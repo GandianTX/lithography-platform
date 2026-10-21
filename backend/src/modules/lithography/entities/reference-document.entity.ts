@@ -14,6 +14,13 @@ import {
 @Index('idx_reference_document_creator_created', ['createdByAccountId', 'createdAt'])
 @Index('idx_reference_document_storage', ['storageBackend', 'storageReference'])
 @Index('idx_reference_document_deprecated_created', ['deprecated', 'createdAt'])
+@Index('uk_reference_document_source_submission', ['sourceSubmissionId'], { unique: true })
+@Index('idx_reference_document_source_revision', ['sourceRevisionId', 'sourceSubmissionId'])
+@Index('idx_reference_document_org_deleted_created', [
+  'ownerOrganizationId',
+  'deletedAt',
+  'createdAt',
+])
 @ForeignKey('EquipmentModelEntity', ['equipmentModelId'], ['id'], {
   name: 'fk_reference_document_equipment_model',
   onDelete: 'RESTRICT',
@@ -21,6 +28,31 @@ import {
 })
 @ForeignKey('AccountEntity', ['createdByAccountId'], ['id'], {
   name: 'fk_reference_document_created_by_account',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
+  name: 'fk_reference_document_owner_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('ContentSubmissionEntity', ['sourceSubmissionId'], ['id'], {
+  name: 'fk_reference_document_source_submission',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey(
+  'ContentSubmissionRevisionEntity',
+  ['sourceRevisionId', 'sourceSubmissionId'],
+  ['id', 'submissionId'],
+  {
+    name: 'fk_reference_document_source_revision',
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+)
+@ForeignKey('AccountEntity', ['updatedByAccountId'], ['id'], {
+  name: 'fk_reference_document_updated_by_account',
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
@@ -36,6 +68,18 @@ import {
 @Check(
   'chk_reference_document_content_source',
   '(`content_text` IS NOT NULL OR `storage_reference` IS NOT NULL)',
+)
+@Check(
+  'chk_reference_document_ingest_method',
+  "`ingest_method` IN ('ADMIN_DIRECT', 'REVIEWED_SUBMISSION', 'SYSTEM_IMPORT')",
+)
+@Check(
+  'chk_reference_document_source_pair',
+  '((`source_submission_id` IS NULL AND `source_revision_id` IS NULL) OR (`source_submission_id` IS NOT NULL AND `source_revision_id` IS NOT NULL))',
+)
+@Check(
+  'chk_reference_document_model_exclusive',
+  '(`equipment_model_id` IS NULL OR `equipment_model_text` IS NULL)',
 )
 export class ReferenceDocumentEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '参考文档主键ID' })
@@ -104,6 +148,68 @@ export class ReferenceDocumentEntity {
 
   @Column({ name: 'created_by_account_id', type: 'int', comment: '创建人账号ID' })
   createdByAccountId!: number;
+
+  @Column({ name: 'owner_organization_id', type: 'int', comment: '所属组织ID' })
+  ownerOrganizationId!: number;
+
+  @Column({
+    name: 'ingest_method',
+    type: 'varchar',
+    length: 32,
+    default: 'ADMIN_DIRECT',
+    comment: '入库方式：ADMIN_DIRECT=管理员直建；REVIEWED_SUBMISSION=审核发布；SYSTEM_IMPORT=预留',
+  })
+  ingestMethod!: string;
+
+  @Column({
+    name: 'source_submission_id',
+    type: 'int',
+    nullable: true,
+    comment: '来源投稿ID；管理员直建为空',
+  })
+  sourceSubmissionId!: number | null;
+
+  @Column({
+    name: 'source_revision_id',
+    type: 'int',
+    nullable: true,
+    comment: '来源送审版本ID；必须属于来源投稿',
+  })
+  sourceRevisionId!: number | null;
+
+  @Column({
+    name: 'equipment_model_text',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: '机型文字（用户手填）；与机型ID互斥',
+  })
+  equipmentModelText!: string | null;
+
+  @Column({
+    name: 'updated_by_account_id',
+    type: 'int',
+    nullable: true,
+    comment: '最后修改人账号ID；正式更正时必写',
+  })
+  updatedByAccountId!: number | null;
+
+  @Column({
+    name: 'extension_json',
+    type: 'json',
+    nullable: true,
+    comment: '按 schema_version 校验的补充属性',
+  })
+  extensionJson!: Record<string, unknown> | null;
+
+  @Column({
+    name: 'schema_version',
+    type: 'smallint',
+    unsigned: true,
+    default: 1,
+    comment: '内容 schema 版本',
+  })
+  schemaVersion!: number;
 
   @Column({ type: 'boolean', default: false, comment: '是否已软删除' })
   deprecated!: boolean;
