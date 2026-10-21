@@ -5,8 +5,9 @@
  * REST 上传 / 下载 adapter 单测：
  * - 成功信封与错误信封映射（业务码 → 显式失败结果，Token 头注入）；
  * - 401 会话失效链路（与 GraphQL executeGraphQL 同口径）：refreshSession 刷新后重试一次；
- *   无刷新能力 / 刷新失败 / 重试仍 401 时调 onAuthFailure 宣布会话失效；
- * - Content-Disposition 文件名解析（filename* 优先于 filename）。
+ *   无刷新能力 / 刷新失败 / 重试仍 401 时调 onAuthFailure 宣布会话失效。
+ *
+ * 说明：通用信封解析与文件名解析测试随实现上移至 shared/http（rest-response.spec.ts）。
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,7 +17,6 @@ import { getGraphQLRuntimeConfig } from '@/shared/graphql';
 import {
   createReferenceDocumentWithFile,
   downloadReferenceDocumentFile,
-  parseAttachmentFilename,
 } from './reference-document-http-adapter';
 
 vi.mock('@/shared/graphql', () => ({
@@ -251,18 +251,5 @@ describe('downloadReferenceDocumentFile', () => {
     const result = await downloadReferenceDocumentFile(970002);
 
     expect(result).toMatchObject({ ok: false, reason: 'download-failed' });
-  });
-});
-
-describe('parseAttachmentFilename', () => {
-  it('filename* 优先；非法编码原样返回；无头返回 null', () => {
-    expect(parseAttachmentFilename("attachment; filename*=UTF-8''%E6%89%8B%E5%86%8C.pdf")).toBe(
-      '手册.pdf',
-    );
-    expect(parseAttachmentFilename('attachment; filename="fallback.pdf"')).toBe('fallback.pdf');
-    expect(parseAttachmentFilename('attachment; filename="a.pdf"; filename*=UTF-8\'\'bad%ZZ')).toBe(
-      'bad%ZZ',
-    );
-    expect(parseAttachmentFilename(null)).toBeNull();
   });
 });

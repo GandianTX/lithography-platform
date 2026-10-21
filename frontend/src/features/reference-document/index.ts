@@ -21,15 +21,20 @@ export type {
   CreateReferenceDocumentWithFileInput,
   CreateReferenceDocumentWithFileResult,
   DeleteReferenceDocumentResult,
+  ReferenceDocumentCaseDetail,
+  ReferenceDocumentCaseHandlingStatus,
   ReferenceDocumentDetail,
   ReferenceDocumentDetailResult,
   ReferenceDocumentEquipmentModelOption,
   ReferenceDocumentFileDownloadResult,
+  ReferenceDocumentIngestMethod,
   ReferenceDocumentListFilter,
   ReferenceDocumentListItem,
   ReferenceDocumentListPage,
   ReferenceDocumentListPagination,
   ReferenceDocumentTypeOption,
+  UpdateReferenceDocumentCasePatch,
+  UpdateReferenceDocumentCaseResult,
   UpdateReferenceDocumentPatch,
   UpdateReferenceDocumentResult,
 } from './infrastructure/reference-document.types';
@@ -43,6 +48,7 @@ export {
   fetchReferenceDocuments,
   fetchReferenceEquipmentModels,
   updateReferenceDocument,
+  updateReferenceDocumentCase,
 } from './infrastructure/reference-document-adapter';
 export { downloadReferenceDocumentFile } from './infrastructure/reference-document-http-adapter';
 export { ReferenceDocumentDetailPanel } from './ui/reference-document-detail-panel';

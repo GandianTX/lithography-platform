@@ -12,6 +12,8 @@ import type {
   ReferenceDocumentListFilter,
   ReferenceDocumentListPage,
   ReferenceDocumentListPagination,
+  UpdateReferenceDocumentCasePatch,
+  UpdateReferenceDocumentCaseResult,
   UpdateReferenceDocumentPatch,
   UpdateReferenceDocumentResult,
 } from './reference-document.types';
@@ -47,8 +49,12 @@ const REFERENCE_DOCUMENTS_QUERY = `
         documentType
         equipmentModelId
         equipmentModelName
+        equipmentModelText
         description
         originalFilename
+        organizationName
+        ingestMethod
+        caseHandlingStatus
         creatorNickname
         createdAt
       }
@@ -67,11 +73,24 @@ const REFERENCE_DOCUMENT_DETAIL_QUERY = `
       documentType
       equipmentModelId
       equipmentModelName
+      equipmentModelText
       description
       originalFilename
       mimeType
       hasFile
       contentText
+      organizationName
+      ingestMethod
+      caseDetail {
+        errorCode
+        handlingStatus
+        phenomenon
+        conditionText
+        reproductionSteps
+        diagnosis
+        actionTaken
+        resolution
+      }
       creatorNickname
       createdAt
       updatedAt
@@ -99,6 +118,15 @@ const SOFT_DELETE_REFERENCE_DOCUMENT_MUTATION = `
   mutation SoftDeleteReferenceDocument($id: Int!) {
     softDeleteReferenceDocument(id: $id) {
       id
+    }
+  }
+`;
+
+const UPDATE_REFERENCE_DOCUMENT_CASE_MUTATION = `
+  mutation UpdateReferenceDocumentCase($id: Int!, $input: UpdateReferenceDocumentCaseInput!) {
+    updateReferenceDocumentCase(id: $id, input: $input) {
+      id
+      updatedAt
     }
   }
 `;
@@ -177,6 +205,36 @@ const DELETE_FALLBACK_MESSAGE_BY_REASON: Record<
   'delete-failed': '参考资料删除失败，请稍后重试。',
 };
 
+/**
+ * 案例更正拒绝原因主映射 + 可选细化。NOT_FOUND 大类含两个来源：
+ * 不存在/已软删/跨组织（默认 not-found）与型号不存在（经 errorCode 细化为 model-not-found）；
+ * 非案例资料走 BAD_USER_INPUT（invalid-input，后端口径，不是 not-found）。
+ */
+const UPDATE_CASE_FAILURE_REASON_BY_CATEGORY_CODE: Record<
+  string,
+  Extract<UpdateReferenceDocumentCaseResult, { ok: false }>['reason']
+> = {
+  NOT_FOUND: 'not-found',
+  BAD_USER_INPUT: 'invalid-input',
+  INTERNAL_SERVER_ERROR: 'update-failed',
+};
+
+const REFINED_UPDATE_CASE_REASON_BY_ERROR_CODE: Partial<
+  Record<string, Extract<UpdateReferenceDocumentCaseResult, { ok: false }>['reason']>
+> = {
+  REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND: 'model-not-found',
+};
+
+const UPDATE_CASE_FALLBACK_MESSAGE_BY_REASON: Record<
+  Extract<UpdateReferenceDocumentCaseResult, { ok: false }>['reason'],
+  string
+> = {
+  'not-found': '案例资料不存在或不可更正。',
+  'model-not-found': '所选设备型号不存在，请重新选择。',
+  'invalid-input': '输入不符合要求，请检查后重新提交。',
+  'update-failed': '案例更正失败，请稍后重试。',
+};
+
 type EquipmentModelsData = {
   equipmentModels: ReferenceDocumentEquipmentModelOption[];
 };
@@ -206,6 +264,10 @@ type SoftDeleteReferenceDocumentData = {
   softDeleteReferenceDocument: { id: number };
 };
 
+type UpdateReferenceDocumentCaseData = {
+  updateReferenceDocumentCase: { id: number; updatedAt: string };
+};
+
 /** OFFSET 分页变量（调用方只传 page/pageSize，mode 与 withTotal 由 adapter 内部补齐） */
 type PaginationVariables = {
   pagination: {
@@ -222,6 +284,7 @@ type ReferenceDocumentsVariables = PaginationVariables & {
     title?: string;
     documentType?: string;
     equipmentModelId?: number;
+    caseHandlingStatus?: string;
   };
 };
 
@@ -253,7 +316,11 @@ export async function fetchReferenceDocuments(
       pageSize: pagination.pageSize,
       withTotal: true,
     },
-    ...(filter && (titleKeyword || filter.documentType || filter.equipmentModelId !== undefined)
+    ...(filter &&
+    (titleKeyword ||
+      filter.documentType ||
+      filter.equipmentModelId !== undefined ||
+      filter.caseHandlingStatus)
       ? {
           filter: {
             ...(titleKeyword ? { title: titleKeyword } : {}),
@@ -261,6 +328,7 @@ export async function fetchReferenceDocuments(
             ...(filter.equipmentModelId !== undefined
               ? { equipmentModelId: filter.equipmentModelId }
               : {}),
+            ...(filter.caseHandlingStatus ? { caseHandlingStatus: filter.caseHandlingStatus } : {}),
           },
         }
       : {}),
@@ -401,6 +469,49 @@ export async function deleteReferenceDocument(id: number): Promise<DeleteReferen
       ok: false,
       reason,
       message: detail.errorMessage ?? DELETE_FALLBACK_MESSAGE_BY_REASON[reason],
+    };
+  }
+}
+
+/**
+ * 更正正式案例资料（仅 SUPER_ADMIN；仅 FAULT_CASE 资料）。
+ * 不存在 / 已软删 / 跨组织由后端统一 NOT_FOUND（防探测）；非案例资料为 INVALID_PARAMS
+ * （invalid-input，后端口径，不是 not-found）；型号不存在经 errorCode 细化为 model-not-found；
+ * 返回资料最新更新时间。
+ */
+export async function updateReferenceDocumentCase(
+  id: number,
+  patch: UpdateReferenceDocumentCasePatch,
+): Promise<UpdateReferenceDocumentCaseResult> {
+  try {
+    const data = await executeGraphQL<
+      UpdateReferenceDocumentCaseData,
+      { id: number; input: UpdateReferenceDocumentCasePatch }
+    >(UPDATE_REFERENCE_DOCUMENT_CASE_MUTATION, { id, input: patch });
+
+    return {
+      ok: true,
+      id: data.updateReferenceDocumentCase.id,
+      updatedAt: data.updateReferenceDocumentCase.updatedAt,
+    };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    const categoryReason = detail?.code
+      ? UPDATE_CASE_FAILURE_REASON_BY_CATEGORY_CODE[detail.code]
+      : undefined;
+
+    if (!detail || !categoryReason) {
+      throw error;
+    }
+
+    const reason =
+      (detail.errorCode ? REFINED_UPDATE_CASE_REASON_BY_ERROR_CODE[detail.errorCode] : undefined) ??
+      categoryReason;
+
+    return {
+      ok: false,
+      reason,
+      message: detail.errorMessage ?? UPDATE_CASE_FALLBACK_MESSAGE_BY_REASON[reason],
     };
   }
 }

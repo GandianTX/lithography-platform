@@ -8,6 +8,12 @@
  * 不出现任何账号 ID 与存储引用路径字段（后端 DTO 已在边界剥离）。
  */
 
+/** 案例处理状态（受控字符串）：未解决 / 处理中 / 已解决 */
+export type ReferenceDocumentCaseHandlingStatus = 'UNRESOLVED' | 'IN_PROGRESS' | 'RESOLVED';
+
+/** 入库方式来源（受控字符串）：ADMIN_DIRECT=管理员直建；REVIEWED_SUBMISSION=投稿审核发布 */
+export type ReferenceDocumentIngestMethod = 'ADMIN_DIRECT' | 'REVIEWED_SUBMISSION';
+
 /** 列表项（列表查询输出；无文本内容，无账号 ID / 存储引用） */
 export type ReferenceDocumentListItem = {
   id: number;
@@ -17,21 +23,49 @@ export type ReferenceDocumentListItem = {
   equipmentModelId: number | null;
   /** 通用资料为空 */
   equipmentModelName: string | null;
+  /** 机型文字（用户手填；与机型 ID 互斥） */
+  equipmentModelText: string | null;
   description: string | null;
   /** 有存储引用的资料返回；纯文本资料为空 */
   originalFilename: string | null;
+  /** 所属组织展示名（本组织范围内固定为本组织） */
+  organizationName: string;
+  /** 入库方式来源：管理员直建 / 投稿审核发布 */
+  ingestMethod: ReferenceDocumentIngestMethod;
+  /** 案例处理状态；普通资料为空 */
+  caseHandlingStatus: ReferenceDocumentCaseHandlingStatus | null;
   /** 创建人当前昵称（缺失时后端回落「未知用户」） */
   creatorNickname: string;
   createdAt: string;
 };
 
-/** 详情（完整元数据 + 文本内容；编辑与软删仅 SUPER_ADMIN 可见，由页面层按角色控制） */
-export type ReferenceDocumentDetail = Omit<ReferenceDocumentListItem, never> & {
+/** 正式资料案例明细（仅 FAULT_CASE 资料非空；普通资料为 null） */
+export type ReferenceDocumentCaseDetail = {
+  /** 设备错误码（保留大小写与内部符号） */
+  errorCode: string | null;
+  handlingStatus: ReferenceDocumentCaseHandlingStatus;
+  phenomenon: string;
+  conditionText: string | null;
+  reproductionSteps: string;
+  diagnosis: string | null;
+  actionTaken: string | null;
+  /** 处理结果；已解决时必填 */
+  resolution: string | null;
+};
+
+/**
+ * 详情（完整元数据 + 文本内容；编辑与软删仅 SUPER_ADMIN 可见，由页面层按角色控制）。
+ * 详情不含 caseHandlingStatus（后端 Detail DTO 无此字段，S7 真机样例核验）：
+ * 案例状态经 caseDetail.handlingStatus 表达，仅列表使用 caseHandlingStatus。
+ */
+export type ReferenceDocumentDetail = Omit<ReferenceDocumentListItem, 'caseHandlingStatus'> & {
   mimeType: string | null;
   /** 是否带可下载文件（权威判定 = 后端存储引用非空；下载按钮与编辑放行均以本字段为准，
    *  不从 originalFilename 推断——有文件名但无存储引用的行不承诺可下载） */
   hasFile: boolean;
   contentText: string | null;
+  /** 案例明细；普通资料为空（前端需兼容可空 caseDetail） */
+  caseDetail: ReferenceDocumentCaseDetail | null;
   updatedAt: string;
 };
 
@@ -41,11 +75,13 @@ export type ReferenceDocumentListPagination = {
   pageSize: number;
 };
 
-/** 列表筛选（标题模糊搜索 / 类型等值 / 型号等值；均可选） */
+/** 列表筛选（标题模糊搜索 / 类型等值 / 型号等值 / 案例处理状态等值；均可选） */
 export type ReferenceDocumentListFilter = {
   titleKeyword?: string;
   documentType?: string;
   equipmentModelId?: number;
+  /** 案例处理状态等值筛选（仅命中案例资料） */
+  caseHandlingStatus?: ReferenceDocumentCaseHandlingStatus;
 };
 
 /** OFFSET 分页结果（列表统一 createdAt DESC + id DESC） */
@@ -215,9 +251,47 @@ export type ReferenceDocumentFileDownloadResult =
       message: string;
     };
 
-/** 编辑结果（domain failure 显式结果；已软删 / 不存在统一 not-found） */
+/**
+ * 编辑结果（domain failure 显式结果；已软删 / 不存在统一 not-found）
+ */
 export type UpdateReferenceDocumentResult =
   | { ok: true; id: number }
+  | {
+      ok: false;
+      reason: 'not-found' | 'model-not-found' | 'invalid-input' | 'update-failed';
+      message: string;
+    };
+
+/**
+ * 案例专属更正补丁（与后端 UpdateReferenceDocumentCaseInput 对齐；仅案例资料）。
+ * 部分提交语义：undefined 保持原值；可读正文为派生字段不在补丁中；
+ * 类型 / 归属组织 / 来源与原附件不可通过本接口修改；
+ * 必填字段（故障现象 / 复现步骤 / 处理状态）不可清空，已解决必须给出处理结果。
+ */
+export type UpdateReferenceDocumentCasePatch = {
+  title?: string | null;
+  equipmentModelId?: number | null;
+  equipmentModelText?: string | null;
+  description?: string | null;
+  errorCode?: string | null;
+  phenomenon?: string | null;
+  conditionText?: string | null;
+  reproductionSteps?: string | null;
+  diagnosis?: string | null;
+  actionTaken?: string | null;
+  handlingStatus?: ReferenceDocumentCaseHandlingStatus | null;
+  resolution?: string | null;
+};
+
+/**
+ * 案例更正结果（domain failure 显式结果）：
+ * - not-found：不存在 / 已软删 / 跨组织（统一防探测口径）；
+ * - invalid-input：非案例资料走本接口 / 必填校验失败（后端口径，非 not-found）；
+ * - model-not-found：型号不存在经 errorCode 细化；
+ * - update-failed：明细缺失等定式破坏。
+ */
+export type UpdateReferenceDocumentCaseResult =
+  | { ok: true; id: number; updatedAt: string }
   | {
       ok: false;
       reason: 'not-found' | 'model-not-found' | 'invalid-input' | 'update-failed';

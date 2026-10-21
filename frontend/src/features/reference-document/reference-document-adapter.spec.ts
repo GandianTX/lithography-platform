@@ -23,6 +23,7 @@ import {
   fetchReferenceDocuments,
   fetchReferenceEquipmentModels,
   updateReferenceDocument,
+  updateReferenceDocumentCase,
 } from './infrastructure/reference-document-adapter';
 
 vi.mock('@/shared/graphql', async (importOriginal) => {
@@ -89,8 +90,12 @@ describe('fetchReferenceDocuments', () => {
         documentType: 'ERROR_CODE_MANUAL',
         equipmentModelId: 49,
         equipmentModelName: 'ASML TWINSCAN NXT:1980Di',
+        equipmentModelText: null,
         description: null,
         originalFilename: null,
+        organizationName: '甲方默认组织',
+        ingestMethod: 'ADMIN_DIRECT',
+        caseHandlingStatus: null,
         creatorNickname: '系统管理员',
         createdAt: '2026-08-01T08:00:00.000Z',
       },
@@ -114,12 +119,22 @@ describe('fetchReferenceDocuments', () => {
 
     await fetchReferenceDocuments(
       { page: 2, pageSize: 10 },
-      { titleKeyword: '  手册  ', documentType: 'CHECKLIST', equipmentModelId: 49 },
+      {
+        titleKeyword: '  手册  ',
+        documentType: 'CHECKLIST',
+        equipmentModelId: 49,
+        caseHandlingStatus: 'RESOLVED',
+      },
     );
 
     expect(executeGraphQLMock).toHaveBeenLastCalledWith(expect.any(String), {
       pagination: { mode: 'OFFSET', page: 2, pageSize: 10, withTotal: true },
-      filter: { title: '手册', documentType: 'CHECKLIST', equipmentModelId: 49 },
+      filter: {
+        title: '手册',
+        documentType: 'CHECKLIST',
+        equipmentModelId: 49,
+        caseHandlingStatus: 'RESOLVED',
+      },
     });
 
     await fetchReferenceDocuments({ page: 1, pageSize: 10 }, { titleKeyword: '   ' });
@@ -155,10 +170,14 @@ describe('fetchReferenceDocument', () => {
     documentType: 'MAINTENANCE_GUIDE',
     equipmentModelId: 51,
     equipmentModelName: 'ASML TWINSCAN NXE:3400C',
+    equipmentModelText: null,
     description: null,
     originalFilename: null,
     mimeType: null,
     contentText: '# 正文',
+    organizationName: '甲方默认组织',
+    ingestMethod: 'ADMIN_DIRECT',
+    caseDetail: null,
     creatorNickname: '陈工',
     createdAt: '2026-08-02T09:30:00.000Z',
     updatedAt: '2026-08-05T14:00:00.000Z',
@@ -168,6 +187,33 @@ describe('fetchReferenceDocument', () => {
     executeGraphQLMock.mockResolvedValue({ referenceDocument: detail });
 
     await expect(fetchReferenceDocument(970002)).resolves.toEqual({ ok: true, detail });
+  });
+
+  it('案例资料详情携带 caseDetail；普通资料 caseDetail 为 null（可空兼容）', async () => {
+    const caseDetail = {
+      errorCode: 'E-STAGE-301',
+      handlingStatus: 'RESOLVED',
+      phenomenon: '干涉仪信号丢失',
+      conditionText: null,
+      reproductionSteps: '复现步骤',
+      diagnosis: null,
+      actionTaken: null,
+      resolution: '已修复',
+    };
+    executeGraphQLMock.mockResolvedValue({
+      referenceDocument: { ...detail, id: 970031, caseDetail },
+    });
+
+    const result = await fetchReferenceDocument(970031);
+
+    expect(result).toMatchObject({ ok: true });
+
+    if (result.ok) {
+      // 案例明细原样穿透（adapter 不推断不裁剪）；普通资料的 null 由上方详情用例钉住。
+      // 详情不含 caseHandlingStatus（后端 Detail DTO 无此字段，S7 真机样例核验）
+      expect(result.detail.caseDetail).toEqual(caseDetail);
+      expect(result.detail).not.toHaveProperty('caseHandlingStatus');
+    }
   });
 
   it('NOT_FOUND（不存在/已软删统一口径）归并 not-found；errorMessage 优先', async () => {
@@ -379,5 +425,70 @@ describe('deleteReferenceDocument', () => {
     executeGraphQLMock.mockRejectedValue(networkError);
 
     await expect(deleteReferenceDocument(970002)).rejects.toBe(networkError);
+  });
+});
+
+describe('updateReferenceDocumentCase', () => {
+  const patch = { handlingStatus: 'IN_PROGRESS' as const };
+
+  it('更正成功返回资料 ID 与最新更新时间', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      updateReferenceDocumentCase: { id: 970031, updatedAt: '2026-08-28T12:00:00.000Z' },
+    });
+
+    await expect(updateReferenceDocumentCase(970031, patch)).resolves.toEqual({
+      ok: true,
+      id: 970031,
+      updatedAt: '2026-08-28T12:00:00.000Z',
+    });
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('updateReferenceDocumentCase'),
+      { id: 970031, input: patch },
+    );
+  });
+
+  it.each([
+    [
+      'NOT_FOUND（不存在/已软删/跨组织统一防探测）',
+      { code: 'NOT_FOUND', errorCode: 'REFERENCE_DOCUMENT_NOT_FOUND' },
+      'not-found',
+    ],
+    [
+      'NOT_FOUND 细化为型号不存在',
+      { code: 'NOT_FOUND', errorCode: 'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND' },
+      'model-not-found',
+    ],
+    ['生产隐藏 errorCode 时大类码退化为 not-found（不误判）', { code: 'NOT_FOUND' }, 'not-found'],
+    [
+      'BAD_USER_INPUT（非案例资料/必填/互斥，后端口径不是 not-found）',
+      { code: 'BAD_USER_INPUT', errorCode: 'REFERENCE_DOCUMENT_INVALID_PARAMS' },
+      'invalid-input',
+    ],
+    [
+      '落库失败 / 明细缺失（系统侧）',
+      { code: 'INTERNAL_SERVER_ERROR', errorCode: 'REFERENCE_DOCUMENT_UPDATE_FAILED' },
+      'update-failed',
+    ],
+  ])('%s → %s', async (_name, extensions, reason) => {
+    executeGraphQLMock.mockRejectedValue(buildDomainIngressError(extensions));
+
+    await expect(updateReferenceDocumentCase(970031, patch)).resolves.toMatchObject({
+      ok: false,
+      reason,
+    });
+  });
+
+  it('FORBIDDEN（守卫拒绝）不吞为业务拒绝，仍上抛', async () => {
+    const forbidden = buildDomainIngressError({ code: 'FORBIDDEN', errorCode: 'ACCESS_DENIED' });
+    executeGraphQLMock.mockRejectedValue(forbidden);
+
+    await expect(updateReferenceDocumentCase(970031, patch)).rejects.toBe(forbidden);
+  });
+
+  it('transport 失败时上抛 GraphQLIngressError', async () => {
+    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
+    executeGraphQLMock.mockRejectedValue(networkError);
+
+    await expect(updateReferenceDocumentCase(970031, patch)).rejects.toBe(networkError);
   });
 });
