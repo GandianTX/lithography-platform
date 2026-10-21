@@ -2,8 +2,10 @@
 
 import { Module } from '@nestjs/common';
 
+import { ContentSubmissionUsecasesModule } from '@src/usecases/content-submission/content-submission-usecases.module';
 import { ReferenceDocumentUsecasesModule } from '@src/usecases/reference-document/reference-document-usecases.module';
 
+import { ContentSubmissionRestController } from './content-submission/content-submission-rest.controller';
 import { ReferenceDocumentRestController } from './reference-document/reference-document-rest.controller';
 
 /**
@@ -12,7 +14,7 @@ import { ReferenceDocumentRestController } from './reference-document/reference-
  * （reference-document-usecases.module.ts wiring，负责人 0910 架构要求）。
  */
 @Module({
-  imports: [ReferenceDocumentUsecasesModule],
-  controllers: [ReferenceDocumentRestController],
+  imports: [ReferenceDocumentUsecasesModule, ContentSubmissionUsecasesModule],
+  controllers: [ReferenceDocumentRestController, ContentSubmissionRestController],
 })
 export class RestAdapterModule {}

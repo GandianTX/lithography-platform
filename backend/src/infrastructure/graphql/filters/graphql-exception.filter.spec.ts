@@ -2,6 +2,7 @@ import {
   CAPABILITY_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
+  ORGANIZATION_ERROR,
   REFERENCE_DOCUMENT_ERROR,
   REPAIR_REQUEST_ERROR,
 } from '@core/common/errors';
@@ -85,6 +86,29 @@ describe(GqlAllExceptionsFilter.name, () => {
     const filter = new GqlAllExceptionsFilter(configService);
 
     const error = filter.catch(new DomainError(errorCode, '参考资料错误'), host) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({
+      code: gqlCode,
+      errorCode,
+    });
+  });
+
+  // 可信组织上下文（A-PR0 §2.1）：成员事实缺失/歧义是已认证用户的权限类拒绝，
+  // 不得塌缩为 UNAUTHENTICATED（前端会误判 Session 失效）或输入错误
+  it.each([
+    [ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, 'FORBIDDEN'],
+    [ORGANIZATION_ERROR.AMBIGUOUS_MEMBERSHIP, 'FORBIDDEN'],
+  ])('maps organization context error %s to GraphQL code %s', (errorCode, gqlCode) => {
+    const configService = {
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'testField' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    const error = filter.catch(new DomainError(errorCode, '组织上下文错误'), host) as GraphQLError;
 
     expect(error.extensions).toMatchObject({
       code: gqlCode,

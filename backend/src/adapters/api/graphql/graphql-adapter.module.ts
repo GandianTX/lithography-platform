@@ -5,6 +5,7 @@ import { AiQueueUsecasesModule } from '@src/usecases/ai-queue/ai-queue-usecases.
 import { AuthUsecasesModule } from '@src/usecases/auth/auth-usecases.module';
 import { AsyncTaskRecordUsecasesModule } from '@src/usecases/async-task-record/async-task-record-usecases.module';
 import { AdminDocumentDatabaseUsecasesModule } from '@src/usecases/admin-document-database/admin-document-database-usecases.module';
+import { ContentSubmissionUsecasesModule } from '@src/usecases/content-submission/content-submission-usecases.module';
 import { EmailQueueUsecasesModule } from '@src/usecases/email-queue/email-queue-usecases.module';
 import { RegistrationUsecasesModule } from '@src/usecases/registration/registration-usecases.module';
 import { ReferenceDocumentUsecasesModule } from '@src/usecases/reference-document/reference-document-usecases.module';
@@ -25,6 +26,7 @@ import { AdminDocumentDatabaseResolver } from './admin-document-database/admin-d
 import { AiResolver } from './ai/ai.resolver';
 import { UserInfoResolver } from './account/user-info.resolver';
 import { AuthResolver } from './auth/auth.resolver';
+import { ContentSubmissionResolver } from './content-submission/content-submission.resolver';
 import { EmailResolver } from './email/email.resolver';
 import { EquipmentModelResolver } from './equipment-model/equipment-model.resolver';
 import { ReferenceDocumentResolver } from './reference-document/reference-document.resolver';
@@ -56,6 +58,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     AiQueueUsecasesModule,
     AsyncTaskRecordUsecasesModule,
     AuthUsecasesModule,
+    ContentSubmissionUsecasesModule,
     EmailQueueUsecasesModule,
     RegistrationUsecasesModule,
     ReferenceDocumentUsecasesModule,
@@ -103,6 +106,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     AdminDocumentDatabaseResolver,
     AiResolver,
     AuthResolver,
+    ContentSubmissionResolver,
     ThirdPartyAuthResolver,
     EmailResolver,
     EquipmentModelResolver,
@@ -125,6 +129,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     AdminDocumentDatabaseResolver,
     AiResolver,
     AuthResolver,
+    ContentSubmissionResolver,
     ThirdPartyAuthResolver,
     EmailResolver,
     EquipmentModelResolver,

@@ -298,6 +298,56 @@ export const INPUT_NORMALIZE_ERROR = {
 } as const;
 Object.freeze(INPUT_NORMALIZE_ERROR);
 
+// 可信组织上下文相关错误码（A-PR0 计划 §2.1：组织成员事实解析）
+// 语义：账号已通过认证，但组织成员事实不满足操作要求——属权限类拒绝。
+// 刻意不复用 AUTH_ERROR.* / JWT_ERROR.*：那些码会被全局过滤器映射为 UNAUTHENTICATED，
+// 使前端把「组织事实缺失」误判为会话失效并清理 Session 跳转登录页
+// （docs/api/graphql-error-contract-current.md：已认证用户的权限失败保持 FORBIDDEN）。
+export const ORGANIZATION_ERROR = {
+  // 无任何有效组织成员关系（成员 ACTIVE 且组织 ACTIVE）：拒绝一切组织范围操作，不回退全库
+  NO_ACTIVE_MEMBERSHIP: 'ORGANIZATION_NO_ACTIVE_MEMBERSHIP',
+  // 多个有效成员关系且无可信组织上下文：拒绝歧义请求（本期不提供组织选择 UI）
+  AMBIGUOUS_MEMBERSHIP: 'ORGANIZATION_AMBIGUOUS_MEMBERSHIP',
+} as const;
+Object.freeze(ORGANIZATION_ERROR);
+
+// 内容投稿相关错误码（A-PR0 计划 §2.2/§2.3：两类草稿、本人查询；S3 起）
+// 语义边界：
+// - 输入类（INVALID_PARAMS / DRAFT_EMPTY）：对外 BAD_USER_INPUT，不得使用
+//   AUTH/JWT 码（会被映射为 UNAUTHENTICATED，前端误判会话失效）；
+// - 目标不可访问（NOT_FOUND）：不存在、他人投稿、跨组织统一同码，
+//   不泄露他人投稿的存在性（同组织其他工程师的投稿也不是公开数据）；
+// - 状态冲突（STATE_NOT_EDITABLE）：目标本身存在且可识别，但当前状态
+//   （PENDING_REVIEW / PUBLISHED）不允许编辑操作，对外 CONFLICT；
+// - 系统侧（CREATION_FAILED / UPDATE_FAILED / READ_FAILED）：落库、锁读与不定式读取
+//   失败，不泄露数据库细节。
+export const CONTENT_SUBMISSION_ERROR = {
+  // 字段超长、机型与机型文字并存、扩展 JSON 含 v1 未定义键等输入非法
+  INVALID_PARAMS: 'CONTENT_SUBMISSION_INVALID_PARAMS',
+  // 草稿无任何已填写文字业务字段（只有默认状态或本地选文件不算已填写）
+  DRAFT_EMPTY: 'CONTENT_SUBMISSION_DRAFT_EMPTY',
+  // 指定设备型号不存在（应用层预检，不依赖 RESTRICT 外键裸报错）
+  EQUIPMENT_MODEL_NOT_FOUND: 'CONTENT_SUBMISSION_EQUIPMENT_MODEL_NOT_FOUND',
+  // 不存在/他人投稿/跨组织统一 NOT_FOUND，不泄露存在性
+  NOT_FOUND: 'CONTENT_SUBMISSION_NOT_FOUND',
+  // 当前状态不允许该操作（PENDING_REVIEW 只读、PUBLISHED 不可改稿）
+  STATE_NOT_EDITABLE: 'CONTENT_SUBMISSION_STATE_NOT_EDITABLE',
+  // 附件上传：multipart 文件缺失/为空（协议层与用例层双重防御）
+  UPLOAD_FILE_MISSING: 'CONTENT_SUBMISSION_UPLOAD_FILE_MISSING',
+  // 附件上传：实际字节数超过配置上限（不信任客户端声明值；与管理员上传同源配置）
+  UPLOAD_FILE_TOO_LARGE: 'CONTENT_SUBMISSION_UPLOAD_FILE_TOO_LARGE',
+  // 附件上传：扩展名不在白名单（以扩展名为主判定，不信任客户端 MIME 头）
+  UPLOAD_FILE_TYPE_NOT_ALLOWED: 'CONTENT_SUBMISSION_UPLOAD_FILE_TYPE_NOT_ALLOWED',
+  // 附件下载：存储对象缺失/引用不可用（不泄露服务器路径与存储引用）
+  FILE_NOT_AVAILABLE: 'CONTENT_SUBMISSION_FILE_NOT_AVAILABLE',
+  // 系统侧：创建/更新/锁读失败，不向客户端泄漏数据库细节
+  CREATION_FAILED: 'CONTENT_SUBMISSION_CREATION_FAILED',
+  UPDATE_FAILED: 'CONTENT_SUBMISSION_UPDATE_FAILED',
+  // 系统侧：读取到不定式被破坏的数据（如 1:1 明细行缺失），失败关闭而非静默容忍
+  READ_FAILED: 'CONTENT_SUBMISSION_READ_FAILED',
+} as const;
+Object.freeze(CONTENT_SUBMISSION_ERROR);
+
 // 类型定义
 export type AuthErrorCode = (typeof AUTH_ERROR)[keyof typeof AUTH_ERROR];
 export type AccountErrorCode = (typeof ACCOUNT_ERROR)[keyof typeof ACCOUNT_ERROR];
@@ -322,6 +372,9 @@ export type AdminDocumentDatabaseErrorCode =
   (typeof ADMIN_DOCUMENT_DATABASE_ERROR)[keyof typeof ADMIN_DOCUMENT_DATABASE_ERROR];
 export type InputNormalizeErrorCode =
   (typeof INPUT_NORMALIZE_ERROR)[keyof typeof INPUT_NORMALIZE_ERROR];
+export type OrganizationErrorCode = (typeof ORGANIZATION_ERROR)[keyof typeof ORGANIZATION_ERROR];
+export type ContentSubmissionErrorCode =
+  (typeof CONTENT_SUBMISSION_ERROR)[keyof typeof CONTENT_SUBMISSION_ERROR];
 
 // 分页相关错误码
 export const PAGINATION_ERROR = {
@@ -350,6 +403,8 @@ export type DomainErrorCode =
   | MyAccountErrorCode
   | AdminDocumentDatabaseErrorCode
   | InputNormalizeErrorCode
+  | OrganizationErrorCode
+  | ContentSubmissionErrorCode
   | PaginationErrorCode;
 
 // 类型守卫：统一判断是否为领域错误（兼容多包/反序列化场景）
