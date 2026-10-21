@@ -33,7 +33,10 @@ import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-re
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { DataSource, In } from 'typeorm';
 
-import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
+import {
+  assertDataSourceOnAllowedE2eDatabase,
+  assertPhysicalCleanupConsent,
+} from '../utils/e2e-db-guard';
 import { createTestAccount, TestAccountConfig } from '../utils/test-accounts';
 
 /** 本 spec 专属账号（固定 loginName；所有权边界仅此三者） */
@@ -176,6 +179,20 @@ const assertWritableTarget = async (ds: DataSource, helper: string): Promise<str
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`[${helper}] 阶段=目标库守卫 拒绝执行写入/删除：${detail}`, { cause: error });
   }
+};
+
+/**
+ * 删除专用双门禁（G4/F05）：物理清理许可 + 目标库白名单，互相独立，缺一即在第一条删除前失败。
+ * 写入路径（seed*）仍只用库名守卫；许可只约束物理删除。
+ */
+const assertDeletableTarget = async (ds: DataSource, helper: string): Promise<string> => {
+  try {
+    assertPhysicalCleanupConsent();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`[${helper}] 阶段=清理许可门禁 拒绝执行删除：${detail}`, { cause: error });
+  }
+  return assertWritableTarget(ds, helper);
 };
 
 /** 归属校验失败：失败关闭（拒绝删除），错误可观察且不含敏感信息 */
@@ -552,7 +569,7 @@ export const cleanupProductionFixtureResidue = async (
   ds: DataSource,
 ): Promise<{ repairRequestIds: number[]; equipmentModelIds: number[]; accountIds: number[] }> => {
   const helper = 'cleanupProductionFixtureResidue';
-  const database = await assertWritableTarget(ds, helper);
+  const database = await assertDeletableTarget(ds, helper);
   const owned = await resolveOwnedRows(ds, helper, database);
 
   // 目标集合 == 已验证所有权集合（定位 + 逐字段校验后的结果即判定边界）
@@ -591,7 +608,7 @@ export const cleanupProductionFixtureByIds = async (
     return;
   }
   const helper = 'cleanupProductionFixtureByIds';
-  const database = await assertWritableTarget(ds, helper);
+  const database = await assertDeletableTarget(ds, helper);
   const ownedIdSet: OwnedIdSet = {
     repairRequestIds: requestIds,
     equipmentModelIds: modelIds,
@@ -919,7 +936,7 @@ export const cleanupProductionSentinelChain = async (
     return;
   }
   const helper = 'cleanupProductionSentinelChain';
-  const database = await assertWritableTarget(ds, helper);
+  const database = await assertDeletableTarget(ds, helper);
   const ownedIdSet: OwnedIdSet = {
     repairRequestIds: requestIds,
     equipmentModelIds: modelIds,

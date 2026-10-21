@@ -13,8 +13,22 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
+import { OrganizationMembershipEntity } from '../../src/modules/lithography/entities/organization-membership.entity';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestMemberships,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 
 /**
  * P2-1B：管理员用户管理五个 GraphQL 操作（adminUsers + 四个写操作）的真实 MySQL E2E。
@@ -196,6 +210,11 @@ describe('管理员用户管理 (e2e)', () => {
   let guestAccountId: number;
   let guestSecondaryAccountId: number;
 
+  // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMUSER');
+  let primaryOrganizationId = 0;
+  const ownership = createOwnedResourceLedger();
+
   beforeAll(async () => {
     // E2E 基线默认关闭 introspection；本 spec 只在 API 初始化期间临时开启，用于核验公开契约面，
     // 不修改任何 .env / Entity / Migration / schema 产物。
@@ -211,10 +230,76 @@ describe('管理员用户管理 (e2e)', () => {
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：组织与账号均按完整指纹核验；不接管同名异主残留
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        organizations: [
+          {
+            organizationCode: suiteOrganizationCodes.primary,
+            name: 'E2E 甲方组织（账号管理）',
+            kind: 'CLIENT',
+          },
+        ],
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.guestSecondary,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.staffSecondary,
+        ]
+          .map(toResidueAccountFingerprint)
+          .concat(
+            {
+              loginName: CREATED_LOGIN_NAME,
+              loginEmail: CREATED_LOGIN_EMAIL,
+              status: AccountStatus.ACTIVE,
+              identityHint: IdentityTypeEnum.ENGINEER,
+              nickname: 'E2E 新建工程师',
+              accessGroup: [IdentityTypeEnum.ENGINEER],
+            },
+            {
+              loginName: null,
+              loginEmail: EMAIL_ONLY_LOGIN_EMAIL,
+              status: AccountStatus.ACTIVE,
+              identityHint: IdentityTypeEnum.CUSTOMER,
+              nickname: 'E2E 仅邮箱账号',
+              accessGroup: [IdentityTypeEnum.CUSTOMER],
+            },
+          ),
+      },
+      helper: 'admin-user-management.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'guestPrimary', 'guestSecondary', 'staffPrimary', 'staffSecondary'],
+      ownership,
+    });
+
+    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 甲方组织（账号管理）',
+          kind: 'CLIENT',
+        },
+      ],
+      ownership,
+    });
+    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
+    await seedTestMemberships({
+      dataSource,
+      organizationIdsByCode: organizationIds,
+      ownership,
+      memberships: [
+        {
+          accountLoginName: testAccountsConfig.admin.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+      ],
     });
 
     adminToken = await login({
@@ -245,12 +330,26 @@ describe('管理员用户管理 (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (app) await app.close();
-    if (previousIntrospectionEnabled === undefined) {
-      delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
-    } else {
-      process.env.GRAPHQL_INTROSPECTION_ENABLED = previousIntrospectionEnabled;
-    }
+    await runE2eTeardown({
+      cleanup: async () => {
+        if (dataSource?.isInitialized) {
+          // 收尾只删除本轮登记的真实 ID；清理失败向 jest 传播，不吞错
+          await runGuardedSpecCleanup({
+            dataSource,
+            owned: ownership,
+            helper: 'admin-user-management.e2e-spec afterAll 收尾',
+          });
+        }
+      },
+      finalize: () => {
+        if (previousIntrospectionEnabled === undefined) {
+          delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
+        } else {
+          process.env.GRAPHQL_INTROSPECTION_ENABLED = previousIntrospectionEnabled;
+        }
+      },
+      closeApp: app ? async () => await app.close() : null,
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -774,6 +873,7 @@ describe('管理员用户管理 (e2e)', () => {
 
       const createdAccountId = view?.id ?? 0;
       expect(createdAccountId).toBeGreaterThan(0);
+      recordOwnedResource(ownership, 'account', createdAccountId);
 
       // 账号行：登录邮箱小写收敛、identity_hint 与请求角色一致、状态 ACTIVE、口令非明文
       const account = await readAccountRow(createdAccountId);
@@ -799,6 +899,17 @@ describe('管理员用户管理 (e2e)', () => {
         accessGroup: [IdentityTypeEnum.ENGINEER],
         metaDigest: [IdentityTypeEnum.ENGINEER],
       });
+
+      // S2c：ENGINEER 创建时在事务内绑定管理员当前组织；成员关系落库校验
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOne({ where: { accountId: createdAccountId } });
+      expect(membership).toMatchObject({
+        organizationId: primaryOrganizationId,
+        memberRole: IdentityTypeEnum.ENGINEER,
+        status: 'ACTIVE',
+      });
+      expect(membership?.leftAt).toBeNull();
 
       // 初始密码经公开登录入口可验证：证明哈希盐取的是数据库权威 createdAt
       const createdToken = await login({
@@ -830,9 +941,19 @@ describe('管理员用户管理 (e2e)', () => {
       expect(view?.role).toBe(IdentityTypeEnum.CUSTOMER);
 
       const account = await readAccountRow(view?.id ?? 0);
+      if (view?.id) {
+        recordOwnedResource(ownership, 'account', view.id);
+      }
       expect(account?.loginName).toBeNull();
       expect(account?.loginEmail).toBe(EMAIL_ONLY_LOGIN_EMAIL);
       expect(await countAccounts({ loginEmail: EMAIL_ONLY_LOGIN_EMAIL })).toBe(1);
+
+      // S2c 口径：CUSTOMER 不建立组织成员关系
+      expect(
+        await dataSource
+          .getRepository(OrganizationMembershipEntity)
+          .findOne({ where: { accountId: view?.id ?? 0 } }),
+      ).toBeNull();
     });
 
     it('重复登录名返回 CONFLICT 且不落库', async () => {

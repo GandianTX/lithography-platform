@@ -14,7 +14,20 @@ import { App } from 'supertest/types';
 import { DataSource, Repository } from 'typeorm';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-teardown';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestMemberships,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 
 const LIST_QUERY = `
   query ReferenceDocuments($pagination: PaginationArgs!) {
@@ -59,7 +72,9 @@ const LIST_SEARCH_QUERY = `
 `;
 
 // REST 上传/下载用运行级临时存储目录：先于 beforeAll 设置 env，使 config 加载时读到
-// 本规格专属目录（不污染默认 var/）；finally 按精确路径清理（呼应 0909 阻塞 1 边界纪律）
+// 本规格专属目录（不污染默认 var/）；finally 按精确路径清理（呼应 0909 阻塞 1 边界纪律）。
+// 原环境变量值先捕获，收尾时恢复原值（不假定原值不存在）。
+const originalStorageDir = captureEnvValue('REFERENCE_DOCUMENT_STORAGE_DIR');
 const e2eStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'refdoc-e2e-storage-'));
 process.env.REFERENCE_DOCUMENT_STORAGE_DIR = e2eStorageRoot;
 
@@ -73,7 +88,9 @@ process.env.REFERENCE_DOCUMENT_STORAGE_DIR = e2eStorageRoot;
  * 以及创建/编辑/软删的落库事实与列表可见性联动。
  * 分支语义由单测钉住的部分（部分提交合并、超长拒绝等）此处不重复。
  *
- * 造数固定主键（43 型号、971~973 资料），依赖 global-setup-e2e 的全表 TRUNCATE；
+ * 造数使用数据库生成的主键（机型自增、资料 971~974 登记到本轮台账）；预清理按
+ * 组织/账号/机型完整指纹回收已知残留，收尾只删除本轮登记的真实 ID，
+ * 不以固定 id=43 或组织编码子查询作为归属证明。
  * 创建路径使用自增 ID 的返回值回查，不与固定主键冲突。
  */
 describe('AI 参考资料库 (e2e)', () => {
@@ -85,6 +102,21 @@ describe('AI 参考资料库 (e2e)', () => {
   let engineerToken: string;
   let customerToken: string;
   let adminAccountId: number;
+
+  // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('REFDOC');
+  let primaryOrganizationId = 0;
+  let peerOrganizationId = 0;
+  let referenceModelId = 0;
+  const ownership = createOwnedResourceLedger();
+
+  // 组织范围用例会话：甲方第二工程师 / 第二组织工程师 / 第二组织管理员 /
+  // 无成员账号 / 多组织歧义账号
+  let staffPrimaryToken: string;
+  let peerEngineerToken: string;
+  let peerAdminToken: string;
+  let noOrgEngineerToken: string;
+  let ambiguousEngineerToken: string;
 
   const PAGE = { mode: 'OFFSET', page: 1, pageSize: 20 };
 
@@ -116,16 +148,124 @@ describe('AI 参考资料库 (e2e)', () => {
 
     await app.init();
 
-    // 清理顺序：先删资料（created_by_account_id / equipment_model_id 外键 RESTRICT），再删账号、型号
-    await documentRepository.createQueryBuilder().delete().execute();
-    await cleanupTestAccounts(dataSource);
-    await modelRepository.createQueryBuilder().delete().execute();
+    // 预清理（窄范围）：组织/账号/机型均按完整指纹回收已知残留，不接管异主行
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        organizations: [
+          {
+            organizationCode: suiteOrganizationCodes.primary,
+            name: 'E2E 甲方组织（参考资料）',
+            kind: 'CLIENT',
+          },
+          {
+            organizationCode: suiteOrganizationCodes.peer,
+            name: 'E2E 同行组织（参考资料）',
+            kind: 'PEER',
+          },
+        ],
+        accounts: [
+          testAccountsConfig.staff,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.staffSecondary,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.admin,
+          testAccountsConfig.peerAdmin,
+          testAccountsConfig.noOrgEngineer,
+          testAccountsConfig.ambiguousEngineer,
+        ].map(toResidueAccountFingerprint),
+        equipmentModels: [
+          {
+            modelCode: 'E2E-REF',
+            modelName: '资料库链路型号',
+            enabled: true,
+            sortOrder: 1,
+          },
+        ],
+      },
+      helper: 'reference-document.e2e-spec beforeAll 预清理',
+    });
 
     await seedTestAccounts({
       dataSource,
       createAccountUsecase: app.get(CreateAccountUsecase),
-      includeKeys: ['staff', 'guestPrimary', 'admin'],
+      includeKeys: [
+        'staff',
+        'staffPrimary',
+        'staffSecondary',
+        'guestPrimary',
+        'admin',
+        'peerAdmin',
+        'noOrgEngineer',
+        'ambiguousEngineer',
+      ],
+      ownership,
     });
+
+    // 组织与成员：甲方组织（admin 管理员 + staff/staffPrimary 工程师）、
+    // 第二组织（peerAdmin 管理员 + staffSecondary 工程师）、
+    // 歧义账号（两组织都 ACTIVE 成员）；noOrgEngineer 不建成员关系（解析拒绝用例）
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 甲方组织（参考资料）',
+          kind: 'CLIENT',
+        },
+        {
+          organizationCode: suiteOrganizationCodes.peer,
+          name: 'E2E 同行组织（参考资料）',
+          kind: 'PEER',
+        },
+      ],
+      ownership,
+    });
+    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
+    peerOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.peer);
+    await seedTestMemberships({
+      dataSource,
+      organizationIdsByCode: organizationIds,
+      ownership,
+      memberships: [
+        {
+          accountLoginName: testAccountsConfig.admin.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+        {
+          accountLoginName: testAccountsConfig.staff.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffSecondary.loginName,
+          organizationCode: suiteOrganizationCodes.peer,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.peerAdmin.loginName,
+          organizationCode: suiteOrganizationCodes.peer,
+          memberRole: 'SUPER_ADMIN',
+        },
+        {
+          accountLoginName: testAccountsConfig.ambiguousEngineer.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.ambiguousEngineer.loginName,
+          organizationCode: suiteOrganizationCodes.peer,
+          memberRole: 'ENGINEER',
+        },
+      ],
+    });
+
     adminToken = await login({
       app,
       loginName: testAccountsConfig.admin.loginName,
@@ -141,22 +281,57 @@ describe('AI 参考资料库 (e2e)', () => {
       loginName: testAccountsConfig.guestPrimary.loginName,
       loginPassword: testAccountsConfig.guestPrimary.loginPassword,
     });
+    staffPrimaryToken = await login({
+      app,
+      loginName: testAccountsConfig.staffPrimary.loginName,
+      loginPassword: testAccountsConfig.staffPrimary.loginPassword,
+    });
+    peerEngineerToken = await login({
+      app,
+      loginName: testAccountsConfig.staffSecondary.loginName,
+      loginPassword: testAccountsConfig.staffSecondary.loginPassword,
+    });
+    peerAdminToken = await login({
+      app,
+      loginName: testAccountsConfig.peerAdmin.loginName,
+      loginPassword: testAccountsConfig.peerAdmin.loginPassword,
+    });
+    noOrgEngineerToken = await login({
+      app,
+      loginName: testAccountsConfig.noOrgEngineer.loginName,
+      loginPassword: testAccountsConfig.noOrgEngineer.loginPassword,
+    });
+    ambiguousEngineerToken = await login({
+      app,
+      loginName: testAccountsConfig.ambiguousEngineer.loginName,
+      loginPassword: testAccountsConfig.ambiguousEngineer.loginPassword,
+    });
     adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
 
-    await modelRepository.save(
-      modelRepository.create([
-        { id: 43, modelCode: 'E2E-REF', modelName: '资料库链路型号', enabled: true, sortOrder: 1 },
-      ]),
+    const savedModel = await modelRepository.save(
+      modelRepository.create({
+        modelCode: 'E2E-REF',
+        modelName: '资料库链路型号',
+        enabled: true,
+        sortOrder: 1,
+      }),
     );
+    referenceModelId = savedModel.id;
+    recordOwnedResource(ownership, 'equipmentModel', referenceModelId);
     // 971 指定型号 + storage 元数据（详情展示「后续版本提供」提示的数据形状）；
-    // 972 通用资料无型号；973 已软删（列表不可见 + 详情统一 NOT_FOUND）
-    await documentRepository.save(
+    // 972 通用资料无型号；973 已软删（列表不可见 + 详情统一 NOT_FOUND）；
+    // 974 第二组织资料（第二组织可见性样本 + 甲方跨组织详情拒绝样本）
+    const peerAdminAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.peerAdmin.loginName,
+    );
+    const seededDocuments = await documentRepository.save(
       documentRepository.create([
         {
           id: 971,
           title: 'E2E 错误码手册',
           documentType: 'ERROR_CODE_MANUAL',
-          equipmentModelId: 43,
+          equipmentModelId: referenceModelId,
           description: '端到端用',
           originalFilename: 'e2e-manual.pdf',
           mimeType: 'application/pdf',
@@ -164,6 +339,8 @@ describe('AI 参考资料库 (e2e)', () => {
           storageBackend: 'LOCAL',
           storageReference: 'e2e/reference-971.pdf',
           createdByAccountId: adminAccountId,
+          ownerOrganizationId: primaryOrganizationId,
+          ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
         },
@@ -179,6 +356,8 @@ describe('AI 参考资料库 (e2e)', () => {
           storageBackend: null,
           storageReference: null,
           createdByAccountId: adminAccountId,
+          ownerOrganizationId: primaryOrganizationId,
+          ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
         },
@@ -194,35 +373,58 @@ describe('AI 参考资料库 (e2e)', () => {
           storageBackend: null,
           storageReference: null,
           createdByAccountId: adminAccountId,
+          ownerOrganizationId: primaryOrganizationId,
+          ingestMethod: 'ADMIN_DIRECT',
           deprecated: true,
           deletedAt: new Date('2026-09-01T00:00:00.000Z'),
         },
+        {
+          id: 974,
+          title: 'E2E 同行组织资料',
+          documentType: 'MANUAL',
+          equipmentModelId: null,
+          description: '第二组织专属',
+          originalFilename: null,
+          mimeType: null,
+          contentText: 'PEER-ONLY',
+          storageBackend: null,
+          storageReference: null,
+          createdByAccountId: peerAdminAccountId,
+          ownerOrganizationId: peerOrganizationId,
+          ingestMethod: 'ADMIN_DIRECT',
+          deprecated: false,
+          deletedAt: null,
+        },
       ]),
     );
+    for (const document of seededDocuments) {
+      recordOwnedResource(ownership, 'document', document.id);
+    }
   }, 30000);
 
   afterAll(async () => {
-    try {
-      if (dataSource && dataSource.isInitialized) {
-        await documentRepository.createQueryBuilder().delete().execute();
-        await cleanupTestAccounts(dataSource);
-        await modelRepository.createQueryBuilder().delete().execute();
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      // 临时存储目录按精确路径清理，并还原环境变量避免泄漏到后续规格
-      fs.rmSync(e2eStorageRoot, { recursive: true, force: true });
-      delete process.env.REFERENCE_DOCUMENT_STORAGE_DIR;
-      if (app) {
-        try {
-          await app.close();
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
+    await runE2eTeardown({
+      cleanup: async () => {
+        if (dataSource?.isInitialized) {
+          await runGuardedSpecCleanup({
+            dataSource,
+            owned: ownership,
+            helper: 'reference-document.e2e-spec afterAll 收尾',
+          });
         }
-      }
-    }
+      },
+      finalize: () => {
+        // 临时存储目录按精确路径清理，并恢复捕获时的原环境变量值
+        fs.rmSync(e2eStorageRoot, { recursive: true, force: true });
+        restoreEnvValue('REFERENCE_DOCUMENT_STORAGE_DIR', originalStorageDir);
+      },
+      closeApp: app
+        ? async () => {
+            await app.close();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        : null,
+    });
   });
 
   describe('未登录（无 Token）', () => {
@@ -336,6 +538,109 @@ describe('AI 参考资料库 (e2e)', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // 组织范围与可信成员解析（A-PR0 §2.1；F4 组织适配）
+  // ---------------------------------------------------------------------------
+
+  describe('组织范围与可信成员解析', () => {
+    it('甲方两工程师同组织：列表一致，均看不到第二组织资料', async () => {
+      for (const token of [engineerToken, staffPrimaryToken]) {
+        const response = await postGql({
+          app,
+          query: LIST_QUERY,
+          variables: { pagination: PAGE },
+          token,
+        }).expect(200);
+        expect(response.body.errors).toBeUndefined();
+        const items = response.body.data.referenceDocuments.items as Array<{ id: number }>;
+        expect(items.map((item) => item.id)).toEqual([972, 971]);
+      }
+    });
+
+    it('第二组织工程师只见本组织列表；跨组织详情统一 NOT_FOUND（不泄露存在性）', async () => {
+      const listResponse = await postGql({
+        app,
+        query: LIST_QUERY,
+        variables: { pagination: PAGE },
+        token: peerEngineerToken,
+      }).expect(200);
+      expect(listResponse.body.errors).toBeUndefined();
+      const items = listResponse.body.data.referenceDocuments.items as Array<{ id: number }>;
+      expect(items.map((item) => item.id)).toEqual([974]);
+
+      const detailResponse = await postGql({
+        app,
+        query: DETAIL_QUERY,
+        variables: { id: 971 },
+        token: peerEngineerToken,
+      }).expect(200);
+      const err = detailResponse.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('NOT_FOUND');
+      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+    });
+
+    it('第二组织管理员创建落本组织；甲方管理员跨组织详情拒绝', async () => {
+      const createResponse = await postGql({
+        app,
+        query: CREATE_MUTATION,
+        variables: {
+          input: {
+            title: 'E2E 第二组织新增资料',
+            documentType: 'MANUAL',
+            contentText: 'PEER 新内容',
+          },
+        },
+        token: peerAdminToken,
+      }).expect(200);
+      expect(createResponse.body.errors).toBeUndefined();
+      const createdId = createResponse.body.data.createReferenceDocument.id as number;
+
+      const saved = await documentRepository.findOne({ where: { id: createdId } });
+      expect(saved).toMatchObject({
+        ownerOrganizationId: peerOrganizationId,
+        ingestMethod: 'ADMIN_DIRECT',
+      });
+
+      // 甲方管理员对第二组织资料详情的跨组织读：统一 NOT_FOUND
+      const crossDetail = await postGql({
+        app,
+        query: DETAIL_QUERY,
+        variables: { id: 974 },
+        token: adminToken,
+      }).expect(200);
+      const err = crossDetail.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('NOT_FOUND');
+      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+    });
+
+    it('无有效成员关系：列表 FORBIDDEN + ORGANIZATION_NO_ACTIVE_MEMBERSHIP（不泄露成员数量）', async () => {
+      const response = await postGql({
+        app,
+        query: LIST_QUERY,
+        variables: { pagination: PAGE },
+        token: noOrgEngineerToken,
+      }).expect(200);
+      expect(response.body.errors).toHaveLength(1);
+      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('FORBIDDEN');
+      expect(err.extensions.errorCode).toBe('ORGANIZATION_NO_ACTIVE_MEMBERSHIP');
+      expect(err.extensions.details).toBeUndefined();
+    });
+
+    it('多有效成员关系歧义：列表 FORBIDDEN + ORGANIZATION_AMBIGUOUS_MEMBERSHIP', async () => {
+      const response = await postGql({
+        app,
+        query: LIST_QUERY,
+        variables: { pagination: PAGE },
+        token: ambiguousEngineerToken,
+      }).expect(200);
+      expect(response.body.errors).toHaveLength(1);
+      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('FORBIDDEN');
+      expect(err.extensions.errorCode).toBe('ORGANIZATION_AMBIGUOUS_MEMBERSHIP');
+    });
+  });
+
   describe('SUPER_ADMIN 全通与业务分支', () => {
     it('列表通过且已软删 973 不出现（withTotal 只计未软删）', async () => {
       const response = await postGql({
@@ -405,7 +710,7 @@ describe('AI 参考资料库 (e2e)', () => {
           input: {
             title: 'E2E 新增资料',
             documentType: 'MANUAL',
-            equipmentModelId: 43,
+            equipmentModelId: referenceModelId,
             contentText: '新增内容',
           },
         },
@@ -417,7 +722,7 @@ describe('AI 参考资料库 (e2e)', () => {
       const saved = await documentRepository.findOne({ where: { id: createdId } });
       expect(saved).toMatchObject({
         title: 'E2E 新增资料',
-        equipmentModelId: 43,
+        equipmentModelId: referenceModelId,
         createdByAccountId: adminAccountId,
         deprecated: false,
         deletedAt: null,
@@ -591,7 +896,7 @@ describe('AI 参考资料库 (e2e)', () => {
           input: {
             title: 'E2E 型号筛选行',
             documentType: 'CHECKLIST',
-            equipmentModelId: 43,
+            equipmentModelId: referenceModelId,
             description: null,
             contentText: '型号筛选链路验证',
           },
@@ -621,8 +926,8 @@ describe('AI 参考资料库 (e2e)', () => {
         return { ids: payload.items.map((item) => item.id), total: payload.total };
       };
 
-      // 正向：指定型号 43 命中自建行
-      const modelHit = await listByModel(43);
+      // 正向：本轮自增机型 ID 命中自建行
+      const modelHit = await listByModel(referenceModelId);
       expect(modelHit.ids).toContain(createdId);
       // 通用资料（无型号，972）不被型号筛选命中
       expect(modelHit.ids).not.toContain(972);
@@ -691,7 +996,7 @@ describe('AI 参考资料库 (e2e)', () => {
       const response = await upload(adminToken, 'e2e-upload.pdf', Buffer.from('e2e-pdf-content'), {
         title: 'E2E REST 上传行',
         documentType: 'MANUAL',
-        equipmentModelId: '43',
+        equipmentModelId: String(referenceModelId),
         description: 'REST 上传',
         contentText: '附带正文',
       }).expect(201);
@@ -888,6 +1193,8 @@ describe('AI 参考资料库 (e2e)', () => {
           storageBackend: 'LOCAL',
           storageReference: '../evil.pdf',
           createdByAccountId: adminAccountId,
+          ownerOrganizationId: primaryOrganizationId,
+          ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
         }),
@@ -915,6 +1222,8 @@ describe('AI 参考资料库 (e2e)', () => {
           storageBackend: 'LOCAL',
           storageReference: `${'0'.repeat(32)}.pdf`,
           createdByAccountId: adminAccountId,
+          ownerOrganizationId: primaryOrganizationId,
+          ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
         }),

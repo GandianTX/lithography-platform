@@ -1,5 +1,10 @@
 // 文件位置：test/04-user-info/update-visible-user-info.e2e-spec.ts
-import { AudienceTypeEnum, IdentityTypeEnum, LoginTypeEnum } from '@app-types/models/account.types';
+import {
+  AccountStatus,
+  AudienceTypeEnum,
+  IdentityTypeEnum,
+  LoginTypeEnum,
+} from '@app-types/models/account.types';
 import { Gender, UserState } from '@app-types/models/user-info.types';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -10,7 +15,13 @@ import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
 import { getAccountIdByLoginName } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * 登录并获取访问令牌
@@ -192,6 +203,7 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
   let guestSecondaryAccountId: number;
 
   let otherGuestAccountId: number;
+  const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -204,10 +216,33 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.staffSecondary,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.guestSecondary,
+        ]
+          .map(toResidueAccountFingerprint)
+          .concat({
+            loginName: 'otherguest',
+            loginEmail: 'otherguest@example.com',
+            status: AccountStatus.PENDING,
+            identityHint: IdentityTypeEnum.CUSTOMER,
+            nickname: 'otherguest_nickname',
+            accessGroup: [IdentityTypeEnum.CUSTOMER],
+          }),
+      },
+      helper: 'update-visible-user-info.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'staffPrimary', 'staffSecondary', 'guestPrimary', 'guestSecondary'],
+      ownership,
     });
 
     adminToken = await loginAndGetToken(
@@ -255,9 +290,17 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
 
     const created = await ensureOtherGuestAccount(dataSource);
     otherGuestAccountId = created.otherGuestAccountId;
+    recordOwnedResource(ownership, 'account', otherGuestAccountId);
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'update-visible-user-info.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
   });
 

@@ -6,7 +6,12 @@ import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { login, postGql } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * P1：`myAccountSettings` 只读 Query 的真实 MySQL + GraphQL E2E。
@@ -79,6 +84,7 @@ describe('当前用户账号设置 myAccountSettings (e2e)', () => {
   let adminToken: string;
   let staffToken: string;
   let guestToken: string;
+  const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
     // E2E 基线默认关闭 introspection；本 spec 只在 API 初始化期间临时开启，用于核验公开契约面，
@@ -95,10 +101,22 @@ describe('当前用户账号设置 myAccountSettings (e2e)', () => {
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.guestPrimary,
+        ].map(toResidueAccountFingerprint),
+      },
+      helper: 'my-account-settings.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'staffPrimary', 'guestPrimary'],
+      ownership,
     });
 
     adminToken = await login({
@@ -119,6 +137,14 @@ describe('当前用户账号设置 myAccountSettings (e2e)', () => {
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      // 正常回收：只删除本轮登记的真实 ID；失败向 jest 传播，不吞错
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'my-account-settings.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
     if (previousIntrospectionEnabled === undefined) {
       delete process.env.GRAPHQL_INTROSPECTION_ENABLED;

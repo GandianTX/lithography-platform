@@ -14,7 +14,12 @@ import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * P2 / P3：`updateMyAccountSettings` 与 `changeMyPassword` 两个写 Mutation 的真实
@@ -130,6 +135,7 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   let adminToken: string;
   let staffToken: string;
   let guestToken: string;
+  const ownership = createOwnedResourceLedger();
   let guestAccountId: number;
   let staffAccountId: number;
 
@@ -160,10 +166,23 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.guestSecondary,
+        ].map(toResidueAccountFingerprint),
+      },
+      helper: 'my-account-settings-write.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'staffPrimary', 'guestPrimary', 'guestSecondary'],
+      ownership,
     });
 
     adminToken = await login({
@@ -190,6 +209,13 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'my-account-settings-write.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
     if (previousIntrospectionEnabled === undefined) {
       delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
