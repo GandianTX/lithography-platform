@@ -1,5 +1,5 @@
 // src/adapters/api/graphql/reference-document/dto/reference-document-filter.input.ts
-// 参考资料列表筛选入参（标题模糊 + 文档类型等值 + 设备型号等值，均可选）
+// 参考资料列表筛选入参（标题模糊 + 文档类型等值 + 设备型号等值 + 案例处理状态等值，均可选）
 
 import { Field, InputType, Int } from '@nestjs/graphql';
 import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
@@ -28,4 +28,13 @@ export class ReferenceDocumentFilterInput {
   @IsInt({ message: '设备型号 ID 必须是整数' })
   @Min(1, { message: '设备型号 ID 必须大于 0' })
   equipmentModelId?: number;
+
+  @Field(() => String, {
+    nullable: true,
+    description: '案例处理状态等值筛选（UNRESOLVED/IN_PROGRESS/RESOLVED；仅命中案例资料）',
+  })
+  @IsOptional()
+  @IsString({ message: '案例处理状态必须是字符串' })
+  @MaxLength(32, { message: '案例处理状态不能超过 32 个字符' })
+  caseHandlingStatus?: string;
 }

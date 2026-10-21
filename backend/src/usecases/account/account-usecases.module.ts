@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { PasswordModule } from '@src/modules/common/password/password.module';
+import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { AdminCreateUserUsecase } from '@src/usecases/account/admin-create-user.usecase';
 import { AdminResetUserPasswordUsecase } from '@src/usecases/account/admin-reset-user-password.usecase';
 import { AdminSetUserStatusUsecase } from '@src/usecases/account/admin-set-user-status.usecase';
@@ -21,7 +22,7 @@ import {
 } from '@src/usecases/account/update-visible-user-info.usecase';
 
 @Module({
-  imports: [AccountInstallerModule, PasswordModule],
+  imports: [AccountInstallerModule, PasswordModule, LithographyModule],
   providers: [
     AdminCreateUserUsecase,
     AdminResetUserPasswordUsecase,

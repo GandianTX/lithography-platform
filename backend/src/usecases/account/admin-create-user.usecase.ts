@@ -1,7 +1,7 @@
 // src/usecases/account/admin-create-user.usecase.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import { AccountStatus } from '@app-types/models/account.types';
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import { PasswordPolicyService } from '@core/common/password/password-policy.service';
@@ -9,6 +9,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { AdminUserView, AdminUserWritableRole } from '@src/modules/account/account.types';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -45,9 +47,11 @@ const PLACEHOLDER_LOGIN_PASSWORD = 'temp';
 
 /** 事务内的写入阶段标记，只用于服务端日志定位，不出现在任何对外响应中。 */
 type AdminCreateUserPhase =
+  | 'RESOLVE_ORGANIZATION'
   | 'INSERT_ACCOUNT'
   | 'UPDATE_PASSWORD_HASH'
   | 'SAVE_USER_INFO'
+  | 'BIND_ORGANIZATION'
   | 'READ_BACK_VIEW'
   | 'TRANSACTION_BOUNDARY';
 
@@ -61,7 +65,8 @@ type AdminCreateUserPhase =
  * 2. 场景输入规范化（凭据至少一个、初始密码非空断言、单值可写角色、资料字段）；
  * 3. 初始密码策略校验；
  * 4. 登录凭据唯一性预检查；
- * 5. Usecase 持有的单一事务内完成账号 + 密码哈希 + 资料写入，并回读稳定 View。
+ * 5. Usecase 持有的单一事务内完成账号 + 密码哈希 + 资料写入 + 组织绑定（仅 ENGINEER），
+ *    并回读稳定 View。
  *
  * 第 3 步排在第 4 步之前是刻意的：输入错误（`BAD_USER_INPUT`）应先于占用冲突（`CONFLICT`）
  * 表达，否则一个连合法密码都未提交的调用者也能借响应差异探测登录名/登录邮箱是否已存在。
@@ -80,6 +85,11 @@ type AdminCreateUserPhase =
  * `PasswordPolicyService`、`hashPasswordWithTimestamp()` 与 `createUserInfoEntity()` 路径，
  * 密码策略与哈希算法没有任何第二套实现。
  *
+ * A-PR0 §4.3（组织绑定）：创建 ENGINEER 时在同一事务内绑定**管理员当前有效组织**
+ * （`TrustedOrganizationContextQueryService` 可信解析，绝不取客户端自报；客户不自动加入）。
+ * 组织解析先于任何写入 fail-fast（管理员无有效组织时账号零落库）；绑定写入失败与其它
+ * 阶段同口径整体回滚，不留半成品账号；不改密码、角色编辑与 Session 规则。
+ *
  * 本用例职责不含资料编辑、状态修改与密码重置；也不创建 SUPER_ADMIN；
  * 普通用户角色只在创建时单选一次，创建后角色只读。
  *
@@ -92,6 +102,8 @@ export class AdminCreateUserUsecase {
     private readonly accountService: AccountService,
     private readonly adminUserQueryService: AdminUserQueryService,
     private readonly passwordPolicyService: PasswordPolicyService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly organizationMembershipService: OrganizationMembershipService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -143,6 +155,7 @@ export class AdminCreateUserUsecase {
       view = await this.transactionRunner.run((transactionContext) =>
         this.createInTransaction({
           transactionContext,
+          adminAccountId: command.session.accountId,
           credential,
           initialPassword,
           role,
@@ -172,7 +185,12 @@ export class AdminCreateUserUsecase {
   }
 
   /**
-   * 事务内的原子创建：账号行、密码哈希、资料行同成同败，并在同一事务内回读稳定 View。
+   * 事务内的原子创建：账号行、密码哈希、资料行与组织绑定同成同败，
+   * 并在同一事务内回读稳定 View。
+   *
+   * 组织绑定（A-PR0 §4.3）：创建 ENGINEER 时把新账号绑定到管理员当前有效组织。
+   * 解析先于任何写入——管理员自身无有效组织时 fail-fast，不给「先建账号又回滚」
+   * 留下无谓的并发窗口；绑定仅使用可信解析出的 organizationId，不接受客户端自报。
    *
    * `access_group` = 单元素数组、`meta_digest` = 同一个单元素数组，
    * 且 `status` 与 `user_state` 同为 `ACTIVE`——因此新建账号必然能通过
@@ -183,15 +201,28 @@ export class AdminCreateUserUsecase {
    */
   private async createInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
+    adminAccountId: number;
     credential: AdminUserCredentialNormalizeOutput;
     initialPassword: string;
     role: AdminUserWritableRole;
     profile: AdminUserProfileNormalizeOutput;
   }): Promise<AdminUserView> {
-    const { transactionContext, credential, initialPassword, role, profile } = params;
-    let phase: AdminCreateUserPhase = 'INSERT_ACCOUNT';
+    const { transactionContext, adminAccountId, credential, initialPassword, role, profile } =
+      params;
+    let phase: AdminCreateUserPhase = 'RESOLVE_ORGANIZATION';
 
     try {
+      // A-PR0 §4.3：仅 ENGINEER 绑定管理员当前有效组织；客户不自动加入任何组织。
+      let bindOrganizationId: number | null = null;
+      if (role === IdentityTypeEnum.ENGINEER) {
+        const organizationFact = await this.organizationContextQueryService.resolveForAccount({
+          accountId: adminAccountId,
+          transactionContext,
+        });
+        bindOrganizationId = organizationFact.organizationId;
+      }
+
+      phase = 'INSERT_ACCOUNT';
       const outcome = await this.accountService.insertAccount({
         transactionContext,
         accountData: {
@@ -241,6 +272,19 @@ export class AdminCreateUserUsecase {
           updatedAt: new Date(),
         },
       });
+
+      // 绑定写入引用同一事务内刚创建的账号：外键在提交前即成立，任一步失败整体回滚
+      if (bindOrganizationId !== null) {
+        phase = 'BIND_ORGANIZATION';
+        await this.organizationMembershipService.insertMembership(
+          {
+            organizationId: bindOrganizationId,
+            accountId: outcome.accountId,
+            memberRole: IdentityTypeEnum.ENGINEER,
+          },
+          transactionContext,
+        );
+      }
 
       // 该读取使用同一个 transactionContext，因此读到的是尚未提交的本次写入
       phase = 'READ_BACK_VIEW';

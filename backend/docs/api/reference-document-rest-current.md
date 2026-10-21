@@ -2,8 +2,8 @@
 
 Purpose: Snapshot the current REST file upload / download contract for the reference-document capability.
 Read when: You change the REST controller, file storage infrastructure, upload validation, or download streaming behavior.
-Do not read when: You only change the GraphQL contract of this capability (see GraphQL DTO / error contract docs instead).
-Source of truth: `src/adapters/api/rest/reference-document/reference-document-rest.controller.ts` 与 `src/infrastructure/file-storage/` 为可执行真源；本文记录必须保持稳定的契约。
+Do not read when: You only change the GraphQL contract of this capability (see GraphQL DTO / error contract docs instead) or the content-submission private attachment contract (`docs/api/content-submission-rest-current.md`); the transport-layer utilities are shared but each capability keeps its own error-code boundary.
+Source of truth: `src/adapters/api/rest/reference-document/reference-document-rest.controller.ts`、`src/adapters/api/rest/shared/upload-boundary.util.ts`（与投稿附件上传共用传输层工具）与 `src/infrastructure/file-storage/` 为可执行真源；HTTP 状态映射唯一真源 `src/core/common/errors/rest-error-status.ts`；本文记录必须保持稳定的契约。
 Global error contract: REST 边界不走 GraphQL error 契约；错误统一为 HTTP 状态码 + JSON 体（见下）。
 
 # Reference Document REST Contract（文件上传 / 下载）
@@ -51,6 +51,7 @@ REST controller 只做 multipart 协议解析与命令组装；文件保存 → 
 
 权限：SUPER_ADMIN / ENGINEER（`hasRole` 层级；负责人 0910 裁定收窄——CUSTOMER 无页面访问权限，下载不对其开放，请求返回 HTTP 403 `INSUFFICIENT_PERMISSIONS`，与 GraphQL 读口径一致）。成功 HTTP 200。
 
+- 组织范围经可信组织上下文解析（A-PR0 §4.3：下载加同组织事实核验；`GetReferenceDocumentFileUsecase` 在角色校验后、任何资料查询前完成解析）：无有效成员关系 / 多关系歧义 → `ORGANIZATION_NO_ACTIVE_MEMBERSHIP` / `ORGANIZATION_AMBIGUOUS_MEMBERSHIP`（HTTP 403，与 GraphQL `FORBIDDEN` 同语义）；跨组织目标与不存在 / 已软删统一 `NOT_FOUND`，不泄露存在性。
 - 复用统一 NOT_FOUND 口径：不存在 / 已软删 → `NOT_FOUND`（HTTP 404，防探测，不泄露删除状态）。
 - 无 `storageReference`（纯文本资料）或存储对象缺失 → `FILE_NOT_AVAILABLE`（HTTP 404，受控错误，不泄露服务器路径）。
 - 响应头：`Content-Type` 取 DB `mimeType`；`Content-Disposition: attachment; filename="..."; filename*=UTF-8''...`（RFC 5987 编码 `originalFilename`，中文不乱码）。
@@ -65,6 +66,7 @@ REST controller 只做 multipart 协议解析与命令组装；文件保存 → 
 | --------------------------------------------------------- | ---- | ------------------------------------ |
 | `JWT_ERROR` / `AUTH_ERROR` 组                             | 401  | 未登录 / Token 失效                  |
 | `PERMISSION_ERROR` 组                                     | 403  | 角色不满足（如工程师上传、客户下载） |
+| `ORGANIZATION_ERROR` 组（成员事实缺失 / 歧义）            | 403  | 已认证的权限类拒绝（与 GraphQL `FORBIDDEN` 同语义） |
 | `INPUT_NORMALIZE_*` / `REFERENCE_DOCUMENT_INVALID_PARAMS` | 400  | 字段校验失败                         |
 | `REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND`            | 400  | 型号不存在                           |
 | `REFERENCE_DOCUMENT_CONTENT_SOURCE_EMPTY`                 | 400  | 正文与文件双空                       |
@@ -82,3 +84,5 @@ REST controller 只做 multipart 协议解析与命令组装；文件保存 → 
 - `REFERENCE_DOCUMENT_ALLOWED_MIME_TYPES`：逗号分隔白名单，空取内置默认集合。
 
 前端单一口径镜像：`frontend/src/features/reference-document/ui/reference-document-form.tsx` 顶部的预检常量仅为即时反馈，本文件所列 env 为唯一真源，修改需同步。
+
+> 投稿私有单附件（工程师上传 / 移除 / 下载）契约见 `docs/api/content-submission-rest-current.md`：共用本节所述 `upload-boundary.util.ts` 运输层工具与 `REFERENCE_DOCUMENT_*` 运行时配置，各域保留独立错误码边界。

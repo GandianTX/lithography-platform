@@ -10,6 +10,7 @@ import { GetReferenceDocumentDetailUsecase } from './get-reference-document-deta
 import { GetReferenceDocumentFileUsecase } from './get-reference-document-file.usecase';
 import { ListReferenceDocumentsUsecase } from './list-reference-documents.usecase';
 import { SoftDeleteReferenceDocumentUsecase } from './soft-delete-reference-document.usecase';
+import { UpdateReferenceDocumentCaseUsecase } from './update-reference-document-case.usecase';
 import { UpdateReferenceDocumentUsecase } from './update-reference-document.usecase';
 
 /**
@@ -18,6 +19,9 @@ import { UpdateReferenceDocumentUsecase } from './update-reference-document.usec
  * 上传大小上限与 MIME 白名单由全局的 LocalReferenceDocumentStorageModule 注入
  * （infrastructure wiring，架构规则），本模块的带文件创建用例将其作为业务规则
  * 单一真源消费（负责人 0910 架构要求）。
+ *
+ * 组织范围（A-PR0 §2.1）由 LithographyModule 导出的可信组织上下文查询服务提供
+ * （同域读侧校验，usecase 不依赖客户端自报组织）。
  */
 @Module({
   imports: [LithographyModule, AccountInstallerModule],
@@ -28,6 +32,7 @@ import { UpdateReferenceDocumentUsecase } from './update-reference-document.usec
     GetReferenceDocumentFileUsecase,
     ListReferenceDocumentsUsecase,
     SoftDeleteReferenceDocumentUsecase,
+    UpdateReferenceDocumentCaseUsecase,
     UpdateReferenceDocumentUsecase,
   ],
   exports: [
@@ -37,6 +42,7 @@ import { UpdateReferenceDocumentUsecase } from './update-reference-document.usec
     GetReferenceDocumentFileUsecase,
     ListReferenceDocumentsUsecase,
     SoftDeleteReferenceDocumentUsecase,
+    UpdateReferenceDocumentCaseUsecase,
     UpdateReferenceDocumentUsecase,
   ],
 })

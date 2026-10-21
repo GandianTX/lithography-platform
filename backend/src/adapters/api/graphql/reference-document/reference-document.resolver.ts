@@ -16,6 +16,7 @@ import { CreateReferenceDocumentUsecase } from '@src/usecases/reference-document
 import { GetReferenceDocumentDetailUsecase } from '@src/usecases/reference-document/get-reference-document-detail.usecase';
 import { ListReferenceDocumentsUsecase } from '@src/usecases/reference-document/list-reference-documents.usecase';
 import { SoftDeleteReferenceDocumentUsecase } from '@src/usecases/reference-document/soft-delete-reference-document.usecase';
+import { UpdateReferenceDocumentCaseUsecase } from '@src/usecases/reference-document/update-reference-document-case.usecase';
 import { UpdateReferenceDocumentUsecase } from '@src/usecases/reference-document/update-reference-document.usecase';
 import { ReferenceDocumentFilterInput } from './dto/reference-document-filter.input';
 import {
@@ -24,7 +25,9 @@ import {
 } from './dto/reference-document-read.dto';
 import {
   CreateReferenceDocumentInput,
+  ReferenceDocumentCaseMutationResultDTO,
   ReferenceDocumentMutationResultDTO,
+  UpdateReferenceDocumentCaseInput,
   UpdateReferenceDocumentInput,
 } from './dto/reference-document-write.dto';
 
@@ -44,11 +47,12 @@ export class ReferenceDocumentResolver {
     private readonly getReferenceDocumentDetailUsecase: GetReferenceDocumentDetailUsecase,
     private readonly createReferenceDocumentUsecase: CreateReferenceDocumentUsecase,
     private readonly updateReferenceDocumentUsecase: UpdateReferenceDocumentUsecase,
+    private readonly updateReferenceDocumentCaseUsecase: UpdateReferenceDocumentCaseUsecase,
     private readonly softDeleteReferenceDocumentUsecase: SoftDeleteReferenceDocumentUsecase,
   ) {}
 
   /**
-   * 查询参考资料列表（默认仅未软删；标题模糊 + 类型等值 + 型号等值筛选）
+   * 查询本组织参考资料列表（默认仅未软删；标题模糊 + 类型等值 + 型号等值 + 案例处理状态筛选）
    * 排序由契约固定：创建时间倒序 + 主键倒序；仅支持 OFFSET 分页（usecase 强制）
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -68,6 +72,7 @@ export class ReferenceDocumentResolver {
         title: filter?.title,
         documentType: filter?.documentType,
         equipmentModelId: filter?.equipmentModelId,
+        caseHandlingStatus: filter?.caseHandlingStatus,
       },
     });
     return {
@@ -79,8 +84,8 @@ export class ReferenceDocumentResolver {
   }
 
   /**
-   * 查询参考资料详情（元数据 + 文本内容）
-   * 不存在与已软删统一 NOT_FOUND（usecase/QueryService 口径），不泄露删除状态
+   * 查询本组织参考资料详情（元数据 + 文本内容 + 可空案例明细）
+   * 不存在、已软删与跨组织统一 NOT_FOUND（usecase/QueryService 口径），不泄露存在性
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
@@ -139,6 +144,42 @@ export class ReferenceDocumentResolver {
         equipmentModelId: input.equipmentModelId,
         description: input.description,
         contentText: input.contentText,
+      },
+    });
+  }
+
+  /**
+   * 更正正式案例资料（仅 SUPER_ADMIN；A-PR0 §S6 专属更正）
+   * 仅 FAULT_CASE 资料可用；合并允许字段后重新生成可读正文并与明细同事务更新；
+   * 类型/归属组织/来源与原附件不可通过本接口修改；普通资料仍用通用编辑接口
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => ReferenceDocumentCaseMutationResultDTO, {
+    description: '更正正式案例资料（仅管理员；仅案例资料）',
+  })
+  @ValidateInput()
+  async updateReferenceDocumentCase(
+    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args('input') input: UpdateReferenceDocumentCaseInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<ReferenceDocumentCaseMutationResultDTO> {
+    return this.updateReferenceDocumentCaseUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      documentId: id,
+      patch: {
+        title: input.title,
+        equipmentModelId: input.equipmentModelId,
+        equipmentModelText: input.equipmentModelText,
+        description: input.description,
+        errorCode: input.errorCode,
+        phenomenon: input.phenomenon,
+        conditionText: input.conditionText,
+        reproductionSteps: input.reproductionSteps,
+        diagnosis: input.diagnosis,
+        actionTaken: input.actionTaken,
+        handlingStatus: input.handlingStatus,
+        resolution: input.resolution,
       },
     });
   }

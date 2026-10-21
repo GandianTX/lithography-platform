@@ -19,21 +19,8 @@ export const REFERENCE_DOCUMENT_ALLOWED_MIME_TYPES = Symbol(
 );
 
 /**
- * 扩展名 → 规范 MIME 映射（单一口径，与 config.module 默认白名单同源维护）。
+ * 扩展名 → 规范 MIME 映射（单一真源已提炼至 usecases/common/file-upload.contract.ts，
+ * 管理员上传与投稿附件共用）：本文件 re-export 保持既有导入兼容。
  * 白名单外扩展名（含无扩展名）一律 UPLOAD_FILE_TYPE_NOT_ALLOWED。
  */
-export const EXTENSION_TO_MIME: Record<string, string> = {
-  pdf: 'application/pdf',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xls: 'application/vnd.ms-excel',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  ppt: 'application/vnd.ms-powerpoint',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  txt: 'text/plain',
-  md: 'text/markdown',
-  csv: 'text/csv',
-};
+export { EXTENSION_TO_MIME } from '@src/usecases/common/file-upload.contract';

@@ -13,7 +13,8 @@ import { ListAdminRepairRequestsUsecase } from './list-admin-repair-requests.use
 
 /**
  * 管理员文档数据库（PR3 只读聚合）用例装配。
- * 只读用例集合：不包含任何写入路径；跨账户域富集统一经 AccountQueryService 契约。
+ * 只读用例集合：不包含任何写入路径；跨账户域富集统一经 AccountQueryService 契约；
+ * 参考资料统计的组织范围（A-PR0 §4.3）由 LithographyModule 导出的可信组织上下文查询服务提供。
  */
 @Module({
   imports: [LithographyModule, AccountInstallerModule],

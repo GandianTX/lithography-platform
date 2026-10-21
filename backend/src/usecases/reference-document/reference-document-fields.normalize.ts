@@ -7,6 +7,11 @@ import type { ReferenceDocumentEditablePatch } from './reference-document.types'
 /** 字段长度上限（与 reference_document 表列长一致；docx 验收标准：标题最长 255、类型最长 100） */
 export const REFERENCE_DOCUMENT_TITLE_MAX_LENGTH = 255;
 export const REFERENCE_DOCUMENT_TYPE_MAX_LENGTH = 100;
+/**
+ * 正式案例保留文档类型（A-PR0 §4.3）：案例只能由投稿审核发布（S5）或专属更正（S6）
+ * 管理；管理员普通创建/上传与通用编辑均不得伪造或改造本类型。
+ */
+export const REFERENCE_DOCUMENT_FAULT_CASE_TYPE = 'FAULT_CASE';
 /** 文档说明上限（DB 为 TEXT，应用层给合理上限防滥用） */
 export const REFERENCE_DOCUMENT_DESCRIPTION_MAX_LENGTH = 2000;
 /** 文本内容上限（DB 为 LONGTEXT，应用层给合理上限防滥用与超大 payload） */
@@ -36,6 +41,15 @@ export function normalizeDocumentType(value: unknown): string {
     );
   }
   return normalized;
+}
+
+/**
+ * 案例保留类型判定（A-PR0 §4.3）：大小写不敏感——数据库列排序规则为
+ * utf8mb4_0900_ai_ci 且无 CHECK 兜底，应用层比较必须与投稿域归一比对口径
+ * （toUpperCase）一致，否则 'fault_case' 等变体会绕过「案例类型保留」守卫。
+ */
+export function isFaultCaseDocumentType(value: string): boolean {
+  return value.trim().toUpperCase() === REFERENCE_DOCUMENT_FAULT_CASE_TYPE;
 }
 
 /**

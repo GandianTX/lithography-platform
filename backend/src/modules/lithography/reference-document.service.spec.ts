@@ -10,7 +10,7 @@ const makeRepo = () => ({
 });
 
 describe('ReferenceDocumentService', () => {
-  it('插入显式落初始状态：deprecated=false；本周存储四字段为空', async () => {
+  it('插入显式落初始状态：deprecated=false；本组织归属与入库方式透传落库', async () => {
     const repo = makeRepo();
     repo.save.mockResolvedValue({ id: 970101 });
     const service = new ReferenceDocumentService(repo as never);
@@ -26,6 +26,8 @@ describe('ReferenceDocumentService', () => {
       storageBackend: null,
       storageReference: null,
       createdByAccountId: 900001,
+      ownerOrganizationId: 910001,
+      ingestMethod: 'ADMIN_DIRECT',
     });
 
     expect(result).toEqual({ id: 970101 });
@@ -33,6 +35,8 @@ describe('ReferenceDocumentService', () => {
       expect.objectContaining({
         title: '新资料',
         createdByAccountId: 900001,
+        ownerOrganizationId: 910001,
+        ingestMethod: 'ADMIN_DIRECT',
         deprecated: false,
         originalFilename: null,
         mimeType: null,
@@ -59,6 +63,8 @@ describe('ReferenceDocumentService', () => {
         storageBackend: null,
         storageReference: null,
         createdByAccountId: 900001,
+        ownerOrganizationId: 910001,
+        ingestMethod: 'ADMIN_DIRECT',
       }),
     ).rejects.toMatchObject({
       code: REFERENCE_DOCUMENT_ERROR.CREATION_FAILED,

@@ -37,6 +37,15 @@ const REQUIRED_TABLES = [
   'ai_report',
   'engineer_response',
   'reference_document',
+  'organization',
+  'organization_membership',
+  'content_submission',
+  'material_submission_detail',
+  'fault_case_submission_detail',
+  'content_submission_attachment',
+  'content_submission_revision',
+  'content_submission_review',
+  'reference_document_case_detail',
 ] as const;
 
 const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
@@ -51,9 +60,52 @@ const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
   { table: 'repair_request', index: 'uk_repair_request_no' },
   { table: 'ai_message', index: 'uk_ai_message_conversation_seq' },
   { table: 'ai_report', index: 'uk_ai_report_conversation_type' },
+  { table: 'organization', index: 'uk_organization_code' },
+  { table: 'organization', index: 'idx_organization_kind_status' },
+  { table: 'organization_membership', index: 'uk_organization_membership_org_account' },
+  { table: 'organization_membership', index: 'idx_organization_membership_account_status' },
+  { table: 'content_submission', index: 'idx_content_submission_org_status_updated' },
+  { table: 'content_submission', index: 'idx_content_submission_submitter_status_updated' },
+  {
+    table: 'material_submission_detail',
+    index: 'idx_material_submission_detail_equipment_model',
+  },
+  {
+    table: 'fault_case_submission_detail',
+    index: 'idx_fault_case_submission_detail_equipment_model',
+  },
+  {
+    table: 'content_submission_attachment',
+    index: 'uk_content_submission_attachment_id_submission',
+  },
+  {
+    table: 'content_submission_attachment',
+    index: 'idx_content_submission_attachment_submission_status',
+  },
+  {
+    table: 'content_submission_attachment',
+    index: 'idx_content_submission_attachment_uploaded_by',
+  },
+  { table: 'content_submission_revision', index: 'uk_content_submission_revision_submission_no' },
+  { table: 'content_submission_revision', index: 'uk_content_submission_revision_id_submission' },
+  { table: 'content_submission_revision', index: 'idx_content_submission_revision_attachment' },
+  { table: 'content_submission_revision', index: 'idx_content_submission_revision_confirmed_by' },
+  { table: 'content_submission_review', index: 'uk_content_submission_review_revision' },
+  {
+    table: 'content_submission_review',
+    index: 'idx_content_submission_review_revision_submission',
+  },
+  {
+    table: 'content_submission_review',
+    index: 'idx_content_submission_review_submission_reviewed',
+  },
+  { table: 'content_submission_review', index: 'idx_content_submission_review_reviewed_by' },
+  { table: 'reference_document', index: 'uk_reference_document_source_submission' },
+  { table: 'reference_document', index: 'idx_reference_document_source_revision' },
+  { table: 'reference_document', index: 'idx_reference_document_org_deleted_created' },
 ];
 
-const REQUIRED_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
+const REQUIRED_COLUMNS: ReadonlyArray<{ table: string; column: string; notNull?: boolean }> = [
   { table: 'base_user_info', column: 'company_name' },
   { table: 'ai_conversation', column: 'status' },
   { table: 'ai_conversation', column: 'ai_feedback' },
@@ -62,6 +114,14 @@ const REQUIRED_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
   { table: 'ai_message', column: 'turn_no' },
   { table: 'reference_document', column: 'deprecated' },
   { table: 'reference_document', column: 'deleted_at' },
+  { table: 'reference_document', column: 'owner_organization_id', notNull: true },
+  { table: 'reference_document', column: 'ingest_method', notNull: true },
+  { table: 'reference_document', column: 'source_submission_id' },
+  { table: 'reference_document', column: 'source_revision_id' },
+  { table: 'reference_document', column: 'equipment_model_text' },
+  { table: 'reference_document', column: 'updated_by_account_id' },
+  { table: 'reference_document', column: 'extension_json' },
+  { table: 'reference_document', column: 'schema_version' },
 ];
 
 const FORBIDDEN_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
@@ -77,6 +137,57 @@ const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string }> = [
   { table: 'reference_document', constraint: 'chk_reference_document_deletion_consistency' },
   { table: 'reference_document', constraint: 'chk_reference_document_storage_pair' },
   { table: 'reference_document', constraint: 'chk_reference_document_content_source' },
+  { table: 'organization', constraint: 'chk_organization_kind' },
+  { table: 'organization', constraint: 'chk_organization_status' },
+  { table: 'organization_membership', constraint: 'chk_organization_membership_role' },
+  { table: 'organization_membership', constraint: 'chk_organization_membership_status' },
+  { table: 'organization_membership', constraint: 'chk_organization_membership_period' },
+  { table: 'content_submission', constraint: 'chk_content_submission_kind' },
+  { table: 'content_submission', constraint: 'chk_content_submission_status' },
+  { table: 'content_submission', constraint: 'chk_content_submission_revision_consistency' },
+  { table: 'content_submission', constraint: 'chk_content_submission_publish_consistency' },
+  {
+    table: 'material_submission_detail',
+    constraint: 'chk_material_submission_detail_model_exclusive',
+  },
+  { table: 'material_submission_detail', constraint: 'chk_material_submission_detail_type' },
+  {
+    table: 'fault_case_submission_detail',
+    constraint: 'chk_fault_case_submission_detail_model_exclusive',
+  },
+  {
+    table: 'fault_case_submission_detail',
+    constraint: 'chk_fault_case_submission_detail_handling_status',
+  },
+  {
+    table: 'fault_case_submission_detail',
+    constraint: 'chk_fault_case_submission_detail_resolution',
+  },
+  {
+    table: 'content_submission_attachment',
+    constraint: 'chk_content_submission_attachment_status',
+  },
+  {
+    table: 'content_submission_attachment',
+    constraint: 'chk_content_submission_attachment_retire_consistency',
+  },
+  { table: 'content_submission_revision', constraint: 'chk_content_submission_revision_no' },
+  { table: 'content_submission_revision', constraint: 'chk_content_submission_revision_title' },
+  { table: 'content_submission_revision', constraint: 'chk_content_submission_revision_notice' },
+  { table: 'content_submission_review', constraint: 'chk_content_submission_review_decision' },
+  { table: 'content_submission_review', constraint: 'chk_content_submission_review_comment' },
+  { table: 'content_submission_review', constraint: 'chk_content_submission_review_publish_flag' },
+  {
+    table: 'reference_document_case_detail',
+    constraint: 'chk_reference_document_case_detail_status',
+  },
+  {
+    table: 'reference_document_case_detail',
+    constraint: 'chk_reference_document_case_detail_resolution',
+  },
+  { table: 'reference_document', constraint: 'chk_reference_document_ingest_method' },
+  { table: 'reference_document', constraint: 'chk_reference_document_source_pair' },
+  { table: 'reference_document', constraint: 'chk_reference_document_model_exclusive' },
 ];
 
 const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
@@ -157,6 +268,106 @@ const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
   {
     table: 'reference_document',
     constraint: 'fk_reference_document_created_by_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'organization_membership',
+    constraint: 'fk_organization_membership_organization',
+    referencedTable: 'organization',
+  },
+  {
+    table: 'organization_membership',
+    constraint: 'fk_organization_membership_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'content_submission',
+    constraint: 'fk_content_submission_owner_organization',
+    referencedTable: 'organization',
+  },
+  {
+    table: 'content_submission',
+    constraint: 'fk_content_submission_submitted_by_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'material_submission_detail',
+    constraint: 'fk_material_submission_detail_submission',
+    referencedTable: 'content_submission',
+  },
+  {
+    table: 'material_submission_detail',
+    constraint: 'fk_material_submission_detail_equipment_model',
+    referencedTable: 'equipment_model',
+  },
+  {
+    table: 'fault_case_submission_detail',
+    constraint: 'fk_fault_case_submission_detail_submission',
+    referencedTable: 'content_submission',
+  },
+  {
+    table: 'fault_case_submission_detail',
+    constraint: 'fk_fault_case_submission_detail_equipment_model',
+    referencedTable: 'equipment_model',
+  },
+  {
+    table: 'content_submission_attachment',
+    constraint: 'fk_content_submission_attachment_submission',
+    referencedTable: 'content_submission',
+  },
+  {
+    table: 'content_submission_attachment',
+    constraint: 'fk_content_submission_attachment_uploaded_by_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'content_submission_revision',
+    constraint: 'fk_content_submission_revision_submission',
+    referencedTable: 'content_submission',
+  },
+  {
+    table: 'content_submission_revision',
+    constraint: 'fk_content_submission_revision_attachment',
+    referencedTable: 'content_submission_attachment',
+  },
+  {
+    table: 'content_submission_revision',
+    constraint: 'fk_content_submission_revision_confirmed_by_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'content_submission_review',
+    constraint: 'fk_content_submission_review_revision',
+    referencedTable: 'content_submission_revision',
+  },
+  {
+    table: 'content_submission_review',
+    constraint: 'fk_content_submission_review_reviewed_by_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'reference_document_case_detail',
+    constraint: 'fk_reference_document_case_detail_document',
+    referencedTable: 'reference_document',
+  },
+  {
+    table: 'reference_document',
+    constraint: 'fk_reference_document_owner_organization',
+    referencedTable: 'organization',
+  },
+  {
+    table: 'reference_document',
+    constraint: 'fk_reference_document_source_submission',
+    referencedTable: 'content_submission',
+  },
+  {
+    table: 'reference_document',
+    constraint: 'fk_reference_document_source_revision',
+    referencedTable: 'content_submission_revision',
+  },
+  {
+    table: 'reference_document',
+    constraint: 'fk_reference_document_updated_by_account',
     referencedTable: 'base_user_account',
   },
 ];
@@ -309,15 +520,20 @@ function buildAdminDataSourceOptions(config: MysqlConnectionConfig): MysqlDataSo
 function buildMigrationDataSourceOptions(
   config: MysqlConnectionConfig,
   databaseName: string,
+  migrations?: ReadonlyArray<new () => unknown>,
 ): MysqlDataSourceOptions {
-  return {
+  const options: MysqlDataSourceOptions = {
     ...buildAdminDataSourceOptions(config),
     database: databaseName,
-    migrations: [
-      path.resolve(__dirname, './migrations/*.migration.ts'),
-      path.resolve(__dirname, './migrations/*.migration.js'),
-    ],
+    migrations: migrations
+      ? (migrations as unknown as MysqlDataSourceOptions['migrations'])
+      : [
+          path.resolve(__dirname, './migrations/*.migration.ts'),
+          path.resolve(__dirname, './migrations/*.migration.js'),
+        ],
   };
+
+  return options;
 }
 
 /**
@@ -372,10 +588,9 @@ async function assertRequiredIndexes(dataSource: DataSource, databaseName: strin
  */
 async function assertRequiredColumns(dataSource: DataSource, databaseName: string): Promise<void> {
   for (const item of REQUIRED_COLUMNS) {
-    const exists = await hasQueryResult(
-      dataSource,
+    const rows: unknown = await dataSource.query(
       `
-        SELECT 1
+        SELECT is_nullable
         FROM information_schema.columns
         WHERE table_schema = ?
           AND table_name = ?
@@ -385,8 +600,21 @@ async function assertRequiredColumns(dataSource: DataSource, databaseName: strin
       [databaseName, item.table, item.column],
     );
 
-    if (!exists) {
+    if (!isQueryRows(rows) || rows.length === 0) {
       throw new Error(`关键字段缺失: ${item.table}.${item.column}`);
+    }
+
+    if (item.notNull) {
+      // is_nullable 必须确为字符串才继续规范化；非字符串属查询结果异常，
+      // 失败关闭而不是用 String() 折叠成 "[object Object]" 掩盖问题。
+      const rawNullable = rows[0]['is_nullable'] ?? rows[0]['IS_NULLABLE'];
+      if (typeof rawNullable !== 'string') {
+        throw new Error(`关键字段 is_nullable 查询结果格式无效: ${item.table}.${item.column}`);
+      }
+      const isNullable = rawNullable.trim().toUpperCase();
+      if (isNullable !== 'NO') {
+        throw new Error(`关键字段允许 NULL，未完成收紧: ${item.table}.${item.column}`);
+      }
     }
   }
 
@@ -517,6 +745,227 @@ async function clearDatabaseTables(dataSource: DataSource, databaseName: string)
 }
 
 /**
+ * 解析旧库升级演练基线数量（T02，可重跑）。
+ * 未设置或非正整数时返回 null，表示执行常规空库演练。
+ */
+function parseBaselineCount(total: number): number | null {
+  const raw = process.env.MIGRATION_DRILL_BASELINE_COUNT?.trim();
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`MIGRATION_DRILL_BASELINE_COUNT 必须为正整数，实际: ${raw}`);
+  }
+  if (parsed >= total) {
+    throw new Error(`基线数量 ${parsed} 必须小于迁移总数 ${total}`);
+  }
+  return parsed;
+}
+
+/**
+ * 提取迁移类名，用于比对已执行迁移记录。
+ */
+function resolveMigrationName(migration: unknown): string {
+  const candidate = (migration as { name?: unknown }).name;
+  if (typeof candidate === 'string' && candidate.length > 0) {
+    return candidate;
+  }
+  throw new Error('迁移项缺少可识别的名称，无法进行升级演练校验');
+}
+
+/**
+ * 解析迁移时间戳（类名末尾 13 位数字），与 TypeORM 的排序口径一致。
+ */
+function resolveMigrationTimestamp(migration: unknown): number {
+  const name = resolveMigrationName(migration);
+  const timestamp = Number.parseInt(name.slice(-13), 10);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`无法从迁移名解析时间戳: ${name}`);
+  }
+  return timestamp;
+}
+
+/**
+ * 将 dataSource 上的迁移实例还原为按时间戳升序的迁移类，供子集演练使用。
+ */
+function toMigrationClasses(instances: ReadonlyArray<unknown>): ReadonlyArray<new () => unknown> {
+  return [...instances]
+    .sort((a, b) => resolveMigrationTimestamp(a) - resolveMigrationTimestamp(b))
+    .map((migration) => (migration as { constructor: new () => unknown }).constructor);
+}
+
+/**
+ * 在旧基线库上写入旧表旧列可用的 fixture，模拟旧库数据。
+ */
+async function insertLegacyUpgradeFixtures(dataSource: DataSource): Promise<void> {
+  await dataSource.query(
+    `INSERT INTO \`equipment_model\` (\`id\`, \`model_code\`, \`model_name\`, \`enabled\`, \`sort_order\`) VALUES (900001, 'T02-LEGACY-MODEL', 'T02 旧机型', 1, 1)`,
+  );
+  await dataSource.query(
+    `INSERT INTO \`base_user_account\` (\`id\`, \`login_name\`, \`login_password\`, \`status\`) VALUES (900001, 't02_legacy_user', 'legacy-password-hash', 'ACTIVE')`,
+  );
+  await dataSource.query(
+    `INSERT INTO \`reference_document\` (\`id\`, \`title\`, \`document_type\`, \`equipment_model_id\`, \`content_text\`, \`created_by_account_id\`, \`deprecated\`, \`deleted_at\`) VALUES (900001, 'T02 旧资料', 'MANUAL', 900001, 'T02 旧库升级基线内容', 900001, 0, NULL)`,
+  );
+}
+
+/**
+ * 校验迁移记录条数与新增迁移均已执行。
+ */
+async function assertMigrationsTableCount(
+  dataSource: DataSource,
+  databaseName: string,
+  expected: number,
+  expectedNewNames: ReadonlyArray<string>,
+): Promise<void> {
+  const rows: unknown = await dataSource.query(
+    `SELECT COUNT(*) AS total FROM \`${databaseName}\`.\`migrations\``,
+  );
+  if (!isQueryRows(rows) || rows.length === 0) {
+    throw new Error('读取 migrations 记录失败，返回格式异常');
+  }
+  const rawTotal = rows[0]['total'] ?? rows[0]['TOTAL'];
+  const total = Number(rawTotal);
+  if (total !== expected) {
+    throw new Error(`migrations 记录数不符：预期 ${expected}，实际 ${String(rawTotal)}`);
+  }
+
+  for (const name of expectedNewNames) {
+    const exists = await hasQueryResult(
+      dataSource,
+      `SELECT 1 FROM \`${databaseName}\`.\`migrations\` WHERE \`name\` = ? LIMIT 1`,
+      [name],
+    );
+    if (!exists) {
+      throw new Error(`新增迁移未记录: ${name}`);
+    }
+  }
+}
+
+/**
+ * 校验旧库 fixture 在升级后保留且归属/入库方式已回填。
+ */
+async function assertLegacyUpgradeFixtures(dataSource: DataSource): Promise<void> {
+  const equipmentRows: unknown = await dataSource.query(
+    `SELECT \`model_code\` FROM \`equipment_model\` WHERE \`id\` = 900001 LIMIT 1`,
+  );
+  if (!isQueryRows(equipmentRows) || equipmentRows.length === 0) {
+    throw new Error('旧库 fixture 丢失: equipment_model 900001 不存在（旧表数据未保留）');
+  }
+
+  const accountRows: unknown = await dataSource.query(
+    `SELECT \`login_name\` FROM \`base_user_account\` WHERE \`id\` = 900001 LIMIT 1`,
+  );
+  if (!isQueryRows(accountRows) || accountRows.length === 0) {
+    throw new Error('旧库 fixture 丢失: base_user_account 900001 不存在（旧表数据未保留）');
+  }
+
+  const documentRows: unknown = await dataSource.query(
+    `SELECT \`owner_organization_id\`, \`ingest_method\`, \`schema_version\` FROM \`reference_document\` WHERE \`id\` = 900001 LIMIT 1`,
+  );
+  if (!isQueryRows(documentRows) || documentRows.length === 0) {
+    throw new Error('旧库 fixture 丢失: reference_document 900001 不存在（旧资料未保留）');
+  }
+  const doc = documentRows[0];
+  const ingestMethod = doc['ingest_method'] ?? doc['INGEST_METHOD'];
+  if (ingestMethod !== 'ADMIN_DIRECT') {
+    throw new Error(`旧资料入库方式回填错误：预期 ADMIN_DIRECT，实际 ${String(ingestMethod)}`);
+  }
+  const ownerValue = doc['owner_organization_id'] ?? doc['OWNER_ORGANIZATION_ID'];
+  const ownerRows: unknown = await dataSource.query(
+    `SELECT \`id\` FROM \`organization\` WHERE \`organization_code\` = 'CLIENT_DEFAULT' LIMIT 1`,
+  );
+  if (!isQueryRows(ownerRows) || ownerRows.length === 0) {
+    throw new Error('回填目标组织 CLIENT_DEFAULT 不存在');
+  }
+  const expectedOwner = ownerRows[0]['id'] ?? ownerRows[0]['ID'];
+  if (Number(ownerValue) !== Number(expectedOwner)) {
+    throw new Error(
+      `旧资料归属回填错误：预期组织 ${String(expectedOwner)}，实际 ${String(ownerValue)}`,
+    );
+  }
+}
+
+/**
+ * 执行旧库升级演练（T02 可重跑版）：旧基线迁移 + 旧 fixture → 只执行新增迁移。
+ */
+async function runUpgradeMigrationDrill(
+  migrationDataSource: DataSource,
+  allMigrations: ReadonlyArray<new () => unknown>,
+  mysqlConfig: MysqlConnectionConfig,
+  databaseName: string,
+  baselineCount: number,
+): Promise<number> {
+  const total = allMigrations.length;
+  const expectedUpgrade = total - baselineCount;
+  writeInfo(
+    `🧱 旧库升级演练：旧基线 ${baselineCount} 条 + 新增 ${expectedUpgrade} 条（共 ${total} 条）`,
+  );
+
+  await clearDatabaseTables(migrationDataSource, databaseName);
+  writeInfo('🧽 目标数据库已清空（模拟旧库前置）');
+
+  const baselineDataSource = new DataSource(
+    buildMigrationDataSourceOptions(
+      mysqlConfig,
+      databaseName,
+      allMigrations.slice(0, baselineCount),
+    ),
+  );
+  await baselineDataSource.initialize();
+  let baselineExecuted: ReadonlyArray<unknown>;
+  try {
+    baselineExecuted = await baselineDataSource.runMigrations({ transaction: 'all' });
+  } finally {
+    await baselineDataSource.destroy();
+  }
+  if (baselineExecuted.length !== baselineCount) {
+    throw new Error(`旧基线迁移数量不符：预期 ${baselineCount}，实际 ${baselineExecuted.length}`);
+  }
+  writeInfo(`✅ 旧基线迁移执行 ${baselineExecuted.length} 条`);
+
+  await insertLegacyUpgradeFixtures(migrationDataSource);
+  writeInfo('🗂️ 已写入旧库 fixture（旧表旧列可用）');
+
+  const upgradeDataSource = new DataSource(
+    buildMigrationDataSourceOptions(mysqlConfig, databaseName, allMigrations),
+  );
+  await upgradeDataSource.initialize();
+  let upgradeExecuted: ReadonlyArray<unknown>;
+  let secondRunCount: number;
+  try {
+    upgradeExecuted = await upgradeDataSource.runMigrations({ transaction: 'all' });
+    if (upgradeExecuted.length !== expectedUpgrade) {
+      throw new Error(
+        `升级仅应执行新增 ${expectedUpgrade} 条，实际 ${upgradeExecuted.length} 条（旧迁移被重跑）`,
+      );
+    }
+    await assertMigrationsTableCount(
+      upgradeDataSource,
+      databaseName,
+      total,
+      allMigrations.slice(baselineCount).map(resolveMigrationName),
+    );
+    await assertLegacyUpgradeFixtures(upgradeDataSource);
+
+    const secondRun = await upgradeDataSource.runMigrations({ transaction: 'all' });
+    if (secondRun.length !== 0) {
+      throw new Error(`升级后再次执行应为 0 条，实际 ${secondRun.length} 条`);
+    }
+    secondRunCount = secondRun.length;
+  } finally {
+    await upgradeDataSource.destroy();
+  }
+  writeInfo(`✅ 升级只执行新增迁移 ${upgradeExecuted.length} 条，旧迁移无重跑`);
+  writeInfo(
+    `✅ 旧库 fixture 保留且归属/入库方式回填正确；升级后幂等（再次执行 ${secondRunCount} 条）`,
+  );
+
+  return total;
+}
+
+/**
  * 执行空库 migration 演练，失败时抛错以阻断 CI。
  */
 async function runEmptyDbMigrationDrill(): Promise<void> {
@@ -569,14 +1018,26 @@ async function runEmptyDbMigrationDrill(): Promise<void> {
         },
       );
     }
-    await clearDatabaseTables(migrationDataSource, target.databaseName);
-    writeInfo('🧽 目标数据库已清空');
+    const allMigrations = toMigrationClasses(migrationDataSource.migrations);
+    const baselineCount = parseBaselineCount(allMigrations.length);
+    if (baselineCount === null) {
+      await clearDatabaseTables(migrationDataSource, target.databaseName);
+      writeInfo('🧽 目标数据库已清空');
 
-    const executedMigrations = await migrationDataSource.runMigrations({ transaction: 'all' });
-    if (executedMigrations.length === 0) {
-      throw new Error('未执行任何 migration，请检查 migration 配置');
+      const executedMigrations = await migrationDataSource.runMigrations({ transaction: 'all' });
+      if (executedMigrations.length === 0) {
+        throw new Error('未执行任何 migration，请检查 migration 配置');
+      }
+      writeInfo(`✅ migration 执行成功，共 ${executedMigrations.length} 条`);
+    } else {
+      await runUpgradeMigrationDrill(
+        migrationDataSource,
+        allMigrations,
+        mysqlConfig,
+        target.databaseName,
+        baselineCount,
+      );
     }
-    writeInfo(`✅ migration 执行成功，共 ${executedMigrations.length} 条`);
 
     await assertRequiredTables(migrationDataSource, target.databaseName);
     await assertRequiredColumns(migrationDataSource, target.databaseName);
@@ -584,7 +1045,7 @@ async function runEmptyDbMigrationDrill(): Promise<void> {
     await assertRequiredChecks(migrationDataSource, target.databaseName);
     await assertRequiredForeignKeys(migrationDataSource, target.databaseName);
     writeInfo('✅ 关键表、字段、索引、CHECK 与外键校验通过');
-    writeInfo('🎉 空库 migration 演练通过');
+    writeInfo(baselineCount === null ? '🎉 空库 migration 演练通过' : '🎉 旧库升级演练通过');
   } finally {
     if (migrationInitialized) {
       await migrationDataSource.destroy();
