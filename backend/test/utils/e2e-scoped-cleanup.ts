@@ -545,27 +545,32 @@ const collectOwnedGraph = async (
       submissionConditions.push(`submitted_by_account_id IN (${inClause(accountIds)})`);
       submissionParams.push(...accountIds);
     }
-    const submissions = await manager.query(
-      `SELECT id, owner_organization_id, submitted_by_account_id
-         FROM content_submission
-        WHERE ${submissionConditions.join(' OR ')}
-        FOR UPDATE`,
-      submissionParams,
-    );
+    // R25-01：retained-only 时 orgIds/accountIds 均空，本查询自身没有任何条件。
+    // 必须整段跳过，不能生成 `WHERE  FOR UPDATE`；其余图收集仍按下面各自的
+    // 条件集合独立执行（不得在此提前 return）。
+    if (submissionConditions.length > 0) {
+      const submissions = await manager.query(
+        `SELECT id, owner_organization_id, submitted_by_account_id
+           FROM content_submission
+          WHERE ${submissionConditions.join(' OR ')}
+          FOR UPDATE`,
+        submissionParams,
+      );
 
-    for (const row of submissions as SubmissionRow[]) {
-      if (
-        !orgIds.includes(asNumber(row.owner_organization_id)) ||
-        !accountIds.includes(asNumber(row.submitted_by_account_id))
-      ) {
-        conflict(
-          helper,
-          'submission',
-          String(row.id),
-          '投稿归属组织或投稿人不在本轮范围，拒绝删除',
-        );
+      for (const row of submissions as SubmissionRow[]) {
+        if (
+          !orgIds.includes(asNumber(row.owner_organization_id)) ||
+          !accountIds.includes(asNumber(row.submitted_by_account_id))
+        ) {
+          conflict(
+            helper,
+            'submission',
+            String(row.id),
+            '投稿归属组织或投稿人不在本轮范围，拒绝删除',
+          );
+        }
+        addIds(plan.submissionIds, [asNumber(row.id)]);
       }
-      addIds(plan.submissionIds, [asNumber(row.id)]);
     }
   }
 

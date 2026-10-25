@@ -993,4 +993,70 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
         .findOne({ where: { accountId: created.accountId } }),
     ).not.toBeNull();
   });
+
+  it('C11 R25-01 retained-only：组织链不生成空 WHERE，相邻账号回收真实执行', async () => {
+    const config = accountConfig(
+      'C11RETAINED',
+      [IdentityTypeEnum.ENGINEER],
+      IdentityTypeEnum.ENGINEER,
+    );
+    // 账号先于组织链创建（模拟 10 组 beforeAll 顺序），暂不登记为本轮 owned
+    const { accountId } = await createTestAccount(dataSource, createAccountUsecase, config);
+    recordOwnedResource(testLedger, 'account', accountId);
+    const accountBefore = await readAccountFields(dataSource, accountId);
+    expect(accountBefore).not.toBeNull();
+
+    const counting = createDeleteCountingDataSource(dataSource);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: counting.dataSource,
+        helper: 'C11 R25-01 组织链 retained-only',
+        retainedAccounts: [toResidueAccountFingerprint(config)],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(counting.stats.transactionCount).toBe(1);
+    expect(counting.stats.deleteCount).toBe(0);
+    expect(await readAccountFields(dataSource, accountId)).toEqual(accountBefore);
+
+    // 组织链空操作成功后，相邻 fixture owner 的精确回收仍执行
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: testLedger,
+      helper: 'C11 R25-01 相邻账号回收',
+    });
+    expect(await readAccountFields(dataSource, accountId)).toBeNull();
+  });
+
+  it('C12 R25-01 上轮仅残留账号：预清理不再卡空 WHERE，下一轮完整回收', async () => {
+    const config = accountConfig(
+      'C12RESIDUAL',
+      [IdentityTypeEnum.ENGINEER],
+      IdentityTypeEnum.ENGINEER,
+    );
+    // 模拟上轮中断：账号存在但本轮没有组织 owned 记录
+    const { accountId } = await createTestAccount(dataSource, createAccountUsecase, config);
+    recordOwnedResource(testLedger, 'account', accountId);
+    const fingerprint = toResidueAccountFingerprint(config);
+
+    const counting = createDeleteCountingDataSource(dataSource);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: counting.dataSource,
+        helper: 'C12 R25-01 预清理残留账号',
+        residue: { accounts: [fingerprint] },
+        retainedAccounts: [fingerprint],
+      }),
+    ).resolves.toBeUndefined();
+    expect(counting.stats.deleteCount).toBe(0);
+    expect(await readAccountFields(dataSource, accountId)).not.toBeNull();
+
+    // 下一轮以 owned 账本精确回收，证明残留不会持续阻塞
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: testLedger,
+      helper: 'C12 R25-01 下一轮回收',
+    });
+    expect(await readAccountFields(dataSource, accountId)).toBeNull();
+  });
 });

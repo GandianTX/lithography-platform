@@ -23,6 +23,11 @@ import { CreateAccountUsecase } from '@src/usecases/account/create-account.useca
 import { DataSource, In, type FindOptionsWhere } from 'typeorm';
 
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
 import { assertFixedIdsVacant, insertOnlyAtFixedIds } from '../utils/e2e-insert-only-seed';
 import { createTestAccount, type TestAccountConfig } from '../utils/test-accounts';
 import {
@@ -845,5 +850,122 @@ describe('普通 admin-document-database fixture 所有权（真实隔离库）'
       expect(await countFixtureMarkers()).toEqual({ accounts: 0, models: 0, requests: 0 });
     }
     expect(new Set(generatedIds).size).toBe(generatedIds.length);
+  });
+
+  it('R25-01 C05：真实业务夹具创建后、组织建立前失败，组合收尾保留原错误并关闭应用', async () => {
+    const { ApiModule: apiModule } = await import('../../src/bootstraps/api/api.module');
+    const moduleFixture = await Test.createTestingModule({ imports: [apiModule] }).compile();
+    const scenarioApp = moduleFixture.createNestApplication();
+    const ownership = createAdminDocFixtureOwnership();
+    const calls: string[] = [];
+    const injected = new Error('R25-01：组织建立前失败');
+    const close = jest.spyOn(scenarioApp, 'close');
+    let targetValidated = false;
+    try {
+      await scenarioApp.init();
+      const ds = scenarioApp.get<DataSource>(DataSource);
+      await assertDataSourceOnAllowedE2eDatabase(ds);
+      targetValidated = true;
+      await expect(
+        (async () => {
+          try {
+            const accounts = await seedAdminDocumentFixtureAccounts({
+              dataSource: ds,
+              ownership,
+              createAccountUsecase: scenarioApp.get(CreateAccountUsecase),
+            });
+            await seedAdminDocumentFixtureBusiness({
+              dataSource: ds,
+              ownership,
+              customerAccountId: accounts.customer,
+              engineerAccountId: accounts.engineer,
+            });
+            expect(await countFixtureMarkers()).toEqual({ accounts: 3, models: 1, requests: 3 });
+            throw injected;
+          } finally {
+            await runAdminDocFixtureTeardown({
+              app: scenarioApp,
+              dataSource: ds,
+              targetValidated,
+              cleanup: async (cleanupDs) => {
+                calls.push('organization');
+                await runGuardedSpecCleanup({
+                  dataSource: cleanupDs,
+                  owned: createOwnedResourceLedger(),
+                  retainedAccounts: Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map(
+                    toResidueAccountFingerprint,
+                  ),
+                  helper: 'R25-01 C05 实际组织链收尾',
+                });
+                calls.push('fixture');
+                await cleanupAdminDocumentFixtureByIds(cleanupDs, ownership);
+              },
+            });
+          }
+        })(),
+      ).rejects.toBe(injected);
+      expect(calls).toEqual(['organization', 'fixture']);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(ds.isInitialized).toBe(false);
+      expect(await countFixtureMarkers()).toEqual({ accounts: 0, models: 0, requests: 0 });
+    } finally {
+      // 断言/初始化失败也释放真实应用；闭库后的兜底只使用已验证的主连接及本轮账本。
+      if (close.mock.calls.length === 0) await scenarioApp.close();
+      if (targetValidated && (await countFixtureMarkers()).accounts > 0) {
+        await cleanupAdminDocumentFixtureByIds(dataSource, ownership);
+      }
+    }
+  });
+
+  it('R25-01 C06：真实账号和业务残留无组织时，实际预清理恢复并连续两轮重建', async () => {
+    for (let run = 0; run < 2; run += 1) {
+      const previous = createAdminDocFixtureOwnership();
+      const current = createAdminDocFixtureOwnership();
+      let previousCleared = false;
+      let currentCleared = false;
+      try {
+        const accounts = await seedFixtureAccounts(previous);
+        await seedAdminDocumentFixtureBusiness({
+          dataSource,
+          ownership: previous,
+          customerAccountId: accounts.customer,
+          engineerAccountId: accounts.engineer,
+        });
+        // 与实际 beforeAll 相同的顺序：先组织链，再 fixture 残留 owner；不向后者传旧账本。
+        await runGuardedSpecCleanup({
+          dataSource,
+          residue: {
+            organizations: [
+              {
+                organizationCode: 'E2E_DOCDB_R25_ABSENT',
+                name: 'R25 未创建组织',
+                kind: 'CLIENT',
+              },
+            ],
+          },
+          retainedAccounts: Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map(
+            toResidueAccountFingerprint,
+          ),
+          helper: 'R25-01 C06 实际组织链预清理',
+        });
+        await cleanupAdminDocumentFixtureResidue(dataSource);
+        previousCleared = true;
+        expect(await countFixtureMarkers()).toEqual({ accounts: 0, models: 0, requests: 0 });
+        const nextAccounts = await seedFixtureAccounts(current);
+        await seedAdminDocumentFixtureBusiness({
+          dataSource,
+          ownership: current,
+          customerAccountId: nextAccounts.customer,
+          engineerAccountId: nextAccounts.engineer,
+        });
+        expect(nextAccounts.admin).not.toBe(accounts.admin);
+        await cleanupAdminDocumentFixtureByIds(dataSource, current);
+        currentCleared = true;
+        expect(await countFixtureMarkers()).toEqual({ accounts: 0, models: 0, requests: 0 });
+      } finally {
+        if (!currentCleared) await cleanupAdminDocumentFixtureByIds(dataSource, current);
+        if (!previousCleared) await cleanupAdminDocumentFixtureByIds(dataSource, previous);
+      }
+    }
   });
 });

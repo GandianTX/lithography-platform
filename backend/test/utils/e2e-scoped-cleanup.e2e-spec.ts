@@ -280,7 +280,11 @@ type SpecCleanupSqlRecord = {
  * `transaction` 直接把假 manager 交给清理器；manager.query 记录真实 SQL，
  * 并按 helper 实际访问的表一律返回空行（不制造归属/引用冲突）。
  */
-const createFakeTransactionalDataSource = (): {
+const createFakeTransactionalDataSource = (
+  options: {
+    respond?: (sql: string, params?: unknown) => unknown[] | undefined;
+  } = {},
+): {
   dataSource: DataSource;
   records: SpecCleanupSqlRecord[];
   transaction: jest.Mock;
@@ -295,7 +299,7 @@ const createFakeTransactionalDataSource = (): {
         sql: normalized,
         params,
       });
-      return Promise.resolve([]);
+      return Promise.resolve(options.respond?.(normalized, params) ?? []);
     },
   };
   const transaction = jest.fn((run: (manager: unknown) => Promise<unknown>) => run(manager));
@@ -463,6 +467,210 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
       { kind: 'delete', sql: 'DELETE FROM base_user_info WHERE account_id IN (?)', params: [201] },
       { kind: 'delete', sql: 'DELETE FROM base_user_account WHERE id IN (?)', params: [201] },
     ]);
+  });
+
+  // R25-01：retained-only 时组织/账号可删集合为空，任何子图查询都不得生成空 WHERE。
+  const retainedFingerprint = {
+    loginName: 'retained_r25_01',
+    loginEmail: 'retained.r25.01@example.com',
+    status: AccountStatus.ACTIVE,
+    identityHint: IdentityTypeEnum.CUSTOMER,
+    nickname: 'retained_r25_01_nickname',
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+  };
+  const retainedAccountRow = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id: 900,
+    login_name: retainedFingerprint.loginName,
+    login_email: retainedFingerprint.loginEmail,
+    status: retainedFingerprint.status,
+    identity_hint: retainedFingerprint.identityHint,
+    nickname: retainedFingerprint.nickname,
+    user_info_email: retainedFingerprint.loginEmail,
+    access_group: retainedFingerprint.accessGroup,
+    meta_digest: 'encrypted-digest',
+    user_state: 'ACTIVE',
+    ...overrides,
+  });
+  const emptyConditionSql = (records: SpecCleanupSqlRecord[]): string[] =>
+    records.filter((record) => /WHERE\s+FOR UPDATE/i.test(record.sql)).map((record) => record.sql);
+  const deletes = (records: SpecCleanupSqlRecord[]): SpecCleanupSqlRecord[] =>
+    records.filter((record) => record.kind === 'delete');
+
+  it('R25-01 C01：保留账号命中且组织/账号集合为空，不生成空 WHERE、不删除保留账号', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const { dataSource, records, transaction } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM base_user_account a\b/i.test(sql) ? [retainedAccountRow()] : undefined,
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R25-01 C01',
+        retainedAccounts: [retainedFingerprint],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    // 保留账号指纹确实被查询并命中
+    expect(records.some((record) => /FROM base_user_account a\b/i.test(record.sql))).toBe(true);
+    expect(emptyConditionSql(records)).toEqual([]);
+    expect(records.some((record) => /FROM content_submission\b/i.test(record.sql))).toBe(false);
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R25-01 C02：保留账号不存在，安全空操作且无非法 SQL、无 DELETE', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const { dataSource, records, transaction } = createFakeTransactionalDataSource();
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R25-01 C02',
+        retainedAccounts: [retainedFingerprint],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(emptyConditionSql(records)).toEqual([]);
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R25-01 C03：保留账号存在但指纹不符，第一条 DELETE 前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM base_user_account a\b/i.test(sql)
+          ? [retainedAccountRow({ nickname: 'foreign_nickname' })]
+          : undefined,
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R25-01 C03',
+        retainedAccounts: [retainedFingerprint],
+      }),
+    ).rejects.toThrow(/账号\/用户信息指纹不符/);
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R25-01 C04：组织与对应保留账号并存时正常清理组织/成员，账号留给相邻 owner', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'organization', 101);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM organization\b[\s\S]*WHERE id IN/i.test(sql)) return [{ id: 101 }];
+        if (/FROM organization_membership\b/i.test(sql)) {
+          return [{ id: 800, organization_id: 101, account_id: 900 }];
+        }
+        if (/FROM base_user_account a\b/i.test(sql)) return [retainedAccountRow()];
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R25-01 C04',
+        owned,
+        retainedAccounts: [retainedFingerprint],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(emptyConditionSql(records)).toEqual([]);
+    expect(
+      records.some(
+        (record) =>
+          /FROM content_submission\b/i.test(record.sql) &&
+          /owner_organization_id IN/i.test(record.sql),
+      ),
+    ).toBe(true);
+    const statements = deletes(records).map((record) => record.sql);
+    expect(statements).toContain('DELETE FROM organization_membership WHERE id IN (?)');
+    expect(statements).toContain('DELETE FROM organization WHERE id IN (?)');
+    expect(statements.some((sql) => /DELETE FROM base_user_account/i.test(sql))).toBe(false);
+  });
+
+  it('R25-01 C09：无组织/账号但账本含可独立核验资源时，其余图收集仍执行', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'equipmentModel', 700);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM equipment_model\b[\s\S]*WHERE id IN/i.test(sql)) return [{ id: 700 }];
+        if (/FROM base_user_account a\b/i.test(sql)) return [retainedAccountRow()];
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R25-01 C09',
+        owned,
+        retainedAccounts: [retainedFingerprint],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(emptyConditionSql(records)).toEqual([]);
+    expect(
+      records.some(
+        (record) =>
+          record.kind === 'select' && /FROM equipment_model\b[\s\S]*WHERE id IN/i.test(record.sql),
+      ),
+    ).toBe(true);
+    expect(deletes(records).map((record) => record.sql)).toContain(
+      'DELETE FROM equipment_model WHERE id IN (?)',
+    );
+    // 根行锁发生在 collectOwnedGraph 前半段，不能证明后半段引用闭包执行过。
+    const closureQueries = records.filter((record) =>
+      /WHERE equipment_model_id IN/i.test(record.sql),
+    );
+    expect(closureQueries).toHaveLength(4);
+    for (const record of closureQueries) {
+      expect(record.params).toEqual([700]);
+    }
+    expect(closureQueries.map((record) => record.sql.match(/FROM (\w+)/i)?.[1])).toEqual([
+      'material_submission_detail',
+      'fault_case_submission_detail',
+      'reference_document',
+      'repair_request',
+    ]);
+  });
+
+  it('R25-01 C09B：retained-only 加机型遇到外部业务引用时拒绝，DELETE=0', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'equipmentModel', 700);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM equipment_model\b[\s\S]*WHERE id IN/i.test(sql)) return [{ id: 700 }];
+        if (/FROM base_user_account a\b/i.test(sql)) return [retainedAccountRow()];
+        if (/FROM repair_request WHERE equipment_model_id IN/i.test(sql)) return [{ id: 701 }];
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R25-01 C09B',
+        owned,
+        retainedAccounts: [retainedFingerprint],
+      }),
+    ).rejects.toThrow(/repair_request.equipment_model_id.*范围外记录引用了本轮机型/);
+    expect(emptyConditionSql(records)).toEqual([]);
+    expect(deletes(records)).toEqual([]);
   });
 });
 
