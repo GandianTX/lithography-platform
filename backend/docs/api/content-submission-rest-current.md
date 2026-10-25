@@ -107,4 +107,4 @@ multipart/form-data；守卫 `@Roles(ENGINEER)`（usecase 内再以精确 `activ
 
 ## 真实调用样例（T19 附件链证据）
 
-`test/11-content-submission/frontend-response-samples.e2e-spec.ts` 的 A2.2/A2.3（上传替换与移除的成功/失败形状）、A4.5（发布后正式文件下载头）与 `/tmp/s7-samples.json` 中的 REST 样例为准；完整调用序列见 `docs/database/PR0-S7交接材料与真实调用样例-20261020.md`。
+`test/11-content-submission/frontend-response-samples.e2e-spec.ts`中的REST捕获结果为准；运行时以`S7_SAMPLES_OUT`指定本次新建临时目录中的JSON，不固定覆盖`/tmp/s7-samples.json`。完整调用序列、当前两个场景/39条样例及测试库与Redis清理说明见`docs/database/PR0-S7交接材料与真实调用样例-20261020.md`。历史逐步编号不代表当前Jest用例数量。
