@@ -1,70 +1,101 @@
-## 交付目标
+## 关联任务
 
-本PR提供资料/故障案例采集的数据库与公共接口，为后续三个真实角色的页面开发准备基础。此次补齐B Review提出的既有库正式增量升级入口，避免把清库演练当成保留旧数据的升级方式。
+- 模块：PR0 / PR0a，资料采集数据库与公共接口前置建设
+- 当前状态：A 侧实现及本地验收完成，已针对 B 的 Review 补齐增量迁移修复，等待 B 复审及独立运行签收
+- 代码修复基准 SHA：b3b6f9a7df56f2fb49274fa4af3c78b7c2e50b5b；此后仅整理 PR 正文，最终交付版本以本 PR 最新 head 为准
+- 本 PR 为普通 PR；B 签收、必要 CI 和 Review 完成之前不合并
 
-这是普通PR。A本地修复验收已完成，交付B复审及独立运行签收；B签收和新候选CI完成前不合并。
+## 改动内容
 
-## 实现范围
+### 数据库与后端
 
-- 新增组织、成员、投稿/两类明细、单附件、冻结版本、审核和正式案例明细九张表，扩展现有参考资料；保留原14条Migration，追加10条。
-- 工程师维护本人草稿、附件、送审和重提；本组织管理员审核，批准冻结版本后进入现有参考资料库。
-- 正式案例专属更正与正文同步；保留普通资料原创建/上传/编辑/下载能力。
-- 组织权限来自可信成员事实；客户不进入资料库或投稿链路。
-- 提供前端公开类型、GraphQL/REST适配及统一认证失败处理。
-- 新增migration:status / migration:run / migration:verify，显式配置及写入确认，只执行pending；预检历史与关键结构、核对索引/外键有序列映射，验证旧资料保留及回填。
-- MySQL部分DDL失败时保留现场并失败退出；主因、解锁和关闭错误可见；最终成功只在收尾完成后确认。
+- 新增组织、成员、资料/案例投稿、附件、冻结版本、审核和正式案例明细等九张表。
+- 扩展现有参考资料表，支持组织归属、来源回链等信息。
+- 实现两类草稿、私有单附件、送审冻结、退回重提、审核发布。
+- 实现本组织参考资料读取及正式案例更正，保留管理员原有资料创建和上传能力。
+- 修复 retained-only 清理生成空 WHERE 的问题，并补齐失败收尾、残留恢复及引用闭包回归测试。
+- 针对 [B 的 Review](https://github.com/GandianTX/lithography-platform/pull/1#pullrequestreview-5646340531)，新增正式增量迁移入口 migration:status / migration:run / migration:verify，明确配置和目标，只执行 pending 迁移，不清表、不执行 synchronize 或 Mock Seed。
+- 补齐迁移历史与结构预检、关键索引/外键有序列映射、MySQL 部分 DDL 失败诊断及恢复说明；主因、解锁和关闭失败均可见，收尾失败不提前输出最终成功。
 
-不包含后续业务页面、演示账号、AI模型/对话、OCR、多附件、同行开户、跨组织共享或训练授权。
+### 前端公共适配
 
-## B Review修复说明
+- 提供资料采集公共类型、GraphQL/附件 API 调用及错误适配。
+- 适配现有参考资料调用方。
+- 本 PR 不新增正式业务页面，不声明页面联调或视觉验收已经完成。
 
-对应[Review 5646340531](https://github.com/GandianTX/lithography-platform/pull/1#pullrequestreview-5646340531)：
+### 权限
 
-1. 正式入口已在候选代码中提供，不调用drill、清表、synchronize或Mock Seed。
-2. 在带合成旧资料的独立14条历史旧库副本上运行正式入口：正常库14→24，再运行0条；旧正文、文件引用、软删事实保留，组织及入库方式正确回填。
-3. 同名错误索引列、错误外键映射在第一条升级写入前拒绝，历史仍14，工具不擅自修复结构。
-4. 31项实库专项覆盖配置/目标拒绝、历史/结构漂移、部分DDL成功、历史写入失败、结果未知及收尾失败；恢复步骤按实际状态区分旧前缀与完整终态。
-5. B本人运行结果尚待填写，不以A或AI验证代签。
+- 客户不能读取资料库或提交资料。
+- 工程师维护本人记录，阅读本组织正式资料。
+- 管理员在本组织范围审核、维护正式资料，不自动继承工程师投稿写入口。
+- 组织、本人、版本及附件归属由服务端校验。
 
-## A侧实际验证
+## 数据库影响
 
-环境：Node22.19.0，Linux，独立MySQL8.0.46和Redis；全量core关闭全库TRUNCATE，夹具清理显式授权。未操作保留库或生产库。
+- 新增九张表、扩展 reference_document，共新增十条 Migration。
+- 未改写既有十四条基线 Migration，已逐文件与目标分支核对。
+- 不依赖 synchronize 或手工改表交付。
+- 已验证空库迁移、旧十四条加新增十条的升级演练；另在带合成旧资料的旧库副本上执行正式增量入口，历史 14→24，再次执行 0 条，核对旧正文、文件引用、软删事实保留及组织/入库方式回填。
+- 同名索引或外键被改列的旧库会在升级写入前拒绝，历史保持 14 条，不自动修复错误结构后放行。
+- MySQL 多步 DDL 失败不保证整体回滚；失败后保留现场，按实际历史/结构及备份恢复流程处理，不自动 down、清历史或盲目重试。
+- 已完整执行两轮 Seed，并核对非 Mock 合成记录逐字段不变。
 
-| 检查 | 结果 |
-| --- | --- |
-| 后端typecheck、无fix ESLint及架构/usecase/capability检查、build | 通过 |
-| 后端unit | 109 suites passed、1 skipped；1332 passed、31 skipped |
-| 迁移实库专项 | 上述条件跳过的31项另在隔离库全部通过 |
-| 前端format/lint、unit及build | 112文件、1557项通过 |
-| 完整core E2E | 41规格、557项通过，0失败/0跳过 |
-| 空库与旧14+10迁移演练 | 通过；演练证据与正式增量入口证据分开 |
-| 正式CLI旧库副本 | 正常升级/终态验证/二次0条通过；错索引/外键副本拒绝且不升级 |
-| 正式Seed连续两次 | 通过，非Mock账号与资料逐字段保持 |
-| 同库重复业务链与响应样例 | 业务协议规格5项、样例规格2项均两轮通过；每轮39条样例；业务夹具无残留，仅保留默认组织 |
-| 测试敏感性 | 临时副本跳过列比较或提前成功时断言失败；恢复后通过 |
-| 旧14条Migration | 与实际base逐文件字节一致 |
+## A 侧实际验证
 
-旧PR3专用check:entity-scope禁止Entity变化，不适用于本PR已授权九表及参考资料扩展；未将其误报为通过。完整适用性、真实I/O/受控替身、skip和环境限制见报告。
+运行时：Node 22.19.0。
+实库验收使用独立临时 MySQL 8.0.46 / Redis，未清理共享或业务环境；core 关闭全库 TRUNCATE，夹具清理显式授权。
 
-## 版本与证据
+- [x] 后端类型检查、适用静态规则和构建通过
+- [x] 后端单测：109 suites passed、1 skipped；1332 tests passed、31 skipped
+- [x] 默认条件跳过的 31 项迁移集成另在隔离实库全部通过
+- [x] 前端格式、lint 和构建通过
+- [x] 前端单测：112 files / 1557 tests
+- [x] core E2E：41 个规格 / 557 tests，0 failed、0 skipped
+- [x] 空库迁移、旧库升级演练、正式旧库副本增量升级及 Seed 非 Mock 保留验证
+- [x] 实际 fixture 部分失败收尾、残留恢复及连续运行验证
+- [x] production 判定下真实 HTTP 错误类别验证
+- [x] 资料/案例独立场景及完整 2 场景、39 条样例核对，同库连续两轮通过
+- [x] 迁移关键断言负对照：临时绕过列比较或提前成功时测试失败，恢复后通过
+- [x] 未提交密钥、真实资料、原始日志、数据库或构建产物
+- [ ] B 独立复现并签收
+- [ ] 本次新候选的必要 CI 通过
+- [ ] Review 意见处理完毕并完成复审
 
-以本PR当前head为交付版本。修复前HEAD为68a78e2e46a166b4a7c16e6290872ffad3f6329a，本轮实现验收绑定该HEAD加报告内207文件指纹；后续文档整理单独留痕。正式交付消息应给出推送后的新完整SHA，不以修复前HEAD代表新增入口。
+注：39 是请求响应样例数量，不是 Jest 测试数量。
+上述为 A 的实际本地结果，本地通过不等于 CI 已通过，也不等于 B 已验收。修复前 68a78… 的绿色 CI 不作为本次新候选 CI 结果；本次验收后的修改仅为文档整理，代码/测试/依赖指纹未变，沿用依据见文档整理回执。
+旧 PR3 专用 check:entity-scope 禁止 Entity 变化，不适用于本 PR 已授权九表及参考资料扩展；未将该脚本误报为通过，详细说明见终审报告。
 
-- [当前交付总入口](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-复审交付材料-20261026/README.md)
-- [完整独立终审报告](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-最终独立终审-20261026/完整PR独立终审报告-20261026.md)
-- [文档整理及证据沿用说明](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-复审交付材料-20261026/文档整理回执.md)
-- [B独立验收入口](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-A侧候选交付-20261025/B独立验收入口.md)
-- [技术交接说明](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0a-技术交接说明-20261025.md)
-- [既有库正式升级与恢复](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/增量升级操作说明-20261026.md)
+## 交接与验收入口
 
-上面使用共享fork功能分支的blob链接，需本轮文件推送后才可访问；固定版本引用应将分支名换为交付的新完整SHA。
+从以下仓库文档入口阅读最新完成回执和 B 独立验收说明：
 
-## 待完成门禁
+[数据库文档入口](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/README.md)
 
-- [x] A侧本地实现与必要验收完成。
-- [ ] 当前PR head已包含本轮修复，正文/交付SHA已核对。
-- [ ] 新候选必要CI通过；旧HEAD绿色不沿用为新候选CI。
-- [ ] B在隔离环境独立完成正式升级/门禁/两条链并记录签收。
-- [ ] B复审及当前讨论完成，由有权限的合并人处理；A不自行合并。
+- [完整独立终审报告](https://github.com/GandianTX/lithography-platform/blob/b3b6f9a7df56f2fb49274fa4af3c78b7c2e50b5b/docs/database/PR0-最终独立终审-20261026/完整PR独立终审报告-20261026.md)
+- [文档整理回执](https://github.com/GandianTX/lithography-platform/blob/b3b6f9a7df56f2fb49274fa4af3c78b7c2e50b5b/docs/database/PR0-复审交付材料-20261026/文档整理回执.md)
 
-以上未完成项在实际完成前保持未勾选。本PR不包含原始日志、响应JSON、环境文件、数据库dump或上传物。
+B 需要在约定候选版本、自己的隔离环境中：
+
+1. 确认最新完整 SHA；已有旧库先按正式 status → run → verify → run 升级，核对旧数据/回填及再次执行 0 条，不能用清库演练替代。
+2. 运行双方约定的权限/数据安全门禁，记录命令、退出码和结果；两条样例不代替完整安全回归。
+3. 跑通普通资料链：草稿、附件、送审、退回、重提、发布、下载。
+4. 跑通案例链：送审、发布、结构化读取、正式案例更正。
+5. 核对退出码 0、2 个完整场景、39 条样例。
+6. 记录实际 SHA、环境、执行结果及疑问，并明确签收结论。
+
+首次空库与已有旧库采用不同初始化/升级流程；具体命令、配置确认、Redis 清理风险和失败恢复以交接说明为准，不复制 A 的临时端口或依赖其 /tmp 文件。
+
+## 本 PR 不包含
+
+- 正式资料采集及审核业务页面
+- 真实 AI、分析转工单及结单总结页面
+- OCR、多附件
+- 同行开户、跨组织共享或训练授权
+- demo 演示账号
+
+## 合并前条件
+
+B 独立签收、本次新候选必要 CI 通过、Review 问题解决并完成复审后，才进入合并流程。当前为普通 PR，不再保留 Draft 转 Ready 的步骤。
+
+不由 PR 创建人自行合并，不直接修改 main。
+最终合并回原项目仓库由项目负责人处理。
