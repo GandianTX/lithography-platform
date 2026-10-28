@@ -19,6 +19,7 @@ import {
   recordOwnedResource,
   runGuardedSpecCleanup,
   toResidueAccountFingerprint,
+  updateOwnedExpectation,
 } from '../utils/e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-teardown';
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
@@ -108,6 +109,7 @@ describe('AI 参考资料库 (e2e)', () => {
   let primaryOrganizationId = 0;
   let peerOrganizationId = 0;
   let referenceModelId = 0;
+  let peerAdminAccountId = 0;
   const ownership = createOwnedResourceLedger();
 
   // 组织范围用例会话：甲方第二工程师 / 第二组织工程师 / 第二组织管理员 /
@@ -317,11 +319,16 @@ describe('AI 参考资料库 (e2e)', () => {
       }),
     );
     referenceModelId = savedModel.id;
-    recordOwnedResource(ownership, 'equipmentModel', referenceModelId);
+    recordOwnedResource(ownership, 'equipmentModel', referenceModelId, {
+      modelCode: 'E2E-REF',
+      modelName: '资料库链路型号',
+      enabled: true,
+      sortOrder: 1,
+    });
     // 971 指定型号 + storage 元数据（详情展示「后续版本提供」提示的数据形状）；
     // 972 通用资料无型号；973 已软删（列表不可见 + 详情统一 NOT_FOUND）；
     // 974 第二组织资料（第二组织可见性样本 + 甲方跨组织详情拒绝样本）
-    const peerAdminAccountId = await getAccountIdByLoginName(
+    peerAdminAccountId = await getAccountIdByLoginName(
       dataSource,
       testAccountsConfig.peerAdmin.loginName,
     );
@@ -398,7 +405,14 @@ describe('AI 参考资料库 (e2e)', () => {
       ]),
     );
     for (const document of seededDocuments) {
-      recordOwnedResource(ownership, 'document', document.id);
+      recordOwnedResource(ownership, 'document', document.id, {
+        ownerOrganizationId: document.ownerOrganizationId,
+        createdByAccountId: document.createdByAccountId,
+        // 本规格种子均未建立来源回链，登记为 null 以拒绝事后被改写的归属。
+        sourceSubmissionId: null,
+        sourceRevisionId: null,
+        equipmentModelId: document.equipmentModelId ?? null,
+      });
     }
   }, 30000);
 
@@ -600,6 +614,14 @@ describe('AI 参考资料库 (e2e)', () => {
         ownerOrganizationId: peerOrganizationId,
         ingestMethod: 'ADMIN_DIRECT',
       });
+      // R02：新建成功即登记真实 ID 与最小预期事实，引用闭包不按创建人自动扩图
+      recordOwnedResource(ownership, 'document', createdId, {
+        ownerOrganizationId: peerOrganizationId,
+        createdByAccountId: peerAdminAccountId,
+        sourceSubmissionId: null,
+        sourceRevisionId: null,
+        equipmentModelId: null,
+      });
 
       // 甲方管理员对第二组织资料详情的跨组织读：统一 NOT_FOUND
       const crossDetail = await postGql({
@@ -727,6 +749,14 @@ describe('AI 参考资料库 (e2e)', () => {
         deprecated: false,
         deletedAt: null,
       });
+      // R02：新建成功即登记真实 ID 与最小预期事实
+      recordOwnedResource(ownership, 'document', createdId, {
+        ownerOrganizationId: primaryOrganizationId,
+        createdByAccountId: adminAccountId,
+        sourceSubmissionId: null,
+        sourceRevisionId: null,
+        equipmentModelId: referenceModelId,
+      });
 
       const listResponse = await postGql({
         app,
@@ -771,6 +801,8 @@ describe('AI 参考资料库 (e2e)', () => {
         title: 'E2E 错误码手册（已修订）',
         contentText: 'E-CHUCK-101',
       });
+      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+      updateOwnedExpectation(ownership, 'document', 971, { equipmentModelId: null });
 
       const nullTitleResponse = await postGql({
         app,
@@ -846,6 +878,15 @@ describe('AI 参考资料库 (e2e)', () => {
       expect(createResponse.body.errors).toBeUndefined();
       const createdId = createResponse.body.data.createReferenceDocument.id as number;
 
+      // R02：新建成功即登记真实 ID 与最小预期事实
+      recordOwnedResource(ownership, 'document', createdId, {
+        ownerOrganizationId: primaryOrganizationId,
+        createdByAccountId: adminAccountId,
+        sourceSubmissionId: null,
+        sourceRevisionId: null,
+        equipmentModelId: null,
+      });
+
       const searchByCreated = async (
         keyword: string | null,
       ): Promise<{
@@ -905,6 +946,15 @@ describe('AI 参考资料库 (e2e)', () => {
       }).expect(200);
       expect(createResponse.body.errors).toBeUndefined();
       const createdId = createResponse.body.data.createReferenceDocument.id as number;
+
+      // R02：新建成功即登记真实 ID 与最小预期事实
+      recordOwnedResource(ownership, 'document', createdId, {
+        ownerOrganizationId: primaryOrganizationId,
+        createdByAccountId: adminAccountId,
+        sourceSubmissionId: null,
+        sourceRevisionId: null,
+        equipmentModelId: referenceModelId,
+      });
 
       const listByModel = async (
         equipmentModelId: number,

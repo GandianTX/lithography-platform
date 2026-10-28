@@ -633,7 +633,12 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
       }),
     );
     s7ModelId = savedModel.id;
-    recordOwnedResource(ownership, 'equipmentModel', s7ModelId);
+    recordOwnedResource(ownership, 'equipmentModel', s7ModelId, {
+      modelCode: 'E2E-S7-MODEL',
+      modelName: S7_MODEL_NAME,
+      enabled: true,
+      sortOrder: 1,
+    });
 
     engineerAccountId = await getAccountIdByLoginName(
       dataSource,

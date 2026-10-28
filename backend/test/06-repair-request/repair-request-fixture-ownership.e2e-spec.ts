@@ -464,8 +464,16 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     const missingConsentProbe = jest.fn(() =>
       Promise.resolve([{ current_database: 'lithography_e2e' }]),
     );
-    const wrongDbDataSource = { query: wrongDbProbe } as unknown as DataSource;
-    const unprobedDataSource = { query: missingConsentProbe } as unknown as DataSource;
+    // N04：fake DataSource 必须像真实 DataSource 一样显式给出预期库，
+    // 不允许以“没有配置”为由跳过预期目标库解析。
+    const wrongDbDataSource = {
+      options: { database: 'lithography_e2e' },
+      query: wrongDbProbe,
+    } as unknown as DataSource;
+    const unprobedDataSource = {
+      options: { database: 'lithography_e2e' },
+      query: missingConsentProbe,
+    } as unknown as DataSource;
     try {
       // ① 有显式许可、库不在白名单 → 仍必须被库名门禁拒绝（许可不能替代库名检查）
       process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';

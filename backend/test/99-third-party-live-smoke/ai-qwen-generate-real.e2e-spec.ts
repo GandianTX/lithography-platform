@@ -17,7 +17,13 @@ import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { login } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import { createOwnedResourceLedger, runGuardedSpecCleanup } from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 type FinalJobState = 'completed' | 'failed';
 
@@ -206,6 +212,9 @@ REAL_AI_DESCRIBE('真实 Qwen generate 闭环（受控 e2e）', () => {
   let staffPrimaryAccountId: number;
   let staffPrimaryActiveRole: string;
 
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staffPrimary']);
+
   beforeAll(async () => {
     if ((process.env.AI_PROVIDER_MODE ?? '').trim().toLowerCase() !== 'remote') {
       throw new Error('RUN_REAL_AI_E2E=true 时必须设置 AI_PROVIDER_MODE=remote');
@@ -223,8 +232,12 @@ REAL_AI_DESCRIBE('真实 Qwen generate 闭环（受控 e2e）', () => {
     dataSource = apiApp.get(DataSource);
     await workerRuntime.start();
 
-    await cleanupTestAccounts(dataSource);
-    await seedTestAccounts({ dataSource, includeKeys: ['staffPrimary'] });
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'ai-qwen-generate-real.e2e beforeAll',
+      residue: { accounts: residueAccounts },
+    });
+    await seedTestAccounts({ dataSource, includeKeys: ['staffPrimary'], ownership });
     staffPrimaryToken = await login({
       app: apiApp,
       loginName: testAccountsConfig.staffPrimary.loginName,
@@ -244,12 +257,23 @@ REAL_AI_DESCRIBE('真实 Qwen generate 闭环（受控 e2e）', () => {
   }, 120000);
 
   afterAll(async () => {
-    if (workerApp) {
-      await workerApp.close();
-    }
-    if (apiApp) {
-      await apiApp.close();
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'ai-qwen-generate-real.e2e afterAll',
+          owned: ownership,
+          residue: { accounts: residueAccounts },
+        }),
+      closeApp: async () => {
+        if (workerApp) {
+          await workerApp.close();
+        }
+        if (apiApp) {
+          await apiApp.close();
+        }
+      },
+    });
   });
 
   it('应完成 queueAiGenerate 到 worker_completed 的真实 qwen 闭环', async () => {
@@ -429,6 +453,9 @@ REAL_AI_AUTH_FAIL_DESCRIBE('真实 Qwen generate 鉴权失败分类（受控 e2e
   let staffPrimaryActiveRole: string;
   let originalQwenApiKey: string | undefined;
 
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staffPrimary']);
+
   beforeAll(async () => {
     if ((process.env.AI_PROVIDER_MODE ?? '').trim().toLowerCase() !== 'remote') {
       throw new Error('RUN_REAL_AI_AUTH_FAIL_E2E=true 时必须设置 AI_PROVIDER_MODE=remote');
@@ -454,8 +481,12 @@ REAL_AI_AUTH_FAIL_DESCRIBE('真实 Qwen generate 鉴权失败分类（受控 e2e
     dataSource = apiApp.get(DataSource);
     await workerRuntime.start();
 
-    await cleanupTestAccounts(dataSource);
-    await seedTestAccounts({ dataSource, includeKeys: ['staffPrimary'] });
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'ai-qwen-generate-auth-fail.e2e beforeAll',
+      residue: { accounts: residueAccounts },
+    });
+    await seedTestAccounts({ dataSource, includeKeys: ['staffPrimary'], ownership });
     staffPrimaryToken = await login({
       app: apiApp,
       loginName: testAccountsConfig.staffPrimary.loginName,
@@ -475,13 +506,26 @@ REAL_AI_AUTH_FAIL_DESCRIBE('真实 Qwen generate 鉴权失败分类（受控 e2e
   }, 120000);
 
   afterAll(async () => {
-    process.env.QWEN_API_KEY = originalQwenApiKey;
-    if (workerApp) {
-      await workerApp.close();
-    }
-    if (apiApp) {
-      await apiApp.close();
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'ai-qwen-generate-auth-fail.e2e afterAll',
+          owned: ownership,
+          residue: { accounts: residueAccounts },
+        }),
+      finalize: () => {
+        process.env.QWEN_API_KEY = originalQwenApiKey;
+      },
+      closeApp: async () => {
+        if (workerApp) {
+          await workerApp.close();
+        }
+        if (apiApp) {
+          await apiApp.close();
+        }
+      },
+    });
   });
 
   it('应落 failed 且归类为 ai_provider_auth_failed', async () => {

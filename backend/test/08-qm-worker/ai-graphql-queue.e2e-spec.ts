@@ -21,7 +21,13 @@ import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { login } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import { createOwnedResourceLedger, runGuardedSpecCleanup } from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 type FinalJobState = 'completed' | 'failed';
 
@@ -427,6 +433,9 @@ describe('AI GraphQL 队列入口与 Worker 联动（e2e）', () => {
   let guestPrimaryToken: string;
   let aiWorkerMock: MockAiWorkerService;
 
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staffPrimary', 'admin', 'guestPrimary']);
+
   beforeAll(async () => {
     initGraphQLSchema();
 
@@ -450,10 +459,15 @@ describe('AI GraphQL 队列入口与 Worker 联动（e2e）', () => {
     dataSource = apiApp.get(DataSource);
     aiWorkerMock = workerApp.get(AiWorkerService);
 
-    await cleanupTestAccounts(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'ai-graphql-queue.e2e beforeAll',
+      residue: { accounts: residueAccounts },
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['staffPrimary', 'admin', 'guestPrimary'],
+      ownership,
     });
     staffPrimaryToken = await login({
       app: apiApp,
@@ -495,13 +509,23 @@ describe('AI GraphQL 队列入口与 Worker 联动（e2e）', () => {
   }, 60000);
 
   afterAll(async () => {
-    await cleanupTestAccounts(dataSource);
-    if (workerApp) {
-      await workerApp.close();
-    }
-    if (apiApp) {
-      await apiApp.close();
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'ai-graphql-queue.e2e afterAll',
+          owned: ownership,
+          residue: { accounts: residueAccounts },
+        }),
+      closeApp: async () => {
+        if (workerApp) {
+          await workerApp.close();
+        }
+        if (apiApp) {
+          await apiApp.close();
+        }
+      },
+    });
   });
 
   it('GraphQL queueAiGenerate 成功入队应返回 queued 并写入 queued 记录', async () => {

@@ -346,7 +346,12 @@ describe('正式案例更正与普通编辑隔离 (V-S6)', () => {
       }),
     );
     caseModelId = savedModel.id;
-    recordOwnedResource(ownership, 'equipmentModel', caseModelId);
+    recordOwnedResource(ownership, 'equipmentModel', caseModelId, {
+      modelCode: 'E2E-CASE',
+      modelName: '案例更正链路机型',
+      enabled: true,
+      sortOrder: 1,
+    });
 
     const engineerAccountId = await getAccountIdByLoginName(
       dataSource,

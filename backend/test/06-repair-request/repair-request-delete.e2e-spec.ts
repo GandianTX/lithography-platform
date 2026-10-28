@@ -9,7 +9,19 @@ import { App } from 'supertest/types';
 import { DataSource, Repository } from 'typeorm';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  type ResidueEquipmentModelFingerprint,
+  type ResidueRepairRequestFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 const DELETE_REPAIR_REQUEST_MUTATION = `
   mutation DeleteMyRepairRequest($id: Int!) {
@@ -23,6 +35,64 @@ const MY_REPAIR_REQUESTS_QUERY = `
   }
 `;
 
+/** 型号自然键（不依赖固定主键）；ID 由数据库生成后登记到本轮账本。 */
+const MODEL_CODE = 'E2E-DEL';
+const MODEL_NAME = '删除链路型号';
+
+interface RequestSeed {
+  readonly key: 'deletable' | 'accepted' | 'otherPending' | 'otherAccepted';
+  readonly requestNo: string;
+  readonly customerKey: 'guestPrimary' | 'guestSecondary';
+  readonly errorCode: string;
+  readonly faultDescription: string;
+  readonly contentMd: string;
+  readonly createdAt: string;
+  readonly accepted: boolean;
+}
+
+const REQUEST_SEEDS: readonly RequestSeed[] = [
+  {
+    key: 'deletable',
+    requestNo: 'E2E-DEL-141',
+    customerKey: 'guestPrimary',
+    errorCode: 'E-3001',
+    faultDescription: '删除成功场景',
+    contentMd: '# E2E-DEL-141',
+    createdAt: '2026-08-30T01:00:00.000Z',
+    accepted: false,
+  },
+  {
+    key: 'accepted',
+    requestNo: 'E2E-DEL-142',
+    customerKey: 'guestPrimary',
+    errorCode: 'E-3002',
+    faultDescription: '已接单删除拒绝场景',
+    contentMd: '# E2E-DEL-142',
+    createdAt: '2026-08-30T02:00:00.000Z',
+    accepted: true,
+  },
+  {
+    key: 'otherPending',
+    requestNo: 'E2E-DEL-143',
+    customerKey: 'guestSecondary',
+    errorCode: 'E-3003',
+    faultDescription: '他人未接单防探测场景',
+    contentMd: '# E2E-DEL-143',
+    createdAt: '2026-08-30T04:00:00.000Z',
+    accepted: false,
+  },
+  {
+    key: 'otherAccepted',
+    requestNo: 'E2E-DEL-144',
+    customerKey: 'guestSecondary',
+    errorCode: 'E-3004',
+    faultDescription: '他人已接单防探测场景',
+    contentMd: '# E2E-DEL-144',
+    createdAt: '2026-08-30T05:00:00.000Z',
+    accepted: true,
+  },
+];
+
 /**
  * 客户删除维修申请 e2e（core 组）
  *
@@ -32,8 +102,8 @@ const MY_REPAIR_REQUESTS_QUERY = `
  * 重复删除幂等成功；并验证软删除落库事实与列表可见性联动。
  * 业务拒绝分支的单元语义由 service/usecase 单测钉住，此处不重复展开。
  *
- * 造数固定主键（42 型号、141~144 申请），依赖 global-setup-e2e 的全表 TRUNCATE
- * 保证无冲突；各用例操作不同主键互不干扰，幂等用例对 141 顺序复用。
+ * 造数不占用固定主键：型号/申请 ID 均由数据库生成后登记到本轮账本，
+ * 用例通过语义 key 引用真实 ID；清理只删除本轮登记 ID，不再整表删除。
  */
 describe('客户删除维修申请 (e2e)', () => {
   let app: INestApplication<App>;
@@ -43,6 +113,35 @@ describe('客户删除维修申请 (e2e)', () => {
   let customerToken: string;
   let engineerToken: string;
   let adminToken: string;
+
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue([
+    'staff',
+    'guestPrimary',
+    'guestSecondary',
+    'admin',
+  ]);
+  const residueModel: ResidueEquipmentModelFingerprint = {
+    modelCode: MODEL_CODE,
+    modelName: MODEL_NAME,
+    enabled: true,
+    sortOrder: 1,
+  };
+  const residueRequests: ResidueRepairRequestFingerprint[] = REQUEST_SEEDS.map((seed) => ({
+    requestNo: seed.requestNo,
+    customerAccountLoginName: testAccountsConfig[seed.customerKey].loginName,
+    equipmentModelCode: MODEL_CODE,
+    errorCode: seed.errorCode,
+    faultDescription: seed.faultDescription,
+    contentMd: seed.contentMd,
+  }));
+
+  const requestIdByKey: Record<RequestSeed['key'], number> = {
+    deletable: 0,
+    accepted: 0,
+    otherPending: 0,
+    otherAccepted: 0,
+  };
 
   const deleteMutation = (id: number, token: string) =>
     postGql({
@@ -66,15 +165,21 @@ describe('客户删除维修申请 (e2e)', () => {
 
     await app.init();
 
-    // 清理顺序：先删申请（customer_account_id 外键 RESTRICT 指向账号），再删账号、型号
-    await requestRepository.createQueryBuilder().delete().execute();
-    await cleanupTestAccounts(dataSource);
-    await modelRepository.createQueryBuilder().delete().execute();
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'repair-request-delete.e2e beforeAll',
+      residue: {
+        accounts: residueAccounts,
+        equipmentModels: [residueModel],
+        repairRequests: residueRequests,
+      },
+    });
 
     await seedTestAccounts({
       dataSource,
       createAccountUsecase: app.get(CreateAccountUsecase),
       includeKeys: ['staff', 'guestPrimary', 'guestSecondary', 'admin'],
+      ownership,
     });
     customerToken = await login({
       app,
@@ -104,98 +209,78 @@ describe('客户删除维修申请 (e2e)', () => {
       testAccountsConfig.staff.loginName,
     );
 
-    await modelRepository.save(
+    const [model] = await modelRepository.save(
       modelRepository.create([
-        { id: 42, modelCode: 'E2E-DEL', modelName: '删除链路型号', enabled: true, sortOrder: 1 },
-      ]),
-    );
-    // 141 客户甲未接单（happy path 删除目标，幂等用例顺序复用）；
-    // 142 客户甲已接单（CONFLICT）；143 客户乙未接单 / 144 客户乙已接单（防探测）
-    await requestRepository.save(
-      requestRepository.create([
         {
-          id: 141,
-          requestNo: 'E2E-DEL-141',
-          customerAccountId,
-          equipmentModelId: 42,
-          errorCode: 'E-3001',
-          faultDescription: '删除成功场景',
-          contentMd: '# E2E-DEL-141',
-          createdAt: new Date('2026-08-30T01:00:00.000Z'),
-          isAccepted: false,
-          acceptedByEngineerAccountId: null,
-          acceptedAt: null,
-          deprecated: false,
-          deletedAt: null,
-        },
-        {
-          id: 142,
-          requestNo: 'E2E-DEL-142',
-          customerAccountId,
-          equipmentModelId: 42,
-          errorCode: 'E-3002',
-          faultDescription: '已接单删除拒绝场景',
-          contentMd: '# E2E-DEL-142',
-          createdAt: new Date('2026-08-30T02:00:00.000Z'),
-          isAccepted: true,
-          acceptedByEngineerAccountId: engineerAccountId,
-          acceptedAt: new Date('2026-08-30T03:00:00.000Z'),
-          deprecated: false,
-          deletedAt: null,
-        },
-        {
-          id: 143,
-          requestNo: 'E2E-DEL-143',
-          customerAccountId: otherCustomerAccountId,
-          equipmentModelId: 42,
-          errorCode: 'E-3003',
-          faultDescription: '他人未接单防探测场景',
-          contentMd: '# E2E-DEL-143',
-          createdAt: new Date('2026-08-30T04:00:00.000Z'),
-          isAccepted: false,
-          acceptedByEngineerAccountId: null,
-          acceptedAt: null,
-          deprecated: false,
-          deletedAt: null,
-        },
-        {
-          id: 144,
-          requestNo: 'E2E-DEL-144',
-          customerAccountId: otherCustomerAccountId,
-          equipmentModelId: 42,
-          errorCode: 'E-3004',
-          faultDescription: '他人已接单防探测场景',
-          contentMd: '# E2E-DEL-144',
-          createdAt: new Date('2026-08-30T05:00:00.000Z'),
-          isAccepted: true,
-          acceptedByEngineerAccountId: engineerAccountId,
-          acceptedAt: new Date('2026-08-30T06:00:00.000Z'),
-          deprecated: false,
-          deletedAt: null,
+          modelCode: MODEL_CODE,
+          modelName: MODEL_NAME,
+          enabled: true,
+          sortOrder: 1,
         },
       ]),
     );
+    recordOwnedResource(ownership, 'equipmentModel', model.id, {
+      modelCode: MODEL_CODE,
+      modelName: MODEL_NAME,
+      enabled: true,
+      sortOrder: 1,
+    });
+
+    const customerIdByKey = {
+      guestPrimary: customerAccountId,
+      guestSecondary: otherCustomerAccountId,
+    } as const;
+
+    const savedRequests = await requestRepository.save(
+      requestRepository.create(
+        REQUEST_SEEDS.map((seed) => ({
+          requestNo: seed.requestNo,
+          customerAccountId: customerIdByKey[seed.customerKey],
+          equipmentModelId: model.id,
+          errorCode: seed.errorCode,
+          faultDescription: seed.faultDescription,
+          contentMd: seed.contentMd,
+          createdAt: new Date(seed.createdAt),
+          isAccepted: seed.accepted,
+          acceptedByEngineerAccountId: seed.accepted ? engineerAccountId : null,
+          acceptedAt: seed.accepted
+            ? new Date(new Date(seed.createdAt).getTime() + 60 * 60 * 1000)
+            : null,
+          deprecated: false,
+          deletedAt: null,
+        })),
+      ),
+    );
+    for (const request of savedRequests) {
+      const seed = REQUEST_SEEDS.find((candidate) => candidate.requestNo === request.requestNo);
+      if (seed) {
+        requestIdByKey[seed.key] = request.id;
+        recordOwnedResource(ownership, 'repairRequest', request.id, {
+          requestNo: seed.requestNo,
+          customerAccountId: customerIdByKey[seed.customerKey],
+          equipmentModelId: model.id,
+          errorCode: seed.errorCode,
+          faultDescription: seed.faultDescription,
+        });
+      }
+    }
   }, 60000);
 
   afterAll(async () => {
-    try {
-      if (dataSource && dataSource.isInitialized) {
-        await requestRepository.createQueryBuilder().delete().execute();
-        await cleanupTestAccounts(dataSource);
-        await modelRepository.createQueryBuilder().delete().execute();
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      if (app) {
-        try {
-          await app.close();
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
-        }
-      }
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'repair-request-delete.e2e afterAll',
+          owned: ownership,
+          residue: {
+            accounts: residueAccounts,
+            equipmentModels: [residueModel],
+            repairRequests: residueRequests,
+          },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   describe('端点鉴权（守卫挂载回归）', () => {
@@ -203,14 +288,14 @@ describe('客户删除维修申请 (e2e)', () => {
       const response = await postGql({
         app,
         query: DELETE_REPAIR_REQUEST_MUTATION,
-        variables: { id: 141 },
+        variables: { id: requestIdByKey.deletable },
       }).expect(200);
       expect(response.body.errors).toHaveLength(1);
       expect(response.body.errors[0].extensions.code).toBe('UNAUTHENTICATED');
     });
 
     it('ENGINEER 应返回 FORBIDDEN（requiredRoles 仅 CUSTOMER）', async () => {
-      const response = await deleteMutation(141, engineerToken).expect(200);
+      const response = await deleteMutation(requestIdByKey.deletable, engineerToken).expect(200);
       expect(response.body.errors).toHaveLength(1);
       expect(response.body.errors[0].extensions.code).toBe('FORBIDDEN');
       expect(response.body.errors[0].extensions.details).toMatchObject({
@@ -220,7 +305,7 @@ describe('客户删除维修申请 (e2e)', () => {
     });
 
     it('SUPER_ADMIN 应返回 FORBIDDEN（裁定 2：超管不以客户身份删除）', async () => {
-      const response = await deleteMutation(141, adminToken).expect(200);
+      const response = await deleteMutation(requestIdByKey.deletable, adminToken).expect(200);
       expect(response.body.errors).toHaveLength(1);
       expect(response.body.errors[0].extensions.code).toBe('FORBIDDEN');
       expect(response.body.errors[0].extensions.details).toMatchObject({
@@ -232,15 +317,15 @@ describe('客户删除维修申请 (e2e)', () => {
 
   describe('业务语义（裁定 5）', () => {
     it('删除本人未接单申请成功，落库为软删除且从列表消失', async () => {
-      const response = await deleteMutation(141, customerToken).expect(200);
+      const response = await deleteMutation(requestIdByKey.deletable, customerToken).expect(200);
 
       expect(response.body.errors).toBeUndefined();
       expect(response.body.data.deleteMyRepairRequest).toEqual({
-        id: 141,
+        id: requestIdByKey.deletable,
         requestNo: 'E2E-DEL-141',
       });
 
-      const row = await requestRepository.findOne({ where: { id: 141 } });
+      const row = await requestRepository.findOne({ where: { id: requestIdByKey.deletable } });
       expect(row).not.toBeNull();
       expect(row!.deprecated).toBe(true);
       expect(row!.deletedAt).not.toBeNull();
@@ -255,16 +340,16 @@ describe('客户删除维修申请 (e2e)', () => {
       }).expect(200);
       expect(list.body.errors).toBeUndefined();
       const ids = list.body.data.myRepairRequests.items.map((item: { id: number }) => item.id);
-      expect(ids).not.toContain(141);
-      expect(ids).toContain(142);
+      expect(ids).not.toContain(requestIdByKey.deletable);
+      expect(ids).toContain(requestIdByKey.accepted);
     });
 
     it('重复删除同一申请幂等成功，返回与首次一致的结果', async () => {
-      const response = await deleteMutation(141, customerToken).expect(200);
+      const response = await deleteMutation(requestIdByKey.deletable, customerToken).expect(200);
 
       expect(response.body.errors).toBeUndefined();
       expect(response.body.data.deleteMyRepairRequest).toEqual({
-        id: 141,
+        id: requestIdByKey.deletable,
         requestNo: 'E2E-DEL-141',
       });
     });
@@ -276,26 +361,27 @@ describe('客户删除维修申请 (e2e)', () => {
       expect(response.body.errors[0].extensions.errorCode).toBe('REPAIR_REQUEST_NOT_FOUND');
     });
 
-    it.each([
-      [143, '他人未接单'],
-      [144, '他人已接单'],
-    ])('删除%s的申请统一返回 NOT_FOUND（防探测，不泄露存在性与状态）', async (otherRequestId) => {
-      const response = await deleteMutation(otherRequestId, customerToken).expect(200);
+    it.each(['otherPending', 'otherAccepted'] as const)(
+      '删除他人%s的申请统一返回 NOT_FOUND（防探测，不泄露存在性与状态）',
+      async (key) => {
+        const otherRequestId = requestIdByKey[key];
+        const response = await deleteMutation(otherRequestId, customerToken).expect(200);
 
-      expect(response.body.errors[0].extensions.code).toBe('NOT_FOUND');
-      expect(response.body.errors[0].extensions.errorCode).toBe('REPAIR_REQUEST_NOT_FOUND');
-      // 防探测基准：他人可删除状态的申请也不被误删
-      const row = await requestRepository.findOne({ where: { id: otherRequestId } });
-      expect(row!.deprecated).toBe(false);
-    });
+        expect(response.body.errors[0].extensions.code).toBe('NOT_FOUND');
+        expect(response.body.errors[0].extensions.errorCode).toBe('REPAIR_REQUEST_NOT_FOUND');
+        // 防探测基准：他人可删除状态的申请也不被误删
+        const row = await requestRepository.findOne({ where: { id: otherRequestId } });
+        expect(row!.deprecated).toBe(false);
+      },
+    );
 
     it('删除本人已接单申请返回 CONFLICT 且落库未变（接单/删除互斥）', async () => {
-      const response = await deleteMutation(142, customerToken).expect(200);
+      const response = await deleteMutation(requestIdByKey.accepted, customerToken).expect(200);
 
       expect(response.body.errors[0].extensions.code).toBe('CONFLICT');
       expect(response.body.errors[0].extensions.errorCode).toBe('REPAIR_REQUEST_ALREADY_ACCEPTED');
 
-      const row = await requestRepository.findOne({ where: { id: 142 } });
+      const row = await requestRepository.findOne({ where: { id: requestIdByKey.accepted } });
       expect(row!.deprecated).toBe(false);
       expect(row!.deletedAt).toBeNull();
       expect(row!.isAccepted).toBe(true);

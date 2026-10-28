@@ -8,7 +8,13 @@ import { App } from 'supertest/types';
 import { DataSource } from 'typeorm';
 import { executeGql, login, postGql } from '../utils/e2e-graphql-utils';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import { createOwnedResourceLedger, runGuardedSpecCleanup } from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 const EQUIPMENT_MODELS_QUERY = 'query { equipmentModels { id modelCode modelName } }';
 
@@ -18,8 +24,18 @@ const CREATE_REPAIR_REQUEST_MUTATION = `
   }
 `;
 
+/**
+ * 拒绝路径不会进入业务写入，型号只需满足 DTO 形状；
+ * 刻意使用不存在的 ID，避免任何“固定小 ID 一定存在”的隐含依赖。
+ */
+const NON_EXISTENT_EQUIPMENT_MODEL_ID = 999999;
+
 const CREATE_REPAIR_REQUEST_VARIABLES = {
-  input: { equipmentModelId: 1, errorCode: 'E-2001', faultDescription: '端点鉴权 e2e' },
+  input: {
+    equipmentModelId: NON_EXISTENT_EQUIPMENT_MODEL_ID,
+    errorCode: 'E-2001',
+    faultDescription: '端点鉴权 e2e',
+  },
 };
 
 /**
@@ -34,6 +50,8 @@ describe('维修申请端点鉴权 (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
   let createAccountUsecase: CreateAccountUsecase;
+  let ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staff', 'admin', 'guestPrimary']);
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -50,26 +68,36 @@ describe('维修申请端点鉴权 (e2e)', () => {
   }, 30000);
 
   afterAll(async () => {
-    try {
-      if (dataSource && dataSource.isInitialized) {
-        await cleanupTestAccounts(dataSource);
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      if (app) {
-        try {
-          await app.close();
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
-        }
-      }
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'repair-request-auth.e2e afterAll',
+          owned: ownership,
+          residue: { accounts: residueAccounts },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   beforeEach(async () => {
-    await cleanupTestAccounts(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'repair-request-auth.e2e beforeEach',
+      owned: ownership,
+      residue: { accounts: residueAccounts },
+    });
+    ownership = createOwnedResourceLedger();
+  });
+
+  afterEach(async () => {
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'repair-request-auth.e2e afterEach',
+      owned: ownership,
+      residue: { accounts: residueAccounts },
+    });
+    ownership = createOwnedResourceLedger();
   });
 
   const expectForbidden = (error: unknown, expectedUserRoles: string[]): void => {
@@ -116,6 +144,7 @@ describe('维修申请端点鉴权 (e2e)', () => {
         dataSource,
         createAccountUsecase,
         includeKeys: ['staff', 'admin'],
+        ownership,
       });
       engineerToken = await login({
         app,
@@ -182,6 +211,7 @@ describe('维修申请端点鉴权 (e2e)', () => {
         dataSource,
         createAccountUsecase,
         includeKeys: ['guestPrimary'],
+        ownership,
       });
       customerToken = await login({
         app,

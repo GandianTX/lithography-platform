@@ -18,7 +18,17 @@ import { DataSource } from 'typeorm';
 import { executeGql as executeGqlUtils } from '../utils/e2e-graphql-utils';
 // 导入全局测试账户工具
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  updateOwnedExpectation,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 /**
  * 测试用的 GraphQL Resolver
@@ -110,6 +120,8 @@ describe('RolesGuard (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
   let createAccountUsecase: CreateAccountUsecase;
+  let ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staff', 'admin', 'guestPrimary', 'guest']);
 
   beforeAll(async () => {
     // 初始化 GraphQL Schema
@@ -129,30 +141,37 @@ describe('RolesGuard (e2e)', () => {
   }, 30000);
 
   afterAll(async () => {
-    try {
-      // 检查数据库连接状态，只有在连接有效时才进行清理
-      if (dataSource && dataSource.isInitialized) {
-        await cleanupTestAccounts(dataSource);
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      // 确保应用正确关闭，添加延迟以允许 WebSocket 服务器优雅关闭
-      if (app) {
-        try {
-          await app.close();
-          // 给 WebSocket 服务器一些时间来完成清理
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
-        }
-      }
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'roles-guard.e2e afterAll',
+          owned: ownership,
+          residue: { accounts: residueAccounts },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
-  // 全局清库
+  // 每个用例结束精确回收本轮账号；下一用例开始前再按完整指纹兜底残留。
   beforeEach(async () => {
-    await cleanupTestAccounts(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'roles-guard.e2e beforeEach',
+      owned: ownership,
+      residue: { accounts: residueAccounts },
+    });
+    ownership = createOwnedResourceLedger();
+  });
+
+  afterEach(async () => {
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'roles-guard.e2e afterEach',
+      owned: ownership,
+      residue: { accounts: residueAccounts },
+    });
+    ownership = createOwnedResourceLedger();
   });
 
   /**
@@ -198,7 +217,12 @@ describe('RolesGuard (e2e)', () => {
     let staffToken: string;
 
     beforeEach(async () => {
-      await seedTestAccounts({ dataSource, createAccountUsecase, includeKeys: ['staff'] });
+      await seedTestAccounts({
+        dataSource,
+        createAccountUsecase,
+        includeKeys: ['staff'],
+        ownership,
+      });
       staffToken = await loginUser(
         testAccountsConfig.staff.loginName,
         testAccountsConfig.staff.loginPassword,
@@ -231,6 +255,7 @@ describe('RolesGuard (e2e)', () => {
         dataSource,
         createAccountUsecase,
         includeKeys: ['staff', 'admin'],
+        ownership,
       });
       staffToken = await loginUser(
         testAccountsConfig.staff.loginName,
@@ -268,6 +293,7 @@ describe('RolesGuard (e2e)', () => {
         dataSource,
         createAccountUsecase,
         includeKeys: ['staff', 'guestPrimary'],
+        ownership,
       });
       staffToken = await loginUser(
         testAccountsConfig.staff.loginName,
@@ -340,7 +366,12 @@ describe('RolesGuard (e2e)', () => {
     let guestToken: string;
 
     beforeEach(async () => {
-      await seedTestAccounts({ dataSource, createAccountUsecase, includeKeys: ['guest'] });
+      await seedTestAccounts({
+        dataSource,
+        createAccountUsecase,
+        includeKeys: ['guest'],
+        ownership,
+      });
       guestToken = await loginUser(
         testAccountsConfig.guest.loginName,
         testAccountsConfig.guest.loginPassword,
@@ -364,6 +395,7 @@ describe('RolesGuard (e2e)', () => {
         dataSource,
         createAccountUsecase,
         includeKeys: ['staff', 'guest'],
+        ownership,
       });
       guestToken = await loginUser(
         testAccountsConfig.guest.loginName,
@@ -410,6 +442,8 @@ describe('RolesGuard (e2e)', () => {
       expect(account).toBeDefined();
 
       await userInfoRepository.update({ accountId: account!.id }, { accessGroup: [] });
+      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+      updateOwnedExpectation(ownership, 'account', account!.id, { accessGroup: [] });
 
       const response = await executeQuery('query { staffQuery }', guestToken).expect(200);
 

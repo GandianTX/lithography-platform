@@ -1,9 +1,10 @@
 ## 关联任务
 
-- 模块：PR0 / PR0a，资料采集数据库与公共接口前置建设
-- 当前状态：A 侧实现及本地验收完成，已针对 B 的 Review 补齐增量迁移修复，等待 B 复审及独立运行签收
-- 已核验交付 SHA：d4535bc2d18a833f52d65ef361a7f2d3f9d9b8e2；实现修复提交为 b3b6f9a7df56f2fb49274fa4af3c78b7c2e50b5b。后续若仅补交接文档，以新的 PR head 及其 CI 为准
-- 本 PR 为普通 PR；B 签收、必要 CI 和 Review 完成之前不合并
+- 模块：PR0 / PR0a，资料采集数据库与公共接口前置建设。
+- 当前状态：A01/A04 修复及 D01/E01 本地收尾已执行完成：一轮 core 625项通过、39样例、KEEP前后不变及正常零残留；等待新候选交付、独立复核和 B 本人验收。
+- 本地候选：`f39a8f9b2741da226f1136c0621d28641692bc2f` + 未提交及新增修复文件。**此旧 SHA 单独不包含修复；提交推送后必须在交付消息提供新完整 SHA。**
+- 当前 PR 继续使用共享 fork `GandianTX/lithography-platform` 的 #1，base `main` / head `feat/data-collection-core`。本轮未更新远端正文、未核验新远端 head/CI。
+- B 本人独立签收、新候选必要 CI 和 Review 完成前不合并；A/执行 AI 不代签、不自行合并。
 
 ## 改动内容
 
@@ -14,6 +15,7 @@
 - 实现两类草稿、私有单附件、送审冻结、退回重提、审核发布。
 - 实现本组织参考资料读取及正式案例更正，保留管理员原有资料创建和上传能力。
 - 修复 retained-only 清理生成空 WHERE 的问题，并补齐失败收尾、残留恢复及引用闭包回归测试。
+- 移除会整表删除 `base_user_account` / `base_user_info` / `organization_membership` 的 `cleanupTestAccounts` 导出，迁移 13 个直接消费者（9 个 core + 3 个外围 + register 规格）为“真实 ID 账本 + 双门禁 + 残留指纹 + 统一收尾”，并新增第三/四类资源（第三方绑定、验证记录、维修申请、工程师回复）的归属收集、引用闭包与固定顺序精确删除。
 - 针对 [B 的 Review](https://github.com/GandianTX/lithography-platform/pull/1#pullrequestreview-5646340531)，新增正式增量迁移入口 migration:status / migration:run / migration:verify，明确配置和目标，只执行 pending 迁移，不清表、不执行 synchronize 或 Mock Seed。
 - 补齐迁移历史与结构预检、关键索引/外键有序列映射、MySQL 部分 DDL 失败诊断及恢复说明；主因、解锁和关闭失败均可见，收尾失败不提前输出最终成功。
 
@@ -38,52 +40,38 @@
 - 已验证空库迁移、旧十四条加新增十条的升级演练；另在带合成旧资料的旧库副本上执行正式增量入口，历史 14→24，再次执行 0 条，核对旧正文、文件引用、软删事实保留及组织/入库方式回填。
 - 同名索引或外键被改列的旧库会在升级写入前拒绝，历史保持 14 条，不自动修复错误结构后放行。
 - MySQL 多步 DDL 失败不保证整体回滚；失败后保留现场，按实际历史/结构及备份恢复流程处理，不自动 down、清历史或盲目重试。
-- 已完整执行两轮 Seed，并核对非 Mock 合成记录逐字段不变。
+- 历史验收中已完整执行两轮 Seed，并核对非 Mock 合成记录逐字段不变；本轮不重复Seed或用其代替core保留核验。
 
 ## A 侧实际验证
 
-运行时：Node 22.19.0。
-实库验收使用独立临时 MySQL 8.0.46 / Redis，未清理共享或业务环境；core 关闭全库 TRUNCATE，夹具清理显式授权。
+执行使用 Node **22.19.0**。最新运行及候选指纹见[交付收尾执行回执](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-B审查core清理安全修复计划-20261026/A01-A04交付收尾与KEEP补证执行回执-20261028.md)。该链接须在本地材料实际提交推送后核对可读性。
 
-- [x] 后端类型检查、适用静态规则和构建通过
-- [x] 后端单测：109 suites passed、1 skipped；1332 tests passed、31 skipped
-- [x] 默认条件跳过的 31 项迁移集成另在隔离实库全部通过
-- [x] 前端格式、lint 和构建通过
-- [x] 前端单测：112 files / 1557 tests
-- [x] core E2E：41 个规格 / 557 tests，0 failed、0 skipped
-- [x] 空库迁移、旧库升级演练、正式旧库副本增量升级及 Seed 非 Mock 保留验证
-- [x] 实际 fixture 部分失败收尾、残留恢复及连续运行验证
-- [x] production 判定下真实 HTTP 错误类别验证
-- [x] 资料/案例独立场景及完整 2 场景、39 条样例核对，同库连续两轮通过
-- [x] 迁移关键断言负对照：临时绕过列比较或提前成功时测试失败，恢复后通过
-- [x] 未提交密钥、真实资料、原始日志、数据库或构建产物
-- [ ] B 独立复现并签收
-- [x] d4535bc 的 Backend、Frontend、Frontend unit (Windows) 三项 CI 均通过；后续新提交须另核对对应 CI
-- [ ] Review 意见处理完毕并完成复审
+- [x] A01：显式分页/字段加密/mock 配置校验并同源传递，缺失/空白拒绝，不依赖私人 env。
+- [x] A04：子运行 null、信号、启动/等待错误等未确认结束时不认领、不登记、不 DROP；正常明确非零仍允许凭唯一匹配创建凭据交接。
+- [x] A01/A04 局部负对照在临时源码/精确边界验证；恢复后通过，不修改工作区实现。
+- [x] 前次独立终审实跑：后端 1332 项取得通过结果，31 项迁移实库专项条件跳过；首轮 6 项本机监听被沙箱拒绝后定向重跑 6/6，通过。不是把首轮失败写成整组 exit 0。
+- [x] 前次独立终审实跑：前端 112 文件/1557 项通过，构建通过；后端 build/tools/spec 三套类型检查通过。被测源码、lock 未变，按命题沿用，不重复宣称新运行。
+- [x] 本轮最终 core：Node22.19.0、独占非默认端口实例、无私人env副本、全局清库关闭，**48规格/625 passed，0 failed/0 skipped，runner exit0，一轮**；同轮39样例（A26/B13）。
+- [x] E01：运行前后全部24表逐字段摘要一致，5个KEEP文件及完整存储文件清单一致；正常数据库/文件夹具和探针库残留0，检查exit0。前后快照SHA-256相同，详见收尾回执。
+- [x] 既有14条 accepted Migration 未改；只新增十条迁移，九表及参考资料扩展属于已授权设计。
+- [x] 原正式旧库增量升级、备份恢复及相关迁移验收事实保留；不冒称默认跳过的31项本轮已实库执行，也不重新覆盖 B 既有签收事实。
+- [ ] B 针对新完整候选独立复现并签收。
+- [ ] 新候选必要 CI 与 Review；旧 d4535bc 的历史 CI 不代替当前候选。
 
-注：39 是请求响应样例数量，不是 Jest 测试数量。
-上述为 A 的实际本地结果，本地通过不等于 CI 已通过，也不等于 B 已验收。本次已核验的是 d4535bc 三项 CI，修复前 68a78… 的绿色不作为替代；本次验收后的修改仅为文档整理，代码/测试/依赖指纹未变，沿用依据见文档整理回执。
-旧 PR3 专用 check:entity-scope 禁止 Entity 变化，不适用于本 PR 已授权九表及参考资料扩展；未将该脚本误报为通过，详细说明见终审报告。
+39 是请求响应样例数，不是 Jest 测试数。旧 557/600/622 等数字及双跑结果仅作为对应历史候选证据，不写成当前625项候选已双跑。
+
+本轮新实例不接触共享/真实环境；此前默认3306/6379事故仍由实例拥有者另行处置，新的隔离验证不证明事故已恢复。
 
 ## 交接与验收入口
 
-从以下仓库文档入口阅读最新完成回执和 B 独立验收说明：
+- [当前交付说明](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-复审交付材料-20261026/README.md)
+- [B当前执行清单](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-复审交付材料-20261026/B独立验收执行清单.md)
+- [本轮收尾回执](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-B审查core清理安全修复计划-20261026/A01-A04交付收尾与KEEP补证执行回执-20261028.md)
+- [正式旧库增量升级说明](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/增量升级操作说明-20261026.md)
 
-[数据库文档入口](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/README.md)
+B 只接收 A 实际推送后的新完整 SHA，在自己的 Linux/WSL 独占可丢弃环境，用完整显式配置预检后，预置 KEEP、完整 core **一轮**并同轮导出39样例，再比较非夹具/文件及正常夹具残留。不要以旧 d4535bc、只有 f39a8f9 的提交、私人 env 或原生 Windows PID 事实作为本轮运行依据。
 
-- [完整独立终审报告](https://github.com/GandianTX/lithography-platform/blob/b3b6f9a7df56f2fb49274fa4af3c78b7c2e50b5b/docs/database/PR0-最终独立终审-20261026/完整PR独立终审报告-20261026.md)
-- [文档整理回执](https://github.com/GandianTX/lithography-platform/blob/b3b6f9a7df56f2fb49274fa4af3c78b7c2e50b5b/docs/database/PR0-复审交付材料-20261026/文档整理回执.md)
-
-B 需要在约定候选版本、自己的隔离环境中：
-
-1. 确认最新完整 SHA；已有旧库先按正式 status → run → verify → run 升级，核对旧数据/回填及再次执行 0 条，不能用清库演练替代。
-2. 按交接入口中的默认执行清单运行现有完整 core 组（当前 41 规格/557 项），或记录双方既有明确 P1 清单；完整 core 已包含两条样例链，无需再为同次签收重复运行。只跑两条样例不能替代安全门禁。
-3. 跑通普通资料链：草稿、附件、送审、退回、重提、发布、下载。
-4. 跑通案例链：送审、发布、结构化读取、正式案例更正。
-5. 核对退出码 0、2 个完整场景、39 条样例。
-6. 记录实际 SHA、环境、执行结果及疑问，并明确签收结论。
-
-首次空库与已有旧库采用不同初始化/升级流程；具体命令、配置确认、Redis 清理风险和失败恢复以交接说明为准，不复制 A 的临时端口或依赖其 /tmp 文件。
+受控启动器依赖 Linux `/proc`；Windows 用户先进入 WSL。A02 执行参数自动白名单、A03 只读预检关闭诊断为后续 P3；本期约定只运行 core/明确本地规格，不能说软件已自动封锁全部范围外参数。
 
 ## 本 PR 不包含
 

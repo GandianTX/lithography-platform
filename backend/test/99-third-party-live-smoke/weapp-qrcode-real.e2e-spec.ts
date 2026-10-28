@@ -10,7 +10,18 @@ import { TokenHelper } from '@modules/auth/token.helper';
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { CreateAccountUsecase } from '@usecases/account/create-account.usecase';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  type ResidueVerificationRecordFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 /**
  * GraphQL 请求辅助函数
@@ -156,6 +167,33 @@ describe('WeApp 二维码 Smoke（真实第三方）', () => {
   let guestAccountId: number;
 
   const audience = (process.env.WEAPP_QRCODE_SMOKE_AUDIENCE ?? 'SSTSWEAPP').trim();
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue([
+    'staff',
+    'staffPrimary',
+    'staffSecondary',
+    'admin',
+    'guestPrimary',
+    'guestSecondary',
+    'guest',
+    'emptyRoles',
+    'staffGuest',
+    'hybridStaff',
+    'peerAdmin',
+    'noOrgEngineer',
+    'ambiguousEngineer',
+  ]);
+  const residueVerificationRecords: ResidueVerificationRecordFingerprint[] = [
+    {
+      type: 'PASSWORD_RESET',
+      targetAccountLoginName: testAccountsConfig.guest.loginName,
+      payload: {
+        title: '密码重置二维码',
+        resetUrl: 'https://example.com/reset-password',
+        email: 'reset-qrcode@example.com',
+      },
+    },
+  ];
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -170,8 +208,15 @@ describe('WeApp 二维码 Smoke（真实第三方）', () => {
     dataSource = moduleFixture.get<DataSource>(DataSource);
     createAccountUsecase = moduleFixture.get<CreateAccountUsecase>(CreateAccountUsecase);
 
-    await cleanupTestAccounts(dataSource);
-    await seedTestAccounts({ dataSource, createAccountUsecase });
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'weapp-qrcode-real.e2e beforeAll',
+      residue: {
+        accounts: residueAccounts,
+        verificationRecords: residueVerificationRecords,
+      },
+    });
+    await seedTestAccounts({ dataSource, createAccountUsecase, ownership });
 
     staffAccessToken = await getAccessToken(
       app,
@@ -188,9 +233,19 @@ describe('WeApp 二维码 Smoke（真实第三方）', () => {
   }, 60000);
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'weapp-qrcode-real.e2e afterAll',
+          owned: ownership,
+          residue: {
+            accounts: residueAccounts,
+            verificationRecords: residueVerificationRecords,
+          },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   it('应该生成指向链接的微信小程序二维码', async () => {
@@ -232,6 +287,21 @@ describe('WeApp 二维码 Smoke（真实第三方）', () => {
     }
 
     const token = createResp.body.data.createVerificationRecord.token as string;
+    const createdRecordId = createResp.body.data.createVerificationRecord.data?.id;
+    if (createdRecordId !== undefined) {
+      recordOwnedResource(ownership, 'verificationRecord', createdRecordId, {
+        type: 'PASSWORD_RESET',
+        targetAccountId: guestAccountId,
+        subjectType: 'ACCOUNT',
+        subjectId: guestAccountId,
+        issuedByAccountId: getMyAccountId(app, staffAccessToken),
+        payload: {
+          title: '密码重置二维码',
+          resetUrl: 'https://example.com/reset-password',
+          email: 'reset-qrcode@example.com',
+        },
+      });
+    }
     expect(typeof token).toBe('string');
     expect(token.length).toBeGreaterThan(0);
 

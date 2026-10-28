@@ -125,6 +125,9 @@ const createMockDataSource = (options: {
 
   const dataSource = {
     isInitialized: true,
+    // N04：fake DataSource 必须像真实 DataSource 一样显式给出预期库，
+    // 不允许以「没有配置」为由跳过预期目标库解析。
+    options: { database: options.database },
     query: (): Promise<Array<{ current_database: string }>> => {
       state.guardQueryCalls += 1;
       return Promise.resolve([{ current_database: options.database }]);

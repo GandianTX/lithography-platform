@@ -11,10 +11,24 @@ import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-re
 import { TokenHelper } from '@src/modules/auth/token.helper';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { App } from 'supertest/types';
+import type { Response as SupertestResponse } from 'supertest';
 import { DataSource, Repository } from 'typeorm';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  updateOwnedExpectation,
+  type ResidueEquipmentModelFingerprint,
+  type ResidueRepairRequestFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 const CREATE_RESPONSE_MUTATION = `
   mutation CreateEngineerResponse($input: CreateEngineerResponseInput!) {
@@ -67,26 +81,87 @@ const ENGINEER_LIST_QUERY = `
 
 const OFFSET_PAGINATION = { mode: 'OFFSET', page: 1, pageSize: 20, withTotal: true };
 
-/** 造数固定主键：型号 43，申请 141~153（与 accept spec 的 42/131~139 分段隔离） */
-const MODEL_ID = 43;
-const REQUEST_ACCEPTED_BY_ENGINEER = 141;
-const REQUEST_NOT_ACCEPTED = 142;
-const REQUEST_DELETED = 143;
-const REQUEST_ACCEPTED_BY_OTHER = 145;
-const REQUEST_FORBIDDEN_TARGET = 146;
-const REQUEST_INVALID_INPUT_TARGET = 147;
-const REQUEST_CONCURRENT_ACCEPT = 148;
-const REQUEST_CONCURRENT_APPEND = 149;
-const REQUEST_HYBRID_ACCEPTED = 150;
-const REQUEST_WHITELIST_TARGET = 151;
-/** “追加语义”专用申请（与单次回复成功用例隔离，支持 -t 单独运行） */
-const REQUEST_APPEND_SEMANTIC = 152;
-/** “客户详情与 MINE 列表同步”专用申请（与前两个成功用例隔离） */
-const REQUEST_READ_SYNC = 153;
-/** 容量合法写入专用申请（65,535 bytes 成功落库，与超限拒绝用例隔离） */
-const REQUEST_CAPACITY_OK = 154;
-/** 容量超限拒绝专用申请（三类超限均不落库，count 恒为 0，与执行顺序无关） */
-const REQUEST_CAPACITY_OVER = 155;
+/** 型号自然键；ID 由数据库生成后登记到本轮账本。 */
+const MODEL_CODE = 'E2E-RESP';
+const MODEL_NAME = '回复型号';
+
+type RequestKey =
+  | 'acceptedByEngineer'
+  | 'notAccepted'
+  | 'deleted'
+  | 'acceptedByOther'
+  | 'forbiddenTarget'
+  | 'invalidInputTarget'
+  | 'concurrentAccept'
+  | 'concurrentAppend'
+  | 'hybridAccepted'
+  | 'whitelistTarget'
+  | 'appendSemantic'
+  | 'readSync'
+  | 'capacityOk'
+  | 'capacityOver';
+
+interface RequestSeed {
+  readonly key: RequestKey;
+  readonly requestNo: string;
+  readonly scene: string;
+  readonly acceptedBy: 'engineer' | 'other' | 'hybrid' | null;
+  readonly deprecated?: boolean;
+}
+
+const REQUEST_SEEDS: readonly RequestSeed[] = [
+  {
+    key: 'acceptedByEngineer',
+    requestNo: 'E2E-RS-141',
+    scene: '本人已接单回复成功',
+    acceptedBy: 'engineer',
+  },
+  { key: 'notAccepted', requestNo: 'E2E-RS-142', scene: '未接单状态冲突', acceptedBy: null },
+  {
+    key: 'deleted',
+    requestNo: 'E2E-RS-143',
+    scene: '已删除防探测',
+    acceptedBy: null,
+    deprecated: true,
+  },
+  { key: 'acceptedByOther', requestNo: 'E2E-RS-145', scene: '他人接单防探测', acceptedBy: 'other' },
+  { key: 'forbiddenTarget', requestNo: 'E2E-RS-146', scene: '权限拒绝', acceptedBy: null },
+  { key: 'invalidInputTarget', requestNo: 'E2E-RS-147', scene: '输入非法', acceptedBy: 'engineer' },
+  { key: 'concurrentAccept', requestNo: 'E2E-RS-148', scene: '接单与回复并发', acceptedBy: null },
+  {
+    key: 'concurrentAppend',
+    requestNo: 'E2E-RS-149',
+    scene: '同人并发追加',
+    acceptedBy: 'engineer',
+  },
+  {
+    key: 'hybridAccepted',
+    requestNo: 'E2E-RS-150',
+    scene: '混合角色回复成功',
+    acceptedBy: 'hybrid',
+  },
+  {
+    key: 'whitelistTarget',
+    requestNo: 'E2E-RS-151',
+    scene: '客户端传入归属账号被拒',
+    acceptedBy: 'engineer',
+  },
+  { key: 'appendSemantic', requestNo: 'E2E-RS-152', scene: '追加语义专用', acceptedBy: 'engineer' },
+  {
+    key: 'readSync',
+    requestNo: 'E2E-RS-153',
+    scene: '客户详情与 MINE 列表同步专用',
+    acceptedBy: 'engineer',
+  },
+  { key: 'capacityOk', requestNo: 'E2E-RS-154', scene: '容量合法写入专用', acceptedBy: 'engineer' },
+  {
+    key: 'capacityOver',
+    requestNo: 'E2E-RS-155',
+    scene: '容量超限拒绝专用',
+    acceptedBy: 'engineer',
+  },
+];
+
 const NON_EXISTENT_REQUEST_ID = 999999;
 
 /**
@@ -141,8 +216,95 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
   let hybridAccountId: number;
   let engineerNickname: string;
 
-  const createResponse = (token: string | undefined, input: Record<string, unknown>) =>
-    postGql({ app, query: CREATE_RESPONSE_MUTATION, variables: { input }, token });
+  const ownership = createOwnedResourceLedger();
+  const requestIdByKey: Record<RequestKey, number> = Object.fromEntries(
+    REQUEST_SEEDS.map((seed) => [seed.key, 0]),
+  ) as Record<RequestKey, number>;
+  const residueAccounts = buildTestAccountResidue([
+    'staff',
+    'staffSecondary',
+    'guestPrimary',
+    'admin',
+    'hybridStaff',
+  ]);
+  const residueModel: ResidueEquipmentModelFingerprint = {
+    modelCode: MODEL_CODE,
+    modelName: MODEL_NAME,
+    enabled: true,
+    sortOrder: 1,
+  };
+  const residueRequests: ResidueRepairRequestFingerprint[] = REQUEST_SEEDS.map((seed) => ({
+    requestNo: seed.requestNo,
+    customerAccountLoginName: testAccountsConfig.guestPrimary.loginName,
+    equipmentModelCode: MODEL_CODE,
+    errorCode: `E-4${seed.requestNo.split('-').pop()}`,
+    faultDescription: `${seed.scene}场景`,
+    contentMd: `# E2E-${seed.requestNo.split('-').pop()}`,
+  }));
+
+  /**
+   * R01：回复成功后立即登记真实回复 ID 与预期事实，清理不再按父申请自动扩图。
+   * 工程师账号由受控登录 Token 推导，客户取自本轮受控申请，正文/状态取自创建返回值。
+   */
+  const registerCreatedResponse = (
+    token: string | undefined,
+    input: Record<string, unknown>,
+    response: SupertestResponse,
+  ): void => {
+    const created = (
+      response.body as {
+        data?: {
+          createEngineerResponse?: {
+            id?: number;
+            responseText?: string;
+            resolutionStatus?: string;
+          };
+        };
+      }
+    )?.data?.createEngineerResponse;
+    if (!created || created.id === undefined || created.id === null) {
+      return;
+    }
+    const responseId = Number(created.id);
+    if (!Number.isInteger(responseId) || responseId <= 0) {
+      throw new Error(`回复登记失败：创建返回的回复 ID 非法（${String(created.id)}）`);
+    }
+    const engineerAccountIdByToken = new Map<string, number>([
+      [engineerToken, engineerAccountId],
+      [hybridTokenEngineer, hybridAccountId],
+    ]);
+    const engineerId = token === undefined ? undefined : engineerAccountIdByToken.get(token);
+    if (engineerId === undefined) {
+      throw new Error('回复登记失败：无法从受控登录 Token 解析本轮工程师账号');
+    }
+    recordOwnedResource(ownership, 'engineerResponse', responseId, {
+      requestId: Number(input.requestId),
+      engineerAccountId: engineerId,
+      customerAccountId,
+      responseText: String(created.responseText ?? input.responseText),
+      resolutionStatus: String(created.resolutionStatus ?? 'PENDING'),
+    });
+  };
+
+  const createResponse = (token: string | undefined, input: Record<string, unknown>) => {
+    const execute = async (status = 200): Promise<SupertestResponse> => {
+      const response = await postGql({
+        app,
+        query: CREATE_RESPONSE_MUTATION,
+        variables: { input },
+        token,
+      }).expect(status);
+      registerCreatedResponse(token, input, response);
+      return response;
+    };
+    return {
+      expect: (status: number) => execute(status),
+      then: <TResult1 = SupertestResponse, TResult2 = never>(
+        onfulfilled?: ((value: SupertestResponse) => TResult1 | PromiseLike<TResult1>) | null,
+        onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+      ): Promise<TResult1 | TResult2> => execute().then(onfulfilled, onrejected),
+    };
+  };
 
   const validInput = (requestId: number, overrides: Record<string, unknown> = {}) => ({
     requestId,
@@ -172,13 +334,6 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     expect(err.extensions.errorCode).toBe('REPAIR_REQUEST_NOT_FOUND');
   };
 
-  const cleanupBusinessRows = async (): Promise<void> => {
-    await responseRepository.createQueryBuilder().delete().execute();
-    await requestRepository.createQueryBuilder().delete().execute();
-    await cleanupTestAccounts(dataSource);
-    await modelRepository.createQueryBuilder().delete().execute();
-  };
-
   beforeAll(async () => {
     initGraphQLSchema();
 
@@ -193,12 +348,21 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     responseRepository = dataSource.getRepository(EngineerResponseEntity);
 
     await app.init();
-    await cleanupBusinessRows();
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'repair-request-response.e2e beforeAll',
+      residue: {
+        accounts: residueAccounts,
+        equipmentModels: [residueModel],
+        repairRequests: residueRequests,
+      },
+    });
 
     await seedTestAccounts({
       dataSource,
       createAccountUsecase: app.get(CreateAccountUsecase),
       includeKeys: ['staff', 'staffSecondary', 'guestPrimary', 'admin', 'hybridStaff'],
+      ownership,
     });
     engineerToken = await login({
       app,
@@ -252,6 +416,10 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     await dataSource
       .getRepository(AccountEntity)
       .update({ id: hybridAccountId }, { identityHint: IdentityTypeEnum.SUPER_ADMIN });
+    // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+    updateOwnedExpectation(ownership, 'account', hybridAccountId, {
+      identityHint: IdentityTypeEnum.SUPER_ADMIN,
+    });
     hybridTokenSuperAdmin = await login({
       app,
       loginName: testAccountsConfig.hybridStaff.loginName,
@@ -273,75 +441,81 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       audience: AudienceTypeEnum.DESKTOP,
     });
 
-    await modelRepository.save(
+    const model = await modelRepository.save(
       modelRepository.create({
-        id: MODEL_ID,
-        modelCode: 'E2E-RESP',
-        modelName: '回复型号',
+        modelCode: MODEL_CODE,
+        modelName: MODEL_NAME,
         enabled: true,
         sortOrder: 1,
       }),
     );
-
-    const buildRequest = (
-      id: number,
-      scene: string,
-      acceptedByEngineerAccountId: number | null = null,
-      options: { deprecated?: boolean } = {},
-    ) => ({
-      id,
-      requestNo: `E2E-RS-${id}`,
-      customerAccountId,
-      equipmentModelId: MODEL_ID,
-      errorCode: `E-4${id}`,
-      faultDescription: `${scene}场景`,
-      contentMd: `# E2E-${id}`,
-      createdAt: new Date('2026-09-01T01:00:00.000Z'),
-      isAccepted: acceptedByEngineerAccountId !== null,
-      acceptedByEngineerAccountId,
-      acceptedAt:
-        acceptedByEngineerAccountId === null ? null : new Date('2026-09-01T02:00:00.000Z'),
-      deprecated: options.deprecated ?? false,
-      deletedAt: options.deprecated ? new Date('2026-09-01T03:00:00.000Z') : null,
+    recordOwnedResource(ownership, 'equipmentModel', model.id, {
+      modelCode: MODEL_CODE,
+      modelName: MODEL_NAME,
+      enabled: true,
+      sortOrder: 1,
     });
 
-    await requestRepository.save(
-      requestRepository.create([
-        buildRequest(REQUEST_ACCEPTED_BY_ENGINEER, '本人已接单回复成功', engineerAccountId),
-        buildRequest(REQUEST_NOT_ACCEPTED, '未接单状态冲突'),
-        buildRequest(REQUEST_DELETED, '已删除防探测', null, { deprecated: true }),
-        buildRequest(REQUEST_ACCEPTED_BY_OTHER, '他人接单防探测', otherEngineerAccountId),
-        buildRequest(REQUEST_FORBIDDEN_TARGET, '权限拒绝'),
-        buildRequest(REQUEST_INVALID_INPUT_TARGET, '输入非法', engineerAccountId),
-        buildRequest(REQUEST_CONCURRENT_ACCEPT, '接单与回复并发'),
-        buildRequest(REQUEST_CONCURRENT_APPEND, '同人并发追加', engineerAccountId),
-        buildRequest(REQUEST_HYBRID_ACCEPTED, '混合角色回复成功', hybridAccountId),
-        buildRequest(REQUEST_WHITELIST_TARGET, '客户端传入归属账号被拒', engineerAccountId),
-        buildRequest(REQUEST_APPEND_SEMANTIC, '追加语义专用', engineerAccountId),
-        buildRequest(REQUEST_READ_SYNC, '客户详情与 MINE 列表同步专用', engineerAccountId),
-        buildRequest(REQUEST_CAPACITY_OK, '容量合法写入专用', engineerAccountId),
-        buildRequest(REQUEST_CAPACITY_OVER, '容量超限拒绝专用', engineerAccountId),
-      ]),
+    const buildRequest = (seed: RequestSeed) => {
+      const suffix = seed.requestNo.split('-').pop();
+      const acceptedByEngineerAccountId =
+        seed.acceptedBy === 'engineer'
+          ? engineerAccountId
+          : seed.acceptedBy === 'other'
+            ? otherEngineerAccountId
+            : seed.acceptedBy === 'hybrid'
+              ? hybridAccountId
+              : null;
+      return {
+        requestNo: seed.requestNo,
+        customerAccountId,
+        equipmentModelId: model.id,
+        errorCode: `E-4${suffix}`,
+        faultDescription: `${seed.scene}场景`,
+        contentMd: `# E2E-${suffix}`,
+        createdAt: new Date('2026-09-01T01:00:00.000Z'),
+        isAccepted: acceptedByEngineerAccountId !== null,
+        acceptedByEngineerAccountId,
+        acceptedAt:
+          acceptedByEngineerAccountId === null ? null : new Date('2026-09-01T02:00:00.000Z'),
+        deprecated: seed.deprecated ?? false,
+        deletedAt: seed.deprecated ? new Date('2026-09-01T03:00:00.000Z') : null,
+      };
+    };
+
+    const savedRequests = await requestRepository.save(
+      requestRepository.create(REQUEST_SEEDS.map(buildRequest)),
     );
+    for (const request of savedRequests) {
+      const seed = REQUEST_SEEDS.find((candidate) => candidate.requestNo === request.requestNo);
+      if (seed) {
+        requestIdByKey[seed.key] = request.id;
+        recordOwnedResource(ownership, 'repairRequest', request.id, {
+          requestNo: seed.requestNo,
+          customerAccountId,
+          equipmentModelId: model.id,
+          errorCode: `E-4${seed.requestNo.split('-').pop()}`,
+          faultDescription: `${seed.scene}场景`,
+        });
+      }
+    }
   }, 60000);
 
   afterAll(async () => {
-    try {
-      if (dataSource && dataSource.isInitialized) {
-        await cleanupBusinessRows();
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      if (app) {
-        try {
-          await app.close();
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
-        }
-      }
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'repair-request-response.e2e afterAll',
+          owned: ownership,
+          residue: {
+            accounts: residueAccounts,
+            equipmentModels: [residueModel],
+            repairRequests: residueRequests,
+          },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   describe('权限矩阵（拒绝路径全程不产生写入）', () => {
@@ -355,31 +529,33 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     it.each(forbiddenCases)(
       '%s 调回复被拒绝（写入口精确 ENGINEER，读权限继承不等于写权限继承）',
       async (_label, token) => {
-        const response = await createResponse(token(), validInput(REQUEST_FORBIDDEN_TARGET)).expect(
-          200,
-        );
+        const response = await createResponse(
+          token(),
+          validInput(requestIdByKey.forbiddenTarget),
+        ).expect(200);
 
         expect(response.body.errors).toHaveLength(1);
         expectForbidden(response.body.errors[0]);
         // 拒绝路径不启动写事务：目标申请无任何回复行
-        expect(await countResponses(REQUEST_FORBIDDEN_TARGET)).toBe(0);
+        expect(await countResponses(requestIdByKey.forbiddenTarget)).toBe(0);
       },
     );
 
     it('未登录调回复返回 UNAUTHENTICATED', async () => {
-      const response = await createResponse(undefined, validInput(REQUEST_FORBIDDEN_TARGET)).expect(
-        200,
-      );
+      const response = await createResponse(
+        undefined,
+        validInput(requestIdByKey.forbiddenTarget),
+      ).expect(200);
 
       expect(response.body.errors).toHaveLength(1);
       expectUnauthenticated(response.body.errors[0]);
-      expect(await countResponses(REQUEST_FORBIDDEN_TARGET)).toBe(0);
+      expect(await countResponses(requestIdByKey.forbiddenTarget)).toBe(0);
     });
 
     it('非接单人工程师调回复统一 NOT_FOUND（不泄露他人接单状态）', async () => {
       const response = await createResponse(
         otherEngineerToken,
-        validInput(REQUEST_ACCEPTED_BY_ENGINEER),
+        validInput(requestIdByKey.acceptedByEngineer),
       ).expect(200);
 
       expect(response.body.errors).toHaveLength(1);
@@ -389,7 +565,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(
         await responseRepository.count({
           where: {
-            requestId: REQUEST_ACCEPTED_BY_ENGINEER,
+            requestId: requestIdByKey.acceptedByEngineer,
             engineerAccountId: otherEngineerAccountId,
           },
         }),
@@ -401,7 +577,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     it('activeRole=ENGINEER 的合法 Token 可回复自己接单的申请', async () => {
       const response = await createResponse(
         hybridTokenEngineer,
-        validInput(REQUEST_HYBRID_ACCEPTED, { responseText: '混合角色工程师回复' }),
+        validInput(requestIdByKey.hybridAccepted, { responseText: '混合角色工程师回复' }),
       ).expect(200);
 
       expect(response.body.errors).toBeUndefined();
@@ -416,7 +592,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
         engineerNickname: hybridNickname,
       });
 
-      const rows = await responseRepository.findBy({ requestId: REQUEST_HYBRID_ACCEPTED });
+      const rows = await responseRepository.findBy({ requestId: requestIdByKey.hybridAccepted });
       expect(rows).toHaveLength(1);
       // 回复人取自可信 Session（混合账号本身），接收人取自目标申请
       expect(rows[0].engineerAccountId).toBe(hybridAccountId);
@@ -443,10 +619,13 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
         engineerToken,
         validInput(NON_EXISTENT_REQUEST_ID),
       ).expect(200);
-      const deleted = await createResponse(engineerToken, validInput(REQUEST_DELETED)).expect(200);
+      const deleted = await createResponse(
+        engineerToken,
+        validInput(requestIdByKey.deleted),
+      ).expect(200);
       const acceptedByOther = await createResponse(
         engineerToken,
-        validInput(REQUEST_ACCEPTED_BY_OTHER),
+        validInput(requestIdByKey.acceptedByOther),
       ).expect(200);
 
       const messages = [nonExistent, deleted, acceptedByOther].map(
@@ -456,10 +635,10 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       [deleted, acceptedByOther].forEach((response) => expectNotFound(response.body.errors[0]));
 
       // 两类不可访问均不产生写入，已删除申请保持未接单的软删除终态
-      expect(await countResponses(REQUEST_DELETED)).toBe(0);
-      expect(await countResponses(REQUEST_ACCEPTED_BY_OTHER)).toBe(0);
+      expect(await countResponses(requestIdByKey.deleted)).toBe(0);
+      expect(await countResponses(requestIdByKey.acceptedByOther)).toBe(0);
       const deletedRow = await requestRepository.findOneOrFail({
-        where: { id: REQUEST_DELETED },
+        where: { id: requestIdByKey.deleted },
       });
       expect(deletedRow).toMatchObject({
         deprecated: true,
@@ -469,20 +648,21 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     });
 
     it('回复未接单的申请返回 CONFLICT(NOT_ACCEPTED)，details 只含 requestId', async () => {
-      const response = await createResponse(engineerToken, validInput(REQUEST_NOT_ACCEPTED)).expect(
-        200,
-      );
+      const response = await createResponse(
+        engineerToken,
+        validInput(requestIdByKey.notAccepted),
+      ).expect(200);
 
       expect(response.body.errors).toHaveLength(1);
       const error = response.body.errors[0];
       expect(error.extensions.code).toBe('CONFLICT');
       expect(error.extensions.errorCode).toBe('REPAIR_REQUEST_NOT_ACCEPTED');
       expect(error.extensions.errorMessage).toBe('维修申请尚未接单，请先接单后回复');
-      expect(error.extensions.details).toEqual({ requestId: REQUEST_NOT_ACCEPTED });
+      expect(error.extensions.details).toEqual({ requestId: requestIdByKey.notAccepted });
       // 错误响应不含归属类身份字段
       expect(JSON.stringify(error)).not.toContain('engineerAccountId');
       expect(JSON.stringify(error)).not.toContain('customerAccountId');
-      expect(await countResponses(REQUEST_NOT_ACCEPTED)).toBe(0);
+      expect(await countResponses(requestIdByKey.notAccepted)).toBe(0);
     });
   });
 
@@ -493,7 +673,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     ])('回复正文为%s时返回 BAD_USER_INPUT', async (_label, responseText) => {
       const response = await createResponse(
         engineerToken,
-        validInput(REQUEST_INVALID_INPUT_TARGET, { responseText }),
+        validInput(requestIdByKey.invalidInputTarget, { responseText }),
       ).expect(200);
 
       expect(response.body.errors).toHaveLength(1);
@@ -501,7 +681,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(response.body.errors[0].extensions.errorCode).toBe(
         'INPUT_NORMALIZE_REQUIRED_TEXT_EMPTY',
       );
-      expect(await countResponses(REQUEST_INVALID_INPUT_TARGET)).toBe(0);
+      expect(await countResponses(requestIdByKey.invalidInputTarget)).toBe(0);
     });
 
     it.each([0, -1])('requestId=%i 在装配层被拒（正整数约束）', async (requestId) => {
@@ -517,7 +697,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     it('客户端试图传入归属账号 ID 在契约层被拒绝（归属不可由客户端指定）', async () => {
       const response = await createResponse(
         engineerToken,
-        validInput(REQUEST_WHITELIST_TARGET, {
+        validInput(requestIdByKey.whitelistTarget, {
           engineerAccountId: otherEngineerAccountId,
           customerAccountId: hybridAccountId,
         }),
@@ -538,7 +718,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
         'Field "customerAccountId" is not defined by type "CreateEngineerResponseInput"',
       );
       // 目标申请不因被构造的越权输入产生任何回复
-      expect(await countResponses(REQUEST_WHITELIST_TARGET)).toBe(0);
+      expect(await countResponses(requestIdByKey.whitelistTarget)).toBe(0);
     });
 
     it('输入校验先于目标查询：非法正文 + 不存在的申请仍是 BAD_USER_INPUT（不泄露存在性）', async () => {
@@ -557,7 +737,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     it('非法处理状态被 GraphQL 运行时 enum 校验拦截，不产生写入', async () => {
       const response = await createResponse(
         engineerToken,
-        validInput(REQUEST_INVALID_INPUT_TARGET, { resolutionStatus: 'DONE' }),
+        validInput(requestIdByKey.invalidInputTarget, { resolutionStatus: 'DONE' }),
       ).expect(400);
 
       expect(response.body.errors).toHaveLength(1);
@@ -565,7 +745,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(JSON.stringify(response.body.errors)).toContain('resolutionStatus');
       // 值域拦截发生在执行之前，不得误报为系统故障
       expect(response.body.errors[0].extensions.code).not.toBe('INTERNAL_SERVER_ERROR');
-      expect(await countResponses(REQUEST_INVALID_INPUT_TARGET)).toBe(0);
+      expect(await countResponses(requestIdByKey.invalidInputTarget)).toBe(0);
     });
   });
 
@@ -576,7 +756,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       const text = 'a'.repeat(65535);
       const response = await createResponse(
         engineerToken,
-        validInput(REQUEST_CAPACITY_OK, { responseText: text }),
+        validInput(requestIdByKey.capacityOk, { responseText: text }),
       ).expect(200);
 
       expect(response.body.errors).toBeUndefined();
@@ -584,7 +764,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
         Buffer.byteLength(response.body.data.createEngineerResponse.responseText, 'utf8'),
       ).toBe(65535);
 
-      const rows = await responseRepository.findBy({ requestId: REQUEST_CAPACITY_OK });
+      const rows = await responseRepository.findBy({ requestId: requestIdByKey.capacityOk });
       expect(rows).toHaveLength(1);
       expect(rows[0].responseText).toBe(text);
       // 数据库真实落库的正文字节数恰为 65,535（MySQL TEXT 上限）
@@ -594,7 +774,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     const expectOverCapacityRejected = async (responseText: string) => {
       const response = await createResponse(
         engineerToken,
-        validInput(REQUEST_CAPACITY_OVER, { responseText }),
+        validInput(requestIdByKey.capacityOver, { responseText }),
       ).expect(200);
 
       expect(response.body.errors).toHaveLength(1);
@@ -607,7 +787,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(error.extensions.errorCode).not.toBe('REPAIR_REQUEST_RESPONSE_FAILED');
       expect(error.extensions.errorMessage).toBe('回复正文不能超过 65,535 字节（按 UTF-8 计算）');
       // 超限在写服务之前被拒绝：目标申请无任何回复行
-      expect(await countResponses(REQUEST_CAPACITY_OVER)).toBe(0);
+      expect(await countResponses(requestIdByKey.capacityOver)).toBe(0);
     };
 
     it('65,536 ASCII bytes 返回 BAD_USER_INPUT 且不产生回复记录', async () => {
@@ -630,7 +810,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
     it('回复成功：DTO 只含本次新建回复，正文 trim 落库，归属由会话与目标申请派生', async () => {
       const response = await createResponse(
         engineerToken,
-        validInput(REQUEST_ACCEPTED_BY_ENGINEER, { responseText: '  已更换备件并复测通过  ' }),
+        validInput(requestIdByKey.acceptedByEngineer, { responseText: '  已更换备件并复测通过  ' }),
       ).expect(200);
 
       expect(response.body.errors).toBeUndefined();
@@ -646,11 +826,13 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(JSON.stringify(created)).not.toContain('engineerAccountId');
       expect(JSON.stringify(created)).not.toContain('customerAccountId');
 
-      const rows = await responseRepository.findBy({ requestId: REQUEST_ACCEPTED_BY_ENGINEER });
+      const rows = await responseRepository.findBy({
+        requestId: requestIdByKey.acceptedByEngineer,
+      });
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         id: created.id,
-        requestId: REQUEST_ACCEPTED_BY_ENGINEER,
+        requestId: requestIdByKey.acceptedByEngineer,
         engineerAccountId,
         customerAccountId,
         resolutionStatus: 'PENDING',
@@ -659,7 +841,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(rows[0].createdAt).toBeInstanceOf(Date);
       // 回复不改变申请自身的接单事实
       const requestRow = await requestRepository.findOneOrFail({
-        where: { id: REQUEST_ACCEPTED_BY_ENGINEER },
+        where: { id: requestIdByKey.acceptedByEngineer },
       });
       expect(requestRow).toMatchObject({
         isAccepted: true,
@@ -673,13 +855,13 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       // 本用例使用专用申请 fixture，在内部造前置回复（不依赖上一个 it 的写入）
       const first = await createResponse(
         engineerToken,
-        validInput(REQUEST_APPEND_SEMANTIC, { responseText: '已更换备件并复测通过' }),
+        validInput(requestIdByKey.appendSemantic, { responseText: '已更换备件并复测通过' }),
       ).expect(200);
       expect(first.body.errors).toBeUndefined();
 
       const second = await createResponse(
         engineerToken,
-        validInput(REQUEST_APPEND_SEMANTIC, {
+        validInput(requestIdByKey.appendSemantic, {
           responseText: '设备已恢复正常，结案',
           resolutionStatus: 'RESOLVED',
         }),
@@ -689,7 +871,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       const detail = await postGql({
         app,
         query: ENGINEER_DETAIL_QUERY,
-        variables: { id: REQUEST_APPEND_SEMANTIC },
+        variables: { id: requestIdByKey.appendSemantic },
         token: engineerToken,
       }).expect(200);
       expect(detail.body.errors).toBeUndefined();
@@ -719,11 +901,11 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       // 本用例使用专用申请 fixture，在内部造两条回复（不依赖前两个 it）
       await createResponse(
         engineerToken,
-        validInput(REQUEST_READ_SYNC, { responseText: '已初步处理' }),
+        validInput(requestIdByKey.readSync, { responseText: '已初步处理' }),
       ).expect(200);
       await createResponse(
         engineerToken,
-        validInput(REQUEST_READ_SYNC, {
+        validInput(requestIdByKey.readSync, {
           responseText: '已结案',
           resolutionStatus: 'RESOLVED',
         }),
@@ -732,7 +914,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       const customerDetail = await postGql({
         app,
         query: MY_DETAIL_QUERY,
-        variables: { id: REQUEST_READ_SYNC },
+        variables: { id: requestIdByKey.readSync },
         token: customerToken,
       }).expect(200);
       expect(customerDetail.body.errors).toBeUndefined();
@@ -752,7 +934,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       }).expect(200);
       expect(mine.body.errors).toBeUndefined();
       const mineItem = mine.body.data.engineerRepairRequests.items.find(
-        (item: { id: number }) => item.id === REQUEST_READ_SYNC,
+        (item: { id: number }) => item.id === requestIdByKey.readSync,
       );
       expect(mineItem).toBeDefined();
       expect(mineItem.latestResolutionStatus).toBe('RESOLVED');
@@ -765,11 +947,11 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       const [first, second] = await Promise.all([
         createResponse(
           engineerToken,
-          validInput(REQUEST_CONCURRENT_APPEND, { responseText: '并发回复 A' }),
+          validInput(requestIdByKey.concurrentAppend, { responseText: '并发回复 A' }),
         ),
         createResponse(
           engineerToken,
-          validInput(REQUEST_CONCURRENT_APPEND, {
+          validInput(requestIdByKey.concurrentAppend, {
             responseText: '并发回复 B',
             resolutionStatus: 'RESOLVED',
           }),
@@ -779,7 +961,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(first.body.errors).toBeUndefined();
       expect(second.body.errors).toBeUndefined();
 
-      const rows = await responseRepository.findBy({ requestId: REQUEST_CONCURRENT_APPEND });
+      const rows = await responseRepository.findBy({ requestId: requestIdByKey.concurrentAppend });
       expect(rows).toHaveLength(2);
       expect(new Set(rows.map((row) => row.id)).size).toBe(2);
       expect(rows.map((row) => row.responseText).sort()).toEqual(['并发回复 A', '并发回复 B']);
@@ -792,12 +974,12 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
         postGql({
           app,
           query: ACCEPT_MUTATION,
-          variables: { id: REQUEST_CONCURRENT_ACCEPT },
+          variables: { id: requestIdByKey.concurrentAccept },
           token: engineerToken,
         }),
         createResponse(
           engineerToken,
-          validInput(REQUEST_CONCURRENT_ACCEPT, { responseText: '接单与回复并发' }),
+          validInput(requestIdByKey.concurrentAccept, { responseText: '接单与回复并发' }),
         ),
       ]);
 
@@ -805,14 +987,14 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       expect(acceptResponse.body.data.acceptRepairRequest.isAccepted).toBe(true);
 
       const requestRow = await requestRepository.findOneOrFail({
-        where: { id: REQUEST_CONCURRENT_ACCEPT },
+        where: { id: requestIdByKey.concurrentAccept },
       });
       expect(requestRow).toMatchObject({
         isAccepted: true,
         acceptedByEngineerAccountId: engineerAccountId,
       });
 
-      const rows = await responseRepository.findBy({ requestId: REQUEST_CONCURRENT_ACCEPT });
+      const rows = await responseRepository.findBy({ requestId: requestIdByKey.concurrentAccept });
       if (responseResponse.body.errors) {
         // 回复先拿到行锁：此刻尚未接单，只能是业务状态冲突，且不产生写入
         expect(responseResponse.body.errors).toHaveLength(1);

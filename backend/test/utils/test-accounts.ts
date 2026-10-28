@@ -4,10 +4,14 @@ import { Gender, UserState } from '@app-types/models/user-info.types';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { AccountService } from '@src/modules/account/base/services/account.service';
-import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { CreateAccountUsecase } from '@usecases/account/create-account.usecase';
 import { DataSource } from 'typeorm';
-import { recordOwnedResource, type OwnedResourceLedger } from './e2e-scoped-cleanup';
+import {
+  recordOwnedResource,
+  toResidueAccountFingerprint,
+  type OwnedResourceLedger,
+  type ResidueAccountFingerprint,
+} from './e2e-scoped-cleanup';
 
 export interface TestAccountConfig {
   loginName: string;
@@ -132,21 +136,13 @@ export const testAccountsConfig = {
 export type TestAccountKey = keyof typeof testAccountsConfig;
 
 /**
- * 清理所有与测试账号相关的数据（整表删除，历史遗留用法）。
- *
- * ⚠️ PR0 独立终审 R02：本函数不携带归属 WHERE，会删除全库成员/账号，
- * 只保留给尚未迁移的历史规格；04/09/10/11/12 等本 PR 消费者必须改用
- * `runGuardedSpecCleanup`（双门禁 + 指纹核验 + 引用闭包 + 精确 ID）。
- *
- * （按外键方向：先成员关系 → user_info → account；
- *   A-PR0 新增外键 fk_organization_membership_account RESTRICT 要求
- *   先删组织成员关系，否则账号删除被阻塞）
+ * 按账号 key 生成完整指纹，供 `runGuardedSpecCleanup` 的残留定位使用。
+ * 自然键只用于定位候选，昵称/状态/角色等字段必须逐项匹配才允许接管。
  */
-export const cleanupTestAccounts = async (dataSource: DataSource): Promise<void> => {
-  await dataSource.createQueryBuilder().delete().from(OrganizationMembershipEntity).execute();
-  await dataSource.createQueryBuilder().delete().from(UserInfoEntity).execute();
-  await dataSource.createQueryBuilder().delete().from(AccountEntity).execute();
-};
+export const buildTestAccountResidue = (
+  keys: readonly TestAccountKey[],
+): ResidueAccountFingerprint[] =>
+  keys.map((key) => toResidueAccountFingerprint(testAccountsConfig[key]));
 
 /**
  * 造数入口（优先用 Usecase；无 Usecase 时走 repo 回落）
@@ -228,7 +224,17 @@ export const createTestAccount = async (
     });
     const accountId = created.id;
     if (ownership) {
-      recordOwnedResource(ownership, 'account', accountId);
+      // R02：登记真实 ID 的同时登记最小预期事实（来自受控输入），删除前仍会逐项核对。
+      recordOwnedResource(ownership, 'account', accountId, {
+        loginName: cfg.loginName,
+        loginEmail: cfg.loginEmail,
+        status: cfg.status,
+        identityHint: cfg.identityType,
+        accessGroup: cfg.accessGroup,
+        nickname: `${cfg.loginName}_nickname`,
+        userInfoEmail: cfg.loginEmail,
+        userState: 'ACTIVE',
+      });
     }
     return { accountId };
   }
@@ -275,7 +281,16 @@ export const createTestAccount = async (
 
   // 事务提交成功即登记，不把登记推迟到调用方完整返回之后。
   if (ownership) {
-    recordOwnedResource(ownership, 'account', accountId);
+    recordOwnedResource(ownership, 'account', accountId, {
+      loginName: cfg.loginName,
+      loginEmail: cfg.loginEmail,
+      status: cfg.status,
+      identityHint: cfg.identityType,
+      accessGroup: cfg.accessGroup,
+      nickname: `${cfg.loginName}_nickname`,
+      userInfoEmail: cfg.loginEmail,
+      userState: 'ACTIVE',
+    });
   }
   return { accountId };
 };

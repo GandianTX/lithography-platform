@@ -35,10 +35,12 @@ import { DataSource } from 'typeorm';
 import { assertDataSourceOnAllowedE2eDatabase } from './e2e-db-guard';
 import {
   createOwnedResourceLedger,
+  mergeOwnedResourceLedger,
   recordOwnedResource,
   runGuardedScopedCleanup,
   runGuardedSpecCleanup,
   toResidueAccountFingerprint,
+  updateOwnedExpectation,
   type OwnedResourceLedger,
 } from './e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from './e2e-teardown';
@@ -211,6 +213,101 @@ describe('runE2eTeardown 统一收尾语义（纯函数）', () => {
 });
 
 // ---------------------------------------------------------------------------------------
+// A2 部分：台账事实深拷贝隔离（N02，纯函数，不需要数据库）
+// ---------------------------------------------------------------------------------------
+
+describe('台账事实深拷贝隔离（N02）', () => {
+  const basePayload = (): Record<string, unknown> => ({
+    email: 'n02@example.com',
+    meta: { title: '原始标题', items: [1, 2] },
+  });
+
+  it('G05 登记/更新后修改输入、数组与 payload 嵌套均不改变台账预期', () => {
+    const ledger = createOwnedResourceLedger();
+    const levels: string[] = ['CUSTOMER'];
+    const payload = basePayload();
+    recordOwnedResource(ledger, 'account', 11, {
+      loginName: 'n02_probe',
+      loginEmail: 'n02@example.com',
+      status: 'ACTIVE',
+      identityHint: 'CUSTOMER',
+      accessGroup: levels,
+      nickname: 'n02_nickname',
+      userInfoEmail: 'n02@example.com',
+      userState: 'ACTIVE',
+    });
+    recordOwnedResource(ledger, 'verificationRecord', 12, {
+      type: 'EMAIL',
+      targetAccountId: 11,
+      subjectType: null,
+      subjectId: null,
+      issuedByAccountId: 11,
+      payload,
+    });
+
+    // 创建后修改输入对象：根字段、数组与嵌套对象同时变化
+    levels.push('ENGINEER');
+    payload.email = 'mutated@example.com';
+    (payload.meta as { title: string; items: number[] }).title = '被外部改写';
+    (payload.meta as { title: string; items: number[] }).items.push(3);
+
+    expect(ledger.facts.account.get(11)?.accessGroup).toEqual(['CUSTOMER']);
+    expect(ledger.facts.verificationRecord.get(12)?.payload).toEqual({
+      email: 'n02@example.com',
+      meta: { title: '原始标题', items: [1, 2] },
+    });
+
+    // 更新时同样深拷贝：patch 后续变化不得改写台账
+    const patchPayload = basePayload();
+    updateOwnedExpectation(ledger, 'verificationRecord', 12, { payload: patchPayload });
+    (patchPayload.meta as { title: string; items: number[] }).title = 'patch 被外部改写';
+    expect(
+      (ledger.facts.verificationRecord.get(12)?.payload?.meta as { title: string }).title,
+    ).toBe('原始标题');
+
+    // 保留 null/false/0/数组/JSON 语义
+    updateOwnedExpectation(ledger, 'account', 11, {
+      loginEmail: null,
+      nickname: '0',
+      userState: 'INACTIVE',
+    });
+    expect(ledger.facts.account.get(11)).toMatchObject({
+      loginEmail: null,
+      nickname: '0',
+      userState: 'INACTIVE',
+    });
+    expect(ledger.facts.account.get(11)?.accessGroup).toEqual(['CUSTOMER']);
+  });
+
+  it('G06 跨台账合并隔离：源台账或原始输入后续变化不影响目标台账', () => {
+    const source = createOwnedResourceLedger();
+    const payload = basePayload();
+    recordOwnedResource(source, 'verificationRecord', 21, {
+      type: 'EMAIL',
+      targetAccountId: null,
+      subjectType: null,
+      subjectId: null,
+      issuedByAccountId: null,
+      payload,
+    });
+
+    const target = createOwnedResourceLedger();
+    mergeOwnedResourceLedger(target, source);
+
+    payload.email = 'source-mutated@example.com';
+    updateOwnedExpectation(source, 'verificationRecord', 21, {
+      payload: { email: 'source-updated@example.com' },
+    });
+
+    expect(target.facts.verificationRecord.get(21)?.payload).toEqual({
+      email: 'n02@example.com',
+      meta: { title: '原始标题', items: [1, 2] },
+    });
+    expect(target.verificationRecordIds).toEqual([21]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
 // B 部分：runGuardedScopedCleanup 双门禁与调用序（假 DataSource，不需要真实数据库）
 // ---------------------------------------------------------------------------------------
 
@@ -261,6 +358,7 @@ const createRecordingDataSource = (options: {
 
   const dataSource = {
     isInitialized: true,
+    options: { database: 'lithography_e2e' },
     query: queryProbe,
     createQueryBuilder: createQueryBuilderChain,
     getRepository,
@@ -299,6 +397,10 @@ const createFakeTransactionalDataSource = (
         sql: normalized,
         params,
       });
+      // N04：事务内同一 manager 会话也要能证明实际库名（假 DS 固定返回预期库）。
+      if (/^SELECT\s+DATABASE\(\)/i.test(normalized)) {
+        return Promise.resolve([{ current_database: 'lithography_e2e' }]);
+      }
       return Promise.resolve(options.respond?.(normalized, params) ?? []);
     },
   };
@@ -306,6 +408,7 @@ const createFakeTransactionalDataSource = (
   const queryProbe = jest.fn(() => Promise.resolve([{ current_database: 'lithography_e2e' }]));
   const dataSource = {
     isInitialized: true,
+    options: { database: 'lithography_e2e' },
     query: queryProbe,
     transaction,
   } as unknown as DataSource;
@@ -323,7 +426,11 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
   it('缺许可：在读取实际库名之前失败关闭，清理回调完全不被调用', async () => {
     delete process.env.E2E_ALLOW_PHYSICAL_CLEANUP;
     const queryProbe = jest.fn(() => Promise.resolve([{ current_database: 'lithography_e2e' }]));
-    const dataSource = { isInitialized: true, query: queryProbe } as unknown as DataSource;
+    const dataSource = {
+      isInitialized: true,
+      options: { database: 'lithography_e2e' },
+      query: queryProbe,
+    } as unknown as DataSource;
     const cleanup = jest.fn((): Promise<void> => Promise.resolve());
 
     await expect(
@@ -341,7 +448,11 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
     process.env.E2E_ALLOWED_DB_NAMES = 'lithography_drill';
     const queryProbe = jest.fn(() => Promise.resolve([{ current_database: 'lithography_e2e' }]));
-    const dataSource = { isInitialized: true, query: queryProbe } as unknown as DataSource;
+    const dataSource = {
+      isInitialized: true,
+      options: { database: 'lithography_e2e' },
+      query: queryProbe,
+    } as unknown as DataSource;
     const cleanup = jest.fn((): Promise<void> => Promise.resolve());
 
     await expect(
@@ -385,7 +496,12 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
 
   it('双门禁先于任何数据接触：缺许可或库名不符时 transaction 与 DELETE 均未发生', async () => {
     const owned = createOwnedResourceLedger();
-    recordOwnedResource(owned, 'organization', 101);
+    recordOwnedResource(owned, 'organization', 101, {
+      organizationCode: 'E2E_GATE_PROBE',
+      name: '门禁探针组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
 
     delete process.env.E2E_ALLOW_PHYSICAL_CLEANUP;
     const denied = createFakeTransactionalDataSource();
@@ -433,8 +549,22 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
     process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
     const owned = createOwnedResourceLedger();
-    recordOwnedResource(owned, 'organization', 101);
-    recordOwnedResource(owned, 'account', 201);
+    recordOwnedResource(owned, 'organization', 101, {
+      organizationCode: 'E2E_OWNED_PROBE',
+      name: '本轮组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
+    recordOwnedResource(owned, 'account', 201, {
+      loginName: 'owned_probe',
+      loginEmail: 'owned.probe@example.com',
+      status: AccountStatus.ACTIVE,
+      identityHint: IdentityTypeEnum.CUSTOMER,
+      accessGroup: [IdentityTypeEnum.CUSTOMER],
+      nickname: 'owned_probe_nickname',
+      userInfoEmail: 'owned.probe@example.com',
+      userState: 'ACTIVE',
+    });
     const { dataSource, records, transaction } = createFakeTransactionalDataSource();
 
     await expect(
@@ -486,6 +616,7 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     login_email: retainedFingerprint.loginEmail,
     status: retainedFingerprint.status,
     identity_hint: retainedFingerprint.identityHint,
+    user_info_id: 900,
     nickname: retainedFingerprint.nickname,
     user_info_email: retainedFingerprint.loginEmail,
     access_group: retainedFingerprint.accessGroup,
@@ -564,10 +695,25 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
     process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
     const owned = createOwnedResourceLedger();
-    recordOwnedResource(owned, 'organization', 101);
+    recordOwnedResource(owned, 'organization', 101, {
+      organizationCode: 'E2E_R25_01_C04',
+      name: 'R25-01 C04 组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
     const { dataSource, records } = createFakeTransactionalDataSource({
       respond: (sql) => {
-        if (/FROM organization\b[\s\S]*WHERE id IN/i.test(sql)) return [{ id: 101 }];
+        if (/FROM organization\b[\s\S]*WHERE id IN/i.test(sql)) {
+          return [
+            {
+              id: 101,
+              organization_code: 'E2E_R25_01_C04',
+              name: 'R25-01 C04 组织',
+              kind: 'CLIENT',
+              status: 'ACTIVE',
+            },
+          ];
+        }
         if (/FROM organization_membership\b/i.test(sql)) {
           return [{ id: 800, organization_id: 101, account_id: 900 }];
         }
@@ -603,10 +749,22 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
     process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
     const owned = createOwnedResourceLedger();
-    recordOwnedResource(owned, 'equipmentModel', 700);
+    recordOwnedResource(owned, 'equipmentModel', 700, {
+      modelCode: 'E2E-R25-01-C09',
+      modelName: 'R25-01 C09 型号',
+      enabled: true,
+      sortOrder: 1,
+    });
+    const modelRow = {
+      id: 700,
+      model_code: 'E2E-R25-01-C09',
+      model_name: 'R25-01 C09 型号',
+      enabled: 1,
+      sort_order: 1,
+    };
     const { dataSource, records } = createFakeTransactionalDataSource({
       respond: (sql) => {
-        if (/FROM equipment_model\b[\s\S]*WHERE id IN/i.test(sql)) return [{ id: 700 }];
+        if (/FROM equipment_model\b[\s\S]*WHERE id IN/i.test(sql)) return [modelRow];
         if (/FROM base_user_account a\b/i.test(sql)) return [retainedAccountRow()];
         return undefined;
       },
@@ -651,10 +809,25 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
     process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
     const owned = createOwnedResourceLedger();
-    recordOwnedResource(owned, 'equipmentModel', 700);
+    recordOwnedResource(owned, 'equipmentModel', 700, {
+      modelCode: 'E2E-R25-01-C09B',
+      modelName: 'R25-01 C09B 型号',
+      enabled: true,
+      sortOrder: 1,
+    });
     const { dataSource, records } = createFakeTransactionalDataSource({
       respond: (sql) => {
-        if (/FROM equipment_model\b[\s\S]*WHERE id IN/i.test(sql)) return [{ id: 700 }];
+        if (/FROM equipment_model\b[\s\S]*WHERE id IN/i.test(sql)) {
+          return [
+            {
+              id: 700,
+              model_code: 'E2E-R25-01-C09B',
+              model_name: 'R25-01 C09B 型号',
+              enabled: 1,
+              sort_order: 1,
+            },
+          ];
+        }
         if (/FROM base_user_account a\b/i.test(sql)) return [retainedAccountRow()];
         if (/FROM repair_request WHERE equipment_model_id IN/i.test(sql)) return [{ id: 701 }];
         return undefined;
@@ -671,6 +844,537 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     ).rejects.toThrow(/repair_request.equipment_model_id.*范围外记录引用了本轮机型/);
     expect(emptyConditionSql(records)).toEqual([]);
     expect(deletes(records)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------------------
+  // R02 core 清理扩展：验证记录 / 第三方绑定 / 维修申请 / 工程师回复
+  // -------------------------------------------------------------------------------------
+
+  const coreAccountFingerprint = {
+    loginName: 'core_clean_probe',
+    loginEmail: 'core.clean.probe@example.com',
+    status: AccountStatus.ACTIVE,
+    identityHint: IdentityTypeEnum.CUSTOMER,
+    nickname: 'core_clean_probe_nickname',
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+  };
+  const coreAccountRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: 201,
+    login_name: coreAccountFingerprint.loginName,
+    login_email: coreAccountFingerprint.loginEmail,
+    status: coreAccountFingerprint.status,
+    identity_hint: coreAccountFingerprint.identityHint,
+    user_info_id: 201,
+    nickname: coreAccountFingerprint.nickname,
+    user_info_email: coreAccountFingerprint.loginEmail,
+    access_group: coreAccountFingerprint.accessGroup,
+    meta_digest: 'encrypted-digest',
+    user_state: 'ACTIVE',
+    ...overrides,
+  });
+  const coreVerificationRow = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id: 301,
+    type: 'PASSWORD_RESET',
+    target_account_id: 201,
+    subject_type: 'ACCOUNT',
+    subject_id: 201,
+    payload: { title: 'core-clean' },
+    issued_by_account_id: null,
+    consumed_by_account_id: null,
+    ...overrides,
+  });
+  const coreRequestRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: 500,
+    request_no: 'E2E-CORE-500',
+    customer_account_id: 201,
+    equipment_model_id: 700,
+    error_code: 'E-500',
+    fault_description: 'core 清理反例',
+    content_md: '# E2E-CORE-500',
+    is_accepted: false,
+    accepted_by_engineer_account_id: null,
+    deprecated: false,
+    ...overrides,
+  });
+  const coreResponseRow = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: 600,
+    request_id: 500,
+    engineer_account_id: 202,
+    customer_account_id: 201,
+    resolution_status: 'PENDING',
+    response_text: 'core 清理回复',
+    ...overrides,
+  });
+
+  // R02：假 DS 下登记事实必须与 helper 将要读到的行一致，否则漂移检查会先于
+  // 本组用例真正要验证的“引用闭包/参与人范围”检查失败。负例中需要模拟的
+  // 漂移字段在调用处显式覆盖（例如客户账号 999）。
+  const CORE_ACCOUNT_FACTS = {
+    loginName: coreAccountFingerprint.loginName,
+    loginEmail: coreAccountFingerprint.loginEmail,
+    status: coreAccountFingerprint.status,
+    identityHint: coreAccountFingerprint.identityHint,
+    accessGroup: coreAccountFingerprint.accessGroup,
+    nickname: coreAccountFingerprint.nickname,
+    userInfoEmail: coreAccountFingerprint.loginEmail,
+    userState: 'ACTIVE',
+  };
+  const CORE_MODEL_FACTS = {
+    modelCode: 'E2E-CORE',
+    modelName: 'core 型号',
+    enabled: true,
+    sortOrder: 1,
+  };
+  const CORE_REQUEST_FACTS = {
+    requestNo: 'E2E-CORE-500',
+    customerAccountId: 201,
+    equipmentModelId: 700,
+    errorCode: 'E-500',
+    faultDescription: 'core 清理反例',
+  };
+  const CORE_RESPONSE_FACTS = {
+    requestId: 500,
+    engineerAccountId: 202,
+    customerAccountId: 201,
+    responseText: 'core 清理回复',
+    resolutionStatus: 'PENDING',
+  };
+
+  it('R02-C01：本轮验证记录/第三方绑定/申请/回复与账号同事务按依赖序精确删除', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    // R01/R02：绑定与回复必须显式登记（含预期事实），不再由账号/申请关联自动接管。
+    recordOwnedResource(owned, 'account', 201, {
+      loginName: coreAccountFingerprint.loginName,
+      loginEmail: coreAccountFingerprint.loginEmail,
+      status: coreAccountFingerprint.status,
+      identityHint: coreAccountFingerprint.identityHint,
+      accessGroup: coreAccountFingerprint.accessGroup,
+      nickname: coreAccountFingerprint.nickname,
+      userInfoEmail: coreAccountFingerprint.loginEmail,
+      userState: 'ACTIVE',
+    });
+    recordOwnedResource(owned, 'account', 202, {
+      loginName: 'core_engineer_probe',
+      loginEmail: 'core.engineer.probe@example.com',
+      status: AccountStatus.ACTIVE,
+      identityHint: IdentityTypeEnum.CUSTOMER,
+      accessGroup: [IdentityTypeEnum.CUSTOMER],
+      nickname: 'core_engineer_probe_nickname',
+      userInfoEmail: 'core.engineer.probe@example.com',
+      userState: 'ACTIVE',
+    });
+    recordOwnedResource(owned, 'equipmentModel', 700, {
+      modelCode: 'E2E-CORE',
+      modelName: 'core 型号',
+      enabled: true,
+      sortOrder: 1,
+    });
+    recordOwnedResource(owned, 'verificationRecord', 301, {
+      type: 'PASSWORD_RESET',
+      targetAccountId: 201,
+      subjectType: 'ACCOUNT',
+      subjectId: 201,
+      issuedByAccountId: null,
+      payload: { title: 'core-clean' },
+    });
+    recordOwnedResource(owned, 'repairRequest', 500, {
+      requestNo: 'E2E-CORE-500',
+      customerAccountId: 201,
+      equipmentModelId: 700,
+      errorCode: 'E-500',
+      faultDescription: 'core 清理反例',
+    });
+    recordOwnedResource(owned, 'engineerResponse', 600, {
+      requestId: 500,
+      engineerAccountId: 202,
+      customerAccountId: 201,
+      responseText: 'core 清理回复',
+      resolutionStatus: 'PENDING',
+    });
+    recordOwnedResource(owned, 'thirdPartyAuth', 401, {
+      accountId: 201,
+      provider: 'WEAPP',
+      providerUserId: 'openid-core',
+      unionId: null,
+    });
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM base_verification_record\b[\s\S]*WHERE id IN/i.test(sql)) {
+          return [coreVerificationRow()];
+        }
+        if (/FROM base_verification_record\b[\s\S]*target_account_id IN/i.test(sql)) {
+          return [coreVerificationRow()];
+        }
+        if (/FROM base_third_party_auth\b[\s\S]*account_id IN/i.test(sql)) {
+          return [
+            {
+              id: 401,
+              account_id: 201,
+              provider: 'WEAPP',
+              provider_user_id: 'openid-core',
+              union_id: null,
+            },
+          ];
+        }
+        if (/FROM repair_request\b[\s\S]*WHERE id IN/i.test(sql)) return [coreRequestRow()];
+        if (/FROM repair_request\b[\s\S]*customer_account_id IN/i.test(sql)) {
+          return [coreRequestRow()];
+        }
+        if (/FROM engineer_response\b[\s\S]*WHERE id IN/i.test(sql)) return [coreResponseRow()];
+        if (/FROM engineer_response\b[\s\S]*request_id IN/i.test(sql)) return [coreResponseRow()];
+        if (/FROM engineer_response\b[\s\S]*engineer_account_id IN/i.test(sql)) {
+          return [coreResponseRow()];
+        }
+        if (/FROM ai_conversation\b/i.test(sql) || /FROM ai_report\b/i.test(sql)) return [];
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({ dataSource, owned, helper: 'R02-C01' }),
+    ).resolves.toBeUndefined();
+
+    expect(deletes(records).map((record) => record.sql)).toEqual([
+      'DELETE FROM engineer_response WHERE id IN (?)',
+      'DELETE FROM repair_request WHERE id IN (?)',
+      'DELETE FROM base_verification_record WHERE id IN (?)',
+      'DELETE FROM base_third_party_auth WHERE id IN (?)',
+      'DELETE FROM base_user_info WHERE account_id IN (?, ?)',
+      'DELETE FROM base_user_account WHERE id IN (?, ?)',
+      'DELETE FROM equipment_model WHERE id IN (?)',
+    ]);
+    expect(deletes(records).map((record) => record.params)).toEqual([
+      [600],
+      [500],
+      [301],
+      [401],
+      [201, 202],
+      [201, 202],
+      [700],
+    ]);
+  });
+
+  it('R02-C03：集合外验证记录引用本轮账号但未登记，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM base_verification_record\b[\s\S]*target_account_id IN/i.test(sql)) {
+          return [coreVerificationRow({ id: 399 })];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R02-C03' })).rejects.toThrow(
+      /验证记录 399 引用了本轮账号但不在本轮删除范围/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R02-C02：登记申请但客户账号不在本轮范围，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    recordOwnedResource(owned, 'equipmentModel', 700, CORE_MODEL_FACTS);
+    // 负例：登记事实与行一致（客户 999），让“客户不在本轮范围”的引用闭包检查先命中；
+    // 若事实仍写 201，则会先被 R02 漂移检查拒绝，覆盖不到本用例的检查点。
+    recordOwnedResource(owned, 'repairRequest', 500, {
+      ...CORE_REQUEST_FACTS,
+      customerAccountId: 999,
+    });
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM repair_request\b[\s\S]*WHERE id IN/i.test(sql)
+          ? [coreRequestRow({ customer_account_id: 999 })]
+          : undefined,
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R02-C02' })).rejects.toThrow(
+      /repairRequest 500 客户账号不在本轮范围/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R02-C03B：登记回复的父申请不在本轮范围，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    recordOwnedResource(owned, 'account', 202, CORE_ACCOUNT_FACTS);
+    recordOwnedResource(owned, 'engineerResponse', 600, CORE_RESPONSE_FACTS);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM engineer_response\b[\s\S]*WHERE id IN/i.test(sql) ? [coreResponseRow()] : undefined,
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R02-C03B' })).rejects.toThrow(
+      /engineerResponse 600 父申请不在本轮范围/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R02-C03C：本轮申请下存在外部参与人回复，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    recordOwnedResource(owned, 'equipmentModel', 700, CORE_MODEL_FACTS);
+    recordOwnedResource(owned, 'repairRequest', 500, CORE_REQUEST_FACTS);
+    // 负例：回复行参与人是范围外账号 999，登记事实与行一致以命中“参与人范围”检查。
+    recordOwnedResource(owned, 'engineerResponse', 600, {
+      ...CORE_RESPONSE_FACTS,
+      engineerAccountId: 999,
+    });
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM repair_request\b[\s\S]*WHERE id IN/i.test(sql)) return [coreRequestRow()];
+        if (/FROM engineer_response\b[\s\S]*request_id IN/i.test(sql)) {
+          return [coreResponseRow({ engineer_account_id: 999 })];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R02-C03C' })).rejects.toThrow(
+      /engineerResponse 600 回复参与人不在本轮范围/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R02-C02B：残留第三方绑定 provider 相同但用户标识漂移，拒绝接管', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM base_user_account a\b/i.test(sql)) return [coreAccountRow()];
+        if (/FROM base_third_party_auth\b[\s\S]*account_id IN/i.test(sql)) {
+          return [
+            {
+              id: 401,
+              account_id: 201,
+              provider: 'WEAPP',
+              provider_user_id: 'foreign-openid',
+              union_id: null,
+            },
+          ];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R02-C02B',
+        residue: {
+          accounts: [coreAccountFingerprint],
+          thirdPartyAuths: [
+            {
+              accountLoginName: coreAccountFingerprint.loginName,
+              provider: 'WEAPP',
+              providerUserId: 'mine-openid',
+              unionId: null,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/thirdPartyAuth.*指纹不符/);
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R02-C02C：残留申请 request_no 相同但正文漂移，拒绝接管', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM base_user_account a\b/i.test(sql)) return [coreAccountRow()];
+        if (/FROM equipment_model\b[\s\S]*model_code IN/i.test(sql)) {
+          return [
+            {
+              id: 700,
+              model_code: 'E2E-CORE',
+              model_name: 'core 型号',
+              enabled: 1,
+              sort_order: 1,
+            },
+          ];
+        }
+        if (/FROM repair_request\b[\s\S]*request_no IN/i.test(sql)) {
+          return [coreRequestRow({ error_code: 'E-DRIFT' })];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource,
+        helper: 'R02-C02C',
+        residue: {
+          accounts: [coreAccountFingerprint],
+          equipmentModels: [
+            {
+              modelCode: 'E2E-CORE',
+              modelName: 'core 型号',
+              enabled: true,
+              sortOrder: 1,
+            },
+          ],
+          repairRequests: [
+            {
+              requestNo: 'E2E-CORE-500',
+              customerAccountLoginName: coreAccountFingerprint.loginName,
+              equipmentModelCode: 'E2E-CORE',
+              errorCode: 'E-500',
+              faultDescription: 'core 清理反例',
+              contentMd: '# E2E-CORE-500',
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/repairRequest E2E-CORE-500 已存在但客户\/型号\/正文指纹不符/);
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('G07 账号存在但用户资料缺失：清理预检拒绝且零 DELETE（不再静默跳过）', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const ledger = createOwnedResourceLedger();
+    recordOwnedResource(ledger, 'account', 201, {
+      loginName: coreAccountFingerprint.loginName,
+      loginEmail: coreAccountFingerprint.loginEmail,
+      status: coreAccountFingerprint.status,
+      identityHint: coreAccountFingerprint.identityHint,
+      accessGroup: coreAccountFingerprint.accessGroup,
+      nickname: coreAccountFingerprint.nickname,
+      userInfoEmail: coreAccountFingerprint.loginEmail,
+      userState: 'ACTIVE',
+    });
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM base_user_account a\b/i.test(sql)) {
+          return [
+            coreAccountRow({
+              user_info_id: null,
+              nickname: null,
+              user_info_email: null,
+              user_state: null,
+            }),
+          ];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(
+      runGuardedSpecCleanup({ dataSource, owned: ledger, helper: 'G07 资料缺失' }),
+    ).rejects.toThrow(
+      /\[G07 资料缺失\] 阶段=归属预检 拒绝删除：account 201 本轮登记事实漂移（user_info\(缺失\)）/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('G07b 昵称与资料状态分别独立漂移：逐字段拒绝且零 DELETE', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const facts = {
+      loginName: coreAccountFingerprint.loginName,
+      loginEmail: coreAccountFingerprint.loginEmail,
+      status: coreAccountFingerprint.status,
+      identityHint: coreAccountFingerprint.identityHint,
+      accessGroup: coreAccountFingerprint.accessGroup,
+      nickname: coreAccountFingerprint.nickname,
+      userInfoEmail: coreAccountFingerprint.loginEmail,
+      userState: 'ACTIVE',
+    };
+    const driftCases = [
+      { field: 'user_info.nickname', overrides: { nickname: 'g07b_drifted_nickname' } },
+      { field: 'user_info.user_state', overrides: { user_state: 'INACTIVE' } },
+    ] as const;
+
+    for (const driftCase of driftCases) {
+      const ledger = createOwnedResourceLedger();
+      recordOwnedResource(ledger, 'account', 201, facts);
+      const { dataSource, records } = createFakeTransactionalDataSource({
+        respond: (sql) =>
+          /FROM base_user_account a\b/i.test(sql)
+            ? [coreAccountRow(driftCase.overrides)]
+            : undefined,
+      });
+
+      await expect(
+        runGuardedSpecCleanup({
+          dataSource,
+          owned: ledger,
+          helper: `G07b ${driftCase.field} 漂移`,
+        }),
+      ).rejects.toThrow(
+        new RegExp(`account 201 本轮登记事实漂移（${driftCase.field.replace('.', '\\.')}）`),
+      );
+      expect(deletes(records)).toEqual([]);
+    }
+  });
+
+  it('G08 账号状态/loginEmail 与 user_state/资料邮箱分别比对，不互相替代', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const loginEmail = 'login.g08@example.com';
+    const contactEmail = 'contact.g08@example.com';
+    const facts = {
+      loginName: coreAccountFingerprint.loginName,
+      loginEmail,
+      status: coreAccountFingerprint.status,
+      identityHint: coreAccountFingerprint.identityHint,
+      accessGroup: coreAccountFingerprint.accessGroup,
+      nickname: coreAccountFingerprint.nickname,
+      userInfoEmail: contactEmail,
+      userState: 'INACTIVE',
+    };
+    const rowOverrides = {
+      login_email: loginEmail,
+      user_info_email: contactEmail,
+      user_state: 'INACTIVE',
+    };
+
+    // 正例：四个字段各自匹配（账号 ACTIVE / 资料 INACTIVE，loginEmail != 资料邮箱）
+    const ledger = createOwnedResourceLedger();
+    recordOwnedResource(ledger, 'account', 201, facts);
+    const matching = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM base_user_account a\b/i.test(sql) ? [coreAccountRow(rowOverrides)] : undefined,
+    });
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: matching.dataSource,
+        owned: ledger,
+        helper: 'G08 分离比对',
+      }),
+    ).resolves.toBeUndefined();
+    expect(deletes(matching.records).length).toBeGreaterThan(0);
+
+    // 反例：把 loginEmail 与资料邮箱互换，必须分别报告两列漂移而不是互相替代
+    const swapped = createOwnedResourceLedger();
+    recordOwnedResource(swapped, 'account', 201, {
+      ...facts,
+      loginEmail: contactEmail,
+      userInfoEmail: loginEmail,
+    });
+    const counted = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM base_user_account a\b/i.test(sql) ? [coreAccountRow(rowOverrides)] : undefined,
+    });
+    await expect(
+      runGuardedSpecCleanup({ dataSource: counted.dataSource, owned: swapped, helper: 'G08 互换' }),
+    ).rejects.toThrow(/事实漂移（login_email, user_info\.email）/);
+    expect(deletes(counted.records)).toEqual([]);
   });
 });
 
@@ -805,6 +1509,22 @@ const ensureScopecleanOrganization = async (
   return requireOrganizationId(idsByCode, organizationCode);
 };
 
+/**
+ * R02：账号/资料的登记同样必须携带与受控创建一致的预期事实。
+ * 复用（existing）分支描述的是“同一受控 spec 之前创建的行”，事实取自同一 spec 输入，
+ * 不从清理阶段的当前值回填；任何后续漂移都会在首删前拒绝。
+ */
+const scopecleanAccountFacts = (config: TestAccountConfig) => ({
+  loginName: config.loginName,
+  loginEmail: config.loginEmail,
+  status: config.status,
+  identityHint: config.identityType,
+  accessGroup: config.accessGroup,
+  nickname: `${config.loginName}_nickname`,
+  userInfoEmail: config.loginEmail,
+  userState: 'ACTIVE',
+});
+
 /** 账号按登录名幂等建立/复用（存在残留则复用其主键，不重复穿越唯一键） */
 const ensureScopecleanAccount = async (params: {
   readonly dataSource: DataSource;
@@ -818,13 +1538,13 @@ const ensureScopecleanAccount = async (params: {
     .findOne({ where: { loginName: config.loginName } });
   if (existing) {
     if (ownership) {
-      recordOwnedResource(ownership, 'account', existing.id);
+      recordOwnedResource(ownership, 'account', existing.id, scopecleanAccountFacts(config));
     }
     return existing.id;
   }
   const { accountId } = await createTestAccount(dataSource, createAccountUsecase, config);
   if (ownership) {
-    recordOwnedResource(ownership, 'account', accountId);
+    recordOwnedResource(ownership, 'account', accountId, scopecleanAccountFacts(config));
   }
   return accountId;
 };
@@ -839,10 +1559,17 @@ const ensureScopecleanDocument = async (params: {
 }): Promise<number> => {
   const { dataSource, title, ownerOrganizationId, createdByAccountId, ownership } = params;
   const repository = dataSource.getRepository(ReferenceDocumentEntity);
+  const documentFacts = {
+    ownerOrganizationId,
+    createdByAccountId,
+    sourceSubmissionId: null,
+    sourceRevisionId: null,
+    equipmentModelId: null,
+  };
   const existing = await repository.findOne({ where: { title } });
   if (existing) {
     if (ownership) {
-      recordOwnedResource(ownership, 'document', existing.id);
+      recordOwnedResource(ownership, 'document', existing.id, documentFacts);
     }
     return existing.id;
   }
@@ -857,7 +1584,7 @@ const ensureScopecleanDocument = async (params: {
     }),
   );
   if (ownership) {
-    recordOwnedResource(ownership, 'document', saved.id);
+    recordOwnedResource(ownership, 'document', saved.id, documentFacts);
   }
   return saved.id;
 };
@@ -980,14 +1707,8 @@ describe('窄清理真实隔离库验收：异主不变 / 门禁拒绝 / 异常�
       documentTitle: SCOPECLEAN.mineDocumentTitle,
       ownership: mineOwnership,
     });
-    // 同一批真实 ID 也并入规格台账，供 afterAll 兜底收尾
-    for (const key of Object.keys(suiteOwnership) as Array<keyof OwnedResourceLedger>) {
-      for (const id of mineOwnership[key]) {
-        if (!suiteOwnership[key].includes(id)) {
-          suiteOwnership[key].push(id);
-        }
-      }
-    }
+    // 同一批真实 ID 与其预期事实一并并入规格台账，供 afterAll 兜底收尾
+    mergeOwnedResourceLedger(suiteOwnership, mineOwnership);
   });
 
   afterEach(() => {

@@ -20,6 +20,7 @@ import {
   recordOwnedResource,
   runGuardedSpecCleanup,
   toResidueAccountFingerprint,
+  updateOwnedExpectation,
 } from '../utils/e2e-scoped-cleanup';
 import { runE2eTeardown } from '../utils/e2e-teardown';
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
@@ -414,25 +415,63 @@ describe('管理员用户管理 (e2e)', () => {
       token,
     });
 
-  const updateUserProfile = (
+  const updateUserProfile = async (
     token: string,
     input: Record<string, unknown>,
-  ): Promise<GqlBody<{ adminUpdateUserProfile?: AdminUserPayload }>> =>
-    gql({
+  ): Promise<GqlBody<{ adminUpdateUserProfile?: AdminUserPayload }>> => {
+    const body = await gql<{ adminUpdateUserProfile?: AdminUserPayload }>({
       query: ADMIN_UPDATE_USER_PROFILE_MUTATION,
       variables: { input },
       token,
     });
+    // N01：合法资料变更成功后更新本轮预期；资料缺失/失败响应不更新。
+    const updated = body.data?.adminUpdateUserProfile;
+    const targetAccountId = Number(input.accountId);
+    if (
+      body.errors === undefined &&
+      updated &&
+      Number.isInteger(targetAccountId) &&
+      ownership.accountIds.includes(targetAccountId)
+    ) {
+      const patch: { nickname?: string; userInfoEmail?: string | null } = {};
+      if (typeof input.nickname === 'string' && typeof updated.nickname === 'string') {
+        patch.nickname = updated.nickname;
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'contactEmail')) {
+        patch.userInfoEmail = updated.contactEmail ?? null;
+      }
+      if (Object.keys(patch).length > 0) {
+        updateOwnedExpectation(ownership, 'account', targetAccountId, patch);
+      }
+    }
+    return body;
+  };
 
-  const setUserStatus = (
+  const setUserStatus = async (
     token: string,
     input: Record<string, unknown>,
-  ): Promise<GqlBody<{ adminSetUserStatus?: AdminUserPayload }>> =>
-    gql({
+  ): Promise<GqlBody<{ adminSetUserStatus?: AdminUserPayload }>> => {
+    const body = await gql<{ adminSetUserStatus?: AdminUserPayload }>({
       query: ADMIN_SET_USER_STATUS_MUTATION,
       variables: { input },
       token,
     });
+    // R02：状态写入成功后显式更新本轮预期事实；合法状态变更不再导致清理误判为漂移。
+    const updated = body.data?.adminSetUserStatus;
+    const targetAccountId = Number(input.accountId);
+    if (
+      updated?.status &&
+      Number.isInteger(targetAccountId) &&
+      ownership.accountIds.includes(targetAccountId)
+    ) {
+      updateOwnedExpectation(ownership, 'account', targetAccountId, {
+        status: updated.status,
+        // account.status 与 user_info.user_state 双字段同步（N01 分别比对）。
+        userState: updated.status === AccountStatus.ACTIVE ? 'ACTIVE' : 'INACTIVE',
+      });
+    }
+    return body;
+  };
 
   const resetUserPassword = (
     token: string,
@@ -873,7 +912,16 @@ describe('管理员用户管理 (e2e)', () => {
 
       const createdAccountId = view?.id ?? 0;
       expect(createdAccountId).toBeGreaterThan(0);
-      recordOwnedResource(ownership, 'account', createdAccountId);
+      recordOwnedResource(ownership, 'account', createdAccountId, {
+        loginName: CREATED_LOGIN_NAME,
+        loginEmail: CREATED_LOGIN_EMAIL,
+        status: AccountStatus.ACTIVE,
+        identityHint: IdentityTypeEnum.ENGINEER,
+        accessGroup: [IdentityTypeEnum.ENGINEER],
+        nickname: 'E2E 新建工程师',
+        userInfoEmail: 'created.contact@example.com',
+        userState: 'ACTIVE',
+      });
 
       // 账号行：登录邮箱小写收敛、identity_hint 与请求角色一致、状态 ACTIVE、口令非明文
       const account = await readAccountRow(createdAccountId);
@@ -942,7 +990,16 @@ describe('管理员用户管理 (e2e)', () => {
 
       const account = await readAccountRow(view?.id ?? 0);
       if (view?.id) {
-        recordOwnedResource(ownership, 'account', view.id);
+        recordOwnedResource(ownership, 'account', view.id, {
+          loginName: null,
+          loginEmail: EMAIL_ONLY_LOGIN_EMAIL,
+          status: AccountStatus.ACTIVE,
+          identityHint: IdentityTypeEnum.CUSTOMER,
+          accessGroup: [IdentityTypeEnum.CUSTOMER],
+          nickname: 'E2E 仅邮箱账号',
+          userInfoEmail: null,
+          userState: 'ACTIVE',
+        });
       }
       expect(account?.loginName).toBeNull();
       expect(account?.loginEmail).toBe(EMAIL_ONLY_LOGIN_EMAIL);

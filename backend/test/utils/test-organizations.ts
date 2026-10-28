@@ -87,7 +87,12 @@ export const seedTestOrganizations = async (params: {
       }
       idByCode.set(spec.organizationCode, existing.id);
       if (ownership) {
-        recordOwnedResource(ownership, 'organization', existing.id);
+        recordOwnedResource(ownership, 'organization', existing.id, {
+          organizationCode: spec.organizationCode,
+          name: spec.name,
+          kind: spec.kind,
+          status: 'ACTIVE',
+        });
       }
       continue;
     }
@@ -101,7 +106,12 @@ export const seedTestOrganizations = async (params: {
     );
     idByCode.set(spec.organizationCode, saved.id);
     if (ownership) {
-      recordOwnedResource(ownership, 'organization', saved.id);
+      recordOwnedResource(ownership, 'organization', saved.id, {
+        organizationCode: spec.organizationCode,
+        name: spec.name,
+        kind: spec.kind,
+        status: 'ACTIVE',
+      });
     }
   }
   return idByCode;
@@ -148,7 +158,13 @@ export const seedTestMemberships = async (params: {
         leftAt,
       });
       if (ownership) {
-        recordOwnedResource(ownership, 'membership', existing.id);
+        // 受控更新成功后才登记预期事实（角色/状态为本次写入后的最终值）。
+        recordOwnedResource(ownership, 'membership', existing.id, {
+          organizationId,
+          accountId: account.id,
+          memberRole: spec.memberRole,
+          status,
+        });
       }
       continue;
     }
@@ -162,7 +178,12 @@ export const seedTestMemberships = async (params: {
       }),
     );
     if (ownership) {
-      recordOwnedResource(ownership, 'membership', saved.id);
+      recordOwnedResource(ownership, 'membership', saved.id, {
+        organizationId,
+        accountId: account.id,
+        memberRole: spec.memberRole,
+        status,
+      });
     }
   }
 };

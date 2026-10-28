@@ -25,8 +25,8 @@ export const restoreEnvValue = (name: string, capturedValue: string | undefined)
 export type E2eTeardownParams = {
   /** 库内数据清理（窄范围，内部应已通过 runGuardedScopedCleanup 双门禁）。 */
   cleanup?: (() => Promise<void>) | null;
-  /** 同步收尾：临时存储目录精确删除、环境变量恢复等。 */
-  finalize?: (() => void) | null;
+  /** 收尾：临时存储目录精确删除、环境变量恢复等；允许异步（会被 await）。 */
+  finalize?: (() => void | Promise<void>) | null;
   /** 关闭 Nest app（含必要的等待释放），必须在 cleanup/finalize 之后执行。 */
   closeApp?: (() => Promise<void>) | null;
 };
@@ -53,7 +53,7 @@ export const runE2eTeardown = async (params: E2eTeardownParams): Promise<void> =
 
   if (params.finalize) {
     try {
-      params.finalize();
+      await params.finalize();
     } catch (error) {
       record(error);
     }

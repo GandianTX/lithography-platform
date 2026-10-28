@@ -11,20 +11,30 @@ import { ApiModule } from '@src/bootstraps/api/api.module';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { DataSource, In } from 'typeorm';
+import { DataSource } from 'typeorm';
 
-import { Gender, UserState } from '@app-types/models/user-info.types';
 import { ThirdPartySession } from '@app-types/models/third-party-auth.types';
 import {
   THIRD_PARTY_PROVIDER_TOKENS,
   WeAppProviderContract,
 } from '@src/modules/third-party-auth/contracts/third-party-provider.contract';
 import { ThirdPartyAuthEntity } from '@src/modules/third-party-auth/third-party-auth.entity';
-import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
-import { AccountService } from '@src/modules/account/base/services/account.service';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  type OwnedResourceLedger,
+  type ResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import { seedSpecialStatusAccount } from '../utils/special-status-account';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 /**
  * Auth 模块基础 E2E 测试
@@ -60,6 +70,20 @@ describe('Auth (e2e)', () => {
     accessGroup: [IdentityTypeEnum.CUSTOMER],
     identityType: IdentityTypeEnum.CUSTOMER,
   };
+
+  /** 残留定位：自然键 + 逐字段指纹，不使用整表删除。 */
+  const specialAccountResidues: ResidueAccountFingerprint[] = [bannedUser, pendingUser].map(
+    (account) => ({
+      loginName: account.loginName,
+      loginEmail: account.loginEmail,
+      status: account.status,
+      identityHint: account.identityType,
+      nickname: `${account.loginName}_nickname`,
+      accessGroup: account.accessGroup,
+    }),
+  );
+
+  let ownership = createOwnedResourceLedger();
 
   // 覆写 WeAppProvider：根据 authCredential 返回不同的 openid（绑定 / 未绑定）
   const mockWeAppProvider: WeAppProviderContract = {
@@ -112,41 +136,40 @@ describe('Auth (e2e)', () => {
   }, 30000);
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
+    await runE2eTeardown({
+      cleanup: () => cleanupTestData(ownership, 'auth.e2e afterAll'),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   beforeEach(async () => {
-    await cleanupTestData();
+    // 先回收上一用例的本轮资源（首轮为空），再按完整指纹兜底残留。
+    await cleanupTestData(ownership, 'auth.e2e beforeEach');
+    ownership = createOwnedResourceLedger();
     await createTestAccounts();
   });
 
   /**
-   * 清理测试数据
+   * 清理测试数据：只删除本轮登记的精确 ID 与完整指纹命中的残留，
+   * 不再整表删除第三方绑定 / 成员关系 / 账号。
    */
-  const cleanupTestData = async (): Promise<void> => {
-    try {
-      // 先清理第三方绑定记录
-      const thirdPartyRepo = dataSource.getRepository(ThirdPartyAuthEntity);
-      await thirdPartyRepo.clear();
-
-      // 清理统一测试账号
-      await cleanupTestAccounts(dataSource);
-
-      // 清理额外的特殊状态测试账号
-      const accountRepository = dataSource.getRepository(AccountEntity);
-      const specialAccounts = [bannedUser, pendingUser];
-      const loginNames = specialAccounts.map((account) => account.loginName);
-
-      if (loginNames.length > 0) {
-        await accountRepository.delete({
-          loginName: In(loginNames),
-        });
-      }
-    } catch (error) {
-      console.warn('清理测试数据失败:', error);
-    }
+  const cleanupTestData = async (owned: OwnedResourceLedger, helper: string): Promise<void> => {
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper,
+      owned,
+      residue: {
+        accounts: [...buildTestAccountResidue(['guest']), ...specialAccountResidues],
+        thirdPartyAuths: [
+          {
+            accountLoginName: activeUser.loginName,
+            provider: ThirdPartyProviderEnum.WEAPP,
+            providerUserId: MOCK_WEAPP_OPENID_BOUND,
+            unionId: MOCK_WEAPP_UNIONID,
+          },
+        ],
+      },
+    });
   };
 
   /**
@@ -159,6 +182,7 @@ describe('Auth (e2e)', () => {
         dataSource,
         createAccountUsecase,
         includeKeys: ['guest'], // 只创建 guest 账号作为 activeUser
+        ownership,
       });
 
       // 创建额外的特殊状态测试账号。
@@ -166,7 +190,18 @@ describe('Auth (e2e)', () => {
       // 而 CreateAccountUsecase 已对双状态一致性失败关闭（BANNED 无对应 UserState），
       // 因此直接走 repo 造数，不经过 Usecase；登录拒绝断言只依赖 account.status。
       const specialAccounts = [bannedUser, pendingUser];
-      await Promise.all(specialAccounts.map((account) => seedSpecialStatusAccount(account)));
+      // R03：并行造数必须等待全部 settle 再抛出首个错误，避免兄弟写入与收尾竞争。
+      const specialResults = await Promise.allSettled(
+        specialAccounts.map((account) =>
+          seedSpecialStatusAccount({ dataSource, account, ownership }),
+        ),
+      );
+      const failedSpecial = specialResults.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failedSpecial) {
+        throw failedSpecial.reason;
+      }
 
       // 绑定 WeApp 第三方登录到 guest 账号
       await seedWeAppThirdPartyBinding();
@@ -174,50 +209,6 @@ describe('Auth (e2e)', () => {
       console.error('❌ 创建测试账户失败:', error);
       throw error;
     }
-  };
-
-  /**
-   * 直接经 repo 创建特殊状态 fixture（绕过 CreateAccountUsecase 的双状态一致性校验）
-   */
-  const seedSpecialStatusAccount = async (account: {
-    loginName: string;
-    loginEmail: string;
-    loginPassword: string;
-    status: AccountStatus;
-    accessGroup: IdentityTypeEnum[];
-    identityType: IdentityTypeEnum;
-  }): Promise<void> => {
-    const accountRepo = dataSource.getRepository(AccountEntity);
-    const userInfoRepo = dataSource.getRepository(UserInfoEntity);
-
-    // 1) 先插入占位账号拿到 createdAt
-    const temp = await accountRepo.save(
-      accountRepo.create({
-        loginName: account.loginName,
-        loginEmail: account.loginEmail,
-        loginPassword: 'temp',
-        status: account.status,
-        identityHint: account.identityType,
-      }),
-    );
-    // 2) 根据 createdAt 计算散列并回写
-    const hashed = AccountService.hashPasswordWithTimestamp(account.loginPassword, temp.createdAt);
-    await accountRepo.update(temp.id, { loginPassword: hashed });
-
-    // 3) 写 user_info（metaDigest 与 accessGroup 保持一致）
-    await userInfoRepo.save(
-      userInfoRepo.create({
-        accountId: temp.id,
-        nickname: `${account.loginName}_nickname`,
-        gender: Gender.SECRET,
-        email: account.loginEmail,
-        accessGroup: account.accessGroup,
-        metaDigest: account.accessGroup,
-        notifyCount: 0,
-        unreadCount: 0,
-        userState: UserState.ACTIVE,
-      }),
-    );
   };
 
   /**
@@ -235,7 +226,7 @@ describe('Auth (e2e)', () => {
     });
 
     if (!existed) {
-      await thirdPartyRepo.save(
+      const saved = await thirdPartyRepo.save(
         thirdPartyRepo.create({
           accountId: account.id,
           provider: ThirdPartyProviderEnum.WEAPP,
@@ -244,6 +235,19 @@ describe('Auth (e2e)', () => {
           accessToken: null,
         }),
       );
+      recordOwnedResource(ownership, 'thirdPartyAuth', saved.id, {
+        accountId: account.id,
+        provider: ThirdPartyProviderEnum.WEAPP,
+        providerUserId: MOCK_WEAPP_OPENID_BOUND,
+        unionId: MOCK_WEAPP_UNIONID,
+      });
+    } else {
+      recordOwnedResource(ownership, 'thirdPartyAuth', existed.id, {
+        accountId: account.id,
+        provider: ThirdPartyProviderEnum.WEAPP,
+        providerUserId: MOCK_WEAPP_OPENID_BOUND,
+        unionId: MOCK_WEAPP_UNIONID,
+      });
     }
   };
 
@@ -569,27 +573,5 @@ describe('Auth (e2e)', () => {
       expect(accessToken.split('.')).toHaveLength(3);
       expect(refreshToken.split('.')).toHaveLength(3);
     });
-  });
-
-  afterAll(async () => {
-    try {
-      // 检查数据库连接状态，只有在连接有效时才进行清理
-      if (dataSource && dataSource.isInitialized) {
-        await cleanupTestAccounts(dataSource);
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      // 确保应用正确关闭，添加延迟以允许 WebSocket 服务器优雅关闭
-      if (app) {
-        try {
-          await app.close();
-          // 给 WebSocket 服务器一些时间来完成清理
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
-        }
-      }
-    }
   });
 });
