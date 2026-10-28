@@ -1,10 +1,9 @@
 ## 关联任务
 
-- 模块：PR0 / PR0a，资料采集数据库与公共接口前置建设。
-- 当前状态：A01/A04 修复及 D01/E01 本地收尾已执行完成：一轮 core 625项通过、39样例、KEEP前后不变及正常零残留；等待新候选交付、独立复核和 B 本人验收。
-- 本地候选：`f39a8f9b2741da226f1136c0621d28641692bc2f` + 未提交及新增修复文件。**此旧 SHA 单独不包含修复；提交推送后必须在交付消息提供新完整 SHA。**
-- 当前 PR 继续使用共享 fork `GandianTX/lithography-platform` 的 #1，base `main` / head `feat/data-collection-core`。本轮未更新远端正文、未核验新远端 head/CI。
-- B 本人独立签收、新候选必要 CI 和 Review 完成前不合并；A/执行 AI 不代签、不自行合并。
+- 模块：PR0 / PR0a，资料采集数据库与公共接口前置建设
+- 当前状态：A 侧已完成本轮清理安全修复和交付收尾；完整 core 一轮625项通过、39样例、KEEP保留和正常零残留已验证，等待新候选复审及 B 本人独立签收
+- 已核验代码与证据交付 SHA：853cda382f466ab6ca09c2564f12fa1f04dcbd08；已推送至 GandianTX/lithography-platform 的 feat/data-collection-core。本次后续若仅更新正文/交接文档，以 PR 实际最新 head 及对应 CI 为准
+- 本 PR 为普通 PR；B 签收、必要 CI 和 Review 完成之前不合并
 
 ## 改动内容
 
@@ -14,8 +13,7 @@
 - 扩展现有参考资料表，支持组织归属、来源回链等信息。
 - 实现两类草稿、私有单附件、送审冻结、退回重提、审核发布。
 - 实现本组织参考资料读取及正式案例更正，保留管理员原有资料创建和上传能力。
-- 修复 retained-only 清理生成空 WHERE 的问题，并补齐失败收尾、残留恢复及引用闭包回归测试。
-- 移除会整表删除 `base_user_account` / `base_user_info` / `organization_membership` 的 `cleanupTestAccounts` 导出，迁移 13 个直接消费者（9 个 core + 3 个外围 + register 规格）为“真实 ID 账本 + 双门禁 + 残留指纹 + 统一收尾”，并新增第三/四类资源（第三方绑定、验证记录、维修申请、工程师回复）的归属收集、引用闭包与固定顺序精确删除。
+- 修复 retained-only 空 WHERE 及旧账号清理无范围删除：移除 cleanupTestAccounts，迁移实际调用方，按真实ID、预期字段及引用闭包预检后在同一事务精确清理；异常留账、afterAll和主次错误可见。补齐A01配置传递及A04子结束确认，未确认结束时不认领、不登记、不DROP。
 - 针对 [B 的 Review](https://github.com/GandianTX/lithography-platform/pull/1#pullrequestreview-5646340531)，新增正式增量迁移入口 migration:status / migration:run / migration:verify，明确配置和目标，只执行 pending 迁移，不清表、不执行 synchronize 或 Mock Seed。
 - 补齐迁移历史与结构预检、关键索引/外键有序列映射、MySQL 部分 DDL 失败诊断及恢复说明；主因、解锁和关闭失败均可见，收尾失败不提前输出最终成功。
 
@@ -40,38 +38,52 @@
 - 已验证空库迁移、旧十四条加新增十条的升级演练；另在带合成旧资料的旧库副本上执行正式增量入口，历史 14→24，再次执行 0 条，核对旧正文、文件引用、软删事实保留及组织/入库方式回填。
 - 同名索引或外键被改列的旧库会在升级写入前拒绝，历史保持 14 条，不自动修复错误结构后放行。
 - MySQL 多步 DDL 失败不保证整体回滚；失败后保留现场，按实际历史/结构及备份恢复流程处理，不自动 down、清历史或盲目重试。
-- 历史验收中已完整执行两轮 Seed，并核对非 Mock 合成记录逐字段不变；本轮不重复Seed或用其代替core保留核验。
+- 历史验收中已完整执行两轮 Seed，并核对非 Mock 合成记录逐字段不变；本轮不重复Seed，也不以Seed代替core数据保留核验。
 
 ## A 侧实际验证
 
-执行使用 Node **22.19.0**。最新运行及候选指纹见[交付收尾执行回执](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-B审查core清理安全修复计划-20261026/A01-A04交付收尾与KEEP补证执行回执-20261028.md)。该链接须在本地材料实际提交推送后核对可读性。
+运行时：Node 22.19.0；当前后端验收入口为Linux/WSL受控启动器，完整显式配置不依赖私人env，AI_PROVIDER_MODE=mock。
+本轮使用全新独占可丢弃 MySQL 8.0.46 / Redis（非默认端口），core关闭全库TRUNCATE、夹具清理另有显式授权；24表及5文件前后不变，正常夹具/探针残留0。本轮服务已关闭；此前3306/6379事故未访问、未恢复。
 
-- [x] A01：显式分页/字段加密/mock 配置校验并同源传递，缺失/空白拒绝，不依赖私人 env。
-- [x] A04：子运行 null、信号、启动/等待错误等未确认结束时不认领、不登记、不 DROP；正常明确非零仍允许凭唯一匹配创建凭据交接。
-- [x] A01/A04 局部负对照在临时源码/精确边界验证；恢复后通过，不修改工作区实现。
-- [x] 前次独立终审实跑：后端 1332 项取得通过结果，31 项迁移实库专项条件跳过；首轮 6 项本机监听被沙箱拒绝后定向重跑 6/6，通过。不是把首轮失败写成整组 exit 0。
-- [x] 前次独立终审实跑：前端 112 文件/1557 项通过，构建通过；后端 build/tools/spec 三套类型检查通过。被测源码、lock 未变，按命题沿用，不重复宣称新运行。
-- [x] 本轮最终 core：Node22.19.0、独占非默认端口实例、无私人env副本、全局清库关闭，**48规格/625 passed，0 failed/0 skipped，runner exit0，一轮**；同轮39样例（A26/B13）。
-- [x] E01：运行前后全部24表逐字段摘要一致，5个KEEP文件及完整存储文件清单一致；正常数据库/文件夹具和探针库残留0，检查exit0。前后快照SHA-256相同，详见收尾回执。
-- [x] 既有14条 accepted Migration 未改；只新增十条迁移，九表及参考资料扩展属于已授权设计。
-- [x] 原正式旧库增量升级、备份恢复及相关迁移验收事实保留；不冒称默认跳过的31项本轮已实库执行，也不重新覆盖 B 既有签收事实。
-- [ ] B 针对新完整候选独立复现并签收。
-- [ ] 新候选必要 CI 与 Review；旧 d4535bc 的历史 CI 不代替当前候选。
+- [x] 后端 build/tools/spec 三套类型检查、适用无fix ESLint通过；生产源码构建的既有结果按源码/lock未变沿用
+- [x] 后端单测：109个非跳过规格取得通过结果，1332 tests passed、31 skipped；首轮6项因沙箱拒绝本机监听失败，定向重跑6/6通过，不把首轮写成exit0
+- [x] 31项迁移实库专项的历史验收事实保留；本轮单测中的31项skip未计为本轮实库通过
+- [x] 前端类型检查和构建通过；已有格式/lint结果按源码与配置未变沿用
+- [x] 前端单测：112 files / 1557 tests
+- [x] core E2E：48个规格 / 625 tests，0 failed、0 skipped，正式runner及外层退出码0，一轮；无私人env源码副本与当前运行文件指纹一致
+- [x] 本轮新建空库24条Migration及关键结构校验通过；历史旧库升级、备份恢复与Seed非Mock保留证据按具体命题保留，不重做或代签B
+- [x] 实际fixture部分失败/收尾/恢复相关规格通过；本轮完整core前后全部24表数据摘要、5文件及完整存储清单一致，正常DB/文件/探针零残留
+- [x] production 判定下真实 HTTP 错误类别验证
+- [x] 资料/案例独立场景及完整2场景、39条样例（A26/B13）核对；与本轮一轮core同次采集，不再为同次签收重复双跑
+- [x] 关键保护负对照：历史迁移列比较/提前成功反例保留；本轮A01撤掉分页配置传递、A04撤掉子结束guard时目标断言失败，恢复后通过，SQL采用精确替身
+- [x] 未提交密钥、真实资料、原始日志、数据库或构建产物
+- [ ] B 独立复现并签收
+- [ ] 新候选 Backend、Frontend、Frontend unit (Windows) CI：待核对实际PR head；d4535bc历史成功不代替本次新提交
+- [ ] Review 意见处理完毕并完成复审
 
-39 是请求响应样例数，不是 Jest 测试数。旧 557/600/622 等数字及双跑结果仅作为对应历史候选证据，不写成当前625项候选已双跑。
-
-本轮新实例不接触共享/真实环境；此前默认3306/6379事故仍由实例拥有者另行处置，新的隔离验证不证明事故已恢复。
+注：39 是请求响应样例数量，不是 Jest 测试数量。
+上述为A的实际本地结果，不等于CI通过或B签收。本轮修改了测试清理与运行基础设施，不能沿用旧SHA的CI结论；853cda3已包含运行修复和可交接证据，后续正文修订不改变被测源码。A02参数自动白名单/A03只读预检关闭诊断保持后续P3，只按约定运行core/明确本地规格；不把使用约定当成软件已自动封锁其他参数。
+旧 PR3 专用 check:entity-scope 禁止 Entity 变化，不适用于本 PR 已授权九表及参考资料扩展；未将该脚本误报为通过，详细说明见终审报告。
 
 ## 交接与验收入口
 
-- [当前交付说明](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-复审交付材料-20261026/README.md)
-- [B当前执行清单](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-复审交付材料-20261026/B独立验收执行清单.md)
-- [本轮收尾回执](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/PR0-B审查core清理安全修复计划-20261026/A01-A04交付收尾与KEEP补证执行回执-20261028.md)
-- [正式旧库增量升级说明](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/增量升级操作说明-20261026.md)
+从以下仓库文档入口阅读当前交付和B独立验收说明；终审报告保留收尾前D01/E01时点，后续执行关闭证据见最新收尾回执，不改写历史结论：
 
-B 只接收 A 实际推送后的新完整 SHA，在自己的 Linux/WSL 独占可丢弃环境，用完整显式配置预检后，预置 KEEP、完整 core **一轮**并同轮导出39样例，再比较非夹具/文件及正常夹具残留。不要以旧 d4535bc、只有 f39a8f9 的提交、私人 env 或原生 Windows PID 事实作为本轮运行依据。
+[数据库文档入口](https://github.com/GandianTX/lithography-platform/blob/feat/data-collection-core/docs/database/README.md)
 
-受控启动器依赖 Linux `/proc`；Windows 用户先进入 WSL。A02 执行参数自动白名单、A03 只读预检关闭诊断为后续 P3；本期约定只运行 core/明确本地规格，不能说软件已自动封锁全部范围外参数。
+- [完整独立终审报告（收尾前快照）](https://github.com/GandianTX/lithography-platform/blob/853cda382f466ab6ca09c2564f12fa1f04dcbd08/docs/database/PR0-B审查core清理安全修复计划-20261026/PR0完整候选独立终审报告-20261028.md)
+- [本轮交付收尾与KEEP补证回执](https://github.com/GandianTX/lithography-platform/blob/853cda382f466ab6ca09c2564f12fa1f04dcbd08/docs/database/PR0-B审查core清理安全修复计划-20261026/A01-A04交付收尾与KEEP补证执行回执-20261028.md)
+
+B 需要在约定候选版本、自己的隔离环境中：
+
+1. 确认最新完整 SHA；已有旧库先按正式 status → run → verify → run 升级，核对旧数据/回填及再次执行 0 条，不能用清库演练替代。
+2. 按当前B执行清单，在自己的Linux/WSL独占可丢弃环境预检完整显式配置后，预置KEEP并运行完整core一轮（当前48规格/625项），或记录双方明确P1清单；完整core已含两条样例链，不重复运行，也不以两条样例代替安全门禁。
+3. 跑通普通资料链：草稿、附件、送审、退回、重提、发布、下载。
+4. 跑通案例链：送审、发布、结构化读取、正式案例更正。
+5. 核对runner退出码0、2个完整场景、39样例，KEEP记录/文件前后不变及正常数据库/文件/探针零残留；不手工清库凑零。
+6. 记录实际 SHA、环境、执行结果及疑问，并明确签收结论。
+
+首次空库与旧库采用不同路径；B只使用A实际推送后的新完整候选SHA，不使用只有f39a8f9的旧提交。Windows先进入WSL，不混用原生Windows进程事实；配置、KEEP构造和核验代码见最新回执，不依赖A的临时目录。
 
 ## 本 PR 不包含
 
