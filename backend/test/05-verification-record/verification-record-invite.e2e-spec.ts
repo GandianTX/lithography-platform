@@ -2,13 +2,24 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ApiModule } from '@src/bootstraps/api/api.module';
-import { VerificationRecordEntity } from '@src/modules/verification-record/verification-record.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  type ResidueVerificationRecordFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource } from 'typeorm';
+import { getAccountIdByLoginName } from '../utils/e2e-graphql-utils';
 
 interface GraphqlError {
   readonly message: string;
@@ -112,7 +123,18 @@ describe('05-VerificationRecord 邀请停用 E2E', () => {
   let dataSource: DataSource;
   let createAccountUsecase: CreateAccountUsecase;
   let staffAccessToken: string;
+  let staffAccountId: number;
   let previousIntrospectionEnabled: string | undefined;
+
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staff']);
+  const residueVerificationRecords: ResidueVerificationRecordFingerprint[] = [
+    {
+      type: 'PASSWORD_RESET',
+      issuedByAccountLoginName: testAccountsConfig.staff.loginName,
+      payload: { reason: 'p4-regression' },
+    },
+  ];
 
   beforeAll(async () => {
     // E2E 基线默认关闭 introspection；本 spec 仅在自身 API 初始化期间临时开启，
@@ -131,12 +153,19 @@ describe('05-VerificationRecord 邀请停用 E2E', () => {
     dataSource = moduleFixture.get<DataSource>(DataSource);
     createAccountUsecase = moduleFixture.get<CreateAccountUsecase>(CreateAccountUsecase);
 
-    await dataSource.createQueryBuilder().delete().from(VerificationRecordEntity).execute();
-    await cleanupTestAccounts(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'verification-record-invite.e2e beforeAll',
+      residue: {
+        accounts: residueAccounts,
+        verificationRecords: residueVerificationRecords,
+      },
+    });
     await seedTestAccounts({
       dataSource,
       createAccountUsecase,
       includeKeys: ['staff'],
+      ownership,
     });
 
     staffAccessToken = await login(
@@ -144,18 +173,30 @@ describe('05-VerificationRecord 邀请停用 E2E', () => {
       testAccountsConfig.staff.loginName,
       testAccountsConfig.staff.loginPassword,
     );
+    staffAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.staff.loginName);
   }, 60000);
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
-
-    if (previousIntrospectionEnabled === undefined) {
-      delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
-    } else {
-      process.env.GRAPHQL_INTROSPECTION_ENABLED = previousIntrospectionEnabled;
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'verification-record-invite.e2e afterAll',
+          owned: ownership,
+          residue: {
+            accounts: residueAccounts,
+            verificationRecords: residueVerificationRecords,
+          },
+        }),
+      finalize: () => {
+        if (previousIntrospectionEnabled === undefined) {
+          delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
+        } else {
+          process.env.GRAPHQL_INTROSPECTION_ENABLED = previousIntrospectionEnabled;
+        }
+      },
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   it('创建入口只暴露 PASSWORD_RESET 类型', async () => {
@@ -231,5 +272,16 @@ describe('05-VerificationRecord 邀请停用 E2E', () => {
     expect(result?.data?.type).toBe('PASSWORD_RESET');
     expect(result?.data?.status).toBe('ACTIVE');
     expect(result?.token).toEqual(expect.any(String));
+
+    if (result?.data?.id !== undefined) {
+      recordOwnedResource(ownership, 'verificationRecord', result.data.id, {
+        type: 'PASSWORD_RESET',
+        targetAccountId: null,
+        subjectType: null,
+        subjectId: null,
+        issuedByAccountId: staffAccountId,
+        payload: { reason: 'p4-regression' },
+      });
+    }
   });
 });

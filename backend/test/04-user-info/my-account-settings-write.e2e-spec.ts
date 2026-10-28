@@ -14,7 +14,13 @@ import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+  updateOwnedExpectation,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * P2 / P3：`updateMyAccountSettings` 与 `changeMyPassword` 两个写 Mutation 的真实
@@ -130,6 +136,7 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   let adminToken: string;
   let staffToken: string;
   let guestToken: string;
+  const ownership = createOwnedResourceLedger();
   let guestAccountId: number;
   let staffAccountId: number;
 
@@ -160,10 +167,23 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.guestSecondary,
+        ].map(toResidueAccountFingerprint),
+      },
+      helper: 'my-account-settings-write.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'staffPrimary', 'guestPrimary', 'guestSecondary'],
+      ownership,
     });
 
     adminToken = await login({
@@ -190,6 +210,13 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'my-account-settings-write.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
     if (previousIntrospectionEnabled === undefined) {
       delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
@@ -321,14 +348,16 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       );
       expect(settings?.status).toBe(AccountStatus.ACTIVE);
 
-      const row = await readUserInfoRow(
+      const targetAccountId =
         _label === 'CUSTOMER'
           ? guestAccountId
           : _label === 'ENGINEER'
             ? staffAccountId
-            : await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName),
-      );
+            : await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
+      const row = await readUserInfoRow(targetAccountId);
       expect(row?.nickname).toBe(nickname);
+      // N01：合法昵称变更成功后同步更新本轮预期。
+      updateOwnedExpectation(ownership, 'account', targetAccountId, { nickname });
     });
 
     it('一个会话的写入不影响其他会话读到的自己的资料', async () => {
@@ -502,6 +531,8 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       );
 
       guestCredentials.loginName = renamed;
+      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+      updateOwnedExpectation(ownership, 'account', guestAccountId, { loginName: renamed });
     });
 
     it('改登录邮箱后可用新邮箱登录，旧邮箱立即失效', async () => {
@@ -517,6 +548,8 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       const row = await readAccountRow(guestAccountId);
       expect(row?.loginEmail).toBe(renamedEmail);
       guestCredentials.loginEmail = renamedEmail;
+      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+      updateOwnedExpectation(ownership, 'account', guestAccountId, { loginEmail: renamedEmail });
     });
 
     it('联系邮箱永不成为登录凭据', async () => {
@@ -534,6 +567,8 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       const row = await readAccountRow(guestAccountId);
       expect(row?.loginEmail).toBe(guestCredentials.loginEmail);
       expect((await readUserInfoRow(guestAccountId))?.email).toBe(contactOnly);
+      // N01：联系邮箱属于 user_info.email，与账号 loginEmail 分开更新预期。
+      updateOwnedExpectation(ownership, 'account', guestAccountId, { userInfoEmail: contactOnly });
     });
   });
 
@@ -563,6 +598,8 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       const row = await readAccountRow(guestAccountId);
       expect(row?.loginName).toBeNull();
       expect(row?.loginEmail).toBe(guestCredentials.loginEmail);
+      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+      updateOwnedExpectation(ownership, 'account', guestAccountId, { loginName: null });
       await expectLoginSucceeds(guestCredentials.loginEmail, guestCredentials.password);
       await expectLoginFails(guestCredentials.loginName, guestCredentials.password);
     });
@@ -598,6 +635,10 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       const body = await updateSettings(guestToken, { loginName: guestCredentials.loginName });
 
       expectUpdated(body, { loginName: guestCredentials.loginName });
+      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
+      updateOwnedExpectation(ownership, 'account', guestAccountId, {
+        loginName: guestCredentials.loginName,
+      });
       await expectLoginSucceeds(guestCredentials.loginName, guestCredentials.password);
     });
   });
@@ -624,6 +665,9 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       expect(row?.companyName).toBe('示例科技有限公司');
       expect(row?.phone).toBe('13900001111');
       expect(row?.email).toBe('contact.updated@example.com');
+      updateOwnedExpectation(ownership, 'account', guestAccountId, {
+        userInfoEmail: 'contact.updated@example.com',
+      });
       // 资料更新不触碰状态与角色列
       expect(row?.userState).toBe(UserState.ACTIVE);
       expect(row?.accessGroup).toEqual([IdentityTypeEnum.CUSTOMER]);
@@ -637,6 +681,9 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
         companyName: '示例科技有限公司',
         phone: '13900001111',
         contactEmail: 'contact.updated@example.com',
+      });
+      updateOwnedExpectation(ownership, 'account', guestAccountId, {
+        nickname: 'guest_profile_round2',
       });
     });
 
@@ -658,6 +705,7 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       expect(row?.companyName).toBeNull();
       expect(row?.phone).toBeNull();
       expect(row?.email).toBeNull();
+      updateOwnedExpectation(ownership, 'account', guestAccountId, { userInfoEmail: null });
 
       const after = await readMySettings(guestToken);
       expect(after.data?.myAccountSettings?.companyName).toBeNull();

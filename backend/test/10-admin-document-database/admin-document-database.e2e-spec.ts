@@ -10,6 +10,16 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 import { login, postGql } from '../utils/e2e-graphql-utils';
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
 import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import {
+  buildSuiteOrganizationCodes,
+  seedTestMemberships,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
+import {
   ADMIN_DOC_FIXTURE_ACCOUNTS,
   ADMIN_DOC_FIXTURE_MARKERS,
   cleanupAdminDocumentFixtureByIds,
@@ -39,6 +49,9 @@ describe('AdminDocumentDatabase (e2e)', () => {
   let customerToken: string;
   let fixtureIds: AdminDocFixtureIds;
   const ownership = createAdminDocFixtureOwnership();
+  const suiteOwnership = createOwnedResourceLedger();
+  // 规格专属测试组织（聚合统计用例的可信组织上下文；编码带 E2E 前缀，清理以编码为界）
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMDOC');
   /** R1：仅当 beforeAll 在「写夹具之前」完成白名单验证才置位，afterAll 据此决定能否清理。 */
   let fixtureTargetValidated = false;
 
@@ -66,6 +79,25 @@ describe('AdminDocumentDatabase (e2e)', () => {
     // afterAll 只关闭 app，不会在未授权目标上 DELETE。
     fixtureTargetValidated = true;
 
+    // A-PR0 组织适配：先按组织编码清理残留成员/组织（fk_organization_membership_account
+    // RESTRICT 会阻塞 fixture 账号回收）；删除经双门禁（许可+库名，互相独立），
+    // 再清 fixture 残留
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        organizations: [
+          {
+            organizationCode: suiteOrganizationCodes.primary,
+            name: 'E2E 甲方组织（文档库统计）',
+            kind: 'CLIENT',
+          },
+        ],
+      },
+      // fixture 账号由相邻的 cleanupAdminDocumentFixture* 事务管理：这里只用于成员归属核验
+      retainedAccounts: Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map(toResidueAccountFingerprint),
+      helper: 'admin-document-database.e2e-spec beforeAll 预清理',
+    });
+
     // 上轮残留只能按专属标记定位，逐字段/引用核验通过后才在事务中精确回收。
     await cleanupAdminDocumentFixtureResidue(dataSource);
 
@@ -86,6 +118,32 @@ describe('AdminDocumentDatabase (e2e)', () => {
       customerAccountId: accountIds.customer,
       ...businessIds,
     };
+
+    // 聚合统计用例（adminDocumentDatabaseStats）经可信组织上下文解析：
+    // fixture 管理员需要本规格专属组织的 ACTIVE 成员关系
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 甲方组织（文档库统计）',
+          kind: 'CLIENT',
+        },
+      ],
+      ownership: suiteOwnership,
+    });
+    await seedTestMemberships({
+      dataSource,
+      organizationIdsByCode: organizationIds,
+      ownership: suiteOwnership,
+      memberships: [
+        {
+          accountLoginName: ADMIN_DOC_FIXTURE_ACCOUNTS.admin.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+      ],
+    });
 
     adminToken = await login({
       app,
@@ -111,7 +169,19 @@ describe('AdminDocumentDatabase (e2e)', () => {
       app,
       dataSource,
       targetValidated: fixtureTargetValidated,
-      cleanup: (ds) => cleanupAdminDocumentFixtureByIds(ds, ownership),
+      cleanup: async (ds) => {
+        // 先清组织成员/组织（否则成员关系阻塞 fixture 账号回收，组织链清理经双门禁），
+        // 再按归属精确清 fixture
+        await runGuardedSpecCleanup({
+          dataSource: ds,
+          owned: suiteOwnership,
+          retainedAccounts: Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map(
+            toResidueAccountFingerprint,
+          ),
+          helper: 'admin-document-database.e2e-spec afterAll 组织链清理',
+        });
+        await cleanupAdminDocumentFixtureByIds(ds, ownership);
+      },
     });
   });
 

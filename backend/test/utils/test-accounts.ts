@@ -6,6 +6,12 @@ import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.ent
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { CreateAccountUsecase } from '@usecases/account/create-account.usecase';
 import { DataSource } from 'typeorm';
+import {
+  recordOwnedResource,
+  toResidueAccountFingerprint,
+  type OwnedResourceLedger,
+  type ResidueAccountFingerprint,
+} from './e2e-scoped-cleanup';
 
 export interface TestAccountConfig {
   loginName: string;
@@ -98,39 +104,80 @@ export const testAccountsConfig = {
     accessGroup: [IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.ENGINEER],
     identityType: IdentityTypeEnum.ENGINEER,
   },
+  /** 第二组织管理员：组织范围用例（参考资料组织隔离）构造对侧管理员身份 */
+  peerAdmin: {
+    loginName: 'testpeeradmin',
+    loginEmail: 'peer.admin@example.com',
+    loginPassword: 'testPeerAdmin@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+  /** 无有效组织成员关系的工程师：组织解析拒绝用例（不建成员关系） */
+  noOrgEngineer: {
+    loginName: 'testnoorgengineer',
+    loginEmail: 'no.org.engineer@example.com',
+    loginPassword: 'testNoOrgEngineer@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.ENGINEER],
+    identityType: IdentityTypeEnum.ENGINEER,
+  },
+  /** 多有效组织成员关系的工程师：组织歧义拒绝用例（两个组织都建 ACTIVE 成员） */
+  ambiguousEngineer: {
+    loginName: 'testambiguousengineer',
+    loginEmail: 'ambiguous.engineer@example.com',
+    loginPassword: 'testAmbiguousEngineer@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.ENGINEER],
+    identityType: IdentityTypeEnum.ENGINEER,
+  },
 } satisfies Record<string, TestAccountConfig>;
 
 export type TestAccountKey = keyof typeof testAccountsConfig;
 
 /**
- * 清理所有与测试账号相关的数据
- * （按外键方向：先 user_info → account）
+ * 按账号 key 生成完整指纹，供 `runGuardedSpecCleanup` 的残留定位使用。
+ * 自然键只用于定位候选，昵称/状态/角色等字段必须逐项匹配才允许接管。
  */
-export const cleanupTestAccounts = async (dataSource: DataSource): Promise<void> => {
-  await dataSource.createQueryBuilder().delete().from(UserInfoEntity).execute();
-  await dataSource.createQueryBuilder().delete().from(AccountEntity).execute();
-};
+export const buildTestAccountResidue = (
+  keys: readonly TestAccountKey[],
+): ResidueAccountFingerprint[] =>
+  keys.map((key) => toResidueAccountFingerprint(testAccountsConfig[key]));
 
 /**
  * 造数入口（优先用 Usecase；无 Usecase 时走 repo 回落）
  * - 不写 metaDigest，交由系统内部一致性逻辑生成
  * - 只创建通用账号与 user_info，不创建业务身份 profile
+ * - `ownership` 存在时登记数据库真实账号 ID，供本轮精确清理
  */
 export const seedTestAccounts = async (opts: {
   dataSource: DataSource;
   createAccountUsecase?: CreateAccountUsecase | null;
   // 可选：显式指定要创建哪些 key，不传则全量
   includeKeys?: TestAccountKey[];
+  ownership?: OwnedResourceLedger;
 }): Promise<void> => {
-  const { dataSource, createAccountUsecase, includeKeys } = opts;
+  const { dataSource, createAccountUsecase, includeKeys, ownership } = opts;
   const list = includeKeys ?? (Object.keys(testAccountsConfig) as TestAccountKey[]);
 
-  await Promise.all(
-    list.map(async (key) => {
-      const cfg = testAccountsConfig[key];
-      await createTestAccount(dataSource, createAccountUsecase || null, cfg);
-    }),
+  // 全部造数必须先收敛再退出：一项失败时其他账号可能仍在途，
+  // 若提前抛出，afterAll/closeApp 之后仍会有写库操作。
+  const results = await Promise.allSettled(
+    list.map((key) =>
+      createTestAccount(
+        dataSource,
+        createAccountUsecase || null,
+        testAccountsConfig[key],
+        ownership,
+      ),
+    ),
   );
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) {
+    throw failed.reason;
+  }
 };
 
 /**
@@ -146,6 +193,7 @@ export const createTestAccount = async (
   dataSource: DataSource,
   createAccountUsecase: CreateAccountUsecase | null,
   cfg: TestAccountConfig,
+  ownership?: OwnedResourceLedger,
 ): Promise<{ accountId: number }> => {
   if (createAccountUsecase) {
     const created = await createAccountUsecase.execute({
@@ -174,42 +222,75 @@ export const createTestAccount = async (
         userState: UserState.ACTIVE,
       },
     });
-    return { accountId: created.id };
+    const accountId = created.id;
+    if (ownership) {
+      // R02：登记真实 ID 的同时登记最小预期事实（来自受控输入），删除前仍会逐项核对。
+      recordOwnedResource(ownership, 'account', accountId, {
+        loginName: cfg.loginName,
+        loginEmail: cfg.loginEmail,
+        status: cfg.status,
+        identityHint: cfg.identityType,
+        accessGroup: cfg.accessGroup,
+        nickname: `${cfg.loginName}_nickname`,
+        userInfoEmail: cfg.loginEmail,
+        userState: 'ACTIVE',
+      });
+    }
+    return { accountId };
   }
 
-  // 回落路径：不依赖 Usecase（直接 repo）
-  const accountRepo = dataSource.getRepository(AccountEntity);
-  const userInfoRepo = dataSource.getRepository(UserInfoEntity);
+  // 回落路径：不依赖 Usecase（直接 repo）。
+  // 账号、密码回写、user_info 必须在同一事务内，任一阶段失败整体回滚，
+  // 避免中途失败留下无法按完整指纹回收的半账号。
+  const accountId = await dataSource.transaction(async (manager) => {
+    const accountRepo = manager.getRepository(AccountEntity);
+    const userInfoRepo = manager.getRepository(UserInfoEntity);
 
-  // 1) 先插入占位账号，拿到 createdAt
-  const temp = await accountRepo.save(
-    accountRepo.create({
+    // 1) 先插入占位账号，拿到 createdAt
+    const temp = await accountRepo.save(
+      accountRepo.create({
+        loginName: cfg.loginName,
+        loginEmail: cfg.loginEmail,
+        loginPassword: 'temp', // 占位
+        status: cfg.status,
+        identityHint: cfg.identityType,
+      }),
+    );
+    // 2) 根据 createdAt 计算散列并回写
+    const hashed = AccountService.hashPasswordWithTimestamp(cfg.loginPassword, temp.createdAt);
+    await accountRepo.update(temp.id, { loginPassword: hashed });
+
+    // 3) 写 user_info（设置 metaDigest 与 accessGroup 保持一致）
+    await userInfoRepo.save(
+      userInfoRepo.create({
+        accountId: temp.id,
+        nickname: `${cfg.loginName}_nickname`,
+        gender: Gender.SECRET,
+        email: cfg.loginEmail,
+        accessGroup: cfg.accessGroup,
+        // ✅ 设置 metaDigest 与 accessGroup 保持一致，避免安全检查失败
+        metaDigest: cfg.accessGroup,
+        notifyCount: 0,
+        unreadCount: 0,
+        userState: UserState.ACTIVE,
+      }),
+    );
+
+    return temp.id;
+  });
+
+  // 事务提交成功即登记，不把登记推迟到调用方完整返回之后。
+  if (ownership) {
+    recordOwnedResource(ownership, 'account', accountId, {
       loginName: cfg.loginName,
       loginEmail: cfg.loginEmail,
-      loginPassword: 'temp', // 占位
       status: cfg.status,
       identityHint: cfg.identityType,
-    }),
-  );
-  // 2) 根据 createdAt 计算散列并回写
-  const hashed = AccountService.hashPasswordWithTimestamp(cfg.loginPassword, temp.createdAt);
-  await accountRepo.update(temp.id, { loginPassword: hashed });
-
-  // 3) 写 user_info（设置 metaDigest 与 accessGroup 保持一致）
-  await userInfoRepo.save(
-    userInfoRepo.create({
-      accountId: temp.id,
-      nickname: `${cfg.loginName}_nickname`,
-      gender: Gender.SECRET,
-      email: cfg.loginEmail,
       accessGroup: cfg.accessGroup,
-      // ✅ 设置 metaDigest 与 accessGroup 保持一致，避免安全检查失败
-      metaDigest: cfg.accessGroup,
-      notifyCount: 0,
-      unreadCount: 0,
-      userState: UserState.ACTIVE,
-    }),
-  );
-
-  return { accountId: temp.id };
+      nickname: `${cfg.loginName}_nickname`,
+      userInfoEmail: cfg.loginEmail,
+      userState: 'ACTIVE',
+    });
+  }
+  return { accountId };
 };

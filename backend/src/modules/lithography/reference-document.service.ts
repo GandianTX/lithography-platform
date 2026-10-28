@@ -5,7 +5,7 @@ import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domai
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { Repository } from 'typeorm';
+import { Repository, type QueryDeepPartialEntity } from 'typeorm';
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
 import {
   ReferenceDocumentDeleteOutcome,
@@ -38,8 +38,13 @@ export class ReferenceDocumentService {
    *
    * 初始状态由本方法统一保证：
    * - deprecated = false，deletedAt 为 NULL；
+   * - ownerOrganizationId / ingestMethod 由 usecase 传入（可信组织上下文与入库方式
+   *   判定均归 usecase，本层不自行推断，也不接受客户端直传）；
    * - 内容来源为正文或存储引用至少一个（chk_reference_document_content_source 兜底）；
-   * - 存储引用由 usecase 层经存储契约生成（服务端随机、无路径语义），本方法不参与命名。
+   * - 存储引用由 usecase 层经存储契约生成（服务端随机、无路径语义），本方法不参与命名；
+   * - 审核发布（REVIEWED_SUBMISSION）时 usecase 传入 sourceSubmissionId /
+   *   sourceRevisionId / equipmentModelText / schemaVersion 回链与快照字段，
+   *   管理员直建不传（列取 NULL/默认值；来源同空或同有由 CHECK 兜底）
    *
    * @param data 已完成业务判定的写入数据
    * @param transactionContext 可选的事务上下文
@@ -55,6 +60,7 @@ export class ReferenceDocumentService {
         title: data.title,
         documentType: data.documentType,
         equipmentModelId: data.equipmentModelId,
+        equipmentModelText: data.equipmentModelText ?? null,
         description: data.description,
         contentText: data.contentText,
         originalFilename: data.originalFilename,
@@ -62,6 +68,12 @@ export class ReferenceDocumentService {
         storageBackend: data.storageBackend,
         storageReference: data.storageReference,
         createdByAccountId: data.createdByAccountId,
+        ownerOrganizationId: data.ownerOrganizationId,
+        ingestMethod: data.ingestMethod,
+        sourceSubmissionId: data.sourceSubmissionId ?? null,
+        sourceRevisionId: data.sourceRevisionId ?? null,
+        extensionJson: data.extensionJson ?? null,
+        schemaVersion: data.schemaVersion ?? 1,
         deprecated: false,
       });
       const saved = await repository.save(entity);
@@ -84,6 +96,8 @@ export class ReferenceDocumentService {
    *
    * 条件更新含 deprecated = 0，已软删行不可被编辑穿透；
    * 未命中时按状态事实返回 NOT_FOUND（负责人 docx 口径：不存在或已软删统一不可访问）。
+   * equipmentModelText / updatedByAccountId 为 S6 案例更正扩展的可选扩展列：
+   * 未传（undefined）时不进入更新集合（通用编辑路径保持原行为）。
    *
    * @param data 已完成合并与校验的写入数据
    * @param transactionContext 可选的事务上下文
@@ -94,17 +108,24 @@ export class ReferenceDocumentService {
     transactionContext?: PersistenceTransactionContext,
   ): Promise<{ id: number }> {
     const repository = this.getRepository(transactionContext);
+    const updatePayload: QueryDeepPartialEntity<ReferenceDocumentEntity> = {
+      title: data.title,
+      documentType: data.documentType,
+      equipmentModelId: data.equipmentModelId,
+      description: data.description,
+      contentText: data.contentText,
+    };
+    if (data.equipmentModelText !== undefined) {
+      updatePayload.equipmentModelText = data.equipmentModelText;
+    }
+    if (data.updatedByAccountId !== undefined) {
+      updatePayload.updatedByAccountId = data.updatedByAccountId;
+    }
     let affected: number;
     try {
       const result = await repository.update(
         { id: data.documentId, deprecated: false },
-        {
-          title: data.title,
-          documentType: data.documentType,
-          equipmentModelId: data.equipmentModelId,
-          description: data.description,
-          contentText: data.contentText,
-        },
+        updatePayload,
       );
       affected = result.affected ?? 0;
     } catch (error) {

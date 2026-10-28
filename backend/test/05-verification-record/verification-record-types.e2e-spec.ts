@@ -9,7 +9,19 @@ import { DataSource } from 'typeorm';
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { CreateAccountUsecase } from '@usecases/account/create-account.usecase';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  type OwnedResourceLedger,
+  type ResidueVerificationRecordFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 interface GraphqlBody<TData> {
   readonly data?: TData | null;
@@ -112,8 +124,9 @@ async function createVerificationRecord(params: {
   readonly bearer: string;
   readonly targetAccountId: number;
   readonly returnToken?: boolean;
+  readonly ownership: OwnedResourceLedger;
 }) {
-  return await postGql<CreateVerificationRecordData>(
+  const response = await postGql<CreateVerificationRecordData>(
     params.app,
     `
       mutation CreateVerificationRecord($input: CreateVerificationRecordInput!) {
@@ -145,6 +158,20 @@ async function createVerificationRecord(params: {
     },
     params.bearer,
   );
+
+  const createdId = response.body.data?.createVerificationRecord?.data?.id;
+  if (createdId !== undefined) {
+    // R02：登记真实 ID 与最小预期事实（类型/目标/subject/签发者/内容指纹）。
+    recordOwnedResource(params.ownership, 'verificationRecord', createdId, {
+      type: params.type,
+      targetAccountId: params.targetAccountId ?? null,
+      subjectType: 'ACCOUNT',
+      subjectId: params.targetAccountId ?? null,
+      issuedByAccountId: getMyAccountId(params.app, params.bearer),
+      payload: params.payload,
+    });
+  }
+  return response;
 }
 
 async function createPasswordResetToken(params: {
@@ -152,6 +179,7 @@ async function createPasswordResetToken(params: {
   readonly bearer: string;
   readonly targetAccountId: number;
   readonly title: string;
+  readonly ownership: OwnedResourceLedger;
 }): Promise<string> {
   const createResponse = await createVerificationRecord({
     app: params.app,
@@ -159,6 +187,7 @@ async function createPasswordResetToken(params: {
     payload: { title: params.title },
     bearer: params.bearer,
     targetAccountId: params.targetAccountId,
+    ownership: params.ownership,
   });
   const token = createResponse.body.data?.createVerificationRecord?.token;
   if (!token) throw new Error('未获取到密码重置 token');
@@ -224,6 +253,35 @@ describe('验证记录类型测试 E2E', () => {
   let staffAccessToken: string;
   let guestAccountId: number;
 
+  const ownership = createOwnedResourceLedger();
+  const residueAccounts = buildTestAccountResidue(['staff', 'guest']);
+  const residueVerificationRecords: ResidueVerificationRecordFingerprint[] = [
+    {
+      type: 'PASSWORD_RESET',
+      targetAccountLoginName: testAccountsConfig.guest.loginName,
+      payload: {
+        title: '密码重置',
+        resetUrl: 'https://example.com/reset-password',
+        email: 'reset@example.com',
+      },
+    },
+    {
+      type: 'PASSWORD_RESET',
+      targetAccountLoginName: testAccountsConfig.guest.loginName,
+      payload: { title: '密码重置消费测试' },
+    },
+    {
+      type: 'PASSWORD_RESET',
+      targetAccountLoginName: testAccountsConfig.guest.loginName,
+      payload: { title: '密码重置预读测试' },
+    },
+    {
+      type: 'PASSWORD_RESET',
+      targetAccountLoginName: testAccountsConfig.guest.loginName,
+      payload: { title: '完整密码重置流程测试' },
+    },
+  ];
+
   beforeAll(async () => {
     initGraphQLSchema();
 
@@ -237,11 +295,19 @@ describe('验证记录类型测试 E2E', () => {
     dataSource = moduleFixture.get<DataSource>(DataSource);
     createAccountUsecase = moduleFixture.get<CreateAccountUsecase>(CreateAccountUsecase);
 
-    await cleanupTestAccounts(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'verification-record-types.e2e beforeAll',
+      residue: {
+        accounts: residueAccounts,
+        verificationRecords: residueVerificationRecords,
+      },
+    });
     await seedTestAccounts({
       dataSource,
       createAccountUsecase,
       includeKeys: ['staff', 'guest'],
+      ownership,
     });
 
     staffAccessToken = await getAccessToken(
@@ -258,9 +324,19 @@ describe('验证记录类型测试 E2E', () => {
   });
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'verification-record-types.e2e afterAll',
+          owned: ownership,
+          residue: {
+            accounts: residueAccounts,
+            verificationRecords: residueVerificationRecords,
+          },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   it('应该成功创建密码重置类型的验证记录', async () => {
@@ -276,6 +352,7 @@ describe('验证记录类型测试 E2E', () => {
       payload,
       bearer: staffAccessToken,
       targetAccountId: guestAccountId,
+      ownership,
     });
 
     expect(response.body.errors).toBeUndefined();
@@ -295,6 +372,7 @@ describe('验证记录类型测试 E2E', () => {
       payload: { title: '密码重置消费测试' },
       bearer: staffAccessToken,
       targetAccountId: guestAccountId,
+      ownership,
     });
 
     const token = createResponse.body.data?.createVerificationRecord?.token;
@@ -331,6 +409,7 @@ describe('验证记录类型测试 E2E', () => {
       payload: { title: '密码重置预读测试' },
       bearer: staffAccessToken,
       targetAccountId: guestAccountId,
+      ownership,
     });
     const token = createResponse.body.data?.createVerificationRecord?.token;
     if (!token) throw new Error('未获取到密码重置 token');
@@ -369,6 +448,7 @@ describe('验证记录类型测试 E2E', () => {
       bearer: staffAccessToken,
       targetAccountId: guestAccountId,
       title: '完整密码重置流程测试',
+      ownership,
     });
 
     await assertPasswordResetRecordActive(app, token);

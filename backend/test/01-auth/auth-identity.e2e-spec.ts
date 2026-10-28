@@ -12,7 +12,13 @@ import { UserState } from '@app-types/models/user-info.types';
 import { initGraphQLSchema } from '@src/adapters/api/graphql/schema/schema.init';
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import { createOwnedResourceLedger, runGuardedSpecCleanup } from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildTestAccountResidue,
+  seedTestAccounts,
+  testAccountsConfig,
+} from '../utils/test-accounts';
 
 /**
  * Auth 通用角色映射 E2E 测试
@@ -25,6 +31,8 @@ describe('Auth Identity (e2e)', () => {
 
   // 直接使用统一测试账号配置
   const { staffSecondary, guestPrimary, staffPrimary, guestSecondary } = testAccountsConfig;
+  const accountKeys = ['staffSecondary', 'guestPrimary', 'staffPrimary', 'guestSecondary'] as const;
+  const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
     // 初始化 GraphQL Schema
@@ -42,23 +50,33 @@ describe('Auth Identity (e2e)', () => {
     await app.init();
     await app.listen(0);
 
-    // 使用统一的测试账号创建函数
+    // 先按完整指纹回收上次中断残留，再用本轮账本造数。
+    await runGuardedSpecCleanup({
+      dataSource,
+      helper: 'auth-identity.e2e beforeAll',
+      residue: { accounts: buildTestAccountResidue([...accountKeys]) },
+    });
     await seedTestAccounts({
       dataSource,
       createAccountUsecase,
-      includeKeys: ['staffSecondary', 'guestPrimary', 'staffPrimary', 'guestSecondary'],
+      includeKeys: [...accountKeys],
+      ownership,
     });
 
     console.log('✅ 使用统一测试账号创建成功');
   }, 30000);
 
   afterAll(async () => {
-    // 清理测试账号
-    await cleanupTestAccounts(dataSource);
-
-    if (app) {
-      await app.close();
-    }
+    await runE2eTeardown({
+      cleanup: () =>
+        runGuardedSpecCleanup({
+          dataSource,
+          helper: 'auth-identity.e2e afterAll',
+          owned: ownership,
+          residue: { accounts: buildTestAccountResidue([...accountKeys]) },
+        }),
+      closeApp: app ? () => app.close() : null,
+    });
   });
 
   /**
@@ -332,30 +350,5 @@ describe('Auth Identity (e2e)', () => {
       expect(accessToken.split('.')).toHaveLength(3);
       expect(refreshToken.split('.')).toHaveLength(3);
     });
-  });
-
-  afterAll(async () => {
-    try {
-      // 检查数据库连接状态，只有在连接有效时才进行清理
-      if (dataSource && dataSource.isInitialized) {
-        await cleanupTestAccounts(dataSource);
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      // 确保应用正确关闭，添加延迟以允许 WebSocket 服务器优雅关闭
-      if (app) {
-        try {
-          await app.close();
-          // 给 WebSocket 服务器一些时间来完成清理
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          const msg = (closeError as Error)?.message ?? String(closeError);
-          if (!/server is not running/i.test(msg)) {
-            console.warn('应用关闭时出现警告:', closeError);
-          }
-        }
-      }
-    }
   });
 });

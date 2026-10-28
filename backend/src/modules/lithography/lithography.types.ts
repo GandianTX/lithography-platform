@@ -331,11 +331,28 @@ export type ReferenceDocumentListPagination = {
   withTotal: boolean;
 };
 
-/** 资料列表筛选条件（标题模糊 + 文档类型等值 + 设备型号等值，均可选） */
+/** 资料列表筛选条件（标题模糊 + 文档类型等值 + 设备型号等值 + 案例处理状态等值，均可选） */
 export type ReferenceDocumentListFilter = {
   title?: string;
   documentType?: string;
   equipmentModelId?: number;
+  /** 案例处理状态等值筛选（UNRESOLVED/IN_PROGRESS/RESOLVED）；仅命中 FAULT_CASE 资料的案例明细 */
+  caseHandlingStatus?: string;
+};
+
+/**
+ * 正式资料案例明细稳定读视图（仅 FAULT_CASE 资料存在，普通资料为 null）。
+ * 不返回 casePayloadJson / schemaVersion 等内部扩展字段。
+ */
+export type ReferenceDocumentCaseDetailView = {
+  errorCode: string | null;
+  handlingStatus: string;
+  phenomenon: string;
+  conditionText: string | null;
+  reproductionSteps: string;
+  diagnosis: string | null;
+  actionTaken: string | null;
+  resolution: string | null;
 };
 
 /**
@@ -343,6 +360,10 @@ export type ReferenceDocumentListFilter = {
  * 默认仅返回未软删资料；创建人展示经 creatorNickname（实时关联，缺失回落），
  * 不返回 createdByAccountId；不返回 storageBackend/storageReference 与服务器路径；
  * 不携带 contentText 大字段（仅详情返回）。
+ *
+ * A-PR0 §4.3 新增字段：organizationName（组织展示名）、ingestMethod（来源信息，
+ * ADMIN_DIRECT/REVIEWED_SUBMISSION）、equipmentModelText（机型文字）、
+ * caseHandlingStatus（案例处理状态，普通资料为 null；列表不返回案例大段正文）。
  */
 export type ReferenceDocumentListItemView = {
   id: number;
@@ -350,8 +371,12 @@ export type ReferenceDocumentListItemView = {
   documentType: string;
   equipmentModelId: number | null;
   equipmentModelName: string | null;
+  equipmentModelText: string | null;
   description: string | null;
   originalFilename: string | null;
+  organizationName: string;
+  ingestMethod: string;
+  caseHandlingStatus: string | null;
   creatorNickname: string;
   createdAt: Date;
 };
@@ -366,6 +391,9 @@ export type ReferenceDocumentListItemQueryResult = Omit<
  * 资料详情稳定读视图（元数据 + 文本内容）。
  * 不返回账号 ID、存储后端/存储引用与服务器路径（0907.docx：不能把服务器本地路径返回给浏览器）；
  * 「是否有文件」以衍生布尔 hasFile 对外（权威判定 = storageReference 非空，与下载/编辑防御真源一致）。
+ *
+ * A-PR0 §4.3 新增字段：organizationName（组织展示名）、ingestMethod（来源信息）、
+ * equipmentModelText（机型文字）、caseDetail（案例明细，普通资料为 null，兼容旧组件）。
  */
 export type ReferenceDocumentDetailView = {
   id: number;
@@ -373,11 +401,15 @@ export type ReferenceDocumentDetailView = {
   documentType: string;
   equipmentModelId: number | null;
   equipmentModelName: string | null;
+  equipmentModelText: string | null;
   description: string | null;
   originalFilename: string | null;
   mimeType: string | null;
   hasFile: boolean;
   contentText: string | null;
+  organizationName: string;
+  ingestMethod: string;
+  caseDetail: ReferenceDocumentCaseDetailView | null;
   creatorNickname: string;
   createdAt: Date;
   updatedAt: Date;
@@ -403,6 +435,8 @@ export type ReferenceDocumentListPage = {
 /**
  * 资料创建写入数据（由 usecase 完成全部业务判定后传入）。
  * createdByAccountId 仅来自可信 Session，不得由客户端传入；
+ * ownerOrganizationId 由可信组织上下文解析（A-PR0 §2.1），不得由客户端传入；
+ * ingestMethod 固定 ADMIN_DIRECT（管理员直建；审核发布路径由 S5 写 REVIEWED_SUBMISSION）；
  * 内容来源为正文或文件至少一个（chk_reference_document_content_source 兜底）：
  * 纯文本创建时存储四字段为 null；文件创建时存储引用由服务端生成（不可猜测、无路径语义）。
  */
@@ -410,6 +444,7 @@ export type ReferenceDocumentInsertData = {
   title: string;
   documentType: string;
   equipmentModelId: number | null;
+  equipmentModelText?: string | null;
   description: string | null;
   contentText: string | null;
   originalFilename: string | null;
@@ -417,6 +452,49 @@ export type ReferenceDocumentInsertData = {
   storageBackend: string | null;
   storageReference: string | null;
   createdByAccountId: number;
+  ownerOrganizationId: number;
+  ingestMethod: string;
+  // 审核发布（REVIEWED_SUBMISSION）来源回链；管理员直建不传
+  // （同空或同有与「正式资料与来源投稿同组织」由 CHECK/外键与用例事务内核验保证）
+  sourceSubmissionId?: number | null;
+  sourceRevisionId?: number | null;
+  extensionJson?: Record<string, unknown> | null;
+  schemaVersion?: number;
+};
+
+/**
+ * 正式故障案例明细写入数据（审核发布插入时由发布用例从冻结快照组装）。
+ * 满足实体 chk_reference_document_case_detail_status / resolution：
+ * handling_status 受控值域；RESOLVED 时 resolution 必填非空。
+ */
+export type ReferenceDocumentCaseDetailInsertData = {
+  documentId: number;
+  errorCode: string | null;
+  handlingStatus: string;
+  phenomenon: string;
+  conditionText: string | null;
+  reproductionSteps: string;
+  diagnosis: string | null;
+  actionTaken: string | null;
+  resolution: string | null;
+  casePayloadJson?: Record<string, unknown> | null;
+};
+
+/**
+ * 正式故障案例明细更正写入数据（A-PR0 §S6 专属更正，全量覆盖式更新）。
+ * 由 usecase 在合并后的最终态上完成校验（必填存在性、RESOLVED 必填结果）后传入；
+ * casePayloadJson / schemaVersion / 创建时间不在更正文范围内（维持原值）。
+ */
+export type ReferenceDocumentCaseDetailUpdateData = {
+  documentId: number;
+  errorCode: string | null;
+  handlingStatus: string;
+  phenomenon: string;
+  conditionText: string | null;
+  reproductionSteps: string;
+  diagnosis: string | null;
+  actionTaken: string | null;
+  resolution: string | null;
 };
 
 /**
@@ -431,6 +509,13 @@ export type ReferenceDocumentUpdateData = {
   equipmentModelId: number | null;
   description: string | null;
   contentText: string | null;
+  /**
+   * 机型文字（S6 案例更正扩展）：未传（undefined）时不更新该列（通用编辑不参与）；
+   * 显式 null 表示清空（与 chk_reference_document_model_exclusive 互补）
+   */
+  equipmentModelText?: string | null;
+  /** 最后修改人（S6 案例更正扩展，正式更正必写）：未传时不更新该列（历史来源行保持可空） */
+  updatedByAccountId?: number;
 };
 
 /**

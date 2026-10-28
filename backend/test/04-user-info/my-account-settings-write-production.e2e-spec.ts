@@ -9,7 +9,12 @@ import { DataSource } from 'typeorm';
 import { GqlAllExceptionsFilter } from '../../src/infrastructure/graphql/filters/graphql-exception.filter';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * P3 自助改密在**临时 production 配置**下的真实 GraphQL 错误分类 E2E。
@@ -106,6 +111,7 @@ describe('changeMyPassword 生产环境错误分类 (e2e, NODE_ENV=production)',
   let dataSource: DataSource;
   let staffToken: string;
   let staffAccountId: number;
+  const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
     // 应用保持 E2E 配置初始化；仅真实 GqlAllExceptionsFilter 接收 production 判定，
@@ -141,8 +147,13 @@ describe('changeMyPassword 生产环境错误分类 (e2e, NODE_ENV=production)',
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
-    await seedTestAccounts({ dataSource, includeKeys: ['staffPrimary'] });
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: { accounts: [toResidueAccountFingerprint(STAFF)] },
+      helper: 'my-account-settings-write-production.e2e-spec beforeAll 预清理',
+    });
+    await seedTestAccounts({ dataSource, includeKeys: ['staffPrimary'], ownership });
 
     staffToken = await login({
       app,
@@ -153,6 +164,13 @@ describe('changeMyPassword 生产环境错误分类 (e2e, NODE_ENV=production)',
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'my-account-settings-write-production.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
   });
 

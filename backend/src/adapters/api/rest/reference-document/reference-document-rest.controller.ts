@@ -3,7 +3,6 @@
 import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
-import * as path from 'node:path';
 
 import {
   Body,
@@ -11,7 +10,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  HttpException,
   Param,
   ParseIntPipe,
   Post,
@@ -29,19 +27,18 @@ import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
-import { resolveRestStatus } from '@core/common/errors/rest-error-status';
 import { CreateReferenceDocumentWithFileUsecase } from '@src/usecases/reference-document/create-reference-document-with-file.usecase';
 import { GetReferenceDocumentFileUsecase } from '@src/usecases/reference-document/get-reference-document-file.usecase';
 import type { ReferenceDocumentFilePayload } from '@src/usecases/reference-document/reference-document.types';
 
-/** 上传边界防御性硬上限：multer 先挡住极端超大请求；业务上限以下方配置为准并给出业务错误码 */
-const UPLOAD_HARD_LIMIT_BYTES = 64 * 1024 * 1024;
-
-/** REST 边界的 multipart 文件最小结构（不依赖 multer 类型包，仅取用到的字段） */
-type UploadedFilePayload = {
-  buffer: Buffer;
-  originalname: string;
-};
+import {
+  UPLOAD_HARD_LIMIT_BYTES,
+  applyDownloadHeaders,
+  decodeUtf8FileName,
+  sanitizeOriginalFilename,
+  toRestError,
+  toUploadedFilePayload,
+} from '../shared/upload-boundary.util';
 
 /** 读取 multipart 文本字段：缺省或空白一律视为未提供 */
 function readMultipartString(body: Record<string, unknown>, key: string): string | null {
@@ -54,48 +51,6 @@ function readMultipartString(body: Record<string, unknown>, key: string): string
   const normalized = value.trim();
 
   return normalized.length > 0 ? normalized : null;
-}
-
-/**
- * 还原 multer/busboy 对 multipart filename 的 latin1 误码：浏览器发送的 UTF-8 文件名字节
- * 会被逐字节映射为 U+0080..U+00FF（中文文件名在此处已是乱码）。当且仅当全部字符落在
- * latin1 范围时做一次 latin1→UTF-8 还原：纯 ASCII 恒等；已正确解码的高码位字符（含中文）
- * 不受影响。还原结果含 U+FFFD（非 UTF-8 字节）时放弃还原保持原值。
- */
-function decodeUtf8FileName(raw: string): string {
-  // eslint-disable-next-line no-control-regex -- latin1 范围检测是本函数的既定职责（识别 multer 误码字节），与 sanitizeOriginalFilename 同理
-  if (!/^[\u0000-\u00ff]+$/.test(raw)) {
-    return raw;
-  }
-  const decoded = Buffer.from(raw, 'latin1').toString('utf8');
-  return decoded.includes('\uFFFD') ? raw : decoded;
-}
-
-/**
- * 清洗客户端文件名：只取 basename、剔除控制字符与首尾空白；
- * 仅作展示用途存入 original_filename，不参与存储命名与路径组装。
- */
-function sanitizeOriginalFilename(raw: string): string {
-  const cleaned = path
-    .basename(raw)
-    // eslint-disable-next-line no-control-regex -- 剔除控制字符是本函数的既定安全职责（清洗客户端文件名）
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .trim();
-
-  return cleaned.length > 0 ? cleaned.slice(0, 255) : '未命名文件';
-}
-
-function toUploadedFilePayload(file: unknown): UploadedFilePayload {
-  if (
-    typeof file !== 'object' ||
-    file === null ||
-    !Buffer.isBuffer((file as { buffer?: unknown }).buffer) ||
-    typeof (file as { originalname?: unknown }).originalname !== 'string'
-  ) {
-    throw new DomainError(REFERENCE_DOCUMENT_ERROR.UPLOAD_FILE_MISSING, '上传文件缺失或格式不合法');
-  }
-
-  return file as UploadedFilePayload;
 }
 
 /**
@@ -126,7 +81,7 @@ export class ReferenceDocumentRestController {
     @Body() body: Record<string, unknown>,
     @currentUser() user: JwtPayload,
   ): Promise<{ id: number }> {
-    const uploaded = toUploadedFilePayload(file);
+    const uploaded = toUploadedFilePayload(file, REFERENCE_DOCUMENT_ERROR.UPLOAD_FILE_MISSING);
 
     // 协议层职责止于 latin1 还原与展示清洗；大小/类型/双空与存储编排归 usecase 单一真源
     const originalFilename = sanitizeOriginalFilename(decodeUtf8FileName(uploaded.originalname));
@@ -147,7 +102,7 @@ export class ReferenceDocumentRestController {
       return { id: result.id };
     } catch (error) {
       if (error instanceof DomainError) {
-        this.toRestError(error);
+        toRestError(error);
       }
 
       throw error;
@@ -172,31 +127,18 @@ export class ReferenceDocumentRestController {
       });
     } catch (error) {
       if (error instanceof DomainError) {
-        this.toRestError(error);
+        toRestError(error);
       }
 
       throw error;
     }
 
-    // MIME 取自 DB（上传时由扩展名映射写入），文件名按 RFC 5987 编码防乱码与头注入；
-    // encodeURIComponent 不转义 ' * ( )，它们均不在 RFC 5987 attr-char 内（' 还是 ext-value 分隔符），需补编码
-    const encodedFilename = encodeURIComponent(payload.originalFilename).replace(
-      /['*()]/g,
-      (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
-    );
-    response.setHeader('Content-Type', payload.mimeType);
-    response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
+    // MIME 取自 DB（上传时由扩展名映射写入），文件名按 RFC 5987 编码防乱码与头注入
+    applyDownloadHeaders(response, {
+      mimeType: payload.mimeType,
+      originalFilename: payload.originalFilename,
+    });
 
     return new StreamableFile(payload.content);
-  }
-
-  /** DomainError → REST 统一错误体；函数签名返回 never，便于在 catch 中直接调用后 throw */
-  private toRestError(error: DomainError): never {
-    const status = resolveRestStatus(error.code);
-
-    throw new HttpException(
-      { statusCode: status, code: error.code, message: error.message },
-      status,
-    );
   }
 }

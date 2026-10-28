@@ -23,6 +23,31 @@ export type ReferenceDocumentEditablePatch = {
   contentText?: string | null;
 };
 
+/**
+ * 案例更正可编辑字段补丁（A-PR0 §S6 专属更正的部分提交语义）：
+ * - undefined：保持原值
+ * - null：清空/置空（必填字段被置空时在合并后校验拒绝）
+ * - 字符串/数字：新值（经 usecase 规范化与校验）
+ * - equipmentModelId 与 equipmentModelText 独立合并（口径同投稿草稿补丁），
+ *   合并后互斥校验拒绝两者并存；替换机型需在同一补丁「一侧置空 + 一侧设值」
+ * - 可读正文（contentText）是派生字段：由合并后的明细字段重新生成，不在补丁白名单中；
+ *   类型、归属组织、来源投稿/版本与原附件不在此补丁内（不可改）
+ */
+export type ReferenceDocumentCaseEditablePatch = {
+  title?: string | null;
+  equipmentModelId?: number | null;
+  equipmentModelText?: string | null;
+  description?: string | null;
+  errorCode?: string | null;
+  phenomenon?: string | null;
+  conditionText?: string | null;
+  reproductionSteps?: string | null;
+  diagnosis?: string | null;
+  actionTaken?: string | null;
+  handlingStatus?: string | null;
+  resolution?: string | null;
+};
+
 export type ListReferenceDocumentsCommand = {
   session: UsecaseSession;
   pagination: PaginationParams;
@@ -30,6 +55,8 @@ export type ListReferenceDocumentsCommand = {
     title?: string;
     documentType?: string;
     equipmentModelId?: number;
+    /** 案例处理状态等值筛选（A-PR0 §4.3；仅命中 FAULT_CASE 资料的案例明细） */
+    caseHandlingStatus?: string;
   };
 };
 
@@ -112,6 +139,17 @@ export type UpdateReferenceDocumentCommand = {
   patch: ReferenceDocumentEditablePatch;
 };
 
+/**
+ * 案例专属更正命令（A-PR0 §S6 / §4.1 `updateReferenceDocumentCase`）：
+ * 仅 SUPER_ADMIN、仅本组织、仅未软删、仅 FAULT_CASE 资料可更正；
+ * 副补丁经合并与最终态校验后，主资料与案例明细在同一事务内更新。
+ */
+export type UpdateReferenceDocumentCaseCommand = {
+  session: UsecaseSession;
+  documentId: number;
+  patch: ReferenceDocumentCaseEditablePatch;
+};
+
 export type SoftDeleteReferenceDocumentCommand = {
   session: UsecaseSession;
   documentId: number;
@@ -119,6 +157,12 @@ export type SoftDeleteReferenceDocumentCommand = {
 
 export type ReferenceDocumentMutationResult = {
   id: number;
+};
+
+/** 案例更正结果：正式资料 ID 与更新时间（A-PR0 §4.1「返回正式资料 ID/更新时间」） */
+export type ReferenceDocumentCaseMutationResult = {
+  id: number;
+  updatedAt: Date;
 };
 
 export type GetReferenceDocumentDetailResult = ReferenceDocumentDetailView;

@@ -12,6 +12,7 @@ import {
   fetchReferenceDocument,
   fetchReferenceDocuments,
   updateReferenceDocument,
+  updateReferenceDocumentCase,
 } from './reference-document-mock-adapter';
 
 /**
@@ -35,16 +36,17 @@ describe('fetchReferenceDocuments', () => {
   it('仅返回未软删条目，按 createdAt DESC + id DESC 排序并分页', async () => {
     const page1 = await fetchReferenceDocuments({ page: 1, pageSize: 10 });
 
-    // 种子 970004 已软删不可见；可见 = 种子 5 未删 + 24 批量 = 29
-    expect(page1.total).toBe(29);
+    // 种子 970004 已软删不可见；可见 = 种子 6 未删 + 案例 970031 + 24 批量 = 30
+    expect(page1.total).toBe(30);
     expect(page1.items).toHaveLength(10);
-    // 最新创建时间在前
+    // 最新创建时间在前（案例 970031 为最新）
     expect(page1.items[0].createdAt >= page1.items[1].createdAt).toBe(true);
+    expect(page1.items[0].id).toBe(970031);
     expect(page1.items.some((item) => item.id === 970004)).toBe(false);
 
     const page3 = await fetchReferenceDocuments({ page: 3, pageSize: 10 });
 
-    expect(page3.items).toHaveLength(9);
+    expect(page3.items).toHaveLength(10);
     // 最早种子 970001 按时间序排在末页末尾
     expect(page3.items[page3.items.length - 1].id).toBe(970001);
   });
@@ -82,6 +84,43 @@ describe('fetchReferenceDocuments', () => {
       combined.items.every((item) => item.title.includes('Mock') && item.equipmentModelId === 51),
     ).toBe(true);
   });
+
+  it('列表项携带组织名 / 入库方式 / 案例处理状态；普通资料案例字段为空', async () => {
+    const page = await fetchReferenceDocuments({ page: 1, pageSize: 50 });
+
+    const caseItem = page.items.find((item) => item.id === 970031);
+    const normalItem = page.items.find((item) => item.id === 970002);
+
+    expect(caseItem).toMatchObject({
+      documentType: 'FAULT_CASE',
+      organizationName: '甲方默认组织',
+      ingestMethod: 'REVIEWED_SUBMISSION',
+      caseHandlingStatus: 'RESOLVED',
+      equipmentModelText: null,
+    });
+    expect(normalItem).toMatchObject({
+      organizationName: '甲方默认组织',
+      ingestMethod: 'ADMIN_DIRECT',
+      caseHandlingStatus: null,
+    });
+  });
+
+  it('caseHandlingStatus 等值筛选仅命中案例资料', async () => {
+    const resolved = await fetchReferenceDocuments(
+      { page: 1, pageSize: 50 },
+      { caseHandlingStatus: 'RESOLVED' },
+    );
+
+    expect(resolved.total).toBe(1);
+    expect(resolved.items.map((item) => item.id)).toEqual([970031]);
+
+    const unresolved = await fetchReferenceDocuments(
+      { page: 1, pageSize: 50 },
+      { caseHandlingStatus: 'UNRESOLVED' },
+    );
+
+    expect(unresolved.total).toBe(0);
+  });
 });
 
 describe('fetchReferenceDocument', () => {
@@ -110,6 +149,28 @@ describe('fetchReferenceDocument', () => {
     expect(missing).toMatchObject({ ok: false, reason: 'not-found' });
     expect(softDeleted).toMatchObject({ ok: false, reason: 'not-found' });
     expect(missing.ok ? '' : missing.message).toBe(softDeleted.ok ? '' : softDeleted.message);
+  });
+
+  it('案例资料详情携带 caseDetail；普通资料 caseDetail 为空（前端需兼容可空）', async () => {
+    const caseResult = await fetchReferenceDocument(970031);
+    const normalResult = await fetchReferenceDocument(970002);
+
+    expect(caseResult.ok).toBe(true);
+    expect(normalResult.ok).toBe(true);
+
+    if (caseResult.ok && normalResult.ok) {
+      expect(caseResult.detail.caseDetail).toMatchObject({
+        errorCode: 'E-STAGE-301',
+        handlingStatus: 'RESOLVED',
+        phenomenon: '曝光工位反复报干涉仪信号丢失，复位后短时恢复。',
+        resolution: '清洁与重标定后连续 500 片无复现。',
+      });
+      // 详情与后端 Detail DTO 同形：不含 caseHandlingStatus（S7 真机样例核验；案例状态经 caseDetail 表达）
+      expect(caseResult.detail).not.toHaveProperty('caseHandlingStatus');
+      expect(caseResult.detail.contentText).toContain('处理状态：已解决');
+      expect(normalResult.detail.caseDetail).toBeNull();
+      expect(normalResult.detail).not.toHaveProperty('caseHandlingStatus');
+    }
   });
 });
 
@@ -227,6 +288,130 @@ describe('updateReferenceDocument', () => {
       ok: false,
       reason: 'not-found',
     });
+  });
+
+  it('案例保护：FAULT_CASE 通用编辑不得改类型 / 正文，普通资料转案例拒绝', async () => {
+    await expect(
+      updateReferenceDocument(970031, { documentType: 'ERROR_CODE_MANUAL' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+
+    await expect(
+      updateReferenceDocument(970031, { contentText: '改写正文' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+
+    // 普通资料不能借此转为 FAULT_CASE（类型保留值只能来自投稿发布）
+    await expect(
+      updateReferenceDocument(970002, { documentType: 'FAULT_CASE' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+
+    // 拒绝为终态：案例资料未被改动
+    const detail = await fetchReferenceDocument(970031);
+
+    expect(detail.ok).toBe(true);
+
+    if (detail.ok) {
+      expect(detail.detail.documentType).toBe('FAULT_CASE');
+      expect(detail.detail.contentText).toContain('处理状态：已解决');
+    }
+  });
+});
+
+describe('updateReferenceDocumentCase（案例专属更正）', () => {
+  it('成功更正：明细合并、正文重新生成、处理状态同步', async () => {
+    const result = await updateReferenceDocumentCase(970031, {
+      handlingStatus: 'IN_PROGRESS',
+      resolution: null,
+      actionTaken: '更换干涉仪光学头并复测。',
+    });
+
+    expect(result.ok).toBe(true);
+
+    if (result.ok) {
+      expect(result.id).toBe(970031);
+      expect(result.updatedAt).toBeTruthy();
+    }
+
+    const detail = await fetchReferenceDocument(970031);
+
+    expect(detail.ok).toBe(true);
+
+    if (detail.ok) {
+      expect(detail.detail.caseDetail).toMatchObject({
+        handlingStatus: 'IN_PROGRESS',
+        resolution: null,
+        actionTaken: '更换干涉仪光学头并复测。',
+        // undefined 字段保持原值
+        phenomenon: '曝光工位反复报干涉仪信号丢失，复位后短时恢复。',
+      });
+      expect(detail.detail).not.toHaveProperty('caseHandlingStatus');
+      // 正文由明细重新生成（与明细不脱节）
+      expect(detail.detail.contentText).toContain('处理状态：处理中');
+      expect(detail.detail.contentText).not.toContain('处理结果');
+    }
+  });
+
+  it('空补丁 / 非案例资料 / 不存在统一拒绝口径', async () => {
+    await expect(updateReferenceDocumentCase(970031, {})).resolves.toMatchObject({
+      ok: false,
+      reason: 'invalid-input',
+    });
+    // 非案例资料 invalid-input（后端口径，不是 not-found）
+    await expect(updateReferenceDocumentCase(970002, { phenomenon: 'x' })).resolves.toMatchObject({
+      ok: false,
+      reason: 'invalid-input',
+    });
+    await expect(updateReferenceDocumentCase(999999, { phenomenon: 'x' })).resolves.toMatchObject({
+      ok: false,
+      reason: 'not-found',
+    });
+    await expect(updateReferenceDocumentCase(970004, { phenomenon: 'x' })).resolves.toMatchObject({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+
+  it('必填清空 / 已解决必填结果 / 机型互斥与存在性拒绝', async () => {
+    await expect(updateReferenceDocumentCase(970031, { phenomenon: null })).resolves.toMatchObject({
+      ok: false,
+      reason: 'invalid-input',
+    });
+    await expect(updateReferenceDocumentCase(970031, { title: '  ' })).resolves.toMatchObject({
+      ok: false,
+      reason: 'invalid-input',
+    });
+    await expect(
+      updateReferenceDocumentCase(970031, { handlingStatus: null }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+    await expect(
+      updateReferenceDocumentCase(970031, { handlingStatus: 'RESOLVED', resolution: null }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+    // 机型互斥：案例现值 equipmentModelId=49，仅设置机型文字即冲突（合并后最终态判定）
+    await expect(
+      updateReferenceDocumentCase(970031, { equipmentModelText: 'ASML XT:1900i' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+    // 变更机型时校验存在
+    await expect(
+      updateReferenceDocumentCase(970031, { equipmentModelId: 999999 }),
+    ).resolves.toMatchObject({ ok: false, reason: 'model-not-found' });
+  });
+
+  it('替换机型需同一补丁清空一侧并设置另一侧', async () => {
+    const result = await updateReferenceDocumentCase(970031, {
+      equipmentModelId: null,
+      equipmentModelText: 'ASML XT:1900i（手填）',
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 970031 });
+
+    const detail = await fetchReferenceDocument(970031);
+
+    expect(detail.ok).toBe(true);
+
+    if (detail.ok) {
+      expect(detail.detail.equipmentModelId).toBeNull();
+      expect(detail.detail.equipmentModelName).toBeNull();
+      expect(detail.detail.equipmentModelText).toBe('ASML XT:1900i（手填）');
+    }
   });
 });
 

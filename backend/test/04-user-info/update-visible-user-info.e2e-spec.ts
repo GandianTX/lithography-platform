@@ -1,5 +1,10 @@
 // 文件位置：test/04-user-info/update-visible-user-info.e2e-spec.ts
-import { AudienceTypeEnum, IdentityTypeEnum, LoginTypeEnum } from '@app-types/models/account.types';
+import {
+  AccountStatus,
+  AudienceTypeEnum,
+  IdentityTypeEnum,
+  LoginTypeEnum,
+} from '@app-types/models/account.types';
 import { Gender, UserState } from '@app-types/models/user-info.types';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -10,7 +15,14 @@ import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
 import { getAccountIdByLoginName } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+  updateOwnedExpectation,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * 登录并获取访问令牌
@@ -192,6 +204,7 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
   let guestSecondaryAccountId: number;
 
   let otherGuestAccountId: number;
+  const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -204,10 +217,33 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.staffSecondary,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.guestSecondary,
+        ]
+          .map(toResidueAccountFingerprint)
+          .concat({
+            loginName: 'otherguest',
+            loginEmail: 'otherguest@example.com',
+            status: AccountStatus.PENDING,
+            identityHint: IdentityTypeEnum.CUSTOMER,
+            nickname: 'otherguest_nickname',
+            accessGroup: [IdentityTypeEnum.CUSTOMER],
+          }),
+      },
+      helper: 'update-visible-user-info.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'staffPrimary', 'staffSecondary', 'guestPrimary', 'guestSecondary'],
+      ownership,
     });
 
     adminToken = await loginAndGetToken(
@@ -255,9 +291,27 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
 
     const created = await ensureOtherGuestAccount(dataSource);
     otherGuestAccountId = created.otherGuestAccountId;
+    recordOwnedResource(ownership, 'account', otherGuestAccountId, {
+      loginName: 'otherguest',
+      loginEmail: 'otherguest@example.com',
+      // 该 fixture 未显式设置状态，按实体默认值 PENDING 登记（与预清理残留指纹一致）。
+      status: AccountStatus.PENDING,
+      identityHint: IdentityTypeEnum.CUSTOMER,
+      accessGroup: [IdentityTypeEnum.CUSTOMER],
+      nickname: 'otherguest_nickname',
+      userInfoEmail: 'otherguest@example.com',
+      userState: 'ACTIVE',
+    });
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'update-visible-user-info.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
   });
 
@@ -268,6 +322,10 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
       expect(res.body.errors).toBeUndefined();
       expect(res.body.data.updateUserInfo.isUpdated).toBe(true);
       expect(res.body.data.updateUserInfo.userInfo.nickname).toBe(newNickname);
+      // N01：合法资料变更后同步更新本轮预期，清理预检不应把受控变更判为漂移。
+      updateOwnedExpectation(ownership, 'account', staffPrimaryAccountId, {
+        nickname: newNickname,
+      });
     });
 
     it('SUPER_ADMIN 改任意 CUSTOMER：改 signature', async () => {
@@ -358,6 +416,10 @@ describe('UpdateVisibleUserInfo (e2e)', () => {
       expect(ui.address).toBeNull();
       expect(ui.signature).toBeNull();
       expect(ui.avatarUrl).toBeNull();
+      // N01：邮箱被合法清空后同步更新本轮预期（只更新实际成功写入的字段）。
+      updateOwnedExpectation(ownership, 'account', staffPrimaryAccountId, {
+        userInfoEmail: null,
+      });
     });
   });
 

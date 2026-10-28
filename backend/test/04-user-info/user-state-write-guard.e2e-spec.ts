@@ -6,7 +6,12 @@ import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { login } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * P1 回归：`userState` 写入口收口——**只负责协议层契约面**。
@@ -69,6 +74,7 @@ describe('userState 写入口收口 (e2e)', () => {
 
   /** 点 2 需要一个能通过 JwtAuthGuard 的合法会话，因此只需 admin 一个账号 */
   let adminToken: string;
+  const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
     // E2E 基线默认关闭 introspection；本 spec 只在 API 初始化期间临时开启，用于核验公开契约，
@@ -85,9 +91,14 @@ describe('userState 写入口收口 (e2e)', () => {
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：只按本规格账号完整指纹回收已知残留，不整表清成员/账号
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: { accounts: [toResidueAccountFingerprint(testAccountsConfig.admin)] },
+      helper: 'user-state-write-guard.e2e-spec beforeAll 预清理',
+    });
     // 协议层校验发生在 Usecase 之前，不需要任何被管理目标账号
-    await seedTestAccounts({ dataSource, includeKeys: ['admin'] });
+    await seedTestAccounts({ dataSource, includeKeys: ['admin'], ownership });
 
     adminToken = await login({
       app,
@@ -97,6 +108,13 @@ describe('userState 写入口收口 (e2e)', () => {
   });
 
   afterAll(async () => {
+    if (dataSource?.isInitialized) {
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'user-state-write-guard.e2e-spec afterAll 收尾',
+      });
+    }
     if (app) await app.close();
     if (previousIntrospectionEnabled === undefined) {
       delete process.env.GRAPHQL_INTROSPECTION_ENABLED;

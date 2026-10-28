@@ -6,13 +6,18 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
+  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { PasswordPolicyService } from '@core/common/password/password-policy.service';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import type { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import type { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import type { OrganizationMembershipFact } from '@src/modules/lithography/organization.types';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { PinoLogger } from 'nestjs-pino';
 import {
+  ADMIN_ACCOUNT_ID,
   captureThrownError,
   createAdminUserView,
   createFakeTransactionHarness,
@@ -46,6 +51,11 @@ describe('AdminCreateUserUsecase', () => {
   const NEW_ACCOUNT_ID = 42;
   const DB_CREATED_AT = new Date('2026-03-15T08:30:00.000Z');
 
+  /** 管理员当前有效组织（可信解析事实）与新工程师成员关系主键（A-PR0 §4.3 绑定断言用） */
+  const ADMIN_MEMBERSHIP_ID = 915_001;
+  const ADMIN_ORGANIZATION_ID = 910_001;
+  const NEW_ENGINEER_MEMBERSHIP_ID = 915_101;
+
   const harness = createFakeTransactionHarness();
 
   const accountService = {
@@ -63,6 +73,14 @@ describe('AdminCreateUserUsecase', () => {
     validatePassword: jest.fn(),
   } as unknown as PasswordPolicyService;
 
+  const organizationContextQueryService = {
+    resolveForAccount: jest.fn(),
+  } as unknown as TrustedOrganizationContextQueryService;
+
+  const organizationMembershipService = {
+    insertMembership: jest.fn(),
+  } as unknown as OrganizationMembershipService;
+
   const logger = {
     setContext: jest.fn(),
     info: jest.fn(),
@@ -74,6 +92,8 @@ describe('AdminCreateUserUsecase', () => {
     accountService,
     adminUserQueryService,
     passwordPolicyService,
+    organizationContextQueryService,
+    organizationMembershipService,
     logger,
     harness.transactionRunner,
   );
@@ -108,6 +128,16 @@ describe('AdminCreateUserUsecase', () => {
     (adminUserQueryService.findAdminUserViewById as jest.Mock).mockResolvedValue(view);
   };
 
+  /** 管理员当前有效组织的可信解析事实（绑定断言必须与本值逐字一致） */
+  const adminOrganizationFact = (): OrganizationMembershipFact => ({
+    membershipId: ADMIN_MEMBERSHIP_ID,
+    organizationId: ADMIN_ORGANIZATION_ID,
+    organizationCode: 'CLIENT_DEFAULT',
+    organizationName: '甲方默认组织',
+    organizationKind: 'CLIENT',
+    memberRole: 'SUPER_ADMIN',
+  });
+
   /** 取本次传给某个 mock 的第一个实参 */
   const firstArgOf = (fn: jest.Mock): Record<string, unknown> =>
     fn.mock.calls[0][0] as Record<string, unknown>;
@@ -135,6 +165,12 @@ describe('AdminCreateUserUsecase', () => {
     (passwordPolicyService.validatePassword as jest.Mock)
       .mockReset()
       .mockReturnValue({ isValid: true, errors: [], strength: 90 });
+    (organizationContextQueryService.resolveForAccount as jest.Mock)
+      .mockReset()
+      .mockResolvedValue(adminOrganizationFact());
+    (organizationMembershipService.insertMembership as jest.Mock)
+      .mockReset()
+      .mockResolvedValue({ membershipId: NEW_ENGINEER_MEMBERSHIP_ID });
     givenCreatedView();
   });
 
@@ -146,13 +182,15 @@ describe('AdminCreateUserUsecase', () => {
           code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
         });
 
-        // 授权是第一步：策略校验、冲突预检查与三处写入都不得被触达
+        // 授权是第一步：策略校验、冲突预检查、组织解析与全部写入都不得被触达
         expect(passwordPolicyService.validatePassword).not.toHaveBeenCalled();
         expect(adminUserQueryService.findAdminUserCredentialConflict).not.toHaveBeenCalled();
         expect(harness.transactionRunner.run).not.toHaveBeenCalled();
         expect(accountService.insertAccount).not.toHaveBeenCalled();
         expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
         expect(accountService.insertUserInfo).not.toHaveBeenCalled();
+        expect(organizationContextQueryService.resolveForAccount).not.toHaveBeenCalled();
+        expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
         expect(harness.isCommitted()).toBe(false);
         expect(harness.isRolledBack()).toBe(false);
       },
@@ -429,16 +467,29 @@ describe('AdminCreateUserUsecase', () => {
       });
     });
 
-    it('四处调用同事务且顺序固定：插入账号 → 回写哈希 → 插入资料 → 回读 View', async () => {
+    it('六处调用同事务且顺序固定：解析组织 → 插入账号 → 回写哈希 → 插入资料 → 绑定组织 → 回读 View', async () => {
       await usecase.execute(validCommand());
 
       const orders = [
+        (organizationContextQueryService.resolveForAccount as jest.Mock).mock
+          .invocationCallOrder[0],
         (accountService.insertAccount as jest.Mock).mock.invocationCallOrder[0],
         (accountService.updateAccountPasswordHash as jest.Mock).mock.invocationCallOrder[0],
         (accountService.insertUserInfo as jest.Mock).mock.invocationCallOrder[0],
+        (organizationMembershipService.insertMembership as jest.Mock).mock.invocationCallOrder[0],
         (adminUserQueryService.findAdminUserViewById as jest.Mock).mock.invocationCallOrder[0],
       ];
       expect(orders).toEqual([...orders].sort((a, b) => a - b));
+
+      // 组织解析与绑定写入都收到同一事务上下文：绑定读的是尚未提交的本次事实
+      expect(organizationContextQueryService.resolveForAccount).toHaveBeenCalledWith({
+        accountId: ADMIN_ACCOUNT_ID,
+        transactionContext: harness.txContext,
+      });
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: NEW_ACCOUNT_ID }),
+        harness.txContext,
+      );
 
       // 回读使用同一个 transactionContext，读到的是尚未提交的本次写入
       expect(adminUserQueryService.findAdminUserViewById).toHaveBeenCalledWith({
@@ -451,6 +502,90 @@ describe('AdminCreateUserUsecase', () => {
 
     it('返回事务内回读的稳定 View', async () => {
       await expect(usecase.execute(validCommand())).resolves.toEqual(createdView());
+    });
+  });
+
+  describe('组织绑定（A-PR0 §4.3）', () => {
+    it('创建 ENGINEER：在同一事务内绑定管理员当前有效组织', async () => {
+      await usecase.execute(validCommand());
+
+      expect(organizationContextQueryService.resolveForAccount).toHaveBeenCalledWith({
+        accountId: ADMIN_ACCOUNT_ID,
+        transactionContext: harness.txContext,
+      });
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledTimes(1);
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: ADMIN_ORGANIZATION_ID,
+          accountId: NEW_ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.ENGINEER,
+        },
+        harness.txContext,
+      );
+      expect(harness.isCommitted()).toBe(true);
+      expect(harness.isRolledBack()).toBe(false);
+    });
+
+    it('创建 CUSTOMER：不解析组织、不写成员关系（客户不自动加入）', async () => {
+      await expect(
+        usecase.execute(validCommand({ role: IdentityTypeEnum.CUSTOMER })),
+      ).resolves.toBeDefined();
+
+      expect(organizationContextQueryService.resolveForAccount).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(harness.isCommitted()).toBe(true);
+      expect(logger.info).toHaveBeenCalledTimes(1);
+    });
+
+    it('管理员无有效组织时失败关闭：解析先于任何写入，账号零落库且无半成品', async () => {
+      (organizationContextQueryService.resolveForAccount as jest.Mock).mockRejectedValue(
+        new DomainError(
+          ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+          '当前账号没有有效组织成员关系，无法执行组织范围操作',
+        ),
+      );
+
+      const error = await captureThrownError(usecase.execute(validCommand()));
+
+      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
+      expect(accountService.insertAccount).not.toHaveBeenCalled();
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(accountService.insertUserInfo).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(adminUserQueryService.findAdminUserViewById).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+      expect(logger.info).not.toHaveBeenCalled();
+      // 领域异常以错误码记录，阶段定位到组织解析
+      expect(lastErrorPayload()).toMatchObject({
+        errorCode: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+        phase: 'RESOLVE_ORGANIZATION',
+      });
+    });
+
+    it('绑定写入失败：整体回滚收敛为 WRITE_FAILED，回读不执行', async () => {
+      (organizationMembershipService.insertMembership as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('ER_LOCK_WAIT_TIMEOUT: Lock wait timeout exceeded'), {
+          name: 'QueryFailedError',
+          driverError: { errno: 1205 },
+        }),
+      );
+
+      await expect(usecase.execute(validCommand())).rejects.toMatchObject({
+        code: ADMIN_USER_ERROR.WRITE_FAILED,
+      });
+
+      expect(accountService.insertUserInfo).toHaveBeenCalledTimes(1);
+      expect(adminUserQueryService.findAdminUserViewById).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(lastErrorPayload()).toMatchObject({
+        reason: 'UNEXPECTED',
+        phase: 'BIND_ORGANIZATION',
+        errorName: 'QueryFailedError',
+        driverCode: 1205,
+      });
     });
   });
 

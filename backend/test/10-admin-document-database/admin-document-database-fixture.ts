@@ -21,7 +21,10 @@ import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-re
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { DataSource, EntityManager, In } from 'typeorm';
 
-import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
+import {
+  assertDataSourceOnAllowedE2eDatabase,
+  assertPhysicalCleanupConsent,
+} from '../utils/e2e-db-guard';
 import { createTestAccount, type TestAccountConfig } from '../utils/test-accounts';
 
 export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
@@ -130,6 +133,20 @@ const assertFixtureTarget = async (ds: DataSource, helper: string): Promise<void
       cause: error,
     });
   }
+};
+
+/**
+ * 删除专用双门禁（G4/F05）：物理清理许可 + 目标库白名单，互相独立，缺一即在第一条删除前失败。
+ * 写入路径（seed*）仍只用库名守卫；许可只约束物理删除。
+ */
+const assertFixtureDeleteTarget = async (ds: DataSource, helper: string): Promise<void> => {
+  try {
+    assertPhysicalCleanupConsent();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`[${helper}] 阶段=清理许可门禁 拒绝执行删除：${detail}`, { cause: error });
+  }
+  await assertFixtureTarget(ds, helper);
 };
 
 const recordId = (ids: number[], id: number): void => {
@@ -662,7 +679,7 @@ export const cleanupAdminDocumentFixtureResidue = async (
   ds: DataSource,
 ): Promise<AdminDocFixtureOwnership> => {
   const helper = 'cleanupAdminDocumentFixtureResidue';
-  await assertFixtureTarget(ds, helper);
+  await assertFixtureDeleteTarget(ds, helper);
   return ds.transaction(async (manager) => {
     const verified = await resolveAndVerifyFixture(manager, helper, null);
     await deleteVerifiedFixture(manager, verified);
@@ -679,7 +696,7 @@ export const cleanupAdminDocumentFixtureByIds = async (
     return;
   }
   const helper = 'cleanupAdminDocumentFixtureByIds';
-  await assertFixtureTarget(ds, helper);
+  await assertFixtureDeleteTarget(ds, helper);
   await ds.transaction(async (manager) => {
     const verified = await resolveAndVerifyFixture(manager, helper, ownership);
     await deleteVerifiedFixture(manager, verified);

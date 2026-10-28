@@ -13,8 +13,23 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
+import { OrganizationMembershipEntity } from '../../src/modules/lithography/entities/organization-membership.entity';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
-import { cleanupTestAccounts, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+  updateOwnedExpectation,
+} from '../utils/e2e-scoped-cleanup';
+import { runE2eTeardown } from '../utils/e2e-teardown';
+import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestMemberships,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 
 /**
  * P2-1B：管理员用户管理五个 GraphQL 操作（adminUsers + 四个写操作）的真实 MySQL E2E。
@@ -196,6 +211,11 @@ describe('管理员用户管理 (e2e)', () => {
   let guestAccountId: number;
   let guestSecondaryAccountId: number;
 
+  // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMUSER');
+  let primaryOrganizationId = 0;
+  const ownership = createOwnedResourceLedger();
+
   beforeAll(async () => {
     // E2E 基线默认关闭 introspection；本 spec 只在 API 初始化期间临时开启，用于核验公开契约面，
     // 不修改任何 .env / Entity / Migration / schema 产物。
@@ -211,10 +231,76 @@ describe('管理员用户管理 (e2e)', () => {
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await cleanupTestAccounts(dataSource);
+    // 预清理（窄范围）：组织与账号均按完整指纹核验；不接管同名异主残留
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: {
+        organizations: [
+          {
+            organizationCode: suiteOrganizationCodes.primary,
+            name: 'E2E 甲方组织（账号管理）',
+            kind: 'CLIENT',
+          },
+        ],
+        accounts: [
+          testAccountsConfig.admin,
+          testAccountsConfig.guestPrimary,
+          testAccountsConfig.guestSecondary,
+          testAccountsConfig.staffPrimary,
+          testAccountsConfig.staffSecondary,
+        ]
+          .map(toResidueAccountFingerprint)
+          .concat(
+            {
+              loginName: CREATED_LOGIN_NAME,
+              loginEmail: CREATED_LOGIN_EMAIL,
+              status: AccountStatus.ACTIVE,
+              identityHint: IdentityTypeEnum.ENGINEER,
+              nickname: 'E2E 新建工程师',
+              accessGroup: [IdentityTypeEnum.ENGINEER],
+            },
+            {
+              loginName: null,
+              loginEmail: EMAIL_ONLY_LOGIN_EMAIL,
+              status: AccountStatus.ACTIVE,
+              identityHint: IdentityTypeEnum.CUSTOMER,
+              nickname: 'E2E 仅邮箱账号',
+              accessGroup: [IdentityTypeEnum.CUSTOMER],
+            },
+          ),
+      },
+      helper: 'admin-user-management.e2e-spec beforeAll 预清理',
+    });
     await seedTestAccounts({
       dataSource,
       includeKeys: ['admin', 'guestPrimary', 'guestSecondary', 'staffPrimary', 'staffSecondary'],
+      ownership,
+    });
+
+    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 甲方组织（账号管理）',
+          kind: 'CLIENT',
+        },
+      ],
+      ownership,
+    });
+    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
+    await seedTestMemberships({
+      dataSource,
+      organizationIdsByCode: organizationIds,
+      ownership,
+      memberships: [
+        {
+          accountLoginName: testAccountsConfig.admin.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+      ],
     });
 
     adminToken = await login({
@@ -245,12 +331,26 @@ describe('管理员用户管理 (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (app) await app.close();
-    if (previousIntrospectionEnabled === undefined) {
-      delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
-    } else {
-      process.env.GRAPHQL_INTROSPECTION_ENABLED = previousIntrospectionEnabled;
-    }
+    await runE2eTeardown({
+      cleanup: async () => {
+        if (dataSource?.isInitialized) {
+          // 收尾只删除本轮登记的真实 ID；清理失败向 jest 传播，不吞错
+          await runGuardedSpecCleanup({
+            dataSource,
+            owned: ownership,
+            helper: 'admin-user-management.e2e-spec afterAll 收尾',
+          });
+        }
+      },
+      finalize: () => {
+        if (previousIntrospectionEnabled === undefined) {
+          delete process.env.GRAPHQL_INTROSPECTION_ENABLED;
+        } else {
+          process.env.GRAPHQL_INTROSPECTION_ENABLED = previousIntrospectionEnabled;
+        }
+      },
+      closeApp: app ? async () => await app.close() : null,
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -315,25 +415,63 @@ describe('管理员用户管理 (e2e)', () => {
       token,
     });
 
-  const updateUserProfile = (
+  const updateUserProfile = async (
     token: string,
     input: Record<string, unknown>,
-  ): Promise<GqlBody<{ adminUpdateUserProfile?: AdminUserPayload }>> =>
-    gql({
+  ): Promise<GqlBody<{ adminUpdateUserProfile?: AdminUserPayload }>> => {
+    const body = await gql<{ adminUpdateUserProfile?: AdminUserPayload }>({
       query: ADMIN_UPDATE_USER_PROFILE_MUTATION,
       variables: { input },
       token,
     });
+    // N01：合法资料变更成功后更新本轮预期；资料缺失/失败响应不更新。
+    const updated = body.data?.adminUpdateUserProfile;
+    const targetAccountId = Number(input.accountId);
+    if (
+      body.errors === undefined &&
+      updated &&
+      Number.isInteger(targetAccountId) &&
+      ownership.accountIds.includes(targetAccountId)
+    ) {
+      const patch: { nickname?: string; userInfoEmail?: string | null } = {};
+      if (typeof input.nickname === 'string' && typeof updated.nickname === 'string') {
+        patch.nickname = updated.nickname;
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'contactEmail')) {
+        patch.userInfoEmail = updated.contactEmail ?? null;
+      }
+      if (Object.keys(patch).length > 0) {
+        updateOwnedExpectation(ownership, 'account', targetAccountId, patch);
+      }
+    }
+    return body;
+  };
 
-  const setUserStatus = (
+  const setUserStatus = async (
     token: string,
     input: Record<string, unknown>,
-  ): Promise<GqlBody<{ adminSetUserStatus?: AdminUserPayload }>> =>
-    gql({
+  ): Promise<GqlBody<{ adminSetUserStatus?: AdminUserPayload }>> => {
+    const body = await gql<{ adminSetUserStatus?: AdminUserPayload }>({
       query: ADMIN_SET_USER_STATUS_MUTATION,
       variables: { input },
       token,
     });
+    // R02：状态写入成功后显式更新本轮预期事实；合法状态变更不再导致清理误判为漂移。
+    const updated = body.data?.adminSetUserStatus;
+    const targetAccountId = Number(input.accountId);
+    if (
+      updated?.status &&
+      Number.isInteger(targetAccountId) &&
+      ownership.accountIds.includes(targetAccountId)
+    ) {
+      updateOwnedExpectation(ownership, 'account', targetAccountId, {
+        status: updated.status,
+        // account.status 与 user_info.user_state 双字段同步（N01 分别比对）。
+        userState: updated.status === AccountStatus.ACTIVE ? 'ACTIVE' : 'INACTIVE',
+      });
+    }
+    return body;
+  };
 
   const resetUserPassword = (
     token: string,
@@ -774,6 +912,16 @@ describe('管理员用户管理 (e2e)', () => {
 
       const createdAccountId = view?.id ?? 0;
       expect(createdAccountId).toBeGreaterThan(0);
+      recordOwnedResource(ownership, 'account', createdAccountId, {
+        loginName: CREATED_LOGIN_NAME,
+        loginEmail: CREATED_LOGIN_EMAIL,
+        status: AccountStatus.ACTIVE,
+        identityHint: IdentityTypeEnum.ENGINEER,
+        accessGroup: [IdentityTypeEnum.ENGINEER],
+        nickname: 'E2E 新建工程师',
+        userInfoEmail: 'created.contact@example.com',
+        userState: 'ACTIVE',
+      });
 
       // 账号行：登录邮箱小写收敛、identity_hint 与请求角色一致、状态 ACTIVE、口令非明文
       const account = await readAccountRow(createdAccountId);
@@ -799,6 +947,17 @@ describe('管理员用户管理 (e2e)', () => {
         accessGroup: [IdentityTypeEnum.ENGINEER],
         metaDigest: [IdentityTypeEnum.ENGINEER],
       });
+
+      // S2c：ENGINEER 创建时在事务内绑定管理员当前组织；成员关系落库校验
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOne({ where: { accountId: createdAccountId } });
+      expect(membership).toMatchObject({
+        organizationId: primaryOrganizationId,
+        memberRole: IdentityTypeEnum.ENGINEER,
+        status: 'ACTIVE',
+      });
+      expect(membership?.leftAt).toBeNull();
 
       // 初始密码经公开登录入口可验证：证明哈希盐取的是数据库权威 createdAt
       const createdToken = await login({
@@ -830,9 +989,28 @@ describe('管理员用户管理 (e2e)', () => {
       expect(view?.role).toBe(IdentityTypeEnum.CUSTOMER);
 
       const account = await readAccountRow(view?.id ?? 0);
+      if (view?.id) {
+        recordOwnedResource(ownership, 'account', view.id, {
+          loginName: null,
+          loginEmail: EMAIL_ONLY_LOGIN_EMAIL,
+          status: AccountStatus.ACTIVE,
+          identityHint: IdentityTypeEnum.CUSTOMER,
+          accessGroup: [IdentityTypeEnum.CUSTOMER],
+          nickname: 'E2E 仅邮箱账号',
+          userInfoEmail: null,
+          userState: 'ACTIVE',
+        });
+      }
       expect(account?.loginName).toBeNull();
       expect(account?.loginEmail).toBe(EMAIL_ONLY_LOGIN_EMAIL);
       expect(await countAccounts({ loginEmail: EMAIL_ONLY_LOGIN_EMAIL })).toBe(1);
+
+      // S2c 口径：CUSTOMER 不建立组织成员关系
+      expect(
+        await dataSource
+          .getRepository(OrganizationMembershipEntity)
+          .findOne({ where: { accountId: view?.id ?? 0 } }),
+      ).toBeNull();
     });
 
     it('重复登录名返回 CONFLICT 且不落库', async () => {

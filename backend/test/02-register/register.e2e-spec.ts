@@ -4,11 +4,18 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { useContainer } from 'class-validator';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { DataSource, In } from 'typeorm';
+import { DataSource } from 'typeorm';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { FieldEncryptionService } from '../../src/infrastructure/field-encryption/field-encryption.service';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  type OwnedResourceLedger,
+} from '../utils/e2e-scoped-cleanup';
+import { createOwnedLedgerLifecycle } from '../utils/owned-ledger-lifecycle';
+import { runE2eTeardown } from '../utils/e2e-teardown';
 import {
   AccountStatus,
   AudienceTypeEnum,
@@ -24,6 +31,17 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 describe('Register (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
+  // 本规格的归属台账：只登记 register 返回的真实账号 ID 与最小预期事实，清理按 ID 精确执行
+  let ownership: OwnedResourceLedger = createOwnedResourceLedger();
+  // R04：清理失败时保留台账与失败原因，只有清理成功才重置；与永久反例共用同一实现。
+  const lifecycle = createOwnedLedgerLifecycle({
+    helper: 'register.e2e',
+    getDataSource: () => dataSource,
+    getOwned: () => ownership,
+    resetOwned: () => {
+      ownership = createOwnedResourceLedger();
+    },
+  });
 
   const testRegisterData = {
     validUser: {
@@ -138,108 +156,33 @@ describe('Register (e2e)', () => {
     await app.init();
   }, 30000);
 
+  afterEach(async () => {
+    // R04：精确回收本用例登记的真实账号（含关联 user_info）；成功后才重置台账。
+    await lifecycle.afterTestCleanup();
+  });
+
   afterAll(async () => {
-    try {
-      // 检查数据库连接状态，只有在连接有效时才进行清理
-      if (dataSource && dataSource.isInitialized) {
-        // 清理测试数据
-        await dataSource.createQueryBuilder().delete().from(UserInfoEntity).execute();
-        await dataSource.createQueryBuilder().delete().from(AccountEntity).execute();
-      }
-    } catch (error) {
-      console.error('afterAll 清理失败:', error);
-    } finally {
-      // 确保应用正确关闭，添加延迟以允许 WebSocket 服务器优雅关闭
-      if (app) {
-        try {
-          await app.close();
-          // 给 WebSocket 服务器一些时间来完成清理
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        } catch (closeError) {
-          console.warn('应用关闭时出现警告:', closeError);
-        }
-      }
-    }
+    await runE2eTeardown({
+      // 兜底回收本轮全部已登记资源（含 afterEach 未覆盖到的部分），失败必须使规格失败
+      cleanup: async () => {
+        await lifecycle.cleanupRetainedForAfterAll();
+      },
+      finalize: null,
+      closeApp: app
+        ? async () => {
+            await app.close();
+            // 给 WebSocket 服务器一些时间完成关闭前的收尾
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        : null,
+    });
   });
 
-  beforeEach(async () => {
-    // 清理测试数据
-    await cleanupTestData();
+  beforeEach(() => {
+    // R04：不得无条件重置台账。上一用例清理失败时旧 ID 仍可能留在库中，
+    // 此处失败关闭，禁止在未恢复的情况下继续造数；afterAll 仍持有该批次用于诊断/回收。
+    lifecycle.assertReadyForNextTest();
   });
-
-  /**
-   * 清理测试数据
-   */
-  const cleanupTestData = async (): Promise<void> => {
-    try {
-      const accountRepository = dataSource.getRepository(AccountEntity);
-      const userInfoRepository = dataSource.getRepository(UserInfoEntity);
-
-      // 收集所有测试数据的标识符
-      const emails: string[] = [];
-      const loginNames: string[] = [];
-      const nicknames: string[] = [];
-
-      Object.values(testRegisterData).forEach((data) => {
-        if (data.loginEmail && data.loginEmail !== '') {
-          emails.push(data.loginEmail);
-        }
-        if (data.loginName && data.loginName !== '') {
-          loginNames.push(data.loginName);
-        }
-        if (data.nickname && data.nickname !== '') {
-          nicknames.push(data.nickname);
-        }
-      });
-
-      // 通过多个条件查找需要清理的账户
-      const whereConditions: Array<{ loginEmail?: any; loginName?: any }> = [];
-      if (emails.length > 0) {
-        whereConditions.push({ loginEmail: In(emails) });
-      }
-      if (loginNames.length > 0) {
-        whereConditions.push({ loginName: In(loginNames) });
-      }
-
-      if (whereConditions.length > 0) {
-        const accounts = await accountRepository.find({
-          where: whereConditions,
-          select: { id: true },
-        });
-
-        const accountIds = accounts.map((account) => account.id);
-
-        if (accountIds.length > 0) {
-          // 通过昵称查找 UserInfo 记录
-          const userInfosToDelete: number[] = [];
-          if (nicknames.length > 0) {
-            const userInfosByNickname = await userInfoRepository.find({
-              where: { nickname: In(nicknames) },
-              select: { accountId: true },
-            });
-            userInfosToDelete.push(...userInfosByNickname.map((ui) => ui.accountId));
-          }
-
-          // 合并需要删除的账户 ID
-          const allAccountIds = [...new Set([...accountIds, ...userInfosToDelete])];
-
-          if (allAccountIds.length > 0) {
-            // 先删除 UserInfo 记录
-            await userInfoRepository.delete({
-              accountId: In(allAccountIds),
-            });
-
-            // 再删除 Account 记录
-            await accountRepository.delete({
-              id: In(allAccountIds),
-            });
-          }
-        }
-      }
-    } catch (error) {
-      console.warn('清理测试数据失败:', error);
-    }
-  };
 
   /**
    * 执行 GraphQL 注册请求
@@ -261,6 +204,32 @@ describe('Register (e2e)', () => {
           input,
         },
       });
+
+    // 创建成功后立即登记真实账号 ID：本规格的清理只按这些 ID 精确执行，
+    // 不再整表删除 user_info/account。注册失败时 data 为空，不登记。
+    const registeredAccountId = (response.body as { data?: { register?: { accountId?: unknown } } })
+      ?.data?.register?.accountId;
+    const numericAccountId = Number(registeredAccountId);
+    if (Number.isInteger(numericAccountId) && numericAccountId > 0) {
+      // 预期事实来自受控注册输入与已受理的注册规则（仅允许客户注册、状态 ACTIVE）。
+      const inputLoginName = typeof input.loginName === 'string' ? input.loginName : null;
+      const inputLoginEmail = typeof input.loginEmail === 'string' ? input.loginEmail : '';
+      // N01：昵称可能被注册规则改写（重复昵称自动加后缀），资料三项取**本次创建结果**，
+      // 在注册成功后立即读取一次；不在清理阶段回读当前值作为预期。
+      const createdUserInfo = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOneOrFail({ where: { accountId: numericAccountId } });
+      recordOwnedResource(ownership, 'account', numericAccountId, {
+        loginName: inputLoginName,
+        loginEmail: inputLoginEmail,
+        status: AccountStatus.ACTIVE,
+        identityHint: IdentityTypeEnum.CUSTOMER,
+        accessGroup: [IdentityTypeEnum.CUSTOMER],
+        nickname: createdUserInfo.nickname,
+        userInfoEmail: createdUserInfo.email ?? null,
+        userState: createdUserInfo.userState,
+      });
+    }
 
     return response;
   };
