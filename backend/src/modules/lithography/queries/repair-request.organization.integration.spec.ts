@@ -8,6 +8,16 @@ import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { OrganizationEntity } from '../entities/organization.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
+import {
+  assertFixtureIdsAvailable,
+  assertRegisteredRowsAbsent,
+  type ControlledFixtureTable,
+  finalizeFixtureTeardown,
+  OwnedFixtureLedger,
+  prepareFixtureSetup,
+  type ReferenceGuard,
+  runOwnedFixtureCleanup,
+} from '../../../../test/utils/e2e-owned-fixture';
 import { RepairRequestQueryService } from './repair-request.query.service';
 
 /**
@@ -27,8 +37,7 @@ const ENABLED = process.env.REPAIR_REQUEST_ORG_INTEGRATION === '1';
 const describeIntegration = ENABLED ? describe : describe.skip;
 
 const ENV_FILE = 'env/.env.e2e';
-const ISOLATED_DATABASES = ['lithography_e2e'];
-const CLEANUP_CONSENT_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
+const ROUND_TAG = 'REPAIR-REQUEST-ORG-INT';
 
 const FIXTURE = {
   orgA: { id: 9903301, code: 'S5IT_ORG_A' },
@@ -37,7 +46,6 @@ const FIXTURE = {
   engineer: { id: 9903102, loginName: 's5it_engineer_9903102' },
   otherEngineer: { id: 9903103, loginName: 's5it_engineer_9903103' },
   model: { id: 9903104, code: 'S5IT-MODEL' },
-  requestNoPrefix: 'S5IT_',
   requests: {
     orgAUnaccepted: 9903201,
     orgBAcceptedByOther: 9903202,
@@ -59,113 +67,126 @@ describeIntegration('维修申请组织范围实库验收', () => {
   let dataSource: DataSource;
   let service: RepairRequestQueryService;
   let actualDatabase = '';
+  let setupAllowed = false;
+  const ledger = new OwnedFixtureLedger(ROUND_TAG);
 
-  const query = async <T = Record<string, unknown>>(sql: string): Promise<T[]> =>
-    dataSource.query(sql);
+  const query = async <T = Record<string, unknown>>(
+    sql: string,
+    parameters?: unknown[],
+  ): Promise<T[]> => dataSource.query(sql, parameters);
 
-  const assertCleanupConsent = (): void => {
-    if (process.env[CLEANUP_CONSENT_ENV] !== '1') {
-      throw new Error(
-        `拒绝执行夹具写入/删除：缺少显式许可 ${CLEANUP_CONSENT_ENV}=1（不提供默认值）。`,
-      );
-    }
+  const registerRow = async (table: ControlledFixtureTable, id: number): Promise<void> => {
+    await ledger.registerById(query, table, id);
   };
 
-  const assertIsolatedTarget = async (declaredDatabase: string): Promise<void> => {
-    if (!ISOLATED_DATABASES.includes(declaredDatabase.toLowerCase())) {
-      throw new Error(
-        `拒绝在库 "${declaredDatabase}" 上执行集成验收：仅允许 [${ISOLATED_DATABASES.join(', ')}]。`,
-      );
-    }
-    const rows = await query<{ current: string }>('SELECT DATABASE() AS current');
-    const current = (rows[0]?.current ?? '').toLowerCase();
-    if (current !== declaredDatabase.toLowerCase()) {
-      throw new Error(
-        `实际连接目标 "${current}" 与声明库 "${declaredDatabase}" 不一致，拒绝写入。`,
-      );
-    }
-    actualDatabase = current;
-  };
+  /** 引用闭包：只放行本轮登记的自有行，账本外任何引用都整批拒绝清理 */
+  const buildReferenceGuards = (): ReferenceGuard[] => {
+    const requestIds = ledger.idsOf('repair_request');
+    const modelIds = ledger.idsOf('equipment_model');
+    const accountIds = ledger.idsOf('base_user_account');
+    const orgIds = ledger.idsOf('organization');
 
-  const deleteFixtures = async (): Promise<string[]> => {
-    const errors: string[] = [];
-    const steps: Array<{ label: string; sql: string }> = [
+    const referenceGuards: ReferenceGuard[] = [
+      { table: 'engineer_response', column: 'request_id', ids: requestIds, label: '维修申请回复' },
       {
-        label: '维修申请',
-        sql: `DELETE FROM repair_request WHERE id IN (${REQUEST_IDS.join(',')}) AND request_no LIKE '${FIXTURE.requestNoPrefix}%'`,
+        table: 'maintenance_report',
+        column: 'repair_request_id',
+        ids: requestIds,
+        label: '维修申请报告',
       },
       {
-        label: '机型',
-        sql: `DELETE FROM equipment_model WHERE id = ${FIXTURE.model.id} AND model_code = '${FIXTURE.model.code}'`,
+        table: 'repair_request',
+        column: 'owner_organization_id',
+        ids: orgIds,
+        label: '组织维修申请',
       },
       {
-        label: '账号',
-        sql: `DELETE FROM base_user_account WHERE id IN (${FIXTURE.customer.id},${FIXTURE.engineer.id},${FIXTURE.otherEngineer.id}) AND login_name IN ('${FIXTURE.customer.loginName}','${FIXTURE.engineer.loginName}','${FIXTURE.otherEngineer.loginName}')`,
+        table: 'organization_membership',
+        column: 'organization_id',
+        ids: orgIds,
+        label: '组织成员',
       },
       {
-        label: '组织',
-        sql: `DELETE FROM organization WHERE id IN (${FIXTURE.orgA.id},${FIXTURE.orgB.id}) AND organization_code IN ('${FIXTURE.orgA.code}','${FIXTURE.orgB.code}')`,
+        table: 'repair_request',
+        column: 'customer_account_id',
+        ids: accountIds,
+        label: '客户账号工单',
+      },
+      {
+        table: 'repair_request',
+        column: 'accepted_by_engineer_account_id',
+        ids: accountIds,
+        label: '接单工程师',
+      },
+      {
+        table: 'organization_membership',
+        column: 'account_id',
+        ids: accountIds,
+        label: '账号成员',
+      },
+      {
+        table: 'engineer_response',
+        column: 'engineer_account_id',
+        ids: accountIds,
+        label: '回复工程师账号',
+      },
+      {
+        table: 'engineer_response',
+        column: 'customer_account_id',
+        ids: accountIds,
+        label: '回复客户账号',
+      },
+      {
+        table: 'repair_request',
+        column: 'equipment_model_id',
+        ids: modelIds,
+        label: '机型工单',
       },
     ];
-    for (const step of steps) {
-      try {
-        await query(step.sql);
-      } catch (error) {
-        errors.push(`${step.label}清理失败：${(error as Error).message}`);
-      }
-    }
-    return errors;
-  };
 
-  const assertNoResidue = async (): Promise<string[]> => {
-    const errors: string[] = [];
-    const checks: Array<{ label: string; sql: string }> = [
-      {
-        label: '维修申请残留',
-        sql: `SELECT COUNT(*) AS total FROM repair_request WHERE id IN (${REQUEST_IDS.join(',')})`,
-      },
-      {
-        label: '账号残留',
-        sql: `SELECT COUNT(*) AS total FROM base_user_account WHERE id IN (${FIXTURE.customer.id},${FIXTURE.engineer.id},${FIXTURE.otherEngineer.id})`,
-      },
-      {
-        label: '组织残留',
-        sql: `SELECT COUNT(*) AS total FROM organization WHERE id IN (${FIXTURE.orgA.id},${FIXTURE.orgB.id})`,
-      },
-      {
-        label: '机型残留',
-        sql: `SELECT COUNT(*) AS total FROM equipment_model WHERE id = ${FIXTURE.model.id}`,
-      },
-    ];
-    for (const check of checks) {
-      try {
-        const rows = await query<{ total: number | string }>(check.sql);
-        if (Number(rows[0]?.total ?? 0) !== 0) {
-          errors.push(`${check.label}：仍有 ${rows[0]?.total} 条`);
-        }
-      } catch (error) {
-        errors.push(`${check.label}核对失败：${(error as Error).message}`);
-      }
-    }
-    return errors;
+    return referenceGuards.filter((guard) => guard.ids.length > 0);
   };
 
   const insertFixtures = async (): Promise<void> => {
+    // 固定 ID 创建前先确认不存在：碰撞立即失败并保留原数据
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'organization',
+      [FIXTURE.orgA.id, FIXTURE.orgB.id],
+      ROUND_TAG,
+    );
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'base_user_account',
+      [FIXTURE.customer.id, FIXTURE.engineer.id, FIXTURE.otherEngineer.id],
+      ROUND_TAG,
+    );
+    await assertFixtureIdsAvailable(dataSource, 'equipment_model', [FIXTURE.model.id], ROUND_TAG);
+    await assertFixtureIdsAvailable(dataSource, 'repair_request', REQUEST_IDS, ROUND_TAG);
+
     await query(
       `INSERT INTO organization (id, organization_code, name, kind, status)
        VALUES (${FIXTURE.orgA.id}, '${FIXTURE.orgA.code}', 'S5 集成组织 A', 'CLIENT', 'ACTIVE'),
               (${FIXTURE.orgB.id}, '${FIXTURE.orgB.code}', 'S5 集成组织 B', 'PEER', 'ACTIVE')`,
     );
+    await registerRow('organization', FIXTURE.orgA.id);
+    await registerRow('organization', FIXTURE.orgB.id);
+
     await query(
       `INSERT INTO base_user_account (id, login_name, login_password, status)
        VALUES (${FIXTURE.customer.id}, '${FIXTURE.customer.loginName}', 's5-integration-fixture', 'ACTIVE'),
               (${FIXTURE.engineer.id}, '${FIXTURE.engineer.loginName}', 's5-integration-fixture', 'ACTIVE'),
               (${FIXTURE.otherEngineer.id}, '${FIXTURE.otherEngineer.loginName}', 's5-integration-fixture', 'ACTIVE')`,
     );
+    for (const accountId of [FIXTURE.customer.id, FIXTURE.engineer.id, FIXTURE.otherEngineer.id]) {
+      await registerRow('base_user_account', accountId);
+    }
+
     await query(
       `INSERT INTO equipment_model (id, model_code, model_name, enabled)
        VALUES (${FIXTURE.model.id}, '${FIXTURE.model.code}', 'S5 集成机型', 1)`,
     );
+    await registerRow('equipment_model', FIXTURE.model.id);
     const values = [
       {
         id: FIXTURE.requests.orgAUnaccepted,
@@ -218,11 +239,11 @@ describeIntegration('维修申请组织范围实库验收', () => {
                  'S5 集成夹具', '# S5 集成夹具', ${item.org}, ${item.accepted},
                  ${item.engineer}, ${item.accepted === 'TRUE' ? 'NOW(3)' : 'NULL'})`,
       );
+      await registerRow('repair_request', item.id);
     }
   };
 
   beforeAll(async () => {
-    assertCleanupConsent();
     const declaredDatabase =
       process.env.REPAIR_REQUEST_ORG_INTEGRATION_DATABASE ?? 'lithography_e2e';
     const config = loadExplicitEnvConfig(ENV_FILE, declaredDatabase);
@@ -248,10 +269,11 @@ describeIntegration('维修申请组织范围实库验收', () => {
       logging: false,
     });
     await dataSource.initialize();
-    await assertIsolatedTarget(config.database);
-
-    // 上次异常中断时先清理同名夹具，再写入本轮固定 ID 夹具
-    await deleteFixtures();
+    // 环境门禁全部通过后才允许创建夹具；未通过则不登记任何资源
+    const gate = await prepareFixtureSetup(dataSource, ROUND_TAG, config.database);
+    actualDatabase = gate.database;
+    setupAllowed = true;
+    // 固定 ID 夹具不做启动前清除：发现碰撞立即失败并保留原数据
     await insertFixtures();
 
     service = new RepairRequestQueryService(
@@ -262,21 +284,40 @@ describeIntegration('维修申请组织范围实库验收', () => {
   });
 
   afterAll(async () => {
-    const errors: string[] = [];
-    if (dataSource?.isInitialized) {
-      errors.push(...(await deleteFixtures()));
-      errors.push(...(await assertNoResidue()));
-      try {
-        await dataSource.destroy();
-      } catch (error) {
-        errors.push(`关闭连接失败：${(error as Error).message}`);
-      }
-    }
-    if (errors.length > 0) {
-      throw new Error(
-        `夹具收尾失败（目标库 ${actualDatabase || '(未确认)'}）：${errors.join('；')}`,
-      );
-    }
+    await finalizeFixtureTeardown({
+      steps: [
+        {
+          label: `清理夹具（目标库 ${actualDatabase || '(未确认)'}）`,
+          run: async () => {
+            if (!setupAllowed) return;
+            await runOwnedFixtureCleanup({
+              dataSource,
+              expectedDatabase: actualDatabase,
+              rows: ledger.list(),
+              referenceGuards: buildReferenceGuards(),
+            });
+          },
+        },
+        {
+          label: '核对夹具残留',
+          run: async () => {
+            if (!setupAllowed) return;
+            const residue = await assertRegisteredRowsAbsent(dataSource, ledger.list());
+            if (residue.length > 0) {
+              throw new Error(`本轮登记资源仍存在：${residue.join('；')}`);
+            }
+          },
+        },
+        {
+          label: '关闭数据库连接',
+          run: async () => {
+            if (dataSource?.isInitialized) {
+              await dataSource.destroy();
+            }
+          },
+        },
+      ],
+    });
   });
 
   it('ALL：仅本组织可见，无归属存量不因组织缺失进入全量视图', async () => {

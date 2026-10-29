@@ -42,11 +42,107 @@
 - KEEP 使用的一次性探针与状态目录已删除。以上为当时运行回执，仓库未提供一键重放该 KEEP 探针的命令；不能把本文当作保留了原始快照或已提供自动 KEEP 执行器。
 - 后续补跑的组织集成套件以自身残留断言核验，不冒称其执行时间也包含在此前 KEEP 快照区间内。
 
+## 清理保护修复与重新验收（2026-10-29，替代上文清理证据）
+
+上一轮的清理证据基于按固定 ID 预清除、按组织/前缀批量删除与逐条容错删除，不满足“错误目标零删除、归属不符零删除、中途失败整批回滚”。本轮完成以下修复并重新取得证据，**上文的清理与残留回执已被本节结果替代**：
+
+- 共享工具 `backend/test/utils/e2e-owned-fixture.ts`（复用既有 `e2e-db-guard` 门禁，未改动 PR0 的 `e2e-scoped-cleanup`）：
+  - 每个删除入口自行校验 `E2E_ALLOW_PHYSICAL_CLEANUP=1`、库名白名单与预期库，并在同一清理连接/事务内执行 `SELECT DATABASE()`，再与预期库逐项比对；不以调用方已检查为由省略入口校验。
+  - `prepareFixtureSetup` 全部检查通过后才标记允许创建夹具；`afterAll` 同时检查该状态，前置检查失败且未创建资源时不发出任何 DELETE。
+  - 登记账本按创建后回读的实际 ID、完整预期字段与本轮标识登记；固定 ID 创建前先查重，碰撞立即失败并保留原数据；移除启动前按固定 ID 清除旧数据。
+  - 清理在单连接单事务中先 `FOR UPDATE` 锁定并逐字段 NULL 安全比较，再核验引用闭包（只放行本轮登记的自有行，额外关联整批零删除），最后按子表→父表精确删除；任一失败立即回滚整批，不继续逐条删除。
+  - 主流程/清理/回滚/连接关闭错误分别收集；登记过的资源才允许清理，创建失败且未登记者不推测为本轮所有。
+- 四份实库测试已移除按组织删成员、按前缀/固定 ID 批量删任务与启动前预清除，改为登记后精确删除：
+  - `maintenance-report.integration.spec.ts` 5/5
+  - `repair-request.organization.integration.spec.ts` 9/9
+  - `maintenance-report.concurrency.integration.spec.ts` 4/4
+  - `local-runtime.concurrency.integration.spec.ts` 3/3
+- 新增失败路径回归 `backend/test/utils/e2e-owned-fixture.e2e-spec.ts`，13/13 通过：
+  - SQL 替身（8 项）：缺少许可、非白名单库、声明库≠实际库均零 DELETE；`DATABASE()` 校验早于任何 DELETE；setup 中途失败仅删除已登记行；固定 ID 碰撞拒绝；字段变化与 NULL 双向不匹配整批零删除；额外外部引用整批零删除。
+  - 真实 MySQL（5 项）：正常清理与重复清理零残留且保活行逐字段不变；字段被改写时整批零删除并在恢复预期后清理；真实外部引用拒绝后解除引用可清理；第二条删除注入失败时此前删除全部回滚；真实固定 ID 碰撞保留原数据。
+- 重新验收：在隔离库 `lithography_e2e` 顺序复跑四份套件，退出码均为 0；运行前后的全库逐字段摘要（33 张业务表、92 行、确定性排序）完全一致，24 个固定/生成夹具 ID 回读残留均为 0。未执行 Seed 或整表清理。
+- 本轮不改迁移与结构契约，上文“29 条迁移 / 24→29 增量 / 二次 0 条”结果确认仍适用，未重跑。
+- 修复过程中自测发现替身测试恢复环境变量时把未定义值写成字符串，导致后续白名单变成 `undefined`；已改为未定义时删除变量，并只清理上一轮自身登记的精确 ID 残留，未触碰其他数据。
+
+## 登记—核验—删除约束补齐与再次重新验收（2026-10-29，替代上一节清理证据）
+
+上一节仍保留调用方自选删除步骤、清理前整行重新读取（`refresh`）重新认领、并发分支断言后登记等缺口。本轮仅修改共享夹具工具与四份实库测试及其回归套件，**上一节的四份计数、KEEP 摘要与残留结论已被本节结果替代**；既有库名守卫、状态门与事务回滚保持不变。
+
+- P1 账本成为唯一删除依据：删除目标只能由已登记、已核验的表名与主键生成；受控表定义与主键结构集中在 `FIXTURE_TABLE_PRIMARY_KEYS` 与 `FIXTURE_TABLE_DELETE_ORDER`，调用方不再能传入 `deleteSteps`。空账本零 DELETE；删除语句逐行执行且 `affectedRows` 必须为 1、总数必须与核验目标一致；复合主键 `maintenance_report_version_attachment` 逐行登记与删除；引用闭包中出现账本外记录整批拒绝。
+- P2 移除全量 `refresh`：删除该入口及全部调用点。账号、组织、机型等未被业务修改的记录保持创建时的完整预期；合法业务变化只通过 `applyExpectedChange` 显式更新受影响字段，主键与所有权列（创建人、组织归属、客户/安装归属等）禁止改写，`updated_at` 作为数据库维护列不参与严格比较，数据库生成时间可在核验身份后受限读取登记。
+- P3 登记早于断言：并发分支在确认创建成功后立即登记实际资源再返回，统一用 `Promise.allSettled` 汇合后再断言；报告建稿产生的根记录、报警、步骤、版本与审核均在业务断言前登记；新增“并发一方成功、一方失败”真实用例，成功资源仍由受保护清理收尾。
+- P4 统一收尾：`runTeardownSteps` / `describeTeardownFailure` / `finalizeFixtureTeardown` 分别执行清理、残留查询与各资源关闭，关闭步骤全部尝试（前一步失败不阻断后续），最终同时报告主流程错误与全部清理错误。
+- 回归与重新验收：
+  - `backend/test/utils/e2e-owned-fixture.e2e-spec.ts` 19/19 通过：SQL 替身 12 项覆盖缺许可、非白名单、声明≠实际、`DATABASE()` 早于 DELETE、空账本零 DELETE、账本外目标不可登记且未登记同行不删、未登记复合主键闭包拒绝、固定 ID 碰撞、字段/NULL 不匹配、额外外部引用、合法变更与所有权拒绝、收尾错误全部保留；真实 MySQL 7 项覆盖并发部分成功+后续断言失败、正常清理与空账本+保活行不变、外部改写拒绝后恢复可清理、合法字段变更、外部引用零删除后解除引用可清理、第二条删除失败整批回滚、真实固定 ID 碰撞。
+  - 隔离库 `lithography_e2e` 顺序复跑四份实库套件：`maintenance-report.integration` 5/5、`repair-request.organization.integration` 9/9、`maintenance-report.concurrency` 4/4、`local-runtime.concurrency` 4/4（新增“并发一方失败”用例），均在受保护清理下退出码 0。
+  - KEEP：运行前后对 34 张表、121 行做确定性排序逐字段摘要，整体 sha256 完全一致（`65ec9f61…a386a`）；全库 `>= 9900000` 夹具区间回读为 0。未执行 Seed 或整表清理。
+  - 首跑失败遗留的精确夹具行（账号 `9904991`、机型 `9904993/9905002/9905003/9905014`、申请 `9905004`）已用一次性受保护脚本逐字段核验后删除，未触碰其他数据。
+- 本轮不改迁移与结构契约，上文“29 条迁移 / 24→29 增量 / 二次 0 条”结果确认仍适用，未重跑。
+
+## 报告子树登记与并发分支生命周期修复轮（2026-10-29，替代上一节相关登记结论）
+
+上一轮的报告清理仍存在两处缺口：报告套件按 `report_id` 扫描把账本外子记录当成“本轮资源”；上传并发 helper 的 A/B 连接与分支生命周期分散在多个 `try` 块，B 初始化失败时无法保证 A 被取消并回滚，异常路径上还会无条件允许提交。本轮只改两套报告测试的子树登记、上传并发 helper 与其回归，不动业务代码、Entity、Migration、既有清理入口与库名/许可门禁；本节实测结果替代上一节关于报告套件计数、并发套件计数与 KEEP 的结论。
+
+- P1 报告子树登记：`maintenance-report.integration.spec.ts` 与 `maintenance-report.concurrency.integration.spec.ts` 删除按 `report_id` 全量扫描的登记函数；附件只登记本轮上传结果（回读实际 ID、上传人、存储引用并在账本中校验），版本与审核只登记具体提交/退回操作返回的 ID（校验版本号、操作人、版本关联），版本附件按 `(version_id, attachment_id)` 复合主键逐行登记；`report_id` 查询只用于引用闭包核验，发现账本外记录则拒绝整批清理并保留现场，不再“登记后再继续删除”。预期字段全部来自创建输入与显式业务状态变化（含 MySQL 布尔列按 0/1 比较），不从查询结果反写所有权预期。
+- P2 并发分支生命周期：新增共享 helper `backend/test/utils/upload-race-runner.ts`，A/B 的创建、连接、开事务、执行、等待与释放全部在同一 `try/finally` 内；B 初始化失败时向 A 发出取消信号、释放等待并等待 A 回滚与释放；只有正常竞争完成才放行提交，异常路径不再无条件 `allowCommit()`；按实际初始化状态逐个连接清理，分支错误、回滚错误与释放错误分别收集，全部分支结束才退出 helper。`local-runtime.concurrency.integration.spec.ts` 改用该 helper，保留原有真实锁竞争同步点。
+- P3 回归：报告并发套件新增“引用闭包”用例（外部上传人附件、外部版本、外部审核、外部版本附件的账本外记录不被认领，清理以“账本外记录”拒绝且零删除，随后清理外部账本与本轮账本各自成功、回读均为 0；正常本轮子树仍可清理）；新增单测 `backend/src/usecases/local-runtime/upload-race-runner.spec.ts` 4 例，分别注入 B 连接失败、B 开事务失败、收尾失败保留原始分支错误、正常竞争提交顺序。
+- 实测（修复方自测，非独立复审）：
+  - `upload-race-runner.spec.ts` 4/4；`maintenance-report.integration` 5/5；`maintenance-report.concurrency` 5/5（含新增引用闭包）；`local-runtime.concurrency` 4/4；均退出码 0，且报告并发套件的 `afterAll` 未出现残留断言失败。
+  - 隔离库 `lithography_e2e`：本轮开工前与全部套件复跑后，34 张表确定性逐字段摘要均为 `95f3490c8dc6346d513f569562b44c2f267d5bd2dea488afa8e905b41d1a52a1`，`>= 9900000` 区间残留为 0；未执行 Seed 或整表清理。
+  - 首跑新增引用闭包用例曾因布尔列回读为 0/1 而整批零删除失败，遗留 39 行本轮夹具（组织 2、账号 5、成员 5、机型 1、工单申请 5、报告 5、报警 5、步骤 5、附件 2、版本 3、版本附件 1）；核对全部为 `S5C_*` 本轮夹具后，用一次性受保护脚本在单事务内按子表→父表精确删除，随后摘要恢复为上述基线，未触碰其他数据。
+- 本轮不改迁移与结构契约，上文“29 条迁移 / 24→29 增量 / 二次 0 条”确认仍适用，未重跑。
+- 独立复审：本轮尚未进行；以上均为修复方实测，复审需在通过后单独执行。
+
+## 版本附件登记与事务收尾补强（2026-10-29，替代上一节两项结论）
+
+上一节仍有两处缺口：普通报告集成测试仍按 `version_id` 查询全部关联后登记版本附件；并发执行器仍以 `startTransaction()` 成功返回作为回滚前提，驱动“已标记活动后才抛错”时不会回滚。本轮只改这两处及其回归，不动业务代码、Entity、Migration 与既有清理入口。
+
+- P1 版本附件登记：`maintenance-report.integration.spec.ts` 的 `registerSubmittedVersion` 改为接收提交时已知的附件集合，按 `(version_id, attachment_id)` 构造复合主键并逐条登记，`sort_order`、`description_snapshot` 来自上传输入，`publish_flag` 取提交前恒为 0 的业务常量；无附件版本登记零条关联。全量关联查询只由既有引用闭包守卫（`maintenance_report_version_attachment.version_id`）在清理前执行，仅用于发现账本外记录；出现未知关联即整批拒绝、零删除并保留现场，不把查询结果登记为本轮资源。
+- P2 事务收尾：`upload-race-runner.ts` 的 `settleRunner` 不再依赖 `transactionStarted` 标记，只要 `isTransactionActive` 为真就尝试回滚；回滚失败仍继续释放连接，初始化、分支、回滚与释放错误分别汇总，取消等待与等待全部分支结束的机制保持不变。
+- P3 回归：集成套件新增“版本附件登记”用例，覆盖无附件零关联、已知附件按复合主键与业务列登记、同版本账本外附件与版本关联不被认领且整批清理拒绝零删除，之后用独立账本精确清理外部记录；单测新增“B 启动事务已标记活动后抛错”与“抛错后回滚失败仍释放且不覆盖原始初始化错误”两例。
+- 实测（修复方自测，非独立复审）：
+  - `upload-race-runner.spec.ts` 6/6；`maintenance-report.integration` 6/6；`maintenance-report.concurrency` 5/5；`local-runtime.concurrency` 4/4；均退出码 0，报告并发套件 `afterAll` 无残留断言失败。
+  - 隔离库 `lithography_e2e`：运行前后 34 张表确定性摘要均为 `95f3490c8dc6346d513f569562b44c2f267d5bd2dea488afa8e905b41d1a52a1`，`>= 9900000` 区间残留为 0；未执行 Seed 或整表清理，也未使用一次性清除脚本。
+  - `tsc -p tsconfig.build.json`、`tsc -p tsconfig.tools.json` 与含 spec 的 `tsconfig.spec.json` 通过；无 `--fix`、无 `--cache` 的 ESLint 在 3 个改动文件上 0 error；`prettier --check` 通过；`git diff --check` 无空白问题。
+- 独立复审：本轮尚未进行；以上均为修复方实测，复审需在通过后单独执行。
+
+## 账本外模拟记录独立账本与失败路径验证（2026-10-29，替代上一节账本外记录收尾结论）
+
+上一节的账本外模拟记录在主流程末尾才创建，清理也放在用例尾部顺序执行：第二条 INSERT 或业务断言失败时，已创建的外部附件既未登记也没有 finally 收尾，会阻断主账本清理。本轮只改该回归用例及其失败路径验证，不改注册、业务代码、Entity、Migration 与既有清理入口。
+
+- 独立账本：版本附件回归用例开始时即创建 tag 为 `ROUND_TAG-EXT` 的独立 `OwnedFixtureLedger`，与主账本分开维护；插入与断言全部在 try 内执行。
+- 写入即登记：外部附件 INSERT 成功后立即按固定主键登记预期字段（`byte_size` 为 bigint unsigned，按驱动回读的字符串形态登记）；版本附件 INSERT 成功后立即登记 `(version_id, attachment_id)` 复合主键及 `report_id/sort_order/description_snapshot/publish_flag`；本轮已知附件也在业务断言之前登记到主账本。
+- finally 收尾：无论插入、登记还是断言失败，finally 都通过 `runTeardownSteps` 对独立账本执行受保护清理；删除顺序沿用 `FIXTURE_TABLE_DELETE_ORDER`（版本附件先于附件）。主流程错误与清理错误经 `describeTeardownFailure` 汇总，互不覆盖。
+- 失败路径验证：新增四例覆盖正常完成、第二条 INSERT 失败（CHECK 约束）、业务断言失败（注入异常）、独立清理失败（由临时独立账本经受保护入口移除登记行），分别断言已成功创建资源均已登记、仅本轮资源被清理、原始错误完整可见。
+- 实测（修复方自测，非独立复审）：
+  - `maintenance-report.integration` 10/10 通过（含 4 例失败路径），退出码 0，`afterAll` 无残留断言失败。
+  - 隔离库 `lithography_e2e`：运行前后 34 张表确定性摘要均为 `95f3490c8dc6346d513f569562b44c2f267d5bd2dea488afa8e905b41d1a52a1`，`>= 9900000` 区间残留为 0；未执行 Seed 或整表清理。
+  - 首跑曾把 bigint unsigned 的 `byte_size` 按数值预期登记，导致独立账本清理核验失败并遗留 30 行本轮夹具；核对全部为本轮 `S5C_*` 夹具后，用一次性受保护脚本在单事务内按子表→父表精确删除，摘要恢复基线后改为字符串形态登记并复跑通过。
+  - 含 spec 的 `tsc -p tsconfig.spec.json`、无 `--fix`/`--cache` 的 ESLint（1 个改动文件 0 error）、`prettier --check`、`git diff --check` 通过。
+- 独立复审：本轮尚未进行；以上均为修复方实测，复审需在通过后单独执行。
+
+## 独立清理失败负例的受保护入口收口（2026-10-29）
+
+上一轮“独立清理失败”负例用直连 `DELETE FROM maintenance_report_attachment` 移除登记行，绕过了受保护清理入口的显式许可、同连接库名检查与所有权核验，不符合夹具反例清单对测试夹具的要求。本轮只改该负例：先由临时独立账本 `registerById` 回读登记，再调用 `runOwnedFixtureCleanup` 删除该行；原账本随后在 finally 中因“登记资源已不存在”清理失败，负例目的保持不变。
+
+- 实测（修复方自测，非独立复审）：该用例单独 1/1；`maintenance-report.integration` 全套 10/10；隔离库运行前后 34 张表确定性摘要均为 `95f3490c8dc6346d513f569562b44c2f267d5bd2dea488afa8e905b41d1a52a1`，`>= 9900000` 残留为 0；含 spec 的 `tsc`、无 `--fix`/`--cache` 的 ESLint（1 个改动文件 0 error）、`prettier --check`、`git diff --check` 通过。
+- 独立复审：本轮尚未进行；以上为修复方实测，复审需在通过后单独执行。
+
 ## 静态门禁与单测
 
 已记录通过：`typecheck`、`build`、无自动修复的 ESLint（0 error，10 warning）、`prettier --check`、normalize guard、architecture fixtures、`check:entity-scope`、`capability:docs:check`。
 
 修正轮全量后端单测记录为 114 个套件通过、3 个套件跳过，1394 passed、45 skipped、0 failed。随后仅修改上传锁选项及对应测试，并定向运行本地运行与报告目录及上述真实并发套件；该全量数字不是后续新增用例后的重新统计。默认关闭的实库套件在普通单测中跳过，不等于真实链路已执行。
+
+清理保护修复轮（2026-10-29）定向记录：受影响模块单测 13 个套件通过、4 个跳过（143 passed、21 skipped、0 failed）；`tsc -p tsconfig.build.json`、`tsc -p tsconfig.tools.json` 与含 spec 的 `tsconfig.spec.json` 类型检查均通过；无 `--fix` 的 ESLint 在 6 个改动文件上 0 error；`prettier --check` 全部通过。本轮未新增业务代码、Entity 或 Migration。
+
+登记—核验—删除约束补齐轮（2026-10-29）记录：受影响模块定向单测 13 个套件通过、4 个跳过（143 passed、22 skipped、0 failed）；全量后端单测 114 个套件通过、5 个跳过（1395 passed、53 skipped、0 failed）；三套 `tsc` 类型检查通过；无 `--fix`、无 `--cache` 的全量 ESLint 为 0 error、10 warning（均为既有文件的历史告警）；`prettier --check` 通过；`lint:usecase-normalize-guard` 与 `lint:architecture-fixtures` 通过（过程中曾因移除调用方手工收敛过滤而命中 guard，已按规范删除该过滤后重跑通过）。本轮未新增业务代码、Entity 或 Migration。
+
+报告子树登记与并发分支生命周期修复轮（2026-10-29）记录：定向单测 `upload-race-runner.spec.ts` 4/4；`tsc -p tsconfig.build.json`、`tsc -p tsconfig.tools.json` 与含 spec 的 `tsconfig.spec.json` 类型检查通过；无 `--fix`、无 `--cache` 的 ESLint 在 8 个改动/新增 TS 文件上 0 error；`prettier --check` 在 9 个改动/新增文件上全部通过。本轮未新增业务代码、Entity 或 Migration。
+
+版本附件登记与事务收尾补强轮（2026-10-29）记录：定向单测 `upload-race-runner.spec.ts` 6/6；三套 `tsc` 类型检查通过；无 `--fix`、无 `--cache` 的 ESLint 在 3 个改动文件上 0 error；`prettier --check` 通过。本轮未新增业务代码、Entity 或 Migration。
+
+账本外模拟记录独立账本与失败路径验证轮（2026-10-29）记录：定向单测 `upload-race-runner.spec.ts` 6/6；`tsc -p tsconfig.spec.json` 与既有构建类型检查通过；无 `--fix`、无 `--cache` 的 ESLint 在 1 个改动文件上 0 error；`prettier --check` 通过；`git diff --check` 无空白问题。本轮未新增业务代码、Entity 或 Migration。
 
 ## 可复现入口
 
@@ -71,6 +167,17 @@ MAINTENANCE_REPORT_CONCURRENCY_INTEGRATION=1 E2E_ALLOW_PHYSICAL_CLEANUP=1 \
 LOCAL_RUNTIME_CONCURRENCY_INTEGRATION=1 E2E_ALLOW_PHYSICAL_CLEANUP=1 \
   npx jest src/usecases/local-runtime/local-runtime.concurrency.integration.spec.ts --runInBand
 ```
+
+清理保护失败路径回归（SQL 替身 + 隔离 MySQL 回滚/引用保护）：
+
+```bash
+E2E_ALLOW_PHYSICAL_CLEANUP=1 E2E_SKIP_DB_CLEANUP=true \
+E2E_SPECS=test/utils/e2e-owned-fixture.e2e-spec.ts \
+  npx jest --config test/jest-e2e.js --runInBand
+```
+
+另两份实库套件分别使用 `MAINTENANCE_REPORT_INTEGRATION=1`、
+`REPAIR_REQUEST_ORG_INTEGRATION=1` 并按上方同样的许可与隔离库前提运行。四份套件可按顺序串行复跑；其清理只删除本轮登记 ID，运行前无需预清除。
 
 ## 已知交付边界
 

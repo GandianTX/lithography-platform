@@ -41,6 +41,7 @@ const GROUPS = {
       'test/12-reference-document-case/reference-document-case.e2e-spec.ts',
       'test/11-content-submission/frontend-response-samples.e2e-spec.ts',
       'test/utils/e2e-db-guard.e2e-spec.ts',
+      'test/utils/e2e-owned-fixture.e2e-spec.ts',
       'test/utils/e2e-db-target-consistency.e2e-spec.ts',
       'test/utils/e2e-probe-lifecycle.e2e-spec.ts',
       'test/utils/e2e-probe-lifecycle-outer.e2e-spec.ts',

@@ -10,7 +10,20 @@ import { LoggerModule } from '@src/infrastructure/logger/logger.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { join } from 'path';
 import { DataSource, type QueryRunner } from 'typeorm';
+import {
+  assertFixtureIdsAvailable,
+  assertRegisteredRowsAbsent,
+  type ControlledFixtureTable,
+  describeTeardownFailure,
+  finalizeFixtureTeardown,
+  OwnedFixtureLedger,
+  prepareFixtureSetup,
+  type ReferenceGuard,
+  runOwnedFixtureCleanup,
+  runTeardownSteps,
+} from '../../../test/utils/e2e-owned-fixture';
 import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract';
+import { AddMaintenanceReportAttachmentUsecase } from './add-maintenance-report-attachment.usecase';
 import { MaintenanceReportUsecasesModule } from './maintenance-report-usecases.module';
 import { RecordRepairRequestHandlingResultUsecase } from './record-repair-request-handling-result.usecase';
 import { ReturnMaintenanceReportUsecase } from './return-maintenance-report.usecase';
@@ -32,8 +45,7 @@ const ENABLED = process.env.MAINTENANCE_REPORT_INTEGRATION === '1';
 const describeIntegration = ENABLED ? describe : describe.skip;
 
 const ENV_FILE = 'env/.env.e2e';
-const ISOLATED_DATABASES = ['lithography_e2e'];
-const CLEANUP_CONSENT_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
+const ROUND_TAG = 'MAINTENANCE-REPORT-INT';
 
 const FIXTURE = {
   org: { id: 9904401, code: 'S5MR_ORG' },
@@ -50,6 +62,15 @@ const FIXTURE = {
   concurrentStep: 9904412,
   repairRequestConcurrent: 9904413,
   handlingRequest: 9904414,
+  repairRequestAttachment: 9904415,
+  reportAttachment: 9904416,
+  alarmAttachment: 9904417,
+  stepAttachment: 9904418,
+  externalAttachment: 9904419,
+  externalAttachmentInsertFail: 9904420,
+  externalAttachmentAssertFail: 9904421,
+  externalAttachmentCleanupFail: 9904422,
+  externalAttachmentNormal: 9904423,
 } as const;
 
 const engineerSession: UsecaseSession = {
@@ -71,13 +92,22 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
   let dataSource: DataSource;
   let submitUsecase: SubmitMaintenanceReportUsecase;
   let updateUsecase: UpdateMaintenanceReportDraftUsecase;
+  let addAttachmentUsecase: AddMaintenanceReportAttachmentUsecase;
   let returnUsecase: ReturnMaintenanceReportUsecase;
   let handlingUsecase: RecordRepairRequestHandlingResultUsecase;
   const analysisReader = { read: jest.fn() };
   let actualDatabase = '';
+  let setupAllowed = false;
+  // 记录本轮提交结果的版本 ID，供后续退回审核登记精确关联
+  let lifecycleVersionId = 0;
+  // 版本附件回归所提交的版本 ID，供账本外模拟记录用例复用
+  let attachmentVersionId = 0;
+  const ledger = new OwnedFixtureLedger(ROUND_TAG);
 
-  const query = async <T = Record<string, unknown>>(sql: string): Promise<T[]> =>
-    dataSource.query(sql);
+  const query = async <T = Record<string, unknown>>(
+    sql: string,
+    parameters?: unknown[],
+  ): Promise<T[]> => dataSource.query(sql, parameters);
 
   // mysql2 对 JSON 列可能直接返回对象，统一兼容两种形态
   const parsePayload = (value: unknown): Record<string, unknown> =>
@@ -85,138 +115,446 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       ? (JSON.parse(value) as Record<string, unknown>)
       : ((value ?? {}) as Record<string, unknown>);
 
-  const assertConsent = (): void => {
-    if (process.env[CLEANUP_CONSENT_ENV] !== '1') {
-      throw new Error(`拒绝执行夹具写入/删除：缺少显式许可 ${CLEANUP_CONSENT_ENV}=1。`);
+  /** 创建成功后立即按主键回读整行并登记，后续断言前先完成登记 */
+  const registerRow = async (table: ControlledFixtureTable, id: number): Promise<void> => {
+    await ledger.registerById(query, table, id);
+  };
+
+  /**
+   * 提交结果返回的版本 ID 直接登记；版本附件只依据提交时已知的附件集合构造复合主键并逐行登记，
+   * 无附件版本登记零条关联。全量关联查询只用于闭包核验发现账本外记录，不用于认领本轮资源。
+   */
+  const registerSubmittedVersion = (
+    reportId: number,
+    submitted: { versionId: number; versionNo: number },
+    knownAttachments: readonly { id: number; sortOrder: number; description: string | null }[],
+  ): void => {
+    ledger.register({
+      table: 'maintenance_report_version',
+      key: { id: submitted.versionId },
+      expected: {
+        id: submitted.versionId,
+        report_id: reportId,
+        version_no: submitted.versionNo,
+        change_kind: 'SUBMIT',
+        submitted_by_account_id: engineerSession.accountId,
+      },
+    });
+    for (const attachment of knownAttachments) {
+      const key = { version_id: submitted.versionId, attachment_id: attachment.id };
+      ledger.register({
+        table: 'maintenance_report_version_attachment',
+        key,
+        expected: {
+          ...key,
+          report_id: reportId,
+          sort_order: attachment.sortOrder,
+          description_snapshot: attachment.description,
+          // 提交前发布选择恒为 0（业务常量，不来自查询回读）
+          publish_flag: 0,
+        },
+      });
     }
   };
 
-  const assertIsolatedTarget = async (declared: string): Promise<void> => {
-    if (!ISOLATED_DATABASES.includes(declared.toLowerCase())) {
-      throw new Error(
-        `拒绝在库 "${declared}" 上执行集成验收：仅允许 ${ISOLATED_DATABASES.join(', ')}。`,
-      );
-    }
-    const rows = await query<{ current: string }>('SELECT DATABASE() AS current');
-    const current = (rows[0]?.current ?? '').toLowerCase();
-    if (current !== declared.toLowerCase()) {
-      throw new Error(`实际连接目标 "${current}" 与声明库 "${declared}" 不一致，拒绝写入。`);
-    }
-    actualDatabase = current;
+  /** 退回审核按返回的审核 ID 登记；预期版本来自本轮已登记的提交结果 */
+  const registerReturnedReview = (
+    reportId: number,
+    versionId: number,
+    reviewed: { reviewId: number },
+    comment: string,
+  ): void => {
+    ledger.register({
+      table: 'maintenance_report_review',
+      key: { id: reviewed.reviewId },
+      expected: {
+        id: reviewed.reviewId,
+        report_id: reportId,
+        version_id: versionId,
+        decision: 'RETURN',
+        comment,
+        reviewed_by_account_id: adminSession.accountId,
+      },
+    });
   };
 
-  const deleteFixtures = async (): Promise<string[]> => {
-    const errors: string[] = [];
-    const steps: Array<{ label: string; sql: string }> = [
+  /**
+   * 引用闭包：只放行本轮登记的自有行，任何账本外关联都会让整批零删除。
+   */
+  const buildReferenceGuards = (): ReferenceGuard[] => {
+    const reportIds = ledger.idsOf('maintenance_report');
+    const versionIds = ledger.idsOf('maintenance_report_version');
+    const requestIds = ledger.idsOf('repair_request');
+    const modelIds = ledger.idsOf('equipment_model');
+    const accountIds = ledger.idsOf('base_user_account');
+    const orgIds = ledger.idsOf('organization');
+
+    const referenceGuards: ReferenceGuard[] = [
+      { table: 'engineer_response', column: 'request_id', ids: requestIds, label: '维修申请回复' },
       {
-        label: '报告审核',
-        sql: 'DELETE FROM maintenance_report_review WHERE report_id IN (9904407, 9904410)',
+        table: 'maintenance_report',
+        column: 'repair_request_id',
+        ids: requestIds,
+        label: '维修申请报告',
       },
       {
-        label: '版本附件',
-        sql: 'DELETE FROM maintenance_report_version_attachment WHERE version_id IN (SELECT id FROM maintenance_report_version WHERE report_id IN (9904407, 9904410))',
-      },
-      {
-        label: '报告版本',
-        sql: 'DELETE FROM maintenance_report_version WHERE report_id IN (9904407, 9904410)',
-      },
-      {
+        table: 'maintenance_report_alarm',
+        column: 'report_id',
+        ids: reportIds,
         label: '报告报警',
-        sql: 'DELETE FROM maintenance_report_alarm WHERE report_id IN (9904407, 9904410)',
       },
       {
+        table: 'maintenance_report_step',
+        column: 'report_id',
+        ids: reportIds,
         label: '报告步骤',
-        sql: 'DELETE FROM maintenance_report_step WHERE report_id IN (9904407, 9904410)',
       },
       {
-        label: '报告',
-        sql: 'DELETE FROM maintenance_report WHERE id IN (9904407, 9904410)',
+        table: 'maintenance_report_version',
+        column: 'report_id',
+        ids: reportIds,
+        label: '报告版本',
       },
       {
-        label: '维修申请',
-        sql: "DELETE FROM repair_request WHERE id IN (9904406, 9904413, 9904414) AND request_no LIKE 'S5MR_%'",
+        table: 'maintenance_report_review',
+        column: 'report_id',
+        ids: reportIds,
+        label: '报告审核',
       },
       {
-        label: '机型',
-        sql: `DELETE FROM equipment_model WHERE id = ${FIXTURE.model.id} AND model_code = '${FIXTURE.model.code}'`,
+        table: 'maintenance_report_attachment',
+        column: 'report_id',
+        ids: reportIds,
+        label: '报告附件',
       },
       {
-        label: '成员关系',
-        sql: 'DELETE FROM organization_membership WHERE organization_id = 9904401 AND account_id IN (9904402, 9904403, 9904404)',
+        table: 'maintenance_report_version_attachment',
+        column: 'report_id',
+        ids: reportIds,
+        label: '版本附件报告',
       },
       {
-        label: '账号',
-        sql: 'DELETE FROM base_user_account WHERE id IN (9904402, 9904403, 9904404)',
+        table: 'maintenance_report_version_attachment',
+        column: 'version_id',
+        ids: versionIds,
+        label: '版本附件版本',
       },
       {
-        label: '组织',
-        sql: `DELETE FROM organization WHERE id = ${FIXTURE.org.id} AND organization_code = '${FIXTURE.org.code}'`,
+        table: 'maintenance_report_review',
+        column: 'version_id',
+        ids: versionIds,
+        label: '审核关联版本',
+      },
+      {
+        table: 'organization_membership',
+        column: 'organization_id',
+        ids: orgIds,
+        label: '组织成员',
+      },
+      {
+        table: 'repair_request',
+        column: 'owner_organization_id',
+        ids: orgIds,
+        label: '组织维修申请',
+      },
+      {
+        table: 'maintenance_report',
+        column: 'owner_organization_id',
+        ids: orgIds,
+        label: '组织报告',
+      },
+      {
+        table: 'organization_membership',
+        column: 'account_id',
+        ids: accountIds,
+        label: '账号成员',
+      },
+      {
+        table: 'repair_request',
+        column: 'customer_account_id',
+        ids: accountIds,
+        label: '客户账号工单',
+      },
+      {
+        table: 'repair_request',
+        column: 'accepted_by_engineer_account_id',
+        ids: accountIds,
+        label: '接单工程师',
+      },
+      {
+        table: 'repair_request',
+        column: 'handling_recorded_by_account_id',
+        ids: accountIds,
+        label: '处理记录人',
+      },
+      {
+        table: 'maintenance_report',
+        column: 'maintenance_engineer_account_id',
+        ids: accountIds,
+        label: '报告工程师',
+      },
+      {
+        table: 'maintenance_report',
+        column: 'created_by_account_id',
+        ids: accountIds,
+        label: '报告创建人',
+      },
+      {
+        table: 'maintenance_report',
+        column: 'updated_by_account_id',
+        ids: accountIds,
+        label: '报告更新人',
+      },
+      {
+        table: 'maintenance_report_version',
+        column: 'submitted_by_account_id',
+        ids: accountIds,
+        label: '版本提交人',
+      },
+      {
+        table: 'maintenance_report_review',
+        column: 'reviewed_by_account_id',
+        ids: accountIds,
+        label: '审核人',
+      },
+      {
+        table: 'maintenance_report_attachment',
+        column: 'uploaded_by_account_id',
+        ids: accountIds,
+        label: '附件上传人',
+      },
+      {
+        table: 'engineer_response',
+        column: 'engineer_account_id',
+        ids: accountIds,
+        label: '回复工程师账号',
+      },
+      {
+        table: 'engineer_response',
+        column: 'customer_account_id',
+        ids: accountIds,
+        label: '回复客户账号',
+      },
+      {
+        table: 'repair_request',
+        column: 'equipment_model_id',
+        ids: modelIds,
+        label: '机型工单',
+      },
+      {
+        table: 'maintenance_report',
+        column: 'equipment_model_id',
+        ids: modelIds,
+        label: '机型报告',
       },
     ];
-    for (const step of steps) {
-      try {
-        await query(step.sql);
-      } catch (error) {
-        errors.push(`${step.label}清理失败：${(error as Error).message}`);
-      }
-    }
-    return errors;
+
+    return referenceGuards;
   };
 
-  const assertNoResidue = async (): Promise<string[]> => {
-    const errors: string[] = [];
-    const checks: Array<{ label: string; sql: string }> = [
-      {
-        label: '报告残留',
-        sql: 'SELECT (SELECT COUNT(*) FROM maintenance_report WHERE id IN (9904407, 9904410)) + (SELECT COUNT(*) FROM maintenance_report_version WHERE report_id IN (9904407, 9904410)) AS total',
+  interface ExternalRecordRegistration {
+    readonly ledger: OwnedFixtureLedger;
+    createAttachment(input: {
+      readonly id: number;
+      readonly reportId: number;
+      readonly sortOrder: number;
+      readonly description: string;
+    }): Promise<void>;
+    createVersionAttachment(input: {
+      readonly versionId: number;
+      readonly attachmentId: number;
+      readonly reportId: number;
+      readonly sortOrder: number;
+      readonly description: string;
+    }): Promise<void>;
+  }
+
+  /**
+   * 账本外模拟记录：独立账本在用例开始时创建，与主账本分开维护；
+   * 每次成功写入后立即登记实际主键与预期字段；
+   * 无论插入、登记还是断言失败，finally 都执行受保护清理，并与主错误分别汇总、互不覆盖。
+   */
+  const runExternalRecordCase = async (
+    scenario: (registration: ExternalRecordRegistration) => Promise<void>,
+  ): Promise<{ readonly ledger: OwnedFixtureLedger; readonly failure: string | null }> => {
+    const externalLedger = new OwnedFixtureLedger(`${ROUND_TAG}-EXT`);
+    const registration: ExternalRecordRegistration = {
+      ledger: externalLedger,
+      createAttachment: async ({ id, reportId, sortOrder, description }) => {
+        // 固定 ID 写入前先确认不存在：碰撞立即失败并保留原数据
+        await assertFixtureIdsAvailable(
+          dataSource,
+          'maintenance_report_attachment',
+          [id],
+          ROUND_TAG,
+        );
+        await query(
+          `INSERT INTO maintenance_report_attachment
+             (id, report_id, original_filename, mime_type, byte_size, checksum_sha256,
+              storage_backend, storage_reference, sort_order, description, status,
+              uploaded_by_account_id)
+           VALUES (?, ?, ?, 'text/plain', 9, NULL, 'LOCAL', ?, ?, ?, 'CURRENT', ?)`,
+          [
+            id,
+            reportId,
+            `s5mr-external-${id}.txt`,
+            `s5mr/external-${id}.txt`,
+            sortOrder,
+            description,
+            FIXTURE.engineer,
+          ],
+        );
+        externalLedger.register({
+          table: 'maintenance_report_attachment',
+          key: { id },
+          expected: {
+            id,
+            report_id: reportId,
+            original_filename: `s5mr-external-${id}.txt`,
+            mime_type: 'text/plain',
+            // bigint unsigned 列经驱动回读为字符串，预期值按同一形态登记
+            byte_size: '9',
+            checksum_sha256: null,
+            storage_backend: 'LOCAL',
+            storage_reference: `s5mr/external-${id}.txt`,
+            sort_order: sortOrder,
+            description,
+            status: 'CURRENT',
+            uploaded_by_account_id: FIXTURE.engineer,
+          },
+        });
       },
-      {
-        label: '账号残留',
-        sql: 'SELECT COUNT(*) AS total FROM base_user_account WHERE id IN (9904402, 9904403, 9904404)',
+      createVersionAttachment: async ({
+        versionId,
+        attachmentId,
+        reportId,
+        sortOrder,
+        description,
+      }) => {
+        await query(
+          `INSERT INTO maintenance_report_version_attachment
+             (version_id, attachment_id, report_id, sort_order, description_snapshot, publish_flag)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+          [versionId, attachmentId, reportId, sortOrder, description],
+        );
+        const key = { version_id: versionId, attachment_id: attachmentId };
+        externalLedger.register({
+          table: 'maintenance_report_version_attachment',
+          key,
+          expected: {
+            ...key,
+            report_id: reportId,
+            sort_order: sortOrder,
+            description_snapshot: description,
+            publish_flag: 0,
+          },
+        });
       },
-      {
-        label: '维修申请残留',
-        sql: 'SELECT COUNT(*) AS total FROM repair_request WHERE id IN (9904406, 9904413, 9904414)',
-      },
-      {
-        label: '成员残留',
-        sql: 'SELECT COUNT(*) AS total FROM organization_membership WHERE organization_id = 9904401',
-      },
-    ];
-    for (const check of checks) {
-      try {
-        const rows = await query<{ total: number | string }>(check.sql);
-        if (Number(rows[0]?.total ?? 0) !== 0) {
-          errors.push(`${check.label}：仍有 ${rows[0]?.total} 条`);
-        }
-      } catch (error) {
-        errors.push(`${check.label}核对失败：${(error as Error).message}`);
-      }
+    };
+
+    let primaryError: unknown;
+    let teardownErrors: readonly string[];
+    try {
+      await scenario(registration);
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      teardownErrors = await runTeardownSteps([
+        {
+          label: '清理账本外模拟记录',
+          run: () =>
+            runOwnedFixtureCleanup({
+              dataSource,
+              expectedDatabase: actualDatabase,
+              rows: externalLedger.list(),
+            }),
+        },
+      ]);
     }
-    return errors;
+
+    return {
+      ledger: externalLedger,
+      failure: describeTeardownFailure({ primaryError, teardownErrors }),
+    };
   };
 
   const insertFixtures = async (): Promise<void> => {
+    // 固定 ID 创建前先确认不存在：碰撞立即失败并保留原数据
+    await assertFixtureIdsAvailable(dataSource, 'organization', [FIXTURE.org.id], ROUND_TAG);
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'base_user_account',
+      [FIXTURE.engineer, FIXTURE.admin, FIXTURE.customer],
+      ROUND_TAG,
+    );
+    await assertFixtureIdsAvailable(dataSource, 'equipment_model', [FIXTURE.model.id], ROUND_TAG);
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'repair_request',
+      [
+        FIXTURE.repairRequest,
+        FIXTURE.repairRequestConcurrent,
+        FIXTURE.handlingRequest,
+        FIXTURE.repairRequestAttachment,
+      ],
+      ROUND_TAG,
+    );
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'maintenance_report',
+      [FIXTURE.reportLifecycle, FIXTURE.reportConcurrent, FIXTURE.reportAttachment],
+      ROUND_TAG,
+    );
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'maintenance_report_alarm',
+      [FIXTURE.alarm, FIXTURE.concurrentAlarm, FIXTURE.alarmAttachment],
+      ROUND_TAG,
+    );
+    await assertFixtureIdsAvailable(
+      dataSource,
+      'maintenance_report_step',
+      [FIXTURE.step, FIXTURE.concurrentStep, FIXTURE.stepAttachment],
+      ROUND_TAG,
+    );
+
     await query(
       `INSERT INTO organization (id, organization_code, name, kind, status)
        VALUES (${FIXTURE.org.id}, '${FIXTURE.org.code}', 'S5 报告集成组织', 'CLIENT', 'ACTIVE')`,
     );
+    await registerRow('organization', FIXTURE.org.id);
+
     await query(
       `INSERT INTO base_user_account (id, login_name, login_password, status)
        VALUES (${FIXTURE.engineer}, 's5mr_engineer_9904402', 's5-integration-fixture', 'ACTIVE'),
               (${FIXTURE.admin}, 's5mr_admin_9904403', 's5-integration-fixture', 'ACTIVE'),
               (${FIXTURE.customer}, 's5mr_customer_9904404', 's5-integration-fixture', 'ACTIVE')`,
     );
+    for (const accountId of [FIXTURE.engineer, FIXTURE.admin, FIXTURE.customer]) {
+      await registerRow('base_user_account', accountId);
+    }
+
     await query(
       `INSERT INTO organization_membership (organization_id, account_id, member_role, status)
        VALUES (${FIXTURE.org.id}, ${FIXTURE.engineer}, 'ENGINEER', 'ACTIVE'),
               (${FIXTURE.org.id}, ${FIXTURE.admin}, 'SUPER_ADMIN', 'ACTIVE'),
               (${FIXTURE.org.id}, ${FIXTURE.customer}, 'CUSTOMER', 'ACTIVE')`,
     );
+    // 成员关系 ID 由数据库生成：按本轮组织与账号精确回读后立即登记
+    const memberships = await query<{ id: number }>(
+      'SELECT id FROM organization_membership WHERE organization_id = ?',
+      [FIXTURE.org.id],
+    );
+    for (const membership of memberships) {
+      await registerRow('organization_membership', membership.id);
+    }
+
     await query(
       `INSERT INTO equipment_model (id, model_code, model_name, enabled)
        VALUES (${FIXTURE.model.id}, '${FIXTURE.model.code}', 'S5 报告集成机型', 1)`,
     );
+    await registerRow('equipment_model', FIXTURE.model.id);
+
     await query(
       `INSERT INTO repair_request
          (id, request_no, customer_account_id, equipment_model_id, error_code,
@@ -230,8 +568,20 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
                ${FIXTURE.engineer}, NOW(3)),
               (${FIXTURE.handlingRequest}, 'S5MR_HANDLING', ${FIXTURE.customer}, ${FIXTURE.model.id},
                'E-S5MR3', 'S5 处理结果夹具', '# S5 处理结果夹具', ${FIXTURE.org.id}, TRUE,
+               ${FIXTURE.engineer}, NOW(3)),
+              (${FIXTURE.repairRequestAttachment}, 'S5MR_ATTACHMENT', ${FIXTURE.customer}, ${FIXTURE.model.id},
+               'E-S5MR4', 'S5 版本附件夹具', '# S5 版本附件夹具', ${FIXTURE.org.id}, TRUE,
                ${FIXTURE.engineer}, NOW(3))`,
     );
+    for (const requestId of [
+      FIXTURE.repairRequest,
+      FIXTURE.repairRequestConcurrent,
+      FIXTURE.handlingRequest,
+      FIXTURE.repairRequestAttachment,
+    ]) {
+      await registerRow('repair_request', requestId);
+    }
+
     for (const report of [
       {
         id: FIXTURE.reportLifecycle,
@@ -247,6 +597,13 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
         step: FIXTURE.concurrentStep,
         title: 'S5 并发报告',
       },
+      {
+        id: FIXTURE.reportAttachment,
+        repairRequest: FIXTURE.repairRequestAttachment,
+        alarm: FIXTURE.alarmAttachment,
+        step: FIXTURE.stepAttachment,
+        title: 'S5 版本附件报告',
+      },
     ]) {
       await query(
         `INSERT INTO maintenance_report
@@ -260,11 +617,13 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
                  ${FIXTURE.engineer}, 'S5 集成工程师', 1, 'DRAFT', 0, 'NOT_USED',
                  ${FIXTURE.engineer}, ${FIXTURE.engineer})`,
       );
+      await registerRow('maintenance_report', report.id);
       await query(
         `INSERT INTO maintenance_report_alarm
            (id, report_id, alarm_index, alarm_code, alarm_description, phase_code, reset_result)
          VALUES (${report.alarm}, ${report.id}, 1, 'ALM-S5', 'S5 集成报警', 'PHASE_01', 'RESET_OK')`,
       );
+      await registerRow('maintenance_report_alarm', report.alarm);
       await query(
         `INSERT INTO maintenance_report_step
            (id, report_id, step_no, step_code, phase_code, part_name, action_text, result_text,
@@ -272,11 +631,11 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
          VALUES (${report.step}, ${report.id}, 1, 'STEP-S5', 'PHASE_01', 'S5 部件',
                  'S5 集成排查动作', 'S5 集成结果', NULL, 0)`,
       );
+      await registerRow('maintenance_report_step', report.step);
     }
   };
 
   beforeAll(async () => {
-    assertConsent();
     const declared = process.env.MAINTENANCE_REPORT_INTEGRATION_DATABASE ?? 'lithography_e2e';
     const config = loadExplicitEnvConfig(ENV_FILE, declared);
 
@@ -317,37 +676,73 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       .compile();
 
     dataSource = moduleRef.get(DataSource);
-    await assertIsolatedTarget(config.database);
-    // 上次异常中断时先清理同 ID 夹具，再写入本轮夹具
-    await deleteFixtures();
+    // 环境门禁全部通过后才允许创建夹具；未通过则不登记任何资源
+    const gate = await prepareFixtureSetup(dataSource, ROUND_TAG, config.database);
+    actualDatabase = gate.database;
+    setupAllowed = true;
+    // 固定 ID 夹具不做启动前清除：发现碰撞立即失败并保留原数据
     await insertFixtures();
 
     submitUsecase = moduleRef.get(SubmitMaintenanceReportUsecase);
     updateUsecase = moduleRef.get(UpdateMaintenanceReportDraftUsecase);
+    addAttachmentUsecase = moduleRef.get(AddMaintenanceReportAttachmentUsecase);
     returnUsecase = moduleRef.get(ReturnMaintenanceReportUsecase);
     handlingUsecase = moduleRef.get(RecordRepairRequestHandlingResultUsecase);
   });
 
   afterAll(async () => {
-    const errors: string[] = [];
-    if (moduleRef) {
-      errors.push(...(await deleteFixtures()));
-      errors.push(...(await assertNoResidue()));
-      try {
-        await moduleRef.close();
-      } catch (error) {
-        errors.push(`关闭测试模块失败：${(error as Error).message}`);
-      }
-    }
-    if (errors.length > 0) {
-      throw new Error(
-        `夹具收尾失败（目标库 ${actualDatabase || '(未确认)'}）：${errors.join('；')}`,
-      );
-    }
+    await finalizeFixtureTeardown({
+      steps: [
+        {
+          label: `清理夹具（目标库 ${actualDatabase || '(未确认)'}）`,
+          run: async () => {
+            if (!setupAllowed) return;
+            await runOwnedFixtureCleanup({
+              dataSource,
+              expectedDatabase: actualDatabase,
+              rows: ledger.list(),
+              referenceGuards: buildReferenceGuards(),
+            });
+          },
+        },
+        {
+          label: '核对夹具残留',
+          run: async () => {
+            if (!setupAllowed) return;
+            const residue = await assertRegisteredRowsAbsent(dataSource, ledger.list());
+            if (residue.length > 0) {
+              throw new Error(`本轮登记资源仍存在：${residue.join('；')}`);
+            }
+          },
+        },
+        {
+          label: '关闭测试模块',
+          run: async () => {
+            if (moduleRef) {
+              await moduleRef.close();
+            }
+          },
+        },
+      ],
+    });
   });
 
   it('提交冻结：版本号 1、状态 PENDING_REVIEW、快照含真实内容且未调用 AI 读取器', async () => {
-    await submitUsecase.execute({ session: engineerSession, reportId: FIXTURE.reportLifecycle });
+    const submitted = await submitUsecase.execute({
+      session: engineerSession,
+      reportId: FIXTURE.reportLifecycle,
+    });
+    // 业务返回的版本 ID 先登记，再执行后续断言；本版本未上传附件，登记零条版本关联
+    registerSubmittedVersion(FIXTURE.reportLifecycle, submitted, []);
+    lifecycleVersionId = submitted.versionId;
+    // 提交只影响状态、版本号与提交时间；其余所有权字段保持创建时的预期
+    await ledger.applyExpectedChange(
+      query,
+      'maintenance_report',
+      FIXTURE.reportLifecycle,
+      { status: 'PENDING_REVIEW', current_version_no: 1 },
+      ['last_submitted_at', 'updated_at'],
+    );
 
     const rows = await query<{
       status: string;
@@ -397,19 +792,49 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
   });
 
   it('退回后重提：版本递增且旧版本完整保留', async () => {
-    await returnUsecase.execute({
+    const reviewed = await returnUsecase.execute({
       session: adminSession,
       reportId: FIXTURE.reportLifecycle,
       comment: 'S5 集成退回',
     });
+    registerReturnedReview(FIXTURE.reportLifecycle, lifecycleVersionId, reviewed, 'S5 集成退回');
+    // 退回只改变状态与审核事实；版本号与创建者保持原预期
+    await ledger.applyExpectedChange(
+      query,
+      'maintenance_report',
+      FIXTURE.reportLifecycle,
+      { status: 'RETURNED' },
+      ['last_reviewed_at', 'updated_at', 'updated_by_account_id'],
+    );
 
     await updateUsecase.execute({
       session: engineerSession,
       reportId: FIXTURE.reportLifecycle,
       draft: { title: 'S5 生命周期报告（修订）' },
     });
+    // 编辑只改变标题与更新人/时间
+    await ledger.applyExpectedChange(
+      query,
+      'maintenance_report',
+      FIXTURE.reportLifecycle,
+      { title: 'S5 生命周期报告（修订）' },
+      ['updated_at', 'updated_by_account_id'],
+    );
 
-    await submitUsecase.execute({ session: engineerSession, reportId: FIXTURE.reportLifecycle });
+    const resubmitted = await submitUsecase.execute({
+      session: engineerSession,
+      reportId: FIXTURE.reportLifecycle,
+    });
+    registerSubmittedVersion(FIXTURE.reportLifecycle, resubmitted, []);
+    lifecycleVersionId = resubmitted.versionId;
+    // 重提只改变状态、版本号与提交时间
+    await ledger.applyExpectedChange(
+      query,
+      'maintenance_report',
+      FIXTURE.reportLifecycle,
+      { status: 'PENDING_REVIEW', current_version_no: 2 },
+      ['last_submitted_at', 'last_reviewed_at', 'updated_at'],
+    );
 
     const rows = await query<{ status: string; current_version_no: number }>(
       `SELECT status, current_version_no FROM maintenance_report WHERE id = ${FIXTURE.reportLifecycle}`,
@@ -445,13 +870,24 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       // 给提交事务足够时间走到锁定读（此刻会阻塞在编辑者持有的行锁上）
       await new Promise((resolve) => setTimeout(resolve, 300));
       await runner.commitTransaction();
-      await submitPromise;
+      const submitted = await submitPromise;
+      // 业务返回的版本 ID 先登记，再离开本用例；并发报告未上传附件
+      registerSubmittedVersion(FIXTURE.reportConcurrent, submitted, []);
     } finally {
       if (runner.isTransactionActive) {
         await runner.rollbackTransaction().catch(() => undefined);
       }
       await runner.release().catch(() => undefined);
     }
+
+    // 并发编辑改变了标题，提交改变了状态与版本号；其余字段保持原预期
+    await ledger.applyExpectedChange(
+      query,
+      'maintenance_report',
+      FIXTURE.reportConcurrent,
+      { title: '并发编辑后的标题', status: 'PENDING_REVIEW', current_version_no: 1 },
+      ['last_submitted_at', 'updated_at'],
+    );
 
     const versions = await query<{ payload_snapshot: string }>(
       `SELECT payload_snapshot FROM maintenance_report_version
@@ -467,6 +903,14 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       repairRequestId: FIXTURE.handlingRequest,
       handlingResult: 'INTERRUPTED',
     });
+    // 处理中只改变处理结果与处理状态；记录时间/记录人为数据库写入，受限读取
+    await ledger.applyExpectedChange(
+      query,
+      'repair_request',
+      FIXTURE.handlingRequest,
+      { handling_result: 'INTERRUPTED', handling_status: 'IN_PROGRESS' },
+      ['handling_recorded_at', 'handling_recorded_by_account_id', 'handling_ended_at'],
+    );
     const afterProgress = await query<{
       handling_result: string;
       handling_status: string;
@@ -486,6 +930,14 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       repairRequestId: FIXTURE.handlingRequest,
       handlingResult: 'FIXED',
     });
+    // 终结保存改变结果/状态并写入结束时间与记录人，其余字段保持原预期
+    await ledger.applyExpectedChange(
+      query,
+      'repair_request',
+      FIXTURE.handlingRequest,
+      { handling_result: 'FIXED', handling_status: 'COMPLETED' },
+      ['handling_ended_at', 'handling_recorded_at', 'handling_recorded_by_account_id'],
+    );
     const afterFixed = await query<{
       handling_result: string;
       handling_status: string;
@@ -516,5 +968,283 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       handling_result: 'FIXED',
       handling_status: 'COMPLETED',
     });
+  });
+
+  it('版本附件登记：无附件零关联，已知附件按复合主键登记，账本外关联拒绝整批清理且零删除', async () => {
+    // 独立账本一开始即创建，此后全部插入与断言都在 try 内执行
+    const { ledger: externalLedger, failure } = await runExternalRecordCase(
+      async ({ createAttachment, createVersionAttachment }) => {
+        // 无附件版本：此前三次提交均未上传附件，账本不得登记任何版本关联
+        const versionsWithoutAttachments = ledger.idsOf('maintenance_report_version');
+        expect(versionsWithoutAttachments.length).toBeGreaterThan(0);
+        expect(
+          ledger.list().filter((row) => row.table === 'maintenance_report_version_attachment'),
+        ).toHaveLength(0);
+        const missing = await query<{ total: number | string }>(
+          `SELECT COUNT(*) AS total FROM maintenance_report_version_attachment
+            WHERE version_id IN (${versionsWithoutAttachments.map(() => '?').join(', ')})`,
+          versionsWithoutAttachments,
+        );
+        expect(Number(missing[0]?.total ?? 0)).toBe(0);
+
+        // 已知附件：上传结果返回的新附件按实际 ID 核验上传人、存储引用与轮次输入后登记，
+        // 登记先于后续业务断言
+        const uploaded = await addAttachmentUsecase.execute({
+          session: engineerSession,
+          reportId: FIXTURE.reportAttachment,
+          file: {
+            originalFilename: 's5mr-known.txt',
+            mimeType: 'text/plain',
+            byteSize: 7,
+            checksumSha256: null,
+            storageBackend: 'LOCAL',
+            storageReference: 's5mr/known.txt',
+            description: 'S5MR 已知附件',
+            sortOrder: 1,
+          },
+        });
+        expect(uploaded.attachmentIds).toHaveLength(1);
+        const knownAttachmentId = uploaded.attachmentIds[0];
+        const uploadedRows = await query<{
+          uploaded_by_account_id: number;
+          storage_reference: string;
+          original_filename: string;
+        }>(
+          `SELECT uploaded_by_account_id, storage_reference, original_filename
+             FROM maintenance_report_attachment WHERE id = ?`,
+          [knownAttachmentId],
+        );
+        expect(uploadedRows[0]).toMatchObject({
+          uploaded_by_account_id: FIXTURE.engineer,
+          storage_reference: 's5mr/known.txt',
+          original_filename: 's5mr-known.txt',
+        });
+        ledger.register({
+          table: 'maintenance_report_attachment',
+          key: { id: knownAttachmentId },
+          expected: {
+            id: knownAttachmentId,
+            report_id: FIXTURE.reportAttachment,
+            uploaded_by_account_id: FIXTURE.engineer,
+            storage_reference: 's5mr/known.txt',
+            original_filename: 's5mr-known.txt',
+          },
+        });
+
+        const submitted = await submitUsecase.execute({
+          session: engineerSession,
+          reportId: FIXTURE.reportAttachment,
+        });
+        attachmentVersionId = submitted.versionId;
+        registerSubmittedVersion(FIXTURE.reportAttachment, submitted, [
+          { id: knownAttachmentId, sortOrder: 1, description: 'S5MR 已知附件' },
+        ]);
+        await ledger.applyExpectedChange(
+          query,
+          'maintenance_report',
+          FIXTURE.reportAttachment,
+          { status: 'PENDING_REVIEW', current_version_no: 1 },
+          ['last_submitted_at', 'updated_at'],
+        );
+
+        // 登记先于断言：复合主键与业务列按已知输入核验，不依赖查询结果反写预期
+        const versionAttachmentRows = await query<{
+          report_id: number;
+          sort_order: number;
+          description_snapshot: string | null;
+          publish_flag: number;
+        }>(
+          `SELECT report_id, sort_order, description_snapshot, publish_flag
+             FROM maintenance_report_version_attachment
+            WHERE version_id = ? AND attachment_id = ?`,
+          [submitted.versionId, knownAttachmentId],
+        );
+        expect(versionAttachmentRows).toHaveLength(1);
+        expect(versionAttachmentRows[0]).toMatchObject({
+          report_id: FIXTURE.reportAttachment,
+          sort_order: 1,
+          description_snapshot: 'S5MR 已知附件',
+          publish_flag: 0,
+        });
+
+        // 账本外关联：同版本挂入未登记的附件与版本关联，每次成功写入后立即登记到独立账本
+        await createAttachment({
+          id: FIXTURE.externalAttachment,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 账本外附件',
+        });
+        await createVersionAttachment({
+          versionId: submitted.versionId,
+          attachmentId: FIXTURE.externalAttachment,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 账本外版本附件',
+        });
+        expect(ledger.has('maintenance_report_attachment', FIXTURE.externalAttachment)).toBe(false);
+        expect(
+          ledger.has('maintenance_report_version_attachment', {
+            version_id: submitted.versionId,
+            attachment_id: FIXTURE.externalAttachment,
+          }),
+        ).toBe(false);
+
+        // 引用闭包发现账本外关联：整批清理拒绝且零删除，现场保留
+        await expect(
+          runOwnedFixtureCleanup({
+            dataSource,
+            expectedDatabase: actualDatabase,
+            rows: ledger.list(),
+            referenceGuards: buildReferenceGuards(),
+          }),
+        ).rejects.toThrow(/账本外记录/);
+
+        const reportIds = ledger.idsOf('maintenance_report');
+        const versionAttachmentsAfterRejection = await query<{ total: number | string }>(
+          `SELECT COUNT(*) AS total FROM maintenance_report_version_attachment
+            WHERE report_id IN (${reportIds.map(() => '?').join(', ')})`,
+          reportIds,
+        );
+        expect(Number(versionAttachmentsAfterRejection[0]?.total ?? 0)).toBe(2);
+        const reportStillPresent = await query<{ total: number | string }>(
+          'SELECT COUNT(*) AS total FROM maintenance_report WHERE id = ?',
+          [FIXTURE.reportAttachment],
+        );
+        expect(Number(reportStillPresent[0]?.total ?? 0)).toBe(1);
+      },
+    );
+
+    expect(failure).toBeNull();
+    // finally 已按独立账本精确清理模拟记录；主账本资源保持待收尾状态
+    expect(await assertRegisteredRowsAbsent(dataSource, externalLedger.list())).toEqual([]);
+    const knownAttachmentCount = await query<{ total: number | string }>(
+      'SELECT COUNT(*) AS total FROM maintenance_report_attachment WHERE report_id = ?',
+      [FIXTURE.reportAttachment],
+    );
+    expect(Number(knownAttachmentCount[0]?.total ?? 0)).toBe(1);
+    const knownVersionAttachmentCount = await query<{ total: number | string }>(
+      'SELECT COUNT(*) AS total FROM maintenance_report_version_attachment WHERE report_id = ?',
+      [FIXTURE.reportAttachment],
+    );
+    expect(Number(knownVersionAttachmentCount[0]?.total ?? 0)).toBe(1);
+  });
+
+  it('账本外模拟记录：第二条 INSERT 失败时已创建附件被精确清理，原始错误完整可见', async () => {
+    const attachmentId = FIXTURE.externalAttachmentInsertFail;
+    const { ledger: externalLedger, failure } = await runExternalRecordCase(
+      async ({ createAttachment, createVersionAttachment }) => {
+        await createAttachment({
+          id: attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 第二条插入失败',
+        });
+        // 非法排序触发 CHECK 约束，模拟第二条 INSERT 失败
+        await createVersionAttachment({
+          versionId: attachmentVersionId,
+          attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 0,
+          description: 'S5MR 非法排序',
+        });
+      },
+    );
+
+    expect(externalLedger.idsOf('maintenance_report_attachment')).toEqual([attachmentId]);
+    expect(failure).not.toBeNull();
+    expect(failure).toContain('chk_maintenance_report_version_attachment_sort');
+    expect(await assertRegisteredRowsAbsent(dataSource, externalLedger.list())).toEqual([]);
+    const knownAttachmentCount = await query<{ total: number | string }>(
+      'SELECT COUNT(*) AS total FROM maintenance_report_attachment WHERE report_id = ?',
+      [FIXTURE.reportAttachment],
+    );
+    expect(Number(knownAttachmentCount[0]?.total ?? 0)).toBe(1);
+  });
+
+  it('账本外模拟记录：业务断言失败时两条已登记记录均被精确清理，原始断言错误可见', async () => {
+    const attachmentId = FIXTURE.externalAttachmentAssertFail;
+    const { ledger: externalLedger, failure } = await runExternalRecordCase(
+      async ({ createAttachment, createVersionAttachment }) => {
+        await createAttachment({
+          id: attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 断言失败',
+        });
+        await createVersionAttachment({
+          versionId: attachmentVersionId,
+          attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 断言失败版本关联',
+        });
+        throw new Error('注入业务断言失败');
+      },
+    );
+
+    expect(externalLedger.idsOf('maintenance_report_attachment')).toEqual([attachmentId]);
+    expect(
+      externalLedger.list().filter((row) => row.table === 'maintenance_report_version_attachment'),
+    ).toHaveLength(1);
+    expect(failure).toContain('注入业务断言失败');
+    expect(await assertRegisteredRowsAbsent(dataSource, externalLedger.list())).toEqual([]);
+  });
+
+  it('账本外模拟记录：独立清理失败时错误被汇总且不留残渣', async () => {
+    const attachmentId = FIXTURE.externalAttachmentCleanupFail;
+    const { ledger: externalLedger, failure } = await runExternalRecordCase(
+      async ({ createAttachment }) => {
+        await createAttachment({
+          id: attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 清理失败',
+        });
+        // 由临时独立账本经受保护入口删除该行，再由原账本验证“记录缺失”的清理失败
+        const removalLedger = new OwnedFixtureLedger(`${ROUND_TAG}-EXT-REMOVE`);
+        await removalLedger.registerById(query, 'maintenance_report_attachment', attachmentId);
+        await runOwnedFixtureCleanup({
+          dataSource,
+          expectedDatabase: actualDatabase,
+          rows: removalLedger.list(),
+        });
+        expect(await assertRegisteredRowsAbsent(dataSource, removalLedger.list())).toEqual([]);
+      },
+    );
+
+    expect(externalLedger.idsOf('maintenance_report_attachment')).toEqual([attachmentId]);
+    expect(failure).toContain('清理账本外模拟记录失败');
+    expect(failure).toContain('登记资源已不存在');
+    expect(
+      await query('SELECT id FROM maintenance_report_attachment WHERE id = ?', [attachmentId]),
+    ).toHaveLength(0);
+  });
+
+  it('账本外模拟记录：正常完成时全部已登记记录被精确清理且无主流程错误', async () => {
+    const attachmentId = FIXTURE.externalAttachmentNormal;
+    const { ledger: externalLedger, failure } = await runExternalRecordCase(
+      async ({ createAttachment, createVersionAttachment }) => {
+        await createAttachment({
+          id: attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 正常完成',
+        });
+        await createVersionAttachment({
+          versionId: attachmentVersionId,
+          attachmentId,
+          reportId: FIXTURE.reportAttachment,
+          sortOrder: 2,
+          description: 'S5MR 正常完成版本关联',
+        });
+      },
+    );
+
+    expect(failure).toBeNull();
+    expect(externalLedger.idsOf('maintenance_report_attachment')).toEqual([attachmentId]);
+    expect(
+      externalLedger.list().filter((row) => row.table === 'maintenance_report_version_attachment'),
+    ).toHaveLength(1);
+    expect(await assertRegisteredRowsAbsent(dataSource, externalLedger.list())).toEqual([]);
   });
 });
