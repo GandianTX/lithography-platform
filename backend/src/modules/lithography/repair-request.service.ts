@@ -62,6 +62,7 @@ export class RepairRequestService {
         errorCode: data.errorCode,
         faultDescription: data.faultDescription,
         contentMd: data.contentMd,
+        ownerOrganizationId: data.ownerOrganizationId ?? null,
         isAccepted: false,
         deprecated: false,
       });
@@ -173,6 +174,23 @@ export class RepairRequestService {
         error,
       );
     }
+  }
+
+  /**
+   * 读取工单组织归属（接单/回复/处理结果的组织范围门禁）。
+   * @returns undefined 表示工单不存在
+   */
+  async findOwnerOrganizationId(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number | null | undefined> {
+    const repository = this.getRepository(transactionContext);
+    const entity = await repository.findOne({
+      where: { id: requestId },
+      select: { id: true, ownerOrganizationId: true, deprecated: true },
+    });
+    if (!entity) return undefined;
+    return entity.ownerOrganizationId ?? null;
   }
 
   /**

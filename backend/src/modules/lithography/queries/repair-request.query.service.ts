@@ -6,7 +6,7 @@ import { hasRole } from '@core/account/policy/role-access.policy';
 import { DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, Not, Repository } from 'typeorm';
+import { FindOptionsWhere, In, IsNull, Not, Repository } from 'typeorm';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
@@ -72,10 +72,11 @@ export class RepairRequestQueryService {
 
   /**
    * 工程师维度列表（四态，数据库侧完成全部筛选后再分页计数）：
-   * - ALL：全部未删除申请；
-   * - AVAILABLE：未删除且未接单（待接单池）；
-   * - MINE：本人已接单；
-   * - TAKEN_BY_OTHER：其他账号已接单。
+   * - ALL：本组织全部未删除申请；
+   * - AVAILABLE：本组织未删除且未接单（待接单池）；
+   * - MINE：本人已接单（含无归属存量，归属缺失不放大可见范围）；
+   * - TAKEN_BY_OTHER：本组织内其他账号已接单。
+   * 无组织上下文的账号在非 MINE 视角直接得到空页，不把归属缺失当作全库可见。
    * 客户昵称筛选已由 usecase 解析为客户账号 ID 集合，在本方法内以 IN 条件
    * 参与分页与 total 计算；列表项为富集前装配结果（含归属类账号 ID，不对外输出）。
    */
@@ -84,6 +85,8 @@ export class RepairRequestQueryService {
     scope: RepairRequestEngineerListScope;
     filter: RepairRequestEngineerListFilterInternal;
     pagination: RepairRequestListPagination;
+    /** 可信组织上下文；为空表示无组织归属（仅可见无归属存量工单） */
+    viewerOrganizationId?: number | null;
   }): Promise<RepairRequestEngineerListQueryPage> {
     const where: FindOptionsWhere<RepairRequestEntity> = { deprecated: false };
     switch (params.scope) {
@@ -107,7 +110,28 @@ export class RepairRequestQueryService {
     if (params.filter.customerAccountIds) {
       where.customerAccountId = In(params.filter.customerAccountIds);
     }
-    return this.listPage(where, params.pagination, (entities) =>
+    // 组织范围：已归属工单仅本组织可见；无归属存量工单不向全体工程师开放，
+    // 仅在 MINE（本人已接单）视角保留，避免用放宽权限掩盖归属缺失
+    const viewerOrganizationId = params.viewerOrganizationId ?? null;
+    const scopeVariants: FindOptionsWhere<RepairRequestEntity>[] = [];
+    if (viewerOrganizationId !== null) {
+      scopeVariants.push({ ...where, ownerOrganizationId: viewerOrganizationId });
+    }
+    if (params.scope === 'MINE') {
+      scopeVariants.push({ ...where, ownerOrganizationId: IsNull() });
+    }
+    if (scopeVariants.length === 0) {
+      // 无组织上下文且非 MINE：无任何可见组织事实，直接空页（不查库、不放宽）
+      const page = Math.max(params.pagination.page, 1);
+      const pageSize = Math.max(params.pagination.pageSize, 1);
+      return {
+        items: [],
+        total: params.pagination.withTotal ? 0 : undefined,
+        page,
+        pageSize,
+      };
+    }
+    return this.listPage(scopeVariants, params.pagination, (entities) =>
       this.toEngineerListItemQueryResults(entities),
     );
   }
@@ -117,8 +141,9 @@ export class RepairRequestQueryService {
    *
    * 权限口径（对接方案第三节 + 负责人 20260901 裁定 2）：
    * - scope=CUSTOMER：仅本人申请；已删除视为不可访问
-   * - scope=ENGINEER：任意未删除申请可读（AVAILABLE / MINE / TAKEN_BY_OTHER），
-   *   写权限仍由各写用例独立失败关闭，读放宽不等于写放宽
+   * - scope=ENGINEER：本组织未删除申请可读；无归属存量仅接单工程师本人可读
+   *   （AVAILABLE / MINE / TAKEN_BY_OTHER 视角由 usecase 计算；未接单的
+   *   无归属存量不因组织列缺失而开放），写权限仍由各写用例独立失败关闭
    * - SUPER_ADMIN 按角色继承规则展开为 ENGINEER + CUSTOMER（roleHierarchy）
    *
    * 不存在、已删除与越权统一拒绝，不区分对外表述，防止资源存在性探测。
@@ -129,9 +154,15 @@ export class RepairRequestQueryService {
     requestId: number;
     session: UsecaseSession;
     scope: RepairRequestDetailReadScope;
+    /** 可信组织上下文（工程师入口）；为空表示无组织归属 */
+    viewerOrganizationId?: number | null;
   }): Promise<RepairRequestDetailQueryResult> {
     const entity = await this.requestRepository.findOne({ where: { id: params.requestId } });
-    if (!entity || !this.canReadRequest(entity, params.session, params.scope)) {
+    if (
+      !entity ||
+      !this.canReadRequest(entity, params.session, params.scope) ||
+      (params.scope === 'ENGINEER' && !this.isEngineerScopeVisible(entity, params))
+    ) {
       // details 仅含申请标识，不泄露归属与存在性
       throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '维修申请不存在或不可查看', {
         id: params.requestId,
@@ -183,13 +214,31 @@ export class RepairRequestQueryService {
       return entity.customerAccountId === session.accountId && !entity.deprecated;
     }
     if (!hasRole(session.roles, IdentityTypeEnum.ENGINEER)) return false;
-    // 工程师：任意未删除申请可读（AVAILABLE / MINE / TAKEN_BY_OTHER 视角由 usecase 计算）；
+    // 工程师：未删除申请中，仅本组织可见；无归属存量另由 isEngineerScopeVisible 限定为接单本人。
     // 写侧（接单/回复）仍按精确身份失败关闭，读权限继承不等于写权限继承
     return !entity.deprecated;
   }
 
+  /**
+   * 工程师入口的组织范围判定（与列表口径一致）：
+   * - 有归属工单：仅同组织可见；
+   * - 无归属存量工单：仅接单工程师本人可见，不因组织列缺失而向全体工程师放开。
+   */
+  private isEngineerScopeVisible(
+    entity: RepairRequestEntity,
+    params: { session: UsecaseSession; viewerOrganizationId?: number | null },
+  ): boolean {
+    if (entity.ownerOrganizationId !== null) {
+      return entity.ownerOrganizationId === (params.viewerOrganizationId ?? null);
+    }
+    return (
+      entity.acceptedByEngineerAccountId !== null &&
+      entity.acceptedByEngineerAccountId === params.session.accountId
+    );
+  }
+
   private async listPage<T>(
-    where: FindOptionsWhere<RepairRequestEntity>,
+    where: FindOptionsWhere<RepairRequestEntity> | FindOptionsWhere<RepairRequestEntity>[],
     pagination: RepairRequestListPagination,
     assemble: (entities: RepairRequestEntity[]) => Promise<T[]>,
   ): Promise<Omit<RepairRequestListPage, 'items'> & { items: T[] }> {

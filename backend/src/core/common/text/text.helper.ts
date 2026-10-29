@@ -21,6 +21,17 @@ export function toLowerCase(value: unknown): string | undefined {
 }
 
 /**
+ * 判断文本是否为空白：null / undefined / 空串 / 仅空白字符。
+ * 供不负责输入裁剪的读侧与快照构建处做完整性判定使用。
+ */
+export function isBlankText(value: string | null | undefined): boolean {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  return value.trim().length === 0;
+}
+
+/**
  * 文本规范化处理
  * @param value 待处理的值
  * @returns 如果是字符串则返回规范化后的结果，否则返回原值

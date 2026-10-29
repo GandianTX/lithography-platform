@@ -18,7 +18,7 @@ import {
   type MigrationDbConfig,
   type MigrationLogger,
 } from './incremental-migration';
-import { assertStructureDefinitionsComplete } from './migration-schema-contract';
+import { REQUIRED_TABLES, assertStructureDefinitionsComplete } from './migration-schema-contract';
 
 /**
  * 实库验收测试：默认跳过。启用时必须同时显式声明破坏性授权。
@@ -764,7 +764,7 @@ describeIntegration('增量迁移实库验收（M02-M09）', () => {
     }
   });
 
-  it('M04：旧 14 条库仅执行新增 10 条，结构与旧数据保留', async () => {
+  it('M04：旧 14 条库仅执行 pending 迁移，结构与旧数据保留', async () => {
     await buildBaseline();
     const beforeRows = await readLegacyRows();
     const beforeState = await readTablesAndHistory();
@@ -786,7 +786,8 @@ describeIntegration('增量迁移实库验收（M02-M09）', () => {
     const businessTables = afterState.tables.filter(
       (table) => table !== 'migrations' && table !== 'typeorm_metadata',
     );
-    expect(businessTables).toHaveLength(23);
+    // 终态业务表集合以当前结构契约为准，不把 PR0 的 23 张写死为永久终态
+    expect(new Set(businessTables)).toEqual(new Set(REQUIRED_TABLES));
     expect(businessTables).toContain('organization');
     expect(businessTables).toContain('reference_document_case_detail');
 
