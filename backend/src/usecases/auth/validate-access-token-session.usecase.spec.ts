@@ -134,6 +134,17 @@ describe('ValidateAccessTokenSessionUsecase', () => {
 
   it.each([
     ['账号停用', snapshot({ accountStatus: AccountStatus.SUSPENDED })],
+    ['账号待审（PENDING）', snapshot({ accountStatus: AccountStatus.PENDING })],
+    [
+      '资料待审（userState PENDING）',
+      snapshot({
+        userInfo: {
+          userState: UserState.PENDING,
+          accessGroup: [IdentityTypeEnum.ENGINEER],
+          metaDigest: [IdentityTypeEnum.ENGINEER],
+        },
+      }),
+    ],
     [
       '角色从 ENGINEER 改为 CUSTOMER',
       snapshot({

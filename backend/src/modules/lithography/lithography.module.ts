@@ -7,6 +7,7 @@ import { ContentSubmissionAttachmentEntity } from './entities/content-submission
 import { ContentSubmissionEntity } from './entities/content-submission.entity';
 import { ContentSubmissionReviewEntity } from './entities/content-submission-review.entity';
 import { ContentSubmissionRevisionEntity } from './entities/content-submission-revision.entity';
+import { EngineerRegistrationApplicationEntity } from './entities/engineer-registration-application.entity';
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { EquipmentModelEntity } from './entities/equipment-model.entity';
 import { FaultCaseSubmissionDetailEntity } from './entities/fault-case-submission-detail.entity';
@@ -31,14 +32,17 @@ import { ContentSubmissionQueryService } from './queries/content-submission.quer
 import { AdminAiMessageQueryService } from './queries/admin-ai-message.query.service';
 import { AdminAiReportQueryService } from './queries/admin-ai-report.query.service';
 import { AdminRepairRequestQueryService } from './queries/admin-repair-request.query.service';
+import { EngineerRegistrationQueryService } from './queries/engineer-registration.query.service';
 import { EquipmentModelQueryService } from './queries/equipment-model.query.service';
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
 import { MaintenanceReportQueryService } from './queries/maintenance-report.query.service';
 import { OrganizationMembershipQueryService } from './queries/organization-membership.query.service';
+import { OrganizationQueryService } from './queries/organization.query.service';
 import { ReferenceDocumentQueryService } from './queries/reference-document.query.service';
 import { RepairRequestQueryService } from './queries/repair-request.query.service';
 import { TrustedOrganizationContextQueryService } from './queries/trusted-organization-context.query.service';
 import { ContentSubmissionService } from './content-submission.service';
+import { EngineerRegistrationService } from './engineer-registration.service';
 import { EngineerResponseService } from './engineer-response.service';
 import { LocalRuntimeService } from './local-runtime.service';
 import { MaintenanceReportService } from './maintenance-report.service';
@@ -57,6 +61,7 @@ const LITHOGRAPHY_ENTITIES = [
   ReferenceDocumentEntity,
   OrganizationEntity,
   OrganizationMembershipEntity,
+  EngineerRegistrationApplicationEntity,
   ContentSubmissionEntity,
   MaterialSubmissionDetailEntity,
   FaultCaseSubmissionDetailEntity,
@@ -91,7 +96,10 @@ const LITHOGRAPHY_ENTITIES = [
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,
     OrganizationMembershipQueryService,
+    OrganizationQueryService,
     OrganizationMembershipService,
+    EngineerRegistrationQueryService,
+    EngineerRegistrationService,
     TrustedOrganizationContextQueryService,
     ContentSubmissionService,
     ContentSubmissionQueryService,
@@ -114,7 +122,10 @@ const LITHOGRAPHY_ENTITIES = [
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,
     OrganizationMembershipQueryService,
+    OrganizationQueryService,
     OrganizationMembershipService,
+    EngineerRegistrationQueryService,
+    EngineerRegistrationService,
     TrustedOrganizationContextQueryService,
     ContentSubmissionService,
     ContentSubmissionQueryService,

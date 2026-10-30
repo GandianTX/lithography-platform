@@ -15,6 +15,8 @@ import type { PaginationParams } from '@core/pagination/pagination.types';
 import { Injectable } from '@nestjs/common';
 import type { AdminUserListPage, AdminUserListQuery } from '@src/modules/account/account.types';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { PinoLogger } from 'nestjs-pino';
 import {
   normalizeAdminUserKeyword,
@@ -42,10 +44,14 @@ const MAX_PAGE_SIZE = 100;
  * 2. 分页收敛：唯一路径是 `@core/pagination/pagination.policy` 的 `applyDefaults()` +
  *    `enforceMaxPageSize()`，不在本用例另写钳制逻辑；
  * 3. 场景输入规范化（keyword / role / status 白名单）；
- * 4. 调用 QueryService 读取。
+ * 4. 组织隔离：经 `TrustedOrganizationContextQueryService.resolveForAccount()` 解析管理员
+ *    单一有效组织，再经 `OrganizationMembershipQueryService.listActiveAccountIdsByOrganization()`
+ *    取得本组织有效账号 ID 清单，作为 `accountIds` 下推给 QueryService；
+ * 5. 调用 QueryService 读取。
  *
- * 依赖方向（`usecase.rules.md`）：本用例只依赖 `AdminUserQueryService`，
- * **不访问 Repository、不接触 ORM、不开启事务**（读链路没有事务边界）。
+ * 依赖方向（`usecase.rules.md`）：本用例只依赖 QueryService，**不访问 Repository、
+ * 不接触 ORM、不开启事务**（读链路没有事务边界）。组织范围由 usecase 编排解析后以
+ * 账号 ID 清单跨域下推，account 域 QueryService 不导入组织 Entity。
  * 权限白名单与断言留在 usecases 层，不下沉到 modules。
  *
  * 不能收敛为同一个唯一角色时，QueryService 抛 `ADMIN_USER_ERROR.ROLE_DATA_INCONSISTENT`
@@ -62,6 +68,8 @@ const MAX_PAGE_SIZE = 100;
 export class ListAdminUsersUsecase {
   constructor(
     private readonly adminUserQueryService: AdminUserQueryService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(ListAdminUsersUsecase.name);
@@ -72,12 +80,24 @@ export class ListAdminUsersUsecase {
 
     const { page, pageSize } = this.resolveOffsetPagination(command.pagination);
 
+    // 组织隔离：管理员只能查看本组织账号。组织范围只来自可信解析（Session 账号的单一
+    // 有效成员关系），绝不取客户端自报；无有效组织或存在歧义时由解析服务失败关闭为
+    // FORBIDDEN，不返回全库列表。
+    const organization = await this.organizationContextQueryService.resolveForAccount({
+      accountId: command.session.accountId,
+    });
+    const accountIds =
+      await this.organizationMembershipQueryService.listActiveAccountIdsByOrganization({
+        organizationId: organization.organizationId,
+      });
+
     const query: AdminUserListQuery = {
       page,
       pageSize,
       keyword: normalizeAdminUserKeyword(command.keyword),
       role: normalizeAdminUserListRoleFilter(command.role),
       status: normalizeAdminUserListStatusFilter(command.status),
+      accountIds,
     };
 
     try {

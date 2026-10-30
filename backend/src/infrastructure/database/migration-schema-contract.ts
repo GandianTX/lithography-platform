@@ -39,6 +39,7 @@ export const REQUIRED_TABLES = [
   'local_installation',
   'local_upload_task',
   'local_backup_run',
+  'engineer_registration_application',
 ] as const;
 
 export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
@@ -142,6 +143,18 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
   { table: 'local_upload_task', index: 'idx_local_upload_task_status_created' },
   { table: 'local_backup_run', index: 'uk_local_backup_run_active' },
   { table: 'local_backup_run', index: 'idx_local_backup_run_started' },
+  {
+    table: 'engineer_registration_application',
+    index: 'uk_engineer_registration_application_pending_account',
+  },
+  {
+    table: 'engineer_registration_application',
+    index: 'idx_engineer_registration_application_org_status_submitted',
+  },
+  {
+    table: 'engineer_registration_application',
+    index: 'idx_engineer_registration_application_account_submitted',
+  },
 ];
 
 export const REQUIRED_COLUMNS: ReadonlyArray<{
@@ -222,6 +235,14 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'local_backup_run', column: 'status', notNull: true },
   { table: 'local_backup_run', column: 'active_installation_id' },
   { table: 'local_backup_run', column: 'finished_at' },
+  { table: 'engineer_registration_application', column: 'account_id', notNull: true },
+  { table: 'engineer_registration_application', column: 'organization_id', notNull: true },
+  { table: 'engineer_registration_application', column: 'status', notNull: true },
+  { table: 'engineer_registration_application', column: 'submitted_at', notNull: true },
+  { table: 'engineer_registration_application', column: 'reviewed_by_account_id' },
+  { table: 'engineer_registration_application', column: 'reviewed_at' },
+  { table: 'engineer_registration_application', column: 'review_comment' },
+  { table: 'engineer_registration_application', column: 'pending_account_id' },
 ];
 
 export const FORBIDDEN_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
@@ -374,6 +395,26 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
   { table: 'local_backup_run', constraint: 'chk_local_backup_run_trigger' },
   { table: 'local_backup_run', constraint: 'chk_local_backup_run_status' },
   { table: 'local_backup_run', constraint: 'chk_local_backup_run_finish' },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'chk_engineer_registration_application_status',
+  },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'chk_engineer_registration_application_pending_review',
+  },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'chk_engineer_registration_application_reviewed',
+  },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'chk_engineer_registration_application_reject_comment',
+  },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'chk_engineer_registration_application_review_time',
+  },
 ];
 
 export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
@@ -661,6 +702,21 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
     constraint: 'fk_local_backup_run_installation',
     referencedTable: 'local_installation',
   },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'fk_engineer_registration_application_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'fk_engineer_registration_application_organization',
+    referencedTable: 'organization',
+  },
+  {
+    table: 'engineer_registration_application',
+    constraint: 'fk_engineer_registration_application_reviewer',
+    referencedTable: 'base_user_account',
+  },
 ];
 
 /* eslint-disable @typescript-eslint/naming-convention -- 键为 `表名.对象名` 的数据库标识，不能改为驼峰 */
@@ -701,6 +757,7 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
   local_installation: 1775401400000,
   local_upload_task: 1775401400000,
   local_backup_run: 1775401400000,
+  engineer_registration_application: 1775401500000,
 };
 
 const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
@@ -771,6 +828,9 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'local_upload_task.idx_local_upload_task_status_created': 1775401400000,
   'local_backup_run.uk_local_backup_run_active': 1775401400000,
   'local_backup_run.idx_local_backup_run_started': 1775401400000,
+  'engineer_registration_application.uk_engineer_registration_application_pending_account': 1775401500000,
+  'engineer_registration_application.idx_engineer_registration_application_org_status_submitted': 1775401500000,
+  'engineer_registration_application.idx_engineer_registration_application_account_submitted': 1775401500000,
 };
 
 const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
@@ -847,6 +907,14 @@ const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'local_backup_run.status': 1775401400000,
   'local_backup_run.active_installation_id': 1775401400000,
   'local_backup_run.finished_at': 1775401400000,
+  'engineer_registration_application.account_id': 1775401500000,
+  'engineer_registration_application.organization_id': 1775401500000,
+  'engineer_registration_application.status': 1775401500000,
+  'engineer_registration_application.submitted_at': 1775401500000,
+  'engineer_registration_application.reviewed_by_account_id': 1775401500000,
+  'engineer_registration_application.reviewed_at': 1775401500000,
+  'engineer_registration_application.review_comment': 1775401500000,
+  'engineer_registration_application.pending_account_id': 1775401500000,
 };
 
 const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
@@ -935,6 +1003,11 @@ const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   'local_backup_run.chk_local_backup_run_trigger': 1775401400000,
   'local_backup_run.chk_local_backup_run_status': 1775401400000,
   'local_backup_run.chk_local_backup_run_finish': 1775401400000,
+  'engineer_registration_application.chk_engineer_registration_application_status': 1775401500000,
+  'engineer_registration_application.chk_engineer_registration_application_pending_review': 1775401500000,
+  'engineer_registration_application.chk_engineer_registration_application_reviewed': 1775401500000,
+  'engineer_registration_application.chk_engineer_registration_application_reject_comment': 1775401500000,
+  'engineer_registration_application.chk_engineer_registration_application_review_time': 1775401500000,
 };
 
 const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
@@ -994,6 +1067,9 @@ const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
   'local_installation.fk_local_installation_organization': 1775401400000,
   'local_upload_task.fk_local_upload_task_installation': 1775401400000,
   'local_backup_run.fk_local_backup_run_installation': 1775401400000,
+  'engineer_registration_application.fk_engineer_registration_application_account': 1775401500000,
+  'engineer_registration_application.fk_engineer_registration_application_organization': 1775401500000,
+  'engineer_registration_application.fk_engineer_registration_application_reviewer': 1775401500000,
 };
 
 /**
@@ -1267,6 +1343,18 @@ const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'local_backup_run.idx_local_backup_run_started': {
     unique: false,
     columns: ['started_at'],
+  },
+  'engineer_registration_application.uk_engineer_registration_application_pending_account': {
+    unique: true,
+    columns: ['pending_account_id'],
+  },
+  'engineer_registration_application.idx_engineer_registration_application_org_status_submitted': {
+    unique: false,
+    columns: ['organization_id', 'status', 'submitted_at', 'id'],
+  },
+  'engineer_registration_application.idx_engineer_registration_application_account_submitted': {
+    unique: false,
+    columns: ['account_id', 'submitted_at', 'id'],
   },
 };
 
@@ -1554,6 +1642,21 @@ const FOREIGN_KEY_DEFINITIONS: Readonly<Record<string, ForeignKeyDefinition>> = 
     referenceTable: 'local_installation',
     localColumns: ['installation_id'],
     referenceColumns: ['installation_id'],
+  },
+  'engineer_registration_application.fk_engineer_registration_application_account': {
+    referenceTable: 'base_user_account',
+    localColumns: ['account_id'],
+    referenceColumns: ['id'],
+  },
+  'engineer_registration_application.fk_engineer_registration_application_organization': {
+    referenceTable: 'organization',
+    localColumns: ['organization_id'],
+    referenceColumns: ['id'],
+  },
+  'engineer_registration_application.fk_engineer_registration_application_reviewer': {
+    referenceTable: 'base_user_account',
+    localColumns: ['reviewed_by_account_id'],
+    referenceColumns: ['id'],
   },
 };
 

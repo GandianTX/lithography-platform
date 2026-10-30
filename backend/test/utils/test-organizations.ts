@@ -29,7 +29,8 @@ export interface TestOrganizationSpec {
 export interface TestMembershipSpec {
   readonly accountLoginName: string;
   readonly organizationCode: string;
-  readonly memberRole: 'SUPER_ADMIN' | 'ENGINEER';
+  // 值域与实体 `chk_organization_membership_role` 一致：管理员代建账号会绑定 CUSTOMER
+  readonly memberRole: 'SUPER_ADMIN' | 'ENGINEER' | 'CUSTOMER';
   readonly status?: 'ACTIVE' | 'LEFT';
 }
 

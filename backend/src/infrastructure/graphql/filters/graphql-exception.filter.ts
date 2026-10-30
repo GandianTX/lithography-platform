@@ -8,6 +8,7 @@ import {
   CAPABILITY_ERROR,
   CONTENT_SUBMISSION_ERROR,
   DomainError,
+  ENGINEER_REGISTRATION_ERROR,
   isDomainError,
   JWT_ERROR,
   LOCAL_RUNTIME_ERROR,
@@ -80,9 +81,14 @@ function getGqlPath(host: ArgumentsHost): string[] | undefined {
 }
 
 /** 根据 HttpException 构建 GraphQL 错误对象
- * - extensions.code：GraphQL 错误大类（默认由 HTTP 状态码映射；也可在异常响应体里传 code 覆盖）
- * - extensions.errorCode：业务细分错误码（来自异常响应体）
- * - extensions.errorMessage：业务错误描述（来自异常响应体）
+ * - extensions.code：GraphQL 错误大类（默认由 HTTP 状态码映射；也可在异常响应体里传 code 覆盖）。
+ *   生产环境**同样**保留该分类：校验管道抛出的 400（`BadRequestException`）必须映射
+ *   `BAD_USER_INPUT`，不能被折叠为 `INTERNAL_SERVER_ERROR`（`graphql-error-contract-current.md`
+ *   要求 input/validation/conflict/not-found/business-state 不因环境改变大类）。
+ * - extensions.errorCode：业务细分错误码（来自异常响应体，生产环境不向外暴露）
+ * - extensions.errorMessage：业务错误描述（来自异常响应体，生产环境不向外暴露）
+ * - 生产环境只隐藏响应体的细节字段与自由文本（message 固定为「请求失败」），
+ *   不改变错误大类。
  */
 function buildGraphQLErrorFromHttpException(
   exception: HttpException,
@@ -97,11 +103,14 @@ function buildGraphQLErrorFromHttpException(
     fallbackMsg ??
     (typeof exception.message === 'string' ? exception.message : 'Request failed');
   const finalMessage = isProdEnv ? '请求失败' : passthroughMessage;
+  // 错误大类不随环境变化：生产环境只隐藏细节（errorCode / errorMessage / 自由文本），
+  // 校验 400 必须仍是 BAD_USER_INPUT，否则前端会把输入错误当成系统故障
+  const gqlCode = code ?? mapHttpToGqlCode(status);
 
   return new GraphQLError(finalMessage, {
     path: getGqlPath(host),
     extensions: {
-      code: isProdEnv ? 'INTERNAL_SERVER_ERROR' : (code ?? mapHttpToGqlCode(status)),
+      code: gqlCode,
       httpStatus: status,
       ...(isProdEnv ? {} : errorCode ? { errorCode } : {}),
       ...(isProdEnv ? {} : errorMessage ? { errorMessage } : {}),
@@ -163,6 +172,8 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   [ACCOUNT_ERROR.NICKNAME_TAKEN]: 'CONFLICT',
   [ACCOUNT_ERROR.EMAIL_TAKEN]: 'CONFLICT',
   [ACCOUNT_ERROR.USER_INFO_NOT_FOUND]: 'NOT_FOUND',
+  // 自助注册所选组织不存在/已停用：客户端可修正的输入问题，显式登记避免契约漂移
+  [ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE]: 'BAD_USER_INPUT',
 
   // 第三方认证相关错误（与登录错误类别保持一致）
   [THIRDPARTY_ERROR.CREDENTIAL_INVALID]: 'UNAUTHENTICATED',
@@ -320,6 +331,21 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   [CONTENT_SUBMISSION_ERROR.CREATION_FAILED]: 'INTERNAL_SERVER_ERROR',
   [CONTENT_SUBMISSION_ERROR.UPDATE_FAILED]: 'INTERNAL_SERVER_ERROR',
   [CONTENT_SUBMISSION_ERROR.READ_FAILED]: 'INTERNAL_SERVER_ERROR',
+
+  // 工程师自助注册与组织审核：凭据证明失败与登录失败同口径（UNAUTHENTICATED，
+  // 不区分账号不存在与密码错误）；业务状态冲突（含并发第二次决策）CONFLICT；
+  // 不存在/他人/跨组织统一 NOT_FOUND 不泄露存在性；输入与组织失效 BAD_USER_INPUT；
+  // 系统侧读写失败 INTERNAL_SERVER_ERROR
+  [ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS]: 'BAD_USER_INPUT',
+  [ENGINEER_REGISTRATION_ERROR.CREDENTIAL_MISMATCH]: 'UNAUTHENTICATED',
+  [ENGINEER_REGISTRATION_ERROR.ACCOUNT_NOT_PENDING]: 'CONFLICT',
+  [ENGINEER_REGISTRATION_ERROR.PENDING_APPLICATION_EXISTS]: 'CONFLICT',
+  [ENGINEER_REGISTRATION_ERROR.APPLICATION_NOT_FOUND]: 'NOT_FOUND',
+  [ENGINEER_REGISTRATION_ERROR.RESUBMIT_NOT_ALLOWED]: 'CONFLICT',
+  [ENGINEER_REGISTRATION_ERROR.APPLICATION_STATE_CONFLICT]: 'CONFLICT',
+  [ENGINEER_REGISTRATION_ERROR.REVIEW_NOT_ALLOWED]: 'CONFLICT',
+  [ENGINEER_REGISTRATION_ERROR.WRITE_FAILED]: 'INTERNAL_SERVER_ERROR',
+  [ENGINEER_REGISTRATION_ERROR.READ_FAILED]: 'INTERNAL_SERVER_ERROR',
 
   [CAPABILITY_ERROR.UNAVAILABLE]: 'INTERNAL_SERVER_ERROR',
 };

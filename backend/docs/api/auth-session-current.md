@@ -16,7 +16,11 @@ Global error contract: Every GraphQL interface must also follow docs/api/graphql
 - `ENGINEER`
 - `CUSTOMER`
 
-`SUPER_ADMIN` 继承 `ENGINEER` 与 `CUSTOMER` 的访问能力，`ENGINEER` 与 `CUSTOMER` 互不继承。公开注册只创建 `CUSTOMER`。
+`SUPER_ADMIN` 继承 `ENGINEER` 与 `CUSTOMER` 的访问能力，`ENGINEER` 与 `CUSTOMER` 互不继承。
+
+公开注册按角色分流：`CUSTOMER` 选择有效组织后直接开通并绑定该组织 `CUSTOMER` 成员；`ENGINEER` 先提交待审申请，账号与资料保持 `PENDING / PENDING`，由所选组织管理员审核通过后才开通。`SUPER_ADMIN` 不开放自助注册，仍由受控管理流程或 Seed 创建。
+
+登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上要求账号 `ACTIVE` 且 `userInfo.userState = ACTIVE`。因此工程师在审核通过前无法登录、也没有可用令牌，第三方入口不提供绕过审核的路径。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
 
 例外（2026-08-29 负责人裁定）：「客户创建维修申请」页拒绝 `SUPER_ADMIN` 继承进入，前端路由与 `ENGINEER` 一致重定向回各自主页；后端 `equipmentModels` 与 `createRepairRequest` 仅接受精确 `CUSTOMER`。
 

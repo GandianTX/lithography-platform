@@ -37,7 +37,8 @@ export type OwnedResourceCategory =
   | 'thirdPartyAuth'
   | 'verificationRecord'
   | 'repairRequest'
-  | 'engineerResponse';
+  | 'engineerResponse'
+  | 'engineerRegistrationApplication';
 
 type OwnedIdKey = Exclude<keyof OwnedResourceLedger, 'facts'>;
 
@@ -58,6 +59,7 @@ const LEDGER_KEY_BY_CATEGORY: Record<OwnedResourceCategory, OwnedIdKey> = {
   verificationRecord: 'verificationRecordIds',
   repairRequest: 'repairRequestIds',
   engineerResponse: 'engineerResponseIds',
+  engineerRegistrationApplication: 'engineerRegistrationApplicationIds',
 };
 
 /**
@@ -146,6 +148,19 @@ export interface OwnedEngineerResponseFacts {
   readonly resolutionStatus: string;
 }
 
+/**
+ * 工程师注册申请的本轮归属事实。
+ *
+ * 只登记不可变归属字段：`account_id` / `organization_id` / `application_note`。
+ * `status` 与审核意见会由合法审核写入改变（PENDING → APPROVED/REJECTED），
+ * 不属于归属证明，故刻意不纳入预期事实；本轮登记的真实申请 ID 仍是删除前提。
+ */
+export interface OwnedEngineerRegistrationApplicationFacts {
+  readonly accountId: number;
+  readonly organizationId: number;
+  readonly applicationNote: string | null;
+}
+
 /** 登记时允许携带预期事实的类别（其余类别的归属由既有父子关系核验证明）。 */
 export interface OwnedFactsByCategory {
   organization: OwnedOrganizationFacts;
@@ -157,6 +172,7 @@ export interface OwnedFactsByCategory {
   verificationRecord: OwnedVerificationRecordFacts;
   repairRequest: OwnedRepairRequestFacts;
   engineerResponse: OwnedEngineerResponseFacts;
+  engineerRegistrationApplication: OwnedEngineerRegistrationApplicationFacts;
 }
 
 export type FactBearingCategory = keyof OwnedFactsByCategory;
@@ -186,6 +202,11 @@ export interface OwnedResourceLedger {
   repairRequestIds: number[];
   /** 工程师回复：登记实际创建 ID，并核验父申请与参与人关系 */
   engineerResponseIds: number[];
+  /**
+   * 工程师自助注册申请：登记实际创建 ID，并核验申请人/目标组织/申请说明。
+   * 申请行对账号与组织均为 FK RESTRICT，必须先于它们删除，否则账号/组织回收会被外键阻断。
+   */
+  engineerRegistrationApplicationIds: number[];
   /**
    * 按类别登记的最小预期事实；每个已登记 ID 必须有对应事实，
    * 缺失即失败关闭，绝不回退为“只按 ID 删除”。
@@ -249,6 +270,7 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
   verificationRecordIds: [],
   repairRequestIds: [],
   engineerResponseIds: [],
+  engineerRegistrationApplicationIds: [],
   facts: {
     organization: new Map(),
     account: new Map(),
@@ -259,6 +281,7 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
     verificationRecord: new Map(),
     repairRequest: new Map(),
     engineerResponse: new Map(),
+    engineerRegistrationApplication: new Map(),
   },
 });
 
@@ -448,6 +471,7 @@ interface CleanupPlan {
   verificationRecordIds: number[];
   repairRequestIds: number[];
   engineerResponseIds: number[];
+  engineerRegistrationApplicationIds: number[];
 }
 
 const emptyPlan = (): CleanupPlan => ({
@@ -467,6 +491,7 @@ const emptyPlan = (): CleanupPlan => ({
   verificationRecordIds: [],
   repairRequestIds: [],
   engineerResponseIds: [],
+  engineerRegistrationApplicationIds: [],
 });
 
 const hasAnyResource = (plan: CleanupPlan): boolean =>
@@ -486,6 +511,13 @@ interface OrganizationRow {
   name: string;
   kind: string;
   status: string;
+}
+
+interface EngineerRegistrationApplicationRow {
+  id: number;
+  account_id: number;
+  organization_id: number;
+  application_note: string | null;
 }
 
 interface AccountRow {
@@ -1119,6 +1151,7 @@ const FACT_BEARING_CATEGORIES: readonly FactBearingCategory[] = [
   'verificationRecord',
   'repairRequest',
   'engineerResponse',
+  'engineerRegistrationApplication',
 ];
 
 /**
@@ -1455,6 +1488,33 @@ const verifyOwnedExpectations = async (
         mismatches.push('resolution_status');
       }
       if (mismatches.length > 0) drift('engineerResponse', id, mismatches);
+    }
+  }
+
+  if (owned.facts.engineerRegistrationApplication.size > 0) {
+    const ids = [...owned.facts.engineerRegistrationApplication.keys()];
+    const rows: EngineerRegistrationApplicationRow[] = await manager.query(
+      `SELECT id, account_id, organization_id, application_note
+         FROM engineer_registration_application
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.engineerRegistrationApplication) {
+      const row = rowById.get(id);
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.account_id) !== expected.accountId) mismatches.push('account_id');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if ((row.application_note ?? null) !== expected.applicationNote) {
+        mismatches.push('application_note');
+      }
+      if (mismatches.length > 0) drift('engineerRegistrationApplication', id, mismatches);
     }
   }
 };
@@ -1984,6 +2044,46 @@ const assertReferenceClosure = async (
         conflict(helper, table, String(rows[0].id), '外部 AI 记录引用了本轮账号，拒绝删除');
       }
     }
+
+    // 工程师注册申请对账号（申请人 / 审核人）与组织均为 FK RESTRICT：
+    // 引用本轮账号但未登记的申请一律先于删除失败关闭，不做按账号自动扩图。
+    const accountApplications: EngineerRegistrationApplicationRow[] = await manager.query(
+      `SELECT id, account_id, organization_id, application_note
+         FROM engineer_registration_application
+        WHERE account_id IN (${placeholders})
+           OR reviewed_by_account_id IN (${placeholders})`,
+      [...accountIds, ...accountIds],
+    );
+    for (const row of accountApplications) {
+      if (!plan.engineerRegistrationApplicationIds.includes(asNumber(row.id))) {
+        conflict(
+          helper,
+          'engineerRegistrationApplication',
+          String(row.id),
+          '工程师注册申请引用了本轮账号但未登记归属证据，关联关系不是删除授权，拒绝删除',
+        );
+      }
+    }
+  }
+
+  if (plan.organizationIds.length > 0) {
+    const orgPlaceholders = inClause(plan.organizationIds);
+    const orgApplications: EngineerRegistrationApplicationRow[] = await manager.query(
+      `SELECT id, account_id, organization_id, application_note
+         FROM engineer_registration_application
+        WHERE organization_id IN (${orgPlaceholders})`,
+      plan.organizationIds,
+    );
+    for (const row of orgApplications) {
+      if (!plan.engineerRegistrationApplicationIds.includes(asNumber(row.id))) {
+        conflict(
+          helper,
+          'engineerRegistrationApplication',
+          String(row.id),
+          '工程师注册申请引用了本轮组织但未登记归属证据，拒绝删除',
+        );
+      }
+    }
   }
 
   if (plan.repairRequestIds.length > 0) {
@@ -2131,6 +2231,12 @@ const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Pr
     );
   }
   await deleteByIds(manager, 'content_submission', plan.submissionIds);
+  // 申请行对账号/组织均为 FK RESTRICT，必须先于成员关系与账号/组织删除。
+  await deleteByIds(
+    manager,
+    'engineer_registration_application',
+    plan.engineerRegistrationApplicationIds,
+  );
   await deleteByIds(manager, 'organization_membership', plan.membershipIds);
   await deleteByIds(manager, 'organization', plan.organizationIds);
   if (plan.accountIds.length > 0) {
@@ -2234,6 +2340,7 @@ export const runGuardedSpecCleanup = async (params: {
     plan.verificationRecordIds = toIdList(owned.verificationRecordIds);
     plan.repairRequestIds = toIdList(owned.repairRequestIds);
     plan.engineerResponseIds = toIdList(owned.engineerResponseIds);
+    plan.engineerRegistrationApplicationIds = toIdList(owned.engineerRegistrationApplicationIds);
   }
 
   const residueHasCandidates =

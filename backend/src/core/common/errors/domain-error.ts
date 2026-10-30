@@ -54,6 +54,8 @@ export const ACCOUNT_ERROR = {
   ACCOUNT_SUSPENDED: 'ACCOUNT_SUSPENDED',
   /** 创建入口：account.status 与 userInfo.userState 不一致，或 status 无对应 UserState（BANNED / DELETED） */
   ACCOUNT_STATUS_STATE_MISMATCH: 'ACCOUNT_STATUS_STATE_MISMATCH',
+  /** 自助注册/重提：所选组织不存在或已停用，属客户端可修正的输入问题 */
+  ORGANIZATION_NOT_AVAILABLE: 'ACCOUNT_ORGANIZATION_NOT_AVAILABLE',
 } as const;
 Object.freeze(ACCOUNT_ERROR);
 
@@ -305,6 +307,42 @@ export const ADMIN_USER_ERROR = {
 Object.freeze(ADMIN_USER_ERROR);
 
 /**
+ * 工程师自助注册申请与组织审核专用错误码。
+ *
+ * 语义边界：
+ * - 输入类（INVALID_PARAMS / ORGANIZATION_NOT_AVAILABLE 由 ACCOUNT_ERROR 承担）：对外 BAD_USER_INPUT；
+ * - 凭据证明失败（CREDENTIAL_MISMATCH）：与登录失败同口径 UNAUTHENTICATED，
+ *   不区分「账号不存在」与「密码错误」，避免账户枚举；
+ * - 业务状态冲突（ACCOUNT_NOT_PENDING / PENDING_APPLICATION_EXISTS / RESUBMIT_NOT_ALLOWED /
+ *   APPLICATION_STATE_CONFLICT / REVIEW_NOT_ALLOWED）：请求本身合法、权限无问题，
+ *   但当前账号或申请状态不允许该动作，对外 CONFLICT；
+ * - 目标不可见（APPLICATION_NOT_FOUND）：不存在、他人申请、跨组织统一同码，
+ *   不泄露存在性，对外 NOT_FOUND；
+ * - 系统侧（WRITE_FAILED / READ_FAILED）：不泄露数据库细节，对外 INTERNAL_SERVER_ERROR。
+ */
+export const ENGINEER_REGISTRATION_ERROR = {
+  // 输入非法（例如申请说明超长、审核动作缺失）
+  INVALID_PARAMS: 'ENGINEER_REGISTRATION_INVALID_PARAMS',
+  // 申请人凭据无法证明本人控制该账号（账号不存在或密码错误不区分）
+  CREDENTIAL_MISMATCH: 'ENGINEER_REGISTRATION_CREDENTIAL_MISMATCH',
+  // 账号不在待审状态（已开通、停用、封禁或资料状态不一致）
+  ACCOUNT_NOT_PENDING: 'ENGINEER_REGISTRATION_ACCOUNT_NOT_PENDING',
+  // 账号已有待审申请，不能并发提交第二份
+  PENDING_APPLICATION_EXISTS: 'ENGINEER_REGISTRATION_PENDING_APPLICATION_EXISTS',
+  // 申请不存在、不属于本人或不属于审核管理员组织
+  APPLICATION_NOT_FOUND: 'ENGINEER_REGISTRATION_APPLICATION_NOT_FOUND',
+  // 只有被拒绝的申请才允许重提；已通过或无历史申请不允许
+  RESUBMIT_NOT_ALLOWED: 'ENGINEER_REGISTRATION_RESUBMIT_NOT_ALLOWED',
+  // 锁内复核发现申请已进入终态（并发第二次决策）或账号角色/双状态不满足审核前提
+  APPLICATION_STATE_CONFLICT: 'ENGINEER_REGISTRATION_APPLICATION_STATE_CONFLICT',
+  // 审核前置事实不再成立（组织已停用、申请人已有成员关系等）
+  REVIEW_NOT_ALLOWED: 'ENGINEER_REGISTRATION_REVIEW_NOT_ALLOWED',
+  WRITE_FAILED: 'ENGINEER_REGISTRATION_WRITE_FAILED',
+  READ_FAILED: 'ENGINEER_REGISTRATION_READ_FAILED',
+} as const;
+Object.freeze(ENGINEER_REGISTRATION_ERROR);
+
+/**
  * 当前用户账号设置（自助场景，P2/P3）写链路专用错误码。
  *
  * 与 `ADMIN_USER_ERROR` 的关系：自助设置不复用
@@ -428,6 +466,8 @@ export type RepairRequestErrorCode =
 export type ReferenceDocumentErrorCode =
   (typeof REFERENCE_DOCUMENT_ERROR)[keyof typeof REFERENCE_DOCUMENT_ERROR];
 export type AdminUserErrorCode = (typeof ADMIN_USER_ERROR)[keyof typeof ADMIN_USER_ERROR];
+export type EngineerRegistrationErrorCode =
+  (typeof ENGINEER_REGISTRATION_ERROR)[keyof typeof ENGINEER_REGISTRATION_ERROR];
 export type MyAccountErrorCode = (typeof MY_ACCOUNT_ERROR)[keyof typeof MY_ACCOUNT_ERROR];
 export type AdminDocumentDatabaseErrorCode =
   (typeof ADMIN_DOCUMENT_DATABASE_ERROR)[keyof typeof ADMIN_DOCUMENT_DATABASE_ERROR];
@@ -461,6 +501,7 @@ export type DomainErrorCode =
   | RepairRequestErrorCode
   | ReferenceDocumentErrorCode
   | AdminUserErrorCode
+  | EngineerRegistrationErrorCode
   | MyAccountErrorCode
   | AdminDocumentDatabaseErrorCode
   | InputNormalizeErrorCode

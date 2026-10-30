@@ -17,7 +17,19 @@ import { Gender, UserState } from '@app-types/models/user-info.types';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { AccountService } from '@src/modules/account/base/services/account.service';
+import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { RegisterTypeEnum } from '@app-types/services/register.types';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+  type OwnedResourceLedger,
+} from '../utils/e2e-scoped-cleanup';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 
 /**
  * 邮箱注册「注册成功即立即可用」完整链路 E2E。
@@ -49,6 +61,11 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
   const LEGACY_LOGIN_NAME = 'e2e_email_legacy_act_pending';
   const LEGACY_EMAIL = 'e2e_email_legacy_act_pending@example.com';
 
+  // 本轮台账：账号 / 成员关系 / 组织均登记真实 ID 与归属事实，按精确 ID 清理。
+  // 清理器要求成员关系所属组织必须同时在本轮删除范围内，故组织与账号同批精确回收。
+  let ownership: OwnedResourceLedger = createOwnedResourceLedger();
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('REGEMAIL');
+
   type GqlBody = {
     data?: {
       register?: { success?: boolean; accountId?: number };
@@ -71,17 +88,46 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
   }, 30000);
 
   afterAll(async () => {
+    // 先回收本轮台账中可能残留的资源（含组织），再按自然键兜底回收安全回归 fixture
+    await cleanupRegistered();
     await cleanupAll();
     if (app) await app.close();
   });
 
+  /**
+   * 幂等建立本用例所需的有效组织，并登记到本用例台账。
+   * 清理器要求成员关系所属组织必须同时在本轮删除范围内，故组织与账号同批精确回收。
+   */
+  const ensureOwnedOrganization = async (): Promise<number> => {
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 邮箱注册主组织',
+          kind: 'CLIENT',
+        },
+      ],
+      ownership,
+    });
+    return requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
+  };
+
+  /** 精确回收本用例登记的真实账号与成员关系；成功后重置台账 */
+  const cleanupRegistered = async (): Promise<void> => {
+    if (!dataSource?.isInitialized) return;
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: ownership,
+      helper: 'register-email-active.e2e 逐用例精确回收',
+    });
+    ownership = createOwnedResourceLedger();
+  };
+
   const cleanupAll = async (): Promise<void> => {
-    try {
-      if (!dataSource?.isInitialized) return;
-      await deleteByLoginNames([LOGIN_NAME, LEGACY_LOGIN_NAME]);
-    } catch (error) {
-      console.warn('清理测试数据失败:', error);
-    }
+    if (!dataSource?.isInitialized) return;
+    // 安全回归 fixture 由本规格直接建行、无成员关系，按自然键兜底回收
+    await deleteByLoginNames([LEGACY_LOGIN_NAME]);
   };
 
   const deleteByLoginNames = async (loginNames: string[]): Promise<void> => {
@@ -108,8 +154,11 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
     }
   };
 
-  const performRegister = async (input: Record<string, unknown>) =>
-    request(app.getHttpServer())
+  const performRegister = async (input: Record<string, unknown>) => {
+    // 注册必填 organizationId：幂等建立本用例专属有效组织并登记到同一台账
+    const primaryOrganizationId = await ensureOwnedOrganization();
+    const payload: Record<string, unknown> = { organizationId: primaryOrganizationId, ...input };
+    const response = await request(app.getHttpServer())
       .post('/graphql')
       .send({
         query: `
@@ -117,8 +166,48 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
             register(input: $input) { success message accountId }
           }
         `,
-        variables: { input },
+        variables: { input: payload },
       });
+
+    // 成功即登记真实账号与成员关系（FK RESTRICT 链要求在删除账号前先删成员关系）
+    const createdAccountId = Number(
+      (response.body as { data?: { register?: { accountId?: unknown } } })?.data?.register
+        ?.accountId,
+    );
+    if (Number.isInteger(createdAccountId) && createdAccountId > 0) {
+      const account = await dataSource
+        .getRepository(AccountEntity)
+        .findOneOrFail({ where: { id: createdAccountId } });
+      const userInfo = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOneOrFail({ where: { accountId: createdAccountId } });
+      recordOwnedResource(ownership, 'account', createdAccountId, {
+        loginName: account.loginName ?? null,
+        loginEmail: account.loginEmail,
+        status: account.status,
+        identityHint: account.identityHint,
+        accessGroup: Array.isArray(userInfo.accessGroup)
+          ? userInfo.accessGroup
+          : (JSON.parse(userInfo.accessGroup) as string[]),
+        nickname: userInfo.nickname,
+        userInfoEmail: userInfo.email ?? null,
+        userState: userInfo.userState,
+      });
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOneOrFail({
+          where: { accountId: createdAccountId, organizationId: primaryOrganizationId },
+        });
+      recordOwnedResource(ownership, 'membership', membership.id, {
+        organizationId: primaryOrganizationId,
+        accountId: createdAccountId,
+        memberRole: membership.memberRole,
+        status: membership.status,
+      });
+    }
+
+    return response;
+  };
 
   const performLogin = async (loginName: string, loginPassword: string) =>
     request(app.getHttpServer())
@@ -155,7 +244,7 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
 
   describe('完整链路：注册成功后立即可用', () => {
     beforeEach(async () => {
-      await deleteByLoginNames([LOGIN_NAME]);
+      await cleanupRegistered();
     });
 
     it('注册 → 数据库 ACTIVE/ACTIVE → 登录 → Token 访问受保护 Query', async () => {
@@ -208,7 +297,7 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
 
   describe('原子性：userInfo 保存失败时全量回滚', () => {
     beforeEach(async () => {
-      await deleteByLoginNames([LOGIN_NAME]);
+      await cleanupRegistered();
     });
 
     it('注册不返回成功，账号/密码哈希/资料全部回滚，不留下 ACTIVE / PENDING', async () => {

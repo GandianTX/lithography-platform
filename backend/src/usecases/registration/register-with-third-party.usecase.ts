@@ -1,5 +1,6 @@
 // src/usecases/registration/register-with-third-party.usecase.ts
 import { AudienceTypeEnum, ThirdPartyProviderEnum } from '@app-types/models/account.types';
+import { RegistrationOutcomeStatus } from '@app-types/models/registration.types';
 import { DomainError, THIRDPARTY_ERROR } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { normalizeRegisterWithThirdPartyInput } from './registration-input.normalize';
@@ -8,9 +9,12 @@ import { WeappRegisterUsecase } from './weapp-register.usecase';
 export interface ThirdPartyRegisterParams {
   provider: ThirdPartyProviderEnum;
   authCredential: string;
-  audience?: string;
+  /** 客户端类型：adapter 必填；合法性由具体 provider 的 usecase 统一 normalize 校验 */
+  audience: AudienceTypeEnum;
   // nickname?: string; // 移除此字段 - 昵称应通过第三方平台获取，而非前端传递
   email?: string | null;
+  /** 所选有效组织主键：第三方注册仅开通客户，注册成功后绑定为该组织的 CUSTOMER 成员 */
+  organizationId?: number | null;
   weAppData?: {
     phoneCode?: string;
   };
@@ -20,6 +24,10 @@ export interface ThirdPartyRegisterResult {
   success: boolean;
   message: string;
   accountId: number;
+  /** 第三方注册只创建客户账号，固定为已开通 */
+  registrationStatus: RegistrationOutcomeStatus;
+  /** 第三方注册不产生待审申请 */
+  applicationId: number | null;
 }
 
 /**
@@ -45,31 +53,17 @@ export class RegisterWithThirdPartyUsecase {
     };
     const { provider } = normalizedParams;
 
+    // 组织绑定对所有第三方客户注册一视同仁：在此显式守卫，避免后续新增 provider 时静默漏绑。
+    // adapter 已把 organizationId 声明为非空，这里只兜住内部调用方绕过边界的情形。
+    if (normalizedParams.organizationId === undefined || normalizedParams.organizationId === null) {
+      throw new DomainError(THIRDPARTY_ERROR.INVALID_PARAMS, '第三方注册必须选择有效组织', {
+        field: 'organizationId',
+      });
+    }
+
     switch (provider) {
       case ThirdPartyProviderEnum.WEAPP:
-        // 验证 audience 参数
-        if (!normalizedParams.audience) {
-          throw new DomainError(
-            THIRDPARTY_ERROR.INVALID_PARAMS,
-            '微信小程序注册需要提供 audience 参数',
-          );
-        }
-
-        // 验证 audience 是否为有效的枚举值
-        if (
-          !Object.values(AudienceTypeEnum).includes(normalizedParams.audience as AudienceTypeEnum)
-        ) {
-          throw new DomainError(
-            THIRDPARTY_ERROR.INVALID_PARAMS,
-            `无效的 audience 值: ${normalizedParams.audience}`,
-          );
-        }
-
-        // 类型转换并调用
-        return this.weappRegisterUsecase.execute({
-          ...normalizedParams,
-          audience: normalizedParams.audience as AudienceTypeEnum,
-        });
+        return this.weappRegisterUsecase.execute(normalizedParams);
 
       // 未来扩展其他平台
       // case ThirdPartyProviderEnum.WECHAT:

@@ -14,6 +14,8 @@ import {
   type UserInfoUpdateData,
 } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -74,6 +76,8 @@ export class AdminUpdateUserProfileUsecase {
   constructor(
     private readonly accountService: AccountService,
     private readonly adminUserQueryService: AdminUserQueryService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -102,7 +106,12 @@ export class AdminUpdateUserProfileUsecase {
     let view: AdminUserView;
     try {
       view = await this.transactionRunner.run((transactionContext) =>
-        this.updateInTransaction({ transactionContext, accountId, patch }),
+        this.updateInTransaction({
+          transactionContext,
+          adminAccountId: command.session.accountId,
+          accountId,
+          patch,
+        }),
       );
     } catch (error) {
       // 事务内各阶段的异常已由 updateInTransaction 的 catch 记录日志并收敛为 DomainError；
@@ -225,16 +234,20 @@ export class AdminUpdateUserProfileUsecase {
    */
   private async updateInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
+    adminAccountId: number;
     accountId: number;
     patch: UserInfoUpdateData;
   }): Promise<AdminUserView> {
-    const { transactionContext, accountId, patch } = params;
+    const { transactionContext, adminAccountId, accountId, patch } = params;
     let phase: AdminUpdateUserProfilePhase = 'LOCK_TARGET';
 
     try {
       await loadWritableAdminUserTarget({
         accountService: this.accountService,
         adminUserQueryService: this.adminUserQueryService,
+        organizationContextQueryService: this.organizationContextQueryService,
+        organizationMembershipQueryService: this.organizationMembershipQueryService,
+        adminAccountId,
         accountId,
         actionLabel: '编辑资料',
         transactionContext,

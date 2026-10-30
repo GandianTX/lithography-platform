@@ -8,16 +8,19 @@ import {
 import { UserState } from '@app-types/models/user-info.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import type { ThirdPartySession } from '@app-types/models/third-party-auth.types';
-import { THIRDPARTY_ERROR } from '@core/common/errors/domain-error';
+import { ACCOUNT_ERROR, THIRDPARTY_ERROR } from '@core/common/errors/domain-error';
 import { ThirdPartyAuthQueryService } from '@modules/third-party-auth/queries/third-party-auth.query.service';
 import { ThirdPartyAuthService } from '@modules/third-party-auth/third-party-auth.service';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { PinoLogger } from 'nestjs-pino';
 import { WeappRegisterUsecase } from './weapp-register.usecase';
 
 describe('WeappRegisterUsecase（注册事务语义）', () => {
   const ACCOUNT_ID = 201;
+  const ORGANIZATION_ID = 21;
 
   let tpa: {
     resolveIdentity: jest.Mock;
@@ -37,6 +40,8 @@ describe('WeappRegisterUsecase（注册事务语义）', () => {
     pickAvailableNickname: jest.Mock;
     getUserAccountViewById: jest.Mock;
   };
+  let organizationQueryService: { findActiveRegistrationOption: jest.Mock };
+  let organizationMembershipService: { insertMembership: jest.Mock };
   let logger: { setContext: jest.Mock; info: jest.Mock; warn: jest.Mock; error: jest.Mock };
 
   let txContext: PersistenceTransactionContext;
@@ -50,6 +55,7 @@ describe('WeappRegisterUsecase（注册事务语义）', () => {
     provider: ThirdPartyProviderEnum.WEAPP,
     authCredential: 'wx-code-e2e',
     audience: AudienceTypeEnum.SSTSWEAPP,
+    organizationId: ORGANIZATION_ID,
   });
 
   const session = (): ThirdPartySession =>
@@ -84,6 +90,14 @@ describe('WeappRegisterUsecase（注册事务语义）', () => {
       pickAvailableNickname: jest.fn().mockResolvedValue('微信用户_abc123'),
       getUserAccountViewById: jest.fn().mockResolvedValue({ id: ACCOUNT_ID }),
     };
+    organizationQueryService = {
+      findActiveRegistrationOption: jest
+        .fn()
+        .mockResolvedValue({ id: ORGANIZATION_ID, name: '测试组织' }),
+    };
+    organizationMembershipService = {
+      insertMembership: jest.fn().mockResolvedValue({ membershipId: 1 }),
+    };
     logger = {
       setContext: jest.fn(),
       info: jest.fn(),
@@ -114,6 +128,8 @@ describe('WeappRegisterUsecase（注册事务语义）', () => {
       thirdPartyAuthQueryService as unknown as ThirdPartyAuthQueryService,
       accountService as unknown as AccountService,
       accountQueryService as unknown as AccountQueryService,
+      organizationQueryService as unknown as OrganizationQueryService,
+      organizationMembershipService as unknown as OrganizationMembershipService,
       logger as unknown as PinoLogger,
       transactionRunner as never,
     );
@@ -161,6 +177,45 @@ describe('WeappRegisterUsecase（注册事务语义）', () => {
       expect(accountService.saveUserInfo).toHaveBeenCalledWith(
         expect.objectContaining({ transactionContext: txContext }),
       );
+    });
+
+    it('同事务绑定所选组织为 CUSTOMER 成员', async () => {
+      await usecase.execute(validParams());
+
+      expect(organizationQueryService.findActiveRegistrationOption).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: ORGANIZATION_ID, transactionContext: txContext }),
+      );
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: ORGANIZATION_ID,
+          accountId: ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.CUSTOMER,
+        },
+        txContext,
+      );
+    });
+  });
+
+  describe('所选组织校验', () => {
+    it('组织不存在或已停用：账号零落库，事务回滚，第三方绑定不执行', async () => {
+      organizationQueryService.findActiveRegistrationOption.mockResolvedValue(null);
+
+      await expect(usecase.execute(validParams())).rejects.toMatchObject({
+        code: ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE,
+      });
+
+      expect(accountService.saveAccount).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(tpa.bindThirdPartyForRegistration).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+    });
+
+    it('未提供 organizationId 时在事务前拒绝', async () => {
+      await expect(
+        usecase.execute({ ...validParams(), organizationId: undefined }),
+      ).rejects.toMatchObject({ code: 'ENGINEER_REGISTRATION_INVALID_PARAMS' });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
     });
   });
 

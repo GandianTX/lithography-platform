@@ -9,6 +9,7 @@ const GROUPS = {
       'test/02-register/register.e2e-spec.ts',
       'test/02-register/register-email-active.e2e-spec.ts',
       'test/02-register/weapp-register-active.e2e-spec.ts',
+      'test/02-register/engineer-registration-approval.e2e-spec.ts',
       'test/03-roles-guard/roles-guard.e2e-spec.ts',
       'test/04-user-info/update-access-group.e2e-spec.ts',
       'test/04-user-info/update-visible-user-info.e2e-spec.ts',
