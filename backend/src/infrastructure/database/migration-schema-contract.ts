@@ -955,6 +955,8 @@ const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   'reference_document.chk_reference_document_model_exclusive': 1775301900000,
   'repair_request.chk_repair_request_handling_result': 1775401100000,
   'repair_request.chk_repair_request_handling_status': 1775401100000,
+  // 31 号迁移在保持约束名不变的前提下替换表达式（NULL 安全）；名称登记仍按 26 号，
+  // 因此 24 态不要求、29/30/31 各态均按同一名称预检，旧库不会被新语义提前阻断。
   'repair_request.chk_repair_request_handling_mapping': 1775401100000,
   'repair_request.chk_repair_request_handling_requires_accepted': 1775401100000,
   'repair_request.chk_repair_request_handling_time': 1775401100000,

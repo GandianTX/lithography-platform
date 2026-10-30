@@ -793,7 +793,7 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     const closureQueries = records.filter((record) =>
       /WHERE equipment_model_id IN/i.test(record.sql),
     );
-    expect(closureQueries).toHaveLength(4);
+    expect(closureQueries).toHaveLength(5);
     for (const record of closureQueries) {
       expect(record.params).toEqual([700]);
     }
@@ -802,6 +802,7 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
       'fault_case_submission_detail',
       'reference_document',
       'repair_request',
+      'maintenance_report',
     ]);
   });
 
@@ -1147,6 +1148,193 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
       /engineerResponse 600 回复参与人不在本轮范围/,
     );
     expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C01：新增维修报告引用待清理机型，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'equipmentModel', 700, CORE_MODEL_FACTS);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM maintenance_report\b[\s\S]*equipment_model_id IN/i.test(sql)
+          ? [{ id: 900 }]
+          : undefined,
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C01' })).rejects.toThrow(
+      /maintenance_report\.equipment_model_id 900 范围外记录引用了本轮机型/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C02：新增维修报告账号字段引用待清理账号，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM maintenance_report\b[\s\S]*maintenance_engineer_account_id IN/i.test(sql)
+          ? [{ id: 900 }]
+          : undefined,
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C02' })).rejects.toThrow(
+      /maintenance_report 工程师\/创建人\/更新人 900 引用了本轮账号/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C03：新增维修报告组织引用待清理组织，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'organization', 101, {
+      organizationCode: 'E2E_R31_C03',
+      name: 'R31-C03 组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM organization\b[\s\S]*WHERE id IN/i.test(sql)) {
+          return [
+            {
+              id: 101,
+              organization_code: 'E2E_R31_C03',
+              name: 'R31-C03 组织',
+              kind: 'CLIENT',
+              status: 'ACTIVE',
+            },
+          ];
+        }
+        if (/FROM maintenance_report\b[\s\S]*owner_organization_id IN/i.test(sql)) {
+          return [{ id: 900 }];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C03' })).rejects.toThrow(
+      /maintenance_report\.owner_organization_id 900 维修报告引用了本轮组织/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C04：本地安装映射引用待清理组织，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'organization', 101, {
+      organizationCode: 'E2E_R31_C04',
+      name: 'R31-C04 组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM organization\b[\s\S]*WHERE id IN/i.test(sql)) {
+          return [
+            {
+              id: 101,
+              organization_code: 'E2E_R31_C04',
+              name: 'R31-C04 组织',
+              kind: 'CLIENT',
+              status: 'ACTIVE',
+            },
+          ];
+        }
+        if (/FROM local_installation\b[\s\S]*organization_id IN/i.test(sql)) {
+          return [{ id: 900 }];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C04' })).rejects.toThrow(
+      /local_installation\.organization_id 900 本地安装映射引用了本轮组织/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C05：新增维修报告引用待清理工单，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    recordOwnedResource(owned, 'equipmentModel', 700, CORE_MODEL_FACTS);
+    recordOwnedResource(owned, 'repairRequest', 500, CORE_REQUEST_FACTS);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) => {
+        if (/FROM repair_request\b[\s\S]*WHERE id IN/i.test(sql)) return [coreRequestRow()];
+        if (/FROM maintenance_report\b[\s\S]*repair_request_id IN/i.test(sql)) {
+          return [{ id: 900 }];
+        }
+        return undefined;
+      },
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C05' })).rejects.toThrow(
+      /maintenance_report\.repair_request_id 900 维修报告引用了本轮工单/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C06：工单处理记录人引用待清理账号但工单未登记，首删前拒绝', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const owned = createOwnedResourceLedger();
+    recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+    const { dataSource, records } = createFakeTransactionalDataSource({
+      respond: (sql) =>
+        /FROM repair_request\b[\s\S]*handling_recorded_by_account_id IN/i.test(sql)
+          ? [coreRequestRow({ id: 900 })]
+          : undefined,
+    });
+
+    await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C06' })).rejects.toThrow(
+      /维修申请 900 引用了本轮账号但不在本轮删除范围/,
+    );
+    expect(deletes(records)).toEqual([]);
+  });
+
+  it('R31-C07：报告附件/版本/审核表引用待清理账号时逐表拒绝，DELETE=0', async () => {
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    const cases: Array<{ table: string; column: string; label: string }> = [
+      {
+        table: 'maintenance_report_attachment',
+        column: 'uploaded_by_account_id',
+        label: 'maintenance_report_attachment 上传人',
+      },
+      {
+        table: 'maintenance_report_version',
+        column: 'submitted_by_account_id',
+        label: 'maintenance_report_version 提交人',
+      },
+      {
+        table: 'maintenance_report_review',
+        column: 'reviewed_by_account_id',
+        label: 'maintenance_report_review 审核人',
+      },
+    ];
+
+    for (const item of cases) {
+      const owned = createOwnedResourceLedger();
+      recordOwnedResource(owned, 'account', 201, CORE_ACCOUNT_FACTS);
+      const { dataSource, records } = createFakeTransactionalDataSource({
+        respond: (sql) =>
+          new RegExp(`FROM ${item.table}\\b[\\s\\S]*${item.column} IN`, 'i').test(sql)
+            ? [{ id: 900 }]
+            : undefined,
+      });
+
+      await expect(runGuardedSpecCleanup({ dataSource, owned, helper: 'R31-C07' })).rejects.toThrow(
+        new RegExp(`${item.label} 900 引用了本轮账号`),
+      );
+      expect(deletes(records)).toEqual([]);
+    }
   });
 
   it('R02-C02B：残留第三方绑定 provider 相同但用户标识漂移，拒绝接管', async () => {

@@ -2,14 +2,14 @@
 
 - 初稿：2026-10-28；实现与交接整理：2026-10-29。
 - 性质：供 PR 审核的设计依据与实现说明，尚不代表薛一审或负责人二审通过。
-- 范围：在 PR0 的 24 条迁移、23 张业务表上追加 5 条迁移、10 张表，终态为 29 条迁移、33 张业务表。
+- 范围：在 PR0 的 24 条迁移、23 张业务表上追加 7 条迁移、11 张新表，终态为 31 条迁移、34 张业务表。
 - 依据：用户确认的组织与维修业务口径、[PR0 Schema 快照](./data-collection-schema.md)及仓库后端规则。
 - 阅读方式：§1—§12 保留建模选择与字段设计；§14 明确实际实现与初稿的差异，涉及差异时优先核对该节以及当前 Entity / Migration / 用例，不把未实现的方案当作已交付功能。
 - 操作与证据：[部署 SOP](./部署与增量升级SOP-20261029.md)、[验收记录](./organization-maintenance-data-increment-acceptance-20261029.md)。
 
 ## 0. 设计边界与原则
 
-1. 保留存量 23 张业务表及 24 条迁移，只做**追加**：2 张表加列、10 张新表。不改已接受迁移，不回改 PR0 语义。
+1. 保留存量 23 张业务表及 24 条迁移，只做**追加**：2 张既有表加列、11 张新表。不改已接受迁移，不回改 PR0 语义。
 2. 所有写入由服务端可信上下文决定组织与角色，不接受客户端自报组织/角色/状态映射。
 3. 组织归属“优先显式落点，子记录受约束派生”：报告、工单、正式资料持 `owner_organization_id`；报警、步骤、附件、版本、审核、AI 记录通过受约束父关系派生，不各自复制组织列。
 4. 工作态用规范子表；冻结态用**严格版本化 JSON** 快照。二者不互相替代、不双写矛盾。
@@ -426,22 +426,25 @@ chk_maintenance_report_status_consistency CHECK (
 
 ## 8. 迁移顺序、事务与并发约束
 
-### 8.1 迁移顺序（5 条追加，不复用旧时间戳）
+### 8.1 迁移顺序（7 条追加，不复用旧时间戳）
 
 | 序  | 迁移（建议名）                                                        | 内容                                                            | 事务/回填                                                                                                 |
 | --- | --------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | M1  | `1775401000000-alter-organization-membership-customer-single-active`  | `member_role` 加 CUSTOMER；生成列 + 唯一索引；角色索引          | DDL 隐式提交；生成列在存量 ACTIVE 行上自动回填；若存量存在“同账号多 ACTIVE”则**中止并报告**，不自动选一个 |
-| M2  | `1775401100000-alter-repair-request-organization-and-handling-result` | 6 列 + 索引 + 唯一锚点 + 3 个 CHECK                             | 先加可空列 → 有意义证据回填组织 → 再加 CHECK；回填失败不阻断 M3                                           |
+| M2  | `1775401100000-alter-repair-request-organization-and-handling-result` | 6 列 + 索引 + 唯一锚点 + 5 个 CHECK                             | 先加可空列 → 有意义证据回填组织 → 再加 CHECK；回填失败不阻断 M3                                           |
 | M3  | `1775401200000-create-maintenance-report-and-content`                 | `maintenance_report` + `_alarm` + `_step`                       | 纯建表，无回填                                                                                            |
 | M4  | `1775401300000-create-maintenance-report-attachment-version-review`   | `_attachment` + `_version` + `_version_attachment` + `_review`  | 纯建表；复合 FK 顺序：attachment → version → version_attachment → review                                  |
 | M5  | `1775401400000-create-local-installation-upload-backup`               | `local_installation` + `local_upload_task` + `local_backup_run` | 插入单行 `id=1`（幂等 `INSERT ... ON DUPLICATE KEY UPDATE id=id`），不写组织映射                          |
+| M6  | `1775401500000-create-engineer-registration-application`              | `engineer_registration_application`                             | 纯建表；待审账号保持 `PENDING`，审核通过后才建立成员关系                                                  |
+| M7  | `1775401600000-add-null-safe-handling-constraints`                    | 替换 `chk_repair_request_handling_mapping` / `_time` 表达式     | 单条 ALTER；先扫描存量非法组合，发现即失败报告；不删除、不猜测修复                                        |
 
 要点：
 
-- 每条迁移加信息模式存在性守卫，重复执行安全；沿用入口 `GET_LOCK` 互斥。
+- 迁移由入口历史表保证只执行一次，不依赖迁移文件内的重复执行守卫；`migration:status` 按已执行前缀预检结构。
+- 第 31 条保持约束名不变，仅替换表达式；因此 24 态不要求该约束，29/30/31 各态按同一名称预检，不会被新语义提前阻断。
 - 组织回填证据只允许：①已有 ACTIVE 成员关系；②`content_submission.owner_organization_id`；③`reference_document.owner_organization_id`。**禁止**按 `company_name`、登录名、型号匹配。
 - 回填脚本输出 4 类清单（已归属/可证据回填/无证据/冲突），无证据者保持 NULL，不赋默认组织。
-- S5 需同时演练“14 条前缀 → 29 条”和“24 条 → 29 条”，演练库必须为 `lithography_e2e` 或专用演练库，禁止开发库。
+- 需分别演练“24 条前缀 → 31 条”“30 条 → 31 条”，演练库必须为 `lithography_e2e` 或专用可丢弃库，禁止开发库。24→31 已用 accepted 提交正向重建的 24 态 + 合成旧数据实跑通过；该证据不是真实历史业务库副本，不能用回退构造替代，也不能据此宣称真实历史数据兼容。
 
 ### 8.2 事务与并发
 
@@ -517,7 +520,7 @@ chk_maintenance_report_status_consistency CHECK (
 
 ## 11. 结构契约与接口范围
 
-- `migration-schema-contract.ts` 已登记新增表、索引、列、CHECK、外键及对应迁移归属，`REQUIRED_TABLES` 由 23 → 33；空库核验复用该契约。
+- `migration-schema-contract.ts` 已登记新增表、索引、列、CHECK、外键及对应迁移归属，`REQUIRED_TABLES` 由 23 → 34（31 条迁移）；空库核验复用该契约。
 - 本次交付 Entity、Migration、服务、查询与用例，以及既有账号/工单入口的必要兼容调整；没有新增报告 CRUD、结果写入或本地运行的 GraphQL/REST 接口及前端页面。
 - 报告读写、审核和附件关联在用例层进行组织及角色校验；真实上传、文件授权下载与 PDF 消费链路未作为本次页面交付验收。
 
@@ -569,7 +572,7 @@ chk_maintenance_report_status_consistency CHECK (
 9. **分析结果读取位置**：外部分析结果读取移出行锁事务，事务内仅在锁后复核引用三元组，被并发修改即返回 `CONFLICT` 由客户端重试。
 10. **仍待对接**：真实 `AnalysisOutputReader` 实现、阶段编码标签文案、附件上传与备份接收端回执、组织映射配置入口、本地入口权限边界（§9）。
 11. **无归属存量的可见口径（S5 收紧）**：按 §3.3 R3「本人/接单工程师访问保持」落地——工程师列表仅在 `MINE` 视角出现无归属记录，详情仅接单工程师本人可读，接单对无归属记录一律 `NOT_FOUND`；不因 `owner_organization_id` 缺失向全体工程师开放，无法判定归属的记录进入异常清单由维护者显式处置。
-12. **账号创建与组织来源（S5 明确）**：`admin-create-user` 要求管理员自身具备当前有效组织，否则失败关闭；自助注册不建立成员关系，未分配组织的客户所建工单以 `NULL` 组织保存，客户仍可读写本人记录，但在管理员建立成员关系前不可被派单（组织分配入口仍待对接，不按厂家/公司名/登录名推断）。
+12. **账号创建与组织来源（S5/S6 明确）**：`admin-create-user` 要求管理员自身具备当前有效组织，否则失败关闭；客户自助注册在创建事务内按所选有效组织建立 `CUSTOMER` 成员关系；工程师自助注册只创建待审账号与申请，审核通过后才建立 `ENGINEER` 成员关系；历史未分配账号不自动猜测组织，未分配组织的客户所建工单以 `NULL` 组织保存，客户仍可读写本人记录，但在管理员建立成员关系前不可被派单（组织分配入口仍待对接，不按厂家/公司名/登录名推断）。
 13. **附件可信元数据（S5 明确未完成）**：当前仅对客户端提交的大小、校验值与存储引用做格式和限额归一化，尚未接入服务端上传记录或存储回读，不能据此宣称真实上传验收通过。
 14. **组织关联的数据库约束与实际保证（S6 校准，供 PR 审核）**：
     - 数据库保证：`repair_request.owner_organization_id`、`maintenance_report.owner_organization_id` 各自只有单列外键 → `organization(id)`，仅保证引用组织存在（且允许 NULL）；报告内部的版本、附件、审核通过复合唯一键 + 复合外键（`version_attachment.(version_id, report_id)`、`version_attachment.(attachment_id, report_id)`、`review.(version_id, report_id)`）保证不会挂到其他报告；`uk_maintenance_report_request(repair_request_id)` 保证一工单至多一份总结根。

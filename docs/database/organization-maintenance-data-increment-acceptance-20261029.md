@@ -4,10 +4,10 @@
 
 - 分支：`feat/maintenance-data-increment`；开发起点：`795eb577f45e5ece4694dec5efa322aba1ef9a3a`。
 - 本记录整理自提交前各轮执行记录。实库结果产生于该起点之上的未提交工作区，不能表述为起点提交已经包含或验证了本次实现，也不代表 CI、薛一审或负责人二审通过。
-- 交付为数据层增量及既有账号/工单兼容调整：5 条追加迁移、10 张新表，终态 29 条迁移、33 张业务表；`migrations` 等元数据表另计。
+- 交付为数据层增量及既有账号/工单兼容调整：7 条追加迁移、11 张新表，终态 31 条迁移、34 张业务表；`migrations` 等元数据表另计。
 - [设计与实现说明](./organization-maintenance-data-increment-design.md)、[部署与升级 SOP](./部署与增量升级SOP-20261029.md)提供正式交接入口。临时阶段计划和旧基线盘点不属于本次提交。
 - 本文只保留脱敏结果，不包含配置、备份、真实业务数据或原始测试日志。
-- 时点说明（2026-10-29 追加）：本记录只覆盖 29 条迁移 / 33 张业务表的终态。此后同一分支追加了工程师注册申请表的迁移（第 30 条、第 34 张业务表），但**未纳入本记录的实库演练**；文中“29 条迁移结果仍适用”的回执不覆盖该新增迁移。第 30 条迁移的空库/增量演练与并发验收以 [注册审核验收记录](./self-registration-engineer-approval-acceptance-20261029.md) 与 [README](./README.md) 的当前迁移清单为准。
+- 时点说明（2026-10-30 更新）：第 10–189 行的表格与回执保留 2026-10-29 时点的 29/30 态历史结果，不代表当前终态；当前 31 条迁移、34 张业务表的最新证据见文末「2026-10-30 第四轮修复与终态补证」。旧文中的“自助注册不建立成员关系”等表述已按第 3 节统一修正。
 
 ## 已执行的迁移验证
 
@@ -185,7 +185,180 @@ E2E_SPECS=test/utils/e2e-owned-fixture.e2e-spec.ts \
 - AI 只有最小读取契约和测试注入模拟，生产未接入时明确不可用；真实输出、版本与历史回看尚未联调。
 - 附件只有记录、格式/限额校验、冻结清单及审核选择，没有真实上传或服务端存储元数据回读。
 - 本地运行只有身份、任务、回执与备份记录状态机，没有真实云接收端、调度器、备份文件生成或恢复编排；数据记录通过不等于真实备份恢复通过。
-- 自助注册客户没有自动组织归属；没有新增组织分配公开入口，运维初始化须依据可信映射。
+- 客户自助注册会在注册事务内按所选有效组织建立 `CUSTOMER` 成员关系；工程师自助注册只创建待审账号与申请，审核通过后才建立 `ENGINEER` 成员关系；历史未分配账号不自动猜测组织，组织分配公开入口仍未交付。
 - 没有新增业务页面、报告 GraphQL/REST 接口或 PDF 导出，本次没有前端视觉验收证据。
 
 PR 审核重点为组织隔离与旧数据兼容、单有效成员生成列、报告/版本/审核关联、锁序与冲突回读、清理保护及单列外键的实际保证范围。本文不代替审核者独立复核。
+
+## 2026-10-30 第四轮修复与终态补证
+
+### 1. 基线
+
+- 分支：`feat/maintenance-data-increment`；未新开分支。
+- 工作区 HEAD、远端分支 head 与审核基线均为 `24f75655eef913b30467ccc05ed9bebbaf846f03`（`feat(registration): add organization-scoped engineer approval`）；本轮改动全部位于未提交工作区，未 commit、未 push、未合并 PR。
+- 迁移文件实际计数 **31**（`backend/src/infrastructure/database/migrations/*.ts`）；本轮新增第 31 条，未改写前 30 条。
+- 数据库授权、实际库名、所有权与事务守卫沿用既有实现，未修改。
+
+### 2. RQ 对照表
+
+| RQ        | 意见                                                             | 代码位置                                                                                                                         | 测试/证据                                                                                               | 状态                   |
+| --------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------- |
+| RQ1（P1） | 旧清理器引用闭包只补 `maintenance_report → equipment_model` 不足 | `backend/test/utils/e2e-scoped-cleanup.ts`：`assertReferenceClosure` 的账号段、组织段、工单段、机型段                            | `e2e-scoped-cleanup.e2e-spec.ts` R31-C01～C07；真实隔离库套件 42/42                                     | 完成                   |
+| RQ2（P2） | 处理结果/状态 CHECK 在单边 NULL 时退化为 UNKNOWN                 | 新增 `1775401600000-add-null-safe-handling-constraints.migration.ts`；`repair-request.entity.ts`；`migration-schema-contract.ts` | M31 真实 MySQL 回归；C6/R2 前缀预检；实库 `verify`                                                      | 完成                   |
+| RQ3（P3） | SOP 承诺空库初始化与正式入口实际拒绝不一致；组织表述混杂         | `docs/database/部署与增量升级SOP-20261029.md`；`organization-maintenance-data-increment-design.md`；`README.md`；注册验收记录    | SOP 第 3/4 节重写；30 态库命令实跑退出码 0                                                              | 完成                   |
+| RQ4（P3） | 组织设计：客户注册即建成员、工程师审批后建成员、历史不猜测       | 同上设计说明第 12 条、迁移表 M1～M7                                                                                              | 注册审批真实 E2E 21/21                                                                                  | 完成                   |
+| P4        | 24→31 组合升级                                                   | 正式入口 `migration:status/run/verify`                                                                                           | 30→31 已用可证明副本通过；24→31 已由 accepted 代码正向重建的 24 态 + 合成旧数据通过（非真实历史库副本） | 完成（待确认来源口径） |
+| P5        | 最终验证与交接                                                   | 本记录与各套件日志                                                                                                               | 见下表                                                                                                  | 完成（不含 CI）        |
+
+### 3. P1 清理器引用闭包
+
+- 账号侧新增：`maintenance_report` 的工程师/创建人/更新人字段，`maintenance_report_attachment` 上传人，`maintenance_report_version` 提交人，`maintenance_report_review` 审核人；`repair_request` 新增 `handling_recorded_by_account_id` 引用。
+- 组织侧新增：`maintenance_report.owner_organization_id`、`local_installation.organization_id`、`repair_request.owner_organization_id`（只有登记集合内工单可随组织删除）。
+- 工单侧新增：`maintenance_report.repair_request_id`（本轮无报告删除能力，直接拒绝）。
+- 机型侧新增：`maintenance_report.equipment_model_id`。
+- 所有查询都在 `assertReferenceClosure` 内、首次 DELETE 之前、同一连接同一事务中执行；账本外引用立即抛错，不自动登记、不扩图、不删除。
+- 负例均使用独立 `createOwnedResourceLedger()`；本组负例只构造替身数据，不创建真实资源，因此无需 `finally` 收尾；真实隔离库套件的正常/失败路径仍由既有 `runE2eTeardown` 覆盖。
+
+### 4. P2 NULL 安全约束
+
+- 第 31 条仅替换两个同名 CHECK 表达式，不新增表、不改列；单条 `ALTER TABLE` 完成 DROP+ADD，MySQL 8 原子 DDL；DDL 隐式提交导致事务无法回滚结构变更的边界已写入迁移注释。
+- 新表达式显式覆盖：双 NULL 且时间全空；五类固定映射且 `handling_recorded_at` 必填；`IN_PROGRESS` 不得有结束时间；`COMPLETED/UNRESOLVED` 必须有结束时间。其余组合均得到 FALSE，不再依赖 NULL 退化为 UNKNOWN。
+- 迁移前扫描存量非法组合，失败时报总行数与样例 ID；不删除、不猜测修复。
+- 结构契约按约束名登记在 26 号迁移（`1775401100000`），因此 24 态不要求该约束，29/30/31 态按同名预检，不会被新语义提前阻断；C6 已验证 14/20/24 前缀通过。
+- 真实 MySQL：M31 在 30 态前缀上先插入两种单边 NULL，证明旧表达式接受非法行；随后迁移预检明确失败、历史仍 30 条；清理非法行后应用 31 号迁移，合法五类映射与双 NULL 接受，单边 NULL、错误映射、三种时间矛盾及双 NULL 带时间全部被数据库拒绝。仅检查约束名不算通过，已用写入行为验证敏感性。
+
+### 5. P3 文档修正
+
+- SOP 改为“既有库增量升级”为正式支持范围；删除“空库直接 `run` 初始化成功”的错误步骤；破坏性 `migration:drill:empty-db` 单列为“可丢弃测试库演练”，明确不是正式初始化。
+- 明确正式空库初始化目前**未提供受验证入口**；若交付该能力须另立实现范围，不得放宽历史守卫。
+- 组织表述统一为：客户注册即建立所选组织 `CUSTOMER` 成员关系；工程师注册只建待审账号与申请，审核通过后才建 `ENGINEER` 成员关系；历史未分配账号不自动猜测组织。
+- 迁移数量、升级路径与待对接说明同步为 31 条 / 34 张业务表。
+
+### 6. P4 30→31 与 24→31
+
+**30→31（真实数据库，已通过）**
+
+- 来源：`lithography_upgrade_drill_copy_20261030` 是 2026-10-29 已验收的 30 态副本；升级前用 `mysqldump` 生成只读基线 `/tmp/lithography_upgrade_copy_20261030_before_m31.sql`。
+- 基线核验：dump 中 `migrations` 元组 **30** 条，不含 `AddNullSafeHandlingConstraints1775401600000`；大小为 103,421 字节。
+- 执行与退出码：`migration:status` → 0（历史 30、仓库 31、pending 1）；`migration:run --confirm-database` → 0（仅执行第 31 条）；`migration:verify` → 0（业务表 34 张）；再次 `run` → 0（pending 0、执行 0 条）。
+- 终态回读：`migrations` **31** 条；基础表 **35** 张（含 `migrations`，业务表 **34** 张）；`base_user_account=1`、`equipment_model=1`、`organization=1`、`repair_request=0`，与升级前一致；31 号迁移无 DML。
+- 约束回读（`information_schema.check_constraints`）：`chk_repair_request_handling_mapping` 与 `_time` 均为新表达式，双 NULL 分支与成对非空分支同时存在。
+
+**24→31（本轮停止，已由第五轮补证）**
+
+- 检索现有 `lithography_e2e`、`lithography_drill`、`lithography_upgrade_drill_copy_20261030` 及本地备份，均为 30 态；没有可证明来源的 accepted 24 态旧库副本或 dump。
+- 按任务约束，不用“删表/删迁移记录倒造”或回退构造替代；第四轮停止 24→31 实库补证，并在 SOP/README 中如实标注未演练。
+- 第五轮已改用 accepted 提交正向重建的 24 态与合成旧数据完成 24→31，见文末“第五轮”小节；该证据不是真实历史业务库副本。
+- 历史 24→29 证据仍保留在 2026-10-29 段落，仅作历史沿用，不能当作 24→31 结果。
+
+### 7. P5 验证结果
+
+| 检查               | 命令/范围                                                                    | 结果                                                                                                                                                                           | 退出码 |
+| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| 类型检查           | `npm run typecheck`                                                          | 通过                                                                                                                                                                           | 0      |
+| 后端单测           | `npm run test:unit -- --runInBand`                                           | 124 suites / 1486 passed；6 suites、70 tests skipped；0 failed                                                                                                                 | 0      |
+| 变更文件 ESLint    | 6 个变更 TS 文件                                                             | 0 error                                                                                                                                                                        | 0      |
+| Prettier           | 同上 6 个文件 `--check`                                                      | 全部符合                                                                                                                                                                       | 0      |
+| 架构门禁           | `npm run lint:architecture-fixtures`、`npm run lint:usecase-normalize-guard` | 均 passed                                                                                                                                                                      | 0      |
+| 构建               | `npm run build`                                                              | 通过（含 capability docs check）                                                                                                                                               | 0      |
+| 清理安全真实库     | `e2e-scoped-cleanup.e2e-spec.ts`                                             | 42/42（含真实隔离库 4 项）                                                                                                                                                     | 0      |
+| NULL 约束真实库    | `incremental-migration.integration.spec.ts -t M31`                           | 1 passed / 31 skipped                                                                                                                                                          | 0      |
+| 前缀结构契约       | 同文件 `-t "C6\|R2"`                                                         | 3 passed                                                                                                                                                                       | 0      |
+| 维修/组织/并发集成 | 3 个 integration spec                                                        | 23/23                                                                                                                                                                          | 0      |
+| 注册审批 E2E       | `engineer-registration-approval.e2e-spec.ts`                                 | 21/21                                                                                                                                                                          | 0      |
+| 迁移入口实跑       | 30 态副本 `status/run/verify/run`                                            | 见 P4                                                                                                                                                                          | 0      |
+| 实体范围门禁       | `npm run check:entity-scope`                                                 | 失败：分支相对 `origin/main` 本身就包含本功能新增 Entity；该门禁按脚本注释服务于 PR3 范围，本分支不适用。第五轮只读核实，未豁免、未改基线、未关闭检查，依据见文末第五轮第 5 节 | 1      |
+
+证据分类：
+
+- **真实数据库**：P1 真实隔离库 4 项、M31 真实 MySQL、C6/R2 前缀、维修/组织/并发集成 23 项、注册审批 21 项、30→31 副本升级、第五轮 24→31（accepted 代码正向重建的 24 态库）。
+- **合成旧数据**：第五轮 24 态的旧业务数据由本轮按旧结构合成写入，**不是真实历史业务库副本**；只能证明迁移链与结构兼容，不能证明真实历史数据兼容。
+- **替身/单测**：R31-C01～C07（假 DataSource，含独立账本）、清理套件其余 SQL 替身、全量单测。
+- **历史沿用**：2026-10-29 的 24→29、29→30 实库结果及 21 表逐字段比对；24→29 未在第五轮重跑。
+- **未覆盖**：真实历史 24 态业务库、前端页面、真实 AI 调用、PDF 导出、真实备份执行/恢复编排、CI（未推送）。
+
+夹具与数据：清理套件自身断言正常夹具零残留、异常路径整批回滚；30→31 副本升级前后基础数据行数一致。获准提交后将补充完整候选 SHA、pass/failed/skipped 与 CI 同 SHA 结果；当前未执行 commit/push。
+
+## 2026-10-30 第五轮：补证与复核收口
+
+本轮只补证与复核：未改代码、未改前 30 条迁移、未调整门禁；代码工作区与第四轮一致，本轮新增改动仅为本记录与 SOP/README 的证据文字。
+
+### 1. 基线与未提交范围
+
+- HEAD、远端分支 head 均为 `24f75655eef913b30467ccc05ed9bebbaf846f03`；现有 PR #2，目标为 fork `main`，等待追加修复提交，因此本轮不存在新的 PR head 可核对。
+- 未提交共 11 项：10 个已修改文件（`incremental-migration.integration.spec.ts`、`migration-schema-contract.ts`、`repair-request.entity.ts`、`e2e-scoped-cleanup.ts`、`e2e-scoped-cleanup.e2e-spec.ts` 与 5 份数据库文档）+ 1 个未跟踪文件（第 31 条迁移）。
+- 迁移文件计数仍为 31；前 30 条未改写。RQ1–RQ4 实施复核未发现新的实际缺陷，因此未扩大修改。
+
+### 2. P1 accepted 24 态来源（合成证据，不是历史业务库副本）
+
+> accepted 代码正向重建的 24 态及合成旧数据，不是真实历史业务库副本。
+
+- 隔离代码环境：`git worktree add --detach /tmp/litho-accepted-795eb57 795eb577f45e5ece4694dec5efa322aba1ef9a3a`；核验该提交 `src/infrastructure/database/migrations` 恰好 **24** 条迁移（清单见证据目录 `migrations_24.txt`）。
+- 建库方式：该版本支持的 `migration:drill:empty-db` 配合 `MIGRATION_DRILL_DATABASE=lithography_drill_rebuild24_20261030`，在全新独占可丢弃库中清空后**正向执行原始 24 条**，输出“migration 执行成功，共 24 条”；结构契约校验通过。
+- 合成旧数据：按旧结构写入 `organization` 3 行（含旧 drill 生成的 `CLIENT_DEFAULT`）、`base_user_account` 4 行、`organization_membership` 3 行、`equipment_model` 2 行、`reference_document` 1 行、`repair_request` 2 行；覆盖组织、成员、账号、机型、参考资料与工单。
+- 基线留存：`structure_24.sql`（SHA-256 `379ee69d…ffdde76`）、升级前 `dump_24_pre_upgrade.sql`（SHA-256 `0d08d034…e11da0`）、`snapshot_24.json`；`migrations=24`、基础表 24。
+- 证据目录：本机 `/tmp/litho-evidence-20261030/`（含 SHA、迁移清单、结构 dump、前后快照、命令日志与比较结果），属本地临时证据，不入库、不提交。
+- 备份恢复验证：将备份导入同版本新库 `lithography_drill_rebuild24_restore_20261030`，完整字段确定性摘要比对 **24/24 未变**（`restore_verify_24.json`）。
+- 边界：合成数据只能证明迁移链与结构兼容，不能证明真实历史业务数据兼容。来源说明已提交薛确认；如要求真实历史副本，该项仍保留为待补证。
+
+### 3. P2 24→31 正式升级（目标 `lithography_drill_rebuild24_20261030`）
+
+| 命令                                 | 实际输出要点                                                         | 退出码 |
+| ------------------------------------ | -------------------------------------------------------------------- | ------ |
+| `migration:status`                   | 历史 24、仓库 31、pending 7，逐条列出 M1～M7                         | 0      |
+| `migration:run --confirm-database …` | 仅执行新增 7 条；`升级完成：历史 31 条，业务表 34 张，再次执行 0 条` | 0      |
+| `migration:verify`                   | 业务表 34 张；历史校验与数据回填校验通过                             | 0      |
+| 再次 `migration:run`                 | 历史 31、pending 0；执行 0 条                                        | 0      |
+
+- 原有 24 表逐字段摘要：仅 `migrations` 数据变化（新增 7 行）；`organization_membership`、`repair_request` 为预期结构变化（新增列/生成列/索引/CHECK）；其余 21 表数据与结构均未变；新增 11 张表与设计一致。
+- 回填规则核对：两条工单 `owner_organization_id=NULL`（合成旧数据无 `CUSTOMER` 成员关系，按规则不猜测）；`handling_*` 全 NULL；成员生成列 `active_account_id` 分别为 3、2、NULL（第三条为 `LEFT`，符合单有效约束）。
+- 新约束真实生效：非法 result-only 被 `chk_repair_request_handling_mapping` 拒绝、双 NULL 带时间被 `chk_repair_request_handling_time` 拒绝、合法双 NULL 被接受；测试行已删除，残留 0（`constraint_live_check.log`）。
+- 本项为**正式增量升级**证据，未用清库 drill 替代；备份恢复已实际验证。
+
+### 4. P3 30→31 数据保留（目标 `lithography_drill_30to31_20261030`）
+
+- 来源：`/tmp/lithography_upgrade_copy_20261030_before_m31.sql` 导入新库并重命名 `USE`；恢复后 `migrations=30`、第 31 条计数 0、基础表 35（业务 34），可证明为 30 态。
+- 升级前 `snapshot_30_pre_upgrade.json` 覆盖 35 张表完整字段；`status` 历史 30/pending 1；`run` 执行 1 条，终态 31/34，再次 0。
+- 完整字段确定性摘要比较（`compare_30_to_31.json`）：原 35 表中 **33 表未变**；`migrations` 数据新增 1 行；`repair_request` 仅 CHECK 定义更新；新增表 0。预期变化已逐项单独解释，非“仅比行数”。
+
+### 5. P4 `check:entity-scope` 只读核实
+
+- 实现：[check-entity-migration-scope.mjs](../../backend/scripts/check-entity-migration-scope.mjs)，由 `package.json` 的 `check:entity-scope` 调用；脚本头部注释自述为“PR3 范围门禁（敌对式终审 F2）”。
+- 比较基线：`BASE` 环境变量，缺省 `origin/main`（当前 `795eb577…9a3a`），只比较**已提交**的 `BASE...HEAD`，工作区与未跟踪文件不在比较范围。
+- 受保护范围：`backend/src/modules/lithography/entities`、`backend/src/database/migrations`。后者在当前仓库**不存在**（实际迁移目录为 `backend/src/infrastructure/database/migrations`），因此迁移变动实际上不受该脚本约束。
+- 实际失败项（exit 1）：11 个新增 Entity + `organization-membership.entity.ts`、`repair-request.entity.ts` 两个修改；均属本分支经设计文档授权的组织/维修数据增量。
+- CI 调用：`.github/workflows/ci.yml` 无该检查步骤，不构成 CI 阻塞。
+- 结论：该门禁面向另一 PR 范围，本分支不适用；本轮未豁免、未改基线、未关闭检查，记录依据并交薛确认。
+
+### 6. P5 最终验证
+
+| 检查            | 命令/范围                                                    | 结果                                                                   | 退出码 |
+| --------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------- | ------ |
+| 类型检查        | `npm run typecheck`                                          | 通过                                                                   | 0      |
+| 全量单测        | `npm run test:unit -- --runInBand`                           | 124 suites / 1486 passed；6 suites skipped；70 tests skipped；0 failed | 0      |
+| 变更文件 ESLint | 6 个变更 TS 文件                                             | 0 error                                                                | 0      |
+| Prettier        | 同上 6 个 TS 文件                                            | 全部符合                                                               | 0      |
+| 架构门禁        | `lint:architecture-fixtures`、`lint:usecase-normalize-guard` | 均 passed                                                              | 0      |
+| 构建            | `npm run build`（含 capability docs check）                  | 通过                                                                   | 0      |
+| 清理安全真实库  | `e2e-scoped-cleanup.e2e-spec.ts`                             | 42/42 passed                                                           | 0      |
+| 写库前后不变    | `lithography_e2e` 35 表完整字段摘要                          | `untouched 35 / changed 0 / newTables 0`                               | 0      |
+| 实体范围门禁    | `check:entity-scope`                                         | 1（范围不适用，见第 5 节）                                             | 1      |
+
+**本轮 70 skipped 的实际原因**：全部来自 6 个默认跳过的**真实数据库集成套件**，由环境变量显式开关控制，未配置时不执行；不是被忽略的失败用例：
+
+| 套件                                                    | 跳过用例 | 启用条件                                                                |
+| ------------------------------------------------------- | -------- | ----------------------------------------------------------------------- |
+| `incremental-migration.integration.spec.ts`             | 32       | `MIGRATION_INTEGRATION=1` + `MIGRATION_INTEGRATION_ALLOW_DESTRUCTIVE=1` |
+| `admin-set-user-status.concurrency.integration.spec.ts` | 10       | `ADMIN_USER_STATUS_CONCURRENCY_INTEGRATION=1`                           |
+| `maintenance-report.integration.spec.ts`                | 10       | `MAINTENANCE_REPORT_INTEGRATION=1`                                      |
+| `repair-request.organization.integration.spec.ts`       | 9        | `REPAIR_REQUEST_ORG_INTEGRATION=1`                                      |
+| `maintenance-report.concurrency.integration.spec.ts`    | 5        | `MAINTENANCE_REPORT_CONCURRENCY_INTEGRATION=1`                          |
+| `local-runtime.concurrency.integration.spec.ts`         | 4        | `LOCAL_RUNTIME_CONCURRENCY_INTEGRATION=1`                               |
+
+合计 70。第四轮记录的“69 项”口径作废，以本表为准；上述套件的相关用例已按本文各节在显式授权下单独实跑或由第四轮实跑覆盖。`lithography_e2e` 快照对比证明 42/42 清理套件执行后非目标数据逐字段不变、夹具零残留。
+
+### 7. 结论与待确认
+
+- 24→31、30→31 两条升级路径均已在隔离库以正式入口完成；24→31 的数据来源是**合成旧数据**，须由薛确认该口径是否可作为交付证据。
+- 本轮未 commit、未 push、未创建/合并 PR、未发布回复；CI 未运行，不把本地结果等同 CI。
+- 独立复审仍需在提交前后另行执行；`check:entity-scope` 的适用范围结论同样待薛确认。

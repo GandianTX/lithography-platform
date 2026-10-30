@@ -64,7 +64,7 @@ import {
 )
 @Check(
   'chk_repair_request_handling_mapping',
-  "((`handling_result` IS NULL AND `handling_status` IS NULL) OR (`handling_result` = 'FIXED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PART_PURCHASED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PROVIDE_PLAN_SELF_EXECUTE' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'INTERRUPTED' AND `handling_status` = 'IN_PROGRESS') OR (`handling_result` = 'UNREPAIRABLE' AND `handling_status` = 'UNRESOLVED'))",
+  "((`handling_result` IS NULL AND `handling_status` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_status` IS NOT NULL AND ((`handling_result` = 'FIXED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PART_PURCHASED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PROVIDE_PLAN_SELF_EXECUTE' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'INTERRUPTED' AND `handling_status` = 'IN_PROGRESS') OR (`handling_result` = 'UNREPAIRABLE' AND `handling_status` = 'UNRESOLVED'))))",
 )
 @Check(
   'chk_repair_request_handling_requires_accepted',
@@ -72,7 +72,7 @@ import {
 )
 @Check(
   'chk_repair_request_handling_time',
-  "((`handling_result` IS NULL AND `handling_ended_at` IS NULL AND `handling_recorded_at` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_recorded_at` IS NOT NULL AND ((`handling_status` = 'IN_PROGRESS' AND `handling_ended_at` IS NULL) OR (`handling_status` IN ('COMPLETED', 'UNRESOLVED') AND `handling_ended_at` IS NOT NULL))))",
+  "((`handling_result` IS NULL AND `handling_status` IS NULL AND `handling_recorded_at` IS NULL AND `handling_ended_at` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_status` IS NOT NULL AND `handling_recorded_at` IS NOT NULL AND ((`handling_status` = 'IN_PROGRESS' AND `handling_ended_at` IS NULL) OR (`handling_status` IN ('COMPLETED', 'UNRESOLVED') AND `handling_ended_at` IS NOT NULL))))",
 )
 export class RepairRequestEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '维修申请主键ID' })

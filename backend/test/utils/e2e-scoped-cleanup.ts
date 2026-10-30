@@ -2006,8 +2006,9 @@ const assertReferenceClosure = async (
         label: '维修申请',
         sql: `SELECT id FROM repair_request
                WHERE customer_account_id IN (${placeholders})
-                  OR accepted_by_engineer_account_id IN (${placeholders})`,
-        params: [...accountIds, ...accountIds],
+                  OR accepted_by_engineer_account_id IN (${placeholders})
+                  OR handling_recorded_by_account_id IN (${placeholders})`,
+        params: [...accountIds, ...accountIds, ...accountIds],
         planKey: 'repairRequestIds',
       },
       {
@@ -2064,6 +2065,50 @@ const assertReferenceClosure = async (
         );
       }
     }
+
+    // 维修报告链路（报告 / 附件 / 冻结版本 / 审核）本轮没有删除能力，也从不登记。
+    // 只要其中任一账号字段引用了本轮待删账号，就在第一条 DELETE 前失败关闭。
+    const reportAccountReferences: Array<{
+      label: string;
+      sql: string;
+      paramGroups: number;
+    }> = [
+      {
+        label: 'maintenance_report 工程师/创建人/更新人',
+        sql: `SELECT id FROM maintenance_report
+               WHERE maintenance_engineer_account_id IN (${placeholders})
+                  OR created_by_account_id IN (${placeholders})
+                  OR updated_by_account_id IN (${placeholders})`,
+        paramGroups: 3,
+      },
+      {
+        label: 'maintenance_report_attachment 上传人',
+        sql: `SELECT id FROM maintenance_report_attachment
+               WHERE uploaded_by_account_id IN (${placeholders})`,
+        paramGroups: 1,
+      },
+      {
+        label: 'maintenance_report_version 提交人',
+        sql: `SELECT id FROM maintenance_report_version
+               WHERE submitted_by_account_id IN (${placeholders})`,
+        paramGroups: 1,
+      },
+      {
+        label: 'maintenance_report_review 审核人',
+        sql: `SELECT id FROM maintenance_report_review
+               WHERE reviewed_by_account_id IN (${placeholders})`,
+        paramGroups: 1,
+      },
+    ];
+    for (const reference of reportAccountReferences) {
+      const rows = await manager.query(
+        reference.sql,
+        Array.from({ length: reference.paramGroups }, () => accountIds).flat(),
+      );
+      if (rows.length > 0) {
+        conflict(helper, reference.label, String(rows[0].id), '引用了本轮账号，拒绝删除');
+      }
+    }
   }
 
   if (plan.organizationIds.length > 0) {
@@ -2081,6 +2126,50 @@ const assertReferenceClosure = async (
           'engineerRegistrationApplication',
           String(row.id),
           '工程师注册申请引用了本轮组织但未登记归属证据，拒绝删除',
+        );
+      }
+    }
+
+    // 组织是维修报告与本地安装映射的父记录；两类引用都不在本轮删除范围内。
+    const reportRows = await manager.query(
+      `SELECT id FROM maintenance_report WHERE owner_organization_id IN (${orgPlaceholders})`,
+      plan.organizationIds,
+    );
+    if (reportRows.length > 0) {
+      conflict(
+        helper,
+        'maintenance_report.owner_organization_id',
+        String(reportRows[0].id),
+        '维修报告引用了本轮组织，拒绝删除',
+      );
+    }
+
+    const localInstallationRows = await manager.query(
+      `SELECT id FROM local_installation WHERE organization_id IN (${orgPlaceholders})`,
+      plan.organizationIds,
+    );
+    if (localInstallationRows.length > 0) {
+      conflict(
+        helper,
+        'local_installation.organization_id',
+        String(localInstallationRows[0].id),
+        '本地安装映射引用了本轮组织，拒绝删除',
+      );
+    }
+
+    // owner_organization_id 是 26 号迁移新增的外键；工单只有在登记集合内才允许随组织删除。
+    const ownerRequests = await manager.query(
+      `SELECT id FROM repair_request WHERE owner_organization_id IN (${orgPlaceholders})`,
+      plan.organizationIds,
+    );
+    for (const row of ownerRequests) {
+      const id = asNumber(row.id);
+      if (!plan.repairRequestIds.includes(id)) {
+        conflict(
+          helper,
+          'repair_request.owner_organization_id',
+          String(id),
+          '工单引用了本轮组织但未登记归属证据，拒绝删除',
         );
       }
     }
@@ -2112,6 +2201,20 @@ const assertReferenceClosure = async (
       if (!plan.engineerResponseIds.includes(id)) {
         conflict(helper, 'engineerResponse', String(id), '回复不属于本轮登记集合，拒绝删除');
       }
+    }
+
+    // 维修报告以 repair_request_id 为唯一父引用；本轮没有报告删除能力，一律拒绝。
+    const reportRows = await manager.query(
+      `SELECT id FROM maintenance_report WHERE repair_request_id IN (${requestPlaceholders})`,
+      plan.repairRequestIds,
+    );
+    if (reportRows.length > 0) {
+      conflict(
+        helper,
+        'maintenance_report.repair_request_id',
+        String(reportRows[0].id),
+        '维修报告引用了本轮工单且未登记为本轮资源，拒绝删除',
+      );
     }
   }
 
@@ -2165,6 +2268,12 @@ const assertReferenceClosure = async (
         table: 'repair_request',
         label: 'repair_request.equipment_model_id',
         sql: `SELECT id FROM repair_request WHERE equipment_model_id IN (${placeholders})`,
+        params: modelIds,
+      },
+      {
+        table: 'maintenance_report',
+        label: 'maintenance_report.equipment_model_id',
+        sql: `SELECT id FROM maintenance_report WHERE equipment_model_id IN (${placeholders})`,
         params: modelIds,
       },
     ];

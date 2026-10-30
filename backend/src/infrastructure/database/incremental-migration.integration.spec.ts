@@ -1801,4 +1801,233 @@ describeIntegration('增量迁移实库验收（M02-M09）', () => {
     expect(landedStatus.pending).toHaveLength(allMigrationClasses.length - BASELINE_COUNT - 1);
     expect((await readTablesAndHistory()).history).toHaveLength(BASELINE_COUNT + 1);
   });
+
+  it('M31：NULL 安全约束修正对旧表达式缺陷敏感并拒绝非法组合', async () => {
+    await buildPrefix(30);
+    const lastMigration = allMigrationClasses[allMigrationClasses.length - 1];
+    expect(classTimestamp(lastMigration)).toBe(1775401600000);
+
+    await withDataSource(async (dataSource) => {
+      await dataSource.query(
+        `INSERT INTO \`base_user_account\` (\`id\`, \`login_name\`, \`login_password\`, \`status\`, \`identity_hint\`)
+         VALUES (900001, 'm31_user', 'hash', 'ACTIVE', 'ENGINEER')`,
+      );
+      await dataSource.query(
+        `INSERT INTO \`equipment_model\` (\`id\`, \`model_code\`, \`model_name\`)
+         VALUES (900001, 'M31-MODEL', 'M31 机型')`,
+      );
+    });
+
+    const insertRequest = async (
+      requestNo: string,
+      values: {
+        result: string | null;
+        status: string | null;
+        recordedAt: 'NOW' | null;
+        endedAt: 'NOW' | null;
+      },
+    ): Promise<void> => {
+      await withDataSource(async (dataSource) => {
+        await dataSource.query(
+          `INSERT INTO \`repair_request\`
+             (\`request_no\`, \`customer_account_id\`, \`equipment_model_id\`, \`error_code\`,
+              \`fault_description\`, \`content_md\`, \`is_accepted\`, \`accepted_by_engineer_account_id\`,
+              \`accepted_at\`, \`handling_result\`, \`handling_status\`, \`handling_recorded_at\`, \`handling_ended_at\`)
+           VALUES (?, 900001, 900001, 'E', 'F', 'C', 1, 900001, NOW(3), ?, ?, ?, ?)`,
+          [
+            requestNo,
+            values.result,
+            values.status,
+            values.recordedAt === 'NOW' ? new Date() : null,
+            values.endedAt === 'NOW' ? new Date() : null,
+          ],
+        );
+      });
+    };
+
+    const deleteRequest = async (requestNo: string): Promise<void> => {
+      await withDataSource(async (dataSource) => {
+        await dataSource.query(`DELETE FROM \`repair_request\` WHERE \`request_no\` = ?`, [
+          requestNo,
+        ]);
+      });
+    };
+
+    // 旧 30 态表达式在单边 NULL 时退化为 UNKNOWN：先证明缺陷真实存在。
+    await insertRequest('M31-OLD-RESULT-ONLY', {
+      result: 'FIXED',
+      status: null,
+      recordedAt: 'NOW',
+      endedAt: null,
+    });
+    await insertRequest('M31-OLD-STATUS-ONLY', {
+      result: null,
+      status: 'COMPLETED',
+      recordedAt: null,
+      endedAt: null,
+    });
+    const oldRows = await withDataSource((dataSource) =>
+      dataSource.query(
+        `SELECT \`request_no\` FROM \`repair_request\` WHERE \`request_no\` IN (?, ?) ORDER BY \`request_no\``,
+        ['M31-OLD-STATUS-ONLY', 'M31-OLD-RESULT-ONLY'],
+      ),
+    );
+    expect(oldRows).toHaveLength(2);
+
+    // 预检：存量单边 NULL 必须在迁移生效前明确失败并报告样例，历史保持 30 条。
+    const precheckDataSource = buildDataSource(config, [lastMigration]);
+    await precheckDataSource.initialize();
+    const precheckError = await precheckDataSource.runMigrations({ transaction: 'none' }).then(
+      () => null,
+      (caught: unknown) => caught as Error,
+    );
+    await precheckDataSource.destroy();
+    expect(precheckError?.message).toMatch(/处理组合预检失败/);
+    expect(precheckError?.message).toMatch(/M31-OLD-RESULT-ONLY|样例 id/);
+    expect((await readTablesAndHistory()).history).toHaveLength(30);
+    await deleteRequest('M31-OLD-RESULT-ONLY');
+    await deleteRequest('M31-OLD-STATUS-ONLY');
+
+    // 应用 31 号迁移。
+    const migrationDataSource = buildDataSource(config, [lastMigration]);
+    await migrationDataSource.initialize();
+    try {
+      await migrationDataSource.runMigrations({ transaction: 'none' });
+    } finally {
+      await migrationDataSource.destroy();
+    }
+    expect((await readTablesAndHistory()).history).toHaveLength(31);
+
+    // 合法五类映射 + 双 NULL 均应被接受。
+    const legalCases: Array<{
+      no: string;
+      result: string | null;
+      status: string | null;
+      recordedAt: 'NOW' | null;
+      endedAt: 'NOW' | null;
+    }> = [
+      {
+        no: 'M31-LEGAL-FIXED',
+        result: 'FIXED',
+        status: 'COMPLETED',
+        recordedAt: 'NOW',
+        endedAt: 'NOW',
+      },
+      {
+        no: 'M31-LEGAL-PART',
+        result: 'PART_PURCHASED',
+        status: 'COMPLETED',
+        recordedAt: 'NOW',
+        endedAt: 'NOW',
+      },
+      {
+        no: 'M31-LEGAL-PLAN',
+        result: 'PROVIDE_PLAN_SELF_EXECUTE',
+        status: 'COMPLETED',
+        recordedAt: 'NOW',
+        endedAt: 'NOW',
+      },
+      {
+        no: 'M31-LEGAL-INTERRUPTED',
+        result: 'INTERRUPTED',
+        status: 'IN_PROGRESS',
+        recordedAt: 'NOW',
+        endedAt: null,
+      },
+      {
+        no: 'M31-LEGAL-UNREPAIRABLE',
+        result: 'UNREPAIRABLE',
+        status: 'UNRESOLVED',
+        recordedAt: 'NOW',
+        endedAt: 'NOW',
+      },
+      { no: 'M31-LEGAL-DOUBLE-NULL', result: null, status: null, recordedAt: null, endedAt: null },
+    ];
+    for (const item of legalCases) {
+      await expect(insertRequest(item.no, item)).resolves.toBeUndefined();
+    }
+
+    // 单边 NULL、错误映射与时间矛盾组合均必须被数据库拒绝。
+    const rejectedCases: Array<{
+      no: string;
+      result: string | null;
+      status: string | null;
+      recordedAt: 'NOW' | null;
+      endedAt: 'NOW' | null;
+      pattern: RegExp;
+    }> = [
+      {
+        no: 'M31-BAD-RESULT-ONLY',
+        result: 'FIXED',
+        status: null,
+        recordedAt: 'NOW',
+        endedAt: null,
+        pattern: /chk_repair_request_handling_mapping/,
+      },
+      {
+        no: 'M31-BAD-STATUS-ONLY',
+        result: null,
+        status: 'COMPLETED',
+        recordedAt: null,
+        endedAt: null,
+        pattern: /chk_repair_request_handling_(mapping|time)/,
+      },
+      {
+        no: 'M31-BAD-MAPPING',
+        result: 'FIXED',
+        status: 'IN_PROGRESS',
+        recordedAt: 'NOW',
+        endedAt: null,
+        pattern: /chk_repair_request_handling_mapping/,
+      },
+      {
+        no: 'M31-BAD-TIME-NO-RECORDED',
+        result: 'FIXED',
+        status: 'COMPLETED',
+        recordedAt: null,
+        endedAt: 'NOW',
+        pattern: /chk_repair_request_handling_time/,
+      },
+      {
+        no: 'M31-BAD-TIME-IN-PROGRESS-ENDED',
+        result: 'INTERRUPTED',
+        status: 'IN_PROGRESS',
+        recordedAt: 'NOW',
+        endedAt: 'NOW',
+        pattern: /chk_repair_request_handling_time/,
+      },
+      {
+        no: 'M31-BAD-TIME-UNRESOLVED-NO-ENDED',
+        result: 'UNREPAIRABLE',
+        status: 'UNRESOLVED',
+        recordedAt: 'NOW',
+        endedAt: null,
+        pattern: /chk_repair_request_handling_time/,
+      },
+      {
+        no: 'M31-BAD-TIME-DOUBLE-NULL-RECORDED',
+        result: null,
+        status: null,
+        recordedAt: 'NOW',
+        endedAt: null,
+        pattern: /chk_repair_request_handling_time/,
+      },
+    ];
+    for (const item of rejectedCases) {
+      const error = await insertRequest(item.no, item).then(
+        () => null,
+        (caught: unknown) => caught as Error,
+      );
+      expect(error?.message).toMatch(item.pattern);
+    }
+
+    const rows = await withDataSource((dataSource) =>
+      dataSource.query(
+        `SELECT \`request_no\` FROM \`repair_request\` WHERE \`request_no\` LIKE 'M31-%' ORDER BY \`request_no\``,
+      ),
+    );
+    expect(rows.map((row: Record<string, unknown>) => String(row['request_no']))).toEqual(
+      legalCases.map((item) => item.no).sort(),
+    );
+  });
 });
