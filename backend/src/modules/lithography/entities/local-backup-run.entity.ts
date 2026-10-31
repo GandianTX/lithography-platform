@@ -18,6 +18,7 @@ import {
  * 结构真源见迁移 1775401400000-create-local-installation-upload-backup。
  */
 @Entity('local_backup_run', { comment: '本地备份运行清单表' })
+@Index('uk_local_backup_run_active', ['activeInstallationId'], { unique: true })
 @Index('idx_local_backup_run_started', ['startedAt'])
 @ForeignKey('LocalInstallationEntity', ['installationId'], ['installationId'], {
   name: 'fk_local_backup_run_installation',

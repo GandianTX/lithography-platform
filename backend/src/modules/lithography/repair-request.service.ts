@@ -213,6 +213,10 @@ export class RepairRequestService {
       const entity = await repository.findOne({
         where: { id: requestId },
         select: { id: true, isAccepted: true, deprecated: true },
+        // 事务内裁决必须读最新已提交状态：MySQL 默认 REPEATABLE-READ 下，本事务
+        // 早于竞争事务提交时，普通一致性读会命中旧快照，把「已被他人接单/已删除」
+        // 误判为系统失败。锁定读（LOCK IN SHARE MODE）始终读取最新已提交版本。
+        ...(transactionContext ? { lock: { mode: 'pessimistic_read' } } : {}),
       });
       if (!entity) {
         return null;

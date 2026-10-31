@@ -362,3 +362,562 @@ PR 审核重点为组织隔离与旧数据兼容、单有效成员生成列、�
 - 24→31、30→31 两条升级路径均已在隔离库以正式入口完成；24→31 的数据来源是**合成旧数据**，须由薛确认该口径是否可作为交付证据。
 - 本轮未 commit、未 push、未创建/合并 PR、未发布回复；CI 未运行，不把本地结果等同 CI。
 - 独立复审仍需在提交前后另行执行；`check:entity-scope` 的适用范围结论同样待薛确认。
+
+## 2026-10-31 第六轮：两条 RQ 收口与完整 core 实跑
+
+本轮只关闭两条 RQ：旧账号资料读写旁路（RQ-A）与维修申请共享夹具/消费者适配（RQ-B）。未改迁移、未新增角色、未放宽组织过滤；除下列两处产品代码修复与测试适配外，未扩大修改范围。完整 core 实跑发现一处与本轮两条 RQ 无关的既有回归（见第 3、6 节），本轮未修，保留现场并交由后续处置。
+
+### 1. 基线与未提交范围
+
+- HEAD 为 `e4dca620c25cc994033d4a28f87a81a05c688070`（`fix(database): close cleanup and constraint review gaps`），全部改动位于其上未提交工作区。
+- 未提交共 17 项：15 个已修改文件 + 2 个未跟踪文件（`backend/src/usecases/account/visible-user-info-organization.ts` 及其单测）。
+- 迁移计数仍为 31；本轮未新增、未改写任何迁移。
+
+### 2. RQ-A：旧账号资料读写旁路封堵
+
+- 实现：`get-visible-user-info.usecase.ts`、`update-visible-user-info.usecase.ts` 统一经 `TrustedOrganizationContextQueryService` 解析操作者与目标的可信组织；本人路径保留自查/自改，非本人目标要求「角色策略允许 + 操作者组织事实唯一有效 + 目标属于同一有效组织」。
+- 抽取共享判定到 `visible-user-info-organization.ts`；跨组织与不存在目标同口径 `NOT_FOUND`，缺失/冲突/无组织事实失败关闭；写链路在同一事务内先锁目标、再解析组织与读取资料，未套用 `admin*` 规则。
+- 节点 `account.query.service.ts` 仅保留读侧职责，组织判定上移至 usecase；`backend/docs/api/account-write-current.md` 同步契约说明。
+- 验证：`visible-user-info-organization.spec.ts` 17/17；`update-visible-user-info.e2e-spec.ts`（真实 GraphQL `userInfo` / `updateUserInfo`）35/35，覆盖本人自改、同组织合法访问、跨组织拒绝、目标不存在同口径、无组织历史账号与字段白名单。
+
+### 3. RQ-B：维修申请共享夹具与消费者适配
+
+- 夹具 `repair-request-fixture.ts`：创建本轮专属组织 `E2E_RR_PRIMARY` / `E2E_RR_PEER`、唯一 ACTIVE 成员关系与工单归属；`RepairRequestFixtureOwnership` 扩展 `organizationIds` / `membershipIds`；解析核验覆盖双向成员闭包（外部账号挂夹具组织、夹具账号挂外部组织均失败关闭）；清理按子表→父表在事务内执行；`RepairRequestFixtureRequestSeed` 增加可选 `ownerOrganizationId`。
+- 四个消费者适配（未删断言、未加 skip、未统一空列表）：
+
+| 规格                                           | 结果  | 新增覆盖                                                                                           |
+| ---------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------- |
+| `repair-request-read.e2e-spec.ts`              | 39/39 | 组织播种、存量归属补齐、跨组织/NULL 归属读口径                                                     |
+| `repair-request-accept.e2e-spec.ts`            | 18/18 | 跨组织接单与 NULL 归属接单均 `REPAIR_REQUEST_NOT_FOUND` 且数据库零写入；与不存在目标文案逐字段一致 |
+| `repair-request-production-input.e2e-spec.ts`  | 13/13 | 组织播种后合法边界查询仍为空                                                                       |
+| `repair-request-fixture-ownership.e2e-spec.ts` | 19/19 | 外部账号持有夹具组织成员关系时失败关闭且零删除                                                     |
+
+- 完整 core 暴露的第五个消费者 `repair-request-response.e2e-spec.ts`：接单要求「工单归属组织 == 工程师唯一可信组织」，原夹具工单为 NULL 归属，导致「接单 + 回复」并发用例的接单被正确拒绝。适配为播种专属组织 `E2E_RR_RESPONSE_PRIMARY`、五个账号的成员关系，并让全部工单落入该组织；断言未放宽，结果 26/26。
+- 产品代码修复 `repair-request.service.ts`：事务上下文内 `findAcceptanceStatus` 改为锁定读（`lock: { mode: 'pessimistic_read' }`）。组织过滤在事务内引入了更早的一致性读，MySQL 默认 `REPEATABLE-READ` 下并发失败方会命中旧快照，把「已被他人接单/已删除」误判为 `REPAIR_REQUEST_ACCEPTED_FAILED`；锁定读后并发用例恢复 `CONFLICT` / `NOT_FOUND`，断言未改。
+- 相关单测：`repair-request.service.spec.ts`、`accept-repair-request.usecase.spec.ts` 等 3 个套件 75/75；`lint:architecture-fixtures` 通过。
+
+### 4. 完整 core 实跑
+
+- 环境：独占隔离库 `lithography_e2e`，`E2E_ALLOW_DB_CLEANUP=1`、`E2E_ALLOW_PHYSICAL_CLEANUP=1`；运行前预置跨库 KEEP 哨兵 `lithography_e2e_keep.keep_sentinel`（marker `E2E-KEEP-SENTINEL-20261031`），并保存其与 `migrations` 31 行的逐字段快照。
+- 首次运行按 `test/jest-e2e.js` 顺序执行；`run-e2e-group` 在首个失败规格处中止，实际执行 29 个规格：28 通过、1 失败。其后以同一标准 runner、同一许可环境补跑剩余 21 个规格，21/21 通过。合计 **50 个 core 规格全部实际执行：49 通过、1 失败、0 跳过**；首个运行退出码 1，补跑退出码 0。
+- 失败的 `test/09-reference-document/reference-document.e2e-spec.ts`：`beforeAll` 为 `ambiguousEngineer` 在同一组织/另一组织各插入一条 ACTIVE 成员关系时被 `uk_organization_membership_active_account` 拒绝（`Duplicate entry '8'`），37/37 用例连带失败。单独复跑同一结果，与工作区改动无关。
+- 根因：该规格（`c29e18d`）早于本分支新增的单有效成员迁移（`ec11508` 的 `1775401000000-alter-organization-membership-customer-single-active`），其「一个账号两条 ACTIVE → 歧义」造数在库级约束下不可能成立；解析器的歧义分支仍由 `trusted-organization-context.query.service.spec.ts` 单测覆盖。该缺陷不属于本轮两条 RQ，本轮未修改该规格，保留失败现场待处置。
+- 失败现场与收尾：失败规格的 `afterAll` 受保护清理正常执行；全部运行结束后 `lithography_e2e` 的组织、成员关系、账号、型号、工单、回复残留计数均为 0，未清库重跑冒充修复。
+
+### 5. KEEP 与不变证据
+
+- 运行前后 `lithography_e2e_keep.keep_sentinel`（1 行，含 `payload_json` / `payload_text` / `created_at`）与 `lithography_e2e.migrations`（31 行）按确定性排序逐字段比较，结果 `KEEP_COMPARE OK`。
+- 主库残留按本轮标记（`E2E_%` 组织编码、`E2E-%` 工单号、`E2E-%` 型号、成员关系、账号、回复）逐表回读为 0。
+- 本轮未执行 Seed、整表清理或一次性清除脚本。
+
+### 6. 提交审计（未提交）
+
+- 候选范围：上述 15 个已修改文件 + 2 个未跟踪文件；HEAD 仍为 `e4dca62`。未 commit、未 push、未发布回复、未合并。
+- 已知阻塞：`reference-document.e2e-spec.ts` 的既有回归使标准 core 首次运行退出码为 1；本轮按范围约束未修，完整 core 目前不能表述为全绿。
+- 独立复审仍未进行；本轮结果均为修复方实测。
+
+## 2026-10-31 第七轮：本次新增 RQ（三 Entity 唯一索引与设计文档校正）
+
+本轮只处理薛在 PR #2 新增评论中的两项：三个 Entity 缺少唯一索引声明、数据库设计文档不准确。第六轮的两项（账号权限旁路、共享夹具 + 完整 core 失败）结论继续有效，未被本轮替代；两份计划在同一分支收口。
+
+### 1. 基线与范围
+
+- 分支 `feat/maintenance-data-increment`，HEAD 仍为 `e4dca620c25cc994033d4a28f87a81a05c688070`，全部改动位于其上的未提交工作区；本轮保留第六轮未提交修改。
+- 未改迁移（仍 31 条）、未新增角色、未拆表、未运行 `synchronize`、未新增报告/工单复合外键、未把本地运行三表扩大为云端多实例管理。
+- 数据库契约层（`migration-schema-contract.ts` 的 `REQUIRED_INDEXES` / `REQUIRED_INDEX_DEFINITIONS`）本轮核对为已正确，未改动；缺口仅在 Entity 声明与文档描述。
+
+### 2. P1：三个 Entity 补齐唯一索引声明
+
+| Entity                                    | 新增声明                                                                                                    | 列序                           |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `organization-membership.entity.ts`       | `@Index('uk_organization_membership_active_account', ['activeAccountId'], { unique: true })`                | `active_account_id`            |
+| `maintenance-report-attachment.entity.ts` | `@Index('uk_maintenance_report_attachment_active_slot', ['reportId', 'activeSortOrder'], { unique: true })` | `report_id, active_sort_order` |
+| `local-backup-run.entity.ts`              | `@Index('uk_local_backup_run_active', ['activeInstallationId'], { unique: true })`                          | `active_installation_id`       |
+
+- 装饰器一律使用 Entity 属性名，物理列名仅用于数据库核对；生成列表达式、`insert/update: false`、`generatedType: 'STORED'` 与业务语义均未改动。
+- 三处声明与对应迁移（`1775401000000`、`1775401300000`、`1775401400000`）中的索引名称、唯一性与列序完全一致。
+
+### 3. P2：只读一致性与 TypeORM 判定证据
+
+临时只读脚本（核验后删除，不随提交）依次输出下列结果，退出码 0：
+
+| 检查项                                 | 结果                                                                                                                                   |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Entity 元数据（名称/唯一/属性列序）    | 三个索引 `ENTITY_INDEX OK unique=true`，属性列序与预期一致                                                                             |
+| 隔离库 `information_schema.statistics` | 三个索引 `DB_INDEX OK unique=true`，物理列序与预期一致                                                                                 |
+| TypeORM `shouldDropIndices`            | 三个索引均 `false`，不再被判定为应删除项                                                                                               |
+| 差异语句来源                           | 组织成员、本地备份两索引零语句；附件槽位索引有 4 条 DROP/CREATE，来源为 `dropColumnCompositeIndices`（列定义变更连带重建），非删除判定 |
+
+- 附件槽位索引的 DROP+CREATE 不是索引语义不一致：TypeORM 在 `updateExistColumns` 中修改 `active_sort_order` 列定义时，会先删除包含该列的复合索引再重建；同表的单列索引（如组织成员、本地备份）不受影响，因此只出现这一处。该判定链与手工核对结论一致：两侧 `isUnique` / `isSpatial` / `isFulltext` / 列数与列名完全相同。
+- 全部比较只读执行：未建表、未写结构、未执行 `synchronize`，仅屏蔽了对不存在的 `typeorm_metadata` 的只读查询。
+
+### 4. 真实 MySQL 六场景约束回归
+
+环境：隔离库 `lithography_e2e`，显式 `E2E_ALLOW_PHYSICAL_CLEANUP=1`；逐行登记创建主键，收尾按主键精确删除。
+
+| 场景                         | 预期 | 实测                                                                                          |
+| ---------------------------- | ---- | --------------------------------------------------------------------------------------------- |
+| 同账号首条 ACTIVE 组织归属   | 允许 | 成功                                                                                          |
+| 同账号重复 ACTIVE 组织归属   | 拒绝 | `ER_DUP_ENTRY` / `organization_membership.uk_organization_membership_active_account`          |
+| LEFT 历史归属与 ACTIVE 共存  | 允许 | 成功                                                                                          |
+| 同报告首条 CURRENT 附件槽位  | 允许 | 成功                                                                                          |
+| 同报告重复 CURRENT 附件槽位  | 拒绝 | `ER_DUP_ENTRY` / `maintenance_report_attachment.uk_maintenance_report_attachment_active_slot` |
+| RETIRED 附件与同槽位 CURRENT | 允许 | 成功（先退役首条 CURRENT 再插入同槽位 CURRENT）                                               |
+| 同安装首条 RUNNING 备份      | 允许 | 成功                                                                                          |
+| 同安装实例重复 RUNNING 备份  | 拒绝 | `ER_DUP_ENTRY` / `local_backup_run.uk_local_backup_run_active`                                |
+| 备份终态历史与新一轮 RUNNING | 允许 | 成功（先将首条置 `INTERRUPTED` 并写 `finished_at` 再插入）                                    |
+
+- 隔离库原无 `local_installation` 行；脚本仅在缺失时临时插入单行 `id=1` 并登记，收尾精确删除，未改写既有行。
+- 收尾核验：7 张相关表行数逐一复原为运行前值，标签残留 `organization=0`、`account=0`，无其他表被触碰。
+- 复用已有用例结论：本仓库现有基线中不存在这三条库级唯一键的真实库断言，故以上为新增断言；既有集成套件（`maintenance-report.integration.spec.ts`、`local-runtime.concurrency.integration.spec.ts`）未重复改动。
+
+### 5. P3：设计文档校正
+
+仅依据实际 Entity、Migration 与隔离库 `information_schema` 修正文档，未反向修改正确实现：
+
+1. §3.1 `member_role` 由 `varchar(20)` 改为实际的 `varchar(32)`。
+2. 逐字段核对 signed/unsigned（未全局替换）：修正 3.3—3.12 中误写的 `int unsigned` 主键/外键为 `int`；保留确实为无符号的 19 列（`phase_flow_version`、`current_version_no`、`ai_score`、`ai_helpfulness`、`alarm_index`、`step_no`、两处 `byte_size`、两处 `sort_order`、`active_sort_order`、`version_no`、三处 `schema_version`、`backup_interval_days`、`entity_local_id`、`attempt_count`、`attachment_count`、`local_installation.id`），并逐一与隔离库核对一致。
+3. 删除不存在的 `RESUBMIT`：明确当前提交与退回后重提均写 `SUBMIT`，通过递增 `version_no` 区分轮次；`chk_..._change_kind` 允许 `SUBMIT / FORMAL_CORRECTION`，但允许值不等于正式更正流程已实现。
+4. §14 复合外键取舍理由修正：`repair_request_id` 可空仅影响该行为 NULL 的记录，对非 NULL 工单总结建立复合外键不构成技术障碍；当前数据库分别保证两列引用存在，**不保证报告组织与工单组织相同**，同组织一致性由受控用例锁后校验承担，本轮保留该取舍。
+5. 保持「报告审核通过不等于发布为参考资料」的边界，未改该表述。
+
+### 6. P4：验证
+
+| 检查            | 命令/范围                                                             | 结果                     |
+| --------------- | --------------------------------------------------------------------- | ------------------------ |
+| 类型检查        | `npm run typecheck`                                                   | 通过，退出码 0           |
+| 变更文件 ESLint | 三个 Entity 文件                                                      | 0 error，退出码 0        |
+| Prettier        | 三个 Entity + 两份 database 文档                                      | 全部符合                 |
+| 相关单测        | `maintenance-report.service.spec.ts`、`local-runtime.service.spec.ts` | 2 suites / 17 passed     |
+| 索引只读核验    | 临时脚本（已删除）                                                    | `RESULT PASS failures=0` |
+| 六场景回归      | 临时脚本（已删除）                                                    | `RESULT PASS failures=0` |
+
+### 7. 证据边界与交接
+
+- 本轮未 commit、未 push、未发布回复、未合并；HEAD 未变。
+- 附件槽位索引在 schema diff 中的 DROP+CREATE 属 TypeORM 列变更连带行为，需在复审时按第 3 节的来源分类阅读，不能直接当作「索引被删除」。
+- 与第六轮收口：完整 core 仍需在「权限旁路 + 共享夹具 + 本次三索引」统一稳定候选上重跑一次；本轮未重跑完整 core，`reference-document.e2e-spec.ts` 仍为已知阻塞。
+- 独立复审仍未进行；本轮结果均为修复方实测。
+
+## 2026-10-31 第八轮：参考资料夹具适配、索引回归固化与完整 core 终验
+
+第六轮的失败历史（完整 core 49/50、`reference-document.e2e-spec.ts` 37/37 失败）保持原样，本节只新增最终运行记录，不覆盖、不重写原始失败。
+
+### 1. 本轮的代码改动
+
+| 文件/范围                                                               | 改动                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend/test/09-reference-document/reference-document.e2e-spec.ts`     | `ambiguousEngineer` 只在甲方组织保留一条 ACTIVE 成员；删除第二组织 ACTIVE 成员与对应登录；原「多有效成员关系歧义」用例改为「事务内插入第二条 ACTIVE 被 `uk_organization_membership_active_account` 拒绝、回滚、无残留」。 |
+| `backend/test/utils/unique-index-constraints.e2e-spec.ts`（新增）       | 固化三个唯一索引回归：Entity 元数据（名称/唯一性/属性列序）、隔离库物理索引（`information_schema.statistics`，名称/唯一性/物理列序）、六场景约束（事务内造数并统一回滚，核对表级行数与标签残留）。                        |
+| `backend/test/jest-e2e.js`                                              | 将新增规格登记进 core 分组（core 规格数 50 → 51）。                                                                                                                                                                       |
+| `backend/src/modules/lithography/entities/*.entity.ts` 等第六、七轮改动 | 本轮未改业务语义、Migration、角色与前端；仅保留既有未提交修复。                                                                                                                                                           |
+
+夹具边界：正常访问每账号只建一条 ACTIVE；跨组织访问用两个组织各自的独立账号；LEFT 仅在历史关系场景使用；重复 ACTIVE 负例在事务中回滚。未扩大生产权限或清理范围，未删除或跳过任何规格。
+
+### 2. 定向验证（统一候选，运行前未改源码）
+
+| 检查                                                                                 | 结果                 |
+| ------------------------------------------------------------------------------------ | -------------------- |
+| `tsc -p tsconfig.build.json --noEmit` / `tsconfig.tools.json` / `tsconfig.spec.json` | 全部通过，退出码 0   |
+| `lint:architecture-fixtures` / `lint:usecase-normalize-guard`                        | 通过                 |
+| 变更文件 ESLint、Prettier                                                            | 0 error，全部符合    |
+| `reference-document.e2e-spec.ts`                                                     | 1 suite / 37 passed  |
+| `unique-index-constraints.e2e-spec.ts`                                               | 1 suite / 3 passed   |
+| `maintenance-report.service.spec.ts`、`local-runtime.service.spec.ts`                | 2 suites / 17 passed |
+
+### 3. 完整 core 终验（退出码 0）
+
+命令（独占隔离环境，从头执行一次，未分段拼接证据）：
+
+```bash
+E2E_ALLOW_DB_CLEANUP=1 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------- |
+| 规格     | 51 个，51 个 `Test Suites: 1 passed`，0 个失败                                              |
+| 用例     | 697 total / **690 passed / 0 failed / 7 skipped**                                           |
+| 跳过归属 | 7 个跳过全部来自既有 `test/utils/e2e-pr0-acceptance.e2e-spec.ts` 的条件跳过，与本轮改动无关 |
+| 退出码   | 0                                                                                           |
+| 日志     | `/tmp/e2e-core-r3.log`                                                                      |
+
+KEEP 与残留核验（KEEP 为独立 schema 中不属于本轮夹具的合成哨兵，含文件 SHA-256 摘要；快照 `/tmp/e2e-keep-snapshot-before-r3.json`）：
+
+| 检查项                         | 结果                                                                                     |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| KEEP 行逐字段 + 文件摘要       | 不变（`keepRows=2`）                                                                     |
+| `migrations` 记录              | 31 条不变                                                                                |
+| 本轮标签残留（`UKC_`/`RQVC_`） | organization=0、account=0、report=0、attachment=0                                        |
+| 约束残留                       | ACTIVE 成员=0、CURRENT 附件=0、RUNNING 备份=0、其他安装行=0                              |
+| 相关业务表行数                 | organization / account / membership / report / attachment / installation / backup 均为 0 |
+
+### 4. 证据归属与边界
+
+- **完整 core 通过**：本次 51/51 规格、690 passed / 0 failed 为统一候选的最终证据，取代第七轮「未重跑完整 core」的边界说明；第六轮失败记录仅作历史保留。
+- **专项通过**：`reference-document` 37/37、索引回归 3/3、类型检查、架构门禁、ESLint、Prettier、相关单测。
+- **历史沿用**：既有迁移演练与第七轮只读索引比对证据按影响沿用，本轮未无差别重跑。
+- **未执行**：`test:e2e:worker`、`test:e2e:smoke`（依赖 Redis/BullMQ/外部服务）与需显式开关的 `*.integration.spec.ts` 不在本轮范围。
+- 完整 core 运行于未提交工作区（HEAD `e4dca620c25cc994033d4a28f87a81a05c688070` 之上的统一候选）；本轮仍未 commit、未 push、未发布回复、未合并。
+
+## 2026-10-31 第九轮：目标库 KEEP 保留模式补验
+
+第八轮证明的是「可从干净库从头运行」，本轮补的是「目标库存在合法非夹具数据时仍可完整运行且该数据不被测试波及」。两轮结论互不替代。
+
+### 1. KEEP 构成（目标库业务表，非独立 schema）
+
+显式 ID 990001、标记 `KEEP_R4_*`，与测试夹具的随机后缀标记完全不同：
+
+| 表                        | 行内容                                                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `base_user_account`       | `keep_r4_engineer` / `KEEP R4 Engineer`，ENGINEER，ACTIVE                                               |
+| `base_user_info`          | 同账号资料行，`access_group=["ENGINEER"]`                                                               |
+| `organization`            | `KEEP_R4_ORG`，CLIENT，ACTIVE                                                                           |
+| `organization_membership` | 上述组织与账号的唯一一条 ACTIVE 归属                                                                    |
+| `equipment_model`         | `KEEP_R4_MODEL`，启用                                                                                   |
+| `repair_request`          | `KEEP_R4_RR_001`，`owner_organization_id` / `customer_account_id` / `equipment_model_id` 均指向上述记录 |
+
+运行前快照 `/tmp/e2e-keep-r4-before.json` 保存六行完整字段、4 项引用计数与 `/tmp/e2e-keep-file-r4.txt` 的 SHA-256。KEEP 不进入任何规格账本，回收使用独立账本 + `runGuardedSpecCleanup`。
+
+### 2. 运行配置与开关生效证据
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+日志确认：`skipDbCleanup=true, allowDbCleanup=false`、目标库白名单 `lithography_e2e`、`⏭️ 已跳过 MySQL 全库清理`，无 TRUNCATE。运行期间未改源码。
+
+### 3. 首次尝试暴露的隔离假设（未绕过）
+
+第一次运行（日志 `/tmp/e2e-core-r4.log`）在 `repair-request-flow.e2e-spec.ts` 失败：`equipmentModels` 断言整表精确等于本规格两行，KEEP 型号使其不成立。查明为**测试隔离假设**而非产品缺陷；未删除 KEEP、未放宽权限、未加 skip、未清库重跑。同类问题在 `admin-document-database.e2e-spec.ts`（未加筛选的 `adminRepairRequests.total=2` 两处、全局统计计数）一并修复。
+
+修复内容（断言强度不降）：
+
+| 文件                                                                  | 修复方式                                                                                                                                                                            |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/06-repair-request/repair-request-flow.e2e-spec.ts`              | 由「整表精确列表」改为「返回集合 == 库内 `enabled=1` 集合」+ 返回顺序与 `sort_order` 非降序 + 停用型号不出现；定向 9/9。                                                            |
+| `test/10-admin-document-database/admin-document-database.e2e-spec.ts` | 两处 total 断言按夹具标记 `E2E-ADM-DOCDB-CORE` 收窄（软删排除断言保留）；全局统计改为与库内真实口径对齐（申请排除 `deprecated`、AI 计全量、参考资料按管理员组织范围）。定向 12/12。 |
+
+### 4. 最终运行（KEEP 保留模式）与核验
+
+| 指标   | 结果                                                                                                  |
+| ------ | ----------------------------------------------------------------------------------------------------- |
+| 命令   | 同 §2，日志 `/tmp/e2e-core-r5.log`                                                                    |
+| 规格   | 51/51 全部通过，0 失败                                                                                |
+| 用例   | 697 total / **690 passed / 0 failed / 7 skipped**（跳过仍全部来自既有 `e2e-pr0-acceptance` 条件跳过） |
+| 退出码 | 0（runner 按失败规格数判定）                                                                          |
+
+运行后核验：
+
+| 检查项                 | 结果                                                                      |
+| ---------------------- | ------------------------------------------------------------------------- |
+| KEEP 六行全字段        | 不变（六表各 1 行）                                                       |
+| KEEP 引用计数          | ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1                        |
+| KEEP 文件哨兵 SHA-256  | 不变                                                                      |
+| `migrations`           | 31 条内容不变                                                             |
+| 测试标签残留           | `UKC_`/`RQVC_` 组织 0、账号 0、报告 0、附件 0；RUNNING 备份 0；其他安装 0 |
+| 运行期间相关业务表行数 | 均为 1（即 KEEP 本身；**不要求为空**）                                    |
+
+### 5. 收尾
+
+通过独立账本与 `runGuardedSpecCleanup` 精确回收 KEEP，回收后 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 均为 0，`migrations` 仍为 31。临时预置与回收脚本已删除。
+
+### 6. 证据边界
+
+- 本轮证明：目标库保留合法非夹具数据时，完整 core 仍全部通过，且该数据零改动、零波及。
+- 第八轮证明：干净库从头运行的完整通过。
+- 两者都不能替代对方；`test:e2e:worker` / `test:e2e:smoke` 与需显式开关的 `*.integration.spec.ts` 仍未执行。
+
+## 2026-10-31 第十轮：`account(id)` 跨组织旁路与共享清理器事务收尾
+
+本轮仅修两项阻塞：**不改 Entity、Migration、角色或前端**。前述各节的完整 core 结果属于历史证据，不代表本轮新代码已验收；本节为统一稳定候选上的新一轮结果。
+
+### 1. P1｜封堵旧 `account(id)` 跨组织旁路
+
+授权整体上移到 `GetAccountByIdUsecase`，`AccountQueryService` 只保留纯读投影 `findAccountSnapshotById`（account 域不跨域读组织事实），Resolver 不加业务判断。授权顺序固定为：
+
+1. 非法目标 ID → `ACCESS_DENIED`（不触达数据库）；
+2. 本人查询（`session.accountId === targetAccountId`）直接放行，不解析组织，保留历史无组织账号自查；
+3. 非本人先沿用**原有管理员权限**（`roles` 含 `SUPER_ADMIN`），ENGINEER / CUSTOMER 仍拒绝，未扩大任何角色权限；
+4. 管理员通过后再叠加**可信同组织校验**（复用 `visible-user-info-organization` 的 `resolveForAccount` + `findActiveMembership`）；操作者组织缺失/歧义、目标无有效成员关系、组织停用一律失败关闭；
+5. 跨组织与目标不存在使用同一拒绝口径 `USER_INFO_NOT_FOUND`（NOT_FOUND，「目标用户不存在」）；只有授权通过后才读取账号行，登录邮箱、角色、登录历史不会在拒绝前返回；
+6. 授权后账号行消失（并发删除）非本人同样走不可用口径，本人保留 `ACCOUNT_NOT_FOUND`。
+
+说明：库级约束 `uk_organization_membership_active_account`（生成列 `active_account_id`）保证一个账号至多一条 ACTIVE 成员关系，真实数据无法构造「多组织歧义」，故歧义分支由 usecase 单测（替身）覆盖，真实库侧以「无组织管理员查他人」与「跨组织管理员查他人」为同码证据。
+
+| 回归层次                                                               | 覆盖与结果                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 单测 `get-account-by-id.usecase.spec.ts`                               | 15 项通过：本人不解析组织；同组织按契约返回且调用顺序 `resolve → membership → snapshot`；跨组织拒绝且不读账号行、不泄露 email；权限不足先于组织解析；组织缺失/歧义失败关闭；目标不存在同码同文案；授权后行消失两种口径；非法 ID 0 / -1 / 1.5                                                                                                                          |
+| 单测 `visible-user-info-organization.spec.ts`                          | 17 项通过（与上一文件合计 32 项）                                                                                                                                                                                                                                                                                                                                     |
+| 真实 GraphQL + JWT + 隔离 MySQL `update-visible-user-info.e2e-spec.ts` | **43 项通过**，直接调用公开 `account(id)`：管理员同组织按原字段契约返回；跨组织拒绝且响应 JSON 不含目标 `loginEmail` / `loginName`；目标 LEFT 拒绝；目标不存在与跨组织同码同文案；ENGINEER 非本人 `ACCESS_DENIED` 且不含 email；无组织管理员查他人 `ORGANIZATION_NO_ACTIVE_MEMBERSHIP` 且不含 email；无组织管理员查本人保留原行为；管理员查无组织目标按跨组织口径拒绝 |
+
+### 2. P2｜共享清理器事务收尾
+
+`runOwnedFixtureCleanup` 重构：
+
+- `connect`、`startTransaction`、数据库守卫、所有权核验、引用闭包、精确删除、`commitTransaction`、关闭全部纳入同一保护范围；
+- 回滚依据驱动实际 `isTransactionActive`，不依赖「`startTransaction()` 已成功返回」的标志；`AfterTransactionStart` 抛错后事务仍活动时照常回滚；
+- 真实回滚失败与注入失败同路径：销毁**本轮独占连接**（`databaseConnection.destroy`），禁止把活动事务连接普通 `release()` 回池；
+- 不销毁共享连接池（检测到 `getConnection` 即拒绝）；驱动未暴露可销毁连接或不支持 `destroy` 时明确报告，而不是假装释放成功；
+- 主错误、回滚、销毁、释放错误分别保留并汇总到 `OwnedFixtureCleanupError`；提交成功但释放失败也明确失败，不宣称资源释放成功；
+- 保留原目标库守卫、所有权核验、引用闭包与单事务精确删除范围。
+
+`e2e-owned-fixture.e2e-spec.ts` 新增 7 项故障注入回归，合计 **26 项通过**，逐项都在 `finally` 恢复替身并断言事务已结束（无泄漏事务）：
+
+| 场景                                      | 结果                             |
+| ----------------------------------------- | -------------------------------- |
+| 事务已活动后 `AfterTransactionStart` 抛错 | 仍尝试回滚，连接正常收尾         |
+| `rollbackTransaction()` 抛错              | 销毁独占连接，不普通归池         |
+| 主流程、回滚、销毁同时失败                | 三段错误均出现在最终消息中       |
+| 驱动无 `destroy`                          | 明确报告无法安全关闭，不普通归池 |
+| 正常失败后回滚                            | 行为不回退                       |
+| 正常成功提交                              | 行为不回退                       |
+| 提交成功、释放失败                        | 明确失败，不报成功               |
+
+### 3. 静态门禁与完整 core（KEEP 保留模式）
+
+静态与定向验证：`npm run typecheck` 通过；六份变更文件 ESLint 通过；Prettier 检查通过（对 3 个文件执行 `--write` 后复跑 ESLint 通过）；`lint:architecture-fixtures` 与 `lint:usecase-normalize-guard` 均通过。
+
+完整 core 在同一稳定候选上从头运行，目标库 KEEP 保留模式（全局清库关闭，物理清理许可与所有权守卫保留）：
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                                                         |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`、目标库白名单 `lithography_e2e`、`⏭️ 已跳过 MySQL 全库清理`，无 TRUNCATE |
+| 规格     | **51/51 通过，0 失败**                                                                                                       |
+| 用例     | **712 total / 705 passed / 0 failed / 7 skipped**（跳过仍全部来自既有 `e2e-pr0-acceptance` 条件跳过）                        |
+| 退出码   | **0**                                                                                                                        |
+| 日志     | `/tmp/e2e-core-r6.log`                                                                                                       |
+
+KEEP 构成（本轮合成记录，非测试夹具）：显式 ID 990001，标记 `KEEP_R5_*`，覆盖 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 六行，另含文件哨兵 `/tmp/e2e-keep-file-r5.txt`。运行前快照保存在 `/tmp/e2e-keep-r5-before.json` 与 `/tmp/e2e-migrations-r5-before.json`。
+
+运行后核验（`/tmp/e2e-verify-after-core-r5.js` 回执）：
+
+| 检查项                                    | 结果                                                                        |
+| ----------------------------------------- | --------------------------------------------------------------------------- |
+| KEEP 六行全字段                           | `KEEP_ROWS OK`（六表各 1 行）                                               |
+| KEEP 引用计数                             | `KEEP_REFS OK`（ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1）        |
+| KEEP 文件哨兵 SHA-256                     | `KEEP_FILE OK`（`01dd2628…`）                                               |
+| `migrations`                              | `MIGRATIONS OK`，31 条内容不变                                              |
+| 测试夹具标签残留                          | `UKC_` / `RQVC_` 组织 0、账号 0、报告 0、附件 0；RUNNING 备份 0；其他安装 0 |
+| 夹具 ID 区间残留（`>= 900000` 且非 KEEP） | 组织 0、账号 0                                                              |
+| 运行期间相关业务表行数                    | 均为 1（即 KEEP 本身；不要求为空）                                          |
+
+通过独立账本与 `runGuardedSpecCleanup` 精确回收 KEEP；回收后六张表均为 0，`migrations` 仍为 31，临时回收脚本已删除。**未使用 Seed、整表清理或 KEEP 删除后重跑。**
+
+### 4. 证据边界
+
+- 本轮完整 core 与 `account(id)` 真实回归均运行于未提交工作区（HEAD `e4dca620c25cc994033d4a28f87a81a05c688070` 之上的统一候选）；第七、八、九轮结果仅作历史保留，不构成本轮新代码的验收证据。
+- 已有迁移演练证据按影响沿用，本轮未重跑无关迁移演练。
+- `test:e2e:worker` / `test:e2e:smoke` 与需显式开关的 `*.integration.spec.ts` 不在本轮范围。
+- 本轮未暂存、未 commit、未 push、未回复 PR、未合并。
+
+## 2026-10-31 第十一轮：成功后登记窗口与安装设置恢复收尾
+
+本轮只修两处收尾缺口，**不改业务规则、Entity、Migration**：其一，创建/提交成功后首次登记仍依赖回读 `SELECT`；其二，安装设置恢复路径的事务收尾分散、回滚依据标志而非驱动实际状态。前文各节完整 core 结果属于历史证据，不能替代本节在新代码上的结果。
+
+### 1. P1｜先登记创建事实，再回读核验
+
+问题定位：`registerById()` 等首次登记路径在提交成功后通过 `SELECT *` 回读得到 ID 与字段，再写入账本。回读一旦抛错，已提交行既不进入账本，也不会出现在残留核对中，形成“假零残留”。
+
+修复（共享账本 `backend/test/utils/e2e-owned-fixture.ts` 与消费者）：
+
+- 首次登记改为**纯同步** `registerCreated(table, id, expected)`：ID 与字段来自创建输入、驱动 `insertId` 或已提交结果，不读取数据库；`register()` 同样不依赖回读。
+- 数据库生成的 ID 在无法同步取得时走 `registerPending` + `resolvePending`（按自然键 `<=> ?` 解析）；解析失败保留为待核验记录，仍参与残留核对。
+- `verifyRegistered` 只读比对，不回写账本、不覆盖原始归属；不允许从查询结果自动认领账本外关联记录。
+- `applyExpectedChange` 仍拒绝未知字段，但允许 `VOLATILE_COLUMNS`（如 `updated_at`）虽未登记预期也可被显式业务变更接受；主键与所有权列仍不可改写。
+- `assertRegisteredRowsAbsent(dataSource, rows, pending)` 同时核对已登记主键与待核验自然键，回读失败的待核验目标按“待核验 …”计入残留，不会消失。
+
+消费者调整：
+
+| 文件                                                 | 调整                                                                                                                                                 |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local-runtime.concurrency.integration.spec.ts`      | 提交成功后立即 `registerCreated('local_upload_task', task.id, …)`，A/B 分支各自登记、不等待另一分支；回调返回 `Promise.resolve()` 以满足执行器契约。 |
+| `maintenance-report.concurrency.integration.spec.ts` | 建稿成功即按创建结果登记报告根、报警、步骤；提交成功即登记版本与版本附件复合主键；上传附件、外部记录全部改为同步登记，回读只用于比对。               |
+| `maintenance-report.integration.spec.ts`             | 版本附件按提交时已知附件集合登记复合主键，不再按 `version_id` 扫描后认领。                                                                           |
+
+回归（`backend/test/utils/e2e-owned-fixture.e2e-spec.ts`，SQL 替身 + 真实 MySQL，**35/35 通过**）新增 4 项：
+
+| 场景                              | 结果                                     |
+| --------------------------------- | ---------------------------------------- |
+| 创建/提交成功后回读 `SELECT` 抛错 | 已知 ID 与事实仍在账本，残留核对命中该行 |
+| 回读发现字段漂移                  | 拒绝清理，原预期不变                     |
+| 并发部分成功                      | 成功分支各自登记，全部分支结束后才收尾   |
+| 已登记但回读失败                  | 以“待核验 …”参与残留核对，不返回假零残留 |
+
+过程中暴露并修复的问题（保留失败历史）：首次定向运行 7 项失败，清理阶段报 `字段 maintenance_report.updated_at 不在登记预期内` 并连带 teardown 残留；确认是 `applyExpectedChange` 对 `VOLATILE_COLUMNS` 过严，修复后重跑通过。`local-runtime` 并发规格另由 `tsconfig.spec.json` 暴露 TS2322（回调返回 `void` 不满足 `Promise<void>`），改为返回 `Promise.resolve()`。失败运行遗留的精确夹具已按已知 ID/报告谱系单事务核验删除，未使用 Seed 或整表清理。
+
+### 2. P2｜安装设置恢复收尾
+
+`local-runtime.concurrency.integration.spec.ts` 的 `restoreInstallation` 改为复用已验证的统一收尾 helper `runGuardedQueryRunnerTransaction`：
+
+- `connect`、`startTransaction`、数据库守卫、恢复前归属与字段核验、恢复写入、`commitTransaction`、关闭全部在同一保护范围；
+- 回滚依据驱动实际 `isTransactionActive`，不依赖“`startTransaction()` 已成功返回”的标志；
+- 回滚失败或回滚后仍活动时销毁**本轮独占连接**（`databaseConnection.destroy`），不再普通 `release()` 归池；不销毁共享连接池；
+- 主错误、回滚、销毁、释放错误分别保留并汇总返回；提交成功但释放失败同样上报；
+- 恢复前的归属/字段白名单核验与“拒绝写回”口径保持不变。
+
+新增 5 项真实驱动方法替身回归：
+
+| 场景                   | 结果                                |
+| ---------------------- | ----------------------------------- |
+| 恢复写入失败、回滚成功 | 回滚并释放，不销毁                  |
+| 恢复写入与回滚均失败   | 销毁独占连接，不普通归池            |
+| 回滚与销毁均失败       | 各阶段错误完整保留                  |
+| 事务启动后事件抛错     | 依据 `isTransactionActive` 收尾     |
+| 提交成功、释放失败     | `committed=true` 且明确报告释放失败 |
+
+每项均在 `finally` 恢复驱动替身并断言 `isTransactionActive=false`，收尾不置于断言之后。
+
+### 3. 定向验证与完整 core（KEEP 保留模式）
+
+定向与静态验证（均为修复方自测，非独立复审）：
+
+| 验证                                                          | 结果                                                                           |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `npm run typecheck`                                           | 通过（退出码 0）                                                               |
+| 变更文件 ESLint                                               | 0 error                                                                        |
+| Prettier                                                      | 变更文件全部符合（已 `--write`）                                               |
+| `lint:architecture-fixtures` / `lint:usecase-normalize-guard` | 通过                                                                           |
+| `e2e-owned-fixture.e2e-spec.ts`                               | 35/35 通过                                                                     |
+| 四份实库规格（维修报告集成/并发、维修申请组织、本地运行并发） | 28/28 通过                                                                     |
+| 全量单测 `npm run test:unit -- --runInBand`                   | 126 suites passed / 1518 passed / 70 skipped（6 个未启用开关的集成规格等跳过） |
+
+完整 core 在统一稳定候选上从头运行，目标库 `lithography_e2e` 为独占隔离库，KEEP 保留模式（全局清库关闭，物理清理许可与所有权守卫保留）：
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                                                                          |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`、白名单 `lithography_e2e`、`⏭️ 已跳过 MySQL 全库清理`，无 TRUNCATE                        |
+| 规格     | **51/51 通过，0 失败**                                                                                                                        |
+| 用例     | **721 total / 714 passed / 0 failed / 7 skipped**（跳过仍全部来自既有 `e2e-pr0-acceptance` 条件跳过；数量按本轮实际日志重新统计，不沿用 705） |
+| 退出码   | **0**                                                                                                                                         |
+| 日志     | `/tmp/s5-core.log`                                                                                                                            |
+
+KEEP 构成：显式 ID 990001，标记 `KEEP_R6_*`，覆盖 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 六行，另含文件哨兵 `/tmp/e2e-keep-file-r6.txt`；运行前快照 `/tmp/s5-keep-before.json`，全库基线 `/tmp/s5-snapshot-before.json`。
+
+运行后核验（`/tmp/s5-verify-after.json`）：
+
+| 检查项                                    | 结果                                                      |
+| ----------------------------------------- | --------------------------------------------------------- |
+| KEEP 六行全字段                           | 六表各 1 行，逐字段不变                                   |
+| KEEP 引用计数                             | ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1        |
+| KEEP 文件哨兵 SHA-256                     | 不变（`3ebbeaf4810a…`）                                   |
+| `migrations`                              | 31 条内容不变，迁移文件 31 个不变                         |
+| 全库逐表摘要                              | 35 张表、37 行，运行前后完全一致（含 KEEP 与 migrations） |
+| 业务表除 KEEP 外残留                      | 0                                                         |
+| 显式 ID 区间残留（`>= 900000` 且非 KEEP） | 账号/组织/机型/工单/上传任务均为 0                        |
+
+收尾：通过单事务逐行 `FOR UPDATE` 核验六行全字段与回收快照一致、引用闭包无账本外行后，按子表→父表精确删除并删除文件哨兵；回收后六张表均为 0、`migrations` 仍为 31，全库回到 35 张表 31 行（仅 `migrations`）。临时预置/核验/回收脚本已删除，**未使用 Seed、整表清理或 KEEP 删除后重跑**。
+
+### 4. 证据边界
+
+- 本节区分三层证据：驱动方法替身（SQL 替身故障注入）、真实 MySQL 集成规格（需显式开关）、完整 core（KEEP 保留模式）。三者互不替代。
+- 完整 core 与定向回归均运行于未提交工作区（HEAD `e4dca620c25cc994033d4a28f87a81a05c688070` 之上的统一候选）；第七至第十轮结果仅作历史保留。
+- `test:e2e:worker` / `test:e2e:smoke`、未启用的集成规格、迁移演练不在本轮范围。
+- 以上均为修复方实测，本轮未进行独立复审。
+- 本轮未暂存、未 commit、未 push、未回复 PR、未合并。
+
+## 2026-10-31 第十二轮：竞争执行器回滚失败与连接创建保护
+
+本轮只修改共用并发执行器 `backend/test/utils/upload-race-runner.ts`、其生命周期单测、`backend/test/utils/e2e-owned-fixture.ts` 的销毁 helper 导出（复用既有安全收尾能力）与验收记录，**不改业务代码、Entity、Migration**。上一轮完整 core 结果属于历史证据，不代表本轮新代码。
+
+### 1. 本轮修复的两项缺陷
+
+| 缺陷                     | 表现                                                                               | 修复                                                                                                                                       |
+| ------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 回滚失败后仍普通归池     | `settleRunner` 在回滚抛错后继续 `release()`，把可能仍活动事务的连接放回连接池      | 回滚失败或回滚后事务仍活动时销毁本轮独占连接；销毁已尝试/已完成后不再 `release()`                                                          |
+| 第二连接创建不在保护范围 | `createRunner()` 在 `try` 之外，同步抛错会跳过取消与收尾，第一分支可能等待或误提交 | 第一、第二连接的 `createRunner()`、`connect`、`startTransaction` 全部纳入保护；第二连接创建失败即取消第一分支，等待其完成回滚/释放后再拒绝 |
+
+### 2. 实现要点
+
+- 复用已验证的安全收尾能力：`destroyExclusiveQueryRunner` 由 `backend/test/utils/e2e-owned-fixture.ts` 导出，竞争执行器不再另造一套销毁逻辑；共享连接池（`getConnection` 特征）一律拒绝销毁，驱动无 `databaseConnection` 时明确报告“无法安全断开”。
+- `settleRunner` 与 `runGuardedQueryRunnerTransaction` 保持相同顺序：按驱动实际 `isTransactionActive` 回滚 → 回滚失败或仍活动则销毁 → 仅在未销毁/未尝试销毁且事务不活动时释放。
+- 分支主错误、回滚、销毁、释放错误分别追加到 `errors`，互不覆盖；原始分支 `reason` 保持不变。
+- 第二连接创建同步失败：先 `resolveDecision('cancel')`，`await firstPromise` 确保第一分支完成回滚/销毁/释放，再抛出包含主错误与收尾错误的异常；进入竞争等待的代码不会执行。
+- 第二连接 `connect`/`startTransaction` 失败：取消第一分支、等待其收尾，第二连接按实际状态收尾（未连接不关闭，已连接按活动状态回滚/销毁或释放）。
+- 未创建成功的连接不执行关闭；已创建但只部分初始化（已连接或事务已激活）的连接必须收尾。
+- 取消只走回滚，不因放行 gate 误提交；顺序由 Promise 屏障控制，不使用固定延时。
+
+### 3. 失败路径回归（驱动方法替身）
+
+`backend/src/usecases/local-runtime/upload-race-runner.spec.ts` 由 6 项扩展到 **11/11 通过**，每项在 `finally` 中断言无活动事务或至少无 `release(active=true)`，不依赖断言成功才收尾：
+
+| 场景                                   | 结果                                                             |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| 回滚抛错                               | 调用 `databaseConnection.destroy`，不发生 `release(active=true)` |
+| 回滚与销毁同时失败                     | 原始错误、回滚错误、销毁错误均保留                               |
+| 第二次 `createRunner()` 同步抛错       | 第一分支取消、零提交，全部收尾后才拒绝                           |
+| 第二连接 `connect` 失败                | 第一分支取消回滚释放；第二连接不执行关闭                         |
+| 第二连接 `startTransaction` 失败       | 第一分支取消；第二连接按已连接状态释放                           |
+| 第二连接事务已激活后启动抛错           | 按驱动状态回滚；回滚失败则销毁且不归池                           |
+| 驱动无法安全断连                       | 明确报告“驱动未暴露可销毁的独占连接”，不普通归池                 |
+| 回滚成功但释放失败                     | 原始错误与释放错误均保留                                         |
+| 第一分支等待期间被取消（等待竞争失败） | 不死等、不提交，取消后回滚并释放                                 |
+| 正常竞争                               | 原有提交顺序与登记回调行为保持                                   |
+
+### 4. 消费者与定向验证
+
+执行器全部调用方已核对：上传任务并发规格、管理员启停并发规格直接使用；维修报告并发规格不使用该执行器。定向运行：
+
+| 规格                                                                  | 结果                |
+| --------------------------------------------------------------------- | ------------------- |
+| `upload-race-runner.spec.ts`                                          | 11/11               |
+| `local-runtime.concurrency.integration.spec.ts`（上传任务）           | 4/4                 |
+| `admin-set-user-status.concurrency.integration.spec.ts`（管理员启停） | 10/10               |
+| 合计                                                                  | **25/25，退出码 0** |
+
+集成规格在隔离库 `lithography_e2e` 运行；为满足本地安装身份的既有前置，临时插入 `local_installation id=1` 并登记，运行后按精确 ID 删除，核验 `local_installation`、上传任务、账号、资料、组织、成员、机型、工单、报告均为 0。
+
+静态与配套验证：
+
+| 验证                                                          | 结果                                                                                                    |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `npm run typecheck`（build + tools）                          | 通过                                                                                                    |
+| `tsc -p tsconfig.spec.json --noEmit`                          | 通过                                                                                                    |
+| 变更文件 ESLint                                               | 0 error（`preserve-caught-error` 已通过附加 `cause` 修复）                                              |
+| Prettier                                                      | 变更的 3 个代码文件全部符合（仓库 `format` 脚本仅覆盖 `src`/`test` 下的 `.ts`，验收文档不在其检查范围） |
+| `lint:architecture-fixtures` / `lint:usecase-normalize-guard` | 通过                                                                                                    |
+
+### 5. 完整 core（KEEP 保留模式）
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                                                      |
+| -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`、白名单 `lithography_e2e`、`⏭️ 已跳过 MySQL 全库清理`，无 TRUNCATE    |
+| 规格     | **51/51 通过，0 失败**                                                                                                    |
+| 用例     | **721 total / 714 passed / 0 failed / 7 skipped**（按本轮日志重新统计；跳过仍全部来自既有 `e2e-pr0-acceptance` 条件跳过） |
+| 退出码   | **0**                                                                                                                     |
+| 日志     | `/tmp/s5b-core.log`                                                                                                       |
+
+KEEP 构成：显式 ID 990001，标记 `KEEP_R7_*`，覆盖六张表各一行，另含文件哨兵 `/tmp/s5b-keep-file.txt`；运行前全库快照 `/tmp/s5b-snapshot-before.json`（35 张表 31 行），KEEP 快照 `/tmp/s5b-keep-before.json`。
+
+运行后核验（`/tmp/s5b-verify-after.json`）：
+
+| 检查项                                    | 结果                                               |
+| ----------------------------------------- | -------------------------------------------------- |
+| KEEP 六行全字段                           | 六表各 1 行，逐字段不变                            |
+| KEEP 引用计数                             | ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1 |
+| KEEP 文件哨兵 SHA-256                     | 不变（`b1dc5f7e7eb1…`）                            |
+| `migrations`                              | 31 条内容不变，迁移文件 31 个不变                  |
+| 全库行数                                  | 运行后 35 张表 37 行（= 31 条迁移 + 6 行 KEEP）    |
+| 业务表除 KEEP 外残留                      | 0                                                  |
+| 显式 ID 区间残留（`>= 900000` 且非 KEEP） | 账号/组织/机型/工单/上传任务均为 0                 |
+
+收尾：单事务逐行 `FOR UPDATE` 核验六行与回收快照一致、引用闭包无账本外行后，按子表→父表精确删除并删除文件哨兵；回收后全库回到 35 张表 31 行（仅 `migrations`），与运行前快照逐表摘要完全一致，`migrations` 与迁移文件均不变。临时预置/核验/回收脚本已删除，**未使用 Seed、整表清理或 KEEP 删除后重跑**。
+
+### 6. 证据边界
+
+- 本节区分三层证据：驱动方法替身生命周期单测、真实 MySQL 并发规格、KEEP 保留模式完整 core。三者互不替代。
+- 定向与完整 core 均运行于未提交工作区（HEAD `e4dca620c25cc994033d4a28f87a81a05c688070` 之上的统一候选）；第十一轮及更早结果仅作历史保留。
+- `test:e2e:worker` / `test:e2e:smoke` 与未启用的集成规格不在本轮范围。
+- 以上均为修复方实测，本轮未进行独立复审。
+- 本轮未暂存、未 commit、未 push、未回复 PR、未合并。

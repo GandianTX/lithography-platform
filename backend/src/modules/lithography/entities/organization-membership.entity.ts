@@ -19,6 +19,7 @@ import {
  * 1775401000000-alter-organization-membership-customer-single-active。
  */
 @Entity('organization_membership', { comment: '组织成员关系表' })
+@Index('uk_organization_membership_active_account', ['activeAccountId'], { unique: true })
 @Index('uk_organization_membership_org_account', ['organizationId', 'accountId'], { unique: true })
 @Index('idx_organization_membership_account_status', ['accountId', 'status'])
 @Index('idx_organization_membership_org_role_status', ['organizationId', 'memberRole', 'status'])

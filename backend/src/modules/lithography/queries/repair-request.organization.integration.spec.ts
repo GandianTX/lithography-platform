@@ -11,7 +11,6 @@ import { RepairRequestEntity } from '../entities/repair-request.entity';
 import {
   assertFixtureIdsAvailable,
   assertRegisteredRowsAbsent,
-  type ControlledFixtureTable,
   finalizeFixtureTeardown,
   OwnedFixtureLedger,
   prepareFixtureSetup,
@@ -75,9 +74,10 @@ describeIntegration('维修申请组织范围实库验收', () => {
     parameters?: unknown[],
   ): Promise<T[]> => dataSource.query(sql, parameters);
 
-  const registerRow = async (table: ControlledFixtureTable, id: number): Promise<void> => {
-    await ledger.registerById(query, table, id);
-  };
+  /**
+   * 夹具一律在写入成功并取得实际主键后，按**写入输入与已知业务结果**同步登记；
+   * 不做成功后的 SELECT 登记，回读失败不会让已提交行从账本消失。
+   */
 
   /** 引用闭包：只放行本轮登记的自有行，账本外任何引用都整批拒绝清理 */
   const buildReferenceGuards = (): ReferenceGuard[] => {
@@ -169,8 +169,18 @@ describeIntegration('维修申请组织范围实库验收', () => {
        VALUES (${FIXTURE.orgA.id}, '${FIXTURE.orgA.code}', 'S5 集成组织 A', 'CLIENT', 'ACTIVE'),
               (${FIXTURE.orgB.id}, '${FIXTURE.orgB.code}', 'S5 集成组织 B', 'PEER', 'ACTIVE')`,
     );
-    await registerRow('organization', FIXTURE.orgA.id);
-    await registerRow('organization', FIXTURE.orgB.id);
+    ledger.registerCreated('organization', FIXTURE.orgA.id, {
+      organization_code: FIXTURE.orgA.code,
+      name: 'S5 集成组织 A',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
+    ledger.registerCreated('organization', FIXTURE.orgB.id, {
+      organization_code: FIXTURE.orgB.code,
+      name: 'S5 集成组织 B',
+      kind: 'PEER',
+      status: 'ACTIVE',
+    });
 
     await query(
       `INSERT INTO base_user_account (id, login_name, login_password, status)
@@ -178,55 +188,62 @@ describeIntegration('维修申请组织范围实库验收', () => {
               (${FIXTURE.engineer.id}, '${FIXTURE.engineer.loginName}', 's5-integration-fixture', 'ACTIVE'),
               (${FIXTURE.otherEngineer.id}, '${FIXTURE.otherEngineer.loginName}', 's5-integration-fixture', 'ACTIVE')`,
     );
-    for (const accountId of [FIXTURE.customer.id, FIXTURE.engineer.id, FIXTURE.otherEngineer.id]) {
-      await registerRow('base_user_account', accountId);
+    for (const account of [FIXTURE.customer, FIXTURE.engineer, FIXTURE.otherEngineer]) {
+      ledger.registerCreated('base_user_account', account.id, {
+        login_name: account.loginName,
+        status: 'ACTIVE',
+      });
     }
 
     await query(
       `INSERT INTO equipment_model (id, model_code, model_name, enabled)
        VALUES (${FIXTURE.model.id}, '${FIXTURE.model.code}', 'S5 集成机型', 1)`,
     );
-    await registerRow('equipment_model', FIXTURE.model.id);
+    ledger.registerCreated('equipment_model', FIXTURE.model.id, {
+      model_code: FIXTURE.model.code,
+      model_name: 'S5 集成机型',
+      enabled: 1,
+    });
     const values = [
       {
         id: FIXTURE.requests.orgAUnaccepted,
         no: 'S5IT_ORG_A',
         customer: FIXTURE.customer.id,
-        org: `${FIXTURE.orgA.id}`,
-        accepted: 'FALSE',
-        engineer: 'NULL',
+        org: FIXTURE.orgA.id,
+        accepted: 0,
+        engineer: null,
       },
       {
         id: FIXTURE.requests.orgBAcceptedByOther,
         no: 'S5IT_ORG_B_ACCEPTED',
         customer: FIXTURE.customer.id,
-        org: `${FIXTURE.orgB.id}`,
-        accepted: 'TRUE',
-        engineer: `${FIXTURE.otherEngineer.id}`,
+        org: FIXTURE.orgB.id,
+        accepted: 1,
+        engineer: FIXTURE.otherEngineer.id,
       },
       {
         id: FIXTURE.requests.nullUnaccepted,
         no: 'S5IT_NULL_UNACCEPTED',
         customer: FIXTURE.customer.id,
-        org: 'NULL',
-        accepted: 'FALSE',
-        engineer: 'NULL',
+        org: null,
+        accepted: 0,
+        engineer: null,
       },
       {
         id: FIXTURE.requests.nullAcceptedByViewer,
         no: 'S5IT_NULL_ACCEPTED_SELF',
         customer: FIXTURE.customer.id,
-        org: 'NULL',
-        accepted: 'TRUE',
-        engineer: `${FIXTURE.engineer.id}`,
+        org: null,
+        accepted: 1,
+        engineer: FIXTURE.engineer.id,
       },
       {
         id: FIXTURE.requests.orgAAcceptedByViewerOwnedByOtherCustomer,
         no: 'S5IT_ORG_A_ACCEPTED',
         customer: FIXTURE.otherEngineer.id,
-        org: `${FIXTURE.orgA.id}`,
-        accepted: 'TRUE',
-        engineer: `${FIXTURE.engineer.id}`,
+        org: FIXTURE.orgA.id,
+        accepted: 1,
+        engineer: FIXTURE.engineer.id,
       },
     ];
     for (const item of values) {
@@ -235,11 +252,29 @@ describeIntegration('维修申请组织范围实库验收', () => {
            (id, request_no, customer_account_id, equipment_model_id, error_code,
             fault_description, content_md, owner_organization_id, is_accepted,
             accepted_by_engineer_account_id, accepted_at)
-         VALUES (${item.id}, '${item.no}', ${item.customer}, ${FIXTURE.model.id}, 'E-S5IT',
-                 'S5 集成夹具', '# S5 集成夹具', ${item.org}, ${item.accepted},
-                 ${item.engineer}, ${item.accepted === 'TRUE' ? 'NOW(3)' : 'NULL'})`,
+         VALUES (?, ?, ?, ?, 'E-S5IT', 'S5 集成夹具', '# S5 集成夹具', ?, ?, ?, ?)`,
+        [
+          item.id,
+          item.no,
+          item.customer,
+          FIXTURE.model.id,
+          item.org,
+          item.accepted,
+          item.engineer,
+          item.accepted === 1 ? new Date() : null,
+        ],
       );
-      await registerRow('repair_request', item.id);
+      ledger.registerCreated('repair_request', item.id, {
+        request_no: item.no,
+        customer_account_id: item.customer,
+        equipment_model_id: FIXTURE.model.id,
+        error_code: 'E-S5IT',
+        fault_description: 'S5 集成夹具',
+        content_md: '# S5 集成夹具',
+        owner_organization_id: item.org,
+        is_accepted: item.accepted,
+        accepted_by_engineer_account_id: item.engineer,
+      });
     }
   };
 

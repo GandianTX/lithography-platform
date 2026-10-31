@@ -1,22 +1,34 @@
 // 文件位置：src/usecases/account/update-visible-user-info.usecase.ts
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { type UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { UserInfoView } from '@app-types/models/auth.types';
 import { Gender, type GeographicInfo } from '@app-types/models/user-info.types';
 import { hasRole } from '@core/account/policy/role-access.policy';
-import { ACCOUNT_ERROR, DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error';
+import {
+  ACCOUNT_ERROR,
+  DomainError,
+  isDomainError,
+  PERMISSION_ERROR,
+} from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   AccountService,
   type UserInfoUpdateData,
 } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import { FetchUserInfoUsecase } from './fetch-user-info.usecase';
+import {
+  assertVisibleUserInfoTargetOrganization,
+  throwVisibleUserInfoTargetUnavailable,
+} from './visible-user-info-organization';
 import {
   normalizeVisibleBirthDateInput,
   normalizeVisibleGenderInput,
@@ -64,6 +76,8 @@ export class UpdateVisibleUserInfoUsecase {
     private readonly accountService: AccountService,
     private readonly accountQueryService: AccountQueryService,
     private readonly fetchUserInfoUsecase: FetchUserInfoUsecase,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -71,9 +85,18 @@ export class UpdateVisibleUserInfoUsecase {
   /**
    * 执行按可见性更新用户信息
    * 规则：
-   * - 权限沿用查看规则：能查看即可更新（SUPER_ADMIN 全量；ENGINEER 可更新其他账户；CUSTOMER 仅能更新自己）
+   * - 权限沿用查看规则：能查看即可更新（SUPER_ADMIN / ENGINEER 可更新其他账户；CUSTOMER 仅能更新自己）
+   * - 非本人目标额外要求同一有效组织：操作者有唯一有效组织且目标在该组织内有有效成员关系；
+   *   跨组织 / 目标无有效成员关系与目标不存在使用同一拒绝口径，不泄露存在性
    * - 字段白名单：仅允许更新基础与联系字段；禁止修改 accessGroup / metaDigest
    * - 幂等：无字段变更则直接返回当前视图
+   *
+   * 执行顺序（写路径，不可交换）：
+   * 1. 纯会话角色判定先于任何数据库访问：未获角色准入的调用方一律 `ACCESS_DENIED`，
+   *    无法用目标 ID 探测账号是否存在；
+   * 2. 进入 `TransactionRunner` 事务后**先锁目标账号行**，再解析组织、读取资料：
+   *    锁前建立的普通读取会被后续事务快照复用，读到并发方提交前的旧组织事实；
+   * 3. 组织授权与字段写入、回读在同一事务内完成，同成同败。
    */
   async execute(params: UpdateVisibleUserInfoParams): Promise<UpdateVisibleUserInfoResult> {
     const { session, targetAccountId, identityHint } = params;
@@ -88,15 +111,30 @@ export class UpdateVisibleUserInfoUsecase {
       throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '无权限更新该用户信息');
     }
 
-    // 事务编排：读取 → 校验 → 幂等 → 更新 → 回读视图
+    const isSelf = session.accountId === targetAccountId;
+
+    // 事务编排：锁定目标 → 组织授权 → 读取 → 校验 → 幂等 → 更新 → 回读视图
     const result = await this.transactionRunner.run<UpdateVisibleUserInfoResult>(
       async (transactionContext) => {
+        const lockedAccount = await this.lockTargetAccount(targetAccountId, transactionContext);
+
+        // 非本人目标：锁后解析操作者可信组织并核验目标归属；
+        // 本人路径不进入组织解析，保留历史无组织账号的自改能力。
+        if (!isSelf) {
+          await assertVisibleUserInfoTargetOrganization({
+            organizationContextQueryService: this.organizationContextQueryService,
+            organizationMembershipQueryService: this.organizationMembershipQueryService,
+            operatorAccountId: session.accountId,
+            targetAccountId,
+            transactionContext,
+          });
+        }
+
         const current = await this.fetchUserInfoUsecase.executeStrict({
           accountId: targetAccountId,
           transactionContext,
         });
 
-        const isSelf = session.accountId === targetAccountId;
         const isStaffRole = hasRole(session.roles, IdentityTypeEnum.ENGINEER);
         const isAdminRole = hasRole(session.roles, IdentityTypeEnum.SUPER_ADMIN);
         const sanitized = await this.sanitizePatch(patch, current, {
@@ -128,11 +166,8 @@ export class UpdateVisibleUserInfoUsecase {
           });
         }
         if (shouldUpdateIdentityHint && resolvedIdentityHint) {
-          const account = await this.accountService.lockByIdForUpdate(
-            targetAccountId,
-            transactionContext,
-          );
-          const currentIdentityHint = this.normalizeIdentityHint(account.identityHint);
+          // 目标行锁已在事务入口取得，直接复用锁内读取的账号事实，不再二次加锁。
+          const currentIdentityHint = this.normalizeIdentityHint(lockedAccount.identityHint);
           if (currentIdentityHint !== resolvedIdentityHint) {
             await this.accountService.updateAccount(
               targetAccountId,
@@ -163,6 +198,28 @@ export class UpdateVisibleUserInfoUsecase {
     if (hasRole(session.roles, IdentityTypeEnum.SUPER_ADMIN)) return true;
 
     return hasRole(session.roles, IdentityTypeEnum.ENGINEER);
+  }
+
+  /**
+   * 事务内先锁定目标账号行。
+   *
+   * 目标不存在时 `lockByIdForUpdate()` 抛 `ACCOUNT_ERROR.ACCOUNT_NOT_FOUND`，其码值与
+   * `AUTH_ERROR.ACCOUNT_NOT_FOUND` 相同，会被全局过滤器映射为 `UNAUTHENTICATED`；
+   * 本用例统一转换为与跨组织目标相同的 `USER_INFO_NOT_FOUND`（NOT_FOUND），
+   * 既避免前端误判会话失效，也保证「目标不存在」与「目标不可见」对外不可区分。
+   */
+  private async lockTargetAccount(
+    targetAccountId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<Awaited<ReturnType<AccountService['lockByIdForUpdate']>>> {
+    try {
+      return await this.accountService.lockByIdForUpdate(targetAccountId, transactionContext);
+    } catch (error) {
+      if (isDomainError(error) && error.code === ACCOUNT_ERROR.ACCOUNT_NOT_FOUND) {
+        return throwVisibleUserInfoTargetUnavailable();
+      }
+      throw error;
+    }
   }
 
   /**

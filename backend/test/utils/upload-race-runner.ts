@@ -1,4 +1,5 @@
 import type { QueryRunner } from 'typeorm';
+import { destroyExclusiveQueryRunner } from './e2e-owned-fixture';
 
 /** 竞争分支的初始化/收尾错误统一收集，便于调用方在断言前判断生命周期是否完整 */
 export interface TwoBranchRaceOptions<T> {
@@ -26,6 +27,8 @@ export class RaceBranchCancelledError extends Error {
 
 interface RunnerState {
   connected: boolean;
+  destroyAttempted: boolean;
+  destroyed: boolean;
 }
 
 const detailOf = (error: unknown): string => {
@@ -38,9 +41,28 @@ const detailOf = (error: unknown): string => {
   }
 };
 
+const destroyOnce = async (
+  runner: QueryRunner,
+  state: RunnerState,
+  errors: string[],
+  stage: string,
+): Promise<void> => {
+  if (state.destroyAttempted) return;
+  state.destroyAttempted = true;
+  const outcome = await destroyExclusiveQueryRunner(runner);
+  state.destroyed = outcome.destroyed;
+  if (!outcome.destroyed) {
+    errors.push(`${stage}销毁独占连接未完成：${outcome.reason ?? '未知原因'}`);
+  }
+};
+
 /**
- * 按驱动实际状态收尾：只要事务仍处于活动状态就尝试回滚（不依赖 startTransaction 是否成功返回），
- * 仅对已建立的连接释放；回滚与释放错误单独收集，不覆盖分支自身的失败原因。
+ * 按驱动实际状态收尾（与 `runGuardedQueryRunnerTransaction` 相同的已验证模式）：
+ * - 只要事务仍处于活动状态就尝试回滚，不依赖 `startTransaction()` 是否成功返回；
+ * - 回滚失败或回滚后事务仍活动时，销毁本轮独占连接，禁止把活动事务以普通 `release()` 回池；
+ * - 已销毁或销毁已尝试后不再执行 `release()`，避免把无法安全关闭的连接放回连接池；
+ * - 仅对已建立连接的分支释放；未建立连接的分支不执行关闭；
+ * - 主错误、回滚、销毁与释放错误分别收集，不相互覆盖。
  */
 const settleRunner = async (
   runner: QueryRunner,
@@ -48,12 +70,24 @@ const settleRunner = async (
   errors: string[],
   label: string,
 ): Promise<void> => {
+  let rollbackFailed = false;
   if (runner.isTransactionActive) {
     try {
       await runner.rollbackTransaction();
     } catch (error) {
+      rollbackFailed = true;
       errors.push(`${label}回滚失败：${detailOf(error)}`);
     }
+  }
+  if (rollbackFailed || runner.isTransactionActive) {
+    await destroyOnce(runner, state, errors, `${label}回滚后`);
+  }
+  if (state.destroyAttempted) {
+    return;
+  }
+  if (runner.isTransactionActive) {
+    await destroyOnce(runner, state, errors, `${label}收尾时`);
+    return;
   }
   if (state.connected) {
     try {
@@ -71,17 +105,23 @@ type FirstReady = { readonly ok: true } | { readonly ok: false; readonly error: 
  * 两分支事务竞争执行器。
  *
  * - A 先启动事务并执行，然后等待放行决定；B 在 A 就绪后启动。
- * - B 初始化失败时向 A 发出取消信号，等待 A 回滚并释放后再返回。
- * - 只有观察到竞争或 B 已结束才放行 A 提交；异常路径一律取消，不无条件提交。
- * - 返回前等待两个分支全部收尾，分支错误、回滚错误与释放错误分别保留。
+ * - B 创建、连接或启动事务失败时向 A 发出取消信号，等待 A 回滚/销毁/释放后再返回。
+ * - A 被取消后只回滚，不因放行 gate 误提交；只有观察到竞争或 B 已结束才允许提交。
+ * - 返回前等待所有已启动分支完成收尾，分支错误、回滚、销毁与释放错误分别保留。
  */
 export const runTwoBranchTransactionRace = async <T>(
   options: TwoBranchRaceOptions<T>,
 ): Promise<TwoBranchRaceResult<T>> => {
   const errors: string[] = [];
 
-  const first = options.createRunner();
-  const firstState: RunnerState = { connected: false };
+  let first: QueryRunner;
+  try {
+    first = options.createRunner();
+  } catch (error) {
+    // 第一连接未创建成功：没有已启动分支需要收尾，直接拒绝
+    throw new Error(`第一分支创建失败：${detailOf(error)}`, { cause: error });
+  }
+  const firstState: RunnerState = { connected: false, destroyAttempted: false, destroyed: false };
 
   let resolveDecision: (decision: 'commit' | 'cancel') => void = () => undefined;
   const decision = new Promise<'commit' | 'cancel'>((resolve) => {
@@ -134,8 +174,25 @@ export const runTwoBranchTransactionRace = async <T>(
     };
   }
 
-  const second = options.createRunner();
-  const secondState: RunnerState = { connected: false };
+  let second: QueryRunner | undefined;
+  const secondState: RunnerState = { connected: false, destroyAttempted: false, destroyed: false };
+  try {
+    second = options.createRunner();
+  } catch (createError) {
+    // 第二连接创建同步失败：取消 A，等待 A 完成回滚/释放后再拒绝，不进入竞争等待
+    errors.push(`第二分支创建失败：${detailOf(createError)}`);
+    resolveDecision('cancel');
+    await firstPromise;
+    const teardownErrors = errors.filter((item) => !item.startsWith('第二分支创建失败'));
+    const message = teardownErrors.length
+      ? `第二分支创建失败：${detailOf(createError)}；收尾错误：${teardownErrors.join('；')}`
+      : `第二分支创建失败：${detailOf(createError)}`;
+    throw new Error(message, { cause: createError });
+  }
+  if (!second) {
+    throw new Error('第二分支创建失败：驱动未返回连接');
+  }
+
   try {
     await second.connect();
     secondState.connected = true;
@@ -147,11 +204,12 @@ export const runTwoBranchTransactionRace = async <T>(
     await settleRunner(second, secondState, errors, '第二分支');
     return { first: firstOutcome, second: { status: 'rejected', reason: error }, errors };
   }
+  const secondRunner = second;
 
   const secondPromise: Promise<PromiseSettledResult<T>> = (async () => {
     try {
-      const value = await options.runSecond(second);
-      await second.commitTransaction();
+      const value = await options.runSecond(secondRunner);
+      await secondRunner.commitTransaction();
       if (options.onSecondCommitted) {
         await options.onSecondCommitted(value);
       }
@@ -159,7 +217,7 @@ export const runTwoBranchTransactionRace = async <T>(
     } catch (error) {
       return { status: 'rejected', reason: error };
     } finally {
-      await settleRunner(second, secondState, errors, '第二分支');
+      await settleRunner(secondRunner, secondState, errors, '第二分支');
     }
   })();
 

@@ -18,6 +18,9 @@ import {
  * 结构真源见迁移 1775401300000-create-maintenance-report-attachment-version-review。
  */
 @Entity('maintenance_report_attachment', { comment: '维修报告当前附件集合表' })
+@Index('uk_maintenance_report_attachment_active_slot', ['reportId', 'activeSortOrder'], {
+  unique: true,
+})
 @Index('uk_maintenance_report_attachment_id_report', ['id', 'reportId'], { unique: true })
 @Index('idx_maintenance_report_attachment_report_status', ['reportId', 'status', 'sortOrder'])
 @ForeignKey('MaintenanceReportEntity', ['reportId'], ['id'], {

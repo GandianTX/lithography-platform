@@ -35,6 +35,7 @@ import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.ent
 import { EngineerResolutionStatus } from '@app-types/models/repair-request.types';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
 import { EngineerResponseEntity } from '@src/modules/lithography/entities/engineer-response.entity';
+import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
@@ -59,6 +60,7 @@ import {
   createRepairRequestFixtureResponse,
   runRepairRequestFixtureTeardown,
   seedRepairRequestFixtureAccounts,
+  seedRepairRequestFixtureOrganizationScope,
   shouldRunRepairRequestFixtureCleanup,
   type RepairRequestFixtureAccountKey,
   type RepairRequestFixtureOwnership,
@@ -266,6 +268,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     // 无残留：验证结果为空集合
     expect(first).toEqual({
       accountIds: [],
+      organizationIds: [],
+      membershipIds: [],
       equipmentModelIds: [],
       repairRequestIds: [],
       engineerResponseIds: [],
@@ -408,6 +412,74 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     expect(await readSentinelSnapshot()).toEqual(before);
   });
 
+  it('外部账号持有夹具组织有效成员关系：失败关闭，夹具与外部成员关系零删除', async () => {
+    const before = await readSentinelSnapshot();
+    // 外部账号复用哨兵注册表（收尾同样走 fail-closed 清理入口），造数前确认标记空闲
+    await assertSentinelMarkersFree(PROBE_SENTINEL);
+    const fixtureOwnership = createRepairRequestFixtureOwnership();
+    const externalMembershipIds: number[] = [];
+    let externalAccountId: number | undefined;
+    let primaryOrganizationId: number | undefined;
+
+    try {
+      const fixtureAccountId = await seedEngineerAccount(fixtureOwnership);
+      const scope = await seedRepairRequestFixtureOrganizationScope({
+        dataSource,
+        ownership: fixtureOwnership,
+        accountIds: { engineerA: fixtureAccountId },
+      });
+      primaryOrganizationId = scope.primaryOrganizationId;
+
+      // 外部账号（非夹具账号）挂到夹具主组织 → 成员关系双侧闭包被打破，必须在删除前失败关闭
+      externalAccountId = await createSentinelAccount(PROBE_SENTINEL, probeOwnership);
+      const membershipRepo = dataSource.getRepository(OrganizationMembershipEntity);
+      const membership = await membershipRepo.save(
+        membershipRepo.create({
+          organizationId: primaryOrganizationId,
+          accountId: externalAccountId,
+          memberRole: 'CUSTOMER',
+          status: 'ACTIVE',
+          leftAt: null,
+        }),
+      );
+      externalMembershipIds.push(membership.id);
+
+      await expect(cleanupRepairRequestFixtureResidue(dataSource)).rejects.toThrow(/归属校验/);
+      // 失败关闭：夹具账号与外部成员关系都未被删除
+      expect(await countFixtureAccounts()).toBe(1);
+      expect(await membershipRepo.count({ where: { id: In(externalMembershipIds) } })).toBe(1);
+    } finally {
+      // 受保护收尾：先删外部成员关系（FK RESTRICT），再回收夹具，最后按哨兵记录回收账号
+      const membershipRepo = dataSource.getRepository(OrganizationMembershipEntity);
+      for (const id of externalMembershipIds) {
+        const row = await membershipRepo.findOne({ where: { id } });
+        if (row) {
+          await deleteRecordedExternalRow({
+            helper: '外部成员关系收尾',
+            entity: OrganizationMembershipEntity,
+            recordedIds: externalMembershipIds,
+            id,
+            verify: (candidate) =>
+              candidate.accountId === externalAccountId &&
+              candidate.organizationId === primaryOrganizationId &&
+              candidate.memberRole === 'CUSTOMER' &&
+              candidate.status === 'ACTIVE',
+          });
+        }
+      }
+      await cleanupRepairRequestFixtureByIds(dataSource, fixtureOwnership);
+      await cleanupSentinelByIds(probeOwnership);
+    }
+
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await countSentinelRows(PROBE_SENTINEL)).toEqual({
+      accounts: 0,
+      models: 0,
+      requests: 0,
+    });
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
   it('清理守卫：未通过目标库校验时不得执行删除', () => {
     expect(shouldRunRepairRequestFixtureCleanup({ dataSource, targetValidated: false })).toBe(
       false,
@@ -430,6 +502,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
       await expect(
         cleanupRepairRequestFixtureByIds(dataSource, {
           accountIds: [sentinelAccountId],
+          organizationIds: [],
+          membershipIds: [],
           equipmentModelIds: [sentinelModelId],
           repairRequestIds: [sentinelRequestId],
           engineerResponseIds: [],

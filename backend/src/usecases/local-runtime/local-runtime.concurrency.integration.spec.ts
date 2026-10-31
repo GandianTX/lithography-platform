@@ -19,6 +19,7 @@ import {
   finalizeFixtureTeardown,
   OwnedFixtureLedger,
   prepareFixtureSetup,
+  runGuardedQueryRunnerTransaction,
   runOwnedFixtureCleanup,
 } from '../../../test/utils/e2e-owned-fixture';
 import { runTwoBranchTransactionRace } from '../../../test/utils/upload-race-runner';
@@ -144,11 +145,23 @@ describeIntegration('本地运行数据真实并发验收', () => {
         }
       : settled;
 
-  /** 提交成功后按实际 ID 登记；未创建任务的竞争分支不重复登记 */
-  const registerCommittedTask = async (result: UploadRaceRawResult): Promise<void> => {
-    if (result.created) {
-      await ledger.registerById(query, 'local_upload_task', result.task.id);
-    }
+  /**
+   * 提交成功后立即按**创建输入与实际返回 ID**同步登记，不做 SELECT。
+   * 若在登记前依赖回读，回读失败会让已提交行从账本与残留核对中消失。
+   * 未创建任务的竞争分支不重复登记。
+   */
+  const registerCommittedTask = (
+    result: UploadRaceRawResult,
+    payload: Omit<LocalUploadTaskInsertData, 'installationId'>,
+  ): void => {
+    if (!result.created) return;
+    ledger.registerCreated('local_upload_task', result.task.id, {
+      installation_id: installationId,
+      entity_type: payload.entityType,
+      entity_local_id: payload.entityLocalId,
+      entity_version: payload.entityVersion,
+      idempotency_key: payload.idempotencyKey,
+    });
   };
 
   const describeSettledReason = (reason: unknown): string =>
@@ -184,8 +197,14 @@ describeIntegration('本地运行数据真实并发验收', () => {
           createTypeOrmPersistenceTransactionContext(runner.manager),
         ),
       waitForCompetition: () => waitForLockWaiters(1),
-      onFirstCommitted: registerCommittedTask,
-      onSecondCommitted: registerCommittedTask,
+      onFirstCommitted: (result) => {
+        registerCommittedTask(result, first);
+        return Promise.resolve();
+      },
+      onSecondCommitted: (result) => {
+        registerCommittedTask(result, second);
+        return Promise.resolve();
+      },
     });
     assertNoRaceTeardownErrors(race.errors);
     return [toUploadRaceOutcome(race.first), toUploadRaceOutcome(race.second)];
@@ -204,89 +223,73 @@ describeIntegration('本地运行数据真实并发验收', () => {
   /**
    * 恢复安装设置：同一事务内先锁定行、核验当前值只可能是「原始值」或「本轮设置用例写入值」，
    * 再按原始值写回并在同一连接内核对；任一步不符即放弃写入，避免覆盖他人数据。
+   * 连接、事务、回滚、销毁与释放统一由守卫收尾，失败阶段逐项上报。
    */
   const restoreInstallation = async (): Promise<string[]> => {
-    const errors: string[] = [];
     if (!originalInstallation || settingsInterval === null) {
-      errors.push('缺少安装设置原始值或本轮设置值，未执行恢复');
-      return errors;
+      return ['缺少安装设置原始值或本轮设置值，未执行恢复'];
     }
     const origin = originalInstallation;
-    const runner: QueryRunner = dataSource.createQueryRunner();
-    try {
-      assertPhysicalCleanupConsent();
-      await runner.connect();
-      await runner.startTransaction();
-      await assertManagerOnExpectedE2eDatabase(runner.manager, expectedDatabase);
-      const rows = (await runner.query(
-        `SELECT local_site_name, auto_upload_enabled, backup_interval_days, updated_at
-           FROM local_installation WHERE id = 1 FOR UPDATE`,
-      )) as InstallationOrigin[];
-      const current = rows[0];
-      if (!current) {
-        throw new Error('安装设置行缺失，拒绝写回');
-      }
-      // 本轮设置用例只会写入站点名与备份周期；其余组合视为外部改写，整批放弃写回
-      const siteNameAllowed =
-        current.local_site_name === origin.local_site_name ||
-        current.local_site_name === SETTINGS_SITE_NAME;
-      const intervalAllowed =
-        Number(current.backup_interval_days) === Number(origin.backup_interval_days) ||
-        Number(current.backup_interval_days) === settingsInterval;
-      const uploadAllowed =
-        Boolean(current.auto_upload_enabled) === Boolean(origin.auto_upload_enabled);
-      if (!siteNameAllowed || !intervalAllowed || !uploadAllowed) {
-        throw new Error('安装设置已被本轮之外的操作修改，拒绝写回');
-      }
-      await runner.query(
-        `UPDATE local_installation
-            SET local_site_name = ?, auto_upload_enabled = ?, backup_interval_days = ?, updated_at = ?
-          WHERE id = 1
-            AND local_site_name <=> ?
-            AND auto_upload_enabled <=> ?
-            AND backup_interval_days <=> ?`,
-        [
-          origin.local_site_name,
-          origin.auto_upload_enabled,
-          origin.backup_interval_days,
-          origin.updated_at,
-          current.local_site_name,
-          current.auto_upload_enabled,
-          current.backup_interval_days,
-        ],
-      );
-      const restoredRows = (await runner.query(
-        `SELECT local_site_name, auto_upload_enabled, backup_interval_days, updated_at
-           FROM local_installation WHERE id = 1`,
-      )) as InstallationOrigin[];
-      const restored = restoredRows[0];
-      if (
-        !restored ||
-        restored.local_site_name !== origin.local_site_name ||
-        Boolean(restored.auto_upload_enabled) !== Boolean(origin.auto_upload_enabled) ||
-        Number(restored.backup_interval_days) !== Number(origin.backup_interval_days) ||
-        new Date(restored.updated_at).getTime() !== new Date(origin.updated_at).getTime()
-      ) {
-        throw new Error('安装设置恢复后与原始值不一致');
-      }
-      await runner.commitTransaction();
-    } catch (error) {
-      if (runner.isTransactionActive) {
-        try {
-          await runner.rollbackTransaction();
-        } catch (rollbackError) {
-          errors.push(`安装设置恢复回滚失败：${(rollbackError as Error).message}`);
+    const outcome = await runGuardedQueryRunnerTransaction({
+      createRunner: () => dataSource.createQueryRunner(),
+      label: '安装设置恢复',
+      work: async (runner) => {
+        assertPhysicalCleanupConsent();
+        await assertManagerOnExpectedE2eDatabase(runner.manager, expectedDatabase);
+        const rows = (await runner.query(
+          `SELECT local_site_name, auto_upload_enabled, backup_interval_days, updated_at
+             FROM local_installation WHERE id = 1 FOR UPDATE`,
+        )) as InstallationOrigin[];
+        const current = rows[0];
+        if (!current) {
+          throw new Error('安装设置行缺失，拒绝写回');
         }
-      }
-      errors.push(`安装设置恢复失败：${(error as Error).message}`);
-    } finally {
-      try {
-        await runner.release();
-      } catch (releaseError) {
-        errors.push(`关闭恢复连接失败：${(releaseError as Error).message}`);
-      }
-    }
-    return errors;
+        // 本轮设置用例只会写入站点名与备份周期；其余组合视为外部改写，整批放弃写回
+        const siteNameAllowed =
+          current.local_site_name === origin.local_site_name ||
+          current.local_site_name === SETTINGS_SITE_NAME;
+        const intervalAllowed =
+          Number(current.backup_interval_days) === Number(origin.backup_interval_days) ||
+          Number(current.backup_interval_days) === settingsInterval;
+        const uploadAllowed =
+          Boolean(current.auto_upload_enabled) === Boolean(origin.auto_upload_enabled);
+        if (!siteNameAllowed || !intervalAllowed || !uploadAllowed) {
+          throw new Error('安装设置已被本轮之外的操作修改，拒绝写回');
+        }
+        await runner.query(
+          `UPDATE local_installation
+              SET local_site_name = ?, auto_upload_enabled = ?, backup_interval_days = ?, updated_at = ?
+            WHERE id = 1
+              AND local_site_name <=> ?
+              AND auto_upload_enabled <=> ?
+              AND backup_interval_days <=> ?`,
+          [
+            origin.local_site_name,
+            origin.auto_upload_enabled,
+            origin.backup_interval_days,
+            origin.updated_at,
+            current.local_site_name,
+            current.auto_upload_enabled,
+            current.backup_interval_days,
+          ],
+        );
+        const restoredRows = (await runner.query(
+          `SELECT local_site_name, auto_upload_enabled, backup_interval_days, updated_at
+             FROM local_installation WHERE id = 1`,
+        )) as InstallationOrigin[];
+        const restored = restoredRows[0];
+        if (
+          !restored ||
+          restored.local_site_name !== origin.local_site_name ||
+          Boolean(restored.auto_upload_enabled) !== Boolean(origin.auto_upload_enabled) ||
+          Number(restored.backup_interval_days) !== Number(origin.backup_interval_days) ||
+          new Date(restored.updated_at).getTime() !== new Date(origin.updated_at).getTime()
+        ) {
+          throw new Error('安装设置恢复后与原始值不一致');
+        }
+      },
+    });
+    return [...outcome.errors];
   };
 
   beforeAll(async () => {
@@ -462,8 +465,14 @@ describeIntegration('本地运行数据真实并发验收', () => {
         ),
       // 失败分支由 CHECK 约束决定，不需要等待锁竞争即可放行成功分支
       waitForCompetition: () => Promise.resolve(),
-      onFirstCommitted: registerCommittedTask,
-      onSecondCommitted: registerCommittedTask,
+      onFirstCommitted: (result) => {
+        registerCommittedTask(result, successPayload);
+        return Promise.resolve();
+      },
+      onSecondCommitted: (result) => {
+        registerCommittedTask(result, failurePayload);
+        return Promise.resolve();
+      },
     });
     assertNoRaceTeardownErrors(race.errors);
 

@@ -135,6 +135,9 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - 完整视图返回 `UserInfoDTO`。
 - 基础视图返回 `BasicUserInfoDTO`。
 - DTO 映射在 adapter 内完成，不能把 GraphQL DTO 下沉到 usecase 或 modules(service)。
+- 组织范围（非本人目标）：角色策略允许后仍需同一有效组织——操作者的唯一有效组织由 `TrustedOrganizationContextQueryService.resolveForAccount()` 解析（既不接受客户端自报组织，也不按公司名推断），目标必须在该组织内有有效成员关系。
+- 本人路径不进入组织解析：历史无组织账号仍可自查，不强制先加入组织。
+- 拒绝口径：跨组织、目标无有效成员关系（含已 LEFT）与目标不存在统一为 `USER_INFO_NOT_FOUND`（对外 `NOT_FOUND`），文案固定为「目标用户不存在」，不泄露目标存在性；操作者自身缺少唯一有效组织为 `ORGANIZATION_NO_ACTIVE_MEMBERSHIP`（对外 `FORBIDDEN`），存在歧义成员关系为 `ORGANIZATION_AMBIGUOUS_MEMBERSHIP`（对外 `FORBIDDEN`）。
 
 ## UserInfo 更新
 
@@ -146,6 +149,9 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `identityHint` 不属于本 mutation 输入：普通用户角色只在管理员创建账号时单选一次写入，创建后角色只读，无公开角色修改 Mutation。
 - Usecase 负责权限、可见性和写语义。
 - Resolver 只做输入 shape 到 usecase 参数的映射。
+- 组织范围与读取一致（本人豁免，非本人目标必须同属一个有效组织），但执行顺序固定为：事务内先 `SELECT ... FOR UPDATE` 锁定目标账号行，再解析操作者组织、核验目标成员关系、读取资料并写入。锁必须在组织解析与资料读取之前取得，避免锁前快照读到并发提交前的旧组织事实。
+- 非本人目标的失败口径与读取相同（跨组织 / 无有效成员关系 / 不存在统一 `USER_INFO_NOT_FOUND`，对外 `NOT_FOUND`）；写路径把锁定阶段的目标缺失（`ACCOUNT_NOT_FOUND`，会映射为 `UNAUTHENTICATED`）转换为同一错误码，避免与「会话失效」混淆。
+- 字段白名单不因组织范围放宽：非本人目标的 staff 写入仍仅允许 `nickname` / `avatarUrl` / `phone`，`email`、`signature` 等其余字段被忽略且不落库。
 
 ## 角色修改入口（已下线）
 

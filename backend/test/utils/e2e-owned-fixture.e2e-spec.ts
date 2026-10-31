@@ -17,6 +17,7 @@ import {
   prepareFixtureSetup,
   type ReferenceGuard,
   runOwnedFixtureCleanup,
+  runGuardedQueryRunnerTransaction,
   runTeardownSteps,
 } from './e2e-owned-fixture';
 
@@ -42,6 +43,18 @@ interface FakeConfig {
   readonly rows?: FakeRow[];
   readonly failDeleteTable?: string;
   readonly referenceTotal?: number;
+  /** `startTransaction` 已把驱动状态置为活动后抛错（模拟 AfterTransactionStart 钩子失败） */
+  readonly failStartAfterActive?: boolean;
+  /** `rollbackTransaction` 抛错并保持事务活动（模拟真实回滚失败） */
+  readonly failRollback?: boolean;
+  /** `release` 抛错（模拟提交成功后释放失败） */
+  readonly failRelease?: boolean;
+  /** 独占连接 `destroy` 抛错 */
+  readonly failDestroy?: boolean;
+  /** 驱动未暴露可销毁的独占连接 */
+  readonly destroyUnavailable?: boolean;
+  /** 成功写入后的回读（`SELECT *` / `SELECT id`）抛错，模拟提交后回读窗口失败 */
+  readonly failSelect?: boolean;
 }
 
 interface FakeHarness {
@@ -49,9 +62,12 @@ interface FakeHarness {
   readonly calls: string[];
   readonly deleteCalls: Array<{ sql: string; params: unknown[] }>;
   readonly setRow: (table: string, values: Record<string, unknown>) => void;
+  readonly runner: QueryRunner;
+  /** 测试自身收尾：断言失败也强制结束替身事务，避免故障注入泄漏状态 */
+  readonly dispose: () => void;
 }
 
-const CONDITION_PATTERN = /`([a-z0-9_]+)` = \?/g;
+const CONDITION_PATTERN = /`([a-z0-9_]+)` (?:<=>|=) \?/g;
 
 const parseConditionColumns = (clause: string): string[] =>
   [...clause.matchAll(CONDITION_PATTERN)]
@@ -85,6 +101,9 @@ const createFakeDataSource = (config: FakeConfig): FakeHarness => {
           current_database: config.actualDatabase ?? config.configuredDatabase ?? 'lithography_e2e',
         },
       ];
+    }
+    if (config.failSelect && /^SELECT (\*|id) FROM/.test(text)) {
+      throw new Error('注入故障：回读 SELECT 失败');
     }
     const available = /^SELECT id FROM `([a-z0-9_]+)` WHERE id IN \((.*)\)$/.exec(text);
     if (available) {
@@ -132,12 +151,31 @@ const createFakeDataSource = (config: FakeConfig): FakeHarness => {
   };
 
   let transactionActive = false;
+
+  const exclusiveConnection = config.destroyUnavailable
+    ? {}
+    : {
+        destroy: (): Promise<void> => {
+          calls.push('DESTROY');
+          if (config.failDestroy) {
+            return Promise.reject(new Error('注入故障：销毁失败'));
+          }
+          // 销毁独占连接即终止其事务
+          transactionActive = false;
+          return Promise.resolve();
+        },
+      };
+
   const runner = {
     manager: { query: handler },
+    databaseConnection: exclusiveConnection,
     connect: (): Promise<void> => Promise.resolve(),
     startTransaction: (): Promise<void> => {
-      transactionActive = true;
       calls.push('START TRANSACTION');
+      transactionActive = true;
+      if (config.failStartAfterActive) {
+        return Promise.reject(new Error('注入故障：AfterTransactionStart 抛错'));
+      }
       return Promise.resolve();
     },
     commitTransaction: (): Promise<void> => {
@@ -146,18 +184,24 @@ const createFakeDataSource = (config: FakeConfig): FakeHarness => {
       return Promise.resolve();
     },
     rollbackTransaction: (): Promise<void> => {
-      transactionActive = false;
       calls.push('ROLLBACK');
+      if (config.failRollback) {
+        return Promise.reject(new Error('注入故障：回滚失败'));
+      }
+      transactionActive = false;
       return Promise.resolve();
     },
     release: (): Promise<void> => {
       calls.push('RELEASE');
+      if (config.failRelease) {
+        return Promise.reject(new Error('注入故障：释放失败'));
+      }
       return Promise.resolve();
     },
     get isTransactionActive(): boolean {
       return transactionActive;
     },
-  };
+  } as unknown as QueryRunner;
 
   const setRow = (table: string, values: Record<string, unknown>): void => {
     const index = rows.findIndex((row) => row.table === table && row.values.id === values.id);
@@ -171,10 +215,14 @@ const createFakeDataSource = (config: FakeConfig): FakeHarness => {
   const dataSource = {
     options: { database: config.configuredDatabase ?? 'lithography_e2e' },
     query: handler,
-    createQueryRunner: (): QueryRunner => runner as unknown as QueryRunner,
+    createQueryRunner: (): QueryRunner => runner,
   } as unknown as DataSource;
 
-  return { dataSource, calls, deleteCalls, setRow };
+  const dispose = (): void => {
+    transactionActive = false;
+  };
+
+  return { dataSource, calls, deleteCalls, setRow, runner, dispose };
 };
 
 const fixtureRow = (
@@ -211,8 +259,12 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
     parameters?: unknown[],
   ): Promise<T[]> => dataSource.query(sql, parameters);
 
-  const register = async (table: ControlledFixtureTable, id: number): Promise<void> => {
-    await master.registerById(query, table, id);
+  const register = (
+    table: ControlledFixtureTable,
+    id: number,
+    expected: Record<string, unknown>,
+  ): void => {
+    master.registerCreated(table, id, expected);
   };
 
   const rowsOf = (ids: readonly number[]): OwnedFixtureRow[] =>
@@ -265,12 +317,19 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
       `INSERT INTO base_user_account (id, login_name, login_password, status)
        VALUES (${ACCOUNT_ID}, 'p4_owned_fixture_9904991', 'p4-fixture', 'ACTIVE')`,
     );
-    await register('base_user_account', ACCOUNT_ID);
+    register('base_user_account', ACCOUNT_ID, {
+      login_name: 'p4_owned_fixture_9904991',
+      status: 'ACTIVE',
+    });
     await query(
       `INSERT INTO equipment_model (id, model_code, model_name, enabled)
        VALUES (${SENTINEL_MODEL_ID}, 'P4-SENTINEL', 'P4 保活机型', 1)`,
     );
-    await register('equipment_model', SENTINEL_MODEL_ID);
+    register('equipment_model', SENTINEL_MODEL_ID, {
+      model_code: 'P4-SENTINEL',
+      model_name: 'P4 保活机型',
+      enabled: 1,
+    });
   });
 
   afterAll(async () => {
@@ -297,7 +356,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
             label: '核对夹具残留',
             run: async () => {
               if (!setupAllowed) return;
-              const residue = await assertRegisteredRowsAbsent(dataSource, master.list());
+              const residue = await assertRegisteredRowsAbsent(
+                dataSource,
+                master.list(),
+                master.pendingRows(),
+              );
               if (residue.length > 0) {
                 throw new Error(`本轮登记资源仍存在：${residue.join('；')}`);
               }
@@ -445,7 +508,7 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         }),
       ).toThrow(/主键结构不匹配/);
 
-      await ledger.registerById(harness.dataSource.query, 'equipment_model', 11);
+      ledger.registerCreated('equipment_model', 11, { model_name: 'mine', enabled: 1 });
       await runOwnedFixtureCleanup({
         dataSource: harness.dataSource,
         rows: ledger.list(),
@@ -569,7 +632,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         ],
       });
       const ledger = new OwnedFixtureLedger(ROUND_TAG);
-      await ledger.registerById(harness.dataSource.query, 'equipment_model', 2);
+      ledger.registerCreated('equipment_model', 2, {
+        model_name: 'm',
+        enabled: 1,
+        created_at: '2026-01-01T00:00:00.000Z',
+      });
 
       // 所有权字段必须保持原始预期
       await expect(
@@ -660,6 +727,404 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
     });
   });
 
+  describe('清理事务收尾与故障注入（SQL 替身）', () => {
+    const cleanupRows = (): OwnedFixtureRow[] => [
+      singleRow('equipment_model', 1, { model_name: 'x', enabled: 1 }),
+    ];
+    const fixtureRows = (): FakeRow[] => [
+      { table: 'equipment_model', values: { id: 1, model_name: 'x', enabled: 1 } },
+    ];
+
+    const catchCleanupError = async (harness: FakeHarness): Promise<Error> =>
+      runOwnedFixtureCleanup({ dataSource: harness.dataSource, rows: cleanupRows() }).then(
+        () => {
+          throw new Error('预期清理失败，但调用成功了');
+        },
+        (error: unknown) => error as Error,
+      );
+
+    it('事务已活动但 AfterTransactionStart 抛错：仍按驱动实际状态回滚', async () => {
+      const harness = createFakeDataSource({ rows: fixtureRows(), failStartAfterActive: true });
+      try {
+        const error = await catchCleanupError(harness);
+        expect(error.message).toContain('清理失败');
+        expect(harness.calls).toEqual(expect.arrayContaining(['START TRANSACTION', 'ROLLBACK']));
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(harness.calls).toContain('RELEASE');
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('rollbackTransaction 抛错：销毁独占连接，不普通归池', async () => {
+      const harness = createFakeDataSource({
+        rows: fixtureRows(),
+        failDeleteTable: 'equipment_model',
+        failRollback: true,
+      });
+      try {
+        const error = await catchCleanupError(harness);
+        expect(error.message).toContain('回滚失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'DESTROY']),
+        );
+        expect(harness.calls).not.toContain('RELEASE');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('主流程、回滚与销毁同时失败：各阶段错误均可见', async () => {
+      const harness = createFakeDataSource({
+        rows: fixtureRows(),
+        failDeleteTable: 'equipment_model',
+        failRollback: true,
+        failDestroy: true,
+      });
+      try {
+        const error = await catchCleanupError(harness);
+        expect(error.message).toContain('清理失败');
+        expect(error.message).toContain('回滚失败');
+        expect(error.message).toContain('销毁独占连接未完成');
+        expect(error.message).toContain('注入故障：销毁失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'DESTROY']),
+        );
+        expect(harness.calls).not.toContain('RELEASE');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('驱动无法安全销毁独占连接时明确报告，且不普通归池', async () => {
+      const harness = createFakeDataSource({
+        rows: fixtureRows(),
+        failDeleteTable: 'equipment_model',
+        failRollback: true,
+        destroyUnavailable: true,
+      });
+      try {
+        const error = await catchCleanupError(harness);
+        expect(error.message).toContain('销毁独占连接未完成');
+        expect(error.message).toContain('当前驱动不支持 destroy');
+        expect(harness.calls).not.toContain('RELEASE');
+        expect(harness.calls).not.toContain('DESTROY');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('正常失败回滚：行为不回退（回滚后释放）', async () => {
+      const harness = createFakeDataSource({
+        rows: fixtureRows(),
+        failDeleteTable: 'equipment_model',
+      });
+      try {
+        const error = await catchCleanupError(harness);
+        expect(error.message).toContain('清理失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('正常成功提交：行为不回退（提交后释放）', async () => {
+      const harness = createFakeDataSource({ rows: fixtureRows() });
+      try {
+        const result = await runOwnedFixtureCleanup({
+          dataSource: harness.dataSource,
+          rows: cleanupRows(),
+        });
+        expect(result).toEqual({ performed: true, deletedRows: 1 });
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'COMMIT', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(harness.deleteCalls).toHaveLength(1);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('提交成功但释放失败：明确失败，不宣称资源释放成功', async () => {
+      const harness = createFakeDataSource({ rows: fixtureRows(), failRelease: true });
+      try {
+        const error = await catchCleanupError(harness);
+        expect(error.message).toContain('关闭清理连接失败');
+        expect(error.message).toContain('注入故障：释放失败');
+        // 提交已生效：删除确实发生，但收尾失败必须向调用方暴露
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'COMMIT', 'RELEASE']),
+        );
+        expect(harness.deleteCalls).toHaveLength(1);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+  });
+
+  describe('首次登记不依赖回读（SQL 替身）', () => {
+    it('创建成功后回读抛错：已知 ID 与事实仍在账本', async () => {
+      const harness = createFakeDataSource({
+        rows: [
+          {
+            table: 'equipment_model',
+            values: { id: 41, model_code: 'P4-DIRECT', model_name: 'P4 直登机型', enabled: 1 },
+          },
+        ],
+        failSelect: true,
+      });
+      const ledger = new OwnedFixtureLedger(ROUND_TAG);
+      try {
+        ledger.registerCreated('equipment_model', 41, {
+          model_code: 'P4-DIRECT',
+          model_name: 'P4 直登机型',
+          enabled: 1,
+        });
+        await expect(
+          ledger.verifyRegistered(harness.dataSource.query, 'equipment_model', 41),
+        ).rejects.toThrow(/回读 SELECT 失败/);
+        // 回读失败不得抹掉已提交资源的登记事实
+        expect(ledger.has('equipment_model', 41)).toBe(true);
+        const residue = await assertRegisteredRowsAbsent(
+          harness.dataSource,
+          ledger.list(),
+          ledger.pendingRows(),
+        );
+        expect(residue).toEqual(['equipment_model(id=41)']);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('回读发现字段漂移：拒绝清理，原预期不变', async () => {
+      const harness = createFakeDataSource({
+        rows: [
+          {
+            table: 'equipment_model',
+            values: { id: 42, model_code: 'P4-DRIFT', model_name: '被外部改写', enabled: 1 },
+          },
+        ],
+      });
+      const ledger = new OwnedFixtureLedger(ROUND_TAG);
+      try {
+        ledger.registerCreated('equipment_model', 42, {
+          model_code: 'P4-DRIFT',
+          model_name: '登记时名称',
+          enabled: 1,
+        });
+        await expect(
+          runOwnedFixtureCleanup({
+            dataSource: harness.dataSource,
+            expectedDatabase: 'lithography_e2e',
+            rows: ledger.list(),
+          }),
+        ).rejects.toThrow(/字段不符/);
+        expect(harness.deleteCalls).toHaveLength(0);
+        // 原始归属与预期不被回读结果覆盖
+        expect(ledger.list()[0]?.expected.model_name).toBe('登记时名称');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('并发部分成功：成功资源已登记，全部分支结束后才收尾', async () => {
+      const harness = createFakeDataSource({
+        rows: [
+          { table: 'equipment_model', values: { id: 51, model_name: '成功分支', enabled: 1 } },
+          { table: 'equipment_model', values: { id: 52, model_name: '失败分支', enabled: 1 } },
+        ],
+      });
+      const ledger = new OwnedFixtureLedger(ROUND_TAG);
+      try {
+        const settled = await Promise.allSettled([
+          Promise.resolve().then(() => {
+            ledger.registerCreated('equipment_model', 51, {
+              model_name: '成功分支',
+              enabled: 1,
+            });
+          }),
+          Promise.resolve().then(() => {
+            throw new Error('注入另一分支失败');
+          }),
+        ]);
+        expect(settled.map((item) => item.status)).toEqual(['fulfilled', 'rejected']);
+        // 各分支各自登记，不等待另一分支成功
+        expect(ledger.has('equipment_model', 51)).toBe(true);
+        expect(ledger.has('equipment_model', 52)).toBe(false);
+        // 全部分支结束（allSettled）后才收尾，且只删除成功分支
+        await runOwnedFixtureCleanup({
+          dataSource: harness.dataSource,
+          expectedDatabase: 'lithography_e2e',
+          rows: ledger.list(),
+        });
+        expect(harness.deleteCalls.map((call) => call.params)).toEqual([[51]]);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('残留核对包含已登记但回读失败的目标，不能返回假零残留', async () => {
+      const harness = createFakeDataSource({
+        rows: [
+          {
+            table: 'maintenance_report_alarm',
+            values: { id: 61, report_id: 62, alarm_index: 1 },
+          },
+        ],
+        failSelect: true,
+      });
+      const ledger = new OwnedFixtureLedger(ROUND_TAG);
+      try {
+        ledger.registerPending(
+          'maintenance_report_alarm',
+          { report_id: 62, alarm_index: 1 },
+          { report_id: 62, alarm_index: 1, alarm_code: 'ALM-P4' },
+        );
+        await expect(
+          ledger.resolvePending(harness.dataSource.query, 'maintenance_report_alarm', {
+            report_id: 62,
+            alarm_index: 1,
+          }),
+        ).rejects.toThrow(/回读 SELECT 失败/);
+        // 解析失败后条目仍留在待核验集合
+        expect(ledger.pendingRows()).toHaveLength(1);
+        const residue = await assertRegisteredRowsAbsent(
+          harness.dataSource,
+          ledger.list(),
+          ledger.pendingRows(),
+        );
+        expect(residue).toEqual(['待核验 maintenance_report_alarm(report_id=62, alarm_index=1)']);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+  });
+
+  describe('恢复路径受保护事务收尾（SQL 替身）', () => {
+    const label = '安装设置恢复';
+
+    const runGuarded = (
+      harness: FakeHarness,
+      work: () => Promise<void>,
+    ): ReturnType<typeof runGuardedQueryRunnerTransaction> =>
+      runGuardedQueryRunnerTransaction({
+        createRunner: () => harness.runner,
+        label,
+        work,
+      });
+
+    it('恢复写入失败、回滚成功：错误上报并在回滚后释放', async () => {
+      const harness = createFakeDataSource({});
+      try {
+        const outcome = await runGuarded(harness, () =>
+          Promise.reject(new Error('注入恢复写入失败')),
+        );
+        expect(outcome.committed).toBe(false);
+        expect(outcome.errors.join('；')).toContain(`${label}失败`);
+        expect(outcome.errors.join('；')).toContain('注入恢复写入失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('恢复写入与回滚均失败：销毁独占连接，不普通归池', async () => {
+      const harness = createFakeDataSource({ failRollback: true });
+      try {
+        const outcome = await runGuarded(harness, () =>
+          Promise.reject(new Error('注入恢复写入失败')),
+        );
+        expect(outcome.committed).toBe(false);
+        expect(outcome.errors.join('；')).toContain(`${label}失败`);
+        expect(outcome.errors.join('；')).toContain(`${label}回滚失败`);
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'DESTROY']),
+        );
+        expect(harness.calls).not.toContain('RELEASE');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('回滚与销毁均失败：各阶段错误完整保留', async () => {
+      const harness = createFakeDataSource({ failRollback: true, failDestroy: true });
+      try {
+        const outcome = await runGuarded(harness, () =>
+          Promise.reject(new Error('注入恢复写入失败')),
+        );
+        const message = outcome.errors.join('；');
+        expect(message).toContain(`${label}失败`);
+        expect(message).toContain(`${label}回滚失败`);
+        expect(message).toContain(`${label}回滚后销毁独占连接未完成`);
+        expect(message).toContain('注入故障：销毁失败');
+        expect(harness.calls).not.toContain('RELEASE');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('事务启动后事件抛错：仍依据活动状态收尾', async () => {
+      const harness = createFakeDataSource({ failStartAfterActive: true });
+      let workRan = false;
+      try {
+        const outcome = await runGuarded(harness, () => {
+          workRan = true;
+          return Promise.resolve();
+        });
+        expect(workRan).toBe(false);
+        expect(outcome.committed).toBe(false);
+        expect(outcome.errors.join('；')).toContain(`${label}失败`);
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('提交成功、释放失败：明确报告失败', async () => {
+      const harness = createFakeDataSource({ failRelease: true });
+      try {
+        const outcome = await runGuarded(harness, () => Promise.resolve());
+        expect(outcome.committed).toBe(true);
+        expect(outcome.errors.join('；')).toContain(`${label}释放失败`);
+        expect(outcome.errors.join('；')).toContain('注入故障：释放失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'COMMIT', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+  });
+
   describe('真实 MySQL 事务与引用保护', () => {
     it('并发部分成功且后续断言失败：成功资源已登记并完成受保护清理，错误同时保留', async () => {
       const modelId = 9905013;
@@ -668,7 +1133,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${modelId}, 'P4-PARTIAL', 'P4 部分成功机型', 1)`,
       );
-      await register('equipment_model', modelId);
+      register('equipment_model', modelId, {
+        model_code: 'P4-PARTIAL',
+        model_name: 'P4 部分成功机型',
+        enabled: 1,
+      });
 
       // 成功分支已登记；另一分支失败；随后断言失败。统一收尾必须清理成功资源并保留全部错误
       let teardownMessage = '';
@@ -710,7 +1179,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${modelId}, 'P4-NORMAL', 'P4 正常清理机型', 1)`,
       );
-      await register('equipment_model', modelId);
+      register('equipment_model', modelId, {
+        model_code: 'P4-NORMAL',
+        model_name: 'P4 正常清理机型',
+        enabled: 1,
+      });
 
       const sentinelBefore = await query('SELECT * FROM equipment_model WHERE id = ?', [
         SENTINEL_MODEL_ID,
@@ -741,7 +1214,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${modelId}, 'P4-CHANGED', 'P4 原始名称', 1)`,
       );
-      await register('equipment_model', modelId);
+      register('equipment_model', modelId, {
+        model_code: 'P4-CHANGED',
+        model_name: 'P4 原始名称',
+        enabled: 1,
+      });
 
       await query('UPDATE equipment_model SET model_name = ? WHERE id = ?', [
         'P4 外部改写',
@@ -767,7 +1244,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${modelId}, 'P4-LEGIT', 'P4 合法变更机型', 1)`,
       );
-      await register('equipment_model', modelId);
+      register('equipment_model', modelId, {
+        model_code: 'P4-LEGIT',
+        model_name: 'P4 合法变更机型',
+        enabled: 1,
+      });
 
       await query('UPDATE equipment_model SET enabled = 0 WHERE id = ?', [modelId]);
       await master.applyExpectedChange(query, 'equipment_model', modelId, { enabled: 0 });
@@ -784,7 +1265,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${modelId}, 'P4-REF', 'P4 引用机型', 1)`,
       );
-      await register('equipment_model', modelId);
+      register('equipment_model', modelId, {
+        model_code: 'P4-REF',
+        model_name: 'P4 引用机型',
+        enabled: 1,
+      });
       await query(
         `INSERT INTO repair_request
            (id, request_no, customer_account_id, equipment_model_id, error_code,
@@ -792,7 +1277,14 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
          VALUES (${requestId}, 'P4_REF_REQUEST', ${ACCOUNT_ID}, ${modelId}, 'E-P4',
                  'P4 外部引用', '# P4 外部引用')`,
       );
-      await register('repair_request', requestId);
+      register('repair_request', requestId, {
+        request_no: 'P4_REF_REQUEST',
+        customer_account_id: ACCOUNT_ID,
+        equipment_model_id: modelId,
+        error_code: 'E-P4',
+        fault_description: 'P4 外部引用',
+        content_md: '# P4 外部引用',
+      });
 
       // 本次清理批次只包含机型：引用它的申请行不在删除目标内，属账本外记录，整批拒绝
       await expect(
@@ -837,8 +1329,16 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${secondModelId}, 'P4-ROLLBACK-B', 'P4 回滚机型 B', 1)`,
       );
-      await register('equipment_model', firstModelId);
-      await register('equipment_model', secondModelId);
+      register('equipment_model', firstModelId, {
+        model_code: 'P4-ROLLBACK-A',
+        model_name: 'P4 回滚机型 A',
+        enabled: 1,
+      });
+      register('equipment_model', secondModelId, {
+        model_code: 'P4-ROLLBACK-B',
+        model_name: 'P4 回滚机型 B',
+        enabled: 1,
+      });
       // 未登记的外部引用使第二笔机型删除触发外键失败；引用行单独登记以便收尾
       await query(
         `INSERT INTO repair_request
@@ -847,7 +1347,14 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
          VALUES (${requestId}, 'P4_ROLLBACK_REQUEST', ${ACCOUNT_ID}, ${secondModelId}, 'E-P4',
                  'P4 回滚引用', '# P4 回滚引用')`,
       );
-      await register('repair_request', requestId);
+      register('repair_request', requestId, {
+        request_no: 'P4_ROLLBACK_REQUEST',
+        customer_account_id: ACCOUNT_ID,
+        equipment_model_id: secondModelId,
+        error_code: 'E-P4',
+        fault_description: 'P4 回滚引用',
+        content_md: '# P4 回滚引用',
+      });
 
       await expect(cleanup([firstModelId, secondModelId])).rejects.toThrow(/清理失败/);
       expect(
@@ -873,7 +1380,11 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
         `INSERT INTO equipment_model (id, model_code, model_name, enabled)
          VALUES (${modelId}, 'P4-COLLISION', 'P4 碰撞机型', 1)`,
       );
-      await register('equipment_model', modelId);
+      register('equipment_model', modelId, {
+        model_code: 'P4-COLLISION',
+        model_name: 'P4 碰撞机型',
+        enabled: 1,
+      });
       await expect(
         assertFixtureIdsAvailable(dataSource, 'equipment_model', [modelId], ROUND_TAG),
       ).rejects.toThrow(/固定 ID 已被占用/);

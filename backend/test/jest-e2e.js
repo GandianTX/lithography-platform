@@ -52,6 +52,7 @@ const GROUPS = {
       'test/utils/e2e-scoped-cleanup-ownership.e2e-spec.ts',
       'test/utils/e2e-scoped-cleanup-faults.e2e-spec.ts',
       'test/utils/owned-ledger-lifecycle.e2e-spec.ts',
+      'test/utils/unique-index-constraints.e2e-spec.ts',
       'test/utils/test-accounts-atomicity.e2e-spec.ts',
     ],
     needs: {

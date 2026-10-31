@@ -104,7 +104,7 @@ erDiagram
 
 | 字段                | 类型        | 空/默认          | 约束/说明                                                                                    |
 | ------------------- | ----------- | ---------------- | -------------------------------------------------------------------------------------------- |
-| `member_role`       | varchar(20) | NN               | **改**：CHECK 扩为 `('SUPER_ADMIN','ENGINEER','CUSTOMER')`                                   |
+| `member_role`       | varchar(32) | NN               | **改**：CHECK 扩为 `('SUPER_ADMIN','ENGINEER','CUSTOMER')`                                   |
 | `status`            | varchar(16) | NN DF `'ACTIVE'` | 不变：`ACTIVE/LEFT`                                                                          |
 | `active_account_id` | int         | NULL             | **新增生成列** `AS (IF(status='ACTIVE', account_id, NULL)) STORED`，唯一索引承载“单有效组织” |
 
@@ -125,104 +125,105 @@ erDiagram
 
 ### 3.3 新表 1：`maintenance_report`（统一报告根）
 
-| 字段                                 | 类型               | 空/默认            | 说明                                                                                                             |
-| ------------------------------------ | ------------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `id`                                 | int unsigned AI PK | NN                 | —                                                                                                                |
-| `owner_organization_id`              | int                | NN                 | `fk_maintenance_report_owner_organization`；组织隔离唯一真实落点                                                 |
-| `source_type`                        | varchar(32)        | NN                 | `HISTORICAL_CASE / WORK_ORDER_SUMMARY`                                                                           |
-| `repair_request_id`                  | int                | NULL               | 仅 `WORK_ORDER_SUMMARY` 必填；`fk_...`；`uk_maintenance_report_request` 唯一（一工单至多一份总结根）             |
-| `title`                              | varchar(200)       | NULL（提交前必填） | 草稿可空，冻结前应用层校验                                                                                       |
-| `customer_factory_name`              | varchar(100)       | NULL（提交前必填） | 客户厂家手填，独立字段，不据其匹配组织                                                                           |
-| `equipment_model_id`                 | int                | NULL               | `fk_..._equipment_model`，全局型号库                                                                             |
-| `equipment_model_text`               | varchar(100)       | NULL               | 型号文本快照；与 id 互斥（沿用 PR0 `model_exclusive` 模式）                                                      |
-| `maintenance_date`                   | date               | NULL（提交前必填） | 业务日期，**不默认今天**                                                                                         |
-| `maintenance_engineer_account_id`    | int                | NN                 | 负责人账号 `fk_..._engineer_account`                                                                             |
-| `maintenance_engineer_name_snapshot` | varchar(50)        | NN                 | 负责人姓名快照，姓名变更不回写                                                                                   |
-| `phase_flow_version`                 | smallint unsigned  | NN DF 1            | 阶段流程版本，决定阶段编码合法性                                                                                 |
-| `status`                             | varchar(16)        | NN DF `'DRAFT'`    | `DRAFT/PENDING_REVIEW/RETURNED/APPROVED`                                                                         |
-| `current_version_no`                 | int unsigned       | NN DF 0            | 最近冻结版本号                                                                                                   |
-| `last_submitted_at`                  | timestamp(3)       | NULL               | 最近提交事件时间                                                                                                 |
-| `last_reviewed_at`                   | timestamp(3)       | NULL               | 最近审核事件时间                                                                                                 |
-| `ai_usage`                           | varchar(16)        | NN DF `'NOT_USED'` | `USED / NOT_USED`                                                                                                |
-| `ai_source_type`                     | varchar(64)        | NULL               | 分析结果来源命名空间；`USED` 时必填，**不在 DB 写死未经确认的来源取值**（避免把演示表/未确认来源固化为正式方案） |
-| `ai_source_id`                       | varchar(128)       | NULL               | 分析结果稳定标识（不建 FK，见 §9.3）                                                                             |
-| `ai_source_version`                  | varchar(64)        | NULL               | 分析结果不可变版本/内容摘要                                                                                      |
-| `ai_score`                           | tinyint unsigned   | NULL               | 1–5，禁止 0 代替“不适用”                                                                                         |
-| `ai_correctness`                     | varchar(16)        | NULL               | `CORRECT / PARTIAL / INCORRECT`                                                                                  |
-| `ai_helpfulness`                     | tinyint unsigned   | NULL               | 1–5                                                                                                              |
-| `ai_note`                            | varchar(2000)      | NULL               | 文字评价                                                                                                         |
-| `created_by_account_id`              | int                | NN                 | `fk_..._created_by`                                                                                              |
-| `updated_by_account_id`              | int                | NN                 | `fk_..._updated_by`                                                                                              |
-| `created_at` / `updated_at`          | timestamp(3)       | NN DF now          | —                                                                                                                |
+| 字段                                 | 类型              | 空/默认            | 说明                                                                                                             |
+| ------------------------------------ | ----------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `id`                                 | int AI PK         | NN                 | —                                                                                                                |
+| `owner_organization_id`              | int               | NN                 | `fk_maintenance_report_owner_organization`；组织隔离唯一真实落点                                                 |
+| `source_type`                        | varchar(32)       | NN                 | `HISTORICAL_CASE / WORK_ORDER_SUMMARY`                                                                           |
+| `repair_request_id`                  | int               | NULL               | 仅 `WORK_ORDER_SUMMARY` 必填；`fk_...`；`uk_maintenance_report_request` 唯一（一工单至多一份总结根）             |
+| `title`                              | varchar(200)      | NULL（提交前必填） | 草稿可空，冻结前应用层校验                                                                                       |
+| `customer_factory_name`              | varchar(100)      | NULL（提交前必填） | 客户厂家手填，独立字段，不据其匹配组织                                                                           |
+| `equipment_model_id`                 | int               | NULL               | `fk_..._equipment_model`，全局型号库                                                                             |
+| `equipment_model_text`               | varchar(100)      | NULL               | 型号文本快照；与 id 互斥（沿用 PR0 `model_exclusive` 模式）                                                      |
+| `maintenance_date`                   | date              | NULL（提交前必填） | 业务日期，**不默认今天**                                                                                         |
+| `maintenance_engineer_account_id`    | int               | NN                 | 负责人账号 `fk_..._engineer_account`                                                                             |
+| `maintenance_engineer_name_snapshot` | varchar(50)       | NN                 | 负责人姓名快照，姓名变更不回写                                                                                   |
+| `phase_flow_version`                 | smallint unsigned | NN DF 1            | 阶段流程版本，决定阶段编码合法性                                                                                 |
+| `status`                             | varchar(16)       | NN DF `'DRAFT'`    | `DRAFT/PENDING_REVIEW/RETURNED/APPROVED`                                                                         |
+| `current_version_no`                 | int unsigned      | NN DF 0            | 最近冻结版本号                                                                                                   |
+| `last_submitted_at`                  | timestamp(3)      | NULL               | 最近提交事件时间                                                                                                 |
+| `last_reviewed_at`                   | timestamp(3)      | NULL               | 最近审核事件时间                                                                                                 |
+| `ai_usage`                           | varchar(16)       | NN DF `'NOT_USED'` | `USED / NOT_USED`                                                                                                |
+| `ai_source_type`                     | varchar(64)       | NULL               | 分析结果来源命名空间；`USED` 时必填，**不在 DB 写死未经确认的来源取值**（避免把演示表/未确认来源固化为正式方案） |
+| `ai_source_id`                       | varchar(128)      | NULL               | 分析结果稳定标识（不建 FK，见 §9.3）                                                                             |
+| `ai_source_version`                  | varchar(64)       | NULL               | 分析结果不可变版本/内容摘要                                                                                      |
+| `ai_score`                           | tinyint unsigned  | NULL               | 1–5，禁止 0 代替“不适用”                                                                                         |
+| `ai_correctness`                     | varchar(16)       | NULL               | `CORRECT / PARTIAL / INCORRECT`                                                                                  |
+| `ai_helpfulness`                     | tinyint unsigned  | NULL               | 1–5                                                                                                              |
+| `ai_note`                            | varchar(2000)     | NULL               | 文字评价                                                                                                         |
+| `created_by_account_id`              | int               | NN                 | `fk_..._created_by`                                                                                              |
+| `updated_by_account_id`              | int               | NN                 | `fk_..._updated_by`                                                                                              |
+| `created_at` / `updated_at`          | timestamp(3)      | NN DF now          | —                                                                                                                |
 
 约束：`uk_maintenance_report_request(repair_request_id)`（一工单至多一份总结根）、`uk_maintenance_report_id_owner(id, owner_organization_id)`（组织内报告锚点，当前无外键引用）；`owner_organization_id` 与 `repair_request_id` **各自为单列外键**（分别指向 `organization(id)`、`repair_request(id)`），数据库不做“报告组织 = 工单组织”的联合校验，该一致性由建稿用例在锁定工单后比对两者组织后写入（见 §14 第 14 条）。
 
 ### 3.4 新表 2：`maintenance_report_alarm`（初始八项报警）
 
-| 字段                | 类型               | 空/默认 | 说明                                      |
-| ------------------- | ------------------ | ------- | ----------------------------------------- |
-| `id`                | int unsigned AI PK | NN      | —                                         |
-| `report_id`         | int unsigned       | NN      | `fk_..._report`，级联限制删除             |
-| `alarm_index`       | tinyint unsigned   | NN      | 1–8，固定槽位                             |
-| `alarm_code`        | varchar(100)       | NN      | 报警代码原文（保留原大小写/格式）         |
-| `alarm_description` | varchar(500)       | NULL    | 手工补充说明                              |
-| `phase_code`        | varchar(32)        | NN      | 稳定阶段编码（10 阶段），标签在类型层     |
-| `reset_result`      | varchar(16)        | NN      | `RESET_OK / RESET_FAILED / NOT_ATTEMPTED` |
+| 字段                | 类型             | 空/默认 | 说明                                      |
+| ------------------- | ---------------- | ------- | ----------------------------------------- |
+| `id`                | int AI PK        | NN      | —                                         |
+| `report_id`         | int              | NN      | `fk_..._report`，级联限制删除             |
+| `alarm_index`       | tinyint unsigned | NN      | 1–8，固定槽位                             |
+| `alarm_code`        | varchar(100)     | NN      | 报警代码原文（保留原大小写/格式）         |
+| `alarm_description` | varchar(500)     | NULL    | 手工补充说明                              |
+| `phase_code`        | varchar(32)      | NN      | 稳定阶段编码（10 阶段），标签在类型层     |
+| `reset_result`      | varchar(16)      | NN      | `RESET_OK / RESET_FAILED / NOT_ATTEMPTED` |
 
 约束：`uk_maintenance_report_alarm_slot(report_id, alarm_index)`、`chk_..._index CHECK(alarm_index BETWEEN 1 AND 8)`、`chk_..._reset_result`、`idx_maintenance_report_alarm_code(alarm_code)`。
 
 ### 3.5 新表 3：`maintenance_report_step`（排查步骤，工作态）
 
-| 字段                  | 类型               | 空/默认 | 说明                                     |
-| --------------------- | ------------------ | ------- | ---------------------------------------- |
-| `id`                  | int unsigned AI PK | NN      | —                                        |
-| `report_id`           | int unsigned       | NN      | `fk_..._report`                          |
-| `step_no`             | smallint unsigned  | NN      | 顺序号，从 1 连续；重排两段式写（见 §8） |
-| `step_code`           | varchar(64)        | NN      | 步骤稳定编码，不随排序变化               |
-| `phase_code`          | varchar(32)        | NN      | 阶段编码                                 |
-| `part_name`           | varchar(100)       | NULL    | 零件/部位                                |
-| `action_text`         | text               | NN      | 动作                                     |
-| `result_text`         | varchar(2000)      | NULL    | 结果                                     |
-| `new_alarm_code`      | varchar(100)       | NULL    | 新故障分支对应报警代码原文               |
-| `is_valid_new_branch` | tinyint(1)         | NN DF 0 | 有效新分支标记；非法组合由 CHECK 拒绝    |
+| 字段                  | 类型              | 空/默认 | 说明                                     |
+| --------------------- | ----------------- | ------- | ---------------------------------------- |
+| `id`                  | int AI PK         | NN      | —                                        |
+| `report_id`           | int               | NN      | `fk_..._report`                          |
+| `step_no`             | smallint unsigned | NN      | 顺序号，从 1 连续；重排两段式写（见 §8） |
+| `step_code`           | varchar(64)       | NN      | 步骤稳定编码，不随排序变化               |
+| `phase_code`          | varchar(32)       | NN      | 阶段编码                                 |
+| `part_name`           | varchar(100)      | NULL    | 零件/部位                                |
+| `action_text`         | text              | NN      | 动作                                     |
+| `result_text`         | varchar(2000)     | NULL    | 结果                                     |
+| `new_alarm_code`      | varchar(100)      | NULL    | 新故障分支对应报警代码原文               |
+| `is_valid_new_branch` | tinyint(1)        | NN DF 0 | 有效新分支标记；非法组合由 CHECK 拒绝    |
 
 约束：`uk_..._step_no(report_id, step_no)`、`uk_..._step_code(report_id, step_code)`、`chk_..._step_no CHECK(step_no>=1)`、`chk_..._branch CHECK(is_valid_new_branch=0 OR new_alarm_code IS NOT NULL)`、`idx_..._phase(report_id, phase_code)`。
 
 ### 3.6 新表 4：`maintenance_report_attachment`（当前附件集合）
 
-| 字段                        | 类型               | 空/默认           | 说明                       |
-| --------------------------- | ------------------ | ----------------- | -------------------------- |
-| `id`                        | int unsigned AI PK | NN                | 本地附件标识，不当云端主键 |
-| `report_id`                 | int unsigned       | NN                | `fk_..._report`            |
-| `original_filename`         | varchar(255)       | NN                | 原文件名快照               |
-| `mime_type`                 | varchar(100)       | NN                | 提交前已鉴定               |
-| `byte_size`                 | bigint unsigned    | NN                | 单文件 ≤ 20 MiB            |
-| `checksum_sha256`           | char(64)           | NULL              | 备份/上传对账用，可空      |
-| `storage_backend`           | varchar(16)        | NN                | `LOCAL / OBJECT`           |
-| `storage_reference`         | varchar(512)       | NN                | 本地相对路径或对象键       |
-| `sort_order`                | smallint unsigned  | NN                | 1–10 展示顺序              |
-| `description`               | varchar(500)       | NULL              | 附件说明                   |
-| `status`                    | varchar(16)        | NN DF `'CURRENT'` | `CURRENT / RETIRED`        |
-| `uploaded_by_account_id`    | int                | NN                | `fk_..._uploaded_by`       |
-| `retired_at`                | timestamp(3)       | NULL              | 退役时间；RETIRED 必填     |
-| `created_at` / `updated_at` | timestamp(3)       | NN DF now         | —                          |
+| 字段                        | 类型              | 空/默认           | 说明                                                                                          |
+| --------------------------- | ----------------- | ----------------- | --------------------------------------------------------------------------------------------- |
+| `id`                        | int AI PK         | NN                | 本地附件标识，不当云端主键                                                                    |
+| `report_id`                 | int               | NN                | `fk_..._report`                                                                               |
+| `original_filename`         | varchar(255)      | NN                | 原文件名快照                                                                                  |
+| `mime_type`                 | varchar(100)      | NN                | 提交前已鉴定                                                                                  |
+| `byte_size`                 | bigint unsigned   | NN                | 单文件 ≤ 20 MiB                                                                               |
+| `checksum_sha256`           | char(64)          | NULL              | 备份/上传对账用，可空                                                                         |
+| `storage_backend`           | varchar(16)       | NN                | `LOCAL / OBJECT`                                                                              |
+| `storage_reference`         | varchar(512)      | NN                | 本地相对路径或对象键                                                                          |
+| `sort_order`                | smallint unsigned | NN                | 1–10 展示顺序                                                                                 |
+| `description`               | varchar(500)      | NULL              | 附件说明                                                                                      |
+| `active_sort_order`         | smallint unsigned | NULL              | **生成列** `AS (IF(status='CURRENT', sort_order, NULL)) STORED`，只读，承载当前附件槽位唯一性 |
+| `status`                    | varchar(16)       | NN DF `'CURRENT'` | `CURRENT / RETIRED`                                                                           |
+| `uploaded_by_account_id`    | int               | NN                | `fk_..._uploaded_by`                                                                          |
+| `retired_at`                | timestamp(3)      | NULL              | 退役时间；RETIRED 必填                                                                        |
+| `created_at` / `updated_at` | timestamp(3)      | NN DF now         | —                                                                                             |
 
-约束：`uk_..._id_report(id, report_id)`（复合 FK 锚点）、`chk_..._byte_size CHECK(byte_size>0 AND byte_size<=20971520)`、`chk_..._sort_order CHECK(sort_order BETWEEN 1 AND 10)`、`chk_..._status`、`chk_..._retired CHECK((status='CURRENT' AND retired_at IS NULL) OR (status='RETIRED' AND retired_at IS NOT NULL))`、`idx_..._report_status(report_id, status, sort_order)`。
+约束：`uk_..._id_report(id, report_id)`（复合 FK 锚点）、`uk_..._active_slot(report_id, active_sort_order)`（同一报告内当前附件槽位唯一）、`chk_..._byte_size CHECK(byte_size>0 AND byte_size<=20971520)`、`chk_..._sort_order CHECK(sort_order BETWEEN 1 AND 10)`、`chk_..._status`、`chk_..._retired CHECK((status='CURRENT' AND retired_at IS NULL) OR (status='RETIRED' AND retired_at IS NOT NULL))`、`idx_..._report_status(report_id, status, sort_order)`。
 
 ### 3.7 新表 5：`maintenance_report_version`（冻结版本）
 
-| 字段                      | 类型               | 空/默认          | 说明                                                           |
-| ------------------------- | ------------------ | ---------------- | -------------------------------------------------------------- |
-| `id`                      | int unsigned AI PK | NN               | —                                                              |
-| `report_id`               | int unsigned       | NN               | `fk_..._report`                                                |
-| `version_no`              | int unsigned       | NN               | 从 1 递增                                                      |
-| `change_kind`             | varchar(24)        | NN DF `'SUBMIT'` | `SUBMIT / FORMAL_CORRECTION`                                   |
-| `change_reason`           | varchar(500)       | NULL             | `FORMAL_CORRECTION` 必填（应用层 + CHECK 组合）                |
-| `schema_version`          | smallint unsigned  | NN DF 2          | 快照严格 schema 版本                                           |
-| `payload_snapshot`        | json               | NN               | 标题/厂家/型号/日期/负责人/八报警/步骤/AI 使用与评价的完整快照 |
-| `submitted_by_account_id` | int                | NN               | `fk_..._submitted_by`                                          |
-| `submitted_at`            | timestamp(3)       | NN               | 冻结事件时间                                                   |
-| `created_at`              | timestamp(3)       | NN DF now        | —                                                              |
+| 字段                      | 类型              | 空/默认          | 说明                                                           |
+| ------------------------- | ----------------- | ---------------- | -------------------------------------------------------------- |
+| `id`                      | int AI PK         | NN               | —                                                              |
+| `report_id`               | int               | NN               | `fk_..._report`                                                |
+| `version_no`              | int unsigned      | NN               | 从 1 递增                                                      |
+| `change_kind`             | varchar(24)       | NN DF `'SUBMIT'` | `SUBMIT / FORMAL_CORRECTION`                                   |
+| `change_reason`           | varchar(500)      | NULL             | `FORMAL_CORRECTION` 必填（应用层 + CHECK 组合）                |
+| `schema_version`          | smallint unsigned | NN DF 2          | 快照严格 schema 版本                                           |
+| `payload_snapshot`        | json              | NN               | 标题/厂家/型号/日期/负责人/八报警/步骤/AI 使用与评价的完整快照 |
+| `submitted_by_account_id` | int               | NN               | `fk_..._submitted_by`                                          |
+| `submitted_at`            | timestamp(3)      | NN               | 冻结事件时间                                                   |
+| `created_at`              | timestamp(3)      | NN DF now        | —                                                              |
 
 约束：`uk_..._version(report_id, version_no)`、`uk_..._id_report(id, report_id)`（复合 FK 锚点）、`chk_..._version_no CHECK(version_no>=1)`、`chk_..._change_kind`、`chk_..._correction_reason CHECK(change_kind='SUBMIT' OR change_reason IS NOT NULL)`、`chk_..._json CHECK(JSON_VALID(payload_snapshot))`、`idx_..._submitted(report_id, submitted_at)`。
 
@@ -230,9 +231,9 @@ erDiagram
 
 | 字段                   | 类型              | 空/默认 | 说明                            |
 | ---------------------- | ----------------- | ------- | ------------------------------- |
-| `version_id`           | int unsigned PK   | NN      | 与 `attachment_id` 组成复合主键 |
-| `attachment_id`        | int unsigned PK   | NN      | —                               |
-| `report_id`            | int unsigned      | NN      | 反跨组织/跨报告锚点             |
+| `version_id`           | int PK            | NN      | 与 `attachment_id` 组成复合主键 |
+| `attachment_id`        | int PK            | NN      | —                               |
+| `report_id`            | int               | NN      | 反跨组织/跨报告锚点             |
 | `sort_order`           | smallint unsigned | NN      | 冻结时顺序                      |
 | `description_snapshot` | varchar(500)      | NULL    | 冻结时说明                      |
 | `publish_flag`         | tinyint(1)        | NN DF 0 | 审核通过时勾选；提交前恒 0      |
@@ -241,15 +242,15 @@ erDiagram
 
 ### 3.9 新表 7：`maintenance_report_review`（审核记录）
 
-| 字段                     | 类型               | 空/默认 | 说明               |
-| ------------------------ | ------------------ | ------- | ------------------ |
-| `id`                     | int unsigned AI PK | NN      | —                  |
-| `report_id`              | int unsigned       | NN      | —                  |
-| `version_id`             | int unsigned       | NN      | 每版本至多一条     |
-| `decision`               | varchar(16)        | NN      | `APPROVE / RETURN` |
-| `comment`                | varchar(2000)      | NULL    | `RETURN` 必填      |
-| `reviewed_by_account_id` | int                | NN      | 管理员账号         |
-| `reviewed_at`            | timestamp(3)       | NN      | 审核事件时间       |
+| 字段                     | 类型          | 空/默认 | 说明               |
+| ------------------------ | ------------- | ------- | ------------------ |
+| `id`                     | int AI PK     | NN      | —                  |
+| `report_id`              | int           | NN      | —                  |
+| `version_id`             | int           | NN      | 每版本至多一条     |
+| `decision`               | varchar(16)   | NN      | `APPROVE / RETURN` |
+| `comment`                | varchar(2000) | NULL    | `RETURN` 必填      |
+| `reviewed_by_account_id` | int           | NN      | 管理员账号         |
+| `reviewed_at`            | timestamp(3)  | NN      | 审核事件时间       |
 
 约束：`uk_..._review_version(version_id)`、`uk_..._id_report(id, report_id)`（可选统一锚点）、复合外键 `(version_id, report_id)→version(id, report_id)`、`chk_..._decision`、`chk_..._return_comment CHECK(decision='APPROVE' OR comment IS NOT NULL)`、`idx_..._reviewed(report_id, reviewed_at)`。
 
@@ -271,44 +272,44 @@ erDiagram
 
 ### 3.11 新表 9：`local_upload_task`（上传意图/幂等/回执）
 
-| 字段                        | 类型               | 空/默认           | 说明                                                   |
-| --------------------------- | ------------------ | ----------------- | ------------------------------------------------------ |
-| `id`                        | int unsigned AI PK | NN                | —                                                      |
-| `installation_id`           | char(36)           | NN                | `fk_local_upload_task_installation`                    |
-| `entity_type`               | varchar(32)        | NN                | `REPORT_VERSION / ATTACHMENT / BACKUP_MANIFEST`        |
-| `entity_local_id`           | int unsigned       | NN                | 本地实体 ID，仅本地语义                                |
-| `entity_version`            | varchar(64)        | NN                | 版本号或内容摘要                                       |
-| `idempotency_key`           | varchar(191)       | NN                | 幂等键                                                 |
-| `status`                    | varchar(16)        | NN DF `'PENDING'` | `PENDING / UPLOADING / SUCCEEDED / FAILED / CANCELLED` |
-| `attempt_count`             | smallint unsigned  | NN DF 0           | —                                                      |
-| `last_attempt_at`           | timestamp(3)       | NULL              | —                                                      |
-| `remote_id`                 | varchar(128)       | NULL              | 云端返回标识（不反写业务主键）                         |
-| `remote_receipt`            | varchar(512)       | NULL              | 回执/摘要                                              |
-| `error_code`                | varchar(64)        | NULL              | —                                                      |
-| `error_message`             | varchar(1000)      | NULL              | 不含凭据                                               |
-| `created_at` / `updated_at` | timestamp(3)       | NN DF now         | —                                                      |
+| 字段                        | 类型              | 空/默认           | 说明                                                   |
+| --------------------------- | ----------------- | ----------------- | ------------------------------------------------------ |
+| `id`                        | int AI PK         | NN                | —                                                      |
+| `installation_id`           | char(36)          | NN                | `fk_local_upload_task_installation`                    |
+| `entity_type`               | varchar(32)       | NN                | `REPORT_VERSION / ATTACHMENT / BACKUP_MANIFEST`        |
+| `entity_local_id`           | int unsigned      | NN                | 本地实体 ID，仅本地语义                                |
+| `entity_version`            | varchar(64)       | NN                | 版本号或内容摘要                                       |
+| `idempotency_key`           | varchar(191)      | NN                | 幂等键                                                 |
+| `status`                    | varchar(16)       | NN DF `'PENDING'` | `PENDING / UPLOADING / SUCCEEDED / FAILED / CANCELLED` |
+| `attempt_count`             | smallint unsigned | NN DF 0           | —                                                      |
+| `last_attempt_at`           | timestamp(3)      | NULL              | —                                                      |
+| `remote_id`                 | varchar(128)      | NULL              | 云端返回标识（不反写业务主键）                         |
+| `remote_receipt`            | varchar(512)      | NULL              | 回执/摘要                                              |
+| `error_code`                | varchar(64)       | NULL              | —                                                      |
+| `error_message`             | varchar(1000)     | NULL              | 不含凭据                                               |
+| `created_at` / `updated_at` | timestamp(3)      | NN DF now         | —                                                      |
 
 约束：`uk_local_upload_task_idempotency(idempotency_key)`、`uk_local_upload_task_entity(installation_id, entity_type, entity_local_id, entity_version)`、`chk_..._status`、`chk_..._attempt CHECK(attempt_count>=0)`、`idx_..._status_created(status, created_at)`。
 
 ### 3.12 新表 10：`local_backup_run`（备份清单/校验/失败）
 
-| 字段                        | 类型               | 空/默认           | 说明                                                                                                 |
-| --------------------------- | ------------------ | ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `id`                        | int unsigned AI PK | NN                | —                                                                                                    |
-| `installation_id`           | char(36)           | NN                | `fk_..._installation`                                                                                |
-| `trigger_type`              | varchar(16)        | NN                | `SCHEDULED / MANUAL / USB_EXPORT`                                                                    |
-| `status`                    | varchar(16)        | NN DF `'RUNNING'` | `RUNNING / SUCCEEDED / FAILED / INTERRUPTED`                                                         |
-| `active_installation_id`    | char(36)           | NULL              | **生成列** `AS (IF(status='RUNNING', installation_id, NULL)) STORED`，单安装同时只允许一个运行中备份 |
-| `started_at`                | timestamp(3)       | NN                | —                                                                                                    |
-| `finished_at`               | timestamp(3)       | NULL              | 非 RUNNING 必填                                                                                      |
-| `manifest_path`             | varchar(512)       | NULL              | 清单文件位置                                                                                         |
-| `manifest_checksum`         | char(64)           | NULL              | SHA-256                                                                                              |
-| `byte_size`                 | bigint unsigned    | NULL              | —                                                                                                    |
-| `attachment_count`          | int unsigned       | NULL              | —                                                                                                    |
-| `schema_version`            | smallint unsigned  | NULL              | 备份时的结构版本/迁移号                                                                              |
-| `error_code`                | varchar(64)        | NULL              | —                                                                                                    |
-| `error_message`             | varchar(1000)      | NULL              | 不含凭据                                                                                             |
-| `created_at` / `updated_at` | timestamp(3)       | NN DF now         | —                                                                                                    |
+| 字段                        | 类型              | 空/默认           | 说明                                                                                                 |
+| --------------------------- | ----------------- | ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `id`                        | int AI PK         | NN                | —                                                                                                    |
+| `installation_id`           | char(36)          | NN                | `fk_..._installation`                                                                                |
+| `trigger_type`              | varchar(16)       | NN                | `SCHEDULED / MANUAL / USB_EXPORT`                                                                    |
+| `status`                    | varchar(16)       | NN DF `'RUNNING'` | `RUNNING / SUCCEEDED / FAILED / INTERRUPTED`                                                         |
+| `active_installation_id`    | char(36)          | NULL              | **生成列** `AS (IF(status='RUNNING', installation_id, NULL)) STORED`，单安装同时只允许一个运行中备份 |
+| `started_at`                | timestamp(3)      | NN                | —                                                                                                    |
+| `finished_at`               | timestamp(3)      | NULL              | 非 RUNNING 必填                                                                                      |
+| `manifest_path`             | varchar(512)      | NULL              | 清单文件位置                                                                                         |
+| `manifest_checksum`         | char(64)          | NULL              | SHA-256                                                                                              |
+| `byte_size`                 | bigint unsigned   | NULL              | —                                                                                                    |
+| `attachment_count`          | int unsigned      | NULL              | —                                                                                                    |
+| `schema_version`            | smallint unsigned | NULL              | 备份时的结构版本/迁移号                                                                              |
+| `error_code`                | varchar(64)       | NULL              | —                                                                                                    |
+| `error_message`             | varchar(1000)     | NULL              | 不含凭据                                                                                             |
+| `created_at` / `updated_at` | timestamp(3)      | NN DF now         | —                                                                                                    |
 
 约束：`uk_local_backup_run_active(active_installation_id)`、`chk_..._trigger`、`chk_..._status`、`chk_..._finish CHECK((status='RUNNING' AND finished_at IS NULL) OR (status<>'RUNNING' AND finished_at IS NOT NULL))`、`idx_..._started(started_at)`。**不设自动清理**字段：保留期未定，删除需显式操作。
 
@@ -563,7 +564,7 @@ chk_maintenance_report_status_consistency CHECK (
 
 1. **组织绑定范围**：按 §3.1「三种账号均关联组织」，`admin-create-user` 对 `ENGINEER` 与 `CUSTOMER` 均绑定管理员当前有效组织（原先“客户不自动加入”的 PR0 注释已同步更正）。客户仍不因此获得资料库、内部对话或审核权限。
 2. **管理员代建报告（§6）未实现**：当前仅本人工单的接单工程师可创建/编辑/提交报告，管理员代建留待后续计划，不在本轮扩大范围。
-3. **`FORMAL_CORRECTION` 变更类型未实现**：`changeKind` 仅落 `SUBMIT`/`RESUBMIT`；正式更正流程需另行确认入口与权限后追加。
+3. **`FORMAL_CORRECTION` 与重提的落库取值**：当前提交与退回后重提均写 `SUBMIT`，通过递增 `version_no` 区分轮次；数据库 `chk_..._change_kind` 允许 `SUBMIT / FORMAL_CORRECTION`，但允许值不等于正式更正流程已经实现，正式更正仍需另行确认入口与权限后追加。
 4. **附件唯一性口径（§7.2）**：实现为 `status` 列（`CURRENT`/`RETIRED`）+ `active_sort_order` 生成列唯一键的“退役往返”，不再采用先置负数再回正的两段式。
 5. **发布数量下限（§7.5）**：放宽为“仅当存在已发布候选附件时才要求至少一条”，纯文字版本允许空发布选择。
 6. **AI 正文不进冻结快照**：版本快照仅保存 `usage/sourceType/sourceId/sourceVersion` 与评价字段；负责人 AI 接口未定，正文入库形态不稳定，暂不绑定冻结证据。
@@ -580,6 +581,6 @@ chk_maintenance_report_status_consistency CHECK (
     - 用例锁后校验承担：建稿用例先 `FOR UPDATE` 锁工单，再解析账号当前有效组织，比对工单 `owner_organization_id` 与账号组织一致后才写入，报告组织直接取账号组织；编辑、提交、附件、审核/退回由 `lockEditableReportForAuthor` 与查询服务按报告组织比对；工单处理结果回写按工单组织比对。不匹配一律 `NOT_FOUND`（不泄露目标存在性）。
     - 该保护覆盖的入口：建稿、草稿编辑、提交冻结、加附件、审核通过/退回、工单处理结果回写。
     - 不受该保护的直接写库路径：绕过用例的 SQL、运维脚本或未来导入工具仍可写入跨组织引用；数据库只会因被引用行不存在而拒绝，不会因跨组织而拒绝。新增写入口必须显式复用锁后归属校验。
-    - 取舍理由：`repair_request_id` 可空（`HISTORICAL_CASE` 为 NULL）时复合外键按 MATCH SIMPLE 不生效，且账号组织可在生命周期内变更，跨组织判定必须使用最新组织事实，故保留单列外键 + 用例锁后校验，不追加复合外键迁移。
+    - 取舍理由：`repair_request_id` 可空（`HISTORICAL_CASE` 为 NULL）只影响该行为 NULL 的记录；对任一非 NULL 工单总结，复合外键 `(repair_request_id, owner_organization_id) → repair_request(id, owner_organization_id)` 仍可建立并校验，空值并不构成不建复合外键的技术障碍。当前取舍是：数据库分别保证两列引用存在，**不保证报告组织与工单组织相同**；同组织一致性与账号组织生命周期变化由用例锁后校验承担，本轮保留该取舍，不追加复合外键迁移。
 15. **并发与幂等修复（评审后登记）**：建稿唯一键冲突映射为 `WORK_ORDER_ALREADY_SUMMARIZED`（`CONFLICT`）；本地设置改为「锁定读 → 合并 → 写入」；上传任务预检改普通读、冲突后才锁定回读，避免间隙锁死锁；本地运行错误码独立为 `LOCAL_RUNTIME_ERROR` 命名空间。
 16. **并发回读锁定语义修复**：`findUploadTaskByKey` 曾把锁选项以 `...lock` 展开为顶层 `mode` 字段，TypeORM 实际未生成 `FOR UPDATE`，REPEATABLE READ 下唯一键冲突后的回读命中旧快照返回空；已改为显式 `lock: { mode: 'pessimistic_write' }` 并补回归单测。真实 MySQL 并发与 KEEP 结果见[验收记录](./organization-maintenance-data-increment-acceptance-20261029.md)。

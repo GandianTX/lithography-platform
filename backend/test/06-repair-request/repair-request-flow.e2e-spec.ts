@@ -153,7 +153,7 @@ describe('维修申请业务流程 (e2e)', () => {
 
   describe('equipmentModels 查询', () => {
     it('只返回启用型号并按 sortOrder 升序', async () => {
-      const [modelB, modelA] = await seedModels([
+      const [modelB, modelA, modelOff] = await seedModels([
         { modelCode: 'E2E-B', modelName: '型号B', sortOrder: 2, enabled: true },
         { modelCode: 'E2E-A', modelName: '型号A', sortOrder: 1, enabled: true },
         { modelCode: 'E2E-OFF', modelName: '已停用', sortOrder: 0, enabled: false },
@@ -166,10 +166,29 @@ describe('维修申请业务流程 (e2e)', () => {
       }).expect(200);
 
       expect(response.body.errors).toBeUndefined();
-      expect(response.body.data.equipmentModels).toEqual([
-        { id: modelA.id, modelCode: 'E2E-A', modelName: '型号A' },
-        { id: modelB.id, modelCode: 'E2E-B', modelName: '型号B' },
-      ]);
+      // 目标库允许保留非本规格的合法数据，故不能假设 equipment_model 只有本规格三行。
+      // 仍以库内「启用集合」为准确认只返回启用型号，并校验返回顺序与 sort_order 非降序一致。
+      const returned = response.body.data.equipmentModels as Array<{
+        id: number;
+        modelCode: string;
+        modelName: string;
+      }>;
+      const enabledRows = await dataSource.query<Array<{ id: number; sort_order: number }>>(
+        'SELECT id, sort_order FROM equipment_model WHERE enabled = 1',
+      );
+      expect(new Set(returned.map((row) => Number(row.id)))).toEqual(
+        new Set(enabledRows.map((row) => Number(row.id))),
+      );
+      expect(returned.map((row) => row.id)).toEqual(expect.arrayContaining([modelA.id, modelB.id]));
+      expect(returned.map((row) => row.id)).not.toContain(modelOff.id);
+
+      const sortOrderById = new Map(
+        enabledRows.map((row) => [Number(row.id), Number(row.sort_order)]),
+      );
+      const returnedOrders = returned.map((row) => sortOrderById.get(Number(row.id)) ?? -1);
+      for (let index = 1; index < returnedOrders.length; index += 1) {
+        expect(returnedOrders[index]).toBeGreaterThanOrEqual(returnedOrders[index - 1]);
+      }
     });
   });
 

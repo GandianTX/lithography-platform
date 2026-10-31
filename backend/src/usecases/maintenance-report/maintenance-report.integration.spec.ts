@@ -13,7 +13,6 @@ import { DataSource, type QueryRunner } from 'typeorm';
 import {
   assertFixtureIdsAvailable,
   assertRegisteredRowsAbsent,
-  type ControlledFixtureTable,
   describeTeardownFailure,
   finalizeFixtureTeardown,
   OwnedFixtureLedger,
@@ -115,10 +114,11 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       ? (JSON.parse(value) as Record<string, unknown>)
       : ((value ?? {}) as Record<string, unknown>);
 
-  /** 创建成功后立即按主键回读整行并登记，后续断言前先完成登记 */
-  const registerRow = async (table: ControlledFixtureTable, id: number): Promise<void> => {
-    await ledger.registerById(query, table, id);
-  };
+  /**
+   * 夹具创建一律在写入成功并取得实际主键后，立即按**写入输入与已知业务结果**同步登记；
+   * 成功后的 SELECT 只用于需要时显式核验，不参与首次登记，避免回读失败让已提交行从账本消失。
+   * 数据库生成值（如 NOW(3)）和日期列驱动形态不作为预期值登记。
+   */
 
   /**
    * 提交结果返回的版本 ID 直接登记；版本附件只依据提交时已知的附件集合构造复合主键并逐行登记，
@@ -522,7 +522,12 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       `INSERT INTO organization (id, organization_code, name, kind, status)
        VALUES (${FIXTURE.org.id}, '${FIXTURE.org.code}', 'S5 报告集成组织', 'CLIENT', 'ACTIVE')`,
     );
-    await registerRow('organization', FIXTURE.org.id);
+    ledger.registerCreated('organization', FIXTURE.org.id, {
+      organization_code: FIXTURE.org.code,
+      name: 'S5 报告集成组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
 
     await query(
       `INSERT INTO base_user_account (id, login_name, login_password, status)
@@ -530,56 +535,113 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
               (${FIXTURE.admin}, 's5mr_admin_9904403', 's5-integration-fixture', 'ACTIVE'),
               (${FIXTURE.customer}, 's5mr_customer_9904404', 's5-integration-fixture', 'ACTIVE')`,
     );
-    for (const accountId of [FIXTURE.engineer, FIXTURE.admin, FIXTURE.customer]) {
-      await registerRow('base_user_account', accountId);
+    for (const account of [
+      { id: FIXTURE.engineer, loginName: 's5mr_engineer_9904402' },
+      { id: FIXTURE.admin, loginName: 's5mr_admin_9904403' },
+      { id: FIXTURE.customer, loginName: 's5mr_customer_9904404' },
+    ]) {
+      ledger.registerCreated('base_user_account', account.id, {
+        login_name: account.loginName,
+        status: 'ACTIVE',
+      });
     }
 
-    await query(
-      `INSERT INTO organization_membership (organization_id, account_id, member_role, status)
-       VALUES (${FIXTURE.org.id}, ${FIXTURE.engineer}, 'ENGINEER', 'ACTIVE'),
-              (${FIXTURE.org.id}, ${FIXTURE.admin}, 'SUPER_ADMIN', 'ACTIVE'),
-              (${FIXTURE.org.id}, ${FIXTURE.customer}, 'CUSTOMER', 'ACTIVE')`,
-    );
-    // 成员关系 ID 由数据库生成：按本轮组织与账号精确回读后立即登记
-    const memberships = await query<{ id: number }>(
-      'SELECT id FROM organization_membership WHERE organization_id = ?',
-      [FIXTURE.org.id],
-    );
-    for (const membership of memberships) {
-      await registerRow('organization_membership', membership.id);
+    // 成员关系 ID 由数据库生成：逐行写入后立即用驱动返回的 insertId 登记，不依赖成功后的 SELECT
+    for (const membership of [
+      { accountId: FIXTURE.engineer, role: 'ENGINEER' },
+      { accountId: FIXTURE.admin, role: 'SUPER_ADMIN' },
+      { accountId: FIXTURE.customer, role: 'CUSTOMER' },
+    ]) {
+      const inserted = (await query(
+        `INSERT INTO organization_membership (organization_id, account_id, member_role, status)
+         VALUES (?, ?, ?, 'ACTIVE')`,
+        [FIXTURE.org.id, membership.accountId, membership.role],
+      )) as unknown as { insertId: number };
+      ledger.registerCreated('organization_membership', Number(inserted.insertId), {
+        organization_id: FIXTURE.org.id,
+        account_id: membership.accountId,
+        member_role: membership.role,
+        status: 'ACTIVE',
+      });
     }
 
     await query(
       `INSERT INTO equipment_model (id, model_code, model_name, enabled)
        VALUES (${FIXTURE.model.id}, '${FIXTURE.model.code}', 'S5 报告集成机型', 1)`,
     );
-    await registerRow('equipment_model', FIXTURE.model.id);
+    ledger.registerCreated('equipment_model', FIXTURE.model.id, {
+      model_code: FIXTURE.model.code,
+      model_name: 'S5 报告集成机型',
+      enabled: 1,
+    });
 
-    await query(
-      `INSERT INTO repair_request
-         (id, request_no, customer_account_id, equipment_model_id, error_code,
-          fault_description, content_md, owner_organization_id, is_accepted,
-          accepted_by_engineer_account_id, accepted_at)
-       VALUES (${FIXTURE.repairRequest}, 'S5MR_REQUEST', ${FIXTURE.customer}, ${FIXTURE.model.id},
-               'E-S5MR', 'S5 报告集成夹具', '# S5 报告集成夹具', ${FIXTURE.org.id}, TRUE,
-               ${FIXTURE.engineer}, NOW(3)),
-              (${FIXTURE.repairRequestConcurrent}, 'S5MR_REQUEST_2', ${FIXTURE.customer}, ${FIXTURE.model.id},
-               'E-S5MR2', 'S5 报告并发夹具', '# S5 报告并发夹具', ${FIXTURE.org.id}, TRUE,
-               ${FIXTURE.engineer}, NOW(3)),
-              (${FIXTURE.handlingRequest}, 'S5MR_HANDLING', ${FIXTURE.customer}, ${FIXTURE.model.id},
-               'E-S5MR3', 'S5 处理结果夹具', '# S5 处理结果夹具', ${FIXTURE.org.id}, TRUE,
-               ${FIXTURE.engineer}, NOW(3)),
-              (${FIXTURE.repairRequestAttachment}, 'S5MR_ATTACHMENT', ${FIXTURE.customer}, ${FIXTURE.model.id},
-               'E-S5MR4', 'S5 版本附件夹具', '# S5 版本附件夹具', ${FIXTURE.org.id}, TRUE,
-               ${FIXTURE.engineer}, NOW(3))`,
-    );
-    for (const requestId of [
-      FIXTURE.repairRequest,
-      FIXTURE.repairRequestConcurrent,
-      FIXTURE.handlingRequest,
-      FIXTURE.repairRequestAttachment,
+    for (const request of [
+      {
+        id: FIXTURE.repairRequest,
+        no: 'S5MR_REQUEST',
+        errorCode: 'E-S5MR',
+        description: 'S5 报告集成夹具',
+        content: '# S5 报告集成夹具',
+      },
+      {
+        id: FIXTURE.repairRequestConcurrent,
+        no: 'S5MR_REQUEST_2',
+        errorCode: 'E-S5MR2',
+        description: 'S5 报告并发夹具',
+        content: '# S5 报告并发夹具',
+      },
+      {
+        id: FIXTURE.handlingRequest,
+        no: 'S5MR_HANDLING',
+        errorCode: 'E-S5MR3',
+        description: 'S5 处理结果夹具',
+        content: '# S5 处理结果夹具',
+      },
+      {
+        id: FIXTURE.repairRequestAttachment,
+        no: 'S5MR_ATTACHMENT',
+        errorCode: 'E-S5MR4',
+        description: 'S5 版本附件夹具',
+        content: '# S5 版本附件夹具',
+      },
     ]) {
-      await registerRow('repair_request', requestId);
+      // 处理结果位列显式写入 NULL，使“未处理”成为创建契约的一部分而非回读推断
+      await query(
+        `INSERT INTO repair_request
+           (id, request_no, customer_account_id, equipment_model_id, error_code,
+            fault_description, content_md, owner_organization_id, is_accepted,
+            accepted_by_engineer_account_id, accepted_at,
+            handling_result, handling_status, handling_recorded_at,
+            handling_recorded_by_account_id, handling_ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, NOW(3), NULL, NULL, NULL, NULL, NULL)`,
+        [
+          request.id,
+          request.no,
+          FIXTURE.customer,
+          FIXTURE.model.id,
+          request.errorCode,
+          request.description,
+          request.content,
+          FIXTURE.org.id,
+          FIXTURE.engineer,
+        ],
+      );
+      ledger.registerCreated('repair_request', request.id, {
+        request_no: request.no,
+        customer_account_id: FIXTURE.customer,
+        equipment_model_id: FIXTURE.model.id,
+        error_code: request.errorCode,
+        fault_description: request.description,
+        content_md: request.content,
+        owner_organization_id: FIXTURE.org.id,
+        is_accepted: 1,
+        accepted_by_engineer_account_id: FIXTURE.engineer,
+        handling_result: null,
+        handling_status: null,
+        handling_recorded_at: null,
+        handling_recorded_by_account_id: null,
+        handling_ended_at: null,
+      });
     }
 
     for (const report of [
@@ -611,19 +673,54 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
             customer_factory_name, equipment_model_id, maintenance_date,
             maintenance_engineer_account_id, maintenance_engineer_name_snapshot,
             phase_flow_version, status, current_version_no, ai_usage,
-            created_by_account_id, updated_by_account_id)
-         VALUES (${report.id}, ${FIXTURE.org.id}, 'WORK_ORDER_SUMMARY', ${report.repairRequest},
-                 '${report.title}', 'S5 集成厂家', ${FIXTURE.model.id}, '2026-10-01',
-                 ${FIXTURE.engineer}, 'S5 集成工程师', 1, 'DRAFT', 0, 'NOT_USED',
-                 ${FIXTURE.engineer}, ${FIXTURE.engineer})`,
+            created_by_account_id, updated_by_account_id, last_submitted_at, last_reviewed_at)
+         VALUES (?, ?, 'WORK_ORDER_SUMMARY', ?, ?, ?, ?, '2026-10-01', ?, ?, 1, 'DRAFT', 0,
+                 'NOT_USED', ?, ?, NULL, NULL)`,
+        [
+          report.id,
+          FIXTURE.org.id,
+          report.repairRequest,
+          report.title,
+          'S5 集成厂家',
+          FIXTURE.model.id,
+          FIXTURE.engineer,
+          'S5 集成工程师',
+          FIXTURE.engineer,
+          FIXTURE.engineer,
+        ],
       );
-      await registerRow('maintenance_report', report.id);
+      // 登记后续预期变更会用到的状态、版本号与标题字段；提交/审核时间列显式写 NULL
+      ledger.registerCreated('maintenance_report', report.id, {
+        owner_organization_id: FIXTURE.org.id,
+        source_type: 'WORK_ORDER_SUMMARY',
+        repair_request_id: report.repairRequest,
+        title: report.title,
+        customer_factory_name: 'S5 集成厂家',
+        equipment_model_id: FIXTURE.model.id,
+        maintenance_engineer_account_id: FIXTURE.engineer,
+        maintenance_engineer_name_snapshot: 'S5 集成工程师',
+        phase_flow_version: 1,
+        status: 'DRAFT',
+        current_version_no: 0,
+        ai_usage: 'NOT_USED',
+        created_by_account_id: FIXTURE.engineer,
+        updated_by_account_id: FIXTURE.engineer,
+        last_submitted_at: null,
+        last_reviewed_at: null,
+      });
       await query(
         `INSERT INTO maintenance_report_alarm
            (id, report_id, alarm_index, alarm_code, alarm_description, phase_code, reset_result)
          VALUES (${report.alarm}, ${report.id}, 1, 'ALM-S5', 'S5 集成报警', 'PHASE_01', 'RESET_OK')`,
       );
-      await registerRow('maintenance_report_alarm', report.alarm);
+      ledger.registerCreated('maintenance_report_alarm', report.alarm, {
+        report_id: report.id,
+        alarm_index: 1,
+        alarm_code: 'ALM-S5',
+        alarm_description: 'S5 集成报警',
+        phase_code: 'PHASE_01',
+        reset_result: 'RESET_OK',
+      });
       await query(
         `INSERT INTO maintenance_report_step
            (id, report_id, step_no, step_code, phase_code, part_name, action_text, result_text,
@@ -631,7 +728,17 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
          VALUES (${report.step}, ${report.id}, 1, 'STEP-S5', 'PHASE_01', 'S5 部件',
                  'S5 集成排查动作', 'S5 集成结果', NULL, 0)`,
       );
-      await registerRow('maintenance_report_step', report.step);
+      ledger.registerCreated('maintenance_report_step', report.step, {
+        report_id: report.id,
+        step_no: 1,
+        step_code: 'STEP-S5',
+        phase_code: 'PHASE_01',
+        part_name: 'S5 部件',
+        action_text: 'S5 集成排查动作',
+        result_text: 'S5 集成结果',
+        new_alarm_code: null,
+        is_valid_new_branch: 0,
+      });
     }
   };
 
@@ -1202,7 +1309,20 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
         });
         // 由临时独立账本经受保护入口删除该行，再由原账本验证“记录缺失”的清理失败
         const removalLedger = new OwnedFixtureLedger(`${ROUND_TAG}-EXT-REMOVE`);
-        await removalLedger.registerById(query, 'maintenance_report_attachment', attachmentId);
+        // 该行由本轮 createAttachment 按已知输入创建，独立账本直接登记同一事实，不回读认领
+        removalLedger.registerCreated('maintenance_report_attachment', attachmentId, {
+          report_id: FIXTURE.reportAttachment,
+          original_filename: `s5mr-external-${attachmentId}.txt`,
+          mime_type: 'text/plain',
+          byte_size: '9',
+          checksum_sha256: null,
+          storage_backend: 'LOCAL',
+          storage_reference: `s5mr/external-${attachmentId}.txt`,
+          sort_order: 2,
+          description: 'S5MR 清理失败',
+          status: 'CURRENT',
+          uploaded_by_account_id: FIXTURE.engineer,
+        });
         await runOwnedFixtureCleanup({
           dataSource,
           expectedDatabase: actualDatabase,

@@ -13,7 +13,6 @@ import { DataSource, type QueryRunner } from 'typeorm';
 import {
   assertFixtureIdsAvailable,
   assertRegisteredRowsAbsent,
-  type ControlledFixtureTable,
   finalizeFixtureTeardown,
   OwnedFixtureLedger,
   prepareFixtureSetup,
@@ -147,13 +146,9 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       ? (JSON.parse(value) as Record<string, unknown>)
       : ((value ?? {}) as Record<string, unknown>);
 
-  const registerRow = async (table: ControlledFixtureTable, id: number): Promise<void> => {
-    await ledger.registerById(query, table, id);
-  };
-
   /**
-   * 只为本轮创建输入中明确声明的报警/步骤按自然键定位数据库生成的 ID，
-   * 不按 report_id 扫描认领账本外的子记录。
+   * 用创建输入声明的报警序号/步骤序号先登记待核验记录，再按这些自然键解析实际主键；
+   * 解析失败时条目保留在待核验集合，清理与残留核对不会忽略已提交的子记录。
    */
   const registerCreatedReportContent = async (
     reportId: number,
@@ -161,18 +156,10 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
     target: OwnedFixtureLedger = ledger,
   ): Promise<void> => {
     for (const alarm of draft.alarms) {
-      const rows = await query<{ id: number }>(
-        'SELECT id FROM maintenance_report_alarm WHERE report_id = ? AND alarm_index = ?',
-        [reportId, alarm.alarmIndex],
-      );
-      if (rows.length !== 1) {
-        throw new Error(`报告 ${reportId} 的报警序号 ${alarm.alarmIndex} 未唯一生成，拒绝登记`);
-      }
-      target.register({
-        table: 'maintenance_report_alarm',
-        key: { id: rows[0].id },
-        expected: {
-          id: rows[0].id,
+      target.registerPending(
+        'maintenance_report_alarm',
+        { report_id: reportId, alarm_index: alarm.alarmIndex },
+        {
           report_id: reportId,
           alarm_index: alarm.alarmIndex,
           alarm_code: alarm.alarmCode,
@@ -180,21 +167,13 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
           phase_code: alarm.phaseCode,
           reset_result: alarm.resetResult,
         },
-      });
+      );
     }
     for (const [index, step] of draft.steps.entries()) {
-      const rows = await query<{ id: number }>(
-        'SELECT id FROM maintenance_report_step WHERE report_id = ? AND step_no = ?',
-        [reportId, index + 1],
-      );
-      if (rows.length !== 1) {
-        throw new Error(`报告 ${reportId} 的步骤序号 ${index + 1} 未唯一生成，拒绝登记`);
-      }
-      target.register({
-        table: 'maintenance_report_step',
-        key: { id: rows[0].id },
-        expected: {
-          id: rows[0].id,
+      target.registerPending(
+        'maintenance_report_step',
+        { report_id: reportId, step_no: index + 1 },
+        {
           report_id: reportId,
           step_no: index + 1,
           step_code: step.stepCode,
@@ -206,8 +185,50 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
           // MySQL 布尔列回读为 0/1，预期值使用数值形态
           is_valid_new_branch: step.isValidNewBranch ? 1 : 0,
         },
+      );
+    }
+    for (const alarm of draft.alarms) {
+      await target.resolvePending(query, 'maintenance_report_alarm', {
+        report_id: reportId,
+        alarm_index: alarm.alarmIndex,
       });
     }
+    for (const [index] of draft.steps.entries()) {
+      await target.resolvePending(query, 'maintenance_report_step', {
+        report_id: reportId,
+        step_no: index + 1,
+      });
+    }
+  };
+
+  /**
+   * 建稿成功后按创建结果与命令输入同步登记根记录，不做成功后的 SELECT。
+   * 负责人姓名快照来自账号资料；夹具账号没有资料行时业务按固定回落“工程师”。
+   */
+  const registerCreatedDraftReport = (
+    created: { reportId: number; status: string; currentVersionNo: number },
+    repairRequestId: number,
+    draft: ReturnType<typeof DRAFT>,
+    target: OwnedFixtureLedger = ledger,
+  ): void => {
+    target.registerCreated('maintenance_report', created.reportId, {
+      owner_organization_id: FIXTURE.orgA.id,
+      source_type: 'WORK_ORDER_SUMMARY',
+      repair_request_id: repairRequestId,
+      title: draft.title,
+      customer_factory_name: 'S5C 并发厂家',
+      equipment_model_id: FIXTURE.model.id,
+      maintenance_engineer_account_id: FIXTURE.engineerA,
+      maintenance_engineer_name_snapshot: '工程师',
+      phase_flow_version: 1,
+      status: created.status,
+      current_version_no: created.currentVersionNo,
+      ai_usage: 'NOT_USED',
+      created_by_account_id: FIXTURE.engineerA,
+      updated_by_account_id: FIXTURE.engineerA,
+      last_submitted_at: null,
+      last_reviewed_at: null,
+    });
   };
 
   /**
@@ -522,8 +543,18 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
        VALUES (${FIXTURE.orgA.id}, '${FIXTURE.orgA.code}', 'S5C 组织A', 'CLIENT', 'ACTIVE'),
               (${FIXTURE.orgB.id}, '${FIXTURE.orgB.code}', 'S5C 组织B', 'CLIENT', 'ACTIVE')`,
     );
-    await registerRow('organization', FIXTURE.orgA.id);
-    await registerRow('organization', FIXTURE.orgB.id);
+    ledger.registerCreated('organization', FIXTURE.orgA.id, {
+      organization_code: FIXTURE.orgA.code,
+      name: 'S5C 组织A',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
+    ledger.registerCreated('organization', FIXTURE.orgB.id, {
+      organization_code: FIXTURE.orgB.code,
+      name: 'S5C 组织B',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
 
     await query(
       `INSERT INTO base_user_account (id, login_name, login_password, status)
@@ -533,62 +564,116 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
               (${FIXTURE.adminB}, 's5c_admin_b_9904506', 's5c-integration-fixture', 'ACTIVE'),
               (${FIXTURE.customerA}, 's5c_customer_a_9904507', 's5c-integration-fixture', 'ACTIVE')`,
     );
-    for (const accountId of [
-      FIXTURE.engineerA,
-      FIXTURE.engineerB,
-      FIXTURE.adminA,
-      FIXTURE.adminB,
-      FIXTURE.customerA,
+    for (const account of [
+      { id: FIXTURE.engineerA, loginName: 's5c_engineer_a_9904503' },
+      { id: FIXTURE.engineerB, loginName: 's5c_engineer_b_9904504' },
+      { id: FIXTURE.adminA, loginName: 's5c_admin_a_9904505' },
+      { id: FIXTURE.adminB, loginName: 's5c_admin_b_9904506' },
+      { id: FIXTURE.customerA, loginName: 's5c_customer_a_9904507' },
     ]) {
-      await registerRow('base_user_account', accountId);
+      ledger.registerCreated('base_user_account', account.id, {
+        login_name: account.loginName,
+        status: 'ACTIVE',
+      });
     }
 
-    await query(
-      `INSERT INTO organization_membership (organization_id, account_id, member_role, status)
-       VALUES (${FIXTURE.orgA.id}, ${FIXTURE.engineerA}, 'ENGINEER', 'ACTIVE'),
-              (${FIXTURE.orgA.id}, ${FIXTURE.adminA}, 'SUPER_ADMIN', 'ACTIVE'),
-              (${FIXTURE.orgA.id}, ${FIXTURE.customerA}, 'CUSTOMER', 'ACTIVE'),
-              (${FIXTURE.orgB.id}, ${FIXTURE.engineerB}, 'ENGINEER', 'ACTIVE'),
-              (${FIXTURE.orgB.id}, ${FIXTURE.adminB}, 'SUPER_ADMIN', 'ACTIVE')`,
-    );
-    // 成员关系 ID 由数据库生成：按本轮组织精确回读后立即登记
-    const memberships = await query<{ id: number }>(
-      'SELECT id FROM organization_membership WHERE organization_id IN (?, ?)',
-      [FIXTURE.orgA.id, FIXTURE.orgB.id],
-    );
-    for (const membership of memberships) {
-      await registerRow('organization_membership', membership.id);
+    // 成员关系 ID 由数据库生成：逐行写入后立即用驱动返回的 insertId 登记，不依赖成功后的 SELECT
+    for (const membership of [
+      { orgId: FIXTURE.orgA.id, accountId: FIXTURE.engineerA, role: 'ENGINEER' },
+      { orgId: FIXTURE.orgA.id, accountId: FIXTURE.adminA, role: 'SUPER_ADMIN' },
+      { orgId: FIXTURE.orgA.id, accountId: FIXTURE.customerA, role: 'CUSTOMER' },
+      { orgId: FIXTURE.orgB.id, accountId: FIXTURE.engineerB, role: 'ENGINEER' },
+      { orgId: FIXTURE.orgB.id, accountId: FIXTURE.adminB, role: 'SUPER_ADMIN' },
+    ]) {
+      const inserted = (await query(
+        `INSERT INTO organization_membership (organization_id, account_id, member_role, status)
+         VALUES (?, ?, ?, 'ACTIVE')`,
+        [membership.orgId, membership.accountId, membership.role],
+      )) as unknown as { insertId: number };
+      ledger.registerCreated('organization_membership', Number(inserted.insertId), {
+        organization_id: membership.orgId,
+        account_id: membership.accountId,
+        member_role: membership.role,
+        status: 'ACTIVE',
+      });
     }
 
     await query(
       `INSERT INTO equipment_model (id, model_code, model_name, enabled)
        VALUES (${FIXTURE.model.id}, '${FIXTURE.model.code}', 'S5C 并发机型', 1)`,
     );
-    await registerRow('equipment_model', FIXTURE.model.id);
+    ledger.registerCreated('equipment_model', FIXTURE.model.id, {
+      model_code: FIXTURE.model.code,
+      model_name: 'S5C 并发机型',
+      enabled: 1,
+    });
 
-    await query(
-      `INSERT INTO repair_request
-         (id, request_no, customer_account_id, equipment_model_id, error_code,
-          fault_description, content_md, owner_organization_id, is_accepted,
-          accepted_by_engineer_account_id, accepted_at)
-       VALUES (${FIXTURE.workOrderCreateRace}, 'S5C_CREATE_RACE', ${FIXTURE.customerA},
-               ${FIXTURE.model.id}, 'E-S5C1', 'S5C 建稿竞争', '# S5C 建稿竞争',
-               ${FIXTURE.orgA.id}, TRUE, ${FIXTURE.engineerA}, NOW(3)),
-              (${FIXTURE.workOrderEditRace}, 'S5C_EDIT_RACE', ${FIXTURE.customerA},
-               ${FIXTURE.model.id}, 'E-S5C2', 'S5C 提交与编辑竞争', '# S5C 提交与编辑竞争',
-               ${FIXTURE.orgA.id}, TRUE, ${FIXTURE.engineerA}, NOW(3)),
-              (${FIXTURE.workOrderAttachmentRace}, 'S5C_ATTACH_RACE', ${FIXTURE.customerA},
-               ${FIXTURE.model.id}, 'E-S5C3', 'S5C 提交与附件竞争', '# S5C 提交与附件竞争',
-               ${FIXTURE.orgA.id}, TRUE, ${FIXTURE.engineerA}, NOW(3)),
-              (${FIXTURE.workOrderCrossOrg}, 'S5C_CROSS_ORG', ${FIXTURE.customerA},
-               ${FIXTURE.model.id}, 'E-S5C4', 'S5C 跨组织拒绝', '# S5C 跨组织拒绝',
-               ${FIXTURE.orgA.id}, TRUE, ${FIXTURE.engineerA}, NOW(3)),
-              (${FIXTURE.workOrderClosure}, 'S5C_CLOSURE', ${FIXTURE.customerA},
-               ${FIXTURE.model.id}, 'E-S5C5', 'S5C 引用闭包', '# S5C 引用闭包',
-               ${FIXTURE.orgA.id}, TRUE, ${FIXTURE.engineerA}, NOW(3))`,
-    );
-    for (const requestId of WORK_ORDER_IDS) {
-      await registerRow('repair_request', requestId);
+    for (const request of [
+      {
+        id: FIXTURE.workOrderCreateRace,
+        no: 'S5C_CREATE_RACE',
+        errorCode: 'E-S5C1',
+        description: 'S5C 建稿竞争',
+        content: '# S5C 建稿竞争',
+      },
+      {
+        id: FIXTURE.workOrderEditRace,
+        no: 'S5C_EDIT_RACE',
+        errorCode: 'E-S5C2',
+        description: 'S5C 提交与编辑竞争',
+        content: '# S5C 提交与编辑竞争',
+      },
+      {
+        id: FIXTURE.workOrderAttachmentRace,
+        no: 'S5C_ATTACH_RACE',
+        errorCode: 'E-S5C3',
+        description: 'S5C 提交与附件竞争',
+        content: '# S5C 提交与附件竞争',
+      },
+      {
+        id: FIXTURE.workOrderCrossOrg,
+        no: 'S5C_CROSS_ORG',
+        errorCode: 'E-S5C4',
+        description: 'S5C 跨组织拒绝',
+        content: '# S5C 跨组织拒绝',
+      },
+      {
+        id: FIXTURE.workOrderClosure,
+        no: 'S5C_CLOSURE',
+        errorCode: 'E-S5C5',
+        description: 'S5C 引用闭包',
+        content: '# S5C 引用闭包',
+      },
+    ]) {
+      await query(
+        `INSERT INTO repair_request
+           (id, request_no, customer_account_id, equipment_model_id, error_code,
+            fault_description, content_md, owner_organization_id, is_accepted,
+            accepted_by_engineer_account_id, accepted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, NOW(3))`,
+        [
+          request.id,
+          request.no,
+          FIXTURE.customerA,
+          FIXTURE.model.id,
+          request.errorCode,
+          request.description,
+          request.content,
+          FIXTURE.orgA.id,
+          FIXTURE.engineerA,
+        ],
+      );
+      ledger.registerCreated('repair_request', request.id, {
+        request_no: request.no,
+        customer_account_id: FIXTURE.customerA,
+        equipment_model_id: FIXTURE.model.id,
+        error_code: request.errorCode,
+        fault_description: request.description,
+        content_md: request.content,
+        owner_organization_id: FIXTURE.orgA.id,
+        is_accepted: 1,
+        accepted_by_engineer_account_id: FIXTURE.engineerA,
+      });
     }
 
     for (const report of [
@@ -611,26 +696,55 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
             customer_factory_name, equipment_model_id, maintenance_date,
             maintenance_engineer_account_id, maintenance_engineer_name_snapshot,
             phase_flow_version, status, current_version_no, ai_usage,
-            created_by_account_id, updated_by_account_id)
-         VALUES (${report.id}, ${FIXTURE.orgA.id}, 'WORK_ORDER_SUMMARY', ${report.repairRequest},
-                 '${report.title}', 'S5C 并发厂家', ${FIXTURE.model.id}, '2026-10-02',
-                 ${FIXTURE.engineerA}, 'S5C 并发工程师', 1, 'DRAFT', 0, 'NOT_USED',
-                 ${FIXTURE.engineerA}, ${FIXTURE.engineerA})`,
+            created_by_account_id, updated_by_account_id, last_submitted_at, last_reviewed_at)
+         VALUES (?, ?, 'WORK_ORDER_SUMMARY', ?, ?, ?, ?, '2026-10-02', ?, ?, 1, 'DRAFT', 0,
+                 'NOT_USED', ?, ?, NULL, NULL)`,
+        [
+          report.id,
+          FIXTURE.orgA.id,
+          report.repairRequest,
+          report.title,
+          'S5C 并发厂家',
+          FIXTURE.model.id,
+          FIXTURE.engineerA,
+          'S5C 并发工程师',
+          FIXTURE.engineerA,
+          FIXTURE.engineerA,
+        ],
       );
-      await registerRow('maintenance_report', report.id);
-      await query(
+      ledger.registerCreated('maintenance_report', report.id, {
+        owner_organization_id: FIXTURE.orgA.id,
+        source_type: 'WORK_ORDER_SUMMARY',
+        repair_request_id: report.repairRequest,
+        title: report.title,
+        customer_factory_name: 'S5C 并发厂家',
+        equipment_model_id: FIXTURE.model.id,
+        maintenance_engineer_account_id: FIXTURE.engineerA,
+        maintenance_engineer_name_snapshot: 'S5C 并发工程师',
+        phase_flow_version: 1,
+        status: 'DRAFT',
+        current_version_no: 0,
+        ai_usage: 'NOT_USED',
+        created_by_account_id: FIXTURE.engineerA,
+        updated_by_account_id: FIXTURE.engineerA,
+        last_submitted_at: null,
+        last_reviewed_at: null,
+      });
+      // 报警 ID 由数据库生成：写入成功后立即用驱动返回的 insertId 登记
+      const insertedAlarm = (await query(
         `INSERT INTO maintenance_report_alarm
            (report_id, alarm_index, alarm_code, alarm_description, phase_code, reset_result)
-         VALUES (${report.id}, 1, 'ALM-S5C', 'S5C 并发报警', 'PHASE_01', 'RESET_OK')`,
-      );
-      // 报警 ID 由数据库生成：按本轮报告精确回读后立即登记
-      const alarms = await query<{ id: number }>(
-        'SELECT id FROM maintenance_report_alarm WHERE report_id = ?',
+         VALUES (?, 1, 'ALM-S5C', 'S5C 并发报警', 'PHASE_01', 'RESET_OK')`,
         [report.id],
-      );
-      for (const alarm of alarms) {
-        await registerRow('maintenance_report_alarm', alarm.id);
-      }
+      )) as unknown as { insertId: number };
+      ledger.registerCreated('maintenance_report_alarm', Number(insertedAlarm.insertId), {
+        report_id: report.id,
+        alarm_index: 1,
+        alarm_code: 'ALM-S5C',
+        alarm_description: 'S5C 并发报警',
+        phase_code: 'PHASE_01',
+        reset_result: 'RESET_OK',
+      });
       await query(
         `INSERT INTO maintenance_report_step
            (id, report_id, step_no, step_code, phase_code, part_name, action_text, result_text,
@@ -638,7 +752,17 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
          VALUES (${report.step}, ${report.id}, 1, 'STEP-S5C', 'PHASE_01', 'S5C 部件',
                  'S5C 并发排查动作', 'S5C 并发结果', NULL, 0)`,
       );
-      await registerRow('maintenance_report_step', report.step);
+      ledger.registerCreated('maintenance_report_step', report.step, {
+        report_id: report.id,
+        step_no: 1,
+        step_code: 'STEP-S5C',
+        phase_code: 'PHASE_01',
+        part_name: 'S5C 部件',
+        action_text: 'S5C 并发排查动作',
+        result_text: 'S5C 并发结果',
+        new_alarm_code: null,
+        is_valid_new_branch: 0,
+      });
     }
     await query(
       `INSERT INTO maintenance_report_attachment
@@ -649,7 +773,19 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
                'text/plain', 10, NULL, 'LOCAL', 's5c/existing.txt', 1, 'S5C 既有附件',
                'CURRENT', ${FIXTURE.engineerA})`,
     );
-    await registerRow('maintenance_report_attachment', FIXTURE.attachment);
+    ledger.registerCreated('maintenance_report_attachment', FIXTURE.attachment, {
+      report_id: FIXTURE.reportAttachmentRace,
+      original_filename: 's5c-existing.txt',
+      mime_type: 'text/plain',
+      byte_size: '10',
+      checksum_sha256: null,
+      storage_backend: 'LOCAL',
+      storage_reference: 's5c/existing.txt',
+      sort_order: 1,
+      description: 'S5C 既有附件',
+      status: 'CURRENT',
+      uploaded_by_account_id: FIXTURE.engineerA,
+    });
   };
 
   beforeAll(async () => {
@@ -739,7 +875,11 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
           label: '核对夹具残留',
           run: async () => {
             if (!setupAllowed || !dataSource) return;
-            const residue = await assertRegisteredRowsAbsent(dataSource, ledger.list());
+            const residue = await assertRegisteredRowsAbsent(
+              dataSource,
+              ledger.list(),
+              ledger.pendingRows(),
+            );
             if (residue.length > 0) {
               throw new Error(`本轮登记资源仍存在：${residue.join('；')}`);
             }
@@ -778,8 +918,12 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       2,
       async (release) => {
         // 任一分支确认创建成功后立即登记根记录与输入声明的子树，再返回结果
-        const registerCreated = async (created: { reportId: number }): Promise<void> => {
-          await registerRow('maintenance_report', created.reportId);
+        const registerCreated = async (created: {
+          reportId: number;
+          status: string;
+          currentVersionNo: number;
+        }): Promise<void> => {
+          registerCreatedDraftReport(created, FIXTURE.workOrderCreateRace, command.draft);
           await registerCreatedReportContent(created.reportId, command.draft);
         };
         const first = createUsecase.execute(command).then(async (created) => {
@@ -986,8 +1130,8 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       draft: DRAFT('S5C 跨组织报告'),
     });
     const reportId = created.reportId;
-    // 跨组织用例内部创建的报告按实际 ID 登记根记录与输入声明的子树
-    await registerRow('maintenance_report', reportId);
+    // 跨组织用例内部创建的报告按创建结果与命令输入登记根记录，再按输入声明的自然键登记子树
+    registerCreatedDraftReport(created, FIXTURE.workOrderCrossOrg, DRAFT('S5C 跨组织报告'));
     await registerCreatedReportContent(reportId, DRAFT('S5C 跨组织报告'));
     const submitted = await submitUsecase.execute({ session: engineerASession, reportId });
     // 提交创建的版本行按返回值登记，再记录本操作的显式预期变更
@@ -1064,17 +1208,17 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
     const externalLedger = new OwnedFixtureLedger(`${ROUND_TAG}-EXTERNAL`);
     const closureDraft = DRAFT('S5C 引用闭包报告');
     let completed = false;
-    const reportId = (
-      await createUsecase.execute({
-        session: engineerASession,
-        sourceType: 'WORK_ORDER_SUMMARY',
-        repairRequestId: FIXTURE.workOrderClosure,
-        draft: closureDraft,
-      })
-    ).reportId;
+    const created = await createUsecase.execute({
+      session: engineerASession,
+      sourceType: 'WORK_ORDER_SUMMARY',
+      repairRequestId: FIXTURE.workOrderClosure,
+      draft: closureDraft,
+    });
+    const reportId = created.reportId;
 
     try {
-      await closureLedger.registerById(query, 'maintenance_report', reportId);
+      // 建稿成功后立即按创建结果登记，后续回读只用于比对
+      registerCreatedDraftReport(created, FIXTURE.workOrderClosure, closureDraft, closureLedger);
       await registerCreatedReportContent(reportId, closureDraft, closureLedger);
 
       // 本轮上传结果：按返回的新附件 ID 登记，并核对上传人、存储引用与本轮标识
@@ -1098,6 +1242,19 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       if (ownAttachmentId === undefined) {
         throw new Error('上传结果未返回本轮新增的附件 ID');
       }
+      // 上传成功后立即按返回 ID 与上传输入登记，随后回读仅用于比对
+      closureLedger.registerCreated('maintenance_report_attachment', ownAttachmentId, {
+        report_id: reportId,
+        original_filename: 's5c-closure-own.txt',
+        mime_type: 'text/plain',
+        checksum_sha256: null,
+        storage_backend: 'LOCAL',
+        storage_reference: 's5c/closure-own.txt',
+        sort_order: 1,
+        description: 'S5C 本轮附件',
+        status: 'CURRENT',
+        uploaded_by_account_id: FIXTURE.engineerA,
+      });
       const uploadedRows = await query<{
         uploaded_by_account_id: number;
         storage_reference: string;
@@ -1112,17 +1269,6 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
         storage_reference: 's5c/closure-own.txt',
         original_filename: 's5c-closure-own.txt',
       });
-      closureLedger.register({
-        table: 'maintenance_report_attachment',
-        key: { id: ownAttachmentId },
-        expected: {
-          id: ownAttachmentId,
-          report_id: reportId,
-          uploaded_by_account_id: FIXTURE.engineerA,
-          storage_reference: 's5c/closure-own.txt',
-          original_filename: 's5c-closure-own.txt',
-        },
-      });
 
       // 外部记录：其他上传人的附件、额外版本、审核与版本附件，均不在本轮结果内
       await query(
@@ -1134,11 +1280,19 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
                  9, NULL, 'LOCAL', 's5c/external.txt', 2, 'S5C 账本外附件', 'CURRENT',
                  ${FIXTURE.engineerB})`,
       );
-      await externalLedger.registerById(
-        query,
-        'maintenance_report_attachment',
-        FIXTURE.externalAttachment,
-      );
+      externalLedger.registerCreated('maintenance_report_attachment', FIXTURE.externalAttachment, {
+        report_id: reportId,
+        original_filename: 's5c-external.txt',
+        mime_type: 'text/plain',
+        byte_size: '9',
+        checksum_sha256: null,
+        storage_backend: 'LOCAL',
+        storage_reference: 's5c/external.txt',
+        sort_order: 2,
+        description: 'S5C 账本外附件',
+        status: 'CURRENT',
+        uploaded_by_account_id: FIXTURE.engineerB,
+      });
       await query(
         `INSERT INTO maintenance_report_version
            (id, report_id, version_no, change_kind, schema_version, payload_snapshot,
@@ -1146,27 +1300,46 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
          VALUES (${FIXTURE.externalVersion}, ${reportId}, 2, 'SUBMIT', 2,
                  JSON_OBJECT('title', 'S5C 账本外版本'), ${FIXTURE.engineerB}, NOW(3))`,
       );
-      await externalLedger.registerById(
-        query,
-        'maintenance_report_version',
-        FIXTURE.externalVersion,
-      );
+      externalLedger.registerCreated('maintenance_report_version', FIXTURE.externalVersion, {
+        report_id: reportId,
+        version_no: 2,
+        change_kind: 'SUBMIT',
+        schema_version: 2,
+        submitted_by_account_id: FIXTURE.engineerB,
+      });
       await query(
         `INSERT INTO maintenance_report_review
            (id, report_id, version_id, decision, comment, reviewed_by_account_id, reviewed_at)
          VALUES (${FIXTURE.externalReview}, ${reportId}, ${FIXTURE.externalVersion}, 'RETURN',
                  'S5C 账本外审核', ${FIXTURE.adminB}, NOW(3))`,
       );
-      await externalLedger.registerById(query, 'maintenance_report_review', FIXTURE.externalReview);
+      externalLedger.registerCreated('maintenance_report_review', FIXTURE.externalReview, {
+        report_id: reportId,
+        version_id: FIXTURE.externalVersion,
+        decision: 'RETURN',
+        comment: 'S5C 账本外审核',
+        reviewed_by_account_id: FIXTURE.adminB,
+      });
       await query(
         `INSERT INTO maintenance_report_version_attachment
            (version_id, attachment_id, report_id, sort_order, description_snapshot, publish_flag)
          VALUES (${FIXTURE.externalVersion}, ${FIXTURE.externalAttachment}, ${reportId}, 1,
                  'S5C 账本外版本附件', 0)`,
       );
-      await externalLedger.registerByKey(query, 'maintenance_report_version_attachment', {
+      const externalVersionAttachmentKey = {
         version_id: FIXTURE.externalVersion,
         attachment_id: FIXTURE.externalAttachment,
+      };
+      externalLedger.register({
+        table: 'maintenance_report_version_attachment',
+        key: externalVersionAttachmentKey,
+        expected: {
+          ...externalVersionAttachmentKey,
+          report_id: reportId,
+          sort_order: 1,
+          description_snapshot: 'S5C 账本外版本附件',
+          publish_flag: 0,
+        },
       });
 
       // 发现记录不等于登记本轮资源：账本不得包含任何外部记录
