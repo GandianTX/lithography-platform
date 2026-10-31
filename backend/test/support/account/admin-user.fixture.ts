@@ -5,6 +5,9 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
 import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
+import type { OrganizationMembershipFact } from '@src/modules/lithography/organization.types';
+import type { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 
 /**
@@ -28,6 +31,59 @@ export const ADMIN_ACCOUNT_ID = 1;
 
 /** 被管理的普通用户账号 ID */
 export const TARGET_ACCOUNT_ID = 2;
+
+/** 管理员所在的可信组织主键（测试用固定值，不参与任何断言比较） */
+export const ADMIN_ORGANIZATION_ID = 100;
+
+/**
+ * 管理员可信组织成员事实的构造器。
+ * 缺省表示「管理员与目标同属一个有效组织」，即组织隔离校验通过的正常前置。
+ */
+export const createAdminOrganizationFact = (
+  overrides: Partial<OrganizationMembershipFact> = {},
+): OrganizationMembershipFact => ({
+  membershipId: 1,
+  organizationId: ADMIN_ORGANIZATION_ID,
+  organizationCode: 'E2E_TEST_PRIMARY',
+  organizationName: '测试组织',
+  organizationKind: 'CLIENT',
+  memberRole: 'SUPER_ADMIN',
+  ...overrides,
+});
+
+/**
+ * 组织隔离相关的两个下游替身。
+ *
+ * 缺省全部「成功」：管理员有单一可信组织、目标在该组织内有有效成员关系、组织内账号
+ * 清单包含管理员与目标。组织隔离的**拒绝**分支由各用例按需覆盖（mockResolvedValue(null)
+ * / mockRejectedValue(...)），不在缺省值里预置失败，避免既有用例被连带改红。
+ */
+export const createOrganizationIsolationMocks = (): {
+  readonly organizationContextQueryService: TrustedOrganizationContextQueryService;
+  readonly organizationMembershipQueryService: OrganizationMembershipQueryService;
+  readonly resolveForAccount: jest.Mock;
+  readonly listActiveAccountIdsByOrganization: jest.Mock;
+  readonly findActiveMembership: jest.Mock;
+} => {
+  const resolveForAccount = jest.fn().mockResolvedValue(createAdminOrganizationFact());
+  const listActiveAccountIdsByOrganization = jest
+    .fn()
+    .mockResolvedValue([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
+  const findActiveMembership = jest.fn().mockResolvedValue(createAdminOrganizationFact());
+
+  return {
+    organizationContextQueryService: {
+      resolveForAccount,
+    } as unknown as TrustedOrganizationContextQueryService,
+    organizationMembershipQueryService: {
+      listActiveAccountIdsByOrganization,
+      findActiveMembership,
+    } as unknown as OrganizationMembershipQueryService,
+    resolveForAccount,
+    listActiveAccountIdsByOrganization,
+    findActiveMembership,
+  };
+};
 
 /**
  * 精确 SUPER_ADMIN 会话：`roles` 含 SUPER_ADMIN **且** `activeRole` 精确等于 SUPER_ADMIN。

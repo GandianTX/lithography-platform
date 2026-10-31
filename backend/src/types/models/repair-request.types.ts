@@ -25,3 +25,27 @@ export enum RepairRequestAcceptanceViewStatus {
   MINE = 'MINE',
   TAKEN_BY_OTHER = 'TAKEN_BY_OTHER',
 }
+
+/**
+ * 工单具体处理结果（五类，稳定枚举）。
+ * 只能由服务端按固定映射写入实际处理状态，客户端不可独立填写状态。
+ */
+export enum RepairRequestHandlingResult {
+  FIXED = 'FIXED',
+  PART_PURCHASED = 'PART_PURCHASED',
+  PROVIDE_PLAN_SELF_EXECUTE = 'PROVIDE_PLAN_SELF_EXECUTE',
+  INTERRUPTED = 'INTERRUPTED',
+  UNREPAIRABLE = 'UNREPAIRABLE',
+}
+
+/**
+ * 工单实际处理状态（三态，由固定映射维护）。
+ * 五类结果 → 三态的映射与终结态判定属领域策略，见
+ * `@core/repair-request/policy/repair-request-handling.policy`；
+ * 本文件只承载稳定枚举契约。
+ */
+export enum RepairRequestHandlingStatus {
+  COMPLETED = 'COMPLETED',
+  IN_PROGRESS = 'IN_PROGRESS',
+  UNRESOLVED = 'UNRESOLVED',
+}

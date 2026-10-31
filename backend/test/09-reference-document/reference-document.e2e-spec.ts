@@ -113,12 +113,11 @@ describe('AI 参考资料库 (e2e)', () => {
   const ownership = createOwnedResourceLedger();
 
   // 组织范围用例会话：甲方第二工程师 / 第二组织工程师 / 第二组织管理员 /
-  // 无成员账号 / 多组织歧义账号
+  // 无成员账号 / 单有效组织负例账号（仅一条 ACTIVE 成员，第二条 ACTIVE 由库唯一键拒绝）
   let staffPrimaryToken: string;
   let peerEngineerToken: string;
   let peerAdminToken: string;
   let noOrgEngineerToken: string;
-  let ambiguousEngineerToken: string;
 
   const PAGE = { mode: 'OFFSET', page: 1, pageSize: 20 };
 
@@ -206,7 +205,8 @@ describe('AI 参考资料库 (e2e)', () => {
 
     // 组织与成员：甲方组织（admin 管理员 + staff/staffPrimary 工程师）、
     // 第二组织（peerAdmin 管理员 + staffSecondary 工程师）、
-    // 歧义账号（两组织都 ACTIVE 成员）；noOrgEngineer 不建成员关系（解析拒绝用例）
+    // ambiguousEngineer 仅在甲方组织建一条 ACTIVE（单有效组织约束；第二条 ACTIVE 负例另行断言）；
+    // noOrgEngineer 不建成员关系（解析拒绝用例）
     const organizationIds = await seedTestOrganizations({
       dataSource,
       organizations: [
@@ -260,11 +260,6 @@ describe('AI 参考资料库 (e2e)', () => {
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'ENGINEER',
         },
-        {
-          accountLoginName: testAccountsConfig.ambiguousEngineer.loginName,
-          organizationCode: suiteOrganizationCodes.peer,
-          memberRole: 'ENGINEER',
-        },
       ],
     });
 
@@ -302,11 +297,6 @@ describe('AI 参考资料库 (e2e)', () => {
       app,
       loginName: testAccountsConfig.noOrgEngineer.loginName,
       loginPassword: testAccountsConfig.noOrgEngineer.loginPassword,
-    });
-    ambiguousEngineerToken = await login({
-      app,
-      loginName: testAccountsConfig.ambiguousEngineer.loginName,
-      loginPassword: testAccountsConfig.ambiguousEngineer.loginPassword,
     });
     adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
 
@@ -649,17 +639,39 @@ describe('AI 参考资料库 (e2e)', () => {
       expect(err.extensions.details).toBeUndefined();
     });
 
-    it('多有效成员关系歧义：列表 FORBIDDEN + ORGANIZATION_AMBIGUOUS_MEMBERSHIP', async () => {
-      const response = await postGql({
-        app,
-        query: LIST_QUERY,
-        variables: { pagination: PAGE },
-        token: ambiguousEngineerToken,
-      }).expect(200);
-      expect(response.body.errors).toHaveLength(1);
-      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
-      expect(err.extensions.code).toBe('FORBIDDEN');
-      expect(err.extensions.errorCode).toBe('ORGANIZATION_AMBIGUOUS_MEMBERSHIP');
+    // 单有效组织约束取代了原先「同一账号在两个组织都 ACTIVE」的歧义夹具：
+    // 该数据形状在库级已不可写入，ORGANIZATION_AMBIGUOUS_MEMBERSHIP 在正常写入路径下不可达；
+    // 这里改为直接断言唯一键拒绝，并在事务中回滚，避免留下第二条 ACTIVE 归属。
+    it('同账号重复 ACTIVE 组织归属：库唯一键拒绝（事务回滚，无残留）', async () => {
+      const ambiguousAccountId = await getAccountIdByLoginName(
+        dataSource,
+        testAccountsConfig.ambiguousEngineer.loginName,
+      );
+      const runner = dataSource.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        await expect(
+          runner.query(
+            `INSERT INTO organization_membership (organization_id, account_id, member_role, status)
+             VALUES (?, ?, 'ENGINEER', 'ACTIVE')`,
+            [peerOrganizationId, ambiguousAccountId],
+          ),
+        ).rejects.toMatchObject({
+          code: 'ER_DUP_ENTRY',
+          sqlMessage: expect.stringContaining('uk_organization_membership_active_account'),
+        });
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
+
+      const activeRows = await dataSource.query<Array<{ total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM organization_membership
+         WHERE account_id = ? AND status = 'ACTIVE'`,
+        [ambiguousAccountId],
+      );
+      expect(Number(activeRows[0]?.total)).toBe(1);
     });
   });
 

@@ -12,6 +12,7 @@ import type {
 } from '@src/modules/lithography/lithography.types';
 import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
 import type { RepairRequestService } from '@src/modules/lithography/repair-request.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import { CreateRepairRequestUsecase } from './create-repair-request.usecase';
 import type { CreateRepairRequestCommand } from './create-repair-request.types';
@@ -19,6 +20,10 @@ import type { CreateRepairRequestCommand } from './create-repair-request.types';
 type RepairRequestServiceMock = {
   readonly insertRequest: jest.Mock<Promise<RepairRequestSnapshot>>;
   readonly requestNoExists: jest.Mock<Promise<boolean>>;
+};
+
+type OrganizationContextMock = {
+  readonly tryResolveForAccount: jest.Mock;
 };
 
 type EquipmentModelQueryServiceMock = {
@@ -40,6 +45,7 @@ describe('CreateRepairRequestUsecase', () => {
 
   let repairRequestService: RepairRequestServiceMock;
   let equipmentModelQueryService: EquipmentModelQueryServiceMock;
+  let organizationContextQueryService: OrganizationContextMock;
   let transactionRunner: TransactionRunner;
   let usecase: CreateRepairRequestUsecase;
 
@@ -73,12 +79,17 @@ describe('CreateRepairRequestUsecase', () => {
       listEnabledModels: jest.fn(),
       findModelById: jest.fn().mockResolvedValue(enabledModel),
     };
+    // 默认：客户账号无组织归属（自注册存量路径）→ 工单不归属组织
+    organizationContextQueryService = {
+      tryResolveForAccount: jest.fn().mockResolvedValue(null),
+    };
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
     };
     usecase = new CreateRepairRequestUsecase(
       repairRequestService as unknown as RepairRequestService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
+      organizationContextQueryService as unknown as TrustedOrganizationContextQueryService,
       transactionRunner,
     );
   });
@@ -123,6 +134,37 @@ describe('CreateRepairRequestUsecase', () => {
       const insertData = repairRequestService.insertRequest.mock.calls[0][0];
       expect(insertData.errorCode).toBe('E-100');
       expect(insertData.faultDescription).toBe('设备无法启动');
+    });
+
+    it('客户归属组织只来自可信解析：写入 ownerOrganizationId，客户端自报被忽略', async () => {
+      organizationContextQueryService.tryResolveForAccount.mockResolvedValue({
+        membershipId: 1,
+        organizationId: 77,
+        organizationCode: 'CLIENT_DEFAULT',
+        organizationName: '甲方默认组织',
+        organizationKind: 'CLIENT',
+        memberRole: 'CUSTOMER',
+      });
+      const smuggled = {
+        ...buildCommand(),
+        ownerOrganizationId: 999,
+      } as unknown as CreateRepairRequestCommand;
+
+      await usecase.execute(smuggled);
+
+      expect(organizationContextQueryService.tryResolveForAccount).toHaveBeenCalledWith({
+        accountId: 7,
+        transactionContext,
+      });
+      const insertData = repairRequestService.insertRequest.mock.calls[0][0];
+      expect(insertData.ownerOrganizationId).toBe(77);
+    });
+
+    it('客户无有效组织归属：ownerOrganizationId 写 null，仍可创建（自注册存量兼容）', async () => {
+      await usecase.execute(buildCommand());
+
+      const insertData = repairRequestService.insertRequest.mock.calls[0][0];
+      expect(insertData.ownerOrganizationId).toBeNull();
     });
   });
 

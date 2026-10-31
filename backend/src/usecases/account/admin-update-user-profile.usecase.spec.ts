@@ -5,6 +5,7 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
+  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { AccountService } from '@src/modules/account/base/services/account.service';
@@ -14,8 +15,10 @@ import {
   ADMIN_ACCOUNT_ID,
   TARGET_ACCOUNT_ID,
   captureThrownError,
+  createAdminOrganizationFact,
   createAdminUserView,
   createFakeTransactionHarness,
+  createOrganizationIsolationMocks,
   createSuperAdminSession,
   createSuperAdminTargetView,
   createUnauthorizedSessions,
@@ -51,9 +54,23 @@ describe('AdminUpdateUserProfileUsecase', () => {
     error: jest.fn(),
   } as unknown as PinoLogger;
 
+  const organizationIsolation = createOrganizationIsolationMocks();
+
+  /** 组织隔离替身回到「成功」缺省：管理员有单一可信组织、目标同组织有效成员 */
+  const givenOrganizationIsolation = (): void => {
+    organizationIsolation.resolveForAccount
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+    organizationIsolation.findActiveMembership
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+  };
+
   const usecase = new AdminUpdateUserProfileUsecase(
     accountService,
     adminUserQueryService,
+    organizationIsolation.organizationContextQueryService,
+    organizationIsolation.organizationMembershipQueryService,
     logger,
     harness.transactionRunner,
   );
@@ -93,6 +110,7 @@ describe('AdminUpdateUserProfileUsecase', () => {
     (accountService.lockByIdForUpdate as jest.Mock).mockReset().mockResolvedValue(undefined);
     (accountService.updateUserInfoFields as jest.Mock).mockReset().mockResolvedValue(undefined);
     givenLockedTarget();
+    givenOrganizationIsolation();
   });
 
   describe('精确 SUPER_ADMIN 授权', () => {
@@ -147,6 +165,48 @@ describe('AdminUpdateUserProfileUsecase', () => {
 
       expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
       expect(harness.isRolledBack()).toBe(true);
+    });
+  });
+
+  describe('组织隔离（管理员只能管理本组织）', () => {
+    it('目标不在管理员可信组织内时收敛为 TARGET_NOT_FOUND，零写入并回滚', async () => {
+      organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
+
+      const error = await captureThrownError(executeAsSuperAdmin({ nickname: 'new_nickname' }));
+
+      expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+      expect(organizationIsolation.findActiveMembership).toHaveBeenCalledWith({
+        accountId: TARGET_ACCOUNT_ID,
+        organizationId: createAdminOrganizationFact().organizationId,
+        transactionContext: harness.txContext,
+      });
+    });
+
+    it('管理员自身没有有效组织时失败关闭为 FORBIDDEN，且零写入', async () => {
+      organizationIsolation.resolveForAccount
+        .mockReset()
+        .mockRejectedValue(
+          new DomainError(
+            ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+            '当前账号没有有效组织成员关系，无法执行组织范围操作',
+          ),
+        );
+
+      const error = await captureThrownError(executeAsSuperAdmin({ nickname: 'new_nickname' }));
+
+      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
+      // 组织解析已后移到行锁之后：先锁定目标，组织裁决失败后不再读取目标资料与写入
+      expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(
+        TARGET_ACCOUNT_ID,
+        harness.txContext,
+      );
+      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
     });
   });
 

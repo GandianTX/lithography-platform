@@ -2,16 +2,18 @@
 
 import { RegisterTypeEnum } from '@app-types/services/register.types';
 import { trimTextPure } from '@core/common/text/text.helper';
-import { Field, InputType } from '@nestjs/graphql';
+import { Field, InputType, Int } from '@nestjs/graphql';
 import { Transform, TransformFnParams } from 'class-transformer';
 import {
   IsEmail,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 import { IsValidPassword } from '@adapters/api/graphql/common/password-validation.decorator';
@@ -57,6 +59,18 @@ export class RegisterInput {
   })
   @IsEnum(RegisterTypeEnum, { message: '注册类型无效' })
   type: RegisterTypeEnum = RegisterTypeEnum.CUSTOMER;
+
+  @Field(() => Int, { description: '所选有效组织主键；客户与工程师均必填' })
+  @IsInt({ message: '组织主键必须是整数' })
+  @Min(1, { message: '组织主键必须大于等于 1' })
+  organizationId!: number;
+
+  @Field(() => String, { description: '工程师申请说明（仅工程师注册使用）', nullable: true })
+  @IsOptional()
+  @Transform(({ value }: TransformFnParams) => trimTextPure(value))
+  @IsString({ message: '申请说明必须是字符串' })
+  @MaxLength(2000, { message: '申请说明最多 2000 个字符' })
+  applicationNote?: string | null;
 
   @Field(() => String, { description: '邀请令牌', nullable: true })
   @IsOptional()

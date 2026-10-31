@@ -7,6 +7,8 @@ import { AsyncTaskRecordUsecasesModule } from '@src/usecases/async-task-record/a
 import { AdminDocumentDatabaseUsecasesModule } from '@src/usecases/admin-document-database/admin-document-database-usecases.module';
 import { ContentSubmissionUsecasesModule } from '@src/usecases/content-submission/content-submission-usecases.module';
 import { EmailQueueUsecasesModule } from '@src/usecases/email-queue/email-queue-usecases.module';
+import { LocalRuntimeUsecasesModule } from '@src/usecases/local-runtime/local-runtime-usecases.module';
+import { MaintenanceReportUsecasesModule } from '@src/usecases/maintenance-report/maintenance-report-usecases.module';
 import { RegistrationUsecasesModule } from '@src/usecases/registration/registration-usecases.module';
 import { ReferenceDocumentUsecasesModule } from '@src/usecases/reference-document/reference-document-usecases.module';
 import { RepairRequestUsecasesModule } from '@src/usecases/repair-request/repair-request-usecases.module';
@@ -60,6 +62,10 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     AuthUsecasesModule,
     ContentSubmissionUsecasesModule,
     EmailQueueUsecasesModule,
+    MaintenanceReportUsecasesModule,
+    // 本地运行数据：上传/备份为本机代理与调度器的内部用例，
+    // 真实接收端接入前不暴露 GraphQL 字段（当前无 resolver 消费）
+    LocalRuntimeUsecasesModule,
     RegistrationUsecasesModule,
     ReferenceDocumentUsecasesModule,
     RepairRequestUsecasesModule,

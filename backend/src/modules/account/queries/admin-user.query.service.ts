@@ -163,6 +163,16 @@ export class AdminUserQueryService {
       .createQueryBuilder('account')
       .leftJoinAndSelect('account.userInfo', 'userInfo');
 
+    // 组织范围由 Usecase 经可信组织解析后以账号 ID 清单下推：account 域不跨域导入组织
+    // Entity，也不接受客户端自报组织。空数组直接返回空页，**不得**退化为「不筛选」——
+    // 那会把「没有可见账号」静默变成「全库账号」。
+    if (query.accountIds !== undefined) {
+      if (query.accountIds.length === 0) {
+        return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
+      }
+      qb.andWhere('account.id IN (:...accountIds)', { accountIds: [...query.accountIds] });
+    }
+
     let searchResult: SearchResult<AccountEntity>;
     try {
       searchResult = await this.searchService.search<AccountEntity>({

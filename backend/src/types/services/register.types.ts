@@ -1,40 +1,15 @@
 // src/types/services/register.types.ts
 
-import { AccountStatus } from '../models/account.types';
-
 /**
  * 注册类型枚举
+ *
+ * `CUSTOMER`：客户，注册后直接开通并绑定所选组织为 CUSTOMER 成员；
+ * `ENGINEER`：工程师，注册后账号保持待审（PENDING/PENDING），只落待审申请，
+ * 由所选组织管理员审核通过后才开通并建立 ENGINEER 成员关系。
  */
 export enum RegisterTypeEnum {
   /** 客户 */
   CUSTOMER = 'CUSTOMER',
+  /** 工程师（待组织管理员审核） */
+  ENGINEER = 'ENGINEER',
 }
-
-export interface RegisterInputModel {
-  loginName?: string | null;
-  loginEmail: string;
-  loginPassword: string;
-  nickname?: string;
-  type: RegisterTypeEnum;
-  inviteToken?: string;
-  confirmPassword?: string;
-}
-
-/**
- * 准备好的注册数据类型
- * 用于 TypeORM 创建账户实体的数据结构
- */
-export type PreparedRegisterData = Omit<RegisterInputModel, 'confirmPassword' | 'type'> & {
-  /** 账户状态 */
-  status: AccountStatus;
-  /** 用户昵称 */
-  nickname: string;
-  /** 邮箱地址 */
-  email: string;
-  /** 访问权限组 */
-  accessGroup: string[];
-  /** 身份提示 */
-  identityHint: string;
-  /** 私有字段 */
-  metaDigest: string | null; // 修复：改为 string | null，与实体定义一致
-};

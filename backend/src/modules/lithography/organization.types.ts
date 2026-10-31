@@ -24,22 +24,33 @@ export type OrganizationMembershipFact = {
   organizationName: string;
   /** 组织类别：`CLIENT`=甲方；`PEER`=同行 */
   organizationKind: string;
-  /** 组织内角色：`SUPER_ADMIN`=组织管理员；`ENGINEER`=工程师 */
+  /** 组织内角色：`SUPER_ADMIN`=组织管理员；`ENGINEER`=工程师；`CUSTOMER`=客户 */
   memberRole: string;
 };
 
 /**
- * 组织成员关系写入数据（A-PR0 §4.3：管理员创建账号时同事务绑定的唯一入口形态）。
+ * 组织成员关系写入数据（管理员代建与自助注册共用同一写入入口形态）。
  *
  * `memberRole` 与实体 `chk_organization_membership_role` 值域一致；
- * 本期唯一写路径固定写入 `ENGINEER`（管理员仅在创建工程师时绑定其当前有效组织，
- * 客户不自动加入）。
+ * 本期写路径：管理员创建账号时绑定；客户自助注册时按所选有效组织同事务绑定 CUSTOMER；
+ * 工程师自助注册先落待审申请，不建成员关系，审核通过时与账号启用同事务绑定 ENGINEER。
  */
 export type OrganizationMembershipInsertData = {
-  /** 组织主键（来自可信组织上下文解析，绝不取客户端自报） */
+  /** 组织主键（管理员代建取自可信组织解析；自助注册取客户端所选、已在同事务内复核 ACTIVE） */
   organizationId: number;
   /** 账号主键（同一事务内刚创建的账号） */
   accountId: number;
-  /** 组织内角色：`SUPER_ADMIN`=组织管理员；`ENGINEER`=工程师 */
-  memberRole: IdentityTypeEnum.SUPER_ADMIN | IdentityTypeEnum.ENGINEER;
+  /** 组织内角色：`SUPER_ADMIN`=组织管理员；`ENGINEER`=工程师；`CUSTOMER`=客户 */
+  memberRole: IdentityTypeEnum.SUPER_ADMIN | IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
+};
+
+/**
+ * 注册组织选项读模型：只含允许自助注册的有效组织主键与展示名称。
+ *
+ * 刻意不含组织编码、类别、状态、成员、管理员、内部统计或其他属性；
+ * 浏览器所选 organizationId 只是申请参数，组织有效性仍由创建事务内复核。
+ */
+export type OrganizationRegistrationOption = {
+  readonly id: number;
+  readonly name: string;
 };

@@ -487,19 +487,36 @@ function parseMigrationArtifacts(content: string): MigrationArtifacts {
   // 迁移源码多用模板字符串，SQL 标识符反引号会被转义为 \`。先还原再解析，
   // 否则结构预检会漏掉全部建表/加列/加约束目标，半迁移检测形同虚设。
   const normalized = content.replace(/\\`/g, '`');
+  // 只解析 up() 主体：down() 里的反向 DDL 不代表迁移前应缺失的对象。
+  const upStart = normalized.search(/public\s+async\s+up\s*\(/);
+  const downStart = normalized.search(/public\s+async\s+down\s*\(/);
+  const scoped =
+    upStart >= 0
+      ? normalized.slice(upStart, downStart > upStart ? downStart : undefined)
+      : normalized;
   const createdTables: string[] = [];
   const addedColumns: Array<{ table: string; column: string }> = [];
   const addedObjects: Array<{ table: string; name: string }> = [];
+  // up() 内先 DROP 再 ADD 的同名约束属于“改定义”，不能当作迁移前应缺失的新对象。
+  const droppedObjects = new Set<string>();
 
   const createTablePattern = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`([^`]+)`/gi;
-  let createMatch = createTablePattern.exec(normalized);
+  let createMatch = createTablePattern.exec(scoped);
   while (createMatch !== null) {
     createdTables.push(createMatch[1]);
-    createMatch = createTablePattern.exec(normalized);
+    createMatch = createTablePattern.exec(scoped);
+  }
+
+  const dropObjectPattern =
+    /DROP\s+(?:CHECK\s+|FOREIGN\s+KEY\s+|INDEX\s+|KEY\s+|CONSTRAINT\s+)?`([^`]+)`/gi;
+  let dropMatch = dropObjectPattern.exec(scoped);
+  while (dropMatch !== null) {
+    droppedObjects.add(dropMatch[1]);
+    dropMatch = dropObjectPattern.exec(scoped);
   }
 
   const alterPattern = /ALTER\s+TABLE\s+`([^`]+)`([\s\S]*?)(?=ALTER\s+TABLE\s+`|$)/gi;
-  let alterMatch = alterPattern.exec(normalized);
+  let alterMatch = alterPattern.exec(scoped);
   while (alterMatch !== null) {
     const table = alterMatch[1];
     const clause = alterMatch[2];
@@ -512,10 +529,12 @@ function parseMigrationArtifacts(content: string): MigrationArtifacts {
     const objectPattern = /ADD\s+(?:CONSTRAINT\s+|UNIQUE\s+KEY\s+|KEY\s+|INDEX\s+)`([^`]+)`/gi;
     let objectMatch = objectPattern.exec(clause);
     while (objectMatch !== null) {
-      addedObjects.push({ table, name: objectMatch[1] });
+      if (!droppedObjects.has(objectMatch[1])) {
+        addedObjects.push({ table, name: objectMatch[1] });
+      }
       objectMatch = objectPattern.exec(clause);
     }
-    alterMatch = alterPattern.exec(normalized);
+    alterMatch = alterPattern.exec(scoped);
   }
 
   return { createdTables, addedColumns, addedObjects };

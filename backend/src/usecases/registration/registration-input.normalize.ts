@@ -1,13 +1,23 @@
 // src/usecases/registration/registration-input.normalize.ts
 
 import { AudienceTypeEnum } from '@app-types/models/account.types';
+import {
+  EngineerRegistrationReviewAction,
+  EngineerRegistrationApplicationStatus,
+} from '@app-types/models/registration.types';
 import { DomainError } from '@core/common/errors';
-import { INPUT_NORMALIZE_ERROR } from '@core/common/errors/domain-error';
+import {
+  ENGINEER_REGISTRATION_ERROR,
+  INPUT_NORMALIZE_ERROR,
+} from '@core/common/errors/domain-error';
 import {
   normalizeEnumValue,
   normalizeOptionalText,
   normalizeRequiredText,
 } from '@core/common/input-normalize/input-normalize.policy';
+
+/** 申请说明与审核意见的数据库列上限（varchar(2000)），超长在输入层即拒绝 */
+const REGISTRATION_TEXT_MAX_LENGTH = 2000;
 
 interface RegisterWithEmailNormalizeInput {
   loginEmail: string;
@@ -194,4 +204,118 @@ function validateRegistrationNickname(value: string): string {
   }
 
   return value;
+}
+
+/**
+ * 注册所选组织主键：必须是正整数。
+ *
+ * 只做输入形态校验；组织是否 ACTIVE 由创建事务内的
+ * `OrganizationQueryService.findActiveRegistrationOption()` 复核，绝不信任客户端自报。
+ */
+export function normalizeRegistrationOrganizationId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new DomainError(ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS, '请选择有效的组织', {
+      field: 'organizationId',
+    });
+  }
+  return value;
+}
+
+/**
+ * 工程师申请说明：可选，去首尾空白；空白视为未填写（返回 null）。
+ * 列上限 2000 字符，超长在输入层即拒绝。
+ */
+export function normalizeRegistrationApplicationNote(value: unknown): string | null {
+  return normalizeRegistrationOptionalText(value, '申请说明');
+}
+
+/** 组织管理员审核意见：可选，去首尾空白；空白视为未填写（返回 null） */
+export function normalizeEngineerRegistrationReviewComment(value: unknown): string | null {
+  return normalizeRegistrationOptionalText(value, '审核意见');
+}
+
+/** 审核目标申请主键：必须是正整数（可见范围仍由用例按可信组织复核） */
+export function normalizeEngineerRegistrationApplicationId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new DomainError(ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS, '请选择有效的注册申请', {
+      field: 'applicationId',
+    });
+  }
+  return value;
+}
+
+/**
+ * 申请人与审核管理员的凭据证明输入（本人状态查询 / 重提共用）。
+ *
+ * - 标识符允许登录名或登录邮箱（`AccountQueryService.findCredentialByLoginName()` 同口径），
+ *   去首尾空白后必须非空；
+ * - 密码**不 trim**：trim 会静默改写秘密，正确密码可能含首尾空白；
+ *   纯空白在凭据比对时统一按 `CREDENTIAL_MISMATCH` 处理，不在输入层区分。
+ */
+export function normalizeEngineerRegistrationCredential(input: {
+  accountIdentifier: unknown;
+  password: unknown;
+}): { accountIdentifier: string; password: string } {
+  const accountIdentifier = normalizeRequiredText(input.accountIdentifier, {
+    fieldName: '登录名或登录邮箱',
+  });
+  if (typeof input.password !== 'string' || input.password.length === 0) {
+    throw new DomainError(ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS, '密码不能为空', {
+      field: 'password',
+    });
+  }
+  return { accountIdentifier, password: input.password };
+}
+
+/** 审核动作：只接受 APPROVE / REJECT 两个终态 */
+export function normalizeEngineerRegistrationReviewAction(
+  value: unknown,
+): EngineerRegistrationReviewAction {
+  return normalizeEnumValue<EngineerRegistrationReviewAction>(
+    value,
+    Object.values(EngineerRegistrationReviewAction),
+    { fieldName: '审核动作' },
+  );
+}
+
+/** 组织审核队列状态筛选：缺省/空白表示不筛选 */
+export function normalizeEngineerRegistrationStatusFilter(
+  value: unknown,
+): EngineerRegistrationApplicationStatus | undefined {
+  const normalized = normalizeOptionalText(value, 'to_undefined', { fieldName: '申请状态' });
+  if (typeof normalized !== 'string') {
+    return undefined;
+  }
+  return normalizeEnumValue<EngineerRegistrationApplicationStatus>(
+    normalized,
+    Object.values(EngineerRegistrationApplicationStatus),
+    { fieldName: '申请状态' },
+  );
+}
+
+/**
+ * 注册文本型可选字段的统一收敛：非字符串按输入问题拒绝；去首尾空白后为空返回 null；
+ * 超过列上限拒绝。`fieldName` 用于组装可定位字段的提示。
+ */
+function normalizeRegistrationOptionalText(value: unknown, fieldName: string): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new DomainError(ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS, `${fieldName}必须是字符串`, {
+      field: fieldName,
+    });
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (trimmed.length > REGISTRATION_TEXT_MAX_LENGTH) {
+    throw new DomainError(
+      ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS,
+      `${fieldName}最多 ${REGISTRATION_TEXT_MAX_LENGTH} 个字符`,
+      { field: fieldName },
+    );
+  }
+  return trimmed;
 }

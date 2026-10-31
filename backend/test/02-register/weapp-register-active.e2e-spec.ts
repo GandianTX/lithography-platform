@@ -3,7 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { DataSource, In } from 'typeorm';
+import { DataSource } from 'typeorm';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import {
@@ -16,11 +16,22 @@ import { UserState } from '@app-types/models/user-info.types';
 import type { ThirdPartySession } from '@app-types/models/third-party-auth.types';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
+import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { ThirdPartyAuthEntity } from '@src/modules/third-party-auth/third-party-auth.entity';
 import {
   THIRD_PARTY_PROVIDER_TOKENS,
   WeAppProviderContract,
 } from '@src/modules/third-party-auth/contracts/third-party-provider.contract';
+import {
+  createOwnedResourceLedger,
+  recordOwnedResource,
+  runGuardedSpecCleanup,
+} from '../utils/e2e-scoped-cleanup';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 
 /**
  * 微信小程序注册「注册成功即立即可用」完整链路 E2E。
@@ -37,6 +48,12 @@ describe('Register 微信小程序注册 ACTIVE/ACTIVE 完整链路 (e2e)', () =
 
   const PROVIDER_USER_ID = `weapp_openid_e2e_register_${Date.now()}`;
   const AUTH_CREDENTIAL = 'e2e-weapp-register-code';
+
+  // 本轮台账：账号 / 成员关系 / 第三方绑定 / 组织均登记真实 ID 与归属事实，按精确 ID 回收。
+  // 清理器要求成员关系所属组织必须同时在本轮删除范围内，故组织与账号同批回收。
+  const ownership = createOwnedResourceLedger();
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('WEAPPREG');
+  let primaryOrganizationId = 0;
 
   type GqlBody = {
     data?: {
@@ -84,35 +101,36 @@ describe('Register 微信小程序注册 ACTIVE/ACTIVE 完整链路 (e2e)', () =
     app = moduleFixture.createNestApplication();
     dataSource = moduleFixture.get<DataSource>(DataSource);
     await app.init();
+
+    // 第三方注册必须选择有效组织：建立本规格专属组织并与账号链同批精确回收
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 微信注册主组织',
+          kind: 'CLIENT',
+        },
+      ],
+      ownership,
+    });
+    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
   }, 30000);
 
   afterAll(async () => {
-    await cleanupCreatedAccounts();
+    if (dataSource?.isInitialized) {
+      // 账号链（绑定/成员关系/资料/账号）与组织在同一台账内一次精确回收
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: ownership,
+        helper: 'weapp-register-active.e2e afterAll 精确回收',
+      });
+    }
     if (app) await app.close();
   });
 
-  const cleanupCreatedAccounts = async (): Promise<void> => {
-    try {
-      if (!dataSource?.isInitialized) return;
-      // 仅清理本 spec 注册产生的账号（按 mock openid 的绑定关系定位）
-      const thirdPartyRepo = dataSource.getRepository(ThirdPartyAuthEntity);
-      const bindings = await thirdPartyRepo.find({
-        where: { provider: ThirdPartyProviderEnum.WEAPP, providerUserId: PROVIDER_USER_ID },
-        select: { accountId: true },
-      });
-      const accountIds = bindings.map((binding) => binding.accountId);
-      if (accountIds.length > 0) {
-        await dataSource.getRepository(UserInfoEntity).delete({ accountId: In(accountIds) });
-        await thirdPartyRepo.delete({ providerUserId: PROVIDER_USER_ID });
-        await dataSource.getRepository(AccountEntity).delete({ id: In(accountIds) });
-      }
-    } catch (error) {
-      console.warn('清理测试数据失败:', error);
-    }
-  };
-
-  const performThirdPartyRegister = async () =>
-    request(app.getHttpServer())
+  const performThirdPartyRegister = async () => {
+    const response = await request(app.getHttpServer())
       .post('/graphql')
       .send({
         query: `
@@ -125,9 +143,59 @@ describe('Register 微信小程序注册 ACTIVE/ACTIVE 完整链路 (e2e)', () =
             provider: ThirdPartyProviderEnum.WEAPP,
             authCredential: AUTH_CREDENTIAL,
             audience: AudienceTypeEnum.SSTSWEAPP,
+            organizationId: primaryOrganizationId,
           },
         },
       });
+
+    // 成功即登记真实账号 / 成员关系 / 第三方绑定（均为 FK RESTRICT 链）
+    const createdAccountId = Number(
+      (response.body as { data?: { thirdPartyRegister?: { accountId?: unknown } } })?.data
+        ?.thirdPartyRegister?.accountId,
+    );
+    if (Number.isInteger(createdAccountId) && createdAccountId > 0) {
+      const account = await dataSource
+        .getRepository(AccountEntity)
+        .findOneOrFail({ where: { id: createdAccountId } });
+      const userInfo = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOneOrFail({ where: { accountId: createdAccountId } });
+      recordOwnedResource(ownership, 'account', createdAccountId, {
+        loginName: account.loginName ?? null,
+        loginEmail: account.loginEmail,
+        status: account.status,
+        identityHint: account.identityHint,
+        accessGroup: Array.isArray(userInfo.accessGroup)
+          ? userInfo.accessGroup
+          : (JSON.parse(userInfo.accessGroup) as string[]),
+        nickname: userInfo.nickname,
+        userInfoEmail: userInfo.email ?? null,
+        userState: userInfo.userState,
+      });
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOneOrFail({
+          where: { accountId: createdAccountId, organizationId: primaryOrganizationId },
+        });
+      recordOwnedResource(ownership, 'membership', membership.id, {
+        organizationId: primaryOrganizationId,
+        accountId: createdAccountId,
+        memberRole: membership.memberRole,
+        status: membership.status,
+      });
+      const binding = await dataSource.getRepository(ThirdPartyAuthEntity).findOneOrFail({
+        where: { accountId: createdAccountId, provider: ThirdPartyProviderEnum.WEAPP },
+      });
+      recordOwnedResource(ownership, 'thirdPartyAuth', binding.id, {
+        accountId: createdAccountId,
+        provider: binding.provider,
+        providerUserId: binding.providerUserId,
+        unionId: binding.unionId,
+      });
+    }
+
+    return response;
+  };
 
   const performThirdPartyLogin = async () =>
     request(app.getHttpServer())

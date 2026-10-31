@@ -9,6 +9,7 @@ import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { FieldEncryptionService } from '../../src/infrastructure/field-encryption/field-encryption.service';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
+import { OrganizationMembershipEntity } from '../../src/modules/lithography/entities/organization-membership.entity';
 import {
   createOwnedResourceLedger,
   recordOwnedResource,
@@ -16,6 +17,11 @@ import {
 } from '../utils/e2e-scoped-cleanup';
 import { createOwnedLedgerLifecycle } from '../utils/owned-ledger-lifecycle';
 import { runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 import {
   AccountStatus,
   AudienceTypeEnum,
@@ -33,6 +39,9 @@ describe('Register (e2e)', () => {
   let dataSource: DataSource;
   // 本规格的归属台账：只登记 register 返回的真实账号 ID 与最小预期事实，清理按 ID 精确执行
   let ownership: OwnedResourceLedger = createOwnedResourceLedger();
+  // 规格级组织编码：每次造数前幂等建立并登记到本用例台账，
+  // 与账号/成员关系一并精确回收（清理器禁止成员关系指向台账外的组织）。
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes('REG');
   // R04：清理失败时保留台账与失败原因，只有清理成功才重置；与永久反例共用同一实现。
   const lifecycle = createOwnedLedgerLifecycle({
     helper: 'register.e2e',
@@ -185,9 +194,31 @@ describe('Register (e2e)', () => {
   });
 
   /**
+   * 幂等建立本用例所需的有效组织，并登记到本用例台账。
+   * 清理器要求成员关系所属组织必须同时在本轮删除范围内，故组织与账号同批精确回收。
+   */
+  const ensureOwnedOrganization = async (): Promise<number> => {
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: suiteOrganizationCodes.primary,
+          name: 'E2E 注册主组织',
+          kind: 'CLIENT',
+        },
+      ],
+      ownership,
+    });
+    return requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
+  };
+
+  /**
    * 执行 GraphQL 注册请求
    */
   const performRegister = async (input: Record<string, unknown>) => {
+    // 客户/工程师注册都必填 organizationId：统一补上本用例专属有效组织
+    const organizationId = await ensureOwnedOrganization();
+    const payload: Record<string, unknown> = { organizationId, ...input };
     const response = await request(app.getHttpServer())
       .post('/graphql')
       .send({
@@ -201,7 +232,7 @@ describe('Register (e2e)', () => {
           }
         `,
         variables: {
-          input,
+          input: payload,
         },
       });
 
@@ -212,8 +243,8 @@ describe('Register (e2e)', () => {
     const numericAccountId = Number(registeredAccountId);
     if (Number.isInteger(numericAccountId) && numericAccountId > 0) {
       // 预期事实来自受控注册输入与已受理的注册规则（仅允许客户注册、状态 ACTIVE）。
-      const inputLoginName = typeof input.loginName === 'string' ? input.loginName : null;
-      const inputLoginEmail = typeof input.loginEmail === 'string' ? input.loginEmail : '';
+      const inputLoginName = typeof payload.loginName === 'string' ? payload.loginName : null;
+      const inputLoginEmail = typeof payload.loginEmail === 'string' ? payload.loginEmail : '';
       // N01：昵称可能被注册规则改写（重复昵称自动加后缀），资料三项取**本次创建结果**，
       // 在注册成功后立即读取一次；不在清理阶段回读当前值作为预期。
       const createdUserInfo = await dataSource
@@ -228,6 +259,20 @@ describe('Register (e2e)', () => {
         nickname: createdUserInfo.nickname,
         userInfoEmail: createdUserInfo.email ?? null,
         userState: createdUserInfo.userState,
+      });
+
+      // 客户注册在同事务内建立 CUSTOMER 成员关系；申请行/成员关系对账号是 FK RESTRICT，
+      // 必须登记真实成员关系 ID 才能精确回收账号与规格组织。
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOneOrFail({
+          where: { accountId: numericAccountId, organizationId },
+        });
+      recordOwnedResource(ownership, 'membership', membership.id, {
+        organizationId,
+        accountId: numericAccountId,
+        memberRole: membership.memberRole,
+        status: membership.status,
       });
     }
 

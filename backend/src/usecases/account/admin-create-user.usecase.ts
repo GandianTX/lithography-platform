@@ -65,8 +65,8 @@ type AdminCreateUserPhase =
  * 2. 场景输入规范化（凭据至少一个、初始密码非空断言、单值可写角色、资料字段）；
  * 3. 初始密码策略校验；
  * 4. 登录凭据唯一性预检查；
- * 5. Usecase 持有的单一事务内完成账号 + 密码哈希 + 资料写入 + 组织绑定（仅 ENGINEER），
- *    并回读稳定 View。
+ * 5. Usecase 持有的单一事务内完成账号 + 密码哈希 + 资料写入 + 组织绑定
+ *    （ENGINEER 与 CUSTOMER 均绑定管理员当前有效组织），并回读稳定 View。
  *
  * 第 3 步排在第 4 步之前是刻意的：输入错误（`BAD_USER_INPUT`）应先于占用冲突（`CONFLICT`）
  * 表达，否则一个连合法密码都未提交的调用者也能借响应差异探测登录名/登录邮箱是否已存在。
@@ -85,10 +85,10 @@ type AdminCreateUserPhase =
  * `PasswordPolicyService`、`hashPasswordWithTimestamp()` 与 `createUserInfoEntity()` 路径，
  * 密码策略与哈希算法没有任何第二套实现。
  *
- * A-PR0 §4.3（组织绑定）：创建 ENGINEER 时在同一事务内绑定**管理员当前有效组织**
- * （`TrustedOrganizationContextQueryService` 可信解析，绝不取客户端自报；客户不自动加入）。
- * 组织解析先于任何写入 fail-fast（管理员无有效组织时账号零落库）；绑定写入失败与其它
- * 阶段同口径整体回滚，不留半成品账号；不改密码、角色编辑与 Session 规则。
+ * A-PR0 §4.3 + 组织数据增量（组织绑定）：创建 ENGINEER 或 CUSTOMER 时在同一事务内绑定
+ * **管理员当前有效组织**（`TrustedOrganizationContextQueryService` 可信解析，绝不取客户端
+ * 自报）。组织解析先于任何写入 fail-fast（管理员无有效组织时账号零落库）；
+ * 绑定写入失败与其它阶段同口径整体回滚，不留半成品账号；不改密码、角色编辑与 Session 规则。
  *
  * 本用例职责不含资料编辑、状态修改与密码重置；也不创建 SUPER_ADMIN；
  * 普通用户角色只在创建时单选一次，创建后角色只读。
@@ -188,7 +188,8 @@ export class AdminCreateUserUsecase {
    * 事务内的原子创建：账号行、密码哈希、资料行与组织绑定同成同败，
    * 并在同一事务内回读稳定 View。
    *
-   * 组织绑定（A-PR0 §4.3）：创建 ENGINEER 时把新账号绑定到管理员当前有效组织。
+   * 组织绑定（A-PR0 §4.3 + 组织数据增量）：创建 ENGINEER 或 CUSTOMER 时，
+   * 把新账号绑定到管理员当前有效组织，成员角色与写入角色一致。
    * 解析先于任何写入——管理员自身无有效组织时 fail-fast，不给「先建账号又回滚」
    * 留下无谓的并发窗口；绑定仅使用可信解析出的 organizationId，不接受客户端自报。
    *
@@ -212,9 +213,12 @@ export class AdminCreateUserUsecase {
     let phase: AdminCreateUserPhase = 'RESOLVE_ORGANIZATION';
 
     try {
-      // A-PR0 §4.3：仅 ENGINEER 绑定管理员当前有效组织；客户不自动加入任何组织。
+      // 组织数据增量：ENGINEER 与 CUSTOMER 均绑定管理员当前有效组织，
+      // 成员角色与写入角色精确一致；其他角色仍不自动加入。
       let bindOrganizationId: number | null = null;
-      if (role === IdentityTypeEnum.ENGINEER) {
+      const bindMemberRole =
+        role === IdentityTypeEnum.ENGINEER || role === IdentityTypeEnum.CUSTOMER ? role : null;
+      if (bindMemberRole !== null) {
         const organizationFact = await this.organizationContextQueryService.resolveForAccount({
           accountId: adminAccountId,
           transactionContext,
@@ -274,13 +278,13 @@ export class AdminCreateUserUsecase {
       });
 
       // 绑定写入引用同一事务内刚创建的账号：外键在提交前即成立，任一步失败整体回滚
-      if (bindOrganizationId !== null) {
+      if (bindOrganizationId !== null && bindMemberRole !== null) {
         phase = 'BIND_ORGANIZATION';
         await this.organizationMembershipService.insertMembership(
           {
             organizationId: bindOrganizationId,
             accountId: outcome.accountId,
-            memberRole: IdentityTypeEnum.ENGINEER,
+            memberRole: bindMemberRole,
           },
           transactionContext,
         );

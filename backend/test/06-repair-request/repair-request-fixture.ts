@@ -1,7 +1,9 @@
 // test/06-repair-request/repair-request-fixture.ts
 //
 // 维修申请 E2E 的专属安全夹具（read / accept / production 分类 spec 共用）：
-// - 账号、型号与业务自然标记只用于定位，命中后必须逐字段、逐引用核验；
+// - 账号、组织、成员关系、型号与业务自然标记只用于定位，命中后必须逐字段、逐引用核验；
+// - 组织与本轮账号的 ACTIVE 成员关系保证「同组织/跨组织」场景有真实归属事实：
+//   primary 组织承载正常读写场景，peer 组织承载跨组织拒绝场景，无归属存量工单显式保持 NULL；
 // - 申请正文（errorCode / faultDescription / contentMd / createdAt）以本文件导出的真源为准，
 //   造数与归属核验共用同一份真源；接单/删除状态会被受测流程合法改写，故按实体不变量核验；
 // - 所有主键由数据库生成，每步成功后立即记录本轮 ID；
@@ -17,6 +19,8 @@ import { AccountEntity } from '@src/modules/account/base/entities/account.entity
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { EngineerResponseEntity } from '@src/modules/lithography/entities/engineer-response.entity';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
+import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
+import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { DataSource, EntityManager, In } from 'typeorm';
@@ -76,12 +80,71 @@ export const REPAIR_REQUEST_FIXTURE_ACCOUNTS = {
     accessGroup: [IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.ENGINEER],
     identityType: IdentityTypeEnum.ENGINEER,
   },
+  /** 跨组织客户：仅归属 peer 组织，用于跨组织拒绝场景（客户视角读他人申请同样拒绝） */
+  crossOrgCustomer: {
+    loginName: 'testrrfixturecrosscustomera',
+    loginEmail: 'rr.fixture.cross.customer@example.com',
+    loginPassword: 'RrFixtureCrossCustomer@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  /** 跨组织工程师：仅归属 peer 组织，用于跨组织读写拒绝与无归属存量受理场景 */
+  crossOrgEngineer: {
+    loginName: 'testrrfixturecrossengineer',
+    loginEmail: 'rr.fixture.cross.engineer@example.com',
+    loginPassword: 'RrFixtureCrossEngineer@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.ENGINEER],
+    identityType: IdentityTypeEnum.ENGINEER,
+  },
 } satisfies Record<
-  'customerA' | 'customerB' | 'engineerA' | 'engineerB' | 'admin' | 'hybrid',
+  | 'customerA'
+  | 'customerB'
+  | 'engineerA'
+  | 'engineerB'
+  | 'admin'
+  | 'hybrid'
+  | 'crossOrgCustomer'
+  | 'crossOrgEngineer',
   TestAccountConfig
 >;
 
 export type RepairRequestFixtureAccountKey = keyof typeof REPAIR_REQUEST_FIXTURE_ACCOUNTS;
+
+/** 夹具专属组织：primary 承载同组织正常场景，peer 承载跨组织拒绝场景（编码唯一、指纹可核验） */
+export const REPAIR_REQUEST_FIXTURE_ORGANIZATIONS = {
+  primary: {
+    organizationCode: 'E2E_RR_PRIMARY',
+    name: '维修申请夹具主组织（夹具专属）',
+    kind: 'CLIENT',
+  },
+  peer: {
+    organizationCode: 'E2E_RR_PEER',
+    name: '维修申请夹具同行组织（夹具专属）',
+    kind: 'PEER',
+  },
+} as const;
+
+export type RepairRequestFixtureOrganizationKey = keyof typeof REPAIR_REQUEST_FIXTURE_ORGANIZATIONS;
+
+/**
+ * 每个夹具账号唯一允许的 ACTIVE 成员关系真源（库级唯一键保证一个账号只有一个 ACTIVE 组织）。
+ * 成员关系既是「可信组织事实」的来源，也是清理时必须先于账号/组织删除的外键引用。
+ */
+export const REPAIR_REQUEST_FIXTURE_MEMBERSHIPS = {
+  customerA: { organizationKey: 'primary', memberRole: 'CUSTOMER' },
+  customerB: { organizationKey: 'primary', memberRole: 'CUSTOMER' },
+  engineerA: { organizationKey: 'primary', memberRole: 'ENGINEER' },
+  engineerB: { organizationKey: 'primary', memberRole: 'ENGINEER' },
+  admin: { organizationKey: 'primary', memberRole: 'SUPER_ADMIN' },
+  hybrid: { organizationKey: 'primary', memberRole: 'ENGINEER' },
+  crossOrgCustomer: { organizationKey: 'peer', memberRole: 'CUSTOMER' },
+  crossOrgEngineer: { organizationKey: 'peer', memberRole: 'ENGINEER' },
+} as const satisfies Record<
+  RepairRequestFixtureAccountKey,
+  { readonly organizationKey: RepairRequestFixtureOrganizationKey; readonly memberRole: string }
+>;
 
 /** 唯一允许被本夹具清理的账号 loginName 集合（固定且专属） */
 export const REPAIR_REQUEST_FIXTURE_LOGIN_NAMES: readonly string[] = Object.values(
@@ -101,6 +164,10 @@ export const REPAIR_REQUEST_FIXTURE_MARKERS = {
     'E2E-RR-RD-115',
     'E2E-RR-RD-116',
     'E2E-RR-RD-117',
+    // 118 归属 peer 组织（跨组织）；119 无归属且已由跨组织工程师接单；120 无归属且未接单
+    'E2E-RR-RD-118',
+    'E2E-RR-RD-119',
+    'E2E-RR-RD-120',
   ],
   acceptRequestNos: [
     'E2E-RR-AC-131',
@@ -113,6 +180,9 @@ export const REPAIR_REQUEST_FIXTURE_MARKERS = {
     'E2E-RR-AC-138',
     'E2E-RR-AC-139',
     'E2E-RR-AC-140',
+    // 141 归属 peer 组织（跨组织接单拒绝）；142 无归属存量（接单失败关闭）
+    'E2E-RR-AC-141',
+    'E2E-RR-AC-142',
   ],
 } as const;
 
@@ -252,6 +322,30 @@ export const REPAIR_REQUEST_FIXTURE_REQUEST_SPECS: readonly RepairRequestFixture
     ...requestState(REQUEST_STATES.available),
   },
   {
+    requestNo: 'E2E-RR-RD-118',
+    errorCode: 'E-1008',
+    faultDescription: '跨组织未接单场景',
+    contentMd: '# E2E-RR-118',
+    createdAt: new Date('2026-08-30T13:00:00.000Z'),
+    ...requestState(REQUEST_STATES.available),
+  },
+  {
+    requestNo: 'E2E-RR-RD-119',
+    errorCode: 'E-1009',
+    faultDescription: '无归属存量本人已接单场景',
+    contentMd: '# E2E-RR-119',
+    createdAt: new Date('2026-08-30T14:00:00.000Z'),
+    ...requestState(REQUEST_STATES.accepted),
+  },
+  {
+    requestNo: 'E2E-RR-RD-120',
+    errorCode: 'E-1010',
+    faultDescription: '无归属存量未接单场景',
+    contentMd: '# E2E-RR-120',
+    createdAt: new Date('2026-08-30T15:00:00.000Z'),
+    ...requestState(REQUEST_STATES.available),
+  },
+  {
     requestNo: 'E2E-RR-AC-131',
     errorCode: 'E-3001',
     faultDescription: '接单成功场景',
@@ -331,6 +425,22 @@ export const REPAIR_REQUEST_FIXTURE_REQUEST_SPECS: readonly RepairRequestFixture
     createdAt: new Date('2026-08-30T12:00:00.000Z'),
     ...requestState(REQUEST_STATES.available, REQUEST_STATES.accepted),
   },
+  {
+    requestNo: 'E2E-RR-AC-141',
+    errorCode: 'E-3011',
+    faultDescription: '跨组织接单拒绝场景',
+    contentMd: '# E2E-AC-141',
+    createdAt: new Date('2026-08-31T01:00:00.000Z'),
+    ...requestState(REQUEST_STATES.available),
+  },
+  {
+    requestNo: 'E2E-RR-AC-142',
+    errorCode: 'E-3012',
+    faultDescription: '无归属存量接单拒绝场景',
+    contentMd: '# E2E-AC-142',
+    createdAt: new Date('2026-08-31T02:00:00.000Z'),
+    ...requestState(REQUEST_STATES.available),
+  },
 ];
 
 /**
@@ -373,9 +483,28 @@ const expectedModelByCode = new Map<string, RepairRequestFixtureModelSpec>(
   Object.values(REPAIR_REQUEST_FIXTURE_MODELS).map((spec) => [spec.modelCode, spec]),
 );
 
+const expectedOrganizationByCode = new Map<
+  string,
+  (typeof REPAIR_REQUEST_FIXTURE_ORGANIZATIONS)[RepairRequestFixtureOrganizationKey]
+>(Object.values(REPAIR_REQUEST_FIXTURE_ORGANIZATIONS).map((spec) => [spec.organizationCode, spec]));
+
+const expectedMembershipByLoginName = new Map<
+  string,
+  (typeof REPAIR_REQUEST_FIXTURE_MEMBERSHIPS)[RepairRequestFixtureAccountKey]
+>(
+  (Object.keys(REPAIR_REQUEST_FIXTURE_MEMBERSHIPS) as RepairRequestFixtureAccountKey[]).map(
+    (key) => [
+      REPAIR_REQUEST_FIXTURE_ACCOUNTS[key].loginName,
+      REPAIR_REQUEST_FIXTURE_MEMBERSHIPS[key],
+    ],
+  ),
+);
+
 /** 本轮所有权上下文：只记录「本轮实际创建成功并拿到 ID」的行 */
 export type RepairRequestFixtureOwnership = {
   accountIds: number[];
+  organizationIds: number[];
+  membershipIds: number[];
   equipmentModelIds: number[];
   repairRequestIds: number[];
   engineerResponseIds: number[];
@@ -383,6 +512,8 @@ export type RepairRequestFixtureOwnership = {
 
 export const createRepairRequestFixtureOwnership = (): RepairRequestFixtureOwnership => ({
   accountIds: [],
+  organizationIds: [],
+  membershipIds: [],
   equipmentModelIds: [],
   repairRequestIds: [],
   engineerResponseIds: [],
@@ -532,6 +663,8 @@ const resolveAndVerifyFixture = async (
 ): Promise<RepairRequestFixtureOwnership> => {
   const accountRepo = manager.getRepository(AccountEntity);
   const userInfoRepo = manager.getRepository(UserInfoEntity);
+  const organizationRepo = manager.getRepository(OrganizationEntity);
+  const membershipRepo = manager.getRepository(OrganizationMembershipEntity);
   const modelRepo = manager.getRepository(EquipmentModelEntity);
   const requestRepo = manager.getRepository(RepairRequestEntity);
   const responseRepo = manager.getRepository(EngineerResponseEntity);
@@ -593,6 +726,76 @@ const resolveAndVerifyFixture = async (
   const accountIds = accounts.map((row) => row.id);
   const accountIdSet = new Set(accountIds);
   const engineerAccountIdSet = new Set(engineerAccountIds);
+  const loginNameByAccountId = new Map(accounts.map((row) => [row.id, row.loginName] as const));
+
+  const organizations = await organizationRepo.find({
+    where: { organizationCode: In([...expectedOrganizationByCode.keys()]) },
+  });
+  for (const organization of organizations) {
+    const spec = expectedOrganizationByCode.get(organization.organizationCode);
+    if (!spec) {
+      throw ownershipError(helper, `组织 id=${organization.id} 的编码不属于本夹具`);
+    }
+    assertValue(helper, `组织 ${spec.organizationCode}.name`, organization.name, spec.name);
+    assertValue(helper, `组织 ${spec.organizationCode}.kind`, organization.kind, spec.kind);
+    assertValue(helper, `组织 ${spec.organizationCode}.status`, organization.status, 'ACTIVE');
+  }
+  const organizationIds = organizations.map((row) => row.id);
+  const organizationIdSet = new Set(organizationIds);
+
+  // 成员关系双向闭包：引用夹具账号或夹具组织的每一行都必须两侧都属于本夹具，
+  // 且角色/状态与真源一致。外部账号挂到夹具组织、或夹具账号挂到外部组织都会
+  // 阻止账号/组织删除（FK RESTRICT），必须在删除前失败关闭而不是强删主表。
+  const membershipWhere = [
+    ...(organizationIds.length > 0 ? [{ organizationId: In(organizationIds) }] : []),
+    ...(accountIds.length > 0 ? [{ accountId: In(accountIds) }] : []),
+  ];
+  const memberships =
+    membershipWhere.length > 0 ? await membershipRepo.find({ where: membershipWhere }) : [];
+  for (const membership of memberships) {
+    const loginName = loginNameByAccountId.get(membership.accountId);
+    if (!loginName) {
+      throw ownershipError(
+        helper,
+        `成员关系 id=${membership.id} 引用了不属于本夹具的账号 ${membership.accountId}`,
+      );
+    }
+    if (!organizationIdSet.has(membership.organizationId)) {
+      throw ownershipError(
+        helper,
+        `成员关系 id=${membership.id} 的账号 ${loginName} 挂在不属于本夹具的组织 ${membership.organizationId}`,
+      );
+    }
+    const expectedMembership = expectedMembershipByLoginName.get(loginName);
+    if (!expectedMembership) {
+      throw ownershipError(helper, `成员关系 id=${membership.id} 的账号 ${loginName} 无成员真源`);
+    }
+    const expectedOrganizationId = organizations.find(
+      (row) =>
+        row.organizationCode ===
+        REPAIR_REQUEST_FIXTURE_ORGANIZATIONS[expectedMembership.organizationKey].organizationCode,
+    )?.id;
+    if (expectedOrganizationId === undefined) {
+      throw ownershipError(
+        helper,
+        `成员关系 id=${membership.id} 缺少真源组织 ${REPAIR_REQUEST_FIXTURE_ORGANIZATIONS[expectedMembership.organizationKey].organizationCode}`,
+      );
+    }
+    assertValue(
+      helper,
+      `成员关系 ${loginName}.organizationId`,
+      membership.organizationId,
+      expectedOrganizationId,
+    );
+    assertValue(
+      helper,
+      `成员关系 ${loginName}.memberRole`,
+      membership.memberRole,
+      expectedMembership.memberRole,
+    );
+    assertValue(helper, `成员关系 ${loginName}.status`, membership.status, 'ACTIVE');
+  }
+  const membershipIds = memberships.map((row) => row.id);
 
   const models = await modelRepo.find({
     where: { modelCode: In([...expectedModelByCode.keys()]) },
@@ -615,6 +818,7 @@ const resolveAndVerifyFixture = async (
     ...(accountIds.length > 0
       ? [{ customerAccountId: In(accountIds) }, { acceptedByEngineerAccountId: In(accountIds) }]
       : []),
+    ...(organizationIds.length > 0 ? [{ ownerOrganizationId: In(organizationIds) }] : []),
   ];
   const requests = await requestRepo.find({ where: requestWhere });
   for (const request of requests) {
@@ -645,6 +849,16 @@ const resolveAndVerifyFixture = async (
       throw ownershipError(
         helper,
         `申请 ${request.requestNo}(id=${request.id}) 的型号 ${request.equipmentModelId} 归属不符`,
+      );
+    }
+    // 归属组织只允许为空（无归属存量）或本夹具组织，外部组织下的同标记申请必须失败关闭
+    if (
+      request.ownerOrganizationId !== null &&
+      !organizationIdSet.has(request.ownerOrganizationId)
+    ) {
+      throw ownershipError(
+        helper,
+        `申请 ${request.requestNo}(id=${request.id}) 的归属组织 ${request.ownerOrganizationId} 不属于本夹具`,
       );
     }
     assertRequestMatchesAllowedState(helper, request, spec, engineerAccountIdSet);
@@ -711,6 +925,8 @@ const resolveAndVerifyFixture = async (
 
   const resolved: RepairRequestFixtureOwnership = {
     accountIds,
+    organizationIds,
+    membershipIds,
     equipmentModelIds,
     repairRequestIds,
     engineerResponseIds,
@@ -718,6 +934,8 @@ const resolveAndVerifyFixture = async (
 
   if (expected) {
     assertResolvedIdsAreOwned(helper, '账号', resolved.accountIds, expected.accountIds);
+    assertResolvedIdsAreOwned(helper, '组织', resolved.organizationIds, expected.organizationIds);
+    assertResolvedIdsAreOwned(helper, '成员关系', resolved.membershipIds, expected.membershipIds);
     assertResolvedIdsAreOwned(
       helper,
       '型号',
@@ -736,7 +954,10 @@ const resolveAndVerifyFixture = async (
   return resolved;
 };
 
-/** 按外键 RESTRICT 反向精确删除：回复 → 申请 → 型号 → user_info → account */
+/**
+ * 按外键 RESTRICT 反向精确删除（子 → 父）：
+ * 回复 → 申请 → 型号 → 成员关系 → user_info → account → organization
+ */
 const deleteVerifiedFixture = async (
   manager: EntityManager,
   verified: RepairRequestFixtureOwnership,
@@ -754,9 +975,17 @@ const deleteVerifiedFixture = async (
       .getRepository(EquipmentModelEntity)
       .delete({ id: In(verified.equipmentModelIds) });
   }
+  if (verified.membershipIds.length > 0) {
+    await manager
+      .getRepository(OrganizationMembershipEntity)
+      .delete({ id: In(verified.membershipIds) });
+  }
   if (verified.accountIds.length > 0) {
     await manager.getRepository(UserInfoEntity).delete({ accountId: In(verified.accountIds) });
     await manager.getRepository(AccountEntity).delete({ id: In(verified.accountIds) });
+  }
+  if (verified.organizationIds.length > 0) {
+    await manager.getRepository(OrganizationEntity).delete({ id: In(verified.organizationIds) });
   }
 };
 
@@ -825,6 +1054,111 @@ export const seedRepairRequestFixtureAccounts = async (opts: {
   return result;
 };
 
+/**
+ * 为已创建的夹具账号建立本轮专属组织与唯一 ACTIVE 成员关系。
+ *
+ * - 组织按专属编码幂等复用：命中后核验名称/类别/ACTIVE 状态指纹，不符即失败关闭；
+ * - 成员关系只为本轮实际创建成功的账号建立，角色/组织取自 `REPAIR_REQUEST_FIXTURE_MEMBERSHIPS`；
+ * - 真实 ID 连同预期事实（组织编码、账号 ID、角色、状态）一并登记到 ownership，供收尾精确回收；
+ * - 库级唯一键 `uk_organization_membership_active_account` 保证一个账号只有一个 ACTIVE 组织，
+ *   因此这里只为每个账号建一条关系，不构造「冲突组织事实」。
+ */
+export type RepairRequestFixtureOrganizationScope = {
+  /** organizationCode → organizationId（供造数时按场景选择归属组织） */
+  organizationIdsByCode: ReadonlyMap<string, number>;
+  primaryOrganizationId: number;
+  peerOrganizationId: number;
+};
+
+export const seedRepairRequestFixtureOrganizationScope = async (opts: {
+  dataSource: DataSource;
+  ownership: RepairRequestFixtureOwnership;
+  accountIds: Partial<Record<RepairRequestFixtureAccountKey, number>>;
+}): Promise<RepairRequestFixtureOrganizationScope> => {
+  const helper = 'seedRepairRequestFixtureOrganizationScope';
+  await assertFixtureTarget(opts.dataSource, helper);
+
+  const organizationRepo = opts.dataSource.getRepository(OrganizationEntity);
+  const membershipRepo = opts.dataSource.getRepository(OrganizationMembershipEntity);
+  const organizationIdsByCode = new Map<string, number>();
+
+  for (const spec of Object.values(REPAIR_REQUEST_FIXTURE_ORGANIZATIONS)) {
+    const existing = await organizationRepo.findOne({
+      where: { organizationCode: spec.organizationCode },
+    });
+    if (existing) {
+      assertValue(helper, `组织 ${spec.organizationCode}.name`, existing.name, spec.name);
+      assertValue(helper, `组织 ${spec.organizationCode}.kind`, existing.kind, spec.kind);
+      assertValue(helper, `组织 ${spec.organizationCode}.status`, existing.status, 'ACTIVE');
+      organizationIdsByCode.set(spec.organizationCode, existing.id);
+      recordId(opts.ownership.organizationIds, existing.id, helper);
+      continue;
+    }
+    const saved = await organizationRepo.save(
+      organizationRepo.create({
+        organizationCode: spec.organizationCode,
+        name: spec.name,
+        kind: spec.kind,
+        status: 'ACTIVE',
+      }),
+    );
+    organizationIdsByCode.set(spec.organizationCode, saved.id);
+    recordId(opts.ownership.organizationIds, saved.id, helper);
+  }
+
+  for (const key of Object.keys(
+    REPAIR_REQUEST_FIXTURE_MEMBERSHIPS,
+  ) as RepairRequestFixtureAccountKey[]) {
+    const accountId = opts.accountIds[key];
+    if (accountId === undefined) {
+      // 该 spec 只创建了部分夹具账号：不为其未创建的账号建立成员关系
+      continue;
+    }
+    const expected = REPAIR_REQUEST_FIXTURE_MEMBERSHIPS[key];
+    const organizationCode =
+      REPAIR_REQUEST_FIXTURE_ORGANIZATIONS[expected.organizationKey].organizationCode;
+    const organizationId = organizationIdsByCode.get(organizationCode);
+    if (organizationId === undefined) {
+      throw new Error(`[${helper}] 组织 ${organizationCode} 未初始化，拒绝建立成员关系`);
+    }
+    const existing = await membershipRepo.findOne({ where: { organizationId, accountId } });
+    if (existing) {
+      assertValue(
+        helper,
+        `成员关系 ${key}.organizationId`,
+        existing.organizationId,
+        organizationId,
+      );
+      assertValue(helper, `成员关系 ${key}.memberRole`, existing.memberRole, expected.memberRole);
+      assertValue(helper, `成员关系 ${key}.status`, existing.status, 'ACTIVE');
+      recordId(opts.ownership.membershipIds, existing.id, helper);
+      continue;
+    }
+    const saved = await membershipRepo.save(
+      membershipRepo.create({
+        organizationId,
+        accountId,
+        memberRole: expected.memberRole,
+        status: 'ACTIVE',
+        leftAt: null,
+      }),
+    );
+    recordId(opts.ownership.membershipIds, saved.id, helper);
+  }
+
+  const primaryOrganizationId = organizationIdsByCode.get(
+    REPAIR_REQUEST_FIXTURE_ORGANIZATIONS.primary.organizationCode,
+  );
+  const peerOrganizationId = organizationIdsByCode.get(
+    REPAIR_REQUEST_FIXTURE_ORGANIZATIONS.peer.organizationCode,
+  );
+  if (primaryOrganizationId === undefined || peerOrganizationId === undefined) {
+    throw new Error(`[${helper}] 夹具组织初始化不完整，拒绝继续造数`);
+  }
+
+  return { organizationIdsByCode, primaryOrganizationId, peerOrganizationId };
+};
+
 /** 创建夹具专属型号（主键由数据库生成，成功即记录） */
 export const createRepairRequestFixtureModel = async (opts: {
   dataSource: DataSource;
@@ -844,6 +1178,14 @@ export type RepairRequestFixtureRequestSeed = {
   requestNo: string;
   customerAccountId: number;
   equipmentModelId: number;
+  /**
+   * 工单归属组织：
+   * - 传夹具主组织 ID = 同组织正常场景；
+   * - 传夹具同行组织 ID = 跨组织场景；
+   * - 省略或传 null = 无归属存量旧工单（不得用于放宽可见范围）。
+   * 非夹具组织 ID 在造数阶段即失败关闭，避免造出清理不掉的残留。
+   */
+  ownerOrganizationId?: number | null;
   errorCode: string;
   faultDescription: string;
   contentMd: string;
@@ -890,8 +1232,20 @@ export const createRepairRequestFixtureRequest = async (opts: {
   ) {
     throw new Error(`[${helper}] 造数拒绝：申请 ${opts.seed.requestNo} 状态不符合真源初始状态`);
   }
+  const ownerOrganizationId = opts.seed.ownerOrganizationId ?? null;
+  if (ownerOrganizationId !== null) {
+    const fixtureOrganizations = await opts.dataSource.getRepository(OrganizationEntity).find({
+      where: { organizationCode: In([...expectedOrganizationByCode.keys()]) },
+    });
+    const fixtureOrganizationIds = new Set(fixtureOrganizations.map((row) => row.id));
+    if (!fixtureOrganizationIds.has(ownerOrganizationId)) {
+      throw new Error(
+        `[${helper}] 造数拒绝：申请 ${opts.seed.requestNo} 的归属组织 ${ownerOrganizationId} 不是本夹具组织（仅允许夹具组织或 NULL）`,
+      );
+    }
+  }
   const repo = opts.dataSource.getRepository(RepairRequestEntity);
-  const saved = await repo.save(repo.create({ ...opts.seed }));
+  const saved = await repo.save(repo.create({ ...opts.seed, ownerOrganizationId }));
   recordId(opts.ownership.repairRequestIds, saved.id, helper);
   return saved.id;
 };

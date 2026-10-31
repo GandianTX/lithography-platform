@@ -9,6 +9,7 @@ const GROUPS = {
       'test/02-register/register.e2e-spec.ts',
       'test/02-register/register-email-active.e2e-spec.ts',
       'test/02-register/weapp-register-active.e2e-spec.ts',
+      'test/02-register/engineer-registration-approval.e2e-spec.ts',
       'test/03-roles-guard/roles-guard.e2e-spec.ts',
       'test/04-user-info/update-access-group.e2e-spec.ts',
       'test/04-user-info/update-visible-user-info.e2e-spec.ts',
@@ -41,6 +42,7 @@ const GROUPS = {
       'test/12-reference-document-case/reference-document-case.e2e-spec.ts',
       'test/11-content-submission/frontend-response-samples.e2e-spec.ts',
       'test/utils/e2e-db-guard.e2e-spec.ts',
+      'test/utils/e2e-owned-fixture.e2e-spec.ts',
       'test/utils/e2e-db-target-consistency.e2e-spec.ts',
       'test/utils/e2e-probe-lifecycle.e2e-spec.ts',
       'test/utils/e2e-probe-lifecycle-outer.e2e-spec.ts',
@@ -50,6 +52,7 @@ const GROUPS = {
       'test/utils/e2e-scoped-cleanup-ownership.e2e-spec.ts',
       'test/utils/e2e-scoped-cleanup-faults.e2e-spec.ts',
       'test/utils/owned-ledger-lifecycle.e2e-spec.ts',
+      'test/utils/unique-index-constraints.e2e-spec.ts',
       'test/utils/test-accounts-atomicity.e2e-spec.ts',
     ],
     needs: {

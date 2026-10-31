@@ -277,7 +277,9 @@ describe('管理员用户管理 (e2e)', () => {
       ownership,
     });
 
-    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系
+    // 组织隔离：管理员「只能管理本组织」。写路径按可信组织校验目标归属，列表按组织内
+    // 有效账号收窄——因此被管理/被查看的账号都必须是管理员的同组织有效成员。
+    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系。
     const organizationIds = await seedTestOrganizations({
       dataSource,
       organizations: [
@@ -299,6 +301,27 @@ describe('管理员用户管理 (e2e)', () => {
           accountLoginName: testAccountsConfig.admin.loginName,
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'SUPER_ADMIN',
+        },
+        // 被管理目标与列表可见账号：同组织有效成员，角色与各自账号身份一致
+        {
+          accountLoginName: testAccountsConfig.guestPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: testAccountsConfig.guestSecondary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffSecondary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
         },
       ],
     });
@@ -1005,12 +1028,16 @@ describe('管理员用户管理 (e2e)', () => {
       expect(account?.loginEmail).toBe(EMAIL_ONLY_LOGIN_EMAIL);
       expect(await countAccounts({ loginEmail: EMAIL_ONLY_LOGIN_EMAIL })).toBe(1);
 
-      // S2c 口径：CUSTOMER 不建立组织成员关系
-      expect(
-        await dataSource
-          .getRepository(OrganizationMembershipEntity)
-          .findOne({ where: { accountId: view?.id ?? 0 } }),
-      ).toBeNull();
+      // S2c 口径：管理员代建 CUSTOMER 与 ENGINEER 一样绑定管理员当前有效组织
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOne({ where: { accountId: view?.id ?? 0 } });
+      expect(membership).toMatchObject({
+        organizationId: primaryOrganizationId,
+        memberRole: IdentityTypeEnum.CUSTOMER,
+        status: 'ACTIVE',
+      });
+      expect(membership?.leftAt).toBeNull();
     });
 
     it('重复登录名返回 CONFLICT 且不落库', async () => {

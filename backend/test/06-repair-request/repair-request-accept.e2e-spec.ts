@@ -23,6 +23,7 @@ import {
   createRepairRequestFixtureRequest,
   runRepairRequestFixtureTeardown,
   seedRepairRequestFixtureAccounts,
+  seedRepairRequestFixtureOrganizationScope,
   type RepairRequestFixtureOwnership,
   type RepairRequestFixtureRequestSeed,
 } from './repair-request-fixture';
@@ -105,7 +106,10 @@ describe('工程师接单写链路 (e2e)', () => {
   let engineerAccountId: number;
   let otherEngineerAccountId: number;
   let customerAccountId: number;
+  let crossOrgCustomerAccountId: number;
   let hybridAccountId: number;
+  let primaryOrganizationId: number;
+  let peerOrganizationId: number;
   let acceptModelId: number;
   let successTargetId: number;
   let conflictTargetId: number;
@@ -114,6 +118,10 @@ describe('工程师接单写链路 (e2e)', () => {
   let hybridRejectTargetId: number;
   let hybridSuccessTargetId: number;
   let noActiveRoleTargetId: number;
+  /** 归属 peer 组织（跨组织）的未接单申请 */
+  let crossOrgTargetId: number;
+  /** 无归属存量（NULL）未接单申请 */
+  let nullOwnerTargetId: number;
   const ownership: RepairRequestFixtureOwnership = createRepairRequestFixtureOwnership();
   /** 仅当 beforeAll 在「写夹具之前」完成白名单验证才置位，afterAll 据此决定能否清理 */
   let fixtureTargetValidated = false;
@@ -144,10 +152,16 @@ describe('工程师接单写链路 (e2e)', () => {
     acceptedAt?: Date | null;
     deprecated?: boolean;
     deletedAt?: Date | null;
+    /** 默认客户端为夹具客户甲；跨组织场景显式传 peer 组织客户 */
+    customerAccountId?: number;
+    /** 省略 = 同组织正常场景；null = 无归属存量旧工单；peer 组织 ID = 跨组织场景 */
+    ownerOrganizationId?: number | null;
   }): RepairRequestFixtureRequestSeed => ({
     requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.acceptRequestNos[params.markerIndex],
-    customerAccountId,
+    customerAccountId: params.customerAccountId ?? customerAccountId,
     equipmentModelId: acceptModelId,
+    ownerOrganizationId:
+      params.ownerOrganizationId === undefined ? primaryOrganizationId : params.ownerOrganizationId,
     errorCode: params.errorCode,
     faultDescription: params.faultDescription,
     contentMd: params.contentMd,
@@ -202,7 +216,17 @@ describe('工程师接单写链路 (e2e)', () => {
     engineerAccountId = accounts.engineerA;
     otherEngineerAccountId = accounts.engineerB;
     customerAccountId = accounts.customerA;
+    crossOrgCustomerAccountId = accounts.crossOrgCustomer;
     hybridAccountId = accounts.hybrid;
+
+    // 本轮专属组织与唯一 ACTIVE 成员关系：primary 承载同组织场景，peer 承载跨组织场景
+    const organizationScope = await seedRepairRequestFixtureOrganizationScope({
+      dataSource,
+      ownership,
+      accountIds: accounts,
+    });
+    primaryOrganizationId = organizationScope.primaryOrganizationId;
+    peerOrganizationId = organizationScope.peerOrganizationId;
 
     engineerToken = await login({
       app,
@@ -345,6 +369,33 @@ describe('工程师接单写链路 (e2e)', () => {
         errorCode: 'E-3009',
         contentMd: '# E2E-AC-139',
         createdAt: new Date('2026-08-30T11:00:00.000Z'),
+      }),
+    });
+    // 141 归属 peer 组织（跨组织）：主组织工程师接单必须失败关闭，且目标逐字段不变
+    crossOrgTargetId = await createRepairRequestFixtureRequest({
+      dataSource,
+      ownership,
+      seed: buildRequestSeed({
+        markerIndex: 10,
+        customerAccountId: crossOrgCustomerAccountId,
+        ownerOrganizationId: peerOrganizationId,
+        faultDescription: '跨组织接单拒绝场景',
+        errorCode: 'E-3011',
+        contentMd: '# E2E-AC-141',
+        createdAt: new Date('2026-08-31T01:00:00.000Z'),
+      }),
+    });
+    // 142 无归属存量（NULL）：解析不到同组织事实，接单必须失败关闭且零写入
+    nullOwnerTargetId = await createRepairRequestFixtureRequest({
+      dataSource,
+      ownership,
+      seed: buildRequestSeed({
+        markerIndex: 11,
+        ownerOrganizationId: null,
+        faultDescription: '无归属存量接单拒绝场景',
+        errorCode: 'E-3012',
+        contentMd: '# E2E-AC-142',
+        createdAt: new Date('2026-08-31T02:00:00.000Z'),
       }),
     });
   }, 60000);
@@ -514,6 +565,49 @@ describe('工程师接单写链路 (e2e)', () => {
       // 错误 details 仅含 requestId，不含接单人与身份类字段
       expect(selfError.extensions.details).toEqual({ requestId: conflictTargetId });
       expect(JSON.stringify(selfError)).not.toContain('engineerAccountId');
+    });
+  });
+
+  describe('组织范围（跨组织与无归属存量）', () => {
+    it('主组织工程师接单 peer 组织工单失败关闭：与不存在同口径且目标逐字段不变', async () => {
+      const missingResponse = await acceptMutation(engineerToken, 999999).expect(200);
+      const crossOrgResponse = await acceptMutation(engineerToken, crossOrgTargetId).expect(200);
+
+      // 与不存在目标一致：同一 code / errorCode / 文案，不泄露目标是否存在
+      expect(crossOrgResponse.body.errors).toHaveLength(1);
+      const crossOrgError = crossOrgResponse.body.errors[0];
+      expect(crossOrgError.extensions.code).toBe('NOT_FOUND');
+      expect(crossOrgError.extensions.errorCode).toBe('REPAIR_REQUEST_NOT_FOUND');
+      expect(crossOrgError.message).toBe(missingResponse.body.errors[0].message);
+      expect(crossOrgError.extensions.errorMessage).toBe(
+        missingResponse.body.errors[0].extensions.errorMessage,
+      );
+
+      const row = await dataSource
+        .getRepository(RepairRequestEntity)
+        .findOneOrFail({ where: { id: crossOrgTargetId } });
+      expect(row.ownerOrganizationId).toBe(peerOrganizationId);
+      expect(row.isAccepted).toBe(false);
+      expect(row.acceptedByEngineerAccountId).toBeNull();
+      expect(row.acceptedAt).toBeNull();
+      expect(row.deprecated).toBe(false);
+      expect(row.deletedAt).toBeNull();
+    });
+
+    it('主组织工程师接单无归属存量（NULL）工单失败关闭：不产生写入', async () => {
+      const response = await acceptMutation(engineerToken, nullOwnerTargetId).expect(200);
+
+      expect(response.body.errors).toHaveLength(1);
+      expect(response.body.errors[0].extensions.code).toBe('NOT_FOUND');
+      expect(response.body.errors[0].extensions.errorCode).toBe('REPAIR_REQUEST_NOT_FOUND');
+
+      const row = await dataSource
+        .getRepository(RepairRequestEntity)
+        .findOneOrFail({ where: { id: nullOwnerTargetId } });
+      expect(row.ownerOrganizationId).toBeNull();
+      expect(row.isAccepted).toBe(false);
+      expect(row.acceptedByEngineerAccountId).toBeNull();
+      expect(row.acceptedAt).toBeNull();
     });
   });
 

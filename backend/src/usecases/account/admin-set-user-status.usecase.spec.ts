@@ -7,6 +7,7 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
+  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
@@ -14,6 +15,10 @@ import type { AccountService } from '@src/modules/account/base/services/account.
 import type { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import type { PinoLogger } from 'nestjs-pino';
+import {
+  createAdminOrganizationFact,
+  createOrganizationIsolationMocks,
+} from '../../../test/support/account/admin-user.fixture';
 import { AdminSetUserStatusUsecase } from './admin-set-user-status.usecase';
 
 /**
@@ -93,9 +98,23 @@ describe('AdminSetUserStatusUsecase 双字段写入原子性', () => {
     }),
   } as unknown as TransactionRunner;
 
+  const organizationIsolation = createOrganizationIsolationMocks();
+
+  /** 组织隔离替身回到「成功」缺省：管理员有单一可信组织、目标同组织有效成员 */
+  const givenOrganizationIsolation = (): void => {
+    organizationIsolation.resolveForAccount
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+    organizationIsolation.findActiveMembership
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+  };
+
   const usecase = new AdminSetUserStatusUsecase(
     accountService,
     adminUserQueryService,
+    organizationIsolation.organizationContextQueryService,
+    organizationIsolation.organizationMembershipQueryService,
     logger,
     transactionRunner,
   );
@@ -109,6 +128,7 @@ describe('AdminSetUserStatusUsecase 双字段写入原子性', () => {
     (adminUserQueryService.findAdminUserViewById as jest.Mock).mockReset();
     (accountService.lockByIdForUpdate as jest.Mock).mockResolvedValue(undefined);
     (adminUserQueryService.findAdminUserStatusFacts as jest.Mock).mockResolvedValue(activeFacts());
+    givenOrganizationIsolation();
   });
 
   it('第二个字段（user_state）写入失败时，事务回滚且两个字段都不落库', async () => {
@@ -258,9 +278,23 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
     }),
   } as unknown as TransactionRunner;
 
+  const organizationIsolation = createOrganizationIsolationMocks();
+
+  /** 组织隔离替身回到「成功」缺省：管理员有单一可信组织、目标同组织有效成员 */
+  const givenOrganizationIsolation = (): void => {
+    organizationIsolation.resolveForAccount
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+    organizationIsolation.findActiveMembership
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+  };
+
   const usecase = new AdminSetUserStatusUsecase(
     accountService,
     adminUserQueryService,
+    organizationIsolation.organizationContextQueryService,
+    organizationIsolation.organizationMembershipQueryService,
     logger,
     transactionRunner,
   );
@@ -305,6 +339,7 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
     (adminUserQueryService.findAdminUserStatusFacts as jest.Mock).mockResolvedValue(
       facts(AccountStatus.ACTIVE, UserState.ACTIVE),
     );
+    givenOrganizationIsolation();
     givenLockedTarget();
   });
 
@@ -387,6 +422,47 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
     });
   });
 
+  describe('组织隔离（管理员只能管理本组织）', () => {
+    it('目标不在管理员可信组织内时收敛为 TARGET_NOT_FOUND，零写入并回滚', async () => {
+      organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
+
+      const error = await captureError(executeAsSuperAdmin(AccountStatus.INACTIVE));
+
+      expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
+      expect(accountService.updateAccount).not.toHaveBeenCalled();
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+      expect(committed).toBe(false);
+      expect(organizationIsolation.findActiveMembership).toHaveBeenCalledWith({
+        accountId: TARGET_ACCOUNT_ID,
+        organizationId: createAdminOrganizationFact().organizationId,
+        transactionContext: txContext,
+      });
+    });
+
+    it('管理员自身没有有效组织时失败关闭为 FORBIDDEN，且零写入', async () => {
+      organizationIsolation.resolveForAccount
+        .mockReset()
+        .mockRejectedValue(
+          new DomainError(
+            ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+            '当前账号没有有效组织成员关系，无法执行组织范围操作',
+          ),
+        );
+
+      const error = await captureError(executeAsSuperAdmin(AccountStatus.INACTIVE));
+
+      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
+      // 组织解析已后移到行锁之后：先锁定目标，组织裁决失败后不再读取目标资料与写入
+      expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(TARGET_ACCOUNT_ID, txContext);
+      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+      expect(accountService.updateAccount).not.toHaveBeenCalled();
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+      expect(committed).toBe(false);
+    });
+  });
+
   describe('同状态幂等', () => {
     it.each([
       ['ACTIVE', AccountStatus.ACTIVE, UserState.ACTIVE],
@@ -405,6 +481,76 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
       expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
       // 幂等路径直接返回锁内 View：不触发写后回读，也不 bump 任何时间列
       expect(adminUserQueryService.findAdminUserViewById).toHaveBeenCalledTimes(1);
+      expect(committed).toBe(true);
+      expect(rolledBack).toBe(false);
+    });
+  });
+
+  /**
+   * 旧快照回归：并发方 A 已持锁并提交停用，B 在锁前建立的普通读取仍会看到 ACTIVE。
+   * 本组用「锁前的读返回旧值、锁后的读返回最新值」的替身，直接区分两种实现顺序：
+   * 顺序交换（先组织解析/先读 View 再锁）会在 B 上重复执行一次停用或错误地幂等返回。
+   */
+  describe('锁后读取最新状态（旧快照回归）', () => {
+    const installLockAwareReads = (latestStatus: AccountStatus): void => {
+      let locked = false;
+      let writtenStatus: AccountStatus | null = null;
+      (accountService.lockByIdForUpdate as jest.Mock).mockImplementation(() => {
+        locked = true;
+      });
+      (adminUserQueryService.findAdminUserStatusFacts as jest.Mock).mockImplementation(() =>
+        locked
+          ? facts(latestStatus, UserState.INACTIVE)
+          : facts(AccountStatus.ACTIVE, UserState.ACTIVE),
+      );
+      (adminUserQueryService.findAdminUserViewById as jest.Mock).mockImplementation(() =>
+        adminUserView({ status: writtenStatus ?? (locked ? latestStatus : AccountStatus.ACTIVE) }),
+      );
+      (accountService.updateAccount as jest.Mock).mockImplementation(
+        (_accountId: number, patch: { status: AccountStatus }) => {
+          writtenStatus = patch.status;
+        },
+      );
+    };
+
+    it('锁后读到 INACTIVE 时，重复停用必须幂等且不 bump 时间列', async () => {
+      installLockAwareReads(AccountStatus.INACTIVE);
+
+      const view = await executeAsSuperAdmin(AccountStatus.INACTIVE);
+
+      expect(view.status).toBe(AccountStatus.INACTIVE);
+      expect(accountService.updateAccount).not.toHaveBeenCalled();
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+      // 幂等路径只读取锁内 View 一次，不触发写后回读
+      expect(adminUserQueryService.findAdminUserViewById).toHaveBeenCalledTimes(1);
+      // 回归核心：锁定必须早于组织解析、View 与状态事实读取
+      const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(
+        organizationIsolation.resolveForAccount.mock.invocationCallOrder[0],
+      );
+      expect(lockOrder).toBeLessThan(
+        (adminUserQueryService.findAdminUserViewById as jest.Mock).mock.invocationCallOrder[0],
+      );
+      expect(lockOrder).toBeLessThan(
+        (adminUserQueryService.findAdminUserStatusFacts as jest.Mock).mock.invocationCallOrder[0],
+      );
+      expect(committed).toBe(true);
+      expect(rolledBack).toBe(false);
+    });
+
+    it('锁后读到 INACTIVE 时，启用必须真正写入而不是沿用旧快照幂等', async () => {
+      installLockAwareReads(AccountStatus.INACTIVE);
+
+      const view = await executeAsSuperAdmin(AccountStatus.ACTIVE);
+
+      expect(view.status).toBe(AccountStatus.ACTIVE);
+      expect(accountService.updateAccount).toHaveBeenCalledTimes(1);
+      expect(accountService.updateAccount).toHaveBeenCalledWith(
+        TARGET_ACCOUNT_ID,
+        expect.objectContaining({ status: AccountStatus.ACTIVE }),
+        txContext,
+      );
+      expect(accountService.updateUserInfoFields).toHaveBeenCalledTimes(1);
       expect(committed).toBe(true);
       expect(rolledBack).toBe(false);
     });

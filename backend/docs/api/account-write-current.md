@@ -23,6 +23,9 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 - `register(input: RegisterInput): RegisterResult`
 - `thirdPartyRegister(input: ThirdPartyRegisterInput): RegisterResult`
+- `registrationOrganizations: [RegistrationOrganizationDTO!]!`
+- `myEngineerRegistrationStatus(input: EngineerRegistrationCredentialInput!, pagination: PaginationArgs!): EngineerRegistrationStatusDTO`
+- `resubmitEngineerRegistration(input: ResubmitEngineerRegistrationInput!): ResubmitEngineerRegistrationResultDTO`
 - `login(input: AuthLoginInput): LoginResult`
 - `account(args: AccountArgs): UserAccountDTO`
 - `userInfo(accountId: Int!): UserInfoDTO`
@@ -37,6 +40,14 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `adminUpdateUserProfile(input: AdminUpdateUserProfileInput): AdminUserDTO`
 - `adminSetUserStatus(input: AdminSetUserStatusInput): AdminUserDTO`
 - `adminResetUserPassword(input: AdminResetUserPasswordInput): AdminResetUserPasswordResultDTO`
+
+当前组织管理员工程师注册审核入口（全部要求可信 SUPER_ADMIN 会话；组织范围由服务端按可信成员关系解析，不接受客户端自报 organizationId）：
+
+- `adminEngineerRegistrations(pagination: PaginationArgs!, status: EngineerRegistrationApplicationStatus): AdminEngineerRegistrationPageDTO`
+- `adminEngineerRegistrationDetail(applicationId: Int!): AdminEngineerRegistrationItemDTO`
+- `reviewEngineerRegistration(input: ReviewEngineerRegistrationInput!): AdminEngineerRegistrationItemDTO`
+
+审核条目的 `applicant` 复用 account 域 `AdminUserDTO` 的字段集（账号 ID、登录名/邮箱、昵称、角色与状态等公开资料），不额外定义第二套账号 DTO；字段明细见 `adminUsers` 的返回类型说明。
 
 当前自助账号设置入口（仅要求已登录会话，目标账号只能来自 Session，详见「自助账号设置」）：
 
@@ -61,13 +72,39 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `loginPassword`
 - `nickname`
 - `type`
+- `organizationId`（必填：客户与工程师都必须选择有效组织）
+- `applicationNote`（可选：仅工程师待审申请使用）
 - `inviteToken`
 
-`type` 默认是 `CUSTOMER`，且公开注册只允许创建 `CUSTOMER`。工程师和超级管理员账号由受控管理流程或 Seed 创建。
+`type` 默认是 `CUSTOMER`，公开注册允许 `CUSTOMER` 和 `ENGINEER`；`SUPER_ADMIN` 仍只由受控管理流程或 Seed 创建，不开放管理员自助注册。
 
-`thirdPartyRegister` 当前走第三方注册 usecase，属于通用第三方账号能力，不代表具体业务域身份。
+**破坏性变更**：`register` 与 `thirdPartyRegister` 的 `organizationId` 现为必填（非空）。旧客户端若不传该字段会收到 `BAD_USER_INPUT`，前端与第三方客户端必须与本后端同批次切换。
 
-公开注册成功语义：`register`（`RegisterWithEmailUsecase`）与 `thirdPartyRegister`（`WeappRegisterUsecase`）返回成功时，必须在**同一个创建事务内**显式写入 `account.status = ACTIVE` 与 `userInfo.userState = ACTIVE`（同提交同回滚，任一步失败不得返回成功，也不做事务外补救写）。`UserInfoEntity.user_state` 列与数据库默认值 `PENDING` 保留原样，不新增 Migration；所有新建 UserInfo 的生产入口必须显式提供 `userState`，不依赖 Entity 默认值。
+开通结果按类型分流，两类都必须先选择一个有效组织（`organizationId` 在写入事务内复核为 ACTIVE，客户端自报值不作为最终凭证）：
+
+- `CUSTOMER`：账号与资料在同一创建事务内写为 `ACTIVE / ACTIVE`，并绑定所选组织为 `CUSTOMER` 成员；注册返回后账号立即可用，`registrationStatus = REGISTERED`、`applicationId = null`；
+- `ENGINEER`：账号与资料保持 `PENDING / PENDING`，不建立有效成员关系、不签发登录令牌，只在同一事务内落一份 `PENDING` 待审申请（`applicationNote` 可选）；返回 `registrationStatus = PENDING_REVIEW` 和非空 `applicationId`。所选组织管理员审核通过后，账号才开通。
+
+`registrationOrganizations` 是公开只读查询，只返回 `ACTIVE` 组织的 `id` / `name`；客户端提交的 `organizationId` 仍由注册/重提事务复核有效性。
+
+`resubmitEngineerRegistration` 用于被拒绝后的重提：输入为本人凭据证明（`accountIdentifier` + `password`）、新的 `organizationId` 与可选 `applicationNote`；只新增一份 `PENDING` 申请，**不覆盖**历史申请行，拒绝记录与审核意见永久保留。重提前置条件为：账号三源角色收敛为 `ENGINEER`、双状态仍为 `PENDING / PENDING`、无有效组织成员关系、最新申请为 `REJECTED`。已有待审申请返回 `PENDING_APPLICATION_EXISTS`。
+
+`myEngineerRegistrationStatus` 供待审申请人查看本人最新申请与历史分页。待审账号没有登录态，因此该入口**不使用 JWT**，只复用密码凭据验证证明「本人」，不签发令牌、不放行登录；凭据不匹配统一返回 `CREDENTIAL_MISMATCH`，不区分账号不存在与密码错误。分页只接受 OFFSET。
+
+该入口是 **Mutation** 而非 Query：凭据必须随 POST 请求体提交，避免密码进入查询串、网关/APM 访问日志与被缓存/重放的 GET 语义。它不产生任何业务状态变更，客户端不应据此推断账号已开通。
+
+`reviewEngineerRegistration` 由所选组织的管理员执行一次性终态决策：
+
+- 权限：准确 SUPER_ADMIN 会话 + 可信成员关系的 `memberRole = SUPER_ADMIN`；申请不属于该组织一律按 NOT_FOUND；
+- `APPROVE`：建立 `ENGINEER` 成员关系、账号 `ACTIVE`、资料 `ACTIVE`、申请 `APPROVED` 在同一事务内生效；
+- `REJECT`：只写 `REJECTED` 与必填审核意见，账号保持 `PENDING / PENDING`，可凭本人凭据重提；
+- 重复/并发决策命中 0 行返回 CONFLICT，不覆盖既有终态。
+
+`thirdPartyRegister` 当前走第三方注册 usecase，属于通用第三方账号能力，不代表具体业务域身份；它同样要求 `organizationId`，只创建并绑定 `CUSTOMER` 成员，不提供工程师绕过审核的入口。
+
+公开注册成功语义：客户注册（`RegisterWithEmailUsecase` 的 CUSTOMER 分支）与 `thirdPartyRegister`（`WeappRegisterUsecase`）返回成功时，必须在**同一个创建事务内**显式写入 `account.status = ACTIVE`、`userInfo.userState = ACTIVE` 与所选组织的 `CUSTOMER` 成员关系（同提交同回滚，任一步失败不得返回成功，也不做事务外补救写）。工程师注册只在同一事务内创建 `PENDING / PENDING` 账号与待审申请，不建成员关系；`UserInfoEntity.user_state` 列与数据库默认值 `PENDING` 保留原样，不新增 Migration；所有新建 UserInfo 的生产入口必须显式提供 `userState`，不依赖 Entity 默认值。
+
+管理员代建入口（`adminCreateUser`）不受本改动影响：继续由可信 SUPER_ADMIN 会话按可信组织解析绑定，创建固定 `ACTIVE`，保留既有凭据、角色与密码策略。
 
 ## 账号读取
 
@@ -98,6 +135,9 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - 完整视图返回 `UserInfoDTO`。
 - 基础视图返回 `BasicUserInfoDTO`。
 - DTO 映射在 adapter 内完成，不能把 GraphQL DTO 下沉到 usecase 或 modules(service)。
+- 组织范围（非本人目标）：角色策略允许后仍需同一有效组织——操作者的唯一有效组织由 `TrustedOrganizationContextQueryService.resolveForAccount()` 解析（既不接受客户端自报组织，也不按公司名推断），目标必须在该组织内有有效成员关系。
+- 本人路径不进入组织解析：历史无组织账号仍可自查，不强制先加入组织。
+- 拒绝口径：跨组织、目标无有效成员关系（含已 LEFT）与目标不存在统一为 `USER_INFO_NOT_FOUND`（对外 `NOT_FOUND`），文案固定为「目标用户不存在」，不泄露目标存在性；操作者自身缺少唯一有效组织为 `ORGANIZATION_NO_ACTIVE_MEMBERSHIP`（对外 `FORBIDDEN`），存在歧义成员关系为 `ORGANIZATION_AMBIGUOUS_MEMBERSHIP`（对外 `FORBIDDEN`）。
 
 ## UserInfo 更新
 
@@ -109,6 +149,9 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `identityHint` 不属于本 mutation 输入：普通用户角色只在管理员创建账号时单选一次写入，创建后角色只读，无公开角色修改 Mutation。
 - Usecase 负责权限、可见性和写语义。
 - Resolver 只做输入 shape 到 usecase 参数的映射。
+- 组织范围与读取一致（本人豁免，非本人目标必须同属一个有效组织），但执行顺序固定为：事务内先 `SELECT ... FOR UPDATE` 锁定目标账号行，再解析操作者组织、核验目标成员关系、读取资料并写入。锁必须在组织解析与资料读取之前取得，避免锁前快照读到并发提交前的旧组织事实。
+- 非本人目标的失败口径与读取相同（跨组织 / 无有效成员关系 / 不存在统一 `USER_INFO_NOT_FOUND`，对外 `NOT_FOUND`）；写路径把锁定阶段的目标缺失（`ACCOUNT_NOT_FOUND`，会映射为 `UNAUTHENTICATED`）转换为同一错误码，避免与「会话失效」混淆。
+- 字段白名单不因组织范围放宽：非本人目标的 staff 写入仍仅允许 `nickname` / `avatarUrl` / `phone`，`email`、`signature` 等其余字段被忽略且不落库。
 
 ## 角色修改入口（已下线）
 
@@ -209,12 +252,12 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - 事务边界由 Usecase 经 `TransactionRunner` 持有；写用例先锁 `base_user_account` 行再写 `base_user_info`，与管理员写用例同一锁顺序；失败日志复用共享 helper（自助链路传入各自的 warn 码与 Session 账号 ID），写密码哈希阶段抑制 `message`（与管理员链路同款纵深防御）。
 - 写后读复用 `findMyAccountSettingsSnapshot()`：三源角色不收敛（`ROLE_DATA_INCONSISTENT`）或账号侧 `status` 与资料侧 `user_state` 双字段不一致（`READ_FAILED`）一律失败关闭，对外 `INTERNAL_SERVER_ERROR`。
 
-| 场景 | DomainError 码 | `extensions.code` |
-| --- | --- | --- |
-| 登录名与登录邮箱合并后双空 | `MY_ACCOUNT_ERROR.LOGIN_CREDENTIAL_BOTH_EMPTY` | `BAD_USER_INPUT` |
-| 凭据占用（预检查或唯一索引竞争） | `MY_ACCOUNT_ERROR.CREDENTIAL_CONFLICT` | `CONFLICT` |
-| 当前密码不正确 | `MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH` | `BAD_USER_INPUT` |
-| 新密码策略不达标 | `INPUT_NORMALIZE_ERROR.INVALID_TEXT` | `BAD_USER_INPUT` |
+| 场景                                 | DomainError 码                                                             | `extensions.code`       |
+| ------------------------------------ | -------------------------------------------------------------------------- | ----------------------- |
+| 登录名与登录邮箱合并后双空           | `MY_ACCOUNT_ERROR.LOGIN_CREDENTIAL_BOTH_EMPTY`                             | `BAD_USER_INPUT`        |
+| 凭据占用（预检查或唯一索引竞争）     | `MY_ACCOUNT_ERROR.CREDENTIAL_CONFLICT`                                     | `CONFLICT`              |
+| 当前密码不正确                       | `MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH`                               | `BAD_USER_INPUT`        |
+| 新密码策略不达标                     | `INPUT_NORMALIZE_ERROR.INVALID_TEXT`                                       | `BAD_USER_INPUT`        |
 | 三源角色不收敛 / 读取失败 / 写入失败 | `ADMIN_USER_ERROR.ROLE_DATA_INCONSISTENT` / `READ_FAILED` / `WRITE_FAILED` | `INTERNAL_SERVER_ERROR` |
 
 密码策略失败口径与管理员链路一致（见「管理员用户管理 → 写入语义」密码策略条目）。
