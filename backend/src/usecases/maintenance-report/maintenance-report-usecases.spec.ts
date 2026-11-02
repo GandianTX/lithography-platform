@@ -13,6 +13,7 @@ import {
   RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
 import {
+  DomainError,
   MAINTENANCE_REPORT_ERROR,
   PERMISSION_ERROR,
   REPAIR_REQUEST_ERROR,
@@ -23,6 +24,8 @@ import type { MaintenanceReportQueryService } from '@src/modules/lithography/que
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import { ApproveMaintenanceReportUsecase } from './approve-maintenance-report.usecase';
+import { GetMaintenanceReportReviewDetailUsecase } from './get-maintenance-report-review-detail.usecase';
+import { GetMyMaintenanceReportUsecase } from './get-my-maintenance-report.usecase';
 import { ReturnMaintenanceReportUsecase } from './return-maintenance-report.usecase';
 import { SubmitMaintenanceReportUsecase } from './submit-maintenance-report.usecase';
 import { RecordRepairRequestHandlingResultUsecase } from './record-repair-request-handling-result.usecase';
@@ -948,5 +951,257 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
     ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
 
     expect(service.updateRepairRequestHandling).not.toHaveBeenCalled();
+  });
+});
+
+describe('维修报告详情：先授权，再读取完整内容', () => {
+  const OTHER_ORGANIZATION_ID = ORGANIZATION_ID + 1;
+  const OTHER_ENGINEER_ACCOUNT_ID = 900002;
+  const notFound = { code: MAINTENANCE_REPORT_ERROR.NOT_FOUND };
+
+  const makeFullDetail = (overrides: Record<string, unknown> = {}) => ({
+    ...makeDetail(),
+    currentAttachments: [],
+    currentVersion: null,
+    currentVersionAttachments: [],
+    currentReview: null,
+    reviewHistory: [],
+    canEdit: true,
+    ...overrides,
+  });
+
+  const makeOwnership = (overrides: Record<string, unknown> = {}) => ({
+    reportId: REPORT_ID,
+    maintenanceEngineerAccountId: 900001,
+    ownerOrganizationId: ORGANIZATION_ID,
+    ...overrides,
+  });
+
+  const makeDetailQueryService = (
+    params: {
+      ownership?: unknown;
+      detail?: unknown;
+      detailError?: unknown;
+    } = {},
+  ) => ({
+    readReportOwnership: jest
+      .fn()
+      .mockResolvedValue(params.ownership === undefined ? makeOwnership() : params.ownership),
+    readReportDetail: params.detailError
+      ? jest.fn().mockRejectedValue(params.detailError)
+      : jest.fn().mockResolvedValue(params.detail === undefined ? makeFullDetail() : params.detail),
+  });
+
+  const makeDetailUsecases = (
+    queryService = makeDetailQueryService(),
+    organizationContextService = makeOrganizationContextService(),
+  ) => ({
+    queryService,
+    organizationContextService,
+    myUsecase: new GetMyMaintenanceReportUsecase(
+      queryService as unknown as MaintenanceReportQueryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    ),
+    reviewUsecase: new GetMaintenanceReportReviewDetailUsecase(
+      queryService as unknown as MaintenanceReportQueryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    ),
+  });
+
+  describe('本人详情', () => {
+    it('报告不存在：返回 NOT_FOUND，且不加载任何内容', async () => {
+      const queryService = makeDetailQueryService({ ownership: null });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+      expect(queryService.readReportOwnership).toHaveBeenCalledWith(REPORT_ID);
+    });
+
+    it('正常外组织：归属事实所属组织不同，返回 NOT_FOUND 且不加载内容', async () => {
+      const queryService = makeDetailQueryService({
+        ownership: makeOwnership({ ownerOrganizationId: OTHER_ORGANIZATION_ID }),
+      });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+    });
+
+    it('异常外组织：授权后详情查询仍携带范围谓词，范围外读取为空仍返回 NOT_FOUND', async () => {
+      const queryService = makeDetailQueryService({ detail: null });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).toHaveBeenCalledWith(REPORT_ID, undefined, {
+        ownerOrganizationId: ORGANIZATION_ID,
+        maintenanceEngineerAccountId: 900001,
+      });
+    });
+
+    it('同组织他人：组织相同但负责人不是本人，返回 NOT_FOUND 且不加载内容', async () => {
+      const queryService = makeDetailQueryService({
+        ownership: makeOwnership({ maintenanceEngineerAccountId: OTHER_ENGINEER_ACCOUNT_ID }),
+      });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+    });
+
+    it('正常本人：授权通过后返回完整详情，并携带组织与本人范围', async () => {
+      const detail = makeFullDetail();
+      const queryService = makeDetailQueryService({ detail });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).resolves.toBe(detail);
+      expect(queryService.readReportDetail).toHaveBeenCalledWith(REPORT_ID, undefined, {
+        ownerOrganizationId: ORGANIZATION_ID,
+        maintenanceEngineerAccountId: 900001,
+      });
+    });
+
+    it('异常本人：授权通过但详情已不可见（范围读取为空），返回 NOT_FOUND', async () => {
+      const queryService = makeDetailQueryService({ detail: null });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+    });
+
+    it('合法可见目标缺版本时保留原数据异常语义，不降级为 NOT_FOUND', async () => {
+      const queryService = makeDetailQueryService({
+        detailError: new DomainError(
+          MAINTENANCE_REPORT_ERROR.DATA_INCONSISTENT,
+          '维修报告当前版本行缺失',
+          { reportId: REPORT_ID },
+        ),
+      });
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.DATA_INCONSISTENT });
+    });
+
+    it('非工程师角色在读取归属事实之前即被拒绝', async () => {
+      const queryService = makeDetailQueryService();
+      const { myUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        myUsecase.execute({ session: customerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      expect(queryService.readReportOwnership).not.toHaveBeenCalled();
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('审核详情', () => {
+    it('报告不存在：返回 NOT_FOUND，且不加载任何内容', async () => {
+      const queryService = makeDetailQueryService({ ownership: null });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+    });
+
+    it('正常外组织：归属事实所属组织不同，返回 NOT_FOUND 且不加载内容', async () => {
+      const queryService = makeDetailQueryService({
+        ownership: makeOwnership({ ownerOrganizationId: OTHER_ORGANIZATION_ID }),
+      });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+    });
+
+    it('异常外组织：授权后详情查询仍携带组织范围谓词，范围外读取为空仍返回 NOT_FOUND', async () => {
+      const queryService = makeDetailQueryService({ detail: null });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+      expect(queryService.readReportDetail).toHaveBeenCalledWith(REPORT_ID, undefined, {
+        ownerOrganizationId: ORGANIZATION_ID,
+      });
+    });
+
+    it('同组织他人：审核入口只按组织裁决，可读取完整详情', async () => {
+      const detail = makeFullDetail();
+      const queryService = makeDetailQueryService({
+        ownership: makeOwnership({ maintenanceEngineerAccountId: OTHER_ENGINEER_ACCOUNT_ID }),
+        detail,
+      });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).resolves.toBe(detail);
+      // 审核详情不追加本人限制，但仍携带组织范围
+      expect(queryService.readReportDetail).toHaveBeenCalledWith(REPORT_ID, undefined, {
+        ownerOrganizationId: ORGANIZATION_ID,
+      });
+    });
+
+    it('正常本人：审核入口同样可读取完整详情', async () => {
+      const detail = makeFullDetail();
+      const queryService = makeDetailQueryService({ detail });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).resolves.toBe(detail);
+    });
+
+    it('异常本人：授权通过但详情已不可见（范围读取为空），返回 NOT_FOUND', async () => {
+      const queryService = makeDetailQueryService({ detail: null });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject(notFound);
+    });
+
+    it('合法可见目标缺版本时保留原数据异常语义，不降级为 NOT_FOUND', async () => {
+      const queryService = makeDetailQueryService({
+        detailError: new DomainError(
+          MAINTENANCE_REPORT_ERROR.DATA_INCONSISTENT,
+          '维修报告当前版本行缺失',
+          { reportId: REPORT_ID },
+        ),
+      });
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: adminSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.DATA_INCONSISTENT });
+    });
+
+    it('非管理员角色在读取归属事实之前即被拒绝', async () => {
+      const queryService = makeDetailQueryService();
+      const { reviewUsecase } = makeDetailUsecases(queryService);
+
+      await expect(
+        reviewUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
+      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      expect(queryService.readReportOwnership).not.toHaveBeenCalled();
+      expect(queryService.readReportDetail).not.toHaveBeenCalled();
+    });
   });
 });

@@ -18,6 +18,8 @@ import type { PinoLogger } from 'nestjs-pino';
 import {
   createAdminOrganizationFact,
   createOrganizationIsolationMocks,
+  createRealViewConversionDouble,
+  type AdminUserAccountRowSpec,
 } from '../../../test/support/account/admin-user.fixture';
 import { AdminSetUserStatusUsecase } from './admin-set-user-status.usecase';
 
@@ -606,6 +608,145 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
       });
       expect(accountService.updateAccount).not.toHaveBeenCalled();
       expect(rolledBack).toBe(true);
+    });
+  });
+
+  describe('真实 View 转换下的目标状态不泄露', () => {
+    const conversion = createRealViewConversionDouble();
+
+    const realViewUsecase = new AdminSetUserStatusUsecase(
+      accountService,
+      conversion.queryService,
+      organizationIsolation.organizationContextQueryService,
+      organizationIsolation.organizationMembershipQueryService,
+      logger,
+      transactionRunner,
+    );
+
+    const executeWithRealView = (status: AccountStatus = AccountStatus.INACTIVE) =>
+      realViewUsecase.execute({ session: session(), accountId: TARGET_ACCOUNT_ID, status });
+
+    beforeEach(() => {
+      conversion.setAccountRow({});
+      givenOrganizationIsolation();
+      (accountService.updateAccount as jest.Mock).mockReset().mockResolvedValue(undefined);
+      (accountService.updateUserInfoFields as jest.Mock).mockReset().mockResolvedValue(undefined);
+    });
+
+    const dirtyRows: ReadonlyArray<[string, AdminUserAccountRowSpec]> = [
+      ['资料行缺失', { withoutUserInfo: true }],
+      [
+        '角色三源不收敛',
+        {
+          identityHint: IdentityTypeEnum.SUPER_ADMIN,
+          accessGroup: [IdentityTypeEnum.CUSTOMER],
+          metaDigest: [IdentityTypeEnum.CUSTOMER],
+        },
+      ],
+    ];
+
+    it.each(dirtyRows)(
+      '外组织目标（%s）与不存在目标使用同一拒绝口径，且不读取目标资料',
+      async (_label, row) => {
+        conversion.setAccountRow(row);
+        organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
+
+        const error = await captureError(executeWithRealView());
+
+        expect(error).toMatchObject({
+          code: ADMIN_USER_ERROR.TARGET_NOT_FOUND,
+          details: undefined,
+        });
+        expect(conversion.findAdminUserViewById).not.toHaveBeenCalled();
+        expect(conversion.findAdminUserStatusFacts).not.toHaveBeenCalled();
+        expect(accountService.updateAccount).not.toHaveBeenCalled();
+        expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+        expect(rolledBack).toBe(true);
+        expect(committed).toBe(false);
+      },
+    );
+
+    it('同组织资料缺失保留原有失败关闭语义（READ_FAILED）', async () => {
+      conversion.setAccountRow({ withoutUserInfo: true });
+
+      const error = await captureError(executeWithRealView());
+
+      expect(error).toMatchObject({
+        code: ADMIN_USER_ERROR.READ_FAILED,
+        cause: { diagnostic: 'USER_INFO_ROW_MISSING' },
+        details: undefined,
+      });
+      expect(accountService.updateAccount).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+    });
+
+    it('同组织角色异常保留原有失败关闭语义（ROLE_DATA_INCONSISTENT）', async () => {
+      conversion.setAccountRow({
+        identityHint: IdentityTypeEnum.SUPER_ADMIN,
+        accessGroup: [IdentityTypeEnum.CUSTOMER],
+        metaDigest: [IdentityTypeEnum.CUSTOMER],
+      });
+
+      const error = await captureError(executeWithRealView());
+
+      expect(error).toMatchObject({
+        code: ADMIN_USER_ERROR.ROLE_DATA_INCONSISTENT,
+        cause: { diagnostic: 'ROLE_CONVERGENCE_FAILED' },
+        details: undefined,
+      });
+      expect(accountService.updateAccount).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+    });
+
+    it('正常同组织目标保持原行为：真实转换下双字段写入、回读与提交', async () => {
+      const installWrite = (): void => {
+        (accountService.updateAccount as jest.Mock).mockImplementation(() => {
+          conversion.setAccountRow({
+            status: AccountStatus.INACTIVE,
+            userState: UserState.INACTIVE,
+          });
+          return Promise.resolve();
+        });
+        (accountService.updateUserInfoFields as jest.Mock).mockResolvedValue(undefined);
+      };
+      installWrite();
+
+      await expect(executeWithRealView()).resolves.toMatchObject({
+        status: AccountStatus.INACTIVE,
+      });
+
+      expect(accountService.updateAccount).toHaveBeenCalledWith(
+        TARGET_ACCOUNT_ID,
+        expect.objectContaining({ status: AccountStatus.INACTIVE }),
+        txContext,
+      );
+      expect(accountService.updateUserInfoFields).toHaveBeenCalledWith({
+        accountId: TARGET_ACCOUNT_ID,
+        patch: { userState: UserState.INACTIVE },
+        transactionContext: txContext,
+      });
+      expect(committed).toBe(true);
+      expect(rolledBack).toBe(false);
+    });
+
+    it('顺序为 锁定 → 解析操作者组织 → 核验同组织成员 → 读取 View → 读取状态事实', async () => {
+      (accountService.updateAccount as jest.Mock).mockImplementation(() => {
+        conversion.setAccountRow({ status: AccountStatus.INACTIVE, userState: UserState.INACTIVE });
+        return Promise.resolve();
+      });
+
+      await executeWithRealView();
+
+      const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
+      const resolveOrder = organizationIsolation.resolveForAccount.mock.invocationCallOrder[0];
+      const membershipOrder =
+        organizationIsolation.findActiveMembership.mock.invocationCallOrder[0];
+      const viewOrder = conversion.findAdminUserViewById.mock.invocationCallOrder[0];
+      const factsOrder = conversion.findAdminUserStatusFacts.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(resolveOrder);
+      expect(resolveOrder).toBeLessThan(membershipOrder);
+      expect(membershipOrder).toBeLessThan(viewOrder);
+      expect(viewOrder).toBeLessThan(factsOrder);
     });
   });
 

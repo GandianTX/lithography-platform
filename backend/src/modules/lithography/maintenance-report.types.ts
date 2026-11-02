@@ -222,6 +222,22 @@ export type RepairRequestWriteContext = {
   handlingStatus: string | null;
 };
 
+/** 维修报告最小归属事实（只读授权用，不含任何内容字段） */
+export type MaintenanceReportOwnershipFacts = {
+  reportId: number;
+  maintenanceEngineerAccountId: number;
+  ownerOrganizationId: number;
+};
+
+/**
+ * 详情读取范围限制：授权通过后仍作为查询谓词传给详情读取，
+ * 避免只依赖调用方第一次检查。
+ */
+export type MaintenanceReportReadScope = {
+  ownerOrganizationId: number;
+  maintenanceEngineerAccountId?: number;
+};
+
 export type MaintenanceReportDraftDetailView = {
   report: MaintenanceReportSnapshot;
   alarms: MaintenanceReportAlarmSnapshot[];

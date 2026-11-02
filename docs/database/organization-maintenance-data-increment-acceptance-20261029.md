@@ -921,3 +921,600 @@ KEEP 构成：显式 ID 990001，标记 `KEEP_R7_*`，覆盖六张表各一行�
 - `test:e2e:worker` / `test:e2e:smoke` 与未启用的集成规格不在本轮范围。
 - 以上均为修复方实测，本轮未进行独立复审。
 - 本轮未暂存、未 commit、未 push、未回复 PR、未合并。
+
+## 2026-10-31 第十三轮：专用清理器入向引用预检与管理员写授权顺序
+
+本轮只修两处阻塞：维修申请专用清理器的入向引用预检，与管理员写操作「先授权、再转换目标资料」的顺序。**未改 Entity、Migration、角色或前端**。前文各节完整 core 结果属于历史证据，不能替代本节在新代码上的结果。
+
+### 1. P0｜冻结范围
+
+- 分支 `feat/maintenance-data-increment`，HEAD `eb0619a3bb772424a8b39d00012d8c6e89f6b5f8`（`fix(account): enforce organization boundaries and safe e2e teardown`）；全部改动位于其上未提交工作区。
+- 未提交共 8 个已修改文件、0 个未跟踪文件；迁移文件仍 31 条，本轮未新增或改写迁移。
+- PR 身份（2026-11-01 重新查询，替代本行旧表述）：本分支的 PR 位于 fork 仓库 `GandianTX/lithography-platform`，即 **PR #2（OPEN）**，URL `https://github.com/GandianTX/lithography-platform/pull/2`，base `main`，head 为 `eb0619a3bb772424a8b39d00012d8c6e89f6b5f8`（与本地 HEAD 一致）；上游仓库 `litho-ai-support/lithography-platform` 当前没有任何本分支对应的 PR（按 fork head 查询为空）。旧文中的「PR #21 / 另一条已 CLOSED 分支」编号不再作为默认事实。
+- 两个专用清理入口（`backend/test/06-repair-request/repair-request-fixture.ts`）：`cleanupRepairRequestFixtureResidue()`（按专属标记解析）与 `cleanupRepairRequestFixtureByIds()`（按调用方传入的归属集合）；两者都经 `assertFixtureDeleteTarget` → 单连接单事务 → `resolveAndVerifyFixture()` → `deleteVerifiedFixture()`。
+- 三个管理员写操作及其直接消费者：`adminUpdateUserProfile` → `AdminUpdateUserProfileUsecase`；`adminSetUserStatus` → `AdminSetUserStatusUsecase`；`adminResetUserPassword` → `AdminResetUserPasswordUsecase`；三者共用 `loadWritableAdminUserTarget()`。
+- `check:entity-scope` 经薛确认不适用于本数据库增量 PR，记录为「经确认不适用」，不记为检查通过。
+
+### 2. P1｜维修申请专用清理器补齐入向引用预检
+
+- 两个入口共用 `resolveAndVerifyFixture()`，`assertNoExternalInboundReferences()` 在同一事务、首次 DELETE 之前执行；核验失败整批拒绝，不认领集合外记录、不扩大删除集合。
+- 入向引用覆盖（按当前外键）：账号段（`content_submission*`、`engineer_registration_application`、`ai_conversation.request_id` / `engineer_account_id`、`ai_report`）；组织段（`maintenance_report.owner_organization_id`）；型号段（`maintenance_report.equipment_model_id`）；工单段（`maintenance_report.repair_request_id`、`maintenance_report_version/review/attachment` 闭包）以及 `reference_document`、`local_installation`、`material_submission_detail`、`fault_case_submission_detail`。新增 `maintenance_report` 及 AI 会话/报告等本轮新增表。
+- 回归（`repair-request-fixture-ownership.e2e-spec.ts`，**22/22**）：
+  - 残留入口：外部 AI 会话 + 维护报告同时引用夹具行 → `/归属校验/` 失败关闭，`DELETE=0`，夹具与两行外部记录逐字段 `toEqual` 不变；
+  - 按 ID 入口：外部 AI 会话引用夹具申请 → 同样失败关闭且零删除；
+  - 后序删除失败：临时注入 `BEFORE DELETE ON base_user_info` 触发器后，两个入口均整批回滚，夹具逐字段不变；触发器在 `finally` 中删除，随后受保护清理并核验零残留与哨兵不变。
+  - 负例外部行只在本轮创建成功后登记，`finally` 中经 `deleteRecordedExternalRow` 按已记录 ID 与指纹核验后删除。
+- 四个消费者实跑：`repair-request-read` 39/39、`repair-request-accept` 18/18、`repair-request-production-input` 13/13、`repair-request-fixture-ownership` 22/22，合计 **92/92**，退出码均为 0。
+
+### 3. P2｜管理员写入先授权，再转换目标资料
+
+`loadWritableAdminUserTarget()` 顺序调整为：
+
+```text
+锁定目标 → 解析操作者可信组织 → 核验目标同组织成员事实 → 读取并转换 AdminUserView → 原业务断言与更新
+```
+
+- 保留先锁后读；组织与成员查询都在取得 `SELECT ... FOR UPDATE` 之后、在事务内执行，未提前建立锁前快照。
+- 目标不存在、正常外组织、资料缺失外组织、角色异常外组织统一为 `TARGET_NOT_FOUND`（对外 NOT_FOUND），不再因 `READ_FAILED` / `ROLE_DATA_INCONSISTENT` 先于归属校验而泄露目标状态。
+- 同组织目标的资料缺失或角色异常仍保留原有失败关闭语义；未使用 catch-all 改写内部异常；字段白名单、角色保护与幂等规则未变。
+- 单测（三个 usecase spec，**3 suites / 148 passed**）使用真实 `AdminUserQueryService` + `toAdminUserView()` 转换与真实角色策略，新增/覆盖：同组织正常写入与回读提交、锁定 → 组织 → 成员 → View 的顺序断言、外组织/不存在一致拒绝、同组织资料缺失与角色异常保留原错误码。
+
+### 4. P3｜组合与真实接口回归
+
+真实 GraphQL E2E（`admin-user-management.e2e-spec.ts`，**35/35**）新增：
+
+| 目标条件                   | 三个写操作预期                                                                                          | 结果 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- | ---- |
+| 存在但外组织（无成员关系） | 统一 `NOT_FOUND` / `ADMIN_USER_TARGET_NOT_FOUND`，`details` 为空，目标逐字段不变，列表按 keyword 查不到 | 通过 |
+| 操作者无有效组织成员关系   | 统一 `FORBIDDEN` / `ORGANIZATION_NO_ACTIVE_MEMBERSHIP`，目标零变化                                      | 通过 |
+
+- 既有「目标不存在」「正常同组织」「异常同组织保留原错误语义」「SUPER_ADMIN 目标只读」与启停幂等/`updatedAt` 用例继续通过，未放宽断言。
+- 操作者组织歧义受 `uk_organization_membership_active_account` 库级约束限制，真实库无法构造，保留由 `admin-reset-user-password.usecase.spec.ts` 的 `ORGANIZATION_AMBIGUOUS_MEMBERSHIP` 单测覆盖。
+
+### 5. P4｜统一验证与收口
+
+| 检查                   | 命令/范围                                                | 结果                  | 退出码 |
+| ---------------------- | -------------------------------------------------------- | --------------------- | ------ |
+| 类型检查               | `npm run typecheck`（build + tools）                     | 通过                  | 0      |
+| 相关单测               | 三个管理员 usecase spec                                  | 3 suites / 148 passed | 0      |
+| 变更文件 ESLint        | 8 个变更 TS 文件                                         | 0 error               | 0      |
+| Prettier               | 同上 8 个文件                                            | 全部符合              | 0      |
+| 架构门禁               | `lint:architecture-fixtures`                             | passed                | 0      |
+| 构建                   | `npm run build`（含 capability docs check）              | 通过                  | 0      |
+| 专用清理负例与四消费者 | ownership 22 + read 39 + accept 18 + production-input 13 | 92/92                 | 0      |
+| 管理员真实接口         | `admin-user-management.e2e-spec.ts`                      | 35/35                 | 0      |
+
+完整 core 在同一稳定候选、独占隔离库 `lithography_e2e` 上从头运行，目标库 KEEP 保留模式（全局清库关闭，物理清理许可与所有权守卫保留）：
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                                                   |
+| -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`、白名单 `lithography_e2e`、`⏭️ 已跳过 MySQL 全库清理`，无 TRUNCATE |
+| 规格     | **51/51 通过，0 失败**                                                                                                 |
+| 用例     | **726 total / 719 passed / 0 failed / 7 skipped**（跳过仍全部来自既有 `e2e-pr0-acceptance` 条件跳过）                  |
+| 退出码   | **0**                                                                                                                  |
+| 日志     | `/tmp/e2e-core-r8.log`                                                                                                 |
+
+KEEP 构成：显式 ID 990001、标记 `KEEP_R8_*`，覆盖 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 六行，另含文件哨兵 `/tmp/e2e-keep-file-r8.txt`（SHA-256 `c2e4226fbf2a5643a6d12dc4759b2cc41a764f4a23cff21c31a2c039bb6a7a47`）；运行前快照 `/tmp/e2e-keep-r8-before.json`（全库 35 张表计数、六行全字段、引用计数、31 条迁移）。
+
+运行后核验（`/tmp/e2e-keep-r8-after.json`，`ok=true`）：
+
+| 检查项                                    | 结果                                               |
+| ----------------------------------------- | -------------------------------------------------- |
+| KEEP 六行全字段                           | 六表各 1 行，逐字段不变                            |
+| KEEP 引用计数                             | ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1 |
+| KEEP 文件哨兵 SHA-256                     | 不变                                               |
+| `migrations`                              | 31 条内容与顺序不变                                |
+| 业务表除 KEEP 外残留                      | 35 张表逐表回读，非 KEEP 表均为 0                  |
+| 显式 ID 区间残留（`>= 900000` 且非 KEEP） | 账号/组织/机型/工单/上传任务均为 0                 |
+
+收尾（`/tmp/e2e-keep-r8-reclaim.json`，`ok=true`）：单事务逐行 `FOR UPDATE` 核验六行全字段与回收快照一致、引用计数一致后，按子表→父表精确删除并删除文件哨兵；回收后六表均为 0、`migrations` 仍为 31，全库只剩 `migrations`。**未使用 Seed、整表清理或 KEEP 删除后重跑**；临时预置/核验/回收脚本已删除。
+
+### 6. 提交审计（未提交）
+
+- 候选范围：8 个已修改代码文件（`admin-reset-user-password.usecase.spec.ts`、`admin-set-user-status.usecase.spec.ts`、`admin-update-user-profile.usecase.spec.ts`、`admin-user-write-support.ts`、`admin-user-management.e2e-spec.ts`、`repair-request-fixture-ownership.e2e-spec.ts`、`repair-request-fixture.ts`、`admin-user.fixture.ts`）+ 本记录；HEAD 仍为 `eb0619a3`。
+- 本轮未暂存、未 commit、未 push、未回复 PR、未合并；`git diff --check` 无空白问题。
+- 既有迁移演练与结构契约证据按影响沿用（迁移未受影响），本轮未重跑。
+- 独立复审仍未进行；本节结果均为修复方实测。
+
+## 2026-11-01 第十四轮：文档库专用清理入口事务化、报告详情先授权、触发器对象所有权
+
+本轮按最小修复计划执行 P1–P5。**未改 Entity、Migration、角色与前端**；继续在 `feat/maintenance-data-increment` 上叠加并保留既有未提交修复；本轮未自动暂存、commit、push、回复 PR 或合并。
+
+### 1. 基线与 PR 身份（当前事实重新查询）
+
+- 分支 `feat/maintenance-data-increment`，HEAD `eb0619a3bb772424a8b39d00012d8c6e89f6b5f8`（`fix(account): enforce organization boundaries and safe e2e teardown`）；全部改动位于其上**未提交工作区**。
+- 未提交范围：**19 个已修改文件 + 2 个未跟踪文件**（`backend/src/modules/lithography/queries/maintenance-report.query.service.spec.ts`、`backend/test/utils/e2e-trigger-ownership.ts`）。
+- 迁移文件仍 **31 条**，与上一轮一致；本轮未新增或改写迁移，历史迁移演练与结构契约证据按影响沿用、未重跑。`check:entity-scope` 仍按薛确认口径记为「经确认不适用」，不记为检查通过。
+- PR 身份（2026-11-01 `gh` 重新查询，替代历史编号）：fork 仓库 `GandianTX/lithography-platform` 的 **PR #2（OPEN）**，URL `https://github.com/GandianTX/lithography-platform/pull/2`，base `main`，head `eb0619a3bb772424a8b39d00012d8c6e89f6b5f8`；上游 `litho-ai-support/lithography-platform` 按 fork head 查询无对应 PR。旧文「PR #21 / 另一条已 CLOSED 分支」不再作为默认事实。
+- **本节所有测试结果均产生于未提交工作区**，不能表述为 PR head 远端 SHA 已通过 CI，也不等于薛一审 / 负责人二审通过。
+
+### 2. P1｜文档数据库专用清理入口
+
+按入口分别核对，六类入口互不代证：
+
+| 类别       | 入口                                   | 删除依据                                         |
+| ---------- | -------------------------------------- | ------------------------------------------------ |
+| 普通       | `cleanupAdminDocumentFixtureResidue()` | 专属标记定位 + 逐字段核验                        |
+| 普通       | `cleanupAdminDocumentFixtureByIds()`   | 调用方持有的本轮实际 ID                          |
+| 普通       | `runAdminDocFixtureTeardown()`         | 收尾包装，先判 `shouldRunAdminDocFixtureCleanup` |
+| production | `cleanupProductionFixtureResidue()`    | 专属标记定位 + 完整归属核验                      |
+| production | `cleanupProductionFixtureByIds()`      | 本轮记录的动态 ID                                |
+| production | `cleanupProductionSentinelChain()`     | 哨兵链本轮记录 ID（先子后父）                    |
+
+- 每个写删 helper 在首条语句前自校验 `E2E_ALLOW_PHYSICAL_CLEANUP=1`、`E2E_ALLOWED_DB_NAMES` 白名单与预期库一致；不因调用方已检查而省略入口校验。
+- 入向引用预检在**同一事务、首次 DELETE 之前**逐表统计，覆盖新增表的实际入向引用：
+  - 账号：`content_submission*`、`engineer_registration_application`（申请人与审核人）、`organization_membership`、`ai_conversation.engineer_account_id`、`ai_report.engineer_account_id`、`engineer_response`（客户与工程师）、`maintenance_report` 的负责人 / 创建人 / 更新人三列、`maintenance_report_version`、`maintenance_report_attachment`、`maintenance_report_review`、`reference_document` 的创建人与更新人。
+  - 型号：`maintenance_report`、`reference_document`、`material_submission_detail`、`fault_case_submission_detail`。
+  - 工单：`ai_conversation`、`ai_report`、`engineer_response`、`maintenance_report`。
+- production 三个入口的预检与整批删除在同一 `EntityManager` 事务内：`assertManagerOnExpectedE2eDatabase` → 引用预检 → 子表→父表删除（申请 → 型号 → `user_info` → `account`）；前序删除不会独立提交，后序失败整批回滚。
+- 外部记录只会导致**拒绝**：既不认领，也不进入待删除集合，更不扩大删除范围；空 ID 集合为 no-op，不开启删除事务。
+
+各入口定向实库验证（隔离库 `lithography_e2e`，独占、开跑前仅含 31 条迁移、业务行 0、触发器 0）：
+
+| 套件                                                       | 覆盖                                                                                                                                        | 结果  |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `repair-request-fixture-ownership.e2e-spec.ts`             | 外部引用时残留 / 按 ID 两入口首次 DELETE 前拒绝（`DELETE=0`）；正常清理、重复执行 no-op；后序失败整批回滚；夹具与外部记录逐字段不变；无残留 | 26/26 |
+| `admin-document-database-production-ownership.e2e-spec.ts` | 两个入口与哨兵包装的固定主键碰撞、外部维修报告引用、后序失败整批回滚、连续两轮无残留                                                        | 16/16 |
+| `admin-document-database-cleanup-failure.e2e-spec.ts`      | 守卫拒绝零 DELETE、预检与删除同事务、中途失败整批回滚、收尾错误不吞                                                                         | 17/17 |
+| `admin-document-database-fixture-ownership.e2e-spec.ts`    | 普通入口：固定 ID 碰撞、同名异主、外部申请与维修报告引用、造数中途失败只回收已登记行、连续两轮                                              | 13/13 |
+
+新增的真实库后序失败用例（本轮）：
+
+- 「后序失败：残留与按 ID 两个入口都整批回滚」：在 `base_user_info` 上注入本轮唯一 `BEFORE DELETE` 触发器，两个入口均 reject，夹具与外部快照逐字段不变，收尾后触发器零残留。
+- 「哨兵包装入口：后序失败同样整批回滚」：哨兵链四个快照值逐字段不变，触发器零残留。
+
+### 3. P2｜报告详情先授权，再读取完整内容
+
+- QueryService 新增只读入口 `readReportOwnership()`：只 `select` 报告主键、负责人账号、所属组织三个字段，不触发任何报警 / 步骤 / 附件 / 版本 / 审核查询；并新增 `MaintenanceReportReadScope` 作为详情读取的第二道范围谓词（`ownerOrganizationId`，本人入口另加 `maintenanceEngineerAccountId`）。
+- `get-my-maintenance-report.usecase.ts`：角色与 ID 断言 → 读最小归属事实 → 不存在、负责人非本人、组织不一致统一返回原有 `NOT_FOUND` → 通过后才调用 `readReportDetail(..., scope)`；详情查询继续携带组织与本人谓词，不只依赖第一次检查。
+- `get-maintenance-report-review-detail.usecase.ts`：角色与 ID 断言 → 读最小归属事实 → 组织不一致返回 `NOT_FOUND` → 通过后才按组织范围读取完整详情。
+- 合法可见目标缺版本时保留原数据异常语义 `DATA_INCONSISTENT`，未被 catch-all 降级为 `NOT_FOUND`。
+- 契约只新增模块层类型与只读方法，未新增 GraphQL 字段、Resolver 或测试专用公开接口。
+
+单测（驱动层替身，真实用例与 QueryService 组合）：
+
+| 套件                                       | 用例                                                                                                                                                                                     | 结果  |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `maintenance-report.query.service.spec.ts` | 只读三字段、不存在返回 null、无 / 有 scope 的 where 构造、范围外根查询为空且不触发内容查询                                                                                               | 6/6   |
+| `maintenance-report-usecases.spec.ts`      | 本人详情 8 例 + 审核详情 8 例：不存在、正常外组织、异常外组织、同组织他人、正常本人、异常本人、`DATA_INCONSISTENT` 透传、非角色在读取归属前拒绝；断言不可见目标未调用 `readReportDetail` | 8 + 8 |
+| 合计                                       | 两个套件                                                                                                                                                                                 | 50/50 |
+
+当前无公开 API，因此未做 GraphQL 层回归；获准后补实库回归。以上为内部真实用例与 QueryService 的替身证据，不能替代真实数据库结果。
+
+### 4. P3｜触发器故障测试的对象所有权
+
+- 新增共享工具 `backend/test/utils/e2e-trigger-ownership.ts`（唯一实现，spec 不再自带重复版本）：`assertTriggerNameFormat`、`readOwnedTriggerFact`、`createOwnedTrigger`、`disposeOwnedTrigger`、`runWithOwnedTrigger`、`assertNoTriggerCaseFailures`。
+- 名称：`e2e_<标签>_<pid>_<序号>_<时间戳>`，带格式校验；先查 `information_schema.TRIGGERS` 同名对象，命中即**拒绝创建**；CREATE 明确成功后才登记本轮对象事实（名称 + 定义 + 所属表）。
+- 删除：无条件 `DROP TRIGGER IF EXISTS`，且只删除「本轮确认创建且定义匹配」的对象；外部同名触发器定义不变。
+- 注入、断言与收尾统一保护：主错误、触发器收尾错误及夹具清理错误分别保留，失败时以 `AggregateError` 汇总、互不吞没。
+- 明确 `MySQL 触发器 DDL 隐式提交`：事务回滚不会删除触发器，必须以对象所有权收尾。
+
+回归用例（`repair-request-fixture-ownership.e2e-spec.ts` 真实库）：
+
+- 同名碰撞：创建前失败关闭，外部同名对象定义完全不变。
+- 创建失败：失败关闭且该名称零残留。
+- 安装后中途断言失败：本轮触发器仍被精确收尾，夹具清理错误独立保留。
+- 收尾失败：错误被单独保留，重试后本轮对象零残留。
+
+DDL 用例执行条件：仅在隔离库 `lithography_e2e`（本轮独占；开跑前 35 张表、31 条迁移、业务行 0、`information_schema.TRIGGERS` 为空）执行；运行后 `TRIGGERS` 仍为空。
+
+### 5. P5｜统一验证
+
+静态检查（全部在未提交工作区）：
+
+| 检查            | 命令                                        | 结果           |
+| --------------- | ------------------------------------------- | -------------- |
+| 类型检查        | `npm run typecheck`（build + tools）        | 通过，退出码 0 |
+| 规格类型检查    | `npx tsc -p tsconfig.spec.json --noEmit`    | 通过，退出码 0 |
+| 变更文件 ESLint | 17 个变更 TS 文件，无 `--fix`、无 `--cache` | 0 error        |
+| Prettier        | 同上 17 个文件 `--check`                    | 全部符合       |
+| 架构门禁        | `npm run lint:architecture-fixtures`        | passed         |
+| 用例门禁        | `npm run lint:usecase-normalize-guard`      | passed         |
+| 构建            | `npm run build`（含 capability docs check） | 通过，退出码 0 |
+| 空白检查        | `git diff --check`                          | 无空白问题     |
+
+相关单测：报告详情 2 套件 **50/50**；账号写操作 3 套件 **148/148**。
+
+定向实库回归（含直接消费者，退出码均为 0，合计 **183/183**）：
+
+| 套件                                                           | 结果  |
+| -------------------------------------------------------------- | ----- |
+| `repair-request-fixture-ownership.e2e-spec.ts`                 | 26/26 |
+| `admin-document-database-production-ownership.e2e-spec.ts`     | 16/16 |
+| `admin-document-database-cleanup-failure.e2e-spec.ts`          | 17/17 |
+| `admin-document-database-fixture-ownership.e2e-spec.ts`        | 13/13 |
+| `admin-document-database.e2e-spec.ts`（直接消费者）            | 12/12 |
+| `admin-document-database-production.e2e-spec.ts`（直接消费者） | 29/29 |
+| `repair-request-read.e2e-spec.ts`（直接消费者）                | 39/39 |
+| `repair-request-accept.e2e-spec.ts`（直接消费者）              | 18/18 |
+| `repair-request-production-input.e2e-spec.ts`（直接消费者）    | 13/13 |
+
+完整 core 在同一未提交候选、独占隔离库 `lithography_e2e` 上从头运行，目标库 KEEP 保留模式：
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                                      |
+| -------- | --------------------------------------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`、白名单 `lithography_e2e`、`⏭️ 已跳过 MySQL 全库清理` |
+| 规格     | **51/51 通过，0 失败**                                                                                    |
+| 用例     | **734 total / 727 passed / 0 failed / 7 skipped**（跳过仍为既有 `e2e-pr0-acceptance` 条件跳过）           |
+| 退出码   | **0**                                                                                                     |
+| 日志     | `/tmp/e2e-core-r9.log`                                                                                    |
+
+KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R9_*`，覆盖 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 六行；文件哨兵 `/tmp/e2e-keep-file-r9.txt`（SHA-256 `2299cbda2622d41b1356e1e91cfbb4d763099774577fc1e2f858f9b8f4b94a3c`）。运行前快照 `/tmp/e2e-keep-r9-before.json`：35 张表、31 条迁移、六行全字段、引用计数（ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单各 1）。
+
+运行后核验（`/tmp/e2e-keep-r9-after.json`）：
+
+| 检查项                | 结果                               |
+| --------------------- | ---------------------------------- |
+| KEEP 六行全字段       | 六表各 1 行，逐字段不变            |
+| KEEP 引用计数         | 四项均为 1，不变                   |
+| KEEP 文件哨兵 SHA-256 | 不变                               |
+| `migrations`          | 31 条，内容与顺序不变              |
+| 业务表除 KEEP 外残留  | 35 张表逐表回读，非 KEEP 表均为 0  |
+| 触发器                | `information_schema.TRIGGERS` 为空 |
+
+收尾（`/tmp/e2e-keep-r9-reclaim.js`）：单事务逐行 `FOR UPDATE` 核验六行全字段与运行前快照一致、引用计数一致后，按子表→父表精确删除并删除文件哨兵；回收后业务行全部为 0、`migrations` 仍为 31、`TRIGGERS` 为空。最终只读快照 `/tmp/e2e-snapshot-r9-final.json` 指纹 `c43e001e0766c47971cdce64aa1a831ebcc34ae5877b055b8184cea361364b5b`，与定向回归开跑前基线完全一致。**未使用 Seed、整表清理或 KEEP 删除后重跑**；一次性预置 / 快照 / 回收脚本位于 `/tmp` 且已删除，仓库内无新增脚本。
+
+### 6. 证据分层
+
+- 替身单测：报告详情两套件 50/50、账号写操作三套件 148/148（驱动层替身，不代表真实库）。
+- 真实数据库：本机隔离库 `lithography_e2e` 上的定向回归 183/183 与完整 core 51/51；开跑前与收尾后的全库快照指纹一致，夹具与触发器零残留。
+- 历史沿用：迁移链、24→31 / 30→31 升级演练、结构契约与既有并发套件结果按影响沿用，本轮未重跑；迁移未受影响。
+- 未执行：独立复审；报告详情的实库 / 公开 API 回归（当前无公开 API，且未为测试新增接口）；`test:e2e:worker`、`test:e2e:smoke`。
+
+### 7. 待负责人裁定（本轮不改权限）
+
+1. 管理员文档库概览中的**全局工单与 AI 聚合读取口径**：现实现按库内真实全局口径统计（申请排除 `deprecated`、AI 计全量、参考资料按管理员组织范围）。是否应收窄为管理员所属组织范围，需负责人明确；本轮不擅自改权限。
+2. **工程师注册申请是否允许跨公司管理员审核**：现尚无明确口径，等待负责人裁定；本轮不混入技术修复，未改动相关用例与权限。
+
+### 8. 提交审计（未提交）
+
+- 候选范围：19 个已修改文件 + 2 个未跟踪文件 + 本记录；HEAD 仍为 `eb0619a3`。
+- 本轮未暂存、未 commit、未 push、未回复 PR、未合并。
+- 既有迁移演练与结构契约证据按影响沿用；独立复审仍未进行，本节结果均为修复方实测。
+
+## 2026-11-01 第十五轮：触发器创建即登记、生产夹具事实验权与 DELETE=0 独立计数
+
+本轮延续同一分支与既有未提交修复，只关闭附件中的两项 P2 缺陷与一项测试证据缺口（本节记为 P1 / P2 / P3）。**未改业务权限、Entity、Migration 与前端**；未自动暂存、commit、push、回复 PR 或合并。
+
+### 1. 基线与证据边界
+
+- 分支 `feat/maintenance-data-increment`，HEAD 仍为 `eb0619a3`；未提交范围仍为 19 个已修改文件 + 2 个未跟踪文件（`maintenance-report.query.service.spec.ts`、`e2e-trigger-ownership.ts`）+ 本记录。
+- 迁移文件仍 31 条，本轮未新增或改写；迁移历史与迁移文件通过完整库快照逐字段比对确认不变。
+- 本节所有结果均产生于**未提交工作区**，不代表 PR head 远端 SHA 通过 CI，也不等于任何人工复审通过。
+
+### 2. P1｜触发器 CREATE 成功后立即登记
+
+- `backend/test/utils/e2e-trigger-ownership.ts`：
+  - `CREATE TRIGGER` 明确成功的**下一行**同步构造本轮登记记录并写入 tracker（名称 / 目标表 / 注入体），`fact` 先为 `null`；登记发生在任何元数据回读与函数返回之前。
+  - 创建后的回读纳入统一 `try` 保护：回读抛错时，传入 tracker 的调用方保留登记记录，交由统一收尾；未传 tracker 的直接调用方按名称精确清理后再抛出**原始错误**。
+  - 销毁前重新读取当前对象，核验名称、目标表与可核实定义（优先已回读事实，回读失败时用调用方注入体）；不匹配即抛「阶段=归属校验 拒绝删除」，不因“登记存在”盲删可能被替换的同名对象。
+  - 无法完成安全核验的记录保留在 tracker，并显式报告「触发器待收尾残留」，不返回假零残留。
+  - `runWithOwnedTrigger` 分阶段保留：夹具造数错误、触发器创建错误、主错误、触发器收尾错误、触发器待收尾残留、夹具清理错误；后一阶段不覆盖前一阶段，`assertNoTriggerCaseFailures` 以 `AggregateError` 汇总。
+- DDL 只在 `E2E_ALLOW_PHYSICAL_CLEANUP=1` + 库名白名单双门禁通过后执行；不依赖事务回滚撤销 `CREATE TRIGGER`（MySQL DDL 隐式提交）。
+
+补充回归（`admin-document-database-production-ownership.e2e-spec.ts`，真实库）：
+
+| #   | 场景                                                     | 断言                                                     |
+| --- | -------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | CREATE 成功、首次 `information_schema.TRIGGERS` 回读抛错 | 登记记录仍可追踪，受保护收尾可执行，对象零残留           |
+| 2   | 主流程失败且销毁失败                                     | 主错误与触发器收尾错误同时完整保留                       |
+| 3   | 触发器收尾与夹具清理同时失败                             | 两类错误均可见，不互相吞没                               |
+| 4   | 同名外部对象已存在 / 登记后对象被外部替换                | 创建前失败关闭；收尾拒绝删除，零误删，外部定义逐字节不变 |
+| 5   | 正常完成 / 中途断言失败                                  | 本轮触发器零残留、夹具零残留，残留记录为空               |
+
+实现细节：回读失败由代理 DataSource 注入（先放行同名预检 1 次，再对 `information_schema.TRIGGERS` 查询抛错），避免误伤创建前预检。
+
+### 3. P2｜生产夹具按事实验证所有权
+
+`admin-document-database-production-fixture.ts`：
+
+- 新增创建登记事实：`ProductionAccountFact` / `ProductionModelFact` / `ProductionRepairRequestFact` 与 `ProductionFixtureOwnership.createdFacts`；`seedProductionFixtureAccounts` / `seedProductionFixtureBusiness` 在写入成功后按 ID 登记显式身份字段（登录名、邮箱、状态、身份提示、客户、接单人、接收状态等）与关系。
+- `verifyRegisteredOwnership(manager, helper, database, workers, facts)` 在**同一事务**内执行：
+  1. 每个待删除 ID 必须存在本轮创建登记事实，缺失即「没有本轮创建登记事实，无法核验归属，拒绝删除」；
+  2. 按 ID 读取当前行并与登记事实**逐字段**对照，任一不符即「当前行与创建登记不符，拒绝删除」；
+  3. 行已不存在则跳过（支持重复清理幂等）；
+  4. 返回**两个独立集合**：`targets`（调用方待删除 ID 经核验保留的部分）与 `verified`（本次实际核验通过的行），不再让同一集合兼任两者。
+- `cleanupProductionFixtureByIds` 与 `cleanupProductionSentinelChain` 两个入口均先 `assertDeletableTarget` → 事务内 `assertManagerOnExpectedE2eDatabase` → 按登记事实验权 → 才生成删除计划（申请 → 型号 → `user_info` → 账号）。
+- 哨兵入口的登记事实由 `PRODUCTION_SENTINEL` / `SENTINEL_ACCOUNT_CONFIG` / `PRODUCTION_SENTINEL_MODEL_SPEC` / `PRODUCTION_FIXTURE_MARKERS.sentinelRequestNo` 与调用方本轮 ID 构造；申请存在但缺账号/型号 ID 时直接拒绝。
+- `cleanupProductionFixtureResidue` 同样走 `resolveOwnedRows → verifyRegisteredOwnership → 独立 targets → deleteOwnedRows`；自然标记、固定 ID 与账号 ID 都不再单独作为归属证明。
+- 数据库守卫、外部引用预检与事务保护保持不变。
+
+两个入口的字段漂移回归（真实库，逐字段前后快照）：
+
+| 入口                             | 漂移对象 | 结果                                                     |
+| -------------------------------- | -------- | -------------------------------------------------------- |
+| `cleanupProductionFixtureByIds`  | 账号     | 首次 DELETE 前拒绝，DELETE=0；原目标与外部记录逐字段不变 |
+| `cleanupProductionFixtureByIds`  | 型号     | 同上                                                     |
+| `cleanupProductionFixtureByIds`  | 工单     | 同上                                                     |
+| `cleanupProductionSentinelChain` | 账号     | 同上                                                     |
+| `cleanupProductionSentinelChain` | 型号     | 同上                                                     |
+| `cleanupProductionSentinelChain` | 工单     | 同上                                                     |
+
+每例在拒绝后恢复登记一致的字段，再验证正常清理零残留、连续执行幂等；后序失败整批回滚由既有触发器注入用例与 `admin-document-database-production.e2e-spec.ts` 连续两轮回收用例覆盖。
+
+### 4. P3｜DELETE=0 的独立断言
+
+- 所有权负例改用 `jest.spyOn(EntityManager.prototype, 'delete')` 统计**实际删除通道**（`Repository.delete` 内部即 `manager.delete`），而不是监视一个未必被经过的 Repository 方法。
+- 每例同时断言：`deleteSpy.mock.calls` 长度 **0**，且漂移前后目标行与外部记录快照**逐字段不变**。
+- 明确区分：快照不变只能排除“删除后又恢复”的巧合，不能单独证明零删除（事务回滚同样会恢复数据），因此两项断言必须同时存在。
+
+### 5. 验证与证据
+
+静态检查（未提交工作区）：
+
+| 检查            | 命令                                            | 结果                         |
+| --------------- | ----------------------------------------------- | ---------------------------- |
+| 类型检查        | `npm run typecheck`（build + tools）            | 通过，退出码 0               |
+| 规格类型检查    | `npx tsc -p tsconfig.spec.json --noEmit`        | 通过，退出码 0               |
+| 变更文件 ESLint | 本轮 4 个变更测试文件，无 `--fix`、无 `--cache` | 0 error                      |
+| Prettier        | 同上 4 个文件 `--check`                         | 全部符合                     |
+| 架构门禁        | `npm run lint:architecture-fixtures`            | passed                       |
+| 能力文档门禁    | `npm run capability:docs:check`                 | passed                       |
+| 构建            | `npm run build`                                 | 通过，退出码 0               |
+| 单测            | `npm run test:unit`                             | 127 suites / 1564 tests 通过 |
+
+`npm run check:entity-scope` 仍失败：该脚本比较 `origin/main...HEAD`，而本分支历史提交已包含受保护目录改动，属**历史沿用条件**，与本轮工作树无关，不记为检查通过。
+
+定向实库回归（独占隔离库 `lithography_e2e`，退出码均为 0，合计 **114/114**）：
+
+| 套件                                                       | 结果  | 说明                           |
+| ---------------------------------------------------------- | ----- | ------------------------------ |
+| `admin-document-database-production-ownership.e2e-spec.ts` | 29/29 | 含本轮新增 13 例 P1/P2/P3 回归 |
+| `admin-document-database-cleanup-failure.e2e-spec.ts`      | 17/17 | 替身适配创建登记事实           |
+| `repair-request-fixture-ownership.e2e-spec.ts`             | 26/26 | 触发器 helper 直接消费者       |
+| `admin-document-database-production.e2e-spec.ts`           | 29/29 | 生产夹具直接消费者             |
+| `admin-document-database-fixture-ownership.e2e-spec.ts`    | 13/13 | 普通入口直接消费者             |
+
+完整 core 在统一候选上从头运行，目标库 KEEP 保留模式（全局清库关闭，物理清理许可与所有权守卫保留）：
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                                            |
+| -------- | ----------------------------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`、白名单 `lithography_e2e`、已跳过全库清理   |
+| 规格     | **51/51 通过，0 失败**                                                                          |
+| 用例     | **747 total / 740 passed / 0 failed / 7 skipped**（跳过仍为既有 `e2e-pr0-acceptance` 条件跳过） |
+| 退出码   | **0**                                                                                           |
+| 日志     | `/tmp/e2e-core-r10.log`                                                                         |
+
+KEEP 与不变证据：
+
+- KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R10_*`，覆盖 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 六行；文件哨兵 `/tmp/e2e-keep-file-r10.txt`（SHA-256 `ce4773d75f79605345dfa6ab450b5e14788c3ab0515129192289a4e4aa9399e8`）。
+- 运行前快照 `/tmp/e2e-r10-before.json`：35 张表、37 行（31 条迁移 + 6 行 KEEP），整库摘要 `1dfc8db3…4d4b`。
+- 运行后快照 `/tmp/e2e-r10-after.json`：与运行前**整库摘要完全相同**（`1dfc8db3…4d4b`），逐表逐字段一致。
+
+| 检查项                | 结果                                                                 |
+| --------------------- | -------------------------------------------------------------------- |
+| KEEP 六行全字段       | 六表各 1 行，逐字段不变（`KEEP_ROWS OK`）                            |
+| KEEP 引用计数         | ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1（`KEEP_REFS OK`） |
+| KEEP 文件哨兵 SHA-256 | 不变（`ce4773d7…99e8`，`KEEP_FILE OK`）                              |
+| `migrations`          | 31 条，内容与顺序不变                                                |
+| 业务表除 KEEP 外残留  | 0（整库仅 KEEP 六行 + 迁移 31 行）                                   |
+| 触发器                | `information_schema.TRIGGERS` 为空                                   |
+
+收尾（`/tmp/e2e-keep-r10.js`，一次性脚本）：单事务逐行 `FOR UPDATE` 核验六行、四项引用计数与账本外引用均为 0 后，按子表→父表精确删除并删除文件哨兵；回收后快照 `/tmp/e2e-r10-final.json` 摘要 `387cbfea…6249`，与运行前基线 `/tmp/e2e-r10-baseline.json`（35 张表 / 31 行 / 触发器 0）**完全一致**，KEEP 文件已删除。**未使用 Seed、整表清理或 KEEP 删除后重跑**；一次性预置 / 快照 / 回收脚本位于 `/tmp`，使用后已删除，仓库内无新增脚本。
+
+### 6. 证据分层
+
+- 替身复现：`cleanup-failure` 的守卫拒绝、事务中途失败、错误不吞等路径使用 mock DataSource；本轮为其补齐创建登记事实后方可复现“事实验权”路径。
+- 真实数据库：`lithography_e2e` 上的定向回归 114/114 与 KEEP 保留模式完整 core 51/51；开跑前后整库摘要一致，夹具与触发器零残留。
+- 历史沿用：迁移链、结构契约、既有并发套件结果按影响沿用，本轮未重跑；迁移未受影响。
+- 未执行：独立复审；报告详情的实库 / 公开 API 回归（当前无公开 API，且未为测试新增接口）；`test:e2e:worker`、`test:e2e:smoke`。
+
+### 7. 待负责人裁定（本轮不改权限，沿用上一节）
+
+1. 管理员文档库概览中的全局工单与 AI 聚合读取口径是否应收窄为管理员所属组织范围。
+2. 工程师注册申请是否允许跨公司管理员审核。
+
+### 8. 提交审计（未提交）
+
+- 候选范围：19 个已修改文件 + 2 个未跟踪文件 + 本记录；HEAD 仍为 `eb0619a3`。
+- 本轮未暂存、未 commit、未 push、未回复 PR、未合并；等修复者完成最终审计后再决定提交范围。
+- `check:entity-scope` 失败为分支历史沿用条件，提交说明中需如实注明，不得表述为“全部门禁通过”。
+
+## 2026-11-01 第十六轮：可追踪成为强制前提
+
+### 1. 变更范围
+
+- P1：`e2e-trigger-ownership.ts` 的 `tracker` 改为**必需参数**（创建与两个收尾入口一致），在任何 DDL（含同名预检查询）之前做运行时校验；删除“无 tracker 时按名称 DROP、吞异常”的整个回退分支。
+- CREATE 明确成功后**下一行同步登记**本轮创建事实，不等回读成功；回读抛错时记录保留，由统一受保护收尾按注入体核验后精确删除。
+- 所有销毁只经过既有定义核验路径（名称 / 目标表 / 当前定义匹配）+ `DROP TRIGGER IF EXISTS`；未新增第二套销毁实现。
+- 包装入口 `runWithOwnedTrigger` 的 `tracker` 同步改为必需，移除“未传入时自行创建”的可选路径；回读、销毁、待收尾残留、夹具清理各阶段错误继续分别保留。
+- P2：调用清单以全仓搜索为准，全部实际入口均已适配，无 `tracker?` 可选参数、无按名称裸 DROP 回退：
+  - `repair-request-fixture-ownership.e2e-spec.ts`：2 个包装入口与 4 处直接入口；
+  - `admin-document-database-production-ownership.e2e-spec.ts`：7 个包装入口与 6 处直接入口。
+  - 必须直接调用的生命周期测试均在 CREATE 之前建立 tracker 并进入 try/finally；同名碰撞负例同样传 tracker。
+- 生产夹具所有权修复沿用第十五轮结论，本轮不返工。
+
+### 2. 直接入口异常回归（替身直接执行实际 helper）
+
+| 场景                         | 工单规格 | production 规格 | 验收结果                                       |
+| ---------------------------- | -------- | --------------- | ---------------------------------------------- |
+| 缺少 tracker                 | 新增     | 新增            | CREATE 前拒绝，`stub.calls` 为空（零 DDL）     |
+| CREATE 成功、回读失败        | 新增     | 新增            | 记录保留且 `fact=null`，仍可受保护收尾         |
+| 回读失败、DROP 失败          | 新增     | 新增            | 两个原始错误与待收尾记录均保留，恢复后收尾成功 |
+| 同名对象被替换、回读失败     | 新增     | 新增            | 定义核验拒绝，调用记录中无 DROP（零误删）      |
+| 触发器收尾成功后夹具清理失败 | 既有     | 新增            | 仅报告 `夹具清理错误`，tracker 为空、零残留    |
+| 恢复后再次受保护收尾         | 新增     | 新增            | 本轮对象与夹具零残留                           |
+
+故障测试自身的最终收尾均不依赖断言成功；真实 DDL 仅在获准的独占隔离库 `lithography_e2e` 上执行。
+
+### 3. 定向验证（真实隔离库）
+
+| 套件                                                       | 结果  | 说明                    |
+| ---------------------------------------------------------- | ----- | ----------------------- |
+| `repair-request-fixture-ownership.e2e-spec.ts`             | 29/29 | 含 3 例新增直接入口回归 |
+| `admin-document-database-production-ownership.e2e-spec.ts` | 33/33 | 含 4 例新增失败阶段回归 |
+| `admin-document-database-cleanup-failure.e2e-spec.ts`      | 17/17 | 替身直接消费者，无回归  |
+
+合计 **79/79**，退出码均为 0。
+
+### 4. 静态门禁与构建
+
+`npm run typecheck`、`npx tsc -p tsconfig.spec.json --noEmit`、改动文件 ESLint 与 Prettier、`lint:architecture-fixtures`、`capability:docs:check`、`npm run build` 全部通过。
+
+### 5. 完整 core（KEEP 保留模式）
+
+统一候选上从头运行，全局清库关闭，物理清理许可与所有权守卫保留：
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                          |
+| -------- | ----------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`，白名单 `lithography_e2e` |
+| 规格     | **51/51 通过，0 失败**                                                        |
+| 用例     | **754 total / 747 passed / 0 failed / 7 skipped**                             |
+| 退出码   | **0**                                                                         |
+| 日志     | `/tmp/e2e-core-r11.log`                                                       |
+
+KEEP 与不变证据：
+
+- KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R11_*`，覆盖 `base_user_account` / `base_user_info` / `organization` / `organization_membership` / `equipment_model` / `repair_request` 六行；文件哨兵 `/tmp/e2e-keep-file-r11.txt`（SHA-256 `de5d40d4…1d6e17`）。
+- 运行前快照 `/tmp/e2e-r11-before.json`、运行后快照 `/tmp/e2e-r11-after.json`：**整库摘要完全相同**（`49f7a5dc…75cf`）。
+
+| 检查项                | 结果                                                                 |
+| --------------------- | -------------------------------------------------------------------- |
+| KEEP 六行全字段       | 六表各 1 行，逐字段不变（`KEEP_ROWS OK`）                            |
+| KEEP 引用计数         | ACTIVE 归属 / 组织工单 / 客户工单 / 型号工单均为 1（`KEEP_REFS OK`） |
+| KEEP 文件哨兵 SHA-256 | 不变（`KEEP_FILE OK`）                                               |
+| `migrations`          | 31 条，内容与顺序不变（`MIGRATIONS OK`）                             |
+| 业务表除 KEEP 外残留  | 0（`RESIDUE OK`）                                                    |
+| 触发器                | `information_schema.TRIGGERS` 为空（`TRIGGERS OK`）                  |
+
+收尾（一次性脚本 `/tmp/keep-r11.js`，已删除）：单事务逐行 `FOR UPDATE` 核验六行、四项引用计数与账本外引用均为 0 后，按子表→父表精确删除并删除文件哨兵。回收后快照 `/tmp/e2e-r11-final.json` 摘要 `3418e695…ff0e`，与运行前基线 `/tmp/e2e-r11-baseline.json` **完全一致**（35 张表 / 31 条迁移 / 触发器 0）。未使用 Seed、整表清理或 KEEP 删除后重跑。
+
+### 6. 证据分层与本轮边界
+
+- 替身复现：新增直接入口回归以替身 DataSource 直接执行实际 helper，覆盖 tracker 缺失、回读失败、DROP 失败、同名替换与仅夹具清理失败。
+- 真实数据库：`lithography_e2e` 上定向 79/79；KEEP 保留模式完整 core 51/51；开跑前后整库摘要一致，夹具与触发器零残留。
+- 历史沿用：迁移链、结构契约、并发套件结果未重跑；生产夹具所有权修复沿用第十五轮已确认结论。
+- 未执行：独立复审；`test:e2e:worker`、`test:e2e:smoke`。
+- 提交审计：本轮不暂存、不 commit、不 push、不回复 PR、不合并；`check:entity-scope` 失败仍为分支历史沿用条件，不得表述为“全部门禁通过”。
+
+## 2026-11-01 第十七轮：成功回读不得认领替换对象
+
+### 1. 变更范围
+
+- 仅改触发器 helper、两份 ownership 规格及本记录；未改业务代码、Entity 或 Migration。
+- `createOwnedTrigger` 的创建核验从“表名匹配”收紧为**名称 / 目标表 / 规范化定义**三项匹配：回读成功但定义不同即视为同名替换，抛 `阶段=创建核验` 错误。
+- 登记记录保留 CREATE 时注入的原始定义，`record.fact` 仅在核验通过后补齐；不以当前定义回填预期，后续收尾按原始预期核验，不匹配即拒绝删除。
+- 两份规格中的真实资源直接调用全部改为“建立 tracker → CREATE 之前进入 try → 全部断言 → finally 按 `tracker.remaining()` 受保护收尾”；不以创建成功返回值作为收尾依据，主错误与收尾错误分别保留。
+
+### 2. 新增回归
+
+| 场景                                    | 规格               | 验收结果                                            |
+| --------------------------------------- | ------------------ | --------------------------------------------------- |
+| CREATE 成功 → 同名对象被替换 → 回读成功 | production 回归 4c | 创建核验拒绝；原始预期不变；DROP=0；替换对象保留    |
+| 创建成功后前置断言失败                  | production P2 回归 | finally 仍按 tracker 收尾，对象零残留               |
+| 同名碰撞首次创建未正常返回              | production 回归 4a | finally 按 tracker 收尾，tracker 清零               |
+| 工单创建失败（表不存在）                | 工单创建失败用例   | CREATE 前进入保护，finally 无记录可收尾，名称零残留 |
+
+替换场景的收尾坚持“无法安全核验时保留记录并报告，不盲删”：原记录在替换对象存在期间始终保留，替换对象仅由本用例已知定义走受保护收尾。
+
+### 3. 定向与静态验证
+
+| 验证                                                       | 结果                                                 |
+| ---------------------------------------------------------- | ---------------------------------------------------- |
+| `admin-document-database-production-ownership`             | 35/35                                                |
+| `repair-request-fixture-ownership`                         | 29/29                                                |
+| `npm run typecheck` / `tsc -p tsconfig.spec.json --noEmit` | 通过                                                 |
+| 改动文件 ESLint / Prettier                                 | 通过                                                 |
+| 调用清单复核                                               | 真实资源调用均在 CREATE 前进入保护，无保护范围外路径 |
+
+定向合计 **64/64**，退出码 0。
+
+### 4. 完整 core（KEEP 保留模式）
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                          |
+| -------- | ----------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`，白名单 `lithography_e2e` |
+| 规格     | **51/51 通过，0 失败**                                                        |
+| 用例     | **756 total / 749 passed / 0 failed / 7 skipped**                             |
+| 退出码   | **0**                                                                         |
+| 日志     | `/tmp/e2e-core-r12.log`                                                       |
+
+KEEP 与不变证据：
+
+- KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R12_*`，覆盖六张表各 1 行；文件哨兵 `/tmp/e2e-keep-file-r12.txt`（SHA-256 `bea2969a…8de1`）。
+- 运行前后快照 `/tmp/e2e-r12-before.json`、`/tmp/e2e-r12-after.json`：`KEEP_ROWS / KEEP_REFS / KEEP_FILE / MIGRATIONS / TRIGGERS / RESIDUE` 全部通过，整库摘要相同（`7c41a791…4f90`）。
+- 回收后快照 `/tmp/e2e-r12-final.json` 摘要 `41e1ddef…e1e0`，与运行前基线 `/tmp/e2e-r12-baseline.json` **完全一致**（35 张表 / 31 条迁移 / 触发器 0）。
+- 一次性脚本 `/tmp/keep-r12.js` 已删除；未使用 Seed、整表清理或 KEEP 删除后重跑。
+
+### 5. 证据分层与本轮边界
+
+- 真实数据库：两份 ownership 规格定向 64/64；KEEP 保留模式完整 core 51/51；运行前后整库摘要一致，夹具与触发器零残留。
+- 历史沿用：迁移链、结构契约、并发套件结果未重跑；生产夹具所有权修复沿用第十五轮结论。
+- 未执行：独立复审；`test:e2e:worker`、`test:e2e:smoke`。
+- 提交审计：本轮不暂存、不 commit、不 push、不回复 PR、不合并；`check:entity-scope` 失败仍为分支历史沿用条件。
+
+## 2026-11-01 第十八轮：触发器测试同类入口一次性收口
+
+### 1. 变更范围
+
+- 仅改触发器测试、必要 helper 与本记录；未改业务代码、权限、Entity 或 Migration。
+- 工单同名碰撞用例：外部对象不再走裸 `CREATE TRIGGER`，改为在 CREATE 前建立 tracker 后调用统一 helper，回读与断言均在保护范围内，finally 按登记时的原始创建事实收尾。
+- production 替换场景：原对象、替换对象分别持有 tracker 与登记事实；替换对象同样经统一 helper 创建；按实际创建阶段分别清理，每项独立 `try/catch`，前一项失败不阻断后续；主错误与各项收尾错误统一收集。
+- 4c 的替换代理内部创建路径改为 helper 登记，不再有未登记的真实 DDL 创建。
+- 新增回归：工单首次创建后回读失败；production 替换创建失败；production 主错误 + 两项收尾错误同时发生。
+
+### 2. 触发器真实 DDL 入口清单
+
+| 入口                                   | 创建事实 / 登记                           | 保护范围                   | 收尾与错误汇总                     |
+| -------------------------------------- | ----------------------------------------- | -------------------------- | ---------------------------------- |
+| `createOwnedTrigger`（唯一创建实现）   | CREATE 成功后下一行登记名称 / 表 / 注入体 | 调用方在 CREATE 前进入 try | 回读或核验错误原样抛出，记录保留   |
+| `disposeOwnedTriggerRecord` / 包装收尾 | 仅按登记事实核验当前定义                  | 每项独立 `try/catch`       | 阶段错误逐项保留，不吞并           |
+| production 4b / 4e 的裸 `DROP TRIGGER` | 模拟外部删除本轮对象，不产生新资源        | 后续替换创建经 helper 登记 | 原记录保留；替换对象按登记事实收尾 |
+| production 替换代理                    | 代理内通过 helper 创建替换对象并登记      | 与直接入口一致             | 定义不匹配即拒绝删除，零误删       |
+| 替身 DataSource 用例                   | 不产生真实 DDL，仅记录 SQL                | 不触库                     | 断言调用序列，不参与实库清理       |
+
+### 3. 定向与静态验证
+
+| 验证                                                       | 结果  |
+| ---------------------------------------------------------- | ----- |
+| `admin-document-database-production-ownership`             | 37/37 |
+| `repair-request-fixture-ownership`                         | 30/30 |
+| `npm run typecheck` / `tsc -p tsconfig.spec.json --noEmit` | 通过  |
+| 变更文件 ESLint / Prettier / `git diff --check`            | 通过  |
+
+定向合计 **67/67**，退出码 0。
+
+### 4. 完整 core（KEEP 保留模式）
+
+| 指标     | 结果                                                                 |
+| -------- | -------------------------------------------------------------------- |
+| 开关生效 | `skipDbCleanup=true, allowDbCleanup=false`，白名单 `lithography_e2e` |
+| 规格     | **51/51 通过，0 失败**                                               |
+| 用例     | **759 total / 752 passed / 0 failed / 7 skipped**                    |
+| 退出码   | **0**                                                                |
+| 日志     | `/tmp/e2e-core-r13.log`                                              |
+
+KEEP 与不变证据：
+
+- KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R13_*`，六张表各 1 行；文件哨兵 `/tmp/e2e-keep-file-r13.txt`（SHA-256 `bba912c3…bd22`）。
+- 运行前后快照 `/tmp/e2e-r13-before.json`、`/tmp/e2e-r13-after.json`：`KEEP_ROWS / KEEP_REFS / KEEP_FILE / MIGRATIONS / TRIGGERS / RESIDUE` 全部通过，整库摘要相同（`8da4f656…a7c3`）。
+- 回收后快照 `/tmp/e2e-r13-final.json` 摘要 `41e1ddef…e1e0`，与运行前基线 `/tmp/e2e-r13-baseline.json` **完全一致**（35 张表 / 31 条迁移 / 触发器 0）。
+- 一次性脚本 `/tmp/keep-r13.js` 已删除；未使用 Seed、整表清理或 KEEP 删除后重跑。
+
+### 5. 证据分层与本轮边界
+
+- 本轮结果属于**修复方自测**；独立复核尚未执行，不能表述为“已通过评审”。
+- 真实数据库：两份 ownership 规格定向 67/67；KEEP 保留模式完整 core 51/51；运行前后整库摘要一致，夹具与触发器零残留。
+- 历史沿用：迁移链、结构契约、并发套件结果未重跑。
+- 未执行：独立复审；`test:e2e:worker`、`test:e2e:smoke`。
+- 提交审计：本轮不暂存、不 commit、不 push、不回复 PR、不合并；`check:entity-scope` 失败仍为分支历史沿用条件。

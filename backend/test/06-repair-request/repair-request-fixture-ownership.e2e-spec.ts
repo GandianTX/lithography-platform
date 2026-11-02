@@ -30,11 +30,15 @@
 
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { AiConversationStatus } from '@app-types/models/ai-conversation.types';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { EngineerResolutionStatus } from '@app-types/models/repair-request.types';
+import { AiConversationEntity } from '@src/modules/lithography/entities/ai-conversation.entity';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
 import { EngineerResponseEntity } from '@src/modules/lithography/entities/engineer-response.entity';
+import { MaintenanceReportEntity } from '@src/modules/lithography/entities/maintenance-report.entity';
+import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
 import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { ApiModule } from '@src/bootstraps/api/api.module';
@@ -48,6 +52,16 @@ import {
   assertPhysicalCleanupConsent,
 } from '../utils/e2e-db-guard';
 import { createTestAccount } from '../utils/test-accounts';
+import {
+  assertNoTriggerCaseFailures,
+  assertTriggerNameFormat,
+  createOwnedTrigger,
+  createTriggerOwnershipTracker,
+  disposeOwnedTrigger,
+  disposeOwnedTriggerRecord,
+  readOwnedTriggerFact,
+  runWithOwnedTrigger,
+} from '../utils/e2e-trigger-ownership';
 import {
   REPAIR_REQUEST_FIXTURE_ACCOUNTS,
   REPAIR_REQUEST_FIXTURE_MARKERS,
@@ -478,6 +492,552 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
       requests: 0,
     });
     expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('入向引用（残留入口）：AI 会话与维护报告引用夹具行时失败关闭，DELETE=0 且逐字段不变', async () => {
+    const before = await readSentinelSnapshot();
+    const ownership = createRepairRequestFixtureOwnership();
+    /** 外部行只在本轮创建成功后登记，finally 收尾时按已记录 ID 核验删除 */
+    let external: {
+      conversationId: number;
+      reportId: number;
+      requestId: number;
+      engineerId: number;
+      modelId: number;
+      organizationId: number;
+    } | null = null;
+    let fixtureBefore: Awaited<ReturnType<typeof readFixtureSnapshot>> | undefined;
+    let conversationBefore: AiConversationEntity | null;
+    let reportBefore: MaintenanceReportEntity | null;
+
+    try {
+      const engineerId = await seedEngineerAccount(ownership, 'engineerA');
+      const customerId = await seedEngineerAccount(ownership, 'customerA');
+      const scope = await seedRepairRequestFixtureOrganizationScope({
+        dataSource,
+        ownership,
+        accountIds: { engineerA: engineerId },
+      });
+      const modelId = await createRepairRequestFixtureModel({ dataSource, ownership, key: 'read' });
+      const requestId = await createRepairRequestFixtureRequest({
+        dataSource,
+        ownership,
+        seed: {
+          requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[0],
+          customerAccountId: customerId,
+          equipmentModelId: modelId,
+          errorCode: 'E-1001',
+          faultDescription: '未接单场景',
+          contentMd: '# E2E-RR-111',
+          createdAt: new Date('2026-08-25T01:00:00.000Z'),
+          isAccepted: false,
+          acceptedByEngineerAccountId: null,
+          acceptedAt: null,
+          deprecated: false,
+          deletedAt: null,
+        },
+      });
+      fixtureBefore = await readFixtureSnapshot(ownership);
+      expect(fixtureBefore.accounts).toHaveLength(2);
+
+      // 外部 AI 会话引用夹具申请与夹具工程师账号（request_id / engineer_account_id）
+      const conversationRepo = dataSource.getRepository(AiConversationEntity);
+      const conversation = await conversationRepo.save(
+        conversationRepo.create({
+          requestId,
+          engineerAccountId: engineerId,
+          status: AiConversationStatus.ACTIVE,
+          aiFeedback: null,
+          completedAt: null,
+        }),
+      );
+
+      // 外部维护报告同时引用夹具组织 / 申请 / 型号 / 工程师与创建/修改人账号
+      const reportRepo = dataSource.getRepository(MaintenanceReportEntity);
+      const report = await reportRepo.save(
+        reportRepo.create({
+          ownerOrganizationId: scope.primaryOrganizationId,
+          sourceType: 'WORK_ORDER_SUMMARY',
+          repairRequestId: requestId,
+          equipmentModelId: modelId,
+          maintenanceEngineerAccountId: engineerId,
+          maintenanceEngineerNameSnapshot: '夹具工程师A',
+          createdByAccountId: engineerId,
+          updatedByAccountId: engineerId,
+        }),
+      );
+
+      external = {
+        conversationId: conversation.id,
+        reportId: report.id,
+        requestId,
+        engineerId,
+        modelId,
+        organizationId: scope.primaryOrganizationId,
+      };
+      conversationBefore = await readAiConversation(conversation.id);
+      reportBefore = await readMaintenanceReport(report.id);
+
+      // 集合外引用直接拒绝：既不认领也不删除这些外部行
+      await expect(cleanupRepairRequestFixtureResidue(dataSource)).rejects.toThrow(/归属校验/);
+
+      // DELETE=0：夹具行与两行外部记录逐字段不变（含主键、引用列与时间列）
+      expect(fixtureBefore).toBeDefined();
+      expect(await readFixtureSnapshot(ownership)).toEqual(fixtureBefore);
+      expect(await readAiConversation(conversation.id)).toEqual(conversationBefore);
+      expect(await readMaintenanceReport(report.id)).toEqual(reportBefore);
+    } finally {
+      if (external) {
+        const e = external;
+        await deleteRecordedExternalRow({
+          helper: '外部AI会话收尾',
+          entity: AiConversationEntity,
+          recordedIds: [e.conversationId],
+          id: e.conversationId,
+          verify: (row) =>
+            row.requestId === e.requestId &&
+            row.engineerAccountId === e.engineerId &&
+            row.status === AiConversationStatus.ACTIVE &&
+            row.aiFeedback === null &&
+            row.completedAt === null,
+        });
+        await deleteRecordedExternalRow({
+          helper: '外部维护报告收尾',
+          entity: MaintenanceReportEntity,
+          recordedIds: [e.reportId],
+          id: e.reportId,
+          verify: (row) =>
+            row.ownerOrganizationId === e.organizationId &&
+            row.repairRequestId === e.requestId &&
+            row.equipmentModelId === e.modelId &&
+            row.maintenanceEngineerAccountId === e.engineerId &&
+            row.createdByAccountId === e.engineerId &&
+            row.updatedByAccountId === e.engineerId,
+        });
+      }
+      await cleanupRepairRequestFixtureByIds(dataSource, ownership);
+    }
+
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await countFixtureRequests()).toBe(0);
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('入向引用（按 ID 入口）：外部 AI 会话引用夹具申请时失败关闭，DELETE=0 且逐字段不变', async () => {
+    const before = await readSentinelSnapshot();
+    const ownership = createRepairRequestFixtureOwnership();
+    let external: { conversationId: number; requestId: number; engineerId: number } | null = null;
+    let fixtureBefore: Awaited<ReturnType<typeof readFixtureSnapshot>> | undefined;
+    let conversationBefore: AiConversationEntity | null;
+
+    try {
+      const engineerId = await seedEngineerAccount(ownership, 'engineerA');
+      const customerId = await seedEngineerAccount(ownership, 'customerA');
+      const modelId = await createRepairRequestFixtureModel({ dataSource, ownership, key: 'read' });
+      const requestId = await createRepairRequestFixtureRequest({
+        dataSource,
+        ownership,
+        seed: {
+          requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[0],
+          customerAccountId: customerId,
+          equipmentModelId: modelId,
+          errorCode: 'E-1001',
+          faultDescription: '未接单场景',
+          contentMd: '# E2E-RR-111',
+          createdAt: new Date('2026-08-25T01:00:00.000Z'),
+          isAccepted: false,
+          acceptedByEngineerAccountId: null,
+          acceptedAt: null,
+          deprecated: false,
+          deletedAt: null,
+        },
+      });
+      fixtureBefore = await readFixtureSnapshot(ownership);
+
+      const conversationRepo = dataSource.getRepository(AiConversationEntity);
+      const conversation = await conversationRepo.save(
+        conversationRepo.create({
+          requestId,
+          engineerAccountId: engineerId,
+          status: AiConversationStatus.ACTIVE,
+          aiFeedback: null,
+          completedAt: null,
+        }),
+      );
+      external = { conversationId: conversation.id, requestId, engineerId };
+      conversationBefore = await readAiConversation(conversation.id);
+
+      // 按 ID 入口只接受运行时记录 ID，但同样必须核验完整图与入向引用后零删除
+      await expect(cleanupRepairRequestFixtureByIds(dataSource, ownership)).rejects.toThrow(
+        /归属校验/,
+      );
+
+      expect(fixtureBefore).toBeDefined();
+      expect(await readFixtureSnapshot(ownership)).toEqual(fixtureBefore);
+      expect(await readAiConversation(conversation.id)).toEqual(conversationBefore);
+    } finally {
+      if (external) {
+        const e = external;
+        await deleteRecordedExternalRow({
+          helper: '外部AI会话收尾（按 ID 入口）',
+          entity: AiConversationEntity,
+          recordedIds: [e.conversationId],
+          id: e.conversationId,
+          verify: (row) =>
+            row.requestId === e.requestId &&
+            row.engineerAccountId === e.engineerId &&
+            row.status === AiConversationStatus.ACTIVE &&
+            row.aiFeedback === null &&
+            row.completedAt === null,
+        });
+      }
+      await cleanupRepairRequestFixtureByIds(dataSource, ownership);
+    }
+
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await countFixtureRequests()).toBe(0);
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('后序删除失败：残留与按 ID 两个入口都整批回滚，夹具逐字段不变且本轮触发器零残留', async () => {
+    const before = await readSentinelSnapshot();
+    const ownership = createRepairRequestFixtureOwnership();
+    const triggerName = nextTriggerName('rollback');
+    const tracker = createTriggerOwnershipTracker();
+    let fixtureBefore: Awaited<ReturnType<typeof readFixtureSnapshot>> | undefined;
+
+    const failures = await runWithOwnedTrigger({
+      dataSource,
+      triggerName,
+      tableName: ROLLBACK_TRIGGER_TABLE,
+      body: ROLLBACK_TRIGGER_BODY,
+      setup: async () => {
+        await seedEngineerAccount(ownership, 'engineerA');
+        const customerId = await seedEngineerAccount(ownership, 'customerA');
+        const modelId = await createRepairRequestFixtureModel({
+          dataSource,
+          ownership,
+          key: 'read',
+        });
+        await createRepairRequestFixtureRequest({
+          dataSource,
+          ownership,
+          seed: {
+            requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[0],
+            customerAccountId: customerId,
+            equipmentModelId: modelId,
+            errorCode: 'E-1001',
+            faultDescription: '未接单场景',
+            contentMd: '# E2E-RR-111',
+            createdAt: new Date('2026-08-25T01:00:00.000Z'),
+            isAccepted: false,
+            acceptedByEngineerAccountId: null,
+            acceptedAt: null,
+            deprecated: false,
+            deletedAt: null,
+          },
+        });
+        expect(ownership.repairRequestIds).toHaveLength(1);
+        fixtureBefore = await readFixtureSnapshot(ownership);
+      },
+      run: async () => {
+        // 注入确定性后序失败：删除顺序中申请 / 型号已在 user_info 之前执行，
+        // 失败时必须整批回滚，不能留下「父行已删、账号仍在」的半清理状态。
+        await expect(cleanupRepairRequestFixtureResidue(dataSource)).rejects.toThrow();
+        expect(await readFixtureSnapshot(ownership)).toEqual(fixtureBefore);
+
+        await expect(cleanupRepairRequestFixtureByIds(dataSource, ownership)).rejects.toThrow();
+        expect(await readFixtureSnapshot(ownership)).toEqual(fixtureBefore);
+      },
+      cleanupFixture: () => cleanupRepairRequestFixtureByIds(dataSource, ownership),
+      tracker,
+    });
+    assertNoTriggerCaseFailures(failures, '后序删除失败回滚');
+
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await countFixtureRequests()).toBe(0);
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('触发器同名碰撞：创建前失败关闭，外部同名对象定义完全不变', async () => {
+    const triggerName = nextTriggerName('collision');
+    const tracker = createTriggerOwnershipTracker();
+    const externalBody = 'SET @e2e_external_trigger_marker = 1';
+    await assertDirectDeleteTarget('triggerCollision');
+
+    // CREATE 之前进入保护：外部对象同样走统一 helper 登记，不保留裸 CREATE 通道
+    try {
+      const external = await createOwnedTrigger({
+        dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: externalBody,
+        tracker,
+      });
+      // CREATE 后的回读与断言全部位于保护范围内
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).toEqual(external);
+
+      await expect(
+        createOwnedTrigger({
+          dataSource,
+          name: triggerName,
+          tableName: ROLLBACK_TRIGGER_TABLE,
+          body: ROLLBACK_TRIGGER_BODY,
+          tracker,
+        }),
+      ).rejects.toThrow(/同名预检/);
+      // 外部同名对象的表与定义均未被覆盖
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).toEqual(external);
+    } finally {
+      // 按登记时的原始创建事实收尾，不按当前查询结果重新认领
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
+    }
+
+    expect(tracker.remaining()).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('触发器首次创建后回读失败：原始错误保留，finally 仍按登记事实精确收尾', async () => {
+    const triggerName = nextTriggerName('createReadbackFail');
+    const tracker = createTriggerOwnershipTracker();
+    const externalBody = 'SET @e2e_external_trigger_marker = 1';
+    // 放行同名预检，CREATE 成功后回读抛错
+    const flaky = createMetadataReadbackFailingDataSource(dataSource, 1);
+    await assertDirectDeleteTarget('triggerReadbackFail');
+
+    try {
+      await expect(
+        createOwnedTrigger({
+          dataSource: flaky,
+          name: triggerName,
+          tableName: ROLLBACK_TRIGGER_TABLE,
+          body: externalBody,
+          tracker,
+        }),
+      ).rejects.toThrow('模拟触发器元数据回读失败');
+      // CREATE 成功即登记：回读失败不丢记录，且 fact 保持待核验
+      expect(tracker.records()).toHaveLength(1);
+      expect(tracker.records()[0].body).toBe(externalBody);
+      expect(tracker.records()[0].fact).toBeNull();
+    } finally {
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
+    }
+
+    expect(tracker.remaining()).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('触发器创建失败：失败关闭且该名称零残留', async () => {
+    const triggerName = nextTriggerName('createfail');
+    const tracker = createTriggerOwnershipTracker();
+    // CREATE 之前就进入保护：即使创建路径异常返回，也按 tracker 收尾
+    try {
+      await expect(
+        createOwnedTrigger({
+          dataSource,
+          name: triggerName,
+          tableName: 'base_not_exists_e2e_trigger',
+          body: ROLLBACK_TRIGGER_BODY,
+          tracker,
+        }),
+      ).rejects.toThrow();
+      // CREATE 未成功 → 不产生登记记录，也没有对象可收尾
+      expect(tracker.records()).toEqual([]);
+    } finally {
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
+    }
+    expect(tracker.remaining()).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('触发器安装后中途断言失败：本轮触发器仍被精确收尾，夹具清理错误独立保留', async () => {
+    const before = await readSentinelSnapshot();
+    const ownership = createRepairRequestFixtureOwnership();
+    const triggerName = nextTriggerName('midassert');
+    const tracker = createTriggerOwnershipTracker();
+
+    const failures = await runWithOwnedTrigger({
+      dataSource,
+      triggerName,
+      tableName: ROLLBACK_TRIGGER_TABLE,
+      body: ROLLBACK_TRIGGER_BODY,
+      setup: async () => {
+        await seedEngineerAccount(ownership, 'engineerA');
+      },
+      run: () => Promise.reject(new Error('模拟中途断言失败')),
+      cleanupFixture: () => cleanupRepairRequestFixtureByIds(dataSource, ownership),
+      tracker,
+    });
+
+    // 主错误与其它阶段分别保留：只有主错误，没有触发器收尾 / 夹具清理错误
+    expect(failures).toHaveLength(1);
+    expect(failures[0].stage).toBe('主错误');
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('触发器收尾失败：错误被单独保留，重试后本轮对象零残留', async () => {
+    const triggerName = nextTriggerName('cleanupfail');
+    // 从 CREATE 之前就建立 tracker 并进入 try/finally：创建未正常返回也执行受保护收尾
+    const tracker = createTriggerOwnershipTracker();
+    let owned: Awaited<ReturnType<typeof createOwnedTrigger>> | undefined;
+    try {
+      owned = await createOwnedTrigger({
+        dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        tracker,
+      });
+      // 收尾替身：只让 DROP TRIGGER 失败，其余查询仍走真实连接
+      const failingDataSource = {
+        options: dataSource.options,
+        query: (sql: string, parameters?: unknown[]): Promise<unknown> => {
+          if (sql.startsWith('DROP TRIGGER')) {
+            return Promise.reject(new Error('注入故障：触发器 DROP 失败'));
+          }
+          return dataSource.query(sql, parameters);
+        },
+      } as unknown as DataSource;
+
+      await expect(disposeOwnedTrigger(failingDataSource, owned, tracker)).rejects.toThrow(
+        /注入故障：触发器 DROP 失败/,
+      );
+      // 收尾失败后本轮对象仍在，不能被错误地视为已清理
+      expect(tracker.remaining().map((record) => record.name)).toEqual([triggerName]);
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).toEqual(owned);
+    } finally {
+      // 故障用例的最终收尾不依赖断言成功：按登记记录走受保护收尾
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
+    }
+    expect(tracker.remaining()).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('直接入口：缺少 tracker → CREATE 前拒绝，零 DDL', async () => {
+    const triggerName = nextTriggerName('notracker');
+    const stub = createStubTriggerDataSource({ metadataResponses: [] });
+    const params = {
+      dataSource: stub.dataSource,
+      name: triggerName,
+      tableName: ROLLBACK_TRIGGER_TABLE,
+      body: ROLLBACK_TRIGGER_BODY,
+    } as unknown as Parameters<typeof createOwnedTrigger>[0];
+
+    await withPhysicalCleanupConsent(async () => {
+      await expect(createOwnedTrigger(params)).rejects.toThrow(/追踪器校验/);
+    });
+
+    // 校验发生在任何 DDL（含同名预检查询）之前
+    expect(stub.calls).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('直接入口：CREATE 成功、回读失败、DROP 失败 → 两个原始错误与待收尾记录均保留，恢复后可安全收尾', async () => {
+    const triggerName = nextTriggerName('readbackdrop');
+    const tracker = createTriggerOwnershipTracker();
+
+    await withPhysicalCleanupConsent(async () => {
+      const createStub = createStubTriggerDataSource({
+        metadataResponses: [[], new Error('模拟触发器回读失败')],
+      });
+      await expect(
+        createOwnedTrigger({
+          dataSource: createStub.dataSource,
+          name: triggerName,
+          tableName: ROLLBACK_TRIGGER_TABLE,
+          body: ROLLBACK_TRIGGER_BODY,
+          tracker,
+        }),
+      ).rejects.toThrow('模拟触发器回读失败');
+
+      // CREATE 成功后立即登记：回读失败不丢记录，fact 仍为待核验
+      expect(tracker.records()).toHaveLength(1);
+      expect(tracker.records()[0].fact).toBeNull();
+      expect(tracker.remaining().map((record) => record.name)).toEqual([triggerName]);
+
+      const failingDisposeStub = createStubTriggerDataSource({
+        metadataResponses: [
+          [
+            {
+              name: triggerName,
+              tableName: ROLLBACK_TRIGGER_TABLE,
+              definition: ROLLBACK_TRIGGER_BODY,
+            },
+          ],
+        ],
+        dropFails: true,
+      });
+      await expect(
+        disposeOwnedTriggerRecord(failingDisposeStub.dataSource, tracker.records()[0], tracker),
+      ).rejects.toThrow('注入故障：触发器 DROP 失败');
+      expect(tracker.remaining().map((record) => record.name)).toEqual([triggerName]);
+
+      // 恢复后再次走同一受保护收尾
+      const recoveredStub = createStubTriggerDataSource({
+        metadataResponses: [
+          [
+            {
+              name: triggerName,
+              tableName: ROLLBACK_TRIGGER_TABLE,
+              definition: ROLLBACK_TRIGGER_BODY,
+            },
+          ],
+        ],
+      });
+      await disposeOwnedTriggerRecord(recoveredStub.dataSource, tracker.records()[0], tracker);
+      expect(tracker.remaining()).toEqual([]);
+      expect(recoveredStub.calls.some((sql) => sql.startsWith('DROP TRIGGER'))).toBe(true);
+    });
+
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('直接入口：同名对象被替换且回读失败 → 定义核验拒绝删除，替换对象零误删', async () => {
+    const triggerName = nextTriggerName('replacedreadback');
+    const tracker = createTriggerOwnershipTracker();
+    const replacedBody = "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'E2E 替换后的同名对象'";
+
+    await withPhysicalCleanupConsent(async () => {
+      const createStub = createStubTriggerDataSource({
+        metadataResponses: [[], new Error('模拟触发器回读失败')],
+      });
+      await expect(
+        createOwnedTrigger({
+          dataSource: createStub.dataSource,
+          name: triggerName,
+          tableName: ROLLBACK_TRIGGER_TABLE,
+          body: ROLLBACK_TRIGGER_BODY,
+          tracker,
+        }),
+      ).rejects.toThrow('模拟触发器回读失败');
+
+      const replacedStub = createStubTriggerDataSource({
+        metadataResponses: [
+          [{ name: triggerName, tableName: ROLLBACK_TRIGGER_TABLE, definition: replacedBody }],
+        ],
+      });
+      await expect(
+        disposeOwnedTriggerRecord(replacedStub.dataSource, tracker.records()[0], tracker),
+      ).rejects.toThrow(/归属校验/);
+
+      // 定义核验拒绝后不得发出任何 DROP；替换对象仍然存在且待收尾记录保留
+      expect(replacedStub.calls.some((sql) => sql.startsWith('DROP TRIGGER'))).toBe(false);
+      expect(tracker.remaining().map((record) => record.name)).toEqual([triggerName]);
+    });
+
+    // 真实库中该名称从未被创建（替身路径不产生 DDL）
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
   });
 
   it('清理守卫：未通过目标库校验时不得执行删除', () => {
@@ -1070,6 +1630,46 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     expect(await countFixtureAccounts()).toBe(0);
   });
 
+  /** 按条件读取多行并稳定排序（用于「逐字段不变」快照比对） */
+  async function readRowsInOrder<T extends { id: number }>(
+    entity: EntityTarget<T>,
+    where: FindOptionsWhere<T>,
+  ): Promise<T[]> {
+    const rows = await dataSource.getRepository(entity).find({ where });
+    return rows.sort((a, b) => a.id - b.id);
+  }
+
+  /** 夹具自身行（账号 / user_info / 组织 / 成员关系 / 型号 / 申请 / 回复）的逐字段快照 */
+  async function readFixtureSnapshot(ownership: RepairRequestFixtureOwnership) {
+    return {
+      accounts: await readRowsInOrder(AccountEntity, { id: In([...ownership.accountIds]) }),
+      userInfos: await readRowsInOrder(UserInfoEntity, {
+        accountId: In([...ownership.accountIds]),
+      }),
+      organizations: await readRowsInOrder(OrganizationEntity, {
+        id: In([...ownership.organizationIds]),
+      }),
+      memberships: await readRowsInOrder(OrganizationMembershipEntity, {
+        id: In([...ownership.membershipIds]),
+      }),
+      models: await readRowsInOrder(EquipmentModelEntity, {
+        id: In([...ownership.equipmentModelIds]),
+      }),
+      requests: await readRowsInOrder(RepairRequestEntity, {
+        id: In([...ownership.repairRequestIds]),
+      }),
+      responses: await readRowsInOrder(EngineerResponseEntity, {
+        requestId: In([...ownership.repairRequestIds]),
+      }),
+    };
+  }
+
+  const readAiConversation = (id: number): Promise<AiConversationEntity | null> =>
+    dataSource.getRepository(AiConversationEntity).findOne({ where: { id } });
+
+  const readMaintenanceReport = (id: number): Promise<MaintenanceReportEntity | null> =>
+    dataSource.getRepository(MaintenanceReportEntity).findOne({ where: { id } });
+
   /** 造一个专属账号并记录到 ownership（默认工程师 A，供多处复用） */
   async function seedEngineerAccount(
     target: RepairRequestFixtureOwnership,
@@ -1091,6 +1691,105 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`[${helper}] 阶段=目标库守卫 拒绝执行写入/删除：${detail}`, { cause: error });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // P3：故障注入触发器的对象所有权（本轮唯一名称 + 同名预检 + 定义核验）
+  // -------------------------------------------------------------------------
+
+  const ROLLBACK_TRIGGER_TABLE = 'base_user_info';
+  const ROLLBACK_TRIGGER_BODY = "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'E2E 后序删除失败注入'";
+  let triggerSequence = 0;
+
+  /** 本轮唯一、格式受控的触发器名称（进程 + 序号 + 时间戳，避免跨轮碰撞） */
+  function nextTriggerName(label: string): string {
+    triggerSequence += 1;
+    const name = `e2e_rr_${label}_${process.pid}_${triggerSequence}_${Date.now()}`;
+    assertTriggerNameFormat(name);
+    return name;
+  }
+
+  /** 替身 DataSource：只记录 SQL 并按脚本回应，用于不触库地执行实际 helper 的异常路径。 */
+  function createStubTriggerDataSource(options: {
+    metadataResponses: ReadonlyArray<unknown>;
+    dropFails?: boolean;
+  }): { dataSource: DataSource; calls: string[] } {
+    const calls: string[] = [];
+    let metadataIndex = 0;
+    const database = 'lithography_e2e';
+    const dataSource = {
+      options: { database },
+      query: (sql: string): Promise<unknown> => {
+        calls.push(sql);
+        // 库门禁查询是唯一的 DATABASE() 入口；先于元数据分支匹配，
+        // 避免仅按子串命中同时含 `DATABASE()` 的 TRIGGERS 查询。
+        if (sql.startsWith('SELECT DATABASE()')) {
+          return Promise.resolve([{ current_database: database }]);
+        }
+        if (sql.includes('information_schema.TRIGGERS')) {
+          const response = options.metadataResponses[metadataIndex];
+          metadataIndex += 1;
+          if (response instanceof Error) {
+            return Promise.reject(response);
+          }
+          return Promise.resolve(response === undefined ? [] : response);
+        }
+        if (sql.startsWith('DROP TRIGGER')) {
+          return options.dropFails
+            ? Promise.reject(new Error('注入故障：触发器 DROP 失败'))
+            : Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      },
+    } as unknown as DataSource;
+    return { dataSource, calls };
+  }
+
+  /**
+   * 真实连接上的元数据回读故障注入：先放行同名预检，CREATE 成功后的回读抛错。
+   */
+  function createMetadataReadbackFailingDataSource(
+    real: DataSource,
+    allowBeforeFailure: number,
+  ): DataSource {
+    let remainingAllowed = allowBeforeFailure;
+    return new Proxy(real, {
+      get: (target, prop, receiver) => {
+        if (prop === 'query') {
+          return (sql: string, parameters?: unknown[]): Promise<unknown> => {
+            if (typeof sql === 'string' && sql.includes('information_schema.TRIGGERS')) {
+              if (remainingAllowed > 0) {
+                remainingAllowed -= 1;
+                return target.query(sql, parameters);
+              }
+              return Promise.reject(new Error('模拟触发器元数据回读失败'));
+            }
+            return target.query(sql, parameters);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+  }
+
+  /** 临时确保物理清理许可存在（替身路径仍经过真实门禁），结束后恢复原值。 */
+  async function withPhysicalCleanupConsent<TReturn>(
+    run: () => Promise<TReturn>,
+  ): Promise<TReturn> {
+    const previous = process.env.E2E_ALLOW_PHYSICAL_CLEANUP;
+    process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
+    try {
+      return await run();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.E2E_ALLOW_PHYSICAL_CLEANUP;
+      } else {
+        process.env.E2E_ALLOW_PHYSICAL_CLEANUP = previous;
+      }
     }
   }
 

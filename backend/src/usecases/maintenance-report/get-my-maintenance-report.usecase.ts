@@ -27,15 +27,35 @@ export class GetMyMaintenanceReportUsecase {
   async execute(command: GetMaintenanceReportCommand): Promise<MaintenanceReportDetailView> {
     assertMaintenanceReportAuthorRole(command.session);
     assertMaintenanceReportId(command.reportId);
+    const ownership = await this.maintenanceReportQueryService.readReportOwnership(
+      command.reportId,
+    );
+    if (ownership === null) {
+      throw new DomainError(MAINTENANCE_REPORT_ERROR.NOT_FOUND, '维修报告不存在或不可访问', {
+        reportId: command.reportId,
+      });
+    }
     const membership = await this.organizationContextService.resolveForAccount({
       accountId: command.session.accountId,
     });
-    const detail = await this.maintenanceReportQueryService.readReportDetail(command.reportId);
     if (
-      detail === null ||
-      detail.report.maintenanceEngineerAccountId !== command.session.accountId ||
-      detail.report.ownerOrganizationId !== membership.organizationId
+      ownership.maintenanceEngineerAccountId !== command.session.accountId ||
+      ownership.ownerOrganizationId !== membership.organizationId
     ) {
+      throw new DomainError(MAINTENANCE_REPORT_ERROR.NOT_FOUND, '维修报告不存在或不可访问', {
+        reportId: command.reportId,
+      });
+    }
+    // 授权后才加载完整内容；详情读取仍携带范围谓词，不依赖第一次检查。
+    const detail = await this.maintenanceReportQueryService.readReportDetail(
+      command.reportId,
+      undefined,
+      {
+        ownerOrganizationId: membership.organizationId,
+        maintenanceEngineerAccountId: command.session.accountId,
+      },
+    );
+    if (detail === null) {
       throw new DomainError(MAINTENANCE_REPORT_ERROR.NOT_FOUND, '维修报告不存在或不可访问', {
         reportId: command.reportId,
       });

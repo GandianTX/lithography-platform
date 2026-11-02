@@ -18,6 +18,8 @@ import { AiConversationEntity } from '@src/modules/lithography/entities/ai-conve
 import { AiMessageEntity } from '@src/modules/lithography/entities/ai-message.entity';
 import { AiReportEntity } from '@src/modules/lithography/entities/ai-report.entity';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
+import { MaintenanceReportEntity } from '@src/modules/lithography/entities/maintenance-report.entity';
+import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { DataSource, In, type FindOptionsWhere } from 'typeorm';
@@ -58,6 +60,8 @@ const FOREIGN = {
   requestNos: ['E2E-ADM-CORE-FOREIGN-211', 'E2E-ADM-CORE-FOREIGN-212', 'E2E-ADM-CORE-FOREIGN-213'],
   reportTitles: ['E2E-ADM-CORE-FOREIGN-401', 'E2E-ADM-CORE-FOREIGN-402'],
   externalReferenceRequestNo: 'E2E-ADM-CORE-FOREIGN-REF',
+  maintenanceReportOrgId: 9907101,
+  maintenanceReportOrgCode: 'E2E-ADM-CORE-FOREIGN-REPORT-ORG',
 } as const;
 
 const FOREIGN_ACCOUNT: TestAccountConfig = {
@@ -775,6 +779,89 @@ describe('普通 admin-document-database fixture 所有权（真实隔离库）'
           .delete({ id: externalRequestId, requestNo: FOREIGN.externalReferenceRequestNo });
       }
       if (businessRequestAId !== null) {
+        await cleanupAdminDocumentFixtureByIds(dataSource, ownership);
+      }
+    }
+  });
+
+  it('外部维修报告引用夹具账号/型号/申请时，清理在任何 DELETE 前失败关闭', async () => {
+    const ownership = createAdminDocFixtureOwnership();
+    const orgRepo = dataSource.getRepository(OrganizationEntity);
+    const reportRepo = dataSource.getRepository(MaintenanceReportEntity);
+    const requestRepo = dataSource.getRepository(RepairRequestEntity);
+    const modelRepo = dataSource.getRepository(EquipmentModelEntity);
+    let organizationId: number | null = null;
+    let maintenanceReportId: number | null = null;
+    try {
+      // 外部组织按固定 ID 仅 INSERT：先确认空闲，碰撞即失败关闭，绝不覆盖既有行
+      await assertFixedIdsVacant(orgRepo, '外部维修报告组织', [FOREIGN.maintenanceReportOrgId]);
+      const accounts = await seedFixtureAccounts(ownership);
+      const business = await seedAdminDocumentFixtureBusiness({
+        dataSource,
+        ownership,
+        customerAccountId: accounts.customer,
+        engineerAccountId: accounts.engineer,
+      });
+
+      [organizationId] = await insertOnlyAtFixedIds(orgRepo, '外部维修报告组织', [
+        {
+          id: FOREIGN.maintenanceReportOrgId,
+          organizationCode: FOREIGN.maintenanceReportOrgCode,
+          name: '外部组织：维修报告归属（非本 spec）',
+          kind: 'CLIENT',
+          status: 'ACTIVE',
+        },
+      ]);
+
+      // 外部维修报告同时引用本轮账号、型号与申请：三者任一都不能被删除
+      const report = await reportRepo.save(
+        reportRepo.create({
+          ownerOrganizationId: organizationId,
+          sourceType: 'WORK_ORDER_SUMMARY',
+          repairRequestId: business.requestAId,
+          equipmentModelId: business.equipmentModelId,
+          maintenanceEngineerAccountId: accounts.engineer,
+          maintenanceEngineerNameSnapshot: '外部维修报告工程师快照',
+          createdByAccountId: accounts.engineer,
+          updatedByAccountId: accounts.engineer,
+        }),
+      );
+      maintenanceReportId = report.id;
+
+      const requestBefore = await requestRepo.findOne({ where: { id: business.requestAId } });
+      const modelBefore = await modelRepo.findOne({ where: { id: business.equipmentModelId } });
+      const accountBefore = await dataSource
+        .getRepository(AccountEntity)
+        .findOne({ where: { id: accounts.engineer } });
+      const reportBefore = await reportRepo.findOne({ where: { id: report.id } });
+      const organizationBefore = await orgRepo.findOne({ where: { id: organizationId } });
+
+      await expect(cleanupAdminDocumentFixtureByIds(dataSource, ownership)).rejects.toThrow(
+        /maintenance_report/,
+      );
+
+      // 首次 DELETE 前失败关闭：夹具与外部记录逐字段不变
+      expect(await requestRepo.findOne({ where: { id: business.requestAId } })).toEqual(
+        requestBefore,
+      );
+      expect(await modelRepo.findOne({ where: { id: business.equipmentModelId } })).toEqual(
+        modelBefore,
+      );
+      expect(
+        await dataSource.getRepository(AccountEntity).findOne({ where: { id: accounts.engineer } }),
+      ).toEqual(accountBefore);
+      expect(await reportRepo.findOne({ where: { id: report.id } })).toEqual(reportBefore);
+      expect(await orgRepo.findOne({ where: { id: organizationId } })).toEqual(organizationBefore);
+      expect(await countFixtureMarkers()).toEqual({ accounts: 3, models: 1, requests: 3 });
+    } finally {
+      // 外部记录先移除，本轮夹具数据才可精确回收
+      if (maintenanceReportId !== null) {
+        await reportRepo.delete({ id: maintenanceReportId });
+      }
+      if (organizationId !== null) {
+        await orgRepo.delete({ id: organizationId });
+      }
+      if (ownership.accountIds.length > 0) {
         await cleanupAdminDocumentFixtureByIds(dataSource, ownership);
       }
     }

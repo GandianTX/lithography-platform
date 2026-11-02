@@ -1,6 +1,6 @@
 // src/usecases/account/admin-reset-user-password.usecase.spec.ts
 
-import { AccountStatus } from '@app-types/models/account.types';
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
 import {
   ACCOUNT_ERROR,
@@ -23,10 +23,12 @@ import {
   createAdminUserView,
   createFakeTransactionHarness,
   createOrganizationIsolationMocks,
+  createRealViewConversionDouble,
   createStatusFacts,
   createSuperAdminSession,
   createSuperAdminTargetView,
   createUnauthorizedSessions,
+  type AdminUserAccountRowSpec,
 } from '../../../test/support/account/admin-user.fixture';
 import { AdminResetUserPasswordUsecase } from './admin-reset-user-password.usecase';
 
@@ -331,6 +333,166 @@ describe('AdminResetUserPasswordUsecase', () => {
       // 组织解析在事务回调内失败：事务已开启并回滚
       expect(harness.isRolledBack()).toBe(true);
       expect(harness.isCommitted()).toBe(false);
+    });
+  });
+
+  describe('真实 View 转换下的目标状态不泄露', () => {
+    const conversion = createRealViewConversionDouble();
+
+    const realViewUsecase = new AdminResetUserPasswordUsecase(
+      accountService,
+      conversion.queryService,
+      passwordPolicyService,
+      organizationIsolation.organizationContextQueryService,
+      organizationIsolation.organizationMembershipQueryService,
+      logger,
+      harness.transactionRunner,
+    );
+
+    const executeWithRealView = () =>
+      realViewUsecase.execute({
+        session: createSuperAdminSession(),
+        accountId: TARGET_ACCOUNT_ID,
+        newPassword: VALID_PASSWORD,
+      });
+
+    beforeEach(() => {
+      conversion.setAccountRow({});
+      givenOrganizationIsolation();
+      (accountService.updateAccountPasswordHash as jest.Mock)
+        .mockReset()
+        .mockResolvedValue(undefined);
+    });
+
+    const dirtyRows: ReadonlyArray<[string, AdminUserAccountRowSpec]> = [
+      ['资料行缺失', { withoutUserInfo: true }],
+      [
+        '角色三源不收敛',
+        {
+          identityHint: IdentityTypeEnum.SUPER_ADMIN,
+          accessGroup: [IdentityTypeEnum.CUSTOMER],
+          metaDigest: [IdentityTypeEnum.CUSTOMER],
+        },
+      ],
+    ];
+
+    it.each(dirtyRows)(
+      '外组织目标（%s）与不存在目标使用同一拒绝口径，且不读取目标资料',
+      async (_label, row) => {
+        conversion.setAccountRow(row);
+        organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
+
+        const error = await captureThrownError(executeWithRealView());
+
+        expect(error).toMatchObject({
+          code: ADMIN_USER_ERROR.TARGET_NOT_FOUND,
+          details: undefined,
+        });
+        expect(conversion.findAdminUserViewById).not.toHaveBeenCalled();
+        expect(conversion.findAdminUserStatusFacts).not.toHaveBeenCalled();
+        expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+        expect(harness.isRolledBack()).toBe(true);
+        expect(harness.isCommitted()).toBe(false);
+      },
+    );
+
+    it('同组织资料缺失保留原有失败关闭语义（READ_FAILED）', async () => {
+      conversion.setAccountRow({ withoutUserInfo: true });
+
+      const error = await captureThrownError(executeWithRealView());
+
+      expect(error).toMatchObject({
+        code: ADMIN_USER_ERROR.READ_FAILED,
+        cause: { diagnostic: 'USER_INFO_ROW_MISSING' },
+        details: undefined,
+      });
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+    });
+
+    it('同组织角色异常保留原有失败关闭语义（ROLE_DATA_INCONSISTENT）', async () => {
+      conversion.setAccountRow({
+        identityHint: IdentityTypeEnum.SUPER_ADMIN,
+        accessGroup: [IdentityTypeEnum.CUSTOMER],
+        metaDigest: [IdentityTypeEnum.CUSTOMER],
+      });
+
+      const error = await captureThrownError(executeWithRealView());
+
+      expect(error).toMatchObject({
+        code: ADMIN_USER_ERROR.ROLE_DATA_INCONSISTENT,
+        cause: { diagnostic: 'ROLE_CONVERGENCE_FAILED' },
+        details: undefined,
+      });
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+    });
+
+    it('操作者组织存在歧义时失败关闭为 FORBIDDEN，且不读取目标资料', async () => {
+      organizationIsolation.resolveForAccount
+        .mockReset()
+        .mockRejectedValue(
+          new DomainError(
+            ORGANIZATION_ERROR.AMBIGUOUS_MEMBERSHIP,
+            '当前账号存在多个有效组织成员关系，无法确定组织范围',
+          ),
+        );
+
+      const error = await captureThrownError(executeWithRealView());
+
+      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.AMBIGUOUS_MEMBERSHIP });
+      expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(
+        TARGET_ACCOUNT_ID,
+        harness.txContext,
+      );
+      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+      expect(conversion.findAdminUserViewById).not.toHaveBeenCalled();
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+    });
+
+    it('正常同组织目标保持原行为：真实转换的 createdAt 作为哈希盐并提交', async () => {
+      const createdAt = new Date('2026-02-02T02:02:02.000Z');
+      conversion.setAccountRow({ createdAt, updatedAt: new Date('2026-09-09T09:09:09.000Z') });
+
+      await expect(executeWithRealView()).resolves.toMatchObject({
+        accountId: TARGET_ACCOUNT_ID,
+        isUpdated: true,
+      });
+
+      const writeArg = (accountService.updateAccountPasswordHash as jest.Mock).mock.calls[0][0] as {
+        passwordHash: string;
+      };
+      expect(writeArg.passwordHash).toBe(
+        AccountService.hashPasswordWithTimestamp(VALID_PASSWORD, createdAt),
+      );
+      expect(harness.isCommitted()).toBe(true);
+      expect(harness.isRolledBack()).toBe(false);
+    });
+
+    it('顺序为 锁定 → 解析操作者组织 → 核验同组织成员 → 读取 View → 读取状态事实 → 写哈希', async () => {
+      const order: string[] = [];
+      (accountService.updateAccountPasswordHash as jest.Mock).mockImplementation(() => {
+        order.push('writeHash');
+        return Promise.resolve();
+      });
+
+      await executeWithRealView();
+
+      const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
+      const resolveOrder = organizationIsolation.resolveForAccount.mock.invocationCallOrder[0];
+      const membershipOrder =
+        organizationIsolation.findActiveMembership.mock.invocationCallOrder[0];
+      const viewOrder = conversion.findAdminUserViewById.mock.invocationCallOrder[0];
+      const factsOrder = conversion.findAdminUserStatusFacts.mock.invocationCallOrder[0];
+      const writeOrder = (accountService.updateAccountPasswordHash as jest.Mock).mock
+        .invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(resolveOrder);
+      expect(resolveOrder).toBeLessThan(membershipOrder);
+      expect(membershipOrder).toBeLessThan(viewOrder);
+      expect(viewOrder).toBeLessThan(factsOrder);
+      expect(factsOrder).toBeLessThan(writeOrder);
+      expect(order).toEqual(['writeHash']);
     });
   });
 

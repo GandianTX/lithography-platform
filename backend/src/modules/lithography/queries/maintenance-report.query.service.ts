@@ -5,7 +5,7 @@ import { DomainError, MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domai
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { In, ObjectLiteral, Repository } from 'typeorm';
+import { In, ObjectLiteral, Repository, type FindOptionsWhere } from 'typeorm';
 import { MaintenanceReportStatus } from '@app-types/models/maintenance-report.types';
 import { MaintenanceReportAlarmEntity } from '../entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from '../entities/maintenance-report-attachment.entity';
@@ -28,6 +28,8 @@ import {
   MaintenanceReportAttachmentSnapshot,
   MaintenanceReportDetailView,
   MaintenanceReportDraftDetailView,
+  MaintenanceReportOwnershipFacts,
+  MaintenanceReportReadScope,
   MaintenanceReportReviewSnapshot,
   MaintenanceReportSnapshot,
   MaintenanceReportStepSnapshot,
@@ -80,13 +82,39 @@ export class MaintenanceReportQueryService {
     private readonly reviewRepository: Repository<MaintenanceReportReviewEntity>,
   ) {}
 
+  /**
+   * 最小归属事实读取（只读授权前置）：只取报告 id / 负责人 / 所属组织，
+   * 不加载报警、步骤、附件、版本与审核历史。
+   */
+  async readReportOwnership(
+    reportId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<MaintenanceReportOwnershipFacts | null> {
+    const entity = await this.getReportRepository(transactionContext).findOne({
+      where: { id: reportId },
+      select: { id: true, maintenanceEngineerAccountId: true, ownerOrganizationId: true },
+    });
+    if (!entity) return null;
+    return {
+      reportId: entity.id,
+      maintenanceEngineerAccountId: entity.maintenanceEngineerAccountId,
+      ownerOrganizationId: entity.ownerOrganizationId,
+    };
+  }
+
   async readReport(
     reportId: number,
     transactionContext?: PersistenceTransactionContext,
+    scope?: MaintenanceReportReadScope,
   ): Promise<MaintenanceReportSnapshot | null> {
-    const entity = await this.getReportRepository(transactionContext).findOne({
-      where: { id: reportId },
-    });
+    const where: FindOptionsWhere<MaintenanceReportEntity> = { id: reportId };
+    if (scope) {
+      where.ownerOrganizationId = scope.ownerOrganizationId;
+      if (scope.maintenanceEngineerAccountId !== undefined) {
+        where.maintenanceEngineerAccountId = scope.maintenanceEngineerAccountId;
+      }
+    }
+    const entity = await this.getReportRepository(transactionContext).findOne({ where });
     return entity ? toMaintenanceReportSnapshot(entity) : null;
   }
 
@@ -94,12 +122,14 @@ export class MaintenanceReportQueryService {
    * 工作态草稿详情：报告根 + 报警 + 步骤 + 当前附件 + 最近一次退回意见。
    *
    * 供编辑/提交用例在报告行锁保护下读取当前草稿事实；也供本人详情读取。
+   * 传入 `scope` 时根查询按授权范围过滤，作为调用方首次授权检查之外的第二道约束。
    */
   async readDraftDetail(
     reportId: number,
     transactionContext?: PersistenceTransactionContext,
+    scope?: MaintenanceReportReadScope,
   ): Promise<MaintenanceReportDraftDetailView | null> {
-    const report = await this.readReport(reportId, transactionContext);
+    const report = await this.readReport(reportId, transactionContext, scope);
     if (!report) return null;
     const [alarms, steps, attachments, latestReturn] = await Promise.all([
       this.getAlarmRepository(transactionContext).find({
@@ -254,8 +284,9 @@ export class MaintenanceReportQueryService {
   async readReportDetail(
     reportId: number,
     transactionContext?: PersistenceTransactionContext,
+    scope?: MaintenanceReportReadScope,
   ): Promise<MaintenanceReportDetailView | null> {
-    const draft = await this.readDraftDetail(reportId, transactionContext);
+    const draft = await this.readDraftDetail(reportId, transactionContext, scope);
     if (!draft) return null;
     const { report } = draft;
     const reviewHistory = await this.readReviewHistory(reportId, transactionContext);

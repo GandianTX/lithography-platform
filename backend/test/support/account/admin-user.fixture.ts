@@ -3,12 +3,17 @@
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
-import { UserState } from '@app-types/models/user-info.types';
+import { Gender, UserState } from '@app-types/models/user-info.types';
 import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
+import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
+import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
+import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import type { SearchService } from '@src/modules/common/search.module';
 import type { OrganizationMembershipFact } from '@src/modules/lithography/organization.types';
 import type { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
+import type { Repository } from 'typeorm';
 
 /**
  * 管理员用户管理写用例的共享测试 fixture。
@@ -257,3 +262,121 @@ export const captureThrownError = async (promise: Promise<unknown>): Promise<unk
     },
     (error: unknown) => error,
   );
+
+/**
+ * 真实 View 转换替身的目标行规格（未给出的字段取「合法同组织 CUSTOMER」缺省）。
+ *
+ * `withoutUserInfo` 制造「资料行缺失」脏数据，`identityHint` / `accessGroup` / `metaDigest`
+ * 三源不一致制造「角色数据异常」脏数据——两者都只能绕过业务入口直接改库，因此只能在
+ * 单测里以真实转换路径复现。
+ */
+export type AdminUserAccountRowSpec = {
+  readonly accountId?: number;
+  readonly loginName?: string | null;
+  readonly loginEmail?: string | null;
+  readonly identityHint?: IdentityTypeEnum | string | null;
+  readonly accessGroup?: IdentityTypeEnum[] | null;
+  readonly metaDigest?: IdentityTypeEnum[] | null;
+  readonly withoutUserInfo?: boolean;
+  readonly nickname?: string;
+  readonly companyName?: string | null;
+  readonly phone?: string | null;
+  readonly contactEmail?: string | null;
+  readonly status?: AccountStatus;
+  readonly userState?: UserState;
+  readonly createdAt?: Date;
+  readonly updatedAt?: Date;
+};
+
+const buildAdminUserAccountRow = (spec: AdminUserAccountRowSpec): AccountEntity => {
+  const createdAt = spec.createdAt ?? new Date('2026-01-01T00:00:00.000Z');
+  const account = new AccountEntity();
+  account.id = spec.accountId ?? TARGET_ACCOUNT_ID;
+  account.loginName = spec.loginName ?? 'target_user';
+  account.loginEmail = spec.loginEmail ?? 'target@example.com';
+  account.loginPassword = 'not-a-real-password-hash';
+  account.status = spec.status ?? AccountStatus.ACTIVE;
+  account.recentLoginHistory = null;
+  account.identityHint = spec.identityHint ?? IdentityTypeEnum.CUSTOMER;
+  account.createdAt = createdAt;
+  account.updatedAt = spec.updatedAt ?? createdAt;
+
+  if (spec.withoutUserInfo === true) {
+    return account;
+  }
+
+  const userInfo = new UserInfoEntity();
+  userInfo.id = 1;
+  userInfo.accountId = account.id;
+  userInfo.nickname = spec.nickname ?? 'target_nickname';
+  userInfo.companyName = spec.companyName ?? null;
+  userInfo.gender = Gender.SECRET;
+  userInfo.birthDate = null;
+  userInfo.avatarUrl = null;
+  userInfo.email = spec.contactEmail ?? null;
+  userInfo.signature = null;
+  userInfo.accessGroup = spec.accessGroup ?? [IdentityTypeEnum.CUSTOMER];
+  userInfo.address = null;
+  userInfo.phone = spec.phone ?? null;
+  userInfo.tags = null;
+  userInfo.geographic = null;
+  userInfo.metaDigest = spec.metaDigest ?? [IdentityTypeEnum.CUSTOMER];
+  userInfo.notifyCount = 0;
+  userInfo.unreadCount = 0;
+  userInfo.userState = spec.userState ?? UserState.ACTIVE;
+  userInfo.createdAt = createdAt;
+  userInfo.updatedAt = account.updatedAt;
+  account.userInfo = userInfo;
+  return account;
+};
+
+export type RealViewConversionDouble = {
+  /** 注入被测 Usecase 的 QueryService：只暴露两个写用例实际消费的读方法 */
+  readonly queryService: AdminUserQueryService;
+  readonly findAdminUserViewById: jest.Mock;
+  readonly findAdminUserStatusFacts: jest.Mock;
+  /** 切换当前目标行；`null` 表示账号不存在（真实服务返回 `null`） */
+  readonly setAccountRow: (spec: AdminUserAccountRowSpec | null) => void;
+};
+
+/**
+ * 真实 View 转换替身：内部直接使用生产 `AdminUserQueryService` + 收敛策略
+ * `toAdminUserView()`，因此 `READ_FAILED`（资料行缺失）与 `ROLE_DATA_INCONSISTENT`
+ * （三源不收敛）的错误码、diagnostic 都由生产代码决定，测试不复写。
+ *
+ * 为什么在 wrapper 里丢弃 `transactionContext`：真实 QueryService 经 WeakMap 解析
+ * EntityManager，fake 事务上下文会直接抛 `Invalid TypeORM persistence transaction context`。
+ * 单测的目标是「真实转换 + 真实角色策略」，不是验证事务上下文传递（那由各用例的
+ * `transactionContext` 入参断言覆盖）。
+ */
+export const createRealViewConversionDouble = (
+  initial: AdminUserAccountRowSpec | null = {},
+): RealViewConversionDouble => {
+  let row = initial === null ? null : buildAdminUserAccountRow(initial);
+  // 单一目标行 fixture：忽略 where/relations，直接返回当前行（含 userInfo 关系）
+  const repository = {
+    findOne: jest.fn(() => Promise.resolve(row)),
+  } as unknown as Repository<AccountEntity>;
+  const realService = new AdminUserQueryService(repository, undefined as unknown as SearchService);
+
+  const findAdminUserViewById = jest.fn(
+    async (params: { accountId: number; transactionContext?: PersistenceTransactionContext }) =>
+      realService.findAdminUserViewById({ accountId: params.accountId }),
+  );
+  const findAdminUserStatusFacts = jest.fn(
+    async (params: { accountId: number; transactionContext?: PersistenceTransactionContext }) =>
+      realService.findAdminUserStatusFacts({ accountId: params.accountId }),
+  );
+
+  return {
+    queryService: {
+      findAdminUserViewById,
+      findAdminUserStatusFacts,
+    } as unknown as AdminUserQueryService,
+    findAdminUserViewById,
+    findAdminUserStatusFacts,
+    setAccountRow: (spec: AdminUserAccountRowSpec | null) => {
+      row = spec === null ? null : buildAdminUserAccountRow(spec);
+    },
+  };
+};

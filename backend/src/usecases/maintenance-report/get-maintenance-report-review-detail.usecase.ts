@@ -27,11 +27,29 @@ export class GetMaintenanceReportReviewDetailUsecase {
   async execute(command: GetMaintenanceReportCommand): Promise<MaintenanceReportDetailView> {
     assertMaintenanceReportReviewRole(command.session);
     assertMaintenanceReportId(command.reportId);
+    const ownership = await this.maintenanceReportQueryService.readReportOwnership(
+      command.reportId,
+    );
+    if (ownership === null) {
+      throw new DomainError(MAINTENANCE_REPORT_ERROR.NOT_FOUND, '维修报告不存在或不可访问', {
+        reportId: command.reportId,
+      });
+    }
     const membership = await this.organizationContextService.resolveForAccount({
       accountId: command.session.accountId,
     });
-    const detail = await this.maintenanceReportQueryService.readReportDetail(command.reportId);
-    if (detail === null || detail.report.ownerOrganizationId !== membership.organizationId) {
+    if (ownership.ownerOrganizationId !== membership.organizationId) {
+      throw new DomainError(MAINTENANCE_REPORT_ERROR.NOT_FOUND, '维修报告不存在或不可访问', {
+        reportId: command.reportId,
+      });
+    }
+    // 授权后才加载完整内容；详情读取仍携带组织范围谓词，不依赖第一次检查。
+    const detail = await this.maintenanceReportQueryService.readReportDetail(
+      command.reportId,
+      undefined,
+      { ownerOrganizationId: membership.organizationId },
+    );
+    if (detail === null) {
       throw new DomainError(MAINTENANCE_REPORT_ERROR.NOT_FOUND, '维修报告不存在或不可访问', {
         reportId: command.reportId,
       });
