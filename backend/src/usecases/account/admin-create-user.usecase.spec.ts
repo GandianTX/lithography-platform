@@ -526,13 +526,24 @@ describe('AdminCreateUserUsecase', () => {
       expect(harness.isRolledBack()).toBe(false);
     });
 
-    it('创建 CUSTOMER：不解析组织、不写成员关系（客户不自动加入）', async () => {
+    it('创建 CUSTOMER：同样绑定管理员当前有效组织，成员角色为 CUSTOMER', async () => {
       await expect(
         usecase.execute(validCommand({ role: IdentityTypeEnum.CUSTOMER })),
       ).resolves.toBeDefined();
 
-      expect(organizationContextQueryService.resolveForAccount).not.toHaveBeenCalled();
-      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(organizationContextQueryService.resolveForAccount).toHaveBeenCalledWith({
+        accountId: ADMIN_ACCOUNT_ID,
+        transactionContext: harness.txContext,
+      });
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledTimes(1);
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: ADMIN_ORGANIZATION_ID,
+          accountId: NEW_ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.CUSTOMER,
+        },
+        harness.txContext,
+      );
       expect(harness.isCommitted()).toBe(true);
       expect(logger.info).toHaveBeenCalledTimes(1);
     });

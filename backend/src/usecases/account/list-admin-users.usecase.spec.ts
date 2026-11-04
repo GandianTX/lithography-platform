@@ -6,6 +6,7 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
+  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
@@ -13,8 +14,12 @@ import type { AdminUserListPage } from '@src/modules/account/account.types';
 import type { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import type { PinoLogger } from 'nestjs-pino';
 import {
+  ADMIN_ACCOUNT_ID,
+  TARGET_ACCOUNT_ID,
   captureThrownError,
+  createAdminOrganizationFact,
   createAdminUserView,
+  createOrganizationIsolationMocks,
   createSuperAdminSession,
   createUnauthorizedSessions,
 } from '../../../test/support/account/admin-user.fixture';
@@ -50,6 +55,8 @@ describe('ListAdminUsersUsecase', () => {
     listAdminUsers: jest.fn(),
   } as unknown as AdminUserQueryService;
 
+  const organizationIsolation = createOrganizationIsolationMocks();
+
   const logger = {
     setContext: jest.fn(),
     info: jest.fn(),
@@ -57,7 +64,12 @@ describe('ListAdminUsersUsecase', () => {
     error: jest.fn(),
   } as unknown as PinoLogger;
 
-  const usecase = new ListAdminUsersUsecase(adminUserQueryService, logger);
+  const usecase = new ListAdminUsersUsecase(
+    adminUserQueryService,
+    organizationIsolation.organizationContextQueryService,
+    organizationIsolation.organizationMembershipQueryService,
+    logger,
+  );
 
   const executeAsSuperAdmin = (
     overrides: {
@@ -84,6 +96,13 @@ describe('ListAdminUsersUsecase', () => {
     jest.clearAllMocks();
     (adminUserQueryService.listAdminUsers as jest.Mock).mockReset();
     (adminUserQueryService.listAdminUsers as jest.Mock).mockResolvedValue(listPage());
+    // 组织隔离替身回到「成功」缺省：clearAllMocks 不清实现，拒绝分支的 mock 会泄漏到后续用例
+    organizationIsolation.resolveForAccount
+      .mockReset()
+      .mockResolvedValue(createAdminOrganizationFact());
+    organizationIsolation.listActiveAccountIdsByOrganization
+      .mockReset()
+      .mockResolvedValue([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
   });
 
   describe('精确 SUPER_ADMIN 授权', () => {
@@ -93,8 +112,52 @@ describe('ListAdminUsersUsecase', () => {
       });
 
       // 授权先于任何输入规范化与数据库读取：无权限者既触发不了查询，
-      // 也无法从错误文案里推断出筛选值域
+      // 也无法从错误文案里推断出筛选值域；组织解析同样不执行
       expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
+      expect(organizationIsolation.resolveForAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('组织隔离（管理员只能查看本组织）', () => {
+    it('以 Session 账号解析可信组织，并把组织内有效账号 ID 下推给 QueryService', async () => {
+      await executeAsSuperAdmin();
+
+      expect(organizationIsolation.resolveForAccount).toHaveBeenCalledWith({
+        accountId: createSuperAdminSession().accountId,
+      });
+      expect(organizationIsolation.listActiveAccountIdsByOrganization).toHaveBeenCalledWith({
+        organizationId: createAdminOrganizationFact().organizationId,
+      });
+      expect(capturedQuery().accountIds).toEqual([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
+    });
+
+    it('管理员无有效组织时失败关闭为 FORBIDDEN，且不触发列表查询', async () => {
+      organizationIsolation.resolveForAccount
+        .mockReset()
+        .mockRejectedValue(
+          new DomainError(
+            ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+            '当前账号没有有效组织成员关系，无法执行组织范围操作',
+          ),
+        );
+
+      await expect(executeAsSuperAdmin()).rejects.toMatchObject({
+        code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+      });
+      expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
+      expect(organizationIsolation.listActiveAccountIdsByOrganization).not.toHaveBeenCalled();
+    });
+
+    it('组织内没有任何有效账号时下推空清单（QueryService 返回空页，不退化为全库）', async () => {
+      organizationIsolation.listActiveAccountIdsByOrganization.mockReset().mockResolvedValue([]);
+      (adminUserQueryService.listAdminUsers as jest.Mock).mockResolvedValue(
+        listPage({ items: [], total: 0 }),
+      );
+
+      await executeAsSuperAdmin();
+
+      expect(capturedQuery().accountIds).toEqual([]);
+      expect(adminUserQueryService.listAdminUsers).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -115,6 +178,7 @@ describe('ListAdminUsersUsecase', () => {
         keyword: 'Target_User',
         role: IdentityTypeEnum.ENGINEER,
         status: AccountStatus.INACTIVE,
+        accountIds: [ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID],
       });
     });
 
@@ -127,6 +191,7 @@ describe('ListAdminUsersUsecase', () => {
         keyword: undefined,
         role: undefined,
         status: undefined,
+        accountIds: [ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID],
       });
     });
 

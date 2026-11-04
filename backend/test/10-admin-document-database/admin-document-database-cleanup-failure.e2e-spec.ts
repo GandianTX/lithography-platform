@@ -17,6 +17,7 @@
 
 import type { DataSource } from 'typeorm';
 
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
 import {
@@ -27,24 +28,35 @@ import {
 } from './admin-document-database-fixture';
 import {
   PRODUCTION_FIXTURE_ACCOUNTS,
+  PRODUCTION_FIXTURE_MARKERS,
   PRODUCTION_FIXTURE_MODEL_SPEC,
+  PRODUCTION_SENTINEL,
+  PRODUCTION_SENTINEL_MODEL_SPEC,
   cleanupProductionFixtureByIds,
   cleanupProductionFixtureResidue,
   cleanupProductionSentinelChain,
   createProductionFixtureOwnership,
   ensureProductionSentinelChain,
+  registerCreatedAccountFact,
+  registerCreatedModelFact,
+  registerCreatedRequestFact,
   seedProductionFixtureAccounts,
   seedProductionFixtureBusiness,
+  type ProductionFixtureFacts,
   type ProductionFixtureOwnership,
 } from './admin-document-database-production-fixture';
 
 type MockState = {
   /** 每条 DELETE 的实体名与删除条件（用于断言「一次都没删」与删除顺序）。 */
-  deleteCalls: Array<{ entityName: string; criteria: unknown }>;
+  deleteCalls: Array<{ entityName: string; criteria: unknown; inTransaction: boolean }>;
   /** 真实落库写入（save / update）的调用记录：守卫拒绝时必须为 0。 */
   dbWriteCalls: Array<{ entityName: string; operation: string }>;
   /** 守卫 SELECT DATABASE() 的查询次数（守卫真实执行、非 mock）。 */
   guardQueryCalls: number;
+  /** 进入事务的次数（生产夹具的预检与整批删除必须在同一事务内）。 */
+  transactionCalls: number;
+  /** 事务回调抛错次数（用于证明失败时整批回滚而非逐条独立提交）。 */
+  transactionRollbacks: number;
 };
 
 /** 依据 where 条件（含 TypeORM In 操作符）在 mock 行集合中筛选 */
@@ -67,16 +79,43 @@ const createMockDataSource = (options: {
   failOnDeleteCall?: number;
   /** 按实体名预置可被 find / findOne 命中的行（默认按 accountIds 造 {id} 行） */
   rowsByEntity?: Record<string, Array<Record<string, unknown>>>;
+  /** 本轮创建登记事实：按实体名生成与之逐字段一致的行（删除前核验的对照真源） */
+  facts?: ProductionFixtureFacts;
 }): { dataSource: DataSource; state: MockState } => {
-  const state: MockState = { deleteCalls: [], dbWriteCalls: [], guardQueryCalls: 0 };
+  const state: MockState = {
+    deleteCalls: [],
+    dbWriteCalls: [],
+    guardQueryCalls: 0,
+    transactionCalls: 0,
+    transactionRollbacks: 0,
+  };
+  /** 事务嵌套深度：用于断言「删除发生在事务内」而不是逐条独立提交。 */
+  let transactionDepth = 0;
 
   const createRepository = (entity: unknown) => {
     const entityName = (entity as { name: string }).name;
-    // 显式预置行（按 where 过滤）与「按 accountIds 造 {id} 行」的回落路径。
-    // 回落路径刻意不按 where 过滤：兼容「只给出账号 ID 即代表命中」的既有断言写法。
+    // 显式预置行（按 where 过滤）与「按登记事实生成行」的回落路径。
+    // 登记事实是删除前核验的对照真源；回落路径刻意不按 where 过滤，兼容极简 {id} 行。
     const explicitRows = options.rowsByEntity?.[entityName];
+    const factRows = ((): Array<Record<string, unknown>> => {
+      const facts = options.facts;
+      if (!facts) {
+        return [];
+      }
+      if (entityName === 'AccountEntity') {
+        return facts.accounts.map((fact) => ({ ...fact }));
+      }
+      if (entityName === 'EquipmentModelEntity') {
+        return facts.equipmentModels.map((fact) => ({ ...fact }));
+      }
+      if (entityName === 'RepairRequestEntity') {
+        return facts.repairRequests.map((fact) => ({ ...fact }));
+      }
+      return [];
+    })();
     const rowsOf = (): Array<Record<string, unknown>> =>
-      explicitRows ?? (options.accountIds ?? []).map((id) => ({ id }));
+      explicitRows ??
+      (factRows.length > 0 ? factRows : (options.accountIds ?? []).map((id) => ({ id })));
 
     const findOptionsWith = (findOptions?: {
       where?: Record<string, unknown> | Array<Record<string, unknown>>;
@@ -96,7 +135,7 @@ const createMockDataSource = (options: {
 
     return {
       delete: (criteria: unknown): Promise<void> => {
-        state.deleteCalls.push({ entityName, criteria });
+        state.deleteCalls.push({ entityName, criteria, inTransaction: transactionDepth > 0 });
         if (
           options.failOnDeleteCall !== undefined &&
           state.deleteCalls.length === options.failOnDeleteCall
@@ -108,6 +147,9 @@ const createMockDataSource = (options: {
       find: (findOptions?: {
         where?: Record<string, unknown> | Array<Record<string, unknown>>;
       }): Promise<unknown[]> => Promise.resolve(selectRows(findOptionsWith(findOptions))),
+      count: (findOptions?: {
+        where?: Record<string, unknown> | Array<Record<string, unknown>>;
+      }): Promise<number> => Promise.resolve(selectRows(findOptionsWith(findOptions)).length),
       findOne: (findOptions?: {
         where?: Record<string, unknown> | Array<Record<string, unknown>>;
       }): Promise<unknown> => Promise.resolve(selectRows(findOptionsWith(findOptions))[0] ?? null),
@@ -123,6 +165,29 @@ const createMockDataSource = (options: {
     };
   };
 
+  const getRepository = (entity: unknown) => createRepository(entity);
+
+  const runInTransaction = <T>(run: (manager: unknown) => Promise<T>): Promise<T> => {
+    state.transactionCalls += 1;
+    transactionDepth += 1;
+    const manager = {
+      query: (): Promise<Array<{ current_database: string }>> => {
+        state.guardQueryCalls += 1;
+        return Promise.resolve([{ current_database: options.database }]);
+      },
+      getRepository,
+    };
+    return run(manager)
+      .catch((error: unknown) => {
+        // 事务回调抛错 = TypeORM 整批回滚，不存在「前序删除独立提交」
+        state.transactionRollbacks += 1;
+        throw error;
+      })
+      .finally(() => {
+        transactionDepth -= 1;
+      });
+  };
+
   const dataSource = {
     isInitialized: true,
     // N04：fake DataSource 必须像真实 DataSource 一样显式给出预期库，
@@ -132,7 +197,10 @@ const createMockDataSource = (options: {
       state.guardQueryCalls += 1;
       return Promise.resolve([{ current_database: options.database }]);
     },
-    getRepository: (entity: unknown) => createRepository(entity),
+    getRepository,
+    // 事务语义：生产夹具的预检与整批删除在同一事务内完成。
+    // 替身把回调交给共享同一 state 的 manager，供断言事务内守卫与删除范围。
+    transaction: runInTransaction,
   } as unknown as DataSource;
 
   return { dataSource, state };
@@ -158,16 +226,47 @@ const extractInValues = (criteria: unknown, key: string): number[] | undefined =
   return Array.isArray(operator?.value) ? operator.value : undefined;
 };
 
-/** 构造本轮所有权上下文（只记录「本轮实际创建成功并拿到 ID」的行） */
+/** 构造本轮所有权上下文（ID 与登记事实同步写入，删除前只能对照登记事实核验） */
 const ownershipWith = (ids: {
   repairRequestIds?: number[];
   equipmentModelIds?: number[];
   accountIds?: number[];
 }): ProductionFixtureOwnership => {
   const ownership = createProductionFixtureOwnership();
-  ownership.createdRepairRequestIds.push(...(ids.repairRequestIds ?? []));
-  ownership.createdEquipmentModelIds.push(...(ids.equipmentModelIds ?? []));
-  ownership.createdAccountIds.push(...(ids.accountIds ?? []));
+  const accountIds = [...(ids.accountIds ?? [])];
+  const modelIds = [...(ids.equipmentModelIds ?? [])];
+  const requestIds = [...(ids.repairRequestIds ?? [])];
+  const customerAccountId = accountIds[0] ?? 0;
+  const equipmentModelId = modelIds[0] ?? 0;
+
+  for (const id of accountIds) {
+    registerCreatedAccountFact(ownership, {
+      id,
+      loginName: `e2e-prod-mock-${id}`,
+      loginEmail: `e2e-prod-mock-${id}@example.com`,
+      status: AccountStatus.ACTIVE,
+      identityHint: IdentityTypeEnum.CUSTOMER,
+    });
+  }
+  for (const id of modelIds) {
+    registerCreatedModelFact(ownership, {
+      id,
+      modelCode: `E2E-PROD-MOCK-MODEL-${id}`,
+      modelName: `mock model ${id}`,
+      enabled: true,
+      sortOrder: 1,
+    });
+  }
+  for (const id of requestIds) {
+    registerCreatedRequestFact(ownership, {
+      id,
+      requestNo: `E2E-PROD-MOCK-REQ-${id}`,
+      customerAccountId,
+      equipmentModelId,
+      acceptedByEngineerAccountId: null,
+      isAccepted: false,
+    });
+  }
   return ownership;
 };
 
@@ -380,7 +479,10 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
 
       await expect(cleanupProductionFixtureResidue(dataSource)).rejects.toThrow(/归属校验/);
 
-      expect(state.guardQueryCalls).toBe(1);
+      // 入口守卫 1 次 + 事务内同连接复核 1 次（预检在事务内发生）
+      expect(state.guardQueryCalls).toBe(2);
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(1);
       expect(state.deleteCalls).toHaveLength(0);
       expect(state.dbWriteCalls).toHaveLength(0);
     });
@@ -401,30 +503,25 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
     });
 
     it('允许的隔离库：守卫先行，按「申请 → 型号 → user_info → account」精确删除', async () => {
+      const ownership = ownershipWith({
+        repairRequestIds: [501, 502],
+        equipmentModelIds: [601],
+        accountIds: [701],
+      });
       const { dataSource, state } = createMockDataSource({
         database: 'lithography_e2e',
-        // 账号引用的申请：必须在已验证所有权集合内（本轮记录的申请）
-        rowsByEntity: Object.fromEntries([
-          [
-            'RepairRequestEntity',
-            [
-              { id: 501, customerAccountId: 701, acceptedByEngineerAccountId: null },
-              { id: 502, customerAccountId: 701, acceptedByEngineerAccountId: null },
-            ],
-          ],
-        ] as Array<[string, Array<Record<string, unknown>>]>),
+        // 行与登记事实逐字段一致；账号引用的申请必须在已验证所有权集合内
+        facts: ownership.createdFacts,
       });
 
-      await cleanupProductionFixtureByIds(
-        dataSource,
-        ownershipWith({
-          repairRequestIds: [501, 502],
-          equipmentModelIds: [601],
-          accountIds: [701],
-        }),
-      );
+      await cleanupProductionFixtureByIds(dataSource, ownership);
 
-      expect(state.guardQueryCalls).toBe(1);
+      // 入口守卫 1 次 + 事务内同连接复核 1 次
+      expect(state.guardQueryCalls).toBe(2);
+      // 预检与整批删除在同一事务内：全部 DELETE 都在事务回调中执行
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(0);
+      expect(state.deleteCalls.every((call) => call.inTransaction)).toBe(true);
       expect(state.deleteCalls.map((call) => call.entityName)).toEqual([
         'RepairRequestEntity',
         'EquipmentModelEntity',
@@ -439,6 +536,7 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
     });
 
     it('账号被归属不明的申请引用：失败关闭，账号与外部申请均不删除', async () => {
+      const ownership = ownershipWith({ accountIds: [701] });
       const { dataSource, state } = createMockDataSource({
         database: 'lithography_e2e',
         // 外部（非本轮记录）申请引用了本轮账号：不得按账号 ID 批量兜底删除
@@ -448,13 +546,18 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
             [{ id: 901, customerAccountId: 701, acceptedByEngineerAccountId: null }],
           ],
         ] as Array<[string, Array<Record<string, unknown>>]>),
+        // 本轮账号仍须先通过「登记事实 ↔ 当前行」核验，拒绝只能来自外部引用
+        facts: ownership.createdFacts,
       });
 
-      await expect(
-        cleanupProductionFixtureByIds(dataSource, ownershipWith({ accountIds: [701] })),
-      ).rejects.toThrow(/账号引用申请/);
+      await expect(cleanupProductionFixtureByIds(dataSource, ownership)).rejects.toThrow(
+        /账号引用申请/,
+      );
 
-      expect(state.guardQueryCalls).toBe(1);
+      // 入口守卫 1 次 + 事务内同连接复核 1 次；失败关闭发生在任何 DELETE 之前
+      expect(state.guardQueryCalls).toBe(2);
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(1);
       expect(state.deleteCalls).toHaveLength(0);
       expect(state.dbWriteCalls).toHaveLength(0);
     });
@@ -462,10 +565,33 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
     it('哨兵链：允许的隔离库按调用方持有的 ID 精确回收（先子后父）', async () => {
       const { dataSource, state } = createMockDataSource({
         database: 'lithography_e2e',
+        // 哨兵链行必须与创建时的专属常量逐字段一致（否则核验会拒绝删除）
         rowsByEntity: Object.fromEntries([
           [
+            'AccountEntity',
+            [
+              {
+                id: 801,
+                loginName: PRODUCTION_SENTINEL.loginName,
+                loginEmail: PRODUCTION_SENTINEL.loginEmail,
+                status: AccountStatus.ACTIVE,
+                identityHint: IdentityTypeEnum.CUSTOMER,
+              },
+            ],
+          ],
+          ['EquipmentModelEntity', [{ id: 802, ...PRODUCTION_SENTINEL_MODEL_SPEC }]],
+          [
             'RepairRequestEntity',
-            [{ id: 803, customerAccountId: 801, acceptedByEngineerAccountId: null }],
+            [
+              {
+                id: 803,
+                requestNo: PRODUCTION_FIXTURE_MARKERS.sentinelRequestNo,
+                customerAccountId: 801,
+                equipmentModelId: 802,
+                acceptedByEngineerAccountId: null,
+                isAccepted: false,
+              },
+            ],
           ],
         ] as Array<[string, Array<Record<string, unknown>>]>),
       });
@@ -499,30 +625,36 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
     });
 
     it('清理中途失败：错误不被吞掉，失败后不再继续删除', async () => {
+      const ownership = ownershipWith({ repairRequestIds: [501, 502], equipmentModelIds: [601] });
       const { dataSource, state } = createMockDataSource({
         database: 'lithography_e2e',
         failOnDeleteCall: 2,
+        // 删除计划只在登记事实核验通过后生成，中途失败发生在第 2 条 DELETE
+        facts: ownership.createdFacts,
       });
 
-      await expect(
-        cleanupProductionFixtureByIds(
-          dataSource,
-          ownershipWith({ repairRequestIds: [501, 502], equipmentModelIds: [601] }),
-        ),
-      ).rejects.toThrow('模拟清理中途失败');
+      await expect(cleanupProductionFixtureByIds(dataSource, ownership)).rejects.toThrow(
+        '模拟清理中途失败',
+      );
 
       expect(state.deleteCalls).toHaveLength(2); // 第 2 条失败后不再继续
+      // 整批删除在同一事务内：后序失败 → 事务回调抛错 → 整批回滚（不存在前序独立提交）
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(1);
+      expect(state.deleteCalls.every((call) => call.inTransaction)).toBe(true);
     });
 
     it('部分账号创建失败：如实返回 created / failures，仅按已记录的成功 ID 回收', async () => {
+      const ownership = createProductionFixtureOwnership();
       const { dataSource, state } = createMockDataSource({
         database: 'lithography_e2e',
         // 库中不存在引用这些账号的申请（有的话即归属不明，必须失败关闭）
         rowsByEntity: Object.fromEntries([['RepairRequestEntity', []]] as Array<
           [string, Array<Record<string, unknown>>]
         >),
+        // 成功账号的登记事实随 seed 同步写入；失败账号没有登记，也不得进入删除计划
+        facts: ownership.createdFacts,
       });
-      const ownership = createProductionFixtureOwnership();
 
       const execute = jest
         .fn()

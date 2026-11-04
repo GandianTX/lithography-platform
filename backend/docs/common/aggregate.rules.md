@@ -52,7 +52,8 @@ Source of truth: This file defines aggregate write boundaries; examples elsewher
 - 本项目账号语义只保留 `SUPER_ADMIN / ENGINEER / CUSTOMER`。
 - `SUPER_ADMIN` 在角色层级中继承 `ENGINEER` 和 `CUSTOMER` 的访问能力。
 - `ENGINEER` 与 `CUSTOMER` 互不继承。
-- 公开注册只创建 `CUSTOMER`；工程师和超级管理员账号由受控管理流程或 Seed 创建。
+- 公开注册按角色分流：`CUSTOMER` 选择有效组织后直接开通并绑定该组织 `CUSTOMER` 成员；`ENGINEER` 仅创建待审账号与 `PENDING` 申请，经所选组织管理员审核通过后，才由审批用例在同一事务内启用账号并建立 `ENGINEER` 成员关系。`SUPER_ADMIN` 不开放自助注册，仍由受控管理流程或 Seed 创建。
+- 工程师注册申请是独立记录：拒绝后重提新增 `PENDING` 申请，原拒绝记录与审核意见保留，不覆盖历史，不新增角色。
 
 ## VerificationRecord 规则
 

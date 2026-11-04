@@ -23,6 +23,7 @@ import {
   createRepairRequestFixtureResponse,
   runRepairRequestFixtureTeardown,
   seedRepairRequestFixtureAccounts,
+  seedRepairRequestFixtureOrganizationScope,
   type RepairRequestFixtureOwnership,
 } from './repair-request-fixture';
 
@@ -128,11 +129,13 @@ const READ_MODEL = REPAIR_REQUEST_FIXTURE_MODELS.read;
  * - 详情按角色分入口（myRepairRequest / engineerRepairRequest，含回复时间线、机型、末条状态口径）
  * - 回复返回工程师安全昵称（实时关联，缺失回落「工程师」）；不返回工程师账号 ID
  * - 双角色读权限矩阵 + 越权/已删除/不存在统一拒绝（防探测）
+ * - 组织范围：同组织正常可读；跨组织工单对本组织不可见也不可读；
+ *   无归属存量工单仅已接单的工程师本人可见（未接单的 NULL 归属不向任何人开放）
  * - SUPER_ADMIN 按角色继承规则准入；未登录与守卫角色准入；分页参数（OFFSET 强制、withTotal）
  *
- * 数据安全：本 spec 只创建/清理**专属夹具**（专属账号 + 专属型号 + 专属编号申请与回复），
- * 主键由数据库生成并在运行期记录；工程师列表断言一律用专属 equipmentModelId 收敛，
- * 不依赖 global-setup 的全表 TRUNCATE，也不做任何整表删除。
+ * 数据安全：本 spec 只创建/清理**专属夹具**（专属账号 + 专属组织与成员关系 + 专属型号
+ * + 专属编号申请与回复），主键由数据库生成并在运行期记录；工程师列表断言一律用
+ * 专属 equipmentModelId 收敛，不依赖 global-setup 的全表 TRUNCATE，也不做任何整表删除。
  */
 describe('维修申请公共读模型 (e2e)', () => {
   let app: INestApplication<App>;
@@ -141,17 +144,29 @@ describe('维修申请公共读模型 (e2e)', () => {
   let customerBToken: string;
   let engineerAToken: string;
   let engineerBToken: string;
+  let crossOrgCustomerToken: string;
+  let crossOrgEngineerToken: string;
   let adminToken: string;
   let customerAAccountId: number;
   let customerBAccountId: number;
+  let crossOrgCustomerAccountId: number;
   let engineerAAccountId: number;
   let engineerBAccountId: number;
+  let crossOrgEngineerAccountId: number;
+  let primaryOrganizationId: number;
+  let peerOrganizationId: number;
   let readModelId: number;
   let unacceptedRequestId: number;
   let acceptedByEngineerARequestId: number;
   let deletedRequestId: number;
   let customerBUnacceptedRequestId: number;
   let customerBAcceptedByEngineerBRequestId: number;
+  /** 归属 peer 组织（跨组织）的未接单申请 */
+  let peerOrganizationRequestId: number;
+  /** 无归属存量：已由跨组织工程师接单（仅该工程师本人可读） */
+  let legacyAcceptedRequestId: number;
+  /** 无归属存量：未接单（对任何工程师都不可见/不可读） */
+  let legacyUnacceptedRequestId: number;
   let pendingResponseId: number;
   let resolvedResponseId: number;
   const ownership: RepairRequestFixtureOwnership = createRepairRequestFixtureOwnership();
@@ -182,8 +197,19 @@ describe('维修申请公共读模型 (e2e)', () => {
     });
     customerAAccountId = accounts.customerA;
     customerBAccountId = accounts.customerB;
+    crossOrgCustomerAccountId = accounts.crossOrgCustomer;
     engineerAAccountId = accounts.engineerA;
     engineerBAccountId = accounts.engineerB;
+    crossOrgEngineerAccountId = accounts.crossOrgEngineer;
+
+    // 本轮专属组织与唯一 ACTIVE 成员关系：primary 承载同组织场景，peer 承载跨组织场景
+    const organizationScope = await seedRepairRequestFixtureOrganizationScope({
+      dataSource,
+      ownership,
+      accountIds: accounts,
+    });
+    primaryOrganizationId = organizationScope.primaryOrganizationId;
+    peerOrganizationId = organizationScope.peerOrganizationId;
 
     customerAToken = await login({
       app,
@@ -205,6 +231,16 @@ describe('维修申请公共读模型 (e2e)', () => {
       loginName: REPAIR_REQUEST_FIXTURE_ACCOUNTS.engineerB.loginName,
       loginPassword: REPAIR_REQUEST_FIXTURE_ACCOUNTS.engineerB.loginPassword,
     });
+    crossOrgEngineerToken = await login({
+      app,
+      loginName: REPAIR_REQUEST_FIXTURE_ACCOUNTS.crossOrgEngineer.loginName,
+      loginPassword: REPAIR_REQUEST_FIXTURE_ACCOUNTS.crossOrgEngineer.loginPassword,
+    });
+    crossOrgCustomerToken = await login({
+      app,
+      loginName: REPAIR_REQUEST_FIXTURE_ACCOUNTS.crossOrgCustomer.loginName,
+      loginPassword: REPAIR_REQUEST_FIXTURE_ACCOUNTS.crossOrgCustomer.loginPassword,
+    });
     adminToken = await login({
       app,
       loginName: REPAIR_REQUEST_FIXTURE_ACCOUNTS.admin.loginName,
@@ -225,6 +261,7 @@ describe('维修申请公共读模型 (e2e)', () => {
         requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[0],
         customerAccountId: customerAAccountId,
         equipmentModelId: readModelId,
+        ownerOrganizationId: primaryOrganizationId,
         errorCode: 'E-1001',
         faultDescription: '未接单场景',
         contentMd: '# E2E-RR-111',
@@ -243,6 +280,7 @@ describe('维修申请公共读模型 (e2e)', () => {
         requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[1],
         customerAccountId: customerAAccountId,
         equipmentModelId: readModelId,
+        ownerOrganizationId: primaryOrganizationId,
         errorCode: 'E-1002',
         faultDescription: '本人接单场景',
         contentMd: '# E2E-RR-112',
@@ -261,6 +299,7 @@ describe('维修申请公共读模型 (e2e)', () => {
         requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[2],
         customerAccountId: customerAAccountId,
         equipmentModelId: readModelId,
+        ownerOrganizationId: primaryOrganizationId,
         errorCode: 'E-1003',
         faultDescription: '已删除场景',
         contentMd: '# E2E-RR-113',
@@ -279,6 +318,7 @@ describe('维修申请公共读模型 (e2e)', () => {
         requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[3],
         customerAccountId: customerBAccountId,
         equipmentModelId: readModelId,
+        ownerOrganizationId: primaryOrganizationId,
         errorCode: 'E-1004',
         faultDescription: '他人未接单场景',
         contentMd: '# E2E-RR-114',
@@ -297,6 +337,7 @@ describe('维修申请公共读模型 (e2e)', () => {
         requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[4],
         customerAccountId: customerBAccountId,
         equipmentModelId: readModelId,
+        ownerOrganizationId: primaryOrganizationId,
         errorCode: 'E-1005',
         faultDescription: '他人已接单场景',
         contentMd: '# E2E-RR-115',
@@ -304,6 +345,66 @@ describe('维修申请公共读模型 (e2e)', () => {
         isAccepted: true,
         acceptedByEngineerAccountId: engineerBAccountId,
         acceptedAt: new Date('2026-08-29T02:00:00.000Z'),
+        deprecated: false,
+        deletedAt: null,
+      },
+    });
+    // 归属 peer 组织：跨组织场景（本组织工程师不可见/不可读）
+    peerOrganizationRequestId = await createRepairRequestFixtureRequest({
+      dataSource,
+      ownership,
+      seed: {
+        requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[7],
+        customerAccountId: crossOrgCustomerAccountId,
+        equipmentModelId: readModelId,
+        ownerOrganizationId: peerOrganizationId,
+        errorCode: 'E-1008',
+        faultDescription: '跨组织未接单场景',
+        contentMd: '# E2E-RR-118',
+        createdAt: new Date('2026-08-30T13:00:00.000Z'),
+        isAccepted: false,
+        acceptedByEngineerAccountId: null,
+        acceptedAt: null,
+        deprecated: false,
+        deletedAt: null,
+      },
+    });
+    // 无归属存量：已由跨组织工程师接单（仅接单工程师本人可读）
+    legacyAcceptedRequestId = await createRepairRequestFixtureRequest({
+      dataSource,
+      ownership,
+      seed: {
+        requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[8],
+        customerAccountId: crossOrgCustomerAccountId,
+        equipmentModelId: readModelId,
+        ownerOrganizationId: null,
+        errorCode: 'E-1009',
+        faultDescription: '无归属存量本人已接单场景',
+        contentMd: '# E2E-RR-119',
+        createdAt: new Date('2026-08-30T14:00:00.000Z'),
+        isAccepted: true,
+        acceptedByEngineerAccountId: crossOrgEngineerAccountId,
+        acceptedAt: new Date('2026-08-30T14:10:00.000Z'),
+        deprecated: false,
+        deletedAt: null,
+      },
+    });
+    // 无归属存量：未接单（不因组织列缺失向任何工程师开放）
+    legacyUnacceptedRequestId = await createRepairRequestFixtureRequest({
+      dataSource,
+      ownership,
+      seed: {
+        requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[9],
+        customerAccountId: crossOrgCustomerAccountId,
+        equipmentModelId: readModelId,
+        ownerOrganizationId: null,
+        errorCode: 'E-1010',
+        faultDescription: '无归属存量未接单场景',
+        contentMd: '# E2E-RR-120',
+        createdAt: new Date('2026-08-30T15:00:00.000Z'),
+        isAccepted: false,
+        acceptedByEngineerAccountId: null,
+        acceptedAt: null,
         deprecated: false,
         deletedAt: null,
       },
@@ -472,6 +573,7 @@ describe('维修申请公共读模型 (e2e)', () => {
           requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[5],
           customerAccountId: customerAAccountId,
           equipmentModelId: readModelId,
+          ownerOrganizationId: primaryOrganizationId,
           errorCode: 'E-1006',
           faultDescription: '同刻排序场景一',
           contentMd: '# E2E-RR-116',
@@ -490,6 +592,7 @@ describe('维修申请公共读模型 (e2e)', () => {
           requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[6],
           customerAccountId: customerAAccountId,
           equipmentModelId: readModelId,
+          ownerOrganizationId: primaryOrganizationId,
           errorCode: 'E-1007',
           faultDescription: '同刻排序场景二',
           contentMd: '# E2E-RR-117',
@@ -1083,6 +1186,157 @@ describe('维修申请公共读模型 (e2e)', () => {
             item.acceptanceViewStatus === 'TAKEN_BY_OTHER',
         ),
       ).toBe(true);
+    });
+  });
+
+  describe('组织范围（跨组织与无归属存量）', () => {
+    it('跨组织工程师只看到本组织工单；无归属存量仅在 MINE 视角出现', async () => {
+      const all = await postGql({
+        app,
+        query: ENGINEER_LIST_QUERY,
+        variables: engineerListVariables({ scope: 'ALL', pagination: OFFSET_PAGINATION }),
+        token: crossOrgEngineerToken,
+      }).expect(200);
+      expect(all.body.errors).toBeUndefined();
+      expect(
+        all.body.data.engineerRepairRequests.items.map((item: { id: number }) => item.id),
+      ).toEqual([peerOrganizationRequestId]);
+      expect(all.body.data.engineerRepairRequests.total).toBe(1);
+
+      const available = await postGql({
+        app,
+        query: ENGINEER_LIST_QUERY,
+        variables: engineerListVariables({ scope: 'AVAILABLE', pagination: OFFSET_PAGINATION }),
+        token: crossOrgEngineerToken,
+      }).expect(200);
+      expect(
+        available.body.data.engineerRepairRequests.items.map((item: { id: number }) => item.id),
+      ).toEqual([peerOrganizationRequestId]);
+
+      const mine = await postGql({
+        app,
+        query: ENGINEER_LIST_QUERY,
+        variables: engineerListVariables({ scope: 'MINE', pagination: OFFSET_PAGINATION }),
+        token: crossOrgEngineerToken,
+      }).expect(200);
+      expect(
+        mine.body.data.engineerRepairRequests.items.map((item: { id: number }) => item.id),
+      ).toEqual([legacyAcceptedRequestId]);
+
+      // 未接单的无归属存量不因组织列缺失进入任何视角
+      for (const page of [all, available, mine]) {
+        expect(
+          page.body.data.engineerRepairRequests.items.map((item: { id: number }) => item.id),
+        ).not.toContain(legacyUnacceptedRequestId);
+      }
+    });
+
+    it('本组织工程师列表不因跨组织/无归属夹具而扩大（ALL 仍为 4 条同组织工单）', async () => {
+      const response = await postGql({
+        app,
+        query: ENGINEER_LIST_QUERY,
+        variables: engineerListVariables({ scope: 'ALL', pagination: OFFSET_PAGINATION }),
+        token: engineerAToken,
+      }).expect(200);
+
+      expect(response.body.errors).toBeUndefined();
+      const ids = response.body.data.engineerRepairRequests.items.map(
+        (item: { id: number }) => item.id,
+      );
+      expect(ids).toEqual([
+        customerBAcceptedByEngineerBRequestId,
+        customerBUnacceptedRequestId,
+        acceptedByEngineerARequestId,
+        unacceptedRequestId,
+      ]);
+      expect(ids).not.toContain(peerOrganizationRequestId);
+      expect(ids).not.toContain(legacyAcceptedRequestId);
+      expect(ids).not.toContain(legacyUnacceptedRequestId);
+    });
+
+    it('跨组织详情统一拒绝，且与「不存在」同码同文案（不泄露存在性）', async () => {
+      const crossOrg = await postGql({
+        app,
+        query: ENGINEER_DETAIL_QUERY,
+        variables: { id: peerOrganizationRequestId },
+        token: engineerAToken,
+      }).expect(200);
+      expect(crossOrg.body.errors).toHaveLength(1);
+      expectAccessDenied(crossOrg.body.errors[0]);
+
+      const missing = await postGql({
+        app,
+        query: ENGINEER_DETAIL_QUERY,
+        variables: { id: 999999 },
+        token: engineerAToken,
+      }).expect(200);
+      expect(missing.body.errors).toHaveLength(1);
+      expect(crossOrg.body.errors[0].message).toBe(missing.body.errors[0].message);
+      expect(crossOrg.body.errors[0].extensions.errorCode).toBe(
+        missing.body.errors[0].extensions.errorCode,
+      );
+    });
+
+    it('无归属存量仅原接单工程师可读；未接单或非接单人一律拒绝', async () => {
+      const crossOrgEngineerNickname = await getNicknameByAccountId(crossOrgEngineerAccountId);
+      const ownerView = await postGql({
+        app,
+        query: ENGINEER_DETAIL_QUERY,
+        variables: { id: legacyAcceptedRequestId },
+        token: crossOrgEngineerToken,
+      }).expect(200);
+      expect(ownerView.body.errors).toBeUndefined();
+      expect(ownerView.body.data.engineerRepairRequest).toMatchObject({
+        id: legacyAcceptedRequestId,
+        isAccepted: true,
+        acceptanceViewStatus: 'MINE',
+        acceptedEngineerNickname: crossOrgEngineerNickname,
+      });
+
+      const otherEngineer = await postGql({
+        app,
+        query: ENGINEER_DETAIL_QUERY,
+        variables: { id: legacyAcceptedRequestId },
+        token: engineerAToken,
+      }).expect(200);
+      expect(otherEngineer.body.errors).toHaveLength(1);
+      expectAccessDenied(otherEngineer.body.errors[0]);
+
+      const unaccepted = await postGql({
+        app,
+        query: ENGINEER_DETAIL_QUERY,
+        variables: { id: legacyUnacceptedRequestId },
+        token: crossOrgEngineerToken,
+      }).expect(200);
+      expect(unaccepted.body.errors).toHaveLength(1);
+      expectAccessDenied(unaccepted.body.errors[0]);
+
+      const otherCustomer = await postGql({
+        app,
+        query: MY_DETAIL_QUERY,
+        variables: { id: legacyAcceptedRequestId },
+        token: customerAToken,
+      }).expect(200);
+      expect(otherCustomer.body.errors).toHaveLength(1);
+      expectAccessDenied(otherCustomer.body.errors[0]);
+    });
+
+    it('跨组织客户的客户入口仍只见本人三名下申请（组织归属不影响客户本人范围）', async () => {
+      const response = await postGql({
+        app,
+        query: MY_LIST_QUERY,
+        variables: { pagination: OFFSET_PAGINATION },
+        token: crossOrgCustomerToken,
+      }).expect(200);
+
+      expect(response.body.errors).toBeUndefined();
+      const page = response.body.data.myRepairRequests;
+      expect(page.items.map((item: { id: number }) => item.id)).toEqual([
+        legacyUnacceptedRequestId,
+        legacyAcceptedRequestId,
+        peerOrganizationRequestId,
+      ]);
+      expect(page.total).toBe(3);
     });
   });
 

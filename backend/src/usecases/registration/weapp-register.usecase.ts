@@ -8,7 +8,9 @@ import {
   UserAccountView,
 } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
+import { RegistrationOutcomeStatus } from '@app-types/models/registration.types';
 import {
+  ACCOUNT_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
   THIRDPARTY_ERROR,
@@ -18,6 +20,8 @@ import { ThirdPartyAuthService } from '@modules/third-party-auth/third-party-aut
 import { HttpException, Inject, Injectable } from '@nestjs/common';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -29,6 +33,7 @@ import {
 } from './register-with-third-party.usecase';
 import {
   normalizeRegistrationNicknameCandidatesInput,
+  normalizeRegistrationOrganizationId,
   normalizeWeappRegisterInput,
   normalizeWeappRegisterParams,
 } from './registration-input.normalize';
@@ -64,6 +69,8 @@ export class WeappRegisterUsecase {
     private readonly thirdPartyAuthQueryService: ThirdPartyAuthQueryService,
     private readonly accountService: AccountService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
+    private readonly organizationMembershipService: OrganizationMembershipService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -79,6 +86,8 @@ export class WeappRegisterUsecase {
     const validatedParams = this.validateParams(params);
     const { authCredential, audience } = validatedParams;
     const normalizedInput = normalizeWeappRegisterInput();
+    // 组织 ID 只做形态校验；有效性在创建事务内复核
+    const organizationId = normalizeRegistrationOrganizationId(params.organizationId);
 
     try {
       // 2. 解析身份信息
@@ -102,6 +111,7 @@ export class WeappRegisterUsecase {
       const account = await this.createAccount({
         accountData,
         userInfoData,
+        organizationId,
       });
 
       // 6. 创建第三方绑定关系
@@ -119,6 +129,9 @@ export class WeappRegisterUsecase {
         success: true,
         message: '注册成功',
         accountId: account.id,
+        // 小程序注册只创建客户账号，注册事务内已绑定所选组织的 CUSTOMER 成员关系
+        registrationStatus: RegistrationOutcomeStatus.REGISTERED,
+        applicationId: null,
       };
     } catch (error) {
       if (error instanceof DomainError) {
@@ -251,7 +264,11 @@ export class WeappRegisterUsecase {
   }
 
   /**
-   * 创建账户与用户信息
+   * 创建账户与用户信息，并绑定所选组织为 CUSTOMER 成员
+   *
+   * 顺序：复核组织有效 → 账号行 → 密码哈希 → 资料行 → 成员关系 → 同事务回读。
+   * 组织有效性先于任何写入 fail-fast，避免留下无归属的账号。
+   *
    * @param params 创建参数
    * @returns 账户视图
    */
@@ -270,9 +287,18 @@ export class WeappRegisterUsecase {
       metaDigest: IdentityTypeEnum[];
       userState: UserState;
     };
+    organizationId: number;
   }): Promise<UserAccountView> {
-    const { accountData, userInfoData } = params;
+    const { accountData, userInfoData, organizationId } = params;
     return await this.transactionRunner.run(async (transactionContext) => {
+      const organization = await this.organizationQueryService.findActiveRegistrationOption({
+        organizationId,
+        transactionContext,
+      });
+      if (organization === null) {
+        throw new DomainError(ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE, '所选组织不存在或已停用');
+      }
+
       const account = this.accountService.createAccountEntity({
         transactionContext,
         accountData: {
@@ -303,6 +329,15 @@ export class WeappRegisterUsecase {
         },
       });
       await this.accountService.saveUserInfo({ userInfo, transactionContext });
+
+      await this.organizationMembershipService.insertMembership(
+        {
+          organizationId,
+          accountId: savedAccount.id,
+          memberRole: IdentityTypeEnum.CUSTOMER,
+        },
+        transactionContext,
+      );
 
       return await this.accountQueryService.getUserAccountViewById({
         accountId: savedAccount.id,

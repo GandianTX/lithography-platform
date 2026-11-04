@@ -9,6 +9,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -129,6 +131,8 @@ export class AdminResetUserPasswordUsecase {
     private readonly accountService: AccountService,
     private readonly adminUserQueryService: AdminUserQueryService,
     private readonly passwordPolicyService: PasswordPolicyService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -149,7 +153,12 @@ export class AdminResetUserPasswordUsecase {
 
     try {
       await this.transactionRunner.run((transactionContext) =>
-        this.resetInTransaction({ transactionContext, accountId, newPassword }),
+        this.resetInTransaction({
+          transactionContext,
+          adminAccountId: command.session.accountId,
+          accountId,
+          newPassword,
+        }),
       );
     } catch (error) {
       // 事务内各阶段的异常已由 resetInTransaction 的 catch 记录日志并收敛为 DomainError；
@@ -206,16 +215,20 @@ export class AdminResetUserPasswordUsecase {
    */
   private async resetInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
+    adminAccountId: number;
     accountId: number;
     newPassword: string;
   }): Promise<void> {
-    const { transactionContext, accountId, newPassword } = params;
+    const { transactionContext, adminAccountId, accountId, newPassword } = params;
     let phase: AdminResetUserPasswordPhase = 'LOCK_TARGET';
 
     try {
       const lockedView: AdminUserView = await loadWritableAdminUserTarget({
         accountService: this.accountService,
         adminUserQueryService: this.adminUserQueryService,
+        organizationContextQueryService: this.organizationContextQueryService,
+        organizationMembershipQueryService: this.organizationMembershipQueryService,
+        adminAccountId,
         accountId,
         actionLabel: '重置密码',
         transactionContext,

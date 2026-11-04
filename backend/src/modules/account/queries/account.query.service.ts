@@ -7,18 +7,10 @@ import {
 } from '@app-types/models/account.types';
 import { UserInfoView } from '@app-types/models/auth.types';
 import { Gender, UserState } from '@app-types/models/user-info.types';
-import { UsecaseSession } from '@app-types/auth/session.types';
-import { hasRole } from '@core/account/policy/role-access.policy';
-import { canViewUserInfo } from '@core/account/policy/user-info-visibility.policy';
 import { convergeAccountRole } from '@core/account/policy/account-role-convergence.policy';
 import { isDualStatusFieldsConsistent } from '@core/account/policy/dual-status-consistency.policy';
 import { ACCOUNT_ERROR } from '@core/common/errors';
-import {
-  ADMIN_USER_ERROR,
-  DomainError,
-  isDomainError,
-  PERMISSION_ERROR,
-} from '@core/common/errors/domain-error';
+import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import { normalizeEmail } from '@core/common/normalize/normalize.helper';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -34,8 +26,6 @@ import type {
 } from '../account.types';
 import { AccountEntity } from '../base/entities/account.entity';
 import { UserInfoEntity } from '../base/entities/user-info.entity';
-
-export type VisibleDetailMode = 'BASIC' | 'FULL';
 
 /**
  * 账号安全展示资料（昵称 + 公司名）：供其他域读模型跨域富集展示，
@@ -76,29 +66,17 @@ export class AccountQueryService {
     private readonly userInfoRepository: Repository<UserInfoEntity>,
   ) {}
 
-  async getAccountById(params: {
-    session: UsecaseSession;
-    targetAccountId: number;
-  }): Promise<UserAccountView> {
-    const { session, targetAccountId } = params;
-
-    if (!Number.isInteger(targetAccountId) || targetAccountId <= 0) {
-      throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '非法的目标账户 ID');
-    }
-
-    const allowed = this.isAllowedToViewAccountDetail(session, targetAccountId);
-    if (!allowed) {
-      throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '无权限查看该账户信息');
-    }
-
-    const account = await this.accountRepository.findOne({ where: { id: targetAccountId } });
-    if (!account) {
-      throw new DomainError(ACCOUNT_ERROR.ACCOUNT_NOT_FOUND, '账户不存在');
-    }
-
-    return this.toUserAccountView(account);
-  }
-
+  /**
+   * 账号详情读取（纯读投影，不含任何授权裁决）。
+   *
+   * 历史实现曾在此处按 `session.roles` 放行 SUPER_ADMIN 的跨账号读取，但 account 域
+   * 无法读取组织成员事实，管理员查询因此缺少可信同组织校验，构成跨组织旁路。
+   * 现把「本人 / 管理员 + 同组织」的裁决统一上移到 `GetAccountByIdUsecase`：
+   * 本方法只按主键读取并映射 View，调用方必须先完成授权，不得把它当作对外入口。
+   * QueryService 保持只读、同域依赖（不导入组织 Entity / 组织 QueryService）。
+   *
+   * @returns 账号行缺失时返回 `null`，由调用方决定错误口径
+   */
   async findAccountSnapshotById(params: {
     accountId: number;
     transactionContext?: PersistenceTransactionContext;
@@ -598,31 +576,6 @@ export class AccountQueryService {
     };
   }
 
-  async getVisibleUserInfo(params: {
-    session: UsecaseSession;
-    targetAccountId: number;
-    detail?: VisibleDetailMode;
-  }): Promise<UserInfoView> {
-    const { session, targetAccountId } = params;
-    const detail: VisibleDetailMode = params.detail ?? 'FULL';
-
-    if (!Number.isInteger(targetAccountId) || targetAccountId <= 0) {
-      throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '非法的目标账户 ID');
-    }
-
-    const allowed = this.isAllowedToView(session, targetAccountId);
-    if (!allowed) {
-      throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '无权限查看该用户信息');
-    }
-
-    const view = await this.getUserInfoViewStrict({ accountId: targetAccountId });
-
-    if (detail === 'BASIC') {
-      return this.maskToBasic(view);
-    }
-    return view;
-  }
-
   async getLoginBootstrapSnapshot(params: {
     accountId: number;
     transactionContext?: PersistenceTransactionContext;
@@ -701,21 +654,6 @@ export class AccountQueryService {
       : [IdentityTypeEnum.CUSTOMER];
 
     return this.buildUserInfoView(base, params.accountId, finalAccessGroup);
-  }
-
-  private isAllowedToView(session: UsecaseSession, targetAccountId: number): boolean {
-    const isSelf = session.accountId === targetAccountId;
-    if (isSelf) return true;
-    if (hasRole(session.roles, IdentityTypeEnum.SUPER_ADMIN)) return true;
-
-    return canViewUserInfo(session.roles, { isSelf });
-  }
-
-  private isAllowedToViewAccountDetail(session: UsecaseSession, targetAccountId: number): boolean {
-    const isSelf = session.accountId === targetAccountId;
-    if (isSelf) return true;
-    if (hasRole(session.roles, IdentityTypeEnum.SUPER_ADMIN)) return true;
-    return false;
   }
 
   private buildUserInfoView(
@@ -837,28 +775,5 @@ export class AccountQueryService {
     if (!tags) return null;
     if (Array.isArray(tags)) return tags.map((v) => String(v));
     return null;
-  }
-
-  private maskToBasic(view: UserInfoView): UserInfoView {
-    return {
-      accountId: view.accountId,
-      nickname: view.nickname,
-      gender: view.gender,
-      birthDate: view.birthDate,
-      avatarUrl: view.avatarUrl,
-      email: null,
-      signature: null,
-      accessGroup: view.accessGroup,
-      address: null,
-      phone: view.phone,
-      tags: null,
-      geographic: null,
-      metaDigest: null,
-      notifyCount: 0,
-      unreadCount: 0,
-      userState: view.userState,
-      createdAt: view.createdAt,
-      updatedAt: view.updatedAt,
-    };
   }
 }

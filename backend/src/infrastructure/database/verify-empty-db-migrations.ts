@@ -249,6 +249,10 @@ function parseBaselineCount(total: number): number | null {
 
 /**
  * 在旧基线库上写入旧表旧列可用的 fixture，模拟旧库数据。
+ *
+ * 基线可能早于也可能晚于「给 reference_document 补组织归属列」的迁移：
+ * 早于时按旧列形态写入，由后续迁移回填；晚于时新列已收紧为 NOT NULL，
+ * 必须显式写入归属组织与入库方式（不能让 fixture 依赖“该迁移尚未执行”）。
  */
 async function insertLegacyUpgradeFixtures(dataSource: DataSource): Promise<void> {
   await dataSource.query(
@@ -257,8 +261,39 @@ async function insertLegacyUpgradeFixtures(dataSource: DataSource): Promise<void
   await dataSource.query(
     `INSERT INTO \`base_user_account\` (\`id\`, \`login_name\`, \`login_password\`, \`status\`) VALUES (900001, 't02_legacy_user', 'legacy-password-hash', 'ACTIVE')`,
   );
+
+  const legacyDocumentHasOrganizationColumns = await hasQueryResult(
+    dataSource,
+    `
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = DATABASE()
+        AND table_name = 'reference_document'
+        AND column_name = 'owner_organization_id'
+      LIMIT 1
+    `,
+    [],
+  );
+
+  if (!legacyDocumentHasOrganizationColumns) {
+    await dataSource.query(
+      `INSERT INTO \`reference_document\` (\`id\`, \`title\`, \`document_type\`, \`equipment_model_id\`, \`content_text\`, \`created_by_account_id\`, \`deprecated\`, \`deleted_at\`) VALUES (900001, 'T02 旧资料', 'MANUAL', 900001, 'T02 旧库升级基线内容', 900001, 0, NULL)`,
+    );
+    return;
+  }
+
   await dataSource.query(
-    `INSERT INTO \`reference_document\` (\`id\`, \`title\`, \`document_type\`, \`equipment_model_id\`, \`content_text\`, \`created_by_account_id\`, \`deprecated\`, \`deleted_at\`) VALUES (900001, 'T02 旧资料', 'MANUAL', 900001, 'T02 旧库升级基线内容', 900001, 0, NULL)`,
+    `INSERT IGNORE INTO \`organization\` (\`organization_code\`, \`name\`, \`kind\`, \`status\`) VALUES ('CLIENT_DEFAULT', '甲方默认组织', 'CLIENT', 'ACTIVE')`,
+  );
+  const ownerRows: unknown = await dataSource.query(
+    `SELECT \`id\` FROM \`organization\` WHERE \`organization_code\` = 'CLIENT_DEFAULT' LIMIT 1`,
+  );
+  if (!isQueryRows(ownerRows) || ownerRows.length === 0) {
+    throw new Error('旧基线已含组织归属列，但无法解析 CLIENT_DEFAULT 组织');
+  }
+  const ownerId = Number(ownerRows[0]['id'] ?? ownerRows[0]['ID']);
+  await dataSource.query(
+    `INSERT INTO \`reference_document\` (\`id\`, \`title\`, \`document_type\`, \`equipment_model_id\`, \`content_text\`, \`created_by_account_id\`, \`deprecated\`, \`deleted_at\`, \`owner_organization_id\`, \`ingest_method\`) VALUES (900001, 'T02 旧资料', 'MANUAL', 900001, 'T02 旧库升级基线内容', 900001, 0, NULL, ?, 'ADMIN_DIRECT')`,
+    [ownerId],
   );
 }
 

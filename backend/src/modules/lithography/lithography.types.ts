@@ -39,6 +39,8 @@ export type RepairRequestInsertData = {
   errorCode: string;
   faultDescription: string;
   contentMd: string;
+  /** 可信组织归属；无有效成员关系的自注册客户为 null（存量兼容语义） */
+  ownerOrganizationId?: number | null;
 };
 
 /**

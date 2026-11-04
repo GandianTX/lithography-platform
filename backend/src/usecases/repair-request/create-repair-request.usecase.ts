@@ -13,6 +13,7 @@ import { normalizeRequiredText } from '@core/common/input-normalize/input-normal
 import { Inject, Injectable } from '@nestjs/common';
 import { EquipmentModelDetailSnapshot } from '@src/modules/lithography/lithography.types';
 import { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -49,6 +50,7 @@ export class CreateRepairRequestUsecase {
   constructor(
     private readonly repairRequestService: RepairRequestService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -119,6 +121,13 @@ export class CreateRepairRequestUsecase {
       );
     }
 
+    // 组织归属：自注册客户可能无有效组织，此时保持 NULL（仅本人可见的存量兼容语义），
+    // 不按 company_name/厂家猜测；有可信成员关系时必须写入真实组织。
+    const organizationFact = await this.organizationContextQueryService.tryResolveForAccount({
+      accountId: command.session.accountId,
+      transactionContext,
+    });
+
     let conflict: DomainError | undefined;
     for (let attempt = 0; attempt < REQUEST_NO_RETRY_LIMIT; attempt += 1) {
       const requestNo = await this.generateUniqueRequestNo(transactionContext);
@@ -137,6 +146,7 @@ export class CreateRepairRequestUsecase {
             errorCode,
             faultDescription,
             contentMd,
+            ownerOrganizationId: organizationFact?.organizationId ?? null,
           },
           transactionContext,
         );

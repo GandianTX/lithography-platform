@@ -210,6 +210,10 @@ describe('管理员用户管理 (e2e)', () => {
   let adminAccountId: number;
   let guestAccountId: number;
   let guestSecondaryAccountId: number;
+  /** 外组织目标：存在但不在管理员可信组织内（无成员关系） */
+  let noOrgEngineerAccountId: number;
+  /** 无有效组织成员关系的 SUPER_ADMIN 会话：操作者组织缺失的失败关闭用例 */
+  let noOrgAdminToken: string;
 
   // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMUSER');
@@ -248,6 +252,9 @@ describe('管理员用户管理 (e2e)', () => {
           testAccountsConfig.guestSecondary,
           testAccountsConfig.staffPrimary,
           testAccountsConfig.staffSecondary,
+          // 外组织目标（存在但不在管理员可信组织内）与无组织操作者
+          testAccountsConfig.noOrgEngineer,
+          testAccountsConfig.peerAdmin,
         ]
           .map(toResidueAccountFingerprint)
           .concat(
@@ -273,11 +280,21 @@ describe('管理员用户管理 (e2e)', () => {
     });
     await seedTestAccounts({
       dataSource,
-      includeKeys: ['admin', 'guestPrimary', 'guestSecondary', 'staffPrimary', 'staffSecondary'],
+      includeKeys: [
+        'admin',
+        'guestPrimary',
+        'guestSecondary',
+        'staffPrimary',
+        'staffSecondary',
+        'noOrgEngineer',
+        'peerAdmin',
+      ],
       ownership,
     });
 
-    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系
+    // 组织隔离：管理员「只能管理本组织」。写路径按可信组织校验目标归属，列表按组织内
+    // 有效账号收窄——因此被管理/被查看的账号都必须是管理员的同组织有效成员。
+    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系。
     const organizationIds = await seedTestOrganizations({
       dataSource,
       organizations: [
@@ -299,6 +316,27 @@ describe('管理员用户管理 (e2e)', () => {
           accountLoginName: testAccountsConfig.admin.loginName,
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'SUPER_ADMIN',
+        },
+        // 被管理目标与列表可见账号：同组织有效成员，角色与各自账号身份一致
+        {
+          accountLoginName: testAccountsConfig.guestPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: testAccountsConfig.guestSecondary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffSecondary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'ENGINEER',
         },
       ],
     });
@@ -328,6 +366,17 @@ describe('管理员用户管理 (e2e)', () => {
       dataSource,
       testAccountsConfig.guestSecondary.loginName,
     );
+    noOrgEngineerAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.noOrgEngineer.loginName,
+    );
+
+    // 无组织操作者：SUPER_ADMIN 权限足够，但没有任何 ACTIVE 成员关系
+    noOrgAdminToken = await login({
+      app,
+      loginName: testAccountsConfig.peerAdmin.loginName,
+      loginPassword: testAccountsConfig.peerAdmin.loginPassword,
+    });
   });
 
   afterAll(async () => {
@@ -1005,12 +1054,16 @@ describe('管理员用户管理 (e2e)', () => {
       expect(account?.loginEmail).toBe(EMAIL_ONLY_LOGIN_EMAIL);
       expect(await countAccounts({ loginEmail: EMAIL_ONLY_LOGIN_EMAIL })).toBe(1);
 
-      // S2c 口径：CUSTOMER 不建立组织成员关系
-      expect(
-        await dataSource
-          .getRepository(OrganizationMembershipEntity)
-          .findOne({ where: { accountId: view?.id ?? 0 } }),
-      ).toBeNull();
+      // S2c 口径：管理员代建 CUSTOMER 与 ENGINEER 一样绑定管理员当前有效组织
+      const membership = await dataSource
+        .getRepository(OrganizationMembershipEntity)
+        .findOne({ where: { accountId: view?.id ?? 0 } });
+      expect(membership).toMatchObject({
+        organizationId: primaryOrganizationId,
+        memberRole: IdentityTypeEnum.CUSTOMER,
+        status: 'ACTIVE',
+      });
+      expect(membership?.leftAt).toBeNull();
     });
 
     it('重复登录名返回 CONFLICT 且不落库', async () => {
@@ -1365,6 +1418,90 @@ describe('管理员用户管理 (e2e)', () => {
       expect(collected).toEqual(
         operations.map(([name]) => [name, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND', undefined]),
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 组织授权顺序：外组织目标与无组织操作者
+  // ---------------------------------------------------------------------------
+
+  /** 三个管理员写操作对指定目标的调用闭包表 */
+  const writeOperationsAgainst = (
+    token: string,
+    targetAccountId: number,
+    nickname: string,
+    newPassword: string,
+  ): Array<[string, () => Promise<GqlBody<unknown>>]> => [
+    [
+      'adminUpdateUserProfile',
+      () => updateUserProfile(token, { accountId: targetAccountId, nickname }),
+    ],
+    [
+      'adminSetUserStatus',
+      () => setUserStatus(token, { accountId: targetAccountId, status: AccountStatus.INACTIVE }),
+    ],
+    [
+      'adminResetUserPassword',
+      () => resetUserPassword(token, { accountId: targetAccountId, newPassword }),
+    ],
+  ];
+
+  describe('外组织目标（一致拒绝，不泄露目标状态）', () => {
+    it('三个写操作统一返回 NOT_FOUND，details 留空且目标逐字段不变', async () => {
+      const targetAccountId = noOrgEngineerAccountId;
+      const accountBefore = await readAccountRow(targetAccountId);
+      const userInfoBefore = await readUserInfoRow(targetAccountId);
+      expect(accountBefore).toBeTruthy();
+      expect(userInfoBefore).toBeTruthy();
+
+      const operations = writeOperationsAgainst(
+        adminToken,
+        targetAccountId,
+        '外组织改名',
+        RESET_NEW_PASSWORD,
+      );
+      const collected = await collectErrors(operations);
+
+      // 与「不存在」目标完全一致的拒绝口径：不因资料/角色差异泄露目标状态
+      expect(collected).toEqual(
+        operations.map(([name]) => [name, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND', undefined]),
+      );
+
+      expect(await readAccountRow(targetAccountId)).toEqual(accountBefore);
+      expect(await readUserInfoRow(targetAccountId)).toEqual(userInfoBefore);
+
+      // 列表仍按管理员可信组织收窄：外组织目标不可见
+      const list = await listAdminUsers(adminToken, {
+        keyword: testAccountsConfig.noOrgEngineer.loginName,
+      });
+      expect(list.errors).toBeUndefined();
+      expect(list.data?.adminUsers?.total).toBe(0);
+    });
+
+    it('无有效组织的操作者：三个写操作统一 FORBIDDEN / ORGANIZATION_NO_ACTIVE_MEMBERSHIP 且目标零变化', async () => {
+      const targetAccountId = guestAccountId;
+      const accountBefore = await readAccountRow(targetAccountId);
+      const userInfoBefore = await readUserInfoRow(targetAccountId);
+
+      const operations = writeOperationsAgainst(
+        noOrgAdminToken,
+        targetAccountId,
+        '组织缺失操作者改名',
+        RESET_NEW_PASSWORD,
+      );
+      const collected = await collectErrors(operations);
+
+      expect(collected).toEqual(
+        operations.map(([name]) => [
+          name,
+          'FORBIDDEN',
+          'ORGANIZATION_NO_ACTIVE_MEMBERSHIP',
+          undefined,
+        ]),
+      );
+
+      expect(await readAccountRow(targetAccountId)).toEqual(accountBefore);
+      expect(await readUserInfoRow(targetAccountId)).toEqual(userInfoBefore);
     });
   });
 

@@ -14,12 +14,14 @@ import type { AdminUserView } from '@src/modules/account/account.types';
 import { assertWritableAdminUserTargetRole } from './admin-user-permission';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { PinoLogger } from 'nestjs-pino';
 
 /**
  * account 写用例（P0-4 / P0-5 / P0-6 管理员链路 + P2 / P3 自助链路）的共享执行支撑：
- * - `loadWritableAdminUserTarget()`：事务内锁定目标 + 读取收敛 View + 目标角色保护，
- *   写用例共用的单一实现（沿用 `admin-user-permission.ts` 在 P0-1 确立的「同一裁决
+ * - `loadWritableAdminUserTarget()`：事务内锁定目标 + 同组织归属校验 + 读取收敛 View +
+ *   目标角色保护，写用例共用的单一实现（沿用 `admin-user-permission.ts` 在 P0-1 确立的「同一裁决
  * - `assertAdminUserPasswordPolicy()`：管理员创建初始密码、管理员重置密码与自助修改密码
  *   共用的密码策略校验（P0-6 起入本文件，避免第二份策略断言）；
  * - `logAdminUserWriteFailure()`：P0-4 / P0-5 / P0-6 与 P2 / P3 写用例的失败日志，
@@ -96,15 +98,26 @@ export const extractDriverErrorCode = (error: unknown): string | number | undefi
 };
 
 /**
- * 事务内加载受保护的管理员写目标：锁定 → 读取收敛 View → 目标角色保护断言。
+ * 事务内加载受保护的管理员写目标：锁定 → 解析管理员组织 → 组织归属校验 → 读取收敛
+ * View → 目标角色保护断言。
  *
- * 1. **先锁后读**：`AccountService.lockByIdForUpdate()` 持 `SELECT ... FOR UPDATE`
- *    悲观行锁，串行化针对同一目标账号的并发管理写；目标保护断言基于**锁内**读到的
- *    数据库事实，而不是锁前的过期快照；
- * 2. 锁内经 `findAdminUserViewById()` 读取收敛后的稳定 View：目标角色数据异常或不一致
- *    （`ROLE_DATA_INCONSISTENT`）、资料行缺失（`READ_FAILED`）由 `toAdminUserView()`
- *    统一失败关闭，本层不重复实现，也不顺手修复历史数据；
- * 3. `assertWritableAdminUserTargetRole()` 依数据库事实拒绝 SUPER_ADMIN 目标——
+ * 1. **先锁定目标账号**（`AccountService.lockByIdForUpdate()` 持 `SELECT ... FOR UPDATE`
+ *    悲观行锁）：串行化针对同一目标账号的并发管理写，并要求后续所有读取都发生在取得
+ *    行锁之后。锁前建立的普通读取（含组织解析）会被后续事务快照复用，读到并发方的旧
+ *    状态，故顺序不可交换；
+ * 2. **锁后解析管理员可信组织**
+ *    （`TrustedOrganizationContextQueryService.resolveForAccount()`）：组织范围只来自
+ *    Session 账号的单一有效成员关系，绝不取客户端自报。无有效组织或存在歧义时失败关闭
+ *    为 `ORGANIZATION_*`（对外 FORBIDDEN），**不**塌缩为目标不存在；
+ * 3. **组织归属校验先于目标资料读取**：目标在本组织内必须有一条有效成员关系
+ *    （`findActiveMembership()`）；不匹配统一收敛为 `TARGET_NOT_FOUND`——跨组织目标
+ *    与不存在的目标对外不可区分，也不泄露目标在其它组织、资料是否缺失或是否为只读
+ *    SUPER_ADMIN。若先读取 View，`READ_FAILED` / `ROLE_DATA_INCONSISTENT` 会让外组织
+ *    目标与不存在目标产生可区分错误，等同泄露目标状态；
+ * 4. 锁内经 `findAdminUserViewById()` 读取收敛后的稳定 View：**同组织**目标的角色数据
+ *    异常或不一致（`ROLE_DATA_INCONSISTENT`）、资料行缺失（`READ_FAILED`）由
+ *    `toAdminUserView()` 统一失败关闭，本层不重复实现，也不顺手修复历史数据；
+ * 5. `assertWritableAdminUserTargetRole()` 依数据库事实拒绝 SUPER_ADMIN 目标——
  *    SUPER_ADMIN 在本功能内全部只读，其中也包含「管理员操作自己」（自己的账号必然是
  *    SUPER_ADMIN）。
  *
@@ -114,16 +127,22 @@ export const extractDriverErrorCode = (error: unknown): string | number | undefi
  * `graphql-error-contract-current.md`「not-found 不得塌缩为 UNAUTHENTICATED」的契约。
  *
  * @param params.accountService 锁能力由既有域内方法提供，本层不直接访问 ORM API
+ * @param params.adminAccountId 发起操作的管理员账号 ID（必须来自可信 Session）
  * @param params.actionLabel 管理动作文案（如「编辑资料」「修改状态」「重置密码」），
  *   仅用于目标保护拒绝提示
  */
 export async function loadWritableAdminUserTarget(params: {
   readonly accountService: AccountService;
   readonly adminUserQueryService: AdminUserQueryService;
+  readonly organizationContextQueryService: TrustedOrganizationContextQueryService;
+  readonly organizationMembershipQueryService: OrganizationMembershipQueryService;
+  readonly adminAccountId: number;
   readonly accountId: number;
   readonly actionLabel: string;
   readonly transactionContext: PersistenceTransactionContext;
 }): Promise<AdminUserView> {
+  // 先取得目标行锁：后续组织解析与目标资料读取都必须发生在锁后，
+  // 否则普通读取会在锁前建立快照，并发方提交后仍读到旧状态。
   try {
     await params.accountService.lockByIdForUpdate(params.accountId, params.transactionContext);
   } catch (error) {
@@ -131,6 +150,23 @@ export async function loadWritableAdminUserTarget(params: {
       throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
     }
     throw error;
+  }
+
+  // 锁后解析管理员可信组织（fail-fast，早于目标资料读取与写入）
+  const adminOrganization = await params.organizationContextQueryService.resolveForAccount({
+    accountId: params.adminAccountId,
+    transactionContext: params.transactionContext,
+  });
+
+  // 目标归属校验先于资料读取与角色断言：跨组织目标统一按不存在处理，
+  // 资料缺失 / 角色异常不再能让外部组织目标与不存在目标产生可区分错误。
+  const targetMembership = await params.organizationMembershipQueryService.findActiveMembership({
+    accountId: params.accountId,
+    organizationId: adminOrganization.organizationId,
+    transactionContext: params.transactionContext,
+  });
+  if (targetMembership === null) {
+    throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
   }
 
   const view = await params.adminUserQueryService.findAdminUserViewById({

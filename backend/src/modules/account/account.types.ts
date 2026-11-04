@@ -206,6 +206,16 @@ export interface AdminUserListQuery {
   readonly keyword?: string;
   readonly role?: AdminUserListRoleFilter;
   readonly status?: AdminUserListStatusFilter;
+  /**
+   * 组织范围：管理员可信组织内的有效成员账号 ID 清单，由 Usecase 经组织解析后下推。
+   *
+   * - `undefined` = 不按组织收窄（仅供非组织场景的内部调用；管理员管理链路必须传入）；
+   * - 空数组 = 范围为空，QueryService 直接返回空页，**不得**退化为「不筛选」。
+   *
+   * 用账号 ID 而非 organizationId：account 域 QueryService 不跨域导入组织 Entity
+   * （`modules.rules.md`），组织事实由 lithography 域 QueryService 解析。
+   */
+  readonly accountIds?: ReadonlyArray<number>;
 }
 
 /**

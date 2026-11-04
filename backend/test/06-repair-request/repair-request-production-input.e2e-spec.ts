@@ -39,6 +39,7 @@ import {
   createRepairRequestFixtureOwnership,
   runRepairRequestFixtureTeardown,
   seedRepairRequestFixtureAccounts,
+  seedRepairRequestFixtureOrganizationScope,
   type RepairRequestFixtureOwnership,
 } from './repair-request-fixture';
 
@@ -195,6 +196,13 @@ describe('engineerRepairRequests 生产环境输入错误分类 (e2e, NODE_ENV=p
       ownership,
       createAccountUsecase: app.get(CreateAccountUsecase),
       includeKeys: ['engineerA', 'customerA'],
+    });
+    // 本轮专属组织与唯一 ACTIVE 成员关系：保证工程师查询走真实组织过滤分支，
+    // 本 spec 不创建任何工单，故合法边界查询仍返回空页（不放宽生产权限）
+    await seedRepairRequestFixtureOrganizationScope({
+      dataSource,
+      ownership,
+      accountIds: accounts,
     });
     readModelId = await createRepairRequestFixtureModel({ dataSource, ownership, key: 'read' });
 

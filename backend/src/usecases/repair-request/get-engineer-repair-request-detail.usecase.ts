@@ -5,6 +5,7 @@ import { Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { RepairRequestEngineerDetailView } from '@src/modules/lithography/lithography.types';
 import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { enrichEngineerRepairRequestDetail } from './enrich-repair-request-nicknames';
 
 /**
@@ -22,16 +23,21 @@ export class GetEngineerRepairRequestDetailUsecase {
   constructor(
     private readonly repairRequestQueryService: RepairRequestQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
     requestId: number;
     session: UsecaseSession;
   }): Promise<RepairRequestEngineerDetailView> {
+    const organizationFact = await this.organizationContextQueryService.tryResolveForAccount({
+      accountId: params.session.accountId,
+    });
     const result = await this.repairRequestQueryService.findDetail({
       requestId: params.requestId,
       session: params.session,
       scope: 'ENGINEER',
+      viewerOrganizationId: organizationFact?.organizationId ?? null,
     });
     return enrichEngineerRepairRequestDetail(
       this.accountQueryService,

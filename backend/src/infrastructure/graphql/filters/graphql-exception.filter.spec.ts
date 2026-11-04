@@ -6,8 +6,14 @@ import {
   REFERENCE_DOCUMENT_ERROR,
   REPAIR_REQUEST_ERROR,
 } from '@core/common/errors';
-import type { ArgumentsHost } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  ValidationPipe,
+  type ArgumentsHost,
+} from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import { IsInt, Min } from 'class-validator';
 import { GraphQLError } from 'graphql';
 import { GqlAllExceptionsFilter } from './graphql-exception.filter';
 
@@ -117,8 +123,7 @@ describe(GqlAllExceptionsFilter.name, () => {
   });
 
   // 生产环境错误分类关键路径：弱密码等输入类拒绝走 DomainError 路径时，其
-  // BAD_USER_INPUT 分类在生产环境保持不变（HttpException 路径在生产环境会把
-  // 一切收敛为 INTERNAL_SERVER_ERROR，输入类业务拒绝因此必须走 DomainError）
+  // BAD_USER_INPUT 分类在生产环境保持不变
   it('maps input normalize error to BAD_USER_INPUT in production via the DomainError path', () => {
     const configService = {
       get: jest.fn().mockReturnValue('production'),
@@ -141,5 +146,132 @@ describe(GqlAllExceptionsFilter.name, () => {
       code: 'BAD_USER_INPUT',
       errorCode: INPUT_NORMALIZE_ERROR.INVALID_TEXT,
     });
+  });
+
+  // 校验管道（`ValidateInput` 的 ValidationPipe）抛出的 400 在生产环境必须仍是
+  // BAD_USER_INPUT：只隐藏 errorCode / errorMessage 细节，不改变错误大类。
+  // 若折叠为 INTERNAL_SERVER_ERROR，前端会把「参数非法」误判为服务端故障。
+  it.each([
+    [400, 'BAD_USER_INPUT'],
+    [401, 'UNAUTHENTICATED'],
+    [403, 'FORBIDDEN'],
+    [404, 'NOT_FOUND'],
+    [409, 'CONFLICT'],
+  ])('keeps HTTP %i classified as %s in production', (status, code) => {
+    const configService = {
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'reviewEngineerRegistration' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    const error = filter.catch(
+      new HttpException('validation failed', status),
+      host,
+    ) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({ code, httpStatus: status });
+    // 生产环境不向外暴露响应体细节与自由文本
+    expect(error.message).toBe('请求失败');
+    expect(error.extensions).not.toHaveProperty('errorCode');
+    expect(error.extensions).not.toHaveProperty('errorMessage');
+  });
+
+  it('classifies a validation BadRequestException as BAD_USER_INPUT in production', () => {
+    const configService = {
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'reviewEngineerRegistration' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    // 与 `ValidateInput` 的 exceptionFactory 同形态：BadRequestException(格式化文本)
+    const error = filter.catch(
+      new BadRequestException('applicationId 必须为大于 0 的整数'),
+      host,
+    ) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({ code: 'BAD_USER_INPUT', httpStatus: 400 });
+    expect(error.message).toBe('请求失败');
+  });
+
+  // 生产输入链路回归：真实 `ValidationPipe` + 生产过滤器。
+  // 复现输入形态与审核入口一致（`applicationId` 为 Int 且 >= 1）；生产环境曾把这类
+  // 校验 400 折叠为 INTERNAL_SERVER_ERROR。这里从管道抛错一路走到过滤器输出，
+  // 证明 `applicationId: 0` 仍是 BAD_USER_INPUT 而非系统错误。
+  it('keeps a real ValidationPipe rejection classified as BAD_USER_INPUT in production', async () => {
+    // 与 `ReviewEngineerRegistrationInput.applicationId` 同一约束形态（不跨层导入 DTO）
+    class ReviewInputProbe {
+      @IsInt()
+      @Min(1)
+      applicationId!: number;
+    }
+
+    const pipe = new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      disableErrorMessages: false,
+      stopAtFirstError: false,
+      validationError: { target: false, value: false },
+      // 与 `ValidateInput` 的 exceptionFactory 同形态：把校验失败转为 400
+      exceptionFactory: (errors) =>
+        new BadRequestException(
+          errors
+            .map((error) => Object.values(error.constraints ?? {}).join('; '))
+            .filter(Boolean)
+            .join('; '),
+        ),
+    });
+
+    let rejected: unknown;
+    try {
+      await pipe.transform({ applicationId: 0 }, { type: 'body', metatype: ReviewInputProbe });
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toBeInstanceOf(BadRequestException);
+
+    const configService = {
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'reviewEngineerRegistration' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    const error = filter.catch(rejected, host) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({ code: 'BAD_USER_INPUT', httpStatus: 400 });
+    expect(error.message).toBe('请求失败');
+    expect(error.extensions).not.toHaveProperty('errorCode');
+  });
+
+  it('keeps HttpException errorCode in the response body outside production', () => {
+    const configService = {
+      get: jest.fn().mockReturnValue('development'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'testField' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    const error = filter.catch(
+      new HttpException({ code: 'BAD_USER_INPUT', errorCode: 'X', errorMessage: '细节' }, 400),
+      host,
+    ) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({
+      code: 'BAD_USER_INPUT',
+      errorCode: 'X',
+      errorMessage: '细节',
+    });
+    expect(error.message).toBe('细节');
   });
 });

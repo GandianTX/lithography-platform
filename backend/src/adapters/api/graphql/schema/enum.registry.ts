@@ -22,6 +22,11 @@ import {
   VerificationRecordType,
 } from '@app-types/models/verification-record.types';
 import { RegisterTypeEnum } from '@app-types/services/register.types';
+import {
+  EngineerRegistrationApplicationStatus,
+  EngineerRegistrationReviewAction,
+  RegistrationOutcomeStatus,
+} from '@app-types/models/registration.types';
 import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
 import { registerEnumType } from '@nestjs/graphql';
 import { GqlPaginationMode, GqlSortDirection } from '@src/adapters/api/graphql/pagination.enums';
@@ -36,6 +41,11 @@ export function registerEnums(): void {
   registerEnumType(ThirdPartyLoginProviderEnum, { name: 'ThirdPartyLoginProviderEnum' });
   registerEnumType(ThirdPartyProviderEnum, { name: 'ThirdPartyProviderEnum' });
   registerEnumType(RegisterTypeEnum, { name: 'RegisterTypeEnum' });
+  registerEnumType(RegistrationOutcomeStatus, { name: 'RegistrationOutcomeStatus' });
+  registerEnumType(EngineerRegistrationApplicationStatus, {
+    name: 'EngineerRegistrationApplicationStatus',
+  });
+  registerEnumType(EngineerRegistrationReviewAction, { name: 'EngineerRegistrationReviewAction' });
   registerEnumType(Gender, { name: 'Gender' });
   registerEnumType(UserState, { name: 'UserState' });
   registerEnumType(SubjectType, { name: 'SubjectType' });

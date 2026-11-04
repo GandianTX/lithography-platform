@@ -9,6 +9,7 @@ import type {
   RepairRequestDetailView,
 } from '@src/modules/lithography/lithography.types';
 import type { RepairRequestService } from '@src/modules/lithography/repair-request.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import { AcceptRepairRequestUsecase } from './accept-repair-request.usecase';
 import type { GetEngineerRepairRequestDetailUsecase } from './get-engineer-repair-request-detail.usecase';
@@ -16,6 +17,11 @@ import type { GetEngineerRepairRequestDetailUsecase } from './get-engineer-repai
 type RepairRequestServiceMock = {
   readonly acceptRequest: jest.Mock<Promise<RepairRequestAcceptWriteResult>>;
   readonly findAcceptanceStatus: jest.Mock<Promise<RepairRequestAcceptanceStatusSnapshot | null>>;
+  readonly findOwnerOrganizationId: jest.Mock<Promise<number | null | undefined>>;
+};
+
+type OrganizationContextMock = {
+  readonly tryResolveForAccount: jest.Mock;
 };
 
 type GetEngineerRepairRequestDetailUsecaseMock = {
@@ -25,6 +31,7 @@ type GetEngineerRepairRequestDetailUsecaseMock = {
 /**
  * 接单用例单测：只验证 UseCase 自身持有的业务决策
  * （roles + activeRole 接单权限、入参校验、事务边界、写入参数来源、
+ * 组织范围（同组织/跨组织/无归属存量一律拒绝）、
  * 未命中裁决、写后读复用），
  * 不复制 QueryService 的细粒度读权限规则（读权限归读用例与 E2E 覆盖）。
  */
@@ -55,6 +62,7 @@ describe('AcceptRepairRequestUsecase', () => {
 
   let repairRequestService: RepairRequestServiceMock;
   let getEngineerRepairRequestDetailUsecase: GetEngineerRepairRequestDetailUsecaseMock;
+  let organizationContextQueryService: OrganizationContextMock;
   let transactionRunner: TransactionRunner;
   let usecase: AcceptRepairRequestUsecase;
 
@@ -62,9 +70,21 @@ describe('AcceptRepairRequestUsecase', () => {
     repairRequestService = {
       acceptRequest: jest.fn().mockResolvedValue({ affected: 1 }),
       findAcceptanceStatus: jest.fn().mockResolvedValue(null),
+      // 默认：工单归属与工程师当前组织一致（组织范围由下方决策用例单独覆盖）
+      findOwnerOrganizationId: jest.fn().mockResolvedValue(77),
     };
     getEngineerRepairRequestDetailUsecase = {
       execute: jest.fn().mockResolvedValue(detailView),
+    };
+    organizationContextQueryService = {
+      tryResolveForAccount: jest.fn().mockResolvedValue({
+        membershipId: 1,
+        organizationId: 77,
+        organizationCode: 'CLIENT_DEFAULT',
+        organizationName: '甲方默认组织',
+        organizationKind: 'CLIENT',
+        memberRole: 'ENGINEER',
+      }),
     };
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
@@ -72,6 +92,7 @@ describe('AcceptRepairRequestUsecase', () => {
     usecase = new AcceptRepairRequestUsecase(
       repairRequestService as unknown as RepairRequestService,
       getEngineerRepairRequestDetailUsecase as unknown as GetEngineerRepairRequestDetailUsecase,
+      organizationContextQueryService as unknown as TrustedOrganizationContextQueryService,
       transactionRunner,
     );
   });
@@ -145,6 +166,67 @@ describe('AcceptRepairRequestUsecase', () => {
         requestId,
         session: engineerSession,
       });
+    });
+  });
+
+  describe('组织范围决策', () => {
+    it('无组织归属的存量工单：NOT_FOUND，不解析组织、不写入（不向全体工程师开放）', async () => {
+      repairRequestService.findOwnerOrganizationId.mockResolvedValue(null);
+
+      await expect(usecase.execute({ requestId, session: engineerSession })).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+      });
+
+      expect(organizationContextQueryService.tryResolveForAccount).not.toHaveBeenCalled();
+      expect(repairRequestService.acceptRequest).not.toHaveBeenCalled();
+      expect(getEngineerRepairRequestDetailUsecase.execute).not.toHaveBeenCalled();
+    });
+
+    it('已归属工单且工程师同组织：允许接单', async () => {
+      repairRequestService.findOwnerOrganizationId.mockResolvedValue(77);
+
+      await expect(usecase.execute({ requestId, session: engineerSession })).resolves.toBe(
+        detailView,
+      );
+
+      expect(organizationContextQueryService.tryResolveForAccount).toHaveBeenCalledWith({
+        accountId: engineerSession.accountId,
+        transactionContext,
+      });
+      expect(repairRequestService.acceptRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('已归属工单但工程师属于其他组织：NOT_FOUND 且不写入（不泄露工单存在性）', async () => {
+      repairRequestService.findOwnerOrganizationId.mockResolvedValue(88);
+
+      await expect(usecase.execute({ requestId, session: engineerSession })).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+      });
+
+      expect(repairRequestService.acceptRequest).not.toHaveBeenCalled();
+      expect(getEngineerRepairRequestDetailUsecase.execute).not.toHaveBeenCalled();
+    });
+
+    it('已归属工单但工程师无组织归属：NOT_FOUND 且不写入', async () => {
+      repairRequestService.findOwnerOrganizationId.mockResolvedValue(77);
+      organizationContextQueryService.tryResolveForAccount.mockResolvedValue(null);
+
+      await expect(usecase.execute({ requestId, session: engineerSession })).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+      });
+
+      expect(repairRequestService.acceptRequest).not.toHaveBeenCalled();
+    });
+
+    it('工单不存在（归属读取为 undefined）：NOT_FOUND 且不解析组织、不写入', async () => {
+      repairRequestService.findOwnerOrganizationId.mockResolvedValue(undefined);
+
+      await expect(usecase.execute({ requestId, session: engineerSession })).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+      });
+
+      expect(organizationContextQueryService.tryResolveForAccount).not.toHaveBeenCalled();
+      expect(repairRequestService.acceptRequest).not.toHaveBeenCalled();
     });
   });
 

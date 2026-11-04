@@ -9,9 +9,20 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+/**
+ * 组织成员关系实体。
+ *
+ * 数据库另有生成列 `active_account_id`（ACTIVE 时为 account_id，否则 NULL）
+ * 与其唯一键 `uk_organization_membership_active_account`，用于保证「一个账号
+ * 只有一个有效组织」的库级约束。按项目既定规则，生成列必须以只读列声明，
+ * 保证 Entity 与迁移结构一致；写入由数据库计算，ORM 不参与。结构真源见迁移
+ * 1775401000000-alter-organization-membership-customer-single-active。
+ */
 @Entity('organization_membership', { comment: '组织成员关系表' })
+@Index('uk_organization_membership_active_account', ['activeAccountId'], { unique: true })
 @Index('uk_organization_membership_org_account', ['organizationId', 'accountId'], { unique: true })
 @Index('idx_organization_membership_account_status', ['accountId', 'status'])
+@Index('idx_organization_membership_org_role_status', ['organizationId', 'memberRole', 'status'])
 @ForeignKey('OrganizationEntity', ['organizationId'], ['id'], {
   name: 'fk_organization_membership_organization',
   onDelete: 'RESTRICT',
@@ -22,7 +33,10 @@ import {
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
-@Check('chk_organization_membership_role', "`member_role` IN ('SUPER_ADMIN', 'ENGINEER')")
+@Check(
+  'chk_organization_membership_role',
+  "`member_role` IN ('SUPER_ADMIN', 'ENGINEER', 'CUSTOMER')",
+)
 @Check('chk_organization_membership_status', "`status` IN ('ACTIVE', 'LEFT')")
 @Check(
   'chk_organization_membership_period',
@@ -42,7 +56,7 @@ export class OrganizationMembershipEntity {
     name: 'member_role',
     type: 'varchar',
     length: 32,
-    comment: '组织内角色：SUPER_ADMIN=组织管理员；ENGINEER=工程师',
+    comment: '组织内角色：SUPER_ADMIN=组织管理员；ENGINEER=工程师；CUSTOMER=客户',
   })
   memberRole!: string;
 
@@ -71,6 +85,18 @@ export class OrganizationMembershipEntity {
     comment: '退出时间（系统事件时间）',
   })
   leftAt!: Date | null;
+
+  @Column({
+    name: 'active_account_id',
+    type: 'int',
+    nullable: true,
+    insert: false,
+    update: false,
+    asExpression: "IF(`status` = 'ACTIVE', `account_id`, NULL)",
+    generatedType: 'STORED',
+    comment: '生成列：ACTIVE 时为账号ID，否则为 NULL（只读）',
+  })
+  activeAccountId!: number | null;
 
   @CreateDateColumn({
     name: 'created_at',

@@ -2,16 +2,18 @@
 
 import { AudienceTypeEnum, ThirdPartyProviderEnum } from '@app-types/models/account.types';
 import { trimTextPure } from '@core/common/text/text.helper';
-import { Field, InputType } from '@nestjs/graphql';
+import { Field, InputType, Int } from '@nestjs/graphql';
 import { Transform, TransformFnParams, Type } from 'class-transformer';
 import {
   IsEmail,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
+  Min,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
@@ -67,6 +69,11 @@ export class ThirdPartyRegisterInput {
   @Field(() => AudienceTypeEnum, { description: '客户端类型' })
   @IsEnum(AudienceTypeEnum, { message: '客户端类型无效' })
   audience!: AudienceTypeEnum;
+
+  @Field(() => Int, { description: '所选有效组织主键；第三方注册仅开通客户并绑定为成员' })
+  @IsInt({ message: '组织主键必须是整数' })
+  @Min(1, { message: '组织主键必须大于等于 1' })
+  organizationId!: number;
 
   // 平台特定字段
   @Field(() => WeAppExtensionInput, { nullable: true, description: '微信小程序特定数据' })

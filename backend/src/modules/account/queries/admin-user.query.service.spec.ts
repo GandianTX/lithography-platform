@@ -36,11 +36,13 @@ describe('AdminUserQueryService', () => {
     const qb = {
       leftJoinAndSelect: jest.fn(),
       innerJoinAndSelect: jest.fn(),
+      andWhere: jest.fn(),
       getRawMany: jest.fn(),
       getMany: jest.fn(),
     };
     qb.leftJoinAndSelect.mockReturnValue(qb);
     qb.innerJoinAndSelect.mockReturnValue(qb);
+    qb.andWhere.mockReturnValue(qb);
     return qb;
   };
 
@@ -137,6 +139,7 @@ describe('AdminUserQueryService', () => {
     (accountRepository.createQueryBuilder as jest.Mock).mockReset().mockReturnValue(qb);
     qb.leftJoinAndSelect.mockClear().mockReturnValue(qb);
     qb.innerJoinAndSelect.mockClear();
+    qb.andWhere.mockClear().mockReturnValue(qb);
     qb.getRawMany.mockClear();
     qb.getMany.mockClear();
     (accountRepository.findOne as jest.Mock).mockReset();
@@ -245,6 +248,25 @@ describe('AdminUserQueryService', () => {
       for (const field of [...allowedFilters, ...allowedSorts]) {
         expect(resolveColumn(field)).toMatch(/^account\./);
       }
+    });
+
+    it('组织范围以账号 ID 清单下推 IN，不改变其余筛选与分页', async () => {
+      await service.listAdminUsers(listQuery({ accountIds: [1, 2, 3] }));
+
+      // 下推为命名参数化的 IN，避免把 ID 拼进 SQL 文本
+      expect(qb.andWhere).toHaveBeenCalledWith('account.id IN (:...accountIds)', {
+        accountIds: [1, 2, 3],
+      });
+      expect(capturedSearchArg().params.filters).toEqual({});
+    });
+
+    it('组织范围为空清单时直接返回空页，不退化为不筛选的全库查询', async () => {
+      const page = await service.listAdminUsers(listQuery({ accountIds: [] }));
+
+      expect(page).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
+      // 关键：不得绕过组织范围去查库——那会把「没有可见账号」静默变成「全部账号」
+      expect(searchService.search).not.toHaveBeenCalled();
+      expect(qb.andWhere).not.toHaveBeenCalled();
     });
   });
 

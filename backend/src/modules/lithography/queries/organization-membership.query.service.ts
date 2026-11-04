@@ -73,6 +73,35 @@ export class OrganizationMembershipQueryService {
   }
 
   /**
+   * 指定组织内的有效成员账号 ID 列表（成员 ACTIVE 且组织 ACTIVE）。
+   *
+   * 供管理员用户管理按「管理员可信组织」收窄可见/可写范围：组织不存在或已停用时返回空
+   * 列表（调用方据此得到空页，而不是退化为全库账号）。账号 ID 清单由 usecase 下推给
+   * account 域 QueryService，避免 account 侧跨域导入组织 Entity。
+   *
+   * @param params.organizationId 可信解析得到的组织主键（不得取自客户端自报）
+   * @param params.transactionContext 可选事务上下文（写用例在同一事务连接上读最新事实）
+   */
+  async listActiveAccountIdsByOrganization(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<number[]> {
+    const organizationRepository = this.getOrganizationRepository(params.transactionContext);
+    const organization = await organizationRepository.findOne({
+      where: { id: params.organizationId, status: 'ACTIVE' },
+    });
+    if (!organization) {
+      return [];
+    }
+    const membershipRepository = this.getMembershipRepository(params.transactionContext);
+    const memberships = await membershipRepository.find({
+      where: { organizationId: params.organizationId, status: 'ACTIVE' },
+      order: { id: 'ASC' },
+    });
+    return memberships.map((item) => item.accountId);
+  }
+
+  /**
    * 批量装配组织事实，仅保留组织仍为 ACTIVE 的成员关系（单次 IN 查询，避免逐行读取）。
    */
   private async attachActiveOrganizations(

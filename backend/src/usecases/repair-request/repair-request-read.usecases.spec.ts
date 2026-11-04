@@ -3,6 +3,7 @@ import { RepairRequestAcceptanceViewStatus } from '@app-types/models/repair-requ
 import { REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { GetEngineerRepairRequestDetailUsecase } from './get-engineer-repair-request-detail.usecase';
 import { GetMyRepairRequestDetailUsecase } from './get-my-repair-request-detail.usecase';
 import { ListEngineerRepairRequestsUsecase } from './list-engineer-repair-requests.usecase';
@@ -32,6 +33,22 @@ const makeQueryService = () => ({
 });
 
 const session = { accountId: 10, roles: ['CUSTOMER'] };
+
+/** 可信组织上下文模拟：默认无组织归属（null），可按需返回单一有效成员事实 */
+const makeOrganizationContext = (organizationId: number | null = null) => ({
+  tryResolveForAccount: jest.fn().mockResolvedValue(
+    organizationId === null
+      ? null
+      : {
+          membershipId: 1,
+          organizationId,
+          organizationCode: 'CLIENT_DEFAULT',
+          organizationName: '甲方默认组织',
+          organizationKind: 'CLIENT',
+          memberRole: 'ENGINEER',
+        },
+  ),
+});
 
 describe('ListMyRepairRequestsUsecase', () => {
   it('OFFSET 分页透传至读侧查询服务，withTotal 缺省为 false', async () => {
@@ -105,10 +122,12 @@ describe('ListEngineerRepairRequestsUsecase', () => {
   const makeUsecase = (
     queryService = makeQueryService(),
     accountQueryService = makeAccountQueryService(),
+    organizationContextQueryService = makeOrganizationContext(),
   ) =>
     new ListEngineerRepairRequestsUsecase(
       queryService as unknown as RepairRequestQueryService,
       accountQueryService as unknown as AccountQueryService,
+      organizationContextQueryService as unknown as TrustedOrganizationContextQueryService,
     );
 
   it('合法范围（ALL / AVAILABLE / MINE / TAKEN_BY_OTHER）透传至读侧查询服务', async () => {
@@ -127,6 +146,7 @@ describe('ListEngineerRepairRequestsUsecase', () => {
         scope,
         filter: { equipmentModelId: undefined, customerAccountIds: undefined },
         pagination: { page: 1, pageSize: 10, withTotal: true },
+        viewerOrganizationId: null,
       });
     }
   });
@@ -452,6 +472,7 @@ describe('详情用例（客户 / 工程师入口）', () => {
     const usecase = new GetEngineerRepairRequestDetailUsecase(
       queryService as unknown as RepairRequestQueryService,
       accountQueryService as unknown as AccountQueryService,
+      makeOrganizationContext() as unknown as TrustedOrganizationContextQueryService,
     );
 
     const result = await usecase.execute({
@@ -463,6 +484,7 @@ describe('详情用例（客户 / 工程师入口）', () => {
       requestId: 3,
       session: { accountId: 20, roles: ['ENGINEER'] },
       scope: 'ENGINEER',
+      viewerOrganizationId: null,
     });
     // 一次批量资料查询（客户 + 接单工程师合并），无 N+1
     expect(accountQueryService.findAccountDisplayProfilesByAccountIds).toHaveBeenCalledTimes(1);
@@ -488,6 +510,7 @@ describe('详情用例（客户 / 工程师入口）', () => {
     const usecase = new GetEngineerRepairRequestDetailUsecase(
       queryService as unknown as RepairRequestQueryService,
       accountQueryService as unknown as AccountQueryService,
+      makeOrganizationContext() as unknown as TrustedOrganizationContextQueryService,
     );
 
     const result = await usecase.execute({

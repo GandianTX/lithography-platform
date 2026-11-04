@@ -29,6 +29,26 @@ import {
   seedTestAccounts,
   testAccountsConfig,
 } from '../utils/test-accounts';
+import {
+  buildSuiteOrganizationCodes,
+  requireOrganizationId,
+  seedTestMemberships,
+  seedTestOrganizations,
+  type TestOrganizationSpec,
+} from '../utils/test-organizations';
+
+/**
+ * 本轮专属组织：接单要求工单归属组织与工程师可信组织一致，
+ * 该规格的申请必须落在本轮自己的组织内，不能借用其他规格或开发库组织。
+ */
+const SUITE_ORGANIZATION_CODES = buildSuiteOrganizationCodes('RR_RESPONSE');
+const ORGANIZATION_SPECS: readonly TestOrganizationSpec[] = [
+  {
+    organizationCode: SUITE_ORGANIZATION_CODES.primary,
+    name: '维修回复夹具主组织（夹具专属）',
+    kind: 'CLIENT',
+  },
+];
 
 const CREATE_RESPONSE_MUTATION = `
   mutation CreateEngineerResponse($input: CreateEngineerResponseInput!) {
@@ -215,6 +235,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
   let customerAccountId: number;
   let hybridAccountId: number;
   let engineerNickname: string;
+  let primaryOrganizationId: number;
 
   const ownership = createOwnedResourceLedger();
   const requestIdByKey: Record<RequestKey, number> = Object.fromEntries(
@@ -352,6 +373,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       dataSource,
       helper: 'repair-request-response.e2e beforeAll',
       residue: {
+        organizations: ORGANIZATION_SPECS,
         accounts: residueAccounts,
         equipmentModels: [residueModel],
         repairRequests: residueRequests,
@@ -362,6 +384,50 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
       dataSource,
       createAccountUsecase: app.get(CreateAccountUsecase),
       includeKeys: ['staff', 'staffSecondary', 'guestPrimary', 'admin', 'hybridStaff'],
+      ownership,
+    });
+
+    // 接单要求「工单归属组织 == 工程师唯一可信组织」；本规格的统一组织关系
+    // 既是基础场景前提，也让「非接单人 / 他人已接单」的拒绝仍按同组织事实判定。
+    const organizationIdsByCode = await seedTestOrganizations({
+      dataSource,
+      organizations: ORGANIZATION_SPECS,
+      ownership,
+    });
+    primaryOrganizationId = requireOrganizationId(
+      organizationIdsByCode,
+      SUITE_ORGANIZATION_CODES.primary,
+    );
+    await seedTestMemberships({
+      dataSource,
+      organizationIdsByCode,
+      memberships: [
+        {
+          accountLoginName: testAccountsConfig.staff.loginName,
+          organizationCode: SUITE_ORGANIZATION_CODES.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.staffSecondary.loginName,
+          organizationCode: SUITE_ORGANIZATION_CODES.primary,
+          memberRole: 'ENGINEER',
+        },
+        {
+          accountLoginName: testAccountsConfig.guestPrimary.loginName,
+          organizationCode: SUITE_ORGANIZATION_CODES.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: testAccountsConfig.admin.loginName,
+          organizationCode: SUITE_ORGANIZATION_CODES.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+        {
+          accountLoginName: testAccountsConfig.hybridStaff.loginName,
+          organizationCode: SUITE_ORGANIZATION_CODES.primary,
+          memberRole: 'ENGINEER',
+        },
+      ],
       ownership,
     });
     engineerToken = await login({
@@ -470,6 +536,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
         requestNo: seed.requestNo,
         customerAccountId,
         equipmentModelId: model.id,
+        ownerOrganizationId: primaryOrganizationId,
         errorCode: `E-4${suffix}`,
         faultDescription: `${seed.scene}场景`,
         contentMd: `# E2E-${suffix}`,
@@ -509,6 +576,7 @@ describe('工程师追加处理回复写链路 (e2e)', () => {
           helper: 'repair-request-response.e2e afterAll',
           owned: ownership,
           residue: {
+            organizations: ORGANIZATION_SPECS,
             accounts: residueAccounts,
             equipmentModels: [residueModel],
             repairRequests: residueRequests,

@@ -14,12 +14,31 @@ import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.ent
 import { AiConversationEntity } from '@src/modules/lithography/entities/ai-conversation.entity';
 import { AiMessageEntity } from '@src/modules/lithography/entities/ai-message.entity';
 import { AiReportEntity } from '@src/modules/lithography/entities/ai-report.entity';
+import { ContentSubmissionAttachmentEntity } from '@src/modules/lithography/entities/content-submission-attachment.entity';
+import { ContentSubmissionEntity } from '@src/modules/lithography/entities/content-submission.entity';
+import { ContentSubmissionRevisionEntity } from '@src/modules/lithography/entities/content-submission-revision.entity';
+import { ContentSubmissionReviewEntity } from '@src/modules/lithography/entities/content-submission-review.entity';
+import { EngineerRegistrationApplicationEntity } from '@src/modules/lithography/entities/engineer-registration-application.entity';
 import { EngineerResponseEntity } from '@src/modules/lithography/entities/engineer-response.entity';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
+import { FaultCaseSubmissionDetailEntity } from '@src/modules/lithography/entities/fault-case-submission-detail.entity';
+import { MaintenanceReportAttachmentEntity } from '@src/modules/lithography/entities/maintenance-report-attachment.entity';
+import { MaintenanceReportEntity } from '@src/modules/lithography/entities/maintenance-report.entity';
+import { MaintenanceReportReviewEntity } from '@src/modules/lithography/entities/maintenance-report-review.entity';
+import { MaintenanceReportVersionEntity } from '@src/modules/lithography/entities/maintenance-report-version.entity';
+import { MaterialSubmissionDetailEntity } from '@src/modules/lithography/entities/material-submission-detail.entity';
+import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { ReferenceDocumentEntity } from '@src/modules/lithography/entities/reference-document.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
-import { DataSource, EntityManager, In } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  type FindOptionsWhere,
+  type ObjectLiteral,
+  type Repository,
+} from 'typeorm';
 
 import {
   assertDataSourceOnAllowedE2eDatabase,
@@ -190,6 +209,159 @@ const assertNoUnknownIds = (
 const expectedAccountByLoginName = new Map(
   Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map((config) => [config.loginName, config]),
 );
+
+type InboundReferenceCheck = { readonly label: string; readonly count: () => Promise<number> };
+
+/**
+ * 入向引用闭包：普通 spec 会删除账号、型号与维修申请，除本夹具自身创建且已逐字段核验的行外，
+ * 任何引用这些父行的外部记录都会以 RESTRICT 外键阻止删除。这里在**同一连接、同一事务、
+ * 首次 DELETE 之前**逐表统计，发现任意外部引用即失败关闭：不认领外部记录、不扩大删除集合。
+ * 维修报告版本 / 附件 / 审核依赖报告根行，报告根行一旦命中即已拒绝，因此对根行逐列统计即可
+ * 覆盖新增表的全部入向引用。AI 会话 / 消息 / 报告与工程师回复已由上方查询逐字段核验或拒绝，
+ * 参考资料（含 updated_by_account_id）已在下方专门查询中核验，故不在本闭包重复统计。
+ */
+const assertNoExternalInboundReferences = async (
+  manager: EntityManager,
+  helper: string,
+  sets: {
+    readonly accountIds: readonly number[];
+    readonly equipmentModelIds: readonly number[];
+    readonly repairRequestIds: readonly number[];
+  },
+): Promise<void> => {
+  const checks: InboundReferenceCheck[] = [];
+  const addInbound = <T extends ObjectLiteral>(params: {
+    readonly label: string;
+    readonly repo: Repository<T>;
+    readonly ids: readonly number[];
+    readonly where: (ids: number[]) => FindOptionsWhere<T>;
+  }): void => {
+    if (params.ids.length === 0) return;
+    const ids = [...params.ids];
+    checks.push({
+      label: params.label,
+      count: () => params.repo.count({ where: params.where(ids) }),
+    });
+  };
+
+  // 账号入向引用（AI 会话 / 报告、工程师回复已在夹具主图逐字段核验）
+  addInbound({
+    label: 'content_submission.submitted_by_account_id',
+    repo: manager.getRepository(ContentSubmissionEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ submittedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'content_submission_attachment.uploaded_by_account_id',
+    repo: manager.getRepository(ContentSubmissionAttachmentEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ uploadedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'content_submission_revision.confirmed_by_account_id',
+    repo: manager.getRepository(ContentSubmissionRevisionEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ confirmedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'content_submission_review.reviewed_by_account_id',
+    repo: manager.getRepository(ContentSubmissionReviewEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ reviewedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'engineer_registration_application.account_id',
+    repo: manager.getRepository(EngineerRegistrationApplicationEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ accountId: In(ids) }),
+  });
+  addInbound({
+    label: 'engineer_registration_application.reviewed_by_account_id',
+    repo: manager.getRepository(EngineerRegistrationApplicationEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ reviewedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'organization_membership.account_id',
+    repo: manager.getRepository(OrganizationMembershipEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ accountId: In(ids) }),
+  });
+  addInbound({
+    label: 'maintenance_report.maintenance_engineer_account_id',
+    repo: manager.getRepository(MaintenanceReportEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ maintenanceEngineerAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'maintenance_report.created_by_account_id',
+    repo: manager.getRepository(MaintenanceReportEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ createdByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'maintenance_report.updated_by_account_id',
+    repo: manager.getRepository(MaintenanceReportEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ updatedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'maintenance_report_version.submitted_by_account_id',
+    repo: manager.getRepository(MaintenanceReportVersionEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ submittedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'maintenance_report_attachment.uploaded_by_account_id',
+    repo: manager.getRepository(MaintenanceReportAttachmentEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ uploadedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'maintenance_report_review.reviewed_by_account_id',
+    repo: manager.getRepository(MaintenanceReportReviewEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ reviewedByAccountId: In(ids) }),
+  });
+
+  // 型号入向引用（申请自身的型号归属已在主图逐字段核验，参考资料在下方专门查询核验）
+  addInbound({
+    label: 'maintenance_report.equipment_model_id',
+    repo: manager.getRepository(MaintenanceReportEntity),
+    ids: sets.equipmentModelIds,
+    where: (ids) => ({ equipmentModelId: In(ids) }),
+  });
+  addInbound({
+    label: 'material_submission_detail.equipment_model_id',
+    repo: manager.getRepository(MaterialSubmissionDetailEntity),
+    ids: sets.equipmentModelIds,
+    where: (ids) => ({ equipmentModelId: In(ids) }),
+  });
+  addInbound({
+    label: 'fault_case_submission_detail.equipment_model_id',
+    repo: manager.getRepository(FaultCaseSubmissionDetailEntity),
+    ids: sets.equipmentModelIds,
+    where: (ids) => ({ equipmentModelId: In(ids) }),
+  });
+
+  // 申请入向引用（会话 / 报告 / 工程师回复已在主图逐字段核验）
+  addInbound({
+    label: 'maintenance_report.repair_request_id',
+    repo: manager.getRepository(MaintenanceReportEntity),
+    ids: sets.repairRequestIds,
+    where: (ids) => ({ repairRequestId: In(ids) }),
+  });
+
+  for (const check of checks) {
+    const count = await check.count();
+    if (count > 0) {
+      throw ownershipError(
+        helper,
+        `${check.label} 存在 ${count} 行外部记录引用本轮夹具行：拒绝删除，且不认领、不删除这些外部记录`,
+      );
+    }
+  }
+};
 
 /**
  * 解析并验证完整夹具图。所有查询都发生在同一事务中；返回前不会执行 DELETE。
@@ -600,7 +772,9 @@ const resolveAndVerifyFixture = async (
       : await documentRepo.find({
           where: [
             ...(equipmentModelIds.length > 0 ? [{ equipmentModelId: In(equipmentModelIds) }] : []),
-            ...(accountIds.length > 0 ? [{ createdByAccountId: In(accountIds) }] : []),
+            ...(accountIds.length > 0
+              ? [{ createdByAccountId: In(accountIds) }, { updatedByAccountId: In(accountIds) }]
+              : []),
           ],
           select: { id: true },
         });
@@ -610,6 +784,13 @@ const resolveAndVerifyFixture = async (
       `发现外部参考资料引用普通 spec 账号或型号：${documents.map((row) => row.id).join(',')}`,
     );
   }
+
+  // 新增表（维修报告 / 投稿 / 注册申请 / 组织成员等）的入向引用闭包：首次 DELETE 前失败关闭
+  await assertNoExternalInboundReferences(manager, helper, {
+    accountIds,
+    equipmentModelIds,
+    repairRequestIds,
+  });
 
   const resolved: AdminDocFixtureOwnership = {
     accountIds,

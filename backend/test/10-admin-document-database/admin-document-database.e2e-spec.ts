@@ -190,17 +190,22 @@ describe('AdminDocumentDatabase (e2e)', () => {
 
   describe('角色矩阵（计划表 S4.3）', () => {
     const listQuery = `
-      query AdminRepairRequests($pagination: PaginationArgs!) {
-        adminRepairRequests(pagination: $pagination) {
+      query AdminRepairRequests($filter: AdminRepairRequestFilterInput, $pagination: PaginationArgs!) {
+        adminRepairRequests(filter: $filter, pagination: $pagination) {
           items { id requestNo }
           total
         }
       }
     `;
     const pagination = { mode: 'OFFSET', page: 1, pageSize: 10, withTotal: true };
+    // 目标库允许保留非本规格的合法数据：以本规格夹具标记收窄，避免断言依赖「整表只有本规格数据」。
+    const scopedFilter = { requestNo: 'E2E-ADM-DOCDB-CORE' };
 
     it('SUPER_ADMIN 读取成功且 total 与列表一致', async () => {
-      const response = await executeGql(listQuery, adminToken, { pagination }).expect(200);
+      const response = await executeGql(listQuery, adminToken, {
+        pagination,
+        filter: scopedFilter,
+      }).expect(200);
 
       const page = (
         response.body as { data: { adminRepairRequests: { items: unknown[]; total: number } } }
@@ -233,15 +238,18 @@ describe('AdminDocumentDatabase (e2e)', () => {
     it('默认排除软删除申请：专属软删行不出现在列表与总数', async () => {
       const response = await executeGql(
         `
-        query ($pagination: PaginationArgs!) {
-          adminRepairRequests(pagination: $pagination) {
+        query ($filter: AdminRepairRequestFilterInput, $pagination: PaginationArgs!) {
+          adminRepairRequests(filter: $filter, pagination: $pagination) {
             items { id requestNo errorCode isAccepted customerNickname }
             total
           }
         }
       `,
         adminToken,
-        { pagination: { mode: 'OFFSET', page: 1, pageSize: 50, withTotal: true } },
+        {
+          pagination: { mode: 'OFFSET', page: 1, pageSize: 50, withTotal: true },
+          filter: { requestNo: 'E2E-ADM-DOCDB-CORE' },
+        },
       ).expect(200);
 
       const page = (
@@ -398,7 +406,7 @@ describe('AdminDocumentDatabase (e2e)', () => {
       expect(data.reportMismatch.requestMismatch).toBe(true);
     });
 
-    it('统计四类计数与夹具一致（参考资料全空 → 0，无演示数字）', async () => {
+    it('统计四类计数与库内真实口径一致（参考资料按管理员组织范围为空 → 0）', async () => {
       const response = await executeGql(
         `
         query {
@@ -416,11 +424,22 @@ describe('AdminDocumentDatabase (e2e)', () => {
       const stats = (
         response.body as { data: { adminDocumentDatabaseStats: Record<string, number> } }
       ).data.adminDocumentDatabaseStats;
+      // 目标库允许保留非本规格的合法数据：统计口径按用例注释（申请排除 deprecated、
+      // AI 会话/报告计全量、参考资料按管理员组织范围）对齐库内真实计数，不再假设空库。
+      const [repairRows, conversationRows, reportRows] = await Promise.all([
+        dataSource.query<Array<{ n: number | string }>>(
+          'SELECT COUNT(*) AS n FROM repair_request WHERE deprecated = 0',
+        ),
+        dataSource.query<Array<{ n: number | string }>>(
+          'SELECT COUNT(*) AS n FROM ai_conversation',
+        ),
+        dataSource.query<Array<{ n: number | string }>>('SELECT COUNT(*) AS n FROM ai_report'),
+      ]);
       expect(stats).toEqual({
-        repairRequestTotal: 2,
+        repairRequestTotal: Number(repairRows[0]?.n ?? -1),
         referenceDocumentTotal: 0,
-        aiConversationTotal: 2,
-        aiReportTotal: 2,
+        aiConversationTotal: Number(conversationRows[0]?.n ?? -1),
+        aiReportTotal: Number(reportRows[0]?.n ?? -1),
       });
     });
   });

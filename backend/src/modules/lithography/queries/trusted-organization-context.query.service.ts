@@ -56,4 +56,31 @@ export class TrustedOrganizationContextQueryService {
         );
     }
   }
+
+  /**
+   * 可选组织解析：用于「无组织归属也可成立」的存量兼容写入路径
+   * （如客户自注册账号创建本人工单）。
+   *
+   * - 恰有一条 → 返回事实；
+   * - 无有效关系 → 返回 null（不伪造组织，也不授予组织范围权限）；
+   * - 多条关系 → 仍视为异常，抛出 `ORGANIZATION_AMBIGUOUS_MEMBERSHIP`。
+   */
+  async tryResolveForAccount(params: {
+    accountId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<OrganizationMembershipFact | null> {
+    const facts = await this.membershipQueryService.listActiveMembershipsByAccount(params);
+    const resolution = resolveSingletonOrganizationContext(facts);
+    switch (resolution.kind) {
+      case 'RESOLVED':
+        return resolution.fact;
+      case 'NO_ACTIVE_MEMBERSHIP':
+        return null;
+      case 'AMBIGUOUS_MEMBERSHIP':
+        throw new DomainError(
+          ORGANIZATION_ERROR.AMBIGUOUS_MEMBERSHIP,
+          '当前账号存在多个有效组织成员关系，无法确定组织范围',
+        );
+    }
+  }
 }

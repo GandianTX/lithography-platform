@@ -6,12 +6,16 @@ import { ACCOUNT_ERROR, DomainError } from '@core/common/errors';
 import { PasswordPolicyService } from '@core/common/password/password-policy.service';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { EngineerRegistrationService } from '@src/modules/lithography/engineer-registration.service';
+import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { PinoLogger } from 'nestjs-pino';
 import { RegisterWithEmailUsecase } from './register-with-email.usecase';
 import { RegisterTypeEnum } from '@app-types/services/register.types';
 
 describe('RegisterWithEmailUsecase（注册事务语义）', () => {
   const ACCOUNT_ID = 101;
+  const ORGANIZATION_ID = 11;
 
   let accountService: {
     createAccountEntity: jest.Mock;
@@ -27,6 +31,9 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     getUserAccountViewById: jest.Mock;
   };
   let passwordPolicyService: { validatePassword: jest.Mock };
+  let organizationQueryService: { findActiveRegistrationOption: jest.Mock };
+  let organizationMembershipService: { insertMembership: jest.Mock };
+  let engineerRegistrationService: { insertApplication: jest.Mock };
   let logger: { setContext: jest.Mock; info: jest.Mock; warn: jest.Mock; error: jest.Mock };
 
   /** 模拟 TransactionRunner：成功提交、异常回滚，并把事务上下文透传给回调 */
@@ -43,6 +50,7 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     loginPassword: 'Str0ng!Passw0rd',
     nickname: '新用户',
     type: RegisterTypeEnum.CUSTOMER,
+    organizationId: ORGANIZATION_ID,
     clientIp: '127.0.0.1',
   });
 
@@ -72,6 +80,17 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     };
     passwordPolicyService = {
       validatePassword: jest.fn().mockReturnValue({ isValid: true, errors: [] }),
+    };
+    organizationQueryService = {
+      findActiveRegistrationOption: jest
+        .fn()
+        .mockResolvedValue({ id: ORGANIZATION_ID, name: '测试组织' }),
+    };
+    organizationMembershipService = {
+      insertMembership: jest.fn().mockResolvedValue({ membershipId: 1 }),
+    };
+    engineerRegistrationService = {
+      insertApplication: jest.fn().mockResolvedValue({ applicationId: 9001 }),
     };
     logger = {
       setContext: jest.fn(),
@@ -103,6 +122,9 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
       accountService as unknown as AccountService,
       accountQueryService as unknown as AccountQueryService,
       passwordPolicyService as unknown as PasswordPolicyService,
+      organizationQueryService as unknown as OrganizationQueryService,
+      organizationMembershipService as unknown as OrganizationMembershipService,
+      engineerRegistrationService as unknown as EngineerRegistrationService,
       logger as unknown as PinoLogger,
       transactionRunner as never,
     );
@@ -152,6 +174,86 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
       await usecase.execute(validParams());
 
       expect(accountService.updateAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('所选组织与开通结果分支', () => {
+    it('客户注册：同事务绑定所选组织为 CUSTOMER 成员，返回 REGISTERED 且无申请', async () => {
+      const result = await usecase.execute(validParams());
+
+      expect(result).toMatchObject({
+        success: true,
+        registrationStatus: 'REGISTERED',
+        applicationId: null,
+      });
+      expect(organizationQueryService.findActiveRegistrationOption).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: ORGANIZATION_ID, transactionContext: txContext }),
+      );
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: ORGANIZATION_ID,
+          accountId: ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.CUSTOMER,
+        },
+        txContext,
+      );
+      expect(engineerRegistrationService.insertApplication).not.toHaveBeenCalled();
+    });
+
+    it('工程师注册：账号双状态 PENDING，不建成员关系，落待审申请并返回 PENDING_REVIEW', async () => {
+      const result = await usecase.execute({
+        ...validParams(),
+        type: RegisterTypeEnum.ENGINEER,
+        applicationNote: '希望加入组织',
+      });
+
+      const accountArg = accountService.createAccountEntity.mock.calls[0][0];
+      expect(accountArg.accountData).toMatchObject({
+        status: AccountStatus.PENDING,
+        identityHint: IdentityTypeEnum.ENGINEER,
+      });
+      const userInfoArg = accountService.createUserInfoEntity.mock.calls[0][0];
+      expect(userInfoArg.userInfoData).toMatchObject({
+        userState: UserState.PENDING,
+        accessGroup: [IdentityTypeEnum.ENGINEER],
+        metaDigest: [IdentityTypeEnum.ENGINEER],
+      });
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(engineerRegistrationService.insertApplication).toHaveBeenCalledWith(
+        {
+          accountId: ACCOUNT_ID,
+          organizationId: ORGANIZATION_ID,
+          applicationNote: '希望加入组织',
+          submittedAt: expect.any(Date),
+        },
+        txContext,
+      );
+      expect(result).toMatchObject({
+        success: true,
+        registrationStatus: 'PENDING_REVIEW',
+        applicationId: 9001,
+      });
+    });
+
+    it('所选组织不存在或已停用：账号零落库，事务回滚', async () => {
+      organizationQueryService.findActiveRegistrationOption.mockResolvedValue(null);
+
+      await expect(usecase.execute(validParams())).rejects.toMatchObject({
+        code: ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE,
+      });
+
+      expect(accountService.saveAccount).not.toHaveBeenCalled();
+      expect(accountService.saveUserInfo).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+    });
+
+    it('仅允许客户或工程师注册类型，其他类型在事务前即拒绝', async () => {
+      await expect(
+        usecase.execute({ ...validParams(), type: 'SUPER_ADMIN' as unknown as RegisterTypeEnum }),
+      ).rejects.toMatchObject({ code: ACCOUNT_ERROR.REGISTRATION_FAILED });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
     });
   });
 

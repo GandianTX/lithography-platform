@@ -13,6 +13,7 @@ import {
   RepairRequestEngineerListScope,
 } from '@src/modules/lithography/lithography.types';
 import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { enrichEngineerListItems } from './enrich-repair-request-nicknames';
 import { normalizeEngineerListFilter } from './repair-request-list-filter.input.normalize';
 
@@ -36,6 +37,7 @@ export class ListEngineerRepairRequestsUsecase {
   constructor(
     private readonly repairRequestQueryService: RepairRequestQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
@@ -76,6 +78,10 @@ export class ListEngineerRepairRequestsUsecase {
       }
     }
 
+    const organizationFact = await this.organizationContextQueryService.tryResolveForAccount({
+      accountId: params.session.accountId,
+    });
+
     const queryPage = await this.repairRequestQueryService.listByEngineer({
       engineerAccountId: params.session.accountId,
       scope,
@@ -84,6 +90,7 @@ export class ListEngineerRepairRequestsUsecase {
         customerAccountIds,
       },
       pagination: { page, pageSize, withTotal: withTotal ?? false },
+      viewerOrganizationId: organizationFact?.organizationId ?? null,
     });
     return {
       items: await enrichEngineerListItems(

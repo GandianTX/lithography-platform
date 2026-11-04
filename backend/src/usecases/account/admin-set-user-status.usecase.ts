@@ -14,6 +14,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -81,6 +83,8 @@ export class AdminSetUserStatusUsecase {
   constructor(
     private readonly accountService: AccountService,
     private readonly adminUserQueryService: AdminUserQueryService,
+    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -103,7 +107,12 @@ export class AdminSetUserStatusUsecase {
     let view: AdminUserView;
     try {
       view = await this.transactionRunner.run((transactionContext) =>
-        this.setStatusInTransaction({ transactionContext, accountId, status }),
+        this.setStatusInTransaction({
+          transactionContext,
+          adminAccountId: command.session.accountId,
+          accountId,
+          status,
+        }),
       );
     } catch (error) {
       // 事务内各阶段的异常已由 setStatusInTransaction 的 catch 记录日志并收敛为
@@ -143,10 +152,11 @@ export class AdminSetUserStatusUsecase {
    */
   private async setStatusInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
+    adminAccountId: number;
     accountId: number;
     status: AccountStatus.ACTIVE | AccountStatus.INACTIVE;
   }): Promise<AdminUserView> {
-    const { transactionContext, accountId, status } = params;
+    const { transactionContext, adminAccountId, accountId, status } = params;
     let phase: AdminSetUserStatusPhase = 'LOCK_TARGET';
 
     try {
@@ -154,6 +164,9 @@ export class AdminSetUserStatusUsecase {
       const lockedView = await loadWritableAdminUserTarget({
         accountService: this.accountService,
         adminUserQueryService: this.adminUserQueryService,
+        organizationContextQueryService: this.organizationContextQueryService,
+        organizationMembershipQueryService: this.organizationMembershipQueryService,
+        adminAccountId,
         accountId,
         actionLabel: '修改状态',
         transactionContext,

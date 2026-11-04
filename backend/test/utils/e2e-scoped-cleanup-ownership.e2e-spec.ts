@@ -151,15 +151,19 @@ const createMembership = async (
   dataSource: DataSource,
   organizationId: number,
   accountId: number,
+  spec: { status?: 'ACTIVE' | 'LEFT' } = {},
 ): Promise<number> => {
   const repository = dataSource.getRepository(OrganizationMembershipEntity);
+  // 库级约束 uk_organization_membership_active_account 保证「一个账号只有一个有效组织」，
+  // 需要同账号第二条成员关系时只能是 LEFT（并写入 left_at 满足 chk_organization_membership_period）。
+  const status = spec.status ?? 'ACTIVE';
   const saved = await repository.save(
     repository.create({
       organizationId,
       accountId,
       memberRole: 'ENGINEER',
-      status: 'ACTIVE',
-      leftAt: null,
+      status,
+      leftAt: status === 'LEFT' ? new Date() : null,
     }),
   );
   return saved.id;
@@ -1045,10 +1049,12 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
       ownedAccountId,
     );
     await ownMembershipFromDb(dataSource, testLedger, ownedMembershipId);
+    // 同账号的第二个组织成员关系必须为 LEFT（有效组织唯一），但仍是范围内的外部引用
     const externalMembershipId = await createMembership(
       dataSource,
       externalOrganizationId,
       ownedAccountId,
+      { status: 'LEFT' },
     );
     await ownMembershipFromDb(dataSource, testLedger, externalMembershipId);
 

@@ -15,6 +15,20 @@ import {
 @Index('idx_repair_request_engineer', ['acceptedByEngineerAccountId'])
 @Index('idx_repair_request_equipment_model', ['equipmentModelId'])
 @Index('idx_repair_request_created_at', ['createdAt'])
+@Index('uk_repair_request_id_owner', ['id', 'ownerOrganizationId'], { unique: true })
+@Index('idx_repair_request_owner_created', ['ownerOrganizationId', 'createdAt'])
+@Index('idx_repair_request_owner_status', ['ownerOrganizationId', 'handlingStatus'])
+@Index('idx_repair_request_handling_recorder', ['handlingRecordedByAccountId'])
+@ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
+  name: 'fk_repair_request_owner_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('AccountEntity', ['handlingRecordedByAccountId'], ['id'], {
+  name: 'fk_repair_request_handling_recorder',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
 @ForeignKey('AccountEntity', ['customerAccountId'], ['id'], {
   name: 'fk_repair_request_customer_account',
   onDelete: 'RESTRICT',
@@ -39,6 +53,26 @@ import {
 @Check(
   'chk_repair_request_deletion_consistency',
   '((`deprecated` = 0 AND `deleted_at` IS NULL) OR (`deprecated` = 1 AND `deleted_at` IS NOT NULL AND `is_accepted` = 0))',
+)
+@Check(
+  'chk_repair_request_handling_result',
+  "`handling_result` IS NULL OR `handling_result` IN ('FIXED', 'PART_PURCHASED', 'PROVIDE_PLAN_SELF_EXECUTE', 'INTERRUPTED', 'UNREPAIRABLE')",
+)
+@Check(
+  'chk_repair_request_handling_status',
+  "`handling_status` IS NULL OR `handling_status` IN ('COMPLETED', 'IN_PROGRESS', 'UNRESOLVED')",
+)
+@Check(
+  'chk_repair_request_handling_mapping',
+  "((`handling_result` IS NULL AND `handling_status` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_status` IS NOT NULL AND ((`handling_result` = 'FIXED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PART_PURCHASED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PROVIDE_PLAN_SELF_EXECUTE' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'INTERRUPTED' AND `handling_status` = 'IN_PROGRESS') OR (`handling_result` = 'UNREPAIRABLE' AND `handling_status` = 'UNRESOLVED'))))",
+)
+@Check(
+  'chk_repair_request_handling_requires_accepted',
+  '`handling_result` IS NULL OR `is_accepted` = 1',
+)
+@Check(
+  'chk_repair_request_handling_time',
+  "((`handling_result` IS NULL AND `handling_status` IS NULL AND `handling_recorded_at` IS NULL AND `handling_ended_at` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_status` IS NOT NULL AND `handling_recorded_at` IS NOT NULL AND ((`handling_status` = 'IN_PROGRESS' AND `handling_ended_at` IS NULL) OR (`handling_status` IN ('COMPLETED', 'UNRESOLVED') AND `handling_ended_at` IS NOT NULL))))",
 )
 export class RepairRequestEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '维修申请主键ID' })
@@ -95,6 +129,58 @@ export class RepairRequestEntity {
     comment: '接单时间（系统事件时间）',
   })
   acceptedAt!: Date | null;
+
+  @Column({
+    name: 'owner_organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '所属组织ID；存量无证据时为空',
+  })
+  ownerOrganizationId!: number | null;
+
+  @Column({
+    name: 'handling_result',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    comment: '处理结果：FIXED/PART_PURCHASED/PROVIDE_PLAN_SELF_EXECUTE/INTERRUPTED/UNREPAIRABLE',
+  })
+  handlingResult!: string | null;
+
+  @Column({
+    name: 'handling_status',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: '实际处理状态：COMPLETED/IN_PROGRESS/UNRESOLVED；服务端按固定映射维护',
+  })
+  handlingStatus!: string | null;
+
+  @Column({
+    name: 'handling_recorded_at',
+    type: 'timestamp',
+    precision: 3,
+    nullable: true,
+    comment: '处理结果记录时间（事件时间）',
+  })
+  handlingRecordedAt!: Date | null;
+
+  @Column({
+    name: 'handling_recorded_by_account_id',
+    type: 'int',
+    nullable: true,
+    comment: '处理结果记录人账号ID',
+  })
+  handlingRecordedByAccountId!: number | null;
+
+  @Column({
+    name: 'handling_ended_at',
+    type: 'timestamp',
+    precision: 3,
+    nullable: true,
+    comment: '终结时间；完成/未完成必填，处理中必须为空',
+  })
+  handlingEndedAt!: Date | null;
 
   @Column({ type: 'boolean', default: false, comment: '是否已撤回/作废' })
   deprecated!: boolean;
