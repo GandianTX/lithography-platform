@@ -753,22 +753,8 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
   };
 
   /**
-   * 故障用例的最终收尾（不依赖断言成功）：按「已知定义」走受保护收尾路径，
-   * 只有当前同名对象的定义与预期一致时才删除；不做按名称的裸 DROP。
-   */
-  const disposeExpectedTestTrigger = async (name: string, expectedBody: string): Promise<void> => {
-    const tracker = createTriggerOwnershipTracker();
-    const record: OwnedTriggerRecord = {
-      name,
-      tableName: ROLLBACK_TRIGGER_TABLE,
-      body: expectedBody,
-      fact: null,
-    };
-    await disposeOwnedTriggerRecord(dataSource, record, tracker);
-  };
-
-  /**
    * 逐项、逐记录独立收尾：任何一项失败只记录该阶段错误，不阻断后续尝试。
+   * 只遍历**传入 tracker 的真实未完成登记**，不构造记录、不按名称推断归属。
    */
   const disposeTrackerRecords = async (
     label: string,
@@ -1599,7 +1585,10 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
       expect((failures[1].error as Error).message).toContain('模拟触发器销毁失败');
       expect((failures[2].error as Error).message).toContain('未完成安全收尾');
     } finally {
-      await disposeExpectedTestTrigger(triggerName, ROLLBACK_TRIGGER_BODY);
+      // 只遍历本轮 tracker 的真实未完成登记；不新建空 tracker、不拼装记录
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
     }
 
     expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
@@ -1630,7 +1619,10 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
       expect((failures[0].error as Error).message).toContain('模拟触发器销毁失败');
       expect((failures[2].error as Error).message).toContain('模拟夹具清理失败');
     } finally {
-      await disposeExpectedTestTrigger(triggerName, ROLLBACK_TRIGGER_BODY);
+      // 同上：收尾只依赖本轮登记，不依赖此前的断言结果
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
     }
 
     expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
@@ -1854,9 +1846,11 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
     // 现场保留：替换对象登记仍为待收尾，未因失败而伪装成已清理
     expect(replacementTracker.remaining()).toHaveLength(1);
 
-    // 恢复后按已知替换定义收尾；原记录对应对象已不存在，受保护收尾为无害 no-op
-    await disposeExpectedTestTrigger(triggerName, replacementBody);
-    await disposeTrackerRecords('原对象', dataSource, originalTracker, []);
+    // 恢复后按替换对象自己的登记账本收尾；原记录对应对象已不存在，受保护收尾为无害 no-op
+    const recoveryErrors: Error[] = [];
+    await disposeTrackerRecords('替换对象', dataSource, replacementTracker, recoveryErrors);
+    await disposeTrackerRecords('原对象', dataSource, originalTracker, recoveryErrors);
+    expect(recoveryErrors).toEqual([]);
     expect(originalTracker.remaining()).toEqual([]);
     expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
   });
@@ -2080,6 +2074,243 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
 
     // 替身路径不产生 DDL：真实库中该名称从未被创建
     expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 第十九轮 P1/P3：销毁入口只接受「本 tracker 在 CREATE 成功后登记且仍待收尾」的记录。
+  // 以下回归在 DROP 之前验证归属，未登记记录零查询零 DDL。
+  // ---------------------------------------------------------------------------
+
+  it('销毁入口：空 tracker + 拼装记录 → 归属核验拒绝，零查询零 DROP', async () => {
+    const triggerName = nextTriggerName('p1emptytracker');
+    const emptyTracker = createTriggerOwnershipTracker();
+    const assembled: OwnedTriggerRecord = {
+      name: triggerName,
+      tableName: ROLLBACK_TRIGGER_TABLE,
+      body: ROLLBACK_TRIGGER_BODY,
+      fact: null,
+    };
+    const stub = createStubTriggerDataSource({
+      metadataResponses: [
+        [
+          {
+            name: triggerName,
+            tableName: ROLLBACK_TRIGGER_TABLE,
+            definition: ROLLBACK_TRIGGER_BODY,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      disposeOwnedTriggerRecord(stub.dataSource, assembled, emptyTracker),
+    ).rejects.toThrow(/归属校验/);
+    // 归属核验先于许可 / 库门禁 / 元数据回读，因此没有任何查询或 DDL
+    expect(stub.calls).toEqual([]);
+    expect(emptyTracker.remaining()).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('销毁入口：记录登记在另一个 tracker → 归属核验拒绝，本轮对象逐字段不变', async () => {
+    const triggerName = nextTriggerName('p1wrongtracker');
+    const ownerTracker = createTriggerOwnershipTracker();
+    const otherTracker = createTriggerOwnershipTracker();
+    let owned: Awaited<ReturnType<typeof createOwnedTrigger>> | undefined;
+
+    try {
+      owned = await createOwnedTrigger({
+        dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        tracker: ownerTracker,
+      });
+
+      const stub = createStubTriggerDataSource({ metadataResponses: [] });
+      await expect(
+        disposeOwnedTriggerRecord(stub.dataSource, ownerTracker.records()[0], otherTracker),
+      ).rejects.toThrow(/归属校验/);
+      expect(stub.calls).toEqual([]);
+
+      // 拒绝后本轮对象仍在，且与创建事实一致
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).toEqual(owned);
+      expect(otherTracker.remaining()).toEqual([]);
+      expect(ownerTracker.remaining().map((record) => record.name)).toEqual([triggerName]);
+    } finally {
+      for (const record of [...ownerTracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, ownerTracker);
+      }
+    }
+
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('销毁入口：复制记录与登记对象不同 → 归属核验拒绝，不发出任何 DROP', async () => {
+    const triggerName = nextTriggerName('p1copiedrecord');
+    const tracker = createTriggerOwnershipTracker();
+
+    try {
+      await createOwnedTrigger({
+        dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        tracker,
+      });
+      const copied = { ...tracker.records()[0] };
+      const stub = createStubTriggerDataSource({ metadataResponses: [] });
+
+      await expect(disposeOwnedTriggerRecord(stub.dataSource, copied, tracker)).rejects.toThrow(
+        /归属校验/,
+      );
+      expect(stub.calls).toEqual([]);
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).not.toBeNull();
+    } finally {
+      for (const record of [...tracker.remaining()]) {
+        await disposeOwnedTriggerRecord(dataSource, record, tracker);
+      }
+    }
+
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('销毁入口：重复收尾 → 第二次在 DROP 前拒绝，不重复删除、不重新认领', async () => {
+    const triggerName = nextTriggerName('p1repeatdispose');
+    const tracker = createTriggerOwnershipTracker();
+    const factRow = [
+      {
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        definition: ROLLBACK_TRIGGER_BODY,
+      },
+    ];
+    const stub = createStubTriggerDataSource({ metadataResponses: [[], factRow, factRow] });
+
+    await withPhysicalCleanupConsent(async () => {
+      await createOwnedTrigger({
+        dataSource: stub.dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        tracker,
+      });
+      const record = tracker.records()[0];
+      await disposeOwnedTriggerRecord(stub.dataSource, record, tracker);
+      expect(tracker.remaining()).toEqual([]);
+
+      const callsBefore = stub.calls.length;
+      await expect(disposeOwnedTriggerRecord(stub.dataSource, record, tracker)).rejects.toThrow(
+        /归属校验/,
+      );
+      // 已落账记录再次收尾：零新增查询、零 DROP
+      expect(stub.calls.slice(callsBefore)).toEqual([]);
+      expect(tracker.records()).toHaveLength(1);
+    });
+
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('同名同表同定义碰撞：第二次 CREATE 被拒且登记为 0 → 原对象只由自己的账本收尾', async () => {
+    const triggerName = nextTriggerName('p1samecollision');
+    const ownerTracker = createTriggerOwnershipTracker();
+    const collisionTracker = createTriggerOwnershipTracker();
+    const collisionCleanupErrors: Error[] = [];
+    const ownerCleanupErrors: Error[] = [];
+    let mainError: unknown;
+
+    // P1：从原触发器 CREATE 之前进入外层保护；原对象清理只在外层 finally
+    try {
+      await createOwnedTrigger({
+        dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        tracker: ownerTracker,
+      });
+
+      // 同名、同表、同定义：仍然必须被同名预检拒绝，且碰撞方登记为 0
+      await expect(
+        createOwnedTrigger({
+          dataSource,
+          name: triggerName,
+          tableName: ROLLBACK_TRIGGER_TABLE,
+          body: ROLLBACK_TRIGGER_BODY,
+          tracker: collisionTracker,
+        }),
+      ).rejects.toThrow(/同名预检/);
+      expect(collisionTracker.records()).toEqual([]);
+
+      // 碰撞方收尾在保护范围内执行；失败只记录，不阻断后续断言
+      await disposeTrackerRecords(
+        '碰撞失败登记',
+        dataSource,
+        collisionTracker,
+        collisionCleanupErrors,
+      );
+
+      // 关键断言：碰撞失败不得删除原对象
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).not.toBeNull();
+    } catch (error) {
+      mainError = error;
+    } finally {
+      // P2：两项收尾各自独立尝试，全部尝试结束后统一汇总
+      await disposeTrackerRecords(
+        '碰撞失败登记',
+        dataSource,
+        collisionTracker,
+        collisionCleanupErrors,
+      );
+      await disposeTrackerRecords('本轮对象', dataSource, ownerTracker, ownerCleanupErrors);
+    }
+
+    const failures: unknown[] = [
+      ...(mainError === undefined ? [] : [mainError]),
+      ...collisionCleanupErrors,
+      ...ownerCleanupErrors,
+    ];
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `同名碰撞用例失败：主错误=${mainError === undefined ? '无' : '有'}` +
+          `，碰撞方收尾错误=${collisionCleanupErrors.length}` +
+          `，原对象收尾错误=${ownerCleanupErrors.length}`,
+      );
+    }
+
+    expect(collisionTracker.remaining()).toEqual([]);
+    expect(ownerTracker.remaining()).toEqual([]);
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+  });
+
+  it('原对象创建成功后中途断言失败 → 仍按真实账本回收，原始错误保留', async () => {
+    const triggerName = nextTriggerName('p1midassert');
+    const tracker = createTriggerOwnershipTracker();
+    const cleanupErrors: Error[] = [];
+    let mainError: unknown;
+
+    // 外层保护从 CREATE 之前开始；收尾不依赖断言成功
+    try {
+      await createOwnedTrigger({
+        dataSource,
+        name: triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        tracker,
+      });
+      // 真实断言失败：对象仍在，却期望不存在
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+    } catch (error) {
+      mainError = error;
+    } finally {
+      await disposeTrackerRecords('本轮对象', dataSource, tracker, cleanupErrors);
+    }
+
+    expect(cleanupErrors).toEqual([]);
+    expect(tracker.remaining()).toEqual([]);
+    // 原对象由自己的创建账本回收，不因断言失败而残留
+    expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+    expect(mainError).toBeInstanceOf(Error);
+    expect((mainError as Error).message).toContain('toBeNull');
   });
 
   it('包装入口：触发器收尾成功后夹具清理失败 → 仅报告夹具清理错误，触发器零残留', async () => {

@@ -1518,3 +1518,151 @@ KEEP 与不变证据：
 - 历史沿用：迁移链、结构契约、并发套件结果未重跑。
 - 未执行：独立复审；`test:e2e:worker`、`test:e2e:smoke`。
 - 提交审计：本轮不暂存、不 commit、不 push、不回复 PR、不合并；`check:entity-scope` 失败仍为分支历史沿用条件。
+
+## 2026-11-04 第十九轮：触发器删除必须来自本轮真实创建登记
+
+### 1. 变更范围
+
+- 仅改 `backend/test/utils/e2e-trigger-ownership.ts`、两份 ownership 规格与本记录；未改业务代码、权限、Entity 或 Migration，也未纳入 V3。
+- 归属判定改为「创建阶段登记」：tracker 内部持有真实创建记录集合，记录以对象身份 + 模块私有创建品牌判定；`register` 拒绝非 `createOwnedTrigger` 在 CREATE 成功后构造的记录。
+- 两个销毁入口（`disposeOwnedTrigger` / `disposeOwnedTriggerRecord`）在**任何查询或 DDL 之前**先核验「该记录由传入 tracker 登记且仍处于待收尾状态」；`disposeOwnedTrigger` 只在 tracker 的真实登记记录上收尾，传入事实必须与登记事实（名称 / 表 / 注入体）一致，不再据此拼装新记录。
+- 删除 production 的 `disposeExpectedTestTrigger()`（新建空 tracker + 拼装 record 的回退）；失败用例的 `finally` 只遍历对应 tracker 的真实未完成登记。原对象与替换对象继续使用各自账本，收尾顺序不互相推断。
+- 删除顺序统一为：核验本轮创建登记及所属 tracker → 核验许可与实际目标库 → 核验当前对象名称 / 表 / 定义 → `DROP` → 标记登记已收尾。定义不匹配仍拒绝删除，保留零盲删约束。
+- 保留第十五至十八轮已完成并复验的两项 RQ 修复，其判定逻辑未回退。
+
+### 2. 本轮新增回归（各规格 5 条）
+
+| 回归                                                           | 预期                                             |
+| -------------------------------------------------------------- | ------------------------------------------------ |
+| 空 tracker + 拼装记录                                          | 归属核验拒绝，零查询零 DROP                      |
+| 记录登记在另一个 tracker                                       | 归属核验拒绝，本轮对象逐字段不变                 |
+| 复制记录（与登记对象不同一）                                   | 归属核验拒绝，零 DROP                            |
+| 重复收尾                                                       | 第二次在 DROP 前拒绝，零新增查询、不重新认领     |
+| 同名、同表、同定义碰撞                                         | 第二次 CREATE 被拒且登记为 0，finally 不删原对象 |
+| 创建成功后回读失败 / 外部替换 / 主错与双收尾错同时发生（沿用） | 真实登记保留、替换对象零删除、错误分别保留       |
+
+替身路径与真实路径分别标注：以上失败注入均作用在真实 helper 入口；替身 DataSource 只记录 SQL，不触库。
+
+### 3. 触发器真实 DDL 入口清单（本轮复核）
+
+| 入口                                 | 创建事实 / 登记                                    | 归属核验                                   | 收尾                     |
+| ------------------------------------ | -------------------------------------------------- | ------------------------------------------ | ------------------------ |
+| `createOwnedTrigger`（唯一创建实现） | CREATE 成功后立即登记名称 / 表 / 注入体 + 创建品牌 | 登记时校验 tracker；回读三要素匹配才补事实 | DDL 隐式提交，由登记收尾 |
+| `disposeOwnedTriggerRecord`          | 只接受本 tracker 的同一登记对象                    | **先于许可 / 库门禁 / 回读**               | DROP 后标记已收尾        |
+| `disposeOwnedTrigger`（事实入口）    | 只在真实登记记录上收尾，不拼装                     | 先于许可 / 库门禁 / 回读                   | DROP 后标记已收尾        |
+| production 4b / 4e 外部替换模拟 DROP | 模拟外部删除本轮对象，不产生新资源                 | 紧接由 helper 登记替换对象                 | 替换对象按自身账本收尾   |
+| production 替换代理                  | 代理内通过 helper 创建并登记替换对象               | 与直接入口一致                             | 定义不匹配即拒绝删除     |
+| 替身 DataSource 用例                 | 不产生真实 DDL，仅记录 SQL                         | 不触库                                     | 断言调用序列             |
+
+### 4. 定向与静态验证
+
+| 验证                                                       | 结果  |
+| ---------------------------------------------------------- | ----- |
+| `admin-document-database-production-ownership`             | 42/42 |
+| `repair-request-fixture-ownership`                         | 35/35 |
+| `npm run typecheck` / `tsc -p tsconfig.spec.json --noEmit` | 通过  |
+| 变更文件 ESLint / Prettier / `git diff --check`            | 通过  |
+
+定向合计 **77/77**，退出码 0；日志 `/tmp/e2e-round19-repair.log`、`/tmp/e2e-round19-production.log`。
+
+### 5. 完整 core（KEEP 保留模式）
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标     | 结果                                                                          |
+| -------- | ----------------------------------------------------------------------------- |
+| 开关生效 | 日志确认 `skipDbCleanup=true, allowDbCleanup=false`，白名单 `lithography_e2e` |
+| 规格     | **51/51 通过，0 失败**                                                        |
+| 用例     | **767 total / 760 passed / 0 failed / 7 skipped**                             |
+| 退出码   | **0**                                                                         |
+| 日志     | `/tmp/e2e-core-r19.log`                                                       |
+
+KEEP 与不变证据（本轮自建脚本 `keep-r19`，摘要算法与 r12/r13 不同，只做本轮内部三点比较）：
+
+- KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R19_*`，六张表各 1 行；文件哨兵 `/tmp/e2e-keep-file-r19.txt`（SHA-256 `2951…c844`）。
+- 运行前后快照：`KEEP_ROWS / KEEP_REFS / KEEP_FILE / MIGRATIONS / TRIGGERS / RESIDUE` 全部通过；整库摘要 `28703c3c…9837`（35 张表 / 31 条迁移 / 触发器 0）在 core 运行前后**完全相同**。
+- 回收后整库摘要 `6e95bbf3…2a5f`，与运行前基线 `/tmp/e2e-keep-r19-d0.json` **完全一致**；KEEP 六行回收 `remaining=0`，文件哨兵已删除。
+- 残留断言：`e2e%` / `testrr%` 账号、`E2E-%` 型号 / 工单 / 组织计数均为 **0**；`information_schema.TRIGGERS` 为 **0** 条。
+- 一次性脚本 `/tmp/keep-r19.js`、`/tmp/inspect-r19.js` 已删除；未使用 Seed、整表清理或 KEEP 删除后重跑。
+
+### 6. 证据分层与本轮边界
+
+- 本轮结果属于**修复方自测**；独立复核尚未执行，不能表述为“已通过评审”，也不沿用旧测试数量。
+- 未执行：独立复审；`test:e2e:worker`、`test:e2e:smoke`；迁移链、结构契约、并发套件沿用既有结论未重跑。
+- 提交审计：本轮不暂存、不 commit、不 push、不回复 PR、不合并；`check:entity-scope` 失败仍为分支历史沿用条件。完整 core 结果对应本轮代码树，提交前需重新确认与新 SHA 一致。
+
+## 2026-11-04 第二十轮：碰撞回归的原触发器收尾编排
+
+### 1. 变更范围
+
+- 仅改两份 ownership 规格与本记录；未改 helper、业务代码、Entity、Migration，未涉及 V3。上一轮的 tracker 归属校验保持原样。
+- 两份规格的同名同表同定义碰撞用例统一改为：
+
+```text
+建立 ownerTracker、collisionTracker
+外层 try（从原触发器 CREATE 之前开始）
+  创建原对象
+  验证第二次创建因碰撞失败、登记为 0
+  执行碰撞方收尾
+  验证原对象保持不变
+外层 finally
+  独立尝试碰撞方剩余登记收尾
+  独立尝试原对象登记收尾
+汇总主错误和各项收尾错误后抛出
+```
+
+- 原 `ownerTracker` 的清理从 try 之后的顺序执行移入外层 `finally`：CREATE 成功后，任何断言或碰撞方收尾失败都不再跳过原对象清理；原对象仍只能由自己的创建账本回收。
+- 碰撞验证错误、碰撞方收尾错误、原对象收尾错误分别用命名数组记录，全部收尾尝试结束后以 `AggregateError` 统一抛出；不再向收尾入口传入临时空数组吞掉错误。production 的主错误与双收尾错误用例中，恢复阶段同样改为命名数组并断言为空。
+
+### 2. 本轮新增回归
+
+| 规格       | 新增                                                                        |
+| ---------- | --------------------------------------------------------------------------- |
+| 工单       | 原对象创建成功后中途断言失败（真实断言）→ 仍按真实账本回收、原始错误保留    |
+| 工单       | 主错误与收尾错误同时发生（DROP 注入失败后重试）→ 两类错误均保留、最终零残留 |
+| production | 原对象创建成功后中途断言失败（真实断言）→ 仍按真实账本回收、原始错误保留    |
+
+production 既有的「主错误与两项收尾错误同时发生」用例继续保留，并纳入本轮错误汇总断言。
+
+### 3. 定向与静态验证
+
+| 验证                                               | 结果      |
+| -------------------------------------------------- | --------- |
+| `admin-document-database-production-ownership`     | 43/43     |
+| `repair-request-fixture-ownership`                 | 37/37     |
+| 定向合计                                           | **80/80** |
+| 定向退出码                                         | 0         |
+| typecheck / ESLint / Prettier / `git diff --check` | 通过      |
+
+日志：`/tmp/e2e-round20-repair.log`、`/tmp/e2e-round20-production.log`。
+
+### 4. 完整 core（KEEP 保留模式）
+
+```bash
+E2E_SKIP_DB_CLEANUP=true E2E_ALLOW_DB_CLEANUP=0 E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:core
+```
+
+| 指标   | 结果                                              |
+| ------ | ------------------------------------------------- |
+| 规格   | **51/51 通过，0 失败**                            |
+| 用例   | **772 total / 765 passed / 0 failed / 7 skipped** |
+| 退出码 | **0**                                             |
+| 日志   | `/tmp/e2e-core-r20.log`                           |
+
+> 统计更正说明（2026-11-04）：上表用例数由原始日志 `/tmp/e2e-core-r20.log` 逐份复核得出（51 个不同规格、无重复、51 条 `Tests:` 汇总），修正了此前被漏计的含 skip 规格行。本次**仅按原始日志修正汇总，未重新运行实库测试**；规格数、失败数、跳过数与退出码未变化。
+
+KEEP 与不变证据（本轮自建脚本 `keep-r20`，摘要算法与 r12/r13 不同，只做本轮内部三点比较）：
+
+- KEEP 构成：显式 ID 990001–990006，标记 `KEEP_R20_*`，六张表各 1 行；文件哨兵 `/tmp/e2e-keep-file-r20.txt`（SHA-256 `8246dfda…`）。
+- 运行前后快照：`KEEP_ROWS / KEEP_REFS / KEEP_FILE / MIGRATIONS / TRIGGERS / RESIDUE` 全部通过；整库摘要 `fcd26ee2…a27a`（35 张表 / 31 条迁移 / 触发器 0）在 core 运行前后**完全相同**。
+- 回收后整库摘要 `6e95bbf3…2a5f`，与运行前基线 `/tmp/e2e-keep-r20-d0.json` **完全一致**（同一值也是上一轮基线）；KEEP 六行回收 `remaining=0`，文件哨兵已删除。
+- 残留断言：`e2e%` / `testrr%` 账号、`E2E-%` 型号 / 工单 / 组织计数均为 **0**；`information_schema.TRIGGERS` 为 **0** 条。
+- 一次性脚本 `/tmp/keep-r20.js` 已删除；未使用 Seed、整表清理或 KEEP 删除后重跑。
+
+### 5. 证据分层与本轮边界
+
+- 本轮结果属于**修复方自测**；独立复核尚未执行，不能表述为“已通过评审”，也不沿用旧测试数量。
+- 未执行：独立复审；`test:e2e:worker`、`test:e2e:smoke`；迁移链、结构契约、并发套件沿用既有结论未重跑。
+- 提交审计：本轮停在**未暂存、未 commit、未 push**状态，未回复或操作 PR；完整 core 结果对应本轮代码树，进入提交审计前需按新 SHA 复核。

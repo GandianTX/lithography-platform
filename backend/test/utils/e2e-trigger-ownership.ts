@@ -2,7 +2,9 @@
 
 /**
  * E2E 故障注入触发器的**对象所有权**工具（第五轮 Review P3；第十五轮 P1 修订；
- * 第十六轮 P1：追踪器改为强制前提，移除无登记创建 / 盲删回退通道）。
+ * 第十六轮 P1：追踪器改为强制前提，移除无登记创建 / 盲删回退通道；
+ * 第十九轮 P1：销毁入口只接受「本 tracker 在 CREATE 成功后登记且仍待收尾」的记录，
+ * 归属依据来自创建阶段的登记格式与对象身份，不再由名称 / 表 / 定义推断）。
  *
  * 背景：为了证明「后序删除失败时整批回滚」，测试会在隔离库创建触发器注入确定性失败。
  * 但 MySQL 的触发器是**库级对象**，DDL 还会隐式提交当前事务——如果测试使用固定名称并
@@ -17,7 +19,9 @@
  *   **不等待元数据回读成功，也不等待创建函数返回**；回读抛错时登记记录仍然存在，
  *   由统一收尾入口处理；
  * - 收尾只删除「本轮登记且当前定义仍可核实匹配」的对象，且一律使用 `DROP TRIGGER IF EXISTS`
- *   （对象已消失时是无害 no-op，不会掩盖真实错误）；
+ *   （对象已消失时是无害 no-op，不会掩盖真实错误）；收尾顺序固定为
+ *   「核验本轮创建登记及所属 tracker → 核验许可与实际目标库 → 核验当前对象名称 / 表 / 定义
+ *   → DROP → 标记登记已收尾」，未登记记录在第一步即被拒绝，零查询零 DDL；
  * - 回读失败导致定义未知时，用调用方注入的触发器体核验当前定义（MySQL 原样保存单语句体）；
  *   仍无法匹配即视为「无法完成安全核验」，保留待收尾记录并报告，绝不盲删；
  * - DDL 只在「显式清理许可 + 实际库名白名单」双门禁通过后执行。
@@ -44,6 +48,12 @@ export type OwnedTriggerRecord = {
   fact: OwnedTriggerFact | null;
 };
 
+/**
+ * 模块私有品牌：只有 `createOwnedTrigger` 在 CREATE 成功后构造的记录才会进入此集合。
+ * 因此「手工拼装 / 复制」的记录无法登记，也就无法通过销毁入口的归属核验。
+ */
+const helperCreatedRecords = new WeakSet<OwnedTriggerRecord>();
+
 /** 本轮触发器登记表：记录创建事实，并追踪尚未完成安全收尾的记录 */
 export type TriggerOwnershipTracker = {
   /** 本轮登记的全部记录（含待核验） */
@@ -54,24 +64,49 @@ export type TriggerOwnershipTracker = {
   register(record: OwnedTriggerRecord): void;
   /** 内部：收尾成功标记 */
   settle(name: string): void;
+  /**
+   * 内部：该记录是否由**本 tracker** 在 CREATE 成功后登记、且仍处于待收尾状态。
+   * 以对象身份 + 登记集合判定；名称 / 表 / 定义只用于核验当前库对象，不能证明创建归属。
+   */
+  ownsRecord(record: OwnedTriggerRecord): boolean;
+  /** 内部：本 tracker 中仍待收尾、名称与给定事实一致的登记记录（无则 null） */
+  pendingRecordFor(name: string): OwnedTriggerRecord | null;
 };
 
 export const createTriggerOwnershipTracker = (): TriggerOwnershipTracker => {
   const registered: OwnedTriggerRecord[] = [];
-  const pending = new Set<string>();
+  const pending = new Set<OwnedTriggerRecord>();
 
   return {
     records: () => registered,
-    remaining: () => registered.filter((record) => pending.has(record.name)),
+    remaining: () => registered.filter((record) => pending.has(record)),
     register: (record: OwnedTriggerRecord): void => {
-      if (!registered.some((entry) => entry.name === record.name)) {
-        registered.push(record);
-        pending.add(record.name);
+      // 登记依据只能来自创建阶段：外部拼装的记录不被接受
+      if (!helperCreatedRecords.has(record)) {
+        throw new Error(
+          '[触发器登记] 拒绝登记：记录不是 createOwnedTrigger 在 CREATE 成功后构造的本轮创建事实',
+        );
       }
+      if (registered.includes(record)) {
+        return;
+      }
+      if (registered.some((entry) => entry.name === record.name)) {
+        throw new Error(`[触发器登记] 拒绝登记：本轮 tracker 已登记同名触发器 ${record.name}`);
+      }
+      registered.push(record);
+      pending.add(record);
     },
     settle: (name: string): void => {
-      pending.delete(name);
+      for (const record of [...pending]) {
+        if (record.name === name) {
+          pending.delete(record);
+        }
+      }
     },
+    ownsRecord: (record: OwnedTriggerRecord): boolean =>
+      record !== null && typeof record === 'object' && pending.has(record),
+    pendingRecordFor: (name: string): OwnedTriggerRecord | null =>
+      registered.find((record) => pending.has(record) && record.name === name) ?? null,
   };
 };
 
@@ -100,7 +135,9 @@ const assertTriggerOwnershipTracker = (
     typeof tracker.register !== 'function' ||
     typeof tracker.settle !== 'function' ||
     typeof tracker.records !== 'function' ||
-    typeof tracker.remaining !== 'function'
+    typeof tracker.remaining !== 'function' ||
+    typeof tracker.ownsRecord !== 'function' ||
+    typeof tracker.pendingRecordFor !== 'function'
   ) {
     throw new Error(
       `[${helper}] 阶段=追踪器校验 拒绝执行：必须提供 createTriggerOwnershipTracker() 创建的本轮登记 tracker；` +
@@ -192,6 +229,8 @@ export const createOwnedTrigger = async (params: {
     body: params.body,
     fact: null,
   };
+  // 先打上创建阶段品牌，再登记：只有经过 CREATE 的记录才可能进入 tracker
+  helperCreatedRecords.add(record);
   tracker.register(record);
 
   const recorded = await readOwnedTriggerFact(params.dataSource, params.name);
@@ -211,6 +250,24 @@ export const createOwnedTrigger = async (params: {
   // 只补齐事实，record.body 保留原始创建预期，后续定义比较不以当前定义回填预期
   record.fact = recorded;
   return recorded;
+};
+
+/**
+ * 归属核验：记录必须由**传入的 tracker** 在 CREATE 成功后登记，且仍待收尾。
+ * 该步骤先于许可 / 库门禁 / 定义核验，未登记记录不产生任何查询或 DDL。
+ */
+const assertRegisteredPendingRecord = (
+  tracker: TriggerOwnershipTracker,
+  record: OwnedTriggerRecord,
+  helper: string,
+): OwnedTriggerRecord => {
+  if (!tracker.ownsRecord(record)) {
+    throw new Error(
+      `[${helper}] 阶段=归属校验 拒绝收尾：记录未由本 tracker 在 CREATE 成功后登记，或已完成收尾；` +
+        '禁止按名称 / 表 / 定义推断创建归属。',
+    );
+  }
+  return record;
 };
 
 /** 收尾前核验：名称 / 目标表 / 可核实的定义事实（回读失败时用注入体核验） */
@@ -242,36 +299,51 @@ const disposeRecord = async (
 /**
  * 收尾：只删除「本轮确认创建且定义仍匹配」的对象。
  * 当前同名对象定义不同 → 视为被外部替换，拒绝删除并抛出可观察错误。
- * `tracker` 为必需参数（与创建一致），收尾成功后在 tracker 上落账。
+ * `tracker` 为必需参数（与创建一致），且只在 tracker **真实的登记记录**上收尾；
+ * 传入的事实必须与创建阶段登记的名称 / 表 / 注入体一致，不用于拼装新记录。
  */
 export const disposeOwnedTrigger = async (
   ds: DataSource,
   owned: OwnedTriggerFact,
   tracker: TriggerOwnershipTracker,
 ): Promise<void> => {
-  const validated = assertTriggerOwnershipTracker(tracker, 'disposeOwnedTrigger');
-  await disposeRecord(
-    ds,
-    {
-      name: owned.name,
-      tableName: owned.tableName,
-      body: owned.definition,
-      fact: owned,
-    },
-    'disposeOwnedTrigger',
-  );
-  validated.settle(owned.name);
+  const helper = 'disposeOwnedTrigger';
+  const validated = assertTriggerOwnershipTracker(tracker, helper);
+  const record = validated.pendingRecordFor(owned.name);
+  if (record === null) {
+    throw new Error(
+      `[${helper}] 阶段=归属校验 拒绝收尾：触发器 ${owned.name} 未由本 tracker 在 CREATE 成功后登记，` +
+        '或已完成收尾；禁止按名称推断创建归属。',
+    );
+  }
+  const expectedDefinition = record.fact?.definition ?? record.body;
+  if (
+    owned.tableName !== record.tableName ||
+    normalizeDefinition(owned.definition) !== normalizeDefinition(expectedDefinition)
+  ) {
+    throw new Error(
+      `[${helper}] 阶段=归属校验 拒绝收尾：给定事实与创建阶段登记不一致` +
+        `（登记表 ${record.tableName}）`,
+    );
+  }
+  await disposeRecord(ds, record, helper);
+  validated.settle(record.name);
 };
 
-/** 收尾一条本轮登记记录（含回读失败的待核验记录）；tracker 为必需参数。 */
+/**
+ * 收尾一条本轮登记记录（含回读失败的待核验记录）；tracker 为必需参数。
+ * 只有「该记录就是本 tracker 登记的同一对象且仍待收尾」时才进入许可 / 库门禁 / 定义核验与 DROP。
+ */
 export const disposeOwnedTriggerRecord = async (
   ds: DataSource,
   record: OwnedTriggerRecord,
   tracker: TriggerOwnershipTracker,
 ): Promise<void> => {
-  const validated = assertTriggerOwnershipTracker(tracker, 'disposeOwnedTriggerRecord');
-  await disposeRecord(ds, record, 'disposeOwnedTriggerRecord');
-  validated.settle(record.name);
+  const helper = 'disposeOwnedTriggerRecord';
+  const validated = assertTriggerOwnershipTracker(tracker, helper);
+  const owned = assertRegisteredPendingRecord(validated, record, helper);
+  await disposeRecord(ds, owned, helper);
+  validated.settle(owned.name);
 };
 
 /** 故障用例的失败阶段：不同阶段错误分别保留，不互相覆盖 */
