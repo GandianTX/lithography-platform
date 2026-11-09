@@ -415,16 +415,16 @@ END
 
 现有（第 36 条，[1775501400000:41-60](file:///home/gandiantx/lithography-platform/backend/src/infrastructure/database/migrations/1775501400000-create-local-sync-and-package-for-v13.migration.ts#L41-L60)）：`id bigint AI PK`、`installation_id char(36) NOT NULL`、`organization_id int NOT NULL`、`setting_source varchar(24) NOT NULL`、`is_current tinyint(1) NOT NULL DEFAULT 0`、`created_at/updated_at timestamp(3) NOT NULL`；`uk_local_company_setting_scope(installation_id, organization_id)`；两个 FK RESTRICT；两个枚举 CHECK。
 
-| 目标列                  | 精确规格                                                        | 旧数据处理                                                                                   |
-| ----------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `initialized_at`        | `timestamp(3) NOT NULL`（S1 4.10 名称，非 `initialization_at`） | 先加可空列，按 `created_at` 回填（行创建即首次初始化，可证明），再改 NOT NULL                |
-| `backup_interval_hours` | `smallint unsigned NOT NULL DEFAULT 72`                         | 设计固定默认 72，直接回填                                                                    |
-| `backup_enabled`        | `boolean NOT NULL DEFAULT TRUE`                                 | 设计固定默认 TRUE                                                                            |
+| 目标列                  | 精确规格                                                        | 旧数据处理                                                                                                         |
+| ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `initialized_at`        | `timestamp(3) NOT NULL`（S1 4.10 名称，非 `initialization_at`） | 先加可空列，按 `created_at` 回填（行创建即首次初始化，可证明），再改 NOT NULL                                      |
+| `backup_interval_hours` | `smallint unsigned NOT NULL DEFAULT 72`                         | 设计固定默认 72，直接回填                                                                                          |
+| `backup_enabled`        | `boolean NOT NULL DEFAULT TRUE`                                 | 设计固定默认 TRUE                                                                                                  |
 | `next_backup_at`        | `timestamp(3) NULL DEFAULT NULL`（S5 定稿）                     | 先加可空列；历史行不派生（`backup_enabled=FALSE`、`next_backup_at=NULL`），新行由应用层写入非空值；见 Q11 推荐方案 |
-| `last_auto_success_at`  | `timestamp(3) NULL DEFAULT NULL`                                | 保持 NULL（无历史成功事实）                                                                  |
-| `last_auto_failure_at`  | `timestamp(3) NULL DEFAULT NULL`                                | 保持 NULL（无历史失败事实）                                                                  |
-| `failure_reason`        | `text NULL DEFAULT NULL`                                        | 保持 NULL                                                                                    |
-| `auto_upload_enabled`   | `boolean NOT NULL DEFAULT FALSE`                                | 设计默认 FALSE，不上云                                                                       |
+| `last_auto_success_at`  | `timestamp(3) NULL DEFAULT NULL`                                | 保持 NULL（无历史成功事实）                                                                                        |
+| `last_auto_failure_at`  | `timestamp(3) NULL DEFAULT NULL`                                | 保持 NULL（无历史失败事实）                                                                                        |
+| `failure_reason`        | `text NULL DEFAULT NULL`                                        | 保持 NULL                                                                                                          |
+| `auto_upload_enabled`   | `boolean NOT NULL DEFAULT FALSE`                                | 设计默认 FALSE，不上云                                                                                             |
 
 新增约束：`chk_local_company_setting_backup_interval CHECK (backup_interval_hours > 0)`（0 小时周期无业务意义）。保留 `setting_source`、`is_current` 及其枚举 CHECK；不新增“同机唯一 current”约束（设计未要求，且兼容列不承担该语义）。
 
@@ -1097,129 +1097,129 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 ### 13.0 工作区核对结论
 
-| 已完成（本轮不重复实现）                                                                   | 证据                                                                                                              |
-| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| 新输入 AI 有用性 1—4；库内 1—5；历史 5 未显式修改时保留                                    | `maintenance-report.input.normalize.ts`、`update-maintenance-report-draft.usecase.ts`、`maintenance-report-usecases.spec.ts` |
-| 1775501800000 将有用性约束恢复为 1—5                                                       | `1775501800000-restore-maintenance-report-helpfulness-range.migration.ts`                                          |
-| 1775501100000 已在任何 ALTER 前对 A/B 做兼容预检并失败关闭                                  | `assertLegacyDataCompatible`                                                                                       |
-| 新表实体、`lithography.module.ts` 注册与 `api-entity-metadata.spec.ts` 已存在              | 源码                                                                                                              |
-| 管理员初始化、专用清理、三路径实库规格已有骨架                                             | `admin-bootstrap.ts`、`e2e-scoped-cleanup.ts`、`v13-upgrade-from-31-state.realdb.spec.ts`                          |
+| 已完成（本轮不重复实现）                                                      | 证据                                                                                                                         |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 新输入 AI 有用性 1—4；库内 1—5；历史 5 未显式修改时保留                       | `maintenance-report.input.normalize.ts`、`update-maintenance-report-draft.usecase.ts`、`maintenance-report-usecases.spec.ts` |
+| 1775501800000 将有用性约束恢复为 1—5                                          | `1775501800000-restore-maintenance-report-helpfulness-range.migration.ts`                                                    |
+| 1775501100000 已在任何 ALTER 前对 A/B 做兼容预检并失败关闭                    | `assertLegacyDataCompatible`                                                                                                 |
+| 新表实体、`lithography.module.ts` 注册与 `api-entity-metadata.spec.ts` 已存在 | 源码                                                                                                                         |
+| 管理员初始化、专用清理、三路径实库规格已有骨架                                | `admin-bootstrap.ts`、`e2e-scoped-cleanup.ts`、`v13-upgrade-from-31-state.realdb.spec.ts`                                    |
 
 本轮只处理尚未覆盖的 F1—F5、历史身份、闭单兼容、管理员真实角色、专用清理闭包、结构校验与 SOP；不回退上述已完成修复。
 
 ### 13.1 表 A：目标字段与约束
 
-| 需求依据                 | 现状                                                                 | 目标                                                                                                                       | 旧数据处理                                                       | 消费者                     | 验收                                                   |
-| ------------------------ | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------- | ------------------------------------------------------ |
-| 4.10 公司备份计划        | `local_company_setting` 无 8 列                                      | 补 `initialized_at`、`backup_interval_hours`、`backup_enabled`、`next_backup_at`、`last_auto_success_at`、`last_auto_failure_at`、`failure_reason`、`auto_upload_enabled`；`chk_backup_interval > 0` | `initialized_at=created_at`；周期 72；新行默认 TRUE/FALSE；`next_backup_at` 见 Q11 | 无现有读写方               | 空表可插完整行；周期 0 被拒；旧行回填与 `created_at` 一致 |
-| 4.19 离线资格            | 授权表无签名凭据三列                                                 | 补 `signed_claims json NULL`、`permission_version int unsigned NULL`、`last_verified_at timestamp(3) NULL`；三值同空或同满；版本 >=1 | 历史行保持三 NULL，不伪造签名、不以 `authorized_at` 冒充核验       | 无现有读写方               | 三空/三满合法；半套被拒；版本 0 被拒                    |
-| 4.7/4.12 同步回执        | 唯一键含 `source_system`，缺安装来源/远端资源/接收时间               | 补 `source_installation_id char(36) NOT NULL`、`remote_resource_id varchar(64) NULL`、`received_at timestamp(3) NULL`；唯一键改四列 `(organization_id, resource_type, record_uuid, version_no)` | 表预期 0 行；非空即失败关闭；重复组先扫描，不合并、不删除         | 无现有读写方               | 同四列不同来源被拒；重复组在 DDL 前中止                  |
-| 4.15 备份资产            | 仅 `storage_reference`/`file_sha256` 等                                | 补 `installation_id`、`format_version`、`data_version`、`manifest_checksum`、`local_reference`、`cloud_reference`、`encryption_key_id`、`verified_at`、`retention_until`、`failure_reason`、`deleted_at`、`local_cleanup_error`；三条 CHECK；安装索引 | 表预期 0 行；非空即失败关闭；不从 `storage_reference` 猜云端地址   | 无现有读写方               | 清理态与本地引用/删除时间互斥；摘要长度 64；版本 >=1    |
-| 4.15 恢复运行            | 保护包 NOT NULL、`started_at` NOT NULL、缺目标安装/检查结果/确认      | 保护包与 `started_at` 可空；补 `target_installation_id NOT NULL`、`check_status NOT NULL`、`confirmation json NULL`；状态补 PENDING；CASE 执行门 | 表预期 0 行；非空即失败关闭；`check_status` 见 Q13                 | 无现有读写方               | PENDING 无保护包；RUNNING 必须有保护包/确认/开始时间    |
-| 4.5 故障原始事实         | `status/source` 与生命周期混用；无原始八字段、`phase_code`、`is_active` | 生命周期列改名；补 `main_error`、`unit_error`、`error_type`、`gpib_status`、`status`、`source`、`phase_code`、`is_active`；`description`/`action` 复用现有列；不新增 `(report_id,step_code)` 唯一键 | 改名保留原值；原始列 NULL；表非空即失败关闭（无法证明当前分支）   | 无现有读写方               | 原始文本不影响生命周期；生命周期越界被拒；超长被拒      |
-| Q7/Q9 工单闭单与历史     | 原因约束拒历史行；闭单 CHECK 存在 UNKNOWN 漏洞                       | `repair_request.is_historical` 持久标记；冻结 ID 集合外一律新行；闭单 CHECK 改 `CASE ... ELSE FALSE`；原因约束对历史行豁免 | 冻结清单在库外；迁移只在集合命中时置 1；不编造原因、不改旧评分     | 工单读取/处置/管理修订     | 双 NULL 合法；单边 NULL 与非法组合 FALSE；历史行豁免     |
-| 4.6 管理员               | 以 `guest` 事实创建 `SUPER_ADMIN`；无组织成员事实；静默 UNCHANGED    | 复用 `convergeAccountRole` + 字段加密；写 `SUPER_ADMIN` 角色事实与 ACTIVE `organization_membership`；无效角色事实明确拒绝 | 不重置密码；不覆盖冲突身份；既有角色事实无效即拒绝                 | 登录/权限/管理 Query       | 真实登录、首改密、受保护 Query、合法管理、越权拒绝      |
-| 专用清理                 | 仅按父关系/前缀清理，缺引用闭包                                       | ByIds 与 Residue 共用同连接同事务许可+目标+所有权+引用闭包预检；集合外引用拒绝 | 未登记子行不认领；残留恢复不凭前缀/父关系取得所有权               | read/accept/production-input/ownership | 零破坏、事实漂移、合法清理、重复执行、后序回滚、异常关闭 |
-| 结构校验                 | 仅列存在/NOT NULL；索引列序；FK 列序；CHECK 仅存在                    | 校验类型/长度/符号/NULL/默认/生成表达式；索引唯一性与列序；FK 列序与规则；CHECK 规范化定义；负例证明拒绝漂移 | 不全局小写、不去括号；字符串与 JSON 路径保持原样                   | 部署校验入口               | 结构同名不同定义被拒；规范化不掩盖真实漂移              |
+| 需求依据             | 现状                                                                    | 目标                                                                                                                                                                                                                                                  | 旧数据处理                                                                         | 消费者                                 | 验收                                                      |
+| -------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------- |
+| 4.10 公司备份计划    | `local_company_setting` 无 8 列                                         | 补 `initialized_at`、`backup_interval_hours`、`backup_enabled`、`next_backup_at`、`last_auto_success_at`、`last_auto_failure_at`、`failure_reason`、`auto_upload_enabled`；`chk_backup_interval > 0`                                                  | `initialized_at=created_at`；周期 72；新行默认 TRUE/FALSE；`next_backup_at` 见 Q11 | 无现有读写方                           | 空表可插完整行；周期 0 被拒；旧行回填与 `created_at` 一致 |
+| 4.19 离线资格        | 授权表无签名凭据三列                                                    | 补 `signed_claims json NULL`、`permission_version int unsigned NULL`、`last_verified_at timestamp(3) NULL`；三值同空或同满；版本 >=1                                                                                                                  | 历史行保持三 NULL，不伪造签名、不以 `authorized_at` 冒充核验                       | 无现有读写方                           | 三空/三满合法；半套被拒；版本 0 被拒                      |
+| 4.7/4.12 同步回执    | 唯一键含 `source_system`，缺安装来源/远端资源/接收时间                  | 补 `source_installation_id char(36) NOT NULL`、`remote_resource_id varchar(64) NULL`、`received_at timestamp(3) NULL`；唯一键改四列 `(organization_id, resource_type, record_uuid, version_no)`                                                       | 表预期 0 行；非空即失败关闭；重复组先扫描，不合并、不删除                          | 无现有读写方                           | 同四列不同来源被拒；重复组在 DDL 前中止                   |
+| 4.15 备份资产        | 仅 `storage_reference`/`file_sha256` 等                                 | 补 `installation_id`、`format_version`、`data_version`、`manifest_checksum`、`local_reference`、`cloud_reference`、`encryption_key_id`、`verified_at`、`retention_until`、`failure_reason`、`deleted_at`、`local_cleanup_error`；三条 CHECK；安装索引 | 表预期 0 行；非空即失败关闭；不从 `storage_reference` 猜云端地址                   | 无现有读写方                           | 清理态与本地引用/删除时间互斥；摘要长度 64；版本 >=1      |
+| 4.15 恢复运行        | 保护包 NOT NULL、`started_at` NOT NULL、缺目标安装/检查结果/确认        | 保护包与 `started_at` 可空；补 `target_installation_id NOT NULL`、`check_status NOT NULL`、`confirmation json NULL`；状态补 PENDING；CASE 执行门                                                                                                      | 表预期 0 行；非空即失败关闭；`check_status` 见 Q13                                 | 无现有读写方                           | PENDING 无保护包；RUNNING 必须有保护包/确认/开始时间      |
+| 4.5 故障原始事实     | `status/source` 与生命周期混用；无原始八字段、`phase_code`、`is_active` | 生命周期列改名；补 `main_error`、`unit_error`、`error_type`、`gpib_status`、`status`、`source`、`phase_code`、`is_active`；`description`/`action` 复用现有列；不新增 `(report_id,step_code)` 唯一键                                                   | 改名保留原值；原始列 NULL；表非空即失败关闭（无法证明当前分支）                    | 无现有读写方                           | 原始文本不影响生命周期；生命周期越界被拒；超长被拒        |
+| Q7/Q9 工单闭单与历史 | 原因约束拒历史行；闭单 CHECK 存在 UNKNOWN 漏洞                          | `repair_request.is_historical` 持久标记；冻结 ID 集合外一律新行；闭单 CHECK 改 `CASE ... ELSE FALSE`；原因约束对历史行豁免                                                                                                                            | 冻结清单在库外；迁移只在集合命中时置 1；不编造原因、不改旧评分                     | 工单读取/处置/管理修订                 | 双 NULL 合法；单边 NULL 与非法组合 FALSE；历史行豁免      |
+| 4.6 管理员           | 以 `guest` 事实创建 `SUPER_ADMIN`；无组织成员事实；静默 UNCHANGED       | 复用 `convergeAccountRole` + 字段加密；写 `SUPER_ADMIN` 角色事实与 ACTIVE `organization_membership`；无效角色事实明确拒绝                                                                                                                             | 不重置密码；不覆盖冲突身份；既有角色事实无效即拒绝                                 | 登录/权限/管理 Query                   | 真实登录、首改密、受保护 Query、合法管理、越权拒绝        |
+| 专用清理             | 仅按父关系/前缀清理，缺引用闭包                                         | ByIds 与 Residue 共用同连接同事务许可+目标+所有权+引用闭包预检；集合外引用拒绝                                                                                                                                                                        | 未登记子行不认领；残留恢复不凭前缀/父关系取得所有权                                | read/accept/production-input/ownership | 零破坏、事实漂移、合法清理、重复执行、后序回滚、异常关闭  |
+| 结构校验             | 仅列存在/NOT NULL；索引列序；FK 列序；CHECK 仅存在                      | 校验类型/长度/符号/NULL/默认/生成表达式；索引唯一性与列序；FK 列序与规则；CHECK 规范化定义；负例证明拒绝漂移                                                                                                                                          | 不全局小写、不去括号；字符串与 JSON 路径保持原样                                   | 部署校验入口                           | 结构同名不同定义被拒；规范化不掩盖真实漂移                |
 
 ### 13.2 表 B：三路径迁移顺序
 
-| 路径                    | 顺序与处置                                                                                                                                                                                                 | 版本处置                                                     |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| 全新空库                | 1—31 → 1775501000000 → 1775501100000（新体：先建 `is_historical` 再建原因约束）→ 1775501200…1800 → 1775501900000（F1—F5 与终态补齐）                                                                         | 1775501100000 改名不变、只改体内；新迁移追加在 1800000 之后  |
-| 31 态旧库               | 先由获授权人导出并签字“完整”的真实工单 ID/行指纹清单（库外，不进 Git）→ 1775501000000 → 1775501100000（部署入口注入清单；先标记历史再建原因约束）→ 追加迁移至 1775501900000                                   | 清单格式、校验器与合成样例进 Git；真实清单不进 Git           |
-| 已执行旧版增量的库      | 迁移历史停在旧 1775501100000/1200…1800 → 直接执行 1775501900000：补 `is_historical`、按清单标记、重建闭单/原因约束，再补 F1—F5；终态与上两条逐列/逐约束一致                                                  | 不手工插入/伪造 migrations；不复用旧行为库作证据；必要时用可验证旧字节与正常执行器重建 |
+| 路径               | 顺序与处置                                                                                                                                                                  | 版本处置                                                                               |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 全新空库           | 1—31 → 1775501000000 → 1775501100000（新体：先建 `is_historical` 再建原因约束）→ 1775501200…1800 → 1775501900000（F1—F5 与终态补齐）                                        | 1775501100000 改名不变、只改体内；新迁移追加在 1800000 之后                            |
+| 31 态旧库          | 先由获授权人导出并签字“完整”的真实工单 ID/行指纹清单（库外，不进 Git）→ 1775501000000 → 1775501100000（部署入口注入清单；先标记历史再建原因约束）→ 追加迁移至 1775501900000 | 清单格式、校验器与合成样例进 Git；真实清单不进 Git                                     |
+| 已执行旧版增量的库 | 迁移历史停在旧 1775501100000/1200…1800 → 直接执行 1775501900000：补 `is_historical`、按清单标记、重建闭单/原因约束，再补 F1—F5；终态与上两条逐列/逐约束一致                 | 不手工插入/伪造 migrations；不复用旧行为库作证据；必要时用可验证旧字节与正常执行器重建 |
 
 约束：末尾追加迁移不能修复“前序迁移已经失败”的库；旧版库必须已经成功执行到 1800000，或按可验证旧字节与正常执行器重建后再续跑。
 
 ### 13.3 表 C：直接消费者
 
-| 消费者                         | 落点                                                                 | 本轮处置                                                         |
-| ------------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| API/Worker 实体装配            | `lithography.module.ts`、`autoLoadEntities`、`api-entity-metadata.spec.ts` | 补新列后保持实体注册与元数据规格通过                             |
-| 旧公开入口                     | `RecordRepairRequestHandlingResultUsecase`                           | 明确新流程原因校验；历史行不编造；不以数据库异常代替业务处理     |
-| 报告提交/草稿                  | `maintenance-report.service.ts`、`update-maintenance-report-draft.usecase.ts` | 新输入 1—4、历史 5 保留；原因非空白                             |
-| 读取 Query                     | `repair-request.query.service` 及其规格                              | 补 `isHistorical`/闭单字段读取兼容                               |
-| Seed/管理员                    | `database-deploy` 的 CLIENT 组织、`admin-bootstrap.ts`               | 真实角色事实、ACTIVE 组织成员、幂等校验                          |
-| 测试 fixture                   | `repair-request-fixture.ts`                                          | 历史/新入口样本、原因与闭单组合                                   |
-| 专用清理                       | `e2e-scoped-cleanup.ts`、清理规格                                    | ByIds 与 Residue 双入口、引用闭包、事务内预检                     |
-| 恢复入口                       | `backup_restore_run` 未来写入方                                      | 预检允许无保护包；执行阶段应用层强制保护包、确认与开始时间       |
-| 同步/备份/资料包               | 暂无写入方                                                           | 只补结构与契约；不新增执行器                                     |
-| 结构校验/文档                  | `migration-schema-contract.ts`、`incremental-migration.ts`、SOP、`docs/database` | 补定义校验、负例与稳定入口说明                                   |
+| 消费者              | 落点                                                                             | 本轮处置                                                     |
+| ------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| API/Worker 实体装配 | `lithography.module.ts`、`autoLoadEntities`、`api-entity-metadata.spec.ts`       | 补新列后保持实体注册与元数据规格通过                         |
+| 旧公开入口          | `RecordRepairRequestHandlingResultUsecase`                                       | 明确新流程原因校验；历史行不编造；不以数据库异常代替业务处理 |
+| 报告提交/草稿       | `maintenance-report.service.ts`、`update-maintenance-report-draft.usecase.ts`    | 新输入 1—4、历史 5 保留；原因非空白                          |
+| 读取 Query          | `repair-request.query.service` 及其规格                                          | 补 `isHistorical`/闭单字段读取兼容                           |
+| Seed/管理员         | `database-deploy` 的 CLIENT 组织、`admin-bootstrap.ts`                           | 真实角色事实、ACTIVE 组织成员、幂等校验                      |
+| 测试 fixture        | `repair-request-fixture.ts`                                                      | 历史/新入口样本、原因与闭单组合                              |
+| 专用清理            | `e2e-scoped-cleanup.ts`、清理规格                                                | ByIds 与 Residue 双入口、引用闭包、事务内预检                |
+| 恢复入口            | `backup_restore_run` 未来写入方                                                  | 预检允许无保护包；执行阶段应用层强制保护包、确认与开始时间   |
+| 同步/备份/资料包    | 暂无写入方                                                                       | 只补结构与契约；不新增执行器                                 |
+| 结构校验/文档       | `migration-schema-contract.ts`、`incremental-migration.ts`、SOP、`docs/database` | 补定义校验、负例与稳定入口说明                               |
 
 ### 13.4 表 D：剩余裁决
 
-| 问题                                                                                                                         | 推荐方案                                                                                                         | 实际影响                                                                 |
-| ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Q11 `local_company_setting.next_backup_at` 旧行是否按 `initialized_at + 72h` 派生？                                            | 不派生：列保持可空，历史行 `backup_enabled=FALSE`、`next_backup_at=NULL`；新行由应用层写入非空值                  | 旧行不会被自动排程或自动上云；数据库不能对历史行 `NOT NULL`；新流程需应用层保障 |
-| Q13 `backup_restore_run.check_status` 与 `maintenance_report_fault.phase_code` 精确枚举                                       | `phase_code` 采用既有十阶段 `PHASE_01…PHASE_10`；`check_status` 建议 `PENDING/PASSED/FAILED`（或与恢复预检结论同域） | 未定前两条列先落列但不加域 CHECK，避免凭猜测拒绝合法值；确认后再追加域约束 |
+| 问题                                                                                    | 推荐方案                                                                                                             | 实际影响                                                                        |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Q11 `local_company_setting.next_backup_at` 旧行是否按 `initialized_at + 72h` 派生？     | 不派生：列保持可空，历史行 `backup_enabled=FALSE`、`next_backup_at=NULL`；新行由应用层写入非空值                     | 旧行不会被自动排程或自动上云；数据库不能对历史行 `NOT NULL`；新流程需应用层保障 |
+| Q13 `backup_restore_run.check_status` 与 `maintenance_report_fault.phase_code` 精确枚举 | `phase_code` 采用既有十阶段 `PHASE_01…PHASE_10`；`check_status` 建议 `PENDING/PASSED/FAILED`（或与恢复预检结论同域） | 未定前两条列先落列但不加域 CHECK，避免凭猜测拒绝合法值；确认后再追加域约束      |
 
 已裁决、本轮不重开：Q12 历史签名三空（用户明确“不伪造旧签名”）；Q14 批准原地修改 1775501100000；Q15 采用 O1 主表持久标记 + 库外冻结 ID 集合。
 
 ### 13.5 本轮实施落点
 
-| 包 | 文件/动作                                                                                                                                                                                                 | 约束                                                         |
-| -- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| A/B | 修改 `1775501100000-alter-repair-ai-report-for-v13.migration.ts`；新增 `1775501900000-close-s5-structural-gaps-for-v13.migration.ts`；新增库外清单格式/校验器/合成样例 | 1—31 与 1775501000000 不动；其他已执行迁移不改写              |
-| 实体 | 更新 `local-company-setting`、`local-account-authorization`、`sync-receipt`、`backup-asset`、`backup-restore-run`、`maintenance-report-fault`、`repair-request` 实体 | 只加列/改约束映射，不新增业务 service                         |
-| C | `admin-bootstrap.ts` 与管理员规格                                                                                                                                                                        | 不 import `modules`/`usecases`；只用 core 策略与 infrastructure 加密 |
-| D | `e2e-scoped-cleanup.ts`、fixture 与清理规格                                                                                                                                                              | 不改迁移、不扩大删除范围                                     |
-| E | `migration-schema-contract.ts`、`incremental-migration.ts`、SOP、`docs/database`                                                                                                                         | 负例只证明校验能力；不承诺自动恢复                           |
+| 包   | 文件/动作                                                                                                                                                              | 约束                                                                 |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| A/B  | 修改 `1775501100000-alter-repair-ai-report-for-v13.migration.ts`；新增 `1775501900000-close-s5-structural-gaps-for-v13.migration.ts`；新增库外清单格式/校验器/合成样例 | 1—31 与 1775501000000 不动；其他已执行迁移不改写                     |
+| 实体 | 更新 `local-company-setting`、`local-account-authorization`、`sync-receipt`、`backup-asset`、`backup-restore-run`、`maintenance-report-fault`、`repair-request` 实体   | 只加列/改约束映射，不新增业务 service                                |
+| C    | `admin-bootstrap.ts` 与管理员规格                                                                                                                                      | 不 import `modules`/`usecases`；只用 core 策略与 infrastructure 加密 |
+| D    | `e2e-scoped-cleanup.ts`、fixture 与清理规格                                                                                                                            | 不改迁移、不扩大删除范围                                             |
+| E    | `migration-schema-contract.ts`、`incremental-migration.ts`、SOP、`docs/database`                                                                                       | 负例只证明校验能力；不承诺自动恢复                                   |
 
 ### 13.6 本轮实现与离线验收结果（2026-11-09）
 
 #### 13.6.1 F1—F5 关闭状态
 
-| 编号 | 目标                                          | 实现落点                                                                                              | 旧数据处置                                                                     | 状态                       |
-| ---- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------- |
-| F1-1 | 公司备份计划、调度时间、自动上传开关          | 实体 + `1775501900000`：8 列 + `chk_local_company_setting_backup_interval`                            | `initialized_at=created_at`；旧行 `backup_enabled=0`、`next_backup_at=NULL`；不派生 | 实现完成，待实库验收       |
-| F1-2 | 离线资格签名凭据、权限版本、最近校验时间      | 实体 + `1775501900000`：3 列 + 2 CHECK                                                                | 历史行三列保持 NULL；不伪造签名、不以 `authorized_at` 冒充核验                  | 实现完成，待实库验收       |
-| F1-3 | 同步来源与版本事实、四列唯一键                | 实体 + `1775501900000`：3 列；`uk_sync_receipt_scope_v13(organization_id, resource_type, record_uuid, version_no)`；DDL 前仅扫描真实重复组 | 旧行原地保留；新列保持 NULL；`source_system` 保留为兼容描述且退出唯一键；重复组在首次 DDL 前报告，不合并/不删除 | 实现完成，待实库验收       |
-| F1-4 | 备份本地/云端引用、版本、校验、保留与清理     | 实体 + `1775501900000`：12 列 + 3 CHECK + `idx_backup_asset_installation`                             | 旧行原地保留；新增事实列保持 NULL；不从 `storage_reference` 猜云端地址、不由 `file_sha256` 推定清单摘要 | 实现完成，待实库验收       |
-| F1-4b | 恢复预检/执行事实                            | 实体 + `1775501900000`：保护包与 `started_at` 改可空；3 列；4 CHECK（含 CASE 执行门）；状态补 `PENDING`；`target_installation_id` FK | 旧行原地保留；`check_status`/`target_installation_id` 历史未知为 NULL，不自动填 PASSED；执行完整性由应用层保证 | 实现完成，待实库验收       |
-| F1-5 | 故障原始八字段、`phase_code`、生命周期分离    | 实体 + `1775501900000`：`status→lifecycle_status`、`source→lifecycle_source`；8 列；4 CHECK；不新增 `(report_id, step_code)` 唯一键 | 旧行原地保留；生命周期原义保留；原始八字段/phase_code/is_active 历史未知为 NULL，不由生命周期转换 | 实现完成，待实库验收       |
-| B    | 历史身份与闭单/原因兼容                      | `repair_request.is_historical` + 库外清单；`1775501100000` 先标记后建原因约束；闭单 CASE；原因历史豁免 | 只按清单命中置 1；集合外按新行；不编造原因、不改旧评分                          | 实现完成，待实库验收       |
-| C    | 管理员真实可用性                            | `admin-bootstrap.ts`：真实 SUPER_ADMIN 三源事实、AES-CBC `meta_digest`、ACTIVE 组织成员、幂等与冲突拒绝 | 不重置密码、不覆盖冲突身份；既有角色事实无效即拒绝                              | 实现完成，待实库验收       |
-| D    | 专用清理所有权与引用闭包                    | `repair-request-fixture.ts` + ownership e2e：ByIds 与 Residue 同连接同事务预检                        | 未登记子行不认领；集合外引用拒绝；残留恢复不凭前缀/父关系                        | 实现完成，待实库验收       |
-| E    | 结构校验与交付                              | `migration-schema-contract.ts`、`incremental-migration.ts`、SOP、`docs/database`                      | 同名不同定义负例；字符串/JSON 路径保留；不承诺自动恢复                          | 实现完成，待实库验收       |
+| 编号  | 目标                                       | 实现落点                                                                                                                                   | 旧数据处置                                                                                                      | 状态                 |
+| ----- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- | -------------------- |
+| F1-1  | 公司备份计划、调度时间、自动上传开关       | 实体 + `1775501900000`：8 列 + `chk_local_company_setting_backup_interval`                                                                 | `initialized_at=created_at`；旧行 `backup_enabled=0`、`next_backup_at=NULL`；不派生                             | 实现完成，待实库验收 |
+| F1-2  | 离线资格签名凭据、权限版本、最近校验时间   | 实体 + `1775501900000`：3 列 + 2 CHECK                                                                                                     | 历史行三列保持 NULL；不伪造签名、不以 `authorized_at` 冒充核验                                                  | 实现完成，待实库验收 |
+| F1-3  | 同步来源与版本事实、四列唯一键             | 实体 + `1775501900000`：3 列；`uk_sync_receipt_scope_v13(organization_id, resource_type, record_uuid, version_no)`；DDL 前仅扫描真实重复组 | 旧行原地保留；新列保持 NULL；`source_system` 保留为兼容描述且退出唯一键；重复组在首次 DDL 前报告，不合并/不删除 | 实现完成，待实库验收 |
+| F1-4  | 备份本地/云端引用、版本、校验、保留与清理  | 实体 + `1775501900000`：12 列 + 3 CHECK + `idx_backup_asset_installation`                                                                  | 旧行原地保留；新增事实列保持 NULL；不从 `storage_reference` 猜云端地址、不由 `file_sha256` 推定清单摘要         | 实现完成，待实库验收 |
+| F1-4b | 恢复预检/执行事实                          | 实体 + `1775501900000`：保护包与 `started_at` 改可空；3 列；4 CHECK（含 CASE 执行门）；状态补 `PENDING`；`target_installation_id` FK       | 旧行原地保留；`check_status`/`target_installation_id` 历史未知为 NULL，不自动填 PASSED；执行完整性由应用层保证  | 实现完成，待实库验收 |
+| F1-5  | 故障原始八字段、`phase_code`、生命周期分离 | 实体 + `1775501900000`：`status→lifecycle_status`、`source→lifecycle_source`；8 列；4 CHECK；不新增 `(report_id, step_code)` 唯一键        | 旧行原地保留；生命周期原义保留；原始八字段/phase_code/is_active 历史未知为 NULL，不由生命周期转换               | 实现完成，待实库验收 |
+| B     | 历史身份与闭单/原因兼容                    | `repair_request.is_historical` + 库外清单；`1775501100000` 先标记后建原因约束；闭单 CASE；原因历史豁免                                     | 只按清单命中置 1；集合外按新行；不编造原因、不改旧评分                                                          | 实现完成，待实库验收 |
+| C     | 管理员真实可用性                           | `admin-bootstrap.ts`：真实 SUPER_ADMIN 三源事实、AES-CBC `meta_digest`、ACTIVE 组织成员、幂等与冲突拒绝                                    | 不重置密码、不覆盖冲突身份；既有角色事实无效即拒绝                                                              | 实现完成，待实库验收 |
+| D     | 专用清理所有权与引用闭包                   | `repair-request-fixture.ts` + ownership e2e：ByIds 与 Residue 同连接同事务预检                                                             | 未登记子行不认领；集合外引用拒绝；残留恢复不凭前缀/父关系                                                       | 实现完成，待实库验收 |
+| E     | 结构校验与交付                             | `migration-schema-contract.ts`、`incremental-migration.ts`、SOP、`docs/database`                                                           | 同名不同定义负例；字符串/JSON 路径保留；不承诺自动恢复                                                          | 实现完成，待实库验收 |
 
 #### 13.6.2 字段与约束落点
 
 新增列中仅 `backup_restore_run.target_installation_id` 建立到 `local_installation` 的外键（见 §13.8 Q16）；其余新增安装标识列不建 FK。
 
-| 表                          | 列                                                                                                                                    | 类型/NULL/默认                                                                                                 | 索引/FK                          | CHECK                                                                 |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------- |
-| `repair_request`            | `is_historical`                                                                                                                       | `tinyint(1) NOT NULL DEFAULT '0'`                                                                              | 无                               | 原因约束增加 `is_historical = 1` 豁免；闭单改 `CASE ... ELSE FALSE`   |
-| `local_company_setting`     | `initialized_at`、`backup_interval_hours`、`backup_enabled`、`next_backup_at`、`last_auto_success_at`、`last_auto_failure_at`、`failure_reason`、`auto_upload_enabled` | `timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)`；`int unsigned NOT NULL DEFAULT '72'`；`tinyint(1) NOT NULL DEFAULT '0'`；`timestamp(3) NULL`；`timestamp(3) NULL`；`timestamp(3) NULL`；`text NULL`；`tinyint(1) NOT NULL DEFAULT '0'` | 复用既有 `uk_local_company_setting_scope`/FK | `backup_interval_hours > 0`；`backup_enabled = 0 OR next_backup_at IS NOT NULL`；`auto_upload_enabled = 0 OR backup_enabled = 1` |
-| `local_account_authorization` | `signed_claims`、`permission_version`、`last_verified_at`                                                                            | `json NULL`；`int unsigned NULL`；`timestamp(3) NULL`                                                          | 复用既有 scope/FK                | 三列同空或同满；`permission_version IS NULL OR >= 1`                  |
-| `sync_receipt`              | `source_installation_id`、`remote_resource_id`、`received_at`                                                                        | `char(36) NULL`（远端来源，不建 FK）；`varchar(64) NULL`；`timestamp(3) NULL`                                   | 四列唯一键 `uk_sync_receipt_scope_v13`；删除旧 `uk_sync_receipt_scope` | 保留状态域；`receipt_status IN ('PENDING','CONFLICT') OR received_at IS NOT NULL OR confirmed_at IS NOT NULL`（`chk_sync_receipt_confirm_time` 取代旧 `chk_sync_receipt_confirmed`） |
-| `backup_asset`              | `installation_id`、`format_version`、`data_version`、`manifest_checksum`、`local_reference`、`cloud_reference`、`encryption_key_id`、`verified_at`、`retention_until`、`failure_reason`、`deleted_at`、`local_cleanup_error` | 全部 `NULL`（历史未知）；`char(36)/int unsigned/varchar(64)/char(64)` 由新写入者必填 | 新增 `idx_backup_asset_installation(installation_id, created_at)`；不建 FK | 摘要 `NULL OR 长度 64`；`format_version NULL OR >= 1`；`CLEANED` 时 `local_reference IS NULL`，非 `CLEANED` 时 `deleted_at IS NULL` |
-| `backup_restore_run`        | `target_installation_id`、`check_status`、`confirmation`；`protection_backup_id`、`started_at` 改可空                                | `char(36) NULL`；`varchar(16) NULL`；`json NULL`；`char(36) NULL`；`timestamp(3) NULL`                          | `fk_backup_restore_run_target → local_installation(installation_id)` RESTRICT | 状态域含 `PENDING`；PENDING 无开始/结束；RUNNING 有开始无结束；CASE 执行门：PENDING 无保护包/确认，执行态须开始时间+保护包；`check_status NULL OR IN ('PENDING','PASSED','FAILED')`；`check_status` 与 `status` 的成败组合约束 |
-| `maintenance_report_fault`  | `lifecycle_status`、`lifecycle_source`（重命名）；`main_error`、`unit_error`、`error_type`、`gpib_status`、`status`、`source`、`phase_code`、`is_active` | `varchar(16) NOT NULL` ×2；`varchar(300) NULL` ×6；`varchar(32) NULL`；`tinyint(1) NULL` | 无新增索引/FK                    | 生命周期状态与来源值域；描述/动作长度上限（NULL 安全）；`phase_code NULL OR IN (PHASE_01…PHASE_10)`；`is_active NULL OR IN (0,1)` |
+| 表                            | 列                                                                                                                                                                                                                           | 类型/NULL/默认                                                                                                                                                                                                                               | 索引/FK                                                                       | CHECK                                                                                                                                                                                                                          |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `repair_request`              | `is_historical`                                                                                                                                                                                                              | `tinyint(1) NOT NULL DEFAULT '0'`                                                                                                                                                                                                            | 无                                                                            | 原因约束增加 `is_historical = 1` 豁免；闭单改 `CASE ... ELSE FALSE`                                                                                                                                                            |
+| `local_company_setting`       | `initialized_at`、`backup_interval_hours`、`backup_enabled`、`next_backup_at`、`last_auto_success_at`、`last_auto_failure_at`、`failure_reason`、`auto_upload_enabled`                                                       | `timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)`；`int unsigned NOT NULL DEFAULT '72'`；`tinyint(1) NOT NULL DEFAULT '0'`；`timestamp(3) NULL`；`timestamp(3) NULL`；`timestamp(3) NULL`；`text NULL`；`tinyint(1) NOT NULL DEFAULT '0'` | 复用既有 `uk_local_company_setting_scope`/FK                                  | `backup_interval_hours > 0`；`backup_enabled = 0 OR next_backup_at IS NOT NULL`；`auto_upload_enabled = 0 OR backup_enabled = 1`                                                                                               |
+| `local_account_authorization` | `signed_claims`、`permission_version`、`last_verified_at`                                                                                                                                                                    | `json NULL`；`int unsigned NULL`；`timestamp(3) NULL`                                                                                                                                                                                        | 复用既有 scope/FK                                                             | 三列同空或同满；`permission_version IS NULL OR >= 1`                                                                                                                                                                           |
+| `sync_receipt`                | `source_installation_id`、`remote_resource_id`、`received_at`                                                                                                                                                                | `char(36) NULL`（远端来源，不建 FK）；`varchar(64) NULL`；`timestamp(3) NULL`                                                                                                                                                                | 四列唯一键 `uk_sync_receipt_scope_v13`；删除旧 `uk_sync_receipt_scope`        | 保留状态域；`receipt_status IN ('PENDING','CONFLICT') OR received_at IS NOT NULL OR confirmed_at IS NOT NULL`（`chk_sync_receipt_confirm_time` 取代旧 `chk_sync_receipt_confirmed`）                                           |
+| `backup_asset`                | `installation_id`、`format_version`、`data_version`、`manifest_checksum`、`local_reference`、`cloud_reference`、`encryption_key_id`、`verified_at`、`retention_until`、`failure_reason`、`deleted_at`、`local_cleanup_error` | 全部 `NULL`（历史未知）；`char(36)/int unsigned/varchar(64)/char(64)` 由新写入者必填                                                                                                                                                         | 新增 `idx_backup_asset_installation(installation_id, created_at)`；不建 FK    | 摘要 `NULL OR 长度 64`；`format_version NULL OR >= 1`；`CLEANED` 时 `local_reference IS NULL`，非 `CLEANED` 时 `deleted_at IS NULL`                                                                                            |
+| `backup_restore_run`          | `target_installation_id`、`check_status`、`confirmation`；`protection_backup_id`、`started_at` 改可空                                                                                                                        | `char(36) NULL`；`varchar(16) NULL`；`json NULL`；`char(36) NULL`；`timestamp(3) NULL`                                                                                                                                                       | `fk_backup_restore_run_target → local_installation(installation_id)` RESTRICT | 状态域含 `PENDING`；PENDING 无开始/结束；RUNNING 有开始无结束；CASE 执行门：PENDING 无保护包/确认，执行态须开始时间+保护包；`check_status NULL OR IN ('PENDING','PASSED','FAILED')`；`check_status` 与 `status` 的成败组合约束 |
+| `maintenance_report_fault`    | `lifecycle_status`、`lifecycle_source`（重命名）；`main_error`、`unit_error`、`error_type`、`gpib_status`、`status`、`source`、`phase_code`、`is_active`                                                                     | `varchar(16) NOT NULL` ×2；`varchar(300) NULL` ×6；`varchar(32) NULL`；`tinyint(1) NULL`                                                                                                                                                     | 无新增索引/FK                                                                 | 生命周期状态与来源值域；描述/动作长度上限（NULL 安全）；`phase_code NULL OR IN (PHASE_01…PHASE_10)`；`is_active NULL OR IN (0,1)`                                                                                              |
 
 #### 13.6.3 三路径与版本处置
 
-| 路径                    | 实际顺序                                                                                                                                                                                                                 | 版本处置                                                                 |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| 全新空库                | 1—31 → `1775501000000` → `1775501100000`（先建 `is_historical`，再建闭单/原因约束）→ `1775501200000`…`1775501800000` → `1775501900000`（F1—F5；检测到列已存在则跳过标记） | 只改 `1775501100000` 体内；新增 `1775501900000` 追加在末尾              |
-| 31 态旧库               | 获授权人导出并签字真实清单（库外）→ `1775501000000` → `1775501100000`（部署入口注入清单；先标记历史再建原因约束）→ … → `1775501900000`                                                                                       | 清单格式/校验器/合成样例进 Git；真实清单不进 Git                        |
-| 已执行旧版增量的库      | 迁移历史停在旧 `1775501100000`/`1775501200000`…`1775501800000` → 直接执行 `1775501900000`：补 `is_historical`、按清单标记、重建闭单/原因约束，再补 F1—F5                                                                     | 不手工插入/伪造 migrations；旧版重建使用可验证旧字节与正常执行器        |
+| 路径               | 实际顺序                                                                                                                                                                  | 版本处置                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 全新空库           | 1—31 → `1775501000000` → `1775501100000`（先建 `is_historical`，再建闭单/原因约束）→ `1775501200000`…`1775501800000` → `1775501900000`（F1—F5；检测到列已存在则跳过标记） | 只改 `1775501100000` 体内；新增 `1775501900000` 追加在末尾       |
+| 31 态旧库          | 获授权人导出并签字真实清单（库外）→ `1775501000000` → `1775501100000`（部署入口注入清单；先标记历史再建原因约束）→ … → `1775501900000`                                    | 清单格式/校验器/合成样例进 Git；真实清单不进 Git                 |
+| 已执行旧版增量的库 | 迁移历史停在旧 `1775501100000`/`1775501200000`…`1775501800000` → 直接执行 `1775501900000`：补 `is_historical`、按清单标记、重建闭单/原因约束，再补 F1—F5                  | 不手工插入/伪造 migrations；旧版重建使用可验证旧字节与正常执行器 |
 
 约束重申：末尾追加迁移不能修复“前序迁移已失败”的库；旧版库必须已成功执行到 `1775501800000`，或按可验证旧字节重建后继续。
 
 #### 13.6.4 直接消费者适配
 
-| 消费者                    | 本轮适配                                                                                       |
-| ------------------------- | ---------------------------------------------------------------------------------------------- |
-| 工单处置写入              | `maintenance-report-command.types.ts`、`maintenance-report.input.normalize.ts`、`record-repair-request-handling-result.usecase.ts`、`maintenance-report.service.ts`：`closureReason` 必填/禁填与去空白校验 |
-| 工单读取                  | `repair-request.query.service.spec.ts`：补 `isHistorical` 读取兼容                              |
-| 报告草稿/提交             | 既有 1—4 输入与历史 5 保留逻辑不变；新增原因校验不外溢到非中断/无法修复结果                    |
-| 部署入口                  | `database-deploy.ts`：`--legacy-repair-manifest`；每次运行先重置进程内清单，避免串用            |
-| 测试 fixture              | `repair-request-fixture.ts`、`repair-request-fixture-ownership.e2e-spec.ts`：ByIds/Residue 共用所有权与引用闭包 |
-| 专用清理                  | `e2e-scoped-cleanup.ts`、`e2e-scoped-cleanup.v13*.spec.ts`：按新必需列写入；清理范围不扩大到集合外 |
-| 实库规格                  | `v13-db-verification.spec.ts`：同步回执四元组唯一、新必需列、lifecycle 字段；`v13-upgrade-from-31-state.realdb.spec.ts`：注入内存清单、`is_historical` 探测、`b_closure` 改为成功 |
-| 管理员                    | `admin-bootstrap.ts`：部署编排；`password-hashing.policy.ts`、`field-encryption.cipher.ts` 复用登录/加密算法，不另造平行机制 |
-| API/Worker 装配           | 实体列扩展，注册与元数据规格保持不变；无新增 service/执行器                                    |
+| 消费者          | 本轮适配                                                                                                                                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 工单处置写入    | `maintenance-report-command.types.ts`、`maintenance-report.input.normalize.ts`、`record-repair-request-handling-result.usecase.ts`、`maintenance-report.service.ts`：`closureReason` 必填/禁填与去空白校验 |
+| 工单读取        | `repair-request.query.service.spec.ts`：补 `isHistorical` 读取兼容                                                                                                                                         |
+| 报告草稿/提交   | 既有 1—4 输入与历史 5 保留逻辑不变；新增原因校验不外溢到非中断/无法修复结果                                                                                                                                |
+| 部署入口        | `database-deploy.ts`：`--legacy-repair-manifest`；每次运行先重置进程内清单，避免串用                                                                                                                       |
+| 测试 fixture    | `repair-request-fixture.ts`、`repair-request-fixture-ownership.e2e-spec.ts`：ByIds/Residue 共用所有权与引用闭包                                                                                            |
+| 专用清理        | `e2e-scoped-cleanup.ts`、`e2e-scoped-cleanup.v13*.spec.ts`：按新必需列写入；清理范围不扩大到集合外                                                                                                         |
+| 实库规格        | `v13-db-verification.spec.ts`：同步回执四元组唯一、新必需列、lifecycle 字段；`v13-upgrade-from-31-state.realdb.spec.ts`：注入内存清单、`is_historical` 探测、`b_closure` 改为成功                          |
+| 管理员          | `admin-bootstrap.ts`：部署编排；`password-hashing.policy.ts`、`field-encryption.cipher.ts` 复用登录/加密算法，不另造平行机制                                                                               |
+| API/Worker 装配 | 实体列扩展，注册与元数据规格保持不变；无新增 service/执行器                                                                                                                                                |
 
 #### 13.6.5 精确修改清单
 
@@ -1235,21 +1235,21 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 #### 13.6.6 离线命令与结果
 
-| 命令                                                                 | 结果                                                              |
-| -------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `npm run typecheck`                                                  | 通过（build + tools）                                             |
-| `npx tsc -p tsconfig.spec.json --noEmit`                             | 通过                                                              |
-| `npm run capability:docs:check`                                      | 通过                                                              |
-| `npm run lint:usecase-normalize-guard`                               | 通过                                                              |
-| `npm run lint:architecture-fixtures`                                 | 通过                                                              |
-| `npm run build`                                                      | 通过                                                              |
-| 全量后端单测                                                         | `Test Suites: 9 skipped, 141 passed (141/150)`；`Tests: 188 skipped, 1671 passed` |
-| 本批 35 个 TS 文件 `eslint --quiet --no-fix`                         | 0 error                                                           |
-| 本批 35 个 TS 文件 `prettier --check`                                | 全部符合                                                          |
-| `git diff --check`                                                   | 退出 0                                                            |
-| 31 条基线迁移逐文件 SHA-256                                          | 31/31 与 S4 一致，0 变更                                          |
-| S4 冻结 39 条逐文件 SHA-256                                          | 38/39 一致；唯一差异为获授权的 `1775501100000`（体内调整）        |
-| `npm run check:entity-scope`                                         | 退出 0，但 `HEAD=base=72de109…`，属空提交区间                     |
+| 命令                                         | 结果                                                                              |
+| -------------------------------------------- | --------------------------------------------------------------------------------- |
+| `npm run typecheck`                          | 通过（build + tools）                                                             |
+| `npx tsc -p tsconfig.spec.json --noEmit`     | 通过                                                                              |
+| `npm run capability:docs:check`              | 通过                                                                              |
+| `npm run lint:usecase-normalize-guard`       | 通过                                                                              |
+| `npm run lint:architecture-fixtures`         | 通过                                                                              |
+| `npm run build`                              | 通过                                                                              |
+| 全量后端单测                                 | `Test Suites: 9 skipped, 141 passed (141/150)`；`Tests: 188 skipped, 1671 passed` |
+| 本批 35 个 TS 文件 `eslint --quiet --no-fix` | 0 error                                                                           |
+| 本批 35 个 TS 文件 `prettier --check`        | 全部符合                                                                          |
+| `git diff --check`                           | 退出 0                                                                            |
+| 31 条基线迁移逐文件 SHA-256                  | 31/31 与 S4 一致，0 变更                                                          |
+| S4 冻结 39 条逐文件 SHA-256                  | 38/39 一致；唯一差异为获授权的 `1775501100000`（体内调整）                        |
+| `npm run check:entity-scope`                 | 退出 0，但 `HEAD=base=72de109…`，属空提交区间                                     |
 
 `check:entity-scope` 说明：该命令比较 `origin/main...HEAD`，本轮未提交，因此退出 0 **不能证明未提交改动合规**。实际覆盖以 `git diff --stat origin/main -- backend/src/modules/lithography/entities backend/src/infrastructure/database/migrations` 为准：9 个实体文件与迁移文件有改动/新增。
 
@@ -1262,12 +1262,12 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 #### 13.7.1 仍未决定的最少问题
 
-| 编号 | 问题                                                                                                             | 推荐方案                                                                                                               | 实际影响                                                                 |
-| ---- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Q11  | `local_company_setting.next_backup_at` 旧行是否允许按 `initialized_at + backup_interval_hours` 派生？              | 不派生：列保持可空，旧行 `backup_enabled=FALSE`；新流程由应用层保证扫描时有值                                          | 数据库无法对旧行强约束；旧行不会自动排程/上云                           |
-| Q13  | `backup_restore_run.check_status` 与 `maintenance_report_fault.phase_code` 的精确枚举                             | `phase_code` 采用既有十阶段 `PHASE_01…PHASE_10`；`check_status` 建议 `PENDING/PASSED/FAILED`                            | 未定前两列只落列、不加域 CHECK；确认后追加域约束                         |
-| Q16  | 新增安装标识列（`sync_receipt.source_installation_id`、`backup_asset.installation_id`、`backup_restore_run.target_installation_id`）是否补 FK 到 `local_installation`？ | 建议补 `ON DELETE RESTRICT ON UPDATE RESTRICT`，与 `local_company_setting` 既有 FK 一致；需先确认写入顺序保证安装行先存在 | 当前无 FK，数据库不阻止孤儿安装标识；补 FK 会约束导入/恢复写入顺序       |
-| Q17  | `sync_receipt.source_system`、`receipt_status`、`confirmed_at` 等兼容列是否长期保留？                              | 保留为兼容描述列，不参与四列唯一键；在字段字典标注“非设计列”                                                          | 同一版本不会再因来源拆行；但列名与设计不同，读取方需按兼容映射理解       |
+| 编号 | 问题                                                                                                                                                                     | 推荐方案                                                                                                                                       | 实际影响                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Q11  | `local_company_setting.next_backup_at` 旧行是否允许按 `initialized_at + backup_interval_hours` 派生？                                                                    | 不派生：列保持可空，旧行 `backup_enabled=FALSE`；新流程由应用层保证扫描时有值                                                                  | 数据库无法对旧行强约束；旧行不会自动排程/上云                               |
+| Q13  | `backup_restore_run.check_status` 与 `maintenance_report_fault.phase_code` 的精确枚举                                                                                    | `phase_code` 采用既有十阶段 `PHASE_01…PHASE_10`；`check_status` 建议 `PENDING/PASSED/FAILED`                                                   | 未定前两列只落列、不加域 CHECK；确认后追加域约束                            |
+| Q16  | 新增安装标识列（`sync_receipt.source_installation_id`、`backup_asset.installation_id`、`backup_restore_run.target_installation_id`）是否补 FK 到 `local_installation`？  | 建议补 `ON DELETE RESTRICT ON UPDATE RESTRICT`，与 `local_company_setting` 既有 FK 一致；需先确认写入顺序保证安装行先存在                      | 当前无 FK，数据库不阻止孤儿安装标识；补 FK 会约束导入/恢复写入顺序          |
+| Q17  | `sync_receipt.source_system`、`receipt_status`、`confirmed_at` 等兼容列是否长期保留？                                                                                    | 保留为兼容描述列，不参与四列唯一键；在字段字典标注“非设计列”                                                                                   | 同一版本不会再因来源拆行；但列名与设计不同，读取方需按兼容映射理解          |
 | Q18  | 旧版增量库若已有 `sync_receipt`/`backup_asset`/`backup_restore_run`/`maintenance_report_fault` 行，是否接受“停写窗口人工归档成空表”作为唯一升级路径，或允许可空/可回填？ | 推荐先接受“空表”作为 S5 合并前提：这些行无法在不猜测的前提下补齐安装来源、原始故障字段；若要保留历史行，需单独授权定义回填来源并把相应列改可空 | 旧库升级需要额外停写与归档步骤；否则迁移在 DDL 前拒绝（数据不丢，但不升级） |
 
 已裁决、不重开：Q12 历史签名三空；Q14 原地修改 `1775501100000`；Q15 历史身份 O1；`setting_source/is_current` 保留为兼容描述。
@@ -1276,12 +1276,12 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 顺序固定为：三路径升级 → 管理员真实链路 → 约束/专用清理/直接消费者 → 最终 KEEP 完整 core。每阶段通过后才进入下一阶段；失败保留现场，不自动清库、不回退 DDL。
 
-| 阶段 | 内容                                                                                                                                                         | 通过门槛                                                                 |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| 1    | 全新空库、31 态 ctrl/A/B/D、旧版增量已执行库分别升级                                                                                                          | 终态逐列/逐索引/逐 CHECK 一致；`is_historical` 只命中清单；无半迁移        |
-| 2    | 管理员真实链路：登录、首次改密、受保护 Query、合法管理操作、越权拒绝                                                                                          | 三源角色事实收敛；成员关系唯一有效；不出现 guest 派生的 SUPER_ADMIN        |
-| 3    | 约束矩阵、ByIds/Residue 专用清理、直接消费者读写                                                                                                              | 非法组合被拒；集合外引用拒绝；零破坏、漂移、重复执行、后序失败回滚、异常关闭 |
-| 4    | 最终 KEEP 完整 core                                                                                                                                          | 仅在阶段 1—3 全部通过后运行一次                                           |
+| 阶段 | 内容                                                                 | 通过门槛                                                                     |
+| ---- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1    | 全新空库、31 态 ctrl/A/B/D、旧版增量已执行库分别升级                 | 终态逐列/逐索引/逐 CHECK 一致；`is_historical` 只命中清单；无半迁移          |
+| 2    | 管理员真实链路：登录、首次改密、受保护 Query、合法管理操作、越权拒绝 | 三源角色事实收敛；成员关系唯一有效；不出现 guest 派生的 SUPER_ADMIN          |
+| 3    | 约束矩阵、ByIds/Residue 专用清理、直接消费者读写                     | 非法组合被拒；集合外引用拒绝；零破坏、漂移、重复执行、后序失败回滚、异常关闭 |
+| 4    | 最终 KEEP 完整 core                                                  | 仅在阶段 1—3 全部通过后运行一次                                              |
 
 #### 13.7.3 最小授权
 
@@ -1293,32 +1293,32 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 #### 13.8.1 Q11/Q13/Q16/Q17/Q18 落实表
 
-| 编号 | 最终裁决                                                                                                                     | 代码/结构落点                                                                                                  | 数据库责任                                    | 应用责任                                                       | 状态             |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------- | ---------------- |
-| Q11  | 旧公司配置不派生 `next_backup_at`；旧行 `backup_enabled=0`、`next_backup_at=NULL`；迁移不自动开启备份或上传；新流程启用备份时必须建立下一次执行时间 | `local_company_setting` 8 列；`chk_local_company_setting_backup_schedule`、`chk_local_company_setting_auto_upload`；默认 `backup_enabled='0'`、`auto_upload_enabled='0'` | 拒绝“启用备份但无下次执行时间”和“自动上传但未启用备份”的组合 | 新流程写入 `next_backup_at`；调度器只扫描 `backup_enabled=1 AND next_backup_at IS NOT NULL` | 实现完成，待实库验收 |
-| Q13  | `phase_code` 使用 `PHASE_01`—`PHASE_10`；`check_status` 使用 `PENDING/PASSED/FAILED`；NULL 表示历史未知；旧行不自动填 PASSED | `chk_maintenance_report_fault_phase_code`、`chk_maintenance_report_fault_active`；`chk_backup_restore_run_check_status`、`chk_backup_restore_run_check_outcome` | 拒绝域外值与“失败/中断却 PASSED”“成功却 FAILED”等冲突组合；NULL 合法 | 新流程必须显式写入 `check_status`、`phase_code`、`is_active`；读取层把 NULL 视为未知，不得视为通过 | 实现完成，待实库验收 |
-| Q16  | 不统一添加安装标识 FK，逐字段核对：`sync_receipt.source_installation_id` 为远端来源（不建 FK、可空）；`backup_asset.installation_id` 语义仍可能为资产来源机器（不建 FK、可空）；`backup_restore_run.target_installation_id` 为当前恢复目标本机（建既有实体 FK、可空以容纳历史行） | `fk_backup_restore_run_target → local_installation(installation_id)` RESTRICT；其余两列仅索引/普通列 | 目标安装非空时必须存在；远端来源不因本机未登记被拒绝 | 恢复执行前必须写入已登记目标安装；导入远端回执不得伪造本机安装行 | 实现完成，待实库验收 |
-| Q17  | 保留 `source_system` 兼容列但不参与四列唯一键；`receipt_status` 是有效状态；`received_at` 是设计事件时间；`confirmed_at` 是旧版确认事件时间（仅兼容/历史） | `uk_sync_receipt_scope_v13(organization_id, resource_type, record_uuid, version_no)`；`chk_sync_receipt_confirm_time` 取代旧 `chk_sync_receipt_confirmed` | 唯一键只保证四列不重复；确认事件允许 `received_at` 或历史 `confirmed_at` 任一存在 | 新写入只写 `receipt_status` + `received_at`，不无依据双写 `confirmed_at`；读取层以 `receipt_status` 为状态、`received_at` 为时间 | 实现完成，待实库验收 |
-| Q18  | 旧行原地保留：不删除、不移出、不猜测新字段；无法证明的事实保留历史未知（NULL）；新流程仍按确认规则保证完整性；不采用“先归档清空才能升级” | `1775501900000` 仅做加列/改名/约束替换；唯一预检为真实冲突（四列重复组）；四表旧列原值不改 | 只拒绝无法合法保留的真实冲突；不自动修复、不合并、不清表 | 新写入者按本表“新写入约束”填写；读取层把 NULL 视为未知，不视为成功/授权 | 实现完成，待实库验收 |
+| 编号 | 最终裁决                                                                                                                                                                                                                                                                          | 代码/结构落点                                                                                                                                                            | 数据库责任                                                                        | 应用责任                                                                                                                         | 状态                 |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| Q11  | 旧公司配置不派生 `next_backup_at`；旧行 `backup_enabled=0`、`next_backup_at=NULL`；迁移不自动开启备份或上传；新流程启用备份时必须建立下一次执行时间                                                                                                                               | `local_company_setting` 8 列；`chk_local_company_setting_backup_schedule`、`chk_local_company_setting_auto_upload`；默认 `backup_enabled='0'`、`auto_upload_enabled='0'` | 拒绝“启用备份但无下次执行时间”和“自动上传但未启用备份”的组合                      | 新流程写入 `next_backup_at`；调度器只扫描 `backup_enabled=1 AND next_backup_at IS NOT NULL`                                      | 实现完成，待实库验收 |
+| Q13  | `phase_code` 使用 `PHASE_01`—`PHASE_10`；`check_status` 使用 `PENDING/PASSED/FAILED`；NULL 表示历史未知；旧行不自动填 PASSED                                                                                                                                                      | `chk_maintenance_report_fault_phase_code`、`chk_maintenance_report_fault_active`；`chk_backup_restore_run_check_status`、`chk_backup_restore_run_check_outcome`          | 拒绝域外值与“失败/中断却 PASSED”“成功却 FAILED”等冲突组合；NULL 合法              | 新流程必须显式写入 `check_status`、`phase_code`、`is_active`；读取层把 NULL 视为未知，不得视为通过                               | 实现完成，待实库验收 |
+| Q16  | 不统一添加安装标识 FK，逐字段核对：`sync_receipt.source_installation_id` 为远端来源（不建 FK、可空）；`backup_asset.installation_id` 语义仍可能为资产来源机器（不建 FK、可空）；`backup_restore_run.target_installation_id` 为当前恢复目标本机（建既有实体 FK、可空以容纳历史行） | `fk_backup_restore_run_target → local_installation(installation_id)` RESTRICT；其余两列仅索引/普通列                                                                     | 目标安装非空时必须存在；远端来源不因本机未登记被拒绝                              | 恢复执行前必须写入已登记目标安装；导入远端回执不得伪造本机安装行                                                                 | 实现完成，待实库验收 |
+| Q17  | 保留 `source_system` 兼容列但不参与四列唯一键；`receipt_status` 是有效状态；`received_at` 是设计事件时间；`confirmed_at` 是旧版确认事件时间（仅兼容/历史）                                                                                                                        | `uk_sync_receipt_scope_v13(organization_id, resource_type, record_uuid, version_no)`；`chk_sync_receipt_confirm_time` 取代旧 `chk_sync_receipt_confirmed`                | 唯一键只保证四列不重复；确认事件允许 `received_at` 或历史 `confirmed_at` 任一存在 | 新写入只写 `receipt_status` + `received_at`，不无依据双写 `confirmed_at`；读取层以 `receipt_status` 为状态、`received_at` 为时间 | 实现完成，待实库验收 |
+| Q18  | 旧行原地保留：不删除、不移出、不猜测新字段；无法证明的事实保留历史未知（NULL）；新流程仍按确认规则保证完整性；不采用“先归档清空才能升级”                                                                                                                                          | `1775501900000` 仅做加列/改名/约束替换；唯一预检为真实冲突（四列重复组）；四表旧列原值不改                                                                               | 只拒绝无法合法保留的真实冲突；不自动修复、不合并、不清表                          | 新写入者按本表“新写入约束”填写；读取层把 NULL 视为未知，不视为成功/授权                                                          | 实现完成，待实库验收 |
 
 #### 13.8.2 非空旧数据兼容（四表逐项）
 
-| 表 | 旧字段 → 新字段 | 可靠回填来源 | 未知时表示 | 新写入约束（应用层） | 读取兼容 |
-| -- | --------------- | ------------ | ---------- | -------------------- | -------- |
-| `sync_receipt` | `record_uuid/organization_id/resource_type/version_no/source_system/manifest_checksum/receipt_status/confirmed_at` 原值保留；新增 `source_installation_id`、`remote_resource_id`、`received_at` | 无（不从 `confirmed_at` 复制到 `received_at`，不猜远端安装/资源 ID） | 新列 NULL；`confirmed_at` 可空 | 四列唯一范围 + `source_system` 兼容描述；状态变化写 `receipt_status`，接收时间写 `received_at`；远端来源可写未在本机登记的值 | 以 `receipt_status` 为状态、`received_at` 为时间；`confirmed_at` 仅历史兼容 |
-| `backup_asset` | `storage_reference/file_sha256/byte_size/cloud_status/local_status/cloud_receipt/attempt_count/last_attempt_at` 原值保留；新增 12 列 | 无（`manifest_checksum` 不由 `file_sha256` 推定，`cloud_reference` 不由 `storage_reference` 推断） | 新列 NULL | 新备份写 `installation_id/format_version/data_version/manifest_checksum/encryption_key_id`；清理成功写 `local_reference=NULL`、`local_status='CLEANED'`，`deleted_at` 由应用层填写 | `local_status='CLEANED'` 且 `local_reference IS NULL` 即可；`deleted_at` NULL 不表示未清理，只表示时间未知 |
-| `backup_restore_run` | `restore_id/backup_id/organization_id/started_by_account_id/status/check_snapshot/started_at/finished_at` 原值保留；`protection_backup_id` 改可空；新增 `target_installation_id/check_status/confirmation` | 无（不自动填 PASSED，不猜目标安装） | 新列 NULL；旧行 `confirmation` NULL | 执行阶段必须写 `target_installation_id`（已登记）、`protection_backup_id`、`started_at`、`confirmation`；预检阶段可只写 `check_status='PENDING'` | NULL 的 `check_status` 表示未知，不能当作检查通过；`status` 仍是唯一有效状态 |
-| `maintenance_report_fault` | `status → lifecycle_status`、`source → lifecycle_source`（原值语义不变）；新增 `main_error/unit_error/error_type/gpib_status/status/source/phase_code/is_active` | 无（原始八字段不能由生命周期字段转换；`is_active` 不能由多分支推断） | 原始八字段、`phase_code`、`is_active` NULL | 新故障必须显式写 `phase_code`（PHASE_01—10）、`is_active`、原始字段；生命周期单独写 `lifecycle_status/lifecycle_source` | `lifecycle_*` 是唯一生命周期来源；新 `status/source` 是原始文本；NULL 表示未知 |
+| 表                         | 旧字段 → 新字段                                                                                                                                                                                            | 可靠回填来源                                                                                       | 未知时表示                                 | 新写入约束（应用层）                                                                                                                                                               | 读取兼容                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `sync_receipt`             | `record_uuid/organization_id/resource_type/version_no/source_system/manifest_checksum/receipt_status/confirmed_at` 原值保留；新增 `source_installation_id`、`remote_resource_id`、`received_at`            | 无（不从 `confirmed_at` 复制到 `received_at`，不猜远端安装/资源 ID）                               | 新列 NULL；`confirmed_at` 可空             | 四列唯一范围 + `source_system` 兼容描述；状态变化写 `receipt_status`，接收时间写 `received_at`；远端来源可写未在本机登记的值                                                       | 以 `receipt_status` 为状态、`received_at` 为时间；`confirmed_at` 仅历史兼容                                |
+| `backup_asset`             | `storage_reference/file_sha256/byte_size/cloud_status/local_status/cloud_receipt/attempt_count/last_attempt_at` 原值保留；新增 12 列                                                                       | 无（`manifest_checksum` 不由 `file_sha256` 推定，`cloud_reference` 不由 `storage_reference` 推断） | 新列 NULL                                  | 新备份写 `installation_id/format_version/data_version/manifest_checksum/encryption_key_id`；清理成功写 `local_reference=NULL`、`local_status='CLEANED'`，`deleted_at` 由应用层填写 | `local_status='CLEANED'` 且 `local_reference IS NULL` 即可；`deleted_at` NULL 不表示未清理，只表示时间未知 |
+| `backup_restore_run`       | `restore_id/backup_id/organization_id/started_by_account_id/status/check_snapshot/started_at/finished_at` 原值保留；`protection_backup_id` 改可空；新增 `target_installation_id/check_status/confirmation` | 无（不自动填 PASSED，不猜目标安装）                                                                | 新列 NULL；旧行 `confirmation` NULL        | 执行阶段必须写 `target_installation_id`（已登记）、`protection_backup_id`、`started_at`、`confirmation`；预检阶段可只写 `check_status='PENDING'`                                   | NULL 的 `check_status` 表示未知，不能当作检查通过；`status` 仍是唯一有效状态                               |
+| `maintenance_report_fault` | `status → lifecycle_status`、`source → lifecycle_source`（原值语义不变）；新增 `main_error/unit_error/error_type/gpib_status/status/source/phase_code/is_active`                                           | 无（原始八字段不能由生命周期字段转换；`is_active` 不能由多分支推断）                               | 原始八字段、`phase_code`、`is_active` NULL | 新故障必须显式写 `phase_code`（PHASE_01—10）、`is_active`、原始字段；生命周期单独写 `lifecycle_status/lifecycle_source`                                                            | `lifecycle_*` 是唯一生命周期来源；新 `status/source` 是原始文本；NULL 表示未知                             |
 
 `panel_snapshot`：仅当 JSON 可解析且键/语义可验证时由读取方解析；迁移不解析、不默认其完整或可信，也不据此回填任何新列。
 
 #### 13.8.3 三路径升级顺序与终态一致
 
-| 路径 | 顺序 | 终态保证 |
-| ---- | ---- | -------- |
-| 全新空库 | 1—31 → `1775501000000` → `1775501100000` → … → `1775501800000` → `1775501900000` | 与另外两条路径使用同一迁移清单与同一 `migration-schema-contract` 校验 |
-| 31 态旧库 | 导出并签字真实清单（库外）→ 1—31 已存在 → 注入清单 → `1775501100000` … → `1775501900000` | 旧行保留；`is_historical` 仅命中清单；其余结构与全新库一致 |
-| 已执行旧版增量的库 | 历史停在旧版 `1775501100000`/`1775501200000`…`1775501800000` → 直接执行 `1775501900000` | 旧行保留；新列 NULL；无重复组时结构与全新库一致；有重复组则在首次 DDL 前失败 |
+| 路径               | 顺序                                                                                     | 终态保证                                                                     |
+| ------------------ | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 全新空库           | 1—31 → `1775501000000` → `1775501100000` → … → `1775501800000` → `1775501900000`         | 与另外两条路径使用同一迁移清单与同一 `migration-schema-contract` 校验        |
+| 31 态旧库          | 导出并签字真实清单（库外）→ 1—31 已存在 → 注入清单 → `1775501100000` … → `1775501900000` | 旧行保留；`is_historical` 仅命中清单；其余结构与全新库一致                   |
+| 已执行旧版增量的库 | 历史停在旧版 `1775501100000`/`1775501200000`…`1775501800000` → 直接执行 `1775501900000`  | 旧行保留；新列 NULL；无重复组时结构与全新库一致；有重复组则在首次 DDL 前失败 |
 
 终态一致性由“唯一迁移目录 + 统一结构契约 + 同一部署入口”保证；三库逐列/逐索引/逐 CHECK 对照在下一批实库执行。
 
@@ -1339,15 +1339,15 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 #### 13.8.5 直接消费者核对
 
-| 消费者 | 核对结果 |
-| ------ | -------- |
-| 管理员初始化/真实会话链 | 本轮无结构变化；维持“实现完成，待实库验收” |
-| 新/旧写入入口 | 四表本轮无应用层执行器；写入约束记入字段字典，后续执行器必须遵守 |
-| `QueryService` | 未新增读取路径；现有读取不把 `is_historical`、`check_status`、`is_active` 的 NULL 当作成功/授权 |
-| Seed | `seed-mock.ts` 不写四表，无影响 |
-| fixture | `repair-request-fixture.ts` 不构造四表行，无影响 |
-| 专用/通用清理 | `e2e-scoped-cleanup.ts` 的故障归属事实改用 `lifecycle_source`；恢复行 `protection_backup_id` 改可空比较；同步回执归属说明改为四列唯一键 + 兼容来源描述 |
-| 清理规格 | `e2e-scoped-cleanup.v13*.spec.ts` 同步改名与列探测；`v13-db-verification.spec.ts` 的恢复夹具改用已登记目标安装，新增“只写 received_at 的 SUCCEEDED 合法”用例 |
+| 消费者                  | 核对结果                                                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 管理员初始化/真实会话链 | 本轮无结构变化；维持“实现完成，待实库验收”                                                                                                                   |
+| 新/旧写入入口           | 四表本轮无应用层执行器；写入约束记入字段字典，后续执行器必须遵守                                                                                             |
+| `QueryService`          | 未新增读取路径；现有读取不把 `is_historical`、`check_status`、`is_active` 的 NULL 当作成功/授权                                                              |
+| Seed                    | `seed-mock.ts` 不写四表，无影响                                                                                                                              |
+| fixture                 | `repair-request-fixture.ts` 不构造四表行，无影响                                                                                                             |
+| 专用/通用清理           | `e2e-scoped-cleanup.ts` 的故障归属事实改用 `lifecycle_source`；恢复行 `protection_backup_id` 改可空比较；同步回执归属说明改为四列唯一键 + 兼容来源描述       |
+| 清理规格                | `e2e-scoped-cleanup.v13*.spec.ts` 同步改名与列探测；`v13-db-verification.spec.ts` 的恢复夹具改用已登记目标安装，新增“只写 received_at 的 SUCCEEDED 合法”用例 |
 
 #### 13.8.6 本期结构支持与未交付执行器边界
 
@@ -1356,50 +1356,50 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 #### 13.8.7 离线验收结果
 
-| 检查 | 命令 | 结果 |
-| ---- | ---- | ---- |
-| 正式类型检查 | `npm run typecheck` | 通过 |
-| 工具/规格类型检查 | `npx tsc -p tsconfig.spec.json --noEmit` | 通过 |
-| 相关单测 | `jest s5-remaining-decisions / migration-schema-contract / incremental-migration / e2e-scoped-cleanup.v13` | 4 套件 67 用例全部通过 |
-| 全量后端单测 | `jest --runInBand` | 142 套件通过、1680 用例通过；9 套件 skipped、189 用例 skipped |
-| 本批 ESLint（无 `--fix`） | `eslint --no-fix <12 个 TS 文件>` | 0 error；仅 2 条既有/api 层级 `max-lines` warning |
-| Prettier | `prettier --check <12 个 TS 文件>` | 全部通过（Markdown 文档不在本批代码格式门禁内，未做全库重排） |
-| 能力/架构门禁 | `capability:docs:check`、`lint:usecase-normalize-guard`、`lint:architecture-fixtures` | 全部通过 |
-| 后端构建 | `npm run build` | 通过 |
-| 空白字符 | `git diff --check` | 通过（exit 0） |
-| 迁移指纹 | 41 文件逐文件 + 全量聚合 | §13.8/附录 B 记录值复算一致 |
-| 实体/迁移范围门禁 | `npm run check:entity-scope` | PASS，但 `HEAD=origin/main=72de1096…`，属空提交区间；本轮 v13 文件均为未跟踪/未提交，该结果**不能**证明本轮 Entity/Migration 变更合规。实际覆盖以 `git status` 中未跟踪的实体与迁移文件逐个人工核对为准 |
+| 检查                      | 命令                                                                                                       | 结果                                                                                                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 正式类型检查              | `npm run typecheck`                                                                                        | 通过                                                                                                                                                                                                    |
+| 工具/规格类型检查         | `npx tsc -p tsconfig.spec.json --noEmit`                                                                   | 通过                                                                                                                                                                                                    |
+| 相关单测                  | `jest s5-remaining-decisions / migration-schema-contract / incremental-migration / e2e-scoped-cleanup.v13` | 4 套件 67 用例全部通过                                                                                                                                                                                  |
+| 全量后端单测              | `jest --runInBand`                                                                                         | 142 套件通过、1680 用例通过；9 套件 skipped、189 用例 skipped                                                                                                                                           |
+| 本批 ESLint（无 `--fix`） | `eslint --no-fix <12 个 TS 文件>`                                                                          | 0 error；仅 2 条既有/api 层级 `max-lines` warning                                                                                                                                                       |
+| Prettier                  | `prettier --check <12 个 TS 文件>`                                                                         | 全部通过（Markdown 文档不在本批代码格式门禁内，未做全库重排）                                                                                                                                           |
+| 能力/架构门禁             | `capability:docs:check`、`lint:usecase-normalize-guard`、`lint:architecture-fixtures`                      | 全部通过                                                                                                                                                                                                |
+| 后端构建                  | `npm run build`                                                                                            | 通过                                                                                                                                                                                                    |
+| 空白字符                  | `git diff --check`                                                                                         | 通过（exit 0）                                                                                                                                                                                          |
+| 迁移指纹                  | 41 文件逐文件 + 全量聚合                                                                                   | §13.8/附录 B 记录值复算一致                                                                                                                                                                             |
+| 实体/迁移范围门禁         | `npm run check:entity-scope`                                                                               | PASS，但 `HEAD=origin/main=72de1096…`，属空提交区间；本轮 v13 文件均为未跟踪/未提交，该结果**不能**证明本轮 Entity/Migration 变更合规。实际覆盖以 `git status` 中未跟踪的实体与迁移文件逐个人工核对为准 |
 
 跳过的 9 套件与 189 用例（以后端实际 jest 日志为准）：
 
-| 套件 | 跳过用例 | 状态 | 原因 |
-| ---- | -------- | ---- | ---- |
-| `v13-db-verification.spec.ts` | 86 | 部分 skipped（focused） | 需要 `V13_DB_SPECS=1` 与已升级真实库；未启用时其余用例仍离线执行 |
-| `incremental-migration.integration.spec.ts` | 32 | skipped | 需要真实 MySQL 与显式开关 |
-| `admin-bootstrap.realdb.spec.ts` | 18 | 部分 skipped（focused） | 需要 `ADMIN_BOOTSTRAP_REALDB_SPECS=1` 与真实库 |
-| `e2e-scoped-cleanup.v13.realdb.spec.ts` | 10 | skipped | 需要真实 MySQL 与显式开关 |
-| `admin-set-user-status.concurrency.integration.spec.ts` | 10 | skipped | 需要真实 MySQL 与显式开关 |
-| `maintenance-report.integration.spec.ts` | 10 | skipped | 需要真实 MySQL 与显式开关 |
-| `repair-request.organization.integration.spec.ts` | 9 | skipped | 需要真实 MySQL 与显式开关 |
-| `maintenance-report.concurrency.integration.spec.ts` | 5 | skipped | 需要真实 MySQL 与显式开关 |
-| `record-package-state.migration.realdb.spec.ts` | 4 | skipped | 需要真实 MySQL 与显式开关 |
-| `local-runtime.concurrency.integration.spec.ts` | 4 | skipped | 需要真实 MySQL 与显式开关 |
-| `v13-upgrade-from-31-state.realdb.spec.ts` | 1 | skipped | 需要 31 态基线库、清单与显式开关 |
+| 套件                                                    | 跳过用例 | 状态                    | 原因                                                             |
+| ------------------------------------------------------- | -------- | ----------------------- | ---------------------------------------------------------------- |
+| `v13-db-verification.spec.ts`                           | 86       | 部分 skipped（focused） | 需要 `V13_DB_SPECS=1` 与已升级真实库；未启用时其余用例仍离线执行 |
+| `incremental-migration.integration.spec.ts`             | 32       | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `admin-bootstrap.realdb.spec.ts`                        | 18       | 部分 skipped（focused） | 需要 `ADMIN_BOOTSTRAP_REALDB_SPECS=1` 与真实库                   |
+| `e2e-scoped-cleanup.v13.realdb.spec.ts`                 | 10       | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `admin-set-user-status.concurrency.integration.spec.ts` | 10       | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `maintenance-report.integration.spec.ts`                | 10       | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `repair-request.organization.integration.spec.ts`       | 9        | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `maintenance-report.concurrency.integration.spec.ts`    | 5        | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `record-package-state.migration.realdb.spec.ts`         | 4        | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `local-runtime.concurrency.integration.spec.ts`         | 4        | skipped                 | 需要真实 MySQL 与显式开关                                        |
+| `v13-upgrade-from-31-state.realdb.spec.ts`              | 1        | skipped                 | 需要 31 态基线库、清单与显式开关                                 |
 
 合计 9 个整包 skipped（85 用例）+ 2 个部分 skipped 套件（104 用例）= 189 用例；均因未满足实库环境开关，不存在 todo/disabled 之外的其他状态，也没有真实失败被隐藏。
 
 #### 13.8.8 下一批集中实库验收：库清单与授权
 
-| 序号 | 库名 | 用途 | 初始状态 | 允许操作 | 保留方式 |
-| ---- | ---- | ---- | -------- | -------- | -------- |
-| 1 | `lithography_v13_fresh` | 全新空库路径 | 空库 | 全量迁移、结构校验 | 通过后保留 7 天供对照 |
-| 2 | `lithography_v13_upg31_ctrl` | 31 态控制组 | 31 条基线迁移 | 注入 ctrl 清单、升级、结构校验 | 保留现场 |
-| 3 | `lithography_v13_upg31_a_ai5` | 31 态评分 5 场景 | 31 条基线迁移 | 注入 A 场景样本、升级 | 保留现场 |
-| 4 | `lithography_v13_upg31_b_closure` | 31 态闭单历史场景 | 31 条基线迁移 | 注入 B 场景样本、升级 | 保留现场 |
-| 5 | `lithography_v13_upg31_d_conv` | 31 态会话归属场景 | 31 条基线迁移 | 注入 D 场景样本、升级 | 保留现场 |
-| 6 | `lithography_v13_incremental_nonempty` | 已执行旧版增量 + 四表非空旧数据 | 旧版增量迁移至 `1775501800000` | 写入四表旧样本、执行 `1775501900000`、结构校验 | 保留现场 |
-| 7 | `lithography_v13_admin_chain` | 管理员真实链路 | 全量结构 | 初始化管理员、登录、受保护 Query、越权拒绝 | 保留现场 |
-| 8 | `lithography_v13_cleanup_scope` | 专用清理/消费者 | 全量结构 + 最小种子 | ByIds/Residue 清理、直接消费者读写 | 保留现场 |
+| 序号 | 库名                                   | 用途                            | 初始状态                       | 允许操作                                       | 保留方式              |
+| ---- | -------------------------------------- | ------------------------------- | ------------------------------ | ---------------------------------------------- | --------------------- |
+| 1    | `lithography_v13_fresh`                | 全新空库路径                    | 空库                           | 全量迁移、结构校验                             | 通过后保留 7 天供对照 |
+| 2    | `lithography_v13_upg31_ctrl`           | 31 态控制组                     | 31 条基线迁移                  | 注入 ctrl 清单、升级、结构校验                 | 保留现场              |
+| 3    | `lithography_v13_upg31_a_ai5`          | 31 态评分 5 场景                | 31 条基线迁移                  | 注入 A 场景样本、升级                          | 保留现场              |
+| 4    | `lithography_v13_upg31_b_closure`      | 31 态闭单历史场景               | 31 条基线迁移                  | 注入 B 场景样本、升级                          | 保留现场              |
+| 5    | `lithography_v13_upg31_d_conv`         | 31 态会话归属场景               | 31 条基线迁移                  | 注入 D 场景样本、升级                          | 保留现场              |
+| 6    | `lithography_v13_incremental_nonempty` | 已执行旧版增量 + 四表非空旧数据 | 旧版增量迁移至 `1775501800000` | 写入四表旧样本、执行 `1775501900000`、结构校验 | 保留现场              |
+| 7    | `lithography_v13_admin_chain`          | 管理员真实链路                  | 全量结构                       | 初始化管理员、登录、受保护 Query、越权拒绝     | 保留现场              |
+| 8    | `lithography_v13_cleanup_scope`        | 专用清理/消费者                 | 全量结构 + 最小种子            | ByIds/Residue 清理、直接消费者读写             | 保留现场              |
 
 最小授权文字：
 
@@ -1414,16 +1414,16 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 
 ### 13.9 第三轮实库验收结果（2026-11-09，S5 41 态候选）
 
-| 阶段 | 目标 | 结果 | 证据 |
-| --- | --- | --- | --- |
-| 1A 全新库 | `lithography_v13_admin_chain_r2`（fresh_r2 失败现场保留） | PASS：41 条迁移、verify、重复 init 0 迁移、CHECKSUM 无漂移 | `evidence/33-*`、`34-*` |
-| 1B 31 态升级 | `_upg31_ctrl_r2` / `_a_ai5_r2` / `_b_closure_r2` | PASS：三库按预期升级；评分 5 保留/新 5 拒绝；旧中断与软删保留 | `evidence/stage1b/` |
-| 1B 预期拒绝 | `_upg31_d_conv_r2` | 预期拒绝：1100000 兼容预检拦截，history 32、V13 列 0；不计成功路径 | `evidence/stage1b/d-conv-r2.log` |
-| 1C 旧增量非空 | `_incremental_nonempty_r2` | PASS：四列重复组首次 DDL 前拒绝；续跑升级成功；旧字段保留、新事实 NULL | `evidence/stage1c/` |
-| 1 终态对照 | 三路径 | PASS：列/索引/FK/CHECK/默认/生成表达式逐项一致，diff 为空；重复执行 0 迁移 | `evidence/stage1-parity/` |
-| 2 管理员链路 | `_admin_chain_r2` | PASS：真实 Nest/GraphQL/JWT、合法管理、越权拒绝、幂等、冲突不改写、事务回滚 | `stage2/evidence/` |
-| 3 约束/清理 | `_cleanup_scope_r2` | PASS：`v13-db-verification` 88/88、`e2e-scoped-cleanup.v13.realdb` 10/10 | `evidence/stage3-*` |
-| 4 完整 core | `lithography_e2e` | **BLOCKED**：正式入口预检拒绝；核心未执行 | `stage4/evidence/02-stage4-blocked.md` |
+| 阶段          | 目标                                                      | 结果                                                                        | 证据                                   |
+| ------------- | --------------------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| 1A 全新库     | `lithography_v13_admin_chain_r2`（fresh_r2 失败现场保留） | PASS：41 条迁移、verify、重复 init 0 迁移、CHECKSUM 无漂移                  | `evidence/33-*`、`34-*`                |
+| 1B 31 态升级  | `_upg31_ctrl_r2` / `_a_ai5_r2` / `_b_closure_r2`          | PASS：三库按预期升级；评分 5 保留/新 5 拒绝；旧中断与软删保留               | `evidence/stage1b/`                    |
+| 1B 预期拒绝   | `_upg31_d_conv_r2`                                        | 预期拒绝：1100000 兼容预检拦截，history 32、V13 列 0；不计成功路径          | `evidence/stage1b/d-conv-r2.log`       |
+| 1C 旧增量非空 | `_incremental_nonempty_r2`                                | PASS：四列重复组首次 DDL 前拒绝；续跑升级成功；旧字段保留、新事实 NULL      | `evidence/stage1c/`                    |
+| 1 终态对照    | 三路径                                                    | PASS：列/索引/FK/CHECK/默认/生成表达式逐项一致，diff 为空；重复执行 0 迁移  | `evidence/stage1-parity/`              |
+| 2 管理员链路  | `_admin_chain_r2`                                         | PASS：真实 Nest/GraphQL/JWT、合法管理、越权拒绝、幂等、冲突不改写、事务回滚 | `stage2/evidence/`                     |
+| 3 约束/清理   | `_cleanup_scope_r2`                                       | PASS：`v13-db-verification` 88/88、`e2e-scoped-cleanup.v13.realdb` 10/10    | `evidence/stage3-*`                    |
+| 4 完整 core   | `lithography_e2e`                                         | **BLOCKED**：正式入口预检拒绝；核心未执行                                   | `stage4/evidence/02-stage4-blocked.md` |
 
 阶段4 阻断事实：
 
@@ -1436,3 +1436,62 @@ B 运行使用了校正后的断言并通过。之后仅做类型替换（`Funct
 本轮不判定“可以合并”；`lithography_e2e` 升级与 KEEP core、四个直接消费者的运行时验证、
 最终独立审查与提交审计均未完成。
 
+---
+
+## 提交后补记：`check:entity-scope` 实测与既有裁决引用（2026-11-10）
+
+本节为追加补记，不改写上方历史结论，也不删除任何失败或事故记录。
+
+- 提交：`f591254e5fde95a81bb2904554ca19bcf0c3fc5c`（父提交 `6283a3f7cf6cd32fc83c5e778a7a1a94cf611ea8`），分支 `feat/database-v13-deploy`。
+- 实测命令：`npm run check:entity-scope`；比较区间 `origin/main...HEAD`，即 `72de1096d0a2aa2d62ed55a48ab49ebc3398000a...f591254e5fde95a81bb2904554ca19bcf0c3fc5c`。
+- 实测结果：**退出码 1**，输出 `FAIL：origin/main...HEAD 改动了受保护目录，禁止提审`。
+- 失败构成：受保护 Entity 目录 26 个文件（17 个 A、9 个 M）；V13 迁移 12 个文件（12 个 A）。合计 **38 个 Entity/Migration 文件**。
+- 脚本路径缺陷：受保护迁移目录写为 `backend/src/database/migrations`，该目录不存在；实际迁移目录为 `backend/src/infrastructure/database/migrations`，因此 12 条迁移未被脚本识别。该缺陷不影响下方人工核对覆盖，本轮未修改门禁。
+- 既有裁决（引用）：
+  - `backend/plans/database-v13-deployment-plan.md` §231：`check:entity-scope` 若仍为旧 PR3 限制，核对已有明确裁决并记“不适用”，不记通过、不为骗绿改脚本。
+  - `docs/database/PR0-最终独立终审-20261026/完整PR独立终审报告-20261026.md` §37：该脚本文件头明确为旧 PR3 “禁止改 Entity” 专用门禁，对任务书已授权的 Entity/Migration 改动应记为“不适用的旧范围门禁”，不伪称通过，也不要求撤销已授权变更。
+- 结论：`check:entity-scope` 退出 1 **不记为本期通过**，按既有裁决记“不适用”；未修改、未放宽、未删除门禁，未切换 base、未使用空区间、未忽略文件、未扩大白名单。
+- 人工核对范围（`git diff --name-status origin/main -- backend/src/modules/lithography/entities backend/src/infrastructure/database/migrations`，共 38 个文件）：
+
+```text
+A backend/src/infrastructure/database/migrations/1775501000000-alter-accounts-and-organizations-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501100000-alter-repair-ai-report-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501200000-create-stored-file-and-repair-intake-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501300000-create-report-fault-and-revisions-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501400000-create-local-sync-and-package-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501500000-create-backup-and-audit-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501600000-fix-json-snapshot-version-checks-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501700000-add-record-package-check-and-import-result-states-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501800000-restore-maintenance-report-helpfulness-range-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775501900000-close-s5-structural-gaps-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775502000000-close-d3-structural-gaps-for-v13.migration.ts
+A backend/src/infrastructure/database/migrations/1775502100000-add-repair-request-revision-previous-version-for-v13.migration.ts
+M backend/src/modules/lithography/entities/ai-conversation.entity.ts
+A backend/src/modules/lithography/entities/ai-message-analysis.entity.ts
+M backend/src/modules/lithography/entities/ai-message.entity.ts
+A backend/src/modules/lithography/entities/backup-asset.entity.ts
+A backend/src/modules/lithography/entities/backup-restore-run.entity.ts
+A backend/src/modules/lithography/entities/intake-analysis-attempt.entity.ts
+A backend/src/modules/lithography/entities/local-account-authorization.entity.ts
+M backend/src/modules/lithography/entities/local-backup-run.entity.ts
+A backend/src/modules/lithography/entities/local-company-setting.entity.ts
+M backend/src/modules/lithography/entities/local-upload-task.entity.ts
+M backend/src/modules/lithography/entities/maintenance-report.entity.ts
+A backend/src/modules/lithography/entities/maintenance-report-fault.entity.ts
+M backend/src/modules/lithography/entities/maintenance-report-step.entity.ts
+A backend/src/modules/lithography/entities/management-audit-event.entity.ts
+M backend/src/modules/lithography/entities/organization.entity.ts
+A backend/src/modules/lithography/entities/record-package-import.entity.ts
+A backend/src/modules/lithography/entities/record-package-item.entity.ts
+M backend/src/modules/lithography/entities/reference-document.entity.ts
+A backend/src/modules/lithography/entities/reference-document-revision.entity.ts
+A backend/src/modules/lithography/entities/repair-process-entry.entity.ts
+M backend/src/modules/lithography/entities/repair-request.entity.ts
+A backend/src/modules/lithography/entities/repair-request-intake.entity.ts
+A backend/src/modules/lithography/entities/repair-request-revision.entity.ts
+A backend/src/modules/lithography/entities/stored-file.entity.ts
+A backend/src/modules/lithography/entities/sync-conflict.entity.ts
+A backend/src/modules/lithography/entities/sync-receipt.entity.ts
+```
+
+- 不变性核对：本补记仅改文档；运行时代码、Entity、43 条迁移相对 `f591254e` 无改动，`ALL43_CONCAT=37ed8126c37015b42ad92bcd523516aef1ff5a67fd2f010fd6fb658c95cc3920` 保持不变。

@@ -1188,18 +1188,18 @@
 - 落位：云；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
 
-| 字段               | 类型         | 约束                           | 用途           | 迁移方式     | 消费者                | 测试            | 状态                        |
-| ------------------ | ------------ | ------------------------------ | -------------- | ------------ | --------------------- | --------------- | --------------------------- |
-| `id`               | bigint       | 自增PK                         | 管理修订       | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `request_id`       | int          | 非空FK工单                     | 目标工单       | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `revision_no`      | int unsigned | 联合UK(request_id,revision_no) | 新版本         | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| 字段               | 类型         | 约束                                                   | 用途                    | 迁移方式                       | 消费者                | 测试                               | 状态                                                                 |
+| ------------------ | ------------ | ------------------------------------------------------ | ----------------------- | ------------------------------ | --------------------- | ---------------------------------- | -------------------------------------------------------------------- |
+| `id`               | bigint       | 自增PK                                                 | 管理修订                | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `request_id`       | int          | 非空FK工单                                             | 目标工单                | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `revision_no`      | int unsigned | 联合UK(request_id,revision_no)                         | 新版本                  | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
 | `previous_version` | int unsigned | 可空；`NULL`=历史未知，`0`=首版；CHECK `< revision_no` | 比较/基于的上一生效版本 | 第 43 条追加迁移（ADD COLUMN） | 后续执行器 + 清理入口 | S2 定向 SQL/e2e + 第 43 条实库用例 | 第 43 条结构已实现（待实库验证）；与冻结 Word 的“非空”存在兼容性差异 |
-| `actor_account_id` | int          | 非空FK账号                     | 实际操作者     | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `reason`           | text         | 非空                           | 修订原因       | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `before_snapshot`  | json         | 非空，有schema_version         | 修改前事实     | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `after_snapshot`   | json         | 非空，有schema_version         | 修改后事实     | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `schema_version`   | int unsigned | 非空                           | 快照格式版本   | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `created_at`       | timestamp(3) | 非空                           | 修订时间       | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `actor_account_id` | int          | 非空FK账号                                             | 实际操作者              | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `reason`           | text         | 非空                                                   | 修订原因                | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `before_snapshot`  | json         | 非空，有schema_version                                 | 修改前事实              | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `after_snapshot`   | json         | 非空，有schema_version                                 | 修改后事实              | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `schema_version`   | int unsigned | 非空                                                   | 快照格式版本            | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
+| `created_at`       | timestamp(3) | 非空                                                   | 修订时间                | CREATE TABLE                   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e                    | S2 结构已实现（待实库验证）                                          |
 
 > **`previous_version` 设计差异（第 43 条，2026-11-09）**：冻结 Word 将该列定义为“非空、比较的上一版本”。由于第 43 条之前的历史行无法证明其比较版本，实际落为 `int unsigned NULL`，不回填、不设置默认版本。语义：`NULL` = 历史未知；`0` = 基于原始版本的首次管理修订；其他值 = 写入时锁定并核验过的 `current_revision_no`。CHECK `previous_version IS NULL OR previous_version < revision_no` 只做 NULL 安全的顺序守卫，不把“修订号连续”写成结构假设。未来 R029/R030 写入方必须填写 `previous_version`；本轮不实现该接口。该差异是兼容旧数据的明确设计调整，不宣称冻结 Word 原样落地。
 
@@ -1287,21 +1287,21 @@
 - 落位：云；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
 
-| 字段                      | 类型         | 约束                                     | 用途             | 迁移方式     | 消费者                | 测试            | 状态                        |
-| ------------------------- | ------------ | ---------------------------------------- | ---------------- | ------------ | --------------------- | --------------- | --------------------------- |
-| `conflict_id`             | char(36)     | 主键                                     | 冲突编号（等价设计 id） | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `record_uuid`             | char(36)     | 非空                                     | 统一记录编号     | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `organization_id`         | int          | 非空FK公司                               | 归属             | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `resource_type`           | varchar(32)  | 非空                                     | 资源类型         | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `version_no`              | int unsigned | 非空                                     | 旧冲突版本号，不映射本地/云端 | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条保留（历史兼容） |
-| `local_version`           | int unsigned | 可空；旧行NULL历史未知；新写入成对必填 | 本地版本         | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证） |
-| `cloud_version`           | int unsigned | 可空；旧行NULL历史未知；新写入成对必填 | 检测云版本       | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证） |
-| `local_snapshot`          | json         | 非空，格式版本明确                       | 保留的本地内容   | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `cloud_snapshot`          | json         | 非空，格式版本明确                       | 保留的云端内容   | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `displayed_cloud_version` | int unsigned | 可空；旧行NULL历史未知                   | 用户已展示版本   | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证） |
-| `decision`                | varchar(24)  | 可空，默认PENDING；旧行NULL历史未知      | 待处理/本地/云端 | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证） |
-| `confirmed_by_account_id` | int          | 可空FK账号                               | 实际确认人       | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `confirmed_at`            | timestamp(3) | 可空                                     | 明确选择时间     | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| 字段                      | 类型         | 约束                                   | 用途                          | 迁移方式     | 消费者                | 测试            | 状态                        |
+| ------------------------- | ------------ | -------------------------------------- | ----------------------------- | ------------ | --------------------- | --------------- | --------------------------- |
+| `conflict_id`             | char(36)     | 主键                                   | 冲突编号（等价设计 id）       | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `record_uuid`             | char(36)     | 非空                                   | 统一记录编号                  | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `organization_id`         | int          | 非空FK公司                             | 归属                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `resource_type`           | varchar(32)  | 非空                                   | 资源类型                      | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `version_no`              | int unsigned | 非空                                   | 旧冲突版本号，不映射本地/云端 | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条保留（历史兼容）      |
+| `local_version`           | int unsigned | 可空；旧行NULL历史未知；新写入成对必填 | 本地版本                      | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证）  |
+| `cloud_version`           | int unsigned | 可空；旧行NULL历史未知；新写入成对必填 | 检测云版本                    | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证）  |
+| `local_snapshot`          | json         | 非空，格式版本明确                     | 保留的本地内容                | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `cloud_snapshot`          | json         | 非空，格式版本明确                     | 保留的云端内容                | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `displayed_cloud_version` | int unsigned | 可空；旧行NULL历史未知                 | 用户已展示版本                | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证）  |
+| `decision`                | varchar(24)  | 可空，默认PENDING；旧行NULL历史未知    | 待处理/本地/云端              | 第42条迁移   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证）  |
+| `confirmed_by_account_id` | int          | 可空FK账号                             | 实际确认人                    | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `confirmed_at`            | timestamp(3) | 可空                                   | 明确选择时间                  | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
 
 #### 4.13 `record_package_import`
 
@@ -1312,20 +1312,20 @@
   `import_status` → `status`（仅表示导入阶段）。设计稿 `format_version` 未新增独立列，
   版本以 `manifest_json` 内 `schema_version` 为单一来源。
 
-| 字段                     | 类型         | 约束                                        | 用途                               | 迁移方式                      | 消费者                | 测试                   | 状态                                  |
-| ------------------------ | ------------ | ------------------------------------------- | ---------------------------------- | ----------------------------- | --------------------- | ---------------------- | ------------------------------------- |
-| `package_id`             | char(36)     | 主键；稳定包编号                            | 包身份；同包重试必须复用该值       | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `organization_id`        | int          | 非空FK公司                                  | 包归属                             | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `imported_by_account_id` | int          | 非空FK账号                                  | 检查/导入操作者                   | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `manifest_json`          | longtext     | 非空；合法 JSON 且 `schema_version` 存在非null | 包清单与格式版本                   | 第38/39条迁移重建 CHECK       | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | 已完成实库验证（第 39 条）             |
-| `manifest_checksum`      | char(64)     | 非空；长度64                                 | 本次包版本身份                     | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `status`                 | varchar(16)  | 非空；PENDING/RUNNING/SUCCEEDED/PARTIAL/FAILED | 导入阶段（不表示检查结论）        | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `check_status`           | varchar(16)  | 可空；NULL/PENDING/PASSED/REJECTED           | 检查结论；不得据此表示导入成功     | 第39条迁移 ADD COLUMN         | 后续执行器 + 清理入口 | S2 §2.5 + 纯替身迁移规格 | 已完成实库验证（第 39 条）             |
-| `item_total`             | int unsigned | 非空，默认0                                  | 清点总条数                         | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `item_succeeded`         | int unsigned | 非空，默认0；与失败数之和不超总数             | 成功条数                           | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `item_failed`            | int unsigned | 非空，默认0                                  | 失败条数                           | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `created_at`             | timestamp(3) | 非空，默认当前时间                           | 处理创建时间                       | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
-| `completed_at`           | timestamp(3) | 可空                                         | 完成时间                           | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证）           |
+| 字段                     | 类型         | 约束                                           | 用途                           | 迁移方式                | 消费者                | 测试                     | 状态                        |
+| ------------------------ | ------------ | ---------------------------------------------- | ------------------------------ | ----------------------- | --------------------- | ------------------------ | --------------------------- |
+| `package_id`             | char(36)     | 主键；稳定包编号                               | 包身份；同包重试必须复用该值   | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `organization_id`        | int          | 非空FK公司                                     | 包归属                         | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `imported_by_account_id` | int          | 非空FK账号                                     | 检查/导入操作者                | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `manifest_json`          | longtext     | 非空；合法 JSON 且 `schema_version` 存在非null | 包清单与格式版本               | 第38/39条迁移重建 CHECK | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | 已完成实库验证（第 39 条）  |
+| `manifest_checksum`      | char(64)     | 非空；长度64                                   | 本次包版本身份                 | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `status`                 | varchar(16)  | 非空；PENDING/RUNNING/SUCCEEDED/PARTIAL/FAILED | 导入阶段（不表示检查结论）     | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `check_status`           | varchar(16)  | 可空；NULL/PENDING/PASSED/REJECTED             | 检查结论；不得据此表示导入成功 | 第39条迁移 ADD COLUMN   | 后续执行器 + 清理入口 | S2 §2.5 + 纯替身迁移规格 | 已完成实库验证（第 39 条）  |
+| `item_total`             | int unsigned | 非空，默认0                                    | 清点总条数                     | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `item_succeeded`         | int unsigned | 非空，默认0；与失败数之和不超总数              | 成功条数                       | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `item_failed`            | int unsigned | 非空，默认0                                    | 失败条数                       | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `created_at`             | timestamp(3) | 非空，默认当前时间                             | 处理创建时间                   | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `completed_at`           | timestamp(3) | 可空                                           | 完成时间                       | CREATE TABLE            | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
 
 组合约束（第 39 条，数据库可证部分）：`RUNNING/SUCCEEDED/PARTIAL` 要求 `check_status=PASSED`；
 `REJECTED` 只允许 `status=PENDING`；`check_status=PENDING` 只允许 `status=PENDING`；
@@ -1340,18 +1340,18 @@
 - 唯一规则：`uk_record_package_item_scope(package_id, record_uuid, resource_type, version_no)`
   负责同包内同条重复识别；同包重试必须命中原 `package_id`，不得生成新编号绕过。
 
-| 字段           | 类型         | 约束                                                     | 用途                                   | 迁移方式                      | 消费者                | 测试                   | 状态                        |
-| -------------- | ------------ | -------------------------------------------------------- | -------------------------------------- | ----------------------------- | --------------------- | ---------------------- | --------------------------- |
-| `id`           | bigint       | 自增PK                                                   | 逐条记录                               | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `package_id`   | char(36)     | 非空FK `record_package_import.package_id`                 | 所属包                                 | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `record_uuid`  | char(36)     | 非空；与 package_id/resource_type/version_no 联合UK       | 业务稳定编号                           | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `resource_type`| varchar(32)  | 非空                                                     | 资源类型                               | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `version_no`   | int unsigned | 非空                                                     | 业务版本                               | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `check_result` | varchar(16)  | 可空；NULL/PASSED/REJECTED                               | 逐条检查结论；NULL 表示未完成或历史未判定 | 第39条迁移 ADD COLUMN        | 后续执行器 + 清理入口 | S2 §2.5 + 纯替身迁移规格 | 已完成实库验证（第 39 条） |
-| `result`       | varchar(16)  | 可空；NULL/SUCCEEDED/FAILED/SKIPPED/CONFLICT              | NULL 未执行；四类导入结果；SUCCEEDED 要求检查通过 | 第39条迁移 MODIFY + 重建CHECK | 后续执行器 + 清理入口 | S2 §2.5 + 纯替身迁移规格 | 已完成实库验证（第 39 条） |
-| `receipt_id`   | char(36)     | 可空FK `sync_receipt.receipt_id`                          | 同步回执                               | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `error_message`| text         | 可空；FAILED 时必填非空白                                 | 实际失败原因                           | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
-| `created_at`   | timestamp(3) | 非空，默认当前时间                                       | 创建时间                               | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e        | S2 结构已实现（待实库验证） |
+| 字段            | 类型         | 约束                                                | 用途                                              | 迁移方式                      | 消费者                | 测试                     | 状态                        |
+| --------------- | ------------ | --------------------------------------------------- | ------------------------------------------------- | ----------------------------- | --------------------- | ------------------------ | --------------------------- |
+| `id`            | bigint       | 自增PK                                              | 逐条记录                                          | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `package_id`    | char(36)     | 非空FK `record_package_import.package_id`           | 所属包                                            | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `record_uuid`   | char(36)     | 非空；与 package_id/resource_type/version_no 联合UK | 业务稳定编号                                      | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `resource_type` | varchar(32)  | 非空                                                | 资源类型                                          | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `version_no`    | int unsigned | 非空                                                | 业务版本                                          | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `check_result`  | varchar(16)  | 可空；NULL/PASSED/REJECTED                          | 逐条检查结论；NULL 表示未完成或历史未判定         | 第39条迁移 ADD COLUMN         | 后续执行器 + 清理入口 | S2 §2.5 + 纯替身迁移规格 | 已完成实库验证（第 39 条）  |
+| `result`        | varchar(16)  | 可空；NULL/SUCCEEDED/FAILED/SKIPPED/CONFLICT        | NULL 未执行；四类导入结果；SUCCEEDED 要求检查通过 | 第39条迁移 MODIFY + 重建CHECK | 后续执行器 + 清理入口 | S2 §2.5 + 纯替身迁移规格 | 已完成实库验证（第 39 条）  |
+| `receipt_id`    | char(36)     | 可空FK `sync_receipt.receipt_id`                    | 同步回执                                          | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `error_message` | text         | 可空；FAILED 时必填非空白                           | 实际失败原因                                      | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
+| `created_at`    | timestamp(3) | 非空，默认当前时间                                  | 创建时间                                          | CREATE TABLE                  | 后续执行器 + 清理入口 | S2 定向 SQL/e2e          | S2 结构已实现（待实库验证） |
 
 组合约束（第 39 条，数据库可证部分）：`check_result=REJECTED` 只允许 `result=NULL`；
 `result=SUCCEEDED` 要求 `check_result=PASSED`。历史 `check_result=NULL` 且
@@ -1417,18 +1417,18 @@
 - 需求：拟新增业务记录；依据R089、R092。仅三类管理操作，复用对应业务实际结果，非独立审计平台。
 - **D3 结构对齐（2026-11-09，第 42 条迁移）**：实现字段名与设计稿等价映射为 `event_id`←`id`、`actor_admin_level`←`actor_level_snapshot`、`target_type`←`resource_type`、`target_id`←`resource_id`、`detail`←`reason`、`created_at`←`occurred_at`；`before_version`/`after_version` 未实现，不重复加列。第 42 条只收紧 `operation` CHECK 为三类已确认操作；旧审计类型不自动映射，存在时迁移失败关闭。
 
-| 字段                   | 类型         | 约束                                                                        | 用途                                                                                  | 迁移方式     | 消费者                | 测试            | 状态                        |
-| ---------------------- | ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------ | --------------------- | --------------- | --------------------------- |
-| `event_id`             | char(36)     | 主键（等价设计 id）                                                         | 操作记录                                                                              | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `actor_account_id`     | int          | 非空FK账号                                                                  | 实际发起三类管理操作的管理员；平台代写不等于自动任务无操作者                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `actor_admin_level`    | tinyint      | 非空，仅1或2                                                                | 实际操作时等级；查询权限仍读取当前可信身份，不信任前端                                | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `organization_id`      | int          | 可空FK目标公司；未知归属记录仅1级可查                                       | 有可信公司时保存实际目标公司；2级仅organization_id=本人可信公司，不因NULL获得全局记录 | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `operation`            | varchar(32)  | 仅ADMIN_DELETE_DOCUMENT／CORRECT_DOCUMENT_OWNERSHIP／RESTORE_LOCAL_BUSINESS | 管理员删除正式资料、更正上传者与公司、恢复本机业务                                    | 第42条收紧   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证） |
-| `target_type`          | varchar(32)  | 非空                                                                        | 目标类型（等价设计 resource_type）                                                    | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `target_id`            | varchar(64)  | 非空                                                                        | 目标编号（等价设计 resource_id）                                                      | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `result`               | varchar(16)  | 非空                                                                        | 阶段真实结果                                                                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `detail`               | text         | 可空，仅必要说明；归属更正采用业务必填原因                                  | 不记录正文、包内容、密码或Token，不扩大通用审计范围（等价设计 reason）                 | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `created_at`           | timestamp(3) | 非空                                                                        | 实际操作时间（等价设计 occurred_at）                                                  | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| 字段                | 类型         | 约束                                                                        | 用途                                                                                  | 迁移方式     | 消费者                | 测试            | 状态                        |
+| ------------------- | ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------ | --------------------- | --------------- | --------------------------- |
+| `event_id`          | char(36)     | 主键（等价设计 id）                                                         | 操作记录                                                                              | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `actor_account_id`  | int          | 非空FK账号                                                                  | 实际发起三类管理操作的管理员；平台代写不等于自动任务无操作者                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `actor_admin_level` | tinyint      | 非空，仅1或2                                                                | 实际操作时等级；查询权限仍读取当前可信身份，不信任前端                                | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `organization_id`   | int          | 可空FK目标公司；未知归属记录仅1级可查                                       | 有可信公司时保存实际目标公司；2级仅organization_id=本人可信公司，不因NULL获得全局记录 | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `operation`         | varchar(32)  | 仅ADMIN_DELETE_DOCUMENT／CORRECT_DOCUMENT_OWNERSHIP／RESTORE_LOCAL_BUSINESS | 管理员删除正式资料、更正上传者与公司、恢复本机业务                                    | 第42条收紧   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证）  |
+| `target_type`       | varchar(32)  | 非空                                                                        | 目标类型（等价设计 resource_type）                                                    | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `target_id`         | varchar(64)  | 非空                                                                        | 目标编号（等价设计 resource_id）                                                      | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `result`            | varchar(16)  | 非空                                                                        | 阶段真实结果                                                                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `detail`            | text         | 可空，仅必要说明；归属更正采用业务必填原因                                  | 不记录正文、包内容、密码或Token，不扩大通用审计范围（等价设计 reason）                | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
+| `created_at`        | timestamp(3) | 非空                                                                        | 实际操作时间（等价设计 occurred_at）                                                  | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
 
 ## 4. 生成列、JSON 格式版本与特殊约束
 
