@@ -18,6 +18,7 @@ import {
   resolveMigrationName,
   toMigrationClasses,
 } from './migration-schema-contract';
+import { assertRequiredStructureDefinitions } from './migration-structure-definition-verifier';
 
 type MysqlDataSourceOptions = Extract<DataSourceOptions, { type: 'mysql' | 'mariadb' }>;
 
@@ -531,7 +532,8 @@ async function runEmptyDbMigrationDrill(): Promise<void> {
     await assertRequiredIndexes(migrationDataSource, target.databaseName);
     await assertRequiredChecks(migrationDataSource, target.databaseName);
     await assertRequiredForeignKeys(migrationDataSource, target.databaseName);
-    writeInfo('✅ 关键表、字段、索引、CHECK 与外键校验通过');
+    await assertRequiredStructureDefinitions(migrationDataSource, target.databaseName);
+    writeInfo('✅ 关键表、字段、索引、CHECK、外键与定义级校验通过');
     writeInfo(baselineCount === null ? '🎉 空库 migration 演练通过' : '🎉 旧库升级演练通过');
   } finally {
     if (migrationInitialized) {

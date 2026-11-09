@@ -2,12 +2,10 @@
 import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import { loadExplicitEnvConfig } from '@src/infrastructure/database/incremental-migration';
 import { DataSource } from 'typeorm';
-import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
-import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
-import { OrganizationEntity } from '../entities/organization.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
+import { REPAIR_REQUEST_ORG_READ_FIXTURE_ENTITIES } from '../../../../test/utils/local-entity-sets';
 import {
   assertFixtureIdsAvailable,
   assertRegisteredRowsAbsent,
@@ -292,14 +290,7 @@ describeIntegration('维修申请组织范围实库验收', () => {
       database: config.database,
       timezone: config.timezone,
       charset: config.charset,
-      entities: [
-        RepairRequestEntity,
-        EngineerResponseEntity,
-        EquipmentModelEntity,
-        OrganizationEntity,
-        AccountEntity,
-        UserInfoEntity,
-      ],
+      entities: [...REPAIR_REQUEST_ORG_READ_FIXTURE_ENTITIES],
       synchronize: false,
       logging: false,
     });

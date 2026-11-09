@@ -4,6 +4,7 @@ import { Gender, UserState } from '@app-types/models/user-info.types';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { AccountService } from '@src/modules/account/base/services/account.service';
+import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
 import { CreateAccountUsecase } from '@usecases/account/create-account.usecase';
 import { DataSource } from 'typeorm';
 import {
@@ -12,6 +13,20 @@ import {
   type OwnedResourceLedger,
   type ResidueAccountFingerprint,
 } from './e2e-scoped-cleanup';
+
+/**
+ * createTestAccount 仓储写入所需的最小实体集合。
+ *
+ * - AccountEntity / UserInfoEntity 是落库路径直接使用的仓储实体；
+ * - UserInfoEntity 的 `@ForeignKey('OrganizationEntity', ...)` 以字符串引用组织表，
+ *   元数据装配时缺少 OrganizationEntity 会直接抛错，因此必须一并注册。
+ * - 供只做测试装配、不启动完整 Nest 容器的规格使用。
+ */
+export const ACCOUNT_WRITE_FIXTURE_ENTITIES = [
+  AccountEntity,
+  UserInfoEntity,
+  OrganizationEntity,
+] as const;
 
 export interface TestAccountConfig {
   loginName: string;

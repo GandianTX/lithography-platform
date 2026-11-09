@@ -19,6 +19,7 @@ import {
   },
 )
 @Index('idx_local_upload_task_status_created', ['status', 'createdAt'])
+@Index('idx_local_upload_task_record_uuid', ['recordUuid'])
 @ForeignKey('LocalInstallationEntity', ['installationId'], ['installationId'], {
   name: 'fk_local_upload_task_installation',
   onDelete: 'RESTRICT',
@@ -39,9 +40,53 @@ import {
   'chk_local_upload_task_error',
   "`status` <> 'FAILED' OR (`error_code` IS NOT NULL AND `error_message` IS NOT NULL)",
 )
+@Check(
+  'chk_local_upload_task_task_kind',
+  "`task_kind` IS NULL OR `task_kind` IN ('BUSINESS_SYNC', 'BACKUP_UPLOAD')",
+)
+@Check(
+  'chk_local_upload_task_manifest_checksum',
+  '`manifest_checksum` IS NULL OR CHAR_LENGTH(`manifest_checksum`) = 64',
+)
 export class LocalUploadTaskEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '上传任务主键ID' })
   id!: number;
+
+  @Column({
+    name: 'record_uuid',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '跨端稳定业务编号；新任务非空',
+  })
+  recordUuid!: string | null;
+
+  @Column({
+    name: 'source_version',
+    type: 'int',
+    unsigned: true,
+    nullable: true,
+    comment: '业务版本；新任务非空',
+  })
+  sourceVersion!: number | null;
+
+  @Column({
+    name: 'task_kind',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    comment: 'BUSINESS_SYNC/BACKUP_UPLOAD',
+  })
+  taskKind!: string | null;
+
+  @Column({
+    name: 'manifest_checksum',
+    type: 'char',
+    length: 64,
+    nullable: true,
+    comment: '正文与原件清单 SHA-256',
+  })
+  manifestChecksum!: string | null;
 
   @Column({ name: 'installation_id', type: 'char', length: 36, comment: '本地安装标识' })
   installationId!: string;

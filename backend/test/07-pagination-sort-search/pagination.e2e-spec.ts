@@ -14,19 +14,20 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
 import { DatabaseModule } from '@src/infrastructure/database/database.module';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
-import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { PaginationModule } from '@src/modules/common/pagination.module';
 import { PaginationService } from '@src/modules/common/pagination.service';
 import { PAGINATION_TOKENS } from '@src/modules/common/tokens/pagination.tokens';
 import { VerificationRecordEntity } from '@src/modules/verification-record/verification-record.entity';
 import { randomBytes } from 'crypto';
 import { DataSource, In, Like } from 'typeorm';
+import { ACCOUNT_QUERY_FIXTURE_ENTITIES } from '../utils/local-entity-sets';
 
 describe('分页工具 (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let paginationService: PaginationService;
   let seededAccountIds: number[] = [];
+  let appInitialized = false;
 
   const accountPrefix = 'PAG_CASE_';
   const joinPrefix = 'PAG_JOIN_';
@@ -64,12 +65,13 @@ describe('分页工具 (e2e)', () => {
         AppConfigModule,
         DatabaseModule,
         PaginationModule,
-        TypeOrmModule.forFeature([AccountEntity, UserInfoEntity, VerificationRecordEntity]),
+        TypeOrmModule.forFeature([...ACCOUNT_QUERY_FIXTURE_ENTITIES]),
       ],
     }).compile();
 
     app = moduleFixture.createNestApplication();
     await app.init();
+    appInitialized = true;
 
     dataSource = app.get(DataSource);
     paginationService = app.get(PaginationService);
@@ -78,10 +80,30 @@ describe('分页工具 (e2e)', () => {
   });
 
   afterAll(async () => {
-    try {
-      await cleanupSeededRows();
-    } finally {
-      if (app) await app.close();
+    const cleanupErrors: unknown[] = [];
+
+    // 仅在本应用成功初始化后才清理；初始化失败时不得继续 getRepository 掩盖原始错误。
+    if (appInitialized) {
+      try {
+        await cleanupSeededRows();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (app) {
+      try {
+        await app.close();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (cleanupErrors.length === 1) {
+      throw cleanupErrors[0];
+    }
+    if (cleanupErrors.length > 1) {
+      throw new AggregateError(cleanupErrors, '分页规格收尾失败（清理与应用关闭均报错）');
     }
   });
 

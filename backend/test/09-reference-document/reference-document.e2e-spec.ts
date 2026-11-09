@@ -22,6 +22,7 @@ import {
   updateOwnedExpectation,
 } from '../utils/e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-teardown';
+import { withReferenceDocumentFixtureState } from '../utils/reference-document-fixture-state';
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
@@ -324,7 +325,7 @@ describe('AI 参考资料库 (e2e)', () => {
     );
     const seededDocuments = await documentRepository.save(
       documentRepository.create([
-        {
+        withReferenceDocumentFixtureState({
           id: 971,
           title: 'E2E 错误码手册',
           documentType: 'ERROR_CODE_MANUAL',
@@ -340,8 +341,8 @@ describe('AI 参考资料库 (e2e)', () => {
           ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
-        },
-        {
+        }),
+        withReferenceDocumentFixtureState({
           id: 972,
           title: 'E2E 通用安全规范',
           documentType: 'SAFETY_SPEC',
@@ -357,8 +358,8 @@ describe('AI 参考资料库 (e2e)', () => {
           ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
-        },
-        {
+        }),
+        withReferenceDocumentFixtureState({
           id: 973,
           title: 'E2E 已停用检查表',
           documentType: 'CHECKLIST',
@@ -374,8 +375,8 @@ describe('AI 参考资料库 (e2e)', () => {
           ingestMethod: 'ADMIN_DIRECT',
           deprecated: true,
           deletedAt: new Date('2026-09-01T00:00:00.000Z'),
-        },
-        {
+        }),
+        withReferenceDocumentFixtureState({
           id: 974,
           title: 'E2E 同行组织资料',
           documentType: 'MANUAL',
@@ -391,7 +392,7 @@ describe('AI 参考资料库 (e2e)', () => {
           ingestMethod: 'ADMIN_DIRECT',
           deprecated: false,
           deletedAt: null,
-        },
+        }),
       ]),
     );
     for (const document of seededDocuments) {
@@ -847,7 +848,7 @@ describe('AI 参考资料库 (e2e)', () => {
       expect(saved?.equipmentModelId).toBeNull();
     });
 
-    it('软删除：deprecated 与 deleted_at 同步落库，列表不再可见', async () => {
+    it('软删除：deprecated、deleted_at 与 OFFLINE 同步落库，列表不再可见', async () => {
       const deleteResponse = await postGql({
         app,
         query: SOFT_DELETE_MUTATION,
@@ -857,7 +858,7 @@ describe('AI 参考资料库 (e2e)', () => {
       expect(deleteResponse.body.errors).toBeUndefined();
 
       const saved = await documentRepository.findOne({ where: { id: 971 } });
-      expect(saved).toMatchObject({ deprecated: true });
+      expect(saved).toMatchObject({ deprecated: true, publicationStatus: 'OFFLINE' });
       expect(saved?.deletedAt).not.toBeNull();
 
       const detailResponse = await postGql({
@@ -1246,20 +1247,22 @@ describe('AI 参考资料库 (e2e)', () => {
     it('伪格式/越界引用行不能读任意文件（404 FILE_NOT_AVAILABLE，不泄漏路径）', async () => {
       // 绕过应用层直接插入非法引用行（DB 层无引用格式约束，防线在存储实现 resolve）
       await documentRepository.save(
-        documentRepository.create({
-          title: 'E2E 伪引用行',
-          documentType: 'MANUAL',
-          contentText: null,
-          originalFilename: 'evil.pdf',
-          mimeType: 'application/pdf',
-          storageBackend: 'LOCAL',
-          storageReference: '../evil.pdf',
-          createdByAccountId: adminAccountId,
-          ownerOrganizationId: primaryOrganizationId,
-          ingestMethod: 'ADMIN_DIRECT',
-          deprecated: false,
-          deletedAt: null,
-        }),
+        documentRepository.create(
+          withReferenceDocumentFixtureState({
+            title: 'E2E 伪引用行',
+            documentType: 'MANUAL',
+            contentText: null,
+            originalFilename: 'evil.pdf',
+            mimeType: 'application/pdf',
+            storageBackend: 'LOCAL',
+            storageReference: '../evil.pdf',
+            createdByAccountId: adminAccountId,
+            ownerOrganizationId: primaryOrganizationId,
+            ingestMethod: 'ADMIN_DIRECT',
+            deprecated: false,
+            deletedAt: null,
+          }),
+        ),
       );
       const row = await documentRepository.findOne({ where: { title: 'E2E 伪引用行' } });
       expect(row).toBeTruthy();
@@ -1275,20 +1278,22 @@ describe('AI 参考资料库 (e2e)', () => {
 
     it('有效格式引用但存储对象缺失 → 404 FILE_NOT_AVAILABLE', async () => {
       await documentRepository.save(
-        documentRepository.create({
-          title: 'E2E 缺失文件行',
-          documentType: 'MANUAL',
-          contentText: null,
-          originalFilename: 'missing.pdf',
-          mimeType: 'application/pdf',
-          storageBackend: 'LOCAL',
-          storageReference: `${'0'.repeat(32)}.pdf`,
-          createdByAccountId: adminAccountId,
-          ownerOrganizationId: primaryOrganizationId,
-          ingestMethod: 'ADMIN_DIRECT',
-          deprecated: false,
-          deletedAt: null,
-        }),
+        documentRepository.create(
+          withReferenceDocumentFixtureState({
+            title: 'E2E 缺失文件行',
+            documentType: 'MANUAL',
+            contentText: null,
+            originalFilename: 'missing.pdf',
+            mimeType: 'application/pdf',
+            storageBackend: 'LOCAL',
+            storageReference: `${'0'.repeat(32)}.pdf`,
+            createdByAccountId: adminAccountId,
+            ownerOrganizationId: primaryOrganizationId,
+            ingestMethod: 'ADMIN_DIRECT',
+            deprecated: false,
+            deletedAt: null,
+          }),
+        ),
       );
       const row = await documentRepository.findOne({ where: { title: 'E2E 缺失文件行' } });
 

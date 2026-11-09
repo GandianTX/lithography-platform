@@ -21,6 +21,8 @@ const ENTITY_TYPES: readonly LocalEntityType[] = [
   'ATTACHMENT',
   'BACKUP_MANIFEST',
 ];
+// 用户可发起的触发类型仅旧三值；AUTO/RETRY 为系统触发，只允许服务端写入，
+// 不接受客户端输入（OI-01 读取层映射语义仍待裁决，此处不放宽输入边界）。
 const TRIGGER_TYPES: readonly LocalBackupTriggerType[] = ['SCHEDULED', 'MANUAL', 'USB_EXPORT'];
 const FINISH_STATUSES: readonly LocalBackupRunStatus[] = ['SUCCEEDED', 'FAILED', 'INTERRUPTED'];
 const UPLOAD_STATUSES: readonly LocalUploadTaskStatus[] = [

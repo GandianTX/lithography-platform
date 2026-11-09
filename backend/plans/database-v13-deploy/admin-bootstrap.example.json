@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "accounts": [
+    {
+      "login_name": "REPLACE_LOGIN_NAME_L1_01",
+      "login_email": "REPLACE_EMAIL_L1_01",
+      "password": "REPLACE_WITH_STRONG_PASSWORD_L1_01",
+      "admin_level": 1,
+      "organization_code": "ORG-CLIENT-A",
+      "nickname": "REPLACE_NICKNAME_L1_01",
+      "real_name": "REPLACE_REAL_NAME_L1_01"
+    },
+    {
+      "login_name": "REPLACE_LOGIN_NAME_L1_02",
+      "login_email": "REPLACE_EMAIL_L1_02",
+      "password": "REPLACE_WITH_STRONG_PASSWORD_L1_02",
+      "admin_level": 1,
+      "organization_code": "ORG-CLIENT-A",
+      "nickname": "REPLACE_NICKNAME_L1_02",
+      "real_name": "REPLACE_REAL_NAME_L1_02"
+    },
+    {
+      "login_name": "REPLACE_LOGIN_NAME_L1_03",
+      "login_email": "REPLACE_EMAIL_L1_03",
+      "password": "REPLACE_WITH_STRONG_PASSWORD_L1_03",
+      "admin_level": 1,
+      "organization_code": "ORG-CLIENT-A",
+      "nickname": "REPLACE_NICKNAME_L1_03",
+      "real_name": "REPLACE_REAL_NAME_L1_03"
+    },
+    {
+      "login_name": "REPLACE_LOGIN_NAME_L2_01",
+      "login_email": "REPLACE_EMAIL_L2_01",
+      "password": "REPLACE_WITH_STRONG_PASSWORD_L2_01",
+      "admin_level": 2,
+      "organization_code": "ORG-PEER-A",
+      "nickname": "REPLACE_NICKNAME_L2_01",
+      "real_name": "REPLACE_REAL_NAME_L2_01"
+    },
+    {
+      "login_name": "REPLACE_LOGIN_NAME_L2_02",
+      "login_email": "REPLACE_EMAIL_L2_02",
+      "password": "REPLACE_WITH_STRONG_PASSWORD_L2_02",
+      "admin_level": 2,
+      "organization_code": "ORG-PEER-A",
+      "nickname": "REPLACE_NICKNAME_L2_02",
+      "real_name": "REPLACE_REAL_NAME_L2_02"
+    },
+    {
+      "login_name": "REPLACE_LOGIN_NAME_L2_03",
+      "login_email": "REPLACE_EMAIL_L2_03",
+      "password": "REPLACE_WITH_STRONG_PASSWORD_L2_03",
+      "admin_level": 2,
+      "organization_code": "ORG-PEER-A",
+      "nickname": "REPLACE_NICKNAME_L2_03",
+      "real_name": "REPLACE_REAL_NAME_L2_03"
+    }
+  ]
+}

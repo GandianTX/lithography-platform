@@ -1,7 +1,7 @@
 // src/infrastructure/field-encryption/field-encryption.service.ts
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as CryptoJS from 'crypto-js';
+import { createFieldCipher, type FieldCipher } from './field-encryption.cipher';
 import { getEncryptedFields } from './field-encryption.metadata';
 
 const getRequiredConfig = (config: ConfigService, key: string): string => {
@@ -12,44 +12,22 @@ const getRequiredConfig = (config: ConfigService, key: string): string => {
   return value;
 };
 
-const FIELD_ENCRYPTION_META = {
-  KEY_LENGTH: 16,
-  IV_LENGTH: 16,
-} as const;
-
 @Injectable()
 export class FieldEncryptionService {
-  private readonly key: CryptoJS.lib.WordArray;
-  private readonly iv: CryptoJS.lib.WordArray;
+  private readonly cipher: FieldCipher;
 
   constructor(private readonly configService: ConfigService) {
     const key = getRequiredConfig(this.configService, 'FIELD_ENCRYPTION_KEY');
     const iv = getRequiredConfig(this.configService, 'FIELD_ENCRYPTION_IV');
-
-    this.key = CryptoJS.lib.WordArray.create(
-      CryptoJS.enc.Utf8.parse(key).words,
-      FIELD_ENCRYPTION_META.KEY_LENGTH,
-    );
-    this.iv = CryptoJS.lib.WordArray.create(
-      CryptoJS.enc.Utf8.parse(iv).words,
-      FIELD_ENCRYPTION_META.IV_LENGTH,
-    );
+    this.cipher = createFieldCipher(key, iv);
   }
 
   encrypt(plain: string): string {
-    return CryptoJS.AES.encrypt(plain, this.key, {
-      iv: this.iv,
-      mode: CryptoJS.mode.CBC,
-      padding: CryptoJS.pad.Pkcs7,
-    }).toString();
+    return this.cipher.encrypt(plain);
   }
 
   decrypt(cipher: string): string {
-    return CryptoJS.AES.decrypt(cipher, this.key, {
-      iv: this.iv,
-      mode: CryptoJS.mode.CBC,
-      padding: CryptoJS.pad.Pkcs7,
-    }).toString(CryptoJS.enc.Utf8);
+    return this.cipher.decrypt(cipher);
   }
 
   encryptEntity(entity: unknown) {

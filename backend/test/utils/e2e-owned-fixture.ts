@@ -742,6 +742,15 @@ export interface GuardedTransactionResult {
   readonly errors: readonly string[];
   /** 事务是否已成功提交；提交后的释放失败只让 errors 非空，不改变该事实 */
   readonly committed: boolean;
+  /** 事务是否已实际回滚（仅 outcome=rollback 时有意义） */
+  readonly rolledBack: boolean;
+  /**
+   * 是否仍可能留下未回滚的写入。
+   *
+   * 只在事务状态无法确认已结束、或独占连接销毁失败时为 true；
+   * 回滚失败但独占连接已销毁时，服务端会终止该连接的事务，不视为可能残留。
+   */
+  readonly residualPossible: boolean;
 }
 
 /**
@@ -757,11 +766,14 @@ export const runGuardedQueryRunnerTransaction = async (params: {
   readonly createRunner: () => QueryRunner;
   readonly label: string;
   readonly work: (runner: QueryRunner) => Promise<void>;
+  /** 成功路径的收尾方式；默认提交。rollback 用于“事务内验证、结束即回滚”的专项。 */
+  readonly outcome?: 'commit' | 'rollback';
 }): Promise<GuardedTransactionResult> => {
-  const { createRunner, label, work } = params;
+  const { createRunner, label, work, outcome = 'commit' } = params;
   const errors: string[] = [];
   const runner = createRunner();
   let committed = false;
+  let rolledBack = false;
   let destroyAttempted = false;
   let connectionDestroyed = false;
 
@@ -775,43 +787,57 @@ export const runGuardedQueryRunnerTransaction = async (params: {
     }
   };
 
+  let primaryError: unknown;
+  let rollbackFailed = false;
+
   try {
     await runner.connect();
     await runner.startTransaction();
     await work(runner);
-    await runner.commitTransaction();
-    committed = true;
   } catch (error) {
+    primaryError = error;
     errors.push(`${label}失败：${detailOf(error)}`);
+  }
 
-    let rollbackFailed = false;
+  if (primaryError === undefined && outcome === 'commit') {
+    try {
+      await runner.commitTransaction();
+      committed = true;
+    } catch (commitError) {
+      primaryError = commitError;
+      errors.push(`${label}提交失败：${detailOf(commitError)}`);
+    }
+  }
+
+  if (outcome === 'rollback' || primaryError !== undefined || !committed) {
     if (runner.isTransactionActive) {
       try {
         await runner.rollbackTransaction();
+        rolledBack = true;
       } catch (rollbackError) {
         rollbackFailed = true;
         errors.push(`${label}回滚失败：${detailOf(rollbackError)}`);
       }
     }
-
     if (rollbackFailed || runner.isTransactionActive) {
       await destroyOnce(`${label}回滚后`);
     }
-  } finally {
-    if (!connectionDestroyed && !destroyAttempted) {
-      if (runner.isTransactionActive) {
-        await destroyOnce(`${label}收尾时`);
-      } else {
-        try {
-          await runner.release();
-        } catch (releaseError) {
-          errors.push(`${label}释放失败：${detailOf(releaseError)}`);
-        }
+  }
+
+  if (!connectionDestroyed && !destroyAttempted) {
+    if (runner.isTransactionActive) {
+      await destroyOnce(`${label}收尾时`);
+    } else {
+      try {
+        await runner.release();
+      } catch (releaseError) {
+        errors.push(`${label}释放失败：${detailOf(releaseError)}`);
       }
     }
   }
 
-  return { errors, committed };
+  const residualPossible = runner.isTransactionActive || (destroyAttempted && !connectionDestroyed);
+  return { errors, committed, rolledBack, residualPossible };
 };
 
 /**

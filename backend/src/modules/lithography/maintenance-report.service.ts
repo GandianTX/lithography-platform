@@ -435,6 +435,8 @@ export class MaintenanceReportService {
       handlingRecordedAt: Date;
       handlingRecordedByAccountId: number;
       handlingEndedAt: Date | null;
+      /** 中断/无法修复原因；由用例层校验，服务层只负责原子写入 */
+      closureReason: string | null;
     },
     ownershipGuard: {
       ownerOrganizationId: number;

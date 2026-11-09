@@ -70,6 +70,14 @@ export class ReferenceDocumentService {
         createdByAccountId: data.createdByAccountId,
         ownerOrganizationId: data.ownerOrganizationId,
         ingestMethod: data.ingestMethod,
+        // V13 必填状态按本入口既有事实显式落值（migration 已收紧为 NOT NULL 且无默认）：
+        // - 新行未软删且创建即可见，落 ONLINE（下架/删除语义仍由后续操作另记）；
+        // - ownerOrganizationId 由可信组织上下文解析、类型非空，落 CONFIRMED；
+        // - 本入口写入正文/文件资料，尚无报告来源回链，落 MATERIAL
+        //   （报告来源发布由独立链路实现，本方法不预造）。
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+        sourceKind: 'MATERIAL',
         sourceSubmissionId: data.sourceSubmissionId ?? null,
         sourceRevisionId: data.sourceRevisionId ?? null,
         extensionJson: data.extensionJson ?? null,
@@ -165,8 +173,12 @@ export class ReferenceDocumentService {
     try {
       const result = await repository.update(
         { id: params.documentId, deprecated: false },
-        // 软删除固定落库 deleted_at（与实体 chk_reference_document_deletion_consistency 一致）
-        { deprecated: true, deletedAt: () => 'CURRENT_TIMESTAMP(3)' },
+        // 软删除与下架同步落库（与迁移回填口径一致：deleted_at 非空即非 ONLINE）
+        {
+          deprecated: true,
+          deletedAt: () => 'CURRENT_TIMESTAMP(3)',
+          publicationStatus: 'OFFLINE',
+        },
       );
       affected = result.affected ?? 0;
     } catch (error) {

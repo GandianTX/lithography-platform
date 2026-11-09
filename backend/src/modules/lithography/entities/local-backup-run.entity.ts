@@ -13,19 +13,34 @@ import {
  * 本地备份运行清单实体。
  *
  * 数据库另有生成列 `active_installation_id`（RUNNING 时为 installation_id，否则 NULL）
- * 与其唯一键，用于保证「同一安装同时只有一个 RUNNING 备份」的库级约束。
+ * 与其「设备+公司+RUNNING」复合唯一键，用于保证同一安装同一公司同时只有一个 RUNNING 备份。
  * 按项目既定规则，生成列以只读列声明，保证 Entity 与迁移结构一致。
- * 结构真源见迁移 1775401400000-create-local-installation-upload-backup。
+ * 结构真源见迁移 1775401400000-create-local-installation-upload-backup 与 V13 前向迁移。
  */
 @Entity('local_backup_run', { comment: '本地备份运行清单表' })
-@Index('uk_local_backup_run_active', ['activeInstallationId'], { unique: true })
+@Index('uk_local_backup_run_active_company', ['activeInstallationId', 'organizationId'], {
+  unique: true,
+})
 @Index('idx_local_backup_run_started', ['startedAt'])
+@Index('idx_local_backup_run_organization', ['organizationId', 'startedAt'])
 @ForeignKey('LocalInstallationEntity', ['installationId'], ['installationId'], {
   name: 'fk_local_backup_run_installation',
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
-@Check('chk_local_backup_run_trigger', "`trigger_type` IN ('SCHEDULED', 'MANUAL', 'USB_EXPORT')")
+@ForeignKey('OrganizationEntity', ['organizationId'], ['id'], {
+  name: 'fk_local_backup_run_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@Check(
+  'chk_local_backup_run_trigger',
+  "`trigger_type` IN ('SCHEDULED', 'MANUAL', 'AUTO', 'RETRY', 'USB_EXPORT')",
+)
+@Check(
+  'chk_local_backup_run_manual_status',
+  "((`manual_upload_status` IS NULL OR `manual_upload_status` IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'NOT_REQUIRED')) AND (`manual_cleanup_status` IS NULL OR `manual_cleanup_status` IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'NOT_REQUIRED')))",
+)
 @Check(
   'chk_local_backup_run_status',
   "`status` IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED')",
@@ -55,10 +70,36 @@ export class LocalBackupRunEntity {
   activeInstallationId!: string | null;
 
   @Column({
+    name: 'organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '公司数据区；旧行可空',
+  })
+  organizationId!: number | null;
+
+  @Column({
+    name: 'manual_upload_status',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: '手动上传状态',
+  })
+  manualUploadStatus!: string | null;
+
+  @Column({
+    name: 'manual_cleanup_status',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: '手动清理状态',
+  })
+  manualCleanupStatus!: string | null;
+
+  @Column({
     name: 'trigger_type',
     type: 'varchar',
     length: 16,
-    comment: 'SCHEDULED/MANUAL/USB_EXPORT',
+    comment: 'SCHEDULED/MANUAL/AUTO/RETRY/USB_EXPORT',
   })
   triggerType!: string;
 

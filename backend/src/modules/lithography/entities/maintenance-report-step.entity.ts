@@ -29,6 +29,10 @@ import {
   'chk_maintenance_report_step_branch',
   '`is_valid_new_branch` IN (0, 1) AND (`is_valid_new_branch` = 0 OR `new_alarm_code` IS NOT NULL)',
 )
+@Check(
+  'chk_maintenance_report_step_result_code',
+  "`result_code` IS NULL OR `result_code` IN ('RESOLVED', 'UNRESOLVED', 'NEW_FAULT')",
+)
 export class MaintenanceReportStepEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '排查步骤主键ID' })
   id!: number;
@@ -36,7 +40,7 @@ export class MaintenanceReportStepEntity {
   @Column({ name: 'report_id', type: 'int', comment: '所属报告ID' })
   reportId!: number;
 
-  @Column({ name: 'step_no', type: 'smallint', unsigned: true, comment: '顺序号；从 1 连续' })
+  @Column({ name: 'step_no', type: 'int', unsigned: true, comment: '顺序号；报告内唯一且 >=1' })
   stepNo!: number;
 
   @Column({ name: 'step_code', type: 'varchar', length: 64, comment: '步骤稳定编码' })
@@ -45,11 +49,35 @@ export class MaintenanceReportStepEntity {
   @Column({ name: 'phase_code', type: 'varchar', length: 32, comment: '稳定阶段编码' })
   phaseCode!: string;
 
-  @Column({ name: 'part_name', type: 'varchar', length: 100, nullable: true, comment: '零件/部位' })
+  @Column({
+    name: 'part_name',
+    type: 'varchar',
+    length: 300,
+    nullable: true,
+    comment: '零件/部位；选填',
+  })
   partName!: string | null;
 
-  @Column({ name: 'action_text', type: 'text', comment: '动作' })
+  @Column({ name: 'action_text', type: 'longtext', comment: '动作' })
   actionText!: string;
+
+  @Column({
+    name: 'result_code',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: 'RESOLVED/UNRESOLVED/NEW_FAULT',
+  })
+  resultCode!: string | null;
+
+  @Column({
+    name: 'error_code',
+    type: 'varchar',
+    length: 300,
+    nullable: true,
+    comment: '步骤报错代码；保留前导零',
+  })
+  errorCode!: string | null;
 
   @Column({
     name: 'result_text',

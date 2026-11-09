@@ -78,7 +78,11 @@ export class UpdateMaintenanceReportDraftUsecase {
       existing.steps,
       command.draft,
     );
-    const draft = normalizeMaintenanceReportDraft(effective, command.session.accountId);
+    const draft = normalizeMaintenanceReportDraft(effective, command.session.accountId, {
+      // 只有本次未显式改写帮助程度时，才允许库内历史值（31 态合法的 5）原样保留。
+      preservedAiHelpfulness:
+        command.draft.aiHelpfulness === undefined ? existing.report.aiHelpfulness : null,
+    });
 
     if (draft.equipmentModelId !== null) {
       const model = await this.equipmentModelQueryService.findModelById({

@@ -19,6 +19,8 @@ import { AccountEntity } from '@src/modules/account/base/entities/account.entity
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { AiConversationEntity } from '@src/modules/lithography/entities/ai-conversation.entity';
 import { AiReportEntity } from '@src/modules/lithography/entities/ai-report.entity';
+import { BackupAssetEntity } from '@src/modules/lithography/entities/backup-asset.entity';
+import { BackupRestoreRunEntity } from '@src/modules/lithography/entities/backup-restore-run.entity';
 import { ContentSubmissionAttachmentEntity } from '@src/modules/lithography/entities/content-submission-attachment.entity';
 import { ContentSubmissionEntity } from '@src/modules/lithography/entities/content-submission.entity';
 import { ContentSubmissionRevisionEntity } from '@src/modules/lithography/entities/content-submission-revision.entity';
@@ -27,7 +29,11 @@ import { EngineerRegistrationApplicationEntity } from '@src/modules/lithography/
 import { EngineerResponseEntity } from '@src/modules/lithography/entities/engineer-response.entity';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
 import { FaultCaseSubmissionDetailEntity } from '@src/modules/lithography/entities/fault-case-submission-detail.entity';
+import { LocalAccountAuthorizationEntity } from '@src/modules/lithography/entities/local-account-authorization.entity';
+import { LocalBackupRunEntity } from '@src/modules/lithography/entities/local-backup-run.entity';
+import { LocalCompanySettingEntity } from '@src/modules/lithography/entities/local-company-setting.entity';
 import { LocalInstallationEntity } from '@src/modules/lithography/entities/local-installation.entity';
+import { ManagementAuditEventEntity } from '@src/modules/lithography/entities/management-audit-event.entity';
 import { MaintenanceReportAttachmentEntity } from '@src/modules/lithography/entities/maintenance-report-attachment.entity';
 import { MaintenanceReportEntity } from '@src/modules/lithography/entities/maintenance-report.entity';
 import { MaintenanceReportReviewEntity } from '@src/modules/lithography/entities/maintenance-report-review.entity';
@@ -35,13 +41,23 @@ import { MaintenanceReportVersionEntity } from '@src/modules/lithography/entitie
 import { MaterialSubmissionDetailEntity } from '@src/modules/lithography/entities/material-submission-detail.entity';
 import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
+import { RecordPackageImportEntity } from '@src/modules/lithography/entities/record-package-import.entity';
+import { RecordPackageItemEntity } from '@src/modules/lithography/entities/record-package-item.entity';
 import { ReferenceDocumentEntity } from '@src/modules/lithography/entities/reference-document.entity';
+import { ReferenceDocumentRevisionEntity } from '@src/modules/lithography/entities/reference-document-revision.entity';
+import { RepairProcessEntryEntity } from '@src/modules/lithography/entities/repair-process-entry.entity';
+import { RepairRequestIntakeEntity } from '@src/modules/lithography/entities/repair-request-intake.entity';
+import { RepairRequestRevisionEntity } from '@src/modules/lithography/entities/repair-request-revision.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
+import { StoredFileEntity } from '@src/modules/lithography/entities/stored-file.entity';
+import { SyncConflictEntity } from '@src/modules/lithography/entities/sync-conflict.entity';
+import { SyncReceiptEntity } from '@src/modules/lithography/entities/sync-receipt.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import {
   DataSource,
   EntityManager,
   In,
+  Not,
   type FindOptionsWhere,
   type ObjectLiteral,
   type Repository,
@@ -49,6 +65,7 @@ import {
 
 import {
   assertDataSourceOnAllowedE2eDatabase,
+  assertManagerOnExpectedE2eDatabase,
   assertPhysicalCleanupConsent,
 } from '../utils/e2e-db-guard';
 import { createTestAccount, type TestAccountConfig } from '../utils/test-accounts';
@@ -563,14 +580,32 @@ const assertFixtureTarget = async (ds: DataSource, helper: string): Promise<stri
  * 两道门禁互相独立：许可缺失时连 `SELECT DATABASE()` 都不会执行（零数据接触），
  * 库名守卫也不读取许可开关，因此许可绝不能替代或绕过库名检查。
  */
-const assertFixtureDeleteTarget = async (ds: DataSource, helper: string): Promise<void> => {
+const assertFixtureDeleteTarget = async (ds: DataSource, helper: string): Promise<string> => {
   try {
     assertPhysicalCleanupConsent();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`[${helper}] 阶段=清理许可门禁 拒绝执行删除：${detail}`, { cause: error });
   }
-  await assertFixtureTarget(ds, helper);
+  return assertFixtureTarget(ds, helper);
+};
+
+/**
+ * 事务内复核：池级预检与实际删除可能落在不同连接，因此事务第一条语句前必须
+ * 在同一 connection 上重新确认许可与实际库名，避免连接漂移绕过白名单。
+ */
+const assertFixtureTransactionTarget = async (
+  manager: EntityManager,
+  helper: string,
+  expectedDatabase: string,
+): Promise<void> => {
+  try {
+    assertPhysicalCleanupConsent();
+    await assertManagerOnExpectedE2eDatabase(manager, expectedDatabase);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`[${helper}] 阶段=事务内目标库守卫 拒绝执行删除：${detail}`, { cause: error });
+  }
 };
 
 const recordId = (ids: number[], id: number, helper: string): void => {
@@ -589,21 +624,38 @@ const assertValue = (helper: string, label: string, actual: unknown, expected: u
   }
 };
 
-/** 解析结果必须完全落在本轮已记录集合内（允许本轮已删除的子集，禁止出现未知行） */
+/**
+ * 解析结果必须与本轮已记录集合逐主键一致：
+ * - 出现集合外行 → 不认领、拒绝；
+ * - 记录中的主键在库中缺失 → 事实漂移，拒绝（重复执行也不会被静默当成 no-op）；
+ * - 非法主键/重复主键直接拒绝，避免把调用方输入当作所有权事实。
+ */
 const assertResolvedIdsAreOwned = (
   helper: string,
   label: string,
   resolved: readonly number[],
   expected: readonly number[],
 ): void => {
+  const invalid = expected.filter((id) => !Number.isInteger(id) || id <= 0);
+  if (invalid.length > 0) {
+    throw ownershipError(helper, `${label} 记录含非法主键：${invalid.join(',')}`);
+  }
   const allowed = new Set(uniquePositiveIds(expected));
-  for (const id of uniquePositiveIds(resolved)) {
+  const actual = new Set(uniquePositiveIds(resolved));
+  for (const id of actual) {
     if (!allowed.has(id)) {
       throw ownershipError(
         helper,
         `${label} id=${id} 不在本轮已记录集合内（expected=${[...allowed].join(',') || '空'}）`,
       );
     }
+  }
+  const missing = [...allowed].filter((id) => !actual.has(id));
+  if (missing.length > 0) {
+    throw ownershipError(
+      helper,
+      `${label} 记录 id=${missing.join(',')} 在库中不存在（实际=${[...actual].join(',') || '空'}）`,
+    );
   }
 };
 
@@ -707,6 +759,27 @@ const assertNoExternalInboundReferences = async (
       count: () => params.repo.count({ where: params.where(ids) }),
     });
   };
+  /**
+   * 申请表的入向列需要排除本轮已登记申请自身：外部申请引用夹具组织/型号时拒绝，
+   * 但夹具申请自然引用同一组织/型号不能算外部引用。
+   */
+  const addRequestInbound = (
+    label: string,
+    ids: readonly number[],
+    where: (ids: number[]) => FindOptionsWhere<RepairRequestEntity>,
+  ): void => {
+    if (ids.length === 0) return;
+    checks.push({
+      label,
+      count: () => {
+        const query = where([...ids]);
+        if (sets.repairRequestIds.length > 0) {
+          query.id = Not(In([...sets.repairRequestIds]));
+        }
+        return manager.getRepository(RepairRequestEntity).count({ where: query });
+      },
+    });
+  };
 
   // 账号入向引用（account 域与维修申请域自身已被上面逐字段核验覆盖，这里只补外部表）
   addInbound({
@@ -805,6 +878,81 @@ const assertNoExternalInboundReferences = async (
     ids: sets.accountIds,
     where: (ids) => ({ updatedByAccountId: In(ids) }),
   });
+  addInbound({
+    label: 'reference_document_revision.actor_account_id',
+    repo: manager.getRepository(ReferenceDocumentRevisionEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ actorAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_request_intake.customer_account_id',
+    repo: manager.getRepository(RepairRequestIntakeEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ customerAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_process_entry.author_account_id',
+    repo: manager.getRepository(RepairProcessEntryEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ authorAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_request_revision.actor_account_id',
+    repo: manager.getRepository(RepairRequestRevisionEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ actorAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'stored_file.uploaded_by_account_id',
+    repo: manager.getRepository(StoredFileEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ uploadedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'local_account_authorization.account_id',
+    repo: manager.getRepository(LocalAccountAuthorizationEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ accountId: In(ids) }),
+  });
+  addInbound({
+    label: 'backup_restore_run.started_by_account_id',
+    repo: manager.getRepository(BackupRestoreRunEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ startedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'record_package_import.imported_by_account_id',
+    repo: manager.getRepository(RecordPackageImportEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ importedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'sync_conflict.confirmed_by_account_id',
+    repo: manager.getRepository(SyncConflictEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ confirmedByAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'management_audit_event.actor_account_id',
+    repo: manager.getRepository(ManagementAuditEventEntity),
+    ids: sets.accountIds,
+    where: (ids) => ({ actorAccountId: In(ids) }),
+  });
+  addInbound({
+    label: 'user_info.customer_organization_id',
+    repo: manager.getRepository(UserInfoEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ customerOrganizationId: In(ids) }),
+  });
+  addRequestInbound('repair_request.customer_account_id', sets.accountIds, (ids) => ({
+    customerAccountId: In(ids),
+  }));
+  addRequestInbound('repair_request.accepted_by_engineer_account_id', sets.accountIds, (ids) => ({
+    acceptedByEngineerAccountId: In(ids),
+  }));
+  addRequestInbound('repair_request.handling_recorded_by_account_id', sets.accountIds, (ids) => ({
+    handlingRecordedByAccountId: In(ids),
+  }));
 
   // 组织入向引用（成员关系与申请归属已在上面双向核验，这里只补外部表）
   addInbound({
@@ -837,6 +985,93 @@ const assertNoExternalInboundReferences = async (
     ids: sets.organizationIds,
     where: (ids) => ({ organizationId: In(ids) }),
   });
+  addInbound({
+    label: 'repair_request_intake.customer_organization_id',
+    repo: manager.getRepository(RepairRequestIntakeEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ customerOrganizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_request_intake.service_organization_id',
+    repo: manager.getRepository(RepairRequestIntakeEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ serviceOrganizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'ai_conversation.owner_organization_id',
+    repo: manager.getRepository(AiConversationEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ ownerOrganizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'stored_file.owner_organization_id',
+    repo: manager.getRepository(StoredFileEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ ownerOrganizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'local_account_authorization.organization_id',
+    repo: manager.getRepository(LocalAccountAuthorizationEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'local_company_setting.organization_id',
+    repo: manager.getRepository(LocalCompanySettingEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'local_backup_run.organization_id',
+    repo: manager.getRepository(LocalBackupRunEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'backup_asset.organization_id',
+    repo: manager.getRepository(BackupAssetEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'backup_restore_run.organization_id',
+    repo: manager.getRepository(BackupRestoreRunEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'record_package_import.organization_id',
+    repo: manager.getRepository(RecordPackageImportEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'sync_receipt.organization_id',
+    repo: manager.getRepository(SyncReceiptEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'sync_conflict.organization_id',
+    repo: manager.getRepository(SyncConflictEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addInbound({
+    label: 'management_audit_event.organization_id',
+    repo: manager.getRepository(ManagementAuditEventEntity),
+    ids: sets.organizationIds,
+    where: (ids) => ({ organizationId: In(ids) }),
+  });
+  addRequestInbound('repair_request.owner_organization_id', sets.organizationIds, (ids) => ({
+    ownerOrganizationId: In(ids),
+  }));
+  addRequestInbound('repair_request.customer_organization_id', sets.organizationIds, (ids) => ({
+    customerOrganizationId: In(ids),
+  }));
+  addRequestInbound('repair_request.service_organization_id', sets.organizationIds, (ids) => ({
+    serviceOrganizationId: In(ids),
+  }));
 
   // 申请入向引用（工程师回复已逐字段核验）
   addInbound({
@@ -856,6 +1091,24 @@ const assertNoExternalInboundReferences = async (
     repo: manager.getRepository(MaintenanceReportEntity),
     ids: sets.repairRequestIds,
     where: (ids) => ({ repairRequestId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_request_intake.converted_request_id',
+    repo: manager.getRepository(RepairRequestIntakeEntity),
+    ids: sets.repairRequestIds,
+    where: (ids) => ({ convertedRequestId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_process_entry.request_id',
+    repo: manager.getRepository(RepairProcessEntryEntity),
+    ids: sets.repairRequestIds,
+    where: (ids) => ({ requestId: In(ids) }),
+  });
+  addInbound({
+    label: 'repair_request_revision.request_id',
+    repo: manager.getRepository(RepairRequestRevisionEntity),
+    ids: sets.repairRequestIds,
+    where: (ids) => ({ requestId: In(ids) }),
   });
 
   // 型号入向引用（申请自身的型号归属已逐字段核验）
@@ -883,6 +1136,86 @@ const assertNoExternalInboundReferences = async (
     ids: sets.equipmentModelIds,
     where: (ids) => ({ equipmentModelId: In(ids) }),
   });
+  addInbound({
+    label: 'repair_request_intake.equipment_model_id',
+    repo: manager.getRepository(RepairRequestIntakeEntity),
+    ids: sets.equipmentModelIds,
+    where: (ids) => ({ equipmentModelId: In(ids) }),
+  });
+  addRequestInbound('repair_request.equipment_model_id', sets.equipmentModelIds, (ids) => ({
+    equipmentModelId: In(ids),
+  }));
+
+  // 多态引用：这些列没有数据库外键，但同样可能在逻辑上指向本轮待删行
+  const polymorphic = (
+    label: string,
+    types: readonly string[],
+    ids: readonly number[],
+    runner: (typeValues: string[], idValues: string[]) => Promise<number>,
+  ): void => {
+    if (ids.length === 0) return;
+    checks.push({
+      label,
+      count: () => runner([...types], ids.map(String)),
+    });
+  };
+  const auditRepo = manager.getRepository(ManagementAuditEventEntity);
+  polymorphic(
+    'management_audit_event.target_id(REPAIR_REQUEST)',
+    ['REPAIR', 'REPAIR_REQUEST'],
+    sets.repairRequestIds,
+    (types, ids) => auditRepo.count({ where: { targetType: In(types), targetId: In(ids) } }),
+  );
+  polymorphic(
+    'management_audit_event.target_id(ACCOUNT)',
+    ['ACCOUNT', 'USER', 'BASE_USER_ACCOUNT'],
+    sets.accountIds,
+    (types, ids) => auditRepo.count({ where: { targetType: In(types), targetId: In(ids) } }),
+  );
+  polymorphic(
+    'management_audit_event.target_id(ORGANIZATION)',
+    ['ORGANIZATION', 'COMPANY'],
+    sets.organizationIds,
+    (types, ids) => auditRepo.count({ where: { targetType: In(types), targetId: In(ids) } }),
+  );
+  polymorphic(
+    'management_audit_event.target_id(EQUIPMENT_MODEL)',
+    ['EQUIPMENT_MODEL', 'MODEL'],
+    sets.equipmentModelIds,
+    (types, ids) => auditRepo.count({ where: { targetType: In(types), targetId: In(ids) } }),
+  );
+  const storedFileRepo = manager.getRepository(StoredFileEntity);
+  polymorphic(
+    'stored_file.business_id(REPAIR_REQUEST)',
+    ['REPAIR', 'REPAIR_REQUEST'],
+    sets.repairRequestIds,
+    (types, ids) =>
+      storedFileRepo.count({ where: { businessType: In(types), businessId: In(ids) } }),
+  );
+  const syncReceiptRepo = manager.getRepository(SyncReceiptEntity);
+  polymorphic(
+    'sync_receipt.record_uuid(REPAIR_REQUEST)',
+    ['REPAIR', 'REPAIR_REQUEST'],
+    sets.repairRequestIds,
+    (types, ids) =>
+      syncReceiptRepo.count({ where: { resourceType: In(types), recordUuid: In(ids) } }),
+  );
+  const syncConflictRepo = manager.getRepository(SyncConflictEntity);
+  polymorphic(
+    'sync_conflict.record_uuid(REPAIR_REQUEST)',
+    ['REPAIR', 'REPAIR_REQUEST'],
+    sets.repairRequestIds,
+    (types, ids) =>
+      syncConflictRepo.count({ where: { resourceType: In(types), recordUuid: In(ids) } }),
+  );
+  const recordPackageItemRepo = manager.getRepository(RecordPackageItemEntity);
+  polymorphic(
+    'record_package_item.record_uuid(REPAIR_REQUEST)',
+    ['REPAIR', 'REPAIR_REQUEST'],
+    sets.repairRequestIds,
+    (types, ids) =>
+      recordPackageItemRepo.count({ where: { resourceType: In(types), recordUuid: In(ids) } }),
+  );
 
   for (const check of checks) {
     const count = await check.count();
@@ -1065,7 +1398,13 @@ const resolveAndVerifyFixture = async (
           { handlingRecordedByAccountId: In(accountIds) },
         ]
       : []),
-    ...(organizationIds.length > 0 ? [{ ownerOrganizationId: In(organizationIds) }] : []),
+    ...(organizationIds.length > 0
+      ? [
+          { ownerOrganizationId: In(organizationIds) },
+          { customerOrganizationId: In(organizationIds) },
+          { serviceOrganizationId: In(organizationIds) },
+        ]
+      : []),
   ];
   const requests = await requestRepo.find({ where: requestWhere });
   for (const request of requests) {
@@ -1073,7 +1412,7 @@ const resolveAndVerifyFixture = async (
     if (!spec) {
       throw ownershipError(
         helper,
-        `申请 ${request.requestNo}(id=${request.id}) 的 requestNo 不属于本夹具（外部申请引用了本夹具账号/型号）`,
+        `申请 ${request.requestNo}(id=${request.id}) 的 requestNo 不属于本夹具（外部申请引用了本夹具账号/型号/组织）`,
       );
     }
     // 内容指纹逐字段比对：同标记但正文不同的记录必须零删除、失败关闭
@@ -1263,8 +1602,10 @@ export const cleanupRepairRequestFixtureResidue = async (
   ds: DataSource,
 ): Promise<RepairRequestFixtureOwnership> => {
   const helper = 'cleanupRepairRequestFixtureResidue';
-  await assertFixtureDeleteTarget(ds, helper);
+  const expectedDatabase = await assertFixtureDeleteTarget(ds, helper);
   return ds.transaction(async (manager) => {
+    await assertFixtureTransactionTarget(manager, helper, expectedDatabase);
+    // 残留所有权只来自专属标记 + 完整内容指纹；父关系仅用于发现，不单独授予所有权。
     const verified = await resolveAndVerifyFixture(manager, helper, null);
     await deleteVerifiedFixture(manager, verified);
     return verified;
@@ -1280,8 +1621,10 @@ export const cleanupRepairRequestFixtureByIds = async (
     return;
   }
   const helper = 'cleanupRepairRequestFixtureByIds';
-  await assertFixtureDeleteTarget(ds, helper);
+  const expectedDatabase = await assertFixtureDeleteTarget(ds, helper);
   await ds.transaction(async (manager) => {
+    await assertFixtureTransactionTarget(manager, helper, expectedDatabase);
+    // 传入 ID 只作为所有权白名单；实际目标必须由同一事务内按主键重新读取并逐主键核对。
     const verified = await resolveAndVerifyFixture(manager, helper, ownership);
     await deleteVerifiedFixture(manager, verified);
   });

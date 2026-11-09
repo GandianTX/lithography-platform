@@ -576,6 +576,7 @@ const resolveAndVerifyFixture = async (
   let activeConversationId: number | undefined;
   for (const conversation of conversationCandidates) {
     if (
+      conversation.requestId === null ||
       !requestIdSet.has(conversation.requestId) ||
       !accountIdSet.has(conversation.engineerAccountId)
     ) {

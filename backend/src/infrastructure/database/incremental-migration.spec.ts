@@ -9,7 +9,11 @@ import {
   attachCleanupErrors,
   classifyHistoryIssues,
   collectCleanupErrors,
+  collectGeneratedColumnIssues,
+  compareColumnDefinition,
   loadExplicitEnvConfig,
+  normalizeCheckClause,
+  normalizeMysqlCheckClauseText,
   parseMigrationCliArgs,
 } from './incremental-migration';
 
@@ -241,5 +245,153 @@ describe('新增迁移入口的破坏性行为静态约束（M10）', () => {
     ]) {
       expect(sources).not.toContain(forbidden);
     }
+  });
+});
+
+describe('normalizeCheckClause', () => {
+  it('仅折叠空白与关键字大小写，保留字符串字面量', () => {
+    expect(normalizeCheckClause("`status` IN ('OPEN', 'CLOSED')")).toBe(
+      normalizeCheckClause("  `status`\n  in\n ('OPEN',   'CLOSED')  "),
+    );
+    expect(normalizeCheckClause("`status` = 'OPEN'")).not.toBe(
+      normalizeCheckClause("`status` = 'open'"),
+    );
+  });
+
+  it('剥离包裹整个表达式的冗余括号，但不抹平运算优先级', () => {
+    expect(normalizeCheckClause('((`a` = 1))')).toBe(normalizeCheckClause('`a` = 1'));
+    expect(normalizeCheckClause('((`a` = 1 OR `b` = 2) AND `c` = 3)')).not.toBe(
+      normalizeCheckClause('`a` = 1 OR (`b` = 2 AND `c` = 3)'),
+    );
+  });
+
+  it('结构名称相同但定义不同（历史豁免缺失）会被判为漂移', () => {
+    const expected = normalizeCheckClause(
+      "(`is_historical` = 1 OR `handling_result` IS NULL OR `handling_result` NOT IN ('INTERRUPTED', 'UNREPAIRABLE') OR (`closure_reason` IS NOT NULL AND CHAR_LENGTH(TRIM(`closure_reason`)) > 0))",
+    );
+    const actual = normalizeCheckClause(
+      "(`handling_result` IS NULL OR `handling_result` NOT IN ('INTERRUPTED', 'UNREPAIRABLE') OR (`closure_reason` IS NOT NULL AND CHAR_LENGTH(TRIM(`closure_reason`)) > 0))",
+    );
+    expect(expected).not.toBe(actual);
+  });
+});
+
+describe('normalizeMysqlCheckClauseText', () => {
+  it('还原数据字典转义与字符集引导符后与预期定义一致', () => {
+    const actual =
+      "((`receipt_status` in (_utf8mb4\\'PENDING\\',_utf8mb4\\'CONFLICT\\')) " +
+      'or (`received_at` is not null) or (`confirmed_at` is not null))';
+    expect(normalizeCheckClause(normalizeMysqlCheckClauseText(actual))).toBe(
+      normalizeCheckClause(
+        "(`receipt_status` IN ('PENDING', 'CONFLICT') " +
+          'OR `received_at` IS NOT NULL OR `confirmed_at` IS NOT NULL)',
+      ),
+    );
+  });
+
+  it('MySQL 打印的操作数括号不会掩盖 AND/OR 优先级漂移', () => {
+    const actual = normalizeCheckClause(
+      normalizeMysqlCheckClauseText('(((`a` = 1) or (`b` = 2)) and (`c` = 3))'),
+    );
+    const different = normalizeCheckClause('`a` = 1 or (`b` = 2 and `c` = 3)');
+    expect(actual).not.toBe(different);
+  });
+});
+
+describe('compareColumnDefinition', () => {
+  const expected = {
+    since: 1775501900000,
+    columnType: 'varchar(64)',
+    nullable: false,
+    defaultValue: null,
+  };
+
+  it('同定义在大小写/空白差异下通过', () => {
+    expect(
+      compareColumnDefinition(expected, {
+        columnType: ' VARCHAR(64) ',
+        nullable: 'NO',
+        defaultValue: null,
+        generatedExpression: '',
+      }),
+    ).toEqual([]);
+  });
+
+  it('类型/长度/可空/默认值/生成表达式漂移均被拒绝', () => {
+    expect(
+      compareColumnDefinition(expected, {
+        columnType: 'varchar(32)',
+        nullable: 'NO',
+        defaultValue: null,
+        generatedExpression: '',
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      compareColumnDefinition(expected, {
+        columnType: 'varchar(64)',
+        nullable: 'YES',
+        defaultValue: null,
+        generatedExpression: '',
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      compareColumnDefinition(
+        { ...expected, defaultValue: '0' },
+        {
+          columnType: 'varchar(64)',
+          nullable: 'NO',
+          defaultValue: '1',
+          generatedExpression: '',
+        },
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      compareColumnDefinition(expected, {
+        columnType: 'varchar(64)',
+        nullable: 'NO',
+        defaultValue: null,
+        generatedExpression: '(`a` + 1)',
+      }).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
+describe('collectGeneratedColumnIssues', () => {
+  it('全部生成列存在且有表达式时不报问题', async () => {
+    const dataSource = {
+      query: jest.fn(() => Promise.resolve([{ generation_expression: '(`account_id`)' }])),
+    };
+
+    const issues = await collectGeneratedColumnIssues(
+      dataSource as unknown as Parameters<typeof collectGeneratedColumnIssues>[0],
+      'lithography',
+    );
+
+    expect(issues).toEqual([]);
+    expect(dataSource.query).toHaveBeenCalledTimes(4);
+  });
+
+  it('生成列缺失或表达式为空时逐项报出', async () => {
+    const dataSource = {
+      query: jest.fn((...args: ReadonlyArray<unknown>) => {
+        const params = args[1] as ReadonlyArray<string>;
+        if (params[1] === 'organization_membership') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([{ generation_expression: '' }]);
+      }),
+    };
+
+    const issues = await collectGeneratedColumnIssues(
+      dataSource as unknown as Parameters<typeof collectGeneratedColumnIssues>[0],
+      'lithography',
+    );
+
+    expect(issues).toEqual([
+      '生成列缺失: organization_membership.active_account_id',
+      '生成列缺少生成表达式: maintenance_report_attachment.active_sort_order',
+      '生成列缺少生成表达式: local_backup_run.active_installation_id',
+      '生成列缺少生成表达式: engineer_registration_application.pending_account_id',
+    ]);
   });
 });

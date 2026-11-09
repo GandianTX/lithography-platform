@@ -60,6 +60,22 @@ export class AccountEntity {
   })
   identityHint!: string | null;
 
+  @Column({
+    name: 'admin_level',
+    type: 'tinyint',
+    nullable: true,
+    comment: '管理员等级：1=一级；2=二级；NULL=非管理员或未映射',
+  })
+  adminLevel!: number | null;
+
+  @Column({
+    name: 'must_change_password',
+    type: 'boolean',
+    default: false,
+    comment: '是否必须先修改密码',
+  })
+  mustChangePassword!: boolean;
+
   /**
    * 用户详细信息关联
    * 一对一关系的反向端（inverse side）

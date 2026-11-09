@@ -157,7 +157,9 @@ export class AdminAiConversationQueryService {
       return [];
     }
 
-    const requestIds = [...new Set(entities.map((entity) => entity.requestId))];
+    const requestIds = [...new Set(entities.map((entity) => entity.requestId))].filter(
+      (requestId): requestId is number => requestId !== null,
+    );
     const conversationIds = entities.map((entity) => entity.id);
 
     const [requests, messageCounts, reportCounts] = await Promise.all([
@@ -176,7 +178,8 @@ export class AdminAiConversationQueryService {
     return entities.map((entity) => ({
       id: entity.id,
       requestId: entity.requestId,
-      requestNo: requestNoByRequestId.get(entity.requestId) ?? '',
+      requestNo:
+        entity.requestId === null ? '' : (requestNoByRequestId.get(entity.requestId) ?? ''),
       engineerAccountId: entity.engineerAccountId,
       status: entity.status,
       aiFeedback: entity.aiFeedback,

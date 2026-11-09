@@ -38,7 +38,37 @@ export type OwnedResourceCategory =
   | 'verificationRecord'
   | 'repairRequest'
   | 'engineerResponse'
-  | 'engineerRegistrationApplication';
+  | 'engineerRegistrationApplication'
+  // V13 新增 17 表：全部为事实承载类别（R02 收口）。
+  // 归属证明 = 登记创建成功取得的真实 ID + 不可变归属字段的预期事实；
+  // 父行关系只用于发现账本外引用并拒绝（R01），绝不自动证明本轮所有权。
+  // 主键与迁移逐表核对（括号内为真实主键列，非统一 id）：
+  //   stored_file(file_id, char36) / repair_request_intake(id) /
+  //   intake_analysis_attempt(id) / repair_process_entry(id) /
+  //   ai_message_analysis(question_uuid, char36) / maintenance_report_fault(id) /
+  //   repair_request_revision(id) / reference_document_revision(id) /
+  //   local_account_authorization(id) / local_company_setting(id) /
+  //   sync_receipt(receipt_id, char36) / sync_conflict(conflict_id, char36) /
+  //   record_package_import(package_id, char36) / record_package_item(id) /
+  //   backup_asset(backup_id, char36) / backup_restore_run(restore_id, char36) /
+  //   management_audit_event(event_id, char36)。
+  | 'storedFile'
+  | 'repairRequestIntake'
+  | 'intakeAnalysisAttempt'
+  | 'repairProcessEntry'
+  | 'aiMessageAnalysis'
+  | 'maintenanceReportFault'
+  | 'repairRequestRevision'
+  | 'referenceDocumentRevision'
+  | 'localAccountAuthorization'
+  | 'localCompanySetting'
+  | 'syncReceipt'
+  | 'syncConflict'
+  | 'recordPackageImport'
+  | 'recordPackageItem'
+  | 'backupAsset'
+  | 'backupRestoreRun'
+  | 'managementAuditEvent';
 
 type OwnedIdKey = Exclude<keyof OwnedResourceLedger, 'facts'>;
 
@@ -60,6 +90,23 @@ const LEDGER_KEY_BY_CATEGORY: Record<OwnedResourceCategory, OwnedIdKey> = {
   repairRequest: 'repairRequestIds',
   engineerResponse: 'engineerResponseIds',
   engineerRegistrationApplication: 'engineerRegistrationApplicationIds',
+  storedFile: 'storedFileIds',
+  repairRequestIntake: 'repairRequestIntakeIds',
+  intakeAnalysisAttempt: 'intakeAnalysisAttemptIds',
+  repairProcessEntry: 'repairProcessEntryIds',
+  aiMessageAnalysis: 'aiMessageAnalysisIds',
+  maintenanceReportFault: 'maintenanceReportFaultIds',
+  repairRequestRevision: 'repairRequestRevisionIds',
+  referenceDocumentRevision: 'referenceDocumentRevisionIds',
+  localAccountAuthorization: 'localAccountAuthorizationIds',
+  localCompanySetting: 'localCompanySettingIds',
+  syncReceipt: 'syncReceiptIds',
+  syncConflict: 'syncConflictIds',
+  recordPackageImport: 'recordPackageImportIds',
+  recordPackageItem: 'recordPackageItemIds',
+  backupAsset: 'backupAssetIds',
+  backupRestoreRun: 'backupRestoreRunIds',
+  managementAuditEvent: 'managementAuditEventIds',
 };
 
 /**
@@ -100,7 +147,7 @@ export interface OwnedMembershipFacts {
 }
 
 export interface OwnedDocumentFacts {
-  readonly ownerOrganizationId: number;
+  readonly ownerOrganizationId: number | null;
   readonly createdByAccountId: number;
   readonly sourceSubmissionId: number | null;
   readonly sourceRevisionId: number | null;
@@ -161,7 +208,175 @@ export interface OwnedEngineerRegistrationApplicationFacts {
   readonly applicationNote: string | null;
 }
 
-/** 登记时允许携带预期事实的类别（其余类别的归属由既有父子关系核验证明）。 */
+// =========================================================================
+// V13 新增 17 表的预期事实（R02 收口）。
+//
+// 每类只登记“创建时确定、生命周期内不可变”的归属字段；
+// 状态机字段（status / is_current / converted_request_id / deleted_at 等）
+// 会由合法业务写入改变，不构成归属证明，刻意不纳入。
+// =========================================================================
+
+/** stored_file：上传人/归属公司/存储引用/原始文件名/校验和/上传上下文均创建即定。 */
+export interface OwnedStoredFileFacts {
+  readonly uploadedByAccountId: number;
+  readonly ownerOrganizationId: number;
+  readonly storageReference: string;
+  readonly originalFilename: string;
+  readonly checksumSha256: string;
+  readonly uploadContextId: string;
+}
+
+/** repair_request_intake：业务稳定编号与四方归属（客户账号/客户公司/维修公司/机型）。 */
+export interface OwnedRepairRequestIntakeFacts {
+  readonly recordUuid: string;
+  readonly customerAccountId: number;
+  readonly customerOrganizationId: number;
+  readonly serviceOrganizationId: number;
+  readonly equipmentModelId: number;
+  readonly errorCode: string;
+  readonly faultDescription: string;
+  readonly fileId: string | null;
+}
+
+/** intake_analysis_attempt：父报修与代次（uk(intake_id, generation_no)）即归属证明。 */
+export interface OwnedIntakeAnalysisAttemptFacts {
+  readonly intakeId: number;
+  readonly generationNo: number;
+}
+
+/** repair_process_entry：稳定编号/所属工单/记录人创建即定；正文可被合法修订故不纳入。 */
+export interface OwnedRepairProcessEntryFacts {
+  readonly entryUuid: string;
+  readonly requestId: number;
+  readonly authorAccountId: number;
+  readonly fileId: string | null;
+}
+
+/**
+ * ai_message_analysis：父会话/问题消息即归属证明。
+ * 注意：父行 ai_conversation / ai_message 不在清理范围内（R01），
+ * 本类不提供“按父行发现子行”的收集，所有权完全由登记事实核验证明。
+ */
+export interface OwnedAiMessageAnalysisFacts {
+  readonly conversationId: number;
+  readonly questionMessageId: number;
+  readonly answerMessageId: number | null;
+}
+
+/**
+ * maintenance_report_fault：父行 maintenance_report 不在清理范围内。
+ * 本类只按登记 ID + 事实核验删除，绝不按报告整批接管。
+ */
+export interface OwnedMaintenanceReportFaultFacts {
+  readonly reportId: number;
+  readonly faultUuid: string;
+  readonly branchKind: string;
+  readonly stepCode: string | null;
+  /**
+   * 生命周期来源（USER/ADMIN/SYSTEM）。
+   * 注意：v13 起旧 `source` 列改名 `lifecycle_source`，新 `source` 列是面板原始故障来源文本，
+   * 历史行可能为 NULL，不能用作归属事实。
+   */
+  readonly lifecycleSource: string;
+}
+
+/** repair_request_revision：所属工单/修订号/修订人创建即定（快照为追加式，不可变）。 */
+export interface OwnedRepairRequestRevisionFacts {
+  readonly requestId: number;
+  readonly revisionNo: number;
+  readonly actorAccountId: number;
+  readonly schemaVersion: number;
+}
+
+/** reference_document_revision：所属资料/修订号/修订人创建即定。 */
+export interface OwnedReferenceDocumentRevisionFacts {
+  readonly documentId: number;
+  readonly revisionNo: number;
+  readonly actorAccountId: number;
+}
+
+/** local_account_authorization：授权三元组（uk）即归属证明；状态变化不纳入。 */
+export interface OwnedLocalAccountAuthorizationFacts {
+  readonly installationId: string;
+  readonly accountId: number;
+  readonly organizationId: number;
+}
+
+/** local_company_setting：（installation_id, organization_id）uk 与来源创建即定。 */
+export interface OwnedLocalCompanySettingFacts {
+  readonly installationId: string;
+  readonly organizationId: number;
+  readonly settingSource: string;
+}
+
+/**
+ * sync_receipt：同步范围（organization_id, resource_type, record_uuid, version_no）四列唯一键
+ * 加上创建即定的 source_system 兼容描述共同作为归属证明；回执状态变化不纳入。
+ * source_system 自 v13 起不再参与唯一键，但仍是创建时确定的事实。
+ */
+export interface OwnedSyncReceiptFacts {
+  readonly recordUuid: string;
+  readonly organizationId: number;
+  readonly resourceType: string;
+  readonly versionNo: number;
+  readonly sourceSystem: string;
+}
+
+/** sync_conflict：冲突范围四元组（uk）即归属证明；确认状态变化不纳入。 */
+export interface OwnedSyncConflictFacts {
+  readonly recordUuid: string;
+  readonly organizationId: number;
+  readonly resourceType: string;
+  readonly versionNo: number;
+}
+
+/** record_package_import：归属公司/导入人/清单校验和创建即定；进度计数不纳入。 */
+export interface OwnedRecordPackageImportFacts {
+  readonly organizationId: number;
+  readonly importedByAccountId: number;
+  readonly manifestChecksum: string;
+}
+
+/** record_package_item：所属包与条目范围（uk）即归属证明。 */
+export interface OwnedRecordPackageItemFacts {
+  readonly packageId: string;
+  readonly recordUuid: string;
+  readonly resourceType: string;
+  readonly versionNo: number;
+  readonly receiptId: string | null;
+}
+
+/** backup_asset：对应备份运行/归属公司/存储引用/文件校验和创建即定；云/本地状态不纳入。 */
+export interface OwnedBackupAssetFacts {
+  readonly runId: number;
+  readonly organizationId: number;
+  readonly storageReference: string;
+  readonly fileSha256: string;
+  readonly localCleanupRunId: number | null;
+}
+
+/**
+ * backup_restore_run：被恢复资产/保护资产/目标公司/发起人创建即定；运行状态不纳入。
+ * protection_backup_id 自 v13 起可空（预检阶段与历史未知行），因此归属事实按可空比较。
+ */
+export interface OwnedBackupRestoreRunFacts {
+  readonly backupId: string;
+  readonly protectionBackupId: string | null;
+  readonly organizationId: number;
+  readonly startedByAccountId: number;
+}
+
+/** management_audit_event：审计事件整体不可变（追加式日志）。 */
+export interface OwnedManagementAuditEventFacts {
+  readonly actorAccountId: number;
+  readonly organizationId: number | null;
+  readonly operation: string;
+  readonly targetType: string;
+  readonly targetId: string;
+  readonly result: string;
+}
+
+/** 登记时必须携带预期事实的类别：全部类别均为事实承载（R02），无豁免。 */
 export interface OwnedFactsByCategory {
   organization: OwnedOrganizationFacts;
   account: OwnedAccountFacts;
@@ -173,12 +388,32 @@ export interface OwnedFactsByCategory {
   repairRequest: OwnedRepairRequestFacts;
   engineerResponse: OwnedEngineerResponseFacts;
   engineerRegistrationApplication: OwnedEngineerRegistrationApplicationFacts;
+  storedFile: OwnedStoredFileFacts;
+  repairRequestIntake: OwnedRepairRequestIntakeFacts;
+  intakeAnalysisAttempt: OwnedIntakeAnalysisAttemptFacts;
+  repairProcessEntry: OwnedRepairProcessEntryFacts;
+  aiMessageAnalysis: OwnedAiMessageAnalysisFacts;
+  maintenanceReportFault: OwnedMaintenanceReportFaultFacts;
+  repairRequestRevision: OwnedRepairRequestRevisionFacts;
+  referenceDocumentRevision: OwnedReferenceDocumentRevisionFacts;
+  localAccountAuthorization: OwnedLocalAccountAuthorizationFacts;
+  localCompanySetting: OwnedLocalCompanySettingFacts;
+  syncReceipt: OwnedSyncReceiptFacts;
+  syncConflict: OwnedSyncConflictFacts;
+  recordPackageImport: OwnedRecordPackageImportFacts;
+  recordPackageItem: OwnedRecordPackageItemFacts;
+  backupAsset: OwnedBackupAssetFacts;
+  backupRestoreRun: OwnedBackupRestoreRunFacts;
+  managementAuditEvent: OwnedManagementAuditEventFacts;
 }
 
 export type FactBearingCategory = keyof OwnedFactsByCategory;
 
 export type OwnedResourceFacts = {
-  readonly [C in FactBearingCategory]: Map<number, OwnedFactsByCategory[C]>;
+  // char(36) 主键类别（stored_file / ai_message_analysis / sync_receipt /
+  // sync_conflict / record_package_import / backup_asset / backup_restore_run /
+  // management_audit_event）以字符串 ID 为键，其余以数字 ID 为键。
+  readonly [C in FactBearingCategory]: Map<number | string, OwnedFactsByCategory[C]>;
 };
 
 export interface OwnedResourceLedger {
@@ -207,6 +442,26 @@ export interface OwnedResourceLedger {
    * 申请行对账号与组织均为 FK RESTRICT，必须先于它们删除，否则账号/组织回收会被外键阻断。
    */
   engineerRegistrationApplicationIds: number[];
+  // V13 新增 17 表：全部事实承载；主键为 char(36) 的 8 张表用字符串登记
+  // （stored_file / ai_message_analysis / sync_receipt / sync_conflict /
+  // record_package_import / backup_asset / backup_restore_run / management_audit_event）。
+  storedFileIds: Array<number | string>;
+  repairRequestIntakeIds: number[];
+  intakeAnalysisAttemptIds: number[];
+  repairProcessEntryIds: number[];
+  aiMessageAnalysisIds: Array<number | string>;
+  maintenanceReportFaultIds: number[];
+  repairRequestRevisionIds: number[];
+  referenceDocumentRevisionIds: number[];
+  localAccountAuthorizationIds: number[];
+  localCompanySettingIds: number[];
+  syncReceiptIds: Array<number | string>;
+  syncConflictIds: Array<number | string>;
+  recordPackageImportIds: Array<number | string>;
+  recordPackageItemIds: number[];
+  backupAssetIds: Array<number | string>;
+  backupRestoreRunIds: Array<number | string>;
+  managementAuditEventIds: Array<number | string>;
   /**
    * 按类别登记的最小预期事实；每个已登记 ID 必须有对应事实，
    * 缺失即失败关闭，绝不回退为“只按 ID 删除”。
@@ -271,6 +526,23 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
   repairRequestIds: [],
   engineerResponseIds: [],
   engineerRegistrationApplicationIds: [],
+  storedFileIds: [],
+  repairRequestIntakeIds: [],
+  intakeAnalysisAttemptIds: [],
+  repairProcessEntryIds: [],
+  aiMessageAnalysisIds: [],
+  maintenanceReportFaultIds: [],
+  repairRequestRevisionIds: [],
+  referenceDocumentRevisionIds: [],
+  localAccountAuthorizationIds: [],
+  localCompanySettingIds: [],
+  syncReceiptIds: [],
+  syncConflictIds: [],
+  recordPackageImportIds: [],
+  recordPackageItemIds: [],
+  backupAssetIds: [],
+  backupRestoreRunIds: [],
+  managementAuditEventIds: [],
   facts: {
     organization: new Map(),
     account: new Map(),
@@ -282,6 +554,23 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
     repairRequest: new Map(),
     engineerResponse: new Map(),
     engineerRegistrationApplication: new Map(),
+    storedFile: new Map(),
+    repairRequestIntake: new Map(),
+    intakeAnalysisAttempt: new Map(),
+    repairProcessEntry: new Map(),
+    aiMessageAnalysis: new Map(),
+    maintenanceReportFault: new Map(),
+    repairRequestRevision: new Map(),
+    referenceDocumentRevision: new Map(),
+    localAccountAuthorization: new Map(),
+    localCompanySetting: new Map(),
+    syncReceipt: new Map(),
+    syncConflict: new Map(),
+    recordPackageImport: new Map(),
+    recordPackageItem: new Map(),
+    backupAsset: new Map(),
+    backupRestoreRun: new Map(),
+    managementAuditEvent: new Map(),
   },
 });
 
@@ -337,31 +626,46 @@ const assertPositiveId = (category: OwnedResourceCategory, id: number): void => 
   }
 };
 
+// char(36) 主键类别（stored_file / ai_message_analysis / sync_receipt / sync_conflict /
+// record_package_import / backup_asset / backup_restore_run / management_audit_event）允许字符串 ID。
+const assertResourceId = (category: OwnedResourceCategory, id: number | string): void => {
+  if (typeof id === 'number') {
+    assertPositiveId(category, id);
+  } else if (typeof id === 'string') {
+    if (id.length === 0) {
+      throw new Error(`清理资源登记失败：${category} 字符串 ID 不能为空`);
+    }
+  } else {
+    throw new Error(`清理资源登记失败：${category} ID 类型非法，收到 ${String(id)}`);
+  }
+};
+
 /**
- * 登记数据库真实生成 ID；只接受正整数并按类别去重。
+ * 登记数据库真实生成 ID；只接受正整数或非空字符串（char(36) 主键）并按类别去重。
  *
- * 需要预期事实的类别必须同时传入事实（R02）；调用方不得只登记 ID 后依赖清理器豁免核验。
+ * 事实承载类别（全部 V13 类别与既有十类）必须同时传入预期事实（R02）；
+ * 调用方不得只登记 ID 后依赖清理器豁免核验。
  */
-export function recordOwnedResource<C extends FactBearingCategory>(
+export function recordOwnedResource<C extends FactBearingCategory, I extends number | string>(
   ledger: OwnedResourceLedger,
   category: C,
-  id: number,
+  id: I,
   facts: OwnedFactsByCategory[C],
-): number;
+): I;
 export function recordOwnedResource(
   ledger: OwnedResourceLedger,
   category: Exclude<OwnedResourceCategory, FactBearingCategory>,
-  id: number,
-): number;
+  id: number | string,
+): number | string;
 export function recordOwnedResource(
   ledger: OwnedResourceLedger,
   category: OwnedResourceCategory,
-  id: number,
+  id: number | string,
   facts?: OwnedFactsByCategory[FactBearingCategory],
-): number {
-  assertPositiveId(category, id);
+): number | string {
+  assertResourceId(category, id);
   const key = LEDGER_KEY_BY_CATEGORY[category];
-  const ids = ledger[key];
+  const ids = ledger[key] as Array<number | string>;
   if (!ids.includes(id)) {
     ids.push(id);
   }
@@ -370,7 +674,7 @@ export function recordOwnedResource(
       throw new Error(`清理资源登记失败：类别 ${category} 不接受预期事实登记`);
     }
     const factsById = ledger.facts[category as FactBearingCategory] as unknown as Map<
-      number,
+      number | string,
       OwnedFactsByCategory[FactBearingCategory]
     >;
     factsById.set(id, cloneFacts(facts));
@@ -386,19 +690,25 @@ export function recordOwnedResource(
 export function updateOwnedExpectation<C extends FactBearingCategory>(
   ledger: OwnedResourceLedger,
   category: C,
-  id: number,
+  id: number | string,
   patch: Partial<OwnedFactsByCategory[C]>,
 ): void {
-  assertPositiveId(category, id);
-  const factsById = ledger.facts[category] as Map<number, OwnedFactsByCategory[C]>;
+  assertResourceId(category, id);
+  const factsById = ledger.facts[category] as Map<number | string, OwnedFactsByCategory[C]>;
   const current = factsById.get(id);
   if (current === undefined) {
-    throw new Error(`清理预期更新失败：${category} ${id} 未登记预期事实，拒绝用猜测值补登记`);
+    throw new Error(
+      `清理预期更新失败：${category} ${String(id)} 未登记预期事实，拒绝用猜测值补登记`,
+    );
   }
   factsById.set(id, cloneFacts({ ...cloneFacts(current), ...cloneFacts(patch) }));
 }
 
 const toIdList = (ids: readonly number[]): number[] => [...new Set(ids)].filter((id) => id > 0);
+
+// char(36) UUID 主键（stored_file.file_id / ai_message_analysis.question_uuid）专用。
+const toMixedIdList = (ids: ReadonlyArray<number | string>): Array<number | string> =>
+  [...new Set(ids)].filter((id) => id !== null && id !== undefined && String(id).length > 0);
 
 /**
  * 台账事实必须与创建输入/补丁完全隔离（N02）。
@@ -472,6 +782,23 @@ interface CleanupPlan {
   repairRequestIds: number[];
   engineerResponseIds: number[];
   engineerRegistrationApplicationIds: number[];
+  storedFileIds: Array<number | string>;
+  repairRequestIntakeIds: number[];
+  intakeAnalysisAttemptIds: number[];
+  repairProcessEntryIds: number[];
+  aiMessageAnalysisIds: Array<number | string>;
+  maintenanceReportFaultIds: number[];
+  repairRequestRevisionIds: number[];
+  referenceDocumentRevisionIds: number[];
+  localAccountAuthorizationIds: number[];
+  localCompanySettingIds: number[];
+  syncReceiptIds: Array<number | string>;
+  syncConflictIds: Array<number | string>;
+  recordPackageImportIds: Array<number | string>;
+  recordPackageItemIds: number[];
+  backupAssetIds: Array<number | string>;
+  backupRestoreRunIds: Array<number | string>;
+  managementAuditEventIds: Array<number | string>;
 }
 
 const emptyPlan = (): CleanupPlan => ({
@@ -492,12 +819,29 @@ const emptyPlan = (): CleanupPlan => ({
   repairRequestIds: [],
   engineerResponseIds: [],
   engineerRegistrationApplicationIds: [],
+  storedFileIds: [],
+  repairRequestIntakeIds: [],
+  intakeAnalysisAttemptIds: [],
+  repairProcessEntryIds: [],
+  aiMessageAnalysisIds: [],
+  maintenanceReportFaultIds: [],
+  repairRequestRevisionIds: [],
+  referenceDocumentRevisionIds: [],
+  localAccountAuthorizationIds: [],
+  localCompanySettingIds: [],
+  syncReceiptIds: [],
+  syncConflictIds: [],
+  recordPackageImportIds: [],
+  recordPackageItemIds: [],
+  backupAssetIds: [],
+  backupRestoreRunIds: [],
+  managementAuditEventIds: [],
 });
 
 const hasAnyResource = (plan: CleanupPlan): boolean =>
   Object.values(plan).some((ids) => ids.length > 0);
 
-const addIds = (target: number[], ids: readonly number[]): void => {
+const addIds = (target: Array<number | string>, ids: ReadonlyArray<number | string>): void => {
   for (const id of ids) {
     if (!target.includes(id)) {
       target.push(id);
@@ -634,6 +978,151 @@ interface EngineerResponseRow {
   customer_account_id: number;
   resolution_status: string;
   response_text: string;
+}
+
+// =========================================================================
+// V13 新增 17 表的回读行类型（列名与迁移逐表核对）。
+// =========================================================================
+
+interface StoredFileRow {
+  file_id: string;
+  uploaded_by_account_id: unknown;
+  owner_organization_id: unknown;
+  storage_reference: string;
+  original_filename: string;
+  checksum_sha256: string;
+  upload_context_id: string;
+}
+
+interface RepairRequestIntakeRow {
+  id: number;
+  record_uuid: string;
+  customer_account_id: unknown;
+  customer_organization_id: unknown;
+  service_organization_id: unknown;
+  equipment_model_id: unknown;
+  error_code: string;
+  fault_description: string;
+  file_id: string | null;
+}
+
+interface IntakeAnalysisAttemptRow {
+  id: number;
+  intake_id: unknown;
+  generation_no: unknown;
+}
+
+interface RepairProcessEntryRow {
+  id: number;
+  entry_uuid: string;
+  request_id: unknown;
+  author_account_id: unknown;
+  file_id: string | null;
+}
+
+interface AiMessageAnalysisRow {
+  question_uuid: string;
+  conversation_id: unknown;
+  question_message_id: unknown;
+  answer_message_id: unknown;
+}
+
+interface MaintenanceReportFaultRow {
+  id: number;
+  report_id: unknown;
+  fault_uuid: string;
+  branch_kind: string;
+  step_code: string | null;
+  lifecycle_source: string;
+}
+
+interface RepairRequestRevisionRow {
+  id: number;
+  request_id: unknown;
+  revision_no: unknown;
+  actor_account_id: unknown;
+  schema_version: unknown;
+}
+
+interface ReferenceDocumentRevisionRow {
+  id: number;
+  document_id: unknown;
+  revision_no: unknown;
+  actor_account_id: unknown;
+}
+
+interface LocalAccountAuthorizationRow {
+  id: number;
+  installation_id: string;
+  account_id: unknown;
+  organization_id: unknown;
+}
+
+interface LocalCompanySettingRow {
+  id: number;
+  installation_id: string;
+  organization_id: unknown;
+  setting_source: string;
+}
+
+interface SyncReceiptRow {
+  receipt_id: string;
+  record_uuid: string;
+  organization_id: unknown;
+  resource_type: string;
+  version_no: unknown;
+  source_system: string;
+}
+
+interface SyncConflictRow {
+  conflict_id: string;
+  record_uuid: string;
+  organization_id: unknown;
+  resource_type: string;
+  version_no: unknown;
+}
+
+interface RecordPackageImportRow {
+  package_id: string;
+  organization_id: unknown;
+  imported_by_account_id: unknown;
+  manifest_checksum: string;
+}
+
+interface RecordPackageItemRow {
+  id: number;
+  package_id: string;
+  record_uuid: string;
+  resource_type: string;
+  version_no: unknown;
+  receipt_id: string | null;
+}
+
+interface BackupAssetRow {
+  backup_id: string;
+  run_id: unknown;
+  organization_id: unknown;
+  storage_reference: string;
+  file_sha256: string;
+  local_cleanup_run_id: unknown;
+}
+
+interface BackupRestoreRunRow {
+  restore_id: string;
+  backup_id: string;
+  protection_backup_id: string | null;
+  organization_id: unknown;
+  started_by_account_id: unknown;
+}
+
+interface ManagementAuditEventRow {
+  event_id: string;
+  actor_account_id: unknown;
+  organization_id: unknown;
+  operation: string;
+  target_type: string;
+  target_id: string;
+  result: string;
 }
 
 /**
@@ -1152,6 +1641,23 @@ const FACT_BEARING_CATEGORIES: readonly FactBearingCategory[] = [
   'repairRequest',
   'engineerResponse',
   'engineerRegistrationApplication',
+  'storedFile',
+  'repairRequestIntake',
+  'intakeAnalysisAttempt',
+  'repairProcessEntry',
+  'aiMessageAnalysis',
+  'maintenanceReportFault',
+  'repairRequestRevision',
+  'referenceDocumentRevision',
+  'localAccountAuthorization',
+  'localCompanySetting',
+  'syncReceipt',
+  'syncConflict',
+  'recordPackageImport',
+  'recordPackageItem',
+  'backupAsset',
+  'backupRestoreRun',
+  'managementAuditEvent',
 ];
 
 /**
@@ -1165,16 +1671,16 @@ export const mergeOwnedResourceLedger = (
   source: OwnedResourceLedger,
 ): void => {
   for (const category of Object.keys(LEDGER_KEY_BY_CATEGORY) as OwnedResourceCategory[]) {
-    const targetIds = target[LEDGER_KEY_BY_CATEGORY[category]];
-    for (const id of source[LEDGER_KEY_BY_CATEGORY[category]]) {
+    const targetIds = target[LEDGER_KEY_BY_CATEGORY[category]] as Array<number | string>;
+    for (const id of source[LEDGER_KEY_BY_CATEGORY[category]] as ReadonlyArray<number | string>) {
       if (!targetIds.includes(id)) {
         targetIds.push(id);
       }
     }
   }
   for (const category of FACT_BEARING_CATEGORIES) {
-    const from = source.facts[category] as unknown as Map<number, unknown>;
-    const to = target.facts[category] as unknown as Map<number, unknown>;
+    const from = source.facts[category] as unknown as Map<number | string, unknown>;
+    const to = target.facts[category] as unknown as Map<number | string, unknown>;
     for (const [id, facts] of from) {
       to.set(id, cloneFacts(facts));
     }
@@ -1187,11 +1693,11 @@ export const mergeOwnedResourceLedger = (
  */
 const assertOwnedFactsComplete = (owned: OwnedResourceLedger, helper: string): void => {
   for (const category of FACT_BEARING_CATEGORIES) {
-    const ids = owned[LEDGER_KEY_BY_CATEGORY[category]] as readonly number[];
+    const ids = owned[LEDGER_KEY_BY_CATEGORY[category]] as ReadonlyArray<number | string>;
     for (const id of ids) {
       if (!owned.facts[category].has(id)) {
         throw new Error(
-          `[${helper}] 阶段=归属预检 拒绝删除：${category} ${id} 缺少必要预期事实，` +
+          `[${helper}] 阶段=归属预检 拒绝删除：${category} ${String(id)} 缺少必要预期事实，` +
             '拒绝仅按 ID 删除',
         );
       }
@@ -1203,6 +1709,12 @@ const nullableNumberEquals = (actual: unknown, expected: number | null): boolean
   expected === null
     ? actual === null || actual === undefined
     : actual !== null && actual !== undefined && asNumber(actual) === expected;
+
+// char(36) 列可空比较（file_id / step_code / receipt_id 等）。
+const nullableStringEquals = (actual: unknown, expected: string | null): boolean =>
+  expected === null
+    ? actual === null || actual === undefined
+    : typeof actual === 'string' && actual === expected;
 
 const boolOfDb = (value: unknown): boolean => value === true || Number(value) === 1;
 
@@ -1218,7 +1730,7 @@ const verifyOwnedExpectations = async (
   owned: OwnedResourceLedger,
   helper: string,
 ): Promise<void> => {
-  const drift = (category: string, id: number, keys: readonly string[]): never =>
+  const drift = (category: string, id: number | string, keys: readonly string[]): never =>
     conflict(
       helper,
       category,
@@ -1237,7 +1749,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.organization) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1264,7 +1776,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.account) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1299,7 +1811,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.membership) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1326,12 +1838,12 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.document) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
       const mismatches: string[] = [];
-      if (asNumber(row.owner_organization_id) !== expected.ownerOrganizationId) {
+      if (!nullableNumberEquals(row.owner_organization_id, expected.ownerOrganizationId)) {
         mismatches.push('owner_organization_id');
       }
       if (asNumber(row.created_by_account_id) !== expected.createdByAccountId) {
@@ -1361,7 +1873,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.equipmentModel) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1385,7 +1897,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.thirdPartyAuth) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1410,7 +1922,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.verificationRecord) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1441,7 +1953,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.repairRequest) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1471,7 +1983,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.engineerResponse) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1502,7 +2014,7 @@ const verifyOwnedExpectations = async (
     );
     const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
     for (const [id, expected] of owned.facts.engineerRegistrationApplication) {
-      const row = rowById.get(id);
+      const row = rowById.get(asNumber(id));
       if (!row) {
         continue;
       }
@@ -1515,6 +2027,493 @@ const verifyOwnedExpectations = async (
         mismatches.push('application_note');
       }
       if (mismatches.length > 0) drift('engineerRegistrationApplication', id, mismatches);
+    }
+  }
+
+  // =========================================================================
+  // V13 新增 17 表：同一事务内 FOR UPDATE 锁定并逐项核对不可变归属事实。
+  // 行已不存在视为“已回收”，保持幂等；任一漂移先于第一条 DELETE 冲突。
+  // =========================================================================
+
+  if (owned.facts.storedFile.size > 0) {
+    const ids = [...owned.facts.storedFile.keys()];
+    const rows: StoredFileRow[] = await manager.query(
+      `SELECT file_id, uploaded_by_account_id, owner_organization_id, storage_reference,
+              original_filename, checksum_sha256, upload_context_id
+         FROM stored_file
+        WHERE file_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.file_id), row]));
+    for (const [id, expected] of owned.facts.storedFile) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.uploaded_by_account_id) !== expected.uploadedByAccountId) {
+        mismatches.push('uploaded_by_account_id');
+      }
+      if (asNumber(row.owner_organization_id) !== expected.ownerOrganizationId) {
+        mismatches.push('owner_organization_id');
+      }
+      if (row.storage_reference !== expected.storageReference) {
+        mismatches.push('storage_reference');
+      }
+      if (row.original_filename !== expected.originalFilename) {
+        mismatches.push('original_filename');
+      }
+      if (row.checksum_sha256 !== expected.checksumSha256) mismatches.push('checksum_sha256');
+      if (row.upload_context_id !== expected.uploadContextId) mismatches.push('upload_context_id');
+      if (mismatches.length > 0) drift('storedFile', id, mismatches);
+    }
+  }
+
+  if (owned.facts.repairRequestIntake.size > 0) {
+    const ids = [...owned.facts.repairRequestIntake.keys()];
+    const rows: RepairRequestIntakeRow[] = await manager.query(
+      `SELECT id, record_uuid, customer_account_id, customer_organization_id,
+              service_organization_id, equipment_model_id, error_code, fault_description, file_id
+         FROM repair_request_intake
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.repairRequestIntake) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.record_uuid !== expected.recordUuid) mismatches.push('record_uuid');
+      if (asNumber(row.customer_account_id) !== expected.customerAccountId) {
+        mismatches.push('customer_account_id');
+      }
+      if (asNumber(row.customer_organization_id) !== expected.customerOrganizationId) {
+        mismatches.push('customer_organization_id');
+      }
+      if (asNumber(row.service_organization_id) !== expected.serviceOrganizationId) {
+        mismatches.push('service_organization_id');
+      }
+      if (asNumber(row.equipment_model_id) !== expected.equipmentModelId) {
+        mismatches.push('equipment_model_id');
+      }
+      if (row.error_code !== expected.errorCode) mismatches.push('error_code');
+      if (row.fault_description !== expected.faultDescription) {
+        mismatches.push('fault_description');
+      }
+      if (!nullableStringEquals(row.file_id, expected.fileId)) mismatches.push('file_id');
+      if (mismatches.length > 0) drift('repairRequestIntake', id, mismatches);
+    }
+  }
+
+  if (owned.facts.intakeAnalysisAttempt.size > 0) {
+    const ids = [...owned.facts.intakeAnalysisAttempt.keys()];
+    const rows: IntakeAnalysisAttemptRow[] = await manager.query(
+      `SELECT id, intake_id, generation_no
+         FROM intake_analysis_attempt
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.intakeAnalysisAttempt) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.intake_id) !== expected.intakeId) mismatches.push('intake_id');
+      if (asNumber(row.generation_no) !== expected.generationNo) mismatches.push('generation_no');
+      if (mismatches.length > 0) drift('intakeAnalysisAttempt', id, mismatches);
+    }
+  }
+
+  if (owned.facts.repairProcessEntry.size > 0) {
+    const ids = [...owned.facts.repairProcessEntry.keys()];
+    const rows: RepairProcessEntryRow[] = await manager.query(
+      `SELECT id, entry_uuid, request_id, author_account_id, file_id
+         FROM repair_process_entry
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.repairProcessEntry) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.entry_uuid !== expected.entryUuid) mismatches.push('entry_uuid');
+      if (asNumber(row.request_id) !== expected.requestId) mismatches.push('request_id');
+      if (asNumber(row.author_account_id) !== expected.authorAccountId) {
+        mismatches.push('author_account_id');
+      }
+      if (!nullableStringEquals(row.file_id, expected.fileId)) mismatches.push('file_id');
+      if (mismatches.length > 0) drift('repairProcessEntry', id, mismatches);
+    }
+  }
+
+  if (owned.facts.aiMessageAnalysis.size > 0) {
+    const ids = [...owned.facts.aiMessageAnalysis.keys()];
+    const rows: AiMessageAnalysisRow[] = await manager.query(
+      `SELECT question_uuid, conversation_id, question_message_id, answer_message_id
+         FROM ai_message_analysis
+        WHERE question_uuid IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.question_uuid), row]));
+    for (const [id, expected] of owned.facts.aiMessageAnalysis) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.conversation_id) !== expected.conversationId) {
+        mismatches.push('conversation_id');
+      }
+      if (asNumber(row.question_message_id) !== expected.questionMessageId) {
+        mismatches.push('question_message_id');
+      }
+      if (!nullableNumberEquals(row.answer_message_id, expected.answerMessageId)) {
+        mismatches.push('answer_message_id');
+      }
+      if (mismatches.length > 0) drift('aiMessageAnalysis', id, mismatches);
+    }
+  }
+
+  if (owned.facts.maintenanceReportFault.size > 0) {
+    const ids = [...owned.facts.maintenanceReportFault.keys()];
+    const rows: MaintenanceReportFaultRow[] = await manager.query(
+      `SELECT id, report_id, fault_uuid, branch_kind, step_code, lifecycle_source
+         FROM maintenance_report_fault
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.maintenanceReportFault) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.report_id) !== expected.reportId) mismatches.push('report_id');
+      if (row.fault_uuid !== expected.faultUuid) mismatches.push('fault_uuid');
+      if (row.branch_kind !== expected.branchKind) mismatches.push('branch_kind');
+      if (!nullableStringEquals(row.step_code, expected.stepCode)) mismatches.push('step_code');
+      if (row.lifecycle_source !== expected.lifecycleSource) mismatches.push('lifecycle_source');
+      if (mismatches.length > 0) drift('maintenanceReportFault', id, mismatches);
+    }
+  }
+
+  if (owned.facts.repairRequestRevision.size > 0) {
+    const ids = [...owned.facts.repairRequestRevision.keys()];
+    const rows: RepairRequestRevisionRow[] = await manager.query(
+      `SELECT id, request_id, revision_no, actor_account_id, schema_version
+         FROM repair_request_revision
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.repairRequestRevision) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.request_id) !== expected.requestId) mismatches.push('request_id');
+      if (asNumber(row.revision_no) !== expected.revisionNo) mismatches.push('revision_no');
+      if (asNumber(row.actor_account_id) !== expected.actorAccountId) {
+        mismatches.push('actor_account_id');
+      }
+      if (asNumber(row.schema_version) !== expected.schemaVersion) {
+        mismatches.push('schema_version');
+      }
+      if (mismatches.length > 0) drift('repairRequestRevision', id, mismatches);
+    }
+  }
+
+  if (owned.facts.referenceDocumentRevision.size > 0) {
+    const ids = [...owned.facts.referenceDocumentRevision.keys()];
+    const rows: ReferenceDocumentRevisionRow[] = await manager.query(
+      `SELECT id, document_id, revision_no, actor_account_id
+         FROM reference_document_revision
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.referenceDocumentRevision) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.document_id) !== expected.documentId) mismatches.push('document_id');
+      if (asNumber(row.revision_no) !== expected.revisionNo) mismatches.push('revision_no');
+      if (asNumber(row.actor_account_id) !== expected.actorAccountId) {
+        mismatches.push('actor_account_id');
+      }
+      if (mismatches.length > 0) drift('referenceDocumentRevision', id, mismatches);
+    }
+  }
+
+  if (owned.facts.localAccountAuthorization.size > 0) {
+    const ids = [...owned.facts.localAccountAuthorization.keys()];
+    const rows: LocalAccountAuthorizationRow[] = await manager.query(
+      `SELECT id, installation_id, account_id, organization_id
+         FROM local_account_authorization
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.localAccountAuthorization) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.installation_id !== expected.installationId) mismatches.push('installation_id');
+      if (asNumber(row.account_id) !== expected.accountId) mismatches.push('account_id');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (mismatches.length > 0) drift('localAccountAuthorization', id, mismatches);
+    }
+  }
+
+  if (owned.facts.localCompanySetting.size > 0) {
+    const ids = [...owned.facts.localCompanySetting.keys()];
+    const rows: LocalCompanySettingRow[] = await manager.query(
+      `SELECT id, installation_id, organization_id, setting_source
+         FROM local_company_setting
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.localCompanySetting) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.installation_id !== expected.installationId) mismatches.push('installation_id');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (row.setting_source !== expected.settingSource) mismatches.push('setting_source');
+      if (mismatches.length > 0) drift('localCompanySetting', id, mismatches);
+    }
+  }
+
+  if (owned.facts.syncReceipt.size > 0) {
+    const ids = [...owned.facts.syncReceipt.keys()];
+    const rows: SyncReceiptRow[] = await manager.query(
+      `SELECT receipt_id, record_uuid, organization_id, resource_type, version_no, source_system
+         FROM sync_receipt
+        WHERE receipt_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.receipt_id), row]));
+    for (const [id, expected] of owned.facts.syncReceipt) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.record_uuid !== expected.recordUuid) mismatches.push('record_uuid');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (row.resource_type !== expected.resourceType) mismatches.push('resource_type');
+      if (asNumber(row.version_no) !== expected.versionNo) mismatches.push('version_no');
+      if (row.source_system !== expected.sourceSystem) mismatches.push('source_system');
+      if (mismatches.length > 0) drift('syncReceipt', id, mismatches);
+    }
+  }
+
+  if (owned.facts.syncConflict.size > 0) {
+    const ids = [...owned.facts.syncConflict.keys()];
+    const rows: SyncConflictRow[] = await manager.query(
+      `SELECT conflict_id, record_uuid, organization_id, resource_type, version_no
+         FROM sync_conflict
+        WHERE conflict_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.conflict_id), row]));
+    for (const [id, expected] of owned.facts.syncConflict) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.record_uuid !== expected.recordUuid) mismatches.push('record_uuid');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (row.resource_type !== expected.resourceType) mismatches.push('resource_type');
+      if (asNumber(row.version_no) !== expected.versionNo) mismatches.push('version_no');
+      if (mismatches.length > 0) drift('syncConflict', id, mismatches);
+    }
+  }
+
+  if (owned.facts.recordPackageImport.size > 0) {
+    const ids = [...owned.facts.recordPackageImport.keys()];
+    const rows: RecordPackageImportRow[] = await manager.query(
+      `SELECT package_id, organization_id, imported_by_account_id, manifest_checksum
+         FROM record_package_import
+        WHERE package_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.package_id), row]));
+    for (const [id, expected] of owned.facts.recordPackageImport) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (asNumber(row.imported_by_account_id) !== expected.importedByAccountId) {
+        mismatches.push('imported_by_account_id');
+      }
+      if (row.manifest_checksum !== expected.manifestChecksum) {
+        mismatches.push('manifest_checksum');
+      }
+      if (mismatches.length > 0) drift('recordPackageImport', id, mismatches);
+    }
+  }
+
+  if (owned.facts.recordPackageItem.size > 0) {
+    const ids = [...owned.facts.recordPackageItem.keys()];
+    const rows: RecordPackageItemRow[] = await manager.query(
+      `SELECT id, package_id, record_uuid, resource_type, version_no, receipt_id
+         FROM record_package_item
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.recordPackageItem) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (String(row.package_id) !== expected.packageId) mismatches.push('package_id');
+      if (row.record_uuid !== expected.recordUuid) mismatches.push('record_uuid');
+      if (row.resource_type !== expected.resourceType) mismatches.push('resource_type');
+      if (asNumber(row.version_no) !== expected.versionNo) mismatches.push('version_no');
+      if (!nullableStringEquals(row.receipt_id, expected.receiptId)) {
+        mismatches.push('receipt_id');
+      }
+      if (mismatches.length > 0) drift('recordPackageItem', id, mismatches);
+    }
+  }
+
+  if (owned.facts.backupAsset.size > 0) {
+    const ids = [...owned.facts.backupAsset.keys()];
+    const rows: BackupAssetRow[] = await manager.query(
+      `SELECT backup_id, run_id, organization_id, storage_reference, file_sha256,
+              local_cleanup_run_id
+         FROM backup_asset
+        WHERE backup_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.backup_id), row]));
+    for (const [id, expected] of owned.facts.backupAsset) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.run_id) !== expected.runId) mismatches.push('run_id');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (row.storage_reference !== expected.storageReference) {
+        mismatches.push('storage_reference');
+      }
+      if (row.file_sha256 !== expected.fileSha256) mismatches.push('file_sha256');
+      if (!nullableNumberEquals(row.local_cleanup_run_id, expected.localCleanupRunId)) {
+        mismatches.push('local_cleanup_run_id');
+      }
+      if (mismatches.length > 0) drift('backupAsset', id, mismatches);
+    }
+  }
+
+  if (owned.facts.backupRestoreRun.size > 0) {
+    const ids = [...owned.facts.backupRestoreRun.keys()];
+    const rows: BackupRestoreRunRow[] = await manager.query(
+      `SELECT restore_id, backup_id, protection_backup_id, organization_id,
+              started_by_account_id
+         FROM backup_restore_run
+        WHERE restore_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.restore_id), row]));
+    for (const [id, expected] of owned.facts.backupRestoreRun) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (String(row.backup_id) !== expected.backupId) mismatches.push('backup_id');
+      if (!nullableStringEquals(row.protection_backup_id, expected.protectionBackupId)) {
+        mismatches.push('protection_backup_id');
+      }
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (asNumber(row.started_by_account_id) !== expected.startedByAccountId) {
+        mismatches.push('started_by_account_id');
+      }
+      if (mismatches.length > 0) drift('backupRestoreRun', id, mismatches);
+    }
+  }
+
+  if (owned.facts.managementAuditEvent.size > 0) {
+    const ids = [...owned.facts.managementAuditEvent.keys()];
+    const rows: ManagementAuditEventRow[] = await manager.query(
+      `SELECT event_id, actor_account_id, organization_id, operation, target_type,
+              target_id, result
+         FROM management_audit_event
+        WHERE event_id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [String(row.event_id), row]));
+    for (const [id, expected] of owned.facts.managementAuditEvent) {
+      const row = rowById.get(String(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (asNumber(row.actor_account_id) !== expected.actorAccountId) {
+        mismatches.push('actor_account_id');
+      }
+      if (!nullableNumberEquals(row.organization_id, expected.organizationId)) {
+        mismatches.push('organization_id');
+      }
+      if (row.operation !== expected.operation) mismatches.push('operation');
+      if (row.target_type !== expected.targetType) mismatches.push('target_type');
+      if (String(row.target_id) !== expected.targetId) mismatches.push('target_id');
+      if (row.result !== expected.result) mismatches.push('result');
+      if (mismatches.length > 0) drift('managementAuditEvent', id, mismatches);
     }
   }
 };
@@ -1703,6 +2702,391 @@ const collectSpecialOwnedGraph = async (
   }
 };
 
+/**
+ * V13 新增 17 表的入向引用闭包核验。
+ *
+ * 语义（R01 收口）：父行在本轮删除范围内时，数据库里凡引用该父行的子行
+ * 都必须已由调用方登记；发现未登记子行即 conflict 拒绝（DELETE=0），
+ * 绝不把父关系当作所有权证明而自动扩图。父行不在范围内属于查询不可达，
+ * 不构成错误；范围外父行的子行不会被本查询命中。
+ *
+ * 列名与迁移逐表核对：
+ * - repair_request_intake 的账号父列是 customer_account_id（无 created_by_account_id）；
+ * - repair_process_entry 的记录人列是 author_account_id（无 actor_account_id）；
+ * - repair_request_revision / reference_document_revision 的修订人列是 actor_account_id
+ *   （无 changed_by_account_id）；
+ * - ai_message_analysis 无 request_id 列，父行 ai_conversation/ai_message 不在清理范围，
+ *   不提供按父发现，所有权完全由登记事实核验证明；
+ * - maintenance_report_fault 父行 maintenance_report 不在清理范围，只按登记 ID 删除。
+ */
+const collectV13OwnedGraph = async (
+  manager: EntityManager,
+  plan: CleanupPlan,
+  helper: string,
+): Promise<void> => {
+  const orgIds = plan.organizationIds;
+  const accountIds = plan.accountIds;
+  const requestIds = plan.repairRequestIds;
+  const documentIds = plan.documentIds;
+  const modelIds = plan.equipmentModelIds;
+
+  /**
+   * 按父列发现子行并核验“父在范围内 ⇒ 子已登记”。
+   * parentIds 支持 char(36) 字符串父键（stored_file.file_id / backup_asset.backup_id /
+   * record_package_import.package_id / sync_receipt.receipt_id），比较统一按字符串进行，
+   * 不对 char(36) 值做数值化。
+   */
+  const collectByParent = async (
+    table: string,
+    idColumn: string,
+    parentColumn: string,
+    parentIds: ReadonlyArray<number | string>,
+    registeredIds: ReadonlyArray<number | string>,
+    category: OwnedResourceCategory,
+  ): Promise<void> => {
+    if (parentIds.length === 0) return;
+    const parentKeys = new Set(parentIds.map((id) => String(id)));
+    const registeredKeys = new Set(registeredIds.map((id) => String(id)));
+    const rows = await manager.query<{ id: number | string; parent_id: number | string | null }[]>(
+      `SELECT ${idColumn} AS id, ${parentColumn} AS parent_id
+         FROM ${table}
+        WHERE ${parentColumn} IN (${inClause(parentIds)})
+        FOR UPDATE`,
+      [...parentIds],
+    );
+    for (const row of rows) {
+      if (row.parent_id === null || row.parent_id === undefined) {
+        continue;
+      }
+      const pid = String(row.parent_id);
+      if (!parentKeys.has(pid)) {
+        conflict(
+          helper,
+          category,
+          String(row.id),
+          `父行 ${parentColumn}=${pid} 不在本轮范围，拒绝删除`,
+        );
+      }
+      // R01：关联查询只用于发现账本外引用；未登记子行不是本轮资源，拒绝而不是接管。
+      if (!registeredKeys.has(String(row.id))) {
+        conflict(
+          helper,
+          category,
+          String(row.id),
+          `父行 ${parentColumn}=${pid} 在本轮范围但该子行未登记归属证据，` +
+            '关联关系不是删除授权，拒绝删除',
+        );
+      }
+    }
+  };
+
+  // organization 父列（含可空 organization_id 的 management_audit_event）。
+  await collectByParent(
+    'stored_file',
+    'file_id',
+    'owner_organization_id',
+    orgIds,
+    plan.storedFileIds,
+    'storedFile',
+  );
+  await collectByParent(
+    'repair_request_intake',
+    'id',
+    'customer_organization_id',
+    orgIds,
+    plan.repairRequestIntakeIds,
+    'repairRequestIntake',
+  );
+  await collectByParent(
+    'repair_request_intake',
+    'id',
+    'service_organization_id',
+    orgIds,
+    plan.repairRequestIntakeIds,
+    'repairRequestIntake',
+  );
+  await collectByParent(
+    'local_account_authorization',
+    'id',
+    'organization_id',
+    orgIds,
+    plan.localAccountAuthorizationIds,
+    'localAccountAuthorization',
+  );
+  await collectByParent(
+    'local_company_setting',
+    'id',
+    'organization_id',
+    orgIds,
+    plan.localCompanySettingIds,
+    'localCompanySetting',
+  );
+  await collectByParent(
+    'sync_receipt',
+    'receipt_id',
+    'organization_id',
+    orgIds,
+    plan.syncReceiptIds,
+    'syncReceipt',
+  );
+  await collectByParent(
+    'sync_conflict',
+    'conflict_id',
+    'organization_id',
+    orgIds,
+    plan.syncConflictIds,
+    'syncConflict',
+  );
+  await collectByParent(
+    'record_package_import',
+    'package_id',
+    'organization_id',
+    orgIds,
+    plan.recordPackageImportIds,
+    'recordPackageImport',
+  );
+  await collectByParent(
+    'backup_asset',
+    'backup_id',
+    'organization_id',
+    orgIds,
+    plan.backupAssetIds,
+    'backupAsset',
+  );
+  await collectByParent(
+    'backup_restore_run',
+    'restore_id',
+    'organization_id',
+    orgIds,
+    plan.backupRestoreRunIds,
+    'backupRestoreRun',
+  );
+  await collectByParent(
+    'management_audit_event',
+    'event_id',
+    'organization_id',
+    orgIds,
+    plan.managementAuditEventIds,
+    'managementAuditEvent',
+  );
+
+  // base_user_account 父列（列名按迁移核对：intake=customer_account_id、
+  // entry=author_account_id、两类 revision=actor_account_id）。
+  await collectByParent(
+    'stored_file',
+    'file_id',
+    'uploaded_by_account_id',
+    accountIds,
+    plan.storedFileIds,
+    'storedFile',
+  );
+  await collectByParent(
+    'repair_request_intake',
+    'id',
+    'customer_account_id',
+    accountIds,
+    plan.repairRequestIntakeIds,
+    'repairRequestIntake',
+  );
+  await collectByParent(
+    'repair_process_entry',
+    'id',
+    'author_account_id',
+    accountIds,
+    plan.repairProcessEntryIds,
+    'repairProcessEntry',
+  );
+  await collectByParent(
+    'repair_request_revision',
+    'id',
+    'actor_account_id',
+    accountIds,
+    plan.repairRequestRevisionIds,
+    'repairRequestRevision',
+  );
+  await collectByParent(
+    'reference_document_revision',
+    'id',
+    'actor_account_id',
+    accountIds,
+    plan.referenceDocumentRevisionIds,
+    'referenceDocumentRevision',
+  );
+  await collectByParent(
+    'local_account_authorization',
+    'id',
+    'account_id',
+    accountIds,
+    plan.localAccountAuthorizationIds,
+    'localAccountAuthorization',
+  );
+  await collectByParent(
+    'sync_conflict',
+    'conflict_id',
+    'confirmed_by_account_id',
+    accountIds,
+    plan.syncConflictIds,
+    'syncConflict',
+  );
+  await collectByParent(
+    'record_package_import',
+    'package_id',
+    'imported_by_account_id',
+    accountIds,
+    plan.recordPackageImportIds,
+    'recordPackageImport',
+  );
+  await collectByParent(
+    'backup_restore_run',
+    'restore_id',
+    'started_by_account_id',
+    accountIds,
+    plan.backupRestoreRunIds,
+    'backupRestoreRun',
+  );
+  await collectByParent(
+    'management_audit_event',
+    'event_id',
+    'actor_account_id',
+    accountIds,
+    plan.managementAuditEventIds,
+    'managementAuditEvent',
+  );
+
+  // equipment_model 父列：报修原始输入的机型引用。
+  await collectByParent(
+    'repair_request_intake',
+    'id',
+    'equipment_model_id',
+    modelIds,
+    plan.repairRequestIntakeIds,
+    'repairRequestIntake',
+  );
+
+  // repair_request 父列。
+  await collectByParent(
+    'repair_request_intake',
+    'id',
+    'converted_request_id',
+    requestIds,
+    plan.repairRequestIntakeIds,
+    'repairRequestIntake',
+  );
+  await collectByParent(
+    'repair_process_entry',
+    'id',
+    'request_id',
+    requestIds,
+    plan.repairProcessEntryIds,
+    'repairProcessEntry',
+  );
+  await collectByParent(
+    'repair_request_revision',
+    'id',
+    'request_id',
+    requestIds,
+    plan.repairRequestRevisionIds,
+    'repairRequestRevision',
+  );
+
+  // reference_document 父列。
+  await collectByParent(
+    'reference_document_revision',
+    'id',
+    'document_id',
+    documentIds,
+    plan.referenceDocumentRevisionIds,
+    'referenceDocumentRevision',
+  );
+
+  // stored_file（char(36) 父键）的子表：报修输入与内部过程的可空原件引用。
+  await collectByParent(
+    'repair_request_intake',
+    'id',
+    'file_id',
+    plan.storedFileIds,
+    plan.repairRequestIntakeIds,
+    'repairRequestIntake',
+  );
+  await collectByParent(
+    'repair_process_entry',
+    'id',
+    'file_id',
+    plan.storedFileIds,
+    plan.repairProcessEntryIds,
+    'repairProcessEntry',
+  );
+
+  // V13 内部父行（char(36) 父键按字符串比较）。
+  await collectByParent(
+    'intake_analysis_attempt',
+    'id',
+    'intake_id',
+    plan.repairRequestIntakeIds,
+    plan.intakeAnalysisAttemptIds,
+    'intakeAnalysisAttempt',
+  );
+  await collectByParent(
+    'record_package_item',
+    'id',
+    'package_id',
+    plan.recordPackageImportIds,
+    plan.recordPackageItemIds,
+    'recordPackageItem',
+  );
+  await collectByParent(
+    'record_package_item',
+    'id',
+    'receipt_id',
+    plan.syncReceiptIds,
+    plan.recordPackageItemIds,
+    'recordPackageItem',
+  );
+  await collectByParent(
+    'backup_restore_run',
+    'restore_id',
+    'backup_id',
+    plan.backupAssetIds,
+    plan.backupRestoreRunIds,
+    'backupRestoreRun',
+  );
+  await collectByParent(
+    'backup_restore_run',
+    'restore_id',
+    'protection_backup_id',
+    plan.backupAssetIds,
+    plan.backupRestoreRunIds,
+    'backupRestoreRun',
+  );
+
+  // 反向闭包：旧表 repair_request.intake_id（26 号迁移新增，FK RESTRICT）指向
+  // 本轮登记的报修输入时，该工单必须已在本轮删除范围；否则拒绝， DELETE=0。
+  if (plan.repairRequestIntakeIds.length > 0) {
+    const referencingRequests = await manager.query<{ id: number; intake_id: number }[]>(
+      `SELECT id, intake_id
+         FROM repair_request
+        WHERE intake_id IN (${inClause(plan.repairRequestIntakeIds)})
+        FOR UPDATE`,
+      [...plan.repairRequestIntakeIds],
+    );
+    for (const row of referencingRequests) {
+      if (!plan.repairRequestIds.includes(asNumber(row.id))) {
+        conflict(
+          helper,
+          'repairRequest',
+          String(row.id),
+          '工单经 intake_id 引用本轮报修输入但未登记归属证据，拒绝删除',
+        );
+      }
+    }
+  }
+
+  // ai_message_analysis：父行 ai_conversation / ai_message 不在清理范围（R01），
+  // 不提供按父发现；无任何表引用本表，所有权由登记事实核验证明。
+  // maintenance_report_fault：父行 maintenance_report 不在清理范围，
+  // 只按登记 ID + 事实核验删除；无任何表引用本表。
+};
+
 const collectOwnedGraph = async (
   manager: EntityManager,
   plan: CleanupPlan,
@@ -1718,6 +3102,7 @@ const collectOwnedGraph = async (
   await lockExistingRows(manager, 'equipment_model', modelIds);
 
   await collectSpecialOwnedGraph(manager, plan, helper);
+  await collectV13OwnedGraph(manager, plan, helper);
 
   if (orgIds.length > 0 || accountIds.length > 0 || membershipAccountIds.length > 0) {
     const conditions: string[] = [];
@@ -2311,7 +3696,84 @@ const deleteByIds = async (
   await manager.query(`DELETE FROM ${table} WHERE id IN (${inClause(ids)})`, ids);
 };
 
+// V13 char(36) 主键表的删除：列名与迁移逐表核对（file_id / question_uuid /
+// receipt_id / conflict_id / package_id / backup_id / restore_id / event_id）。
+const deleteByColumnIds = async (
+  manager: EntityManager,
+  table: string,
+  column: string,
+  ids: ReadonlyArray<number | string>,
+): Promise<void> => {
+  if (ids.length === 0) {
+    return;
+  }
+  await manager.query(`DELETE FROM ${table} WHERE ${column} IN (${inClause(ids)})`, ids);
+};
+
 const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Promise<void> => {
+  // V13 新增 17 表：按 FK 依赖从深到浅删除，必须先于其父行（repair_request /
+  // reference_document / organization / base_user_account）删除，否则 FK RESTRICT 阻断。
+  // 主键列名与迁移逐表核对：int 主键表统一为 id；char(36) 主键表为
+  // file_id / question_uuid / receipt_id / conflict_id / package_id /
+  // backup_id / restore_id / event_id。
+
+  // 循环引用解环：repair_request.intake_id 与 repair_request_intake.converted_request_id
+  // 互相 RESTRICT。闭包已保证引用本轮 intake 的工单都在删除计划内，
+  // 先在事务内把本轮工单的 intake_id 置空（可空列），之后才能删除 intake；
+  // 事实核验在置空前已完成，不受影响。
+  if (plan.repairRequestIntakeIds.length > 0 && plan.repairRequestIds.length > 0) {
+    await manager.query(
+      `UPDATE repair_request
+          SET intake_id = NULL
+        WHERE id IN (${inClause(plan.repairRequestIds)})
+          AND intake_id IN (${inClause(plan.repairRequestIntakeIds)})`,
+      [...plan.repairRequestIds, ...plan.repairRequestIntakeIds],
+    );
+  }
+
+  // 第一层：只被本计划内其他 V13 行引用的最深子行。
+  await deleteByIds(manager, 'intake_analysis_attempt', plan.intakeAnalysisAttemptIds);
+  await deleteByIds(manager, 'record_package_item', plan.recordPackageItemIds);
+  // backup_restore_run 经 backup_id / protection_backup_id 引用 backup_asset（RESTRICT），
+  // 必须先于 backup_asset 删除。
+  await deleteByColumnIds(manager, 'backup_restore_run', 'restore_id', plan.backupRestoreRunIds);
+  // 第二层：引用 repair_request / reference_document / 账号 / 组织的子行。
+  await deleteByIds(manager, 'repair_process_entry', plan.repairProcessEntryIds);
+  await deleteByColumnIds(
+    manager,
+    'ai_message_analysis',
+    'question_uuid',
+    plan.aiMessageAnalysisIds,
+  );
+  await deleteByIds(manager, 'repair_request_revision', plan.repairRequestRevisionIds);
+  await deleteByIds(manager, 'reference_document_revision', plan.referenceDocumentRevisionIds);
+  // repair_request_intake 引用 stored_file，必须先于 stored_file 删除。
+  await deleteByIds(manager, 'repair_request_intake', plan.repairRequestIntakeIds);
+  await deleteByIds(manager, 'local_account_authorization', plan.localAccountAuthorizationIds);
+  await deleteByIds(manager, 'local_company_setting', plan.localCompanySettingIds);
+  await deleteByColumnIds(manager, 'sync_conflict', 'conflict_id', plan.syncConflictIds);
+  // record_package_item 已先行删除，sync_receipt / record_package_import 此时无入向引用。
+  await deleteByColumnIds(manager, 'sync_receipt', 'receipt_id', plan.syncReceiptIds);
+  await deleteByColumnIds(
+    manager,
+    'record_package_import',
+    'package_id',
+    plan.recordPackageImportIds,
+  );
+  await deleteByColumnIds(manager, 'backup_asset', 'backup_id', plan.backupAssetIds);
+  await deleteByColumnIds(
+    manager,
+    'management_audit_event',
+    'event_id',
+    plan.managementAuditEventIds,
+  );
+  // maintenance_report_fault 父行 maintenance_report 不在清理计划：
+  // 只按本轮登记且事实核验通过的真实 ID 删除，绝不按报告整批接管。
+  await deleteByIds(manager, 'maintenance_report_fault', plan.maintenanceReportFaultIds);
+  // stored_file 被 repair_request_intake.file_id / repair_process_entry.file_id 引用，
+  // 必须在本轮 V13 删除序列的最后。
+  await deleteByColumnIds(manager, 'stored_file', 'file_id', plan.storedFileIds);
+
   // 维修链路先于账号/型号删除（FK RESTRICT：回复 → 申请 → 型号 → user_info → 账号）。
   await deleteByIds(manager, 'engineer_response', plan.engineerResponseIds);
   await deleteByIds(manager, 'repair_request', plan.repairRequestIds);
@@ -2450,6 +3912,23 @@ export const runGuardedSpecCleanup = async (params: {
     plan.repairRequestIds = toIdList(owned.repairRequestIds);
     plan.engineerResponseIds = toIdList(owned.engineerResponseIds);
     plan.engineerRegistrationApplicationIds = toIdList(owned.engineerRegistrationApplicationIds);
+    plan.storedFileIds = toMixedIdList(owned.storedFileIds);
+    plan.repairRequestIntakeIds = toIdList(owned.repairRequestIntakeIds);
+    plan.intakeAnalysisAttemptIds = toIdList(owned.intakeAnalysisAttemptIds);
+    plan.repairProcessEntryIds = toIdList(owned.repairProcessEntryIds);
+    plan.aiMessageAnalysisIds = toMixedIdList(owned.aiMessageAnalysisIds);
+    plan.maintenanceReportFaultIds = toIdList(owned.maintenanceReportFaultIds);
+    plan.repairRequestRevisionIds = toIdList(owned.repairRequestRevisionIds);
+    plan.referenceDocumentRevisionIds = toIdList(owned.referenceDocumentRevisionIds);
+    plan.localAccountAuthorizationIds = toIdList(owned.localAccountAuthorizationIds);
+    plan.localCompanySettingIds = toIdList(owned.localCompanySettingIds);
+    plan.syncReceiptIds = toMixedIdList(owned.syncReceiptIds);
+    plan.syncConflictIds = toMixedIdList(owned.syncConflictIds);
+    plan.recordPackageImportIds = toMixedIdList(owned.recordPackageImportIds);
+    plan.recordPackageItemIds = toIdList(owned.recordPackageItemIds);
+    plan.backupAssetIds = toMixedIdList(owned.backupAssetIds);
+    plan.backupRestoreRunIds = toMixedIdList(owned.backupRestoreRunIds);
+    plan.managementAuditEventIds = toMixedIdList(owned.managementAuditEventIds);
   }
 
   const residueHasCandidates =

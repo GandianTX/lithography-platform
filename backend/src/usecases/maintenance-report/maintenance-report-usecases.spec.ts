@@ -750,6 +750,60 @@ describe('维修报告草稿输入归一化', () => {
 
     expect(result.steps[0].actionText).toHaveLength(2000);
   });
+
+  const makeUsedAiDraft = (overrides: Record<string, unknown> = {}) =>
+    makeDraft({
+      aiUsage: 'USED',
+      aiSourceType: 'AI_ANALYSIS_REPORT',
+      aiSourceId: 'analysis-1',
+      aiSourceVersion: 'v1',
+      ...overrides,
+    });
+
+  const captureError = (run: () => unknown): unknown => {
+    try {
+      run();
+      return null;
+    } catch (caught) {
+      return caught;
+    }
+  };
+
+  it('新输入帮助程度 5 被拒绝（库内 1—5 仅供历史值）', () => {
+    const error = captureError(() =>
+      normalizeMaintenanceReportDraft(makeUsedAiDraft({ aiHelpfulness: 5 }), 900001),
+    );
+
+    expect(error).toMatchObject({ code: MAINTENANCE_REPORT_ERROR.AI_EVALUATION_INVALID });
+  });
+
+  it('帮助程度新输入 4 与评分 5 均通过', () => {
+    const result = normalizeMaintenanceReportDraft(
+      makeUsedAiDraft({ aiHelpfulness: 4, aiScore: 5 }),
+      900001,
+    );
+
+    expect(result.aiHelpfulness).toBe(4);
+    expect(result.aiScore).toBe(5);
+  });
+
+  it('更新未改写帮助程度时允许历史值 5 原样保留', () => {
+    const result = normalizeMaintenanceReportDraft(makeUsedAiDraft({ aiHelpfulness: 5 }), 900001, {
+      preservedAiHelpfulness: 5,
+    });
+
+    expect(result.aiHelpfulness).toBe(5);
+  });
+
+  it('库内既有值不是 5 时输入 5 仍被拒绝', () => {
+    const error = captureError(() =>
+      normalizeMaintenanceReportDraft(makeUsedAiDraft({ aiHelpfulness: 5 }), 900001, {
+        preservedAiHelpfulness: 4,
+      }),
+    );
+
+    expect(error).toMatchObject({ code: MAINTENANCE_REPORT_ERROR.AI_EVALUATION_INVALID });
+  });
 });
 
 describe('RecordRepairRequestHandlingResultUsecase', () => {
@@ -787,12 +841,14 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
       session: engineerSession,
       repairRequestId: REQUEST_ID,
       handlingResult: RepairRequestHandlingResult.INTERRUPTED,
+      closureReason: '客户现场停电，择期继续',
     });
 
     expect(result).toMatchObject({
       repairRequestId: REQUEST_ID,
       handlingStatus: RepairRequestHandlingStatus.IN_PROGRESS,
       handlingEndedAt: null,
+      closureReason: '客户现场停电，择期继续',
     });
     expect(service.updateRepairRequestHandling).toHaveBeenCalledWith(
       REQUEST_ID,
@@ -800,6 +856,7 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
         handlingStatus: RepairRequestHandlingStatus.IN_PROGRESS,
         handlingRecordedByAccountId: 900001,
         handlingEndedAt: null,
+        closureReason: '客户现场停电，择期继续',
       }),
       // WHERE 条件收窄：归属组织与接单人必须与锁定时的事实一致
       { ownerOrganizationId: ORGANIZATION_ID, acceptedEngineerAccountId: 900001 },
@@ -839,6 +896,7 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
         session: engineerSession,
         repairRequestId: REQUEST_ID,
         handlingResult: RepairRequestHandlingResult.INTERRUPTED,
+        closureReason: '客户要求暂停',
       }),
     ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.HANDLING_STATE_CONFLICT });
 
@@ -933,6 +991,44 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
         session: engineerSession,
         repairRequestId: REQUEST_ID,
         handlingResult: 'NOT_A_RESULT',
+      }),
+    ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.INVALID_PARAMS });
+
+    expect(service.updateRepairRequestHandling).not.toHaveBeenCalled();
+  });
+
+  it('中断/无法修复缺少或给出空白原因时拒绝，且不写库', async () => {
+    const { usecase, service } = makeUsecase();
+
+    await expect(
+      usecase.execute({
+        session: engineerSession,
+        repairRequestId: REQUEST_ID,
+        handlingResult: RepairRequestHandlingResult.INTERRUPTED,
+      }),
+    ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.INVALID_PARAMS });
+
+    await expect(
+      usecase.execute({
+        session: engineerSession,
+        repairRequestId: REQUEST_ID,
+        handlingResult: RepairRequestHandlingResult.UNREPAIRABLE,
+        closureReason: '   ',
+      }),
+    ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.INVALID_PARAMS });
+
+    expect(service.updateRepairRequestHandling).not.toHaveBeenCalled();
+  });
+
+  it('完成类结果携带原因时拒绝，不静默丢弃输入', async () => {
+    const { usecase, service } = makeUsecase();
+
+    await expect(
+      usecase.execute({
+        session: engineerSession,
+        repairRequestId: REQUEST_ID,
+        handlingResult: RepairRequestHandlingResult.FIXED,
+        closureReason: '不应出现的原因',
       }),
     ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.INVALID_PARAMS });
 

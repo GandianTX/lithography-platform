@@ -2,7 +2,10 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AiConversationEntity } from './entities/ai-conversation.entity';
 import { AiMessageEntity } from './entities/ai-message.entity';
+import { AiMessageAnalysisEntity } from './entities/ai-message-analysis.entity';
 import { AiReportEntity } from './entities/ai-report.entity';
+import { BackupAssetEntity } from './entities/backup-asset.entity';
+import { BackupRestoreRunEntity } from './entities/backup-restore-run.entity';
 import { ContentSubmissionAttachmentEntity } from './entities/content-submission-attachment.entity';
 import { ContentSubmissionEntity } from './entities/content-submission.entity';
 import { ContentSubmissionReviewEntity } from './entities/content-submission-review.entity';
@@ -11,6 +14,11 @@ import { EngineerRegistrationApplicationEntity } from './entities/engineer-regis
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { EquipmentModelEntity } from './entities/equipment-model.entity';
 import { FaultCaseSubmissionDetailEntity } from './entities/fault-case-submission-detail.entity';
+import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.entity';
+import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
+import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
+import { ManagementAuditEventEntity } from './entities/management-audit-event.entity';
+import { MaintenanceReportFaultEntity } from './entities/maintenance-report-fault.entity';
 import { MaterialSubmissionDetailEntity } from './entities/material-submission-detail.entity';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
@@ -24,9 +32,18 @@ import { MaintenanceReportVersionAttachmentEntity } from './entities/maintenance
 import { MaintenanceReportVersionEntity } from './entities/maintenance-report-version.entity';
 import { OrganizationEntity } from './entities/organization.entity';
 import { OrganizationMembershipEntity } from './entities/organization-membership.entity';
+import { RecordPackageImportEntity } from './entities/record-package-import.entity';
+import { RecordPackageItemEntity } from './entities/record-package-item.entity';
 import { ReferenceDocumentCaseDetailEntity } from './entities/reference-document-case-detail.entity';
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
+import { ReferenceDocumentRevisionEntity } from './entities/reference-document-revision.entity';
+import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
+import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
+import { StoredFileEntity } from './entities/stored-file.entity';
+import { SyncConflictEntity } from './entities/sync-conflict.entity';
+import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 import { AdminAiConversationQueryService } from './queries/admin-ai-conversation.query.service';
 import { ContentSubmissionQueryService } from './queries/content-submission.query.service';
 import { AdminAiMessageQueryService } from './queries/admin-ai-message.query.service';
@@ -79,6 +96,23 @@ const LITHOGRAPHY_ENTITIES = [
   LocalInstallationEntity,
   LocalUploadTaskEntity,
   LocalBackupRunEntity,
+  StoredFileEntity,
+  RepairRequestIntakeEntity,
+  IntakeAnalysisAttemptEntity,
+  RepairProcessEntryEntity,
+  AiMessageAnalysisEntity,
+  MaintenanceReportFaultEntity,
+  RepairRequestRevisionEntity,
+  ReferenceDocumentRevisionEntity,
+  LocalAccountAuthorizationEntity,
+  LocalCompanySettingEntity,
+  SyncReceiptEntity,
+  SyncConflictEntity,
+  RecordPackageImportEntity,
+  RecordPackageItemEntity,
+  BackupAssetEntity,
+  BackupRestoreRunEntity,
+  ManagementAuditEventEntity,
 ] as const;
 
 @Module({

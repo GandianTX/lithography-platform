@@ -1804,8 +1804,8 @@ describeIntegration('增量迁移实库验收（M02-M09）', () => {
 
   it('M31：NULL 安全约束修正对旧表达式缺陷敏感并拒绝非法组合', async () => {
     await buildPrefix(30);
-    const lastMigration = allMigrationClasses[allMigrationClasses.length - 1];
-    expect(classTimestamp(lastMigration)).toBe(1775401600000);
+    const m31Migration = allMigrationClasses[30];
+    expect(classTimestamp(m31Migration)).toBe(1775401600000);
 
     await withDataSource(async (dataSource) => {
       await dataSource.query(
@@ -1875,7 +1875,7 @@ describeIntegration('增量迁移实库验收（M02-M09）', () => {
     expect(oldRows).toHaveLength(2);
 
     // 预检：存量单边 NULL 必须在迁移生效前明确失败并报告样例，历史保持 30 条。
-    const precheckDataSource = buildDataSource(config, [lastMigration]);
+    const precheckDataSource = buildDataSource(config, [m31Migration]);
     await precheckDataSource.initialize();
     const precheckError = await precheckDataSource.runMigrations({ transaction: 'none' }).then(
       () => null,
@@ -1889,7 +1889,7 @@ describeIntegration('增量迁移实库验收（M02-M09）', () => {
     await deleteRequest('M31-OLD-STATUS-ONLY');
 
     // 应用 31 号迁移。
-    const migrationDataSource = buildDataSource(config, [lastMigration]);
+    const migrationDataSource = buildDataSource(config, [m31Migration]);
     await migrationDataSource.initialize();
     try {
       await migrationDataSource.runMigrations({ transaction: 'none' });
