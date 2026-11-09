@@ -1,8 +1,11 @@
 // test/utils/e2e-owned-fixture.e2e-spec.ts
 //
 // 清理保护失败路径回归：
-// 1. 拒绝路径、调用顺序、账本外目标与统一收尾用 SQL 替身（无需真实库）；
-// 2. 事务回滚、引用保护、合法预期变更与正常清理在隔离 MySQL 中验证。
+// 1. 拒绝路径、调用顺序、账本外目标与统一收尾用 SQL 替身（无需真实库，默认执行）；
+// 2. 事务回滚、引用保护、合法预期变更与正常清理只在显式指定专用配置目录库时执行：
+//    E2E_OWNED_FIXTURE_SPECS=1、E2E_OWNED_FIXTURE_CONFIG_FILE、E2E_OWNED_FIXTURE_TARGET_DB、
+//    E2E_ALLOWED_DB_NAMES（单目标且与目标一致）、E2E_OWNED_FIXTURE_EXPECTED_SERVER_UUID、
+//    E2E_ALLOW_PHYSICAL_CLEANUP=1；任一缺失或不一致即拒绝，不回退 env/.env.e2e 或默认库。
 
 import { DataSource, type QueryRunner } from 'typeorm';
 import { loadExplicitEnvConfig } from '../../src/infrastructure/database/incremental-migration';
@@ -23,10 +26,103 @@ import {
 
 jest.setTimeout(180_000);
 
-const ENV_FILE = 'env/.env.e2e';
+const SPECS_ENV = 'E2E_OWNED_FIXTURE_SPECS';
+const CONFIG_ENV = 'E2E_OWNED_FIXTURE_CONFIG_FILE';
+const TARGET_DB_ENV = 'E2E_OWNED_FIXTURE_TARGET_DB';
+const UUID_ENV = 'E2E_OWNED_FIXTURE_EXPECTED_SERVER_UUID';
 const ROUND_TAG = 'OWNED-FIXTURE-P4';
 const CONSENT_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
 const ALLOWED_ENV = 'E2E_ALLOWED_DB_NAMES';
+const FAKE_DATABASE = 'lithography_e2e';
+
+/**
+ * SQL 替身用例必须与外部真实目标白名单隔离：
+ * 运行实库专项时进程环境指向专用库，若替身继续沿用外部白名单会被目标校验拒绝。
+ */
+const useFakeAllowedDatabase = (): void => {
+  let original: string | undefined;
+  beforeEach(() => {
+    original = process.env[ALLOWED_ENV];
+    process.env[ALLOWED_ENV] = FAKE_DATABASE;
+  });
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env[ALLOWED_ENV];
+    } else {
+      process.env[ALLOWED_ENV] = original;
+    }
+  });
+};
+
+export interface OwnedFixtureTarget {
+  readonly configFile: string;
+  readonly database: string;
+  readonly serverUuid: string;
+}
+
+/**
+ * 解析自有夹具实库目标；缺参数、多目标白名单、目标与白名单不一致时直接拒绝，
+ * 不回退默认库，也不读取固定的 env/.env.e2e。
+ */
+export const resolveOwnedFixtureTarget = (env: NodeJS.ProcessEnv): OwnedFixtureTarget => {
+  if (env[SPECS_ENV] !== '1') {
+    throw new Error(`自有夹具实库规格拒绝执行：缺少 ${SPECS_ENV}=1`);
+  }
+  const configFile = (env[CONFIG_ENV] ?? '').trim();
+  if (configFile.length === 0) {
+    throw new Error(`自有夹具实库规格拒绝执行：缺少 ${CONFIG_ENV}`);
+  }
+  const database = (env[TARGET_DB_ENV] ?? '').trim().toLowerCase();
+  if (database.length === 0) {
+    throw new Error(`自有夹具实库规格拒绝执行：缺少 ${TARGET_DB_ENV}`);
+  }
+  const allowed = (env[ALLOWED_ENV] ?? '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0);
+  if (allowed.length === 0) {
+    throw new Error(`自有夹具实库规格拒绝执行：缺少 ${ALLOWED_ENV}`);
+  }
+  if (allowed.length !== 1) {
+    throw new Error(`自有夹具实库规格拒绝执行：${ALLOWED_ENV} 必须是单一目标库`);
+  }
+  if (allowed[0] !== database) {
+    throw new Error(
+      `自有夹具实库规格拒绝执行：单目标白名单 ${allowed[0]} 与 ${TARGET_DB_ENV}=${database} 不一致`,
+    );
+  }
+  if (env[CONSENT_ENV] !== '1') {
+    throw new Error(`自有夹具实库规格拒绝执行：缺少 ${CONSENT_ENV}=1`);
+  }
+  const serverUuid = (env[UUID_ENV] ?? '').trim();
+  if (serverUuid.length === 0) {
+    throw new Error(`自有夹具实库规格拒绝执行：缺少 ${UUID_ENV}`);
+  }
+  return { configFile, database, serverUuid };
+};
+
+/** 连接后核验实际 DATABASE() 与实例 UUID；任一不一致即拒绝。 */
+export const assertOwnedFixtureActualTarget = (
+  target: OwnedFixtureTarget,
+  actual: { readonly database: string; readonly serverUuid: string },
+): void => {
+  if (actual.database.trim().toLowerCase() !== target.database) {
+    throw new Error(
+      `自有夹具实库规格拒绝执行：实际 DATABASE()=${actual.database}，` +
+        `与单目标白名单 ${target.database} 不一致`,
+    );
+  }
+  if (actual.serverUuid.trim() !== target.serverUuid) {
+    throw new Error(
+      `自有夹具实库规格拒绝执行：实际 server_uuid=${actual.serverUuid}，` +
+        `与 ${UUID_ENV}=${target.serverUuid} 不一致`,
+    );
+  }
+};
+
+const REAL_DB_REQUESTED = process.env[SPECS_ENV] === '1';
+const TARGET = REAL_DB_REQUESTED ? resolveOwnedFixtureTarget(process.env) : null;
+const describeRealDb = REAL_DB_REQUESTED ? describe : describe.skip;
 
 // ---------------------------------------------------------------------------
 // SQL 替身：记录调用顺序与参数，模拟行快照、引用计数与删除失败
@@ -291,8 +387,10 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
 
   beforeAll(async () => {
     consentOriginal = process.env[CONSENT_ENV];
+    // 未显式请求实库时只运行 SQL 替身回归，不读取任何环境文件、不建立连接。
+    if (!TARGET) return;
     assertPhysicalCleanupConsent();
-    const config = loadExplicitEnvConfig(ENV_FILE, 'lithography_e2e');
+    const config = loadExplicitEnvConfig(TARGET.configFile, TARGET.database);
     dataSource = new DataSource({
       type: 'mysql',
       host: config.host,
@@ -306,6 +404,13 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
       logging: false,
     });
     await dataSource.initialize();
+    const [actual] = (await dataSource.query(
+      'SELECT DATABASE() AS db, @@server_uuid AS server_uuid',
+    )) as unknown as Array<{ db: string; server_uuid: string }>;
+    assertOwnedFixtureActualTarget(TARGET, {
+      database: actual.db,
+      serverUuid: actual.server_uuid,
+    });
     const gate = await prepareFixtureSetup(dataSource, ROUND_TAG, config.database);
     database = gate.database;
     setupAllowed = true;
@@ -386,6 +491,7 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
   });
 
   describe('拒绝路径与调用顺序（SQL 替身）', () => {
+    useFakeAllowedDatabase();
     it('缺少显式许可：清理入口自身拒绝，零 DELETE', async () => {
       process.env[CONSENT_ENV] = '';
       const harness = createFakeDataSource({
@@ -728,6 +834,7 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
   });
 
   describe('清理事务收尾与故障注入（SQL 替身）', () => {
+    useFakeAllowedDatabase();
     const cleanupRows = (): OwnedFixtureRow[] => [
       singleRow('equipment_model', 1, { model_name: 'x', enabled: 1 }),
     ];
@@ -876,6 +983,7 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
   });
 
   describe('首次登记不依赖回读（SQL 替身）', () => {
+    useFakeAllowedDatabase();
     it('创建成功后回读抛错：已知 ID 与事实仍在账本', async () => {
       const harness = createFakeDataSource({
         rows: [
@@ -1018,6 +1126,7 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
   });
 
   describe('恢复路径受保护事务收尾（SQL 替身）', () => {
+    useFakeAllowedDatabase();
     const label = '安装设置恢复';
 
     const runGuarded = (
@@ -1125,7 +1234,139 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
     });
   });
 
-  describe('真实 MySQL 事务与引用保护', () => {
+  describe('回滚事务模式（专项验收，不提交、不按名称 DELETE）', () => {
+    useFakeAllowedDatabase();
+    const label = 'D3 专项事务';
+
+    const runRollback = (
+      harness: FakeHarness,
+      work: () => Promise<void>,
+    ): ReturnType<typeof runGuardedQueryRunnerTransaction> =>
+      runGuardedQueryRunnerTransaction({
+        createRunner: () => harness.runner,
+        label,
+        outcome: 'rollback',
+        work,
+      });
+
+    it('写入成功：先 ROLLBACK 再 RELEASE，零 DELETE、零 COMMIT', async () => {
+      const harness = createFakeDataSource({});
+      try {
+        const outcome = await runRollback(harness, () => Promise.resolve());
+        expect(outcome.errors).toEqual([]);
+        expect(outcome.committed).toBe(false);
+        expect(outcome.rolledBack).toBe(true);
+        expect(outcome.residualPossible).toBe(false);
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('COMMIT');
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('部分成功后写入失败：错误保留并回滚释放，零 DELETE', async () => {
+      const harness = createFakeDataSource({});
+      try {
+        const outcome = await runRollback(harness, () =>
+          Promise.reject(new Error('注入第 2 步失败')),
+        );
+        expect(outcome.committed).toBe(false);
+        expect(outcome.rolledBack).toBe(true);
+        expect(outcome.errors.join('；')).toContain(`${label}失败`);
+        expect(outcome.errors.join('；')).toContain('注入第 2 步失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('事务启动后事件失败：按实际活动状态回滚释放', async () => {
+      const harness = createFakeDataSource({ failStartAfterActive: true });
+      let workRan = false;
+      try {
+        const outcome = await runRollback(harness, () => {
+          workRan = true;
+          return Promise.resolve();
+        });
+        expect(workRan).toBe(false);
+        expect(outcome.rolledBack).toBe(true);
+        expect(outcome.errors.join('；')).toContain(`${label}失败`);
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('回滚失败：销毁独占连接，不普通归池', async () => {
+      const harness = createFakeDataSource({ failRollback: true });
+      try {
+        const outcome = await runRollback(harness, () => Promise.resolve());
+        expect(outcome.rolledBack).toBe(false);
+        expect(outcome.errors.join('；')).toContain(`${label}回滚失败`);
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'DESTROY']),
+        );
+        expect(harness.calls).not.toContain('RELEASE');
+        expect(outcome.residualPossible).toBe(false);
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('回滚与销毁均失败：保留各阶段错误并标记可能残留', async () => {
+      const harness = createFakeDataSource({ failRollback: true, failDestroy: true });
+      try {
+        const outcome = await runRollback(harness, () => Promise.resolve());
+        const message = outcome.errors.join('；');
+        expect(message).toContain(`${label}回滚失败`);
+        expect(message).toContain(`${label}回滚后销毁独占连接未完成`);
+        expect(outcome.residualPossible).toBe(true);
+        expect(harness.calls).not.toContain('RELEASE');
+        expect(harness.deleteCalls).toHaveLength(0);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+
+    it('回滚成功但释放失败：回滚事实保留，关闭错误单独上报', async () => {
+      const harness = createFakeDataSource({ failRelease: true });
+      try {
+        const outcome = await runRollback(harness, () => Promise.resolve());
+        expect(outcome.rolledBack).toBe(true);
+        expect(outcome.committed).toBe(false);
+        expect(outcome.errors.join('；')).toContain(`${label}释放失败`);
+        expect(outcome.errors.join('；')).toContain('注入故障：释放失败');
+        expect(harness.calls).toEqual(
+          expect.arrayContaining(['START TRANSACTION', 'ROLLBACK', 'RELEASE']),
+        );
+        expect(harness.calls).not.toContain('DESTROY');
+        expect(outcome.residualPossible).toBe(false);
+      } finally {
+        harness.dispose();
+        expect(harness.runner.isTransactionActive).toBe(false);
+      }
+    });
+  });
+
+  describeRealDb('真实 MySQL 事务与引用保护', () => {
     it('并发部分成功且后续断言失败：成功资源已登记并完成受保护清理，错误同时保留', async () => {
       const modelId = 9905013;
       await assertFixtureIdsAvailable(dataSource, 'equipment_model', [modelId], ROUND_TAG);
@@ -1391,5 +1632,76 @@ describe('自有夹具登记与受保护清理（失败路径回归）', () => {
       expect(await query('SELECT id FROM equipment_model WHERE id = ?', [modelId])).toHaveLength(1);
       await cleanup([modelId]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 离线目标校验回归（无需数据库 / 不依赖 E2E_OWNED_FIXTURE_SPECS）
+// ---------------------------------------------------------------------------
+
+describe('自有夹具实库目标参数校验（离线）', () => {
+  const baseEnv = (): NodeJS.ProcessEnv => ({
+    E2E_OWNED_FIXTURE_SPECS: '1',
+    E2E_OWNED_FIXTURE_CONFIG_FILE: '/secure/deploy/e2e-owned.env',
+    E2E_OWNED_FIXTURE_TARGET_DB: 'lithography_v13_delivery_dev43',
+    E2E_OWNED_FIXTURE_EXPECTED_SERVER_UUID: '909f9587-9fce-11f1-a353-00e0709ef3a9',
+    E2E_ALLOWED_DB_NAMES: 'lithography_v13_delivery_dev43',
+    E2E_ALLOW_PHYSICAL_CLEANUP: '1',
+  });
+
+  it('合法显式配置解析为单一目标', () => {
+    expect(resolveOwnedFixtureTarget(baseEnv())).toEqual({
+      configFile: '/secure/deploy/e2e-owned.env',
+      database: 'lithography_v13_delivery_dev43',
+      serverUuid: '909f9587-9fce-11f1-a353-00e0709ef3a9',
+    });
+  });
+
+  it('缺少显式许可、配置文件、目标库、白名单、实例 UUID 或清理许可时拒绝', () => {
+    const cases: Array<[keyof NodeJS.ProcessEnv, RegExp]> = [
+      ['E2E_OWNED_FIXTURE_SPECS', /缺少 E2E_OWNED_FIXTURE_SPECS=1/],
+      ['E2E_OWNED_FIXTURE_CONFIG_FILE', /缺少 E2E_OWNED_FIXTURE_CONFIG_FILE/],
+      ['E2E_OWNED_FIXTURE_TARGET_DB', /缺少 E2E_OWNED_FIXTURE_TARGET_DB/],
+      ['E2E_ALLOWED_DB_NAMES', /缺少 E2E_ALLOWED_DB_NAMES/],
+      ['E2E_OWNED_FIXTURE_EXPECTED_SERVER_UUID', /缺少 E2E_OWNED_FIXTURE_EXPECTED_SERVER_UUID/],
+      ['E2E_ALLOW_PHYSICAL_CLEANUP', /缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1/],
+    ];
+    for (const [key, message] of cases) {
+      const env = baseEnv();
+      delete env[key];
+      expect(() => resolveOwnedFixtureTarget(env)).toThrow(message);
+    }
+  });
+
+  it('多目标白名单或目标与白名单不一致时拒绝', () => {
+    const multi = baseEnv();
+    multi.E2E_ALLOWED_DB_NAMES = 'lithography_v13_delivery_dev43,lithography_e2e';
+    expect(() => resolveOwnedFixtureTarget(multi)).toThrow(/单一目标库/);
+
+    const mismatch = baseEnv();
+    mismatch.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+    expect(() => resolveOwnedFixtureTarget(mismatch)).toThrow(/不一致/);
+  });
+
+  it('实际 DATABASE() 或实例 UUID 不一致时拒绝，一致时通过', () => {
+    const target = resolveOwnedFixtureTarget(baseEnv());
+    expect(() =>
+      assertOwnedFixtureActualTarget(target, {
+        database: 'lithography_e2e',
+        serverUuid: target.serverUuid,
+      }),
+    ).toThrow(/实际 DATABASE\(\)/);
+    expect(() =>
+      assertOwnedFixtureActualTarget(target, {
+        database: target.database,
+        serverUuid: '00000000-0000-0000-0000-000000000000',
+      }),
+    ).toThrow(/实际 server_uuid/);
+    expect(() =>
+      assertOwnedFixtureActualTarget(target, {
+        database: target.database.toUpperCase(),
+        serverUuid: target.serverUuid,
+      }),
+    ).not.toThrow();
   });
 });
