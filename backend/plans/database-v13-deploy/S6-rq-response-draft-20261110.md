@@ -34,6 +34,13 @@
     - init 与 upgrade 均拒绝；
     - 按原定义恢复唯一索引后 verify 通过，快照与原始一致。
   - 两类漂移分开制造，未同时存在。
+  - 本轮补充（`16-not-enforced/`，`lithography_rq5_43`，候选 `ea394fd857744bbcecbf183f81b1f95d398e0d6`）：
+    `engineer_response.chk_engineer_response_text` 原定义
+    ``(char_length(trim(`response_text`)) > 0)``、基线 `ENFORCED=YES`；
+    改为 `NOT ENFORCED`（**不删除**）后正式 verify 退出 1，并报告
+    `关键 CHECK 未强制执行: engineer_response.chk_engineer_response_text enforced=NO`；
+    可靠 finally 恢复 `ENFORCED` 后 verify 退出 0，状态、结构、数据与 44 条迁移历史均与基线快照逐字节一致。
+    **明确：本项是 `NOT ENFORCED` 反例，不以此前删除 CHECK（缺失）的结果替代。**
 
 ## RQ3 账号邮箱冲突与整批回滚
 
@@ -103,6 +110,8 @@
   - 配置输入缺陷（先明确指出，未静默改文件）：B 的 `DB_PASS` 多一个前导 `=` 且缺 host/port/db/timezone；
     C 的 `DB_PASS` 同样多一个前导 `=`；三者均缺 `FIELD_ENCRYPTION_KEY/IV`，故交付组沿用既定部署配置。
     运行封装在内存中披露后纠正并补齐，未改原文件、未落盘新密码、未创建账号或变更授权。
+    B/C 的实测均使用**明确修正后的有效连接参数**（去掉一个前导 `=`；B 补齐 host/port/db/timezone），
+    并非原样使用缺陷文件。
   - 条件 A：`--listTests` 精确为单一清理规格；实际执行退出码 0，**14 passed / 0 failed / 2 skipped**；
     快照前后逐字节一致，`s4e_` 夹具、驻留会话、活动事务、用户级锁、触发器均 0。
   - 条件 C（仅缺 `threads`）：退出码 1，**4 passed / 10 failed / 2 skipped**；10 个实库用例均在 `beforeAll` 因

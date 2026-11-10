@@ -2953,3 +2953,47 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 
 - `tsc`（spec/build）退出 0；定向回归 50 passed；ESLint 0；Prettier 0；`nest build` 0；`git diff --check` 0。
 - 未 push、未回复 PR、未合并；本轮追加本地提交。
+
+## 第四十二轮：chk_engineer_response_text 的 NOT ENFORCED 反例（2026-11-10）
+
+### 42.1 范围与候选
+
+- 候选：`ea394fdd857744bbcecbf183f81b1f95d398e0d6`（本轮文档提交前的代码候选，工作区干净）。
+- 先查既有原始日志：仅 `04-rq2/` 有 `organization.chk_organization_service_provider` 的
+  `NOT ENFORCED` 反例（更早候选、不同 CHECK）；`15-final-3fix/` 的 `chk_engineer_response_text`
+  证据是**删除 CHECK**（缺失）。两者都不覆盖同一最终候选上的 `NOT ENFORCED`，故本轮单独执行。
+- 授权目标：仅 `127.0.0.1:3306`、`@@server_uuid=909f9587-9fce-11f1-a353-00e0709ef3a9`、
+  `lithography_rq5_43`（52 张表、44 条迁移、51 张业务表）。未插入业务数据、未改代码或迁移、
+  未建库、未操作其他库或 Redis、未重跑其他测试。
+
+### 42.2 基线与前置
+
+- 实际身份实测与授权一致；`migrations=44`，最新
+  `TightenRepairRequestRevisionPreviousVersionForV131775502200000`。
+- 约束原定义：`engineer_response.chk_engineer_response_text`
+  ``(char_length(trim(`response_text`)) > 0)``，`ENFORCED=YES`。
+- 正式 `migration:verify` 基线退出 0（`业务表 51 张；历史校验与数据回填校验通过`）。
+- 基线快照（结构/CHECK/索引/外键/触发器/全部表校验和/迁移历史）
+  `16-not-enforced/before.snapshot.json`，sha256
+  `8c7fe156c07b73229996bc5c8203c311bf979fa9f8be19cf1e2ac51d9e3674bb`。
+
+### 42.3 反例与恢复
+
+- 执行：`ALTER TABLE engineer_response ALTER CHECK chk_engineer_response_text NOT ENFORCED`
+  （不删除约束）；复查 `ENFORCED=NO`，`CHECK_CLAUSE` 与基线逐字一致。
+- 正式 verify 命令：
+  `npx cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/migration.ts verify --config-file=<0600 配置> --database=lithography_rq5_43 --confirm-database=lithography_rq5_43`
+  退出码 1，明确报告
+  `❌ 校验问题：关键 CHECK 未强制执行: engineer_response.chk_engineer_response_text enforced=NO`。
+- 可靠 finally：`ALTER TABLE engineer_response ALTER CHECK chk_engineer_response_text ENFORCED`；
+  复查 `ENFORCED=YES`，定义不变。恢复失败路径设计为立即退出码 2 并同时保留主错误与恢复错误
+  （本次未触发）。
+- 恢复后正式 verify 退出 0（`业务表 51 张；历史校验与数据回填校验通过`）。
+
+### 42.4 一致性与结论
+
+- 恢复后快照 `16-not-enforced/after.snapshot.json` 与基线逐字节一致（同一 sha256
+  `8c7fe156…`）：52 张表、44 条迁移、CHECK 状态/定义、结构与全部表校验和、历史均不变。
+- 本项为 `NOT ENFORCED` 反例，**不以此前删除 CHECK（缺失）的结果替代**。
+- 证据目录 `16-not-enforced/`（`run-not-enforced.js`、`run.log`、`verify-*.log`、前后快照）。
+- 未 push、未回复 PR、未合并。
