@@ -3267,3 +3267,56 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 - 本轮未改代码、未改安全门、未重跑停采/R02/完整单测。
 - 两份记录更新后通过 Prettier、本地链接与 `git diff --check`，追加文档提交。
   未 push、未回复 PR、未合并。
+
+## 第四十七轮：S4-E 两处收尾安全遗漏修复（2026-11-10）
+
+### 47.1 范围与改动
+
+- P1 `FAULT-UPDATE`：写入前由数据库 `NOW(3)` 确定本轮 `finished_at`，规范化为
+  `timestamp(3)` 毫秒精度；`UPDATE` 成功后立即登记原值、写入值与字节精确 CAS 条件，
+  登记不依赖任何回读。回读改为受控故障点，只用于核验。
+- P2 `R02-CONFLICT` 独立收尾：删除条件只使用受控修改前登记的 `expectedFilename`
+  （本轮写入值）；当前值只用于比较与定位，不回填预期事实。`DELETE` 未命中时保留
+  文件及账号/组织父资源并输出 `file_id`/字节事实；零匹配不视为回收成功。
+- 未改迁移、Entity、权限、数据库部署或其他 RQ/旧业务 core。
+
+### 47.2 静态检查
+
+- `npm run typecheck` 退出 0。
+- 变更文件 ESLint 退出 0；Prettier `--check` 退出 0；`git diff --check` 退出 0。
+
+### 47.3 实库定向回归（lithography_rq6_cleanup）
+
+- 授权与身份沿用：`127.0.0.1:3306`、UUID
+  `909f9587-9fce-11f1-a353-00e0709ef3a9`、低权限配置
+  `rq6-lowpriv/account-a.env`（0700/0600）；runner 先 `--listTests` 精确 1 文件，
+  再 `--runTestsByPath`，未加 skip、未放宽断言、未建库/扩权。
+- P1 正常收尾（`CASE=FAULT-UPDATE`，更新成功后回读立即注入失败）：
+  **1 passed / 18 skipped / 0 failed，退出码 0**；恢复后 `status` 与原 `finished_at`
+  均回到基线，主错误含 `INJECTED_READ_FAILURE:FAULT-UPDATE`。
+- P1 外部改写（`CASE=FAULT-UPDATE` + `E2E_V13_SECOND_CONNECTION=1`）：
+  **1 passed / 18 skipped / 0 failed，退出码 0**；第二受控连接改写 `finished_at` 后，
+  字节精确 CAS 未命中并输出 `恢复冲突` 与 `targetId`，未覆盖异主值；证据后由
+  `afterAll` 按测试自有主键回收 `local_backup_run`。
+- P2 第三方保留（`CASE=R02-CONFLICT` + `E2E_V13_SECOND_CONNECTION=1`）：
+  **1 passed / 18 skipped / 0 failed，退出码 0**；独立 `DELETE` 使用登记预期值，
+  `affectedRows=0`，保留 `file_id=e3530b83-306a-46d6-a43a-1b0536a7ec44`
+  （`account_id=9905040`、`organization_id=120`），未继续通用删除。
+- P2 正常回收对照（`CASE=R02`）：**1 passed / 18 skipped / 0 failed，退出码 0**；
+  注入读取失败后字节精确 CAS 命中 1 行，按用例台账回收并回到基线。
+  独立收尾的 `deleted===1` 与第三方保留分支共用同一“登记预期值”删除条件；
+  本轮实库通过第三方保留分支验证当前值未被回填为预期事实。
+- 每次运行 `afterAll` 均复核非目标基线不变：`organization id=1`、
+  `local_installation` 种子、44 条迁移历史、触发器数量均与 `beforeAll` 基线一致。
+
+### 47.4 保留现场与状态
+
+- 按“未登记第三方值必须保留”的要求，R02-CONFLICT 在专用库留下 1 个 `stored_file`
+  及其必要父资源（账号/组织）作为实库证据，未为追求零残留反向删除父行。
+  该保留是本轮设计结果，不记为清理器回收成功，也不声称 17 表零残留。
+- 只读复核：17 表中仅 `stored_file` 为 1（上述保留行），其余 16 表为 0；
+  `migrations=44`、触发器 0、`organization id=1` 与安装种子不变。
+- 该证据会使同一库上的 R09“17 表零残留”断言不再成立；在授权维护者复核并手动处置
+  证据前，不把该库用于零残留交付组断言。保留 ID 已记录，便于定位与后续处置。
+- 未重跑数据库部署、其他 RQ、完整单测或旧业务 core；未 push、未回复 PR、未合并。
+- 记录更新后追加修复提交。

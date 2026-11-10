@@ -158,7 +158,8 @@
   “仅停采实际测试连接、首次造数前拒绝、零业务写入、finally 恢复原状态”；
   `E2E_V13_SECOND_CONNECTION=1` + `E2E_V13_CONTROLLED_FAULT=1` +
   `E2E_V13_CONTROLLED_FAULT_CASE=R02-CONFLICT` 验证“另一受控连接仅改大小写后拒绝恢复、
-  冲突行保留并输出可定位 ID”，随后由独立执行者按精确字节事实回收。
+  冲突行保留并输出可定位 ID”；独立收尾只使用受控修改前登记的预期字节值，
+  未登记的第三方值保留、`DELETE affectedRows=0`，零匹配不视为回收成功。
 - 本轮**没有新的实库写入授权**，未执行上述实库反例；现有授权仅覆盖既有
   `lithography_rq6_cleanup` / `lithography_rq3_account_dev` 等专项，未覆盖
   `performance_schema.threads` 的 `UPDATE`（线程停采）与第二受控连接写入。
@@ -190,8 +191,9 @@
   不进入随后通用清理；保存的直接证据为
   `file_id=9602dbaf-7aa0-4681-8e73-e71b0e07d99a`、
   `original_filename_bytes=5334452d5230322d5752495454454e2d4d5741494e454a3035343530323336422e545854`
-  （大写 `S4E-R02-WRITTEN-...TXT`）。证据保存后由独立执行者按 `file_id` 与
-  `CAST(original_filename AS BINARY)` 精确删除；**不把“冲突行按设计保留”记为清理器零残留**。
+  （大写 `S4E-R02-WRITTEN-...TXT`）。当轮证据保存后的独立收尾曾按冲突行当前字节回收；
+  该做法已在第 47 轮修正为仅使用受控修改前登记的预期字节值：未登记第三方值保留，
+  `DELETE affectedRows=0`，零匹配不视为回收成功；**不把保留记为清理器零残留**。
 - 正常交付组：`e2e-scoped-cleanup.v13.realdb.spec.ts` +
   `e2e-owned-fixture.e2e-spec.ts`，**2 suites / 59 passed / 5 skipped / 0 failed，退出码 0**；
   5 项 skip 均为默认关闭的受控故障/线程停采用例。
@@ -258,6 +260,24 @@
   旧运行不改写、不合并。
 - 本轮未改代码、未改安全门、未重跑停采/R02/完整单测。
   文档通过 Prettier、链接与 `git diff --check` 后追加提交；未 push、未回复 PR、未合并。
+
+## RQ6 第 47 轮：两处收尾安全遗漏修复（2026-11-10）
+
+- `FAULT-UPDATE`：写入前由数据库确定并规范化 `finished_at`，`UPDATE` 成功后立即登记
+  原值、写入值与字节精确 CAS 条件；回读只做核验。实库已验证“回读注入失败后仍恢复”
+  与“外部改写后拒绝覆盖并报告 `targetId`”，各 **1 passed / 18 skipped，退出码 0**。
+- `R02-CONFLICT` 独立收尾：`DELETE` 只用受控修改前登记的预期字节值，当前值只用于比较
+  与定位；未登记第三方值保留，`affectedRows=0`，不继续通用删除；必要父资源一并保留，
+  `afterAll` 不为追求零残留反向删除。实库 **1 passed / 18 skipped，退出码 0**；
+  保留证据 `file_id=e3530b83-306a-46d6-a43a-1b0536a7ec44`、`account_id=9905040`、
+  `organization_id=120`。
+- 正常回收对照（`CASE=R02`）：**1 passed / 18 skipped，退出码 0**。
+- 非目标基线（`organization id=1`、安装种子、44 条迁移、触发器数）每次运行前后一致；
+  17 表中仅保留证据 `stored_file` 为 1，其余 16 表为 0。该证据会使同库 R09 零残留
+  断言不成立；授权维护者复核处置前，不将该库用于零残留交付组断言。
+  未改迁移/Entity/权限/部署，未重跑其他 RQ 或旧业务 core。
+- 静态检查：`typecheck`、变更文件 ESLint、Prettier、`git diff --check` 均退出 0。
+- 追加修复提交；未 push、未回复 PR、未合并。
 
 ## 未关闭与不适用项
 

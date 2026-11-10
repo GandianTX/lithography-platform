@@ -195,6 +195,16 @@ const messageOf = (error: unknown): string => {
   return String(error);
 };
 
+/**
+ * 将数据库时间字符串规范化为 timestamp(3) 的毫秒精度。
+ *
+ * 只截断超出毫秒的尾随数字；不重新解释时区，也不在应用侧猜测数据库当前时间。
+ */
+const normalizeDbMillisecondTimestamp = (value: string): string => {
+  const match = /^(.*\.\d{3})\d*$/.exec(value);
+  return match === null ? value : match[1];
+};
+
 /** 从 DELETE/UPDATE 语句提取目标表；仅用于计数与故障注入，不做任何改写。 */
 const parseDestructive = (sql: string): Pick<DestructiveCall, 'kind' | 'table'> | null => {
   const match = /^\s*(DELETE\s+FROM|UPDATE)\s+(`?)([A-Za-z0-9_]+)\2/i.exec(sql);
@@ -287,6 +297,12 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
    */
   let executorLedger: OwnedResourceLedger;
   let executorCasRestores: ExecutorCasRestore[];
+  /**
+   * R02-CONFLICT 按已登记预期字节值删除未命中的冲突文件。
+   * 该文件属于未登记第三方值，必须保留；其必要父资源（账号/组织）也随之保留，
+   * afterAll 不得为追求零残留反向删除被引用父行。
+   */
+  let retainedConflictFileId = '';
   // RQ6：只有能力预检通过且开始造数后才允许 afterAll 进入清理路径。
   let setupAllowed = false;
 
@@ -387,6 +403,56 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       targetId: restore.targetId,
       affectedRows,
     });
+  };
+
+  type ConflictFileReclaimResult =
+    | { readonly kind: 'absent' }
+    | { readonly kind: 'reclaimed' }
+    | { readonly kind: 'retained'; readonly currentFilename: string }
+    | { readonly kind: 'mismatch'; readonly currentRows: number };
+
+  /**
+   * R02-CONFLICT 独立收尾：删除条件只使用受控修改前登记的预期字节值。
+   *
+   * 回读只用于判断行是否仍在、比较当前值与定位；不得用当前值替换预期事实。
+   * `DELETE` 未命中（0 行）绝不视为回收成功：当前值等于预期值时按未知并发失败；
+   * 当前值不等于预期值时视为未登记第三方值，保留文件并交由调用方报告。
+   */
+  const reclaimConflictFileByExpectedBytes = async (
+    fileId: string,
+    expectedFilename: string,
+  ): Promise<ConflictFileReclaimResult> => {
+    const beforeDelete = await snapshotRows('stored_file', 'file_id', [fileId]);
+    if (beforeDelete.length === 0) {
+      return { kind: 'absent' };
+    }
+    const deleted = await guardedDirect(
+      'DELETE FROM stored_file WHERE file_id = ? ' +
+        `AND ${byteExactTextMatchCondition('file_id')} ` +
+        `AND ${byteExactTextMatchCondition('original_filename')}`,
+      [fileId, fileId, expectedFilename],
+    );
+    if (deleted === 1) {
+      const remaining = await snapshotRows('stored_file', 'file_id', [fileId]);
+      if (remaining.length !== 0) {
+        throw new Error(
+          `R02-CONFLICT 独立回收后仍有残留：file_id=${fileId} rows=${remaining.length}`,
+        );
+      }
+      return { kind: 'reclaimed' };
+    }
+    if (deleted !== 0) {
+      throw new Error(
+        `R02-CONFLICT 独立回收异常：file_id=${fileId} affectedRows=${deleted}，期望 0 或 1`,
+      );
+    }
+    const afterDelete = await snapshotRows('stored_file', 'file_id', [fileId]);
+    const currentFilename =
+      afterDelete.length === 1 ? String(afterDelete[0].original_filename) : undefined;
+    if (currentFilename !== undefined && currentFilename !== expectedFilename) {
+      return { kind: 'retained', currentFilename };
+    }
+    return { kind: 'mismatch', currentRows: afterDelete.length };
   };
 
   /**
@@ -1438,6 +1504,18 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
 
       if (diagnostics.length === 0) {
         try {
+          if (retainedConflictFileId !== '') {
+            // 冲突文件按设计保留：其账号/组织父资源必须一并保留。
+            // 从本轮外部台账清理范围中移除这两个父资源，避免为追求零残留删除被引用父行。
+            externalLedger.organizationIds.splice(0);
+            externalLedger.accountIds.splice(0);
+            externalLedger.facts.organization.clear();
+            externalLedger.facts.account.clear();
+            console.warn(
+              `[S4-E] 冲突文件保留，必要父资源一并保留：file_id=${retainedConflictFileId} ` +
+                `account_id=${external.accountId} organization_id=${external.organizationId}`,
+            );
+          }
           await runGuardedSpecCleanup({
             dataSource,
             helper: 'S4-E/外部台账回收',
@@ -1656,8 +1734,11 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       const writtenFilename = `s4e-r02-written-${runTag}.txt`;
       // 另一受控连接只改变字母大小写，模拟排序规则等价改写。
       const caseChangedFilename = writtenFilename.toUpperCase();
+      // 受控修改前登记本轮预期字节值；删除只允许使用该预期值。
+      // 回读仅用于比较与定位，绝不替换这里的预期事实。
+      const expectedFilename = writtenFilename;
       let fileId = '';
-      let retained: Row[] = [];
+      let controlledWriteCommitted = false;
       let recoveryError: Error | undefined;
 
       try {
@@ -1669,16 +1750,17 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               tag: 'r02-conflict',
               originalFilename,
             });
-            // 第一条受控写入（登记后）由第二连接提交。
+            // 第一条受控写入由第二连接提交；写入前 expectedFilename 已登记。
             const second = dataSource.createQueryRunner();
             try {
               await second.connect();
               await second.startTransaction();
               await second.query('UPDATE stored_file SET original_filename = ? WHERE file_id = ?', [
-                writtenFilename,
+                expectedFilename,
                 fileId,
               ]);
               await second.commitTransaction();
+              controlledWriteCommitted = true;
             } finally {
               await second.release();
             }
@@ -1691,7 +1773,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
                 'WHERE file_id = ? ' +
                 `AND ${byteExactTextMatchCondition('file_id')} ` +
                 `AND ${byteExactTextMatchCondition('original_filename')}`,
-              parameters: [originalFilename, fileId, fileId, writtenFilename],
+              parameters: [originalFilename, fileId, fileId, expectedFilename],
             });
             // 另一连接再次提交“仅大小写”变化，CAS 的写入值条件不再字节命中。
             const third = dataSource.createQueryRunner();
@@ -1720,7 +1802,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         expect(messageOf(failure)).toContain('已跳过后续通用清理');
 
         // 直接证据：冲突行未被覆盖、未被通用清理删除。
-        retained = await snapshotRows('stored_file', 'file_id', [fileId]);
+        const retained = await snapshotRows('stored_file', 'file_id', [fileId]);
         expect(retained).toHaveLength(1);
         expect(String(retained[0].original_filename)).toBe(caseChangedFilename);
         // 只输出脱敏行标识与字节事实，不落盘、不输出连接信息。
@@ -1729,25 +1811,38 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             `original_filename_bytes=${Buffer.from(caseChangedFilename, 'utf8').toString('hex')}`,
         );
       } finally {
-        // 独立测试执行者回收：凭原始创建事实（file_id / 原值）与冲突行当前精确字节，
-        // 与被测清理器分离；先保存证据，再精确删除唯一一行。
-        if (fileId !== '' && retained.length === 0) {
-          retained = await snapshotRows('stored_file', 'file_id', [fileId]);
-        }
-        if (retained.length === 1) {
-          const currentBytes = String(retained[0].original_filename);
-          const deleted = await guardedDirect(
-            'DELETE FROM stored_file WHERE file_id = ? ' +
-              `AND ${byteExactTextMatchCondition('file_id')} ` +
-              `AND ${byteExactTextMatchCondition('original_filename')}`,
-            [fileId, fileId, currentBytes],
-          );
-          if (deleted !== 1) {
-            recoveryError = new Error(
-              `R02-CONFLICT 独立回收失败：file_id=${fileId} affectedRows=${deleted}，期望 1`,
-            );
+        // 独立测试执行者收尾：与被测清理器分离，删除条件只使用受控修改前登记的
+        // expectedFilename；当前值仅用于比较与定位，绝不反填为预期事实。
+        if (fileId !== '' && controlledWriteCommitted) {
+          try {
+            const outcome = await reclaimConflictFileByExpectedBytes(fileId, expectedFilename);
+            if (outcome.kind === 'retained') {
+              retainedConflictFileId = fileId;
+              console.warn(
+                `[S4-E/R02-CONFLICT] 第三方值保留：file_id=${fileId} ` +
+                  `expected_bytes=${Buffer.from(expectedFilename, 'utf8').toString('hex')} ` +
+                  `current_bytes=${Buffer.from(outcome.currentFilename, 'utf8').toString('hex')} ` +
+                  'DELETE affectedRows=0；未继续通用删除',
+              );
+            } else if (outcome.kind === 'mismatch') {
+              recoveryError = new Error(
+                `R02-CONFLICT 独立回收未命中：file_id=${fileId} ` +
+                  `expected_bytes=${Buffer.from(expectedFilename, 'utf8').toString('hex')} ` +
+                  `current_rows=${outcome.currentRows} DELETE affectedRows=0；` +
+                  '零匹配不视为回收成功',
+              );
+            } else if (outcome.kind === 'absent') {
+              console.info(
+                `[S4-E/R02-CONFLICT] 冲突行已由用例台账回收：file_id=${fileId}，` +
+                  '独立收尾未发起 DELETE',
+              );
+            }
+          } catch (error) {
+            recoveryError =
+              error instanceof Error
+                ? error
+                : new Error(`R02-CONFLICT 独立回收异常：${String(error)}`);
           }
-          expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
         }
       }
       if (recoveryError !== undefined) {
@@ -2488,16 +2583,30 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         return (rows[0]?.finished_at as string | null | undefined) ?? null;
       };
       const originalFinishedAt = await readFinishedAt();
-      let writtenFinishedAt: string | null = null;
+      // 外部改写只落 finished_at：status 仍为本轮写入值，可单独验证 CAS 的字节精确条件。
+      const externalFinishedAt = '2001-02-03 04:05:06.007';
+      const conflictArmed = SECOND_CONNECTION_INTERFERENCE && faultArmedFor('FAULT-UPDATE');
+      let writtenFinishedAt = '';
 
-      await expect(
+      const failure = await captureFailure(async () =>
         runCase('S4-E/FAULT-UPDATE', async () => {
+          // 写入前从数据库取本轮 finished_at，并规范化为 timestamp(3) 毫秒精度。
+          // 登记与恢复只使用该值；任何写入后回读都不能成为登记前置。
+          const writtenRows = await dataSource.query(
+            "SELECT DATE_FORMAT(NOW(3), '%Y-%m-%d %H:%i:%s.%f') AS finished_at",
+          );
+          writtenFinishedAt = normalizeDbMillisecondTimestamp(
+            String(writtenRows[0]?.finished_at ?? ''),
+          );
+          if (writtenFinishedAt === '') {
+            throw new Error('FAULT-UPDATE 未能确定本轮 finished_at');
+          }
           // 同时写入完成时间，满足 chk_local_backup_run_finish（非 RUNNING 必须有 finished_at）。
           await dataSource.query(
-            'UPDATE local_backup_run SET status = ?, finished_at = NOW(3) WHERE id = ?',
-            [changedStatus, external.backupRunId],
+            'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ?',
+            [changedStatus, writtenFinishedAt, external.backupRunId],
           );
-          writtenFinishedAt = await readFinishedAt();
+          // UPDATE 成功后立即登记原值、本轮写入值与字节精确 CAS 条件。
           caseDirectCleanups.push(async () => {
             // 按写入值条件恢复：status 字节精确且 finished_at 一致才回滚，
             // 避免另一连接仅改大小写/尾部空格时被普通等号误判并覆盖。
@@ -2516,13 +2625,68 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               ],
             });
           });
+          if (conflictArmed) {
+            // 另一受控连接改写 finished_at：CAS 必须拒绝覆盖并保留异主值。
+            const second = dataSource.createQueryRunner();
+            try {
+              await second.connect();
+              await second.startTransaction();
+              await second.query('UPDATE local_backup_run SET finished_at = ? WHERE id = ?', [
+                externalFinishedAt,
+                external.backupRunId,
+              ]);
+              await second.commitTransaction();
+            } finally {
+              await second.release();
+            }
+          }
+          // 回读只做核验；受控故障在此注入失败，登记已在此之前完成。
+          const observed = await readWithControlledFault('FAULT-UPDATE', 'finished-at-verify', () =>
+            readFinishedAt(),
+          );
+          expect(observed === null ? null : normalizeDbMillisecondTimestamp(observed)).toBe(
+            writtenFinishedAt,
+          );
           throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
         }),
-      ).rejects.toThrow(/__CONTROLLED_ASSERTION_FAILURE__/);
-
-      expect((await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0].status).toBe(
-        original.status,
       );
+
+      if (conflictArmed) {
+        // 外部改写存在时：恢复必须拒绝覆盖，保留异主值并输出定位信息。
+        expect(messageOf(failure)).toContain('INJECTED_READ_FAILURE:FAULT-UPDATE');
+        expect(messageOf(failure)).toContain('恢复冲突');
+        expect(messageOf(failure)).toContain(`targetId=${external.backupRunId}`);
+        const retained = await snapshotRows('local_backup_run', 'id', [external.backupRunId]);
+        expect(retained).toHaveLength(1);
+        expect(retained[0].status).toBe(changedStatus);
+        const retainedFinishedAt = await readFinishedAt();
+        expect(
+          retainedFinishedAt === null ? null : normalizeDbMillisecondTimestamp(retainedFinishedAt),
+        ).toBe(normalizeDbMillisecondTimestamp(externalFinishedAt));
+        console.info(
+          `[S4-E/FAULT-UPDATE] 外部改写保留 backup_run_id=${external.backupRunId} ` +
+            `status=${changedStatus} finished_at=${externalFinishedAt}`,
+        );
+      } else {
+        if (failure === undefined) {
+          throw new Error('FAULT-UPDATE 未按预期失败');
+        }
+        expect(messageOf(failure)).toContain(
+          faultArmedFor('FAULT-UPDATE')
+            ? 'INJECTED_READ_FAILURE:FAULT-UPDATE'
+            : '__CONTROLLED_ASSERTION_FAILURE__',
+        );
+        expect(
+          (await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0].status,
+        ).toBe(original.status);
+        // 原 finished_at 也必须恢复（RUNNING 种子的原值为 NULL）。
+        const restoredFinishedAt = await readFinishedAt();
+        expect(
+          restoredFinishedAt === null ? null : normalizeDbMillisecondTimestamp(restoredFinishedAt),
+        ).toBe(
+          originalFinishedAt === null ? null : normalizeDbMillisecondTimestamp(originalFinishedAt),
+        );
+      }
       await assertNoActiveTransactions();
     },
   );
