@@ -11,6 +11,13 @@ const MANAGED_ENV_KEYS = [
   'V13_SPEC_CONFIG_FILE',
   'V13_SPEC_TARGET_DB',
   'V13_SPEC_SERVER_UUID',
+  'V13_SPEC_INJECTION_PROFILE',
+  'V13_SPEC_ISOLATED_INSTANCE',
+  'E2E_V13_INSTRUMENT_INJECTION',
+  'E2E_V13_UPSTREAM_CONSUMER_INJECTION',
+  'E2E_V13_CONTROLLED_FAULT',
+  'E2E_V13_CONTROLLED_FAULT_CASE',
+  'E2E_V13_SECOND_CONNECTION',
   'E2E_ALLOW_PHYSICAL_CLEANUP',
   'E2E_ALLOWED_DB_NAMES',
   'E2E_EXPECTED_SERVER_UUID',
@@ -151,10 +158,66 @@ describe('V13 权威规格启动配置', () => {
     expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/目标库/);
   });
 
-  it('缺少物理清理许可时在执行前失败关闭', () => {
-    process.env.V13_SPEC_CONFIG_FILE = writeConfig(validConfig());
-    delete process.env.E2E_ALLOW_PHYSICAL_CLEANUP;
+  const isolatedConfig = (): string => validConfig().replace('DB_PORT=3306', 'DB_PORT=3307');
 
-    expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/E2E_ALLOW_PHYSICAL_CLEANUP/);
+  it('normal 注入 profile 在隔离实例注入 P1/P2 开关，不启用受控故障', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'normal';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    const env = buildEnvironment(V13_SPEC_GROUPS.delivery);
+
+    expect(env.V13_SPEC_INJECTION_PROFILE).toBe('normal');
+    expect(env.V13_SPEC_ISOLATED_INSTANCE).toBe('1');
+    expect(env.E2E_V13_INSTRUMENT_INJECTION).toBe('1');
+    expect(env.E2E_V13_UPSTREAM_CONSUMER_INJECTION).toBe('1');
+    expect(env.E2E_V13_CONTROLLED_FAULT).toBeUndefined();
+    expect(env.E2E_V13_SECOND_CONNECTION).toBeUndefined();
+  });
+
+  it('conflict 注入 profile 同时启用两类冲突与第二连接', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'conflict';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    const env = buildEnvironment(V13_SPEC_GROUPS.delivery);
+
+    expect(env.E2E_V13_CONTROLLED_FAULT).toBe('1');
+    expect(env.E2E_V13_CONTROLLED_FAULT_CASE).toBe('R02-CONFLICT,FAULT-UPDATE');
+    expect(env.E2E_V13_SECOND_CONNECTION).toBe('1');
+  });
+
+  it('注入 profile 在 3306 共享实例上失败关闭', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'normal';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(validConfig());
+
+    expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/禁止使用 3306 共享实例/);
+  });
+
+  it('注入 profile 在非回环地址上失败关闭', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'normal';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(
+      isolatedConfig().replace('DB_HOST=127.0.0.1', 'DB_HOST=10.0.0.8'),
+    );
+
+    expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/只允许回环/);
+  });
+
+  it('注入 profile 缺少隔离确认时失败关闭', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'conflict';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/专用隔离实例/);
+  });
+
+  it('未知注入 profile 失败关闭', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'all';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(
+      /只接受 none、normal 或 conflict/,
+    );
   });
 });

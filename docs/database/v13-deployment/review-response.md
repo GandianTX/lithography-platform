@@ -281,6 +281,30 @@
 - 静态检查：`typecheck`、变更文件 ESLint、Prettier、`git diff --check` 均退出 0。
 - 追加修复提交；未 push、未回复 PR、未合并。
 
+## RQ6 第 48 轮：4 项 RQ 收口与隔离实例实库复跑（2026-11-10）
+
+- 入口与目标：专用隔离实例 `127.0.0.1:3307`（MySQL 8.0.46，`@@server_uuid=7e75b5a6-dd06-11f1-808d-00e0709ef3a9`，
+  `performance_schema=1`）；空库 `lithography_v13_test` 由本轮创建并 `database:deploy --mode=init` 初始化：
+  44 条迁移、51 张业务表（含 `migrations` 共 52 张）、1 行安装种子。未连接或修改共享 3306 实例、Redis、
+  审查方现场与原事故数据。
+- P1 上游依赖：`global_instrumentation`、`thread_instrumentation` 分别关闭时计数明确拒绝、不返回零事务，
+  恢复后事务可见；正常采集可观测真实活动事务（计数 1），回滚后归零。
+  normal 档 `3 suites passed / 72 passed / 3 skipped`，退出码 0。
+- P2 停采恢复：第二连接先停采时本轮 `UPDATE` 零命中，判定 `not-applied`，保持他人 `NO` 且不反向恢复；
+  本轮成功命中 `applied` 时才登记并执行恢复。normal 档实库通过。
+- P3 冲突跨收尾：`R02-CONFLICT` 与 `FAULT-UPDATE` 在 conflict 档执行，`75 passed / 0 skipped`，退出码 0。
+  Jest 退出后用独立 mysql 连接复核：冲突 `stored_file` 行仍在（`file_id=26eed0a0-588e-42dd-b2fd-18e73f29fbce`，
+  字节值 `S4E-R02-WRITTEN-MWAPGBGY9C833E02.TXT`，uploader=`9904992`、owner_organization=`21`、`STAGING`）；
+  冲突备份行 `local_backup_run id=5` 仍在（`SUCCEEDED`、`finished_at=2001-02-03 04:05:06.007`，
+  `installation_id` 指向唯一安装种子）；账号、组织、安装引用均存在。
+  17 张清理表中仅 `stored_file=1`（保留），其余 16 张为 0；`local_backup_run=1`（保留）。该保留现场**不是零残留**。
+- conflict 档首次执行暴露 R04/R06 的全局零残留断言未考虑设计保留；两处已改为“除已登记保留外精确零行”，
+  并仍断言保留行存在；未修改或放宽 R09，也未删除保留行制造通过。
+- P4 文档：PR 正文仅保留当前交接说明并统一链接本目录；终态为 44 条迁移、51 张业务表。
+- 最终静态与构建：`typecheck`、变更文件 ESLint/Prettier 退出码 0；`test:unit` 为
+  `8 skipped suites / 159 passed`，`202 skipped / 1889 passed / 2091 total`，退出码 0；`npm run build` 退出码 0。
+- 未改迁移、Entity、旧业务接口、MySQL 服务或系统权限表；未 push、未回复 PR、未合并。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。

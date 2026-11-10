@@ -17,6 +17,11 @@
 //   V13_SPEC_CONFIG_FILE=<0600 env> V13_SPEC_TARGET_DB=<库名> \
 //   V13_SPEC_SERVER_UUID=<uuid> E2E_ALLOW_PHYSICAL_CLEANUP=1 \
 //   npx ts-node -r tsconfig-paths/register test/run-v13-authoritative-spec.ts delivery
+//
+// 专用隔离实例注入（默认 none）：
+//   V13_SPEC_INJECTION_PROFILE=normal|conflict V13_SPEC_ISOLATED_INSTANCE=1
+//   仅允许回环地址且 DB_PORT != 3306；normal 启用 P1/P2 线程与上游 consumer 注入，
+//   conflict 追加 R02-CONFLICT、FAULT-UPDATE 受控故障与第二连接。
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
@@ -74,6 +79,48 @@ const resolveGroup = (): V13SpecGroup => {
   return V13_SPEC_GROUPS[raw];
 };
 
+type InjectionProfile = 'none' | 'normal' | 'conflict';
+
+const INJECTION_PROFILE_FLAG = 'V13_SPEC_INJECTION_PROFILE';
+const ISOLATED_INSTANCE_FLAG = 'V13_SPEC_ISOLATED_INSTANCE';
+const CONFLICT_FAULT_CASES = 'R02-CONFLICT,FAULT-UPDATE';
+
+const resolveInjectionProfile = (): InjectionProfile => {
+  const raw = (process.env[INJECTION_PROFILE_FLAG] ?? 'none').trim().toLowerCase();
+  if (raw !== 'none' && raw !== 'normal' && raw !== 'conflict') {
+    return fail(`拒绝执行：${INJECTION_PROFILE_FLAG} 只接受 none、normal 或 conflict`);
+  }
+  if (raw !== 'none' && process.env[ISOLATED_INSTANCE_FLAG] !== '1') {
+    return fail(
+      `拒绝执行：注入 profile=${raw} 必须在专用隔离实例显式设置 ${ISOLATED_INSTANCE_FLAG}=1`,
+    );
+  }
+  return raw;
+};
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/**
+ * 注入 profile 只允许命中本机回环且非 3306 的实例；
+ * 该检查在建立任何连接前完成，避免误改承载其他开发库的共享实例。
+ */
+const assertIsolatedTarget = (parsed: Record<string, string>, profile: InjectionProfile): void => {
+  if (profile === 'none') {
+    return;
+  }
+  const host = (parsed.DB_HOST ?? '').trim().toLowerCase();
+  if (!LOOPBACK_HOSTS.has(host)) {
+    fail(`拒绝执行：注入 profile 只允许回环 DB_HOST，实际 "${host || '(缺失)'}"`);
+  }
+  const port = Number((parsed.DB_PORT ?? '').trim());
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    fail(`拒绝执行：DB_PORT 非法 "${parsed.DB_PORT ?? '(缺失)'}"`);
+  }
+  if (port === 3306) {
+    fail('拒绝执行：注入 profile 禁止使用 3306 共享实例');
+  }
+};
+
 /**
  * 配置文件只接受明确列举的连接字段与字段加密参数。
  * 不使用 `DB_*` 或其他大写变量通配，避免未来新增的 DB_/控制变量被静默放行。
@@ -124,18 +171,34 @@ const assertEntryConfirmed = (
     readonly group: V13SpecGroup;
     readonly targetDb: string;
     readonly serverUuid: string;
+    readonly injectionProfile: InjectionProfile;
   },
 ): void => {
-  const checks: ReadonlyArray<readonly [string, string]> = [
+  const checks: Array<readonly [string, string]> = [
     ['V13_AUTHORITATIVE_SPECS', '1'],
     ['V13_SPEC_GROUP', expected.group.name],
     ['V13_SPEC_TARGET_DB', expected.targetDb],
     ['V13_SPEC_SERVER_UUID', expected.serverUuid],
+    ['V13_SPEC_INJECTION_PROFILE', expected.injectionProfile],
     ['E2E_ALLOW_PHYSICAL_CLEANUP', '1'],
     ['E2E_REAL_DB_NAME', expected.targetDb],
     ['E2E_ALLOWED_DB_NAMES', expected.targetDb],
     ['E2E_EXPECTED_SERVER_UUID', expected.serverUuid],
   ];
+  if (expected.injectionProfile !== 'none') {
+    checks.push(
+      [ISOLATED_INSTANCE_FLAG, '1'],
+      ['E2E_V13_INSTRUMENT_INJECTION', '1'],
+      ['E2E_V13_UPSTREAM_CONSUMER_INJECTION', '1'],
+    );
+  }
+  if (expected.injectionProfile === 'conflict') {
+    checks.push(
+      ['E2E_V13_CONTROLLED_FAULT', '1'],
+      ['E2E_V13_CONTROLLED_FAULT_CASE', CONFLICT_FAULT_CASES],
+      ['E2E_V13_SECOND_CONNECTION', '1'],
+    );
+  }
   for (const [key, value] of checks) {
     if (env[key] !== value) {
       return fail(`拒绝执行：入口控制变量 ${key} 未被独立确认`);
@@ -147,6 +210,7 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
   if (process.env.E2E_ALLOW_PHYSICAL_CLEANUP !== '1') {
     return fail('拒绝执行：缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1');
   }
+  const injectionProfile = resolveInjectionProfile();
   const configFile = requireEnv('V13_SPEC_CONFIG_FILE');
   if (!path.isAbsolute(configFile)) {
     return fail('拒绝执行：V13_SPEC_CONFIG_FILE 必须是绝对路径');
@@ -161,6 +225,7 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
 
   const parsed = dotenv.parse(fs.readFileSync(configFile));
   assertConfigKeysAllowed(parsed);
+  assertIsolatedTarget(parsed, injectionProfile);
   const configDb = (parsed.DB_NAME ?? '').trim().toLowerCase();
   if (configDb !== targetDb) {
     return fail(`拒绝执行：配置 DB_NAME=${configDb || '(缺失)'} 与目标库 ${targetDb} 不一致`);
@@ -173,12 +238,23 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
     V13_SPEC_GROUP: group.name,
     V13_SPEC_TARGET_DB: targetDb,
     V13_SPEC_SERVER_UUID: serverUuid,
+    V13_SPEC_INJECTION_PROFILE: injectionProfile,
     E2E_ALLOW_PHYSICAL_CLEANUP: '1',
     E2E_REAL_DB_NAME: targetDb,
     E2E_ALLOWED_DB_NAMES: targetDb,
     E2E_EXPECTED_SERVER_UUID: serverUuid,
     E2E_REAL_DB_CONFIG_FILE: configFile,
   };
+  if (injectionProfile !== 'none') {
+    env[ISOLATED_INSTANCE_FLAG] = '1';
+    env.E2E_V13_INSTRUMENT_INJECTION = '1';
+    env.E2E_V13_UPSTREAM_CONSUMER_INJECTION = '1';
+  }
+  if (injectionProfile === 'conflict') {
+    env.E2E_V13_CONTROLLED_FAULT = '1';
+    env.E2E_V13_CONTROLLED_FAULT_CASE = CONFLICT_FAULT_CASES;
+    env.E2E_V13_SECOND_CONNECTION = '1';
+  }
   // 只注入白名单内的连接字段；控制变量已在上面由入口独立写入。
   for (const [key, value] of Object.entries(parsed)) {
     if (CONFIG_KEY_ALLOWLIST.has(key)) {
@@ -204,7 +280,7 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
   }
 
   // 注入完成后由入口再次独立确认：配置与父进程都不能改写这些控制值。
-  assertEntryConfirmed(env, { group, targetDb, serverUuid });
+  assertEntryConfirmed(env, { group, targetDb, serverUuid, injectionProfile });
 
   return env;
 };

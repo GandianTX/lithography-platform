@@ -400,6 +400,9 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
 - 规格自身在建立连接前检查显式开关、专用配置与单目标白名单；连接后核验
   `DATABASE()` 与 `@@server_uuid`。第 43 条升级规格在自身连接上同时核验两者。
 - 只核对文件集合时追加 `V13_SPEC_LIST_ONLY=1`；此模式不建立任何数据库连接。
+- 上游 consumer 与线程停采注入口径：`V13_SPEC_INJECTION_PROFILE=normal|conflict` 必须同时设置
+  `V13_SPEC_ISOLATED_INSTANCE=1`；入口在建立连接前要求 `DB_HOST` 为回环且 `DB_PORT != 3306`。
+  normal 启用 P1/P2 注入；conflict 追加 `R02-CONFLICT,FAULT-UPDATE` 受控故障与第二连接。
 
 - 规格不得硬编码由 `UUID()` 生成的种子值（如 `local_installation.installation_id`），应读取目标库真值；
 - 迁移条数等基线常量应随候选冻结更新，避免把候选演进口径当成漂移。
@@ -475,10 +478,36 @@ npm run database:deploy -- --mode=upgrade \
 - 授权账号 `gandiantx@127.0.0.1` 在本轮之前即持有 `PROCESS`（非本轮授予）。本轮**未授予、未回收、未修改**任何权限，
   因此不在该账号上演示“无 `PROCESS`”的真实条件；无权限/未启用采集/不可观测返回空的分支由离线能力用例覆盖，
   不以空结果冒充“无活动事务”。
-- `assertTransactionObservationCapability` 必须先确认 `@@performance_schema=1` 且
-  `events_transactions_current` 消费器启用，才允许进入造数。
+- `assertTransactionObservationCapability` 必须先确认 `@@performance_schema=1`，且
+  `global_instrumentation`、`thread_instrumentation`、`events_transactions_current` 三个 consumer
+  与 `transaction` instrument 全部启用，才允许进入造数；任一上游开关关闭或不可确认时明确拒绝，
+  绝不返回“零事务”。
+- 停采恢复只认本轮条件 `UPDATE` 命中 1 行：命中才登记恢复责任并在收尾执行；
+  0 行表示他人已停采，保持其 `NO`、保留现场并诊断，不做反向恢复。
 
 ### 11.7 历史失败与事故记录保留
 
 - §11.1、§11.2 记录的旧候选字节识别失败、隐藏/阻塞 CHECK 重建半迁移等现场与处置口径继续保留；
 - 本轮及后续修复只追加新记录，不删除、不改写既有失败与事故记录，也不把未复验的旧结论标为已通过。
+
+### 11.8 第 4 项 RQ 收口实测（2026-11-10，专用隔离实例）
+
+- 实例：`/tmp` 下独立 `mysqld`，`127.0.0.1:3307`，MySQL 8.0.46，
+  `@@server_uuid=7e75b5a6-dd06-11f1-808d-00e0709ef3a9`，`performance_schema=ON`，`--default-time-zone=+08:00`；
+  未停止、未修改承载其他开发库的 3306 实例，未改系统权限表。
+- 目标库：空库 `lithography_v13_test`（含开发标记，供 D3 开发账号守卫使用），
+  `database:deploy --mode=init` 结果 44 条迁移 / 51 张业务表，退出码 0；执行前 17 张清理表均为 0。
+- 正常档（`V13_SPEC_INJECTION_PROFILE=normal V13_SPEC_ISOLATED_INSTANCE=1`）：
+  `3 suites passed / 72 passed / 3 skipped`，退出码 0；覆盖上游 consumer 分别关闭时拒绝并恢复、
+  真实活动事务计数 1 与回滚归零、第二连接先停采时零命中保持 `NO`。
+- 冲突档（`V13_SPEC_INJECTION_PROFILE=conflict`，注入 `R02-CONFLICT,FAULT-UPDATE` 与第二连接）：
+  `75 passed / 0 skipped`，退出码 0。
+- Jest 退出后独立连接复核：保留冲突文件 `file_id=26eed0a0-588e-42dd-b2fd-18e73f29fbce`
+  （字节值 `S4E-R02-WRITTEN-MWAPGBGY9C833E02.TXT`，uploader=9904992、owner_organization=21）；
+  保留冲突备份 `local_backup_run id=5`（`SUCCEEDED`、`finished_at=2001-02-03 04:05:06.007`，
+  `installation_id` 指向唯一安装种子）；账号、组织、安装引用均在。
+- 快照：44 条迁移、`organization id=1` 与安装种子不变、触发器 0；17 张清理表中仅 `stored_file=1`
+  （按设计保留），其余 16 张为 0；`local_backup_run=1`（按设计保留）。
+  该保留现场不是零残留，处置前不得将同库用于零残留组验收，也不得为制造通过删除保留行。
+- 静态与构建：`typecheck`、变更文件 ESLint/Prettier、`npm run build` 退出码 0；
+  `test:unit` 为 `8 skipped suites / 159 passed`、`202 skipped / 1889 passed / 2091 total`，退出码 0。

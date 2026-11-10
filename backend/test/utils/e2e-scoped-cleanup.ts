@@ -3821,6 +3821,23 @@ const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Pr
 };
 
 /**
+ * 套件级保留集合的清理视角。
+ *
+ * 进入集合的冲突行与必要父资源不再被视为“可认领删除”的本轮资源；
+ * 清理器只跳过删除，不改变其存在性或事实。
+ */
+export interface RetainedCleanupResources {
+  readonly organizationIds?: ReadonlySet<number>;
+  readonly accountIds?: ReadonlySet<number>;
+  readonly storedFileIds?: ReadonlySet<number | string>;
+}
+
+const excludeRetainedIdList = <T extends number | string>(
+  ids: readonly T[],
+  retained: ReadonlySet<T> | undefined,
+): T[] => (retained === undefined ? [...ids] : ids.filter((id) => !retained.has(id)));
+
+/**
  * 门禁通过后，再执行调用方提供的归属范围清理回调。
  *
  * @param params.cleanup 必须自带归属 WHERE；门禁失败时该回调不会被调用（第一条删除前拒绝）。
@@ -3873,10 +3890,23 @@ export const runGuardedSpecCleanup = async (params: {
    * 用于 10 组“组织链 + fixture 账号分两步”的组合清理。
    */
   readonly retainedAccounts?: readonly ResidueAccountFingerprint[];
+  /**
+   * 套件级保留集合：冲突现场及必要父资源。即使仍出现在 `owned` 台账中，
+   * 也绝不在本轮清理中再次认领删除。
+   */
+  readonly retained?: RetainedCleanupResources;
   /** 显式预期目标库；缺省时取 DataSource.options.database（N04）。 */
   readonly expectedDatabase?: string;
 }): Promise<void> => {
-  const { dataSource, helper, owned, residue, retainedAccounts = [], expectedDatabase } = params;
+  const {
+    dataSource,
+    helper,
+    owned,
+    residue,
+    retainedAccounts = [],
+    retained,
+    expectedDatabase,
+  } = params;
 
   try {
     assertPhysicalCleanupConsent();
@@ -3929,6 +3959,13 @@ export const runGuardedSpecCleanup = async (params: {
     plan.backupAssetIds = toMixedIdList(owned.backupAssetIds);
     plan.backupRestoreRunIds = toMixedIdList(owned.backupRestoreRunIds);
     plan.managementAuditEventIds = toMixedIdList(owned.managementAuditEventIds);
+    if (retained !== undefined) {
+      // 套件级保留集合：冲突现场及其必要父资源即使仍在台账中，也禁止再次认领删除。
+      // 过滤发生在事务与任何 DELETE 之前；保留 ID 的事实核验仍由 verifyOwnedExpectations 只读完成。
+      plan.organizationIds = excludeRetainedIdList(plan.organizationIds, retained.organizationIds);
+      plan.accountIds = excludeRetainedIdList(plan.accountIds, retained.accountIds);
+      plan.storedFileIds = excludeRetainedIdList(plan.storedFileIds, retained.storedFileIds);
+    }
   }
 
   const residueHasCandidates =
@@ -3984,10 +4021,22 @@ const OBSERVATION_ACTIVE_SQL = `SELECT COUNT(*) AS total
   WHERE th.PROCESSLIST_USER = SUBSTRING_INDEX(CURRENT_USER(), '@', 1)
     AND t.STATE = 'ACTIVE'`;
 
+/**
+ * 事务采集依赖的上游 consumer 链。
+ *
+ * `events_transactions_current` 只有在 `global_instrumentation` 与
+ * `thread_instrumentation` 同时启用时才会产生数据；只检查事务 consumer 会把
+ * “上游关闭、事务表恒为空”误判为“没有活动事务”。三者都必须确认。
+ */
+const OBSERVATION_REQUIRED_CONSUMERS = [
+  'global_instrumentation',
+  'thread_instrumentation',
+  'events_transactions_current',
+] as const;
+
 const OBSERVATION_CONSUMER_SQL = `SELECT NAME AS name, ENABLED AS enabled
    FROM performance_schema.setup_consumers
-  WHERE NAME = 'events_transactions_current'
-  LIMIT 1`;
+  WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_transactions_current')`;
 
 const OBSERVATION_INSTRUMENT_SQL = `SELECT NAME AS name, ENABLED AS enabled
    FROM performance_schema.setup_instruments
@@ -4022,7 +4071,8 @@ interface ObservationProbeOptions {
  *    TYPE=FOREGROUND 且该线程 `INSTRUMENTED=YES`（实际目标线程，而非仅全局开关）；
  * 3. 当前用户不存在其他停采的前台线程（覆盖连接池/事务/收尾实际连接）；
  * 4. `events_transactions_current` 与 `threads` 的关联查询可执行；
- * 5. consumer 与 transaction instrument 均已启用。
+ * 5. `global_instrumentation`、`thread_instrumentation` 与
+ *    `events_transactions_current` 三个 consumer 均已启用，且 transaction instrument 已启用。
  *
  * 只有全部前提成立时，计数 0 才表示“确实没有活动事务”；
  * 任一前提缺失/不可确认都视为“不可观测”，在夹具创建前失败关闭（零造数）。
@@ -4092,8 +4142,16 @@ const collectObservationFailures = async (
       '无法读取 performance_schema.setup_consumers（缺少 SELECT 权限）：' +
         observationErrorText(consumerProbe.error),
     );
-  } else if (!isObservationEnablementEnabled(consumerProbe.rows)) {
-    failures.push('events_transactions_current consumer 未启用，事务采集不可用');
+  } else {
+    const consumers = readObservationEnablementMap(consumerProbe.rows);
+    for (const required of OBSERVATION_REQUIRED_CONSUMERS) {
+      const enabled = consumers.get(required.toUpperCase());
+      if (enabled === undefined) {
+        failures.push(`${required} consumer 缺失或不可确认，事务采集不可用`);
+      } else if (enabled !== 'YES') {
+        failures.push(`${required} consumer 未启用，事务采集不可用`);
+      }
+    }
   }
 
   const instrumentProbe = await probeObservationQuery(query, OBSERVATION_INSTRUMENT_SQL);
@@ -4180,6 +4238,24 @@ const isObservationEnablementEnabled = (
   rows !== undefined &&
   rows.length === 1 &&
   observationText(rows[0], 'enabled').toUpperCase() === 'YES';
+
+/** 将 setup_consumers 行集合解析为 NAME → ENABLED（均大写）；不猜测缺失行。 */
+const readObservationEnablementMap = (
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): Map<string, string> => {
+  const result = new Map<string, string>();
+  if (rows === undefined) {
+    return result;
+  }
+  for (const row of rows) {
+    const name = observationText(row, 'name').toUpperCase();
+    if (name.length === 0) {
+      continue;
+    }
+    result.set(name, observationText(row, 'enabled').toUpperCase());
+  }
+  return result;
+};
 
 const validateObservationThread = (
   rows: ReadonlyArray<Record<string, unknown>> | undefined,
@@ -4293,4 +4369,66 @@ export const assertCasRestoreAffectedOne = (params: {
     )}，期望 1；行可能已被其他连接改写或已不存在，按设计保留现场，拒绝覆盖/删除；` +
       '受其引用影响的父资源保持原状；已跳过后续通用清理',
   );
+};
+
+export type ThreadInstrumentationWriteOutcome = 'applied' | 'not-applied' | 'unknown';
+
+export interface ThreadInstrumentationWriteDecision {
+  readonly outcome: ThreadInstrumentationWriteOutcome;
+  /**
+   * 只有条件 UPDATE 明确命中 1 行时才为 true。
+   * 调用方只能在此分支登记/执行恢复责任；0 行与未知结果均不得恢复。
+   */
+  readonly shouldRestore: boolean;
+  readonly affectedRows: number | null;
+  readonly diagnostic: string | null;
+}
+
+/**
+ * 判定线程停采条件 UPDATE 的结果（P2）。
+ *
+ * - `affectedRows=1`：本轮确实把目标线程从原状态改为停采，登记恢复责任；
+ * - `affectedRows=0`：行已被其他连接改写或条件不匹配，本轮没有成功写入，不恢复；
+ * - 其他/缺失：结果未知，保留现场并输出诊断，不按猜测恢复。
+ *
+ * MySQL 默认按“实际改变行数”返回 affectedRows；把 `NO` 再写成 `NO` 会得到 0，
+ * 这正是“另一连接先设为 NO”时应保持 NO 而不得反向恢复的场景。
+ */
+export const classifyThreadInstrumentationWrite = (
+  rawResult: unknown,
+): ThreadInstrumentationWriteDecision => {
+  const rawAffected = (rawResult as { affectedRows?: unknown } | null | undefined)?.affectedRows;
+  const affectedRows =
+    typeof rawAffected === 'number'
+      ? rawAffected
+      : typeof rawAffected === 'string' && rawAffected.trim().length > 0
+        ? Number(rawAffected)
+        : Number.NaN;
+  if (!Number.isInteger(affectedRows) || affectedRows < 0) {
+    return {
+      outcome: 'unknown',
+      shouldRestore: false,
+      affectedRows: null,
+      diagnostic: '线程停采条件 UPDATE 未返回有效 affectedRows；结果未知，保留现场并停止自动恢复',
+    };
+  }
+  if (affectedRows === 1) {
+    return { outcome: 'applied', shouldRestore: true, affectedRows, diagnostic: null };
+  }
+  if (affectedRows === 0) {
+    return {
+      outcome: 'not-applied',
+      shouldRestore: false,
+      affectedRows,
+      diagnostic: '线程停采条件 UPDATE 命中 0 行；本轮未成功写入，不登记恢复责任，保持当前状态',
+    };
+  }
+  return {
+    outcome: 'unknown',
+    shouldRestore: false,
+    affectedRows,
+    diagnostic: `线程停采条件 UPDATE affectedRows=${String(
+      affectedRows,
+    )}，期望 0 或 1；结果未知，保留现场并停止自动恢复`,
+  };
 };

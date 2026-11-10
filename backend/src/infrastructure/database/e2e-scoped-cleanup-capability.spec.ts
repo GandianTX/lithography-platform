@@ -3,6 +3,7 @@ import {
   assertTransactionObservationCapability,
   byteExactTextEquals,
   byteExactTextMatchCondition,
+  classifyThreadInstrumentationWrite,
   countActiveOwnTransactions,
 } from '../../../test/utils/e2e-scoped-cleanup';
 
@@ -13,6 +14,10 @@ interface ObservationGrants {
   readonly enabledQuery?: boolean;
   readonly performanceSchema?: boolean;
   readonly consumerEnabled?: boolean;
+  /** 单独关闭某个上游 consumer（global_instrumentation / thread_instrumentation）。 */
+  readonly disabledConsumers?: ReadonlyArray<string>;
+  /** 从 setup_consumers 结果中缺失某个 consumer，模拟不可确认。 */
+  readonly missingConsumers?: ReadonlyArray<string>;
   readonly instrumentEnabled?: boolean;
   readonly activeTotal?: number;
   /** 当前用户除本连接外仍未开启采集的前台线程数。 */
@@ -79,12 +84,17 @@ const createObservationQuery = (
       if (!grants.setup) {
         return denied('setup_consumers');
       }
-      return Promise.resolve([
-        {
-          name: 'events_transactions_current',
-          enabled: grants.consumerEnabled === false ? 'NO' : 'YES',
-        },
-      ]);
+      return Promise.resolve(
+        ['global_instrumentation', 'thread_instrumentation', 'events_transactions_current']
+          .filter((name) => !(grants.missingConsumers ?? []).includes(name))
+          .map((name) => ({
+            name,
+            enabled:
+              grants.consumerEnabled === false || (grants.disabledConsumers ?? []).includes(name)
+                ? 'NO'
+                : 'YES',
+          })),
+      );
     }
     if (sql.includes('FROM performance_schema.setup_instruments')) {
       if (!grants.setup) {
@@ -147,6 +157,18 @@ describe('RQ6 事务观测能力预检（离线）', () => {
 
   const setupCases: Array<[ObservationGrants, RegExp]> = [
     [{ ...allGranted, consumerEnabled: false }, /consumer 未启用/],
+    [
+      { ...allGranted, disabledConsumers: ['global_instrumentation'] },
+      /global_instrumentation consumer 未启用/,
+    ],
+    [
+      { ...allGranted, disabledConsumers: ['thread_instrumentation'] },
+      /thread_instrumentation consumer 未启用/,
+    ],
+    [
+      { ...allGranted, missingConsumers: ['global_instrumentation'] },
+      /global_instrumentation consumer 缺失或不可确认/,
+    ],
     [{ ...allGranted, instrumentEnabled: false }, /instrument 未启用/],
     [{ ...allGranted, setup: false }, /setup_consumers.*零造数/],
   ];
@@ -156,6 +178,21 @@ describe('RQ6 事务观测能力预检（离线）', () => {
 
     await expect(assertTransactionObservationCapability(query)).rejects.toThrow(expected);
   });
+
+  it.each(['global_instrumentation', 'thread_instrumentation'])(
+    '上游 consumer %s 关闭时计数拒绝，绝不能返回零事务',
+    async (name) => {
+      const { query } = createObservationQuery({
+        ...allGranted,
+        disabledConsumers: [name],
+        activeTotal: 0,
+      });
+
+      await expect(countActiveOwnTransactions(query)).rejects.toThrow(
+        new RegExp(`${name} consumer 未启用`),
+      );
+    },
+  );
 
   const failingThreadCases: Array<[ObservationGrants, RegExp]> = [
     [{ ...allGranted, performanceSchema: false }, /不可观测/],
@@ -252,7 +289,11 @@ describe('RQ6 事务观测能力预检（离线）', () => {
           return Promise.resolve([{ enabled: 1 }]);
         }
         if (sql.includes('FROM performance_schema.setup_consumers')) {
-          return Promise.resolve([{ name: 'events_transactions_current', enabled: 'YES' }]);
+          return Promise.resolve([
+            { name: 'global_instrumentation', enabled: 'YES' },
+            { name: 'thread_instrumentation', enabled: 'YES' },
+            { name: 'events_transactions_current', enabled: 'YES' },
+          ]);
         }
         if (sql.includes('FROM performance_schema.setup_instruments')) {
           return Promise.resolve([{ name: 'transaction', enabled: 'YES' }]);
@@ -303,5 +344,40 @@ describe('R02 字节精确恢复（离线）', () => {
         `恢复冲突：stored_file\\.original_filename targetId=f-1 条件更新 affectedRows=${affectedRows}.*已跳过后续通用清理`,
       ),
     );
+  });
+});
+
+describe('P2 线程停采写入结果分类（离线）', () => {
+  it('明确命中 1 行才登记恢复责任', () => {
+    expect(classifyThreadInstrumentationWrite({ affectedRows: 1 })).toEqual({
+      outcome: 'applied',
+      shouldRestore: true,
+      affectedRows: 1,
+      diagnostic: null,
+    });
+  });
+
+  it('命中 0 行时不恢复，保持现状', () => {
+    const decision = classifyThreadInstrumentationWrite({ affectedRows: 0 });
+    expect(decision.outcome).toBe('not-applied');
+    expect(decision.shouldRestore).toBe(false);
+    expect(decision.affectedRows).toBe(0);
+    expect(decision.diagnostic).toMatch(/命中 0 行.*不登记恢复责任/);
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { affectedRows: undefined },
+    { affectedRows: Number.NaN },
+    { affectedRows: '' },
+    { affectedRows: 'not-a-number' },
+    { affectedRows: 2 },
+  ])('结果不可确认时保留现场且不恢复（%#）', (raw) => {
+    const decision = classifyThreadInstrumentationWrite(raw);
+    expect(decision.outcome).toBe('unknown');
+    expect(decision.shouldRestore).toBe(false);
+    expect(decision.diagnostic).toMatch(/结果未知.*保留现场/);
   });
 });
