@@ -61,11 +61,25 @@
 
 - 反例：未知表存在时仍执行 pending/回填；仅用 verify 而未走正式 upgrade。
 - 修复：`database:deploy --mode upgrade` 在 pending/回填前检查未登记业务表并失败关闭。
-- 实库证据（`07-rq5/`）：
+- 实库证据（`07-rq5/`、`12-rq5-44/`）：
   - `lithography_rq5_43`（冻结 43 条正向构建）与 `lithography_rq5_42`（冻结 42 条正向构建）分别创建带哨兵未知表。
   - 正式 upgrade：均在任何 pending 前拒绝，执行迁移 0 条；历史、原表、原行、哨兵与快照完全不变。
   - 精确移除本轮未知表后：43→44 与 42→44 均合法升级并终态校验通过；`previous_version` 合法值 0/1 原值保留。
   - 再次 upgrade：0 条迁移，全部不变。
+  - 44 态、pending=0 复验（`lithography_rq5_43`）：迁移历史 44 条，名称、时间戳、顺序与仓库一致；正式 verify 退出码 0，
+    业务表 51 张；status 显示 `pending 0 条`。
+  - 基线快照：52 张基础表、44 条历史、0 个触发器、0 个本账号活动事务（`44-before.json`，
+    sha256 `8c7fe156c07b73229996bc5c8203c311bf979fa9f8be19cf1e2ac51d9e3674bb`）。
+  - 创建前确认 `rq5_44_unknown_probe_2c9d` 不存在；随后创建 `id int NOT NULL` / `payload varchar(64) NOT NULL` /
+    主键 `id` 的唯一未知表及哨兵行 `(1, 'RQ5-44-SENTINEL-20261110')`，并登记定义、哨兵和引用数（0）。
+  - 正式 `database:deploy --mode upgrade` 退出码 1，原因明确为
+    `存在预期之外的业务表: rq5_44_unknown_probe_2c9d`；无“已执行 N 条迁移”，无收尾错误。
+  - 拒绝前后快照逐字节一致（sha256 `49301f2bbc884ae0054a5d298fd23e07891624ea9cce0b3023e63dc63f219cc1`），
+    哨兵仍在、历史仍 44。
+  - finally 复核表定义、哨兵与引用关系后，精确 `DROP TABLE`（不使用 `IF EXISTS`）退出码 0，残留 0；
+    删除后快照与基线逐字节一致（sha256 `8c7fe156...`）。
+  - 恢复后正式 verify 退出码 0；upgrade 退出码 0，`pending 0`、`无变化`；最终 52 张基础表、44 条历史、
+    0 个触发器、0 个驻留会话、0 个残留合成对象。
 
 ## RQ6 精确清理与事务观测
 
@@ -77,9 +91,25 @@
     UPDATE 后断言失败按 status + finished_at 写入值条件恢复，主错误/收尾错误/残留诊断保留。
   - 观测前置：`@@performance_schema=1`、`events_transactions_current=YES`；未读取 `INNODB_TRX`。
   - 正常交付组（`09-baseline/`）：3 suites / 68 passed / 2 skipped；基线 10 个账号事实前后一致，夹具零残留。
-- 限制：授权账号在本轮前已持有 `PROCESS`（非本轮授予，未授予/未回收/未改系统表）。
-  因此未在该账号上演示“无 `PROCESS`”的真实条件；无权限/未启用/不可观测分支由离线能力用例覆盖，
-  不把空结果当成“无活动事务”。
+- 上述正常/受控故障运行使用的 `gandiantx@127.0.0.1` 含全局 `PROCESS`（非本轮授予），只作为功能证据，
+  不作为“无 `PROCESS`”反例。
+- 真实无 `PROCESS` 条件（`14-rq6-lowpriv/`，低权限账号由用户本轮创建，配置在库外 0600）：
+  - `litho_rq6_a@127.0.0.1`：无全局 `PROCESS`，无角色；直接授予目标库 9 项库级权限，以及
+    `performance_schema.events_transactions_current`、`performance_schema.threads` 的 `SELECT`；
+    实测 `CURRENT_USER` 与 `@@server_uuid` 一致，两项观测查询均成功。
+  - `litho_rq6_b@127.0.0.1`：无全局 `PROCESS`，无角色；仅目标库 9 项库级权限；
+    实测两项 `performance_schema` 查询均返回 `ER_TABLEACCESS_DENIED_ERROR`。
+  - 条件 A：`--listTests` 精确为单一清理规格；实际执行退出码 0，**14 passed / 0 failed / 2 skipped**
+    （受控故障开关关闭）；快照前后逐字节一致（sha256 `d7479fdb...`），`s4e_` 夹具 0，
+    0 驻留会话、0 活动事务、0 用户级锁、0 触发器；账号语句计数显示确有 INSERT/UPDATE/DELETE 后完成精确回收。
+  - 条件 B：同一入口 `--listTests` 精确一致；退出码 1，**4 passed / 10 failed / 2 skipped**；
+    10 个实库用例均在 `beforeAll` 因
+    `当前账号无法读取 performance_schema.events_transactions_current，拒绝创建夹具（零造数）` 失败；
+    账号语句计数增量仅为 4 次 SELECT，INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE 均为 0；
+    前后快照逐字节一致，夹具与连接均 0。
+  - 配置输入更正：`account-b.env` 的 `DB_PASS` 多一个前导 `=`，且缺少 host/port/db/timezone 字段；
+    运行封装在内存中纠正并补齐，未改原文件、未落盘新密码、未创建账号或变更授权。
+- 结论：RQ6 条件 A/B 均已取得真实无 `PROCESS` 实库证据，不再保留未验证状态。
 
 ## RQ44 previous_version 收紧
 

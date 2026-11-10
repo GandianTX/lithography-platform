@@ -2804,3 +2804,108 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 - R029/R030 写入接口与读取审计仍未实现，属功能缺口，不在本期范围。
 - 旧 PR3 entity-scope 门禁退出码 1，按既有裁决记不适用。
 - **本轮回合不 push、不回复 PR、不合并。**
+
+## 第三十九轮：RQ5 44 态未知表拒绝与 RQ6 真实无 PROCESS 条件核对（2026-11-10）
+
+### 39.1 范围与候选
+
+- 分支 `feat/database-v13-deploy`；HEAD `00c4118fa25462a68095075c535dd016a3f83659`（与要求一致）。
+- 工作区与 3 个 stash 原样保留；未 reset、未 stash、未改写提交。
+- 迁移 44 条，`ALL44=72dc3718fba8fd350beda73477a811d4de96c907eb9c3d117eaaff495ce99eb9`；
+  未改迁移、Entity、权限政策或测试断言。
+- 实例 `127.0.0.1:3306`，`@@server_uuid=909f9587-9fce-11f1-a353-00e0709ef3a9`，MySQL 8.0.46；
+  `CURRENT_USER()=gandiantx@127.0.0.1`。
+- 仅使用 `lithography_rq5_43` 与 `lithography_rq6_cleanup`；未新建数据库、未 DROP 数据库、未 TRUNCATE、
+  未关闭外键、未重置 `AUTO_INCREMENT`、未修改迁移历史、未操作其他库或 Redis。
+
+### 39.2 RQ5：44 态、pending=0 时拒绝未知表
+
+- 只读核对：迁移历史 44 条，名称/时间戳/顺序与仓库一致；`status` 输出 `历史 44 条；仓库 44 条；pending 0 条`；
+  正式 `migration:verify` 退出码 0，业务表 51 张。
+- 基线：52 张基础表、44 条历史、0 个触发器、1 个自身会话、0 个本账号活动事务；
+  快照 `12-rq5-44/44-before.json`，sha256 `8c7fe156c07b73229996bc5c8203c311bf979fa9f8be19cf1e2ac51d9e3674bb`。
+- 合成对象：创建前确认 `rq5_44_unknown_probe_2c9d` 不存在（0）；
+  创建 `id int NOT NULL` / `payload varchar(64) NOT NULL` / `PRIMARY KEY (id)` 的未知表；
+  插入哨兵 `(1, 'RQ5-44-SENTINEL-20261110')`；登记 `SHOW CREATE TABLE`、哨兵与引用数（0）。
+- 正式 CLI：`npm run database:deploy -- --mode=upgrade --config-file=<受限配置>
+--database=lithography_rq5_43 --confirm-database=lithography_rq5_43`。
+  - 退出码 1；原因 `存在预期之外的业务表: rq5_44_unknown_probe_2c9d`；
+  - 无“已执行 N 条迁移”；无收尾错误；历史仍 44；哨兵仍在。
+- 拒绝前后快照逐字节一致：sha256 `49301f2bbc884ae0054a5d298fd23e07891624ea9cce0b3023e63dc63f219cc1`。
+- finally 复核表定义、哨兵与引用关系（0）后，精确 `DROP TABLE`（不使用 `IF EXISTS`），退出码 0，残留 0；
+  删除后快照与基线逐字节一致（sha256 `8c7fe156...`）。
+- 恢复后正式 verify 退出码 0；upgrade 退出码 0，`pending 0`、`无变化`；
+  最终 52 张基础表、44 条历史、0 个触发器、0 个驻留会话、0 个残留合成对象。
+
+### 39.3 RQ6：真实无 PROCESS 条件核对
+
+- 既有正常/受控故障运行（`08-rq6/`）使用 `gandiantx@127.0.0.1`；该账号 `SHOW GRANTS` 明确含全局 `PROCESS`，
+  本轮未授予、未回收、未改系统表。因此该运行只能作为功能证据，**不能**充当条件 A/B。
+- 只读核对（`13-rq6-accounts/`）：
+  - `gandiantx@127.0.0.1`：全局 `PROCESS`；`mysql.role_edges` 0 行。
+  - `litho_m39@127.0.0.1`：无全局 `PROCESS`、无角色；仅 `USAGE` 与 `lithography_v13_m39_a/b` 的 9 项库级权限；
+    `lithography_rq6_cleanup` 的库/表/列级授权均为 0；
+    实测 `CURRENT_USER()=litho_m39@127.0.0.1`；读取 `performance_schema.events_transactions_current`
+    返回 `ER_TABLEACCESS_DENIED_ERROR`。
+  - 条件 A 缺失：不存在“无 `PROCESS` + 具备 `lithography_rq6_cleanup` 专项权限 + 可读事务观测视图”的既有账号。
+  - 条件 B 缺失：`litho_m39` 虽无 `PROCESS` 且不可观测，但缺少目标库专项权限，无法抵达观测前置；
+    未用它冒充条件 B，也未用它运行专项。
+- 条件 A/B 均记为 **NOT_EXECUTED**；未创建账号、未 `GRANT`/`REVOKE`、未修改 `mysql` 系统权限表。
+- DBA 最小模板见 `13-rq6-accounts/dba-authorization-template.sql`：条件 A 为目标库 9 项库级权限 +
+  两个观测对象 `SELECT`；条件 B 仅目标库 9 项库级权限，不含全局 `PROCESS`、不含 `GRANT OPTION`。
+
+### 39.4 结论与限制
+
+- RQ5 已取得 44 态、pending=0 的正式 CLI 拒绝证据，且清理与恢复前后快照一致。
+- RQ6 的“真实无 `PROCESS`”条件 A/B 因既有账号权限不满足而保留未验证；不以离线用例或高权限账号替代。
+  **该缺口已由第四十轮用户提供的低权限账号补齐，见下。**
+- 未 push、未回复 PR、未合并；本轮因 RQ6 两项未取得有效实库证据而未追加验收提交。
+
+## 第四十轮：RQ6 真实无 PROCESS 条件 A/B 补验（2026-11-10）
+
+### 40.1 范围与账号
+
+- 候选仍为 `00c4118fa25462a68095075c535dd016a3f83659`；未改代码、迁移、Entity、权限政策或测试断言。
+- 实例/库：`127.0.0.1:3306` / `lithography_rq6_cleanup`；`@@server_uuid` 与授权值一致。
+- 用户本轮创建的两个低权限账号，配置位于库外
+  `/home/gandiantx/secure/lithography-v13/rq6-lowpriv/`（文件 0600、目录 0700）：
+  - `litho_rq6_a@127.0.0.1`：无全局 `PROCESS`、无角色；目标库 9 项库级权限 +
+    `performance_schema.events_transactions_current`、`performance_schema.threads` 的 `SELECT`。
+  - `litho_rq6_b@127.0.0.1`：无全局 `PROCESS`、无角色；仅目标库 9 项库级权限，无任何 `performance_schema` 授权。
+- 本轮未创建账号、未 `GRANT`/`REVOKE`、未修改 `mysql` 系统权限表；测试进程以 A/B 运行，未使用 root。
+- 配置输入异常：`account-b.env` 的 `DB_PASS` 多一个前导 `=`，且缺少 host/port/db/timezone；
+  运行封装在内存中纠正/补齐，未改原文件、未落盘新密码。
+
+### 40.2 前置与快照
+
+- `CURRENT_USER` 均实测为对应低权限账号；`SHOW GRANTS` 仅含上述直接授权，`mysql.role_edges` 对两账号均为 0。
+- `migration:status`：历史 44 条、仓库 44 条、pending 0 条，退出码 0。
+- 基线快照 `14-rq6-lowpriv/rq6-before.json`：52 张基础表、44 条历史、0 触发器、`s4e_` 夹具 0；
+  sha256 `d7479fdb82f02576ab0d4b2fc5d64b7ad6f206ebaa5dcafc3f30be4513ce2776`。
+
+### 40.3 条件 A（可观测、无 PROCESS）
+
+- 入口：`test/jest-v13-authoritative.config.js` + 单一 `--runTestsByPath`；
+  封装先用同一配置/环境运行 `--listTests`，实际集合精确为 1 个
+  `src/infrastructure/database/e2e-scoped-cleanup.v13.realdb.spec.ts`，退出码 0。
+- 实际执行：退出码 0；**14 passed / 0 failed / 2 skipped**（受控故障开关关闭，2 个 FAULT 用例按设计跳过）。
+- 收尾：快照前后逐字节一致（同一 sha256）；`s4e_` 夹具 0、驻留会话 0、A 账号活动事务 0、
+  用户级锁 0、触发器 0；未读取 `INNODB_TRX`。
+- 账号语句计数（前后差）：SELECT +810、INSERT +68、UPDATE +18、DELETE +75；
+  CREATE/ALTER/DROP/TRUNCATE 均 0，说明确有造数并完成精确回收。
+
+### 40.4 条件 B（不可观测、无 PROCESS）
+
+- 同一入口、同一 `--listTests` 校验（精确 1 个文件），再实际执行；退出码 1。
+- 结果：**4 passed / 10 failed / 2 skipped**；10 个实库用例全部在 `beforeAll` 失败，错误为
+  `当前账号无法读取 performance_schema.events_transactions_current，拒绝创建夹具（零造数）`，
+  cause 为 `SELECT command denied ... for table 'events_transactions_current'`。
+- 零造数：账号语句计数（前后差）仅 SELECT +4；
+  INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE 均 0。
+- 运行前后快照逐字节一致（sha256 `d7479fdb...`）；`s4e_` 夹具 0、驻留会话 0、
+  B 账号活动事务 0、用户级锁 0、触发器 0。
+
+### 40.5 结论
+
+- RQ6 条件 A/B 均已取得真实无 `PROCESS` 实库证据；条件 B 在任何造数前按观测能力不足失败关闭。
+- 未 push、未回复 PR、未合并；本轮仅补充证据与文档。
