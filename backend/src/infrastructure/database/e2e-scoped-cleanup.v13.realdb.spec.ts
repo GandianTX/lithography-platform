@@ -49,14 +49,16 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'path';
 
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
-import { DataSource, type EntityManager } from 'typeorm';
+import { DataSource, type EntityManager, type QueryRunner } from 'typeorm';
 import {
   assertAllowedE2eDatabase,
   assertManagerOnExpectedE2eDatabase,
 } from '../../../test/utils/e2e-db-guard';
 import { readRepositoryMigrations } from './incremental-migration';
 import {
+  assertCasRestoreAffectedOne,
   assertTransactionObservationCapability,
+  byteExactTextMatchCondition,
   countActiveOwnTransactions,
   createOwnedResourceLedger,
   recordOwnedResource,
@@ -76,6 +78,10 @@ const CONTROLLED_FAULT = process.env.E2E_V13_CONTROLLED_FAULT === '1';
 const CONTROLLED_FAULT_CASE = (process.env.E2E_V13_CONTROLLED_FAULT_CASE ?? '')
   .trim()
   .toUpperCase();
+// RQ6 线程停采反例：默认关闭；必须另行授权并具备 performance_schema.threads 更新权限。
+const INSTRUMENT_INJECTION = process.env.E2E_V13_INSTRUMENT_INJECTION === '1';
+// R02 第二连接干扰反例：默认关闭；必须另行授权第二受控连接写入目标库。
+const SECOND_CONNECTION_INTERFERENCE = process.env.E2E_V13_SECOND_CONNECTION === '1';
 
 export interface V13CleanupTarget {
   readonly database: string;
@@ -169,9 +175,11 @@ interface DestructiveCall {
 /**
  * 测试执行者登记的 CAS 恢复条件。
  * 原值、写入值与条件同时登记，回收时不从当前库值临时拼装。
+ * `targetId` 只用于冲突诊断，证明保留的是哪一行。
  */
 interface ExecutorCasRestore {
   readonly label: string;
+  readonly targetId: string | number;
   readonly sql: string;
   readonly parameters: unknown[];
 }
@@ -261,6 +269,11 @@ const createDestructiveRecorder = (
 
 describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   let dataSource: DataSource;
+  /**
+   * 观测专用连接：预检、活动事务计数与收尾复验都固定在这一条实际连接上，
+   * 避免“预检连接通过、后续池连接未知”。池内其他连接由 helper 的同用户前台线程检查覆盖。
+   */
+  let observationRunner: QueryRunner;
   let externalLedger: OwnedResourceLedger;
   let caseLedger: OwnedResourceLedger;
   let caseDirectCleanups: Array<() => Promise<void>>;
@@ -331,33 +344,73 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   };
 
   const assertNoActiveTransactions = async (): Promise<void> => {
-    // RQ6：改用本连接/QueryRunner 状态与 performance_schema 当前用户事务视图，
+    // RQ6：观测固定在实际 observationRunner 连接上；计数前由 helper 再次核验
+    // 该线程 INSTRUMENTED、池内其他前台线程、consumer/instrument 与关联查询。
     // 不再读取需要全局 PROCESS 的 information_schema.innodb_trx。
-    const runner = dataSource.createQueryRunner();
-    try {
-      await runner.connect();
-      expect(runner.isTransactionActive).toBe(false);
-      const connection = (await runner.query('SELECT CONNECTION_ID() AS connection_id')) as Row[];
-      expect(Number(connection[0]?.connection_id)).toBeGreaterThan(0);
-    } finally {
-      await runner.release();
-    }
-    expect(runner.isReleased).toBe(true);
+    expect(observationRunner.isReleased).toBe(false);
+    expect(observationRunner.isTransactionActive).toBe(false);
+    const connection = (await observationRunner.query(
+      'SELECT CONNECTION_ID() AS connection_id',
+    )) as Row[];
+    expect(Number(connection[0]?.connection_id)).toBeGreaterThan(0);
 
-    await expect(countActiveOwnTransactions((sql) => dataSource.query(sql))).resolves.toBe(0);
+    await expect(countActiveOwnTransactions((sql) => observationRunner.query(sql))).resolves.toBe(
+      0,
+    );
     // 连接池可用（事务连接已归还，未被悬挂）。
     await expect(dataSource.query('SELECT 1 AS ok')).resolves.toBeDefined();
   };
 
-  const guardedDirect = async (sql: string, parameters: unknown[]): Promise<void> => {
+  const guardedDirect = async (sql: string, parameters: unknown[]): Promise<number> => {
+    let affectedRows = -1;
     await runGuardedScopedCleanup({
       dataSource,
       helper: 'S4-E/干扰行精确回收',
       expectedDatabase: EXPECTED_DB,
       cleanup: async (target) => {
-        await target.query(sql, parameters);
+        const result = await target.query(sql, parameters);
+        affectedRows = Number((result as { affectedRows?: number } | undefined)?.affectedRows);
       },
     });
+    return affectedRows;
+  };
+
+  /**
+   * 测试执行者 CAS 恢复：必须在单行命中时才视为成功。
+   * 未命中表示行被另一连接改写或已不存在，立即失败并保留现场；
+   * 调用方（cleanupCase）在收到该错误后跳过后续通用清理，避免再次认领删除。
+   */
+  const guardedCasRestore = async (restore: ExecutorCasRestore): Promise<void> => {
+    const affectedRows = await guardedDirect(restore.sql, restore.parameters);
+    assertCasRestoreAffectedOne({
+      label: restore.label,
+      targetId: restore.targetId,
+      affectedRows,
+    });
+  };
+
+  /**
+   * 读取一条实际连接在 performance_schema.threads 中的线程事实。
+   * 仅用于默认关闭的线程停采反例；不用于被测清理器。
+   */
+  const readObservationThreadState = async (
+    runner: QueryRunner,
+  ): Promise<{ threadId: number; connectionId: number; instrumented: string }> => {
+    const rows = (await runner.query(
+      `SELECT th.THREAD_ID AS thread_id,
+              th.PROCESSLIST_ID AS processlist_id,
+              th.INSTRUMENTED AS instrumented,
+              CONNECTION_ID() AS connection_id
+         FROM performance_schema.threads AS th
+        WHERE th.PROCESSLIST_ID = CONNECTION_ID()
+        LIMIT 1`,
+    )) as Row[];
+    expect(rows).toHaveLength(1);
+    return {
+      threadId: Number(rows[0].thread_id),
+      connectionId: Number(rows[0].connection_id),
+      instrumented: String(rows[0].instrumented).toUpperCase(),
+    };
   };
 
   const resetCase = (): void => {
@@ -411,11 +464,12 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     try {
       for (const restore of executorCasRestores.splice(0)) {
         try {
-          await guardedDirect(restore.sql, restore.parameters);
+          await guardedCasRestore(restore);
         } catch (error) {
           diagnostics.push(
             new Error(`${helper} 测试执行者恢复失败: ${restore.label}`, { cause: error }),
           );
+          // 冲突行按设计保留：立即停止，绝不进入后续通用清理再次认领/删除。
           return diagnostics;
         }
       }
@@ -1159,7 +1213,11 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     }
 
     // RQ6：在任何造数、任何 DDL/DML 之前确认事务观测能力；缺失时零造数失败关闭。
-    await assertTransactionObservationCapability((sql) => dataSource.query(sql));
+    // 固定使用 observationRunner 这一条实际连接完成预检与后续计数，
+    // 并对池内当前用户前台线程的 INSTRUMENTED 状态一起核验。
+    observationRunner = dataSource.createQueryRunner();
+    await observationRunner.connect();
+    await assertTransactionObservationCapability((sql) => observationRunner.query(sql));
 
     // 迁移历史必须与仓库冻结清单逐条一致（名称、时间戳、顺序），不只比较数量。
     const repositoryMigrations = readRepositoryMigrations(dataSource);
@@ -1356,6 +1414,21 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       }
     }
 
+    if (observationRunner && !observationRunner.isReleased) {
+      if (observationRunner.isTransactionActive) {
+        try {
+          await observationRunner.rollbackTransaction();
+        } catch (error) {
+          diagnostics.push(new Error('S4-E 观测连接回滚失败', { cause: error }));
+        }
+      }
+      try {
+        await observationRunner.release();
+      } catch (error) {
+        diagnostics.push(new Error('S4-E 观测连接释放失败', { cause: error }));
+      }
+    }
+
     if (dataSource?.isInitialized) {
       try {
         await dataSource.destroy();
@@ -1475,12 +1548,14 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           driftedFilename,
           fileId,
         ]);
-        // 改写成功立即登记原值、写入值与 CAS 恢复条件，早于任何读取/断言。
+        // 改写成功立即登记原值、写入值与字节精确 CAS 恢复条件，早于任何读取/断言。
+        // 不使用 utf8mb4_0900_ai_ci 的普通等号：另一连接仅改大小写/尾部空格时不得覆盖。
         executorCasRestores.push({
           label: 'stored_file.original_filename',
+          targetId: fileId,
           sql:
             'UPDATE stored_file SET original_filename = ? ' +
-            'WHERE file_id = ? AND original_filename = ?',
+            `WHERE file_id = ? AND ${byteExactTextMatchCondition('original_filename')}`,
           parameters: [originalFilename, fileId, driftedFilename],
         });
 
@@ -1506,6 +1581,114 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
     await assertSeedBaselineUnchanged();
   });
+
+  // =========================================================================
+  // R02-CONFLICT：另一受控连接在登记后只改大小写
+  // =========================================================================
+
+  (SECOND_CONNECTION_INTERFERENCE && faultArmedFor('R02-CONFLICT') ? it : it.skip)(
+    'R02-CONFLICT 另一连接仅改大小写：字节精确恢复拒绝，冲突行按设计保留',
+    async () => {
+      const originalFilename = `s4e-r02-conflict-${runTag}.txt`;
+      const writtenFilename = `s4e-r02-written-${runTag}.txt`;
+      // 另一受控连接只改变字母大小写，模拟排序规则等价改写。
+      const caseChangedFilename = writtenFilename.toUpperCase();
+      let fileId = '';
+      let retained: Row[] = [];
+      let recoveryError: Error | undefined;
+
+      try {
+        const failure = await captureFailure(async () =>
+          runCase('S4-E/R02-CONFLICT', async () => {
+            fileId = await insertStoredFile(caseLedger, {
+              uploaderAccountId: external.accountId,
+              ownerOrganizationId: external.organizationId,
+              tag: 'r02-conflict',
+              originalFilename,
+            });
+            // 第一条受控写入（登记后）由第二连接提交。
+            const second = dataSource.createQueryRunner();
+            try {
+              await second.connect();
+              await second.startTransaction();
+              await second.query('UPDATE stored_file SET original_filename = ? WHERE file_id = ?', [
+                writtenFilename,
+                fileId,
+              ]);
+              await second.commitTransaction();
+            } finally {
+              await second.release();
+            }
+            // 登记 CAS 恢复条件（写入值）。
+            executorCasRestores.push({
+              label: 'stored_file.original_filename',
+              targetId: fileId,
+              sql:
+                'UPDATE stored_file SET original_filename = ? ' +
+                `WHERE file_id = ? AND ${byteExactTextMatchCondition('original_filename')}`,
+              parameters: [originalFilename, fileId, writtenFilename],
+            });
+            // 另一连接再次提交“仅大小写”变化，CAS 的写入值条件不再字节命中。
+            const third = dataSource.createQueryRunner();
+            try {
+              await third.connect();
+              await third.startTransaction();
+              await third.query('UPDATE stored_file SET original_filename = ? WHERE file_id = ?', [
+                caseChangedFilename,
+                fileId,
+              ]);
+              await third.commitTransaction();
+            } finally {
+              await third.release();
+            }
+
+            await readWithControlledFault('R02-CONFLICT', 'stored-file-snapshot', () =>
+              snapshotRows('stored_file', 'file_id', [fileId]),
+            );
+          }),
+        );
+
+        // 主读取错误与恢复冲突都必须保留，且报告可定位的行 ID。
+        expect(messageOf(failure)).toContain('INJECTED_READ_FAILURE:R02-CONFLICT');
+        expect(messageOf(failure)).toContain('恢复冲突');
+        expect(messageOf(failure)).toContain(`targetId=${fileId}`);
+        expect(messageOf(failure)).toContain('已跳过后续通用清理');
+
+        // 直接证据：冲突行未被覆盖、未被通用清理删除。
+        retained = await snapshotRows('stored_file', 'file_id', [fileId]);
+        expect(retained).toHaveLength(1);
+        expect(String(retained[0].original_filename)).toBe(caseChangedFilename);
+        // 只输出脱敏行标识与字节事实，不落盘、不输出连接信息。
+        console.info(
+          `[S4-E/R02-CONFLICT] retained file_id=${fileId} ` +
+            `original_filename_bytes=${Buffer.from(caseChangedFilename, 'utf8').toString('hex')}`,
+        );
+      } finally {
+        // 独立测试执行者回收：凭原始创建事实（file_id / 原值）与冲突行当前精确字节，
+        // 与被测清理器分离；先保存证据，再精确删除唯一一行。
+        if (fileId !== '' && retained.length === 0) {
+          retained = await snapshotRows('stored_file', 'file_id', [fileId]);
+        }
+        if (retained.length === 1) {
+          const currentBytes = String(retained[0].original_filename);
+          const deleted = await guardedDirect(
+            'DELETE FROM stored_file WHERE file_id = ? AND ' +
+              byteExactTextMatchCondition('original_filename'),
+            [fileId, currentBytes],
+          );
+          if (deleted !== 1) {
+            recoveryError = new Error(
+              `R02-CONFLICT 独立回收失败：file_id=${fileId} affectedRows=${deleted}，期望 1`,
+            );
+          }
+          expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
+        }
+      }
+      if (recoveryError !== undefined) {
+        throw recoveryError;
+      }
+    },
+  );
 
   // =========================================================================
   // R03：集合外记录引用本轮目标
@@ -2250,17 +2433,22 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           );
           writtenFinishedAt = await readFinishedAt();
           caseDirectCleanups.push(async () => {
-            // 按写入值条件恢复：status 与 finished_at 均一致才回滚，避免覆盖异主修改。
-            await guardedDirect(
-              'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ? AND status = ? AND finished_at = ?',
-              [
+            // 按写入值条件恢复：status 字节精确且 finished_at 一致才回滚，
+            // 避免另一连接仅改大小写/尾部空格时被普通等号误判并覆盖。
+            await guardedCasRestore({
+              label: 'local_backup_run.status+finished_at',
+              targetId: external.backupRunId,
+              sql:
+                'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ? AND ' +
+                `${byteExactTextMatchCondition('status')} AND finished_at = ?`,
+              parameters: [
                 original.status,
                 originalFinishedAt,
                 external.backupRunId,
                 changedStatus,
                 writtenFinishedAt,
               ],
-            );
+            });
           });
           throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
         }),
@@ -2269,6 +2457,134 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       expect((await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0].status).toBe(
         original.status,
       );
+      await assertNoActiveTransactions();
+    },
+  );
+
+  // =========================================================================
+  // 默认关闭的真实反例：事务采集能力（需要独立授权）
+  // =========================================================================
+
+  (INSTRUMENT_INJECTION ? it : it.skip)(
+    'INSTRUMENT 正常活动事务被实际观测，回滚后归零',
+    async () => {
+      const transactionRunner = dataSource.createQueryRunner();
+      try {
+        await transactionRunner.connect();
+        await transactionRunner.startTransaction();
+        // 真实活动事务：在事务内执行语句，使 events_transactions_current 出现 ACTIVE 行。
+        await transactionRunner.query('SELECT 1 AS inside_transaction');
+        await expect(
+          countActiveOwnTransactions((sql) => observationRunner.query(sql)),
+        ).resolves.toBe(1);
+        await transactionRunner.rollbackTransaction();
+      } finally {
+        if (transactionRunner.isTransactionActive) {
+          await transactionRunner.rollbackTransaction();
+        }
+        await transactionRunner.release();
+      }
+      // 回滚后才允许得到 0；此前 0 不能作为“无活动事务”的证据。
+      await expect(countActiveOwnTransactions((sql) => observationRunner.query(sql))).resolves.toBe(
+        0,
+      );
+      await assertNoActiveTransactions();
+    },
+  );
+
+  (INSTRUMENT_INJECTION ? it : it.skip)(
+    'INSTRUMENT 仅停采测试连接：造数前拒绝且零业务写入，finally 恢复原状态',
+    async () => {
+      const trackedTables = [
+        'intake_analysis_attempt',
+        'record_package_item',
+        'backup_restore_run',
+        'repair_process_entry',
+        'ai_message_analysis',
+        'repair_request_revision',
+        'reference_document_revision',
+        'repair_request_intake',
+        'local_account_authorization',
+        'local_company_setting',
+        'sync_conflict',
+        'sync_receipt',
+        'record_package_import',
+        'backup_asset',
+        'management_audit_event',
+        'maintenance_report_fault',
+        'stored_file',
+        'repair_request',
+        'reference_document',
+        'organization',
+        'base_user_info',
+        'base_user_account',
+        'equipment_model',
+      ] as const;
+      const snapshotCounts = async (): Promise<Record<string, number>> => {
+        const entries = await Promise.all(
+          trackedTables.map(async (table) => [table, await countOf(table)] as const),
+        );
+        return Object.fromEntries(entries);
+      };
+
+      const stoppedRunner = dataSource.createQueryRunner();
+      let threadId = 0;
+      let connectionId: number | undefined;
+      let originalInstrumented = '';
+      let restoreError: Error | undefined;
+      try {
+        await stoppedRunner.connect();
+        const original = await readObservationThreadState(stoppedRunner);
+        threadId = original.threadId;
+        connectionId = original.connectionId;
+        originalInstrumented = original.instrumented;
+        expect(originalInstrumented).toBe('YES');
+
+        // 只改这一条明确授权的测试连接线程；不触碰全局设置、权限或其他线程。
+        await dataSource.query(
+          'UPDATE performance_schema.threads SET INSTRUMENTED = ? WHERE THREAD_ID = ?',
+          ['NO', threadId],
+        );
+        const injected = await readObservationThreadState(stoppedRunner);
+        expect(injected.instrumented).toBe('NO');
+        console.info(
+          `[S4-E/INSTRUMENT] thread_id=${threadId} connection_id=${String(connectionId)} ` +
+            `original=YES injected=NO`,
+        );
+
+        const countsBefore = await snapshotCounts();
+        // 实际目标线程停采：即使全局 consumer/instrument/权限不变也必须拒绝。
+        await expect(
+          assertTransactionObservationCapability((sql) => stoppedRunner.query(sql)),
+        ).rejects.toThrow(/INSTRUMENTED=NO/);
+        // 覆盖实际池连接：预检即使落到另一条仍采集的连接，池内停采线程也必须被识别。
+        await expect(
+          assertTransactionObservationCapability((sql) => dataSource.query(sql)),
+        ).rejects.toThrow(/INSTRUMENTED<>YES/);
+        // 首次造数前拒绝：业务表行数完全不变，证明零业务写入。
+        expect(await snapshotCounts()).toEqual(countsBefore);
+      } finally {
+        try {
+          if (threadId > 0) {
+            await dataSource.query(
+              'UPDATE performance_schema.threads SET INSTRUMENTED = ? WHERE THREAD_ID = ?',
+              [originalInstrumented || 'YES', threadId],
+            );
+            const restored = await readObservationThreadState(stoppedRunner);
+            if (restored.instrumented !== (originalInstrumented || 'YES')) {
+              restoreError = new Error(
+                `线程停采恢复失败：thread_id=${threadId} 当前=${restored.instrumented} ` +
+                  `期望=${originalInstrumented || 'YES'}`,
+              );
+            }
+          }
+        } finally {
+          await stoppedRunner.release();
+        }
+      }
+      if (restoreError !== undefined) {
+        throw restoreError;
+      }
       await assertNoActiveTransactions();
     },
   );

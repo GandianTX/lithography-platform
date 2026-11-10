@@ -2997,3 +2997,57 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 - 本项为 `NOT ENFORCED` 反例，**不以此前删除 CHECK（缺失）的结果替代**。
 - 证据目录 `16-not-enforced/`（`run-not-enforced.js`、`run.log`、`verify-*.log`、前后快照）。
 - 未 push、未回复 PR、未合并。
+
+## 第四十三轮：连接采集能力与 R02 字节精确恢复（2026-11-10）
+
+### 43.1 起点与范围
+
+- 分支 `feat/database-v13-deploy`，起点 `de742a59700450b42a951b64f0a41cddb12d294c`。
+- 保留既有 3 个 stash，未改动已接受迁移、Entity、外键、目标库守卫或被测拒绝语义。
+- 本轮只处理两项剩余审查意见：实际连接采集能力、R02 恢复字节精确与结果检查。
+- **本轮没有新的实库写入授权**：先核对既有授权，未执行线程停采、第二连接干扰或新的实库恢复；
+  授权缺口见 SOP 2.2 与 43.5。
+
+### 43.2 连接采集能力
+
+- 预检与收尾计数固定在实际 `observationRunner` 连接，不再用一次临时连接推定后续池连接。
+- `assertTransactionObservationCapability` 新增：`@@performance_schema=1`、当前线程
+  `TYPE=FOREGROUND`、当前线程 `INSTRUMENTED=YES`，并统计当前用户其他前台线程是否停采；
+  覆盖造数、事务与收尾实际使用的池连接。
+- `countActiveOwnTransactions` 每次计数前重新核验上述前提；线程停采、线程消失、状态缺失、
+  查询异常或存在停采池连接时统一报“事务观测不可用（不可观测）”，不返回 0。
+- helper 只读，不自动开启全局/线程采集，不扩权。
+
+### 43.3 R02 字节精确恢复
+
+- `stored_file.original_filename` 恢复条件改为
+  `CAST(original_filename AS BINARY) = CAST(? AS BINARY)`；列在已接受迁移中为
+  `varchar(255) NOT NULL`，不需要额外 NULL 分支，长度与尾部空格按字节比较。
+- `guardedCasRestore` 检查 `affectedRows===1`；0 或 2 均失败并报告 `label`、`targetId`、
+  `affectedRows` 与冲突原因。冲突时 `cleanupCase` 在恢复阶段立即返回，不覆盖、不删除该行，
+  不进入随后通用清理；受引用影响的父资源保持原状。
+- `local_backup_run.status` 的同类文本条件一并改为字节精确；`finished_at` 条件保留。
+
+### 43.4 离线回归与验证
+
+- 目标反例测试：当前线程停采、池连接停采、线程消失、状态缺失、查询异常、正常路径保留；
+  R02 字节精确（大小写/尾部空格/NULL）、CAS 命中 1 行成功、0/2 行失败。
+- `npm run typecheck` 退出 0。
+- 定向回归：2 suites / **31 passed / 15 skipped**，退出 0。
+- 变更文件 ESLint 0；Prettier 0；`npm run build` 退出 0；`git diff --check` 退出 0。
+- 完整后端单测：**159 passed / 8 skipped suites；1869 passed / 200 skipped tests**，退出 0。
+- 失败历史：首次 ESLint 报 11 个格式/`no-unsafe-finally`/`no-useless-assignment` 问题；
+  已改为 finally 只记录错误、finally 外抛出，并修正格式与未使用变量后复验通过。
+
+### 43.5 实库授权核对与缺口
+
+- 现有授权覆盖既有 `lithography_rq6_cleanup` / `lithography_rq3_account_dev` 等专项；
+  未覆盖以下新增反例，故本轮保持默认关闭、未执行：
+  - 线程停采 `E2E_V13_INSTRUMENT_INJECTION=1`：需要 `performance_schema.threads` 的
+    `SELECT` 与仅针对授权测试连接的 `UPDATE`（恢复原值），不修改全局开关、不使用 root；
+  - 第二连接干扰 `E2E_V13_SECOND_CONNECTION=1` + 受控故障 `R02-CONFLICT`：需要第二受控连接
+    对目标库 `stored_file` 的 `SELECT/UPDATE/DELETE`，以及独立执行者按 `file_id` 与
+    `CAST(original_filename AS BINARY)` 精确回收冲突行；
+  - 若目标 MySQL 版本要求更新他人会话线程行需额外管理权限，该权限也须单独授权。
+- 未操作审查方现场、共享库、Redis 或原事故数据；未重建数据库、未新增迁移、未跑旧业务 core。
+- 未 push、未回复 PR、未合并。

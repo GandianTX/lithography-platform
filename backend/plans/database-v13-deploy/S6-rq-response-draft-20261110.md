@@ -138,6 +138,33 @@
     历史仍 43、列仍可空、两行均保留；未回填、未删除、未伪造通过。
   - 该 NULL 拒绝库保留现场，不要求升级成功。
 
+## RQ6 第 43 轮残项修复（观测能力与 R02 字节精确恢复）
+
+- 观测能力：预检与收尾计数固定在实际 `observationRunner` 连接；
+  `performance_schema.threads` 同时核验当前线程 `TYPE=FOREGROUND`、`INSTRUMENTED=YES`，
+  并统计当前用户其他前台线程是否停采，覆盖造数/事务/收尾使用的池连接。
+  `countActiveOwnTransactions` 每次计数前重新核验这些前提；线程停采、线程消失、
+  状态缺失、查询异常或存在停采池连接时统一报“事务观测不可用（不可观测）”，
+  拒绝把未知状态当作 `0`，helper 不开启任何全局/线程采集。
+- R02 恢复：`stored_file.original_filename` 条件改为
+  `CAST(original_filename AS BINARY) = CAST(? AS BINARY)`，不再依赖
+  `utf8mb4_0900_ai_ci` 普通等号；`guardedCasRestore` 检查 `affectedRows===1`，
+  未命中立即失败并报告 `targetId` 与冲突原因。冲突时 `cleanupCase` 在恢复阶段直接返回，
+  不覆盖、不删除该行，也不进入随后通用清理；`local_backup_run.status` 的同类文本条件
+  一并改为字节精确，`finished_at` 条件保留。
+- 本轮新增默认关闭反例：
+  `E2E_V13_INSTRUMENT_INJECTION=1` 验证“真实活动事务被观测、回滚后归零”与
+  “仅停采实际测试连接、首次造数前拒绝、零业务写入、finally 恢复原状态”；
+  `E2E_V13_SECOND_CONNECTION=1` + `E2E_V13_CONTROLLED_FAULT=1` +
+  `E2E_V13_CONTROLLED_FAULT_CASE=R02-CONFLICT` 验证“另一受控连接仅改大小写后拒绝恢复、
+  冲突行保留并输出可定位 ID”，随后由独立执行者按精确字节事实回收。
+- 本轮**没有新的实库写入授权**，未执行上述实库反例；现有授权仅覆盖既有
+  `lithography_rq6_cleanup` / `lithography_rq3_account_dev` 等专项，未覆盖
+  `performance_schema.threads` 的 `UPDATE`（线程停采）与第二受控连接写入。
+  所需权限与授权缺口见 SOP 2.2；获批前保持默认关闭。
+- 离线验证：类型检查、定向回归、变更文件 ESLint/Prettier、`nest build`、`git diff --check`
+  与完整后端单测结果见本轮执行记录；未通过则不提交、不 push、不回复 PR、不合并。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。

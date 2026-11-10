@@ -3965,9 +3965,13 @@ export const runGuardedSpecCleanup = async (params: {
   });
 };
 
+const OBSERVATION_ENABLED_SQL = `SELECT @@performance_schema AS enabled`;
+
 const OBSERVATION_THREADS_SQL = `SELECT th.THREAD_ID AS thread_id,
          th.PROCESSLIST_ID AS processlist_id,
          th.PROCESSLIST_USER AS processlist_user,
+         th.TYPE AS thread_type,
+         th.INSTRUMENTED AS instrumented,
          CONNECTION_ID() AS connection_id,
          SUBSTRING_INDEX(CURRENT_USER(), '@', 1) AS current_user_name
     FROM performance_schema.threads AS th
@@ -3991,21 +3995,51 @@ const OBSERVATION_INSTRUMENT_SQL = `SELECT NAME AS name, ENABLED AS enabled
   LIMIT 1`;
 
 /**
- * RQ6：在任何造数之前确认本连接可完整观测自身事务。
+ * 当前用户下仍未开启线程采集（`threads.INSTRUMENTED <> YES`）的前台线程数。
  *
- * 不使用需要全局 PROCESS 的 information_schema.innodb_trx；一次性核验：
- * 1. performance_schema.threads 中当前连接可见，且线程归属与 CURRENT_USER 一致；
- * 2. events_transactions_current 与 threads 的实际连接/线程关联查询可执行；
- * 3. events_transactions_current consumer 与 transaction instrument 均已启用。
+ * 连接池、事务与收尾连接都使用同一数据库用户；全局 consumer/instrument 为 YES
+ * 也不能保证某条池连接仍有采集能力。只要仍有停采的前台线程，
+ * “当前用户 ACTIVE 事务数=0”就不能证明没有活动事务，必须失败关闭。
+ * 这里只读取，不修改任何线程或全局采集开关。
+ */
+const OBSERVATION_UNINSTRUMENTED_THREADS_SQL = `SELECT COUNT(*) AS total
+   FROM performance_schema.threads AS th
+  WHERE th.TYPE = 'FOREGROUND'
+    AND th.PROCESSLIST_USER = SUBSTRING_INDEX(CURRENT_USER(), '@', 1)
+    AND (th.INSTRUMENTED IS NULL OR UPPER(th.INSTRUMENTED) <> 'YES')`;
+
+interface ObservationProbeOptions {
+  /** 是否验证活动事务关联查询可执行（预检与收尾计数均需要）。 */
+  readonly verifyActiveQuery: boolean;
+}
+
+/**
+ * RQ6：确认给定连接可完整观测事务，并拒绝“全局开关开、目标线程停采”的假阳性。
+ *
+ * 不使用需要全局 PROCESS 的 information_schema.innodb_trx；逐项核验：
+ * 1. `@@performance_schema=1`；
+ * 2. `performance_schema.threads` 中当前连接可见，归属与 CURRENT_USER 一致，
+ *    TYPE=FOREGROUND 且该线程 `INSTRUMENTED=YES`（实际目标线程，而非仅全局开关）；
+ * 3. 当前用户不存在其他停采的前台线程（覆盖连接池/事务/收尾实际连接）；
+ * 4. `events_transactions_current` 与 `threads` 的关联查询可执行；
+ * 5. consumer 与 transaction instrument 均已启用。
  *
  * 只有全部前提成立时，计数 0 才表示“确实没有活动事务”；
- * 前提缺失一律视为“采集不可用”，在夹具创建前失败关闭（零造数），
- * 不修改任何全局采集设置，也不把空结果当作安全。
+ * 任一前提缺失/不可确认都视为“不可观测”，在夹具创建前失败关闭（零造数）。
+ * 本函数只读，不开启任何全局或线程采集，也不扩权。
  */
-export const assertTransactionObservationCapability = async (
+const collectObservationFailures = async (
   query: (sql: string) => Promise<unknown>,
-): Promise<void> => {
+  options: ObservationProbeOptions,
+): Promise<string[]> => {
   const failures: string[] = [];
+
+  const enabledProbe = await probeObservationQuery(query, OBSERVATION_ENABLED_SQL);
+  if (enabledProbe.error !== undefined) {
+    failures.push('无法读取 @@performance_schema：' + observationErrorText(enabledProbe.error));
+  } else if (readObservationPerformanceSchemaEnabled(enabledProbe.rows) !== true) {
+    failures.push('performance_schema 未启用或不可确认，事务采集不可观测');
+  }
 
   const threadsProbe = await probeObservationQuery(query, OBSERVATION_THREADS_SQL);
   if (threadsProbe.error !== undefined) {
@@ -4017,16 +4051,38 @@ export const assertTransactionObservationCapability = async (
     failures.push(...validateObservationThread(threadsProbe.rows));
   }
 
-  const activeProbe = await probeObservationQuery(query, OBSERVATION_ACTIVE_SQL);
-  if (activeProbe.error !== undefined) {
+  const uninstrumentedProbe = await probeObservationQuery(
+    query,
+    OBSERVATION_UNINSTRUMENTED_THREADS_SQL,
+  );
+  if (uninstrumentedProbe.error !== undefined) {
     failures.push(
-      'events_transactions_current 与 threads 的连接/线程关联查询不可执行：' +
-        observationErrorText(activeProbe.error),
+      '无法读取当前用户前台线程的采集状态（缺少 SELECT 权限）：' +
+        observationErrorText(uninstrumentedProbe.error),
     );
   } else {
-    const total = readObservationCount(activeProbe.rows);
-    if (total === null) {
-      failures.push('事务观测结果不是有效计数，无法区分“采集不可用”和“无活动事务”');
+    const uninstrumented = readObservationCount(uninstrumentedProbe.rows);
+    if (uninstrumented === null) {
+      failures.push('当前用户前台线程采集状态不是有效计数，无法确认是否停采');
+    } else if (uninstrumented > 0) {
+      failures.push(
+        `存在 ${uninstrumented} 个当前用户前台线程 INSTRUMENTED<>YES，事务采集不可观测`,
+      );
+    }
+  }
+
+  if (options.verifyActiveQuery) {
+    const activeProbe = await probeObservationQuery(query, OBSERVATION_ACTIVE_SQL);
+    if (activeProbe.error !== undefined) {
+      failures.push(
+        'events_transactions_current 与 threads 的连接/线程关联查询不可执行：' +
+          observationErrorText(activeProbe.error),
+      );
+    } else {
+      const total = readObservationCount(activeProbe.rows);
+      if (total === null) {
+        failures.push('事务观测结果不是有效计数，无法区分“采集不可用”和“无活动事务”');
+      }
     }
   }
 
@@ -4050,6 +4106,18 @@ export const assertTransactionObservationCapability = async (
     failures.push('transaction instrument 未启用，事务采集不可用');
   }
 
+  return failures;
+};
+
+/**
+ * RQ6：在任何造数之前确认本连接可完整观测自身事务。
+ *
+ * 失败信息统一以“拒绝创建夹具（零造数）”结尾；不修改任何全局采集设置，也不扩权。
+ */
+export const assertTransactionObservationCapability = async (
+  query: (sql: string) => Promise<unknown>,
+): Promise<void> => {
+  const failures = await collectObservationFailures(query, { verifyActiveQuery: true });
   if (failures.length > 0) {
     throw new Error(`事务观测能力不可用：${failures.join('；')}；拒绝创建夹具（零造数）`);
   }
@@ -4089,6 +4157,23 @@ const readObservationCount = (
   return Number.isFinite(total) && total >= 0 ? total : null;
 };
 
+const readObservationPerformanceSchemaEnabled = (
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): boolean | null => {
+  if (rows === undefined || rows.length !== 1) {
+    return null;
+  }
+  const raw = rows[0].enabled;
+  if (typeof raw === 'boolean') {
+    return raw;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value)) {
+    return null;
+  }
+  return value === 1;
+};
+
 const isObservationEnablementEnabled = (
   rows: ReadonlyArray<Record<string, unknown>> | undefined,
 ): boolean =>
@@ -4108,6 +4193,8 @@ const validateObservationThread = (
   const connectionId = Number(row.connection_id);
   const processlistUser = observationText(row, 'processlist_user');
   const currentUser = observationText(row, 'current_user_name');
+  const threadType = observationText(row, 'thread_type').toUpperCase();
+  const instrumented = observationText(row, 'instrumented').toUpperCase();
   const failures: string[] = [];
   if (!Number.isInteger(threadId) || threadId <= 0) {
     failures.push('performance_schema.threads 当前连接线程 ID 非法');
@@ -4118,18 +4205,38 @@ const validateObservationThread = (
   if (processlistUser.length === 0 || currentUser.length === 0 || processlistUser !== currentUser) {
     failures.push('performance_schema.threads 线程归属用户与 CURRENT_USER 不一致');
   }
+  // 实际目标线程必须自己开启采集；全局 consumer/instrument 为 YES 不足以证明可观测。
+  if (threadType !== 'FOREGROUND') {
+    failures.push(
+      `performance_schema.threads 当前线程 TYPE=${threadType || '<缺失>'}，不是前台线程`,
+    );
+  }
+  if (instrumented !== 'YES') {
+    failures.push(
+      `performance_schema.threads 当前线程 INSTRUMENTED=${instrumented || '<缺失>'}，` +
+        '实际目标线程未开启采集，事务观测不可确认',
+    );
+  }
   return failures;
 };
 
 /**
  * RQ6：统计当前用户仍处于 ACTIVE 的事务数量。
  *
- * 通过 performance_schema.threads 限定为当前用户的连接，无需全局 PROCESS；
- * 用于替代原先依赖 information_schema.innodb_trx 的观测。
+ * 在计数前重新核验观测前提（实际线程 INSTRUMENTED、池内其他前台线程、
+ * consumer/instrument、关联查询可执行）。任一前提不成立即报告“不可观测”，
+ * 绝不把未知状态或停采结果返回为 0。
  */
 export const countActiveOwnTransactions = async (
   query: (sql: string) => Promise<unknown>,
 ): Promise<number> => {
+  const failures = await collectObservationFailures(query, { verifyActiveQuery: false });
+  if (failures.length > 0) {
+    throw new Error(
+      `事务观测不可用（不可观测）：${failures.join('；')}；拒绝把未知状态当作无活动事务`,
+    );
+  }
+
   const rows = await query(OBSERVATION_ACTIVE_SQL);
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('事务观测结果为空，拒绝把未知状态当作无活动事务');
@@ -4139,4 +4246,51 @@ export const countActiveOwnTransactions = async (
     throw new Error('事务观测结果不是有效计数，拒绝把未知状态当作无活动事务');
   }
   return total;
+};
+
+/**
+ * 文本事实的字节精确比较（离线语义回归用）。
+ *
+ * 与 MySQL `CAST(column AS BINARY) = CAST(? AS BINARY)` 对齐：
+ * 大小写不同、尾部空格不同、NULL 与非 NULL 均视为不相等。
+ */
+export const byteExactTextEquals = (left: string | null, right: string | null): boolean => {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return Buffer.from(left, 'utf8').equals(Buffer.from(right, 'utf8'));
+};
+
+/**
+ * 生成字节精确的文本 CAS 条件（R02 恢复）。
+ *
+ * 不使用依赖 `utf8mb4_0900_ai_ci` 的普通等号；`CAST(... AS BINARY)`
+ * 同时消除大小写与尾部空格等价，并按实际字节长度比较。
+ * 目标列在已接受迁移中为 `varchar(255) NOT NULL`，因此无需额外的 NULL 分支；
+ * 若未来用于可空列，NULL 与任何参数比较都不会命中（SQL 三值逻辑），不会被误判为成功。
+ */
+export const byteExactTextMatchCondition = (column: string): string =>
+  `CAST(${column} AS BINARY) = CAST(? AS BINARY)`;
+
+/**
+ * 单行条件恢复结果核验。
+ *
+ * `affectedRows !== 1` 表示行已被其他连接改写或已不存在；必须失败并保留现场，
+ * 不得把未匹配当作恢复成功，也不得在冲突后强行删除制造“零残留”。
+ */
+export const assertCasRestoreAffectedOne = (params: {
+  readonly label: string;
+  readonly targetId: string | number;
+  readonly affectedRows: number;
+}): void => {
+  const { label, targetId, affectedRows } = params;
+  if (affectedRows === 1) {
+    return;
+  }
+  throw new Error(
+    `恢复冲突：${label} targetId=${String(targetId)} 条件更新 affectedRows=${String(
+      affectedRows,
+    )}，期望 1；行可能已被其他连接改写或已不存在，按设计保留现场，拒绝覆盖/删除；` +
+      '受其引用影响的父资源保持原状；已跳过后续通用清理',
+  );
 };

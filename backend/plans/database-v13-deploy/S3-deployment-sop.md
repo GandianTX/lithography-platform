@@ -35,12 +35,45 @@
 - `S4-E` 清理验收不读取 `information_schema.innodb_trx`（该表需要全局 `PROCESS`），
   改用 `performance_schema.events_transactions_current` 的**当前用户/当前连接**视图，
   只需要 `performance_schema` 的 `SELECT`，不需要全局 `PROCESS`。
+- **实际连接必须自身开启采集**：权限齐全、全局 consumer/instrument 为 `YES`，都不能保证
+  参与造数/事务/收尾的某条池连接仍可观测。预检与收尾计数必须核验实际目标线程的
+  `performance_schema.threads.INSTRUMENTED=YES`，并在计数前再次核验；不能只验证一次临时
+  预检连接就假定后续池连接具备采集能力。
+- **不可观测时不得报告零事务**：线程停采、线程消失、状态缺失、查询异常或存在其他停采的
+  当前用户前台线程时，规格必须报“事务观测不可用（不可观测）”并失败关闭，不能把未知状态
+  当作 `0` 个活动事务，也不能自动开启全局/线程采集或扩权。
+- **字节事实冲突时保留行并报错**：恢复条件必须与登记事实字节精确（文本使用
+  `CAST(column AS BINARY) = CAST(? AS BINARY)`，不依赖 `utf8mb4_0900_ai_ci` 普通等号）；
+  条件更新未命中不能视为恢复成功。发现另一连接改写时，不覆盖、不删除该行，跳过随后通用
+  清理，报告可定位行 ID 与冲突原因；不得强删制造“零残留”。冲突行如确需回收，只能由独立
+  测试执行者凭原始创建账本与精确字节事实处理，且先保存行被保留的直接证据。
 - 上述权限只由 DBA 在**另行明确授权的专用实例/专用账号**上授予并记录，不属于部署授权；
   禁止为了跑通验收而给部署账号补授 `PROCESS`，也不得修改 `mysql` 系统权限表。
 - 缺少观测能力时，规格必须在任何夹具写入之前失败关闭（零造数），由维护者申请专项授权后重跑；
   不得降级为固定 `sleep`、仅看最终计数或跳过观测断言。
 - `E2E_V13_CONTROLLED_FAULT=1` 是默认关闭的受控实库故障注入开关，只允许在专项授权窗口中
   针对专用库开启，用于验证“创建/修改后断言失败仍精确回收”；不得在共享库或常规回归中开启。
+- `E2E_V13_INSTRUMENT_INJECTION=1`（线程停采反例）与 `E2E_V13_SECOND_CONNECTION=1`
+  （R02 第二连接干扰反例）同样默认关闭，只在另行授权的专用库与专用测试连接上开启；
+  所需权限单独列清（见 2.2），不得使用 root 或修改全局采集开关。
+- 线程停采反例结束后必须由 `finally` 恢复原 `INSTRUMENTED` 值并读回确认；
+  第二连接干扰反例必须先保存冲突行被保留的直接证据，再由独立执行者按精确字节事实回收。
+
+### 2.2 线程停采与第二连接反例的权限清单（需另行授权）
+
+- 线程停采注入（`E2E_V13_INSTRUMENT_INJECTION=1`）：
+  - `SELECT` on `performance_schema.threads`、`performance_schema.events_transactions_current`、
+    `performance_schema.setup_consumers`、`performance_schema.setup_instruments`；
+  - `UPDATE` on `performance_schema.threads`（仅用于把**明确授权的测试连接**线程置为
+    `INSTRUMENTED=NO`，再用 `finally` 恢复；不修改全局 consumer/instrument，不改其他线程）。
+  - 若目标 MySQL 版本要求更新他人会话线程行还需额外管理权限，则该权限也须单独授权；
+    不得以 root 或全局 `SUPER` 代替。
+- 第二连接干扰（`E2E_V13_SECOND_CONNECTION=1` +
+  `E2E_V13_CONTROLLED_FAULT=1` + `E2E_V13_CONTROLLED_FAULT_CASE=R02-CONFLICT`）：
+  - 目标库 `stored_file` 的 `SELECT` / `UPDATE` / `DELETE`（第二受控连接提交仅大小写变化）；
+  - 被测清理器使用同一授权账号执行精确恢复；冲突行回收由独立执行者按
+    `file_id` 与 `CAST(original_filename AS BINARY)` 精确匹配处理。
+  - 不得操作审查方现场、共享库、Redis 或原事故数据；不重建整套数据库、不新增迁移。
 
 ## 3. 配置位置
 
