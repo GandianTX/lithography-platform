@@ -3159,3 +3159,111 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 - 失败历史：首轮 ESLint 报 5 errors / 2 warnings（`no-base-to-string`、
   `no-unnecessary-type-assertion`、`max-depth`）；按类型收窄与条件更新重构后复验 0。
 - 未 push、未回复 PR、未合并。
+
+## 第四十五轮：补跑线程停采与 D3（2026-11-10）
+
+### 45.1 授权与实际核对
+
+- 用户为 `litho_rq6_a@127.0.0.1` 临时授予
+  `GRANT UPDATE (INSTRUMENTED) ON performance_schema.threads`。
+- 实测 `SHOW GRANTS` 已包含该列级 UPDATE；仍无全局 `PROCESS`、无角色、无其他库权限。
+- 仅使用 `127.0.0.1:3306`、`@@server_uuid=909f9587-9fce-11f1-a353-00e0709ef3a9`、
+  库 `lithography_rq6_cleanup`；未使用 root、未扩权、未建库、未操作其他库/连接/Redis。
+
+### 45.2 反例 A：单线程停采（通过）
+
+- 命令沿用安全 runner：`--listTests` 精确 1 文件后 `--runTestsByPath`；
+  `E2E_V13_INSTRUMENT_INJECTION=1`，`-t` 精确选择“INSTRUMENT 仅停采测试连接”。
+- 结果：**1 passed / 18 skipped / 0 failed，退出码 0**。
+- 实测事实：`thread_id=14358`、`connection_id=12103`、`original=YES`、`injected=NO`。
+- 首次造数前，`assertTransactionObservationCapability` 对已停采的实际连接拒绝
+  （`INSTRUMENTED=NO`），池级预检也拒绝（`INSTRUMENTED<>YES`）；未返回 0。
+- `finally` 按已核验的连接/线程/用户/前台类型/原状态条件恢复并读回确认；
+  运行后本账号前台线程 `INSTRUMENTED<>YES` 计数为 **0**。
+- 分开统计：授权的 `performance_schema.threads` 注入 UPDATE 共 **2 次**
+  （停采 1 次、恢复 1 次，均由测试日志与读回状态证明）；
+  业务 INSERT/UPDATE/DELETE 与 DDL 为 **0**（23 张业务表计数与全库快照前后一致）。
+- 首次执行因列别名 `CURRENT_USER` 与 MySQL 保留函数冲突，在任何 UPDATE 之前失败
+  （`thread_id=0`，未改线程状态）；将别名改为 `current_user_value` 后复跑通过。
+  该修复仅涉及测试文件，`typecheck`/ESLint/Prettier 均为 0。
+
+### 45.3 D3 专用库外配置
+
+- 新建 `/home/gandiantx/secure/lithography-v13/rq6-lowpriv/account-a-d3.env`
+  （目录 0700、文件 0600，未覆盖原 `account-a.env`）。
+- 保留 `litho_rq6_a` 身份与 `lithography_rq6_cleanup` 目标库；
+  `FIELD_ENCRYPTION_KEY/IV` 从该部署既有的 0600 受限配置
+  `round43-final/deploy-delivery.env` 原样读取，长度均为 16，未重新生成、未猜测、未打印。
+- 该文件仅用于本轮 D3 运行，不入库、不提交。
+
+### 45.4 D3 实库单文件（未全通过）
+
+- 以新配置经安全 runner 执行 `v13-d3-constraint-acceptance.realdb.spec.ts`：
+  `--listTests` 精确 1 文件后实际运行。
+- 结果：**8 passed / 1 failed，退出码 1**，未记为通过。
+- 失败用例：“初始化事务失败不留部分新增，密码与目标库在写入前拒绝”。
+  失败点：规格第 770 行要求 `assertDevAccountTargetDatabase(requireTarget().database)`
+  不抛错，即目标库名必须包含 `test/dev/local/drill`；授权库
+  `lithography_rq6_cleanup` 被该安全门按设计拒绝。
+- 该失败不是配置缺密钥或夹具残留，而是授权库名与安全门不兼容。未改安全门、未加 skip、
+  未放宽断言、未重命名或新建数据库，故无法在本轮授权范围内通过；按受阻如实报告。
+- 运行后全库快照 `sha256` 仍为
+  `fee380c13369b0ea6972e4bcde7c54fcde79bce3feccf79dd3aaa9e0c59f30d6`；
+  S4E/D3C/OWNED 残留 0，相关业务表 0，触发器 0，活动事务 0，本账号停采线程 0。
+
+### 45.5 范围与状态
+
+- 未重跑已通过的实际事务观测、R02 正常对照、R02 并发冲突与交付组两项；
+  这些结果不受本轮测试文件别名修复影响（修复只影响停采用例读取的线程状态查询，已复跑该用例）。
+- 因“两项均通过”未满足（D3 有 1 个库名安全门受阻用例），**未追加文档提交**；
+  执行记录与 RQ 草稿仅在工作区更新。未 push、未回复 PR、未合并。
+
+## 第四十六轮：D3 功能验收补跑（rq3_account_dev，2026-11-10）
+
+### 46.1 授权与现场
+
+- 授权目标：`127.0.0.1:3306`、实例 UUID
+  `909f9587-9fce-11f1-a353-00e0709ef3a9`、库 `lithography_rq3_account_dev`。
+- 保留当前提交 `dfc767e9cd755b8fac9410c4259dd97bfad4dfde`、两份未提交文档与 3 个 stash；
+  未 reset/stash/amend。
+- 配置 `/home/gandiantx/secure/lithography-v13/delivery-verify/rq3-account-dev.env`
+  （目录 0700、文件 0600），账号 `gandiantx@127.0.0.1` 为该库既有部署账号。
+- **本次明确为 D3 功能验收，不是低权限证据**：该账号具备全局 `PROCESS`/`SUPER` 等权限，
+  仅用于确认功能与数据不变；未用 root、未扩权、未新建库、未修改默认 env。
+- 实测身份：`CURRENT_USER()=gandiantx@127.0.0.1`、
+  `DATABASE()=lithography_rq3_account_dev`、MySQL `8.0.46`、UUID 与授权一致。
+- 基线：44 条迁移、52 张表（51 张业务表）、0 个触发器、`local_installation` 种子存在。
+- 快照 `before.json` 哈希
+  `5b50db359c88635da972593418e094ef19cca4384d7fcb49395cf73f33db3f3c`
+  （含结构、列、索引、外键、CHECK、表计数、迁移历史、组织/账号/安装种子）。
+
+### 46.2 正式 verify
+
+- 命令：`npm run migration:verify -- --config-file=<0600 配置> --database=lithography_rq3_account_dev`。
+- 结果：**退出码 0**；输出“业务表 51 张；历史校验与数据回填校验通过”。
+
+### 46.3 D3 九项（通过）
+
+- 安全入口：同一 runner，先 `--listTests` 精确 1 文件，再 `--runTestsByPath`；
+  未加 `-t`、未加 skip、未放宽断言。
+- 结果：**1 suite / 9 passed / 9 total / 0 failed / 0 skipped，退出码 0**。
+- 覆盖：生成列与四类计算语义、NULL/JSON/枚举/唯一/外键 RESTRICT、初始化事务失败不留部分新增、
+  开发账号原子创建、目标参数离线校验五项。
+
+### 46.4 运行后基线与资源
+
+- `after.json` 哈希与 `before.json` 完全相同（`5b50db35...`）：已有账号、组织、结构、数据与
+  迁移历史均未变，D3 夹具零残留（`D3C-`/`S4E-`/`OWNED-FIXTURE` 均为 0）。
+- `information_schema.innodb_trx` 0、`innodb_temp_table_info` 0、
+  `performance_schema.data_locks` 0；元数据锁仅剩本次核对连接自身对
+  `performance_schema.metadata_locks` 的 `SHARED_READ`，非测试遗留。
+- 本账号前台连接仅核对连接 1 条，活动事务 0；触发器 0。
+
+### 46.5 历史保留与提交
+
+- 保留第 45 轮在 `lithography_rq6_cleanup` 的 **8 passed / 1 failed** 历史：
+  失败原因为授权库名不含 `test/dev/local/drill`，被开发账号安全门按设计拒绝；
+  该旧运行不改写、不合并进本轮结果。
+- 本轮未改代码、未改安全门、未重跑停采/R02/完整单测。
+- 两份记录更新后通过 Prettier、本地链接与 `git diff --check`，追加文档提交。
+  未 push、未回复 PR、未合并。

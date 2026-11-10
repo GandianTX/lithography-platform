@@ -206,6 +206,59 @@
 - `typecheck`、变更文件 ESLint、Prettier、`git diff --check` 均退出 0；生产源码未变，
   沿用 `674d975` 的完整后端单测结果。未 push、未回复 PR、未合并。
 
+## RQ6 第 45 轮补跑：线程停采与 D3（2026-11-10）
+
+- 账号 `litho_rq6_a@127.0.0.1` 已获临时
+  `GRANT UPDATE (INSTRUMENTED) ON performance_schema.threads`；仍无全局 `PROCESS`、无角色；
+  仅用 `lithography_rq6_cleanup` 与授权实例 UUID，未用 root、未扩权、未建库。
+- 单线程停采（`E2E_V13_INSTRUMENT_INJECTION=1`）：**1 passed / 18 skipped / 0 failed，退出码 0**。
+  实测 `thread_id=14358`、`connection_id=12103`、`original=YES`、`injected=NO`；
+  造数前对已停采实际连接的观测拒绝、池级预检拒绝，未返回 0；
+  `finally` 条件恢复并读回确认；运行后本账号 `INSTRUMENTED<>YES` 前台线程为 **0**。
+  授权 `performance_schema.threads` UPDATE 共 **2 次**（停采、恢复各 1），
+  业务 INSERT/UPDATE/DELETE 与 DDL 为 **0**，23 表计数与全库快照前后一致。
+- 首次停采执行因列别名 `CURRENT_USER` 与 MySQL 保留函数冲突，在任何 UPDATE 前失败
+  （未改线程状态）；改为 `current_user_value` 后复跑通过，`typecheck`/ESLint/Prettier 均为 0。
+- D3 专用配置：新建 `account-a-d3.env`（0700/0600，未覆盖原文件），保留同一低权限身份与目标库；
+  `FIELD_ENCRYPTION_KEY/IV` 从该部署既有 0600 配置 `round43-final/deploy-delivery.env`
+  原样读取（均 16 字符），未重新生成/猜测/打印，未提交。
+- D3 实库单文件：**8 passed / 1 failed，退出码 1**。失败用例为
+  “初始化事务失败不留部分新增，密码与目标库在写入前拒绝”：规格要求目标库名包含
+  `test/dev/local/drill`，授权库 `lithography_rq6_cleanup` 被安全门按设计拒绝。
+  未改安全门、未加 skip、未放宽断言、未重命名或新建库，故本轮无法通过，**不记为 passed**。
+- D3 运行后快照 `sha256` 仍为
+  `fee380c13369b0ea6972e4bcde7c54fcde79bce3feccf79dd3aaa9e0c59f30d6`；
+  S4E/D3C/OWNED 残留 0，相关业务表 0，触发器 0，活动事务 0，停采线程 0。
+- 未重跑已通过的实际事务观测、R02 正常/并发冲突与交付组两项。
+  因 D3 未全通过，未追加文档提交；未 push、未回复 PR、未合并。
+
+## RQ6 第 46 轮 D3 功能验收补跑（rq3_account_dev，2026-11-10）
+
+- 授权目标：`127.0.0.1:3306`、UUID `909f9587-9fce-11f1-a353-00e0709ef3a9`、
+  库 `lithography_rq3_account_dev`。
+- 使用该库既有部署账号与本机 0600/0700 受限配置
+  `/home/gandiantx/secure/lithography-v13/delivery-verify/rq3-account-dev.env`；
+  账号 `gandiantx@127.0.0.1` 具备全局 `PROCESS`/`SUPER` 等权限。
+  **本次仅为 D3 功能验收，不声称低权限证据**；未用 root、未扩权、未新建库、未改默认 env。
+- 基线核对：`CURRENT_USER()=gandiantx@127.0.0.1`、
+  `DATABASE()=lithography_rq3_account_dev`、MySQL `8.0.46`、UUID 一致；
+  44 条迁移、52 张表（51 张业务表）、0 触发器、安装种子存在。
+- 正式 verify：`npm run migration:verify -- --config-file=<0600 配置>
+--database=lithography_rq3_account_dev`，**退出码 0**；
+  输出“业务表 51 张；历史校验与数据回填校验通过”。
+- 基线快照 `sha256=5b50db359c88635da972593418e094ef19cca4384d7fcb49395cf73f33db3f3c`。
+- D3 单文件（安全入口先 `--listTests` 精确 1 文件，再 `--runTestsByPath`）：
+  **1 suite / 9 passed / 0 failed / 0 skipped，退出码 0**；未加 skip、未放宽断言。
+- 运行后快照哈希与基线完全相同：已有账号、组织、结构、数据与迁移历史未变，
+  D3/S4E/OWNED 夹具零残留；`innodb_trx` 0、`innodb_temp_table_info` 0、
+  `data_locks` 0；元数据锁仅核对连接自身对 `performance_schema.metadata_locks`
+  的 `SHARED_READ`，非测试遗留；本账号前台连接仅核对连接 1 条，活动事务 0。
+- 保留第 45 轮在 `lithography_rq6_cleanup` 的 **8 passed / 1 failed** 历史：
+  失败原因为授权库名不含 `test/dev/local/drill`，被开发账号安全门按设计拒绝；
+  旧运行不改写、不合并。
+- 本轮未改代码、未改安全门、未重跑停采/R02/完整单测。
+  文档通过 Prettier、链接与 `git diff --check` 后追加提交；未 push、未回复 PR、未合并。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。
