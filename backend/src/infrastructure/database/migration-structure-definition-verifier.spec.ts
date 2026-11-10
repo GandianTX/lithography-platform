@@ -1,11 +1,16 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
 import type { DataSource } from 'typeorm';
 
 import {
+  CHECK_CREATED_BY,
   CHECK_DEFINITIONS,
   COLUMN_DEFINITIONS,
   FOREIGN_KEY_DEFINITIONS,
   GENERATED_COLUMN_DEFINITIONS,
   INDEX_DEFINITIONS,
+  REQUIRED_CHECKS,
   REQUIRED_INDEXES,
   collectPrefixStructureRequirements,
 } from './migration-schema-contract';
@@ -24,6 +29,7 @@ interface Overrides {
   readonly index?: Readonly<Record<string, { unique?: boolean; columns?: ReadonlyArray<string> }>>;
   readonly check?: Readonly<Record<string, string>>;
   readonly checkEnforced?: Readonly<Record<string, string>>;
+  readonly missingCheck?: ReadonlyArray<string>;
   readonly missingIndex?: ReadonlyArray<string>;
   readonly tables?: ReadonlyArray<string>;
   readonly foreignKey?: Readonly<
@@ -105,6 +111,7 @@ const createFakeDataSource = (overrides: Overrides): DataSource => {
       if (sql.includes('FROM information_schema.check_constraints')) {
         const [, table, constraint] = params;
         const key = `${table}.${constraint}`;
+        if (overrides.missingCheck?.includes(key)) return Promise.resolve([]);
         const base = CHECK_DEFINITIONS[key];
         if (!base) return Promise.resolve([]);
         return Promise.resolve([
@@ -505,7 +512,7 @@ describe('collectDefinitionCoverageIssues', () => {
 
     expect(collectDefinitionCoverageStatistics()).toEqual([
       { kind: 'column', expected: 280, covered: 280, missing: 0, inherited: 79 },
-      { kind: 'check', expected: 110, covered: 110, missing: 0, inherited: 82 },
+      { kind: 'check', expected: 110, covered: 110, missing: 0, inherited: 89 },
       { kind: 'index', expected: 43, covered: 43, missing: 0, inherited: 70 },
       { kind: 'foreignKey', expected: 51, covered: 51, missing: 0, inherited: 59 },
       { kind: 'generatedColumn', expected: 0, covered: 0, missing: 0, inherited: 4 },
@@ -585,5 +592,110 @@ describe('未知业务表', () => {
     );
 
     expect(report.issues.join('\n')).toContain('存在预期之外的业务表: rogue_table');
+  });
+});
+
+describe('CHECK 完整性补登记', () => {
+  const DICTIONARY_FILE = path.resolve(
+    __dirname,
+    '../../../plans/database-v13-deploy/S1-object-and-field-dictionary.md',
+  );
+  /**
+   * 已被后续迁移显式删除并由新约束取代的 CHECK。
+   * 字典保留历史行，但 REQUIRED_CHECKS 不能继续要求已删除的旧名称。
+   */
+  const SUPERSEDED_CHECK_NAMES: Readonly<Record<string, string>> = {
+    chk_reference_document_content_source:
+      '1775501100000 显式删除旧约束，由 chk_reference_document_content_source_v13 取代',
+  };
+
+  it('冻结字典中的每个 CHECK 都已登记，或被显式标记为已取代', () => {
+    const dictionary = fs.readFileSync(DICTIONARY_FILE, 'utf8');
+    const dictionaryNames = [
+      ...new Set([...dictionary.matchAll(/`(chk_[a-z0-9_]+)`/g)].map((match) => match[1])),
+    ];
+    const requiredNames = new Set(REQUIRED_CHECKS.map((check) => check.constraint));
+
+    const missing = dictionaryNames.filter(
+      (name) => !requiredNames.has(name) && SUPERSEDED_CHECK_NAMES[name] === undefined,
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it('chk_engineer_response_text 登记名称、精确定义与生效阶段', () => {
+    const key = 'engineer_response.chk_engineer_response_text';
+
+    expect(REQUIRED_CHECKS).toContainEqual({
+      table: 'engineer_response',
+      constraint: 'chk_engineer_response_text',
+    });
+    expect(CHECK_CREATED_BY[key]).toBe(1775201400000);
+    expect(CHECK_DEFINITIONS[key]).toEqual({
+      since: 1775201400000,
+      clause: 'CHAR_LENGTH(TRIM(`response_text`)) > 0',
+    });
+  });
+
+  it('旧态不提前要求 chk_engineer_response_text，创建迁移执行后才要求', () => {
+    const isEngineerResponseCheck = (item: {
+      kind: string;
+      table: string;
+      name: string;
+    }): boolean =>
+      item.kind === 'check' &&
+      item.table === 'engineer_response' &&
+      item.name === 'chk_engineer_response_text';
+
+    const before = collectPrefixStructureRequirements(new Set([1775201200000]));
+    expect(before.some(isEngineerResponseCheck)).toBe(false);
+
+    const after = collectPrefixStructureRequirements(new Set([1775201400000]));
+    const requirement = after.find(isEngineerResponseCheck);
+    expect(requirement?.kind).toBe('check');
+    if (requirement?.kind !== 'check') {
+      throw new Error('未生成 engineer_response CHECK 结构要求');
+    }
+    expect(requirement.definition?.clause).toBe('CHAR_LENGTH(TRIM(`response_text`)) > 0');
+  });
+
+  it('chk_engineer_response_text 缺失时拒绝', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(
+        createFakeDataSource({ missingCheck: ['engineer_response.chk_engineer_response_text'] }),
+        'fake_db',
+      ),
+    ).rejects.toThrow(/关键 CHECK 定义缺失: engineer_response\.chk_engineer_response_text/);
+  });
+
+  it('chk_engineer_response_text 未强制执行时拒绝', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(
+        createFakeDataSource({
+          checkEnforced: at('engineer_response.chk_engineer_response_text', 'NO'),
+        }),
+        'fake_db',
+      ),
+    ).rejects.toThrow(/关键 CHECK 未强制执行: engineer_response\.chk_engineer_response_text/);
+  });
+
+  it('chk_engineer_response_text 定义漂移时拒绝', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(
+        createFakeDataSource({
+          check: at(
+            'engineer_response.chk_engineer_response_text',
+            '(`response_text` IS NOT NULL)',
+          ),
+        }),
+        'fake_db',
+      ),
+    ).rejects.toThrow(/关键 CHECK 定义漂移: engineer_response\.chk_engineer_response_text/);
+  });
+
+  it('正确结构通过', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(createFakeDataSource({}), 'fake_db'),
+    ).resolves.toBeUndefined();
   });
 });

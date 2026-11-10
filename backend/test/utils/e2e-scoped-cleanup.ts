@@ -3965,28 +3965,160 @@ export const runGuardedSpecCleanup = async (params: {
   });
 };
 
+const OBSERVATION_THREADS_SQL = `SELECT th.THREAD_ID AS thread_id,
+         th.PROCESSLIST_ID AS processlist_id,
+         th.PROCESSLIST_USER AS processlist_user,
+         CONNECTION_ID() AS connection_id,
+         SUBSTRING_INDEX(CURRENT_USER(), '@', 1) AS current_user_name
+    FROM performance_schema.threads AS th
+   WHERE th.PROCESSLIST_ID = CONNECTION_ID()
+   LIMIT 1`;
+
+const OBSERVATION_ACTIVE_SQL = `SELECT COUNT(*) AS total
+   FROM performance_schema.events_transactions_current AS t
+   JOIN performance_schema.threads AS th ON th.THREAD_ID = t.THREAD_ID
+  WHERE th.PROCESSLIST_USER = SUBSTRING_INDEX(CURRENT_USER(), '@', 1)
+    AND t.STATE = 'ACTIVE'`;
+
+const OBSERVATION_CONSUMER_SQL = `SELECT NAME AS name, ENABLED AS enabled
+   FROM performance_schema.setup_consumers
+  WHERE NAME = 'events_transactions_current'
+  LIMIT 1`;
+
+const OBSERVATION_INSTRUMENT_SQL = `SELECT NAME AS name, ENABLED AS enabled
+   FROM performance_schema.setup_instruments
+  WHERE NAME = 'transaction'
+  LIMIT 1`;
+
 /**
- * RQ6：在任何造数之前确认本连接可读取 performance_schema 的事务视图。
+ * RQ6：在任何造数之前确认本连接可完整观测自身事务。
  *
- * 不使用需要全局 PROCESS 的 information_schema.innodb_trx；只读取
- * performance_schema.events_transactions_current 中当前线程的记录。
- * 能力缺失时在夹具创建前失败关闭，保证零造数。
+ * 不使用需要全局 PROCESS 的 information_schema.innodb_trx；一次性核验：
+ * 1. performance_schema.threads 中当前连接可见，且线程归属与 CURRENT_USER 一致；
+ * 2. events_transactions_current 与 threads 的实际连接/线程关联查询可执行；
+ * 3. events_transactions_current consumer 与 transaction instrument 均已启用。
+ *
+ * 只有全部前提成立时，计数 0 才表示“确实没有活动事务”；
+ * 前提缺失一律视为“采集不可用”，在夹具创建前失败关闭（零造数），
+ * 不修改任何全局采集设置，也不把空结果当作安全。
  */
 export const assertTransactionObservationCapability = async (
   query: (sql: string) => Promise<unknown>,
 ): Promise<void> => {
-  try {
-    await query(
-      `SELECT COUNT(*) AS total
-         FROM performance_schema.events_transactions_current
-        WHERE THREAD_ID = PS_CURRENT_THREAD_ID()`,
+  const failures: string[] = [];
+
+  const threadsProbe = await probeObservationQuery(query, OBSERVATION_THREADS_SQL);
+  if (threadsProbe.error !== undefined) {
+    failures.push(
+      '无法读取 performance_schema.threads（当前连接不可见或缺少 SELECT 权限）：' +
+        observationErrorText(threadsProbe.error),
     );
-  } catch (error) {
-    throw new Error(
-      '当前账号无法读取 performance_schema.events_transactions_current，拒绝创建夹具（零造数）',
-      { cause: error },
-    );
+  } else {
+    failures.push(...validateObservationThread(threadsProbe.rows));
   }
+
+  const activeProbe = await probeObservationQuery(query, OBSERVATION_ACTIVE_SQL);
+  if (activeProbe.error !== undefined) {
+    failures.push(
+      'events_transactions_current 与 threads 的连接/线程关联查询不可执行：' +
+        observationErrorText(activeProbe.error),
+    );
+  } else {
+    const total = readObservationCount(activeProbe.rows);
+    if (total === null) {
+      failures.push('事务观测结果不是有效计数，无法区分“采集不可用”和“无活动事务”');
+    }
+  }
+
+  const consumerProbe = await probeObservationQuery(query, OBSERVATION_CONSUMER_SQL);
+  if (consumerProbe.error !== undefined) {
+    failures.push(
+      '无法读取 performance_schema.setup_consumers（缺少 SELECT 权限）：' +
+        observationErrorText(consumerProbe.error),
+    );
+  } else if (!isObservationEnablementEnabled(consumerProbe.rows)) {
+    failures.push('events_transactions_current consumer 未启用，事务采集不可用');
+  }
+
+  const instrumentProbe = await probeObservationQuery(query, OBSERVATION_INSTRUMENT_SQL);
+  if (instrumentProbe.error !== undefined) {
+    failures.push(
+      '无法读取 performance_schema.setup_instruments（缺少 SELECT 权限）：' +
+        observationErrorText(instrumentProbe.error),
+    );
+  } else if (!isObservationEnablementEnabled(instrumentProbe.rows)) {
+    failures.push('transaction instrument 未启用，事务采集不可用');
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`事务观测能力不可用：${failures.join('；')}；拒绝创建夹具（零造数）`);
+  }
+};
+
+const probeObservationQuery = async (
+  query: (sql: string) => Promise<unknown>,
+  sql: string,
+): Promise<{
+  readonly rows?: ReadonlyArray<Record<string, unknown>>;
+  readonly error?: unknown;
+}> => {
+  try {
+    const value = await query(sql);
+    if (!Array.isArray(value)) {
+      return { error: new Error('返回结果不是行集合') };
+    }
+    return { rows: value as ReadonlyArray<Record<string, unknown>> };
+  } catch (error) {
+    return { error };
+  }
+};
+
+const observationErrorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const observationText = (row: Record<string, unknown>, key: string): string =>
+  typeof row[key] === 'string' ? row[key] : '';
+
+const readObservationCount = (
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): number | null => {
+  if (rows === undefined || rows.length === 0) {
+    return null;
+  }
+  const total = Number(rows[0].total);
+  return Number.isFinite(total) && total >= 0 ? total : null;
+};
+
+const isObservationEnablementEnabled = (
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): boolean =>
+  rows !== undefined &&
+  rows.length === 1 &&
+  observationText(rows[0], 'enabled').toUpperCase() === 'YES';
+
+const validateObservationThread = (
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): string[] => {
+  if (rows === undefined || rows.length !== 1) {
+    return ['当前连接在 performance_schema.threads 中不可见或不唯一'];
+  }
+  const row = rows[0];
+  const threadId = Number(row.thread_id);
+  const processlistId = Number(row.processlist_id);
+  const connectionId = Number(row.connection_id);
+  const processlistUser = observationText(row, 'processlist_user');
+  const currentUser = observationText(row, 'current_user_name');
+  const failures: string[] = [];
+  if (!Number.isInteger(threadId) || threadId <= 0) {
+    failures.push('performance_schema.threads 当前连接线程 ID 非法');
+  }
+  if (!Number.isInteger(processlistId) || processlistId !== connectionId) {
+    failures.push('performance_schema.threads 当前连接与 CONNECTION_ID() 不一致');
+  }
+  if (processlistUser.length === 0 || currentUser.length === 0 || processlistUser !== currentUser) {
+    failures.push('performance_schema.threads 线程归属用户与 CURRENT_USER 不一致');
+  }
+  return failures;
 };
 
 /**
@@ -3998,18 +4130,12 @@ export const assertTransactionObservationCapability = async (
 export const countActiveOwnTransactions = async (
   query: (sql: string) => Promise<unknown>,
 ): Promise<number> => {
-  const rows = await query(
-    `SELECT COUNT(*) AS total
-       FROM performance_schema.events_transactions_current AS t
-       JOIN performance_schema.threads AS th ON th.THREAD_ID = t.THREAD_ID
-      WHERE th.PROCESSLIST_USER = SUBSTRING_INDEX(CURRENT_USER(), '@', 1)
-        AND t.STATE = 'ACTIVE'`,
-  );
+  const rows = await query(OBSERVATION_ACTIVE_SQL);
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('事务观测结果为空，拒绝把未知状态当作无活动事务');
   }
-  const total = Number((rows[0] as { readonly total?: unknown }).total);
-  if (!Number.isFinite(total) || total < 0) {
+  const total = readObservationCount(rows);
+  if (total === null) {
     throw new Error('事务观测结果不是有效计数，拒绝把未知状态当作无活动事务');
   }
   return total;

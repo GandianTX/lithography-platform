@@ -85,6 +85,8 @@
 
 - 反例：默认读取需 `PROCESS` 的 `INNODB_TRX`；CREATE/UPDATE 后断言失败留下残留或覆盖异主修改。
 - 修复：默认只读 `performance_schema`；观测能力不足在造数前失败关闭；条件恢复使用原值/写入值 CAS。
+- 本轮补齐：7 条真实遗漏的既有 CHECK 纳入契约并加回归；观测能力在首次写入前一次预检
+  threads/consumer/instrument/目标连接可见性；R01/R02/R03 成功后立即登记收尾事实并新增默认关闭的受控中断。
 - 实库证据（`08-rq6/`，`lithography_rq6_cleanup`，44 条终态）：
   - 正常清理规格：14 passed / 2 skipped（受控故障默认关闭），退出码 0。
   - `E2E_V13_CONTROLLED_FAULT=1`：16 passed / 0 failed，退出码 0；覆盖 CREATE 后真实断言失败精确回收、
@@ -93,23 +95,27 @@
   - 正常交付组（`09-baseline/`）：3 suites / 68 passed / 2 skipped；基线 10 个账号事实前后一致，夹具零残留。
 - 上述正常/受控故障运行使用的 `gandiantx@127.0.0.1` 含全局 `PROCESS`（非本轮授予），只作为功能证据，
   不作为“无 `PROCESS`”反例。
-- 真实无 `PROCESS` 条件（`14-rq6-lowpriv/`，低权限账号由用户本轮创建，配置在库外 0600）：
-  - `litho_rq6_a@127.0.0.1`：无全局 `PROCESS`，无角色；直接授予目标库 9 项库级权限，以及
-    `performance_schema.events_transactions_current`、`performance_schema.threads` 的 `SELECT`；
-    实测 `CURRENT_USER` 与 `@@server_uuid` 一致，两项观测查询均成功。
-  - `litho_rq6_b@127.0.0.1`：无全局 `PROCESS`，无角色；仅目标库 9 项库级权限；
-    实测两项 `performance_schema` 查询均返回 `ER_TABLEACCESS_DENIED_ERROR`。
-  - 条件 A：`--listTests` 精确为单一清理规格；实际执行退出码 0，**14 passed / 0 failed / 2 skipped**
-    （受控故障开关关闭）；快照前后逐字节一致（sha256 `d7479fdb...`），`s4e_` 夹具 0，
-    0 驻留会话、0 活动事务、0 用户级锁、0 触发器；账号语句计数显示确有 INSERT/UPDATE/DELETE 后完成精确回收。
-  - 条件 B：同一入口 `--listTests` 精确一致；退出码 1，**4 passed / 10 failed / 2 skipped**；
-    10 个实库用例均在 `beforeAll` 因
-    `当前账号无法读取 performance_schema.events_transactions_current，拒绝创建夹具（零造数）` 失败；
-    账号语句计数增量仅为 4 次 SELECT，INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE 均为 0；
-    前后快照逐字节一致，夹具与连接均 0。
-  - 配置输入更正：`account-b.env` 的 `DB_PASS` 多一个前导 `=`，且缺少 host/port/db/timezone 字段；
-    运行封装在内存中纠正并补齐，未改原文件、未落盘新密码、未创建账号或变更授权。
-- 结论：RQ6 条件 A/B 均已取得真实无 `PROCESS` 实库证据，不再保留未验证状态。
+- 真实无 `PROCESS` 条件（`14-rq6-lowpriv/`、`15-final-3fix/`，低权限账号由用户本轮创建，配置在库外 0600）：
+  - `litho_rq6_a@127.0.0.1`：无全局 `PROCESS`，无角色；目标库 9 项库级权限，并补齐
+    `performance_schema.setup_consumers`、`setup_instruments`、`threads`、`events_transactions_current` 的 `SELECT`。
+  - `litho_rq6_c@127.0.0.1`：同上，但不含 `performance_schema.threads` 的 `SELECT`。
+  - `litho_rq6_b@127.0.0.1`：仅目标库 9 项库级权限，无任何 `performance_schema` 授权。
+  - 配置输入缺陷（先明确指出，未静默改文件）：B 的 `DB_PASS` 多一个前导 `=` 且缺 host/port/db/timezone；
+    C 的 `DB_PASS` 同样多一个前导 `=`；三者均缺 `FIELD_ENCRYPTION_KEY/IV`，故交付组沿用既定部署配置。
+    运行封装在内存中披露后纠正并补齐，未改原文件、未落盘新密码、未创建账号或变更授权。
+  - 条件 A：`--listTests` 精确为单一清理规格；实际执行退出码 0，**14 passed / 0 failed / 2 skipped**；
+    快照前后逐字节一致，`s4e_` 夹具、驻留会话、活动事务、用户级锁、触发器均 0。
+  - 条件 C（仅缺 `threads`）：退出码 1，**4 passed / 10 failed / 2 skipped**；10 个实库用例均在 `beforeAll` 因
+    `事务观测能力不可用：无法读取 performance_schema.threads…；拒绝创建夹具（零造数）` 失败；
+    实例写语句计数器前后差 0，快照逐字节一致。
+  - 条件 B（`threads` 与观测表都缺）：同一入口在造数前拒绝，错误同时列出
+    `threads`、`events_transactions_current`、`setup_consumers`、`setup_instruments`；退出码 1，
+    **4 passed / 10 failed / 2 skipped**；写语句计数器前后差 0，快照逐字节一致。
+  - R01/R02/R03 受控中断（`E2E_V13_CONTROLLED_FAULT=1` + `R01|R02|R03`）：各 **16 passed / 0 failed**，退出码 0；
+    退出后精确回收本轮资源、非目标不变，主错误与收尾错误可追溯。
+  - 最终交付组（`15-final-3fix/`，`lithography_rq3_account_dev`，44 条终态）：3 suites / **68 passed / 2 skipped**，
+    退出码 0；前后快照逐字节一致，基线 10 账号 / 2 组织不变，17 表零残留。
+- 结论：RQ6 条件 A/C/B、三项受控中断与最终交付组均已取得实库证据，不再保留未验证状态。
 
 ## RQ44 previous_version 收紧
 

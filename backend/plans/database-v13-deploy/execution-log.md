@@ -2909,3 +2909,47 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 
 - RQ6 条件 A/B 均已取得真实无 `PROCESS` 实库证据；条件 B 在任何造数前按观测能力不足失败关闭。
 - 未 push、未回复 PR、未合并；本轮仅补充证据与文档。
+
+## 第四十一轮：3 项审查意见修复与集中实库补验（2026-11-10）
+
+### 41.1 代码修复
+
+- CHECK 契约：补入 7 条真实遗漏的既有 CHECK（`engineer_response.chk_engineer_response_text`、
+  `ai_message` 3 条、`repair_request` 2 条、`reference_document` 1 条）；`DELIVERY_CHECKS` 仍 110 条。
+- 结构校验回归：读取冻结字典独立核对，覆盖缺失、NOT ENFORCED、定义漂移、正确结构与旧态前缀。
+- 观测预检：首次写入前一次核验 `threads` 可见性与进程一致、关联查询可执行、
+  consumer/instrument 启用；失败统一为 `事务观测能力不可用…；拒绝创建夹具（零造数）`；
+  只有全部前提成立时计数 0 才表示“确实无活动事务”。
+- R01/R02/R03 收尾登记：R01 执行者台账；R02 原值/写入值 CAS 恢复；R03 外部工单精确删除
+  （先于用例台账，解除 `intake_id` 外键）；新增默认关闭的 `E2E_V13_CONTROLLED_FAULT_CASE=R01|R02|R03`。
+- R03 首次实跑失败：把集合外工单放进执行者台账后，归属核验要求客户账号/机型也在删除范围而拒绝，
+  导致 `repair_request` 残留；改为在用例收尾清单登记精确删除，保留“集合外”语义。
+  该次残留 `repair_request` id=33 与 `repair_request_intake` id=44 已按真实 ID 与创建事实精确删除。
+
+### 41.2 配置核对（先指出，未静默改文件）
+
+- 目录 `/home/gandiantx/secure/lithography-v13/rq6-lowpriv/` 0700，三个文件均 0600。
+- A 无缺陷；C 的 `DB_PASS` 多一个前导 `=`；B 的 `DB_PASS` 多一个前导 `=`，且缺
+  `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_TIMEZONE`；三者均无 `PROCESS`。
+- 认证探测：A 原样可连；B/C 原样 1045，去掉一个前导 `=` 后可连。三者均缺
+  `FIELD_ENCRYPTION_KEY/IV`，故交付组沿用既定部署配置，低权限文件不用于交付组。
+
+### 41.3 实库补验（`lithography_rq6_cleanup`，52 表 / 44 历史）
+
+- CHECK：`lithography_rq5_43` 正式 verify 退出 0；删除 `chk_engineer_response_text` 后退出 1
+  （缺失 + 定义缺失）；精确恢复后退出 0 且定义逐字一致；前后快照一致。
+- 条件 A：**14 passed / 0 failed / 2 skipped**，退出 0；快照一致；17 表与关联表零残留。
+- 条件 C（仅缺 `threads`）：10 个实库用例在 `beforeAll` 拒绝，**4 passed / 10 failed / 2 skipped**，
+  退出 1；实例写语句计数器（`Com_insert/update/delete/create_table/...`）前后差 0；快照逐字节一致。
+- 条件 B（`threads` 与观测表都缺）：同一入口在造数前拒绝，错误同时列出 `threads`、
+  `events_transactions_current`、`setup_consumers`、`setup_instruments`；
+  **4 passed / 10 failed / 2 skipped**，退出 1；写计数器前后差 0；快照逐字节一致。
+- R01/R02/R03 受控中断：各 **16 passed / 0 failed**，退出 0；精确回收、非目标不变、主错误可追溯。
+- 最终交付组：`lithography_rq3_account_dev`（44 条终态，沿用既定部署配置），
+  3 suites / **68 passed / 2 skipped**，退出 0；前后快照逐字节一致；
+  基线 10 账号 / 2 组织不变，`repair_request`/`repair_request_intake`/`stored_file`/`intake_analysis_attempt` 均 0。
+
+### 41.4 离线验证与交付
+
+- `tsc`（spec/build）退出 0；定向回归 50 passed；ESLint 0；Prettier 0；`nest build` 0；`git diff --check` 0。
+- 未 push、未回复 PR、未合并；本轮追加本地提交。

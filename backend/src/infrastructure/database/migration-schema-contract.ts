@@ -1280,10 +1280,16 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
   { table: 'equipment_model', constraint: 'chk_equipment_model_enabled' },
   { table: 'repair_request', constraint: 'chk_repair_request_acceptance_consistency' },
   { table: 'repair_request', constraint: 'chk_repair_request_deletion_consistency' },
+  { table: 'repair_request', constraint: 'chk_repair_request_is_accepted' },
+  { table: 'repair_request', constraint: 'chk_repair_request_deprecated' },
   { table: 'ai_conversation', constraint: 'chk_ai_conversation_completion' },
+  { table: 'ai_message', constraint: 'chk_ai_message_seq' },
   { table: 'ai_message', constraint: 'chk_ai_message_turn' },
+  { table: 'ai_message', constraint: 'chk_ai_message_role_turn' },
+  { table: 'ai_message', constraint: 'chk_ai_message_content' },
   { table: 'reference_document', constraint: 'chk_reference_document_deletion_consistency' },
   { table: 'reference_document', constraint: 'chk_reference_document_storage_pair' },
+  { table: 'reference_document', constraint: 'chk_reference_document_deprecated' },
   { table: 'organization', constraint: 'chk_organization_kind' },
   { table: 'organization', constraint: 'chk_organization_status' },
   { table: 'organization_membership', constraint: 'chk_organization_membership_role' },
@@ -1441,6 +1447,7 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
     table: 'engineer_registration_application',
     constraint: 'chk_engineer_registration_application_review_time',
   },
+  { table: 'engineer_response', constraint: 'chk_engineer_response_text' },
   { table: 'base_user_account', constraint: 'chk_base_user_account_admin_level' },
   { table: 'organization', constraint: 'chk_organization_service_provider' },
   { table: 'organization', constraint: 'chk_organization_managed_company' },
@@ -2663,10 +2670,17 @@ export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   'equipment_model.chk_equipment_model_enabled': 1775200900000,
   'repair_request.chk_repair_request_acceptance_consistency': 1775201000000,
   'repair_request.chk_repair_request_deletion_consistency': 1775201000000,
+  'repair_request.chk_repair_request_is_accepted': 1775201000000,
+  'repair_request.chk_repair_request_deprecated': 1775201000000,
   'ai_conversation.chk_ai_conversation_completion': 1775201100000,
+  'ai_message.chk_ai_message_seq': 1775201200000,
   'ai_message.chk_ai_message_turn': 1775201200000,
+  'ai_message.chk_ai_message_role_turn': 1775201200000,
+  'ai_message.chk_ai_message_content': 1775201200000,
+  'engineer_response.chk_engineer_response_text': 1775201400000,
   'reference_document.chk_reference_document_deletion_consistency': 1775201500000,
   'reference_document.chk_reference_document_storage_pair': 1775201500000,
+  'reference_document.chk_reference_document_deprecated': 1775201500000,
   'organization.chk_organization_kind': 1775301000000,
   'organization.chk_organization_status': 1775301000000,
   'organization_membership.chk_organization_membership_role': 1775301100000,
@@ -5808,10 +5822,42 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
 };
 
 /**
- * 本期交付（V13 增量迁移 1775501000000—1775502100000）CHECK 的精确表达式。
+ * 关键 CHECK 的精确表达式。
+ * 本期交付项必须有定义；历史沿用项补登记定义后同样参与实库核验。
  * 同名不同定义属于真实漂移，必须由 verify 拒绝。
  */
 export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
+  // 一轮完整性补登记：以下 CHECK 由前 44 条迁移创建、从未被后续迁移替换，
+  // 但此前只登记了名称/所属迁移，未登记精确表达式。生效阶段以创建迁移为准，
+  // 不得按本期交付阶段要求（旧态不提前要求）。
+  'ai_message.chk_ai_message_seq': {
+    since: 1775201200000,
+    clause: '`message_seq` >= 1',
+  },
+  'ai_message.chk_ai_message_role_turn': {
+    since: 1775201200000,
+    clause: "`role` IN ('SYSTEM', 'TOOL') OR `turn_no` IS NOT NULL",
+  },
+  'ai_message.chk_ai_message_content': {
+    since: 1775201200000,
+    clause: 'CHAR_LENGTH(TRIM(`content_text`)) > 0',
+  },
+  'engineer_response.chk_engineer_response_text': {
+    since: 1775201400000,
+    clause: 'CHAR_LENGTH(TRIM(`response_text`)) > 0',
+  },
+  'reference_document.chk_reference_document_deprecated': {
+    since: 1775201500000,
+    clause: '`deprecated` IN (0, 1)',
+  },
+  'repair_request.chk_repair_request_is_accepted': {
+    since: 1775201000000,
+    clause: '`is_accepted` IN (0, 1)',
+  },
+  'repair_request.chk_repair_request_deprecated': {
+    since: 1775201000000,
+    clause: '`deprecated` IN (0, 1)',
+  },
   'repair_request.chk_repair_request_closure': {
     since: 1775502000000,
     clause:

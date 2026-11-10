@@ -13,7 +13,13 @@
 //   启用后第一条写 SQL 前独立核验：
 //     1. 目标库在 E2E_ALLOWED_DB_NAMES 白名单内（assertAllowedE2eDatabase）；
 //     2. 实际连接库 === E2E_REAL_DB_NAME（assertManagerOnExpectedE2eDatabase）；
-//     3. E2E_EXPECTED_SERVER_UUID 与 @@server_uuid 一致（必填）。
+//     3. E2E_EXPECTED_SERVER_UUID 与 @@server_uuid 一致（必填）；
+//     4. 事务观测能力：threads 可见性 + events_transactions_current/threads 关联查询
+//        + consumer/instrument 均已启用（缺失即在造数前零写入拒绝）。
+//
+// 受控中断（默认关闭，仅限另行授权的专用库）：
+//   E2E_V13_CONTROLLED_FAULT=1 且 E2E_V13_CONTROLLED_FAULT_CASE=R01|R02|R03
+//   在原危险窗口注入一次读取失败；finally 仍按测试执行者台账精确回收/恢复。
 //
 // 覆盖映射（17 表逐表见 plans/database-v13-deploy/execution-log.md §14）：
 //   R01 父行在范围、子行未登记        → repair_request_intake → intake_analysis_attempt
@@ -66,6 +72,10 @@ import {
 const REQUESTED = process.env.E2E_REAL_DB_SPECS === '1';
 // RQ6：受控故障注入默认关闭；仅在另行授权时显式开启。
 const CONTROLLED_FAULT = process.env.E2E_V13_CONTROLLED_FAULT === '1';
+// R01/R02/R03 的读取中断按用例选择，默认空值表示不注入。
+const CONTROLLED_FAULT_CASE = (process.env.E2E_V13_CONTROLLED_FAULT_CASE ?? '')
+  .trim()
+  .toUpperCase();
 
 export interface V13CleanupTarget {
   readonly database: string;
@@ -156,6 +166,16 @@ interface DestructiveCall {
   readonly affectedRows: number;
 }
 
+/**
+ * 测试执行者登记的 CAS 恢复条件。
+ * 原值、写入值与条件同时登记，回收时不从当前库值临时拼装。
+ */
+interface ExecutorCasRestore {
+  readonly label: string;
+  readonly sql: string;
+  readonly parameters: unknown[];
+}
+
 const messageOf = (error: unknown): string => {
   if (error instanceof AggregateError) {
     return `${error.message}: ${error.errors.map(messageOf).join(' | ')}`;
@@ -244,6 +264,16 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   let externalLedger: OwnedResourceLedger;
   let caseLedger: OwnedResourceLedger;
   let caseDirectCleanups: Array<() => Promise<void>>;
+  /**
+   * 测试执行者的独立收尾台账。
+   *
+   * 与“被测清理器台账”严格区分：R01 的未登记子行只登记在这里，
+   * 绝不重新塞回被测台账，否则会取消原本要验证的拒绝行为。
+   * R03 的集合外工单因归属核验要求客户账号/机型同在删除范围，
+   * 改用 caseDirectCleanups 登记精确删除。
+   */
+  let executorLedger: OwnedResourceLedger;
+  let executorCasRestores: ExecutorCasRestore[];
   // RQ6：只有能力预检通过且开始造数后才允许 afterAll 进入清理路径。
   let setupAllowed = false;
 
@@ -333,31 +363,91 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   const resetCase = (): void => {
     caseLedger = createOwnedResourceLedger();
     caseDirectCleanups = [];
+    executorLedger = createOwnedResourceLedger();
+    executorCasRestores = [];
+  };
+
+  const faultArmedFor = (caseId: string): boolean =>
+    CONTROLLED_FAULT && CONTROLLED_FAULT_CASE === caseId;
+
+  /**
+   * 受控读取中断：默认关闭；开启时在指定危险窗口抛出一次读取失败。
+   * 只在专用库规格内可用，不增加任何公开业务入口。
+   */
+  const readWithControlledFault = async <T>(
+    caseId: string,
+    stage: string,
+    read: () => Promise<T>,
+  ): Promise<T> => {
+    if (faultArmedFor(caseId)) {
+      throw new Error(`INJECTED_READ_FAILURE:${caseId}:${stage}`);
+    }
+    return read();
+  };
+
+  const captureFailure = async (body: () => Promise<void>): Promise<unknown> => {
+    try {
+      await body();
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  };
+
+  /** 受控中断后的非目标基线：种子行必须与 beforeAll 完全一致。 */
+  const assertSeedBaselineUnchanged = async (): Promise<void> => {
+    expect(await snapshotRows('organization', 'id', [1])).toEqual(baseline.seedOrganization);
+    expect(await snapshotRows('local_installation', 'installation_id', [installationId])).toEqual(
+      baseline.seedInstallation,
+    );
   };
 
   /**
-   * 用例收尾：先精确回收“故意制造的干扰行”，再按台账回收。
-   * 任一步失败即停止，不扩大删除范围。
+   * 用例收尾：先执行测试执行者登记的恢复/回收，再回收干扰行，最后按被测台账回收。
+   * 任一步失败即停止，不扩大删除范围；内存台账始终复位，避免后续用例误认领现场。
    */
   const cleanupCase = async (helper: string): Promise<unknown[]> => {
     const diagnostics: unknown[] = [];
-    for (const step of caseDirectCleanups.splice(0)) {
+    try {
+      for (const restore of executorCasRestores.splice(0)) {
+        try {
+          await guardedDirect(restore.sql, restore.parameters);
+        } catch (error) {
+          diagnostics.push(
+            new Error(`${helper} 测试执行者恢复失败: ${restore.label}`, { cause: error }),
+          );
+          return diagnostics;
+        }
+      }
       try {
-        await step();
+        await runGuardedSpecCleanup({
+          dataSource,
+          helper: `${helper}/测试执行者台账回收`,
+          owned: executorLedger,
+          expectedDatabase: EXPECTED_DB,
+        });
       } catch (error) {
-        diagnostics.push(new Error(`${helper} 干扰行回收失败`, { cause: error }));
+        diagnostics.push(new Error(`${helper} 测试执行者台账回收失败`, { cause: error }));
         return diagnostics;
       }
-    }
-    try {
-      await runGuardedSpecCleanup({
-        dataSource,
-        helper: `${helper}/台账回收`,
-        owned: caseLedger,
-        expectedDatabase: EXPECTED_DB,
-      });
-    } catch (error) {
-      diagnostics.push(new Error(`${helper} 用例台账回收失败`, { cause: error }));
+      for (const step of caseDirectCleanups.splice(0)) {
+        try {
+          await step();
+        } catch (error) {
+          diagnostics.push(new Error(`${helper} 干扰行回收失败`, { cause: error }));
+          return diagnostics;
+        }
+      }
+      try {
+        await runGuardedSpecCleanup({
+          dataSource,
+          helper: `${helper}/台账回收`,
+          owned: caseLedger,
+          expectedDatabase: EXPECTED_DB,
+        });
+      } catch (error) {
+        diagnostics.push(new Error(`${helper} 用例台账回收失败`, { cause: error }));
+      }
     } finally {
       resetCase();
     }
@@ -1311,35 +1401,58 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   // =========================================================================
 
   it('R01 父行在范围但子行未登记：首删前拒绝且零破坏', async () => {
-    await runCase('S4-E/R01', async () => {
-      const intakeId = await insertIntake(caseLedger, {
-        customerAccountId: external.accountId,
-        customerOrganizationId: external.organizationId,
-        serviceOrganizationId: external.organizationId,
-        equipmentModelId: external.equipmentModelId,
-        tag: 'r01',
-      });
-      const attemptId = await insertAttempt(caseLedger, intakeId);
-      // 干扰：父行（intake）已登记，子行（attempt）故意不登记。
-      caseLedger.intakeAnalysisAttemptIds.splice(0, caseLedger.intakeAnalysisAttemptIds.length);
-      caseLedger.facts.intakeAnalysisAttempt.clear();
+    let intakeId = 0;
+    let attemptId = 0;
+    const failure = await captureFailure(async () =>
+      runCase('S4-E/R01', async () => {
+        intakeId = await insertIntake(caseLedger, {
+          customerAccountId: external.accountId,
+          customerOrganizationId: external.organizationId,
+          serviceOrganizationId: external.organizationId,
+          equipmentModelId: external.equipmentModelId,
+          tag: 'r01',
+        });
+        attemptId = await insertAttempt(caseLedger, intakeId);
+        // 独立测试执行者收尾责任：先按真实创建事实登记，再移除被测台账记录。
+        // 这样“移除台账 → 后续读取/断言”之间发生异常时仍能精确回收子行。
+        recordOwnedResource(executorLedger, 'intakeAnalysisAttempt', attemptId, {
+          intakeId,
+          generationNo: 0,
+        });
+        // 干扰：父行（intake）已登记，子行（attempt）故意不登记。
+        caseLedger.intakeAnalysisAttemptIds.splice(0, caseLedger.intakeAnalysisAttemptIds.length);
+        caseLedger.facts.intakeAnalysisAttempt.clear();
 
-      const before = {
-        intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
-        attempt: await snapshotRows('intake_analysis_attempt', 'id', [attemptId]),
-      };
+        const before = {
+          intake: await readWithControlledFault('R01', 'intake-snapshot', () =>
+            snapshotRows('repair_request_intake', 'id', [intakeId]),
+          ),
+          attempt: await readWithControlledFault('R01', 'attempt-snapshot', () =>
+            snapshotRows('intake_analysis_attempt', 'id', [attemptId]),
+          ),
+        };
 
-      await rejectWithoutDestructiveCalls(caseLedger, 'S4-E/R01', '该子行未登记归属证据');
+        await rejectWithoutDestructiveCalls(caseLedger, 'S4-E/R01', '该子行未登记归属证据');
 
-      expect({
-        intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
-        attempt: await snapshotRows('intake_analysis_attempt', 'id', [attemptId]),
-      }).toEqual(before);
+        expect({
+          intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
+          attempt: await snapshotRows('intake_analysis_attempt', 'id', [attemptId]),
+        }).toEqual(before);
+      }),
+    );
 
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('DELETE FROM intake_analysis_attempt WHERE id = ?', [attemptId]);
-      });
-    });
+    if (!faultArmedFor('R01')) {
+      if (failure !== undefined) {
+        throw failure instanceof Error ? failure : new Error(messageOf(failure));
+      }
+      return;
+    }
+
+    // 受控中断：主错误必须可追溯，finally 仍精确回收子行与父行，非目标种子不变。
+    expect(messageOf(failure)).toContain('INJECTED_READ_FAILURE:R01');
+    expect(await snapshotRows('repair_request_intake', 'id', [intakeId])).toEqual([]);
+    expect(await snapshotRows('intake_analysis_attempt', 'id', [attemptId])).toEqual([]);
+    await assertSeedBaselineUnchanged();
   });
 
   // =========================================================================
@@ -1347,33 +1460,51 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   // =========================================================================
 
   it('R02 已登记资源事实被改写：首删前拒绝且零破坏', async () => {
-    await runCase('S4-E/R02', async () => {
-      const fileId = await insertStoredFile(caseLedger, {
-        uploaderAccountId: external.accountId,
-        ownerOrganizationId: external.organizationId,
-        tag: 'r02',
-      });
-      const driftedFilename = `drifted-${runTag}.txt`;
-      await dataSource.query('UPDATE stored_file SET original_filename = ? WHERE file_id = ?', [
-        driftedFilename,
-        fileId,
-      ]);
-
-      const before = await snapshotRows('stored_file', 'file_id', [fileId]);
-      expect(before[0].original_filename).toBe(driftedFilename);
-
-      await rejectWithoutDestructiveCalls(caseLedger, 'S4-E/R02', '本轮登记事实漂移');
-
-      expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual(before);
-
-      // 先恢复受控写入前的归属事实，再走合法精确回收。
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('UPDATE stored_file SET original_filename = ? WHERE file_id = ?', [
-          `s4e-r02.txt`,
+    let fileId = '';
+    const failure = await captureFailure(async () =>
+      runCase('S4-E/R02', async () => {
+        const originalFilename = 's4e-r02.txt';
+        fileId = await insertStoredFile(caseLedger, {
+          uploaderAccountId: external.accountId,
+          ownerOrganizationId: external.organizationId,
+          tag: 'r02',
+          originalFilename,
+        });
+        const driftedFilename = `drifted-${runTag}.txt`;
+        await dataSource.query('UPDATE stored_file SET original_filename = ? WHERE file_id = ?', [
+          driftedFilename,
           fileId,
         ]);
-      });
-    });
+        // 改写成功立即登记原值、写入值与 CAS 恢复条件，早于任何读取/断言。
+        executorCasRestores.push({
+          label: 'stored_file.original_filename',
+          sql:
+            'UPDATE stored_file SET original_filename = ? ' +
+            'WHERE file_id = ? AND original_filename = ?',
+          parameters: [originalFilename, fileId, driftedFilename],
+        });
+
+        const before = await readWithControlledFault('R02', 'stored-file-snapshot', () =>
+          snapshotRows('stored_file', 'file_id', [fileId]),
+        );
+        expect(before[0].original_filename).toBe(driftedFilename);
+
+        await rejectWithoutDestructiveCalls(caseLedger, 'S4-E/R02', '本轮登记事实漂移');
+
+        expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual(before);
+      }),
+    );
+
+    if (!faultArmedFor('R02')) {
+      if (failure !== undefined) {
+        throw failure instanceof Error ? failure : new Error(messageOf(failure));
+      }
+      return;
+    }
+
+    expect(messageOf(failure)).toContain('INJECTED_READ_FAILURE:R02');
+    expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
+    await assertSeedBaselineUnchanged();
   });
 
   // =========================================================================
@@ -1381,54 +1512,87 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   // =========================================================================
 
   it('R03 集合外工单引用本轮 intake：拒绝且零删除零解环', async () => {
-    await runCase('S4-E/R03', async () => {
-      const intakeId = await insertIntake(caseLedger, {
-        customerAccountId: external.accountId,
-        customerOrganizationId: external.organizationId,
-        serviceOrganizationId: external.organizationId,
-        equipmentModelId: external.equipmentModelId,
-        tag: 'r03',
-      });
+    let intakeId = 0;
+    let externalRequestId = 0;
+    const failure = await captureFailure(async () =>
+      runCase('S4-E/R03', async () => {
+        intakeId = await insertIntake(caseLedger, {
+          customerAccountId: external.accountId,
+          customerOrganizationId: external.organizationId,
+          serviceOrganizationId: external.organizationId,
+          equipmentModelId: external.equipmentModelId,
+          tag: 'r03',
+        });
 
-      const externalRequestNo = `S4E-EXTREQ-r03-${runTag}`;
-      const externalRequestResult = await dataSource.query(
-        `INSERT INTO repair_request
-           (request_no, customer_account_id, equipment_model_id, error_code, fault_description,
-            content_md, intake_id, customer_organization_id, service_organization_id,
-            owner_organization_id)
-         VALUES (?, ?, ?, 'E001', 'S4-E 外部工单', 'S4-E 外部内容', ?, ?, ?, ?)`,
-        [
-          externalRequestNo,
-          external.accountId,
-          external.equipmentModelId,
-          intakeId,
-          external.organizationId,
-          external.organizationId,
-          external.organizationId,
-        ],
-      );
-      const externalRequestId = insertIdOf(externalRequestResult);
+        const externalRequestNo = `S4E-EXTREQ-r03-${runTag}`;
+        const externalRequestResult = await dataSource.query(
+          `INSERT INTO repair_request
+             (request_no, customer_account_id, equipment_model_id, error_code, fault_description,
+              content_md, intake_id, customer_organization_id, service_organization_id,
+              owner_organization_id)
+           VALUES (?, ?, ?, 'E001', 'S4-E 外部工单', 'S4-E 外部内容', ?, ?, ?, ?)`,
+          [
+            externalRequestNo,
+            external.accountId,
+            external.equipmentModelId,
+            intakeId,
+            external.organizationId,
+            external.organizationId,
+            external.organizationId,
+          ],
+        );
+        externalRequestId = insertIdOf(externalRequestResult);
+        // INSERT 成功立即登记收尾事实；该行只属于测试执行者，不重新塞回被测台账，
+        // 保留“集合外记录”语义。回收条件同时限定真实 ID 与创建事实，且在用例台账
+        // 之前执行，先解除 intake_id 外键引用；不能放进测试执行者台账，
+        // 因为该台账的归属核验要求客户账号/机型也在本轮删除范围内。
+        caseDirectCleanups.push(async () => {
+          await guardedDirect(
+            'DELETE FROM repair_request WHERE id = ? AND request_no = ? ' +
+              'AND customer_account_id = ? AND equipment_model_id = ? AND intake_id = ?',
+            [
+              externalRequestId,
+              externalRequestNo,
+              external.accountId,
+              external.equipmentModelId,
+              intakeId,
+            ],
+          );
+        });
 
-      const before = {
-        intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
-        externalRequest: await snapshotRows('repair_request', 'id', [externalRequestId]),
-      };
+        const before = {
+          intake: await readWithControlledFault('R03', 'intake-snapshot', () =>
+            snapshotRows('repair_request_intake', 'id', [intakeId]),
+          ),
+          externalRequest: await readWithControlledFault('R03', 'external-request-snapshot', () =>
+            snapshotRows('repair_request', 'id', [externalRequestId]),
+          ),
+        };
 
-      await rejectWithoutDestructiveCalls(
-        caseLedger,
-        'S4-E/R03',
-        '工单经 intake_id 引用本轮报修输入但未登记归属证据',
-      );
+        await rejectWithoutDestructiveCalls(
+          caseLedger,
+          'S4-E/R03',
+          '工单经 intake_id 引用本轮报修输入但未登记归属证据',
+        );
 
-      expect({
-        intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
-        externalRequest: await snapshotRows('repair_request', 'id', [externalRequestId]),
-      }).toEqual(before);
+        expect({
+          intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
+          externalRequest: await snapshotRows('repair_request', 'id', [externalRequestId]),
+        }).toEqual(before);
+      }),
+    );
 
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('DELETE FROM repair_request WHERE id = ?', [externalRequestId]);
-      });
-    });
+    if (!faultArmedFor('R03')) {
+      if (failure !== undefined) {
+        throw failure instanceof Error ? failure : new Error(messageOf(failure));
+      }
+      return;
+    }
+
+    expect(messageOf(failure)).toContain('INJECTED_READ_FAILURE:R03');
+    expect(await snapshotRows('repair_request', 'id', [externalRequestId])).toEqual([]);
+    expect(await snapshotRows('repair_request_intake', 'id', [intakeId])).toEqual([]);
+    await assertSeedBaselineUnchanged();
   });
 
   // =========================================================================
