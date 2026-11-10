@@ -410,7 +410,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               th.INSTRUMENTED AS instrumented,
               th.TYPE AS thread_type,
               CONNECTION_ID() AS connection_id,
-              CURRENT_USER() AS current_user
+              CURRENT_USER() AS current_user_value
          FROM performance_schema.threads AS th
         WHERE th.PROCESSLIST_ID = CONNECTION_ID()
         LIMIT 1`,
@@ -418,7 +418,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     expect(rows).toHaveLength(1);
     const rawProcesslistUser = rows[0].processlist_user;
     const rawThreadType = rows[0].thread_type;
-    const rawCurrentUser = rows[0].current_user;
+    const rawCurrentUser = rows[0].current_user_value;
     return {
       threadId: Number(rows[0].thread_id),
       connectionId: Number(rows[0].connection_id),
