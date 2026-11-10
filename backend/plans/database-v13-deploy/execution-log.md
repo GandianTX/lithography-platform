@@ -3023,6 +3023,8 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 - `stored_file.original_filename` 恢复条件改为
   `CAST(original_filename AS BINARY) = CAST(? AS BINARY)`；列在已接受迁移中为
   `varchar(255) NOT NULL`，不需要额外 NULL 分支，长度与尾部空格按字节比较。
+  同一恢复事实中的 `file_id`（`char(36)` 主键）也增加字节精确条件，避免仅大小写
+  改写主键后仍被普通等号命中；保留索引等值条件以维持可定位性。
 - `guardedCasRestore` 检查 `affectedRows===1`；0 或 2 均失败并报告 `label`、`targetId`、
   `affectedRows` 与冲突原因。冲突时 `cleanupCase` 在恢复阶段立即返回，不覆盖、不删除该行，
   不进入随后通用清理；受引用影响的父资源保持原状。

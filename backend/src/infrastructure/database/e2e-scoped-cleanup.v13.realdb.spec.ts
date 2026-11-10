@@ -1555,8 +1555,10 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           targetId: fileId,
           sql:
             'UPDATE stored_file SET original_filename = ? ' +
-            `WHERE file_id = ? AND ${byteExactTextMatchCondition('original_filename')}`,
-          parameters: [originalFilename, fileId, driftedFilename],
+            'WHERE file_id = ? ' +
+            `AND ${byteExactTextMatchCondition('file_id')} ` +
+            `AND ${byteExactTextMatchCondition('original_filename')}`,
+          parameters: [originalFilename, fileId, fileId, driftedFilename],
         });
 
         const before = await readWithControlledFault('R02', 'stored-file-snapshot', () =>
@@ -1625,8 +1627,10 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               targetId: fileId,
               sql:
                 'UPDATE stored_file SET original_filename = ? ' +
-                `WHERE file_id = ? AND ${byteExactTextMatchCondition('original_filename')}`,
-              parameters: [originalFilename, fileId, writtenFilename],
+                'WHERE file_id = ? ' +
+                `AND ${byteExactTextMatchCondition('file_id')} ` +
+                `AND ${byteExactTextMatchCondition('original_filename')}`,
+              parameters: [originalFilename, fileId, fileId, writtenFilename],
             });
             // 另一连接再次提交“仅大小写”变化，CAS 的写入值条件不再字节命中。
             const third = dataSource.createQueryRunner();
@@ -1672,9 +1676,10 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         if (retained.length === 1) {
           const currentBytes = String(retained[0].original_filename);
           const deleted = await guardedDirect(
-            'DELETE FROM stored_file WHERE file_id = ? AND ' +
-              byteExactTextMatchCondition('original_filename'),
-            [fileId, currentBytes],
+            'DELETE FROM stored_file WHERE file_id = ? ' +
+              `AND ${byteExactTextMatchCondition('file_id')} ` +
+              `AND ${byteExactTextMatchCondition('original_filename')}`,
+            [fileId, fileId, currentBytes],
           );
           if (deleted !== 1) {
             recoveryError = new Error(

@@ -148,7 +148,8 @@
   拒绝把未知状态当作 `0`，helper 不开启任何全局/线程采集。
 - R02 恢复：`stored_file.original_filename` 条件改为
   `CAST(original_filename AS BINARY) = CAST(? AS BINARY)`，不再依赖
-  `utf8mb4_0900_ai_ci` 普通等号；`guardedCasRestore` 检查 `affectedRows===1`，
+  `utf8mb4_0900_ai_ci` 普通等号；同一恢复事实中的 `file_id` 也增加字节精确条件，
+  避免主键仅大小写变化后被普通等号命中；`guardedCasRestore` 检查 `affectedRows===1`，
   未命中立即失败并报告 `targetId` 与冲突原因。冲突时 `cleanupCase` 在恢复阶段直接返回，
   不覆盖、不删除该行，也不进入随后通用清理；`local_backup_run.status` 的同类文本条件
   一并改为字节精确，`finished_at` 条件保留。
