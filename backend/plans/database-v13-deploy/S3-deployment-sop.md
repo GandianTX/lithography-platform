@@ -66,8 +66,17 @@
     `performance_schema.setup_consumers`、`performance_schema.setup_instruments`；
   - `UPDATE` on `performance_schema.threads`（仅用于把**明确授权的测试连接**线程置为
     `INSTRUMENTED=NO`，再用 `finally` 恢复；不修改全局 consumer/instrument，不改其他线程）。
+  - `performance_schema.threads` 无法按行授权，因此注入工具必须在 `UPDATE` 前核验本轮连接的
+    `CONNECTION_ID`、`THREAD_ID`、`PROCESSLIST_USER`、`TYPE=FOREGROUND` 与原 `INSTRUMENTED=YES`；
+    实际写入使用同时包含这些事实的条件 `UPDATE`，`affectedRows` 必须为 1，任一事实不符即拒绝。
+    恢复使用同样的条件精确命中并读回确认；未确认、线程消失或恢复失败时保留错误并停止后续写入。
+    不得按用户名批量更新，也不得用一次临时预检连接代替实际测试连接。
+  - 最小授权示例（需另行批准，行级授权不可用）：
+    `GRANT UPDATE ON performance_schema.threads TO '<专用测试账号>'@'<授权来源>';`
   - 若目标 MySQL 版本要求更新他人会话线程行还需额外管理权限，则该权限也须单独授权；
     不得以 root 或全局 `SUPER` 代替。
+  - 低权限配置若缺 `FIELD_ENCRYPTION_KEY/IV`，交付组中的约束验收规格会在造数前失败关闭；
+    应申请专用低权限配置补齐这两项，不得改用高权限部署配置冒充低权限证据。
 - 第二连接干扰（`E2E_V13_SECOND_CONNECTION=1` +
   `E2E_V13_CONTROLLED_FAULT=1` + `E2E_V13_CONTROLLED_FAULT_CASE=R02-CONFLICT`）：
   - 目标库 `stored_file` 的 `SELECT` / `UPDATE` / `DELETE`（第二受控连接提交仅大小写变化）；

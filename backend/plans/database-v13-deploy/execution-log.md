@@ -3053,3 +3053,109 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
   - 若目标 MySQL 版本要求更新他人会话线程行需额外管理权限，该权限也须单独授权。
 - 未操作审查方现场、共享库、Redis 或原事故数据；未重建数据库、未新增迁移、未跑旧业务 core。
 - 未 push、未回复 PR、未合并。
+
+## 第四十四轮：两项实库反例与正常交付组复验（2026-11-10）
+
+### 44.1 候选、现场与实库
+
+- 分支 `feat/database-v13-deploy`，起点与最终候选 `674d9750b40aa850a6aefa05ad920cca196b4046`；
+  工作区与未跟踪文件保留，3 个 stash 未动，未 reset/stash/amend。
+- 迁移 44 条；`ALL44=72dc3718fba8fd350beda73477a811d4de96c907eb9c3d117eaaff495ce99eb9`
+  （按文件名排序后逐文件 `sha256sum` 再整体取 `sha256`），前 44 条未改。
+- 实库 `127.0.0.1:3306`，`@@server_uuid=909f9587-9fce-11f1-a353-00e0709ef3a9`，
+  MySQL `8.0.46`，库 `lithography_rq6_cleanup`：44 条历史、52 张基础表、0 个触发器、
+  `local_installation` 种子齐全。
+- 配置 `/home/gandiantx/secure/lithography-v13/rq6-lowpriv/account-a.env`（目录 0700、文件 0600），
+  密码未打印。
+- 账号 `litho_rq6_a@127.0.0.1`：无全局 `PROCESS`、无角色；目标库 9 项库级权限；
+  `performance_schema.threads` / `events_transactions_current` / `setup_consumers` /
+  `setup_instruments` 的 `SELECT`；**无 `performance_schema.threads` 的 `UPDATE`**。
+
+### 44.2 安全入口
+
+- 复用 `test/jest-v13-authoritative.config.js` 与 `test/run-v13-authoritative-spec.ts` 的
+  `buildEnvironment`：配置 0600/0700、`DB_NAME` 与目标库一致、UUID/白名单/清理许可独立确认。
+- 外层一次性封装只显式转发本轮授权开关
+  `E2E_V13_CONTROLLED_FAULT`、`E2E_V13_CONTROLLED_FAULT_CASE`、
+  `E2E_V13_INSTRUMENT_INJECTION`、`E2E_V13_SECOND_CONNECTION`；其他 `E2E_`/`V13_` 不继承。
+- 每次先以同一环境、配置与路径执行 `--listTests` 并机器核对文件集合，再 `--runTestsByPath`；
+  未回退默认 env，未触发全库清理或 Redis。
+
+### 44.3 反例 A：实际连接正常观测（实库，通过）
+
+- `E2E_V13_INSTRUMENT_INJECTION=1`，`-t` 精确选择“INSTRUMENT 正常活动事务被实际观测，回滚后归零”。
+- 结果：**1 passed / 18 skipped，退出码 0**；`--listTests` 精确为单一清理规格。
+- 实际参与专项的连接建立真实事务，`countActiveOwnTransactions=1`；回滚后再次计数为 0。
+- 运行前后快照逐字节一致（见 44.8）。
+
+### 44.4 反例 A：单线程停采（权限受阻，未执行）
+
+- 账号 A 缺 `UPDATE ON performance_schema.threads`；按授权规则不自行 `GRANT`、不使用 root、
+  不修改全局采集开关，故**未执行该用例、未进入造数**，不记为通过。
+- 最小授权（需另行批准）：
+  `GRANT UPDATE ON performance_schema.threads TO 'litho_rq6_a'@'127.0.0.1';`
+  `SELECT` 已具备；该对象无法按行授权。
+- 本轮按授权要求做了最小代码修复（注入工具守卫）：
+  - `UPDATE` 前核验本轮 `CONNECTION_ID`、`THREAD_ID`、`PROCESSLIST_USER`、`TYPE=FOREGROUND`
+    与原 `INSTRUMENTED=YES`，任一不符即拒绝；
+  - 实际写入使用同时包含上述事实的条件 `UPDATE`，`affectedRows` 必须为 1；
+  - 恢复使用同样的条件精确命中并读回确认；未确认、线程消失或恢复失败时记录恢复错误并停止后续写入；
+  - 不按用户名批量更新，不修改全局 consumer/instrument。
+- 该修复已通过 `typecheck`、ESLint、Prettier；因缺权限未在实库执行，其行为证据仍待授权后补。
+
+### 44.5 反例 B：R02 正常对照（实库，通过）
+
+- `E2E_V13_CONTROLLED_FAULT=1` + `E2E_V13_CONTROLLED_FAULT_CASE=R02`。
+- 结果：**1 passed / 18 skipped，退出码 0**。
+- 本轮写入值未被他人修改；原 R02 窗口注入读取失败；字节精确 CAS 命中 **1 行**；
+  主错误可追溯；随后精确回收，快照回到基线。
+
+### 44.6 反例 B：R02 大小写并发修改（实库，通过）
+
+- `E2E_V13_CONTROLLED_FAULT=1` + `E2E_V13_CONTROLLED_FAULT_CASE=R02-CONFLICT` +
+  `E2E_V13_SECOND_CONNECTION=1`。
+- 结果：**1 passed / 18 skipped，退出码 0**。
+- 第二受控连接在原 R02 登记恢复之后、恢复之前提交仅大小写不同的文件名。
+- 保留证据（独立清理前读取）：
+  `file_id=9602dbaf-7aa0-4681-8e73-e71b0e07d99a`，
+  `original_filename_bytes=5334452d5230322d5752495454454e2d4d5741494e454a3035343530323336422e545854`
+  （解码为大写 `S4E-R02-WRITTEN-...TXT`）。
+- 证明：字节精确 CAS **未命中**；输出 `targetId` 与冲突诊断；**不覆盖、不删除**该行；
+  不进入随后通用清理；依赖父资源按需保留并报告。
+- “冲突行按设计保留”**不记为清理器零残留**；保存证据后由测试内独立执行者按
+  `file_id` 与 `CAST(original_filename AS BINARY)` 精确删除；最终执行者收尾后快照回基线。
+
+### 44.7 正常交付组复验（部分通过）
+
+- 同一最终源码与本授权库复跑：
+  `e2e-scoped-cleanup.v13.realdb.spec.ts` + `e2e-owned-fixture.e2e-spec.ts`。
+- 结果：**2 suites / 59 passed / 5 skipped / 0 failed，退出码 0**。
+  5 项 skip 全部为默认关闭的受控故障或线程停采用例。
+- `v13-d3-constraint-acceptance.realdb.spec.ts` **未执行**：唯一授权低权限配置缺
+  `FIELD_ENCRYPTION_KEY/IV`，该规格 `beforeAll` 会在造数前断言失败。
+  按“配置缺口先指出、不静默猜测修正”，未补配置、未切换库、未用高权限部署配置冒充低权限证据。
+  该受阻部分如实报告，不记为 passed。
+- 未覆盖或回收已有初始化数据；父资源与种子保持原状。
+
+### 44.8 基线与资源状态
+
+- 快照 `before-final.json` 与 `after-final.json` 的 `sha256` 均为
+  `fee380c13369b0ea6972e4bcde7c54fcde79bce3feccf79dd3aaa9e0c59f30d6`，逐字节一致：
+  52 表结构/列/索引/外键/CHECK、44 条迁移历史、种子与行数未变。
+- 残留：`S4E-` 组织/账号 0、`D3C-` 组织/账号 0、`OWNED-FIXTURE` 0；
+  `stored_file` / `repair_request` / `repair_request_intake` / `intake_analysis_attempt` 均 0；
+  触发器 0；本账号活动事务 0；除核对连接外无本账号前台驻留线程。
+- `performance_schema.data_locks` / `metadata_locks` 无 `SELECT` 权限，未能直接读取；
+  以“活动事务 0 + 无驻留会话”佐证，未宣称已核验锁表。
+- 未新建或 DROP 数据库、未 TRUNCATE、未关闭外键、未重置 AUTO_INCREMENT、
+  未修改迁移历史或全局采集开关，未操作其他连接、其他库、Redis、审查方现场或原事故数据。
+
+### 44.9 检查与失败历史
+
+- `npm run typecheck` 退出 0；变更文件 ESLint 退出 0；Prettier `--check` 退出 0；
+  `git diff --check` 退出 0。
+- 本轮仅改实库测试文件的注入工具守卫，生产源码未变，故沿用 `674d975` 候选的完整后端单测结果
+  （159 passed / 8 skipped suites；1869 passed / 200 skipped tests），未重复完整单测。
+- 失败历史：首轮 ESLint 报 5 errors / 2 warnings（`no-base-to-string`、
+  `no-unnecessary-type-assertion`、`max-depth`）；按类型收窄与条件更新重构后复验 0。
+- 未 push、未回复 PR、未合并。

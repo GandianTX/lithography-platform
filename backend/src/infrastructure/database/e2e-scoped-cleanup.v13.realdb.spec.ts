@@ -395,22 +395,83 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
    */
   const readObservationThreadState = async (
     runner: QueryRunner,
-  ): Promise<{ threadId: number; connectionId: number; instrumented: string }> => {
+  ): Promise<{
+    threadId: number;
+    connectionId: number;
+    instrumented: string;
+    processlistUser: string;
+    threadType: string;
+    currentUser: string;
+  }> => {
     const rows = (await runner.query(
       `SELECT th.THREAD_ID AS thread_id,
               th.PROCESSLIST_ID AS processlist_id,
+              th.PROCESSLIST_USER AS processlist_user,
               th.INSTRUMENTED AS instrumented,
-              CONNECTION_ID() AS connection_id
+              th.TYPE AS thread_type,
+              CONNECTION_ID() AS connection_id,
+              CURRENT_USER() AS current_user
          FROM performance_schema.threads AS th
         WHERE th.PROCESSLIST_ID = CONNECTION_ID()
         LIMIT 1`,
     )) as Row[];
     expect(rows).toHaveLength(1);
+    const rawProcesslistUser = rows[0].processlist_user;
+    const rawThreadType = rows[0].thread_type;
+    const rawCurrentUser = rows[0].current_user;
     return {
       threadId: Number(rows[0].thread_id),
       connectionId: Number(rows[0].connection_id),
       instrumented: String(rows[0].instrumented).toUpperCase(),
+      processlistUser: typeof rawProcesslistUser === 'string' ? rawProcesslistUser : '',
+      threadType: typeof rawThreadType === 'string' ? rawThreadType.toUpperCase() : '',
+      currentUser: typeof rawCurrentUser === 'string' ? rawCurrentUser : '',
     };
+  };
+
+  /**
+   * 线程停采恢复：只在已核验的本轮连接/线程/用户/前台类型与原状态上精确恢复。
+   * 未精确命中 1 行即报错并停止后续写入，绝不按用户名批量恢复。
+   */
+  const restoreObservationThread = async (
+    runner: QueryRunner,
+    facts: {
+      readonly threadId: number;
+      readonly connectionId: number;
+      readonly processlistUser: string;
+      readonly originalInstrumented: string;
+    },
+  ): Promise<void> => {
+    const expectedInstrumented = facts.originalInstrumented || 'YES';
+    if (facts.threadId <= 0 || facts.connectionId <= 0 || facts.processlistUser === '') {
+      throw new Error('线程停采恢复缺少已核验的连接/线程/用户事实；停止后续写入');
+    }
+    const restoredResult = await dataSource.query(
+      `UPDATE performance_schema.threads
+          SET INSTRUMENTED = ?
+        WHERE THREAD_ID = ?
+          AND PROCESSLIST_ID = ?
+          AND PROCESSLIST_USER = ?
+          AND TYPE = 'FOREGROUND'
+          AND UPPER(INSTRUMENTED) = 'NO'`,
+      [expectedInstrumented, facts.threadId, facts.connectionId, facts.processlistUser],
+    );
+    const restoredRows = Number(
+      (restoredResult as { affectedRows?: number } | undefined)?.affectedRows,
+    );
+    if (restoredRows !== 1) {
+      throw new Error(
+        `线程停采恢复未精确命中：thread_id=${facts.threadId} 原值=${expectedInstrumented} ` +
+          `affectedRows=${String(restoredRows)}；停止后续写入`,
+      );
+    }
+    const restored = await readObservationThreadState(runner);
+    if (restored.instrumented !== expectedInstrumented) {
+      throw new Error(
+        `线程停采恢复失败：thread_id=${facts.threadId} 当前=${restored.instrumented} ` +
+          `期望=${expectedInstrumented}；停止后续写入`,
+      );
+    }
   };
 
   const resetCase = (): void => {
@@ -2535,6 +2596,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       const stoppedRunner = dataSource.createQueryRunner();
       let threadId = 0;
       let connectionId: number | undefined;
+      let processlistUser = '';
       let originalInstrumented = '';
       let restoreError: Error | undefined;
       try {
@@ -2542,14 +2604,38 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         const original = await readObservationThreadState(stoppedRunner);
         threadId = original.threadId;
         connectionId = original.connectionId;
+        processlistUser = original.processlistUser;
         originalInstrumented = original.instrumented;
+        // UPDATE 前核验本轮连接的全部事实；任一不符即拒绝，不进入任何业务造数。
+        const expectedUser = original.currentUser.split('@')[0] ?? '';
         expect(originalInstrumented).toBe('YES');
+        expect(original.threadType).toBe('FOREGROUND');
+        expect(original.processlistUser).not.toBe('');
+        expect(original.processlistUser).toBe(expectedUser);
+        expect(connectionId).toBeGreaterThan(0);
 
-        // 只改这一条明确授权的测试连接线程；不触碰全局设置、权限或其他线程。
-        await dataSource.query(
-          'UPDATE performance_schema.threads SET INSTRUMENTED = ? WHERE THREAD_ID = ?',
-          ['NO', threadId],
+        // 只改这一条明确授权的测试连接线程；条件同时锁定连接、线程、用户、类型与原状态，
+        // 任一事实变化或未精确命中 1 行都拒绝，避免按用户名批量更新或误改其他线程。
+        const stopped = await dataSource.query(
+          `UPDATE performance_schema.threads
+              SET INSTRUMENTED = ?
+            WHERE THREAD_ID = ?
+              AND PROCESSLIST_ID = ?
+              AND PROCESSLIST_USER = ?
+              AND TYPE = 'FOREGROUND'
+              AND UPPER(INSTRUMENTED) = 'YES'`,
+          ['NO', threadId, connectionId, processlistUser],
         );
+        const stoppedRows = Number(
+          (stopped as { affectedRows?: number } | undefined)?.affectedRows,
+        );
+        if (stoppedRows !== 1) {
+          throw new Error(
+            `线程停采拒绝：事实不匹配或未精确命中 thread_id=${threadId} ` +
+              `connection_id=${String(connectionId)} user=${processlistUser} ` +
+              `affectedRows=${String(stoppedRows)}`,
+          );
+        }
         const injected = await readObservationThreadState(stoppedRunner);
         expect(injected.instrumented).toBe('NO');
         console.info(
@@ -2571,18 +2657,18 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       } finally {
         try {
           if (threadId > 0) {
-            await dataSource.query(
-              'UPDATE performance_schema.threads SET INSTRUMENTED = ? WHERE THREAD_ID = ?',
-              [originalInstrumented || 'YES', threadId],
-            );
-            const restored = await readObservationThreadState(stoppedRunner);
-            if (restored.instrumented !== (originalInstrumented || 'YES')) {
-              restoreError = new Error(
-                `线程停采恢复失败：thread_id=${threadId} 当前=${restored.instrumented} ` +
-                  `期望=${originalInstrumented || 'YES'}`,
-              );
-            }
+            await restoreObservationThread(stoppedRunner, {
+              threadId,
+              connectionId: connectionId ?? 0,
+              processlistUser,
+              originalInstrumented,
+            });
           }
+        } catch (error) {
+          restoreError =
+            error instanceof Error
+              ? error
+              : new Error(`线程停采恢复异常：${String(error)}；停止后续写入`);
         } finally {
           await stoppedRunner.release();
         }

@@ -166,6 +166,46 @@
 - 离线验证：类型检查、定向回归、变更文件 ESLint/Prettier、`nest build`、`git diff --check`
   与完整后端单测结果见本轮执行记录；未通过则不提交、不 push、不回复 PR、不合并。
 
+## RQ6 第 44 轮实库反例与交付组复验（2026-11-10）
+
+- 候选 `674d9750b40aa850a6aefa05ad920cca196b4046`；44 条迁移
+  `ALL44=72dc3718fba8fd350beda73477a811d4de96c907eb9c3d117eaaff495ce99eb9`。
+  库 `lithography_rq6_cleanup`（44 态），账号 `litho_rq6_a@127.0.0.1`
+  （无全局 `PROCESS`、无角色、无 `performance_schema.threads` 的 `UPDATE`），配置库外 0600/0700。
+- 反例 A 正常观测（`E2E_V13_INSTRUMENT_INJECTION=1`）：**1 passed / 18 skipped，退出码 0**；
+  实际参与专项的连接建立真实事务被识别为 **1**，回滚后再次计数为 **0**。
+- 反例 A 单线程停采：**未执行**（缺 `UPDATE ON performance_schema.threads`；未自行 `GRANT`、
+  未用 root、未改全局开关，也未进入造数）。最小授权：
+  `GRANT UPDATE ON performance_schema.threads TO 'litho_rq6_a'@'127.0.0.1';`
+  注入工具已改为 `UPDATE` 前核验 `CONNECTION_ID`/`THREAD_ID`/`PROCESSLIST_USER`/
+  `TYPE=FOREGROUND`/原 `INSTRUMENTED=YES`，以同时包含这些事实的条件 `UPDATE` 且
+  `affectedRows=1` 才放行；恢复同样精确命中并读回确认，失败即停止后续写入。
+  该修复仅通过静态/离线检查，实库行为证据待授权后补。
+- 反例 B 正常对照（`E2E_V13_CONTROLLED_FAULT=1` + `CASE=R02`）：
+  **1 passed / 18 skipped，退出码 0**；注入读取失败、字节精确 CAS 命中 **1 行**、
+  主错误可追溯、精确回收后快照回基线。
+- 反例 B 并发冲突（`CASE=R02-CONFLICT` + `E2E_V13_SECOND_CONNECTION=1`）：
+  **1 passed / 18 skipped，退出码 0**；第二受控连接提交仅大小写不同的文件名后，
+  字节精确 CAS **未命中**，输出 `targetId` 与冲突诊断，**不覆盖、不删除**该行，
+  不进入随后通用清理；保存的直接证据为
+  `file_id=9602dbaf-7aa0-4681-8e73-e71b0e07d99a`、
+  `original_filename_bytes=5334452d5230322d5752495454454e2d4d5741494e454a3035343530323336422e545854`
+  （大写 `S4E-R02-WRITTEN-...TXT`）。证据保存后由独立执行者按 `file_id` 与
+  `CAST(original_filename AS BINARY)` 精确删除；**不把“冲突行按设计保留”记为清理器零残留**。
+- 正常交付组：`e2e-scoped-cleanup.v13.realdb.spec.ts` +
+  `e2e-owned-fixture.e2e-spec.ts`，**2 suites / 59 passed / 5 skipped / 0 failed，退出码 0**；
+  5 项 skip 均为默认关闭的受控故障/线程停采用例。
+  `v13-d3-constraint-acceptance.realdb.spec.ts` **未执行**：唯一授权低权限配置缺
+  `FIELD_ENCRYPTION_KEY/IV`，会在 `beforeAll` 造数前失败关闭；未补配置、未切换库、
+  未用高权限部署配置冒充低权限证据，受阻部分如实报告。
+- 快照前后 `sha256` 均为 `fee380c13369b0ea6972e4bcde7c54fcde79bce3feccf79dd3aaa9e0c59f30d6`，
+  逐字节一致：52 表结构/索引/外键/CHECK、44 条迁移历史、种子与行数不变；S4E/D3C/OWNED
+  残留 0，`stored_file`/`repair_request`/`intake`/`attempt` 0，触发器 0，本账号活动事务 0，
+  除核对连接外无驻留前台线程。`data_locks`/`metadata_locks` 无 `SELECT` 权限，未直接读取，
+  未宣称已核验锁表。
+- `typecheck`、变更文件 ESLint、Prettier、`git diff --check` 均退出 0；生产源码未变，
+  沿用 `674d975` 的完整后端单测结果。未 push、未回复 PR、未合并。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。
