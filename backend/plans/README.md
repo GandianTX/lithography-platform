@@ -91,9 +91,9 @@ direction -> plan -> docs / followup -> delete
 
 ## 当前计划
 
-- [V13 数据库一键部署交付收口计划](./database-v13-deployment-delivery-plan.md)：当前执行入口；验收最终表／字段／约束、默认6管理员、显式开发客户／工程师账号及可重复的一键部署，不以旧接口或完整业务core作为本期门禁。
-- [V13 后续业务适配](./database-v13-business-integration-followup.md)：跟踪旧接口、真实会话、执行器和业务core等后续事项，不代替数据库自身质量验收。
-- [V13 原始增量计划](./database-v13-deployment-plan.md)：来源、历史阶段和裁决背景；后续范围及验收以当前收口计划为准。
+本地执行计划、阶段记录和后续待办不再纳入 Git；本目录除本规范说明外均由根 `.gitignore` 忽略。
+已交付的 V13 数据库说明、SOP、配置模板和复审回执见 [正式交接入口](../../docs/database/v13-deployment/README.md)。
+本地计划仍可保留用于开发，但不是干净检出和部署的依赖。
 
 当前没有 capability 治理计划；稳定边界见 `docs/common/capability.rules.md` 与 `docs/capabilities/current.md`。
 

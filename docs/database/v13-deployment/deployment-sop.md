@@ -161,7 +161,7 @@ npm run database:deploy -- \
 `--dev-accounts-file=/secure/path/dev-accounts.json --confirm-dev-accounts=APPLY-DEV-ACCOUNTS`；
 目标库名必须含 `test/dev/local/drill`。实测客户 2、工程师 2，`must_change_password=0`。
 重复执行同一条命令返回 `UNCHANGED`，不重置密码、不重复成员关系；更换映射密码重跑也不会重置既有密码。
-验收证据与结构清单见 [S2 §3.2](S2-db-verification-specs.md)。
+验收证据与结构清单见 [S2 §3.2](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S2-db-verification-specs.md)。
 
 #### 4.2.2 组织映射
 
@@ -390,7 +390,7 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
   test/run-v13-authoritative-spec.ts <delivery|upgrade>
 ```
 
-- 专用配置 [jest-v13-authoritative.config.js](../../test/jest-v13-authoritative.config.js) 不注册
+- 专用配置 [jest-v13-authoritative.config.js](../../../backend/test/jest-v13-authoritative.config.js) 不注册
   `globalSetup` / `globalTeardown`，不连接默认库、不全库清理、不操作 Redis，也不回退
   `.env.e2e` / `.env.development`；缺少 `V13_AUTHORITATIVE_SPECS=1` 时拒绝加载。
 - 入口先以完全相同的配置、环境和 `--runTestsByPath` 路径运行 `--listTests`，

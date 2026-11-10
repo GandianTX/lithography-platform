@@ -45,5 +45,9 @@
 /docs/requirements/
 /docs/plan/
 
+# Local execution plans; publish stable handoff documents under docs/database.
+/backend/plans/*
+!/backend/plans/README.md
+
 # Local integration artifacts (may contain credentials or local paths)
 /docs/tmp/

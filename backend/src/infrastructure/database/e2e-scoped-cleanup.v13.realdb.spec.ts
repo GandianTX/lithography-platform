@@ -21,7 +21,7 @@
 //   E2E_V13_CONTROLLED_FAULT=1 且 E2E_V13_CONTROLLED_FAULT_CASE=R01|R02|R03
 //   在原危险窗口注入一次读取失败；finally 仍按测试执行者台账精确回收/恢复。
 //
-// 覆盖映射（17 表逐表见 plans/database-v13-deploy/execution-log.md §14）：
+// 覆盖映射：docs/database/v13-deployment/schema-dictionary.md 与 review-response.md。
 //   R01 父行在范围、子行未登记        → repair_request_intake → intake_analysis_attempt
 //   R02 已登记事实被改写              → stored_file（字符串主键 + 事实核验）
 //   R03 集合外记录引用本轮目标        → repair_request.intake_id（整数主键 + 闭包拒绝）

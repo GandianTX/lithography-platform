@@ -1,6 +1,8 @@
 # S1 关键契约与兼容顺序
 
-> 本文件把已确认的业务语义翻译成可执行的数据契约；只给推荐实现方式，不改变业务语义。未确认处在 [S1-open-issues.md](S1-open-issues.md)。
+> 正式交接副本：保留原裁决及来源时点，后续明确裁决优先；不表示业务接口已实现。部署见 [SOP](deployment-sop.md)，实际证据与限制见 [复审回执](review-response.md)。
+
+> 本文件把已确认的业务语义翻译成可执行的数据契约；只给推荐实现方式，不改变业务语义。未确认处在 [S1-open-issues.md](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S1-open-issues.md)。
 
 ## 1. 提交幂等（同一次提交重试不多建）
 

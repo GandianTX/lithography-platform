@@ -23,7 +23,7 @@
 //   - 纯约束用例的全部写入在独占事务内完成并最终强制回滚，不产生任何提交行；
 //   - 创建部分成功、断言失败、回滚失败、清理失败均保留原始诊断（cause 链）再抛出。
 //
-// S2 覆盖映射（plans/database-v13-deploy/S2-db-verification-specs.md）：
+// 交付字段与约束来源：docs/database/v13-deployment/schema-dictionary.md。
 //   §2.1 唯一键 14 项 → describe('2.1') 14 个用例全覆盖；
 //   §2.2 外键与删除策略 6 项 → describe('2.2') 6 个用例全覆盖；
 //   §2.3 NULL 安全 CHECK 23 项 → describe('2.3') 23 个用例全覆盖（含 1 个正向用例）；

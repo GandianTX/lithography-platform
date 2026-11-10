@@ -1,5 +1,7 @@
 # S1 对象与字段清单（34 现有表 + 17 候选 + 全部目标设计行）
 
+> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、44 条迁移及正式校验契约为准，最近复验见 [复审回执](review-response.md)。不依赖本地计划目录。
+
 > 来源：`数据库表设计说明-V1.1`。现有字段/约束来自各 Entity 与设计说明；目标字段逐行列出。**组合字段按一行展示但注明包含多列，逻辑/部署约束不计为新增列**。
 
 ## 1. 计数口径
@@ -20,13 +22,13 @@
 
 结论：91 项需求不是 91 列。源稿共有 **267 条目标设计行**（71 现有表 + 196 候选字段）；本期真正的目标新增物理列按 **243 列估算**（47 现有表 + 196 候选；17 候选按独立表实施，OI-04 已裁决），另有 29 个既有列引用需调整、5 条逻辑/关系/部署规则。243 为估算值：候选归并或技术字段变化时更新逐项清单与统计，不为凑数字修改设计。旧稿的 439/59/255/238 分别修正为 **442/71/267/243**；差异来源见 §5。
 
-> **S2 实施状态（2026-11-08）**：267 条源设计行已落到 6 条前向迁移、17 个新 Entity、11 个既有 Entity 与 `migration-schema-contract.ts`。既有表共新增物理列 47；候选字段按 17 张独立表建列；`engineer_response.resolution_status` 与 `local_installation` 沿用现有结构（无 DDL）。表中状态「S2 结构已实现（待实库验证）」仅表示代码与迁移已写，**不代表 MySQL 约束、事务或清理已通过**；实库项见 [S2-db-verification-specs.md](S2-db-verification-specs.md)。
+> **S2 实施状态（2026-11-08）**：267 条源设计行已落到 6 条前向迁移、17 个新 Entity、11 个既有 Entity 与 `migration-schema-contract.ts`。既有表共新增物理列 47；候选字段按 17 张独立表建列；`engineer_response.resolution_status` 与 `local_installation` 沿用现有结构（无 DDL）。表中状态「S2 结构已实现（待实库验证）」仅表示代码与迁移已写，**不代表 MySQL 约束、事务或清理已通过**；实库项见 [S2-db-verification-specs.md](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S2-db-verification-specs.md)。
 
 ## 2. 34 张现有表逐表清单
 
 ### 3.1 `base_user_account`
 
-- 定位：现有表；Entity [account.entity.ts](../../src/modules/account/base/entities/account.entity.ts)；创建迁移 [1773924900000-create-base-user-account-table.migration.ts](../../src/infrastructure/database/migrations/1773924900000-create-base-user-account-table.migration.ts)
+- 定位：现有表；Entity [account.entity.ts](../../../backend/src/modules/account/base/entities/account.entity.ts)；创建迁移 [1773924900000-create-base-user-account-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1773924900000-create-base-user-account-table.migration.ts)
 - 说明：保存账号的登录凭据、身份提示和启用状态；目标设计在本表增加管理员等级及首次改密限制。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 9；目标设计行 2；现有约束 3；直接消费者 42；测试 5
@@ -51,7 +53,7 @@
 
 ### 3.2 `base_user_info`
 
-- 定位：现有表；Entity [user-info.entity.ts](../../src/modules/account/base/entities/user-info.entity.ts)；创建迁移 [1773925000000-create-base-user-info-table.migration.ts](../../src/infrastructure/database/migrations/1773925000000-create-base-user-info-table.migration.ts)
+- 定位：现有表；Entity [user-info.entity.ts](../../../backend/src/modules/account/base/entities/user-info.entity.ts)；创建迁移 [1773925000000-create-base-user-info-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1773925000000-create-base-user-info-table.migration.ts)
 - 说明：保存姓名、昵称、联系方式等本人资料；目标设计增加客户自家公司关联，不把客户公司当成工程师成员资格。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 20；目标设计行 2；现有约束 3；直接消费者 37；测试 5
@@ -76,7 +78,7 @@
 
 ### 3.3 `ai_provider_call_record`
 
-- 定位：现有表；Entity [ai-provider-call-record.entity.ts](../../src/modules/ai-provider-call-record/ai-provider-call-record.entity.ts)；创建迁移 [1773889200000-create-ai-provider-call-record-table.migration.ts](../../src/infrastructure/database/migrations/1773889200000-create-ai-provider-call-record-table.migration.ts)
+- 定位：现有表；Entity [ai-provider-call-record.entity.ts](../../../backend/src/modules/ai-provider-call-record/ai-provider-call-record.entity.ts)；创建迁移 [1773889200000-create-ai-provider-call-record-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1773889200000-create-ai-provider-call-record-table.migration.ts)
 - 说明：记录真实模型供应方的一次调用、耗时、用量和错误；是技术追溯数据，不是另一份业务报告。
 - 本期处理：复用真实模型调用追溯，不要求本团队训练模型。
 - 规模：现有字段 28；目标设计行 0；现有约束 14；直接消费者 6；测试 1
@@ -108,7 +110,7 @@
 
 ### 3.4 `ai_workflow_context`
 
-- 定位：现有表；Entity [ai-workflow-context.entity.ts](../../src/modules/ai-workflow-context/ai-workflow-context.entity.ts)；创建迁移 [1775200800000-create-ai-workflow-context-table.migration.ts](../../src/infrastructure/database/migrations/1775200800000-create-ai-workflow-context-table.migration.ts)
+- 定位：现有表；Entity [ai-workflow-context.entity.ts](../../../backend/src/modules/ai-workflow-context/ai-workflow-context.entity.ts)；创建迁移 [1775200800000-create-ai-workflow-context-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775200800000-create-ai-workflow-context-table.migration.ts)
 - 说明：保存AI异步流程的输入上下文、业务关联、入队及执行状态，不代替报修、会话等业务主记录。
 - 本期处理：复用既有编排上下文，报修、会话来源需明确；不是另一份业务主数据。
 - 规模：现有字段 28；目标设计行 0；现有约束 10；直接消费者 5；测试 1
@@ -137,7 +139,7 @@
 
 ### 3.5 `base_async_task_record`
 
-- 定位：现有表；Entity [async-task-record.entity.ts](../../src/modules/async-task-record/async-task-record.entity.ts)；创建迁移 [1773925700000-create-base-async-task-record-table.migration.ts](../../src/infrastructure/database/migrations/1773925700000-create-base-async-task-record-table.migration.ts)
+- 定位：现有表；Entity [async-task-record.entity.ts](../../../backend/src/modules/async-task-record/async-task-record.entity.ts)；创建迁移 [1773925700000-create-base-async-task-record-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1773925700000-create-base-async-task-record-table.migration.ts)
 - 说明：保存后台异步任务的队列身份、尝试次数、状态和失败事实；不因此新增用户任务管理中心。
 - 本期处理：复用已有异步处理结果及失败记录，不新增独立任务中心。
 - 规模：现有字段 22；目标设计行 0；现有约束 12；直接消费者 10；测试 0
@@ -167,7 +169,7 @@
 
 ### 3.6 `ai_conversation`
 
-- 定位：现有表；Entity [ai-conversation.entity.ts](../../src/modules/lithography/entities/ai-conversation.entity.ts)；创建迁移 [1775201100000-create-ai-conversation-table.migration.ts](../../src/infrastructure/database/migrations/1775201100000-create-ai-conversation-table.migration.ts)
+- 定位：现有表；Entity [ai-conversation.entity.ts](../../../backend/src/modules/lithography/entities/ai-conversation.entity.ts)；创建迁移 [1775201100000-create-ai-conversation-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775201100000-create-ai-conversation-table.migration.ts)
 - 说明：保存AI会话及其作者、工单和状态；目标设计允许独立会话，并固定可信公司及内容版本。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 7；目标设计行 4；现有约束 7；直接消费者 10；测试 2
@@ -198,7 +200,7 @@
 
 ### 3.7 `ai_message`
 
-- 定位：现有表；Entity [ai-message.entity.ts](../../src/modules/lithography/entities/ai-message.entity.ts)；创建迁移 [1775201200000-create-ai-message-table.migration.ts](../../src/infrastructure/database/migrations/1775201200000-create-ai-message-table.migration.ts)
+- 定位：现有表；Entity [ai-message.entity.ts](../../../backend/src/modules/lithography/entities/ai-message.entity.ts)；创建迁移 [1775201200000-create-ai-message-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775201200000-create-ai-message-table.migration.ts)
 - 说明：保存会话内逐条问题和回答及顺序；目标设计补充原问题标识和固定导出版本。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 7；目标设计行 2；现有约束 9；直接消费者 5；测试 0
@@ -229,7 +231,7 @@
 
 ### 3.8 `ai_report`
 
-- 定位：现有表；Entity [ai-report.entity.ts](../../src/modules/lithography/entities/ai-report.entity.ts)；创建迁移 [1775201300000-create-ai-report-table.migration.ts](../../src/infrastructure/database/migrations/1775201300000-create-ai-report-table.migration.ts)
+- 定位：现有表；Entity [ai-report.entity.ts](../../../backend/src/modules/lithography/entities/ai-report.entity.ts)；创建迁移 [1775201300000-create-ai-report-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775201300000-create-ai-report-table.migration.ts)
 - 说明：保留已有AI报告记录；新问答PDF读取有权保存内容，不因这张历史表增加手动保存报告流程。
 - 本期处理：保留旧诊断报告数据；V13问答PDF读取固定消息版本，不强制新增手动保存步骤。
 - 规模：现有字段 8；目标设计行 0；现有约束 7；直接消费者 8；测试 1
@@ -254,7 +256,7 @@
 
 ### 3.9 `content_submission_attachment`
 
-- 定位：现有表；Entity [content-submission-attachment.entity.ts](../../src/modules/lithography/entities/content-submission-attachment.entity.ts)；创建迁移 [1775301500000-create-content-submission-attachment-table.migration.ts](../../src/infrastructure/database/migrations/1775301500000-create-content-submission-attachment-table.migration.ts)
+- 定位：现有表；Entity [content-submission-attachment.entity.ts](../../../backend/src/modules/lithography/entities/content-submission-attachment.entity.ts)；创建迁移 [1775301500000-create-content-submission-attachment-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301500000-create-content-submission-attachment-table.migration.ts)
 - 说明：保留旧投稿与附件的关联及历史；不作为两类新报告的必需写入链。
 - 本期处理：仅保留既有普通资料及历史关联；取消新建入口，不作为两类新报告的必需写入链
 - 规模：现有字段 11；目标设计行 0；现有约束 7；直接消费者 10；测试 1
@@ -279,7 +281,7 @@
 
 ### 3.10 `content_submission_review`
 
-- 定位：现有表；Entity [content-submission-review.entity.ts](../../src/modules/lithography/entities/content-submission-review.entity.ts)；创建迁移 [1775301700000-create-content-submission-review-table.migration.ts](../../src/infrastructure/database/migrations/1775301700000-create-content-submission-review-table.migration.ts)
+- 定位：现有表；Entity [content-submission-review.entity.ts](../../../backend/src/modules/lithography/entities/content-submission-review.entity.ts)；创建迁移 [1775301700000-create-content-submission-review-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301700000-create-content-submission-review-table.migration.ts)
 - 说明：保留旧资料审核决定；已有历史可追溯，但不为新资料创建待审批状态。
 - 本期处理：保留旧资料审核历史，不作为新资料发布前置。
 - 规模：现有字段 8；目标设计行 0；现有约束 9；直接消费者 9；测试 1
@@ -306,7 +308,7 @@
 
 ### 3.11 `content_submission_revision`
 
-- 定位：现有表；Entity [content-submission-revision.entity.ts](../../src/modules/lithography/entities/content-submission-revision.entity.ts)；创建迁移 [1775301600000-create-content-submission-revision-table.migration.ts](../../src/infrastructure/database/migrations/1775301600000-create-content-submission-revision-table.migration.ts)
+- 定位：现有表；Entity [content-submission-revision.entity.ts](../../../backend/src/modules/lithography/entities/content-submission-revision.entity.ts)；创建迁移 [1775301600000-create-content-submission-revision-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301600000-create-content-submission-revision-table.migration.ts)
 - 说明：保留旧投稿送审或冻结版本；V13不据此恢复普通资料投稿与审核流程。
 - 本期处理：仅保留既有普通资料及历史关联；取消新建入口，不作为两类新报告的必需写入链
 - 规模：现有字段 11；目标设计行 0；现有约束 10；直接消费者 8；测试 1
@@ -334,7 +336,7 @@
 
 ### 3.12 `content_submission`
 
-- 定位：现有表；Entity [content-submission.entity.ts](../../src/modules/lithography/entities/content-submission.entity.ts)；创建迁移 [1775301200000-create-content-submission-table.migration.ts](../../src/infrastructure/database/migrations/1775301200000-create-content-submission-table.migration.ts)
+- 定位：现有表；Entity [content-submission.entity.ts](../../../backend/src/modules/lithography/entities/content-submission.entity.ts)；创建迁移 [1775301200000-create-content-submission-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301200000-create-content-submission-table.migration.ts)
 - 说明：保留旧普通资料或案例投稿的来源及状态；V13取消普通资料新建，不将其重新接入新报告提交链。
 - 本期处理：仅保留既有普通资料及历史关联；取消新建入口，不作为两类新报告的必需写入链
 - 规模：现有字段 10；目标设计行 0；现有约束 8；直接消费者 10；测试 1
@@ -360,7 +362,7 @@
 
 ### 3.13 `engineer_registration_application`
 
-- 定位：现有表；Entity [engineer-registration-application.entity.ts](../../src/modules/lithography/entities/engineer-registration-application.entity.ts)；创建迁移 [1775401500000-create-engineer-registration-application.migration.ts](../../src/infrastructure/database/migrations/1775401500000-create-engineer-registration-application.migration.ts)
+- 定位：现有表；Entity [engineer-registration-application.entity.ts](../../../backend/src/modules/lithography/entities/engineer-registration-application.entity.ts)；创建迁移 [1775401500000-create-engineer-registration-application.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401500000-create-engineer-registration-application.migration.ts)
 - 说明：保存工程师注册申请、申请公司、审核状态和决定；批准时与账号资格及有效成员关系一起变更。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
 - 规模：现有字段 12；目标设计行 0；现有约束 12；直接消费者 7；测试 0
@@ -390,7 +392,7 @@
 
 ### 3.14 `engineer_response`
 
-- 定位：现有表；Entity [engineer-response.entity.ts](../../src/modules/lithography/entities/engineer-response.entity.ts)；创建迁移 [1775201400000-create-engineer-response-table.migration.ts](../../src/infrastructure/database/migrations/1775201400000-create-engineer-response-table.migration.ts)
+- 定位：现有表；Entity [engineer-response.entity.ts](../../../backend/src/modules/lithography/entities/engineer-response.entity.ts)；创建迁移 [1775201400000-create-engineer-response-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775201400000-create-engineer-response-table.migration.ts)
 - 说明：保存接单工程师发给客户的回复；回复与内部维修过程、结束工单分别处理。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 7；目标设计行 1；现有约束 8；直接消费者 12；测试 2
@@ -419,7 +421,7 @@
 
 ### 3.15 `equipment_model`
 
-- 定位：现有表；Entity [equipment-model.entity.ts](../../src/modules/lithography/entities/equipment-model.entity.ts)；创建迁移 [1775200900000-create-equipment-model-table.migration.ts](../../src/infrastructure/database/migrations/1775200900000-create-equipment-model-table.migration.ts)
+- 定位：现有表；Entity [equipment-model.entity.ts](../../../backend/src/modules/lithography/entities/equipment-model.entity.ts)；创建迁移 [1775200900000-create-equipment-model-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775200900000-create-equipment-model-table.migration.ts)
 - 说明：保存平台预置设备机型及启用、排序信息，供报修和报告表单查询。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
 - 规模：现有字段 7；目标设计行 0；现有约束 3；直接消费者 25；测试 6
@@ -440,7 +442,7 @@
 
 ### 3.16 `fault_case_submission_detail`
 
-- 定位：现有表；Entity [fault-case-submission-detail.entity.ts](../../src/modules/lithography/entities/fault-case-submission-detail.entity.ts)；创建迁移 [1775301400000-create-fault-case-submission-detail-table.migration.ts](../../src/infrastructure/database/migrations/1775301400000-create-fault-case-submission-detail-table.migration.ts)
+- 定位：现有表；Entity [fault-case-submission-detail.entity.ts](../../../backend/src/modules/lithography/entities/fault-case-submission-detail.entity.ts)；创建迁移 [1775301400000-create-fault-case-submission-detail-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301400000-create-fault-case-submission-detail-table.migration.ts)
 - 说明：保留旧投稿案例的故障、排查及处理内容；新的独立故障报告统一使用maintenance_report。
 - 本期处理：保留旧投稿案例详情；新独立历史／现场报告统一进入maintenance_report。
 - 规模：现有字段 15；目标设计行 0；现有约束 6；直接消费者 7；测试 1
@@ -464,7 +466,7 @@
 
 ### 3.17 `local_backup_run`
 
-- 定位：现有表；Entity [local-backup-run.entity.ts](../../src/modules/lithography/entities/local-backup-run.entity.ts)；创建迁移 [1775401400000-create-local-installation-upload-backup.migration.ts](../../src/infrastructure/database/migrations/1775401400000-create-local-installation-upload-backup.migration.ts)
+- 定位：现有表；Entity [local-backup-run.entity.ts](../../../backend/src/modules/lithography/entities/local-backup-run.entity.ts)；创建迁移 [1775401400000-create-local-installation-upload-backup.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401400000-create-local-installation-upload-backup.migration.ts)
 - 说明：保存一次本地备份生成的执行事实；目标设计区分设备公司，并分别记录手动流程的上传和清理结果。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 16；目标设计行 4；现有约束 7；直接消费者 5；测试 0
@@ -495,7 +497,7 @@
 
 ### 3.18 `local_installation`
 
-- 定位：现有表；Entity [local-installation.entity.ts](../../src/modules/lithography/entities/local-installation.entity.ts)；创建迁移 [1775401400000-create-local-installation-upload-backup.migration.ts](../../src/infrastructure/database/migrations/1775401400000-create-local-installation-upload-backup.migration.ts)
+- 定位：现有表；Entity [local-installation.entity.ts](../../../backend/src/modules/lithography/entities/local-installation.entity.ts)；创建迁移 [1775401400000-create-local-installation-upload-backup.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401400000-create-local-installation-upload-backup.migration.ts)
 - 说明：保存本机安装的稳定身份和旧配置；目标设计将多公司的设置分离，不用单行公司配置覆盖整台设备。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 10；目标设计行 1；现有约束 5；直接消费者 5；测试 0
@@ -521,7 +523,7 @@
 
 ### 3.19 `local_upload_task`
 
-- 定位：现有表；Entity [local-upload-task.entity.ts](../../src/modules/lithography/entities/local-upload-task.entity.ts)；创建迁移 [1775401400000-create-local-installation-upload-backup.migration.ts](../../src/infrastructure/database/migrations/1775401400000-create-local-installation-upload-backup.migration.ts)
+- 定位：现有表；Entity [local-upload-task.entity.ts](../../../backend/src/modules/lithography/entities/local-upload-task.entity.ts)；创建迁移 [1775401400000-create-local-installation-upload-backup.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401400000-create-local-installation-upload-backup.migration.ts)
 - 说明：保存业务同步或备份上传任务、重试和实际结果；目标设计明确区分BUSINESS_SYNC与BACKUP_UPLOAD。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 15；目标设计行 4；现有约束 10；直接消费者 4；测试 0
@@ -555,7 +557,7 @@
 
 ### 3.20 `maintenance_report_alarm`
 
-- 定位：现有表；Entity [maintenance-report-alarm.entity.ts](../../src/modules/lithography/entities/maintenance-report-alarm.entity.ts)；创建迁移 [1775401200000-create-maintenance-report-and-content.migration.ts](../../src/infrastructure/database/migrations/1775401200000-create-maintenance-report-and-content.migration.ts)
+- 定位：现有表；Entity [maintenance-report-alarm.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-alarm.entity.ts)；创建迁移 [1775401200000-create-maintenance-report-and-content.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401200000-create-maintenance-report-and-content.migration.ts)
 - 说明：仅保留旧报告固定1—8报警槽位；新八字段故障结构使用maintenance_report_fault，不再按八槽位录入。
 - 本期处理：旧1—8报警槽位仅兼容历史；V13八字段使用maintenance_report_fault，不把八字段复制成八条报警。
 - 规模：现有字段 7；目标设计行 0；现有约束 7；直接消费者 4；测试 0
@@ -580,7 +582,7 @@
 
 ### 3.21 `maintenance_report_attachment`
 
-- 定位：现有表；Entity [maintenance-report-attachment.entity.ts](../../src/modules/lithography/entities/maintenance-report-attachment.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
+- 定位：现有表；Entity [maintenance-report-attachment.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-attachment.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
 - 说明：保存报告当前及历史附件关联；正式提交和读取均核验本报告的有效原件。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
 - 规模：现有字段 16；目标设计行 0；现有约束 12；直接消费者 8；测试 0
@@ -610,7 +612,7 @@
 
 ### 3.22 `maintenance_report_review`
 
-- 定位：现有表；Entity [maintenance-report-review.entity.ts](../../src/modules/lithography/entities/maintenance-report-review.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
+- 定位：现有表；Entity [maintenance-report-review.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-review.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
 - 说明：保留旧报告审核决定和意见；V13新报告直接提交，不以本表作为发布前置。
 - 本期处理：保留旧报告审核历史，不为新报告创建待审流程。
 - 规模：现有字段 7；目标设计行 0；现有约束 7；直接消费者 7；测试 0
@@ -635,7 +637,7 @@
 
 ### 3.23 `maintenance_report_step`
 
-- 定位：现有表；Entity [maintenance-report-step.entity.ts](../../src/modules/lithography/entities/maintenance-report-step.entity.ts)；创建迁移 [1775401200000-create-maintenance-report-and-content.migration.ts](../../src/infrastructure/database/migrations/1775401200000-create-maintenance-report-and-content.migration.ts)
+- 定位：现有表；Entity [maintenance-report-step.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-step.entity.ts)；创建迁移 [1775401200000-create-maintenance-report-and-content.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401200000-create-maintenance-report-and-content.migration.ts)
 - 说明：保存报告排查步骤及稳定步骤标识；新增故障仍属于原报告，排序不改变步骤身份。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 12；目标设计行 6；现有约束 9；直接消费者 4；测试 0
@@ -670,7 +672,7 @@
 
 ### 3.24 `maintenance_report_version_attachment`
 
-- 定位：现有表；Entity [maintenance-report-version-attachment.entity.ts](../../src/modules/lithography/entities/maintenance-report-version-attachment.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
+- 定位：现有表；Entity [maintenance-report-version-attachment.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-version-attachment.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
 - 说明：记录某一冻结报告版本实际关联的附件，保证历史版本与原件能对应读回。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
 - 规模：现有字段 6；目标设计行 0；现有约束 6；直接消费者 4；测试 0
@@ -694,7 +696,7 @@
 
 ### 3.25 `maintenance_report_version`
 
-- 定位：现有表；Entity [maintenance-report-version.entity.ts](../../src/modules/lithography/entities/maintenance-report-version.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
+- 定位：现有表；Entity [maintenance-report-version.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-version.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
 - 说明：保存报告正式提交的冻结版本，保留原始提交内容，不被后续管理修订无痕覆盖。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
 - 规模：现有字段 10；目标设计行 0；现有约束 10；直接消费者 7；测试 0
@@ -722,7 +724,7 @@
 
 ### 3.26 `maintenance_report`
 
-- 定位：现有表；Entity [maintenance-report.entity.ts](../../src/modules/lithography/entities/maintenance-report.entity.ts)；创建迁移 [1775401200000-create-maintenance-report-and-content.migration.ts](../../src/infrastructure/database/migrations/1775401200000-create-maintenance-report-and-content.migration.ts)
+- 定位：现有表；Entity [maintenance-report.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report.entity.ts)；创建迁移 [1775401200000-create-maintenance-report-and-content.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401200000-create-maintenance-report-and-content.migration.ts)
 - 说明：保存独立故障报告或工单总结的根记录、表头、维修事实和模型评价；目标设计补齐一次正式提交的状态、持久请求标识和内容摘要，覆盖首次无报告ID的重试。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 28；目标设计行 15；现有约束 21；直接消费者 10；测试 0
@@ -778,7 +780,7 @@
 
 ### 3.27 `material_submission_detail`
 
-- 定位：现有表；Entity [material-submission-detail.entity.ts](../../src/modules/lithography/entities/material-submission-detail.entity.ts)；创建迁移 [1775301300000-create-material-submission-detail-table.migration.ts](../../src/infrastructure/database/migrations/1775301300000-create-material-submission-detail-table.migration.ts)
+- 定位：现有表；Entity [material-submission-detail.entity.ts](../../../backend/src/modules/lithography/entities/material-submission-detail.entity.ts)；创建迁移 [1775301300000-create-material-submission-detail-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301300000-create-material-submission-detail-table.migration.ts)
 - 说明：保留旧普通资料的标题、正文、类型和机型等明细；不新增普通文档填写或提交功能。
 - 本期处理：仅保留既有普通资料及历史关联；取消新建入口，不作为两类新报告的必需写入链
 - 规模：现有字段 10；目标设计行 0；现有约束 5；直接消费者 7；测试 1
@@ -801,7 +803,7 @@
 
 ### 3.28 `organization_membership`
 
-- 定位：现有表；Entity [organization-membership.entity.ts](../../src/modules/lithography/entities/organization-membership.entity.ts)；创建迁移 [1775301100000-create-organization-membership-table.migration.ts](../../src/infrastructure/database/migrations/1775301100000-create-organization-membership-table.migration.ts)
+- 定位：现有表；Entity [organization-membership.entity.ts](../../../backend/src/modules/lithography/entities/organization-membership.entity.ts)；创建迁移 [1775301100000-create-organization-membership-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301100000-create-organization-membership-table.migration.ts)
 - 说明：保存工程师及管理员与公司的有效成员关系，用于确定公司范围；同一账号只允许一条ACTIVE归属。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
 - 规模：现有字段 10；目标设计行 0；现有约束 10；直接消费者 17；测试 1
@@ -829,7 +831,7 @@
 
 ### 3.29 `organization`
 
-- 定位：现有表；Entity [organization.entity.ts](../../src/modules/lithography/entities/organization.entity.ts)；创建迁移 [1775301000000-create-organization-table.migration.ts](../../src/infrastructure/database/migrations/1775301000000-create-organization-table.migration.ts)
+- 定位：现有表；Entity [organization.entity.ts](../../../backend/src/modules/lithography/entities/organization.entity.ts)；创建迁移 [1775301000000-create-organization-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301000000-create-organization-table.migration.ts)
 - 说明：保存客户或服务公司的稳定档案；目标字段区分有效管理名单、启用状态和维修服务资格。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 7；目标设计行 9；现有约束 4；直接消费者 15；测试 4
@@ -862,7 +864,7 @@
 
 ### 3.30 `reference_document_case_detail`
 
-- 定位：现有表；Entity [reference-document-case-detail.entity.ts](../../src/modules/lithography/entities/reference-document-case-detail.entity.ts)；创建迁移 [1775301800000-create-reference-document-case-detail-table.migration.ts](../../src/infrastructure/database/migrations/1775301800000-create-reference-document-case-detail-table.migration.ts)
+- 定位：现有表；Entity [reference-document-case-detail.entity.ts](../../../backend/src/modules/lithography/entities/reference-document-case-detail.entity.ts)；创建迁移 [1775301800000-create-reference-document-case-detail-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775301800000-create-reference-document-case-detail-table.migration.ts)
 - 说明：保留旧正式故障案例扩展明细；新报告通过来源及冻结版本关联，避免再复制一套完整报告。
 - 本期处理：保留旧资料案例扩展；新增报告来源与冻结版本关联时避免复制第三套报告。
 - 规模：现有字段 13；目标设计行 0；现有约束 3；直接消费者 6；测试 1
@@ -883,7 +885,7 @@
 
 ### 3.31 `reference_document`
 
-- 定位：现有表；Entity [reference-document.entity.ts](../../src/modules/lithography/entities/reference-document.entity.ts)；创建迁移 [1775201500000-create-reference-document-table.migration.ts](../../src/infrastructure/database/migrations/1775201500000-create-reference-document-table.migration.ts)
+- 定位：现有表；Entity [reference-document.entity.ts](../../../backend/src/modules/lithography/entities/reference-document.entity.ts)；创建迁移 [1775201500000-create-reference-document-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775201500000-create-reference-document-table.migration.ts)
 - 说明：保存正式资料条目、公司及原始来源；目标设计关联本报告冻结版本，区分下架与软删除，并指向当前生效管理版本。无附件完整报告也可入库。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - 规模：现有字段 23；目标设计行 13；现有约束 20；直接消费者 15；测试 2
@@ -936,7 +938,7 @@
 
 ### 3.32 `repair_request`
 
-- 定位：现有表；Entity [repair-request.entity.ts](../../src/modules/lithography/entities/repair-request.entity.ts)；创建迁移 [1775201000000-create-repair-request-table.migration.ts](../../src/infrastructure/database/migrations/1775201000000-create-repair-request-table.migration.ts)
+- 定位：现有表；Entity [repair-request.entity.ts](../../../backend/src/modules/lithography/entities/repair-request.entity.ts)；创建迁移 [1775201000000-create-repair-request-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1775201000000-create-repair-request-table.migration.ts)
 - 说明：保存可接单维修工单、接单人及维修处理事实；目标设计区分客户公司、服务公司和工单结束状态。
 - 本期处理：调整，见下方目标字段；其余现有字段保留
 - **D3 结单对齐（2026-11-09，第 42 条迁移）**：`chk_repair_request_closure` 统一为 CASE 形式：`closure_status` 与 `closed_at` 双 NULL 允许（明确历史未知），`OPEN` 必须 `closed_at IS NULL`，`CLOSED` 必须 `closed_at IS NOT NULL`；单边 NULL 与非法状态在迁移前扫描并失败关闭。Entity 已采用同一 CASE，第 42 条用单条 `ALTER TABLE ... DROP CHECK ... ADD CONSTRAINT` 替换。
@@ -989,7 +991,7 @@
 
 ### 3.33 `base_third_party_auth`
 
-- 定位：现有表；Entity [third-party-auth.entity.ts](../../src/modules/third-party-auth/third-party-auth.entity.ts)；创建迁移 [1773926400000-create-base-third-party-auth-table.migration.ts](../../src/infrastructure/database/migrations/1773926400000-create-base-third-party-auth-table.migration.ts)
+- 定位：现有表；Entity [third-party-auth.entity.ts](../../../backend/src/modules/third-party-auth/third-party-auth.entity.ts)；创建迁移 [1773926400000-create-base-third-party-auth-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1773926400000-create-base-third-party-auth-table.migration.ts)
 - 说明：保留已有账号与第三方平台的绑定；本期不因保留本表新增第三方登录需求。
 - 本期处理：原有认证关联保留，本期不新增第三方登录要求。
 - 规模：现有字段 8；目标设计行 0；现有约束 3；直接消费者 7；测试 0
@@ -1010,7 +1012,7 @@
 
 ### 3.34 `base_verification_record`
 
-- 定位：现有表；Entity [verification-record.entity.ts](../../src/modules/verification-record/verification-record.entity.ts)；创建迁移 [1773927600000-create-base-verification-record-table.migration.ts](../../src/infrastructure/database/migrations/1773927600000-create-base-verification-record-table.migration.ts)
+- 定位：现有表；Entity [verification-record.entity.ts](../../../backend/src/modules/verification-record/verification-record.entity.ts)；创建迁移 [1773927600000-create-base-verification-record-table.migration.ts](../../../backend/src/infrastructure/database/migrations/1773927600000-create-base-verification-record-table.migration.ts)
 - 说明：保存既有一次性验证或可撤销动作的令牌指纹及状态；不代替工程师公司审核申请。
 - 本期处理：复用必要验证能力，不把验证记录当工程师公司审批。
 - 规模：现有字段 15；目标设计行 0；现有约束 7；直接消费者 8；测试 0
@@ -1137,7 +1139,7 @@
 
 #### 4.5 `maintenance_report_fault`
 
-> **P0 修正（2026-11-09）**：本节“结构已实现”只指 DDL/Entity 已创建。经 F1 审计：原始八字段与 `phase_code` 未落列；`status/source` 与面板原始字段同名异义，原始数据与处理生命周期混行；`panel_snapshot` 无 JSON 校验与版本；`(report_id, step_code)` 唯一缺失。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：本节“结构已实现”只指 DDL/Entity 已创建。经 F1 审计：原始八字段与 `phase_code` 未落列；`status/source` 与面板原始字段同名异义，原始数据与处理生命周期混行；`panel_snapshot` 无 JSON 校验与版本；`(report_id, step_code)` 唯一缺失。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 
 - 落位：云；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
@@ -1221,7 +1223,7 @@
 
 #### 4.9 `local_account_authorization`
 
-> **P0 修正（2026-11-09）**：经 F1 审计，`signed_claims`、`permission_version`、`last_verified_at` 均不存在；现有 `authorization_status/authorized_at` 是撤销事实，不能单独充当离线资格。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：经 F1 审计，`signed_claims`、`permission_version`、`last_verified_at` 均不存在；现有 `authorization_status/authorized_at` 是撤销事实，不能单独充当离线资格。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 
 - 落位：本地；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
@@ -1239,7 +1241,7 @@
 
 #### 4.10 `local_company_setting`
 
-> **P0 修正（2026-11-09）**：经 F1 审计，`initialization_at`、`backup_interval_hours`、`backup_enabled`、`next_backup_at`、`last_auto_success_at`、`last_auto_failure_at`、`failure_reason`、`auto_upload_enabled` 均不存在；现有 `setting_source/is_current` 为设计外列。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：经 F1 审计，`initialization_at`、`backup_interval_hours`、`backup_enabled`、`next_backup_at`、`last_auto_success_at`、`last_auto_failure_at`、`failure_reason`、`auto_upload_enabled` 均不存在；现有 `setting_source/is_current` 为设计外列。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 
 - 落位：本地；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
@@ -1260,7 +1262,7 @@
 
 #### 4.11 `sync_receipt`
 
-> **P0 修正（2026-11-09）**：经 F1 审计，唯一键含 `source_system`，同一版本可被本地/云端各记一行，违背“共用去重”；且缺 `source_installation_id`、`remote_resource_id`、`received_at`。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：经 F1 审计，唯一键含 `source_system`，同一版本可被本地/云端各记一行，违背“共用去重”；且缺 `source_installation_id`、`remote_resource_id`、`received_at`。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 
 - 落位：云；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
@@ -1280,7 +1282,7 @@
 
 #### 4.12 `sync_conflict`
 
-> **P0 修正（2026-11-09）**：本审计未连库，`data_version` 是独立列还是 JSON 内版本尚未核实；快照的版本域拒绝也无读写方证明。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：本审计未连库，`data_version` 是独立列还是 JSON 内版本尚未核实；快照的版本域拒绝也无读写方证明。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 >
 > **D3 结构对齐（2026-11-09，第 42 条迁移）**：实现主键为 `conflict_id char(36)`，承担设计 `id` 的稳定身份，不重复新增自增列；既有 `version_no` 是旧冲突版本号，无法证明属于本地或云端，保留但不映射。补齐 `local_version`、`cloud_version`、`displayed_cloud_version`、`decision` 四列；旧行无法证明的版本/选择保持 NULL（明确历史未知），新写入由应用层成对提供 `local_version`/`cloud_version` 并默认 `decision=PENDING`。
 
@@ -1359,7 +1361,7 @@
 
 #### 4.15 `backup_asset`
 
-> **P0 修正（2026-11-09）**：经 F1 审计，缺 `installation_id`、`format_version`、`data_version`、本地引用（现仅 `storage_reference` 覆盖云端）、`encryption_key_id`、`verified_at`、`retention_until`、`failure_reason`、`deleted_at`、`local_cleanup_error`。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：经 F1 审计，缺 `installation_id`、`format_version`、`data_version`、本地引用（现仅 `storage_reference` 覆盖云端）、`encryption_key_id`、`verified_at`、`retention_until`、`failure_reason`、`deleted_at`、`local_cleanup_error`。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 
 - 落位：云登记 + 本地/云副本状态；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
@@ -1390,7 +1392,7 @@
 
 #### 4.16 `backup_restore_run`
 
-> **P0 修正（2026-11-09）**：经 F1 审计，缺 `target_installation_id`、`check_status`、`confirmation`；`protection_backup_id` 为 NOT NULL，与“执行前必有保护备份”的预检阶段冲突。判定见 [S5 审计](./S5-pre-merge-blocker-audit-20261109.md)。
+> **P0 修正（2026-11-09）**：经 F1 审计，缺 `target_installation_id`、`check_status`、`confirmation`；`protection_backup_id` 为 NOT NULL，与“执行前必有保护备份”的预检阶段冲突。判定见 [S5 审计](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S5-pre-merge-blocker-audit-20261109.md)。
 
 - 落位：本地；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
 - 需求：见 V5.3
@@ -1461,7 +1463,7 @@
 - 34/34 现有表已列；17/17 候选对象已列；**71/71 现有表目标设计行**与 **196/196 候选字段**已列，共 **267 行目标设计**。
 - 逻辑/关系/部署规则 5 行单独标注，不计列；组合字段 7 行注明含多列，不误算为独立新增列。
 - 现有表新增物理列 **47**，候选字段 **196**，目标新增列合计 **243**；既有列调整引用 **29**。
-- 未发现“91 项 = 91 列”的机械映射；需求到对象的映射见 [S1-requirement-mapping.md](S1-requirement-mapping.md)。
+- 未发现“91 项 = 91 列”的机械映射；需求到对象的映射见 [S1-requirement-mapping.md](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S1-requirement-mapping.md)。
 
 ## 6. 源稿 267 行逐行对照与差异解释
 

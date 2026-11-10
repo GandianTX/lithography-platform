@@ -598,7 +598,7 @@ describe('未知业务表', () => {
 describe('CHECK 完整性补登记', () => {
   const DICTIONARY_FILE = path.resolve(
     __dirname,
-    '../../../plans/database-v13-deploy/S1-object-and-field-dictionary.md',
+    '../../../../docs/database/v13-deployment/schema-dictionary.md',
   );
   /**
    * 已被后续迁移显式删除并由新约束取代的 CHECK。
