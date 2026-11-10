@@ -569,3 +569,27 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
   保留；17 张清理表中仅 `stored_file=1`，其余 16 张为 0。该现场不是零残留，不得用于零残留档验收或删除保留行制造通过。
 - 统计与构建：`test:unit` `205 skipped / 1895 passed / 2100 total`、`0 failed / 0 todo`，退出码 0；
   `npm run build` 退出码 0。上一轮 `1892/2095` 无保留原始 JSON 支撑，以本轮 JSON 为准。
+
+### 11.10 实例级 consumer 写入责任与第 51 轮补验（2026-11-11）
+
+- 发起注入前固定实际实例 UUID、consumer 名称及原状态。条件 UPDATE 同时匹配名称和原状态；只有明确命中 1 行后，
+  才登记用例自动恢复责任。恢复同样按本轮写入值条件更新并读回，不以“当前是 NO”推断归属。
+- 返回值缺失、异常或非精确命中均停止该套件后续测试及注入。未知结果必须保留原始错误，报告
+  `server_uuid / consumer / original / current`；诊断读取失败时标记不可确认，不自动恢复。
+  恢复、回滚或连接释放同时失败时，以 AggregateError 保留主错误和收尾错误。
+- 未知结果的处置属于隔离实例执行者：先保存整个 Jest 进程退出后的独立读取，再核对实例 UUID、端口和原始记录，
+  只恢复该 consumer 的已登记原状态，保存读回并验证正常事务观测。未处置前不得在该实例继续故障注入。
+- 本轮新建 `127.0.0.1:3307` 隔离实例，UUID `00e7be55-dd5c-11f1-85cf-00e0709ef3a9`，
+  库 `lithography_v13_test`；正式 init/verify 均退出 0，终态 44 条迁移、51 张业务表。
+  专项使用 `litho_v13_test`；初始化管理员仅负责隔离实例设置、独立取证、受控恢复和关闭。
+- 候选正常单文件：18 passed / 6 skipped，退出 0；明确命中后两个上游开关恢复，事务活动时计数 1，回滚后 0。
+- 临时源码副本只在 global consumer 写入已执行后丢弃结果；正式候选没有新增该故障开关。
+  单文件只选择上游 consumer 用例：0 passed / 1 failed / 23 skipped，退出 1（预期拒绝，不计作通过）。
+  Jest 退出后独立读取为 `global_instrumentation=NO`，另外两个 consumer 为 YES；完整定位诊断及原始错误均存在。
+- 执行者条件恢复 global consumer 后读回三项均 YES；最终候选三文件正常交付组
+  72 passed / 0 failed / 6 skipped，退出 0。三次运行的全表数据快照均前后一致。
+- 完整后端单测：1901 passed / 205 skipped / 2106 total，0 failed；160 suites passed / 8 skipped。
+  类型检查、变更文件 ESLint/Prettier、构建通过。实库开关未用于完整单测。
+- 原始命令、日志、JSON、临时副本注入 diff、进程退出后快照与执行者恢复记录在仓库外
+  `~/.local/share/lithography-v13-rq-evidence/round51-consumer/`（0700/0600）。
+  隔离实例核验身份后关闭，数据目录保留；未操作共享 3306、Redis 或其他既有现场。

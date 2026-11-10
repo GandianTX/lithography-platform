@@ -373,6 +373,32 @@
 - 未覆盖：真实旧库升级、前端/真实登录、Redis、Worker、完整业务 core、真实云端执行器不在本轮范围；
   `npm run check:entity-scope` 仍为 1（既有裁决记不适用）。
 
+## 第 51 轮：实例级 consumer 未知写入结果的收尾修复（2026-11-11）
+
+- 对应 dd0d2e9 复审的唯一 P2：条件 UPDATE 发出前固定实例 UUID、消费者及原状态；明确命中 1 行才返回恢复函数，
+  调用方在任何后续断言前登记。0 行或未知结果不认领恢复，停止后续测试/注入并输出当前可确认状态及执行者处置责任。
+- 新增 `test/utils/consumer-instrumentation.ts` 与 6 条离线回归。用例保留主错误，恢复/回滚/释放错误分别收集，
+  避免 finally 覆盖原始故障；条件恢复要求精确命中并读回原状态。
+- 新建隔离 MySQL 8.0.46（127.0.0.1:3307，UUID `00e7be55-dd5c-11f1-85cf-00e0709ef3a9`），
+  专用库 `lithography_v13_test`。正式 `database:deploy --mode=init` 与 `migration:verify` 退出码 0，44 迁移、51 业务表。
+  专项使用专用非 root 账号；管理员只用于隔离实例管理和独立读取/处置。
+- 实际验收编排：仓库外 `node /tmp/v13-consumer-accept.cjs setup|normal|unknown|restore|post-restore|checks|shutdown`
+  分阶段运行；逐条命令及退出码保存在证据目录各 `*.command.json`。测试环境由正式 runner 的 `buildEnvironment` 派生，
+  专用 Jest 配置、显式 UUID/库名/白名单/许可不变。每次先 `--listTests` 精确核对 1 个或 3 个文件，再执行 `--runTestsByPath`。
+- normal：候选单文件 18 passed / 0 failed / 6 skipped，退出 0。两个上游 consumer 正常恢复；真实事务计数 1→回滚后 0。
+- unknown：临时源码副本只在 MySQL 已执行 global consumer 关闭后抛出 `INJECTED_CONSUMER_WRITE_RESULT_LOST`，
+  不改正式候选；选择上游 consumer 单用例。0 passed / 1 failed / 23 skipped，退出 1。
+  预期失败内容明确包含实例 UUID、`consumer=global_instrumentation original=YES current=NO`、原始错误及停止注入/人工处置说明。
+  整个 Jest 退出后独立连接确认 global consumer 为 NO、thread 与 events consumer 仍为 YES；此失败不冒记为通过。
+- 独立执行者保存上述直接证据后，核对实例 UUID/端口，按名称及 NO 条件恢复 YES，命中 1 行；读回三项均 YES。
+  post-restore：最终候选 3 suites / 72 passed / 0 failed / 6 skipped，退出 0，包含恢复后的活动事务观测。
+  normal、unknown、post-restore 三次全表数据快照均逐字节一致；无通过删除未知状态制造验收成功。
+- 完整单测原始 JSON：160 passed / 8 skipped suites；1901 passed / 205 skipped / 2106 total，0 failed，退出 0。
+  typecheck、spec tsc、变更文件 ESLint/Prettier、build、diff 检查通过。44 条迁移、Entity、外键、目标守卫均未改。
+- 证据：`~/.local/share/lithography-v13-rq-evidence/round51-consumer/`（0700/0600），包括进程退出后设置快照、数据快照、
+  临时副本唯一注入 diff、Jest JSON、执行者恢复前后记录。仅关闭本轮独立 mysqld，保留 datadir 和证据；未操作共享 3306/Redis/审查方现场。
+- 本轮追加本地提交；未 push、未回复 PR、未合并。既有 `v13-authoritative-config.spec.ts` 的纯格式工作区改动不纳入本轮提交。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。

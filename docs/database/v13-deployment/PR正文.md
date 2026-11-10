@@ -46,10 +46,13 @@
 
 - [x] 后端构建和类型检查通过。
 - [x] 相关测试通过：离线定向回归（竞争用例恢复归属 3 条、线程停采结果分类与 CAS 诊断）通过；
-      完整单测 `205 skipped / 1895 passed / 2100 total`、`0 failed / 0 todo`、`npm run build` 退出码 0。
+      第 51 轮完整单测 `205 skipped / 1901 passed / 2106 total`、`0 failed`、`npm run build` 退出码 0。
 - [x] 专用隔离实例实库通过：normal、fault（显式关闭 `E2E_V13_SECOND_CONNECTION`）、
       fault-UNKNOWN、fault-ASSERT-AFTER、conflict 五档均为 3 suites passed，退出码 0；
       进程退出后由独立 mysql 连接复核保留资源与零残留边界。
+- [x] 实例级 consumer 未知写入结果补验：临时源码副本预期拒绝为 1 failed / 23 skipped、退出码 1；
+      Jest 退出后独立读取与定位诊断齐全，执行者受控恢复后，候选正常交付组 72 passed / 6 skipped、退出码 0。
+      预期拒绝不计为通过，三次数据快照前后一致；详见复审回执第 51 轮。
 - [ ] 前端构建通过：不适用（无前端变更）。
 - [ ] 正确角色可以访问 / 错误角色无法访问：不适用（无接口与授权变更）。
 - [ ] 前后端使用真实接口跑通 / 刷新后数据仍然正确：不适用（无页面与接口变更）。

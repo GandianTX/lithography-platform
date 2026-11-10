@@ -58,6 +58,7 @@ import {
   assertManagerOnExpectedE2eDatabase,
 } from '../../../test/utils/e2e-db-guard';
 import { readRepositoryMigrations } from './incremental-migration';
+import { disableConsumerWithRecovery } from '../../../test/utils/consumer-instrumentation';
 import {
   assertCasRestoreAffectedOne,
   assertTransactionObservationCapability,
@@ -328,6 +329,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   };
   // RQ6：只有能力预检通过且开始造数后才允许 afterAll 进入清理路径。
   let setupAllowed = false;
+  let consumerInjectionBlocked = false;
 
   const runTag = `${Date.now().toString(36)}${randomUUID().slice(0, 8)}`;
   // `local_installation.installation_id` 由迁移以 `UUID()` 随机生成，每个库不同；
@@ -1544,6 +1546,12 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     external.backupRunId = insertIdOf(backupRunResult);
 
     resetCase();
+  });
+
+  beforeEach(() => {
+    if (consumerInjectionBlocked) {
+      throw new Error('consumer 状态未确认：已停止本实例上的后续测试及故障注入，等待执行者处置');
+    }
   });
 
   afterAll(async () => {
@@ -2897,16 +2905,12 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         const row = rows[0] as Record<string, unknown>;
         return typeof row.enabled === 'string' ? row.enabled : '';
       };
-      const setEnabled = async (name: string, enabled: string): Promise<void> => {
+      const setEnabled = async (name: string, from: string, enabled: string): Promise<unknown> => {
         const result: unknown = await dataSource.query(
-          `UPDATE performance_schema.setup_consumers SET ENABLED = ? WHERE NAME = ?`,
-          [enabled, name],
+          `UPDATE performance_schema.setup_consumers SET ENABLED = ? WHERE NAME = ? AND ENABLED = ?`,
+          [enabled, name, from],
         );
-        const rawAffected =
-          typeof result === 'object' && result !== null
-            ? (result as Record<string, unknown>).affectedRows
-            : undefined;
-        expect(Number(rawAffected)).toBe(1);
+        return result;
       };
 
       for (const name of requiredConsumers) {
@@ -2915,13 +2919,25 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         // 否则本用例的“关闭后拒绝”不是可归因的本轮注入，直接拒绝制造不可信现场。
         expect(original).toBe('YES');
         const transactionRunner = dataSource.createQueryRunner();
-        let consumerDisabled = false;
+        let restoreConsumer: (() => Promise<void>) | undefined;
+        let primaryError: unknown;
+        const cleanupErrors: unknown[] = [];
         try {
           await transactionRunner.connect();
           await transactionRunner.startTransaction();
           await transactionRunner.query('SELECT 1 AS inside_transaction');
-          await setEnabled(name, 'NO');
-          consumerDisabled = true;
+          try {
+            restoreConsumer = await disableConsumerWithRecovery({
+              serverUuid: EXPECTED_SERVER_UUID,
+              consumer: name,
+              original,
+              write: (from, to) => setEnabled(name, from, to),
+              read: () => readEnabled(name),
+            });
+          } catch (error) {
+            consumerInjectionBlocked = true;
+            throw error;
+          }
           // 上游关闭时预检与计数都必须明确拒绝；
           // 尤其是计数不能因为 events_transactions_current 为空而返回 0。
           await expect(
@@ -2930,19 +2946,42 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           await expect(
             countActiveOwnTransactions((sql) => observationRunner.query(sql)),
           ).rejects.toThrow(new RegExp(`${name} consumer 未启用`));
+        } catch (error) {
+          primaryError = error;
         } finally {
           try {
-            if (consumerDisabled) {
+            if (restoreConsumer) {
               // 可靠恢复：无论断言是否失败，都恢复原值并逐项确认。
-              await setEnabled(name, original);
-              expect(await readEnabled(name)).toBe(original);
+              await restoreConsumer();
             }
-          } finally {
+          } catch (error) {
+            consumerInjectionBlocked = true;
+            cleanupErrors.push(error);
+          }
+          try {
             if (transactionRunner.isTransactionActive) {
               await transactionRunner.rollbackTransaction();
             }
-            await transactionRunner.release();
+          } catch (error) {
+            cleanupErrors.push(error);
           }
+          try {
+            await transactionRunner.release();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+        }
+        if (cleanupErrors.length > 0) {
+          consumerInjectionBlocked = true;
+          throw new AggregateError(
+            primaryError === undefined ? cleanupErrors : [primaryError, ...cleanupErrors],
+            `consumer 注入或收尾失败：server_uuid=${EXPECTED_SERVER_UUID} consumer=${name}`,
+          );
+        }
+        if (primaryError !== undefined) {
+          throw primaryError instanceof Error
+            ? primaryError
+            : new Error('consumer 注入失败', { cause: primaryError });
         }
 
         // 恢复后：正常事务可见，回滚后归零。
