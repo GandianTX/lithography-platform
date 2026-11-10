@@ -4432,3 +4432,38 @@ export const classifyThreadInstrumentationWrite = (
     )}，期望 0 或 1；结果未知，保留现场并停止自动恢复`,
   };
 };
+
+export interface ThreadInstrumentationRecoveryPlan {
+  /** `restore` 仅在首次条件 UPDATE 明确命中 1 行时为唯一选择。 */
+  readonly action: 'restore' | 'keep';
+  readonly reason: string;
+}
+
+/**
+ * 决定 `finally` 是否恢复线程停采（P1）。
+ *
+ * 只依据首次条件 UPDATE 的分类结果，不按线程标识或“当前是 NO”猜测归属：
+ * 明确命中 1 行才恢复；0 行、结果未知、未执行或线程事实不全时一律保持现状，
+ * 绝不认领其他执行方写入的状态。
+ */
+export const planThreadInstrumentationRecovery = (params: {
+  readonly stopDecision: ThreadInstrumentationWriteDecision | null;
+  readonly threadFactsKnown: boolean;
+}): ThreadInstrumentationRecoveryPlan => {
+  if (params.stopDecision === null) {
+    return { action: 'keep', reason: '本轮未执行线程停采条件 UPDATE，不认领恢复责任' };
+  }
+  if (!params.threadFactsKnown) {
+    return { action: 'keep', reason: '线程/连接/用户事实不完整，无法精确恢复，保持现状' };
+  }
+  if (params.stopDecision.shouldRestore) {
+    return { action: 'restore', reason: '本轮条件 UPDATE 明确命中 1 行，按登记事实恢复' };
+  }
+  return {
+    action: 'keep',
+    reason:
+      params.stopDecision.outcome === 'not-applied'
+        ? '条件 UPDATE 命中 0 行，本轮未成功写入，不恢复也不认领他人状态'
+        : `结果未知（${params.stopDecision.diagnostic ?? '缺少诊断'}），保留现场不自动恢复`,
+  };
+};

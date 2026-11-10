@@ -19,9 +19,11 @@
 //   npx ts-node -r tsconfig-paths/register test/run-v13-authoritative-spec.ts delivery
 //
 // 专用隔离实例注入（默认 none）：
-//   V13_SPEC_INJECTION_PROFILE=normal|conflict V13_SPEC_ISOLATED_INSTANCE=1
+//   V13_SPEC_INJECTION_PROFILE=normal|conflict|fault V13_SPEC_ISOLATED_INSTANCE=1
 //   仅允许回环地址且 DB_PORT != 3306；normal 启用 P1/P2 线程与上游 consumer 注入，
-//   conflict 追加 R02-CONFLICT、FAULT-UPDATE 受控故障与第二连接。
+//   conflict 追加 R02-CONFLICT、FAULT-UPDATE 受控故障与第二连接；
+//   fault 只启用 FAULT-UPDATE 受控故障并明确关闭 E2E_V13_SECOND_CONNECTION，
+//   可通过 V13_SPEC_INSTRUMENT_FAULT_CASE=UNKNOWN|ASSERT-AFTER 追加停采收尾验收。
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
@@ -79,21 +81,37 @@ const resolveGroup = (): V13SpecGroup => {
   return V13_SPEC_GROUPS[raw];
 };
 
-type InjectionProfile = 'none' | 'normal' | 'conflict';
+type InjectionProfile = 'none' | 'normal' | 'conflict' | 'fault';
 
 const INJECTION_PROFILE_FLAG = 'V13_SPEC_INJECTION_PROFILE';
 const ISOLATED_INSTANCE_FLAG = 'V13_SPEC_ISOLATED_INSTANCE';
+const INSTRUMENT_FAULT_FLAG = 'V13_SPEC_INSTRUMENT_FAULT_CASE';
 const CONFLICT_FAULT_CASES = 'R02-CONFLICT,FAULT-UPDATE';
+const FAULT_UPDATE_ONLY = 'FAULT-UPDATE';
 
 const resolveInjectionProfile = (): InjectionProfile => {
   const raw = (process.env[INJECTION_PROFILE_FLAG] ?? 'none').trim().toLowerCase();
-  if (raw !== 'none' && raw !== 'normal' && raw !== 'conflict') {
-    return fail(`拒绝执行：${INJECTION_PROFILE_FLAG} 只接受 none、normal 或 conflict`);
+  if (raw !== 'none' && raw !== 'normal' && raw !== 'conflict' && raw !== 'fault') {
+    return fail(`拒绝执行：${INJECTION_PROFILE_FLAG} 只接受 none、normal、conflict 或 fault`);
   }
   if (raw !== 'none' && process.env[ISOLATED_INSTANCE_FLAG] !== '1') {
     return fail(
       `拒绝执行：注入 profile=${raw} 必须在专用隔离实例显式设置 ${ISOLATED_INSTANCE_FLAG}=1`,
     );
+  }
+  return raw;
+};
+
+const resolveInstrumentFaultCase = (profile: InjectionProfile): string => {
+  const raw = (process.env[INSTRUMENT_FAULT_FLAG] ?? '').trim().toUpperCase();
+  if (raw === '') {
+    return '';
+  }
+  if (profile !== 'fault') {
+    return fail(`拒绝执行：${INSTRUMENT_FAULT_FLAG} 只允许与 fault profile 一起使用`);
+  }
+  if (raw !== 'UNKNOWN' && raw !== 'ASSERT-AFTER') {
+    return fail(`拒绝执行：${INSTRUMENT_FAULT_FLAG} 只接受 UNKNOWN 或 ASSERT-AFTER`);
   }
   return raw;
 };
@@ -172,6 +190,7 @@ const assertEntryConfirmed = (
     readonly targetDb: string;
     readonly serverUuid: string;
     readonly injectionProfile: InjectionProfile;
+    readonly instrumentFaultCase: string;
   },
 ): void => {
   const checks: Array<readonly [string, string]> = [
@@ -199,6 +218,22 @@ const assertEntryConfirmed = (
       ['E2E_V13_SECOND_CONNECTION', '1'],
     );
   }
+  if (expected.injectionProfile === 'fault') {
+    checks.push(
+      ['E2E_V13_CONTROLLED_FAULT', '1'],
+      ['E2E_V13_CONTROLLED_FAULT_CASE', FAULT_UPDATE_ONLY],
+    );
+    if (env.E2E_V13_SECOND_CONNECTION !== undefined) {
+      return fail('拒绝执行：fault profile 必须明确关闭 E2E_V13_SECOND_CONNECTION');
+    }
+    if (expected.instrumentFaultCase === '') {
+      if (env.E2E_V13_INSTRUMENT_FAULT_CASE !== undefined) {
+        return fail('拒绝执行：未请求停采受控故障却注入了 E2E_V13_INSTRUMENT_FAULT_CASE');
+      }
+    } else {
+      checks.push(['E2E_V13_INSTRUMENT_FAULT_CASE', expected.instrumentFaultCase]);
+    }
+  }
   for (const [key, value] of checks) {
     if (env[key] !== value) {
       return fail(`拒绝执行：入口控制变量 ${key} 未被独立确认`);
@@ -211,6 +246,7 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
     return fail('拒绝执行：缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1');
   }
   const injectionProfile = resolveInjectionProfile();
+  const instrumentFaultCase = resolveInstrumentFaultCase(injectionProfile);
   const configFile = requireEnv('V13_SPEC_CONFIG_FILE');
   if (!path.isAbsolute(configFile)) {
     return fail('拒绝执行：V13_SPEC_CONFIG_FILE 必须是绝对路径');
@@ -255,6 +291,15 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
     env.E2E_V13_CONTROLLED_FAULT_CASE = CONFLICT_FAULT_CASES;
     env.E2E_V13_SECOND_CONNECTION = '1';
   }
+  if (injectionProfile === 'fault') {
+    env.E2E_V13_CONTROLLED_FAULT = '1';
+    env.E2E_V13_CONTROLLED_FAULT_CASE = FAULT_UPDATE_ONLY;
+    // 明确关闭第二连接干扰：保留登记不得依赖 conflictArmed。
+    delete env.E2E_V13_SECOND_CONNECTION;
+    if (instrumentFaultCase !== '') {
+      env.E2E_V13_INSTRUMENT_FAULT_CASE = instrumentFaultCase;
+    }
+  }
   // 只注入白名单内的连接字段；控制变量已在上面由入口独立写入。
   for (const [key, value] of Object.entries(parsed)) {
     if (CONFIG_KEY_ALLOWLIST.has(key)) {
@@ -280,7 +325,13 @@ export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
   }
 
   // 注入完成后由入口再次独立确认：配置与父进程都不能改写这些控制值。
-  assertEntryConfirmed(env, { group, targetDb, serverUuid, injectionProfile });
+  assertEntryConfirmed(env, {
+    group,
+    targetDb,
+    serverUuid,
+    injectionProfile,
+    instrumentFaultCase,
+  });
 
   return env;
 };

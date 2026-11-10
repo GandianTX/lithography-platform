@@ -5,6 +5,7 @@ import {
   byteExactTextMatchCondition,
   classifyThreadInstrumentationWrite,
   countActiveOwnTransactions,
+  planThreadInstrumentationRecovery,
 } from '../../../test/utils/e2e-scoped-cleanup';
 
 interface ObservationGrants {
@@ -379,5 +380,37 @@ describe('P2 线程停采写入结果分类（离线）', () => {
     expect(decision.outcome).toBe('unknown');
     expect(decision.shouldRestore).toBe(false);
     expect(decision.diagnostic).toMatch(/结果未知.*保留现场/);
+  });
+});
+
+describe('P1 竞争用例的恢复归属（离线）', () => {
+  it('首次条件 UPDATE 命中 0 行时不恢复，也不认领他人状态', () => {
+    const plan = planThreadInstrumentationRecovery({
+      stopDecision: classifyThreadInstrumentationWrite({ affectedRows: 0 }),
+      threadFactsKnown: true,
+    });
+    expect(plan.action).toBe('keep');
+    expect(plan.reason).toMatch(/命中 0 行.*不认领他人状态/);
+  });
+
+  it('结果未知时保留现场且不恢复', () => {
+    const plan = planThreadInstrumentationRecovery({
+      stopDecision: classifyThreadInstrumentationWrite({ affectedRows: 3 }),
+      threadFactsKnown: true,
+    });
+    expect(plan.action).toBe('keep');
+    expect(plan.reason).toMatch(/结果未知.*保留现场/);
+  });
+
+  it('成功写入后即使后续断言失败，仍按登记事实恢复', () => {
+    // 恢复责任在写入分类后立即登记；随后断言失败不改变归属，finally 仍应恢复。
+    const stopDecision = classifyThreadInstrumentationWrite({ affectedRows: 1 });
+    const laterAssertion = (): void => {
+      throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
+    };
+    expect(laterAssertion).toThrow(/__CONTROLLED_ASSERTION_FAILURE__/);
+    const plan = planThreadInstrumentationRecovery({ stopDecision, threadFactsKnown: true });
+    expect(plan.action).toBe('restore');
+    expect(plan.reason).toMatch(/明确命中 1 行/);
   });
 });

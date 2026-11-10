@@ -56,8 +56,11 @@
 - `E2E_V13_INSTRUMENT_INJECTION=1`（线程停采反例）与 `E2E_V13_SECOND_CONNECTION=1`
   （R02 第二连接干扰反例）同样默认关闭，只在另行授权的专用库与专用测试连接上开启；
   所需权限单独列清（见 2.2），不得使用 root 或修改全局采集开关。
-- 线程停采反例结束后必须由 `finally` 恢复原 `INSTRUMENTED` 值并读回确认；
-  第二连接干扰反例必须先保存冲突行被保留的直接证据，再由独立执行者按精确字节事实回收。
+- 线程停采反例的恢复责任只由首次条件 `UPDATE` 明确命中 1 行的执行方登记；命中 0 行或结果未知时保持现状，
+  不得按线程标识认领他人 `NO` 状态。登记发生在断言之前，后续断言失败仍由该执行方在 `finally` 恢复并读回确认。
+- `FAULT-UPDATE` 的恢复冲突由用例自身的受控外部连接改写 `local_backup_run.finished_at` 制造，
+  不依赖 `E2E_V13_SECOND_CONNECTION`；冲突在恢复阶段实际发生处立即登记套件级保留，
+  用例、通用清理与 `afterAll` 统一读取该保留事实。
 
 ### 2.2 线程停采与第二连接反例的权限清单（需另行授权）
 
@@ -83,6 +86,10 @@
   - 被测清理器使用同一授权账号执行精确恢复；冲突行回收由独立执行者按
     `file_id` 与 `CAST(original_filename AS BINARY)` 精确匹配处理。
   - 不得操作审查方现场、共享库、Redis 或原事故数据；不重建整套数据库、不新增迁移。
+- `FAULT-UPDATE` 恢复冲突（`E2E_V13_CONTROLLED_FAULT=1` + `E2E_V13_CONTROLLED_FAULT_CASE=FAULT-UPDATE`）：
+  - `local_backup_run` 的 `SELECT` / `UPDATE`；受控外部连接只改写 `finished_at`，不改其他列；
+  - 恢复按本轮写入值做字节精确 CAS；命中 0 行即登记套件级保留，不覆盖外部值、不反向删除保留行；
+    保留行的父安装种子属既有基线，不得为追求零残留而删除。
 
 ## 3. 配置位置
 
@@ -400,9 +407,11 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
 - 规格自身在建立连接前检查显式开关、专用配置与单目标白名单；连接后核验
   `DATABASE()` 与 `@@server_uuid`。第 43 条升级规格在自身连接上同时核验两者。
 - 只核对文件集合时追加 `V13_SPEC_LIST_ONLY=1`；此模式不建立任何数据库连接。
-- 上游 consumer 与线程停采注入口径：`V13_SPEC_INJECTION_PROFILE=normal|conflict` 必须同时设置
+- 上游 consumer 与线程停采注入口径：`V13_SPEC_INJECTION_PROFILE=none|normal|conflict|fault` 必须同时设置
   `V13_SPEC_ISOLATED_INSTANCE=1`；入口在建立连接前要求 `DB_HOST` 为回环且 `DB_PORT != 3306`。
-  normal 启用 P1/P2 注入；conflict 追加 `R02-CONFLICT,FAULT-UPDATE` 受控故障与第二连接。
+  normal 启用 P1/P2 注入；conflict 追加 `R02-CONFLICT,FAULT-UPDATE` 受控故障与第二连接；
+  fault 只启用 `FAULT-UPDATE`，并明确不设置 `E2E_V13_SECOND_CONNECTION`，可通过
+  `V13_SPEC_INSTRUMENT_FAULT_CASE=UNKNOWN|ASSERT-AFTER` 追加停采收尾验收。
 
 - 规格不得硬编码由 `UUID()` 生成的种子值（如 `local_installation.installation_id`），应读取目标库真值；
 - 迁移条数等基线常量应随候选冻结更新，避免把候选演进口径当成漂移。
@@ -415,7 +424,9 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
 - 先确认目标库独占、UUID 正确、基线迁移与数据快照已保存，再插入 KEEP 并登记独立账本；
 - 升级被预检拒绝时不得进入 core，不得以清库/重建替代。
 
-### 11.5 本轮实测命令（2026-11-10）
+### 11.5 本轮实测命令（2026-11-10，第 46 轮历史现场）
+
+> 本节记录第 46 轮在 3306 交付库的历史命令；当前隔离实例口径以 11.9 为准。
 
 前置（缺一不可）：
 
@@ -444,23 +455,35 @@ npm run migration:verify -- --config-file=<0600 库配置> --database=<交付库
 - 验收口径（本轮终态）：44 条迁移、51 张业务表（含 `migrations` 共 52 张）、按映射创建的组织数（本轮为 1 个合成公司）、
   10 个账号、10 条成员关系；3 个一级管理员与 3 个二级管理员、2 个客户、2 个工程师。
 
-升级库（42→43 使用库外冻结的 43 条候选；43→44 使用当前 44 条仓库）：
+当前 44 态升级（使用仓库当前迁移，执行目录 `backend`）：
 
 ```bash
-V13_AUTHORITATIVE_SPECS=1 V13_SPEC_TARGET_DB=<升级库> \
-V13_SPEC_SERVER_UUID=<uuid> V13_SPEC_CONFIG_FILE=<0600 库配置> \
-E2E_ALLOW_PHYSICAL_CLEANUP=1 \
-npx ts-node -r tsconfig-paths/register test/run-v13-authoritative-spec.ts upgrade
-npm run migration:verify -- --config-file=<0600 库配置> --database=<升级库>
 npm run database:deploy -- --mode=upgrade \
   --config-file=<0600 库配置> --database=<升级库> --confirm-database=<升级库>
+npm run migration:verify -- --config-file=<0600 库配置> --database=<升级库>
 ```
 
-- 42→43 专项（冻结的 43 条候选）：旧行 `previous_version` 保持 NULL、其他旧字段不变；0→1、1→2 合法。
 - 43→44 专项：第 44 条在**任何 ALTER 之前**校验 `previous_version IS NULL` 与 `previous_version >= revision_no`；
   合法行（0=首版、后续=实际基版本）保留并收紧为 NOT NULL；存在 NULL 或非法版本序时失败关闭，
   只输出脱敏计数与有限定位 ID，不自动回填、不删除历史行。
 - 再次 upgrade 必须为 0 条且终态校验通过；终态为第 44 条。
+
+冻结 43 态历史路径（只用于追溯 42→43 证据，不得与上面的 44 态命令混用）：
+
+- 候选：库外冻结的 43 条候选（聚合指纹 `94fc2845…3643`），仓库当前迁移中不含该候选；不得用仓库 44 条迁移替代，
+  也不得用该路径结果为当前 44 态背书。
+- 执行目录：`backend`；历史库例：`lithography_rq1_42`（42 态起点的专用库）。
+- 仅在还原库外冻结候选后执行，且仍需该库的单独授权：
+
+```bash
+V13_AUTHORITATIVE_SPECS=1 V13_SPEC_TARGET_DB=<42 态起点库> \
+V13_SPEC_SERVER_UUID=<uuid> V13_SPEC_CONFIG_FILE=<0600 库配置> \
+E2E_ALLOW_PHYSICAL_CLEANUP=1 \
+npx ts-node -r tsconfig-paths/register test/run-v13-authoritative-spec.ts upgrade
+npm run migration:verify -- --config-file=<0600 库配置> --database=<42 态起点库>
+```
+
+- 历史结论（仅对应冻结 43 态）：旧行 `previous_version` 保持 NULL、其他旧字段不变；0→1、1→2 合法。
 
 ### 11.6 `previous_version` 已批准裁决与落实边界
 
@@ -490,7 +513,9 @@ npm run database:deploy -- --mode=upgrade \
 - §11.1、§11.2 记录的旧候选字节识别失败、隐藏/阻塞 CHECK 重建半迁移等现场与处置口径继续保留；
 - 本轮及后续修复只追加新记录，不删除、不改写既有失败与事故记录，也不把未复验的旧结论标为已通过。
 
-### 11.8 第 4 项 RQ 收口实测（2026-11-10，专用隔离实例）
+### 11.8 第 4 项 RQ 收口实测（2026-11-10，第 48 轮历史现场）
+
+> 本节 UUID、计数与保留 ID 均为第 48 轮历史事实；当前最终候选见 11.9。
 
 - 实例：`/tmp` 下独立 `mysqld`，`127.0.0.1:3307`，MySQL 8.0.46，
   `@@server_uuid=7e75b5a6-dd06-11f1-808d-00e0709ef3a9`，`performance_schema=ON`，`--default-time-zone=+08:00`；
@@ -511,3 +536,36 @@ npm run database:deploy -- --mode=upgrade \
   该保留现场不是零残留，处置前不得将同库用于零残留组验收，也不得为制造通过删除保留行。
 - 静态与构建：`typecheck`、变更文件 ESLint/Prettier、`npm run build` 退出码 0；
   `test:unit` 为 `8 skipped suites / 159 passed`、`202 skipped / 1889 passed / 2091 total`，退出码 0。
+
+### 11.9 第 50 轮最终候选实库验收（2026-11-10，当前口径）
+
+- 实例：新建 `/tmp/v13-isolated-20261110T140903Z`（0700），仅 `127.0.0.1:3307`，全新 datadir/socket/pid/日志，
+  启动前确认 3307 空闲；`@@server_uuid=490feee1-dd10-11f1-9b49-00e0709ef3a9`；未使用 3306、Redis 或他人进程。
+- 初始化管理员只创建 `litho_v13_test` 专用账号并授予目标库、观测 SELECT、`threads.INSTRUMENTED` 与
+  `setup_consumers.ENABLED` 权限；专项不使用 root。空库执行一次
+  `database:deploy --mode=init` 得到 44 条迁移、51 张业务表，`migration:verify` 与种子核验退出码 0。
+- 当前命令模板（五种入口共用，`--listTests` 先机器校验 3 文件集合）：
+
+```bash
+cd backend
+V13_AUTHORITATIVE_SPECS=1 \
+V13_SPEC_CONFIG_FILE=<0600 库配置> \
+V13_SPEC_TARGET_DB=lithography_v13_test \
+V13_SPEC_SERVER_UUID=<实际 @@server_uuid> \
+E2E_ALLOW_PHYSICAL_CLEANUP=1 \
+V13_SPEC_ISOLATED_INSTANCE=1 \
+V13_SPEC_INJECTION_PROFILE=<normal|fault|conflict> \
+[V13_SPEC_INSTRUMENT_FAULT_CASE=<UNKNOWN|ASSERT-AFTER>] \
+npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
+  test/run-v13-authoritative-spec.ts delivery
+```
+
+- 结果：normal `72 passed / 6 skipped`；fault（不设置 `E2E_V13_SECOND_CONNECTION`）`75 passed / 3 skipped`；
+  fault-UNKNOWN 与 fault-ASSERT-AFTER 各 `76 passed / 2 skipped`；conflict 及 R09 `76 passed / 2 skipped`；
+  五次均为 3 suites passed、退出码 0。
+- 进程退出后独立 mysql 连接复核：`local_backup_run id=5/9/13/17` 仍在，
+  `finished_at=2001-02-03 04:05:06.007` 保留，`installation_id` 引用存在，本账号 active transaction=0；
+  冲突文件 `file_id=4a467f73-1efe-47c1-a382-945c1ea03a5f`（uploader=9905052、owner_organization=81、`STAGING`）
+  保留；17 张清理表中仅 `stored_file=1`，其余 16 张为 0。该现场不是零残留，不得用于零残留档验收或删除保留行制造通过。
+- 统计与构建：`test:unit` `205 skipped / 1895 passed / 2100 total`、`0 failed / 0 todo`，退出码 0；
+  `npm run build` 退出码 0。上一轮 `1892/2095` 无保留原始 JSON 支撑，以本轮 JSON 为准。

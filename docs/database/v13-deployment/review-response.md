@@ -300,10 +300,78 @@
   17 张清理表中仅 `stored_file=1`（保留），其余 16 张为 0；`local_backup_run=1`（保留）。该保留现场**不是零残留**。
 - conflict 档首次执行暴露 R04/R06 的全局零残留断言未考虑设计保留；两处已改为“除已登记保留外精确零行”，
   并仍断言保留行存在；未修改或放宽 R09，也未删除保留行制造通过。
+  （第 49/50 轮更正：R09 已同步读取精确登记的保留集合，“未修改 R09”的表述自第 49 轮起不再成立。
+  第 50 轮 conflict 档再次实库通过，保留集合按实际 `file_id` / `local_backup_run.id` 核验。）
 - P4 文档：PR 正文仅保留当前交接说明并统一链接本目录；终态为 44 条迁移、51 张业务表。
 - 最终静态与构建：`typecheck`、变更文件 ESLint/Prettier 退出码 0；`test:unit` 为
   `8 skipped suites / 159 passed`，`202 skipped / 1889 passed / 2091 total`，退出码 0；`npm run build` 退出码 0。
 - 未改迁移、Entity、旧业务接口、MySQL 服务或系统权限表；未 push、未回复 PR、未合并。
+
+## RQ6 第 49 轮：P1/P2 最小修复与文档更正（2026-11-10）
+
+- 范围：只改 V13 专项验收规格、测试工具与交付文档；未改迁移、Entity、旧接口，未连库、未 push、未回复 PR、未合并。
+- P1 竞争用例恢复归属：`finally` 不再只凭线程标识恢复。首次条件 UPDATE 的分类结果在任何断言之前登记为恢复责任；
+  命中 0 行、结果未知或线程事实不全时保持现状，不认领其他执行方写入的状态。新增离线回归 3 条：
+  零命中、结果未知、成功写入后断言失败仍按登记事实恢复。
+- P2 实际恢复冲突登记：套件级保留改为在恢复阶段实际冲突处（CAS 命中 0 行）立即登记，不再依赖故障注入开关；
+  用例、通用清理与 `afterAll` 统一读取该保留事实，父安装种子仍由既有基线保护。`FAULT-UPDATE` 的冲突改由
+  受控外部连接制造，`E2E_V13_SECOND_CONNECTION` 仅保留给 `R02-CONFLICT`；无冲突正常回收保留为独立对照用例。
+- P3 文档：`PR正文.md` 的 6 条链接改为同目录相对链接，并注明粘贴 PR 正文时的仓库链接口径；按模板补齐
+  数据库影响、验证与不适用项；SOP 将冻结 43 态命令单列为历史路径，与当前 44 态命令分开。
+- 更正第 48 轮记录：R09 已改为读取精确登记的保留集合（`stored_file`、`local_backup_run` 等），
+  不能再声称“未修改 R09”；第 48 轮 R04/R06 的记录保留为历史事实，不回写覆盖。
+- 验证：定向离线回归与 capability 规格通过；`typecheck`、变更文件 ESLint/Prettier、
+  `test:unit`（`202 skipped / 1892 passed / 2095 total`）与 `npm run build` 退出码均为 0。
+  实库正常档、冲突档与 R09 专项未在本轮复跑，需隔离实例另行授权。
+  （第 50 轮更正：上述 `1892/2095` 没有保留原始 Jest JSON 支撑，保留的 21:08 原始日志为
+  `202 skipped / 1889 passed / 2091 total`；最终候选实测为 `205 skipped / 1895 passed / 2100 total`，
+  以第 50 轮的 JSON 与日志为准。）
+
+## RQ6 第 50 轮：三项修复集中实库验收与本地提交（2026-11-10）
+
+- 范围：沿用第 49 轮 P1/P2/P3 修复，仅补验收所需的默认关闭停采故障与 runner `fault` 入口；
+  未改迁移、Entity、旧业务接口；未 push、未回复 PR、未合并。
+- 现场：分支 `feat/database-v13-deploy`，冻结 HEAD `f434d0084b5dcbda8258d0b41f6e48721f8001b3`；
+  工作区修复未 reset/stash/amend。证据在仓库外
+  `~/.local/share/lithography-v13-rq-evidence/round50/`（目录 0700、文件 0600）。
+- 隔离实例：新建 `/tmp/v13-isolated-20261110T140903Z`（datadir/socket/pid/日志均在其中，
+  启动前确认 3307 空闲），仅绑定 `127.0.0.1:3307`，`@@server_uuid=490feee1-dd10-11f1-9b49-00e0709ef3a9`；
+  未连接或修改 3306、Redis、审查方现场与事故数据。初始化管理员只用于创建 `litho_v13_test` 专用账号及
+  库级/观测 SELECT/`threads.INSTRUMENTED`/`setup_consumers.ENABLED` 授权；专项不使用 root。
+  空库 `lithography_v13_test` 由本轮创建，`database:deploy --mode=init` 得到 44 条迁移、51 张业务表，
+  `migration:verify` 与安装种子/迁移计数核验退出码 0。
+- 冻结指纹：候选 14 个代码/配置/测试文件逐文件 SHA-256 见 `candidate-files.sha256`；44 条迁移逐文件
+  SHA-256 见 `migrations-files.sha256`，聚合指纹 `05ea36ee9638ca314064966599d920f2bee734a5d933a4fb56035974be785877`。
+  关键文件：`e2e-scoped-cleanup.v13.realdb.spec.ts=bb43a921…`、`run-v13-authoritative-spec.ts=67d378dc…`、
+  `e2e-scoped-cleanup.ts=d5be801d…`、`v13-authoritative-config.spec.ts=d8a2d28d…`（完整值见证据文件）。
+  `--listTests` 在 normal / fault / fault-UNKNOWN / fault-ASSERT-AFTER / conflict 五种入口下均由入口机器校验为
+  同一 3 文件集合后再 `--runTestsByPath`。
+- A 零命中：受控第三连接先把目标线程置 `NO`；被测路径的首次条件 UPDATE 为 0 行，分类 `not-applied`、
+  `shouldRestore=false`；`finally` 计划为 `keep` 且不发恢复写入。直接证据 `instrumented=NO` 保存后，
+  由测试执行者按注入事实恢复为 `YES`。实库通过。
+- B 结果未知：真实 UPDATE 命中 1 行但主动丢弃返回值，分类 `unknown`；报告
+  `thread_id/connection_id/user` 与“结果未知”，不归为成功或零命中；`finally` 保持 `NO`，执行者收尾恢复。
+  实库通过。
+- C 成功后断言失败：命中 1 行后、断言前已登记恢复责任；受控断言失败后仍按登记事实恢复 `YES`。实库通过。
+- 真实备份冲突：`fault` 档明确不设置 `E2E_V13_SECOND_CONNECTION`，保留登记不依赖 `conflictArmed`；
+  受控连接改写 `finished_at` 并提交，CAS 恢复命中 0 行后在冲突位置登记套件级保留。normal 对照断言原始
+  `INJECTED_READ_FAILURE:FAULT-UPDATE`；冲突用例断言原始失败含 `恢复冲突` 与 `targetId=17`。
+  Jest 进程退出后由独立 mysql 连接复核：`local_backup_run id=5/9/13/17` 仍在、外部值
+  `2001-02-03 04:05:06.007` 保留、`installation_id` 引用存在、本账号 active transaction=0。
+  trace 见证据目录 `run-fault-update.log` 的 `[S4-E/FAULT-UPDATE-CONFLICT]` 行。
+- 正常对照与专项：normal 档 `72 passed / 6 skipped`；fault 档（无外部冲突的 FAULT-UPDATE 正常恢复与精确回收）
+  `75 passed / 3 skipped`；fault-UNKNOWN 与 fault-ASSERT-AFTER 各 `76 passed / 2 skipped`；
+  conflict 档及 R09 `76 passed / 2 skipped`。五次退出码均 0。
+- conflict 保留：`stored_file file_id=4a467f73-1efe-47c1-a382-945c1ea03a5f`
+  （原始文件名字节 `S4E-R02-WRITTEN-MWARW4WDCCED9192.TXT`，uploader=9905052、owner_organization=81、`STAGING`）；
+  `local_backup_run id=17`（`SUCCEEDED`、`finished_at=2001-02-03 04:05:06.007`）。17 张清理表中仅
+  `stored_file=1`，其余 16 张为 0；`local_backup_run` 共 4 行保留（含前序受控反例 5/9/13）。
+  该现场不是零残留；未删除保留行、未 TRUNCATE、未关闭外键、未重置 AUTO_INCREMENT。
+- 统计更正：完整单测 `8 skipped suites / 159 passed`、`205 skipped / 1895 passed / 2100 total`、
+  `0 failed / 0 todo`，退出码 0；`npm run build` 退出码 0。上一轮文档的 `1892/2095` 无保留原始 JSON 支撑，
+  保留的 21:08 日志为 `202/1889/2091`；本轮以实测 JSON 替换，不做算术修补。
+- 未覆盖：真实旧库升级、前端/真实登录、Redis、Worker、完整业务 core、真实云端执行器不在本轮范围；
+  `npm run check:entity-scope` 仍为 1（既有裁决记不适用）。
 
 ## 未关闭与不适用项
 

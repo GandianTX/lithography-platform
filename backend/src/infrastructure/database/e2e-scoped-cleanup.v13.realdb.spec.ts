@@ -18,8 +18,11 @@
 //        + consumer/instrument 均已启用（缺失即在造数前零写入拒绝）。
 //
 // 受控中断（默认关闭，仅限另行授权的专用库）：
-//   E2E_V13_CONTROLLED_FAULT=1 且 E2E_V13_CONTROLLED_FAULT_CASE=R01|R02|R03
-//   在原危险窗口注入一次读取失败；finally 仍按测试执行者台账精确回收/恢复。
+//   E2E_V13_CONTROLLED_FAULT=1 且 E2E_V13_CONTROLLED_FAULT_CASE 指定用例
+//   （R01|R02|R03|R02-CONFLICT|FAULT-UPDATE）时，在原危险窗口注入一次读取失败；
+//   finally 仍按测试执行者台账精确回收/恢复。
+//   FAULT-UPDATE 的实际恢复冲突由受控外部连接制造，不依赖 E2E_V13_SECOND_CONNECTION；
+//   冲突在恢复阶段实际发生后立即登记套件级保留。
 //
 // 覆盖映射：docs/database/v13-deployment/schema-dictionary.md 与 review-response.md。
 //   R01 父行在范围、子行未登记        → repair_request_intake → intake_analysis_attempt
@@ -62,11 +65,13 @@ import {
   classifyThreadInstrumentationWrite,
   countActiveOwnTransactions,
   createOwnedResourceLedger,
+  planThreadInstrumentationRecovery,
   recordOwnedResource,
   runGuardedScopedCleanup,
   runGuardedSpecCleanup,
   type OwnedResourceLedger,
   type RetainedCleanupResources,
+  type ThreadInstrumentationWriteDecision,
 } from '../../../test/utils/e2e-scoped-cleanup';
 import {
   ACCOUNT_WRITE_FIXTURE_ENTITIES,
@@ -82,6 +87,13 @@ const CONTROLLED_FAULT_CASE = (process.env.E2E_V13_CONTROLLED_FAULT_CASE ?? '')
   .toUpperCase();
 // RQ6 线程停采反例：默认关闭；必须另行授权并具备 performance_schema.threads 更新权限。
 const INSTRUMENT_INJECTION = process.env.E2E_V13_INSTRUMENT_INJECTION === '1';
+// P1 收尾验收：首次写入结果未知 / 成功后断言失败的受控故障，默认关闭。
+const INSTRUMENT_FAULT_CASE = (process.env.E2E_V13_INSTRUMENT_FAULT_CASE ?? '')
+  .trim()
+  .toUpperCase();
+if (INSTRUMENT_INJECTION && !['', 'UNKNOWN', 'ASSERT-AFTER'].includes(INSTRUMENT_FAULT_CASE)) {
+  throw new Error(`S4-E 拒绝执行：未知的 E2E_V13_INSTRUMENT_FAULT_CASE=${INSTRUMENT_FAULT_CASE}`);
+}
 /**
  * 上游 consumer（global_instrumentation / thread_instrumentation）注入会改变实例级状态，
  * 只允许在专用隔离实例开启；恢复责任由用例 finally 逐项确认。
@@ -2664,45 +2676,59 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     },
   );
 
-  (CONTROLLED_FAULT ? it : it.skip)(
-    'FAULT-UPDATE 修改成功后断言失败，原值安全恢复且不覆盖异主修改',
-    async () => {
-      const original = (await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0];
-      const changedStatus = original.status === 'SUCCEEDED' ? 'FAILED' : 'SUCCEEDED';
-      const readFinishedAt = async (): Promise<string | null> => {
-        const rows = await dataSource.query(
-          "SELECT DATE_FORMAT(finished_at, '%Y-%m-%d %H:%i:%s.%f') AS finished_at " +
-            'FROM local_backup_run WHERE id = ?',
-          [external.backupRunId],
-        );
-        return (rows[0]?.finished_at as string | null | undefined) ?? null;
-      };
-      const originalFinishedAt = await readFinishedAt();
-      // 外部改写只落 finished_at：status 仍为本轮写入值，可单独验证 CAS 的字节精确条件。
-      const externalFinishedAt = '2001-02-03 04:05:06.007';
-      const conflictArmed = SECOND_CONNECTION_INTERFERENCE && faultArmedFor('FAULT-UPDATE');
-      let writtenFinishedAt = '';
+  const readBackupFinishedAt = async (): Promise<string | null> => {
+    const rows = await dataSource.query(
+      "SELECT DATE_FORMAT(finished_at, '%Y-%m-%d %H:%i:%s.%f') AS finished_at " +
+        'FROM local_backup_run WHERE id = ?',
+      [external.backupRunId],
+    );
+    return (rows[0]?.finished_at as string | null | undefined) ?? null;
+  };
 
-      const failure = await captureFailure(async () =>
-        runCase('S4-E/FAULT-UPDATE', async () => {
-          // 写入前从数据库取本轮 finished_at，并规范化为 timestamp(3) 毫秒精度。
-          // 登记与恢复只使用该值；任何写入后回读都不能成为登记前置。
-          const writtenRows = await dataSource.query(
-            "SELECT DATE_FORMAT(NOW(3), '%Y-%m-%d %H:%i:%s.%f') AS finished_at",
-          );
-          writtenFinishedAt = normalizeDbMillisecondTimestamp(
-            String(writtenRows[0]?.finished_at ?? ''),
-          );
-          if (writtenFinishedAt === '') {
-            throw new Error('FAULT-UPDATE 未能确定本轮 finished_at');
-          }
-          // 同时写入完成时间，满足 chk_local_backup_run_finish（非 RUNNING 必须有 finished_at）。
-          await dataSource.query(
-            'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ?',
-            [changedStatus, writtenFinishedAt, external.backupRunId],
-          );
-          // UPDATE 成功后立即登记原值、本轮写入值与字节精确 CAS 条件。
-          caseDirectCleanups.push(async () => {
+  /**
+   * FAULT-UPDATE 公共执行体：写入前由数据库确定本轮 finished_at，
+   * UPDATE 成功后立即登记原值、写入值与字节精确 CAS 条件。
+   * `withConflict` 为 true 时由受控外部连接改写 finished_at，制造真实恢复冲突；
+   * 套件级保留只在恢复阶段实际冲突时登记，不依赖故障注入开关。
+   */
+  const runFaultUpdateWrite = async (
+    helper: string,
+    withConflict: boolean,
+  ): Promise<{
+    readonly failure: unknown;
+    readonly originalStatus: unknown;
+    readonly originalFinishedAt: string | null;
+    readonly changedStatus: string;
+    readonly externalFinishedAt: string | null;
+  }> => {
+    const original = (await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0];
+    const changedStatus = original.status === 'SUCCEEDED' ? 'FAILED' : 'SUCCEEDED';
+    const originalFinishedAt = await readBackupFinishedAt();
+    // 外部改写只落 finished_at：status 仍为本轮写入值，可单独验证 CAS 的字节精确条件。
+    const externalFinishedAt = '2001-02-03 04:05:06.007';
+    let writtenFinishedAt = '';
+
+    const failure = await captureFailure(async () =>
+      runCase(helper, async () => {
+        // 写入前从数据库取本轮 finished_at，并规范化为 timestamp(3) 毫秒精度。
+        // 登记与恢复只使用该值；任何写入后回读都不能成为登记前置。
+        const writtenRows = await dataSource.query(
+          "SELECT DATE_FORMAT(NOW(3), '%Y-%m-%d %H:%i:%s.%f') AS finished_at",
+        );
+        writtenFinishedAt = normalizeDbMillisecondTimestamp(
+          String(writtenRows[0]?.finished_at ?? ''),
+        );
+        if (writtenFinishedAt === '') {
+          throw new Error('FAULT-UPDATE 未能确定本轮 finished_at');
+        }
+        // 同时写入完成时间，满足 chk_local_backup_run_finish（非 RUNNING 必须有 finished_at）。
+        await dataSource.query(
+          'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ?',
+          [changedStatus, writtenFinishedAt, external.backupRunId],
+        );
+        // UPDATE 成功后立即登记原值、本轮写入值与字节精确 CAS 条件。
+        caseDirectCleanups.push(async () => {
+          try {
             // 按写入值条件恢复：status 字节精确且 finished_at 一致才回滚，
             // 避免另一连接仅改大小写/尾部空格时被普通等号误判并覆盖。
             await guardedCasRestore({
@@ -2719,71 +2745,105 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
                 writtenFinishedAt,
               ],
             });
-          });
-          if (conflictArmed) {
-            // 另一受控连接改写 finished_at：CAS 必须拒绝覆盖并保留异主值。
-            const second = dataSource.createQueryRunner();
-            try {
-              await second.connect();
-              await second.startTransaction();
-              await second.query('UPDATE local_backup_run SET finished_at = ? WHERE id = ?', [
-                externalFinishedAt,
-                external.backupRunId,
-              ]);
-              await second.commitTransaction();
-            } finally {
-              await second.release();
-            }
+          } catch (error) {
+            // P2：在实际恢复冲突发生的位置立即登记套件级保留；
+            // 即使后续断言失败，用例收尾、通用清理与 afterAll 也不得删除该行。
+            retainConflictBackupRun(external.backupRunId);
+            throw error;
           }
-          // 回读只做核验；受控故障在此注入失败，登记已在此之前完成。
-          const observed = await readWithControlledFault('FAULT-UPDATE', 'finished-at-verify', () =>
-            readFinishedAt(),
-          );
-          expect(observed === null ? null : normalizeDbMillisecondTimestamp(observed)).toBe(
-            writtenFinishedAt,
-          );
-          throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
-        }),
-      );
-
-      if (conflictArmed) {
-        // P3：先登记套件级保留，再断言；即使后续断言失败，afterAll 也不得删除冲突备份行。
-        retainConflictBackupRun(external.backupRunId);
-        // 外部改写存在时：恢复必须拒绝覆盖，保留异主值并输出定位信息。
-        expect(messageOf(failure)).toContain('INJECTED_READ_FAILURE:FAULT-UPDATE');
-        expect(messageOf(failure)).toContain('恢复冲突');
-        expect(messageOf(failure)).toContain(`targetId=${external.backupRunId}`);
-        const retained = await snapshotRows('local_backup_run', 'id', [external.backupRunId]);
-        expect(retained).toHaveLength(1);
-        expect(retained[0].status).toBe(changedStatus);
-        const retainedFinishedAt = await readFinishedAt();
-        expect(
-          retainedFinishedAt === null ? null : normalizeDbMillisecondTimestamp(retainedFinishedAt),
-        ).toBe(normalizeDbMillisecondTimestamp(externalFinishedAt));
-        console.info(
-          `[S4-E/FAULT-UPDATE] 外部改写保留 backup_run_id=${external.backupRunId} ` +
-            `status=${changedStatus} finished_at=${externalFinishedAt}`,
-        );
-      } else {
-        if (failure === undefined) {
-          throw new Error('FAULT-UPDATE 未按预期失败');
+        });
+        if (withConflict) {
+          // 受控外部连接改写 finished_at：CAS 必须拒绝覆盖并保留异主值。
+          const second = dataSource.createQueryRunner();
+          try {
+            await second.connect();
+            await second.startTransaction();
+            await second.query('UPDATE local_backup_run SET finished_at = ? WHERE id = ?', [
+              externalFinishedAt,
+              external.backupRunId,
+            ]);
+            await second.commitTransaction();
+          } finally {
+            await second.release();
+          }
         }
-        expect(messageOf(failure)).toContain(
-          faultArmedFor('FAULT-UPDATE')
-            ? 'INJECTED_READ_FAILURE:FAULT-UPDATE'
-            : '__CONTROLLED_ASSERTION_FAILURE__',
+        // 回读只做核验；受控故障在此注入失败，登记已在此之前完成。
+        const observed = await readWithControlledFault('FAULT-UPDATE', 'finished-at-verify', () =>
+          readBackupFinishedAt(),
         );
-        expect(
-          (await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0].status,
-        ).toBe(original.status);
-        // 原 finished_at 也必须恢复（RUNNING 种子的原值为 NULL）。
-        const restoredFinishedAt = await readFinishedAt();
-        expect(
-          restoredFinishedAt === null ? null : normalizeDbMillisecondTimestamp(restoredFinishedAt),
-        ).toBe(
-          originalFinishedAt === null ? null : normalizeDbMillisecondTimestamp(originalFinishedAt),
+        expect(observed === null ? null : normalizeDbMillisecondTimestamp(observed)).toBe(
+          writtenFinishedAt,
         );
+        throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
+      }),
+    );
+
+    return {
+      failure,
+      originalStatus: original.status,
+      originalFinishedAt,
+      changedStatus,
+      externalFinishedAt: withConflict ? externalFinishedAt : null,
+    };
+  };
+
+  (CONTROLLED_FAULT ? it : it.skip)(
+    'FAULT-UPDATE 修改成功后断言失败：无并发冲突时按写入值精确恢复原值',
+    async () => {
+      const result = await runFaultUpdateWrite('S4-E/FAULT-UPDATE', false);
+      if (result.failure === undefined) {
+        throw new Error('FAULT-UPDATE 未按预期失败');
       }
+      expect(messageOf(result.failure)).toContain(
+        faultArmedFor('FAULT-UPDATE')
+          ? 'INJECTED_READ_FAILURE:FAULT-UPDATE'
+          : '__CONTROLLED_ASSERTION_FAILURE__',
+      );
+      expect(retainedResources.backupRunIds.has(external.backupRunId)).toBe(false);
+      expect((await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0].status).toBe(
+        result.originalStatus,
+      );
+      // 原 finished_at 也必须恢复（RUNNING 种子的原值为 NULL）。
+      const restoredFinishedAt = await readBackupFinishedAt();
+      expect(
+        restoredFinishedAt === null ? null : normalizeDbMillisecondTimestamp(restoredFinishedAt),
+      ).toBe(
+        result.originalFinishedAt === null
+          ? null
+          : normalizeDbMillisecondTimestamp(result.originalFinishedAt),
+      );
+      await assertNoActiveTransactions();
+    },
+  );
+
+  // 实际冲突只在受控故障用例被选中时执行（公开 normal 档不得留下保留行），
+  // 但冲突本身由受控外部连接制造，不再依赖 E2E_V13_SECOND_CONNECTION 开关。
+  (faultArmedFor('FAULT-UPDATE') ? it : it.skip)(
+    'FAULT-UPDATE 实际恢复冲突：拒绝覆盖异主值并立即登记套件保留',
+    async () => {
+      const result = await runFaultUpdateWrite('S4-E/FAULT-UPDATE-CONFLICT', true);
+      // 主错误可为注入读取失败或受控断言失败，但恢复冲突必须发生。
+      expect(messageOf(result.failure)).toMatch(
+        /INJECTED_READ_FAILURE:FAULT-UPDATE|__CONTROLLED_ASSERTION_FAILURE__/,
+      );
+      expect(messageOf(result.failure)).toContain('恢复冲突');
+      expect(messageOf(result.failure)).toContain(`targetId=${external.backupRunId}`);
+      // 保留登记来自恢复阶段的实际冲突，而不是用例在断言后补写。
+      expect(retainedResources.backupRunIds.has(external.backupRunId)).toBe(true);
+      if (result.externalFinishedAt === null) {
+        throw new Error('FAULT-UPDATE 冲突用例未产生外部改写值');
+      }
+      const retained = await snapshotRows('local_backup_run', 'id', [external.backupRunId]);
+      expect(retained).toHaveLength(1);
+      expect(retained[0].status).toBe(result.changedStatus);
+      const retainedFinishedAt = await readBackupFinishedAt();
+      expect(
+        retainedFinishedAt === null ? null : normalizeDbMillisecondTimestamp(retainedFinishedAt),
+      ).toBe(normalizeDbMillisecondTimestamp(result.externalFinishedAt));
+      console.info(
+        `[S4-E/FAULT-UPDATE-CONFLICT] 外部改写保留 backup_run_id=${external.backupRunId} ` +
+          `status=${result.changedStatus} finished_at=${result.externalFinishedAt}`,
+      );
       await assertNoActiveTransactions();
     },
   );
@@ -3072,6 +3132,12 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       let threadId = 0;
       let connectionId = 0;
       let processlistUser = '';
+      let originalInstrumented = '';
+      /**
+       * P1：恢复责任只由首次条件 UPDATE 的分类结果决定，并在任何断言之前登记。
+       * 0 行或结果未知时保持现状，不认领其他执行方写入的状态；后续断言失败也不改变已登记事实。
+       */
+      let stopDecision: ThreadInstrumentationWriteDecision | null = null;
       const conditionalStopSql = `UPDATE performance_schema.threads
           SET INSTRUMENTED = 'NO'
         WHERE THREAD_ID = ?
@@ -3084,48 +3150,226 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         await otherRunner.connect();
         const original = await readObservationThreadState(targetRunner);
         expect(original.instrumented).toBe('YES');
+        originalInstrumented = original.instrumented;
         threadId = original.threadId;
         connectionId = original.connectionId ?? 0;
         processlistUser = original.processlistUser;
         expect(connectionId).toBeGreaterThan(0);
 
-        // 另一连接先成功停采目标线程。
-        const first = classifyThreadInstrumentationWrite(
+        // 受控第三连接先成功停采目标线程；这是前置事实，不是本轮被测路径的恢复责任。
+        const precondition = classifyThreadInstrumentationWrite(
           await otherRunner.query(conditionalStopSql, [threadId, connectionId, processlistUser]),
         );
-        expect(first.outcome).toBe('applied');
-        expect(first.shouldRestore).toBe(true);
+        expect(precondition.outcome).toBe('applied');
+        expect(precondition.shouldRestore).toBe(true);
 
-        // 本轮再次按同一条件停采：必须 0 行，且不得登记恢复责任。
-        const second = classifyThreadInstrumentationWrite(
+        // 被测路径的首次条件 UPDATE：目标已被第三连接置 NO，因此必须 0 行。
+        // 分类结果在任何断言之前登记；0 行 => 本轮不认领恢复责任。
+        stopDecision = classifyThreadInstrumentationWrite(
           await dataSource.query(conditionalStopSql, [threadId, connectionId, processlistUser]),
         );
-        expect(second.outcome).toBe('not-applied');
-        expect(second.shouldRestore).toBe(false);
+        if (stopDecision.outcome === 'unknown') {
+          throw new Error(
+            `首次停采结果未知：thread_id=${threadId} connection_id=${connectionId} ` +
+              `user=${processlistUser}；${stopDecision.diagnostic ?? '缺少有效 affectedRows'}；` +
+              '保留现场，不执行自动恢复',
+          );
+        }
+        expect(stopDecision.outcome).toBe('not-applied');
+        expect(stopDecision.shouldRestore).toBe(false);
 
-        // 本轮没有成功写入，目标线程必须保持另一连接设置的 NO，不能被反向恢复为 YES。
+        // 被测路径未成功写入，目标线程必须保持第三连接设置的 NO，不能被反向恢复为 YES。
         expect((await readObservationThreadState(targetRunner)).instrumented).toBe('NO');
       } finally {
         try {
-          if (threadId > 0 && connectionId > 0 && processlistUser !== '') {
-            // 恢复责任属于真正成功写入的第一方；由独立连接恢复并确认。
-            const restored = (await otherRunner.query(
-              `UPDATE performance_schema.threads
-                  SET INSTRUMENTED = 'YES'
-                WHERE THREAD_ID = ?
-                  AND PROCESSLIST_ID = ?
-                  AND PROCESSLIST_USER = ?
-                  AND TYPE = 'FOREGROUND'
-                  AND UPPER(INSTRUMENTED) = 'NO'`,
-              [threadId, connectionId, processlistUser],
-            )) as { affectedRows?: unknown };
-            expect(Number(restored.affectedRows)).toBe(1);
-            expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
-          }
+          const recovery = planThreadInstrumentationRecovery({
+            stopDecision,
+            threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
+          });
+          expect(recovery.action).toBe('keep');
+          console.warn(`[S4-E/INSTRUMENT] 未登记恢复责任：${recovery.reason}`);
+
+          // 直接证据（先于任何收尾）：被测 finally 结束后，第三连接设置的 NO 仍保留。
+          const retained = await readObservationThreadState(targetRunner);
+          expect(retained.instrumented).toBe('NO');
+          console.warn(
+            `[S4-E/INSTRUMENT] 保留第三连接停采状态：thread_id=${threadId} ` +
+              `connection_id=${connectionId} instrumented=${retained.instrumented}`,
+          );
+
+          // 独立执行者收尾：按已核验事实恢复原值，避免停采连接回流连接池影响后续观测。
+          // 这是测试执行者在保存证据后的精确收尾，不是被测路径 finally 的恢复写入。
+          await restoreObservationThread(targetRunner, {
+            threadId,
+            connectionId,
+            processlistUser,
+            originalInstrumented,
+          });
+          expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
         } finally {
           await targetRunner.release();
           await otherRunner.release();
         }
+      }
+      await assertNoActiveTransactions();
+    },
+  );
+
+  (INSTRUMENT_INJECTION && INSTRUMENT_FAULT_CASE === 'UNKNOWN' ? it : it.skip)(
+    'INSTRUMENT 首次停采结果未知：保留 NO 现场且 finally 不恢复，由独立执行者收尾',
+    async () => {
+      const targetRunner = dataSource.createQueryRunner();
+      let threadId: number;
+      let connectionId: number;
+      let processlistUser: string;
+      let originalInstrumented: string;
+      let stopDecision: ThreadInstrumentationWriteDecision | null = null;
+      let testedPathRestored = false;
+      let observedAfterKeep: string;
+      const conditionalStopSql = `UPDATE performance_schema.threads
+          SET INSTRUMENTED = 'NO'
+        WHERE THREAD_ID = ?
+          AND PROCESSLIST_ID = ?
+          AND PROCESSLIST_USER = ?
+          AND TYPE = 'FOREGROUND'
+          AND UPPER(INSTRUMENTED) = 'YES'`;
+      await targetRunner.connect();
+      try {
+        const original = await readObservationThreadState(targetRunner);
+        expect(original.instrumented).toBe('YES');
+        originalInstrumented = original.instrumented;
+        threadId = original.threadId;
+        connectionId = original.connectionId ?? 0;
+        processlistUser = original.processlistUser;
+        expect(connectionId).toBeGreaterThan(0);
+
+        // 默认关闭的受控故障：真实写入命中 1 行，但主动丢弃返回值，模拟“结果无法确认”。
+        const rawWrite = await dataSource.query(conditionalStopSql, [
+          threadId,
+          connectionId,
+          processlistUser,
+        ]);
+        expect(Number(rawWrite.affectedRows)).toBe(1);
+        try {
+          stopDecision = classifyThreadInstrumentationWrite({ affectedRows: undefined });
+          if (stopDecision.outcome !== 'unknown') {
+            throw new Error(`受控未知故障未生效：outcome=${stopDecision.outcome}`);
+          }
+          throw new Error(
+            `首次停采结果未知：thread_id=${threadId} connection_id=${connectionId} ` +
+              `user=${processlistUser}；${stopDecision.diagnostic ?? '缺少诊断'}；` +
+              '保留现场，不执行自动恢复',
+          );
+        } catch (error) {
+          const failureMessage = messageOf(error);
+          expect(failureMessage).toContain('结果未知');
+          expect(failureMessage).toContain(`thread_id=${threadId}`);
+          expect(failureMessage).toContain(`connection_id=${connectionId}`);
+          expect(failureMessage).toContain(`user=${processlistUser}`);
+          console.warn(`[S4-E/INSTRUMENT] 受控未知结果：${failureMessage}`);
+        } finally {
+          const recovery = planThreadInstrumentationRecovery({
+            stopDecision,
+            threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
+          });
+          if (recovery.action === 'restore') {
+            testedPathRestored = true;
+            await restoreObservationThread(targetRunner, {
+              threadId,
+              connectionId,
+              processlistUser,
+              originalInstrumented,
+            });
+          }
+          observedAfterKeep = (await readObservationThreadState(targetRunner)).instrumented;
+          console.warn(
+            `[S4-E/INSTRUMENT] 未知结果保留现场：${recovery.reason}；` +
+              `instrumented=${observedAfterKeep}`,
+          );
+        }
+
+        // 直接证据：被测 finally 没有恢复，未知结果下的 NO 仍保留。
+        expect(testedPathRestored).toBe(false);
+        expect(observedAfterKeep).toBe('NO');
+
+        // 独立执行者依据“本轮确实命中 1 行”的注入事实精确收尾，避免停采连接回流连接池。
+        await restoreObservationThread(targetRunner, {
+          threadId,
+          connectionId,
+          processlistUser,
+          originalInstrumented,
+        });
+        expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
+      } finally {
+        await targetRunner.release();
+      }
+      await assertNoActiveTransactions();
+    },
+  );
+
+  (INSTRUMENT_INJECTION && INSTRUMENT_FAULT_CASE === 'ASSERT-AFTER' ? it : it.skip)(
+    'INSTRUMENT 首次停采成功后受控断言失败：仍按登记事实精确恢复',
+    async () => {
+      const targetRunner = dataSource.createQueryRunner();
+      let threadId = 0;
+      let connectionId = 0;
+      let processlistUser = '';
+      let originalInstrumented = '';
+      let stopDecision: ThreadInstrumentationWriteDecision | null = null;
+      let restoredInFinally = false;
+      const conditionalStopSql = `UPDATE performance_schema.threads
+          SET INSTRUMENTED = 'NO'
+        WHERE THREAD_ID = ?
+          AND PROCESSLIST_ID = ?
+          AND PROCESSLIST_USER = ?
+          AND TYPE = 'FOREGROUND'
+          AND UPPER(INSTRUMENTED) = 'YES'`;
+      try {
+        await targetRunner.connect();
+        const original = await readObservationThreadState(targetRunner);
+        expect(original.instrumented).toBe('YES');
+        originalInstrumented = original.instrumented;
+        threadId = original.threadId;
+        connectionId = original.connectionId ?? 0;
+        processlistUser = original.processlistUser;
+        expect(connectionId).toBeGreaterThan(0);
+
+        const failure = await captureFailure(async () => {
+          try {
+            const written = await dataSource.query(conditionalStopSql, [
+              threadId,
+              connectionId,
+              processlistUser,
+            ]);
+            stopDecision = classifyThreadInstrumentationWrite(written);
+            // 先登记恢复责任，再执行任何断言；受控断言失败发生在登记之后。
+            expect(stopDecision.outcome).toBe('applied');
+            expect(stopDecision.shouldRestore).toBe(true);
+            expect((await readObservationThreadState(targetRunner)).instrumented).toBe('NO');
+            throw new Error('__CONTROLLED_ASSERTION_FAILURE__:INSTRUMENT');
+          } finally {
+            const recovery = planThreadInstrumentationRecovery({
+              stopDecision,
+              threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
+            });
+            if (recovery.action === 'restore') {
+              restoredInFinally = true;
+              await restoreObservationThread(targetRunner, {
+                threadId,
+                connectionId,
+                processlistUser,
+                originalInstrumented,
+              });
+            }
+            console.warn(`[S4-E/INSTRUMENT] 断言失败后恢复计划：${recovery.reason}`);
+          }
+        });
+
+        expect(messageOf(failure)).toContain('__CONTROLLED_ASSERTION_FAILURE__:INSTRUMENT');
+        expect(restoredInFinally).toBe(true);
+        expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
+      } finally {
+        await targetRunner.release();
       }
       await assertNoActiveTransactions();
     },

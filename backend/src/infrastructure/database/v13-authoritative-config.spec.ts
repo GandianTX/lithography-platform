@@ -13,7 +13,9 @@ const MANAGED_ENV_KEYS = [
   'V13_SPEC_SERVER_UUID',
   'V13_SPEC_INJECTION_PROFILE',
   'V13_SPEC_ISOLATED_INSTANCE',
+  'V13_SPEC_INSTRUMENT_FAULT_CASE',
   'E2E_V13_INSTRUMENT_INJECTION',
+  'E2E_V13_INSTRUMENT_FAULT_CASE',
   'E2E_V13_UPSTREAM_CONSUMER_INJECTION',
   'E2E_V13_CONTROLLED_FAULT',
   'E2E_V13_CONTROLLED_FAULT_CASE',
@@ -212,12 +214,47 @@ describe('V13 权威规格启动配置', () => {
     expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/专用隔离实例/);
   });
 
-  it('未知注入 profile 失败关闭', () => {
+  it('已知注入 profile 的枚举错误提示包含 fault', () => {
     process.env.V13_SPEC_INJECTION_PROFILE = 'all';
     process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
 
     expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(
-      /只接受 none、normal 或 conflict/,
+      /只接受 none、normal、conflict 或 fault/,
     );
+  });
+
+  it('fault 注入 profile 只启用 FAULT-UPDATE 并明确关闭第二连接', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'fault';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    const env = buildEnvironment(V13_SPEC_GROUPS.delivery);
+
+    expect(env.E2E_V13_CONTROLLED_FAULT).toBe('1');
+    expect(env.E2E_V13_CONTROLLED_FAULT_CASE).toBe('FAULT-UPDATE');
+    expect(env.E2E_V13_SECOND_CONNECTION).toBeUndefined();
+    expect(env.E2E_V13_INSTRUMENT_FAULT_CASE).toBeUndefined();
+    expect(env.E2E_V13_INSTRUMENT_INJECTION).toBe('1');
+  });
+
+  it('fault 注入 profile 可追加停采收尾受控故障', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'fault';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_INSTRUMENT_FAULT_CASE = 'unknown';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    const env = buildEnvironment(V13_SPEC_GROUPS.delivery);
+
+    expect(env.E2E_V13_INSTRUMENT_FAULT_CASE).toBe('UNKNOWN');
+    expect(env.E2E_V13_SECOND_CONNECTION).toBeUndefined();
+  });
+
+  it('停采受控故障只允许与 fault profile 一起使用', () => {
+    process.env.V13_SPEC_INJECTION_PROFILE = 'normal';
+    process.env.V13_SPEC_ISOLATED_INSTANCE = '1';
+    process.env.V13_SPEC_INSTRUMENT_FAULT_CASE = 'unknown';
+    process.env.V13_SPEC_CONFIG_FILE = writeConfig(isolatedConfig());
+
+    expect(() => buildEnvironment(V13_SPEC_GROUPS.delivery)).toThrow(/只允许与 fault profile/);
   });
 });
