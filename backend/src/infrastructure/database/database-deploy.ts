@@ -292,6 +292,38 @@ interface InitializationDataConfig {
   readonly devAccounts: DevAccountBootstrapConfig | null;
 }
 
+/**
+ * 同一批次三个映射文件必须共享唯一的登录邮箱：管理员与开发账号之间也不能冲突。
+ * 在写入前整体校验，避免依赖数据库唯一索引才在事务末段报错。
+ */
+export function assertInitializationEmailConflicts(
+  adminBootstrap: AdminBootstrapConfig | null,
+  devAccounts: DevAccountBootstrapConfig | null,
+): void {
+  const seen = new Map<string, string>();
+  const add = (email: string | null, label: string): void => {
+    if (email === null) {
+      return;
+    }
+    const key = email.toLowerCase();
+    const prior = seen.get(key);
+    if (prior !== undefined) {
+      throw new Error(`初始化映射邮箱冲突 ${email}：${prior} 与 ${label}`);
+    }
+    seen.set(key, label);
+  };
+
+  for (const entry of adminBootstrap?.accounts ?? []) {
+    add(entry.loginEmail, `管理员 ${entry.loginName}`);
+  }
+  for (const entry of devAccounts?.customers ?? []) {
+    add(entry.loginEmail, `开发客户 ${entry.loginName}`);
+  }
+  for (const entry of devAccounts?.engineers ?? []) {
+    add(entry.loginEmail, `开发工程师 ${entry.loginName}`);
+  }
+}
+
 interface InitializationDataResult {
   readonly organizations: ReadonlyArray<OrganizationBootstrapResult> | null;
   readonly admins: ReadonlyArray<AdminBootstrapResult> | null;
@@ -314,6 +346,8 @@ async function applyInitializationData(
   if (!hasAny) {
     return { organizations: null, admins: null, devAccounts: null };
   }
+
+  assertInitializationEmailConflicts(initialization.adminBootstrap, initialization.devAccounts);
 
   return dataSource.transaction(async (manager) => {
     const organizations = initialization.organizationBootstrap
@@ -567,7 +601,7 @@ export async function runDatabaseDeploy(
 /**
  * upgrade：仅运行 pending；无 pending 时做终态校验并返回无变化。
  */
-async function runUpgradeDeploy(
+export async function runUpgradeDeploy(
   dataSource: DataSource,
   config: MigrationDbConfig,
   logger: MigrationLogger,

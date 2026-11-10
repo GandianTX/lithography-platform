@@ -22,7 +22,14 @@ import {
   runGuardedQueryRunnerTransaction,
   runOwnedFixtureCleanup,
 } from '../../../test/utils/e2e-owned-fixture';
-import { runTwoBranchTransactionRace } from '../../../test/utils/upload-race-runner';
+import {
+  matchesOriginalInstallation,
+  planInstallationRestore,
+} from '../../../test/utils/installation-restore-guard';
+import {
+  assertLockObservationCapability,
+  runTwoBranchTransactionRace,
+} from '../../../test/utils/upload-race-runner';
 import { join } from 'path';
 import { DataSource, type QueryRunner } from 'typeorm';
 import { LocalRuntimeUsecasesModule } from './local-runtime-usecases.module';
@@ -230,6 +237,7 @@ describeIntegration('本地运行数据真实并发验收', () => {
       return ['缺少安装设置原始值或本轮设置值，未执行恢复'];
     }
     const origin = originalInstallation;
+    const runInterval = settingsInterval;
     const outcome = await runGuardedQueryRunnerTransaction({
       createRunner: () => dataSource.createQueryRunner(),
       label: '安装设置恢复',
@@ -245,16 +253,9 @@ describeIntegration('本地运行数据真实并发验收', () => {
           throw new Error('安装设置行缺失，拒绝写回');
         }
         // 本轮设置用例只会写入站点名与备份周期；其余组合视为外部改写，整批放弃写回
-        const siteNameAllowed =
-          current.local_site_name === origin.local_site_name ||
-          current.local_site_name === SETTINGS_SITE_NAME;
-        const intervalAllowed =
-          Number(current.backup_interval_days) === Number(origin.backup_interval_days) ||
-          Number(current.backup_interval_days) === settingsInterval;
-        const uploadAllowed =
-          Boolean(current.auto_upload_enabled) === Boolean(origin.auto_upload_enabled);
-        if (!siteNameAllowed || !intervalAllowed || !uploadAllowed) {
-          throw new Error('安装设置已被本轮之外的操作修改，拒绝写回');
+        const decision = planInstallationRestore(origin, current, SETTINGS_SITE_NAME, runInterval);
+        if (!decision.allowed) {
+          throw new Error(decision.reason);
         }
         await runner.query(
           `UPDATE local_installation
@@ -262,7 +263,8 @@ describeIntegration('本地运行数据真实并发验收', () => {
             WHERE id = 1
               AND local_site_name <=> ?
               AND auto_upload_enabled <=> ?
-              AND backup_interval_days <=> ?`,
+              AND backup_interval_days <=> ?
+              AND updated_at <=> ?`,
           [
             origin.local_site_name,
             origin.auto_upload_enabled,
@@ -271,6 +273,7 @@ describeIntegration('本地运行数据真实并发验收', () => {
             current.local_site_name,
             current.auto_upload_enabled,
             current.backup_interval_days,
+            current.updated_at,
           ],
         );
         const restoredRows = (await runner.query(
@@ -278,13 +281,7 @@ describeIntegration('本地运行数据真实并发验收', () => {
              FROM local_installation WHERE id = 1`,
         )) as InstallationOrigin[];
         const restored = restoredRows[0];
-        if (
-          !restored ||
-          restored.local_site_name !== origin.local_site_name ||
-          Boolean(restored.auto_upload_enabled) !== Boolean(origin.auto_upload_enabled) ||
-          Number(restored.backup_interval_days) !== Number(origin.backup_interval_days) ||
-          new Date(restored.updated_at).getTime() !== new Date(origin.updated_at).getTime()
-        ) {
+        if (!restored || !matchesOriginalInstallation(origin, restored)) {
           throw new Error('安装设置恢复后与原始值不一致');
         }
       },
@@ -323,6 +320,10 @@ describeIntegration('本地运行数据真实并发验收', () => {
     // 环境门禁全部通过后才允许读取/写入夹具
     const gate = await prepareFixtureSetup(dataSource, ROUND_TAG, config.database);
     expectedDatabase = gate.database;
+    // 观测能力不足时必须在任何夹具写入之前失败关闭（零造数）
+    await assertLockObservationCapability(query);
+    setupAllowed = true;
+    // 先登记原始设置，后续任何写入成功后断言失败都按原值条件恢复
     originalInstallation = await readOriginInstallation();
     const originalInterval = Number(originalInstallation.backup_interval_days);
     settingsInterval = originalInterval >= 365 ? originalInterval - 1 : originalInterval + 1;
@@ -336,7 +337,6 @@ describeIntegration('本地运行数据真实并发验收', () => {
     await assertFixtureKeysAvailable();
     localRuntimeService = moduleRef.get(LocalRuntimeService);
     updateSettingsUsecase = moduleRef.get(UpdateLocalRuntimeSettingsUsecase);
-    setupAllowed = true;
   });
 
   afterAll(async () => {
@@ -366,7 +366,7 @@ describeIntegration('本地运行数据真实并发验收', () => {
         {
           label: '恢复安装设置',
           run: async () => {
-            if (!setupAllowed) return;
+            if (!setupAllowed || originalInstallation === null) return;
             const restoreErrors = await restoreInstallation();
             if (restoreErrors.length > 0) {
               throw new Error(restoreErrors.join('；'));

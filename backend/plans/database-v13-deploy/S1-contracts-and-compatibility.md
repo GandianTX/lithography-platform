@@ -69,9 +69,12 @@
 ### 3.3 工单管理修订（repair_request_revision）
 
 - `revision_no` 是本次生效的新业务修订号；`previous_version` 是本次修订锁定并核验过的上一生效修订号，不是快照格式版本。
-- 写入契约（未来 R029/R030 执行器）：`SELECT repair_request ... FOR UPDATE` → 核验 `expected_version = current_revision_no`（过期拒绝）→ 取 `previous_version = current_revision_no`、`revision_no = previous_version + 1` → 同事务写修订行并推进 `current_revision_no`。
-- 第 43 条将 `previous_version` 落为 `int unsigned NULL`，与冻结 Word 的“非空”存在兼容性差异：`NULL` = 第 43 条之前无法证明的历史值；`0` = 基于原始版本的首次管理修订；不回填、不设置默认版本。
-- CHECK `previous_version IS NULL OR previous_version < revision_no` 只做 NULL 安全的顺序守卫；“修订号连续”仍是写入方与应用验收不变量，不是数据库约束。读取方不得用 `revision_no - 1` 重算并覆盖已存储值。
+- 写入契约（未来 R029/R030 执行器）：`SELECT repair_request ... FOR UPDATE` → 核验 `expected_version = current_revision_no`（过期拒绝）→ 取 `previous_version = current_revision_no`、`revision_no = previous_version + 1` → 同事务写修订行并推进 `current_revision_no`。首次修订明确写 `previous_version = 0`，后续写实际基版本。
+- 第 43 条先追加 `previous_version int unsigned NULL`（历史行无法证明取值时保留 NULL）；第 44 条按已批准裁决把最终列收紧为 **NOT NULL、无默认值**：
+  - 在任何 `ALTER` 之前校验 `previous_version IS NULL` 与 `previous_version >= revision_no`；
+  - 存在违规即失败关闭，只输出脱敏计数与有限定位 ID，**不自动 UPDATE、不删除历史行、不猜测回填**；
+  - 无违规才收紧列约束；`down` 只回退可空性，不伪造或删除任何版本值。
+- 保留 CHECK `previous_version < revision_no` 作为顺序守卫（第 43 条创建时写作 `previous_version IS NULL OR previous_version < revision_no`；第 44 条收紧为非空后 NULL 分支不可达）；“修订号连续”仍是写入方与应用验收不变量，不是数据库约束。读取方不得用 `revision_no - 1` 重算并覆盖已存储值。
 - 本节与 §3.2 的 `schema_version` 规则不同：`previous_version` 是业务修订号，不是 JSON 快照内部版本，不适用“版本号写在 JSON 内部”的约定。
 
 ## 4. 原件绑定（stored_file）

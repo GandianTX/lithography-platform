@@ -61,6 +61,7 @@ export const REQUIRED_TABLES = [
 
 export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
   { table: 'base_user_account', index: 'uk_login_email' },
+  { table: 'base_user_account', index: 'uk_login_name' },
   { table: 'base_third_party_auth', index: 'base_third_party_auth_provider_IDX' },
   { table: 'base_async_task_record', index: 'uk_queue_name_job_id' },
   { table: 'ai_provider_call_record', index: 'uk_ai_provider_call_trace_seq' },
@@ -2179,6 +2180,7 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
 
 const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'base_user_account.uk_login_email': 1773924900000,
+  'base_user_account.uk_login_name': 1773924900000,
   'base_third_party_auth.base_third_party_auth_provider_IDX': 1773926400000,
   'base_async_task_record.uk_queue_name_job_id': 1773925700000,
   'ai_provider_call_record.uk_ai_provider_call_trace_seq': 1773889200000,
@@ -2996,6 +2998,7 @@ export interface ForeignKeyDefinition {
  */
 export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'base_user_account.uk_login_email': { unique: true, columns: ['login_email'] },
+  'base_user_account.uk_login_name': { unique: true, columns: ['login_name'] },
   'base_third_party_auth.base_third_party_auth_provider_IDX': {
     unique: true,
     columns: ['provider', 'provider_user_id'],
@@ -5527,9 +5530,9 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     defaultValue: null,
   },
   'repair_request_revision.previous_version': {
-    since: 1775502100000,
+    since: 1775502200000,
     columnType: 'int unsigned',
-    nullable: true,
+    nullable: false,
     defaultValue: null,
   },
   'repair_request_revision.schema_version': {

@@ -27,6 +27,21 @@
 
 不得授予全局 `FILE`、`SUPER`、`GRANT OPTION`，也不得使用 `--force` 类绕过。
 
+### 2.1 专项观测权限（与部署权限分开）
+
+- 上节是**部署/迁移权限**，不包含、也不自动附带专项观测权限。
+- 真实 MySQL 并发验收需要观察其他会话的锁等待，使用 `PROCESS`（读取
+  `information_schema.processlist`）与 `performance_schema.data_lock_waits` 的 `SELECT` 权限。
+- `S4-E` 清理验收不读取 `information_schema.innodb_trx`（该表需要全局 `PROCESS`），
+  改用 `performance_schema.events_transactions_current` 的**当前用户/当前连接**视图，
+  只需要 `performance_schema` 的 `SELECT`，不需要全局 `PROCESS`。
+- 上述权限只由 DBA 在**另行明确授权的专用实例/专用账号**上授予并记录，不属于部署授权；
+  禁止为了跑通验收而给部署账号补授 `PROCESS`，也不得修改 `mysql` 系统权限表。
+- 缺少观测能力时，规格必须在任何夹具写入之前失败关闭（零造数），由维护者申请专项授权后重跑；
+  不得降级为固定 `sleep`、仅看最终计数或跳过观测断言。
+- `E2E_V13_CONTROLLED_FAULT=1` 是默认关闭的受控实库故障注入开关，只允许在专项授权窗口中
+  针对专用库开启，用于验证“创建/修改后断言失败仍精确回收”；不得在共享库或常规回归中开启。
+
 ## 3. 配置位置
 
 - 已知部署角色与运行期账号由运维另行创建。
@@ -37,6 +52,9 @@
 - 上述 JSON 均含 `REPLACE_` 占位符，直接使用会因密码策略/必填校验失败；真实清单由上线负责人提供且不入库。
 - 环境变量键固定为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASS`、`DB_NAME`、`DB_TIMEZONE`、`DB_SYNCHRONIZE=false`。
 - 初始化账号还需要 `FIELD_ENCRYPTION_KEY` 与 `FIELD_ENCRYPTION_IV`（16 字符），用于写入并校验 `meta_digest`；缺失时交付失败关闭。
+- 权威规格 runner 的配置文件只接受上述显式列举的连接字段与两项加密配置；不接受其他 `DB_*`、
+  任意大写变量，也不接受 `V13_*`/`E2E_*`/`D3_*`/`NODE_ENV` 等控制变量。目标库、实例 UUID、白名单、
+  组别与清理许可只由入口显式确认，配置夹带时在执行前拒绝。
 
 ## 4. 正式命令
 
@@ -144,6 +162,9 @@ npm run database:deploy -- \
 - 只运行 pending；不清库、不调用 drill、不伪造历史。
 - 无 pending 时做终态校验并返回「无变化」。
 - `upgrade` 拒绝管理员初始化参数。
+- **真实存量升级尚未承诺**：本轮承诺的是空库 init 与受控/合成库的升级演练；
+  生产存量库的升级窗口、备份、历史事实确认与回退方案必须另行评审和书面授权，
+  不能因离线测试或合成库通过而视为已承诺或已验收。
 - 旧行回填迁移（以文件名为准）：
   - `1775501700000-add-record-package-check-and-import-result-states-for-v13.migration.ts`
     在任何 `ALTER` 前先扫描历史行：JSON 缺键/JSON null、非法枚举、非法检查/导入组合、
@@ -225,6 +246,9 @@ npm run database:deploy -- \
 - 迁移历史完整性；
 - `REQUIRED_*` 结构契约（列类型/长度/符号/NULL/默认/生成表达式、
   索引唯一性与列序、外键列序与规则、CHECK 表达式）；
+- 关键 `CHECK` 必须 `ENFORCED=YES`；`NOT ENFORCED` 与缺失一并通过失败关闭；
+- `base_user_account.uk_login_name` 与 `uk_login_email` 等关键唯一索引必须存在；
+- 预期之外的业务表在 pending 执行前和终态复核时都失败关闭，不静默忽略；
 - 数据级校验（旧资料回填、归属待确认等）；
 - pending 必须为 0。
 
@@ -351,7 +375,7 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
 前置（缺一不可）：
 
 - MySQL 8.0.46，`127.0.0.1:3306`，`@@server_uuid` 与授权值一致；工具不安装 MySQL、不建账号、不改系统权限表。
-- 两个库由维护者**预建为空库**，`utf8mb4 / utf8mb4_0900_ai_ci`；已存在则停止，不覆盖、不复用。
+- 两个库由本轮在**确认不存在后**创建为空库，`utf8mb4 / utf8mb4_0900_ai_ci`；已存在则停止，不覆盖、不复用。
 - 环境文件、组织/管理员/开发样例映射均放在仓库外，文件 `0600`、目录 `0700`；不打印密码或哈希。
 - 开发样例仅在目标库名含 `test/dev/local/drill` 且显式提供文件与确认口令时写入；正式库不带该选项。
 
@@ -372,21 +396,47 @@ npm run migration:verify -- --config-file=<0600 库配置> --database=<交付库
 
 - 原命令重跑：0 条迁移、全部 `UNCHANGED`，密码哈希、角色、等级与归属不变。
 - 去掉 `--dev-accounts-file` 与 `--confirm-dev-accounts` 再跑：不新增、不删除开发账号。
-- 验收口径：43 条迁移、51 张业务表（含 `migrations` 共 52 张）、3 个组织、10 个账号、10 条成员关系。
+- 验收口径（本轮终态）：44 条迁移、51 张业务表（含 `migrations` 共 52 张）、按映射创建的组织数（本轮为 1 个合成公司）、
+  10 个账号、10 条成员关系；3 个一级管理员与 3 个二级管理员、2 个客户、2 个工程师。
 
-升级库（先用前 42 条迁移正向构建 42 态，再执行第 43 条专项）：
+升级库（42→43 使用库外冻结的 43 条候选；43→44 使用当前 44 条仓库）：
 
 ```bash
 V13_AUTHORITATIVE_SPECS=1 V13_SPEC_TARGET_DB=<升级库> \
 V13_SPEC_SERVER_UUID=<uuid> V13_SPEC_CONFIG_FILE=<0600 库配置> \
 E2E_ALLOW_PHYSICAL_CLEANUP=1 \
-npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
-  test/run-v13-authoritative-spec.ts upgrade
+npx ts-node -r tsconfig-paths/register test/run-v13-authoritative-spec.ts upgrade
 npm run migration:verify -- --config-file=<0600 库配置> --database=<升级库>
 npm run database:deploy -- --mode=upgrade \
   --config-file=<0600 库配置> --database=<升级库> --confirm-database=<升级库>
 ```
 
-- 专项确认：旧行 `previous_version` 保持 NULL、其他旧字段不变；0→1、1→2 合法；
-  等于或大于新版本号时命中目标 CHECK 拒绝。
-- 再次 upgrade 必须为 0 条且终态校验通过。
+- 42→43 专项（冻结的 43 条候选）：旧行 `previous_version` 保持 NULL、其他旧字段不变；0→1、1→2 合法。
+- 43→44 专项：第 44 条在**任何 ALTER 之前**校验 `previous_version IS NULL` 与 `previous_version >= revision_no`；
+  合法行（0=首版、后续=实际基版本）保留并收紧为 NOT NULL；存在 NULL 或非法版本序时失败关闭，
+  只输出脱敏计数与有限定位 ID，不自动回填、不删除历史行。
+- 再次 upgrade 必须为 0 条且终态校验通过；终态为第 44 条。
+
+### 11.6 `previous_version` 已批准裁决与落实边界
+
+- 已获用户批准的最终裁决：`previous_version` 最终 **NOT NULL、无默认值**；首次修订写 0，后续写实际基版本；
+  保留 `previous_version < revision_no` 顺序守卫；旧行无法证明取值时拒绝升级，不猜测回填、不删除。
+- 第 44 条落实情况：先校验再收紧，违规零 ALTER；`down` 只回退可空性，不伪造或删除版本值。
+- 仍不得宣称任意真实旧库已验证：本轮只对明确起点、明确来源的专用库验证；
+  生产存量库若存在 NULL 历史行，必须先由业务/审计确认处置，不能因本轮专用库通过而视为已承诺。
+- 任何文档、提交或验收记录都只陈述本轮起点、来源、保留内容与拒绝条件，不代替批准。
+
+### 11.6.1 事务观测能力边界（RQ6）
+
+- 精确清理的默认前置只读取 `performance_schema.events_transactions_current` 与 `PS_CURRENT_THREAD_ID()`，
+  **不读取** `information_schema.innodb_trx`，也不把全局 `PROCESS` 作为默认前置。
+- 授权账号 `gandiantx@127.0.0.1` 在本轮之前即持有 `PROCESS`（非本轮授予）。本轮**未授予、未回收、未修改**任何权限，
+  因此不在该账号上演示“无 `PROCESS`”的真实条件；无权限/未启用采集/不可观测返回空的分支由离线能力用例覆盖，
+  不以空结果冒充“无活动事务”。
+- `assertTransactionObservationCapability` 必须先确认 `@@performance_schema=1` 且
+  `events_transactions_current` 消费器启用，才允许进入造数。
+
+### 11.7 历史失败与事故记录保留
+
+- §11.1、§11.2 记录的旧候选字节识别失败、隐藏/阻塞 CHECK 重建半迁移等现场与处置口径继续保留；
+- 本轮及后续修复只追加新记录，不删除、不改写既有失败与事故记录，也不把未复验的旧结论标为已通过。

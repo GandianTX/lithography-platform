@@ -6,6 +6,7 @@ import type { EntityManager } from 'typeorm';
 
 import { createFieldCipher, type FieldCipher } from '../field-encryption/field-encryption.cipher';
 import {
+  assertExistingAccountLoginEmail,
   decryptMetaDigest,
   loadActiveMembership,
   loadBootstrapAccount,
@@ -352,6 +353,12 @@ async function assertValidExistingDevAccount(params: {
         '拒绝改写为开发样例账号',
     );
   }
+  await assertExistingAccountLoginEmail(
+    manager,
+    entry.loginName,
+    entry.loginEmail,
+    account.loginEmail,
+  );
 
   const expectedRole = ROLE_FACTS[role];
   const convergence = convergeAccountRole({
@@ -412,6 +419,12 @@ async function applyOne(
   }
   if (organization.status !== 'ACTIVE') {
     throw new Error(`公司 ${entry.organizationCode} 不是 ACTIVE，拒绝挂接开发账号`);
+  }
+  if (role === 'ENGINEER' && !organization.isManagedCompany) {
+    throw new Error(
+      `工程师账号 ${entry.loginName} 只能挂接管理名单内公司，` +
+        `organization_code=${entry.organizationCode} is_managed_company=false`,
+    );
   }
 
   const account = await loadBootstrapAccount(manager, entry.loginName);

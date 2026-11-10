@@ -1331,10 +1331,9 @@ async function collectStructureIssues(
         break;
       }
       case 'check': {
-        const exists = await hasQueryResult(
-          dataSource,
+        const constraintRows: unknown = await dataSource.query(
           `
-            SELECT 1
+            SELECT enforced
             FROM information_schema.table_constraints
             WHERE constraint_schema = ?
               AND table_name = ?
@@ -1344,8 +1343,15 @@ async function collectStructureIssues(
           `,
           [databaseName, item.table, item.name],
         );
-        if (!exists) {
+        if (!isQueryRows(constraintRows) || constraintRows.length === 0) {
           issues.push(`关键 CHECK 约束缺失: ${item.table}.${item.name}`);
+          break;
+        }
+        const enforced = readRowString(constraintRows[0], ['enforced', 'ENFORCED']);
+        if (enforced === null || enforced.toUpperCase() !== 'YES') {
+          issues.push(
+            `关键 CHECK 未强制执行: ${item.table}.${item.name} enforced=${enforced ?? '(未知)'}`,
+          );
           break;
         }
         if (item.definition) {
@@ -1421,6 +1427,7 @@ export async function inspectMigrationState(
       collectPrefixStructureRequirements(executedTimestamps),
     )),
   );
+  issues.push(...describeUnknownBusinessTables(await readBaseTableNames(dataSource, databaseName)));
 
   for (const executed of history) {
     const artifact = artifacts.get(executed.timestamp);
@@ -1543,6 +1550,15 @@ export async function collectGeneratedColumnIssues(
   return issues;
 }
 
+function describeUnknownBusinessTables(actualTables: ReadonlyArray<string>): string[] {
+  const expected = new Set<string>(REQUIRED_TABLES);
+  return actualTables
+    .filter(
+      (table) => table !== 'migrations' && table !== 'typeorm_metadata' && !expected.has(table),
+    )
+    .map((table) => `存在预期之外的业务表: ${table}`);
+}
+
 /**
  * 收集最终结构差异，逐项输出而不是只看总表数。
  */
@@ -1555,14 +1571,7 @@ export async function collectStructuralIssues(
   const businessTables = actualTables.filter(
     (table) => table !== 'migrations' && table !== 'typeorm_metadata',
   );
-  const expected = new Set<string>(REQUIRED_TABLES);
-  const actual = new Set<string>(businessTables);
-
-  for (const table of actual) {
-    if (!expected.has(table)) {
-      warnings.push(`存在预期之外的业务表: ${table}`);
-    }
-  }
+  warnings.push(...describeUnknownBusinessTables(businessTables));
 
   const issues = [
     ...(await collectStructureIssues(dataSource, databaseName, collectAllStructureRequirements())),
@@ -1743,6 +1752,7 @@ export async function verifyMigrationState(
   const structural = await collectStructuralIssues(dataSource, databaseName);
   issues.push(...structural.issues);
   warnings.push(...structural.warnings);
+  issues.push(...structural.warnings);
   issues.push(...(await collectDataIssues(dataSource, databaseName)));
   issues.push(...(await collectRequiredStructureDefinitionIssues(dataSource, databaseName)));
 

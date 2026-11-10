@@ -36,7 +36,10 @@ import {
   type OwnedMembershipFacts,
   type OwnedResourceLedger,
 } from '../../../test/utils/e2e-scoped-cleanup';
-import { runTwoBranchTransactionRace } from '../../../test/utils/upload-race-runner';
+import {
+  assertLockObservationCapability,
+  runTwoBranchTransactionRace,
+} from '../../../test/utils/upload-race-runner';
 import { AdminSetUserStatusUsecase } from './admin-set-user-status.usecase';
 
 /**
@@ -591,6 +594,8 @@ describeIntegration('管理员启停真实并发验收（锁后读取）', () =>
     // 环境门禁全部通过后才允许读取/写入夹具
     const gate = await prepareFixtureSetup(dataSource, ROUND_TAG, config.database);
     expectedDatabase = gate.database;
+    // 观测能力不足时必须在任何夹具写入之前失败关闭（零造数）
+    await assertLockObservationCapability(query);
     // 门禁通过即允许清理：后续任一步写入成功后失败，afterAll 都必须能回收已登记资源
     setupAllowed = true;
 

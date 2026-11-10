@@ -3964,3 +3964,53 @@ export const runGuardedSpecCleanup = async (params: {
     await deleteVerifiedPlan(manager, plan);
   });
 };
+
+/**
+ * RQ6：在任何造数之前确认本连接可读取 performance_schema 的事务视图。
+ *
+ * 不使用需要全局 PROCESS 的 information_schema.innodb_trx；只读取
+ * performance_schema.events_transactions_current 中当前线程的记录。
+ * 能力缺失时在夹具创建前失败关闭，保证零造数。
+ */
+export const assertTransactionObservationCapability = async (
+  query: (sql: string) => Promise<unknown>,
+): Promise<void> => {
+  try {
+    await query(
+      `SELECT COUNT(*) AS total
+         FROM performance_schema.events_transactions_current
+        WHERE THREAD_ID = PS_CURRENT_THREAD_ID()`,
+    );
+  } catch (error) {
+    throw new Error(
+      '当前账号无法读取 performance_schema.events_transactions_current，拒绝创建夹具（零造数）',
+      { cause: error },
+    );
+  }
+};
+
+/**
+ * RQ6：统计当前用户仍处于 ACTIVE 的事务数量。
+ *
+ * 通过 performance_schema.threads 限定为当前用户的连接，无需全局 PROCESS；
+ * 用于替代原先依赖 information_schema.innodb_trx 的观测。
+ */
+export const countActiveOwnTransactions = async (
+  query: (sql: string) => Promise<unknown>,
+): Promise<number> => {
+  const rows = await query(
+    `SELECT COUNT(*) AS total
+       FROM performance_schema.events_transactions_current AS t
+       JOIN performance_schema.threads AS th ON th.THREAD_ID = t.THREAD_ID
+      WHERE th.PROCESSLIST_USER = SUBSTRING_INDEX(CURRENT_USER(), '@', 1)
+        AND t.STATE = 'ACTIVE'`,
+  );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error('事务观测结果为空，拒绝把未知状态当作无活动事务');
+  }
+  const total = Number((rows[0] as { readonly total?: unknown }).total);
+  if (!Number.isFinite(total) || total < 0) {
+    throw new Error('事务观测结果不是有效计数，拒绝把未知状态当作无活动事务');
+  }
+  return total;
+};

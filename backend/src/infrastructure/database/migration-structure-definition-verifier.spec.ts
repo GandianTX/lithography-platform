@@ -6,6 +6,7 @@ import {
   FOREIGN_KEY_DEFINITIONS,
   GENERATED_COLUMN_DEFINITIONS,
   INDEX_DEFINITIONS,
+  REQUIRED_INDEXES,
   collectPrefixStructureRequirements,
 } from './migration-schema-contract';
 import {
@@ -14,7 +15,7 @@ import {
   collectDefinitionCoverageStatistics,
   type DefinitionCoverageInput,
 } from './migration-structure-definition-verifier';
-import { verifyMigrationState } from './incremental-migration';
+import { inspectMigrationState, verifyMigrationState } from './incremental-migration';
 
 interface Overrides {
   readonly column?: Readonly<Record<string, Record<string, unknown>>>;
@@ -22,6 +23,9 @@ interface Overrides {
   readonly generatedExtra?: Readonly<Record<string, string>>;
   readonly index?: Readonly<Record<string, { unique?: boolean; columns?: ReadonlyArray<string> }>>;
   readonly check?: Readonly<Record<string, string>>;
+  readonly checkEnforced?: Readonly<Record<string, string>>;
+  readonly missingIndex?: ReadonlyArray<string>;
+  readonly tables?: ReadonlyArray<string>;
   readonly foreignKey?: Readonly<
     Record<
       string,
@@ -87,6 +91,7 @@ const createFakeDataSource = (overrides: Overrides): DataSource => {
       if (sql.includes('FROM information_schema.statistics')) {
         const [, table, index] = params;
         const key = `${table}.${index}`;
+        if (overrides.missingIndex?.includes(key)) return Promise.resolve([]);
         const base = INDEX_DEFINITIONS[key];
         if (!base) return Promise.resolve([]);
         const adjusted = { ...base, ...overrides.index?.[key] };
@@ -102,7 +107,15 @@ const createFakeDataSource = (overrides: Overrides): DataSource => {
         const key = `${table}.${constraint}`;
         const base = CHECK_DEFINITIONS[key];
         if (!base) return Promise.resolve([]);
-        return Promise.resolve([{ check_clause: overrides.check?.[key] ?? base.clause }]);
+        return Promise.resolve([
+          {
+            check_clause: overrides.check?.[key] ?? base.clause,
+            enforced: overrides.checkEnforced?.[key] ?? 'YES',
+          },
+        ]);
+      }
+      if (sql.includes('FROM information_schema.tables')) {
+        return Promise.resolve((overrides.tables ?? []).map((table) => ({ table_name: table })));
       }
       if (sql.includes('FROM information_schema.key_column_usage')) {
         const [, table, constraint] = params;
@@ -132,6 +145,28 @@ const createFakeDataSource = (overrides: Overrides): DataSource => {
   return fake as unknown as DataSource;
 };
 
+describe('必要索引的精确登记', () => {
+  it('REQUIRED_INDEXES 每一条都必须有唯一性与列序定义，避免只补单个名称', () => {
+    const missing = REQUIRED_INDEXES.map(({ table, index }) => `${table}.${index}`).filter(
+      (key) => !Object.prototype.hasOwnProperty.call(INDEX_DEFINITIONS, key),
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it('uk_login_name 必须按登录名列唯一登记', () => {
+    expect(INDEX_DEFINITIONS['base_user_account.uk_login_name']).toEqual({
+      unique: true,
+      columns: ['login_name'],
+    });
+    expect(
+      REQUIRED_INDEXES.some(
+        ({ table, index }) => table === 'base_user_account' && index === 'uk_login_name',
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('assertRequiredStructureDefinitions', () => {
   it('完整匹配的定义全部通过', async () => {
     await expect(
@@ -159,6 +194,17 @@ describe('assertRequiredStructureDefinitions', () => {
         'lithography_v13_delivery_dev',
       ),
     ).rejects.toThrow(/关键 CHECK 定义漂移: stored_file\.chk_stored_file_status/);
+  });
+
+  it('关键 CHECK 存在但未强制执行时失败关闭', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(
+        createFakeDataSource({
+          checkEnforced: at('stored_file.chk_stored_file_status', 'NO'),
+        }),
+        'lithography_v13_delivery_dev',
+      ),
+    ).rejects.toThrow(/关键 CHECK 未强制执行: stored_file\.chk_stored_file_status/);
   });
 
   it('同名字段但类型不符时失败关闭', async () => {
@@ -289,11 +335,11 @@ describe('assertRequiredStructureDefinitions', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('previous_version 由第 43 条迁移追加，可空性漂移时失败关闭', async () => {
+  it('previous_version 由第 44 条收紧为非空，仍可空时失败关闭', async () => {
     await expect(
       assertRequiredStructureDefinitions(
         createFakeDataSource({
-          column: at('repair_request_revision.previous_version', { is_nullable: 'NO' }),
+          column: at('repair_request_revision.previous_version', { is_nullable: 'YES' }),
         }),
         'lithography_v13_delivery_dev',
       ),
@@ -460,7 +506,7 @@ describe('collectDefinitionCoverageIssues', () => {
     expect(collectDefinitionCoverageStatistics()).toEqual([
       { kind: 'column', expected: 280, covered: 280, missing: 0, inherited: 79 },
       { kind: 'check', expected: 110, covered: 110, missing: 0, inherited: 82 },
-      { kind: 'index', expected: 43, covered: 43, missing: 0, inherited: 69 },
+      { kind: 'index', expected: 43, covered: 43, missing: 0, inherited: 70 },
       { kind: 'foreignKey', expected: 51, covered: 51, missing: 0, inherited: 59 },
       { kind: 'generatedColumn', expected: 0, covered: 0, missing: 0, inherited: 4 },
     ]);
@@ -497,5 +543,47 @@ describe('正式部署入口接线', () => {
     expect(report.issues.join('\n')).toContain(
       '关键字段定义漂移: sync_conflict.local_version 列类型不符',
     );
+  });
+
+  it('verifyMigrationState 对缺失的登录名唯一索引失败关闭', async () => {
+    const report = await verifyMigrationState(
+      createFakeDataSource({ missingIndex: ['base_user_account.uk_login_name'] }),
+      'fake_db',
+    );
+
+    expect(report.issues.join('\n')).toContain('关键索引缺失: base_user_account.uk_login_name');
+  });
+
+  it('verifyMigrationState 对 NOT ENFORCED 的关键 CHECK 失败关闭', async () => {
+    const report = await verifyMigrationState(
+      createFakeDataSource({
+        checkEnforced: at('stored_file.chk_stored_file_status', 'NO'),
+      }),
+      'fake_db',
+    );
+
+    expect(report.issues.join('\n')).toContain(
+      '关键 CHECK 未强制执行: stored_file.chk_stored_file_status',
+    );
+  });
+});
+
+describe('未知业务表', () => {
+  it('pending 执行前发现未知表时拒绝', async () => {
+    const report = await inspectMigrationState(
+      createFakeDataSource({ tables: ['migrations', 'base_user_account', 'rogue_table'] }),
+      'fake_db',
+    );
+
+    expect(report.issues.join('\n')).toContain('存在预期之外的业务表: rogue_table');
+  });
+
+  it('终态校验发现未知表时拒绝', async () => {
+    const report = await verifyMigrationState(
+      createFakeDataSource({ tables: ['migrations', 'base_user_account', 'rogue_table'] }),
+      'fake_db',
+    );
+
+    expect(report.issues.join('\n')).toContain('存在预期之外的业务表: rogue_table');
   });
 });

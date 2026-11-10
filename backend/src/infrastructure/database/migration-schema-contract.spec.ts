@@ -24,6 +24,7 @@ const BASELINE_TIMESTAMPS = [
 const V13_TIMESTAMPS = [
   1775501000000, 1775501100000, 1775501200000, 1775501300000, 1775501400000, 1775501500000,
   1775501600000, 1775501700000, 1775501800000, 1775501900000, 1775502000000, 1775502100000,
+  1775502200000,
 ];
 
 const V13_TABLES = [
@@ -157,7 +158,7 @@ describe('V13 结构契约（不连接实库）', () => {
     ).toBeUndefined();
   });
 
-  it('previous_version 由第 43 条迁移追加，可空且只做顺序守卫', () => {
+  it('previous_version 第 43 条追加、第 44 条收紧为非空且保留顺序守卫', () => {
     const requirements = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
     const column = requirements.find(
       (item) =>
@@ -169,7 +170,30 @@ describe('V13 结构契约（不连接实库）', () => {
     if (column && column.kind === 'column') {
       expect(column.since).toBe(1775502100000);
       expect(column.notNull).toBeUndefined();
+      expect(column.definition).toEqual({
+        since: 1775502200000,
+        columnType: 'int unsigned',
+        nullable: false,
+        defaultValue: null,
+      });
     }
+
+    // 第 44 条未执行时（仅到 43 态）不得提前要求非空。
+    const prefixOnly = collectPrefixStructureRequirements(
+      new Set(V13_TIMESTAMPS.filter((timestamp) => timestamp < 1775502200000)),
+    );
+    const prefixColumn = prefixOnly.find(
+      (item) =>
+        item.kind === 'column' &&
+        item.table === 'repair_request_revision' &&
+        item.name === 'previous_version',
+    );
+    expect(prefixColumn).toBeDefined();
+    if (prefixColumn && prefixColumn.kind === 'column') {
+      expect(prefixColumn.notNull).toBeUndefined();
+      expect(prefixColumn.definition).toBeUndefined();
+    }
+
     const check = requirements.find(
       (item) =>
         item.kind === 'check' &&

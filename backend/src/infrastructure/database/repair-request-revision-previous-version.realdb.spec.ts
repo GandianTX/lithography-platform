@@ -25,6 +25,8 @@
 //   5. 收尾只按台账登记的真实 ID 与事实精确回收，主错误与收尾错误分别保留。
 
 import { randomUUID } from 'node:crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import type { DataSource } from 'typeorm';
 
@@ -128,6 +130,8 @@ const requireTarget = (): M43Target => {
 const MIGRATION_42_TIMESTAMP = 1775502000000;
 const MIGRATION_43_TIMESTAMP = 1775502100000;
 const MIGRATION_43_NAME = 'AddRepairRequestRevisionPreviousVersionForV131775502100000';
+const MIGRATION_44_TIMESTAMP = 1775502200000;
+const MIGRATION_DIR = path.join(__dirname, 'migrations');
 const REVISION_TABLE = 'repair_request_revision';
 const PREVIOUS_VERSION_CHECK = 'chk_repair_request_revision_previous_version';
 const OLD_COLUMNS = [
@@ -143,6 +147,26 @@ const OLD_COLUMNS = [
 ].join(', ');
 
 const describeRealDb = TARGET ? describe : describe.skip;
+
+/**
+ * 版本前置：本规格验证 42→43。第 43 条允许历史行 previous_version 为 NULL，
+ * 而第 44 条会拒绝这些 NULL 行。因此含第 44 条的仓库不得运行本规格，
+ * 必须使用库外冻结的 43 条候选与匹配契约。
+ */
+export const assertFrozen43Repository = (timestamps: ReadonlyArray<number>): void => {
+  if (timestamps.includes(MIGRATION_44_TIMESTAMP)) {
+    throw new Error(
+      '第 43 条实库规格拒绝在含第 44 条的仓库运行：请使用库外冻结的 43 条候选与匹配契约',
+    );
+  }
+};
+
+const readRepositoryTimestamps = (): number[] =>
+  fs
+    .readdirSync(MIGRATION_DIR)
+    .filter((name) => name.endsWith('.migration.ts'))
+    .map((name) => Number(name.slice(0, 13)))
+    .sort((left, right) => left - right);
 
 const SNAPSHOT = JSON.stringify({ schema_version: 1 });
 
@@ -476,6 +500,7 @@ const deployOptions = (): {
 
 describeRealDb('repair_request_revision.previous_version 实库验收', () => {
   beforeAll(async () => {
+    assertFrozen43Repository(readRepositoryTimestamps());
     const target = requireTarget();
     state.config = loadExplicitEnvConfig(target.configFile, target.database);
     assertAllowedE2eDatabase(state.config.database);
@@ -683,5 +708,15 @@ describe('第 43 条实库规格启动门禁（离线）', () => {
         serverUuid: '00000000-0000-0000-0000-000000000000',
       }),
     ).toThrow(/实际 server_uuid/);
+  });
+
+  it('仓库仅到第 43 条时允许运行 42→43 规格', () => {
+    expect(() => assertFrozen43Repository([1775502000000, 1775502100000])).not.toThrow();
+  });
+
+  it('仓库含第 44 条时拒绝运行 42→43 规格', () => {
+    expect(() => assertFrozen43Repository([1775502000000, 1775502100000, 1775502200000])).toThrow(
+      /第 44 条|冻结的 43 条/,
+    );
   });
 });

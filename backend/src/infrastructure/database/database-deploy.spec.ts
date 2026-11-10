@@ -1,5 +1,6 @@
 import { parseAdminBootstrapConfig } from './admin-bootstrap';
-import { parseDeployCliArgs } from './database-deploy';
+import { assertInitializationEmailConflicts, parseDeployCliArgs } from './database-deploy';
+import { parseDevAccountBootstrapConfig } from './dev-account-bootstrap';
 
 const validAdminFile = JSON.stringify({
   schema_version: 1,
@@ -253,6 +254,34 @@ describe('管理员映射文件（不连接实库）', () => {
     ).toThrow(/不支持的字段/);
   });
 
+  it('管理员映射内重复邮箱时失败关闭', () => {
+    expect(() =>
+      parseAdminBootstrapConfig(
+        JSON.stringify({
+          schema_version: 1,
+          accounts: [
+            {
+              login_name: 'admin01',
+              login_email: 'shared@example.com',
+              password: 'valid-password-01',
+              admin_level: 1,
+              organization_code: 'ORG-001',
+              nickname: '管理员一',
+            },
+            {
+              login_name: 'admin02',
+              login_email: 'SHARED@example.com',
+              password: 'valid-password-02',
+              admin_level: 1,
+              organization_code: 'ORG-002',
+              nickname: '管理员二',
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/重复邮箱/);
+  });
+
   it('密码过短或缺失公司编码时失败关闭', () => {
     expect(() =>
       parseAdminBootstrapConfig(
@@ -285,5 +314,78 @@ describe('管理员映射文件（不连接实库）', () => {
         }),
       ),
     ).toThrow(/organization_code/);
+  });
+});
+
+describe('初始化映射邮箱冲突（不连接实库）', () => {
+  const adminConfig = (email: string) =>
+    parseAdminBootstrapConfig(
+      JSON.stringify({
+        schema_version: 1,
+        accounts: [
+          {
+            login_name: 'admin01',
+            login_email: email,
+            password: 'valid-password-01',
+            admin_level: 1,
+            organization_code: 'ORG-001',
+            nickname: '管理员一',
+          },
+        ],
+      }),
+    );
+
+  const devConfig = (email: string) =>
+    parseDevAccountBootstrapConfig(
+      JSON.stringify({
+        schema_version: 1,
+        customers: [
+          {
+            login_name: 'dev-customer-01',
+            login_email: email,
+            password: 'Xk7#mQ2!vR9',
+            nickname: '开发客户一',
+            organization_code: 'ORG-CLIENT-A',
+          },
+        ],
+        engineers: [],
+      }),
+    );
+
+  it('管理员与开发客户邮箱冲突时拒绝', () => {
+    expect(() =>
+      assertInitializationEmailConflicts(
+        adminConfig('same@example.com'),
+        devConfig('SAME@example.com'),
+      ),
+    ).toThrow(/初始化映射邮箱冲突/);
+  });
+
+  it('管理员与开发工程师邮箱冲突时拒绝', () => {
+    const dev = parseDevAccountBootstrapConfig(
+      JSON.stringify({
+        schema_version: 1,
+        customers: [],
+        engineers: [
+          {
+            login_name: 'dev-engineer-01',
+            login_email: 'same@example.com',
+            password: 'Hj4%kL6^bN2',
+            nickname: '开发工程师一',
+            organization_code: 'ORG-PEER-A',
+          },
+        ],
+      }),
+    );
+    expect(() => assertInitializationEmailConflicts(adminConfig('same@example.com'), dev)).toThrow(
+      /初始化映射邮箱冲突/,
+    );
+  });
+
+  it('合法配置复跑保持幂等校验通过', () => {
+    const admin = adminConfig('admin01@example.com');
+    const dev = devConfig('dev-customer-01@example.com');
+    expect(() => assertInitializationEmailConflicts(admin, dev)).not.toThrow();
+    expect(() => assertInitializationEmailConflicts(admin, dev)).not.toThrow();
   });
 });

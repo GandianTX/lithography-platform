@@ -144,14 +144,14 @@
 - 判定：`业务语义冲突` + `字段缺失` + `约束缺失`。
 - 落点（**需用户裁决**）：A) 原始八字段落列、处理生命周期另表/另列；B) 冻结 `panel_snapshot` JSON schema（`schema_version` + 八个必填键 + 类型），并补 `JSON_VALID`/版本域 CHECK，且把处理生命周期移出同名 `status/source`。B 只有在 A 不可行时才成立，且必须同时提供读写方（当前不存在）。
 
-### 2.5.1 补充：`repair_request_revision.previous_version`（第 43 条已关闭）
+### 2.5.1 补充：`repair_request_revision.previous_version`（第 43/44 条关闭）
 
 - 设计（Word 4.7）：`previous_version int unsigned`，**非空**，用途“比较的上一版本”。
 - 42 态实际：Entity、迁移、结构契约均无该列；字段字典却标记“S2 结构已实现”。按本审计“等价必须显式写明、不能默认隐式等价”的标准，判定为 `字段缺失`。
 - 等价性：`revision_no - 1`、`current_revision_no`、快照 JSON、`created_at` 均只能在“修订号从 1 严格连续且每行基于写入前当前版本”的应用不变量下推导；数据库未约束连续性，故不构成完整等价。
 - 处理（2026-11-09，第 43 条）：追加 `previous_version int unsigned NULL`，CHECK `previous_version IS NULL OR previous_version < revision_no`；不回填、不设置默认版本。`NULL`=历史未知，`0`=首版，其他值=锁定并核验后的 `current_revision_no`。
-- 设计差异：冻结 Word 的“非空”调整为可空以兼容无法证明的历史行；该差异已在字段字典 §4.7 与契约 §3.3 显式记录，不宣称原设计原样落地。
-- 剩余：R029/R030 写入接口与读取审计仍未实现，属功能缺口；结构缺口由第 43 条关闭（待实库验证）。
+- 处理（2026-11-10，第 44 条，已获批准）：最终列收紧为 **NOT NULL、无默认值**；在任何 ALTER 前校验 NULL 与 `previous_version >= revision_no`，违规失败关闭（脱敏计数 + 有限定位 ID），不回填、不删除；`down` 只回退可空性。字段字典 §4.7 与契约 §3.3 已同步为已批准裁决。
+- 剩余：R029/R030 写入接口与读取审计仍未实现，属功能缺口；结构缺口由第 43/44 条关闭（待实库验证）。
 
 ### 2.6 关联对象（不改变 F1 五主项判定，但影响结构冻结）
 

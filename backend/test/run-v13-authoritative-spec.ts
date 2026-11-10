@@ -74,7 +74,76 @@ const resolveGroup = (): V13SpecGroup => {
   return V13_SPEC_GROUPS[raw];
 };
 
-const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
+/**
+ * 配置文件只接受明确列举的连接字段与字段加密参数。
+ * 不使用 `DB_*` 或其他大写变量通配，避免未来新增的 DB_/控制变量被静默放行。
+ */
+const CONFIG_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
+  'DB_HOST',
+  'DB_PORT',
+  'DB_USER',
+  'DB_PASS',
+  'DB_NAME',
+  'DB_TIMEZONE',
+  'DB_SYNCHRONIZE',
+  'FIELD_ENCRYPTION_KEY',
+  'FIELD_ENCRYPTION_IV',
+]);
+
+/**
+ * UUID、目标库、白名单、组别、清理许可等控制变量只能由本入口显式注入，
+ * 不从父进程继承，也不能由 0600 配置文件夹带覆盖。
+ */
+const CONTROLLED_ENV_PREFIXES = ['V13_', 'E2E_', 'D3_', 'DB_', 'FIELD_ENCRYPTION_'] as const;
+
+const buildBaseEnvironment = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (key === 'NODE_ENV' || CONTROLLED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      continue;
+    }
+    env[key] = value;
+  }
+  return env;
+};
+
+const assertConfigKeysAllowed = (parsed: Record<string, string>): void => {
+  for (const key of Object.keys(parsed)) {
+    if (!CONFIG_KEY_ALLOWLIST.has(key)) {
+      return fail(`拒绝执行：配置文件包含保留变量 ${key}`);
+    }
+  }
+};
+
+const assertEntryConfirmed = (
+  env: NodeJS.ProcessEnv,
+  expected: {
+    readonly group: V13SpecGroup;
+    readonly targetDb: string;
+    readonly serverUuid: string;
+  },
+): void => {
+  const checks: ReadonlyArray<readonly [string, string]> = [
+    ['V13_AUTHORITATIVE_SPECS', '1'],
+    ['V13_SPEC_GROUP', expected.group.name],
+    ['V13_SPEC_TARGET_DB', expected.targetDb],
+    ['V13_SPEC_SERVER_UUID', expected.serverUuid],
+    ['E2E_ALLOW_PHYSICAL_CLEANUP', '1'],
+    ['E2E_REAL_DB_NAME', expected.targetDb],
+    ['E2E_ALLOWED_DB_NAMES', expected.targetDb],
+    ['E2E_EXPECTED_SERVER_UUID', expected.serverUuid],
+  ];
+  for (const [key, value] of checks) {
+    if (env[key] !== value) {
+      return fail(`拒绝执行：入口控制变量 ${key} 未被独立确认`);
+    }
+  }
+};
+
+export const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
   if (process.env.E2E_ALLOW_PHYSICAL_CLEANUP !== '1') {
     return fail('拒绝执行：缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1');
   }
@@ -91,31 +160,32 @@ const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
   const serverUuid = requireEnv('V13_SPEC_SERVER_UUID');
 
   const parsed = dotenv.parse(fs.readFileSync(configFile));
+  assertConfigKeysAllowed(parsed);
   const configDb = (parsed.DB_NAME ?? '').trim().toLowerCase();
   if (configDb !== targetDb) {
     return fail(`拒绝执行：配置 DB_NAME=${configDb || '(缺失)'} 与目标库 ${targetDb} 不一致`);
   }
 
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...buildBaseEnvironment(),
     NODE_ENV: 'test',
     V13_AUTHORITATIVE_SPECS: '1',
     V13_SPEC_GROUP: group.name,
+    V13_SPEC_TARGET_DB: targetDb,
+    V13_SPEC_SERVER_UUID: serverUuid,
     E2E_ALLOW_PHYSICAL_CLEANUP: '1',
     E2E_REAL_DB_NAME: targetDb,
     E2E_ALLOWED_DB_NAMES: targetDb,
     E2E_EXPECTED_SERVER_UUID: serverUuid,
     E2E_REAL_DB_CONFIG_FILE: configFile,
   };
-  // 把显式配置注入子进程（规格自身按 DB_* 建立连接），只来自受限配置文件。
+  // 只注入白名单内的连接字段；控制变量已在上面由入口独立写入。
   for (const [key, value] of Object.entries(parsed)) {
-    if (/^[A-Z][A-Z0-9_]*$/.test(key)) {
+    if (CONFIG_KEY_ALLOWLIST.has(key)) {
       env[key] = value;
     }
   }
   delete env.E2E_DOTENV;
-  // 显式覆盖，避免外部残留的多目标白名单混入。
-  env.E2E_ALLOWED_DB_NAMES = targetDb;
 
   if (group.name === 'delivery') {
     env.E2E_REAL_DB_SPECS = '1';
@@ -132,6 +202,9 @@ const buildEnvironment = (group: V13SpecGroup): NodeJS.ProcessEnv => {
     env.E2E_REAL_DB_SPECS = '1';
     env.E2E_ALLOW_MIGRATION_43_UPGRADE = '1';
   }
+
+  // 注入完成后由入口再次独立确认：配置与父进程都不能改写这些控制值。
+  assertEntryConfirmed(env, { group, targetDb, serverUuid });
 
   return env;
 };
@@ -180,9 +253,11 @@ const main = (): void => {
   console.log(`[v13-spec] group=${group.name} 执行完成`);
 };
 
-try {
-  main();
-} catch (error) {
-  console.error(`[v13-spec] 失败关闭：${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(`[v13-spec] 失败关闭：${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }

@@ -2707,3 +2707,100 @@ Redis `127.0.0.1:37275`）验证：初始化三源角色/摘要/身份提示一�
 - 停止后续阶段，保留现有现场；未 DROP、未 TRUNCATE、未重置 AUTO_INCREMENT、未修改迁移历史。
 - 证据目录：`/home/gandiantx/secure/lithography-v13/evidence/final43/`（0700；文件 0600），含 `git-freeze.txt`、`migration-sha256.txt`、`candidate-files-sha256.txt`、`fingerprints.txt`、`mysql-readonly.txt`、`precheck-conflicts.md`。
 - 待授权决策：是否允许将交付库改名带开发标记、或书面授权调整上述规格的数据库/迁移数前置条件；未获授权前不进入第四节至第七节。
+
+## 第三十八轮：`previous_version` 第 44 条落实与 RQ1—RQ6 集中实库复验（2026-11-10）
+
+### 38.1 本轮范围与边界
+
+- 分支 `feat/database-v13-deploy`；起点 HEAD `229a5961a34407cfa369d131e3d73d0b3a8738aa`；工作区已修改/未跟踪文件与 3 个 stash 原样保留。
+- 仅追加第 44 条迁移并同步 Entity、结构契约、规格与文档；**前 43 条迁移未改**，不改写已有提交、不 reset、不 stash。
+- 未删断言、未加 skip、未用数量替代历史名称/顺序核验；当前 44 条仓库与库外冻结 43 条候选分别承担各自路径。
+- 未 DROP DATABASE、未 TRUNCATE、未关闭外键检查、未重置 `AUTO_INCREMENT`、未伪造迁移历史。
+- 未授予 `PROCESS`、未修改 `mysql` 系统表、未用高权限绕过反例。
+- 不 push、不回复 PR、不合并。
+
+### 38.2 授权实例与专用库
+
+- 实例 `127.0.0.1:3306`，`@@server_uuid=909f9587-9fce-11f1-a353-00e0709ef3a9`，MySQL 8.0.46。
+- 本轮使用：`lithography_rq1_42`、`lithography_rq2_constraint`、`lithography_rq3_account_dev`、`lithography_rq4_org_dev`、`lithography_rq5_43`、`lithography_rq5_42`、`lithography_rq6_cleanup`、`lithography_rq44_previous`。
+- 每个库在创建前均经 `scripts/dbtool.js exists` 确认不存在后才创建；`lithography_rq3_account` 与 `lithography_rq4_org` 未创建、未使用，开发账号安全门未改。
+- 42/43 态由库外冻结候选（`frozen-42/`、`frozen-43/`）正向构建：空库 + `DataSource.runMigrations()` 仅执行前 N 条，不清库、不伪造历史。
+
+### 38.3 第 44 条实现
+
+- 新迁移 `1775502200000-tighten-repair-request-revision-previous-version-for-v13.migration.ts`：
+  - `up` 先读列并校验存在，再在**任何 ALTER 前**统计 `previous_version IS NULL` 与 `previous_version >= revision_no`；
+  - 违规则失败关闭，只输出脱敏计数与最多 20 个定位 ID，并明确“未执行任何 ALTER；禁止猜测回填或删除历史行”；
+  - 无违规才 `MODIFY COLUMN ... int unsigned NOT NULL`，无默认值；重复执行已是终态则跳过，并复核终态定义；
+  - `down` 只回退可空性，不伪造、不删除版本值。
+- 同步：`repair-request-revision.entity.ts`（`previousVersion!: number`）、`migration-schema-contract.ts`（`COLUMN_DEFINITIONS` 的 `since=1775502200000`、`nullable=false`、`defaultValue=null`；`COLUMN_CREATED_BY` 仍为第 43 条）、S1 契约/字段字典、S3 SOP、S5 审计、S6 回复草稿。
+- 实库规格与离线用例覆盖：空表收紧、合法非空行保留、NULL 旧行零 ALTER 拒绝、等于/大于 `revision_no` 拒绝、合法首次与后续版本通过。
+
+### 38.4 RQ1—RQ6 与 RQ44 实库结果
+
+| 项   | 起点                                                | 实际命令（要点）                                                                                                                          | 结果                                                                                                                                                                                                               |
+| ---- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| RQ1  | `lithography_rq1_42` 42 态                          | 冻结 43 条候选 runner `upgrade`（错误 UUID / 配置夹带 / 合法路径）；当前仓库 `database:deploy --mode upgrade`；`migration:verify`         | 错误 UUID：`1 failed / 12 passed`，退出码 1；配置夹带：`配置文件包含保留变量 V13_SPEC_SERVER_UUID`，未连库；拒绝前后快照逐字节一致；合法 42→43：13 passed / 0 failed 退出码 0；43→44 后 verify 通过（51 张业务表） |
+| RQ2  | `lithography_rq2_constraint` 44 态                  | 分别 `ALTER ... NOT ENFORCED` 指定 CHECK、`DROP INDEX uk_login_name`；verify/init/upgrade；恢复后复跑                                     | 单项漂移时 verify、init、upgrade 均拒绝，原因准确（`enforced=NO` / `关键索引缺失`）；恢复后通过且快照与原始一致；两项未同时制造                                                                                    |
+| RQ3  | `lithography_rq3_account_dev`（一条 init 达 44 态） | 既有管理员/工程师映射到他人邮箱；合法新增在前、冲突在后；合法映射复跑；去 dev 选项复跑                                                    | 冲突拒绝并点名占用账号；整批回滚（新增 0 行）；复跑全 `UNCHANGED`；去 dev 不增删；邮箱、密码哈希、角色/等级、资料、公司、成员资格快照一致                                                                          |
+| RQ4  | `lithography_rq4_org_dev` 44 态                     | 新建/既有工程师映射到 `ACTIVE + kind=PEER + is_managed_company=0`；合法新增在前、非法在后；`is_managed_company=1 + is_service_provider=0` | 未入管理名单一律拒绝（与 `kind` 无关）；名单内且 `is_service_provider=0` 允许；回滚零残留；快照一致；verify 通过                                                                                                   |
+| RQ5  | `lithography_rq5_43` / `lithography_rq5_42`         | 创建带哨兵未知表后执行正式 `database:deploy --mode upgrade`；精确移除未知表后再 upgrade；重复 upgrade                                     | 均在任何 pending/回填前拒绝，执行迁移 0 条；历史、原表、原行、哨兵与快照不变；移除后升级成功且 `previous_version` 原值保留；重复 0 条                                                                              |
+| RQ6  | `lithography_rq6_cleanup` 44 态                     | `e2e-scoped-cleanup.v13.realdb.spec.ts` 正常与 `E2E_V13_CONTROLLED_FAULT=1`；先 `--listTests` 机器核对再 `--runTestsByPath`               | 正常 14 passed / 2 skipped；受控故障 16 passed / 0 failed；CREATE 后断言失败精确回收、UPDATE 后按 `status + finished_at` 写入值 CAS 恢复；主错误/收尾错误/残留诊断保留；17 表零残留                                |
+| RQ44 | `lithography_rq44_previous` 43 态                   | 插入合法首版行与 NULL 历史行后正式 upgrade                                                                                                | 在第 44 条任何 ALTER 前拒绝（`previous_version IS NULL=1（样本 ID: 2）`）；历史仍 43、列仍可空、两行保留；未回填、未删除、未伪造通过；现场保留                                                                     |
+
+### 38.5 最终交付基线
+
+- `lithography_rq3_account_dev` 一条正式 `database:deploy --mode init` 完成：44 条迁移、1 个合成公司、3 个 1 级管理员、3 个 2 级管理员、2 个客户、2 个工程师（10 个账号、10 条成员关系）。
+- 密码/角色/等级/资料/公司/成员资格核验通过；正式 verify 通过，终态 44。
+- 同命令重跑 0 条迁移，全部 `UNCHANGED`；不传 dev 选项不增删既有开发账号。
+- 初始化公司与 10 个账号为本轮基线数据，不是测试残留。
+
+### 38.6 RQ6 观测边界
+
+- 授权账号在本轮开始前已持有 `PROCESS`；本轮未授予、未回收，也未修改系统表。
+- 因此本轮未在该账号上演示“无 `PROCESS`”的真实条件；该分支由离线能力用例覆盖。
+- 默认观测只读 `performance_schema`（`events_transactions_current` + `PS_CURRENT_THREAD_ID()`），不读取 `information_schema.innodb_trx`，不把不可观测/空结果当成“无活动事务”。
+- 本轮实测：`@@performance_schema=1`、消费器 `events_transactions_current=YES`、当前连接活动事务 0。
+
+### 38.7 离线验证
+
+| 项                 | 命令                                                          | 结果                                                |
+| ------------------ | ------------------------------------------------------------- | --------------------------------------------------- |
+| 正式类型检查       | `npm run typecheck`                                           | 退出码 0                                            |
+| RQ 定向回归        | 12 个 spec                                                    | 140 passed / 13 skipped，退出码 0                   |
+| 完整后端单测       | `npm run test:unit -- --runInBand`                            | 159 suites、1841 passed / 197 skipped，退出码 0     |
+| 变更文件 ESLint    | 仓库根 `./backend/node_modules/.bin/eslint <files>`（无 fix） | 0 errors / 17 warnings                              |
+| Prettier           | `prettier --check <changed files>`                            | 通过                                                |
+| 能力文档门禁       | `npm run check:capability-docs`                               | 退出码 0                                            |
+| usecase 归一化守卫 | `npm run check:usecase-normalize`                             | 退出码 0                                            |
+| 架构夹具           | `npm run check:architecture-fixtures`                         | 退出码 0                                            |
+| entity-scope       | `npm run check:entity-scope`                                  | 退出码 1（旧 PR3 按既有裁决记不适用，未改政策骗绿） |
+| 构建               | `npm run build`                                               | 退出码 0                                            |
+| 空白检查           | `git diff --check`                                            | 退出码 0                                            |
+
+### 38.8 指纹
+
+| 项           | 值                                                                 |
+| ------------ | ------------------------------------------------------------------ |
+| HEAD         | `229a5961a34407cfa369d131e3d73d0b3a8738aa`                         |
+| ALL44        | `72dc3718fba8fd350beda73477a811d4de96c907eb9c3d117eaaff495ce99eb9` |
+| 冻结 43 候选 | `42d8c24c27c6c58d373bec0019eef6b35a2294f5c9a37c4832a0c387f5315db5` |
+| 冻结 42 候选 | `1d569b4b8fe09ceb3c90c353d89e7e7ddbd08b790bfe371bd0501a5e6faa6ed9` |
+
+（ALL44 为按文件名排序后逐文件 `sha256sum` 再整体取 `sha256`。）
+
+### 38.9 证据与保留资源
+
+- 证据根目录 `/home/gandiantx/.local/share/lithography-v13-rq-evidence/`（目录 0700、文件 0600；不入库）：
+  `01-config/`、`02-rq1/`、`03-rq44/`、`04-rq2/`、`05-rq3/`、`06-rq4/`、`07-rq5/`、`08-rq6/`、`09-baseline/`、`10-mappings/`、`11-mappings-rq4/`、`frozen-42/`、`frozen-43/`、`scripts/`。
+- 库外工具：`dbtool.js`、`snapshot.js`、`account-facts.js`、`gen-mappings.js`、`gen-rq4-mappings.js`、`build-state.ts`。
+- 保留资源：8 个授权专用库及其现场（含 `lithography_rq44_previous` 的 NULL 拒绝现场、`lithography_rq5_43/42` 的 44 态），未 DROP。
+- 非目标数据：均未触碰审查方数据库、生产业务库、共享库、150 行事故现场与任何 Redis 实例。
+
+### 38.10 限制与未关闭项
+
+- 本轮验证起点为库外冻结候选与本轮新建空库；**不宣称任意真实旧库已验证**。
+- 升级验收仅覆盖 42→43（冻结候选）、43→44 与 42/43→44（本轮合成库）；生产存量库升级仍需另行评审与书面授权。
+- R029/R030 写入接口与读取审计仍未实现，属功能缺口，不在本期范围。
+- 旧 PR3 entity-scope 门禁退出码 1，按既有裁决记不适用。
+- **本轮回合不 push、不回复 PR、不合并。**

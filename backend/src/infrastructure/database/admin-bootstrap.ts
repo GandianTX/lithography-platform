@@ -6,6 +6,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 
 import { createFieldCipher, type FieldCipher } from '../field-encryption/field-encryption.cipher';
 import {
+  assertExistingAccountLoginEmail,
   decryptMetaDigest,
   loadActiveMembership,
   loadBootstrapAccount,
@@ -131,6 +132,7 @@ export function parseAdminBootstrapConfig(raw: string): AdminBootstrapConfig {
   }
 
   const seenLoginNames = new Set<string>();
+  const seenLoginEmails = new Set<string>();
   const accounts = accountsValue.map((item, index): AdminBootstrapEntry => {
     const label = `管理员映射 accounts[${String(index)}]`;
     if (!isRecord(item)) {
@@ -156,10 +158,18 @@ export function parseAdminBootstrapConfig(raw: string): AdminBootstrapConfig {
 
     const organizationCode = readRequiredString(item, 'organization_code', label);
     const nickname = readRequiredString(item, 'nickname', label);
+    const loginEmail = readOptionalString(item, 'login_email', label);
+    if (loginEmail !== null) {
+      const emailKey = loginEmail.toLowerCase();
+      if (seenLoginEmails.has(emailKey)) {
+        throw new Error(`管理员映射存在重复邮箱 ${loginEmail}`);
+      }
+      seenLoginEmails.add(emailKey);
+    }
 
     return {
       loginName,
-      loginEmail: readOptionalString(item, 'login_email', label),
+      loginEmail,
       password,
       adminLevel: rawLevel,
       organizationCode,
@@ -231,6 +241,12 @@ async function assertValidExistingAdminFacts(params: {
       `账号 ${entry.loginName} 的资料状态为 ${String(account.userState)}，不是 ACTIVE，拒绝映射`,
     );
   }
+  await assertExistingAccountLoginEmail(
+    manager,
+    entry.loginName,
+    entry.loginEmail,
+    account.loginEmail,
+  );
   if (account.adminLevel !== null && account.adminLevel !== entry.adminLevel) {
     throw new Error(
       `账号 ${entry.loginName} 已有等级 ${String(account.adminLevel)}，与映射 ${String(entry.adminLevel)} 不一致，拒绝覆盖`,
@@ -302,6 +318,20 @@ async function createAccount(
   });
   if (!intendedFacts.converged || intendedFacts.role !== ADMIN_ROLE) {
     throw new Error(`管理员 ${entry.loginName} 的角色事实构造无效，拒绝写入`);
+  }
+
+  if (entry.loginEmail !== null) {
+    const conflictRows: unknown = await manager.query(
+      'SELECT `login_name` FROM `base_user_account` WHERE `login_email` = ? LIMIT 1 FOR UPDATE',
+      [entry.loginEmail],
+    );
+    if (Array.isArray(conflictRows) && conflictRows.length > 0) {
+      const owner = (conflictRows[0] as { readonly login_name?: unknown }).login_name;
+      throw new Error(
+        `管理员 ${entry.loginName} 的邮箱 ${entry.loginEmail} 已被账号 ` +
+          `${typeof owner === 'string' ? owner : '(未知)'} 占用，拒绝创建`,
+      );
+    }
   }
 
   await manager.query(

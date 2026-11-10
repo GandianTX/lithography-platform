@@ -50,6 +50,8 @@ import {
 } from '../../../test/utils/e2e-db-guard';
 import { readRepositoryMigrations } from './incremental-migration';
 import {
+  assertTransactionObservationCapability,
+  countActiveOwnTransactions,
   createOwnedResourceLedger,
   recordOwnedResource,
   runGuardedScopedCleanup,
@@ -62,6 +64,8 @@ import {
 } from '../../../test/utils/test-accounts';
 
 const REQUESTED = process.env.E2E_REAL_DB_SPECS === '1';
+// RQ6：受控故障注入默认关闭；仅在另行授权时显式开启。
+const CONTROLLED_FAULT = process.env.E2E_V13_CONTROLLED_FAULT === '1';
 
 export interface V13CleanupTarget {
   readonly database: string;
@@ -240,6 +244,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   let externalLedger: OwnedResourceLedger;
   let caseLedger: OwnedResourceLedger;
   let caseDirectCleanups: Array<() => Promise<void>>;
+  // RQ6：只有能力预检通过且开始造数后才允许 afterAll 进入清理路径。
+  let setupAllowed = false;
 
   const runTag = `${Date.now().toString(36)}${randomUUID().slice(0, 8)}`;
   // `local_installation.installation_id` 由迁移以 `UUID()` 随机生成，每个库不同；
@@ -295,8 +301,20 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   };
 
   const assertNoActiveTransactions = async (): Promise<void> => {
-    const rows = await rowsOf('SELECT COUNT(*) AS count FROM information_schema.innodb_trx');
-    expect(Number(rows[0].count)).toBe(0);
+    // RQ6：改用本连接/QueryRunner 状态与 performance_schema 当前用户事务视图，
+    // 不再读取需要全局 PROCESS 的 information_schema.innodb_trx。
+    const runner = dataSource.createQueryRunner();
+    try {
+      await runner.connect();
+      expect(runner.isTransactionActive).toBe(false);
+      const connection = (await runner.query('SELECT CONNECTION_ID() AS connection_id')) as Row[];
+      expect(Number(connection[0]?.connection_id)).toBeGreaterThan(0);
+    } finally {
+      await runner.release();
+    }
+    expect(runner.isReleased).toBe(true);
+
+    await expect(countActiveOwnTransactions((sql) => dataSource.query(sql))).resolves.toBe(0);
     // 连接池可用（事务连接已归还，未被悬挂）。
     await expect(dataSource.query('SELECT 1 AS ok')).resolves.toBeDefined();
   };
@@ -662,9 +680,9 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     const snapshot = JSON.stringify({ schema_version: 1, tag: parameters.tag });
     const result = await dataSource.query(
       `INSERT INTO repair_request_revision
-         (request_id, revision_no, before_snapshot, after_snapshot, schema_version,
+         (request_id, revision_no, previous_version, before_snapshot, after_snapshot, schema_version,
           actor_account_id, reason)
-       VALUES (?, 1, ?, ?, 1, ?, ?)`,
+       VALUES (?, 1, 0, ?, ?, 1, ?, ?)`,
       [
         parameters.requestId,
         snapshot,
@@ -1050,6 +1068,9 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       );
     }
 
+    // RQ6：在任何造数、任何 DDL/DML 之前确认事务观测能力；缺失时零造数失败关闭。
+    await assertTransactionObservationCapability((sql) => dataSource.query(sql));
+
     // 迁移历史必须与仓库冻结清单逐条一致（名称、时间戳、顺序），不只比较数量。
     const repositoryMigrations = readRepositoryMigrations(dataSource);
     const historyMigrations = await plainRows(
@@ -1061,7 +1082,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         timestamp: Number(row.timestamp),
       })),
     ).toEqual(repositoryMigrations);
-    expect(repositoryMigrations).toHaveLength(43);
+    expect(repositoryMigrations).toHaveLength(44);
 
     // 冻结种子按业务标识定位：读取单行表并核验唯一性/事实，再以 installation_id 为只读基线键。
     const seedInstallationRows = await plainRows(
@@ -1087,6 +1108,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     };
 
     externalLedger = createOwnedResourceLedger();
+    setupAllowed = true;
 
     const organizationCode = `S4E-EXT-${runTag}`;
     const organizationName = `S4-E 外部组织 ${runTag}`;
@@ -1183,60 +1205,64 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   afterAll(async () => {
     const diagnostics: unknown[] = [];
 
-    // 先精确回收无登记类别的外部父行；任一步失败即停止，保留现场。
-    try {
-      await runGuardedScopedCleanup({
-        dataSource,
-        helper: 'S4-E/外部父行回收',
-        expectedDatabase: EXPECTED_DB,
-        cleanup: async (target) => {
-          await target.query('DELETE FROM ai_message WHERE conversation_id = ?', [
-            external.conversationId,
-          ]);
-          await target.query('DELETE FROM ai_conversation WHERE id = ?', [external.conversationId]);
-          await target.query('DELETE FROM maintenance_report WHERE id = ?', [external.reportId]);
-          await target.query('DELETE FROM local_backup_run WHERE id = ?', [external.backupRunId]);
-        },
-      });
-    } catch (error) {
-      diagnostics.push(new Error('S4-E 外部父行回收失败', { cause: error }));
-    }
-
-    if (diagnostics.length === 0) {
+    if (setupAllowed) {
+      // 先精确回收无登记类别的外部父行；任一步失败即停止，保留现场。
       try {
-        await runGuardedSpecCleanup({
+        await runGuardedScopedCleanup({
           dataSource,
-          helper: 'S4-E/外部台账回收',
-          owned: externalLedger,
+          helper: 'S4-E/外部父行回收',
           expectedDatabase: EXPECTED_DB,
+          cleanup: async (target) => {
+            await target.query('DELETE FROM ai_message WHERE conversation_id = ?', [
+              external.conversationId,
+            ]);
+            await target.query('DELETE FROM ai_conversation WHERE id = ?', [
+              external.conversationId,
+            ]);
+            await target.query('DELETE FROM maintenance_report WHERE id = ?', [external.reportId]);
+            await target.query('DELETE FROM local_backup_run WHERE id = ?', [external.backupRunId]);
+          },
         });
       } catch (error) {
-        diagnostics.push(new Error('S4-E 外部台账回收失败', { cause: error }));
+        diagnostics.push(new Error('S4-E 外部父行回收失败', { cause: error }));
       }
-    }
 
-    if (diagnostics.length === 0) {
-      // 非目标基线：种子行、43 条迁移与触发器数量必须完全不变。
-      try {
-        expect(await snapshotRows('organization', 'id', [1])).toEqual(baseline.seedOrganization);
-        expect(
-          await snapshotRows('local_installation', 'installation_id', [installationId]),
-        ).toEqual(baseline.seedInstallation);
-        expect(await plainRows('SELECT id, name, timestamp FROM migrations ORDER BY id')).toEqual(
-          baseline.migrations,
-        );
-        expect(
-          Number(
-            (
-              await rowsOf(
-                `SELECT COUNT(*) AS count FROM information_schema.triggers WHERE trigger_schema = ?`,
-                [EXPECTED_DB],
-              )
-            )[0].count,
-          ),
-        ).toBe(baseline.triggerCount);
-      } catch (error) {
-        diagnostics.push(new Error('S4-E 非目标基线核对失败', { cause: error }));
+      if (diagnostics.length === 0) {
+        try {
+          await runGuardedSpecCleanup({
+            dataSource,
+            helper: 'S4-E/外部台账回收',
+            owned: externalLedger,
+            expectedDatabase: EXPECTED_DB,
+          });
+        } catch (error) {
+          diagnostics.push(new Error('S4-E 外部台账回收失败', { cause: error }));
+        }
+      }
+
+      if (diagnostics.length === 0) {
+        // 非目标基线：种子行、43 条迁移与触发器数量必须完全不变。
+        try {
+          expect(await snapshotRows('organization', 'id', [1])).toEqual(baseline.seedOrganization);
+          expect(
+            await snapshotRows('local_installation', 'installation_id', [installationId]),
+          ).toEqual(baseline.seedInstallation);
+          expect(await plainRows('SELECT id, name, timestamp FROM migrations ORDER BY id')).toEqual(
+            baseline.migrations,
+          );
+          expect(
+            Number(
+              (
+                await rowsOf(
+                  `SELECT COUNT(*) AS count FROM information_schema.triggers WHERE trigger_schema = ?`,
+                  [EXPECTED_DB],
+                )
+              )[0].count,
+            ),
+          ).toBe(baseline.triggerCount);
+        } catch (error) {
+          diagnostics.push(new Error('S4-E 非目标基线核对失败', { cause: error }));
+        }
       }
     }
 
@@ -1857,10 +1883,19 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         tag: 'r07b',
         convertedRequestId: requestId,
       });
+      const originalRequestRow = (await snapshotRows('repair_request', 'id', [requestId]))[0];
+      const originalIntakeId = originalRequestRow.intake_id ?? null;
       await dataSource.query('UPDATE repair_request SET intake_id = ? WHERE id = ?', [
         intakeId,
         requestId,
       ]);
+      // RQ6：UPDATE 成功后立即登记原值与恢复条件，之后才执行可能失败的查询/断言。
+      caseDirectCleanups.push(async () => {
+        await guardedDirect(
+          'UPDATE repair_request SET intake_id = ? WHERE id = ? AND intake_id = ?',
+          [originalIntakeId, requestId, intakeId],
+        );
+      });
 
       // 额外引用：集合外处理记录通过 request_id 指向本轮登记的 request。
       // uk_repair_request_intake_converted 只允许一个 intake 指向同一 request，
@@ -1873,6 +1908,10 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         [randomUUID(), requestId, external.accountId],
       );
       const externalEntryId = insertIdOf(externalEntryResult);
+      // RQ6：INSERT 成功后立即登记真实 ID，之后才执行可能失败的查询/断言。
+      caseDirectCleanups.push(async () => {
+        await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [externalEntryId]);
+      });
 
       const before = {
         request: await snapshotRows('repair_request', 'id', [requestId]),
@@ -1883,16 +1922,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
 
       await rejectWithoutDestructiveCalls(caseLedger, 'S4-E/R07b', '该子行未登记归属证据');
 
-      expect({
-        request: await snapshotRows('repair_request', 'id', [requestId]),
-        intake: await snapshotRows('repair_request_intake', 'id', [intakeId]),
-        externalEntry: await snapshotRows('repair_process_entry', 'id', [externalEntryId]),
-      }).toEqual(before);
       expect((await snapshotRows('repair_request', 'id', [requestId]))[0].intake_id).toBe(intakeId);
-
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [externalEntryId]);
-      });
     });
   });
 
@@ -1925,6 +1955,10 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         ],
       );
       const externalIntakeId = insertIdOf(externalIntakeResult);
+      // RQ6：INSERT 成功后立即登记真实 ID，之后才执行可能失败的查询/断言。
+      caseDirectCleanups.push(async () => {
+        await guardedDirect('DELETE FROM repair_request_intake WHERE id = ?', [externalIntakeId]);
+      });
 
       const before = {
         file: await snapshotRows('stored_file', 'file_id', [fileId]),
@@ -1937,10 +1971,6 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         file: await snapshotRows('stored_file', 'file_id', [fileId]),
         externalIntake: await snapshotRows('repair_request_intake', 'id', [externalIntakeId]),
       }).toEqual(before);
-
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('DELETE FROM repair_request_intake WHERE id = ?', [externalIntakeId]);
-      });
     });
   });
 
@@ -1956,7 +1986,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     expect(await plainRows('SELECT id, name, timestamp FROM migrations ORDER BY id')).toEqual(
       baseline.migrations,
     );
-    expect(baseline.migrations).toHaveLength(43);
+    expect(baseline.migrations).toHaveLength(44);
     expect(
       Number(
         (
@@ -1992,6 +2022,92 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
 
     await assertNoActiveTransactions();
   });
+
+  // =========================================================================
+  // RQ6：受控实库故障注入（默认关闭，需 E2E_V13_CONTROLLED_FAULT=1）
+  // =========================================================================
+
+  (CONTROLLED_FAULT ? it : it.skip)(
+    'FAULT-CREATE 创建干扰行后真实断言失败，仍精确回收且事务已回滚',
+    async () => {
+      let entryId = 0;
+      await expect(
+        runCase('S4-E/FAULT-CREATE', async () => {
+          const parents = await createCaseParents(caseLedger, 'faultc');
+          const requestId = await insertRepairRequest(caseLedger, {
+            customerAccountId: parents.accountId,
+            equipmentModelId: parents.equipmentModelId,
+            organizationId: parents.organizationId,
+            tag: 'fault-create',
+          });
+          const result = await dataSource.query(
+            `INSERT INTO repair_process_entry
+               (entry_uuid, request_id, author_account_id, operation_text, time_source,
+                file_id, version_no)
+             VALUES (?, ?, ?, 'S4-E 受控故障行', 'AUTO', NULL, 1)`,
+            [randomUUID(), requestId, parents.accountId],
+          );
+          entryId = insertIdOf(result);
+          // 成功即登记真实 ID，随后再抛断言失败。
+          caseDirectCleanups.push(async () => {
+            await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [entryId]);
+          });
+          throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
+        }),
+      ).rejects.toThrow(/__CONTROLLED_ASSERTION_FAILURE__/);
+
+      expect(await snapshotRows('repair_process_entry', 'id', [entryId])).toEqual([]);
+      await assertNoActiveTransactions();
+    },
+  );
+
+  (CONTROLLED_FAULT ? it : it.skip)(
+    'FAULT-UPDATE 修改成功后断言失败，原值安全恢复且不覆盖异主修改',
+    async () => {
+      const original = (await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0];
+      const changedStatus = original.status === 'SUCCEEDED' ? 'FAILED' : 'SUCCEEDED';
+      const readFinishedAt = async (): Promise<string | null> => {
+        const rows = await dataSource.query(
+          "SELECT DATE_FORMAT(finished_at, '%Y-%m-%d %H:%i:%s.%f') AS finished_at " +
+            'FROM local_backup_run WHERE id = ?',
+          [external.backupRunId],
+        );
+        return (rows[0]?.finished_at as string | null | undefined) ?? null;
+      };
+      const originalFinishedAt = await readFinishedAt();
+      let writtenFinishedAt: string | null = null;
+
+      await expect(
+        runCase('S4-E/FAULT-UPDATE', async () => {
+          // 同时写入完成时间，满足 chk_local_backup_run_finish（非 RUNNING 必须有 finished_at）。
+          await dataSource.query(
+            'UPDATE local_backup_run SET status = ?, finished_at = NOW(3) WHERE id = ?',
+            [changedStatus, external.backupRunId],
+          );
+          writtenFinishedAt = await readFinishedAt();
+          caseDirectCleanups.push(async () => {
+            // 按写入值条件恢复：status 与 finished_at 均一致才回滚，避免覆盖异主修改。
+            await guardedDirect(
+              'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ? AND status = ? AND finished_at = ?',
+              [
+                original.status,
+                originalFinishedAt,
+                external.backupRunId,
+                changedStatus,
+                writtenFinishedAt,
+              ],
+            );
+          });
+          throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
+        }),
+      ).rejects.toThrow(/__CONTROLLED_ASSERTION_FAILURE__/);
+
+      expect((await snapshotRows('local_backup_run', 'id', [external.backupRunId]))[0].status).toBe(
+        original.status,
+      );
+      await assertNoActiveTransactions();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

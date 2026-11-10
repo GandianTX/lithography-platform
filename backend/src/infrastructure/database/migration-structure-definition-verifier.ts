@@ -484,7 +484,7 @@ async function collectCheckDefinitionIssues(
     const [table, constraint] = splitKey(key);
     const rows = rowsOf(
       await dataSource.query(
-        `SELECT cc.check_clause
+        `SELECT cc.check_clause, tc.enforced AS enforced
            FROM information_schema.check_constraints cc
            JOIN information_schema.table_constraints tc
              ON tc.constraint_schema = cc.constraint_schema
@@ -499,6 +499,10 @@ async function collectCheckDefinitionIssues(
     if (rows.length === 0) {
       issues.push(`关键 CHECK 定义缺失: ${key}`);
       continue;
+    }
+    const enforced = readString(rows[0], 'enforced').toUpperCase();
+    if (enforced !== 'YES') {
+      issues.push(`关键 CHECK 未强制执行: ${key} enforced=${enforced || '(未知)'}`);
     }
     const actual = normalizeMysqlCheckClauseText(readString(rows[0], 'check_clause'));
     if (normalizeCheckClause(actual) !== normalizeCheckClause(expected.clause)) {

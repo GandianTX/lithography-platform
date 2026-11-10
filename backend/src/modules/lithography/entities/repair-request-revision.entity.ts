@@ -44,10 +44,9 @@ export class RepairRequestRevisionEntity {
     name: 'previous_version',
     type: 'int',
     unsigned: true,
-    nullable: true,
-    comment: '该修订比较/基于的上一生效修订号；0=首版；NULL=历史无法证明',
+    comment: '该修订比较/基于的上一生效修订号；0=首版；后续=实际基版本',
   })
-  previousVersion!: number | null;
+  previousVersion!: number;
 
   @Column({ name: 'before_snapshot', type: 'longtext', comment: '修订前完整快照 JSON' })
   beforeSnapshot!: string;

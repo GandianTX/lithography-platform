@@ -18,6 +18,7 @@ export interface BootstrapAccountFacts {
   readonly accessGroup: unknown;
   readonly metaDigest: unknown;
   readonly userState: string | null;
+  readonly loginEmail: string | null;
 }
 
 export interface BootstrapMembershipRow {
@@ -68,6 +69,7 @@ export async function loadBootstrapAccount(
         a.\`id\`,
         a.\`admin_level\`,
         a.\`identity_hint\`,
+        a.\`login_email\`,
         a.\`status\` AS \`account_status\`,
         i.\`id\` AS \`info_id\`,
         i.\`customer_organization_id\`,
@@ -88,6 +90,7 @@ export async function loadBootstrapAccount(
     readonly id: number;
     readonly admin_level: number | null;
     readonly identity_hint: string | null;
+    readonly login_email: string | null;
     readonly account_status: string;
     readonly info_id: number | null;
     readonly customer_organization_id: number | null;
@@ -106,7 +109,47 @@ export async function loadBootstrapAccount(
     accessGroup: parseJsonColumn(row.access_group),
     metaDigest: row.meta_digest,
     userState: row.user_state,
+    loginEmail: row.login_email ?? null,
   };
+}
+
+/**
+ * 既有账号的映射邮箱核对。
+ *
+ * - 映射未提供邮箱时不改写、不接管；
+ * - 邮箱已归另一账号时整批失败；
+ * - 映射邮箱与既有邮箱不一致时明确拒绝，绝不静默覆盖或错误返回 UNCHANGED。
+ */
+export async function assertExistingAccountLoginEmail(
+  manager: EntityManager,
+  loginName: string,
+  configuredEmail: string | null,
+  existingEmail: string | null,
+): Promise<void> {
+  if (configuredEmail === null) {
+    return;
+  }
+  const ownerRows: unknown = await manager.query(
+    'SELECT `login_name` FROM `base_user_account` WHERE `login_email` = ? LIMIT 1 FOR UPDATE',
+    [configuredEmail],
+  );
+  if (Array.isArray(ownerRows) && ownerRows.length > 0) {
+    const owner = (ownerRows[0] as { readonly login_name?: unknown }).login_name;
+    if (owner !== loginName) {
+      throw new Error(
+        `账号 ${loginName} 的映射邮箱 ${configuredEmail} 已被账号 ` +
+          `${typeof owner === 'string' ? owner : '(未知)'} 占用，拒绝初始化`,
+      );
+    }
+  }
+  const sameEmail =
+    existingEmail !== null && existingEmail.toLowerCase() === configuredEmail.toLowerCase();
+  if (!sameEmail) {
+    throw new Error(
+      `账号 ${loginName} 既有邮箱 ${existingEmail ?? '(空)'} 与映射邮箱 ` +
+        `${configuredEmail} 不一致，拒绝覆盖或接管`,
+    );
+  }
 }
 
 export async function loadActiveMembership(
