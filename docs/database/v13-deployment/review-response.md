@@ -600,6 +600,72 @@
 - 本轮未 commit、未 push、未回复 PR、未合并；未重跑完整单测、接口、真实登录、前端、Redis、Worker
   或完整业务 core。
 
+## 第 55 轮专项：零命中对照的执行者恢复与两档完整实库复跑（2026-11-11）
+
+- 冻结与实例：HEAD `1a1676ba57f15dba2fe18eceae3688af4e7aef82`、分支 `feat/database-v13-deploy`、
+  3 个 stash 保持、暂存区为空。工作区改动仅 2 个文件：本轮目标规格
+  `backend/src/infrastructure/database/e2e-scoped-cleanup.v13.realdb.spec.ts`（SHA-256
+  `0b75d74494f75952cedd1780ec4b1b1cc99249b4ab71f15ec70e9ad1abad20f2`），以及第 54 轮已存在、
+  本轮未触碰的 `v13-authoritative-config.spec.ts` 格式改动。44 条迁移、Entity、业务接口与目标库守卫
+  均无改动（迁移目录 `git status` 为 0，相关守卫/Entity 无差异）。仅使用既有专用实例
+  `127.0.0.1:3307`、UUID `32aab37e-dd78-11f1-a06e-00e0709ef3a9`、datadir
+  `/tmp/v13-f1f3-1794364374/data/`、账号 `v13_test`、库 `v13_accept_test`。该实例在第 54 轮结束后已停止，
+  本轮以同一 datadir 与同一参数重启（UUID、datadir 未变），未连接共享 3306、Redis、审查方实例或事故现场。
+- 代码修复（仅零命中对照用例及其离线决策函数）：
+  - 执行者前置 `UPDATE` 与被测 `UPDATE` 的结果、恢复责任分开登记：前置分类为 `applied`
+    后立刻登记 `threadId/connectionId/processlistUser/expectedInstrumented`，早于任何读回或断言。
+  - 被测 `UPDATE` 命中 0 行时不执行被测路径的恢复写入；先读回并断言 `NO`，保留
+    “未覆盖另一连接写入”的证据；被测恢复次数固定为 0。
+  - 取证后在独立 `finally` 中，仅由已登记责任的执行者按线程身份与预期当前值条件恢复；
+    精确命中并读回 `YES` 后才普通 `release()`；证据断言失败不阻止执行者恢复。
+  - 前置命中 0 行/结果未知（未登记责任）或恢复失败时：置位套件级拦截并销毁本轮两个独占
+    `QueryRunner`，不退回普通 `release()`，不销毁共享 `DataSource`/连接池；主错误与收尾错误分别保留。
+- 新增离线覆盖（同文件，无需数据库）：`registerThreadStopExecutorRecovery` 与
+  `planZeroHitControlSettlement` 纯决策函数，覆盖“前置 1 行 + 被测 0 行”（被测恢复 0 次、
+  执行者确认后普通释放、不拦截）、“前置 0 行或未知”（不登记、不发恢复写入、销毁且保持拦截）、
+  “线程事实不完整不登记”与“恢复失败销毁、不回池、保持拦截”。
+  `npx jest src/infrastructure/database/e2e-scoped-cleanup.v13.realdb.spec.ts --runInBand`：
+  `1 suite passed`、`8 passed / 20 skipped / 28 total`，退出码 0（新增 4 条离线用例）。
+  `npx tsc -p tsconfig.json --noEmit` 退出码 0；该文件 `npx eslint` 0 error / 10 warning
+  （全为既有 `max-depth`，其中 1 条为本次收尾嵌套深度 6，未新增 error）。
+- 实库两档（各自独立 Jest 进程、正式入口、无 `-t` 过滤；入口先以相同配置运行 `--listTests` 并
+  机器核对集合，3 个文件：`v13-d3-constraint-acceptance.realdb.spec.ts`、
+  `e2e-scoped-cleanup.v13.realdb.spec.ts`、`e2e-owned-fixture.e2e-spec.ts`，日志均含
+  `listTests 集合校验通过`）。共同前置环境：
+  `V13_AUTHORITATIVE_SPECS=1 V13_SPEC_GROUP=delivery`、`V13_SPEC_CONFIG_FILE=<runner-test.env>`、
+  `V13_SPEC_TARGET_DB=v13_accept_test`、`V13_SPEC_SERVER_UUID=32aab37e-…`、
+  `E2E_ALLOW_PHYSICAL_CLEANUP=1`、`V13_SPEC_INJECTION_PROFILE=fault`、`V13_SPEC_ISOLATED_INSTANCE=1`，
+  命令为 `npx ts-node -r tsconfig-paths/register test/run-v13-authoritative-spec.ts delivery`：
+
+  | 档 | 附加变量 | passed / failed / skipped | 退出码 | 结论 |
+  | --- | --- | --- | --- | --- |
+  | fault + UNKNOWN | `V13_SPEC_INSTRUMENT_FAULT_CASE=UNKNOWN` | 80 / 0 / 2（82） | 0 | 零命中对照先通过，随后 UNKNOWN 同进程执行并通过 |
+  | fault + ASSERT-AFTER | `V13_SPEC_INSTRUMENT_FAULT_CASE=ASSERT-AFTER` | 80 / 0 / 2（82） | 0 | 零命中对照先通过，随后 ASSERT-AFTER 同进程执行并通过 |
+
+  - 两档各 2 条 skipped 固定为：未选中的另一停采故障档、`R02-CONFLICT`（fault 档明确关闭第二连接）。
+    实际执行序列：`✓ INSTRUMENT 仅停采测试连接` → `✓ INSTRUMENT 另一连接先停采` →
+    `✓ INSTRUMENT 首次停采结果未知`（UNKNOWN 档）/ `✓ INSTRUMENT 首次停采成功后受控断言失败`
+    （ASSERT-AFTER 档）；两档日志均无 `线程采集状态未确认`（`beforeEach` 拦截）输出。
+  - 两次写入的责任证据（两档原文一致）：`被测路径未认领恢复责任：条件 UPDATE 命中 0 行，
+    本轮未成功写入，不恢复也不认领他人状态；前置停采=applied；被测恢复 UPDATE 0 次`；
+    `保留第三连接停采状态（未覆盖另一连接写入）：thread_id=61/74 connection_id=24/37 instrumented=NO`；
+    `执行者恢复确认：… instrumented=YES；允许普通释放连接`。即前置 `UPDATE` 命中 1 行、被测 `UPDATE`
+    命中 0 行，被测恢复 0 次、执行者恢复 1 次并读回 YES。
+  - UNKNOWN 档目标用例证据：`受控未知结果：首次停采结果未知：thread_id=63 connection_id=26…`、
+    `未知结果保留现场：… instrumented=NO`；ASSERT-AFTER 档目标用例证据：
+    `断言失败后恢复计划：本轮条件 UPDATE 明确命中 1 行，按登记事实恢复`。两档均未置位拦截，
+    后续用例未被 `beforeEach` 拦截或跳过。
+- 保留与基线（不写成零残留）：fault 档会执行 `FAULT-UPDATE 实际恢复冲突`，每档按设计保留 1 行
+  冲突 `local_backup_run`（UNKNOWN 档 `backup_run_id=46`、ASSERT-AFTER 档 `backup_run_id=50`，
+  均 `status=SUCCEEDED`、`finished_at=2001-02-03 04:05:06.007`）。运行前库内已有 6 行历史保留
+  （id 8/9/13/21/25/42），两档后共 8 行，每档净增 1 行且均为套件级保留；两档各自 `R09` 均通过
+  “除套件保留外 17 表零残留”，未宣称整库零残留。
+- 实例收尾核对：进程退出后 `v13_test` 仅有核对用 CLI 连接（`INSTRUMENTED=YES`），无 `INSTRUMENTED='NO'`
+  活动线程；`events_transactions_current` 的 `ACTIVE` 计数为 0；`migrations` 仍为 44 条。
+- 本轮未单独重跑 `check:*`、接口或完整业务 core；两档即规定的完整 delivery 文件集合
+  （含 D3 约束规格），未额外启动其他检查。未 commit、未 push、未回复 PR、未合并。
+  临时日志位于 `/tmp/v13-p55-unknown.log`、`/tmp/v13-p55-assert-after.log`，不入库。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。

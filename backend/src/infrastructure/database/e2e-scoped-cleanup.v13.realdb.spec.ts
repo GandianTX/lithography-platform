@@ -211,6 +211,87 @@ interface ExecutorCasRestore {
   readonly parameters: unknown[];
 }
 
+/**
+ * 零命中对照的执行者恢复责任。
+ *
+ * 只由“执行者前置条件 UPDATE 明确命中 1 行”登记；0 行、结果未知或线程事实不完整
+ * 时一律不登记，绝不按当前线程状态猜测归属。
+ */
+interface ThreadStopExecutorRecovery {
+  readonly threadId: number;
+  readonly connectionId: number;
+  readonly processlistUser: string;
+  readonly expectedInstrumented: string;
+}
+
+const registerThreadStopExecutorRecovery = (params: {
+  readonly decision: ThreadInstrumentationWriteDecision | null;
+  readonly threadId: number;
+  readonly connectionId: number;
+  readonly processlistUser: string;
+  readonly expectedInstrumented: string;
+}): ThreadStopExecutorRecovery | undefined => {
+  if (params.decision?.shouldRestore !== true) {
+    return undefined;
+  }
+  if (
+    params.threadId <= 0 ||
+    params.connectionId <= 0 ||
+    params.processlistUser === '' ||
+    params.expectedInstrumented === ''
+  ) {
+    return undefined;
+  }
+  return {
+    threadId: params.threadId,
+    connectionId: params.connectionId,
+    processlistUser: params.processlistUser,
+    expectedInstrumented: params.expectedInstrumented,
+  };
+};
+
+interface ZeroHitSettlement {
+  readonly release: boolean;
+  readonly destroy: boolean;
+  readonly blockInjection: boolean;
+  readonly reason: string;
+}
+
+/**
+ * 零命中对照的连接收尾决策（纯函数，不执行 I/O）。
+ *
+ * - 未登记执行者恢复责任：不写恢复 UPDATE，拦截后续注入并销毁本轮独占连接；
+ * - 已登记但恢复/读回未确认：同样拦截并销毁，禁止带停采状态普通回池；
+ * - 恢复精确命中且读回期望值：普通释放，不拦截。
+ */
+const planZeroHitControlSettlement = (params: {
+  readonly executorRecoveryRegistered: boolean;
+  readonly restoreConfirmed: boolean;
+}): ZeroHitSettlement => {
+  if (!params.executorRecoveryRegistered) {
+    return {
+      release: false,
+      destroy: true,
+      blockInjection: true,
+      reason: '未登记执行者恢复责任：不发恢复写入，拦截后续注入并销毁本轮独占连接',
+    };
+  }
+  if (!params.restoreConfirmed) {
+    return {
+      release: false,
+      destroy: true,
+      blockInjection: true,
+      reason: '执行者恢复未确认：拦截后续注入并销毁本轮独占连接',
+    };
+  }
+  return {
+    release: true,
+    destroy: false,
+    blockInjection: false,
+    reason: '执行者恢复精确命中并读回期望值：普通释放连接',
+  };
+};
+
 const messageOf = (error: unknown): string => {
   if (error instanceof AggregateError) {
     return `${error.message}: ${error.errors.map(messageOf).join(' | ')}`;
@@ -3291,12 +3372,16 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       let threadId = 0;
       let connectionId = 0;
       let processlistUser = '';
+      let originalInstrumented!: string;
       /**
-       * P1：恢复责任只由首次条件 UPDATE 的分类结果决定，并在任何断言之前登记。
-       * 0 行或结果未知时保持现状，不认领其他执行方写入的状态；后续断言失败也不改变已登记事实。
+       * 恢复责任分开登记：
+       * - 执行者前置 UPDATE 的 1 行结果 => `executorRecovery`（本轮唯一恢复义务）；
+       * - 被测 UPDATE 的 0 行结果 => 不恢复、不认领，只保留“未覆盖另一连接写入”的证据。
+       * 两类结果在任何读回或断言之前分别登记，后续断言失败也不改变已登记事实。
        */
       let preconditionDecision: ThreadInstrumentationWriteDecision | null = null;
       let stopDecision: ThreadInstrumentationWriteDecision | null = null;
+      let executorRecovery: ThreadStopExecutorRecovery | undefined;
       let primaryError: unknown;
       let deferredSecondaryError: Error | undefined;
       const conditionalStopSql = `UPDATE performance_schema.threads
@@ -3311,18 +3396,26 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         await otherRunner.connect();
         const original = await readObservationThreadState(targetRunner);
         expect(original.instrumented).toBe('YES');
+        originalInstrumented = original.instrumented;
         threadId = original.threadId;
         connectionId = original.connectionId ?? 0;
         processlistUser = original.processlistUser;
         expect(connectionId).toBeGreaterThan(0);
 
         // 受控第三连接先成功停采目标线程；这是前置事实，不是本轮被测路径的恢复责任。
-        // 结果在任何断言或读回之前登记，后续断言失败也不会改变已登记的连接状态。
+        // 命中 1 行后立即登记执行者恢复责任，早于任何读回或断言。
         preconditionDecision = classifyThreadInstrumentationWrite(
           await otherRunner.query(conditionalStopSql, [threadId, connectionId, processlistUser]),
         );
+        executorRecovery = registerThreadStopExecutorRecovery({
+          decision: preconditionDecision,
+          threadId,
+          connectionId,
+          processlistUser,
+          expectedInstrumented: originalInstrumented,
+        });
         expect(preconditionDecision.outcome).toBe('applied');
-        expect(preconditionDecision.shouldRestore).toBe(true);
+        expect(executorRecovery).toBeDefined();
 
         // 被测路径的首次条件 UPDATE：目标已被第三连接置 NO，因此必须 0 行。
         // 分类结果在任何断言之前登记；0 行 => 本轮不认领恢复责任。
@@ -3339,7 +3432,14 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         expect(stopDecision.outcome).toBe('not-applied');
         expect(stopDecision.shouldRestore).toBe(false);
 
-        // 被测路径未成功写入，目标线程必须保持第三连接设置的 NO，不能被反向恢复为 YES。
+        // 被测路径未成功写入：恢复计划必须是 keep（被测恢复 UPDATE 0 次）。
+        expect(
+          planThreadInstrumentationRecovery({
+            stopDecision,
+            threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
+          }).action,
+        ).toBe('keep');
+        // 直接证据：被测路径没有覆盖第三连接写入的 NO，也不能反向恢复为 YES。
         expect((await readObservationThreadState(targetRunner)).instrumented).toBe('NO');
       } catch (error) {
         primaryError = error;
@@ -3347,58 +3447,92 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       } finally {
         let evidenceError: unknown;
         let recoveryError: Error | undefined;
-        let connectionStateConfirmed = false;
-        let restorePlanKeep = false;
+        let restoreConfirmed = false;
         try {
-          // 证据断言不得与连接收尾共用一个失败边界：证据失败也必须执行收尾。
-          const recovery = planThreadInstrumentationRecovery({
+          // 证据阶段：被测路径的 0 行结果只保留现场，不写恢复 UPDATE，不认领他人修改。
+          const testedPlan = planThreadInstrumentationRecovery({
             stopDecision,
             threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
           });
-          // 0 行或结果未知都只保持现状：不写恢复 UPDATE，不认领他人修改。
-          expect(recovery.action).toBe('keep');
-          restorePlanKeep = true;
+          expect(testedPlan.action).toBe('keep');
           console.warn(
-            `[S4-E/INSTRUMENT] 未登记恢复责任：${recovery.reason}；` +
-              `前置停采=${preconditionDecision?.outcome ?? '未执行'}`,
+            `[S4-E/INSTRUMENT] 被测路径未认领恢复责任：${testedPlan.reason}；` +
+              `前置停采=${preconditionDecision?.outcome ?? '未执行'}；被测恢复 UPDATE 0 次`,
           );
 
           // 直接证据（先于任何收尾）：被测 finally 结束后，第三连接设置的 NO 仍保留。
           const retained = await readObservationThreadState(targetRunner);
           expect(retained.instrumented).toBe('NO');
           console.warn(
-            `[S4-E/INSTRUMENT] 保留第三连接停采状态：thread_id=${threadId} ` +
-              `connection_id=${connectionId} instrumented=${retained.instrumented}`,
+            `[S4-E/INSTRUMENT] 保留第三连接停采状态（未覆盖另一连接写入）：` +
+              `thread_id=${threadId} connection_id=${connectionId} instrumented=${retained.instrumented}`,
           );
         } catch (error) {
           evidenceError = error;
         } finally {
-          // 恢复责任与连接状态分开判定：只有独立读回确认目标线程为 YES 才允许普通 release()。
-          // 确认 NO 或无法确认时，先置位套件级拦截，再销毁本轮独占连接，不销毁共享池。
-          try {
-            const observed = await readObservationThreadState(targetRunner);
-            connectionStateConfirmed = observed.instrumented === 'YES';
-            if (!connectionStateConfirmed) {
-              console.error(
-                `[S4-E/INSTRUMENT] 目标线程未确认恢复：instrumented=${observed.instrumented}；` +
-                  '先置位拦截再销毁本轮独占连接',
-              );
+          // 独立恢复边界：即使证据断言失败，执行者也必须履行已登记的恢复责任。
+          // 未登记责任（前置 0 行/未知/事实不全）时不发恢复写入，交由下方销毁与拦截。
+          if (executorRecovery !== undefined) {
+            try {
+              await restoreObservationThread(targetRunner, {
+                threadId: executorRecovery.threadId,
+                connectionId: executorRecovery.connectionId,
+                processlistUser: executorRecovery.processlistUser,
+                originalInstrumented: executorRecovery.expectedInstrumented,
+              });
+              const restored = await readObservationThreadState(targetRunner);
+              restoreConfirmed = restored.instrumented === executorRecovery.expectedInstrumented;
+              if (!restoreConfirmed) {
+                recoveryError = new Error(
+                  `执行者恢复未确认：期望 ${executorRecovery.expectedInstrumented}，` +
+                    `实际 ${restored.instrumented}；停止后续注入`,
+                );
+              } else {
+                console.info(
+                  `[S4-E/INSTRUMENT] 执行者恢复确认：thread_id=${executorRecovery.threadId} ` +
+                    `connection_id=${executorRecovery.connectionId} ` +
+                    `instrumented=${restored.instrumented}；允许普通释放连接`,
+                );
+              }
+            } catch (error) {
+              recoveryError =
+                error instanceof Error
+                  ? error
+                  : new Error(`执行者恢复异常：${String(error)}；停止后续注入`);
+              console.error(`[S4-E/INSTRUMENT] 执行者恢复失败：${recoveryError.message}`);
             }
-          } catch (error) {
-            recoveryError = new Error(
-              `线程停采连接状态无法确认：${messageOf(error)}；停止后续注入并销毁本轮独占连接`,
-            );
-            console.error(`[S4-E/INSTRUMENT] ${recoveryError.message}`);
+          } else {
+            console.warn('[S4-E/INSTRUMENT] 前置停采未登记恢复责任：不发恢复写入，保持现场');
+          }
+
+          const settlement = planZeroHitControlSettlement({
+            executorRecoveryRegistered: executorRecovery !== undefined,
+            restoreConfirmed,
+          });
+          if (settlement.blockInjection) {
+            // 前置 0 行/未知或恢复失败：先置位套件级拦截，再销毁本轮独占连接。
+            instrumentInjectionBlocked = true;
+            const message =
+              `${settlement.reason}；前置停采=${preconditionDecision?.outcome ?? '未执行'}；` +
+              `执行者恢复=${
+                executorRecovery === undefined ? '未登记' : restoreConfirmed ? '已确认' : '未确认'
+              }`;
+            if (recoveryError === undefined) {
+              recoveryError = new Error(message);
+            } else {
+              console.error(`[S4-E/INSTRUMENT] ${message}`);
+            }
           }
           const exclusiveRunners = [
             { runner: targetRunner, label: 'S4-E 被测停采连接' },
             { runner: otherRunner, label: 'S4-E 前置停采连接' },
           ] as const;
-          if (connectionStateConfirmed) {
+          if (settlement.release) {
+            // 执行者恢复精确命中并读回 YES 后才允许普通 release()。
             for (const { runner, label } of exclusiveRunners) {
-              const settlement = await settleExclusiveQueryRunner({ runner, label });
-              if (settlement.errors.length > 0) {
-                const message = settlement.errors.join('；');
+              const settled = await settleExclusiveQueryRunner({ runner, label });
+              if (settled.errors.length > 0) {
+                const message = settled.errors.join('；');
                 if (recoveryError === undefined) {
                   recoveryError = new Error(message);
                 } else {
@@ -3407,9 +3541,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               }
             }
           } else {
-            // 读回为 NO 或无法确认：先置位套件级拦截，再销毁本轮独占连接，禁止普通 release。
-            // 销毁失败也不解除拦截、不退回普通释放，只追加收尾错误。
-            instrumentInjectionBlocked = true;
+            // 销毁失败也不解除拦截、不退回普通释放，也不销毁共享池，只追加收尾错误。
             const destroyedLabels: string[] = [];
             for (const { runner, label } of exclusiveRunners) {
               const outcome = await destroyExclusiveQueryRunner(runner);
@@ -3426,8 +3558,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             }
             console.warn(
               `[S4-E/INSTRUMENT] 独占连接销毁完成（未普通回池）：` +
-                `${destroyedLabels.join('、') || '无'}；套件级拦截=${String(instrumentInjectionBlocked)}；` +
-                `恢复计划=${restorePlanKeep ? 'keep，恢复 UPDATE 0 次' : '未确认'}`,
+                `${destroyedLabels.join('、') || '无'}；套件级拦截=${String(instrumentInjectionBlocked)}`,
             );
           }
         }
@@ -3853,5 +3984,80 @@ describe('S4-E 目标参数与种子基线校验（离线）', () => {
     expect(() => assertSeedInstallation([{ ...seed, backup_interval_days: 0 }])).toThrow(
       /backup_interval_days/,
     );
+  });
+});
+
+describe('S4-E 零命中对照恢复责任与收尾（离线）', () => {
+  const threadFacts = {
+    threadId: 51,
+    connectionId: 15,
+    processlistUser: 'v13_test',
+    expectedInstrumented: 'YES',
+  };
+
+  it('前置 1 行 + 被测 0 行：只登记执行者责任，被测恢复 0 次，确认后普通释放', () => {
+    const precondition = classifyThreadInstrumentationWrite({ affectedRows: 1 });
+    const tested = classifyThreadInstrumentationWrite({ affectedRows: 0 });
+    const executor = registerThreadStopExecutorRecovery({ decision: precondition, ...threadFacts });
+    expect(executor).toEqual(threadFacts);
+    expect(
+      planThreadInstrumentationRecovery({ stopDecision: tested, threadFactsKnown: true }).action,
+    ).toBe('keep');
+    expect(
+      planZeroHitControlSettlement({
+        executorRecoveryRegistered: executor !== undefined,
+        restoreConfirmed: true,
+      }),
+    ).toEqual({
+      release: true,
+      destroy: false,
+      blockInjection: false,
+      reason: '执行者恢复精确命中并读回期望值：普通释放连接',
+    });
+  });
+
+  it('前置 0 行或结果未知：不登记恢复责任，不发恢复写入，销毁且保持拦截', () => {
+    for (const raw of [{ affectedRows: 0 }, { affectedRows: undefined }, {}]) {
+      const decision = classifyThreadInstrumentationWrite(raw);
+      const executor = registerThreadStopExecutorRecovery({ decision, ...threadFacts });
+      expect(executor).toBeUndefined();
+      expect(
+        planZeroHitControlSettlement({
+          executorRecoveryRegistered: executor !== undefined,
+          restoreConfirmed: false,
+        }),
+      ).toEqual({
+        release: false,
+        destroy: true,
+        blockInjection: true,
+        reason: '未登记执行者恢复责任：不发恢复写入，拦截后续注入并销毁本轮独占连接',
+      });
+    }
+  });
+
+  it('线程事实不完整时不登记执行者恢复责任', () => {
+    const applied = classifyThreadInstrumentationWrite({ affectedRows: 1 });
+    expect(
+      registerThreadStopExecutorRecovery({
+        decision: applied,
+        threadId: 0,
+        connectionId: 15,
+        processlistUser: 'v13_test',
+        expectedInstrumented: 'YES',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('执行者恢复失败：销毁、不回池、保持拦截', () => {
+    const applied = classifyThreadInstrumentationWrite({ affectedRows: 1 });
+    const executor = registerThreadStopExecutorRecovery({ decision: applied, ...threadFacts });
+    const settlement = planZeroHitControlSettlement({
+      executorRecoveryRegistered: executor !== undefined,
+      restoreConfirmed: false,
+    });
+    expect(settlement.release).toBe(false);
+    expect(settlement.destroy).toBe(true);
+    expect(settlement.blockInjection).toBe(true);
+    expect(settlement.reason).toContain('恢复未确认');
   });
 });
