@@ -81,6 +81,10 @@ import {
   ACCOUNT_WRITE_FIXTURE_ENTITIES,
   createTestAccount,
 } from '../../../test/utils/test-accounts';
+import {
+  destroyExclusiveQueryRunner,
+  settleExclusiveQueryRunner,
+} from '../../../test/utils/e2e-owned-fixture';
 
 const REQUESTED = process.env.E2E_REAL_DB_SPECS === '1';
 // RQ6：受控故障注入默认关闭；仅在另行授权时显式开启。
@@ -333,6 +337,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   // RQ6：只有能力预检通过且开始造数后才允许 afterAll 进入清理路径。
   let setupAllowed = false;
   let consumerInjectionBlocked = false;
+  // F3：执行者恢复失败或无法确认时，停止本实例后续线程采集注入。
+  let instrumentInjectionBlocked = false;
 
   const runTag = `${Date.now().toString(36)}${randomUUID().slice(0, 8)}`;
   // `local_installation.installation_id` 由迁移以 `UUID()` 随机生成，每个库不同；
@@ -1555,6 +1561,9 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     if (consumerInjectionBlocked) {
       throw new Error('consumer 状态未确认：已停止本实例上的后续测试及故障注入，等待执行者处置');
     }
+    if (instrumentInjectionBlocked) {
+      throw new Error('线程采集状态未确认：已停止本实例上的后续测试及故障注入，等待执行者处置');
+    }
   });
 
   afterAll(async () => {
@@ -1640,17 +1649,12 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     }
 
     if (observationRunner && !observationRunner.isReleased) {
-      if (observationRunner.isTransactionActive) {
-        try {
-          await observationRunner.rollbackTransaction();
-        } catch (error) {
-          diagnostics.push(new Error('S4-E 观测连接回滚失败', { cause: error }));
-        }
-      }
-      try {
-        await observationRunner.release();
-      } catch (error) {
-        diagnostics.push(new Error('S4-E 观测连接释放失败', { cause: error }));
+      const settlement = await settleExclusiveQueryRunner({
+        runner: observationRunner,
+        label: 'S4-E 观测连接',
+      });
+      for (const message of settlement.errors) {
+        diagnostics.push(new Error(message));
       }
     }
 
@@ -1838,6 +1842,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             });
             // 第一条受控写入由第二连接提交；写入前 expectedFilename 已登记。
             const second = dataSource.createQueryRunner();
+            let secondError: unknown;
+            let secondTeardownFailure: string | undefined;
             try {
               await second.connect();
               await second.startTransaction();
@@ -1847,8 +1853,25 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               ]);
               await second.commitTransaction();
               controlledWriteCommitted = true;
+            } catch (error) {
+              secondError = error;
+              throw error;
             } finally {
-              await second.release();
+              const settlement = await settleExclusiveQueryRunner({
+                runner: second,
+                label: 'R02-CONFLICT 第二连接',
+              });
+              if (settlement.errors.length > 0) {
+                const message = settlement.errors.join('；');
+                if (secondError === undefined) {
+                  secondTeardownFailure = `R02-CONFLICT 第二连接收尾失败：${message}`;
+                } else {
+                  console.error(`[S4-E] R02-CONFLICT 第二连接收尾失败：${message}`);
+                }
+              }
+            }
+            if (secondTeardownFailure !== undefined) {
+              throw new Error(secondTeardownFailure);
             }
             // 登记 CAS 恢复条件（写入值）。
             executorCasRestores.push({
@@ -1863,6 +1886,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             });
             // 另一连接再次提交“仅大小写”变化，CAS 的写入值条件不再字节命中。
             const third = dataSource.createQueryRunner();
+            let thirdError: unknown;
+            let thirdTeardownFailure: string | undefined;
             try {
               await third.connect();
               await third.startTransaction();
@@ -1871,8 +1896,25 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
                 fileId,
               ]);
               await third.commitTransaction();
+            } catch (error) {
+              thirdError = error;
+              throw error;
             } finally {
-              await third.release();
+              const settlement = await settleExclusiveQueryRunner({
+                runner: third,
+                label: 'R02-CONFLICT 第三连接',
+              });
+              if (settlement.errors.length > 0) {
+                const message = settlement.errors.join('；');
+                if (thirdError === undefined) {
+                  thirdTeardownFailure = `R02-CONFLICT 第三连接收尾失败：${message}`;
+                } else {
+                  console.error(`[S4-E] R02-CONFLICT 第三连接收尾失败：${message}`);
+                }
+              }
+            }
+            if (thirdTeardownFailure !== undefined) {
+              throw new Error(thirdTeardownFailure);
             }
 
             await readWithControlledFault('R02-CONFLICT', 'stored-file-snapshot', () =>
@@ -2766,6 +2808,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         if (withConflict) {
           // 受控外部连接改写 finished_at：CAS 必须拒绝覆盖并保留异主值。
           const second = dataSource.createQueryRunner();
+          let secondError: unknown;
+          let secondTeardownFailure: string | undefined;
           try {
             await second.connect();
             await second.startTransaction();
@@ -2774,8 +2818,26 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
               external.backupRunId,
             ]);
             await second.commitTransaction();
+          } catch (error) {
+            secondError = error;
+            throw error;
           } finally {
-            await second.release();
+            // F2：提交失败时事务可能仍活动；先回滚，无法确认则销毁本连接，禁止普通回池。
+            const settlement = await settleExclusiveQueryRunner({
+              runner: second,
+              label: 'FAULT-UPDATE 第二连接',
+            });
+            if (settlement.errors.length > 0) {
+              const message = settlement.errors.join('；');
+              if (secondError === undefined) {
+                secondTeardownFailure = `FAULT-UPDATE 第二连接收尾失败：${message}`;
+              } else {
+                console.error(`[S4-E] FAULT-UPDATE 第二连接收尾失败：${message}`);
+              }
+            }
+          }
+          if (secondTeardownFailure !== undefined) {
+            throw new Error(secondTeardownFailure);
           }
         }
         // 回读只做核验；受控故障在此注入失败，登记已在此之前完成。
@@ -2867,6 +2929,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     'INSTRUMENT 正常活动事务被实际观测，回滚后归零',
     async () => {
       const transactionRunner = dataSource.createQueryRunner();
+      let primaryError: unknown;
+      let teardownFailure: string | undefined;
       try {
         await transactionRunner.connect();
         await transactionRunner.startTransaction();
@@ -2876,11 +2940,25 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           countActiveOwnTransactions((sql) => observationRunner.query(sql)),
         ).resolves.toBe(1);
         await transactionRunner.rollbackTransaction();
+      } catch (error) {
+        primaryError = error;
+        throw error;
       } finally {
-        if (transactionRunner.isTransactionActive) {
-          await transactionRunner.rollbackTransaction();
+        const settlement = await settleExclusiveQueryRunner({
+          runner: transactionRunner,
+          label: 'INSTRUMENT 正常事务连接',
+        });
+        if (settlement.errors.length > 0) {
+          const message = settlement.errors.join('；');
+          if (primaryError === undefined) {
+            teardownFailure = `INSTRUMENT 正常事务连接收尾失败：${message}`;
+          } else {
+            console.error(`[S4-E] INSTRUMENT 正常事务连接收尾失败：${message}`);
+          }
         }
-        await transactionRunner.release();
+      }
+      if (teardownFailure !== undefined) {
+        throw new Error(teardownFailure);
       }
       // 回滚后才允许得到 0；此前 0 不能作为“无活动事务”的证据。
       await expect(countActiveOwnTransactions((sql) => observationRunner.query(sql))).resolves.toBe(
@@ -2961,17 +3039,14 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             consumerInjectionBlocked = true;
             cleanupErrors.push(error);
           }
-          try {
-            if (transactionRunner.isTransactionActive) {
-              await transactionRunner.rollbackTransaction();
-            }
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-          try {
-            await transactionRunner.release();
-          } catch (error) {
-            cleanupErrors.push(error);
+          // F2：按驱动实际事务状态收尾；回滚失败或仍活动时销毁本轮独占连接，
+          // 禁止把带活动事务的连接以普通 release() 回池。
+          const settlement = await settleExclusiveQueryRunner({
+            runner: transactionRunner,
+            label: `consumer ${name} 注入事务`,
+          });
+          for (const message of settlement.errors) {
+            cleanupErrors.push(new Error(message));
           }
         }
         if (cleanupErrors.length > 0) {
@@ -2993,6 +3068,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
 
         // 恢复后：正常事务可见，回滚后归零。
         const verifyRunner = dataSource.createQueryRunner();
+        let verifyError: unknown;
+        let verifyTeardownFailure: string | undefined;
         try {
           await verifyRunner.connect();
           await verifyRunner.startTransaction();
@@ -3001,11 +3078,25 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             countActiveOwnTransactions((sql) => observationRunner.query(sql)),
           ).resolves.toBe(1);
           await verifyRunner.rollbackTransaction();
+        } catch (error) {
+          verifyError = error;
+          throw error;
         } finally {
-          if (verifyRunner.isTransactionActive) {
-            await verifyRunner.rollbackTransaction();
+          const settlement = await settleExclusiveQueryRunner({
+            runner: verifyRunner,
+            label: `consumer ${name} 验证事务`,
+          });
+          if (settlement.errors.length > 0) {
+            const message = settlement.errors.join('；');
+            if (verifyError === undefined) {
+              verifyTeardownFailure = `consumer ${name} 验证事务收尾失败：${message}`;
+            } else {
+              console.error(`[S4-E] consumer ${name} 验证事务收尾失败：${message}`);
+            }
           }
-          await verifyRunner.release();
+        }
+        if (verifyTeardownFailure !== undefined) {
+          throw new Error(verifyTeardownFailure);
         }
         await expect(
           countActiveOwnTransactions((sql) => observationRunner.query(sql)),
@@ -3155,12 +3246,38 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             console.error('[S4-E/INSTRUMENT] 停采结果未知：保留现场并诊断，不执行自动恢复');
           }
         } catch (error) {
+          instrumentInjectionBlocked = true;
           restoreError =
             error instanceof Error
               ? error
               : new Error(`线程停采恢复异常：${String(error)}；停止后续写入`);
         } finally {
-          await stoppedRunner.release();
+          // F3/F2：恢复失败或结果未知时，停采连接不得以普通 release() 回池。
+          if (restoreError !== undefined || injectionOutcome === 'unknown') {
+            instrumentInjectionBlocked = true;
+            const outcome = await destroyExclusiveQueryRunner(stoppedRunner);
+            if (!outcome.destroyed) {
+              const message = `S4-E 停采连接销毁未完成：${outcome.reason ?? '未知原因'}`;
+              if (restoreError === undefined) {
+                restoreError = new Error(message);
+              } else {
+                console.error(message);
+              }
+            }
+          } else {
+            const settlement = await settleExclusiveQueryRunner({
+              runner: stoppedRunner,
+              label: 'S4-E 停采连接',
+            });
+            if (settlement.errors.length > 0) {
+              const message = settlement.errors.join('；');
+              if (restoreError === undefined) {
+                restoreError = new Error(message);
+              } else {
+                console.error(message);
+              }
+            }
+          }
         }
       }
       if (restoreError !== undefined) {
@@ -3184,6 +3301,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
        * 0 行或结果未知时保持现状，不认领其他执行方写入的状态；后续断言失败也不改变已登记事实。
        */
       let stopDecision: ThreadInstrumentationWriteDecision | null = null;
+      let primaryError: unknown;
+      let deferredSecondaryError: Error | undefined;
       const conditionalStopSql = `UPDATE performance_schema.threads
           SET INSTRUMENTED = 'NO'
         WHERE THREAD_ID = ?
@@ -3226,8 +3345,15 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
 
         // 被测路径未成功写入，目标线程必须保持第三连接设置的 NO，不能被反向恢复为 YES。
         expect((await readObservationThreadState(targetRunner)).instrumented).toBe('NO');
+      } catch (error) {
+        primaryError = error;
+        throw error;
       } finally {
+        let evidenceError: unknown;
+        let recoveryError: Error | undefined;
+        let recoveryConfirmed = false;
         try {
+          // 证据断言不得与执行者恢复共用一个失败边界：证据失败也必须执行恢复。
           const recovery = planThreadInstrumentationRecovery({
             stopDecision,
             threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
@@ -3242,20 +3368,91 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
             `[S4-E/INSTRUMENT] 保留第三连接停采状态：thread_id=${threadId} ` +
               `connection_id=${connectionId} instrumented=${retained.instrumented}`,
           );
-
-          // 独立执行者收尾：按已核验事实恢复原值，避免停采连接回流连接池影响后续观测。
-          // 这是测试执行者在保存证据后的精确收尾，不是被测路径 finally 的恢复写入。
-          await restoreObservationThread(targetRunner, {
-            threadId,
-            connectionId,
-            processlistUser,
-            originalInstrumented,
-          });
-          expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
+        } catch (error) {
+          evidenceError = error;
         } finally {
-          await targetRunner.release();
-          await otherRunner.release();
+          try {
+            // 独立执行者收尾：按已核验事实恢复原值，避免停采连接回流连接池影响后续观测。
+            // 这是测试执行者在保存证据后的精确收尾，不是被测路径 finally 的恢复写入。
+            await restoreObservationThread(targetRunner, {
+              threadId,
+              connectionId,
+              processlistUser,
+              originalInstrumented,
+            });
+            const restored = await readObservationThreadState(targetRunner);
+            if (restored.instrumented !== 'YES') {
+              instrumentInjectionBlocked = true;
+              recoveryError = new Error(
+                `执行者恢复未确认：期望 YES，实际 ${restored.instrumented}；停止后续注入`,
+              );
+              console.error(`[S4-E/INSTRUMENT] 执行者恢复失败：${recoveryError.message}`);
+            } else {
+              recoveryConfirmed = true;
+            }
+          } catch (error) {
+            instrumentInjectionBlocked = true;
+            recoveryError =
+              error instanceof Error
+                ? error
+                : new Error(`执行者恢复异常：${String(error)}；停止后续注入`);
+            console.error(`[S4-E/INSTRUMENT] 执行者恢复失败：${recoveryError.message}`);
+          } finally {
+            // F3/F2：恢复未确认时销毁本轮独占停采连接，禁止普通回池。
+            if (!recoveryConfirmed) {
+              const outcome = await destroyExclusiveQueryRunner(targetRunner);
+              if (!outcome.destroyed) {
+                const message = `S4-E 被测停采连接销毁未完成：${outcome.reason ?? '未知原因'}`;
+                if (recoveryError === undefined) {
+                  recoveryError = new Error(message);
+                } else {
+                  console.error(message);
+                }
+              }
+            } else {
+              const settlement = await settleExclusiveQueryRunner({
+                runner: targetRunner,
+                label: 'S4-E 被测停采连接',
+              });
+              if (settlement.errors.length > 0) {
+                const message = settlement.errors.join('；');
+                if (recoveryError === undefined) {
+                  recoveryError = new Error(message);
+                } else {
+                  console.error(message);
+                }
+              }
+            }
+            const otherSettlement = await settleExclusiveQueryRunner({
+              runner: otherRunner,
+              label: 'S4-E 前置停采连接',
+            });
+            if (otherSettlement.errors.length > 0) {
+              const message = otherSettlement.errors.join('；');
+              if (recoveryError === undefined) {
+                recoveryError = new Error(message);
+              } else {
+                console.error(message);
+              }
+            }
+          }
         }
+
+        // 主错误优先；证据/恢复错误在无主错误时抛出，否则保留到输出，避免互相覆盖。
+        const secondary = evidenceError ?? recoveryError;
+        if (secondary !== undefined) {
+          if (primaryError === undefined) {
+            deferredSecondaryError =
+              secondary instanceof Error
+                ? secondary
+                : new Error(`执行者收尾失败：${messageOf(secondary)}`);
+          } else {
+            console.error(`[S4-E/INSTRUMENT] 主错误之外的收尾失败：${messageOf(secondary)}`);
+          }
+        }
+      }
+      if (deferredSecondaryError !== undefined) {
+        throw deferredSecondaryError;
       }
       await assertNoActiveTransactions();
     },
@@ -3265,13 +3462,27 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     'INSTRUMENT 首次停采结果未知：保留 NO 现场且 finally 不恢复，由独立执行者收尾',
     async () => {
       const targetRunner = dataSource.createQueryRunner();
-      let threadId: number;
-      let connectionId: number;
-      let processlistUser: string;
-      let originalInstrumented: string;
+      let threadId!: number;
+      let connectionId!: number;
+      let processlistUser!: string;
+      let originalInstrumented!: string;
       let stopDecision: ThreadInstrumentationWriteDecision | null = null;
       let testedPathRestored = false;
-      let observedAfterKeep: string;
+      let observedAfterKeep!: string;
+      /**
+       * F3：执行者的恢复责任必须在收到真实 affectedRows=1 之后、任何后续读取或断言之前登记。
+       * 被测 UNKNOWN 路径本身仍保持“不自动恢复”，二者失败边界相互独立，不得混淆。
+       */
+      let executorRecovery:
+        | {
+            readonly threadId: number;
+            readonly connectionId: number;
+            readonly processlistUser: string;
+            readonly expectedInstrumented: string;
+          }
+        | undefined;
+      let primaryError: unknown;
+      let deferredSecondaryError: Error | undefined;
       const conditionalStopSql = `UPDATE performance_schema.threads
           SET INSTRUMENTED = 'NO'
         WHERE THREAD_ID = ?
@@ -3279,8 +3490,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           AND PROCESSLIST_USER = ?
           AND TYPE = 'FOREGROUND'
           AND UPPER(INSTRUMENTED) = 'YES'`;
-      await targetRunner.connect();
       try {
+        await targetRunner.connect();
         const original = await readObservationThreadState(targetRunner);
         expect(original.instrumented).toBe('YES');
         originalInstrumented = original.instrumented;
@@ -3295,7 +3506,17 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           connectionId,
           processlistUser,
         ]);
-        expect(Number(rawWrite.affectedRows)).toBe(1);
+        const affectedRows = Number(rawWrite?.affectedRows);
+        if (affectedRows === 1) {
+          // 先登记执行者恢复责任（线程、连接、用户、预期恢复值），随后才允许断言或读取。
+          executorRecovery = {
+            threadId,
+            connectionId,
+            processlistUser,
+            expectedInstrumented: originalInstrumented,
+          };
+        }
+        expect(affectedRows).toBe(1);
         try {
           stopDecision = classifyThreadInstrumentationWrite({ affectedRows: undefined });
           if (stopDecision.outcome !== 'unknown') {
@@ -3314,6 +3535,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           expect(failureMessage).toContain(`user=${processlistUser}`);
           console.warn(`[S4-E/INSTRUMENT] 受控未知结果：${failureMessage}`);
         } finally {
+          // 被测 UNKNOWN 路径的 finally：只按分类结果决策，保持现场，不执行恢复。
           const recovery = planThreadInstrumentationRecovery({
             stopDecision,
             threadFactsKnown: threadId > 0 && connectionId > 0 && processlistUser !== '',
@@ -3337,17 +3559,95 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         // 直接证据：被测 finally 没有恢复，未知结果下的 NO 仍保留。
         expect(testedPathRestored).toBe(false);
         expect(observedAfterKeep).toBe('NO');
-
-        // 独立执行者依据“本轮确实命中 1 行”的注入事实精确收尾，避免停采连接回流连接池。
-        await restoreObservationThread(targetRunner, {
-          threadId,
-          connectionId,
-          processlistUser,
-          originalInstrumented,
-        });
-        expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
+      } catch (error) {
+        primaryError = error;
+        throw error;
       } finally {
-        await targetRunner.release();
+        let evidenceError: unknown;
+        let recoveryError: Error | undefined;
+        // 未登记恢复责任（真实 affectedRows≠1）时无需执行者恢复。
+        let recoveryConfirmed = executorRecovery === undefined;
+        try {
+          // 证据断言与执行者恢复分离：证据失败也必须执行恢复。
+          expect(testedPathRestored).toBe(false);
+          const retained = await readObservationThreadState(targetRunner);
+          expect(retained.instrumented).toBe('NO');
+        } catch (error) {
+          evidenceError = error;
+        } finally {
+          try {
+            // 独立执行者恢复：按已登记线程、连接、用户与预期状态精确执行，并核对读回。
+            if (executorRecovery !== undefined) {
+              await restoreObservationThread(targetRunner, {
+                threadId: executorRecovery.threadId,
+                connectionId: executorRecovery.connectionId,
+                processlistUser: executorRecovery.processlistUser,
+                originalInstrumented: executorRecovery.expectedInstrumented,
+              });
+              const restored = await readObservationThreadState(targetRunner);
+              if (restored.instrumented !== executorRecovery.expectedInstrumented) {
+                instrumentInjectionBlocked = true;
+                recoveryError = new Error(
+                  `执行者恢复未确认：期望 ${executorRecovery.expectedInstrumented}，` +
+                    `实际 ${restored.instrumented}；停止后续注入`,
+                );
+                console.error(`[S4-E/INSTRUMENT] 执行者恢复失败：${recoveryError.message}`);
+              }
+            }
+            if (recoveryError === undefined) {
+              recoveryConfirmed = true;
+            }
+          } catch (error) {
+            instrumentInjectionBlocked = true;
+            recoveryError =
+              error instanceof Error
+                ? error
+                : new Error(`执行者恢复异常：${String(error)}；停止后续注入`);
+            console.error(`[S4-E/INSTRUMENT] 执行者恢复失败：${recoveryError.message}`);
+          } finally {
+            // F3/F2：恢复未确认时销毁本轮独占停采连接，禁止带活动事务或停采状态普通回池。
+            if (!recoveryConfirmed) {
+              const outcome = await destroyExclusiveQueryRunner(targetRunner);
+              if (!outcome.destroyed) {
+                const message = `S4-E 被测停采连接销毁未完成：${outcome.reason ?? '未知原因'}`;
+                if (recoveryError === undefined) {
+                  recoveryError = new Error(message);
+                } else {
+                  console.error(message);
+                }
+              }
+            } else {
+              const settlement = await settleExclusiveQueryRunner({
+                runner: targetRunner,
+                label: 'S4-E 被测停采连接',
+              });
+              if (settlement.errors.length > 0) {
+                const message = settlement.errors.join('；');
+                if (recoveryError === undefined) {
+                  recoveryError = new Error(message);
+                } else {
+                  console.error(message);
+                }
+              }
+            }
+          }
+        }
+
+        // 主错误优先；证据/恢复错误在无主错误时抛出，否则保留到输出，避免互相覆盖。
+        const secondary = evidenceError ?? recoveryError;
+        if (secondary !== undefined) {
+          if (primaryError === undefined) {
+            deferredSecondaryError =
+              secondary instanceof Error
+                ? secondary
+                : new Error(`执行者收尾失败：${messageOf(secondary)}`);
+          } else {
+            console.error(`[S4-E/INSTRUMENT] 主错误之外的收尾失败：${messageOf(secondary)}`);
+          }
+        }
+      }
+      if (deferredSecondaryError !== undefined) {
+        throw deferredSecondaryError;
       }
       await assertNoActiveTransactions();
     },
@@ -3363,6 +3663,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       let originalInstrumented = '';
       let stopDecision: ThreadInstrumentationWriteDecision | null = null;
       let restoredInFinally = false;
+      let primaryError: unknown;
+      let teardownFailure: string | undefined;
       const conditionalStopSql = `UPDATE performance_schema.threads
           SET INSTRUMENTED = 'NO'
         WHERE THREAD_ID = ?
@@ -3414,8 +3716,26 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         expect(messageOf(failure)).toContain('__CONTROLLED_ASSERTION_FAILURE__:INSTRUMENT');
         expect(restoredInFinally).toBe(true);
         expect((await readObservationThreadState(targetRunner)).instrumented).toBe('YES');
+      } catch (error) {
+        primaryError = error;
+        throw error;
       } finally {
-        await targetRunner.release();
+        // F2：按驱动实际事务状态收尾；无法确认时销毁本轮独占连接，禁止普通回池。
+        const settlement = await settleExclusiveQueryRunner({
+          runner: targetRunner,
+          label: 'INSTRUMENT 断言失败连接',
+        });
+        if (settlement.errors.length > 0) {
+          const message = settlement.errors.join('；');
+          if (primaryError === undefined) {
+            teardownFailure = `INSTRUMENT 断言失败连接收尾失败：${message}`;
+          } else {
+            console.error(`[S4-E] INSTRUMENT 断言失败连接收尾失败：${message}`);
+          }
+        }
+      }
+      if (teardownFailure !== undefined) {
+        throw new Error(teardownFailure);
       }
       await assertNoActiveTransactions();
     },
