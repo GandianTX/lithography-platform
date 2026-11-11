@@ -526,6 +526,80 @@
   `v13_test` 无停采线程；44 条迁移与候选源码 SHA-256 复核未变。
 - 本轮未 commit、未 push、未回复 PR、未合并；仅依据上述证据判断是否具备提交条件。
 
+## 第 54 轮专项复查：恢复责任与连接状态分离（2026-11-11）
+
+- 冻结与实例：HEAD `754ebf987a5e4f051bd48e1e8071cf2d890e72ec`（与预期一致）、分支
+  `feat/database-v13-deploy`、3 个 stash 保持、暂存区为空；44 条迁移逐文件 SHA-256 与第 53 轮一致，
+  聚合值仍为 `72dc3718fba8fd350beda73477a811d4de96c907eb9c3d117eaaff495ce99eb9`；
+  未改前 44 条迁移、Entity、业务接口与目标库守卫。仅使用既有专用实例 `127.0.0.1:3307`，
+  UUID `32aab37e-dd78-11f1-a06e-00e0709ef3a9`，datadir `/tmp/v13-f1f3-1794364374/data/`，账号 `v13_test`；
+  未连接共享 3306、Redis、审查方实例或事故现场。`v13-authoritative-config.spec.ts` 的既有格式改动保留，
+  本轮未触碰。
+- 修改的源码文件（仅 1 个）：`backend/src/infrastructure/database/e2e-scoped-cleanup.v13.realdb.spec.ts`
+  （SHA-256 `6e0575de229f9b68c3e93fc4eae68431b3437d74aac2e3ef9d209ad389617ec5`）；
+  验收记录仅改本文件。核对：本文与命令中均未出现 `UEKNOWN` 拼写，实际启用档位为
+  `V13_SPEC_INSTRUMENT_FAULT_CASE=UNKNOWN`（见下方各档命令与日志首行过滤器），不存在拼写差异。
+  - 零命中：前置停采结果在任何断言/读回前登记；本轮 0 行不写恢复 UPDATE，不认领他人状态；
+    连接状态独立读回，只有 YES 才按现有受保护收尾普通 release；**读回 NO 或无法确认时先置位
+    套件级拦截，再销毁本轮两个独占连接，禁止普通 release；销毁失败也不解除拦截、不退回普通释放**。
+    不为让同进程其他反例继续执行而放宽拦截。
+  - UNKNOWN：未登记恢复责任不再等同于可回池；独立读回只有 YES 才普通 release，NO 或读回失败
+    一律置位拦截并销毁；执行者明确收到 1 行时按登记事实恢复并读回。
+  - ASSERT-AFTER：原断言、恢复与销毁错误分别保留，多错误以 `AggregateError` 首行同时给出
+    `原断言=`、`恢复=`、`销毁=` 具体原因；恢复抛错或读回未确认时外层不再普通 release。
+  - 同专项同模式：`INSTRUMENT 仅停采测试连接` 改为仅“明确 applied 且恢复无错”才 release，
+    0 行/未知/恢复失败一律销毁并置位拦截；未扩大修改范围。
+- 离线替身（`/tmp/v13-recheck-thread.cjs`，及仅调整命中行数的 `-zero-applied` 变体）逐条断言，退出码均 0：
+  - `zero`：`restores=0`、`DESTROY×2`、无 `POOL_RELEASE`、`blocked=true`。
+  - `zero-applied`（前置命中 1 行、本轮命中 0 行）：`STOP`、`restores=0`、`DESTROY×2`、无 `POOL_RELEASE`、`blocked=true`。
+  - `lost`（UNKNOWN 回执丢失）：`restores=0`、`DESTROY`、无 `POOL_RELEASE`、`blocked=true`。
+  - `restore`（ASSERT-AFTER 主断言失败且恢复抛错）：首行同时含
+    `原断言=expect(received).toBe(expected) // Object.is equality` 与 `恢复=RESTORE_FAILED`；
+    `DESTROY`、无 `POOL_RELEASE`、`blocked=true`。
+  - `read` / `assert`（正常对照）：`RESTORE` 后读回 YES 才 `POOL_RELEASE YES`，`blocked=false`。
+- 静态与离线回归：`npx tsc -p tsconfig.json --noEmit` 退出 0；该文件 `npx eslint` 0 error /
+  9 warning（全为既有 `max-depth`，HEAD 基线 12 warning），退出 0；`npx jest
+  src/infrastructure/database/e2e-scoped-cleanup.v13.realdb.spec.ts --runInBand` 4 passed /
+  20 skipped，退出 0。
+- 临时源码副本实库验证（`/tmp/v13-recheck-1794367212/backend`，该文件与工作区 SHA-256 一致
+  `6e0575de…`；配置 `/tmp/v13-f1f3-1794364374/runner-test.env`，库 `v13_accept_test`，
+  实例 `127.0.0.1:3307` / `32aab37e-dd78-11f1-a06e-00e0709ef3a9`）。
+  分进程入口为副本内 `test/tmp-p54-filtered-run.ts`（复用正式入口的 `buildEnvironment` 与
+  文件集合，仅追加 Jest `-t` 名称过滤；不入库），日志在 `evidence/p54-p*.log`：
+
+  | 档 | 命令要点 | passed / failed / skipped | 退出码 | 结论 |
+  | --- | --- | --- | --- | --- |
+  | P1 零命中 + 同进程下一条注入用例 | `V13_SPEC_INJECTION_PROFILE=fault`、`V13_SPEC_INSTRUMENT_FAULT_CASE=UNKNOWN`、`-t 'INSTRUMENT 另一连接先停采\|INSTRUMENT 首次停采结果未知'` | 1 / 1 / 76（78） | 1 | 零命中用例通过；UNKNOWN 被 `beforeEach` 实际拦截，属预期失败，不计作通过 |
+  | P2 UNKNOWN（独立进程） | 同上，`-t 'INSTRUMENT 首次停采结果未知'` | 1 / 0 / 77（78） | 0 | 通过；执行者恢复读回 YES 后普通释放 |
+  | P3 ASSERT-AFTER（独立进程） | `V13_SPEC_INSTRUMENT_FAULT_CASE=ASSERT-AFTER`、`-t 'INSTRUMENT 首次停采成功后受控断言失败'` | 1 / 0 / 77（78） | 0 | 通过；恢复读回 YES 后普通释放 |
+  | P4 正常对照（normal） | `V13_SPEC_INJECTION_PROFILE=normal`、`-t 'INSTRUMENT 仅停采测试连接'` | 1 / 0 / 77（78） | 0 | 通过；`original=YES injected=NO`，恢复读回 YES 后普通释放，未置位拦截 |
+  | P5 默认交付档 | 无 `V13_SPEC_INJECTION_PROFILE`（默认 `none`）、正式入口 `npx ts-node test/run-v13-authoritative-spec.ts delivery`、无 `-t` | 68 / 0 / 10（78） | 0 | 通过；**默认交付档（未启用停采注入）**，不称为 normal 注入档 |
+
+  - P1 证据原文：`未登记恢复责任：条件 UPDATE 命中 0 行，本轮未成功写入，不恢复也不认领他人状态；前置停采=applied`；
+    `保留第三连接停采状态：thread_id=51 connection_id=15 instrumented=NO`；
+    `目标线程未确认恢复：instrumented=NO；先置位拦截再销毁本轮独占连接`；
+    `独占连接销毁完成（未普通回池）：S4-E 被测停采连接、S4-E 前置停采连接；套件级拦截=true；恢复计划=keep，恢复 UPDATE 0 次`；
+    随后同一进程选中的 UNKNOWN 用例在 `beforeEach` 处失败：
+    `线程采集状态未确认：已停止本实例上的后续测试及故障注入，等待执行者处置`
+    （`e2e-scoped-cleanup.v13.realdb.spec.ts:1565`）。
+  - P2 证据原文：`受控未知结果：首次停采结果未知：thread_id=55 connection_id=19 user=v13_test…`；
+    `未知结果保留现场：…；instrumented=NO`；无“执行者恢复失败”输出，未置位拦截。
+  - P3 证据原文：`断言失败后恢复计划：本轮条件 UPDATE 明确命中 1 行，按登记事实恢复`；未置位拦截。
+  - P4 证据原文：`thread_id=61 connection_id=25 original=YES injected=NO`；未置位拦截。
+- 连接事件（进程退出后由独立连接核对 `performance_schema.threads`）：
+  - P1 的 `thread_id=51`（connection 15）与同轮第二独占连接属销毁档，退出后无记录，记录为“线程消失”，
+    不写成“恢复为 YES”。
+  - P2 `thread_id=55`（connection 19）、P4 `thread_id=61`（connection 25）在进程内读回 YES 后才普通释放；
+    退出后同样无记录，记录为“线程消失”，不据此宣称“恢复为 YES”。
+  - 核对时实例当前最大 `THREAD_ID=75`，上述线程号未被复用；无 `INSTRUMENTED='NO'` 的活动线程，
+    无本账号活动事务。
+- 作废运行：一次 `delivery` conflict profile 跑在遗留库 `v13_accept` 上，为“套件级拦截”最终调整前的
+  中间版本，且库名不含 test/dev/local/drill 被 D3 守卫拒绝（1 failed / 75 passed / 2 skipped，退出 1），
+  另有同库遗留数据导致 R04/R06/R09 失败；另有一次旧版外部脚本用 `ts-node register` 载入入口时
+  编译失败（`TS5011`），未执行任何用例。两者均不作为本轮验收结论，已被上面的分进程运行取代。
+- 本轮未 commit、未 push、未回复 PR、未合并；未重跑完整单测、接口、真实登录、前端、Redis、Worker
+  或完整业务 core。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。
