@@ -4125,9 +4125,17 @@ export interface ColumnDefinition {
  * CHECK 约束表达式契约。clause 使用与迁移 DDL 一致的文本，
  * 校验时按 token 规范化后比较，保留字符串字面量、JSON 路径与括号优先级。
  */
-export interface CheckDefinition {
+export interface CheckStageDefinition {
   readonly since: number;
   readonly clause: string;
+}
+
+export interface CheckDefinition extends CheckStageDefinition {
+  /**
+   * 早期阶段有效定义，按 since 升序排列；当前 since/clause 为最新阶段。
+   * 仅登记确有表达式变化的阶段，用于旧前缀按旧定义校验、终态按最新定义校验。
+   */
+  readonly stages?: ReadonlyArray<CheckStageDefinition>;
 }
 
 /**
@@ -5865,9 +5873,16 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
       "WHEN `closure_status` = 'OPEN' THEN `closed_at` IS NULL " +
       "WHEN `closure_status` = 'CLOSED' THEN `closed_at` IS NOT NULL " +
       'ELSE FALSE END) = TRUE',
+    stages: [
+      {
+        since: 1775501100000,
+        clause:
+          "(`closure_status` IS NULL AND `closed_at` IS NULL) OR (`closure_status` = 'OPEN' AND `closed_at` IS NULL) OR (`closure_status` = 'CLOSED' AND `closed_at` IS NOT NULL)",
+      },
+    ],
   },
   'repair_request.chk_repair_request_closure_reason': {
-    since: 1775501900000,
+    since: 1775501100000,
     clause:
       '(`is_historical` = 1 OR `handling_result` IS NULL ' +
       "OR `handling_result` NOT IN ('INTERRUPTED', 'UNREPAIRABLE') " +
@@ -5919,6 +5934,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'backup_restore_run.chk_backup_restore_run_status': {
     since: 1775501900000,
     clause: "(`status` IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED'))",
+    stages: [
+      {
+        since: 1775501500000,
+        clause: "`status` IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED')",
+      },
+    ],
   },
   'backup_restore_run.chk_backup_restore_run_finish': {
     since: 1775501900000,
@@ -5926,10 +5947,23 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
       "((`status` = 'PENDING' AND `started_at` IS NULL AND `finished_at` IS NULL) " +
       "OR (`status` = 'RUNNING' AND `started_at` IS NOT NULL AND `finished_at` IS NULL) " +
       "OR (`status` IN ('SUCCEEDED', 'FAILED', 'INTERRUPTED') AND `finished_at` IS NOT NULL))",
+    stages: [
+      {
+        since: 1775501500000,
+        clause:
+          "(`status` = 'RUNNING' AND `finished_at` IS NULL) OR (`status` <> 'RUNNING' AND `finished_at` IS NOT NULL)",
+      },
+    ],
   },
   'backup_restore_run.chk_backup_restore_run_protection': {
     since: 1775501900000,
     clause: '(`protection_backup_id` IS NULL OR `protection_backup_id` <> `backup_id`)',
+    stages: [
+      {
+        since: 1775501500000,
+        clause: '`backup_id` <> `protection_backup_id`',
+      },
+    ],
   },
   'backup_restore_run.chk_backup_restore_run_execution_guard': {
     since: 1775501900000,
@@ -5981,6 +6015,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
     since: 1775502000000,
     clause:
       "(`operation` IN ('ADMIN_DELETE_DOCUMENT', 'CORRECT_DOCUMENT_OWNERSHIP', 'RESTORE_LOCAL_BUSINESS'))",
+    stages: [
+      {
+        since: 1775501500000,
+        clause: "`operation` IN ('MANAGE_ACCOUNT', 'ASSIGN_RESOURCE', 'MANAGE_COMPANY')",
+      },
+    ],
   },
   'sync_conflict.chk_sync_conflict_versions': {
     since: 1775502000000,
@@ -5997,6 +6037,13 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
     since: 1775501100000,
     clause:
       "(`status` = 'ACTIVE' AND `ai_feedback` IS NULL AND `completed_at` IS NULL) OR (`status` = 'COMPLETED' AND `ai_feedback` IS NOT NULL AND CHAR_LENGTH(TRIM(`ai_feedback`)) > 0 AND `completed_at` IS NOT NULL)",
+    stages: [
+      {
+        since: 1775201100000,
+        clause:
+          "(`status` = 'ACTIVE' AND `completed_at` IS NULL) OR (`status` = 'COMPLETED' AND `ai_feedback` IS NOT NULL AND CHAR_LENGTH(TRIM(`ai_feedback`)) > 0 AND `completed_at` IS NOT NULL)",
+      },
+    ],
   },
   'ai_conversation.chk_ai_conversation_content_version': {
     since: 1775501100000,
@@ -6050,7 +6097,14 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'backup_restore_run.chk_backup_restore_run_schema': {
     since: 1775501600000,
     clause:
-      "JSON_VALID(`check_snapshot`) AND JSON_EXTRACT(`check_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`check_snapshot`, '$.schema_version')) <> 'NULL'",
+      "(json_valid(`check_snapshot`) and (json_extract(`check_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`check_snapshot`,'$.schema_version')) <> 'NULL'))",
+    stages: [
+      {
+        since: 1775501500000,
+        clause:
+          "JSON_VALID(`check_snapshot`) AND JSON_EXTRACT(`check_snapshot`, '$.schema_version') IS NOT NULL",
+      },
+    ],
   },
   'base_user_account.chk_base_user_account_admin_level': {
     since: 1775501000000,
@@ -6082,6 +6136,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'local_backup_run.chk_local_backup_run_trigger': {
     since: 1775501100000,
     clause: "`trigger_type` IN ('SCHEDULED', 'MANUAL', 'AUTO', 'RETRY', 'USB_EXPORT')",
+    stages: [
+      {
+        since: 1775401400000,
+        clause: "`trigger_type` IN ('SCHEDULED', 'MANUAL', 'USB_EXPORT')",
+      },
+    ],
   },
   'local_company_setting.chk_local_company_setting_current': {
     since: 1775501400000,
@@ -6120,9 +6180,16 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
     since: 1775501100000,
     clause:
       "`ai_correctness` IS NULL OR `ai_correctness` IN ('CORRECT', 'PARTIAL', 'INCORRECT', 'UNKNOWN')",
+    stages: [
+      {
+        since: 1775401200000,
+        clause:
+          "`ai_correctness` IS NULL OR `ai_correctness` IN ('CORRECT', 'PARTIAL', 'INCORRECT')",
+      },
+    ],
   },
   'maintenance_report.chk_maintenance_report_ai_helpfulness': {
-    since: 1775501800000,
+    since: 1775401200000,
     clause: '`ai_helpfulness` IS NULL OR `ai_helpfulness` BETWEEN 1 AND 5',
   },
   'maintenance_report.chk_maintenance_report_closure_reason': {
@@ -6142,11 +6209,24 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'maintenance_report.chk_maintenance_report_status': {
     since: 1775501100000,
     clause: "`status` IN ('DRAFT', 'SUBMITTED', 'PENDING_REVIEW', 'RETURNED', 'APPROVED')",
+    stages: [
+      {
+        since: 1775401200000,
+        clause: "`status` IN ('DRAFT', 'PENDING_REVIEW', 'RETURNED', 'APPROVED')",
+      },
+    ],
   },
   'maintenance_report.chk_maintenance_report_status_consistency': {
     since: 1775501100000,
     clause:
       "(`status` = 'DRAFT' AND `current_version_no` = 0 AND `last_submitted_at` IS NULL AND `last_reviewed_at` IS NULL) OR (`status` IN ('SUBMITTED', 'PENDING_REVIEW') AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NULL) OR (`status` IN ('RETURNED', 'APPROVED') AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NOT NULL)",
+    stages: [
+      {
+        since: 1775401200000,
+        clause:
+          "(`status` = 'DRAFT' AND `current_version_no` = 0 AND `last_submitted_at` IS NULL AND `last_reviewed_at` IS NULL) OR (`status` = 'PENDING_REVIEW' AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NULL) OR (`status` IN ('RETURNED', 'APPROVED') AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NOT NULL)",
+      },
+    ],
   },
   'maintenance_report.chk_maintenance_report_submission_pair': {
     since: 1775501100000,
@@ -6191,6 +6271,13 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
     since: 1775501700000,
     clause:
       "JSON_VALID(`manifest_json`) AND JSON_EXTRACT(`manifest_json`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`manifest_json`, '$.schema_version')) <> 'NULL' AND CHAR_LENGTH(`manifest_checksum`) = 64",
+    stages: [
+      {
+        since: 1775501400000,
+        clause:
+          "JSON_VALID(`manifest_json`) AND JSON_EXTRACT(`manifest_json`, '$.schema_version') IS NOT NULL AND CHAR_LENGTH(`manifest_checksum`) = 64",
+      },
+    ],
   },
   'record_package_import.chk_record_package_import_status': {
     since: 1775501400000,
@@ -6213,6 +6300,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'record_package_item.chk_record_package_item_result': {
     since: 1775501700000,
     clause: "`result` IS NULL OR `result` IN ('SUCCEEDED', 'FAILED', 'SKIPPED', 'CONFLICT')",
+    stages: [
+      {
+        since: 1775501400000,
+        clause: "`result` IN ('SUCCEEDED', 'FAILED', 'SKIPPED')",
+      },
+    ],
   },
   'reference_document_revision.chk_reference_document_revision_no': {
     since: 1775501300000,
@@ -6225,7 +6318,14 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'reference_document_revision.chk_reference_document_revision_schema': {
     since: 1775501600000,
     clause:
-      "JSON_VALID(`before_snapshot`) AND JSON_VALID(`after_snapshot`) AND JSON_EXTRACT(`before_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`before_snapshot`, '$.schema_version')) <> 'NULL' AND JSON_EXTRACT(`after_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`after_snapshot`, '$.schema_version')) <> 'NULL'",
+      "(json_valid(`before_snapshot`) and json_valid(`after_snapshot`) and (json_extract(`before_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`before_snapshot`,'$.schema_version')) <> 'NULL') and (json_extract(`after_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`after_snapshot`,'$.schema_version')) <> 'NULL'))",
+    stages: [
+      {
+        since: 1775501300000,
+        clause:
+          "JSON_VALID(`before_snapshot`) AND JSON_VALID(`after_snapshot`) AND JSON_EXTRACT(`before_snapshot`, '$.schema_version') IS NOT NULL AND JSON_EXTRACT(`after_snapshot`, '$.schema_version') IS NOT NULL",
+      },
+    ],
   },
   'reference_document.chk_reference_document_content_source_v13': {
     since: 1775501100000,
@@ -6236,6 +6336,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
     since: 1775501100000,
     clause:
       "`ingest_method` IN ('ADMIN_DIRECT', 'REVIEWED_SUBMISSION', 'SYSTEM_IMPORT', 'DIRECT_SUBMISSION')",
+    stages: [
+      {
+        since: 1775301900000,
+        clause: "`ingest_method` IN ('ADMIN_DIRECT', 'REVIEWED_SUBMISSION', 'SYSTEM_IMPORT')",
+      },
+    ],
   },
   'reference_document.chk_reference_document_ownership': {
     since: 1775501100000,
@@ -6290,7 +6396,14 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'repair_request_revision.chk_repair_request_revision_schema': {
     since: 1775501600000,
     clause:
-      "`schema_version` >= 1 AND JSON_VALID(`before_snapshot`) AND JSON_VALID(`after_snapshot`) AND JSON_EXTRACT(`before_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`before_snapshot`, '$.schema_version')) <> 'NULL' AND JSON_EXTRACT(`after_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`after_snapshot`, '$.schema_version')) <> 'NULL' AND JSON_EXTRACT(`before_snapshot`, '$.schema_version') = `schema_version` AND JSON_EXTRACT(`after_snapshot`, '$.schema_version') = `schema_version`",
+      "((`schema_version` >= 1) and json_valid(`before_snapshot`) and json_valid(`after_snapshot`) and (json_extract(`before_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`before_snapshot`,'$.schema_version')) <> 'NULL') and (json_extract(`after_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`after_snapshot`,'$.schema_version')) <> 'NULL') and (json_extract(`before_snapshot`,'$.schema_version') = `schema_version`) and (json_extract(`after_snapshot`,'$.schema_version') = `schema_version`))",
+    stages: [
+      {
+        since: 1775501300000,
+        clause:
+          "`schema_version` >= 1 AND JSON_VALID(`before_snapshot`) AND JSON_VALID(`after_snapshot`) AND JSON_EXTRACT(`before_snapshot`, '$.schema_version') = `schema_version` AND JSON_EXTRACT(`after_snapshot`, '$.schema_version') = `schema_version`",
+      },
+    ],
   },
   'repair_request.chk_repair_request_current_revision': {
     since: 1775501100000,
@@ -6338,7 +6451,14 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'sync_conflict.chk_sync_conflict_schema': {
     since: 1775501600000,
     clause:
-      "JSON_VALID(`local_snapshot`) AND JSON_VALID(`cloud_snapshot`) AND JSON_EXTRACT(`local_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`local_snapshot`, '$.schema_version')) <> 'NULL' AND JSON_EXTRACT(`cloud_snapshot`, '$.schema_version') IS NOT NULL AND JSON_TYPE(JSON_EXTRACT(`cloud_snapshot`, '$.schema_version')) <> 'NULL'",
+      "(json_valid(`local_snapshot`) and json_valid(`cloud_snapshot`) and (json_extract(`local_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`local_snapshot`,'$.schema_version')) <> 'NULL') and (json_extract(`cloud_snapshot`,'$.schema_version') is not null) and (json_type(json_extract(`cloud_snapshot`,'$.schema_version')) <> 'NULL'))",
+    stages: [
+      {
+        since: 1775501400000,
+        clause:
+          "JSON_VALID(`local_snapshot`) AND JSON_VALID(`cloud_snapshot`) AND JSON_EXTRACT(`local_snapshot`, '$.schema_version') IS NOT NULL AND JSON_EXTRACT(`cloud_snapshot`, '$.schema_version') IS NOT NULL",
+      },
+    ],
   },
   'sync_conflict.chk_sync_conflict_status': {
     since: 1775501400000,
@@ -6355,6 +6475,382 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'sync_receipt.chk_sync_receipt_status': {
     since: 1775501400000,
     clause: "`receipt_status` IN ('PENDING', 'SUCCEEDED', 'FAILED', 'CONFLICT')",
+  },
+  // 继承 CHECK 精确定义（由前 44 条迁移创建，按创建阶段登记；后续替换项见 stages）。
+  'ai_message.chk_ai_message_turn': {
+    since: 1775201200000,
+    clause: '(`turn_no` IS NULL OR `turn_no` BETWEEN 1 AND 100)',
+  },
+  'content_submission_attachment.chk_content_submission_attachment_retire_consistency': {
+    since: 1775301500000,
+    clause:
+      "((`status` = 'CURRENT' AND `retired_at` IS NULL) OR (`status` = 'RETIRED' AND `retired_at` IS NOT NULL))",
+  },
+  'content_submission_attachment.chk_content_submission_attachment_status': {
+    since: 1775301500000,
+    clause: "`status` IN ('CURRENT', 'RETIRED')",
+  },
+  'content_submission_review.chk_content_submission_review_comment': {
+    since: 1775301700000,
+    clause:
+      "(`decision` <> 'RETURN' OR (`comment` IS NOT NULL AND CHAR_LENGTH(TRIM(`comment`)) > 0))",
+  },
+  'content_submission_review.chk_content_submission_review_decision': {
+    since: 1775301700000,
+    clause: "`decision` IN ('RETURN', 'APPROVE')",
+  },
+  'content_submission_review.chk_content_submission_review_publish_flag': {
+    since: 1775301700000,
+    clause: "(`decision` <> 'RETURN' OR `publish_attachment` = 0)",
+  },
+  'content_submission_revision.chk_content_submission_revision_no': {
+    since: 1775301600000,
+    clause: '`revision_no` >= 1',
+  },
+  'content_submission_revision.chk_content_submission_revision_notice': {
+    since: 1775301600000,
+    clause: 'CHAR_LENGTH(TRIM(`notice_version`)) > 0',
+  },
+  'content_submission_revision.chk_content_submission_revision_title': {
+    since: 1775301600000,
+    clause: 'CHAR_LENGTH(TRIM(`title_snapshot`)) > 0',
+  },
+  'content_submission.chk_content_submission_kind': {
+    since: 1775301200000,
+    clause: "`submission_kind` IN ('MATERIAL', 'FAULT_CASE')",
+  },
+  'content_submission.chk_content_submission_publish_consistency': {
+    since: 1775301200000,
+    clause:
+      "((`status` = 'PUBLISHED' AND `published_at` IS NOT NULL) OR (`status` <> 'PUBLISHED' AND `published_at` IS NULL))",
+  },
+  'content_submission.chk_content_submission_revision_consistency': {
+    since: 1775301200000,
+    clause:
+      "((`status` = 'DRAFT' AND `current_revision_no` = 0 AND `last_submitted_at` IS NULL) OR (`status` <> 'DRAFT' AND `current_revision_no` >= 1 AND `last_submitted_at` IS NOT NULL))",
+  },
+  'content_submission.chk_content_submission_status': {
+    since: 1775301200000,
+    clause: "`status` IN ('DRAFT', 'PENDING_REVIEW', 'RETURNED', 'PUBLISHED')",
+  },
+  'engineer_registration_application.chk_engineer_registration_application_pending_review': {
+    since: 1775401500000,
+    clause:
+      "((`status` = 'PENDING' AND `reviewed_by_account_id` IS NULL AND `reviewed_at` IS NULL AND `review_comment` IS NULL) OR (`status` <> 'PENDING'))",
+  },
+  'engineer_registration_application.chk_engineer_registration_application_reject_comment': {
+    since: 1775401500000,
+    clause:
+      "(`status` <> 'REJECTED' OR (`review_comment` IS NOT NULL AND CHAR_LENGTH(TRIM(`review_comment`)) > 0))",
+  },
+  'engineer_registration_application.chk_engineer_registration_application_review_time': {
+    since: 1775401500000,
+    clause: '(`reviewed_at` IS NULL OR `reviewed_at` >= `submitted_at`)',
+  },
+  'engineer_registration_application.chk_engineer_registration_application_reviewed': {
+    since: 1775401500000,
+    clause:
+      "((`status` = 'PENDING') OR (`reviewed_by_account_id` IS NOT NULL AND `reviewed_at` IS NOT NULL))",
+  },
+  'engineer_registration_application.chk_engineer_registration_application_status': {
+    since: 1775401500000,
+    clause: "`status` IN ('PENDING', 'APPROVED', 'REJECTED')",
+  },
+  'equipment_model.chk_equipment_model_enabled': {
+    since: 1775200900000,
+    clause: '`enabled` IN (0, 1)',
+  },
+  'fault_case_submission_detail.chk_fault_case_submission_detail_handling_status': {
+    since: 1775301400000,
+    clause:
+      "(`handling_status` IS NULL OR `handling_status` IN ('UNRESOLVED', 'IN_PROGRESS', 'RESOLVED'))",
+  },
+  'fault_case_submission_detail.chk_fault_case_submission_detail_model_exclusive': {
+    since: 1775301400000,
+    clause: '(`equipment_model_id` IS NULL OR `equipment_model_text` IS NULL)',
+  },
+  'fault_case_submission_detail.chk_fault_case_submission_detail_resolution': {
+    since: 1775301400000,
+    clause:
+      "(`handling_status` IS NULL OR `handling_status` <> 'RESOLVED' OR (`resolution` IS NOT NULL AND CHAR_LENGTH(TRIM(`resolution`)) > 0))",
+  },
+  'local_backup_run.chk_local_backup_run_finish': {
+    since: 1775401400000,
+    clause:
+      "((`status` = 'RUNNING' AND `finished_at` IS NULL) OR (`status` <> 'RUNNING' AND `finished_at` IS NOT NULL))",
+  },
+  'local_backup_run.chk_local_backup_run_status': {
+    since: 1775401400000,
+    clause: "`status` IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED')",
+  },
+  'local_installation.chk_local_installation_interval': {
+    since: 1775401400000,
+    clause: '`backup_interval_days` >= 1',
+  },
+  'local_installation.chk_local_installation_singleton': {
+    since: 1775401400000,
+    clause: '`id` = 1',
+  },
+  'local_upload_task.chk_local_upload_task_attempt': {
+    since: 1775401400000,
+    clause: '`attempt_count` >= 0',
+  },
+  'local_upload_task.chk_local_upload_task_entity_type': {
+    since: 1775401400000,
+    clause: "`entity_type` IN ('REPORT_VERSION', 'ATTACHMENT', 'BACKUP_MANIFEST')",
+  },
+  'local_upload_task.chk_local_upload_task_error': {
+    since: 1775401400000,
+    clause: "`status` <> 'FAILED' OR (`error_code` IS NOT NULL AND `error_message` IS NOT NULL)",
+  },
+  'local_upload_task.chk_local_upload_task_idempotency': {
+    since: 1775401400000,
+    clause: 'CHAR_LENGTH(TRIM(`idempotency_key`)) > 0',
+  },
+  'local_upload_task.chk_local_upload_task_status': {
+    since: 1775401400000,
+    clause: "`status` IN ('PENDING', 'UPLOADING', 'SUCCEEDED', 'FAILED', 'CANCELLED')",
+  },
+  'local_upload_task.chk_local_upload_task_version': {
+    since: 1775401400000,
+    clause: 'CHAR_LENGTH(TRIM(`entity_version`)) > 0',
+  },
+  'maintenance_report_alarm.chk_maintenance_report_alarm_code': {
+    since: 1775401200000,
+    clause: 'CHAR_LENGTH(TRIM(`alarm_code`)) > 0',
+  },
+  'maintenance_report_alarm.chk_maintenance_report_alarm_index': {
+    since: 1775401200000,
+    clause: '`alarm_index` BETWEEN 1 AND 8',
+  },
+  'maintenance_report_alarm.chk_maintenance_report_alarm_phase': {
+    since: 1775401200000,
+    clause:
+      "`phase_code` IN ('PHASE_01','PHASE_02','PHASE_03','PHASE_04','PHASE_05','PHASE_06','PHASE_07','PHASE_08','PHASE_09','PHASE_10')",
+  },
+  'maintenance_report_alarm.chk_maintenance_report_alarm_reset': {
+    since: 1775401200000,
+    clause: "`reset_result` IN ('RESET_OK', 'RESET_FAILED', 'NOT_ATTEMPTED')",
+  },
+  'maintenance_report_attachment.chk_maintenance_report_attachment_byte_size': {
+    since: 1775401300000,
+    clause: '`byte_size` > 0 AND `byte_size` <= 20971520',
+  },
+  'maintenance_report_attachment.chk_maintenance_report_attachment_filename': {
+    since: 1775401300000,
+    clause: 'CHAR_LENGTH(TRIM(`original_filename`)) > 0',
+  },
+  'maintenance_report_attachment.chk_maintenance_report_attachment_retired': {
+    since: 1775401300000,
+    clause:
+      "((`status` = 'CURRENT' AND `retired_at` IS NULL) OR (`status` = 'RETIRED' AND `retired_at` IS NOT NULL))",
+  },
+  'maintenance_report_attachment.chk_maintenance_report_attachment_sort': {
+    since: 1775401300000,
+    clause: '`sort_order` BETWEEN 1 AND 10',
+  },
+  'maintenance_report_attachment.chk_maintenance_report_attachment_status': {
+    since: 1775401300000,
+    clause: "`status` IN ('CURRENT', 'RETIRED')",
+  },
+  'maintenance_report_attachment.chk_maintenance_report_attachment_storage': {
+    since: 1775401300000,
+    clause: "`storage_backend` IN ('LOCAL', 'OBJECT')",
+  },
+  'maintenance_report_review.chk_maintenance_report_review_comment': {
+    since: 1775401300000,
+    clause: "`decision` = 'APPROVE' OR `comment` IS NOT NULL",
+  },
+  'maintenance_report_review.chk_maintenance_report_review_decision': {
+    since: 1775401300000,
+    clause: "`decision` IN ('APPROVE', 'RETURN')",
+  },
+  'maintenance_report_step.chk_maintenance_report_step_action': {
+    since: 1775401200000,
+    clause: 'CHAR_LENGTH(TRIM(`action_text`)) > 0',
+  },
+  'maintenance_report_step.chk_maintenance_report_step_branch': {
+    since: 1775401200000,
+    clause:
+      '`is_valid_new_branch` IN (0, 1) AND (`is_valid_new_branch` = 0 OR `new_alarm_code` IS NOT NULL)',
+  },
+  'maintenance_report_step.chk_maintenance_report_step_code': {
+    since: 1775401200000,
+    clause: 'CHAR_LENGTH(TRIM(`step_code`)) > 0',
+  },
+  'maintenance_report_step.chk_maintenance_report_step_no': {
+    since: 1775401200000,
+    clause: '`step_no` >= 1',
+  },
+  'maintenance_report_step.chk_maintenance_report_step_phase': {
+    since: 1775401200000,
+    clause:
+      "`phase_code` IN ('PHASE_01','PHASE_02','PHASE_03','PHASE_04','PHASE_05','PHASE_06','PHASE_07','PHASE_08','PHASE_09','PHASE_10')",
+  },
+  'maintenance_report_version_attachment.chk_maintenance_report_version_attachment_publish': {
+    since: 1775401300000,
+    clause: '`publish_flag` IN (0, 1)',
+  },
+  'maintenance_report_version_attachment.chk_maintenance_report_version_attachment_sort': {
+    since: 1775401300000,
+    clause: '`sort_order` BETWEEN 1 AND 10',
+  },
+  'maintenance_report_version.chk_maintenance_report_version_change_kind': {
+    since: 1775401300000,
+    clause: "`change_kind` IN ('SUBMIT', 'FORMAL_CORRECTION')",
+  },
+  'maintenance_report_version.chk_maintenance_report_version_correction_reason': {
+    since: 1775401300000,
+    clause: "`change_kind` = 'SUBMIT' OR `change_reason` IS NOT NULL",
+  },
+  'maintenance_report_version.chk_maintenance_report_version_no': {
+    since: 1775401300000,
+    clause: '`version_no` >= 1',
+  },
+  'maintenance_report_version.chk_maintenance_report_version_payload': {
+    since: 1775401300000,
+    clause: 'JSON_VALID(`payload_snapshot`)',
+  },
+  'maintenance_report_version.chk_maintenance_report_version_schema': {
+    since: 1775401300000,
+    clause: '`schema_version` >= 2',
+  },
+  'maintenance_report.chk_maintenance_report_ai_score': {
+    since: 1775401200000,
+    clause: '`ai_score` IS NULL OR `ai_score` BETWEEN 1 AND 5',
+  },
+  'maintenance_report.chk_maintenance_report_ai_usage': {
+    since: 1775401200000,
+    clause:
+      "((`ai_usage` = 'NOT_USED' AND `ai_source_type` IS NULL AND `ai_source_id` IS NULL AND `ai_source_version` IS NULL AND `ai_score` IS NULL AND `ai_correctness` IS NULL AND `ai_helpfulness` IS NULL AND `ai_note` IS NULL) OR (`ai_usage` = 'USED' AND `ai_source_type` IS NOT NULL AND CHAR_LENGTH(TRIM(`ai_source_type`)) > 0 AND `ai_source_id` IS NOT NULL AND `ai_source_version` IS NOT NULL))",
+  },
+  'maintenance_report.chk_maintenance_report_model_exclusive': {
+    since: 1775401200000,
+    clause: '`equipment_model_id` IS NULL OR `equipment_model_text` IS NULL',
+  },
+  'maintenance_report.chk_maintenance_report_phase_flow': {
+    since: 1775401200000,
+    clause: '`phase_flow_version` >= 1',
+  },
+  'maintenance_report.chk_maintenance_report_request_source': {
+    since: 1775401200000,
+    clause:
+      "((`source_type` = 'WORK_ORDER_SUMMARY' AND `repair_request_id` IS NOT NULL) OR (`source_type` = 'HISTORICAL_CASE' AND `repair_request_id` IS NULL))",
+  },
+  'maintenance_report.chk_maintenance_report_source': {
+    since: 1775401200000,
+    clause: "`source_type` IN ('HISTORICAL_CASE', 'WORK_ORDER_SUMMARY')",
+  },
+  'material_submission_detail.chk_material_submission_detail_model_exclusive': {
+    since: 1775301300000,
+    clause: '(`equipment_model_id` IS NULL OR `equipment_model_text` IS NULL)',
+  },
+  'material_submission_detail.chk_material_submission_detail_type': {
+    since: 1775301300000,
+    clause: "(`document_type` IS NULL OR `document_type` <> 'FAULT_CASE')",
+  },
+  'organization_membership.chk_organization_membership_period': {
+    since: 1775301100000,
+    clause:
+      "((`status` = 'ACTIVE' AND `left_at` IS NULL) OR (`status` = 'LEFT' AND `left_at` IS NOT NULL))",
+  },
+  'organization_membership.chk_organization_membership_status': {
+    since: 1775301100000,
+    clause: "`status` IN ('ACTIVE', 'LEFT')",
+  },
+  'organization_membership.chk_organization_membership_role': {
+    since: 1775401000000,
+    clause: "`member_role` IN ('SUPER_ADMIN', 'ENGINEER', 'CUSTOMER')",
+    stages: [
+      {
+        since: 1775301100000,
+        clause: "`member_role` IN ('SUPER_ADMIN', 'ENGINEER')",
+      },
+    ],
+  },
+  'organization.chk_organization_kind': {
+    since: 1775301000000,
+    clause: "`kind` IN ('CLIENT', 'PEER')",
+  },
+  'organization.chk_organization_status': {
+    since: 1775301000000,
+    clause: "`status` IN ('ACTIVE', 'DISABLED')",
+  },
+  'reference_document_case_detail.chk_reference_document_case_detail_resolution': {
+    since: 1775301800000,
+    clause:
+      "(`handling_status` <> 'RESOLVED' OR (`resolution` IS NOT NULL AND CHAR_LENGTH(TRIM(`resolution`)) > 0))",
+  },
+  'reference_document_case_detail.chk_reference_document_case_detail_status': {
+    since: 1775301800000,
+    clause: "`handling_status` IN ('UNRESOLVED', 'IN_PROGRESS', 'RESOLVED')",
+  },
+  'reference_document.chk_reference_document_deletion_consistency': {
+    since: 1775201500000,
+    clause:
+      '((`deprecated` = 0 AND `deleted_at` IS NULL) OR (`deprecated` = 1 AND `deleted_at` IS NOT NULL))',
+  },
+  'reference_document.chk_reference_document_model_exclusive': {
+    since: 1775301900000,
+    clause: '(`equipment_model_id` IS NULL OR `equipment_model_text` IS NULL)',
+  },
+  'reference_document.chk_reference_document_source_pair': {
+    since: 1775301900000,
+    clause:
+      '((`source_submission_id` IS NULL AND `source_revision_id` IS NULL) OR (`source_submission_id` IS NOT NULL AND `source_revision_id` IS NOT NULL))',
+  },
+  'reference_document.chk_reference_document_storage_pair': {
+    since: 1775201500000,
+    clause:
+      '((`storage_backend` IS NULL AND `storage_reference` IS NULL) OR (`storage_backend` IS NOT NULL AND `storage_reference` IS NOT NULL))',
+  },
+  'repair_request.chk_repair_request_acceptance_consistency': {
+    since: 1775201000000,
+    clause:
+      '((`is_accepted` = 0 AND `accepted_by_engineer_account_id` IS NULL AND `accepted_at` IS NULL) OR (`is_accepted` = 1 AND `accepted_by_engineer_account_id` IS NOT NULL AND `accepted_at` IS NOT NULL))',
+  },
+  'repair_request.chk_repair_request_deletion_consistency': {
+    since: 1775201000000,
+    clause:
+      '((`deprecated` = 0 AND `deleted_at` IS NULL) OR (`deprecated` = 1 AND `deleted_at` IS NOT NULL AND `is_accepted` = 0))',
+  },
+  'repair_request.chk_repair_request_handling_requires_accepted': {
+    since: 1775401100000,
+    clause: '`handling_result` IS NULL OR `is_accepted` = 1',
+  },
+  'repair_request.chk_repair_request_handling_result': {
+    since: 1775401100000,
+    clause:
+      "`handling_result` IS NULL OR `handling_result` IN ('FIXED', 'PART_PURCHASED', 'PROVIDE_PLAN_SELF_EXECUTE', 'INTERRUPTED', 'UNREPAIRABLE')",
+  },
+  'repair_request.chk_repair_request_handling_status': {
+    since: 1775401100000,
+    clause:
+      "`handling_status` IS NULL OR `handling_status` IN ('COMPLETED', 'IN_PROGRESS', 'UNRESOLVED')",
+  },
+  'repair_request.chk_repair_request_handling_mapping': {
+    since: 1775401600000,
+    clause:
+      "(((`handling_result` is null) and (`handling_status` is null)) or ((`handling_result` is not null) and (`handling_status` is not null) and (((`handling_result` = 'FIXED') and (`handling_status` = 'COMPLETED')) or ((`handling_result` = 'PART_PURCHASED') and (`handling_status` = 'COMPLETED')) or ((`handling_result` = 'PROVIDE_PLAN_SELF_EXECUTE') and (`handling_status` = 'COMPLETED')) or ((`handling_result` = 'INTERRUPTED') and (`handling_status` = 'IN_PROGRESS')) or ((`handling_result` = 'UNREPAIRABLE') and (`handling_status` = 'UNRESOLVED')))))",
+    stages: [
+      {
+        since: 1775401100000,
+        clause:
+          "(`handling_result` IS NULL AND `handling_status` IS NULL) OR (`handling_result` = 'FIXED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PART_PURCHASED' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'PROVIDE_PLAN_SELF_EXECUTE' AND `handling_status` = 'COMPLETED') OR (`handling_result` = 'INTERRUPTED' AND `handling_status` = 'IN_PROGRESS') OR (`handling_result` = 'UNREPAIRABLE' AND `handling_status` = 'UNRESOLVED')",
+      },
+    ],
+  },
+  'repair_request.chk_repair_request_handling_time': {
+    since: 1775401600000,
+    clause:
+      "(((`handling_result` is null) and (`handling_status` is null) and (`handling_recorded_at` is null) and (`handling_ended_at` is null)) or ((`handling_result` is not null) and (`handling_status` is not null) and (`handling_recorded_at` is not null) and (((`handling_status` = 'IN_PROGRESS') and (`handling_ended_at` is null)) or ((`handling_status` in ('COMPLETED','UNRESOLVED')) and (`handling_ended_at` is not null)))))",
+    stages: [
+      {
+        since: 1775401100000,
+        clause:
+          "(`handling_result` IS NULL AND `handling_ended_at` IS NULL AND `handling_recorded_at` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_recorded_at` IS NOT NULL AND ((`handling_status` = 'IN_PROGRESS' AND `handling_ended_at` IS NULL) OR (`handling_status` IN ('COMPLETED', 'UNRESOLVED') AND `handling_ended_at` IS NOT NULL)))",
+      },
+    ],
   },
 };
 /* eslint-enable @typescript-eslint/naming-convention */
@@ -6435,12 +6931,15 @@ function requireColumnDefinition(key: string): ColumnDefinition | undefined {
 }
 
 /**
- * 读取 CHECK 表达式定义；登记项必须与 REQUIRED_CHECKS 对应。
+ * 读取 CHECK 表达式定义；缺失/空表达式/非法阶段均属契约缺陷，必须显式停止。
  */
-function requireCheckDefinition(key: string): CheckDefinition | undefined {
+function requireCheckDefinition(key: string): CheckDefinition {
   const definition = CHECK_DEFINITIONS[key];
   if (!definition) {
-    return undefined;
+    throw new Error(`关键 CHECK 缺少表达式定义: ${key}`);
+  }
+  if (typeof definition.since !== 'number') {
+    throw new Error(`关键 CHECK 缺少 since: ${key}`);
   }
   if (typeof definition.clause !== 'string' || definition.clause.trim().length === 0) {
     throw new Error(`关键 CHECK 定义缺少表达式: ${key}`);
@@ -6448,7 +6947,48 @@ function requireCheckDefinition(key: string): CheckDefinition | undefined {
   if (!REQUIRED_CHECKS.some((check) => `${check.table}.${check.constraint}` === key)) {
     throw new Error(`关键 CHECK 定义未在 REQUIRED_CHECKS 登记: ${key}`);
   }
+  const stages = definition.stages;
+  if (stages !== undefined) {
+    if (!Array.isArray(stages) || stages.length === 0) {
+      throw new Error(`关键 CHECK 阶段定义为空: ${key}`);
+    }
+    // Array.isArray 会把只读数组窄化为 any[]；显式回注契约类型，避免动态校验处于 any。
+    const declaredStages = stages as ReadonlyArray<CheckStageDefinition>;
+    let previousSince = 0;
+    for (const stage of declaredStages) {
+      if (typeof stage.since !== 'number' || stage.since <= previousSince) {
+        throw new Error(`关键 CHECK 阶段 since 非递增: ${key}`);
+      }
+      if (stage.since >= definition.since) {
+        throw new Error(`关键 CHECK 阶段 since 不早于终态: ${key}`);
+      }
+      if (typeof stage.clause !== 'string' || stage.clause.trim().length === 0) {
+        throw new Error(`关键 CHECK 阶段缺少表达式: ${key} @ ${stage.since}`);
+      }
+      previousSince = stage.since;
+    }
+  }
   return definition;
+}
+
+/**
+ * 按已执行迁移集合解析 CHECK 在该前缀的有效定义。
+ * stages 登记旧态有效定义，终态 since/clause 为最新阶段。
+ */
+function resolveCheckDefinitionAt(
+  definition: CheckDefinition,
+  executedTimestamps: ReadonlySet<number>,
+): CheckDefinition | undefined {
+  let effective: CheckDefinition | undefined;
+  for (const stage of definition.stages ?? []) {
+    if (executedTimestamps.has(stage.since)) {
+      effective = { since: stage.since, clause: stage.clause };
+    }
+  }
+  if (executedTimestamps.has(definition.since)) {
+    effective = { since: definition.since, clause: definition.clause };
+  }
+  return effective;
 }
 
 /**
@@ -6531,8 +7071,8 @@ export function assertStructureDefinitionsComplete(
   for (const key of Object.keys(COLUMN_DEFINITIONS)) {
     requireColumnDefinition(key);
   }
-  for (const key of Object.keys(CHECK_DEFINITIONS)) {
-    requireCheckDefinition(key);
+  for (const item of REQUIRED_CHECKS) {
+    requireCheckDefinition(`${item.table}.${item.constraint}`);
   }
 }
 
@@ -6609,7 +7149,7 @@ export function collectPrefixStructureRequirements(
       table: item.table,
       name: item.constraint,
       since: requireOwner(CHECK_CREATED_BY, key, 'check'),
-      definition: definition && executedTimestamps.has(definition.since) ? definition : undefined,
+      definition: resolveCheckDefinitionAt(definition, executedTimestamps),
     });
   }
 
@@ -6679,15 +7219,24 @@ export function isStructureOwnedByExecutedMigration(
  * 全部关键结构清单，供最终校验使用（不区分迁移是否已执行）。
  */
 export function collectAllStructureRequirements(): ReadonlyArray<PrefixStructureRequirement> {
-  return collectPrefixStructureRequirements(
-    new Set<number>([
-      ...Object.values(TABLE_CREATED_BY),
-      ...Object.values(INDEX_CREATED_BY),
-      ...Object.values(COLUMN_CREATED_BY),
-      ...Object.values(CHECK_CREATED_BY),
-      ...Object.values(FOREIGN_KEY_CREATED_BY),
-    ]),
-  );
+  const executedTimestamps = new Set<number>([
+    ...Object.values(TABLE_CREATED_BY),
+    ...Object.values(INDEX_CREATED_BY),
+    ...Object.values(COLUMN_CREATED_BY),
+    ...Object.values(CHECK_CREATED_BY),
+    ...Object.values(FOREIGN_KEY_CREATED_BY),
+  ]);
+  // 同名 CHECK 可能在后续迁移替换表达式；终态校验必须包含这些阶段的 since，
+  // 否则会回退到旧阶段并误报终态漂移。
+  for (const definition of Object.values(CHECK_DEFINITIONS)) {
+    if (typeof definition.since === 'number') {
+      executedTimestamps.add(definition.since);
+    }
+    for (const stage of definition.stages ?? []) {
+      executedTimestamps.add(stage.since);
+    }
+  }
+  return collectPrefixStructureRequirements(executedTimestamps);
 }
 
 /**

@@ -193,6 +193,23 @@ const collectOrphanDefinitionIssues = (
     .map((key) => `${label}定义未登记于结构要求: ${key}`);
 
 /**
+ * 继承 CHECK 同样属于最终态结构要求；缺少精确定义时不得静默跳过。
+ */
+const collectInheritedCheckGapIssues = (
+  requiredKeys: ReadonlySet<string>,
+  deliveryKeys: ReadonlySet<string>,
+  definitions: Readonly<Record<string, unknown>>,
+): string[] => {
+  const issues: string[] = [];
+  for (const key of requiredKeys) {
+    if (!deliveryKeys.has(key) && definitions[key] === undefined) {
+      issues.push(`继承CHECK 缺少精确定义: ${key}`);
+    }
+  }
+  return issues;
+};
+
+/**
  * 覆盖完整性：本期交付清单中的字段/CHECK/索引/外键/生成列
  * 必须同时出现在结构化要求与精确定义中，定义也不得指向设计之外的名称。
  */
@@ -209,6 +226,11 @@ export function collectDefinitionCoverageIssues(
       '字段',
     ),
     ...collectOrphanDefinitionIssues(context.columnDefinitions, context.requiredColumnKeys, '字段'),
+    ...collectInheritedCheckGapIssues(
+      context.requiredCheckKeys,
+      context.deliveryCheckKeys,
+      context.checkDefinitions,
+    ),
     ...collectDeliveryGapIssues(
       context.deliveryCheckKeys,
       context.requiredCheckKeys,
@@ -480,8 +502,14 @@ async function collectCheckDefinitionIssues(
   databaseName: string,
 ): Promise<ReadonlyArray<string>> {
   const issues: string[] = [];
-  for (const [key, expected] of Object.entries(CHECK_DEFINITIONS)) {
-    const [table, constraint] = splitKey(key);
+  for (const item of REQUIRED_CHECKS) {
+    const key = `${item.table}.${item.constraint}`;
+    const [table, constraint] = [item.table, item.constraint];
+    const expected = CHECK_DEFINITIONS[key];
+    if (!expected) {
+      issues.push(`关键 CHECK 缺少表达式定义: ${key}`);
+      continue;
+    }
     const rows = rowsOf(
       await dataSource.query(
         `SELECT cc.check_clause, tc.enforced AS enforced

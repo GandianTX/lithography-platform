@@ -12,6 +12,7 @@ import {
   INDEX_DEFINITIONS,
   REQUIRED_CHECKS,
   REQUIRED_INDEXES,
+  collectAllStructureRequirements,
   collectPrefixStructureRequirements,
 } from './migration-schema-contract';
 import {
@@ -697,5 +698,126 @@ describe('CHECK 完整性补登记', () => {
     await expect(
       assertRequiredStructureDefinitions(createFakeDataSource({}), 'fake_db'),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('F1 继承 CHECK 精确定义与阶段差异', () => {
+  const checkRequirement = (executedTimestamps: ReadonlySet<number>, table: string, name: string) =>
+    collectPrefixStructureRequirements(executedTimestamps).find(
+      (item) => item.kind === 'check' && item.table === table && item.name === name,
+    );
+
+  it('REQUIRED_CHECKS 每一条都必须登记表达式定义', () => {
+    const missing = REQUIRED_CHECKS.map(({ table, constraint }) => `${table}.${constraint}`).filter(
+      (key) => CHECK_DEFINITIONS[key] === undefined,
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it('organization.chk_organization_kind 漂移为 TRUE 时拒绝', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(
+        createFakeDataSource({ check: at('organization.chk_organization_kind', 'TRUE') }),
+        'fake_db',
+      ),
+    ).rejects.toThrow(/关键 CHECK 定义漂移: organization\.chk_organization_kind/);
+  });
+
+  it('repair_request.chk_repair_request_handling_mapping 漂移为 TRUE 时拒绝', async () => {
+    await expect(
+      assertRequiredStructureDefinitions(
+        createFakeDataSource({
+          check: at('repair_request.chk_repair_request_handling_mapping', 'TRUE'),
+        }),
+        'fake_db',
+      ),
+    ).rejects.toThrow(/关键 CHECK 定义漂移: repair_request\.chk_repair_request_handling_mapping/);
+  });
+
+  it('旧态按旧态有效定义校验，升级后才要求终态', () => {
+    const key = 'repair_request.chk_repair_request_handling_mapping';
+    const current = CHECK_DEFINITIONS[key];
+    expect(current.stages).toHaveLength(1);
+
+    const beforeCreation = checkRequirement(
+      new Set([1775401000000]),
+      'repair_request',
+      'chk_repair_request_handling_mapping',
+    );
+    expect(beforeCreation).toBeUndefined();
+
+    const oldStage = checkRequirement(
+      new Set([1775401100000]),
+      'repair_request',
+      'chk_repair_request_handling_mapping',
+    );
+    expect(oldStage?.kind).toBe('check');
+    if (oldStage?.kind !== 'check') {
+      throw new Error('未生成 repair_request.chk_repair_request_handling_mapping 旧态要求');
+    }
+    expect(oldStage.definition?.clause).toBe(current.stages?.[0].clause);
+    expect(oldStage.definition?.clause).not.toBe(current.clause);
+
+    const finalStage = checkRequirement(
+      new Set([1775401100000, 1775401600000]),
+      'repair_request',
+      'chk_repair_request_handling_mapping',
+    );
+    expect(finalStage?.kind).toBe('check');
+    if (finalStage?.kind !== 'check') {
+      throw new Error('未生成 repair_request.chk_repair_request_handling_mapping 终态要求');
+    }
+    expect(finalStage.definition?.clause).toBe(current.clause);
+  });
+
+  it('终态校验集合使用同名 CHECK 的最终定义而不是旧阶段', () => {
+    const key = 'repair_request.chk_repair_request_handling_mapping';
+    const terminal = collectAllStructureRequirements().find(
+      (item) => item.kind === 'check' && `${item.table}.${item.name}` === key,
+    );
+    expect(terminal?.kind).toBe('check');
+    if (terminal?.kind !== 'check') {
+      throw new Error(`终态校验集合缺少 ${key}`);
+    }
+    expect(terminal.definition?.clause).toBe(CHECK_DEFINITIONS[key].clause);
+  });
+
+  it('组织成员角色旧态使用旧定义，升级后使用新定义', () => {
+    const key = 'organization_membership.chk_organization_membership_role';
+    const current = CHECK_DEFINITIONS[key];
+    expect(current.stages).toHaveLength(1);
+
+    const oldStage = checkRequirement(
+      new Set([1775301100000]),
+      'organization_membership',
+      'chk_organization_membership_role',
+    );
+    expect(oldStage?.kind).toBe('check');
+    if (oldStage?.kind !== 'check') {
+      throw new Error('未生成 organization_membership.chk_organization_membership_role 旧态要求');
+    }
+    expect(oldStage.definition?.clause).toBe(current.stages?.[0].clause);
+    expect(oldStage.definition?.clause).not.toContain('CUSTOMER');
+
+    const finalStage = checkRequirement(
+      new Set([1775301100000, 1775401000000]),
+      'organization_membership',
+      'chk_organization_membership_role',
+    );
+    expect(finalStage?.kind).toBe('check');
+    if (finalStage?.kind !== 'check') {
+      throw new Error('未生成 organization_membership.chk_organization_membership_role 终态要求');
+    }
+    expect(finalStage.definition?.clause).toBe(current.clause);
+    expect(finalStage.definition?.clause).toContain('CUSTOMER');
+  });
+
+  it('继承 CHECK 漏登记定义时正式覆盖校验报告问题', () => {
+    const issues = collectDefinitionCoverageIssues({
+      checkDefinitions: omitKey(CHECK_DEFINITIONS, 'organization.chk_organization_kind'),
+    });
+
+    expect(issues).toContain('继承CHECK 缺少精确定义: organization.chk_organization_kind');
   });
 });
