@@ -431,6 +431,101 @@
   证据在 `~/.local/share/lithography-v13-rq-evidence/round52-consumer-double-failure/`（0700/0600）。
   本轮仅追加本地修复提交，未 push、未回复 PR、未合并；原有配置测试格式改动继续保留于工作区。
 
+## 第 53 轮：F1 CHECK 定义、F2 独占连接收尾与 F3 执行者恢复（2026-11-11）
+
+- 基线：分支 `feat/database-v13-deploy`，HEAD `996d3c1934392ec4b5cf4da528f4f62a7fa1033e`；
+  保留既有工作区改动与 3 个 stash。未改前 44 条迁移、业务接口、外键、目标库守卫与清理器拒绝语义，
+  未 reset/amend/清库/重置 AUTO_INCREMENT；本轮不 commit、不 push、不回复 PR、不合并。
+- F1 定义完整性：
+  - `REQUIRED_CHECKS` 共 199 项，全部具备显式表达式定义；补齐 79 条继承 CHECK（前 44 条迁移创建），
+    并为 20 条确有表达式变化的 CHECK 增加 `stages`（含 `organization_membership_role`、
+    `repair_request_handling_mapping`、`repair_request_handling_time`）。
+  - `requireCheckDefinition` 对缺失定义、缺少 `since`/`clause`、未在 `REQUIRED_CHECKS` 登记、
+    阶段 `since` 非递增或早于终态一律抛错；正式校验的 `collectCheckDefinitionIssues` 改为遍历
+    `REQUIRED_CHECKS`，缺定义直接报告“关键 CHECK 缺少表达式定义”，不再因查找返回 `undefined` 静默跳过。
+  - 前缀校验使用 `resolveCheckDefinitionAt`：旧前缀按当时有效阶段校验，终态按最新定义校验；
+    创建前不产生该 CHECK 要求。正式入口仍由既有 `assertRequiredStructureDefinitions` 调用链执行。
+  - 新增离线回归：`organization.chk_organization_kind` 与
+    `repair_request.chk_repair_request_handling_mapping` 改为 `TRUE` 均以
+    `关键 CHECK 定义漂移` 拒绝；正确终态通过；旧前缀按旧定义通过；漏登记定义产生
+    `继承CHECK 缺少精确定义`；既有缺失、`NOT ENFORCED`、已登记漂移拒绝保持。
+- F2 独占连接收尾：
+  - 复用既有 `destroyExclusiveQueryRunner`，新增 `settleExclusiveQueryRunner` 并让
+    `runGuardedQueryRunnerTransaction` 改走同一实现，不另建平行机制。
+  - 按驱动实际 `isTransactionActive` 收尾：活动事务先回滚；回滚失败或仍活动时销毁本轮独占连接；
+    仅确认无活动事务后才普通 `release`；不销毁共享 DataSource/连接池。
+  - 已覆盖同文件同模式：consumer 注入/验证事务、`FAULT-UPDATE` 第二连接、`R02-CONFLICT` 第二/三连接、
+    `INSTRUMENT` 正常事务、`afterAll` 观测连接、停采及断言失败连接。主错误、回滚、销毁与释放错误分别保留，
+    主错误存在时收尾错误打印到 Jest 输出，无主错误时再抛出。
+- F3 执行者恢复独立于证据断言：
+  - 线程 UNKNOWN 用例在真实 `affectedRows=1` 后、任何后续读取/断言前登记
+    `threadId/connectionId/processlistUser/expectedInstrumented`。
+  - 被测 UNKNOWN 路径仍按分类结果 `keep`，不自动恢复；执行者恢复放入独立 `finally`，按登记事实精确恢复并读回。
+  - 恢复失败或读回未确认时置位注入拦截、销毁停采独占连接（不回池）；证据断言与恢复错误互不覆盖。
+- 离线验证（本轮未具备新增实库授权，未连接共享 3306/Redis/审查方或事故现场）：
+  - `npx jest`（7 个受影响数据库规格，含 F1 规格、schema 契约、v13-db-verification、
+    e2e-scoped-cleanup 离线档、capability、consumer-instrumentation）：
+    `7 suites passed`、`167 passed / 86 skipped / 253 total`，退出码 0。
+  - `npx jest --config /tmp/jest-offline-owned-fixture.js`（仓库外临时配置，仅跳过实库 globalSetup）：
+    `38 passed / 7 skipped / 45 total`、0 failed，退出码 0；覆盖事务启动后抛错、提交后释放失败、
+    正常失败回滚、回滚失败、销毁失败与主错误保留。
+  - `npm run typecheck` 退出码 0；变更 5 文件 `npx eslint` 0 error（12 条 `max-depth` warning，不阻断）。
+  - 44 条迁移文件 `git status` 无改动，迁移指纹未变；未改 Entity。
+- 待补证（需另行授权的专用隔离实例）：
+  - F1 实库把 `organization.chk_organization_kind`、`repair_request.chk_repair_request_handling_mapping`
+    改为 `TRUE` 后 `migration:verify` 拒绝，以及旧前缀合法态通过。
+  - F2 启动部分成功、UPDATE/commit 失败、回滚失败、destroy/release 失败的实际 Jest 输出与
+    “活动连接未普通回池”直接证据。
+  - F3 成功写入后读回失败、证据断言失败、执行者恢复失败三档；证明被测路径未擅自恢复、
+    执行者 `finally` 确实执行、恢复未确认时后续注入被拦截。
+- 原 Entity `ai_helpfulness` 差异（单列，不顺带改输入策略）：
+  `maintenance-report.entity.ts` 声明 `BETWEEN 1 AND 4`，而第 44 条迁移、校验契约与字段字典均为
+  `BETWEEN 1 AND 5`。本轮保持交付库与校验契约为 1..5，不修改 Entity，也不改变输入策略；
+  该差异留待独立裁决。
+
+## 第 53 轮集中实库验收（2026-11-11）
+
+- 冻结与实例：HEAD `996d3c19…`、分支 `feat/database-v13-deploy`、3 个 stash 保持、暂存区为空；
+  44 条迁移逐文件 SHA-256 与上一轮一致。仅使用新建专用实例 `127.0.0.1:3307`，
+  UUID `32aab37e-dd78-11f1-a06e-00e0709ef3a9`，datadir `/tmp/v13-f1f3-1794364374/data/`，
+  账号 `v13_test`；未连接共享 3306、Redis、审查方实例或事故现场。
+  `v13-authoritative-config.spec.ts` 的既有格式改动保留在工作区，不纳入交付指纹。
+- 基线修正：正式 init 先暴露 6 条 CHECK 定义漂移（mapping、handling_time、
+  repair_request_revision、reference_document_revision、sync_conflict、backup_restore_run）。
+  根因是终态校验集合只登记创建时间戳，未包含同名 CHECK 的最终阶段 `since`，导致回退旧阶段；
+  已在 `collectAllStructureRequirements` 纳入 `CHECK_DEFINITIONS` 的终态与阶段时间戳，并补离线回归用例。
+  修正后 `v13_accept` 与新建 `v13_accept_test` 的正式 init/verify 均退出 0。
+- F1 漂移反例（各单独执行，互不复用通过结论）：
+  - `organization.chk_organization_kind` → `CHECK (TRUE) ENFORCED`，`migration:verify` 退出 1，
+    issue 仅命中该约束的定义漂移；受保护恢复后 `SHOW CREATE TABLE`、约束清单、`ENFORCED`、
+    表数据与基线完全一致，verify 退出 0。
+  - `repair_request.chk_repair_request_handling_mapping` 同样退出 1 且仅命中该约束；恢复一致后退出 0。
+  - 合法旧前缀：按迁移时间戳正向构建前 30 条（含旧 mapping 定义、不含终态迁移），
+    正式 `migration:status` 退出 0 且无结构 issue，正式 `database:deploy --mode=upgrade` 退出 0；
+    未伪造迁移历史，也未要求只支持终态的 verify 接受旧态。
+- F2 临时副本故障注入（候选源码未改）：实库 Jest 6/6 passed，退出 0。覆盖启动部分成功、
+  事务内 UPDATE 失败、提交回执丢失、回滚失败、回滚+销毁均失败、释放失败；
+  断言连接事件为先回滚后释放、回滚失败时不普通 release 且仅销毁本轮独占连接、
+  共享 DataSource 仍可查询；主错误、回滚/销毁/释放错误均实际可见。
+  提交回执丢失档不宣称已回滚或未写入，独立连接读回该行确实存在后再清理。
+  回滚失败档独立确认行未落库且服务端线程已消失。
+- F3 临时副本故障注入（真实停采命中 1 行后）：
+  - 读回失败档：被测 UNKNOWN 路径记录“不执行自动恢复”，执行者在独立 finally 按登记事实恢复，
+    日志确认 `YES`；Jest 以注入读回错误预期失败（0 passed / 1 failed / 23 skipped，退出 1）。
+  - 断言失败档：`Expected YES / Received NO` 证明被测路径未恢复，执行者恢复确认 `YES`；
+    预期失败计数同上。
+  - 执行者恢复失败档：同时启用下一条注入用例，恢复抛错后销毁停采独占连接、置位拦截，
+    下一条用例在 beforeEach 被拒绝（0 passed / 2 failed / 22 skipped，退出 1）。
+    进程退出后独立连接确认测试账号无 `INSTRUMENTED='NO'` 线程、无活动事务；
+    该连接因销毁而消失，记录为线程消失，不写成恢复为 YES。
+- 最小回归：F1 离线规格 46 passed；正常交付组（`delivery` + normal 注入档，目标
+  `v13_accept_test`）72 passed / 6 skipped / 0 failed，退出 0（首轮 `v13_accept` 因库名不含
+  test/dev/local/drill 被 d3 守卫拒绝，属环境前置不匹配，不计作通过）；typecheck 退出 0；
+  5 个变更代码文件 eslint 0 error、12 条既有 `max-depth` warning。
+- 残留与不变量：`v13_accept`/`v13_accept_test` 中 F2/D3 测试行均为 0，活动事务 0，
+  `v13_test` 无停采线程；44 条迁移与候选源码 SHA-256 复核未变。
+- 本轮未 commit、未 push、未回复 PR、未合并；仅依据上述证据判断是否具备提交条件。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。

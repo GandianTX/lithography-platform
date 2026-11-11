@@ -57,7 +57,12 @@
   （R02 第二连接干扰反例）同样默认关闭，只在另行授权的专用库与专用测试连接上开启；
   所需权限单独列清（见 2.2），不得使用 root 或修改全局采集开关。
 - 线程停采反例的恢复责任只由首次条件 `UPDATE` 明确命中 1 行的执行方登记；命中 0 行或结果未知时保持现状，
-  不得按线程标识认领他人 `NO` 状态。登记发生在断言之前，后续断言失败仍由该执行方在 `finally` 恢复并读回确认。
+  不得按线程标识认领他人 `NO` 状态。登记必须在收到真实 `affectedRows` 后、任何后续读取或断言之前完成；
+  被测路径的结果未知分支保持“不自动恢复”，执行者恢复放入独立 `finally` 并按登记事实精确命中、读回确认。
+  后续断言失败不得跳过执行者恢复；恢复失败或无法确认时停止后续注入，并按下方连接收尾规则处理连接。
+- 独占事务连接收尾：按驱动实际 `isTransactionActive` 判断。活动事务先回滚；回滚失败或仍活动时销毁本轮独占连接；
+  只有确认无活动事务后才允许普通 `release`。不得销毁共享 DataSource/连接池，也不得把带活动事务或停采状态的
+  连接普通回池。主错误、回滚、销毁与释放错误分别保留；主错误存在时收尾错误须出现在实际 Jest 输出中。
 - `FAULT-UPDATE` 的恢复冲突由用例自身的受控外部连接改写 `local_backup_run.finished_at` 制造，
   不依赖 `E2E_V13_SECOND_CONNECTION`；冲突在恢复阶段实际发生处立即登记套件级保留，
   用例、通用清理与 `afterAll` 统一读取该保留事实。
@@ -68,7 +73,8 @@
   - `SELECT` on `performance_schema.threads`、`performance_schema.events_transactions_current`、
     `performance_schema.setup_consumers`、`performance_schema.setup_instruments`；
   - `UPDATE` on `performance_schema.threads`（仅用于把**明确授权的测试连接**线程置为
-    `INSTRUMENTED=NO`，再用 `finally` 恢复；不修改全局 consumer/instrument，不改其他线程）。
+    `INSTRUMENTED=NO`，再由测试执行者在独立 `finally` 中恢复；被测路径的结果未知分支不自动恢复。
+    不修改全局 consumer/instrument，不改其他线程）。
   - `performance_schema.threads` 无法按行授权，因此注入工具必须在 `UPDATE` 前核验本轮连接的
     `CONNECTION_ID`、`THREAD_ID`、`PROCESSLIST_USER`、`TYPE=FOREGROUND` 与原 `INSTRUMENTED=YES`；
     实际写入使用同时包含这些事实的条件 `UPDATE`，`affectedRows` 必须为 1，任一事实不符即拒绝。
@@ -295,7 +301,10 @@ npm run database:deploy -- \
 - 迁移历史完整性；
 - `REQUIRED_*` 结构契约（列类型/长度/符号/NULL/默认/生成表达式、
   索引唯一性与列序、外键列序与规则、CHECK 表达式）；
-- 关键 `CHECK` 必须 `ENFORCED=YES`；`NOT ENFORCED` 与缺失一并通过失败关闭；
+- 全部 `REQUIRED_CHECKS`（含前 44 条迁移继承的 CHECK）必须登记精确表达式定义；缺少定义时
+  校验必须报告“关键 CHECK 缺少表达式定义”，不得因查找返回 `undefined` 静默跳过；
+  旧前缀按该阶段有效定义校验，终态按最新定义校验，不得提前要求终态；
+- 关键 `CHECK` 必须 `ENFORCED=YES`；`NOT ENFORCED`、缺失与已登记表达式漂移一并通过失败关闭；
 - `base_user_account.uk_login_name` 与 `uk_login_email` 等关键唯一索引必须存在；
 - 预期之外的业务表在 pending 执行前和终态复核时都失败关闭，不静默忽略；
 - 数据级校验（旧资料回填、归属待确认等）；
@@ -613,3 +622,18 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
 - 完整单测：1905 passed / 205 skipped / 2110 total，0 failed；类型、lint、格式、构建通过。
   原始命令、实际输出、Jest JSON、进程退出后状态及处置记录保存在仓库外
   `~/.local/share/lithography-v13-rq-evidence/round52-consumer-double-failure/`（0700/0600）。
+
+### 11.12 终态 CHECK 定义与实库漂移反例（2026-11-11）
+
+- 终态结构校验集合必须包含 `CHECK_DEFINITIONS` 的顶层 `since` 与全部 `stages[].since`；
+  只登记创建时间戳会让同名 CHECK 回退旧阶段，正式 init/verify 误报终态漂移。
+  旧前缀校验仍按已执行时间戳选择当时有效的定义，不能要求终态 verify 接受旧态。
+- CHECK 漂移反例必须逐约束单独执行：同名 `ENFORCED TRUE` 后正式 `migration:verify` 应退出非零，
+  且 issue 只命中该约束；不得把其他错误当作“拒绝通过”。
+- 恢复必须在受保护收尾中完成，并以 `SHOW CREATE TABLE`、约束清单、`ENFORCED` 与表数据
+  四项都与反例前基线一致作为恢复确认；任一项不一致即停止后续反例。
+- F2/F3 故障注入只允许在临时源码副本进行，候选源码不得新增故障开关；
+  提交回执丢失时只报告结果未知并独立读回现场，不宣称已回滚或未写入。
+- 执行者恢复失败时销毁停采独占连接并置位拦截，下一条注入用例应被拒绝；
+  进程退出后以独立连接核对，无 `INSTRUMENTED='NO'` 线程与活动事务。
+  连接因销毁而消失时记录“线程消失”，不得写成恢复为 YES。
