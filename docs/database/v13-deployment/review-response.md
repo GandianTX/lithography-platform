@@ -399,6 +399,38 @@
   临时副本唯一注入 diff、Jest JSON、执行者恢复前后记录。仅关闭本轮独立 mysqld，保留 datadir 和证据；未操作共享 3306/Redis/审查方现场。
 - 本轮追加本地提交；未 push、未回复 PR、未合并。既有 `v13-authoritative-config.spec.ts` 的纯格式工作区改动不纳入本轮提交。
 
+## 第 52 轮：双失败具体诊断的实际 Jest 补验（2026-11-11）
+
+- 对应 `5ab64d8` 复审的唯一 P2。恢复失败包装错误保留 cause，并只读取得当前状态；
+  `createConsumerInjectionFailure` 保留原始错误对象到 `AggregateError.errors`，同时把主错误、每个收尾错误和状态写入
+  Jest 实际显示的 message。读回失败明确输出 `current=UNKNOWN` 及读回原因；原状态、实例和 consumer 可定位。
+  已确认写入才恢复的责任规则及后续注入拦截保持不变。
+- 新增 4 条离线回归，10 条 consumer 回归全部通过。覆盖结构化对象身份、主/恢复错误的可见 message、状态读回成功/失败，
+  确认没有因显示诊断而新增写入或重试恢复。
+- 全新 MySQL 8.0.46 隔离实例：127.0.0.1:3307，UUID `f20f830a-dd67-11f1-9c45-00e0709ef3a9`，
+  专用库 `lithography_v13_test`；正式 init/verify 均退出 0，44 条迁移、51 张业务表。
+  专项使用专用非 root 账号，管理员仅负责隔离实例设置、独立读取、处置和关闭。
+- 实际编排为仓库外 `node /tmp/v13-consumer-accept52.cjs` 分别执行 `setup`、`normal`、`double`、
+  `restore double`、`double-read-unknown`、`restore double-read-unknown`、`post-restore`、`checks`、`shutdown`。
+  环境由正式 runner 的 `buildEnvironment` 派生；每次先 `--listTests` 精确校验 1 或 3 文件，再执行 `--runTestsByPath`。
+  两种故障运行均追加 `-t 'INSTRUMENT (上游 consumer|仅停采测试连接)'`，同时选择被测故障及其后续注入。
+  原始 cwd、命令参数、退出码分别保存在各 `*.command.json`，临时副本注入 diff 单列保存，不改正式候选。
+- `double`：真实停采成功后触发带 `INJECTED_CONSUMER_PRIMARY_ASSERTION` 标记的 Jest 主断言失败，恢复写入抛出
+  `INJECTED_CONSUMER_RECOVERY_FAILURE`。实际 Jest message 同时显示两个标记、UUID、consumer、`original=YES current=NO`，
+  已确认写入责任、恢复条件及执行者处置说明。0 passed / 2 failed / 22 skipped，退出 1；第二个失败来自 beforeEach 拦截。
+- `double-read-unknown`：在同一双失败上再让诊断读取抛出 `INJECTED_CONSUMER_STATE_READ_FAILURE`。
+  实际 Jest message 仍显示主错误和恢复错误，状态明确为 `current=UNKNOWN`、含读回错误；
+  0 passed / 2 failed / 22 skipped，退出 1；后续注入同样被拦截。两次预期失败均不计为通过。
+- 每次整个 Jest 进程退出后，独立连接读取均为 global consumer NO、thread/events consumer YES。
+  保存直接证据后执行者核对 UUID/端口及原状态，按名称和 NO 条件恢复 YES，分别明确命中 1 行并读回三项 YES。
+  初始 `normal` 与最终 `post-restore` 各 3 suites / 72 passed / 0 failed / 6 skipped，退出 0，真实事务观测 1→回滚后 0。
+  四次运行全表数据快照均前后一致；未操作共享 3306、Redis 或既有现场。
+- 完整单测原始 JSON：160 passed / 8 skipped suites，1905 passed / 205 skipped / 2110 total，0 failed，退出 0。
+  正式/工具/spec 类型检查、变更文件 ESLint/Prettier、build、diff 检查通过。迁移、Entity、外键和目标守卫未改。
+- 关闭前独立读取三项 consumer 均 YES、活动事务及测试账号会话均 0；只关闭本轮 mysqld，数据目录保留。
+  证据在 `~/.local/share/lithography-v13-rq-evidence/round52-consumer-double-failure/`（0700/0600）。
+  本轮仅追加本地修复提交，未 push、未回复 PR、未合并；原有配置测试格式改动继续保留于工作区。
+
 ## 未关闭与不适用项
 
 - `npm run check:entity-scope` 退出码 1（旧 PR3 entity-scope 按既有裁决记不适用；未改政策骗绿）。

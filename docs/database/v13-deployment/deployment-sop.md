@@ -593,3 +593,23 @@ npx ts-node -P tsconfig.spec.json -r tsconfig-paths/register \
 - 原始命令、日志、JSON、临时副本注入 diff、进程退出后快照与执行者恢复记录在仓库外
   `~/.local/share/lithography-v13-rq-evidence/round51-consumer/`（0700/0600）。
   隔离实例核验身份后关闭，数据目录保留；未操作共享 3306、Redis 或其他既有现场。
+
+### 11.11 consumer 主错误与恢复错误同时发生（2026-11-11）
+
+- 保留 AggregateError 的原始 `errors` 对象，并在实际输出的 message 中逐项显示主错误、收尾错误、实例 UUID、
+  consumer、原状态和安全读回的当前状态。不能只依赖 Jest 自动展开 AggregateError。
+- 恢复写入抛错、未确认命中或读回不一致时，错误包含原始 cause、已确认的停采责任和恢复条件；
+  诊断读取失败显示 `current=UNKNOWN`、状态未知及读回错误，不把未知解释为已恢复或继续写入。
+  后续故障注入仍由套件保护拒绝。只读诊断不会建立新的恢复责任，执行者按先前登记事实处置。
+- 第 52 轮新建隔离实例 `127.0.0.1:3307`，UUID `f20f830a-dd67-11f1-9c45-00e0709ef3a9`，
+  正式 init/verify 均退出 0。故障注入只发生在临时源码副本，正式候选没有新增故障开关。
+- 两条实际 Jest 反例均选中上游 consumer 用例及后续停采用例：
+  主断言失败且恢复失败、再加诊断读回失败，各为 0 passed / 2 failed / 22 skipped，退出 1。
+  首个失败 message 同时显示两个具体错误及 `current=NO` 或 `current=UNKNOWN`；第二个失败来自后续注入被拦截。
+  两次整个 Jest 退出后，独立连接确认 global consumer 为 NO，另外两个为 YES；保存证据后执行者分别条件恢复。
+- 故障前与两次受控处置完成后的最终候选正常交付组各为 72 passed / 0 failed / 6 skipped，退出 0。
+  normal、两种双失败与 post-restore 的全表数据快照前后一致。关闭实例前，三个 consumer 均 YES，
+  活动事务与测试账号前台连接均 0；隔离实例正常关闭并保留 datadir。
+- 完整单测：1905 passed / 205 skipped / 2110 total，0 failed；类型、lint、格式、构建通过。
+  原始命令、实际输出、Jest JSON、进程退出后状态及处置记录保存在仓库外
+  `~/.local/share/lithography-v13-rq-evidence/round52-consumer-double-failure/`（0700/0600）。

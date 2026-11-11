@@ -58,7 +58,10 @@ import {
   assertManagerOnExpectedE2eDatabase,
 } from '../../../test/utils/e2e-db-guard';
 import { readRepositoryMigrations } from './incremental-migration';
-import { disableConsumerWithRecovery } from '../../../test/utils/consumer-instrumentation';
+import {
+  createConsumerInjectionFailure,
+  disableConsumerWithRecovery,
+} from '../../../test/utils/consumer-instrumentation';
 import {
   assertCasRestoreAffectedOne,
   assertTransactionObservationCapability,
@@ -2973,10 +2976,14 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         }
         if (cleanupErrors.length > 0) {
           consumerInjectionBlocked = true;
-          throw new AggregateError(
-            primaryError === undefined ? cleanupErrors : [primaryError, ...cleanupErrors],
-            `consumer 注入或收尾失败：server_uuid=${EXPECTED_SERVER_UUID} consumer=${name}`,
-          );
+          throw await createConsumerInjectionFailure({
+            serverUuid: EXPECTED_SERVER_UUID,
+            consumer: name,
+            original,
+            primaryError,
+            cleanupErrors,
+            read: () => readEnabled(name),
+          });
         }
         if (primaryError !== undefined) {
           throw primaryError instanceof Error
