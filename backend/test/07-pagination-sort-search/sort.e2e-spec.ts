@@ -7,8 +7,8 @@ import { AppConfigModule } from '@src/infrastructure/config/config.module';
 import { DatabaseModule } from '@src/infrastructure/database/database.module';
 import { TypeOrmSort } from '@src/infrastructure/typeorm/sort/typeorm-sort';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
-import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { DataSource } from 'typeorm';
+import { ACCOUNT_WRITE_FIXTURE_ENTITIES } from '../utils/test-accounts';
 
 describe('TypeOrmSort 独立使用 (e2e)', () => {
   let app: INestApplication;
@@ -19,7 +19,7 @@ describe('TypeOrmSort 独立使用 (e2e)', () => {
       imports: [
         AppConfigModule,
         DatabaseModule,
-        TypeOrmModule.forFeature([AccountEntity, UserInfoEntity]),
+        TypeOrmModule.forFeature([...ACCOUNT_WRITE_FIXTURE_ENTITIES]),
       ],
     }).compile();
 

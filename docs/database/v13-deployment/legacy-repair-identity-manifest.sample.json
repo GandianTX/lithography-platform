@@ -1,0 +1,16 @@
+{
+  "formatVersion": 1,
+  "source": "V13_31_STATE",
+  "frozenAt": "2026-11-09T00:00:00.000Z",
+  "note": "合成样例，仅用于校验器/格式演示；真实清单必须由获授权人在停写窗口导出并签字，不得提交 Git。",
+  "rows": [
+    {
+      "id": 900001,
+      "fingerprint": "07dd2899f9136c81ce96195bb8f855efb76d6a3263dd9d4b0322610d834c8071"
+    },
+    {
+      "id": 900002,
+      "fingerprint": "fa9e7ecc22397e181ce69d2c012d5d1eaa629be8354c4184d72f43f9652e206f"
+    }
+  ]
+}

@@ -12,11 +12,13 @@ import { AppGraphQLModule } from '@src/infrastructure/graphql/graphql.module';
 import { LoggerModule } from '@src/infrastructure/logger/logger.module';
 import { MiddlewareModule } from '@src/infrastructure/middleware/middleware.module';
 import { AccountModule } from '@src/modules/account/account.module';
+import { AiProviderCallRecordEntity } from '@src/modules/ai-provider-call-record/ai-provider-call-record.entity';
 import { AuthModule } from '@src/modules/auth/auth.module';
 import { PasswordModule } from '@src/modules/common/password/password.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApiController } from './api.controller';
 import { ApiService } from './api.service';
 
@@ -37,6 +39,10 @@ import { ApiService } from './api.service';
     AccountModule,
     AuthModule,
     LithographyModule,
+    // LithographyModule 的 IntakeAnalysisAttemptEntity 以字符串外键引用
+    // AiProviderCallRecordEntity；API 组合根只补纯 ORM 元数据注册，
+    // 不导入 ai-provider-call-record 业务模块，也不暴露其服务。
+    TypeOrmModule.forFeature([AiProviderCallRecordEntity]),
   ],
   controllers: [ApiController],
   providers: [

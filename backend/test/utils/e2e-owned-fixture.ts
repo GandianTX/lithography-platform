@@ -742,7 +742,83 @@ export interface GuardedTransactionResult {
   readonly errors: readonly string[];
   /** 事务是否已成功提交；提交后的释放失败只让 errors 非空，不改变该事实 */
   readonly committed: boolean;
+  /** 事务是否已实际回滚（仅 outcome=rollback 时有意义） */
+  readonly rolledBack: boolean;
+  /**
+   * 是否仍可能留下未回滚的写入。
+   *
+   * 只在事务状态无法确认已结束、或独占连接销毁失败时为 true；
+   * 回滚失败但独占连接已销毁时，服务端会终止该连接的事务，不视为可能残留。
+   */
+  readonly residualPossible: boolean;
 }
+
+/**
+ * 受保护的独占连接收尾（事务回滚/销毁/释放共用同一实现）。
+ *
+ * - 依据驱动实际 `isTransactionActive` 决定是否回滚，而非调用方自报；
+ * - 回滚失败或事务仍活动时销毁本轮独占连接，禁止把活动事务以普通 `release()` 回池；
+ * - 不销毁共享连接池；回滚、销毁与释放错误分别保留。
+ */
+export interface ExclusiveRunnerSettlement {
+  readonly errors: ReadonlyArray<string>;
+  readonly rolledBack: boolean;
+  readonly destroyAttempted: boolean;
+  readonly connectionDestroyed: boolean;
+}
+
+export const settleExclusiveQueryRunner = async (params: {
+  readonly runner: QueryRunner;
+  readonly label: string;
+  /** 是否在活动事务时先回滚；默认 true。 */
+  readonly rollback?: boolean;
+}): Promise<ExclusiveRunnerSettlement> => {
+  const { runner, label, rollback = true } = params;
+  const errors: string[] = [];
+  let rolledBack = false;
+  let rollbackFailed = false;
+  let rollbackAttempted = false;
+  let destroyAttempted = false;
+  let connectionDestroyed = false;
+
+  const destroyOnce = async (stage: string): Promise<void> => {
+    if (destroyAttempted) return;
+    destroyAttempted = true;
+    const outcome = await destroyExclusiveQueryRunner(runner);
+    connectionDestroyed = outcome.destroyed;
+    if (!connectionDestroyed) {
+      errors.push(`${stage}销毁独占连接未完成：${outcome.reason ?? '未知原因'}`);
+    }
+  };
+
+  if (rollback && runner.isTransactionActive) {
+    rollbackAttempted = true;
+    try {
+      await runner.rollbackTransaction();
+      rolledBack = true;
+    } catch (rollbackError) {
+      rollbackFailed = true;
+      errors.push(`${label}回滚失败：${detailOf(rollbackError)}`);
+    }
+    if (rollbackFailed || runner.isTransactionActive) {
+      await destroyOnce(`${label}回滚后`);
+    }
+  }
+
+  if (!connectionDestroyed && !destroyAttempted) {
+    if (runner.isTransactionActive) {
+      await destroyOnce(`${label}${rollbackAttempted ? '回滚后' : '收尾时'}`);
+    } else {
+      try {
+        await runner.release();
+      } catch (releaseError) {
+        errors.push(`${label}释放失败：${detailOf(releaseError)}`);
+      }
+    }
+  }
+
+  return { errors, rolledBack, destroyAttempted, connectionDestroyed };
+};
 
 /**
  * 受保护的独占连接事务收尾（恢复写入等单事务场景复用）。
@@ -757,61 +833,50 @@ export const runGuardedQueryRunnerTransaction = async (params: {
   readonly createRunner: () => QueryRunner;
   readonly label: string;
   readonly work: (runner: QueryRunner) => Promise<void>;
+  /** 成功路径的收尾方式；默认提交。rollback 用于“事务内验证、结束即回滚”的专项。 */
+  readonly outcome?: 'commit' | 'rollback';
 }): Promise<GuardedTransactionResult> => {
-  const { createRunner, label, work } = params;
+  const { createRunner, label, work, outcome = 'commit' } = params;
   const errors: string[] = [];
   const runner = createRunner();
   let committed = false;
-  let destroyAttempted = false;
-  let connectionDestroyed = false;
 
-  const destroyOnce = async (stage: string): Promise<void> => {
-    if (destroyAttempted) return;
-    destroyAttempted = true;
-    const outcome = await destroyExclusiveQueryRunner(runner);
-    connectionDestroyed = outcome.destroyed;
-    if (!connectionDestroyed) {
-      errors.push(`${stage}销毁独占连接未完成：${outcome.reason ?? '未知原因'}`);
-    }
-  };
+  let primaryError: unknown;
 
   try {
     await runner.connect();
     await runner.startTransaction();
     await work(runner);
-    await runner.commitTransaction();
-    committed = true;
   } catch (error) {
+    primaryError = error;
     errors.push(`${label}失败：${detailOf(error)}`);
+  }
 
-    let rollbackFailed = false;
-    if (runner.isTransactionActive) {
-      try {
-        await runner.rollbackTransaction();
-      } catch (rollbackError) {
-        rollbackFailed = true;
-        errors.push(`${label}回滚失败：${detailOf(rollbackError)}`);
-      }
-    }
-
-    if (rollbackFailed || runner.isTransactionActive) {
-      await destroyOnce(`${label}回滚后`);
-    }
-  } finally {
-    if (!connectionDestroyed && !destroyAttempted) {
-      if (runner.isTransactionActive) {
-        await destroyOnce(`${label}收尾时`);
-      } else {
-        try {
-          await runner.release();
-        } catch (releaseError) {
-          errors.push(`${label}释放失败：${detailOf(releaseError)}`);
-        }
-      }
+  if (primaryError === undefined && outcome === 'commit') {
+    try {
+      await runner.commitTransaction();
+      committed = true;
+    } catch (commitError) {
+      primaryError = commitError;
+      errors.push(`${label}提交失败：${detailOf(commitError)}`);
     }
   }
 
-  return { errors, committed };
+  const settlement = await settleExclusiveQueryRunner({
+    runner,
+    label,
+    rollback: outcome === 'rollback' || primaryError !== undefined || !committed,
+  });
+  errors.push(...settlement.errors);
+
+  const residualPossible =
+    runner.isTransactionActive || (settlement.destroyAttempted && !settlement.connectionDestroyed);
+  return {
+    errors,
+    committed,
+    rolledBack: settlement.rolledBack,
+    residualPossible,
+  };
 };
 
 /**

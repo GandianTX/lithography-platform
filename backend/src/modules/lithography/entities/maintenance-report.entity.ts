@@ -19,6 +19,11 @@ import {
 ])
 @Index('idx_maintenance_report_engineer_created', ['maintenanceEngineerAccountId', 'createdAt'])
 @Index('idx_maintenance_report_source_created', ['sourceType', 'createdAt'])
+@Index(
+  'uk_maintenance_report_submission',
+  ['createdByAccountId', 'ownerOrganizationId', 'submissionRequestId'],
+  { unique: true },
+)
 @ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
   name: 'fk_maintenance_report_owner_organization',
   onDelete: 'RESTRICT',
@@ -59,11 +64,11 @@ import {
 )
 @Check(
   'chk_maintenance_report_status',
-  "`status` IN ('DRAFT', 'PENDING_REVIEW', 'RETURNED', 'APPROVED')",
+  "`status` IN ('DRAFT', 'SUBMITTED', 'PENDING_REVIEW', 'RETURNED', 'APPROVED')",
 )
 @Check(
   'chk_maintenance_report_status_consistency',
-  "((`status` = 'DRAFT' AND `current_version_no` = 0 AND `last_submitted_at` IS NULL AND `last_reviewed_at` IS NULL) OR (`status` = 'PENDING_REVIEW' AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NULL) OR (`status` IN ('RETURNED', 'APPROVED') AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NOT NULL))",
+  "((`status` = 'DRAFT' AND `current_version_no` = 0 AND `last_submitted_at` IS NULL AND `last_reviewed_at` IS NULL) OR (`status` IN ('SUBMITTED', 'PENDING_REVIEW') AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NULL) OR (`status` IN ('RETURNED', 'APPROVED') AND `current_version_no` >= 1 AND `last_submitted_at` IS NOT NULL AND `last_reviewed_at` IS NOT NULL))",
 )
 @Check(
   'chk_maintenance_report_model_exclusive',
@@ -77,11 +82,27 @@ import {
 @Check('chk_maintenance_report_ai_score', '`ai_score` IS NULL OR `ai_score` BETWEEN 1 AND 5')
 @Check(
   'chk_maintenance_report_ai_helpfulness',
-  '`ai_helpfulness` IS NULL OR `ai_helpfulness` BETWEEN 1 AND 5',
+  '`ai_helpfulness` IS NULL OR `ai_helpfulness` BETWEEN 1 AND 4',
 )
 @Check(
   'chk_maintenance_report_ai_correctness',
-  "`ai_correctness` IS NULL OR `ai_correctness` IN ('CORRECT', 'PARTIAL', 'INCORRECT')",
+  "`ai_correctness` IS NULL OR `ai_correctness` IN ('CORRECT', 'PARTIAL', 'INCORRECT', 'UNKNOWN')",
+)
+@Check(
+  'chk_maintenance_report_handling_result',
+  "`handling_result` IS NULL OR `handling_result` IN ('FIXED', 'PART_PURCHASED', 'PROVIDE_PLAN_SELF_EXECUTE', 'INTERRUPTED', 'UNREPAIRABLE')",
+)
+@Check(
+  'chk_maintenance_report_reset_result',
+  "`reset_result` IS NULL OR `reset_result` IN ('NORMAL', 'SAME_FAULT', 'NEW_FAULT')",
+)
+@Check(
+  'chk_maintenance_report_closure_reason',
+  "`handling_result` IS NULL OR `handling_result` NOT IN ('INTERRUPTED', 'UNREPAIRABLE') OR (`closure_reason` IS NOT NULL AND CHAR_LENGTH(TRIM(`closure_reason`)) > 0)",
+)
+@Check(
+  'chk_maintenance_report_submission_pair',
+  '((`submission_request_id` IS NULL AND `submission_payload_hash` IS NULL) OR (`submission_request_id` IS NOT NULL AND CHAR_LENGTH(TRIM(`submission_request_id`)) > 0 AND `submission_payload_hash` IS NOT NULL AND CHAR_LENGTH(`submission_payload_hash`) = 64))',
 )
 export class MaintenanceReportEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '报告主键ID' })
@@ -117,7 +138,7 @@ export class MaintenanceReportEntity {
   @Column({
     name: 'customer_factory_name',
     type: 'varchar',
-    length: 100,
+    length: 200,
     nullable: true,
     comment: '客户厂家（手填，不作为权限来源）',
   })
@@ -134,7 +155,7 @@ export class MaintenanceReportEntity {
   @Column({
     name: 'equipment_model_text',
     type: 'varchar',
-    length: 100,
+    length: 200,
     nullable: true,
     comment: '型号文字快照；与型号ID互斥',
   })
@@ -158,10 +179,61 @@ export class MaintenanceReportEntity {
   @Column({
     name: 'maintenance_engineer_name_snapshot',
     type: 'varchar',
-    length: 50,
+    length: 200,
     comment: '负责工程师姓名快照',
   })
   maintenanceEngineerNameSnapshot!: string;
+
+  @Column({ name: 'supplementary_note', type: 'longtext', nullable: true, comment: '补充说明' })
+  supplementaryNote!: string | null;
+
+  @Column({
+    name: 'handling_result',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    comment: '处理结果五选一',
+  })
+  handlingResult!: string | null;
+
+  @Column({ name: 'closure_reason', type: 'text', nullable: true, comment: '中断或无法修复时必填' })
+  closureReason!: string | null;
+
+  @Column({
+    name: 'reset_result',
+    type: 'varchar',
+    length: 24,
+    nullable: true,
+    comment: 'NORMAL/SAME_FAULT/NEW_FAULT',
+  })
+  resetResult!: string | null;
+
+  @Column({ name: 'actual_cause', type: 'text', nullable: true, comment: '实际原因' })
+  actualCause!: string | null;
+
+  @Column({ name: 'repair_actions', type: 'longtext', nullable: true, comment: '实际修复动作' })
+  repairActions!: string | null;
+
+  @Column({ name: 'verification_result', type: 'text', nullable: true, comment: '验证结果' })
+  verificationResult!: string | null;
+
+  @Column({
+    name: 'submission_request_id',
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    comment: '提交动作标识；同次重试复用',
+  })
+  submissionRequestId!: string | null;
+
+  @Column({
+    name: 'submission_payload_hash',
+    type: 'char',
+    length: 64,
+    nullable: true,
+    comment: '规范化提交正文 SHA-256',
+  })
+  submissionPayloadHash!: string | null;
 
   @Column({
     name: 'phase_flow_version',
@@ -176,7 +248,7 @@ export class MaintenanceReportEntity {
     type: 'varchar',
     length: 16,
     default: 'DRAFT',
-    comment: 'DRAFT/PENDING_REVIEW/RETURNED/APPROVED',
+    comment: 'DRAFT/SUBMITTED/PENDING_REVIEW/RETURNED/APPROVED',
   })
   status!: string;
 

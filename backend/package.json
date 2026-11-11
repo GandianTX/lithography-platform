@@ -40,6 +40,7 @@
     "migration:status": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/migration.ts status",
     "migration:run": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/migration.ts run",
     "migration:verify": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/migration.ts verify",
+    "database:deploy": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/database-deploy.ts",
     "ci:baseline-drill": "npm run migration:drill:empty-db",
     "seed:mock": "cross-env TZ=Asia/Shanghai NODE_ENV=development ts-node -r tsconfig-paths/register scripts/seed-mock.ts",
     "dev:worker": "cross-env TZ=Asia/Shanghai NODE_ENV=development ts-node -r tsconfig-paths/register src/bootstraps/worker/main.ts",

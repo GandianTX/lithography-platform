@@ -43,9 +43,19 @@ const AI_USAGE_SET = new Set<string>(Object.values(MaintenanceAiUsage));
 const SOURCE_TYPE_SET = new Set<string>(Object.values(MaintenanceReportSourceType));
 const HANDLING_RESULT_SET = new Set<string>(Object.values(RepairRequestHandlingResult));
 
-/** 评分型评价（评分/帮助程度）统一区间 1-5 */
+/** 评分区间：库内与读取保持 1-5；帮助程度新输入收紧到 1-4，历史 5 只允许原样保留 */
 const AI_RATING_MIN = 1;
-const AI_RATING_MAX = 5;
+const AI_SCORE_MAX = 5;
+const AI_HELPFULNESS_MAX = 4;
+
+/** 更新已有草稿时的归一化选项 */
+export interface MaintenanceReportDraftNormalizeOptions {
+  /**
+   * 库内既有的帮助程度值：仅当本次输入未显式改写该字段时传入，
+   * 用于允许 31 态历史值 5 原样保留；新输入仍只能是 1-4。
+   */
+  readonly preservedAiHelpfulness?: number | null;
+}
 
 function invalid(message: string, details?: Record<string, unknown>): never {
   throw new DomainError(MAINTENANCE_REPORT_ERROR.INVALID_PARAMS, message, details);
@@ -187,8 +197,14 @@ function isProvided<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
 }
 
-function isRating(value: number): boolean {
-  return Number.isInteger(value) && value >= AI_RATING_MIN && value <= AI_RATING_MAX;
+function isRating(value: number, max: number): boolean {
+  return Number.isInteger(value) && value >= AI_RATING_MIN && value <= max;
+}
+
+/** 帮助程度：新输入 1-4；仅与库内既有值相同且该值本身合法时才允许保留 5 */
+function isHelpfulness(value: number, preserved: number | null): boolean {
+  if (isRating(value, AI_HELPFULNESS_MAX)) return true;
+  return preserved !== null && value === preserved && isRating(value, AI_SCORE_MAX);
 }
 
 /** AI 使用标记：缺省视为未使用；非法值直接拒绝（先按字符串集合校验，再收窄类型） */
@@ -234,13 +250,22 @@ function normalizeAiSourceReference(
   return { aiSourceType, aiSourceId, aiSourceVersion };
 }
 
-/** 评价取值校验：评分 1-5，正确性为枚举值 */
-function validateAiEvaluationInput(input: MaintenanceReportDraftInput): void {
-  if (isProvided(input.aiScore) && !isRating(input.aiScore)) {
+/** 评价取值校验：评分 1-5，帮助程度新输入 1-4（历史 5 仅原样保留），正确性为枚举值 */
+function validateAiEvaluationInput(
+  input: MaintenanceReportDraftInput,
+  preservedAiHelpfulness: number | null,
+): void {
+  if (isProvided(input.aiScore) && !isRating(input.aiScore, AI_SCORE_MAX)) {
     throw new DomainError(MAINTENANCE_REPORT_ERROR.AI_EVALUATION_INVALID, 'AI 评分必须为 1-5');
   }
-  if (isProvided(input.aiHelpfulness) && !isRating(input.aiHelpfulness)) {
-    throw new DomainError(MAINTENANCE_REPORT_ERROR.AI_EVALUATION_INVALID, 'AI 帮助程度必须为 1-5');
+  if (
+    isProvided(input.aiHelpfulness) &&
+    !isHelpfulness(input.aiHelpfulness, preservedAiHelpfulness)
+  ) {
+    throw new DomainError(
+      MAINTENANCE_REPORT_ERROR.AI_EVALUATION_INVALID,
+      'AI 帮助程度新输入必须为 1-4；历史值 5 仅可原样保留',
+    );
   }
   if (isProvided(input.aiCorrectness) && !CORRECTNESS_SET.has(input.aiCorrectness)) {
     throw new DomainError(MAINTENANCE_REPORT_ERROR.AI_EVALUATION_INVALID, 'AI 正确性取值无效');
@@ -257,7 +282,10 @@ function normalizeAiCorrectnessValue(
   return value as MaintenanceAiCorrectness;
 }
 
-function normalizeAiEvaluation(input: MaintenanceReportDraftInput): AiEvaluationWriteData {
+function normalizeAiEvaluation(
+  input: MaintenanceReportDraftInput,
+  preservedAiHelpfulness: number | null,
+): AiEvaluationWriteData {
   const usage = normalizeAiUsageFlag(input.aiUsage);
 
   if (usage === MaintenanceAiUsage.NOT_USED) {
@@ -280,7 +308,7 @@ function normalizeAiEvaluation(input: MaintenanceReportDraftInput): AiEvaluation
   }
 
   const sourceReference = normalizeAiSourceReference(input);
-  validateAiEvaluationInput(input);
+  validateAiEvaluationInput(input, preservedAiHelpfulness);
 
   return {
     aiUsage: usage,
@@ -302,6 +330,7 @@ function normalizeAiEvaluation(input: MaintenanceReportDraftInput): AiEvaluation
 export function normalizeMaintenanceReportDraft(
   input: MaintenanceReportDraftInput,
   updatedByAccountId: number,
+  options: MaintenanceReportDraftNormalizeOptions = {},
 ): MaintenanceReportDraftWriteData {
   const title = normalizeOptionalText(input.title, TITLE_MAX, '标题');
   const customerFactoryName = normalizeOptionalText(
@@ -332,7 +361,7 @@ export function normalizeMaintenanceReportDraft(
     maintenanceDate: normalizeDate(input.maintenanceDate),
     alarms: normalizeAlarms(input.alarms),
     steps: normalizeSteps(input.steps),
-    ...normalizeAiEvaluation(input),
+    ...normalizeAiEvaluation(input, options.preservedAiHelpfulness ?? null),
     updatedByAccountId,
   };
 }
@@ -343,6 +372,36 @@ export function normalizeHandlingResult(value: string): RepairRequestHandlingRes
     invalid('维修处理结果无效', { handlingResult: value });
   }
   return value as RepairRequestHandlingResult;
+}
+
+/** 需要强制填写非空原因的终结类结果 */
+const CLOSURE_REASON_REQUIRED = new Set<RepairRequestHandlingResult>([
+  RepairRequestHandlingResult.INTERRUPTED,
+  RepairRequestHandlingResult.UNREPAIRABLE,
+]);
+
+/**
+ * 归一化中断/无法修复原因。
+ *
+ * 新流程对 INTERRUPTED/UNREPAIRABLE 要求去空白后非空；其他结果不允许携带原因。
+ * 历史行不在此处补造原因，库内 `chk_repair_request_closure_reason` 仅对
+ * `is_historical = 1` 的旧行豁免。
+ */
+export function normalizeHandlingClosureReason(
+  handlingResult: RepairRequestHandlingResult,
+  value: string | null | undefined,
+): string | null {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (CLOSURE_REASON_REQUIRED.has(handlingResult)) {
+    if (trimmed.length === 0) {
+      invalid('中断或无法修复必须填写非空原因', { handlingResult });
+    }
+    return trimmed;
+  }
+  if (trimmed.length > 0) {
+    invalid('仅中断或无法修复结果可填写原因', { handlingResult });
+  }
+  return null;
 }
 
 export function assertGeneratedAnalysisOutput(

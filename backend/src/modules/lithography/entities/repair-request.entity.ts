@@ -19,8 +19,26 @@ import {
 @Index('idx_repair_request_owner_created', ['ownerOrganizationId', 'createdAt'])
 @Index('idx_repair_request_owner_status', ['ownerOrganizationId', 'handlingStatus'])
 @Index('idx_repair_request_handling_recorder', ['handlingRecordedByAccountId'])
+@Index('uk_repair_request_intake', ['intakeId'], { unique: true })
+@Index('idx_repair_request_customer_organization', ['customerOrganizationId', 'createdAt'])
+@Index('idx_repair_request_service_organization', ['serviceOrganizationId', 'createdAt'])
 @ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
   name: 'fk_repair_request_owner_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('OrganizationEntity', ['customerOrganizationId'], ['id'], {
+  name: 'fk_repair_request_customer_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('OrganizationEntity', ['serviceOrganizationId'], ['id'], {
+  name: 'fk_repair_request_service_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('RepairRequestIntakeEntity', ['intakeId'], ['id'], {
+  name: 'fk_repair_request_intake',
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
@@ -74,12 +92,83 @@ import {
   'chk_repair_request_handling_time',
   "((`handling_result` IS NULL AND `handling_status` IS NULL AND `handling_recorded_at` IS NULL AND `handling_ended_at` IS NULL) OR (`handling_result` IS NOT NULL AND `handling_status` IS NOT NULL AND `handling_recorded_at` IS NOT NULL AND ((`handling_status` = 'IN_PROGRESS' AND `handling_ended_at` IS NULL) OR (`handling_status` IN ('COMPLETED', 'UNRESOLVED') AND `handling_ended_at` IS NOT NULL))))",
 )
+@Check(
+  'chk_repair_request_new_intake_companies',
+  '(`intake_id` IS NULL OR (`customer_organization_id` IS NOT NULL AND `service_organization_id` IS NOT NULL))',
+)
+@Check(
+  'chk_repair_request_closure',
+  "(CASE WHEN `closure_status` IS NULL THEN `closed_at` IS NULL WHEN `closure_status` = 'OPEN' THEN `closed_at` IS NULL WHEN `closure_status` = 'CLOSED' THEN `closed_at` IS NOT NULL ELSE FALSE END) = TRUE",
+)
+@Check(
+  'chk_repair_request_closure_reason',
+  "(`is_historical` = 1 OR `handling_result` IS NULL OR `handling_result` NOT IN ('INTERRUPTED', 'UNREPAIRABLE') OR (`closure_reason` IS NOT NULL AND CHAR_LENGTH(TRIM(`closure_reason`)) > 0))",
+)
+@Check('chk_repair_request_current_revision', '`current_revision_no` >= 0')
 export class RepairRequestEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '维修申请主键ID' })
   id!: number;
 
   @Column({ name: 'request_no', type: 'varchar', length: 50, comment: '维修申请编号' })
   requestNo!: string;
+
+  @Column({ name: 'intake_id', type: 'int', nullable: true, comment: '报修原始输入ID' })
+  intakeId!: number | null;
+
+  @Column({
+    name: 'customer_organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '客户公司ID；仅可从可证明来源回填',
+  })
+  customerOrganizationId!: number | null;
+
+  @Column({
+    name: 'service_organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '服务公司ID；仅可从可证明来源回填',
+  })
+  serviceOrganizationId!: number | null;
+
+  @Column({
+    name: 'closure_status',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: 'OPEN/CLOSED；旧行可空',
+  })
+  closureStatus!: string | null;
+
+  @Column({
+    name: 'closed_at',
+    type: 'timestamp',
+    precision: 3,
+    nullable: true,
+    comment: '结束事实时间',
+  })
+  closedAt!: Date | null;
+
+  @Column({ name: 'closure_reason', type: 'text', nullable: true, comment: '中断或无法修复原因' })
+  closureReason!: string | null;
+
+  @Column({
+    name: 'is_historical',
+    type: 'boolean',
+    default: false,
+    update: false,
+    comment: '历史导入工单；仅迁移/运维可置1，普通业务输入不可修改',
+  })
+  isHistorical!: boolean;
+
+  @Column({
+    name: 'current_revision_no',
+    type: 'int',
+    unsigned: true,
+    default: 0,
+    comment: '管理修订生效版本',
+  })
+  currentRevisionNo!: number;
 
   @Column({ name: 'customer_account_id', type: 'int', comment: '提交申请的客户账号ID' })
   customerAccountId!: number;

@@ -10,7 +10,7 @@ const makeRepo = () => ({
 });
 
 describe('ReferenceDocumentService', () => {
-  it('插入显式落初始状态：deprecated=false；本组织归属与入库方式透传落库', async () => {
+  it('插入显式落初始状态：deprecated=false 与 V13 必填状态；本组织归属与入库方式透传落库', async () => {
     const repo = makeRepo();
     repo.save.mockResolvedValue({ id: 970101 });
     const service = new ReferenceDocumentService(repo as never);
@@ -37,6 +37,9 @@ describe('ReferenceDocumentService', () => {
         createdByAccountId: 900001,
         ownerOrganizationId: 910001,
         ingestMethod: 'ADMIN_DIRECT',
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+        sourceKind: 'MATERIAL',
         deprecated: false,
         originalFilename: null,
         mimeType: null,
@@ -131,7 +134,7 @@ describe('ReferenceDocumentService', () => {
     ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED });
   });
 
-  it('软删除条件更新命中返回 DELETED；deleted_at 与 deprecated 同语句写入', async () => {
+  it('软删除条件更新命中返回 DELETED；deleted_at/deprecated/publication_status 同语句写入', async () => {
     const repo = makeRepo();
     repo.update.mockResolvedValue({ affected: 1 });
     const service = new ReferenceDocumentService(repo as never);
@@ -142,7 +145,11 @@ describe('ReferenceDocumentService', () => {
     });
     expect(repo.update).toHaveBeenCalledWith(
       { id: 970001, deprecated: false },
-      { deprecated: true, deletedAt: expect.any(Function) },
+      {
+        deprecated: true,
+        deletedAt: expect.any(Function),
+        publicationStatus: 'OFFLINE',
+      },
     );
   });
 

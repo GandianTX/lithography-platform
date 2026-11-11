@@ -21,6 +21,19 @@ import {
   'deletedAt',
   'createdAt',
 ])
+@Index('uk_reference_document_source_report_version', ['sourceReportVersionId'], {
+  unique: true,
+})
+@ForeignKey(
+  'MaintenanceReportVersionEntity',
+  ['sourceReportVersionId', 'sourceReportId'],
+  ['id', 'reportId'],
+  {
+    name: 'fk_reference_document_source_report_version',
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+)
 @ForeignKey('EquipmentModelEntity', ['equipmentModelId'], ['id'], {
   name: 'fk_reference_document_equipment_model',
   onDelete: 'RESTRICT',
@@ -66,12 +79,25 @@ import {
   '((`storage_backend` IS NULL AND `storage_reference` IS NULL) OR (`storage_backend` IS NOT NULL AND `storage_reference` IS NOT NULL))',
 )
 @Check(
-  'chk_reference_document_content_source',
-  '(`content_text` IS NOT NULL OR `storage_reference` IS NOT NULL)',
+  'chk_reference_document_content_source_v13',
+  "((`source_kind` = 'MATERIAL' AND (`content_text` IS NOT NULL OR `storage_reference` IS NOT NULL)) OR (`source_kind` IN ('INDEPENDENT_REPORT', 'WORK_ORDER_SUMMARY') AND `source_report_id` IS NOT NULL AND `source_report_version_id` IS NOT NULL))",
 )
 @Check(
   'chk_reference_document_ingest_method',
-  "`ingest_method` IN ('ADMIN_DIRECT', 'REVIEWED_SUBMISSION', 'SYSTEM_IMPORT')",
+  "`ingest_method` IN ('ADMIN_DIRECT', 'REVIEWED_SUBMISSION', 'SYSTEM_IMPORT', 'DIRECT_SUBMISSION')",
+)
+@Check('chk_reference_document_publication', "`publication_status` IN ('ONLINE', 'OFFLINE')")
+@Check(
+  'chk_reference_document_ownership',
+  "`ownership_status` IN ('CONFIRMED', 'PENDING') AND (`ownership_status` = 'PENDING' OR `owner_organization_id` IS NOT NULL)",
+)
+@Check(
+  'chk_reference_document_source_kind',
+  "`source_kind` IN ('INDEPENDENT_REPORT', 'WORK_ORDER_SUMMARY', 'MATERIAL')",
+)
+@Check(
+  'chk_reference_document_report_source_pair',
+  '((`source_report_id` IS NULL AND `source_report_version_id` IS NULL) OR (`source_report_id` IS NOT NULL AND `source_report_version_id` IS NOT NULL))',
 )
 @Check(
   'chk_reference_document_source_pair',
@@ -149,8 +175,62 @@ export class ReferenceDocumentEntity {
   @Column({ name: 'created_by_account_id', type: 'int', comment: '创建人账号ID' })
   createdByAccountId!: number;
 
-  @Column({ name: 'owner_organization_id', type: 'int', comment: '所属组织ID' })
-  ownerOrganizationId!: number;
+  @Column({
+    name: 'owner_organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '所属组织ID；未知历史归属为空，不猜测',
+  })
+  ownerOrganizationId!: number | null;
+
+  @Column({
+    name: 'publication_status',
+    type: 'varchar',
+    length: 16,
+    comment: 'ONLINE/OFFLINE；删除另记',
+  })
+  publicationStatus!: string;
+
+  @Column({
+    name: 'ownership_status',
+    type: 'varchar',
+    length: 16,
+    comment: 'CONFIRMED/PENDING',
+  })
+  ownershipStatus!: string;
+
+  @Column({
+    name: 'current_revision_no',
+    type: 'int',
+    unsigned: true,
+    default: 0,
+    comment: '生效管理修订版本',
+  })
+  currentRevisionNo!: number;
+
+  @Column({
+    name: 'source_kind',
+    type: 'varchar',
+    length: 32,
+    comment: 'INDEPENDENT_REPORT/WORK_ORDER_SUMMARY/MATERIAL',
+  })
+  sourceKind!: string;
+
+  @Column({
+    name: 'source_report_id',
+    type: 'int',
+    nullable: true,
+    comment: '来源报告ID；与版本同报告',
+  })
+  sourceReportId!: number | null;
+
+  @Column({
+    name: 'source_report_version_id',
+    type: 'int',
+    nullable: true,
+    comment: '来源冻结报告版本ID；永久保留',
+  })
+  sourceReportVersionId!: number | null;
 
   @Column({
     name: 'ingest_method',

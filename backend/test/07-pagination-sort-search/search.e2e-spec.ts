@@ -12,17 +12,18 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
 import { DatabaseModule } from '@src/infrastructure/database/database.module';
 import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
-import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
 import { SearchModule, SearchService } from '@src/modules/common/search.module';
 import { VerificationRecordEntity } from '@src/modules/verification-record/verification-record.entity';
 import { randomBytes } from 'crypto';
 import { DataSource, type SelectQueryBuilder } from 'typeorm';
+import { ACCOUNT_QUERY_FIXTURE_ENTITIES } from '../utils/local-entity-sets';
 
 describe('TypeOrmSearch 功能测试 (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let searchService: SearchService;
   let seededAccountIds: number[] = [];
+  let appInitialized = false;
 
   const searchPrefix = 'SE_CASE_';
   const groupedPrefix = 'LS_CASE_';
@@ -80,12 +81,13 @@ describe('TypeOrmSearch 功能测试 (e2e)', () => {
         AppConfigModule,
         DatabaseModule,
         SearchModule,
-        TypeOrmModule.forFeature([AccountEntity, UserInfoEntity, VerificationRecordEntity]),
+        TypeOrmModule.forFeature([...ACCOUNT_QUERY_FIXTURE_ENTITIES]),
       ],
     }).compile();
 
     app = moduleFixture.createNestApplication();
     await app.init();
+    appInitialized = true;
     dataSource = moduleFixture.get<DataSource>(DataSource);
     searchService = moduleFixture.get<SearchService>(SearchService);
 
@@ -98,10 +100,30 @@ describe('TypeOrmSearch 功能测试 (e2e)', () => {
   });
 
   afterAll(async () => {
-    try {
-      await cleanupSeededRows();
-    } finally {
-      if (app) await app.close();
+    const cleanupErrors: unknown[] = [];
+
+    // 仅在本应用成功初始化后才清理；初始化失败时不得继续 getRepository 掩盖原始错误。
+    if (appInitialized) {
+      try {
+        await cleanupSeededRows();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (app) {
+      try {
+        await app.close();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (cleanupErrors.length === 1) {
+      throw cleanupErrors[0];
+    }
+    if (cleanupErrors.length > 1) {
+      throw new AggregateError(cleanupErrors, '搜索规格收尾失败（清理与应用关闭均报错）');
     }
   });
 

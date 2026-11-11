@@ -9,14 +9,19 @@ import {
   PrefixForeignKeyRequirement,
   PrefixIndexRequirement,
   PrefixStructureRequirement,
+  REQUIRED_GENERATED_COLUMNS,
   REQUIRED_TABLES,
+  REDEFINED_COLUMN_OWNERS,
+  type ColumnDefinition,
   collectAllStructureRequirements,
   collectPrefixStructureRequirements,
   hasQueryResult,
   isQueryRows,
+  isStructureOwnedByExecutedMigration,
   resolveMigrationName,
   resolveMigrationTimestamp,
 } from './migration-schema-contract';
+import { collectRequiredStructureDefinitionIssues } from './migration-structure-definition-verifier';
 
 type MysqlDataSourceOptions = Extract<DataSourceOptions, { type: 'mysql' | 'mariadb' }>;
 
@@ -37,6 +42,12 @@ export interface MigrationDbConfig {
   readonly database: string;
   readonly timezone: string;
   readonly charset: string;
+  /**
+   * 字段加密配置：仅管理员初始化写入 `meta_digest` 时需要。
+   * 与 API 读取加密列必须使用同一组 key/iv；缺失时管理员初始化失败关闭。
+   */
+  readonly fieldEncryptionKey?: string;
+  readonly fieldEncryptionIv?: string;
 }
 
 export interface MigrationLogger {
@@ -209,6 +220,9 @@ export function loadExplicitEnvConfig(
     throw new Error('环境文件声明 DB_SYNCHRONIZE=true，与迁移入口强制 synchronize=false 冲突');
   }
 
+  const fieldEncryptionKey = (parsed.FIELD_ENCRYPTION_KEY ?? '').trim();
+  const fieldEncryptionIv = (parsed.FIELD_ENCRYPTION_IV ?? '').trim();
+
   return {
     host,
     port,
@@ -217,6 +231,8 @@ export function loadExplicitEnvConfig(
     database,
     timezone: (parsed.DB_TIMEZONE ?? '+08:00').trim() || '+08:00',
     charset: 'utf8mb4',
+    ...(fieldEncryptionKey.length > 0 ? { fieldEncryptionKey } : {}),
+    ...(fieldEncryptionIv.length > 0 ? { fieldEncryptionIv } : {}),
   };
 }
 
@@ -604,6 +620,33 @@ async function columnExists(
 }
 
 /**
+ * 读取列的实际类型（小写，用于区分“旧迁移已创建”与“待执行迁移半途写入”）。
+ */
+async function readColumnType(
+  dataSource: DataSource,
+  databaseName: string,
+  tableName: string,
+  columnName: string,
+): Promise<string | null> {
+  const rows: unknown = await dataSource.query(
+    `
+      SELECT column_type
+      FROM information_schema.columns
+      WHERE table_schema = ?
+        AND table_name = ?
+        AND column_name = ?
+      LIMIT 1
+    `,
+    [databaseName, tableName, columnName],
+  );
+  if (!isQueryRows(rows) || rows.length === 0) {
+    return null;
+  }
+  const value = readRowString(rows[0], ['column_type', 'COLUMN_TYPE']);
+  return value === null ? null : value.trim().toLowerCase();
+}
+
+/**
  * 检查指定索引/约束是否存在（索引按 statistics，约束按 table_constraints）。
  */
 async function objectExists(
@@ -652,6 +695,378 @@ function sameOrderedValues(
     return false;
   }
   return expected.every((value, index) => value === actual[index]);
+}
+
+const QUOTE_CHARS = new Set(["'", '"', '`']);
+const WORD_CHARS = /[A-Za-z0-9_$]/;
+const ADJACENT_PUNCTUATION = new Set(['(', ')', ',']);
+
+/**
+ * 读取带引号的 token，保留字符串字面量与 JSON 路径的原始大小写/内容。
+ */
+function readQuotedToken(raw: string, start: number): { token: string; next: number } {
+  const quote = raw[start];
+  let index = start + 1;
+  while (index < raw.length) {
+    if (raw[index] === '\\' && quote !== '`') {
+      index += 2;
+      continue;
+    }
+    if (raw[index] === quote) {
+      if (raw[index + 1] === quote) {
+        index += 2;
+        continue;
+      }
+      return { token: raw.slice(start, index + 1), next: index + 1 };
+    }
+    index += 1;
+  }
+  throw new Error('CHECK 表达式的引号未闭合');
+}
+
+/**
+ * 判断表达式是否被一对包裹整个表达式的多余括号包围。
+ * 只剥离这种冗余括号，保留会影响运算优先级的内层括号。
+ */
+function isWrappedBySingleParenPair(expression: string): boolean {
+  if (!expression.startsWith('(') || !expression.endsWith(')')) {
+    return false;
+  }
+  let depth = 0;
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+    if (QUOTE_CHARS.has(char)) {
+      const quoted = readQuotedToken(expression, index);
+      index = quoted.next - 1;
+      continue;
+    }
+    if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth -= 1;
+      if (depth === 0 && index !== expression.length - 1) {
+        return false;
+      }
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+  return depth === 0;
+}
+
+/**
+ * information_schema.check_constraints.check_clause 返回的是数据字典转义后的文本：
+ * 单引号写作 \'，反斜杠写作 \\，字符串字面量前带 _utf8mb4 等字符集引导符。
+ * 这里只还原转义并去掉引导符，不改变字面量内容，避免与预期定义比较时产生伪漂移。
+ * 注意：只对数据库返回的实际值使用，不要对仓库内的预期定义使用。
+ */
+export function normalizeMysqlCheckClauseText(raw: string): string {
+  let unescaped = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === '\\' && index + 1 < raw.length) {
+      const next = raw[index + 1];
+      if (next === '\\' || next === "'") {
+        unescaped += next;
+        index += 1;
+        continue;
+      }
+    }
+    unescaped += char;
+  }
+  return unescaped.replace(/_utf8mb4(?=')/gi, '');
+}
+
+/**
+ * MySQL 会把 CHECK 表达式重新打印，并给 AND/OR 的每个操作数加上分组括号。
+ * 这些括号包住的是单个比较项，去掉不改变运算优先级；含顶层 AND/OR 的分组保留，
+ * 因此不会掩盖 `(a OR b) AND c` 与 `a OR (b AND c)` 这类真实漂移。
+ */
+const LOGICAL_KEYWORDS = new Set(['and', 'or', 'xor']);
+const GROUPING_CONTEXT_KEYWORDS = new Set(['and', 'or', 'xor', 'not', 'when', 'then', 'else']);
+
+function findMatchingParen(expression: string, start: number): number {
+  let depth = 0;
+  let index = start;
+  while (index < expression.length) {
+    const char = expression[index];
+    if (QUOTE_CHARS.has(char)) {
+      index = readQuotedToken(expression, index).next;
+      continue;
+    }
+    if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+    index += 1;
+  }
+  return -1;
+}
+
+function trailingWord(prefix: string): string | null {
+  const match = /([A-Za-z_][A-Za-z0-9_$]*)$/.exec(prefix);
+  return match === null ? null : match[1].toLowerCase();
+}
+
+function hasTopLevelLogicalOperator(expression: string): boolean {
+  let depth = 0;
+  let pendingBetween = false;
+  let index = 0;
+  while (index < expression.length) {
+    const char = expression[index];
+    if (QUOTE_CHARS.has(char)) {
+      index = readQuotedToken(expression, index).next;
+      continue;
+    }
+    if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth -= 1;
+    } else if (depth === 0 && WORD_CHARS.test(char)) {
+      let end = index + 1;
+      while (end < expression.length && WORD_CHARS.test(expression[end])) {
+        end += 1;
+      }
+      const word = expression.slice(index, end).toLowerCase();
+      if (word === 'between') {
+        pendingBetween = true;
+      } else if (word === 'and' && pendingBetween) {
+        pendingBetween = false;
+      } else if (LOGICAL_KEYWORDS.has(word)) {
+        return true;
+      }
+      index = end;
+      continue;
+    }
+    index += 1;
+  }
+  return false;
+}
+
+function isWordLike(char: string | undefined): boolean {
+  return char !== undefined && (WORD_CHARS.test(char) || QUOTE_CHARS.has(char));
+}
+
+function stripRedundantGroupParens(expression: string): string {
+  let result = '';
+  let index = 0;
+  while (index < expression.length) {
+    const char = expression[index];
+    if (QUOTE_CHARS.has(char)) {
+      const quoted = readQuotedToken(expression, index);
+      result += quoted.token;
+      index = quoted.next;
+      continue;
+    }
+    if (char !== '(') {
+      result += char;
+      index += 1;
+      continue;
+    }
+    const end = findMatchingParen(expression, index);
+    if (end === -1) {
+      result += char;
+      index += 1;
+      continue;
+    }
+    const inner = stripRedundantGroupParens(expression.slice(index + 1, end));
+    // 用原表达式的紧邻前词判断分组上下文，避免上一组被剥离后丢失关键字身份。
+    const word = trailingWord(expression.slice(0, index));
+    // 函数调用/IN 列表的括号必须保留；其余分组括号在只包住单个比较项时删除。
+    const isGrouping = word === null || GROUPING_CONTEXT_KEYWORDS.has(word);
+    if (isGrouping && !hasTopLevelLogicalOperator(inner)) {
+      if (isWordLike(result.slice(-1)) && isWordLike(inner[0])) {
+        result += ' ';
+      }
+      result += inner;
+      if (isWordLike(inner.slice(-1)) && isWordLike(expression[end + 1])) {
+        result += ' ';
+      }
+      index = end + 1;
+      continue;
+    }
+    result += `(${inner})`;
+    index = end + 1;
+  }
+  return result;
+}
+
+/**
+ * 规范化 CHECK 表达式用于定义比较。
+ *
+ * 规则：仅折叠空白、去引号外的大小写、剥离包裹整个表达式的冗余括号；
+ * 字符串字面量、JSON 路径和所有影响运算优先级的内层括号保持原样，
+ * 不用全局小写或去括号掩盖真实漂移。
+ */
+export function normalizeCheckClause(raw: string): string {
+  const tokens: string[] = [];
+  let pendingSpace = false;
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index];
+    if (QUOTE_CHARS.has(char)) {
+      if (pendingSpace && tokens.length > 0) {
+        const previousChar = tokens[tokens.length - 1].slice(-1);
+        if (
+          !ADJACENT_PUNCTUATION.has(previousChar) &&
+          (WORD_CHARS.test(previousChar) || QUOTE_CHARS.has(previousChar))
+        ) {
+          tokens.push(' ');
+        }
+      }
+      pendingSpace = false;
+      const quoted = readQuotedToken(raw, index);
+      tokens.push(quoted.token);
+      index = quoted.next;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      pendingSpace = true;
+      index += 1;
+      continue;
+    }
+    if (ADJACENT_PUNCTUATION.has(char)) {
+      tokens.push(char);
+      pendingSpace = false;
+      index += 1;
+      continue;
+    }
+    if (pendingSpace && tokens.length > 0) {
+      const previousChar = tokens[tokens.length - 1].slice(-1);
+      if (
+        !ADJACENT_PUNCTUATION.has(previousChar) &&
+        (WORD_CHARS.test(previousChar) || QUOTE_CHARS.has(previousChar))
+      ) {
+        tokens.push(' ');
+      }
+    }
+    pendingSpace = false;
+    tokens.push(char.toLowerCase());
+    index += 1;
+  }
+  let normalized = tokens.join('');
+  while (isWrappedBySingleParenPair(normalized)) {
+    normalized = normalized.slice(1, -1);
+  }
+  return stripRedundantGroupParens(normalized);
+}
+
+/**
+ * 规范化列默认值：null 表示 SQL NULL；字符串默认去掉外层引号后小写。
+ */
+function normalizeDefaultValue(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  const unquoted =
+    trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")
+      ? trimmed.slice(1, -1)
+      : trimmed;
+  return unquoted.toLowerCase();
+}
+
+/**
+ * 规范化列类型：折叠空白并小写，保留长度/精度/unsigned 信息。
+ */
+function normalizeColumnType(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export interface ActualColumnDefinition {
+  readonly columnType: string | null;
+  readonly nullable: string | null;
+  readonly defaultValue: string | null;
+  readonly generatedExpression: string | null;
+}
+
+/**
+ * 比较列定义：类型/长度/符号、NULL、默认值与生成表达式。
+ * 结构化返回问题清单，供 verify 与单元测试共用。
+ */
+export function compareColumnDefinition(
+  expected: ColumnDefinition,
+  actual: ActualColumnDefinition,
+): ReadonlyArray<string> {
+  const issues: string[] = [];
+  if (
+    actual.columnType === null ||
+    normalizeColumnType(actual.columnType) !== normalizeColumnType(expected.columnType)
+  ) {
+    issues.push(`列类型不符: 期望 ${expected.columnType}，实际 ${String(actual.columnType)}`);
+  }
+  const actualNullable = actual.nullable === 'YES';
+  if (actualNullable !== expected.nullable) {
+    issues.push(
+      `列可空性不符: 期望 ${expected.nullable ? 'NULL' : 'NOT NULL'}，实际 ${String(actual.nullable)}`,
+    );
+  }
+  if (
+    expected.defaultValue !== undefined &&
+    normalizeDefaultValue(actual.defaultValue) !== normalizeDefaultValue(expected.defaultValue)
+  ) {
+    issues.push(
+      `列默认值不符: 期望 ${String(expected.defaultValue)}，实际 ${String(actual.defaultValue)}`,
+    );
+  }
+  const actualGenerated =
+    actual.generatedExpression === null || actual.generatedExpression.trim().length === 0
+      ? null
+      : actual.generatedExpression;
+  const expectedGenerated = expected.generatedExpression ?? null;
+  if (actualGenerated !== expectedGenerated) {
+    issues.push(
+      `列生成表达式不符: 期望 ${String(expectedGenerated)}，实际 ${String(actualGenerated)}`,
+    );
+  }
+  return issues;
+}
+
+/**
+ * 将列定义问题加上表列定位，便于预检输出直接定位漂移。
+ */
+function prefixColumnIssues(
+  table: string,
+  column: string,
+  issues: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  return issues.map((issue) => `关键字段定义漂移: ${table}.${column} ${issue}`);
+}
+
+/**
+ * 读取列的实际定义（类型/可空/默认/生成表达式）。
+ */
+async function readActualColumnDefinition(
+  dataSource: DataSource,
+  databaseName: string,
+  tableName: string,
+  columnName: string,
+): Promise<ActualColumnDefinition | null> {
+  const rows: unknown = await dataSource.query(
+    `
+      SELECT column_type, is_nullable, column_default, generation_expression
+      FROM information_schema.columns
+      WHERE table_schema = ?
+        AND table_name = ?
+        AND column_name = ?
+      LIMIT 1
+    `,
+    [databaseName, tableName, columnName],
+  );
+  if (!isQueryRows(rows) || rows.length === 0) {
+    return null;
+  }
+  return {
+    columnType: readRowString(rows[0], ['column_type', 'COLUMN_TYPE']),
+    nullable: readRowString(rows[0], ['is_nullable', 'IS_NULLABLE']),
+    defaultValue: readRowString(rows[0], ['column_default', 'COLUMN_DEFAULT']),
+    generatedExpression: readRowString(rows[0], ['generation_expression', 'GENERATION_EXPRESSION']),
+  };
 }
 
 /**
@@ -817,6 +1232,41 @@ async function collectForeignKeyIssues(
       `关键外键定义不符: ${item.table}.${item.name} 期望 (${item.localColumns.join(', ')}) -> ${databaseName}.${item.referenceTable}(${item.referenceColumns.join(', ')})，实际 (${actualLocal.join(', ')}) -> ${String(actualSchema)}.${String(actualTable)}(${actualReference.join(', ')})`,
     );
   }
+  if (item.onDelete !== undefined || item.onUpdate !== undefined) {
+    const ruleRows: unknown = await dataSource.query(
+      `
+        SELECT delete_rule, update_rule
+        FROM information_schema.referential_constraints
+        WHERE constraint_schema = ?
+          AND table_name = ?
+          AND constraint_name = ?
+        LIMIT 1
+      `,
+      [databaseName, item.table, item.name],
+    );
+    if (!isQueryRows(ruleRows) || ruleRows.length === 0) {
+      issues.push(`关键外键规则查询为空: ${item.table}.${item.name}`);
+    } else {
+      const actualDelete = readRowString(ruleRows[0], ['delete_rule', 'DELETE_RULE']) ?? '';
+      const actualUpdate = readRowString(ruleRows[0], ['update_rule', 'UPDATE_RULE']) ?? '';
+      if (
+        item.onDelete !== undefined &&
+        actualDelete.toUpperCase() !== item.onDelete.toUpperCase()
+      ) {
+        issues.push(
+          `关键外键删除规则不符: ${item.table}.${item.name} 期望 ${item.onDelete}，实际 ${actualDelete}`,
+        );
+      }
+      if (
+        item.onUpdate !== undefined &&
+        actualUpdate.toUpperCase() !== item.onUpdate.toUpperCase()
+      ) {
+        issues.push(
+          `关键外键更新规则不符: ${item.table}.${item.name} 期望 ${item.onUpdate}，实际 ${actualUpdate}`,
+        );
+      }
+    }
+  }
   return issues;
 }
 
@@ -859,13 +1309,31 @@ async function collectStructureIssues(
             issues.push(`关键字段允许 NULL，未完成收紧: ${item.table}.${item.name}`);
           }
         }
+        if (item.definition) {
+          const actual = await readActualColumnDefinition(
+            dataSource,
+            databaseName,
+            item.table,
+            item.name,
+          );
+          if (actual === null) {
+            issues.push(`关键字段定义查询为空: ${item.table}.${item.name}`);
+            break;
+          }
+          issues.push(
+            ...prefixColumnIssues(
+              item.table,
+              item.name,
+              compareColumnDefinition(item.definition, actual),
+            ),
+          );
+        }
         break;
       }
       case 'check': {
-        const exists = await hasQueryResult(
-          dataSource,
+        const constraintRows: unknown = await dataSource.query(
           `
-            SELECT 1
+            SELECT enforced
             FROM information_schema.table_constraints
             WHERE constraint_schema = ?
               AND table_name = ?
@@ -875,8 +1343,42 @@ async function collectStructureIssues(
           `,
           [databaseName, item.table, item.name],
         );
-        if (!exists) {
+        if (!isQueryRows(constraintRows) || constraintRows.length === 0) {
           issues.push(`关键 CHECK 约束缺失: ${item.table}.${item.name}`);
+          break;
+        }
+        const enforced = readRowString(constraintRows[0], ['enforced', 'ENFORCED']);
+        if (enforced === null || enforced.toUpperCase() !== 'YES') {
+          issues.push(
+            `关键 CHECK 未强制执行: ${item.table}.${item.name} enforced=${enforced ?? '(未知)'}`,
+          );
+          break;
+        }
+        if (item.definition) {
+          const rows: unknown = await dataSource.query(
+            `
+              SELECT check_clause
+              FROM information_schema.check_constraints
+              WHERE constraint_schema = ?
+                AND constraint_name = ?
+              LIMIT 1
+            `,
+            [databaseName, item.name],
+          );
+          if (!isQueryRows(rows) || rows.length === 0) {
+            issues.push(`关键 CHECK 表达式查询为空: ${item.table}.${item.name}`);
+            break;
+          }
+          const actualClause = readRowString(rows[0], ['check_clause', 'CHECK_CLAUSE']);
+          if (
+            actualClause === null ||
+            normalizeCheckClause(normalizeMysqlCheckClauseText(actualClause)) !==
+              normalizeCheckClause(item.definition.clause)
+          ) {
+            issues.push(
+              `关键 CHECK 定义漂移: ${item.table}.${item.name} 期望 ${normalizeCheckClause(item.definition.clause)}，实际 ${String(actualClause)}`,
+            );
+          }
         }
         break;
       }
@@ -925,6 +1427,7 @@ export async function inspectMigrationState(
       collectPrefixStructureRequirements(executedTimestamps),
     )),
   );
+  issues.push(...describeUnknownBusinessTables(await readBaseTableNames(dataSource, databaseName)));
 
   for (const executed of history) {
     const artifact = artifacts.get(executed.timestamp);
@@ -953,13 +1456,42 @@ export async function inspectMigrationState(
       }
     }
     for (const column of artifact.addedColumns) {
+      if (
+        isStructureOwnedByExecutedMigration(
+          'column',
+          column.table,
+          column.column,
+          executedTimestamps,
+        )
+      ) {
+        continue;
+      }
       if (await columnExists(dataSource, databaseName, column.table, column.column)) {
+        const redefined = REDEFINED_COLUMN_OWNERS.find(
+          (owner) => owner.table === column.table && owner.column === column.column,
+        );
+        if (redefined && executedTimestamps.has(redefined.since)) {
+          const actualType = await readColumnType(
+            dataSource,
+            databaseName,
+            column.table,
+            column.column,
+          );
+          if (actualType === redefined.legacyColumnType.toLowerCase()) {
+            continue;
+          }
+        }
         issues.push(
           `疑似半迁移：列 ${column.table}.${column.column} 已存在，但 ${entry.name} 未记录为已执行`,
         );
       }
     }
     for (const object of artifact.addedObjects) {
+      if (
+        isStructureOwnedByExecutedMigration('object', object.table, object.name, executedTimestamps)
+      ) {
+        continue;
+      }
       if (await objectExists(dataSource, databaseName, object.table, object.name)) {
         issues.push(
           `疑似半迁移：索引/约束 ${object.table}.${object.name} 已存在，但 ${entry.name} 未记录为已执行`,
@@ -984,6 +1516,50 @@ export async function inspectMigrationState(
 }
 
 /**
+ * 校验生成列确实由数据库计算。
+ *
+ * 只断言 generation_expression 非空：MySQL 会按版本归一化表达式文本，
+ * 逐字比较会产生跨版本假失败；类型与唯一索引已由列/索引契约覆盖。
+ */
+export async function collectGeneratedColumnIssues(
+  dataSource: DataSource,
+  databaseName: string,
+): Promise<ReadonlyArray<string>> {
+  const issues: string[] = [];
+  for (const item of REQUIRED_GENERATED_COLUMNS) {
+    const rows: unknown = await dataSource.query(
+      `
+        SELECT generation_expression
+        FROM information_schema.columns
+        WHERE table_schema = ?
+          AND table_name = ?
+          AND column_name = ?
+        LIMIT 1
+      `,
+      [databaseName, item.table, item.column],
+    );
+    if (!isQueryRows(rows) || rows.length === 0) {
+      issues.push(`生成列缺失: ${item.table}.${item.column}`);
+      continue;
+    }
+    const expression = readRowString(rows[0], ['generation_expression', 'GENERATION_EXPRESSION']);
+    if (expression === null || expression.trim().length === 0) {
+      issues.push(`生成列缺少生成表达式: ${item.table}.${item.column}`);
+    }
+  }
+  return issues;
+}
+
+function describeUnknownBusinessTables(actualTables: ReadonlyArray<string>): string[] {
+  const expected = new Set<string>(REQUIRED_TABLES);
+  return actualTables
+    .filter(
+      (table) => table !== 'migrations' && table !== 'typeorm_metadata' && !expected.has(table),
+    )
+    .map((table) => `存在预期之外的业务表: ${table}`);
+}
+
+/**
  * 收集最终结构差异，逐项输出而不是只看总表数。
  */
 export async function collectStructuralIssues(
@@ -995,17 +1571,11 @@ export async function collectStructuralIssues(
   const businessTables = actualTables.filter(
     (table) => table !== 'migrations' && table !== 'typeorm_metadata',
   );
-  const expected = new Set<string>(REQUIRED_TABLES);
-  const actual = new Set<string>(businessTables);
-
-  for (const table of actual) {
-    if (!expected.has(table)) {
-      warnings.push(`存在预期之外的业务表: ${table}`);
-    }
-  }
+  warnings.push(...describeUnknownBusinessTables(businessTables));
 
   const issues = [
     ...(await collectStructureIssues(dataSource, databaseName, collectAllStructureRequirements())),
+    ...(await collectGeneratedColumnIssues(dataSource, databaseName)),
   ];
 
   for (const item of FORBIDDEN_COLUMNS) {
@@ -1182,7 +1752,9 @@ export async function verifyMigrationState(
   const structural = await collectStructuralIssues(dataSource, databaseName);
   issues.push(...structural.issues);
   warnings.push(...structural.warnings);
+  issues.push(...structural.warnings);
   issues.push(...(await collectDataIssues(dataSource, databaseName)));
+  issues.push(...(await collectRequiredStructureDefinitionIssues(dataSource, databaseName)));
 
   return {
     target,
@@ -1284,7 +1856,7 @@ export function getCleanupErrors(error: unknown): ReadonlyArray<string> {
 /**
  * 获取目标库连接级互斥锁；同一目标只允许一个迁移进程。
  */
-async function acquireMigrationLock(
+export async function acquireMigrationLock(
   dataSource: DataSource,
   databaseName: string,
   timeoutSeconds: number,

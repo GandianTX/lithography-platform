@@ -157,6 +157,11 @@ export type RecordRepairRequestHandlingCommand = {
   session: UsecaseSession;
   repairRequestId: number;
   handlingResult: string;
+  /**
+   * 中断/无法修复原因：这两类结果必填且去空白后非空；
+   * 其他结果不得携带原因，避免静默丢弃调用方输入。
+   */
+  closureReason?: string | null;
 };
 
 export type RecordRepairRequestHandlingResult = {
@@ -165,4 +170,5 @@ export type RecordRepairRequestHandlingResult = {
   handlingStatus: string;
   handlingRecordedAt: Date;
   handlingEndedAt: Date | null;
+  closureReason: string | null;
 };

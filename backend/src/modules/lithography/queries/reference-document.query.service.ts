@@ -170,9 +170,12 @@ export class ReferenceDocumentQueryService {
     const model = entity.equipmentModelId
       ? await this.equipmentModelRepository.findOne({ where: { id: entity.equipmentModelId } })
       : null;
-    const organization = await this.getOrganizationRepository(params.transactionContext).findOne({
-      where: { id: entity.ownerOrganizationId },
-    });
+    const organization =
+      entity.ownerOrganizationId === null
+        ? null
+        : await this.getOrganizationRepository(params.transactionContext).findOne({
+            where: { id: entity.ownerOrganizationId },
+          });
     const caseDetailRepository = this.getCaseDetailRepository(params.transactionContext);
     const caseDetail =
       params.forUpdate === true && isFaultCaseType(entity.documentType)
@@ -278,7 +281,9 @@ export class ReferenceDocumentQueryService {
       : [];
     const nameByModelId = new Map(models.map((model) => [model.id, model.modelName]));
 
-    const organizationIds = [...new Set(entities.map((entity) => entity.ownerOrganizationId))];
+    const organizationIds = [
+      ...new Set(entities.map((entity) => entity.ownerOrganizationId)),
+    ].filter((id): id is number => id !== null);
     const organizations = await this.organizationRepository.find({
       where: { id: In(organizationIds) },
     });
@@ -305,7 +310,9 @@ export class ReferenceDocumentQueryService {
       description: entity.description,
       originalFilename: entity.originalFilename,
       organizationName:
-        nameByOrganizationId.get(entity.ownerOrganizationId) ?? UNKNOWN_ORGANIZATION_NAME,
+        entity.ownerOrganizationId === null
+          ? UNKNOWN_ORGANIZATION_NAME
+          : (nameByOrganizationId.get(entity.ownerOrganizationId) ?? UNKNOWN_ORGANIZATION_NAME),
       ingestMethod: entity.ingestMethod,
       // 案例处理状态来自案例明细（普通资料无明细，恒为 null）；列表不携带案例大段正文
       caseHandlingStatus: handlingStatusByDocumentId.get(entity.id) ?? null,

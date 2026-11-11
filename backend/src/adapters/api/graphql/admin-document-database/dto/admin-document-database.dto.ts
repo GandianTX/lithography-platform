@@ -80,8 +80,8 @@ export class AdminAiConversationListItemDTO {
   @Field(() => Int, { description: 'AI 会话 ID' })
   id!: number;
 
-  @Field(() => Int, { description: '关联维修申请 ID' })
-  requestId!: number;
+  @Field(() => Int, { nullable: true, description: '关联维修申请 ID（转换前可为空）' })
+  requestId?: number | null;
 
   @Field(() => String, { description: '关联申请编号' })
   requestNo!: string;

@@ -9,12 +9,10 @@ import {
 } from '@app-types/models/account.types';
 import { Gender, type GeographicInfo, UserState } from '@app-types/models/user-info.types';
 import {
-  ACCOUNT_ERROR,
-  ADMIN_USER_ERROR,
-  AUTH_ERROR,
-  DomainError,
-} from '@core/common/errors/domain-error';
-import { LegacyPasswordCryptoHelper } from '@modules/common/password/legacy-password-crypto.helper';
+  hashPasswordWithTimestamp,
+  verifyPasswordWithTimestamp,
+} from '@core/account/policy/password-hashing.policy';
+import { ACCOUNT_ERROR, ADMIN_USER_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
@@ -467,41 +465,12 @@ export class AccountService {
 
   /** 使用创建时间的 UTC ISO 表示作为稳定盐值进行 PBKDF2 加密 */
   static hashPasswordWithTimestamp(password: string, createdAt: Date): string {
-    // 应用与 PasswordPolicyService 相同的预处理
-    const processedPassword = AccountService.preprocessPassword(password);
-    const salt = createdAt.toISOString();
-    return LegacyPasswordCryptoHelper.hashPasswordWithCrypto(processedPassword, salt);
+    return hashPasswordWithTimestamp(password, createdAt);
   }
 
   /** 验证密码 */
   static verifyPassword(password: string, hashedPassword: string, createdAt: Date): boolean {
-    // 应用与 PasswordPolicyService 相同的预处理
-    const processedPassword = AccountService.preprocessPassword(password);
-    const salt = createdAt.toISOString();
-    return LegacyPasswordCryptoHelper.verifyPasswordWithCrypto(
-      processedPassword,
-      salt,
-      hashedPassword,
-    );
-  }
-
-  /**
-   * 密码预处理 - 与 PasswordPolicyService 保持一致
-   * @param password 原始密码
-   * @returns 预处理后的密码
-   */
-  private static preprocessPassword(password: string): string {
-    if (!password || /^\s*$/u.test(password)) {
-      throw new DomainError(AUTH_ERROR.INVALID_PASSWORD, '密码不能为空或纯空白字符');
-    }
-
-    const normalizedPassword = password.normalize('NFKC');
-
-    if (/^\s|\s$/u.test(normalizedPassword)) {
-      throw new DomainError(AUTH_ERROR.INVALID_PASSWORD, '密码首尾不能包含空格');
-    }
-
-    return normalizedPassword;
+    return verifyPasswordWithTimestamp(password, hashedPassword, createdAt);
   }
 
   /**

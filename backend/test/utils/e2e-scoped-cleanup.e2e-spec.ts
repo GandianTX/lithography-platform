@@ -44,6 +44,7 @@ import {
   type OwnedResourceLedger,
 } from './e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from './e2e-teardown';
+import { withReferenceDocumentFixtureState } from './reference-document-fixture-state';
 import { createTestAccount, type TestAccountConfig } from './test-accounts';
 import {
   requireOrganizationId,
@@ -793,11 +794,12 @@ describe('runGuardedScopedCleanup / runGuardedSpecCleanup 双门禁与调用序�
     const closureQueries = records.filter((record) =>
       /WHERE equipment_model_id IN/i.test(record.sql),
     );
-    expect(closureQueries).toHaveLength(5);
+    expect(closureQueries).toHaveLength(6);
     for (const record of closureQueries) {
       expect(record.params).toEqual([700]);
     }
     expect(closureQueries.map((record) => record.sql.match(/FROM (\w+)/i)?.[1])).toEqual([
+      'repair_request_intake',
       'material_submission_detail',
       'fault_case_submission_detail',
       'reference_document',
@@ -1762,14 +1764,18 @@ const ensureScopecleanDocument = async (params: {
     return existing.id;
   }
   const saved = await repository.save(
-    repository.create({
-      title,
-      documentType: 'E2E_SCOPECLEAN',
-      contentText: `# ${title}`,
-      createdByAccountId,
-      ownerOrganizationId,
-      ingestMethod: 'ADMIN_DIRECT',
-    }),
+    repository.create(
+      withReferenceDocumentFixtureState({
+        title,
+        documentType: 'E2E_SCOPECLEAN',
+        contentText: `# ${title}`,
+        createdByAccountId,
+        ownerOrganizationId,
+        ingestMethod: 'ADMIN_DIRECT',
+        deprecated: false,
+        deletedAt: null,
+      }),
+    ),
   );
   if (ownership) {
     recordOwnedResource(ownership, 'document', saved.id, documentFacts);

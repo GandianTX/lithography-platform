@@ -40,6 +40,7 @@ import {
   type OwnedResourceLedger,
 } from './e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from './e2e-teardown';
+import { withReferenceDocumentFixtureState } from './reference-document-fixture-state';
 import { createTestAccount, type TestAccountConfig } from './test-accounts';
 
 jest.setTimeout(60000);
@@ -102,7 +103,7 @@ interface MembershipFields {
 interface DocumentFields {
   title: string;
   documentType: string;
-  ownerOrganizationId: number;
+  ownerOrganizationId: number | null;
   createdByAccountId: number;
   updatedByAccountId: number | null;
   sourceSubmissionId: number | null;
@@ -179,14 +180,18 @@ const createDocument = async (
 ): Promise<number> => {
   const repository = dataSource.getRepository(ReferenceDocumentEntity);
   const saved = await repository.save(
-    repository.create({
-      title: params.title,
-      documentType: 'E2E_OWNERSHIP',
-      contentText: `# ${params.title}`,
-      ownerOrganizationId: params.ownerOrganizationId,
-      createdByAccountId: params.createdByAccountId,
-      ingestMethod: 'ADMIN_DIRECT',
-    }),
+    repository.create(
+      withReferenceDocumentFixtureState({
+        title: params.title,
+        documentType: 'E2E_OWNERSHIP',
+        contentText: `# ${params.title}`,
+        ownerOrganizationId: params.ownerOrganizationId,
+        createdByAccountId: params.createdByAccountId,
+        ingestMethod: 'ADMIN_DIRECT',
+        deprecated: false,
+        deletedAt: null,
+      }),
+    ),
   );
   return saved.id;
 };

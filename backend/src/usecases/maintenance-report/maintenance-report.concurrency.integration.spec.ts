@@ -19,6 +19,7 @@ import {
   type ReferenceGuard,
   runOwnedFixtureCleanup,
 } from '../../../test/utils/e2e-owned-fixture';
+import { assertLockObservationCapability } from '../../../test/utils/upload-race-runner';
 import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract';
 import { AddMaintenanceReportAttachmentUsecase } from './add-maintenance-report-attachment.usecase';
 import { CreateMaintenanceReportDraftUsecase } from './create-maintenance-report-draft.usecase';
@@ -845,6 +846,8 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
     // 环境门禁全部通过后才允许创建夹具；未通过则不登记任何资源
     const gate = await prepareFixtureSetup(dataSource, ROUND_TAG, config.database);
     actualDatabase = gate.database;
+    // 观测能力不足时必须在任何夹具写入之前失败关闭（零造数）
+    await assertLockObservationCapability(query);
     setupAllowed = true;
     // 固定 ID 夹具不做启动前清除：发现碰撞立即失败并保留原数据
     await insertFixtures();

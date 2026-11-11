@@ -44,9 +44,9 @@ const INDEX_TARGETS = [
   {
     entity: LocalBackupRunEntity,
     table: 'local_backup_run',
-    index: 'uk_local_backup_run_active',
-    properties: ['activeInstallationId'],
-    physicalColumns: ['active_installation_id'],
+    index: 'uk_local_backup_run_active_company',
+    properties: ['activeInstallationId', 'organizationId'],
+    physicalColumns: ['active_installation_id', 'organization_id'],
   },
 ] as const;
 
@@ -276,7 +276,7 @@ const runAttachmentScenario = async (runner: QueryRunner): Promise<void> => {
   await insertAttachment(1, 'CURRENT', null);
 };
 
-/** 场景 C：同安装实例重复 RUNNING 备份拒绝；终态历史与新一轮 RUNNING 共存。 */
+/** 场景 C：同安装同公司重复 RUNNING 备份拒绝；终态历史与新一轮 RUNNING 共存。 */
 const runBackupScenario = async (runner: QueryRunner): Promise<void> => {
   const installationRows = (await runner.query(
     'SELECT installation_id FROM local_installation WHERE id = 1',
@@ -291,23 +291,26 @@ const runBackupScenario = async (runner: QueryRunner): Promise<void> => {
     );
   }
   const installationKey = installationId;
+  const organization = await insertOrganization(runner, 'ORGD');
 
   const insertRun = () =>
     runner.query(
-      `INSERT INTO local_backup_run (installation_id, trigger_type, status, started_at, finished_at)
-       VALUES (?, 'MANUAL', 'RUNNING', ?, NULL)`,
-      [installationKey, new Date()],
+      `INSERT INTO local_backup_run
+         (installation_id, organization_id, trigger_type, status, started_at, finished_at)
+       VALUES (?, ?, 'MANUAL', 'RUNNING', ?, NULL)`,
+      [installationKey, organization, new Date()],
     );
 
   const running = ((await insertRun()) as { insertId: number }).insertId;
 
   await expectDuplicateKey(
     runner,
-    '同安装实例重复 RUNNING 备份',
-    'uk_local_backup_run_active',
-    `INSERT INTO local_backup_run (installation_id, trigger_type, status, started_at, finished_at)
-     VALUES (?, 'MANUAL', 'RUNNING', ?, NULL)`,
-    [installationKey, new Date()],
+    '同安装同公司重复 RUNNING 备份',
+    'uk_local_backup_run_active_company',
+    `INSERT INTO local_backup_run
+       (installation_id, organization_id, trigger_type, status, started_at, finished_at)
+     VALUES (?, ?, 'MANUAL', 'RUNNING', ?, NULL)`,
+    [installationKey, organization, new Date()],
   );
 
   await runner.query(

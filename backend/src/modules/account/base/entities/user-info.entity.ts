@@ -7,6 +7,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  ForeignKey,
   Index,
   JoinColumn,
   OneToOne,
@@ -16,6 +17,12 @@ import {
 import { AccountEntity } from './account.entity';
 
 @Index('uk_account_id', ['accountId'], { unique: true })
+@Index('idx_base_user_info_customer_organization', ['customerOrganizationId'])
+@ForeignKey('OrganizationEntity', ['customerOrganizationId'], ['id'], {
+  name: 'fk_base_user_info_customer_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
 @Entity('base_user_info')
 export class UserInfoEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '主键' })
@@ -30,6 +37,23 @@ export class UserInfoEntity {
 
   @Column({ type: 'varchar', length: 50, comment: '昵称' })
   nickname!: string;
+
+  @Column({
+    name: 'real_name',
+    type: 'varchar',
+    length: 200,
+    nullable: true,
+    comment: '真实姓名；与昵称分开',
+  })
+  realName!: string | null;
+
+  @Column({
+    name: 'customer_organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '客户所属公司ID；不自动授予工程师成员资格',
+  })
+  customerOrganizationId!: number | null;
 
   @Column({
     name: 'company_name',

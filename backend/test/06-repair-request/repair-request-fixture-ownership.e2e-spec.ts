@@ -28,6 +28,7 @@
 // - 守卫未通过 / ownership 为空 → 零删除；事务成功提交后清空 ownership，使重复调用不再
 //   开启删除事务；`app.close()` 始终在 finally 中执行。
 
+import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AiConversationStatus } from '@app-types/models/ai-conversation.types';
@@ -40,6 +41,9 @@ import { EngineerResponseEntity } from '@src/modules/lithography/entities/engine
 import { MaintenanceReportEntity } from '@src/modules/lithography/entities/maintenance-report.entity';
 import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
 import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
+import { RepairProcessEntryEntity } from '@src/modules/lithography/entities/repair-process-entry.entity';
+import { RepairRequestIntakeEntity } from '@src/modules/lithography/entities/repair-request-intake.entity';
+import { RepairRequestRevisionEntity } from '@src/modules/lithography/entities/repair-request-revision.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
@@ -699,6 +703,222 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     expect(await countFixtureAccounts()).toBe(0);
     expect(await countFixtureRequests()).toBe(0);
     expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('未登记子行（两个入口）：intake / process / revision 引用夹具图时失败关闭，零删除且无关数据不变', async () => {
+    const before = await readSentinelSnapshot();
+    const ownership = createRepairRequestFixtureOwnership();
+    let external: {
+      intakeId: number;
+      processId: number | string;
+      revisionId: number | string;
+      requestId: number;
+      engineerId: number;
+      customerId: number;
+      modelId: number;
+      primaryOrganizationId: number;
+      peerOrganizationId: number;
+    } | null = null;
+    let fixtureBefore: Awaited<ReturnType<typeof readFixtureSnapshot>> | undefined;
+
+    try {
+      const engineerId = await seedEngineerAccount(ownership, 'engineerA');
+      const customerId = await seedEngineerAccount(ownership, 'customerA');
+      const scope = await seedRepairRequestFixtureOrganizationScope({
+        dataSource,
+        ownership,
+        accountIds: { engineerA: engineerId },
+      });
+      const modelId = await createRepairRequestFixtureModel({ dataSource, ownership, key: 'read' });
+      const requestId = await createRepairRequestFixtureRequest({
+        dataSource,
+        ownership,
+        seed: {
+          requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[0],
+          customerAccountId: customerId,
+          equipmentModelId: modelId,
+          errorCode: 'E-1001',
+          faultDescription: '未接单场景',
+          contentMd: '# E2E-RR-111',
+          createdAt: new Date('2026-08-25T01:00:00.000Z'),
+          isAccepted: false,
+          acceptedByEngineerAccountId: null,
+          acceptedAt: null,
+          deprecated: false,
+          deletedAt: null,
+        },
+      });
+      fixtureBefore = await readFixtureSnapshot(ownership);
+
+      const intakeRepo = dataSource.getRepository(RepairRequestIntakeEntity);
+      const intake = await intakeRepo.save(
+        intakeRepo.create({
+          recordUuid: randomUUID(),
+          customerAccountId: customerId,
+          customerOrganizationId: scope.primaryOrganizationId,
+          serviceOrganizationId: scope.peerOrganizationId,
+          equipmentModelId: modelId,
+          errorCode: 'E-INTAKE',
+          faultDescription: '未登记的报修原始输入',
+          fileId: null,
+          analysisStatus: 'COMPLETED',
+          convertedRequestId: requestId,
+          deletedAt: null,
+        }),
+      );
+      const processRepo = dataSource.getRepository(RepairProcessEntryEntity);
+      const processEntry = await processRepo.save(
+        processRepo.create({
+          entryUuid: randomUUID(),
+          requestId,
+          authorAccountId: engineerId,
+          operationText: '未登记的维修过程',
+          testResult: null,
+          occurredAt: null,
+          timeSource: 'MANUAL',
+          fileId: null,
+          versionNo: 1,
+        }),
+      );
+      const revisionRepo = dataSource.getRepository(RepairRequestRevisionEntity);
+      const revision = await revisionRepo.save(
+        revisionRepo.create({
+          requestId,
+          revisionNo: 1,
+          beforeSnapshot: JSON.stringify({ schema_version: 1 }),
+          afterSnapshot: JSON.stringify({ schema_version: 1 }),
+          schemaVersion: 1,
+          actorAccountId: engineerId,
+          reason: '未登记的管理修订',
+        }),
+      );
+      external = {
+        intakeId: intake.id,
+        processId: processEntry.id,
+        revisionId: revision.id,
+        requestId,
+        engineerId,
+        customerId,
+        modelId,
+        primaryOrganizationId: scope.primaryOrganizationId,
+        peerOrganizationId: scope.peerOrganizationId,
+      };
+
+      await expect(cleanupRepairRequestFixtureResidue(dataSource)).rejects.toThrow(/归属校验/);
+      expect(await readFixtureSnapshot(ownership)).toEqual(fixtureBefore);
+      await expect(cleanupRepairRequestFixtureByIds(dataSource, ownership)).rejects.toThrow(
+        /归属校验/,
+      );
+      expect(await readFixtureSnapshot(ownership)).toEqual(fixtureBefore);
+      expect(await readSentinelSnapshot()).toEqual(before);
+    } finally {
+      if (external) {
+        const e = external;
+        await deleteRecordedExternalRow({
+          helper: '未登记修订收尾',
+          entity: RepairRequestRevisionEntity,
+          recordedIds: [e.revisionId],
+          id: e.revisionId,
+          verify: (row) =>
+            row.requestId === e.requestId &&
+            row.revisionNo === 1 &&
+            row.actorAccountId === e.engineerId &&
+            row.reason === '未登记的管理修订',
+        });
+        await deleteRecordedExternalRow({
+          helper: '未登记过程收尾',
+          entity: RepairProcessEntryEntity,
+          recordedIds: [e.processId],
+          id: e.processId,
+          verify: (row) =>
+            row.requestId === e.requestId &&
+            row.authorAccountId === e.engineerId &&
+            row.operationText === '未登记的维修过程' &&
+            row.versionNo === 1,
+        });
+        await deleteRecordedExternalRow({
+          helper: '未登记报修输入收尾',
+          entity: RepairRequestIntakeEntity,
+          recordedIds: [e.intakeId],
+          id: e.intakeId,
+          verify: (row) =>
+            row.convertedRequestId === e.requestId &&
+            row.customerAccountId === e.customerId &&
+            row.equipmentModelId === e.modelId &&
+            row.customerOrganizationId === e.primaryOrganizationId &&
+            row.serviceOrganizationId === e.peerOrganizationId,
+        });
+      }
+      await cleanupRepairRequestFixtureByIds(dataSource, ownership);
+    }
+
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await countFixtureRequests()).toBe(0);
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('重复执行（按 ID 入口）：首次合法清理成功后第二次拒绝且零删除，无关数据不变', async () => {
+    const before = await readSentinelSnapshot();
+    const ownership = createRepairRequestFixtureOwnership();
+
+    const engineerId = await seedEngineerAccount(ownership, 'engineerA');
+    const customerId = await seedEngineerAccount(ownership, 'customerA');
+    await seedRepairRequestFixtureOrganizationScope({
+      dataSource,
+      ownership,
+      accountIds: { engineerA: engineerId },
+    });
+    const modelId = await createRepairRequestFixtureModel({ dataSource, ownership, key: 'read' });
+    await createRepairRequestFixtureRequest({
+      dataSource,
+      ownership,
+      seed: {
+        requestNo: REPAIR_REQUEST_FIXTURE_MARKERS.readRequestNos[0],
+        customerAccountId: customerId,
+        equipmentModelId: modelId,
+        errorCode: 'E-1001',
+        faultDescription: '未接单场景',
+        contentMd: '# E2E-RR-111',
+        createdAt: new Date('2026-08-25T01:00:00.000Z'),
+        isAccepted: false,
+        acceptedByEngineerAccountId: null,
+        acceptedAt: null,
+        deprecated: false,
+        deletedAt: null,
+      },
+    });
+
+    await cleanupRepairRequestFixtureByIds(dataSource, ownership);
+    expect(await countFixtureAccounts()).toBe(0);
+    expect(await countFixtureRequests()).toBe(0);
+    expect(await readSentinelSnapshot()).toEqual(before);
+
+    // 记录仍在调用方手中，但库中目标已被首次清理：第二次必须失败关闭，不能静默 no-op 或误删。
+    await expect(cleanupRepairRequestFixtureByIds(dataSource, ownership)).rejects.toThrow(
+      /归属校验/,
+    );
+    expect(await readSentinelSnapshot()).toEqual(before);
+  });
+
+  it('事实漂移（按 ID 入口）：记录主键在库中缺失时拒绝，不认领且零删除', async () => {
+    const ownership = createRepairRequestFixtureOwnership();
+    const accountId = await seedEngineerAccount(ownership, 'engineerA');
+    const missingId = 2_000_000_000;
+    ownership.accountIds.push(missingId);
+
+    try {
+      await expect(cleanupRepairRequestFixtureByIds(dataSource, ownership)).rejects.toThrow(
+        /在库中不存在/,
+      );
+      expect(
+        await dataSource.getRepository(AccountEntity).count({ where: { id: accountId } }),
+      ).toBe(1);
+    } finally {
+      ownership.accountIds.splice(ownership.accountIds.indexOf(missingId), 1);
+      await cleanupRepairRequestFixtureByIds(dataSource, ownership);
+    }
+
+    expect(await countFixtureAccounts()).toBe(0);
   });
 
   it('后序删除失败：残留与按 ID 两个入口都整批回滚，夹具逐字段不变且本轮触发器零残留', async () => {
@@ -2118,11 +2338,11 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
    * - ID 必须来自本轮显式记录的集合，拒绝任意 ID（含哨兵与夹具行 ID）；
    * - 事务内按指纹谓词逐字段核验后才按该 ID 删除，核验失败即整笔回滚、零删除。
    */
-  async function deleteRecordedExternalRow<T extends { id: number }>(opts: {
+  async function deleteRecordedExternalRow<T extends { id: number | string }>(opts: {
     helper: string;
     entity: EntityTarget<T>;
-    recordedIds: readonly number[];
-    id: number;
+    recordedIds: readonly (number | string)[];
+    id: number | string;
     verify: (row: T) => boolean;
   }): Promise<void> {
     const recorded = [...new Set(opts.recordedIds)];

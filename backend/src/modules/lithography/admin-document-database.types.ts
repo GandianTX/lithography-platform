@@ -125,7 +125,7 @@ export type AdminAiConversationQueryFilter = {
 /** 管理员 AI 会话列表项装配结果（昵称富集前；账号 ID 不对外输出） */
 export type AdminAiConversationListItemQueryResult = {
   id: number;
-  requestId: number;
+  requestId: number | null;
   requestNo: string;
   engineerAccountId: number;
   status: AiConversationStatus;

@@ -91,6 +91,10 @@ direction -> plan -> docs / followup -> delete
 
 ## 当前计划
 
+本地执行计划、阶段记录和后续待办不再纳入 Git；本目录除本规范说明外均由根 `.gitignore` 忽略。
+已交付的 V13 数据库说明、SOP、配置模板和复审回执见 [正式交接入口](../../docs/database/v13-deployment/README.md)。
+本地计划仍可保留用于开发，但不是干净检出和部署的依赖。
+
 当前没有 capability 治理计划；稳定边界见 `docs/common/capability.rules.md` 与 `docs/capabilities/current.md`。
 
 ## 已收口背景

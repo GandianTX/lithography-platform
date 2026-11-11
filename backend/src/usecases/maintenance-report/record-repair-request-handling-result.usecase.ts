@@ -22,7 +22,10 @@ import type {
   RecordRepairRequestHandlingResult,
 } from './maintenance-report-command.types';
 import { assertMaintenanceReportAuthorRole } from './maintenance-report-roles';
-import { normalizeHandlingResult } from './maintenance-report.input.normalize';
+import {
+  normalizeHandlingClosureReason,
+  normalizeHandlingResult,
+} from './maintenance-report.input.normalize';
 
 /**
  * 接单工程师回写工单维修处理结果。
@@ -47,6 +50,8 @@ export class RecordRepairRequestHandlingResultUsecase {
   ): Promise<RecordRepairRequestHandlingResult> {
     assertMaintenanceReportAuthorRole(command.session);
     const handlingResult = normalizeHandlingResult(command.handlingResult);
+    // 新流程要求中断/无法修复必须给出非空原因；其他结果不得携带原因。
+    const closureReason = normalizeHandlingClosureReason(handlingResult, command.closureReason);
     if (!Number.isInteger(command.repairRequestId) || command.repairRequestId <= 0) {
       throw new DomainError(MAINTENANCE_REPORT_ERROR.INVALID_PARAMS, '工单 ID 无效', {
         repairRequestId: command.repairRequestId,
@@ -97,6 +102,7 @@ export class RecordRepairRequestHandlingResultUsecase {
           handlingRecordedAt: recordedAt,
           handlingRecordedByAccountId: command.session.accountId,
           handlingEndedAt: endedAt,
+          closureReason,
         },
         {
           ownerOrganizationId: membership.organizationId,
@@ -110,6 +116,7 @@ export class RecordRepairRequestHandlingResultUsecase {
         handlingStatus,
         handlingRecordedAt: recordedAt,
         handlingEndedAt: endedAt,
+        closureReason,
       };
     });
   }

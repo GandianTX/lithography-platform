@@ -102,6 +102,36 @@ const settleRunner = async (
 type FirstReady = { readonly ok: true } | { readonly ok: false; readonly error: unknown };
 
 /**
+ * 锁等待观测能力前置门：必须在任何夹具写入之前调用。
+ *
+ * 并发验收依赖 `information_schema.processlist` 观察其他会话、并读取
+ * `performance_schema.data_lock_waits`；缺少 PROCESS 或 performance_schema
+ * 读取权限时，观测结果不可信。此时直接失败关闭，保证「缺观测能力零造数」。
+ */
+export const assertLockObservationCapability = async (
+  query: (sql: string) => Promise<unknown>,
+): Promise<void> => {
+  const privilegeRows = (await query(
+    `SELECT COUNT(*) AS total
+       FROM information_schema.USER_PRIVILEGES
+      WHERE GRANTEE = CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''', SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''')
+        AND PRIVILEGE_TYPE = 'PROCESS'`,
+  )) as Array<{ readonly total?: number | string }>;
+  const processPrivileges = Number(privilegeRows[0]?.total ?? 0);
+  if (!Number.isFinite(processPrivileges) || processPrivileges <= 0) {
+    throw new Error('当前账号缺少 PROCESS 观测能力，拒绝创建夹具（零造数）');
+  }
+
+  try {
+    await query('SELECT 1 FROM performance_schema.data_lock_waits LIMIT 1');
+  } catch (error) {
+    throw new Error('当前账号无法读取 performance_schema.data_lock_waits，拒绝创建夹具（零造数）', {
+      cause: error,
+    });
+  }
+};
+
+/**
  * 两分支事务竞争执行器。
  *
  * - A 先启动事务并执行，然后等待放行决定；B 在 A 就绪后启动。

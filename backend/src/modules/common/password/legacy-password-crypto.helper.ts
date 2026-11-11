@@ -1,5 +1,8 @@
 // src/modules/common/password/legacy-password-crypto.helper.ts
-import { pbkdf2Sync, timingSafeEqual } from 'crypto';
+import {
+  hashPasswordWithSalt,
+  verifyPasswordWithSalt,
+} from '@core/account/policy/password-hashing.policy';
 // import * as CryptoJS from 'crypto-js';
 
 /**
@@ -9,15 +12,13 @@ import { pbkdf2Sync, timingSafeEqual } from 'crypto';
 export class LegacyPasswordCryptoHelper {
   /**
    * 根据传入的密码和盐值生成哈希字符串（Node.js crypto 版本）
-   * 使用 Node.js 内置 crypto 模块实现相同的算法
+   * 算法实现已下沉到 core，避免登录、管理员初始化与历史调用各自维护一份 PBKDF2。
    * @param password - 用户的密码
    * @param salt - 用于加密的盐值
    * @returns 返回加密后的哈希字符串
    */
   static hashPasswordWithCrypto(password: string, salt: string): string {
-    // 5000 次迭代，64 字节输出长度，SHA-256 算法
-    const hash = pbkdf2Sync(password, salt, 5000, 64, 'sha256').toString('hex');
-    return hash;
+    return hashPasswordWithSalt(password, salt);
   }
 
   /**
@@ -29,8 +30,7 @@ export class LegacyPasswordCryptoHelper {
    * @returns 密码是否匹配
    */
   static verifyPasswordWithCrypto(password: string, salt: string, hashedPassword: string): boolean {
-    const hash = this.hashPasswordWithCrypto(password, salt);
-    return timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(hashedPassword, 'hex'));
+    return verifyPasswordWithSalt(password, salt, hashedPassword);
   }
 
   /**

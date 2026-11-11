@@ -4,7 +4,7 @@
 
 export type LocalEntityType = 'REPORT_VERSION' | 'ATTACHMENT' | 'BACKUP_MANIFEST';
 export type LocalUploadTaskStatus = 'PENDING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
-export type LocalBackupTriggerType = 'SCHEDULED' | 'MANUAL' | 'USB_EXPORT';
+export type LocalBackupTriggerType = 'SCHEDULED' | 'MANUAL' | 'AUTO' | 'RETRY' | 'USB_EXPORT';
 export type LocalBackupRunStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'INTERRUPTED';
 
 export type LocalInstallationSnapshot = {

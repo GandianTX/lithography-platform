@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "organizations": [
+    {
+      "organization_code": "ORG-CLIENT-A",
+      "name": "REPLACE_CLIENT_COMPANY_NAME",
+      "short_name": "REPLACE_CLIENT_SHORT_NAME",
+      "kind": "CLIENT",
+      "is_managed_company": false,
+      "is_service_provider": false,
+      "status": "ACTIVE"
+    },
+    {
+      "organization_code": "ORG-PEER-A",
+      "name": "REPLACE_MANAGED_COMPANY_NAME",
+      "short_name": "REPLACE_MANAGED_SHORT_NAME",
+      "kind": "PEER",
+      "is_managed_company": true,
+      "is_service_provider": true,
+      "status": "ACTIVE"
+    }
+  ]
+}
