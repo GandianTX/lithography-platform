@@ -475,6 +475,8 @@ describe('main 收尾与退出码', () => {
     released = false;
     commitError: Error | null = null;
     rollbackError: Error | null = null;
+    unlockError: Error | null = null;
+    releaseError: Error | null = null;
 
     query(sql: string): Promise<unknown> {
       if (sql.includes('SELECT DATABASE()')) {
@@ -487,7 +489,9 @@ describe('main 收尾与退出码', () => {
         return Promise.resolve([]);
       }
       if (sql.includes('GET_LOCK')) return Promise.resolve([{ acquired: 1 }]);
-      if (sql.includes('RELEASE_LOCK')) return Promise.resolve([]);
+      if (sql.includes('RELEASE_LOCK')) {
+        return this.unlockError ? Promise.reject(this.unlockError) : Promise.resolve([]);
+      }
       if (sql.includes('FROM base_user_account')) {
         return Promise.resolve([{ total: ACCOUNTS.length }]);
       }
@@ -516,7 +520,7 @@ describe('main 收尾与退出码', () => {
 
     release(): Promise<void> {
       this.released = true;
-      return Promise.resolve();
+      return this.releaseError ? Promise.reject(this.releaseError) : Promise.resolve();
     }
   }
 
@@ -673,9 +677,13 @@ describe('main 收尾与退出码', () => {
       packRun: () => Promise.reject(new MockConflictError('异主冲突：组织归属不明')),
     });
     harness.runner.rollbackError = new Error('ROLLBACK 连接已断开');
+    harness.runner.unlockError = new Error('解锁失败（模拟）');
+    harness.runner.releaseError = new Error('释放失败（模拟）');
     try {
       const { code, stderr } = await runAndCapture(harness);
       expect(code).toBe(3);
+      expect(stderr).toContain('释放运行锁失败');
+      expect(stderr).toContain('释放 QueryRunner失败');
       expect(harness.runner.rolledBack).toBe(false);
       expect(stderr).toContain('异主冲突：组织归属不明');
       expect(stderr).toContain('无法确认回滚');

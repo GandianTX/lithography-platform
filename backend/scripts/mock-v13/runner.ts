@@ -160,17 +160,22 @@ export async function executePacks(
     if (acquired) {
       try {
         await releaseRunLock(queryRunner, options.database);
-      } catch {
-        // 释放失败不掩盖主错误。
+      } catch (error) {
+        reportConnectionCleanupFailure(options.database, '释放运行锁', error);
       }
     }
     try {
       // 连接由本函数独占释放；调用方（main）不再重复释放，避免双重 release。
       await queryRunner.release();
-    } catch {
-      // 连接可能已释放，不掩盖主错误。
+    } catch (error) {
+      reportConnectionCleanupFailure(options.database, '释放 QueryRunner', error);
     }
   }
+}
+
+function reportConnectionCleanupFailure(database: string, step: string, error: unknown): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`[mock:v13] 库 ${database}：${step}失败（不改变事务结论）：${reason}\n`);
 }
 
 function asReferenceText(value: unknown): string {
@@ -848,8 +853,8 @@ export async function main(
     if (queryRunner && !packsOwnRelease) {
       try {
         await queryRunner.release();
-      } catch {
-        // 连接可能已释放。
+      } catch (error) {
+        reportConnectionCleanupFailure(options.database ?? '(未确认)', '释放 QueryRunner', error);
       }
     }
     if (source?.isInitialized) {
