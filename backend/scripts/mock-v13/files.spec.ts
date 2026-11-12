@@ -22,6 +22,7 @@ import {
   sha256Hex,
   verifyMockPackageContent,
   writeCredentialsFile,
+  writeJsonFileExclusive,
 } from './files';
 
 function createTempDir(): string {
@@ -114,11 +115,55 @@ describe('FileRegistry', () => {
     fs.writeFileSync(existing, '人工放置', 'utf8');
     const created = path.join(tempDir, 'created.png');
     registry.ensure(created, mockPng());
-    registry.cleanupCreated();
+    const cleanup = registry.cleanupCreated();
 
     expect(fs.existsSync(created)).toBe(false);
     expect(fs.existsSync(existing)).toBe(true);
+    expect(cleanup.removed).toEqual([created]);
+    expect(cleanup.retained).toEqual([]);
     expect(registry.createdCount()).toBe(0);
+  });
+
+  it('回收前文件被替换时保留替换物并报告', () => {
+    const created = path.join(tempDir, 'created.png');
+    registry.ensure(created, mockPng());
+    fs.unlinkSync(created);
+    fs.writeFileSync(created, '替换物', 'utf8');
+
+    const cleanup = registry.cleanupCreated();
+
+    expect(fs.existsSync(created)).toBe(true);
+    expect(fs.readFileSync(created, 'utf8')).toBe('替换物');
+    expect(cleanup.removed).toEqual([]);
+    expect(cleanup.retained.join('\n')).toMatch(/inode 已变化|内容已变化/);
+  });
+
+  it('回收前文件被替换为链接时保留链接，不跟随删除目标', () => {
+    const created = path.join(tempDir, 'created.png');
+    const outside = path.join(tempDir, 'outside.txt');
+    fs.writeFileSync(outside, '边界外哨兵', 'utf8');
+    registry.ensure(created, mockPng());
+    fs.unlinkSync(created);
+    fs.symlinkSync(outside, created);
+
+    const cleanup = registry.cleanupCreated();
+
+    expect(fs.existsSync(outside)).toBe(true);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('边界外哨兵');
+    expect(fs.lstatSync(created).isSymbolicLink()).toBe(true);
+    expect(cleanup.retained.join('\n')).toContain('已不是本轮创建的普通文件');
+  });
+
+  it('已存在的符号链接路径组件在写入前拒绝', () => {
+    const outside = createTempDir();
+    const linked = path.join(tempDir, 'linked-root');
+    fs.symlinkSync(outside, linked);
+    try {
+      expect(() => registry.ensure(path.join(linked, 'a.png'), mockPng())).toThrow(/符号链接/);
+      expect(fs.readdirSync(outside)).toEqual([]);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -155,5 +200,30 @@ describe('writeCredentialsFile', () => {
       false,
     );
     expect(fs.readFileSync(target, 'utf8')).toContain('MockV13#Passw0rd');
+  });
+});
+
+describe('writeJsonFileExclusive', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('首次写入创建，同内容重跑复用', () => {
+    const target = path.join(tempDir, 'stats.json');
+    expect(writeJsonFileExclusive(target, { total: 1 })).toBe('CREATED');
+    expect(writeJsonFileExclusive(target, { total: 1 })).toBe('REUSED');
+  });
+
+  it('内容不同拒绝覆盖，保留原统计', () => {
+    const target = path.join(tempDir, 'stats.json');
+    writeJsonFileExclusive(target, { total: 1 });
+    expect(() => writeJsonFileExclusive(target, { total: 2 })).toThrow(/拒绝覆盖/);
+    expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ total: 1 });
   });
 });

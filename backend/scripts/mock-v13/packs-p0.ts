@@ -34,6 +34,7 @@ import {
   resolveOrganizationIds,
 } from './packs-shared';
 import { MockConflictError } from './errors';
+import { parseRoleArrayValue } from './roles';
 
 const ACCOUNT_ROLES = new Set(['SUPER_ADMIN', 'ENGINEER', 'CUSTOMER']);
 
@@ -42,24 +43,14 @@ function asText(value: unknown): string {
 }
 
 function parseRoleArray(value: unknown, context: string): string[] {
-  if (Array.isArray(value)) {
-    if (value.some((item) => typeof item !== 'string')) {
-      throw new MockConflictError(`${context} 不是合法角色数组`);
-    }
-    return value as string[];
-  }
-  if (typeof value !== 'string') {
+  if (!Array.isArray(value) && typeof value !== 'string') {
     throw new MockConflictError(`${context} 不是字符串`);
   }
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
-      throw new Error('not array');
-    }
-    return parsed as string[];
-  } catch {
+  const parsed = parseRoleArrayValue(value);
+  if (!parsed) {
     throw new MockConflictError(`${context} 不是合法角色数组`);
   }
+  return parsed;
 }
 
 export async function runOrgAccountsPack(context: PackContext): Promise<void> {
@@ -103,6 +94,7 @@ async function ensureAccount(
     context.report.reused();
     const accountId = readNumber(existing, 'id');
     await ensureUserInfo(context, account, accountId, ids);
+    context.report.markAccountVerified(account.loginName);
     context.report.scenario({
       kind: 'account',
       key: account.loginName,
@@ -126,6 +118,7 @@ async function ensureAccount(
   });
   context.report.inserted();
   await ensureUserInfo(context, account, accountId, ids);
+  context.report.markAccountVerified(account.loginName);
   context.report.scenario({
     kind: 'account',
     key: account.loginName,
@@ -147,11 +140,21 @@ async function ensureUserInfo(
     if (accessGroup.length !== 1 || !ACCOUNT_ROLES.has(accessGroup[0])) {
       throw new MockConflictError(`账号 ${account.loginName} 的 access_group 不是单一角色`);
     }
+    if (accessGroup[0] !== account.role) {
+      throw new MockConflictError(
+        `账号 ${account.loginName} 的资料角色 ${accessGroup[0]} 与账号角色 ${account.role} 不一致，拒绝复用`,
+      );
+    }
     const decrypted = context.encryption.decrypt(asText(existing.meta_digest));
     const digestRoles = parseRoleArray(decrypted, `${account.loginName} meta_digest`);
-    if (digestRoles.length !== 1 || digestRoles[0] !== accessGroup[0]) {
+    if (digestRoles.length !== 1 || digestRoles[0] !== account.role) {
       throw new MockConflictError(
-        `账号 ${account.loginName} 的 meta_digest 与 access_group 不一致`,
+        `账号 ${account.loginName} 的 meta_digest 与账号角色 ${account.role} 不一致，拒绝复用`,
+      );
+    }
+    if (asText(existing.user_state) !== account.userState) {
+      throw new MockConflictError(
+        `账号 ${account.loginName} 的资料状态为 ${asText(existing.user_state)}，与预期 ${account.userState} 不一致，拒绝复用`,
       );
     }
     const existingOrganizationId =

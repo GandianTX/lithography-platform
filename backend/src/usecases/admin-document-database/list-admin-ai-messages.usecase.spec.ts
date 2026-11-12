@@ -2,7 +2,9 @@
 
 import type { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
 import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiMessageQueryService } from '@src/modules/lithography/queries/admin-ai-message.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -44,10 +46,23 @@ describe('ListAdminAiMessagesUsecase', () => {
     }),
   } as unknown as AdminAiMessageQueryService;
 
-  const usecase = new ListAdminAiMessagesUsecase(adminAiMessageQueryService);
+  const accountQueryService = {
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
+  } as unknown as AccountQueryService;
+
+  const organizationContextService = {
+    resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 12 }),
+  } as unknown as TrustedOrganizationContextQueryService;
+
+  const usecase = new ListAdminAiMessagesUsecase(
+    adminAiMessageQueryService,
+    accountQueryService,
+    organizationContextService,
+  );
 
   beforeEach(() => {
     (adminAiMessageQueryService.listByConversation as jest.Mock).mockClear();
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
   });
 
   it.each(createUnauthorizedSessions().map(([label, session]) => ({ label, session })))(
@@ -88,7 +103,23 @@ describe('ListAdminAiMessagesUsecase', () => {
 
     expect(adminAiMessageQueryService.listByConversation).toHaveBeenCalledWith({
       conversationId: 660001,
+      ownerOrganizationId: undefined,
       pagination: { page: 2, pageSize: 50, withTotal: true },
+    });
+  });
+
+  it('二级管理员按可信组织读取会话消息，跨公司由查询层统一拒绝', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+    await usecase.execute({
+      session: createSuperAdminSession(),
+      conversationId: 660001,
+      pagination: offsetPagination(),
+    });
+
+    expect(adminAiMessageQueryService.listByConversation).toHaveBeenCalledWith({
+      conversationId: 660001,
+      ownerOrganizationId: 12,
+      pagination: { page: 1, pageSize: 50, withTotal: true },
     });
   });
 

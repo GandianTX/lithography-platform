@@ -4,6 +4,7 @@ import { ADMIN_DOCUMENT_DATABASE_ERROR, PERMISSION_ERROR } from '@core/common/er
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiReportDetailQueryResult } from '@src/modules/lithography/admin-document-database.types';
 import type { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -36,15 +37,25 @@ describe('GetAdminAiReportDetailUsecase', () => {
   } as unknown as AdminAiReportQueryService;
 
   const accountQueryService = {
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
     findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map([[900002, '陈工程师']])),
   } as unknown as AccountQueryService;
 
-  const usecase = new GetAdminAiReportDetailUsecase(adminAiReportQueryService, accountQueryService);
+  const organizationContextService = {
+    resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 12 }),
+  } as unknown as TrustedOrganizationContextQueryService;
+
+  const usecase = new GetAdminAiReportDetailUsecase(
+    adminAiReportQueryService,
+    accountQueryService,
+    organizationContextService,
+  );
 
   beforeEach(() => {
     (adminAiReportQueryService.findDetailById as jest.Mock)
       .mockClear()
       .mockResolvedValue(detailResult);
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
     (accountQueryService.findNicknamesByAccountIds as jest.Mock)
       .mockClear()
       .mockResolvedValue(new Map([[900002, '陈工程师']]));
@@ -76,6 +87,15 @@ describe('GetAdminAiReportDetailUsecase', () => {
       engineerNickname: '陈工程师',
     });
     expect(view).not.toHaveProperty('engineerAccountId');
+  });
+
+  it('一级管理员全范围，二级管理员只按可信组织读取报告详情', async () => {
+    await usecase.execute({ session: createSuperAdminSession(), reportId: 550001 });
+    expect(adminAiReportQueryService.findDetailById).toHaveBeenLastCalledWith(550001, undefined);
+
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+    await usecase.execute({ session: createSuperAdminSession(), reportId: 550001 });
+    expect(adminAiReportQueryService.findDetailById).toHaveBeenLastCalledWith(550001, 12);
   });
 
   it.each([0, -1, 1.5])('reportId %j 非法时在查询前拒绝', async (reportId) => {

@@ -314,6 +314,9 @@ export function assertSchemaColumns(
 /**
  * Mock 文件目录的守卫：目录必须可明确归属，且不得写入源码、依赖、构建产物或版本库目录，
  * 避免回滚回收时误删工程文件。默认目录（`<cwd>/var/...`）不受影响。
+ *
+ * 除字符串前缀外，还逐级检查已存在的路径组件：任何符号链接都拒绝，避免通过链接
+ * 逃逸到受控目录之外。原件根下实际会写入的子目录也一并检查。
  */
 export function assertMockDirectories(mockFileDir: string, referenceStorageDir: string): void {
   const targets = [
@@ -330,6 +333,10 @@ export function assertMockDirectories(mockFileDir: string, referenceStorageDir: 
     if (path.parse(target.dir).root === target.dir) {
       throw new GuardViolationError(`${target.flag} 不能是文件系统根目录: ${target.dir}`);
     }
+    assertNoSymlinkComponents(target.dir, target.flag);
+    if (fs.existsSync(target.dir) && !fs.statSync(target.dir).isDirectory()) {
+      throw new GuardViolationError(`${target.flag} 已存在但不是目录: ${target.dir}`);
+    }
     for (const forbidden of forbiddenRoots) {
       const relative = path.relative(forbidden, target.dir);
       const inside = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -340,6 +347,55 @@ export function assertMockDirectories(mockFileDir: string, referenceStorageDir: 
       }
     }
   }
+  const mockSubdirectories = ['files', 'report-attachments', 'packages', 'backups'] as const;
+  for (const name of mockSubdirectories) {
+    const subdirectory = path.join(targets[0].dir, name);
+    assertNoSymlinkComponents(subdirectory, `--mock-file-dir 子目录 ${name}`);
+    if (fs.existsSync(subdirectory) && !fs.statSync(subdirectory).isDirectory()) {
+      throw new GuardViolationError(`--mock-file-dir 子目录已存在但不是目录: ${subdirectory}`);
+    }
+  }
+}
+
+/**
+ * 逐级检查目标路径已存在的组件；遇到符号链接立即拒绝。
+ *
+ * 该检查不跟随链接，也不依赖字符串前缀，因此可以识别“父目录是链接”的逃逸。
+ * 目标自身不存在时，只检查其已存在的父级组件。
+ */
+export function assertNoSymlinkComponents(targetPath: string, label: string): void {
+  const absolute = path.resolve(targetPath);
+  const root = path.parse(absolute).root;
+  const components = absolute.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
+  for (const component of components) {
+    current = path.join(current, component);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return;
+      }
+      throw new GuardViolationError(
+        `${label} 路径无法检查: ${current}（${(error as Error).message}）`,
+      );
+    }
+    if (stat.isSymbolicLink()) {
+      throw new GuardViolationError(`${label} 路径组件为符号链接，拒绝写入: ${current}`);
+    }
+  }
+}
+
+/** 统计/JSON 输出路径：目标自身不得是链接，父目录必须已存在且无符号链接组件。 */
+export function assertOutputParentDirectory(outputPath: string, label: string): string {
+  const absolute = path.resolve(outputPath);
+  assertNoSymlinkComponents(absolute, label);
+  const parent = path.dirname(absolute);
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    throw new GuardViolationError(`${label} 父目录不存在或不是目录: ${parent}`);
+  }
+  return absolute;
 }
 
 /** 仓库根目录（用于阻止把凭据写到 Git 工作区）。 */
@@ -347,19 +403,35 @@ export function resolveRepositoryRoot(): string {
   return path.resolve(__dirname, '../../..');
 }
 
-/** 凭据输出路径必须位于仓库之外，且父目录存在。 */
+/**
+ * 凭据输出路径必须位于仓库之外，且父目录存在。
+ *
+ * 判定基于真实路径：父目录若是指向仓库的符号链接，会被识别并拒绝；
+ * 目标文件若已存在且自身是符号链接，同样拒绝，避免实际落点逃逸。
+ */
 export function assertCredentialsPathOutsideRepository(credentialsPath: string): string {
   const absolute = path.resolve(credentialsPath);
-  const repositoryRoot = resolveRepositoryRoot();
-  const relative = path.relative(repositoryRoot, absolute);
-  if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
-    throw new GuardViolationError(
-      `凭据文件 ${absolute} 位于仓库内，拒绝写入；请使用仓库外的受控目录`,
-    );
+  assertNoSymlinkComponents(absolute, '凭据文件');
+  if (fs.existsSync(absolute)) {
+    if (fs.lstatSync(absolute).isSymbolicLink()) {
+      throw new GuardViolationError(`凭据文件本身是符号链接，拒绝写入: ${absolute}`);
+    }
+    if (!fs.statSync(absolute).isFile()) {
+      throw new GuardViolationError(`凭据文件已存在但不是普通文件: ${absolute}`);
+    }
   }
   const parent = path.dirname(absolute);
-  if (!fs.existsSync(parent)) {
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
     throw new GuardViolationError(`凭据文件父目录不存在: ${parent}`);
+  }
+  const repositoryRealRoot = fs.realpathSync(resolveRepositoryRoot());
+  const parentRealPath = fs.realpathSync(parent);
+  const targetRealPath = path.join(parentRealPath, path.basename(absolute));
+  const relative = path.relative(repositoryRealRoot, targetRealPath);
+  if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+    throw new GuardViolationError(
+      `凭据文件实际目标 ${targetRealPath} 位于仓库内，拒绝写入；请使用仓库外的受控目录`,
+    );
   }
   return absolute;
 }

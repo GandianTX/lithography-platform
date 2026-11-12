@@ -100,8 +100,23 @@ export class AdminAiReportQueryService {
    *
    * @throws DomainError ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND（对外大类 NOT_FOUND）
    */
-  async findDetailById(reportId: number): Promise<AdminAiReportDetailQueryResult> {
-    const entity = await this.reportRepository.findOne({ where: { id: reportId } });
+  async findDetailById(
+    reportId: number,
+    ownerOrganizationId?: number,
+  ): Promise<AdminAiReportDetailQueryResult> {
+    let entity: AiReportEntity | null;
+    if (typeof ownerOrganizationId === 'number') {
+      entity = await this.reportRepository
+        .createQueryBuilder('report')
+        .innerJoin(AiConversationEntity, 'conversation', 'conversation.id = report.conversationId')
+        .where('report.id = :reportId', { reportId })
+        .andWhere('conversation.ownerOrganizationId = :ownerOrganizationId', {
+          ownerOrganizationId,
+        })
+        .getOne();
+    } else {
+      entity = await this.reportRepository.findOne({ where: { id: reportId } });
+    }
     if (!entity) {
       throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, 'AI 报告不存在或不可访问', {
         reportId,
@@ -160,6 +175,11 @@ export class AdminAiReportQueryService {
   ): void {
     if (!filter) {
       return;
+    }
+    if (typeof filter.ownerOrganizationId === 'number') {
+      qb.andWhere('conversation.ownerOrganizationId = :ownerOrganizationId', {
+        ownerOrganizationId: filter.ownerOrganizationId,
+      });
     }
     if (filter.requestNo) {
       const pattern = `%${escapeLikePattern(filter.requestNo)}%`;

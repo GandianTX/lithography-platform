@@ -8,6 +8,7 @@ import type {
 } from '@src/modules/lithography/admin-document-database.types';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -63,16 +64,26 @@ describe('ListAdminAiReportsUsecase', () => {
   } as unknown as AdminAiReportQueryService;
 
   const accountQueryService = {
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
     findAccountIdsByDisplayKeyword: jest
       .fn()
       .mockResolvedValue({ accountIds: [], totalMatched: 0 }),
     findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map([[900002, '陈工程师']])),
   } as unknown as AccountQueryService;
 
-  const usecase = new ListAdminAiReportsUsecase(adminAiReportQueryService, accountQueryService);
+  const organizationContextService = {
+    resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 12 }),
+  } as unknown as TrustedOrganizationContextQueryService;
+
+  const usecase = new ListAdminAiReportsUsecase(
+    adminAiReportQueryService,
+    accountQueryService,
+    organizationContextService,
+  );
 
   beforeEach(() => {
     (adminAiReportQueryService.listAll as jest.Mock).mockClear().mockResolvedValue(makeListPage());
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
     (accountQueryService.findAccountIdsByDisplayKeyword as jest.Mock)
       .mockClear()
       .mockResolvedValue({ accountIds: [], totalMatched: 0 });
@@ -164,6 +175,17 @@ describe('ListAdminAiReportsUsecase', () => {
 
     expect(error.message).toContain('命中账号过多');
     expect(adminAiReportQueryService.listAll).not.toHaveBeenCalled();
+  });
+
+  it('一级管理员全范围，二级管理员按可信组织下推报告范围', async () => {
+    await usecase.execute({ session: createSuperAdminSession(), pagination: offsetPagination() });
+    const level1Call = (adminAiReportQueryService.listAll as jest.Mock).mock.calls[0][0];
+    expect(level1Call.filter.ownerOrganizationId).toBeUndefined();
+
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+    await usecase.execute({ session: createSuperAdminSession(), pagination: offsetPagination() });
+    const level2Call = (adminAiReportQueryService.listAll as jest.Mock).mock.calls[1][0];
+    expect(level2Call.filter.ownerOrganizationId).toBe(12);
   });
 
   it('时间范围非法（from 晚于 to）在查询前拒绝', async () => {

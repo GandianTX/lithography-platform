@@ -32,6 +32,7 @@ export interface ScenarioRecord {
 export class RunReport {
   private readonly stats = new Map<PackId, PackStat>();
   private readonly scenarios: ScenarioRecord[] = [];
+  private readonly verifiedAccountLogins = new Set<string>();
   private activePack: PackId | null = null;
 
   startPack(pack: PackId): void {
@@ -66,6 +67,15 @@ export class RunReport {
     this.scenarios.push(record);
   }
 
+  /** 记录本次创建或已核验的账号；凭据文件只导出这些账号。 */
+  markAccountVerified(loginName: string): void {
+    this.verifiedAccountLogins.add(loginName);
+  }
+
+  verifiedAccountLoginNames(): readonly string[] {
+    return [...this.verifiedAccountLogins];
+  }
+
   packStats(): PackStat[] {
     return [...this.stats.values()];
   }
@@ -90,12 +100,15 @@ export function formatSummary(
     readonly instanceUuid: string;
     readonly mode: 'dry-run' | 'write';
     readonly durationMs: number;
+    readonly timezone: string | null;
   },
 ): string {
   const lines: string[] = [];
   lines.push(`${'='.repeat(78)}`);
   lines.push(`V13 Mock 数据运行结果 | 模式=${headers.mode} | 库=${headers.database}`);
-  lines.push(`实例 UUID=${headers.instanceUuid} | 耗时=${headers.durationMs}ms`);
+  lines.push(
+    `实例 UUID=${headers.instanceUuid} | 时区=${headers.timezone ?? '未设置'} | 耗时=${headers.durationMs}ms`,
+  );
   lines.push(`${'='.repeat(78)}`);
   lines.push('数据包                 新增   复用   备注');
   for (const stat of report.packStats()) {
@@ -137,13 +150,24 @@ export function formatHelp(): string {
     '默认是 dry-run：只做守卫与目标核对，不写入。',
     '--write 还需要环境文件内写入 MOCK_V13_WRITE_ACK 确认短语。',
     '--allow-database 可重复传入；--mock-file-dir 与 --reference-storage-dir 必须是',
-    '彼此不同、位于仓库外的独立目录（默认分别为 var/mock-v13 与 var/reference-documents）。',
+    '彼此不同、且不位于 src/node_modules/dist/.git 的独立目录',
+    '（默认分别为 var/mock-v13 与 var/reference-documents）；路径中任何已存在的',
+    '符号链接组件都会在首次写入前被拒绝。',
+    'DB_TIMEZONE 必须与实际运行的开发后端一致（模板使用 +08:00）；字段加密配置',
+    '必须与开发后端同源，预检只输出生效时区，不输出密钥。',
     '',
     '可用数据包（按默认顺序）：',
     '  p0-org-accounts, p0-equipment, p0-repair, p0-reports, p0-documents,',
     '  p1-ai, p1-local, p1-packages, p1-backup',
     '',
+    '数据包前置：p0-repair 需要 p0-org-accounts + p0-equipment；',
+    '  p0-reports 需要 p0-org-accounts + p0-equipment + p0-repair；',
+    '  p0-documents 需要 ... + p0-reports；p1-* 需要 p0-org-accounts。',
+    '单独执行某包时，未选择的前置包必须在目标库中已存在，否则在写入前拒绝。',
+    '--credentials-out 只能与 p0-org-accounts 同时使用，且只导出本次创建或已核验的账号。',
+    '',
     '退出码：0 成功/无需写入；2 守卫拒绝；3 异主冲突；4 写入回滚；5 写入后校验失败；',
-    '        6 事务已提交但收尾文件写入失败（数据不回滚）。',
+    '        6 事务已提交但收尾文件写入失败（数据不回滚）；',
+    '        7 COMMIT 已发出但结果未知（保留本轮文件，需独立连接只读核对）。',
   ].join('\n');
 }

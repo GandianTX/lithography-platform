@@ -76,6 +76,24 @@ const REGISTRY: Record<PackId, PackDefinition> = {
 
 export const ALL_PACKS: readonly PackDefinition[] = PACK_IDS.map((id) => REGISTRY[id]);
 
+/**
+ * 各数据包的前置包。未同时选择的前置包必须在目标库中已存在，
+ * 否则在事务开始前以退出码 2 拒绝，避免把“缺前置”误报成事务内写入失败。
+ */
+/* eslint-disable @typescript-eslint/naming-convention -- 数据包 ID 是命令行稳定标识 */
+export const PACK_PREREQUISITES: Readonly<Record<PackId, readonly PackId[]>> = {
+  'p0-org-accounts': [],
+  'p0-equipment': [],
+  'p0-repair': ['p0-org-accounts', 'p0-equipment'],
+  'p0-reports': ['p0-org-accounts', 'p0-equipment', 'p0-repair'],
+  'p0-documents': ['p0-org-accounts', 'p0-equipment', 'p0-reports'],
+  'p1-ai': ['p0-org-accounts'],
+  'p1-local': ['p0-org-accounts'],
+  'p1-packages': ['p0-org-accounts'],
+  'p1-backup': ['p0-org-accounts'],
+};
+/* eslint-enable @typescript-eslint/naming-convention */
+
 export function selectPacks(selection: readonly string[]): PackDefinition[] {
   if (selection.length === 1 && selection[0] === 'all') {
     return [...ALL_PACKS];

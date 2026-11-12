@@ -117,6 +117,8 @@ export type AdminAiConversationListFilter = {
 
 /** AI 会话管理员读侧查询筛选（usecase 内部形态） */
 export type AdminAiConversationQueryFilter = {
+  /** 管理员组织范围（usecase 从可信成员关系解析；一级管理员不传表示全范围） */
+  ownerOrganizationId?: number;
   requestNo?: string;
   engineerAccountIds?: ReadonlyArray<number>;
   status?: AiConversationStatus;
@@ -187,6 +189,8 @@ export type AdminAiReportListFilter = {
 
 /** AI 报告管理员读侧查询筛选（usecase 内部形态） */
 export type AdminAiReportQueryFilter = {
+  /** 管理员组织范围（按报告所属会话的归属组织过滤；一级管理员不传表示全范围） */
+  ownerOrganizationId?: number;
   requestNo?: string;
   engineerAccountIds?: ReadonlyArray<number>;
   reportType?: string;

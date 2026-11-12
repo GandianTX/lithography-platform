@@ -19,6 +19,7 @@ describe('AdminAiReportQueryService', () => {
   const makeQbStub = () => {
     const qb: Record<string, jest.Mock> = {
       leftJoin: jest.fn().mockReturnThis(),
+      innerJoin: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
       offset: jest.fn().mockReturnThis(),
@@ -30,6 +31,7 @@ describe('AdminAiReportQueryService', () => {
       groupBy: jest.fn().mockReturnThis(),
     };
     qb.getMany = jest.fn().mockResolvedValue([]);
+    qb.getOne = jest.fn().mockResolvedValue(null);
     qb.getCount = jest.fn().mockResolvedValue(0);
     qb.getRawMany = jest.fn().mockResolvedValue([]);
     return qb;
@@ -227,6 +229,55 @@ describe('AdminAiReportQueryService', () => {
 
     expect(detail.requestMismatch).toBe(false);
     expect(detail.requestNo).toBe('RR-20260901-001');
+  });
+
+  it('二级管理员列表按会话归属组织过滤，列表与总数同口径', async () => {
+    const repos = makeRepos();
+    const listQb = makeQbStub();
+    repos.reportRepo.createQueryBuilder.mockImplementation(() => listQb);
+    const service = new AdminAiReportQueryService(
+      repos.reportRepo as never,
+      repos.conversationRepo as never,
+      repos.requestRepo as never,
+    );
+
+    await service.listAll({ filter: { ownerOrganizationId: 12 }, pagination });
+
+    expect(listQb.andWhere).toHaveBeenCalledWith(
+      'conversation.ownerOrganizationId = :ownerOrganizationId',
+      { ownerOrganizationId: 12 },
+    );
+    expect(listQb.getCount).toHaveBeenCalledTimes(1);
+  });
+
+  it('二级管理员详情按会话归属组织读取；跨公司详情统一 NOT_FOUND', async () => {
+    const repos = makeRepos();
+    const scopedQb = makeQbStub();
+    scopedQb.getOne.mockResolvedValue(reportEntity());
+    repos.reportRepo.createQueryBuilder.mockImplementation(() => scopedQb);
+    repos.conversationRepo.findOne.mockResolvedValue(conversationEntity());
+    repos.requestRepo.findOne.mockResolvedValue({ id: 880001, requestNo: 'RR-20260901-001' });
+    const service = new AdminAiReportQueryService(
+      repos.reportRepo as never,
+      repos.conversationRepo as never,
+      repos.requestRepo as never,
+    );
+
+    const detail = await service.findDetailById(550001, 12);
+    expect(detail).toMatchObject({ id: 550001, conversationId: 660001 });
+    expect(scopedQb.innerJoin).toHaveBeenCalled();
+    expect(scopedQb.andWhere).toHaveBeenCalledWith(
+      'conversation.ownerOrganizationId = :ownerOrganizationId',
+      { ownerOrganizationId: 12 },
+    );
+
+    const crossQb = makeQbStub();
+    crossQb.getOne.mockResolvedValue(null);
+    repos.reportRepo.createQueryBuilder.mockImplementation(() => crossQb);
+    const error = await captureThrownError(service.findDetailById(550001, 12));
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    expect(repos.reportRepo.findOne).not.toHaveBeenCalled();
   });
 
   it('统计总数为全量 count', async () => {

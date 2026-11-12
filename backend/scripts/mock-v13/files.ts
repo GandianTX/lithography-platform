@@ -11,7 +11,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { MockConflictError } from './errors';
+import { MockConflictError, MockWriteError } from './errors';
+import { assertNoSymlinkComponents } from './guard';
 import { MOCK_LABEL, MOCK_PREFIX } from './manifest';
 
 export function sha256Hex(content: string | Buffer): string {
@@ -121,9 +122,34 @@ export function verifyMockPackageContent(content: string): PackageVerification {
   return { ok: computed === parsed.payload_sha256, expected: parsed.payload_sha256, computed };
 }
 
-/** 文件登记器：只删除本次运行创建的文件。 */
+/** 本次运行创建的文件记录：dev/ino 用于确认清理对象仍是同一文件。 */
+interface CreatedFile {
+  readonly path: string;
+  readonly dev: number;
+  readonly ino: number;
+  /** 创建时的内容哈希：inode 可能被系统复用，需同时核对内容身份。 */
+  readonly sha256: string;
+}
+
+export interface CleanupResult {
+  readonly removed: readonly string[];
+  /** 无法确认仍是本轮创建对象而保留的文件（含原因）。 */
+  readonly retained: readonly string[];
+  readonly errors: readonly string[];
+}
+
+function lstatOrNull(targetPath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** 文件登记器：只删除本次运行创建、且仍能确认对象身份的文件。 */
 export class FileRegistry {
-  private readonly created: string[] = [];
+  private readonly created: CreatedFile[] = [];
   private readonly allowedRoots: readonly string[];
 
   constructor(allowedRoots: readonly string[]) {
@@ -139,32 +165,105 @@ export class FileRegistry {
     }
   }
 
+  /** 目录创建后按真实路径再次核对，避免链接把实际落点带出受控根。 */
+  private assertRealParentInsideAllowedRoots(absolutePath: string): void {
+    const parentRealPath = fs.realpathSync(path.dirname(absolutePath));
+    const inside = this.allowedRoots.some((root) => {
+      const rootRealPath = fs.existsSync(root) ? fs.realpathSync(root) : null;
+      if (!rootRealPath) return false;
+      const relative = path.relative(rootRealPath, parentRealPath);
+      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    });
+    if (!inside) {
+      throw new MockConflictError(
+        `拒绝在受控目录的真实路径之外写文件: ${absolutePath} -> ${parentRealPath}`,
+      );
+    }
+  }
+
   /** 内容一致则复用；不存在则创建；内容不一致视为异主文件。 */
   ensure(absolutePath: string, content: Buffer): 'CREATED' | 'REUSED' {
     const absolute = path.resolve(absolutePath);
     this.assertInsideAllowedRoots(absolute);
-    if (fs.existsSync(absolute)) {
-      const existing = fs.readFileSync(absolute);
-      if (sha256Hex(existing) !== sha256Hex(content)) {
+    assertNoSymlinkComponents(absolute, '原件路径');
+    const existing = lstatOrNull(absolute);
+    if (existing) {
+      if (existing.isSymbolicLink() || !existing.isFile()) {
+        throw new MockConflictError(`目标已是链接或非普通文件，拒绝覆盖: ${absolute}`);
+      }
+      const current = fs.readFileSync(absolute);
+      if (sha256Hex(current) !== sha256Hex(content)) {
         throw new MockConflictError(`文件已存在但内容不同，拒绝覆盖: ${absolute}`);
       }
       return 'REUSED';
     }
     fs.mkdirSync(path.dirname(absolute), { recursive: true });
-    fs.writeFileSync(absolute, content, { flag: 'wx', mode: 0o640 });
-    this.created.push(absolute);
+    assertNoSymlinkComponents(absolute, '原件路径');
+    this.assertRealParentInsideAllowedRoots(absolute);
+    try {
+      fs.writeFileSync(absolute, content, { flag: 'wx', mode: 0o640 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new MockConflictError(`文件在写入瞬间被创建，拒绝覆盖: ${absolute}`);
+      }
+      throw new MockWriteError(`写入原件失败: ${absolute}（${(error as Error).message}）`);
+    }
+    const stat = fs.lstatSync(absolute);
+    this.created.push({ path: absolute, dev: stat.dev, ino: stat.ino, sha256: sha256Hex(content) });
     return 'CREATED';
   }
 
-  /** 回滚时仅回收本次创建的文件。 */
-  cleanupCreated(): void {
-    for (const file of this.created.splice(0)) {
+  /**
+   * 回滚时仅回收本次创建的文件。
+   *
+   * 清理前重新 lstat：必须是普通文件且 dev/ino 与本轮记录一致；不跟随链接，
+   * 被替换或无法确认时保留并报告，绝不删除替换物。
+   */
+  cleanupCreated(): CleanupResult {
+    const removed: string[] = [];
+    const retained: string[] = [];
+    const errors: string[] = [];
+    for (const entry of this.created.splice(0)) {
+      let stat: fs.Stats | null;
       try {
-        fs.unlinkSync(file);
-      } catch {
-        // 文件可能已被人工处理，回收失败不掩盖原始错误。
+        stat = lstatOrNull(entry.path);
+      } catch (error) {
+        errors.push(`${entry.path}: 清理前无法检查（${(error as Error).message}）`);
+        continue;
+      }
+      if (!stat) continue;
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        retained.push(`${entry.path}: 已不是本轮创建的普通文件`);
+        continue;
+      }
+      if (stat.dev !== entry.dev || stat.ino !== entry.ino) {
+        retained.push(`${entry.path}: inode 已变化，疑似被替换`);
+        continue;
+      }
+      let currentSha256: string;
+      try {
+        currentSha256 = sha256Hex(fs.readFileSync(entry.path));
+      } catch (error) {
+        errors.push(`${entry.path}: 清理前无法读取内容（${(error as Error).message}）`);
+        continue;
+      }
+      if (currentSha256 !== entry.sha256) {
+        retained.push(`${entry.path}: 内容已变化，疑似被替换`);
+        continue;
+      }
+      try {
+        fs.unlinkSync(entry.path);
+        removed.push(entry.path);
+      } catch (error) {
+        errors.push(`${entry.path}: 删除失败（${(error as Error).message}）`);
       }
     }
+    return { removed, retained, errors };
+  }
+
+  /** 本轮创建的文件清单（提交结果未知时用于保留诊断）。 */
+  createdPaths(): readonly string[] {
+    return this.created.map((entry) => entry.path);
   }
 
   createdCount(): number {
@@ -195,14 +294,52 @@ export interface CredentialFileContent {
  * 返回值表示是否新写入；已存在时不覆盖（重跑不改变凭据）。
  */
 export function writeCredentialsFile(filePath: string, content: CredentialFileContent): boolean {
+  const absolute = path.resolve(filePath);
+  assertNoSymlinkComponents(absolute, '凭据文件');
+  const existing = lstatOrNull(absolute);
+  if (existing) {
+    if (existing.isSymbolicLink() || !existing.isFile()) {
+      throw new MockWriteError(`凭据文件已是链接或非普通文件，拒绝写入: ${absolute}`);
+    }
+    return false;
+  }
   const serialized = `${JSON.stringify(content, null, 2)}\n`;
   try {
-    fs.writeFileSync(filePath, serialized, { flag: 'wx', mode: 0o600 });
+    fs.writeFileSync(absolute, serialized, { flag: 'wx', mode: 0o600 });
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       return false;
     }
-    throw error;
+    throw new MockWriteError(`写入凭据文件失败: ${absolute}（${(error as Error).message}）`);
+  }
+}
+
+/**
+ * 统计 JSON 输出：不覆盖已有对象。
+ * 内容完全一致时视为复用；内容不同则拒绝覆盖，避免旧统计被误当成本次结果。
+ */
+export function writeJsonFileExclusive(filePath: string, content: unknown): 'CREATED' | 'REUSED' {
+  const absolute = path.resolve(filePath);
+  assertNoSymlinkComponents(absolute, '统计输出文件');
+  const serialized = `${JSON.stringify(content, null, 2)}\n`;
+  const existing = lstatOrNull(absolute);
+  if (existing) {
+    if (existing.isSymbolicLink() || !existing.isFile()) {
+      throw new MockWriteError(`统计输出已是链接或非普通文件，拒绝写入: ${absolute}`);
+    }
+    if (fs.readFileSync(absolute, 'utf8') !== serialized) {
+      throw new MockWriteError(`统计输出已存在且内容不同，拒绝覆盖: ${absolute}`);
+    }
+    return 'REUSED';
+  }
+  try {
+    fs.writeFileSync(absolute, serialized, { flag: 'wx', mode: 0o640 });
+    return 'CREATED';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new MockWriteError(`统计输出在写入瞬间被创建，拒绝覆盖: ${absolute}`);
+    }
+    throw new MockWriteError(`写入统计输出失败: ${absolute}（${(error as Error).message}）`);
   }
 }

@@ -204,7 +204,7 @@ describe('ListAdminRepairRequestsUsecase', () => {
     await usecase.execute({
       session: createSuperAdminSession(),
       pagination: offsetPagination(),
-      filter: { requestNo: 'RR-1' } as never,
+      filter: { requestNo: 'RR-1' },
     });
 
     const call = (adminRepairRequestQueryService.listAll as jest.Mock).mock.calls[0][0];

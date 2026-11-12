@@ -104,6 +104,11 @@ export class AdminAiConversationQueryService {
     if (!filter) {
       return;
     }
+    if (typeof filter.ownerOrganizationId === 'number') {
+      qb.andWhere('conversation.ownerOrganizationId = :ownerOrganizationId', {
+        ownerOrganizationId: filter.ownerOrganizationId,
+      });
+    }
     if (filter.requestNo) {
       const pattern = `%${escapeLikePattern(filter.requestNo)}%`;
       qb.andWhere('request.requestNo LIKE :requestNoPattern', { requestNoPattern: pattern });

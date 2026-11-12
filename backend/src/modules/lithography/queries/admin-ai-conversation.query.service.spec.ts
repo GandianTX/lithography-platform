@@ -218,6 +218,29 @@ describe('AdminAiConversationQueryService', () => {
     expect(repos.conversationRepo.count).toHaveBeenCalledWith();
   });
 
+  it('二级管理员列表按归属组织过滤，列表与总数同口径', async () => {
+    const repos = makeRepos();
+    const service = new AdminAiConversationQueryService(
+      repos.conversationRepo as never,
+      repos.messageRepo as never,
+      repos.reportRepo as never,
+      repos.requestRepo as never,
+    );
+
+    await service.listAll({ filter: { ownerOrganizationId: 12 }, pagination });
+
+    const listQb = repos.conversationRepo.createQueryBuilder.mock.results[0].value;
+    const countQb = repos.conversationRepo.createQueryBuilder.mock.results[1].value;
+    expect(listQb.andWhere).toHaveBeenCalledWith(
+      'conversation.ownerOrganizationId = :ownerOrganizationId',
+      { ownerOrganizationId: 12 },
+    );
+    expect(countQb.andWhere).toHaveBeenCalledWith(
+      'conversation.ownerOrganizationId = :ownerOrganizationId',
+      { ownerOrganizationId: 12 },
+    );
+  });
+
   it('空列表不触发申请与计数装配', async () => {
     const repos = makeRepos();
     const service = new AdminAiConversationQueryService(

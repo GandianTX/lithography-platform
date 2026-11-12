@@ -1,8 +1,10 @@
 // src/modules/lithography/queries/admin-ai-message.query.service.ts
 
+import { DomainError, ADMIN_DOCUMENT_DATABASE_ERROR } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { AiConversationEntity } from '../entities/ai-conversation.entity';
 import { AiMessageEntity } from '../entities/ai-message.entity';
 import type { AdminAiMessageListPage, AdminListPagination } from '../admin-document-database.types';
 
@@ -25,15 +27,33 @@ export class AdminAiMessageQueryService {
   constructor(
     @InjectRepository(AiMessageEntity)
     private readonly messageRepository: Repository<AiMessageEntity>,
+    @InjectRepository(AiConversationEntity)
+    private readonly conversationRepository: Repository<AiConversationEntity>,
   ) {}
 
   /**
-   * 按会话读取消息列表。会话不存在时返回空页（分页语义），由页面呈现空态。
+   * 按会话读取消息列表。
+   *
+   * - 会话不存在：返回空页（保持既有分页语义）；
+   * - 传入 ownerOrganizationId 且会话归属不同：统一 NOT_FOUND，与报告详情口径一致，
+   *   不泄露其他公司会话是否存在。
    */
   async listByConversation(params: {
     conversationId: number;
+    ownerOrganizationId?: number;
     pagination: AdminListPagination;
   }): Promise<AdminAiMessageListPage> {
+    if (typeof params.ownerOrganizationId === 'number') {
+      const conversation = await this.conversationRepository.findOne({
+        where: { id: params.conversationId },
+        select: { id: true, ownerOrganizationId: true },
+      });
+      if (conversation && conversation.ownerOrganizationId !== params.ownerOrganizationId) {
+        throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, 'AI 会话不存在或不可访问', {
+          conversationId: params.conversationId,
+        });
+      }
+    }
     const page = Math.max(params.pagination.page, 1);
     const pageSize = Math.max(params.pagination.pageSize, 1);
     const where = { conversationId: params.conversationId };

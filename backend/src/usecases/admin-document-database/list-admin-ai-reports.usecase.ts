@@ -16,6 +16,7 @@ import type {
   AdminAiReportQueryFilter,
 } from '@src/modules/lithography/admin-document-database.types';
 import { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   ADMIN_KEYWORD_ACCOUNT_LIMIT,
   assertKeywordAccountLimit,
@@ -25,6 +26,7 @@ import {
 } from './admin-document-database-filter.normalize';
 import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
 import { enrichAdminAiReportListItems } from './enrich-admin-account-display';
+import { resolveAdminDataScope } from './resolve-admin-data-scope';
 
 /** 页大小上限：与 GraphQL 边界 PaginationArgs @Max(100) 对齐（统一分页策略） */
 const MAX_PAGE_SIZE = 100;
@@ -44,6 +46,7 @@ export class ListAdminAiReportsUsecase {
   constructor(
     private readonly adminAiReportQueryService: AdminAiReportQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextService: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
@@ -52,6 +55,11 @@ export class ListAdminAiReportsUsecase {
     filter?: AdminAiReportListFilter;
   }): Promise<AdminAiReportListPage> {
     assertAdminDocumentDatabasePermission(params.session, '查看 AI 报告数据库');
+    const scope = await resolveAdminDataScope({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      organizationContextService: this.organizationContextService,
+    });
 
     if (!isOffsetMode(params.pagination)) {
       throw new DomainError(
@@ -89,6 +97,7 @@ export class ListAdminAiReportsUsecase {
     }
 
     const queryFilter: AdminAiReportQueryFilter = {
+      ownerOrganizationId: scope.ownerOrganizationId,
       requestNo: normalizeOptionalFilterText(filter?.requestNo),
       engineerAccountIds,
       reportType: normalizeOptionalFilterText(filter?.reportType),

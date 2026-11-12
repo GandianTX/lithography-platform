@@ -372,6 +372,21 @@ describe('assertMockDirectories', () => {
   it('文件系统根目录拒绝', () => {
     expectGuardViolation(() => assertMockDirectories('/', '/tmp/mock-v13/references'), /根目录/u);
   });
+
+  it('原件 files 子目录为符号链接时在首次写入前拒绝', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-root-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-outside-'));
+    const reference = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-ref-'));
+    fs.symlinkSync(outside, path.join(root, 'files'));
+    try {
+      expectGuardViolation(() => assertMockDirectories(root, reference), /符号链接/u);
+      expect(fs.readdirSync(outside)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(reference, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('assertCredentialsPathOutsideRepository', () => {
@@ -401,5 +416,23 @@ describe('assertCredentialsPathOutsideRepository', () => {
         assertCredentialsPathOutsideRepository(path.join(tempDir, 'nested', 'credentials.json')),
       /父目录不存在/u,
     );
+  });
+
+  it('父目录为指向仓库的链接时拒绝（按真实路径判定）', () => {
+    const linkedParent = path.join(tempDir, 'repo-link');
+    fs.symlinkSync(fs.realpathSync(resolveRepositoryRoot()), linkedParent);
+    expectGuardViolation(
+      () => assertCredentialsPathOutsideRepository(path.join(linkedParent, 'credentials.json')),
+      /符号链接|仓库内/u,
+    );
+  });
+
+  it('凭据目标本身为链接时拒绝', () => {
+    const sentinel = path.join(tempDir, 'sentinel.txt');
+    fs.writeFileSync(sentinel, '哨兵', 'utf8');
+    const target = path.join(tempDir, 'credentials.json');
+    fs.symlinkSync(sentinel, target);
+    expectGuardViolation(() => assertCredentialsPathOutsideRepository(target), /符号链接/u);
+    expect(fs.readFileSync(sentinel, 'utf8')).toBe('哨兵');
   });
 });

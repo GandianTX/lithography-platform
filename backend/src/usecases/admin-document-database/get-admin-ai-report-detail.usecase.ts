@@ -5,9 +5,11 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiReportDetailView } from '@src/modules/lithography/admin-document-database.types';
 import { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
 import { assertPositiveId } from './admin-document-database-filter.normalize';
 import { enrichAdminAiReportDetail } from './enrich-admin-account-display';
+import { resolveAdminDataScope } from './resolve-admin-data-scope';
 
 /**
  * 管理员 AI 报告只读详情用例（PR3，含正文 contentMd）。
@@ -23,6 +25,7 @@ export class GetAdminAiReportDetailUsecase {
   constructor(
     private readonly adminAiReportQueryService: AdminAiReportQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextService: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
@@ -31,8 +34,16 @@ export class GetAdminAiReportDetailUsecase {
   }): Promise<AdminAiReportDetailView> {
     assertAdminDocumentDatabasePermission(params.session, '查看 AI 报告详情');
     assertPositiveId(params.reportId, 'AI 报告 ID', 'reportId');
+    const scope = await resolveAdminDataScope({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      organizationContextService: this.organizationContextService,
+    });
 
-    const result = await this.adminAiReportQueryService.findDetailById(params.reportId);
+    const result = await this.adminAiReportQueryService.findDetailById(
+      params.reportId,
+      scope.ownerOrganizationId,
+    );
     return enrichAdminAiReportDetail(this.accountQueryService, result);
   }
 }
