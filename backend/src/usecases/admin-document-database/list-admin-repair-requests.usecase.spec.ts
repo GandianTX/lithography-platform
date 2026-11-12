@@ -8,6 +8,7 @@ import type {
 } from '@src/modules/lithography/admin-document-database.types';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -62,11 +63,17 @@ describe('ListAdminRepairRequestsUsecase', () => {
       .fn()
       .mockResolvedValue({ accountIds: [], totalMatched: 0 }),
     findAccountDisplayInfosByAccountIds: jest.fn().mockResolvedValue(new Map()),
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
   } as unknown as AccountQueryService;
+
+  const organizationContextService = {
+    resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 42 }),
+  } as unknown as TrustedOrganizationContextQueryService;
 
   const usecase = new ListAdminRepairRequestsUsecase(
     adminRepairRequestQueryService,
     accountQueryService,
+    organizationContextService,
   );
 
   beforeEach(() => {
@@ -79,6 +86,10 @@ describe('ListAdminRepairRequestsUsecase', () => {
     (accountQueryService.findAccountDisplayInfosByAccountIds as jest.Mock)
       .mockClear()
       .mockResolvedValue(new Map());
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
+    (organizationContextService.resolveForAccount as jest.Mock)
+      .mockClear()
+      .mockResolvedValue({ organizationId: 42 });
   });
 
   it.each(createUnauthorizedSessions().map(([label, session]) => ({ label, session })))(
@@ -175,6 +186,42 @@ describe('ListAdminRepairRequestsUsecase', () => {
     expect(accountQueryService.findAccountDisplayInfosByAccountIds).toHaveBeenCalledTimes(1);
     expect(page.items[0]).toMatchObject({ customerNickname: '客户甲', companyName: '甲公司' });
     expect(page.items[0]).not.toHaveProperty('customerAccountId');
+  });
+
+  it('一级管理员保留全平台范围：不向查询层传组织过滤', async () => {
+    await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+    });
+
+    const call = (adminRepairRequestQueryService.listAll as jest.Mock).mock.calls[0][0];
+    expect(call.filter.ownerOrganizationId).toBeUndefined();
+  });
+
+  it('二级管理员按可信成员组织收敛，前端筛选不能扩大范围', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+
+    await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+      filter: { requestNo: 'RR-1' } as never,
+    });
+
+    const call = (adminRepairRequestQueryService.listAll as jest.Mock).mock.calls[0][0];
+    expect(call.filter.ownerOrganizationId).toBe(42);
+    expect(call.filter).not.toHaveProperty('organizationId');
+  });
+
+  it('等级缺失不会提升为一级：仍按可信成员组织收敛', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(null);
+
+    await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+    });
+
+    const call = (adminRepairRequestQueryService.listAll as jest.Mock).mock.calls[0][0];
+    expect(call.filter.ownerOrganizationId).toBe(42);
   });
 
   it('空白筛选词与 requestNo 归一化透传：空白视为未提供', async () => {

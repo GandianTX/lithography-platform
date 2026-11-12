@@ -3,6 +3,7 @@
 import { randomInt } from 'node:crypto';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
+import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
 import {
   DomainError,
   isDomainError,
@@ -12,6 +13,7 @@ import {
 import { normalizeRequiredText } from '@core/common/input-normalize/input-normalize.policy';
 import { Inject, Injectable } from '@nestjs/common';
 import { EquipmentModelDetailSnapshot } from '@src/modules/lithography/lithography.types';
+import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
@@ -51,6 +53,7 @@ export class CreateRepairRequestUsecase {
     private readonly repairRequestService: RepairRequestService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
     private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly engineerRegistrationQueryService: EngineerRegistrationQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -63,6 +66,7 @@ export class CreateRepairRequestUsecase {
    */
   async execute(command: CreateRepairRequestCommand): Promise<CreateRepairRequestResult> {
     this.assertCustomerRole(command.session.accessGroup);
+    await this.assertNoPendingOrRejectedEngineerApplication(command.session.accountId);
 
     if (!Number.isInteger(command.equipmentModelId) || command.equipmentModelId <= 0) {
       throw new DomainError(REPAIR_REQUEST_ERROR.INVALID_PARAMS, '设备型号 ID 无效', {
@@ -184,6 +188,27 @@ export class CreateRepairRequestUsecase {
         { accessGroup: [...accessGroup] },
       );
     }
+  }
+
+  /**
+   * 待审/被拒的工程师申请人只保留本人申请与账号自助能力，不进入报修等普通客户业务。
+   *
+   * 账号本身仍可登录（P0-3 明确不把待审/被拒改成一律禁止登录），
+   * 这里在写操作的服务端资格判断处失败关闭；已通过或从未申请的账号不受影响。
+   */
+  private async assertNoPendingOrRejectedEngineerApplication(accountId: number): Promise<void> {
+    const latest = await this.engineerRegistrationQueryService.findLatestByAccountId(accountId);
+    if (
+      latest?.status !== EngineerRegistrationApplicationStatus.PENDING &&
+      latest?.status !== EngineerRegistrationApplicationStatus.REJECTED
+    ) {
+      return;
+    }
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      '工程师申请审核中或已被拒绝，当前账号暂不能发起报修',
+      { applicationStatus: latest.status },
+    );
   }
 
   /**

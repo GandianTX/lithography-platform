@@ -5,6 +5,7 @@ import { AccountQueryService } from '@src/modules/account/queries/account.query.
 import { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { enrichReferenceDocumentCreator } from './enrich-reference-document-creator';
+import { canReadCrossOrganizationReferenceDocuments } from './reference-document-access';
 import { assertDocumentIdValid, assertReferenceDocumentReadRole } from './reference-document-roles';
 import {
   GetReferenceDocumentDetailCommand,
@@ -36,10 +37,15 @@ export class GetReferenceDocumentDetailUsecase {
     const membership = await this.organizationContextService.resolveForAccount({
       accountId: command.session.accountId,
     });
+    const crossOrganizationOnlineOnly = await canReadCrossOrganizationReferenceDocuments({
+      accountQueryService: this.accountQueryService,
+      accountId: command.session.accountId,
+    });
 
     const detail = await this.referenceDocumentQueryService.findDetail({
       documentId: command.documentId,
       organizationId: membership.organizationId,
+      crossOrganizationOnlineOnly,
     });
     return enrichReferenceDocumentCreator(this.accountQueryService, detail);
   }

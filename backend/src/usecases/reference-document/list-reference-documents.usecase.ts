@@ -9,6 +9,7 @@ import { AccountQueryService } from '@src/modules/account/queries/account.query.
 import { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { enrichReferenceDocumentListCreators } from './enrich-reference-document-creator';
+import { canReadCrossOrganizationReferenceDocuments } from './reference-document-access';
 import { normalizeOptionalFilterText } from './reference-document-fields.normalize';
 import { assertReferenceDocumentReadRole } from './reference-document-roles';
 import {
@@ -56,6 +57,10 @@ export class ListReferenceDocumentsUsecase {
     const membership = await this.organizationContextService.resolveForAccount({
       accountId: command.session.accountId,
     });
+    const crossOrganizationOnlineOnly = await canReadCrossOrganizationReferenceDocuments({
+      accountQueryService: this.accountQueryService,
+      accountId: command.session.accountId,
+    });
 
     const listPage = await this.referenceDocumentQueryService.listDocuments({
       // 字符串筛选词先规范化：空白视为未提供该筛选，与前端「空白搜索词=无筛选」口径一致
@@ -67,6 +72,7 @@ export class ListReferenceDocumentsUsecase {
       },
       pagination: { page, pageSize, withTotal: withTotal ?? false },
       organizationId: membership.organizationId,
+      crossOrganizationOnlineOnly,
     });
     const items = await enrichReferenceDocumentListCreators(
       this.accountQueryService,

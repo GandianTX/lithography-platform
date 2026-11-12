@@ -98,6 +98,25 @@ export class AccountQueryService {
   }
 
   /**
+   * 读取账号当前的管理员等级（数据库事实，供跨域读侧裁决）。
+   *
+   * 只返回 `admin_level` 原值：`1` = 一级管理员，`2` = 二级管理员，
+   * `null` = 非管理员或未映射。调用方不得把 `null` 或非法值提升为一级；
+   * 账号行缺失时同样返回 `null`，授权口径由调用方失败关闭。
+   */
+  async findAdminLevelByAccountId(
+    accountId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number | null> {
+    const accountRepository = this.getAccountRepository(transactionContext);
+    const account = await accountRepository.findOne({
+      where: { id: accountId },
+      select: { id: true, adminLevel: true },
+    });
+    return account ? account.adminLevel : null;
+  }
+
+  /**
    * 受保护请求的账号权限事实快照（P0-7，单一语义读取，query-side projection）。
    *
    * 为 `ValidateAccessTokenSessionUsecase` 提供数据库当前授权事实，用于把

@@ -1,5 +1,6 @@
 /// <reference types="jest" />
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
 import {
   DomainError,
   INPUT_NORMALIZE_ERROR,
@@ -10,6 +11,7 @@ import type {
   EquipmentModelDetailSnapshot,
   RepairRequestSnapshot,
 } from '@src/modules/lithography/lithography.types';
+import type { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
 import type { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
@@ -46,6 +48,7 @@ describe('CreateRepairRequestUsecase', () => {
   let repairRequestService: RepairRequestServiceMock;
   let equipmentModelQueryService: EquipmentModelQueryServiceMock;
   let organizationContextQueryService: OrganizationContextMock;
+  let engineerRegistrationQueryService: { findLatestByAccountId: jest.Mock };
   let transactionRunner: TransactionRunner;
   let usecase: CreateRepairRequestUsecase;
 
@@ -86,12 +89,43 @@ describe('CreateRepairRequestUsecase', () => {
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
     };
+    engineerRegistrationQueryService = {
+      findLatestByAccountId: jest.fn().mockResolvedValue(null),
+    };
     usecase = new CreateRepairRequestUsecase(
       repairRequestService as unknown as RepairRequestService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
       organizationContextQueryService as unknown as TrustedOrganizationContextQueryService,
+      engineerRegistrationQueryService as unknown as EngineerRegistrationQueryService,
       transactionRunner,
     );
+  });
+
+  describe('工程师申请状态资格判断', () => {
+    it.each([
+      EngineerRegistrationApplicationStatus.PENDING,
+      EngineerRegistrationApplicationStatus.REJECTED,
+    ])('最新申请为 %s 时拒绝发起报修且不写库', async (status) => {
+      engineerRegistrationQueryService.findLatestByAccountId.mockResolvedValue({
+        id: 1,
+        status,
+      });
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      });
+      expect(repairRequestService.insertRequest).not.toHaveBeenCalled();
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('最新申请已通过或从未申请时不拦截', async () => {
+      engineerRegistrationQueryService.findLatestByAccountId.mockResolvedValue({
+        id: 1,
+        status: EngineerRegistrationApplicationStatus.APPROVED,
+      });
+
+      await expect(usecase.execute(buildCommand())).resolves.toMatchObject({ id: 11 });
+    });
   });
 
   describe('成功路径', () => {

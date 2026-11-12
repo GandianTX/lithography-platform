@@ -142,9 +142,16 @@ export class AdminAiReportQueryService {
     };
   }
 
-  /** 管理员统计：全局 AI 报告总数 */
-  async countAll(): Promise<number> {
-    return this.reportRepository.count();
+  /** 管理员统计：AI 报告总数（传入组织时按报告来源会话的归属组织收敛） */
+  async countAll(ownerOrganizationId?: number): Promise<number> {
+    if (typeof ownerOrganizationId !== 'number') {
+      return this.reportRepository.count();
+    }
+    return this.reportRepository
+      .createQueryBuilder('report')
+      .innerJoin(AiConversationEntity, 'conversation', 'conversation.id = report.conversationId')
+      .where('conversation.ownerOrganizationId = :ownerOrganizationId', { ownerOrganizationId })
+      .getCount();
   }
 
   private applyFilters(

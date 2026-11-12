@@ -43,6 +43,7 @@
     "database:deploy": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/database-deploy.ts",
     "ci:baseline-drill": "npm run migration:drill:empty-db",
     "seed:mock": "cross-env TZ=Asia/Shanghai NODE_ENV=development ts-node -r tsconfig-paths/register scripts/seed-mock.ts",
+    "mock:v13": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/mock-v13.ts",
     "dev:worker": "cross-env TZ=Asia/Shanghai NODE_ENV=development ts-node -r tsconfig-paths/register src/bootstraps/worker/main.ts",
     "start:worker": "cross-env NODE_ENV=production node dist/bootstraps/worker/main",
     "capability:list": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/capability-list.ts list",

@@ -3,6 +3,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 
@@ -11,6 +12,7 @@ import {
   ReferenceDocumentFilePayload,
   ReferenceDocumentStorage,
 } from './reference-document.types';
+import { canReadCrossOrganizationReferenceDocuments } from './reference-document-access';
 import {
   assertDocumentIdValid,
   assertReferenceDocumentDownloadRole,
@@ -33,6 +35,7 @@ export class GetReferenceDocumentFileUsecase {
   constructor(
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly accountQueryService: AccountQueryService,
     @Inject(REFERENCE_DOCUMENT_STORAGE)
     private readonly storage: ReferenceDocumentStorage,
   ) {}
@@ -45,11 +48,16 @@ export class GetReferenceDocumentFileUsecase {
     const membership = await this.organizationContextService.resolveForAccount({
       accountId: command.session.accountId,
     });
+    const crossOrganizationOnlineOnly = await canReadCrossOrganizationReferenceDocuments({
+      accountQueryService: this.accountQueryService,
+      accountId: command.session.accountId,
+    });
 
     // 不存在/已软删/跨组织由 QueryService 统一 NOT_FOUND，不区分原因
     const detail = await this.referenceDocumentQueryService.findDetail({
       documentId: command.documentId,
       organizationId: membership.organizationId,
+      crossOrganizationOnlineOnly,
     });
 
     if (

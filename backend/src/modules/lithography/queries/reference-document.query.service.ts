@@ -69,21 +69,29 @@ export class ReferenceDocumentQueryService {
   ) {}
 
   /**
-   * 本组织未软删资料列表：默认过滤已软删（deprecated = 0）与组织范围（owner_organization_id），
+   * 未软删资料列表：默认过滤已软删（deprecated = 0）与组织范围（owner_organization_id），
    * 固定排序，OFFSET 分页。列表项为昵称富集前装配结果，由 usecase 富集创建人昵称后对外输出。
    *
    * 组织范围必须由 usecase 经可信组织上下文解析后传入（A-PR0 §2.1），本层不信任客户端自报。
+   * `crossOrganizationOnlineOnly = true` 仅供一级管理员读侧：本公司资料保持原可见范围，
+   * 其他公司只追加 `publication_status = ONLINE` 且 `ownership_status = CONFIRMED`
+   * 的正式资料；他公司下架（OFFLINE）与未确认归属资料不会被放大可见。
    */
   async listDocuments(params: {
     filter: ReferenceDocumentListFilter;
     pagination: ReferenceDocumentListPagination;
     organizationId: number;
+    crossOrganizationOnlineOnly?: boolean;
   }): Promise<
     Omit<ReferenceDocumentListPage, 'items'> & { items: ReferenceDocumentListItemQueryResult[] }
   > {
     const where: FindOptionsWhere<ReferenceDocumentEntity> = {
       deprecated: false,
-      ownerOrganizationId: params.organizationId,
+      ownerOrganizationId: params.crossOrganizationOnlineOnly
+        ? Raw((alias) => this.buildCrossOrganizationFormalPredicate(alias), {
+            ownerOrganizationId: params.organizationId,
+          })
+        : params.organizationId,
     };
     if (params.filter.title) {
       where.title = Raw((alias) => `${alias} LIKE :pattern`, {
@@ -148,9 +156,19 @@ export class ReferenceDocumentQueryService {
     organizationId: number;
     transactionContext?: PersistenceTransactionContext;
     forUpdate?: boolean;
+    crossOrganizationOnlineOnly?: boolean;
   }): Promise<ReferenceDocumentDetailQueryResult> {
     const documentRepository = this.getDocumentRepository(params.transactionContext);
-    const documentWhere = { id: params.documentId, ownerOrganizationId: params.organizationId };
+    const useCrossOrganizationScope =
+      params.crossOrganizationOnlineOnly === true && params.forUpdate !== true;
+    const documentWhere: FindOptionsWhere<ReferenceDocumentEntity> = {
+      id: params.documentId,
+      ownerOrganizationId: useCrossOrganizationScope
+        ? Raw((alias) => this.buildCrossOrganizationFormalPredicate(alias), {
+            ownerOrganizationId: params.organizationId,
+          })
+        : params.organizationId,
+    };
     // 锁定读的 where 不含 deprecated：已软删行同样被锁定（与并发软删除写互斥），
     // 软删状态由下方判定统一拒绝——避免「拿到锁却仍按旧快照看到未软删」的穿透
     const entity =
@@ -222,6 +240,15 @@ export class ReferenceDocumentQueryService {
   async isStorageReferenceReferenced(storageReference: string): Promise<boolean> {
     const count = await this.documentRepository.count({ where: { storageReference } });
     return count > 0;
+  }
+
+  /**
+   * 一级管理员跨组织正式资料谓词：本公司资料保持原可见范围（含已下架/未确认归属），
+   * 他公司只放行 `publication_status = ONLINE` 且 `ownership_status = CONFIRMED` 的正式资料。
+   * 只拼接本服务固定字面量，组织 ID 始终走参数绑定。
+   */
+  private buildCrossOrganizationFormalPredicate(alias: string): string {
+    return `(${alias} = :ownerOrganizationId OR (${alias} IS NOT NULL AND ${alias} <> :ownerOrganizationId AND publication_status = 'ONLINE' AND ownership_status = 'CONFIRMED'))`;
   }
 
   /** 事务上下文存在时改用事务内 EntityManager 的 Repository（与 EquipmentModelQueryService 同模式） */

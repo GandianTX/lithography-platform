@@ -91,6 +91,11 @@ export class AdminRepairRequestQueryService {
     filter?: AdminRepairRequestQueryFilter,
   ): FindOptionsWhere<RepairRequestEntity> {
     const where: FindOptionsWhere<RepairRequestEntity> = { deprecated: false };
+    if (typeof filter?.ownerOrganizationId === 'number') {
+      // 管理员组织范围：只信任 usecase 从当前账号可信成员关系解析出的归属组织，
+      // 按 repair_request.owner_organization_id 收敛，不按客户/服务公司名称猜测。
+      where.ownerOrganizationId = filter.ownerOrganizationId;
+    }
     if (filter?.requestNo) {
       where.requestNo = Raw((alias) => `${alias} LIKE :pattern`, {
         pattern: `%${escapeLikePattern(filter.requestNo)}%`,
@@ -134,8 +139,15 @@ export class AdminRepairRequestQueryService {
    *
    * @throws DomainError ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND（对外大类 NOT_FOUND）
    */
-  async findSummaryById(requestId: number): Promise<AdminRepairRequestSummaryQueryResult> {
-    const entity = await this.requestRepository.findOne({ where: { id: requestId } });
+  async findSummaryById(
+    requestId: number,
+    ownerOrganizationId?: number,
+  ): Promise<AdminRepairRequestSummaryQueryResult> {
+    const where: FindOptionsWhere<RepairRequestEntity> = { id: requestId };
+    if (typeof ownerOrganizationId === 'number') {
+      where.ownerOrganizationId = ownerOrganizationId;
+    }
+    const entity = await this.requestRepository.findOne({ where });
     if (!entity || entity.deprecated) {
       // details 仅含申请标识，不区分「不存在」与「已删除」，防删除状态探测
       throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, '维修申请不存在或不可访问', {
@@ -167,9 +179,13 @@ export class AdminRepairRequestQueryService {
     };
   }
 
-  /** 管理员统计：全局未删除申请总数（口径与默认列表过滤一致） */
-  async countAll(): Promise<number> {
-    return this.requestRepository.count({ where: { deprecated: false } });
+  /** 管理员统计：未删除申请总数（口径与列表一致；传入组织时只统计该归属组织） */
+  async countAll(ownerOrganizationId?: number): Promise<number> {
+    const where: FindOptionsWhere<RepairRequestEntity> = { deprecated: false };
+    if (typeof ownerOrganizationId === 'number') {
+      where.ownerOrganizationId = ownerOrganizationId;
+    }
+    return this.requestRepository.count({ where });
   }
 
   private emptyPage(pagination: AdminListPagination): Omit<AdminRepairRequestListPage, 'items'> & {

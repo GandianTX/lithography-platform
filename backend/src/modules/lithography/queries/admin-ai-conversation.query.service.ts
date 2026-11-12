@@ -89,9 +89,12 @@ export class AdminAiConversationQueryService {
     };
   }
 
-  /** 管理员统计：全局 AI 会话总数 */
-  async countAll(): Promise<number> {
-    return this.conversationRepository.count();
+  /** 管理员统计：AI 会话总数（传入组织时只统计该归属组织） */
+  async countAll(ownerOrganizationId?: number): Promise<number> {
+    if (typeof ownerOrganizationId !== 'number') {
+      return this.conversationRepository.count();
+    }
+    return this.conversationRepository.count({ where: { ownerOrganizationId } });
   }
 
   private applyFilters(

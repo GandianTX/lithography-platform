@@ -48,6 +48,7 @@ const makeModelQueryService = () => ({
 
 const makeAccountQueryService = () => ({
   findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map([[900001, '管理员甲']])),
+  findAdminLevelByAccountId: jest.fn().mockResolvedValue(null),
 });
 
 /** 可信组织上下文替身：缺省解析到甲方默认组织（与 Seed 口径一致） */
@@ -111,6 +112,7 @@ describe('ListReferenceDocumentsUsecase', () => {
       filter: { title: '手册', documentType: 'MANUAL', equipmentModelId: 930001 },
       pagination: { page: 2, pageSize: 5, withTotal: false },
       organizationId: 910001,
+      crossOrganizationOnlineOnly: false,
     });
   });
 
@@ -132,6 +134,7 @@ describe('ListReferenceDocumentsUsecase', () => {
       filter: { title: undefined, documentType: undefined, equipmentModelId: 930001 },
       pagination: { page: 1, pageSize: 10, withTotal: false },
       organizationId: 910001,
+      crossOrganizationOnlineOnly: false,
     });
   });
 
@@ -287,6 +290,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
       organizationId: 910001,
+      crossOrganizationOnlineOnly: false,
     });
     expect(result).toMatchObject({
       id: 970001,
@@ -296,6 +300,26 @@ describe('GetReferenceDocumentDetailUsecase', () => {
       caseDetail: null,
     });
     expect(result).not.toHaveProperty('createdByAccountId');
+  });
+
+  it('一级管理员读详情：按跨组织正式资料范围查询（二级/工程师保持本组织）', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockResolvedValue(detailQueryResult());
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(1);
+    const usecase = new GetReferenceDocumentDetailUsecase(
+      queryService as unknown as ReferenceDocumentQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
+    );
+
+    await usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 });
+
+    expect(queryService.findDetail).toHaveBeenCalledWith({
+      documentId: 970001,
+      organizationId: 910001,
+      crossOrganizationOnlineOnly: true,
+    });
   });
 
   it('资料 ID 非法拒绝；CUSTOMER 读取被拒', async () => {
@@ -952,6 +976,7 @@ describe('GetReferenceDocumentFileUsecase', () => {
       usecase: new GetReferenceDocumentFileUsecase(
         queryService as unknown as ReferenceDocumentQueryService,
         organizationContextService as unknown as TrustedOrganizationContextQueryService,
+        makeAccountQueryService() as unknown as AccountQueryService,
         storage,
       ),
     };
@@ -985,6 +1010,7 @@ describe('GetReferenceDocumentFileUsecase', () => {
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
       organizationId: 910001,
+      crossOrganizationOnlineOnly: false,
     });
   });
 

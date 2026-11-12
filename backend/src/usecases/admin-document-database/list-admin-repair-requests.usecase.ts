@@ -16,6 +16,7 @@ import type {
   AdminRepairRequestQueryFilter,
 } from '@src/modules/lithography/admin-document-database.types';
 import { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   ADMIN_KEYWORD_ACCOUNT_LIMIT,
   assertKeywordAccountLimit,
@@ -24,6 +25,7 @@ import {
   normalizeOptionalKeyword,
 } from './admin-document-database-filter.normalize';
 import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
+import { resolveAdminDataScope } from './resolve-admin-data-scope';
 import { enrichAdminRepairRequestListItems } from './enrich-admin-account-display';
 
 /** 页大小上限：与 GraphQL 边界 PaginationArgs @Max(100) 对齐（统一分页策略） */
@@ -44,6 +46,7 @@ export class ListAdminRepairRequestsUsecase {
   constructor(
     private readonly adminRepairRequestQueryService: AdminRepairRequestQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextService: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
@@ -68,6 +71,11 @@ export class ListAdminRepairRequestsUsecase {
     const filter = params.filter;
     assertTimeRangeOrder(filter?.createdAtFrom, filter?.createdAtTo);
     const customerKeyword = normalizeOptionalKeyword(filter?.customerKeyword);
+    const scope = await resolveAdminDataScope({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      organizationContextService: this.organizationContextService,
+    });
 
     let customerAccountIds: number[] | undefined;
     if (customerKeyword) {
@@ -89,6 +97,7 @@ export class ListAdminRepairRequestsUsecase {
     }
 
     const queryFilter: AdminRepairRequestQueryFilter = {
+      ownerOrganizationId: scope.ownerOrganizationId,
       requestNo: normalizeOptionalFilterText(filter?.requestNo),
       customerAccountIds,
       equipmentModelId: filter?.equipmentModelId,

@@ -1,6 +1,7 @@
 // src/usecases/admin-document-database/get-admin-document-database-stats.usecase.spec.ts
 
 import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiConversationQueryService } from '@src/modules/lithography/queries/admin-ai-conversation.query.service';
 import type { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
 import type { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
@@ -47,19 +48,25 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
         memberRole: 'ADMIN',
       }),
     }) as unknown as TrustedOrganizationContextQueryService;
+  const makeAccountQueryService = (adminLevel: number | null = 1) =>
+    ({
+      findAdminLevelByAccountId: jest.fn().mockResolvedValue(adminLevel),
+    }) as unknown as AccountQueryService;
 
-  it('四类统计并行聚合：口径与默认列表过滤一致，参考资料统计带本组织范围', async () => {
+  it('四类统计并行聚合：一级保留全平台，参考资料统计与读侧同范围', async () => {
     const repair = makeRepairQueryService();
     const conversation = makeConversationQueryService();
     const report = makeReportQueryService();
     const reference = makeReferenceQueryService();
     const organizationContext = makeOrganizationContextService();
+    const accountQueryService = makeAccountQueryService(1);
     const usecase = new GetAdminDocumentDatabaseStatsUsecase(
       repair,
       conversation,
       report,
       reference,
       organizationContext,
+      accountQueryService,
     );
 
     const stats = await usecase.execute({ session: createSuperAdminSession() });
@@ -71,18 +78,47 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       referenceDocumentTotal: 5,
     });
     // 参考资料：以 pageSize=1 的 withTotal 查询取真实总数，不取当页条数冒充；
-    // 组织范围来自可信组织上下文（与资料列表同一口径）
+    // 一级管理员追加他公司正式资料范围（与资料列表同一口径）
     expect(reference.listDocuments).toHaveBeenCalledWith({
       filter: {},
       pagination: { page: 1, pageSize: 1, withTotal: true },
       organizationId: 910001,
+      crossOrganizationOnlineOnly: true,
     });
     expect(organizationContext.resolveForAccount).toHaveBeenCalledWith({
       accountId: createSuperAdminSession().accountId,
     });
-    expect(repair.countAll).toHaveBeenCalledWith();
-    expect(conversation.countAll).toHaveBeenCalledWith();
-    expect(report.countAll).toHaveBeenCalledWith();
+    expect(repair.countAll).toHaveBeenCalledWith(undefined);
+    expect(conversation.countAll).toHaveBeenCalledWith(undefined);
+    expect(report.countAll).toHaveBeenCalledWith(undefined);
+  });
+
+  it('二级管理员四类统计统一收敛到可信成员组织', async () => {
+    const repair = makeRepairQueryService();
+    const conversation = makeConversationQueryService();
+    const report = makeReportQueryService();
+    const reference = makeReferenceQueryService();
+    const organizationContext = makeOrganizationContextService();
+    const usecase = new GetAdminDocumentDatabaseStatsUsecase(
+      repair,
+      conversation,
+      report,
+      reference,
+      organizationContext,
+      makeAccountQueryService(2),
+    );
+
+    await usecase.execute({ session: createSuperAdminSession() });
+
+    expect(repair.countAll).toHaveBeenCalledWith(910001);
+    expect(conversation.countAll).toHaveBeenCalledWith(910001);
+    expect(report.countAll).toHaveBeenCalledWith(910001);
+    expect(reference.listDocuments).toHaveBeenCalledWith({
+      filter: {},
+      pagination: { page: 1, pageSize: 1, withTotal: true },
+      organizationId: 910001,
+      crossOrganizationOnlineOnly: false,
+    });
   });
 
   it.each(createUnauthorizedSessions().map(([label, session]) => ({ label, session })))(
@@ -99,6 +135,7 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
         report,
         reference,
         organizationContext,
+        makeAccountQueryService(),
       );
 
       const error = (await captureThrownError(usecase.execute({ session }))) as { code?: string };

@@ -4,6 +4,7 @@ import { ADMIN_DOCUMENT_DATABASE_ERROR, PERMISSION_ERROR } from '@core/common/er
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminRepairRequestSummaryQueryResult } from '@src/modules/lithography/admin-document-database.types';
 import type { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -41,11 +42,17 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
     findAccountDisplayInfosByAccountIds: jest
       .fn()
       .mockResolvedValue(new Map([[900001, { nickname: '客户甲', companyName: '甲公司' }]])),
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
   } as unknown as AccountQueryService;
+
+  const organizationContextService = {
+    resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 42 }),
+  } as unknown as TrustedOrganizationContextQueryService;
 
   const usecase = new GetAdminRepairRequestSummaryUsecase(
     adminRepairRequestQueryService,
     accountQueryService,
+    organizationContextService,
   );
 
   beforeEach(() => {
@@ -55,6 +62,10 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
     (accountQueryService.findAccountDisplayInfosByAccountIds as jest.Mock)
       .mockClear()
       .mockResolvedValue(new Map([[900001, { nickname: '客户甲', companyName: '甲公司' }]]));
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
+    (organizationContextService.resolveForAccount as jest.Mock)
+      .mockClear()
+      .mockResolvedValue({ organizationId: 42 });
   });
 
   it.each(createUnauthorizedSessions().map(([label, session]) => ({ label, session })))(
@@ -84,6 +95,20 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
     });
     expect(view).not.toHaveProperty('customerAccountId');
     expect(view).not.toHaveProperty('acceptedByEngineerAccountId');
+  });
+
+  it('二级管理员摘要按可信成员组织收敛（跨公司 ID 交由查询层统一 NOT_FOUND）', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+
+    await usecase.execute({ session: createSuperAdminSession(), requestId: 880001 });
+
+    expect(adminRepairRequestQueryService.findSummaryById).toHaveBeenCalledWith(880001, 42);
+  });
+
+  it('一级管理员摘要保留全平台范围', async () => {
+    await usecase.execute({ session: createSuperAdminSession(), requestId: 880001 });
+
+    expect(adminRepairRequestQueryService.findSummaryById).toHaveBeenCalledWith(880001, undefined);
   });
 
   it.each([0, -1, 1.5])('requestId %j 非法时在查询前拒绝', async (requestId) => {

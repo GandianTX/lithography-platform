@@ -33,6 +33,8 @@ export type AdminRepairRequestListFilter = {
  * 账号 ID 集合由 usecase 经账户域解析得到，QueryService 不做跨域解析。
  */
 export type AdminRepairRequestQueryFilter = {
+  /** 管理员组织范围（usecase 从可信成员关系解析；一级管理员不传表示全范围） */
+  ownerOrganizationId?: number;
   requestNo?: string;
   customerAccountIds?: ReadonlyArray<number>;
   equipmentModelId?: number;
