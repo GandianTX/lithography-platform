@@ -101,7 +101,7 @@
 
 ## 4. 部署与开放注册条件
 
-正式操作步骤见 [部署与增量升级 SOP](./部署与增量升级SOP-20261029.md)。与本次注册增量直接相关的条件：
+正式操作步骤见 [部署 SOP](./v13-deployment/deployment-sop.md)。与本次注册增量直接相关的条件：
 
 1. 目标库先按 SOP 升级到 **31 条迁移 / 34 张业务表** 终态；`engineer_registration_application` 默认空表，不随 Seed 导入。
 2. `registrationOrganizations` 只列出 ACTIVE 组织。开放注册前必须确认组织名称/编码正确、状态为 ACTIVE；不得按厂家、公司名、登录名或邮箱域名自动推断组织。
@@ -147,7 +147,7 @@
 | `migration:verify …`                                                                  | 业务表 **34** 张；历史校验与数据回填校验通过                                                                                    | 0      |
 | 再次 `migration:run …`                                                                | 历史 30 条、pending **0** 条；待执行 0 条，结构校验通过，再次执行 **0** 条                                                      | 0      |
 
-升级后回读：`migrations` 30 条；`equipment_model` / `base_user_account` / `reference_document` 各保留 1 行（合计 3 行，即本轮数据范围），`reference_document` 的 `owner_organization_id=1`、`ingest_method=ADMIN_DIRECT` 回填正确；基础表 35 张（含 `migrations`，业务表 34 张）；新表 `engineer_registration_application` 存在且为 **0** 行。本节保留 2026-10-29 的 29→30 历史口径；第 31 条之后的 30→31 验证见[组织与维修数据增量验收记录](./organization-maintenance-data-increment-acceptance-20261029.md)的 2026-10-30 小节。24→31 已在 accepted 代码正向重建的 24 态 + 合成旧数据上通过，不是真实历史业务库副本。
+升级后回读：`migrations` 30 条；`equipment_model` / `base_user_account` / `reference_document` 各保留 1 行（合计 3 行，即本轮数据范围），`reference_document` 的 `owner_organization_id=1`、`ingest_method=ADMIN_DIRECT` 回填正确；基础表 35 张（含 `migrations`，业务表 34 张）；新表 `engineer_registration_application` 存在且为 **0** 行。本节保留 2026-10-29 的 29→30 历史口径；第 31 条之后的 30→31 验证记录已按仓库文档清理策略移除。24→31 已在 accepted 代码正向重建的 24 态 + 合成旧数据上通过，不是真实历史业务库副本。
 
 ### 5.3 注册与审批真实链路、越权、回滚、并发
 
@@ -306,7 +306,7 @@
 
 - 51 个已跟踪修改 + 38 个新增文件（临时计划已按约定删除）；主要是本轮注册/审批实现、迁移、E2E 与文档，另有此前数据增量与测试修复的未提交部分。
 
-仓库内 `docs/database/` 保留了 PR0 各轮过程文档（历史证据），其中部分文档数量与结论只代表各自执行时点，不能替代本轮结果。
+仓库内 `docs/database/` 已不再保留 PR0 过程文档；本文数量与结论只代表 2026-10-29 执行时点，不能替代当前结果。
 
 ### 6.2 fork PR 需薛一审重点审核的内容
 

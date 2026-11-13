@@ -24,7 +24,7 @@
 //   FAULT-UPDATE 的实际恢复冲突由受控外部连接制造，不依赖 E2E_V13_SECOND_CONNECTION；
 //   冲突在恢复阶段实际发生后立即登记套件级保留。
 //
-// 覆盖映射：docs/database/v13-deployment/schema-dictionary.md 与 review-response.md。
+// 覆盖映射：docs/database/v13-deployment/schema-dictionary.md。
 //   R01 父行在范围、子行未登记        → repair_request_intake → intake_analysis_attempt
 //   R02 已登记事实被改写              → stored_file（字符串主键 + 事实核验）
 //   R03 集合外记录引用本轮目标        → repair_request.intake_id（整数主键 + 闭包拒绝）
