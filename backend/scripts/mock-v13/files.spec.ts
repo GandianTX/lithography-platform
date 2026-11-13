@@ -317,11 +317,22 @@ describe('claimMockRoots', () => {
 
     const [first, second] = await Promise.all([run(ownerA.database), run(ownerB.database)]);
     expect([first.code, second.code].sort((a, b) => Number(a) - Number(b))).toEqual([0, 3]);
-    expect(`${first.stderr}${second.stderr}`).toMatch(/其它实例或库/u);
-    const marker = JSON.parse(
-      fs.readFileSync(path.join(mock, MOCK_ROOT_OWNER_FILE), 'utf8'),
-    ) as Record<string, unknown>;
-    expect([ownerA.database, ownerB.database]).toContain(marker.database);
+    const [winner, loser] = first.code === 0 ? [ownerA, second] : [ownerB, first];
+    // 竞争方可能在正式标记发布前只看到临时标记，这也是合法的安全拒绝。
+    expect(loser.stderr).toMatch(/已有内容但没有可信归属标记|已被其它实例或库认领/u);
+    for (const [root, role] of [
+      [mock, 'mock-file-dir'],
+      [reference, 'reference-storage-dir'],
+    ] as const) {
+      const marker: unknown = JSON.parse(
+        fs.readFileSync(path.join(root, MOCK_ROOT_OWNER_FILE), 'utf8'),
+      );
+      expect(marker).toMatchObject({
+        instance_uuid: winner.instanceUuid,
+        database: winner.database,
+        role,
+      });
+    }
   }, 30000);
 
   it('两个根相同或互相嵌套时拒绝', () => {
