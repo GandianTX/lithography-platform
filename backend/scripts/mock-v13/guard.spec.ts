@@ -19,6 +19,7 @@ import {
   REQUIRED_TABLES,
   WRITE_ACK_PHRASE,
   assertCredentialsPathOutsideRepository,
+  assertCredentialsPathVacant,
   assertDistinctOutputPaths,
   assertOutputPathsOutsideMockDirectories,
   assertGuardConfig,
@@ -418,6 +419,19 @@ describe('assertMockDirectories', () => {
     expectGuardViolation(() => assertMockDirectories('/', '/tmp/mock-v13/references'), /根目录/u);
   });
 
+  it('两个原件根相同或互相嵌套时拒绝', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-nested-'));
+    try {
+      expectGuardViolation(() => assertMockDirectories(root, root), /不同目录/u);
+      expectGuardViolation(
+        () => assertMockDirectories(root, path.join(root, 'reference')),
+        /嵌套/u,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('原件 files 子目录为符号链接时在首次写入前拒绝', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-root-'));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-outside-'));
@@ -546,5 +560,42 @@ describe('assertCredentialsPathOutsideRepository', () => {
     fs.symlinkSync(sentinel, target);
     expectGuardViolation(() => assertCredentialsPathOutsideRepository(target), /符号链接/u);
     expect(fs.readFileSync(sentinel, 'utf8')).toBe('哨兵');
+  });
+});
+
+describe('assertCredentialsPathVacant', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-cred-vacant-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('仓库外的新路径接受并返回绝对路径', () => {
+    const target = path.join(tempDir, 'credentials.json');
+    expect(assertCredentialsPathVacant(target)).toBe(path.resolve(target));
+  });
+
+  it('目标为已有普通文件时拒绝，内容不变', () => {
+    const target = path.join(tempDir, 'existing.png');
+    fs.writeFileSync(target, '已有 PNG', 'utf8');
+    expectGuardViolation(() => assertCredentialsPathVacant(target), /目标已占用/u);
+    expect(fs.readFileSync(target, 'utf8')).toBe('已有 PNG');
+  });
+
+  it('目标为已有无关 JSON 时拒绝，内容不变', () => {
+    const target = path.join(tempDir, 'unrelated.json');
+    fs.writeFileSync(target, '{"keep":true}', 'utf8');
+    expectGuardViolation(() => assertCredentialsPathVacant(target), /目标已占用/u);
+    expect(fs.readFileSync(target, 'utf8')).toBe('{"keep":true}');
+  });
+
+  it('目标为目录时拒绝', () => {
+    const target = path.join(tempDir, 'occupied');
+    fs.mkdirSync(target);
+    expectGuardViolation(() => assertCredentialsPathVacant(target), /不是普通文件/u);
   });
 });

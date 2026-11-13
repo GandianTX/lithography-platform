@@ -27,6 +27,7 @@ import {
 import { requireReportIds } from './packs-p0';
 import {
   PackContext,
+  assertAccountsEligible,
   readNumber,
   requireAccountId,
   requireOrganizationId,
@@ -150,6 +151,7 @@ async function ensureAnalysis(
 }
 
 export async function runAiPack(context: PackContext): Promise<void> {
+  await assertAccountsEligible(context, ['engineer-a', 'engineer-b'], 'p1-ai');
   const orgA = await requireOrganizationId(context, 'A');
   const orgB = await requireOrganizationId(context, 'B');
   const engineerA = await requireAccountId(context, 'engineer-a');
@@ -294,6 +296,7 @@ export async function runAiPack(context: PackContext): Promise<void> {
 }
 
 export async function runLocalPack(context: PackContext): Promise<void> {
+  await assertAccountsEligible(context, ['engineer-a', 'engineer-b'], 'p1-local');
   const orgA = await requireOrganizationId(context, 'A');
   const orgB = await requireOrganizationId(context, 'B');
   const engineerA = await requireAccountId(context, 'engineer-a');
@@ -495,6 +498,7 @@ async function ensureAuthorization(
 }
 
 export async function runPackagesPack(context: PackContext): Promise<void> {
+  await assertAccountsEligible(context, ['engineer-b'], 'p1-packages');
   const orgB = await requireOrganizationId(context, 'B');
   const engineerB = await requireAccountId(context, 'engineer-b');
 
@@ -640,6 +644,7 @@ async function ensurePackageImport(
 }
 
 export async function runBackupPack(context: PackContext): Promise<void> {
+  await assertAccountsEligible(context, ['admin-l2-a'], 'p1-backup');
   const orgA = await requireOrganizationId(context, 'A');
   const adminA = await requireAccountId(context, 'admin-l2-a');
   const installation = await resolveInstallationIdentity(context);

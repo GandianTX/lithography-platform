@@ -20,9 +20,7 @@ type AccessGroupFactory = (loginName: string, role: string) => unknown;
 class AccountsQueryRunner {
   readonly calls: string[] = [];
 
-  constructor(
-    private readonly accessGroup: AccessGroupFactory = (_loginName, role) => [role],
-  ) {}
+  constructor(private readonly accessGroup: AccessGroupFactory = (_loginName, role) => [role]) {}
 
   query(sql: string, parameters: readonly unknown[] = []): Promise<unknown> {
     this.calls.push(sql);
@@ -81,6 +79,7 @@ class AccountsQueryRunner {
         {
           organization_code: code,
           is_managed_company: spec.organization === 'PLATFORM' ? 0 : 1,
+          organization_status: 'ACTIVE',
           member_role: spec.role,
           status: 'ACTIVE',
         },

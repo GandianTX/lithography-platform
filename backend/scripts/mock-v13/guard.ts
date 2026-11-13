@@ -328,6 +328,18 @@ export function assertMockDirectories(mockFileDir: string, referenceStorageDir: 
   if (targets[0].dir === targets[1].dir) {
     throw new GuardViolationError('--mock-file-dir 与 --reference-storage-dir 必须指向不同目录');
   }
+  const mockWithinReference = path.relative(targets[0].dir, targets[1].dir);
+  const referenceWithinMock = path.relative(targets[1].dir, targets[0].dir);
+  const isNested = (relative: string): boolean =>
+    relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  const eitherIsFilesystemRoot = targets.some(
+    (target) => path.parse(target.dir).root === target.dir,
+  );
+  if (!eitherIsFilesystemRoot && (isNested(mockWithinReference) || isNested(referenceWithinMock))) {
+    throw new GuardViolationError(
+      '--mock-file-dir 与 --reference-storage-dir 不能相互嵌套，拒绝写入 Mock 文件',
+    );
+  }
   const repositoryRoot = resolveRepositoryRoot();
   const forbiddenRoots = [
     path.join(repositoryRoot, 'backend', 'src'),
@@ -495,6 +507,33 @@ export function assertCredentialsPathOutsideRepository(credentialsPath: string):
   if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
     throw new GuardViolationError(
       `凭据文件实际目标 ${targetRealPath} 位于仓库内，拒绝写入；请使用仓库外的受控目录`,
+    );
+  }
+  return absolute;
+}
+
+/**
+ * 凭据输出只接受尚不存在的新文件路径。
+ *
+ * 在连库、建目录或写文件之前调用：目标被占用（含悬空符号链接）即退出 2，
+ * 提示改用新文件名，或重跑时省略 `--credentials-out`。
+ */
+export function assertCredentialsPathVacant(credentialsPath: string): string {
+  const absolute = assertCredentialsPathOutsideRepository(credentialsPath);
+  let existing: fs.Stats | null = null;
+  try {
+    existing = fs.lstatSync(absolute);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      throw new GuardViolationError(
+        `无法检查凭据文件目标是否已占用: ${absolute}（${(error as Error).message}）`,
+      );
+    }
+  }
+  if (existing) {
+    throw new GuardViolationError(
+      `--credentials-out 目标已占用: ${absolute}；请改用新文件名，或重跑时省略该参数`,
     );
   }
   return absolute;

@@ -40,9 +40,19 @@ import {
   exitCodeOf,
   failureDiagnosticsOf,
 } from './errors';
-import { FileRegistry, writeCredentialsFile, writeJsonFileExclusive } from './files';
 import {
-  assertCredentialsPathOutsideRepository,
+  FileRegistry,
+  MockRootClaim,
+  MockRootTarget,
+  RootClaimHooks,
+  RootOwner,
+  claimMockRoots,
+  sha256Hex,
+  writeCredentialsFile,
+  writeJsonFileExclusive,
+} from './files';
+import {
+  assertCredentialsPathVacant,
   assertGuardConfig,
   assertMockDirectories,
   assertDistinctOutputPaths,
@@ -55,10 +65,20 @@ import {
   parseMockEnv,
 } from './guard';
 import { ACCOUNTS, FIXED_ACCOUNT_CREATED_AT, ORGANIZATIONS, mockEmail, mockUuid } from './manifest';
-import { PackContext, buildFieldEncryptionCodec, readInstallationIdentity } from './packs-shared';
+import {
+  PackContext,
+  buildFieldEncryptionCodec,
+  collectAccountFailures,
+  readInstallationIdentity,
+} from './packs-shared';
 import { PACK_PREREQUISITES, PackDefinition, selectPacks } from './packs';
+import { mockMaterialContent, mockMaterialReference } from './packs-p0';
 import { RunReport, formatHelp, formatSummary } from './report';
-import { parseRoleArrayValue } from './roles';
+
+/** 本轮独占的底层驱动连接；只用于 DataSource.destroy() 失败时的兜底断开。 */
+export interface MockDriverConnection {
+  destroy(): void;
+}
 
 export interface TransactionQueryRunner extends MockQueryRunner {
   connect(): Promise<void>;
@@ -66,6 +86,11 @@ export interface TransactionQueryRunner extends MockQueryRunner {
   commitTransaction(): Promise<void>;
   rollbackTransaction(): Promise<void>;
   release(): Promise<void>;
+  /**
+   * TypeORM MySQL QueryRunner 在 connect() 后挂载的底层驱动连接。
+   * 正常收尾仍走 release()；只有连接不能回池且 DataSource.destroy() 失败时才兜底关闭。
+   */
+  readonly databaseConnection?: MockDriverConnection;
 }
 
 export interface RunDependencies {
@@ -74,6 +99,14 @@ export interface RunDependencies {
   createQueryRunner(source: DataSource): Promise<TransactionQueryRunner>;
   /** 仅测试注入：默认使用正式数据包注册表。 */
   selectPacks?(selection: readonly string[]): readonly PackDefinition[];
+  /** 仅测试/验收注入：默认使用 FileRegistry(fileRoots)。 */
+  createFileRegistry?(roots: readonly string[]): FileRegistry;
+  /** 仅测试注入：默认使用正式原件根认领。 */
+  claimRoots?(
+    targets: readonly MockRootTarget[],
+    owner: RootOwner,
+    hooks?: RootClaimHooks,
+  ): MockRootClaim[];
 }
 
 const defaultDependencies: RunDependencies = {
@@ -88,21 +121,73 @@ export interface ExecutePacksOptions {
   readonly database: string;
   readonly failAfterPack: string | null;
   readonly verify?: () => Promise<void>;
+  /** 事务状态未确认而跳过普通 release() 时回调，供上层保留兜底关闭依据。 */
+  readonly onConnectionRetained?: () => void;
 }
 
-/** 单事务执行；失败时按事务阶段决定回滚与文件回收。抽成独立函数以便离线验证 A6。 */
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/** 回滚是收尾动作：失败只作为诊断返回，绝不覆盖主错误。 */
+async function attemptRollback(queryRunner: TransactionQueryRunner): Promise<Error | null> {
+  try {
+    await queryRunner.rollbackTransaction();
+    return null;
+  } catch (error) {
+    return asError(error);
+  }
+}
+
+/**
+ * 单事务执行；失败时按事务阶段决定回滚、文件回收与连接收尾。抽成独立函数以便离线验证 A6。
+ *
+ * 只有事务启动成功且回滚确认成功时才允许普通 release() 把连接交回池；
+ * 启动结果不明或回滚未确认时，连接可能仍带事务，必须交由持有本轮专用 DataSource 的上层关闭。
+ */
 export async function executePacks(
   queryRunner: TransactionQueryRunner,
   packs: readonly PackDefinition[],
   context: PackContext,
   options: ExecutePacksOptions,
 ): Promise<void> {
-  const acquired = await acquireRunLock(queryRunner, options.database);
+  let connectionCloseRequired = false;
+  let acquired = false;
   try {
+    // 放入 try 内：运行锁查询抛错时也必须走连接收尾，不能把连接留在 main 手里。
+    acquired = await acquireRunLock(queryRunner, options.database);
     if (!acquired) {
-      throw new MockWriteError('未获取到运行锁（可能有并发 Mock 正在执行）');
+      const error = new MockWriteError('未获取到运行锁（可能有并发 Mock 正在执行）');
+      attachFailureDiagnostics(error, { transactionState: 'NOT_STARTED' });
+      throw error;
     }
-    await queryRunner.startTransaction();
+
+    try {
+      await queryRunner.startTransaction();
+    } catch (startFailure) {
+      // 启动结果不明：先尝试确认回滚；无论回滚是否成功，连接都不再走普通回池路径。
+      connectionCloseRequired = true;
+      const primaryError = asError(startFailure);
+      const rollbackError = await attemptRollback(queryRunner);
+      if (rollbackError) {
+        throw new RollbackUnconfirmedError({
+          targetDatabase: options.database,
+          phase: 'START_UNCERTAIN',
+          primaryError,
+          rollbackError,
+          retainedFiles: context.files.createdPaths(),
+        });
+      }
+      const cleanup = context.files.cleanupCreated();
+      attachFailureDiagnostics(primaryError, {
+        rollbackConfirmed: true,
+        transactionState: 'START_UNCERTAIN_ROLLBACK_CONFIRMED',
+        cleanupErrors: cleanup.errors,
+        retainedFiles: cleanup.retained,
+      });
+      throw primaryError;
+    }
+
     let commitStarted = false;
     try {
       for (const pack of packs) {
@@ -120,35 +205,25 @@ export async function executePacks(
       await queryRunner.commitTransaction();
     } catch (error) {
       if (commitStarted) {
-        let rollbackError: Error | null = null;
-        try {
-          await queryRunner.rollbackTransaction();
-        } catch (rollbackFailure) {
-          rollbackError =
-            rollbackFailure instanceof Error ? rollbackFailure : new Error(String(rollbackFailure));
-        }
+        connectionCloseRequired = true;
+        const rollbackError = await attemptRollback(queryRunner);
         throw new CommitOutcomeUnknownError({
           targetDatabase: options.database,
           phase: 'COMMIT_SENT',
           retainedFiles: context.files.createdPaths(),
-          primaryError: error instanceof Error ? error : new Error(String(error)),
+          primaryError: asError(error),
           rollbackError,
         });
       }
 
-      let rollbackError: Error | null = null;
-      try {
-        await queryRunner.rollbackTransaction();
-      } catch (rollbackFailure) {
-        rollbackError =
-          rollbackFailure instanceof Error ? rollbackFailure : new Error(String(rollbackFailure));
-      }
+      const rollbackError = await attemptRollback(queryRunner);
       if (rollbackError) {
         // 回滚未确认是独立结果：保留主错误、回滚错误与本轮文件，不得声称已回滚。
+        connectionCloseRequired = true;
         throw new RollbackUnconfirmedError({
           targetDatabase: options.database,
           phase: 'ROLLBACK_FAILED',
-          primaryError: error instanceof Error ? error : new Error(String(error)),
+          primaryError: asError(error),
           rollbackError,
           retainedFiles: context.files.createdPaths(),
         });
@@ -157,6 +232,7 @@ export async function executePacks(
       const cleanup = context.files.cleanupCreated();
       attachFailureDiagnostics(error, {
         rollbackConfirmed: true,
+        transactionState: 'ROLLBACK_CONFIRMED',
         cleanupErrors: cleanup.errors,
         retainedFiles: cleanup.retained,
       });
@@ -170,11 +246,19 @@ export async function executePacks(
         reportConnectionCleanupFailure(options.database, '释放运行锁', error);
       }
     }
-    try {
-      // 连接由本函数独占释放；调用方（main）不再重复释放，避免双重 release。
-      await queryRunner.release();
-    } catch (error) {
-      reportConnectionCleanupFailure(options.database, '释放 QueryRunner', error);
+    if (connectionCloseRequired) {
+      options.onConnectionRetained?.();
+      process.stderr.write(
+        `[mock:v13] 库 ${options.database}：事务启动或回滚未确认，跳过普通 release()，` +
+          '交由上层关闭本轮专用连接（不把可能仍带事务的连接交回池）。\n',
+      );
+    } else {
+      try {
+        // 连接由本函数独占释放；调用方（main）不再重复释放，避免双重 release。
+        await queryRunner.release();
+      } catch (error) {
+        reportConnectionCleanupFailure(options.database, '释放 QueryRunner', error);
+      }
     }
   }
 }
@@ -184,24 +268,75 @@ function reportConnectionCleanupFailure(database: string, step: string, error: u
   process.stderr.write(`[mock:v13] 库 ${database}：${step}失败（不改变事务结论）：${reason}\n`);
 }
 
+/**
+ * DataSource.destroy() 在断开前失败时的兜底：直接关闭本轮独占的驱动连接。
+ *
+ * 该连接从未执行普通 release()，关闭它不会把可能仍带事务的连接交回池，
+ * 也不影响共享池中的其他会话。兜底失败单独记录，不覆盖主错误、回滚错误或关闭错误。
+ */
+function closeRetainedConnection(connection: MockDriverConnection | null): void {
+  if (!connection) {
+    process.stderr.write(
+      '[mock:v13] 未取得本轮独占驱动连接句柄，无法兜底断开；请用独立连接核对目标库。\n',
+    );
+    return;
+  }
+  try {
+    connection.destroy();
+    process.stderr.write(
+      '[mock:v13] 已用本轮独占驱动连接兜底断开（仅关闭本轮连接，不影响共享池或其他会话）。\n',
+    );
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `[mock:v13] 兜底断开本轮独占驱动连接失败：${reason}（与上方关闭错误分别保留）。\n`,
+    );
+  }
+}
+
+interface PrivateConnectionPool {
+  /** mysql2 回调式连接池：end(callback) 返回 undefined，关闭结果只能从回调得知。 */
+  end(callback: (error?: Error | null) => void): void;
+}
+
+/**
+ * DataSource.destroy() 在关闭私有池前失败时，兜底关闭本轮 CLI 自己创建的私有池。
+ *
+ * 只结束本轮私有池并等待关闭结果：不处理已归池的单个连接，不碰共享池；
+ * 兜底结果单独返回，由调用方与原始关闭错误分别记录，不覆盖事务退出码。
+ *
+ * mysql2 的 `Pool.end(callback)` 返回 undefined，必须等回调触发才算关闭完成；
+ * 回调报错或 `end()` 同步抛出都视为本次兜底关闭失败。
+ */
+async function closePrivatePool(source: DataSource): Promise<Error | null> {
+  let pool: PrivateConnectionPool | undefined;
+  try {
+    const driver = source.driver as unknown as { pool?: PrivateConnectionPool } | undefined;
+    pool = driver?.pool;
+  } catch (error) {
+    return asError(error);
+  }
+  if (!pool || typeof pool.end !== 'function') {
+    return new Error('未找到本轮私有连接池');
+  }
+  const target = pool;
+  return new Promise<Error | null>((resolve) => {
+    let settled = false;
+    const finish = (error?: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(error ? asError(error) : null);
+    };
+    try {
+      target.end((error) => finish(error));
+    } catch (error) {
+      finish(asError(error));
+    }
+  });
+}
+
 function asReferenceText(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-function asArray(value: unknown, context: string): string[] {
-  const parsed = parseRoleArrayValue(value);
-  if (!parsed) {
-    throw new MockVerificationError(`${context} 不是合法角色数组`);
-  }
-  return parsed;
-}
-
-function organizationCodeOf(key: 'A' | 'B'): string {
-  const organization = ORGANIZATIONS.find((item) => item.key === key);
-  if (!organization) {
-    throw new MockVerificationError(`未知组织键: ${key}`);
-  }
-  return organization.code;
 }
 
 /**
@@ -212,107 +347,10 @@ function organizationCodeOf(key: 'A' | 'B'): string {
  */
 export async function verifyAccounts(context: PackContext): Promise<void> {
   const queryRunner = context.qr;
-  const failed: string[] = [];
+  const failed: string[] = await collectAccountFailures(context, ACCOUNTS);
   const check = (condition: boolean, message: string): void => {
     if (!condition) failed.push(message);
   };
-
-  for (const spec of ACCOUNTS) {
-    const account = await findOne(queryRunner, 'base_user_account', {
-      login_name: spec.loginName,
-    });
-    if (!account) {
-      failed.push(`${spec.loginName}: 账号缺失`);
-      continue;
-    }
-    const accountId = Number(account.id);
-    check(
-      asReferenceText(account.login_email) === mockEmail(spec.loginName),
-      `${spec.loginName}: 登录邮箱不一致`,
-    );
-    check(
-      asReferenceText(account.status) === spec.accountStatus,
-      `${spec.loginName}: 账号状态 ${asReferenceText(account.status)} != ${spec.accountStatus}`,
-    );
-    check(
-      asReferenceText(account.identity_hint) === spec.role,
-      `${spec.loginName}: 账号角色 ${asReferenceText(account.identity_hint)} != ${spec.role}`,
-    );
-    const adminLevel = account.admin_level === null ? null : Number(account.admin_level);
-    check(
-      adminLevel === spec.adminLevel,
-      `${spec.loginName}: 管理员等级 ${String(adminLevel)} != ${String(spec.adminLevel)}`,
-    );
-
-    const info = await findOne(queryRunner, 'base_user_info', { account_id: accountId });
-    if (!info) {
-      failed.push(`${spec.loginName}: 用户资料缺失`);
-      continue;
-    }
-    check(
-      asReferenceText(info.user_state) === spec.userState,
-      `${spec.loginName}: 资料状态 ${asReferenceText(info.user_state)} != ${spec.userState}`,
-    );
-    const accessGroup = asArray(info.access_group, `${spec.loginName} access_group`);
-    check(
-      accessGroup.length === 1 && accessGroup[0] === spec.role,
-      `${spec.loginName}: 资料角色 [${accessGroup.join(',')}] 与账号角色 ${spec.role} 不一致`,
-    );
-    const digestRoles = asArray(
-      context.encryption.decrypt(asReferenceText(info.meta_digest)),
-      `${spec.loginName} meta_digest`,
-    );
-    check(
-      digestRoles.length === 1 && digestRoles[0] === spec.role,
-      `${spec.loginName}: meta_digest 角色 [${digestRoles.join(',')}] 与账号角色 ${spec.role} 不一致`,
-    );
-
-    const expectedProfileOrganizationId =
-      spec.profileOrganization === null
-        ? null
-        : await organizationIdByCode(queryRunner, organizationCodeOf(spec.profileOrganization));
-    const profileOrganizationId =
-      info.customer_organization_id === null ? null : Number(info.customer_organization_id);
-    check(
-      profileOrganizationId === expectedProfileOrganizationId,
-      `${spec.loginName}: 资料归属公司 ${String(profileOrganizationId)} != ${String(
-        expectedProfileOrganizationId,
-      )}`,
-    );
-
-    const memberships = asRows(
-      await queryRunner.query(
-        `SELECT o.organization_code, o.is_managed_company, m.member_role, m.status
-           FROM organization_membership m
-           JOIN organization o ON o.id = m.organization_id
-          WHERE m.account_id = ? AND m.status = 'ACTIVE'`,
-        [accountId],
-      ),
-    );
-    if (spec.organization === null) {
-      check(memberships.length === 0, `${spec.loginName}: 不应存在有效组织成员关系`);
-    } else if (spec.organization === 'PLATFORM') {
-      check(
-        memberships.length === 1 && Number(memberships[0].is_managed_company) === 0,
-        `${spec.loginName}: 平台归属成员关系缺失或异常`,
-      );
-      check(
-        memberships.length === 1 && asReferenceText(memberships[0].member_role) === spec.role,
-        `${spec.loginName}: 平台成员角色与账号角色不一致`,
-      );
-    } else {
-      const expectedCode = organizationCodeOf(spec.organization);
-      check(
-        memberships.length === 1 &&
-          asReferenceText(memberships[0].organization_code) === expectedCode,
-        `${spec.loginName}: 组织归属不是 ${expectedCode}`,
-      );
-      check(
-        memberships.length === 1 && asReferenceText(memberships[0].member_role) === spec.role,
-        `${spec.loginName}: 成员角色与账号角色不一致`,
-      );
-    }
-  }
 
   for (const key of ['pending-engineer', 'rejected-engineer'] as const) {
     const spec = ACCOUNTS.find((account) => account.key === key);
@@ -351,19 +389,6 @@ export async function verifyAccounts(context: PackContext): Promise<void> {
     }
   }
   context.report.note('定向校验：固定账号逐个核对登录名/账号态/资料态/角色/等级/归属');
-}
-
-async function organizationIdByCode(
-  queryRunner: MockQueryRunner,
-  organizationCode: string,
-): Promise<number> {
-  const organization = await findOne(queryRunner, 'organization', {
-    organization_code: organizationCode,
-  });
-  if (!organization) {
-    throw new MockVerificationError(`组织 ${organizationCode} 缺失`);
-  }
-  return Number(organization.id);
 }
 
 async function verifyRepairBasics(queryRunner: MockQueryRunner, report: RunReport): Promise<void> {
@@ -439,11 +464,23 @@ async function verifyDocuments(
   const document = await findOne(queryRunner, 'reference_document', {
     title: '[MOCK-V13] 星港曝光台对准漂移处置手册',
   });
+  const expectedReference = mockMaterialReference();
+  const expectedContent = mockMaterialContent();
   const reference = document ? asReferenceText(document.storage_reference) : '';
-  if (!reference || !fs.existsSync(path.join(referenceStorageDir, reference))) {
+  const storageBackend = document ? asReferenceText(document.storage_backend) : '';
+  if (!document || storageBackend !== 'LOCAL' || reference !== expectedReference) {
+    throw new MockVerificationError(
+      `资料原件引用与本次生成/校验不一致（backend=${storageBackend}，reference=${reference}）`,
+    );
+  }
+  const referencePath = path.join(referenceStorageDir, reference);
+  if (!fs.existsSync(referencePath)) {
     throw new MockVerificationError('资料声称可下载但实际文件缺失');
   }
-  report.note('定向校验：资料在线状态与真实文件一致');
+  if (sha256Hex(fs.readFileSync(referencePath)) !== sha256Hex(expectedContent)) {
+    throw new MockVerificationError('资料原件内容与本次校验的原件不一致');
+  }
+  report.note('定向校验：资料在线状态、业务引用与真实文件内容一致');
 }
 
 async function verifyAi(queryRunner: MockQueryRunner, report: RunReport): Promise<void> {
@@ -646,6 +683,9 @@ export async function main(
 
   let source: DataSource | null = null;
   let queryRunner: TransactionQueryRunner | null = null;
+  // 本轮独占驱动连接：事务未确认时 DataSource.destroy() 失败的最后兜底。
+  let exclusiveConnection: MockDriverConnection | null = null;
+  let connectionRetained = false;
   let packsOwnRelease = false;
   // 已确定的结果码；用于关闭连接失败时保留原结论，避免落到 CLI 通用兜底 4。
   let resultCode: number | null = null;
@@ -685,7 +725,7 @@ export async function main(
     // 所有路径检查都在首次数据库/文件写入之前完成。
     assertOutputPathsOutsideMockDirectories(options);
     const credentialsPath = options.credentialsOut
-      ? assertCredentialsPathOutsideRepository(options.credentialsOut)
+      ? assertCredentialsPathVacant(options.credentialsOut)
       : null;
     assertMockDirectories(options.mockFileDir, options.referenceStorageDir);
     const jsonOutPath = options.jsonOut
@@ -717,6 +757,7 @@ export async function main(
       : new DataSource(dataSourceOptions);
     await source.initialize();
     queryRunner = await dependencies.createQueryRunner(source);
+    exclusiveConnection = queryRunner.databaseConnection ?? null;
 
     const facts = await readTargetFacts(queryRunner);
     assertTargetFacts(guard, facts);
@@ -728,10 +769,11 @@ export async function main(
 
     const report = new RunReport();
     const fileRoots = [options.mockFileDir, options.referenceStorageDir];
+    const createFileRegistry = dependencies.createFileRegistry ?? ((roots) => new FileRegistry(roots));
     const context: PackContext = {
       qr: queryRunner,
       report,
-      files: new FileRegistry(fileRoots),
+      files: createFileRegistry(fileRoots),
       mockFileDir: options.mockFileDir,
       referenceStorageDir: options.referenceStorageDir,
       passwordHash: hashPasswordWithTimestamp(env.mockPassword, FIXED_ACCOUNT_CREATED_AT),
@@ -750,9 +792,21 @@ export async function main(
       return 0;
     }
 
-    fs.mkdirSync(options.mockFileDir, { recursive: true });
-    fs.mkdirSync(options.referenceStorageDir, { recursive: true });
-    // 目录创建完成后按真实路径再核对一次，防止竞态中出现的链接。
+    // 两个原件根分别建立持久归属：在核对实际实例 UUID 与库名之后、业务写入之前。
+    try {
+      (dependencies.claimRoots ?? claimMockRoots)(
+        [
+          { flag: '--mock-file-dir', dir: options.mockFileDir },
+          { flag: '--reference-storage-dir', dir: options.referenceStorageDir },
+        ],
+        { instanceUuid: facts.instanceUuid, database: guard.database },
+      );
+    } catch (error) {
+      // 认领发生在事务之前；即使第一根标记已落盘，业务事务也尚未开始。
+      attachFailureDiagnostics(error, { transactionState: 'NOT_STARTED' });
+      throw error;
+    }
+    // 认领完成后按真实路径再核对一次，防止竞态中出现的链接。
     assertMockDirectories(options.mockFileDir, options.referenceStorageDir);
 
     if (options.failAfterPack !== null) {
@@ -777,6 +831,9 @@ export async function main(
       database: guard.database,
       failAfterPack: options.failAfterPack,
       verify: verifier,
+      onConnectionRetained: () => {
+        connectionRetained = true;
+      },
     });
     // executePacks 正常返回即代表 COMMIT 已确认成功。
     commitConfirmed = true;
@@ -798,7 +855,7 @@ export async function main(
         const accountsToExport = ACCOUNTS.filter((account) =>
           verifiedLogins.has(account.loginName),
         );
-        const written = writeCredentialsFile(credentialsPath, {
+        writeCredentialsFile(credentialsPath, {
           generated_at: new Date().toISOString(),
           mock: true,
           warning: '仅限开发联调；请通过受控渠道交付，不得提交到 Git。',
@@ -817,7 +874,7 @@ export async function main(
           })),
         });
         process.stdout.write(
-          `[mock:v13] 凭据索引${written ? '已写入' : '已存在（未覆盖）'}（${accountsToExport.length} 个本次创建/核验账号）: ${credentialsPath}\n`,
+          `[mock:v13] 凭据索引已写入（${accountsToExport.length} 个本次创建/核验账号）: ${credentialsPath}\n`,
         );
       } else {
         process.stdout.write('[mock:v13] 未写凭据文件；测试密码未持久化，请通过受控渠道交付。\n');
@@ -830,7 +887,6 @@ export async function main(
           instanceUuid: facts.instanceUuid,
           timezone: env.dbTimezone,
           durationMs: Date.now() - startedAt,
-          exitCode: 0,
           packs: report.packStats(),
           scenarios: report.scenarioIndex(),
           fileRoots,
@@ -863,9 +919,19 @@ export async function main(
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`[mock:v13] 失败: ${message}\n`);
     // 只有确实执行过 ROLLBACK 且调用成功时才允许声称“事务已回滚”；
-    // 写入前被守卫拒绝、未取得运行锁等情况从未进入事务。
-    if (error instanceof MockConflictError && diagnostics.rollbackConfirmed === true) {
-      process.stderr.write('[mock:v13] 已有数据归属不明，本次未覆盖；事务已回滚。\n');
+    // 写入前被守卫拒绝、未取得运行锁或事务启动失败但回滚已确认等情况必须逐个区分。
+    if (diagnostics.transactionState === 'START_UNCERTAIN_ROLLBACK_CONFIRMED') {
+      process.stderr.write(
+        '[mock:v13] 事务启动结果不明，但 ROLLBACK 已确认；未提交，本轮文件可回收（退出码 4）。\n',
+      );
+    } else if (diagnostics.transactionState === 'NOT_STARTED') {
+      process.stderr.write('[mock:v13] 事务尚未开始，未执行回滚（不得记为已回滚）。\n');
+    } else if (diagnostics.rollbackConfirmed === true) {
+      process.stderr.write(
+        error instanceof MockConflictError
+          ? '[mock:v13] 已有数据归属不明，本次未覆盖；事务已确认回滚。\n'
+          : '[mock:v13] 事务已确认回滚。\n',
+      );
     }
     if (diagnostics.cleanupErrors && diagnostics.cleanupErrors.length > 0) {
       process.stderr.write(
@@ -897,6 +963,22 @@ export async function main(
       if (shutdownError) {
         // 关闭失败单独记录，绝不覆盖已确定的事务结论。
         process.stderr.write(`[mock:v13] 关闭连接失败：${shutdownError.message}\n`);
+        if (connectionRetained) {
+          // 连接从未回池，destroy() 又在断开前失败：直接关闭本轮独占驱动连接。
+          closeRetainedConnection(exclusiveConnection);
+        }
+        // destroy() 未完成关闭：兜底结束本轮私有池，并等待关闭结果。
+        // 普通 release() 已成功时连接已归池，这里只关池，不再销毁该连接。
+        const poolCloseError = await closePrivatePool(source);
+        if (poolCloseError) {
+          process.stderr.write(
+            `[mock:v13] 兜底关闭本轮私有池失败：${poolCloseError.message}（与上方关闭错误分别保留）。\n`,
+          );
+        } else {
+          process.stderr.write(
+            '[mock:v13] 已兜底关闭本轮私有池（仅本轮私有连接池，不影响共享池或其他会话）。\n',
+          );
+        }
         if (commitConfirmed) {
           process.stderr.write(
             '[mock:v13] 数据已提交；关闭连接失败属于收尾错误（退出码 6，不回滚，本轮文件不回收）。\n',

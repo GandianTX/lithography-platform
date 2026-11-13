@@ -6,11 +6,12 @@
 
 import { createFieldCipher } from '@src/infrastructure/field-encryption/field-encryption.cipher';
 
-import { MockConflictError, MockWriteError } from './errors';
+import { MockConflictError, MockVerificationError, MockWriteError } from './errors';
 import { FileRegistry } from './files';
-import { findMany, findOne, insertRow, MockQueryRunner, Row } from './db';
-import { ACCOUNTS, OrganizationKey, ORGANIZATIONS } from './manifest';
+import { asRows, findMany, findOne, insertRow, MockQueryRunner, Row, updateRow } from './db';
+import { ACCOUNTS, AccountSpec, OrganizationKey, ORGANIZATIONS, mockEmail } from './manifest';
 import { RunReport } from './report';
+import { parseRoleArrayValue } from './roles';
 
 export interface FieldEncryptionCodec {
   encrypt(plain: string): string;
@@ -249,6 +250,322 @@ export async function findAccountId(
   }
   const row = await findOne(context.qr, 'base_user_account', { login_name: spec.loginName });
   return row ? readNumber(row, 'id') : null;
+}
+
+function asReferenceText(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function asRoleArray(value: unknown, label: string): string[] {
+  const parsed = parseRoleArrayValue(value);
+  if (!parsed) {
+    throw new MockVerificationError(`${label} 不是合法角色数组`);
+  }
+  return parsed;
+}
+
+export function organizationCodeOf(key: OrganizationKey): string {
+  const organization = ORGANIZATIONS.find((item) => item.key === key);
+  if (!organization) {
+    throw new MockVerificationError(`未知组织键: ${key}`);
+  }
+  return organization.code;
+}
+
+async function organizationIdByCode(
+  queryRunner: MockQueryRunner,
+  organizationCode: string,
+): Promise<number | null> {
+  const organization = await findOne(queryRunner, 'organization', {
+    organization_code: organizationCode,
+  });
+  return organization ? readNumber(organization, 'id') : null;
+}
+
+/**
+ * 逐账号核对登录名、账号状态、资料状态、角色、等级与可信归属。
+ *
+ * 只按总数判断会被“对照客户补足总数”绕过；任一事实不符都判定失败，
+ * 且不自动修复、不重置密码、不覆盖昵称。
+ */
+export async function collectAccountFailures(
+  context: PackContext,
+  specs: readonly AccountSpec[],
+): Promise<string[]> {
+  const queryRunner = context.qr;
+  const failed: string[] = [];
+  const check = (condition: boolean, message: string): void => {
+    if (!condition) failed.push(message);
+  };
+
+  for (const spec of specs) {
+    const account = await findOne(queryRunner, 'base_user_account', {
+      login_name: spec.loginName,
+    });
+    if (!account) {
+      failed.push(`${spec.loginName}: 账号缺失`);
+      continue;
+    }
+    const accountId = Number(account.id);
+    check(
+      asReferenceText(account.login_email) === mockEmail(spec.loginName),
+      `${spec.loginName}: 登录邮箱不一致`,
+    );
+    check(
+      asReferenceText(account.status) === spec.accountStatus,
+      `${spec.loginName}: 账号状态 ${asReferenceText(account.status)} != ${spec.accountStatus}`,
+    );
+    check(
+      asReferenceText(account.identity_hint) === spec.role,
+      `${spec.loginName}: 账号角色 ${asReferenceText(account.identity_hint)} != ${spec.role}`,
+    );
+    const adminLevel = account.admin_level === null ? null : Number(account.admin_level);
+    check(
+      adminLevel === spec.adminLevel,
+      `${spec.loginName}: 管理员等级 ${String(adminLevel)} != ${String(spec.adminLevel)}`,
+    );
+
+    const info = await findOne(queryRunner, 'base_user_info', { account_id: accountId });
+    if (!info) {
+      failed.push(`${spec.loginName}: 用户资料缺失`);
+      continue;
+    }
+    check(
+      asReferenceText(info.user_state) === spec.userState,
+      `${spec.loginName}: 资料状态 ${asReferenceText(info.user_state)} != ${spec.userState}`,
+    );
+    const accessGroup = asRoleArray(info.access_group, `${spec.loginName} access_group`);
+    check(
+      accessGroup.length === 1 && accessGroup[0] === spec.role,
+      `${spec.loginName}: 资料角色 [${accessGroup.join(',')}] 与账号角色 ${spec.role} 不一致`,
+    );
+
+    const digestRoles = asRoleArray(
+      context.encryption.decrypt(asReferenceText(info.meta_digest)),
+      `${spec.loginName} meta_digest`,
+    );
+    check(
+      digestRoles.length === 1 && digestRoles[0] === spec.role,
+      `${spec.loginName}: meta_digest 角色 [${digestRoles.join(',')}] 与账号角色 ${spec.role} 不一致`,
+    );
+
+    const expectedProfileOrganizationId =
+      spec.profileOrganization === null
+        ? null
+        : await organizationIdByCode(queryRunner, organizationCodeOf(spec.profileOrganization));
+    const profileOrganizationId =
+      info.customer_organization_id === null ? null : Number(info.customer_organization_id);
+    check(
+      profileOrganizationId === expectedProfileOrganizationId,
+      `${spec.loginName}: 资料归属公司 ${String(profileOrganizationId)} != ${String(
+        expectedProfileOrganizationId,
+      )}`,
+    );
+
+    const memberships = asRows(
+      await queryRunner.query(
+        `SELECT o.organization_code, o.is_managed_company, o.status AS organization_status,
+                m.member_role, m.status
+           FROM organization_membership m
+           JOIN organization o ON o.id = m.organization_id
+          WHERE m.account_id = ? AND m.status = 'ACTIVE'`,
+        [accountId],
+      ),
+    );
+    // 与正式组织解析口径一致：成员行有效不等于组织有效，组织停用即成员资格失效。
+    const activeMemberships = memberships.filter(
+      (membership) => asReferenceText(membership.organization_status) === 'ACTIVE',
+    );
+    if (activeMemberships.length !== memberships.length) {
+      failed.push(`${spec.loginName}: 成员关系所属组织不是 ACTIVE（成员有效不等于组织有效）`);
+    }
+    if (spec.organization === null) {
+      check(activeMemberships.length === 0, `${spec.loginName}: 不应存在有效组织成员关系`);
+    } else if (spec.organization === 'PLATFORM') {
+      check(
+        activeMemberships.length === 1 && Number(activeMemberships[0].is_managed_company) === 0,
+        `${spec.loginName}: 平台归属成员关系缺失或异常`,
+      );
+      check(
+        activeMemberships.length === 1 &&
+          asReferenceText(activeMemberships[0].member_role) === spec.role,
+        `${spec.loginName}: 平台成员角色与账号角色不一致`,
+      );
+    } else {
+      const expectedCode = organizationCodeOf(spec.organization);
+      check(
+        activeMemberships.length === 1 &&
+          asReferenceText(activeMemberships[0].organization_code) === expectedCode,
+        `${spec.loginName}: 组织归属不是 ${expectedCode}`,
+      );
+      check(
+        activeMemberships.length === 1 &&
+          asReferenceText(activeMemberships[0].member_role) === spec.role,
+        `${spec.loginName}: 成员角色与账号角色不一致`,
+      );
+    }
+  }
+  return failed;
+}
+
+/**
+ * 分包复用前，按该包实际引用的账号执行同一套逐账号事实校验。
+ *
+ * 在写行或写文件之前调用；异常即拒绝，不要求重跑账号包，
+ * 也不自动启用账号、重置密码或覆盖昵称。
+ */
+export async function assertAccountsEligible(
+  context: PackContext,
+  accountKeys: readonly string[],
+  label: string,
+): Promise<void> {
+  const uniqueKeys = [...new Set(accountKeys)].sort();
+  const specs: AccountSpec[] = [];
+  for (const key of uniqueKeys) {
+    const spec = ACCOUNTS.find((item) => item.key === key);
+    if (!spec) {
+      throw new MockWriteError(`${label} 引用了未知账号键 ${key}`);
+    }
+    specs.push(spec);
+  }
+  if (specs.length === 0) return;
+  const failed = await collectAccountFailures(context, specs);
+  if (failed.length > 0) {
+    throw new MockVerificationError(
+      `${label} 引用的账号事实校验失败（拒绝写入，不自动启用/重置密码/覆盖昵称）：${failed.join('；')}`,
+    );
+  }
+  context.report.note(`${label} 复用前账号校验通过：${uniqueKeys.join(', ')}`);
+}
+
+export interface StoredFileExpectation {
+  readonly fileId: string;
+  readonly storageReference: string;
+  readonly originalFilename: string;
+  readonly mimeType: string;
+  readonly byteSize: number;
+  readonly checksumSha256: string;
+  readonly businessType: string;
+  readonly uploaderAccountId: number;
+  readonly ownerOrganizationId: number;
+}
+
+/**
+ * 复用已有原件行前核对归属、用途、文件事实与库内 SHA-256。
+ * 任一不符都拒绝并保留原值，不做“就地修正”。
+ */
+export function assertStoredFileMatches(existing: Row, expected: StoredFileExpectation): void {
+  const mismatches: string[] = [];
+  const text = (key: string): string => asReferenceText(existing[key]);
+  const compareText = (key: string, value: string): void => {
+    if (text(key) !== value) {
+      mismatches.push(`${key}=${text(key)} != ${value}`);
+    }
+  };
+  compareText('storage_reference', expected.storageReference);
+  compareText('original_filename', expected.originalFilename);
+  compareText('mime_type', expected.mimeType);
+  compareText('checksum_sha256', expected.checksumSha256);
+  compareText('business_type', expected.businessType);
+  compareText('status', 'VALID');
+  if (Number(existing.byte_size) !== expected.byteSize) {
+    mismatches.push(`byte_size=${String(existing.byte_size)} != ${expected.byteSize}`);
+  }
+  if (Number(existing.uploaded_by_account_id) !== expected.uploaderAccountId) {
+    mismatches.push(
+      `uploaded_by_account_id=${String(existing.uploaded_by_account_id)} != ${expected.uploaderAccountId}`,
+    );
+  }
+  if (Number(existing.owner_organization_id) !== expected.ownerOrganizationId) {
+    mismatches.push(
+      `owner_organization_id=${String(existing.owner_organization_id)} != ${expected.ownerOrganizationId}`,
+    );
+  }
+  if (mismatches.length > 0) {
+    throw new MockConflictError(
+      `已有原件 ${expected.fileId} 与本次引用不一致，拒绝复用并保留原值：${mismatches.join('；')}`,
+    );
+  }
+}
+
+export interface StoredFileBindingInput {
+  readonly fileId: string;
+  readonly businessType: string;
+  readonly businessId: string;
+  readonly checksumSha256: string;
+  /** 只有本事务新建且仍未绑定的原件行才允许补绑。 */
+  readonly createdInThisRun: boolean;
+}
+
+/**
+ * 绑定或核对原件行：
+ * - 已绑定：必须恰好指向本目标，只读不写；
+ * - 未绑定：仅允许本事务新建的行，带明确条件更新并确认恰好命中一行；
+ * - 改绑、跨事务补绑或身份不明：拒绝并保留原值。
+ */
+export async function bindStoredFile(
+  context: PackContext,
+  input: StoredFileBindingInput,
+): Promise<'REUSED' | 'BOUND'> {
+  const row = await findOne(context.qr, 'stored_file', { file_id: input.fileId });
+  if (!row) {
+    throw new MockConflictError(`原件行 ${input.fileId} 不存在，拒绝绑定`);
+  }
+  if (asReferenceText(row.business_type) !== input.businessType) {
+    throw new MockConflictError(
+      `原件 ${input.fileId} 的用途 ${asReferenceText(row.business_type)} != ${input.businessType}，拒绝改绑`,
+    );
+  }
+  const bindingStatus = asReferenceText(row.binding_status);
+  const rawBusinessId = row.business_id;
+  const businessId =
+    rawBusinessId === null
+      ? null
+      : typeof rawBusinessId === 'string' || typeof rawBusinessId === 'number'
+        ? String(rawBusinessId)
+        : '';
+  if (bindingStatus === 'BOUND') {
+    if (businessId !== input.businessId) {
+      throw new MockConflictError(
+        `原件 ${input.fileId} 已绑定到 ${String(businessId)}，拒绝改绑到 ${input.businessId}`,
+      );
+    }
+    return 'REUSED';
+  }
+  if (bindingStatus !== 'TEMPORARY' || businessId !== null) {
+    throw new MockConflictError(
+      `原件 ${input.fileId} 绑定状态异常（${bindingStatus}/${String(businessId)}），拒绝复用`,
+    );
+  }
+  if (!input.createdInThisRun) {
+    throw new MockConflictError(`原件 ${input.fileId} 不是本事务新建的未绑定行，拒绝跨事务补绑`);
+  }
+  const affected = await updateRow(
+    context.qr,
+    'stored_file',
+    {
+      file_id: input.fileId,
+      business_type: input.businessType,
+      checksum_sha256: input.checksumSha256,
+      binding_status: 'TEMPORARY',
+      business_id: null,
+    },
+    { business_id: input.businessId, binding_status: 'BOUND' },
+  );
+  if (affected !== 1) {
+    throw new MockConflictError(
+      `原件 ${input.fileId} 绑定更新命中 ${affected} 行（要求恰好 1 行），拒绝继续`,
+    );
+  }
+  const confirmed = await findOne(context.qr, 'stored_file', {
+    file_id: input.fileId,
+    binding_status: 'BOUND',
+    business_id: input.businessId,
+  });
+  if (!confirmed) {
+    throw new MockConflictError(`原件 ${input.fileId} 绑定后独立读回不一致，拒绝继续`);
+  }
+  return 'BOUND';
 }
 
 export interface ResolvedModel {

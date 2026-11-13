@@ -26,6 +26,10 @@ import {
 import {
   OrganizationIds,
   PackContext,
+  StoredFileExpectation,
+  assertAccountsEligible,
+  assertStoredFileMatches,
+  bindStoredFile,
   organizationIdFor,
   readNumber,
   readString,
@@ -363,32 +367,51 @@ interface StoredFileInput {
   businessType: string;
 }
 
-async function ensureStoredFile(context: PackContext, input: StoredFileInput): Promise<string> {
+interface EnsuredStoredFile {
+  readonly fileId: string;
+  /** 只有本事务新建的行才允许后续绑定更新。 */
+  readonly created: boolean;
+}
+
+async function ensureStoredFile(
+  context: PackContext,
+  input: StoredFileInput,
+): Promise<EnsuredStoredFile> {
   const reference = input.relativePath;
   const fileId = mockUuid(`stored-file:${input.fileKey}`);
+  const expected: StoredFileExpectation = {
+    fileId,
+    storageReference: reference,
+    originalFilename: input.originalFilename,
+    mimeType: input.mimeType,
+    byteSize: input.content.length,
+    checksumSha256: sha256Hex(input.content),
+    businessType: input.businessType,
+    uploaderAccountId: await requireAccountId(context, input.uploaderKey),
+    ownerOrganizationId: input.organizationId,
+  };
   const existing = await findOne(context.qr, 'stored_file', { file_id: fileId });
   const fileState = context.files.ensure(input.absolutePath, input.content);
   if (existing) {
-    if (readString(existing, 'storage_reference') !== reference) {
-      throw new MockConflictError(`原件 ${input.fileKey} 的存储引用不一致`);
-    }
+    // 复用前核对归属、用途、文件事实与库内 SHA-256；不一致即拒绝且保留原值。
+    assertStoredFileMatches(existing, expected);
     context.report.reused();
-    return fileId;
+    return { fileId, created: false };
   }
   if (fileState === 'REUSED') {
     context.report.note(`文件已存在且校验一致: ${reference}`);
   }
   await insertRow(context.qr, 'stored_file', {
     file_id: fileId,
-    uploaded_by_account_id: await requireAccountId(context, input.uploaderKey),
-    owner_organization_id: input.organizationId,
-    storage_reference: reference,
-    original_filename: input.originalFilename,
-    mime_type: input.mimeType,
-    byte_size: input.content.length,
-    checksum_sha256: sha256Hex(input.content),
+    uploaded_by_account_id: expected.uploaderAccountId,
+    owner_organization_id: expected.ownerOrganizationId,
+    storage_reference: expected.storageReference,
+    original_filename: expected.originalFilename,
+    mime_type: expected.mimeType,
+    byte_size: expected.byteSize,
+    checksum_sha256: expected.checksumSha256,
     status: 'VALID',
-    business_type: input.businessType,
+    business_type: expected.businessType,
     business_id: null,
     upload_context_id: mockUuid(`upload-context:${input.fileKey}`),
     // 先登记为 TEMPORARY（business_id 必须为空），待业务主键生成后再绑定；
@@ -404,10 +427,20 @@ async function ensureStoredFile(context: PackContext, input: StoredFileInput): P
     id: reference,
     detail: input.originalFilename,
   });
-  return fileId;
+  return { fileId, created: true };
 }
 
 export async function runRepairPack(context: PackContext): Promise<void> {
+  // 复用任何报修数据前，先按本包实际引用的客户/工程师核验账号事实。
+  await assertAccountsEligible(
+    context,
+    [
+      ...TICKETS.map((ticket) => ticket.customerKey),
+      ...TICKETS.flatMap((ticket) => (ticket.acceptedByKey === null ? [] : [ticket.acceptedByKey])),
+      'customer-a',
+    ],
+    'p0-repair',
+  );
   const ids = await resolveOrganizationIds(context);
   const models = await resolveModels(context);
   if (models.length < 2) {
@@ -416,7 +449,7 @@ export async function runRepairPack(context: PackContext): Promise<void> {
 
   const intakeAFileContent = mockPng();
   const intakeAFileReference = path.join('files', 'intake-a-in-progress.png');
-  const intakeAFileId = await ensureStoredFile(context, {
+  const intakeAFile = await ensureStoredFile(context, {
     fileKey: 'intake:a-in-progress',
     relativePath: intakeAFileReference,
     absolutePath: path.join(context.mockFileDir, intakeAFileReference),
@@ -443,6 +476,17 @@ export async function runRepairPack(context: PackContext): Promise<void> {
       ) {
         throw new MockConflictError(`报修采集 ${ticket.requestNo} 已存在但归属不同，拒绝改写`);
       }
+      // 正向文件引用与 stored_file 的反向绑定必须同时指向本轮预期对象；任一侧漂移都拒绝复用。
+      const expectedFileId = ticket.key === 'a-in-progress' ? intakeAFile.fileId : null;
+      const actualFileId =
+        typeof intakeExisting.file_id === 'string' ? intakeExisting.file_id : null;
+      if (actualFileId !== expectedFileId) {
+        throw new MockConflictError(
+          `报修采集 ${ticket.requestNo} 的原件引用 ${String(actualFileId)} != ${String(
+            expectedFileId,
+          )}，拒绝复用`,
+        );
+      }
       intakeId = readNumber(intakeExisting, 'id');
       context.report.reused();
     } else {
@@ -454,7 +498,7 @@ export async function runRepairPack(context: PackContext): Promise<void> {
         equipment_model_id: model.id,
         error_code: ticket.errorCode,
         fault_description: ticket.faultDescription,
-        file_id: ticket.key === 'a-in-progress' ? intakeAFileId : null,
+        file_id: ticket.key === 'a-in-progress' ? intakeAFile.fileId : null,
         analysis_status: ticket.analysisStatus,
         analysis_generation: ticket.analysisStatus === 'RUNNING' ? 0 : 1,
         converted_request_id: null,
@@ -539,12 +583,14 @@ export async function runRepairPack(context: PackContext): Promise<void> {
     });
 
     if (ticket.key === 'a-in-progress') {
-      await updateRow(
-        context.qr,
-        'stored_file',
-        { file_id: intakeAFileId },
-        { business_id: String(intakeId), binding_status: 'BOUND' },
-      );
+      // 已正确绑定的行只读；只有本事务新建且仍为 TEMPORARY 的行才允许条件绑定。
+      await bindStoredFile(context, {
+        fileId: intakeAFile.fileId,
+        businessType: 'REPAIR_REQUEST_INTAKE',
+        businessId: String(intakeId),
+        checksumSha256: sha256Hex(intakeAFileContent),
+        createdInThisRun: intakeAFile.created,
+      });
     }
 
     if (ticket.responseText && ticket.acceptedByKey && ticket.resolutionStatus) {
@@ -669,6 +715,11 @@ export interface ReportIds {
 }
 
 export async function runReportsPack(context: PackContext): Promise<ReportIds> {
+  await assertAccountsEligible(
+    context,
+    [...REPORT_SEEDS.map((seed) => seed.engineerKey), 'admin-l2-a', 'admin-l2-b'],
+    'p0-reports',
+  );
   const ids = await resolveOrganizationIds(context);
   const models = await resolveModels(context);
   if (models.length < 2) {
@@ -931,8 +982,24 @@ async function ensureDraftAttachment(
     sort_order: 1,
   });
   if (existing) {
-    if (String(existing.checksum_sha256) !== sha256Hex(content)) {
-      throw new MockConflictError('报告附件已存在但校验和不一致，拒绝覆盖');
+    // 存储后端、业务引用、库内哈希与字节数必须同时对应本轮实际校验的原件。
+    const problems: string[] = [];
+    if (asText(existing.storage_backend) !== 'LOCAL') {
+      problems.push(`storage_backend=${asText(existing.storage_backend)}`);
+    }
+    if (asText(existing.storage_reference) !== relativePath) {
+      problems.push(`storage_reference=${asText(existing.storage_reference)}`);
+    }
+    if (asText(existing.checksum_sha256) !== sha256Hex(content)) {
+      problems.push('checksum_sha256 不一致');
+    }
+    if (Number(existing.byte_size) !== content.length) {
+      problems.push(`byte_size=${String(existing.byte_size)}`);
+    }
+    if (problems.length > 0) {
+      throw new MockConflictError(
+        `报告附件已存在但业务引用与本次校验不一致，拒绝覆盖：${problems.join('；')}`,
+      );
     }
     context.report.reused();
     return;
@@ -962,7 +1029,25 @@ async function ensureDraftAttachment(
   });
 }
 
+const MATERIAL_A_REFERENCE_KEY = 'mock-v13:reference-document:a';
+const MATERIAL_A_BODY = '对准漂移处置步骤：1. 检查工件台基准；2. 重做对准标定；3. 复测 3 个批次。';
+
+/** 参考资料 A 的稳定文件名；终检据此确认业务行引用未漂移。 */
+export function mockMaterialReference(): string {
+  return `${sha256Hex(MATERIAL_A_REFERENCE_KEY).slice(0, 32)}.txt`;
+}
+
+/** 参考资料 A 的稳定内容；终检据此确认磁盘文件仍是本轮校验的原件。 */
+export function mockMaterialContent(): Buffer {
+  return mockTextDocument(DOCUMENT_TITLES.materialA, MATERIAL_A_BODY);
+}
+
 export async function runDocumentsPack(context: PackContext): Promise<void> {
+  await assertAccountsEligible(
+    context,
+    ['engineer-a', 'engineer-b', 'admin-l1-a', 'admin-l2-a'],
+    'p0-documents',
+  );
   const reports = await requireReportIds(context);
   const ids = await resolveOrganizationIds(context);
   const models = await resolveModels(context);
@@ -972,11 +1057,8 @@ export async function runDocumentsPack(context: PackContext): Promise<void> {
   const engineerA = await requireAccountId(context, 'engineer-a');
   const engineerB = await requireAccountId(context, 'engineer-b');
 
-  const reference = `${sha256Hex('mock-v13:reference-document:a').slice(0, 32)}.txt`;
-  const referenceContent = mockTextDocument(
-    DOCUMENT_TITLES.materialA,
-    '对准漂移处置步骤：1. 检查工件台基准；2. 重做对准标定；3. 复测 3 个批次。',
-  );
+  const reference = mockMaterialReference();
+  const referenceContent = mockMaterialContent();
   const storageState = context.files.ensure(
     path.join(context.referenceStorageDir, reference),
     referenceContent,
@@ -1123,6 +1205,27 @@ async function ensureDocument(context: PackContext, input: DocumentInput): Promi
       !asText(existing.title).startsWith(MOCK_LABEL)
     ) {
       throw new MockConflictError(`资料 ${input.title} 已存在但归属或来源不同，拒绝改写`);
+    }
+    // 有原件的样例：业务行必须仍指向本轮实际校验的文件，而不是“某个存在的路径”。
+    if (input.storageReference !== null) {
+      const drift: string[] = [];
+      if (asText(existing.storage_backend) !== input.storageBackend) {
+        drift.push(`storage_backend=${asText(existing.storage_backend)}`);
+      }
+      if (asText(existing.storage_reference) !== input.storageReference) {
+        drift.push(`storage_reference=${asText(existing.storage_reference)}`);
+      }
+      if (asText(existing.original_filename) !== input.originalFilename) {
+        drift.push(`original_filename=${asText(existing.original_filename)}`);
+      }
+      if (asText(existing.mime_type) !== input.mimeType) {
+        drift.push(`mime_type=${asText(existing.mime_type)}`);
+      }
+      if (drift.length > 0) {
+        throw new MockConflictError(
+          `资料 ${input.title} 已有原件引用与本次校验不一致，拒绝复用：${drift.join('；')}`,
+        );
+      }
     }
     context.report.reused();
     context.report.scenario({
