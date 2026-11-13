@@ -12,9 +12,12 @@
 ## 无秘密模板
 
 - [部署环境](database-deploy.env.example)
-- [组织映射](organization-bootstrap.example.json)
-- [管理员映射](admin-bootstrap.example.json)
-- [可选开发账号](dev-accounts.example.json)
+- [生产组织映射](organization-bootstrap.example.json)
+- [生产管理员映射](admin-bootstrap.example.json)
+- [开发组织映射](dev-organizations.example.json)
+- [开发管理员映射](dev-admin.example.json)
+- [开发账号映射](dev-accounts.example.json)
+- [开发联调样例](dev-data.example.json)
 - [历史身份清单合成样例](legacy-repair-identity-manifest.sample.json)
 
 复制模板到仓库外受限位置，再替换占位值。真实密码、密钥、历史身份清单、dump 和原始日志不得提交 Git。
@@ -22,8 +25,16 @@
 ## 当前交付边界
 
 - 44 条迁移，51 张业务表；预建空库后使用 `database:deploy --mode=init`。
-- 可在同一条 init 命令中初始化组织、3 个一级与 3 个二级管理员，以及显式启用的客户/工程师开发账号（默认各 2 个）。开发账号默认关闭，目标库名须符合开发标记守卫。
-- `upgrade` 仅用于已经确认来源与起点的库。现有合成旧态证据不等于任意真实业务库已验收；无法满足新约束时拒绝，不猜测回填、不删数据制造成功。
+- 生产入口（`--environment=production`，默认）一条命令完成迁移、必要系统数据、组织与 3 个一级 + 3 个二级管理员；
+  不创建开发账号、模拟公司、业务样例或样例文件。
+- 开发入口（`--environment=development` + `--expect-server-uuid` + `--confirm-dev-target`）可在同一条命令中
+  追加组织、6 个管理员、开发客户/工程师与计划要求的机型/工单/报告/资料样例；开发数据默认关闭，
+  目标库须通过实例 UUID、实际库名、确认库与开发标记四项核对，现有共享库直接拒绝。
+- 开发样例稳定键幂等：重跑不重复、不覆盖用户合法编辑；同键异主失败关闭。不生成 AI/同步/备份/导入记录。
+  资料必须有不可变 `seed_key`，标题只展示；存储引用由 `seed_key` 派生且正式改名不改写。
+  资料本轮只支持带无敏感信息的 `.txt` 原件；原件目录须为以目标库名命名的专属目录并通过重复确认，
+  首次认领须排他记录实例 UUID + 精确库名，写入后回读核对字节数与 SHA-256，重跑只核对不覆盖。
+- `upgrade` 仅执行 pending，拒绝任何初始化数据；只用于已经确认来源与起点的库。现有合成旧态证据不等于任意真实业务库已验收；无法满足新约束时拒绝，不猜测回填、不删数据制造成功。
 - `previous_version` 最终非空、无默认版本；第 44 条预检发现未知历史值即拒绝。
 - 接口、前端、真实登录、Worker、Redis、云端执行器与完整业务 core 不因本目录资料而宣称完成。
 

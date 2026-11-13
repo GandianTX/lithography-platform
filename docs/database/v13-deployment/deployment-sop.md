@@ -1,8 +1,11 @@
 # S3 正式部署工具 SOP
 
 > 适用范围：`backend` 的 `database:deploy`（`--mode=init` / `--mode=upgrade`）。
-> 工具负责结构与迁移复核；仅在显式文件与确认口令下初始化组织、管理员和开发样例账号。
-> 不创建数据库、不创建 MySQL 账号、不授予系统权限、不启动 API/Worker、不导入工单/报告等演示业务数据。
+> 工具负责结构与迁移复核；仅在显式文件与确认口令下初始化组织、管理员和开发联调样例。
+> `init` 按 `--environment=production|development` 区分生产入口与开发入口：
+> 生产入口只创建组织、必要系统数据和 6 个管理员；开发入口可额外创建开发账号与业务样例。
+> `upgrade` 只执行 pending 迁移，不补样例、不清数据、不重置密码。
+> 不创建数据库、不创建 MySQL 账号、不授予系统权限、不启动 API/Worker。
 
 ## 1. 前置环境
 
@@ -101,15 +104,18 @@
 
 - 已知部署角色与运行期账号由运维另行创建。
 - 环境文件模板：[database-deploy.env.example](database-deploy.env.example)。真实文件放在仓库外。
-- 组织映射模板：[organization-bootstrap.example.json](organization-bootstrap.example.json)。
-- 管理员映射模板：[admin-bootstrap.example.json](admin-bootstrap.example.json)（默认 6 个：1 级 3 个、2 级 3 个）。
-- 开发样例账号模板：[dev-accounts.example.json](dev-accounts.example.json)（默认客户 2 个、工程师 2 个，数量可增减）。
+- 生产组织映射模板：[organization-bootstrap.example.json](organization-bootstrap.example.json)。
+- 生产管理员映射模板：[admin-bootstrap.example.json](admin-bootstrap.example.json)（默认 6 个：1 级 3 个、2 级 3 个）。
+- 开发组织映射模板：[dev-organizations.example.json](dev-organizations.example.json)（2 家模拟公司，均标记受管/服务商）。
+- 开发管理员映射模板：[dev-admin.example.json](dev-admin.example.json)（3 个一级 + 3 个二级，分别覆盖两家公司）。
+- 开发账号映射模板：[dev-accounts.example.json](dev-accounts.example.json)（3 个客户，其中 1 个为同公司对照；2 个工程师）。
+- 开发联调业务样例模板：[dev-data.example.json](dev-data.example.json)（2 个机型、3 张工单、2 份报告、2 条参考资料，资料含 `.txt` 原件与 SHA-256）。
 - 上述 JSON 均含 `REPLACE_` 占位符，直接使用会因密码策略/必填校验失败；真实清单由上线负责人提供且不入库。
 - 环境变量键固定为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASS`、`DB_NAME`、`DB_TIMEZONE`、`DB_SYNCHRONIZE=false`。
 - 初始化账号还需要 `FIELD_ENCRYPTION_KEY` 与 `FIELD_ENCRYPTION_IV`（16 字符），用于写入并校验 `meta_digest`；缺失时交付失败关闭。
-- **部署与应用运行时必须使用同一组字段加密配置。** 如果应用已配置，从应用实际使用的受控配置来源取得这两项值，
-  原样用于部署账号初始化，不要另外生成一组。应用和数据库都是全新配置时，也应从同一受控来源为两处配置同一组值。
-  仅部署结构时可省略这两项；不要在仓库、日志或验收报告中记录真实值。
+- **部署与应用运行时必须使用同一组字段加密配置和同一个 `DB_TIMEZONE`。** 如果应用已配置，从应用实际使用的受控配置来源取得这两项值与 `DB_TIMEZONE`，
+  原样用于部署账号初始化与开发样例时间，不要另外生成一组。应用和数据库都是全新配置时，也应从同一受控来源为两处配置同一组值。
+  仅部署结构时可省略加密配置；不要在仓库、日志或验收报告中记录真实值。
 - `migration:verify` 通过不能证明部署和应用运行时的加密配置一致。验收初始化账号时，应使用应用运行配置同源的值
   只读核对角色事实，避免部署成功后应用无法正确读取 `meta_digest`。
 - 权威规格 runner 的配置文件只接受上述显式列举的连接字段与两项加密配置；不接受其他 `DB_*`、
@@ -126,35 +132,79 @@
 cd backend
 npm run database:deploy -- \
   --mode=init \
+  --environment=production \
   --config-file=/secure/path/lithography-deploy.env \
   --database=lithography_v13 \
   --confirm-database=lithography_v13
 ```
 
 - 目标库必须已存在且为空（无业务表）。工具不会创建数据库。
+- `--environment` 省略时默认 `production`；生产入口拒绝任何开发账号/开发联调样例参数。
 - 工具会检查实际连接目标、获取互斥锁、执行全部迁移、复核终态。
 - 如果库已完整迁移且终态校验通过，命令返回「无变化」。
+- 生产新库只创建迁移带来的必要系统数据（如 `local_installation`）；业务样例、开发账号和样例文件一律不生成。
+- 生产新库通常在同一条命令追加组织与 6 个管理员映射（见 4.2 的对应参数）；这是「一条命令完成迁移 + 系统数据 + 6 个管理员」的正式口径。
 
-### 4.2 空库初始化并显式初始化组织、管理员与开发样例
+### 4.2 开发新库一键初始化（迁移 + 6 管理员 + 联调样例）
 
-三个映射文件与三个确认口令都在**同一条命令**中生效，顺序固定为组织 → 管理员 → 开发样例，
-并共用一个数据事务：任一账号失败时组织与账号都不会留下半成品。省略某个文件则该类数据不初始化。
+组织、管理员、开发账号与开发联调样例四份映射在同一条命令中生效，顺序固定为
+组织 → 管理员 → 开发账号 → 业务样例，并共用一个数据事务：任一步失败时四类数据都不留半成品。
+省略某个文件则该类数据不初始化；只做结构初始化仍可只带 `--mode=init`。
+
+开发入口必须同时提供 `--environment=development`、`--expect-server-uuid` 与
+`--confirm-dev-target=<目标库>`。工具会在连接后、首次写入前读取实际 `@@server_uuid` 与
+`DATABASE()` 独立核对；目标库名还必须带开发/测试标记，并明确拒绝
+`lithography_drill`、`lithography_e2e` 等现有共享库。
+
+样例模板含资料原件时，还必须提供 `--dev-sample-files-dir=<目标库专属目录>` 并重复
+`--confirm-dev-sample-files=<同一路径>`。目录要求：绝对路径、目录名等于目标库名、已存在、
+本身不是符号链接、真实路径与输入一致，且不是文件系统根/家目录/临时目录根/当前目录等共享位置。
+该目录必须与目标应用 `referenceDocumentStorage.dir` 完全相同，否则应用侧下载找不到文件。
+
+```bash
+cd backend
+npm run database:deploy -- \
+  --mode=init \
+  --environment=development \
+  --config-file=/secure/path/lithography-dev.env \
+  --database=lithography_dev_v13_accept \
+  --confirm-database=lithography_dev_v13_accept \
+  --expect-server-uuid=<实际 @@server_uuid> \
+  --confirm-dev-target=lithography_dev_v13_accept \
+  --organization-bootstrap-file=/secure/path/dev-organizations.json \
+  --confirm-organization-bootstrap=APPLY-ORGANIZATION-BOOTSTRAP \
+  --admin-bootstrap-file=/secure/path/dev-admin.json \
+  --confirm-admin-bootstrap=APPLY-ADMIN-BOOTSTRAP \
+  --dev-accounts-file=/secure/path/dev-accounts.json \
+  --confirm-dev-accounts=APPLY-DEV-ACCOUNTS \
+  --dev-data-file=/secure/path/dev-data.json \
+  --confirm-dev-data=APPLY-DEV-DATA \
+  --dev-sample-files-dir=/srv/lithography/reference-documents/lithography_dev_v13_accept \
+  --confirm-dev-sample-files=/srv/lithography/reference-documents/lithography_dev_v13_accept
+```
+
+- 一条命令完成：全部迁移、必要系统数据、3 个一级管理员、3 个二级管理员、开发客户/工程师，
+  以及计划要求的机型、工单、报告与参考资料。**不需要**再单独运行 Mock 或 Seed 命令。
+- 不额外创建管理员；开发账号与管理员总数、公司归属完全由映射文件决定。
+- 生产新库使用同一入口但省略全部 `--dev-*` 参数，并可用
+  `--environment=production` 显式声明（默认即生产）：
+  只创建迁移、必要系统数据、组织与 6 个管理员。生产入口会直接拒绝开发账号、开发样例与开发目标确认。
 
 ```bash
 npm run database:deploy -- \
   --mode=init \
-  --config-file=/secure/path/lithography-deploy.env \
-  --database=lithography_v13_dev \
-  --confirm-database=lithography_v13_dev \
+  --environment=production \
+  --config-file=/secure/path/lithography-prod.env \
+  --database=lithography_v13 \
+  --confirm-database=lithography_v13 \
   --organization-bootstrap-file=/secure/path/organizations.json \
   --confirm-organization-bootstrap=APPLY-ORGANIZATION-BOOTSTRAP \
   --admin-bootstrap-file=/secure/path/admin-bootstrap.json \
-  --confirm-admin-bootstrap=APPLY-ADMIN-BOOTSTRAP \
-  --dev-accounts-file=/secure/path/dev-accounts.json \
-  --confirm-dev-accounts=APPLY-DEV-ACCOUNTS
+  --confirm-admin-bootstrap=APPLY-ADMIN-BOOTSTRAP
 ```
 
-正式环境通常**不带** `--dev-accounts-file` 与 `--confirm-dev-accounts`；开发样例默认关闭。
+> 旧口径（2026-11-09 及以前的已验证命令）没有 `--environment` / `--expect-server-uuid` /
+> `--confirm-dev-target`；当前开发入口已收紧，历史记录只用于追溯，不得照抄为新命令。
 
 #### 4.2.1 已验证命令（D3，2026-11-09）
 
@@ -175,10 +225,15 @@ npm run database:deploy -- \
   --confirm-admin-bootstrap=APPLY-ADMIN-BOOTSTRAP
 ```
 
-需要开发样例时，在同一条命令追加
-`--dev-accounts-file=/secure/path/dev-accounts.json --confirm-dev-accounts=APPLY-DEV-ACCOUNTS`；
-目标库名必须含 `test/dev/local/drill`。实测客户 2、工程师 2，`must_change_password=0`。
-重复执行同一条命令返回 `UNCHANGED`，不重置密码、不重复成员关系；更换映射密码重跑也不会重置既有密码。
+需要开发账号与联调样例时，在同一条命令追加：
+`--environment=development --expect-server-uuid=<实际 UUID> --confirm-dev-target=<目标库>`
+以及
+`--dev-accounts-file=/secure/path/dev-accounts.json --confirm-dev-accounts=APPLY-DEV-ACCOUNTS`
+和/或
+`--dev-data-file=/secure/path/dev-data.json --confirm-dev-data=APPLY-DEV-DATA`。
+目标库名必须含 `test/dev/local/drill`，且不得是 `lithography_drill`、`lithography_e2e` 等现有共享库。
+模板默认 3 个客户（含同公司对照）+ 2 个工程师；`must_change_password=0`。
+重复执行同一条命令返回 `UNCHANGED`，不重置密码、不重复成员关系、不覆盖样例后续编辑。
 验收证据与结构清单见 [S2 §3.2](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S2-db-verification-specs.md)。
 
 #### 4.2.2 组织映射
@@ -189,7 +244,7 @@ npm run database:deploy -- \
 - 仅接受 `status=ACTIVE`；1 级管理员只能绑定 `CLIENT` 公司，2 级管理员只能绑定 `is_managed_company=true` 的受管公司；
 - 公司编码、名称与归属必须由上线负责人提供，工具不猜测。
 
-#### 4.2.2 管理员映射
+#### 4.2.3 管理员映射
 
 - 默认交付口径：1 级 3 个、2 级 3 个（模板即 3+3）；具体账号、公司与凭据由受控配置决定；
 - 初始密码必须通过项目密码策略（与登录/注册同一 `PasswordPolicyService`）；真实密码只在库外受限配置，不打印；
@@ -197,17 +252,80 @@ npm run database:deploy -- \
 - 账号已存在时绝不重置密码；已有等级/公司归属不被覆盖；与映射不一致时失败关闭；
 - 公司编码不存在时失败关闭，不猜测公司。
 
-#### 4.2.3 开发样例账号（显式、默认关闭）
+#### 4.2.4 开发样例账号（显式、默认关闭）
 
-- 仅当同时提供 `--dev-accounts-file` 与 `--confirm-dev-accounts=APPLY-DEV-ACCOUNTS` 才写入；
-- 目标库名必须包含 `test`、`dev`、`local` 或 `drill` 之一，否则在连接与写入前拒绝；
-- 默认模板为客户 2 个、工程师 2 个；数组长度可调整，但配置中不得出现重复账号/邮箱；
+- 仅当同时提供 `--environment=development`、`--expect-server-uuid`、`--confirm-dev-target`、
+  `--dev-accounts-file` 与 `--confirm-dev-accounts=APPLY-DEV-ACCOUNTS` 才写入；
+- 目标库必须通过三项独立核对：实际 `@@server_uuid` 等于期望值、实际 `DATABASE()` 等于确认库、
+  库名含 `test/dev/local/drill` 标记；`lithography_drill`、`lithography_e2e` 及其他现有共享库直接拒绝；
+- 模板为 3 个客户（含 1 个同公司对照）与 2 个工程师，分别归属两家模拟公司；数组长度可调整，
+  但配置中不得出现重复账号/邮箱；
 - 客户：ACTIVE CUSTOMER 三源角色事实、ACTIVE 资料、`customer_organization_id` 指向配置公司、
   ACTIVE CUSTOMER 组织成员关系；
 - 工程师：ACTIVE ENGINEER 三源角色事实、ACTIVE 资料、ACTIVE ENGINEER 组织成员关系；
-  不写注册/审批历史，不生成工单、报告、文件等业务样例；
+  本模块不写注册/审批历史，不生成工单、报告、文件等业务样例（业务样例见 4.2.5）；
 - 密码同样必须符合项目密码策略；已存在账号绝不重置密码、不覆盖等级/公司/角色；
   事实不完整（缺资料、缺 ACTIVE 成员关系、角色不一致、带管理员等级等）一律失败关闭。
+
+#### 4.2.5 开发联调业务样例（显式、默认关闭）
+
+`--dev-data-file` 在开发账号之后、同一事务内补齐静态可验收样例；它引用账号与公司稳定键，
+不创建管理员，也不调用任何外部服务。
+
+| 能力/页面 | 样例口径 | 说明 |
+| --- | --- | --- |
+| 公司与账号归属 | 2 家模拟公司，A 有 2 个客户（含同公司对照）、B 有 1 个客户；各 1 个工程师 | 用于 A/B 隔离与同公司对照验收 |
+| 设备机型 | 2 个全局机型 | 工单/报告/资料引用同一机型键 |
+| 工单列表与详情 | 3 张：待接单、处理中、已完成 | 含 1 张跨公司工单（客户 A、服务公司 B） |
+| 维修报告 | 2 份：DRAFT + APPROVED | 正式报告含冻结版本、审核记录、报警与步骤 |
+| 参考资料 | 2 条：分别归属 A/B，`MATERIAL` + 正文 + 纯文本原件 | 原件写入目标库专属目录，回读核对字节数与 SHA-256 |
+| 样例文件/下载 | 2 个 `.txt` 原件 | 只允许无敏感信息的纯文本；存储引用由不可变 `seed_key` 派生，`wx` 排他创建，不覆盖既有文件 |
+| AI 分析/会话/Worker | 不造数 | 必须调用真实模型或 Worker，禁止伪造成功 |
+| 同步/备份/恢复/导入 | 不造数 | 必须连接外部服务或真实文件，禁止伪造回执 |
+
+- 稳定键：机型 `model_code`、工单 `request_no`、报告 `repair_request_id`、参考资料 `seed_key`。
+- 参考资料必须有显式、不可变的 `seed_key`；`title` 只用于展示，不参与认领。存储引用固定为
+  `sha256("lithography-dev-sample-reference:v1\n" + seed_key)` 前 32 位十六进制 + `.txt`，
+  正式编辑路径只改标题/正文，不改写该引用。本轮只支持带原件的资料样例；无原件样例没有可证明的
+  稳定身份，模板校验直接拒绝。
+- 每个稳定键写入前 `FOR UPDATE` 核对归属；同键异主、同键异机型/异客户/异来源、同一存储引用
+  命中多条、存储后端不是 `local` 一律失败关闭。旧库中同主同标题但引用不是本轮 seed_key 派生值的
+  记录属于旧现场：不得按标题自动认领，也不得重跑另造一份；复用需单独授权并先核实首次生成的
+  ID、引用与文件哈希。
+- 已存在且归属一致时返回 `UNCHANGED`：不覆盖用户后续编辑、不把已完成工单改回处理中、
+  不把已提交/已审核报告改回草稿、不重置密码；正式改名后的标题、原 ID、原引用与文件内容保持不变。
+- 报告冻结快照固定 `ai.usage=NOT_USED`，所有 AI 来源与评分字段为空；不伪造 AI 成功。
+- 样例时间使用 UTC ISO 输入，落库连接使用与应用相同的 `DB_TIMEZONE`（当前开发验收为 `+08:00`，
+  但不在代码中写死）。
+- 原件幂等：重跑时按既有 `storage_reference` 只读核对，状态为 `VERIFIED`/`MISSING`/`MISMATCH`；
+  缺失或不一致只告警、不覆盖、不改写既有记录。
+- 目录归属：首次使用以排他方式写入 `.lithography-dev-sample-owner.json`（实际实例 UUID + 精确库名）；
+  同一实例同一库可重跑，另一实例的同名库拒绝复用。非空且无可信归属标记的旧目录拒绝认领并保留现场，
+  不自动补标记、不清理。
+- 原件收尾：文件只在成功取得 `wx` 句柄并登记对象身份（dev+ino）后计入本轮。初始化使用独占
+  QueryRunner，事务终局区分未开始、已确认回滚、已确认提交、结果未知；只有明确收到 ROLLBACK
+  成功回执、文件归属已确认且引用探测未命中时才删除本轮原件。COMMIT 已发出但回执丢失时，
+  不得以随后 ROLLBACK 成功作为未提交的证据；回滚失败、状态未知或探测失败时保留文件并输出库名、
+  事务阶段、待处置引用与主错误。状态未知的连接不归还连接池；关闭/清理失败单独诊断，不覆盖主错误。
+
+#### 4.2.6 资料原件与下载验收
+
+1. 记录部署日志中的每条 `开发样例原件 ...：CREATED/VERIFIED，storageReference=...，
+   byteSize=...，sha256=...`，作为本轮证据。
+2. 在数据库中核对业务绑定：
+   `SELECT title, owner_organization_id, original_filename, mime_type, storage_backend,
+   storage_reference, content_text FROM reference_document ORDER BY id;`
+   要求 A/B 两条分别归属对应公司，`original_filename`/`mime_type` 与模板一致，
+   `storage_backend='local'` 且 `storage_reference` 非空；同时核对 `storage_reference`
+   等于模板 `seed_key` 按 SOP 固定算法派生的值，标题不参与身份匹配。
+3. 用对应公司账号调用资料详情/下载接口（或前端“下载原件”），保存响应文件后核对：
+   `sha256sum <下载文件>` 与 `stat -c%s <下载文件>` 必须分别等于日志中的 `sha256` 与 `byteSize`。
+4. 用另一家公司账号访问同一资料必须被拒绝或不可见，验证归属隔离。
+5. 目录侧核对：文件必须位于 `--dev-sample-files-dir` 下，文件名等于 `storage_reference`；
+   目录外不得出现同名副本；目录归属标记必须记录本轮实际实例 UUID 与精确库名。
+   任一不符即停止验收并保留现场。
+6. 正式改名重跑：通过正式编辑路径修改资料标题后重跑 init，核对行数、ID、`storage_reference`、
+   文件 SHA-256 均不变，正式标题保留，目录无新增文件；不得为验证而改动模板 `seed_key`。
 
 ### 4.3 升级（存量库）
 
@@ -219,9 +337,10 @@ npm run database:deploy -- \
   --confirm-database=lithography_v13
 ```
 
-- 只运行 pending；不清库、不调用 drill、不伪造历史。
+- 只运行 pending；不清库、不调用 drill、不伪造历史、不补样例、不重置密码。
 - 无 pending 时做终态校验并返回「无变化」。
-- `upgrade` 拒绝管理员初始化参数。
+- `upgrade` 拒绝组织、管理员、开发账号、开发联调样例、样例原件目录与开发目标确认参数；
+  需要核对实例时可只带 `--expect-server-uuid`，工具会在首次写入前比对实际 `@@server_uuid`。
 - **真实存量升级尚未承诺**：本轮承诺的是空库 init 与受控/合成库的升级演练；
   生产存量库的升级窗口、备份、历史事实确认与回退方案必须另行评审和书面授权，
   不能因离线测试或合成库通过而视为已承诺或已验收。
@@ -338,40 +457,56 @@ SELECT COUNT(*) FROM reference_document WHERE source_report_version_id IS NOT NU
 - 禁止手工删除迁移历史记录来「重跑」。
 - 组织映射重复执行只核对已有公司，不覆盖、不改名、不重复创建；名称差异只告警不写入。
 - 管理员与开发样例映射重复执行返回 `UNCHANGED`，不重建账号、不重置密码、不覆盖等级和公司。
+- 开发联调样例按稳定键幂等：机型 `model_code`、工单 `request_no`、报告 `repair_request_id`、
+  资料 `seed_key`。已存在且归属一致时返回 `UNCHANGED`，不覆盖用户合法编辑；
+  同键异主、同键异机型/异客户/异来源时失败关闭。资料标题只展示，改名不改变身份；
+  旧库随机引用不得按标题认领或另造，复用需单独授权。
 - 已有账号事实不完整或与映射冲突时失败关闭，而不是为了“幂等”静默接管。
 
 ## 8. 初始化数据上线前置
 
 - 真实「公司 → 编码 → 类别/标记」清单、默认 6 个管理员（3 个 1 级、3 个 2 级）的
   「账号 → 等级 → 公司」清单必须在上线前完成评审，均放在库外受限配置。
+- 开发联调清单中的公司、账号、机型、工单、报告与资料名称需同样评审；只允许使用无敏感信息的测试内容。
 - 未映射管理员在运行时失败关闭，不自动提升等级、不猜测公司。
-- 开发样例账号默认关闭；只有验收/开发目标库才允许显式启用，数量由映射文件决定。
+- 开发账号与开发联调样例默认关闭；只有同时满足显式开发环境、实例 UUID 核对、目标库确认和
+  库名标记时才允许启用。`lithography_drill`、`lithography_e2e` 与其他现有共享库不得作为开发样例目标。
 - 缺少真实映射不阻塞结构迁移；但上线必须完成组织与管理员映射。
 
 ## 9. 失败恢复
 
-| 失败点                  | 处置                                                                                                                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 目标库/账号/权限错误    | 停止；修正环境文件或授权后重跑；不修改代码绕过                                                                                                                                             |
-| 已获取锁超时            | 确认无其他部署/迁移进程；检查未释放锁；必要时由 DBA 清理会话                                                                                                                               |
-| 非空库无历史            | 停止；确认是否选错库；不得用 init 覆盖                                                                                                                                                     |
-| 未知对象/半迁移         | 停止；保存 `SHOW CREATE TABLE` 与迁移历史；用 `status` 查看 pending 与疑似半迁移对象；人工确认对象属于哪条迁移、是否可安全跳过后再动                                                       |
-| DDL 部分失败            | 停止；保留失败点与已执行迁移；按失败文件名和错误中的“已完成步骤”核对列/约束存在性；修复后重跑 `upgrade` 续跑；禁止伪造历史或手工补记录                                                     |
-| 旧版增量结构缺口        | 运行 `upgrade` 让 `1775501900000-close-s5-structural-gaps-for-v13.migration.ts` 补齐；若其预检因同步回执四列重复组失败，先按业务确认并在工作库外处置，工具不会自动合并、择一保留或删除旧行 |
-| 前序迁移已失败          | 末尾追加迁移不能替代失败的前序迁移；必须人工恢复前序迁移的历史记录或按已提交 DDL 对齐后续跑条件，不得手工插入迁移历史                                                                      |
-| 终态校验失败            | 停止；按输出逐项定位；未修复前不得启动 API/Worker                                                                                                                                          |
-| 组织映射冲突            | 结构迁移已提交，但初始化数据事务整体回滚；按错误中的编码核对已有公司类别/标记，禁止手工改库“凑”配置；确认后重跑 init                                                                       |
-| 管理员/开发样例映射失败 | 结构迁移已提交，但初始化数据事务整体回滚（组织与全部账号均未落库）；修正映射后重跑 init，结构将返回无变化并重新应用初始化                                                                  |
-| 开发样例被拒绝          | 检查目标库名是否含 `test/dev/local/drill`、确认口令是否一致；这是防止样例进入正式库的安全门                                                                                                |
+| 失败点                     | 处置                                                                                                                                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 目标库/账号/权限错误       | 停止；修正环境文件或授权后重跑；不修改代码绕过                                                                                                                                                                         |
+| 目标实例 UUID 或确认库不符 | 在首次写入前停止；核对 `@@server_uuid`、`DATABASE()` 与命令参数；不得通过改库名或复用共享库绕过                                                                                                                       |
+| 已获取锁超时               | 确认无其他部署/迁移进程；检查未释放锁；必要时由 DBA 清理会话                                                                                                                                                           |
+| 非空库无历史               | 停止；确认是否选错库；不得用 init 覆盖                                                                                                                                                                                  |
+| 未知对象/半迁移            | 停止；保存 `SHOW CREATE TABLE` 与迁移历史；用 `status` 查看 pending 与疑似半迁移对象；人工确认对象属于哪条迁移、是否可安全跳过后再动                                                                                     |
+| DDL 部分失败               | 停止；保留失败点与已执行迁移；按失败文件名和错误中的“已完成步骤”核对列/约束存在性；修复后重跑 `upgrade` 续跑；禁止伪造历史或手工补记录                                                                                 |
+| 旧版增量结构缺口           | 运行 `upgrade` 让 `1775501900000-close-s5-structural-gaps-for-v13.migration.ts` 补齐；若其预检因同步回执四列重复组失败，先按业务确认并在工作库外处置，工具不会自动合并、择一保留或删除旧行                             |
+| 前序迁移已失败             | 末尾追加迁移不能替代失败的前序迁移；必须人工恢复前序迁移的历史记录或按已提交 DDL 对齐后续跑条件，不得手工插入迁移历史                                                                                                  |
+| 终态校验失败               | 停止；按输出逐项定位；未修复前不得启动 API/Worker                                                                                                                                                                      |
+| 组织映射冲突               | 结构迁移已提交，但初始化数据事务整体回滚；按错误中的编码核对已有公司类别/标记，禁止手工改库“凑”配置；确认后重跑 init                                                                                                   |
+| 管理员/开发账号映射失败    | 结构迁移已提交，但初始化数据事务整体回滚（组织、账号与业务样例均未落库）；修正映射后重跑 init，结构将返回无变化并重新应用初始化                                                                                         |
+| 开发样例被拒绝             | 检查 `--environment`、实例 UUID、`--confirm-dev-target`、确认口令与目标库名；这是防止样例进入正式/共享库的安全门                                                                                                       |
+| 开发样例同键异主/缺少依赖  | 初始化事务整体回滚；按错误中的稳定键核对已有工单/报告/资料的客户、服务公司、机型与来源；不得手工改库“凑”配置                                                                                                            |
+| 样例原件目录被拒绝         | 目录必须是绝对路径、目录名等于目标库名、已存在、非符号链接且真实路径一致；首次认领须排他写入实例 UUID + 精确库名，非空旧目录无标记时拒绝且保留现场；修正后重跑，工具不会自行创建目录、补标记、清理或放宽守卫 |
+| 样例原件写入/回读失败      | `wx` 排他创建失败（EEXIST）时保留既有文件且不改字节；部分写入仅在句柄身份与目录归属都可确认时回收本轮对象，否则保留并输出路径；不得手工插入资料行 |
+| 初始化事务失败后的原件     | 仅“明确 ROLLBACK 成功回执 + 文件归属确认 + 引用未命中”删除本轮文件；回滚失败、COMMIT 回执丢失、状态未知或探测失败时保留文件并输出库名、阶段、引用与主错误；未确认的连接不归还连接池，人工确认后再处置 |
+| 目录归属标记残缺/不可解析  | 停止；核对目录名等于目标库名、目录内文件均为 `storage_reference` 形态；用独立连接确认无正式资料引用后，由维护者删除残缺的 `.lithography-dev-sample-owner.json` 再重跑。工具不会自动补写、修复或删除标记 |
+| 样例原件残留（EEXIST/状态未知） | 停止；按错误中的库名、事务阶段与待处置引用，用独立连接核对 `reference_document.storage_reference` 无对应行，且文件字节哈希等于模板；确认后才可人工移走该文件再重跑。不得直接覆盖，不得手工插入资料行 |
+| 旧现场（历史随机引用）     | 不得按标题认领、不得补归属标记、不得重跑另造一份；复用旧库须单独授权，并先核实首次生成的 ID、引用与文件哈希。标题已改且原件缺失时无法自动识别，禁止直接以新方案对旧库重跑 |
 
 ## 10. 工具明确不做
 
 - 不创建数据库、不创建 MySQL/系统账号、不授予数据库权限；
-- 默认不初始化组织、管理员或开发样例；只有显式文件与确认口令才执行；
-- 不生成工单、报告、文件等业务样例数据，不写入注册/审批历史；
+- 默认不初始化组织、管理员、开发账号或业务样例；只有显式文件与确认口令才执行；
+- 生产入口不生成开发账号、模拟公司、工单/报告/资料或样例文件；
+- 开发入口只生成无敏感信息的 `.txt` 样例原件，不生成二进制、大文件或可执行内容；
+- 不生成 AI 任务/会话/报告、同步回执、备份/恢复/导入记录，不伪造这些任务成功；
 - 不启动或停止 API/Worker；
 - 不安装 systemd/服务、不修改系统权限；
-- 不导入演示业务数据；
+- 不导入演示业务数据（开发联调样例只来自受控 JSON，不来自导出包/旧库）；
 - 不执行 `synchronize`、`drop`、`down()` 或清库；
 - 不连接未显式指定的数据库；
 - 不自动判定历史记录“已检查”，不代替业务确认冻结清单（G-11）；
