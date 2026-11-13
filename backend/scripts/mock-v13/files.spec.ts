@@ -318,8 +318,10 @@ describe('claimMockRoots', () => {
     const [first, second] = await Promise.all([run(ownerA.database), run(ownerB.database)]);
     expect([first.code, second.code].sort((a, b) => Number(a) - Number(b))).toEqual([0, 3]);
     const [winner, loser] = first.code === 0 ? [ownerA, second] : [ownerB, first];
-    // 竞争方可能在正式标记发布前只看到临时标记，这也是合法的安全拒绝。
-    expect(loser.stderr).toMatch(/已有内容但没有可信归属标记|已被其它实例或库认领/u);
+    // 竞争方的三种合法安全拒绝：看到无标记旧内容、看到对方正式标记、第一次检查后才发现内容。
+    expect(loser.stderr).toMatch(
+      /已有内容但没有可信归属标记|已被其它实例或库认领|在认领前出现内容/u,
+    );
     for (const [root, role] of [
       [mock, 'mock-file-dir'],
       [reference, 'reference-storage-dir'],
@@ -334,6 +336,33 @@ describe('claimMockRoots', () => {
       });
     }
   }, 30000);
+
+  it('第一次检查为空、第二次检查前出现内容时拒绝，不发布标记也不改动新内容', () => {
+    const mock = path.join(base, 'late-mock');
+    const reference = path.join(base, 'late-reference');
+    // 预建空目录让第一次检查通过；随后在首根发布钩子里写入内容，稳定制造两次检查之间的差异。
+    fs.mkdirSync(reference, { recursive: true });
+    const lateContent = path.join(reference, 'late-arrival.txt');
+    let message = '';
+    try {
+      claimMockRoots(targets(mock, reference), ownerA, {
+        beforePublish: (_claim, index) => {
+          if (index === 0) {
+            fs.writeFileSync(lateContent, '认领前出现的内容', 'utf8');
+          }
+        },
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toContain('在认领前出现内容');
+    expect(fs.existsSync(path.join(reference, MOCK_ROOT_OWNER_FILE))).toBe(false);
+    expect(fs.readFileSync(lateContent, 'utf8')).toBe('认领前出现的内容');
+    expect(
+      fs.readdirSync(reference).filter((name) => name.startsWith(`${MOCK_ROOT_OWNER_FILE}.tmp-`)),
+    ).toEqual([]);
+  });
 
   it('两个根相同或互相嵌套时拒绝', () => {
     const root = path.join(base, 'root');
