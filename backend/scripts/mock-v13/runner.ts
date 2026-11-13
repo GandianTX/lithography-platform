@@ -35,6 +35,7 @@ import {
   MockVerificationError,
   MockWriteError,
   PostCommitError,
+  RollbackUnconfirmedError,
   attachFailureDiagnostics,
   exitCodeOf,
   failureDiagnosticsOf,
@@ -44,7 +45,7 @@ import {
   assertCredentialsPathOutsideRepository,
   assertGuardConfig,
   assertMockDirectories,
-  assertOutputParentDirectory,
+  assertOutputPathVacant,
   assertSchemaColumns,
   assertSchemaTables,
   assertTargetFacts,
@@ -141,11 +142,14 @@ export async function executePacks(
           rollbackFailure instanceof Error ? rollbackFailure : new Error(String(rollbackFailure));
       }
       if (rollbackError) {
-        attachFailureDiagnostics(error, {
+        // 回滚未确认是独立结果：保留主错误、回滚错误与本轮文件，不得声称已回滚。
+        throw new RollbackUnconfirmedError({
+          targetDatabase: options.database,
+          phase: 'ROLLBACK_FAILED',
+          primaryError: error instanceof Error ? error : new Error(String(error)),
           rollbackError,
           retainedFiles: context.files.createdPaths(),
         });
-        throw error;
       }
 
       const cleanup = context.files.cleanupCreated();
@@ -600,6 +604,27 @@ function formatCommitOutcomeUnknown(error: CommitOutcomeUnknownError): string {
   return lines.join('\n');
 }
 
+function formatRollbackUnconfirmed(error: RollbackUnconfirmedError): string {
+  const details = error.details;
+  const lines: string[] = [
+    `[mock:v13] 回滚未确认（退出码 8，目标库=${details.targetDatabase}，阶段=${details.phase}）：不能声称已回滚。`,
+    `主错误=${details.primaryError.message}`,
+    `回滚错误=${details.rollbackError.message}`,
+  ];
+  if (details.retainedFiles.length > 0) {
+    lines.push(`保留本轮创建的文件 ${details.retainedFiles.length} 个（未回收）：`);
+    for (const file of details.retainedFiles) {
+      lines.push(`  - ${file}`);
+    }
+  } else {
+    lines.push('本轮未创建文件。');
+  }
+  lines.push(
+    '请使用独立连接只读核对目标库后再决定人工处理；不要直接重跑覆盖，也不要把本次结果改记为“已回滚”。',
+  );
+  return lines.join('\n');
+}
+
 export async function main(
   argv: readonly string[],
   dependencies: RunDependencies = defaultDependencies,
@@ -661,7 +686,7 @@ export async function main(
       : null;
     assertMockDirectories(options.mockFileDir, options.referenceStorageDir);
     const jsonOutPath = options.jsonOut
-      ? assertOutputParentDirectory(options.jsonOut, '--json-out')
+      ? assertOutputPathVacant(options.jsonOut, '--json-out')
       : null;
     process.stdout.write(
       `[mock:v13] 生效时区=${env.dbTimezone ?? '未设置'}（必须与开发后端一致；不输出密钥）\n`,
@@ -793,7 +818,7 @@ export async function main(
       }
 
       if (jsonOutPath) {
-        const state = writeJsonFileExclusive(jsonOutPath, {
+        writeJsonFileExclusive(jsonOutPath, {
           mode: 'write',
           database: guard.database,
           instanceUuid: facts.instanceUuid,
@@ -805,9 +830,7 @@ export async function main(
           fileRoots,
           credentialsFile: credentialsPath,
         });
-        process.stdout.write(
-          `[mock:v13] 运行统计${state === 'CREATED' ? '已写入' : '已存在且内容一致（未覆盖）'}: ${jsonOutPath}\n`,
-        );
+        process.stdout.write(`[mock:v13] 运行统计已写入: ${jsonOutPath}\n`);
       }
     } catch (error) {
       const postCommitError = new PostCommitError(
@@ -826,17 +849,17 @@ export async function main(
       resultCode = error.exitCode;
       return error.exitCode;
     }
+    if (error instanceof RollbackUnconfirmedError) {
+      process.stderr.write(`${formatRollbackUnconfirmed(error)}\n`);
+      resultCode = error.exitCode;
+      return error.exitCode;
+    }
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`[mock:v13] 失败: ${message}\n`);
     // 只有确实执行过 ROLLBACK 且调用成功时才允许声称“事务已回滚”；
     // 写入前被守卫拒绝、未取得运行锁等情况从未进入事务。
     if (error instanceof MockConflictError && diagnostics.rollbackConfirmed === true) {
       process.stderr.write('[mock:v13] 已有数据归属不明，本次未覆盖；事务已回滚。\n');
-    }
-    if (diagnostics.rollbackError) {
-      process.stderr.write(
-        `[mock:v13] 无法确认回滚（回滚失败）：${diagnostics.rollbackError.message}\n`,
-      );
     }
     if (diagnostics.cleanupErrors && diagnostics.cleanupErrors.length > 0) {
       process.stderr.write(
@@ -848,7 +871,8 @@ export async function main(
         `[mock:v13] 保留未回收的文件（无法确认仍是本轮创建对象）：${diagnostics.retainedFiles.join('；')}\n`,
       );
     }
-    return exitCodeOf(error);
+    resultCode = exitCodeOf(error);
+    return resultCode;
   } finally {
     if (queryRunner && !packsOwnRelease) {
       try {

@@ -3,13 +3,10 @@
 import { DomainError, ADMIN_DOCUMENT_DATABASE_ERROR } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 import { AiConversationEntity } from '../entities/ai-conversation.entity';
 import { AiMessageEntity } from '../entities/ai-message.entity';
 import type { AdminAiMessageListPage, AdminListPagination } from '../admin-document-database.types';
-
-/** 消息固定排序（契约冻结）：messageSeq 升序，主键升序——会话内稳定顺序的唯一口径 */
-const MESSAGE_ORDER = { messageSeq: 'ASC', id: 'ASC' } as const;
 
 /**
  * 管理员 AI 消息读侧查询服务（PR3 只读聚合）
@@ -34,9 +31,10 @@ export class AdminAiMessageQueryService {
   /**
    * 按会话读取消息列表。
    *
-   * - 会话不存在：返回空页（保持既有分页语义）；
-   * - 传入 ownerOrganizationId 且会话归属不同：统一 NOT_FOUND，与报告详情口径一致，
-   *   不泄露其他公司会话是否存在。
+   * - 传入 ownerOrganizationId（二级管理员）时，会话查找与消息查询都带同一可信组织范围：
+   *   查不到（不存在或无权）一律返回相同的 NOT_FOUND，不区分“存在但无权”和“不存在”；
+   * - 本公司存在但无消息的会话返回成功空页；
+   * - 未传入组织范围（一级管理员）保持原有分页语义。
    */
   async listByConversation(params: {
     conversationId: number;
@@ -45,10 +43,13 @@ export class AdminAiMessageQueryService {
   }): Promise<AdminAiMessageListPage> {
     if (typeof params.ownerOrganizationId === 'number') {
       const conversation = await this.conversationRepository.findOne({
-        where: { id: params.conversationId },
-        select: { id: true, ownerOrganizationId: true },
+        where: {
+          id: params.conversationId,
+          ownerOrganizationId: params.ownerOrganizationId,
+        },
+        select: { id: true },
       });
-      if (conversation && conversation.ownerOrganizationId !== params.ownerOrganizationId) {
+      if (!conversation) {
         throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, 'AI 会话不存在或不可访问', {
           conversationId: params.conversationId,
         });
@@ -56,17 +57,16 @@ export class AdminAiMessageQueryService {
     }
     const page = Math.max(params.pagination.page, 1);
     const pageSize = Math.max(params.pagination.pageSize, 1);
-    const where = { conversationId: params.conversationId };
 
     const [entities, total] = await Promise.all([
-      this.messageRepository.find({
-        where,
-        order: MESSAGE_ORDER,
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
+      this.buildMessageQuery(params.conversationId, params.ownerOrganizationId)
+        .orderBy('message.messageSeq', 'ASC')
+        .addOrderBy('message.id', 'ASC')
+        .offset((page - 1) * pageSize)
+        .limit(pageSize)
+        .getMany(),
       params.pagination.withTotal
-        ? this.messageRepository.count({ where })
+        ? this.buildMessageQuery(params.conversationId, params.ownerOrganizationId).getCount()
         : Promise.resolve(undefined),
     ]);
 
@@ -84,5 +84,28 @@ export class AdminAiMessageQueryService {
       page,
       pageSize,
     };
+  }
+
+  /**
+   * 消息查询始终限定在目标会话；二级管理员额外关联会话归属组织，
+   * 使实际消息读取与前置存在性判断使用同一组织范围。
+   */
+  private buildMessageQuery(
+    conversationId: number,
+    ownerOrganizationId?: number,
+  ): SelectQueryBuilder<AiMessageEntity> {
+    const qb = this.messageRepository
+      .createQueryBuilder('message')
+      .where('message.conversationId = :conversationId', { conversationId });
+    if (typeof ownerOrganizationId === 'number') {
+      qb.innerJoin(
+        AiConversationEntity,
+        'conversation',
+        'conversation.id = message.conversationId',
+      ).andWhere('conversation.ownerOrganizationId = :ownerOrganizationId', {
+        ownerOrganizationId,
+      });
+    }
+    return qb;
   }
 }

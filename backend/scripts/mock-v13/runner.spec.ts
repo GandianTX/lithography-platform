@@ -18,6 +18,7 @@ import {
   MockConflictError,
   MockVerificationError,
   MockWriteError,
+  RollbackUnconfirmedError,
   exitCodeOf,
   failureDiagnosticsOf,
 } from './errors';
@@ -231,7 +232,7 @@ describe('executePacks', () => {
     expect(error.details.rollbackError?.message).toBe('ROLLBACK refused');
   });
 
-  it('COMMIT 前回滚失败时保留文件，主错误不被回滚错误覆盖', async () => {
+  it('COMMIT 前回滚失败时退出码 8，保留文件并同时保留两个错误', async () => {
     const created = path.join(tempDir, 'rollback-failed.png');
     const context = createContext(tempDir, queryRunner);
     queryRunner.rollbackError = new Error('ROLLBACK 连接已断开');
@@ -243,19 +244,20 @@ describe('executePacks', () => {
       }),
     ];
 
-    const error = await captureRejection(
+    const error = (await captureRejection(
       executePacks(queryRunner, packs, context, {
         database: 'lithography_v13_dev',
         failAfterPack: null,
       }),
-    );
+    )) as RollbackUnconfirmedError;
 
-    expect(error).toBeInstanceOf(MockWriteError);
-    expect((error as Error).message).toContain('主错误');
+    expect(error).toBeInstanceOf(RollbackUnconfirmedError);
+    expect(exitCodeOf(error)).toBe(8);
     expect(fs.existsSync(created)).toBe(true);
-    const diagnostics = failureDiagnosticsOf(error);
-    expect(diagnostics.rollbackError?.message).toContain('ROLLBACK');
-    expect(diagnostics.retainedFiles).toContain(created);
+    expect(error.details.phase).toBe('ROLLBACK_FAILED');
+    expect(error.details.primaryError.message).toContain('主错误');
+    expect(error.details.rollbackError.message).toBe('ROLLBACK 连接已断开');
+    expect(error.details.retainedFiles).toContain(created);
   });
 
   it('回滚成功后清理发现文件被替换：保留替换物并报告，主错误仍可见', async () => {
@@ -672,23 +674,79 @@ describe('main 收尾与退出码', () => {
     }
   });
 
-  it('异主冲突且回滚失败：保留退出码 3，报告无法确认回滚，不声称已回滚', async () => {
+  it('异主冲突且回滚失败：退出码 8，保留主错误、回滚错误与文件，后续失败不覆盖', async () => {
     const harness = createHarness({
-      packRun: () => Promise.reject(new MockConflictError('异主冲突：组织归属不明')),
+      destroyError: new Error('销毁连接失败（模拟）'),
+      packRun: (context) => {
+        context.files.ensure(path.join(context.mockFileDir, 'retained.png'), mockPng());
+        return Promise.reject(new MockConflictError('异主冲突：组织归属不明'));
+      },
     });
     harness.runner.rollbackError = new Error('ROLLBACK 连接已断开');
     harness.runner.unlockError = new Error('解锁失败（模拟）');
     harness.runner.releaseError = new Error('释放失败（模拟）');
     try {
       const { code, stderr } = await runAndCapture(harness);
-      expect(code).toBe(3);
-      expect(stderr).toContain('释放运行锁失败');
-      expect(stderr).toContain('释放 QueryRunner失败');
-      expect(harness.runner.rolledBack).toBe(false);
+      expect(code).toBe(8);
+      expect(stderr).toContain('回滚未确认（退出码 8');
       expect(stderr).toContain('异主冲突：组织归属不明');
-      expect(stderr).toContain('无法确认回滚');
-      expect(stderr).toContain('ROLLBACK 连接已断开');
+      expect(stderr).toContain('回滚错误=ROLLBACK 连接已断开');
+      expect(stderr).toContain('retained.png');
+      expect(stderr).toContain('解锁失败（模拟）');
+      expect(stderr).toContain('释放失败（模拟）');
+      expect(stderr).toContain('关闭连接失败：销毁连接失败（模拟）');
+      expect(stderr).toContain('保持退出码 8');
+      expect(fs.existsSync(path.join(harness.mockDir, 'retained.png'))).toBe(true);
+      expect(harness.runner.rolledBack).toBe(false);
       expect(stderr).not.toContain('事务已回滚');
+      expect(stderr).not.toContain('已确认回滚');
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it('旧统计路径已占用：连接与写入前退出 2，原统计和目录不变', async () => {
+    const harness = createHarness({ packRun: () => Promise.resolve() });
+    const jsonOut = path.join(harness.tempDir, 'run-01.json');
+    fs.writeFileSync(jsonOut, '{"old":true}\n', 'utf8');
+    harness.args.push('--json-out', jsonOut);
+    const createDataSource = jest.fn(harness.dependencies.createDataSource);
+    harness.dependencies.createDataSource = createDataSource;
+    try {
+      const { code, stderr } = await runAndCapture(harness);
+      expect(code).toBe(2);
+      expect(stderr).toContain('--json-out 目标已存在');
+      expect(createDataSource).not.toHaveBeenCalled();
+      expect(harness.runner.committed).toBe(false);
+      expect(fs.readFileSync(jsonOut, 'utf8')).toBe('{"old":true}\n');
+      expect(fs.readdirSync(harness.mockDir)).toEqual([]);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it('换新统计路径可重跑：退出 0，旧统计与已编辑文件均不变', async () => {
+    const harness = createHarness({ packRun: () => Promise.resolve() });
+    const occupied = path.join(harness.tempDir, 'run-01.json');
+    fs.writeFileSync(occupied, '{"unrelated":true}\n', 'utf8');
+    const jsonOut = path.join(harness.tempDir, 'run-02.json');
+    harness.args.push('--json-out', jsonOut);
+    try {
+      const { code } = await runAndCapture(harness);
+      expect(code).toBe(0);
+      expect(JSON.parse(fs.readFileSync(jsonOut, 'utf8')).exitCode).toBe(0);
+      expect(fs.readFileSync(occupied, 'utf8')).toBe('{"unrelated":true}\n');
+
+      const edited = path.join(harness.mockDir, 'edited.txt');
+      fs.writeFileSync(edited, '已编辑内容', 'utf8');
+      harness.runner.committed = false;
+      harness.runner.rolledBack = false;
+      harness.runner.released = false;
+      const rerun = await runAndCapture(harness);
+      expect(rerun.code).toBe(2);
+      expect(rerun.stderr).toContain('--json-out 目标已存在');
+      expect(fs.readFileSync(occupied, 'utf8')).toBe('{"unrelated":true}\n');
+      expect(fs.readFileSync(edited, 'utf8')).toBe('已编辑内容');
     } finally {
       harness.cleanup();
     }

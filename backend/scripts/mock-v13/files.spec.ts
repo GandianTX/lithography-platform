@@ -214,16 +214,17 @@ describe('writeJsonFileExclusive', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('首次写入创建，同内容重跑复用', () => {
+  it('首次写入创建，重复使用同一路径直接拒绝（同内容也不复用）', () => {
     const target = path.join(tempDir, 'stats.json');
-    expect(writeJsonFileExclusive(target, { total: 1 })).toBe('CREATED');
-    expect(writeJsonFileExclusive(target, { total: 1 })).toBe('REUSED');
+    writeJsonFileExclusive(target, { total: 1 });
+    expect(() => writeJsonFileExclusive(target, { total: 1 })).toThrow(/已存在/u);
+    expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ total: 1 });
   });
 
   it('内容不同拒绝覆盖，保留原统计', () => {
     const target = path.join(tempDir, 'stats.json');
     writeJsonFileExclusive(target, { total: 1 });
-    expect(() => writeJsonFileExclusive(target, { total: 2 })).toThrow(/拒绝覆盖/);
+    expect(() => writeJsonFileExclusive(target, { total: 2 })).toThrow(/已存在/u);
     expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ total: 1 });
   });
 });

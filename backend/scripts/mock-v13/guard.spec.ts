@@ -21,6 +21,7 @@ import {
   assertCredentialsPathOutsideRepository,
   assertGuardConfig,
   assertMockDirectories,
+  assertOutputPathVacant,
   assertSchemaColumns,
   assertSchemaTables,
   assertTargetFacts,
@@ -358,15 +359,57 @@ describe('assertMockDirectories', () => {
     );
   });
 
-  it('仓库源码目录内拒绝写入', () => {
+  it('后端源码目录内拒绝写入', () => {
     expectGuardViolation(
       () =>
         assertMockDirectories(
-          path.join(resolveRepositoryRoot(), 'src', 'mock-files'),
+          path.join(resolveRepositoryRoot(), 'backend', 'src', 'mock-files'),
           '/tmp/mock-v13/references',
         ),
       /受保护目录/u,
     );
+  });
+
+  it('后端依赖目录内拒绝写入', () => {
+    expectGuardViolation(
+      () =>
+        assertMockDirectories(
+          path.join(resolveRepositoryRoot(), 'backend', 'node_modules', 'mock-v13'),
+          '/tmp/mock-v13/references',
+        ),
+      /受保护目录/u,
+    );
+  });
+
+  it('后端构建产物目录内拒绝写入', () => {
+    expectGuardViolation(
+      () =>
+        assertMockDirectories(
+          path.join(resolveRepositoryRoot(), 'backend', 'dist', 'mock-v13'),
+          '/tmp/mock-v13/references',
+        ),
+      /受保护目录/u,
+    );
+  });
+
+  it('参考资料目录落在后端源码内同样拒绝', () => {
+    expectGuardViolation(
+      () =>
+        assertMockDirectories(
+          '/tmp/mock-v13/files',
+          path.join(resolveRepositoryRoot(), 'backend', 'src', 'references'),
+        ),
+      /受保护目录/u,
+    );
+  });
+
+  it('受保护目录同前缀但不同路径组件时仍可写入', () => {
+    expect(() =>
+      assertMockDirectories(
+        path.join(resolveRepositoryRoot(), 'backend', 'src-mock', 'files'),
+        path.join(resolveRepositoryRoot(), 'backend', 'dist-mock', 'references'),
+      ),
+    ).not.toThrow();
   });
 
   it('文件系统根目录拒绝', () => {
@@ -386,6 +429,38 @@ describe('assertMockDirectories', () => {
       fs.rmSync(outside, { recursive: true, force: true });
       fs.rmSync(reference, { recursive: true, force: true });
     }
+  });
+});
+
+describe('assertOutputPathVacant', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-json-out-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('尚不存在的统计路径接受', () => {
+    const target = path.join(tempDir, 'run-01.json');
+    expect(assertOutputPathVacant(target, '--json-out')).toBe(path.resolve(target));
+  });
+
+  it('已存在的统计路径在写入前拒绝（同内容也不复用）', () => {
+    const target = path.join(tempDir, 'run-01.json');
+    fs.writeFileSync(target, '{"total":1}\n', 'utf8');
+    expectGuardViolation(() => assertOutputPathVacant(target, '--json-out'), /已存在/u);
+    expect(fs.readFileSync(target, 'utf8')).toBe('{"total":1}\n');
+  });
+
+  it('目标为目录时拒绝，且目录内容不变', () => {
+    const target = path.join(tempDir, 'run-01.json');
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, 'sentinel.txt'), '哨兵', 'utf8');
+    expectGuardViolation(() => assertOutputPathVacant(target, '--json-out'), /已存在/u);
+    expect(fs.readFileSync(path.join(target, 'sentinel.txt'), 'utf8')).toBe('哨兵');
   });
 });
 

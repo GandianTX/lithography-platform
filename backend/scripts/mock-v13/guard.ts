@@ -312,9 +312,11 @@ export function assertSchemaColumns(
 }
 
 /**
- * Mock 文件目录的守卫：目录必须可明确归属，且不得写入源码、依赖、构建产物或版本库目录，
+ * Mock 文件目录的守卫：目录必须可明确归属，且不得写入后端源码、依赖、构建产物或版本库目录，
  * 避免回滚回收时误删工程文件。默认目录（`<cwd>/var/...`）不受影响。
  *
+ * 受保护目录从实际仓库根定位到 `backend/src`、`backend/node_modules`、`backend/dist`，
+ * 原件目录与参考资料目录都按路径组件判断是否落在其中（含目录自身及其任意子目录）。
  * 除字符串前缀外，还逐级检查已存在的路径组件：任何符号链接都拒绝，避免通过链接
  * 逃逸到受控目录之外。原件根下实际会写入的子目录也一并检查。
  */
@@ -326,16 +328,16 @@ export function assertMockDirectories(mockFileDir: string, referenceStorageDir: 
   if (targets[0].dir === targets[1].dir) {
     throw new GuardViolationError('--mock-file-dir 与 --reference-storage-dir 必须指向不同目录');
   }
-  const forbiddenRoots = ['src', 'node_modules', 'dist', '.git'].map((name) =>
-    path.join(resolveRepositoryRoot(), name),
-  );
+  const repositoryRoot = resolveRepositoryRoot();
+  const forbiddenRoots = [
+    path.join(repositoryRoot, 'backend', 'src'),
+    path.join(repositoryRoot, 'backend', 'node_modules'),
+    path.join(repositoryRoot, 'backend', 'dist'),
+    path.join(repositoryRoot, '.git'),
+  ];
   for (const target of targets) {
     if (path.parse(target.dir).root === target.dir) {
       throw new GuardViolationError(`${target.flag} 不能是文件系统根目录: ${target.dir}`);
-    }
-    assertNoSymlinkComponents(target.dir, target.flag);
-    if (fs.existsSync(target.dir) && !fs.statSync(target.dir).isDirectory()) {
-      throw new GuardViolationError(`${target.flag} 已存在但不是目录: ${target.dir}`);
     }
     for (const forbidden of forbiddenRoots) {
       const relative = path.relative(forbidden, target.dir);
@@ -345,6 +347,10 @@ export function assertMockDirectories(mockFileDir: string, referenceStorageDir: 
           `${target.flag} 位于受保护目录内: ${forbidden}，拒绝写入 Mock 文件`,
         );
       }
+    }
+    assertNoSymlinkComponents(target.dir, target.flag);
+    if (fs.existsSync(target.dir) && !fs.statSync(target.dir).isDirectory()) {
+      throw new GuardViolationError(`${target.flag} 已存在但不是目录: ${target.dir}`);
     }
   }
   const mockSubdirectories = ['files', 'report-attachments', 'packages', 'backups'] as const;
@@ -394,6 +400,21 @@ export function assertOutputParentDirectory(outputPath: string, label: string): 
   const parent = path.dirname(absolute);
   if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
     throw new GuardViolationError(`${label} 父目录不存在或不是目录: ${parent}`);
+  }
+  return absolute;
+}
+
+/**
+ * 统计输出必须是一次运行专属的新文件：目标已存在时在连接/写入前拒绝。
+ *
+ * 仅做预检，真正的落盘仍由排他创建（`wx`）兜底，防止预检与写入之间出现的文件被覆盖。
+ */
+export function assertOutputPathVacant(outputPath: string, label: string): string {
+  const absolute = assertOutputParentDirectory(outputPath, label);
+  if (fs.existsSync(absolute)) {
+    throw new GuardViolationError(
+      `${label} 目标已存在: ${absolute}；每次运行必须使用新的统计文件名，或省略 ${label} 以不写统计`,
+    );
   }
   return absolute;
 }

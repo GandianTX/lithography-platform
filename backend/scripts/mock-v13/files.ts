@@ -316,29 +316,27 @@ export function writeCredentialsFile(filePath: string, content: CredentialFileCo
 }
 
 /**
- * 统计 JSON 输出：不覆盖已有对象。
- * 内容完全一致时视为复用；内容不同则拒绝覆盖，避免旧统计被误当成本次结果。
+ * 统计 JSON 输出：每次运行必须是新文件。
+ *
+ * 预检已在写库前拒绝已占用路径；这里保留排他创建，防止预检后出现的文件被覆盖。
+ * 已存在（含内容一致）同样拒绝，避免把旧统计误当成本次运行结果。
  */
-export function writeJsonFileExclusive(filePath: string, content: unknown): 'CREATED' | 'REUSED' {
+export function writeJsonFileExclusive(filePath: string, content: unknown): void {
   const absolute = path.resolve(filePath);
   assertNoSymlinkComponents(absolute, '统计输出文件');
   const serialized = `${JSON.stringify(content, null, 2)}\n`;
-  const existing = lstatOrNull(absolute);
-  if (existing) {
-    if (existing.isSymbolicLink() || !existing.isFile()) {
-      throw new MockWriteError(`统计输出已是链接或非普通文件，拒绝写入: ${absolute}`);
-    }
-    if (fs.readFileSync(absolute, 'utf8') !== serialized) {
-      throw new MockWriteError(`统计输出已存在且内容不同，拒绝覆盖: ${absolute}`);
-    }
-    return 'REUSED';
+  if (lstatOrNull(absolute)) {
+    throw new MockWriteError(
+      `统计输出已存在，拒绝覆盖: ${absolute}；请使用新的统计文件名或省略 --json-out`,
+    );
   }
   try {
     fs.writeFileSync(absolute, serialized, { flag: 'wx', mode: 0o640 });
-    return 'CREATED';
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new MockWriteError(`统计输出在写入瞬间被创建，拒绝覆盖: ${absolute}`);
+      throw new MockWriteError(
+        `统计输出在写入瞬间被创建，拒绝覆盖: ${absolute}；请使用新的统计文件名或省略 --json-out`,
+      );
     }
     throw new MockWriteError(`写入统计输出失败: ${absolute}（${(error as Error).message}）`);
   }
