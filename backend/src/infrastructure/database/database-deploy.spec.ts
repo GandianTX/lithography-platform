@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parseAdminBootstrapConfig } from './admin-bootstrap';
@@ -13,7 +14,13 @@ import {
   parseDevAccountBootstrapConfig,
 } from './dev-account-bootstrap';
 import { parseDevDataConfig } from './dev-data-bootstrap';
-import type { DevSampleFileClaim } from './dev-sample-files';
+import {
+  claimDevSampleFilesDirectory,
+  deleteDevSampleFile,
+  sha256Of,
+  writeDevSampleFile,
+  type DevSampleFileClaim,
+} from './dev-sample-files';
 import { parseOrganizationBootstrapConfig } from './organization-bootstrap';
 
 const DOCS_DIR = join(__dirname, '../../../../docs/database/v13-deployment');
@@ -454,6 +461,75 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it.each([true, false])('部分写入后按回滚回执决定是否回收残件（确认=%s）', async (confirmed) => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-partial-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const storageReference = `${'a'.repeat(32)}.txt`;
+      const partial = join(directory, storageReference);
+      const existing = join(directory, `${'b'.repeat(32)}.txt`);
+      writeFileSync(existing, '预存文件');
+      const content = Buffer.from('sample');
+      const main = new Error('partial write');
+      const pending: DevSampleFileClaim[] = [];
+      const { runner, rollback, release } = makeRunner();
+      rollback.mockImplementationOnce(async () => {
+        expect(readFileSync(partial)).toEqual(content.subarray(0, 2));
+        if (!confirmed) throw new Error('rollback lost');
+      });
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: pending,
+          removeSampleFile: deleteDevSampleFile,
+          run: async () =>
+            writeDevSampleFile(
+              directory,
+              {
+                originalFilename: 'sample.txt',
+                mimeType: 'text/plain',
+                byteSize: content.length,
+                sha256: sha256Of(content),
+                content,
+              },
+              {
+                storageReference,
+                ownership,
+                onClaim: (claim) => pending.push(claim),
+                writeContent: async (handle) => {
+                  await handle.write(content.subarray(0, 2));
+                  throw main;
+                },
+              },
+            ),
+        }),
+      );
+
+      expect(error).toBe(main);
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+      expect(pending).toHaveLength(1);
+      expect(existsSync(partial)).toBe(!confirmed);
+      expect(readFileSync(existing, 'utf8')).toBe('预存文件');
+      if (!confirmed) {
+        expect(readFileSync(partial)).toEqual(content.subarray(0, 2));
+        expect(error.cleanupErrors?.join(' | ')).toContain(partial);
+        expect(error.cleanupErrors?.join(' | ')).toContain('rollback lost');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('明确回滚成功后只回收本轮已登记原件，并保留主错误', async () => {

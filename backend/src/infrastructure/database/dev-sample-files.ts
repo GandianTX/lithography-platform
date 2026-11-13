@@ -74,9 +74,7 @@ export interface DevSampleFileWriteOptions {
   /** 测试注入点：默认通过句柄写入完整内容。 */
   readonly writeContent?: (handle: FileHandle, content: Buffer) => Promise<void>;
   /** 测试注入点：默认通过句柄读取对象身份。 */
-  readonly readIdentity?: (
-    handle: FileHandle,
-  ) => Promise<{
+  readonly readIdentity?: (handle: FileHandle) => Promise<{
     readonly isFile: () => boolean;
     readonly dev: number | bigint;
     readonly ino: number | bigint;
@@ -360,8 +358,8 @@ async function assertOwnershipStillCurrent(ownership: DevSampleDirectoryOwnershi
  * 写入一份样例原件并回读核对字节数与哈希。
  *
  * 使用 `wx` 排他创建，已存在的文件既不覆盖也不删除；只有成功取得句柄并记录
- * 对象身份后才登记本轮归属。写入/核对失败时，仅在目录归属与对象身份都可确认
- * 时回收；否则保留现场并在错误上附加路径，交由调用方报告。
+ * 对象身份后才登记本轮归属。失败时关闭句柄并保留现场；已登记的原件只由
+ * 部署事务在确认回滚后决定是否回收。
  */
 export async function writeDevSampleFile(
   directory: string,
@@ -426,17 +424,10 @@ export async function writeDevSampleFile(
     if (closeError !== null && closeError !== mainError) {
       notes.push(`关闭原件句柄失败：${messageOf(closeError)}`);
     }
-    if (claim !== null) {
-      try {
-        const removal = await deleteDevSampleFile(claim);
-        if (removal === 'RETAINED') {
-          notes.push(`原件未能安全回收，已保留现场：${claim.filePath}`);
-        }
-      } catch (error) {
-        notes.push(`原件补偿清理失败，已保留现场 ${claim.filePath}：${messageOf(error)}`);
-      }
-    } else {
+    if (claim === null) {
       notes.push(`未登记本轮原件归属，已保留现场：${target}`);
+    } else {
+      notes.push(`原件写入未完成，回收前须确认事务已回滚：${claim.filePath}`);
     }
     throw annotateError(mainError, notes);
   }

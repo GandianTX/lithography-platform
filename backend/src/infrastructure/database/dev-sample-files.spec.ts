@@ -147,7 +147,7 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe('原有字节');
   });
 
-  it('部分写入失败时关闭句柄并只回收本轮已登记对象', async () => {
+  it('部分写入失败时关闭句柄并保留已登记的残件供事务收尾', async () => {
     const { dir } = makeTargetDir();
     const owner = await ownership(dir);
     const reference = deriveDevSampleStorageReference(SEED_KEY);
@@ -167,7 +167,7 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
       }),
     ).rejects.toThrow(/partial write/);
     expect(claimed).not.toBeNull();
-    expect(fs.existsSync(path.join(dir, reference))).toBe(false);
+    expect(fs.readFileSync(path.join(dir, reference))).toEqual(CONTENT.subarray(0, 2));
   });
 
   it('取得句柄后身份登记失败时保留现场并报告路径', async () => {
