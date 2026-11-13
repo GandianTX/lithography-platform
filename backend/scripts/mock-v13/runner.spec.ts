@@ -468,6 +468,135 @@ describe('main 守卫短路', () => {
   });
 });
 
+describe('main 输出路径组合预检', () => {
+  const TEST_UUID = '3f2b6c1e-9a4d-4c8b-8f2e-1c7d5a9b0e42';
+
+  function writeEnvFile(tempDir: string): string {
+    const envFile = path.join(tempDir, 'mock-v13.env');
+    fs.writeFileSync(
+      envFile,
+      [
+        'NODE_ENV=development',
+        'DB_HOST=127.0.0.1',
+        'DB_PORT=3306',
+        'DB_USER=mock_writer',
+        'DB_PASS=secret',
+        'DB_NAME=lithography_v13_dev',
+        'DB_TIMEZONE=+08:00',
+        'FIELD_ENCRYPTION_KEY=0123456789abcdef',
+        'FIELD_ENCRYPTION_IV=fedcba9876543210',
+        'MOCK_V13_PASSWORD=MockV13!Passw0rd',
+        `MOCK_V13_WRITE_ACK=${WRITE_ACK_PHRASE}`,
+      ].join('\n'),
+      'utf8',
+    );
+    return envFile;
+  }
+
+  function buildArgs(
+    tempDir: string,
+    envFile: string,
+    credentialsOut: string,
+    jsonOut: string,
+  ): string[] {
+    return [
+      '--env-file',
+      envFile,
+      '--database',
+      'lithography_v13_dev',
+      '--confirm-database',
+      'lithography_v13_dev',
+      '--allow-database',
+      'lithography_v13_dev',
+      '--expected-instance-uuid',
+      TEST_UUID,
+      '--mock-file-dir',
+      path.join(tempDir, 'files'),
+      '--reference-storage-dir',
+      path.join(tempDir, 'reference'),
+      '--pack',
+      'p0-org-accounts',
+      '--credentials-out',
+      credentialsOut,
+      '--json-out',
+      jsonOut,
+      '--write',
+    ];
+  }
+
+  async function runAndCaptureConnectAttempts(args: string[]): Promise<{
+    code: number;
+    stderr: string;
+    createDataSource: jest.Mock;
+    createQueryRunner: jest.Mock;
+  }> {
+    const errors: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      errors.push(String(chunk));
+      return true;
+    });
+    const createDataSource = jest.fn(
+      () =>
+        ({
+          initialize: () => Promise.resolve(),
+          destroy: () => Promise.resolve(),
+          isInitialized: true,
+        }) as unknown as DataSource,
+    );
+    const createQueryRunner = jest.fn();
+    try {
+      const code = await main(args, { createDataSource, createQueryRunner });
+      return { code, stderr: errors.join(''), createDataSource, createQueryRunner };
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  }
+
+  it('两个参数完全相同：退出 2，未连接数据库且不新增目录或文件', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-same-out-'));
+    const envFile = writeEnvFile(tempDir);
+    const target = path.join(tempDir, 'run.json');
+    try {
+      const { code, stderr, createDataSource, createQueryRunner } =
+        await runAndCaptureConnectAttempts(buildArgs(tempDir, envFile, target, target));
+
+      expect(code).toBe(2);
+      expect(stderr).toContain('--credentials-out 和 --json-out 必须使用不同文件');
+      expect(createDataSource).not.toHaveBeenCalled();
+      expect(createQueryRunner).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tempDir, 'files'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, 'reference'))).toBe(false);
+      expect(fs.readdirSync(tempDir)).toEqual([path.basename(envFile)]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('两个参数等价（run.json 与 ./run.json）：退出 2，目录与文件均无新增', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-equivalent-out-'));
+    const envFile = writeEnvFile(tempDir);
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(tempDir);
+      const { code, stderr, createDataSource, createQueryRunner } =
+        await runAndCaptureConnectAttempts(buildArgs(tempDir, envFile, 'run.json', './run.json'));
+
+      expect(code).toBe(2);
+      expect(stderr).toContain('--credentials-out 和 --json-out 必须使用不同文件');
+      expect(createDataSource).not.toHaveBeenCalled();
+      expect(createQueryRunner).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tempDir, 'files'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, 'reference'))).toBe(false);
+      expect(fs.readdirSync(tempDir)).toEqual([path.basename(envFile)]);
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('main 收尾与退出码', () => {
   const TEST_UUID = '3f2b6c1e-9a4d-4c8b-8f2e-1c7d5a9b0e42';
 

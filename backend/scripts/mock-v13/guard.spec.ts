@@ -19,6 +19,7 @@ import {
   REQUIRED_TABLES,
   WRITE_ACK_PHRASE,
   assertCredentialsPathOutsideRepository,
+  assertDistinctOutputPaths,
   assertGuardConfig,
   assertMockDirectories,
   assertOutputPathVacant,
@@ -461,6 +462,28 @@ describe('assertOutputPathVacant', () => {
     fs.writeFileSync(path.join(target, 'sentinel.txt'), '哨兵', 'utf8');
     expectGuardViolation(() => assertOutputPathVacant(target, '--json-out'), /已存在/u);
     expect(fs.readFileSync(path.join(target, 'sentinel.txt'), 'utf8')).toBe('哨兵');
+  });
+});
+
+describe('assertDistinctOutputPaths', () => {
+  it('不同文件路径通过', () => {
+    expect(() =>
+      assertDistinctOutputPaths('/tmp/mock-v13/credentials.json', '/tmp/mock-v13/run-01.json'),
+    ).not.toThrow();
+  });
+
+  it('完全相同的路径拒绝', () => {
+    expectGuardViolation(
+      () => assertDistinctOutputPaths('/tmp/mock-v13/run.json', '/tmp/mock-v13/run.json'),
+      /--credentials-out 和 --json-out 必须使用不同文件/u,
+    );
+  });
+
+  it('等价路径按规范化结果识别为同一文件', () => {
+    expectGuardViolation(
+      () => assertDistinctOutputPaths('run.json', './run.json'),
+      /--credentials-out 和 --json-out 必须使用不同文件/u,
+    );
   });
 });
 

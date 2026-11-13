@@ -419,6 +419,17 @@ export function assertOutputPathVacant(outputPath: string, label: string): strin
   return absolute;
 }
 
+/**
+ * 凭据与统计输出必须落在不同文件：同一路径会让后写入的统计覆盖凭据，
+ * 或让凭据内容被统计复用。按规范化后的绝对路径比较，`run.json` 与 `./run.json`
+ * 视为同一目标。
+ */
+export function assertDistinctOutputPaths(credentialsPath: string, jsonOutPath: string): void {
+  if (path.resolve(credentialsPath) === path.resolve(jsonOutPath)) {
+    throw new GuardViolationError('--credentials-out 和 --json-out 必须使用不同文件');
+  }
+}
+
 /** 仓库根目录（用于阻止把凭据写到 Git 工作区）。 */
 export function resolveRepositoryRoot(): string {
   return path.resolve(__dirname, '../../..');

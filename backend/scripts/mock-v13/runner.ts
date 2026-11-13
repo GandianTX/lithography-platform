@@ -45,6 +45,7 @@ import {
   assertCredentialsPathOutsideRepository,
   assertGuardConfig,
   assertMockDirectories,
+  assertDistinctOutputPaths,
   assertOutputPathVacant,
   assertSchemaColumns,
   assertSchemaTables,
@@ -688,6 +689,9 @@ export async function main(
     const jsonOutPath = options.jsonOut
       ? assertOutputPathVacant(options.jsonOut, '--json-out')
       : null;
+    if (credentialsPath && jsonOutPath) {
+      assertDistinctOutputPaths(credentialsPath, jsonOutPath);
+    }
     process.stdout.write(
       `[mock:v13] 生效时区=${env.dbTimezone ?? '未设置'}（必须与开发后端一致；不输出密钥）\n`,
     );
