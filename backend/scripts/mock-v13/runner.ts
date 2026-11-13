@@ -46,6 +46,7 @@ import {
   assertGuardConfig,
   assertMockDirectories,
   assertDistinctOutputPaths,
+  assertOutputPathsOutsideMockDirectories,
   assertOutputPathVacant,
   assertSchemaColumns,
   assertSchemaTables,
@@ -682,6 +683,7 @@ export async function main(
     }
 
     // 所有路径检查都在首次数据库/文件写入之前完成。
+    assertOutputPathsOutsideMockDirectories(options);
     const credentialsPath = options.credentialsOut
       ? assertCredentialsPathOutsideRepository(options.credentialsOut)
       : null;

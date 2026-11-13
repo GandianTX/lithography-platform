@@ -167,6 +167,7 @@ export function formatHelp(): string {
     '  p0-documents 需要 ... + p0-reports；p1-* 需要 p0-org-accounts。',
     '单独执行某包时，未选择的前置包必须在目标库中已存在，否则在写入前拒绝。',
     '--credentials-out 只能与 p0-org-accounts 同时使用，且只导出本次创建或已核验的账号。',
+    '--credentials-out 和 --json-out 必须位于两个原件根目录之外，且不能占用原件目录的父路径。',
     '',
     '退出码：0 成功/无需写入；2 守卫拒绝；3 异主冲突；4 写入回滚；5 写入后校验失败；',
     '        6 事务已提交但收尾文件写入失败（数据不回滚）；',

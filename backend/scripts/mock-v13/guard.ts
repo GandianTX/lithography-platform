@@ -430,6 +430,38 @@ export function assertDistinctOutputPaths(credentialsPath: string, jsonOutPath: 
   }
 }
 
+function containsPath(directory: string, target: string): boolean {
+  const relative = path.relative(directory, target);
+  return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
+}
+
+/** 输出文件不能占用原件目录或其任一父路径，也不能写入原件目录内。 */
+export function assertOutputPathsOutsideMockDirectories(
+  options: Pick<
+    MockV13CliOptions,
+    'credentialsOut' | 'jsonOut' | 'mockFileDir' | 'referenceStorageDir'
+  >,
+): void {
+  const roots = [
+    ['--mock-file-dir', options.mockFileDir],
+    ['--reference-storage-dir', options.referenceStorageDir],
+  ] as const;
+  const outputs = [
+    ['--credentials-out', options.credentialsOut],
+    ['--json-out', options.jsonOut],
+  ] as const;
+  for (const [outputFlag, output] of outputs) {
+    if (output === null) continue;
+    for (const [rootFlag, root] of roots) {
+      if (containsPath(root, output) || containsPath(output, root)) {
+        throw new GuardViolationError(
+          `${outputFlag} 与 ${rootFlag} 路径冲突；输出必须是与原件目录分离的文件`,
+        );
+      }
+    }
+  }
+}
+
 /** 仓库根目录（用于阻止把凭据写到 Git 工作区）。 */
 export function resolveRepositoryRoot(): string {
   return path.resolve(__dirname, '../../..');

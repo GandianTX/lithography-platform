@@ -20,6 +20,7 @@ import {
   WRITE_ACK_PHRASE,
   assertCredentialsPathOutsideRepository,
   assertDistinctOutputPaths,
+  assertOutputPathsOutsideMockDirectories,
   assertGuardConfig,
   assertMockDirectories,
   assertOutputPathVacant,
@@ -462,6 +463,19 @@ describe('assertOutputPathVacant', () => {
     fs.writeFileSync(path.join(target, 'sentinel.txt'), '哨兵', 'utf8');
     expectGuardViolation(() => assertOutputPathVacant(target, '--json-out'), /已存在/u);
     expect(fs.readFileSync(path.join(target, 'sentinel.txt'), 'utf8')).toBe('哨兵');
+  });
+});
+
+describe('assertOutputPathsOutsideMockDirectories', () => {
+  it('允许名称相近的同级目录，以及两个独立的输出文件', () => {
+    expect(() =>
+      assertOutputPathsOutsideMockDirectories({
+        mockFileDir: '/tmp/mock-v13/files',
+        referenceStorageDir: '/tmp/mock-v13/reference',
+        credentialsOut: '/tmp/mock-v13/files-output/credentials.json',
+        jsonOut: '/tmp/mock-v13/reference-output/stats.json',
+      }),
+    ).not.toThrow();
   });
 });
 

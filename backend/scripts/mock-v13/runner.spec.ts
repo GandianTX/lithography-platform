@@ -595,6 +595,42 @@ describe('main 输出路径组合预检', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ['待生成 PNG', '--json-out', 'files/files/intake-a-in-progress.png', '--mock-file-dir'],
+    ['Mock 根目录', '--json-out', 'files', '--mock-file-dir'],
+    ['已有 PNG', '--credentials-out', 'files/files/existing.png', '--mock-file-dir'],
+    ['参考资料子路径', '--json-out', 'reference/./run.json', '--reference-storage-dir'],
+    ['原件根的父路径', '--json-out', '.', '--mock-file-dir'],
+  ])('%s：拒绝输出冲突，未连接、未写文件', async (scenario, flag, target, rootFlag) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-v13-root-output-'));
+    const envFile = writeEnvFile(tempDir);
+    const pngDir = path.join(tempDir, 'files', 'files');
+    const png = path.join(pngDir, 'existing.png');
+    const originalPng = mockPng();
+    try {
+      if (scenario === '已有 PNG' || scenario === '待生成 PNG') {
+        fs.mkdirSync(pngDir, { recursive: true });
+      }
+      if (scenario === '已有 PNG') fs.writeFileSync(png, originalPng);
+      const before = fs.readdirSync(tempDir, { recursive: true }).sort();
+      const args = buildArgs(tempDir, envFile, 'unused-credentials.json', 'unused-stats.json');
+      args.splice(args.indexOf('--credentials-out'), 4);
+      args.push(flag, `${tempDir}/${target}`);
+
+      const { code, stderr, createDataSource, createQueryRunner } =
+        await runAndCaptureConnectAttempts(args);
+
+      expect(code).toBe(2);
+      expect(stderr).toContain(`${flag} 与 ${rootFlag} 路径冲突`);
+      expect(createDataSource).not.toHaveBeenCalled();
+      expect(createQueryRunner).not.toHaveBeenCalled();
+      expect(fs.readdirSync(tempDir, { recursive: true }).sort()).toEqual(before);
+      if (scenario === '已有 PNG') expect(fs.readFileSync(png)).toEqual(originalPng);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('main 收尾与退出码', () => {
