@@ -483,6 +483,8 @@ export interface InitializationQueryRunner {
   commitTransaction(): Promise<void>;
   rollbackTransaction(): Promise<void>;
   release(): Promise<void>;
+  /** 可选：销毁本轮专用连接；BEGIN 未确认时禁止普通归池。 */
+  destroy?(): Promise<void> | void;
 }
 
 export interface InitializationTransactionOptions<T> {
@@ -490,7 +492,7 @@ export interface InitializationTransactionOptions<T> {
   readonly database: string;
   readonly logger: MigrationLogger;
   readonly sampleFilesDir: string | null;
-  /** 本轮成功取得句柄并登记对象身份的原件；只有明确回滚后才有资格回收。 */
+  /** 本轮成功取得句柄并登记对象身份的原件；只按事务终局报告，不自动删除。 */
   readonly claims: ReadonlyArray<DevSampleFileClaim>;
   readonly run: (manager: EntityManager) => Promise<T>;
   readonly probeReference?: (
@@ -516,10 +518,11 @@ async function probeSampleFileReference(
 }
 
 /**
- * 用本轮独占 QueryRunner 执行初始化事务，并按可证明的终局决定是否回收原件。
+ * 用本轮独占 QueryRunner 执行初始化事务，并按可证明的终局报告原件处置。
  *
  * 事务终局只有四种：未开始、已确认回滚、已确认提交、结果未知。
- * - 仅“明确收到 ROLLBACK 成功回执 + 文件归属已确认 + 引用探测未命中”才删除本轮原件；
+ * - 共享原件目录没有可证明的独占删除边界，任何终局都不按路径自动删除原件；
+ * - 明确回滚且引用探测未命中时仍保留文件，输出路径、事务终局与人工处置原因；
  * - COMMIT 已发出但回执丢失时，即使随后 ROLLBACK 返回成功，也不得当作原提交未生效；
  * - 回滚抛错、状态未知时保留原件，输出库名、事务阶段、待处置引用与主错误；
  * - 状态未知的连接不归还连接池；关闭/清理失败单独诊断，不覆盖主错误。
@@ -530,6 +533,8 @@ export async function runInitializationDataTransaction<T>(
   const queryRunner = options.dataSource.createQueryRunner() as InitializationQueryRunner;
   let state: InitializationTransactionState = 'NOT_STARTED';
   let phase: InitializationTransactionPhase = 'CONNECT';
+  let connected = false;
+  let beginAttempted = false;
   let transactionStarted = false;
   let commitAttempted = false;
   let mainError: unknown = null;
@@ -538,7 +543,10 @@ export async function runInitializationDataTransaction<T>(
 
   try {
     await queryRunner.connect();
+    connected = true;
     phase = 'BEGIN';
+    // 记录已尝试必须早于调用：BEGIN 可能已在服务端生效而调用方未收到回执。
+    beginAttempted = true;
     await queryRunner.startTransaction();
     transactionStarted = true;
     phase = 'CALLBACK';
@@ -549,7 +557,16 @@ export async function runInitializationDataTransaction<T>(
     state = 'COMMIT_CONFIRMED';
   } catch (error) {
     mainError = error;
-    if (transactionStarted && !commitAttempted) {
+    if (beginAttempted && !transactionStarted && !commitAttempted) {
+      // BEGIN 可能已在服务端生效：进入 UNKNOWN / BEGIN，禁止普通归池。
+      // 不能以 isTransactionActive 或退出后事务数反推 BEGIN 未生效。
+      state = 'UNKNOWN';
+      cleanupErrors.push(
+        `BEGIN 已尝试但未取得确认回执 connection=${connected ? 'ESTABLISHED' : 'NOT_ESTABLISHED'} ` +
+          `begin=ATTEMPTED_UNCONFIRMED transaction=UNCONFIRMED ` +
+          `state=UNKNOWN phase=BEGIN`,
+      );
+    } else if (transactionStarted && !commitAttempted) {
       phase = 'ROLLBACK';
       try {
         await queryRunner.rollbackTransaction();
@@ -569,11 +586,18 @@ export async function runInitializationDataTransaction<T>(
 
   if (mainError !== null && options.claims.length > 0 && options.sampleFilesDir !== null) {
     if (state !== 'ROLLBACK_CONFIRMED') {
+      const retainedPaths = options.claims.map((claim) => claimPaths(claim).join('|')).join(', ');
+      cleanupErrors.push(
+        `初始化事务未确认，保留本轮样例原件 state=${state} phase=${phase} paths=[${retainedPaths}] ` +
+          `原因=事务终局未确认且共享原件目录无独占删除边界，须人工核对后处置`,
+      );
       options.logger.error(
         `初始化事务未确认，保留本轮样例原件 database=${options.database} ` +
           `state=${state} phase=${phase} refs=[${options.claims
             .map((claim) => claim.storageReference)
-            .join(', ')}] mainError=${errorMessage(mainError)}`,
+            .join(', ')}] paths=[${retainedPaths}] ` +
+          `原因=事务终局未确认且共享原件目录无独占删除边界，须人工核对后处置 ` +
+          `mainError=${errorMessage(mainError)}`,
       );
     } else {
       const removeSampleFile = options.removeSampleFile ?? deleteDevSampleFile;
@@ -604,22 +628,30 @@ export async function runInitializationDataTransaction<T>(
         }
         try {
           const removal = await removeSampleFile(claim);
+          const paths = claimPaths(claim).join('|');
           if (removal === 'RETAINED') {
-            cleanupErrors.push(`原件未能安全回收，已保留现场 ${claim.filePath}`);
+            cleanupErrors.push(
+              `共享原件目录无独占删除边界，按安全策略保留原件 state=ROLLBACK_CONFIRMED ` +
+                `phase=ROLLBACK paths=[${paths}]；数据库已确认不再引用，仍须人工核对后处置`,
+            );
             options.logger.error(
-              `开发样例原件身份或目录归属无法确认，保留现场 file=${claim.filePath}`,
+              `开发样例原件按安全策略保留，待人工处置 database=${options.database} ` +
+                `state=ROLLBACK_CONFIRMED phase=ROLLBACK ` +
+                `storageReference=${claim.storageReference} paths=[${paths}] ` +
+                `原因=共享原件目录无法证明核对与删除之间目录项未被其他写入方替换`,
             );
           } else {
             options.logger.info(
-              `已回收本轮未被引用的开发样例原件 storageReference=${claim.storageReference}`,
+              `初始化事务已确认回滚，未发现待处置的开发样例原件 ` +
+                `storageReference=${claim.storageReference}`,
             );
           }
         } catch (deleteError) {
           cleanupErrors.push(
-            `原件补偿删除失败，已保留现场 ${claim.filePath}：${errorMessage(deleteError)}`,
+            `原件收尾处置失败，已保留现场 ${claim.filePath}：${errorMessage(deleteError)}`,
           );
           options.logger.error(
-            `开发样例原件补偿删除失败，存在需清理的孤儿文件 file=${claim.filePath}：${errorMessage(
+            `开发样例原件收尾处置失败，存在需人工处置的路径 file=${claim.filePath}：${errorMessage(
               deleteError,
             )}`,
           );
@@ -628,10 +660,33 @@ export async function runInitializationDataTransaction<T>(
     }
   }
 
+  if (state === 'COMMIT_CONFIRMED' && options.claims.length > 0) {
+    // 成功发布后的暂存硬链接不再自动 unlink：共享目录同样没有独占删除边界。
+    // 已确认提交时不把该保留计入清理失败，只报告路径供人工处置。
+    const stagingPaths = [...new Set(options.claims.map((claim) => claim.stagingPath))];
+    options.logger.info(
+      `初始化数据已确认提交，开发样例原件暂存硬链接按安全策略保留 ` +
+        `database=${options.database} state=COMMIT_CONFIRMED phase=COMMIT ` +
+        `paths=[${stagingPaths.join('|')}]`,
+    );
+  }
+
+  // 关闭句柄与删除文件是两件事：所有分支都在收尾决定后关闭本轮句柄。
+  for (const claim of options.claims) {
+    try {
+      await claim.close();
+    } catch (closeError) {
+      cleanupErrors.push(
+        `关闭原件句柄失败，已保留现场 ${claimPaths(claim).join('|')}：${errorMessage(closeError)}`,
+      );
+    }
+  }
+
   if (state === 'UNKNOWN') {
     const message = `初始化事务状态未确认，连接不归还连接池 database=${options.database} phase=${phase}`;
     cleanupErrors.push(message);
     options.logger.error(message);
+    await disposeUnconfirmedConnection(queryRunner, cleanupErrors, options.logger);
   } else {
     phase = 'RELEASE';
     try {
@@ -661,12 +716,60 @@ export async function runInitializationDataTransaction<T>(
   return result as T;
 }
 
+function claimPaths(claim: DevSampleFileClaim): string[] {
+  const paths = [claim.stagingPath, claim.finalPath].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  return [...new Set(paths)];
+}
+
+/**
+ * BEGIN 未确认或终局未知时，本轮专用连接不得普通 release 回池。
+ *
+ * 优先使用 QueryRunner 自身销毁能力，其次销毁其独占 databaseConnection；
+ * 两者都不可用时仅记录诊断并保留连接，由进程退出处置。
+ */
+async function disposeUnconfirmedConnection(
+  queryRunner: InitializationQueryRunner,
+  cleanupErrors: string[],
+  logger: MigrationLogger,
+): Promise<void> {
+  const ownDestroy =
+    typeof queryRunner.destroy === 'function'
+      ? () => queryRunner.destroy?.()
+      : null;
+  const connection = (
+    queryRunner as unknown as {
+      readonly databaseConnection?: { destroy?: () => Promise<void> | void };
+    }
+  ).databaseConnection;
+  const destroy =
+    ownDestroy ??
+    (typeof connection?.destroy === 'function'
+      ? () => connection.destroy?.()
+      : null);
+  if (destroy === null) {
+    const message = '无法销毁未确认的初始化专用连接，已保留连接不归池';
+    cleanupErrors.push(message);
+    logger.error(message);
+    return;
+  }
+  try {
+    await destroy();
+    logger.info('已销毁未确认的初始化专用连接，未执行普通归池');
+  } catch (destroyError) {
+    const message = `销毁未确认的初始化专用连接失败：${errorMessage(destroyError)}`;
+    cleanupErrors.push(message);
+    logger.error(message);
+  }
+}
+
 /**
  * 组织、管理员、开发账号与开发联调样例在同一事务中应用：任一步失败时都不留半成品。
  * 写入顺序固定为 组织 → 管理员 → 开发账号 → 业务样例，避免样例引用尚未创建的账号/公司。
  *
  * 样例原件只在取得排他句柄并登记对象身份后计入本轮；事务失败时由
- * `runInitializationDataTransaction` 根据可证明的终局决定回收或保留。
+ * `runInitializationDataTransaction` 保留文件并报告路径、终局与人工处置原因。
  */
 async function applyInitializationData(
   dataSource: DataSource,

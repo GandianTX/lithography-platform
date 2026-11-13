@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -388,6 +396,9 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     return {
       storageReference: reference,
       filePath: `/tmp/lithography_dev_v13_accept/${reference}`,
+      stagingPath: `/tmp/lithography_dev_v13_accept/${reference}`,
+      finalPath: `/tmp/lithography_dev_v13_accept/${reference}`,
+      published: true,
       identity: { device: BigInt(1), inode: BigInt(2) },
       ownership: {
         directory: '/tmp/lithography_dev_v13_accept',
@@ -396,7 +407,9 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
         markerPath: '/tmp/lithography_dev_v13_accept/.owner.json',
         markerIdentity: { device: BigInt(1), inode: BigInt(1) },
       },
-    };
+      currentIdentity: async () => ({ device: BigInt(1), inode: BigInt(2) }),
+      close: async () => undefined,
+    } as unknown as DevSampleFileClaim;
   }
 
   function makeRunner(): {
@@ -406,6 +419,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     readonly commit: jest.Mock;
     readonly rollback: jest.Mock;
     readonly release: jest.Mock;
+    readonly destroy: jest.Mock;
     readonly query: jest.Mock;
   } {
     const connect = jest.fn(async () => undefined);
@@ -413,6 +427,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     const commit = jest.fn(async () => undefined);
     const rollback = jest.fn(async () => undefined);
     const release = jest.fn(async () => undefined);
+    const destroy = jest.fn(async () => undefined);
     const query = jest.fn(async () => []);
     const runner = {
       manager: { query } as unknown as InitializationQueryRunner['manager'],
@@ -421,8 +436,9 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       commitTransaction: commit,
       rollbackTransaction: rollback,
       release,
+      destroy,
     };
-    return { runner, connect, start, commit, rollback, release, query };
+    return { runner, connect, start, commit, rollback, release, destroy, query };
   }
 
   const claims = [makeClaim(`${'a'.repeat(32)}.txt`), makeClaim(`${'b'.repeat(32)}.txt`)];
@@ -463,7 +479,11 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     jest.clearAllMocks();
   });
 
-  it.each([true, false])('部分写入后按回滚回执决定是否回收残件（确认=%s）', async (confirmed) => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it.each([true, false])('部分写入后无论回滚回执是否确认都不自动删除残件（确认=%s）', async (confirmed) => {
     const root = mkdtempSync(join(tmpdir(), 'dev-deploy-partial-'));
     try {
       const database = 'lithography_dev_v13_accept';
@@ -481,9 +501,11 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       const content = Buffer.from('sample');
       const main = new Error('partial write');
       const pending: DevSampleFileClaim[] = [];
-      const { runner, rollback, release } = makeRunner();
+      const { runner, rollback, release, destroy } = makeRunner();
       rollback.mockImplementationOnce(async () => {
-        expect(readFileSync(partial)).toEqual(content.subarray(0, 2));
+        const staged = (pending[0] as unknown as { stagingPath: string }).stagingPath;
+        expect(staged).not.toBe(partial);
+        expect(readFileSync(staged)).toEqual(content.subarray(0, 2));
         if (!confirmed) throw new Error('rollback lost');
       });
 
@@ -519,24 +541,39 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       expect(error).toBe(main);
       expect(rollback).toHaveBeenCalledTimes(1);
       expect(release).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+      expect(destroy).toHaveBeenCalledTimes(confirmed ? 0 : 1);
       expect(pending).toHaveLength(1);
-      expect(existsSync(partial)).toBe(!confirmed);
+      const claimView = pending[0] as unknown as {
+        stagingPath: string;
+        finalPath: string;
+        published: boolean;
+      };
+      expect(claimView.published).toBe(false);
+      expect(claimView.finalPath).toBe(partial);
+      expect(existsSync(partial)).toBe(false);
       expect(readFileSync(existing, 'utf8')).toBe('预存文件');
-      if (!confirmed) {
-        expect(readFileSync(partial)).toEqual(content.subarray(0, 2));
-        expect(error.cleanupErrors?.join(' | ')).toContain(partial);
-        expect(error.cleanupErrors?.join(' | ')).toContain('rollback lost');
+      expect(readFileSync(claimView.stagingPath)).toEqual(content.subarray(0, 2));
+      const notes = error.cleanupErrors?.join(' | ') ?? '';
+      if (confirmed) {
+        expect(notes).toContain(claimView.stagingPath);
+        expect(notes).toContain('state=ROLLBACK_CONFIRMED');
+        expect(notes).toContain('共享原件目录无独占删除边界');
+      } else {
+        expect(notes).toContain(claimView.stagingPath);
+        expect(notes).toContain('rollback lost');
+        expect(notes).toContain('state=UNKNOWN');
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('明确回滚成功后只回收本轮已登记原件，并保留主错误', async () => {
+  it('确认回滚后只探测本轮已登记原件的引用，不再自动删除并关闭句柄', async () => {
     const { runner, release } = makeRunner();
     const main = new Error('样例插入失败');
-    const removeSampleFile = jest.fn(async () => 'DELETED' as const);
+    const removeSampleFile = jest.fn(async () => 'RETAINED' as const);
     const probeReference = jest.fn(async () => false);
+    const closeSpies = claims.map((claim) => jest.spyOn(claim, 'close'));
 
     const error = await captureError(
       runInitializationDataTransaction(
@@ -559,6 +596,18 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     ).toEqual(claims.map((claim) => claim.storageReference));
     expect(probeReference).toHaveBeenCalledTimes(2);
     expect(release).toHaveBeenCalledTimes(1);
+    for (const spy of closeSpies) {
+      expect(spy).toHaveBeenCalledTimes(1);
+    }
+    const notes = error.cleanupErrors?.join(' | ') ?? '';
+    for (const claim of claims) {
+      expect(notes).toContain(claim.filePath);
+    }
+    expect(notes).toContain('state=ROLLBACK_CONFIRMED');
+    expect(notes).toContain('共享原件目录无独占删除边界');
+    expect(logger.error.mock.calls.map((call) => String(call[0])).join(' | ')).toContain(
+      '待人工处置',
+    );
   });
 
   it('回滚失败但别处查不到引用时仍保留原件，且不归还连接', async () => {
@@ -590,8 +639,73 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     );
   });
 
+  it('成功发布后 COMMIT 回执丢失时保留最终路径与预存文件', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-commit-unknown-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const storageReference = `${'c'.repeat(32)}.txt`;
+      const target = join(directory, storageReference);
+      const existing = join(directory, `${'d'.repeat(32)}.txt`);
+      writeFileSync(existing, '预存文件');
+      const content = Buffer.from('committed sample');
+      const pending: DevSampleFileClaim[] = [];
+      const { runner, commit, release, destroy } = makeRunner();
+      commit.mockRejectedValueOnce(new Error('commit acknowledgement lost'));
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: pending,
+          removeSampleFile: deleteDevSampleFile,
+          probeReference: async () => false,
+          run: async () =>
+            writeDevSampleFile(
+              directory,
+              {
+                originalFilename: 'sample.txt',
+                mimeType: 'text/plain',
+                byteSize: content.length,
+                sha256: sha256Of(content),
+                content,
+              },
+              { storageReference, ownership, onClaim: (claim) => pending.push(claim) },
+            ),
+        }),
+      );
+
+      expect(error.message).toBe('commit acknowledgement lost');
+      expect(release).not.toHaveBeenCalled();
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(pending).toHaveLength(1);
+      const claimView = pending[0] as unknown as {
+        stagingPath: string;
+        finalPath: string;
+        published: boolean;
+      };
+      expect(claimView.published).toBe(true);
+      expect(claimView.finalPath).toBe(target);
+      expect(readFileSync(target)).toEqual(content);
+      // 成功发布后的暂存硬链接同样按安全策略保留，不再自动 unlink。
+      expect(readFileSync(claimView.stagingPath)).toEqual(content);
+      expect(readFileSync(existing, 'utf8')).toBe('预存文件');
+      expect(error.cleanupErrors?.join(' | ')).toContain(target);
+      expect(error.cleanupErrors?.join(' | ')).toContain('state=UNKNOWN');
+      expect(error.cleanupErrors?.join(' | ')).toContain('phase=COMMIT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('COMMIT 已发出但回执丢失时保留原件，不用 ROLLBACK 反推未提交', async () => {
-    const { runner, commit, rollback, release } = makeRunner();
+    const { runner, commit, rollback, release, destroy } = makeRunner();
     const commitError = new Error('commit acknowledgement lost');
     commit.mockRejectedValueOnce(commitError);
     const removeSampleFile = jest.fn(async () => 'DELETED' as const);
@@ -609,6 +723,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     expect(removeSampleFile).not.toHaveBeenCalled();
     expect(rollback).not.toHaveBeenCalled();
     expect(release).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledTimes(1);
     expect(error.cleanupErrors?.join(' | ')).toContain('COMMIT 已发出但结果未知');
   });
 
@@ -661,6 +776,124 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     expect(error.cleanupErrors?.join(' | ')).toContain('仍被正式资料引用');
   });
 
+  it('确认回滚但已发布原件仍被正式引用时保留最终路径', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-referenced-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const storageReference = `${'e'.repeat(32)}.txt`;
+      const target = join(directory, storageReference);
+      const existing = join(directory, `${'f'.repeat(32)}.txt`);
+      writeFileSync(existing, '预存文件');
+      const content = Buffer.from('referenced sample');
+      const main = new Error('样例插入失败');
+      const pending: DevSampleFileClaim[] = [];
+      const { runner, release } = makeRunner();
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: pending,
+          removeSampleFile: deleteDevSampleFile,
+          probeReference: async () => true,
+          run: async () => {
+            await writeDevSampleFile(
+              directory,
+              {
+                originalFilename: 'sample.txt',
+                mimeType: 'text/plain',
+                byteSize: content.length,
+                sha256: sha256Of(content),
+                content,
+              },
+              { storageReference, ownership, onClaim: (claim) => pending.push(claim) },
+            );
+            throw main;
+          },
+        }),
+      );
+
+      expect(error).toBe(main);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(readFileSync(target)).toEqual(content);
+      expect(readFileSync(existing, 'utf8')).toBe('预存文件');
+      const claimView = pending[0] as unknown as { stagingPath: string };
+      expect(readFileSync(claimView.stagingPath)).toEqual(content);
+      expect(error.cleanupErrors?.join(' | ')).toContain('仍被正式资料引用');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('确认回滚且无引用时也不删除已发布原件，路径替换物保持原字节', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-retain-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const storageReference = `${'a'.repeat(32)}.txt`;
+      const target = join(directory, storageReference);
+      const content = Buffer.from('published sample');
+      const replacement = Buffer.from('核对后替换的最终路径内容\n', 'utf8');
+      const main = new Error('样例插入失败');
+      const pending: DevSampleFileClaim[] = [];
+      const { runner, release } = makeRunner();
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: pending,
+          removeSampleFile: deleteDevSampleFile,
+          probeReference: async () => false,
+          run: async () => {
+            await writeDevSampleFile(
+              directory,
+              {
+                originalFilename: 'sample.txt',
+                mimeType: 'text/plain',
+                byteSize: content.length,
+                sha256: sha256Of(content),
+                content,
+              },
+              { storageReference, ownership, onClaim: (claim) => pending.push(claim) },
+            );
+            // 发布后、事务收尾之前替换最终路径：数据库虽已确认回滚且无引用，
+            // 也不能按路径删除当前目录项。
+            unlinkSync(target);
+            writeFileSync(target, replacement);
+            throw main;
+          },
+        }),
+      );
+
+      expect(error).toBe(main);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(readFileSync(target)).toEqual(replacement);
+      expect(sha256Of(readFileSync(target))).toBe(sha256Of(replacement));
+      const claimView = pending[0] as unknown as { stagingPath: string };
+      expect(readFileSync(claimView.stagingPath)).toEqual(content);
+      const notes = error.cleanupErrors?.join(' | ') ?? '';
+      expect(notes).toContain(target);
+      expect(notes).toContain('state=ROLLBACK_CONFIRMED');
+      expect(notes).toContain('共享原件目录无独占删除边界');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('清理与连接收尾失败单独诊断，不覆盖主错误', async () => {
     const { runner, release } = makeRunner();
     const main = new Error('样例插入失败');
@@ -686,29 +919,58 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     expect(error).toBe(main);
     expect(error.message).toBe('样例插入失败');
     const notes = error.cleanupErrors?.join(' | ') ?? '';
-    expect(notes).toContain('原件补偿删除失败');
+    expect(notes).toContain('原件收尾处置失败');
     expect(notes).toContain('释放初始化查询连接失败');
   });
 
-  it('事务未开始时安全释放连接且不补偿', async () => {
-    const { runner, start, rollback, release } = makeRunner();
-    const startError = new Error('begin failed');
+  it('BEGIN 尝试抛错时进入未确认状态：不执行回调、不普通释放', async () => {
+    const { runner, start, rollback, release, destroy } = makeRunner();
+    const startError = new Error('begin receipt lost');
     start.mockRejectedValueOnce(startError);
     const removeSampleFile = jest.fn(async () => 'DELETED' as const);
+    const run = jest.fn(async () => ({ ok: true }));
 
     const error = await captureError(
       runInitializationDataTransaction(
         options(runner, {
-          run: async () => ({ ok: true }),
+          run,
           removeSampleFile,
         }),
       ),
     );
 
     expect(error).toBe(startError);
+    expect(run).not.toHaveBeenCalled();
     expect(rollback).not.toHaveBeenCalled();
     expect(removeSampleFile).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledTimes(1);
+    const notes = error.cleanupErrors?.join(' | ') ?? '';
+    expect(notes).toContain('begin=ATTEMPTED_UNCONFIRMED');
+    expect(notes).toContain('state=UNKNOWN phase=BEGIN');
+  });
+
+  it('BEGIN 未确认时专用连接关闭失败仍保留主错误', async () => {
+    const { runner, start, release, destroy } = makeRunner();
+    const startError = new Error('begin receipt lost');
+    const destroyError = new Error('connection destroy failed');
+    start.mockRejectedValueOnce(startError);
+    destroy.mockRejectedValueOnce(destroyError);
+
+    const error = await captureError(
+      runInitializationDataTransaction(
+        options(runner, {
+          run: async () => ({ ok: true }),
+        }),
+      ),
+    );
+
+    expect(error).toBe(startError);
+    expect(error.message).toBe('begin receipt lost');
+    expect(release).not.toHaveBeenCalled();
+    const notes = error.cleanupErrors?.join(' | ') ?? '';
+    expect(notes).toContain('begin=ATTEMPTED_UNCONFIRMED');
+    expect(notes).toContain('connection destroy failed');
   });
 
   it('确认提交后返回结果并正常释放连接', async () => {
@@ -719,6 +981,21 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     expect(result).toEqual({ ok: true });
     expect(commit).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('确认提交后报告按安全策略保留的暂存硬链接，且不当作清理失败', async () => {
+    const { runner } = makeRunner();
+    const result = await runInitializationDataTransaction(
+      options(runner, { run: async () => ({ ok: true }) }),
+    );
+
+    expect(result).toEqual({ ok: true });
+    const messages = logger.info.mock.calls.map((call) => String(call[0])).join(' | ');
+    expect(messages).toContain('暂存硬链接按安全策略保留');
+    expect(messages).toContain('state=COMMIT_CONFIRMED');
+    for (const claim of claims) {
+      expect(messages).toContain(claim.stagingPath);
+    }
   });
 
   it('确认提交后释放失败必须单独诊断，不静默当作成功', async () => {
@@ -767,7 +1044,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     expect(error).toBe(main);
     const notes = error.cleanupErrors ?? [];
     expect(notes[0]).toContain(retainedPath);
-    expect(notes.join(' | ')).toContain('原件补偿删除失败');
+    expect(notes.join(' | ')).toContain('原件收尾处置失败');
   });
 });
 

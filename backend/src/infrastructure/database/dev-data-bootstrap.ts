@@ -186,7 +186,7 @@ export interface DevDataBootstrapOptions {
   readonly sampleFilesDir: string | null;
   /** 已核对的目标实例 UUID + 精确库名目录归属；缺失时不允许写入原件。 */
   readonly directoryOwnership?: DevSampleDirectoryOwnership | null;
-  /** 本轮实际新写入的原件所有权；供事务失败后的精确回收使用。 */
+  /** 本轮实际新写入的原件所有权；供事务失败后的保留报告使用。 */
   readonly createdSampleFiles?: DevSampleFileClaim[];
 }
 

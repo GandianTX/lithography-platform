@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+// 默认全部委托真实实现，仅让 `lstat` 可在“核对之后、删除之前”插入确定性替换。
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof import('node:fs/promises')>('node:fs/promises');
+  return { ...actual, lstat: jest.fn(actual.lstat) };
+});
 
 import {
   assertDevSampleFilesDirectory,
@@ -20,6 +27,15 @@ const DATABASE = 'lithography_dev_v13_accept';
 const SERVER_UUID = '6ccd2f7e-1b0f-11ee-be56-0242ac120002';
 const CONTENT = Buffer.from('开发联调样例原件\n，仅用于本地验收。\n', 'utf8');
 const SEED_KEY = 'dev-reference-document-a';
+
+type RuntimeClaim = DevSampleFileClaim & {
+  readonly published: boolean;
+  close(): Promise<void>;
+};
+
+function runtimeClaim(claim: DevSampleFileClaim | null): RuntimeClaim {
+  return claim as unknown as RuntimeClaim;
+}
 
 function makeSpec(): DevSampleFileSpec {
   return {
@@ -114,7 +130,39 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     return claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID);
   }
 
-  it('同 seed_key 派生稳定引用，写入后回读通过并可精确回收', async () => {
+  it('句柄写入后暂存路径被替换时拒绝发布且保留替换物', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    let recorded: DevSampleFileClaim | null = null;
+    const sentinel = path.join(dir, 'keep.txt');
+    fs.writeFileSync(sentinel, '预存文件');
+    try {
+      await expect(
+        writeDevSampleFile(dir, makeSpec(), {
+          storageReference: reference,
+          ownership: owner,
+          onClaim: (claim) => {
+            recorded = claim;
+          },
+          writeContent: async (handle, content) => {
+            await handle.writeFile(content);
+            const staging = runtimeClaim(recorded).stagingPath;
+            fs.renameSync(staging, `${staging}.original`);
+            fs.writeFileSync(staging, '替换物');
+          },
+        }),
+      ).rejects.toThrow(/暂存路径已被替换/);
+      expect(runtimeClaim(recorded).published).toBe(false);
+      expect(fs.existsSync(path.join(dir, reference))).toBe(false);
+      expect(fs.readFileSync(runtimeClaim(recorded).stagingPath, 'utf8')).toBe('替换物');
+      expect(fs.readFileSync(sentinel, 'utf8')).toBe('预存文件');
+    } finally {
+      await runtimeClaim(recorded).close();
+    }
+  });
+
+  it('同 seed_key 派生稳定引用，写入后回读通过且不自动删除', async () => {
     const { dir } = makeTargetDir();
     const owner = await ownership(dir);
     const spec = makeSpec();
@@ -128,10 +176,16 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     });
     expect(storageReference).toBe(reference);
     expect(claim).not.toBeNull();
+    expect(runtimeClaim(claim).published).toBe(true);
     expect(await verifyDevSampleFile(dir, reference, spec)).toBe('VERIFIED');
-    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('DELETED');
-    expect(await verifyDevSampleFile(dir, reference, spec)).toBe('MISSING');
-    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('DELETED');
+    const stagingPath = runtimeClaim(claim).stagingPath;
+    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
+    expect(await verifyDevSampleFile(dir, reference, spec)).toBe('VERIFIED');
+    expect(fs.readFileSync(stagingPath)).toEqual(CONTENT);
+    await runtimeClaim(claim).close();
+    // 句柄关闭也不改变“共享目录不自动删除”的结论。
+    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
+    expect(await verifyDevSampleFile(dir, reference, spec)).toBe('VERIFIED');
   });
 
   it('排他创建遇到 EEXIST 时保留既有文件且字节不变', async () => {
@@ -147,10 +201,11 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe('原有字节');
   });
 
-  it('部分写入失败时关闭句柄并保留已登记的残件供事务收尾', async () => {
+  it('部分写入失败时最终路径不得出现半截文件，暂存残件供事务收尾', async () => {
     const { dir } = makeTargetDir();
     const owner = await ownership(dir);
     const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const target = path.join(dir, reference);
     let claimed: DevSampleFileClaim | null = null;
 
     await expect(
@@ -167,7 +222,27 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
       }),
     ).rejects.toThrow(/partial write/);
     expect(claimed).not.toBeNull();
-    expect(fs.readFileSync(path.join(dir, reference))).toEqual(CONTENT.subarray(0, 2));
+    const claim = runtimeClaim(claimed);
+    expect(claim.published).toBe(false);
+    expect(claim.filePath).not.toBe(target);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.readFileSync(claim.filePath)).toEqual(CONTENT.subarray(0, 2));
+    await claim.close();
+  });
+
+  it('关闭句柄后的身份快照不能单独授权删除（替身反例）', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    const target = path.join(dir, reference);
+    // 先关闭句柄，旧实现仅凭关闭前保存的 dev+ino 仍会删除；新实现必须保留。
+    await runtimeClaim(claim).close();
+    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
+    expect(fs.readFileSync(target)).toEqual(CONTENT);
   });
 
   it('取得句柄后身份登记失败时保留现场并报告路径', async () => {
@@ -192,9 +267,26 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
       error = thrown;
     }
     expect(claimed).toBeNull();
-    expect(fs.existsSync(path.join(dir, reference))).toBe(true);
+    expect(fs.existsSync(path.join(dir, reference))).toBe(false);
     const notes = (error as Error & { cleanupErrors?: ReadonlyArray<string> }).cleanupErrors ?? [];
-    expect(notes.join(' | ')).toContain(path.join(dir, reference));
+    expect(notes.join(' | ')).toContain('未登记本轮原件归属');
+  });
+
+  it('删除原对象后立即同路径重建时不得删除替换物（文件系统实测）', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    const target = path.join(dir, reference);
+    fs.unlinkSync(target);
+    fs.writeFileSync(target, '同路径重建物', 'utf8');
+
+    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
+    expect(fs.readFileSync(target, 'utf8')).toBe('同路径重建物');
+    await runtimeClaim(claim).close();
   });
 
   it('目标被替换后拒绝删除替换物', async () => {
@@ -206,18 +298,110 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
       ownership: owner,
     });
     const target = path.join(dir, reference);
+    const replacement = Buffer.from('替换物', 'utf8');
     fs.renameSync(target, `${target}.orig`);
-    fs.writeFileSync(target, '替换物', 'utf8');
+    fs.writeFileSync(target, replacement);
 
     await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
-    expect(fs.readFileSync(target, 'utf8')).toBe('替换物');
+    expect(fs.readFileSync(target)).toEqual(replacement);
+    expect(sha256Of(fs.readFileSync(target))).toBe(sha256Of(replacement));
+    await runtimeClaim(claim).close();
+  });
+
+  it('最终路径在核对之后、删除之前被替换时，替换物字节与哈希不变', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    const target = path.join(dir, reference);
+    const stagingPath = runtimeClaim(claim).stagingPath;
+    const replacement = Buffer.from('核对后替换的最终路径内容\n', 'utf8');
+    let swapped = false;
+    const lstatMock = fsp.lstat as jest.MockedFunction<typeof fsp.lstat>;
+    const realLstat = jest.requireActual<typeof import('node:fs/promises')>(
+      'node:fs/promises',
+    ).lstat;
+    lstatMock.mockImplementation((async (candidate: fs.PathLike) => {
+      const stat = await realLstat(candidate);
+      if (!swapped && path.resolve(String(candidate)) === target) {
+        // 模拟核对通过之后、删除动作之前其他写入方替换目录项。
+        swapped = true;
+        fs.unlinkSync(target);
+        fs.writeFileSync(target, replacement);
+      }
+      return stat;
+    }) as typeof fsp.lstat);
+    try {
+      await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
+    } finally {
+      lstatMock.mockImplementation(realLstat);
+    }
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(target)).toEqual(replacement);
+    expect(sha256Of(fs.readFileSync(target))).toBe(sha256Of(replacement));
+    expect(fs.readFileSync(stagingPath)).toEqual(CONTENT);
+    await runtimeClaim(claim).close();
+  });
+
+  it('暂存路径在核对之后、删除之前被替换时，替换物字节与哈希不变', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    let claimed: DevSampleFileClaim | null = null;
+    await expect(
+      writeDevSampleFile(dir, makeSpec(), {
+        storageReference: reference,
+        ownership: owner,
+        onClaim: (claim) => {
+          claimed = claim;
+        },
+        writeContent: async (handle) => {
+          await handle.write(CONTENT.subarray(0, 2));
+          throw new Error('partial write');
+        },
+      }),
+    ).rejects.toThrow(/partial write/);
+    const claim = runtimeClaim(claimed);
+    expect(claim.published).toBe(false);
+    const stagingPath = claim.stagingPath;
+    const replacement = Buffer.from('核对后替换的暂存路径内容\n', 'utf8');
+    let swapped = false;
+    const lstatMock = fsp.lstat as jest.MockedFunction<typeof fsp.lstat>;
+    const realLstat = jest.requireActual<typeof import('node:fs/promises')>(
+      'node:fs/promises',
+    ).lstat;
+    lstatMock.mockImplementation((async (candidate: fs.PathLike) => {
+      const stat = await realLstat(candidate);
+      if (!swapped && path.resolve(String(candidate)) === stagingPath) {
+        swapped = true;
+        fs.unlinkSync(stagingPath);
+        fs.writeFileSync(stagingPath, replacement);
+      }
+      return stat;
+    }) as typeof fsp.lstat);
+    try {
+      await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
+    } finally {
+      lstatMock.mockImplementation(realLstat);
+    }
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(stagingPath)).toEqual(replacement);
+    expect(sha256Of(fs.readFileSync(stagingPath))).toBe(sha256Of(replacement));
+    await claim.close();
   });
 
   it('同目标同目录重跑不覆盖、不新增文件', async () => {
     const { dir } = makeTargetDir();
     const owner = await ownership(dir);
     const reference = deriveDevSampleStorageReference(SEED_KEY);
-    await writeDevSampleFile(dir, makeSpec(), { storageReference: reference, ownership: owner });
+    const first = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    await runtimeClaim(first.claim).close();
     const before = fs.readdirSync(dir).sort();
 
     await expect(
@@ -231,7 +415,11 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     const { dir } = makeTargetDir();
     const owner = await ownership(dir);
     const reference = deriveDevSampleStorageReference(SEED_KEY);
-    await writeDevSampleFile(dir, makeSpec(), { storageReference: reference, ownership: owner });
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    await runtimeClaim(claim).close();
     fs.writeFileSync(path.join(dir, reference), 'tampered', 'utf8');
     expect(await verifyDevSampleFile(dir, reference, makeSpec())).toBe('MISMATCH');
   });
