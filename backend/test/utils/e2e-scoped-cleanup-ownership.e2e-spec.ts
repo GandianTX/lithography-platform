@@ -2760,9 +2760,18 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
       ownership: driftLedger,
     });
     const driftId = requireOrganizationId(driftFirst, driftCode);
+    // 外层台账先登记实际创建事实：即使后续断言中断，afterEach 也能按精确 ID 回收
+    recordOwnedResource(testLedger, 'organization', driftId, {
+      organizationCode: driftCode,
+      name: 'G13B 受管标记漂移组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+      isManagedCompany: true,
+    });
     const driftFactsBefore = driftLedger.facts.organization.get(driftId);
 
     await organizationRepository.update({ id: driftId }, { isManagedCompany: false });
+    updateOwnedExpectation(testLedger, 'organization', driftId, { isManagedCompany: false });
     const driftSnapshot = await readOrganizationFields(dataSource, driftId);
     expect(driftSnapshot?.isManagedCompany).toBe(false);
 
@@ -2777,6 +2786,7 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
 
     // 恢复受管标记后正例：返回同一 ID 且不重复登记
     await organizationRepository.update({ id: driftId }, { isManagedCompany: true });
+    updateOwnedExpectation(testLedger, 'organization', driftId, { isManagedCompany: true });
     const driftRestored = await seedTestOrganizations({
       dataSource,
       organizations: [driftSpec],
@@ -2787,10 +2797,12 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
 
     // ---- A2. 状态漂移：受管标记以外的事实同样参与核验 ----
     await organizationRepository.update({ id: driftId }, { status: 'DISABLED' });
+    updateOwnedExpectation(testLedger, 'organization', driftId, { status: 'DISABLED' });
     await expect(
       seedTestOrganizations({ dataSource, organizations: [driftSpec], ownership: driftLedger }),
     ).rejects.toThrow(/status/);
     await organizationRepository.update({ id: driftId }, { status: 'ACTIVE' });
+    updateOwnedExpectation(testLedger, 'organization', driftId, { status: 'ACTIVE' });
 
     // 恢复预期后按台账受保护回收，零残留
     await runGuardedSpecCleanup({ dataSource, owned: driftLedger, helper: 'G13B 漂移恢复后回收' });
@@ -2812,8 +2824,28 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
     });
     const missingId = requireOrganizationId(missingFirst, missingCode);
     const missingFactsBefore = missingLedger.facts.organization.get(missingId);
+    recordOwnedResource(testLedger, 'organization', missingId, {
+      organizationCode: missingCode,
+      name: 'G13B 缺行组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+      isManagedCompany: true,
+    });
 
-    await organizationRepository.delete({ id: missingId });
+    // 为制造「已登记 ID 缺行」，用专用台账走受保护入口精确撤掉本次组织
+    const missingRemovalLedger = createOwnedResourceLedger();
+    recordOwnedResource(missingRemovalLedger, 'organization', missingId, {
+      organizationCode: missingCode,
+      name: 'G13B 缺行组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+      isManagedCompany: true,
+    });
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: missingRemovalLedger,
+      helper: 'G13B 撤掉缺行场景原组织',
+    });
     expect(await readOrganizationFields(dataSource, missingId)).toBeNull();
 
     await expect(
@@ -2833,6 +2865,14 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
       kind: 'CLIENT',
       isManagedCompany: true,
     });
+    // 替代行对被测台账是外部资源：只进入外层台账，由 afterEach 受保护回收
+    recordOwnedResource(testLedger, 'organization', replacementId, {
+      organizationCode: missingCode,
+      name: 'G13B 同码替代外部组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+      isManagedCompany: true,
+    });
     const replacementBefore = await readOrganizationFields(dataSource, replacementId);
 
     await expect(
@@ -2850,9 +2890,5 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
     // 只会按台账尝试删除原 ID（行缺失，影响 0 行）；替代行不在台账，绝不参与删除
     expect(counted.stats.deleteCount).toBe(1);
     expect(await readOrganizationFields(dataSource, replacementId)).toEqual(replacementBefore);
-
-    // 替代行由测试外层按精确 ID 删除
-    await organizationRepository.delete({ id: replacementId });
-    expect(await readOrganizationFields(dataSource, replacementId)).toBeNull();
   });
 });
