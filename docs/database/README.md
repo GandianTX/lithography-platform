@@ -11,7 +11,7 @@
 
 ## 近期验收
 
-- 工程师自助注册与组织审核：[设计与验收记录](./self-registration-engineer-approval-acceptance-20261029.md)
+- 工程师自助注册与组织审核：[2026-10-29 历史设计与验收记录](./self-registration-engineer-approval-acceptance-20261029.md)
 
 ## 事实来源
 
