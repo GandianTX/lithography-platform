@@ -506,6 +506,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error), { cause: error });
+}
+
 async function probeSampleFileReference(
   storageReference: string,
   queryRunner: InitializationQueryRunner,
@@ -735,19 +739,14 @@ async function disposeUnconfirmedConnection(
   logger: MigrationLogger,
 ): Promise<void> {
   const ownDestroy =
-    typeof queryRunner.destroy === 'function'
-      ? () => queryRunner.destroy?.()
-      : null;
+    typeof queryRunner.destroy === 'function' ? () => queryRunner.destroy?.() : null;
   const connection = (
     queryRunner as unknown as {
       readonly databaseConnection?: { destroy?: () => Promise<void> | void };
     }
   ).databaseConnection;
   const destroy =
-    ownDestroy ??
-    (typeof connection?.destroy === 'function'
-      ? () => connection.destroy?.()
-      : null);
+    ownDestroy ?? (typeof connection?.destroy === 'function' ? () => connection.destroy?.() : null);
   if (destroy === null) {
     const message = '无法销毁未确认的初始化专用连接，已保留连接不归池';
     cleanupErrors.push(message);
@@ -810,50 +809,85 @@ async function applyInitializationData(
   }
 
   const createdSampleFiles: DevSampleFileClaim[] = [];
-  return runInitializationDataTransaction({
-    dataSource,
-    database: config.database,
-    logger,
-    sampleFilesDir: initialization.devSampleFilesDir,
-    claims: createdSampleFiles,
-    run: async (manager) => {
-      const organizations = initialization.organizationBootstrap
-        ? await applyOrganizationBootstrap(manager, initialization.organizationBootstrap)
-        : null;
+  let mainError: unknown = null;
+  let result: InitializationDataResult | null = null;
+  try {
+    result = await runInitializationDataTransaction({
+      dataSource,
+      database: config.database,
+      logger,
+      sampleFilesDir: initialization.devSampleFilesDir,
+      claims: createdSampleFiles,
+      run: async (manager) => {
+        const organizations = initialization.organizationBootstrap
+          ? await applyOrganizationBootstrap(manager, initialization.organizationBootstrap)
+          : null;
 
-      const admins =
-        initialization.adminBootstrap === null
-          ? null
-          : await applyAdminBootstrap(
-              dataSource,
-              initialization.adminBootstrap,
-              {
+        const admins =
+          initialization.adminBootstrap === null
+            ? null
+            : await applyAdminBootstrap(
+                dataSource,
+                initialization.adminBootstrap,
+                {
+                  fieldEncryptionKey: config.fieldEncryptionKey,
+                  fieldEncryptionIv: config.fieldEncryptionIv,
+                },
+                manager,
+              );
+
+        const devAccounts =
+          initialization.devAccounts === null
+            ? null
+            : await applyDevAccountBootstrap(manager, initialization.devAccounts, {
                 fieldEncryptionKey: config.fieldEncryptionKey,
                 fieldEncryptionIv: config.fieldEncryptionIv,
-              },
-              manager,
-            );
+              });
 
-      const devAccounts =
-        initialization.devAccounts === null
-          ? null
-          : await applyDevAccountBootstrap(manager, initialization.devAccounts, {
-              fieldEncryptionKey: config.fieldEncryptionKey,
-              fieldEncryptionIv: config.fieldEncryptionIv,
-            });
+        const devData =
+          initialization.devData === null
+            ? null
+            : await applyDevDataBootstrap(manager, initialization.devData, {
+                sampleFilesDir: initialization.devSampleFilesDir,
+                directoryOwnership,
+                createdSampleFiles,
+              });
 
-      const devData =
-        initialization.devData === null
-          ? null
-          : await applyDevDataBootstrap(manager, initialization.devData, {
-              sampleFilesDir: initialization.devSampleFilesDir,
-              directoryOwnership,
-              createdSampleFiles,
-            });
+        return { organizations, admins, devAccounts, devData };
+      },
+    });
+  } catch (error) {
+    mainError = error;
+  }
 
-      return { organizations, admins, devAccounts, devData };
-    },
-  });
+  let ownershipCloseError: unknown = null;
+  if (directoryOwnership !== null) {
+    try {
+      await directoryOwnership.close();
+    } catch (error) {
+      ownershipCloseError = error;
+    }
+  }
+
+  if (mainError !== null) {
+    if (ownershipCloseError !== null) {
+      throw toError(
+        attachCleanupErrors(mainError, [
+          `关闭开发样例原件目录句柄失败：${errorMessage(ownershipCloseError)}`,
+        ]),
+      );
+    }
+    throw toError(mainError);
+  }
+  if (ownershipCloseError !== null) {
+    throw new MigrationCleanupError([
+      `关闭开发样例原件目录句柄失败：${errorMessage(ownershipCloseError)}`,
+    ]);
+  }
+  if (result === null) {
+    throw new Error('初始化数据未产生结果且未记录主因');
+  }
+  return result;
 }
 
 function businessTableNames(tables: ReadonlyArray<string>): ReadonlyArray<string> {

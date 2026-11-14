@@ -615,6 +615,7 @@ describe('参考资料稳定身份（不连接实库）', () => {
     expect(persisted.storage_reference).toBe(reference);
     expect(fs.readdirSync(dir).sort()).toEqual(beforeFiles);
     expect(sha256Of(fs.readFileSync(path.join(dir, reference)))).toBe(beforeHash);
+    await ownership.close();
   });
 
   it('模板标题变化但 seed_key 不变时仍按稳定引用保持不变', async () => {
@@ -639,6 +640,7 @@ describe('参考资料稳定身份（不连接实库）', () => {
     expect(rerun[0]).toMatchObject({ outcome: 'UNCHANGED', id: persisted.id });
     expect(db.rows).toHaveLength(1);
     expect(persisted.title).toBe(seed.title);
+    await ownership.close();
   });
 
   it('异主命中稳定引用时拒绝且不改库、不写文件', async () => {
@@ -673,6 +675,7 @@ describe('参考资料稳定身份（不连接实库）', () => {
     expect(db.rows).toHaveLength(1);
     expect(db.inserts).toHaveLength(0);
     expect(fs.readdirSync(dir).sort()).toEqual(before);
+    await ownership.close();
   });
 
   it('旧验收库随机引用按标题命中时拒绝自动认领，也不重跑另造', async () => {
@@ -706,6 +709,7 @@ describe('参考资料稳定身份（不连接实库）', () => {
     expect(db.rows).toHaveLength(1);
     expect(db.inserts).toHaveLength(0);
     expect(fs.readdirSync(dir).sort()).toEqual(before);
+    await ownership.close();
   });
 
   it('旧现场已改名但同主同原件哈希一致时仍拒绝另造', async () => {
@@ -744,5 +748,6 @@ describe('参考资料稳定身份（不连接实库）', () => {
     expect(db.rows).toHaveLength(1);
     expect(db.inserts).toHaveLength(0);
     expect(fs.readdirSync(dir).sort()).toEqual(before);
+    await ownership.close();
   });
 });

@@ -483,90 +483,94 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
     jest.restoreAllMocks();
   });
 
-  it.each([true, false])('部分写入后无论回滚回执是否确认都不自动删除残件（确认=%s）', async (confirmed) => {
-    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-partial-'));
-    try {
-      const database = 'lithography_dev_v13_accept';
-      const directory = join(root, database);
-      mkdirSync(directory);
-      const ownership = await claimDevSampleFilesDirectory(
-        directory,
-        database,
-        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
-      );
-      const storageReference = `${'a'.repeat(32)}.txt`;
-      const partial = join(directory, storageReference);
-      const existing = join(directory, `${'b'.repeat(32)}.txt`);
-      writeFileSync(existing, '预存文件');
-      const content = Buffer.from('sample');
-      const main = new Error('partial write');
-      const pending: DevSampleFileClaim[] = [];
-      const { runner, rollback, release, destroy } = makeRunner();
-      rollback.mockImplementationOnce(async () => {
-        const staged = (pending[0] as unknown as { stagingPath: string }).stagingPath;
-        expect(staged).not.toBe(partial);
-        expect(readFileSync(staged)).toEqual(content.subarray(0, 2));
-        if (!confirmed) throw new Error('rollback lost');
-      });
+  it.each([true, false])(
+    '部分写入后无论回滚回执是否确认都不自动删除残件（确认=%s）',
+    async (confirmed) => {
+      const root = mkdtempSync(join(tmpdir(), 'dev-deploy-partial-'));
+      try {
+        const database = 'lithography_dev_v13_accept';
+        const directory = join(root, database);
+        mkdirSync(directory);
+        const ownership = await claimDevSampleFilesDirectory(
+          directory,
+          database,
+          '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+        );
+        const storageReference = `${'a'.repeat(32)}.txt`;
+        const partial = join(directory, storageReference);
+        const existing = join(directory, `${'b'.repeat(32)}.txt`);
+        writeFileSync(existing, '预存文件');
+        const content = Buffer.from('sample');
+        const main = new Error('partial write');
+        const pending: DevSampleFileClaim[] = [];
+        const { runner, rollback, release, destroy } = makeRunner();
+        rollback.mockImplementationOnce(async () => {
+          const staged = (pending[0] as unknown as { stagingPath: string }).stagingPath;
+          expect(staged).not.toBe(partial);
+          expect(readFileSync(staged)).toEqual(content.subarray(0, 2));
+          if (!confirmed) throw new Error('rollback lost');
+        });
 
-      const error = await captureError(
-        runInitializationDataTransaction({
-          ...options(runner, { run: async () => undefined }),
-          sampleFilesDir: directory,
-          claims: pending,
-          removeSampleFile: deleteDevSampleFile,
-          run: async () =>
-            writeDevSampleFile(
-              directory,
-              {
-                originalFilename: 'sample.txt',
-                mimeType: 'text/plain',
-                byteSize: content.length,
-                sha256: sha256Of(content),
-                content,
-              },
-              {
-                storageReference,
-                ownership,
-                onClaim: (claim) => pending.push(claim),
-                writeContent: async (handle) => {
-                  await handle.write(content.subarray(0, 2));
-                  throw main;
+        const error = await captureError(
+          runInitializationDataTransaction({
+            ...options(runner, { run: async () => undefined }),
+            sampleFilesDir: directory,
+            claims: pending,
+            removeSampleFile: deleteDevSampleFile,
+            run: async () =>
+              writeDevSampleFile(
+                directory,
+                {
+                  originalFilename: 'sample.txt',
+                  mimeType: 'text/plain',
+                  byteSize: content.length,
+                  sha256: sha256Of(content),
+                  content,
                 },
-              },
-            ),
-        }),
-      );
+                {
+                  storageReference,
+                  ownership,
+                  onClaim: (claim) => pending.push(claim),
+                  writeContent: async (handle) => {
+                    await handle.write(content.subarray(0, 2));
+                    throw main;
+                  },
+                },
+              ),
+          }),
+        );
 
-      expect(error).toBe(main);
-      expect(rollback).toHaveBeenCalledTimes(1);
-      expect(release).toHaveBeenCalledTimes(confirmed ? 1 : 0);
-      expect(destroy).toHaveBeenCalledTimes(confirmed ? 0 : 1);
-      expect(pending).toHaveLength(1);
-      const claimView = pending[0] as unknown as {
-        stagingPath: string;
-        finalPath: string;
-        published: boolean;
-      };
-      expect(claimView.published).toBe(false);
-      expect(claimView.finalPath).toBe(partial);
-      expect(existsSync(partial)).toBe(false);
-      expect(readFileSync(existing, 'utf8')).toBe('预存文件');
-      expect(readFileSync(claimView.stagingPath)).toEqual(content.subarray(0, 2));
-      const notes = error.cleanupErrors?.join(' | ') ?? '';
-      if (confirmed) {
-        expect(notes).toContain(claimView.stagingPath);
-        expect(notes).toContain('state=ROLLBACK_CONFIRMED');
-        expect(notes).toContain('共享原件目录无独占删除边界');
-      } else {
-        expect(notes).toContain(claimView.stagingPath);
-        expect(notes).toContain('rollback lost');
-        expect(notes).toContain('state=UNKNOWN');
+        expect(error).toBe(main);
+        expect(rollback).toHaveBeenCalledTimes(1);
+        expect(release).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+        expect(destroy).toHaveBeenCalledTimes(confirmed ? 0 : 1);
+        expect(pending).toHaveLength(1);
+        const claimView = pending[0] as unknown as {
+          stagingPath: string;
+          finalPath: string;
+          published: boolean;
+        };
+        expect(claimView.published).toBe(false);
+        expect(claimView.finalPath).toBe(partial);
+        expect(existsSync(partial)).toBe(false);
+        expect(readFileSync(existing, 'utf8')).toBe('预存文件');
+        expect(readFileSync(claimView.stagingPath)).toEqual(content.subarray(0, 2));
+        const notes = error.cleanupErrors?.join(' | ') ?? '';
+        if (confirmed) {
+          expect(notes).toContain(claimView.stagingPath);
+          expect(notes).toContain('state=ROLLBACK_CONFIRMED');
+          expect(notes).toContain('共享原件目录无独占删除边界');
+        } else {
+          expect(notes).toContain(claimView.stagingPath);
+          expect(notes).toContain('rollback lost');
+          expect(notes).toContain('state=UNKNOWN');
+        }
+        await ownership.close();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 
   it('确认回滚后只探测本轮已登记原件的引用，不再自动删除并关闭句柄', async () => {
     const { runner, release } = makeRunner();
@@ -699,6 +703,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       expect(error.cleanupErrors?.join(' | ')).toContain(target);
       expect(error.cleanupErrors?.join(' | ')).toContain('state=UNKNOWN');
       expect(error.cleanupErrors?.join(' | ')).toContain('phase=COMMIT');
+      await ownership.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -827,6 +832,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       const claimView = pending[0] as unknown as { stagingPath: string };
       expect(readFileSync(claimView.stagingPath)).toEqual(content);
       expect(error.cleanupErrors?.join(' | ')).toContain('仍被正式资料引用');
+      await ownership.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -889,6 +895,7 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       expect(notes).toContain(target);
       expect(notes).toContain('state=ROLLBACK_CONFIRMED');
       expect(notes).toContain('共享原件目录无独占删除边界');
+      await ownership.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

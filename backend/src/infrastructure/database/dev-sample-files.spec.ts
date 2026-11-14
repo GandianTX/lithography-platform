@@ -4,10 +4,10 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-// 默认全部委托真实实现，仅让 `lstat` 可在“核对之后、删除之前”插入确定性替换。
+// 默认全部委托真实实现，仅让 `lstat`/`open` 可在确定性替换时插入检查点。
 jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof import('node:fs/promises')>('node:fs/promises');
-  return { ...actual, lstat: jest.fn(actual.lstat) };
+  return { ...actual, lstat: jest.fn(actual.lstat), open: jest.fn(actual.open) };
 });
 
 import {
@@ -58,6 +58,27 @@ function makeTargetDir(): { root: string; dir: string } {
   return { root, dir };
 }
 
+const openedOwnerships: DevSampleDirectoryOwnership[] = [];
+
+async function claimOwned(dir: string): Promise<DevSampleDirectoryOwnership> {
+  const owner = await claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID);
+  openedOwnerships.push(owner);
+  return owner;
+}
+
+afterEach(async () => {
+  while (openedOwnerships.length > 0) {
+    const owner = openedOwnerships.pop();
+    if (owner) {
+      try {
+        await owner.close();
+      } catch {
+        // 句柄可能已在用例内关闭；这里只做兜底收尾。
+      }
+    }
+  }
+});
+
 describe('开发样例原件目录守卫（不连接实库）', () => {
   it('接受以目标库名命名的专属真实目录', () => {
     const { dir } = makeTargetDir();
@@ -90,7 +111,7 @@ describe('开发样例原件目录守卫（不连接实库）', () => {
 describe('开发样例原件目录归属（不连接实库）', () => {
   it('首次排他认领后写入实例 UUID 与精确库名，并允许同实例同库重跑', async () => {
     const { dir } = makeTargetDir();
-    const first = await claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID);
+    const first = await claimOwned(dir);
     expect(first.database).toBe(DATABASE);
     expect(first.serverUuid).toBe(SERVER_UUID);
     const marker = JSON.parse(
@@ -101,13 +122,13 @@ describe('开发样例原件目录归属（不连接实库）', () => {
       database: DATABASE,
       server_uuid: SERVER_UUID,
     });
-    const second = await claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID);
+    const second = await claimOwned(dir);
     expect(second.markerIdentity).toEqual(first.markerIdentity);
   });
 
   it('另一实例的同名库不得复用目录，且保留现场', async () => {
     const { dir } = makeTargetDir();
-    await claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID);
+    await claimOwned(dir);
     fs.writeFileSync(path.join(dir, 'keep.txt'), 'keep', 'utf8');
     await expect(
       claimDevSampleFilesDirectory(dir, DATABASE, '11111111-2222-3333-4444-555555555555'),
@@ -127,7 +148,7 @@ describe('开发样例原件目录归属（不连接实库）', () => {
 
 describe('开发样例原件写入与核对（不连接实库）', () => {
   async function ownership(dir: string): Promise<DevSampleDirectoryOwnership> {
-    return claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID);
+    return claimOwned(dir);
   }
 
   it('句柄写入后暂存路径被替换时拒绝发布且保留替换物', async () => {
@@ -319,27 +340,10 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     const target = path.join(dir, reference);
     const stagingPath = runtimeClaim(claim).stagingPath;
     const replacement = Buffer.from('核对后替换的最终路径内容\n', 'utf8');
-    let swapped = false;
-    const lstatMock = fsp.lstat as jest.MockedFunction<typeof fsp.lstat>;
-    const realLstat = jest.requireActual<typeof import('node:fs/promises')>(
-      'node:fs/promises',
-    ).lstat;
-    lstatMock.mockImplementation((async (candidate: fs.PathLike) => {
-      const stat = await realLstat(candidate);
-      if (!swapped && path.resolve(String(candidate)) === target) {
-        // 模拟核对通过之后、删除动作之前其他写入方替换目录项。
-        swapped = true;
-        fs.unlinkSync(target);
-        fs.writeFileSync(target, replacement);
-      }
-      return stat;
-    }) as typeof fsp.lstat);
-    try {
-      await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
-    } finally {
-      lstatMock.mockImplementation(realLstat);
-    }
-    expect(swapped).toBe(true);
+    fs.unlinkSync(target);
+    fs.writeFileSync(target, replacement);
+
+    await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
     expect(fs.readFileSync(target)).toEqual(replacement);
     expect(sha256Of(fs.readFileSync(target))).toBe(sha256Of(replacement));
     expect(fs.readFileSync(stagingPath)).toEqual(CONTENT);
@@ -368,26 +372,10 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     expect(claim.published).toBe(false);
     const stagingPath = claim.stagingPath;
     const replacement = Buffer.from('核对后替换的暂存路径内容\n', 'utf8');
-    let swapped = false;
-    const lstatMock = fsp.lstat as jest.MockedFunction<typeof fsp.lstat>;
-    const realLstat = jest.requireActual<typeof import('node:fs/promises')>(
-      'node:fs/promises',
-    ).lstat;
-    lstatMock.mockImplementation((async (candidate: fs.PathLike) => {
-      const stat = await realLstat(candidate);
-      if (!swapped && path.resolve(String(candidate)) === stagingPath) {
-        swapped = true;
-        fs.unlinkSync(stagingPath);
-        fs.writeFileSync(stagingPath, replacement);
-      }
-      return stat;
-    }) as typeof fsp.lstat);
-    try {
-      await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
-    } finally {
-      lstatMock.mockImplementation(realLstat);
-    }
-    expect(swapped).toBe(true);
+    fs.unlinkSync(stagingPath);
+    fs.writeFileSync(stagingPath, replacement);
+
+    await expect(deleteDevSampleFile(claim)).resolves.toBe('RETAINED');
     expect(fs.readFileSync(stagingPath)).toEqual(replacement);
     expect(sha256Of(fs.readFileSync(stagingPath))).toBe(sha256Of(replacement));
     await claim.close();
@@ -409,6 +397,201 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     ).rejects.toThrow(/EEXIST/);
     expect(fs.readdirSync(dir).sort()).toEqual(before);
     expect(await verifyDevSampleFile(dir, reference, makeSpec())).toBe('VERIFIED');
+  });
+
+  it('暂存路径在核对后、发布前被替换时只发布已校验的原对象', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const target = path.join(dir, reference);
+    let recorded: DevSampleFileClaim | null = null;
+    const replacement = Buffer.from('核对后替换的暂存内容\n', 'utf8');
+
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+      onClaim: (value) => {
+        recorded = value;
+      },
+      beforePublish: () => {
+        const stagingPath = runtimeClaim(recorded).stagingPath;
+        fs.renameSync(stagingPath, `${stagingPath}.original`);
+        fs.writeFileSync(stagingPath, replacement);
+      },
+    });
+
+    const view = runtimeClaim(claim);
+    expect(view.published).toBe(true);
+    expect(fs.readFileSync(target)).toEqual(CONTENT);
+    expect(sha256Of(fs.readFileSync(target))).toBe(makeSpec().sha256);
+    expect(fs.readFileSync(view.stagingPath)).toEqual(replacement);
+    expect(fs.readFileSync(`${view.stagingPath}.original`)).toEqual(CONTENT);
+    expect(sha256Of(fs.readFileSync(view.stagingPath))).toBe(sha256Of(replacement));
+    await view.close();
+    await owner.close();
+  });
+
+  it('发布前目标目录被替换时仍写入已认领目录，未认领目录零新增', async () => {
+    const { root, dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const claimedSentinel = path.join(dir, 'claimed.txt');
+    fs.writeFileSync(claimedSentinel, '已认领目录预存文件');
+    const detour = path.join(root, 'detour');
+    fs.mkdirSync(detour);
+    fs.writeFileSync(path.join(detour, 'unclaimed.txt'), '未认领目录预存文件');
+    let recorded: DevSampleFileClaim | null = null;
+    let error: unknown;
+    try {
+      await writeDevSampleFile(dir, makeSpec(), {
+        storageReference: reference,
+        ownership: owner,
+        onClaim: (value) => {
+          recorded = value;
+        },
+        beforePublish: () => {
+          // 最后一次目录核对通过之后、实际发布之前，把配置路径换成另一个目录。
+          fs.renameSync(dir, `${dir}.claimed`);
+          fs.renameSync(detour, dir);
+        },
+      });
+    } catch (thrown) {
+      error = thrown;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/配置路径已指向其他目录/);
+    // 未认领目录（当前配置路径）只保留自己的预存文件，零新增。
+    expect(fs.readdirSync(dir)).toEqual(['unclaimed.txt']);
+    expect(fs.readFileSync(path.join(dir, 'unclaimed.txt'), 'utf8')).toBe('未认领目录预存文件');
+    expect(fs.existsSync(path.join(dir, reference))).toBe(false);
+    // 已认领目录（原 inode，已被改名）收到发布文件；预存文件不变。
+    const claimedDir = `${dir}.claimed`;
+    expect(fs.readFileSync(path.join(claimedDir, reference))).toEqual(CONTENT);
+    expect(fs.readFileSync(path.join(claimedDir, 'claimed.txt'), 'utf8')).toBe(
+      '已认领目录预存文件',
+    );
+    const view = runtimeClaim(recorded);
+    expect(view.published).toBe(true);
+    // 收尾存在性判断也必须经已认领目录句柄，不能因配置路径被替换而误报已清理。
+    await expect(deleteDevSampleFile(view)).resolves.toBe('RETAINED');
+    const notes = (error as Error & { cleanupErrors?: ReadonlyArray<string> }).cleanupErrors ?? [];
+    expect(notes.join(' | ')).toContain('最终路径已发布');
+    expect(notes.join(' | ')).toContain('已发布文件身份 dev=');
+    expect(notes.join(' | ')).toContain(`dev=${String(owner.directoryIdentity.device)}`);
+    await view.close();
+    await owner.close();
+  });
+
+  it('预检通过后配置路径被替换时暂存仍写入已认领目录，未认领目录零新增', async () => {
+    const { root, dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const claimedSentinel = path.join(dir, 'claimed.txt');
+    fs.writeFileSync(claimedSentinel, '已认领目录预存文件');
+    const detour = path.join(root, 'detour');
+    fs.mkdirSync(detour);
+    fs.writeFileSync(path.join(detour, 'unclaimed.txt'), '未认领目录预存文件');
+    const realBind = owner.assertPathBinding.bind(owner);
+    let swapped = false;
+    const bindSpy = jest.spyOn(owner, 'assertPathBinding').mockImplementation(async () => {
+      await realBind();
+      if (!swapped) {
+        // 认领后、暂存创建前把配置路径换成另一个目录。
+        swapped = true;
+        fs.renameSync(dir, `${dir}.claimed`);
+        fs.renameSync(detour, dir);
+      }
+    });
+
+    let error: unknown;
+    try {
+      await writeDevSampleFile(dir, makeSpec(), {
+        storageReference: reference,
+        ownership: owner,
+      });
+    } catch (thrown) {
+      error = thrown;
+    } finally {
+      bindSpy.mockRestore();
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/配置路径已指向其他目录/);
+    // 未认领目录（当前配置路径）只保留自己的预存文件，零新增。
+    expect(fs.readdirSync(dir)).toEqual(['unclaimed.txt']);
+    expect(fs.readFileSync(path.join(dir, 'unclaimed.txt'), 'utf8')).toBe('未认领目录预存文件');
+    expect(fs.existsSync(path.join(dir, reference))).toBe(false);
+    // 已认领目录（原 inode）收到归属标记、暂存对象与发布文件；预存文件不变。
+    const claimedDir = `${dir}.claimed`;
+    const entries = fs.readdirSync(claimedDir);
+    expect(entries).toContain('.lithography-dev-sample-owner.json');
+    expect(entries.some((name) => name.startsWith('.dev-sample-staging-'))).toBe(true);
+    expect(fs.readFileSync(path.join(claimedDir, reference))).toEqual(CONTENT);
+    expect(fs.readFileSync(path.join(claimedDir, 'claimed.txt'), 'utf8')).toBe(
+      '已认领目录预存文件',
+    );
+    await owner.close();
+  });
+
+  it('认领打开前任一上级目录被换成符号链接时拒绝且零写入', async () => {
+    const root = makeRoot();
+    const container = path.join(root, 'container');
+    const dir = path.join(container, DATABASE);
+    fs.mkdirSync(dir, { recursive: true });
+    const other = path.join(root, 'other');
+    fs.mkdirSync(path.join(other, DATABASE), { recursive: true });
+    fs.writeFileSync(path.join(other, DATABASE, 'sentinel.txt'), '未认领目录预存文件');
+
+    const openMock = fsp.open as jest.MockedFunction<typeof fsp.open>;
+    const realOpen = jest.requireActual<typeof import('node:fs/promises')>('node:fs/promises').open;
+    let swapped = false;
+    openMock.mockImplementation(((target: fs.PathLike, flags?: string | number, mode?: fs.Mode) => {
+      if (!swapped && String(target) === dir) {
+        // 守卫通过之后、真正打开目录之前，把上级目录换成指向另存目录的符号链接。
+        swapped = true;
+        fs.renameSync(container, `${container}.real`);
+        fs.symlinkSync(other, container);
+      }
+      return realOpen(target, flags, mode);
+    }) as typeof fsp.open);
+
+    try {
+      await expect(claimOwned(dir)).rejects.toThrow(/句柄指向的路径与配置不一致/);
+    } finally {
+      openMock.mockImplementation(realOpen);
+    }
+
+    expect(swapped).toBe(true);
+    // 未认领目录零新增：没有归属标记，只保留预存文件。
+    expect(fs.readdirSync(path.join(other, DATABASE))).toEqual(['sentinel.txt']);
+    expect(fs.readdirSync(path.join(`${container}.real`, DATABASE))).toEqual([]);
+  });
+
+  it('认领后配置路径被替换时不创建暂存对象或归属标记', async () => {
+    const { root, dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const detour = path.join(root, 'detour');
+    fs.mkdirSync(detour);
+    fs.writeFileSync(path.join(detour, 'unclaimed.txt'), '未认领目录预存文件');
+    fs.renameSync(dir, `${dir}.claimed`);
+    fs.renameSync(detour, dir);
+    const onClaim = jest.fn();
+
+    await expect(
+      writeDevSampleFile(dir, makeSpec(), {
+        storageReference: reference,
+        ownership: owner,
+        onClaim,
+      }),
+    ).rejects.toThrow(/配置路径已指向其他目录/);
+
+    expect(onClaim).not.toHaveBeenCalled();
+    expect(fs.readdirSync(dir)).toEqual(['unclaimed.txt']);
+    expect(fs.readFileSync(path.join(dir, 'unclaimed.txt'), 'utf8')).toBe('未认领目录预存文件');
+    expect(fs.readdirSync(`${dir}.claimed`)).toContain('.lithography-dev-sample-owner.json');
+    await owner.close();
   });
 
   it('内容被改动后核对为不一致且不覆盖', async () => {
