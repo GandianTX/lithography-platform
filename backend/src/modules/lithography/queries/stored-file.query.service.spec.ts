@@ -6,6 +6,7 @@ import type { Repository } from 'typeorm';
 
 import type { RepairProcessEntryEntity } from '../entities/repair-process-entry.entity';
 import type { RepairRequestEntity } from '../entities/repair-request.entity';
+import type { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import type { StoredFileEntity } from '../entities/stored-file.entity';
 import { StoredFileQueryService, type StoredFileAccessQuery } from './stored-file.query.service';
 
@@ -54,6 +55,9 @@ const makeRepositories = () => ({
   },
   processEntry: { findOne: jest.fn().mockResolvedValue(null) },
   request: { findOne: jest.fn().mockResolvedValue(null) },
+  intake: {
+    findOne: jest.fn().mockResolvedValue({ id: 7001, serviceOrganizationId: 910001 }),
+  },
 });
 
 const makeService = () => {
@@ -62,6 +66,7 @@ const makeService = () => {
     repositories.storedFile as unknown as Repository<StoredFileEntity>,
     repositories.processEntry as unknown as Repository<RepairProcessEntryEntity>,
     repositories.request as unknown as Repository<RepairRequestEntity>,
+    repositories.intake as unknown as Repository<RepairRequestIntakeEntity>,
   );
   return { service, repositories };
 };
@@ -131,7 +136,9 @@ describe('StoredFileQueryService 读授权', () => {
     const entry = { id: 700001 };
     const request = (overrides: Record<string, unknown> = {}) => ({
       id: 42,
-      ownerOrganizationId: 910001,
+      ownerOrganizationId: 920002,
+      intakeId: 7001,
+      serviceOrganizationId: 910001,
       isAccepted: true,
       acceptedByEngineerAccountId: 900001,
       deprecated: false,
@@ -193,17 +200,75 @@ describe('StoredFileQueryService 读授权', () => {
       ).resolves.toBeNull();
     });
 
-    it('无归属公司工单：仅本人接单工程师可读', async () => {
+    it('客户 A / 服务公司 B：按可信服务公司放行 B 公司工程师，不放行客户公司', async () => {
       const { service, repositories } = makeService();
       repositories.storedFile.findOne.mockResolvedValue(boundFile());
       repositories.processEntry.findOne.mockResolvedValue(entry);
-      repositories.request.findOne.mockResolvedValue(request({ ownerOrganizationId: null }));
+      repositories.request.findOne.mockResolvedValue(request());
+
+      await expect(
+        service.findAuthorizedMetadata(accessQuery({ uploadContextId: null })),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+
+      await expect(
+        service.findAuthorizedMetadata(
+          accessQuery({ uploadContextId: null, viewerOrganizationId: 920002 }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('工单与报修服务公司冲突时，双方工程师都不能读取元数据或下载', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(request());
+      repositories.intake.findOne.mockResolvedValue({ id: 7001, serviceOrganizationId: 920002 });
+
+      for (const viewerOrganizationId of [910001, 920002]) {
+        const query = accessQuery({ uploadContextId: null, viewerOrganizationId });
+        await expect(service.findAuthorizedMetadata(query)).resolves.toBeNull();
+        await expect(service.findAuthorizedDownload(query)).resolves.toBeNull();
+      }
+    });
+
+    it('intake 缺失时拒绝，不使用工单旧 owner 兜底', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(request());
+
+      repositories.intake.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.findAuthorizedMetadata(accessQuery({ uploadContextId: null })),
+      ).resolves.toBeNull();
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ intakeId: null, serviceOrganizationId: 910001, ownerOrganizationId: 910001 }),
+      );
+      await expect(
+        service.findAuthorizedMetadata(
+          accessQuery({ uploadContextId: null, session: otherEngineer }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('无可信服务归属的工单：原接单人也不可读', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(
+        request({ ownerOrganizationId: null, intakeId: null, serviceOrganizationId: null }),
+      );
 
       await expect(
         service.findAuthorizedMetadata(
           accessQuery({ uploadContextId: null, viewerOrganizationId: null }),
         ),
-      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+      ).resolves.toBeNull();
+
+      await expect(
+        service.findAuthorizedMetadata(accessQuery({ uploadContextId: null })),
+      ).resolves.toBeNull();
 
       await expect(
         service.findAuthorizedMetadata(

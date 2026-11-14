@@ -15,6 +15,7 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { Repository } from 'typeorm';
 import { RepairProcessEntryEntity } from '../entities/repair-process-entry.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import { StoredFileEntity } from '../entities/stored-file.entity';
 import type { StoredFileDownloadFacts, StoredFileMetadataView } from '../lithography.types';
 
@@ -54,7 +55,7 @@ type StoredFileAccessRow = {
  * 统一的读授权口径（不按文件 ID / 上下文 ID / 前端组织参数单独放行）：
  * - 暂存（TEMPORARY）：原上传者 + 可信当前公司一致 + 用途一致 + upload_context_id 精确匹配；
  * - 正式绑定（BOUND REPAIR_PROCESS）：必须存在 repair_process_entry 真实关联，
- *   且读取者具备工程师角色，并按工单口径限制组织（有归属公司）或本人接单（无归属公司）；
+ *   且读取者具备工程师角色，工单及 intake 的服务公司一致并匹配读取者可信组织；
  * - 客户、外公司、同公司非工程师账号一律返回 null，不泄露原件存在性或内部过程。
  */
 @Injectable()
@@ -66,6 +67,8 @@ export class StoredFileQueryService {
     private readonly repairProcessEntryRepository: Repository<RepairProcessEntryEntity>,
     @InjectRepository(RepairRequestEntity)
     private readonly repairRequestRepository: Repository<RepairRequestEntity>,
+    @InjectRepository(RepairRequestIntakeEntity)
+    private readonly repairRequestIntakeRepository: Repository<RepairRequestIntakeEntity>,
   ) {}
 
   /** 授权元数据；不可访问返回 null（usecase 统一映射 NOT_FOUND） */
@@ -215,9 +218,8 @@ export class StoredFileQueryService {
         where: { id: requestId },
         select: {
           id: true,
-          ownerOrganizationId: true,
-          isAccepted: true,
-          acceptedByEngineerAccountId: true,
+          intakeId: true,
+          serviceOrganizationId: true,
           deprecated: true,
         },
       }),
@@ -226,10 +228,18 @@ export class StoredFileQueryService {
       return false;
     }
 
-    if (request.ownerOrganizationId !== null) {
-      return request.ownerOrganizationId === query.viewerOrganizationId;
+    if (
+      request.intakeId === null ||
+      query.viewerOrganizationId === null ||
+      request.serviceOrganizationId !== query.viewerOrganizationId
+    ) {
+      return false;
     }
-    return request.isAccepted && request.acceptedByEngineerAccountId === query.session.accountId;
+    const intake = await this.repairRequestIntakeRepository.findOne({
+      where: { id: request.intakeId },
+      select: { id: true, serviceOrganizationId: true },
+    });
+    return intake !== null && intake.serviceOrganizationId === request.serviceOrganizationId;
   }
 
   private toMetadataView(file: StoredFileAccessRow): StoredFileMetadataView {

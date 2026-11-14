@@ -60,6 +60,8 @@ export type RepairProcessOriginalBindingResult = {
  * - 可信公司归属（organization membership）；
  * - 原件上传者、归属公司、用途、upload_context_id、VALID + TEMPORARY、未被占用；
  * - 工单存在、未作废、已接单且当前接单人就是操作者、未结束（处理未终结且未关闭）；
+ * - 工单的服务公司来自可证明的报修原始输入（intakeId 非空），且与当前工程师可信组织一致；
+ *   旧 owner、客户公司、历史接单人和客户端传入组织都不能替代服务归属；
  * - 存储对象实际字节数与 SHA-256 与登记一致（防替换/截断）。
  *
  * 并发：
@@ -173,19 +175,22 @@ export class BindRepairProcessOriginalUsecase {
     }
   }
 
-  /** 工单事实核对：存在、未作废、本人接单、未结束、同公司 */
+  /** 工单事实核对：存在、未作废、本人接单、未结束、可信服务公司一致 */
   private assertWorkOrderBindableFacts(
     target: RepairProcessBindingTargetSnapshot | null,
     command: BindRepairProcessOriginalCommand,
-    ownerOrganizationId: number,
+    viewerOrganizationId: number,
   ): void {
+    const trustedServiceOrganizationId =
+      target !== null && target.intakeId !== null ? target.serviceOrganizationId : null;
     if (
       !target ||
       target.deprecated ||
       !target.isAccepted ||
       target.acceptedByEngineerAccountId !== command.session.accountId ||
       isEnded(target.handlingStatus, target.closureStatus) ||
-      (target.ownerOrganizationId !== null && target.ownerOrganizationId !== ownerOrganizationId)
+      trustedServiceOrganizationId === null ||
+      trustedServiceOrganizationId !== viewerOrganizationId
     ) {
       throw new DomainError(
         STORED_FILE_ERROR.WORK_ORDER_NOT_BINDABLE,

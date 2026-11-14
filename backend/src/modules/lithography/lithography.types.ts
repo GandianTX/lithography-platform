@@ -589,7 +589,12 @@ export type StoredFileInsertData = {
 /** 绑定前置的工单锁读快照：只含状态事实，决策归 usecase */
 export type RepairProcessBindingTargetSnapshot = {
   id: number;
+  /** 旧归属列，仅作历史事实保留；不用于服务公司授权 */
   ownerOrganizationId: number | null;
+  /** 报修原始输入ID；空表示旧工单，服务公司来源不可确认 */
+  intakeId: number | null;
+  /** 可信服务公司ID（仅由报修原始输入解析；非工单旧字段兜底） */
+  serviceOrganizationId: number | null;
   isAccepted: boolean;
   acceptedByEngineerAccountId: number | null;
   deprecated: boolean;

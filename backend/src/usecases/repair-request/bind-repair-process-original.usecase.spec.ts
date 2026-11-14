@@ -46,6 +46,8 @@ const fileSnapshot = (overrides: Record<string, unknown> = {}) => ({
 const targetSnapshot = (overrides: Record<string, unknown> = {}) => ({
   id: 42,
   ownerOrganizationId: organizationId,
+  intakeId: 7001,
+  serviceOrganizationId: organizationId,
   isAccepted: true,
   acceptedByEngineerAccountId: 900001,
   deprecated: false,
@@ -206,7 +208,20 @@ describe('BindRepairProcessOriginalUsecase（任务 04 接入契约）', () => {
     );
   });
 
-  it('工单未接单 / 非本人接单 / 已结束 / 已作废 / 外公司均拒绝，且不核完整性、不绑定', async () => {
+  it('客户 A / 服务公司 B：owner 与可信服务公司不同时按服务公司放行', async () => {
+    const repairRequestService = makeRepairRequestService();
+    repairRequestService.findProcessBindingTargetForUpdate.mockResolvedValueOnce(
+      targetSnapshot({ ownerOrganizationId: 920002 }),
+    );
+    const { usecase, storedFileService } = makeUsecase({ repairRequestService });
+
+    await expect(
+      usecase.executeInTransaction(command(), transactionContext),
+    ).resolves.toMatchObject({ fileId, businessType: 'REPAIR_PROCESS', businessId: '42' });
+    expect(storedFileService.bindIfTemporary).toHaveBeenCalled();
+  });
+
+  it('工单未接单 / 非本人接单 / 已结束 / 已作废均拒绝，且不核完整性、不绑定', async () => {
     for (const target of [
       null,
       targetSnapshot({ isAccepted: false, acceptedByEngineerAccountId: null }),
@@ -215,7 +230,25 @@ describe('BindRepairProcessOriginalUsecase（任务 04 接入契约）', () => {
       targetSnapshot({ handlingStatus: 'UNRESOLVED' }),
       targetSnapshot({ closureStatus: 'CLOSED' }),
       targetSnapshot({ deprecated: true }),
-      targetSnapshot({ ownerOrganizationId: 920002 }),
+    ]) {
+      const repairRequestService = makeRepairRequestService();
+      repairRequestService.findProcessBindingTargetForUpdate.mockResolvedValueOnce(target);
+      const { usecase, storage, storedFileService } = makeUsecase({ repairRequestService });
+
+      await expect(
+        usecase.executeInTransaction(command(), transactionContext),
+      ).rejects.toMatchObject({ code: STORED_FILE_ERROR.WORK_ORDER_NOT_BINDABLE });
+      expect(storage.verifyIntegrity).not.toHaveBeenCalled();
+      expect(storedFileService.bindIfTemporary).not.toHaveBeenCalled();
+    }
+  });
+
+  it('服务归属无法确认 / 与服务公司不一致时拒绝，且不核完整性、不绑定', async () => {
+    for (const target of [
+      targetSnapshot({ serviceOrganizationId: 920002 }),
+      targetSnapshot({ intakeId: null }),
+      targetSnapshot({ serviceOrganizationId: null }),
+      targetSnapshot({ ownerOrganizationId: 920002, serviceOrganizationId: null }),
     ]) {
       const repairRequestService = makeRepairRequestService();
       repairRequestService.findProcessBindingTargetForUpdate.mockResolvedValueOnce(target);
