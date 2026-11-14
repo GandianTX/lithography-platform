@@ -121,6 +121,12 @@ export interface OwnedOrganizationFacts {
   readonly name: string;
   readonly kind: string;
   readonly status: string;
+  /**
+   * 受管公司标记（`is_managed_company`）的可选预期（I10）。
+   * - `undefined`：本轮未提供该预期（不参与比对，避免无关规格失效）；
+   * - 布尔：必须与该值一致，防止「固定编码重登旧行并覆盖资格标记」。
+   */
+  readonly isManagedCompany?: boolean;
 }
 
 export interface OwnedAccountFacts {
@@ -137,6 +143,15 @@ export interface OwnedAccountFacts {
   readonly nickname: string;
   readonly userInfoEmail: string | null;
   readonly userState: string;
+  /**
+   * 客户资料归属组织（`base_user_info.customer_organization_id`）的可选预期。
+   * - `undefined`：本轮未提供该预期；**没有**「客户资料 → 待删组织」引用边时兼容，
+   *   一旦存在该引用边即视为缺少可信预期并在首删前拒绝；
+   * - `null`：明确预期「空归属」；面对真实非空引用同样拒绝；
+   * - 数值：必须与真实引用完全相同，否则按归属漂移拒绝。
+   * 预期必须在造数/业务变更完成时用已知值登记，禁止在清理阶段回读当前归属补齐。
+   */
+  readonly customerOrganizationId?: number | null;
 }
 
 export interface OwnedMembershipFacts {
@@ -855,6 +870,7 @@ interface OrganizationRow {
   name: string;
   kind: string;
   status: string;
+  is_managed_company: boolean | number;
 }
 
 interface EngineerRegistrationApplicationRow {
@@ -1741,7 +1757,7 @@ const verifyOwnedExpectations = async (
   if (owned.facts.organization.size > 0) {
     const ids = [...owned.facts.organization.keys()];
     const rows: OrganizationRow[] = await manager.query(
-      `SELECT id, organization_code, name, kind, status
+      `SELECT id, organization_code, name, kind, status, is_managed_company
          FROM organization
         WHERE id IN (${inClause(ids)})
         FOR UPDATE`,
@@ -1758,6 +1774,12 @@ const verifyOwnedExpectations = async (
       if (row.name !== expected.name) mismatches.push('name');
       if (row.kind !== expected.kind) mismatches.push('kind');
       if (row.status !== expected.status) mismatches.push('status');
+      if (
+        expected.isManagedCompany !== undefined &&
+        Boolean(Number(row.is_managed_company)) !== expected.isManagedCompany
+      ) {
+        mismatches.push('is_managed_company');
+      }
       if (mismatches.length > 0) drift('organization', id, mismatches);
     }
   }
@@ -3092,6 +3114,7 @@ const collectOwnedGraph = async (
   plan: CleanupPlan,
   membershipAccountIds: readonly number[],
   helper: string,
+  owned?: OwnedResourceLedger,
 ): Promise<void> => {
   const orgIds = plan.organizationIds;
   const accountIds = plan.accountIds;
@@ -3317,7 +3340,7 @@ const collectOwnedGraph = async (
     }
   }
 
-  await assertReferenceClosure(manager, plan, helper);
+  await assertReferenceClosure(manager, plan, helper, owned);
 };
 
 /** 检查集合外入向引用；任何一条都拒绝删除，不做“顺便一起删”。 */
@@ -3325,6 +3348,7 @@ const assertReferenceClosure = async (
   manager: EntityManager,
   plan: CleanupPlan,
   helper: string,
+  owned?: OwnedResourceLedger,
 ): Promise<void> => {
   const accountIds = plan.accountIds;
   if (accountIds.length > 0) {
@@ -3498,6 +3522,61 @@ const assertReferenceClosure = async (
 
   if (plan.organizationIds.length > 0) {
     const orgPlaceholders = inClause(plan.organizationIds);
+
+    // base_user_info.customer_organization_id 对 organization 为 FK RESTRICT：
+    // 账外账号的客户资料归属若引用本轮组织，删除会在最后一步被外键拒绝。
+    // 必须在第一条 DELETE 前用同一事务的参数化 IN + 锁定读显式发现并拒绝，
+    // 不能依赖 deleteVerifiedPlan 末尾的外键兜底。
+    const customerProfiles = await manager.query<
+      { account_id: number; customer_organization_id: number }[]
+    >(
+      `SELECT account_id, customer_organization_id
+         FROM base_user_info
+        WHERE customer_organization_id IN (${orgPlaceholders})
+        FOR UPDATE`,
+      plan.organizationIds,
+    );
+    for (const row of customerProfiles) {
+      const profileAccountId = asNumber(row.account_id);
+      const customerOrganizationId = asNumber(row.customer_organization_id);
+      if (!plan.accountIds.includes(profileAccountId)) {
+        conflict(
+          helper,
+          'base_user_info.customer_organization_id',
+          String(profileAccountId),
+          '账外账号的客户资料归属引用了本轮组织且账号未登记归属证据，拒绝删除',
+        );
+      }
+      const expectedCustomerOrganizationId =
+        owned?.facts.account.get(profileAccountId)?.customerOrganizationId;
+      // F4：只要存在「客户资料 → 待删组织」的真实引用边，就必须有可信预期。
+      // 缺字段（undefined）与显式空归属（null）分别诊断，二者面对真实非空引用都失败。
+      if (expectedCustomerOrganizationId === undefined) {
+        conflict(
+          helper,
+          'base_user_info.customer_organization_id',
+          String(profileAccountId),
+          '本轮账号的客户资料归属引用了待删组织，但台账缺少可信归属预期（undefined），拒绝删除',
+        );
+      } else if (expectedCustomerOrganizationId === null) {
+        conflict(
+          helper,
+          'base_user_info.customer_organization_id',
+          String(profileAccountId),
+          '本轮账号台账显式登记为空归属（null），与真实引用不符，拒绝删除',
+        );
+      } else if (!nullableNumberEquals(customerOrganizationId, expectedCustomerOrganizationId)) {
+        conflict(
+          helper,
+          'base_user_info.customer_organization_id',
+          String(profileAccountId),
+          `本轮账号的客户归属与登记预期不符（expected=${String(
+            expectedCustomerOrganizationId,
+          )}, actual=${String(customerOrganizationId)}），拒绝删除`,
+        );
+      }
+    }
+
     const orgApplications: EngineerRegistrationApplicationRow[] = await manager.query(
       `SELECT id, account_id, organization_id, application_note
          FROM engineer_registration_application
@@ -3996,7 +4075,13 @@ export const runGuardedSpecCleanup = async (params: {
       const resolved = await resolveResidue(manager, residue ?? {}, retainedAccounts, helper, plan);
       retainedAccountIds = resolved.retainedAccountIds;
     }
-    await collectOwnedGraph(manager, plan, [...plan.accountIds, ...retainedAccountIds], helper);
+    await collectOwnedGraph(
+      manager,
+      plan,
+      [...plan.accountIds, ...retainedAccountIds],
+      helper,
+      owned,
+    );
     if (!hasAnyResource(plan)) {
       return;
     }

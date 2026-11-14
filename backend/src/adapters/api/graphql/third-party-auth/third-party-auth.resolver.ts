@@ -81,6 +81,9 @@ export class ThirdPartyAuthResolver {
       restriction: result.restriction ?? SessionRestriction.NONE,
       adminLevel: result.adminLevel ?? null,
       customerOrganizationId: result.customerOrganizationId ?? null,
+      engineerOrganizationId: result.engineerOrganizationId ?? null,
+      adminOrganizationId: result.adminOrganizationId ?? null,
+      registrationOrganizationId: result.registrationOrganizationId ?? null,
     };
   }
 

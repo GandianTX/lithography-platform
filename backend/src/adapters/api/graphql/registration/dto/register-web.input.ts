@@ -36,6 +36,7 @@ export class RegisterWebInput {
   @Transform(({ value }: TransformFnParams) => trimTextPure(value))
   @IsString({ message: '登录名必须是字符串' })
   @MinLength(4, { message: '登录名至少 4 个字符' })
+  @MaxLength(30, { message: '登录名最多 30 个字符' })
   @Matches(/^[a-zA-Z0-9_-]+$/, {
     message: '登录名只能包含英文字母、数字、下划线和短横线',
   })
@@ -44,7 +45,7 @@ export class RegisterWebInput {
   @Field(() => String, { description: '登录邮箱' })
   @Transform(({ value }: TransformFnParams) => trimTextPure(value))
   @IsNotEmpty({ message: '邮箱不能为空' })
-  @MaxLength(254, { message: '邮箱长度不能超过 254 个字符' })
+  @MaxLength(50, { message: '邮箱长度不能超过 50 个字符' })
   @IsEmail({}, { message: '邮箱格式不正确' })
   loginEmail!: string;
 

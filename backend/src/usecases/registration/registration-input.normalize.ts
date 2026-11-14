@@ -28,6 +28,26 @@ const REGISTRATION_REAL_NAME_MAX_LENGTH = 200;
 /** 联系电话对应 `base_user_info.phone` 的列上限（varchar(20)） */
 const REGISTRATION_PHONE_MAX_LENGTH = 20;
 
+/**
+ * Web 注册可写邮箱上限：`base_user_info.email` 列宽 50。
+ *
+ * Web 入口按既定语义「联系邮箱默认取登录邮箱」，因此登录邮箱必须同时适配
+ * `base_user_account.login_email`（100）与 `base_user_info.email`（50）两列。
+ * 旧 `register` 入口维持原输入契约（254），不因本收敛被动收紧。
+ */
+export const WEB_REGISTRATION_EMAIL_MAX_LENGTH = 50;
+
+/** Web 注册登录名上限：`base_user_account.login_name` 列宽 30 */
+export const WEB_REGISTRATION_LOGIN_NAME_MAX_LENGTH = 30;
+
+/**
+ * Web 默认昵称基础候选的最大长度。
+ *
+ * `base_user_info.nickname` 列宽 50，昵称冲突时 `generateUniqueNicknameWithSuffix`
+ * 追加 `#` + 6 位随机后缀共 7 个字符，故基础候选最多 43 个字符才能保证追加后仍在列内。
+ */
+export const WEB_REGISTRATION_NICKNAME_BASE_MAX_LENGTH = 43;
+
 interface RegisterWithEmailNormalizeInput {
   loginEmail: string;
   nickname?: string | null;
@@ -72,9 +92,50 @@ export function normalizeRegisterWithEmailInput(
   };
 }
 
+/**
+ * Web 入口的列宽边界校验（在归一化之后、任何公司/账号写入之前执行）。
+ *
+ * - 登录邮箱：Web 联系邮箱默认取登录邮箱，必须适配 `base_user_info.email`（50）；
+ * - 登录名：必须适配 `base_user_account.login_name`（30），长度仍要求 4–30。
+ *
+ * 旧 `register` 入口不调用本函数，维持原输入契约。
+ */
+export function assertWebRegistrationColumnLimits(input: {
+  loginName?: string | null;
+  loginEmail: string;
+}): void {
+  if (input.loginEmail.length > WEB_REGISTRATION_EMAIL_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      `登录邮箱最多 ${WEB_REGISTRATION_EMAIL_MAX_LENGTH} 个字符`,
+      { field: 'loginEmail' },
+    );
+  }
+
+  if (input.loginName === null || typeof input.loginName === 'undefined') {
+    return;
+  }
+
+  if (input.loginName.length < 4) {
+    throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, '登录名至少 4 个字符', {
+      field: 'loginName',
+    });
+  }
+
+  if (input.loginName.length > WEB_REGISTRATION_LOGIN_NAME_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      `登录名最多 ${WEB_REGISTRATION_LOGIN_NAME_MAX_LENGTH} 个字符`,
+      { field: 'loginName' },
+    );
+  }
+}
+
 export function normalizeRegistrationNicknameCandidatesInput(input: {
   providedNickname?: unknown;
   fallbackOptions?: unknown;
+  /** 默认候选的最大字符数；提供时按字符截断，保证追加冲突后缀后仍在列内 */
+  maxFallbackLength?: number;
 }): {
   providedNickname?: string;
   fallbackOptions: string[];
@@ -97,8 +158,16 @@ export function normalizeRegistrationNicknameCandidatesInput(input: {
     const normalized = normalizeOptionalText(option, 'to_undefined', {
       fieldName: '昵称备选项',
     });
-    if (typeof normalized === 'string' && !fallbackOptions.includes(normalized)) {
-      fallbackOptions.push(normalized);
+    if (typeof normalized !== 'string') {
+      continue;
+    }
+    // 按 Unicode 码点截断，避免把代理对（emoji / 生僻字）切成半个字符
+    const bounded =
+      typeof input.maxFallbackLength === 'number' && input.maxFallbackLength > 0
+        ? Array.from(normalized).slice(0, input.maxFallbackLength).join('')
+        : normalized;
+    if (bounded.length > 0 && !fallbackOptions.includes(bounded)) {
+      fallbackOptions.push(bounded);
     }
   }
 

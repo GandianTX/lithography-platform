@@ -31,6 +31,9 @@ import {
 import { RegisterTypeEnum } from '@app-types/services/register.types';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 
+/** 本轮一次性短标识：组织编码按轮派生，避免上一轮残留被当作本轮资源接管。 */
+const RUN_TAG = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
+
 /**
  * Register 模块 E2E 测试
  */
@@ -39,9 +42,10 @@ describe('Register (e2e)', () => {
   let dataSource: DataSource;
   // 本规格的归属台账：只登记 register 返回的真实账号 ID 与最小预期事实，清理按 ID 精确执行
   let ownership: OwnedResourceLedger = createOwnedResourceLedger();
-  // 规格级组织编码：每次造数前幂等建立并登记到本用例台账，
-  // 与账号/成员关系一并精确回收（清理器禁止成员关系指向台账外的组织）。
-  const suiteOrganizationCodes = buildSuiteOrganizationCodes('REG');
+  // 规格级组织编码：按本轮唯一标识派生，上一轮残留不会被自动接管；
+  // 每次造数前幂等建立并登记到本用例台账，与账号/成员关系一并精确回收
+  // （清理器禁止成员关系指向台账外的组织）。
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes(`REG_${RUN_TAG}`);
   // R04：清理失败时保留台账与失败原因，只有清理成功才重置；与永久反例共用同一实现。
   const lifecycle = createOwnedLedgerLifecycle({
     helper: 'register.e2e',

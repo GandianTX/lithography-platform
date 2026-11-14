@@ -98,12 +98,24 @@ export function RegistrationOrganizationSelect({
           onChange?.({ id: Number(next.value), name: String(next.label ?? '') });
         }}
         onPopupScroll={handlePopupScroll}
+        // 长公司名随弹层可用宽度自然换行：选项正文不再被单行省略号截断，
+        // 虚拟列表按实际高度测量并滚动（rc-virtual-list 支持动态行高）
+        optionRender={(option) => (
+          <span className="whitespace-normal [overflow-wrap:anywhere]">{option.label}</span>
+        )}
         options={options}
         placeholder={placeholder}
         showSearch={{ filterOption: false, onSearch: search }}
         style={{ width: '100%' }}
         value={value ? { label: value.name, value: value.id } : undefined}
       />
+      {/* 已选值保持单行（弹层内已可换行查看），另给出常驻的完整名称确认：
+          触摸与键盘用户都能直接读到完整称谓，不依赖原生 title / hover */}
+      {value ? (
+        <p className="m-0 text-xs [overflow-wrap:anywhere]" style={{ color: 'var(--text-muted)' }}>
+          已选公司：{value.name.trim()}
+        </p>
+      ) : null}
       {state.status === 'failed' ? (
         <div className="flex items-center gap-2">
           <span className="text-xs text-red-500">{state.message}</span>

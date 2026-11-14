@@ -30,7 +30,9 @@ import { ChangeMyPasswordUsecase } from './change-my-password.usecase';
  * 6. 写哈希失败 ⇒ 整个事务回滚，且失败日志抑制 `message`（UPDATE 绑定参数含哈希）；
  * 7. 成功结果不含当前密码、新密码、哈希或 Token；
  * 8. 不新增 Token 黑名单 / tokenVersion / 服务端会话撤销；
- * 9. 全部日志（成功与失败）都不含当前密码、新密码或哈希。
+ * 9. 全部日志（成功与失败）都不含当前密码、新密码或哈希；
+ * 10. 强制改密（`mustChangePassword`）下新密码与当前密码相同时拒绝且不写哈希、不清标记；
+ *    未要求强制改密时保持既有语义（同值仍按原行为处理）。
  */
 describe('ChangeMyPasswordUsecase', () => {
   const ACCOUNT_ID = 7;
@@ -105,6 +107,7 @@ describe('ChangeMyPasswordUsecase', () => {
       status: AccountStatus.ACTIVE,
       loginPassword: STORED_HASH,
       createdAt: DB_CREATED_AT,
+      mustChangePassword: false,
     });
     (accountService.updateAccountPasswordHash as jest.Mock)
       .mockReset()
@@ -199,6 +202,69 @@ describe('ChangeMyPasswordUsecase', () => {
     });
   });
 
+  describe('强制改密必须实际更换密码', () => {
+    /** 模拟管理员要求下次登录必须改密的账号（数据库锁内快照事实） */
+    const mockMustChangePasswordSnapshot = (): void => {
+      (accountService.lockMyAccountCredentialSnapshot as jest.Mock).mockResolvedValue({
+        id: ACCOUNT_ID,
+        status: AccountStatus.ACTIVE,
+        loginPassword: STORED_HASH,
+        createdAt: DB_CREATED_AT,
+        mustChangePassword: true,
+      });
+    };
+
+    it('新密码与当前密码相同时拒绝，不写哈希、不清标记，事务回滚并记 warn', async () => {
+      mockMustChangePasswordSnapshot();
+
+      const error = await captureThrownError(execute(CURRENT_PASSWORD, CURRENT_PASSWORD));
+
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
+        message: '新密码需与当前密码不同',
+        details: undefined,
+      });
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: ACCOUNT_ID,
+          errorCode: MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
+          phase: 'VERIFY_NEW_PASSWORD_DISTINCT',
+        }),
+        expect.any(String),
+      );
+      expect(logger.info).not.toHaveBeenCalled();
+    });
+
+    it('新密码不同时正常覆盖哈希并在同一 UPDATE 清除强制改密标记', async () => {
+      mockMustChangePasswordSnapshot();
+
+      await expect(execute(CURRENT_PASSWORD, NEW_PASSWORD)).resolves.toMatchObject({
+        isUpdated: true,
+      });
+
+      expect(accountService.updateAccountPasswordHash).toHaveBeenCalledWith({
+        accountId: ACCOUNT_ID,
+        passwordHash: AccountService.hashPasswordWithTimestamp(NEW_PASSWORD, DB_CREATED_AT),
+        transactionContext: harness.txContext,
+        clearMustChangePassword: true,
+      });
+      expect(harness.isCommitted()).toBe(true);
+    });
+
+    it('未要求强制改密时保持既有语义：允许提交同值密码（不扩大契约）', async () => {
+      // beforeEach 默认快照 mustChangePassword: false
+      await expect(execute(CURRENT_PASSWORD, CURRENT_PASSWORD)).resolves.toMatchObject({
+        isUpdated: true,
+      });
+
+      expect(accountService.updateAccountPasswordHash).toHaveBeenCalledTimes(1);
+      expect(harness.isCommitted()).toBe(true);
+    });
+  });
+
   describe('密码策略只作用于新密码', () => {
     it('存量弱口令作为当前密码时仍可改密，策略只校验新密码一次', async () => {
       const legacyPassword = '123';
@@ -207,6 +273,7 @@ describe('ChangeMyPasswordUsecase', () => {
         status: AccountStatus.ACTIVE,
         loginPassword: AccountService.hashPasswordWithTimestamp(legacyPassword, DB_CREATED_AT),
         createdAt: DB_CREATED_AT,
+        mustChangePassword: false,
       });
 
       await expect(execute(legacyPassword, NEW_PASSWORD)).resolves.toMatchObject({
@@ -278,6 +345,7 @@ describe('ChangeMyPasswordUsecase', () => {
         status: AccountStatus.ACTIVE,
         loginPassword: AccountService.hashPasswordWithTimestamp(CURRENT_PASSWORD, OTHER_CREATED_AT),
         createdAt: OTHER_CREATED_AT,
+        mustChangePassword: false,
       });
 
       await execute(CURRENT_PASSWORD, NEW_PASSWORD);

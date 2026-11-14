@@ -20,7 +20,7 @@ Global error contract: Every GraphQL interface must also follow docs/api/graphql
 
 公开注册按角色分流：`CUSTOMER` 选择有效组织后直接开通并绑定该组织 `CUSTOMER` 成员；`ENGINEER` 先提交待审申请，账号与资料保持 `PENDING / PENDING`，由所选组织管理员审核通过后才开通。`SUPER_ADMIN` 不开放自助注册，仍由受控管理流程或 Seed 创建。
 
-登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）默认只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；当调用方显式传 `allowRestrictedSession = true` 时，`PENDING` 账号只有在存在明确会话限制（`MUST_CHANGE_PASSWORD` / `ENGINEER_PENDING` / `ENGINEER_REJECTED` / `ENGINEER_INACTIVE`）时才签发受限令牌，停用、封禁、删除、暂停等状态仍一律拒绝。`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上复用 `ResolveSessionRestrictionUsecase`（唯一事实读取入口）与同一套 `resolveSessionRestriction` 纯策略，并固定允许受限会话。受限会话只能进入受限入口（改密页 / 待审结果页），业务接口由 `SessionRestrictionGuard` 拦截。第三方登录入口不传 `allowRestrictedSession`，因此仍不提供绕过审核的路径。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
+登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）默认只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；当调用方显式传 `allowRestrictedSession = true` 时，`PENDING` 账号只有在存在明确会话限制（`MUST_CHANGE_PASSWORD` / `ENGINEER_PENDING` / `ENGINEER_REJECTED` / `ENGINEER_INACTIVE`）时才签发受限令牌，停用、封禁、删除、暂停等状态仍一律拒绝。`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上复用 `ResolveSessionRestrictionUsecase`（唯一事实读取入口）与同一套 `resolveSessionRestriction` 纯策略，并固定允许受限会话。受限会话只能进入受限入口（改密页 / 待审结果页），业务接口由 `SessionRestrictionGuard` 拦截。第三方登录入口不传 `allowRestrictedSession`，因此仍不提供绕过审核的路径；其 `LoginResult` 与密码登录同源计算 `restriction` 与组织身份字段，`ACTIVE` 账号的「必须改密 / 工程师资格未生效」会如实返回并同样受每请求守卫拦截，`PENDING` 账号仍返回 `ACCOUNT_INACTIVE`。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
 
 工程师资格口径：最新申请为 `APPROVED` 时，只有账号与资料同时 `ACTIVE`，且账号在该申请目标组织内恰有一条有效 `ENGINEER` 成员关系（成员 `ACTIVE` 且组织 `ACTIVE`），才视为资格生效并返回 `NONE`；成员缺失、组织停用、角色不符、目标组织不一致或多组织歧义一律返回 `ENGINEER_INACTIVE`（滚动受限，业务入口由守卫拒绝）。没有任何工程师申请记录的存量工程师账号不追加成员事实要求，继续沿用「双状态 `ACTIVE` 即 `NONE`」的既有口径。
 
@@ -133,8 +133,12 @@ Resolver、Guard、Usecase 不应各自手写不同的 session shape。
     （映射 `BAD_USER_INPUT`），成功后账号直接 `ACTIVE` 并写可信公司归属。
   - `ENGINEER`：仅可选择名单内公司，必填 `realName` / `phone`；写入账号与资料
     （`PENDING / PENDING`）与待审申请，待组织管理员审核通过后才可正常登录。
-- 并发注册命中账号唯一索引冲突时返回 `ACCOUNT_ALREADY_EXISTS`，映射 `CONFLICT`；
+- 并发注册命中账号唯一索引冲突时，错误类别按入口区分：旧 `register` 维持
+  `ACCOUNT_ALREADY_EXISTS` → `BAD_USER_INPUT`（兼容基线契约），`registerWeb` 使用
+  `REGISTRATION_ACCOUNT_EXISTS` → `CONFLICT`；预检查与唯一索引兜底共用同一决定点。
   前端按 `extensions.code` 大类识别，不依赖生产环境隐藏的 `extensions.errorCode`。
+- `registerWeb` 的 `loginEmail` 可写上限为 50（联系邮箱列宽），`loginName` 为 4–30
+  （登录名列宽）；两者均在归一化后、任何公司/账号写入前拒绝越界输入。
 - 工程师待审补充入口：`myEngineerRegistrationStatus`（凭据证明，不使用 JWT）、
   `resubmitEngineerRegistration`（拒绝后重提）。
 

@@ -40,14 +40,19 @@ export function LoginPage({ onAuthenticated, sessionExpired = false }: LoginPage
             </div>
           ) : null}
 
-          <LoginForm onAuthenticated={onAuthenticated} />
-
-          <div className="login-card-register-links">
-            <span>还没有账号？</span>
-            <Link to="/register/customer">客户注册</Link>
-            <span aria-hidden="true" className="login-card-register-divider" />
-            <Link to="/register/engineer">工程师注册</Link>
-          </div>
+          <LoginForm
+            onAuthenticated={onAuthenticated}
+            secondaryActions={
+              <>
+                <Link className="login-action-link" to="/register/customer">
+                  客户注册
+                </Link>
+                <Link className="login-action-link" to="/register/engineer">
+                  工程师注册
+                </Link>
+              </>
+            }
+          />
         </DataCard>
       </div>
     </div>

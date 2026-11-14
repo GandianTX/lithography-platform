@@ -26,6 +26,7 @@ import {
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import { PinoLogger } from 'nestjs-pino';
 import {
+  assertWebRegistrationColumnLimits,
   normalizeEngineerRegistrationProfile,
   normalizeLegacyEngineerRegistrationProfile,
   normalizeRegisterWithEmailInput,
@@ -33,6 +34,7 @@ import {
   normalizeRegistrationNicknameCandidatesInput,
   resolveLegacyRegistrationOrganizationChoice,
   resolveRegistrationOrganizationChoice,
+  WEB_REGISTRATION_NICKNAME_BASE_MAX_LENGTH,
   type RegistrationOrganizationChoice,
 } from './registration-input.normalize';
 
@@ -107,6 +109,11 @@ export class RegisterWithEmailUsecase {
     const normalizedNickname = normalizedInput.nickname;
     const role = this.mapRegisterTypeToRole(type);
     const isWebEntry = entryChannel === RegistrationEntryChannel.WEB;
+    // Web 入口在归一化之后、任何公司/账号写入之前完成列宽边界判断；
+    // 旧 register 入口维持原输入契约，不因共享 helper 被动收紧
+    if (isWebEntry) {
+      assertWebRegistrationColumnLimits({ loginName, loginEmail: normalizedLoginEmail });
+    }
     // 公司分支：Web 允许选公司或手填且互斥；旧入口只接受必填组织主键
     const organizationChoice = isWebEntry
       ? resolveRegistrationOrganizationChoice({ organizationId, organizationName, role })
@@ -129,7 +136,11 @@ export class RegisterWithEmailUsecase {
       const finalClientIp = clientIp ?? '';
 
       // 检查账户是否已存在
-      await this.checkAccountExists({ loginName, loginEmail: normalizedLoginEmail });
+      await this.checkAccountExists({
+        loginName,
+        loginEmail: normalizedLoginEmail,
+        entryChannel,
+      });
 
       // 准备注册数据
       const preparedData = await this.prepareRegisterData({
@@ -138,6 +149,7 @@ export class RegisterWithEmailUsecase {
         loginPassword,
         nickname: normalizedNickname,
         role,
+        isWebEntry,
       });
 
       // 创建账户（客户直接开通；工程师落待审申请）
@@ -186,7 +198,7 @@ export class RegisterWithEmailUsecase {
 
       // 并发注册可能同时通过预检查，最终由唯一索引兜底；映射为可操作的业务错误
       if (isDuplicateAccountEntryError(error)) {
-        throw new DomainError(ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS, '该登录名或邮箱已被注册');
+        throw this.createDuplicateAccountError(entryChannel);
       }
 
       if (error instanceof Error) {
@@ -203,9 +215,11 @@ export class RegisterWithEmailUsecase {
   private async checkAccountExists({
     loginName,
     loginEmail,
+    entryChannel,
   }: {
     loginName?: string | null;
     loginEmail: string;
+    entryChannel: RegistrationEntryChannel;
   }): Promise<void> {
     const exists = await this.accountQueryService.checkAccountExists({
       loginName,
@@ -213,8 +227,22 @@ export class RegisterWithEmailUsecase {
     });
 
     if (exists) {
-      throw new DomainError(ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS, '该登录名或邮箱已被注册');
+      throw this.createDuplicateAccountError(entryChannel);
     }
+  }
+
+  /**
+   * 重复账号事实的唯一定点：按入口选择稳定错误类别。
+   *
+   * - 旧 `register`：`ACCOUNT_ALREADY_EXISTS` → `BAD_USER_INPUT`（基线契约，兼容既有客户端）；
+   * - Web `registerWeb`：`REGISTRATION_ACCOUNT_EXISTS` → `CONFLICT`。
+   *
+   * 预检查与唯一索引兜底两条路径都经此方法，避免同事实在两个入口漂移。
+   */
+  private createDuplicateAccountError(entryChannel: RegistrationEntryChannel): DomainError {
+    return entryChannel === RegistrationEntryChannel.WEB
+      ? new DomainError(ACCOUNT_ERROR.REGISTRATION_ACCOUNT_EXISTS, '该登录名或邮箱已被注册')
+      : new DomainError(ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS, '该登录名或邮箱已被注册');
   }
 
   /**
@@ -226,16 +254,21 @@ export class RegisterWithEmailUsecase {
     loginPassword,
     nickname,
     role,
+    isWebEntry,
   }: {
     loginName?: string | null;
     loginEmail: string;
     loginPassword: string;
     nickname?: string;
     role: IdentityTypeEnum.CUSTOMER | IdentityTypeEnum.ENGINEER;
+    isWebEntry: boolean;
   }) {
     const nicknameCandidates = normalizeRegistrationNicknameCandidatesInput({
       providedNickname: nickname,
       fallbackOptions: [loginName ?? undefined, loginEmail.split('@')[0], '用户'],
+      // Web 默认昵称候选需为冲突后缀预留空间，保证追加后仍在 nickname 列宽内；
+      // 旧入口与小程序入口维持既有候选行为
+      maxFallbackLength: isWebEntry ? WEB_REGISTRATION_NICKNAME_BASE_MAX_LENGTH : undefined,
     });
 
     const finalNickname = await this.accountQueryService.pickAvailableNickname({

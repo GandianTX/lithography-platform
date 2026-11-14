@@ -34,8 +34,10 @@ import {
   assertApiSqlSameDatabase,
   cleanupRegisteredDedicatedAccounts,
   DEDICATED_LOGIN_NAME_PATTERN,
+  type DedicatedAccountRole,
   preflightDedicatedAccountCleanup,
   readAccountCountByLoginName,
+  readActingOrganizationId,
   registerCreatedDedicatedAccount,
   type RegisteredDedicatedAccount,
   runWithCleanup,
@@ -188,7 +190,14 @@ async function searchAdminUser(page: Page, keyword: string): Promise<void> {
  */
 async function createUserViaPage(
   page: Page,
-  input: { roleLabel: string; nickname: string; loginName: string; password: string },
+  input: {
+    role: DedicatedAccountRole;
+    roleLabel: string;
+    nickname: string;
+    loginName: string;
+    password: string;
+    organizationId: number;
+  },
   registry: RegisteredDedicatedAccount[],
 ): Promise<RegisteredDedicatedAccount> {
   await page.getByRole('button', { name: '创建用户' }).click();
@@ -222,7 +231,15 @@ async function createUserViaPage(
 
   const createResponse = await createResponsePromise;
   const createBody = (await createResponse.json().catch(() => null)) as unknown;
-  const registered = registerCreatedDedicatedAccount(registry, createBody, input.loginName);
+  const registered = registerCreatedDedicatedAccount(registry, createBody, {
+    accessGroup: [input.role],
+    loginName: input.loginName,
+    nickname: input.nickname,
+    organizationId: input.organizationId,
+    role: input.role,
+    userInfoEmail: null,
+    userState: 'ACTIVE',
+  });
 
   await expect(dialog).toBeHidden();
 
@@ -406,6 +423,8 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
 
     // 本轮登记的精确清理目标（创建响应一返回即登记，见 createUserViaPage / 评审 P1）
     const created: RegisteredDedicatedAccount[] = [];
+    // adminCreateUser 会把 ENGINEER / CUSTOMER 绑定管理员当前有效组织，预期值取自该事实
+    const actingOrganizationId = readActingOrganizationId('mock_super_admin');
 
     await runWithCleanup(
       async () => {
@@ -425,7 +444,9 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
             {
               loginName,
               nickname,
+              organizationId: actingOrganizationId,
               password: CREATE_PASSWORD,
+              role: roleCase.role,
               roleLabel: roleCase.roleLabel,
             },
             created,
@@ -502,6 +523,8 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     const loginName = buildDedicatedLoginName();
     // 本轮登记的精确清理目标（创建响应一返回即登记，见下）
     const created: RegisteredDedicatedAccount[] = [];
+    // adminCreateUser 会把该 ENGINEER 绑定管理员当前有效组织，预期值取自该事实
+    const actingOrganizationId = readActingOrganizationId('mock_super_admin');
 
     await runWithCleanup(
       async () => {
@@ -520,11 +543,15 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
         );
 
         // 创建响应成功即立即登记精确 ID，早于任何后续登录 / 停用 / 断言
-        const accountId = registerCreatedDedicatedAccount(
-          created,
-          createdResponse.body,
+        const accountId = registerCreatedDedicatedAccount(created, createdResponse.body, {
+          accessGroup: ['ENGINEER'],
           loginName,
-        ).id;
+          nickname: 'E2E 停用联调账号',
+          organizationId: actingOrganizationId,
+          role: 'ENGINEER',
+          userInfoEmail: null,
+          userState: 'ACTIVE',
+        }).id;
 
         // 初始密码真实 UI 登录并读取会话 Token（旧 Token 的来源）
         await loginViaUi(page, loginName, CREATE_PASSWORD, '/engineer');

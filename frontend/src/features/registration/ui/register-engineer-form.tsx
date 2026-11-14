@@ -104,7 +104,7 @@ export function RegisterEngineerForm() {
     return (
       <div className="register-success">
         <Alert showIcon title="注册申请已提交，等待所属公司管理员审核。" type="success" />
-        <p className="register-success-email">{registeredEmail}</p>
+        <p className="register-success-email [overflow-wrap:anywhere]">{registeredEmail}</p>
         <Button block type="primary" onClick={() => navigate('/login')}>
           前往登录
         </Button>
@@ -152,13 +152,8 @@ export function RegisterEngineerForm() {
         />
       </Form.Item>
 
-      <Form.Item
-        extra="2–20 个字符，支持中英文、数字与 _ - · ."
-        label="昵称（选填）"
-        name="nickname"
-        rules={OPTIONAL_NICKNAME_RULES}
-      >
-        <Input disabled={isSubmitting} placeholder="用于界面展示" />
+      <Form.Item label="昵称（选填）" name="nickname" rules={OPTIONAL_NICKNAME_RULES}>
+        <Input disabled={isSubmitting} placeholder="2–20 个字符，用于界面展示" />
       </Form.Item>
 
       <Form.Item
@@ -221,7 +216,6 @@ export function RegisterEngineerForm() {
       </Form.Item>
 
       <Form.Item
-        extra={`选填，最多 ${APPLICATION_NOTE_MAX_LENGTH} 个字符，供管理员审核参考`}
         label="申请说明（选填）"
         name="applicationNote"
         rules={[
@@ -231,7 +225,12 @@ export function RegisterEngineerForm() {
           },
         ]}
       >
-        <Input.TextArea disabled={isSubmitting} placeholder="说明加入原因或工作背景" rows={3} />
+        <Input.TextArea
+          autoSize={{ minRows: 2, maxRows: 5 }}
+          disabled={isSubmitting}
+          maxLength={APPLICATION_NOTE_MAX_LENGTH}
+          placeholder="说明加入原因或工作背景"
+        />
       </Form.Item>
 
       <div className="register-actions">

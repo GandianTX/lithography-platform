@@ -41,6 +41,9 @@ import {
   seedTestOrganizations,
 } from '../utils/test-organizations';
 
+/** 本轮一次性短标识：组织编码按轮派生，避免上一轮残留被当作本轮资源接管。 */
+const RUN_TAG = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
+
 /**
  * 工程师自助注册 + 组织管理员审核真实链路 E2E。
  *
@@ -333,9 +336,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
   let guestToken: string;
   let adminAccountId: number;
 
-  const suiteOrganizationCodes = buildSuiteOrganizationCodes('ENGREG');
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes(`ENGREG_${RUN_TAG}`);
   /** 旧入口兼容用例专用：启用但未受管公司（Web 规则不可用，旧 register 可用） */
-  const LEGACY_UNMANAGED_ORGANIZATION_CODE = 'E2E_ENGREG_LEGACY_UNMANAGED';
+  const LEGACY_UNMANAGED_ORGANIZATION_CODE = `E2E_ENGREG_LEGACY_UNMANAGED_${RUN_TAG}`;
   let primaryOrganizationId = 0;
   let peerOrganizationId = 0;
   let legacyUnmanagedOrganizationId = 0;
@@ -533,11 +536,14 @@ describe('工程师注册与组织审核 (e2e)', () => {
     accountId: number,
     input: RegisterInput,
     registrationStatus: RegistrationOutcomeStatus,
+    options: { readonly webEntry?: boolean } = {},
   ): void => {
     const role =
       input.type === RegisterTypeEnum.ENGINEER
         ? IdentityTypeEnum.ENGINEER
         : IdentityTypeEnum.CUSTOMER;
+    // Web 入口客户在创建事务内写可信公司归属；旧入口与工程师保持 null（V44）。
+    const webEntry = options.webEntry ?? true;
     const pending = registrationStatus === RegistrationOutcomeStatus.PENDING_REVIEW;
     recordOwnedResource(ownership, 'account', accountId, {
       loginName: input.loginName ?? null,
@@ -548,6 +554,10 @@ describe('工程师注册与组织审核 (e2e)', () => {
       nickname: input.nickname,
       userInfoEmail: input.loginEmail,
       userState: pending ? UserState.PENDING : UserState.ACTIVE,
+      // Web 客户注册在创建事务内写入可信公司归属；工程师与旧入口写 null（V44）。
+      // 该字段是清理引用闭包的强制预期：缺登记会在首删前失败关闭。
+      customerOrganizationId:
+        role === IdentityTypeEnum.CUSTOMER && webEntry ? input.organizationId : null,
     });
   };
 
@@ -581,6 +591,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
     if (userInfo.nickname !== expected.nickname) mismatches.push('nickname');
     if ((userInfo.email ?? null) !== expected.userInfoEmail) mismatches.push('userInfoEmail');
     if (String(userInfo.userState) !== String(expected.userState)) mismatches.push('userState');
+    if ((userInfo.customerOrganizationId ?? null) !== (expected.customerOrganizationId ?? null)) {
+      mismatches.push('customerOrganizationId');
+    }
     if (mismatches.length > 0) {
       throw new Error(
         `回读核验失败：账号 ${accountId} 归属字段已与本轮登记事实不一致（${mismatches.join(', ')}），` +
@@ -904,6 +917,7 @@ describe('工程师注册与组织审核 (e2e)', () => {
         nickname,
         userInfoEmail: CUSTOMER_READBACK_FAILURE.loginEmail,
         userState: UserState.ACTIVE,
+        customerOrganizationId: primaryOrganizationId,
       });
     });
 
@@ -1029,7 +1043,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
 
       // 先登记创建事实，再做可失败的回读核验
       recordApplication(applicationId, accountId, primaryOrganizationId, null);
-      recordRegisteredAccountCreation(accountId, input, RegistrationOutcomeStatus.PENDING_REVIEW);
+      recordRegisteredAccountCreation(accountId, input, RegistrationOutcomeStatus.PENDING_REVIEW, {
+        webEntry: false,
+      });
       await verifyRegisteredAccount(accountId);
 
       const userInfo = await userInfoRepo().findOneOrFail({ where: { accountId } });
@@ -1067,7 +1083,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
         throw new Error(`旧入口客户注册未返回账号主键：${JSON.stringify(body)}`);
       }
 
-      recordRegisteredAccountCreation(accountId, input, RegistrationOutcomeStatus.REGISTERED);
+      recordRegisteredAccountCreation(accountId, input, RegistrationOutcomeStatus.REGISTERED, {
+        webEntry: false,
+      });
       await verifyRegisteredAccount(accountId);
       await recordActiveMembership(
         legacyUnmanagedOrganizationId,

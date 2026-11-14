@@ -1,29 +1,37 @@
 // e2e/helpers/dedicated-account-cleanup.spec.ts
 // @vitest-environment node
-// 专用账号物理清理 helper 的单元测试（R2 修正轮第 4 项；R4 修正轮扩展；vitest 运行，
-// Playwright 经 testIgnore 排除 helpers 目录）。node 环境：helper 内部依赖 import.meta.url
-// 解析 env 文件路径，须在 node 环境下运行。
+// 专用账号物理清理 helper 的单元测试（R2 修正轮第 4 项；R4 修正轮扩展；终审 I3 收紧）。
+// vitest 运行，Playwright 经 testIgnore 排除 helpers 目录。node 环境：helper 内部依赖
+// import.meta.url 解析 env 文件路径，须在 node 环境下运行。
 //
-// 关键安全断言：
-// - 非安全正整数 ID、非专用白名单登录名、缺少 opt-in、库名授权不等值，都必须在任何 SQL
-//   组装 / 数据库进程启动之前被拒绝；
-// - 清理目标绑定 accountId + dedicatedLoginName 双因子：事务内绑定断言先于任何 DELETE，
-//   绑定不匹配时 mysql 中止退出、事务自动回滚，目标账号保持存在；
-// - API/SQL 同库探针：SQL 实际连接库 ≠ 配置库、API 读回 ≠ 哨兵、GraphQL errors，任何一种
-//   情况都必须在业务写入（adminCreateUser）之前失败，且哨兵无论成败都精确恢复；
-// - 负例全部经 mock 表达，不触真实数据库。
+// 关键安全断言（终审 I3）：
+// - 入参是本次创建的资源记录；ID、登录名、角色、组织、成员关系与资料主键逐项校验；
+// - 清理入口自身要求显式 opt-in + 严格专用库名，拒绝时绝不启动 mysql 进程；
+// - 创建响应丢失时登记为空、无删除目标；回读核验不符时登记保留但拒绝删除（失败关闭）；
+// - 删除脚本在**同一会话同一事务**内复核 DATABASE()、FOR UPDATE 锁定并核对绑定、
+//   检查集合外引用；任一断言失败时 mysql batch 立即中止，DELETE 一条都不会执行；
+// - 只按已核验主键删除成员关系 / 资料 / 账号，不再推导式删除 AI、工单、资料等业务表；
+// - 残留非零、绑定不符与账外引用分别可诊断，且互不覆盖。
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { DEDICATED_E2E_DB_NAME } from '../../e2e-real/dedicated-e2e-environment';
 
 import {
   assertApiSqlSameDatabase,
   cleanupRegisteredDedicatedAccounts,
   DEDICATED_LOGIN_NAME_PATTERN,
-  deleteE2EDedicatedAccountById,
+  type DedicatedAccountExpectation,
+  deleteE2EDedicatedAccount,
+  describeDedicatedAccountCleanupTarget,
   preflightDedicatedAccountCleanup,
   readAccountCountByLoginName,
+  readActingOrganizationId,
   readDedicatedAccountCleanupResidue,
+  readDedicatedAccountCreationFacts,
+  readDedicatedCleanupReferenceColumns,
   registerCreatedDedicatedAccount,
+  type RegisteredDedicatedAccount,
   runWithCleanup,
   toErrorMessage,
 } from './dedicated-account-cleanup';
@@ -44,26 +52,419 @@ vi.mock('node:fs', async (importOriginal) => ({
 
 const OPT_IN_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
 const DEDICATED_LOGIN_NAME = 'e2e-pw-1758000000000';
+const DEDICATED_NICKNAME = 'E2E 改密专用账号';
 
-/** 从 execFileSync 入参中提取 -e 后的 SQL 字面量（取最近一次调用） */
-function executedSql(): string | undefined {
-  const lastCallArgs = execFileSyncMock.mock.lastCall?.[1] as string[] | undefined;
-  const flagIndex = lastCallArgs?.indexOf('-e') ?? -1;
-
-  return flagIndex >= 0 ? lastCallArgs?.[flagIndex + 1] : undefined;
+function envFile(dbName: string): string {
+  return `DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=${dbName}\n`;
 }
 
-/** 提取全部已执行 SQL（按调用顺序），用于断言 UPDATE 恢复序列 */
-function executedSqlList(): string[] {
-  return execFileSyncMock.mock.calls.map((call) => {
-    const args = call[1] as string[];
-    const flagIndex = args.indexOf('-e');
+function utf8Hex(value: string): string {
+  return Buffer.from(value, 'utf8').toString('hex').toUpperCase();
+}
 
-    return flagIndex >= 0 ? args[flagIndex + 1] : '';
+const EXPECTATION: DedicatedAccountExpectation = {
+  accessGroup: ['ENGINEER'],
+  loginName: DEDICATED_LOGIN_NAME,
+  nickname: DEDICATED_NICKNAME,
+  organizationId: 11,
+  role: 'ENGINEER',
+  userInfoEmail: null,
+  userState: 'ACTIVE',
+};
+
+const RECORD: RegisteredDedicatedAccount = {
+  ...EXPECTATION,
+  facts: { membershipId: 21, userInfoId: 31 },
+  id: 41,
+};
+
+/** 创建后回读事实的 batch 输出（-N -B：制表符分隔、无表头） */
+function creationFactsRows(options?: { memberships?: number }): string {
+  const membershipCount = options?.memberships ?? 1;
+  const rows = [
+    `ACCOUNT\t41\t${DEDICATED_LOGIN_NAME}\tENGINEER\t\t\t`,
+    `USER_INFO\t31\t${utf8Hex(DEDICATED_NICKNAME)}\tNULL\tACTIVE\t1\tENGINEER`,
+  ];
+
+  for (let index = 0; index < membershipCount; index += 1) {
+    rows.push(`MEMBERSHIP\t${21 + index}\t11\tENGINEER\tACTIVE\t\t`);
+  }
+
+  return rows.join('\n');
+}
+
+/**
+ * 模拟 mysql batch 语义：按语句顺序执行，遇到被拒断言（PREPARE 的 SQL 文本命中拒绝标记）
+ * 立即中止——返回已执行语句，后续语句（含 DELETE / COMMIT）不会执行。
+ */
+function simulateMysqlBatch(
+  sql: string,
+  rejectMarker: string | null,
+): { executed: string[]; rejected: boolean } {
+  const statements = sql
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  const preparedSql = new Map<string, string>();
+  const executed: string[] = [];
+
+  for (const statement of statements) {
+    const setMatch = statement.match(/^SET @(\w+)_sql = IF\([^)]*'SELECT 1', 'SELECT ([^']+)'\)$/);
+
+    if (setMatch) {
+      preparedSql.set(setMatch[1], setMatch[2]);
+    }
+
+    const execMatch = statement.match(/^EXECUTE (\w+)_stmt$/);
+
+    if (execMatch && rejectMarker !== null && preparedSql.get(execMatch[1]) === rejectMarker) {
+      return { executed, rejected: true };
+    }
+
+    executed.push(statement);
+  }
+
+  return { executed, rejected: false };
+}
+
+/**
+ * 安装 mysql mock：FK 发现返回 discovery 行，清理脚本按 batch 语义模拟。
+ * rejectMarker 命中时按真实 mysql 行为抛错（stderr 带 ERROR 标记），事务随连接关闭回滚。
+ */
+function installDedicatedMysqlMock(options?: {
+  database?: string;
+  discovery?: string;
+  rejectMarker?: string | null;
+}): { scripts: string[]; deletedTables: () => string[] } {
+  const database = options?.database ?? DEDICATED_E2E_DB_NAME;
+  const rejectMarker = options?.rejectMarker ?? null;
+  const scripts: string[] = [];
+  const executedStatements: string[] = [];
+
+  execFileSyncMock.mockImplementation((_file, args) => {
+    const argv = args as string[];
+    const flagIndex = argv.indexOf('-e');
+    const sql = argv[flagIndex + 1] as string;
+
+    if (sql.startsWith('SELECT kcu.TABLE_NAME')) {
+      return options?.discovery ?? '';
+    }
+
+    scripts.push(sql);
+
+    const simulation = simulateMysqlBatch(sql, rejectMarker);
+
+    executedStatements.push(...simulation.executed);
+
+    if (simulation.rejected) {
+      throw Object.assign(new Error('mysql batch aborted'), {
+        stderr: `ERROR 1054 (42S22): Unknown column '${rejectMarker}' in 'field list'`,
+      });
+    }
+
+    return database;
   });
+
+  return {
+    deletedTables: () =>
+      executedStatements
+        .filter((statement) => statement.startsWith('DELETE FROM'))
+        .map((statement) => statement.replace(/^DELETE FROM (\w+).*$/, '$1')),
+    scripts,
+  };
 }
 
-describe('real-backend 专用账号物理清理（R2 修正轮第 4 项 / R4 修正轮）', () => {
+describe('专用账号资源台账与引用闭包清理（终审 I3）', () => {
+  const originalOptIn = process.env[OPT_IN_ENV];
+  const originalDatabase = process.env.DB_NAME;
+
+  beforeEach(() => {
+    execFileSyncMock.mockReset().mockReturnValue('');
+    readFileSyncMock.mockReset().mockReturnValue(envFile(DEDICATED_E2E_DB_NAME));
+    delete process.env[OPT_IN_ENV];
+    delete process.env.DB_NAME;
+  });
+
+  afterEach(() => {
+    delete process.env[OPT_IN_ENV];
+    if (originalDatabase === undefined) {
+      delete process.env.DB_NAME;
+    } else {
+      process.env.DB_NAME = originalDatabase;
+    }
+  });
+
+  afterAll(() => {
+    if (originalOptIn === undefined) {
+      delete process.env[OPT_IN_ENV];
+    } else {
+      process.env[OPT_IN_ENV] = originalOptIn;
+    }
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    '非安全正整数账号 ID（%p）直接抛错且绝不启动 mysql 进程',
+    (invalidId) => {
+      process.env[OPT_IN_ENV] = '1';
+
+      expect(() => deleteE2EDedicatedAccount({ ...RECORD, id: invalidId })).toThrow(
+        '未通过正整数校验',
+      );
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['e2e_pw_1758000000000', 'mock_customer_alpha', 'e2e-pw-abc', ''])(
+    '登录名（%p）未通过专用账号白名单校验时直接抛错且绝不启动 mysql 进程',
+    (invalidLoginName) => {
+      process.env[OPT_IN_ENV] = '1';
+
+      expect(() => deleteE2EDedicatedAccount({ ...RECORD, loginName: invalidLoginName })).toThrow(
+        '未通过白名单校验',
+      );
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('专用登录名白名单形如 e2e-pw-<纯数字时间戳>', () => {
+    expect(DEDICATED_LOGIN_NAME_PATTERN.test('e2e-pw-1758000000000')).toBe(true);
+    expect(DEDICATED_LOGIN_NAME_PATTERN.test('mock_customer_alpha')).toBe(false);
+    expect(DEDICATED_LOGIN_NAME_PATTERN.test('e2e-pw-1758000000000; DROP TABLE x')).toBe(false);
+  });
+
+  it('缺少 opt-in 时物理清理被拒绝且 mysql 进程未被调用', () => {
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow('缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('opt-in 但目标库不含 e2e/test 段时在连接前被拒绝', () => {
+    process.env[OPT_IN_ENV] = '1';
+    readFileSyncMock.mockReturnValue(envFile('app'));
+
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow('不属于测试库命名');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('opt-in 且库名含 e2e 但不是严格专用库时仍被拒绝，且 mysql 进程未被调用', () => {
+    process.env[OPT_IN_ENV] = '1';
+    readFileSyncMock.mockReturnValue(envFile('app_e2e'));
+
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow('≠ 严格专用库');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('未核验事实（facts 为空）的记录拒绝清理，且不启动 mysql 进程', () => {
+    process.env[OPT_IN_ENV] = '1';
+
+    expect(() => deleteE2EDedicatedAccount({ ...RECORD, facts: null })).toThrow(
+      '缺少创建后核验事实',
+    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('正常路径：单事务内先核对绑定与闭包，再按成员→资料→账号顺序精确删除并提交', () => {
+    process.env[OPT_IN_ENV] = '1';
+    const mysql = installDedicatedMysqlMock({
+      discovery: [
+        'engineer_response\tcustomer_account_id\tbase_user_account\tid',
+        'organization_membership\taccount_id\tbase_user_account\tid',
+      ].join('\n'),
+    });
+
+    deleteE2EDedicatedAccount(RECORD);
+
+    expect(mysql.scripts).toHaveLength(1);
+
+    const sql = mysql.scripts[0];
+
+    // 同一会话：事务 + DATABASE() 复核必须在任何 DELETE 之前
+    expect(sql).toContain('START TRANSACTION');
+    expect(sql).toContain('SET @dedicated_cleanup_database = DATABASE()');
+    expect(sql.indexOf('DATABASE()')).toBeLessThan(sql.indexOf('DELETE FROM'));
+
+    // 绑定核对使用 FOR UPDATE 锁定，且先于任何 DELETE；账号锁定同时绑定登录名与身份漂移字段
+    expect(sql).toContain('FOR UPDATE');
+    expect(sql).toContain(
+      `SELECT id INTO @dedicated_cleanup_account_row FROM base_user_account WHERE id = 41 AND login_name = '${DEDICATED_LOGIN_NAME}' AND identity_hint = 'ENGINEER' FOR UPDATE`,
+    );
+    expect(sql.indexOf('FOR UPDATE')).toBeLessThan(sql.indexOf('DELETE FROM'));
+
+    // 集合外引用检查先于任何 DELETE
+    expect(sql.indexOf('dedicated_cleanup_unregistered_external_references')).toBeLessThan(
+      sql.indexOf('DELETE FROM'),
+    );
+
+    // 只删三张表，且先删成员关系（FK RESTRICT）再删资料与账号
+    expect(mysql.deletedTables()).toEqual([
+      'organization_membership',
+      'base_user_info',
+      'base_user_account',
+    ]);
+    expect(sql).not.toContain('DELETE FROM engineer_response');
+    expect(sql).not.toContain('DELETE FROM ai_message');
+    expect(sql).not.toContain('DELETE FROM repair_request');
+    expect(sql).not.toContain('DELETE FROM reference_document');
+
+    // 每条删除按已核验主键与归属执行
+    expect(sql).toContain(
+      'DELETE FROM organization_membership WHERE id = 21 AND account_id = 41 AND organization_id = 11',
+    );
+    expect(sql).toContain('DELETE FROM base_user_info WHERE id = 31 AND account_id = 41');
+    expect(sql).toContain(
+      `DELETE FROM base_user_account WHERE id = 41 AND login_name = '${DEDICATED_LOGIN_NAME}'`,
+    );
+
+    // 提交前核对本轮残留为零
+    expect(sql).toContain('dedicated_cleanup_residue_must_be_zero');
+    expect(sql.trimEnd().endsWith('COMMIT')).toBe(true);
+  });
+
+  it.each([
+    'dedicated_cleanup_database_must_equal_strict_dedicated_e2e',
+    'dedicated_cleanup_account_binding_login_name_and_identity_hint_must_match_exactly_one',
+    'dedicated_cleanup_user_info_binding_must_match_exactly_one',
+    'dedicated_cleanup_membership_binding_must_match_exactly_one',
+    'dedicated_cleanup_unregistered_external_references',
+  ])('首删前断言 %s 被拒时 batch 立即中止：一条 DELETE 都不执行', (marker) => {
+    process.env[OPT_IN_ENV] = '1';
+    const mysql = installDedicatedMysqlMock({ rejectMarker: marker });
+
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow(marker);
+    expect(mysql.deletedTables()).toEqual([]);
+  });
+
+  it('残留断言在三条删除之后执行：DELETE 已发出但 COMMIT 不会执行（连接关闭回滚）', () => {
+    process.env[OPT_IN_ENV] = '1';
+    const mysql = installDedicatedMysqlMock({
+      rejectMarker: 'dedicated_cleanup_residue_must_be_zero',
+    });
+
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow(
+      'dedicated_cleanup_residue_must_be_zero',
+    );
+    // 残留核对排在三条 DELETE 之后：已执行的 DELETE 由事务回滚撤销
+    expect(mysql.deletedTables()).toEqual([
+      'organization_membership',
+      'base_user_info',
+      'base_user_account',
+    ]);
+    expect(mysql.scripts[0].trimEnd().endsWith('COMMIT')).toBe(true);
+  });
+
+  it('删除条数不符时在该条 DELETE 之后立即中止，后续 DELETE 不再执行', () => {
+    process.env[OPT_IN_ENV] = '1';
+    const deleteCountMock = installDedicatedMysqlMock({
+      rejectMarker: 'dedicated_cleanup_membership_delete_must_affect_exactly_one_row',
+    });
+
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow(
+      'dedicated_cleanup_membership_delete_must_affect_exactly_one_row',
+    );
+    // 成员关系已尝试删除，但资料与账号的 DELETE 未被继续执行
+    expect(deleteCountMock.deletedTables()).toEqual(['organization_membership']);
+  });
+
+  it('创建后回读：成员关系多于预期即拒绝，并保留可诊断信息（不按登录名猜测归属）', () => {
+    readFileSyncMock.mockReturnValue(envFile(DEDICATED_E2E_DB_NAME));
+    execFileSyncMock.mockReturnValue(creationFactsRows({ memberships: 2 }));
+
+    expect(() => readDedicatedAccountCreationFacts(RECORD)).toThrow(
+      '组织成员关系期望恰好 1 行，实际 2 行',
+    );
+  });
+
+  it('创建后回读：关键字段不符时逐项报出（组织 / 成员角色 / 账号状态 / 资料字段）', () => {
+    execFileSyncMock.mockReturnValue(
+      [
+        `ACCOUNT\t41\t${DEDICATED_LOGIN_NAME}\tCUSTOMER\t\t\t`,
+        `USER_INFO\t31\t${utf8Hex('别的昵称')}\tNULL\tPENDING\t2\tADMIN\t`,
+        'MEMBERSHIP\t21\t99\tSUPER_ADMIN\tACTIVE\t\t',
+      ].join('\n'),
+    );
+
+    expect(() => readDedicatedAccountCreationFacts(RECORD)).toThrow('字段不符（identity_hint）');
+  });
+
+  it('引用闭包发现：集合内表被排除，外部列按实际 schema 返回，未受支持的引用目标失败关闭', () => {
+    execFileSyncMock.mockReturnValue(
+      [
+        'base_user_info\taccount_id\tbase_user_account\tid',
+        'organization_membership\taccount_id\tbase_user_account\tid',
+        'repair_request\tcustomer_account_id\tbase_user_account\tid',
+      ].join('\n'),
+    );
+
+    expect(readDedicatedCleanupReferenceColumns()).toEqual([
+      { column: 'customer_account_id', table: 'repair_request' },
+    ]);
+
+    execFileSyncMock.mockReturnValue('repair_request\tid\tbase_user_info\tid');
+
+    expect(() => readDedicatedCleanupReferenceColumns()).toThrow('未受支持的引用目标');
+  });
+
+  it('管理员有效组织必须唯一，否则拒绝据此核验归属', () => {
+    execFileSyncMock.mockReturnValue('11\n12');
+
+    expect(() => readActingOrganizationId('mock_super_admin')).toThrow('有效组织不唯一');
+    expect(() => readActingOrganizationId("mock'; DROP TABLE x")).toThrow('未通过格式校验');
+  });
+
+  it('清理目标描述包含本轮精确目标与实际连接库，便于接手人一眼确认', () => {
+    expect(describeDedicatedAccountCleanupTarget(RECORD, DEDICATED_E2E_DB_NAME)).toContain(
+      '账号 41（e2e-pw-1758000000000）',
+    );
+    expect(describeDedicatedAccountCleanupTarget(RECORD, DEDICATED_E2E_DB_NAME)).toContain(
+      '成员 21',
+    );
+    expect(describeDedicatedAccountCleanupTarget(RECORD, DEDICATED_E2E_DB_NAME)).toContain(
+      `目标库 ${DEDICATED_E2E_DB_NAME}`,
+    );
+  });
+
+  it('残留核对分别返回主记录、userInfo 孤儿和关联业务表数量', () => {
+    execFileSyncMock.mockReturnValue('0\n0\n0');
+
+    expect(readDedicatedAccountCleanupResidue(970100)).toEqual({
+      account: 0,
+      relatedBusiness: 0,
+      userInfo: 0,
+    });
+  });
+
+  it('按登录名统计账号数仅接受安全登录名参数', () => {
+    execFileSyncMock.mockReturnValue('1');
+
+    expect(readAccountCountByLoginName('mock_customer_alpha')).toBe(1);
+    expect(() => readAccountCountByLoginName("mock'; DROP TABLE x")).toThrow('未通过格式校验');
+  });
+
+  // 防回退（R3 真实改密轮 ERROR 1064）：残留统计必须是一条完整 SELECT，不得被分号截断。
+  it('残留核对 SQL 防回退：不含 `+;` 截断、恰为 3 条完整 SELECT', () => {
+    execFileSyncMock.mockReturnValue('0\n0\n0');
+
+    readDedicatedAccountCleanupResidue(970100);
+
+    const args = execFileSyncMock.mock.lastCall?.[1] as string[];
+    const sql = args[args.indexOf('-e') + 1];
+
+    expect(sql).not.toMatch(/\+\s*;/);
+
+    const statements = sql
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+
+    expect(statements).toHaveLength(3);
+    for (const statement of statements) {
+      expect(statement.startsWith('SELECT')).toBe(true);
+    }
+    expect(statements[2]).toContain('FROM organization_membership');
+    expect(statements[2]).toContain('FROM engineer_response');
+  });
+});
+
+describe('real-backend 专用账号清理预检（沿用 R2/R4 口径）', () => {
   const originalOptIn = process.env[OPT_IN_ENV];
 
   beforeEach(() => {
@@ -84,39 +485,6 @@ describe('real-backend 专用账号物理清理（R2 修正轮第 4 项 / R4 修
     }
   });
 
-  it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
-    '非安全正整数账号 ID（%p）直接抛错且绝不启动 mysql 进程',
-    (invalidId) => {
-      expect(() => deleteE2EDedicatedAccountById(invalidId, DEDICATED_LOGIN_NAME)).toThrow(
-        '未通过正整数校验',
-      );
-      expect(execFileSyncMock).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(['e2e_pw_1758000000000', 'mock_customer_alpha', 'e2e-pw-abc', ''])(
-    '登录名（%p）未通过专用账号白名单校验时直接抛错且绝不启动 mysql 进程',
-    (invalidLoginName) => {
-      expect(() => deleteE2EDedicatedAccountById(970100, invalidLoginName)).toThrow(
-        '未通过专用账号白名单校验',
-      );
-      expect(execFileSyncMock).not.toHaveBeenCalled();
-    },
-  );
-
-  it('专用登录名白名单形如 e2e-pw-<纯数字时间戳>', () => {
-    expect(DEDICATED_LOGIN_NAME_PATTERN.test('e2e-pw-1758000000000')).toBe(true);
-    expect(DEDICATED_LOGIN_NAME_PATTERN.test('mock_customer_alpha')).toBe(false);
-    expect(DEDICATED_LOGIN_NAME_PATTERN.test('e2e-pw-1758000000000; DROP TABLE x')).toBe(false);
-  });
-
-  it('缺少 opt-in 时物理清理被拒绝且 mysql 进程未被调用', () => {
-    expect(() => deleteE2EDedicatedAccountById(970100, DEDICATED_LOGIN_NAME)).toThrow(
-      '缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1',
-    );
-    expect(execFileSyncMock).not.toHaveBeenCalled();
-  });
-
   it('opt-in 但目标库不是 e2e/test 时在连接前被拒绝', () => {
     process.env[OPT_IN_ENV] = '1';
     readFileSyncMock.mockReturnValue('DB_NAME=app\n');
@@ -125,109 +493,16 @@ describe('real-backend 专用账号物理清理（R2 修正轮第 4 项 / R4 修
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
-  it('ID 与登录名唯一匹配：一个事务内先断言绑定，再按子表到主表精确 DELETE，COMMIT 前核对残留', () => {
+  it('缺少 opt-in 时预检在连接前失败', () => {
+    expect(() => preflightDedicatedAccountCleanup()).toThrow('缺少 E2E_ALLOW_PHYSICAL_CLEANUP=1');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('SQL 实际连接库与配置库不一致时拒绝继续（创建前证据）', () => {
     process.env[OPT_IN_ENV] = '1';
+    execFileSyncMock.mockReturnValue('app_test');
 
-    deleteE2EDedicatedAccountById(970100, DEDICATED_LOGIN_NAME);
-
-    const sql = executedSql() ?? '';
-    expect(sql).toContain('START TRANSACTION');
-    expect(sql).toContain(
-      `SELECT COUNT(*) FROM base_user_account WHERE id = 970100 AND login_name = '${DEDICATED_LOGIN_NAME}'`,
-    );
-    // 绑定断言必须先于任何 DELETE：同 ID 异名的账号不得被按 ID 继续删除
-    expect(sql.indexOf("login_name = '")).toBeLessThan(
-      sql.indexOf('DELETE FROM engineer_response'),
-    );
-    expect(sql.indexOf('DELETE FROM engineer_response')).toBeLessThan(
-      sql.indexOf('DELETE FROM base_user_account'),
-    );
-    // 组织成员关系对主记录是 ON DELETE RESTRICT：必须先于 base_user_account 删除
-    // 且位于 base_user_info 之前，否则清理事务会被外键整体回滚（真实改密轮回归）
-    expect(sql.indexOf('DELETE FROM organization_membership')).toBeLessThan(
-      sql.indexOf('DELETE FROM base_user_info'),
-    );
-    expect(sql.indexOf('DELETE FROM organization_membership')).toBeLessThan(
-      sql.indexOf('DELETE FROM base_user_account'),
-    );
-    expect(sql).toContain('SET ');
-    expect(sql).toContain('PREPARE dedicated_cleanup_check');
-    expect(sql).toContain('COMMIT');
-  });
-
-  it('同 ID 但登录名不匹配：绑定断言在 DELETE 前中止，mysql 抛错退出、事务回滚，目标账号保持存在', () => {
-    process.env[OPT_IN_ENV] = '1';
-    execFileSyncMock.mockImplementation(() => {
-      throw new Error(
-        'ERROR 1064 dedicated_account_binding_id_and_login_name_must_match_exactly_one',
-      );
-    });
-
-    expect(() => deleteE2EDedicatedAccountById(970100, DEDICATED_LOGIN_NAME)).toThrow(
-      'dedicated_account_binding_id_and_login_name_must_match_exactly_one',
-    );
-
-    const sql = executedSql() ?? '';
-    expect(sql).toContain('START TRANSACTION');
-    expect(sql).toContain(`WHERE id = 970100 AND login_name = '${DEDICATED_LOGIN_NAME}'`);
-    // 绑定断言先于任何 DELETE：一旦断言失败，DELETE 语句永远不会被执行
-    expect(
-      sql.indexOf('dedicated_account_binding_id_and_login_name_must_match_exactly_one'),
-    ).toBeLessThan(sql.indexOf('DELETE FROM engineer_response'));
-  });
-
-  it('残留核对分别返回主记录、userInfo 孤儿和关联业务表数量', () => {
-    execFileSyncMock.mockReturnValue('0\n0\n0');
-
-    expect(readDedicatedAccountCleanupResidue(970100)).toEqual({
-      account: 0,
-      relatedBusiness: 0,
-      userInfo: 0,
-    });
-  });
-
-  it('按登录名统计账号数仅接受安全登录名参数', () => {
-    execFileSyncMock.mockReturnValue('1');
-
-    expect(readAccountCountByLoginName('mock_customer_alpha')).toBe(1);
-    expect(() => readAccountCountByLoginName("mock'; DROP TABLE x")).toThrow('未通过格式校验');
-    expect(executedSql()).toBe(
-      "SELECT COUNT(*) FROM base_user_account WHERE login_name = 'mock_customer_alpha'",
-    );
-  });
-
-  // 防回退（R3 真实改密轮 ERROR 1064）：第三条业务表残留统计必须是**一条完整** SELECT，
-  // 加法项之间绝不允许被分号截断；前两条单值 SELECT 仍保持独立语句。
-  it('残留核对 SQL 防回退：不含 `+;` 截断、恰为 3 条完整 SELECT、第三条含全部业务表计数', () => {
-    execFileSyncMock.mockReturnValue('0\n0\n0');
-
-    readDedicatedAccountCleanupResidue(970100);
-
-    const sql = executedSql() ?? '';
-
-    // 加法表达式不得被分号截断（`+;` 及其任意空白变体均拒绝）
-    expect(sql).not.toMatch(/\+\s*;/);
-
-    const statements = sql
-      .split(';')
-      .map((statement) => statement.trim())
-      .filter(Boolean);
-
-    expect(statements).toHaveLength(3);
-    for (const statement of statements) {
-      expect(statement.startsWith('SELECT')).toBe(true);
-    }
-
-    // 第三条是连续加法，同时覆盖全部 7 张关联表（含组织成员关系）
-    const thirdStatement = statements[2];
-    expect(thirdStatement).toContain('FROM organization_membership');
-    expect(thirdStatement).toContain('FROM engineer_response');
-    expect(thirdStatement).toContain('FROM ai_message');
-    expect(thirdStatement).toContain('FROM ai_report');
-    expect(thirdStatement).toContain('FROM ai_conversation');
-    expect(thirdStatement).toContain('FROM repair_request');
-    expect(thirdStatement).toContain('FROM reference_document');
-    expect((thirdStatement.match(/\+\s*\(/g) ?? []).length).toBe(6);
+    expect(() => preflightDedicatedAccountCleanup()).toThrow('数据库连接目标不一致');
   });
 });
 
@@ -354,7 +629,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
     const updateStatements = executedSqlList().filter((sql) =>
       sql.startsWith('UPDATE base_user_info'),
     );
-    // 写哨兵 + 精确恢复，恰好两次，且恢复值是读到的原昵称
     expect(updateStatements).toHaveLength(2);
     expect(updateStatements[0]).toContain('e2e-probe-');
     expect(updateStatements[1]).toContain(`UNHEX('${CHENJIA_HEX}')`);
@@ -377,7 +651,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
     const updateStatements = executedSqlList().filter((sql) =>
       sql.startsWith('UPDATE base_user_info'),
     );
-    // 写哨兵 + 精确恢复，恰好两次，且恢复值是读到的原昵称
     expect(updateStatements).toHaveLength(2);
     expect(updateStatements[0]).toContain('e2e-probe-');
     expect(updateStatements[1]).toContain(`UNHEX('${CHENJIA_HEX}')`);
@@ -411,8 +684,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
   });
 
   // 防回退（复核修正轮）：原昵称恢复不得把原始字符直接拼进 SQL 字符串字面量。
-  // 读取走 IS NULL 标志 + HEX 编码，恢复经 UNHEX 字节级还原——单引号、反斜杠、
-  // 前后空白、内部换行与 NULL / 空串都必须保真。
   it('防回退：原昵称含单引号与反斜杠时经 UNHEX 恢复，原始字符不进入 SQL 字面量', async () => {
     process.env[OPT_IN_ENV] = '1';
     const tricky = `O'Brien \\ "引号'测试`;
@@ -429,7 +700,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
     expect(updateStatements[1]).toBe(
       `UPDATE base_user_info SET nickname = UNHEX('${trickyHex}') WHERE account_id = (SELECT id FROM base_user_account WHERE login_name = 'mock_customer_alpha')`,
     );
-    // 引号 / 反斜杠 / 原始多字节字符不得以字面量形式出现在恢复 SQL 中
     expect(updateStatements[1]).not.toContain(tricky);
     expect(updateStatements[1]).not.toContain("\\'");
   });
@@ -449,7 +719,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
     expect(updateStatements[1]).toBe(
       `UPDATE base_user_info SET nickname = UNHEX('${whitespaceHex}') WHERE account_id = (SELECT id FROM base_user_account WHERE login_name = 'mock_customer_alpha')`,
     );
-    // 前后空白不得被 trim 丢失：恢复语句按字节还原完整原值
     expect(updateStatements[1]).toContain(`UNHEX('${whitespaceHex}')`);
   });
 
@@ -466,7 +735,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
     expect(updateStatements).toHaveLength(2);
     expect(updateStatements[1]).toContain('SET nickname = NULL');
     expect(updateStatements[1]).not.toContain('UNHEX');
-    // NULL 不得被改写为空串字面量
     expect(updateStatements[1]).not.toContain("= ''");
   });
 
@@ -484,7 +752,6 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
     expect(updateStatements[1]).toContain("SET nickname = ''");
     expect(updateStatements[1]).not.toContain('UNHEX');
 
-    // 数据一致性守卫：IS NULL=1 但 HEX 非 NULL（或反向）属于读取异常，直接失败
     mockSqlResponses({ isNull: '1', hex: 'ABCDEF' });
     await expect(assertApiSqlSameDatabase()).rejects.toThrow('同库探针账号数据异常');
     mockSqlResponses({ isNull: '0', hex: 'NULL' });
@@ -492,33 +759,125 @@ describe('real-backend API/SQL 同库探针（R4 修正轮）', () => {
   });
 });
 
-// 最小修复计划 P1/P2：创建响应登记 + 逐账号清理编排 + 主流程/清理双错报告。
+// 创建登记 + 逐账号清理编排 + 主流程/清理双错报告。
 // 全部为纯逻辑负例（不启动 mysql、不触真实数据库），只验证编排与错误聚合语义。
-describe('专用账号创建登记与逐账号清理编排（最小修复计划 P1/P2）', () => {
+describe('专用账号创建登记与逐账号清理编排（终审 I3）', () => {
+  beforeEach(() => {
+    execFileSyncMock.mockReset().mockReturnValue('');
+    readFileSyncMock.mockReset().mockReturnValue(envFile(DEDICATED_E2E_DB_NAME));
+  });
+
+  afterEach(() => {
+    delete process.env[OPT_IN_ENV];
+  });
+
   /** adminCreateUser 成功响应体（数据库生成 ID） */
   function createResponseBody(id: number): unknown {
     return { data: { adminCreateUser: { id } } };
   }
 
-  function registeredAccount(id: number): { id: number; loginName: string } {
-    return { id, loginName: `e2e-pw-175800000${id}` };
+  function expectationFor(id: number): DedicatedAccountExpectation {
+    return {
+      ...EXPECTATION,
+      loginName: `e2e-pw-17580000${id}`,
+    };
+  }
+
+  function verifiedAccount(id: number): RegisteredDedicatedAccount {
+    return {
+      ...expectationFor(id),
+      facts: { membershipId: id + 1000, userInfoId: id + 2000 },
+      id,
+    };
   }
 
   function zeroResidue(): { account: number; relatedBusiness: number; userInfo: number } {
     return { account: 0, relatedBusiness: 0, userInfo: 0 };
   }
 
-  it('登记必须早于后续步骤：登记后即使后续查询抛错，精确 ID 仍在清理清单（P1）', async () => {
-    const registry: Array<{ id: number; loginName: string }> = [];
+  it('创建响应丢失：不建立任何清理目标（绝不按登录名扫描后删除）', () => {
+    const registry: RegisteredDedicatedAccount[] = [];
+
+    expect(() =>
+      registerCreatedDedicatedAccount(
+        registry,
+        { data: { adminCreateUser: null } },
+        expectationFor(970100),
+      ),
+    ).toThrow('专用账号创建失败');
+    expect(registry).toEqual([]);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('登录名未通过白名单时拒绝登记且不启动任何数据库调用', () => {
+    const registry: RegisteredDedicatedAccount[] = [];
+
+    expect(() =>
+      registerCreatedDedicatedAccount(registry, createResponseBody(970100), {
+        ...expectationFor(970100),
+        loginName: 'mock_customer_alpha',
+      }),
+    ).toThrow('未通过白名单校验');
+    expect(registry).toEqual([]);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('登记早于核验：回读核验失败时精确 ID 仍留在台账（facts 为空，清理入口会拒绝删除）', async () => {
+    const registry: RegisteredDedicatedAccount[] = [];
+    execFileSyncMock.mockReturnValue(
+      [
+        `ACCOUNT\t970100\t${expectationFor(970100).loginName}\tENGINEER\t\t\t`,
+        `USER_INFO\t970200\t${utf8Hex(DEDICATED_NICKNAME)}\tNULL\tACTIVE\t1\tENGINEER`,
+        'MEMBERSHIP\t970300\t11\tENGINEER\tACTIVE\t\t',
+        'MEMBERSHIP\t970301\t99\tENGINEER\tACTIVE\t\t',
+      ].join('\n'),
+    );
+
+    expect(() =>
+      registerCreatedDedicatedAccount(registry, createResponseBody(970100), expectationFor(970100)),
+    ).toThrow('组织成员关系期望恰好 1 行，实际 2 行');
+
+    expect(registry).toEqual([{ ...expectationFor(970100), facts: null, id: 970100 }]);
+  });
+
+  it('登记成功后从回读结果写入成员关系与资料主键', () => {
+    const registry: RegisteredDedicatedAccount[] = [];
+    execFileSyncMock.mockReturnValue(
+      [
+        `ACCOUNT\t970100\t${expectationFor(970100).loginName}\tENGINEER\t\t\t`,
+        `USER_INFO\t970200\t${utf8Hex(DEDICATED_NICKNAME)}\tNULL\tACTIVE\t1\tENGINEER`,
+        'MEMBERSHIP\t970300\t11\tENGINEER\tACTIVE\t\t',
+      ].join('\n'),
+    );
+
+    registerCreatedDedicatedAccount(registry, createResponseBody(970100), expectationFor(970100));
+
+    expect(registry).toEqual([
+      {
+        ...expectationFor(970100),
+        facts: { membershipId: 970300, userInfoId: 970200 },
+        id: 970100,
+      },
+    ]);
+  });
+
+  it('登记后即使后续业务失败，台账仍保留（登记不依赖后续步骤）', async () => {
+    const registry: RegisteredDedicatedAccount[] = [];
+    execFileSyncMock.mockReturnValue(
+      [
+        `ACCOUNT\t970100\t${expectationFor(970100).loginName}\tENGINEER\t\t\t`,
+        `USER_INFO\t970200\t${utf8Hex(DEDICATED_NICKNAME)}\tNULL\tACTIVE\t1\tENGINEER`,
+        'MEMBERSHIP\t970300\t11\tENGINEER\tACTIVE\t\t',
+      ].join('\n'),
+    );
 
     await expect(
       runWithCleanup(
         async () => {
-          // 模拟：创建响应成功 → 立即登记 → 随后的列表 / 字段查询失败
           registerCreatedDedicatedAccount(
             registry,
             createResponseBody(970100),
-            'e2e-pw-1758000000100',
+            expectationFor(970100),
           );
           throw new Error('后续 adminUsers 查询失败');
         },
@@ -528,34 +887,16 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
       ),
     ).rejects.toThrow('后续 adminUsers 查询失败');
 
-    expect(registry).toEqual([{ id: 970100, loginName: 'e2e-pw-1758000000100' }]);
+    expect(registry).toHaveLength(1);
+    expect(registry[0].facts).toEqual({ membershipId: 970300, userInfoId: 970200 });
   });
 
-  it('登记从创建响应解析精确 ID：无效响应抛错且不登记（P1）', () => {
-    const registry: Array<{ id: number; loginName: string }> = [];
-
-    expect(() =>
-      registerCreatedDedicatedAccount(
-        registry,
-        { data: { adminCreateUser: null } },
-        'e2e-pw-1758000000101',
-      ),
-    ).toThrow('专用账号创建失败');
-    expect(registry).toEqual([]);
-
-    // 登录名未通过专用白名单：拒绝登记，且不登记任何条目
-    expect(() =>
-      registerCreatedDedicatedAccount(registry, createResponseBody(970100), 'mock_customer_alpha'),
-    ).toThrow('未通过白名单校验');
-    expect(registry).toEqual([]);
-  });
-
-  it('首个账号删除失败不阻断后续账号，删除错误被聚合报告（P2）', () => {
+  it('首个账号删除失败不阻断后续账号，删除错误被聚合报告', () => {
     const attempted: number[] = [];
-    const deleteFn = (id: number) => {
-      attempted.push(id);
+    const deleteFn = (account: RegisteredDedicatedAccount) => {
+      attempted.push(account.id);
 
-      if (id === 101) {
+      if (account.id === 101) {
         throw new Error('账号 101 删除被拒');
       }
     };
@@ -563,7 +904,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
     let thrown: unknown;
     try {
       cleanupRegisteredDedicatedAccounts(
-        [registeredAccount(101), registeredAccount(102)],
+        [verifiedAccount(101), verifiedAccount(102)],
         deleteFn,
         zeroResidue,
       );
@@ -571,13 +912,12 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
       thrown = error;
     }
 
-    // 后续账号仍被尝试清理
     expect(attempted).toEqual([101, 102]);
-    expect(toErrorMessage(thrown)).toContain('账号 101（e2e-pw-175800000101）物理删除失败');
+    expect(toErrorMessage(thrown)).toContain('账号 101（e2e-pw-17580000101）物理删除失败');
     expect(toErrorMessage(thrown)).toContain('账号 101 删除被拒');
   });
 
-  it('残留非零与残留核对失败分别记录，且不阻断后续账号（P2）', () => {
+  it('残留非零与残留核对失败分别记录，且不阻断后续账号', () => {
     const checked: number[] = [];
     const residueFn = (id: number) => {
       checked.push(id);
@@ -595,7 +935,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
     let thrown: unknown;
     try {
       cleanupRegisteredDedicatedAccounts(
-        [registeredAccount(101), registeredAccount(102), registeredAccount(103)],
+        [verifiedAccount(101), verifiedAccount(102), verifiedAccount(103)],
         () => {},
         residueFn,
       );
@@ -604,32 +944,34 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
     }
 
     expect(checked).toEqual([101, 102, 103]);
-    expect(toErrorMessage(thrown)).toContain('账号 102（e2e-pw-175800000102）残留核对失败');
+    expect(toErrorMessage(thrown)).toContain('账号 102（e2e-pw-17580000102）残留核对失败');
     expect(toErrorMessage(thrown)).toContain('残留核对 SQL 失败');
-    expect(toErrorMessage(thrown)).toContain('账号 103（e2e-pw-175800000103）清理后仍有残留');
+    expect(toErrorMessage(thrown)).toContain('账号 103（e2e-pw-17580000103）清理后仍有残留');
   });
 
-  it('正常路径：全部本轮账号被清理且逐账号残留为零，不抛错（P2）', () => {
+  it('两轮正常清理：每轮各自删除并核对零残留，互不影响', () => {
     const deleted: number[] = [];
     const checked: number[] = [];
 
-    expect(() =>
-      cleanupRegisteredDedicatedAccounts(
-        [registeredAccount(101), registeredAccount(102)],
-        (id) => deleted.push(id),
-        (id) => {
-          checked.push(id);
+    for (const round of [1, 2]) {
+      expect(() =>
+        cleanupRegisteredDedicatedAccounts(
+          [verifiedAccount(100 + round)],
+          (account) => deleted.push(account.id),
+          (id) => {
+            checked.push(id);
 
-          return zeroResidue();
-        },
-      ),
-    ).not.toThrow();
+            return zeroResidue();
+          },
+        ),
+      ).not.toThrow();
+    }
 
     expect(deleted).toEqual([101, 102]);
     expect(checked).toEqual([101, 102]);
   });
 
-  it('空清单为 no-op：不执行任何删除 / 残留核对（P2）', () => {
+  it('空台账为 no-op：不执行任何删除 / 残留核对', () => {
     const deleteFn = vi.fn();
     const residueFn = vi.fn();
 
@@ -638,7 +980,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
     expect(residueFn).not.toHaveBeenCalled();
   });
 
-  it('主流程与清理同时失败：两类错误都被报告（P2）', async () => {
+  it('主流程与清理同时失败：两类错误都被报告', async () => {
     let thrown: unknown;
     try {
       await runWithCleanup(
@@ -646,7 +988,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
           throw new Error('主断言失败：角色字段不符');
         },
         () => {
-          throw new Error('专用账号清理失败——账号 101（e2e-pw-175800000101）物理删除失败：x');
+          throw new Error('专用账号清理失败——账号 101（e2e-pw-17580000101）物理删除失败：x');
         },
       );
     } catch (error) {
@@ -658,7 +1000,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
     expect(toErrorMessage(thrown)).toContain('此外清理失败');
   });
 
-  it('主流程成功但清理失败：清理错误被抛出（不被 finally 之后的断言吞掉）（P2）', async () => {
+  it('主流程成功但清理失败：清理错误被抛出（不被 finally 之后的断言吞掉）', async () => {
     await expect(
       runWithCleanup(
         async () => {},
@@ -669,7 +1011,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
     ).rejects.toThrow('清理失败：账号 101 残留非零');
   });
 
-  it('主流程失败但清理成功：主流程错误被保留（P2）', async () => {
+  it('主流程失败但清理成功：主流程错误被保留', async () => {
     await expect(
       runWithCleanup(
         async () => {
@@ -681,8 +1023,7 @@ describe('专用账号创建登记与逐账号清理编排（最小修复计划 
   });
 });
 
-// 最小修复计划：账号清理与 context.close() 共用的收尾路径——两者独立执行、错误互不覆盖。
-// 全部为纯逻辑负例（mock 步骤函数，不启动 mysql、不触真实数据库）。
+// 账号清理与 context.close() 共用的收尾路径——两者独立执行、错误互不覆盖。
 describe('收尾步骤独立执行与错误合并（最小修复计划）', () => {
   it('账号清理与关闭上下文同时失败：两类错误都被报告，且关闭步骤确实被执行', async () => {
     const closeSpy = vi.fn(() => {
@@ -773,3 +1114,13 @@ describe('收尾步骤独立执行与错误合并（最小修复计划）', () =
     ).rejects.toThrow('关闭上下文失败：仅此一步');
   });
 });
+
+/** 从 execFileSync 入参中提取 -e 后的 SQL 字面量（取最近一次调用） */
+function executedSqlList(): string[] {
+  return execFileSyncMock.mock.calls.map((call) => {
+    const args = call[1] as string[];
+    const flagIndex = args.indexOf('-e');
+
+    return flagIndex >= 0 ? args[flagIndex + 1] : '';
+  });
+}

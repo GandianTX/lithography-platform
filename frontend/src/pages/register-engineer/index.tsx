@@ -13,9 +13,7 @@ export function RegisterEngineerPage() {
     <div className="register-layout">
       <header className="register-header">
         <h1 className="register-title">工程师注册</h1>
-        <p className="register-subtitle">
-          提交申请后由所属公司管理员审核开通；审核通过前账号不可使用工作台。
-        </p>
+        <p className="register-subtitle">提交后由公司管理员审核开通。</p>
       </header>
 
       <div className="register-panel">

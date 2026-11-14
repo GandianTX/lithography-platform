@@ -114,7 +114,7 @@ export function RegisterCustomerForm() {
     return (
       <div className="register-success">
         <Alert showIcon title="账号已开通，请使用登录邮箱与密码登录。" type="success" />
-        <p className="register-success-email">{registeredEmail}</p>
+        <p className="register-success-email [overflow-wrap:anywhere]">{registeredEmail}</p>
         <Button block type="primary" onClick={() => navigate('/login')}>
           前往登录
         </Button>
@@ -162,13 +162,8 @@ export function RegisterCustomerForm() {
         />
       </Form.Item>
 
-      <Form.Item
-        extra="2–20 个字符，支持中英文、数字与 _ - · ."
-        label="昵称（选填）"
-        name="nickname"
-        rules={OPTIONAL_NICKNAME_RULES}
-      >
-        <Input disabled={isSubmitting} placeholder="用于界面展示" />
+      <Form.Item label="昵称（选填）" name="nickname" rules={OPTIONAL_NICKNAME_RULES}>
+        <Input disabled={isSubmitting} placeholder="2–20 个字符，用于界面展示" />
       </Form.Item>
 
       <Form.Item label="所属公司">
@@ -185,9 +180,7 @@ export function RegisterCustomerForm() {
       {organization ? null : (
         <Form.Item
           extra={
-            hasSameNameCandidate
-              ? '发现同名公司，可从名单选择。手填名称不会自动合并。'
-              : '名单中没有自家公司时填写；同名公司不会自动合并。'
+            hasSameNameCandidate ? '发现同名公司，可从名单选择；手填名称不会自动合并。' : undefined
           }
           label="自家公司名称"
           name="organizationName"

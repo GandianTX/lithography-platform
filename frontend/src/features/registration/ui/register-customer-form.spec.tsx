@@ -171,7 +171,7 @@ describe('RegisterCustomerForm', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('发现同名公司，可从名单选择。手填名称不会自动合并。'),
+        screen.getByText('发现同名公司，可从名单选择；手填名称不会自动合并。'),
       ).toBeInTheDocument();
     });
 

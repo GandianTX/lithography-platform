@@ -42,6 +42,7 @@ import {
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from './e2e-teardown';
 import { withReferenceDocumentFixtureState } from './reference-document-fixture-state';
 import { createTestAccount, type TestAccountConfig } from './test-accounts';
+import { requireOrganizationId, seedTestOrganizations } from './test-organizations';
 
 jest.setTimeout(60000);
 
@@ -74,6 +75,7 @@ interface OrganizationFields {
   name: string;
   kind: string;
   status: string;
+  isManagedCompany: boolean;
 }
 
 interface AccountFields {
@@ -125,6 +127,7 @@ const createOrganization = async (
     name: string;
     kind: 'CLIENT' | 'PEER';
     status?: 'ACTIVE' | 'DISABLED';
+    isManagedCompany?: boolean;
   },
 ): Promise<number> => {
   const repository = dataSource.getRepository(OrganizationEntity);
@@ -134,6 +137,7 @@ const createOrganization = async (
       name: spec.name,
       kind: spec.kind,
       status: spec.status ?? 'ACTIVE',
+      isManagedCompany: spec.isManagedCompany ?? false,
     }),
   );
   return saved.id;
@@ -294,6 +298,7 @@ const ownOrganizationFromDb = async (
     name: row.name,
     kind: row.kind,
     status: row.status,
+    isManagedCompany: row.isManagedCompany,
   });
 };
 
@@ -301,12 +306,18 @@ const ownAccountFromDb = async (
   ds: DataSource,
   ledger: OwnedResourceLedger,
   id: number,
+  options: {
+    /** 显式覆盖客户归属预期（用于构造漂移/空归属反例）；省略时取登记时的真实值 */
+    customerOrganizationId?: number | null;
+    /** 模拟台账缺少客户归属预期（undefined），不写入该字段 */
+    omitCustomerOrganizationId?: boolean;
+  } = {},
 ): Promise<void> => {
   const account = await ds.getRepository(AccountEntity).findOneOrFail({ where: { id } });
   const userInfo = await ds
     .getRepository(UserInfoEntity)
     .findOneOrFail({ where: { accountId: id } });
-  recordOwnedResource(ledger, 'account', id, {
+  const baseFacts = {
     loginName: account.loginName,
     loginEmail: account.loginEmail,
     status: account.status,
@@ -316,7 +327,21 @@ const ownAccountFromDb = async (
     nickname: userInfo.nickname,
     userInfoEmail: userInfo.email ?? null,
     userState: userInfo.userState,
-  });
+  };
+  recordOwnedResource(
+    ledger,
+    'account',
+    id,
+    options.omitCustomerOrganizationId
+      ? baseFacts
+      : {
+          ...baseFacts,
+          customerOrganizationId:
+            options.customerOrganizationId === undefined
+              ? (userInfo.customerOrganizationId ?? null)
+              : options.customerOrganizationId,
+        },
+  );
 };
 
 const ownMembershipFromDb = async (
@@ -331,6 +356,25 @@ const ownMembershipFromDb = async (
     memberRole: row.memberRole,
     status: row.status,
   });
+};
+
+/** I4：写入/读取基座资料的客户归属组织（`base_user_info.customer_organization_id`）。 */
+const assignCustomerOrganization = async (
+  ds: DataSource,
+  accountId: number,
+  organizationId: number | null,
+): Promise<void> => {
+  await ds
+    .getRepository(UserInfoEntity)
+    .update({ accountId }, { customerOrganizationId: organizationId });
+};
+
+const readCustomerOrganizationId = async (
+  ds: DataSource,
+  accountId: number,
+): Promise<number | null> => {
+  const row = await ds.getRepository(UserInfoEntity).findOneOrFail({ where: { accountId } });
+  return row.customerOrganizationId ?? null;
 };
 
 const ownDocumentFromDb = async (
@@ -487,6 +531,7 @@ const readOrganizationFields = async (
         name: row.name,
         kind: row.kind,
         status: row.status,
+        isManagedCompany: row.isManagedCompany,
       }
     : null;
 };
@@ -1093,6 +1138,302 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
     expect(await readMembershipFields(dataSource, externalMembershipId)).toEqual(
       externalMembershipBefore,
     );
+  });
+
+  it('C05C 账外账号的客户资料归属引用本轮组织：首删前拒绝，DELETE=0 且哨兵不变', async () => {
+    const organizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05C_ORG'),
+      name: 'C05C 本轮组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, organizationId);
+
+    // 账外账号：只登记到规格兜底台账（用于 afterEach 回收），不进入本轮清理目标台账
+    const externalAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05CEXT', [IdentityTypeEnum.CUSTOMER], IdentityTypeEnum.CUSTOMER),
+    );
+    await ownAccountFromDb(dataSource, testLedger, externalAccountId);
+    await assignCustomerOrganization(dataSource, externalAccountId, organizationId);
+    // 受控变更后同步兜底台账的预期事实，避免测试自身在 afterEach 触发漂移
+    updateOwnedExpectation(testLedger, 'account', externalAccountId, {
+      customerOrganizationId: organizationId,
+    });
+
+    const organizationBefore = await readOrganizationFields(dataSource, organizationId);
+    const accountBefore = await readAccountFields(dataSource, externalAccountId);
+    expect(await readCustomerOrganizationId(dataSource, externalAccountId)).toBe(organizationId);
+
+    const targetLedger = createOwnedResourceLedger();
+    await ownOrganizationFromDb(dataSource, targetLedger, organizationId);
+
+    const counted = createDeleteCountingDataSource(dataSource);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: counted.dataSource,
+        owned: targetLedger,
+        helper: 'C05C 账外客户归属',
+      }),
+    ).rejects.toThrow(/\[C05C 账外客户归属\].*base_user_info\.customer_organization_id/);
+
+    expect(counted.stats.deleteCount).toBe(0);
+    expect(await readOrganizationFields(dataSource, organizationId)).toEqual(organizationBefore);
+    expect(await readAccountFields(dataSource, externalAccountId)).toEqual(accountBefore);
+    expect(await readCustomerOrganizationId(dataSource, externalAccountId)).toBe(organizationId);
+  });
+
+  it('C05D 本轮账号与客户归属同组织：精确回收零残留；后序 DELETE 注错整体回滚', async () => {
+    const organizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05D_ORG'),
+      name: 'C05D 本轮组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, organizationId);
+
+    const ownedAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05DOWN', [IdentityTypeEnum.CUSTOMER], IdentityTypeEnum.CUSTOMER),
+    );
+    await assignCustomerOrganization(dataSource, ownedAccountId, organizationId);
+    await ownAccountFromDb(dataSource, testLedger, ownedAccountId);
+
+    const organizationBefore = await readOrganizationFields(dataSource, organizationId);
+    const accountBefore = await readAccountFields(dataSource, ownedAccountId);
+
+    // 注错：本轮删除序列为 base_user_info → organization → base_user_account，第 2 次注错落在组织删除
+    const failing = createFailNthDeleteDataSource(dataSource, 2);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: failing.dataSource,
+        owned: testLedger,
+        helper: 'C05D 后序失败',
+      }),
+    ).rejects.toThrow(/注入：第 2 次 DELETE 失败/);
+
+    expect(failing.stats.deleteCount).toBe(2);
+    expect(await readOrganizationFields(dataSource, organizationId)).toEqual(organizationBefore);
+    expect(await readAccountFields(dataSource, ownedAccountId)).toEqual(accountBefore);
+    expect(await readCustomerOrganizationId(dataSource, ownedAccountId)).toBe(organizationId);
+
+    // 恢复后正常回收：本轮账号、资料、组织全部零残留
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: testLedger,
+      helper: 'C05D 恢复正常回收',
+    });
+    expect(await readOrganizationFields(dataSource, organizationId)).toBeNull();
+    expect(await readAccountFields(dataSource, ownedAccountId)).toBeNull();
+    expect(
+      await dataSource
+        .getRepository(UserInfoEntity)
+        .count({ where: { accountId: ownedAccountId } }),
+    ).toBe(0);
+  });
+
+  it('C05E 本轮账号资料引用待删组织但台账缺归属预期：首删前拒绝，DELETE=0 且行不变', async () => {
+    const organizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05E_ORG'),
+      name: 'C05E 本轮组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, organizationId);
+
+    const ownedAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05EOWN', [IdentityTypeEnum.CUSTOMER], IdentityTypeEnum.CUSTOMER),
+    );
+    await assignCustomerOrganization(dataSource, ownedAccountId, organizationId);
+    // 兜底台账在受控变更完成后登记可信预期，保证 afterEach 可正常回收
+    await ownAccountFromDb(dataSource, testLedger, ownedAccountId, {
+      customerOrganizationId: organizationId,
+    });
+
+    const organizationBefore = await readOrganizationFields(dataSource, organizationId);
+    const accountBefore = await readAccountFields(dataSource, ownedAccountId);
+
+    const targetLedger = createOwnedResourceLedger();
+    await ownOrganizationFromDb(dataSource, targetLedger, organizationId);
+    // 只登记组织删除边，故意不写客户归属预期（undefined）
+    await ownAccountFromDb(dataSource, targetLedger, ownedAccountId, {
+      omitCustomerOrganizationId: true,
+    });
+
+    const counted = createDeleteCountingDataSource(dataSource);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: counted.dataSource,
+        owned: targetLedger,
+        helper: 'C05E 缺失归属预期',
+      }),
+    ).rejects.toThrow(/缺少可信归属预期（undefined）/);
+
+    expect(counted.stats.deleteCount).toBe(0);
+    expect(await readOrganizationFields(dataSource, organizationId)).toEqual(organizationBefore);
+    expect(await readAccountFields(dataSource, ownedAccountId)).toEqual(accountBefore);
+    expect(await readCustomerOrganizationId(dataSource, ownedAccountId)).toBe(organizationId);
+  });
+
+  it('C05F 台账显式登记空归属但资料真实引用待删组织：首删前拒绝，DELETE=0 且行不变', async () => {
+    const organizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05F_ORG'),
+      name: 'C05F 本轮组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, organizationId);
+
+    const ownedAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05FOWN', [IdentityTypeEnum.CUSTOMER], IdentityTypeEnum.CUSTOMER),
+    );
+    await assignCustomerOrganization(dataSource, ownedAccountId, organizationId);
+    await ownAccountFromDb(dataSource, testLedger, ownedAccountId, {
+      customerOrganizationId: organizationId,
+    });
+
+    const organizationBefore = await readOrganizationFields(dataSource, organizationId);
+    const accountBefore = await readAccountFields(dataSource, ownedAccountId);
+
+    const targetLedger = createOwnedResourceLedger();
+    await ownOrganizationFromDb(dataSource, targetLedger, organizationId);
+    // 显式空归属预期与真实非空引用冲突
+    await ownAccountFromDb(dataSource, targetLedger, ownedAccountId, {
+      customerOrganizationId: null,
+    });
+
+    const counted = createDeleteCountingDataSource(dataSource);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: counted.dataSource,
+        owned: targetLedger,
+        helper: 'C05F 空归属预期',
+      }),
+    ).rejects.toThrow(/显式登记为空归属（null）/);
+
+    expect(counted.stats.deleteCount).toBe(0);
+    expect(await readOrganizationFields(dataSource, organizationId)).toEqual(organizationBefore);
+    expect(await readAccountFields(dataSource, ownedAccountId)).toEqual(accountBefore);
+    expect(await readCustomerOrganizationId(dataSource, ownedAccountId)).toBe(organizationId);
+  });
+
+  it('C05G 台账预期指向另一个组织：归属漂移首删前拒绝，DELETE=0 且行不变', async () => {
+    const organizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05G_ORG'),
+      name: 'C05G 本轮组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, organizationId);
+
+    const otherOrganizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05G_OTHER_ORG'),
+      name: 'C05G 另一个组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, otherOrganizationId);
+
+    const ownedAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05GOWN', [IdentityTypeEnum.CUSTOMER], IdentityTypeEnum.CUSTOMER),
+    );
+    await assignCustomerOrganization(dataSource, ownedAccountId, organizationId);
+    await ownAccountFromDb(dataSource, testLedger, ownedAccountId, {
+      customerOrganizationId: organizationId,
+    });
+
+    const organizationBefore = await readOrganizationFields(dataSource, organizationId);
+    const accountBefore = await readAccountFields(dataSource, ownedAccountId);
+
+    const targetLedger = createOwnedResourceLedger();
+    await ownOrganizationFromDb(dataSource, targetLedger, organizationId);
+    // 预期写另一个组织，真实引用仍指向待删组织
+    await ownAccountFromDb(dataSource, targetLedger, ownedAccountId, {
+      customerOrganizationId: otherOrganizationId,
+    });
+
+    const counted = createDeleteCountingDataSource(dataSource);
+    await expect(
+      runGuardedSpecCleanup({
+        dataSource: counted.dataSource,
+        owned: targetLedger,
+        helper: 'C05G 归属漂移',
+      }),
+    ).rejects.toThrow(
+      new RegExp(`登记预期不符（expected=${otherOrganizationId}, actual=${organizationId}）`),
+    );
+
+    expect(counted.stats.deleteCount).toBe(0);
+    expect(await readOrganizationFields(dataSource, organizationId)).toEqual(organizationBefore);
+    expect(await readOrganizationFields(dataSource, otherOrganizationId)).not.toBeNull();
+    expect(await readAccountFields(dataSource, ownedAccountId)).toEqual(accountBefore);
+    expect(await readCustomerOrganizationId(dataSource, ownedAccountId)).toBe(organizationId);
+  });
+
+  it('C05H 预期与真实归属一致：精确回收本轮三行，独立哨兵组织/账号逐字段保留', async () => {
+    const organizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05H_ORG'),
+      name: 'C05H 本轮组织',
+      kind: 'CLIENT',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, organizationId);
+
+    const ownedAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05HOWN', [IdentityTypeEnum.CUSTOMER], IdentityTypeEnum.CUSTOMER),
+    );
+    await assignCustomerOrganization(dataSource, ownedAccountId, organizationId);
+    await ownAccountFromDb(dataSource, testLedger, ownedAccountId, {
+      customerOrganizationId: organizationId,
+    });
+
+    // 独立哨兵：外部组织与外部账号（无客户归属），只由兜底台账回收
+    const sentinelOrganizationId = await createOrganization(dataSource, {
+      organizationCode: codeFor('C05H_SENTINEL_ORG'),
+      name: 'C05H 外部哨兵组织',
+      kind: 'PEER',
+    });
+    await ownOrganizationFromDb(dataSource, testLedger, sentinelOrganizationId);
+    const sentinelAccountId = await createAccount(
+      dataSource,
+      createAccountUsecase,
+      accountConfig('C05HSENT', [IdentityTypeEnum.ENGINEER], IdentityTypeEnum.ENGINEER),
+    );
+    await ownAccountFromDb(dataSource, testLedger, sentinelAccountId);
+
+    const sentinelOrganizationBefore = await readOrganizationFields(
+      dataSource,
+      sentinelOrganizationId,
+    );
+    const sentinelAccountBefore = await readAccountFields(dataSource, sentinelAccountId);
+
+    const targetLedger = createOwnedResourceLedger();
+    await ownOrganizationFromDb(dataSource, targetLedger, organizationId);
+    await ownAccountFromDb(dataSource, targetLedger, ownedAccountId, {
+      customerOrganizationId: organizationId,
+    });
+
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: targetLedger,
+      helper: 'C05H 正确归属回收',
+    });
+
+    expect(await readOrganizationFields(dataSource, organizationId)).toBeNull();
+    expect(await readAccountFields(dataSource, ownedAccountId)).toBeNull();
+    expect(
+      await dataSource
+        .getRepository(UserInfoEntity)
+        .count({ where: { accountId: ownedAccountId } }),
+    ).toBe(0);
+
+    expect(await readOrganizationFields(dataSource, sentinelOrganizationId)).toEqual(
+      sentinelOrganizationBefore,
+    );
+    expect(await readAccountFields(dataSource, sentinelAccountId)).toEqual(sentinelAccountBefore);
   });
 
   it('C06 后阶段冲突：第一阶段的组织同样未被删除（单事务回滚）', async () => {
@@ -1987,6 +2328,15 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
     const skipCleanupOriginal = captureEnvValue('E2E_SKIP_DB_CLEANUP');
     const skipInfraOriginal = captureEnvValue('E2E_SKIP_INFRA_CHECKS');
     const allowedOriginal = captureEnvValue('E2E_ALLOWED_DB_NAMES');
+    // 本次运行的真实库名从已验证的测试连接读取：默认库与替代库（如 lithography_work_e2e）
+    // 必须走同一套语义，不能把团队默认库名写死成唯一可通过的路径。
+    const actualDatabaseRows = await dataSource.query('SELECT DATABASE() AS current_database');
+    const actualDatabase = (actualDatabaseRows[0]?.current_database ?? '').trim();
+    if (actualDatabase === '') {
+      throw new Error('G03 无法从真实测试连接读取当前库名，拒绝构造门禁组合场景');
+    }
+    // 仅测试进程内使用的合成库名：不连接、不建库，只用于白名单/预期与实际组合。
+    const otherAllowedDatabase = `${actualDatabase}_expected_other`;
     try {
       // (a) 缺许可：即使跳过全局清理与基础设施检查也拒绝
       process.env.E2E_SKIP_DB_CLEANUP = 'true';
@@ -2004,7 +2354,7 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
 
       // 以下所有子项：已有许可，但预期/实际库名各自失败关闭
       process.env.E2E_ALLOW_PHYSICAL_CLEANUP = '1';
-      process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
+      process.env.E2E_ALLOWED_DB_NAMES = actualDatabase;
 
       // (b) 预期缺失：既无显式 expectedDatabase，DataSource.options.database 也为空
       const expectedMissing = createDeleteCountingDataSource(
@@ -2021,7 +2371,7 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
 
       // (c) 预期库不在白名单（实际库仍允许）：两个白名单各自独立，不能由实际库替预期背书
       const expectedNotAllowed = createDeleteCountingDataSource(
-        withExpectedDatabase(dataSource, 'lithography_f11_expected_other'),
+        withExpectedDatabase(dataSource, otherAllowedDatabase),
       );
       await expect(
         runGuardedSpecCleanup({
@@ -2033,9 +2383,9 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
       expect(expectedNotAllowed.stats.deleteCount).toBe(0);
 
       // (d) 预期库允许，但实际连接库不在白名单
-      process.env.E2E_ALLOWED_DB_NAMES = 'lithography_f11_expected_other';
+      process.env.E2E_ALLOWED_DB_NAMES = otherAllowedDatabase;
       const actualNotAllowed = createDeleteCountingDataSource(
-        withExpectedDatabase(dataSource, 'lithography_f11_expected_other'),
+        withExpectedDatabase(dataSource, otherAllowedDatabase),
       );
       await expect(
         runGuardedSpecCleanup({
@@ -2047,9 +2397,9 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
       expect(actualNotAllowed.stats.deleteCount).toBe(0);
 
       // (e) 预期与实际都属于白名单，但两者不是同一个库：仍拒绝
-      process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e,lithography_f11_actual_other';
+      process.env.E2E_ALLOWED_DB_NAMES = `${actualDatabase},${otherAllowedDatabase}`;
       const targetMismatch = createDeleteCountingDataSource(
-        withExpectedDatabase(dataSource, 'lithography_f11_actual_other'),
+        withExpectedDatabase(dataSource, otherAllowedDatabase),
       );
       await expect(
         runGuardedSpecCleanup({
@@ -2061,8 +2411,10 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
       expect(targetMismatch.stats.deleteCount).toBe(0);
 
       // (f) 正对照：预期=实际且均允许，空台账纯 no-op 可以通过且零 DELETE
-      process.env.E2E_ALLOWED_DB_NAMES = 'lithography_e2e';
-      const consistent = createDeleteCountingDataSource(dataSource);
+      process.env.E2E_ALLOWED_DB_NAMES = actualDatabase;
+      const consistent = createDeleteCountingDataSource(
+        withExpectedDatabase(dataSource, actualDatabase),
+      );
       await expect(
         runGuardedSpecCleanup({
           dataSource: consistent.dataSource,
@@ -2236,5 +2588,271 @@ describe('清理归属与引用闭包 C01–C10（真实隔离库）', () => {
 
     expect(await readOrganizationFields(dataSource, noTxOrganizationId)).toBeNull();
     expect(await readAccountFields(dataSource, noTxAccountId)).toBeNull();
+  });
+
+  it('G13/I10 既有组织无本轮所有权：受管值不同或指纹全同均拒绝接管，收尾不触碰哨兵；本轮内复用与两轮新建/清理零残留', async () => {
+    // 反例一：编码/名称/类别/状态与规格预期一致，仅受管值不同
+    const managedSentinelCode = codeFor('G13_MANAGED_SENTINEL');
+    const managedSentinelId = await createOrganization(dataSource, {
+      organizationCode: managedSentinelCode,
+      name: 'G13 受管值哨兵组织',
+      kind: 'CLIENT',
+      isManagedCompany: false,
+    });
+    const managedSentinelBefore = await readOrganizationFields(dataSource, managedSentinelId);
+
+    const managedRejectedLedger = createOwnedResourceLedger();
+    await expect(
+      seedTestOrganizations({
+        dataSource,
+        organizations: [
+          {
+            organizationCode: managedSentinelCode,
+            name: 'G13 受管值哨兵组织',
+            kind: 'CLIENT',
+            isManagedCompany: true,
+          },
+        ],
+        ownership: managedRejectedLedger,
+      }),
+    ).rejects.toThrow(/受管标记不符/);
+
+    // 拒绝发生在登记之前：台账为空，清理器不会认领该行；哨兵逐字段不变
+    expect(ledgerHasAny(managedRejectedLedger)).toBe(false);
+    expect(await readOrganizationFields(dataSource, managedSentinelId)).toEqual(
+      managedSentinelBefore,
+    );
+
+    // 反例二：编码、名称、类别、ACTIVE、受管标记全部相同的外部组织。
+    // 指纹完全一致也不构成所有权证据，空台账进正式 setup 必须拒绝认领。
+    const identicalSentinelCode = codeFor('G13_IDENTICAL_SENTINEL');
+    const identicalSentinelId = await createOrganization(dataSource, {
+      organizationCode: identicalSentinelCode,
+      name: 'G13 指纹全同哨兵组织',
+      kind: 'CLIENT',
+      isManagedCompany: true,
+    });
+    const identicalSentinelBefore = await readOrganizationFields(dataSource, identicalSentinelId);
+
+    const identicalRejectedLedger = createOwnedResourceLedger();
+    await expect(
+      seedTestOrganizations({
+        dataSource,
+        organizations: [
+          {
+            organizationCode: identicalSentinelCode,
+            name: 'G13 指纹全同哨兵组织',
+            kind: 'CLIENT',
+            isManagedCompany: true,
+          },
+        ],
+        ownership: identicalRejectedLedger,
+      }),
+    ).rejects.toThrow(/本轮台账无所有权证据/);
+
+    expect(ledgerHasAny(identicalRejectedLedger)).toBe(false);
+    expect(await readOrganizationFields(dataSource, identicalSentinelId)).toEqual(
+      identicalSentinelBefore,
+    );
+
+    // 测试必须跑到真实收尾：用同一空台账执行正式清理，确认没有针对哨兵的 DELETE
+    const counted = createDeleteCountingDataSource(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource: counted.dataSource,
+      owned: identicalRejectedLedger,
+      helper: 'G13 拒绝认领后的正式收尾',
+    });
+    expect(counted.stats.deleteCount).toBe(0);
+    expect(await readOrganizationFields(dataSource, identicalSentinelId)).toEqual(
+      identicalSentinelBefore,
+    );
+
+    // 同一 run 台账内复用：同编码第二次 setup 返回同一 ID，且不重复登记
+    const roundCode = codeFor('G13_ROUND');
+    const reuseLedger = createOwnedResourceLedger();
+    const reuseSpec = {
+      organizationCode: roundCode,
+      name: 'G13 本轮复用组织',
+      kind: 'CLIENT' as const,
+      isManagedCompany: true,
+    };
+    const firstSetup = await seedTestOrganizations({
+      dataSource,
+      organizations: [reuseSpec],
+      ownership: reuseLedger,
+    });
+    const reuseId = requireOrganizationId(firstSetup, roundCode);
+    const secondSetup = await seedTestOrganizations({
+      dataSource,
+      organizations: [reuseSpec],
+      ownership: reuseLedger,
+    });
+    expect(requireOrganizationId(secondSetup, roundCode)).toBe(reuseId);
+    expect(reuseLedger.organizationIds).toEqual([reuseId]);
+    expect(reuseLedger.facts.organization.get(reuseId)?.organizationCode).toBe(roundCode);
+
+    await runGuardedSpecCleanup({
+      dataSource,
+      owned: reuseLedger,
+      helper: 'G13 本轮复用回收',
+    });
+    expect(await readOrganizationFields(dataSource, reuseId)).toBeNull();
+
+    // 两轮「新建 → 清理」：同编码第二轮证明上一轮确已回收，且两轮 ID 不同、各自零残留
+    const roundIds: number[] = [];
+    for (const round of [1, 2]) {
+      const roundLedger = createOwnedResourceLedger();
+      const ids = await seedTestOrganizations({
+        dataSource,
+        organizations: [
+          {
+            organizationCode: roundCode,
+            name: `G13 第 ${round} 轮组织`,
+            kind: 'CLIENT',
+            isManagedCompany: true,
+          },
+        ],
+        ownership: roundLedger,
+      });
+      const roundId = requireOrganizationId(ids, roundCode);
+      expect(roundIds).not.toContain(roundId);
+      roundIds.push(roundId);
+      expect((await readOrganizationFields(dataSource, roundId))?.isManagedCompany).toBe(true);
+
+      await runGuardedSpecCleanup({
+        dataSource,
+        owned: roundLedger,
+        helper: `G13 第 ${round} 轮回收`,
+      });
+      expect(await readOrganizationFields(dataSource, roundId)).toBeNull();
+    }
+    expect(new Set(roundIds).size).toBe(2);
+
+    // 两个外部哨兵仍在，且受管值/指纹始终未被改写
+    expect(await readOrganizationFields(dataSource, managedSentinelId)).toEqual(
+      managedSentinelBefore,
+    );
+    expect(await readOrganizationFields(dataSource, identicalSentinelId)).toEqual(
+      identicalSentinelBefore,
+    );
+    // 测试外层持有哨兵 ID，最后按 ID 精确删除
+    await dataSource.getRepository(OrganizationEntity).delete({ id: managedSentinelId });
+    await dataSource.getRepository(OrganizationEntity).delete({ id: identicalSentinelId });
+    expect(await readOrganizationFields(dataSource, managedSentinelId)).toBeNull();
+    expect(await readOrganizationFields(dataSource, identicalSentinelId)).toBeNull();
+  });
+
+  it('G13B 台账内复用前重核数据库实值：受管标记/状态漂移与已登记 ID 缺行均在 setup 拒绝，替代行不被认领', async () => {
+    const organizationRepository = dataSource.getRepository(OrganizationEntity);
+
+    // ---- A. 登记后受管标记漂移：同一台账再次 setup 必须拒绝，台账与行保持原样 ----
+    const driftCode = codeFor('G13B_MANAGED_DRIFT');
+    const driftLedger = createOwnedResourceLedger();
+    const driftSpec = {
+      organizationCode: driftCode,
+      name: 'G13B 受管标记漂移组织',
+      kind: 'CLIENT' as const,
+      isManagedCompany: true,
+    };
+    const driftFirst = await seedTestOrganizations({
+      dataSource,
+      organizations: [driftSpec],
+      ownership: driftLedger,
+    });
+    const driftId = requireOrganizationId(driftFirst, driftCode);
+    const driftFactsBefore = driftLedger.facts.organization.get(driftId);
+
+    await organizationRepository.update({ id: driftId }, { isManagedCompany: false });
+    const driftSnapshot = await readOrganizationFields(dataSource, driftId);
+    expect(driftSnapshot?.isManagedCompany).toBe(false);
+
+    await expect(
+      seedTestOrganizations({ dataSource, organizations: [driftSpec], ownership: driftLedger }),
+    ).rejects.toThrow(/isManagedCompany/);
+
+    // 拒绝不写库、不改台账：旧 ID 不能流入 setup 的后续步骤
+    expect(driftLedger.organizationIds).toEqual([driftId]);
+    expect(driftLedger.facts.organization.get(driftId)).toBe(driftFactsBefore);
+    expect(await readOrganizationFields(dataSource, driftId)).toEqual(driftSnapshot);
+
+    // 恢复受管标记后正例：返回同一 ID 且不重复登记
+    await organizationRepository.update({ id: driftId }, { isManagedCompany: true });
+    const driftRestored = await seedTestOrganizations({
+      dataSource,
+      organizations: [driftSpec],
+      ownership: driftLedger,
+    });
+    expect(requireOrganizationId(driftRestored, driftCode)).toBe(driftId);
+    expect(driftLedger.organizationIds).toEqual([driftId]);
+
+    // ---- A2. 状态漂移：受管标记以外的事实同样参与核验 ----
+    await organizationRepository.update({ id: driftId }, { status: 'DISABLED' });
+    await expect(
+      seedTestOrganizations({ dataSource, organizations: [driftSpec], ownership: driftLedger }),
+    ).rejects.toThrow(/status/);
+    await organizationRepository.update({ id: driftId }, { status: 'ACTIVE' });
+
+    // 恢复预期后按台账受保护回收，零残留
+    await runGuardedSpecCleanup({ dataSource, owned: driftLedger, helper: 'G13B 漂移恢复后回收' });
+    expect(await readOrganizationFields(dataSource, driftId)).toBeNull();
+
+    // ---- B. 已登记 ID 缺行：精确撤掉本轮组织后复用，必须报缺失且不补建 ----
+    const missingCode = codeFor('G13B_MISSING');
+    const missingLedger = createOwnedResourceLedger();
+    const missingSpec = {
+      organizationCode: missingCode,
+      name: 'G13B 缺行组织',
+      kind: 'CLIENT' as const,
+      isManagedCompany: true,
+    };
+    const missingFirst = await seedTestOrganizations({
+      dataSource,
+      organizations: [missingSpec],
+      ownership: missingLedger,
+    });
+    const missingId = requireOrganizationId(missingFirst, missingCode);
+    const missingFactsBefore = missingLedger.facts.organization.get(missingId);
+
+    await organizationRepository.delete({ id: missingId });
+    expect(await readOrganizationFields(dataSource, missingId)).toBeNull();
+
+    await expect(
+      seedTestOrganizations({ dataSource, organizations: [missingSpec], ownership: missingLedger }),
+    ).rejects.toThrow(/已不存在该行/);
+    expect(missingLedger.organizationIds).toEqual([missingId]);
+    expect(missingLedger.facts.organization.get(missingId)).toBe(missingFactsBefore);
+    // 不按编码补建原行
+    expect(
+      await organizationRepository.findOne({ where: { organizationCode: missingCode } }),
+    ).toBeNull();
+
+    // ---- C. 同码替代行：仍报原 ID 缺行，不认领替代行，收尾零 DELETE ----
+    const replacementId = await createOrganization(dataSource, {
+      organizationCode: missingCode,
+      name: 'G13B 同码替代外部组织',
+      kind: 'CLIENT',
+      isManagedCompany: true,
+    });
+    const replacementBefore = await readOrganizationFields(dataSource, replacementId);
+
+    await expect(
+      seedTestOrganizations({ dataSource, organizations: [missingSpec], ownership: missingLedger }),
+    ).rejects.toThrow(/已不存在该行/);
+    expect(missingLedger.organizationIds).toEqual([missingId]);
+    expect(missingLedger.organizationIds).not.toContain(replacementId);
+
+    const counted = createDeleteCountingDataSource(dataSource);
+    await runGuardedSpecCleanup({
+      dataSource: counted.dataSource,
+      owned: missingLedger,
+      helper: 'G13B 缺行后的正式收尾',
+    });
+    // 只会按台账尝试删除原 ID（行缺失，影响 0 行）；替代行不在台账，绝不参与删除
+    expect(counted.stats.deleteCount).toBe(1);
+    expect(await readOrganizationFields(dataSource, replacementId)).toEqual(replacementBefore);
+
+    // 替代行由测试外层按精确 ID 删除
+    await organizationRepository.delete({ id: replacementId });
+    expect(await readOrganizationFields(dataSource, replacementId)).toBeNull();
   });
 });

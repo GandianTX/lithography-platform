@@ -448,6 +448,70 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     });
   });
 
+  describe('Web 输入列宽边界（终审 I5）', () => {
+    // '@ex.com' 共 7 个字符：前缀 43 → 50，前缀 44 → 51
+    const emailOfLength = (length: number): string =>
+      `${'a'.repeat(length - '@ex.com'.length)}@ex.com`;
+
+    it('登录邮箱 50 个字符可进入事务', async () => {
+      await usecase.execute({ ...validParams(), loginEmail: emailOfLength(50) });
+
+      expect(transactionRunner.run).toHaveBeenCalled();
+    });
+
+    it('登录邮箱 51 个字符在事务前拒绝（非 MySQL 列宽兜底）', async () => {
+      await expect(
+        usecase.execute({ ...validParams(), loginEmail: emailOfLength(51) }),
+      ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_TEXT });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('登录名 30 个字符可进入事务、31 个字符在事务前拒绝', async () => {
+      await usecase.execute({ ...validParams(), loginName: 'n'.repeat(30) });
+      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+
+      await expect(
+        usecase.execute({ ...validParams(), loginName: 'n'.repeat(31) }),
+      ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_TEXT });
+      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+    });
+
+    it('旧入口不受 Web 邮箱上限影响（维持原输入契约）', async () => {
+      await usecase.execute({
+        ...legacyParams(),
+        loginEmail: emailOfLength(51),
+      });
+
+      expect(transactionRunner.run).toHaveBeenCalled();
+    });
+
+    it('默认昵称候选为冲突后缀预留空间：基础候选最长 43 个字符', async () => {
+      await usecase.execute({
+        ...validParams(),
+        loginName: undefined,
+        nickname: undefined,
+        loginEmail: emailOfLength(50),
+      });
+
+      const nicknameArg = accountQueryService.pickAvailableNickname.mock.calls[0][0] as {
+        fallbackOptions: string[];
+      };
+      expect(nicknameArg.fallbackOptions.length).toBeGreaterThan(0);
+      for (const option of nicknameArg.fallbackOptions) {
+        expect(option.length).toBeLessThanOrEqual(43);
+      }
+    });
+
+    it('显式昵称维持 2–20 的业务规则，不被默认候选截断影响', async () => {
+      await expect(
+        usecase.execute({ ...validParams(), nickname: '昵'.repeat(21) }),
+      ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_TEXT });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+  });
+
   describe('旧入口（LEGACY）行为兼容', () => {
     it('客户注册只按 ACTIVE 复核组织，且不写 customer_organization_id', async () => {
       // 未受管公司：Web 资格复核为 null，旧入口的 ACTIVE 复核仍可用
@@ -539,8 +603,30 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     });
   });
 
+  describe('重复账号的错误类别（终审 I6）', () => {
+    it('Web 入口预检查命中：返回 REGISTRATION_ACCOUNT_EXISTS（映射 CONFLICT）', async () => {
+      accountQueryService.checkAccountExists.mockResolvedValue(true);
+
+      await expect(usecase.execute(validParams())).rejects.toMatchObject({
+        code: ACCOUNT_ERROR.REGISTRATION_ACCOUNT_EXISTS,
+      });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('旧入口预检查命中：维持基线 ACCOUNT_ALREADY_EXISTS（映射 BAD_USER_INPUT）', async () => {
+      accountQueryService.checkAccountExists.mockResolvedValue(true);
+
+      await expect(usecase.execute(legacyParams())).rejects.toMatchObject({
+        code: ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS,
+      });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+  });
+
   describe('并发唯一约束冲突', () => {
-    it('邮箱唯一索引冲突映射为账号已存在，且事务回滚', async () => {
+    it('Web 入口邮箱唯一索引冲突映射为 REGISTRATION_ACCOUNT_EXISTS，且事务回滚', async () => {
       accountService.saveAccount.mockRejectedValue({
         code: 'ER_DUP_ENTRY',
         errno: 1062,
@@ -548,10 +634,24 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
       });
 
       await expect(usecase.execute(validParams())).rejects.toMatchObject({
-        code: ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS,
+        code: ACCOUNT_ERROR.REGISTRATION_ACCOUNT_EXISTS,
       });
 
       expect(accountService.saveUserInfo).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
+    });
+
+    it('旧入口并发唯一索引冲突映射为 ACCOUNT_ALREADY_EXISTS，且事务回滚', async () => {
+      accountService.saveAccount.mockRejectedValue({
+        code: 'ER_DUP_ENTRY',
+        errno: 1062,
+        message: "Duplicate entry 'a@b.com' for key 'base_user_account.uk_login_email'",
+      });
+
+      await expect(usecase.execute(legacyParams())).rejects.toMatchObject({
+        code: ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS,
+      });
+
       expect(rolledBack).toBe(true);
     });
 

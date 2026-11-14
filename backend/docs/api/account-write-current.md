@@ -107,6 +107,9 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 | 公司资格（事务内复核） | 仅 `status = ACTIVE` | `status = ACTIVE AND is_managed_company = true` |
 | 工程师 `realName` / `phone` | 可同时省略；只提供其一被拒 | 必填 |
 | 客户 `customer_organization_id` | 不写入（保持基线行为） | 选择/新建公司时写可信归属 |
+| `loginEmail` 可写上限 | 254（原输入契约） | 50（同时写入 `base_user_info.email`） |
+| `loginName` 长度 | 4–30（列宽 30） | 4–30（归一化后、写入前校验） |
+| 重复账号错误码 | `ACCOUNT_ALREADY_EXISTS` → `BAD_USER_INPUT` | `REGISTRATION_ACCOUNT_EXISTS` → `CONFLICT` |
 
 **兼容性说明**：`register` 与 `thirdPartyRegister` 的 `organizationId` 为必填（非空），旧客户端不传会收到 `BAD_USER_INPUT`。V44 Web 注册页已切换到 `registerWeb`，客户不再被强制传 `organizationId`（可手填自家公司）。
 

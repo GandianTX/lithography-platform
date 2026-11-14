@@ -14,12 +14,20 @@ const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 128;
 const NICKNAME_MAX_LENGTH = 20;
 const LOGIN_NAME_MIN_LENGTH = 4;
+/** 登录名对应 `base_user_account.login_name` 列宽 30 */
+const LOGIN_NAME_MAX_LENGTH = 30;
+/** 登录邮箱同时写入联系邮箱列（50），Web 可写上限与服务端一致 */
+const LOGIN_EMAIL_MAX_LENGTH = 50;
 
 export const LOGIN_EMAIL_RULES: FormRule[] = [
   {
     message: '请输入登录邮箱。',
     required: true,
     whitespace: true,
+  },
+  {
+    message: `邮箱最多 ${LOGIN_EMAIL_MAX_LENGTH} 个字符。`,
+    max: LOGIN_EMAIL_MAX_LENGTH,
   },
   {
     message: '邮箱格式不正确。',
@@ -47,6 +55,10 @@ export const OPTIONAL_LOGIN_NAME_RULES: FormRule[] = [
   {
     message: '登录名至少 4 个字符。',
     min: LOGIN_NAME_MIN_LENGTH,
+  },
+  {
+    message: `登录名最多 ${LOGIN_NAME_MAX_LENGTH} 个字符。`,
+    max: LOGIN_NAME_MAX_LENGTH,
   },
   {
     message: '登录名只能包含英文字母、数字、下划线和短横线。',

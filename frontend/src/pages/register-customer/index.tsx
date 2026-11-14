@@ -14,9 +14,7 @@ export function RegisterCustomerPage() {
     <div className="register-layout">
       <header className="register-header">
         <h1 className="register-title">客户注册</h1>
-        <p className="register-subtitle">
-          注册即开通账号，并关联所属公司；名单中没有自家公司时可填写名称。
-        </p>
+        <p className="register-subtitle">注册即开通账号并关联所属公司。</p>
       </header>
 
       <div className="register-panel">
