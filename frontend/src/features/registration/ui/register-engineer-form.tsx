@@ -4,6 +4,7 @@
  * 工程师注册表单。
  *
  * - 姓名、联系电话、登录邮箱、密码与所属公司必填；登录名、昵称、申请说明选填；
+ * - 字段顺序按 V44：登录邮箱 → 密码 → 登录名 → 昵称 → 姓名 → 联系电话 → 公司 → 申请说明；
  * - 公司只能从名单选择（只提交 organizationId），不提供手填分支；
  * - 提交中防重复；失败保留非敏感输入并清空密码；
  * - 成功切待审结果区：不创建会话、不跳工作台，只引导前往登录。
@@ -11,7 +12,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
-import { Link, useNavigate } from 'react-router';
+import { useNavigate } from 'react-router';
 
 import {
   resolveRegisterEngineerErrorMessage,
@@ -125,6 +126,41 @@ export function RegisterEngineerForm() {
         </div>
       ) : null}
 
+      <Form.Item label="登录邮箱" name="loginEmail" rules={LOGIN_EMAIL_RULES}>
+        <Input
+          autoCapitalize="none"
+          autoComplete="email"
+          disabled={isSubmitting}
+          placeholder="用于登录与接收通知"
+        />
+      </Form.Item>
+
+      <Form.Item label="密码" name="loginPassword" rules={LOGIN_PASSWORD_RULES}>
+        <Input.Password
+          autoComplete="new-password"
+          disabled={isSubmitting}
+          placeholder="8–128 位，需包含小写字母、数字与特殊字符"
+        />
+      </Form.Item>
+
+      <Form.Item label="登录名（选填）" name="loginName" rules={OPTIONAL_LOGIN_NAME_RULES}>
+        <Input
+          autoCapitalize="none"
+          autoComplete="username"
+          disabled={isSubmitting}
+          placeholder="仅支持英文字母、数字、下划线和短横线"
+        />
+      </Form.Item>
+
+      <Form.Item
+        extra="2–20 个字符，支持中英文、数字与 _ - · ."
+        label="昵称（选填）"
+        name="nickname"
+        rules={OPTIONAL_NICKNAME_RULES}
+      >
+        <Input disabled={isSubmitting} placeholder="用于界面展示" />
+      </Form.Item>
+
       <Form.Item
         label="姓名"
         name="realName"
@@ -173,41 +209,6 @@ export function RegisterEngineerForm() {
         <Input autoComplete="tel" disabled={isSubmitting} placeholder="用于审核联系" />
       </Form.Item>
 
-      <Form.Item label="登录邮箱" name="loginEmail" rules={LOGIN_EMAIL_RULES}>
-        <Input
-          autoCapitalize="none"
-          autoComplete="email"
-          disabled={isSubmitting}
-          placeholder="用于登录与接收通知"
-        />
-      </Form.Item>
-
-      <Form.Item label="密码" name="loginPassword" rules={LOGIN_PASSWORD_RULES}>
-        <Input.Password
-          autoComplete="new-password"
-          disabled={isSubmitting}
-          placeholder="8–128 位，需包含小写字母、数字与特殊字符"
-        />
-      </Form.Item>
-
-      <Form.Item label="登录名（选填）" name="loginName" rules={OPTIONAL_LOGIN_NAME_RULES}>
-        <Input
-          autoCapitalize="none"
-          autoComplete="username"
-          disabled={isSubmitting}
-          placeholder="仅支持英文字母、数字、下划线和短横线"
-        />
-      </Form.Item>
-
-      <Form.Item
-        extra="2–20 个字符，支持中英文、数字与 _ - · ."
-        label="昵称（选填）"
-        name="nickname"
-        rules={OPTIONAL_NICKNAME_RULES}
-      >
-        <Input disabled={isSubmitting} placeholder="用于界面展示" />
-      </Form.Item>
-
       <Form.Item label="所属公司" required>
         <RegistrationOrganizationSelect
           ariaLabel="所属公司"
@@ -233,15 +234,11 @@ export function RegisterEngineerForm() {
         <Input.TextArea disabled={isSubmitting} placeholder="说明加入原因或工作背景" rows={3} />
       </Form.Item>
 
-      <Form.Item>
-        <Button block htmlType="submit" loading={isSubmitting} type="primary">
+      <div className="register-actions">
+        <Button htmlType="submit" loading={isSubmitting} type="primary">
           提交注册申请
         </Button>
-      </Form.Item>
-
-      <div className="register-back-login">
-        <span>已有账号？</span>
-        <Link to="/login">返回登录</Link>
+        <Button onClick={() => navigate('/login')}>返回登录</Button>
       </div>
     </Form>
   );

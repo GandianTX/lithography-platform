@@ -13,7 +13,7 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test --workers=1",
     "test:e2e:account-real": "playwright test --config=playwright.account-settings-real.config.ts e2e-real/account-settings-real.spec.ts",
-    "test:e2e:repair-request-real": "cross-env DB_NAME=lithography_work_e2e E2E_BACKEND_ORIGIN=http://127.0.0.1:3100 playwright test --config=playwright.engineer-repair-request-real.config.ts",
+    "test:e2e:repair-request-real": "cross-env DB_NAME=lithography_e2e E2E_BACKEND_ORIGIN=http://127.0.0.1:3100 playwright test --config=playwright.engineer-repair-request-real.config.ts",
     "test:e2e:pr5-real": "playwright test --config=playwright.account-settings-real.config.ts e2e-real/pr5-real-flow.spec.ts",
     "test:e2e:pr5-cleanup-safety": "playwright test --config=playwright.pr5-cleanup-safety.config.ts",
     "test:e2e:auth-admin-real": "playwright test --config=playwright.auth-admin-real.config.ts e2e-real/auth-admin-real.spec.ts",

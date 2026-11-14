@@ -50,10 +50,13 @@ function createStoredSession(overrides: Record<string, unknown> = {}): string {
     accountId: SUPER_ADMIN_SESSION.accountId,
     adminLevel: SUPER_ADMIN_SESSION.adminLevel,
     customerOrganizationId: SUPER_ADMIN_SESSION.customerOrganizationId,
+    engineerOrganizationId: SUPER_ADMIN_SESSION.engineerOrganizationId,
+    adminOrganizationId: SUPER_ADMIN_SESSION.adminOrganizationId,
+    registrationOrganizationId: SUPER_ADMIN_SESSION.registrationOrganizationId,
     restriction: SUPER_ADMIN_SESSION.restriction,
     role: SUPER_ADMIN_SESSION.role,
     userInfo: SUPER_ADMIN_SESSION.userInfo,
-    version: 2,
+    version: 3,
     ...overrides,
   });
 }
@@ -66,7 +69,7 @@ describe('auth session storage', () => {
     persistence.write(SUPER_ADMIN_SESSION);
 
     expect(persistence.read()).toEqual(SUPER_ADMIN_SESSION);
-    expect([...storage.values.values()][0]).toContain('"version":2');
+    expect([...storage.values.values()][0]).toContain('"version":3');
     expect([...storage.values.values()][0]).not.toContain('refreshToken');
     expect([...storage.values.values()][0]).not.toContain('metaDigest');
   });
@@ -75,12 +78,15 @@ describe('auth session storage', () => {
     const storage = createMemoryStorage();
     const persistence = createAuthSessionPersistence(() => storage);
 
-    // v2 快照缺失限制状态 / 身份扩展字段：按 NONE / null 恢复，不丢会话
+    // v3 快照缺失限制状态 / 身份扩展字段：按 NONE / null 恢复，不丢会话
     storage.setItem(
       AUTH_SESSION_STORAGE_KEY,
       createStoredSession({
         adminLevel: undefined,
         customerOrganizationId: undefined,
+        engineerOrganizationId: undefined,
+        adminOrganizationId: undefined,
+        registrationOrganizationId: undefined,
         restriction: undefined,
       }),
     );
@@ -88,6 +94,9 @@ describe('auth session storage', () => {
     expect(persistence.read()).toEqual({
       ...SUPER_ADMIN_SESSION,
       adminLevel: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
       restriction: 'NONE',
     });
   });
@@ -112,10 +121,10 @@ describe('auth session storage', () => {
 
   it.each([
     ['an empty payload', ''],
-    ['an unknown version', createStoredSession({ version: 3 })],
+    ['an unknown version', createStoredSession({ version: 4 })],
     ['a legacy v1 payload', createStoredSession({ version: 1 })],
     ['an empty token', createStoredSession({ accessToken: ' ' })],
-    ['missing fields', JSON.stringify({ version: 2 })],
+    ['missing fields', JSON.stringify({ version: 3 })],
     ['invalid JSON', '{invalid json'],
   ])('removes %s instead of restoring it', (_caseName, storedValue) => {
     const storage = createMemoryStorage();

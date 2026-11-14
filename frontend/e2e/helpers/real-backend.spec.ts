@@ -107,7 +107,7 @@ describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 
   const OPT_IN_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
   const originalOptIn = process.env[OPT_IN_ENV];
   const TEST_DB_ENV =
-    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n';
+    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   const CREATED_BY_ACCOUNT_ID = 9001;
   const TITLE = 'E2E 参考资料验收行·run1（光闸维护·已改）';
   const STORAGE_REFERENCE = `${'a'.repeat(32)}.md`;
@@ -140,7 +140,7 @@ describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 
   /** CLI 回读的核验诊断行（helper 逐项复查后才允许声称清理成功） */
   function cleanupDiagnostics(overrides: Record<string, string> = {}, expectedRows = 1): string {
     const fields: Record<string, string> = {
-      database: 'lithography_work_e2e',
+      database: 'lithography_e2e',
       expected_rows: String(expectedRows),
       existing_rows: String(expectedRows),
       field_mismatch_rows: '0',
@@ -274,7 +274,7 @@ describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 
     expect(sql).toContain('START TRANSACTION');
     expect(sql.match(/\bCOMMIT\b/g)).toHaveLength(1);
     // 连接内自查实际 DATABASE()，并 FOR UPDATE 锁定目标行后才核对
-    expect(sql).toContain("(DATABASE() <> 'lithography_work_e2e')");
+    expect(sql).toContain("(DATABASE() <> 'lithography_e2e')");
     expect(sql).toContain('FOR UPDATE');
     // 守卫表以 CHECK 约束强制「核验不达标即中止批处理」
     expect(sql.toLowerCase()).toContain('check (violations = 0)');
@@ -366,7 +366,7 @@ describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 
     process.env[OPT_IN_ENV] = '1';
     execFileSyncMock.mockImplementation(() => {
       throw Object.assign(new Error('mysql exited with code 1'), {
-        stdout: 'database=lithography_work_e2e expected_rows=1 existing_rows=1\n',
+        stdout: 'database=lithography_e2e expected_rows=1 existing_rows=1\n',
         stderr: 'ERROR 3819 (HY000) at line 5: Check constraint violated',
       });
     });
@@ -382,7 +382,7 @@ describe('real-backend 维修申请按精确 ID 物理清理（本轮收口新�
   const OPT_IN_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
   const originalOptIn = process.env[OPT_IN_ENV];
   const TEST_DB_ENV =
-    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n';
+    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   const REQUEST_NO_A = 'RR20260902000000AB12CD';
   const REQUEST_NO_B = 'RR20260902000001CD34EF';
   const FAULT_DESCRIPTION = '阶段五真实后端 e2e 用例';
@@ -419,7 +419,7 @@ describe('real-backend 维修申请按精确 ID 物理清理（本轮收口新�
   /** CLI 回读的核验诊断行（helper 逐项复查后才允许声称清理成功） */
   function cleanupDiagnostics(overrides: Record<string, string> = {}, expectedRows = 1): string {
     const fields: Record<string, string> = {
-      database: 'lithography_work_e2e',
+      database: 'lithography_e2e',
       expected_response_rows: '0',
       expected_rows: String(expectedRows),
       existing_rows: String(expectedRows),
@@ -543,7 +543,7 @@ describe('real-backend 维修申请按精确 ID 物理清理（本轮收口新�
     expect(sql).toContain('START TRANSACTION');
     expect(sql.match(/\bCOMMIT\b/g)).toHaveLength(1);
     // 连接内自查实际 DATABASE()，并 FOR UPDATE 锁定目标行后才核对
-    expect(sql).toContain("(DATABASE() <> 'lithography_work_e2e')");
+    expect(sql).toContain("(DATABASE() <> 'lithography_e2e')");
     expect(sql).toContain('FOR UPDATE');
     // 守卫表以 CHECK 约束强制「核验不达标即中止批处理」
     expect(sql.toLowerCase()).toContain('check (violations = 0)');
@@ -711,7 +711,7 @@ describe('real-backend 已回复维修申请的精确清理（负责人单卡片
   const OPT_IN_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
   const originalOptIn = process.env[OPT_IN_ENV];
   const TEST_DB_ENV =
-    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n';
+    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   const REQUEST_NO = 'RR20260902000002AB12CD';
   const FAULT_DESCRIPTION = '工程师回复链路真实 e2e 用例';
   const RESPONSE_TEXT = '已更换备件，待观察';
@@ -738,7 +738,7 @@ describe('real-backend 已回复维修申请的精确清理（负责人单卡片
 
   function diagnostics(overrides: Record<string, string> = {}): string {
     const fields: Record<string, string> = {
-      database: 'lithography_work_e2e',
+      database: 'lithography_e2e',
       expected_response_rows: '0',
       expected_rows: '1',
       existing_rows: '1',
@@ -982,13 +982,13 @@ describe('real-backend 统一清理入口 cleanupE2ERepairRequest（创建 / 管
     DB_PORT: '3306',
     DB_USER: 'root',
     DB_PASS: 'secret',
-    DB_NAME: 'lithography_work_e2e',
+    DB_NAME: 'lithography_e2e',
   };
   const SHARED_ENV = { ...DEDICATED_ENV, DB_NAME: 'lithography_drill' };
   const SHARED_DB_FILE =
     'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_drill\n';
   const DEDICATED_DB_FILE =
-    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n';
+    'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   const SOFT_DELETE_OK = {
     data: { deleteMyRepairRequest: { id: 920006, requestNo: CLEANUP_REQUEST_NO } },
   };
@@ -1111,7 +1111,7 @@ describe('real-backend 统一清理入口 cleanupE2ERepairRequest（创建 / 管
       .mockReset()
       .mockReturnValueOnce('920006')
       .mockReturnValue(
-        'database=lithography_work_e2e expected_response_rows=0 expected_rows=1 existing_rows=1 field_mismatch_rows=0 child_rows=0 response_residue_rows=0 residue_rows=0',
+        'database=lithography_e2e expected_response_rows=0 expected_rows=1 existing_rows=1 field_mismatch_rows=0 child_rows=0 response_residue_rows=0 residue_rows=0',
       );
     stubGraphqlFetch(SOFT_DELETE_OK);
 
@@ -1126,7 +1126,7 @@ describe('real-backend 统一清理入口 cleanupE2ERepairRequest（创建 / 管
       `SELECT id FROM repair_request WHERE request_no = '${CLEANUP_REQUEST_NO}'`,
     );
     expect(sqls[1]).toContain('DELETE FROM repair_request WHERE id IN (920006)');
-    expect(sqls[1]).toContain("(DATABASE() <> 'lithography_work_e2e')");
+    expect(sqls[1]).toContain("(DATABASE() <> 'lithography_e2e')");
   });
 
   it('已接单并含本轮回复：条件软删不可行，跳过软删直接走受保护物理清理（先删回复再删申请）', async () => {
@@ -1135,7 +1135,7 @@ describe('real-backend 统一清理入口 cleanupE2ERepairRequest（创建 / 管
       .mockReset()
       .mockReturnValueOnce('920006')
       .mockReturnValue(
-        'database=lithography_work_e2e expected_response_rows=1 expected_rows=1 existing_rows=1 field_mismatch_rows=0 child_rows=0 response_residue_rows=0 residue_rows=0',
+        'database=lithography_e2e expected_response_rows=1 expected_rows=1 existing_rows=1 field_mismatch_rows=0 child_rows=0 response_residue_rows=0 residue_rows=0',
       );
 
     await expect(
@@ -1332,7 +1332,7 @@ describe('real-backend 存储物理文件清理（入口自证失败关闭 + 先
 
   /** 专用隔离库配置文件：入口授权门通过后，配置库名门必须命中该库 */
   function dedicatedDbEnv(): string {
-    return 'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n';
+    return 'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   }
 
   function storageFileTarget(
@@ -1354,7 +1354,7 @@ describe('real-backend 存储物理文件清理（入口自证失败关闭 + 先
 
   function verificationDiagnostics(overrides: Record<string, string> = {}): string {
     return Object.entries({
-      database: 'lithography_work_e2e',
+      database: 'lithography_e2e',
       expected_files: '1',
       existing_rows: '1',
       field_mismatch_rows: '0',
@@ -1542,7 +1542,7 @@ describe('real-backend 参考资料软删前归属预检（只读，失败即停
 
   function ownershipDiagnostics(overrides: Record<string, string> = {}): string {
     return Object.entries({
-      database: 'lithography_work_e2e',
+      database: 'lithography_e2e',
       expected_rows: '1',
       existing_rows: '1',
       field_mismatch_rows: '0',
@@ -1559,7 +1559,7 @@ describe('real-backend 参考资料软删前归属预检（只读，失败即停
     readFileSyncMock
       .mockReset()
       .mockReturnValue(
-        'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n',
+        'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n',
       );
   });
 
@@ -1755,10 +1755,10 @@ describe('real-backend 数据库连接键运行时覆盖（R3：不改 .env 切�
     });
   });
 
-  it('DB_NAME=lithography_work_e2e 运行时覆盖生效', () => {
-    process.env.DB_NAME = 'lithography_work_e2e';
+  it('DB_NAME=lithography_e2e 运行时覆盖生效', () => {
+    process.env.DB_NAME = 'lithography_e2e';
 
-    expect(readBackendEnv().DB_NAME).toBe('lithography_work_e2e');
+    expect(readBackendEnv().DB_NAME).toBe('lithography_e2e');
   });
 
   it.each([[''], ['   '], ['\t']])('空白 DB_NAME 覆盖值（%p）不覆盖文件值', (blank) => {
@@ -1776,7 +1776,7 @@ describe('real-backend 数据库连接键运行时覆盖（R3：不改 .env 切�
       // 未覆盖时：文件库名 app 不是测试库命名，安全门拒绝
       expect(() => assertPhysicalCleanupAllowed(readBackendEnv())).toThrow('不属于测试库命名');
 
-      process.env.DB_NAME = 'lithography_work_e2e';
+      process.env.DB_NAME = 'lithography_e2e';
 
       // 覆盖后：安全门放行，且 mysqlQuery 实际连接的库名与安全门读到的是同一个值
       expect(() => assertPhysicalCleanupAllowed(readBackendEnv())).not.toThrow();
@@ -1784,8 +1784,8 @@ describe('real-backend 数据库连接键运行时覆盖（R3：不改 .env 切�
 
       const args = execFileSyncMock.mock.lastCall?.[1] as string[];
 
-      expect(args).toContain('lithography_work_e2e');
-      expect(readBackendEnv().DB_NAME).toBe('lithography_work_e2e');
+      expect(args).toContain('lithography_e2e');
+      expect(readBackendEnv().DB_NAME).toBe('lithography_e2e');
     } finally {
       if (originalOptIn === undefined) {
         delete process.env[optInKey];
@@ -1809,7 +1809,7 @@ describe('real-backend 真实 E2E 夹具写入与「先核验后恢复」安全�
   const TITLE = 'E2E 参考资料SQL回归·run1·ref-null';
 
   function dedicatedDbEnv(): string {
-    return 'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_work_e2e\n';
+    return 'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   }
 
   /** ref-null 案夹具：引用与后端被故意改成 NULL、并补了正文以满足表 CHECK */
@@ -1886,7 +1886,7 @@ describe('real-backend 真实 E2E 夹具写入与「先核验后恢复」安全�
 
   it('实际 DATABASE() 命中专用隔离库：先探测库名，再执行写入（同一入口）', () => {
     process.env[OPT_IN_ENV] = '1';
-    execFileSyncMock.mockReturnValueOnce('lithography_work_e2e').mockReturnValueOnce('1');
+    execFileSyncMock.mockReturnValueOnce('lithography_e2e').mockReturnValueOnce('1');
 
     const writeSql = 'UPDATE reference_document SET content_text = NULL WHERE id = 980001';
 
@@ -1967,8 +1967,8 @@ describe('real-backend 真实 E2E 夹具写入与「先核验后恢复」安全�
   it('恢复脚本先锁行、写前核验、更新后核对影响行数，全部在同一 mysql 事务内', () => {
     process.env[OPT_IN_ENV] = '1';
     execFileSyncMock
-      .mockReturnValueOnce('lithography_work_e2e')
-      .mockReturnValueOnce('database=lithography_work_e2e existing_rows=1 restored_rows=1');
+      .mockReturnValueOnce('lithography_e2e')
+      .mockReturnValueOnce('database=lithography_e2e existing_rows=1 restored_rows=1');
 
     restoreMutatedReferenceDocumentFixtureRow(readBackendEnv(), restoreTarget());
 
@@ -2021,21 +2021,19 @@ describe('real-backend 真实 E2E 夹具写入与「先核验后恢复」安全�
     expect(secondGuardIndex).toBeGreaterThan(captureIndex);
     expect(restoreSql).toContain('CHECK (violations = 0)');
     // 写前守卫含库名 + 身份/逐列制造值核验
-    expect(restoreSql).toContain("(DATABASE() <> 'lithography_work_e2e')");
+    expect(restoreSql).toContain("(DATABASE() <> 'lithography_e2e')");
     expect(restoreSql).toContain('(1 - (SELECT COUNT(*) FROM reference_document WHERE id = 980001');
     // 更新后守卫要求影响行数恰好 1
     expect(restoreSql).toContain('(1 - @restored_rows)');
   });
 
   it.each([
-    ['制造状态已被意外改动', 'database=lithography_work_e2e existing_rows=1 restored_rows=0'],
-    ['目标行缺失', 'database=lithography_work_e2e existing_rows=0 restored_rows=0'],
+    ['制造状态已被意外改动', 'database=lithography_e2e existing_rows=1 restored_rows=0'],
+    ['目标行缺失', 'database=lithography_e2e existing_rows=0 restored_rows=0'],
     ['实际库名非专用隔离库', 'database=lithography_drill existing_rows=1 restored_rows=1'],
   ])('恢复诊断不达标（%s）时抛错并保留行与文件', (_label, diagnosticOutput) => {
     process.env[OPT_IN_ENV] = '1';
-    execFileSyncMock
-      .mockReturnValueOnce('lithography_work_e2e')
-      .mockReturnValueOnce(diagnosticOutput);
+    execFileSyncMock.mockReturnValueOnce('lithography_e2e').mockReturnValueOnce(diagnosticOutput);
 
     expect(() =>
       restoreMutatedReferenceDocumentFixtureRow(readBackendEnv(), restoreTarget()),

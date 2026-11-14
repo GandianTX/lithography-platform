@@ -1,5 +1,5 @@
 // e2e-real/pr5-real-flow.spec.ts
-// PR5 S5「真实权限与业务闭环」真实链路用例：专用隔离库 lithography_work_e2e + 专用后端 3100
+// PR5 S5「真实权限与业务闭环」真实链路用例：专用隔离库 lithography_e2e + 专用后端 3100
 // + 专用前端 4174（/graphql 同源代理到 3100）。
 //
 // 运行入口（授权变量必须由执行者显式设置，不写入 npm script）：

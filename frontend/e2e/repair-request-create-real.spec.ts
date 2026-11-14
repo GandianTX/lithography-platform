@@ -3,7 +3,7 @@
 //
 // 只有专用隔离入口（playwright.real-backend-dedicated.config.ts）收集本文件；普通默认入口
 // （playwright.config.ts）不收集，保证 `npm run test:e2e` 默认只跑 mock-only、不触达真实后端，
-// 也不写共享开发库 lithography_drill。专用入口固定 lithography_work_e2e 并显式注入严格模式。
+// 也不写共享开发库 lithography_drill。专用入口固定 lithography_e2e 并显式注入严格模式。
 //
 // 共享工具（env/探针/mysql/真实登录）见 ./helpers/real-backend；前提不满足时用例自动跳过
 // （专用入口严格模式下直接失败，不以 skipped 掩盖），运行后自行清理产生的申请行。

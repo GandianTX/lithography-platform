@@ -1,6 +1,6 @@
 // e2e/helpers/pr5-real-flow.ts
 //
-// PR5 S5「真实权限与业务闭环」的共享基建（专用隔离库 lithography_work_e2e + 专用后端 3100）：
+// PR5 S5「真实权限与业务闭环」的共享基建（专用隔离库 lithography_e2e + 专用后端 3100）：
 //
 // 1. 环境预检：只允许在专用隔离库上执行，且物理清理必须显式 opt-in
 //    （复用 real-backend.assertPhysicalCleanupAllowed，不自建平行安全门）；
@@ -446,7 +446,7 @@ type Pr5SnapshotTable = 'repair_request' | 'reference_document';
 const PR5_SNAPSHOT_TABLES: readonly Pr5SnapshotTable[] = ['repair_request', 'reference_document'];
 
 /**
- * 专用环境预检：物理清理授权 + 目标库必须是专用隔离库 lithography_work_e2e，
+ * 专用环境预检：物理清理授权 + 目标库必须是专用隔离库 lithography_e2e，
  * 且 SQL helper 实际连接的库与之完全一致。任何一条不满足都直接抛错（不 skip 掩盖）。
  */
 export function assertPr5DedicatedEnvironment(env = readBackendEnv()): void {

@@ -63,7 +63,7 @@ function establishEngineerSession(nickname: string) {
       accountId: 900201,
       role: 'ENGINEER',
       userInfo: { accessGroup: ['ENGINEER'], nickname },
-      version: 2,
+      version: 3,
     }),
   );
 }
@@ -119,7 +119,7 @@ describe('AppLayout 侧栏昵称同步（真实会话装配）', () => {
       userInfo?: { nickname?: string } | null;
       version?: number;
     };
-    expect(stored?.version).toBe(2);
+    expect(stored?.version).toBe(3);
     expect(stored?.accountId).toBe(900201);
     expect(stored?.userInfo?.nickname).toBe('同步后的昵称');
 

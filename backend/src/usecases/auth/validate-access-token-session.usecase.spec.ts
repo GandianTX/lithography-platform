@@ -6,7 +6,10 @@ import { UserState } from '@app-types/models/user-info.types';
 import type { AccountSessionAuthoritySnapshot } from '@src/modules/account/account.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import type { OrganizationMembershipFact } from '@src/modules/lithography/organization.types';
 import type { PinoLogger } from 'nestjs-pino';
+import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.usecase';
 import { ValidateAccessTokenSessionUsecase } from './validate-access-token-session.usecase';
 
 describe('ValidateAccessTokenSessionUsecase', () => {
@@ -37,35 +40,63 @@ describe('ValidateAccessTokenSessionUsecase', () => {
     ...overrides,
   });
 
+  const membership = (
+    overrides: Partial<OrganizationMembershipFact> = {},
+  ): OrganizationMembershipFact => ({
+    membershipId: 1,
+    organizationId: 501,
+    organizationCode: 'CLIENT_DEFAULT',
+    organizationName: '示例维护公司',
+    organizationKind: 'CLIENT',
+    memberRole: IdentityTypeEnum.ENGINEER,
+    ...overrides,
+  });
+
   const accountQueryService = {
     findSessionAuthoritySnapshot: jest.fn(),
   } as unknown as AccountQueryService;
   const engineerRegistrationQueryService = {
     findLatestByAccountId: jest.fn(),
   } as unknown as EngineerRegistrationQueryService;
+  const organizationMembershipQueryService = {
+    listActiveMembershipsByAccount: jest.fn(),
+  } as unknown as OrganizationMembershipQueryService;
+  const resolveSessionRestrictionUsecase = new ResolveSessionRestrictionUsecase(
+    engineerRegistrationQueryService,
+    organizationMembershipQueryService,
+  );
   const logger = {
     setContext: jest.fn(),
     warn: jest.fn(),
   } as unknown as PinoLogger;
   const usecase = new ValidateAccessTokenSessionUsecase(
     accountQueryService,
-    engineerRegistrationQueryService,
+    resolveSessionRestrictionUsecase,
     logger,
   );
 
   const mockSnapshot = (value: AccountSessionAuthoritySnapshot): void => {
     (accountQueryService.findSessionAuthoritySnapshot as jest.Mock).mockResolvedValue(value);
   };
-  const mockLatestApplication = (status: EngineerRegistrationApplicationStatus | null): void => {
+  const mockLatestApplication = (
+    status: EngineerRegistrationApplicationStatus | null,
+    organizationId: number | null = null,
+  ): void => {
     (engineerRegistrationQueryService.findLatestByAccountId as jest.Mock).mockResolvedValue(
-      status === null ? null : { status },
+      status === null ? null : { status, organizationId },
     );
+  };
+  const mockMemberships = (facts: readonly OrganizationMembershipFact[]): void => {
+    (
+      organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
+    ).mockResolvedValue(facts);
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockSnapshot(snapshot());
     mockLatestApplication(null);
+    mockMemberships([]);
   });
 
   it('允许合法单角色会话，并返回 NONE 限制', async () => {
@@ -75,6 +106,9 @@ describe('ValidateAccessTokenSessionUsecase', () => {
       role: IdentityTypeEnum.ENGINEER,
       adminLevel: null,
       customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
       restriction: SessionRestriction.NONE,
     });
   });
@@ -252,6 +286,39 @@ describe('ValidateAccessTokenSessionUsecase', () => {
     await expect(usecase.execute({ payload: payload() })).resolves.toMatchObject({
       restriction: SessionRestriction.MUST_CHANGE_PASSWORD,
       adminLevel: 2,
+    });
+  });
+
+  it('申请已批准但缺少有效工程师成员关系时返回 ENGINEER_INACTIVE', async () => {
+    mockLatestApplication(EngineerRegistrationApplicationStatus.APPROVED, 501);
+    mockMemberships([]);
+
+    await expect(usecase.execute({ payload: payload() })).resolves.toMatchObject({
+      restriction: SessionRestriction.ENGINEER_INACTIVE,
+      engineerOrganizationId: null,
+      registrationOrganizationId: 501,
+    });
+  });
+
+  it('申请已批准且成员组织与申请目标一致时返回 NONE 并带出可信组织', async () => {
+    mockLatestApplication(EngineerRegistrationApplicationStatus.APPROVED, 501);
+    mockMemberships([membership({ organizationId: 501 })]);
+
+    await expect(usecase.execute({ payload: payload() })).resolves.toMatchObject({
+      restriction: SessionRestriction.NONE,
+      engineerOrganizationId: 501,
+      registrationOrganizationId: 501,
+    });
+  });
+
+  it('申请已批准但成员组织与申请目标不一致时返回 ENGINEER_INACTIVE', async () => {
+    mockLatestApplication(EngineerRegistrationApplicationStatus.APPROVED, 501);
+    mockMemberships([membership({ organizationId: 777 })]);
+
+    await expect(usecase.execute({ payload: payload() })).resolves.toMatchObject({
+      restriction: SessionRestriction.ENGINEER_INACTIVE,
+      engineerOrganizationId: 777,
+      registrationOrganizationId: 501,
     });
   });
 });

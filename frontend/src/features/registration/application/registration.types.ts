@@ -23,3 +23,32 @@ export type RegistrationOrganizationSearch = {
   pageSize: number;
   keyword?: string;
 };
+
+/** 工程师申请状态（与后端 EngineerRegistrationApplicationStatus 同值） */
+export const ENGINEER_REGISTRATION_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'] as const;
+
+export type EngineerRegistrationStatus = (typeof ENGINEER_REGISTRATION_STATUSES)[number];
+
+/** 工程师申请状态展示名 */
+export const ENGINEER_REGISTRATION_STATUS_LABELS: Record<EngineerRegistrationStatus, string> = {
+  APPROVED: '已通过',
+  PENDING: '审核中',
+  REJECTED: '已拒绝',
+};
+
+/**
+ * 本人最新一份工程师申请（受限会话读取）。
+ *
+ * 只含申请人自己需要看到的展示事实：目标公司、状态、申请说明与审核结论；
+ * 不含账号主键与审核管理员身份。`organizationName` 在组织行缺失时为 null。
+ */
+export type MyEngineerRegistrationView = {
+  applicationId: number;
+  organizationId: number;
+  organizationName: string | null;
+  status: EngineerRegistrationStatus;
+  applicationNote: string | null;
+  submittedAt: string;
+  reviewedAt: string | null;
+  reviewComment: string | null;
+};

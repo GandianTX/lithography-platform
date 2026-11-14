@@ -2192,26 +2192,40 @@ body {
   }
 }
 
-/* 注册页（S3/S4）：与登录页共用壳层与左栏文案样式，仅主体双栏宽度略宽 */
+/* 注册页（RQ5 · V44）：居中单列——标题与说明在卡片上方，卡片标题为「注册资料」，
+   底部为提交与返回登录并排动作。列宽沿用既有 460px 表单基准（原型 284px 窄卡为
+   已登记的有意偏差）；整体由 .login-workspace 居中。 */
 .register-layout {
-  align-items: flex-start;
   display: flex;
-  gap: 64px;
-  margin-right: 4%;
-  max-width: 920px;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 460px;
   width: 100%;
 }
 
+.register-header {
+  min-width: 0;
+}
+
 /* 注册页标题按 V44 基准 24px / 行高 32px（登录页 H1 保留现有层级） */
-.register-layout .login-intro-title {
+.register-title {
+  color: var(--text-strong);
   font-size: 1.5rem;
+  font-weight: 700;
   line-height: 2rem;
+  margin: 0;
+}
+
+.register-subtitle {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  margin: 4px 0 0;
 }
 
 .register-panel {
-  flex: 0 1 460px;
-  max-width: 100%;
   min-width: 0;
+  width: 100%;
 }
 
 /* 登录卡底部注册入口：只消费既有 Token 的细线分隔与主色链接 */
@@ -2250,23 +2264,11 @@ body {
   gap: 12px;
 }
 
-/* 注册表单底部返回登录入口：与登录卡注册链接同口径的轻量文案 */
-.register-back-login {
-  align-items: center;
-  color: var(--text-muted);
+/* 注册表单底部动作：提交与返回登录并排，窄屏自动折行 */
+.register-actions {
   display: flex;
-  font-size: 0.875rem;
-  gap: 8px;
-  justify-content: center;
-}
-
-.register-back-login a {
-  color: var(--ant-color-primary);
-  text-decoration: none;
-}
-
-.register-back-login a:hover {
-  text-decoration: underline;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .register-success-email {
@@ -2276,19 +2278,10 @@ body {
   text-align: center;
 }
 
-/* 窄屏：注册页双栏同样纵向堆叠，不缩字号、不横向溢出 */
+/* 窄屏：单列自适应容器宽度，不缩字号、不横向溢出 */
 @media (max-width: 768px) {
   .register-layout {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 28px;
-    margin-right: 0;
-    max-width: 460px;
-  }
-
-  .register-panel {
-    flex: 0 0 auto;
-    width: 100%;
+    max-width: 100%;
   }
 }
 

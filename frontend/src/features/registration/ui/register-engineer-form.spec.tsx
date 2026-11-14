@@ -50,6 +50,13 @@ async function pickOrganization(name: string) {
   fireEvent.click(await screen.findByTitle(name));
 }
 
+function getFieldLabelOrder(): string[] {
+  const form = screen.getByLabelText('登录邮箱').closest('form') as HTMLFormElement;
+  return Array.from(form.querySelectorAll('.ant-form-item-label label')).map(
+    (label) => label.textContent?.trim() ?? '',
+  );
+}
+
 describe('RegisterEngineerForm', () => {
   beforeEach(() => {
     fetchOrganizationsMock.mockReset();
@@ -70,6 +77,23 @@ describe('RegisterEngineerForm', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('字段顺序与 V44 一致，底部为提交与返回登录动作', () => {
+    renderForm();
+
+    expect(getFieldLabelOrder()).toEqual([
+      '登录邮箱',
+      '密码',
+      '登录名（选填）',
+      '昵称（选填）',
+      '姓名',
+      '联系电话',
+      '所属公司',
+      '申请说明（选填）',
+    ]);
+    expect(screen.getByRole('button', { name: /提交注册申请/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回登录' })).toBeInTheDocument();
   });
 
   it('姓名与联系电话必填，未填写时不发起请求', async () => {

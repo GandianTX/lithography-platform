@@ -207,9 +207,12 @@ export function deleteE2EDedicatedAccountById(accountId: number, dedicatedLoginN
       `DELETE FROM ai_conversation WHERE engineer_account_id = ${id}`,
       `DELETE FROM repair_request WHERE customer_account_id = ${id} OR accepted_by_engineer_account_id = ${id}`,
       `DELETE FROM reference_document WHERE created_by_account_id = ${id}`,
+      // adminCreateUser 会为账号写入组织成员关系（FK ON DELETE RESTRICT），
+      // 必须在主记录前删除，否则整个清理事务被外键拒绝而回滚
+      `DELETE FROM organization_membership WHERE account_id = ${id}`,
       `DELETE FROM base_user_info WHERE account_id = ${id}`,
       `DELETE FROM base_user_account WHERE id = ${id}`,
-      `SET @dedicated_cleanup_residue = (SELECT COUNT(*) FROM base_user_account WHERE id = ${id}) + (SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id}) + (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) + (SELECT COUNT(*) FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id})) + (SELECT COUNT(*) FROM ai_report WHERE engineer_account_id = ${id}) + (SELECT COUNT(*) FROM ai_conversation WHERE engineer_account_id = ${id}) + (SELECT COUNT(*) FROM repair_request WHERE customer_account_id = ${id} OR accepted_by_engineer_account_id = ${id}) + (SELECT COUNT(*) FROM reference_document WHERE created_by_account_id = ${id})`,
+      `SET @dedicated_cleanup_residue = (SELECT COUNT(*) FROM base_user_account WHERE id = ${id}) + (SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id}) + (SELECT COUNT(*) FROM organization_membership WHERE account_id = ${id}) + (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) + (SELECT COUNT(*) FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id})) + (SELECT COUNT(*) FROM ai_report WHERE engineer_account_id = ${id}) + (SELECT COUNT(*) FROM ai_conversation WHERE engineer_account_id = ${id}) + (SELECT COUNT(*) FROM repair_request WHERE customer_account_id = ${id} OR accepted_by_engineer_account_id = ${id}) + (SELECT COUNT(*) FROM reference_document WHERE created_by_account_id = ${id})`,
       "SET @dedicated_cleanup_assertion = IF(@dedicated_cleanup_residue = 0, 'SELECT 1', 'SELECT dedicated_cleanup_residue_must_be_zero')",
       'PREPARE dedicated_cleanup_check FROM @dedicated_cleanup_assertion',
       'EXECUTE dedicated_cleanup_check',
@@ -241,7 +244,8 @@ export function readDedicatedAccountCleanupResidue(
     [
       `SELECT COUNT(*) FROM base_user_account WHERE id = ${id}`,
       `SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id}`,
-      `SELECT (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) +
+      `SELECT (SELECT COUNT(*) FROM organization_membership WHERE account_id = ${id}) +
+              (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) +
               (SELECT COUNT(*) FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id})) +
               (SELECT COUNT(*) FROM ai_report WHERE engineer_account_id = ${id}) +
               (SELECT COUNT(*) FROM ai_conversation WHERE engineer_account_id = ${id}) +

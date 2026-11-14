@@ -50,6 +50,13 @@ async function pickOrganization(name: string) {
   fireEvent.click(await screen.findByTitle(name));
 }
 
+function getFieldLabelOrder(): string[] {
+  const form = screen.getByLabelText('登录邮箱').closest('form') as HTMLFormElement;
+  return Array.from(form.querySelectorAll('.ant-form-item-label label')).map(
+    (label) => label.textContent?.trim() ?? '',
+  );
+}
+
 function duplicateAccountError(): GraphQLIngressError {
   return new GraphQLIngressError({
     message: 'duplicate account',
@@ -87,6 +94,21 @@ describe('RegisterCustomerForm', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it('字段顺序与 V44 一致，底部为注册并开通与返回登录动作', () => {
+    renderForm();
+
+    expect(getFieldLabelOrder()).toEqual([
+      '登录邮箱',
+      '密码',
+      '登录名（选填）',
+      '昵称（选填）',
+      '所属公司',
+      '自家公司名称',
+    ]);
+    expect(screen.getByRole('button', { name: '注册并开通' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回登录' })).toBeInTheDocument();
   });
 
   it('选择名单内公司时只提交 organizationId，成功后进入结果区', async () => {

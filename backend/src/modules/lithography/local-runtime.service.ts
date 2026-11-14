@@ -13,7 +13,7 @@ import { FindOneOptions, ObjectLiteral, Repository } from 'typeorm';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
-import { isDuplicateKeyError } from '@modules/common/utils/database-error.util';
+import { isDuplicateKeyError } from './database-error.helpers';
 import {
   toLocalBackupRunSnapshot,
   toLocalInstallationSnapshot,

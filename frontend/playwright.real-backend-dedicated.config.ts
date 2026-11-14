@@ -5,18 +5,18 @@
 // 为什么需要专用入口：默认配置（playwright.config.ts）的浏览器与 SQL helper 指向本地开发后端
 // （127.0.0.1:3000）与共享开发库 lithography_drill，而这四条 spec 会真实创建 / 软删行并上传文件；
 // 共享开发库不满足物理清理的授权与命名门（assertPhysicalCleanupAllowed），测试数据只能软删后
-// 留在开发库里。本入口把它们固定到与开发库完全隔离的 lithography_work_e2e，并复用既有专用配置模块
+// 留在开发库里。本入口把它们固定到与开发库完全隔离的 lithography_e2e，并复用既有专用配置模块
 // 与全局前置，不新增第二套配置源。
 //
 // 与既有专用配置（playwright.account-settings-real / playwright.engineer-repair-request-real）
 // 同一模式：
 // - 完整五项 DB 连接统一由 e2e-real/dedicated-e2e-environment.ts 解析并校验，DB_NAME 必须严格
-//   等于 lithography_work_e2e，否则配置加载即失败（校验完成前不会启动任何破坏性子进程）；
+//   等于 lithography_e2e，否则配置加载即失败（校验完成前不会启动任何破坏性子进程）；
 // - 专用后端 3100（reuseExistingServer: false，绝不复用开发后端 3000）、专用前端 4174
 //   （strictPort，DEV_API_PROXY_TARGET 指向 3100，VITE_GRAPHQL_ENDPOINT 置空走同源代理）；
 //   浏览器 / Node GraphQL helper / SQL helper 三者同源，并由 real-backend helper 的
 //   assertDedicatedLinkDatabaseConsistency 复查「后端指向专用时 SQL 库必须是专用库」；
-// - globalSetup（e2e-real/global-setup.ts）只对 lithography_work_e2e 执行 baseline Migration 与
+// - globalSetup（e2e-real/global-setup.ts）只对 lithography_e2e 执行 baseline Migration 与
 //   官方 Mock Seed，库名不符或缺授权即硬失败；
 // - 失败关闭：本入口显式注入 E2E_REAL_BACKEND_STRICT=1，四条 spec 统一走 real-backend helper 的
 //   resolveRealBackendPrerequisite 预检；后端不可达 / 登录失败 / 通道或配置缺失时直接抛错让用例

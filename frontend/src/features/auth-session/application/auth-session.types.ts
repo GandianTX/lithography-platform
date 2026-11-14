@@ -14,6 +14,7 @@ export const AUTH_SESSION_RESTRICTIONS = [
   'MUST_CHANGE_PASSWORD',
   'ENGINEER_PENDING',
   'ENGINEER_REJECTED',
+  'ENGINEER_INACTIVE',
 ] as const;
 
 export type AuthSessionRestriction = (typeof AUTH_SESSION_RESTRICTIONS)[number];
@@ -38,6 +39,15 @@ export type AuthSessionSnapshot = {
    */
   adminLevel: number | null;
   customerOrganizationId: number | null;
+  /** 唯一有效 ENGINEER 成员组织（0 条或多条为 null） */
+  engineerOrganizationId: number | null;
+  /** 唯一有效 SUPER_ADMIN 成员组织（0 条或多条为 null） */
+  adminOrganizationId: number | null;
+  /**
+   * 最新工程师申请的目标公司：仅用于受限页展示「申请了哪家公司」，
+   * 不授予该组织的任何业务权限。
+   */
+  registrationOrganizationId: number | null;
   /** 会话限制状态：非 NONE 时前端只放行 `/restricted` */
   restriction: AuthSessionRestriction;
   role: AuthSessionRole;
@@ -45,16 +55,23 @@ export type AuthSessionSnapshot = {
 };
 
 /**
- * 建立会话的入参：新增的 restriction / adminLevel / customerOrganizationId
- * 设计为可选，兼容仅携带最小身份的既有调用方与测试夹具；缺省值分别为
- * NONE / null / null。
+ * 建立会话的入参：身份扩展字段设计为可选，兼容仅携带最小身份的既有调用方
+ * 与测试夹具；缺省值分别为 NONE / null。
  */
 export type EstablishAuthSessionInput = Omit<
   AuthSessionSnapshot,
-  'adminLevel' | 'customerOrganizationId' | 'restriction'
+  | 'adminLevel'
+  | 'customerOrganizationId'
+  | 'engineerOrganizationId'
+  | 'adminOrganizationId'
+  | 'registrationOrganizationId'
+  | 'restriction'
 > & {
   adminLevel?: number | null;
   customerOrganizationId?: number | null;
+  engineerOrganizationId?: number | null;
+  adminOrganizationId?: number | null;
+  registrationOrganizationId?: number | null;
   restriction?: AuthSessionRestriction;
 };
 

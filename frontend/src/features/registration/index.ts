@@ -20,11 +20,16 @@ export {
   submitRegisterEngineer,
 } from './application/register-engineer';
 export type {
+  EngineerRegistrationStatus,
+  MyEngineerRegistrationView,
   RegistrationOrganizationOption,
   RegistrationOrganizationPage,
   RegistrationOrganizationSearch,
   RegistrationOrganizationSelection,
 } from './application/registration.types';
+export { ENGINEER_REGISTRATION_STATUS_LABELS } from './application/registration.types';
+export type { MyEngineerRegistrationState } from './application/use-my-engineer-registration';
+export { useMyEngineerRegistration } from './application/use-my-engineer-registration';
 export type {
   RegistrationOrganizationsState,
   UseRegistrationOrganizationsOptions,

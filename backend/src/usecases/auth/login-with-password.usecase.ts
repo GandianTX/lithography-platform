@@ -3,23 +3,21 @@
 import { EnrichedLoginResult, LoginWarningType } from '@app-types/auth/login-flow.types';
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { JwtPayload } from '@app-types/jwt.types';
-import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { AuthLoginModel } from '@app-types/models/auth.types';
 import {
   isAccountStatusAllowedForSession,
   isUserStateAllowedForSession,
-  resolveSessionRestriction,
 } from '@core/account/policy/session-restriction.policy';
 import { AUTH_ERROR, DomainError, isDomainError } from '@core/common/errors';
 import { Injectable } from '@nestjs/common';
 import { TokenHelper } from '@modules/auth/token.helper';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
-import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { PinoLogger } from 'nestjs-pino';
 import { DecideLoginRoleUsecase } from './decide-login-role.usecase';
 import { EnrichLoginWithIdentityUsecase } from './enrich-login-with-identity.usecase';
 import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
+import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.usecase';
 
 /**
  * 密码登录用例
@@ -29,7 +27,7 @@ import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
 export class LoginWithPasswordUsecase {
   constructor(
     private readonly accountQueryService: AccountQueryService,
-    private readonly engineerRegistrationQueryService: EngineerRegistrationQueryService,
+    private readonly resolveSessionRestrictionUsecase: ResolveSessionRestrictionUsecase,
     private readonly executeLoginFlowUsecase: ExecuteLoginFlowUsecase,
     private readonly decideLoginRoleUsecase: DecideLoginRoleUsecase,
     private readonly enrichLoginWithIdentityUsecase: EnrichLoginWithIdentityUsecase,
@@ -118,6 +116,9 @@ export class LoginWithPasswordUsecase {
         restriction: loginContext.restriction,
         adminLevel: loginContext.adminLevel,
         customerOrganizationId: loginContext.customerOrganizationId,
+        engineerOrganizationId: loginContext.engineerOrganizationId,
+        adminOrganizationId: loginContext.adminOrganizationId,
+        registrationOrganizationId: loginContext.registrationOrganizationId,
         options: { includeIdentity: true },
       });
 
@@ -167,21 +168,16 @@ export class LoginWithPasswordUsecase {
       throw new DomainError(AUTH_ERROR.ACCOUNT_NOT_FOUND, '账户不存在');
     }
 
-    // 读取当前授权事实并计算限制状态（不改写任何数据库字段）
+    // 读取当前授权事实并计算限制状态（不改写任何数据库字段）。申请、成员与组织事实
+    // 由统一用例读取，保证登录签发与每请求复核口径一致。
     const snapshot = await this.accountQueryService.findSessionAuthoritySnapshot({
       accountId: account.id,
     });
-    const latestEngineerApplication =
-      snapshot.identityHint === IdentityTypeEnum.ENGINEER
-        ? await this.engineerRegistrationQueryService.findLatestByAccountId(account.id)
-        : null;
-    const restriction = resolveSessionRestriction({
-      mustChangePassword: snapshot.mustChangePassword,
-      identityHint: snapshot.identityHint,
-      accountStatus: snapshot.accountStatus,
-      userState: snapshot.userInfo?.userState ?? null,
-      latestEngineerApplicationStatus: latestEngineerApplication?.status ?? null,
+    const resolution = await this.resolveSessionRestrictionUsecase.execute({
+      accountId: account.id,
+      snapshot,
     });
+    const restriction = resolution.restriction;
 
     const isRestrictedSessionAllowed =
       allowRestrictedSession === true && restriction !== SessionRestriction.NONE;
@@ -223,6 +219,9 @@ export class LoginWithPasswordUsecase {
       allowPendingAccount: isRestrictedSessionAllowed,
       adminLevel: snapshot.adminLevel,
       customerOrganizationId: snapshot.userInfo?.customerOrganizationId ?? null,
+      engineerOrganizationId: resolution.engineerOrganizationId,
+      adminOrganizationId: resolution.adminOrganizationId,
+      registrationOrganizationId: resolution.latestEngineerApplication?.organizationId ?? null,
     };
   }
 }

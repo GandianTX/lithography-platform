@@ -6,7 +6,9 @@
  * - 复用 shared/graphql 的 executeGraphQL（唯一 Apollo Client、ingress 错误模型），
  *   以 `authMode: 'none'` 发送公开请求，不携带任何登录态；
  * - 原始 DTO 与 operation 只停留在本目录，对外返回 feature 内部模型；
- * - 资格口径由服务端决定（ACTIVE 且属于一级维护名单），前端不做二次过滤。
+ * - 资格口径由服务端决定（ACTIVE 且属于一级维护名单），前端不做二次过滤；
+ * - 使用 Web 独立入口 `registrationOrganizationSearch`（分页 + 关键字），
+ *   无参的 `registrationOrganizations` 数组入口保留给小程序注册与凭据重提。
  */
 
 import { executeGraphQL } from '@/shared/graphql';
@@ -17,8 +19,8 @@ import type {
 } from '../application/registration.types';
 
 const REGISTRATION_ORGANIZATIONS_QUERY = `
-  query RegistrationOrganizations($pagination: PaginationArgs!, $keyword: String) {
-    registrationOrganizations(pagination: $pagination, keyword: $keyword) {
+  query RegistrationOrganizationSearch($pagination: PaginationArgs!, $keyword: String) {
+    registrationOrganizationSearch(pagination: $pagination, keyword: $keyword) {
       items {
         id
         name
@@ -31,7 +33,7 @@ const REGISTRATION_ORGANIZATIONS_QUERY = `
 `;
 
 type RegistrationOrganizationsData = {
-  registrationOrganizations: {
+  registrationOrganizationSearch: {
     items: RegistrationOrganizationPage['items'];
     total?: number | null;
     page?: number | null;
@@ -72,7 +74,7 @@ export async function fetchRegistrationOrganizations(
     { authMode: 'none', fetchPolicy: 'no-cache' },
   );
 
-  const page = data.registrationOrganizations;
+  const page = data.registrationOrganizationSearch;
   return {
     items: page.items,
     total: page.total ?? 0,

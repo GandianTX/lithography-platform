@@ -39,7 +39,7 @@ import {
   toMaintenanceReportVersionSnapshot,
 } from './maintenance-report.mapper';
 import { RepairRequestEntity } from './entities/repair-request.entity';
-import { isDuplicateKeyError } from '@modules/common/utils/database-error.util';
+import { isDuplicateKeyError } from './database-error.helpers';
 
 /**
  * 维修报告写服务。

@@ -32,6 +32,9 @@ export class EnrichLoginWithIdentityUsecase implements IEnrichLoginWithIdentityU
       restriction,
       adminLevel,
       customerOrganizationId,
+      engineerOrganizationId,
+      adminOrganizationId,
+      registrationOrganizationId,
       options = {},
     } = input;
     const { includeAccount = true, includeUserInfo = true } = options;
@@ -51,6 +54,9 @@ export class EnrichLoginWithIdentityUsecase implements IEnrichLoginWithIdentityU
       restriction: restriction ?? SessionRestriction.NONE,
       adminLevel: adminLevel ?? null,
       customerOrganizationId: customerOrganizationId ?? null,
+      engineerOrganizationId: engineerOrganizationId ?? null,
+      adminOrganizationId: adminOrganizationId ?? null,
+      registrationOrganizationId: registrationOrganizationId ?? null,
     });
 
     this.logEnrichmentCompletion(accountId, finalRole, warnings);

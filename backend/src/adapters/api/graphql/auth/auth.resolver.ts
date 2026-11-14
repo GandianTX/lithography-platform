@@ -56,6 +56,9 @@ export class AuthResolver {
       restriction: result.restriction ?? SessionRestriction.NONE,
       adminLevel: result.adminLevel ?? null,
       customerOrganizationId: result.customerOrganizationId ?? null,
+      engineerOrganizationId: result.engineerOrganizationId ?? null,
+      adminOrganizationId: result.adminOrganizationId ?? null,
+      registrationOrganizationId: result.registrationOrganizationId ?? null,
     };
 
     return loginResult;
@@ -78,6 +81,9 @@ export class AuthResolver {
       role: user.role ?? null,
       adminLevel: user.adminLevel ?? null,
       customerOrganizationId: user.customerOrganizationId ?? null,
+      engineerOrganizationId: user.engineerOrganizationId ?? null,
+      adminOrganizationId: user.adminOrganizationId ?? null,
+      registrationOrganizationId: user.registrationOrganizationId ?? null,
       restriction: user.restriction,
     };
   }

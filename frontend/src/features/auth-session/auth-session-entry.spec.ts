@@ -94,6 +94,9 @@ describe('auth session entry', () => {
         accountId: 900201,
         adminLevel: 2,
         customerOrganizationId: 4401,
+        engineerOrganizationId: 7701,
+        adminOrganizationId: 8801,
+        registrationOrganizationId: 6601,
         restriction: 'ENGINEER_PENDING',
       });
 
@@ -102,6 +105,9 @@ describe('auth session entry', () => {
       expect(getCurrentAuthSession()).toMatchObject({
         adminLevel: 2,
         customerOrganizationId: 4401,
+        engineerOrganizationId: 7701,
+        adminOrganizationId: 8801,
+        registrationOrganizationId: 6601,
         restriction: 'ENGINEER_PENDING',
       });
       expect(window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY)).toContain('ENGINEER_PENDING');
@@ -118,6 +124,9 @@ describe('auth session entry', () => {
         accountId: 900201,
         adminLevel: null,
         customerOrganizationId: null,
+        engineerOrganizationId: null,
+        adminOrganizationId: null,
+        registrationOrganizationId: null,
         restriction: null,
       });
 
@@ -137,6 +146,9 @@ describe('auth session entry', () => {
         accountId: 999999,
         adminLevel: null,
         customerOrganizationId: null,
+        engineerOrganizationId: null,
+        adminOrganizationId: null,
+        registrationOrganizationId: null,
         restriction: 'MUST_CHANGE_PASSWORD',
       });
 

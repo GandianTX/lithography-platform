@@ -89,6 +89,30 @@ async function installRestrictedSessionMocks(page: Page, options: RestrictedSess
       return;
     }
 
+    // 受限页只读展示本人最新申请（可信会话入口，不接受账号/申请 ID）
+    if (query.includes('query MyEngineerRegistration')) {
+      const rejected = options.restriction === 'ENGINEER_REJECTED';
+      await route.fulfill({
+        body: JSON.stringify({
+          data: {
+            myEngineerRegistration: {
+              applicationId: 7001,
+              organizationId: 11,
+              organizationName: '测试公司',
+              status: rejected ? 'REJECTED' : 'PENDING',
+              applicationNote: '希望加入',
+              submittedAt: '2026-11-14T10:00:00.000Z',
+              reviewedAt: rejected ? '2026-11-14T11:00:00.000Z' : null,
+              reviewComment: rejected ? '资料不完整，请补充后重新提交' : null,
+            },
+          },
+        }),
+        contentType: 'application/json',
+        status: 200,
+      });
+      return;
+    }
+
     if (query.includes('mutation ChangeMyPassword')) {
       if (options.changePassword === 'invalid-current-password') {
         await route.fulfill({
@@ -139,14 +163,19 @@ test('a pending engineer can only stay on the restricted page', async ({ page })
   await loginWithPassword(page);
 
   await expect(page).toHaveURL(/\/restricted$/);
-  await expect(page.getByText('工程师申请审核中')).toBeVisible();
-  // 待审不是改密场景：不渲染改密表单
-  await expect(page.getByText('修改登录密码')).toHaveCount(0);
+  await expect(page.getByText('工程师申请审核中', { exact: true })).toBeVisible();
+  // 受限态允许只读查看本人申请，并维护本人资料与登录密码
+  await expect(page.getByText('我的工程师申请', { exact: true })).toBeVisible();
+  await expect(page.getByText('测试公司')).toBeVisible();
+  await expect(page.getByText('修改登录密码')).toBeVisible();
+  await expect(page.getByLabel('昵称')).toBeVisible();
+  // 不暴露任何审批写入口（角色 / 等级 / 审批状态不可改）
+  await expect(page.getByRole('button', { name: /批准|拒绝|审核通过/ })).toHaveCount(0);
 
   // 受限会话访问业务路由被统一收回受限页，而不是进入工作台
   await page.goto('/engineer');
   await expect(page).toHaveURL(/\/restricted$/);
-  await expect(page.getByText('工程师申请审核中')).toBeVisible();
+  await expect(page.getByText('工程师申请审核中', { exact: true })).toBeVisible();
 
   const storedSession = await readStoredAuthSession(page);
   expect(storedSession).toContain('"restriction":"ENGINEER_PENDING"');

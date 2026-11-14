@@ -10,12 +10,15 @@ import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { MustChangePasswordGuard } from '@src/adapters/api/graphql/guards/must-change-password.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { UseGuards } from '@nestjs/common';
 import { GetAdminEngineerRegistrationDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-detail.usecase';
 import { GetEngineerRegistrationStatusUsecase } from '@src/usecases/registration/get-engineer-registration-status.usecase';
+import { GetMyEngineerRegistrationUsecase } from '@src/usecases/registration/get-my-engineer-registration.usecase';
 import { ListAdminEngineerRegistrationsUsecase } from '@src/usecases/registration/list-admin-engineer-registrations.usecase';
 import { ListRegistrationOrganizationsUsecase } from '@src/usecases/registration/list-registration-organizations.usecase';
+import { SearchRegistrationOrganizationsUsecase } from '@src/usecases/registration/search-registration-organizations.usecase';
 import { RegisterWithEmailUsecase } from '@usecases/registration/register-with-email.usecase';
 import { RegisterWithThirdPartyUsecase } from '@usecases/registration/register-with-third-party.usecase';
 import { ResubmitEngineerRegistrationUsecase } from '@src/usecases/registration/resubmit-engineer-registration.usecase';
@@ -33,9 +36,17 @@ import { toEngineerRegistrationApplicationPageDTO } from './dto/engineer-registr
 import { EngineerRegistrationCredentialInput } from './dto/engineer-registration-credential.input';
 import { EngineerRegistrationStatusDTO } from './dto/engineer-registration-status.dto';
 import {
+  MyEngineerRegistrationDTO,
+  toMyEngineerRegistrationDTO,
+} from './dto/my-engineer-registration.dto';
+import {
   RegistrationOrganizationPageDTO,
   toRegistrationOrganizationPageDTO,
 } from './dto/registration-organization-page.dto';
+import {
+  RegistrationOrganizationDTO,
+  toRegistrationOrganizationDTO,
+} from './dto/registration-organization.dto';
 import { RegisterResult } from './dto/register-result.dto';
 import { RegisterInput } from './dto/register.input';
 import { ResubmitEngineerRegistrationResultDTO } from './dto/resubmit-engineer-registration-result.dto';
@@ -50,7 +61,9 @@ export class RegistrationResolver {
     private readonly registerWithThirdParty: RegisterWithThirdPartyUsecase,
     private readonly getWeappPhoneUsecase: GetWeappPhoneUsecase,
     private readonly listRegistrationOrganizations: ListRegistrationOrganizationsUsecase,
+    private readonly searchRegistrationOrganizations: SearchRegistrationOrganizationsUsecase,
     private readonly getEngineerRegistrationStatus: GetEngineerRegistrationStatusUsecase,
+    private readonly getMyEngineerRegistration: GetMyEngineerRegistrationUsecase,
     private readonly resubmitEngineerRegistrationUsecase: ResubmitEngineerRegistrationUsecase,
     private readonly listAdminEngineerRegistrations: ListAdminEngineerRegistrationsUsecase,
     private readonly getAdminEngineerRegistrationDetail: GetAdminEngineerRegistrationDetailUsecase,
@@ -141,18 +154,35 @@ export class RegistrationResolver {
   }
 
   /**
-   * 注册公司候选（公开只读）：客户与工程师注册共用。
+   * 注册可选组织（公开只读，兼容入口）：保持主线既有 `{ id name }` 数组契约。
+   *
+   * 返回全部 `ACTIVE` 组织，不分页、不区分受管资格；小程序注册与拒绝后凭据重提
+   * 等既有调用方无需改动请求即可通过 Schema 验证并得到原有响应。Web 注册页使用
+   * 独立的 `registrationOrganizationSearch`（受管公司 + 关键字 + 分页）。
+   * 提交的 organizationId 仍由写入事务按各自入口的资格复核。
+   */
+  @Query(() => [RegistrationOrganizationDTO], {
+    name: 'registrationOrganizations',
+    description: '注册可选组织（公开，仅 ACTIVE 组织；兼容入口）',
+  })
+  async registrationOrganizations(): Promise<RegistrationOrganizationDTO[]> {
+    const options = await this.listRegistrationOrganizations.execute();
+    return options.map((option) => toRegistrationOrganizationDTO(option));
+  }
+
+  /**
+   * Web 注册公司候选检索（公开只读）：客户与工程师注册共用。
    *
    * 资格口径为 `status = ACTIVE AND is_managed_company = true`，支持名称关键字与
    * OFFSET 分页；返回结果只含主键、名称与分页信息。提交的 organizationId 仍由写入
    * 事务按同一资格复核，本查询结果不作为资格凭证。
    */
   @Query(() => RegistrationOrganizationPageDTO, {
-    name: 'registrationOrganizations',
-    description: '注册可选公司（公开，仅启用且属于一级维护名单的公司）',
+    name: 'registrationOrganizationSearch',
+    description: 'Web 注册可选公司检索（公开，仅启用且属于一级维护名单的公司）',
   })
   @ValidateInput()
-  async registrationOrganizations(
+  async registrationOrganizationSearch(
     @Args('pagination', { description: '分页参数（仅 OFFSET）' }) pagination: PaginationArgs,
     @Args('keyword', {
       type: () => String,
@@ -161,7 +191,7 @@ export class RegistrationResolver {
     })
     keyword?: string,
   ): Promise<RegistrationOrganizationPageDTO> {
-    const page = await this.listRegistrationOrganizations.execute({
+    const page = await this.searchRegistrationOrganizations.execute({
       keyword: keyword ?? null,
       pagination: mapGqlToCoreParams(pagination),
     });
@@ -197,6 +227,29 @@ export class RegistrationResolver {
       latest: result.latest === null ? null : toEngineerRegistrationApplicationDTO(result.latest),
       applications: toEngineerRegistrationApplicationPageDTO(result.applications),
     };
+  }
+
+  /**
+   * 受限会话读取本人最新一份工程师申请。
+   *
+   * 与 `myEngineerRegistrationStatus` 的分工：本入口使用已认证会话（每请求复核后的
+   * restriction），供 `/restricted` 页在待审 / 已拒绝 / 资格未生效时展示申请公司与
+   * 审核意见；账号主键只来自 Session，不接受任何账号或申请 ID 参数。
+   *
+   * 挂 `MustChangePasswordGuard` 而非 `SessionRestrictionGuard`：强制改密之外的限制态
+   * 必须能读到自己的申请，否则受限页无法解释「为什么被限制」。
+   */
+  @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
+  @Query(() => MyEngineerRegistrationDTO, {
+    name: 'myEngineerRegistration',
+    description: '本人最新工程师注册申请（受限会话）',
+  })
+  async myEngineerRegistration(
+    @currentUser() user: JwtPayload,
+  ): Promise<MyEngineerRegistrationDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const view = await this.getMyEngineerRegistration.execute({ session });
+    return toMyEngineerRegistrationDTO(view);
   }
 
   /**

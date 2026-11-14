@@ -84,6 +84,9 @@ export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
     identity,
     adminLevel: snapshot.adminLevel,
     customerOrganizationId: snapshot.customerOrganizationId,
+    engineerOrganizationId: snapshot.engineerOrganizationId,
+    adminOrganizationId: snapshot.adminOrganizationId,
+    registrationOrganizationId: snapshot.registrationOrganizationId,
     restriction: snapshot.restriction,
   });
 }

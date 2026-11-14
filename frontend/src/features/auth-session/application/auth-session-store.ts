@@ -26,6 +26,9 @@ export type AuthSessionStore = {
     identity: AuthSessionIdentity;
     adminLevel: number | null;
     customerOrganizationId: number | null;
+    engineerOrganizationId: number | null;
+    adminOrganizationId: number | null;
+    registrationOrganizationId: number | null;
     restriction: AuthSessionRestriction;
   }) => boolean;
   clearSession: () => void;
@@ -74,7 +77,15 @@ export function createAuthSessionStore(persistence: AuthSessionPersistence): Aut
   }
 
   const store: AuthSessionStore = {
-    applySessionIdentity({ identity, adminLevel, customerOrganizationId, restriction }) {
+    applySessionIdentity({
+      identity,
+      adminLevel,
+      customerOrganizationId,
+      engineerOrganizationId,
+      adminOrganizationId,
+      registrationOrganizationId,
+      restriction,
+    }) {
       const current = state.session;
 
       // 未接入采样、当前无会话、或身份已变化：一律忽略（迟到响应 / 已切换账号）
@@ -85,17 +96,23 @@ export function createAuthSessionStore(persistence: AuthSessionPersistence): Aut
       if (
         current.restriction === restriction &&
         current.adminLevel === adminLevel &&
-        current.customerOrganizationId === customerOrganizationId
+        current.customerOrganizationId === customerOrganizationId &&
+        current.engineerOrganizationId === engineerOrganizationId &&
+        current.adminOrganizationId === adminOrganizationId &&
+        current.registrationOrganizationId === registrationOrganizationId
       ) {
         return false;
       }
 
-      // 复用 snapshot 工厂：会话内其余字段与不变量保持不变，只替换服务端复核出的三项事实
+      // 复用 snapshot 工厂：会话内其余字段与不变量保持不变，只替换服务端复核出的事实
       const next = createAuthSessionSnapshot({
         accessToken: current.accessToken,
         accountId: current.accountId,
         adminLevel,
         customerOrganizationId,
+        engineerOrganizationId,
+        adminOrganizationId,
+        registrationOrganizationId,
         restriction,
         role: current.role,
         userInfo: current.userInfo,
@@ -168,6 +185,9 @@ export function createAuthSessionStore(persistence: AuthSessionPersistence): Aut
         accountId: current.accountId,
         adminLevel: current.adminLevel,
         customerOrganizationId: current.customerOrganizationId,
+        engineerOrganizationId: current.engineerOrganizationId,
+        adminOrganizationId: current.adminOrganizationId,
+        registrationOrganizationId: current.registrationOrganizationId,
         restriction: current.restriction,
         role: current.role,
         userInfo: {

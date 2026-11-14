@@ -12,6 +12,9 @@ const LOGIN_RESPONSE = {
     restriction: 'NONE',
     adminLevel: null,
     customerOrganizationId: null,
+    engineerOrganizationId: null,
+    adminOrganizationId: null,
+    registrationOrganizationId: null,
     userInfo: {
       accessGroup: ['ENGINEER'],
       avatarUrl: 'https://example.test/avatar/chen.png',

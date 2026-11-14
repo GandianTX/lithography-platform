@@ -5,6 +5,7 @@ import {
   AUTH_ERROR,
   ENGINEER_REGISTRATION_ERROR,
   INPUT_NORMALIZE_ERROR,
+  PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
@@ -29,11 +30,12 @@ describe('GetEngineerRegistrationStatusUsecase（本人凭据证明与可见范�
   };
   let usecase: GetEngineerRegistrationStatusUsecase;
 
-  const credential = (): AccountCredentialSnapshot => ({
+  const credential = (mustChangePassword = false): AccountCredentialSnapshot => ({
     id: ACCOUNT_ID,
     status: AccountStatus.PENDING,
     loginPassword: PASSWORD_HASH,
     createdAt: CREATED_AT,
+    mustChangePassword,
   });
 
   const view = (identityHint: IdentityTypeEnum): UserAccountView =>
@@ -114,6 +116,25 @@ describe('GetEngineerRegistrationStatusUsecase（本人凭据证明与可见范�
       ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.REQUIRED_TEXT_EMPTY });
 
       expect(accountQueryService.findCredentialByLoginName).not.toHaveBeenCalled();
+    });
+
+    it('被要求强制改密的账号在改密前不能通过凭据入口查询', async () => {
+      accountQueryService.findCredentialByLoginName.mockResolvedValue(credential(true));
+
+      await expect(
+        usecase.execute({ accountIdentifier: 'newuser', password: PASSWORD, pagination: offset() }),
+      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+
+      expect(accountQueryService.getUserAccountViewById).not.toHaveBeenCalled();
+      expect(engineerRegistrationQueryService.findLatestByAccountId).not.toHaveBeenCalled();
+    });
+
+    it('密码错误优先于强制改密判定，不泄露账号状态', async () => {
+      accountQueryService.findCredentialByLoginName.mockResolvedValue(credential(true));
+
+      await expect(
+        usecase.execute({ accountIdentifier: 'newuser', password: 'wrong', pagination: offset() }),
+      ).rejects.toMatchObject({ code: ENGINEER_REGISTRATION_ERROR.CREDENTIAL_MISMATCH });
     });
   });
 

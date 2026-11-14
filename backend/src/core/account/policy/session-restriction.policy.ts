@@ -11,7 +11,10 @@ import { SessionRestriction } from '@app-types/auth/session-restriction.types';
  * - `mustChangePassword`：`base_user_account.must_change_password`；
  * - `identityHint`：`base_user_account.identity_hint`（可能为 `null` / 非法历史值）；
  * - `accountStatus` / `userState`：双状态字段（`null` 表示账号或资料行缺失）；
- * - `latestEngineerApplicationStatus`：账号最新一份工程师申请状态，无申请记录时为 `null`。
+ * - `latestEngineerApplicationStatus`：账号最新一份工程师申请状态，无申请记录时为 `null`；
+ * - `latestEngineerApplicationOrganizationId`：最新申请的目标公司，无申请记录时为 `null`；
+ * - `effectiveEngineerOrganizationIds`：账号持有有效 `ENGINEER` 成员关系的组织集合
+ *   （成员 ACTIVE 且组织 ACTIVE，由 `OrganizationMembershipQueryService` 过滤后传入）。
  */
 export interface SessionRestrictionFacts {
   readonly mustChangePassword: boolean;
@@ -19,6 +22,8 @@ export interface SessionRestrictionFacts {
   readonly accountStatus: AccountStatus | null;
   readonly userState: UserState | null;
   readonly latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus | null;
+  readonly latestEngineerApplicationOrganizationId: number | null;
+  readonly effectiveEngineerOrganizationIds: readonly number[];
 }
 
 /**
@@ -28,12 +33,18 @@ export interface SessionRestrictionFacts {
  * 1. 必须改密——管理员显式要求，任何其他状态都不得覆盖；
  * 2. 最新工程师申请为 `PENDING` → `ENGINEER_PENDING`；
  * 3. 最新工程师申请为 `REJECTED` → `ENGINEER_REJECTED`；
- * 4. 无申请记录时回落到状态事实：`identity_hint=ENGINEER` 且账号或资料为 `PENDING`
+ * 4. 最新工程师申请为 `APPROVED` 但资格未生效 → `ENGINEER_INACTIVE`。资格生效要求
+ *    账号与资料同时 `ACTIVE`，且申请目标组织在有效 `ENGINEER` 成员组织集合内
+ *    （组织停用、成员缺失、成员角色不符、目标组织不一致都视为未生效）；
+ * 5. 无申请记录时回落到状态事实：`identity_hint=ENGINEER` 且账号或资料为 `PENDING`
  *    → `ENGINEER_PENDING`（覆盖历史待审账号在申请表中无记录的情况）；
- * 5. 其余（含申请已 `APPROVED`）→ `NONE`。
+ * 6. 其余（含申请已 `APPROVED` 且资格生效、无申请记录的存量工程师）→ `NONE`。
  *
- * 第 2/3 步以申请状态为准、先于第 4 步：待审与拒绝工程师的账号/资料可能同时为
+ * 第 2/3 步以申请状态为准、先于第 5 步：待审与拒绝工程师的账号/资料可能同时为
  * `PENDING`，若先按状态回落会把「已拒绝」误判为「待审」。
+ *
+ * 存量规则：没有任何工程师申请记录的历史工程师账号不追加成员事实要求，继续沿用
+ * 「双状态 ACTIVE 即 `NONE`」的既有准入口径，避免批量阻断旧数据。
  *
  * 本函数是纯函数：确定性、无 I/O、无 DI、无 ORM、无日志、不修改入参。
  */
@@ -51,6 +62,14 @@ export function resolveSessionRestriction(facts: SessionRestrictionFacts): Sessi
   }
 
   if (
+    applicationStatus === EngineerRegistrationApplicationStatus.APPROVED &&
+    facts.identityHint === IdentityTypeEnum.ENGINEER &&
+    !isEngineerQualificationEffective(facts)
+  ) {
+    return SessionRestriction.ENGINEER_INACTIVE;
+  }
+
+  if (
     facts.identityHint === IdentityTypeEnum.ENGINEER &&
     (facts.accountStatus === AccountStatus.PENDING || facts.userState === UserState.PENDING)
   ) {
@@ -58,6 +77,23 @@ export function resolveSessionRestriction(facts: SessionRestrictionFacts): Sessi
   }
 
   return SessionRestriction.NONE;
+}
+
+/**
+ * 已批准申请是否已具备可开通资格：
+ * 双状态同时 ACTIVE，且账号恰有一个有效 `ENGINEER` 成员组织，并且该组织就是申请目标组织。
+ * 多组织成员关系视为歧义（无法确定可信组织），与「无成员 / 组织停用 / 角色不符」同样未生效。
+ */
+function isEngineerQualificationEffective(facts: SessionRestrictionFacts): boolean {
+  if (facts.accountStatus !== AccountStatus.ACTIVE || facts.userState !== UserState.ACTIVE) {
+    return false;
+  }
+  const applicationOrganizationId = facts.latestEngineerApplicationOrganizationId;
+  return (
+    applicationOrganizationId !== null &&
+    facts.effectiveEngineerOrganizationIds.length === 1 &&
+    facts.effectiveEngineerOrganizationIds[0] === applicationOrganizationId
+  );
 }
 
 /**

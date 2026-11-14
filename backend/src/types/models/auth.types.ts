@@ -67,4 +67,10 @@ export interface LoginResultModel {
   adminLevel?: number | null;
   /** 客户公司归属 */
   customerOrganizationId?: number | null;
+  /** 唯一有效 ENGINEER 成员组织 */
+  engineerOrganizationId?: number | null;
+  /** 唯一有效 SUPER_ADMIN 成员组织 */
+  adminOrganizationId?: number | null;
+  /** 最新工程师申请的目标公司（仅展示，不授予权限） */
+  registrationOrganizationId?: number | null;
 }

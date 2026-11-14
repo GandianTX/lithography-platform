@@ -20,3 +20,20 @@ export function assertSessionRestrictionAllowsBusiness(user: {
     );
   }
 }
+
+/**
+ * 强制改密门禁（`MustChangePasswordGuard` 与凭据式入口共用）。
+ *
+ * 只拒绝 `MUST_CHANGE_PASSWORD`：待审 / 已拒绝 / 资格未生效的受限会话仍需维护本人
+ * 昵称、电话与申请信息，且必须能看到自己为什么被限制；而强制改密未完成前的一切
+ * 其他操作都必须失败关闭，否则「强制改密」可被绕过。
+ */
+export function assertNotPendingPasswordChange(user: {
+  readonly restriction?: SessionRestriction;
+}): void {
+  if (user.restriction === SessionRestriction.MUST_CHANGE_PASSWORD) {
+    throw new DomainError(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS, '当前账号需要先修改登录密码', {
+      restriction: user.restriction,
+    });
+  }
+}

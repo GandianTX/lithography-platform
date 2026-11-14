@@ -2,7 +2,7 @@
 // 工程师维修申请真实链路（接单 / 回复）的专用联调入口（负责人单卡片计划 P3/P4）。
 //
 // 为什么需要专用配置：本用例创建的申请会被工程师接单并回复，业务上客户无法删除已接单申请，
-// 只能在专用隔离库 lithography_work_e2e 上走显式授权的精确物理清理。默认配置（playwright.config.ts）
+// 只能在专用隔离库 lithography_e2e 上走显式授权的精确物理清理。默认配置（playwright.config.ts）
 // 的浏览器与 SQL helper 指向本地开发后端（lithography_drill），既无法清理也无法核验零残留，
 // 因此本条真实链路必须跑在与开发库完全隔离的专用通道上。
 //
@@ -14,7 +14,7 @@
 //   置空 → 应用走同源 /graphql，由 DEV_API_PROXY_TARGET 指向专用后端 3100；
 //   浏览器、Node GraphQL helper（E2E_BACKEND_ORIGIN，经 npm script 注入）与 SQL helper
 //   （完整五项 DB 连接，经 global-setup 写入测试进程环境）全部指向同一专用后端与同一独立 E2E 库；
-// - 全局前置（e2e-real/global-setup.ts）只对 lithography_work_e2e 执行 baseline Migration 与官方
+// - 全局前置（e2e-real/global-setup.ts）只对 lithography_e2e 执行 baseline Migration 与官方
 //   Mock Seed，授权缺失时硬失败；
 // - 运行方式（授权变量必须由执行者显式设置，不写入 npm script）：
 //   E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:repair-request-real

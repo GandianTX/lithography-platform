@@ -352,6 +352,7 @@ export class AccountService {
       status: account.status,
       loginPassword: account.loginPassword,
       createdAt: account.createdAt,
+      mustChangePassword: account.mustChangePassword,
     };
   }
 
@@ -483,11 +484,10 @@ export class AccountService {
   /**
    * 唯一约束冲突判定（MySQL：`ER_DUP_ENTRY` / errno 1062 / SQLSTATE 23000）。
    *
-   * 判定口径与仓库既有实现一致（`RepairRequestService`、`VerificationRecordService`、
+   * 判定口径与仓库既有实现完全一致（`RepairRequestService`、`VerificationRecordService`、
    * `AsyncTaskRecordService`、`AiWorkflowContextService`、`AiProviderCallRecordService`）：
    * 优先读 TypeORM 的 `driverError`，缺失时回退直接读 error 对象。
-   * 共享 helper `@modules/common/utils/database-error.util` 只识别 `ER_DUP_ENTRY` / 1062；
-   * 本方法与上述服务额外接受 `sqlState = 23000` 与 PostgreSQL `23505`，迁移需逐个核对语义。
+   * 本仓当前没有共享 helper，抽取公共实现需同时改动上述 5 个不相关服务，超出本轮范围，
    */
   private isUniqueConstraintViolation(error: unknown): boolean {
     if (!(error instanceof QueryFailedError)) {

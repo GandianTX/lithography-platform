@@ -13,8 +13,11 @@ import {
   DB_TARGET_MUTATING_KEYS,
   DEDICATED_DB_CONNECTION_KEYS,
   DEDICATED_E2E_DB_NAME,
+  DEDICATED_E2E_DB_NAME_DEFAULT,
+  DEDICATED_E2E_DB_NAME_OVERRIDE_ENV,
   probeDedicatedDatabaseConnection,
   resolveDedicatedE2EDatabase,
+  resolveDedicatedE2EDbName,
 } from './dedicated-e2e-environment';
 import globalSetup from './global-setup';
 
@@ -125,6 +128,38 @@ function childProcessCalls(): Array<{ file: string; args: string[]; env: Record<
       file: file as string,
     }));
 }
+
+describe('专用库名解析（团队默认 + 受控本地覆盖）', () => {
+  it('未声明覆盖时始终使用团队默认库', () => {
+    expect(DEDICATED_E2E_DB_NAME_DEFAULT).toBe('lithography_e2e');
+    expect(resolveDedicatedE2EDbName({})).toBe(DEDICATED_E2E_DB_NAME_DEFAULT);
+  });
+
+  it('空白覆盖按未声明处理', () => {
+    expect(resolveDedicatedE2EDbName({ [DEDICATED_E2E_DB_NAME_OVERRIDE_ENV]: '   ' })).toBe(
+      DEDICATED_E2E_DB_NAME_DEFAULT,
+    );
+  });
+
+  it('白名单内的本地隔离库覆盖生效', () => {
+    expect(
+      resolveDedicatedE2EDbName({
+        [DEDICATED_E2E_DB_NAME_OVERRIDE_ENV]: 'lithography_isolated_e2e',
+      }),
+    ).toBe('lithography_isolated_e2e');
+  });
+
+  it.each([
+    ['开发库', 'lithography_drill'],
+    ['业务库', 'lithography_platform'],
+    ['缺少团队前缀', 'e2e_review'],
+    ['形态不符', 'lithography_e2e_extra'],
+  ])('%s（%s）覆盖被拒绝', (_label, value) => {
+    expect(() =>
+      resolveDedicatedE2EDbName({ [DEDICATED_E2E_DB_NAME_OVERRIDE_ENV]: value }),
+    ).toThrow(DEDICATED_E2E_DB_NAME_OVERRIDE_ENV);
+  });
+});
 
 describe('resolveDedicatedE2EDatabase 失败关闭校验', () => {
   beforeEach(() => {

@@ -22,6 +22,9 @@ const MY_SESSION_IDENTITY_QUERY = `
       role
       adminLevel
       customerOrganizationId
+      engineerOrganizationId
+      adminOrganizationId
+      registrationOrganizationId
       restriction
     }
   }
@@ -31,8 +34,15 @@ export type SessionIdentitySnapshot = {
   accountId: number;
   adminLevel: number | null;
   customerOrganizationId: number | null;
+  engineerOrganizationId: number | null;
+  adminOrganizationId: number | null;
+  registrationOrganizationId: number | null;
   restriction: AuthSessionRestriction | null;
 };
+
+function decodeIdentityOrganizationId(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
+}
 
 export async function fetchMySessionIdentity(): Promise<SessionIdentitySnapshot | null> {
   const response: unknown = await executeGraphQL(MY_SESSION_IDENTITY_QUERY, {});
@@ -47,6 +57,9 @@ export async function fetchMySessionIdentity(): Promise<SessionIdentitySnapshot 
     adminLevel: typeof value.adminLevel === 'number' ? value.adminLevel : null,
     customerOrganizationId:
       typeof value.customerOrganizationId === 'number' ? value.customerOrganizationId : null,
+    engineerOrganizationId: decodeIdentityOrganizationId(value.engineerOrganizationId),
+    adminOrganizationId: decodeIdentityOrganizationId(value.adminOrganizationId),
+    registrationOrganizationId: decodeIdentityOrganizationId(value.registrationOrganizationId),
     restriction: isAuthSessionRestriction(value.restriction) ? value.restriction : null,
   };
 }

@@ -10,11 +10,13 @@ import { AUTH_ERROR } from '@core/common/errors';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
 import type { PinoLogger } from 'nestjs-pino';
 import { DecideLoginRoleUsecase } from './decide-login-role.usecase';
 import { EnrichLoginWithIdentityUsecase } from './enrich-login-with-identity.usecase';
 import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
 import { LoginWithPasswordUsecase } from './login-with-password.usecase';
+import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.usecase';
 import { TokenHelper } from '@modules/auth/token.helper';
 
 describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
@@ -25,6 +27,13 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
   const engineerRegistrationQueryService = {
     findLatestByAccountId: jest.fn(),
   } as unknown as EngineerRegistrationQueryService;
+  const organizationMembershipQueryService = {
+    listActiveMembershipsByAccount: jest.fn(),
+  } as unknown as OrganizationMembershipQueryService;
+  const resolveSessionRestrictionUsecase = new ResolveSessionRestrictionUsecase(
+    engineerRegistrationQueryService,
+    organizationMembershipQueryService,
+  );
   const executeLoginFlowUsecase = {
     execute: jest.fn(),
   } as unknown as ExecuteLoginFlowUsecase;
@@ -45,7 +54,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
   } as unknown as PinoLogger;
   const usecase = new LoginWithPasswordUsecase(
     accountQueryService,
-    engineerRegistrationQueryService,
+    resolveSessionRestrictionUsecase,
     executeLoginFlowUsecase,
     decideLoginRoleUsecase,
     enrichLoginWithIdentityUsecase,
@@ -96,6 +105,9 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
       authoritySnapshot(AccountStatus.ACTIVE),
     );
     (engineerRegistrationQueryService.findLatestByAccountId as jest.Mock).mockResolvedValue(null);
+    (
+      organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
+    ).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -250,6 +262,87 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
       expect.objectContaining({ accountId: 9001, allowPendingAccount: true }),
     );
     expect(tokenHelper.generateAccessToken).toHaveBeenCalled();
+  });
+
+  it('已批准但缺少有效工程师成员时，普通登录仍被拒绝', async () => {
+    (accountQueryService.findCredentialByLoginName as jest.Mock).mockResolvedValue(
+      credential(AccountStatus.ACTIVE),
+    );
+    (accountQueryService.findSessionAuthoritySnapshot as jest.Mock).mockResolvedValue(
+      authoritySnapshot(AccountStatus.ACTIVE),
+    );
+    (engineerRegistrationQueryService.findLatestByAccountId as jest.Mock).mockResolvedValue({
+      status: 'APPROVED',
+      organizationId: 501,
+    });
+
+    await expect(login()).rejects.toMatchObject({ code: AUTH_ERROR.ACCOUNT_INACTIVE });
+    expect(tokenHelper.generateAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('已批准且成员资格有效时按普通会话放行', async () => {
+    (accountQueryService.findCredentialByLoginName as jest.Mock).mockResolvedValue(
+      credential(AccountStatus.ACTIVE),
+    );
+    (accountQueryService.findSessionAuthoritySnapshot as jest.Mock).mockResolvedValue(
+      authoritySnapshot(AccountStatus.ACTIVE),
+    );
+    (engineerRegistrationQueryService.findLatestByAccountId as jest.Mock).mockResolvedValue({
+      status: 'APPROVED',
+      organizationId: 501,
+    });
+    (
+      organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
+    ).mockResolvedValue([{ organizationId: 501, memberRole: IdentityTypeEnum.ENGINEER }]);
+    (executeLoginFlowUsecase.execute as jest.Mock).mockResolvedValue({
+      tokens: { accessToken: 'basic-access', refreshToken: 'refresh' },
+      accountId: 9001,
+      roleFromHint: IdentityTypeEnum.ENGINEER,
+      accessGroup: [IdentityTypeEnum.ENGINEER],
+      account: {
+        id: 9001,
+        loginName: 'engineer-active',
+        loginEmail: 'engineer-active@example.com',
+        status: AccountStatus.ACTIVE,
+        identityHint: IdentityTypeEnum.ENGINEER,
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+        updatedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      userInfo: {
+        id: 1,
+        accountId: 9001,
+        nickname: '工程师',
+        avatarUrl: null,
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+        updatedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+    });
+    (decideLoginRoleUsecase.execute as jest.Mock).mockReturnValue({
+      finalRole: IdentityTypeEnum.ENGINEER,
+      reason: 'hint',
+    });
+    (tokenHelper.generateAccessToken as jest.Mock).mockReturnValue('access-token');
+    (enrichLoginWithIdentityUsecase.execute as jest.Mock).mockImplementation(
+      (input: { restriction?: SessionRestriction }) => ({
+        accessToken: 'access-token',
+        refreshToken: 'refresh',
+        accountId: 9001,
+        role: IdentityTypeEnum.ENGINEER,
+        restriction: input.restriction,
+        engineerOrganizationId: 501,
+      }),
+    );
+
+    const result = await usecase.execute({
+      loginName: 'engineer-active@example.com',
+      loginPassword: 'PlainPassword1!',
+      type: LoginTypeEnum.PASSWORD,
+      ip: '127.0.0.1',
+      audience: AudienceTypeEnum.SJWEB,
+    });
+
+    expect(result.restriction).toBe(SessionRestriction.NONE);
+    expect(result.engineerOrganizationId).toBe(501);
   });
 
   it('普通会话登录时不允许 PENDING 账号通过执行流程', async () => {

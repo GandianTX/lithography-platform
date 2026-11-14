@@ -21,6 +21,12 @@ export interface AccountCredentialSnapshot {
   readonly status: AccountStatus;
   readonly loginPassword: string;
   readonly createdAt: Date;
+  /**
+   * 是否被要求先修改密码（`base_user_account.must_change_password`）。
+   * 凭据式入口据此拒绝「改密前」的其他操作，口径与 JWT 会话的
+   * `MUST_CHANGE_PASSWORD` 限制一致。
+   */
+  readonly mustChangePassword: boolean;
 }
 
 /**

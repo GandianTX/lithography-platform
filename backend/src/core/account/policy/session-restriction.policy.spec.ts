@@ -1,13 +1,135 @@
 // src/core/account/policy/session-restriction.policy.spec.ts
 
-import { AccountStatus } from '@app-types/models/account.types';
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
+import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
 import { UserState } from '@app-types/models/user-info.types';
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 
 import {
   isAccountStatusAllowedForSession,
   isUserStateAllowedForSession,
+  resolveSessionRestriction,
+  type SessionRestrictionFacts,
 } from './session-restriction.policy';
+
+describe('会话限制解析策略', () => {
+  const facts = (overrides: Partial<SessionRestrictionFacts> = {}): SessionRestrictionFacts => ({
+    mustChangePassword: false,
+    identityHint: IdentityTypeEnum.ENGINEER,
+    accountStatus: AccountStatus.ACTIVE,
+    userState: UserState.ACTIVE,
+    latestEngineerApplicationStatus: null,
+    latestEngineerApplicationOrganizationId: null,
+    effectiveEngineerOrganizationIds: [],
+    ...overrides,
+  });
+
+  it('必须改密优先级最高', () => {
+    expect(
+      resolveSessionRestriction(
+        facts({
+          mustChangePassword: true,
+          latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.REJECTED,
+        }),
+      ),
+    ).toBe(SessionRestriction.MUST_CHANGE_PASSWORD);
+  });
+
+  it.each([
+    [EngineerRegistrationApplicationStatus.PENDING, SessionRestriction.ENGINEER_PENDING],
+    [EngineerRegistrationApplicationStatus.REJECTED, SessionRestriction.ENGINEER_REJECTED],
+  ])('申请状态 %s 直接决定限制', (status, expected) => {
+    expect(
+      resolveSessionRestriction(
+        facts({
+          accountStatus: AccountStatus.PENDING,
+          userState: UserState.PENDING,
+          latestEngineerApplicationStatus: status,
+        }),
+      ),
+    ).toBe(expected);
+  });
+
+  describe('已批准申请的资格生效判定', () => {
+    it.each([
+      [
+        '缺少有效工程师成员关系',
+        facts({
+          latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.APPROVED,
+          latestEngineerApplicationOrganizationId: 501,
+        }),
+      ],
+      [
+        '成员组织与申请目标不一致',
+        facts({
+          latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.APPROVED,
+          latestEngineerApplicationOrganizationId: 501,
+          effectiveEngineerOrganizationIds: [502],
+        }),
+      ],
+      [
+        '存在多个工程师成员组织（歧义）',
+        facts({
+          latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.APPROVED,
+          latestEngineerApplicationOrganizationId: 501,
+          effectiveEngineerOrganizationIds: [501, 502],
+        }),
+      ],
+      [
+        '账号未处于 ACTIVE',
+        facts({
+          accountStatus: AccountStatus.PENDING,
+          latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.APPROVED,
+          latestEngineerApplicationOrganizationId: 501,
+          effectiveEngineerOrganizationIds: [501],
+        }),
+      ],
+      [
+        '资料未处于 ACTIVE',
+        facts({
+          userState: UserState.SUSPENDED,
+          latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.APPROVED,
+          latestEngineerApplicationOrganizationId: 501,
+          effectiveEngineerOrganizationIds: [501],
+        }),
+      ],
+    ])('%s 时返回 ENGINEER_INACTIVE', (_label, input) => {
+      expect(resolveSessionRestriction(input)).toBe(SessionRestriction.ENGINEER_INACTIVE);
+    });
+
+    it('双状态 ACTIVE 且唯一成员组织等于申请目标时返回 NONE', () => {
+      expect(
+        resolveSessionRestriction(
+          facts({
+            latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.APPROVED,
+            latestEngineerApplicationOrganizationId: 501,
+            effectiveEngineerOrganizationIds: [501],
+          }),
+        ),
+      ).toBe(SessionRestriction.NONE);
+    });
+  });
+
+  it('无申请记录但双状态 PENDING 的工程师回落到 ENGINEER_PENDING', () => {
+    expect(
+      resolveSessionRestriction(
+        facts({ accountStatus: AccountStatus.PENDING, userState: UserState.PENDING }),
+      ),
+    ).toBe(SessionRestriction.ENGINEER_PENDING);
+  });
+
+  it('无申请记录的存量工程师保持 NONE，不追加成员事实要求', () => {
+    expect(resolveSessionRestriction(facts())).toBe(SessionRestriction.NONE);
+  });
+
+  it('非工程师身份不因申请状态字段缺失而被限制', () => {
+    expect(
+      resolveSessionRestriction(
+        facts({ identityHint: IdentityTypeEnum.CUSTOMER, accountStatus: AccountStatus.ACTIVE }),
+      ),
+    ).toBe(SessionRestriction.NONE);
+  });
+});
 
 describe('会话状态门禁策略', () => {
   describe('账号状态', () => {

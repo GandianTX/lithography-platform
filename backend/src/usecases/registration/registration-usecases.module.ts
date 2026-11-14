@@ -6,7 +6,9 @@ import { ThirdPartyAuthModule } from '@modules/third-party-auth/third-party-auth
 import { Module } from '@nestjs/common';
 import { VerificationRecordModule } from '@src/modules/verification-record/verification-record.module';
 import { GetEngineerRegistrationStatusUsecase } from '@src/usecases/registration/get-engineer-registration-status.usecase';
+import { GetMyEngineerRegistrationUsecase } from '@src/usecases/registration/get-my-engineer-registration.usecase';
 import { ListRegistrationOrganizationsUsecase } from '@src/usecases/registration/list-registration-organizations.usecase';
+import { SearchRegistrationOrganizationsUsecase } from '@src/usecases/registration/search-registration-organizations.usecase';
 import { RegisterWithEmailUsecase } from '@src/usecases/registration/register-with-email.usecase';
 import { RegisterWithThirdPartyUsecase } from '@src/usecases/registration/register-with-third-party.usecase';
 import { ResubmitEngineerRegistrationUsecase } from '@src/usecases/registration/resubmit-engineer-registration.usecase';
@@ -28,7 +30,9 @@ import { ReviewEngineerRegistrationUsecase } from '@src/usecases/registration/re
     RegisterWithThirdPartyUsecase,
     WeappRegisterUsecase,
     ListRegistrationOrganizationsUsecase,
+    SearchRegistrationOrganizationsUsecase,
     GetEngineerRegistrationStatusUsecase,
+    GetMyEngineerRegistrationUsecase,
     ResubmitEngineerRegistrationUsecase,
     ListAdminEngineerRegistrationsUsecase,
     GetAdminEngineerRegistrationDetailUsecase,
@@ -39,7 +43,9 @@ import { ReviewEngineerRegistrationUsecase } from '@src/usecases/registration/re
     RegisterWithThirdPartyUsecase,
     WeappRegisterUsecase,
     ListRegistrationOrganizationsUsecase,
+    SearchRegistrationOrganizationsUsecase,
     GetEngineerRegistrationStatusUsecase,
+    GetMyEngineerRegistrationUsecase,
     ResubmitEngineerRegistrationUsecase,
     ListAdminEngineerRegistrationsUsecase,
     GetAdminEngineerRegistrationDetailUsecase,

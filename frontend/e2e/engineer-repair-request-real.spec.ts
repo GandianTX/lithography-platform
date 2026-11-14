@@ -3,7 +3,7 @@
 //
 // 与 engineer-repair-request-flow.spec.ts 分工：该文件是前端浏览器流程测试（GraphQL 由
 // page.route mock，不连数据库）；本文件是真实链路——客户创建 → 工程师接单/回复 → 客户查看回复，
-// 浏览器业务请求真实到达连接专用隔离库 lithography_work_e2e 的后端，落库事实由受保护 SQL helper 核验。
+// 浏览器业务请求真实到达连接专用隔离库 lithography_e2e 的后端，落库事实由受保护 SQL helper 核验。
 //
 // 数据边界（与 repair-request-create / repair-request-manage-real 同一口径）：
 // - 本轮自建行只在 finally 经统一安全入口清理，预期事实取本轮自有值（表单填入值 + 被动记录的
@@ -16,7 +16,7 @@
 // 专用入口的配置、授权、健康或真实登录前提不满足时直接失败，不得跳过验收。
 //
 // 本文件含两组用例：①业务链路（客户创建 → 工程师接单/回复 → 客户查看回复，走浏览器）；
-// ②清理事务安全回归（在 lithography_work_e2e 上验证「字段不符 + 缺少预期回复」组合下事务真实回滚）。
+// ②清理事务安全回归（在 lithography_e2e 上验证「字段不符 + 缺少预期回复」组合下事务真实回滚）。
 
 import { expect, type Page, test } from '@playwright/test';
 
@@ -111,7 +111,7 @@ async function selectResolutionStatus(page: Page, label: '处理中' | '已解�
 /**
  * 专用真实通道前置检查（两组用例共用）：任一不满足即报错。
  * 本用例创建的是会被工程师接单并回复的申请，业务上客户无法删除已接单申请
- *（deleteMyRepairRequest 拒绝），只能在专用隔离库 lithography_work_e2e 上走显式授权的精确物理清理。
+ *（deleteMyRepairRequest 拒绝），只能在专用隔离库 lithography_e2e 上走显式授权的精确物理清理。
  * 在创建夹具前确认隔离库、清理授权与客户/工程师的直连及代理登录。
  * 错误仅包含阶段及安全诊断，不透传可能带有秘密的底层异常或 cause。
  */
@@ -292,10 +292,10 @@ test.describe('real backend engineer accept and respond flow', () => {
       expect(createdEquipmentModelId).toBeGreaterThan(0);
       // 页面展示的编号与被动记录的创建返回值一致（同一条落库记录）
       await expect(page.getByText(`申请编号：${requestNo!}`)).toBeVisible();
-      // 跨库一致性硬校验：浏览器写入的这条申请必须能被 SQL helper 在 lithography_work_e2e
+      // 跨库一致性硬校验：浏览器写入的这条申请必须能被 SQL helper 在 lithography_e2e
       // 按编号查到且 ID 与创建响应一致——否则说明浏览器后端与清理 helper 不连同一个库，
       // 立即失败，绝不继续在错误的库上创建无法清理的已接单数据（业务请求确实到达了
-      // 连接 lithography_work_e2e 的后端，而不是仅凭配置声称）。
+      // 连接 lithography_e2e 的后端，而不是仅凭配置声称）。
       expect(findRepairRequestByRequestNo(requestNo!, 'id')).toBe(String(createdRequestId));
 
       // ---------- 2. 工程师在浏览器中接单、回复 ----------
@@ -393,7 +393,7 @@ test.describe('real backend engineer accept and respond flow', () => {
  * 与「预期回复缺失」(-1) 同时出现时会相消为 0，CHECK 误判通过并提交 DELETE；删除已落库，
  * 之后才由 Node 侧诊断发现，属于「核验未通过却已经删了数据」的安全缺陷。
  *
- * 本用例在 lithography_work_e2e 上用本轮专属夹具构造该组合，验证真实回滚（不是只比对 SQL 字符串）：
+ * 本用例在 lithography_e2e 上用本轮专属夹具构造该组合，验证真实回滚（不是只比对 SQL 字符串）：
  * 事务必须中止，且被核验拦下的申请必须仍然在库中。
  */
 test.describe('real backend repair request cleanup transaction guard', () => {

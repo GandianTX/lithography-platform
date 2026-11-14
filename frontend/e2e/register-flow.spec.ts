@@ -34,11 +34,11 @@ async function installRegistrationMocks(
     const payload = route.request().postDataJSON() as GraphQLPayload;
     const query = payload.query ?? '';
 
-    if (query.includes('query RegistrationOrganizations')) {
+    if (query.includes('query RegistrationOrganizationSearch')) {
       await route.fulfill({
         body: JSON.stringify({
           data: {
-            registrationOrganizations: {
+            registrationOrganizationSearch: {
               items: ORGANIZATIONS,
               total: ORGANIZATIONS.length,
               page: payload.variables?.pagination?.page ?? 1,
@@ -99,7 +99,7 @@ test('login page links to both public registration entries', async ({ page }) =>
   await expect(page).toHaveURL(/\/register\/customer$/);
   await expect(page.getByLabel('登录邮箱')).toBeVisible();
 
-  await page.getByRole('link', { name: '返回登录' }).click();
+  await page.getByRole('button', { name: '返回登录' }).click();
   await expect(page).toHaveURL(/\/login$/);
 
   await page.getByRole('link', { name: '工程师注册' }).click();

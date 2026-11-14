@@ -3,9 +3,9 @@
 //
 // 运行入口：E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:account-real
 // （playwright.account-settings-real.config.ts）：专用后端（127.0.0.1:3100，
-// DB_NAME=lithography_work_e2e 进程级覆盖）+ 专用前端（127.0.0.1:4174，/graphql 同源代理
+// DB_NAME=lithography_e2e 进程级覆盖）+ 专用前端（127.0.0.1:4174，/graphql 同源代理
 // 到 3100）。浏览器、Node GraphQL helper、SQL helper 全部指向同一专用后端与同一独立
-// E2E 库；global-setup 只对 lithography_work_e2e 执行 baseline Migration 与官方 Mock Seed。
+// E2E 库；global-setup 只对 lithography_e2e 执行 baseline Migration 与官方 Mock Seed。
 //
 // 五条真实页面流程，全部以 DOM / URL / 后端权威视图断言，不把截图或录像当作
 // 自动化断言：

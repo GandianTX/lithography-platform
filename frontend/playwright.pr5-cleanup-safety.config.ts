@@ -10,7 +10,7 @@
 // - workers: 1（串行，避免与本组自身的执行锁与反例造数交叉）。
 //
 // 运行入口（授权变量必须由执行者显式设置，不写入 npm script）：
-//   E2E_ALLOW_PHYSICAL_CLEANUP=1 DB_NAME=lithography_work_e2e npm run test:e2e:pr5-cleanup-safety
+//   E2E_ALLOW_PHYSICAL_CLEANUP=1 DB_NAME=lithography_e2e npm run test:e2e:pr5-cleanup-safety
 import { defineConfig } from '@playwright/test';
 
 import { DEDICATED_E2E_DB_NAME } from './e2e-real/dedicated-e2e-environment';

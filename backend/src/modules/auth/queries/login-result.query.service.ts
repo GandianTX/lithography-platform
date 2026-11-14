@@ -67,6 +67,9 @@ export class LoginResultQueryService {
     restriction?: SessionRestriction;
     adminLevel?: number | null;
     customerOrganizationId?: number | null;
+    engineerOrganizationId?: number | null;
+    adminOrganizationId?: number | null;
+    registrationOrganizationId?: number | null;
   }): EnrichedLoginResult {
     const {
       tokens,
@@ -82,6 +85,9 @@ export class LoginResultQueryService {
       restriction = SessionRestriction.NONE,
       adminLevel = null,
       customerOrganizationId = null,
+      engineerOrganizationId = null,
+      adminOrganizationId = null,
+      registrationOrganizationId = null,
     } = params;
     return {
       accessToken: tokens.accessToken,
@@ -93,6 +99,9 @@ export class LoginResultQueryService {
       restriction,
       adminLevel,
       customerOrganizationId,
+      engineerOrganizationId,
+      adminOrganizationId,
+      registrationOrganizationId,
       ...(includeAccount && { account }),
       ...(includeUserInfo && { userInfo }),
       ...(warnings.length > 0 && { warnings }),

@@ -15,7 +15,7 @@ describe('fetchRegistrationOrganizations（公开公司候选）', () => {
 
   it('以公开请求加载，OFFSET 分页并携带 total', async () => {
     executeGraphQLMock.mockResolvedValue({
-      registrationOrganizations: {
+      registrationOrganizationSearch: {
         items: [{ id: 1, name: '公司A' }],
         total: 1,
         page: 1,
@@ -32,7 +32,7 @@ describe('fetchRegistrationOrganizations（公开公司候选）', () => {
       pageSize: 20,
     });
     expect(executeGraphQLMock).toHaveBeenCalledWith(
-      expect.stringContaining('registrationOrganizations'),
+      expect.stringContaining('registrationOrganizationSearch'),
       {
         pagination: { mode: 'OFFSET', page: 1, pageSize: 20, withTotal: true },
       },
@@ -42,7 +42,7 @@ describe('fetchRegistrationOrganizations（公开公司候选）', () => {
 
   it('关键字去首尾空白后透传；空白关键字不携带', async () => {
     executeGraphQLMock.mockResolvedValue({
-      registrationOrganizations: { items: [], total: 0, page: 1, pageSize: 20 },
+      registrationOrganizationSearch: { items: [], total: 0, page: 1, pageSize: 20 },
     });
 
     await fetchRegistrationOrganizations({ keyword: '  光刻  ', page: 1, pageSize: 20 });
@@ -67,7 +67,7 @@ describe('fetchRegistrationOrganizations（公开公司候选）', () => {
 
   it('后端可空分页字段用请求值与 0 兜底', async () => {
     executeGraphQLMock.mockResolvedValue({
-      registrationOrganizations: { items: [], total: null, page: null, pageSize: null },
+      registrationOrganizationSearch: { items: [], total: null, page: null, pageSize: null },
     });
 
     await expect(fetchRegistrationOrganizations({ page: 3, pageSize: 10 })).resolves.toEqual({

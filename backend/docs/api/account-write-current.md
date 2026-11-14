@@ -24,6 +24,8 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `register(input: RegisterInput): RegisterResult`
 - `thirdPartyRegister(input: ThirdPartyRegisterInput): RegisterResult`
 - `registrationOrganizations: [RegistrationOrganizationDTO!]!`
+- `registrationOrganizationSearch(pagination: PaginationArgs!, keyword: String): RegistrationOrganizationPageDTO`
+- `myEngineerRegistration: MyEngineerRegistrationDTO`
 - `myEngineerRegistrationStatus(input: EngineerRegistrationCredentialInput!, pagination: PaginationArgs!): EngineerRegistrationStatusDTO`
 - `resubmitEngineerRegistration(input: ResubmitEngineerRegistrationInput!): ResubmitEngineerRegistrationResultDTO`
 - `login(input: AuthLoginInput): LoginResult`
@@ -85,13 +87,17 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `CUSTOMER`：账号与资料在同一创建事务内写为 `ACTIVE / ACTIVE`，并绑定所选组织为 `CUSTOMER` 成员；注册返回后账号立即可用，`registrationStatus = REGISTERED`、`applicationId = null`；
 - `ENGINEER`：账号与资料保持 `PENDING / PENDING`，不建立有效成员关系、不签发登录令牌，只在同一事务内落一份 `PENDING` 待审申请（`applicationNote` 可选）；返回 `registrationStatus = PENDING_REVIEW` 和非空 `applicationId`。所选组织管理员审核通过后，账号才开通。
 
-`registrationOrganizations` 是公开只读查询，只返回 `ACTIVE` 组织的 `id` / `name`；客户端提交的 `organizationId` 仍由注册/重提事务复核有效性。
+`registrationOrganizations` 是公开只读的**兼容入口**：无参数，只返回 `ACTIVE` 组织的 `id` / `name` 数组，供小程序注册与拒绝后凭据重提等既有调用方继续使用。
+
+`registrationOrganizationSearch` 是 Web 注册（客户与工程师注册页）专用的公开只读检索：资格固定为 `status = ACTIVE AND is_managed_company = true`，支持公司名称关键字与 OFFSET 分页（单页上限 50、关键字长度上限 100），只返回 `items { id name }` 与分页信息。两个入口返回的 `organizationId` 都只是申请参数，仍由注册/重提事务复核有效性。
 
 `resubmitEngineerRegistration` 用于被拒绝后的重提：输入为本人凭据证明（`accountIdentifier` + `password`）、新的 `organizationId` 与可选 `applicationNote`；只新增一份 `PENDING` 申请，**不覆盖**历史申请行，拒绝记录与审核意见永久保留。重提前置条件为：账号三源角色收敛为 `ENGINEER`、双状态仍为 `PENDING / PENDING`、无有效组织成员关系、最新申请为 `REJECTED`。已有待审申请返回 `PENDING_APPLICATION_EXISTS`。
 
 `myEngineerRegistrationStatus` 供待审申请人查看本人最新申请与历史分页。待审账号没有登录态，因此该入口**不使用 JWT**，只复用密码凭据验证证明「本人」，不签发令牌、不放行登录；凭据不匹配统一返回 `CREDENTIAL_MISMATCH`，不区分账号不存在与密码错误。分页只接受 OFFSET。
 
 该入口是 **Mutation** 而非 Query：凭据必须随 POST 请求体提交，避免密码进入查询串、网关/APM 访问日志与被缓存/重放的 GET 语义。它不产生任何业务状态变更，客户端不应据此推断账号已开通。
+
+`myEngineerRegistration` 供已登录的工程师受限期账号读取本人最新一份申请（`Query`，要求可信会话且未处于强制改密状态）：输出 `applicationId` / `organizationId` / `organizationName` / `status` / `applicationNote` / `submittedAt` / `reviewedAt` / `reviewComment`，不含 `accountId`、审核人等内部字段；无申请返回 `NOT_FOUND`。目标公司名称按既成事实读取，即使公司后来被停用也照常显示；申请目标**不授予任何组织权限**，也不参与会话 `restriction` 的组织归属判定（该判定只认有效 `ENGINEER` 成员关系）。
 
 `reviewEngineerRegistration` 由所选组织的管理员执行一次性终态决策：
 

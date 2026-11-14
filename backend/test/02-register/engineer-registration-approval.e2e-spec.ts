@@ -166,13 +166,19 @@ const USER_INFO_QUERY = `
 `;
 
 const ORGANIZATIONS_QUERY = `
-  query RegistrationOrganizations($pagination: PaginationArgs!) {
-    registrationOrganizations(pagination: $pagination) {
+  query RegistrationOrganizationSearch($pagination: PaginationArgs!) {
+    registrationOrganizationSearch(pagination: $pagination) {
       items { id name }
       total
       page
       pageSize
     }
+  }
+`;
+
+const LEGACY_ORGANIZATIONS_QUERY = `
+  query RegistrationOrganizations {
+    registrationOrganizations { id name }
   }
 `;
 
@@ -909,7 +915,7 @@ describe('工程师注册与组织审核 (e2e)', () => {
 
     it('公开组织选项仅返回有效组织且包含本轮主组织', async () => {
       const body = await gql<{
-        registrationOrganizations?: {
+        registrationOrganizationSearch?: {
           items: Array<{ id: number; name: string }>;
           total: number;
           page: number;
@@ -920,9 +926,19 @@ describe('工程师注册与组织审核 (e2e)', () => {
         variables: { pagination: { mode: 'OFFSET', page: 1, pageSize: 50 } },
       });
       expect(body.errors).toBeUndefined();
-      const ids = (body.data?.registrationOrganizations?.items ?? []).map((item) => item.id);
+      const ids = (body.data?.registrationOrganizationSearch?.items ?? []).map((item) => item.id);
       expect(ids).toContain(primaryOrganizationId);
       expect(ids).toContain(peerOrganizationId);
+
+      // 兼容入口：无参 `registrationOrganizations` 仍返回 `{ id name }` 数组
+      const legacy = await gql<{
+        registrationOrganizations?: Array<{ id: number; name: string }>;
+      }>({ query: LEGACY_ORGANIZATIONS_QUERY });
+      expect(legacy.errors).toBeUndefined();
+      const legacyIds = (legacy.data?.registrationOrganizations ?? []).map((item) => item.id);
+      expect(Array.isArray(legacy.data?.registrationOrganizations)).toBe(true);
+      expect(legacyIds).toContain(primaryOrganizationId);
+      expect(legacyIds).toContain(peerOrganizationId);
     });
   });
 

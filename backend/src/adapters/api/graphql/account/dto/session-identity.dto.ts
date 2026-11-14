@@ -24,6 +24,18 @@ export class SessionIdentityDTO {
   @Field(() => Int, { nullable: true, description: '客户公司归属（无归属为空）' })
   customerOrganizationId!: number | null;
 
+  @Field(() => Int, { nullable: true, description: '唯一有效工程师成员组织（无或多组织为空）' })
+  engineerOrganizationId!: number | null;
+
+  @Field(() => Int, { nullable: true, description: '唯一有效管理员成员组织（无或多组织为空）' })
+  adminOrganizationId!: number | null;
+
+  @Field(() => Int, {
+    nullable: true,
+    description: '最新工程师申请的目标公司（仅展示，不授予组织业务权限）',
+  })
+  registrationOrganizationId!: number | null;
+
   @Field(() => SessionRestriction, { description: '当前会话限制状态' })
   restriction!: SessionRestriction;
 }

@@ -15,7 +15,7 @@
 //   浏览器、Node GraphQL helper（E2E_BACKEND_ORIGIN，由本配置注入）与 SQL helper
 //   （完整五项 DB 连接，经 global-setup 写入测试进程环境）全部指向同一专用后端与
 //   同一独立 E2E 库；
-// - 全局前置（e2e-real/global-setup.ts）只对 lithography_work_e2e 执行 baseline Migration 与
+// - 全局前置（e2e-real/global-setup.ts）只对 lithography_e2e 执行 baseline Migration 与
 //   官方 Mock Seed，授权缺失时硬失败；
 // - 专用入口下进程级环境变量由本配置在**外部未设置时**注入（DB_NAME /
 //   E2E_BACKEND_ORIGIN），外部若已设置且指向非专用目标则硬失败（不静默覆盖）；

@@ -11,7 +11,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
-import { Link, useNavigate } from 'react-router';
+import { useNavigate } from 'react-router';
 
 import {
   resolveRegisterCustomerErrorMessage,
@@ -202,15 +202,11 @@ export function RegisterCustomerForm() {
         </Form.Item>
       )}
 
-      <Form.Item>
-        <Button block htmlType="submit" loading={isSubmitting} type="primary">
+      <div className="register-actions">
+        <Button htmlType="submit" loading={isSubmitting} type="primary">
           注册并开通
         </Button>
-      </Form.Item>
-
-      <div className="register-back-login">
-        <span>已有账号？</span>
-        <Link to="/login">返回登录</Link>
+        <Button onClick={() => navigate('/login')}>返回登录</Button>
       </div>
     </Form>
   );

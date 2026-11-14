@@ -130,7 +130,7 @@ function establishSession(accountId: number, nickname: string): void {
       accountId,
       role: 'CUSTOMER',
       userInfo: { accessGroup: ['CUSTOMER'], nickname },
-      version: 2,
+      version: 3,
     }),
   );
 }
@@ -360,7 +360,7 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
         accountId,
         role: 'CUSTOMER',
         userInfo: { accessGroup: ['CUSTOMER'], nickname },
-        version: 2,
+        version: 3,
       }),
     );
   }

@@ -6,15 +6,14 @@ import { type AuthenticatedSessionUser } from '@app-types/auth/session-restricti
 import {
   isAccountStatusAllowedForSession,
   isUserStateAllowedForSession,
-  resolveSessionRestriction,
 } from '@core/account/policy/session-restriction.policy';
 import { validateAccountRoleSet } from '@core/account/policy/account-role-convergence.policy';
 import { DomainError, JWT_ERROR } from '@core/common/errors/domain-error';
 import type { AccountSessionAuthoritySnapshot } from '@src/modules/account/account.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
-import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { Injectable } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
+import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.usecase';
 
 /**
  * `JwtStrategy` 的唯一数据库 Session 复核入口（P0-7）。
@@ -67,7 +66,7 @@ import { PinoLogger } from 'nestjs-pino';
 export class ValidateAccessTokenSessionUsecase {
   constructor(
     private readonly accountQueryService: AccountQueryService,
-    private readonly engineerRegistrationQueryService: EngineerRegistrationQueryService,
+    private readonly resolveSessionRestrictionUsecase: ResolveSessionRestrictionUsecase,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(ValidateAccessTokenSessionUsecase.name);
@@ -97,21 +96,15 @@ export class ValidateAccessTokenSessionUsecase {
       this.reject(2, 'USER_INFO_RECORD_MISSING', payload.sub);
     }
     // 3~4. 账号/资料状态：ACTIVE 放行；PENDING 仅在存在明确限制（必须改密 / 工程师待审 /
-    // 工程师拒绝）时放行给受限会话；其余状态（停用、封禁、删除、注销）一律失败关闭。
-    // 门禁口径与登录入口共用 core 纯策略；本用例固定允许受限会话，
+    // 工程师拒绝 / 已批准但资格未生效）时放行给受限会话；其余状态（停用、封禁、删除、注销）
+    // 一律失败关闭。门禁口径与登录入口共用 core 纯策略；本用例固定允许受限会话，
     // 业务入口的限制由 RolesGuard / SessionRestrictionGuard 继续拦截。
-    const latestEngineerApplication =
-      snapshot.identityHint === IdentityTypeEnum.ENGINEER
-        ? await this.engineerRegistrationQueryService.findLatestByAccountId(payload.sub)
-        : null;
-
-    const restriction = resolveSessionRestriction({
-      mustChangePassword: snapshot.mustChangePassword,
-      identityHint: snapshot.identityHint,
-      accountStatus: snapshot.accountStatus,
-      userState: snapshot.userInfo.userState,
-      latestEngineerApplicationStatus: latestEngineerApplication?.status ?? null,
+    // 限制状态与身份组织字段由同一解析用例产出，申请/成员事实只看一次库。
+    const resolution = await this.resolveSessionRestrictionUsecase.execute({
+      accountId: payload.sub,
+      snapshot,
     });
+    const restriction = resolution.restriction;
 
     const isAccountStatusAllowed = isAccountStatusAllowedForSession({
       accountStatus: snapshot.accountStatus,
@@ -162,6 +155,9 @@ export class ValidateAccessTokenSessionUsecase {
       role: payload.activeRole ?? null,
       adminLevel: snapshot.adminLevel,
       customerOrganizationId: snapshot.userInfo.customerOrganizationId,
+      engineerOrganizationId: resolution.engineerOrganizationId,
+      adminOrganizationId: resolution.adminOrganizationId,
+      registrationOrganizationId: resolution.latestEngineerApplication?.organizationId ?? null,
       restriction,
     };
   }

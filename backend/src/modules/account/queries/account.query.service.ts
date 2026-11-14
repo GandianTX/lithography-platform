@@ -12,7 +12,6 @@ import { isDualStatusFieldsConsistent } from '@core/account/policy/dual-status-c
 import { ACCOUNT_ERROR } from '@core/common/errors';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import { normalizeEmail } from '@core/common/normalize/normalize.helper';
-import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
@@ -36,6 +35,11 @@ export type AccountDisplayProfile = {
   nickname: string;
   companyName: string | null;
 };
+
+/** 昵称模糊搜索：转义 LIKE 通配符，避免用户输入 % / _ 意外扩大匹配范围 */
+function escapeLikePattern(input: string): string {
+  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
 
 /**
  * 把实体上的角色数组原值转为快照值（`AccountSessionAuthoritySnapshot` 的字段口径）。
@@ -365,6 +369,7 @@ export class AccountQueryService {
       status: account.status,
       loginPassword: account.loginPassword,
       createdAt: account.createdAt,
+      mustChangePassword: account.mustChangePassword,
     };
   }
 

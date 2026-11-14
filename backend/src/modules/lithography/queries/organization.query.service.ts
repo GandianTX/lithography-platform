@@ -1,7 +1,6 @@
 // src/modules/lithography/queries/organization.query.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
@@ -32,6 +31,24 @@ export class OrganizationQueryService {
     @InjectRepository(OrganizationEntity)
     private readonly repository: Repository<OrganizationEntity>,
   ) {}
+
+  /**
+   * 兼容入口：全部 `ACTIVE` 组织（按名称、主键稳定排序，不分页、不区分受管资格）。
+   *
+   * 仅服务主线既有契约的 `registrationOrganizations { id name }`（小程序注册、
+   * 拒绝后凭据重提等调用方）。Web 注册页必须改用 `searchEligibleRegistrationOptions`。
+   */
+  async listActiveRegistrationOptions(
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<OrganizationRegistrationOption[]> {
+    const repository = this.getRepository(transactionContext);
+    const rows = await repository.find({
+      where: { status: 'ACTIVE' },
+      select: { id: true, name: true },
+      order: { name: 'ASC', id: 'ASC' },
+    });
+    return rows.map((row) => ({ id: row.id, name: row.name }));
+  }
 
   /**
    * Web 注册候选检索：启用且属于一级维护名单，支持名称关键字与 OFFSET 分页。
@@ -118,10 +135,33 @@ export class OrganizationQueryService {
     return row ? { id: row.id, name: row.name } : null;
   }
 
+  /**
+   * 按主键读取组织显示名称（只读，**不过滤状态**）。
+   *
+   * 仅用于「已经发生的业务事实」的展示：本人申请里的目标公司即使后来被停用，
+   * 申请人仍应看到自己申请的是哪家公司。授权与注册资格判定不得使用本方法。
+   */
+  async findOrganizationNameById(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<string | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({
+      where: { id: params.organizationId },
+      select: { id: true, name: true },
+    });
+    return row ? row.name : null;
+  }
+
   private getRepository(
     transactionContext?: PersistenceTransactionContext,
   ): Repository<OrganizationEntity> {
     const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
     return manager ? manager.getRepository(OrganizationEntity) : this.repository;
   }
+}
+
+/** LIKE 模式转义：`\`、`%`、`_` 按普通字符匹配（MySQL 默认转义符为 `\`） */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
 }

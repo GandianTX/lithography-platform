@@ -20,6 +20,9 @@ describe('fetchMySessionIdentity（启动期会话身份复核）', () => {
         role: 'ENGINEER',
         adminLevel: 2,
         customerOrganizationId: 31,
+        engineerOrganizationId: 7701,
+        adminOrganizationId: 8801,
+        registrationOrganizationId: 6601,
         restriction: 'ENGINEER_PENDING',
       },
     });
@@ -28,6 +31,9 @@ describe('fetchMySessionIdentity（启动期会话身份复核）', () => {
       accountId: 900201,
       adminLevel: 2,
       customerOrganizationId: 31,
+      engineerOrganizationId: 7701,
+      adminOrganizationId: 8801,
+      registrationOrganizationId: 6601,
       restriction: 'ENGINEER_PENDING',
     });
     expect(executeGraphQLMock).toHaveBeenCalledWith(
@@ -58,6 +64,9 @@ describe('fetchMySessionIdentity（启动期会话身份复核）', () => {
       accountId: 900201,
       adminLevel: null,
       customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
       restriction: null,
     });
   });
@@ -76,6 +85,9 @@ describe('fetchMySessionIdentity（启动期会话身份复核）', () => {
       accountId: 900201,
       adminLevel: null,
       customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
       restriction: 'NONE',
     });
   });

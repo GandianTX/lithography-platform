@@ -20,7 +20,9 @@ Global error contract: Every GraphQL interface must also follow docs/api/graphql
 
 公开注册按角色分流：`CUSTOMER` 选择有效组织后直接开通并绑定该组织 `CUSTOMER` 成员；`ENGINEER` 先提交待审申请，账号与资料保持 `PENDING / PENDING`，由所选组织管理员审核通过后才开通。`SUPER_ADMIN` 不开放自助注册，仍由受控管理流程或 Seed 创建。
 
-登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）默认只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；当调用方显式传 `allowRestrictedSession = true` 时，`PENDING` 账号只有在存在明确会话限制（`MUST_CHANGE_PASSWORD` / `ENGINEER_PENDING` / `ENGINEER_REJECTED`）时才签发受限令牌，停用、封禁、删除、暂停等状态仍一律拒绝。`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上复用同一套 `resolveSessionRestriction` 纯策略与账号/用户状态门禁，并固定允许受限会话。受限会话只能进入受限入口（改密页 / 待审结果页），业务接口由 `SessionRestrictionGuard` 拦截。第三方登录入口不传 `allowRestrictedSession`，因此仍不提供绕过审核的路径。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
+登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）默认只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；当调用方显式传 `allowRestrictedSession = true` 时，`PENDING` 账号只有在存在明确会话限制（`MUST_CHANGE_PASSWORD` / `ENGINEER_PENDING` / `ENGINEER_REJECTED` / `ENGINEER_INACTIVE`）时才签发受限令牌，停用、封禁、删除、暂停等状态仍一律拒绝。`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上复用 `ResolveSessionRestrictionUsecase`（唯一事实读取入口）与同一套 `resolveSessionRestriction` 纯策略，并固定允许受限会话。受限会话只能进入受限入口（改密页 / 待审结果页），业务接口由 `SessionRestrictionGuard` 拦截。第三方登录入口不传 `allowRestrictedSession`，因此仍不提供绕过审核的路径。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
+
+工程师资格口径：最新申请为 `APPROVED` 时，只有账号与资料同时 `ACTIVE`，且账号在该申请目标组织内恰有一条有效 `ENGINEER` 成员关系（成员 `ACTIVE` 且组织 `ACTIVE`），才视为资格生效并返回 `NONE`；成员缺失、组织停用、角色不符、目标组织不一致或多组织歧义一律返回 `ENGINEER_INACTIVE`（滚动受限，业务入口由守卫拒绝）。没有任何工程师申请记录的存量工程师账号不追加成员事实要求，继续沿用「双状态 `ACTIVE` 即 `NONE`」的既有口径。
 
 例外（2026-08-29 负责人裁定）：「客户创建维修申请」页拒绝 `SUPER_ADMIN` 继承进入，前端路由与 `ENGINEER` 一致重定向回各自主页；后端 `equipmentModels` 与 `createRepairRequest` 仅接受精确 `CUSTOMER`。
 
@@ -57,6 +59,9 @@ Adapter 只做协议输入映射，不在 resolver 内实现登录业务规则�
 - `restriction`：`SessionRestriction`，缺省视为 `NONE`
 - `adminLevel`：管理员等级（`1` / `2` / `null`）
 - `customerOrganizationId`：客户公司归属主键，无归属为 `null`
+- `engineerOrganizationId`：唯一有效 `ENGINEER` 成员组织主键，0 条或多条为 `null`
+- `adminOrganizationId`：唯一有效 `SUPER_ADMIN` 成员组织主键，0 条或多条为 `null`
+- `registrationOrganizationId`：最新工程师申请的目标组织主键，仅用于展示，不授予组织业务权限
 
 `userInfo` 由登录后读取链路装配，并移除敏感字段，例如 `metaDigest`。
 
@@ -101,15 +106,20 @@ Resolver、Guard、Usecase 不应各自手写不同的 session shape。
   - Resolver：`src/adapters/api/graphql/auth/auth.resolver.ts`
   - 会话事实由 `JwtStrategy` → `ValidateAccessTokenSessionUsecase` 每请求计算并挂在
     `request.user` 上，adapter 只做薄映射，不再查库。
-  - 输出 `accountId` / `role` / `adminLevel` / `customerOrganizationId` / `restriction`，
-    前端据此判断是否需要进入受限入口。
+  - 输出 `accountId` / `role` / `adminLevel` / `customerOrganizationId` /
+    `engineerOrganizationId` / `adminOrganizationId` / `registrationOrganizationId` /
+    `restriction`，前端据此判断是否需要进入受限入口。
+  - 组织字段与 `restriction` 同源：都由 `ResolveSessionRestrictionUsecase` 在每次请求时
+    按数据库事实重算，不信任 Token 声明中的组织信息。
   - 未识别到的 `restriction` 按 `null` 处理，由前端保持现状而不是回落 `NONE`。
 
 ## 公开注册
 
-- `registrationOrganizations(keyword, pagination)`：公开关键字分页检索可自助注册的组织，
-  只返回 `id` / `name`；仅返回 `status = ACTIVE AND is_managed_company = true` 的组织，
-  单页上限 50，关键字长度上限 100。
+- `registrationOrganizations: [RegistrationOrganizationDTO!]!`：兼容入口，无参数，返回全部
+  `ACTIVE` 组织的 `id` / `name` 数组，供小程序注册与拒绝后凭据重提等既有调用方继续使用。
+- `registrationOrganizationSearch(pagination, keyword)`：Web 注册（客户与工程师）专用公开
+  关键字分页检索，只返回 `id` / `name`；仅返回 `status = ACTIVE AND is_managed_company = true`
+  的组织，单页上限 50，关键字长度上限 100。
 - `register(input: RegisterInput!)`：统一注册入口，`type` 区分角色（默认 `CUSTOMER`）。
   - `CUSTOMER`：选择名单内组织（`organizationId`）或手填公司名（`organizationName`）二者互斥；
     名单内组织需满足上述资格，创建事务内用同一 `transactionContext` 复核，资格失效返回

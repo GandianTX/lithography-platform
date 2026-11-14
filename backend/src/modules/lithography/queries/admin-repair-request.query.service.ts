@@ -1,7 +1,6 @@
 // src/modules/lithography/queries/admin-repair-request.query.service.ts
 
 import { DomainError, ADMIN_DOCUMENT_DATABASE_ERROR } from '@core/common/errors/domain-error';
-import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, FindOptionsWhere, In, Raw, Repository } from 'typeorm';
@@ -18,6 +17,11 @@ import type {
 
 /** 列表固定排序：创建时间倒序，次级主键倒序（与既有维修申请读模型同口径） */
 const LIST_ORDER = { createdAt: 'DESC', id: 'DESC' } as const;
+
+/** 标题/编号模糊搜索：转义 LIKE 通配符，避免用户输入 % / _ 意外扩大匹配范围 */
+function escapeLikePattern(input: string): string {
+  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
 
 /**
  * 管理员维修申请读侧查询服务（PR3 只读聚合）

@@ -142,6 +142,14 @@ describe('real-backend 专用账号物理清理（R2 修正轮第 4 项 / R4 修
     expect(sql.indexOf('DELETE FROM engineer_response')).toBeLessThan(
       sql.indexOf('DELETE FROM base_user_account'),
     );
+    // 组织成员关系对主记录是 ON DELETE RESTRICT：必须先于 base_user_account 删除
+    // 且位于 base_user_info 之前，否则清理事务会被外键整体回滚（真实改密轮回归）
+    expect(sql.indexOf('DELETE FROM organization_membership')).toBeLessThan(
+      sql.indexOf('DELETE FROM base_user_info'),
+    );
+    expect(sql.indexOf('DELETE FROM organization_membership')).toBeLessThan(
+      sql.indexOf('DELETE FROM base_user_account'),
+    );
     expect(sql).toContain('SET ');
     expect(sql).toContain('PREPARE dedicated_cleanup_check');
     expect(sql).toContain('COMMIT');
@@ -210,15 +218,16 @@ describe('real-backend 专用账号物理清理（R2 修正轮第 4 项 / R4 修
       expect(statement.startsWith('SELECT')).toBe(true);
     }
 
-    // 第三条是连续加法，同时覆盖全部 6 张业务表
+    // 第三条是连续加法，同时覆盖全部 7 张关联表（含组织成员关系）
     const thirdStatement = statements[2];
+    expect(thirdStatement).toContain('FROM organization_membership');
     expect(thirdStatement).toContain('FROM engineer_response');
     expect(thirdStatement).toContain('FROM ai_message');
     expect(thirdStatement).toContain('FROM ai_report');
     expect(thirdStatement).toContain('FROM ai_conversation');
     expect(thirdStatement).toContain('FROM repair_request');
     expect(thirdStatement).toContain('FROM reference_document');
-    expect((thirdStatement.match(/\+\s*\(/g) ?? []).length).toBe(5);
+    expect((thirdStatement.match(/\+\s*\(/g) ?? []).length).toBe(6);
   });
 });
 

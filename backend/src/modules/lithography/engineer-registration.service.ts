@@ -7,7 +7,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository } from 'typeorm';
-import { isDuplicateKeyError } from '@modules/common/utils/database-error.util';
+import { isDuplicateKeyError } from './database-error.helpers';
 import { EngineerRegistrationApplicationEntity } from './entities/engineer-registration-application.entity';
 import { toEngineerRegistrationApplicationSnapshot } from './engineer-registration.mapper';
 import {
