@@ -40,7 +40,7 @@ import type { UploadStoredFileCommand, UploadedStoredFileView } from './stored-f
  * 3. 实际内容类型、1..20,000,000 字节、SHA-256 校验（内存中完成）；
  * 4. 私有存储写入（服务端生成引用）；
  * 5. 单事务登记 VALID + TEMPORARY、business_id 为空的暂存记录；
- * 6. 落库失败时补偿删除未登记存储对象，不留下半成品。
+ * 6. 落库失败时不猜测事务终局：保留存储对象并记录可排查诊断，由人工核对后清理。
  *
  * 暂存成功只表示「已校验」，不表示已绑定任何业务；
  * 绑定必须由任务 04 保存用例在自身事务内调用绑定能力完成。
@@ -110,9 +110,11 @@ export class UploadStoredFileUsecase {
     const uploadContextId = randomUUID();
 
     let storageReference: string | null = null;
+    let storageSaveAttempted = false;
     let callbackCompleted = false;
     try {
       try {
+        storageSaveAttempted = true;
         storageReference = await this.storage.save(buffer, extension);
       } catch (error) {
         // 存储失败对外只暴露受控错误，不泄露路径/引用
@@ -159,23 +161,63 @@ export class UploadStoredFileUsecase {
         createdAt: snapshot.createdAt,
       };
     } catch (error) {
-      // 存储已写入但落库未确认：先探测是否已有登记，避免误删已提交对象
-      if (storageReference && !callbackCompleted) {
-        await this.compensateStorage(storageReference);
+      // 事务契约不提供明确终局：回调完成、回调抛错、提交回执丢失都可能是未知结果，
+      // 独立连接查不到引用也不等于已回滚。因此一律保留存储对象，只记录诊断供人工核对。
+      if (storageSaveAttempted) {
+        await this.reportRetainedStorage({
+          storageReference,
+          fileId,
+          uploadContextId,
+          businessType,
+          registrationCallbackCompleted: callbackCompleted,
+          failure: error,
+        });
       }
       throw error;
     }
   }
 
-  private async compensateStorage(storageReference: string): Promise<void> {
+  private async reportRetainedStorage(params: {
+    storageReference: string | null;
+    fileId: string;
+    uploadContextId: string;
+    businessType: string;
+    registrationCallbackCompleted: boolean;
+    failure: unknown;
+  }): Promise<void> {
+    const referenceProbe = await this.probeStorageReference(params.storageReference);
+    // 仅记录内部诊断：不向客户端返回存储引用或服务器路径，也不改变主错误
+    this.logger.warn(
+      `原件暂存落库失败后的存储对象已保留待人工核对: ${JSON.stringify({
+        event: 'stored_file.upload.compensation_retained',
+        fileId: params.fileId,
+        uploadContextId: params.uploadContextId,
+        businessType: params.businessType,
+        storageReference: params.storageReference,
+        referenceProbe: referenceProbe.status,
+        referenceProbeError: referenceProbe.error,
+        transactionOutcome: 'unconfirmed',
+        registrationCallbackCompleted: params.registrationCallbackCompleted,
+        failure: describeError(params.failure),
+      })}`,
+    );
+  }
+
+  private async probeStorageReference(storageReference: string | null): Promise<{
+    status: 'referenced' | 'unreferenced' | 'probe-failed' | 'unavailable';
+    error?: string;
+  }> {
+    if (!storageReference) {
+      return { status: 'unavailable' };
+    }
     try {
-      if (await this.storedFileQueryService.isStorageReferenceReferenced(storageReference)) {
-        return;
-      }
-      await this.storage.delete(storageReference);
-    } catch (cleanupError) {
-      // 补偿失败不覆盖原始错误；由运维按日志人工清理，不向客户端暴露路径
-      this.logger.warn(`原件暂存落库失败后的存储补偿未完成: ${describeError(cleanupError)}`);
+      return {
+        status: (await this.storedFileQueryService.isStorageReferenceReferenced(storageReference))
+          ? 'referenced'
+          : 'unreferenced',
+      };
+    } catch (probeError) {
+      return { status: 'probe-failed', error: describeError(probeError) };
     }
   }
 }

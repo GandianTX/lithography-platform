@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { DomainError, PERMISSION_ERROR, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
+import { Logger } from '@nestjs/common';
 import type { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { StoredFileService } from '@src/modules/lithography/stored-file.service';
@@ -245,31 +246,99 @@ describe('UploadStoredFileUsecase', () => {
     });
     expect(storedFileService.insertStagedFile).not.toHaveBeenCalled();
   });
+});
 
-  it('落库失败后补偿删除未登记的存储对象，不留下半成品', async () => {
-    const transactionRunner = makeTransactionRunner();
-    transactionRunner.run.mockRejectedValueOnce(
-      new DomainError(STORED_FILE_ERROR.UPLOAD_FAILED, 'db down'),
-    );
-    const { usecase, queryService, storage } = makeUsecase({ transactionRunner });
+describe('UploadStoredFileUsecase 存储补偿判定', () => {
+  const storageReference = '0123456789abcdef0123456789abcdef.pdf';
+  let warnSpy: jest.SpyInstance;
 
-    await expect(usecase.execute(command())).rejects.toMatchObject({
-      code: STORED_FILE_ERROR.UPLOAD_FAILED,
-    });
-    expect(queryService.isStorageReferenceReferenced).toHaveBeenCalledWith(
-      '0123456789abcdef0123456789abcdef.pdf',
-    );
-    expect(storage.delete).toHaveBeenCalledWith('0123456789abcdef0123456789abcdef.pdf');
+  beforeEach(() => {
+    warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
   });
 
-  it('落库失败但存储引用已被登记时不删除（防误删已提交对象）', async () => {
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  const diagnosticMessage = (): string => String(warnSpy.mock.calls.at(-1)?.[0] ?? '');
+
+  /** 登记回调已完成，但调用方仍收到错误（提交回执丢失/提交后报错） */
+  const makeCommitThenFailRunner = () =>
+    ({
+      run: jest.fn(async (cb: (ctx: unknown) => unknown) => {
+        await cb(transactionContext);
+        throw new Error('commit acknowledgement lost');
+      }),
+    }) as unknown as TransactionRunner & { run: jest.Mock };
+
+  it('回归：事务终局未确认且独立查询查不到引用时，仍保留文件并记录诊断', async () => {
     const transactionRunner = makeTransactionRunner();
-    transactionRunner.run.mockRejectedValueOnce(new Error('commit uncertain'));
+    transactionRunner.run.mockRejectedValueOnce(new Error('commit outcome unknown'));
+    const queryService = makeQueryService();
+    queryService.isStorageReferenceReferenced.mockResolvedValueOnce(false);
+    const { usecase, storage } = makeUsecase({ transactionRunner, queryService });
+
+    await expect(usecase.execute(command())).rejects.toThrow('commit outcome unknown');
+
+    expect(queryService.isStorageReferenceReferenced).toHaveBeenCalledWith(storageReference);
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(diagnosticMessage()).toContain(storageReference);
+    expect(diagnosticMessage()).toContain('unreferenced');
+    expect(diagnosticMessage()).toContain('unconfirmed');
+  });
+
+  it('确认回滚（登记回调抛错）但事务契约未给出明确终局时，保留文件并报告', async () => {
+    const callbackError = new DomainError(STORED_FILE_ERROR.UPLOAD_FAILED, '登记失败');
+    const storedFileService = makeStoredFileService();
+    storedFileService.insertStagedFile.mockRejectedValueOnce(callbackError);
+    const queryService = makeQueryService();
+    queryService.isStorageReferenceReferenced.mockResolvedValueOnce(false);
+    const { usecase, storage } = makeUsecase({ storedFileService, queryService });
+
+    await expect(usecase.execute(command())).rejects.toBe(callbackError);
+
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(diagnosticMessage()).toContain('unconfirmed');
+  });
+
+  it('真实提交但调用方收到错误时，保留文件并报告已存在引用', async () => {
+    const transactionRunner = makeCommitThenFailRunner();
     const queryService = makeQueryService();
     queryService.isStorageReferenceReferenced.mockResolvedValueOnce(true);
     const { usecase, storage } = makeUsecase({ transactionRunner, queryService });
 
-    await expect(usecase.execute(command())).rejects.toBeInstanceOf(Error);
+    await expect(usecase.execute(command())).rejects.toThrow('commit acknowledgement lost');
+
     expect(storage.delete).not.toHaveBeenCalled();
+    expect(diagnosticMessage()).toContain('referenced');
+  });
+
+  it('引用探测失败时保留文件，主错误不变且不删除', async () => {
+    const primaryError = new DomainError(STORED_FILE_ERROR.UPLOAD_FAILED, 'db down');
+    const transactionRunner = makeTransactionRunner();
+    transactionRunner.run.mockRejectedValueOnce(primaryError);
+    const queryService = makeQueryService();
+    queryService.isStorageReferenceReferenced.mockRejectedValueOnce(new Error('probe unavailable'));
+    const { usecase, storage } = makeUsecase({ transactionRunner, queryService });
+
+    await expect(usecase.execute(command())).rejects.toBe(primaryError);
+
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(diagnosticMessage()).toContain('probe-failed');
+    expect(diagnosticMessage()).toContain(primaryError.message);
+  });
+
+  it('存储对象身份不明时保留并报告，不执行删除', async () => {
+    const storage = makeStorage();
+    storage.save.mockResolvedValueOnce('');
+    const transactionRunner = makeTransactionRunner();
+    transactionRunner.run.mockRejectedValueOnce(new Error('db down'));
+    const { usecase } = makeUsecase({ storage, transactionRunner });
+
+    await expect(usecase.execute(command())).rejects.toThrow('db down');
+
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(diagnosticMessage()).toContain('unavailable');
   });
 });
