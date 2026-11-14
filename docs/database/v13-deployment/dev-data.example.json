@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "equipment_models": [
+    {
+      "model_code": "DEV-LITHO-A",
+      "model_name": "开发联调机型 A",
+      "sort_order": 10,
+      "enabled": true
+    },
+    {
+      "model_code": "DEV-LITHO-B",
+      "model_name": "开发联调机型 B",
+      "sort_order": 20,
+      "enabled": true
+    }
+  ],
+  "repair_requests": [
+    {
+      "request_no": "DEV-RR-A-001",
+      "customer_login_name": "dev-customer-a1",
+      "service_organization_code": "ORG-DEV-B",
+      "equipment_model_code": "DEV-LITHO-A",
+      "error_code": "DEV-E-1001",
+      "fault_description": "开发联调：设备无法完成曝光，等待工程师接单。",
+      "content_md": "## 现象\n\n设备启动后无法完成曝光。\n\n## 期望\n\n工程师接单后远程确认。",
+      "created_at": "2026-10-01T01:00:00.000Z",
+      "accepted_by_login_name": null,
+      "accepted_at": null,
+      "handling_result": null,
+      "handling_recorded_by_login_name": null,
+      "handling_recorded_at": null,
+      "handling_ended_at": null,
+      "closure_reason": null
+    },
+    {
+      "request_no": "DEV-RR-B-001",
+      "customer_login_name": "dev-customer-b1",
+      "service_organization_code": "ORG-DEV-B",
+      "equipment_model_code": "DEV-LITHO-A",
+      "error_code": "DEV-E-2001",
+      "fault_description": "开发联调：设备报警后暂停使用，处理中。",
+      "content_md": "## 现象\n\n设备报警后暂停使用。\n\n## 已做检查\n\n已确认现场供电正常。",
+      "created_at": "2026-10-02T01:00:00.000Z",
+      "accepted_by_login_name": "dev-engineer-b",
+      "accepted_at": "2026-10-02T02:00:00.000Z",
+      "handling_result": "INTERRUPTED",
+      "handling_recorded_by_login_name": "dev-engineer-b",
+      "handling_recorded_at": "2026-10-03T02:00:00.000Z",
+      "handling_ended_at": null,
+      "closure_reason": "等待备件到货"
+    },
+    {
+      "request_no": "DEV-RR-A-002",
+      "customer_login_name": "dev-customer-a2",
+      "service_organization_code": "ORG-DEV-A",
+      "equipment_model_code": "DEV-LITHO-B",
+      "error_code": "DEV-E-3001",
+      "fault_description": "开发联调：更换部件后已恢复，可用于报告验收。",
+      "content_md": "## 现象\n\n光源功率不足导致曝光异常。\n\n## 处理结果\n\n更换光源后连续运行正常。",
+      "created_at": "2026-10-04T01:00:00.000Z",
+      "accepted_by_login_name": "dev-engineer-a",
+      "accepted_at": "2026-10-04T02:00:00.000Z",
+      "handling_result": "FIXED",
+      "handling_recorded_by_login_name": "dev-engineer-a",
+      "handling_recorded_at": "2026-10-05T02:00:00.000Z",
+      "handling_ended_at": "2026-10-06T02:00:00.000Z",
+      "closure_reason": null
+    }
+  ],
+  "maintenance_reports": [
+    {
+      "repair_request_no": "DEV-RR-B-001",
+      "owner_organization_code": "ORG-DEV-B",
+      "title": "开发联调：报警处理记录（草稿）",
+      "customer_factory_name": "开发客户 B 工厂",
+      "equipment_model_code": "DEV-LITHO-A",
+      "maintenance_date": "2026-10-03",
+      "engineer_login_name": "dev-engineer-b",
+      "status": "DRAFT",
+      "handling_result": null,
+      "reset_result": null,
+      "actual_cause": null,
+      "repair_actions": null,
+      "verification_result": null,
+      "alarms": [
+        {
+          "alarm_index": 1,
+          "alarm_code": "ALM-101",
+          "alarm_description": "曝光异常",
+          "phase_code": "PHASE_02",
+          "reset_result": "NOT_ATTEMPTED"
+        }
+      ],
+      "steps": [
+        {
+          "step_no": 1,
+          "step_code": "STEP-01",
+          "phase_code": "PHASE_02",
+          "part_name": "光学模组",
+          "action_text": "检查光路并记录报警。",
+          "result_text": "等待备件。",
+          "new_alarm_code": null,
+          "is_valid_new_branch": false
+        }
+      ],
+      "submitted_at": null,
+      "reviewed_at": null,
+      "reviewer_login_name": null,
+      "review_comment": null
+    },
+    {
+      "repair_request_no": "DEV-RR-A-002",
+      "owner_organization_code": "ORG-DEV-A",
+      "title": "开发联调：曝光异常维修报告",
+      "customer_factory_name": "开发客户 A 工厂",
+      "equipment_model_code": "DEV-LITHO-B",
+      "maintenance_date": "2026-10-06",
+      "engineer_login_name": "dev-engineer-a",
+      "status": "APPROVED",
+      "handling_result": "FIXED",
+      "reset_result": "NORMAL",
+      "actual_cause": "光源部件老化。",
+      "repair_actions": "更换光源部件并复测功率。",
+      "verification_result": "连续运行正常。",
+      "alarms": [
+        {
+          "alarm_index": 1,
+          "alarm_code": "ALM-201",
+          "alarm_description": "光源功率不足",
+          "phase_code": "PHASE_03",
+          "reset_result": "RESET_OK"
+        }
+      ],
+      "steps": [
+        {
+          "step_no": 1,
+          "step_code": "STEP-01",
+          "phase_code": "PHASE_03",
+          "part_name": "光源",
+          "action_text": "更换光源并复测功率。",
+          "result_text": "功率恢复。",
+          "new_alarm_code": null,
+          "is_valid_new_branch": false
+        }
+      ],
+      "submitted_at": "2026-10-07T01:00:00.000Z",
+      "reviewed_at": "2026-10-08T01:00:00.000Z",
+      "reviewer_login_name": "dev-admin-l2-01",
+      "review_comment": "开发联调样例：内容完整，同意归档。"
+    }
+  ],
+  "reference_documents": [
+    {
+      "seed_key": "dev-reference-maintenance-manual-a",
+      "title": "开发联调：客户 A 保养手册",
+      "document_type": "MAINTENANCE_MANUAL",
+      "owner_organization_code": "ORG-DEV-A",
+      "equipment_model_code": "DEV-LITHO-B",
+      "description": "用于验证归属公司 A 的资料列表、详情展示与原件下载。",
+      "content_text": "保养前请断电并确认安全。本资料仅用于开发联调，不含真实业务信息。",
+      "created_by_login_name": "dev-engineer-a",
+      "file": {
+        "original_filename": "dev-sample-maintenance-manual-a.txt",
+        "mime_type": "text/plain",
+        "byte_size": 148,
+        "sha256": "3852a035f60ed53f7aaf45ff64c6e0f6e9fa2b41c2fcd1bbe13dfeb9ae4551db",
+        "content": "开发联调样例：客户 A 保养手册\n\n1. 保养前请断电并确认安全。\n2. 本资料仅用于开发联调，不含真实业务信息。\n"
+      }
+    },
+    {
+      "seed_key": "dev-reference-fault-code-table-b",
+      "title": "开发联调：客户 B 故障代码表",
+      "document_type": "FAULT_CODE_TABLE",
+      "owner_organization_code": "ORG-DEV-B",
+      "equipment_model_code": "DEV-LITHO-A",
+      "description": "用于验证归属公司 B 的资料列表、详情展示与原件下载。",
+      "content_text": "ALM-101 表示曝光异常。本资料仅用于开发联调，不含真实业务信息。",
+      "created_by_login_name": "dev-engineer-b",
+      "file": {
+        "original_filename": "dev-sample-fault-code-table-b.txt",
+        "mime_type": "text/plain",
+        "byte_size": 138,
+        "sha256": "bfc6580a17f4bd1190bb7294f5d94a1d64d0dea5391def99999a2e5218280c51",
+        "content": "开发联调样例：客户 B 故障代码表\n\nALM-101 表示曝光异常。\n本资料仅用于开发联调，不含真实业务信息。\n"
+      }
+    }
+  ]
+}

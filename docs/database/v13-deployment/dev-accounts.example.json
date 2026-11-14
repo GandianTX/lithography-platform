@@ -2,38 +2,46 @@
   "schema_version": 1,
   "customers": [
     {
-      "login_name": "dev-customer-01",
-      "login_email": "dev-customer-01@example.invalid",
-      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_01",
-      "nickname": "开发客户一",
-      "real_name": "REPLACE_DEV_CUSTOMER_NAME_01",
-      "organization_code": "ORG-CLIENT-A"
+      "login_name": "dev-customer-a1",
+      "login_email": "dev-customer-a1@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_A1",
+      "nickname": "开发客户 A1",
+      "real_name": "REPLACE_DEV_CUSTOMER_NAME_A1",
+      "organization_code": "ORG-DEV-A"
     },
     {
-      "login_name": "dev-customer-02",
-      "login_email": "dev-customer-02@example.invalid",
-      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_02",
-      "nickname": "开发客户二",
-      "real_name": "REPLACE_DEV_CUSTOMER_NAME_02",
-      "organization_code": "ORG-CLIENT-A"
+      "login_name": "dev-customer-a2",
+      "login_email": "dev-customer-a2@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_A2",
+      "nickname": "开发客户 A2（同公司对照）",
+      "real_name": "REPLACE_DEV_CUSTOMER_NAME_A2",
+      "organization_code": "ORG-DEV-A"
+    },
+    {
+      "login_name": "dev-customer-b1",
+      "login_email": "dev-customer-b1@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_B1",
+      "nickname": "开发客户 B1",
+      "real_name": "REPLACE_DEV_CUSTOMER_NAME_B1",
+      "organization_code": "ORG-DEV-B"
     }
   ],
   "engineers": [
     {
-      "login_name": "dev-engineer-01",
-      "login_email": "dev-engineer-01@example.invalid",
-      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_03",
-      "nickname": "开发工程师一",
-      "real_name": "REPLACE_DEV_ENGINEER_NAME_01",
-      "organization_code": "ORG-PEER-A"
+      "login_name": "dev-engineer-a",
+      "login_email": "dev-engineer-a@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_EA",
+      "nickname": "开发工程师 A",
+      "real_name": "REPLACE_DEV_ENGINEER_NAME_A",
+      "organization_code": "ORG-DEV-A"
     },
     {
-      "login_name": "dev-engineer-02",
-      "login_email": "dev-engineer-02@example.invalid",
-      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_04",
-      "nickname": "开发工程师二",
-      "real_name": "REPLACE_DEV_ENGINEER_NAME_02",
-      "organization_code": "ORG-PEER-A"
+      "login_name": "dev-engineer-b",
+      "login_email": "dev-engineer-b@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_PASSWORD_EB",
+      "nickname": "开发工程师 B",
+      "real_name": "REPLACE_DEV_ENGINEER_NAME_B",
+      "organization_code": "ORG-DEV-B"
     }
   ]
 }

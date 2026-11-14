@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "organizations": [
+    {
+      "organization_code": "ORG-DEV-A",
+      "name": "开发联调公司 A",
+      "short_name": "开发 A",
+      "kind": "CLIENT",
+      "is_managed_company": true,
+      "is_service_provider": true,
+      "status": "ACTIVE"
+    },
+    {
+      "organization_code": "ORG-DEV-B",
+      "name": "开发联调公司 B",
+      "short_name": "开发 B",
+      "kind": "CLIENT",
+      "is_managed_company": true,
+      "is_service_provider": true,
+      "status": "ACTIVE"
+    }
+  ]
+}

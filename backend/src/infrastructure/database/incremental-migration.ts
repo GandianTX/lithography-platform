@@ -1816,8 +1816,9 @@ export function attachCleanupErrors(
 ): unknown {
   if (mainError !== null && mainError !== undefined) {
     if (cleanupErrors.length > 0 && mainError instanceof Error) {
+      // 追加而不覆盖：内层（如原件保留现场）已登记的收尾说明必须保留。
       const withCleanup = mainError as Error & { cleanupErrors?: ReadonlyArray<string> };
-      withCleanup.cleanupErrors = cleanupErrors;
+      withCleanup.cleanupErrors = [...getCleanupErrors(mainError), ...cleanupErrors];
     }
     return mainError;
   }

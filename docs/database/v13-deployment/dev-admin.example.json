@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "accounts": [
+    {
+      "login_name": "dev-admin-l1-01",
+      "login_email": "dev-admin-l1-01@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_ADMIN_PASSWORD_L1_01",
+      "admin_level": 1,
+      "organization_code": "ORG-DEV-A",
+      "nickname": "开发一级管理员一",
+      "real_name": "REPLACE_DEV_ADMIN_NAME_L1_01"
+    },
+    {
+      "login_name": "dev-admin-l1-02",
+      "login_email": "dev-admin-l1-02@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_ADMIN_PASSWORD_L1_02",
+      "admin_level": 1,
+      "organization_code": "ORG-DEV-A",
+      "nickname": "开发一级管理员二",
+      "real_name": "REPLACE_DEV_ADMIN_NAME_L1_02"
+    },
+    {
+      "login_name": "dev-admin-l1-03",
+      "login_email": "dev-admin-l1-03@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_ADMIN_PASSWORD_L1_03",
+      "admin_level": 1,
+      "organization_code": "ORG-DEV-B",
+      "nickname": "开发一级管理员三",
+      "real_name": "REPLACE_DEV_ADMIN_NAME_L1_03"
+    },
+    {
+      "login_name": "dev-admin-l2-01",
+      "login_email": "dev-admin-l2-01@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_ADMIN_PASSWORD_L2_01",
+      "admin_level": 2,
+      "organization_code": "ORG-DEV-A",
+      "nickname": "开发二级管理员一",
+      "real_name": "REPLACE_DEV_ADMIN_NAME_L2_01"
+    },
+    {
+      "login_name": "dev-admin-l2-02",
+      "login_email": "dev-admin-l2-02@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_ADMIN_PASSWORD_L2_02",
+      "admin_level": 2,
+      "organization_code": "ORG-DEV-B",
+      "nickname": "开发二级管理员二",
+      "real_name": "REPLACE_DEV_ADMIN_NAME_L2_02"
+    },
+    {
+      "login_name": "dev-admin-l2-03",
+      "login_email": "dev-admin-l2-03@example.invalid",
+      "password": "REPLACE_WITH_STRONG_DEV_ADMIN_PASSWORD_L2_03",
+      "admin_level": 2,
+      "organization_code": "ORG-DEV-B",
+      "nickname": "开发二级管理员三",
+      "real_name": "REPLACE_DEV_ADMIN_NAME_L2_03"
+    }
+  ]
+}

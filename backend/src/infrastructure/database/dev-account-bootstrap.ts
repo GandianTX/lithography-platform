@@ -74,13 +74,23 @@ const ROLE_FACTS: Record<DevAccountRole, IdentityTypeEnum> = {
 };
 
 const DEV_TARGET_DATABASE_MARKERS = ['test', 'dev', 'local', 'drill'] as const;
+const FORBIDDEN_DEV_TARGET_DATABASES = ['lithography_drill', 'lithography_e2e'] as const;
+const FORBIDDEN_DEV_TARGET_SUFFIXES = ['_drill', '_e2e'] as const;
 
 /**
  * 开发样例账号的目标库安全门：库名必须带明确的开发/测试标记。
  * 这样即使误把样例配置指向正式库，也会在连接与任何写入之前失败。
+ * 现有共享验收库（lithography_drill / lithography_e2e 等）明确拒绝，
+ * 不允许借库初始化。
  */
 export function assertDevAccountTargetDatabase(database: string): void {
   const normalized = database.toLowerCase();
+  if (
+    FORBIDDEN_DEV_TARGET_DATABASES.some((name) => normalized === name) ||
+    FORBIDDEN_DEV_TARGET_SUFFIXES.some((suffix) => normalized.endsWith(suffix))
+  ) {
+    throw new Error(`开发账号初始化拒绝写入现有共享库 ${database}；请显式创建独立的开发验收库`);
+  }
   if (!DEV_TARGET_DATABASE_MARKERS.some((marker) => normalized.includes(marker))) {
     throw new Error(
       `开发账号初始化只允许写入库名包含 ${DEV_TARGET_DATABASE_MARKERS.join('/')} 的开发或测试库；` +
