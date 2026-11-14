@@ -429,12 +429,20 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 经目录句柄读取归属标记：打开、身份与内容都绑定同一文件对象。 */
+/**
+ * 经目录句柄读取归属标记：打开、身份与内容都绑定同一文件对象。
+ *
+ * 只读打开带 `O_NONBLOCK`：FIFO 等特殊文件不会阻塞在 open，而是在同一句柄上
+ * 检查文件类型后立即拒绝；`O_NOFOLLOW` 继续拒绝末段符号链接。
+ */
 async function readOwnerMarker(handle: FileHandle): Promise<OwnerMarkerRecord | null> {
   const markerPath = objectPathIn(handle, DEV_SAMPLE_DIRECTORY_MARKER);
   let file: FileHandle;
   try {
-    file = await fsp.open(markerPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    file = await fsp.open(
+      markerPath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
       return null;
@@ -940,25 +948,97 @@ export async function deleteDevSampleFile(
   return 'DELETED';
 }
 
-/** 只读核对既有文件；文件缺失返回 MISSING，内容不一致返回 MISMATCH。 */
+/**
+ * 只读核对已认领目录内的既有文件。
+ *
+ * 核验绑定已认领目录句柄：先复核配置路径仍指向该目录、归属标记未被替换，
+ * 再经目录句柄打开白名单相对名。只读打开带 `O_NONBLOCK`，FIFO 等特殊文件不会
+ * 阻塞在 open；`O_NOFOLLOW` 不跟随符号链接。打开后只接受普通文件，并在同一个
+ * 文件句柄上核对字节数与 SHA-256，所有分支都关闭句柄。
+ * 只有目录绑定与归属标记都成立、且目录项确实不存在时才返回 MISSING；
+ * 路径变化、归属标记异常、符号链接与非普通文件一律拒绝，不能当作缺文件继续。
+ */
 export async function verifyDevSampleFile(
-  directory: string,
+  ownership: DevSampleDirectoryOwnership,
   storageReference: string,
   spec: DevSampleFileSpec,
 ): Promise<DevSampleFileState> {
-  const target = resolveSampleFile(directory, storageReference);
-  let content: Buffer;
+  assertObjectName(storageReference);
+  if (!STORAGE_REFERENCE_PATTERN.test(storageReference)) {
+    throw new Error(`开发样例原件存储引用格式非法：${storageReference}`);
+  }
+  await ownership.assertPathBinding();
+
+  let handle: FileHandle;
   try {
-    content = await fsp.readFile(target);
+    handle = await ownership.openObject(
+      storageReference,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
       return 'MISSING';
     }
+    if (errorCode(error) === 'ELOOP') {
+      throw new Error(`开发样例原件不得为符号链接，拒绝核验：${storageReference}`, {
+        cause: error,
+      });
+    }
     throw error;
   }
-  return content.byteLength === spec.byteSize && sha256Of(content) === spec.sha256
-    ? 'VERIFIED'
-    : 'MISMATCH';
+  try {
+    const stat = await handle.stat({ bigint: true });
+    if (!stat.isFile()) {
+      throw new Error(`开发样例原件必须是普通文件，不得为符号链接：${storageReference}`);
+    }
+    if (stat.size !== BigInt(spec.byteSize)) {
+      return 'MISMATCH';
+    }
+    const content = Buffer.alloc(spec.byteSize);
+    let offset = 0;
+    while (offset < spec.byteSize) {
+      const { bytesRead } = await handle.read(content, offset, spec.byteSize - offset, offset);
+      if (bytesRead === 0) {
+        throw new Error(`开发样例原件回读提前结束：${storageReference}`);
+      }
+      offset += bytesRead;
+    }
+    return sha256Of(content) === spec.sha256 ? 'VERIFIED' : 'MISMATCH';
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * 提交前核对：已认领目录、归属标记与本轮已发布的正式目录项仍指向登记对象。
+ *
+ * 在初始化回调完成后、发出 COMMIT 之前调用。任一不符即抛出含具体路径的错误，
+ * 由调用方走既有回滚与原件保留策略，不发出 COMMIT。
+ */
+export async function assertDevSamplePublicationStable(
+  ownership: DevSampleDirectoryOwnership,
+  claims: ReadonlyArray<DevSampleFileClaim>,
+): Promise<void> {
+  await ownership.assertPathBinding();
+  for (const claim of claims) {
+    if (!claim.published) {
+      continue;
+    }
+    const stat = await ownership.statObject(claim.storageReference);
+    if (stat === null) {
+      throw new Error(`开发样例原件正式目录项已不存在，拒绝提交初始化：${claim.finalPath}`);
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`开发样例原件正式目录项已不是普通文件，拒绝提交初始化：${claim.finalPath}`);
+    }
+    if (!sameIdentity(identityOf(stat), claim.identity)) {
+      throw new Error(
+        `开发样例原件正式目录项已被替换，拒绝提交初始化：${claim.finalPath} ` +
+          `registered=${formatIdentity(claim.identity)} ` +
+          `current=${formatIdentity(identityOf(stat))}`,
+      );
+    }
+  }
 }
 
 function annotateError(error: unknown, notes: ReadonlyArray<string>): Error {

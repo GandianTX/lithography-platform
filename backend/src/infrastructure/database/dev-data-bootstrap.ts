@@ -1892,13 +1892,6 @@ export async function upsertReferenceDocuments(
     const key = seed.seedKey;
 
     if (decision === 'CREATE') {
-      await rejectLegacyReferenceFileSite(
-        manager,
-        seed,
-        ownerOrganization.id,
-        expectedReference,
-        options.sampleFilesDir,
-      );
       if (seed.file === null) {
         throw new Error(
           `参考资料 ${seed.seedKey} 未提供原件；本轮只支持带原件的资料样例，拒绝生成无稳定身份的记录`,
@@ -1907,14 +1900,22 @@ export async function upsertReferenceDocuments(
       if (options.sampleFilesDir === null) {
         throw new Error(`参考资料 ${seed.title} 声明了原件，但未提供目标库专属原件目录`);
       }
-      if (!options.directoryOwnership) {
+      const ownership = options.directoryOwnership ?? null;
+      if (ownership === null) {
         throw new Error(
           `参考资料 ${seed.title} 的原件目录归属未确认（实例 UUID + 精确库名），拒绝写入`,
         );
       }
+      await rejectLegacyReferenceFileSite(
+        manager,
+        seed,
+        ownerOrganization.id,
+        expectedReference,
+        ownership,
+      );
       const written = await writeDevSampleFile(options.sampleFilesDir, seed.file, {
         storageReference: expectedReference,
-        ownership: options.directoryOwnership,
+        ownership,
         onClaim: (claim) => options.createdSampleFiles?.push(claim),
       });
       const file: DevReferenceFileFacts = {
@@ -1966,7 +1967,7 @@ export async function upsertReferenceDocuments(
             originalFilename: row.originalFilename,
             mimeType: row.mimeType,
           },
-          options.sampleFilesDir,
+          options.directoryOwnership ?? null,
         ),
       });
     }
@@ -1985,9 +1986,9 @@ async function rejectLegacyReferenceFileSite(
   seed: DevReferenceDocumentSeed,
   expectedOwnerOrganizationId: number,
   expectedReference: string,
-  sampleFilesDir: string | null,
+  ownership: DevSampleDirectoryOwnership,
 ): Promise<void> {
-  if (seed.file === null || sampleFilesDir === null) {
+  if (seed.file === null) {
     return;
   }
   const rows = rowsOf(
@@ -2008,7 +2009,7 @@ async function rejectLegacyReferenceFileSite(
     if (row.storageReference === null || row.storageReference === expectedReference) {
       continue;
     }
-    const state = await verifyDevSampleFile(sampleFilesDir, row.storageReference, seed.file);
+    const state = await verifyDevSampleFile(ownership, row.storageReference, seed.file);
     if (state === 'VERIFIED') {
       throw new Error(
         `参考资料 seed_key=${seed.seedKey} 命中同主旧现场（id=${row.id}，` +
@@ -2045,7 +2046,7 @@ async function inspectExistingReferenceFile(
     readonly originalFilename: string | null;
     readonly mimeType: string | null;
   },
-  sampleFilesDir: string | null,
+  ownership: DevSampleDirectoryOwnership | null,
 ): Promise<DevReferenceFileFacts | null> {
   if (seed.file === null) {
     return null;
@@ -2058,13 +2059,13 @@ async function inspectExistingReferenceFile(
       state: 'ABSENT',
     };
   }
-  if (sampleFilesDir === null) {
-    throw new Error(`参考资料 ${seed.title} 已有原件，但未提供原件目录用于核对`);
+  if (ownership === null) {
+    throw new Error(`参考资料 ${seed.title} 已有原件，但原件目录归属未确认，拒绝按路径核对`);
   }
   const metadataMatches =
     existing.originalFilename === seed.file.originalFilename &&
     existing.mimeType === seed.file.mimeType;
-  const byteState = await verifyDevSampleFile(sampleFilesDir, existing.storageReference, seed.file);
+  const byteState = await verifyDevSampleFile(ownership, existing.storageReference, seed.file);
   return {
     storageReference: existing.storageReference,
     byteSize: seed.file.byteSize,

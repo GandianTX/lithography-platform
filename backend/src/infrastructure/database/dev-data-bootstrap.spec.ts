@@ -712,6 +712,209 @@ describe('参考资料稳定身份（不连接实库）', () => {
     await ownership.close();
   });
 
+  function replaceConfiguredDirectory(dir: string): string {
+    const claimed = `${dir}.claimed`;
+    fs.renameSync(dir, claimed);
+    fs.mkdirSync(dir);
+    return claimed;
+  }
+
+  it('旧资料识别：配置路径被替换后即使外部文件哈希相同也拒绝核验通过', async () => {
+    const dir = makeSeedDatabase();
+    const ownership = await claimDevSampleFilesDirectory(
+      dir,
+      'lithography_dev_v13_seed',
+      SERVER_UUID,
+    );
+    const seed = config.referenceDocuments[0];
+    if (seed.file === null) {
+      throw new Error('测试配置缺少原件');
+    }
+    const legacyReference = `${'ef'.repeat(16)}.txt`;
+    fs.writeFileSync(path.join(dir, legacyReference), seed.file.content);
+    const db = makeReferenceManager([
+      {
+        id: 61,
+        title: '旧现场已改名的标题',
+        owner_organization_id: 31,
+        source_kind: 'MATERIAL',
+        storage_reference: legacyReference,
+        storage_backend: 'local',
+        original_filename: seed.file.originalFilename,
+        mime_type: seed.file.mimeType,
+      },
+    ]);
+    const replaced = replaceConfiguredDirectory(dir);
+    // 替换后的配置路径放置字节与哈希完全一致的文件，旧实现会按绝对路径读取并判定已核验。
+    fs.writeFileSync(path.join(dir, legacyReference), seed.file.content);
+
+    await expect(
+      upsertReferenceDocuments(db.manager, [seed], modelIds, {
+        sampleFilesDir: dir,
+        directoryOwnership: ownership,
+      }),
+    ).rejects.toThrow(/配置路径已指向其他目录/);
+    expect(db.inserts).toHaveLength(0);
+    expect(fs.readdirSync(dir)).toEqual([legacyReference]);
+    expect(fs.readFileSync(path.join(dir, legacyReference))).toEqual(seed.file.content);
+    expect(fs.readdirSync(replaced)).toContain(legacyReference);
+    await ownership.close();
+  });
+
+  it('旧资料识别：原件为符号链接时拒绝，不按目标文件哈希当作已核验', async () => {
+    const dir = makeSeedDatabase();
+    const ownership = await claimDevSampleFilesDirectory(
+      dir,
+      'lithography_dev_v13_seed',
+      SERVER_UUID,
+    );
+    const seed = config.referenceDocuments[0];
+    if (seed.file === null) {
+      throw new Error('测试配置缺少原件');
+    }
+    const legacyReference = `${'ef'.repeat(16)}.txt`;
+    const outside = path.join(path.dirname(dir), 'outside-sample.txt');
+    fs.writeFileSync(outside, seed.file.content);
+    fs.symlinkSync(outside, path.join(dir, legacyReference));
+    const db = makeReferenceManager([
+      {
+        id: 61,
+        title: '旧现场已改名的标题',
+        owner_organization_id: 31,
+        source_kind: 'MATERIAL',
+        storage_reference: legacyReference,
+        storage_backend: 'local',
+        original_filename: seed.file.originalFilename,
+        mime_type: seed.file.mimeType,
+      },
+    ]);
+
+    await expect(
+      upsertReferenceDocuments(db.manager, [seed], modelIds, {
+        sampleFilesDir: dir,
+        directoryOwnership: ownership,
+      }),
+    ).rejects.toThrow(/符号链接/);
+    expect(db.inserts).toHaveLength(0);
+    expect(fs.lstatSync(path.join(dir, legacyReference)).isSymbolicLink()).toBe(true);
+    await ownership.close();
+  });
+
+  it('健康重跑：配置路径被替换后即使外部文件哈希相同也拒绝核验通过', async () => {
+    const dir = makeSeedDatabase();
+    const ownership = await claimDevSampleFilesDirectory(
+      dir,
+      'lithography_dev_v13_seed',
+      SERVER_UUID,
+    );
+    const seed = config.referenceDocuments[0];
+    if (seed.file === null) {
+      throw new Error('测试配置缺少原件');
+    }
+    const reference = deriveDevSampleStorageReference(seed.seedKey);
+    fs.writeFileSync(path.join(dir, reference), seed.file.content);
+    const db = makeReferenceManager([
+      {
+        id: 61,
+        title: seed.title,
+        owner_organization_id: 31,
+        source_kind: 'MATERIAL',
+        storage_reference: reference,
+        storage_backend: 'local',
+        original_filename: seed.file.originalFilename,
+        mime_type: seed.file.mimeType,
+      },
+    ]);
+    const replaced = replaceConfiguredDirectory(dir);
+    fs.writeFileSync(path.join(dir, reference), seed.file.content);
+
+    await expect(
+      upsertReferenceDocuments(db.manager, [seed], modelIds, {
+        sampleFilesDir: dir,
+        directoryOwnership: ownership,
+      }),
+    ).rejects.toThrow(/配置路径已指向其他目录/);
+    expect(db.inserts).toHaveLength(0);
+    expect(fs.readdirSync(dir)).toEqual([reference]);
+    expect(fs.readdirSync(replaced)).toContain(reference);
+    await ownership.close();
+  });
+
+  it('健康重跑：既有原件为符号链接时拒绝，不按目标文件哈希判定 VERIFIED', async () => {
+    const dir = makeSeedDatabase();
+    const ownership = await claimDevSampleFilesDirectory(
+      dir,
+      'lithography_dev_v13_seed',
+      SERVER_UUID,
+    );
+    const seed = config.referenceDocuments[0];
+    if (seed.file === null) {
+      throw new Error('测试配置缺少原件');
+    }
+    const reference = deriveDevSampleStorageReference(seed.seedKey);
+    const outside = path.join(path.dirname(dir), 'outside-sample.txt');
+    fs.writeFileSync(outside, seed.file.content);
+    fs.symlinkSync(outside, path.join(dir, reference));
+    const db = makeReferenceManager([
+      {
+        id: 61,
+        title: seed.title,
+        owner_organization_id: 31,
+        source_kind: 'MATERIAL',
+        storage_reference: reference,
+        storage_backend: 'local',
+        original_filename: seed.file.originalFilename,
+        mime_type: seed.file.mimeType,
+      },
+    ]);
+
+    await expect(
+      upsertReferenceDocuments(db.manager, [seed], modelIds, {
+        sampleFilesDir: dir,
+        directoryOwnership: ownership,
+      }),
+    ).rejects.toThrow(/符号链接/);
+    expect(fs.lstatSync(path.join(dir, reference)).isSymbolicLink()).toBe(true);
+    await ownership.close();
+  });
+
+  it('正常健康重跑：既有引用与文件一致时报告 VERIFIED，不改库也不改文件', async () => {
+    const dir = makeSeedDatabase();
+    const ownership = await claimDevSampleFilesDirectory(
+      dir,
+      'lithography_dev_v13_seed',
+      SERVER_UUID,
+    );
+    const seed = config.referenceDocuments[0];
+    if (seed.file === null) {
+      throw new Error('测试配置缺少原件');
+    }
+    const db = makeReferenceManager([]);
+    await upsertReferenceDocuments(db.manager, [seed], modelIds, {
+      sampleFilesDir: dir,
+      directoryOwnership: ownership,
+    });
+    const persisted = db.rows[0];
+    const reference = persisted.storage_reference;
+    if (reference === null) {
+      throw new Error('测试插入缺少存储引用');
+    }
+    const beforeFiles = fs.readdirSync(dir).sort();
+    const beforeHash = sha256Of(fs.readFileSync(path.join(dir, reference)));
+
+    const rerun = await upsertReferenceDocuments(db.manager, [seed], modelIds, {
+      sampleFilesDir: dir,
+      directoryOwnership: ownership,
+    });
+
+    expect(rerun[0]).toMatchObject({ outcome: 'UNCHANGED', id: persisted.id });
+    expect(rerun[0].file).toMatchObject({ state: 'VERIFIED', storageReference: reference });
+    expect(db.inserts).toHaveLength(1);
+    expect(fs.readdirSync(dir).sort()).toEqual(beforeFiles);
+    expect(sha256Of(fs.readFileSync(path.join(dir, reference)))).toBe(beforeHash);
+    await ownership.close();
+  });
+
   it('旧现场已改名但同主同原件哈希一致时仍拒绝另造', async () => {
     const dir = makeSeedDatabase();
     const ownership = await claimDevSampleFilesDirectory(

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -12,6 +13,7 @@ jest.mock('node:fs/promises', () => {
 
 import {
   assertDevSampleFilesDirectory,
+  assertDevSamplePublicationStable,
   claimDevSampleFilesDirectory,
   deleteDevSampleFile,
   deriveDevSampleStorageReference,
@@ -49,6 +51,31 @@ function makeSpec(): DevSampleFileSpec {
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sample-files-'));
+}
+
+/** 用系统 mkfifo 创建离线 FIFO；创建失败直接失败，不静默跳过。 */
+function makeFifo(target: string): void {
+  const result = spawnSync('mkfifo', [target]);
+  if (result.status !== 0) {
+    throw new Error(
+      `无法创建测试 FIFO：${result.error?.message ?? result.stderr.toString('utf8')}`,
+    );
+  }
+}
+
+/** 给拒绝断言加上明确上界；超界表现为“未在有界时间内返回”，而不是测试超时。 */
+async function withBoundedWait<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const bound = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} 未在有界时间内返回`)), 1000);
+  });
+  try {
+    return await Promise.race([promise, bound]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function makeTargetDir(): { root: string; dir: string } {
@@ -198,15 +225,15 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     expect(storageReference).toBe(reference);
     expect(claim).not.toBeNull();
     expect(runtimeClaim(claim).published).toBe(true);
-    expect(await verifyDevSampleFile(dir, reference, spec)).toBe('VERIFIED');
+    expect(await verifyDevSampleFile(owner, reference, spec)).toBe('VERIFIED');
     const stagingPath = runtimeClaim(claim).stagingPath;
     await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
-    expect(await verifyDevSampleFile(dir, reference, spec)).toBe('VERIFIED');
+    expect(await verifyDevSampleFile(owner, reference, spec)).toBe('VERIFIED');
     expect(fs.readFileSync(stagingPath)).toEqual(CONTENT);
     await runtimeClaim(claim).close();
     // 句柄关闭也不改变“共享目录不自动删除”的结论。
     await expect(deleteDevSampleFile(claim as DevSampleFileClaim)).resolves.toBe('RETAINED');
-    expect(await verifyDevSampleFile(dir, reference, spec)).toBe('VERIFIED');
+    expect(await verifyDevSampleFile(owner, reference, spec)).toBe('VERIFIED');
   });
 
   it('排他创建遇到 EEXIST 时保留既有文件且字节不变', async () => {
@@ -396,7 +423,7 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
       writeDevSampleFile(dir, makeSpec(), { storageReference: reference, ownership: owner }),
     ).rejects.toThrow(/EEXIST/);
     expect(fs.readdirSync(dir).sort()).toEqual(before);
-    expect(await verifyDevSampleFile(dir, reference, makeSpec())).toBe('VERIFIED');
+    expect(await verifyDevSampleFile(owner, reference, makeSpec())).toBe('VERIFIED');
   });
 
   it('暂存路径在核对后、发布前被替换时只发布已校验的原对象', async () => {
@@ -604,11 +631,131 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     });
     await runtimeClaim(claim).close();
     fs.writeFileSync(path.join(dir, reference), 'tampered', 'utf8');
-    expect(await verifyDevSampleFile(dir, reference, makeSpec())).toBe('MISMATCH');
+    expect(await verifyDevSampleFile(owner, reference, makeSpec())).toBe('MISMATCH');
+  });
+
+  it('核验绑定已认领目录句柄：目录被替换后即使哈希相同也拒绝', async () => {
+    const { root, dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    fs.writeFileSync(path.join(dir, reference), CONTENT);
+    const detour = path.join(root, 'detour');
+    fs.mkdirSync(detour);
+    fs.writeFileSync(path.join(detour, reference), CONTENT);
+    fs.renameSync(dir, `${dir}.claimed`);
+    fs.renameSync(detour, dir);
+
+    await expect(verifyDevSampleFile(owner, reference, makeSpec())).rejects.toThrow(
+      /配置路径已指向其他目录/,
+    );
+    expect(fs.readFileSync(path.join(dir, reference))).toEqual(CONTENT);
+    await owner.close();
+  });
+
+  it('核验拒绝符号链接，即使目标字节与哈希一致', async () => {
+    const { root, dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const outside = path.join(root, 'outside-sample.txt');
+    fs.writeFileSync(outside, CONTENT);
+    fs.symlinkSync(outside, path.join(dir, reference));
+
+    await expect(verifyDevSampleFile(owner, reference, makeSpec())).rejects.toThrow(/符号链接/);
+    expect(fs.lstatSync(path.join(dir, reference)).isSymbolicLink()).toBe(true);
+    await owner.close();
+  });
+
+  it('归属标记被替换后核验拒绝，不当作缺文件继续', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    fs.writeFileSync(path.join(dir, reference), CONTENT);
+    const marker = path.join(dir, '.lithography-dev-sample-owner.json');
+    const markerBody = fs.readFileSync(marker);
+    fs.renameSync(marker, `${marker}.orig`);
+    fs.writeFileSync(marker, markerBody);
+
+    await expect(verifyDevSampleFile(owner, reference, makeSpec())).rejects.toThrow(
+      /归属标记已被替换/,
+    );
+    await owner.close();
+  });
+
+  it('原件为 FIFO 时在有界时间内明确拒绝，不阻塞读取', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    makeFifo(path.join(dir, reference));
+
+    await expect(
+      withBoundedWait(verifyDevSampleFile(owner, reference, makeSpec()), '原件 FIFO 核验'),
+    ).rejects.toThrow(/必须是普通文件/);
+    expect(fs.lstatSync(path.join(dir, reference)).isFIFO()).toBe(true);
+    await owner.close();
+  });
+
+  it('归属标记为 FIFO 时在有界时间内明确拒绝，不阻塞认领', async () => {
+    const { dir } = makeTargetDir();
+    makeFifo(path.join(dir, '.lithography-dev-sample-owner.json'));
+
+    await expect(
+      withBoundedWait(
+        claimDevSampleFilesDirectory(dir, DATABASE, SERVER_UUID),
+        '归属标记 FIFO 认领',
+      ),
+    ).rejects.toThrow(/必须是普通文件/);
+    expect(fs.lstatSync(path.join(dir, '.lithography-dev-sample-owner.json')).isFIFO()).toBe(true);
+  });
+
+  it('已认领目录内确实不存在时返回 MISSING', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    await expect(verifyDevSampleFile(owner, reference, makeSpec())).resolves.toBe('MISSING');
+    await owner.close();
+  });
+
+  it('提交前核对发现正式目录项被替换时拒绝并保留替换物', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    const target = path.join(dir, reference);
+    const replacement = Buffer.from('提交前替换物\n', 'utf8');
+    fs.unlinkSync(target);
+    fs.writeFileSync(target, replacement);
+
+    await expect(
+      assertDevSamplePublicationStable(owner, [claim as DevSampleFileClaim]),
+    ).rejects.toThrow(/正式目录项已被替换/);
+    expect(fs.readFileSync(target)).toEqual(replacement);
+    expect(sha256Of(fs.readFileSync(target))).toBe(sha256Of(replacement));
+    await runtimeClaim(claim).close();
+    await owner.close();
+  });
+
+  it('提交前核对通过时不改动已发布文件', async () => {
+    const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
+    const reference = deriveDevSampleStorageReference(SEED_KEY);
+    const { claim } = await writeDevSampleFile(dir, makeSpec(), {
+      storageReference: reference,
+      ownership: owner,
+    });
+    await expect(
+      assertDevSamplePublicationStable(owner, [claim as DevSampleFileClaim]),
+    ).resolves.toBeUndefined();
+    expect(fs.readFileSync(path.join(dir, reference))).toEqual(CONTENT);
+    await runtimeClaim(claim).close();
+    await owner.close();
   });
 
   it('拒绝越界或格式非法的存储引用', async () => {
     const { dir } = makeTargetDir();
+    const owner = await ownership(dir);
     const spec = makeSpec();
     for (const reference of [
       '../escape.txt',
@@ -616,8 +763,9 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
       'A'.repeat(32) + '.txt',
       'a'.repeat(31) + '.txt',
     ]) {
-      await expect(verifyDevSampleFile(dir, reference, spec)).rejects.toThrow();
+      await expect(verifyDevSampleFile(owner, reference, spec)).rejects.toThrow();
     }
+    await owner.close();
   });
 
   it('哈希工具输出稳定小写十六进制', () => {

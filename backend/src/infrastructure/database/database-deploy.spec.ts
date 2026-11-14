@@ -2,13 +2,15 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { parseAdminBootstrapConfig } from './admin-bootstrap';
 import {
@@ -24,6 +26,7 @@ import {
 import { parseDevDataConfig } from './dev-data-bootstrap';
 import {
   claimDevSampleFilesDirectory,
+  assertDevSamplePublicationStable,
   deleteDevSampleFile,
   sha256Of,
   writeDevSampleFile,
@@ -703,6 +706,183 @@ describe('初始化事务终局与原件补偿（替身，不连接实库）', (
       expect(error.cleanupErrors?.join(' | ')).toContain(target);
       expect(error.cleanupErrors?.join(' | ')).toContain('state=UNKNOWN');
       expect(error.cleanupErrors?.join(' | ')).toContain('phase=COMMIT');
+      await ownership.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('提交前配置路径被替换时不发 COMMIT，走回滚且未认领目录零新增', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-precommit-dir-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const storageReference = `${'e'.repeat(32)}.txt`;
+      const existing = join(directory, `${'f'.repeat(32)}.txt`);
+      writeFileSync(existing, '预存文件');
+      const content = Buffer.from('pre-commit sample');
+      const pending: DevSampleFileClaim[] = [];
+      const { runner, commit, rollback, release, destroy } = makeRunner();
+      const claimedDir = `${directory}.claimed`;
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: pending,
+          removeSampleFile: deleteDevSampleFile,
+          probeReference: async () => false,
+          assertPreCommit: () => assertDevSamplePublicationStable(ownership, pending),
+          run: async () => {
+            await writeDevSampleFile(
+              directory,
+              {
+                originalFilename: 'sample.txt',
+                mimeType: 'text/plain',
+                byteSize: content.length,
+                sha256: sha256Of(content),
+                content,
+              },
+              { storageReference, ownership, onClaim: (claim) => pending.push(claim) },
+            );
+            // 最后一条资料写入后、提交前替换目录：已认领目录改名，配置路径换成未认领目录。
+            renameSync(directory, claimedDir);
+            mkdirSync(directory);
+            writeFileSync(join(directory, 'unclaimed.txt'), '未认领目录预存文件');
+          },
+        }),
+      );
+
+      expect(commit).not.toHaveBeenCalled();
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(error.message).toMatch(/配置路径已指向其他目录/);
+      expect(error.message).toContain(directory);
+      expect(readdirSync(directory)).toEqual(['unclaimed.txt']);
+      expect(readFileSync(join(directory, 'unclaimed.txt'), 'utf8')).toBe('未认领目录预存文件');
+      expect(existsSync(join(directory, storageReference))).toBe(false);
+      expect(pending).toHaveLength(1);
+      expect(readFileSync(join(claimedDir, storageReference))).toEqual(content);
+      expect(readFileSync(join(claimedDir, basename(existing)), 'utf8')).toBe('预存文件');
+      const notes = error.cleanupErrors?.join(' | ') ?? '';
+      expect(notes).toContain('state=ROLLBACK_CONFIRMED');
+      const claimView = pending[0] as unknown as { finalPath: string };
+      expect(notes).toContain(claimView.finalPath);
+      await ownership.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('提交前正式文件被替换时不发 COMMIT，走回滚且替换物与预存文件不变', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-precommit-file-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const storageReference = `${'1'.repeat(32)}.txt`;
+      const target = join(directory, storageReference);
+      const existing = join(directory, `${'2'.repeat(32)}.txt`);
+      writeFileSync(existing, '预存文件');
+      const content = Buffer.from('pre-commit replaced sample');
+      const replacement = Buffer.from('提交前替换的正式文件内容\n', 'utf8');
+      const pending: DevSampleFileClaim[] = [];
+      const { runner, commit, rollback, release, destroy } = makeRunner();
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: pending,
+          removeSampleFile: deleteDevSampleFile,
+          probeReference: async () => false,
+          assertPreCommit: () => assertDevSamplePublicationStable(ownership, pending),
+          run: async () => {
+            await writeDevSampleFile(
+              directory,
+              {
+                originalFilename: 'sample.txt',
+                mimeType: 'text/plain',
+                byteSize: content.length,
+                sha256: sha256Of(content),
+                content,
+              },
+              { storageReference, ownership, onClaim: (claim) => pending.push(claim) },
+            );
+            // 最后一条资料写入后、提交前替换正式目录项。
+            unlinkSync(target);
+            writeFileSync(target, replacement);
+          },
+        }),
+      );
+
+      expect(commit).not.toHaveBeenCalled();
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(error.message).toMatch(/正式目录项已被替换/);
+      expect(error.message).toContain(target);
+      expect(readFileSync(target)).toEqual(replacement);
+      expect(sha256Of(readFileSync(target))).toBe(sha256Of(replacement));
+      expect(readFileSync(existing, 'utf8')).toBe('预存文件');
+      expect(pending).toHaveLength(1);
+      const claimView = pending[0] as unknown as { stagingPath: string };
+      expect(readFileSync(claimView.stagingPath)).toEqual(content);
+      await ownership.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('提交前归属标记被替换时不发 COMMIT，走回滚并保留现场', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-deploy-precommit-marker-'));
+    try {
+      const database = 'lithography_dev_v13_accept';
+      const directory = join(root, database);
+      mkdirSync(directory);
+      const ownership = await claimDevSampleFilesDirectory(
+        directory,
+        database,
+        '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+      );
+      const marker = join(directory, '.lithography-dev-sample-owner.json');
+      const markerBody = readFileSync(marker);
+      const { runner, commit, rollback, release, destroy } = makeRunner();
+
+      const error = await captureError(
+        runInitializationDataTransaction({
+          ...options(runner, { run: async () => undefined }),
+          sampleFilesDir: directory,
+          claims: [],
+          removeSampleFile: deleteDevSampleFile,
+          probeReference: async () => false,
+          assertPreCommit: () => assertDevSamplePublicationStable(ownership, []),
+          run: async () => {
+            renameSync(marker, `${marker}.orig`);
+            writeFileSync(marker, markerBody);
+          },
+        }),
+      );
+
+      expect(commit).not.toHaveBeenCalled();
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(error.message).toMatch(/归属标记已被替换/);
+      expect(readFileSync(marker)).toEqual(markerBody);
+      expect(readFileSync(`${marker}.orig`)).toEqual(markerBody);
       await ownership.close();
     } finally {
       rmSync(root, { recursive: true, force: true });

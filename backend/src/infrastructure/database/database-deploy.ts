@@ -27,6 +27,7 @@ import {
   type DevSampleDirectoryOwnership,
   type DevSampleFileClaim,
   assertDevSampleFilesDirectory,
+  assertDevSamplePublicationStable,
   claimDevSampleFilesDirectory,
   deleteDevSampleFile,
 } from './dev-sample-files';
@@ -495,6 +496,8 @@ export interface InitializationTransactionOptions<T> {
   /** 本轮成功取得句柄并登记对象身份的原件；只按事务终局报告，不自动删除。 */
   readonly claims: ReadonlyArray<DevSampleFileClaim>;
   readonly run: (manager: EntityManager) => Promise<T>;
+  /** 回调完成后、发出 COMMIT 之前的核对；失败时不发 COMMIT，走既有回滚与保留策略。 */
+  readonly assertPreCommit?: () => Promise<void> | void;
   readonly probeReference?: (
     storageReference: string,
     queryRunner: InitializationQueryRunner,
@@ -555,6 +558,9 @@ export async function runInitializationDataTransaction<T>(
     transactionStarted = true;
     phase = 'CALLBACK';
     result = await options.run(queryRunner.manager);
+    // 回调完成后、标记 COMMIT 已尝试之前核对文件系统前提：
+    // 目录绑定、归属标记与已发布正式目录项任一变化即失败，不发出 COMMIT。
+    await options.assertPreCommit?.();
     phase = 'COMMIT';
     commitAttempted = true;
     await queryRunner.commitTransaction();
@@ -809,6 +815,7 @@ async function applyInitializationData(
   }
 
   const createdSampleFiles: DevSampleFileClaim[] = [];
+  const claimedOwnership = directoryOwnership;
   let mainError: unknown = null;
   let result: InitializationDataResult | null = null;
   try {
@@ -818,6 +825,10 @@ async function applyInitializationData(
       logger,
       sampleFilesDir: initialization.devSampleFilesDir,
       claims: createdSampleFiles,
+      assertPreCommit:
+        claimedOwnership === null
+          ? undefined
+          : () => assertDevSamplePublicationStable(claimedOwnership, createdSampleFiles),
       run: async (manager) => {
         const organizations = initialization.organizationBootstrap
           ? await applyOrganizationBootstrap(manager, initialization.organizationBootstrap)
