@@ -168,8 +168,9 @@ test('customer registration surfaces a duplicate account error, clears the passw
   await installRegistrationMocks(page, {
     registerErrors: [
       {
+        // 生产形态：只暴露稳定大类码，不返回 errorCode / errorMessage
         message: 'internal database detail',
-        extensions: { code: 'CONFLICT', errorCode: 'ACCOUNT_ALREADY_EXISTS' },
+        extensions: { code: 'CONFLICT' },
       },
     ],
   });

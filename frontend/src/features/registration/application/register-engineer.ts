@@ -5,7 +5,7 @@
  *
  * - 只接受名单内公司：始终只传 `organizationId`，不提供手填公司分支；
  * - 姓名与联系电话必填，由服务端二次归一与校验；
- * - 失败文案复用客户注册的共用映射，仅覆盖「公司不可用」与公司输入兜底口径。
+ * - 失败文案复用客户注册的共用映射，仅覆盖「公司不可用」口径。
  */
 
 import {
@@ -18,7 +18,6 @@ import { assertRegistrationSucceeded, normalizeOptionalText } from './registrati
 
 const ENGINEER_ERROR_MESSAGES = {
   organizationUnavailable: '所选公司当前不可用，请重新选择后重试。',
-  invalidCompanyInput: '提交信息有误，请检查后重新提交。',
 };
 
 export type RegisterEngineerInput = {

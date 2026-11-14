@@ -78,7 +78,7 @@ export class AuthResolver {
       role: user.role ?? null,
       adminLevel: user.adminLevel ?? null,
       customerOrganizationId: user.customerOrganizationId ?? null,
-      restriction: user.restriction ?? SessionRestriction.NONE,
+      restriction: user.restriction,
     };
   }
 

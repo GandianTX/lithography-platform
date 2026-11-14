@@ -58,7 +58,7 @@ function duplicateAccountError(): GraphQLIngressError {
       {
         message: 'duplicate account',
         extensions: {
-          code: 'BAD_USER_INPUT',
+          code: 'CONFLICT',
           errorCode: 'ACCOUNT_ALREADY_EXISTS',
           errorMessage: '登录邮箱已存在',
         },
@@ -232,9 +232,7 @@ describe('RegisterCustomerForm', () => {
     await waitFor(() => {
       expect(screen.getByText('昵称至少 2 个字符')).toBeInTheDocument();
     });
-    expect(
-      screen.queryByText('公司信息不完整或不合法，请重新选择或填写后重试。'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('提交信息有误，请检查后重新提交。')).not.toBeInTheDocument();
   });
 
   it('请求在途时重复提交只放行一次', async () => {

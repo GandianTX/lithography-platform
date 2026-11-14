@@ -20,7 +20,6 @@ import { assertRegistrationSucceeded, normalizeOptionalText } from './registrati
 /** 客户注册可改为手填自家公司，因此公司失效文案比工程师注册多一条出路 */
 const CUSTOMER_ERROR_MESSAGES = {
   organizationUnavailable: '所选公司当前不可用，请重新选择或改为填写自家公司名称。',
-  invalidCompanyInput: '公司信息不完整或不合法，请重新选择或填写后重试。',
 };
 
 export type RegisterCustomerInput = {

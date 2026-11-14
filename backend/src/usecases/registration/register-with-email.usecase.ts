@@ -14,6 +14,7 @@ import { PasswordPolicyService } from '@core/common/password/password-policy.ser
 import { Inject, Injectable } from '@nestjs/common';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { isDuplicateKeyError } from '@src/modules/common/utils/database-error.util';
 import { EngineerRegistrationService } from '@src/modules/lithography/engineer-registration.service';
 import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
 import { OrganizationService } from '@src/modules/lithography/organization.service';
@@ -422,31 +423,26 @@ export class RegisterWithEmailUsecase {
 /**
  * 并发注册的唯一索引冲突识别：`login_email` / `login_name` 重复时映射为
  * `ACCOUNT_ALREADY_EXISTS`；其他唯一键冲突维持通用注册失败。
+ *
+ * 驱动错误解包复用 `isDuplicateKeyError`（`ER_DUP_ENTRY` / 1062 沿 `driverError`、
+ * `cause` 递归识别），本函数只追加「账号唯一索引」这一领域收窄。
  */
 function isDuplicateAccountEntryError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
+  if (!isDuplicateKeyError(error)) {
     return false;
   }
 
   const candidate = error as {
-    code?: unknown;
-    errno?: unknown;
     message?: unknown;
-    driverError?: { code?: unknown; errno?: unknown; message?: unknown };
+    driverError?: { message?: unknown };
   };
   const driver = candidate.driverError;
-  const code = typeof driver?.code === 'string' ? driver.code : candidate.code;
-  const errno = typeof driver?.errno === 'number' ? driver.errno : candidate.errno;
   const message =
     typeof driver?.message === 'string'
       ? driver.message
       : typeof candidate.message === 'string'
         ? candidate.message
         : '';
-
-  if (code !== 'ER_DUP_ENTRY' && errno !== 1062) {
-    return false;
-  }
 
   return message.includes('uk_login_email') || message.includes('uk_login_name');
 }

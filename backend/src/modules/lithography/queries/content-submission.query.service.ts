@@ -2,6 +2,7 @@
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { CONTENT_SUBMISSION_ERROR, DomainError } from '@core/common/errors/domain-error';
+import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
@@ -54,11 +55,6 @@ export const REVIEW_LIST_ORDER: FindOptionsOrder<ContentSubmissionEntity> = {
   lastSubmittedAt: 'DESC',
   id: 'DESC',
 };
-
-/** 标题模糊搜索：转义 LIKE 通配符，避免用户输入 % / _ 意外扩大匹配范围 */
-function escapeLikePattern(input: string): string {
-  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
 
 /**
  * 内容投稿本人读侧查询服务（A-PR0 §4.1 `myContentSubmissions` / `myContentSubmission`）

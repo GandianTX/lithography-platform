@@ -1,6 +1,7 @@
 // src/modules/lithography/queries/admin-ai-report.query.service.ts
 
 import { DomainError, ADMIN_DOCUMENT_DATABASE_ERROR } from '@core/common/errors/domain-error';
+import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, Repository, SelectQueryBuilder } from 'typeorm';
@@ -14,11 +15,6 @@ import type {
   AdminAiReportQueryFilter,
   AdminListPagination,
 } from '../admin-document-database.types';
-
-/** LIKE 通配符转义，避免用户输入 % / _ 意外扩大匹配范围 */
-function escapeLikePattern(input: string): string {
-  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
 
 /**
  * 管理员 AI 报告读侧查询服务（PR3 只读聚合）

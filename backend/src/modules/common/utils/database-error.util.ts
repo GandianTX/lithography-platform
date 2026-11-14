@@ -1,4 +1,4 @@
-// src/modules/lithography/database-error.helpers.ts
+// 文件位置：src/modules/common/utils/database-error.util.ts
 // MySQL 驱动错误识别：供业务写服务把冲突映射为领域错误，不泄露数据库细节。
 
 /**

@@ -12,7 +12,6 @@ const INVALID_INPUT_MESSAGE = '提交信息有误，请检查后重新提交。'
 
 const CALLER_MESSAGES = {
   organizationUnavailable: '客户口径：所选公司不可用。',
-  invalidCompanyInput: '客户口径：公司输入兜底。',
 };
 
 function ingressError(
@@ -66,7 +65,16 @@ describe('resolveRegistrationErrorMessage（注册失败文案映射）', () => 
     ).toBe(DEFAULT_MESSAGE);
   });
 
-  it('账号已存在使用去重文案，不依赖服务端自由文本', () => {
+  it('账号已存在按稳定大类码 CONFLICT 使用去重文案（生产不暴露 errorCode）', () => {
+    expect(
+      resolveRegistrationErrorMessage(
+        ingressError('graphql', { code: 'CONFLICT' }),
+        CALLER_MESSAGES,
+      ),
+    ).toBe(DUPLICATE_MESSAGE);
+  });
+
+  it('账号已存在时附带 errorCode 与自由文本，也不把服务端原文当业务文案', () => {
     expect(
       resolveRegistrationErrorMessage(
         ingressError('graphql', {
@@ -104,19 +112,7 @@ describe('resolveRegistrationErrorMessage（注册失败文案映射）', () => 
     ).toBe('昵称不符合规则');
   });
 
-  it('输入归一错误缺少字段文案时使用调用方的公司输入兜底', () => {
-    expect(
-      resolveRegistrationErrorMessage(
-        ingressError('graphql', {
-          code: 'BAD_USER_INPUT',
-          errorCode: 'INPUT_NORMALIZE_REQUIRED_TEXT_EMPTY',
-        }),
-        CALLER_MESSAGES,
-      ),
-    ).toBe(CALLER_MESSAGES.invalidCompanyInput);
-  });
-
-  it('一般 BAD_USER_INPUT 优先展示字段文案，缺失时使用统一输入错误文案', () => {
+  it('BAD_USER_INPUT 优先展示服务端字段文案', () => {
     expect(
       resolveRegistrationErrorMessage(
         ingressError('graphql', {
@@ -126,6 +122,10 @@ describe('resolveRegistrationErrorMessage（注册失败文案映射）', () => 
         CALLER_MESSAGES,
       ),
     ).toBe('登录邮箱已被占用');
+  });
+
+  it('BAD_USER_INPUT 在生产环境无细分信息时使用通用输入文案，不误报成公司问题', () => {
+    // 服务端字段校验（如密码强度）在生产只保留大类码与通用 message
     expect(
       resolveRegistrationErrorMessage(
         ingressError('graphql', { code: 'BAD_USER_INPUT' }),

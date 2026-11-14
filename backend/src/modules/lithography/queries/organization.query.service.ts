@@ -1,6 +1,7 @@
 // src/modules/lithography/queries/organization.query.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
@@ -123,9 +124,4 @@ export class OrganizationQueryService {
     const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
     return manager ? manager.getRepository(OrganizationEntity) : this.repository;
   }
-}
-
-/** LIKE 模式转义：`\`、`%`、`_` 按普通字符匹配（MySQL 默认转义符为 `\`） */
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
 }

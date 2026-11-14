@@ -20,7 +20,7 @@ Global error contract: Every GraphQL interface must also follow docs/api/graphql
 
 公开注册按角色分流：`CUSTOMER` 选择有效组织后直接开通并绑定该组织 `CUSTOMER` 成员；`ENGINEER` 先提交待审申请，账号与资料保持 `PENDING / PENDING`，由所选组织管理员审核通过后才开通。`SUPER_ADMIN` 不开放自助注册，仍由受控管理流程或 Seed 创建。
 
-登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上要求账号 `ACTIVE` 且 `userInfo.userState = ACTIVE`。因此工程师在审核通过前无法登录、也没有可用令牌，第三方入口不提供绕过审核的路径。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
+登录与令牌复核对待审账号的口径：`login`（`LoginWithPasswordUsecase`）默认只放行 `account.status = ACTIVE`，其余状态返回 `ACCOUNT_INACTIVE`；当调用方显式传 `allowRestrictedSession = true` 时，`PENDING` 账号只有在存在明确会话限制（`MUST_CHANGE_PASSWORD` / `ENGINEER_PENDING` / `ENGINEER_REJECTED`）时才签发受限令牌，停用、封禁、删除、暂停等状态仍一律拒绝。`ExecuteLoginFlowUsecase` 二次复核账号状态；`ValidateAccessTokenSessionUsecase` 在每个受保护请求上复用同一套 `resolveSessionRestriction` 纯策略与账号/用户状态门禁，并固定允许受限会话。受限会话只能进入受限入口（改密页 / 待审结果页），业务接口由 `SessionRestrictionGuard` 拦截。第三方登录入口不传 `allowRestrictedSession`，因此仍不提供绕过审核的路径。管理员启停矩阵继续拒绝 `PENDING` 账号，不能用「启用账号」替代审批。
 
 例外（2026-08-29 负责人裁定）：「客户创建维修申请」页拒绝 `SUPER_ADMIN` 继承进入，前端路由与 `ENGINEER` 一致重定向回各自主页；后端 `equipmentModels` 与 `createRepairRequest` 仅接受精确 `CUSTOMER`。
 
@@ -41,6 +41,7 @@ Global error contract: Every GraphQL interface must also follow docs/api/graphql
 - `type`：`LoginTypeEnum`，当前密码登录主链路要求传入。
 - `ip`：可选客户端 IP。
 - `audience`：`AudienceTypeEnum`，用于 token audience 与登录记录。
+- `allowRestrictedSession`：可选，默认 `false`；仅允许受限会话登录的入口显式传 `true`。
 
 Adapter 只做协议输入映射，不在 resolver 内实现登录业务规则。
 
@@ -53,6 +54,9 @@ Adapter 只做协议输入映射，不在 resolver 内实现登录业务规则�
 - `accountId`
 - `role`
 - `userInfo`
+- `restriction`：`SessionRestriction`，缺省视为 `NONE`
+- `adminLevel`：管理员等级（`1` / `2` / `null`）
+- `customerOrganizationId`：客户公司归属主键，无归属为 `null`
 
 `userInfo` 由登录后读取链路装配，并移除敏感字段，例如 `metaDigest`。
 
@@ -90,6 +94,32 @@ Resolver、Guard、Usecase 不应各自手写不同的 session shape。
 - HTTP `401` 只作为 transport 层兜底，GraphQL 可以 HTTP `200` 携带 `errors`。
 - GraphQL adapter 层的 `JwtStrategy` 只负责协议认证接入；账号存在性等 session 读校验通过
   `ValidateAccessTokenSessionUsecase` 上提到 usecase 层。
+
+## Session Identity 查询
+
+- `mySessionIdentity: SessionIdentityDTO`
+  - Resolver：`src/adapters/api/graphql/auth/auth.resolver.ts`
+  - 会话事实由 `JwtStrategy` → `ValidateAccessTokenSessionUsecase` 每请求计算并挂在
+    `request.user` 上，adapter 只做薄映射，不再查库。
+  - 输出 `accountId` / `role` / `adminLevel` / `customerOrganizationId` / `restriction`，
+    前端据此判断是否需要进入受限入口。
+  - 未识别到的 `restriction` 按 `null` 处理，由前端保持现状而不是回落 `NONE`。
+
+## 公开注册
+
+- `registrationOrganizations(keyword, pagination)`：公开关键字分页检索可自助注册的组织，
+  只返回 `id` / `name`；仅返回 `status = ACTIVE AND is_managed_company = true` 的组织，
+  单页上限 50，关键字长度上限 100。
+- `register(input: RegisterInput!)`：统一注册入口，`type` 区分角色（默认 `CUSTOMER`）。
+  - `CUSTOMER`：选择名单内组织（`organizationId`）或手填公司名（`organizationName`）二者互斥；
+    名单内组织需满足上述资格，创建事务内用同一 `transactionContext` 复核，资格失效返回
+    `ACCOUNT_ORGANIZATION_NOT_AVAILABLE`（映射 `BAD_USER_INPUT`），成功后账号直接 `ACTIVE`。
+  - `ENGINEER`：仅可选择名单内组织，必填 `realName` / `phone`；写入账号与资料
+    （`PENDING / PENDING`）与待审申请，待组织管理员审核通过后才可正常登录。
+- 并发注册命中账号唯一索引冲突时返回 `ACCOUNT_ALREADY_EXISTS`，映射 `CONFLICT`；
+  前端按 `extensions.code` 大类识别，不依赖生产环境隐藏的 `extensions.errorCode`。
+- 工程师待审补充入口：`myEngineerRegistrationStatus`（凭据证明，不使用 JWT）、
+  `resubmitEngineerRegistration`（拒绝后重提）。
 
 ## 禁止项
 

@@ -1,5 +1,6 @@
 // src/modules/lithography/queries/admin-ai-conversation.query.service.ts
 
+import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, Repository, SelectQueryBuilder } from 'typeorm';
@@ -13,11 +14,6 @@ import type {
   AdminAiConversationQueryFilter,
   AdminListPagination,
 } from '../admin-document-database.types';
-
-/** LIKE 通配符转义，避免用户输入 % / _ 意外扩大匹配范围 */
-function escapeLikePattern(input: string): string {
-  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
 
 /**
  * 管理员 AI 会话读侧查询服务（PR3 只读聚合）

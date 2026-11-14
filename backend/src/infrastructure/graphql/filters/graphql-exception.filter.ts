@@ -171,6 +171,9 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   // 账户相关错误
   [ACCOUNT_ERROR.NICKNAME_TAKEN]: 'CONFLICT',
   [ACCOUNT_ERROR.EMAIL_TAKEN]: 'CONFLICT',
+  // 自助注册并发命中的账号唯一索引冲突属资源冲突：前端只需 `extensions.code` 即可识别，
+  // 不能依赖生产环境被隐藏的 `extensions.errorCode`
+  [ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS]: 'CONFLICT',
   [ACCOUNT_ERROR.USER_INFO_NOT_FOUND]: 'NOT_FOUND',
   // 自助注册所选组织不存在/已停用：客户端可修正的输入问题，显式登记避免契约漂移
   [ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE]: 'BAD_USER_INPUT',

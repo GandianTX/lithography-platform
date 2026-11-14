@@ -2,6 +2,7 @@
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
+import { escapeLikePattern } from '@modules/common/utils/sql-like-pattern.util';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
@@ -24,11 +25,6 @@ const LIST_ORDER = { createdAt: 'DESC', id: 'DESC' } as const;
 
 /** 组织展示名缺失时的展示回落（与创建人昵称「未知用户」同口径，FK 保证实际不会发生） */
 const UNKNOWN_ORGANIZATION_NAME = '未知组织';
-
-/** 标题模糊搜索：转义 LIKE 通配符，避免用户输入 % / _ 意外扩大匹配范围 */
-function escapeLikePattern(input: string): string {
-  return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
 
 /**
  * FAULT_CASE 保留类型判定（与 usecases 层 normalize 同口径：大小写不敏感，
