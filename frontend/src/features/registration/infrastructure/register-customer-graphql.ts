@@ -13,8 +13,8 @@
 import { executeGraphQL } from '@/shared/graphql';
 
 const REGISTER_CUSTOMER_MUTATION = `
-  mutation RegisterCustomer($input: RegisterInput!) {
-    register(input: $input) {
+  mutation RegisterCustomer($input: RegisterWebInput!) {
+    registerWeb(input: $input) {
       success
       message
       accountId
@@ -39,7 +39,7 @@ export type RegisterCustomerMutationResult = {
 };
 
 type RegisterCustomerMutationData = {
-  register: {
+  registerWeb: {
     success: boolean;
     message: string;
     accountId?: number | null;
@@ -61,8 +61,8 @@ export async function registerCustomerAccount(
   );
 
   return {
-    success: data.register.success,
-    message: data.register.message,
-    accountId: data.register.accountId ?? null,
+    success: data.registerWeb.success,
+    message: data.registerWeb.message,
+    accountId: data.registerWeb.accountId ?? null,
   };
 }

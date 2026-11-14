@@ -65,7 +65,11 @@ const RESTRICTION_DETAILS: Record<RestrictedReason, { description: string; title
 export function RestrictedPage() {
   const navigate = useNavigate();
   const { session } = useAuthSession();
+  // 强制改密态只开放身份读取与改密：进入该分支不得加载账号资料与申请详情，
+  // 因此必须在 hook 调用前判定并按 enabled 关闭资料链路（Hook 顺序保持不变）
+  const mustChangePassword = session?.restriction === 'MUST_CHANGE_PASSWORD';
   const { isPending, reload, state, updatePassword, updateProfile } = useAccountSettings({
+    enabled: !mustChangePassword,
     // 请求发起前固化会话身份：迟到响应若已不属于当前会话（退出重登 / 切换账号），
     // 不得清理当前会话，与账号设置页同一口径
     sampleAccountId: () => getCurrentAuthSession()?.accountId ?? null,
@@ -90,7 +94,6 @@ export function RestrictedPage() {
   }
 
   const details = RESTRICTION_DETAILS[session.restriction];
-  const mustChangePassword = session.restriction === 'MUST_CHANGE_PASSWORD';
 
   async function handlePasswordChangeSucceeded(
     initiatedIdentity: AuthSessionIdentity | null,
@@ -142,6 +145,7 @@ export function RestrictedPage() {
           {state.status === 'ready' ? (
             <DataCard title="资料维护">
               <AccountProfileForm
+                mode="restricted"
                 onSubmit={updateProfile}
                 settings={state.settings}
                 submitting={isPending('update-profile')}

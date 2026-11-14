@@ -164,8 +164,8 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
       .post('/graphql')
       .send({
         query: `
-          mutation Register($input: RegisterInput!) {
-            register(input: $input) { success message accountId }
+          mutation Register($input: RegisterWebInput!) {
+            register: registerWeb(input: $input) { success message accountId }
           }
         `,
         variables: { input: payload },

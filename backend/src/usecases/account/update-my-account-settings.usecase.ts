@@ -1,11 +1,13 @@
 // src/usecases/account/update-my-account-settings.usecase.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import {
   ADMIN_USER_ERROR,
   DomainError,
   isDomainError,
   MY_ACCOUNT_ERROR,
+  PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
 import type {
@@ -48,6 +50,14 @@ const UPDATE_MY_ACCOUNT_SETTINGS_WARN_ERROR_CODES: ReadonlyArray<string> = [
   MY_ACCOUNT_ERROR.LOGIN_CREDENTIAL_BOTH_EMPTY,
   MY_ACCOUNT_ERROR.CREDENTIAL_CONFLICT,
 ];
+
+/**
+ * 受限会话（待审 / 已拒绝 / 资格未生效）获准维护的本人资料字段白名单。
+ *
+ * 受限会话的公司归属由注册申请与审核流程决定，登录凭据属于账号安全操作，
+ * 均不得由受限会话自助改写；服务端以**显式许可字段**表达，而非按已知越界字段黑名单。
+ */
+const RESTRICTED_PROFILE_ALLOWED_FIELDS = ['nickname', 'phone', 'contactEmail'] as const;
 
 /** 事务内结果：公开 Outcome 之外附带被更新的协议字段名清单（仅用于成功日志）。 */
 interface UpdateMyAccountSettingsTxResult {
@@ -101,6 +111,9 @@ export class UpdateMyAccountSettingsUsecase {
 
   async execute(command: UpdateMyAccountSettingsCommand): Promise<UpdateMyAccountSettingsOutcome> {
     const accountId = normalizeMyAccountSettingsAccountId(command.session);
+    // 受限会话的字段白名单先于任何输入收敛：越界字段直接 FORBIDDEN，不因字段值本身
+    // 合法或非法而改变错误类别；混传时整体拒绝，事务不启动，因而零部分写入
+    this.assertRestrictedProfileUpdateAllowed(command);
     const input = normalizeMyAccountSettingsUpdateInput({
       loginName: command.loginName,
       loginEmail: command.loginEmail,
@@ -145,6 +158,42 @@ export class UpdateMyAccountSettingsUsecase {
       '账号设置更新成功',
     );
     return { isUpdated: result.isUpdated, settings: result.settings };
+  }
+
+  /**
+   * 受限会话字段白名单：只允许 `nickname` / `phone` / `contactEmail`。
+   *
+   * - 依据**每次请求复核后**的限制状态（`ValidateAccessTokenSessionUsecase` 产出），
+   *   不信任 Token 签发时的旧结论；
+   * - 越界判定看「字段是否被提供」（`undefined` 才表示未提供），因此显式
+   *   `companyName: null`、`loginName: null` 等清空语义同样被拒绝；
+   * - 混传（合法昵称 + 越界公司）整体拒绝：抛错发生在事务之前，不存在部分写入；
+   * - 错误类别沿用稳定的权限码 `PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS`
+   *   （对外 `FORBIDDEN`），details 只记字段名，不含任何字段值。
+   */
+  private assertRestrictedProfileUpdateAllowed(command: UpdateMyAccountSettingsCommand): void {
+    if (command.restriction === SessionRestriction.NONE) {
+      return;
+    }
+
+    const allowedFields = new Set<string>(RESTRICTED_PROFILE_ALLOWED_FIELDS);
+    const rejectedFields = (
+      ['loginName', 'loginEmail', 'nickname', 'companyName', 'phone', 'contactEmail'] as const
+    ).filter((field) => !allowedFields.has(field) && command[field] !== undefined);
+    if (rejectedFields.length === 0) {
+      return;
+    }
+
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      '受限会话仅可维护昵称、电话与联系邮箱',
+      undefined,
+      {
+        diagnostic: 'RESTRICTED_PROFILE_FIELDS_REJECTED',
+        restriction: command.restriction,
+        fields: rejectedFields,
+      },
+    );
   }
 
   /**

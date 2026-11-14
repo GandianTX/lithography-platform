@@ -70,7 +70,9 @@ async function installRegistrationMocks(
 
       await route.fulfill({
         body: JSON.stringify({
-          data: { register: options.registerResult ?? { success: true, message: '注册成功' } },
+          data: {
+            registerWeb: options.registerResult ?? { success: true, message: '注册成功' },
+          },
         }),
         contentType: 'application/json',
         status: 200,

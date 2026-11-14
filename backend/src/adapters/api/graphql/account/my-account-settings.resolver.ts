@@ -1,6 +1,7 @@
 // src/adapters/api/graphql/account/my-account-settings.resolver.ts
 
 import { mapJwtToUsecaseSession, type UsecaseSession } from '@app-types/auth/session.types';
+import { AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { ValidateInput } from '@adapters/api/graphql/common/validate-input.decorator';
 import { UseGuards } from '@nestjs/common';
@@ -68,6 +69,9 @@ export class MyAccountSettingsResolver {
    * 更新当前登录用户自己的账号设置（登录名 / 登录邮箱 / 昵称 / 公司名称 / 电话 / 联系邮箱）。
    * 三态语义见 `UpdateMyAccountSettingsInput`；「至少保留一个登录方式」、唯一性预检查与
    * 数据库唯一索引竞争裁决全部由 Usecase 在事务内完成，本方法不做任何业务判断。
+   *
+   * 受限会话的字段白名单由 Usecase 依据请求期复核结论（`user.restriction`）裁决：
+   * Resolver 只透传事实，不自行放宽或收紧。
    */
   @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
   @Mutation(() => UpdateMyAccountSettingsResultDTO, {
@@ -77,11 +81,12 @@ export class MyAccountSettingsResolver {
   @ValidateInput()
   async updateMyAccountSettings(
     @Args('input') input: UpdateMyAccountSettingsInput,
-    @currentUser() user: JwtPayload,
+    @currentUser() user: AuthenticatedSessionUser,
   ): Promise<UpdateMyAccountSettingsResultDTO> {
     const session: UsecaseSession = mapJwtToUsecaseSession(user);
     const result = await this.updateMyAccountSettingsUsecase.execute({
       session,
+      restriction: user.restriction,
       loginName: input.loginName,
       loginEmail: input.loginEmail,
       nickname: input.nickname,

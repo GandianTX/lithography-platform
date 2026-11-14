@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   updateNicknameMock: vi.fn(),
   restriction: { current: 'MUST_CHANGE_PASSWORD' as AuthSessionRestriction },
   application: { current: null as MyEngineerRegistrationView | null },
+  accountSettingsEnabled: { current: undefined as boolean | undefined },
 }));
 
 vi.mock('react-router', async (importOriginal) => {
@@ -66,22 +67,30 @@ vi.mock('@/features/registration', async (importOriginal) => {
 });
 
 vi.mock('@/features/account-settings', () => ({
-  useAccountSettings: () => ({
-    isPending: () => false,
-    reload: vi.fn(),
-    state: {
-      settings: {
-        contactEmail: null,
-        loginEmail: 'engineer@example.com',
-        nickname: '陈工',
-        phone: null,
+  useAccountSettings: (options: { enabled?: boolean } = {}) => {
+    mocks.accountSettingsEnabled.current = options.enabled;
+
+    return {
+      isPending: () => false,
+      reload: vi.fn(),
+      state: {
+        settings: {
+          contactEmail: null,
+          loginEmail: 'engineer@example.com',
+          nickname: '陈工',
+          phone: null,
+        },
+        status: 'ready',
       },
-      status: 'ready',
-    },
-    updatePassword: vi.fn(),
-    updateProfile: vi.fn(),
-  }),
-  AccountProfileForm: () => <div data-testid="account-profile-form">资料维护表单</div>,
+      updatePassword: vi.fn(),
+      updateProfile: vi.fn(),
+    };
+  },
+  AccountProfileForm: ({ mode }: { mode?: string }) => (
+    <div data-mode={mode} data-testid="account-profile-form">
+      资料维护表单
+    </div>
+  ),
   ChangePasswordForm: ({
     onSucceeded,
   }: {
@@ -124,6 +133,8 @@ describe('RestrictedPage', () => {
     expect(screen.getByText('请先修改登录密码')).toBeInTheDocument();
     expect(screen.queryByText('我的工程师申请')).toBeNull();
     expect(screen.queryByTestId('account-profile-form')).toBeNull();
+    // 强制改密态不得加载账号资料
+    expect(mocks.accountSettingsEnabled.current).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: '模拟改密成功' }));
 
@@ -164,6 +175,9 @@ describe('RestrictedPage', () => {
     expect(screen.getByText('测试公司')).toBeInTheDocument();
     expect(screen.getByText('审核中')).toBeInTheDocument();
     expect(screen.getByTestId('account-profile-form')).toBeInTheDocument();
+    // 非改密限制态才加载资料，且资料表单以受限模式（公司只读、只提交获准字段）渲染
+    expect(mocks.accountSettingsEnabled.current).toBe(true);
+    expect(screen.getByTestId('account-profile-form')).toHaveAttribute('data-mode', 'restricted');
     expect(screen.getByRole('button', { name: '模拟改密成功' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /批准|拒绝|审核通过/ })).toBeNull();
   });

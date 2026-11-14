@@ -12,7 +12,7 @@ describe('registerEngineerAccount（公开工程师注册）', () => {
   beforeEach(() => {
     executeGraphQLMock.mockReset();
     executeGraphQLMock.mockResolvedValue({
-      register: {
+      registerWeb: {
         success: true,
         message: '注册申请已提交',
         accountId: 601,
@@ -57,7 +57,7 @@ describe('registerEngineerAccount（公开工程师注册）', () => {
 
   it('accountId / applicationId 缺省时归一为 null', async () => {
     executeGraphQLMock.mockResolvedValue({
-      register: { success: true, message: 'ok', registrationStatus: 'PENDING_REVIEW' },
+      registerWeb: { success: true, message: 'ok', registrationStatus: 'PENDING_REVIEW' },
     });
 
     await expect(

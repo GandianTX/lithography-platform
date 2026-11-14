@@ -43,8 +43,7 @@ export class RegisterInput {
   @Field(() => String, { description: '登录密码' })
   @IsString({ message: '密码必须是字符串' })
   @IsNotEmpty({ message: '密码不能为空' })
-  @MinLength(8, { message: '密码至少 8 个字符' })
-  @MaxLength(128, { message: '密码最多 128 个字符' })
+  @MinLength(6, { message: '密码至少 6 个字符' })
   @IsValidPassword({ message: '密码不符合安全要求' })
   loginPassword!: string;
 
@@ -54,20 +53,6 @@ export class RegisterInput {
   @IsString({ message: '昵称必须是字符串' })
   nickname?: string | null;
 
-  @Field(() => String, { description: '真实姓名（仅工程师注册必填）', nullable: true })
-  @IsOptional()
-  @Transform(({ value }: TransformFnParams) => trimTextPure(value))
-  @IsString({ message: '姓名必须是字符串' })
-  @MaxLength(200, { message: '姓名最多 200 个字符' })
-  realName?: string | null;
-
-  @Field(() => String, { description: '联系电话（仅工程师注册必填）', nullable: true })
-  @IsOptional()
-  @Transform(({ value }: TransformFnParams) => trimTextPure(value))
-  @IsString({ message: '联系电话必须是字符串' })
-  @MaxLength(20, { message: '联系电话最多 20 个字符' })
-  phone?: string | null;
-
   @Field(() => RegisterTypeEnum, {
     description: '注册类型',
     defaultValue: RegisterTypeEnum.CUSTOMER,
@@ -75,24 +60,10 @@ export class RegisterInput {
   @IsEnum(RegisterTypeEnum, { message: '注册类型无效' })
   type: RegisterTypeEnum = RegisterTypeEnum.CUSTOMER;
 
-  @Field(() => Int, {
-    description: '所选有效组织主键；选择名单公司时必填，与 organizationName 互斥',
-    nullable: true,
-  })
-  @IsOptional()
+  @Field(() => Int, { description: '所选有效组织主键；客户与工程师均必填' })
   @IsInt({ message: '组织主键必须是整数' })
   @Min(1, { message: '组织主键必须大于等于 1' })
-  organizationId?: number | null;
-
-  @Field(() => String, {
-    description: '手填自家公司名称；未选择名单公司时必填，与 organizationId 互斥',
-    nullable: true,
-  })
-  @IsOptional()
-  @Transform(({ value }: TransformFnParams) => trimTextPure(value))
-  @IsString({ message: '公司名称必须是字符串' })
-  @MaxLength(200, { message: '公司名称最多 200 个字符' })
-  organizationName?: string | null;
+  organizationId!: number;
 
   @Field(() => String, { description: '工程师申请说明（仅工程师注册使用）', nullable: true })
   @IsOptional()

@@ -120,8 +120,9 @@ export class OrganizationQueryService {
   /**
    * 按主键复核组织仍为 ACTIVE（旧入口口径）。
    *
-   * 仅 `WeappRegisterUsecase` 与 `ResubmitEngineerRegistrationUsecase` 使用；
-   * Web 注册必须改用 `findEligibleRegistrationOption`，不得退回本方法。
+   * 旧 `register` 入口（`RegistrationEntryChannel.LEGACY`）、`WeappRegisterUsecase` 与
+   * `ResubmitEngineerRegistrationUsecase` 使用；Web 注册入口必须改用
+   * `findEligibleRegistrationOption`，不得退回本方法。
    */
   async findActiveRegistrationOption(params: {
     organizationId: number;

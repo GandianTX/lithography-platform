@@ -12,8 +12,8 @@
 import { executeGraphQL } from '@/shared/graphql';
 
 const REGISTER_ENGINEER_MUTATION = `
-  mutation RegisterEngineer($input: RegisterInput!) {
-    register(input: $input) {
+  mutation RegisterEngineer($input: RegisterWebInput!) {
+    registerWeb(input: $input) {
       success
       message
       accountId
@@ -42,7 +42,7 @@ export type RegisterEngineerMutationResult = {
 };
 
 type RegisterEngineerMutationData = {
-  register: {
+  registerWeb: {
     success: boolean;
     message: string;
     accountId?: number | null;
@@ -65,9 +65,9 @@ export async function registerEngineerAccount(
   );
 
   return {
-    success: data.register.success,
-    message: data.register.message,
-    accountId: data.register.accountId ?? null,
-    applicationId: data.register.applicationId ?? null,
+    success: data.registerWeb.success,
+    message: data.registerWeb.message,
+    accountId: data.registerWeb.accountId ?? null,
+    applicationId: data.registerWeb.applicationId ?? null,
   };
 }

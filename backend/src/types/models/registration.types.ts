@@ -37,9 +37,27 @@ export enum EngineerRegistrationReviewAction {
 }
 
 /**
+ * 注册入口通道：决定输入默认值、公司资格口径与资料写入范围。
+ *
+ * - `LEGACY`：既有 `register` 入口（旧客户端、小程序注册、凭据重提共用）。
+ *   组织主键必填，资格只要求 `ACTIVE`；工程师姓名/电话可省略；不支持手填公司；
+ *   客户注册不写 `customer_organization_id`。与主线原有请求形状保持一致；
+ * - `WEB`：V44 Web 注册入口 `registerWeb`。公司资格为 `ACTIVE + 受管`；
+ *   工程师必填姓名/电话；客户在「选择公司 / 手填公司」中二选一，
+ *   选择公司时写可信 `customer_organization_id`。
+ *
+ * 两条通道复用同一账号初始化、唯一性校验与注册事务，差异只在校验口径与字段写入。
+ */
+export enum RegistrationEntryChannel {
+  LEGACY = 'LEGACY',
+  WEB = 'WEB',
+}
+
+/**
  * 邮箱注册用例参数
  *
- * `organizationId` 为客户/工程师所选组织（必填，事务内复核有效）；
+ * `entryChannel` 由 GraphQL 入口显式传入，不使用默认值，避免新入口误走旧规则；
+ * `organizationId` 在 `LEGACY` 下必填，在 `WEB` 下与 `organizationName` 二选一；
  * `applicationNote` 仅工程师待审申请使用，客户注册忽略。
  */
 export interface RegisterWithEmailParams {
@@ -47,14 +65,16 @@ export interface RegisterWithEmailParams {
   loginEmail: string;
   loginPassword: string;
   nickname?: string | null;
-  /** 真实姓名：工程师注册必填，客户注册忽略 */
+  /** 真实姓名：`WEB` 工程师必填；`LEGACY` 工程师可省略，客户忽略 */
   realName?: string | null;
-  /** 联系电话：工程师注册必填，客户注册忽略 */
+  /** 联系电话：`WEB` 工程师必填；`LEGACY` 工程师可省略，客户忽略 */
   phone?: string | null;
   type?: RegisterTypeEnum;
-  /** 选择名单内公司时使用；与 `organizationName` 互斥 */
+  /** 注册入口通道；调用方必须显式指定 */
+  entryChannel: RegistrationEntryChannel;
+  /** 选择名单内公司时使用；`LEGACY` 为必填，`WEB` 与 `organizationName` 互斥 */
   organizationId?: number | null;
-  /** 手填自家公司名称时使用；与 `organizationId` 互斥 */
+  /** 手填自家公司名称时使用；仅 `WEB` 客户支持，与 `organizationId` 互斥 */
   organizationName?: string | null;
   applicationNote?: string | null;
   inviteToken?: string;

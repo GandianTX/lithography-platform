@@ -304,6 +304,30 @@ export function resolveRegistrationOrganizationChoice(input: {
 }
 
 /**
+ * 旧 `register` 入口的公司分支：只接受名单内公司主键，且必填。
+ *
+ * 与 Web 入口的差异：不支持手填公司名称（旧请求形状没有该字段），资格口径为
+ * 仅 `ACTIVE`（事务内用 `findActiveRegistrationOption()` 复核），不要求受管。
+ * 若调用方在旧通道提交 `organizationName`，明确拒绝而不是静默忽略。
+ */
+export function resolveLegacyRegistrationOrganizationChoice(input: {
+  organizationId?: number | null;
+  organizationName?: string | null;
+}): RegistrationOrganizationChoice {
+  if (normalizeRegistrationOrganizationName(input.organizationName) !== null) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      '旧版注册入口不支持手填公司名称，请提交 organizationId',
+      { field: 'organizationName' },
+    );
+  }
+  return {
+    kind: 'EXISTING',
+    organizationId: normalizeRegistrationOrganizationId(input.organizationId),
+  };
+}
+
+/**
  * 工程师注册的真实姓名与联系电话：二者均必填。
  *
  * - 只做输入形态与列上限校验；`real_name` 为 varchar(200)、`phone` 为 varchar(20)，
@@ -345,6 +369,25 @@ export function normalizeEngineerRegistrationProfile(input: {
   }
 
   return { realName, phone };
+}
+
+/**
+ * 旧 `register` 入口的工程师资料：姓名与电话均可省略。
+ *
+ * - 两者都缺省（`null` / `undefined`）→ 返回 `null`，只创建待审账号与申请，不写姓名电话；
+ * - 任一提供 → 复用与 Web 相同的必填与格式校验（即「部分提供」视为完整资料提交，
+ *   缺另一项按必填错误拒绝）。
+ */
+export function normalizeLegacyEngineerRegistrationProfile(input: {
+  realName: unknown;
+  phone: unknown;
+}): { realName: string; phone: string } | null {
+  const realNameMissing = input.realName === null || typeof input.realName === 'undefined';
+  const phoneMissing = input.phone === null || typeof input.phone === 'undefined';
+  if (realNameMissing && phoneMissing) {
+    return null;
+  }
+  return normalizeEngineerRegistrationProfile(input);
 }
 
 /**

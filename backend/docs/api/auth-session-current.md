@@ -120,11 +120,18 @@ Resolver、Guard、Usecase 不应各自手写不同的 session shape。
 - `registrationOrganizationSearch(pagination, keyword)`：Web 注册（客户与工程师）专用公开
   关键字分页检索，只返回 `id` / `name`；仅返回 `status = ACTIVE AND is_managed_company = true`
   的组织，单页上限 50，关键字长度上限 100。
-- `register(input: RegisterInput!)`：统一注册入口，`type` 区分角色（默认 `CUSTOMER`）。
-  - `CUSTOMER`：选择名单内组织（`organizationId`）或手填公司名（`organizationName`）二者互斥；
-    名单内组织需满足上述资格，创建事务内用同一 `transactionContext` 复核，资格失效返回
-    `ACCOUNT_ORGANIZATION_NOT_AVAILABLE`（映射 `BAD_USER_INPUT`），成功后账号直接 `ACTIVE`。
-  - `ENGINEER`：仅可选择名单内组织，必填 `realName` / `phone`；写入账号与资料
+- `register(input: RegisterInput!)`：旧注册入口（LEGACY，兼容既有客户端），`type` 区分角色
+  （默认 `CUSTOMER`）。`organizationId` Schema 必填（客户与工程师），事务内只复核
+  `status = ACTIVE`；不支持手填公司名；工程师 `realName` / `phone` 可省略；客户不写
+  `customer_organization_id`。资格失效返回 `ACCOUNT_ORGANIZATION_NOT_AVAILABLE`
+  （映射 `BAD_USER_INPUT`），成功后客户账号直接 `ACTIVE`。
+- `registerWeb(input: RegisterWebInput!)`：V44 Web 注册页入口（WEB），与 `register` 共用同一
+  注册事务。
+  - `CUSTOMER`：选择名单内公司（`organizationId`）或手填公司名（`organizationName`）二者互斥；
+    名单内公司需满足 `ACTIVE AND is_managed_company = true`，创建事务内用同一
+    `transactionContext` 复核，资格失效返回 `ACCOUNT_ORGANIZATION_NOT_AVAILABLE`
+    （映射 `BAD_USER_INPUT`），成功后账号直接 `ACTIVE` 并写可信公司归属。
+  - `ENGINEER`：仅可选择名单内公司，必填 `realName` / `phone`；写入账号与资料
     （`PENDING / PENDING`）与待审申请，待组织管理员审核通过后才可正常登录。
 - 并发注册命中账号唯一索引冲突时返回 `ACCOUNT_ALREADY_EXISTS`，映射 `CONFLICT`；
   前端按 `extensions.code` 大类识别，不依赖生产环境隐藏的 `extensions.errorCode`。

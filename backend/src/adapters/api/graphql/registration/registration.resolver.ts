@@ -1,7 +1,10 @@
 // src/adapters/api/graphql/registration/registration.resolver.ts
 import { ValidateInput } from '@adapters/api/graphql/common/validate-input.decorator';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
-import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
+import {
+  EngineerRegistrationApplicationStatus,
+  RegistrationEntryChannel,
+} from '@app-types/models/registration.types';
 import { mapJwtToUsecaseSession, type UsecaseSession } from '@app-types/auth/session.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { Args, Context, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
@@ -49,6 +52,7 @@ import {
 } from './dto/registration-organization.dto';
 import { RegisterResult } from './dto/register-result.dto';
 import { RegisterInput } from './dto/register.input';
+import { RegisterWebInput } from './dto/register-web.input';
 import { ResubmitEngineerRegistrationResultDTO } from './dto/resubmit-engineer-registration-result.dto';
 import { ResubmitEngineerRegistrationInput } from './dto/resubmit-engineer-registration.input';
 import { ReviewEngineerRegistrationInput } from './dto/review-engineer-registration.input';
@@ -73,49 +77,30 @@ export class RegistrationResolver {
     this.logger.setContext(RegistrationResolver.name);
   }
 
-  @Mutation(() => RegisterResult, { description: '用户注册' })
+  /**
+   * 旧注册入口（兼容既有客户端）。
+   *
+   * 请求形状与主线原行为一致：`organizationId` 必填（客户与工程师都必须选择组织），
+   * 组织资格只要求 `ACTIVE`；工程师姓名/电话可省略；不支持手填公司名称；
+   * 客户注册不写 `customer_organization_id`。V44 Web 规则由 `registerWeb` 承担。
+   */
+  @Mutation(() => RegisterResult, { description: '用户注册（旧入口，兼容既有客户端）' })
   @ValidateInput()
   async register(
     @Args('input') input: RegisterInput,
     @Context() context: { req: Request },
   ): Promise<RegisterResult> {
-    // 只传递 usecase 关心的"扁平请求形状"，避免把 Express 类型下沉到用例层
-    const req = context?.req;
-    const clientIp = (() => {
-      if (!req) return '';
-      const clean = (ip: string | undefined): string => ip?.replace(/^::ffff:/, '').trim() || '';
-      const xRealIp = req.headers['x-real-ip'];
-      if (xRealIp) {
-        const ip = Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
-        return clean(ip);
-      }
-      const xForwardedFor = req.headers['x-forwarded-for'];
-      if (xForwardedFor) {
-        const firstIp =
-          typeof xForwardedFor === 'string'
-            ? xForwardedFor.split(',')[0].trim()
-            : Array.isArray(xForwardedFor)
-              ? xForwardedFor[0].split(',')[0].trim()
-              : '';
-        if (firstIp) return firstIp;
-      }
-      if (req.ip) return req.ip;
-      return req.socket?.remoteAddress ?? '';
-    })();
-
     const result = await this.registerWithEmail.execute({
       loginName: input.loginName ?? null,
       loginEmail: input.loginEmail,
       loginPassword: input.loginPassword,
       nickname: input.nickname,
-      realName: input.realName ?? null,
-      phone: input.phone ?? null,
       type: input.type,
-      organizationId: input.organizationId ?? null,
-      organizationName: input.organizationName ?? null,
+      entryChannel: RegistrationEntryChannel.LEGACY,
+      organizationId: input.organizationId,
       applicationNote: input.applicationNote,
       inviteToken: input.inviteToken,
-      clientIp,
+      clientIp: this.resolveClientIp(context),
     });
 
     return {
@@ -125,6 +110,74 @@ export class RegistrationResolver {
       registrationStatus: result.registrationStatus,
       applicationId: result.applicationId,
     };
+  }
+
+  /**
+   * V44 Web 注册入口（客户与工程师注册页使用）。
+   *
+   * 与旧 `register` 共用同一注册事务，但执行 Web 规则：工程师必填真实姓名与电话，
+   * 公司须为 `ACTIVE + 受管`；客户可选名单内公司或手填自家公司，二者互斥，
+   * 选择公司时写可信 `customer_organization_id`。
+   */
+  @Mutation(() => RegisterResult, {
+    name: 'registerWeb',
+    description: 'Web 用户注册（V44 规则：工程师姓名/电话必填，公司须启用且受管）',
+  })
+  @ValidateInput()
+  async registerWeb(
+    @Args('input') input: RegisterWebInput,
+    @Context() context: { req: Request },
+  ): Promise<RegisterResult> {
+    const result = await this.registerWithEmail.execute({
+      loginName: input.loginName ?? null,
+      loginEmail: input.loginEmail,
+      loginPassword: input.loginPassword,
+      nickname: input.nickname,
+      realName: input.realName ?? null,
+      phone: input.phone ?? null,
+      type: input.type,
+      entryChannel: RegistrationEntryChannel.WEB,
+      organizationId: input.organizationId ?? null,
+      organizationName: input.organizationName ?? null,
+      applicationNote: input.applicationNote,
+      inviteToken: input.inviteToken,
+      clientIp: this.resolveClientIp(context),
+    });
+
+    return {
+      success: result.success,
+      message: result.message,
+      accountId: result.accountId,
+      registrationStatus: result.registrationStatus,
+      applicationId: result.applicationId,
+    };
+  }
+
+  /**
+   * 提取客户端 IP：与既有注册入口口径一致，只传递 usecase 关心的扁平字符串，
+   * 避免把 Express 类型下沉到用例层。
+   */
+  private resolveClientIp(context: { req?: Request }): string {
+    const req = context?.req;
+    if (!req) return '';
+    const clean = (ip: string | undefined): string => ip?.replace(/^::ffff:/, '').trim() || '';
+    const xRealIp = req.headers['x-real-ip'];
+    if (xRealIp) {
+      const ip = Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
+      return clean(ip);
+    }
+    const xForwardedFor = req.headers['x-forwarded-for'];
+    if (xForwardedFor) {
+      const firstIp =
+        typeof xForwardedFor === 'string'
+          ? xForwardedFor.split(',')[0].trim()
+          : Array.isArray(xForwardedFor)
+            ? xForwardedFor[0].split(',')[0].trim()
+            : '';
+      if (firstIp) return firstIp;
+    }
+    if (req.ip) return req.ip;
+    return req.socket?.remoteAddress ?? '';
   }
 
   /**

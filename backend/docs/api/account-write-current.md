@@ -21,7 +21,8 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 当前通用账号相关入口：
 
-- `register(input: RegisterInput): RegisterResult`
+- `register(input: RegisterInput): RegisterResult`（LEGACY，兼容既有客户端）
+- `registerWeb(input: RegisterWebInput): RegisterResult`（WEB，V44 注册页规则）
 - `thirdPartyRegister(input: ThirdPartyRegisterInput): RegisterResult`
 - `registrationOrganizations: [RegistrationOrganizationDTO!]!`
 - `registrationOrganizationSearch(pagination: PaginationArgs!, keyword: String): RegistrationOrganizationPageDTO`
@@ -65,27 +66,56 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 ## 注册
 
-`register` 当前使用 `RegisterWithEmailUsecase`。
+公开注册有两条通道，共用 `RegisterWithEmailUsecase` 与同一个创建事务，差异只在入口规则：
 
-输入字段包括：
+- `register`（`RegisterInput`，LEGACY）：保持主线基线 `833437f` 的请求形状与行为，供既有客户端与小程序继续使用；
+- `registerWeb`（`RegisterWebInput`，WEB）：V44 Web 注册页使用，承担工程师资料与受管公司资格规则。
+
+`RegisterInput`（`register`）字段：
 
 - `loginName`
 - `loginEmail`
-- `loginPassword`
+- `loginPassword`（最少 6 位）
 - `nickname`
 - `type`
-- `organizationId`（必填：客户与工程师都必须选择有效组织）
+- `organizationId`（必填：客户与工程师都必须选择组织）
+- `applicationNote`（可选：仅工程师待审申请使用）
+- `inviteToken`
+
+`RegisterWebInput`（`registerWeb`）字段：
+
+- `loginName`
+- `loginEmail`
+- `loginPassword`（最少 8 位、最多 128 位）
+- `nickname`
+- `realName`（工程师必填）
+- `phone`（工程师必填）
+- `type`
+- `organizationId`（选择名单内公司时必填，与 `organizationName` 互斥）
+- `organizationName`（手填自家公司时必填，仅客户可用，与 `organizationId` 互斥）
 - `applicationNote`（可选：仅工程师待审申请使用）
 - `inviteToken`
 
 `type` 默认是 `CUSTOMER`，公开注册允许 `CUSTOMER` 和 `ENGINEER`；`SUPER_ADMIN` 仍只由受控管理流程或 Seed 创建，不开放管理员自助注册。
 
-**破坏性变更**：`register` 与 `thirdPartyRegister` 的 `organizationId` 现为必填（非空）。旧客户端若不传该字段会收到 `BAD_USER_INPUT`，前端与第三方客户端必须与本后端同批次切换。
+通道差异（其余写入路径完全一致）：
 
-开通结果按类型分流，两类都必须先选择一个有效组织（`organizationId` 在写入事务内复核为 ACTIVE，客户端自报值不作为最终凭证）：
+| 维度 | `register`（LEGACY） | `registerWeb`（WEB） |
+| --- | --- | --- |
+| `organizationId` | Schema 必填（客户与工程师） | 客户二选一；工程师必填 |
+| 手填公司 `organizationName` | 不支持，提交即 `BAD_USER_INPUT` | 仅客户可用，与 `organizationId` 互斥 |
+| 公司资格（事务内复核） | 仅 `status = ACTIVE` | `status = ACTIVE AND is_managed_company = true` |
+| 工程师 `realName` / `phone` | 可同时省略；只提供其一被拒 | 必填 |
+| 客户 `customer_organization_id` | 不写入（保持基线行为） | 选择/新建公司时写可信归属 |
+
+**兼容性说明**：`register` 与 `thirdPartyRegister` 的 `organizationId` 为必填（非空），旧客户端不传会收到 `BAD_USER_INPUT`。V44 Web 注册页已切换到 `registerWeb`，客户不再被强制传 `organizationId`（可手填自家公司）。
+
+开通结果按类型分流，两条通道都必须在写入事务内复核所选组织，客户端自报值不作为最终凭证：
 
 - `CUSTOMER`：账号与资料在同一创建事务内写为 `ACTIVE / ACTIVE`，并绑定所选组织为 `CUSTOMER` 成员；注册返回后账号立即可用，`registrationStatus = REGISTERED`、`applicationId = null`；
 - `ENGINEER`：账号与资料保持 `PENDING / PENDING`，不建立有效成员关系、不签发登录令牌，只在同一事务内落一份 `PENDING` 待审申请（`applicationNote` 可选）；返回 `registrationStatus = PENDING_REVIEW` 和非空 `applicationId`。所选组织管理员审核通过后，账号才开通。
+
+公司资格复核失败统一返回 `ACCOUNT_ORGANIZATION_NOT_AVAILABLE`（映射 `BAD_USER_INPUT`），事务整体回滚、不留下任何写入；旧入口文案为「所选组织不存在或已停用」，Web 入口为「所选公司不存在、已停用或不具备注册资格」。旧入口提交 `organizationName`、或只在姓名/电话中提供其一时，按输入校验失败返回 `BAD_USER_INPUT`（不进入写入事务）。
 
 `registrationOrganizations` 是公开只读的**兼容入口**：无参数，只返回 `ACTIVE` 组织的 `id` / `name` 数组，供小程序注册与拒绝后凭据重提等既有调用方继续使用。
 
@@ -108,7 +138,7 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 `thirdPartyRegister` 当前走第三方注册 usecase，属于通用第三方账号能力，不代表具体业务域身份；它同样要求 `organizationId`，只创建并绑定 `CUSTOMER` 成员，不提供工程师绕过审核的入口。
 
-公开注册成功语义：客户注册（`RegisterWithEmailUsecase` 的 CUSTOMER 分支）与 `thirdPartyRegister`（`WeappRegisterUsecase`）返回成功时，必须在**同一个创建事务内**显式写入 `account.status = ACTIVE`、`userInfo.userState = ACTIVE` 与所选组织的 `CUSTOMER` 成员关系（同提交同回滚，任一步失败不得返回成功，也不做事务外补救写）。工程师注册只在同一事务内创建 `PENDING / PENDING` 账号与待审申请，不建成员关系；`UserInfoEntity.user_state` 列与数据库默认值 `PENDING` 保留原样，不新增 Migration；所有新建 UserInfo 的生产入口必须显式提供 `userState`，不依赖 Entity 默认值。
+公开注册成功语义：客户注册（`RegisterWithEmailUsecase` 的 CUSTOMER 分支）与 `thirdPartyRegister`（`WeappRegisterUsecase`）返回成功时，必须在**同一个创建事务内**显式写入 `account.status = ACTIVE`、`userInfo.userState = ACTIVE` 与所选组织的 `CUSTOMER` 成员关系（同提交同回滚，任一步失败不得返回成功，也不做事务外补救写）；客户可信公司归属 `customer_organization_id` 仅 `registerWeb` 写入，旧 `register` 保持基线不写。工程师注册只在同一事务内创建 `PENDING / PENDING` 账号与待审申请，不建成员关系；`UserInfoEntity.user_state` 列与数据库默认值 `PENDING` 保留原样，不新增 Migration；所有新建 UserInfo 的生产入口必须显式提供 `userState`，不依赖 Entity 默认值。
 
 管理员代建入口（`adminCreateUser`）不受本改动影响：继续由可信 SUPER_ADMIN 会话按可信组织解析绑定，创建固定 `ACTIVE`，保留既有凭据、角色与密码策略。
 

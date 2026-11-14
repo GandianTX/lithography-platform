@@ -14,6 +14,7 @@ import { OrganizationQueryService } from '@src/modules/lithography/queries/organ
 import { PinoLogger } from 'nestjs-pino';
 import { RegisterWithEmailUsecase } from './register-with-email.usecase';
 import { RegisterTypeEnum } from '@app-types/services/register.types';
+import { RegistrationEntryChannel } from '@app-types/models/registration.types';
 
 describe('RegisterWithEmailUsecase（注册事务语义）', () => {
   const ACCOUNT_ID = 101;
@@ -33,7 +34,10 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     getUserAccountViewById: jest.Mock;
   };
   let passwordPolicyService: { validatePassword: jest.Mock };
-  let organizationQueryService: { findEligibleRegistrationOption: jest.Mock };
+  let organizationQueryService: {
+    findEligibleRegistrationOption: jest.Mock;
+    findActiveRegistrationOption: jest.Mock;
+  };
   let organizationService: { createSelfRegisteredCompany: jest.Mock };
   let organizationMembershipService: { insertMembership: jest.Mock };
   let engineerRegistrationService: { insertApplication: jest.Mock };
@@ -53,6 +57,7 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     loginPassword: 'Str0ng!Passw0rd',
     nickname: '新用户',
     type: RegisterTypeEnum.CUSTOMER,
+    entryChannel: RegistrationEntryChannel.WEB,
     organizationId: ORGANIZATION_ID,
     clientIp: '127.0.0.1',
   });
@@ -88,6 +93,10 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
       findEligibleRegistrationOption: jest
         .fn()
         .mockResolvedValue({ id: ORGANIZATION_ID, name: '测试公司' }),
+      findActiveRegistrationOption: jest.fn().mockResolvedValue({
+        id: ORGANIZATION_ID,
+        name: '测试公司',
+      }),
     };
     organizationService = {
       createSelfRegisteredCompany: jest.fn().mockResolvedValue({ id: 7001 }),
@@ -190,6 +199,12 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
     realName: '张三',
     phone: '138-0013-8000',
     applicationNote: '希望加入组织',
+  });
+
+  /** 旧 `register` 入口（LEGACY）参数；默认只带必填组织主键 */
+  const legacyParams = () => ({
+    ...validParams(),
+    entryChannel: RegistrationEntryChannel.LEGACY,
   });
 
   describe('所选组织与开通结果分支', () => {
@@ -361,6 +376,7 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
       loginPassword: 'Str0ng!Passw0rd',
       nickname: '新用户',
       type: RegisterTypeEnum.CUSTOMER,
+      entryChannel: RegistrationEntryChannel.WEB,
       organizationName: '  手填光刻公司  ',
     });
 
@@ -429,6 +445,97 @@ describe('RegisterWithEmailUsecase（注册事务语义）', () => {
       ).rejects.toBeInstanceOf(DomainError);
 
       expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('旧入口（LEGACY）行为兼容', () => {
+    it('客户注册只按 ACTIVE 复核组织，且不写 customer_organization_id', async () => {
+      // 未受管公司：Web 资格复核为 null，旧入口的 ACTIVE 复核仍可用
+      organizationQueryService.findEligibleRegistrationOption.mockResolvedValue(null);
+
+      const result = await usecase.execute(legacyParams());
+
+      expect(result).toMatchObject({ success: true, registrationStatus: 'REGISTERED' });
+      expect(organizationQueryService.findActiveRegistrationOption).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: ORGANIZATION_ID, transactionContext: txContext }),
+      );
+      expect(organizationQueryService.findEligibleRegistrationOption).not.toHaveBeenCalled();
+      const userInfoArg = accountService.createUserInfoEntity.mock.calls[0][0];
+      expect(userInfoArg.userInfoData).toMatchObject({ customerOrganizationId: null });
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: ORGANIZATION_ID,
+          accountId: ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.CUSTOMER,
+        },
+        txContext,
+      );
+    });
+
+    it('工程师省略姓名与电话：创建待审账号与申请，不写资料、不建成员关系', async () => {
+      const result = await usecase.execute({
+        ...legacyParams(),
+        type: RegisterTypeEnum.ENGINEER,
+      });
+
+      const accountArg = accountService.createAccountEntity.mock.calls[0][0];
+      expect(accountArg.accountData).toMatchObject({
+        status: AccountStatus.PENDING,
+        identityHint: IdentityTypeEnum.ENGINEER,
+      });
+      const userInfoArg = accountService.createUserInfoEntity.mock.calls[0][0];
+      expect(userInfoArg.userInfoData).toMatchObject({
+        userState: UserState.PENDING,
+        realName: null,
+        phone: null,
+        customerOrganizationId: null,
+      });
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(engineerRegistrationService.insertApplication).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: ORGANIZATION_ID, accountId: ACCOUNT_ID }),
+        txContext,
+      );
+      expect(result).toMatchObject({
+        success: true,
+        registrationStatus: 'PENDING_REVIEW',
+        applicationId: 9001,
+      });
+    });
+
+    it('工程师只提供姓名或电话：仍按完整资料校验拒绝，不发生写入', async () => {
+      await expect(
+        usecase.execute({
+          ...legacyParams(),
+          type: RegisterTypeEnum.ENGINEER,
+          realName: '张三',
+        }),
+      ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_TEXT });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+      expect(accountService.saveAccount).not.toHaveBeenCalled();
+    });
+
+    it('缺少组织主键或提交手填公司名称：事务前拒绝', async () => {
+      await expect(
+        usecase.execute({ ...legacyParams(), organizationId: undefined }),
+      ).rejects.toMatchObject({ code: 'ENGINEER_REGISTRATION_INVALID_PARAMS' });
+      await expect(
+        usecase.execute({ ...legacyParams(), organizationName: '手填公司' }),
+      ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_TEXT });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('组织已停用：账号零落库且事务回滚', async () => {
+      organizationQueryService.findActiveRegistrationOption.mockResolvedValue(null);
+
+      await expect(usecase.execute(legacyParams())).rejects.toMatchObject({
+        code: ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE,
+      });
+
+      expect(accountService.saveAccount).not.toHaveBeenCalled();
+      expect(accountService.saveUserInfo).not.toHaveBeenCalled();
+      expect(rolledBack).toBe(true);
     });
   });
 

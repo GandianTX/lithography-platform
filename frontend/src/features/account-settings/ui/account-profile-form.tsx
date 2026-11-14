@@ -26,6 +26,12 @@ import type {
 import type { AccountSettingsCommandExecution } from '../application/use-account-settings';
 
 type AccountProfileFormProps = {
+  /**
+   * `full`（默认）：账号设置页，可维护公司名称；
+   * `restricted`：受限会话页，公司名称只读展示可信申请结果，提交草稿只含昵称、电话与
+   * 联系邮箱——不得附带旧公司值、`null` 或其他只读字段（后端白名单对越界字段整体拒绝）。
+   */
+  mode?: 'full' | 'restricted';
   onSubmit: (
     draft: AccountSettingsProfileDraft,
   ) => Promise<AccountSettingsCommandExecution<AccountSettingsProfileUpdateResult>>;
@@ -47,21 +53,33 @@ function toOptionalDraftValue(value: string | undefined): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
-export function AccountProfileForm({ onSubmit, settings, submitting }: AccountProfileFormProps) {
+export function AccountProfileForm({
+  mode = 'full',
+  onSubmit,
+  settings,
+  submitting,
+}: AccountProfileFormProps) {
   const [form] = Form.useForm<AccountProfileFormValues>();
   const [submitError, setSubmitError] = useState<string | null>(null);
   const editVersionRef = useRef(0);
+  const isRestricted = mode === 'restricted';
 
   const handleFinish = async (values: AccountProfileFormValues) => {
     setSubmitError(null);
     const editVersionAtSubmit = editVersionRef.current;
 
-    const execution = await onSubmit({
-      companyName: toOptionalDraftValue(values.companyName),
+    const draft: AccountSettingsProfileDraft = {
       contactEmail: toOptionalDraftValue(values.contactEmail),
       nickname: values.nickname.trim(),
       phone: toOptionalDraftValue(values.phone),
-    });
+    };
+
+    // 受限会话：公司名称由注册申请审核结果决定，提交草稿中不出现该键
+    if (!isRestricted) {
+      draft.companyName = toOptionalDraftValue(values.companyName);
+    }
+
+    const execution = await onSubmit(draft);
 
     if (execution.kind !== 'ok') {
       if (execution.kind === 'unhandled-error') {
@@ -115,8 +133,12 @@ export function AccountProfileForm({ onSubmit, settings, submitting }: AccountPr
         <Input autoComplete="off" placeholder="昵称允许重复" />
       </Form.Item>
 
-      <Form.Item<AccountProfileFormValues> label="公司名称" name="companyName">
-        <Input autoComplete="off" />
+      <Form.Item<AccountProfileFormValues>
+        extra={isRestricted ? '公司名称由注册申请审核结果决定，如需变更请联系管理员。' : undefined}
+        label="公司名称"
+        name="companyName"
+      >
+        <Input autoComplete="off" disabled={isRestricted} />
       </Form.Item>
 
       <Form.Item<AccountProfileFormValues> label="电话" name="phone">

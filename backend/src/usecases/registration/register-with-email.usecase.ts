@@ -6,6 +6,7 @@ import { UserState } from '@app-types/models/user-info.types';
 import {
   RegisterWithEmailParams,
   RegisterWithEmailResult,
+  RegistrationEntryChannel,
   RegistrationOutcomeStatus,
 } from '@app-types/models/registration.types';
 import { RegisterTypeEnum } from '@app-types/services/register.types';
@@ -26,9 +27,11 @@ import {
 import { PinoLogger } from 'nestjs-pino';
 import {
   normalizeEngineerRegistrationProfile,
+  normalizeLegacyEngineerRegistrationProfile,
   normalizeRegisterWithEmailInput,
   normalizeRegistrationApplicationNote,
   normalizeRegistrationNicknameCandidatesInput,
+  resolveLegacyRegistrationOrganizationChoice,
   resolveRegistrationOrganizationChoice,
   type RegistrationOrganizationChoice,
 } from './registration-input.normalize';
@@ -50,9 +53,14 @@ type RegisterOutcome = {
  *   落一份 `PENDING` 待审申请（含申请说明）。所选组织管理员审核通过后，
  *   才由审批用例同事务启用账号并建立 `ENGINEER` 成员关系。
  *
- * 所选公司（`organizationId`）必须在事务内按 Web 注册资格
- * （`ACTIVE` 且属于一级维护名单）复核；客户端自报值只作申请参数，
- * 绝不作为公司归属的最终凭证。任一步失败整体回滚，不留下半成品状态组合。
+ * 输入与资格口径由 `entryChannel` 决定，两条通道复用同一事务与写入顺序：
+ * - `LEGACY`（旧 `register`）：组织主键必填、只要求 `ACTIVE`、不支持手填公司、
+ *   工程师姓名/电话可省略、客户不写 `customer_organization_id`；
+ * - `WEB`（`registerWeb`）：工程师必填姓名/电话，公司须为 `ACTIVE + 受管`，
+ *   客户可选公司或手填且写可信公司归属。
+ *
+ * 所选公司（`organizationId`）必须在事务内按对应通道的资格口径复核；客户端自报值只作
+ * 申请参数，绝不作为公司归属的最终凭证。任一步失败整体回滚，不留下半成品状态组合。
  *
  * 管理员代建入口（`AdminCreateUserUsecase`）不受本用例影响，继续使用可信组织解析绑定。
  */
@@ -87,6 +95,7 @@ export class RegisterWithEmailUsecase {
       realName,
       phone,
       type = RegisterTypeEnum.CUSTOMER,
+      entryChannel,
       organizationId,
       organizationName,
       applicationNote,
@@ -97,16 +106,18 @@ export class RegisterWithEmailUsecase {
     const normalizedLoginEmail = normalizedInput.loginEmail;
     const normalizedNickname = normalizedInput.nickname;
     const role = this.mapRegisterTypeToRole(type);
-    // 公司分支：选择名单内公司或手填自家公司名称，二者互斥；工程师本期只允许选择
-    const organizationChoice = resolveRegistrationOrganizationChoice({
-      organizationId,
-      organizationName,
-      role,
-    });
-    // 姓名/电话仅工程师注册必填；客户注册不采集、不写入资料
+    const isWebEntry = entryChannel === RegistrationEntryChannel.WEB;
+    // 公司分支：Web 允许选公司或手填且互斥；旧入口只接受必填组织主键
+    const organizationChoice = isWebEntry
+      ? resolveRegistrationOrganizationChoice({ organizationId, organizationName, role })
+      : resolveLegacyRegistrationOrganizationChoice({ organizationId, organizationName });
+    // 姓名/电话仅工程师注册采集：Web 工程师必填；旧入口可省略。
+    // 客户注册不采集、不写入资料
     const engineerProfile =
       role === IdentityTypeEnum.ENGINEER
-        ? normalizeEngineerRegistrationProfile({ realName, phone })
+        ? isWebEntry
+          ? normalizeEngineerRegistrationProfile({ realName, phone })
+          : normalizeLegacyEngineerRegistrationProfile({ realName, phone })
         : null;
     // 申请说明仅工程师待审申请使用；客户注册忽略该字段
     const normalizedApplicationNote =
@@ -132,6 +143,7 @@ export class RegisterWithEmailUsecase {
       // 创建账户（客户直接开通；工程师落待审申请）
       const outcome = await this.createAccount({
         preparedData,
+        entryChannel,
         organizationChoice,
         applicationNote: normalizedApplicationNote,
         engineerProfile,
@@ -284,18 +296,22 @@ export class RegisterWithEmailUsecase {
       nickname: string;
       email: string;
     };
+    entryChannel: RegistrationEntryChannel;
     organizationChoice: RegistrationOrganizationChoice;
     applicationNote: string | null;
-    /** 工程师真实姓名与联系电话；客户注册为 null，不写资料 */
+    /** 工程师真实姓名与联系电话；客户注册或旧入口省略时为 null，不写资料 */
     engineerProfile: { realName: string; phone: string } | null;
   }): Promise<RegisterOutcome> {
-    const { preparedData, organizationChoice, applicationNote, engineerProfile } = params;
+    const { preparedData, entryChannel, organizationChoice, applicationNote, engineerProfile } =
+      params;
     const { loginName, loginEmail, loginPassword, role, status, userState, nickname, email } =
       preparedData;
+    const isWebEntry = entryChannel === RegistrationEntryChannel.WEB;
 
     return await this.transactionRunner.run(async (transactionContext) => {
-      // 公司资格先于账号写入 fail-fast：选名单公司须启用且受管；手填则同事务新建公司
+      // 公司资格先于账号写入 fail-fast：Web 要求启用且受管，旧入口只要求启用
       const organizationId = await this.resolveOrganizationId({
+        entryChannel,
         organizationChoice,
         transactionContext,
       });
@@ -337,8 +353,9 @@ export class RegisterWithEmailUsecase {
           accountId: savedAccount.id,
           nickname,
           email,
-          // 客户可信公司归属；工程师不写该字段（归属由审批后的成员关系表达）
-          customerOrganizationId: role === IdentityTypeEnum.CUSTOMER ? organizationId : null,
+          // 客户可信公司归属：仅 Web 入口写；旧入口保持主线「不写该字段」的行为
+          customerOrganizationId:
+            role === IdentityTypeEnum.CUSTOMER && isWebEntry ? organizationId : null,
           // 工程师姓名与联系电话随资料一同落库；客户不采集
           realName: engineerProfile?.realName ?? null,
           phone: engineerProfile?.phone ?? null,
@@ -389,12 +406,14 @@ export class RegisterWithEmailUsecase {
   /**
    * 解析本次注册的公司主键。
    *
-   * - `EXISTING`：事务内按 Web 注册资格复核（`ACTIVE` 且受管，共享行锁）；
-   * - `SELF_FILLED`：同一事务内新建「启用、未受管、无维修资格」的公司档。
+   * - `EXISTING` + `WEB`：事务内按 Web 注册资格复核（`ACTIVE` 且受管，共享行锁）；
+   * - `EXISTING` + `LEGACY`：事务内只复核 `ACTIVE`，与主线旧请求口径一致；
+   * - `SELF_FILLED`：同一事务内新建「启用、未受管、无维修资格」的公司档（仅 Web）。
    *
    * 复核失败抛出 `ORGANIZATION_NOT_AVAILABLE`，整体事务回滚，不留下任何写入。
    */
   private async resolveOrganizationId(params: {
+    entryChannel: RegistrationEntryChannel;
     organizationChoice: RegistrationOrganizationChoice;
     transactionContext: PersistenceTransactionContext;
   }): Promise<number> {
@@ -406,14 +425,22 @@ export class RegisterWithEmailUsecase {
       return created.id;
     }
 
-    const organization = await this.organizationQueryService.findEligibleRegistrationOption({
-      organizationId: params.organizationChoice.organizationId,
-      transactionContext: params.transactionContext,
-    });
+    const organization =
+      params.entryChannel === RegistrationEntryChannel.WEB
+        ? await this.organizationQueryService.findEligibleRegistrationOption({
+            organizationId: params.organizationChoice.organizationId,
+            transactionContext: params.transactionContext,
+          })
+        : await this.organizationQueryService.findActiveRegistrationOption({
+            organizationId: params.organizationChoice.organizationId,
+            transactionContext: params.transactionContext,
+          });
     if (organization === null) {
       throw new DomainError(
         ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE,
-        '所选公司不存在、已停用或不具备注册资格',
+        params.entryChannel === RegistrationEntryChannel.WEB
+          ? '所选公司不存在、已停用或不具备注册资格'
+          : '所选组织不存在或已停用',
       );
     }
     return organization.id;
