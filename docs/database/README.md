@@ -1,47 +1,20 @@
-<!-- 文件位置：docs/database/README.md -->
-
 # 数据库基线工作区
 
-本目录用于保存已经确认的 Schema、ER 图、字段说明和数据库决策。
+本目录只保留当前数据库部署材料和工程师注册审核验收记录。初始仓库仅包含本 README；后续加入的 PR0 过程材料、历史设计与验收记录已清理，历史可查 Git 记录。
 
-## PR0 当前交接入口
+## 当前正式入口
 
-- 当前操作路径：[复审交付说明](./PR0-复审交付材料-20261026/README.md)、[B独立验收执行清单](./PR0-复审交付材料-20261026/B独立验收执行清单.md)、[本地PR正文](./PR0-复审交付材料-20261026/PR正文.md)。只使用实际推送后的新完整候选 SHA；旧 d4535bc 或只有 f39a8f9 的提交不能运行本轮安全 core。
-- 当前收尾：[A01/A04交付收尾与KEEP补证执行回执](./PR0-B审查core清理安全修复计划-20261026/A01-A04交付收尾与KEEP补证执行回执-20261028.md)。本地补证及交接更新完成：625项一轮/39样例、24表及5文件前后不变、正常夹具零残留；代码/证据已推送 `853cda382f466ab6ca09c2564f12fa1f04dcbd08`；正文修订随功能分支交付，未代签独立复核或B/CI。
-- 本轮独立终审：[2026-10-28完整候选终审报告](./PR0-B审查core清理安全修复计划-20261026/PR0完整候选独立终审报告-20261028.md)。记录当时 D01/E01，不覆盖历史结论；后续完成状态看新收尾回执。
-- 既有库增量升级：[增量升级操作说明](./增量升级操作说明-20261026.md)。正式入口为 `migration:status` / `migration:run` / `migration:verify`，只执行 pending 迁移；`migration:drill:*` 会清空目标库，仅用于迁移链演练，不能当作既有库升级命令。
-- v13 当前正式交接：[部署入口与范围](./v13-deployment/README.md)、[正式部署 SOP](./v13-deployment/deployment-sop.md)、[字段字典](./v13-deployment/schema-dictionary.md)、[数据契约](./v13-deployment/data-contracts.md)、[逐项复审回执](./v13-deployment/review-response.md)。终态为 44 条迁移、51 张业务表；预建空库走 `database:deploy --mode=init`，明确来源/起点的旧库走 `--mode=upgrade`。同一 init 命令可显式初始化组织、默认 6 管理员与可选开发账号；真实配置与历史身份清单放仓库外。计划及完整执行日志只留本地，不是部署依赖；旧接口/真实登录和完整业务 core 后置，未承诺任意真实旧库升级。
-- 组织与维修数据增量（31 条迁移 / 34 张业务表，历史时点）：[部署与增量升级 SOP](./部署与增量升级SOP-20261029.md)。覆盖既有库增量升级、预检/备份/后验、DDL 部分失败恢复、组织初始化与未接入能力边界。第 30 条为 2026-10-29 追加的工程师注册申请表，第 31 条为 2026-10-30 追加的 `repair_request` 处理组合 NULL 安全约束修正。该节“不提供空库初始化”只描述当时时点；当前空库统一走 `--mode=init`，`--mode=upgrade` 仅用于明确确认的旧态。30→31 已在保留数据副本上通过，24→31 已在 accepted 代码正向重建的 24 态 + 合成旧数据上通过（**不是真实历史业务库副本**，来源口径待确认）。
-- 同次增量的[设计与实现说明](./organization-maintenance-data-increment-design.md)保留字段与约束选择、实际实现差异和 PR 审核重点；[验收记录](./organization-maintenance-data-increment-acceptance-20261029.md)记录迁移、真实并发、组织隔离、KEEP 与证据限制。二者不代表一审或二审已通过。
-- 工程师自助注册与组织审核（第 30 条迁移）：[正式设计与验收记录](./self-registration-engineer-approval-acceptance-20261029.md)。含表结构/状态机/锁序、GraphQL 接口契约、S5 实库证据（空库 30 条、29→30 增量、注册/审批/越权/回滚/并发、KEEP 与零残留）、整条分支相对 fork main 的差异审计与需重点审核项。前端页面未交付，未通过独立复审或 CI。
-- 管理员写入链路锁后读取修复：[锁序修复与并发验收记录](./admin-user-write-locking-concurrency-acceptance-20261030.md)。记录组织解析提前建立旧快照的 P0 结论、锁定前置的最小修复、旧快照单测与真实双连接三场景，以及夹具原子创建与失败路径回归（连续两次、KEEP 与零残留）；修复方自测，非独立验证；未改 Entity/Migration/接口/权限规则。
-- 增量迁移二轮修复：[二轮执行回执](./PR0-B审查增量迁移修复计划-20261026/二轮执行回执.md)。记录 R1—R3 修复、E1—E4 证据与 Node 22.19.0 门禁；记录该轮执行时点，当前已推送状态以本节首条为准；B签收仍待完成。
-- 增量迁移三轮修复：[三轮执行回执](./PR0-B审查增量迁移修复计划-20261026/三轮执行回执.md)。记录关键索引/外键有序列映射、C1—C9 反例、旧库副本与 S7 证据；记录该轮执行时点，当前已推送状态以本节首条为准；B签收仍待完成。
-- B接手入口：[B 独立验收入口](./PR0-A侧候选交付-20261025/B独立验收入口.md)。[A侧剩余项完成回执](./PR0-A侧候选交付-20261025/剩余项完成回执.md)保留2026-10-25历史结果；B尚未签收，不把代码Review或A自测当作B独立运行通过。
-- 接手人先读：[PR0a 技术交接说明（给 B）](./PR0a-技术交接说明-20261025.md)，包含隔离环境、两场景复现、清理风险和待填写签收清单。
-- 详细操作：[S7 交接材料与真实调用样例](./PR0-S7交接材料与真实调用样例-20261020.md)，已于 2026-10-25 修正执行参数和当前测试数量。
-- 当前结构：[数据采集 Schema 快照](./data-collection-schema.md)。PR0 新增 9 张表、扩展现有参考资料表，保留已有基线，不重新设计一套资料库。
-- 历史 S0—S8 和独立审查报告记录各自执行时点；不把历史“通过”或旧工作树状态视为当前 B 已签收、远端已合并或最终 CI 已通过。
+- 部署入口与范围：[v13-deployment/README.md](./v13-deployment/README.md)
+- 部署 SOP：[v13-deployment/deployment-sop.md](./v13-deployment/deployment-sop.md)
+- 字段字典：[v13-deployment/schema-dictionary.md](./v13-deployment/schema-dictionary.md)；该文件由后端迁移结构校验测试读取，修改时须同步迁移与测试。
+- 数据契约：[v13-deployment/data-contracts.md](./v13-deployment/data-contracts.md)
 
-## 首次基线流程
+## 近期验收
 
-1. 确认唯一的业务 Schema。
-2. 复用底座已有账户和基础设施表，不建立重复用户表。
-3. 为新增业务表同时编写 Entity 和基线 Migration。
-4. 在全新空库中仅通过 Migration 重建结构。
-5. 比较字段、类型、默认值、索引、外键和约束。
-6. 通过独立、幂等的 Seed 导入开发 Mock Data。
-7. 基线合并后再开始页面并行开发。
+- 工程师自助注册与组织审核：[2026-10-29 历史设计与验收记录](./self-registration-engineer-approval-acceptance-20261029.md)
 
-## 全量 Mock Data
+## 事实来源
 
-当前 34 张业务/基础表（原 14 张加 PR0 的 9 张，再加 2026-10-29 组织与维修数据增量的 10 张，以及同日追加的工程师注册申请表）中，Seed 登记的表由独立、幂等的后端 Seed 导入，不写入 Migration；`engineer_registration_application` 不随 Seed 导入，导入后保持空表。Migration 执行记录表不计入此数。执行前先确认目标为个人开发环境，并在 Seed 使用的环境文件中配置 `MOCK_SEED_PASSWORD`，该密码供三类 Mock 账号登录；`FIELD_ENCRYPTION_KEY` 和 `FIELD_ENCRYPTION_IV` 也必须与 API 使用的值一致：
-
-```bash
-cd backend
-SEED_DOTENV=env/.env.development npm run seed:mock
-```
-
-脚本默认读取 `backend/env/.env.e2e`，其次读取 `backend/env/.env.development`；上面的 Bash/WSL 命令显式选择个人开发配置，避免误用自动测试配置。执行前确认文件存在且指向预期个人数据库。它会检查其登记的 Mock 表是否已由 Migration 创建（缺失即失败，不覆盖未登记的新表），只更新保留的 Mock 主键/业务键，不清空其他数据，并在同一事务内校验账号密码、角色密文、各表数据量及业务外键链路。除设备型号外，Mock 自增主键保留在 `900000-999999` 区间。数据库名必须包含 `test`、`drill`、`dev` 或 `local`；其他非生产库还需显式设置 `SEED_ALLOW_NON_TEST_DB=true`。不能为绕过冲突向共享/生产库导入。
-
-Schema 设计稿是首次基线的审核输入；代码合并后，Entity 表达当前 ORM 映射，Migration 是数据库可执行交付记录。禁止通过个人数据库中的手工改表代替 Migration。
+- Schema 以 Entity 和 Migration 为准；本目录文档只解释决策与操作。
+- 禁止通过个人数据库手工改表代替 Migration。
+- 阶段性计划、执行回执和终审材料不再提交仓库，避免与当前基线混淆。
