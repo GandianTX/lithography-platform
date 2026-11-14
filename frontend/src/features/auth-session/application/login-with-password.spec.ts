@@ -8,6 +8,9 @@ import { createLoginWithPasswordUsecase } from './login-with-password';
 const ENGINEER_SESSION: AuthSessionSnapshot = {
   accessToken: 'access-token',
   accountId: 900101,
+  adminLevel: null,
+  customerOrganizationId: null,
+  restriction: 'NONE',
   role: 'ENGINEER',
   userInfo: {
     accessGroup: ['ENGINEER'],
@@ -38,10 +41,44 @@ describe('login with password usecase', () => {
     expect(session.establishSession).toHaveBeenCalledWith(ENGINEER_SESSION);
     expect(result).toEqual({
       accountId: 900101,
+      adminLevel: null,
+      customerOrganizationId: null,
+      restriction: 'NONE',
       role: 'ENGINEER',
       userInfo: ENGINEER_SESSION.userInfo,
     });
     expect(result).not.toHaveProperty('accessToken');
+  });
+
+  it('keeps the restricted-session facts in the token-free view', async () => {
+    const restrictedSession: AuthSessionSnapshot = {
+      ...ENGINEER_SESSION,
+      adminLevel: 2,
+      customerOrganizationId: null,
+      restriction: 'MUST_CHANGE_PASSWORD',
+    };
+    const gateway = {
+      loginWithPassword: vi.fn().mockResolvedValue(restrictedSession),
+    };
+    const session = {
+      establishSession: vi.fn(),
+    };
+    const loginWithPassword = createLoginWithPasswordUsecase({ gateway, session });
+
+    const result = await loginWithPassword({
+      loginName: 'mock_engineer_chen',
+      loginPassword: 'local-password',
+    });
+
+    expect(session.establishSession).toHaveBeenCalledWith(restrictedSession);
+    expect(result).toEqual({
+      accountId: 900101,
+      adminLevel: 2,
+      customerOrganizationId: null,
+      restriction: 'MUST_CHANGE_PASSWORD',
+      role: 'ENGINEER',
+      userInfo: ENGINEER_SESSION.userInfo,
+    });
   });
 
   it('does not establish a session when authentication fails', async () => {

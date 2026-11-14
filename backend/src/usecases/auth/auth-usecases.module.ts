@@ -1,6 +1,7 @@
 // src/usecases/auth/auth-usecases.module.ts
 import { AuthModule } from '@modules/auth/auth.module';
 import { ThirdPartyAuthModule } from '@modules/third-party-auth/third-party-auth.module';
+import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { Module } from '@nestjs/common';
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { DecideLoginRoleUsecase } from '@src/usecases/auth/decide-login-role.usecase';
@@ -12,7 +13,7 @@ import { LoginWithThirdPartyUsecase } from '@src/usecases/auth/login-with-third-
 import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-access-token-session.usecase';
 
 @Module({
-  imports: [AuthModule, ThirdPartyAuthModule, AccountInstallerModule],
+  imports: [AuthModule, ThirdPartyAuthModule, AccountInstallerModule, LithographyModule],
   providers: [
     LoginWithPasswordUsecase,
     ExecuteLoginFlowUsecase,

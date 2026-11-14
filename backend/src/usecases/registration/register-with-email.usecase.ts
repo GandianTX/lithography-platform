@@ -1,6 +1,7 @@
 // src/usecases/registration/register-with-email.usecase.ts
 
 import { AccountStatus, IdentityTypeEnum, UserAccountView } from '@app-types/models/account.types';
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { UserState } from '@app-types/models/user-info.types';
 import {
   RegisterWithEmailParams,
@@ -15,6 +16,7 @@ import { AccountService } from '@src/modules/account/base/services/account.servi
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EngineerRegistrationService } from '@src/modules/lithography/engineer-registration.service';
 import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import { OrganizationService } from '@src/modules/lithography/organization.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import {
   TRANSACTION_RUNNER,
@@ -22,10 +24,12 @@ import {
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import { PinoLogger } from 'nestjs-pino';
 import {
+  normalizeEngineerRegistrationProfile,
   normalizeRegisterWithEmailInput,
   normalizeRegistrationApplicationNote,
   normalizeRegistrationNicknameCandidatesInput,
-  normalizeRegistrationOrganizationId,
+  resolveRegistrationOrganizationChoice,
+  type RegistrationOrganizationChoice,
 } from './registration-input.normalize';
 
 /** 注册事务内的写入结果：账号视图 + 工程师待审申请主键（客户为 null） */
@@ -45,8 +49,9 @@ type RegisterOutcome = {
  *   落一份 `PENDING` 待审申请（含申请说明）。所选组织管理员审核通过后，
  *   才由审批用例同事务启用账号并建立 `ENGINEER` 成员关系。
  *
- * 所选组织（`organizationId`）必须在事务内复核为 `ACTIVE`；客户端自报值只作申请参数，
- * 绝不作为组织归属的最终凭证。任一步失败整体回滚，不留下半成品状态组合。
+ * 所选公司（`organizationId`）必须在事务内按 Web 注册资格
+ * （`ACTIVE` 且属于一级维护名单）复核；客户端自报值只作申请参数，
+ * 绝不作为公司归属的最终凭证。任一步失败整体回滚，不留下半成品状态组合。
  *
  * 管理员代建入口（`AdminCreateUserUsecase`）不受本用例影响，继续使用可信组织解析绑定。
  */
@@ -57,6 +62,7 @@ export class RegisterWithEmailUsecase {
     private readonly accountQueryService: AccountQueryService,
     private readonly passwordPolicyService: PasswordPolicyService,
     private readonly organizationQueryService: OrganizationQueryService,
+    private readonly organizationService: OrganizationService,
     private readonly organizationMembershipService: OrganizationMembershipService,
     private readonly engineerRegistrationService: EngineerRegistrationService,
     private readonly logger: PinoLogger,
@@ -77,8 +83,11 @@ export class RegisterWithEmailUsecase {
       loginEmail,
       loginPassword,
       nickname,
+      realName,
+      phone,
       type = RegisterTypeEnum.CUSTOMER,
       organizationId,
+      organizationName,
       applicationNote,
       inviteToken,
       clientIp,
@@ -87,8 +96,17 @@ export class RegisterWithEmailUsecase {
     const normalizedLoginEmail = normalizedInput.loginEmail;
     const normalizedNickname = normalizedInput.nickname;
     const role = this.mapRegisterTypeToRole(type);
-    // 组织 ID 只做形态校验；有效性在事务内复核
-    const normalizedOrganizationId = normalizeRegistrationOrganizationId(organizationId);
+    // 公司分支：选择名单内公司或手填自家公司名称，二者互斥；工程师本期只允许选择
+    const organizationChoice = resolveRegistrationOrganizationChoice({
+      organizationId,
+      organizationName,
+      role,
+    });
+    // 姓名/电话仅工程师注册必填；客户注册不采集、不写入资料
+    const engineerProfile =
+      role === IdentityTypeEnum.ENGINEER
+        ? normalizeEngineerRegistrationProfile({ realName, phone })
+        : null;
     // 申请说明仅工程师待审申请使用；客户注册忽略该字段
     const normalizedApplicationNote =
       role === IdentityTypeEnum.ENGINEER
@@ -113,8 +131,9 @@ export class RegisterWithEmailUsecase {
       // 创建账户（客户直接开通；工程师落待审申请）
       const outcome = await this.createAccount({
         preparedData,
-        organizationId: normalizedOrganizationId,
+        organizationChoice,
         applicationNote: normalizedApplicationNote,
+        engineerProfile,
       });
 
       if (inviteToken) {
@@ -150,6 +169,11 @@ export class RegisterWithEmailUsecase {
     } catch (error) {
       if (error instanceof DomainError) {
         throw error;
+      }
+
+      // 并发注册可能同时通过预检查，最终由唯一索引兜底；映射为可操作的业务错误
+      if (isDuplicateAccountEntryError(error)) {
+        throw new DomainError(ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS, '该登录名或邮箱已被注册');
       }
 
       if (error instanceof Error) {
@@ -198,7 +222,7 @@ export class RegisterWithEmailUsecase {
   }) {
     const nicknameCandidates = normalizeRegistrationNicknameCandidatesInput({
       providedNickname: nickname,
-      fallbackOptions: [loginName ?? undefined, loginEmail.split('@')[0]],
+      fallbackOptions: [loginName ?? undefined, loginEmail.split('@')[0], '用户'],
     });
 
     const finalNickname = await this.accountQueryService.pickAvailableNickname({
@@ -240,8 +264,8 @@ export class RegisterWithEmailUsecase {
   /**
    * 创建账户（单一事务）
    *
-   * 顺序：复核组织有效 → 密码策略 → 账号行 → 密码哈希 → 资料行 →
-   * 客户建 CUSTOMER 成员 / 工程师落 PENDING 申请 → 同事务回读账号视图。
+   * 顺序：复核/新建公司 → 密码策略 → 账号行 → 密码哈希 → 资料行 →
+   * 客户建 CUSTOMER 成员与可信公司归属 / 工程师落 PENDING 申请 → 同事务回读账号视图。
    * 角色三源（`identity_hint` / `access_group` / `meta_digest`）写同一个单元素角色；
    * 工程师的双状态同写 PENDING，杜绝「已启用但待审」或反之的组合。
    *
@@ -259,22 +283,21 @@ export class RegisterWithEmailUsecase {
       nickname: string;
       email: string;
     };
-    organizationId: number;
+    organizationChoice: RegistrationOrganizationChoice;
     applicationNote: string | null;
+    /** 工程师真实姓名与联系电话；客户注册为 null，不写资料 */
+    engineerProfile: { realName: string; phone: string } | null;
   }): Promise<RegisterOutcome> {
-    const { preparedData, organizationId, applicationNote } = params;
+    const { preparedData, organizationChoice, applicationNote, engineerProfile } = params;
     const { loginName, loginEmail, loginPassword, role, status, userState, nickname, email } =
       preparedData;
 
     return await this.transactionRunner.run(async (transactionContext) => {
-      // 组织有效性先于任何写入 fail-fast：所选组织不存在/停用时账号零落库
-      const organization = await this.organizationQueryService.findActiveRegistrationOption({
-        organizationId,
+      // 公司资格先于账号写入 fail-fast：选名单公司须启用且受管；手填则同事务新建公司
+      const organizationId = await this.resolveOrganizationId({
+        organizationChoice,
         transactionContext,
       });
-      if (organization === null) {
-        throw new DomainError(ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE, '所选组织不存在或已停用');
-      }
 
       const passwordValidation = this.passwordPolicyService.validatePassword(loginPassword);
       if (!passwordValidation.isValid) {
@@ -313,6 +336,11 @@ export class RegisterWithEmailUsecase {
           accountId: savedAccount.id,
           nickname,
           email,
+          // 客户可信公司归属；工程师不写该字段（归属由审批后的成员关系表达）
+          customerOrganizationId: role === IdentityTypeEnum.CUSTOMER ? organizationId : null,
+          // 工程师姓名与联系电话随资料一同落库；客户不采集
+          realName: engineerProfile?.realName ?? null,
+          phone: engineerProfile?.phone ?? null,
           accessGroup: [role],
           metaDigest: [role],
           userState,
@@ -356,4 +384,69 @@ export class RegisterWithEmailUsecase {
       };
     });
   }
+
+  /**
+   * 解析本次注册的公司主键。
+   *
+   * - `EXISTING`：事务内按 Web 注册资格复核（`ACTIVE` 且受管，共享行锁）；
+   * - `SELF_FILLED`：同一事务内新建「启用、未受管、无维修资格」的公司档。
+   *
+   * 复核失败抛出 `ORGANIZATION_NOT_AVAILABLE`，整体事务回滚，不留下任何写入。
+   */
+  private async resolveOrganizationId(params: {
+    organizationChoice: RegistrationOrganizationChoice;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<number> {
+    if (params.organizationChoice.kind === 'SELF_FILLED') {
+      const created = await this.organizationService.createSelfRegisteredCompany({
+        name: params.organizationChoice.organizationName,
+        transactionContext: params.transactionContext,
+      });
+      return created.id;
+    }
+
+    const organization = await this.organizationQueryService.findEligibleRegistrationOption({
+      organizationId: params.organizationChoice.organizationId,
+      transactionContext: params.transactionContext,
+    });
+    if (organization === null) {
+      throw new DomainError(
+        ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE,
+        '所选公司不存在、已停用或不具备注册资格',
+      );
+    }
+    return organization.id;
+  }
+}
+
+/**
+ * 并发注册的唯一索引冲突识别：`login_email` / `login_name` 重复时映射为
+ * `ACCOUNT_ALREADY_EXISTS`；其他唯一键冲突维持通用注册失败。
+ */
+function isDuplicateAccountEntryError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const candidate = error as {
+    code?: unknown;
+    errno?: unknown;
+    message?: unknown;
+    driverError?: { code?: unknown; errno?: unknown; message?: unknown };
+  };
+  const driver = candidate.driverError;
+  const code = typeof driver?.code === 'string' ? driver.code : candidate.code;
+  const errno = typeof driver?.errno === 'number' ? driver.errno : candidate.errno;
+  const message =
+    typeof driver?.message === 'string'
+      ? driver.message
+      : typeof candidate.message === 'string'
+        ? candidate.message
+        : '';
+
+  if (code !== 'ER_DUP_ENTRY' && errno !== 1062) {
+    return false;
+  }
+
+  return message.includes('uk_login_email') || message.includes('uk_login_name');
 }

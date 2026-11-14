@@ -13,7 +13,7 @@
 // 未记录的遗漏行，绝不并入删除目标（同标题异主行保持原样）。
 // 上传文件清理由入口自行过授权门 + 严格专用库门并经同一核验 SQL 回读实际 DATABASE()，
 // 再按记录引用核验目标行字段 / 文件元数据 / 引用唯一性，核验失败保留文件并让用例失败。
-// 专用隔离库（严格 lithography_e2e + 显式 opt-in）内按精确 ID + 预期事实走受保护物理清理，
+// 专用隔离库（严格 lithography_work_e2e + 显式 opt-in）内按精确 ID + 预期事实走受保护物理清理，
 // 事务内核验归属 / 存储引用 / 外部引用，任一不符即零删除并让用例转红；共享开发库只软删不物删。
 // 清理失败不再以警告吞掉：主断言错误保留，清理错误一并报告，专用入口只有在本轮数据库行与
 // 上传文件均核验为零残留时才能通过。
@@ -210,7 +210,7 @@ async function runWithCleanup(
 // 精确 ID」的真实夹具 + 存储目录真实文件执行真实 SQL：覆盖可空字段被改成 NULL 的各条失败路径——
 // 核验必须把 NULL 不一致计入 field_mismatch_rows → 失败关闭 → 零软删 / 零物理删行 / 零文件删除。
 // 夹具的插入 / 故意改 NULL / 恢复一律经 runGuardedFixtureWrite（复用显式授权门 + 测试库命名门 +
-// 严格 lithography_e2e 库名门，并复查执行连接实际 DATABASE()）；收尾不再直接 DELETE / rmSync，而是
+// 严格 lithography_work_e2e 库名门，并复查执行连接实际 DATABASE()）；收尾不再直接 DELETE / rmSync，而是
 // 先「核验后恢复」被改坏的列，再复用受保护的文件 / 资料行清理 helper。夹具标题使用独立前缀（不含
 // RUN_TITLE_KEYWORD），避免被主链路用例的标题反查命中；操作一律以本轮登记的精确 ID 为边界并校验
 // 标题 / 创建人 / 当前预期字段，绝不按标题前缀认领记录。
@@ -271,7 +271,7 @@ function sqlLiteral(value: string | null): string {
 
 /**
  * 直插一条夹具行并立即取回精确 ID（写入经 runGuardedFixtureWrite 统一安全入口：
- * 授权门 + 严格 lithography_e2e 库名门 + 实际 DATABASE() 复查）。同一 mysql 进程 = 同一连接，
+ * 授权门 + 严格 lithography_work_e2e 库名门 + 实际 DATABASE() 复查）。同一 mysql 进程 = 同一连接，
  * 故 INSERT 后的 LAST_INSERT_ID() 必为该行主键；取回后立即登记为本轮清理边界。
  */
 function insertSqlFixtureRow(
@@ -1006,7 +1006,7 @@ test.describe('real backend reference document flow', () => {
   // 未物理删除、文件保留；同批一条不符时整批零删除。反向对照：预期与实际均为 NULL 的文本资料、
   // 正常文件资料必须核验通过并完成清理（NULL 安全比较不得误判）。
   //
-  // 夹具写入（插入 / 故意改 NULL / 恢复）统一经 runGuardedFixtureWrite（授权门 + 严格 lithography_e2e
+  // 夹具写入（插入 / 故意改 NULL / 恢复）统一经 runGuardedFixtureWrite（授权门 + 严格 lithography_work_e2e
   // 库名门 + 实际 DATABASE() 复查）；收尾先对仍在库、被故意改 NULL 的夹具「先核验后恢复」，再复用受
   // 保护的文件 / 资料行清理 helper（不再直接 DELETE / rmSync）；文件清理失败即停止行清理，收尾错误经
   // runWithCleanup 与原测试错误一并报告。操作一律以本轮登记的精确 ID 为边界并校验标题 / 创建人。
@@ -1014,10 +1014,10 @@ test.describe('real backend reference document flow', () => {
     test.setTimeout(90_000);
     const env = readBackendEnv();
 
-    // 本文件只由专用入口收集（lithography_e2e + 显式授权）；仍自行复查，缺失即硬失败，不以 skip 掩盖。
+    // 本文件只由专用入口收集（lithography_work_e2e + 显式授权）；仍自行复查，缺失即硬失败，不以 skip 掩盖。
     if (!isPhysicalCleanupEnabled(env)) {
       throw new Error(
-        `真实 SQL 回归要求专用隔离库 lithography_e2e 且显式设置 E2E_ALLOW_PHYSICAL_CLEANUP=1，当前 DB_NAME=${JSON.stringify(env.DB_NAME)}，拒绝在非专用环境执行`,
+        `真实 SQL 回归要求专用隔离库 lithography_work_e2e 且显式设置 E2E_ALLOW_PHYSICAL_CLEANUP=1，当前 DB_NAME=${JSON.stringify(env.DB_NAME)}，拒绝在非专用环境执行`,
       );
     }
 
@@ -1195,7 +1195,7 @@ test.describe('real backend reference document flow', () => {
 
     if (!isPhysicalCleanupEnabled(env)) {
       throw new Error(
-        `真实 SQL 回归要求专用隔离库 lithography_e2e 且显式设置 E2E_ALLOW_PHYSICAL_CLEANUP=1，当前 DB_NAME=${JSON.stringify(env.DB_NAME)}，拒绝在非专用环境执行`,
+        `真实 SQL 回归要求专用隔离库 lithography_work_e2e 且显式设置 E2E_ALLOW_PHYSICAL_CLEANUP=1，当前 DB_NAME=${JSON.stringify(env.DB_NAME)}，拒绝在非专用环境执行`,
       );
     }
 

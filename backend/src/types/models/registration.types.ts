@@ -47,8 +47,15 @@ export interface RegisterWithEmailParams {
   loginEmail: string;
   loginPassword: string;
   nickname?: string | null;
+  /** 真实姓名：工程师注册必填，客户注册忽略 */
+  realName?: string | null;
+  /** 联系电话：工程师注册必填，客户注册忽略 */
+  phone?: string | null;
   type?: RegisterTypeEnum;
-  organizationId: number;
+  /** 选择名单内公司时使用；与 `organizationName` 互斥 */
+  organizationId?: number | null;
+  /** 手填自家公司名称时使用；与 `organizationId` 互斥 */
+  organizationName?: string | null;
   applicationNote?: string | null;
   inviteToken?: string;
   clientIp?: string;

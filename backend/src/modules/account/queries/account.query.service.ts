@@ -137,6 +137,8 @@ export class AccountQueryService {
         accountId: params.accountId,
         accountStatus: null,
         identityHint: null,
+        mustChangePassword: false,
+        adminLevel: null,
         userInfo: null,
       };
     }
@@ -146,11 +148,14 @@ export class AccountQueryService {
       accountId: account.id,
       accountStatus: account.status,
       identityHint: account.identityHint,
+      mustChangePassword: account.mustChangePassword === true,
+      adminLevel: account.adminLevel ?? null,
       userInfo: userInfo
         ? {
             userState: userInfo.userState,
             accessGroup: toRoleArraySnapshot(userInfo.accessGroup),
             metaDigest: toRoleArraySnapshot(userInfo.metaDigest),
+            customerOrganizationId: userInfo.customerOrganizationId ?? null,
           }
         : null,
     };

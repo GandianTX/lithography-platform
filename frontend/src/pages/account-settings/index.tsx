@@ -4,8 +4,8 @@ import { useNavigate } from 'react-router';
 
 import { AccountSettingsPanel } from '@/features/account-settings';
 import {
+  clearSessionAfterPasswordChange,
   getCurrentAuthSession,
-  logoutAuthSessionIfIdentityMatches,
   sampleCurrentAuthSessionIdentity,
   updateCurrentAuthSessionNickname,
 } from '@/features/auth-session';
@@ -39,16 +39,10 @@ export function AccountSettingsPage() {
 
       <AccountSettingsPanel
         onPasswordChangeSucceeded={async (initiatedIdentity) => {
-          try {
-            const cleared = await logoutAuthSessionIfIdentityMatches(initiatedIdentity);
-
-            // 身份不匹配（退出重登 / 已切换账号的迟到响应）：忽略，不打断当前会话；
-            // 返回 false 让表单对该次响应完全静默（不展示成功提示）
-            if (!cleared) {
-              return false;
-            }
-          } catch {
-            // 缓存清理失败不阻断回到登录页（会话已清理，与 LogoutButton 同一口径）
+          // 身份不匹配（退出重登 / 已切换账号的迟到响应）：不打断当前会话，
+          // 返回 false 让表单对该次响应完全静默（不展示成功提示）
+          if (!(await clearSessionAfterPasswordChange(initiatedIdentity))) {
+            return false;
           }
 
           navigate('/login');

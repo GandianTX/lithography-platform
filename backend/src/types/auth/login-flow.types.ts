@@ -1,6 +1,7 @@
 // src/types/auth/login-flow.types.ts
 
 import { AccountStatus, AudienceTypeEnum, IdentityTypeEnum } from '@app-types/models/account.types';
+import { SessionRestriction } from './session-restriction.types';
 
 /**
  * ExecuteLoginFlowUsecase 输出类型
@@ -48,6 +49,12 @@ export interface EnrichLoginWithIdentityInput {
   accessGroup: IdentityTypeEnum[]; // 修复：从 string[] 改为 IdentityTypeEnum[]
   account: MinimalAccountInfo;
   userInfo: MinimalUserInfo;
+  /** 会话限制状态（缺省 NONE） */
+  restriction?: SessionRestriction;
+  /** 管理员等级 */
+  adminLevel?: number | null;
+  /** 客户公司归属 */
+  customerOrganizationId?: number | null;
   // 可选开关（默认全部为 true）
   options?: {
     includeIdentity?: boolean;
@@ -69,6 +76,11 @@ export interface EnrichedLoginResult {
   role: IdentityTypeEnum;
   identity: unknown; // 改为 unknown，由适配器层处理具体类型
   accessGroup: IdentityTypeEnum[];
+
+  // 会话限制与身份扩展（S1；旧调用方可忽略）
+  restriction: SessionRestriction;
+  adminLevel: number | null;
+  customerOrganizationId: number | null;
 
   // 账号和用户信息（改为可选字段）
   account?: MinimalAccountInfo;

@@ -7,8 +7,9 @@
  * 页面只负责页头、feature 公开 UI 组合，以及两条会话侧写接线：
  * 1. 改密成功后使既有会话失效：仅当「发起改密的那个会话」仍是当前会话（同账号且同
  *    会话代次）时清理 auth-session 的唯一会话真源并跳转登录页；退出重登 / 已切换
- *    账号的迟到响应被忽略——不清理、不跳转，并以返回值 false 告知表单**完全静默
- *    （不展示成功提示）**；缓存清理失败不阻断跳转。
+ * 账号的迟到响应被忽略——不清理、不跳转，并以返回值 false 告知表单**完全静默
+ * （不展示成功提示）**；缓存清理失败不阻断跳转（该口径已下沉到 auth-session 的
+ * clearSessionAfterPasswordChange 工厂，由 usecase 单测覆盖）。
  * 2. 资料保存成功后把权威昵称经窄入口回写会话真源：accountId 在**请求发起前**
  *    经 sampleAccountId 采样固化，迟到响应携带发起者身份，由 store 与当前会话
  *    比对拒绝——A 发起保存后切换 B 的场景不会把 A 的昵称写进 B 的会话。
@@ -107,7 +108,7 @@ async function renderAccountSettingsPage() {
   vi.doMock('@/features/auth-session', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/features/auth-session')>();
 
-    return { ...actual, logoutAuthSessionIfIdentityMatches: condLogoutMock };
+    return { ...actual, clearSessionAfterPasswordChange: condLogoutMock };
   });
   const { AccountSettingsPage } = await import('./index');
 
@@ -129,7 +130,7 @@ function establishSession(accountId: number, nickname: string): void {
       accountId,
       role: 'CUSTOMER',
       userInfo: { accessGroup: ['CUSTOMER'], nickname },
-      version: 1,
+      version: 2,
     }),
   );
 }
@@ -212,18 +213,7 @@ describe('AccountSettingsPage', () => {
     await waitFor(() => expect(panelState.deliveredResult).toBe(false));
   });
 
-  it('会话清理失败不阻断跳转登录页（与 LogoutButton 同一口径）', async () => {
-    condLogoutMock.mockRejectedValue(new Error('cache reset failed'));
-    panelState.identityToDeliver = { accountId: 900201, epoch: 1 };
-    await renderAccountSettingsPage();
-
-    fireEvent.click(screen.getByRole('button', { name: TRIGGER_LABEL }));
-
-    await waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
-    expect(navigateMock).toHaveBeenCalledWith('/login');
-  });
-
-  it('清理未完成前不提前跳转：跳转发生在条件登出 promise 之后', async () => {
+  it('清理未完成前不提前跳转：跳转发生在会话收口 promise 之后', async () => {
     let releaseLogout: () => void = () => {};
     condLogoutMock.mockImplementation(
       () =>
@@ -370,7 +360,7 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
         accountId,
         role: 'CUSTOMER',
         userInfo: { accessGroup: ['CUSTOMER'], nickname },
-        version: 1,
+        version: 2,
       }),
     );
   }
@@ -393,7 +383,7 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
     }));
     vi.doMock('@/features/auth-session', async (importOriginal) => ({
       ...(await importOriginal<Record<string, unknown>>()),
-      logoutAuthSessionIfIdentityMatches: condLogoutMock,
+      clearSessionAfterPasswordChange: condLogoutMock,
     }));
 
     const { AccountSettingsPage } = await import('./index');

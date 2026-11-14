@@ -33,9 +33,9 @@ import { toEngineerRegistrationApplicationPageDTO } from './dto/engineer-registr
 import { EngineerRegistrationCredentialInput } from './dto/engineer-registration-credential.input';
 import { EngineerRegistrationStatusDTO } from './dto/engineer-registration-status.dto';
 import {
-  RegistrationOrganizationDTO,
-  toRegistrationOrganizationDTO,
-} from './dto/registration-organization.dto';
+  RegistrationOrganizationPageDTO,
+  toRegistrationOrganizationPageDTO,
+} from './dto/registration-organization-page.dto';
 import { RegisterResult } from './dto/register-result.dto';
 import { RegisterInput } from './dto/register.input';
 import { ResubmitEngineerRegistrationResultDTO } from './dto/resubmit-engineer-registration-result.dto';
@@ -95,8 +95,11 @@ export class RegistrationResolver {
       loginEmail: input.loginEmail,
       loginPassword: input.loginPassword,
       nickname: input.nickname,
+      realName: input.realName ?? null,
+      phone: input.phone ?? null,
       type: input.type,
-      organizationId: input.organizationId,
+      organizationId: input.organizationId ?? null,
+      organizationName: input.organizationName ?? null,
       applicationNote: input.applicationNote,
       inviteToken: input.inviteToken,
       clientIp,
@@ -138,16 +141,31 @@ export class RegistrationResolver {
   }
 
   /**
-   * 注册可选组织（公开只读）：两类注册都必须选择有效组织。
-   * 返回结果只含主键与名称；提交的 organizationId 仍由写入事务复核有效性。
+   * 注册公司候选（公开只读）：客户与工程师注册共用。
+   *
+   * 资格口径为 `status = ACTIVE AND is_managed_company = true`，支持名称关键字与
+   * OFFSET 分页；返回结果只含主键、名称与分页信息。提交的 organizationId 仍由写入
+   * 事务按同一资格复核，本查询结果不作为资格凭证。
    */
-  @Query(() => [RegistrationOrganizationDTO], {
+  @Query(() => RegistrationOrganizationPageDTO, {
     name: 'registrationOrganizations',
-    description: '注册可选组织（公开，仅 ACTIVE 组织）',
+    description: '注册可选公司（公开，仅启用且属于一级维护名单的公司）',
   })
-  async registrationOrganizations(): Promise<RegistrationOrganizationDTO[]> {
-    const options = await this.listRegistrationOrganizations.execute();
-    return options.map((option) => toRegistrationOrganizationDTO(option));
+  @ValidateInput()
+  async registrationOrganizations(
+    @Args('pagination', { description: '分页参数（仅 OFFSET）' }) pagination: PaginationArgs,
+    @Args('keyword', {
+      type: () => String,
+      nullable: true,
+      description: '公司名称关键字；缺省表示不过滤',
+    })
+    keyword?: string,
+  ): Promise<RegistrationOrganizationPageDTO> {
+    const page = await this.listRegistrationOrganizations.execute({
+      keyword: keyword ?? null,
+      pagination: mapGqlToCoreParams(pagination),
+    });
+    return toRegistrationOrganizationPageDTO(page);
   }
 
   /**

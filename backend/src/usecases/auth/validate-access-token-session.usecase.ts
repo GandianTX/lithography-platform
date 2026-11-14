@@ -1,12 +1,18 @@
 // src/usecases/auth/validate-access-token-session.usecase.ts
 import type { JwtPayload } from '@app-types/jwt.types';
-import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
-import { UserState } from '@app-types/models/user-info.types';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
+import { type AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
+import {
+  isAccountStatusAllowedForSession,
+  isUserStateAllowedForSession,
+  resolveSessionRestriction,
+} from '@core/account/policy/session-restriction.policy';
 import { validateAccountRoleSet } from '@core/account/policy/account-role-convergence.policy';
 import { DomainError, JWT_ERROR } from '@core/common/errors/domain-error';
 import type { AccountSessionAuthoritySnapshot } from '@src/modules/account/account.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { Injectable } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 
@@ -61,12 +67,13 @@ import { PinoLogger } from 'nestjs-pino';
 export class ValidateAccessTokenSessionUsecase {
   constructor(
     private readonly accountQueryService: AccountQueryService,
+    private readonly engineerRegistrationQueryService: EngineerRegistrationQueryService,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(ValidateAccessTokenSessionUsecase.name);
   }
 
-  async execute(input: { readonly payload: JwtPayload }): Promise<JwtPayload> {
+  async execute(input: { readonly payload: JwtPayload }): Promise<AuthenticatedSessionUser> {
     const { payload } = input;
 
     // 1. 只接受 access token：refresh token 不得进入受保护请求的认证链路
@@ -89,11 +96,39 @@ export class ValidateAccessTokenSessionUsecase {
       // 资料行缺失（账号行存在）：同上失败关闭，日志按缺失行区分诊断粒度（R10-3）
       this.reject(2, 'USER_INFO_RECORD_MISSING', payload.sub);
     }
-    if (snapshot.accountStatus !== AccountStatus.ACTIVE) {
-      this.reject(3, 'ACCOUNT_STATUS_NOT_ACTIVE', payload.sub);
+    // 3~4. 账号/资料状态：ACTIVE 放行；PENDING 仅在存在明确限制（必须改密 / 工程师待审 /
+    // 工程师拒绝）时放行给受限会话；其余状态（停用、封禁、删除、注销）一律失败关闭。
+    // 门禁口径与登录入口共用 core 纯策略；本用例固定允许受限会话，
+    // 业务入口的限制由 RolesGuard / SessionRestrictionGuard 继续拦截。
+    const latestEngineerApplication =
+      snapshot.identityHint === IdentityTypeEnum.ENGINEER
+        ? await this.engineerRegistrationQueryService.findLatestByAccountId(payload.sub)
+        : null;
+
+    const restriction = resolveSessionRestriction({
+      mustChangePassword: snapshot.mustChangePassword,
+      identityHint: snapshot.identityHint,
+      accountStatus: snapshot.accountStatus,
+      userState: snapshot.userInfo.userState,
+      latestEngineerApplicationStatus: latestEngineerApplication?.status ?? null,
+    });
+
+    const isAccountStatusAllowed = isAccountStatusAllowedForSession({
+      accountStatus: snapshot.accountStatus,
+      restriction,
+      allowRestrictedSession: true,
+    });
+    if (!isAccountStatusAllowed) {
+      this.reject(3, 'ACCOUNT_STATUS_NOT_ALLOWED', payload.sub);
     }
-    if (snapshot.userInfo.userState !== UserState.ACTIVE) {
-      this.reject(4, 'USER_STATE_NOT_ACTIVE', payload.sub);
+
+    const isUserStateAllowed = isUserStateAllowedForSession({
+      userState: snapshot.userInfo.userState,
+      restriction,
+      allowRestrictedSession: true,
+    });
+    if (!isUserStateAllowed) {
+      this.reject(4, 'USER_STATE_NOT_ALLOWED', payload.sub);
     }
 
     // 5. 历史会话兼容的三源角色集合校验。管理员写链路仍使用严格单角色收敛。
@@ -119,8 +154,16 @@ export class ValidateAccessTokenSessionUsecase {
       this.reject(7, 'ACTIVE_ROLE_NOT_IN_ROLE_SET', payload.sub);
     }
 
-    // 复核通过：原样返回 payload，Strategy 契约与下游 session 装配不变
-    return payload;
+    // 复核通过：返回 JWT 声明 + 请求期会话事实（restriction / 身份字段），Strategy 与下游
+    // 业务层仍可把返回值当作 `JwtPayload` 使用
+    return {
+      ...payload,
+      accountId: payload.sub,
+      role: payload.activeRole ?? null,
+      adminLevel: snapshot.adminLevel,
+      customerOrganizationId: snapshot.userInfo.customerOrganizationId,
+      restriction,
+    };
   }
 
   /**

@@ -9,4 +9,6 @@ export type {
   AccountSettingsView,
   ChangePasswordSessionIdentity,
 } from './application/account-settings.types';
+export { useAccountSettings } from './application/use-account-settings';
 export { AccountSettingsPanel } from './ui/account-settings-panel';
+export { ChangePasswordForm } from './ui/change-password-form';

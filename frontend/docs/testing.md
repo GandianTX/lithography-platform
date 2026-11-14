@@ -46,11 +46,11 @@
 - 数据库连接五项（`DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASS`/`DB_NAME`）来自进程环境或
   `backend/env/.env.development`（本地文件，不入库），由
   `e2e-real/dedicated-e2e-environment.ts` 一次性解析并校验；
-- `DB_NAME` 必须严格等于 `lithography_e2e`：专用配置在加载期以「**外部未设置才注入专用值、
+- `DB_NAME` 必须严格等于 `lithography_work_e2e`：专用配置在加载期以「**外部未设置才注入专用值、
   外部值非空且与专用值冲突即硬失败**」写入（不再依赖 npm script 的 `cross-env`），
   且必须早于 `resolveDedicatedE2EDatabase()` 的解析与校验；`E2E_BACKEND_ORIGIN`
   同为该口径（专用后端 `http://127.0.0.1:3100`）。
-- 本机 MySQL 中已创建空库 `lithography_e2e`（链路只清空表，不创建库）。
+- 本机 MySQL 中已创建空库 `lithography_work_e2e`（链路只清空表，不创建库）。
 
 **入口边界（本节的自注入仅限本配置；PR4 工程师链路的入口不在此列）**
 
@@ -89,7 +89,7 @@ Remove-Item Env:E2E_ALLOW_PHYSICAL_CLEANUP
 
 硬性约束：
 
-- 只能连接专用 `lithography_e2e`，不得连接开发库、验收库或真实数据环境；
+- 只能连接专用 `lithography_work_e2e`，不得连接开发库、验收库或真实数据环境；
   配置模块对外部继承的 `MIGRATION_DRILL_DATABASE`（指向其他库）、
   `MIGRATION_DRILL_CREATE_TEMP_DB=true`、`MIGRATION_DRILL_DOTENV`、`SEED_DOTENV`
   一律失败关闭；

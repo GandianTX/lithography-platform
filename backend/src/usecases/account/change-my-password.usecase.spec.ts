@@ -126,6 +126,7 @@ describe('ChangeMyPasswordUsecase', () => {
         accountId: 42,
         passwordHash: expect.any(String),
         transactionContext: harness.txContext,
+        clearMustChangePassword: true,
       });
       expect(harness.isCommitted()).toBe(true);
     });

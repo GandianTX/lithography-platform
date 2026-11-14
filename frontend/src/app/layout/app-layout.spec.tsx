@@ -1,7 +1,7 @@
 // src/app/layout/app-layout.spec.tsx
 
-import { act, cleanup, render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ThemeProvider } from '@/app/providers';
@@ -16,6 +16,8 @@ vi.mock('@/features/auth-session', async (importOriginal) => {
 
   return {
     ...actual,
+    // 壳层测试不触网：启动期会话复核固定返回「无变化」
+    refreshCurrentAuthSessionIdentity: vi.fn().mockResolvedValue(false),
     useAuthSession: () => useAuthSessionMock(),
   };
 });
@@ -73,6 +75,26 @@ function renderLayout(pathname: string) {
   return render(
     <ThemeProvider>
       <MemoryRouter initialEntries={[pathname]}>
+        <Routes>
+          <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
+        </Routes>
+      </MemoryRouter>
+    </ThemeProvider>,
+  );
+}
+
+// 收口跳转的观察面：探针读取实际路径名，避免用 DOM 结构反推导航结果。
+function LocationProbe() {
+  const location = useLocation();
+
+  return <div data-testid="current-pathname">{location.pathname}</div>;
+}
+
+function renderLayoutWithLocationProbe(pathname: string) {
+  return render(
+    <ThemeProvider>
+      <MemoryRouter initialEntries={[pathname]}>
+        <LocationProbe />
         <Routes>
           <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
         </Routes>
@@ -270,5 +292,28 @@ describe('AppLayout（S3 壳层）', () => {
 
     act(() => narrowViewport.setMatches(false));
     expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
+  });
+
+  // S1.4：会话限制状态由服务端每请求复核，壳层按快照做导航裁决（策略函数在
+  // auth-session-policy 单测覆盖，这里只验证壳层的落点）。
+  it('受限会话停留在业务路由时收回 /restricted', async () => {
+    useAuthSessionMock.mockReturnValue({
+      session: { ...sessionFor('ENGINEER').session, restriction: 'ENGINEER_PENDING' },
+      status: 'authenticated',
+    });
+    renderLayoutWithLocationProbe('/engineer/repair-requests');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-pathname')).toHaveTextContent('/restricted');
+    });
+  });
+
+  it('非受限会话访问 /restricted 时回到角色主页', async () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    renderLayoutWithLocationProbe('/restricted');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-pathname')).toHaveTextContent('/customer');
+    });
   });
 });

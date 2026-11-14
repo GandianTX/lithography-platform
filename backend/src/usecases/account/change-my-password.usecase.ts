@@ -181,6 +181,9 @@ export class ChangeMyPasswordUsecase {
         accountId,
         passwordHash,
         transactionContext,
+        // 「必须改密」是管理员对下次登录的要求；用户完成改密后必须在同一 UPDATE 内清除，
+        // 否则重新登录仍会被判为受限会话
+        clearMustChangePassword: true,
       });
     } catch (error) {
       logAdminUserWriteFailure({

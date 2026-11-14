@@ -1,5 +1,6 @@
 // src/adapters/api/graphql/account/dto/login-result.dto.ts
 
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { Field, Int, ObjectType } from '@nestjs/graphql';
 import { UserInfoDTO } from './user-info.dto';
@@ -23,4 +24,13 @@ export class LoginResult {
 
   @Field(() => UserInfoDTO, { nullable: true, description: '用户信息' })
   userInfo?: UserInfoDTO | null;
+
+  @Field(() => SessionRestriction, { description: '当前会话限制状态' })
+  restriction!: SessionRestriction;
+
+  @Field(() => Int, { nullable: true, description: '管理员等级（非管理员为空）' })
+  adminLevel?: number | null;
+
+  @Field(() => Int, { nullable: true, description: '客户公司归属（无归属为空）' })
+  customerOrganizationId?: number | null;
 }

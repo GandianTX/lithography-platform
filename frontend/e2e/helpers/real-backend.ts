@@ -306,7 +306,7 @@ export function assertPhysicalCleanupAllowed(env: Record<string, string>): void 
 }
 
 /**
- * 物理清理是否可用于当前环境：目标库严格为专用隔离库 lithography_e2e 且执行者显式授权。
+ * 物理清理是否可用于当前环境：目标库严格为专用隔离库 lithography_work_e2e 且执行者显式授权。
  * 调用方据此决定是否进入物理清理分支（共享开发库只走软删边界）；
  * 受保护 helper 仍会在访问数据库前独立复查，不依赖调用方或全局 setup 已经检查过。
  */
@@ -449,7 +449,7 @@ const CLEANUP_GUARD_TABLE_REFERENCE_DOCUMENT = 'e2e_reference_document_cleanup_g
 
 /**
  * 严格库名门（在 assertPhysicalCleanupAllowed 的「测试库命名」之上再收紧一道）：
- * 参考资料物理清理只允许发生在专用隔离库 lithography_e2e，默认连共享开发库
+ * 参考资料物理清理只允许发生在专用隔离库 lithography_work_e2e，默认连共享开发库
  * （lithography_drill）时失败关闭、不执行删除，也不降级到别的库上删除。
  */
 function assertDedicatedReferenceDocumentCleanupDatabase(env: Record<string, string>): void {
@@ -587,7 +587,7 @@ function assertReferenceDocumentCleanupDiagnostics(output: string, expectedRows:
  * 按本次运行记录的精确 ID 物理清理参考资料行（统一安全入口）。
  *
  * 安全性质：
- * - 入口内独立执行「显式授权门 + 测试库命名门 + 严格 lithography_e2e 库名门」，任一门不通过即抛错
+ * - 入口内独立执行「显式授权门 + 测试库命名门 + 严格 lithography_work_e2e 库名门」，任一门不通过即抛错
  *   且 mysql 进程绝不启动；不再有「仅凭 ID 列表直接 DELETE」的路径，也不按标题前缀/行数匹配；
  * - 目标 ID 与预期事实（标题 / 创建人账号 / 存储引用）先过 Node 侧白名单，先于任何 SQL 组装；
  * - 同一连接、同一事务内完成：库名核验 → FOR UPDATE 锁定目标行 → 逐项核对预期字段与外部引用
@@ -778,7 +778,7 @@ const CLEANUP_GUARD_TABLE = 'e2e_repair_request_cleanup_guard';
 
 /**
  * 严格库名门（在 assertPhysicalCleanupAllowed 的「测试库命名」之上再收紧一道）：
- * 维修申请物理清理只允许发生在专用隔离库 lithography_e2e。默认连共享开发库
+ * 维修申请物理清理只允许发生在专用隔离库 lithography_work_e2e。默认连共享开发库
  * （lithography_drill）时失败关闭、不执行删除，也不降级成在别的库上删除。
  */
 function assertDedicatedRepairRequestCleanupDatabase(env: Record<string, string>): void {
@@ -1106,7 +1106,7 @@ function assertRepairRequestCleanupDiagnostics(
  * 按本次运行记录的精确 ID 物理清理维修申请行（统一安全入口，创建 / 管理 / 分页夹具共用）。
  *
  * 安全性质（负责人最小修复计划 P1/P2，负责人单卡片计划 P3 扩展回复清理）：
- * - 入口内独立执行「显式授权门 + 测试库命名门 + 严格 lithography_e2e 库名门」，
+ * - 入口内独立执行「显式授权门 + 测试库命名门 + 严格 lithography_work_e2e 库名门」，
  *   任一门不通过即抛错且 mysql 进程绝不启动（不依赖调用方或全局 setup 已经检查过）；
  * - 目标 ID 与五项预期事实先过 Node 侧白名单（编号 / 客户账号 / 故障码 / 设备型号 / 故障描述），
  *   先于任何 SQL 组装；不再有「仅凭编号格式直接 DELETE」的路径，也不按前缀/行数/猜测 ID 匹配；
@@ -1155,7 +1155,7 @@ const DELETE_MY_REPAIR_REQUEST_MUTATION = `
  * 3. 未接单申请经产品自身通道软删（可逆）：共享开发库与专用隔离库都执行，保持基线可见面干净；
  *    已接单并含本轮回复的申请在业务上不可被客户软删（deleteMyRepairRequest 对已接单申请拒绝），
  *    此时跳过软删并直接走受保护物理清理；
- * 4. 仅当环境为专用隔离库 lithography_e2e 且执行者显式授权时，再按「精确 ID + 本轮预期事实
+ * 4. 仅当环境为专用隔离库 lithography_work_e2e 且执行者显式授权时，再按「精确 ID + 本轮预期事实
  *    + 本轮回复精确 ID」走受保护物理清理（同一连接同一事务核验后先删回复再删申请，任一残留非零即失败）；
  *    共享开发库保持既有软删边界，不做物理删除。
  * 任一门不通过即抛错：清理失败必须是可观测的失败，而不是静默残留。
@@ -1600,8 +1600,8 @@ function fixtureSqlLiteral(value: string | null): string {
 
 /**
  * 真实 E2E 夹具写入的统一安全入口（仅测试夹具使用）：复用既有「显式物理清理授权门 +
- * 测试库命名门 + 严格 lithography_e2e 库名门」，并额外核对执行连接实际连上的 DATABASE()
- * 必须为 lithography_e2e。mysql 每次调用都是独立进程，故先独立回读实际库名再执行写入；
+ * 测试库命名门 + 严格 lithography_work_e2e 库名门」，并额外核对执行连接实际连上的 DATABASE()
+ * 必须为 lithography_work_e2e。mysql 每次调用都是独立进程，故先独立回读实际库名再执行写入；
  * 任一门不通过即抛错，且绝不启动写入 SQL 的 mysql 进程。
  *
  * 只应传入代码内静态字面量的夹具 SQL（插入 / 故意改 NULL / 恢复），不得拼接外部输入。

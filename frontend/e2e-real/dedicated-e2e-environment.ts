@@ -9,7 +9,7 @@
 // 4. 测试内 SQL helper / 物理清理 helper（经进程环境写入）。
 //
 // 失败关闭策略（校验完成前不得启动 Migration、Seed 或任何删除操作）：
-// - DB_NAME 必须严格等于 lithography_e2e；
+// - DB_NAME 必须严格等于 lithography_work_e2e；
 // - DB_HOST / DB_USER / DB_PASS 不得为空，DB_PORT 必须是合法端口；
 // - E2E_ALLOW_PHYSICAL_CLEANUP 必须由调用者显式设置为 1（不入 npm script）；
 // - 外部继承的 MIGRATION_DRILL_DATABASE（指向其他库）、MIGRATION_DRILL_CREATE_TEMP_DB=true、
@@ -23,7 +23,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const DEDICATED_E2E_DB_NAME = 'lithography_e2e';
+export const DEDICATED_E2E_DB_NAME = 'lithography_work_e2e';
 export const DEDICATED_BACKEND_ORIGIN = 'http://127.0.0.1:3100';
 
 /** 物理清理显式授权变量：只能由执行者在启动前设置，不提供默认值 */

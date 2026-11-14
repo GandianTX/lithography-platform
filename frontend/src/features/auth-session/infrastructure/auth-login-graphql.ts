@@ -13,6 +13,9 @@ const LOGIN_WITH_PASSWORD_MUTATION = [
   '    accessToken',
   '    accountId',
   '    role',
+  '    restriction',
+  '    adminLevel',
+  '    customerOrganizationId',
   '    userInfo {',
   '      nickname',
   '      accessGroup',
@@ -24,6 +27,7 @@ const LOGIN_WITH_PASSWORD_MUTATION = [
 
 type LoginGraphQLVariables = {
   input: {
+    allowRestrictedSession: true;
     audience: 'SSTSWEB';
     loginName: string;
     loginPassword: string;
@@ -63,6 +67,9 @@ export function createGraphQLAuthLoginGateway(
         LOGIN_WITH_PASSWORD_MUTATION,
         {
           input: {
+            // Web 端始终允许受限会话登录：受限状态由后端计算并在前端
+            // 收口到 /restricted，不把「未激活」伪装成登录失败
+            allowRestrictedSession: true,
             audience: 'SSTSWEB',
             loginName: input.loginName,
             loginPassword: input.loginPassword,

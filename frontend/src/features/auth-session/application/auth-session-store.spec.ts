@@ -28,6 +28,9 @@ function createMemoryPersistence(initialSession: AuthSessionSnapshot | null = nu
 const ENGINEER_SESSION: AuthSessionSnapshot = {
   accessToken: 'access-token',
   accountId: 900101,
+  adminLevel: null,
+  customerOrganizationId: null,
+  restriction: 'NONE',
   role: 'ENGINEER',
   userInfo: {
     accessGroup: ['ENGINEER'],
@@ -131,6 +134,25 @@ describe('auth session store', () => {
       expect(getStoredSession()).toEqual(session);
     });
 
+    it('昵称回写保留受限状态与身份扩展字段（不得把受限会话洗成正常会话）', () => {
+      const restrictedSession: AuthSessionSnapshot = {
+        ...ENGINEER_SESSION,
+        adminLevel: 3,
+        customerOrganizationId: 4401,
+        restriction: 'ENGINEER_PENDING',
+      };
+      const { getStoredSession, persistence } = createMemoryPersistence(restrictedSession);
+      const store = createAuthSessionStore(persistence);
+
+      expect(store.updateNickname({ accountId: 900101, nickname: '待审工程师' })).toBe(true);
+
+      const session = store.getSnapshot().session;
+      expect(session?.restriction).toBe('ENGINEER_PENDING');
+      expect(session?.adminLevel).toBe(3);
+      expect(session?.customerOrganizationId).toBe(4401);
+      expect(getStoredSession()?.restriction).toBe('ENGINEER_PENDING');
+    });
+
     it('accountId 不匹配时一律不更新（过期视图不得写入他人会话）', () => {
       const { getStoredSession, persistence } = createMemoryPersistence(ENGINEER_SESSION);
       const store = createAuthSessionStore(persistence);
@@ -162,6 +184,9 @@ describe('auth session store', () => {
       const sessionWithoutUserInfo: AuthSessionSnapshot = {
         accessToken: 'access-token',
         accountId: 900102,
+        adminLevel: null,
+        customerOrganizationId: null,
+        restriction: 'NONE',
         role: 'CUSTOMER',
         userInfo: null,
       };
@@ -293,6 +318,72 @@ describe('auth session store', () => {
 
       expect(store.clearSessionIfIdentityMatches({ accountId: 900101, epoch: 1 })).toBe(false);
       expect(store.sampleSessionIdentity()).toBeNull();
+    });
+  });
+
+  describe('服务端身份复核回写', () => {
+    it('同一会话代次时写入服务端复核出的限制状态与身份扩展字段', () => {
+      const { getStoredSession, persistence } = createMemoryPersistence(ENGINEER_SESSION);
+      const store = createAuthSessionStore(persistence);
+      const identity = store.sampleSessionIdentity();
+
+      expect(identity).not.toBeNull();
+
+      const updated = store.applySessionIdentity({
+        identity: identity!,
+        adminLevel: 2,
+        customerOrganizationId: 950001,
+        restriction: 'MUST_CHANGE_PASSWORD',
+      });
+
+      expect(updated).toBe(true);
+      expect(store.getSnapshot().session).toMatchObject({
+        accessToken: ENGINEER_SESSION.accessToken,
+        accountId: ENGINEER_SESSION.accountId,
+        adminLevel: 2,
+        customerOrganizationId: 950001,
+        restriction: 'MUST_CHANGE_PASSWORD',
+        role: ENGINEER_SESSION.role,
+        userInfo: ENGINEER_SESSION.userInfo,
+      });
+      expect(getStoredSession()?.restriction).toBe('MUST_CHANGE_PASSWORD');
+    });
+
+    it('值无变化时不写盘、不发布', () => {
+      const { persistence } = createMemoryPersistence(ENGINEER_SESSION);
+      const store = createAuthSessionStore(persistence);
+      const listener = vi.fn();
+
+      store.subscribe(listener);
+
+      expect(
+        store.applySessionIdentity({
+          identity: store.sampleSessionIdentity()!,
+          adminLevel: null,
+          customerOrganizationId: null,
+          restriction: 'NONE',
+        }),
+      ).toBe(false);
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('会话代次变化（退出重登 / 刷新恢复）后的迟到复核结果被丢弃', () => {
+      const { getStoredSession, persistence } = createMemoryPersistence(ENGINEER_SESSION);
+      const store = createAuthSessionStore(persistence);
+      const identityBeforeRestore = store.sampleSessionIdentity();
+
+      store.restoreSession();
+
+      expect(
+        store.applySessionIdentity({
+          identity: identityBeforeRestore!,
+          adminLevel: 1,
+          customerOrganizationId: null,
+          restriction: 'ENGINEER_PENDING',
+        }),
+      ).toBe(false);
+      expect(store.getSnapshot().session?.restriction).toBe('NONE');
+      expect(getStoredSession()?.restriction).toBe('NONE');
     });
   });
 });

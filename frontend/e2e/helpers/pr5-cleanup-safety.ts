@@ -6,7 +6,7 @@
 // mock SQL 字符串或「先清空全表再 Seed」的绿色 E2E 代替。
 //
 // 硬边界（见计划 §4.2）：
-// 1. 只允许 `DB_NAME=lithography_e2e`，且必须 `E2E_ALLOW_PHYSICAL_CLEANUP=1` 显式 opt-in；
+// 1. 只允许 `DB_NAME=lithography_work_e2e`，且必须 `E2E_ALLOW_PHYSICAL_CLEANUP=1` 显式 opt-in；
 // 2. SQL 实际连接库必须与配置库一致（复用 assertPr5DedicatedEnvironment）；
 // 3. 只检查现有 schema，**不执行 TRUNCATE / Migration / 全量 Seed**；schema 缺失直接失败；
 // 4. 获取与既有真实 E2E 同名的数据库执行锁，禁止与全表 drill 并行；

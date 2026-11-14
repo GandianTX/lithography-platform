@@ -18,6 +18,9 @@ const mockedLoginWithPassword = vi.mocked(loginWithPassword);
 
 const authenticatedView: AuthSessionView = {
   accountId: 900101,
+  adminLevel: null,
+  customerOrganizationId: null,
+  restriction: 'NONE',
   role: 'ENGINEER',
   userInfo: null,
 };

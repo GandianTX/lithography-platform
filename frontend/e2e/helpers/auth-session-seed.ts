@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 
 /**
  * e2e 预置会话快照的唯一收口：字段布局跟随 features/auth-session 的
- * auth-session-storage 持久化格式（当前 version: 1），格式升版时只改这里。
+ * auth-session-storage 持久化格式（当前 version: 2），格式升版时只改这里。
  * 各 *.spec.ts 一律导入本文件，不再复制快照结构。
  */
 export const AUTH_SESSION_STORAGE_KEY = 'lithography-platform.auth-session.v1';
@@ -21,12 +21,15 @@ export async function seedAuthSession(page: Page, role: SeededAuthSessionRole) {
         JSON.stringify({
           accessToken: 'test-only-access-token',
           accountId: 900201,
+          adminLevel: null,
+          customerOrganizationId: null,
+          restriction: 'NONE',
           role: seededRole,
           userInfo: {
             accessGroup: [seededRole],
             nickname: '测试会话',
           },
-          version: 1,
+          version: 2,
         }),
       );
     },

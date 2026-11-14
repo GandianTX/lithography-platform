@@ -8,7 +8,9 @@ import type {
 import { decodeAuthSessionPayload, isRecord } from './auth-session-mapper';
 
 const AUTH_SESSION_STORAGE_KEY = 'lithography-platform.auth-session.v1';
-const AUTH_SESSION_STORAGE_VERSION = 1;
+// v2 起持久化 restriction / adminLevel / customerOrganizationId；读到旧版本
+// （v1）时按既有「未知版本」口径清除，用户重新登录即可获得完整会话快照
+const AUTH_SESSION_STORAGE_VERSION = 2;
 
 export type AuthSessionStorageBackend = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>;
 
@@ -28,6 +30,9 @@ function serializeAuthSession(session: AuthSessionSnapshot): string {
   return JSON.stringify({
     accessToken: session.accessToken,
     accountId: session.accountId,
+    adminLevel: session.adminLevel,
+    customerOrganizationId: session.customerOrganizationId,
+    restriction: session.restriction,
     role: session.role,
     userInfo: session.userInfo
       ? {

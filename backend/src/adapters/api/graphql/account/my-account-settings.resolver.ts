@@ -21,6 +21,7 @@ import {
 } from '@src/adapters/api/graphql/account/dto/my-account-settings.dto';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { SessionRestrictionGuard } from '@src/adapters/api/graphql/guards/session-restriction.guard';
 import { ChangeMyPasswordUsecase } from '@src/usecases/account/change-my-password.usecase';
 import { GetMyAccountSettingsUsecase } from '@src/usecases/account/get-my-account-settings.usecase';
 import { UpdateMyAccountSettingsUsecase } from '@src/usecases/account/update-my-account-settings.usecase';
@@ -67,7 +68,7 @@ export class MyAccountSettingsResolver {
    * 三态语义见 `UpdateMyAccountSettingsInput`；「至少保留一个登录方式」、唯一性预检查与
    * 数据库唯一索引竞争裁决全部由 Usecase 在事务内完成，本方法不做任何业务判断。
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Mutation(() => UpdateMyAccountSettingsResultDTO, {
     name: 'updateMyAccountSettings',
     description: '更新当前登录用户的账号设置',

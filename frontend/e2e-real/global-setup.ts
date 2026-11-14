@@ -8,7 +8,7 @@
 //    与测试内 SQL helper 全部消费同一份值；外部继承的 MIGRATION_DRILL_DATABASE /
 //    MIGRATION_DRILL_CREATE_TEMP_DB=true / MIGRATION_DRILL_DOTENV / SEED_DOTENV
 //    直接失败关闭，绝不触碰 lithography_drill 或其他数据库；
-// 3. 只对专用独立库 lithography_e2e 执行 baseline Migration（官方空库演练脚本：
+// 3. 只对专用独立库 lithography_work_e2e 执行 baseline Migration（官方空库演练脚本：
 //    清空表 → 全量迁移 → 结构校验）与官方 Mock Seed；第一个破坏性子进程启动前
 //    执行一次只读连接探针，确认实际连接的库与端口与已校验配置一致；
 // 4. 专用后端由 playwright 配置的 webServer 以进程级环境变量启动
@@ -128,12 +128,12 @@ export default function globalSetup(): () => void {
     // 第一个破坏性子进程之前的只读连接探针：确认实际连接的库与端口与配置一致
     probeDedicatedDatabaseConnection(dedicated);
 
-    // 官方 baseline：空库演练脚本（清空 lithography_e2e 全部表 → 全量迁移 → 结构校验）。
+    // 官方 baseline：空库演练脚本（清空 lithography_work_e2e 全部表 → 全量迁移 → 结构校验）。
     // 五项连接经子进程环境显式锁定，dotenv 不覆盖已存在的进程变量，故绝不影响
     // lithography_drill 或其他库；DB 名不含 test/drill/ci 段，按脚本要求显式授权。
     runBackendScript('migration:drill:empty-db', buildMigrationChildEnv(process.env, dedicated));
 
-    // 官方 Mock Seed：与 migration 完全相同的五项连接（lithography_e2e）。库名不含
+    // 官方 Mock Seed：与 migration 完全相同的五项连接（lithography_work_e2e）。库名不含
     // test/drill/dev/local 段，按 seed 脚本自身安全门的要求以进程级变量显式授权。
     runBackendScript('seed:mock', buildSeedChildEnv(process.env, dedicated));
   } catch (setupError) {

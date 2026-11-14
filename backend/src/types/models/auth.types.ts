@@ -1,6 +1,7 @@
 // src/types/models/auth.types.ts
 
 import { MinimalUserInfo } from '../auth/login-flow.types';
+import { SessionRestriction } from '../auth/session-restriction.types';
 import { AudienceTypeEnum, IdentityTypeEnum, LoginTypeEnum } from './account.types';
 import { Gender, GeographicInfo, UserState } from './user-info.types';
 
@@ -39,6 +40,8 @@ export interface AuthLoginModel {
   type: LoginTypeEnum;
   ip?: string;
   audience: AudienceTypeEnum;
+  /** 是否允许受限账号登录（默认 false，保持旧客户端行为） */
+  allowRestrictedSession?: boolean;
 }
 
 /**
@@ -58,4 +61,10 @@ export interface LoginResultModel {
   role: IdentityTypeEnum;
   identity?: unknown; // 简化为 unknown，由适配器层处理
   userInfo?: MinimalUserInfo | null; // 使用 MinimalUserInfo
+  /** 当前会话限制状态（缺省视为 NONE） */
+  restriction?: SessionRestriction;
+  /** 管理员等级（1 / 2 / null） */
+  adminLevel?: number | null;
+  /** 客户公司归属 */
+  customerOrganizationId?: number | null;
 }

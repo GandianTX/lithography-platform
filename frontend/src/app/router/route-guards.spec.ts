@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AuthSessionRole } from '@/features/auth-session';
+import type { AuthSessionRestriction, AuthSessionRole } from '@/features/auth-session';
 import * as authSessionFeature from '@/features/auth-session';
 
 import { indexRouteLoader, loginLoader, protectedRouteLoader } from './route-guards';
@@ -18,10 +18,13 @@ vi.mock('@/features/auth-session', async (importOriginal) => {
 
 const mockedGetCurrentAuthSession = vi.mocked(authSessionFeature.getCurrentAuthSession);
 
-function createSnapshot(role: AuthSessionRole) {
+function createSnapshot(role: AuthSessionRole, restriction: AuthSessionRestriction = 'NONE') {
   return {
     accessToken: 'access-token',
     accountId: 900101,
+    adminLevel: null,
+    customerOrganizationId: null,
+    restriction,
     role,
     userInfo: null,
   };
@@ -177,6 +180,23 @@ describe('protected route guard wiring', () => {
       redirectLocation(
         protectedRouteLoader(createLoaderRequest('http://localhost/customer/repair-requests/1')),
       ),
+    ).toBe('/engineer');
+  });
+
+  it('funnels restricted sessions into /restricted and keeps normal sessions out', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('ENGINEER', 'ENGINEER_PENDING'));
+
+    expect(redirectLocation(indexRouteLoader())).toBe('/restricted');
+    expect(
+      redirectLocation(protectedRouteLoader(createLoaderRequest('http://localhost/engineer'))),
+    ).toBe('/restricted');
+    expect(
+      redirectLocation(protectedRouteLoader(createLoaderRequest('http://localhost/restricted'))),
+    ).toBeNull();
+
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('ENGINEER'));
+    expect(
+      redirectLocation(protectedRouteLoader(createLoaderRequest('http://localhost/restricted'))),
     ).toBe('/engineer');
   });
 });

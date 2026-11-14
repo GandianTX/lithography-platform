@@ -314,10 +314,16 @@ export interface AccountSessionAuthoritySnapshot {
   readonly accountId: number;
   readonly accountStatus: AccountStatus | null;
   readonly identityHint: string | null;
+  /** `base_user_account.must_change_password`（账号行缺失时为 false） */
+  readonly mustChangePassword: boolean;
+  /** `base_user_account.admin_level`（1 / 2 / null） */
+  readonly adminLevel: number | null;
   readonly userInfo: {
     readonly userState: UserState | null;
     readonly accessGroup: ReadonlyArray<IdentityTypeEnum> | null;
     readonly metaDigest: ReadonlyArray<IdentityTypeEnum> | null;
+    /** `base_user_info.customer_organization_id`（可信公司归属） */
+    readonly customerOrganizationId: number | null;
   } | null;
 }
 

@@ -9,7 +9,7 @@
 // 开始、逐笔记录创建响应的精确 ID 与编号（连同本轮输入事实形成目标记录），finally 经
 // deleteMyRepairRequest 逐 ID 幂等软删（清理失败归并进 primaryError 让测试转红）；
 // 共享开发库不做物理删除（与 reference-document-real.spec 同一安全边界），仅当目标库严格为
-// lithography_e2e 且显式授权物理清理时，才按同一批精确 ID 物理删除，避免残留污染官方 Mock Seed。
+// lithography_work_e2e 且显式授权物理清理时，才按同一批精确 ID 物理删除，避免残留污染官方 Mock Seed。
 // 前提不满足（无本地后端 / 无 env / 无前端真实通道）时用例自动跳过，不阻塞。
 //
 // 断言作用域注意：Tabs 非激活面板保持挂载（仅隐藏），因此所有标签内
@@ -166,7 +166,7 @@ async function listRunRequests(
  *   反查只保留为「发现遗漏残留」的辅助步骤与软删安全网；
  * - 创建响应未记录的行（创建中途抛错）不进物理删除目标，只走反查软删兜底，避免用猜测事实删行；
  * - 共享开发库只软删不物理删除（与 reference-document-real.spec 同边界）；仅当目标库严格为
- *   lithography_e2e 且执行者显式授权（E2E_ALLOW_PHYSICAL_CLEANUP=1）时才物理删除，
+ *   lithography_work_e2e 且执行者显式授权（E2E_ALLOW_PHYSICAL_CLEANUP=1）时才物理删除，
  *   保证不残留影响官方 Mock Seed 计数校验。绝不按编号前缀/行数/猜测 ID 删除。
  * - 受保护 helper 在同一连接同一事务内 FOR UPDATE 核验目标行的五项事实与子记录引用、
  *   删除后再核验残留为零，任一不达标即回滚报错（编号与创建记录不符同样命中 field_mismatch_rows，

@@ -1,13 +1,21 @@
 // src/adapters/api/graphql/auth/auth.resolver.ts
 
+import {
+  type AuthenticatedSessionUser,
+  SessionRestriction,
+} from '@app-types/auth/session-restriction.types';
 import { AuthLoginModel, LoginResultModel, UserInfoView } from '@app-types/models/auth.types';
 import { GeographicInfo } from '@app-types/models/user-info.types';
-import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { UseGuards } from '@nestjs/common';
+import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { FetchUserInfoUsecase } from '@usecases/account/fetch-user-info.usecase';
 import type { CompleteUserData } from '@usecases/account/fetch-user-info.types';
 import { LoginWithPasswordUsecase } from '@usecases/auth/login-with-password.usecase';
 import { LoginResult } from '../account/dto/login-result.dto';
+import { SessionIdentityDTO } from '../account/dto/session-identity.dto';
 import { UserInfoDTO } from '../account/dto/user-info.dto';
+import { currentUser } from '../decorators/current-user.decorator';
+import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { AuthLoginInput } from './dto/auth-login.input';
 
 /**
@@ -29,6 +37,7 @@ export class AuthResolver {
       type: input.type,
       ip: input.ip,
       audience: input.audience,
+      allowRestrictedSession: input.allowRestrictedSession,
     };
 
     // 调用 usecase
@@ -44,9 +53,33 @@ export class AuthResolver {
       accountId: result.accountId,
       role: result.role,
       userInfo,
+      restriction: result.restriction ?? SessionRestriction.NONE,
+      adminLevel: result.adminLevel ?? null,
+      customerOrganizationId: result.customerOrganizationId ?? null,
     };
 
     return loginResult;
+  }
+
+  /**
+   * 读取当前会话身份与限制状态。
+   *
+   * 会话事实已由 `JwtStrategy` → `ValidateAccessTokenSessionUsecase` 每请求计算并挂在
+   * `request.user` 上，本入口只做薄映射，不再查库。
+   */
+  @UseGuards(JwtAuthGuard)
+  @Query(() => SessionIdentityDTO, {
+    name: 'mySessionIdentity',
+    description: '读取当前会话身份与限制状态',
+  })
+  mySessionIdentity(@currentUser() user: AuthenticatedSessionUser): SessionIdentityDTO {
+    return {
+      accountId: user.accountId,
+      role: user.role ?? null,
+      adminLevel: user.adminLevel ?? null,
+      customerOrganizationId: user.customerOrganizationId ?? null,
+      restriction: user.restriction ?? SessionRestriction.NONE,
+    };
   }
 
   /**

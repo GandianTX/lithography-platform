@@ -42,6 +42,10 @@ export interface AccountCreateData {
 export interface UserInfoCreateData {
   accountId?: number;
   nickname?: string;
+  /** `base_user_info.customer_organization_id`：客户可信公司归属（可空） */
+  customerOrganizationId?: number | null;
+  /** `base_user_info.real_name`：真实姓名（工程师注册必填，可空） */
+  realName?: string | null;
   /** `base_user_info.company_name`（varchar(100) nullable）：既有列，本轮只补齐创建数据入口 */
   companyName?: string | null;
   gender?: Gender;
@@ -211,10 +215,13 @@ export class AccountService {
     accountId: number;
     passwordHash: string;
     transactionContext?: PersistenceTransactionContext;
+    /** 为 true 时在同一 UPDATE 内清除 `must_change_password` 标记 */
+    clearMustChangePassword?: boolean;
   }): Promise<void> {
     const repository = this.getAccountRepository(params.transactionContext);
     await repository.update(params.accountId, {
       loginPassword: params.passwordHash,
+      ...(params.clearMustChangePassword === true ? { mustChangePassword: false } : {}),
       updatedAt: new Date(),
     });
   }

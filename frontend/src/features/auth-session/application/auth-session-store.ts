@@ -3,6 +3,7 @@
 import type {
   AuthSessionIdentity,
   AuthSessionPersistence,
+  AuthSessionRestriction,
   AuthSessionState,
   EstablishAuthSessionInput,
 } from './auth-session.types';
@@ -16,6 +17,17 @@ const ANONYMOUS_AUTH_SESSION_STATE: AuthSessionState = {
 };
 
 export type AuthSessionStore = {
+  /**
+   * 用服务端复核结果校对当前会话的限制状态与身份扩展字段。
+   * 仅当 identity 仍描述当前会话（同账号且同会话代次）时生效并返回 true；
+   * 值无变化或身份不匹配时不写盘、不发布并返回 false（迟到响应不得改写当前会话）。
+   */
+  applySessionIdentity: (input: {
+    identity: AuthSessionIdentity;
+    adminLevel: number | null;
+    customerOrganizationId: number | null;
+    restriction: AuthSessionRestriction;
+  }) => boolean;
   clearSession: () => void;
   /**
    * 仅当 identity 仍描述当前会话（同账号且同会话代次）时清理会话真源并返回 true；
@@ -62,6 +74,38 @@ export function createAuthSessionStore(persistence: AuthSessionPersistence): Aut
   }
 
   const store: AuthSessionStore = {
+    applySessionIdentity({ identity, adminLevel, customerOrganizationId, restriction }) {
+      const current = state.session;
+
+      // 未接入采样、当前无会话、或身份已变化：一律忽略（迟到响应 / 已切换账号）
+      if (!current || current.accountId !== identity.accountId || sessionEpoch !== identity.epoch) {
+        return false;
+      }
+
+      if (
+        current.restriction === restriction &&
+        current.adminLevel === adminLevel &&
+        current.customerOrganizationId === customerOrganizationId
+      ) {
+        return false;
+      }
+
+      // 复用 snapshot 工厂：会话内其余字段与不变量保持不变，只替换服务端复核出的三项事实
+      const next = createAuthSessionSnapshot({
+        accessToken: current.accessToken,
+        accountId: current.accountId,
+        adminLevel,
+        customerOrganizationId,
+        restriction,
+        role: current.role,
+        userInfo: current.userInfo,
+      });
+
+      persistence.write(next);
+      publish({ session: next, status: 'authenticated' });
+
+      return true;
+    },
     clearSession() {
       sessionEpoch += 1;
       persistence.clear();
@@ -122,6 +166,9 @@ export function createAuthSessionStore(persistence: AuthSessionPersistence): Aut
       const next = createAuthSessionSnapshot({
         accessToken: current.accessToken,
         accountId: current.accountId,
+        adminLevel: current.adminLevel,
+        customerOrganizationId: current.customerOrganizationId,
+        restriction: current.restriction,
         role: current.role,
         userInfo: {
           ...current.userInfo,

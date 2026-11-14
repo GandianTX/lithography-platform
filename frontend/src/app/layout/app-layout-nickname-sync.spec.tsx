@@ -21,6 +21,13 @@ vi.mock('@/widgets/aigc-sidecar', () => ({
   AigcSidecar: () => null,
 }));
 
+// 本文件走真实 store 装配；只在基础设施边界桩掉启动期身份复核的网络请求，
+// 不整体 mock feature 模块 —— 否则 vi.resetModules() 无法重建真实 store，
+// 用例之间会共享上一个用例的内存会话。
+vi.mock('@/features/auth-session/infrastructure/auth-session-identity-graphql', () => ({
+  fetchMySessionIdentity: vi.fn().mockResolvedValue(null),
+}));
+
 const STORAGE_KEY = 'lithography-platform.auth-session.v1';
 
 async function renderLayout(pathname: string) {
@@ -56,7 +63,7 @@ function establishEngineerSession(nickname: string) {
       accountId: 900201,
       role: 'ENGINEER',
       userInfo: { accessGroup: ['ENGINEER'], nickname },
-      version: 1,
+      version: 2,
     }),
   );
 }
@@ -112,7 +119,7 @@ describe('AppLayout 侧栏昵称同步（真实会话装配）', () => {
       userInfo?: { nickname?: string } | null;
       version?: number;
     };
-    expect(stored?.version).toBe(1);
+    expect(stored?.version).toBe(2);
     expect(stored?.accountId).toBe(900201);
     expect(stored?.userInfo?.nickname).toBe('同步后的昵称');
 

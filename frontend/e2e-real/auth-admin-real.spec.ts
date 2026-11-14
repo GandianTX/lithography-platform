@@ -1,6 +1,6 @@
 // e2e-real/auth-admin-real.spec.ts
 // 「登录 + 管理员用户管理」隔离库真实联调入口（PR6 S4）：专用后端 3100 + 专用前端 4174 +
-// 独立 E2E 库 lithography_e2e，串行运行，不复用 127.0.0.1:3000 开发后端。
+// 独立 E2E 库 lithography_work_e2e，串行运行，不复用 127.0.0.1:3000 开发后端。
 //
 // 运行入口（授权变量必须由执行者显式设置，不写入 npm script）：
 //   E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:auth-admin-real
@@ -357,7 +357,7 @@ async function setUserStatusViaApi(
   }
 }
 
-test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', () => {
+test.describe('auth & admin real backend flow（隔离库 lithography_work_e2e）', () => {
   test('三种角色真实登录进入各自默认首页，并能经主导航进入对应入口', async ({ browser }) => {
     // 三次真实登录 + 三次导航，串行门禁下需要独立预算
     test.setTimeout(90_000);

@@ -9,6 +9,9 @@ const LOGIN_RESPONSE = {
     accessToken: 'access-token',
     accountId: 900101,
     role: 'ENGINEER',
+    restriction: 'NONE',
+    adminLevel: null,
+    customerOrganizationId: null,
     userInfo: {
       accessGroup: ['ENGINEER'],
       avatarUrl: 'https://example.test/avatar/chen.png',
@@ -42,6 +45,8 @@ describe('GraphQL auth login gateway', () => {
     });
     expect(calls[0]?.variables).toEqual({
       input: {
+        // Web 端始终允许受限会话登录，由后端返回 restriction 决定落地页
+        allowRestrictedSession: true,
         audience: 'SSTSWEB',
         loginName: 'mock_engineer_chen',
         loginPassword: 'local-password',
@@ -51,6 +56,9 @@ describe('GraphQL auth login gateway', () => {
     expect(calls[0]?.query).toContain('mutation LoginWithPassword');
     expect(calls[0]?.query).toContain('accessToken');
     expect(calls[0]?.query).toContain('accountId');
+    expect(calls[0]?.query).toContain('restriction');
+    expect(calls[0]?.query).toContain('adminLevel');
+    expect(calls[0]?.query).toContain('customerOrganizationId');
     expect(calls[0]?.query).toContain('nickname');
     expect(calls[0]?.query).toContain('accessGroup');
     expect(calls[0]?.query).toContain('avatarUrl');

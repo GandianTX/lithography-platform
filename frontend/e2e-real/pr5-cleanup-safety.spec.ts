@@ -26,7 +26,7 @@
 //      目标回复 / 同批资料全部保留，外部改写值不变；恢复基线后可精确回收且无残留。
 //
 // 运行入口（npm script，授权变量由执行者显式设置，不写入 npm script）：
-//   E2E_ALLOW_PHYSICAL_CLEANUP=1 DB_NAME=lithography_e2e npm run test:e2e:pr5-cleanup-safety
+//   E2E_ALLOW_PHYSICAL_CLEANUP=1 DB_NAME=lithography_work_e2e npm run test:e2e:pr5-cleanup-safety
 //
 // 与既有 S5 真实闭环（pr5-real-flow.spec.ts）**不共享** global-setup：本组不使用
 // global-setup.ts（它 TRUNCATE / Migration / Seed），仅做环境门 + schema 只读检查 + 数据库执行锁。

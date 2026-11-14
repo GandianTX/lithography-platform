@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createClearSessionAfterPasswordChangeUsecase,
   createConditionalLogoutAuthSessionUsecase,
   createLogoutAuthSessionUsecase,
 } from './logout-auth-session';
@@ -127,6 +128,46 @@ describe('conditional logout usecase（迟到响应裁决）', () => {
     });
 
     await expect(logoutIfMatches(IDENTITY)).rejects.toThrow('cache reset failed');
+    expect(clearSessionIfIdentityMatches).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('clearSessionAfterPasswordChange usecase（改密后会话收口）', () => {
+  const IDENTITY = { accountId: 900201, epoch: 1 };
+
+  it('身份匹配时清理会话与缓存并返回 true', async () => {
+    const clearSessionIfIdentityMatches = vi.fn().mockReturnValue(true);
+    const clearCache = vi.fn().mockResolvedValue(undefined);
+    const clearSession = createClearSessionAfterPasswordChangeUsecase({
+      cache: { clearCache },
+      session: { clearSessionIfIdentityMatches },
+    });
+
+    await expect(clearSession(IDENTITY)).resolves.toBe(true);
+    expect(clearSessionIfIdentityMatches).toHaveBeenCalledWith(IDENTITY);
+    expect(clearCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('身份不匹配（退出重登 / 已切换账号的迟到响应）返回 false 且不触碰缓存', async () => {
+    const clearSessionIfIdentityMatches = vi.fn().mockReturnValue(false);
+    const clearCache = vi.fn().mockResolvedValue(undefined);
+    const clearSession = createClearSessionAfterPasswordChangeUsecase({
+      cache: { clearCache },
+      session: { clearSessionIfIdentityMatches },
+    });
+
+    await expect(clearSession(IDENTITY)).resolves.toBe(false);
+    expect(clearCache).not.toHaveBeenCalled();
+  });
+
+  it('缓存清理失败不向外传播：会话已清理，返回 true 让调用方继续跳转（与 LogoutButton 同一口径）', async () => {
+    const clearSessionIfIdentityMatches = vi.fn().mockReturnValue(true);
+    const clearSession = createClearSessionAfterPasswordChangeUsecase({
+      cache: { clearCache: vi.fn().mockRejectedValue(new Error('cache reset failed')) },
+      session: { clearSessionIfIdentityMatches },
+    });
+
+    await expect(clearSession(IDENTITY)).resolves.toBe(true);
     expect(clearSessionIfIdentityMatches).toHaveBeenCalledTimes(1);
   });
 });
