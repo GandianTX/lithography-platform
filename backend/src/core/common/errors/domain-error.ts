@@ -447,6 +447,45 @@ export const CONTENT_SUBMISSION_ERROR = {
 } as const;
 Object.freeze(CONTENT_SUBMISSION_ERROR);
 
+/**
+ * 共用业务原件（任务 11）错误码。
+ *
+ * 语义边界：
+ * - 输入类（INVALID_PARAMS / PURPOSE_NOT_SUPPORTED / UPLOAD_FILE_*）：对外 4xx，
+ *   不使用 AUTH/JWT 码（会被映射为 UNAUTHENTICATED，前端误判会话失效）；
+ * - 目标不可访问（NOT_FOUND / FILE_NOT_AVAILABLE）：不存在、他人暂存、跨组织、
+ *   上下文不匹配统一同码，不泄露原件存在性；
+ * - 状态/完整性冲突（NOT_BINDABLE / ALREADY_BOUND / WORK_ORDER_NOT_BINDABLE /
+ *   INTEGRITY_FAILED）：请求本身合法、权限无问题，属明确当前状态冲突，对外 409；
+ * - 系统侧（UPLOAD_FAILED / BIND_FAILED）：存储或落库失败，不泄露数据库与路径细节。
+ */
+export const STORED_FILE_ERROR = {
+  INVALID_PARAMS: 'STORED_FILE_INVALID_PARAMS',
+  // 用途无真实接入方（任务 11 仅 REPAIR_PROCESS）；不提前放开未接入用途
+  PURPOSE_NOT_SUPPORTED: 'STORED_FILE_PURPOSE_NOT_SUPPORTED',
+  // 上传：文件缺失/为空、超过 20,000,000 字节、实际内容与扩展名不符或不在白名单
+  UPLOAD_FILE_MISSING: 'STORED_FILE_UPLOAD_FILE_MISSING',
+  UPLOAD_FILE_TOO_LARGE: 'STORED_FILE_UPLOAD_FILE_TOO_LARGE',
+  UPLOAD_FILE_TYPE_NOT_ALLOWED: 'STORED_FILE_UPLOAD_FILE_TYPE_NOT_ALLOWED',
+  // 系统侧：存储写入或暂存登记失败
+  UPLOAD_FAILED: 'STORED_FILE_UPLOAD_FAILED',
+  // 读取/下载：不存在、他人暂存、跨组织、上下文不匹配统一口径
+  NOT_FOUND: 'STORED_FILE_NOT_FOUND',
+  // 下载：存储对象缺失或引用不可用（不泄露服务器路径与存储引用）
+  FILE_NOT_AVAILABLE: 'STORED_FILE_FILE_NOT_AVAILABLE',
+  // 绑定：原件不是 VALID + TEMPORARY、上传者/公司/用途/上下文不符
+  NOT_BINDABLE: 'STORED_FILE_NOT_BINDABLE',
+  // 绑定：原件已被占用或并发重复绑定
+  ALREADY_BOUND: 'STORED_FILE_ALREADY_BOUND',
+  // 绑定：工单不存在、未接单、非本人接单、已结束或跨组织
+  WORK_ORDER_NOT_BINDABLE: 'STORED_FILE_WORK_ORDER_NOT_BINDABLE',
+  // 绑定：存储对象缺失或字节数/SHA-256 与实际不一致
+  INTEGRITY_FAILED: 'STORED_FILE_INTEGRITY_FAILED',
+  // 系统侧：绑定条件更新/锁读失败
+  BIND_FAILED: 'STORED_FILE_BIND_FAILED',
+} as const;
+Object.freeze(STORED_FILE_ERROR);
+
 // 类型定义
 export type AuthErrorCode = (typeof AUTH_ERROR)[keyof typeof AUTH_ERROR];
 export type AccountErrorCode = (typeof ACCOUNT_ERROR)[keyof typeof ACCOUNT_ERROR];
@@ -476,6 +515,7 @@ export type InputNormalizeErrorCode =
 export type OrganizationErrorCode = (typeof ORGANIZATION_ERROR)[keyof typeof ORGANIZATION_ERROR];
 export type ContentSubmissionErrorCode =
   (typeof CONTENT_SUBMISSION_ERROR)[keyof typeof CONTENT_SUBMISSION_ERROR];
+export type StoredFileErrorCode = (typeof STORED_FILE_ERROR)[keyof typeof STORED_FILE_ERROR];
 
 // 分页相关错误码
 export const PAGINATION_ERROR = {
@@ -507,6 +547,7 @@ export type DomainErrorCode =
   | InputNormalizeErrorCode
   | OrganizationErrorCode
   | ContentSubmissionErrorCode
+  | StoredFileErrorCode
   | PaginationErrorCode;
 
 // 类型守卫：统一判断是否为领域错误（兼容多包/反序列化场景）

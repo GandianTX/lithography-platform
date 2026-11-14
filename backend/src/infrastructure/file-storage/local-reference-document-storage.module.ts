@@ -13,8 +13,11 @@ import {
   REFERENCE_DOCUMENT_UPLOAD_MAX_BYTES,
 } from '@src/usecases/reference-document/reference-document-upload.contract';
 import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/reference-document/reference-document-storage.contract';
+import { STORED_FILE_STORAGE } from '@src/usecases/common/ports/stored-file-storage.contract';
+import { STORED_FILE_ALLOWED_MIME_TYPES } from '@src/usecases/stored-file/stored-file-upload.contract';
 
 import { LocalReferenceDocumentStorage } from './local-reference-document-storage';
+import { LocalStoredFileStorage } from './local-stored-file-storage';
 
 /**
  * 参考资料与投稿附件文件存储/上传策略 token 装配（与 TypeOrmTransactionModule 同模式：全局 + useExisting）。
@@ -60,6 +63,16 @@ import { LocalReferenceDocumentStorage } from './local-reference-document-storag
         configService.get<string[]>('referenceDocumentStorage.allowedMimeTypes', []),
       inject: [ConfigService],
     },
+    // 共用业务原件（任务 11）：复用同一本地存储实现与同一配置 key；
+    // 同一实现实例同时满足参考资料/投稿/原件三个契约，安全边界不复制
+    LocalStoredFileStorage,
+    { provide: STORED_FILE_STORAGE, useExisting: LocalStoredFileStorage },
+    {
+      provide: STORED_FILE_ALLOWED_MIME_TYPES,
+      useFactory: (configService: ConfigService) =>
+        configService.get<string[]>('referenceDocumentStorage.allowedMimeTypes', []),
+      inject: [ConfigService],
+    },
   ],
   exports: [
     REFERENCE_DOCUMENT_STORAGE,
@@ -68,6 +81,8 @@ import { LocalReferenceDocumentStorage } from './local-reference-document-storag
     CONTENT_SUBMISSION_ATTACHMENT_STORAGE,
     CONTENT_SUBMISSION_ATTACHMENT_UPLOAD_MAX_BYTES,
     CONTENT_SUBMISSION_ATTACHMENT_ALLOWED_MIME_TYPES,
+    STORED_FILE_STORAGE,
+    STORED_FILE_ALLOWED_MIME_TYPES,
   ],
 })
 export class LocalReferenceDocumentStorageModule {}
