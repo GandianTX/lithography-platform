@@ -109,6 +109,8 @@ type RegisterInput = {
   loginEmail: string;
   loginPassword: string;
   nickname: string;
+  realName?: string | null;
+  phone?: string | null;
   type?: RegisterTypeEnum;
   organizationId: number;
   applicationNote?: string | null;
@@ -164,8 +166,13 @@ const USER_INFO_QUERY = `
 `;
 
 const ORGANIZATIONS_QUERY = `
-  query RegistrationOrganizations {
-    registrationOrganizations { id name }
+  query RegistrationOrganizations($pagination: PaginationArgs!) {
+    registrationOrganizations(pagination: $pagination) {
+      items { id name }
+      total
+      page
+      pageSize
+    }
   }
 `;
 
@@ -319,11 +326,14 @@ describe('工程师注册与组织审核 (e2e)', () => {
           organizationCode: suiteOrganizationCodes.primary,
           name: 'E2E 工程师注册主组织',
           kind: 'CLIENT',
+          // 注册候选资格为 ACTIVE + 受管公司（V44）
+          isManagedCompany: true,
         },
         {
           organizationCode: suiteOrganizationCodes.peer,
           name: 'E2E 工程师注册对侧组织',
           kind: 'PEER',
+          isManagedCompany: true,
         },
       ],
       ownership,
@@ -693,6 +703,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
     loginName: params.loginName,
     loginEmail: params.loginEmail,
     loginPassword: PASSWORD,
+    // 工程师注册的姓名与电话为必填（V44）
+    realName: 'E2E 工程师',
+    phone: '13800000000',
     // 昵称必须与登录名一样一一对应且不超过 20 字符：若用固定截断前缀，
     // 前缀相同的两个账号会触发服务端追加随机后缀，回读值便与登记事实不一致。
     nickname: params.loginName,
@@ -895,11 +908,19 @@ describe('工程师注册与组织审核 (e2e)', () => {
     });
 
     it('公开组织选项仅返回有效组织且包含本轮主组织', async () => {
-      const body = await gql<{ registrationOrganizations?: Array<{ id: number; name: string }> }>({
+      const body = await gql<{
+        registrationOrganizations?: {
+          items: Array<{ id: number; name: string }>;
+          total: number;
+          page: number;
+          pageSize: number;
+        };
+      }>({
         query: ORGANIZATIONS_QUERY,
+        variables: { pagination: { mode: 'OFFSET', page: 1, pageSize: 50 } },
       });
       expect(body.errors).toBeUndefined();
-      const ids = (body.data?.registrationOrganizations ?? []).map((item) => item.id);
+      const ids = (body.data?.registrationOrganizations?.items ?? []).map((item) => item.id);
       expect(ids).toContain(primaryOrganizationId);
       expect(ids).toContain(peerOrganizationId);
     });

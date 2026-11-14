@@ -24,6 +24,11 @@ export interface TestOrganizationSpec {
   readonly organizationCode: string;
   readonly name: string;
   readonly kind: 'CLIENT' | 'PEER';
+  /**
+   * 是否受管公司；Web 自助注册要求 `ACTIVE + 受管`（V44）。
+   * 需要走注册资格的规格显式传 `true`，其余规格保持默认 `false`。
+   */
+  readonly isManagedCompany?: boolean;
 }
 
 export interface TestMembershipSpec {
@@ -86,6 +91,11 @@ export const seedTestOrganizations = async (params: {
             `（name=${existing.name}, kind=${existing.kind}, status=${existing.status}），拒绝接管`,
         );
       }
+      // 资格标记属于规格可声明的测试事实：仅当规格显式声明时校准，避免上次中断残留旧值
+      const expectedManaged = spec.isManagedCompany ?? false;
+      if (existing.isManagedCompany !== expectedManaged && spec.isManagedCompany !== undefined) {
+        await repository.update(existing.id, { isManagedCompany: expectedManaged });
+      }
       idByCode.set(spec.organizationCode, existing.id);
       if (ownership) {
         recordOwnedResource(ownership, 'organization', existing.id, {
@@ -103,6 +113,7 @@ export const seedTestOrganizations = async (params: {
         name: spec.name,
         kind: spec.kind,
         status: 'ACTIVE',
+        isManagedCompany: spec.isManagedCompany ?? false,
       }),
     );
     idByCode.set(spec.organizationCode, saved.id);

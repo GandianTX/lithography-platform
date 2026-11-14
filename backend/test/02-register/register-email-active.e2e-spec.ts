@@ -106,6 +106,8 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
           organizationCode: suiteOrganizationCodes.primary,
           name: 'E2E 邮箱注册主组织',
           kind: 'CLIENT',
+          // Web 注册资格为 ACTIVE + 受管公司（V44）
+          isManagedCompany: true,
         },
       ],
       ownership,
@@ -335,8 +337,8 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
       await deleteByLoginNames([LEGACY_LOGIN_NAME]);
     });
 
-    it('account.status=ACTIVE 而 userInfo.userState=PENDING 时，受保护请求返回 UNAUTHENTICATED', async () => {
-      // 隔离 fixture：人工创建 ACTIVE / PENDING（不经任何业务入口，不做管理员修复）
+    it('签发 Token 后 userState 降级为 PENDING，受保护请求按每请求复核返回 UNAUTHENTICATED', async () => {
+      // 隔离 fixture：人工创建 ACTIVE / ACTIVE（不经任何业务入口，不做管理员修复）
       const accountRepo = dataSource.getRepository(AccountEntity);
       const userInfoRepo = dataSource.getRepository(UserInfoEntity);
 
@@ -361,24 +363,25 @@ describe('Register 邮箱注册 ACTIVE/ACTIVE 完整链路 (e2e)', () => {
           metaDigest: [IdentityTypeEnum.CUSTOMER],
           notifyCount: 0,
           unreadCount: 0,
-          userState: UserState.PENDING,
+          userState: UserState.ACTIVE,
         }),
       );
 
-      // 确认 fixture 落库形态确为 ACTIVE / PENDING
+      // 确认 fixture 落库形态确为 ACTIVE / ACTIVE
       const fixtureAccount = await accountRepo.findOne({ where: { id: temp.id } });
       const fixtureUserInfo = await userInfoRepo.findOne({ where: { accountId: temp.id } });
       expect(fixtureAccount?.status).toBe(AccountStatus.ACTIVE);
-      expect(fixtureUserInfo?.userState).toBe(UserState.PENDING);
+      expect(fixtureUserInfo?.userState).toBe(UserState.ACTIVE);
 
-      // 登录门禁只看 account.status，因此可取得 Token
+      // 正常状态可登录并取得 Token
       const loginResponse = await performLogin(LEGACY_LOGIN_NAME, LOGIN_PASSWORD);
       expect(loginResponse.status).toBe(200);
       const loginBody = loginResponse.body as GqlBody;
       const accessToken = loginBody.data?.login?.accessToken;
       expect(typeof accessToken).toBe('string');
 
-      // 但受保护请求在会话复核门禁（userState != ACTIVE）失败关闭为 UNAUTHENTICATED
+      // 已签发 Token 之后 userState 降级：受保护请求在每请求复核门禁失败关闭为 UNAUTHENTICATED
+      await userInfoRepo.update({ accountId: temp.id }, { userState: UserState.PENDING });
       const protectedResponse = await queryProtectedUserInfo(accessToken as string, temp.id);
       const protectedBody = protectedResponse.body as {
         errors?: Array<{ message: string; extensions?: { code?: string } }>;

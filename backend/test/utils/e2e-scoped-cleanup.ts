@@ -3809,13 +3809,15 @@ const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Pr
     plan.engineerRegistrationApplicationIds,
   );
   await deleteByIds(manager, 'organization_membership', plan.membershipIds);
-  await deleteByIds(manager, 'organization', plan.organizationIds);
+  // base_user_info.customer_organization_id 对 organization 为 FK RESTRICT：
+  // 客户账号资料必须先于组织删除，否则本轮组织的删除会因客户归属被拒。
   if (plan.accountIds.length > 0) {
     await manager.query(
       `DELETE FROM base_user_info WHERE account_id IN (${inClause(plan.accountIds)})`,
       plan.accountIds,
     );
   }
+  await deleteByIds(manager, 'organization', plan.organizationIds);
   await deleteByIds(manager, 'base_user_account', plan.accountIds);
   await deleteByIds(manager, 'equipment_model', plan.equipmentModelIds);
 };

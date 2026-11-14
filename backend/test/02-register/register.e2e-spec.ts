@@ -205,6 +205,8 @@ describe('Register (e2e)', () => {
           organizationCode: suiteOrganizationCodes.primary,
           name: 'E2E 注册主组织',
           kind: 'CLIENT',
+          // Web 注册资格为 ACTIVE + 受管公司（V44）
+          isManagedCompany: true,
         },
       ],
       ownership,
