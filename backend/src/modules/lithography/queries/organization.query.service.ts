@@ -4,16 +4,26 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { OrganizationEntity } from '../entities/organization.entity';
 import {
+  AdminOrganizationListQuery,
+  AdminOrganizationPage,
+  AdminOrganizationView,
+  OrganizationNameOptionPage,
+  OrganizationNameOptionQuery,
   OrganizationRegistrationOption,
   OrganizationRegistrationOptionPage,
   OrganizationRegistrationOptionQuery,
+  OrganizationServiceProviderOptionPage,
+  OrganizationServiceProviderOptionQuery,
 } from '../organization.types';
 
 /** Web 注册候选单页上限：公开查询只服务选择器，超过上限按上限截断 */
 const REGISTRATION_OPTION_PAGE_SIZE_MAX = 50;
+
+/** 报修服务候选与管理端名称名单单页上限：同样只服务选择器 */
+const SELECTOR_OPTION_PAGE_SIZE_MAX = 50;
 
 /**
  * 注册组织只读查询服务。
@@ -90,6 +100,178 @@ export class OrganizationQueryService {
       page,
       pageSize,
     };
+  }
+
+  /**
+   * 报修服务候选检索：启用且具备维修服务资格，支持名称关键字与 OFFSET 分页。
+   *
+   * 与注册候选刻意分离：维修资格 `is_service_provider` 不参与注册判断，受管归类
+   * `is_managed_company` 也不参与维修判断。只返回选择所需的 `id` / `name` / `shortName`。
+   * 调用方（任务 03）在提交报修时仍须按同一口径复核所选公司。
+   */
+  async searchServiceProviderOptions(
+    query: OrganizationServiceProviderOptionQuery,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<OrganizationServiceProviderOptionPage> {
+    const page = Math.max(query.pagination.page, 1);
+    const pageSize = Math.min(
+      Math.max(query.pagination.pageSize, 1),
+      SELECTOR_OPTION_PAGE_SIZE_MAX,
+    );
+    const keyword = query.keyword?.trim();
+
+    const qb = this.getRepository(transactionContext)
+      .createQueryBuilder('organization')
+      .select(['organization.id', 'organization.name', 'organization.shortName'])
+      .where('organization.status = :status', { status: 'ACTIVE' })
+      .andWhere('organization.is_service_provider = :isServiceProvider', {
+        isServiceProvider: true,
+      })
+      .orderBy('organization.name', 'ASC')
+      .addOrderBy('organization.id', 'ASC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    if (keyword) {
+      qb.andWhere('organization.name LIKE :keyword', {
+        keyword: `%${escapeLikePattern(keyword)}%`,
+      });
+    }
+
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      items: rows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName })),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * 管理员公司名称名单（R015 最小字段视图）：启用公司的 `id` / `name`，支持关键字与分页。
+   *
+   * 刻意不复用公开注册候选：本名单不按 `is_managed_company` 过滤，也不输出任何
+   * 联系信息、成员或业务字段；授权由调用方按请求期管理员等级与可信公司归属裁决。
+   */
+  async searchOrganizationNameOptions(
+    query: OrganizationNameOptionQuery,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<OrganizationNameOptionPage> {
+    const page = Math.max(query.pagination.page, 1);
+    const pageSize = Math.min(
+      Math.max(query.pagination.pageSize, 1),
+      SELECTOR_OPTION_PAGE_SIZE_MAX,
+    );
+    const keyword = query.keyword?.trim();
+
+    const qb = this.getRepository(transactionContext)
+      .createQueryBuilder('organization')
+      .select(['organization.id', 'organization.name'])
+      .where('organization.status = :status', { status: 'ACTIVE' })
+      .orderBy('organization.name', 'ASC')
+      .addOrderBy('organization.id', 'ASC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    if (keyword) {
+      qb.andWhere('organization.name LIKE :keyword', {
+        keyword: `%${escapeLikePattern(keyword)}%`,
+      });
+    }
+
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      items: rows.map((row) => ({ id: row.id, name: row.name })),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * 管理员公司档案完整列表（任务 08.2，一级管理员专用）。
+   *
+   * 关键字同时匹配全称、编号与简称（参数化 LIKE，通配符转义）；状态、受管归类与
+   * 维修资格可分别筛选。按名称、主键稳定排序。本方法不裁决授权：调用方必须先经
+   * `resolveLevelOneAdminScope`，二级管理员不得触达完整视图。
+   */
+  async searchAdminOrganizations(
+    query: AdminOrganizationListQuery,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<AdminOrganizationPage> {
+    const page = Math.max(query.pagination.page, 1);
+    const pageSize = Math.min(
+      Math.max(query.pagination.pageSize, 1),
+      SELECTOR_OPTION_PAGE_SIZE_MAX,
+    );
+    const keyword = query.keyword?.trim();
+
+    const qb = this.getRepository(transactionContext)
+      .createQueryBuilder('organization')
+      .orderBy('organization.name', 'ASC')
+      .addOrderBy('organization.id', 'ASC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    if (keyword) {
+      qb.andWhere(
+        '(organization.name LIKE :keyword OR organization.organizationCode LIKE :keyword OR organization.shortName LIKE :keyword)',
+        { keyword: `%${escapeLikePattern(keyword)}%` },
+      );
+    }
+    if (query.status) {
+      qb.andWhere('organization.status = :status', { status: query.status });
+    }
+    if (query.isManagedCompany !== undefined) {
+      qb.andWhere('organization.isManagedCompany = :isManagedCompany', {
+        isManagedCompany: query.isManagedCompany,
+      });
+    }
+    if (query.isServiceProvider !== undefined) {
+      qb.andWhere('organization.isServiceProvider = :isServiceProvider', {
+        isServiceProvider: query.isServiceProvider,
+      });
+    }
+
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      items: rows.map(toAdminOrganizationView),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * 按主键读取公司档案完整视图（不过滤状态；停用公司仍可查看详情）。
+   *
+   * 授权由调用方在用例层裁决，本方法不区分管理员等级。
+   */
+  async findAdminOrganizationView(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<AdminOrganizationView | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({ where: { id: params.organizationId } });
+    return row ? toAdminOrganizationView(row) : null;
+  }
+
+  /**
+   * 事务内锁定公司档案目标行（`pessimistic_write`）并返回完整视图。
+   *
+   * 只允许在事务上下文中调用；用于编辑前复核目标仍存在，并在写入期间阻止并发
+   * 启停或编辑交错。不存在返回 null。
+   */
+  async lockAdminOrganizationForUpdate(params: {
+    organizationId: number;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<AdminOrganizationView | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({
+      where: { id: params.organizationId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return row ? toAdminOrganizationView(row) : null;
   }
 
   /**
@@ -186,6 +368,30 @@ export class OrganizationQueryService {
     return row ? row.name : null;
   }
 
+  /**
+   * 按主键批量读取组织显示名称（只读，**不过滤状态**）。
+   *
+   * 供管理员列表在单次查询内补齐公司名，避免逐行 N+1；找不到的主键不出现在结果中，
+   * 调用方按 `null` 兜底。与 `findOrganizationNameById` 同口径：只用于展示已发生的
+   * 业务事实，授权与资格判定不得使用本方法。
+   */
+  async findOrganizationNamesByIds(
+    organizationIds: readonly number[],
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<Map<number, string>> {
+    const ids = [...new Set(organizationIds)];
+    if (ids.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.getRepository(transactionContext).find({
+      where: { id: In(ids) },
+      select: { id: true, name: true },
+    });
+
+    return new Map(rows.map((row) => [row.id, row.name]));
+  }
+
   private getRepository(
     transactionContext?: PersistenceTransactionContext,
   ): Repository<OrganizationEntity> {
@@ -197,4 +403,30 @@ export class OrganizationQueryService {
 /** LIKE 模式转义：`\`、`%`、`_` 按普通字符匹配（MySQL 默认转义符为 `\`） */
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+/**
+ * 实体 → 管理员完整视图（字段直通，不做业务判断）。
+ *
+ * `kind` / `status` 的库值受 `chk_organization_kind` / `chk_organization_status`
+ * 约束；此处按实体类型收窄，不引入第二套值域判断。
+ */
+function toAdminOrganizationView(entity: OrganizationEntity): AdminOrganizationView {
+  return {
+    id: entity.id,
+    organizationCode: entity.organizationCode,
+    name: entity.name,
+    shortName: entity.shortName,
+    contactName: entity.contactName,
+    contactPhone: entity.contactPhone,
+    contactEmail: entity.contactEmail,
+    address: entity.address,
+    remark: entity.remark,
+    isServiceProvider: entity.isServiceProvider,
+    isManagedCompany: entity.isManagedCompany,
+    kind: entity.kind as AdminOrganizationView['kind'],
+    status: entity.status as AdminOrganizationView['status'],
+    createdAt: entity.createdAt,
+    updatedAt: entity.updatedAt,
+  };
 }

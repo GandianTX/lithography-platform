@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository } from 'typeorm';
 import { OrganizationEntity } from './entities/organization.entity';
+import type { CreateManagedCompanyData, UpdateManagedCompanyPatch } from './organization.types';
 
 /**
  * 组织写服务。
@@ -48,6 +49,89 @@ export class OrganizationService {
     });
     const saved = await repository.save(entity);
     return { id: saved.id };
+  }
+
+  /**
+   * 一级管理员新增公司档案（任务 08.2）。
+   *
+   * - 编号由服务端生成（`ADMIN_ORG_<uuid>`），与名称解耦，唯一索引兜底；
+   * - 固定 `kind = CLIENT`、`status = ACTIVE`、`isManagedCompany = true`：
+   *   新增即进入一级维护名单，维修资格按入参单独设置；
+   * - 单条 INSERT，调用方持有事务；失败不会留下半条记录。
+   *
+   * @returns 新公司主键与服务端生成的编号（供调用方回读与断言）
+   */
+  async createManagedCompany(
+    data: CreateManagedCompanyData,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<{ id: number; organizationCode: string }> {
+    const repository = this.getRepository(transactionContext);
+    const organizationCode = `ADMIN_ORG_${randomUUID()}`;
+    const entity = repository.create({
+      organizationCode,
+      name: data.name,
+      shortName: data.shortName,
+      contactName: data.contactName,
+      contactPhone: data.contactPhone,
+      contactEmail: data.contactEmail,
+      address: data.address,
+      remark: data.remark,
+      isServiceProvider: data.isServiceProvider,
+      isManagedCompany: true,
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    });
+    const saved = await repository.save(entity);
+    return { id: saved.id, organizationCode: saved.organizationCode };
+  }
+
+  /**
+   * 一级管理员编辑公司档案（任务 08.2）：只写白名单字段。
+   *
+   * 补丁中没有编号、受管归类与类别，本方法也不会自行补齐；未提供的键保持原值，
+   * 可选文本显式 `null` 表示清空。调用方须在同一事务内先锁定目标并复核存在性。
+   */
+  async updateManagedCompany(params: {
+    organizationId: number;
+    patch: UpdateManagedCompanyPatch;
+    updatedAt: Date;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<void> {
+    const { patch } = params;
+    const update: Partial<OrganizationEntity> = { updatedAt: params.updatedAt };
+
+    if (patch.name !== undefined) {
+      update.name = patch.name;
+    }
+    if (patch.shortName !== undefined) {
+      update.shortName = patch.shortName;
+    }
+    if (patch.contactName !== undefined) {
+      update.contactName = patch.contactName;
+    }
+    if (patch.contactPhone !== undefined) {
+      update.contactPhone = patch.contactPhone;
+    }
+    if (patch.contactEmail !== undefined) {
+      update.contactEmail = patch.contactEmail;
+    }
+    if (patch.address !== undefined) {
+      update.address = patch.address;
+    }
+    if (patch.remark !== undefined) {
+      update.remark = patch.remark;
+    }
+    if (patch.status !== undefined) {
+      update.status = patch.status;
+    }
+    if (patch.isServiceProvider !== undefined) {
+      update.isServiceProvider = patch.isServiceProvider;
+    }
+
+    await this.getRepository(params.transactionContext).update(
+      { id: params.organizationId },
+      update,
+    );
   }
 
   private getRepository(

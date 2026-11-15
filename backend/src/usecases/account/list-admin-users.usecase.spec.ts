@@ -6,7 +6,6 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
-  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
@@ -19,6 +18,7 @@ import {
   captureThrownError,
   createAdminOrganizationFact,
   createAdminUserView,
+  createLevelTwoAdminSession,
   createOrganizationIsolationMocks,
   createSuperAdminSession,
   createUnauthorizedSessions,
@@ -118,12 +118,26 @@ describe('ListAdminUsersUsecase', () => {
     });
   });
 
-  describe('组织隔离（管理员只能查看本组织）', () => {
-    it('以 Session 账号解析可信组织，并把组织内有效账号 ID 下推给 QueryService', async () => {
+  describe('两级管理员作用域', () => {
+    it('一级管理员：不解析成员公司、不下推账号清单，读面即平台全范围', async () => {
       await executeAsSuperAdmin();
 
+      expect(organizationIsolation.resolveForAccount).not.toHaveBeenCalled();
+      expect(organizationIsolation.listActiveAccountIdsByOrganization).not.toHaveBeenCalled();
+      expect(capturedQuery().accountIds).toBeUndefined();
+      // 读面仍强制只返回普通用户
+      expect(capturedQuery().visibleRoles).toEqual([
+        IdentityTypeEnum.ENGINEER,
+        IdentityTypeEnum.CUSTOMER,
+      ]);
+    });
+
+    it('二级管理员：复核可信公司成员关系，并把公司内有效账号 ID 下推给 QueryService', async () => {
+      await executeAsSuperAdmin({ session: createLevelTwoAdminSession() });
+
       expect(organizationIsolation.resolveForAccount).toHaveBeenCalledWith({
-        accountId: createSuperAdminSession().accountId,
+        accountId: createLevelTwoAdminSession().accountId,
+        transactionContext: undefined,
       });
       expect(organizationIsolation.listActiveAccountIdsByOrganization).toHaveBeenCalledWith({
         organizationId: createAdminOrganizationFact().organizationId,
@@ -131,21 +145,31 @@ describe('ListAdminUsersUsecase', () => {
       expect(capturedQuery().accountIds).toEqual([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
     });
 
-    it('管理员无有效组织时失败关闭为 FORBIDDEN，且不触发列表查询', async () => {
+    it('二级管理员的成员关系被撤销或公司不一致时失败关闭为 FORBIDDEN，且不触发列表查询', async () => {
       organizationIsolation.resolveForAccount
         .mockReset()
-        .mockRejectedValue(
-          new DomainError(
-            ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
-            '当前账号没有有效组织成员关系，无法执行组织范围操作',
-          ),
-        );
+        .mockResolvedValue(createAdminOrganizationFact({ organizationId: 999 }));
 
-      await expect(executeAsSuperAdmin()).rejects.toMatchObject({
-        code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
+      await expect(
+        executeAsSuperAdmin({ session: createLevelTwoAdminSession() }),
+      ).rejects.toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
       });
       expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
       expect(organizationIsolation.listActiveAccountIdsByOrganization).not.toHaveBeenCalled();
+    });
+
+    it('二级管理员的成员角色不再是 SUPER_ADMIN 时失败关闭为 FORBIDDEN', async () => {
+      organizationIsolation.resolveForAccount
+        .mockReset()
+        .mockResolvedValue(createAdminOrganizationFact({ memberRole: 'ENGINEER' }));
+
+      await expect(
+        executeAsSuperAdmin({ session: createLevelTwoAdminSession() }),
+      ).rejects.toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      });
+      expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
     });
 
     it('组织内没有任何有效账号时下推空清单（QueryService 返回空页，不退化为全库）', async () => {
@@ -154,10 +178,19 @@ describe('ListAdminUsersUsecase', () => {
         listPage({ items: [], total: 0 }),
       );
 
-      await executeAsSuperAdmin();
+      await executeAsSuperAdmin({ session: createLevelTwoAdminSession() });
 
       expect(capturedQuery().accountIds).toEqual([]);
       expect(adminUserQueryService.listAdminUsers).toHaveBeenCalledTimes(1);
+    });
+
+    it('等级缺失 / 非法的管理员会话被拒且不触发查询', async () => {
+      for (const adminLevel of [null, 0, 3, undefined]) {
+        await expect(
+          executeAsSuperAdmin({ session: createSuperAdminSession({ adminLevel }) }),
+        ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      }
+      expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
     });
   });
 
@@ -178,7 +211,8 @@ describe('ListAdminUsersUsecase', () => {
         keyword: 'Target_User',
         role: IdentityTypeEnum.ENGINEER,
         status: AccountStatus.INACTIVE,
-        accountIds: [ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID],
+        accountIds: undefined,
+        visibleRoles: [IdentityTypeEnum.ENGINEER, IdentityTypeEnum.CUSTOMER],
       });
     });
 
@@ -191,7 +225,8 @@ describe('ListAdminUsersUsecase', () => {
         keyword: undefined,
         role: undefined,
         status: undefined,
-        accountIds: [ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID],
+        accountIds: undefined,
+        visibleRoles: [IdentityTypeEnum.ENGINEER, IdentityTypeEnum.CUSTOMER],
       });
     });
 
@@ -201,10 +236,15 @@ describe('ListAdminUsersUsecase', () => {
       expect(capturedQuery().keyword).toBeUndefined();
     });
 
-    it('role 筛选值域比可写值域多出 SUPER_ADMIN（管理页面只读展示管理员）', async () => {
-      await executeAsSuperAdmin({ role: IdentityTypeEnum.SUPER_ADMIN });
+    it('role 筛选值域只含 ENGINEER / CUSTOMER，SUPER_ADMIN 被白名单拒绝', async () => {
+      await executeAsSuperAdmin({ role: IdentityTypeEnum.ENGINEER });
+      expect(capturedQuery().role).toBe(IdentityTypeEnum.ENGINEER);
 
-      expect(capturedQuery().role).toBe(IdentityTypeEnum.SUPER_ADMIN);
+      (adminUserQueryService.listAdminUsers as jest.Mock).mockClear();
+      await expect(
+        executeAsSuperAdmin({ role: IdentityTypeEnum.SUPER_ADMIN }),
+      ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_ENUM_VALUE });
+      expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
     });
 
     it('sorts 与 withTotal 被结构性丢弃（排序与统计由固定契约给出）', async () => {

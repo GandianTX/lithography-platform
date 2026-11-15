@@ -10,6 +10,7 @@ import { mapGqlToCoreParams } from '@src/adapters/api/graphql/pagination.mapper'
 import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { AdminCreateUserInput } from '@src/adapters/api/graphql/account/dto/admin-create-user.input';
 import { AdminResetUserPasswordInput } from '@src/adapters/api/graphql/account/dto/admin-reset-user-password.input';
+import { AdminResetUserPasswordToDefaultInput } from '@src/adapters/api/graphql/account/dto/admin-reset-user-password-to-default.input';
 import {
   AdminResetUserPasswordResultDTO,
   toAdminResetUserPasswordResultDTO,
@@ -24,6 +25,7 @@ import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { AdminCreateUserUsecase } from '@src/usecases/account/admin-create-user.usecase';
 import { AdminResetUserPasswordUsecase } from '@src/usecases/account/admin-reset-user-password.usecase';
+import { AdminResetUserPasswordToDefaultUsecase } from '@src/usecases/account/admin-reset-user-password-to-default.usecase';
 import { AdminSetUserStatusUsecase } from '@src/usecases/account/admin-set-user-status.usecase';
 import { AdminUpdateUserProfileUsecase } from '@src/usecases/account/admin-update-user-profile.usecase';
 import { ListAdminUsersUsecase } from '@src/usecases/account/list-admin-users.usecase';
@@ -37,8 +39,9 @@ import { ListAdminUsersUsecase } from '@src/usecases/account/list-admin-users.us
  * - 错误不在此捕获：DomainError 直接上抛进入全局 GraphQL exception filter，
  *
  * - 粗粒度准入：`JwtAuthGuard` + `RolesGuard` + `@Roles(SUPER_ADMIN)`；
- * - 精确授权：每个 Usecase 继续执行 `activeRole === SUPER_ADMIN` 的
- *   `assertAdminUserManagementPermission()` 断言（全仓唯一实现），
+ * - 精确授权：每个 Usecase 继续执行请求期管理员作用域断言
+ *   （`assertAdminUserManagementScope()` / `resolveLevelOneAdminScope()`，
+ *   依请求期查库得到的 `adminLevel` 与可信公司归属裁决），
  *   Guard 不能替代 Usecase 的业务授权；
  * - 即时失效：停用 / 降级账号的旧 Token 由 `ValidateAccessTokenSessionUsecase`
  *   （P0-7）在每个受保护请求上复核。
@@ -51,10 +54,15 @@ export class AdminUserResolver {
     private readonly adminUpdateUserProfileUsecase: AdminUpdateUserProfileUsecase,
     private readonly adminSetUserStatusUsecase: AdminSetUserStatusUsecase,
     private readonly adminResetUserPasswordUsecase: AdminResetUserPasswordUsecase,
+    private readonly adminResetUserPasswordToDefaultUsecase: AdminResetUserPasswordToDefaultUsecase,
   ) {}
 
   /**
-   * 管理员分页查询用户列表。
+   * 管理员分页查询用户列表（任务 08.4）。
+   *
+   * 只返回普通用户（ENGINEER / CUSTOMER），管理员账号不在读面输出；
+   * 一级管理员全范围，二级管理员只在其请求期可信公司范围内筛选后再分页，
+   * `total` 与 `items` 同源（范围下推到同一 QueryBuilder），不从总数泄漏外公司账号。
    * keyword 由 Usecase trim 后对登录名、登录邮箱、昵称做参数化模糊搜索；
    * role / status 缺省表示不按该维度筛选；排序由契约固定（created_at DESC, id DESC），
    * 不接受客户端排序字段。
@@ -75,7 +83,7 @@ export class AdminUserResolver {
     @Args('role', {
       type: () => IdentityTypeEnum,
       nullable: true,
-      description: '角色筛选（查看值域，含 SUPER_ADMIN）',
+      description: '角色筛选（可筛选值域仅 ENGINEER / CUSTOMER）',
     })
     role?: IdentityTypeEnum,
     @Args('status', {
@@ -102,7 +110,10 @@ export class AdminUserResolver {
   }
 
   /**
-   * 管理员创建 ENGINEER / CUSTOMER 用户。
+   * 管理员创建 ENGINEER / CUSTOMER 用户（遗留入口，仅一级管理员）。
+   *
+   * 保留签名以兼容既有调用方，但 S4 管理页不再提供创建入口，二级管理员调用一律
+   * `FORBIDDEN`（Usecase 内 `resolveLevelOneAdminScope()` 拒绝）。
    * 登录名 / 登录邮箱至少一个；创建固定为 ACTIVE；凭据唯一冲突对外为 CONFLICT。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -129,7 +140,9 @@ export class AdminUserResolver {
   }
 
   /**
-   * 管理员编辑普通用户资料（昵称 / 公司名称 / 电话 / 联系邮箱）。
+   * 管理员编辑普通用户资料（昵称 / 公司名称 / 电话 / 联系邮箱）（遗留入口，仅一级管理员）。
+   *
+   * S4 管理页不再提供资料编辑入口；签名保留，二级管理员调用一律 `FORBIDDEN`。
    * 昵称不传 = 不修改、string = 修改且禁止 null / 空白；其余可选字段三态：
    * 不传 = 不修改，null = 清空。
    */
@@ -178,7 +191,10 @@ export class AdminUserResolver {
   }
 
   /**
-   * 管理员手动设置普通用户新密码。
+   * 管理员手动设置普通用户新密码（遗留入口，仅一级管理员）。
+   *
+   * 保留签名以兼容既有调用方；S4 管理页改用 `adminResetUserPasswordToDefault`
+   * （不接受任意新密码），二级管理员调用本入口一律 `FORBIDDEN`。
    * 不走公开 verification token 流程；目标状态边界（仅双字段一致的
    * ACTIVE / INACTIVE）由 Usecase 在哈希生成与任何写入之前裁决。
    */
@@ -198,6 +214,34 @@ export class AdminUserResolver {
       session,
       accountId: input.accountId,
       newPassword: input.newPassword,
+    });
+    return toAdminResetUserPasswordResultDTO(result);
+  }
+
+  /**
+   * 管理员把普通用户密码重置为系统默认密码（任务 08.4）。
+   *
+   * - 输入只有目标 `accountId`：默认密码来自服务端配置，不接受客户端密码；
+   * - 一级管理员全范围，二级管理员仅可信公司内目标；管理员账号只读；
+   * - 写入哈希的同一条 UPDATE 置 `must_change_password = true`，目标用户下次登录
+   *   必须先改密；配置缺失或不合策略时失败关闭，不回退硬编码口令；
+   * - 回包只含固定安全提示，不含密码。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => AdminResetUserPasswordResultDTO, {
+    name: 'adminResetUserPasswordToDefault',
+    description: '管理员重置普通用户密码为系统默认密码',
+  })
+  @ValidateInput()
+  async adminResetUserPasswordToDefault(
+    @Args('input') input: AdminResetUserPasswordToDefaultInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<AdminResetUserPasswordResultDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const result = await this.adminResetUserPasswordToDefaultUsecase.execute({
+      session,
+      accountId: input.accountId,
     });
     return toAdminResetUserPasswordResultDTO(result);
   }

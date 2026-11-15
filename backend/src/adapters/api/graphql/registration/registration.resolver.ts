@@ -351,16 +351,17 @@ export class RegistrationResolver {
   }
 
   /**
-   * 本组织工程师注册审核队列。
+   * 工程师注册审核队列。
    *
-   * 粗粒度准入由 Guard 完成；精确权限（activeRole === SUPER_ADMIN）与可信组织范围
-   * 由用例裁决：组织由服务端解析，不接受客户端自报 organizationId。
+   * 粗粒度准入由 Guard 完成；精确权限（activeRole === SUPER_ADMIN + 请求期 admin_level）
+   * 与可见组织范围由用例裁决：一级全范围，二级仅本公司；组织由服务端解析，
+   * 不接受客户端自报 organizationId。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => AdminEngineerRegistrationPageDTO, {
     name: 'adminEngineerRegistrations',
-    description: '本组织工程师注册审核队列',
+    description: '工程师注册审核队列（一级全范围，二级仅本公司）',
   })
   @ValidateInput()
   async adminEngineerRegistrations(
@@ -388,13 +389,13 @@ export class RegistrationResolver {
   }
 
   /**
-   * 本组织工程师注册申请详情。跨组织或不存在的申请统一按 NOT_FOUND 拒绝。
+   * 工程师注册申请详情。一级任意公司；二级跨公司或不存在的申请统一按 NOT_FOUND 拒绝。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => AdminEngineerRegistrationItemDTO, {
     name: 'adminEngineerRegistrationDetail',
-    description: '本组织工程师注册申请详情',
+    description: '工程师注册申请详情（一级全范围，二级仅本公司）',
   })
   async adminEngineerRegistrationDetail(
     @Args('applicationId', { type: () => Int, description: '申请 ID' }) applicationId: number,
@@ -409,8 +410,9 @@ export class RegistrationResolver {
   }
 
   /**
-   * 本组织管理员一次性终态审核。
+   * 管理员一次性终态审核。
    *
+   * - 一级可跨公司批准，成员关系写入申请目标公司；二级仅限本公司；
    * - `APPROVE`：账号、资料、有效 ENGINEER 成员关系与申请终态在同一事务生效；
    * - `REJECT`：只写否决与意见，账号保持待审，可凭本人凭据重提；
    * - 重复/并发决策命中 0 行 → CONFLICT，不覆盖既有终态。
@@ -419,7 +421,7 @@ export class RegistrationResolver {
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Mutation(() => AdminEngineerRegistrationItemDTO, {
     name: 'reviewEngineerRegistration',
-    description: '组织管理员审核工程师注册申请（一次性终态）',
+    description: '管理员审核工程师注册申请（一次性终态；一级跨公司，二级仅本公司）',
   })
   @ValidateInput()
   async reviewEngineerRegistration(

@@ -7,7 +7,6 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
-  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { PasswordPolicyService } from '@core/common/password/password-policy.service';
@@ -22,13 +21,13 @@ import {
   createAdminOrganizationFact,
   createAdminUserView,
   createFakeTransactionHarness,
+  createLevelTwoAdminSession,
   createOrganizationIsolationMocks,
   createRealViewConversionDouble,
   createStatusFacts,
   createSuperAdminSession,
   createSuperAdminTargetView,
   createUnauthorizedSessions,
-  type AdminUserAccountRowSpec,
 } from '../../../test/support/account/admin-user.fixture';
 import { AdminResetUserPasswordUsecase } from './admin-reset-user-password.usecase';
 
@@ -87,7 +86,6 @@ describe('AdminResetUserPasswordUsecase', () => {
     accountService,
     adminUserQueryService,
     passwordPolicyService,
-    organizationIsolation.organizationContextQueryService,
     organizationIsolation.organizationMembershipQueryService,
     logger,
     harness.transactionRunner,
@@ -291,48 +289,30 @@ describe('AdminResetUserPasswordUsecase', () => {
     });
   });
 
-  describe('组织隔离（管理员只能管理本组织）', () => {
-    it('目标不在管理员可信组织内时收敛为 TARGET_NOT_FOUND，零写入并回滚', async () => {
-      organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
-
-      const error = await captureThrownError(executeAsSuperAdmin());
-
-      // 跨组织目标统一按不存在处理：不区分「不存在」与「属于别的组织」，不泄露存在性
-      expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
-      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
-      expect(harness.isRolledBack()).toBe(true);
-      expect(harness.isCommitted()).toBe(false);
-      // 组织归属校验使用管理员可信组织 + 目标账号，并在同一事务上下文内
-      expect(organizationIsolation.findActiveMembership).toHaveBeenCalledWith({
+  describe('遗留入口仅一级管理员', () => {
+    it('一级管理员全范围重置：不解析成员公司、不校验目标归属', async () => {
+      await expect(executeAsSuperAdmin()).resolves.toMatchObject({
         accountId: TARGET_ACCOUNT_ID,
-        organizationId: createAdminOrganizationFact().organizationId,
-        transactionContext: harness.txContext,
+        isUpdated: true,
       });
+
+      expect(organizationIsolation.resolveForAccount).not.toHaveBeenCalled();
+      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
     });
 
-    it('管理员自身没有有效组织时失败关闭为 FORBIDDEN，且零写入', async () => {
-      organizationIsolation.resolveForAccount
-        .mockReset()
-        .mockRejectedValue(
-          new DomainError(
-            ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
-            '当前账号没有有效组织成员关系，无法执行组织范围操作',
-          ),
-        );
+    it('二级管理员调用旧入口被拒：策略、事务与数据库均不被触达', async () => {
+      await expect(
+        usecase.execute({
+          session: createLevelTwoAdminSession(),
+          accountId: TARGET_ACCOUNT_ID,
+          newPassword: VALID_PASSWORD,
+        }),
+      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
 
-      const error = await captureThrownError(executeAsSuperAdmin());
-
-      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
-      // 组织解析已后移到行锁之后：先锁定目标，组织裁决失败后不再读取目标资料与写入
-      expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(
-        TARGET_ACCOUNT_ID,
-        harness.txContext,
-      );
-      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+      expect(passwordPolicyService.validatePassword).not.toHaveBeenCalled();
+      expect(harness.transactionRunner.run).not.toHaveBeenCalled();
+      expect(accountService.lockByIdForUpdate).not.toHaveBeenCalled();
       expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
-      // 组织解析在事务回调内失败：事务已开启并回滚
-      expect(harness.isRolledBack()).toBe(true);
-      expect(harness.isCommitted()).toBe(false);
     });
   });
 
@@ -343,7 +323,6 @@ describe('AdminResetUserPasswordUsecase', () => {
       accountService,
       conversion.queryService,
       passwordPolicyService,
-      organizationIsolation.organizationContextQueryService,
       organizationIsolation.organizationMembershipQueryService,
       logger,
       harness.transactionRunner,
@@ -363,38 +342,6 @@ describe('AdminResetUserPasswordUsecase', () => {
         .mockReset()
         .mockResolvedValue(undefined);
     });
-
-    const dirtyRows: ReadonlyArray<[string, AdminUserAccountRowSpec]> = [
-      ['资料行缺失', { withoutUserInfo: true }],
-      [
-        '角色三源不收敛',
-        {
-          identityHint: IdentityTypeEnum.SUPER_ADMIN,
-          accessGroup: [IdentityTypeEnum.CUSTOMER],
-          metaDigest: [IdentityTypeEnum.CUSTOMER],
-        },
-      ],
-    ];
-
-    it.each(dirtyRows)(
-      '外组织目标（%s）与不存在目标使用同一拒绝口径，且不读取目标资料',
-      async (_label, row) => {
-        conversion.setAccountRow(row);
-        organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
-
-        const error = await captureThrownError(executeWithRealView());
-
-        expect(error).toMatchObject({
-          code: ADMIN_USER_ERROR.TARGET_NOT_FOUND,
-          details: undefined,
-        });
-        expect(conversion.findAdminUserViewById).not.toHaveBeenCalled();
-        expect(conversion.findAdminUserStatusFacts).not.toHaveBeenCalled();
-        expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
-        expect(harness.isRolledBack()).toBe(true);
-        expect(harness.isCommitted()).toBe(false);
-      },
-    );
 
     it('同组织资料缺失保留原有失败关闭语义（READ_FAILED）', async () => {
       conversion.setAccountRow({ withoutUserInfo: true });
@@ -428,30 +375,7 @@ describe('AdminResetUserPasswordUsecase', () => {
       expect(harness.isRolledBack()).toBe(true);
     });
 
-    it('操作者组织存在歧义时失败关闭为 FORBIDDEN，且不读取目标资料', async () => {
-      organizationIsolation.resolveForAccount
-        .mockReset()
-        .mockRejectedValue(
-          new DomainError(
-            ORGANIZATION_ERROR.AMBIGUOUS_MEMBERSHIP,
-            '当前账号存在多个有效组织成员关系，无法确定组织范围',
-          ),
-        );
-
-      const error = await captureThrownError(executeWithRealView());
-
-      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.AMBIGUOUS_MEMBERSHIP });
-      expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(
-        TARGET_ACCOUNT_ID,
-        harness.txContext,
-      );
-      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
-      expect(conversion.findAdminUserViewById).not.toHaveBeenCalled();
-      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
-      expect(harness.isRolledBack()).toBe(true);
-    });
-
-    it('正常同组织目标保持原行为：真实转换的 createdAt 作为哈希盐并提交', async () => {
+    it('正常目标保持原行为：真实转换的 createdAt 作为哈希盐并提交', async () => {
       const createdAt = new Date('2026-02-02T02:02:02.000Z');
       conversion.setAccountRow({ createdAt, updatedAt: new Date('2026-09-09T09:09:09.000Z') });
 
@@ -470,7 +394,7 @@ describe('AdminResetUserPasswordUsecase', () => {
       expect(harness.isRolledBack()).toBe(false);
     });
 
-    it('顺序为 锁定 → 解析操作者组织 → 核验同组织成员 → 读取 View → 读取状态事实 → 写哈希', async () => {
+    it('顺序为 锁定 → 读取 View → 读取状态事实 → 写哈希（一级不再解析成员公司）', async () => {
       const order: string[] = [];
       (accountService.updateAccountPasswordHash as jest.Mock).mockImplementation(() => {
         order.push('writeHash');
@@ -480,18 +404,14 @@ describe('AdminResetUserPasswordUsecase', () => {
       await executeWithRealView();
 
       const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
-      const resolveOrder = organizationIsolation.resolveForAccount.mock.invocationCallOrder[0];
-      const membershipOrder =
-        organizationIsolation.findActiveMembership.mock.invocationCallOrder[0];
       const viewOrder = conversion.findAdminUserViewById.mock.invocationCallOrder[0];
       const factsOrder = conversion.findAdminUserStatusFacts.mock.invocationCallOrder[0];
       const writeOrder = (accountService.updateAccountPasswordHash as jest.Mock).mock
         .invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(resolveOrder);
-      expect(resolveOrder).toBeLessThan(membershipOrder);
-      expect(membershipOrder).toBeLessThan(viewOrder);
+      expect(lockOrder).toBeLessThan(viewOrder);
       expect(viewOrder).toBeLessThan(factsOrder);
       expect(factsOrder).toBeLessThan(writeOrder);
+      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
       expect(order).toEqual(['writeHash']);
     });
   });

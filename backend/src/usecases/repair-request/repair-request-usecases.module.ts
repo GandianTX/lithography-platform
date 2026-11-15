@@ -13,6 +13,7 @@ import { GetMyRepairRequestDetailUsecase } from './get-my-repair-request-detail.
 import { ListEquipmentModelsUsecase } from './list-equipment-models.usecase';
 import { ListEngineerRepairRequestsUsecase } from './list-engineer-repair-requests.usecase';
 import { ListMyRepairRequestsUsecase } from './list-my-repair-requests.usecase';
+import { SearchRepairServiceOrganizationsUsecase } from './search-repair-service-organizations.usecase';
 
 @Module({
   imports: [LithographyModule, AccountInstallerModule],
@@ -27,6 +28,7 @@ import { ListMyRepairRequestsUsecase } from './list-my-repair-requests.usecase';
     ListEquipmentModelsUsecase,
     ListEngineerRepairRequestsUsecase,
     ListMyRepairRequestsUsecase,
+    SearchRepairServiceOrganizationsUsecase,
   ],
   exports: [
     AcceptRepairRequestUsecase,
@@ -39,6 +41,7 @@ import { ListMyRepairRequestsUsecase } from './list-my-repair-requests.usecase';
     ListEquipmentModelsUsecase,
     ListEngineerRepairRequestsUsecase,
     ListMyRepairRequestsUsecase,
+    SearchRepairServiceOrganizationsUsecase,
   ],
 })
 export class RepairRequestUsecasesModule {}

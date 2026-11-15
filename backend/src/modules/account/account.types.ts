@@ -84,14 +84,23 @@ export interface AccountLoginBootstrapSnapshot {
 export type AdminUserWritableRole = IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
 
 /**
- * 管理员用户列表的角色筛选值域：查看筛选允许 `SUPER_ADMIN`（只读展示已有管理员），
- * 与可写角色值域分开声明，避免把只读角色当作可写角色使用。
+ * 管理员用户列表的角色筛选值域（任务 08.4 起只允许普通账号）。
+ *
+ * 新版页面只读普通客户与工程师，不再暴露 `SUPER_ADMIN` 筛选；管理员账号
+ * 即使出现在存量数据中也不进入列表。与可写角色值域仍分开声明。
  *
  * 同样显式列出成员：纯别名（`= IdentityTypeEnum`）在结构上与枚举完全等价，
  * 既不提供任何收窄，也会在枚举扩容时静默扩大筛选值域。
  */
-export type AdminUserListRoleFilter =
-  IdentityTypeEnum.SUPER_ADMIN | IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
+export type AdminUserListRoleFilter = IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
+
+/**
+ * 管理员列表的可见角色范围：与筛选值域同源但**独立声明**。
+ *
+ * 筛选是调用方可选的动作，可见范围是服务端强制的读面下推；两者一旦共用同一数组，
+ * 任何一侧的演进都会静默改变另一侧。当前成员相同（仅普通账号），必须各自显式修改。
+ */
+export type AdminUserVisibleRole = IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
 
 /**
  * 管理员可写账号状态值域：第一版只开放 `ACTIVE` / `INACTIVE`。
@@ -215,13 +224,22 @@ export interface AdminUserListQuery {
   /**
    * 组织范围：管理员可信组织内的有效成员账号 ID 清单，由 Usecase 经组织解析后下推。
    *
-   * - `undefined` = 不按组织收窄（仅供非组织场景的内部调用；管理员管理链路必须传入）；
+   * - `undefined` = 不按组织收窄（一级管理员全范围，或非组织场景的内部调用）；
    * - 空数组 = 范围为空，QueryService 直接返回空页，**不得**退化为「不筛选」。
    *
    * 用账号 ID 而非 organizationId：account 域 QueryService 不跨域导入组织 Entity
    * （`modules.rules.md`），组织事实由 lithography 域 QueryService 解析。
    */
   readonly accountIds?: ReadonlyArray<number>;
+  /**
+   * 可见角色范围（任务 08.4）：只列出该值域内的账号。
+   *
+   * - `undefined` = 不按角色收窄；
+   * - 空数组 = 范围为空，直接返回空页（与 `accountIds` 同口径）；
+   * - 条件与分页 / COUNT 共用同一 QueryBuilder，因此 `total` 与 `items` 同源，
+   *   不存在「先分页再过滤」导致的总数泄漏。
+   */
+  readonly visibleRoles?: ReadonlyArray<AdminUserVisibleRole>;
 }
 
 /**

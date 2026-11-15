@@ -79,3 +79,147 @@ export type OrganizationRegistrationOptionPage = {
   page: number;
   pageSize: number;
 };
+
+/**
+ * 报修服务候选读模型：客户提交报修时可选的维修服务公司最小信息。
+ *
+ * 只含选择所需的 `id` / `name` / `shortName`（R018-02），不返回组织编码、
+ * 联系信息、受管归类或成员资料；资格口径固定为「启用且具备维修服务资格」，
+ * 提交报修时由任务 03 在写入事务内再次复核。
+ */
+export type OrganizationServiceProviderOption = {
+  readonly id: number;
+  readonly name: string;
+  readonly shortName: string | null;
+};
+
+/** 报修服务候选检索条件（关键字为名称子串，空表示不过滤） */
+export type OrganizationServiceProviderOptionQuery = {
+  keyword?: string;
+  pagination: OrganizationRegistrationOptionPagination;
+};
+
+/** 报修服务候选分页结果（按名称、主键稳定排序） */
+export type OrganizationServiceProviderOptionPage = {
+  items: OrganizationServiceProviderOption[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+/**
+ * 管理员公司名称名单读模型（R015 最小字段视图）。
+ *
+ * 只含主键与全称；联系方式、成员、业务详情、受管/维修资格等一律不输出。
+ * 该名单是管理端读视图，**不是**公开注册候选，资格口径与 `ACTIVE + 受管` 无关。
+ */
+export type OrganizationNameOption = {
+  readonly id: number;
+  readonly name: string;
+};
+
+/** 管理员公司名称名单检索条件（关键字为名称子串，空表示不过滤） */
+export type OrganizationNameOptionQuery = {
+  keyword?: string;
+  pagination: OrganizationRegistrationOptionPagination;
+};
+
+/** 管理员公司名称名单分页结果（按名称、主键稳定排序） */
+export type OrganizationNameOptionPage = {
+  items: OrganizationNameOption[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+/**
+ * 组织状态值域：与实体 `chk_organization_status` 一致。
+ *
+ * 以「运行时常量 + 同名类型」声明，既保持字面量联合类型（库值与入参都用字符串），
+ * 也为 GraphQL `registerEnumType` 提供运行时对象，不引入第二套值域判断。
+ * 常量名按仓库命名规范使用 camelCase，GraphQL 枚举名在注册处显式指定。
+ */
+export const organizationStatusValues = {
+  ACTIVE: 'ACTIVE',
+  DISABLED: 'DISABLED',
+} as const;
+export type OrganizationStatus =
+  (typeof organizationStatusValues)[keyof typeof organizationStatusValues];
+
+/** 组织类别值域：与实体 `chk_organization_kind` 一致（同样提供运行时对象） */
+export const organizationKindValues = {
+  CLIENT: 'CLIENT',
+  PEER: 'PEER',
+} as const;
+export type OrganizationKind = (typeof organizationKindValues)[keyof typeof organizationKindValues];
+
+/**
+ * 管理员公司档案完整视图（任务 08.2 一级管理读写共用）。
+ *
+ * 含编号、联系信息、状态与维修资格等全部管理字段；只允许一级管理员读取，
+ * 二级管理员的读入口是 `OrganizationNameOption` 最小名单。
+ */
+export type AdminOrganizationView = {
+  readonly id: number;
+  readonly organizationCode: string;
+  readonly name: string;
+  readonly shortName: string | null;
+  readonly contactName: string | null;
+  readonly contactPhone: string | null;
+  readonly contactEmail: string | null;
+  readonly address: string | null;
+  readonly remark: string | null;
+  readonly isServiceProvider: boolean;
+  readonly isManagedCompany: boolean;
+  readonly kind: OrganizationKind;
+  readonly status: OrganizationStatus;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+};
+
+/** 管理员公司档案列表检索条件（关键字与筛选为空表示不过滤） */
+export type AdminOrganizationListQuery = {
+  keyword?: string;
+  status?: OrganizationStatus;
+  isManagedCompany?: boolean;
+  isServiceProvider?: boolean;
+  pagination: OrganizationRegistrationOptionPagination;
+};
+
+/** 管理员公司档案分页结果（按名称、主键稳定排序） */
+export type AdminOrganizationPage = {
+  items: AdminOrganizationView[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+/** 一级管理员新增公司：编号由服务端生成，受管归类固定为 true、状态固定 ACTIVE */
+export type CreateManagedCompanyData = {
+  name: string;
+  shortName: string | null;
+  contactName: string | null;
+  contactPhone: string;
+  contactEmail: string | null;
+  address: string | null;
+  remark: string | null;
+  isServiceProvider: boolean;
+};
+
+/**
+ * 一级管理员编辑公司的白名单补丁。
+ *
+ * 键缺省 = 不修改；可选文本显式为 null = 清空。编号、受管归类与类别不在补丁内，
+ * 由写服务拒绝任何越界字段。
+ */
+export type UpdateManagedCompanyPatch = {
+  name?: string;
+  shortName?: string | null;
+  contactName?: string | null;
+  contactPhone?: string;
+  contactEmail?: string | null;
+  address?: string | null;
+  remark?: string | null;
+  status?: OrganizationStatus;
+  isServiceProvider?: boolean;
+};

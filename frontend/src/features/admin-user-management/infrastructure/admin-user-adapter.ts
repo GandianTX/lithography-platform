@@ -21,12 +21,10 @@ import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
 import type {
   AdminUserCommandFailureReason,
   AdminUserCommandResult,
-  AdminUserCreateDraft,
+  AdminUserFilterRole,
   AdminUserListPage,
   AdminUserListQuery,
   AdminUserPasswordResetResult,
-  AdminUserProfileEditDraft,
-  AdminUserRole,
   AdminUserStatusFilter,
 } from '../application/admin-user-management.types';
 
@@ -59,22 +57,6 @@ const ADMIN_USERS_QUERY = `
   }
 `;
 
-const ADMIN_CREATE_USER_MUTATION = `
-  mutation AdminCreateUser($input: AdminCreateUserInput!) {
-    adminCreateUser(input: $input) {
-      id
-    }
-  }
-`;
-
-const ADMIN_UPDATE_USER_PROFILE_MUTATION = `
-  mutation AdminUpdateUserProfile($input: AdminUpdateUserProfileInput!) {
-    adminUpdateUserProfile(input: $input) {
-      id
-    }
-  }
-`;
-
 const ADMIN_SET_USER_STATUS_MUTATION = `
   mutation AdminSetUserStatus($input: AdminSetUserStatusInput!) {
     adminSetUserStatus(input: $input) {
@@ -83,9 +65,13 @@ const ADMIN_SET_USER_STATUS_MUTATION = `
   }
 `;
 
-const ADMIN_RESET_USER_PASSWORD_MUTATION = `
-  mutation AdminResetUserPassword($input: AdminResetUserPasswordInput!) {
-    adminResetUserPassword(input: $input) {
+/**
+ * 重置为系统默认密码：协议层**只有** `accountId`，不接受任何客户端自报密码；
+ * 默认密码由服务端运行期配置提供，回包只含固定安全提示。
+ */
+const ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION = `
+  mutation AdminResetUserPasswordToDefault($input: AdminResetUserPasswordToDefaultInput!) {
+    adminResetUserPasswordToDefault(input: $input) {
       accountId
       isUpdated
       notice
@@ -97,20 +83,12 @@ type AdminUsersQueryData = {
   adminUsers: AdminUserListPageDto;
 };
 
-type AdminCreateUserData = {
-  adminCreateUser: { id: number };
-};
-
-type AdminUpdateUserProfileData = {
-  adminUpdateUserProfile: { id: number };
-};
-
 type AdminSetUserStatusData = {
   adminSetUserStatus: { id: number };
 };
 
-type AdminResetUserPasswordData = {
-  adminResetUserPassword: AdminResetUserPasswordResultDto;
+type AdminResetUserPasswordToDefaultData = {
+  adminResetUserPasswordToDefault: AdminResetUserPasswordResultDto;
 };
 
 type AdminUsersQueryVariables = {
@@ -121,7 +99,7 @@ type AdminUsersQueryVariables = {
     pageSize: number;
     withTotal: true;
   };
-  role?: AdminUserRole;
+  role?: AdminUserFilterRole;
   status?: AdminUserStatusFilter;
 };
 
@@ -138,20 +116,6 @@ type AdminUserCommandFailure = {
  * 各命令的大类码 → 展示原因主映射（extensions.code 契约保证稳定）；
  * extensions.errorCode 仅作可选细化，生产隐藏时自动回退主映射，不会失效。
  */
-const CREATE_REASON_BY_CATEGORY_CODE: CommandReasonMap = {
-  CONFLICT: 'duplicate-credential',
-  BAD_USER_INPUT: 'invalid-input',
-  FORBIDDEN: 'forbidden',
-  INTERNAL_SERVER_ERROR: 'creation-failed',
-};
-
-const PROFILE_REASON_BY_CATEGORY_CODE: CommandReasonMap = {
-  NOT_FOUND: 'not-found',
-  BAD_USER_INPUT: 'invalid-input',
-  FORBIDDEN: 'forbidden',
-  INTERNAL_SERVER_ERROR: 'update-failed',
-};
-
 const STATUS_REASON_BY_CATEGORY_CODE: CommandReasonMap = {
   NOT_FOUND: 'not-found',
   CONFLICT: 'status-conflict',
@@ -160,6 +124,10 @@ const STATUS_REASON_BY_CATEGORY_CODE: CommandReasonMap = {
   INTERNAL_SERVER_ERROR: 'update-failed',
 };
 
+/**
+ * 默认密码重置的失败映射：状态未收敛（`PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED`）
+ * 与启停冲突同属 CONFLICT，统一展示为「当前状态不允许该操作」。
+ */
 const RESET_PASSWORD_REASON_BY_CATEGORY_CODE: CommandReasonMap = {
   NOT_FOUND: 'not-found',
   CONFLICT: 'status-conflict',
@@ -169,8 +137,6 @@ const RESET_PASSWORD_REASON_BY_CATEGORY_CODE: CommandReasonMap = {
 };
 
 const FALLBACK_MESSAGE_BY_REASON: Record<AdminUserCommandFailureReason, string> = {
-  'creation-failed': '用户创建失败，请稍后重试。',
-  'duplicate-credential': '登录名或登录邮箱已被占用，请更换后重试。',
   forbidden: '当前身份无权执行该操作。',
   'invalid-input': '输入不符合要求，请检查后重新提交。',
   'not-found': '目标账号不存在或已被删除，请刷新列表。',
@@ -223,81 +189,6 @@ export async function fetchAdminUsers(query: AdminUserListQuery): Promise<AdminU
   return mapAdminUserListPageDtoToListPage(data.adminUsers);
 }
 
-function toCreateInput(draft: AdminUserCreateDraft) {
-  const loginName = draft.loginName.trim();
-  const loginEmail = draft.loginEmail.trim();
-  const companyName = draft.companyName.trim();
-  const contactEmail = draft.contactEmail.trim();
-  const phone = draft.phone.trim();
-
-  return {
-    companyName: companyName || null,
-    contactEmail: contactEmail || null,
-    initialPassword: draft.initialPassword,
-    loginEmail: loginEmail || null,
-    loginName: loginName || null,
-    nickname: draft.nickname.trim(),
-    phone: phone || null,
-    role: draft.role,
-  };
-}
-
-export async function adminCreateUser(
-  draft: AdminUserCreateDraft,
-): Promise<AdminUserCommandResult> {
-  try {
-    await executeGraphQL<AdminCreateUserData, { input: ReturnType<typeof toCreateInput> }>(
-      ADMIN_CREATE_USER_MUTATION,
-      { input: toCreateInput(draft) },
-    );
-
-    return { ok: true };
-  } catch (error) {
-    return toCommandFailure(error, CREATE_REASON_BY_CATEGORY_CODE);
-  }
-}
-
-export async function adminUpdateUserProfile(
-  draft: AdminUserProfileEditDraft,
-): Promise<AdminUserCommandResult> {
-  // 四个资料字段的 undefined 均表示不修改（序列化时省略该键）；nickname 只接受 string，
-  // 其余三列另以 null 表示明确清空。只提交弹窗已 trim 并判定发生变化的键。
-  const input: {
-    accountId: number;
-    companyName?: string | null;
-    contactEmail?: string | null;
-    nickname?: string;
-    phone?: string | null;
-  } = { accountId: draft.accountId };
-
-  if (draft.nickname !== undefined) {
-    input.nickname = draft.nickname.trim();
-  }
-
-  if (draft.companyName !== undefined) {
-    input.companyName = draft.companyName;
-  }
-
-  if (draft.contactEmail !== undefined) {
-    input.contactEmail = draft.contactEmail;
-  }
-
-  if (draft.phone !== undefined) {
-    input.phone = draft.phone;
-  }
-
-  try {
-    await executeGraphQL<AdminUpdateUserProfileData, { input: typeof input }>(
-      ADMIN_UPDATE_USER_PROFILE_MUTATION,
-      { input },
-    );
-
-    return { ok: true };
-  } catch (error) {
-    return toCommandFailure(error, PROFILE_REASON_BY_CATEGORY_CODE);
-  }
-}
-
 export async function adminSetUserStatus(input: {
   accountId: number;
   status: AdminUserStatusFilter;
@@ -314,18 +205,17 @@ export async function adminSetUserStatus(input: {
   }
 }
 
-export async function adminResetUserPassword(input: {
+export async function adminResetUserPasswordToDefault(input: {
   accountId: number;
-  newPassword: string;
 }): Promise<AdminUserPasswordResetResult> {
   try {
     const data = await executeGraphQL<
-      AdminResetUserPasswordData,
-      { input: { accountId: number; newPassword: string } }
-    >(ADMIN_RESET_USER_PASSWORD_MUTATION, { input });
+      AdminResetUserPasswordToDefaultData,
+      { input: { accountId: number } }
+    >(ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION, { input });
 
     // 密码本身不出现在任何结果中，只回传后端固定安全提示
-    return { ok: true, notice: data.adminResetUserPassword.notice };
+    return { ok: true, notice: data.adminResetUserPasswordToDefault.notice };
   } catch (error) {
     return toCommandFailure(error, RESET_PASSWORD_REASON_BY_CATEGORY_CODE);
   }

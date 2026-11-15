@@ -28,13 +28,15 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('SUPER_ADMIN 见首页、参考资料、用户管理、文档数据库与账号设置（PR3 S3）', () => {
+  it('SUPER_ADMIN 见首页、参考资料、用户管理、公司档案、注册审批、文档数据库与账号设置', () => {
     const paths = getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path);
 
     expect(paths).toEqual([
       '/',
       '/reference-documents',
       '/admin/users',
+      '/admin/companies',
+      '/admin/engineer-registrations',
       '/admin/document-database',
       '/account/settings',
     ]);

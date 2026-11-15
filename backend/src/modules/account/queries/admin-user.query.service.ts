@@ -87,10 +87,10 @@ const ADMIN_USER_LIST_SEARCH_OPTIONS: SearchOptions = {
  * userInfo 可见资料装配、登录引导快照等多种读取语义（465 行），再叠加管理员列表分页、
  * 三源角色收敛与写后读会把「一类事情一文件」彻底打散（`queryservice.rules.md`
  * 「单文件单语义」「当出现多种读取语义时，考虑拆分」「当出现不同权限策略时，考虑拆分」）。
- * 本文件只做管理员场景读取，不含权限断言——精确 SUPER_ADMIN 授权属**写用例的流程级授权**
- * 与列表用例的入口断言，由 `ListAdminUsersUsecase` / `AdminCreateUserUsecase` 调用
- * `assertAdminUserManagementPermission()` 完成（`queryservice.rules.md`「写用例的流程级授权
- * 由 Usecase 负责」）。
+ * 本文件只做管理员场景读取，不含权限断言——管理员授权属**写用例的流程级授权**
+ * 与列表用例的入口断言，由 `ListAdminUsersUsecase` 调用
+ * `assertAdminUserManagementScope()`、遗留写用例调用 `resolveLevelOneAdminScope()` 完成
+ * （`queryservice.rules.md`「写用例的流程级授权由 Usecase 负责」）。
  *
  * 边界（`queryservice.rules.md`）：
  * - 只读：不写库、不开启业务事务、不产生副作用（刻意不注入 logger，诊断信息以
@@ -171,6 +171,17 @@ export class AdminUserQueryService {
         return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
       }
       qb.andWhere('account.id IN (:...accountIds)', { accountIds: [...query.accountIds] });
+    }
+
+    // 可见角色范围由 Usecase 下推（任务 08.4：只读普通客户与工程师）。条件与分页 / COUNT
+    // 共用同一 QueryBuilder，因此 total 与 items 同源；空值域直接返回空页，不得退化为「不筛选」。
+    if (query.visibleRoles !== undefined) {
+      if (query.visibleRoles.length === 0) {
+        return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
+      }
+      qb.andWhere('account.identityHint IN (:...visibleRoles)', {
+        visibleRoles: [...query.visibleRoles],
+      });
     }
 
     let searchResult: SearchResult<AccountEntity>;

@@ -67,9 +67,14 @@ export type EngineerRegistrationDecisionUpdateData = {
   reviewComment: string | null;
 };
 
-/** 组织审核队列查询（organizationId 必须来自可信组织解析） */
-export type EngineerRegistrationOrganizationQueueQuery = {
-  organizationId: number;
+/**
+ * 管理员审核队列查询。
+ *
+ * `organizationId` 只能来自可信管理员作用域：二级必须传本公司以实现「先限域再筛选」；
+ * 一级不传表示全范围。绝不能直接透传客户端自报的组织参数。
+ */
+export type AdminEngineerRegistrationQueueQuery = {
+  organizationId?: number;
   /** 不传表示不按状态筛选 */
   status?: EngineerRegistrationApplicationStatus;
   pagination: EngineerRegistrationListPagination;

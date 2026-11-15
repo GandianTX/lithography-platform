@@ -5,6 +5,7 @@ import {
   RepairRequestAcceptanceViewStatus,
 } from '@app-types/models/repair-request.types';
 import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
+import type { AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { UseGuards } from '@nestjs/common';
@@ -24,9 +25,14 @@ import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-requ
 import { GetMyRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-my-repair-request-detail.usecase';
 import { ListEngineerRepairRequestsUsecase } from '@src/usecases/repair-request/list-engineer-repair-requests.usecase';
 import { ListMyRepairRequestsUsecase } from '@src/usecases/repair-request/list-my-repair-requests.usecase';
+import { SearchRepairServiceOrganizationsUsecase } from '@src/usecases/repair-request/search-repair-service-organizations.usecase';
 import { CreateEngineerResponseInput } from './dto/create-engineer-response.input';
 import { CreateRepairRequestInput } from './dto/create-repair-request.input';
 import { DeleteMyRepairRequestResultDTO } from './dto/delete-my-repair-request-result.dto';
+import {
+  RepairServiceOrganizationPageDTO,
+  toRepairServiceOrganizationPageDTO,
+} from './dto/repair-service-organization.dto';
 import { RepairRequestDTO } from './dto/repair-request.dto';
 import { EngineerRepairRequestFilterInput } from './dto/engineer-repair-request-filter.input';
 import { ValidateRepairRequestInput } from './validate-repair-request-input.decorator';
@@ -55,7 +61,40 @@ export class RepairRequestResolver {
     private readonly listEngineerRepairRequestsUsecase: ListEngineerRepairRequestsUsecase,
     private readonly getMyRepairRequestDetailUsecase: GetMyRepairRequestDetailUsecase,
     private readonly getEngineerRepairRequestDetailUsecase: GetEngineerRepairRequestDetailUsecase,
+    private readonly searchRepairServiceOrganizationsUsecase: SearchRepairServiceOrganizationsUsecase,
   ) {}
+
+  /**
+   * 客户查询报修服务公司候选（启用且具备维修服务资格）。
+   *
+   * 入口仅按 `@Roles(CUSTOMER)` 做粗粒度准入（角色继承不放开给 SUPER_ADMIN）；
+   * 客户角色与「已补齐可信公司归属」由 Usecase 精确复核，缺失即 FORBIDDEN。
+   * 只返回 `id` / `name` / `shortName`，所选公司仍由 03 在提交事务内复核。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.CUSTOMER)
+  @Query(() => RepairServiceOrganizationPageDTO, {
+    name: 'repairServiceOrganizationSearch',
+    description: '客户查询报修服务公司候选（启用且具备维修服务资格）',
+  })
+  @ValidateInput()
+  async repairServiceOrganizationSearch(
+    @Args('pagination', { description: '分页参数（仅 OFFSET）' }) pagination: PaginationArgs,
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('keyword', {
+      type: () => String,
+      nullable: true,
+      description: '公司名称关键字；缺省表示不过滤',
+    })
+    keyword?: string,
+  ): Promise<RepairServiceOrganizationPageDTO> {
+    const page = await this.searchRepairServiceOrganizationsUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      keyword: keyword ?? null,
+      pagination: mapGqlToCoreParams(pagination),
+    });
+    return toRepairServiceOrganizationPageDTO(page);
+  }
 
   /**
    * 客户创建维修申请

@@ -1,6 +1,7 @@
 // src/usecases/account/admin-user-write-support.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { AccountStatus } from '@app-types/models/account.types';
 import {
   ACCOUNT_ERROR,
   ADMIN_USER_ERROR,
@@ -9,13 +10,14 @@ import {
   isDomainError,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
+import { isDualStatusFieldsConsistent } from '@core/account/policy/dual-status-consistency.policy';
 import { PasswordPolicyService } from '@core/common/password/password-policy.service';
-import type { AdminUserView } from '@src/modules/account/account.types';
+import type { AdminScope } from '@core/account/policy/admin-scope.policy';
+import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
 import { assertWritableAdminUserTargetRole } from './admin-user-permission';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
-import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { PinoLogger } from 'nestjs-pino';
 
 /**
@@ -98,26 +100,22 @@ export const extractDriverErrorCode = (error: unknown): string | number | undefi
 };
 
 /**
- * 事务内加载受保护的管理员写目标：锁定 → 解析管理员组织 → 组织归属校验 → 读取收敛
- * View → 目标角色保护断言。
+ * 事务内加载受保护的管理员写目标：锁定 → 二级归属校验 → 读取收敛 View → 目标角色保护断言。
  *
  * 1. **先锁定目标账号**（`AccountService.lockByIdForUpdate()` 持 `SELECT ... FOR UPDATE`
  *    悲观行锁）：串行化针对同一目标账号的并发管理写，并要求后续所有读取都发生在取得
  *    行锁之后。锁前建立的普通读取（含组织解析）会被后续事务快照复用，读到并发方的旧
  *    状态，故顺序不可交换；
- * 2. **锁后解析管理员可信组织**
- *    （`TrustedOrganizationContextQueryService.resolveForAccount()`）：组织范围只来自
- *    Session 账号的单一有效成员关系，绝不取客户端自报。无有效组织或存在歧义时失败关闭
- *    为 `ORGANIZATION_*`（对外 FORBIDDEN），**不**塌缩为目标不存在；
- * 3. **组织归属校验先于目标资料读取**：目标在本组织内必须有一条有效成员关系
- *    （`findActiveMembership()`）；不匹配统一收敛为 `TARGET_NOT_FOUND`——跨组织目标
- *    与不存在的目标对外不可区分，也不泄露目标在其它组织、资料是否缺失或是否为只读
- *    SUPER_ADMIN。若先读取 View，`READ_FAILED` / `ROLE_DATA_INCONSISTENT` 会让外组织
- *    目标与不存在目标产生可区分错误，等同泄露目标状态；
- * 4. 锁内经 `findAdminUserViewById()` 读取收敛后的稳定 View：**同组织**目标的角色数据
+ * 2. **一级管理员跳过组织解析与目标归属校验**：一级是平台级角色，可跨公司写普通账号，
+ *    且不要求自身存在成员公司；二级管理员必须确认目标在 `scope.organizationId` 内有
+ *    有效成员关系（`findActiveMembership()`），不匹配统一收敛为 `TARGET_NOT_FOUND`——
+ *    跨公司目标与不存在的目标对外不可区分，也不泄露目标在其它组织、资料是否缺失或
+ *    是否为只读 SUPER_ADMIN。若先读取 View，`READ_FAILED` / `ROLE_DATA_INCONSISTENT`
+ *    会让外公司目标与不存在目标产生可区分错误，等同泄露目标状态；
+ * 3. 锁内经 `findAdminUserViewById()` 读取收敛后的稳定 View：本作用域内目标的角色数据
  *    异常或不一致（`ROLE_DATA_INCONSISTENT`）、资料行缺失（`READ_FAILED`）由
  *    `toAdminUserView()` 统一失败关闭，本层不重复实现，也不顺手修复历史数据；
- * 5. `assertWritableAdminUserTargetRole()` 依数据库事实拒绝 SUPER_ADMIN 目标——
+ * 4. `assertWritableAdminUserTargetRole()` 依数据库事实拒绝 SUPER_ADMIN 目标——
  *    SUPER_ADMIN 在本功能内全部只读，其中也包含「管理员操作自己」（自己的账号必然是
  *    SUPER_ADMIN）。
  *
@@ -127,21 +125,21 @@ export const extractDriverErrorCode = (error: unknown): string | number | undefi
  * `graphql-error-contract-current.md`「not-found 不得塌缩为 UNAUTHENTICATED」的契约。
  *
  * @param params.accountService 锁能力由既有域内方法提供，本层不直接访问 ORM API
- * @param params.adminAccountId 发起操作的管理员账号 ID（必须来自可信 Session）
+ * @param params.scope 发起方的管理员作用域（`assertAdminUserManagementScope()` 的返回值，
+ *   一级全范围 / 二级可信公司）；**不接受**客户端自报公司
  * @param params.actionLabel 管理动作文案（如「编辑资料」「修改状态」「重置密码」），
  *   仅用于目标保护拒绝提示
  */
 export async function loadWritableAdminUserTarget(params: {
   readonly accountService: AccountService;
   readonly adminUserQueryService: AdminUserQueryService;
-  readonly organizationContextQueryService: TrustedOrganizationContextQueryService;
   readonly organizationMembershipQueryService: OrganizationMembershipQueryService;
-  readonly adminAccountId: number;
+  readonly scope: AdminScope;
   readonly accountId: number;
   readonly actionLabel: string;
   readonly transactionContext: PersistenceTransactionContext;
 }): Promise<AdminUserView> {
-  // 先取得目标行锁：后续组织解析与目标资料读取都必须发生在锁后，
+  // 先取得目标行锁：后续目标资料读取与写入都必须发生在锁后，
   // 否则普通读取会在锁前建立快照，并发方提交后仍读到旧状态。
   try {
     await params.accountService.lockByIdForUpdate(params.accountId, params.transactionContext);
@@ -152,21 +150,16 @@ export async function loadWritableAdminUserTarget(params: {
     throw error;
   }
 
-  // 锁后解析管理员可信组织（fail-fast，早于目标资料读取与写入）
-  const adminOrganization = await params.organizationContextQueryService.resolveForAccount({
-    accountId: params.adminAccountId,
-    transactionContext: params.transactionContext,
-  });
-
-  // 目标归属校验先于资料读取与角色断言：跨组织目标统一按不存在处理，
-  // 资料缺失 / 角色异常不再能让外部组织目标与不存在目标产生可区分错误。
-  const targetMembership = await params.organizationMembershipQueryService.findActiveMembership({
-    accountId: params.accountId,
-    organizationId: adminOrganization.organizationId,
-    transactionContext: params.transactionContext,
-  });
-  if (targetMembership === null) {
-    throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
+  // 二级管理员只允许操作可信公司内的账号；一级管理员可直接跨公司操作
+  if (params.scope.level === 2) {
+    const targetMembership = await params.organizationMembershipQueryService.findActiveMembership({
+      accountId: params.accountId,
+      organizationId: params.scope.organizationId,
+      transactionContext: params.transactionContext,
+    });
+    if (targetMembership === null) {
+      throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
+    }
   }
 
   const view = await params.adminUserQueryService.findAdminUserViewById({
@@ -312,4 +305,52 @@ export function assertAdminUserPasswordPolicy(params: {
       `${params.fieldName}不符合安全要求: ${validation.errors.join(', ')}`,
     );
   }
+}
+
+/**
+ * 密码重置的目标状态边界（旧「自填新密码」与新的「默认密码」两条管理员链路共用）。
+ *
+ * 只允许双字段一致的 `ACTIVE` / `INACTIVE` 普通账号。`PENDING` / `SUSPENDED` /
+ * `BANNED` / `DELETED`、双字段不一致与状态缺失一律拒绝
+ * （`PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED`，对外 `CONFLICT`，不复用
+ * `STATUS_TRANSITION_NOT_ALLOWED`——后者专指启停状态转换），拒绝发生在哈希生成与
+ * 任何写入之前：停用 / 封禁语义被尊重，`INACTIVE` 账号重置后仍是 `INACTIVE`，
+ * 拒绝路径不操作 Token / Session。
+ *
+ * 一致性比对与 `AdminSetUserStatusUsecase` 同口径：两枚举类型不同、成员字符串当前
+ * 逐字相同，判定上收 core `dual-status-consistency.policy.ts` 单一实现；当前状态事实
+ * 只进 `cause.diagnostic` 供服务端排查，`details` 留空，不进对外响应。
+ */
+export function assertPasswordResetTargetStatusAllowed(
+  facts: AdminUserStatusFacts,
+  accountId: number,
+): void {
+  // 「双字段一致且处于两态」的两种合法形态：accountStatus 命中两态之一后，
+  // isDualStatusFieldsConsistent({ accountStatus, userState }) 即等价于 userState 与之同值
+  const isConsistentActive =
+    facts.accountStatus === AccountStatus.ACTIVE &&
+    isDualStatusFieldsConsistent({
+      accountStatus: facts.accountStatus,
+      userState: facts.userState,
+    });
+  const isConsistentInactive =
+    facts.accountStatus === AccountStatus.INACTIVE &&
+    isDualStatusFieldsConsistent({
+      accountStatus: facts.accountStatus,
+      userState: facts.userState,
+    });
+  if (isConsistentActive || isConsistentInactive) {
+    return;
+  }
+  throw new DomainError(
+    ADMIN_USER_ERROR.PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED,
+    '账号当前状态不允许重置密码',
+    undefined,
+    {
+      diagnostic: 'PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED',
+      accountId,
+      currentStatus: facts.accountStatus,
+      currentUserState: facts.userState,
+    },
+  );
 }

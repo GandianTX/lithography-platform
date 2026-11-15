@@ -119,10 +119,14 @@ Remove-Item Env:E2E_ALLOW_PHYSICAL_CLEANUP
 
 局部截图例外登记表（新增例外必须先在此登记，再按需在 `eslint.config.js` override 放行）：
 
-| 文件                                         | 截图产物                                      | 类型                                      | 例外理由                                                                                              |
-| -------------------------------------------- | --------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `e2e/admin-document-database-visual.spec.ts` | `kb-local-{宽x高}-header/summary/toolbar.png` | 元素截图（`locator.screenshot`）          | 元素 1:1 局部图（物理尺寸 = 元素 CSS 尺寸），供与原型并排人工对照，非全视口证据                       |
-| `e2e/admin-document-database-visual.spec.ts` | `kb-local-{宽x高}-thead-first-row.png`        | clip 合成图（`page.screenshot` + `clip`） | 表头 + 一行正文跨元素连续区域；`clip` 由相邻元素 `boundingBox()` 合成，机械约束中唯一放行的 clip 例外 |
-| `e2e/reference-library-visual.spec.ts`       | `reference-library-search-filled-*.png`       | 元素截图（`locator.screenshot`）          | 搜索框填充态局部细节图，非全视口证据                                                                  |
+| 文件                                            | 截图产物                                      | 类型                                      | 例外理由                                                                                                                                                        |
+| ----------------------------------------------- | --------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `e2e/admin-document-database-visual.spec.ts`    | `kb-local-{宽x高}-header/summary/toolbar.png` | 元素截图（`locator.screenshot`）          | 元素 1:1 局部图（物理尺寸 = 元素 CSS 尺寸），供与原型并排人工对照，非全视口证据                                                                                 |
+| `e2e/admin-document-database-visual.spec.ts`    | `kb-local-{宽x高}-thead-first-row.png`        | clip 合成图（`page.screenshot` + `clip`） | 表头 + 一行正文跨元素连续区域；`clip` 由相邻元素 `boundingBox()` 合成，机械约束中唯一放行的 clip 例外                                                           |
+| `e2e/reference-library-visual.spec.ts`          | `reference-library-search-filled-*.png`       | 元素截图（`locator.screenshot`）          | 搜索框填充态局部细节图，非全视口证据                                                                                                                            |
+| `e2e-real/admin-companies-real.spec.ts`         | `docs/plan/task08/visual/s2-admin*.png`       | 全视口实现截图（`page.screenshot`）       | S2 检查轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据 |
+| `e2e-real/admin-engineer-approval-real.spec.ts` | `docs/plan/task08/visual/s3-*.png`            | 全视口实现截图（`page.screenshot`）       | S3 检查轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据 |
+| `e2e-real/admin-user-management-real.spec.ts`   | `docs/plan/task08/visual/s4-*.png`            | 全视口实现截图（`page.screenshot`）       | S4 检查轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据 |
+| `e2e-real/admin-s5-visual-real.spec.ts`         | `docs/plan/task08/visual/s5-*.png`            | 全视口实现截图（`page.screenshot`）       | S5 检查轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据 |
 
-以上例外截图前均调用 `prepareStableViewport()`；全视口证据不得以登记表例外替代。
+以上例外截图前均调用 `prepareStableViewport()`；全视口最终证据不得以登记表例外替代（预提交阶段的实现截图须在提交后由 `captureStableViewport()` 重采替换）。

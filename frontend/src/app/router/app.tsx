@@ -12,7 +12,9 @@ import { AppLayout } from '@/app/layout';
 
 import { AccountSettingsPage } from '@/pages/account-settings';
 import { AdminPage } from '@/pages/admin';
+import { AdminCompaniesPage } from '@/pages/admin-companies';
 import { AdminDocumentDatabasePage } from '@/pages/admin-document-database';
+import { AdminEngineerApprovalsPage } from '@/pages/admin-engineer-approvals';
 import { AdminUsersPage } from '@/pages/admin-users';
 import {
   CustomerPage,
@@ -139,6 +141,20 @@ const router = createBrowserRouter([
         element: <AdminDocumentDatabasePage />,
         loader: protectedRouteLoader,
         path: 'admin/document-database',
+      },
+      {
+        // 公司档案页（任务 08.2）：路由治理复用 protectedRouteLoader 与既有 /admin/**
+        // 角色策略（SUPER_ADMIN 放行）；一级/二级差异由页面按会话等级呈现，服务端独立裁决
+        element: <AdminCompaniesPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/companies',
+      },
+      {
+        // 工程师注册审批页（任务 08.3）：路由治理复用 protectedRouteLoader 与既有 /admin/**
+        // 角色策略（SUPER_ADMIN 放行）；一级全范围、二级仅本公司的差异由服务端独立裁决
+        element: <AdminEngineerApprovalsPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/engineer-registrations',
       },
       {
         // 用户管理页：路由治理完全复用 protectedRouteLoader 与既有 /admin/**

@@ -8,8 +8,9 @@
 //   E2E_ALLOW_PHYSICAL_CLEANUP=1 E2E_AUTH_ADMIN_JWT_EXPIRES_IN=45s npm run test:e2e:auth-admin-real
 //
 // 覆盖的真实场景（全部以 DOM / URL / 后端权威视图断言，不把截图或录像当作自动化断言）：
-//   a. 三角色真实登录进入各自默认首页；管理员通过页面创建 ENGINEER / CUSTOMER，
-//      核对角色单值三字段、状态 ACTIVE、刷新后列表一致；
+//   a. 三角色真实登录进入各自默认首页；管理员经真实 API 创建 ENGINEER / CUSTOMER（V6.4
+//      08.4 起页面不再提供创建入口），页面列表核对角色与状态、刷新后一致，
+//      并核对角色单值三字段、状态 ACTIVE；
 //   b. 本轮专用普通账号停用后：不能登录、旧 Token 下一次真实受保护请求被拒、前端会话被清理
 //      跳登录页；重新启用后新登录可访问受保护 Query；
 //   c. 真实签发 Token 自然过期后，由真实受保护 Query 触发会话清理并回到登录页；
@@ -183,56 +184,38 @@ async function searchAdminUser(page: Page, keyword: string): Promise<void> {
 }
 
 /**
- * 通过创建弹窗创建一名普通用户（角色仅 ENGINEER / CUSTOMER）。
+ * 经真实管理员 API 创建一名普通用户（角色仅 ENGINEER / CUSTOMER）。
  *
- * 评审 P1：点击创建前先登记响应监听，adminCreateUser 成功响应一返回即解析数据库生成 ID 并
- * **立即**登记到本轮清理清单（返回登记项）——早于弹窗关闭等待与调用方任何后续查询 / 断言；
- * 即便本函数后续的 `expect(dialog).toBeHidden()` 或调用方后续步骤失败，精确 ID 也已进入清单。
+ * V6.4 08.4 起管理页不再提供创建入口，本用例只验证「创建后列表展示正确」，
+ * 因此建号改走与页面同一条后端契约的真实 GraphQL 调用。
+ * 创建响应一返回即解析数据库生成 ID 并**立即**登记到本轮清理清单（返回登记项），
+ * 早于调用方任何后续查询 / 断言；即便后续步骤失败，精确 ID 也已进入清单。
  */
-async function createUserViaPage(
-  page: Page,
+async function createUserViaApi(
+  env: Record<string, string>,
   input: {
     role: DedicatedAccountRole;
-    roleLabel: string;
     nickname: string;
     loginName: string;
-    password: string;
     organizationId: number;
   },
   registry: RegisteredDedicatedAccount[],
 ): Promise<RegisteredDedicatedAccount> {
-  await page.getByRole('button', { name: '创建用户' }).click();
-
-  const dialog = page.getByRole('dialog');
-
-  await expect(dialog).toBeVisible();
-  // AntD Select 交互按仓库先例（engineer-repair-request-real / reference-document-real）：
-  // 点击 label 不展开下拉，必须先点 combobox 打开下拉。这里必须用 `.ant-select-item-option`
-  // （title 为中文标签）而非 getByRole('option')：AntD 6 的 role="option" 节点是零宽内部
-  // 元素（实测 rect 宽为 0），Playwright 判为不可见并一直等待。
-  await dialog.getByRole('combobox').click();
-  await page
-    .locator(`.ant-select-dropdown .ant-select-item-option[title="${input.roleLabel}"]`)
-    .click();
-  await dialog.getByLabel('昵称', { exact: true }).fill(input.nickname);
-  await dialog.getByLabel('登录名（登录凭据之一）', { exact: true }).fill(input.loginName);
-  await dialog.getByLabel('初始密码', { exact: true }).fill(input.password);
-  await dialog.getByLabel('确认初始密码', { exact: true }).fill(input.password);
-  // 点击创建前先登记响应监听：创建响应一返回即捕获精确 ID 并立即登记清理目标
-  const createResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes('/graphql') &&
-      response.request().method() === 'POST' &&
-      (response.request().postData() ?? '').includes('adminCreateUser'),
+  const createdResponse = await realGraphqlCall(
+    env,
+    ADMIN_CREATE_USER_MUTATION,
+    {
+      input: {
+        initialPassword: CREATE_PASSWORD,
+        loginName: input.loginName,
+        nickname: input.nickname,
+        role: input.role,
+      },
+    },
+    'mock_super_admin',
   );
 
-  // 弹窗底部确认按钮的可访问名是「创 建」：AntD 会在两个汉字间自动插空格
-  //（与登录按钮 /登\s*录/ 同一现象），故不能用 exact: true 的「创建」。
-  await dialog.getByRole('button', { name: /创\s*建/ }).click();
-
-  const createResponse = await createResponsePromise;
-  const createBody = (await createResponse.json().catch(() => null)) as unknown;
-  const registered = registerCreatedDedicatedAccount(registry, createBody, {
+  return registerCreatedDedicatedAccount(registry, createdResponse.body, {
     accessGroup: [input.role],
     loginName: input.loginName,
     nickname: input.nickname,
@@ -241,10 +224,6 @@ async function createUserViaPage(
     userInfoEmail: null,
     userState: 'ACTIVE',
   });
-
-  await expect(dialog).toBeHidden();
-
-  return registered;
 }
 
 /** Node 侧真实登录尝试：不抛错，返回是否拿到 Token 与首个错误大类（供负例断言用） */
@@ -408,7 +387,7 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     }
   });
 
-  test('管理员通过页面创建 ENGINEER 与 CUSTOMER：角色字段正确、状态 ACTIVE、刷新后一致', async ({
+  test('管理员经真实 API 创建 ENGINEER 与 CUSTOMER：页面列表角色与状态正确、刷新后一致', async ({
     page,
   }) => {
     // 两次真实创建 + 两次刷新核对 + API/SQL 三字段核验，串行门禁下需要独立预算
@@ -422,7 +401,7 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     preflightDedicatedAccountCleanup();
     await assertApiSqlSameDatabase(env);
 
-    // 本轮登记的精确清理目标（创建响应一返回即登记，见 createUserViaPage / 评审 P1）
+    // 本轮登记的精确清理目标（创建响应一返回即登记，见 createUserViaApi）
     const created: RegisteredDedicatedAccount[] = [];
     // adminCreateUser 会把 ENGINEER / CUSTOMER 绑定管理员当前有效组织，预期值取自该事实
     const actingOrganizationId = readActingOrganizationId('mock_super_admin');
@@ -439,16 +418,14 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
           const loginName = buildDedicatedLoginName();
           const nickname = `E2E 创建-${roleCase.role}-${Date.now()}`;
 
-          // 创建辅助函数在 adminCreateUser 成功响应返回时立即登记精确 ID（早于弹窗关闭等待）
-          const registered = await createUserViaPage(
-            page,
+          // 创建辅助函数在 adminCreateUser 成功响应返回时立即登记精确 ID
+          const registered = await createUserViaApi(
+            env,
             {
               loginName,
               nickname,
               organizationId: actingOrganizationId,
-              password: CREATE_PASSWORD,
               role: roleCase.role,
-              roleLabel: roleCase.roleLabel,
             },
             created,
           );

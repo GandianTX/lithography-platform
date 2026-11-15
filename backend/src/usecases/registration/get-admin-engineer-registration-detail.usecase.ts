@@ -9,20 +9,24 @@ import {
 import { Injectable } from '@nestjs/common';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type {
   AdminEngineerRegistrationItem,
   GetAdminEngineerRegistrationDetailCommand,
 } from './admin-engineer-registration.types';
 import { normalizeEngineerRegistrationApplicationId } from './registration-input.normalize';
-import { assertEngineerRegistrationReviewPermission } from './engineer-registration-review-permission';
+import {
+  assertEngineerRegistrationReviewPermission,
+  isApplicationInAdminScope,
+} from './engineer-registration-review-permission';
 
 /**
- * 所属组织管理员查看单条工程师注册申请。
+ * 管理员查看单条工程师注册申请。
  *
- * 可见范围由可信组织解析限定：申请不存在或不属于该组织时统一返回
- * `APPLICATION_NOT_FOUND`（对外 NOT_FOUND），不区分「不存在」与「跨组织」，
- * 避免通过错误差异探测其他组织的申请主键。
+ * 可见范围由可信管理员作用域限定：一级任意公司，二级仅本公司。
+ * 申请不存在、跨公司或已不可见时统一返回 `APPLICATION_NOT_FOUND`（对外 NOT_FOUND），
+ * 不区分「不存在」与「跨公司」，避免通过错误差异探测其他公司的申请主键。
  *
  * 只读：不开启事务、不写库、不加锁。
  */
@@ -32,12 +36,13 @@ export class GetAdminEngineerRegistrationDetailUsecase {
     private readonly engineerRegistrationQueryService: EngineerRegistrationQueryService,
     private readonly adminUserQueryService: AdminUserQueryService,
     private readonly organizationContext: TrustedOrganizationContextQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
   ) {}
 
   async execute(
     command: GetAdminEngineerRegistrationDetailCommand,
   ): Promise<AdminEngineerRegistrationItem> {
-    const organization = await assertEngineerRegistrationReviewPermission({
+    const scope = await assertEngineerRegistrationReviewPermission({
       session: command.session,
       actionLabel: '查看',
       organizationContext: this.organizationContext,
@@ -46,7 +51,7 @@ export class GetAdminEngineerRegistrationDetailUsecase {
 
     try {
       const application = await this.engineerRegistrationQueryService.findById(applicationId);
-      if (application === null || application.organizationId !== organization.organizationId) {
+      if (application === null || !isApplicationInAdminScope(scope, application.organizationId)) {
         throw new DomainError(ENGINEER_REGISTRATION_ERROR.APPLICATION_NOT_FOUND, '注册申请不存在');
       }
 
@@ -62,7 +67,11 @@ export class GetAdminEngineerRegistrationDetailUsecase {
         );
       }
 
-      return { application, applicant };
+      const organizationName = await this.organizationQueryService.findOrganizationNameById({
+        organizationId: application.organizationId,
+      });
+
+      return { application, applicant, organizationName };
     } catch (error) {
       if (isDomainError(error)) {
         throw error;

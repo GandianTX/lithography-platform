@@ -21,6 +21,9 @@ export class AdminEngineerRegistrationItemDTO {
 
   @Field(() => AdminUserDTO, { description: '申请人账号公开资料' })
   applicant!: AdminUserDTO;
+
+  @Field(() => String, { description: '申请目标公司展示名称（公司行缺失时为空）', nullable: true })
+  organizationName!: string | null;
 }
 
 /** 组织审核条目 View → DTO 薄映射 */
@@ -30,5 +33,6 @@ export function toAdminEngineerRegistrationItemDTO(
   return {
     application: toEngineerRegistrationApplicationDTO(item.application),
     applicant: toAdminUserDTO(item.applicant),
+    organizationName: item.organizationName,
   };
 }

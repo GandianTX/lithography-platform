@@ -8,6 +8,7 @@ import {
 } from '@app-types/models/registration.types';
 import { UserState } from '@app-types/models/user-info.types';
 import { convergeAccountRole } from '@core/account/policy/account-role-convergence.policy';
+import { resolveAdminScope } from '@core/account/policy/admin-scope.policy';
 import {
   ADMIN_USER_ERROR,
   DomainError,
@@ -22,6 +23,7 @@ import { EngineerRegistrationService } from '@src/modules/lithography/engineer-r
 import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
@@ -39,24 +41,25 @@ import {
 } from './registration-input.normalize';
 import {
   assertEngineerRegistrationReviewPermission,
-  assertRegistrationAdminSession,
+  isApplicationInAdminScope,
 } from './engineer-registration-review-permission';
 
 /**
- * 所属组织管理员对工程师注册申请做一次性终态决策。
+ * 管理员对工程师注册申请做一次性终态决策。
  *
- * 权限与组织范围：精确 SUPER_ADMIN + 可信组织管理员身份；申请不属于该组织一律
- * `APPLICATION_NOT_FOUND`，不使用客户端自报 organizationId。
+ * 权限与组织范围：精确 SUPER_ADMIN + 请求期查库得到的 `admin_level`；
+ * 一级可跨公司审批（成员关系写入**申请目标公司**），二级仅限本公司。
+ * 申请不属于可见范围、不存在或并发已被处理时统一失败关闭，不使用客户端自报 organizationId。
  *
  * 事务与锁序（与拒绝后重提共用同一顺序，避免死锁）：
- * 1. 事务内解析可信组织（成员事实按事务连接读取）；
- * 2. 读取申请取得申请人主键并校验归属；
+ * 1. 事务内解析管理员作用域（二级复核可信成员事实）；
+ * 2. 读取申请取得申请人主键并校验可见范围；
  * 3. **先锁申请人账号行，再锁申请行**（`pessimistic_write`）；
- * 4. 锁内复核申请仍为 PENDING、仍属本组织；申请人三源角色收敛为 ENGINEER、
+ * 4. 锁内复核申请仍为 PENDING、仍属可见范围；申请人三源角色收敛为 ENGINEER、
  *    双状态同为 PENDING/PENDING、且无有效成员关系——任何一项不成立即失败关闭，零写入；
  * 5. 终态写入：
- *    - `APPROVE`：建立 `ENGINEER` 成员关系 + 账号 `ACTIVE` + 资料 `ACTIVE` +
- *      申请 `APPROVED`，全部同一事务；
+ *    - `APPROVE`：建立 `ENGINEER` 成员关系（目标公司为申请公司）+ 账号 `ACTIVE` +
+ *      资料 `ACTIVE` + 申请 `APPROVED`，全部同一事务；
  *    - `REJECT`：仅写申请 `REJECTED` 与必填审核意见，账号保持 `PENDING/PENDING`，
  *      可凭本人凭据重提（历史拒绝记录永久保留）；
  * 6. 决策条件更新只允许从 PENDING 迁出；并发第二次决策命中 0 行 →
@@ -76,6 +79,7 @@ export class ReviewEngineerRegistrationUsecase {
     private readonly engineerRegistrationService: EngineerRegistrationService,
     private readonly engineerRegistrationQueryService: EngineerRegistrationQueryService,
     private readonly organizationContext: TrustedOrganizationContextQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -99,12 +103,12 @@ export class ReviewEngineerRegistrationUsecase {
 
     const actionLabel = action === EngineerRegistrationReviewAction.APPROVE ? '通过' : '拒绝';
     // 会话级权限是纯内存判定：先拒绝，不为越权调用开启事务；
-    // 事务内仍走共享断言（含可信组织成员事实复核），两者口径一致。
-    assertRegistrationAdminSession(command.session, actionLabel);
+    // 事务内仍走共享断言（二级含可信组织成员事实复核），两者口径一致。
+    resolveAdminScope(command.session, actionLabel);
 
     try {
       return await this.transactionRunner.run(async (transactionContext) => {
-        const organization = await assertEngineerRegistrationReviewPermission({
+        const scope = await assertEngineerRegistrationReviewPermission({
           session: command.session,
           actionLabel,
           organizationContext: this.organizationContext,
@@ -115,7 +119,7 @@ export class ReviewEngineerRegistrationUsecase {
           applicationId,
           transactionContext,
         );
-        if (application === null || application.organizationId !== organization.organizationId) {
+        if (application === null || !isApplicationInAdminScope(scope, application.organizationId)) {
           throw new DomainError(
             ENGINEER_REGISTRATION_ERROR.APPLICATION_NOT_FOUND,
             '注册申请不存在',
@@ -140,13 +144,10 @@ export class ReviewEngineerRegistrationUsecase {
           applicationId,
           transactionContext,
         );
-        if (lockedApplication === null) {
-          throw new DomainError(
-            ENGINEER_REGISTRATION_ERROR.APPLICATION_NOT_FOUND,
-            '注册申请不存在',
-          );
-        }
-        if (lockedApplication.organizationId !== organization.organizationId) {
+        if (
+          lockedApplication === null ||
+          !isApplicationInAdminScope(scope, lockedApplication.organizationId)
+        ) {
           throw new DomainError(
             ENGINEER_REGISTRATION_ERROR.APPLICATION_NOT_FOUND,
             '注册申请不存在',
@@ -172,7 +173,7 @@ export class ReviewEngineerRegistrationUsecase {
           // 同事务：有效成员关系、账号启用、资料启用、申请通过四步同成同败
           await this.organizationMembershipService.insertMembership(
             {
-              organizationId: organization.organizationId,
+              organizationId: application.organizationId,
               accountId: application.accountId,
               memberRole: IdentityTypeEnum.ENGINEER,
             },
@@ -235,17 +236,22 @@ export class ReviewEngineerRegistrationUsecase {
           );
         }
 
+        const organizationName = await this.organizationQueryService.findOrganizationNameById({
+          organizationId: application.organizationId,
+          transactionContext,
+        });
+
         this.logger.info(
           {
             applicationId,
             accountId: application.accountId,
-            organizationId: organization.organizationId,
+            organizationId: application.organizationId,
             action,
           },
           '工程师注册申请审核完成',
         );
 
-        return { application: reviewedApplication, applicant };
+        return { application: reviewedApplication, applicant, organizationName };
       });
     } catch (error) {
       if (isDomainError(error)) {

@@ -24,7 +24,8 @@ import {
   normalizeAdminUserListStatusFilter,
 } from './admin-user-management.input.normalize';
 import type { ListAdminUsersCommand } from './admin-user-management.types';
-import { assertAdminUserManagementPermission } from './admin-user-permission';
+import { ADMIN_USER_VISIBLE_ROLES } from './admin-user-permission';
+import { assertAdminUserManagementScope } from './admin-user-scope';
 
 /**
  * 页大小上限：与 GraphQL 边界 `PaginationArgs` 的 `@Max(100)`、
@@ -37,16 +38,17 @@ const MAX_PAGE_SIZE = 100;
  * 管理员用户列表用例（P0-2）。
  *
  * 执行顺序刻意固定：
- * 1. **第一步就是精确 SUPER_ADMIN 权限断言**（`assertAdminUserManagementPermission()`，
- *    全仓唯一实现，同时校验 `roles` 含 SUPER_ADMIN 且 `activeRole` 精确等于 SUPER_ADMIN，
- *    缺失或矛盾即失败关闭为 `FORBIDDEN`）。断言先于任何输入规范化与数据库读取，
- *    因此无权限的调用者既不会触发查询，也不会从错误文案里推断出筛选值域；
+ * 1. **第一步就是管理员作用域断言**（`assertAdminUserManagementScope()`，全仓唯一实现）：
+ *    精确 SUPER_ADMIN 身份 + 请求期 `adminLevel`；一级归一为全范围，二级必须带可信公司
+ *    并复核成员关系。断言先于任何输入规范化与数据库读取，因此无权限的调用者既不会触发
+ *    查询，也不会从错误文案里推断出筛选值域；
  * 2. 分页收敛：唯一路径是 `@core/pagination/pagination.policy` 的 `applyDefaults()` +
  *    `enforceMaxPageSize()`，不在本用例另写钳制逻辑；
  * 3. 场景输入规范化（keyword / role / status 白名单）；
- * 4. 组织隔离：经 `TrustedOrganizationContextQueryService.resolveForAccount()` 解析管理员
- *    单一有效组织，再经 `OrganizationMembershipQueryService.listActiveAccountIdsByOrganization()`
- *    取得本组织有效账号 ID 清单，作为 `accountIds` 下推给 QueryService；
+ * 4. 范围下推：一级不传 `accountIds`（平台全范围）；二级经
+ *    `OrganizationMembershipQueryService.listActiveAccountIdsByOrganization()` 取可信公司内
+ *    有效账号 ID 清单后下推。可见角色固定为普通客户与工程师（`ADMIN_USER_VISIBLE_ROLES`），
+ *    与组织条件、分页、COUNT 共用同一 QueryBuilder；
  * 5. 调用 QueryService 读取。
  *
  * 依赖方向（`usecase.rules.md`）：本用例只依赖 QueryService，**不访问 Repository、
@@ -76,20 +78,24 @@ export class ListAdminUsersUsecase {
   }
 
   async execute(command: ListAdminUsersCommand): Promise<AdminUserListPage> {
-    assertAdminUserManagementPermission(command.session, '查看');
+    // 一级全范围，二级仅可信公司；等级缺失 / 非法一律 FORBIDDEN
+    const scope = await assertAdminUserManagementScope({
+      session: command.session,
+      actionLabel: '查看',
+      organizationContext: this.organizationContextQueryService,
+    });
 
     const { page, pageSize } = this.resolveOffsetPagination(command.pagination);
 
-    // 组织隔离：管理员只能查看本组织账号。组织范围只来自可信解析（Session 账号的单一
-    // 有效成员关系），绝不取客户端自报；无有效组织或存在歧义时由解析服务失败关闭为
-    // FORBIDDEN，不返回全库列表。
-    const organization = await this.organizationContextQueryService.resolveForAccount({
-      accountId: command.session.accountId,
-    });
+    // 组织隔离：一级管理员不按公司收窄；二级只查可信公司内的有效成员账号。
+    // 组织范围只来自请求期查库结果，绝不取客户端自报；二级成员关系被撤销或歧义时
+    // 由作用域断言失败关闭，不返回全库列表。
     const accountIds =
-      await this.organizationMembershipQueryService.listActiveAccountIdsByOrganization({
-        organizationId: organization.organizationId,
-      });
+      scope.level === 1
+        ? undefined
+        : await this.organizationMembershipQueryService.listActiveAccountIdsByOrganization({
+            organizationId: scope.organizationId,
+          });
 
     const query: AdminUserListQuery = {
       page,
@@ -98,6 +104,9 @@ export class ListAdminUsersUsecase {
       role: normalizeAdminUserListRoleFilter(command.role),
       status: normalizeAdminUserListStatusFilter(command.status),
       accountIds,
+      // 读面强制只读普通客户与工程师：条件与分页 / COUNT 共用同一 QueryBuilder，
+      // 不做「先分页再剔除」，避免从总数或条数泄漏管理员账号
+      visibleRoles: ADMIN_USER_VISIBLE_ROLES,
     };
 
     try {

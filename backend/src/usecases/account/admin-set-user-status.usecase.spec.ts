@@ -39,6 +39,8 @@ describe('AdminSetUserStatusUsecase 双字段写入原子性', () => {
     accountId: ADMIN_ACCOUNT_ID,
     roles: [IdentityTypeEnum.SUPER_ADMIN],
     activeRole: IdentityTypeEnum.SUPER_ADMIN,
+    adminLevel: 1,
+    adminOrganizationId: null,
   });
 
   const adminUserView = (overrides: Partial<AdminUserView> = {}): AdminUserView => ({
@@ -217,13 +219,22 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
     fakeTx: 'admin-set-user-status-matrix',
   } as unknown as PersistenceTransactionContext;
 
-  /** 缺省会话即「精确 SUPER_ADMIN」：roles 含 SUPER_ADMIN 且 activeRole 精确等于 SUPER_ADMIN */
+  /** 缺省会话即「精确 SUPER_ADMIN + 一级管理员」：平台全范围，不解析成员公司 */
   const session = (overrides: Partial<UsecaseSession> = {}): UsecaseSession => ({
     accountId: ADMIN_ACCOUNT_ID,
     roles: [IdentityTypeEnum.SUPER_ADMIN],
     activeRole: IdentityTypeEnum.SUPER_ADMIN,
+    adminLevel: 1,
+    adminOrganizationId: null,
     ...overrides,
   });
+
+  /** 二级管理员：等级 2 + 请求期可信公司归属 */
+  const levelTwoSession = (): UsecaseSession =>
+    session({
+      adminLevel: 2,
+      adminOrganizationId: createAdminOrganizationFact().organizationId,
+    });
 
   const adminUserView = (overrides: Partial<AdminUserView> = {}): AdminUserView => ({
     id: TARGET_ACCOUNT_ID,
@@ -310,6 +321,9 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
 
   const executeAsSuperAdmin = (status: unknown, accountId: unknown = TARGET_ACCOUNT_ID) =>
     usecase.execute({ session: session(), accountId, status });
+
+  const executeAsLevelTwo = (status: unknown, accountId: unknown = TARGET_ACCOUNT_ID) =>
+    usecase.execute({ session: levelTwoSession(), accountId, status });
 
   /**
    * 原样透传入参的执行入口：不给 `accountId` 设默认值。
@@ -424,11 +438,25 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
     });
   });
 
-  describe('组织隔离（管理员只能管理本组织）', () => {
-    it('目标不在管理员可信组织内时收敛为 TARGET_NOT_FOUND，零写入并回滚', async () => {
+  describe('两级管理员作用域', () => {
+    it('一级管理员跨公司可写：不解析成员公司、不校验目标归属', async () => {
+      (adminUserQueryService.findAdminUserViewById as jest.Mock)
+        .mockReset()
+        .mockResolvedValueOnce(adminUserView({ status: AccountStatus.ACTIVE }))
+        .mockResolvedValueOnce(adminUserView({ status: AccountStatus.INACTIVE }));
+
+      await expect(executeAsSuperAdmin(AccountStatus.INACTIVE)).resolves.toMatchObject({
+        status: AccountStatus.INACTIVE,
+      });
+
+      expect(organizationIsolation.resolveForAccount).not.toHaveBeenCalled();
+      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+    });
+
+    it('二级管理员的目标不在可信公司内时收敛为 TARGET_NOT_FOUND，零写入并回滚', async () => {
       organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
 
-      const error = await captureError(executeAsSuperAdmin(AccountStatus.INACTIVE));
+      const error = await captureError(executeAsLevelTwo(AccountStatus.INACTIVE));
 
       expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
       expect(accountService.updateAccount).not.toHaveBeenCalled();
@@ -442,7 +470,7 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
       });
     });
 
-    it('管理员自身没有有效组织时失败关闭为 FORBIDDEN，且零写入', async () => {
+    it('二级管理员的成员关系被撤销时失败关闭为 FORBIDDEN，且不开启事务', async () => {
       organizationIsolation.resolveForAccount
         .mockReset()
         .mockRejectedValue(
@@ -452,16 +480,36 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
           ),
         );
 
-      const error = await captureError(executeAsSuperAdmin(AccountStatus.INACTIVE));
+      const error = await captureError(executeAsLevelTwo(AccountStatus.INACTIVE));
 
       expect(error).toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
-      // 组织解析已后移到行锁之后：先锁定目标，组织裁决失败后不再读取目标资料与写入
-      expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(TARGET_ACCOUNT_ID, txContext);
-      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+      // 作用域复核先于事务：成员关系不成立时不锁目标、不写任何字段
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+      expect(accountService.lockByIdForUpdate).not.toHaveBeenCalled();
       expect(accountService.updateAccount).not.toHaveBeenCalled();
-      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
-      expect(rolledBack).toBe(true);
-      expect(committed).toBe(false);
+    });
+
+    it('二级管理员的成员角色不再是 SUPER_ADMIN 时失败关闭为 FORBIDDEN', async () => {
+      organizationIsolation.resolveForAccount
+        .mockReset()
+        .mockResolvedValue(createAdminOrganizationFact({ memberRole: 'ENGINEER' }));
+
+      await expect(executeAsLevelTwo(AccountStatus.INACTIVE)).rejects.toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      });
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+      expect(accountService.updateAccount).not.toHaveBeenCalled();
+    });
+
+    it('等级缺失的会话被拒且不开启事务', async () => {
+      await expect(
+        usecase.execute({
+          session: session({ adminLevel: null }),
+          accountId: TARGET_ACCOUNT_ID,
+          status: AccountStatus.INACTIVE,
+        }),
+      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      expect(transactionRunner.run).not.toHaveBeenCalled();
     });
   });
 
@@ -525,11 +573,9 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
       expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
       // 幂等路径只读取锁内 View 一次，不触发写后回读
       expect(adminUserQueryService.findAdminUserViewById).toHaveBeenCalledTimes(1);
-      // 回归核心：锁定必须早于组织解析、View 与状态事实读取
+      // 回归核心：锁定必须早于 View 与状态事实读取
+      // （作用域解析发生在事务之前，不参与「锁后读取」的顺序比较）
       const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(
-        organizationIsolation.resolveForAccount.mock.invocationCallOrder[0],
-      );
       expect(lockOrder).toBeLessThan(
         (adminUserQueryService.findAdminUserViewById as jest.Mock).mock.invocationCallOrder[0],
       );
@@ -623,8 +669,11 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
       transactionRunner,
     );
 
-    const executeWithRealView = (status: AccountStatus = AccountStatus.INACTIVE) =>
-      realViewUsecase.execute({ session: session(), accountId: TARGET_ACCOUNT_ID, status });
+    const executeWithRealView = (
+      status: AccountStatus = AccountStatus.INACTIVE,
+      sessionOverride: UsecaseSession = session(),
+    ) =>
+      realViewUsecase.execute({ session: sessionOverride, accountId: TARGET_ACCOUNT_ID, status });
 
     beforeEach(() => {
       conversion.setAccountRow({});
@@ -646,12 +695,14 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
     ];
 
     it.each(dirtyRows)(
-      '外组织目标（%s）与不存在目标使用同一拒绝口径，且不读取目标资料',
+      '二级管理员遇到外公司目标（%s）与不存在目标使用同一拒绝口径，且不读取目标资料',
       async (_label, row) => {
         conversion.setAccountRow(row);
         organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
 
-        const error = await captureError(executeWithRealView());
+        const error = await captureError(
+          executeWithRealView(AccountStatus.INACTIVE, levelTwoSession()),
+        );
 
         expect(error).toMatchObject({
           code: ADMIN_USER_ERROR.TARGET_NOT_FOUND,
@@ -729,22 +780,22 @@ describe('AdminSetUserStatusUsecase 授权、目标保护与状态转换矩阵',
       expect(rolledBack).toBe(false);
     });
 
-    it('顺序为 锁定 → 解析操作者组织 → 核验同组织成员 → 读取 View → 读取状态事实', async () => {
+    it('顺序为 解析作用域 → 锁定 → 核验同公司成员 → 读取 View → 读取状态事实', async () => {
       (accountService.updateAccount as jest.Mock).mockImplementation(() => {
         conversion.setAccountRow({ status: AccountStatus.INACTIVE, userState: UserState.INACTIVE });
         return Promise.resolve();
       });
 
-      await executeWithRealView();
+      await executeWithRealView(AccountStatus.INACTIVE, levelTwoSession());
 
-      const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
       const resolveOrder = organizationIsolation.resolveForAccount.mock.invocationCallOrder[0];
+      const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
       const membershipOrder =
         organizationIsolation.findActiveMembership.mock.invocationCallOrder[0];
       const viewOrder = conversion.findAdminUserViewById.mock.invocationCallOrder[0];
       const factsOrder = conversion.findAdminUserStatusFacts.mock.invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(resolveOrder);
-      expect(resolveOrder).toBeLessThan(membershipOrder);
+      expect(resolveOrder).toBeLessThan(lockOrder);
+      expect(lockOrder).toBeLessThan(membershipOrder);
       expect(membershipOrder).toBeLessThan(viewOrder);
       expect(viewOrder).toBeLessThan(factsOrder);
     });

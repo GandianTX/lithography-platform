@@ -1,16 +1,17 @@
 // src/usecases/account/admin-reset-user-password.usecase.ts
 
-import { AccountStatus } from '@app-types/models/account.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import { PasswordPolicyService } from '@core/common/password/password-policy.service';
-import { isDualStatusFieldsConsistent } from '@core/account/policy/dual-status-consistency.policy';
+import {
+  resolveLevelOneAdminScope,
+  type AdminScope,
+} from '@core/account/policy/admin-scope.policy';
 import { Inject, Injectable } from '@nestjs/common';
-import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
+import type { AdminUserView } from '@src/modules/account/account.types';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
-import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -24,9 +25,9 @@ import type {
   AdminResetUserPasswordCommand,
   AdminResetUserPasswordResult,
 } from './admin-user-management.types';
-import { assertAdminUserManagementPermission } from './admin-user-permission';
 import {
   assertAdminUserPasswordPolicy,
+  assertPasswordResetTargetStatusAllowed,
   loadWritableAdminUserTarget,
   logAdminUserWriteFailure,
 } from './admin-user-write-support';
@@ -59,8 +60,8 @@ const SUPPRESSED_MESSAGE_PHASES: ReadonlyArray<AdminResetUserPasswordPhase> = [
  * 管理员重置普通用户密码用例（P0-6）。
  *
  * 执行顺序刻意固定：
- * 1. **第一步就是精确 SUPER_ADMIN 权限断言**（`assertAdminUserManagementPermission()`，
- *    全仓单一实现，同时校验 `roles` 含 SUPER_ADMIN 且 `activeRole` 精确等于 SUPER_ADMIN），
+ * 1. **第一步就是管理员作用域断言**（`resolveLevelOneAdminScope()`，任务 08.4 起本遗留入口
+ *    只开放给一级管理员；新版页面改用 `adminResetUserPasswordToDefault`），
  *    先于任何输入规范化与数据库访问；
  * 2. 场景输入规范化：目标账号 ID + 新密码非空断言（刻意不 trim，理由见
  *    `normalizeAdminUserPasswordInput()`）；
@@ -131,7 +132,6 @@ export class AdminResetUserPasswordUsecase {
     private readonly accountService: AccountService,
     private readonly adminUserQueryService: AdminUserQueryService,
     private readonly passwordPolicyService: PasswordPolicyService,
-    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
     private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
@@ -141,7 +141,8 @@ export class AdminResetUserPasswordUsecase {
   }
 
   async execute(command: AdminResetUserPasswordCommand): Promise<AdminResetUserPasswordResult> {
-    assertAdminUserManagementPermission(command.session, '重置密码');
+    // 遗留入口：保留签名与一级行为，但不向二级管理员开放
+    const scope = resolveLevelOneAdminScope(command.session, '重置密码');
 
     const accountId = normalizeAdminUserTargetAccountId(command.accountId);
     const newPassword = normalizeAdminUserPasswordInput(command.newPassword, '新密码');
@@ -155,7 +156,7 @@ export class AdminResetUserPasswordUsecase {
       await this.transactionRunner.run((transactionContext) =>
         this.resetInTransaction({
           transactionContext,
-          adminAccountId: command.session.accountId,
+          scope,
           accountId,
           newPassword,
         }),
@@ -215,20 +216,19 @@ export class AdminResetUserPasswordUsecase {
    */
   private async resetInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
-    adminAccountId: number;
+    scope: AdminScope;
     accountId: number;
     newPassword: string;
   }): Promise<void> {
-    const { transactionContext, adminAccountId, accountId, newPassword } = params;
+    const { transactionContext, scope, accountId, newPassword } = params;
     let phase: AdminResetUserPasswordPhase = 'LOCK_TARGET';
 
     try {
       const lockedView: AdminUserView = await loadWritableAdminUserTarget({
         accountService: this.accountService,
         adminUserQueryService: this.adminUserQueryService,
-        organizationContextQueryService: this.organizationContextQueryService,
         organizationMembershipQueryService: this.organizationMembershipQueryService,
-        adminAccountId,
+        scope,
         accountId,
         actionLabel: '重置密码',
         transactionContext,
@@ -249,8 +249,7 @@ export class AdminResetUserPasswordUsecase {
           { diagnostic: 'PASSWORD_RESET_STATUS_FACTS_NOT_READABLE', accountId },
         );
       }
-      this.assertPasswordResetTargetStatusAllowed(facts, accountId);
-
+      assertPasswordResetTargetStatusAllowed(facts, accountId);
       phase = 'WRITE_PASSWORD_HASH';
       // 时间盐取账号创建时间（锁内 View 携带），与本仓注册 / 创建 / 公开重置链路同一实现
       await this.accountService.updateAccountPasswordHash({
@@ -276,50 +275,5 @@ export class AdminResetUserPasswordUsecase {
         error,
       );
     }
-  }
-
-  /**
-   *
-   * 与 P0-5 的状态转换矩阵（R8）同构但语义不同：这里不是状态转换裁决，而是「当前处于
-   * 哪些状态的账号可以被管理员覆盖登录凭据」。拒绝时**不生成密码哈希、不写数据库、
-   * 不改变账号状态与角色、不操作 Token / Session**（本方法在写哈希阶段之前执行）。
-   *
-   * 不复用 `STATUS_TRANSITION_NOT_ALLOWED`：该码专指启停状态转换，不是密码重置。
-   * 一致性比对与 `AdminSetUserStatusUsecase` 同口径：两枚举类型不同、成员字符串当前
-   * `details` 刻意留空，当前状态事实只进
-   * `cause.diagnostic` 供服务端排查，不进对外响应。
-   */
-  private assertPasswordResetTargetStatusAllowed(
-    facts: AdminUserStatusFacts,
-    accountId: number,
-  ): void {
-    // 「双字段一致且处于两态」的两种合法形态：accountStatus 命中两态之一后，
-    // isDualStatusFieldsConsistent({ accountStatus, userState }) 即等价于 userState 与之同值
-    const isConsistentActive =
-      facts.accountStatus === AccountStatus.ACTIVE &&
-      isDualStatusFieldsConsistent({
-        accountStatus: facts.accountStatus,
-        userState: facts.userState,
-      });
-    const isConsistentInactive =
-      facts.accountStatus === AccountStatus.INACTIVE &&
-      isDualStatusFieldsConsistent({
-        accountStatus: facts.accountStatus,
-        userState: facts.userState,
-      });
-    if (isConsistentActive || isConsistentInactive) {
-      return;
-    }
-    throw new DomainError(
-      ADMIN_USER_ERROR.PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED,
-      '账号当前状态不允许重置密码',
-      undefined,
-      {
-        diagnostic: 'PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED',
-        accountId,
-        currentStatus: facts.accountStatus,
-        currentUserState: facts.userState,
-      },
-    );
   }
 }

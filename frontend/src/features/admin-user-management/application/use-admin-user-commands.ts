@@ -3,8 +3,8 @@
 /**
  * 管理员用户管理写命令的执行入口（use case / command，收束在 feature application）。
  *
- * - 四个独立命令（创建 / 资料编辑 / 状态修改 / 密码重置）各持有自己的
- *   in-flight 键：同类命令进行中拒绝重复提交，不同命令互不阻塞；
+ * - 两个独立命令（状态修改 / 重置为默认密码）各持有自己的 in-flight 键：
+ *   同类命令进行中拒绝重复提交，不同命令互不阻塞；
  * - 命令的显式业务结果（成功 / 业务拒绝）由 adapter 归一后原样透传给调用方；
  * - transport / auth / 网络类未处理失败统一收敛为 unhandled-error（附兜底文案），
  *   UNAUTHENTICATED 的会话清理与跳转仍由共享 ingress 链路负责，
@@ -17,21 +17,17 @@ import { useCallback, useRef, useState } from 'react';
 import { isGraphQLIngressError } from '@/shared/graphql';
 
 import {
-  adminCreateUser,
-  adminResetUserPassword,
+  adminResetUserPasswordToDefault,
   adminSetUserStatus,
-  adminUpdateUserProfile,
 } from '../infrastructure/admin-user-adapter';
 
 import type {
   AdminUserCommandResult,
-  AdminUserCreateDraft,
   AdminUserPasswordResetResult,
-  AdminUserProfileEditDraft,
   AdminUserStatusFilter,
 } from './admin-user-management.types';
 
-export const ADMIN_USER_COMMAND_KEYS = ['create', 'profile', 'status', 'reset-password'] as const;
+export const ADMIN_USER_COMMAND_KEYS = ['status', 'reset-password'] as const;
 
 export type AdminUserCommandKey = (typeof ADMIN_USER_COMMAND_KEYS)[number];
 
@@ -109,20 +105,6 @@ export function useAdminUserCommands(reload: () => void) {
     [reload, runCommand],
   );
 
-  const createUser = useCallback(
-    (draft: AdminUserCreateDraft): Promise<AdminUserCommandExecution<AdminUserCommandResult>> =>
-      runReloadingCommand('create', () => adminCreateUser(draft)),
-    [runReloadingCommand],
-  );
-
-  const updateUserProfile = useCallback(
-    (
-      draft: AdminUserProfileEditDraft,
-    ): Promise<AdminUserCommandExecution<AdminUserCommandResult>> =>
-      runReloadingCommand('profile', () => adminUpdateUserProfile(draft)),
-    [runReloadingCommand],
-  );
-
   const setUserStatus = useCallback(
     (input: {
       accountId: number;
@@ -132,22 +114,19 @@ export function useAdminUserCommands(reload: () => void) {
     [runReloadingCommand],
   );
 
-  const resetUserPassword = useCallback(
+  const resetPasswordToDefault = useCallback(
     (input: {
       accountId: number;
-      newPassword: string;
     }): Promise<AdminUserCommandExecution<AdminUserPasswordResetResult>> =>
-      runReloadingCommand('reset-password', () => adminResetUserPassword(input)),
+      runReloadingCommand('reset-password', () => adminResetUserPasswordToDefault(input)),
     [runReloadingCommand],
   );
 
   const isPending = useCallback((key: AdminUserCommandKey) => pendingKeys.has(key), [pendingKeys]);
 
   return {
-    createUser,
     isPending,
-    resetUserPassword,
+    resetPasswordToDefault,
     setUserStatus,
-    updateUserProfile,
   };
 }

@@ -10,10 +10,12 @@ import type { PaginationParams } from '@core/pagination/pagination.types';
 import type { AdminUserView } from '@src/modules/account/account.types';
 import type { EngineerRegistrationApplicationSnapshot } from '@src/modules/lithography/engineer-registration.types';
 
-/** 审核队列/详情的最小条目：申请事实 + 申请人公开资料，不含任何凭据或角色摘要 */
+/** 审核队列/详情的最小条目：申请事实 + 申请人公开资料 + 目标公司展示名，不含任何凭据或角色摘要 */
 export type AdminEngineerRegistrationItem = {
   readonly application: EngineerRegistrationApplicationSnapshot;
   readonly applicant: AdminUserView;
+  /** 申请目标公司展示名；公司行缺失时为 null，仅用于展示 */
+  readonly organizationName: string | null;
 };
 
 /** 组织审核队列分页结果 */
@@ -49,4 +51,6 @@ export type ReviewEngineerRegistrationCommand = {
 export type ReviewEngineerRegistrationResult = {
   readonly application: EngineerRegistrationApplicationSnapshot;
   readonly applicant: AdminUserView;
+  /** 申请目标公司展示名；公司行缺失时为 null，仅用于展示 */
+  readonly organizationName: string | null;
 };

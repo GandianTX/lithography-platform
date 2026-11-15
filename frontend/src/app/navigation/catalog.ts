@@ -68,6 +68,28 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['admin', 'users', 'management', '管理员', '用户管理'],
   },
   {
+    description: 'SUPER_ADMIN 的公司档案维护：完整名单、详情、新增与编辑（含启停与维修资格）。',
+    id: 'admin-companies',
+    kind: 'stable',
+    label: '公司档案',
+    // 仅对 SUPER_ADMIN 展示；二级管理员进入后只读名称名单，服务端独立裁决写权限。
+    // 展示过滤不替代路由守卫：未授权角色直达 /admin/companies 仍由路由层拒绝。
+    path: '/admin/companies',
+    roles: ['SUPER_ADMIN'],
+    tags: ['admin', 'companies', 'organization', '管理员', '公司档案', '维修服务'],
+  },
+  {
+    description: 'SUPER_ADMIN 的工程师注册审批：一级全范围、二级仅本公司，可批准或填写原因拒绝。',
+    id: 'admin-engineer-registrations',
+    kind: 'stable',
+    label: '注册审批',
+    // 仅对 SUPER_ADMIN 展示；可见范围由服务端按请求期等级与可信公司独立裁决。
+    // 展示过滤不替代路由守卫：未授权角色直达 /admin/engineer-registrations 仍由路由层拒绝。
+    path: '/admin/engineer-registrations',
+    roles: ['SUPER_ADMIN'],
+    tags: ['admin', 'registration', 'engineer', 'approval', '管理员', '注册审批', '工程师'],
+  },
+  {
     description: 'SUPER_ADMIN 的数据聚合视图：参考资料、维修申请、AI 会话与 AI 报告。',
     id: 'admin-document-database',
     kind: 'stable',

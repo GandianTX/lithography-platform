@@ -306,6 +306,10 @@ export const ADMIN_USER_ERROR = {
   // 管理员权限无问题、这是明确的当前状态冲突）；details 留空，
   // 当前状态事实只进 cause.diagnostic 供服务端排查，不进对外响应
   PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED: 'ADMIN_USER_PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED',
+  // 默认密码重置（任务 08.4）：运行期未配置默认密码，或配置值不符合密码策略。
+  // 对外大类 INTERNAL_SERVER_ERROR：这是部署侧配置问题，不是调用方可修正的输入；
+  // 文案与 details 均不暴露配置键名或具体策略原因，避免把弱口令事实与配置细节外泄
+  DEFAULT_PASSWORD_NOT_CONFIGURED: 'ADMIN_USER_DEFAULT_PASSWORD_NOT_CONFIGURED',
 } as const;
 Object.freeze(ADMIN_USER_ERROR);
 
@@ -418,6 +422,27 @@ export const ORGANIZATION_ERROR = {
 } as const;
 Object.freeze(ORGANIZATION_ERROR);
 
+/**
+ * 管理员公司档案（任务 08.2）专用错误码。
+ *
+ * 与 `ORGANIZATION_ERROR`（可信组织上下文缺失/歧义）刻意分离：本组只服务
+ * 一级管理员的列表、详情、新增与编辑。语义边界：
+ * - `TARGET_NOT_FOUND`：目标公司不存在，对外 NOT_FOUND，不回显内部细节；
+ * - `CODE_CONFLICT`：服务端生成的编号命中唯一索引（含并发竞争），对外 CONFLICT；
+ * - `READ_FAILED` / `WRITE_FAILED`：系统侧读写失败，不泄露数据库细节，
+ *   对外 INTERNAL_SERVER_ERROR。
+ *
+ * 输入类错误继续复用 `INPUT_NORMALIZE_ERROR`（对外 BAD_USER_INPUT），
+ * 权限类复用 `PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS`（对外 FORBIDDEN）。
+ */
+export const ORGANIZATION_MANAGEMENT_ERROR = {
+  TARGET_NOT_FOUND: 'ORGANIZATION_MANAGEMENT_TARGET_NOT_FOUND',
+  CODE_CONFLICT: 'ORGANIZATION_MANAGEMENT_CODE_CONFLICT',
+  READ_FAILED: 'ORGANIZATION_MANAGEMENT_READ_FAILED',
+  WRITE_FAILED: 'ORGANIZATION_MANAGEMENT_WRITE_FAILED',
+} as const;
+Object.freeze(ORGANIZATION_MANAGEMENT_ERROR);
+
 // 内容投稿相关错误码（A-PR0 计划 §2.2/§2.3：两类草稿、本人查询；S3 起）
 // 语义边界：
 // - 输入类（INVALID_PARAMS / DRAFT_EMPTY）：对外 BAD_USER_INPUT，不得使用
@@ -521,6 +546,8 @@ export type AdminDocumentDatabaseErrorCode =
 export type InputNormalizeErrorCode =
   (typeof INPUT_NORMALIZE_ERROR)[keyof typeof INPUT_NORMALIZE_ERROR];
 export type OrganizationErrorCode = (typeof ORGANIZATION_ERROR)[keyof typeof ORGANIZATION_ERROR];
+export type OrganizationManagementErrorCode =
+  (typeof ORGANIZATION_MANAGEMENT_ERROR)[keyof typeof ORGANIZATION_MANAGEMENT_ERROR];
 export type ContentSubmissionErrorCode =
   (typeof CONTENT_SUBMISSION_ERROR)[keyof typeof CONTENT_SUBMISSION_ERROR];
 export type StoredFileErrorCode = (typeof STORED_FILE_ERROR)[keyof typeof STORED_FILE_ERROR];
@@ -554,6 +581,7 @@ export type DomainErrorCode =
   | AdminDocumentDatabaseErrorCode
   | InputNormalizeErrorCode
   | OrganizationErrorCode
+  | OrganizationManagementErrorCode
   | ContentSubmissionErrorCode
   | StoredFileErrorCode
   | PaginationErrorCode;

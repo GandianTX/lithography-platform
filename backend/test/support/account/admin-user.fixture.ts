@@ -92,7 +92,10 @@ export const createOrganizationIsolationMocks = (): {
 
 /**
  * 精确 SUPER_ADMIN 会话：`roles` 含 SUPER_ADMIN **且** `activeRole` 精确等于 SUPER_ADMIN。
- * `assertAdminUserManagementPermission()` 要求两个条件同时成立，缺一即失败关闭。
+ *
+ * 缺省同时给出 `adminLevel: 1`（一级管理员，平台全范围），因为任务 08 起所有管理端入口
+ * 都先经 `resolveAdminScope()` 校验请求期查库得到的等级；只有角色而没有等级会被
+ * `FORBIDDEN` 拒绝。二级会话请用 `createLevelTwoAdminSession()`。
  */
 export const createSuperAdminSession = (
   overrides: Partial<UsecaseSession> = {},
@@ -100,8 +103,24 @@ export const createSuperAdminSession = (
   accountId: ADMIN_ACCOUNT_ID,
   roles: [IdentityTypeEnum.SUPER_ADMIN],
   activeRole: IdentityTypeEnum.SUPER_ADMIN,
+  adminLevel: 1,
+  adminOrganizationId: null,
   ...overrides,
 });
+
+/**
+ * 二级管理员会话：等级 2 + 请求期解析出的可信公司归属。
+ * 二级管理端入口会再经 `TrustedOrganizationContextQueryService.resolveForAccount()`
+ * 复核成员关系仍是 SUPER_ADMIN 且公司一致。
+ */
+export const createLevelTwoAdminSession = (
+  overrides: Partial<UsecaseSession> = {},
+): UsecaseSession =>
+  createSuperAdminSession({
+    adminLevel: 2,
+    adminOrganizationId: ADMIN_ORGANIZATION_ID,
+    ...overrides,
+  });
 
 /**
  * 无管理员权限的会话组合：两个纯普通角色，以及两类「半管理员」矛盾会话。

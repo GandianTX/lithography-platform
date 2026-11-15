@@ -17,6 +17,7 @@ import { EngineerRegistrationService } from '@src/modules/lithography/engineer-r
 import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { PinoLogger } from 'nestjs-pino';
 import { ReviewEngineerRegistrationUsecase } from './review-engineer-registration.usecase';
@@ -47,6 +48,7 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
   };
   let engineerRegistrationQueryService: { findById: jest.Mock };
   let organizationContext: { resolveForAccount: jest.Mock };
+  let organizationQueryService: { findOrganizationNameById: jest.Mock };
   let logger: { setContext: jest.Mock; info: jest.Mock; error: jest.Mock };
   let transactionRunner: { run: jest.Mock };
   let usecase: ReviewEngineerRegistrationUsecase;
@@ -99,6 +101,8 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
       accountId: ADMIN_ACCOUNT_ID,
       roles: [IdentityTypeEnum.SUPER_ADMIN],
       activeRole: IdentityTypeEnum.SUPER_ADMIN,
+      adminLevel: 1,
+      adminOrganizationId: ORGANIZATION_ID,
     };
     currentStatus = EngineerRegistrationApplicationStatus.PENDING;
     reviewComment = null;
@@ -162,6 +166,9 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
         .fn()
         .mockResolvedValue(organizationFact(IdentityTypeEnum.SUPER_ADMIN)),
     };
+    organizationQueryService = {
+      findOrganizationNameById: jest.fn().mockResolvedValue('测试组织'),
+    };
     logger = { setContext: jest.fn(), info: jest.fn(), error: jest.fn() };
     transactionRunner = {
       run: jest.fn(async (fn: (ctx: PersistenceTransactionContext) => Promise<unknown>) =>
@@ -178,6 +185,7 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
       engineerRegistrationService as unknown as EngineerRegistrationService,
       engineerRegistrationQueryService as unknown as EngineerRegistrationQueryService,
       organizationContext as unknown as TrustedOrganizationContextQueryService,
+      organizationQueryService as unknown as OrganizationQueryService,
       logger as unknown as PinoLogger,
       transactionRunner as never,
     );
@@ -207,7 +215,17 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
       expect(transactionRunner.run).not.toHaveBeenCalled();
     });
 
-    it('所属组织成员角色不是 SUPER_ADMIN 时拒绝审核', async () => {
+    it('管理员等级缺失时在事务前即被拒绝', async () => {
+      session = { ...session, adminLevel: null };
+
+      await expect(usecase.execute(approveCommand())).rejects.toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      });
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('二级管理员可信成员角色不是 SUPER_ADMIN 时拒绝审核', async () => {
+      session = { ...session, adminLevel: 2 };
       organizationContext.resolveForAccount.mockResolvedValue(
         organizationFact(IdentityTypeEnum.ENGINEER),
       );
@@ -218,7 +236,8 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
       expect(engineerRegistrationService.lockApplicationById).not.toHaveBeenCalled();
     });
 
-    it('跨组织申请按不存在处理，不暴露其他组织申请', async () => {
+    it('二级管理员跨公司申请按不存在处理，不暴露其他组织申请', async () => {
+      session = { ...session, adminLevel: 2 };
       engineerRegistrationQueryService.findById.mockResolvedValue({
         ...application(EngineerRegistrationApplicationStatus.PENDING),
         organizationId: ORGANIZATION_ID + 1,
@@ -322,6 +341,36 @@ describe('ReviewEngineerRegistrationUsecase（组织管理员一次性终态决�
       );
       expect(result.application.status).toBe(EngineerRegistrationApplicationStatus.APPROVED);
       expect(result.applicant.status).toBe(AccountStatus.ACTIVE);
+      expect(result.organizationName).toBe('测试组织');
+    });
+
+    it('一级管理员跨公司批准时成员关系写入申请目标公司', async () => {
+      const targetOrganizationId = ORGANIZATION_ID + 1;
+      engineerRegistrationQueryService.findById.mockResolvedValue({
+        ...application(EngineerRegistrationApplicationStatus.PENDING),
+        organizationId: targetOrganizationId,
+      });
+      engineerRegistrationService.lockApplicationById.mockImplementation(() =>
+        Promise.resolve({
+          ...application(currentStatus),
+          organizationId: targetOrganizationId,
+        }),
+      );
+      organizationQueryService.findOrganizationNameById.mockResolvedValue('乙公司');
+
+      const result = await usecase.execute(approveCommand());
+
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: targetOrganizationId,
+          accountId: APPLICANT_ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.ENGINEER,
+        },
+        expect.anything(),
+      );
+      expect(result.organizationName).toBe('乙公司');
+      // 一级是平台级角色：不解析成员事实，也不要求申请人属于某家公司
+      expect(organizationContext.resolveForAccount).not.toHaveBeenCalled();
     });
   });
 
