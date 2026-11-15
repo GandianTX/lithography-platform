@@ -260,6 +260,50 @@ describe('ValidateAccessTokenSessionUsecase', () => {
     });
   });
 
+  it.each([
+    ['账号 ACTIVE / 资料 PENDING', AccountStatus.ACTIVE, UserState.PENDING],
+    ['账号 PENDING / 资料 ACTIVE', AccountStatus.PENDING, UserState.ACTIVE],
+  ])(
+    '已签发 Token 遇到%s 时认证层拒绝并记录双状态不一致',
+    async (_label, accountStatus, userState) => {
+      mockSnapshot(
+        snapshot({
+          accountStatus,
+          userInfo: {
+            userState,
+            accessGroup: [IdentityTypeEnum.ENGINEER],
+            metaDigest: [IdentityTypeEnum.ENGINEER],
+            customerOrganizationId: null,
+          },
+        }),
+      );
+      mockLatestApplication(EngineerRegistrationApplicationStatus.PENDING);
+
+      await expect(usecase.execute({ payload: payload() })).rejects.toMatchObject({
+        code: 'JWT_AUTHENTICATION_FAILED',
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ gate: 3, reason: 'STATUS_COMBINATION_MISMATCH' }),
+        expect.any(String),
+      );
+    },
+  );
+
+  it.each([
+    ['账号行缺失', snapshot({ accountStatus: null }), 'ACCOUNT_RECORD_MISSING'],
+    ['资料行缺失', snapshot({ userInfo: null }), 'USER_INFO_RECORD_MISSING'],
+  ])('%s 时认证层拒绝并记录缺行原因', async (_label, authoritySnapshot, reason) => {
+    mockSnapshot(authoritySnapshot);
+
+    await expect(usecase.execute({ payload: payload() })).rejects.toMatchObject({
+      code: 'JWT_AUTHENTICATION_FAILED',
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ gate: 2, reason }),
+      expect.any(String),
+    );
+  });
+
   it('最新申请为 REJECTED 时返回 ENGINEER_REJECTED', async () => {
     mockSnapshot(
       snapshot({

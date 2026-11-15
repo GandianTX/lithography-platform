@@ -110,41 +110,74 @@ export interface SessionStatusGateFacts {
 }
 
 /**
- * 账号状态门禁：`ACTIVE` 放行；`PENDING` 仅在「存在明确限制且允许受限会话」时放行。
+ * 双状态组合门禁的拒绝原因。
  *
- * 登录与每请求复核共用本判定，避免两处各自手写 ACTIVE/PENDING 分支而漂移；
- * 封禁 / 删除 / 暂停 / 缺失等其余状态一律失败关闭。
+ * 仅用于调用方日志分类（区分受限开关、缺行、单边状态不一致与禁用状态），
+ * 不进入任何 GraphQL 错误契约：密码登录统一映射 `ACCOUNT_INACTIVE`，
+ * 每请求复核统一抛 `JWT_ERROR.AUTHENTICATION_FAILED`。
  */
-export function isAccountStatusAllowedForSession(
-  facts: SessionStatusGateFacts & { readonly accountStatus: AccountStatus | null },
-): boolean {
-  if (!isRestrictedSessionPermitted(facts)) {
-    return false;
-  }
+export type SessionStatusRejectionReason =
+  | 'RESTRICTED_SESSION_NOT_ALLOWED'
+  | 'ACCOUNT_STATUS_MISSING'
+  | 'USER_STATE_MISSING'
+  | 'STATUS_COMBINATION_MISMATCH'
+  | 'STATUS_NOT_ALLOWED';
 
-  const allowPendingStatus = resolveAllowPendingStatus(facts);
-  return (
-    facts.accountStatus === AccountStatus.ACTIVE ||
-    (facts.accountStatus === AccountStatus.PENDING && allowPendingStatus)
-  );
-}
+export type SessionStatusCombinationDecision =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly rejection: SessionStatusRejectionReason };
 
 /**
- * 资料状态门禁：口径与 {@link isAccountStatusAllowedForSession} 一致，作用于
- * `base_user_info.user_state`。每请求复核需分别定位是账号还是资料未通过，故拆成两个纯函数。
+ * 账号状态与资料状态的组合门禁。
+ *
+ * 允许的只有两种组合：
+ * - `ACTIVE` / `ACTIVE`：正常会话，前提仍满足既有受限会话开关
+ *   （存在限制时必须由入口显式允许受限会话）；
+ * - `PENDING` / `PENDING`：仅在「存在明确限制且入口显式允许受限会话」时放行。
+ *
+ * 其余组合一律失败关闭：任意一侧为 PENDING 而另一侧不是（单边状态不一致）、
+ * 两侧 PENDING 但不存在限制或未允许受限会话、缺行，以及封禁 / 删除 / 暂停等禁用状态。
+ * 首次改密优先级与既有禁用条件由 {@link resolveSessionRestriction} 与状态枚举继续保证。
+ *
+ * 登录与每请求复核共用本判定，避免两处各自手写 ACTIVE/PENDING 分支后重新出现
+ * 「单边 PENDING 也能通过」的口径漂移。
  */
-export function isUserStateAllowedForSession(
-  facts: SessionStatusGateFacts & { readonly userState: UserState | null },
-): boolean {
+export function evaluateSessionStatusCombination(
+  facts: SessionStatusGateFacts & {
+    readonly accountStatus: AccountStatus | null;
+    readonly userState: UserState | null;
+  },
+): SessionStatusCombinationDecision {
   if (!isRestrictedSessionPermitted(facts)) {
-    return false;
+    return { allowed: false, rejection: 'RESTRICTED_SESSION_NOT_ALLOWED' };
   }
 
-  const allowPendingStatus = resolveAllowPendingStatus(facts);
-  return (
-    facts.userState === UserState.ACTIVE ||
-    (facts.userState === UserState.PENDING && allowPendingStatus)
-  );
+  const { accountStatus, userState } = facts;
+  if (accountStatus === null) {
+    return { allowed: false, rejection: 'ACCOUNT_STATUS_MISSING' };
+  }
+  if (userState === null) {
+    return { allowed: false, rejection: 'USER_STATE_MISSING' };
+  }
+
+  if (accountStatus === AccountStatus.ACTIVE && userState === UserState.ACTIVE) {
+    return { allowed: true };
+  }
+
+  if (
+    resolveAllowPendingStatus(facts) &&
+    accountStatus === AccountStatus.PENDING &&
+    userState === UserState.PENDING
+  ) {
+    return { allowed: true };
+  }
+
+  // 仅一侧为 PENDING：账号与资料对同一会话给出相反结论，按不一致拒绝。
+  if ((accountStatus === AccountStatus.PENDING) !== (userState === UserState.PENDING)) {
+    return { allowed: false, rejection: 'STATUS_COMBINATION_MISMATCH' };
+  }
+
+  return { allowed: false, rejection: 'STATUS_NOT_ALLOWED' };
 }
 
 /** 存在限制时，调用方必须显式允许受限会话；否则任何状态都不通过 */

@@ -500,8 +500,11 @@ export function readDedicatedCleanupReferenceColumns(): DedicatedCleanupReferenc
   return columns;
 }
 
-/** 一条 SQL 断言：条件不成立时执行一条必然失败的 SELECT，使 mysql 客户端在该语句处中止 */
-function renderGuardedAssertion(name: string, condition: string, marker: string): string[] {
+/**
+ * 一条 SQL 断言：条件不成立时执行一条必然失败的 SELECT，使 mysql 客户端在该语句处中止。
+ * 导出供其它按 ID 台账清理的 helper 复用同一守卫实现（避免两套断言口径漂移）。
+ */
+export function renderGuardedAssertion(name: string, condition: string, marker: string): string[] {
   return [
     `SET @${name}_ok = IF(${condition}, 1, 0)`,
     `SET @${name}_sql = IF(@${name}_ok = 1, 'SELECT 1', 'SELECT ${marker}')`,

@@ -6,7 +6,10 @@ const { executeGraphQLMock } = vi.hoisted(() => ({ executeGraphQLMock: vi.fn() }
 
 vi.mock('@/shared/graphql', () => ({ executeGraphQL: executeGraphQLMock }));
 
-import { fetchRegistrationOrganizations } from './registration-organization-adapter';
+import {
+  checkRegistrationOrganizationNameExists,
+  fetchRegistrationOrganizations,
+} from './registration-organization-adapter';
 
 describe('fetchRegistrationOrganizations（公开公司候选）', () => {
   beforeEach(() => {
@@ -76,5 +79,40 @@ describe('fetchRegistrationOrganizations（公开公司候选）', () => {
       page: 3,
       pageSize: 10,
     });
+  });
+});
+
+describe('checkRegistrationOrganizationNameExists（手填公司名精确同名查询）', () => {
+  beforeEach(() => {
+    executeGraphQLMock.mockReset();
+  });
+
+  it('以公开请求调用独立精确查询，只传名称且不使用缓存', async () => {
+    executeGraphQLMock.mockResolvedValue({ registrationOrganizationNameExists: true });
+
+    await expect(checkRegistrationOrganizationNameExists('同名公司')).resolves.toBe(true);
+
+    expect(executeGraphQLMock).toHaveBeenCalledTimes(1);
+    const [query, variables, options] = executeGraphQLMock.mock.calls[0];
+    expect(query).toContain('query RegistrationOrganizationNameExists');
+    expect(query).toContain('registrationOrganizationNameExists(name: $name)');
+    expect(query).not.toContain('registrationOrganizationSearch');
+    expect(variables).toEqual({ name: '同名公司' });
+    expect(options).toEqual({ authMode: 'none', fetchPolicy: 'no-cache' });
+  });
+
+  it('未命中返回 false，非真值一律按未命中处理', async () => {
+    executeGraphQLMock.mockResolvedValue({ registrationOrganizationNameExists: false });
+    await expect(checkRegistrationOrganizationNameExists('不存在公司')).resolves.toBe(false);
+
+    executeGraphQLMock.mockResolvedValue({ registrationOrganizationNameExists: null });
+    await expect(checkRegistrationOrganizationNameExists('不存在公司')).resolves.toBe(false);
+  });
+
+  it('请求失败向上抛出，由调用方按未命中兜底', async () => {
+    executeGraphQLMock.mockRejectedValue(new Error('network down'));
+    await expect(checkRegistrationOrganizationNameExists('同名公司')).rejects.toThrow(
+      'network down',
+    );
   });
 });

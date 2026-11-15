@@ -6,8 +6,7 @@ import { UserState } from '@app-types/models/user-info.types';
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 
 import {
-  isAccountStatusAllowedForSession,
-  isUserStateAllowedForSession,
+  evaluateSessionStatusCombination,
   resolveSessionRestriction,
   type SessionRestrictionFacts,
 } from './session-restriction.policy';
@@ -131,93 +130,76 @@ describe('会话限制解析策略', () => {
   });
 });
 
-describe('会话状态门禁策略', () => {
-  describe('账号状态', () => {
-    it('无限制时 ACTIVE 放行、PENDING 拒绝', () => {
-      expect(
-        isAccountStatusAllowedForSession({
-          accountStatus: AccountStatus.ACTIVE,
-          restriction: SessionRestriction.NONE,
-          allowRestrictedSession: false,
-        }),
-      ).toBe(true);
-      expect(
-        isAccountStatusAllowedForSession({
-          accountStatus: AccountStatus.PENDING,
-          restriction: SessionRestriction.NONE,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(false);
+describe('会话状态组合门禁策略', () => {
+  const gate = (
+    accountStatus: AccountStatus | null,
+    userState: UserState | null,
+    restriction: SessionRestriction = SessionRestriction.NONE,
+    allowRestrictedSession = false,
+  ) =>
+    evaluateSessionStatusCombination({
+      accountStatus,
+      userState,
+      restriction,
+      allowRestrictedSession,
     });
 
-    it('存在限制但调用方未允许受限会话时，ACTIVE 也拒绝', () => {
-      expect(
-        isAccountStatusAllowedForSession({
-          accountStatus: AccountStatus.ACTIVE,
-          restriction: SessionRestriction.ENGINEER_PENDING,
-          allowRestrictedSession: false,
-        }),
-      ).toBe(false);
-    });
+  it('ACTIVE／ACTIVE 在无限制时放行', () => {
+    expect(gate(AccountStatus.ACTIVE, UserState.ACTIVE)).toEqual({ allowed: true });
+  });
 
-    it('存在限制且允许受限会话时，PENDING 放行', () => {
-      expect(
-        isAccountStatusAllowedForSession({
-          accountStatus: AccountStatus.PENDING,
-          restriction: SessionRestriction.MUST_CHANGE_PASSWORD,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(true);
-    });
+  it('ACTIVE／ACTIVE 存在限制时仍需入口显式允许受限会话', () => {
+    expect(
+      gate(AccountStatus.ACTIVE, UserState.ACTIVE, SessionRestriction.MUST_CHANGE_PASSWORD),
+    ).toEqual({ allowed: false, rejection: 'RESTRICTED_SESSION_NOT_ALLOWED' });
+    expect(
+      gate(AccountStatus.ACTIVE, UserState.ACTIVE, SessionRestriction.MUST_CHANGE_PASSWORD, true),
+    ).toEqual({ allowed: true });
+  });
 
-    it('缺失或非 ACTIVE / PENDING 状态一律拒绝', () => {
-      expect(
-        isAccountStatusAllowedForSession({
-          accountStatus: null,
-          restriction: SessionRestriction.ENGINEER_PENDING,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(false);
-      expect(
-        isAccountStatusAllowedForSession({
-          accountStatus: AccountStatus.BANNED,
-          restriction: SessionRestriction.ENGINEER_PENDING,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(false);
+  it('PENDING／PENDING 仅在存在限制且允许受限会话时放行', () => {
+    expect(
+      gate(AccountStatus.PENDING, UserState.PENDING, SessionRestriction.ENGINEER_PENDING, true),
+    ).toEqual({ allowed: true });
+    expect(
+      gate(AccountStatus.PENDING, UserState.PENDING, SessionRestriction.ENGINEER_PENDING, false),
+    ).toEqual({ allowed: false, rejection: 'RESTRICTED_SESSION_NOT_ALLOWED' });
+    expect(gate(AccountStatus.PENDING, UserState.PENDING, SessionRestriction.NONE, true)).toEqual({
+      allowed: false,
+      rejection: 'STATUS_NOT_ALLOWED',
     });
   });
 
-  describe('资料状态', () => {
-    it('与账号状态同口径', () => {
-      expect(
-        isUserStateAllowedForSession({
-          userState: UserState.ACTIVE,
-          restriction: SessionRestriction.NONE,
-          allowRestrictedSession: false,
-        }),
-      ).toBe(true);
-      expect(
-        isUserStateAllowedForSession({
-          userState: UserState.PENDING,
-          restriction: SessionRestriction.ENGINEER_PENDING,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(true);
-      expect(
-        isUserStateAllowedForSession({
-          userState: UserState.PENDING,
-          restriction: SessionRestriction.NONE,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(false);
-      expect(
-        isUserStateAllowedForSession({
-          userState: null,
-          restriction: SessionRestriction.ENGINEER_PENDING,
-          allowRestrictedSession: true,
-        }),
-      ).toBe(false);
+  it.each([
+    ['账号 ACTIVE / 资料 PENDING', AccountStatus.ACTIVE, UserState.PENDING],
+    ['账号 PENDING / 资料 ACTIVE', AccountStatus.PENDING, UserState.ACTIVE],
+  ])('%s 的单边状态即使允许受限会话也失败关闭', (_label, accountStatus, userState) => {
+    expect(gate(accountStatus, userState, SessionRestriction.ENGINEER_PENDING, true)).toEqual({
+      allowed: false,
+      rejection: 'STATUS_COMBINATION_MISMATCH',
+    });
+  });
+
+  it('缺行失败关闭并区分账号行与资料行', () => {
+    expect(gate(null, UserState.PENDING, SessionRestriction.ENGINEER_PENDING, true)).toEqual({
+      allowed: false,
+      rejection: 'ACCOUNT_STATUS_MISSING',
+    });
+    expect(gate(AccountStatus.PENDING, null, SessionRestriction.ENGINEER_PENDING, true)).toEqual({
+      allowed: false,
+      rejection: 'USER_STATE_MISSING',
+    });
+  });
+
+  it.each([
+    ['账号停用', AccountStatus.SUSPENDED, UserState.ACTIVE],
+    ['账号封禁', AccountStatus.BANNED, UserState.SUSPENDED],
+    ['资料停用', AccountStatus.ACTIVE, UserState.SUSPENDED],
+    ['双状态停用', AccountStatus.SUSPENDED, UserState.SUSPENDED],
+  ])('%s 时即使允许受限会话也拒绝', (_label, accountStatus, userState) => {
+    expect(gate(accountStatus, userState, SessionRestriction.MUST_CHANGE_PASSWORD, true)).toEqual({
+      allowed: false,
+      rejection: 'STATUS_NOT_ALLOWED',
     });
   });
 });

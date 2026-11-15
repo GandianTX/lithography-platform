@@ -93,6 +93,38 @@ export class OrganizationQueryService {
   }
 
   /**
+   * 精确同名存在性（Web 注册手填公司名提示专用）。
+   *
+   * 资格口径与候选检索一致：`status = ACTIVE AND is_managed_company = true`。
+   * 名称两侧都按「先把全部空白（含 tab / 换行）合并为单个空格，再去首尾空白，
+   * 最后统一小写」归一后整体相等，参数化比较，不使用 LIKE 子串 / 前缀，
+   * 也不受候选分页与首屏限制。
+   *
+   * 归一顺序不可交换：必须先 `REGEXP_REPLACE` 再 `TRIM`，否则首尾 tab / 换行
+   * 不会被 `TRIM` 移除，随后被合并成首尾空格导致漏命中。
+   * 比较两侧显式 `COLLATE utf8mb4_0900_as_cs`：重音敏感（Café ≠ Cafe）、
+   * 大小写敏感（两侧均已小写，仅防止库/连接级排序规则覆盖）。
+   * `normalizedName` 由用例归一化后传入，本方法不再二次改写。
+   */
+  async existsEligibleRegistrationOptionByName(params: {
+    normalizedName: string;
+  }): Promise<boolean> {
+    const count = await this.repository
+      .createQueryBuilder('organization')
+      .select('organization.id')
+      .where('organization.status = :status', { status: 'ACTIVE' })
+      .andWhere('organization.is_managed_company = :isManagedCompany', {
+        isManagedCompany: true,
+      })
+      .andWhere(
+        "LOWER(TRIM(REGEXP_REPLACE(organization.name, '\\\\s+', ' '))) COLLATE utf8mb4_0900_as_cs = :normalizedName COLLATE utf8mb4_0900_as_cs",
+        { normalizedName: params.normalizedName },
+      )
+      .getCount();
+    return count > 0;
+  }
+
+  /**
    * 按主键复核组织具备 Web 注册资格（`ACTIVE` 且属于一级维护名单）。
    * 不存在、已停用或已撤销受管资格统一返回 null。
    *

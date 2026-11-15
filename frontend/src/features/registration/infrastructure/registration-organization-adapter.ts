@@ -32,6 +32,12 @@ const REGISTRATION_ORGANIZATIONS_QUERY = `
   }
 `;
 
+const REGISTRATION_ORGANIZATION_NAME_EXISTS_QUERY = `
+  query RegistrationOrganizationNameExists($name: String!) {
+    registrationOrganizationNameExists(name: $name)
+  }
+`;
+
 type RegistrationOrganizationsData = {
   registrationOrganizationSearch: {
     items: RegistrationOrganizationPage['items'];
@@ -49,6 +55,14 @@ type RegistrationOrganizationsVariables = {
     withTotal: true;
   };
   keyword?: string;
+};
+
+type RegistrationOrganizationNameExistsData = {
+  registrationOrganizationNameExists: boolean;
+};
+
+type RegistrationOrganizationNameExistsVariables = {
+  name: string;
 };
 
 /** 公开检索注册公司候选（名称关键字可选；空白关键字整体省略） */
@@ -81,4 +95,23 @@ export async function fetchRegistrationOrganizations(
     page: page.page ?? search.page,
     pageSize: page.pageSize ?? search.pageSize,
   };
+}
+
+/**
+ * 手填公司名精确同名提示（公开只读，最小布尔结果）。
+ *
+ * 与候选分页完全独立：服务端按归一化后的完整名称精确比较启用且受管的公司，
+ * 不受当前已加载候选或首屏影响。调用方传入的 `name` 可保留用户原始输入，
+ * 服务端与前端使用同一归一化口径。
+ */
+export async function checkRegistrationOrganizationNameExists(name: string): Promise<boolean> {
+  const data = await executeGraphQL<
+    RegistrationOrganizationNameExistsData,
+    RegistrationOrganizationNameExistsVariables
+  >(
+    REGISTRATION_ORGANIZATION_NAME_EXISTS_QUERY,
+    { name },
+    { authMode: 'none', fetchPolicy: 'no-cache' },
+  );
+  return data.registrationOrganizationNameExists === true;
 }

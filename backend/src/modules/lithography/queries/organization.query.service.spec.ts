@@ -13,6 +13,7 @@ type QueryBuilderMock = {
   skip: jest.Mock;
   take: jest.Mock;
   getManyAndCount: jest.Mock;
+  getCount: jest.Mock;
 };
 
 describe('OrganizationQueryService（注册公司资格与检索）', () => {
@@ -30,6 +31,7 @@ describe('OrganizationQueryService（注册公司资格与检索）', () => {
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
       getManyAndCount: jest.fn().mockResolvedValue([[{ id: 2, name: '受管公司B' }], 1]),
+      getCount: jest.fn().mockResolvedValue(0),
     };
     repository = {
       createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
@@ -91,6 +93,50 @@ describe('OrganizationQueryService（注册公司资格与检索）', () => {
 
       expect(queryBuilder.skip).toHaveBeenCalledWith(0);
       expect(queryBuilder.take).toHaveBeenCalledWith(50);
+    });
+  });
+
+  describe('existsEligibleRegistrationOptionByName', () => {
+    it('资格固定为 ACTIVE 且受管，名称先合并空白再 TRIM 后小写整体相等，不使用 LIKE', async () => {
+      queryBuilder.getCount.mockResolvedValue(1);
+
+      const exists = await service.existsEligibleRegistrationOptionByName({
+        normalizedName: '光刻 公司',
+      });
+
+      expect(exists).toBe(true);
+      expect(queryBuilder.where).toHaveBeenCalledWith('organization.status = :status', {
+        status: 'ACTIVE',
+      });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'organization.is_managed_company = :isManagedCompany',
+        { isManagedCompany: true },
+      );
+      expect(queryBuilder.andWhere).toHaveBeenLastCalledWith(
+        expect.stringContaining('LOWER(TRIM(REGEXP_REPLACE(organization.name'),
+        { normalizedName: '光刻 公司' },
+      );
+      const nameCondition = queryBuilder.andWhere.mock.calls.at(-1)?.[0] as string;
+      // 归一顺序：REGEXP_REPLACE 必须最贴近列名（先合并空白），TRIM 套在其外层，否则首尾 tab / 换行漏命中
+      expect(nameCondition).toMatch(/LOWER\(TRIM\(REGEXP_REPLACE\(organization\.name/);
+      // 列名只出现一次，排除「先 TRIM 再 REGEXP_REPLACE」的并列写法
+      expect(nameCondition.match(/organization\.name/g)).toHaveLength(1);
+      // 两侧显式重音敏感排序规则
+      expect(nameCondition.match(/utf8mb4_0900_as_cs/g)).toHaveLength(2);
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(
+        expect.stringContaining('LIKE'),
+        expect.anything(),
+      );
+      expect(queryBuilder.skip).not.toHaveBeenCalled();
+      expect(queryBuilder.take).not.toHaveBeenCalled();
+    });
+
+    it('未命中时返回 false', async () => {
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await expect(
+        service.existsEligibleRegistrationOptionByName({ normalizedName: '不存在公司' }),
+      ).resolves.toBe(false);
     });
   });
 

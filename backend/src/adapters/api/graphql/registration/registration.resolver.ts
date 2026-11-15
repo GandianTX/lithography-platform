@@ -22,6 +22,7 @@ import { GetMyEngineerRegistrationUsecase } from '@src/usecases/registration/get
 import { ListAdminEngineerRegistrationsUsecase } from '@src/usecases/registration/list-admin-engineer-registrations.usecase';
 import { ListRegistrationOrganizationsUsecase } from '@src/usecases/registration/list-registration-organizations.usecase';
 import { SearchRegistrationOrganizationsUsecase } from '@src/usecases/registration/search-registration-organizations.usecase';
+import { CheckRegistrationOrganizationNameUsecase } from '@src/usecases/registration/check-registration-organization-name.usecase';
 import { RegisterWithEmailUsecase } from '@usecases/registration/register-with-email.usecase';
 import { RegisterWithThirdPartyUsecase } from '@usecases/registration/register-with-third-party.usecase';
 import { ResubmitEngineerRegistrationUsecase } from '@src/usecases/registration/resubmit-engineer-registration.usecase';
@@ -66,6 +67,7 @@ export class RegistrationResolver {
     private readonly getWeappPhoneUsecase: GetWeappPhoneUsecase,
     private readonly listRegistrationOrganizations: ListRegistrationOrganizationsUsecase,
     private readonly searchRegistrationOrganizations: SearchRegistrationOrganizationsUsecase,
+    private readonly checkRegistrationOrganizationName: CheckRegistrationOrganizationNameUsecase,
     private readonly getEngineerRegistrationStatus: GetEngineerRegistrationStatusUsecase,
     private readonly getMyEngineerRegistration: GetMyEngineerRegistrationUsecase,
     private readonly resubmitEngineerRegistrationUsecase: ResubmitEngineerRegistrationUsecase,
@@ -249,6 +251,28 @@ export class RegistrationResolver {
       pagination: mapGqlToCoreParams(pagination),
     });
     return toRegistrationOrganizationPageDTO(page);
+  }
+
+  /**
+   * 手填公司名精确同名提示（公开只读，返回最小布尔结果）。
+   *
+   * 与候选分页相互独立：按归一化后的完整名称精确比较启用且受管的公司，
+   * 不受候选首屏或已加载页影响。结果只用于界面提示「可能同名」，
+   * 不阻断手填注册，也不作为公司唯一性或资格凭证。
+   */
+  @Query(() => Boolean, {
+    name: 'registrationOrganizationNameExists',
+    description: '手填公司名精确同名提示（公开，仅启用且属于一级维护名单的公司）',
+  })
+  @ValidateInput()
+  async registrationOrganizationNameExists(
+    @Args('name', {
+      type: () => String,
+      description: '手填公司名称；按去首尾空白、合并连续空白、忽略大小写后精确比较',
+    })
+    name: string,
+  ): Promise<boolean> {
+    return this.checkRegistrationOrganizationName.execute({ name });
   }
 
   /**

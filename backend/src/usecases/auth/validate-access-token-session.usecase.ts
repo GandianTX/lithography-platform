@@ -3,10 +3,7 @@ import type { JwtPayload } from '@app-types/jwt.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
 import { type AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
-import {
-  isAccountStatusAllowedForSession,
-  isUserStateAllowedForSession,
-} from '@core/account/policy/session-restriction.policy';
+import { evaluateSessionStatusCombination } from '@core/account/policy/session-restriction.policy';
 import { validateAccountRoleSet } from '@core/account/policy/account-role-convergence.policy';
 import { DomainError, JWT_ERROR } from '@core/common/errors/domain-error';
 import type { AccountSessionAuthoritySnapshot } from '@src/modules/account/account.types';
@@ -27,12 +24,13 @@ import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.
  * 1. payload 不是 access token（含 refresh token 误入受保护请求）；
  * 2. 账号或 userInfo 记录不存在（快照以 `null` 表达缺失，缺失语义见
  *    `AccountSessionAuthoritySnapshot`）；
- * 3. `account.status` 不是 `ACTIVE`；
- * 4. `userInfo.userState` 不是 `ACTIVE`；
- * 5. 数据库 `access_group` 与解密后的 `meta_digest` 必须是同一非空、无重复、合法
+ * 3. `account.status` 与 `userInfo.userState` 的组合不合法：只允许 `ACTIVE` / `ACTIVE`，
+ *    `PENDING` / `PENDING` 仅在存在明确限制时放行给受限会话；单边状态不一致、其余
+ *    禁用状态与缺行失败关闭（日志原因可区分子项）；
+ * 4. 数据库 `access_group` 与解密后的 `meta_digest` 必须是同一非空、无重复、合法
  *    角色集合，且 `identity_hint` 必须是该集合成员；管理员写链路仍使用单角色收敛；
- * 6. Token `accessGroup` 经统一映射后的角色集合必须与数据库集合完全一致；
- * 7. Token `activeRole` 可缺失；存在时必须是数据库集合成员。
+ * 5. Token `accessGroup` 经统一映射后的角色集合必须与数据库集合完全一致；
+ * 6. Token `activeRole` 可缺失；存在时必须是数据库集合成员。
  *
  * 服务端诊断日志（R10-3）：任一门禁拒绝时先以 `warn` 记录门禁序号、原因分类与账号主键
  * 再抛错。三源角色原值、收敛细节与任何凭据派生物不进日志，抛出的 `DomainError` 不携带
@@ -95,9 +93,10 @@ export class ValidateAccessTokenSessionUsecase {
       // 资料行缺失（账号行存在）：同上失败关闭，日志按缺失行区分诊断粒度（R10-3）
       this.reject(2, 'USER_INFO_RECORD_MISSING', payload.sub);
     }
-    // 3~4. 账号/资料状态：ACTIVE 放行；PENDING 仅在存在明确限制（必须改密 / 工程师待审 /
-    // 工程师拒绝 / 已批准但资格未生效）时放行给受限会话；其余状态（停用、封禁、删除、注销）
-    // 一律失败关闭。门禁口径与登录入口共用 core 纯策略；本用例固定允许受限会话，
+    // 3. 账号/资料双状态组合：只允许 ACTIVE/ACTIVE；PENDING/PENDING 仅在存在明确限制
+    // （必须改密 / 工程师待审 / 工程师拒绝 / 已批准但资格未生效）时放行给受限会话。
+    // 单边 PENDING、其余禁用状态与缺行一律失败关闭；日志原因可区分「双状态不一致」与
+    // 「行缺失」。门禁口径与登录入口共用 core 纯策略；本用例固定允许受限会话，
     // 业务入口的限制由 RolesGuard / SessionRestrictionGuard 继续拦截。
     // 限制状态与身份组织字段由同一解析用例产出，申请/成员事实只看一次库。
     const resolution = await this.resolveSessionRestrictionUsecase.execute({
@@ -106,45 +105,37 @@ export class ValidateAccessTokenSessionUsecase {
     });
     const restriction = resolution.restriction;
 
-    const isAccountStatusAllowed = isAccountStatusAllowedForSession({
+    const statusDecision = evaluateSessionStatusCombination({
       accountStatus: snapshot.accountStatus,
-      restriction,
-      allowRestrictedSession: true,
-    });
-    if (!isAccountStatusAllowed) {
-      this.reject(3, 'ACCOUNT_STATUS_NOT_ALLOWED', payload.sub);
-    }
-
-    const isUserStateAllowed = isUserStateAllowedForSession({
       userState: snapshot.userInfo.userState,
       restriction,
       allowRestrictedSession: true,
     });
-    if (!isUserStateAllowed) {
-      this.reject(4, 'USER_STATE_NOT_ALLOWED', payload.sub);
+    if (!statusDecision.allowed) {
+      this.reject(3, statusDecision.rejection, payload.sub);
     }
 
-    // 5. 历史会话兼容的三源角色集合校验。管理员写链路仍使用严格单角色收敛。
+    // 4. 历史会话兼容的三源角色集合校验。管理员写链路仍使用严格单角色收敛。
     const roleSet = validateAccountRoleSet({
       identityHint: snapshot.identityHint,
       accessGroup: snapshot.userInfo.accessGroup,
       metaDigest: snapshot.userInfo.metaDigest,
     });
     if (!roleSet.valid) {
-      this.reject(5, `ROLE_SET_VALIDATION_FAILED:${roleSet.reason}`, payload.sub);
+      this.reject(4, `ROLE_SET_VALIDATION_FAILED:${roleSet.reason}`, payload.sub);
     }
 
-    // 6. Token 角色集合必须与数据库当前角色集合完全一致。
+    // 5. Token 角色集合必须与数据库当前角色集合完全一致。
     if (
       tokenSession.roles.length !== roleSet.roles.length ||
       !tokenSession.roles.every((role) => roleSet.roles.includes(role as IdentityTypeEnum))
     ) {
-      this.reject(6, 'TOKEN_ACCESS_GROUP_MISMATCH', payload.sub);
+      this.reject(5, 'TOKEN_ACCESS_GROUP_MISMATCH', payload.sub);
     }
 
-    // 7. activeRole 是可选的历史声明；存在时必须属于当前数据库角色集合。
+    // 6. activeRole 是可选的历史声明；存在时必须属于当前数据库角色集合。
     if (tokenSession.activeRole !== undefined && !roleSet.roles.includes(tokenSession.activeRole)) {
-      this.reject(7, 'ACTIVE_ROLE_NOT_IN_ROLE_SET', payload.sub);
+      this.reject(6, 'ACTIVE_ROLE_NOT_IN_ROLE_SET', payload.sub);
     }
 
     // 复核通过：返回 JWT 声明 + 请求期会话事实（restriction / 身份字段），Strategy 与下游

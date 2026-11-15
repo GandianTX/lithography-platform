@@ -95,7 +95,14 @@ export default defineConfig({
     '**/reference-document-real.spec.ts',
     '**/repair-request-manage-real.spec.ts',
     '**/repair-request-create-real.spec.ts',
+    '**/registration-organization-name-real.spec.ts',
+    '**/registration-organization-name-fault.spec.ts',
   ],
+  // 故障反例故意失败，只在显式开关下收集：常规回归看不到它（既不执行也不计跳过）
+  testIgnore:
+    (process.env.E2E_REG_NM_FAULT ?? '').trim() === '1'
+      ? []
+      : ['**/registration-organization-name-fault.spec.ts'],
   timeout: 120_000,
   use: {
     baseURL: 'http://127.0.0.1:4174',

@@ -240,12 +240,14 @@ export function mysqlQuery(sql: string): string {
   return execFileSync(
     'mysql',
     ['-h', env.DB_HOST, '-P', env.DB_PORT, `-u${env.DB_USER}`, env.DB_NAME, '-N', '-B', '-e', sql],
-    // 密码经 MYSQL_PWD 注入（不出现在进程参数列表），并抑制 stderr，
-    // 避免 mysql CLI 的密码告警污染测试输出。
+    // 密码经 MYSQL_PWD 注入（不出现在进程参数列表），并捕获 stderr：
+    // 成功时 stderr（含 mysql 密码告警）不会打印；失败时错误文本里可看到
+    // SQL 守卫抛出的标记（如 rc_unregistered_in_set_*），便于区分「预检拒绝」
+    // 与「外键兜底」，也让红测证据可被直接引用。
     {
       encoding: 'utf-8',
       env: { ...process.env, MYSQL_PWD: env.DB_PASS },
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
   ).trim();
 }

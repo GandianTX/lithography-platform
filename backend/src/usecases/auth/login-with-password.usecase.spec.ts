@@ -182,6 +182,36 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     expect(tokenHelper.generateAccessToken).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['账号 ACTIVE / 资料 PENDING', AccountStatus.ACTIVE, UserState.PENDING],
+    ['账号 PENDING / 资料 ACTIVE', AccountStatus.PENDING, UserState.ACTIVE],
+  ])(
+    '%s 的单边状态即使存在限制且允许受限会话也拒绝签发令牌',
+    async (_label, accountStatus, userState) => {
+      (accountQueryService.findCredentialByLoginName as jest.Mock).mockResolvedValue(
+        credential(accountStatus),
+      );
+      (accountQueryService.findSessionAuthoritySnapshot as jest.Mock).mockResolvedValue(
+        authoritySnapshot(accountStatus, {
+          userInfo: {
+            userState,
+            accessGroup: [IdentityTypeEnum.ENGINEER],
+            metaDigest: [IdentityTypeEnum.ENGINEER],
+            customerOrganizationId: null,
+          },
+        }),
+      );
+      (engineerRegistrationQueryService.findLatestByAccountId as jest.Mock).mockResolvedValue({
+        status: 'PENDING',
+        organizationId: 501,
+      });
+
+      await expect(login(true)).rejects.toMatchObject({ code: AUTH_ERROR.ACCOUNT_INACTIVE });
+      expect(executeLoginFlowUsecase.execute).not.toHaveBeenCalled();
+      expect(tokenHelper.generateAccessToken).not.toHaveBeenCalled();
+    },
+  );
+
   it('激活账号密码错误仍按 INVALID_PASSWORD 拒绝', async () => {
     (accountQueryService.findCredentialByLoginName as jest.Mock).mockResolvedValue(
       credential(AccountStatus.ACTIVE),

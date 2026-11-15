@@ -8,12 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GraphQLIngressError } from '@/shared/graphql';
 
-const { fetchOrganizationsMock, registerMock } = vi.hoisted(() => ({
+const { fetchOrganizationsMock, checkNameExistsMock, registerMock } = vi.hoisted(() => ({
   fetchOrganizationsMock: vi.fn(),
+  checkNameExistsMock: vi.fn(),
   registerMock: vi.fn(),
 }));
 
 vi.mock('../infrastructure/registration-organization-adapter', () => ({
+  checkRegistrationOrganizationNameExists: checkNameExistsMock,
   fetchRegistrationOrganizations: fetchOrganizationsMock,
 }));
 vi.mock('../infrastructure/register-customer-graphql', () => ({
@@ -77,6 +79,7 @@ function duplicateAccountError(): GraphQLIngressError {
 describe('RegisterCustomerForm', () => {
   beforeEach(() => {
     fetchOrganizationsMock.mockReset();
+    checkNameExistsMock.mockReset();
     registerMock.mockReset();
     fetchOrganizationsMock.mockResolvedValue({
       items: [
@@ -87,6 +90,7 @@ describe('RegisterCustomerForm', () => {
       page: 1,
       pageSize: 20,
     });
+    checkNameExistsMock.mockResolvedValue(false);
     registerMock.mockResolvedValue({ success: true, message: '注册成功', accountId: 501 });
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -162,6 +166,7 @@ describe('RegisterCustomerForm', () => {
   });
 
   it('手填与候选同名的公司时提示不自动合并，但仍按手填分支提交', async () => {
+    checkNameExistsMock.mockImplementation(async (name: string) => name === '同名公司');
     renderForm();
     fillBasics();
 
@@ -174,6 +179,8 @@ describe('RegisterCustomerForm', () => {
         screen.getByText('发现同名公司，可从名单选择；手填名称不会自动合并。'),
       ).toBeInTheDocument();
     });
+    // 提示来自独立精确查询，使用与后端同口径的归一化名称
+    expect(checkNameExistsMock).toHaveBeenCalledWith('同名公司');
 
     fireEvent.click(getSubmitButton());
 
@@ -184,6 +191,79 @@ describe('RegisterCustomerForm', () => {
         organizationName: '同名公司',
       });
     });
+  });
+
+  it('同名提示不受候选首屏影响：候选未包含目标时独立查询仍命中', async () => {
+    // 候选只加载了首屏两条，目标在第 2 页且从未搜索/滚动
+    checkNameExistsMock.mockImplementation(async (name: string) => name === '后页公司');
+    renderForm();
+    fillBasics();
+
+    fireEvent.change(screen.getByLabelText('自家公司名称'), {
+      target: { value: '后页公司' },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('发现同名公司，可从名单选择；手填名称不会自动合并。'),
+      ).toBeInTheDocument();
+    });
+    expect(fetchOrganizationsMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => {
+      expect(registerMock).toHaveBeenCalledWith({
+        loginEmail: 'customer@example.com',
+        loginPassword: 'Str0ng!Passw0rd',
+        organizationName: '后页公司',
+      });
+    });
+  });
+
+  it('清空手填名称后同名提示消失且不再提示旧名称', async () => {
+    checkNameExistsMock.mockImplementation(async (name: string) => name === '同名公司');
+    renderForm();
+    fillBasics();
+
+    const nameInput = screen.getByLabelText('自家公司名称');
+    fireEvent.change(nameInput, { target: { value: '同名公司' } });
+    await waitFor(() => {
+      expect(
+        screen.getByText('发现同名公司，可从名单选择；手填名称不会自动合并。'),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.change(nameInput, { target: { value: '' } });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText('发现同名公司，可从名单选择；手填名称不会自动合并。'),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('精确查询失败时按未命中处理，不阻止手填注册提交', async () => {
+    checkNameExistsMock.mockRejectedValue(new Error('network down'));
+    renderForm();
+    fillBasics();
+
+    fireEvent.change(screen.getByLabelText('自家公司名称'), {
+      target: { value: '自家公司' },
+    });
+
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => {
+      expect(registerMock).toHaveBeenCalledWith({
+        loginEmail: 'customer@example.com',
+        loginPassword: 'Str0ng!Passw0rd',
+        organizationName: '自家公司',
+      });
+    });
+    expect(
+      screen.queryByText('发现同名公司，可从名单选择；手填名称不会自动合并。'),
+    ).not.toBeInTheDocument();
   });
 
   it('未选公司也未填名称时给出可操作提示，不发起请求', async () => {

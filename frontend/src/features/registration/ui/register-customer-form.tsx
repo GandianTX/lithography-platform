@@ -5,11 +5,12 @@
  *
  * - 公司归属两条互斥分支：从名单选择（只提交 organizationId）或手填自家公司
  *   名称（只提交 organizationName）；两者都空时前端先给出可操作提示，服务端仍二次校验；
- * - 手填名称与已加载候选同名时只提示、不阻止提交，也不做自动合并；
+ * - 手填名称与已加载候选同名时只提示、不阻止提交，也不做自动合并；同名提示使用
+ *   独立精确查询，不受候选首屏或已加载分页影响；
  * - 提交中防重复；失败保留非敏感输入并清空密码；成功后切结果区，引导前往登录。
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
 import { useNavigate } from 'react-router';
 
@@ -17,10 +18,8 @@ import {
   resolveRegisterCustomerErrorMessage,
   submitRegisterCustomer,
 } from '../application/register-customer';
-import type {
-  RegistrationOrganizationOption,
-  RegistrationOrganizationSelection,
-} from '../application/registration.types';
+import type { RegistrationOrganizationSelection } from '../application/registration.types';
+import { useRegistrationOrganizationNameCheck } from '../application/use-registration-organization-name-check';
 
 import {
   LOGIN_EMAIL_RULES,
@@ -45,30 +44,20 @@ type RegisterFeedback = {
 
 const ORGANIZATION_NAME_MAX_LENGTH = 200;
 
-function normalizeCompanyName(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
 export function RegisterCustomerForm() {
   const [form] = Form.useForm<RegisterCustomerFormValues>();
   const navigate = useNavigate();
   const submittingRef = useRef(false);
   const [organization, setOrganization] = useState<RegistrationOrganizationSelection | null>(null);
-  const [candidates, setCandidates] = useState<RegistrationOrganizationOption[]>([]);
   const [feedback, setFeedback] = useState<RegisterFeedback | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
   const organizationNameValue = Form.useWatch('organizationName', form);
 
-  const handleCandidatesChange = useCallback((items: RegistrationOrganizationOption[]) => {
-    setCandidates(items);
-  }, []);
-
-  const normalizedTypedName = normalizeCompanyName(organizationNameValue ?? '');
-  const hasSameNameCandidate =
-    !organization &&
-    normalizedTypedName.length > 0 &&
-    candidates.some((item) => normalizeCompanyName(item.name) === normalizedTypedName);
+  const hasSameNameCompany = useRegistrationOrganizationNameCheck({
+    enabled: organization === null,
+    name: organizationNameValue,
+  });
 
   async function handleFinish(values: RegisterCustomerFormValues) {
     if (submittingRef.current) {
@@ -171,7 +160,6 @@ export function RegisterCustomerForm() {
           ariaLabel="所属公司"
           disabled={isSubmitting}
           id="customer-registration-organization"
-          onCandidatesChange={handleCandidatesChange}
           onChange={setOrganization}
           value={organization}
         />
@@ -180,7 +168,7 @@ export function RegisterCustomerForm() {
       {organization ? null : (
         <Form.Item
           extra={
-            hasSameNameCandidate ? '发现同名公司，可从名单选择；手填名称不会自动合并。' : undefined
+            hasSameNameCompany ? '发现同名公司，可从名单选择；手填名称不会自动合并。' : undefined
           }
           label="自家公司名称"
           name="organizationName"

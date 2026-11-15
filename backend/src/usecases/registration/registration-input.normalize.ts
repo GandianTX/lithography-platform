@@ -20,7 +20,7 @@ import {
 const REGISTRATION_TEXT_MAX_LENGTH = 2000;
 
 /** 手填公司名称对应 `organization.name` 的列上限（varchar(200)） */
-const REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH = 200;
+export const REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH = 200;
 
 /** 真实姓名对应 `base_user_info.real_name` 的列上限（varchar(200)） */
 const REGISTRATION_REAL_NAME_MAX_LENGTH = 200;
@@ -311,6 +311,16 @@ export function normalizeRegistrationOrganizationName(value: unknown): string | 
     '公司名称',
     REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH,
   );
+}
+
+/**
+ * 手填公司名称的同名比较归一化：去首尾空白、连续空白合并为单个空格、统一小写。
+ *
+ * 与前端手填表单的 `normalizeCompanyName` 同口径；只用于公开同名提示查询，
+ * 不改变注册落库的原值，也不承担资格或唯一性裁决。
+ */
+export function normalizeRegistrationOrganizationNameForComparison(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /** 注册公司分支：选择名单内公司，或手填自家公司名称；二者互斥 */

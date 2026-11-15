@@ -4,10 +4,7 @@ import { EnrichedLoginResult, LoginWarningType } from '@app-types/auth/login-flo
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { AuthLoginModel } from '@app-types/models/auth.types';
-import {
-  isAccountStatusAllowedForSession,
-  isUserStateAllowedForSession,
-} from '@core/account/policy/session-restriction.policy';
+import { evaluateSessionStatusCombination } from '@core/account/policy/session-restriction.policy';
 import { AUTH_ERROR, DomainError, isDomainError } from '@core/common/errors';
 import { Injectable } from '@nestjs/common';
 import { TokenHelper } from '@modules/auth/token.helper';
@@ -182,23 +179,18 @@ export class LoginWithPasswordUsecase {
     const isRestrictedSessionAllowed =
       allowRestrictedSession === true && restriction !== SessionRestriction.NONE;
 
-    // 状态放行与每请求复核同源（共用 core 纯策略）：ACTIVE 正常放行；只有
-    // 「PENDING + 明确限制 + 开关打开」才允许受限会话。封禁 / 删除 / 暂停 /
-    // 长期不活跃一律在这里失败关闭，不再签发随后必被复核拒绝的令牌。
-    const statusGateFacts = {
+    // 状态放行与每请求复核同源（共用 core 纯策略）：仅 `ACTIVE` / `ACTIVE` 正常放行、
+    // `PENDING` / `PENDING` 在「存在明确限制 + 显式允许受限会话」时放行；单边状态不一致、
+    // 缺行，以及封禁 / 删除 / 暂停 / 长期不活跃一律在这里失败关闭，不再签发随后必被复核
+    // 拒绝的令牌。
+    const statusDecision = evaluateSessionStatusCombination({
       restriction,
       allowRestrictedSession: allowRestrictedSession === true,
-    };
-    const isAccountStatusAllowed = isAccountStatusAllowedForSession({
-      ...statusGateFacts,
       accountStatus: snapshot.accountStatus,
-    });
-    const isUserStateAllowed = isUserStateAllowedForSession({
-      ...statusGateFacts,
       userState: snapshot.userInfo?.userState ?? null,
     });
 
-    if (!isAccountStatusAllowed || !isUserStateAllowed) {
+    if (!statusDecision.allowed) {
       throw new DomainError(AUTH_ERROR.ACCOUNT_INACTIVE, '账户未激活或已被禁用');
     }
 
