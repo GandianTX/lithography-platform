@@ -134,9 +134,11 @@ describe('RepairRequestService', () => {
     { orderCompany: 22, intakeCompany: 33, expected: null },
     { orderCompany: 22, intakeCompany: null, expected: null },
   ])('绑定锁读仅接受一致的服务公司：%j', async ({ orderCompany, intakeCompany, expected }) => {
-    const intakeFindOne = jest.fn().mockResolvedValue(
-      intakeCompany === null ? null : { id: 71, serviceOrganizationId: intakeCompany },
-    );
+    const intakeFindOne = jest
+      .fn()
+      .mockResolvedValue(
+        intakeCompany === null ? null : { id: 71, serviceOrganizationId: intakeCompany },
+      );
     const transactionRepository = {
       findOne: jest.fn().mockResolvedValue({
         id: 11,

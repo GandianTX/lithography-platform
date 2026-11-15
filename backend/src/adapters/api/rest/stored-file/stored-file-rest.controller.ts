@@ -1,20 +1,23 @@
 // src/adapters/api/rest/stored-file/stored-file-rest.controller.ts
 
+import type { Readable } from 'node:stream';
+
 import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { DomainError, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
+import { resolveRestStatus } from '@core/common/errors/rest-error-status';
 import {
   Body,
   Controller,
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Param,
   Post,
   Req,
   Res,
-  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -53,6 +56,8 @@ import {
  */
 @Controller('api/stored-files')
 export class StoredFileRestController {
+  private readonly logger = new Logger(StoredFileRestController.name);
+
   constructor(
     private readonly uploadUsecase: UploadStoredFileUsecase,
     private readonly metadataUsecase: GetStoredFileMetadataUsecase,
@@ -119,6 +124,10 @@ export class StoredFileRestController {
 
   /**
    * 授权下载（R062-03）：不暴露存储引用；客户与无权同公司账号不可借 ID 读取。
+   *
+   * 响应头已写出后才发生的读流故障不能再改写状态码：
+   * - 未发送响应头：清除下载专用头，返回固定受控错误体（不回显底层异常/路径/引用）；
+   * - 已开始响应：直接中断连接，不追加 JSON 或底层错误文本。
    */
   @Get(':fileId/download')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -127,8 +136,16 @@ export class StoredFileRestController {
     @Param('fileId') fileId: string,
     @Req() request: Request,
     @currentUser() user: JwtPayload,
-    @Res({ passthrough: true }) response: Response,
-  ): Promise<StreamableFile> {
+    @Res() response: Response,
+  ): Promise<void> {
+    // 等待授权与存储打开期间客户端可能已断开：先跟踪响应状态，避免对已关闭响应
+    // 设置下载头或启动传输，也避免迟到的源流无人销毁。
+    let responseClosed = false;
+    const markResponseClosed = (): void => {
+      responseClosed = true;
+    };
+    response.once('close', markResponseClosed);
+
     let payload: Awaited<ReturnType<DownloadStoredFileUsecase['execute']>>;
 
     try {
@@ -138,10 +155,18 @@ export class StoredFileRestController {
         uploadContextId: readUploadContextId(request.query.uploadContextId),
       });
     } catch (error) {
+      response.removeListener('close', markResponseClosed);
       if (error instanceof DomainError) {
         toRestError(error);
       }
       throw error;
+    }
+
+    response.removeListener('close', markResponseClosed);
+
+    if (responseClosed || response.destroyed) {
+      this.discardLateContent(payload.content);
+      return;
     }
 
     applyDownloadHeaders(response, {
@@ -149,7 +174,101 @@ export class StoredFileRestController {
       originalFilename: payload.originalFilename,
     });
 
-    return new StreamableFile(payload.content);
+    await this.streamDownload(response, payload.content, fileId);
+  }
+
+  /** 响应已关闭时到达的源流：销毁并吞掉销毁期间的读流错误，随后移除监听器。 */
+  private discardLateContent(content: Readable): void {
+    this.destroyContentQuietly(content);
+  }
+
+  /**
+   * 销毁源流，同时把销毁回调抛出的读流错误留在本地监听器内。
+   * 监听器在 destroy 完成后再移除；重复调用不会留下未清理的监听器。
+   */
+  private destroyContentQuietly(content: Readable): void {
+    const swallowError = (): void => undefined;
+    const removeSwallow = (): void => {
+      content.removeListener('error', swallowError);
+    };
+    content.on('error', swallowError);
+    if (content.closed) {
+      removeSwallow();
+      content.destroy();
+      return;
+    }
+    content.once('close', removeSwallow);
+    content.destroy();
+  }
+
+  /**
+   * 交付授权文件流，并把读流故障收敛为协议层终态。
+   * 底层异常只写入服务端日志的文件标识，不进入响应体。
+   */
+  private async streamDownload(
+    response: Response,
+    content: Readable,
+    fileId: string,
+  ): Promise<void> {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const settle = (): void => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      const onContentError = (error: unknown): void => {
+        content.unpipe(response);
+        content.removeListener('error', onContentError);
+        this.logger.warn(
+          `原件下载读流失败: fileId=${fileId} stage=${
+            response.headersSent ? 'after-headers' : 'before-headers'
+          } reason=${error instanceof Error ? error.name : typeof error}`,
+        );
+
+        if (!response.headersSent) {
+          // 尚未写出任何字节：撤销下载专用头，按 REST 契约返回固定受控错误
+          response.removeHeader('Content-Type');
+          response.removeHeader('Content-Disposition');
+          const status = resolveRestStatus(STORED_FILE_ERROR.FILE_NOT_AVAILABLE);
+          response.status(status).json({
+            statusCode: status,
+            code: STORED_FILE_ERROR.FILE_NOT_AVAILABLE,
+            message: '原件文件暂时不可用',
+          });
+        } else if (!response.writableEnded) {
+          // 已有响应字节：中断传输，绝不追加 JSON 或底层错误文本
+          response.destroy();
+        }
+
+        settle();
+      };
+
+      const onResponseClosed = (): void => {
+        content.removeListener('error', onContentError);
+        this.destroyContentQuietly(content);
+        settle();
+      };
+
+      const onResponseError = (): void => {
+        content.removeListener('error', onContentError);
+        this.destroyContentQuietly(content);
+        settle();
+      };
+
+      response.once('close', onResponseClosed);
+      response.once('error', onResponseError);
+      response.once('finish', settle);
+      content.once('error', onContentError);
+
+      try {
+        content.pipe(response);
+      } catch (error) {
+        onContentError(error);
+      }
+    });
   }
 }
 
