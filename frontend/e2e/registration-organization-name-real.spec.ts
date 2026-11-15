@@ -28,6 +28,8 @@ import {
   resolveRealBackendPrerequisite,
 } from './helpers/real-backend';
 import {
+  buildRegistrationAttemptProbeSql,
+  describeCaptureDiagnosis,
   type RegistrationCapture,
   startRegistrationCapture,
 } from './helpers/registration-response-capture';
@@ -157,6 +159,12 @@ let sameNameSentinelId = 0;
  */
 let registrationCapture: RegistrationCapture | null = null;
 
+/**
+ * 主用例的 UI 断言失败（第三轮 P2）：afterAll 必须把它与响应接管诊断一起聚合，
+ * 否则 UI 先失败时，接手人看不到「提交可能已发生」的诊断。
+ */
+let uiFailure: unknown = null;
+
 const startCapture = (page: Page): RegistrationCapture => {
   registrationCapture = startRegistrationCapture(page, roundLedger, {
     expectedSelfFilledName: TARGET_NAME,
@@ -246,9 +254,31 @@ test.describe('客户注册手填公司名同名提示（真实链路）', () =>
   });
 
   test.afterAll(async () => {
-    await runTeardownSteps([
-      // 0. 先等注册响应接管收敛：已返回的成功响应必须先入账，再谈清理
-      () => registrationCapture?.settled ?? Promise.resolve(),
+    // 0. 先等注册响应接管收敛：已返回的成功响应必须先入账，再谈清理。
+    //    settled 永不 reject，失败结论通过 outcome / error 显式带入报告。
+    await registrationCapture?.settled;
+
+    const diagnostics: string[] = [];
+    if (uiFailure !== null) {
+      diagnostics.push(`原 UI 断言失败：${describeError(uiFailure)}`);
+    }
+
+    const diagnosis = describeCaptureDiagnosis(registrationCapture, { loginEmail: LOGIN_EMAIL });
+    if (diagnosis !== null) {
+      diagnostics.push(diagnosis);
+      const outcome = registrationCapture?.outcome ?? null;
+      if (outcome !== null && (outcome.kind === 'unknown' || outcome.kind === 'unverified')) {
+        // 未知资源只做只读核查：按本轮合成登录邮箱这一可追溯事实查实际 ID，
+        // 不删除、不重试，也不把「没有台账」当成「零残留」。
+        const probe = mysqlQuery(buildRegistrationAttemptProbeSql(LOGIN_EMAIL)).trim();
+        diagnostics.push(
+          `待确认提交只读核查（不含删除）：${probe.length === 0 ? '该登录邮箱未查到账号行' : probe.replace(/\n/g, ' | ')}`,
+        );
+      }
+    }
+
+    const failures: unknown[] = [];
+    const steps: Array<() => void | Promise<void>> = [
       // 1. 只按本轮真实 ID 台账清理
       () => cleanupRegistrationRound(roundLedger),
       // 2. 外部哨兵必须逐字段保持不变（未被按名称/前缀误删或改动）
@@ -259,7 +289,26 @@ test.describe('客户注册手填公司名同名提示（真实链路）', () =>
       },
       // 3. 哨兵自身按独立台账精确回收
       () => cleanupRegistrationRound(sentinelLedger),
-    ]);
+    ];
+    for (const step of steps) {
+      try {
+        await step();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+
+    if (diagnostics.length === 0 && failures.length === 0) {
+      return;
+    }
+
+    const parts = [
+      ...diagnostics,
+      ...(failures.length > 0
+        ? [`清理或哨兵核验失败：${failures.map(describeError).join('；')}`]
+        : []),
+    ];
+    throw new Error(`注册用例收尾发现 ${parts.length} 项问题：${parts.join('；')}`);
   });
 
   test('手填候选第 2 页同名公司：出现提示、允许提交并创建独立未受管公司', async ({ page }) => {
@@ -299,7 +348,13 @@ test.describe('客户注册手填公司名同名提示（真实链路）', () =>
     const capture = startCapture(page);
 
     await page.getByRole('button', { name: '注册并开通' }).click();
-    await expect(page.getByText(SUCCESS)).toBeVisible({ timeout: 20_000 });
+    try {
+      await expect(page.getByText(SUCCESS)).toBeVisible({ timeout: 20_000 });
+    } catch (error) {
+      // UI 先失败时主因原样上抛；afterAll 会把「提交结果」诊断聚合进同一份报告
+      uiFailure = error;
+      throw error;
+    }
 
     // 响应接管收敛后才有完整台账；接管失败时显式抛出（不静默）
     await capture.settled;

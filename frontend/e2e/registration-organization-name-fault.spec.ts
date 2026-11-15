@@ -22,6 +22,8 @@ import {
   runGuardedFixtureWrite,
 } from './helpers/real-backend';
 import {
+  buildRegistrationAttemptProbeSql,
+  describeCaptureDiagnosis,
   type RegistrationCapture,
   startRegistrationCapture,
 } from './helpers/registration-response-capture';
@@ -45,6 +47,7 @@ const CODE_PREFIX = `E2E_FAULT_${RUN_TAG}_`;
 const TARGET_NAME = `${NAME_PREFIX}TARGET`;
 const LOGIN_PASSWORD = 'Str0ng!Passw0rd';
 const HINT = '发现同名公司，可从名单选择；手填名称不会自动合并。';
+const SUCCESS = '账号已开通，请使用登录邮箱与密码登录。';
 
 const faultEmail = (suffix: string): string => `e2e.fault.${RUN_TAG}.${suffix}@example.com`;
 const LOGIN_EMAIL = faultEmail('a');
@@ -156,6 +159,10 @@ const roundLedger = createRegistrationRoundLedger();
 const sentinelLedger = createRegistrationRoundLedger();
 let sentinelFacts: Array<{ id: number; facts: RegistrationRoundOrganizationFacts }> = [];
 let registrationCapture: RegistrationCapture | null = null;
+/** 主用例 UI 断言失败（第三轮 P2：必须在收尾报告里与响应诊断聚合） */
+let uiFailure: unknown = null;
+/** F：成功响应在客户端边界丢失时，代理侧看到的真实账号 ID 与合成邮箱 */
+let lostAttempt: { readonly loginEmail: string; readonly accountId: number } | null = null;
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -169,12 +176,37 @@ test.describe('注册清理故障反例（真实库，故意失败）', () => {
   });
 
   test.afterAll(async () => {
-    // 已返回的成功响应必须先入账，再清理
+    // 已返回的成功响应必须先入账，再清理；失败结论必须显式进入报告（第三轮 P2）
     if (registrationCapture) {
       await registrationCapture.settled;
     }
     const organizationIds = roundLedger.organizations.map((item) => item.id);
     const accountIds = roundLedger.accounts.map((item) => item.id);
+
+    const diagnostics: string[] = [];
+    if (uiFailure !== null) {
+      diagnostics.push(`原 UI 断言失败：${describeError(uiFailure)}`);
+    }
+
+    const diagnosis = describeCaptureDiagnosis(registrationCapture, {
+      loginEmail: lostAttempt?.loginEmail ?? LOGIN_EMAIL,
+    });
+    if (diagnosis !== null) {
+      diagnostics.push(diagnosis);
+    }
+
+    // F：响应丢失时只做只读核查，用代理侧看到的账号 ID 与库内实际行互相印证
+    let pendingAccountFound = 0;
+    if (lostAttempt !== null) {
+      const probe = mysqlQuery(buildRegistrationAttemptProbeSql(lostAttempt.loginEmail)).trim();
+      console.log(`FAULT_F_PENDING_PROBE=${probe.replace(/\n/g, ' | ') || '(none)'}`);
+      if (probe.length > 0) {
+        const [table, id] = probe.split('\n')[0].split('\t');
+        expect(table).toBe('account');
+        expect(Number(id)).toBe(lostAttempt.accountId);
+        pendingAccountFound = 1;
+      }
+    }
 
     const failures: unknown[] = [];
     const steps: Array<() => void | Promise<void>> = [
@@ -194,25 +226,44 @@ test.describe('注册清理故障反例（真实库，故意失败）', () => {
       }
     }
 
-    // 本轮零残留：按实际 ID 与唯一前缀双向核对
+    // 台账内资源必须零残留（按实际 ID 与唯一名称前缀双向核对）
     const residue = {
-      accounts: Number(
-        mysqlQuery(
-          `SELECT COUNT(*) FROM base_user_account WHERE login_email LIKE 'e2e.fault.${RUN_TAG}%'`,
-        ),
-      ),
       accountIds: accountIds.filter((id) => countById('base_user_account', id) !== 0).length,
       organizationIds: organizationIds.filter((id) => countById('organization', id) !== 0).length,
       organizations: Number(
         mysqlQuery(`SELECT COUNT(*) FROM organization WHERE name LIKE '${NAME_PREFIX}%'`),
       ),
     };
-    console.log(`FAULT_RUN_RESIDUE=${JSON.stringify(residue)}`);
+    console.log(`FAULT_KNOWN_RESIDUE=${JSON.stringify(residue)}`);
 
-    expect(residue).toEqual({ accountIds: 0, accounts: 0, organizationIds: 0, organizations: 0 });
+    // 台账外账号单独登记：未知提交结果不得并入「零残留」
+    const outsideLedger = Number(
+      mysqlQuery(
+        `SELECT COUNT(*) FROM base_user_account WHERE login_email LIKE 'e2e.fault.${RUN_TAG}%'`,
+      ),
+    );
+    console.log(
+      `FAULT_OUTSIDE_LEDGER_ACCOUNTS=${outsideLedger} PENDING_F_ACCOUNTS=${pendingAccountFound}`,
+    );
 
-    if (failures.length > 0) {
-      throw new Error(`故障反例收尾失败：${failures.map(describeError).join('；')}`);
+    if (residue.accountIds !== 0 || residue.organizationIds !== 0 || residue.organizations !== 0) {
+      failures.push(new Error(`台账内仍有残留：${JSON.stringify(residue)}`));
+    }
+    if (outsideLedger !== pendingAccountFound) {
+      failures.push(
+        new Error(
+          `台账外账号数 ${outsideLedger} 与待确认核查 ${pendingAccountFound} 不一致（无台账不得计为零残留）`,
+        ),
+      );
+    }
+
+    if (diagnostics.length > 0 || failures.length > 0) {
+      throw new Error(
+        `故障反例收尾发现 ${diagnostics.length + failures.length} 项问题：${[
+          ...diagnostics,
+          ...failures.map(describeError),
+        ].join('；')}`,
+      );
     }
   });
 
@@ -492,5 +543,97 @@ test.describe('注册清理故障反例（真实库，故意失败）', () => {
     expect(isRegistrationRoundLedgerEmpty(ledger)).toBe(true);
     expect(countById('base_user_account', account.accountId)).toBe(0);
     expect(countById('organization', organizationId)).toBe(0);
+  });
+
+  test('F. 成功响应在客户端边界丢失：UI 先失败仍保留提交结果待确认诊断', async ({ page }) => {
+    test.setTimeout(150_000);
+
+    const loginEmail = faultEmail('f');
+    // 不落在 NAME_PREFIX 内：本轮台账零残留断言只针对登记过的事实
+    const selfFilledName = `E2E-FAULTF-${RUN_TAG}-TARGET`;
+    const captureLedger = createRegistrationRoundLedger();
+
+    // 真实执行 registerWeb：代理收到服务端成功响应与账号 ID 后终止向浏览器转发
+    await page.route('**/graphql', async (route) => {
+      if (!(route.request().postData() ?? '').includes('RegisterCustomer')) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        data?: { registerWeb?: { accountId?: number | null } | null };
+      };
+      const accountId = body.data?.registerWeb?.accountId ?? 0;
+      if (typeof accountId !== 'number' || accountId <= 0) {
+        throw new Error(`代理未取到服务端成功响应与账号 ID：${JSON.stringify(body)}`);
+      }
+      lostAttempt = { accountId, loginEmail };
+      await route.abort('failed');
+    });
+
+    await page.goto('/register/customer');
+    await page.getByLabel('登录邮箱').fill(loginEmail);
+    await page.getByLabel('密码').fill(LOGIN_PASSWORD);
+    await page.getByLabel('自家公司名称').fill(selfFilledName);
+
+    registrationCapture = startRegistrationCapture(page, captureLedger, {
+      expectedSelfFilledName: selfFilledName,
+      loginEmail,
+      timeoutMs: 5_000,
+    });
+    await page.getByRole('button', { name: '注册并开通' }).click();
+
+    // 响应被丢弃 → 成功文案永不出现；主因原样上抛，诊断由 afterAll 聚合
+    try {
+      await expect(page.getByText(SUCCESS)).toBeVisible({ timeout: 8_000 });
+    } catch (error) {
+      uiFailure = error;
+      throw error;
+    }
+
+    throw new Error('响应丢失反例未按预期失败：成功文案出现了');
+  });
+
+  test('G. 明确注册拒绝：无新增写入，结论标记为明确拒绝', async ({ page }) => {
+    test.setTimeout(90_000);
+
+    const loginEmail = faultEmail('g');
+    const existing = insertAccountFixture({
+      customerOrganizationId: null,
+      loginEmail,
+      nickname: 'E2E 已存在账号',
+      withUserInfo: false,
+    });
+    const ledger = createRegistrationRoundLedger();
+    // 拒绝是预期结果，用局部 capture：不把「明确拒绝」带进主流程收尾
+    const capture = startRegistrationCapture(page, ledger, {
+      expectedSelfFilledName: `${NAME_PREFIX}G-TARGET`,
+      loginEmail,
+      timeoutMs: 20_000,
+    });
+
+    try {
+      await page.goto('/register/customer');
+      await page.getByLabel('登录邮箱').fill(loginEmail);
+      await page.getByLabel('密码').fill(LOGIN_PASSWORD);
+      await page.getByLabel('自家公司名称').fill(`${NAME_PREFIX}G-TARGET`);
+      await page.getByRole('button', { name: '注册并开通' }).click();
+
+      await capture.settled;
+      expect(capture.outcome?.kind).toBe('rejected');
+      console.log(
+        `FAULT_G_DIAGNOSIS=${describeCaptureDiagnosis(capture, { loginEmail }) ?? '(none)'}`,
+      );
+
+      // 明确拒绝 = 无新增写入：该邮箱仍只有夹具这一行，本轮台账为空
+      expect(
+        Number(
+          mysqlQuery(`SELECT COUNT(*) FROM base_user_account WHERE login_email = '${loginEmail}'`),
+        ),
+      ).toBe(1);
+      expect(isRegistrationRoundLedgerEmpty(ledger)).toBe(true);
+    } finally {
+      deleteAccountFixture(existing);
+    }
   });
 });
