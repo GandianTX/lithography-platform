@@ -12,6 +12,7 @@ import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { Public } from '@src/adapters/api/graphql/decorators/public.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { SessionRestrictionGuard } from '@src/adapters/api/graphql/guards/session-restriction.guard';
 import { ConsumeVerificationRecordUsecase } from '@src/usecases/verification-record/consume-verification-record.usecase';
 import { CreateVerificationRecordUsecase } from '@src/usecases/verification-record/create-verification-record.usecase';
 import { FindVerificationRecordUsecase } from '@src/usecases/verification-record/find-verification-record.usecase';
@@ -44,7 +45,7 @@ export class VerificationRecordResolver {
    * 创建验证记录
    */
   @Mutation(() => CreateVerificationRecordResult, { description: '创建验证记录' })
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   async createVerificationRecord(
     @Args('input') input: CreateVerificationRecordInput,
     @currentUser() user: JwtPayload,
@@ -162,7 +163,7 @@ export class VerificationRecordResolver {
    * 消费验证记录
    */
   @Mutation(() => UpdateVerificationRecordResult, { description: '消费验证记录' })
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   async consumeVerificationRecord(
     @Args('input') input: ConsumeVerificationRecordInput,
     @currentUser() user: JwtPayload,
@@ -194,7 +195,7 @@ export class VerificationRecordResolver {
    * 撤销验证记录
    */
   @Mutation(() => UpdateVerificationRecordResult, { description: '撤销验证记录' })
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   async revokeVerificationRecord(
     @Args('input') input: RevokeVerificationRecordInput,
     @currentUser() _user: JwtPayload,

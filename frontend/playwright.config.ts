@@ -24,6 +24,8 @@ export default defineConfig({
     '**/reference-document-real.spec.ts',
     '**/repair-request-manage-real.spec.ts',
     '**/repair-request-create-real.spec.ts',
+    '**/registration-organization-name-real.spec.ts',
+    '**/registration-organization-name-fault.spec.ts',
   ],
   timeout: 20_000,
   use: {

@@ -20,6 +20,23 @@
 // - 不再自建平行安全门，统一复用 real-backend.assertPhysicalCleanupAllowed()；
 // - 使用独立 E2E 数据库（DB_NAME 必须含 e2e/test 段），授权缺失时直接失败（R4：不再 skip）；
 // - 单一事务包裹 DELETE + 残留核对，失败回滚；密码经 MYSQL_PWD 注入，不出现在进程参数。
+//
+// 终审 I3（按明确台账与引用闭包执行）：
+// - 入参由「账号 ID + 格式匹配登录名」收紧为本次创建的完整资源记录
+//   （ID、登录名、角色、组织、预期资料、成员关系与资料主键）；
+// - 创建响应一到即登记 ID，再回读核验；核验失败保留登记项并失败关闭；
+// - 删除入口独立要求显式许可 + 严格专用库名，并在执行 DELETE 的同一 MySQL 会话内
+//   复核 DATABASE()、FOR UPDATE 锁定并核对绑定、检查集合外引用；
+// - 只删本轮创建的成员关系 / 资料 / 账号；AI、工单、资料等账外引用在首删前明确拒绝。
+//
+// P2-01 整批原子性：
+// - 同一用例登记的多个账号作为**一个批次**：全部目标在同一会话、同一事务内先锁定核验，
+//   任一目标不符即在首条 DELETE 前拒绝；后序 DELETE 失败整批回滚，不会出现部分提交；
+// - 单账号入口委托单项批次，语义与整批一致；只有提交明确成功后才做事务外残留回读。
+
+import { execFileSync } from 'node:child_process';
+
+import { DEDICATED_E2E_DB_NAME } from '../../e2e-real/dedicated-e2e-environment';
 
 import {
   assertPhysicalCleanupAllowed,
@@ -168,55 +185,755 @@ export async function assertApiSqlSameDatabase(env = readBackendEnv()): Promise<
   }
 }
 
+// ---- 本轮创建资源台账与引用闭包清理（终审 I3） ----
+
+/** 专用账号可写角色：与 adminCreateUser 允许绑定的成员角色同口径 */
+export type DedicatedAccountRole = 'ENGINEER' | 'CUSTOMER';
+
 /**
- * 按「ID + 登录名」双因子绑定物理删除专用账号及其全部关联记录（R4 修正轮）。
- *
- * 单一事务：START TRANSACTION → 唯一绑定断言（id + login_name）→ 子表到主表精确 DELETE
- * → 残留核对 → COMMIT。绑定断言失败会让 MySQL 客户端在 DELETE 前报错退出，事务自动回滚：
- * 不存在「仅按 ID 继续删除」的路径。
+ * 创建专用账号时由调用方给定的预期事实（全部来自创建输入与既有业务语义，
+ * 不从数据库回读现值充当授权）。
  */
-export function deleteE2EDedicatedAccountById(accountId: number, dedicatedLoginName: string): void {
-  if (!Number.isSafeInteger(accountId) || accountId <= 0) {
-    throw new Error(`物理清理目标账号 ID 未通过正整数校验，拒绝执行：${JSON.stringify(accountId)}`);
+export interface DedicatedAccountExpectation {
+  readonly loginName: string;
+  readonly role: DedicatedAccountRole;
+  readonly organizationId: number;
+  readonly nickname: string;
+  readonly userInfoEmail: string | null;
+  readonly userState: string;
+  readonly accessGroup: readonly string[];
+}
+
+/** 创建后回读定位到的从属主键：资料与成员关系各一行 */
+export interface DedicatedAccountCreationFacts {
+  readonly membershipId: number;
+  readonly userInfoId: number;
+}
+
+/**
+ * 本轮登记的专用账号。
+ *
+ * - `id` 来自 adminCreateUser 的成功响应，一收到响应即登记，早于任何后续断言；
+ * - `facts` 为创建后回读并逐字段核验通过的从属主键；为空表示核验失败，
+ *   清理入口会拒绝删除并保留诊断——绝不退化为按登录名扫描猜测归属。
+ */
+export interface RegisteredDedicatedAccount extends DedicatedAccountExpectation {
+  readonly id: number;
+  readonly facts: DedicatedAccountCreationFacts | null;
+}
+
+/** 引用闭包需要核对的外部列（集合外引用必须在首删前发现） */
+export interface DedicatedCleanupReferenceColumn {
+  readonly table: string;
+  readonly column: string;
+}
+
+const DEDICATED_ACCOUNT_ROLES: readonly DedicatedAccountRole[] = ['ENGINEER', 'CUSTOMER'];
+const SQL_IDENTIFIER_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
+const ENUM_TOKEN_PATTERN = /^[A-Z_]{1,32}$/;
+const SAFE_LOGIN_NAME_PATTERN = /^[a-z0-9_-]{1,64}$/i;
+const NICKNAME_MAX_LENGTH = 50;
+const USER_INFO_EMAIL_MAX_LENGTH = 50;
+
+/** 清理集合内的三张表：其余任何对本轮账号的引用都属于账外引用 */
+const CLEANUP_IN_SET_TABLES: readonly string[] = [
+  'base_user_account',
+  'base_user_info',
+  'organization_membership',
+];
+
+/**
+ * 已知的逻辑引用（不依赖数据库 FK 声明）：这些正是旧「推导式删除」曾一并清掉的业务表，
+ * 现在改为首删前显式拒绝，而不是替调用方删除。
+ */
+const LOGICAL_ACCOUNT_REFERENCES: readonly DedicatedCleanupReferenceColumn[] = [
+  { column: 'customer_account_id', table: 'engineer_response' },
+  { column: 'engineer_account_id', table: 'engineer_response' },
+  { column: 'engineer_account_id', table: 'ai_conversation' },
+  { column: 'engineer_account_id', table: 'ai_report' },
+  { column: 'customer_account_id', table: 'repair_request' },
+  { column: 'accepted_by_engineer_account_id', table: 'repair_request' },
+  { column: 'created_by_account_id', table: 'reference_document' },
+  { column: 'updated_by_account_id', table: 'reference_document' },
+];
+
+function assertPositiveInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${field} 未通过正整数校验，拒绝执行：${JSON.stringify(value)}`);
   }
-  if (!DEDICATED_LOGIN_NAME_PATTERN.test(dedicatedLoginName)) {
+
+  return value;
+}
+
+function utf8Hex(value: string): string {
+  return Buffer.from(value, 'utf8').toString('hex').toUpperCase();
+}
+
+/**
+ * 校验本轮预期事实：登录名、角色、组织、昵称列宽、资料邮箱列宽、账号状态与访问分组。
+ * 任何一项不合法都在访问数据库之前失败。
+ */
+function assertDedicatedAccountExpectation(expectation: DedicatedAccountExpectation): void {
+  if (!DEDICATED_LOGIN_NAME_PATTERN.test(expectation.loginName)) {
     throw new Error(
-      `物理清理目标登录名未通过专用账号白名单校验，拒绝执行：${JSON.stringify(dedicatedLoginName)}`,
+      `专用账号登录名未通过白名单校验，拒绝登记：${JSON.stringify(expectation.loginName)}`,
+    );
+  }
+  if (!DEDICATED_ACCOUNT_ROLES.includes(expectation.role)) {
+    throw new Error(
+      `专用账号角色不在可写角色集合内，拒绝登记：${JSON.stringify(expectation.role)}`,
+    );
+  }
+  assertPositiveInteger(expectation.organizationId, '专用账号预期组织 ID');
+  if (
+    typeof expectation.nickname !== 'string' ||
+    expectation.nickname.length === 0 ||
+    expectation.nickname.length > NICKNAME_MAX_LENGTH
+  ) {
+    throw new Error(
+      `专用账号预期昵称长度非法（1-${NICKNAME_MAX_LENGTH}），拒绝登记：${JSON.stringify(expectation.nickname)}`,
+    );
+  }
+  if (
+    expectation.userInfoEmail !== null &&
+    (typeof expectation.userInfoEmail !== 'string' ||
+      expectation.userInfoEmail.length > USER_INFO_EMAIL_MAX_LENGTH)
+  ) {
+    throw new Error(
+      `专用账号预期资料邮箱长度非法（<=${USER_INFO_EMAIL_MAX_LENGTH} 或 null），拒绝登记：${JSON.stringify(expectation.userInfoEmail)}`,
+    );
+  }
+  if (!ENUM_TOKEN_PATTERN.test(expectation.userState)) {
+    throw new Error(
+      `专用账号预期账号状态不是受控枚举，拒绝登记：${JSON.stringify(expectation.userState)}`,
+    );
+  }
+  if (
+    expectation.accessGroup.length !== 1 ||
+    !expectation.accessGroup.every((group) => ENUM_TOKEN_PATTERN.test(group))
+  ) {
+    throw new Error(
+      `专用账号预期访问分组必须是单元素受控枚举数组，拒绝登记：${JSON.stringify(expectation.accessGroup)}`,
+    );
+  }
+}
+
+/**
+ * 读取管理员当前有效组织 ID（创建专用账号时 adminCreateUser 会绑定该组织）。
+ * 只接受安全登录名参数；必须恰好命中一行 ACTIVE 成员关系。
+ */
+export function readActingOrganizationId(loginName: string): number {
+  if (!SAFE_LOGIN_NAME_PATTERN.test(loginName)) {
+    throw new Error(`管理员登录名未通过格式校验，拒绝查询：${JSON.stringify(loginName)}`);
+  }
+
+  const rows = mysqlQuery(
+    [
+      'SELECT organization_id FROM organization_membership',
+      "WHERE status = 'ACTIVE'",
+      `AND account_id = (SELECT id FROM base_user_account WHERE login_name = '${loginName}')`,
+    ].join(' '),
+  )
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (rows.length !== 1 || !/^\d+$/.test(rows[0])) {
+    throw new Error(
+      `管理员 ${JSON.stringify(loginName)} 的有效组织不唯一，无法据此核验专用账号归属：${JSON.stringify(rows)}`,
     );
   }
 
+  return Number(rows[0]);
+}
+
+/**
+ * 创建后回读并核验本次创建的账号、资料与成员关系（终审 I3 第 1 项）。
+ *
+ * 预期值全部来自创建输入；回读只用于**定位从属主键**与**确认实际写入等于预期**。
+ * 实际关联多于预期（例如额外成员关系）或关键字段不符时抛错，绝不接受现值作为授权。
+ */
+export function readDedicatedAccountCreationFacts(
+  account: RegisteredDedicatedAccount,
+): DedicatedAccountCreationFacts {
+  const id = assertPositiveInteger(account.id, '专用账号 ID');
+  const idText = String(id);
+
+  const rows = mysqlQuery(
+    [
+      `SELECT 'ACCOUNT', CAST(id AS CHAR), login_name, identity_hint, '', '', '' FROM base_user_account WHERE id = ${idText}`,
+      `SELECT 'USER_INFO', CAST(id AS CHAR), HEX(nickname), IFNULL(HEX(email), 'NULL'), user_state, CAST(JSON_LENGTH(access_group) AS CHAR), IFNULL(JSON_UNQUOTE(JSON_EXTRACT(access_group, '$[0]')), 'NULL') FROM base_user_info WHERE account_id = ${idText}`,
+      `SELECT 'MEMBERSHIP', CAST(id AS CHAR), CAST(organization_id AS CHAR), member_role, status, '', '' FROM organization_membership WHERE account_id = ${idText}`,
+    ].join('; '),
+  )
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split('\t'));
+
+  const pick = (kind: string): string[][] => rows.filter((row) => row[0] === kind);
+
+  const accounts = pick('ACCOUNT');
+  if (accounts.length !== 1) {
+    throw new Error(
+      `专用账号创建事实核验失败：账号 ${idText} 期望恰好 1 行 base_user_account，实际 ${accounts.length} 行`,
+    );
+  }
+  const [, accountIdText, actualLoginName, identityHint] = accounts[0];
+  const accountMismatches: string[] = [];
+
+  if (Number(accountIdText) !== id) {
+    accountMismatches.push('id');
+  }
+  if (actualLoginName !== account.loginName) {
+    accountMismatches.push('login_name');
+  }
+  if (identityHint !== account.role) {
+    accountMismatches.push('identity_hint');
+  }
+  if (accountMismatches.length > 0) {
+    throw new Error(
+      `专用账号创建事实核验失败：账号 ${idText} 字段不符（${accountMismatches.join(', ')}）`,
+    );
+  }
+
+  const userInfos = pick('USER_INFO');
+  if (userInfos.length !== 1) {
+    throw new Error(
+      `专用账号创建事实核验失败：账号 ${idText} 期望恰好 1 行 base_user_info，实际 ${userInfos.length} 行`,
+    );
+  }
+  const [, userInfoIdText, nicknameHex, emailHex, userState, accessGroupLength, firstGroup] =
+    userInfos[0];
+  const userInfoMismatches: string[] = [];
+
+  if (nicknameHex !== utf8Hex(account.nickname)) {
+    userInfoMismatches.push('nickname');
+  }
+  if (
+    account.userInfoEmail === null
+      ? emailHex !== 'NULL'
+      : emailHex !== utf8Hex(account.userInfoEmail)
+  ) {
+    userInfoMismatches.push('email');
+  }
+  if (userState !== account.userState) {
+    userInfoMismatches.push('user_state');
+  }
+  if (Number(accessGroupLength) !== 1 || firstGroup !== account.accessGroup[0]) {
+    userInfoMismatches.push('access_group');
+  }
+  if (userInfoMismatches.length > 0) {
+    throw new Error(
+      `专用账号创建事实核验失败：账号 ${idText} 的资料字段不符（${userInfoMismatches.join(', ')}）`,
+    );
+  }
+
+  const memberships = pick('MEMBERSHIP');
+  if (memberships.length !== 1) {
+    throw new Error(
+      `专用账号创建事实核验失败：账号 ${idText} 的组织成员关系期望恰好 1 行，实际 ${memberships.length} 行（多于预期即拒绝，不按登录名猜测归属）`,
+    );
+  }
+  const [, membershipIdText, organizationIdText, memberRole, membershipStatus] = memberships[0];
+  const membershipMismatches: string[] = [];
+
+  if (Number(organizationIdText) !== account.organizationId) {
+    membershipMismatches.push('organization_id');
+  }
+  if (memberRole !== account.role) {
+    membershipMismatches.push('member_role');
+  }
+  if (membershipStatus !== 'ACTIVE') {
+    membershipMismatches.push('status');
+  }
+  if (membershipMismatches.length > 0) {
+    throw new Error(
+      `专用账号创建事实核验失败：账号 ${idText} 的成员关系字段不符（${membershipMismatches.join(', ')}）`,
+    );
+  }
+
+  return {
+    membershipId: assertPositiveInteger(Number(membershipIdText), '成员关系 ID'),
+    userInfoId: assertPositiveInteger(Number(userInfoIdText), '资料 ID'),
+  };
+}
+
+/**
+ * 从数据库真实 schema 发现所有引用本轮清理三张表的外部列（排除集合内表自身的引用）。
+ * 只接受单列 FK；出现无法映射的引用列即失败关闭。
+ */
+export function readDedicatedCleanupReferenceColumns(): DedicatedCleanupReferenceColumn[] {
+  const output = mysqlQuery(
+    [
+      'SELECT kcu.TABLE_NAME, kcu.COLUMN_NAME, kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME',
+      'FROM information_schema.KEY_COLUMN_USAGE kcu',
+      'WHERE kcu.TABLE_SCHEMA = DATABASE()',
+      "AND kcu.REFERENCED_TABLE_NAME IN ('base_user_account', 'base_user_info', 'organization_membership')",
+      'ORDER BY kcu.TABLE_NAME, kcu.COLUMN_NAME',
+    ].join(' '),
+  );
+
+  const columns: DedicatedCleanupReferenceColumn[] = [];
+
+  for (const line of output
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    const [table, column, referencedTable, referencedColumn] = line.split('\t');
+
+    if (!SQL_IDENTIFIER_PATTERN.test(table) || !SQL_IDENTIFIER_PATTERN.test(column)) {
+      throw new Error(`引用闭包发现非法标识符，拒绝继续：${JSON.stringify(line)}`);
+    }
+    if (CLEANUP_IN_SET_TABLES.includes(table)) {
+      continue;
+    }
+    if (referencedTable !== 'base_user_account' || referencedColumn !== 'id') {
+      throw new Error(
+        `引用闭包发现未受支持的引用目标 ${JSON.stringify(referencedTable)}.${JSON.stringify(referencedColumn)}（${table}.${column}），拒绝继续`,
+      );
+    }
+
+    columns.push({ column, table });
+  }
+
+  return columns;
+}
+
+/**
+ * 一条 SQL 断言：条件不成立时执行一条必然失败的 SELECT，使 mysql 客户端在该语句处中止。
+ * 导出供其它按 ID 台账清理的 helper 复用同一守卫实现（避免两套断言口径漂移）。
+ */
+export function renderGuardedAssertion(name: string, condition: string, marker: string): string[] {
+  return [
+    `SET @${name}_ok = IF(${condition}, 1, 0)`,
+    `SET @${name}_sql = IF(@${name}_ok = 1, 'SELECT 1', 'SELECT ${marker}')`,
+    `PREPARE ${name}_stmt FROM @${name}_sql`,
+    `EXECUTE ${name}_stmt`,
+    `DEALLOCATE PREPARE ${name}_stmt`,
+  ];
+}
+
+/** 本次清理目标的单行描述：接手人据此一眼确认预期目标 */
+export function describeDedicatedAccountCleanupTarget(
+  account: RegisteredDedicatedAccount,
+  database: string,
+): string {
+  const facts = account.facts;
+
+  return [
+    `账号 ${account.id}（${account.loginName}）`,
+    `角色 ${account.role}`,
+    `组织 ${account.organizationId}`,
+    `成员 ${facts === null ? '未核验' : facts.membershipId}`,
+    `资料 ${facts === null ? '未核验' : facts.userInfoId}`,
+    `目标库 ${database}`,
+  ].join(' / ');
+}
+
+/** 批次内一个已核验目标的字符化主键（SQL 变量与断言标记按账号 ID 隔离） */
+interface DedicatedCleanupTarget {
+  readonly account: RegisteredDedicatedAccount;
+  readonly facts: DedicatedAccountCreationFacts;
+  readonly id: string;
+  readonly idNumber: number;
+  readonly userInfoId: string;
+  readonly membershipId: string;
+  readonly organizationId: string;
+}
+
+/**
+ * 整批目标校验（P2-01）：全部在访问数据库之前完成。
+ *
+ * - 预期事实逐项校验（登录名白名单、角色、组织、昵称/邮箱列宽、状态、访问分组）；
+ * - 未核验 `facts: null` 整体拒绝，不放宽为按登录名扫描；
+ * - 重复账号 ID、重复资料主键、重复成员关系主键、重复登录名整体拒绝，
+ *   避免同一物理行被两条目标重复删除；
+ * - 返回按账号 ID 升序的目标列表：锁定顺序确定，SQL 变量与断言标记按账号 ID 命名，
+ *   第二个目标不会读到第一个目标的残值。
+ */
+function assertBatchCleanupTargets(
+  accounts: readonly RegisteredDedicatedAccount[],
+): DedicatedCleanupTarget[] {
+  const seenAccountIds = new Set<number>();
+  const seenLoginNames = new Set<string>();
+  const seenUserInfoIds = new Set<number>();
+  const seenMembershipIds = new Set<number>();
+  const targets: DedicatedCleanupTarget[] = [];
+
+  for (const account of accounts) {
+    assertDedicatedAccountExpectation(account);
+
+    const idNumber = assertPositiveInteger(account.id, '专用账号 ID');
+
+    if (seenAccountIds.has(idNumber)) {
+      throw new Error(
+        `专用账号清理批次被拒绝：账号 ID ${idNumber} 重复登记，拒绝执行（不得对同一目标重复删除）`,
+      );
+    }
+    if (seenLoginNames.has(account.loginName)) {
+      throw new Error(
+        `专用账号清理批次被拒绝：登录名 ${JSON.stringify(account.loginName)} 重复登记，拒绝执行`,
+      );
+    }
+    seenAccountIds.add(idNumber);
+    seenLoginNames.add(account.loginName);
+
+    const facts = account.facts;
+
+    if (facts === null) {
+      throw new Error(
+        `专用账号清理批次被拒绝：账号 ${idNumber}（${account.loginName}）缺少创建后核验事实，拒绝清理`,
+      );
+    }
+
+    const userInfoId = assertPositiveInteger(facts.userInfoId, '资料 ID');
+    const membershipId = assertPositiveInteger(facts.membershipId, '成员关系 ID');
+
+    if (seenUserInfoIds.has(userInfoId)) {
+      throw new Error(`专用账号清理批次被拒绝：资料主键 ${userInfoId} 重复登记，拒绝执行`);
+    }
+    if (seenMembershipIds.has(membershipId)) {
+      throw new Error(`专用账号清理批次被拒绝：成员关系主键 ${membershipId} 重复登记，拒绝执行`);
+    }
+    seenUserInfoIds.add(userInfoId);
+    seenMembershipIds.add(membershipId);
+
+    targets.push({
+      account,
+      facts,
+      id: String(idNumber),
+      idNumber,
+      membershipId: String(membershipId),
+      organizationId: String(account.organizationId),
+      userInfoId: String(userInfoId),
+    });
+  }
+
+  return targets.sort((left, right) => left.idNumber - right.idNumber);
+}
+
+/** 单个目标在批次内的 SQL 守卫变量前缀与拒绝标记前缀（按账号 ID 隔离，互不覆盖） */
+function targetSqlPrefix(target: DedicatedCleanupTarget): string {
+  return `dc_acct_${target.id}`;
+}
+
+/** 单个目标的集合外引用计数表达式（集合内三张表之外的全部引用） */
+function externalReferenceSum(
+  id: string,
+  references: readonly DedicatedCleanupReferenceColumn[],
+): string {
+  const referenceChecks = new Map<string, string>();
+
+  for (const reference of references) {
+    referenceChecks.set(
+      `${reference.table}.${reference.column}`,
+      `(SELECT COUNT(*) FROM \`${reference.table}\` WHERE \`${reference.column}\` = ${id})`,
+    );
+  }
+  for (const reference of LOGICAL_ACCOUNT_REFERENCES) {
+    referenceChecks.set(
+      `${reference.table}.${reference.column}`,
+      `(SELECT COUNT(*) FROM \`${reference.table}\` WHERE \`${reference.column}\` = ${id})`,
+    );
+  }
+  referenceChecks.set(
+    'ai_message.conversation_id',
+    `(SELECT COUNT(*) FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id}))`,
+  );
+
+  return [...referenceChecks.values()].join(' + ');
+}
+
+/**
+ * 生成整批清理脚本（单一 MySQL 会话、单一事务、单一 COMMIT）：
+ *
+ * START TRANSACTION
+ * → 同会话 DATABASE() 必须等于严格专用库
+ * → 按账号 ID 升序 FOR UPDATE 锁定并核对**全部**目标的账号 / 资料 / 成员关系绑定
+ * → 全批集合外引用（实际 schema FK + 已知逻辑引用）必须为 0
+ * → 全部预检通过后才按成员关系 → 资料 → 账号顺序逐目标精确删除（逐条 ROW_COUNT=1）
+ * → 全批残留必须为 0
+ * → COMMIT
+ *
+ * 任一断言不成立时，`EXECUTE` 处触发 SQL 错误；mysql 客户端在 batch 模式下遇到错误即退出，
+ * 事务随连接关闭整体回滚：既不会提交前面已通过的目标，也不会执行后续 DELETE 与 COMMIT。
+ */
+export function buildDedicatedAccountCleanupScript(
+  accounts: readonly RegisteredDedicatedAccount[],
+  references: readonly DedicatedCleanupReferenceColumn[],
+  expectedDatabase: string,
+): string {
+  const targets = assertBatchCleanupTargets(accounts);
+
+  if (targets.length === 0) {
+    return '';
+  }
+
+  if (!SQL_IDENTIFIER_PATTERN.test(expectedDatabase)) {
+    throw new Error(`目标库名未通过标识符校验，拒绝清理：${JSON.stringify(expectedDatabase)}`);
+  }
+
+  const statements: string[] = [
+    'START TRANSACTION',
+    'SET @dc_database = DATABASE()',
+    ...renderGuardedAssertion(
+      'dc_database',
+      `@dc_database = '${expectedDatabase}'`,
+      'dc_database_must_equal_strict_dedicated_e2e',
+    ),
+  ];
+
+  // 第一阶段：锁定并核验全部目标，任何一条不符都在首条 DELETE 之前中止
+  for (const target of targets) {
+    const prefix = targetSqlPrefix(target);
+    const { account, id, membershipId, organizationId, userInfoId } = target;
+    const emailCondition =
+      account.userInfoEmail === null
+        ? 'email IS NULL'
+        : `HEX(email) = '${utf8Hex(account.userInfoEmail)}'`;
+    const accessGroupJson = `["${account.accessGroup.join('","')}"]`;
+
+    statements.push(
+      `SELECT id INTO @${prefix}_account_row FROM base_user_account WHERE id = ${id} AND login_name = '${account.loginName}' AND identity_hint = '${account.role}' FOR UPDATE`,
+      ...renderGuardedAssertion(
+        `${prefix}_account`,
+        `@${prefix}_account_row = ${id}`,
+        `${prefix}_account_binding_mismatch`,
+      ),
+      `SET @${prefix}_user_info_count = (SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id})`,
+      ...renderGuardedAssertion(
+        `${prefix}_user_info_count`,
+        `@${prefix}_user_info_count = 1`,
+        `${prefix}_user_info_count_mismatch`,
+      ),
+      `SELECT id INTO @${prefix}_user_info_row FROM base_user_info WHERE id = ${userInfoId} AND account_id = ${id} AND HEX(nickname) = '${utf8Hex(account.nickname)}' AND ${emailCondition} AND user_state = '${account.userState}' AND JSON_EXTRACT(access_group, '$') = CAST('${accessGroupJson}' AS JSON) FOR UPDATE`,
+      ...renderGuardedAssertion(
+        `${prefix}_user_info`,
+        `@${prefix}_user_info_row = ${userInfoId}`,
+        `${prefix}_user_info_binding_mismatch`,
+      ),
+      `SET @${prefix}_membership_count = (SELECT COUNT(*) FROM organization_membership WHERE account_id = ${id})`,
+      ...renderGuardedAssertion(
+        `${prefix}_membership_count`,
+        `@${prefix}_membership_count = 1`,
+        `${prefix}_membership_count_mismatch`,
+      ),
+      `SELECT id INTO @${prefix}_membership_row FROM organization_membership WHERE id = ${membershipId} AND account_id = ${id} AND organization_id = ${organizationId} AND member_role = '${account.role}' AND status = 'ACTIVE' FOR UPDATE`,
+      ...renderGuardedAssertion(
+        `${prefix}_membership`,
+        `@${prefix}_membership_row = ${membershipId}`,
+        `${prefix}_membership_binding_mismatch`,
+      ),
+    );
+  }
+
+  // 第二阶段：全批集合外引用必须为 0，仍在首条 DELETE 之前
+  const externalReferenceTotal = targets
+    .map((target) => `(${externalReferenceSum(target.id, references)})`)
+    .join(' + ');
+
+  statements.push(
+    `SET @dc_external_refs = ${externalReferenceTotal}`,
+    ...renderGuardedAssertion(
+      'dc_external',
+      '@dc_external_refs = 0',
+      'dc_unregistered_external_references',
+    ),
+  );
+
+  // 第三阶段：全批预检通过后才删除，按依赖顺序逐目标精确删除
+  for (const target of targets) {
+    const prefix = targetSqlPrefix(target);
+    const { account, id, membershipId, organizationId, userInfoId } = target;
+
+    statements.push(
+      `DELETE FROM organization_membership WHERE id = ${membershipId} AND account_id = ${id} AND organization_id = ${organizationId} AND member_role = '${account.role}'`,
+      'SET @dc_deleted_membership = ROW_COUNT()',
+      ...renderGuardedAssertion(
+        `${prefix}_membership_delete`,
+        '@dc_deleted_membership = 1',
+        `${prefix}_membership_delete_rows_mismatch`,
+      ),
+      `DELETE FROM base_user_info WHERE id = ${userInfoId} AND account_id = ${id}`,
+      'SET @dc_deleted_user_info = ROW_COUNT()',
+      ...renderGuardedAssertion(
+        `${prefix}_user_info_delete`,
+        '@dc_deleted_user_info = 1',
+        `${prefix}_user_info_delete_rows_mismatch`,
+      ),
+      `DELETE FROM base_user_account WHERE id = ${id} AND login_name = '${account.loginName}'`,
+      'SET @dc_deleted_account = ROW_COUNT()',
+      ...renderGuardedAssertion(
+        `${prefix}_account_delete`,
+        '@dc_deleted_account = 1',
+        `${prefix}_account_delete_rows_mismatch`,
+      ),
+    );
+  }
+
+  // 第四阶段：提交前核对全批残留为零
+  const residueTotal = targets
+    .map(
+      ({ id }) =>
+        `(SELECT COUNT(*) FROM base_user_account WHERE id = ${id}) + (SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id}) + (SELECT COUNT(*) FROM organization_membership WHERE account_id = ${id})`,
+    )
+    .join(' + ');
+
+  statements.push(
+    `SET @dc_residue = ${residueTotal}`,
+    ...renderGuardedAssertion('dc_residue', '@dc_residue = 0', 'dc_residue_must_be_zero'),
+    'COMMIT',
+  );
+
+  return statements.join('; ');
+}
+
+/**
+ * 批次清理的提交状态：只有具备阶段证据时才允许给出确定结论。
+ * - `未提交`：执行前校验失败，或 mysql 在 COMMIT 之前被服务端错误中止（连接关闭后整批回滚）；
+ * - `提交状态待确认`：客户端非零 / 被终止 / 超时 / stderr 为空 / 连接断开等无法确定 COMMIT
+ *   阶段的情况——保留台账、停止自动写删，交人工按已核验目标库只读核对。
+ */
+export type DedicatedCleanupCommitState = '未提交' | '提交状态待确认';
+
+/** 批次清理失败：把提交状态、失败阶段与实际账号 ID 以结构化字段传给外层，避免外层误写结论 */
+export class DedicatedCleanupBatchError extends Error {
+  readonly commitState: DedicatedCleanupCommitState;
+  readonly stage: string;
+  readonly accountIds: readonly number[];
+
+  constructor(
+    message: string,
+    details: {
+      commitState: DedicatedCleanupCommitState;
+      stage: string;
+      accountIds: readonly number[];
+      cause?: unknown;
+    },
+  ) {
+    super(message, details.cause === undefined ? undefined : { cause: details.cause });
+    this.name = 'DedicatedCleanupBatchError';
+    this.commitState = details.commitState;
+    this.stage = details.stage;
+    this.accountIds = details.accountIds;
+  }
+}
+
+/**
+ * 在单一 MySQL 会话中执行清理脚本；错误原文（含被拒的断言标记）回传调用方，
+ * 但密码在错误文本中被脱敏。脚本一旦被拒，mysql 立即退出，后续语句不执行。
+ */
+function runDedicatedCleanupScript(
+  sql: string,
+  env: Record<string, string>,
+  accountIds: readonly number[],
+): void {
+  try {
+    execFileSync(
+      'mysql',
+      [
+        '-h',
+        env.DB_HOST,
+        '-P',
+        env.DB_PORT,
+        `-u${env.DB_USER}`,
+        env.DB_NAME,
+        '-N',
+        '-B',
+        '-e',
+        sql,
+      ],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, MYSQL_PWD: env.DB_PASS },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+  } catch (error) {
+    const rawStderr = (error as { stderr?: unknown }).stderr;
+    const stderr = Buffer.isBuffer(rawStderr)
+      ? rawStderr.toString('utf-8')
+      : typeof rawStderr === 'string'
+        ? rawStderr
+        : '';
+    const secret = env.DB_PASS ?? '';
+    const redacted = secret === '' ? stderr : stderr.split(secret).join('***');
+    // 提交状态判定（失败关闭）：
+    // - 服务端返回 SQL 错误（ERROR nnnn (SQLSTATE)）说明 batch 在 COMMIT 之前中止，
+    //   连接关闭后事务整体回滚，可以确定「未提交」；
+    // - 客户端非零 / 被终止 / 超时 / stderr 为空 / 连接中断时无法确认 COMMIT 是否已生效，
+    //   必须标记「提交状态待确认」并保留台账、停止自动写删——不得声称「未提交」，
+    //   否则 COMMIT 已生效时调用方会按回滚语义误判（丢失确认）。
+    const commitState: DedicatedCleanupCommitState =
+      CONNECTION_LOSS_PATTERN.test(redacted) || !SQL_SERVER_ERROR_PATTERN.test(redacted)
+        ? '提交状态待确认'
+        : '未提交';
+    const explanation =
+      commitState === '未提交'
+        ? '事务未 COMMIT，整批删除随连接关闭回滚'
+        : '清理脚本执行结果无法确认（连接中断或客户端异常），可能已提交；请在已核验的同一目标库按本轮登记的账号/资料/成员 ID 做只读核对后再决定是否重试';
+    const diagnostic = redacted.trim().split('\n').slice(-3).join(' | ') || '(无 stderr)';
+
+    throw new DedicatedCleanupBatchError(
+      `专用账号清理脚本执行失败（目标库 ${JSON.stringify(env.DB_NAME)}，${commitState}）：${explanation}。诊断：${diagnostic}`,
+      { commitState, stage: '清理脚本执行（mysql batch）', accountIds, cause: error },
+    );
+  }
+}
+
+/** 服务端 SQL 错误（语句中止，且必然发生在 COMMIT 之前） */
+const SQL_SERVER_ERROR_PATTERN = /ERROR \d{4} \([0-9A-Z]{5}\)/;
+
+/** 连接中断特征：无法据此确认 COMMIT 是否已生效 */
+const CONNECTION_LOSS_PATTERN =
+  /Lost connection|server has gone away|Can't connect|Connection refused|ERROR 2006|ERROR 2013/i;
+
+/**
+ * 整批执行物理清理（P2-01）：所有目标共用一次预检、一个 MySQL 会话、一个事务与一次 COMMIT。
+ *
+ * 安全门顺序：入参校验（含重复目标）→ 显式 opt-in → 严格专用库名 → 同一会话 DATABASE() 复核
+ * → 按账号 ID 升序锁定并核验**全部**目标绑定 → 全批集合外引用为 0 → 逐目标精确删除
+ * → 全批残留为 0 → 提交。
+ *
+ * 任一目标不符或任一 DELETE 失败，整批（含已执行的 DELETE）回滚：不会出现部分提交。
+ * 不再推导式删除 AI、工单、资料等业务表；这类账外引用在首删前被明确拒绝。
+ */
+export function deleteE2EDedicatedAccounts(accounts: readonly RegisteredDedicatedAccount[]): void {
+  if (accounts.length === 0) {
+    return;
+  }
+
   const env = readBackendEnv();
+  const target = accounts
+    .map((account) => describeDedicatedAccountCleanupTarget(account, env.DB_NAME ?? ''))
+    .join(' ; ');
+
+  // 全批目标校验必须早于任何数据库调用：第二个目标不合法时连读引用都不发起
+  assertBatchCleanupTargets(accounts);
+
+  // 显式许可 + 测试库命名（先于任何数据库进程）
   assertPhysicalCleanupAllowed(env);
 
-  const id = String(accountId);
-  const loginName = dedicatedLoginName;
+  // 严格专用库名：不允许「含 e2e/test 段的任意库」，必须是本轮专用入口解析出的库
+  if (env.DB_NAME !== DEDICATED_E2E_DB_NAME) {
+    throw new Error(
+      `专用账号清理目标库被拒绝：${JSON.stringify(env.DB_NAME)} ≠ 严格专用库 ${JSON.stringify(DEDICATED_E2E_DB_NAME)}，拒绝物理删除（${target}）`,
+    );
+  }
 
-  mysqlQuery(
-    [
-      'START TRANSACTION',
-      // R4：清理前必须确认 id 与登录名唯一绑定；不匹配即中止（SELECT 语句报错使 mysql 退出，
-      // 连接关闭触发回滚），杜绝同 ID 异名账号被误删
-      `SET @dedicated_cleanup_bound = (SELECT COUNT(*) FROM base_user_account WHERE id = ${id} AND login_name = '${loginName}')`,
-      "SET @dedicated_cleanup_binding = IF(@dedicated_cleanup_bound = 1, 'SELECT 1', 'SELECT dedicated_account_binding_id_and_login_name_must_match_exactly_one')",
-      'PREPARE dedicated_cleanup_binding_check FROM @dedicated_cleanup_binding',
-      'EXECUTE dedicated_cleanup_binding_check',
-      'DEALLOCATE PREPARE dedicated_cleanup_binding_check',
-      `DELETE FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}`,
-      `DELETE FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id})`,
-      `DELETE FROM ai_report WHERE engineer_account_id = ${id}`,
-      `DELETE FROM ai_conversation WHERE engineer_account_id = ${id}`,
-      `DELETE FROM repair_request WHERE customer_account_id = ${id} OR accepted_by_engineer_account_id = ${id}`,
-      `DELETE FROM reference_document WHERE created_by_account_id = ${id}`,
-      `DELETE FROM base_user_info WHERE account_id = ${id}`,
-      `DELETE FROM base_user_account WHERE id = ${id}`,
-      `SET @dedicated_cleanup_residue = (SELECT COUNT(*) FROM base_user_account WHERE id = ${id}) + (SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id}) + (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) + (SELECT COUNT(*) FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id})) + (SELECT COUNT(*) FROM ai_report WHERE engineer_account_id = ${id}) + (SELECT COUNT(*) FROM ai_conversation WHERE engineer_account_id = ${id}) + (SELECT COUNT(*) FROM repair_request WHERE customer_account_id = ${id} OR accepted_by_engineer_account_id = ${id}) + (SELECT COUNT(*) FROM reference_document WHERE created_by_account_id = ${id})`,
-      "SET @dedicated_cleanup_assertion = IF(@dedicated_cleanup_residue = 0, 'SELECT 1', 'SELECT dedicated_cleanup_residue_must_be_zero')",
-      'PREPARE dedicated_cleanup_check FROM @dedicated_cleanup_assertion',
-      'EXECUTE dedicated_cleanup_check',
-      'DEALLOCATE PREPARE dedicated_cleanup_check',
-      'COMMIT',
-    ].join('; '),
+  const references = readDedicatedCleanupReferenceColumns();
+
+  runDedicatedCleanupScript(
+    buildDedicatedAccountCleanupScript(accounts, references, DEDICATED_E2E_DB_NAME),
+    env,
+    accounts.map(({ id }) => id),
   );
+}
+
+/** 单账号入口：委托整批实现（单项批次），语义与整批完全一致 */
+export function deleteE2EDedicatedAccount(account: RegisteredDedicatedAccount): void {
+  deleteE2EDedicatedAccounts([account]);
 }
 
 /** 专用账号清理残留读数：主记录 / userInfo 孤儿 / 已知关联业务表 */
@@ -241,7 +958,8 @@ export function readDedicatedAccountCleanupResidue(
     [
       `SELECT COUNT(*) FROM base_user_account WHERE id = ${id}`,
       `SELECT COUNT(*) FROM base_user_info WHERE account_id = ${id}`,
-      `SELECT (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) +
+      `SELECT (SELECT COUNT(*) FROM organization_membership WHERE account_id = ${id}) +
+              (SELECT COUNT(*) FROM engineer_response WHERE customer_account_id = ${id} OR engineer_account_id = ${id}) +
               (SELECT COUNT(*) FROM ai_message WHERE conversation_id IN (SELECT id FROM ai_conversation WHERE engineer_account_id = ${id})) +
               (SELECT COUNT(*) FROM ai_report WHERE engineer_account_id = ${id}) +
               (SELECT COUNT(*) FROM ai_conversation WHERE engineer_account_id = ${id}) +
@@ -276,13 +994,7 @@ export function readAccountCountByLoginName(loginName: string): number {
   return value;
 }
 
-// ---- 账号创建登记与逐账号清理编排（最小修复计划 P1/P2） ----
-
-/** 本轮登记的专用账号（精确 ID + 专用登录名双因子）：逐账号清理的唯一删除边界 */
-export interface RegisteredDedicatedAccount {
-  readonly id: number;
-  readonly loginName: string;
-}
+// ---- 账号创建登记与逐账号清理编排（终审 I3） ----
 
 export function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -304,52 +1016,94 @@ export function readCreatedDedicatedAccountId(responseBody: unknown): number {
 }
 
 /**
- * 创建响应登记（最小修复计划 P1）：校验专用登录名白名单与创建响应中的精确 ID 后，
- * **立即**登记到本轮清理清单并返回登记项。
+ * 创建响应登记（终审 I3 第 1 项）：
  *
- * 调用方必须在任何后续列表查询 / 字段断言 / 弹窗关闭等待之前调用本函数——登记不依赖任何
- * 后续步骤，故后续失败不会回滚登记：精确 ID 始终可被清理看见（不按标题 / 反查猜测归属）。
+ * 1. 校验预期事实与创建响应中的精确 ID；
+ * 2. **先**把「ID + 约定登录名 + 角色 + 组织 + 预期资料」登记进本轮清单——登记不依赖任何
+ *    后续步骤，故后续核验失败或业务断言失败都不会让该 ID 从清理视野消失；
+ * 3. 再回读数据库定位成员关系与资料主键，并逐字段核验实际写入等于预期。
+ *
+ * 核验失败时登记项保留（facts 为空）并抛出诊断：清理入口会拒绝删除未核验账号，
+ * 绝不放宽为按登录名扫描后删除。
  */
 export function registerCreatedDedicatedAccount(
   registry: RegisteredDedicatedAccount[],
   responseBody: unknown,
-  loginName: string,
+  expectation: DedicatedAccountExpectation,
 ): RegisteredDedicatedAccount {
-  if (!DEDICATED_LOGIN_NAME_PATTERN.test(loginName)) {
-    throw new Error(`专用账号登记登录名未通过白名单校验，拒绝登记：${JSON.stringify(loginName)}`);
-  }
+  assertDedicatedAccountExpectation(expectation);
 
-  const entry: RegisteredDedicatedAccount = {
+  const pending: RegisteredDedicatedAccount = {
+    ...expectation,
+    facts: null,
     id: readCreatedDedicatedAccountId(responseBody),
-    loginName,
   };
 
-  registry.push(entry);
+  // 先登记精确 ID，再核验事实：核验失败也不能丢失清理边界
+  registry.push(pending);
 
-  return entry;
+  const verified: RegisteredDedicatedAccount = {
+    ...pending,
+    facts: readDedicatedAccountCreationFacts(pending),
+  };
+
+  registry[registry.length - 1] = verified;
+
+  return verified;
 }
 
 /**
- * 逐账号独立清理并聚合报告（最小修复计划 P2）：
- * - 每个账号的「精确删除」与「精确 ID 残留核对」各自 try/catch——某个账号失败不阻断后续账号；
- * - 删除错误与残留核对错误分别记录，残留非零单列为失败；
+ * 整批清理并聚合报告（P2-01）：
+ * - 空台账为 no-op，不启动任何数据库调用；
+ * - 非空批次交给批次入口：整批预检通过才允许首删，任一目标不符或后序 DELETE 失败整批回滚，
+ *   不会出现「前一个账号已提交、后一个账号被拒」的部分提交；
+ * - 只有批次提交明确成功后，才在事务外逐账号做只读残留核对；残留非零与核对失败分别记录；
+ * - 批次失败时保留调用方台账，并按执行边界给出的提交状态（`未提交` / `提交状态待确认`）、
+ *   失败阶段与实际账号 ID 抛出结构化错误；待确认时停止自动写删，交人工只读核对；
+ *   失败后不再做事务外残留核对（已回滚时回读只会重复报错）；
  * - 汇总后一次性抛错（含全部失败信息），供调用方与主流程错误一并报告；全部成功（零残留）时不抛错。
  *
- * deleteAccount / readResidue 可注入以便单测；默认复用真实受保护实现。
+ * deleteAccounts / readResidue 可注入以便单测；默认复用真实受保护实现。
  */
 export function cleanupRegisteredDedicatedAccounts(
   accounts: readonly RegisteredDedicatedAccount[],
-  deleteAccount: (id: number, loginName: string) => void = deleteE2EDedicatedAccountById,
+  deleteAccounts: (
+    batch: readonly RegisteredDedicatedAccount[],
+  ) => void = deleteE2EDedicatedAccounts,
   readResidue: (id: number) => DedicatedAccountCleanupResidue = readDedicatedAccountCleanupResidue,
 ): void {
+  if (accounts.length === 0) {
+    return;
+  }
+
+  try {
+    deleteAccounts(accounts);
+  } catch (error) {
+    const targets = accounts.map(({ id, loginName }) => `${id}（${loginName}）`).join('、');
+    const accountIds = accounts.map(({ id }) => id);
+
+    // 提交状态只由执行边界给定：批次错误带结构化状态与失败阶段；执行前校验失败必然是「未提交」。
+    // 外层不得固定拼接「未提交」——连接在 COMMIT 附近中断时状态无法确认。
+    const commitState: DedicatedCleanupCommitState =
+      error instanceof DedicatedCleanupBatchError ? error.commitState : '未提交';
+    const stage =
+      error instanceof DedicatedCleanupBatchError ? error.stage : '批次入口（执行前校验）';
+    const guidance =
+      commitState === '未提交'
+        ? '台账保留，未执行任何提交'
+        : '台账完整保留、停止自动写删；请在已核验的同一目标库按本批登记的账号/资料/成员 ID 做只读核对后再决定是否重试';
+
+    throw new DedicatedCleanupBatchError(
+      `专用账号批次清理失败——本批 ${accounts.length} 个目标（${targets}），${commitState}（失败阶段：${stage}）；${guidance}：${toErrorMessage(error)}`,
+      { commitState, stage, accountIds, cause: error },
+    );
+  }
+
+  // 批次已提交：事务外逐账号只读核对本轮残留，作为独立诊断
   const failures: string[] = [];
 
-  for (const { id, loginName } of accounts) {
-    try {
-      deleteAccount(id, loginName);
-    } catch (error) {
-      failures.push(`账号 ${id}（${loginName}）物理删除失败：${toErrorMessage(error)}`);
-    }
+  for (const account of accounts) {
+    const { id, loginName } = account;
 
     try {
       const residue = readResidue(id);
@@ -358,7 +1112,7 @@ export function cleanupRegisteredDedicatedAccounts(
         failures.push(`账号 ${id}（${loginName}）清理后仍有残留：${JSON.stringify(residue)}`);
       }
     } catch (error) {
-      failures.push(`账号 ${id}（${loginName}）残留核对失败：${toErrorMessage(error)}`);
+      failures.push(`账号 ${id}（${loginName}）已提交，残留核验失败：${toErrorMessage(error)}`);
     }
   }
 

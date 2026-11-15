@@ -6,9 +6,11 @@ import { AudienceTypeEnum, ThirdPartyProviderEnum } from '@app-types/models/acco
 import { AUTH_ERROR, DomainError } from '@core/common/errors';
 import { TokenHelper } from '@modules/auth/token.helper';
 import { Injectable } from '@nestjs/common';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { DecideLoginRoleUsecase } from './decide-login-role.usecase';
 import { EnrichLoginWithIdentityUsecase } from './enrich-login-with-identity.usecase';
 import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
+import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.usecase';
 
 /**
  * 根据账户 ID 登录用例（三段式编排）
@@ -17,6 +19,8 @@ import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
 @Injectable()
 export class LoginByAccountIdUsecase {
   constructor(
+    private readonly accountQueryService: AccountQueryService,
+    private readonly resolveSessionRestrictionUsecase: ResolveSessionRestrictionUsecase,
     private readonly executeLoginFlowUsecase: ExecuteLoginFlowUsecase,
     private readonly decideLoginRoleUsecase: DecideLoginRoleUsecase,
     private readonly enrichLoginWithIdentityUsecase: EnrichLoginWithIdentityUsecase,
@@ -86,6 +90,17 @@ export class LoginByAccountIdUsecase {
     const accessToken = this.tokenHelper.generateAccessToken({ payload, audience });
     const tokens = { accessToken, refreshToken: basicResult.tokens.refreshToken };
 
+    // Resolve: 按数据库事实计算会话限制与可信组织身份。
+    // 与 `LoginWithPasswordUsecase` / `ValidateAccessTokenSessionUsecase` 共用同一读取入口，
+    // 保证第三方签发返回的 `restriction` 与随后每请求复核、`mySessionIdentity` 口径一致。
+    const snapshot = await this.accountQueryService.findSessionAuthoritySnapshot({
+      accountId: basicResult.accountId,
+    });
+    const resolution = await this.resolveSessionRestrictionUsecase.execute({
+      accountId: basicResult.accountId,
+      snapshot,
+    });
+
     // Enrich: 装配身份信息
     const enrichedResult = await this.enrichLoginWithIdentityUsecase.execute({
       tokens,
@@ -94,6 +109,12 @@ export class LoginByAccountIdUsecase {
       accessGroup: basicResult.accessGroup,
       account: basicResult.account,
       userInfo: basicResult.userInfo,
+      restriction: resolution.restriction,
+      adminLevel: snapshot.adminLevel,
+      customerOrganizationId: snapshot.userInfo?.customerOrganizationId ?? null,
+      engineerOrganizationId: resolution.engineerOrganizationId,
+      adminOrganizationId: resolution.adminOrganizationId,
+      registrationOrganizationId: resolution.latestEngineerApplication?.organizationId ?? null,
       options: { includeIdentity: true },
     });
 

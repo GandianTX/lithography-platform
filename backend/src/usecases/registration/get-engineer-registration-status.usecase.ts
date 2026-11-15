@@ -11,7 +11,10 @@ import type { OffsetParams } from '@core/pagination/pagination.types';
 import { Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
-import { isEngineerRegistrationPasswordVerified } from './engineer-registration-credential';
+import {
+  assertCredentialPasswordChangeNotPending,
+  isEngineerRegistrationPasswordVerified,
+} from './engineer-registration-credential';
 import { normalizeEngineerRegistrationCredential } from './registration-input.normalize';
 import type {
   EngineerRegistrationStatusResult,
@@ -79,6 +82,9 @@ export class GetEngineerRegistrationStatusUsecase {
     ) {
       throw new DomainError(ENGINEER_REGISTRATION_ERROR.CREDENTIAL_MISMATCH, '账号或密码不正确');
     }
+
+    // 凭据证明先于改密门禁：不得以本入口探测「哪些账号处于强制改密状态」
+    assertCredentialPasswordChangeNotPending(credential);
 
     const view = await this.accountQueryService.getUserAccountViewById({
       accountId: credential.id,

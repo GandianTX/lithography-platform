@@ -27,7 +27,11 @@ import {
 import type { ChangeMyPasswordCommand, ChangeMyPasswordOutcome } from './my-account-settings.types';
 
 /** 事务内的写入阶段标记，只用于服务端日志定位，不出现在任何对外响应中。 */
-type ChangeMyPasswordPhase = 'LOCK_CREDENTIAL' | 'VERIFY_CURRENT_PASSWORD' | 'WRITE_PASSWORD_HASH';
+type ChangeMyPasswordPhase =
+  | 'LOCK_CREDENTIAL'
+  | 'VERIFY_CURRENT_PASSWORD'
+  | 'VERIFY_NEW_PASSWORD_DISTINCT'
+  | 'WRITE_PASSWORD_HASH';
 
 /** 固定成功提示：不声称服务端撤销了已签发 Token。 */
 const CHANGE_MY_PASSWORD_NOTICE = '密码已更新，请使用新密码重新登录';
@@ -35,9 +39,10 @@ const CHANGE_MY_PASSWORD_NOTICE = '密码已更新，请使用新密码重新登
 /** 写哈希阶段（UPDATE 绑定参数嵌新密码派生哈希）的失败日志抑制 `message`（P0-6 同款纵深防御）。 */
 const SUPPRESSED_MESSAGE_PHASES: ReadonlyArray<ChangeMyPasswordPhase> = ['WRITE_PASSWORD_HASH'];
 
-/** 预期业务拒绝码（当前密码不正确）：命中共享失败日志 helper 的 warn 分流。 */
+/** 预期业务拒绝码（当前密码不正确 / 强制改密提交同值密码）：命中共享失败日志 helper 的 warn 分流。 */
 const CHANGE_MY_PASSWORD_WARN_ERROR_CODES: ReadonlyArray<string> = [
   MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH,
+  MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
 ];
 
 /**
@@ -49,8 +54,16 @@ const CHANGE_MY_PASSWORD_WARN_ERROR_CODES: ReadonlyArray<string> = [
  * 3. 用全仓唯一的 `PasswordPolicyService` 校验**新密码**（当前密码刻意不做策略校验：
  *    存量账号的密码可能先于现行策略设立，策略校验会把本来正确的当前密码误判为非法）；
  * 4. 单一事务内：锁定 account 行取得纯 credential 快照（含数据库权威 `createdAt`）→
- *    `AccountService.verifyPassword()` 校验当前密码 → 同一 `createdAt` 做盐再哈希 →
- *    `AccountService.updateAccountPasswordHash()` 写入。
+ *    `AccountService.verifyPassword()` 校验当前密码 → 强制改密时拒绝同值新密码 →
+ *    同一 `createdAt` 做盐再哈希 → `AccountService.updateAccountPasswordHash()` 写入。
+ *
+ * 强制改密语义：快照 `mustChangePassword === true`（管理员要求下次登录必须改密）时，新密码
+ * 若仍能通过同一旧凭据校验（即新旧相同），则拒绝为
+ * `MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED`（对外 `BAD_USER_INPUT`）——否则写哈希会在同一
+ * UPDATE 内清掉强制改密标记，用户重新登录即恢复完整访问，却从未真正更换凭据，等于绕过管理员
+ * 要求。比较复用 `AccountService.verifyPassword()`（登录侧同一归一化 / 校验口径），拒绝发生在
+ * 任何写调用之前，哈希、标记与事务外会话均不变。普通主动改密（无强制改密标记）保持既有语义：
+ * 允许提交同值密码，避免扩大契约。
  *
  * 与管理员重置密码（P0-6）的关系：权限（本人 vs SUPER_ADMIN + 目标保护）、入参（含当前
  * 密码 vs 不含）与编排均不同，是两条独立链路；**不调用** `AdminResetUserPasswordUsecase`，
@@ -172,6 +185,21 @@ export class ChangeMyPasswordUsecase {
         throw new DomainError(MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH, '当前密码不正确');
       }
 
+      // 强制改密必须实际更换凭据：快照要求首次改密且新密码仍能通过同一旧凭据校验时拒绝。
+      // 比较复用与当前密码校验相同的 verifyPassword 口径（含 INVALID_PASSWORD 收敛为 false），
+      // 不新增第二套密码比较实现；拒绝发生在写哈希之前，标记不会被清除。
+      phase = 'VERIFY_NEW_PASSWORD_DISTINCT';
+      const isNewPasswordSameAsCurrent =
+        snapshot.mustChangePassword === true &&
+        this.verifyCurrentPassword({
+          currentPassword: newPassword,
+          snapshotPasswordHash: snapshot.loginPassword,
+          snapshotCreatedAt: snapshot.createdAt,
+        });
+      if (isNewPasswordSameAsCurrent) {
+        throw new DomainError(MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED, '新密码需与当前密码不同');
+      }
+
       phase = 'WRITE_PASSWORD_HASH';
       const passwordHash = AccountService.hashPasswordWithTimestamp(
         newPassword,
@@ -181,6 +209,9 @@ export class ChangeMyPasswordUsecase {
         accountId,
         passwordHash,
         transactionContext,
+        // 「必须改密」是管理员对下次登录的要求；用户完成改密后必须在同一 UPDATE 内清除，
+        // 否则重新登录仍会被判为受限会话
+        clearMustChangePassword: true,
       });
     } catch (error) {
       logAdminUserWriteFailure({

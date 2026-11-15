@@ -1,5 +1,6 @@
 // test/02-register/engineer-registration-approval.e2e-spec.ts
 
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import {
   AccountStatus,
   IdentityTypeEnum,
@@ -39,6 +40,9 @@ import {
   seedTestMemberships,
   seedTestOrganizations,
 } from '../utils/test-organizations';
+
+/** 本轮一次性短标识：组织编码按轮派生，避免上一轮残留被当作本轮资源接管。 */
+const RUN_TAG = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
 
 /**
  * 工程师自助注册 + 组织管理员审核真实链路 E2E。
@@ -109,12 +113,21 @@ type RegisterInput = {
   loginEmail: string;
   loginPassword: string;
   nickname: string;
+  realName?: string | null;
+  phone?: string | null;
   type?: RegisterTypeEnum;
   organizationId: number;
   applicationNote?: string | null;
 };
 
-type LoginPayload = { login?: { accessToken?: string; accountId?: number } };
+type LoginPayload = {
+  login?: {
+    accessToken?: string;
+    accountId?: number;
+    restriction?: string;
+    registrationOrganizationId?: number | null;
+  };
+};
 
 type StatusPayload = {
   accountId: number;
@@ -139,8 +152,29 @@ const ADMIN_ITEM_FIELDS = `
   applicant { id loginName loginEmail nickname role status }
 `;
 
+/**
+ * 本规格验证 V44 Web 注册规则（工程师必填姓名/电话、公司须受管），
+ * 因此统一走 Web 独立入口 `registerWeb`；用别名保持既有断言字段不变。
+ * 旧 `register` 的兼容行为见「旧入口兼容」用例。
+ */
 const REGISTER_MUTATION = `
-  mutation Register($input: RegisterInput!) {
+  mutation Register($input: RegisterWebInput!) {
+    register: registerWeb(input: $input) {
+      success
+      message
+      accountId
+      registrationStatus
+      applicationId
+    }
+  }
+`;
+
+/**
+ * 旧客户端请求形状：`RegisterInput` 不支持姓名/电话/手填公司，`organizationId` 必填。
+ * 本规格用它验证主线旧行为的兼容性，不混入 Web 规则。
+ */
+const LEGACY_REGISTER_MUTATION = `
+  mutation LegacyRegister($input: RegisterInput!) {
     register(input: $input) {
       success
       message
@@ -153,7 +187,12 @@ const REGISTER_MUTATION = `
 
 const LOGIN_MUTATION = `
   mutation Login($input: AuthLoginInput!) {
-    login(input: $input) { accessToken accountId }
+    login(input: $input) {
+      accessToken
+      accountId
+      restriction
+      registrationOrganizationId
+    }
   }
 `;
 
@@ -164,6 +203,17 @@ const USER_INFO_QUERY = `
 `;
 
 const ORGANIZATIONS_QUERY = `
+  query RegistrationOrganizationSearch($pagination: PaginationArgs!) {
+    registrationOrganizationSearch(pagination: $pagination) {
+      items { id name }
+      total
+      page
+      pageSize
+    }
+  }
+`;
+
+const LEGACY_ORGANIZATIONS_QUERY = `
   query RegistrationOrganizations {
     registrationOrganizations { id name }
   }
@@ -286,9 +336,12 @@ describe('工程师注册与组织审核 (e2e)', () => {
   let guestToken: string;
   let adminAccountId: number;
 
-  const suiteOrganizationCodes = buildSuiteOrganizationCodes('ENGREG');
+  const suiteOrganizationCodes = buildSuiteOrganizationCodes(`ENGREG_${RUN_TAG}`);
+  /** 旧入口兼容用例专用：启用但未受管公司（Web 规则不可用，旧 register 可用） */
+  const LEGACY_UNMANAGED_ORGANIZATION_CODE = `E2E_ENGREG_LEGACY_UNMANAGED_${RUN_TAG}`;
   let primaryOrganizationId = 0;
   let peerOrganizationId = 0;
+  let legacyUnmanagedOrganizationId = 0;
 
   const ownership = createOwnedResourceLedger();
 
@@ -319,17 +372,31 @@ describe('工程师注册与组织审核 (e2e)', () => {
           organizationCode: suiteOrganizationCodes.primary,
           name: 'E2E 工程师注册主组织',
           kind: 'CLIENT',
+          // 注册候选资格为 ACTIVE + 受管公司（V44）
+          isManagedCompany: true,
         },
         {
           organizationCode: suiteOrganizationCodes.peer,
           name: 'E2E 工程师注册对侧组织',
           kind: 'PEER',
+          isManagedCompany: true,
+        },
+        {
+          organizationCode: LEGACY_UNMANAGED_ORGANIZATION_CODE,
+          name: 'E2E 旧入口未受管组织',
+          kind: 'CLIENT',
+          // 显式未受管：只允许旧 register 入口使用
+          isManagedCompany: false,
         },
       ],
       ownership,
     });
     primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
     peerOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.peer);
+    legacyUnmanagedOrganizationId = requireOrganizationId(
+      organizationIds,
+      LEGACY_UNMANAGED_ORGANIZATION_CODE,
+    );
 
     await seedTestMemberships({
       dataSource,
@@ -469,11 +536,14 @@ describe('工程师注册与组织审核 (e2e)', () => {
     accountId: number,
     input: RegisterInput,
     registrationStatus: RegistrationOutcomeStatus,
+    options: { readonly webEntry?: boolean } = {},
   ): void => {
     const role =
       input.type === RegisterTypeEnum.ENGINEER
         ? IdentityTypeEnum.ENGINEER
         : IdentityTypeEnum.CUSTOMER;
+    // Web 入口客户在创建事务内写可信公司归属；旧入口与工程师保持 null（V44）。
+    const webEntry = options.webEntry ?? true;
     const pending = registrationStatus === RegistrationOutcomeStatus.PENDING_REVIEW;
     recordOwnedResource(ownership, 'account', accountId, {
       loginName: input.loginName ?? null,
@@ -484,6 +554,10 @@ describe('工程师注册与组织审核 (e2e)', () => {
       nickname: input.nickname,
       userInfoEmail: input.loginEmail,
       userState: pending ? UserState.PENDING : UserState.ACTIVE,
+      // Web 客户注册在创建事务内写入可信公司归属；工程师与旧入口写 null（V44）。
+      // 该字段是清理引用闭包的强制预期：缺登记会在首删前失败关闭。
+      customerOrganizationId:
+        role === IdentityTypeEnum.CUSTOMER && webEntry ? input.organizationId : null,
     });
   };
 
@@ -517,6 +591,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
     if (userInfo.nickname !== expected.nickname) mismatches.push('nickname');
     if ((userInfo.email ?? null) !== expected.userInfoEmail) mismatches.push('userInfoEmail');
     if (String(userInfo.userState) !== String(expected.userState)) mismatches.push('userState');
+    if ((userInfo.customerOrganizationId ?? null) !== (expected.customerOrganizationId ?? null)) {
+      mismatches.push('customerOrganizationId');
+    }
     if (mismatches.length > 0) {
       throw new Error(
         `回读核验失败：账号 ${accountId} 归属字段已与本轮登记事实不一致（${mismatches.join(', ')}），` +
@@ -557,6 +634,15 @@ describe('工程师注册与组织审核 (e2e)', () => {
   const register = async (input: RegisterInput): Promise<GqlBody<{ register?: RegisterPayload }>> =>
     await gql<{ register?: RegisterPayload }>({
       query: REGISTER_MUTATION,
+      variables: { input },
+    });
+
+  /** 旧 `register` 入口：请求形状与主线旧客户端一致 */
+  const legacyRegister = async (
+    input: RegisterInput,
+  ): Promise<GqlBody<{ register?: RegisterPayload }>> =>
+    await gql<{ register?: RegisterPayload }>({
+      query: LEGACY_REGISTER_MUTATION,
       variables: { input },
     });
 
@@ -693,6 +779,9 @@ describe('工程师注册与组织审核 (e2e)', () => {
     loginName: params.loginName,
     loginEmail: params.loginEmail,
     loginPassword: PASSWORD,
+    // 工程师注册的姓名与电话为必填（V44）
+    realName: 'E2E 工程师',
+    phone: '13800000000',
     // 昵称必须与登录名一样一一对应且不超过 20 字符：若用固定截断前缀，
     // 前缀相同的两个账号会触发服务端追加随机后缀，回读值便与登记事实不一致。
     nickname: params.loginName,
@@ -828,6 +917,7 @@ describe('工程师注册与组织审核 (e2e)', () => {
         nickname,
         userInfoEmail: CUSTOMER_READBACK_FAILURE.loginEmail,
         userState: UserState.ACTIVE,
+        customerOrganizationId: primaryOrganizationId,
       });
     });
 
@@ -895,13 +985,306 @@ describe('工程师注册与组织审核 (e2e)', () => {
     });
 
     it('公开组织选项仅返回有效组织且包含本轮主组织', async () => {
-      const body = await gql<{ registrationOrganizations?: Array<{ id: number; name: string }> }>({
+      const body = await gql<{
+        registrationOrganizationSearch?: {
+          items: Array<{ id: number; name: string }>;
+          total: number;
+          page: number;
+          pageSize: number;
+        };
+      }>({
         query: ORGANIZATIONS_QUERY,
+        variables: { pagination: { mode: 'OFFSET', page: 1, pageSize: 50 } },
       });
       expect(body.errors).toBeUndefined();
-      const ids = (body.data?.registrationOrganizations ?? []).map((item) => item.id);
+      const ids = (body.data?.registrationOrganizationSearch?.items ?? []).map((item) => item.id);
       expect(ids).toContain(primaryOrganizationId);
       expect(ids).toContain(peerOrganizationId);
+
+      // 兼容入口：无参 `registrationOrganizations` 仍返回 `{ id name }` 数组
+      const legacy = await gql<{
+        registrationOrganizations?: Array<{ id: number; name: string }>;
+      }>({ query: LEGACY_ORGANIZATIONS_QUERY });
+      expect(legacy.errors).toBeUndefined();
+      const legacyIds = (legacy.data?.registrationOrganizations ?? []).map((item) => item.id);
+      expect(Array.isArray(legacy.data?.registrationOrganizations)).toBe(true);
+      expect(legacyIds).toContain(primaryOrganizationId);
+      expect(legacyIds).toContain(peerOrganizationId);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 旧 register 入口兼容（主线旧请求形状）
+  // ---------------------------------------------------------------------------
+  describe('旧入口 register 行为兼容', () => {
+    it('旧工程师请求省略姓名与电话：创建待审账号与申请，无成员关系', async () => {
+      const input: RegisterInput = {
+        loginName: 'e2e_legacy_engineer',
+        loginEmail: 'e2e_legacy_engineer@example.com',
+        loginPassword: PASSWORD,
+        nickname: 'e2e_legacy_engineer',
+        type: RegisterTypeEnum.ENGINEER,
+        organizationId: primaryOrganizationId,
+      };
+
+      const body = await legacyRegister(input);
+      expect(body.errors).toBeUndefined();
+      const payload = body.data?.register;
+      expect(payload?.success).toBe(true);
+      expect(payload?.registrationStatus).toBe(RegistrationOutcomeStatus.PENDING_REVIEW);
+
+      const accountId = payload?.accountId;
+      const applicationId = payload?.applicationId;
+      expect(typeof accountId).toBe('number');
+      expect(typeof applicationId).toBe('number');
+      if (typeof accountId !== 'number' || typeof applicationId !== 'number') {
+        throw new Error(`旧入口工程师注册未返回主键：${JSON.stringify(body)}`);
+      }
+
+      // 先登记创建事实，再做可失败的回读核验
+      recordApplication(applicationId, accountId, primaryOrganizationId, null);
+      recordRegisteredAccountCreation(accountId, input, RegistrationOutcomeStatus.PENDING_REVIEW, {
+        webEntry: false,
+      });
+      await verifyRegisteredAccount(accountId);
+
+      const userInfo = await userInfoRepo().findOneOrFail({ where: { accountId } });
+      expect(userInfo.realName ?? null).toBeNull();
+      expect(userInfo.phone ?? null).toBeNull();
+      const memberships = await membershipRepo().count({ where: { accountId } });
+      expect(memberships).toBe(0);
+
+      // 与主线一致：待审账号仍不能登录
+      const loginBody = await performLogin('e2e_legacy_engineer', PASSWORD);
+      expect(loginBody.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(loginBody)).toBe('FORBIDDEN');
+      expect(loginBody.data?.login?.accessToken).toBeUndefined();
+    });
+
+    it('旧客户选择启用未受管公司：按主线约定开通，且不写 customer_organization_id', async () => {
+      const input: RegisterInput = {
+        loginName: 'e2e_legacy_customer',
+        loginEmail: 'e2e_legacy_customer@example.com',
+        loginPassword: PASSWORD,
+        nickname: 'e2e_legacy_customer',
+        type: RegisterTypeEnum.CUSTOMER,
+        organizationId: legacyUnmanagedOrganizationId,
+      };
+
+      const body = await legacyRegister(input);
+      expect(body.errors).toBeUndefined();
+      const payload = body.data?.register;
+      expect(payload?.success).toBe(true);
+      expect(payload?.registrationStatus).toBe(RegistrationOutcomeStatus.REGISTERED);
+
+      const accountId = payload?.accountId;
+      expect(typeof accountId).toBe('number');
+      if (typeof accountId !== 'number') {
+        throw new Error(`旧入口客户注册未返回账号主键：${JSON.stringify(body)}`);
+      }
+
+      recordRegisteredAccountCreation(accountId, input, RegistrationOutcomeStatus.REGISTERED, {
+        webEntry: false,
+      });
+      await verifyRegisteredAccount(accountId);
+      await recordActiveMembership(
+        legacyUnmanagedOrganizationId,
+        accountId,
+        IdentityTypeEnum.CUSTOMER,
+      );
+
+      // 基线差异：旧入口沿用主线行为，不写可信公司归属
+      const userInfo = await userInfoRepo().findOneOrFail({ where: { accountId } });
+      expect(userInfo.customerOrganizationId ?? null).toBeNull();
+    });
+
+    it('Web 入口拒绝同一未受管公司：明确拒绝且零落库', async () => {
+      const loginEmail = 'e2e_web_unmanaged@example.com';
+      const body = await register({
+        loginName: 'e2e_web_unmanaged',
+        loginEmail,
+        loginPassword: PASSWORD,
+        nickname: 'e2e_web_unmanaged',
+        realName: 'E2E 工程师',
+        phone: '13800000000',
+        type: RegisterTypeEnum.ENGINEER,
+        organizationId: legacyUnmanagedOrganizationId,
+      });
+
+      expect(body.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(body)).toBe('BAD_USER_INPUT');
+      const account = await accountRepo().findOne({ where: { loginEmail } });
+      expect(account).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 受限会话本人资料写入白名单（RQ3）
+  // ---------------------------------------------------------------------------
+  describe('受限会话本人资料写入白名单', () => {
+    const RESTRICTED_ENGINEER = {
+      loginName: 'e2eengrestricted',
+      loginEmail: 'e2e.eng.restricted@example.com',
+    };
+    const UPDATE_MY_ACCOUNT_SETTINGS_MUTATION = `
+      mutation UpdateMyAccountSettings($input: UpdateMyAccountSettingsInput!) {
+        updateMyAccountSettings(input: $input) {
+          isUpdated
+          settings { loginName loginEmail nickname companyName phone contactEmail role status }
+        }
+      }
+    `;
+
+    type SettingsSnapshot = {
+      loginName: string | null;
+      loginEmail: string | null;
+      nickname: string;
+      companyName: string | null;
+      phone: string | null;
+      contactEmail: string | null;
+      customerOrganizationId: number | null;
+    };
+
+    let restrictedAccountId = 0;
+    let restrictedApplicationId = 0;
+    let restrictedToken = '';
+
+    /** 只读快照：账号凭据、本人资料与可信公司归属（都不应被越界写入改动） */
+    const readSnapshot = async (): Promise<SettingsSnapshot> => {
+      const account = await accountRepo().findOneOrFail({ where: { id: restrictedAccountId } });
+      const userInfo = await userInfoRepo().findOneOrFail({
+        where: { accountId: restrictedAccountId },
+      });
+      return {
+        loginName: account.loginName ?? null,
+        loginEmail: account.loginEmail ?? null,
+        nickname: userInfo.nickname,
+        companyName: userInfo.companyName ?? null,
+        phone: userInfo.phone ?? null,
+        contactEmail: userInfo.email ?? null,
+        customerOrganizationId: userInfo.customerOrganizationId ?? null,
+      };
+    };
+
+    const updateSettings = async (input: Record<string, unknown>) =>
+      await gql<{
+        updateMyAccountSettings?: { isUpdated: boolean; settings: SettingsSnapshot };
+      }>({
+        query: UPDATE_MY_ACCOUNT_SETTINGS_MUTATION,
+        variables: { input },
+        token: restrictedToken,
+      });
+
+    /** 越界请求后核验：本人资料、申请目标、有效成员与账号归属均保持原值 */
+    const expectNoSideEffects = async (before: SettingsSnapshot): Promise<void> => {
+      expect(await readSnapshot()).toEqual(before);
+      const detail = await adminDetail(adminToken, restrictedApplicationId);
+      expect(detail.errors).toBeUndefined();
+      expect(detail.data?.adminEngineerRegistrationDetail?.application.organizationId).toBe(
+        primaryOrganizationId,
+      );
+      expect(await membershipRepo().count({ where: { accountId: restrictedAccountId } })).toBe(0);
+    };
+
+    beforeAll(async () => {
+      const recorded = await registerEngineerAndRecord(RESTRICTED_ENGINEER);
+      restrictedAccountId = recorded.accountId;
+      restrictedApplicationId = recorded.applicationId;
+
+      // 普通登录仍被拒绝；显式允许受限会话后才签发令牌，并核对服务端限制结论
+      const plainLogin = await performLogin(RESTRICTED_ENGINEER.loginName, PASSWORD);
+      expect(errorCodeOf(plainLogin)).toBe('FORBIDDEN');
+
+      const loginBody = await gql<LoginPayload>({
+        query: LOGIN_MUTATION,
+        variables: {
+          input: {
+            loginName: RESTRICTED_ENGINEER.loginName,
+            loginPassword: PASSWORD,
+            type: LoginTypeEnum.PASSWORD,
+            audience: AudienceTypeEnum.DESKTOP,
+            allowRestrictedSession: true,
+          },
+        },
+      });
+      expect(loginBody.errors).toBeUndefined();
+      expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.ENGINEER_PENDING);
+      expect(loginBody.data?.login?.registrationOrganizationId).toBe(primaryOrganizationId);
+      restrictedToken = loginBody.data?.login?.accessToken ?? '';
+      expect(restrictedToken).not.toBe('');
+    });
+
+    it('越界字段与混传整体拒绝且零部分写入', async () => {
+      const before = await readSnapshot();
+      expect(before.companyName).toBeNull();
+
+      const rejectedInputs: Array<Record<string, unknown>> = [
+        { companyName: '复验另一个公司名称' },
+        { companyName: null },
+        { loginName: 'e2eengrestricted2' },
+        { loginEmail: 'e2e.eng.restricted2@example.com' },
+        // 合法昵称 + 非法公司混传：同样整体拒绝，昵称不得被写入
+        { nickname: 'E2E 混传昵称', companyName: '复验另一个公司名称' },
+      ];
+
+      for (const input of rejectedInputs) {
+        const body = await updateSettings(input);
+        expect(errorCodeOf(body)).toBe('FORBIDDEN');
+        await expectNoSideEffects(before);
+      }
+    });
+
+    it('获准字段（昵称／电话／联系邮箱）可写入并在回读时一致', async () => {
+      const before = await readSnapshot();
+      const body = await updateSettings({
+        nickname: 'E2E 受限昵称',
+        phone: '13900000000',
+        contactEmail: 'e2e.eng.restricted.contact@example.com',
+      });
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.updateMyAccountSettings?.isUpdated).toBe(true);
+      const settings = body.data?.updateMyAccountSettings?.settings;
+      expect(settings?.nickname).toBe('E2E 受限昵称');
+      expect(settings?.phone).toBe('13900000000');
+      expect(settings?.contactEmail).toBe('e2e.eng.restricted.contact@example.com');
+      // 只读字段不受影响
+      expect(settings?.companyName ?? null).toBe(before.companyName);
+      expect(settings?.loginName).toBe(before.loginName);
+      expect(settings?.loginEmail).toBe(before.loginEmail);
+
+      expect(await readSnapshot()).toEqual({
+        ...before,
+        nickname: 'E2E 受限昵称',
+        phone: '13900000000',
+        contactEmail: 'e2e.eng.restricted.contact@example.com',
+      });
+      // 本人获准字段的写入属刻意行为：同步清理台账预期事实，避免收尾预检误判为归属漂移
+      updateOwnedExpectation(ownership, 'account', restrictedAccountId, {
+        nickname: 'E2E 受限昵称',
+        userInfoEmail: 'e2e.eng.restricted.contact@example.com',
+      });
+      const detail = await adminDetail(adminToken, restrictedApplicationId);
+      expect(detail.data?.adminEngineerRegistrationDetail?.application.organizationId).toBe(
+        primaryOrganizationId,
+      );
+      expect(await membershipRepo().count({ where: { accountId: restrictedAccountId } })).toBe(0);
+    });
+
+    it('伪造角色、管理员等级、公司 ID 与目标账号字段被拒绝且零写入', async () => {
+      const before = await readSnapshot();
+      const body = await updateSettings({
+        nickname: 'E2E 伪造字段昵称',
+        role: IdentityTypeEnum.SUPER_ADMIN,
+        adminLevel: 1,
+        customerOrganizationId: peerOrganizationId,
+        accountId: adminAccountId,
+      });
+
+      // Schema 层拒绝未知输入字段：请求不进入用例，不产生任何写入
+      expect(body.errors?.length ?? 0).toBeGreaterThan(0);
+      await expectNoSideEffects(before);
+      expect((await readSnapshot()).nickname).toBe(before.nickname);
     });
   });
 

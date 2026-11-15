@@ -130,6 +130,34 @@ describe('useAccountSettings 读取状态机', () => {
     expect(console.error).toHaveBeenCalledWith(expect.any(String), guardError);
   });
 
+  it('enabled=false 时不发起读取，reload 亦不触发；重新启用后按当前事实加载', async () => {
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useAccountSettings({ enabled }),
+      { initialProps: { enabled: false } },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.state).toEqual({ status: 'loading' });
+
+    act(() => {
+      result.current.reload();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    rerender({ enabled: true });
+
+    await waitFor(() =>
+      expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('reload 可从 failed 恢复到 ready', async () => {
     fetchMock.mockReset();
     fetchMock.mockRejectedValueOnce(new GraphQLIngressError({ type: 'http', message: '500' }));

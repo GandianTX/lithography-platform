@@ -1,6 +1,7 @@
 // src/adapters/api/graphql/third-party-auth/third-party-auth.resolver.ts
 
 import { JwtPayload } from '@app-types/jwt.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import {
   ThirdPartyLoginProviderEnum,
   ThirdPartyProviderEnum,
@@ -14,6 +15,7 @@ import { LoginResult } from '@src/adapters/api/graphql/account/dto/login-result.
 import { UserInfoDTO } from '@src/adapters/api/graphql/account/dto/user-info.dto';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { SessionRestrictionGuard } from '@src/adapters/api/graphql/guards/session-restriction.guard';
 import { BindThirdPartyInput } from '@src/adapters/api/graphql/third-party-auth/dto/bind-third-party.input';
 import { GenerateWeappQrcodeInput } from '@src/adapters/api/graphql/third-party-auth/dto/generate-weapp-qrcode.input';
 import { GenerateWeappQrcodeResultDTO } from '@src/adapters/api/graphql/third-party-auth/dto/generate-weapp-qrcode.result';
@@ -76,6 +78,12 @@ export class ThirdPartyAuthResolver {
       accountId: result.accountId,
       role: result.role,
       userInfo,
+      restriction: result.restriction ?? SessionRestriction.NONE,
+      adminLevel: result.adminLevel ?? null,
+      customerOrganizationId: result.customerOrganizationId ?? null,
+      engineerOrganizationId: result.engineerOrganizationId ?? null,
+      adminOrganizationId: result.adminOrganizationId ?? null,
+      registrationOrganizationId: result.registrationOrganizationId ?? null,
     };
   }
 
@@ -98,7 +106,7 @@ export class ThirdPartyAuthResolver {
    * @returns 绑定后的第三方认证信息
    * @throws HttpException 当绑定冲突时抛出异常
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Mutation(() => ThirdPartyAuthDTO, { description: '绑定第三方账户' })
   async bindThirdParty(
     @Args('input') input: BindThirdPartyInput,
@@ -130,7 +138,7 @@ export class ThirdPartyAuthResolver {
    * @returns 解绑操作是否成功
    * @throws HttpException 当绑定记录不存在时抛出异常
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Mutation(() => Boolean, { description: '解绑第三方账户' })
   async unbindThirdParty(
     @Args('input') input: UnbindThirdPartyInput,
@@ -149,7 +157,7 @@ export class ThirdPartyAuthResolver {
    * @param user 当前登录用户信息 (通过 JWT 认证获取)
    * @returns 第三方绑定列表
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Query(() => [ThirdPartyAuthDTO], { description: '获取我的第三方绑定列表' })
   async myThirdPartyAuths(@currentUser() user: JwtPayload): Promise<ThirdPartyAuthDTO[]> {
     const records = await this.getThirdPartyAuthsUsecase.execute({ accountId: user.sub });

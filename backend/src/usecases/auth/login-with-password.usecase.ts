@@ -1,9 +1,10 @@
 // src/usecases/auth/login-with-password.usecase.ts
 
 import { EnrichedLoginResult, LoginWarningType } from '@app-types/auth/login-flow.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { JwtPayload } from '@app-types/jwt.types';
-import { AccountStatus } from '@app-types/models/account.types';
 import { AuthLoginModel } from '@app-types/models/auth.types';
+import { evaluateSessionStatusCombination } from '@core/account/policy/session-restriction.policy';
 import { AUTH_ERROR, DomainError, isDomainError } from '@core/common/errors';
 import { Injectable } from '@nestjs/common';
 import { TokenHelper } from '@modules/auth/token.helper';
@@ -13,6 +14,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { DecideLoginRoleUsecase } from './decide-login-role.usecase';
 import { EnrichLoginWithIdentityUsecase } from './enrich-login-with-identity.usecase';
 import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
+import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.usecase';
 
 /**
  * 密码登录用例
@@ -22,6 +24,7 @@ import { ExecuteLoginFlowUsecase } from './execute-login-flow.usecase';
 export class LoginWithPasswordUsecase {
   constructor(
     private readonly accountQueryService: AccountQueryService,
+    private readonly resolveSessionRestrictionUsecase: ResolveSessionRestrictionUsecase,
     private readonly executeLoginFlowUsecase: ExecuteLoginFlowUsecase,
     private readonly decideLoginRoleUsecase: DecideLoginRoleUsecase,
     private readonly enrichLoginWithIdentityUsecase: EnrichLoginWithIdentityUsecase,
@@ -41,16 +44,23 @@ export class LoginWithPasswordUsecase {
     loginPassword,
     ip,
     audience,
+    allowRestrictedSession,
   }: AuthLoginModel): Promise<EnrichedLoginResult> {
     try {
-      // Validate: 验证登录凭据
-      const account = await this.validateLoginCredentials({ loginName, loginPassword });
+      // Validate: 验证登录凭据（同时计算会话限制状态）
+      const loginContext = await this.validateLoginCredentials({
+        loginName,
+        loginPassword,
+        allowRestrictedSession,
+      });
+      const account = loginContext.account;
 
-      // Execute: 执行基础登录流程
+      // Execute: 执行基础登录流程（受限会话允许 PENDING 账号继续签发令牌）
       const basicResult = await this.executeLoginFlowUsecase.execute({
         accountId: account.id,
         ip,
         audience,
+        allowPendingAccount: loginContext.allowPendingAccount,
       });
 
       // Decide: 决策最终角色
@@ -100,6 +110,12 @@ export class LoginWithPasswordUsecase {
         accessGroup: basicResult.accessGroup,
         account: basicResult.account,
         userInfo: basicResult.userInfo,
+        restriction: loginContext.restriction,
+        adminLevel: loginContext.adminLevel,
+        customerOrganizationId: loginContext.customerOrganizationId,
+        engineerOrganizationId: loginContext.engineerOrganizationId,
+        adminOrganizationId: loginContext.adminOrganizationId,
+        registrationOrganizationId: loginContext.registrationOrganizationId,
         options: { includeIdentity: true },
       });
 
@@ -125,22 +141,56 @@ export class LoginWithPasswordUsecase {
   }
 
   /**
-   * 验证登录凭据
-   * @param params 登录参数
-   * @returns 验证通过的账户信息
+   * 验证登录凭据，并计算会话限制状态。
+   *
+   * 放行条件（与 `ValidateAccessTokenSessionUsecase` 的每请求复核口径一致）：
+   * - 账号 `ACTIVE` 且资料 `ACTIVE`、无限制 → 正常会话；
+   * - 账号 `/` 资料为 `PENDING` 且存在明确限制（必须改密 / 工程师待审 / 工程师拒绝），
+   *   并且调用方显式传入 `allowRestrictedSession: true` → 受限会话；
+   * - 其余状态（封禁、删除、暂停、长期不活跃等）即使存在限制也一律拒绝——
+   *   否则会签发一个「能登录但每个请求都被复核拒绝」的无效令牌；
+   * - 其余情况维持既有 `ACCOUNT_INACTIVE` 失败口径。
+   *
+   * @param params 登录名、密码与受限会话开关
+   * @returns 凭据快照 + 限制状态 + 身份扩展字段
    */
   private async validateLoginCredentials({
     loginName,
     loginPassword,
-  }: Pick<AuthLoginModel, 'loginName' | 'loginPassword'>) {
+    allowRestrictedSession,
+  }: Pick<AuthLoginModel, 'loginName' | 'loginPassword' | 'allowRestrictedSession'>) {
     // 查找账户（支持登录名或邮箱）
     const account = await this.accountQueryService.findCredentialByLoginName({ loginName });
     if (!account) {
       throw new DomainError(AUTH_ERROR.ACCOUNT_NOT_FOUND, '账户不存在');
     }
 
-    // 检查账户状态
-    if (account.status !== AccountStatus.ACTIVE) {
+    // 读取当前授权事实并计算限制状态（不改写任何数据库字段）。申请、成员与组织事实
+    // 由统一用例读取，保证登录签发与每请求复核口径一致。
+    const snapshot = await this.accountQueryService.findSessionAuthoritySnapshot({
+      accountId: account.id,
+    });
+    const resolution = await this.resolveSessionRestrictionUsecase.execute({
+      accountId: account.id,
+      snapshot,
+    });
+    const restriction = resolution.restriction;
+
+    const isRestrictedSessionAllowed =
+      allowRestrictedSession === true && restriction !== SessionRestriction.NONE;
+
+    // 状态放行与每请求复核同源（共用 core 纯策略）：仅 `ACTIVE` / `ACTIVE` 正常放行、
+    // `PENDING` / `PENDING` 在「存在明确限制 + 显式允许受限会话」时放行；单边状态不一致、
+    // 缺行，以及封禁 / 删除 / 暂停 / 长期不活跃一律在这里失败关闭，不再签发随后必被复核
+    // 拒绝的令牌。
+    const statusDecision = evaluateSessionStatusCombination({
+      restriction,
+      allowRestrictedSession: allowRestrictedSession === true,
+      accountStatus: snapshot.accountStatus,
+      userState: snapshot.userInfo?.userState ?? null,
+    });
+
+    if (!statusDecision.allowed) {
       throw new DomainError(AUTH_ERROR.ACCOUNT_INACTIVE, '账户未激活或已被禁用');
     }
 
@@ -155,6 +205,15 @@ export class LoginWithPasswordUsecase {
       throw new DomainError(AUTH_ERROR.INVALID_PASSWORD, '密码错误');
     }
 
-    return account;
+    return {
+      account,
+      restriction,
+      allowPendingAccount: isRestrictedSessionAllowed,
+      adminLevel: snapshot.adminLevel,
+      customerOrganizationId: snapshot.userInfo?.customerOrganizationId ?? null,
+      engineerOrganizationId: resolution.engineerOrganizationId,
+      adminOrganizationId: resolution.adminOrganizationId,
+      registrationOrganizationId: resolution.latestEngineerApplication?.organizationId ?? null,
+    };
   }
 }

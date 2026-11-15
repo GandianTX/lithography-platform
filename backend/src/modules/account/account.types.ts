@@ -21,6 +21,12 @@ export interface AccountCredentialSnapshot {
   readonly status: AccountStatus;
   readonly loginPassword: string;
   readonly createdAt: Date;
+  /**
+   * 是否被要求先修改密码（`base_user_account.must_change_password`）。
+   * 凭据式入口据此拒绝「改密前」的其他操作，口径与 JWT 会话的
+   * `MUST_CHANGE_PASSWORD` 限制一致。
+   */
+  readonly mustChangePassword: boolean;
 }
 
 /**
@@ -314,10 +320,16 @@ export interface AccountSessionAuthoritySnapshot {
   readonly accountId: number;
   readonly accountStatus: AccountStatus | null;
   readonly identityHint: string | null;
+  /** `base_user_account.must_change_password`（账号行缺失时为 false） */
+  readonly mustChangePassword: boolean;
+  /** `base_user_account.admin_level`（1 / 2 / null） */
+  readonly adminLevel: number | null;
   readonly userInfo: {
     readonly userState: UserState | null;
     readonly accessGroup: ReadonlyArray<IdentityTypeEnum> | null;
     readonly metaDigest: ReadonlyArray<IdentityTypeEnum> | null;
+    /** `base_user_info.customer_organization_id`（可信公司归属） */
+    readonly customerOrganizationId: number | null;
   } | null;
 }
 

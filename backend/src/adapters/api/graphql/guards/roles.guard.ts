@@ -1,17 +1,20 @@
 // src/adapters/api/graphql/guards/roles.guard.ts
 
 import { JwtPayload } from '@app-types/jwt.types';
+import { type AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
 import { DomainError, JWT_ERROR, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { GqlContextType, GqlExecutionContext } from '@nestjs/graphql';
 import { Request } from 'express';
 
+import { assertSessionRestrictionAllowsBusiness } from './session-restriction.assert';
+
 /**
  * GraphQL 上下文类型定义
  */
 interface GraphQLContext {
-  req: Request & { user?: JwtPayload };
+  req: Request & { user?: AuthenticatedSessionUser };
 }
 
 // 注意：角色装饰器统一定义在 src/adapters/api/graphql/decorators/roles.decorator.ts
@@ -28,6 +31,10 @@ export class RolesGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const requiredRoles = this.getRequiredRoles(context);
     const user = this.getAuthenticatedUser(context, requiredRoles);
+
+    // 受限会话（必须改密 / 工程师待审 / 工程师拒绝）只允许访问受限页所需的
+    // 改密与自身会话入口，任何角色业务入口一律失败关闭
+    assertSessionRestrictionAllowsBusiness(user);
 
     if (!requiredRoles) {
       return true;
@@ -46,9 +53,9 @@ export class RolesGuard implements CanActivate {
   /**
    * 获取请求对象（支持 GraphQL 和 REST）
    */
-  private getRequest(context: ExecutionContext): Request & { user?: JwtPayload } {
+  private getRequest(context: ExecutionContext): Request & { user?: AuthenticatedSessionUser } {
     if (context.getType() === 'http') {
-      return context.switchToHttp().getRequest<Request & { user?: JwtPayload }>();
+      return context.switchToHttp().getRequest<Request & { user?: AuthenticatedSessionUser }>();
     }
 
     if (context.getType<GqlContextType>() === 'graphql') {
@@ -79,7 +86,7 @@ export class RolesGuard implements CanActivate {
   private getAuthenticatedUser(
     context: ExecutionContext,
     requiredRoles: string[] | undefined,
-  ): JwtPayload {
+  ): AuthenticatedSessionUser {
     const request = this.getRequest(context);
     const user = request.user;
     if (!user) {

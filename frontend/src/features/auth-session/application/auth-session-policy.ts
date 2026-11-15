@@ -10,7 +10,9 @@ import {
 } from '../infrastructure/auth-return-to-url';
 
 import {
+  AUTH_SESSION_RESTRICTIONS,
   AUTH_SESSION_ROLES,
+  type AuthSessionRestriction,
   type AuthSessionRole,
   type AuthSessionSnapshot,
   type AuthSessionUserSummary,
@@ -20,6 +22,18 @@ import {
 
 export function isAuthSessionRole(value: unknown): value is AuthSessionRole {
   return typeof value === 'string' && (AUTH_SESSION_ROLES as readonly string[]).includes(value);
+}
+
+export function isAuthSessionRestriction(value: unknown): value is AuthSessionRestriction {
+  return (
+    typeof value === 'string' && (AUTH_SESSION_RESTRICTIONS as readonly string[]).includes(value)
+  );
+}
+
+// 正整数身份字段（adminLevel / customerOrganizationId）的宽容归一：缺失、
+// null 或非法值一律回落 null——它们是展示性事实，不参与会话合法性判定。
+function normalizeNullableIdentityId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function normalizeUserSummary(
@@ -69,6 +83,14 @@ export function createAuthSessionSnapshot(input: EstablishAuthSessionInput): Aut
   return {
     accessToken,
     accountId,
+    // 限制状态缺省 NONE、身份扩展字段缺省 null：仅携带最小身份的调用方
+    // （既有测试夹具 / 旧调用点）建立的是正常会话
+    adminLevel: normalizeNullableIdentityId(input.adminLevel),
+    customerOrganizationId: normalizeNullableIdentityId(input.customerOrganizationId),
+    engineerOrganizationId: normalizeNullableIdentityId(input.engineerOrganizationId),
+    adminOrganizationId: normalizeNullableIdentityId(input.adminOrganizationId),
+    registrationOrganizationId: normalizeNullableIdentityId(input.registrationOrganizationId),
+    restriction: isAuthSessionRestriction(input.restriction) ? input.restriction : 'NONE',
     role,
     userInfo: normalizeUserSummary(input.userInfo, role),
   };
@@ -76,6 +98,12 @@ export function createAuthSessionSnapshot(input: EstablishAuthSessionInput): Aut
 export function createAuthSessionView(session: AuthSessionSnapshot): AuthSessionView {
   return {
     accountId: session.accountId,
+    adminLevel: session.adminLevel,
+    customerOrganizationId: session.customerOrganizationId,
+    engineerOrganizationId: session.engineerOrganizationId,
+    adminOrganizationId: session.adminOrganizationId,
+    registrationOrganizationId: session.registrationOrganizationId,
+    restriction: session.restriction,
     role: session.role,
     userInfo: session.userInfo,
   };
@@ -86,6 +114,10 @@ const AUTH_SESSION_ROLE_HOME_PATHS: Record<AuthSessionRole, string> = {
   ENGINEER: '/engineer',
   SUPER_ADMIN: '/admin',
 };
+
+// 受限会话（必须改密 / 工程师待审 / 工程师拒绝）的唯一落地页；非受限会话
+// 访问该路径时回到自己的角色主页
+export const AUTH_SESSION_RESTRICTED_PATH = '/restricted';
 
 // SUPER_ADMIN 按后端角色层级继承 ENGINEER 与 CUSTOMER 的访问能力，见
 // backend/docs/api/auth-session-current.md 与 docs/development/task-acceptance.md。
@@ -137,7 +169,16 @@ export function isAuthSessionRoleAllowedAt(role: AuthSessionRole, path: string):
   );
 }
 
-export type AuthSessionRoleCarrier = Pick<AuthSessionSnapshot, 'role'>;
+export type AuthSessionRoleCarrier = Pick<AuthSessionSnapshot, 'role'> & {
+  /** 可选：仅做路由决策的既有调用方可不携带，缺省视为正常会话 */
+  restriction?: AuthSessionRestriction;
+};
+
+// 受限会话判定：restriction 非 NONE 时只允许访问 /restricted。
+// 未携带 restriction 的载体（策略函数的既有调用点）按正常会话处理。
+export function isAuthSessionRestricted(carrier: AuthSessionRoleCarrier): boolean {
+  return carrier.restriction !== undefined && carrier.restriction !== 'NONE';
+}
 
 // 登录/守卫共用的入口路径决策唯一实现；resolveLoginRouteRedirect、
 // resolveEntryRouteRedirect 与 app/router 的登录后跳转都委托这里，
@@ -146,6 +187,11 @@ export function resolveAuthSessionEntryPath(
   session: AuthSessionRoleCarrier,
   returnToCandidate?: unknown,
 ): string {
+  // 受限会话不看 returnTo：一律落到受限页，避免「登录后进入无权页面」
+  if (isAuthSessionRestricted(session)) {
+    return AUTH_SESSION_RESTRICTED_PATH;
+  }
+
   const safeReturnTo = resolveSafeReturnTo(returnToCandidate);
 
   if (safeReturnTo && isAuthSessionRoleAllowedAt(session.role, extractUrlPathname(safeReturnTo))) {
@@ -174,7 +220,23 @@ export function resolveProtectedRouteRedirect(
     return composeLoginRedirectPath(requestedPath);
   }
 
-  if (!isAuthSessionRoleAllowedAt(session.role, extractUrlPathname(requestedPath))) {
+  const requestedPathname = extractUrlPathname(requestedPath);
+  const isRequestingRestrictedPath = isAuthSessionRolePathAllowed(
+    requestedPathname,
+    AUTH_SESSION_RESTRICTED_PATH,
+  );
+
+  // 受限会话：只放行受限落地页，其余受保护路由一律收回 /restricted
+  if (isAuthSessionRestricted(session)) {
+    return isRequestingRestrictedPath ? null : AUTH_SESSION_RESTRICTED_PATH;
+  }
+
+  // 非受限会话访问受限页：回自己的角色主页（该页只属于受限会话）
+  if (isRequestingRestrictedPath) {
+    return resolveAuthSessionHomePath(session.role);
+  }
+
+  if (!isAuthSessionRoleAllowedAt(session.role, requestedPathname)) {
     return resolveAuthSessionHomePath(session.role);
   }
 

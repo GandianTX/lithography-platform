@@ -1,5 +1,6 @@
 // src/modules/auth/queries/login-result.query.service.ts
 import { BasicLoginResult, EnrichedLoginResult } from '@app-types/auth/login-flow.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { Injectable } from '@nestjs/common';
 import { LoginUserDataCollection } from './login-bootstrap.query.service';
@@ -63,6 +64,12 @@ export class LoginResultQueryService {
     warnings: string[];
     includeAccount: boolean;
     includeUserInfo: boolean;
+    restriction?: SessionRestriction;
+    adminLevel?: number | null;
+    customerOrganizationId?: number | null;
+    engineerOrganizationId?: number | null;
+    adminOrganizationId?: number | null;
+    registrationOrganizationId?: number | null;
   }): EnrichedLoginResult {
     const {
       tokens,
@@ -75,6 +82,12 @@ export class LoginResultQueryService {
       warnings,
       includeAccount,
       includeUserInfo,
+      restriction = SessionRestriction.NONE,
+      adminLevel = null,
+      customerOrganizationId = null,
+      engineerOrganizationId = null,
+      adminOrganizationId = null,
+      registrationOrganizationId = null,
     } = params;
     return {
       accessToken: tokens.accessToken,
@@ -83,6 +96,12 @@ export class LoginResultQueryService {
       role: finalRole,
       identity,
       accessGroup,
+      restriction,
+      adminLevel,
+      customerOrganizationId,
+      engineerOrganizationId,
+      adminOrganizationId,
+      registrationOrganizationId,
       ...(includeAccount && { account }),
       ...(includeUserInfo && { userInfo }),
       ...(warnings.length > 0 && { warnings }),

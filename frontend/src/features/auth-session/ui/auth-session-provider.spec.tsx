@@ -48,6 +48,12 @@ describe('AuthSessionProvider', () => {
     const probeState = readProbeState();
     expect(probeState.session).toEqual({
       accountId: 900101,
+      adminLevel: null,
+      customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
+      restriction: 'NONE',
       role: 'ENGINEER',
       userInfo: null,
     });

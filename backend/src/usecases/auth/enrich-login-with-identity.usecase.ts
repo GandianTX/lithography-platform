@@ -6,6 +6,7 @@ import {
   IEnrichLoginWithIdentityUsecase,
   LoginWarningType,
 } from '@app-types/auth/login-flow.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { LoginResultQueryService } from '@modules/auth/queries/login-result.query.service';
 import { Injectable } from '@nestjs/common';
@@ -21,7 +22,21 @@ export class EnrichLoginWithIdentityUsecase implements IEnrichLoginWithIdentityU
   }
 
   execute(input: EnrichLoginWithIdentityInput): Promise<EnrichedLoginResult> {
-    const { tokens, accountId, finalRole, accessGroup, account, userInfo, options = {} } = input;
+    const {
+      tokens,
+      accountId,
+      finalRole,
+      accessGroup,
+      account,
+      userInfo,
+      restriction,
+      adminLevel,
+      customerOrganizationId,
+      engineerOrganizationId,
+      adminOrganizationId,
+      registrationOrganizationId,
+      options = {},
+    } = input;
     const { includeAccount = true, includeUserInfo = true } = options;
     const warnings: LoginWarningType[] = [];
 
@@ -36,6 +51,12 @@ export class EnrichLoginWithIdentityUsecase implements IEnrichLoginWithIdentityU
       warnings,
       includeAccount,
       includeUserInfo,
+      restriction: restriction ?? SessionRestriction.NONE,
+      adminLevel: adminLevel ?? null,
+      customerOrganizationId: customerOrganizationId ?? null,
+      engineerOrganizationId: engineerOrganizationId ?? null,
+      adminOrganizationId: adminOrganizationId ?? null,
+      registrationOrganizationId: registrationOrganizationId ?? null,
     });
 
     this.logEnrichmentCompletion(accountId, finalRole, warnings);

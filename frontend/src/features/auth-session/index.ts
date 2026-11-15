@@ -2,15 +2,19 @@
 
 export type {
   AuthSessionIdentity,
+  AuthSessionRestriction,
   AuthSessionRole,
   AuthSessionUserSummary,
   AuthSessionView,
   AuthSessionViewState,
 } from './application/auth-session.types';
-export { AUTH_SESSION_ROLES } from './application/auth-session.types';
+export { AUTH_SESSION_RESTRICTIONS, AUTH_SESSION_ROLES } from './application/auth-session.types';
 export {
+  AUTH_SESSION_RESTRICTED_PATH,
   type AuthSessionRoleCarrier,
   isAuthSessionExpiredReason,
+  isAuthSessionRestricted,
+  isAuthSessionRestriction,
   isAuthSessionRole,
   isAuthSessionRoleAllowedAt,
   resolveAuthSessionEntryPath,
@@ -22,11 +26,12 @@ export {
   resolveSessionExpiredLoginPath,
 } from './application/auth-session-policy';
 export {
+  clearSessionAfterPasswordChange,
   getAuthSessionAccessToken,
   getCurrentAuthSession,
   hasCurrentAuthSession,
   logoutAuthSession,
-  logoutAuthSessionIfIdentityMatches,
+  refreshCurrentAuthSessionIdentity,
   sampleCurrentAuthSessionIdentity,
   updateCurrentAuthSessionNickname,
 } from './auth-session-entry';

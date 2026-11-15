@@ -4,6 +4,21 @@ export const AUTH_SESSION_ROLES = ['SUPER_ADMIN', 'ENGINEER', 'CUSTOMER'] as con
 
 export type AuthSessionRole = (typeof AUTH_SESSION_ROLES)[number];
 
+/**
+ * 会话限制状态（与后端 SessionRestriction 同口径）：NONE 为正常会话，
+ * 其余值只允许访问受限落地页 `/restricted`。限制状态由后端按数据库事实
+ * 每请求重算，前端仅据此做路由收口，不作为授权依据。
+ */
+export const AUTH_SESSION_RESTRICTIONS = [
+  'NONE',
+  'MUST_CHANGE_PASSWORD',
+  'ENGINEER_PENDING',
+  'ENGINEER_REJECTED',
+  'ENGINEER_INACTIVE',
+] as const;
+
+export type AuthSessionRestriction = (typeof AUTH_SESSION_RESTRICTIONS)[number];
+
 export type AuthSessionUserSummary = {
   accessGroup: readonly AuthSessionRole[];
   /**
@@ -18,11 +33,47 @@ export type AuthSessionUserSummary = {
 export type AuthSessionSnapshot = {
   accessToken: string;
   accountId: number;
+  /**
+   * 管理员等级（非管理员为 null）与客户公司归属（无归属为 null）。
+   * 二者均为身份展示/上下文事实，不参与会话合法性判定。
+   */
+  adminLevel: number | null;
+  customerOrganizationId: number | null;
+  /** 唯一有效 ENGINEER 成员组织（0 条或多条为 null） */
+  engineerOrganizationId: number | null;
+  /** 唯一有效 SUPER_ADMIN 成员组织（0 条或多条为 null） */
+  adminOrganizationId: number | null;
+  /**
+   * 最新工程师申请的目标公司：仅用于受限页展示「申请了哪家公司」，
+   * 不授予该组织的任何业务权限。
+   */
+  registrationOrganizationId: number | null;
+  /** 会话限制状态：非 NONE 时前端只放行 `/restricted` */
+  restriction: AuthSessionRestriction;
   role: AuthSessionRole;
   userInfo: AuthSessionUserSummary | null;
 };
 
-export type EstablishAuthSessionInput = AuthSessionSnapshot;
+/**
+ * 建立会话的入参：身份扩展字段设计为可选，兼容仅携带最小身份的既有调用方
+ * 与测试夹具；缺省值分别为 NONE / null。
+ */
+export type EstablishAuthSessionInput = Omit<
+  AuthSessionSnapshot,
+  | 'adminLevel'
+  | 'customerOrganizationId'
+  | 'engineerOrganizationId'
+  | 'adminOrganizationId'
+  | 'registrationOrganizationId'
+  | 'restriction'
+> & {
+  adminLevel?: number | null;
+  customerOrganizationId?: number | null;
+  engineerOrganizationId?: number | null;
+  adminOrganizationId?: number | null;
+  registrationOrganizationId?: number | null;
+  restriction?: AuthSessionRestriction;
+};
 
 export type AuthSessionState =
   | {

@@ -16,8 +16,65 @@ describe('decodeAuthSessionPayload', () => {
     ).toEqual({
       accessToken: 'access-token',
       accountId: 900101,
+      adminLevel: null,
+      customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
+      restriction: 'NONE',
       role: 'ENGINEER',
       userInfo: null,
+    });
+  });
+
+  it('decodes restricted-session facts and defaults unknown values safely', () => {
+    expect(
+      decodeAuthSessionPayload({
+        accessToken: 'access-token',
+        accountId: 900101,
+        adminLevel: 2,
+        customerOrganizationId: 4401,
+        engineerOrganizationId: 7701,
+        adminOrganizationId: 8801,
+        registrationOrganizationId: 6601,
+        restriction: 'MUST_CHANGE_PASSWORD',
+        role: 'ENGINEER',
+        userInfo: null,
+      }),
+    ).toEqual({
+      accessToken: 'access-token',
+      accountId: 900101,
+      adminLevel: 2,
+      customerOrganizationId: 4401,
+      engineerOrganizationId: 7701,
+      adminOrganizationId: 8801,
+      registrationOrganizationId: 6601,
+      restriction: 'MUST_CHANGE_PASSWORD',
+      role: 'ENGINEER',
+      userInfo: null,
+    });
+
+    // 未知限制状态与非法身份扩展字段：回落 NONE / null，不拒绝整份会话
+    expect(
+      decodeAuthSessionPayload({
+        accessToken: 'access-token',
+        accountId: 900101,
+        adminLevel: '2',
+        customerOrganizationId: 0,
+        engineerOrganizationId: -1,
+        adminOrganizationId: '8801',
+        registrationOrganizationId: 0,
+        restriction: 'UNKNOWN',
+        role: 'ENGINEER',
+        userInfo: null,
+      }),
+    ).toMatchObject({
+      adminLevel: null,
+      customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
+      restriction: 'NONE',
     });
   });
 
@@ -36,6 +93,12 @@ describe('decodeAuthSessionPayload', () => {
     ).toEqual({
       accessToken: 'access-token',
       accountId: 900101,
+      adminLevel: null,
+      customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
+      restriction: 'NONE',
       role: 'ENGINEER',
       userInfo: {
         accessGroup: ['ENGINEER'],
@@ -66,6 +129,12 @@ describe('decodeAuthSessionPayload', () => {
       ).toEqual({
         accessToken: 'access-token',
         accountId: 900101,
+        adminLevel: null,
+        customerOrganizationId: null,
+        engineerOrganizationId: null,
+        adminOrganizationId: null,
+        registrationOrganizationId: null,
+        restriction: 'NONE',
         role: 'ENGINEER',
         userInfo: {
           accessGroup: ['ENGINEER'],

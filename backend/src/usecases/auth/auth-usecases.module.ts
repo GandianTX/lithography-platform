@@ -1,6 +1,7 @@
 // src/usecases/auth/auth-usecases.module.ts
 import { AuthModule } from '@modules/auth/auth.module';
 import { ThirdPartyAuthModule } from '@modules/third-party-auth/third-party-auth.module';
+import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { Module } from '@nestjs/common';
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { DecideLoginRoleUsecase } from '@src/usecases/auth/decide-login-role.usecase';
@@ -9,10 +10,11 @@ import { ExecuteLoginFlowUsecase } from '@src/usecases/auth/execute-login-flow.u
 import { LoginByAccountIdUsecase } from '@src/usecases/auth/login-by-account-id.usecase';
 import { LoginWithPasswordUsecase } from '@src/usecases/auth/login-with-password.usecase';
 import { LoginWithThirdPartyUsecase } from '@src/usecases/auth/login-with-third-party.usecase';
+import { ResolveSessionRestrictionUsecase } from '@src/usecases/auth/resolve-session-restriction.usecase';
 import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-access-token-session.usecase';
 
 @Module({
-  imports: [AuthModule, ThirdPartyAuthModule, AccountInstallerModule],
+  imports: [AuthModule, ThirdPartyAuthModule, AccountInstallerModule, LithographyModule],
   providers: [
     LoginWithPasswordUsecase,
     ExecuteLoginFlowUsecase,
@@ -20,6 +22,7 @@ import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-a
     LoginWithThirdPartyUsecase,
     DecideLoginRoleUsecase,
     EnrichLoginWithIdentityUsecase,
+    ResolveSessionRestrictionUsecase,
     ValidateAccessTokenSessionUsecase,
   ],
   exports: [
@@ -29,6 +32,7 @@ import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-a
     LoginWithThirdPartyUsecase,
     DecideLoginRoleUsecase,
     EnrichLoginWithIdentityUsecase,
+    ResolveSessionRestrictionUsecase,
     ValidateAccessTokenSessionUsecase,
   ],
 })

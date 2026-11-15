@@ -12,6 +12,7 @@ import {
 import { UserAccountDTO } from '@src/adapters/api/graphql/account/dto/user-account.dto';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { SessionRestrictionGuard } from '@src/adapters/api/graphql/guards/session-restriction.guard';
 import { GetAccountByIdUsecase } from '@src/usecases/account/get-account-by-id.usecase';
 import { ConsumeVerificationFlowUsecase } from '@src/usecases/verification/consume-verification-flow.usecase';
 
@@ -31,7 +32,7 @@ export class AccountResolver {
    * @param user 当前登录用户信息
    * @returns 账户详细信息
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Query(() => UserAccountDTO, { description: '根据 ID 查询账户详细信息' })
   async account(
     @Args() args: AccountArgs,

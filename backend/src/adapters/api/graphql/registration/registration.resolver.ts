@@ -1,7 +1,10 @@
 // src/adapters/api/graphql/registration/registration.resolver.ts
 import { ValidateInput } from '@adapters/api/graphql/common/validate-input.decorator';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
-import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
+import {
+  EngineerRegistrationApplicationStatus,
+  RegistrationEntryChannel,
+} from '@app-types/models/registration.types';
 import { mapJwtToUsecaseSession, type UsecaseSession } from '@app-types/auth/session.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { Args, Context, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
@@ -10,12 +13,16 @@ import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { MustChangePasswordGuard } from '@src/adapters/api/graphql/guards/must-change-password.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { UseGuards } from '@nestjs/common';
 import { GetAdminEngineerRegistrationDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-detail.usecase';
 import { GetEngineerRegistrationStatusUsecase } from '@src/usecases/registration/get-engineer-registration-status.usecase';
+import { GetMyEngineerRegistrationUsecase } from '@src/usecases/registration/get-my-engineer-registration.usecase';
 import { ListAdminEngineerRegistrationsUsecase } from '@src/usecases/registration/list-admin-engineer-registrations.usecase';
 import { ListRegistrationOrganizationsUsecase } from '@src/usecases/registration/list-registration-organizations.usecase';
+import { SearchRegistrationOrganizationsUsecase } from '@src/usecases/registration/search-registration-organizations.usecase';
+import { CheckRegistrationOrganizationNameUsecase } from '@src/usecases/registration/check-registration-organization-name.usecase';
 import { RegisterWithEmailUsecase } from '@usecases/registration/register-with-email.usecase';
 import { RegisterWithThirdPartyUsecase } from '@usecases/registration/register-with-third-party.usecase';
 import { ResubmitEngineerRegistrationUsecase } from '@src/usecases/registration/resubmit-engineer-registration.usecase';
@@ -33,11 +40,20 @@ import { toEngineerRegistrationApplicationPageDTO } from './dto/engineer-registr
 import { EngineerRegistrationCredentialInput } from './dto/engineer-registration-credential.input';
 import { EngineerRegistrationStatusDTO } from './dto/engineer-registration-status.dto';
 import {
+  MyEngineerRegistrationDTO,
+  toMyEngineerRegistrationDTO,
+} from './dto/my-engineer-registration.dto';
+import {
+  RegistrationOrganizationPageDTO,
+  toRegistrationOrganizationPageDTO,
+} from './dto/registration-organization-page.dto';
+import {
   RegistrationOrganizationDTO,
   toRegistrationOrganizationDTO,
 } from './dto/registration-organization.dto';
 import { RegisterResult } from './dto/register-result.dto';
 import { RegisterInput } from './dto/register.input';
+import { RegisterWebInput } from './dto/register-web.input';
 import { ResubmitEngineerRegistrationResultDTO } from './dto/resubmit-engineer-registration-result.dto';
 import { ResubmitEngineerRegistrationInput } from './dto/resubmit-engineer-registration.input';
 import { ReviewEngineerRegistrationInput } from './dto/review-engineer-registration.input';
@@ -50,7 +66,10 @@ export class RegistrationResolver {
     private readonly registerWithThirdParty: RegisterWithThirdPartyUsecase,
     private readonly getWeappPhoneUsecase: GetWeappPhoneUsecase,
     private readonly listRegistrationOrganizations: ListRegistrationOrganizationsUsecase,
+    private readonly searchRegistrationOrganizations: SearchRegistrationOrganizationsUsecase,
+    private readonly checkRegistrationOrganizationName: CheckRegistrationOrganizationNameUsecase,
     private readonly getEngineerRegistrationStatus: GetEngineerRegistrationStatusUsecase,
+    private readonly getMyEngineerRegistration: GetMyEngineerRegistrationUsecase,
     private readonly resubmitEngineerRegistrationUsecase: ResubmitEngineerRegistrationUsecase,
     private readonly listAdminEngineerRegistrations: ListAdminEngineerRegistrationsUsecase,
     private readonly getAdminEngineerRegistrationDetail: GetAdminEngineerRegistrationDetailUsecase,
@@ -60,46 +79,30 @@ export class RegistrationResolver {
     this.logger.setContext(RegistrationResolver.name);
   }
 
-  @Mutation(() => RegisterResult, { description: '用户注册' })
+  /**
+   * 旧注册入口（兼容既有客户端）。
+   *
+   * 请求形状与主线原行为一致：`organizationId` 必填（客户与工程师都必须选择组织），
+   * 组织资格只要求 `ACTIVE`；工程师姓名/电话可省略；不支持手填公司名称；
+   * 客户注册不写 `customer_organization_id`。V44 Web 规则由 `registerWeb` 承担。
+   */
+  @Mutation(() => RegisterResult, { description: '用户注册（旧入口，兼容既有客户端）' })
   @ValidateInput()
   async register(
     @Args('input') input: RegisterInput,
     @Context() context: { req: Request },
   ): Promise<RegisterResult> {
-    // 只传递 usecase 关心的"扁平请求形状"，避免把 Express 类型下沉到用例层
-    const req = context?.req;
-    const clientIp = (() => {
-      if (!req) return '';
-      const clean = (ip: string | undefined): string => ip?.replace(/^::ffff:/, '').trim() || '';
-      const xRealIp = req.headers['x-real-ip'];
-      if (xRealIp) {
-        const ip = Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
-        return clean(ip);
-      }
-      const xForwardedFor = req.headers['x-forwarded-for'];
-      if (xForwardedFor) {
-        const firstIp =
-          typeof xForwardedFor === 'string'
-            ? xForwardedFor.split(',')[0].trim()
-            : Array.isArray(xForwardedFor)
-              ? xForwardedFor[0].split(',')[0].trim()
-              : '';
-        if (firstIp) return firstIp;
-      }
-      if (req.ip) return req.ip;
-      return req.socket?.remoteAddress ?? '';
-    })();
-
     const result = await this.registerWithEmail.execute({
       loginName: input.loginName ?? null,
       loginEmail: input.loginEmail,
       loginPassword: input.loginPassword,
       nickname: input.nickname,
       type: input.type,
+      entryChannel: RegistrationEntryChannel.LEGACY,
       organizationId: input.organizationId,
       applicationNote: input.applicationNote,
       inviteToken: input.inviteToken,
-      clientIp,
+      clientIp: this.resolveClientIp(context),
     });
 
     return {
@@ -109,6 +112,74 @@ export class RegistrationResolver {
       registrationStatus: result.registrationStatus,
       applicationId: result.applicationId,
     };
+  }
+
+  /**
+   * V44 Web 注册入口（客户与工程师注册页使用）。
+   *
+   * 与旧 `register` 共用同一注册事务，但执行 Web 规则：工程师必填真实姓名与电话，
+   * 公司须为 `ACTIVE + 受管`；客户可选名单内公司或手填自家公司，二者互斥，
+   * 选择公司时写可信 `customer_organization_id`。
+   */
+  @Mutation(() => RegisterResult, {
+    name: 'registerWeb',
+    description: 'Web 用户注册（V44 规则：工程师姓名/电话必填，公司须启用且受管）',
+  })
+  @ValidateInput()
+  async registerWeb(
+    @Args('input') input: RegisterWebInput,
+    @Context() context: { req: Request },
+  ): Promise<RegisterResult> {
+    const result = await this.registerWithEmail.execute({
+      loginName: input.loginName ?? null,
+      loginEmail: input.loginEmail,
+      loginPassword: input.loginPassword,
+      nickname: input.nickname,
+      realName: input.realName ?? null,
+      phone: input.phone ?? null,
+      type: input.type,
+      entryChannel: RegistrationEntryChannel.WEB,
+      organizationId: input.organizationId ?? null,
+      organizationName: input.organizationName ?? null,
+      applicationNote: input.applicationNote,
+      inviteToken: input.inviteToken,
+      clientIp: this.resolveClientIp(context),
+    });
+
+    return {
+      success: result.success,
+      message: result.message,
+      accountId: result.accountId,
+      registrationStatus: result.registrationStatus,
+      applicationId: result.applicationId,
+    };
+  }
+
+  /**
+   * 提取客户端 IP：与既有注册入口口径一致，只传递 usecase 关心的扁平字符串，
+   * 避免把 Express 类型下沉到用例层。
+   */
+  private resolveClientIp(context: { req?: Request }): string {
+    const req = context?.req;
+    if (!req) return '';
+    const clean = (ip: string | undefined): string => ip?.replace(/^::ffff:/, '').trim() || '';
+    const xRealIp = req.headers['x-real-ip'];
+    if (xRealIp) {
+      const ip = Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
+      return clean(ip);
+    }
+    const xForwardedFor = req.headers['x-forwarded-for'];
+    if (xForwardedFor) {
+      const firstIp =
+        typeof xForwardedFor === 'string'
+          ? xForwardedFor.split(',')[0].trim()
+          : Array.isArray(xForwardedFor)
+            ? xForwardedFor[0].split(',')[0].trim()
+            : '';
+      if (firstIp) return firstIp;
+    }
+    if (req.ip) return req.ip;
+    return req.socket?.remoteAddress ?? '';
   }
 
   /**
@@ -138,16 +209,70 @@ export class RegistrationResolver {
   }
 
   /**
-   * 注册可选组织（公开只读）：两类注册都必须选择有效组织。
-   * 返回结果只含主键与名称；提交的 organizationId 仍由写入事务复核有效性。
+   * 注册可选组织（公开只读，兼容入口）：保持主线既有 `{ id name }` 数组契约。
+   *
+   * 返回全部 `ACTIVE` 组织，不分页、不区分受管资格；小程序注册与拒绝后凭据重提
+   * 等既有调用方无需改动请求即可通过 Schema 验证并得到原有响应。Web 注册页使用
+   * 独立的 `registrationOrganizationSearch`（受管公司 + 关键字 + 分页）。
+   * 提交的 organizationId 仍由写入事务按各自入口的资格复核。
    */
   @Query(() => [RegistrationOrganizationDTO], {
     name: 'registrationOrganizations',
-    description: '注册可选组织（公开，仅 ACTIVE 组织）',
+    description: '注册可选组织（公开，仅 ACTIVE 组织；兼容入口）',
   })
   async registrationOrganizations(): Promise<RegistrationOrganizationDTO[]> {
     const options = await this.listRegistrationOrganizations.execute();
     return options.map((option) => toRegistrationOrganizationDTO(option));
+  }
+
+  /**
+   * Web 注册公司候选检索（公开只读）：客户与工程师注册共用。
+   *
+   * 资格口径为 `status = ACTIVE AND is_managed_company = true`，支持名称关键字与
+   * OFFSET 分页；返回结果只含主键、名称与分页信息。提交的 organizationId 仍由写入
+   * 事务按同一资格复核，本查询结果不作为资格凭证。
+   */
+  @Query(() => RegistrationOrganizationPageDTO, {
+    name: 'registrationOrganizationSearch',
+    description: 'Web 注册可选公司检索（公开，仅启用且属于一级维护名单的公司）',
+  })
+  @ValidateInput()
+  async registrationOrganizationSearch(
+    @Args('pagination', { description: '分页参数（仅 OFFSET）' }) pagination: PaginationArgs,
+    @Args('keyword', {
+      type: () => String,
+      nullable: true,
+      description: '公司名称关键字；缺省表示不过滤',
+    })
+    keyword?: string,
+  ): Promise<RegistrationOrganizationPageDTO> {
+    const page = await this.searchRegistrationOrganizations.execute({
+      keyword: keyword ?? null,
+      pagination: mapGqlToCoreParams(pagination),
+    });
+    return toRegistrationOrganizationPageDTO(page);
+  }
+
+  /**
+   * 手填公司名精确同名提示（公开只读，返回最小布尔结果）。
+   *
+   * 与候选分页相互独立：按归一化后的完整名称精确比较启用且受管的公司，
+   * 不受候选首屏或已加载页影响。结果只用于界面提示「可能同名」，
+   * 不阻断手填注册，也不作为公司唯一性或资格凭证。
+   */
+  @Query(() => Boolean, {
+    name: 'registrationOrganizationNameExists',
+    description: '手填公司名精确同名提示（公开，仅启用且属于一级维护名单的公司）',
+  })
+  @ValidateInput()
+  async registrationOrganizationNameExists(
+    @Args('name', {
+      type: () => String,
+      description: '手填公司名称；按去首尾空白、合并连续空白、忽略大小写后精确比较',
+    })
+    name: string,
+  ): Promise<boolean> {
+    return this.checkRegistrationOrganizationName.execute({ name });
   }
 
   /**
@@ -179,6 +304,29 @@ export class RegistrationResolver {
       latest: result.latest === null ? null : toEngineerRegistrationApplicationDTO(result.latest),
       applications: toEngineerRegistrationApplicationPageDTO(result.applications),
     };
+  }
+
+  /**
+   * 受限会话读取本人最新一份工程师申请。
+   *
+   * 与 `myEngineerRegistrationStatus` 的分工：本入口使用已认证会话（每请求复核后的
+   * restriction），供 `/restricted` 页在待审 / 已拒绝 / 资格未生效时展示申请公司与
+   * 审核意见；账号主键只来自 Session，不接受任何账号或申请 ID 参数。
+   *
+   * 挂 `MustChangePasswordGuard` 而非 `SessionRestrictionGuard`：强制改密之外的限制态
+   * 必须能读到自己的申请，否则受限页无法解释「为什么被限制」。
+   */
+  @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
+  @Query(() => MyEngineerRegistrationDTO, {
+    name: 'myEngineerRegistration',
+    description: '本人最新工程师注册申请（受限会话）',
+  })
+  async myEngineerRegistration(
+    @currentUser() user: JwtPayload,
+  ): Promise<MyEngineerRegistrationDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const view = await this.getMyEngineerRegistration.execute({ session });
+    return toMyEngineerRegistrationDTO(view);
   }
 
   /**

@@ -5,7 +5,11 @@ import type {
   AuthSessionSnapshot,
   AuthSessionUserSummary,
 } from '../application/auth-session.types';
-import { createAuthSessionSnapshot, isAuthSessionRole } from '../application/auth-session-policy';
+import {
+  createAuthSessionSnapshot,
+  isAuthSessionRestriction,
+  isAuthSessionRole,
+} from '../application/auth-session-policy';
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object');
@@ -52,6 +56,12 @@ function decodeUserSummary(value: unknown): AuthSessionUserSummary | null | unde
   };
 }
 
+// 身份扩展字段的宽容解码：缺失/非法一律回落 null，由 snapshot 工厂再归一；
+// 限制状态缺失或未知时按 NONE 处理，非法值不可能被提升成受限/放行依据。
+function decodeNullableIdentityId(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
+}
+
 export function decodeAuthSessionPayload(value: unknown): AuthSessionSnapshot | null {
   if (
     !isRecord(value) ||
@@ -72,6 +82,12 @@ export function decodeAuthSessionPayload(value: unknown): AuthSessionSnapshot | 
     return createAuthSessionSnapshot({
       accessToken: value.accessToken,
       accountId: value.accountId,
+      adminLevel: decodeNullableIdentityId(value.adminLevel),
+      customerOrganizationId: decodeNullableIdentityId(value.customerOrganizationId),
+      engineerOrganizationId: decodeNullableIdentityId(value.engineerOrganizationId),
+      adminOrganizationId: decodeNullableIdentityId(value.adminOrganizationId),
+      registrationOrganizationId: decodeNullableIdentityId(value.registrationOrganizationId),
+      restriction: isAuthSessionRestriction(value.restriction) ? value.restriction : undefined,
       role: value.role,
       userInfo,
     });

@@ -64,6 +64,7 @@ import { EngineerResponseService } from './engineer-response.service';
 import { LocalRuntimeService } from './local-runtime.service';
 import { MaintenanceReportService } from './maintenance-report.service';
 import { OrganizationMembershipService } from './organization-membership.service';
+import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
 import { ReferenceDocumentService } from './reference-document.service';
 import { RepairRequestService } from './repair-request.service';
@@ -132,6 +133,7 @@ const LITHOGRAPHY_ENTITIES = [
     OrganizationMembershipQueryService,
     OrganizationQueryService,
     OrganizationMembershipService,
+    OrganizationService,
     EngineerRegistrationQueryService,
     EngineerRegistrationService,
     TrustedOrganizationContextQueryService,
@@ -158,6 +160,7 @@ const LITHOGRAPHY_ENTITIES = [
     OrganizationMembershipQueryService,
     OrganizationQueryService,
     OrganizationMembershipService,
+    OrganizationService,
     EngineerRegistrationQueryService,
     EngineerRegistrationService,
     TrustedOrganizationContextQueryService,

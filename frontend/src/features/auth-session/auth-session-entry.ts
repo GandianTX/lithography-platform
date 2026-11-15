@@ -4,11 +4,12 @@ import type { AuthSessionIdentity } from './application/auth-session.types';
 import { createAuthSessionStore } from './application/auth-session-store';
 import { createLoginWithPasswordUsecase } from './application/login-with-password';
 import {
-  createConditionalLogoutAuthSessionUsecase,
+  createClearSessionAfterPasswordChangeUsecase,
   createLogoutAuthSessionUsecase,
 } from './application/logout-auth-session';
 import { apolloAuthSessionCache } from './infrastructure/apollo-session-cache';
 import { graphQLAuthLoginGateway } from './infrastructure/auth-login-graphql';
+import { fetchMySessionIdentity } from './infrastructure/auth-session-identity-graphql';
 import { browserAuthSessionPersistence } from './infrastructure/auth-session-storage';
 
 export const authSessionStore = createAuthSessionStore(browserAuthSessionPersistence);
@@ -20,7 +21,7 @@ export const logoutAuthSession = createLogoutAuthSessionUsecase({
   cache: apolloAuthSessionCache,
   session: authSessionStore,
 });
-export const logoutAuthSessionIfIdentityMatches = createConditionalLogoutAuthSessionUsecase({
+export const clearSessionAfterPasswordChange = createClearSessionAfterPasswordChangeUsecase({
   cache: apolloAuthSessionCache,
   session: authSessionStore,
 });
@@ -56,6 +57,38 @@ export function sampleCurrentAuthSessionIdentity(): AuthSessionIdentity | null {
  */
 export function updateCurrentAuthSessionNickname(accountId: number, nickname: string): boolean {
   return authSessionStore.updateNickname({ accountId, nickname });
+}
+
+/**
+ * 启动 / 刷新时用服务端当前复核结果校对会话限制状态。
+ *
+ * 身份（账号 + 会话代次）在请求发起前采样；响应回来时若会话已变化（退出重登 /
+ * 切换账号），store 侧拒绝写入。返回是否实际更新了会话；无会话、响应不合法或
+ * 值无变化返回 false。网络 / 认证失败按既有 ingress 链路上抛，由调用方决定是否
+ * 静默（UNAUTHENTICATED 已由全局 auth failure handler 收口）。
+ */
+export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
+  const identity = authSessionStore.sampleSessionIdentity();
+
+  if (!identity) {
+    return false;
+  }
+
+  const snapshot = await fetchMySessionIdentity();
+
+  if (!snapshot || snapshot.accountId !== identity.accountId || snapshot.restriction === null) {
+    return false;
+  }
+
+  return authSessionStore.applySessionIdentity({
+    identity,
+    adminLevel: snapshot.adminLevel,
+    customerOrganizationId: snapshot.customerOrganizationId,
+    engineerOrganizationId: snapshot.engineerOrganizationId,
+    adminOrganizationId: snapshot.adminOrganizationId,
+    registrationOrganizationId: snapshot.registrationOrganizationId,
+    restriction: snapshot.restriction,
+  });
 }
 
 // loginWithPassword 仅供 feature 内部（LoginForm）相对导入使用，不属于模块公开 API；

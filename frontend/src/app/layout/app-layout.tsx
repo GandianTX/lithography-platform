@@ -18,7 +18,15 @@ import { FONT_SCALE_OPTIONS, useTheme } from '@/app/providers';
 import { APP_THEME_CSS_VAR_KEY } from '@/app/theme';
 
 import { AigcSidecar } from '@/widgets/aigc-sidecar';
-import { type AuthSessionRole, LogoutButton, useAuthSession } from '@/features/auth-session';
+import {
+  AUTH_SESSION_RESTRICTED_PATH,
+  type AuthSessionRole,
+  isAuthSessionRestricted,
+  LogoutButton,
+  refreshCurrentAuthSessionIdentity,
+  resolveAuthSessionHomePath,
+  useAuthSession,
+} from '@/features/auth-session';
 
 import type { AssistantRouteCandidate } from '@/entities/assistant-session';
 
@@ -96,6 +104,10 @@ const REFERENCE_LIBRARY_PATH = '/reference-documents';
 // 其他页面继续通用侧栏；不用前缀匹配，避免误伤其他页面。
 const LOGIN_PATH = '/login';
 
+// 注册页（S3/S4）与登录页共用同一独立壳层；按注册路径前缀匹配，
+// 覆盖 /register/customer、/register/engineer 等后续注册页。
+const REGISTER_PATH_PREFIX = '/register/';
+
 export function AppLayout({ children }: AppLayoutProps = {}) {
   const [isNavCollapsed, setIsNavCollapsed] = useState(false);
   const [isSidecarOpen, setIsSidecarOpen] = useState(false);
@@ -115,8 +127,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
   const isKnowledgeBasePage = location.pathname === KNOWLEDGE_BASE_PATH;
   // 参考资料列表工作区变体同样按精确路由开启（PR5 整页计划）：新增/详情路由不继承
   const isReferenceLibraryPage = location.pathname === REFERENCE_LIBRARY_PATH;
-  // 登录页壳层变体按精确路由开启（PR6）
-  const isLoginPage = location.pathname === LOGIN_PATH;
+  // 登录 / 注册页共用独立壳层（注册页按 /register/ 前缀）
+  const isAuthLandingPage =
+    location.pathname === LOGIN_PATH || location.pathname.startsWith(REGISTER_PATH_PREFIX);
   const navigationItems = useMemo(() => getNavigationItems(undefined, activeRole), [activeRole]);
   const activeNavigationPath = useMemo(
     () => resolveActiveNavigationPath(location.pathname, navigationItems),
@@ -182,6 +195,33 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
     };
   }, []);
 
+  // 启动 / 刷新时按服务端复核结果校对会话限制状态：账号在别处被要求改密、
+  // 工程师申请在别处被审批等变化会同步到路由落地，避免停留在过期页面。
+  // 认证失效由全局 GraphQL ingress 统一收口，这里只静默失败。
+  useEffect(() => {
+    void refreshCurrentAuthSessionIdentity().catch(() => {});
+  }, []);
+
+  // 限制状态与当前路径的一致性兜底：受限会话只允许停留 /restricted，限制解除后
+  // 从 /restricted 回到对应角色主页。正常导航由 route-guards 在进入前决定，
+  // 这里只覆盖「页面停留期间会话状态被服务端刷新」的场景。
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const restricted = isAuthSessionRestricted(session);
+
+    if (restricted && location.pathname !== AUTH_SESSION_RESTRICTED_PATH) {
+      navigate(AUTH_SESSION_RESTRICTED_PATH, { replace: true });
+      return;
+    }
+
+    if (!restricted && location.pathname === AUTH_SESSION_RESTRICTED_PATH) {
+      navigate(resolveAuthSessionHomePath(session.role), { replace: true });
+    }
+  }, [location.pathname, navigate, session]);
+
   const workspaceClassName = isKnowledgeBasePage
     ? 'app-workspace app-workspace--knowledge-base'
     : isReferenceLibraryPage
@@ -193,10 +233,10 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       ? 'app-main app-main--reference-library'
       : 'app-main';
 
-  // 登录页壳层：白底工作台侧栏、字号档位与 AI 入口都不渲染，只保留整页灰蓝底、
-  // 固定在左上角的项目品牌与双栏登录主体（品牌沿用侧栏同一个 .brand-mark 与同一组
+  // 登录 / 注册页壳层：白底工作台侧栏、字号档位与 AI 入口都不渲染，只保留整页灰蓝底、
+  // 固定在左上角的项目品牌与双栏主体（品牌沿用侧栏同一个 .brand-mark 与同一组
   // 颜色 Token；标识与名称之间只加一条细竖分隔线，不出现英文副标题）。
-  if (isLoginPage) {
+  if (isAuthLandingPage) {
     return (
       <div className={`app-shell login-shell ${APP_THEME_CSS_VAR_KEY}`}>
         <div className="login-brand">

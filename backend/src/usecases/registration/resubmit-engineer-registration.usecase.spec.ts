@@ -3,7 +3,11 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
 import { UserState } from '@app-types/models/user-info.types';
-import { ACCOUNT_ERROR, ENGINEER_REGISTRATION_ERROR } from '@core/common/errors/domain-error';
+import {
+  ACCOUNT_ERROR,
+  ENGINEER_REGISTRATION_ERROR,
+  PERMISSION_ERROR,
+} from '@core/common/errors/domain-error';
 import { AccountService } from '@src/modules/account/base/services/account.service';
 import type { AccountCredentialSnapshot } from '@src/modules/account/account.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
@@ -47,11 +51,20 @@ describe('ResubmitEngineerRegistrationUsecase（拒绝后重提）', () => {
     applicationNote: '再次申请',
   });
 
-  const credential = (): AccountCredentialSnapshot => ({
+  const credential = (mustChangePassword = false): AccountCredentialSnapshot => ({
     id: ACCOUNT_ID,
     status: AccountStatus.PENDING,
     loginPassword: PASSWORD_HASH,
     createdAt: CREATED_AT,
+    mustChangePassword,
+  });
+
+  const lockedCredential = (mustChangePassword = false): AccountCredentialSnapshot => ({
+    id: ACCOUNT_ID,
+    status: AccountStatus.PENDING,
+    loginPassword: PASSWORD_HASH,
+    createdAt: CREATED_AT,
+    mustChangePassword,
   });
 
   const application = (
@@ -73,12 +86,7 @@ describe('ResubmitEngineerRegistrationUsecase（拒绝后重提）', () => {
 
   beforeEach(() => {
     accountService = {
-      lockMyAccountCredentialSnapshot: jest.fn().mockResolvedValue({
-        id: ACCOUNT_ID,
-        status: AccountStatus.PENDING,
-        loginPassword: PASSWORD_HASH,
-        createdAt: CREATED_AT,
-      }),
+      lockMyAccountCredentialSnapshot: jest.fn().mockResolvedValue(lockedCredential()),
     };
     accountQueryService = {
       findCredentialByLoginName: jest.fn().mockResolvedValue(credential()),
@@ -145,16 +153,20 @@ describe('ResubmitEngineerRegistrationUsecase（拒绝后重提）', () => {
     });
 
     it('密码错误时全部裁决中止，不写入任何申请', async () => {
-      accountService.lockMyAccountCredentialSnapshot.mockResolvedValue({
-        id: ACCOUNT_ID,
-        status: AccountStatus.PENDING,
-        loginPassword: PASSWORD_HASH,
-        createdAt: CREATED_AT,
-      });
+      accountService.lockMyAccountCredentialSnapshot.mockResolvedValue(lockedCredential());
 
       await expect(
         usecase.execute({ ...command(), password: 'Wrong#Pass2026' }),
       ).rejects.toMatchObject({ code: ENGINEER_REGISTRATION_ERROR.CREDENTIAL_MISMATCH });
+      expect(engineerRegistrationService.insertApplication).not.toHaveBeenCalled();
+    });
+
+    it('被要求强制改密的账号在改密前不能重提申请', async () => {
+      accountService.lockMyAccountCredentialSnapshot.mockResolvedValue(lockedCredential(true));
+
+      await expect(usecase.execute(command())).rejects.toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      });
       expect(engineerRegistrationService.insertApplication).not.toHaveBeenCalled();
     });
   });

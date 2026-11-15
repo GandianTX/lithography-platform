@@ -32,10 +32,14 @@ import { expect, type Page, test } from '@playwright/test';
 import { readStoredAuthSession } from '../e2e/helpers/auth-session-seed';
 import {
   assertApiSqlSameDatabase,
-  deleteE2EDedicatedAccountById,
+  cleanupRegisteredDedicatedAccounts,
   preflightDedicatedAccountCleanup,
   readAccountCountByLoginName,
+  readActingOrganizationId,
   readDedicatedAccountCleanupResidue,
+  registerCreatedDedicatedAccount,
+  type RegisteredDedicatedAccount,
+  runWithCleanup,
 } from '../e2e/helpers/dedicated-account-cleanup';
 import {
   assertBrowserRequestsBoundToDedicatedOrigins,
@@ -442,9 +446,9 @@ test.describe('account settings real backend flow', () => {
   // 新密码登录成功 → 受保护 Query 数据级断言。全部流量放行到真实后端，无任何 route 拦截。
   // 专用账号：共享 Mock 账号的 seed 密码不满足现行密码策略、真改密后无法改回，故经
   // adminCreateUser 以策略合规密码创建一次性 ENGINEER 账号；创建前必须通过 API/SQL
-  // 同库探针（探针失败禁止业务写入）；finally 内经 deleteE2EDedicatedAccountById 按
-  // 「accountId + dedicatedLoginName」双因子绑定精确物理删除该账号及关联记录。清理后
-  // 分别核对主记录、userInfo 与关联业务表均为 0，且无关 mock 哨兵账号原样存在。
+  // 同库探针（探针失败禁止业务写入）；finally 内经 cleanupRegisteredDedicatedAccounts
+  // 按本轮登记的完整资源记录（账号 ID + 资料 / 成员关系主键 + 创建预期）精确物理删除。
+  // 清理后分别核对主记录、userInfo 与关联业务表均为 0，且无关 mock 哨兵账号原样存在。
   for (const run of [1, 2]) {
     test(`真实改密链路（第 ${run} 次）：专用账号改密后旧密码失效、新密码可登录受保护页`, async ({
       page,
@@ -463,8 +467,20 @@ test.describe('account settings real backend flow', () => {
       // 两个密码均满足现行策略（8～128 位、含小写字母/数字/特殊字符、非黑名单、无连续序列）
       const INITIAL_PASSWORD = 'E2eInit#2026Pass';
       const NEW_PASSWORD = 'E2eChanged#2026Pass';
-      let dedicatedAccountId: number | null = null;
-      let restoreFailure: unknown;
+      const DEDICATED_NICKNAME = 'E2E 改密专用账号';
+      const UNRELATED_SENTINELS = [
+        'mock_super_admin',
+        'mock_engineer_li',
+        'mock_engineer_chen',
+        'mock_customer_alpha',
+      ] as const;
+      // 非本轮哨兵在清理前后的基线：任何变化都意味着清理越界
+      const sentinelBaseline = UNRELATED_SENTINELS.map((loginName) => ({
+        count: readAccountCountByLoginName(loginName),
+        loginName,
+      }));
+      // 本轮创建资源台账：创建响应一到即登记，finally 只清这些记录
+      const registry: RegisteredDedicatedAccount[] = [];
 
       // R4：浏览器流量绑定守卫——本用例所有页面请求必须落在专用前端（4174，同源代理）
       // 或专用后端（3100）；出现 127.0.0.1:3000 即判失败
@@ -473,99 +489,108 @@ test.describe('account settings real backend flow', () => {
         browserRequestUrls.push(request.url());
       });
 
-      try {
-        const created = await realGraphqlCall(
-          env,
-          ADMIN_CREATE_USER_MUTATION,
-          {
-            input: {
-              initialPassword: INITIAL_PASSWORD,
-              loginName: dedicatedLoginName,
-              nickname: 'E2E 改密专用账号',
-              role: 'ENGINEER',
+      // 主流程错误与清理错误都保留：任一失败都让本用例非零（不再用 finally 之后的断言吞掉清理错误）
+      await runWithCleanup(
+        async () => {
+          // 创建前先取管理员当前有效组织：这是 adminCreateUser 绑定专用账号时的预期归属
+          const organizationId = readActingOrganizationId('mock_super_admin');
+
+          const created = await realGraphqlCall(
+            env,
+            ADMIN_CREATE_USER_MUTATION,
+            {
+              input: {
+                initialPassword: INITIAL_PASSWORD,
+                loginName: dedicatedLoginName,
+                nickname: DEDICATED_NICKNAME,
+                role: 'ENGINEER',
+              },
             },
-          },
-          'mock_super_admin',
-        );
-        const createdBody = created.body as {
-          data?: { adminCreateUser?: { id: number; status?: string } };
-        };
-        dedicatedAccountId = createdBody.data?.adminCreateUser?.id ?? null;
+            'mock_super_admin',
+          );
 
-        if (dedicatedAccountId === null) {
-          throw new Error(`专用账号创建失败：${JSON.stringify(created.body)}`);
-        }
-
-        // 初始密码真实 UI 登录 → 经导航进入账号设置 → 真实提交改密
-        await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/engineer');
-        await enterAccountSettingsFromNav(page);
-
-        const securityCard = cardByTitle(page, '安全设置');
-
-        // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
-        await securityCard.getByLabel('当前密码').fill(INITIAL_PASSWORD);
-        await securityCard.getByLabel('新密码', { exact: true }).fill(NEW_PASSWORD);
-        await securityCard.getByLabel('确认新密码').fill(NEW_PASSWORD);
-        await securityCard.getByRole('button', { name: /修\s*改\s*密\s*码/ }).click();
-
-        // 会话收口：唯一会话真源被清理，随后跳转登录页（不依赖服务端撤销）
-        await expect(page).toHaveURL(/\/login$/);
-        expect(await readStoredAuthSession(page)).toBeNull();
-
-        // 旧密码经真实登录入口已失效
-        const oldAttempt = await attemptRealLogin(dedicatedLoginName, INITIAL_PASSWORD);
-
-        expect(oldAttempt.accessToken).toBeNull();
-        expect(oldAttempt.errorCode).toBe('UNAUTHENTICATED');
-
-        // 新密码经真实 UI 登录成功并落到受保护主页
-        await loginViaUi(page, dedicatedLoginName, NEW_PASSWORD, '/engineer');
-
-        // R4 P5：在点击「账号设置」前注册 MyAccountSettings 响应等待，做 GraphQL 数据级
-        // 断言（真实响应、无 route.fulfill）：errors 为空、data.myAccountSettings 存在、
-        // loginName 与专用账号一致，随后页面表单值与返回数据一致
-        const myAccountSettingsResponse = page.waitForResponse(
-          (response) => response.request().postData()?.includes('query MyAccountSettings') === true,
-        );
-        await enterAccountSettingsFromNav(page);
-
-        const response = await myAccountSettingsResponse;
-        const payload = (await response.json()) as unknown;
-        const settings = assertRealMyAccountSettingsSuccess(payload, dedicatedLoginName);
-
-        // 页面装配层展示与 GraphQL 数据一致（登录名、昵称两项核心表单值）
-        const main = page.getByRole('main');
-
-        await expect(main.getByLabel('登录名')).toHaveValue(settings.loginName ?? '');
-        await expect(main.getByLabel('昵称')).toHaveValue(settings.nickname);
-
-        // R4：浏览器流量绑定守卫——任何流向 127.0.0.1:3000 或其他来源的请求都判失败
-        assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
-      } finally {
-        const cleanupAccountId = dedicatedAccountId;
-
-        if (cleanupAccountId !== null) {
-          restoreFailure = await captureRestoreFailure(async () => {
-            // R4：清理目标绑定 accountId + dedicatedLoginName 双因子，绑定不匹配即回滚
-            deleteE2EDedicatedAccountById(cleanupAccountId, dedicatedLoginName);
-
-            expect(readDedicatedAccountCleanupResidue(cleanupAccountId)).toEqual({
-              account: 0,
-              relatedBusiness: 0,
-              userInfo: 0,
-            });
+          // 收到创建响应即登记精确 ID 与预期事实，并回读核验成员关系 / 资料主键；
+          // 核验失败会保留诊断并使本用例失败，绝不在回执丢失时按登录名扫描后删除。
+          registerCreatedDedicatedAccount(registry, created.body, {
+            accessGroup: ['ENGINEER'],
+            loginName: dedicatedLoginName,
+            nickname: DEDICATED_NICKNAME,
+            organizationId,
+            role: 'ENGINEER',
+            userInfoEmail: null,
+            userState: 'ACTIVE',
           });
-        }
-      }
 
-      // finally 之后再核对回收结果：主链路失败时不掩盖原始错误，物理清理失败必被发现并使本用例失败
-      expect(restoreFailure).toBeNull();
+          // 初始密码真实 UI 登录 → 经导航进入账号设置 → 真实提交改密
+          await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/engineer');
+          await enterAccountSettingsFromNav(page);
 
-      // R4：无关哨兵数据保持不变——官方 mock 账号在专用账号清理后仍恰好各 1 行
-      expect(readAccountCountByLoginName('mock_super_admin')).toBe(1);
-      expect(readAccountCountByLoginName('mock_engineer_li')).toBe(1);
-      expect(readAccountCountByLoginName('mock_engineer_chen')).toBe(1);
-      expect(readAccountCountByLoginName('mock_customer_alpha')).toBe(1);
+          const securityCard = cardByTitle(page, '安全设置');
+
+          // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
+          await securityCard.getByLabel('当前密码').fill(INITIAL_PASSWORD);
+          await securityCard.getByLabel('新密码', { exact: true }).fill(NEW_PASSWORD);
+          await securityCard.getByLabel('确认新密码').fill(NEW_PASSWORD);
+          await securityCard.getByRole('button', { name: /修\s*改\s*密\s*码/ }).click();
+
+          // 会话收口：唯一会话真源被清理，随后跳转登录页（不依赖服务端撤销）
+          await expect(page).toHaveURL(/\/login$/);
+          expect(await readStoredAuthSession(page)).toBeNull();
+
+          // 旧密码经真实登录入口已失效
+          const oldAttempt = await attemptRealLogin(dedicatedLoginName, INITIAL_PASSWORD);
+
+          expect(oldAttempt.accessToken).toBeNull();
+          expect(oldAttempt.errorCode).toBe('UNAUTHENTICATED');
+
+          // 新密码经真实 UI 登录成功并落到受保护主页
+          await loginViaUi(page, dedicatedLoginName, NEW_PASSWORD, '/engineer');
+
+          // R4 P5：在点击「账号设置」前注册 MyAccountSettings 响应等待，做 GraphQL 数据级
+          // 断言（真实响应、无 route.fulfill）：errors 为空、data.myAccountSettings 存在、
+          // loginName 与专用账号一致，随后页面表单值与返回数据一致
+          const myAccountSettingsResponse = page.waitForResponse(
+            (response) =>
+              response.request().postData()?.includes('query MyAccountSettings') === true,
+          );
+          await enterAccountSettingsFromNav(page);
+
+          const response = await myAccountSettingsResponse;
+          const payload = (await response.json()) as unknown;
+          const settings = assertRealMyAccountSettingsSuccess(payload, dedicatedLoginName);
+
+          // 页面装配层展示与 GraphQL 数据一致（登录名、昵称两项核心表单值）
+          const main = page.getByRole('main');
+
+          await expect(main.getByLabel('登录名')).toHaveValue(settings.loginName ?? '');
+          await expect(main.getByLabel('昵称')).toHaveValue(settings.nickname);
+
+          // R4：浏览器流量绑定守卫——任何流向 127.0.0.1:3000 或其他来源的请求都判失败
+          assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
+        },
+        {
+          label: '专用账号清理',
+          run: () => {
+            // 只清本轮登记的账号、资料与成员关系；整批预检通过才允许首删，
+            // 账外引用与任一目标不符都会在首删前拒绝并整批回滚
+            cleanupRegisteredDedicatedAccounts(registry);
+
+            // 批次提交明确成功后，才在事务外逐账号核对本轮残留为零（失败时台账保留）
+            for (const account of registry) {
+              expect(readDedicatedAccountCleanupResidue(account.id)).toEqual({
+                account: 0,
+                relatedBusiness: 0,
+                userInfo: 0,
+              });
+            }
+
+            // 非本轮哨兵在清理前后必须逐项不变（越界删除会在此暴露）
+            for (const sentinel of sentinelBaseline) {
+              expect(readAccountCountByLoginName(sentinel.loginName)).toBe(sentinel.count);
+            }
+          },
+        },
+      );
     });
   }
 });

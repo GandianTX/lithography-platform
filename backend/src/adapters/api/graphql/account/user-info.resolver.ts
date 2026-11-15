@@ -9,6 +9,7 @@ import { GetVisibleUserInfoUsecase } from '@src/usecases/account/get-visible-use
 import { UpdateVisibleUserInfoUsecase } from '@src/usecases/account/update-visible-user-info.usecase';
 import { currentUser } from '../decorators/current-user.decorator';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
+import { SessionRestrictionGuard } from '../guards/session-restriction.guard';
 import { BasicUserInfoDTO } from './dto/basic-user-info.dto';
 import { UserInfoDTO } from './dto/user-info.dto';
 import { UpdateUserInfoInput, UpdateUserInfoResult } from './dto/user-info.update.input';
@@ -29,7 +30,7 @@ export class UserInfoResolver {
    * @param user 当前登录用户的 JWT 载荷
    * @param accountId 目标账户 ID
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Query(() => UserInfoDTO, { name: 'userInfo' })
   async userInfo(
     @currentUser() user: JwtPayload,
@@ -49,7 +50,7 @@ export class UserInfoResolver {
    * @param user 当前登录用户的 JWT 载荷
    * @param accountId 目标账户 ID
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Query(() => BasicUserInfoDTO, { name: 'basicUserInfo' })
   async basicUserInfo(
     @currentUser() user: JwtPayload,
@@ -124,7 +125,7 @@ export class UserInfoResolver {
    * @param user 当前登录用户
    * @param input 更新输入
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SessionRestrictionGuard)
   @Mutation(() => UpdateUserInfoResult, { name: 'updateUserInfo' })
   async updateUserInfo(
     @currentUser() user: JwtPayload,

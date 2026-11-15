@@ -2,7 +2,7 @@
 
 import { AudienceTypeEnum, LoginTypeEnum } from '@app-types/models/account.types';
 import { Field, InputType } from '@nestjs/graphql';
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 /**
  * 用户登录输入参数
@@ -31,4 +31,18 @@ export class AuthLoginInput {
   @Field(() => AudienceTypeEnum, { description: '客户端类型' })
   @IsEnum(AudienceTypeEnum, { message: '客户端类型无效' })
   audience!: AudienceTypeEnum;
+
+  /**
+   * 是否允许受限账号取得会话（必须改密 / 工程师待审 / 工程师拒绝）。
+   * 默认 `false`，保持旧客户端「非 ACTIVE 一律登录失败」的行为；
+   * Web 端传 `true`，受限账号登录后只能落到受限页改密或退出。
+   */
+  @Field(() => Boolean, {
+    description: '是否允许受限账号登录',
+    nullable: true,
+    defaultValue: false,
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'allowRestrictedSession 必须是布尔值' })
+  allowRestrictedSession?: boolean;
 }

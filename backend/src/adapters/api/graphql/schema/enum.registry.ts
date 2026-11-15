@@ -28,6 +28,7 @@ import {
   RegistrationOutcomeStatus,
 } from '@app-types/models/registration.types';
 import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { registerEnumType } from '@nestjs/graphql';
 import { GqlPaginationMode, GqlSortDirection } from '@src/adapters/api/graphql/pagination.enums';
 import { OrderDirection } from '@app-types/common/sort.types';
@@ -38,6 +39,7 @@ export function registerEnums(): void {
   registerEnumType(EmploymentStatus, { name: 'EmploymentStatus' });
   registerEnumType(IdentityTypeEnum, { name: 'IdentityTypeEnum' });
   registerEnumType(LoginTypeEnum, { name: 'LoginTypeEnum' });
+  registerEnumType(SessionRestriction, { name: 'SessionRestriction' });
   registerEnumType(ThirdPartyLoginProviderEnum, { name: 'ThirdPartyLoginProviderEnum' });
   registerEnumType(ThirdPartyProviderEnum, { name: 'ThirdPartyProviderEnum' });
   registerEnumType(RegisterTypeEnum, { name: 'RegisterTypeEnum' });

@@ -16,7 +16,7 @@
  * →CONFLICT、READ / WRITE / ROLE_DATA→INTERNAL_SERVER_ERROR、INPUT_NORMALIZE_*→BAD_USER_INPUT）。
  */
 
-import { executeGraphQL, isGraphQLIngressError } from '@/shared/graphql';
+import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
 
 import type {
   AdminUserCommandFailureReason,
@@ -34,7 +34,7 @@ import type {
   AdminResetUserPasswordResultDto,
   AdminUserListPageDto,
 } from './admin-user-management.dto';
-import { mapAdminUserListPageDtoToListPage, toOptionalText } from './admin-user-management-mapper';
+import { mapAdminUserListPageDtoToListPage } from './admin-user-management-mapper';
 
 const ADMIN_USERS_QUERY = `
   query AdminUsers($keyword: String, $pagination: PaginationArgs!, $role: IdentityTypeEnum, $status: AccountStatus) {
@@ -124,32 +124,6 @@ type AdminUsersQueryVariables = {
   role?: AdminUserRole;
   status?: AdminUserStatusFilter;
 };
-
-type GraphQLErrorDetail = {
-  code: string | null;
-  errorCode: string | null;
-  errorMessage: string | null;
-};
-
-/**
- * 从 ingress error 中读取第一条 GraphQL 错误的业务细节。
- * 只取 extensions 的稳定字段；不取顶层通用 message（避免把通用文案当业务消息）；
- * 不做任何 Session 读写。
- */
-function readGraphQLErrorDetail(error: unknown): GraphQLErrorDetail | null {
-  if (!isGraphQLIngressError(error) || !error.graphqlErrors?.length) {
-    return null;
-  }
-
-  const [firstError] = error.graphqlErrors;
-  const extensions = (firstError.extensions as Record<string, unknown> | undefined) || {};
-
-  return {
-    code: toOptionalText(extensions.code),
-    errorCode: toOptionalText(extensions.errorCode),
-    errorMessage: toOptionalText(extensions.errorMessage),
-  };
-}
 
 type CommandReasonMap = Partial<Record<string, AdminUserCommandFailureReason>>;
 
