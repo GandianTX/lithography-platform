@@ -57,6 +57,7 @@ import { OrganizationMembershipQueryService } from './queries/organization-membe
 import { OrganizationQueryService } from './queries/organization.query.service';
 import { ReferenceDocumentQueryService } from './queries/reference-document.query.service';
 import { RepairRequestQueryService } from './queries/repair-request.query.service';
+import { StoredFileQueryService } from './queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from './queries/trusted-organization-context.query.service';
 import { ContentSubmissionService } from './content-submission.service';
 import { EngineerRegistrationService } from './engineer-registration.service';
@@ -68,6 +69,7 @@ import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
 import { ReferenceDocumentService } from './reference-document.service';
 import { RepairRequestService } from './repair-request.service';
+import { StoredFileService } from './stored-file.service';
 
 const LITHOGRAPHY_ENTITIES = [
   EquipmentModelEntity,
@@ -127,6 +129,8 @@ const LITHOGRAPHY_ENTITIES = [
     AdminAiMessageQueryService,
     AdminAiReportQueryService,
     RepairRequestService,
+    StoredFileService,
+    StoredFileQueryService,
     ReferenceDocumentService,
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,
@@ -154,6 +158,8 @@ const LITHOGRAPHY_ENTITIES = [
     AdminAiMessageQueryService,
     AdminAiReportQueryService,
     RepairRequestService,
+    StoredFileService,
+    StoredFileQueryService,
     ReferenceDocumentService,
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,

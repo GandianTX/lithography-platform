@@ -1,14 +1,20 @@
 // src/modules/lithography/repair-request.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
+import {
+  DomainError,
+  REPAIR_REQUEST_ERROR,
+  STORED_FILE_ERROR,
+} from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { QueryFailedError, Repository } from 'typeorm';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
 import {
   EngineerResponseTargetSnapshot,
+  RepairProcessBindingTargetSnapshot,
   RepairRequestAcceptanceStatusSnapshot,
   RepairRequestAcceptData,
   RepairRequestAcceptWriteResult,
@@ -365,6 +371,69 @@ export class RepairRequestService {
       throw new DomainError(
         REPAIR_REQUEST_ERROR.RESPONSE_FAILED,
         '处理回复失败，请稍后重试',
+        { requestId },
+        error,
+      );
+    }
+  }
+
+  /**
+   * 内部维修过程原件绑定目标锁读（pessimistic_write，必须与任务 04 保存写入同事务）：
+   * 只返回工单状态事实（可信服务公司、接单、作废、处理/结束状态），
+   * 是否允许绑定由 usecase 裁决，不在此做权限或状态决策。
+   * 工单服务公司与报修原始输入一致时才返回可信服务公司。
+   */
+  async findProcessBindingTargetForUpdate(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairProcessBindingTargetSnapshot | null> {
+    const repository = this.getRepository(transactionContext);
+    try {
+      const entity = await repository.findOne({
+        where: { id: requestId },
+        select: {
+          id: true,
+          ownerOrganizationId: true,
+          intakeId: true,
+          serviceOrganizationId: true,
+          isAccepted: true,
+          acceptedByEngineerAccountId: true,
+          deprecated: true,
+          handlingStatus: true,
+          closureStatus: true,
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!entity) {
+        return null;
+      }
+      const intakeServiceOrganizationId =
+        entity.intakeId === null
+          ? null
+          : ((
+              await repository.manager.getRepository(RepairRequestIntakeEntity).findOne({
+                where: { id: entity.intakeId },
+                select: { id: true, serviceOrganizationId: true },
+              })
+            )?.serviceOrganizationId ?? null);
+      return {
+        id: entity.id,
+        ownerOrganizationId: entity.ownerOrganizationId,
+        intakeId: entity.intakeId,
+        serviceOrganizationId:
+          intakeServiceOrganizationId === entity.serviceOrganizationId
+            ? intakeServiceOrganizationId
+            : null,
+        isAccepted: entity.isAccepted,
+        acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
+        deprecated: entity.deprecated,
+        handlingStatus: entity.handlingStatus,
+        closureStatus: entity.closureStatus,
+      };
+    } catch (error) {
+      throw new DomainError(
+        STORED_FILE_ERROR.BIND_FAILED,
+        '原件绑定失败，请稍后重试',
         { requestId },
         error,
       );

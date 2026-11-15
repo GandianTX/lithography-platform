@@ -86,6 +86,28 @@ export class AccountQueryService {
     return account ? this.toUserAccountView(account) : null;
   }
 
+  /**
+   * 管理员层级读取（窄投影，仅供管理员工单组织范围裁决）。
+   *
+   * `admin_level` 是账号侧列：1 = 一级管理员（全公司），2 = 二级管理员（本公司），
+   * null = 账号存在但未映射等级（调用方必须失败关闭，不得按 1 级放行，见
+   * `docs/database/v13-deployment/data-contracts.md` §5/§6.1）。本方法只返回数据库事实，
+   * 不做权限判定；调用方必须已完成管理员角色断言，并以可信 Session 的账号 ID 调用。
+   *
+   * 「账号行缺失」与「账号存在但等级为 null」必须可区分：行缺失抛
+   * `ACCOUNT_NOT_FOUND` 失败关闭，绝不把不存在的账号当成未映射等级继续放行。
+   */
+  async findAdminLevelByAccountId(accountId: number): Promise<number | null> {
+    const account = await this.accountRepository.findOne({
+      where: { id: accountId },
+      select: { id: true, adminLevel: true },
+    });
+    if (!account) {
+      throw new DomainError(ACCOUNT_ERROR.ACCOUNT_NOT_FOUND, '账户不存在');
+    }
+    return account.adminLevel;
+  }
+
   async getUserAccountViewById(params: {
     accountId: number;
     transactionContext?: PersistenceTransactionContext;

@@ -2,6 +2,7 @@ import {
   EngineerResolutionStatus,
   RepairRequestAcceptanceViewStatus,
 } from '@app-types/models/repair-request.types';
+import { StoredFileBindingStatus, StoredFileStatus } from '@app-types/models/stored-file.types';
 
 /**
  * AI 会话共享枚举兼容出口。
@@ -527,3 +528,89 @@ export type ReferenceDocumentUpdateData = {
  */
 export type ReferenceDocumentDeleteOutcome =
   { kind: 'DELETED'; id: number } | { kind: 'NOT_FOUND'; id: number };
+
+// ---------- 共用业务原件（任务 11） ----------
+
+/**
+ * 原件写入完成后的稳定快照（不暴露 ORM Entity）。
+ * byteSize 由 bigint 列转安全整数（迁移 CHECK 上限 20,000,000，远小于 JS 安全整数上限）。
+ */
+export type StoredFileSnapshot = {
+  fileId: string;
+  uploadedByAccountId: number;
+  ownerOrganizationId: number;
+  storageReference: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+  status: string;
+  businessType: string;
+  businessId: string | null;
+  uploadContextId: string;
+  bindingStatus: string;
+  createdAt: Date;
+  verifiedAt: Date | null;
+};
+
+/**
+ * 原件安全元数据读视图：对外只暴露业务与校验事实，
+ * 不包含 storageReference、服务器路径、上传者/归属公司账号 ID。
+ */
+export type StoredFileMetadataView = {
+  fileId: string;
+  businessType: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+  status: StoredFileStatus;
+  bindingStatus: StoredFileBindingStatus;
+  businessId: string | null;
+  uploadContextId: string;
+  verifiedAt: Date | null;
+  createdAt: Date;
+};
+
+/** 原件暂存写入数据（业务判定全部由 usecase 完成后传入） */
+export type StoredFileInsertData = {
+  fileId: string;
+  uploadedByAccountId: number;
+  ownerOrganizationId: number;
+  storageReference: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+  businessType: string;
+  uploadContextId: string;
+};
+
+/** 绑定前置的工单锁读快照：只含状态事实，决策归 usecase */
+export type RepairProcessBindingTargetSnapshot = {
+  id: number;
+  /** 旧归属列，仅作历史事实保留；不用于服务公司授权 */
+  ownerOrganizationId: number | null;
+  /** 报修原始输入ID；空表示旧工单，服务公司来源不可确认 */
+  intakeId: number | null;
+  /** 可信服务公司ID（仅由报修原始输入解析；非工单旧字段兜底） */
+  serviceOrganizationId: number | null;
+  isAccepted: boolean;
+  acceptedByEngineerAccountId: number | null;
+  deprecated: boolean;
+  handlingStatus: string | null;
+  closureStatus: string | null;
+};
+
+/**
+ * 下载定位结果：storageReference 不进入对外视图，仅供下载用例读取存储；
+ * byteSize/checksumSha256 为登记事实，仅供用例在发送前核对实际内容。
+ */
+export type StoredFileDownloadFacts = {
+  fileId: string;
+  storageReference: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+};

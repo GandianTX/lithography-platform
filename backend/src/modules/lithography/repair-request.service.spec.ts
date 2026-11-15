@@ -129,6 +129,41 @@ describe('RepairRequestService', () => {
     expect(repository.save).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { orderCompany: 22, intakeCompany: 22, expected: 22 },
+    { orderCompany: 22, intakeCompany: 33, expected: null },
+    { orderCompany: 22, intakeCompany: null, expected: null },
+  ])('绑定锁读仅接受一致的服务公司：%j', async ({ orderCompany, intakeCompany, expected }) => {
+    const intakeFindOne = jest
+      .fn()
+      .mockResolvedValue(
+        intakeCompany === null ? null : { id: 71, serviceOrganizationId: intakeCompany },
+      );
+    const transactionRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 11,
+        ownerOrganizationId: 7,
+        intakeId: 71,
+        serviceOrganizationId: orderCompany,
+      }),
+      manager: { getRepository: () => ({ findOne: intakeFindOne }) },
+    };
+    const context = createTypeOrmPersistenceTransactionContext({
+      getRepository: () => transactionRepository,
+    } as unknown as EntityManager);
+
+    await expect(service.findProcessBindingTargetForUpdate(11, context)).resolves.toMatchObject({
+      serviceOrganizationId: expected,
+    });
+    expect(transactionRepository.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lock: { mode: 'pessimistic_write' },
+        select: expect.objectContaining({ serviceOrganizationId: true }),
+      }),
+    );
+    expect(intakeFindOne).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 71 } }));
+  });
+
   it('requestNoExists 按计数结果返回是否存在', async () => {
     repository.count.mockResolvedValueOnce(1);
     await expect(service.requestNoExists(insertData.requestNo)).resolves.toBe(true);
