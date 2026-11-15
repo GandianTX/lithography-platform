@@ -1,6 +1,7 @@
 // src/usecases/account/my-account-settings.types.ts
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import type { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import type { MyAccountSettingsView } from '@src/modules/account/account.types';
 
 /**
@@ -80,6 +81,14 @@ export interface UpdateMyAccountSettingsNormalizeOutput {
  */
 export interface UpdateMyAccountSettingsCommand {
   readonly session: UsecaseSession;
+  /**
+   * 本次请求复核后的会话限制状态（`ValidateAccessTokenSessionUsecase` 每请求计算）。
+   *
+   * 非 `NONE` 时只允许维护昵称、电话、联系邮箱三个本人字段；登录凭据与公司名称由
+   * 服务端白名单整体拒绝（见 `UpdateMyAccountSettingsUsecase`）。该值只能来自已认证
+   * 请求上下文，不得从 GraphQL 入参读取。
+   */
+  readonly restriction: SessionRestriction;
   readonly loginName: unknown;
   readonly loginEmail: unknown;
   readonly nickname: unknown;

@@ -2122,7 +2122,8 @@ body {
   width: 100%;
 }
 
-/* 左栏欢迎文案：主/副标题只在这里出现一次，登录卡内不重复 */
+/* 左栏欢迎文案：主/副标题只在这里出现一次，登录卡内不重复。
+   标题按 V44 实测 16／24、常规字重，与副标题同字号，仅用颜色区分层级 */
 .login-intro {
   flex: 1 1 auto;
   min-width: 0;
@@ -2130,9 +2131,9 @@ body {
 
 .login-intro-title {
   color: var(--text-strong);
-  font-size: 2rem;
-  font-weight: 700;
-  line-height: 1.25;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5rem;
   margin: 0;
 }
 
@@ -2140,7 +2141,7 @@ body {
   color: var(--text-muted);
   font-size: 1rem;
   line-height: 1.5rem;
-  margin: 12px 0 0;
+  margin: 0;
 }
 
 /* 标题下主色短横（原型强调线）：消费 AntD 主色变量，仅装饰 */
@@ -2190,6 +2191,130 @@ body {
     flex: 0 0 auto;
     width: 100%;
   }
+}
+
+/* 注册页（RQ5 · V44）：居中单列——标题与说明在卡片上方，卡片标题为「注册资料」，
+   底部为提交与返回登录并排动作。列宽按原型实测 284px（卡内 24px 内边距、内容 234px），
+   窄屏随可用空间收缩；整体由 .login-workspace 居中。 */
+.register-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 284px;
+  width: 100%;
+}
+
+.register-header {
+  min-width: 0;
+}
+
+/* 注册页标题按 V44 基准 24px / 行高 32px（登录页 H1 保留现有层级） */
+.register-title {
+  color: var(--text-strong);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 2rem;
+  margin: 0;
+}
+
+.register-subtitle {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  margin: 4px 0 0;
+}
+
+.register-panel {
+  min-width: 0;
+  width: 100%;
+}
+
+/* 注册卡按 V44 卡片节奏：56px 卡头（16px / 600 标题、24px 横向内边距）
+   + 24px 表单内边距；内容由字段自然撑高，窄屏只随可用空间收缩 */
+.register-panel .data-card {
+  padding: 0;
+}
+
+.register-panel .data-card-header {
+  align-items: center;
+  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 0;
+  min-height: 56px;
+  padding: 0 24px;
+}
+
+.register-panel .data-card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5715;
+}
+
+.register-panel .data-card > .ant-form,
+.register-panel .data-card > .register-success {
+  padding: 24px;
+}
+
+/* 登录卡底部动作组：登录、客户注册、工程师注册同排左对齐（V44），
+   空间不足时按键顺序换行；注册入口保持链接语义，外观贴近原型描边按钮 */
+.login-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
+}
+
+/* 原型中「登录」与首个注册入口相邻无间距，两个注册入口之间 8px */
+.login-action-link + .login-action-link {
+  margin-left: 8px;
+}
+
+/* 动作行是表单最后一项，去掉 AntD 默认下外边距，使卡片高度随内容收敛 */
+.login-panel .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.login-action-link {
+  align-items: center;
+  background: var(--panel-bg);
+  border: 1px solid var(--ant-color-border);
+  border-radius: var(--ant-border-radius);
+  color: var(--text-strong);
+  display: inline-flex;
+  font-size: 0.875rem;
+  height: 32px;
+  padding: 0 15px;
+  text-decoration: none;
+}
+
+.login-action-link:hover {
+  border-color: var(--ant-color-primary);
+  color: var(--ant-color-primary);
+}
+
+.login-action-link:focus-visible {
+  outline: 2px solid var(--ant-color-primary);
+  outline-offset: 2px;
+}
+
+/* 注册成功结果区：成功提示 + 已开通邮箱 + 前往登录 */
+.register-success {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 注册表单底部动作：提交与返回登录并排左对齐，窄屏自动折行（V44 两键相邻无间距） */
+.register-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+}
+
+.register-success-email {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin: 0;
+  text-align: center;
 }
 
 /* 管理员首页「当前账号」卡：左侧方形头像 + 身份文字，右侧只放「账号设置」入口

@@ -1,11 +1,13 @@
 // src/usecases/account/update-my-account-settings.usecase.spec.ts
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import {
   ADMIN_USER_ERROR,
   INPUT_NORMALIZE_ERROR,
   MY_ACCOUNT_ERROR,
+  PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type {
   MyAccountSettingsSnapshot,
@@ -107,9 +109,11 @@ describe('UpdateMyAccountSettingsUsecase', () => {
       >
     > = {},
     overrides: Partial<UsecaseSession> = {},
+    restriction: SessionRestriction = SessionRestriction.NONE,
   ) =>
     usecase.execute({
       session: session(overrides),
+      restriction,
       loginName: fields.loginName,
       loginEmail: fields.loginEmail,
       nickname: fields.nickname,
@@ -227,6 +231,83 @@ describe('UpdateMyAccountSettingsUsecase', () => {
         cause: { diagnostic: 'ACCOUNT_ROW_MISSING', accountId: ACCOUNT_ID },
       });
       expect(harness.isRolledBack()).toBe(true);
+    });
+  });
+
+  describe('受限会话的本人资料写入白名单', () => {
+    it.each([
+      ['ENGINEER_PENDING', SessionRestriction.ENGINEER_PENDING],
+      ['ENGINEER_REJECTED', SessionRestriction.ENGINEER_REJECTED],
+      ['ENGINEER_INACTIVE', SessionRestriction.ENGINEER_INACTIVE],
+    ])('%s 下允许维护昵称、电话与联系邮箱', async (_label, restriction) => {
+      const outcome = await execute(
+        { nickname: 'renamed', phone: '13900000000', contactEmail: 'new@example.com' },
+        {},
+        restriction,
+      );
+
+      expect(outcome.isUpdated).toBe(true);
+      expect(capturedPatch()).toEqual({
+        nickname: 'renamed',
+        phone: '13900000000',
+        email: 'new@example.com',
+      });
+      expect(harness.isCommitted()).toBe(true);
+    });
+
+    it.each([
+      ['公司名称（字符串）', { companyName: '伪造公司' }, ['companyName']],
+      ['公司名称（显式 null）', { companyName: null }, ['companyName']],
+      ['登录名（显式 null）', { loginName: null }, ['loginName']],
+      ['登录邮箱', { loginEmail: 'other@example.com' }, ['loginEmail']],
+      [
+        '合法字段与越界字段混传',
+        { nickname: 'renamed', companyName: '伪造公司', loginName: 'other_login' },
+        ['loginName', 'companyName'],
+      ],
+    ])('受限会话提交 %s 整体拒绝且零写入', async (_label, fields, rejectedFields) => {
+      const error = await captureThrownError(
+        execute(fields, {}, SessionRestriction.ENGINEER_PENDING),
+      );
+
+      expect(error).toMatchObject({
+        code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+        cause: {
+          diagnostic: 'RESTRICTED_PROFILE_FIELDS_REJECTED',
+          restriction: SessionRestriction.ENGINEER_PENDING,
+          fields: rejectedFields,
+        },
+      });
+      // 拒绝发生在事务之前：不锁行、不写库、混传中的合法字段也不落地
+      expect(harness.transactionRunner.run).not.toHaveBeenCalled();
+      expect(accountService.lockMyAccountSettingsFacts).not.toHaveBeenCalled();
+      expect(accountService.updateMyAccountCredentials).not.toHaveBeenCalled();
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+    });
+
+    it('越界拒绝的错误信息不含任何字段值', async () => {
+      const error = (await captureThrownError(
+        execute({ companyName: '秘密公司' }, {}, SessionRestriction.ENGINEER_REJECTED),
+      )) as { cause?: unknown };
+
+      expect(JSON.stringify(error.cause)).not.toContain('秘密公司');
+      expect(JSON.stringify(error.cause)).toContain('companyName');
+    });
+
+    it('MUST_CHANGE_PASSWORD 同样只按白名单放行', async () => {
+      const error = await captureThrownError(
+        execute({ companyName: '伪造公司' }, {}, SessionRestriction.MUST_CHANGE_PASSWORD),
+      );
+
+      expect(error).toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      expect(harness.transactionRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('限制解除（NONE）后恢复完整字段写入', async () => {
+      await execute({ companyName: '合法公司' }, {}, SessionRestriction.NONE);
+
+      expect(capturedPatch()).toEqual({ companyName: '合法公司' });
+      expect(harness.isCommitted()).toBe(true);
     });
   });
 

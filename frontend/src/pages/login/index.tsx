@@ -1,5 +1,7 @@
 // src/pages/login/index.tsx
 
+import { Link } from 'react-router';
+
 import type { AuthSessionView } from '@/features/auth-session';
 import { LoginForm, SessionExpiredNotice } from '@/features/auth-session';
 
@@ -38,7 +40,19 @@ export function LoginPage({ onAuthenticated, sessionExpired = false }: LoginPage
             </div>
           ) : null}
 
-          <LoginForm onAuthenticated={onAuthenticated} />
+          <LoginForm
+            onAuthenticated={onAuthenticated}
+            secondaryActions={
+              <>
+                <Link className="login-action-link" to="/register/customer">
+                  客户注册
+                </Link>
+                <Link className="login-action-link" to="/register/engineer">
+                  工程师注册
+                </Link>
+              </>
+            }
+          />
         </DataCard>
       </div>
     </div>

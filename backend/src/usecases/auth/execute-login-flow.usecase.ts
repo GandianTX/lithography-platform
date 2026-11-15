@@ -49,17 +49,25 @@ export class ExecuteLoginFlowUsecase {
     ip,
     audience,
     provider,
+    allowPendingAccount,
   }: {
     accountId: number;
     ip?: string;
     audience?: AudienceTypeEnum;
     provider?: ThirdPartyProviderEnum;
+    /**
+     * 是否允许 `PENDING` 账号继续签发令牌。
+     *
+     * 只允许「受限会话」调用方在完成资格判定（限制状态非 NONE 且显式开启
+     * `allowRestrictedSession`）之后传 `true`；封禁 / 删除 / 暂停等状态不受此开关影响。
+     */
+    allowPendingAccount?: boolean;
   }): Promise<BasicLoginResult> {
     // 验证 audience 类型安全性
     this.validateAudience(audience);
 
     // 获取用户相关数据
-    const userData = await this.fetchUserData(accountId);
+    const userData = await this.fetchUserData(accountId, allowPendingAccount === true);
 
     // 生成 JWT tokens，传入 audience 参数
     const tokens = this.generateTokens(userData, audience);
@@ -90,9 +98,13 @@ export class ExecuteLoginFlowUsecase {
   /**
    * 获取用户相关数据
    * @param accountId 账户 ID
+   * @param allowPendingAccount 是否允许 `PENDING` 账号通过状态检查（仅受限会话）
    * @returns 用户数据集合
    */
-  private async fetchUserData(accountId: number): Promise<LoginUserDataCollection> {
+  private async fetchUserData(
+    accountId: number,
+    allowPendingAccount: boolean,
+  ): Promise<LoginUserDataCollection> {
     const loginSnapshot = await this.accountQueryService.getLoginBootstrapSnapshot({ accountId });
 
     const securityResult = this.accountSecurityService.checkAndHandleAccountSecurity({
@@ -103,8 +115,11 @@ export class ExecuteLoginFlowUsecase {
       throw new DomainError(ACCOUNT_ERROR.ACCOUNT_SUSPENDED, '账户因安全问题已被暂停');
     }
 
-    // 检查账户状态
-    if (loginSnapshot.account.status !== AccountStatus.ACTIVE) {
+    // 检查账户状态：受限会话调用方已完成资格判定，允许待审账号继续签发令牌，
+    // 其余非 ACTIVE 状态（封禁 / 删除 / 暂停等）一律拒绝。
+    const isPendingAccountAllowed =
+      allowPendingAccount && loginSnapshot.account.status === AccountStatus.PENDING;
+    if (loginSnapshot.account.status !== AccountStatus.ACTIVE && !isPendingAccountAllowed) {
       throw new DomainError(AUTH_ERROR.ACCOUNT_INACTIVE, '账户未激活');
     }
 

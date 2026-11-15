@@ -27,7 +27,10 @@ import { ProjectStructurePage } from '@/pages/project-structure';
 import { ReferenceDocumentDetailPage } from '@/pages/reference-document-detail';
 import { ReferenceDocumentNewPage } from '@/pages/reference-document-new';
 import { ReferenceDocumentsPage } from '@/pages/reference-documents';
+import { RegisterCustomerPage } from '@/pages/register-customer';
+import { RegisterEngineerPage } from '@/pages/register-engineer';
 import { RepairRequestCreatePage } from '@/pages/repair-request-create';
+import { RestrictedPage } from '@/pages/restricted';
 import { canAccessSharedUiGallery, SharedUiGalleryPage } from '@/pages/shared-ui-gallery';
 import { Error403, Error404, Error500, ErrorRouteCrash } from '@/features/error-feedback';
 
@@ -103,6 +106,26 @@ const router = createBrowserRouter([
         element: <LoginPageRoute />,
         loader: loginLoader,
         path: 'login',
+      },
+      {
+        // 客户注册（S3）：公开页，已登录会话按登录页同一策略回到角色主页
+        element: <RegisterCustomerPage />,
+        loader: loginLoader,
+        path: 'register/customer',
+      },
+      {
+        // 工程师注册（S4）：同为公开页，成功后只落待审申请、不签发会话
+        element: <RegisterEngineerPage />,
+        loader: loginLoader,
+        path: 'register/engineer',
+      },
+      {
+        // 受限会话落地页：必须改密 / 工程师待审 / 工程师拒绝的会话只允许停留在
+        // 本页，其余受保护路由由 protectedRouteLoader 统一收回这里；非受限会话
+        // 访问本页时跳回自己的角色主页（决策唯一实现在 auth-session 策略层）
+        element: <RestrictedPage />,
+        loader: protectedRouteLoader,
+        path: 'restricted',
       },
       {
         element: <AdminPage />,

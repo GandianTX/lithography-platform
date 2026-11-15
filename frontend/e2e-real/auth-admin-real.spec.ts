@@ -21,8 +21,9 @@
 // - 本轮专用账号写入前必须通过 API/SQL 同库探针（assertApiSqlSameDatabase）；
 // - 本轮自建账号一律使用数据库生成主键，清理绑定 accountId + 专用登录名双因子；
 // - 创建响应一返回即**立即登记**精确 ID（早于任何后续查询 / 断言 / 弹窗关闭等待），后续步骤失败
-//   不回滚登记；逐账号独立清理（某账号失败不阻断后续），删除错误与逐账号残留核对错误一并聚合
-//   报告，主流程与清理同时失败时两类错误都保留（见 helper 的 registerCreatedDedicatedAccount /
+//   不回滚登记；同一用例登记的多个账号作为**一个批次**清理：整批预检通过才允许首删，任一目标
+//   不符或后序 DELETE 失败整批回滚（不会先提交前一个账号）；批次提交后才做事务外残留核对，
+//   主流程与清理同时失败时两类错误都保留（见 helper 的 registerCreatedDedicatedAccount /
 //   cleanupRegisteredDedicatedAccounts / runWithCleanup）；
 // - 不修改共享 Mock 账号的密码 / 状态 / 角色；共享管理员只用于合法管理与被拒保护验证；
 // - 浏览器流量必须落在专用前端 / 专用后端来源，出现 127.0.0.1:3000 即判失败。
@@ -34,8 +35,10 @@ import {
   assertApiSqlSameDatabase,
   cleanupRegisteredDedicatedAccounts,
   DEDICATED_LOGIN_NAME_PATTERN,
+  type DedicatedAccountRole,
   preflightDedicatedAccountCleanup,
   readAccountCountByLoginName,
+  readActingOrganizationId,
   registerCreatedDedicatedAccount,
   type RegisteredDedicatedAccount,
   runWithCleanup,
@@ -188,7 +191,14 @@ async function searchAdminUser(page: Page, keyword: string): Promise<void> {
  */
 async function createUserViaPage(
   page: Page,
-  input: { roleLabel: string; nickname: string; loginName: string; password: string },
+  input: {
+    role: DedicatedAccountRole;
+    roleLabel: string;
+    nickname: string;
+    loginName: string;
+    password: string;
+    organizationId: number;
+  },
   registry: RegisteredDedicatedAccount[],
 ): Promise<RegisteredDedicatedAccount> {
   await page.getByRole('button', { name: '创建用户' }).click();
@@ -222,7 +232,15 @@ async function createUserViaPage(
 
   const createResponse = await createResponsePromise;
   const createBody = (await createResponse.json().catch(() => null)) as unknown;
-  const registered = registerCreatedDedicatedAccount(registry, createBody, input.loginName);
+  const registered = registerCreatedDedicatedAccount(registry, createBody, {
+    accessGroup: [input.role],
+    loginName: input.loginName,
+    nickname: input.nickname,
+    organizationId: input.organizationId,
+    role: input.role,
+    userInfoEmail: null,
+    userState: 'ACTIVE',
+  });
 
   await expect(dialog).toBeHidden();
 
@@ -406,6 +424,8 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
 
     // 本轮登记的精确清理目标（创建响应一返回即登记，见 createUserViaPage / 评审 P1）
     const created: RegisteredDedicatedAccount[] = [];
+    // adminCreateUser 会把 ENGINEER / CUSTOMER 绑定管理员当前有效组织，预期值取自该事实
+    const actingOrganizationId = readActingOrganizationId('mock_super_admin');
 
     await runWithCleanup(
       async () => {
@@ -425,7 +445,9 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
             {
               loginName,
               nickname,
+              organizationId: actingOrganizationId,
               password: CREATE_PASSWORD,
+              role: roleCase.role,
               roleLabel: roleCase.roleLabel,
             },
             created,
@@ -474,7 +496,7 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
 
         assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
       },
-      // 逐账号独立清理（某账号失败不阻断后续），删除错误与逐账号残留核对错误一并聚合报告
+      // 两个账号同批提交：整批预检通过才允许首删，任一目标不符或后序 DELETE 失败整批回滚
       () => cleanupRegisteredDedicatedAccounts(created),
     );
 
@@ -502,6 +524,8 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     const loginName = buildDedicatedLoginName();
     // 本轮登记的精确清理目标（创建响应一返回即登记，见下）
     const created: RegisteredDedicatedAccount[] = [];
+    // adminCreateUser 会把该 ENGINEER 绑定管理员当前有效组织，预期值取自该事实
+    const actingOrganizationId = readActingOrganizationId('mock_super_admin');
 
     await runWithCleanup(
       async () => {
@@ -520,11 +544,15 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
         );
 
         // 创建响应成功即立即登记精确 ID，早于任何后续登录 / 停用 / 断言
-        const accountId = registerCreatedDedicatedAccount(
-          created,
-          createdResponse.body,
+        const accountId = registerCreatedDedicatedAccount(created, createdResponse.body, {
+          accessGroup: ['ENGINEER'],
           loginName,
-        ).id;
+          nickname: 'E2E 停用联调账号',
+          organizationId: actingOrganizationId,
+          role: 'ENGINEER',
+          userInfoEmail: null,
+          userState: 'ACTIVE',
+        }).id;
 
         // 初始密码真实 UI 登录并读取会话 Token（旧 Token 的来源）
         await loginViaUi(page, loginName, CREATE_PASSWORD, '/engineer');

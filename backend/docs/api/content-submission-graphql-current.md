@@ -151,4 +151,3 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 
 - **捕获规格**：`test/11-content-submission/frontend-response-samples.e2e-spec.ts`（12 个操作文本逐字复制前端 adapter；15 组精确键集合断言；39 条样例落盘）。
 - **执行方式**：`S7_SAMPLES_OUT=/tmp/s7-samples.json npm run test:e2e:file -- test/11-content-submission/frontend-response-samples.e2e-spec.ts`（真机 7/7 通过）。
-- **交接材料**：`docs/database/PR0-S7交接材料与真实调用样例-20261020.md`（固定 Seed、账号获取方式、从草稿到发布/下载/更正的最小变量序列、接口↔页面映射表、失败响应清单；隐藏凭据与服务器路径）。

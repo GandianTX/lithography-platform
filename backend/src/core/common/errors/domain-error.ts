@@ -43,7 +43,10 @@ Object.freeze(AUTH_ERROR);
 
 // 账户领域错误码（账户资料/唯一性约束等）
 export const ACCOUNT_ERROR = {
+  /** 旧 `register` 入口的重复账号事实：稳定大类维持基线 BAD_USER_INPUT */
   ACCOUNT_ALREADY_EXISTS: 'ACCOUNT_ALREADY_EXISTS',
+  /** Web `registerWeb` 入口的重复账号事实：仅该入口映射为 CONFLICT */
+  REGISTRATION_ACCOUNT_EXISTS: 'ACCOUNT_REGISTRATION_ACCOUNT_EXISTS',
   NICKNAME_ALREADY_EXISTS: 'NICKNAME_ALREADY_EXISTS',
   REGISTRATION_FAILED: 'REGISTRATION_FAILED',
   OPERATION_NOT_SUPPORTED: 'OPERATION_NOT_SUPPORTED',
@@ -363,6 +366,10 @@ Object.freeze(ENGINEER_REGISTRATION_ERROR);
  *   该码映射 `UNAUTHENTICATED`，会让前端误判会话失效并清理 Session 跳转登录页，
  *   而此类输入形态不可能是正确密码，收敛为「当前密码不正确」语义等价且安全）。
  *   映射 `BAD_USER_INPUT`（当前密码不正确不得触发全局 Session 失效跳转）。
+ * - `NEW_PASSWORD_UNCHANGED`：账号被要求强制改密（`must_change_password`）时，提交的新密码
+ *   仍能通过同一旧凭据校验（即新旧密码相同）。此类提交会清掉强制改密标记却不真正更换凭据，
+ *   等于绕过管理员要求，故按客户端输入类拒绝并映射 `BAD_USER_INPUT`；普通主动改密不适用
+ *   本码（既有语义保持不变）。不得映射 `UNAUTHENTICATED`，否则前端会误判会话失效。
  *
  * `details` 一律留空：字段级提示走 `message`，账号主键与诊断分类只进 `DomainError.cause`
  * （全局过滤器不序列化 `cause`）。
@@ -371,6 +378,7 @@ export const MY_ACCOUNT_ERROR = {
   LOGIN_CREDENTIAL_BOTH_EMPTY: 'MY_ACCOUNT_LOGIN_CREDENTIAL_BOTH_EMPTY',
   CREDENTIAL_CONFLICT: 'MY_ACCOUNT_CREDENTIAL_CONFLICT',
   CURRENT_PASSWORD_MISMATCH: 'MY_ACCOUNT_CURRENT_PASSWORD_MISMATCH',
+  NEW_PASSWORD_UNCHANGED: 'MY_ACCOUNT_NEW_PASSWORD_UNCHANGED',
 } as const;
 Object.freeze(MY_ACCOUNT_ERROR);
 

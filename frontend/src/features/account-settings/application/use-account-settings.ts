@@ -55,6 +55,13 @@ export type UseAccountSettingsOptions = {
    * 与权威昵称一起交给窄入口，由 store 与当前会话比对后决定是否落盘。
    */
   onProfileSaved?: (settings: AccountSettingsView, expectedAccountId: number | null) => void;
+  /**
+   * 是否启用资料读取与写入链路，默认 true。
+   *
+   * 受限页的强制改密态只允许读取身份与改密，**不得**在进入该分支时加载账号资料；
+   * 传 false 时初始加载与 `reload` 都不发起请求（页面装配层据此避免改密前读取其他账号事实）。
+   */
+  enabled?: boolean;
 };
 
 export type AccountSettingsState =
@@ -78,7 +85,7 @@ function toUnhandledUserMessage(error: unknown): string {
 const LOAD_FAILED_MESSAGE = '账号设置加载失败，请稍后重试。';
 
 export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
-  const { onProfileSaved, sampleAccountId, sampleSessionIdentity } = options;
+  const { enabled = true, onProfileSaved, sampleAccountId, sampleSessionIdentity } = options;
   const [state, setState] = useState<AccountSettingsState>({ status: 'loading' });
   // 设置视图序号：仅在初始加载 / reload / 资料保存（会改写设置视图的动作）发起时
   // +1，结果回来时不再等于发起值即陈旧；改密不推进它（见文件头注释）
@@ -100,6 +107,10 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     let cancelled = false;
 
     async function load() {
@@ -132,10 +143,14 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   /** 按当前事实重新加载（写命令不走本入口：写结果自带权威视图，见 updateProfile） */
   const reload = useCallback(() => {
+    if (!enabled) {
+      return;
+    }
+
     viewSeqRef.current += 1;
     const viewSeq = viewSeqRef.current;
 
@@ -156,7 +171,7 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
           setState({ message: LOAD_FAILED_MESSAGE, status: 'failed' });
         }
       });
-  }, []);
+  }, [enabled]);
 
   /**
    * 资料更新：成功时把 adapter 返回的权威视图写回状态（仅当序列未推进——

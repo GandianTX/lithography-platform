@@ -1,6 +1,6 @@
 // src/usecases/registration/registration-input.normalize.ts
 
-import { AudienceTypeEnum } from '@app-types/models/account.types';
+import { AudienceTypeEnum, IdentityTypeEnum } from '@app-types/models/account.types';
 import {
   EngineerRegistrationReviewAction,
   EngineerRegistrationApplicationStatus,
@@ -18,6 +18,35 @@ import {
 
 /** 申请说明与审核意见的数据库列上限（varchar(2000)），超长在输入层即拒绝 */
 const REGISTRATION_TEXT_MAX_LENGTH = 2000;
+
+/** 手填公司名称对应 `organization.name` 的列上限（varchar(200)） */
+export const REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH = 200;
+
+/** 真实姓名对应 `base_user_info.real_name` 的列上限（varchar(200)） */
+const REGISTRATION_REAL_NAME_MAX_LENGTH = 200;
+
+/** 联系电话对应 `base_user_info.phone` 的列上限（varchar(20)） */
+const REGISTRATION_PHONE_MAX_LENGTH = 20;
+
+/**
+ * Web 注册可写邮箱上限：`base_user_info.email` 列宽 50。
+ *
+ * Web 入口按既定语义「联系邮箱默认取登录邮箱」，因此登录邮箱必须同时适配
+ * `base_user_account.login_email`（100）与 `base_user_info.email`（50）两列。
+ * 旧 `register` 入口维持原输入契约（254），不因本收敛被动收紧。
+ */
+export const WEB_REGISTRATION_EMAIL_MAX_LENGTH = 50;
+
+/** Web 注册登录名上限：`base_user_account.login_name` 列宽 30 */
+export const WEB_REGISTRATION_LOGIN_NAME_MAX_LENGTH = 30;
+
+/**
+ * Web 默认昵称基础候选的最大长度。
+ *
+ * `base_user_info.nickname` 列宽 50，昵称冲突时 `generateUniqueNicknameWithSuffix`
+ * 追加 `#` + 6 位随机后缀共 7 个字符，故基础候选最多 43 个字符才能保证追加后仍在列内。
+ */
+export const WEB_REGISTRATION_NICKNAME_BASE_MAX_LENGTH = 43;
 
 interface RegisterWithEmailNormalizeInput {
   loginEmail: string;
@@ -63,9 +92,50 @@ export function normalizeRegisterWithEmailInput(
   };
 }
 
+/**
+ * Web 入口的列宽边界校验（在归一化之后、任何公司/账号写入之前执行）。
+ *
+ * - 登录邮箱：Web 联系邮箱默认取登录邮箱，必须适配 `base_user_info.email`（50）；
+ * - 登录名：必须适配 `base_user_account.login_name`（30），长度仍要求 4–30。
+ *
+ * 旧 `register` 入口不调用本函数，维持原输入契约。
+ */
+export function assertWebRegistrationColumnLimits(input: {
+  loginName?: string | null;
+  loginEmail: string;
+}): void {
+  if (input.loginEmail.length > WEB_REGISTRATION_EMAIL_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      `登录邮箱最多 ${WEB_REGISTRATION_EMAIL_MAX_LENGTH} 个字符`,
+      { field: 'loginEmail' },
+    );
+  }
+
+  if (input.loginName === null || typeof input.loginName === 'undefined') {
+    return;
+  }
+
+  if (input.loginName.length < 4) {
+    throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, '登录名至少 4 个字符', {
+      field: 'loginName',
+    });
+  }
+
+  if (input.loginName.length > WEB_REGISTRATION_LOGIN_NAME_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      `登录名最多 ${WEB_REGISTRATION_LOGIN_NAME_MAX_LENGTH} 个字符`,
+      { field: 'loginName' },
+    );
+  }
+}
+
 export function normalizeRegistrationNicknameCandidatesInput(input: {
   providedNickname?: unknown;
   fallbackOptions?: unknown;
+  /** 默认候选的最大字符数；提供时按字符截断，保证追加冲突后缀后仍在列内 */
+  maxFallbackLength?: number;
 }): {
   providedNickname?: string;
   fallbackOptions: string[];
@@ -88,8 +158,16 @@ export function normalizeRegistrationNicknameCandidatesInput(input: {
     const normalized = normalizeOptionalText(option, 'to_undefined', {
       fieldName: '昵称备选项',
     });
-    if (typeof normalized === 'string' && !fallbackOptions.includes(normalized)) {
-      fallbackOptions.push(normalized);
+    if (typeof normalized !== 'string') {
+      continue;
+    }
+    // 按 Unicode 码点截断，避免把代理对（emoji / 生僻字）切成半个字符
+    const bounded =
+      typeof input.maxFallbackLength === 'number' && input.maxFallbackLength > 0
+        ? Array.from(normalized).slice(0, input.maxFallbackLength).join('')
+        : normalized;
+    if (bounded.length > 0 && !fallbackOptions.includes(bounded)) {
+      fallbackOptions.push(bounded);
     }
   }
 
@@ -209,8 +287,9 @@ function validateRegistrationNickname(value: string): string {
 /**
  * 注册所选组织主键：必须是正整数。
  *
- * 只做输入形态校验；组织是否 ACTIVE 由创建事务内的
- * `OrganizationQueryService.findActiveRegistrationOption()` 复核，绝不信任客户端自报。
+ * 只做输入形态校验；组织可用性由创建事务内按入口资格复核：
+ * Web 注册用 `OrganizationQueryService.findEligibleRegistrationOption()`（ACTIVE 且受管），
+ * 小程序注册与凭据重提用 `findActiveRegistrationOption()`（仅 ACTIVE），绝不信任客户端自报。
  */
 export function normalizeRegistrationOrganizationId(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
@@ -219,6 +298,175 @@ export function normalizeRegistrationOrganizationId(value: unknown): number {
     });
   }
   return value;
+}
+
+/**
+ * 客户手填公司名称：可选；去首尾空白后为空视为未填（返回 null）。
+ * 对应 `organization.name` 列上限 200，超长在输入层拒绝。
+ * 同名公司不合并：写入侧会新建一条独立公司档。
+ */
+export function normalizeRegistrationOrganizationName(value: unknown): string | null {
+  return normalizeRegistrationOptionalText(
+    value,
+    '公司名称',
+    REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH,
+  );
+}
+
+/**
+ * 手填公司名称的同名比较归一化：去首尾空白、连续空白合并为单个空格、统一小写。
+ *
+ * 与前端手填表单的 `normalizeCompanyName` 同口径；只用于公开同名提示查询，
+ * 不改变注册落库的原值，也不承担资格或唯一性裁决。
+ */
+export function normalizeRegistrationOrganizationNameForComparison(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** 注册公司分支：选择名单内公司，或手填自家公司名称；二者互斥 */
+export type RegistrationOrganizationChoice =
+  { kind: 'EXISTING'; organizationId: number } | { kind: 'SELF_FILLED'; organizationName: string };
+
+/**
+ * 解析注册的公司分支。
+ *
+ * - 客户注册：`organizationId` 与 `organizationName` 必须恰好提供一个；
+ *   混传或皆空均明确拒绝，不猜测用户意图；
+ * - 工程师注册：本期只允许选择名单内公司，手填分支留给后续阶段。
+ */
+export function resolveRegistrationOrganizationChoice(input: {
+  organizationId?: number | null;
+  organizationName?: string | null;
+  role: IdentityTypeEnum.CUSTOMER | IdentityTypeEnum.ENGINEER;
+}): RegistrationOrganizationChoice {
+  const hasOrganizationId =
+    input.organizationId !== null && typeof input.organizationId !== 'undefined';
+  const normalizedOrganizationName = normalizeRegistrationOrganizationName(input.organizationName);
+  const hasOrganizationName = normalizedOrganizationName !== null;
+
+  if (hasOrganizationId && hasOrganizationName) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      '所属公司只能选择名单内公司或手填自家公司名称，二者不能同时提交',
+      { field: 'organizationName' },
+    );
+  }
+
+  if (input.role === IdentityTypeEnum.ENGINEER) {
+    if (hasOrganizationName) {
+      throw new DomainError(
+        INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+        '工程师注册必须选择名单内公司，不能手填公司名称',
+        { field: 'organizationName' },
+      );
+    }
+    return {
+      kind: 'EXISTING',
+      organizationId: normalizeRegistrationOrganizationId(input.organizationId),
+    };
+  }
+
+  if (hasOrganizationId) {
+    return {
+      kind: 'EXISTING',
+      organizationId: normalizeRegistrationOrganizationId(input.organizationId),
+    };
+  }
+
+  if (hasOrganizationName) {
+    return { kind: 'SELF_FILLED', organizationName: normalizedOrganizationName };
+  }
+
+  throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, '请选择所属公司或手填自家公司名称', {
+    field: 'organizationName',
+  });
+}
+
+/**
+ * 旧 `register` 入口的公司分支：只接受名单内公司主键，且必填。
+ *
+ * 与 Web 入口的差异：不支持手填公司名称（旧请求形状没有该字段），资格口径为
+ * 仅 `ACTIVE`（事务内用 `findActiveRegistrationOption()` 复核），不要求受管。
+ * 若调用方在旧通道提交 `organizationName`，明确拒绝而不是静默忽略。
+ */
+export function resolveLegacyRegistrationOrganizationChoice(input: {
+  organizationId?: number | null;
+  organizationName?: string | null;
+}): RegistrationOrganizationChoice {
+  if (normalizeRegistrationOrganizationName(input.organizationName) !== null) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      '旧版注册入口不支持手填公司名称，请提交 organizationId',
+      { field: 'organizationName' },
+    );
+  }
+  return {
+    kind: 'EXISTING',
+    organizationId: normalizeRegistrationOrganizationId(input.organizationId),
+  };
+}
+
+/**
+ * 工程师注册的真实姓名与联系电话：二者均必填。
+ *
+ * - 只做输入形态与列上限校验；`real_name` 为 varchar(200)、`phone` 为 varchar(20)，
+ *   超长在进入事务前拒绝；
+ * - 电话允许前导 `+` 与空格/短横线分隔，去分隔符后必须是 6–20 位数字；
+ *   落库保留用户输入的 trim 原值，不做进一步改写；
+ * - 客户注册不调用本收敛，姓名/电话不写入资料。
+ */
+export function normalizeEngineerRegistrationProfile(input: {
+  realName: unknown;
+  phone: unknown;
+}): { realName: string; phone: string } {
+  const realName = normalizeRequiredText(input.realName, { fieldName: '姓名' });
+  if (realName.length > REGISTRATION_REAL_NAME_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      `姓名最多 ${REGISTRATION_REAL_NAME_MAX_LENGTH} 个字符`,
+      { field: 'realName' },
+    );
+  }
+
+  const phone = normalizeRequiredText(input.phone, { fieldName: '联系电话' });
+  if (phone.length > REGISTRATION_PHONE_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      `联系电话最多 ${REGISTRATION_PHONE_MAX_LENGTH} 个字符`,
+      { field: 'phone' },
+    );
+  }
+  const compactPhone = phone.replace(/[\s-]/g, '');
+  if (!/^\+?\d{6,20}$/.test(compactPhone)) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+      '联系电话格式不正确，请填写 6–20 位数字',
+      {
+        field: 'phone',
+      },
+    );
+  }
+
+  return { realName, phone };
+}
+
+/**
+ * 旧 `register` 入口的工程师资料：姓名与电话均可省略。
+ *
+ * - 两者都缺省（`null` / `undefined`）→ 返回 `null`，只创建待审账号与申请，不写姓名电话；
+ * - 任一提供 → 复用与 Web 相同的必填与格式校验（即「部分提供」视为完整资料提交，
+ *   缺另一项按必填错误拒绝）。
+ */
+export function normalizeLegacyEngineerRegistrationProfile(input: {
+  realName: unknown;
+  phone: unknown;
+}): { realName: string; phone: string } | null {
+  const realNameMissing = input.realName === null || typeof input.realName === 'undefined';
+  const phoneMissing = input.phone === null || typeof input.phone === 'undefined';
+  if (realNameMissing && phoneMissing) {
+    return null;
+  }
+  return normalizeEngineerRegistrationProfile(input);
 }
 
 /**
@@ -293,11 +541,40 @@ export function normalizeEngineerRegistrationStatusFilter(
   );
 }
 
+/** 注册公司候选检索关键字：去首尾空白；空白视为未填；超长拒绝而非静默截断 */
+export function normalizeRegistrationOrganizationKeyword(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, '公司名称 必须是字符串', {
+      field: 'keyword',
+    });
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  if (trimmed.length > maxLength) {
+    throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, `公司名称最多 ${maxLength} 个字符`, {
+      field: 'keyword',
+    });
+  }
+  return trimmed;
+}
+
 /**
  * 注册文本型可选字段的统一收敛：非字符串按输入问题拒绝；去首尾空白后为空返回 null；
  * 超过列上限拒绝。`fieldName` 用于组装可定位字段的提示。
  */
-function normalizeRegistrationOptionalText(value: unknown, fieldName: string): string | null {
+function normalizeRegistrationOptionalText(
+  value: unknown,
+  fieldName: string,
+  maxLength: number = REGISTRATION_TEXT_MAX_LENGTH,
+): string | null {
   if (value === null || value === undefined) {
     return null;
   }
@@ -310,10 +587,10 @@ function normalizeRegistrationOptionalText(value: unknown, fieldName: string): s
   if (trimmed.length === 0) {
     return null;
   }
-  if (trimmed.length > REGISTRATION_TEXT_MAX_LENGTH) {
+  if (trimmed.length > maxLength) {
     throw new DomainError(
       ENGINEER_REGISTRATION_ERROR.INVALID_PARAMS,
-      `${fieldName}最多 ${REGISTRATION_TEXT_MAX_LENGTH} 个字符`,
+      `${fieldName}最多 ${maxLength} 个字符`,
       { field: fieldName },
     );
   }

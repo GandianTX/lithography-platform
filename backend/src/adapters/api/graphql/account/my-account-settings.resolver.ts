@@ -1,6 +1,7 @@
 // src/adapters/api/graphql/account/my-account-settings.resolver.ts
 
 import { mapJwtToUsecaseSession, type UsecaseSession } from '@app-types/auth/session.types';
+import { AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { ValidateInput } from '@adapters/api/graphql/common/validate-input.decorator';
 import { UseGuards } from '@nestjs/common';
@@ -21,6 +22,7 @@ import {
 } from '@src/adapters/api/graphql/account/dto/my-account-settings.dto';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { MustChangePasswordGuard } from '@src/adapters/api/graphql/guards/must-change-password.guard';
 import { ChangeMyPasswordUsecase } from '@src/usecases/account/change-my-password.usecase';
 import { GetMyAccountSettingsUsecase } from '@src/usecases/account/get-my-account-settings.usecase';
 import { UpdateMyAccountSettingsUsecase } from '@src/usecases/account/update-my-account-settings.usecase';
@@ -34,10 +36,11 @@ import { UpdateMyAccountSettingsUsecase } from '@src/usecases/account/update-my-
  * - 不依赖 modules(service)、QueryService、Repository 或 infrastructure；
  * - 错误不在此捕获：DomainError 直接上抛进入全局 GraphQL exception filter。
  *
- * 准入：`JwtAuthGuard` 一层即可——`SUPER_ADMIN` / `ENGINEER` / `CUSTOMER` 均可管理**自己的**
- * 账号设置（契约见 `docs/api/account-write-current.md`），故不加 `@Roles`。目标账号只能来自
- * 已认证 Session，三个入口（1 Query + 2 Mutation）**刻意不接收任何目标账号 ID 参数**，
- * 结构上杜绝读取 / 修改他人设置的入口。
+ * 准入：`JwtAuthGuard` + `MustChangePasswordGuard`——`SUPER_ADMIN` / `ENGINEER` / `CUSTOMER`
+ * 均可管理**自己的**账号设置（契约见 `docs/api/account-write-current.md`），故不加 `@Roles`；
+ * 待审 / 已拒绝 / 资格未生效的受限会话仍需查看与维护本人资料，但强制改密完成前一律拒绝。
+ * 目标账号只能来自已认证 Session，三个入口（1 Query + 2 Mutation）**刻意不接收任何目标
+ * 账号 ID 参数**，结构上杜绝读取 / 修改他人设置的入口。
  */
 @Resolver()
 export class MyAccountSettingsResolver {
@@ -51,7 +54,7 @@ export class MyAccountSettingsResolver {
    * 读取当前登录用户自己的账号设置（只读）。
    * 角色与状态为只读展示字段；响应不含 accountId、密码、Token、identityHint 等敏感字段。
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
   @Query(() => MyAccountSettingsDTO, {
     name: 'myAccountSettings',
     description: '读取当前登录用户的账号设置（只读）',
@@ -66,8 +69,11 @@ export class MyAccountSettingsResolver {
    * 更新当前登录用户自己的账号设置（登录名 / 登录邮箱 / 昵称 / 公司名称 / 电话 / 联系邮箱）。
    * 三态语义见 `UpdateMyAccountSettingsInput`；「至少保留一个登录方式」、唯一性预检查与
    * 数据库唯一索引竞争裁决全部由 Usecase 在事务内完成，本方法不做任何业务判断。
+   *
+   * 受限会话的字段白名单由 Usecase 依据请求期复核结论（`user.restriction`）裁决：
+   * Resolver 只透传事实，不自行放宽或收紧。
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
   @Mutation(() => UpdateMyAccountSettingsResultDTO, {
     name: 'updateMyAccountSettings',
     description: '更新当前登录用户的账号设置',
@@ -75,11 +81,12 @@ export class MyAccountSettingsResolver {
   @ValidateInput()
   async updateMyAccountSettings(
     @Args('input') input: UpdateMyAccountSettingsInput,
-    @currentUser() user: JwtPayload,
+    @currentUser() user: AuthenticatedSessionUser,
   ): Promise<UpdateMyAccountSettingsResultDTO> {
     const session: UsecaseSession = mapJwtToUsecaseSession(user);
     const result = await this.updateMyAccountSettingsUsecase.execute({
       session,
+      restriction: user.restriction,
       loginName: input.loginName,
       loginEmail: input.loginEmail,
       nickname: input.nickname,

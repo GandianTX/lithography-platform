@@ -9,7 +9,7 @@ import type { OrganizationRegistrationOption } from '@src/modules/lithography/or
  * 只供注册页选择；客户端提交的 organizationId 仍由注册/重提事务复核有效性，
  * 本 DTO 不暴露组织类别、成员、内部资料等任何组织内部信息。
  */
-@ObjectType({ description: '注册可选组织（有效组织的公开最小信息）' })
+@ObjectType({ description: '注册可选组织（启用且属于一级维护名单的公开最小信息）' })
 export class RegistrationOrganizationDTO {
   @Field(() => Int, { description: '组织主键' })
   id!: number;

@@ -17,6 +17,8 @@ const engineer = session(['ENGINEER']);
 const otherEngineer = session(['ENGINEER'], 900002);
 const customer = session(['CUSTOMER']);
 const nonEngineerSameOrg = session(['CLIENT'], 900003);
+/** 管理员会话：读写身份均以可信 JWT roles + activeRole 为准 */
+const admin = session(['SUPER_ADMIN'], 900010);
 
 const createdAt = new Date('2026-11-14T00:00:00.000Z');
 
@@ -87,6 +89,29 @@ describe('StoredFileQueryService 读授权', () => {
         businessId: null,
       });
       expect(result).not.toHaveProperty('storageReference');
+    });
+
+    it('原上传者 + 正确上下文可下载；缺上下文、错上下文、非上传者拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(fileRow());
+
+      await expect(service.findAuthorizedDownload(accessQuery())).resolves.toMatchObject({
+        fileId: '11111111-1111-4111-8111-111111111111',
+        storageReference: 'private/ref.pdf',
+        byteSize: 10,
+        checksumSha256: 'checksum',
+      });
+      await expect(
+        service.findAuthorizedDownload(accessQuery({ uploadContextId: null })),
+      ).resolves.toBeNull();
+      await expect(
+        service.findAuthorizedDownload(
+          accessQuery({ uploadContextId: '33333333-3333-4333-8333-333333333333' }),
+        ),
+      ).resolves.toBeNull();
+      await expect(
+        service.findAuthorizedDownload(accessQuery({ session: otherEngineer })),
+      ).resolves.toBeNull();
     });
 
     it('上传上下文缺失或不匹配时拒绝（不可只凭 fileId 读取）', async () => {
@@ -296,6 +321,242 @@ describe('StoredFileQueryService 读授权', () => {
         byteSize: 10,
         checksumSha256: 'checksum',
       });
+    });
+  });
+
+  describe('管理员读取（BOUND REPAIR_PROCESS）', () => {
+    const boundFile = () =>
+      fileRow({ bindingStatus: 'BOUND', businessId: '42', uploadContextId: 'ctx' });
+    const entry = { id: 700001 };
+    const request = (overrides: Record<string, unknown> = {}) => ({
+      id: 42,
+      intakeId: 7001,
+      serviceOrganizationId: 920002,
+      ownerOrganizationId: 920002,
+      isAccepted: false,
+      acceptedByEngineerAccountId: null,
+      deprecated: false,
+      ...overrides,
+    });
+
+    const adminQuery = (overrides: Partial<StoredFileAccessQuery> = {}) =>
+      accessQuery({
+        session: admin,
+        viewerOrganizationId: null,
+        uploadContextId: null,
+        adminOrganizationId: null,
+        ...overrides,
+      });
+
+    it('工单查询同时读取服务公司证据列（管理员组织范围判定所需）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(request());
+
+      await service.findAuthorizedMetadata(adminQuery());
+
+      expect(repositories.request.findOne).toHaveBeenCalledWith({
+        where: { id: 42 },
+        select: expect.objectContaining({
+          serviceOrganizationId: true,
+          ownerOrganizationId: true,
+          deprecated: true,
+        }),
+      });
+    });
+
+    it('一级管理员（organizationId = null）可跨公司读取真实关联原件', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(request());
+
+      const result = await service.findAuthorizedMetadata(adminQuery());
+
+      expect(result).toMatchObject({ businessId: '42', bindingStatus: 'BOUND' });
+      expect(result).not.toHaveProperty('storageReference');
+    });
+
+    it('二级管理员可读取本公司工单原件（按服务公司主口径）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 700002 }),
+      );
+
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+    });
+
+    it('二级管理员跨公司读取拒绝（即使存在真实过程关联）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(request());
+
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('服务公司为空时即使 owner 匹配也拒绝；两列都空同样拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: null, ownerOrganizationId: 700002 }),
+      );
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: null, ownerOrganizationId: null }),
+      );
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('服务公司属于外公司时以服务公司为准，owner 匹配也拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(
+        request({ serviceOrganizationId: 920002, ownerOrganizationId: 700002 }),
+      );
+
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('服务公司属于本公司时允许，owner 不同不影响', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 920002 }),
+      );
+
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+    });
+
+    it('一级管理员可跨公司定位下载；只返回流式所需事实', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(request());
+
+      const facts = await service.findAuthorizedDownload(adminQuery());
+
+      expect(facts).toMatchObject({
+        fileId: fileRow().fileId,
+        storageReference: fileRow().storageReference,
+        mimeType: 'application/pdf',
+        checksumSha256: 'checksum',
+      });
+      expect(facts).not.toHaveProperty('businessId');
+      expect(facts).not.toHaveProperty('uploadedByAccountId');
+    });
+
+    it('二级管理员可下载本公司工单原件，跨公司下载拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 700002 }),
+      );
+      await expect(
+        service.findAuthorizedDownload(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+
+      repositories.request.findOne.mockResolvedValue(request());
+      await expect(
+        service.findAuthorizedDownload(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('二级管理员下载：服务公司为空或为外公司时即使 owner 匹配也拒绝；服务公司本公司时允许', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: null, ownerOrganizationId: 700002 }),
+      );
+      await expect(
+        service.findAuthorizedDownload(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: 920002, ownerOrganizationId: 700002 }),
+      );
+      await expect(
+        service.findAuthorizedDownload(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toBeNull();
+
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 920002 }),
+      );
+      await expect(
+        service.findAuthorizedDownload(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+    });
+
+    it('缺少真实过程关联或工单已删除时管理员同样拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.request.findOne.mockResolvedValue(request());
+
+      await expect(service.findAuthorizedMetadata(adminQuery())).resolves.toBeNull();
+
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(request({ deprecated: true }));
+      await expect(service.findAuthorizedMetadata(adminQuery())).resolves.toBeNull();
+    });
+
+    it('管理员身份不自动获得他人暂存文件', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(fileRow({ uploadedByAccountId: 900001 }));
+
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({
+            viewerOrganizationId: 910001,
+            uploadContextId: '22222222-2222-4222-8222-222222222222',
+          }),
+        ),
+      ).resolves.toBeNull();
     });
   });
 

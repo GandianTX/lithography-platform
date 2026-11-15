@@ -1,5 +1,6 @@
 // src/adapters/api/graphql/strategies/jwt.strategy.ts
 import type { JwtPayload } from '@app-types/jwt.types';
+import type { AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
 import { Inject, Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-access-token-session.usecase';
@@ -28,7 +29,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     this.logger.setContext(JwtStrategy.name);
   }
 
-  async validate(payload: JwtPayload): Promise<JwtPayload> {
+  async validate(payload: JwtPayload): Promise<AuthenticatedSessionUser> {
     return await this.validateAccessTokenSessionUsecase.execute({ payload });
   }
 }

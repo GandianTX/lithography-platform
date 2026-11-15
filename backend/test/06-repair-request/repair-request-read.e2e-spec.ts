@@ -626,9 +626,16 @@ describe('维修申请公共读模型 (e2e)', () => {
         expect(page.total).toBe(6);
       } finally {
         // 清理本用例造数（按本轮记录 ID，逐主键删除），不影响后续用例对种子集合的精确断言
-        await dataSource
+        const deleted = await dataSource
           .getRepository(RepairRequestEntity)
           .delete({ id: In([firstSameId, secondSameId]) });
+        // 预期删除必须确实命中两条；删除失败或命中不足都显式失败，不静默放过
+        expect(deleted.affected).toBe(2);
+        // 两条临时申请已被本用例预期删除，必须同步移出归属台账；
+        // 其余夹具继续由 afterAll 做完整归属校验和精确清理。
+        ownership.repairRequestIds = ownership.repairRequestIds.filter(
+          (id) => id !== firstSameId && id !== secondSameId,
+        );
       }
     });
 

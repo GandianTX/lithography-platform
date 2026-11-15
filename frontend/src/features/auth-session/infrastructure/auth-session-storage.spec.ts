@@ -33,6 +33,9 @@ function createMemoryStorage(): AuthSessionStorageBackend & {
 const SUPER_ADMIN_SESSION = createAuthSessionSnapshot({
   accessToken: 'access-token',
   accountId: 900001,
+  adminLevel: 1,
+  customerOrganizationId: null,
+  restriction: 'NONE',
   role: 'SUPER_ADMIN',
   userInfo: {
     accessGroup: ['SUPER_ADMIN'],
@@ -45,9 +48,15 @@ function createStoredSession(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     accessToken: SUPER_ADMIN_SESSION.accessToken,
     accountId: SUPER_ADMIN_SESSION.accountId,
+    adminLevel: SUPER_ADMIN_SESSION.adminLevel,
+    customerOrganizationId: SUPER_ADMIN_SESSION.customerOrganizationId,
+    engineerOrganizationId: SUPER_ADMIN_SESSION.engineerOrganizationId,
+    adminOrganizationId: SUPER_ADMIN_SESSION.adminOrganizationId,
+    registrationOrganizationId: SUPER_ADMIN_SESSION.registrationOrganizationId,
+    restriction: SUPER_ADMIN_SESSION.restriction,
     role: SUPER_ADMIN_SESSION.role,
     userInfo: SUPER_ADMIN_SESSION.userInfo,
-    version: 1,
+    version: 3,
     ...overrides,
   });
 }
@@ -60,9 +69,36 @@ describe('auth session storage', () => {
     persistence.write(SUPER_ADMIN_SESSION);
 
     expect(persistence.read()).toEqual(SUPER_ADMIN_SESSION);
-    expect([...storage.values.values()][0]).toContain('"version":1');
+    expect([...storage.values.values()][0]).toContain('"version":3');
     expect([...storage.values.values()][0]).not.toContain('refreshToken');
     expect([...storage.values.values()][0]).not.toContain('metaDigest');
+  });
+
+  it('restores a snapshot missing the new session facts with safe defaults', () => {
+    const storage = createMemoryStorage();
+    const persistence = createAuthSessionPersistence(() => storage);
+
+    // v3 快照缺失限制状态 / 身份扩展字段：按 NONE / null 恢复，不丢会话
+    storage.setItem(
+      AUTH_SESSION_STORAGE_KEY,
+      createStoredSession({
+        adminLevel: undefined,
+        customerOrganizationId: undefined,
+        engineerOrganizationId: undefined,
+        adminOrganizationId: undefined,
+        registrationOrganizationId: undefined,
+        restriction: undefined,
+      }),
+    );
+
+    expect(persistence.read()).toEqual({
+      ...SUPER_ADMIN_SESSION,
+      adminLevel: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
+      restriction: 'NONE',
+    });
   });
 
   it('restores a legacy snapshot without avatarUrl as null instead of dropping the session', () => {
@@ -85,9 +121,10 @@ describe('auth session storage', () => {
 
   it.each([
     ['an empty payload', ''],
-    ['an unknown version', createStoredSession({ version: 2 })],
+    ['an unknown version', createStoredSession({ version: 4 })],
+    ['a legacy v1 payload', createStoredSession({ version: 1 })],
     ['an empty token', createStoredSession({ accessToken: ' ' })],
-    ['missing fields', JSON.stringify({ version: 1 })],
+    ['missing fields', JSON.stringify({ version: 3 })],
     ['invalid JSON', '{invalid json'],
   ])('removes %s instead of restoring it', (_caseName, storedValue) => {
     const storage = createMemoryStorage();

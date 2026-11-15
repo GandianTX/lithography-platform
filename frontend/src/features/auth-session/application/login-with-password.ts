@@ -1,6 +1,10 @@
 // src/features/auth-session/application/login-with-password.ts
 
-import type { AuthSessionView, EstablishAuthSessionInput } from './auth-session.types';
+import type {
+  AuthSessionSnapshot,
+  AuthSessionView,
+  EstablishAuthSessionInput,
+} from './auth-session.types';
 import { createAuthSessionView } from './auth-session-policy';
 
 export type LoginWithPasswordInput = {
@@ -9,7 +13,8 @@ export type LoginWithPasswordInput = {
 };
 
 export type AuthLoginGateway = {
-  loginWithPassword: (input: LoginWithPasswordInput) => Promise<EstablishAuthSessionInput>;
+  /** 网关已完成响应解码与会话不变量校验，返回可直接建立会话的快照 */
+  loginWithPassword: (input: LoginWithPasswordInput) => Promise<AuthSessionSnapshot>;
 };
 
 type AuthSessionEstablisher = {

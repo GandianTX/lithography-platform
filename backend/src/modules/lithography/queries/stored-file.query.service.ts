@@ -28,6 +28,12 @@ export type StoredFileAccessQuery = {
   /** 暂存读取必须携带并匹配；正式业务读取不使用 */
   uploadContextId: string | null;
   expectedBusinessType: string;
+  /**
+   * 管理员工单组织范围（仅 BOUND REPAIR_PROCESS 生效）：
+   * `undefined` 表示非管理员，继续既有工程师口径；`null` 为一级全公司；
+   * 数字为二级管理员可信本公司。不得由客户端传入。
+   */
+  adminOrganizationId?: number | null;
 };
 
 /** 读取授权所需的原件安全事实（含仅服务端可见的存储引用） */
@@ -56,6 +62,7 @@ type StoredFileAccessRow = {
  * - 暂存（TEMPORARY）：原上传者 + 可信当前公司一致 + 用途一致 + upload_context_id 精确匹配；
  * - 正式绑定（BOUND REPAIR_PROCESS）：必须存在 repair_process_entry 真实关联，
  *   且读取者具备工程师角色，工单及 intake 的服务公司一致并匹配读取者可信组织；
+ *   管理员分支复用管理员工单授权策略：一级全公司、二级仅本公司（见 adminOrganizationId）；
  * - 客户、外公司、同公司非工程师账号一律返回 null，不泄露原件存在性或内部过程。
  */
 @Injectable()
@@ -222,6 +229,7 @@ export class StoredFileQueryService {
           id: true,
           intakeId: true,
           serviceOrganizationId: true,
+          ownerOrganizationId: true,
           deprecated: true,
         },
       }),
@@ -230,6 +238,18 @@ export class StoredFileQueryService {
       return false;
     }
 
+    if (query.adminOrganizationId !== undefined) {
+      return this.canAccessBoundAsAdmin(request, query.adminOrganizationId);
+    }
+
+    return this.canAccessBoundAsEngineer(request, query);
+  }
+
+  /** 工程师分支：工单 intake 服务公司须与读取者可信公司一致 */
+  private async canAccessBoundAsEngineer(
+    request: RepairRequestEntity,
+    query: StoredFileAccessQuery,
+  ): Promise<boolean> {
     if (
       request.intakeId === null ||
       query.viewerOrganizationId === null ||
@@ -242,6 +262,24 @@ export class StoredFileQueryService {
       select: { id: true, serviceOrganizationId: true },
     });
     return intake !== null && intake.serviceOrganizationId === request.serviceOrganizationId;
+  }
+
+  /**
+   * 管理员分支：一级全公司；二级必须由工单自身的 `service_organization_id`
+   * 明确证明属于本公司。
+   *
+   * 工单原件不采用管理员工单列表/详情的 owner 回退：`service_organization_id`
+   * 为空或指向外公司时，即使 `owner_organization_id` 匹配也拒绝，避免二级管理员
+   * 借历史列读取没有明确服务归属的原件（失败关闭，见 data-contracts §5「2 级限本公司」）。
+   */
+  private canAccessBoundAsAdmin(
+    request: RepairRequestEntity,
+    adminOrganizationId: number | null,
+  ): boolean {
+    if (adminOrganizationId === null) {
+      return true;
+    }
+    return request.serviceOrganizationId === adminOrganizationId;
   }
 
   private toMetadataView(file: StoredFileAccessRow): StoredFileMetadataView {

@@ -141,6 +141,42 @@ describe('auth session policy', () => {
     );
   });
 
+  it('funnels restricted sessions into the dedicated landing page', () => {
+    const pendingSession = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900101,
+      restriction: 'ENGINEER_PENDING',
+      role: 'ENGINEER',
+      userInfo: null,
+    });
+    const mustChangeSession = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900102,
+      restriction: 'MUST_CHANGE_PASSWORD',
+      role: 'ENGINEER',
+      userInfo: null,
+    });
+    const normalSession = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900103,
+      role: 'ENGINEER',
+      userInfo: null,
+    });
+
+    // 入口 / 登录回跳 / 受保护路由：受限会话一律落到 /restricted，不看 returnTo
+    expect(resolveAuthSessionEntryPath(pendingSession, '/engineer')).toBe('/restricted');
+    expect(resolveLoginRouteRedirect(pendingSession, '/engineer?tab=open')).toBe('/restricted');
+    expect(resolveEntryRouteRedirect(mustChangeSession)).toBe('/restricted');
+    expect(resolveProtectedRouteRedirect(pendingSession, '/engineer')).toBe('/restricted');
+    expect(resolveProtectedRouteRedirect(pendingSession, '/account/settings')).toBe('/restricted');
+    expect(resolveProtectedRouteRedirect(pendingSession, '/restricted')).toBeNull();
+    expect(resolveProtectedRouteRedirect(pendingSession, '/restricted/')).toBeNull();
+
+    // 非受限会话不得停留在受限页：回到自己的角色主页
+    expect(resolveProtectedRouteRedirect(normalSession, '/restricted')).toBe('/engineer');
+    expect(resolveProtectedRouteRedirect({ role: 'CUSTOMER' }, '/restricted')).toBe('/customer');
+  });
+
   it('adopts a same-role sub-page returnTo and rejects cross-role or lookalike targets', () => {
     expect(resolveAuthSessionEntryPath({ role: 'CUSTOMER' }, '/customer/repair-requests/new')).toBe(
       '/customer/repair-requests/new',
@@ -300,12 +336,53 @@ describe('auth session policy', () => {
     ).toEqual({
       accessToken: 'access-token',
       accountId: 900101,
+      adminLevel: null,
+      customerOrganizationId: null,
+      engineerOrganizationId: null,
+      adminOrganizationId: null,
+      registrationOrganizationId: null,
+      restriction: 'NONE',
       role: 'ENGINEER',
       userInfo: {
         accessGroup: ['ENGINEER'],
         avatarUrl: 'https://example.test/avatar/chen.png',
         nickname: '陈工',
       },
+    });
+  });
+
+  it('normalizes restricted-session facts and fails open to NONE on unknown values', () => {
+    expect(
+      createAuthSessionSnapshot({
+        accessToken: 'access-token',
+        accountId: 900101,
+        adminLevel: 2,
+        customerOrganizationId: 4401,
+        restriction: 'ENGINEER_PENDING',
+        role: 'ENGINEER',
+        userInfo: null,
+      }),
+    ).toMatchObject({
+      adminLevel: 2,
+      customerOrganizationId: 4401,
+      restriction: 'ENGINEER_PENDING',
+    });
+
+    // 非法身份扩展字段回落 null、未知限制状态回落 NONE（服务端仍按数据库事实鉴权）
+    expect(
+      createAuthSessionSnapshot({
+        accessToken: 'access-token',
+        accountId: 900101,
+        adminLevel: -1,
+        customerOrganizationId: 1.5,
+        restriction: 'UNKNOWN' as never,
+        role: 'ENGINEER',
+        userInfo: null,
+      }),
+    ).toMatchObject({
+      adminLevel: null,
+      customerOrganizationId: null,
+      restriction: 'NONE',
     });
   });
 

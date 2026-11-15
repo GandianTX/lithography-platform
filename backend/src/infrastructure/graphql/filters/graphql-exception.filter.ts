@@ -171,6 +171,11 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   // 账户相关错误
   [ACCOUNT_ERROR.NICKNAME_TAKEN]: 'CONFLICT',
   [ACCOUNT_ERROR.EMAIL_TAKEN]: 'CONFLICT',
+  // 旧 `register` 入口的重复账号事实维持基线大类 BAD_USER_INPUT（兼容既有客户端）；
+  // Web `registerWeb` 入口的重复账号用独立错误码映射 CONFLICT，两个入口都能只凭
+  // `extensions.code` 识别，不依赖生产环境被隐藏的 `extensions.errorCode`
+  [ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS]: 'BAD_USER_INPUT',
+  [ACCOUNT_ERROR.REGISTRATION_ACCOUNT_EXISTS]: 'CONFLICT',
   [ACCOUNT_ERROR.USER_INFO_NOT_FOUND]: 'NOT_FOUND',
   // 自助注册所选组织不存在/已停用：客户端可修正的输入问题，显式登记避免契约漂移
   [ACCOUNT_ERROR.ORGANIZATION_NOT_AVAILABLE]: 'BAD_USER_INPUT',
@@ -300,6 +305,8 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   [MY_ACCOUNT_ERROR.LOGIN_CREDENTIAL_BOTH_EMPTY]: 'BAD_USER_INPUT',
   [MY_ACCOUNT_ERROR.CREDENTIAL_CONFLICT]: 'CONFLICT',
   [MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH]: 'BAD_USER_INPUT',
+  // 强制改密提交同值密码属客户端输入类拒绝：映射 UNAUTHENTICATED 会让前端误判会话失效
+  [MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED]: 'BAD_USER_INPUT',
 
   // 管理员文档数据库聚合读（PR3 只读）：目标不存在/已软删统一 NOT_FOUND；
   // 输入问题（含关键字命中账号超限、非法 ID / 时间范围）显式登记 BAD_USER_INPUT，

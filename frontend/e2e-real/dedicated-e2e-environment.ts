@@ -9,7 +9,8 @@
 // 4. 测试内 SQL helper / 物理清理 helper（经进程环境写入）。
 //
 // 失败关闭策略（校验完成前不得启动 Migration、Seed 或任何删除操作）：
-// - DB_NAME 必须严格等于 lithography_e2e；
+// - DB_NAME 必须等于团队默认专用库 lithography_e2e，或命中白名单的本地隔离覆盖
+//   （E2E_DEDICATED_DB_NAME，见 resolveDedicatedE2EDbName）；
 // - DB_HOST / DB_USER / DB_PASS 不得为空，DB_PORT 必须是合法端口；
 // - E2E_ALLOW_PHYSICAL_CLEANUP 必须由调用者显式设置为 1（不入 npm script）；
 // - 外部继承的 MIGRATION_DRILL_DATABASE（指向其他库）、MIGRATION_DRILL_CREATE_TEMP_DB=true、
@@ -23,7 +24,22 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const DEDICATED_E2E_DB_NAME = 'lithography_e2e';
+/** 团队默认专用库：共享配置的唯一默认目标 */
+export const DEDICATED_E2E_DB_NAME_DEFAULT = 'lithography_e2e';
+
+/**
+ * 本机隔离库覆盖变量：默认不设置；确需把共享入口指向另一套专用库时，
+ * 只能在可复核的本地执行入口（进程环境）中声明，不写入任何共享配置或文档默认值。
+ * 覆盖值仍须命中团队命名白名单，并与连接一致性、只读探针、清理授权门逐项复核。
+ */
+export const DEDICATED_E2E_DB_NAME_OVERRIDE_ENV = 'E2E_DEDICATED_DB_NAME';
+
+/** 白名单：团队默认库，或团队命名约定下另一套专用 E2E 库（不含开发库/演练库） */
+const DEDICATED_E2E_DB_NAME_PATTERN = /^lithography(?:_[a-z0-9]+)*_e2e$/;
+
+/** 本轮实际使用的专用库名（模块加载时解析一次，所有消费者共享同一值） */
+export const DEDICATED_E2E_DB_NAME = resolveDedicatedE2EDbName();
+
 export const DEDICATED_BACKEND_ORIGIN = 'http://127.0.0.1:3100';
 
 /** 物理清理显式授权变量：只能由执行者在启动前设置，不提供默认值 */
@@ -91,6 +107,41 @@ function readProcessValue(env: NodeJS.ProcessEnv | Record<string, string>, key: 
   return value !== undefined && value.trim() !== '' ? value : '';
 }
 
+/** 读取后端 env 文件；本地文件缺失或不可读时按「未提供」处理 */
+function readBackendEnvFileValuesSafe(): Record<string, string> {
+  try {
+    return parseBackendEnvFileValues();
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 解析本轮专用库名：团队默认值 + 受控的本地隔离覆盖。
+ *
+ * - 未声明 `E2E_DEDICATED_DB_NAME` 时使用团队默认库 `lithography_e2e`；
+ * - 覆盖只来自进程环境（本地执行入口），不读取未入库文件，避免本机差异进入共享配置；
+ * - 覆盖值必须命中团队命名白名单（`lithography[_<段>]*_e2e`），开发库/演练库一律拒绝；
+ * - 解析结果参与五项连接一致性、baseline/seed 目标、只读探针与清理授权门的全部复核。
+ */
+export function resolveDedicatedE2EDbName(
+  env: NodeJS.ProcessEnv | Record<string, string> = process.env,
+): string {
+  const override = readProcessValue(env, DEDICATED_E2E_DB_NAME_OVERRIDE_ENV);
+
+  if (override === '') {
+    return DEDICATED_E2E_DB_NAME_DEFAULT;
+  }
+
+  if (!DEDICATED_E2E_DB_NAME_PATTERN.test(override)) {
+    throw new Error(
+      `专用 E2E 库名覆盖被拒绝：${DEDICATED_E2E_DB_NAME_OVERRIDE_ENV}=${JSON.stringify(override)} 未命中团队白名单（默认 ${JSON.stringify(DEDICATED_E2E_DB_NAME_DEFAULT)}）`,
+    );
+  }
+
+  return override;
+}
+
 function assertValidPort(port: string): void {
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65_535) {
     throw new Error(
@@ -126,13 +177,8 @@ export function resolveDedicatedE2EDatabase(
     }
   }
 
-  let fileValues: Record<string, string> = {};
-  try {
-    fileValues = parseBackendEnvFileValues();
-  } catch {
-    // 文件是本地文件不入库；仅当进程 env 未提供完整五项时才因缺失失败（见下方校验）
-    fileValues = {};
-  }
+  // 文件是本地文件不入库；仅当进程 env 未提供完整五项时才因缺失失败（见下方校验）
+  const fileValues = readBackendEnvFileValuesSafe();
 
   const resolve = (key: (typeof DEDICATED_DB_CONNECTION_KEYS)[number]): string =>
     readProcessValue(env, key) || fileValues[key] || '';

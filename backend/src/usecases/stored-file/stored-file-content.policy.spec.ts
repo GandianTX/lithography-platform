@@ -514,6 +514,16 @@ const expectOnlyChainTerminatorChanged = (
   expect(Math.max(...changedOffsets)).toBeLessThan(legal.terminatorOffset + 4);
 };
 
+function patchJpegMarker(sample: Buffer, from: number, to: number): Buffer {
+  const patched = Buffer.from(sample);
+  const markerOffset = patched.indexOf(Buffer.from([0xff, from]));
+  if (markerOffset < 0) {
+    throw new Error('jpeg marker not found in fixture');
+  }
+  patched[markerOffset + 1] = to;
+  return patched;
+}
+
 describe('stored-file-content.policy', () => {
   it('提取小写扩展名', () => {
     expect(extractStoredFileExtension('维修记录.PDF')).toBe('pdf');
@@ -572,6 +582,11 @@ describe('stored-file-content.policy', () => {
     expect(resolve(minimalPng, 'sample.png')).toBe('image/png');
     expect(resolve(minimalJpeg, 'sample.jpg')).toBe('image/jpeg');
     expect(resolve(minimalJpeg, 'sample.jpeg')).toBe('image/jpeg');
+  });
+
+  it('JPEG 只把 SOF 标记识别为帧：SOF1 仍通过，非 SOF 标记不当作帧', () => {
+    expect(resolve(patchJpegMarker(minimalJpeg, 0xc0, 0xc1), 'sof1.jpg')).toBe('image/jpeg');
+    expect(resolve(patchJpegMarker(minimalJpeg, 0xc0, 0xc4), 'non-sof.jpg')).toBeNull();
   });
 
   it('普通 ZIP 冒充 Office 被拒绝', () => {

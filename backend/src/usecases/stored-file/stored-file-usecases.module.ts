@@ -2,6 +2,7 @@
 
 import { Module } from '@nestjs/common';
 
+import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { DownloadStoredFileUsecase } from './download-stored-file.usecase';
 import { GetStoredFileMetadataUsecase } from './get-stored-file-metadata.usecase';
@@ -16,7 +17,7 @@ import { UploadStoredFileUsecase } from './upload-stored-file.usecase';
  *   （与参考资料/投稿附件同一存储实现与配置源，安全边界不复制）。
  */
 @Module({
-  imports: [LithographyModule],
+  imports: [LithographyModule, AccountInstallerModule],
   providers: [UploadStoredFileUsecase, GetStoredFileMetadataUsecase, DownloadStoredFileUsecase],
   exports: [UploadStoredFileUsecase, GetStoredFileMetadataUsecase, DownloadStoredFileUsecase],
 })

@@ -44,8 +44,13 @@ function fill(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-function renderForm(onSubmit: (draft: AccountSettingsProfileDraft) => Promise<SubmitExecution>) {
-  return render(<AccountProfileForm onSubmit={onSubmit} settings={SETTINGS} submitting={false} />);
+function renderForm(
+  onSubmit: (draft: AccountSettingsProfileDraft) => Promise<SubmitExecution>,
+  mode?: 'full' | 'restricted',
+) {
+  return render(
+    <AccountProfileForm mode={mode} onSubmit={onSubmit} settings={SETTINGS} submitting={false} />,
+  );
 }
 
 function successResult(
@@ -195,6 +200,66 @@ describe('AccountProfileForm 客户端校验与草稿构造', () => {
     expect(Object.keys(draft).sort()).toEqual(['companyName', 'contactEmail', 'nickname', 'phone']);
     expect(draft).not.toHaveProperty('loginName');
     expect(draft).not.toHaveProperty('loginEmail');
+  });
+});
+
+describe('AccountProfileForm 受限会话模式', () => {
+  it('公司名称只读展示可信申请结果，提交草稿不含 companyName 键', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(successResult());
+    renderForm(onSubmit, 'restricted');
+
+    expect(screen.getByLabelText('公司名称')).toBeDisabled();
+    expect(screen.getByLabelText('公司名称')).toHaveValue('示例公司');
+    expect(
+      screen.getByText('公司名称由注册申请审核结果决定，如需变更请联系管理员。'),
+    ).toBeInTheDocument();
+
+    fill('昵称', '新昵称');
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const draft = onSubmit.mock.calls[0]?.[0] as AccountSettingsProfileDraft;
+
+    expect(draft).toEqual({
+      contactEmail: 'contact@example.com',
+      nickname: '新昵称',
+      phone: '13800000000',
+    });
+    expect(draft).not.toHaveProperty('companyName');
+    expect(draft).not.toHaveProperty('loginName');
+    expect(draft).not.toHaveProperty('loginEmail');
+  });
+
+  it('清空电话与联系邮箱只提交 null，不夹带公司字段的空值', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(successResult());
+    renderForm(onSubmit, 'restricted');
+
+    fill('电话', '   ');
+    fill('联系邮箱（非登录凭据）', '');
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const draft = onSubmit.mock.calls[0]?.[0] as AccountSettingsProfileDraft;
+
+    expect(draft).toEqual({
+      contactEmail: null,
+      nickname: '陈工',
+      phone: null,
+    });
+    expect(draft).not.toHaveProperty('companyName');
+  });
+
+  it('保存成功后以后端权威公司值回写只读展示', async () => {
+    const { onSubmit, resolve } = deferredSubmit();
+    renderForm(onSubmit, 'restricted');
+
+    fill('昵称', '新昵称');
+    fireEvent.click(getSubmitButton());
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+
+    resolve(successResult({ companyName: '审核通过公司', nickname: '新昵称' }));
+
+    await waitFor(() => expect(screen.getByLabelText('公司名称')).toHaveValue('审核通过公司'));
   });
 });
 

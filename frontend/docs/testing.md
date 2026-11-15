@@ -51,6 +51,11 @@
   且必须早于 `resolveDedicatedE2EDatabase()` 的解析与校验；`E2E_BACKEND_ORIGIN`
   同为该口径（专用后端 `http://127.0.0.1:3100`）。
 - 本机 MySQL 中已创建空库 `lithography_e2e`（链路只清空表，不创建库）。
+- 本机确需把共享入口指向另一套隔离库时，只能在进程环境声明
+  `E2E_DEDICATED_DB_NAME`（例如
+  `E2E_DEDICATED_DB_NAME=lithography_isolated_e2e E2E_ALLOW_PHYSICAL_CLEANUP=1 npm run test:e2e:account-real`）；
+  值必须命中 `lithography[_<段>]*_e2e` 白名单，开发库/演练库一律拒绝。未声明时始终使用
+  团队默认库 `lithography_e2e`，覆盖值不写入 npm script、默认配置或测试代码。
 
 **入口边界（本节的自注入仅限本配置；PR4 工程师链路的入口不在此列）**
 
@@ -89,7 +94,8 @@ Remove-Item Env:E2E_ALLOW_PHYSICAL_CLEANUP
 
 硬性约束：
 
-- 只能连接专用 `lithography_e2e`，不得连接开发库、验收库或真实数据环境；
+- 只能连接专用 `lithography_e2e`（或经 `E2E_DEDICATED_DB_NAME` 白名单覆盖的专用库），
+  不得连接开发库、验收库或真实数据环境；
   配置模块对外部继承的 `MIGRATION_DRILL_DATABASE`（指向其他库）、
   `MIGRATION_DRILL_CREATE_TEMP_DB=true`、`MIGRATION_DRILL_DOTENV`、`SEED_DOTENV`
   一律失败关闭；

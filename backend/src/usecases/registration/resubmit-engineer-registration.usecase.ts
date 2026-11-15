@@ -24,7 +24,10 @@ import {
   type TransactionRunner,
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import { PinoLogger } from 'nestjs-pino';
-import { isEngineerRegistrationPasswordVerified } from './engineer-registration-credential';
+import {
+  assertCredentialPasswordChangeNotPending,
+  isEngineerRegistrationPasswordVerified,
+} from './engineer-registration-credential';
 import type {
   ResubmitEngineerRegistrationCommand,
   ResubmitEngineerRegistrationResult,
@@ -109,6 +112,9 @@ export class ResubmitEngineerRegistrationUsecase {
             '账号或密码不正确',
           );
         }
+
+        // 凭据证明之后才判定强制改密，避免向未通过验证者暴露账号状态
+        assertCredentialPasswordChangeNotPending(lockedCredential);
 
         await this.assertPendingEngineerAccount(credential.id, transactionContext);
 

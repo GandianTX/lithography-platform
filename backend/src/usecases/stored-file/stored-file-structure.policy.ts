@@ -624,7 +624,13 @@ function readCfbFat(
   fatSectorCount: number,
 ): number[] {
   assertStructure(fatSectorIds.length === fatSectorCount, 'cfb fat sector count');
-  assertStructure(new Set(fatSectorIds).size === fatSectorIds.length, 'cfb duplicate fat sector');
+  const sortedFatSectorIds = [...fatSectorIds].sort((left, right) => left - right);
+  for (let index = 1; index < sortedFatSectorIds.length; index += 1) {
+    assertStructure(
+      sortedFatSectorIds[index - 1] !== sortedFatSectorIds[index],
+      'cfb duplicate fat sector',
+    );
+  }
   const fat: number[] = [];
   for (let index = 0; index < fatSectorCount; index += 1) {
     const sectorId = fatSectorIds[index];
@@ -1153,9 +1159,9 @@ const JPEG_SOI = 0xd8;
 const JPEG_EOI = 0xd9;
 const JPEG_SOS = 0xda;
 const JPEG_MAX_SEGMENTS = 10000;
-const JPEG_SOF_MARKERS = new Set([
+const JPEG_SOF_MARKERS: readonly number[] = [
   0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
-]);
+];
 
 export function isJpegStructureValid(buffer: Buffer): boolean {
   return isValidWith(() => validateJpeg(buffer));
@@ -1190,7 +1196,7 @@ function validateJpeg(buffer: Buffer): void {
     const segmentEnd = cursor + segmentLength;
     assertStructure(segmentEnd <= buffer.byteLength, 'jpeg segment bounds');
 
-    if (JPEG_SOF_MARKERS.has(marker)) {
+    if (JPEG_SOF_MARKERS.includes(marker)) {
       assertStructure(segmentLength >= 8, 'jpeg frame header length');
       const height = buffer.readUInt16BE(cursor + 3);
       const width = buffer.readUInt16BE(cursor + 5);

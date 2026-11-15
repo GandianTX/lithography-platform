@@ -20,6 +20,8 @@ jest.setTimeout(300000);
 const BACKEND_ROOT = path.resolve(__dirname, '../..');
 const CHILD_SPEC = 'test/fixtures/cleanup-faults-child.e2e-spec.ts';
 const D1_CHILD_SPEC = 'test/fixtures/cleanup-beforeall-failure-child.e2e-spec.ts';
+const SESSION_TEARDOWN_CHILD_SPEC =
+  'test/fixtures/session-status-combination-teardown-child.e2e-spec.ts';
 
 interface ChildRun {
   readonly status: number | null;
@@ -35,6 +37,9 @@ let consentMissingRun: ChildRun;
 let consentZeroRun: ChildRun;
 /** D1：真实 beforeAll 失败后由 afterAll 收尾的子进程。 */
 let d1Run: ChildRun;
+/** 双状态门禁规格：断言中断 / afterAll hook 失败两种真实子进程。 */
+let sessionInterruptRun: ChildRun;
+let sessionHookFailureRun: ChildRun;
 /** G01：两次被拒绝启动期间实例级 DELETE 语句增量（必须为 0）。 */
 let rejectedRunsDeleteDelta = -1;
 
@@ -43,8 +48,12 @@ const matchTag = (output: string): string | null => {
   return matched ? matched[1] : null;
 };
 
-const runChild = (spec: string, consentOverride?: { readonly value?: string }): ChildRun => {
-  const env: NodeJS.ProcessEnv = { ...process.env, E2E_GROUP: 'core' };
+const runChild = (
+  spec: string,
+  consentOverride?: { readonly value?: string },
+  extraEnv?: NodeJS.ProcessEnv,
+): ChildRun => {
+  const env: NodeJS.ProcessEnv = { ...process.env, E2E_GROUP: 'core', ...extraEnv };
   if (consentOverride) {
     if (consentOverride.value === undefined) {
       delete env.E2E_ALLOW_PHYSICAL_CLEANUP;
@@ -111,20 +120,31 @@ describe('cleanup 故障生命周期（真实 Jest 子进程）', () => {
     // G11：真实 beforeAll 在登记后失败，afterAll 必须真实收尾并零残留。
     d1Run = runChild(D1_CHILD_SPEC);
 
+    // 双状态门禁规格的收尾反例：断言中断与 afterAll hook 失败都必须零残留。
+    sessionInterruptRun = runChild(SESSION_TEARDOWN_CHILD_SPEC, undefined, {
+      SESSION_TEARDOWN_MODE: 'interrupt',
+    });
+    sessionHookFailureRun = runChild(SESSION_TEARDOWN_CHILD_SPEC, undefined, {
+      SESSION_TEARDOWN_MODE: 'hook-failure',
+    });
+
     // 把子进程的判定证据落到父规格输出，便于回执/日志复核（不打印整段噪声）。
-    const evidence =
-      `${run.output}\n${consentMissingRun.output}\n${consentZeroRun.output}\n${d1Run.output}`
-        .split(/\r?\n/)
-        .filter((line) =>
-          /CHILD_TAG=|F07_OK|F08_OK|F09_|D1_|启动许可未通过|台账保留|上一用例清理失败|拒绝在未恢复前继续造数/.test(
-            line,
-          ),
-        )
-        .map((line) => line.replace(/^.*?(?=\[|F|D|CHILD_TAG|启动许可)/, ''));
+    const evidence = (
+      `${run.output}\n${consentMissingRun.output}\n${consentZeroRun.output}\n${d1Run.output}` +
+      `\n${sessionInterruptRun.output}\n${sessionHookFailureRun.output}`
+    )
+      .split(/\r?\n/)
+      .filter((line) =>
+        /CHILD_TAG=|F07_OK|F08_OK|F09_|D1_|ST_|启动许可未通过|台账保留|上一用例清理失败|拒绝在未恢复前继续造数/.test(
+          line,
+        ),
+      )
+      .map((line) => line.replace(/^.*?(?=\[|F|D|S|CHILD_TAG|启动许可)/, ''));
     console.log(
       `CHILD_EXIT=${String(run.status)}\nCONSENT_MISSING_EXIT=${String(consentMissingRun.status)}\n` +
         `CONSENT_ZERO_EXIT=${String(consentZeroRun.status)}\nCONSENT_DELETE_DELTA=${rejectedRunsDeleteDelta}\n` +
-        `D1_EXIT=${String(d1Run.status)}\n${evidence.join('\n')}`,
+        `D1_EXIT=${String(d1Run.status)}\nSESSION_INTERRUPT_EXIT=${String(sessionInterruptRun.status)}\n` +
+        `SESSION_HOOK_FAILURE_EXIT=${String(sessionHookFailureRun.status)}\n${evidence.join('\n')}`,
     );
   });
 
@@ -193,5 +213,33 @@ describe('cleanup 故障生命周期（真实 Jest 子进程）', () => {
     expect(d1Run.output).toContain('D1 注入：第二笔真实事务失败后终止 beforeAll');
     await expectNoChildRows(d1Run.tag);
     console.log('G11_OK');
+  });
+
+  it('G12 断言中断：受控改写后用例失败，afterAll 仍按台账精确回收并零残留', async () => {
+    expect(sessionInterruptRun.status).not.toBe(0);
+    expect(sessionInterruptRun.tag).not.toBeNull();
+    expect(sessionInterruptRun.output).toContain('ST_MODE=interrupt');
+    expect(sessionInterruptRun.output).toContain('ST 注入：受控改写后的断言中断');
+    expect(sessionInterruptRun.output).toContain('ST_CLEANUP_REFUSED=0');
+    expect(sessionInterruptRun.output).toContain('ST_FINALIZE_AFTER_FAILURE=0');
+    expect(sessionInterruptRun.output).toContain('ST_RESIDUE=0');
+    expect(sessionInterruptRun.output).toContain('ST_CLOSE_AFTER_FAILURE=closed');
+    await expectNoChildRows(sessionInterruptRun.tag);
+    console.log('G12_OK');
+  });
+
+  it('G13 afterAll hook 失败：首次清理拒绝、finalize 守护修复后二次清理、仍关闭且原错误可见', async () => {
+    expect(sessionHookFailureRun.status).not.toBe(0);
+    expect(sessionHookFailureRun.tag).not.toBeNull();
+    expect(sessionHookFailureRun.output).toContain('ST_MODE=hook-failure');
+    expect(sessionHookFailureRun.output).toContain('ST_DRIFT_WITHOUT_EXPECTATION=1');
+    expect(sessionHookFailureRun.output).toContain('ST_CLEANUP_REFUSED=1');
+    expect(sessionHookFailureRun.output).toContain('ST_CLEANUP_ERROR=');
+    expect(sessionHookFailureRun.output).toContain('ST_FINALIZE_REPAIR=1');
+    expect(sessionHookFailureRun.output).toContain('ST_FINALIZE_AFTER_FAILURE=1');
+    expect(sessionHookFailureRun.output).toContain('ST_RESIDUE=0');
+    expect(sessionHookFailureRun.output).toContain('ST_CLOSE_AFTER_FAILURE=closed');
+    await expectNoChildRows(sessionHookFailureRun.tag);
+    console.log('G13_OK');
   });
 });

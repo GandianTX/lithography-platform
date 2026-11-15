@@ -1,6 +1,6 @@
 // src/features/auth-session/ui/login-form.tsx
 
-import { useRef, useState } from 'react';
+import { type ReactNode, useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
 
 import type { AuthSessionView } from '../application/auth-session.types';
@@ -14,6 +14,8 @@ type LoginFormValues = {
 
 export type LoginFormProps = {
   onAuthenticated?: (session: AuthSessionView) => void;
+  // 与登录按钮同组的次要入口（注册链接）。由页面注入，保持认证特性不依赖注册模块。
+  secondaryActions?: ReactNode;
 };
 
 type LoginFeedback =
@@ -26,7 +28,7 @@ type LoginFeedback =
       type: 'success';
     };
 
-export function LoginForm({ onAuthenticated }: LoginFormProps) {
+export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps) {
   const [form] = Form.useForm<LoginFormValues>();
   const submittingRef = useRef(false);
   const [feedback, setFeedback] = useState<LoginFeedback | null>(null);
@@ -123,9 +125,12 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
       </Form.Item>
 
       <Form.Item>
-        <Button block htmlType="submit" loading={isSubmitting} type="primary">
-          登录
-        </Button>
+        <div className="login-actions">
+          <Button htmlType="submit" loading={isSubmitting} type="primary">
+            登录
+          </Button>
+          {secondaryActions}
+        </div>
       </Form.Item>
     </Form>
   );

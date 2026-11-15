@@ -54,3 +54,28 @@ export type OrganizationRegistrationOption = {
   readonly id: number;
   readonly name: string;
 };
+
+/** 注册组织候选分页参数（页码从 1 开始，页大小由写入/查询侧统一限流） */
+export type OrganizationRegistrationOptionPagination = {
+  page: number;
+  pageSize: number;
+};
+
+/**
+ * 注册组织候选检索条件。
+ *
+ * `keyword` 为名称关键字（空表示不过滤），由用例归一化后传入；
+ * 资格口径固定为「ACTIVE 且属于一级维护名单」，不接受调用方覆盖。
+ */
+export type OrganizationRegistrationOptionQuery = {
+  keyword?: string;
+  pagination: OrganizationRegistrationOptionPagination;
+};
+
+/** 注册组织候选分页结果（按名称、主键稳定排序） */
+export type OrganizationRegistrationOptionPage = {
+  items: OrganizationRegistrationOption[];
+  total: number;
+  page: number;
+  pageSize: number;
+};

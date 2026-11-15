@@ -54,3 +54,27 @@ export function createConditionalLogoutAuthSessionUsecase({
     return true;
   };
 }
+
+/**
+ * 改密成功后的会话收口（受限页与账号设置页共用）。
+ *
+ * 身份匹配时清理会话并返回 true；缓存清理失败不向外传播——会话真源已清理，
+ * 调用方应继续跳转登录页（与 LogoutButton 同一口径）。身份不匹配返回 false，
+ * 调用方必须对该次迟到响应完全静默。
+ */
+export function createClearSessionAfterPasswordChangeUsecase({
+  cache,
+  session,
+}: ConditionalLogoutAuthSessionDependencies) {
+  const logoutIfIdentityMatches = createConditionalLogoutAuthSessionUsecase({ cache, session });
+
+  return async function clearSessionAfterPasswordChange(
+    identity: AuthSessionIdentity | null,
+  ): Promise<boolean> {
+    try {
+      return await logoutIfIdentityMatches(identity);
+    } catch {
+      return true;
+    }
+  };
+}

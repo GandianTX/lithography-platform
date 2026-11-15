@@ -1,9 +1,40 @@
 // e2e/login-flow.spec.ts
 
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 
 import { readStoredAuthSession, seedAuthSession } from './helpers/auth-session-seed';
 import { installCustomerRepairRequestMocks } from './helpers/customer-repair-request-mocks';
+
+/**
+ * 预置会话的启动期复核桩：布局挂载后会请求 mySessionIdentity 校对限制状态，
+ * 占位 token 打到真实后端会收到 UNAUTHENTICATED 并清会话，覆盖「按登录态分发」断言。
+ */
+async function mockSessionIdentity(page: Page) {
+  await page.route('**/graphql', async (route) => {
+    const payload = route.request().postDataJSON() as { query?: string };
+
+    if (payload.query?.includes('mySessionIdentity')) {
+      await route.fulfill({
+        body: JSON.stringify({
+          data: {
+            mySessionIdentity: {
+              accountId: 900201,
+              adminLevel: null,
+              customerOrganizationId: null,
+              restriction: 'NONE',
+              role: 'CUSTOMER',
+            },
+          },
+        }),
+        contentType: 'application/json',
+        status: 200,
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+}
 
 test('anonymous engineer visit completes the public login flow and returns to the target', async ({
   page,
@@ -119,6 +150,7 @@ test('entry route dispatches by login state', async ({ page }) => {
   // 触发全局清会话跳登录，覆盖「按登录态分发」断言。与 customer-repair-request-states
   // 同口径：mock 先于会话预置安装（seedAuthSession 内部也会载入应用源）。
   await installCustomerRepairRequestMocks(page);
+  await mockSessionIdentity(page);
 
   await page.goto('/');
   await expect(page).toHaveURL(/\/login$/);
@@ -132,6 +164,7 @@ test('entry route dispatches by login state', async ({ page }) => {
 test('entry route dispatches a SUPER_ADMIN session to the admin home', async ({ page }) => {
   // 入口路由按登录态分派：超管首页固定 /admin。
   // 角色决策本身由 auth-session-policy.spec.ts 钉住，这里只验证路由装配真正接上了它。
+  await mockSessionIdentity(page);
   await seedAuthSession(page, 'SUPER_ADMIN');
 
   await page.goto('/');

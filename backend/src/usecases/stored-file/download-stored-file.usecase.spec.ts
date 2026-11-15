@@ -8,9 +8,16 @@ import * as path from 'node:path';
 import { Readable } from 'node:stream';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
-import { PERMISSION_ERROR, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
+import {
+  ACCOUNT_ERROR,
+  DomainError,
+  ORGANIZATION_ERROR,
+  PERMISSION_ERROR,
+  STORED_FILE_ERROR,
+} from '@core/common/errors/domain-error';
 import { LocalReferenceDocumentStorage } from '@src/infrastructure/file-storage/local-reference-document-storage';
 import { LocalStoredFileStorage } from '@src/infrastructure/file-storage/local-stored-file-storage';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { STORED_FILE_UPLOAD_MAX_BYTES } from './stored-file-upload.contract';
@@ -21,6 +28,7 @@ const session = (roles: string[], accountId = 900001): UsecaseSession =>
 
 const engineer = session(['ENGINEER']);
 const customer = session(['CUSTOMER']);
+const admin = session(['SUPER_ADMIN'], 900010);
 const fileId = '11111111-1111-4111-8111-111111111111';
 const uploadContextId = '22222222-2222-4222-8222-222222222222';
 
@@ -42,6 +50,11 @@ const makeQueryService = () => ({
 
 const makeOrganizationContextService = () => ({
   tryResolveForAccount: jest.fn().mockResolvedValue({ organizationId: 910001 }),
+  resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 910001 }),
+});
+
+const makeAccountQueryService = () => ({
+  findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
 });
 
 const makeStorage = () => ({
@@ -55,19 +68,22 @@ const makeUsecase = (
   overrides: {
     queryService?: ReturnType<typeof makeQueryService>;
     organizationContextService?: ReturnType<typeof makeOrganizationContextService>;
+    accountQueryService?: ReturnType<typeof makeAccountQueryService>;
     storage?: ReturnType<typeof makeStorage>;
   } = {},
 ) => {
   const queryService = overrides.queryService ?? makeQueryService();
   const organizationContextService =
     overrides.organizationContextService ?? makeOrganizationContextService();
+  const accountQueryService = overrides.accountQueryService ?? makeAccountQueryService();
   const storage = overrides.storage ?? makeStorage();
   const usecase = new DownloadStoredFileUsecase(
     queryService as unknown as StoredFileQueryService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    accountQueryService as unknown as AccountQueryService,
     storage,
   );
-  return { usecase, queryService, storage };
+  return { usecase, queryService, organizationContextService, accountQueryService, storage };
 };
 
 const readAll = async (content: Readable): Promise<Buffer> => {
@@ -120,6 +136,109 @@ describe('DownloadStoredFileUsecase', () => {
     await expect(
       usecase.execute({ session: customer, fileId, uploadContextId }),
     ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('一级管理员跨公司下载：管理员范围传入查询服务，授权后才触达存储', async () => {
+    const { usecase, queryService, storage } = makeUsecase();
+
+    await usecase.execute({ session: admin, fileId, uploadContextId: null });
+
+    expect(queryService.findAuthorizedDownload).toHaveBeenCalledWith({
+      fileId,
+      session: admin,
+      viewerOrganizationId: null,
+      uploadContextId: null,
+      expectedBusinessType: 'REPAIR_PROCESS',
+      adminOrganizationId: null,
+    });
+    expect(storage.open).toHaveBeenCalledWith('private/ref.pdf');
+  });
+
+  it('二级管理员跨公司拒绝：NOT_FOUND 且不打开存储', async () => {
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValueOnce(2);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockResolvedValueOnce({
+      organizationId: 700002,
+    });
+    const queryService = makeQueryService();
+    queryService.findAuthorizedDownload.mockResolvedValueOnce(null);
+    const { usecase, storage } = makeUsecase({
+      queryService,
+      accountQueryService,
+      organizationContextService,
+    });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员：工单仅 owner 归属（服务公司为空）时拒绝，且不打开存储', async () => {
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValueOnce(2);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockResolvedValueOnce({
+      organizationId: 700002,
+    });
+    const queryService = makeQueryService();
+    queryService.findAuthorizedDownload.mockResolvedValueOnce(null);
+    const { usecase, storage } = makeUsecase({
+      queryService,
+      accountQueryService,
+      organizationContextService,
+    });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员组织事实异常：受控 NOT_FOUND，不查询也不打开存储', async () => {
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValueOnce(2);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockRejectedValueOnce(
+      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '无有效组织'),
+    );
+    const { usecase, queryService, storage } = makeUsecase({
+      accountQueryService,
+      organizationContextService,
+    });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(queryService.findAuthorizedDownload).not.toHaveBeenCalled();
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('管理员等级为 NULL：失败关闭 NOT_FOUND，不查询也不打开存储', async () => {
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValueOnce(null);
+    const { usecase, queryService, storage } = makeUsecase({ accountQueryService });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(queryService.findAuthorizedDownload).not.toHaveBeenCalled();
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('管理员账号行缺失：失败关闭 NOT_FOUND，不查询也不打开存储', async () => {
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockRejectedValueOnce(
+      new DomainError(ACCOUNT_ERROR.ACCOUNT_NOT_FOUND, '账户不存在'),
+    );
+    const { usecase, queryService, storage } = makeUsecase({ accountQueryService });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(queryService.findAuthorizedDownload).not.toHaveBeenCalled();
     expect(storage.open).not.toHaveBeenCalled();
   });
 
@@ -307,6 +426,7 @@ describe('DownloadStoredFileUsecase 真实临时磁盘完整性校验', () => {
     const usecase = new DownloadStoredFileUsecase(
       queryService as unknown as StoredFileQueryService,
       makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
       storage,
     );
     return { usecase, queryService };

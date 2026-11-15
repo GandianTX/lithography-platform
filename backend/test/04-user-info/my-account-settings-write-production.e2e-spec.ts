@@ -7,6 +7,7 @@ import { PARAMS_PROVIDER_TOKEN, type Params } from 'nestjs-pino';
 import { decode, sign, type JwtPayload } from 'jsonwebtoken';
 import { DataSource } from 'typeorm';
 import { GqlAllExceptionsFilter } from '../../src/infrastructure/graphql/filters/graphql-exception.filter';
+import { ACCOUNT_ERROR } from '@core/common/errors';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
 import {
@@ -58,6 +59,23 @@ const LOGIN_MUTATION = `
     login(input: $input) { accessToken }
   }
 `;
+
+/** I6：Web 注册入口（重复账号应映射 CONFLICT） */
+const REGISTER_WEB_MUTATION = `
+  mutation RegisterWeb($input: RegisterWebInput!) {
+    registerWeb(input: $input) { success message accountId applicationId }
+  }
+`;
+
+/** I6：旧 `register` 入口（重复账号维持基线 BAD_USER_INPUT） */
+const LEGACY_REGISTER_MUTATION = `
+  mutation Register($input: RegisterInput!) {
+    register(input: $input) { success message accountId applicationId }
+  }
+`;
+
+/** 51 字符邮箱：超过 Web 邮箱列宽上限（50），应由 DTO 校验在写入前拒绝 */
+const OVERLONG_LOGIN_EMAIL = `${'x'.repeat(44)}@ex.com`;
 
 /** E2E 日志配置：stdout 直写（无 pino/file transport），不触碰生产日志目录 */
 const E2E_LOGGER_PARAMS = {
@@ -311,5 +329,89 @@ describe('changeMyPassword 生产环境错误分类 (e2e, NODE_ENV=production)',
       expect(body.data?.changeMyPassword).toBeUndefined();
     });
     expect((await readAccountRow())?.loginPassword).toBe(hashBefore);
+  });
+
+  describe('I6 · production 分类装配下的重复账号与输入越界', () => {
+    const registrationBase = {
+      loginPassword: VALID_NEW_PASSWORD,
+      // 重复与越界都应在公司解析之前被拒，该主键不会被实际使用
+      organizationId: 1,
+    };
+
+    /** 生产响应不得包含 SQL 细节、唯一索引名或凭据类自由文本 */
+    const expectNoSensitiveLeak = (body: GqlBody<unknown>): void => {
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toMatch(/Data too long/i);
+      expect(serialized).not.toMatch(/INSERT|SELECT|UPDATE /i);
+      expect(serialized).not.toMatch(/uk_login_(email|name)/i);
+    };
+
+    it('生产分类：Web 重复邮箱为 CONFLICT 且保留细码 REGISTRATION_ACCOUNT_EXISTS', async () => {
+      await expectRejectionViaOverriddenFilter(async () => {
+        const body = await gql<{ registerWeb?: unknown }>({
+          query: REGISTER_WEB_MUTATION,
+          variables: { input: { loginEmail: STAFF.loginEmail, ...registrationBase } },
+        });
+
+        expectSingleError(body, 'CONFLICT', ACCOUNT_ERROR.REGISTRATION_ACCOUNT_EXISTS);
+        expect(body.data?.registerWeb).toBeUndefined();
+        expect(body.errors?.[0]?.message).toBe('该登录名或邮箱已被注册');
+        expectNoSensitiveLeak(body);
+      });
+    });
+
+    it('生产分类：Web 重复登录名同样为 CONFLICT（错误类别随入口而非字段漂移）', async () => {
+      await expectRejectionViaOverriddenFilter(async () => {
+        const body = await gql<{ registerWeb?: unknown }>({
+          query: REGISTER_WEB_MUTATION,
+          variables: {
+            input: {
+              loginName: STAFF.loginName,
+              loginEmail: 'i6.prod.web-dup@example.com',
+              ...registrationBase,
+            },
+          },
+        });
+
+        expectSingleError(body, 'CONFLICT', ACCOUNT_ERROR.REGISTRATION_ACCOUNT_EXISTS);
+        expectNoSensitiveLeak(body);
+      });
+    });
+
+    it('生产分类：旧 register 重复账号为 BAD_USER_INPUT 且保留细码 ACCOUNT_ALREADY_EXISTS', async () => {
+      await expectRejectionViaOverriddenFilter(async () => {
+        const body = await gql<{ register?: unknown }>({
+          query: LEGACY_REGISTER_MUTATION,
+          variables: { input: { loginEmail: STAFF.loginEmail, ...registrationBase } },
+        });
+
+        expectSingleError(body, 'BAD_USER_INPUT', ACCOUNT_ERROR.ACCOUNT_ALREADY_EXISTS);
+        expect(body.data?.register).toBeUndefined();
+        expectNoSensitiveLeak(body);
+      });
+    });
+
+    it('生产分类：DTO 输入越界为 BAD_USER_INPUT，message 固定「请求失败」且不暴露细码', async () => {
+      await expectRejectionViaOverriddenFilter(async () => {
+        const body = await gql<{ registerWeb?: unknown }>({
+          query: REGISTER_WEB_MUTATION,
+          variables: {
+            input: {
+              loginEmail: OVERLONG_LOGIN_EMAIL,
+              loginPassword: VALID_NEW_PASSWORD,
+              organizationName: 'I6 生产分类测试公司',
+            },
+          },
+        });
+
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+        // HttpException 路径：生产环境隐藏细码与自由文本，只保留大类
+        expect(body.errors?.[0]?.extensions?.errorCode).toBeUndefined();
+        expect(body.errors?.[0]?.message).toBe('请求失败');
+        expect(body.data?.registerWeb).toBeUndefined();
+        expectNoSensitiveLeak(body);
+      });
+    });
   });
 });

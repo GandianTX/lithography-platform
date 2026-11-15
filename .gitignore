@@ -45,7 +45,7 @@
 /docs/requirements/
 /docs/plan/
 
-# Local execution plans; publish stable handoff documents under docs/database.
+# Local execution plans; docs/database keeps only current baseline and deployment documents.
 /backend/plans/*
 !/backend/plans/README.md
 

@@ -11,6 +11,7 @@ import {
 } from '@core/stored-file/policy/stored-file-input.policy';
 import { assertStoredFileReadRole } from '@core/stored-file/policy/stored-file-permission.policy';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { StoredFileDownloadFacts } from '@src/modules/lithography/lithography.types';
 import { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
@@ -18,6 +19,10 @@ import {
   STORED_FILE_STORAGE,
   type StoredFileStorage,
 } from '@src/usecases/common/ports/stored-file-storage.contract';
+import {
+  resolveStoredFileAdminScope,
+  resolveStoredFileViewerOrganizationId,
+} from './stored-file-admin-scope';
 import { STORED_FILE_UPLOAD_MAX_BYTES } from './stored-file-upload.contract';
 import type { DownloadStoredFileQuery, StoredFileDownloadResult } from './stored-file.types';
 
@@ -42,6 +47,7 @@ export class DownloadStoredFileUsecase {
   constructor(
     private readonly storedFileQueryService: StoredFileQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly accountQueryService: AccountQueryService,
     @Inject(STORED_FILE_STORAGE)
     private readonly storage: StoredFileStorage,
   ) {}
@@ -54,16 +60,24 @@ export class DownloadStoredFileUsecase {
 
     assertStoredFileReadRole(query.session);
 
-    const membership = await this.trustedOrganizationContext.tryResolveForAccount({
-      accountId: query.session.accountId,
+    const adminScope = await resolveStoredFileAdminScope({
+      session: query.session,
+      accountQueryService: this.accountQueryService,
+      trustedOrganizationContext: this.trustedOrganizationContext,
+    });
+    const viewerOrganizationId = await resolveStoredFileViewerOrganizationId({
+      session: query.session,
+      adminScope,
+      trustedOrganizationContext: this.trustedOrganizationContext,
     });
 
     const facts = await this.storedFileQueryService.findAuthorizedDownload({
       fileId,
       session: query.session,
-      viewerOrganizationId: membership?.organizationId ?? null,
+      viewerOrganizationId,
       uploadContextId: normalizeUploadContextId(query.uploadContextId),
       expectedBusinessType: StoredFileBusinessType.REPAIR_PROCESS,
+      ...(adminScope ? { adminOrganizationId: adminScope.organizationId } : {}),
     });
     if (!facts) {
       throw new DomainError(STORED_FILE_ERROR.NOT_FOUND, '原件不存在或无权访问');

@@ -10,7 +10,7 @@
 - MySQL 8.0
 - Redis
 
-MySQL 和 Redis 可以运行在每个人自己的电脑上。三个人不需要共用同一台数据库服务器；Migration 保证结构一致，Seed 保证开发模拟数据一致。
+MySQL 和 Redis 可以运行在每个人自己的电脑上。三个人不需要共用同一台数据库服务器；V13 正式部署工具应用仓库迁移，并可按显式配置初始化开发联调数据。
 
 ## 2. Clone 和安装依赖
 
@@ -32,7 +32,7 @@ CREATE DATABASE lithography_drill
   COLLATE utf8mb4_0900_ai_ci;
 ```
 
-推荐每个人都使用 `lithography_drill`。数据库位于各自电脑，不会相互覆盖；名称包含 `drill`，可通过建表脚本的安全检查。
+库名可按个人环境配置。首次初始化使用专用空库，将库名同时填入 V13 部署配置与后端运行配置。
 
 ## 4. 配置后端环境
 
@@ -85,8 +85,6 @@ PAGINATION_HMAC_SECRET=<团队开发环境分页签名密钥>
 AI_PROVIDER_MODE=mock
 AI_QUEUE_DEBUG_ENABLED=false
 EMAIL_QUEUE_DEBUG_ENABLED=false
-
-MOCK_SEED_PASSWORD=<团队统一 Mock 登录密码>
 ```
 
 负责人通过私密渠道提供以下团队开发值，不得写入 GitHub、Issue、PR 或日志：
@@ -95,42 +93,18 @@ MOCK_SEED_PASSWORD=<团队统一 Mock 登录密码>
 - `FIELD_ENCRYPTION_IV`
 - `JWT_SECRET`
 - `PAGINATION_HMAC_SECRET`
-- `MOCK_SEED_PASSWORD`
 
-`FIELD_ENCRYPTION_KEY` 和 `FIELD_ENCRYPTION_IV` 必须与本机启动 API 时使用的值相同，否则 API 无法解密 Seed 写入的 `meta_digest`，登录安全校验会失败。
+`FIELD_ENCRYPTION_KEY` 和 `FIELD_ENCRYPTION_IV` 必须与本机启动 API 时使用的值相同，否则 API 无法解密初始化账号时写入的 `meta_digest`，登录安全校验会失败。
 
-## 5. 从 Migration 建表
+## 5. 通过 V13 正式部署初始化个人开发库
 
-只对刚创建的个人 `lithography_drill` 执行：
+按 [V13 正式部署 SOP](../database/v13-deployment/deployment-sop.md) 的「开发新库一键初始化」执行 `database:deploy --mode=init --environment=development`。使用已预建的专用空库，按 SOP 核对目标实例、库名和开发确认参数。当前的迁移与业务表终态见 [V13 正式交接说明](../database/v13-deployment/README.md)。已有数据的库按 SOP 的存量库升级流程判断和操作。
 
-```powershell
-cd backend
-$env:MIGRATION_DRILL_DOTENV='env/.env.development'
-npm run migration:drill:empty-db
-```
+`DB_SYNCHRONIZE` 必须保持 `false`。旧版 14 表流程使用 `migration:drill:empty-db` 清库重建。该命令会删除指定库的全部表，仅用于专用可丢弃库的隔离演练。
 
-该命令会删除目标库中的全部表，再从 Migration 重建并检查 14 张表、关键字段、索引、外键和 CHECK 约束。它是破坏性空库演练命令，禁止指向共享库、正式库或包含需保留数据的数据库。
+## 6. 初始化用于本地登录的开发账号
 
-`DB_SYNCHRONIZE` 必须保持 `false`。团队数据库结构只能由 Migration 交付，不能依赖 TypeORM 自动改表。
-
-## 6. 导入全量 Mock Data
-
-```powershell
-$env:SEED_DOTENV='env/.env.development'
-npm run seed:mock
-```
-
-Seed 会填充当前全部 14 张表，并校验密码散列、角色密文、数据量和业务关联。它不会清空数据库，可重复执行；除设备型号外，Mock 自增主键使用 `900000-999999` 保留区间。
-
-可登录账号如下，密码统一取自 `MOCK_SEED_PASSWORD`：
-
-| 角色          | 登录名                |
-| ------------- | --------------------- |
-| `SUPER_ADMIN` | `mock_super_admin`    |
-| `ENGINEER`    | `mock_engineer_chen`  |
-| `ENGINEER`    | `mock_engineer_li`    |
-| `CUSTOMER`    | `mock_customer_alpha` |
-| `CUSTOMER`    | `mock_customer_beta`  |
+按同一份 SOP 的「开发样例账号」配置组织与开发账号映射。开发样例默认关闭，需要联调时按 SOP 提供相应映射文件和确认参数。登录时使用本次映射中实际创建的工程师账号及其配置密码。旧版全量 `seed:mock` 及固定 `mock_*` 账号属于旧流程，本文的登录示例使用 V13 开发账号映射。
 
 ## 7. 启动后端并验证登录
 
@@ -170,8 +144,8 @@ mutation Login($input: AuthLoginInput!) {
 ```json
 {
   "input": {
-    "loginName": "mock_engineer_chen",
-    "loginPassword": "填写 MOCK_SEED_PASSWORD 的实际值",
+    "loginName": "填写开发账号映射中已初始化的工程师登录名",
+    "loginPassword": "填写该开发账号的配置密码",
     "type": "PASSWORD",
     "audience": "SSTSWEB"
   }
@@ -240,7 +214,7 @@ FLUSH PRIVILEGES;
 
 ### 10.2 为 E2E 库建 schema（一次性）
 
-E2E 只清数据、不建表，因此需先用 Migration 把结构灌入 `lithography_e2e`：
+E2E 只清数据、不建表。以下隔离演练命令会清空目标库的全部表再应用迁移，执行前确认实际连接的是第 10.1 节创建的专用可丢弃库 `lithography_e2e`。
 
 ```powershell
 cd backend
@@ -295,7 +269,7 @@ $env:E2E_ALLOW_PHYSICAL_CLEANUP=1; npm run test:e2e:file -- test/10-admin-docume
 
 - API 启动时报 Redis 连接失败：确认本机 Redis 已启动且端口、DB 与 `.env.development` 一致。
 - API 启动时报字段加密配置缺失：补齐 `FIELD_ENCRYPTION_KEY` 和 `FIELD_ENCRYPTION_IV`。
-- Mock 账号密码正确但登录失败：确认 Seed 和 API 使用同一组字段加密 Key/IV，然后重新执行 `npm run seed:mock`。
+- 开发账号登录失败时，确认账号已按 V13 SOP 初始化，核对实际连接库、登录配置以及部署与 API 使用的字段加密 Key/IV。
 - 浏览器出现 CORS 错误：确认 `APP_CORS_ORIGINS` 与前端实际地址完全一致。
 - GraphQL 返回 `UNAUTHENTICATED`：Token 缺失、过期或无效，清理本地 Session 后重新登录。
-- Migration 演练拒绝数据库名：只对个人空库操作，并使用包含 `test`、`drill` 或 `ci` 的库名。
+- 隔离演练拒绝数据库名时，先核对目标是否为专用可丢弃库。个人开发库初始化按第 5 节执行。
