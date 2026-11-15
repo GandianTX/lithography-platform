@@ -378,13 +378,17 @@ describe('StoredFileQueryService 读授权', () => {
       expect(result).not.toHaveProperty('storageReference');
     });
 
-    it('二级管理员可读取本公司工单原件（按服务公司主口径）', async () => {
+    it('二级管理员可读取本公司工单原件（工单与报修服务公司一致）', async () => {
       const { service, repositories } = makeService();
       repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
       repositories.processEntry.findOne.mockResolvedValueOnce(entry);
       repositories.request.findOne.mockResolvedValueOnce(
         request({ serviceOrganizationId: 700002, ownerOrganizationId: 700002 }),
       );
+      repositories.intake.findOne.mockResolvedValueOnce({
+        id: 7001,
+        serviceOrganizationId: 700002,
+      });
 
       await expect(
         service.findAuthorizedMetadata(
@@ -452,12 +456,77 @@ describe('StoredFileQueryService 读授权', () => {
       repositories.request.findOne.mockResolvedValueOnce(
         request({ serviceOrganizationId: 700002, ownerOrganizationId: 920002 }),
       );
+      repositories.intake.findOne.mockResolvedValueOnce({
+        id: 7001,
+        serviceOrganizationId: 700002,
+      });
 
       await expect(
         service.findAuthorizedMetadata(
           adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
         ),
       ).resolves.toMatchObject({ fileId: fileRow().fileId });
+    });
+
+    it('工单、报修、二级管理员三方公司一致：元数据与下载均允许', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 920002 }),
+      );
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        serviceOrganizationId: 700002,
+      });
+      const query = adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 });
+
+      await expect(service.findAuthorizedMetadata(query)).resolves.toMatchObject({
+        fileId: fileRow().fileId,
+      });
+      await expect(service.findAuthorizedDownload(query)).resolves.toMatchObject({
+        fileId: fileRow().fileId,
+        storageReference: fileRow().storageReference,
+      });
+    });
+
+    it('工单与报修服务公司冲突：元数据与下载均拒绝（不使用 owner 回退）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 700002 }),
+      );
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        serviceOrganizationId: 920002,
+      });
+      const query = adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 });
+
+      await expect(service.findAuthorizedMetadata(query)).resolves.toBeNull();
+      await expect(service.findAuthorizedDownload(query)).resolves.toBeNull();
+    });
+
+    it.each([
+      ['工单未关联报修', { intakeId: null }, { id: 7001, serviceOrganizationId: 700002 }],
+      ['报修不存在', {}, null],
+      ['报修服务公司缺失', {}, { id: 7001, serviceOrganizationId: null }],
+    ])('来源缺失（%s）：二级管理员元数据与下载均拒绝', async (_label, requestOverride, intake) => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(entry);
+      repositories.request.findOne.mockResolvedValue(
+        request({
+          serviceOrganizationId: 700002,
+          ownerOrganizationId: 700002,
+          ...requestOverride,
+        }),
+      );
+      repositories.intake.findOne.mockResolvedValue(intake);
+      const query = adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 });
+
+      await expect(service.findAuthorizedMetadata(query)).resolves.toBeNull();
+      await expect(service.findAuthorizedDownload(query)).resolves.toBeNull();
     });
 
     it('一级管理员可跨公司定位下载；只返回流式所需事实', async () => {
@@ -486,6 +555,10 @@ describe('StoredFileQueryService 读授权', () => {
       repositories.request.findOne.mockResolvedValue(
         request({ serviceOrganizationId: 700002, ownerOrganizationId: 700002 }),
       );
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        serviceOrganizationId: 700002,
+      });
       await expect(
         service.findAuthorizedDownload(
           adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
@@ -526,6 +599,10 @@ describe('StoredFileQueryService 读授权', () => {
       repositories.request.findOne.mockResolvedValue(
         request({ serviceOrganizationId: 700002, ownerOrganizationId: 920002 }),
       );
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        serviceOrganizationId: 700002,
+      });
       await expect(
         service.findAuthorizedDownload(
           adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),

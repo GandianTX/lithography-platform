@@ -265,21 +265,38 @@ export class StoredFileQueryService {
   }
 
   /**
-   * 管理员分支：一级全公司；二级必须由工单自身的 `service_organization_id`
-   * 明确证明属于本公司。
+   * 管理员分支：一级全公司；二级必须由工单与原始报修共同的 `service_organization_id`
+   * 证明属于本公司。
+   *
+   * 二级管理员除了「真实过程关联 + 工单未删除」外，还必须满足：
+   * - 工单明确关联 `intake_id`，且对应原始报修真实存在；
+   * - 工单与原始报修的 `service_organization_id` 均存在且一致；
+   * - 该服务公司等于服务端解析的可信本公司。
    *
    * 工单原件不采用管理员工单列表/详情的 owner 回退：`service_organization_id`
-   * 为空或指向外公司时，即使 `owner_organization_id` 匹配也拒绝，避免二级管理员
-   * 借历史列读取没有明确服务归属的原件（失败关闭，见 data-contracts §5「2 级限本公司」）。
+   * 为空、两处冲突或指向外公司时，即使 `owner_organization_id` 匹配也拒绝，
+   * 避免二级管理员借历史列读取没有明确服务归属的原件（失败关闭，
+   * 见 data-contracts §5「2 级限本公司」）。
    */
-  private canAccessBoundAsAdmin(
+  private async canAccessBoundAsAdmin(
     request: RepairRequestEntity,
     adminOrganizationId: number | null,
-  ): boolean {
+  ): Promise<boolean> {
     if (adminOrganizationId === null) {
       return true;
     }
-    return request.serviceOrganizationId === adminOrganizationId;
+    if (
+      request.serviceOrganizationId === null ||
+      request.serviceOrganizationId !== adminOrganizationId ||
+      request.intakeId === null
+    ) {
+      return false;
+    }
+    const intake = await this.repairRequestIntakeRepository.findOne({
+      where: { id: request.intakeId },
+      select: { id: true, serviceOrganizationId: true },
+    });
+    return intake !== null && intake.serviceOrganizationId === request.serviceOrganizationId;
   }
 
   private toMetadataView(file: StoredFileAccessRow): StoredFileMetadataView {

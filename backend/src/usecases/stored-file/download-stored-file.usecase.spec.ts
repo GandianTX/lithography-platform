@@ -18,7 +18,7 @@ import {
 import { LocalReferenceDocumentStorage } from '@src/infrastructure/file-storage/local-reference-document-storage';
 import { LocalStoredFileStorage } from '@src/infrastructure/file-storage/local-stored-file-storage';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
-import type { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
+import { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { STORED_FILE_UPLOAD_MAX_BYTES } from './stored-file-upload.contract';
 import { DownloadStoredFileUsecase } from './download-stored-file.usecase';
@@ -503,5 +503,109 @@ describe('DownloadStoredFileUsecase 真实临时磁盘完整性校验', () => {
     await expect(
       usecase.execute({ session: engineer, fileId, uploadContextId }),
     ).rejects.toMatchObject({ code: STORED_FILE_ERROR.FILE_NOT_AVAILABLE });
+  });
+});
+
+/**
+ * 归属判断使用真实 StoredFileQueryService；数据库替身范围仅限四个 Repository 的
+ * `findOne` 返回值（内存 jest 替身），不连接 MySQL，也不验证 SQL/查询构造。
+ */
+describe('DownloadStoredFileUsecase 真实 QueryService 归属判断', () => {
+  const boundFileRow = () => ({
+    fileId,
+    uploadedByAccountId: 900001,
+    ownerOrganizationId: 700002,
+    storageReference: 'private/ref.pdf',
+    originalFilename: '维修记录.pdf',
+    mimeType: 'application/pdf',
+    byteSize: String(payload.byteLength),
+    checksumSha256: sha256(payload),
+    status: 'VALID',
+    businessType: 'REPAIR_PROCESS',
+    businessId: '42',
+    uploadContextId: 'ctx',
+    bindingStatus: 'BOUND',
+    createdAt: new Date('2026-11-14T00:00:00.000Z'),
+    verifiedAt: new Date('2026-11-14T00:00:00.000Z'),
+  });
+
+  const makeLevel2AdminUsecase = () => {
+    const storedFile = { findOne: jest.fn().mockResolvedValue(boundFileRow()), count: jest.fn() };
+    const processEntry = { findOne: jest.fn().mockResolvedValue({ id: 700001 }) };
+    const request = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 42,
+        intakeId: 7001,
+        serviceOrganizationId: 700002,
+        ownerOrganizationId: 920002,
+        deprecated: false,
+      }),
+    };
+    const intake = { findOne: jest.fn() };
+    const queryService = new StoredFileQueryService(
+      storedFile as never,
+      processEntry as never,
+      request as never,
+      intake as never,
+    );
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(2);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockResolvedValue({ organizationId: 700002 });
+    const storage = makeStorage();
+    const usecase = new DownloadStoredFileUsecase(
+      queryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      storage,
+    );
+    return { usecase, storage, request, intake };
+  };
+
+  it('工单与报修服务公司一致：授权通过并打开存储', async () => {
+    const { usecase, storage, intake } = makeLevel2AdminUsecase();
+    intake.findOne.mockResolvedValue({ id: 7001, serviceOrganizationId: 700002 });
+
+    const result = await usecase.execute({ session: admin, fileId, uploadContextId: null });
+
+    expect(storage.open).toHaveBeenCalledTimes(1);
+    await expect(readAll(result.content)).resolves.toEqual(payload);
+  });
+
+  it('工单与报修服务公司冲突：NOT_FOUND 且不打开存储', async () => {
+    const { usecase, storage, intake } = makeLevel2AdminUsecase();
+    intake.findOne.mockResolvedValue({ id: 7001, serviceOrganizationId: 920002 });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('工单未关联报修：NOT_FOUND 且不打开存储', async () => {
+    const { usecase, storage, request, intake } = makeLevel2AdminUsecase();
+    request.findOne.mockResolvedValue({
+      id: 42,
+      intakeId: null,
+      serviceOrganizationId: 700002,
+      ownerOrganizationId: 700002,
+      deprecated: false,
+    });
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(intake.findOne).not.toHaveBeenCalled();
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('原始报修不存在：NOT_FOUND 且不打开存储', async () => {
+    const { usecase, storage, intake } = makeLevel2AdminUsecase();
+    intake.findOne.mockResolvedValue(null);
+
+    await expect(
+      usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(storage.open).not.toHaveBeenCalled();
   });
 });
