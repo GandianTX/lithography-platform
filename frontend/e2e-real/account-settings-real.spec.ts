@@ -571,10 +571,11 @@ test.describe('account settings real backend flow', () => {
         {
           label: '专用账号清理',
           run: () => {
-            // 只清本轮登记的账号、资料与成员关系；账外引用会在首删前被拒绝
+            // 只清本轮登记的账号、资料与成员关系；整批预检通过才允许首删，
+            // 账外引用与任一目标不符都会在首删前拒绝并整批回滚
             cleanupRegisteredDedicatedAccounts(registry);
 
-            // 清理成功后才释放台账：逐账号核对本轮残留为零
+            // 批次提交明确成功后，才在事务外逐账号核对本轮残留为零（失败时台账保留）
             for (const account of registry) {
               expect(readDedicatedAccountCleanupResidue(account.id)).toEqual({
                 account: 0,

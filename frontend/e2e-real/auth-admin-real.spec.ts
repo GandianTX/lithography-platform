@@ -21,8 +21,9 @@
 // - 本轮专用账号写入前必须通过 API/SQL 同库探针（assertApiSqlSameDatabase）；
 // - 本轮自建账号一律使用数据库生成主键，清理绑定 accountId + 专用登录名双因子；
 // - 创建响应一返回即**立即登记**精确 ID（早于任何后续查询 / 断言 / 弹窗关闭等待），后续步骤失败
-//   不回滚登记；逐账号独立清理（某账号失败不阻断后续），删除错误与逐账号残留核对错误一并聚合
-//   报告，主流程与清理同时失败时两类错误都保留（见 helper 的 registerCreatedDedicatedAccount /
+//   不回滚登记；同一用例登记的多个账号作为**一个批次**清理：整批预检通过才允许首删，任一目标
+//   不符或后序 DELETE 失败整批回滚（不会先提交前一个账号）；批次提交后才做事务外残留核对，
+//   主流程与清理同时失败时两类错误都保留（见 helper 的 registerCreatedDedicatedAccount /
 //   cleanupRegisteredDedicatedAccounts / runWithCleanup）；
 // - 不修改共享 Mock 账号的密码 / 状态 / 角色；共享管理员只用于合法管理与被拒保护验证；
 // - 浏览器流量必须落在专用前端 / 专用后端来源，出现 127.0.0.1:3000 即判失败。
@@ -495,7 +496,7 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
 
         assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
       },
-      // 逐账号独立清理（某账号失败不阻断后续），删除错误与逐账号残留核对错误一并聚合报告
+      // 两个账号同批提交：整批预检通过才允许首删，任一目标不符或后序 DELETE 失败整批回滚
       () => cleanupRegisteredDedicatedAccounts(created),
     );
 

@@ -22,7 +22,9 @@ import {
   cleanupRegisteredDedicatedAccounts,
   DEDICATED_LOGIN_NAME_PATTERN,
   type DedicatedAccountExpectation,
+  DedicatedCleanupBatchError,
   deleteE2EDedicatedAccount,
+  deleteE2EDedicatedAccounts,
   describeDedicatedAccountCleanupTarget,
   preflightDedicatedAccountCleanup,
   readAccountCountByLoginName,
@@ -279,18 +281,18 @@ describe('专用账号资源台账与引用闭包清理（终审 I3）', () => {
 
     // 同一会话：事务 + DATABASE() 复核必须在任何 DELETE 之前
     expect(sql).toContain('START TRANSACTION');
-    expect(sql).toContain('SET @dedicated_cleanup_database = DATABASE()');
+    expect(sql).toContain('SET @dc_database = DATABASE()');
     expect(sql.indexOf('DATABASE()')).toBeLessThan(sql.indexOf('DELETE FROM'));
 
     // 绑定核对使用 FOR UPDATE 锁定，且先于任何 DELETE；账号锁定同时绑定登录名与身份漂移字段
     expect(sql).toContain('FOR UPDATE');
     expect(sql).toContain(
-      `SELECT id INTO @dedicated_cleanup_account_row FROM base_user_account WHERE id = 41 AND login_name = '${DEDICATED_LOGIN_NAME}' AND identity_hint = 'ENGINEER' FOR UPDATE`,
+      `SELECT id INTO @dc_acct_41_account_row FROM base_user_account WHERE id = 41 AND login_name = '${DEDICATED_LOGIN_NAME}' AND identity_hint = 'ENGINEER' FOR UPDATE`,
     );
     expect(sql.indexOf('FOR UPDATE')).toBeLessThan(sql.indexOf('DELETE FROM'));
 
     // 集合外引用检查先于任何 DELETE
-    expect(sql.indexOf('dedicated_cleanup_unregistered_external_references')).toBeLessThan(
+    expect(sql.indexOf('dc_unregistered_external_references')).toBeLessThan(
       sql.indexOf('DELETE FROM'),
     );
 
@@ -315,16 +317,18 @@ describe('专用账号资源台账与引用闭包清理（终审 I3）', () => {
     );
 
     // 提交前核对本轮残留为零
-    expect(sql).toContain('dedicated_cleanup_residue_must_be_zero');
+    expect(sql).toContain('dc_residue_must_be_zero');
     expect(sql.trimEnd().endsWith('COMMIT')).toBe(true);
   });
 
   it.each([
-    'dedicated_cleanup_database_must_equal_strict_dedicated_e2e',
-    'dedicated_cleanup_account_binding_login_name_and_identity_hint_must_match_exactly_one',
-    'dedicated_cleanup_user_info_binding_must_match_exactly_one',
-    'dedicated_cleanup_membership_binding_must_match_exactly_one',
-    'dedicated_cleanup_unregistered_external_references',
+    'dc_database_must_equal_strict_dedicated_e2e',
+    'dc_acct_41_account_binding_mismatch',
+    'dc_acct_41_user_info_count_mismatch',
+    'dc_acct_41_user_info_binding_mismatch',
+    'dc_acct_41_membership_count_mismatch',
+    'dc_acct_41_membership_binding_mismatch',
+    'dc_unregistered_external_references',
   ])('首删前断言 %s 被拒时 batch 立即中止：一条 DELETE 都不执行', (marker) => {
     process.env[OPT_IN_ENV] = '1';
     const mysql = installDedicatedMysqlMock({ rejectMarker: marker });
@@ -336,12 +340,10 @@ describe('专用账号资源台账与引用闭包清理（终审 I3）', () => {
   it('残留断言在三条删除之后执行：DELETE 已发出但 COMMIT 不会执行（连接关闭回滚）', () => {
     process.env[OPT_IN_ENV] = '1';
     const mysql = installDedicatedMysqlMock({
-      rejectMarker: 'dedicated_cleanup_residue_must_be_zero',
+      rejectMarker: 'dc_residue_must_be_zero',
     });
 
-    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow(
-      'dedicated_cleanup_residue_must_be_zero',
-    );
+    expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow('dc_residue_must_be_zero');
     // 残留核对排在三条 DELETE 之后：已执行的 DELETE 由事务回滚撤销
     expect(mysql.deletedTables()).toEqual([
       'organization_membership',
@@ -354,11 +356,11 @@ describe('专用账号资源台账与引用闭包清理（终审 I3）', () => {
   it('删除条数不符时在该条 DELETE 之后立即中止，后续 DELETE 不再执行', () => {
     process.env[OPT_IN_ENV] = '1';
     const deleteCountMock = installDedicatedMysqlMock({
-      rejectMarker: 'dedicated_cleanup_membership_delete_must_affect_exactly_one_row',
+      rejectMarker: 'dc_acct_41_membership_delete_rows_mismatch',
     });
 
     expect(() => deleteE2EDedicatedAccount(RECORD)).toThrow(
-      'dedicated_cleanup_membership_delete_must_affect_exactly_one_row',
+      'dc_acct_41_membership_delete_rows_mismatch',
     );
     // 成员关系已尝试删除，但资料与账号的 DELETE 未被继续执行
     expect(deleteCountMock.deletedTables()).toEqual(['organization_membership']);
@@ -461,6 +463,250 @@ describe('专用账号资源台账与引用闭包清理（终审 I3）', () => {
     }
     expect(statements[2]).toContain('FROM organization_membership');
     expect(statements[2]).toContain('FROM engineer_response');
+  });
+});
+
+// P2-01：同一用例登记的多个账号必须整批预检、单事务删除，不允许部分提交。
+describe('整批原子清理（P2-01）', () => {
+  const originalOptIn = process.env[OPT_IN_ENV];
+
+  beforeEach(() => {
+    execFileSyncMock.mockReset().mockReturnValue('');
+    readFileSyncMock.mockReset().mockReturnValue(envFile(DEDICATED_E2E_DB_NAME));
+    delete process.env[OPT_IN_ENV];
+    delete process.env.DB_NAME;
+  });
+
+  afterEach(() => {
+    delete process.env[OPT_IN_ENV];
+  });
+
+  afterAll(() => {
+    if (originalOptIn === undefined) {
+      delete process.env[OPT_IN_ENV];
+    } else {
+      process.env[OPT_IN_ENV] = originalOptIn;
+    }
+  });
+
+  /** 合法批次目标：登录名命中白名单，成员/资料主键唯一 */
+  function batchRecord(id: number): RegisteredDedicatedAccount {
+    return {
+      accessGroup: ['ENGINEER'],
+      facts: { membershipId: 600 + id, userInfoId: 500 + id },
+      id,
+      loginName: `e2e-pw-175800000${String(id)}`,
+      nickname: `E2E 批次账号 ${id}`,
+      organizationId: 11,
+      role: 'ENGINEER',
+      userInfoEmail: null,
+      userState: 'ACTIVE',
+    };
+  }
+
+  it('空批次为 no-op：不要求清理授权，也不启动 mysql', () => {
+    expect(() => deleteE2EDedicatedAccounts([])).not.toThrow();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['账号 ID', () => [batchRecord(101), batchRecord(101)]],
+    [
+      '资料主键',
+      () => [
+        batchRecord(101),
+        { ...batchRecord(102), facts: { membershipId: 702, userInfoId: 601 } },
+      ],
+    ],
+    [
+      '成员关系主键',
+      () => [
+        batchRecord(101),
+        { ...batchRecord(102), facts: { membershipId: 701, userInfoId: 602 } },
+      ],
+    ],
+  ])('批次内重复%s整体拒绝，且不启动 mysql', (_label, build) => {
+    process.env[OPT_IN_ENV] = '1';
+
+    expect(() => deleteE2EDedicatedAccounts(build())).toThrow('重复登记');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('第二个目标校验失败时整批拒绝：连引用闭包读取都不发起', () => {
+    process.env[OPT_IN_ENV] = '1';
+
+    expect(() =>
+      deleteE2EDedicatedAccounts([batchRecord(101), { ...batchRecord(102), loginName: 'bad' }]),
+    ).toThrow('未通过白名单校验');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('两个目标正常：单脚本、单事务、单 COMMIT，全部锁定早于首删', () => {
+    process.env[OPT_IN_ENV] = '1';
+    const mysql = installDedicatedMysqlMock();
+
+    deleteE2EDedicatedAccounts([batchRecord(102), batchRecord(101)]);
+
+    expect(mysql.scripts).toHaveLength(1);
+
+    const sql = mysql.scripts[0];
+
+    expect(sql.match(/START TRANSACTION/g)).toHaveLength(1);
+    expect(sql.match(/\bCOMMIT\b/g)).toHaveLength(1);
+    expect(sql.lastIndexOf('FOR UPDATE')).toBeLessThan(sql.indexOf('DELETE FROM'));
+    expect(sql.lastIndexOf('dc_unregistered_external_references')).toBeLessThan(
+      sql.indexOf('DELETE FROM'),
+    );
+
+    // 两个目标各自独立命名断言标记，互不覆盖
+    expect(sql).toContain('dc_acct_101_user_info_binding_mismatch');
+    expect(sql).toContain('dc_acct_102_user_info_binding_mismatch');
+
+    // 按账号 ID 升序删除，每个目标都是成员 → 资料 → 账号
+    expect(mysql.deletedTables()).toEqual([
+      'organization_membership',
+      'base_user_info',
+      'base_user_account',
+      'organization_membership',
+      'base_user_info',
+      'base_user_account',
+    ]);
+    expect(sql.indexOf('id = 101')).toBeLessThan(sql.indexOf('id = 102'));
+
+    // 提交前残留断言在最后一条 DELETE 之后
+    expect(sql.lastIndexOf('DELETE FROM base_user_account')).toBeLessThan(
+      sql.indexOf('dc_residue_must_be_zero'),
+    );
+  });
+
+  it('第二个目标预检被拒：第一个目标的 DELETE 也一条都不执行', () => {
+    process.env[OPT_IN_ENV] = '1';
+    const mysql = installDedicatedMysqlMock({
+      rejectMarker: 'dc_acct_102_user_info_binding_mismatch',
+    });
+
+    expect(() => deleteE2EDedicatedAccounts([batchRecord(101), batchRecord(102)])).toThrow(
+      'dc_acct_102_user_info_binding_mismatch',
+    );
+    expect(mysql.deletedTables()).toEqual([]);
+    expect(mysql.scripts[0].trimEnd().endsWith('COMMIT')).toBe(true);
+  });
+
+  it('第二个目标后序 DELETE 失败：第一个目标已发出的 DELETE 不会提交', () => {
+    process.env[OPT_IN_ENV] = '1';
+    const mysql = installDedicatedMysqlMock({
+      rejectMarker: 'dc_acct_102_membership_delete_rows_mismatch',
+    });
+
+    expect(() => deleteE2EDedicatedAccounts([batchRecord(101), batchRecord(102)])).toThrow(
+      'dc_acct_102_membership_delete_rows_mismatch',
+    );
+    // 第一个目标三条 DELETE 已发出，第二个目标的成员 DELETE 也已发出，后续 DELETE 与 COMMIT 未执行
+    expect(mysql.deletedTables()).toEqual([
+      'organization_membership',
+      'base_user_info',
+      'base_user_account',
+      'organization_membership',
+    ]);
+    expect(mysql.scripts[0].trimEnd().endsWith('COMMIT')).toBe(true);
+  });
+
+  it('连接中断时标记提交状态待确认，提示保留台账并停止自动重试', () => {
+    process.env[OPT_IN_ENV] = '1';
+    execFileSyncMock.mockImplementation((_file, args) => {
+      const argv = args as string[];
+      const sql = argv[argv.indexOf('-e') + 1] as string;
+
+      // 引用闭包发现正常返回；清理脚本执行期间连接中断
+      if (sql.startsWith('SELECT kcu.TABLE_NAME')) {
+        return '';
+      }
+
+      throw Object.assign(new Error('mysql lost'), {
+        stderr: 'ERROR 2013 (HY000): Lost connection to MySQL server during query',
+      });
+    });
+
+    expect(() => deleteE2EDedicatedAccounts([batchRecord(101)])).toThrow('提交状态待确认');
+  });
+
+  it('COMMIT 已生效但确认丢失（stderr 为空）：不得声称未提交或已回滚', () => {
+    process.env[OPT_IN_ENV] = '1';
+    execFileSyncMock.mockImplementation((_file, args) => {
+      const argv = args as string[];
+      const sql = argv[argv.indexOf('-e') + 1] as string;
+
+      if (sql.startsWith('SELECT kcu.TABLE_NAME')) {
+        return '';
+      }
+
+      // 客户端在脚本执行完后丢失确认：没有 stderr，无法判断 COMMIT 是否生效
+      throw new Error('client lost after executing batch');
+    });
+
+    let thrown: unknown;
+    try {
+      cleanupRegisteredDedicatedAccounts([batchRecord(101), batchRecord(102)]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    const message = toErrorMessage(thrown);
+
+    expect(message).toContain('提交状态待确认');
+    expect(message).not.toContain('事务未 COMMIT');
+    expect(message).not.toMatch(/个目标.*未提交/);
+    expect(message).toContain('(无 stderr)');
+    // 结构化字段由执行边界一路传到外层：状态、阶段、实际账号 ID 都不丢失
+    expect(thrown).toBeInstanceOf(DedicatedCleanupBatchError);
+    expect(thrown).toMatchObject({
+      accountIds: [101, 102],
+      commitState: '提交状态待确认',
+      stage: '清理脚本执行（mysql batch）',
+    });
+    // 原始诊断与脱敏后的执行边界错误都保留在错误链上
+    expect((thrown as Error).cause).toBeInstanceOf(DedicatedCleanupBatchError);
+  });
+
+  it('连接中断的待确认诊断经 runWithCleanup 聚合后仍保留，且关闭上下文仍被尝试', async () => {
+    process.env[OPT_IN_ENV] = '1';
+    execFileSyncMock.mockImplementation((_file, args) => {
+      const argv = args as string[];
+      const sql = argv[argv.indexOf('-e') + 1] as string;
+
+      if (sql.startsWith('SELECT kcu.TABLE_NAME')) {
+        return '';
+      }
+
+      throw Object.assign(new Error('mysql lost'), {
+        stderr: 'ERROR 2013 (HY000): Lost connection to MySQL server during query',
+      });
+    });
+    const closeSpy = vi.fn(() => {});
+
+    let thrown: unknown;
+    try {
+      await runWithCleanup(
+        async () => {
+          throw new Error('业务断言失败：改密后登录返回意外状态');
+        },
+        {
+          label: '账号清理',
+          run: () => cleanupRegisteredDedicatedAccounts([batchRecord(101), batchRecord(102)]),
+        },
+        { label: '关闭浏览器上下文', run: closeSpy },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    const message = toErrorMessage(thrown);
+
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(message).toContain('提交状态待确认');
+    expect(message).toContain('业务断言失败：改密后登录返回意外状态');
+    expect(message).toContain('ERROR 2013 (HY000): Lost connection');
+    expect(message).not.toMatch(/个目标.*未提交|事务未 COMMIT/);
   });
 });
 
@@ -891,33 +1137,43 @@ describe('专用账号创建登记与逐账号清理编排（终审 I3）', () =
     expect(registry[0].facts).toEqual({ membershipId: 970300, userInfoId: 970200 });
   });
 
-  it('首个账号删除失败不阻断后续账号，删除错误被聚合报告', () => {
-    const attempted: number[] = [];
-    const deleteFn = (account: RegisteredDedicatedAccount) => {
-      attempted.push(account.id);
+  it('整批删除失败：整批目标一次提交、不执行事务外残留核对，错误保留批次与原始原因', () => {
+    const attempted: number[][] = [];
+    const deleteAccounts = (batch: readonly RegisteredDedicatedAccount[]) => {
+      attempted.push(batch.map((account) => account.id));
 
-      if (account.id === 101) {
-        throw new Error('账号 101 删除被拒');
-      }
+      throw new Error('批次删除被拒');
     };
+    const residueFn = vi.fn(zeroResidue);
 
     let thrown: unknown;
     try {
       cleanupRegisteredDedicatedAccounts(
         [verifiedAccount(101), verifiedAccount(102)],
-        deleteFn,
-        zeroResidue,
+        deleteAccounts,
+        residueFn,
       );
     } catch (error) {
       thrown = error;
     }
 
-    expect(attempted).toEqual([101, 102]);
-    expect(toErrorMessage(thrown)).toContain('账号 101（e2e-pw-17580000101）物理删除失败');
-    expect(toErrorMessage(thrown)).toContain('账号 101 删除被拒');
+    // 批次入口只被调用一次：整批一起提交，不存在逐个账号的重试或部分提交
+    expect(attempted).toEqual([[101, 102]]);
+    // 事务已回滚，不再做事务外残留回读
+    expect(residueFn).not.toHaveBeenCalled();
+    expect(toErrorMessage(thrown)).toContain(
+      '本批 2 个目标（101（e2e-pw-17580000101）、102（e2e-pw-17580000102）），未提交（失败阶段：批次入口（执行前校验））；台账保留，未执行任何提交',
+    );
+    expect(toErrorMessage(thrown)).toContain('批次删除被拒');
+    expect(thrown).toBeInstanceOf(DedicatedCleanupBatchError);
+    expect(thrown).toMatchObject({
+      accountIds: [101, 102],
+      commitState: '未提交',
+      stage: '批次入口（执行前校验）',
+    });
   });
 
-  it('残留非零与残留核对失败分别记录，且不阻断后续账号', () => {
+  it('残留非零与残留核对失败分别记录，且不阻断后续账号的核对', () => {
     const checked: number[] = [];
     const residueFn = (id: number) => {
       checked.push(id);
@@ -944,7 +1200,8 @@ describe('专用账号创建登记与逐账号清理编排（终审 I3）', () =
     }
 
     expect(checked).toEqual([101, 102, 103]);
-    expect(toErrorMessage(thrown)).toContain('账号 102（e2e-pw-17580000102）残留核对失败');
+    expect(toErrorMessage(thrown)).toContain('账号 102（e2e-pw-17580000102）已提交，残留核验失败');
+    expect(toErrorMessage(thrown)).not.toContain('未提交');
     expect(toErrorMessage(thrown)).toContain('残留核对 SQL 失败');
     expect(toErrorMessage(thrown)).toContain('账号 103（e2e-pw-17580000103）清理后仍有残留');
   });
@@ -957,7 +1214,7 @@ describe('专用账号创建登记与逐账号清理编排（终审 I3）', () =
       expect(() =>
         cleanupRegisteredDedicatedAccounts(
           [verifiedAccount(100 + round)],
-          (account) => deleted.push(account.id),
+          (batch) => batch.forEach((account) => deleted.push(account.id)),
           (id) => {
             checked.push(id);
 
