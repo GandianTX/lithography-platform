@@ -8,11 +8,12 @@ import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { DomainError, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
 import { resolveRestStatus } from '@core/common/errors/rest-error-status';
 import {
-  Body,
   Controller,
   Get,
   HttpCode,
+  HttpException,
   HttpStatus,
+  Injectable,
   Logger,
   Param,
   Post,
@@ -21,9 +22,13 @@ import {
   UploadedFile,
   UseGuards,
   UseInterceptors,
+  type CallHandler,
+  type ExecutionContext,
+  type NestInterceptor,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request, Response } from 'express';
+import type { Observable } from 'rxjs';
 
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
@@ -32,17 +37,96 @@ import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import type { StoredFileMetadataView } from '@src/modules/lithography/lithography.types';
 import { DownloadStoredFileUsecase } from '@src/usecases/stored-file/download-stored-file.usecase';
 import { GetStoredFileMetadataUsecase } from '@src/usecases/stored-file/get-stored-file-metadata.usecase';
-import { UploadStoredFileUsecase } from '@src/usecases/stored-file/upload-stored-file.usecase';
+import { STORED_FILE_UPLOAD_MAX_BYTES } from '@src/usecases/stored-file/stored-file-upload.contract';
 import type { UploadedStoredFileView } from '@src/usecases/stored-file/stored-file.types';
+import { UploadStoredFileUsecase } from '@src/usecases/stored-file/upload-stored-file.usecase';
 
 import {
-  UPLOAD_HARD_LIMIT_BYTES,
   applyDownloadHeaders,
   decodeUtf8FileName,
   sanitizeOriginalFilename,
   toRestError,
   toUploadedFilePayload,
 } from '../shared/upload-boundary.util';
+
+/**
+ * 本入口独立的 multipart 解析限额（不改全局上传配置）。
+ *
+ * busboy/multer 在「达到」限额时即报错，因此数值设置为「允许值的边界 + 1」：
+ * - fileSize：允许恰好 20,000,000 字节，20,000,001 字节在解析阶段即被拒绝；
+ * - fieldSize：允许 businessType 最多 64 字节，更长值在解析阶段即被拒绝；
+ * - parts：允许 businessType + file 两个部分，第三个部分在解析阶段即被拒绝；
+ * - fields/files：分别只允许一个文本字段与一个文件。
+ * 精确字段名、重复字段与缺失字段由控制器在解析后按形态校验（不会解析超大内容）。
+ */
+const STORED_FILE_BUSINESS_TYPE_MAX_BYTES = 64;
+
+const STORED_FILE_MULTIPART_LIMITS = {
+  fileSize: STORED_FILE_UPLOAD_MAX_BYTES + 1,
+  files: 1,
+  fields: 1,
+  fieldSize: STORED_FILE_BUSINESS_TYPE_MAX_BYTES + 1,
+  parts: 3,
+} as const;
+
+/** 仅本入口使用的 multipart 解析器（Nest 直接依赖，不改全局上传配置） */
+const storedFileMultipartParser = FileInterceptor('file', {
+  limits: STORED_FILE_MULTIPART_LIMITS,
+});
+
+/**
+ * 上传入口专用 multipart 拦截器：在解析阶段收紧限额，并把解析错误收敛为
+ * 本域固定 REST 错误体（超限 413、其余表单错误 400），解析失败时处理器不会执行。
+ */
+@Injectable()
+export class StoredFileUploadInterceptor implements NestInterceptor {
+  private readonly parser = new storedFileMultipartParser();
+
+  async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
+    try {
+      return await this.parser.intercept(context, next);
+    } catch (error) {
+      throw mapStoredFileMultipartError(error);
+    }
+  }
+}
+
+/** 解析期错误 → 固定 REST 错误体；LIMIT_FILE_SIZE 为 413，其余表单结构问题为 400 */
+function mapStoredFileMultipartError(error: unknown): Error {
+  const tooLarge =
+    error instanceof HttpException && error.getStatus() === Number(HttpStatus.PAYLOAD_TOO_LARGE);
+  const domainError = tooLarge
+    ? new DomainError(STORED_FILE_ERROR.UPLOAD_FILE_TOO_LARGE, '业务原件不能超过 20,000,000 字节')
+    : new DomainError(STORED_FILE_ERROR.INVALID_PARAMS, '上传表单不合法');
+
+  try {
+    toRestError(domainError);
+  } catch (mapped) {
+    return mapped instanceof Error ? mapped : new Error('上传表单不合法');
+  }
+}
+
+/** 只接受唯一 businessType 文本字段：重复（数组）、额外字段、错名或缺失一律拒绝 */
+function readStoredFileBusinessType(body: unknown): string {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new DomainError(STORED_FILE_ERROR.INVALID_PARAMS, '上传表单不合法');
+  }
+
+  const entries = Object.entries(body as Record<string, unknown>);
+  if (entries.length !== 1 || entries[0][0] !== 'businessType') {
+    throw new DomainError(STORED_FILE_ERROR.INVALID_PARAMS, '上传表单不合法');
+  }
+
+  const value = entries[0][1];
+  if (typeof value !== 'string') {
+    throw new DomainError(STORED_FILE_ERROR.INVALID_PARAMS, '上传表单不合法');
+  }
+  if (value.length === 0) {
+    throw new DomainError(STORED_FILE_ERROR.INVALID_PARAMS, '缺少业务原件用途');
+  }
+
+  return value;
+}
 
 /**
  * 共用业务原件 REST 边界（任务 11 / R062-01..03）。
@@ -72,20 +156,21 @@ export class StoredFileRestController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.ENGINEER)
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: UPLOAD_HARD_LIMIT_BYTES } }))
+  @UseInterceptors(StoredFileUploadInterceptor)
   @HttpCode(HttpStatus.CREATED)
   async upload(
     @UploadedFile() file: unknown,
+    @Req() request: Request,
     @currentUser() user: JwtPayload,
-    @Body('businessType') businessType?: string,
   ): Promise<UploadedStoredFileView> {
     try {
+      const businessType = readStoredFileBusinessType(request.body);
       const uploaded = toUploadedFilePayload(file, STORED_FILE_ERROR.UPLOAD_FILE_MISSING);
       const originalFilename = sanitizeOriginalFilename(decodeUtf8FileName(uploaded.originalname));
 
       return await this.uploadUsecase.execute({
         session: mapJwtToUsecaseSession(user),
-        businessType: businessType ?? '',
+        businessType,
         file: { buffer: uploaded.buffer, originalFilename },
       });
     } catch (error) {
@@ -138,11 +223,13 @@ export class StoredFileRestController {
     @currentUser() user: JwtPayload,
     @Res() response: Response,
   ): Promise<void> {
-    // 等待授权与存储打开期间客户端可能已断开：先跟踪响应状态，避免对已关闭响应
-    // 设置下载头或启动传输，也避免迟到的源流无人销毁。
+    // 等待授权、存储打开与完整性校验期间客户端可能已断开：跟踪响应状态并把断开
+    // 传递给用例，由用例销毁源流（含打开迟到返回的流）；校验完成前不写下载头/正文。
     let responseClosed = false;
+    const abortController = new AbortController();
     const markResponseClosed = (): void => {
       responseClosed = true;
+      abortController.abort();
     };
     response.once('close', markResponseClosed);
 
@@ -153,9 +240,14 @@ export class StoredFileRestController {
         session: mapJwtToUsecaseSession(user),
         fileId,
         uploadContextId: readUploadContextId(request.query.uploadContextId),
+        signal: abortController.signal,
       });
     } catch (error) {
       response.removeListener('close', markResponseClosed);
+      // 客户端已断开时响应无法再承载错误体：仅结束处理，不再写响应
+      if (responseClosed || response.destroyed) {
+        return;
+      }
       if (error instanceof DomainError) {
         toRestError(error);
       }

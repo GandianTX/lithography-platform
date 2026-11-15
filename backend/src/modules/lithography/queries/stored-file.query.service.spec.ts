@@ -293,6 +293,8 @@ describe('StoredFileQueryService 读授权', () => {
         storageReference: 'private/ref.pdf',
         originalFilename: '维修记录.pdf',
         mimeType: 'application/pdf',
+        byteSize: 10,
+        checksumSha256: 'checksum',
       });
     });
   });

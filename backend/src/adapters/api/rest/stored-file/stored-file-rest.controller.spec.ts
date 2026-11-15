@@ -106,7 +106,7 @@ describe('StoredFileRestController', () => {
     const { controller } = makeController();
 
     const error = await controller
-      .upload(undefined, user, 'REPAIR_PROCESS')
+      .upload(undefined, { body: { businessType: 'REPAIR_PROCESS' } } as unknown as Request, user)
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(HttpException);
@@ -115,6 +115,44 @@ describe('StoredFileRestController', () => {
     expect(httpError.getResponse()).toMatchObject({
       code: STORED_FILE_ERROR.UPLOAD_FILE_MISSING,
     });
+  });
+
+  it('重复 businessType（数组）在边界层拒绝，不调用上传用例', async () => {
+    const { controller, uploadUsecase } = makeController();
+
+    const error = await controller
+      .upload(
+        { buffer: Buffer.from('pdf'), originalname: 'a.pdf' },
+        { body: { businessType: ['REPAIR_PROCESS', 'REPAIR_PROCESS'] } } as unknown as Request,
+        user,
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(HttpException);
+    expect((error as HttpException).getStatus()).toBe(400);
+    expect((error as HttpException).getResponse()).toMatchObject({
+      code: STORED_FILE_ERROR.INVALID_PARAMS,
+    });
+    expect(uploadUsecase.execute).not.toHaveBeenCalled();
+  });
+
+  it('额外文本字段在边界层拒绝，不调用上传用例', async () => {
+    const { controller, uploadUsecase } = makeController();
+
+    const error = await controller
+      .upload(
+        { buffer: Buffer.from('pdf'), originalname: 'a.pdf' },
+        { body: { businessType: 'REPAIR_PROCESS', note: 'extra' } } as unknown as Request,
+        user,
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(HttpException);
+    expect((error as HttpException).getStatus()).toBe(400);
+    expect((error as HttpException).getResponse()).toMatchObject({
+      code: STORED_FILE_ERROR.INVALID_PARAMS,
+    });
+    expect(uploadUsecase.execute).not.toHaveBeenCalled();
   });
 
   it('元数据传递可信会话、上下文与原文文件名；不自行组装组织', async () => {
@@ -302,11 +340,16 @@ describe('StoredFileRestController 正式下载入口（真实 Nest HTTP）', ()
     process.on('uncaughtException', onUncaught);
 
     try {
-      const pending: { enter?: () => void; release?: (payload: unknown) => void } = {};
+      const pending: {
+        enter?: () => void;
+        release?: (payload: unknown) => void;
+        signal?: AbortSignal;
+      } = {};
       const entered = new Promise<void>((resolve) => {
         pending.enter = resolve;
       });
-      downloadExecute.mockImplementationOnce(() => {
+      downloadExecute.mockImplementationOnce((command: { signal?: AbortSignal }) => {
+        pending.signal = command.signal;
         pending.enter?.();
         return new Promise((resolve) => {
           pending.release = resolve;
@@ -341,6 +384,7 @@ describe('StoredFileRestController 正式下载入口（真实 Nest HTTP）', ()
 
       request.destroy();
       await waitFor(() => responseClosed, '客户端断开后服务端响应未关闭');
+      expect(pending.signal?.aborted).toBe(true);
 
       pending.release?.({
         fileId,
@@ -490,23 +534,42 @@ describe('StoredFileRestController 正式上传入口（真实 Nest multipart HT
   let storageSave: jest.Mock;
   let insertStagedFile: jest.Mock;
 
-  const multipartBody = (filename: string, content: Buffer): Buffer =>
-    Buffer.concat([
-      Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="businessType"\r\n\r\nREPAIR_PROCESS\r\n`,
-        'utf8',
-      ),
-      Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
-        'utf8',
-      ),
-      content,
-      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
-    ]);
+  type MultipartPart = {
+    name: string;
+    value?: string;
+    filename?: string;
+    content?: Buffer;
+  };
 
-  const requestUpload = (filename: string, content: Buffer): Promise<RawResponse> => {
-    const body = multipartBody(filename, content);
-    return new Promise((resolve) => {
+  const multipartBodyFrom = (parts: readonly MultipartPart[]): Buffer => {
+    const chunks: Buffer[] = [];
+    for (const part of parts) {
+      const disposition =
+        part.filename === undefined
+          ? `--${boundary}\r\nContent-Disposition: form-data; name="${part.name}"\r\n\r\n`
+          : `--${boundary}\r\nContent-Disposition: form-data; name="${part.name}"; filename="${part.filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+      chunks.push(Buffer.from(disposition, 'utf8'));
+      chunks.push(
+        part.filename === undefined
+          ? Buffer.from(part.value ?? '', 'utf8')
+          : (part.content ?? Buffer.alloc(0)),
+      );
+      chunks.push(Buffer.from('\r\n', 'utf8'));
+    }
+    chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
+    return Buffer.concat(chunks);
+  };
+
+  const defaultParts = (filename: string, content: Buffer): MultipartPart[] => [
+    { name: 'businessType', value: 'REPAIR_PROCESS' },
+    { name: 'file', filename, content },
+  ];
+
+  const multipartBody = (filename: string, content: Buffer): Buffer =>
+    multipartBodyFrom(defaultParts(filename, content));
+
+  const requestUploadBody = (body: Buffer): Promise<RawResponse> =>
+    new Promise((resolve) => {
       const headers: Record<string, string | number> = {};
       headers['content-type'] = `multipart/form-data; boundary=${boundary}`;
       headers['content-length'] = body.byteLength;
@@ -539,7 +602,12 @@ describe('StoredFileRestController 正式上传入口（真实 Nest multipart HT
       );
       request.end(body);
     });
-  };
+
+  const requestUpload = (filename: string, content: Buffer): Promise<RawResponse> =>
+    requestUploadBody(multipartBody(filename, content));
+
+  const requestUploadParts = (parts: readonly MultipartPart[]): Promise<RawResponse> =>
+    requestUploadBody(multipartBodyFrom(parts));
 
   beforeAll(async () => {
     storageSave = jest.fn().mockResolvedValue('private/storage/ref');
@@ -648,4 +716,124 @@ describe('StoredFileRestController 正式上传入口（真实 Nest multipart HT
       expect(insertStagedFile).not.toHaveBeenCalled();
     },
   );
+
+  it('恰好 20,000,000 字节的合法原件返回 201（解析器边界与用例上限一致）', async () => {
+    storageSave.mockClear();
+    insertStagedFile.mockClear();
+    const content = Buffer.alloc(20_000_000, 0x61);
+
+    const response = await requestUpload('boundary.txt', content);
+    const body = JSON.parse(response.body.toString('utf8')) as Record<string, unknown>;
+
+    expect(response.status).toBe(201);
+    expect(body.byteSize).toBe(20_000_000);
+    expect(body.checksumSha256).toBe(createHash('sha256').update(content).digest('hex'));
+    expect(storageSave).toHaveBeenCalledTimes(1);
+    expect(insertStagedFile).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it('20,000,001 字节返回受控 413，存储与登记均为 0', async () => {
+    storageSave.mockClear();
+    insertStagedFile.mockClear();
+    const response = await requestUpload('over.txt', Buffer.alloc(20_000_001, 0x61));
+    const body = JSON.parse(response.body.toString('utf8')) as Record<string, unknown>;
+
+    expect(response.status).toBe(413);
+    expect(body).toEqual({
+      statusCode: 413,
+      code: STORED_FILE_ERROR.UPLOAD_FILE_TOO_LARGE,
+      message: '业务原件不能超过 20,000,000 字节',
+    });
+    expect(storageSave).not.toHaveBeenCalled();
+    expect(insertStagedFile).not.toHaveBeenCalled();
+  }, 60_000);
+
+  const rejectionCases: Array<[string, MultipartPart[]]> = [
+    [
+      '额外文本字段',
+      [...defaultParts('a.txt', Buffer.from('ok')), { name: 'note', value: 'extra' }],
+    ],
+    [
+      '重复 businessType',
+      [
+        { name: 'businessType', value: 'REPAIR_PROCESS' },
+        { name: 'businessType', value: 'REPAIR_PROCESS' },
+        { name: 'file', filename: 'a.txt', content: Buffer.from('ok') },
+      ],
+    ],
+    [
+      '超长 businessType',
+      [
+        { name: 'businessType', value: 'R'.repeat(200) },
+        { name: 'file', filename: 'a.txt', content: Buffer.from('ok') },
+      ],
+    ],
+    [
+      '错名文本字段',
+      [
+        { name: 'businessTypes', value: 'REPAIR_PROCESS' },
+        { name: 'file', filename: 'a.txt', content: Buffer.from('ok') },
+      ],
+    ],
+    [
+      '错名文件字段',
+      [
+        { name: 'businessType', value: 'REPAIR_PROCESS' },
+        { name: 'attachment', filename: 'a.txt', content: Buffer.from('ok') },
+      ],
+    ],
+    [
+      '第二个文件',
+      [
+        { name: 'businessType', value: 'REPAIR_PROCESS' },
+        { name: 'file', filename: 'a.txt', content: Buffer.from('ok') },
+        { name: 'file', filename: 'b.txt', content: Buffer.from('ok') },
+      ],
+    ],
+  ];
+
+  it.each(rejectionCases)('multipart 形态拒绝且存储与登记均为 0：%s', async (_label, parts) => {
+    storageSave.mockClear();
+    insertStagedFile.mockClear();
+
+    const response = await requestUploadParts(parts);
+    const body = JSON.parse(response.body.toString('utf8')) as Record<string, unknown>;
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({
+      statusCode: 400,
+      code: STORED_FILE_ERROR.INVALID_PARAMS,
+      message: '上传表单不合法',
+    });
+    expect(storageSave).not.toHaveBeenCalled();
+    expect(insertStagedFile).not.toHaveBeenCalled();
+  });
+
+  it('缺失文件字段时返回受控 400，存储与登记均为 0', async () => {
+    storageSave.mockClear();
+    insertStagedFile.mockClear();
+
+    const response = await requestUploadParts([{ name: 'businessType', value: 'REPAIR_PROCESS' }]);
+    const body = JSON.parse(response.body.toString('utf8')) as Record<string, unknown>;
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({ code: STORED_FILE_ERROR.UPLOAD_FILE_MISSING });
+    expect(storageSave).not.toHaveBeenCalled();
+    expect(insertStagedFile).not.toHaveBeenCalled();
+  });
+
+  it('缺失 businessType 字段时返回受控 400，存储与登记均为 0', async () => {
+    storageSave.mockClear();
+    insertStagedFile.mockClear();
+
+    const response = await requestUploadParts([
+      { name: 'file', filename: 'a.txt', content: Buffer.from('ok') },
+    ]);
+    const body = JSON.parse(response.body.toString('utf8')) as Record<string, unknown>;
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({ code: STORED_FILE_ERROR.INVALID_PARAMS });
+    expect(storageSave).not.toHaveBeenCalled();
+    expect(insertStagedFile).not.toHaveBeenCalled();
+  });
 });

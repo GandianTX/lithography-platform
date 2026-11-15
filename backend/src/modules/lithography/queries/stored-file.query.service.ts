@@ -92,6 +92,8 @@ export class StoredFileQueryService {
       storageReference: file.storageReference,
       originalFilename: file.originalFilename,
       mimeType: file.mimeType,
+      byteSize: Number(file.byteSize),
+      checksumSha256: file.checksumSha256,
     };
   }
 

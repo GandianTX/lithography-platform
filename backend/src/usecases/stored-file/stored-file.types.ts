@@ -31,6 +31,8 @@ export type DownloadStoredFileQuery = {
   fileId: string;
   /** 暂存读取必填；正式业务读取忽略 */
   uploadContextId?: string | null;
+  /** 客户端断开信号：打开/校验期间收到时销毁源流，不返回内容 */
+  signal?: AbortSignal;
 };
 
 /** 下载结果：文件流与原始文件名，不包含存储引用 */

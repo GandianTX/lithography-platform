@@ -602,10 +602,15 @@ export type RepairProcessBindingTargetSnapshot = {
   closureStatus: string | null;
 };
 
-/** 下载定位结果：storageReference 不进入对外视图，仅供下载用例读取存储 */
+/**
+ * 下载定位结果：storageReference 不进入对外视图，仅供下载用例读取存储；
+ * byteSize/checksumSha256 为登记事实，仅供用例在发送前核对实际内容。
+ */
 export type StoredFileDownloadFacts = {
   fileId: string;
   storageReference: string;
   originalFilename: string;
   mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
 };
