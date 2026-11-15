@@ -23,6 +23,7 @@ import {
   type RestErrorEnvelope,
   toRestErrorEnvelope,
 } from '@/shared/http';
+import { type MessageKey, translateNow } from '@/shared/i18n';
 
 import type {
   AcceptRepairRequestFailureReason,
@@ -269,14 +270,14 @@ const ACCEPT_REFINED_REASON_BY_ERROR_CODE: Partial<
   REPAIR_REQUEST_ALREADY_ACCEPTED: 'already-accepted',
 };
 
-const ACCEPT_FALLBACK_MESSAGE_BY_REASON: Record<AcceptRepairRequestFailureReason, string> = {
+const ACCEPT_FALLBACK_MESSAGE_BY_REASON: Record<AcceptRepairRequestFailureReason, MessageKey> = {
   // 中性文案：最小快照不读接单人，无法区分本人重复接单与他人接单，不向前端引入工程师 ID 来区分；
   // 兜底与后端 DomainError message 同一句且同样不带句号（主展示路径为后端 errorMessage，
   // 两条展示路径的用户可见文案保持一致）
-  'already-accepted': '该维修申请已被接单，请刷新后查看最新状态',
-  'not-accessible': '维修申请不存在或已删除。',
-  'insufficient-permission': '当前账号无权接单维修申请。',
-  'accept-failed': '接单失败，请稍后重试。',
+  'already-accepted': 'engineerDetail.acceptError.alreadyAccepted',
+  'not-accessible': 'engineerDetail.acceptError.notAccessible',
+  'insufficient-permission': 'engineerDetail.acceptError.insufficientPermission',
+  'accept-failed': 'engineerDetail.acceptFailed',
 };
 
 /**
@@ -295,15 +296,18 @@ const DETAIL_FAILURE_REASON_BY_CATEGORY_CODE: Record<
 
 /**
  * 统一不可访问文案的唯一真源：后端对越权统一拒绝且不泄露存在性，
- * adapter 兜底文案与详情流程对无效/非法 ID 的静态反馈共用同一句，不复制第二份。
+ * adapter 兜底文案与详情流程对无效/非法 ID 的静态反馈共用同一词条，不复制第二份。
  */
-export const ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE = '维修申请不存在，或当前账号无权查看。';
+export const ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE_KEY =
+  'engineerDetail.notAccessible' as const satisfies MessageKey;
 
-const DETAIL_FALLBACK_MESSAGE_BY_REASON: Record<EngineerRepairRequestDetailFailureReason, string> =
-  {
-    'not-accessible': ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE,
-    'load-failed': '维修申请详情加载失败，请稍后重试。',
-  };
+const DETAIL_FALLBACK_MESSAGE_BY_REASON: Record<
+  EngineerRepairRequestDetailFailureReason,
+  MessageKey
+> = {
+  'not-accessible': ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE_KEY,
+  'load-failed': 'engineerDetail.loadFailed',
+};
 
 /**
  * 回复拒绝主映射：仅依赖 extensions.code 大类（契约保证稳定的生产分支信号）。
@@ -327,16 +331,16 @@ const CREATE_RESPONSE_FAILURE_REASON_BY_CATEGORY_CODE: Record<
 
 const CREATE_RESPONSE_FALLBACK_MESSAGE_BY_REASON: Record<
   CreateEngineerResponseFailureReason,
-  string
+  MessageKey
 > = {
   // 以下兜底文案与后端 DomainError message 逐字一致（无句号）：主展示路径为后端
   // errorMessage，两条展示路径的用户可见文案保持一致（接单 already-accepted 先例）
-  'not-accepted': '维修申请尚未接单，请先接单后回复',
-  'not-accessible': '维修申请不存在或不可访问',
-  'insufficient-permission': '仅工程师账号可以回复维修申请',
-  'response-failed': '处理回复失败，请稍后重试',
+  'not-accepted': 'engineerDetail.replyError.notAccepted',
+  'not-accessible': 'engineerDetail.replyError.notAccessible',
+  'insufficient-permission': 'engineerDetail.replyError.insufficientPermission',
+  'response-failed': 'engineerDetail.replyError.responseFailed',
   // 输入非法的后端 message 逐项不同（ID/正文/状态），兜底用一句中性汇总文案
-  'invalid-input': '回复内容无效，请检查后重试。',
+  'invalid-input': 'engineerDetail.replyError.invalidInput',
 };
 
 /* ------------------------------ mapper ------------------------------ */
@@ -536,7 +540,8 @@ export async function fetchEngineerRepairRequestDetail(
     return {
       ok: false,
       reason: categoryReason,
-      message: detail.errorMessage ?? DETAIL_FALLBACK_MESSAGE_BY_REASON[categoryReason],
+      message:
+        detail.errorMessage ?? translateNow(DETAIL_FALLBACK_MESSAGE_BY_REASON[categoryReason]),
     };
   }
 }
@@ -576,7 +581,7 @@ export async function acceptRepairRequest(id: number): Promise<AcceptRepairReque
     return {
       ok: false,
       reason,
-      message: detail.errorMessage ?? ACCEPT_FALLBACK_MESSAGE_BY_REASON[reason],
+      message: detail.errorMessage ?? translateNow(ACCEPT_FALLBACK_MESSAGE_BY_REASON[reason]),
     };
   }
 }
@@ -618,7 +623,8 @@ export async function createEngineerResponse(
     return {
       ok: false,
       reason,
-      message: detail.errorMessage ?? CREATE_RESPONSE_FALLBACK_MESSAGE_BY_REASON[reason],
+      message:
+        detail.errorMessage ?? translateNow(CREATE_RESPONSE_FALLBACK_MESSAGE_BY_REASON[reason]),
     };
   }
 }

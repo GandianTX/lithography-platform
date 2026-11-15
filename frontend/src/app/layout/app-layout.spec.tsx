@@ -1,10 +1,10 @@
 // src/app/layout/app-layout.spec.tsx
 
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ThemeProvider } from '@/app/providers';
+import { I18nProvider, ThemeProvider } from '@/app/providers';
 
 import { AppLayout } from './app-layout';
 
@@ -73,13 +73,15 @@ function stubNarrowViewport(initialMatches: boolean) {
 
 function renderLayout(pathname: string) {
   return render(
-    <ThemeProvider>
-      <MemoryRouter initialEntries={[pathname]}>
-        <Routes>
-          <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
-        </Routes>
-      </MemoryRouter>
-    </ThemeProvider>,
+    <I18nProvider>
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[pathname]}>
+          <Routes>
+            <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>
+    </I18nProvider>,
   );
 }
 
@@ -92,22 +94,31 @@ function LocationProbe() {
 
 function renderLayoutWithLocationProbe(pathname: string) {
   return render(
-    <ThemeProvider>
-      <MemoryRouter initialEntries={[pathname]}>
-        <LocationProbe />
-        <Routes>
-          <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
-        </Routes>
-      </MemoryRouter>
-    </ThemeProvider>,
+    <I18nProvider>
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[pathname]}>
+          <LocationProbe />
+          <Routes>
+            <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>
+    </I18nProvider>,
   );
 }
 
-function sessionFor(role: 'CUSTOMER' | 'ENGINEER' | 'SUPER_ADMIN') {
+// 管理员默认按 1 级（全域）构造会话；2 级/未知等级用例显式覆盖等级事实。
+function sessionFor(
+  role: 'CUSTOMER' | 'ENGINEER' | 'SUPER_ADMIN',
+  adminLevel: number | null = role === 'SUPER_ADMIN' ? 1 : null,
+  adminOrganizationId: number | null = role === 'SUPER_ADMIN' ? 910003 : null,
+) {
   return {
     session: {
       accessToken: 'token',
       accountId: 1,
+      adminLevel,
+      adminOrganizationId,
       role,
       userInfo: { accessGroup: [role], avatarUrl: null, nickname: `用户-${role}` },
     },
@@ -119,6 +130,8 @@ describe('AppLayout（S3 壳层）', () => {
   afterEach(() => {
     cleanup();
     useAuthSessionMock.mockReset();
+    // 一次性批准提示按账号写入 localStorage：用例之间必须清空，避免串场
+    window.localStorage.clear();
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: originalMatchMedia,
@@ -146,6 +159,25 @@ describe('AppLayout（S3 壳层）', () => {
     expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '文档数据库' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '发起申请' })).not.toBeInTheDocument();
+  });
+
+  // S1：全域管理入口只对 1 级管理员出现；2 级（本公司）与未知等级不出现，
+  // 与直达路由守卫同一范围判定。
+  it('2 级与未知等级管理员侧栏不出现全域管理入口', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', 2, 910004));
+    const view = renderLayout('/admin');
+
+    expect(screen.getByRole('link', { name: '首页' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
+
+    view.unmount();
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', null));
+    renderLayout('/admin');
+
+    expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
   });
 
   it('业务子路由刷新后选中态按前缀恢复（/admin/users 选中用户管理而非首页）', () => {
@@ -315,5 +347,71 @@ describe('AppLayout（S3 壳层）', () => {
     await waitFor(() => {
       expect(screen.getByTestId('current-pathname')).toHaveTextContent('/customer');
     });
+  });
+
+  // S3：资格生效后会话从受限态变为 NONE，一次性批准提示常驻布局层，
+  // 不依赖 /restricted 页面本身（该页会立即被收口跳转卸载）。
+  it('工程师资格生效后在工作区顶部展示一次性批准提示', () => {
+    useAuthSessionMock.mockReturnValue({
+      session: { ...sessionFor('ENGINEER').session, restriction: 'ENGINEER_PENDING' },
+      status: 'authenticated',
+    });
+    const view = renderLayout('/engineer');
+
+    expect(screen.queryByText('申请已通过，权限已开通')).toBeNull();
+    view.unmount();
+
+    useAuthSessionMock.mockReturnValue({
+      session: { ...sessionFor('ENGINEER').session, restriction: 'NONE' },
+      status: 'authenticated',
+    });
+    renderLayout('/engineer');
+
+    expect(screen.getByText('申请已通过，权限已开通')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '进入工作台' })).toBeInTheDocument();
+  });
+
+  // S5：语言切换入口唯一（展开态只在字号区上方出现一组），切语言只换文案，
+  // 不改变路由、导航结构与选中态。
+  it('展开态侧栏只提供一个语言入口，切换英文后文案变化而路由与选中态不变', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN'));
+    renderLayout('/admin/users');
+
+    const groups = screen.getAllByRole('group', { name: '界面语言' });
+    expect(groups).toHaveLength(1);
+    expect(within(groups[0]).getAllByRole('button')).toHaveLength(2);
+
+    const usersLink = screen.getByRole('link', { name: '用户管理' });
+    const href = usersLink.getAttribute('href');
+
+    fireEvent.click(within(groups[0]).getByRole('button', { name: 'English' }));
+
+    expect(screen.getByText('Lithography Service Platform')).toBeInTheDocument();
+    const englishUsersLink = screen.getByRole('link', { name: 'User management' });
+    expect(englishUsersLink).toHaveAttribute('href', href);
+    expect(englishUsersLink).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('group', { name: 'Interface language' })).toBeInTheDocument();
+  });
+
+  it('折叠态侧栏以图标入口保留语言切换，可访问名称随语言变化', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubNarrowViewport(true);
+    renderLayout('/customer');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到英文' }));
+
+    // 切到英文后按钮的可访问名称随界面语言本地化
+    expect(screen.getByRole('button', { name: 'Switch to Chinese' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
+  });
+
+  it('刷新后按已存语言偏好恢复英文界面', () => {
+    window.localStorage.setItem('ui-language', 'en');
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    renderLayout('/customer');
+
+    expect(screen.getByText('Lithography Service Platform')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'New request' })).toBeInTheDocument();
   });
 });

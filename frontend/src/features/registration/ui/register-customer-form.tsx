@@ -14,6 +14,8 @@ import { useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
 import { useNavigate } from 'react-router';
 
+import { useI18n } from '@/shared/i18n';
+
 import {
   resolveRegisterCustomerErrorMessage,
   submitRegisterCustomer,
@@ -22,10 +24,10 @@ import type { RegistrationOrganizationSelection } from '../application/registrat
 import { useRegistrationOrganizationNameCheck } from '../application/use-registration-organization-name-check';
 
 import {
-  LOGIN_EMAIL_RULES,
-  LOGIN_PASSWORD_RULES,
-  OPTIONAL_LOGIN_NAME_RULES,
-  OPTIONAL_NICKNAME_RULES,
+  createLoginEmailRules,
+  createLoginPasswordRules,
+  createOptionalLoginNameRules,
+  createOptionalNicknameRules,
 } from './registration-form-rules';
 import { RegistrationOrganizationSelect } from './registration-organization-select';
 
@@ -45,6 +47,7 @@ type RegisterFeedback = {
 const ORGANIZATION_NAME_MAX_LENGTH = 200;
 
 export function RegisterCustomerForm() {
+  const { t } = useI18n();
   const [form] = Form.useForm<RegisterCustomerFormValues>();
   const navigate = useNavigate();
   const submittingRef = useRef(false);
@@ -69,7 +72,7 @@ export function RegisterCustomerForm() {
     const nickname = values.nickname?.trim() ?? '';
 
     if (!organization && !organizationName) {
-      setFeedback({ message: '请选择所属公司，或填写自家公司名称。', type: 'error' });
+      setFeedback({ message: t('register.customerNeedCompany'), type: 'error' });
       return;
     }
 
@@ -92,7 +95,7 @@ export function RegisterCustomerForm() {
     } catch (error) {
       // 失败统一清空密码，其余输入保留，便于修正后重试
       form.setFieldValue('loginPassword', '');
-      setFeedback({ message: resolveRegisterCustomerErrorMessage(error), type: 'error' });
+      setFeedback({ message: resolveRegisterCustomerErrorMessage(error, t), type: 'error' });
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
@@ -102,10 +105,10 @@ export function RegisterCustomerForm() {
   if (registeredEmail) {
     return (
       <div className="register-success">
-        <Alert showIcon title="账号已开通，请使用登录邮箱与密码登录。" type="success" />
+        <Alert showIcon title={t('register.customerSuccess')} type="success" />
         <p className="register-success-email [overflow-wrap:anywhere]">{registeredEmail}</p>
         <Button block type="primary" onClick={() => navigate('/login')}>
-          前往登录
+          {t('common.goLogin')}
         </Button>
       </div>
     );
@@ -125,39 +128,55 @@ export function RegisterCustomerForm() {
         </div>
       ) : null}
 
-      <Form.Item label="登录邮箱" name="loginEmail" rules={LOGIN_EMAIL_RULES}>
+      <Form.Item
+        label={t('register.loginEmail')}
+        name="loginEmail"
+        rules={createLoginEmailRules(t)}
+      >
         <Input
           autoCapitalize="none"
           autoComplete="email"
           disabled={isSubmitting}
-          placeholder="用于登录与接收通知"
+          placeholder={t('register.loginEmailPlaceholder')}
         />
       </Form.Item>
 
-      <Form.Item label="密码" name="loginPassword" rules={LOGIN_PASSWORD_RULES}>
+      <Form.Item
+        label={t('register.password')}
+        name="loginPassword"
+        rules={createLoginPasswordRules(t)}
+      >
         <Input.Password
           autoComplete="new-password"
           disabled={isSubmitting}
-          placeholder="8–128 位，需包含小写字母、数字与特殊字符"
+          placeholder={t('register.passwordPlaceholder')}
         />
       </Form.Item>
 
-      <Form.Item label="登录名（选填）" name="loginName" rules={OPTIONAL_LOGIN_NAME_RULES}>
+      <Form.Item
+        label={t('register.loginName')}
+        name="loginName"
+        rules={createOptionalLoginNameRules(t)}
+      >
         <Input
           autoCapitalize="none"
           autoComplete="username"
           disabled={isSubmitting}
-          placeholder="仅支持英文字母、数字、下划线和短横线"
+          placeholder={t('register.loginNamePlaceholder')}
         />
       </Form.Item>
 
-      <Form.Item label="昵称（选填）" name="nickname" rules={OPTIONAL_NICKNAME_RULES}>
-        <Input disabled={isSubmitting} placeholder="2–20 个字符，用于界面展示" />
+      <Form.Item
+        label={t('register.nickname')}
+        name="nickname"
+        rules={createOptionalNicknameRules(t)}
+      >
+        <Input disabled={isSubmitting} placeholder={t('register.nicknamePlaceholder')} />
       </Form.Item>
 
-      <Form.Item label="所属公司">
+      <Form.Item label={t('register.company')}>
         <RegistrationOrganizationSelect
-          ariaLabel="所属公司"
+          ariaLabel={t('register.company')}
           disabled={isSubmitting}
           id="customer-registration-organization"
           onChange={setOrganization}
@@ -167,27 +186,25 @@ export function RegisterCustomerForm() {
 
       {organization ? null : (
         <Form.Item
-          extra={
-            hasSameNameCompany ? '发现同名公司，可从名单选择；手填名称不会自动合并。' : undefined
-          }
-          label="自家公司名称"
+          extra={hasSameNameCompany ? t('register.sameNameHint') : undefined}
+          label={t('register.companyOwn')}
           name="organizationName"
           rules={[
             {
-              message: `公司名称最多 ${ORGANIZATION_NAME_MAX_LENGTH} 个字符。`,
+              message: t('register.companyNameMax', { max: ORGANIZATION_NAME_MAX_LENGTH }),
               max: ORGANIZATION_NAME_MAX_LENGTH,
             },
           ]}
         >
-          <Input disabled={isSubmitting} placeholder="填写自家公司名称" />
+          <Input disabled={isSubmitting} placeholder={t('register.companyOwnPlaceholder')} />
         </Form.Item>
       )}
 
       <div className="register-actions">
         <Button htmlType="submit" loading={isSubmitting} type="primary">
-          注册并开通
+          {t('register.submitCustomer')}
         </Button>
-        <Button onClick={() => navigate('/login')}>返回登录</Button>
+        <Button onClick={() => navigate('/login')}>{t('register.backLogin')}</Button>
       </div>
     </Form>
   );

@@ -19,6 +19,7 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import type {
   AccountCredentialSnapshot,
   AccountCreateOutcome,
+  CustomerCompanyBindingFacts,
   MyAccountCredentialWriteOutcome,
   MyAccountSettingsUpdateFacts,
 } from '@src/modules/account/account.types';
@@ -74,6 +75,8 @@ export interface UserInfoCreateData {
 
 export interface UserInfoUpdateData {
   nickname?: string;
+  /** `base_user_info.real_name`：真实姓名（可空） */
+  realName?: string | null;
   /** `base_user_info.company_name`（varchar(100) nullable）：既有列，P0-4 补齐细粒度更新入口 */
   companyName?: string | null;
   gender?: Gender;
@@ -320,10 +323,75 @@ export class AccountService {
       loginName: account.loginName,
       loginEmail: account.loginEmail,
       nickname: userInfo.nickname,
+      realName: userInfo.realName,
       companyName: userInfo.companyName,
       phone: userInfo.phone,
       contactEmail: userInfo.email,
     };
+  }
+
+  /**
+   * 缺归属客户补录（任务 02.4）：锁定补录判定所需的账号行与资料行。
+   *
+   * 锁顺序与全仓口径一致：先 `base_user_account` 行 `pessimistic_write`，再
+   * `base_user_info` 行 `pessimistic_write`。与 `lockMyAccountSettingsFacts()` 的差异是
+   * 资料行也显式加锁——补录要先复核「仍缺公司」再写 FK，两次读之间不能被并发补录穿透。
+   *
+   * 账号行缺失返回 `null`（错误口径归调用方，不塌缩为 `UNAUTHENTICATED`）；资料行缺失
+   * 属数据不变量被破坏，失败关闭为 `READ_FAILED`。
+   */
+  async lockCustomerCompanyBindingFacts(params: {
+    accountId: number;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<CustomerCompanyBindingFacts | null> {
+    const accountRepository = this.getAccountRepository(params.transactionContext);
+    const account = await accountRepository
+      .createQueryBuilder('account')
+      .where('account.id = :accountId', { accountId: params.accountId })
+      .setLock('pessimistic_write')
+      .getOne();
+    if (!account) {
+      return null;
+    }
+
+    const userInfoRepository = this.getUserInfoRepository(params.transactionContext);
+    const userInfo = await userInfoRepository
+      .createQueryBuilder('userInfo')
+      .where('userInfo.accountId = :accountId', { accountId: params.accountId })
+      .setLock('pessimistic_write')
+      .getOne();
+    if (!userInfo) {
+      throw new DomainError(
+        ADMIN_USER_ERROR.READ_FAILED,
+        '账号资料缺失，无法补录公司信息',
+        undefined,
+        { diagnostic: 'USER_INFO_ROW_MISSING', accountId: params.accountId },
+      );
+    }
+
+    return {
+      accountId: account.id,
+      customerOrganizationId: userInfo.customerOrganizationId ?? null,
+    };
+  }
+
+  /**
+   * 缺归属客户补录（任务 02.4）：窄写 `base_user_info.customer_organization_id`。
+   *
+   * 只改这一列与 `updated_at`，不触碰 `company_name`（旧展示字段不是可信归属来源），
+   * 也不触碰状态与角色列。返回受影响行数，供调用方在 0 行时失败关闭。
+   */
+  async bindCustomerOrganization(params: {
+    accountId: number;
+    organizationId: number;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<number> {
+    const repository = this.getUserInfoRepository(params.transactionContext);
+    const result = await repository.update(
+      { accountId: params.accountId },
+      { customerOrganizationId: params.organizationId, updatedAt: new Date() },
+    );
+    return result.affected ?? 0;
   }
 
   /**

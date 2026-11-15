@@ -2,16 +2,20 @@
 
 import { CompassOutlined } from '@ant-design/icons';
 
+import { useI18n } from '@/shared/i18n';
+
 import { ErrorBlock } from './error-block';
 
 export function Error404() {
+  const { t } = useI18n();
+
   return (
     <ErrorBlock
-      actions={[{ label: '返回工作台', to: '/' }]}
-      description={'你访问的页面已被移除、重命名，\n或在当前环境中不可用。'}
+      actions={[{ label: t('error.backToWorkbench'), to: '/' }]}
+      description={t('error.404.description')}
       icon={<CompassOutlined />}
       statusCode={404}
-      title="路由不存在"
+      title={t('error.404.title')}
       tone="neutral"
     />
   );

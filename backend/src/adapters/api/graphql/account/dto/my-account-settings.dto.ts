@@ -1,7 +1,7 @@
 // src/adapters/api/graphql/account/dto/my-account-settings.dto.ts
 
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
-import { Field, ObjectType } from '@nestjs/graphql';
+import { Field, Int, ObjectType } from '@nestjs/graphql';
 import type { MyAccountSettingsView } from '@src/modules/account/account.types';
 
 /**
@@ -31,8 +31,14 @@ export class MyAccountSettingsDTO {
   @Field(() => String, { description: '昵称' })
   nickname!: string;
 
+  @Field(() => String, { description: '真实姓名', nullable: true })
+  realName!: string | null;
+
   @Field(() => String, { description: '公司名称', nullable: true })
   companyName!: string | null;
+
+  @Field(() => String, { description: '可信公司名称', nullable: true })
+  trustedCompanyName!: string | null;
 
   @Field(() => String, { description: '电话', nullable: true })
   phone!: string | null;
@@ -46,6 +52,9 @@ export class MyAccountSettingsDTO {
   @Field(() => AccountStatus, { description: '账号状态（只读）' })
   status!: AccountStatus;
 
+  @Field(() => Int, { description: '管理员等级（只读）', nullable: true })
+  adminLevel!: number | null;
+
   @Field(() => Date, { description: '最近变更时间（账号侧与资料侧较新值）' })
   updatedAt!: Date;
 }
@@ -58,11 +67,14 @@ export function toMyAccountSettingsDTO(view: MyAccountSettingsView): MyAccountSe
     loginName: view.loginName,
     loginEmail: view.loginEmail,
     nickname: view.nickname,
+    realName: view.realName,
     companyName: view.companyName,
+    trustedCompanyName: view.trustedCompanyName,
     phone: view.phone,
     contactEmail: view.contactEmail,
     role: view.role,
     status: view.status,
+    adminLevel: view.adminLevel,
     updatedAt: view.updatedAt,
   };
 }

@@ -16,6 +16,11 @@ import {
   ChangeMyPasswordResultDTO,
   toChangeMyPasswordResultDTO,
 } from '@src/adapters/api/graphql/account/dto/change-my-password-result.dto';
+import { SupplementMyCustomerCompanyInput } from '@src/adapters/api/graphql/account/dto/supplement-my-customer-company.input';
+import {
+  SupplementMyCustomerCompanyResultDTO,
+  toSupplementMyCustomerCompanyResultDTO,
+} from '@src/adapters/api/graphql/account/dto/supplement-my-customer-company-result.dto';
 import {
   MyAccountSettingsDTO,
   toMyAccountSettingsDTO,
@@ -25,6 +30,7 @@ import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { MustChangePasswordGuard } from '@src/adapters/api/graphql/guards/must-change-password.guard';
 import { ChangeMyPasswordUsecase } from '@src/usecases/account/change-my-password.usecase';
 import { GetMyAccountSettingsUsecase } from '@src/usecases/account/get-my-account-settings.usecase';
+import { SupplementMyCustomerCompanyUsecase } from '@src/usecases/account/supplement-my-customer-company.usecase';
 import { UpdateMyAccountSettingsUsecase } from '@src/usecases/account/update-my-account-settings.usecase';
 
 /**
@@ -47,6 +53,7 @@ export class MyAccountSettingsResolver {
   constructor(
     private readonly getMyAccountSettingsUsecase: GetMyAccountSettingsUsecase,
     private readonly updateMyAccountSettingsUsecase: UpdateMyAccountSettingsUsecase,
+    private readonly supplementMyCustomerCompanyUsecase: SupplementMyCustomerCompanyUsecase,
     private readonly changeMyPasswordUsecase: ChangeMyPasswordUsecase,
   ) {}
 
@@ -59,9 +66,18 @@ export class MyAccountSettingsResolver {
     name: 'myAccountSettings',
     description: '读取当前登录用户的账号设置（只读）',
   })
-  async myAccountSettings(@currentUser() user: JwtPayload): Promise<MyAccountSettingsDTO> {
+  async myAccountSettings(
+    @currentUser() user: AuthenticatedSessionUser,
+  ): Promise<MyAccountSettingsDTO> {
     const session: UsecaseSession = mapJwtToUsecaseSession(user);
-    const view = await this.getMyAccountSettingsUsecase.execute({ session });
+    const view = await this.getMyAccountSettingsUsecase.execute({
+      session,
+      trustedOrganizations: {
+        customerOrganizationId: user.customerOrganizationId,
+        engineerOrganizationId: user.engineerOrganizationId,
+        adminOrganizationId: user.adminOrganizationId,
+      },
+    });
     return toMyAccountSettingsDTO(view);
   }
 
@@ -87,14 +103,47 @@ export class MyAccountSettingsResolver {
     const result = await this.updateMyAccountSettingsUsecase.execute({
       session,
       restriction: user.restriction,
+      trustedOrganizations: {
+        customerOrganizationId: user.customerOrganizationId,
+        engineerOrganizationId: user.engineerOrganizationId,
+        adminOrganizationId: user.adminOrganizationId,
+      },
       loginName: input.loginName,
       loginEmail: input.loginEmail,
       nickname: input.nickname,
+      realName: input.realName,
       companyName: input.companyName,
       phone: input.phone,
       contactEmail: input.contactEmail,
     });
     return toUpdateMyAccountSettingsResultDTO(result);
+  }
+
+  /**
+   * 缺归属客户补录本人公司归属（任务 02.4 / D1）。
+   *
+   * 公司归属写入 `base_user_info.customer_organization_id` 并同事务补 CUSTOMER 成员关系，
+   * 不写展示字段 `company_name`。角色 / 状态 / 是否已归属 / 组织可用性 / 并发裁决全部由
+   * Usecase 在行锁内完成，本方法只透传 Session、限制状态与两个互斥入参。
+   */
+  @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
+  @Mutation(() => SupplementMyCustomerCompanyResultDTO, {
+    name: 'supplementMyCustomerCompany',
+    description: '补录当前客户的所属公司（仅缺归属的客户可用）',
+  })
+  @ValidateInput()
+  async supplementMyCustomerCompany(
+    @Args('input') input: SupplementMyCustomerCompanyInput,
+    @currentUser() user: AuthenticatedSessionUser,
+  ): Promise<SupplementMyCustomerCompanyResultDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const result = await this.supplementMyCustomerCompanyUsecase.execute({
+      session,
+      restriction: user.restriction,
+      organizationId: input.organizationId,
+      organizationName: input.organizationName,
+    });
+    return toSupplementMyCustomerCompanyResultDTO(result);
   }
 
   /**

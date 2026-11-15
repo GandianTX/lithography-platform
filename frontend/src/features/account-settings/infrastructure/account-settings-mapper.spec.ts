@@ -21,14 +21,17 @@ const UPDATED_AT = '2026-01-01T08:00:00.000Z';
 
 function makeDto(overrides?: Partial<MyAccountSettingsDto>): MyAccountSettingsDto {
   return {
+    adminLevel: 2,
     companyName: '  示例公司  ',
     contactEmail: '  contact@example.com  ',
     loginEmail: '  self@example.com  ',
     loginName: '  self_user  ',
     nickname: '  陈工  ',
     phone: '  13800000000  ',
+    realName: '  张三  ',
     role: 'ENGINEER',
     status: 'ACTIVE',
+    trustedCompanyName: '  可信公司  ',
     updatedAt: UPDATED_AT,
     ...overrides,
   };
@@ -37,14 +40,17 @@ function makeDto(overrides?: Partial<MyAccountSettingsDto>): MyAccountSettingsDt
 describe('mapMyAccountSettingsDtoToView 字段归一', () => {
   it('trim 可选文本与昵称，updatedAt 原样透传', () => {
     expect(mapMyAccountSettingsDtoToView(makeDto())).toEqual({
+      adminLevel: 2,
       companyName: '示例公司',
       contactEmail: 'contact@example.com',
       loginEmail: 'self@example.com',
       loginName: 'self_user',
       nickname: '陈工',
       phone: '13800000000',
+      realName: '张三',
       role: 'ENGINEER',
       status: 'ACTIVE',
+      trustedCompanyName: '可信公司',
       updatedAt: UPDATED_AT,
     });
   });
@@ -58,17 +64,22 @@ describe('mapMyAccountSettingsDtoToView 字段归一', () => {
           loginEmail: null,
           loginName: 42 as unknown as string,
           phone: {} as unknown as string,
+          realName: '   ',
+          trustedCompanyName: '',
         }),
       ),
     ).toEqual({
+      adminLevel: 2,
       companyName: null,
       contactEmail: null,
       loginEmail: null,
       loginName: null,
       nickname: '陈工',
       phone: null,
+      realName: null,
       role: 'ENGINEER',
       status: 'ACTIVE',
+      trustedCompanyName: null,
       updatedAt: UPDATED_AT,
     });
   });
@@ -115,8 +126,25 @@ describe('mapMyAccountSettingsDtoToView 枚举失败关闭', () => {
   });
 });
 
+describe('mapMyAccountSettingsDtoToView 等级失败关闭', () => {
+  it('null 表示未设置，原样保留；有限整数原样透传', () => {
+    expect(mapMyAccountSettingsDtoToView(makeDto({ adminLevel: null })).adminLevel).toBeNull();
+    expect(mapMyAccountSettingsDtoToView(makeDto({ adminLevel: 0 })).adminLevel).toBe(0);
+    expect(mapMyAccountSettingsDtoToView(makeDto({ adminLevel: -1 })).adminLevel).toBe(-1);
+  });
+
+  it.each([[1.5], ['2'], [Number.NaN], [Number.POSITIVE_INFINITY], [undefined], [{}], [true]])(
+    '未知等级（%s）抛错而不是降级成占位展示',
+    (adminLevel) => {
+      expect(() =>
+        mapMyAccountSettingsDtoToView(makeDto({ adminLevel: adminLevel as unknown as number })),
+      ).toThrow('账号设置返回了无法识别的等级。');
+    },
+  );
+});
+
 describe('mapMyAccountSettingsDtoToView 视图形状', () => {
-  it('视图只含九项展示字段，不携带 accountId 与任何凭据 / 令牌字段', () => {
+  it('视图只含十二项展示字段，不携带 accountId 与任何凭据 / 令牌字段', () => {
     const polluted = {
       ...makeDto(),
       accountId: 900101,
@@ -136,14 +164,17 @@ describe('mapMyAccountSettingsDtoToView 视图形状', () => {
     ];
 
     expect(Object.keys(view).sort()).toEqual([
+      'adminLevel',
       'companyName',
       'contactEmail',
       'loginEmail',
       'loginName',
       'nickname',
       'phone',
+      'realName',
       'role',
       'status',
+      'trustedCompanyName',
       'updatedAt',
     ]);
 

@@ -14,6 +14,8 @@ import { useCallback, useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
 import { useNavigate } from 'react-router';
 
+import { useI18n } from '@/shared/i18n';
+
 import {
   resolveRegisterEngineerErrorMessage,
   submitRegisterEngineer,
@@ -21,10 +23,10 @@ import {
 import type { RegistrationOrganizationSelection } from '../application/registration.types';
 
 import {
-  LOGIN_EMAIL_RULES,
-  LOGIN_PASSWORD_RULES,
-  OPTIONAL_LOGIN_NAME_RULES,
-  OPTIONAL_NICKNAME_RULES,
+  createLoginEmailRules,
+  createLoginPasswordRules,
+  createOptionalLoginNameRules,
+  createOptionalNicknameRules,
 } from './registration-form-rules';
 import { RegistrationOrganizationSelect } from './registration-organization-select';
 
@@ -48,6 +50,7 @@ const PHONE_MAX_LENGTH = 20;
 const APPLICATION_NOTE_MAX_LENGTH = 2000;
 
 export function RegisterEngineerForm() {
+  const { t } = useI18n();
   const [form] = Form.useForm<RegisterEngineerFormValues>();
   const navigate = useNavigate();
   const submittingRef = useRef(false);
@@ -68,7 +71,7 @@ export function RegisterEngineerForm() {
     const applicationNote = values.applicationNote?.trim() ?? '';
 
     if (!organization) {
-      setFeedback({ message: '请选择所属公司。', type: 'error' });
+      setFeedback({ message: t('register.engineerNeedCompany'), type: 'error' });
       return;
     }
 
@@ -93,7 +96,7 @@ export function RegisterEngineerForm() {
     } catch (error) {
       // 失败统一清空密码，其余输入保留，便于修正后重试
       form.setFieldValue('loginPassword', '');
-      setFeedback({ message: resolveRegisterEngineerErrorMessage(error), type: 'error' });
+      setFeedback({ message: resolveRegisterEngineerErrorMessage(error, t), type: 'error' });
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
@@ -103,10 +106,10 @@ export function RegisterEngineerForm() {
   if (registeredEmail) {
     return (
       <div className="register-success">
-        <Alert showIcon title="注册申请已提交，等待所属公司管理员审核。" type="success" />
+        <Alert showIcon title={t('register.engineerSuccess')} type="success" />
         <p className="register-success-email [overflow-wrap:anywhere]">{registeredEmail}</p>
         <Button block type="primary" onClick={() => navigate('/login')}>
-          前往登录
+          {t('common.goLogin')}
         </Button>
       </div>
     );
@@ -126,60 +129,80 @@ export function RegisterEngineerForm() {
         </div>
       ) : null}
 
-      <Form.Item label="登录邮箱" name="loginEmail" rules={LOGIN_EMAIL_RULES}>
+      <Form.Item
+        label={t('register.loginEmail')}
+        name="loginEmail"
+        rules={createLoginEmailRules(t)}
+      >
         <Input
           autoCapitalize="none"
           autoComplete="email"
           disabled={isSubmitting}
-          placeholder="用于登录与接收通知"
+          placeholder={t('register.loginEmailPlaceholder')}
         />
       </Form.Item>
 
-      <Form.Item label="密码" name="loginPassword" rules={LOGIN_PASSWORD_RULES}>
+      <Form.Item
+        label={t('register.password')}
+        name="loginPassword"
+        rules={createLoginPasswordRules(t)}
+      >
         <Input.Password
           autoComplete="new-password"
           disabled={isSubmitting}
-          placeholder="8–128 位，需包含小写字母、数字与特殊字符"
+          placeholder={t('register.passwordPlaceholder')}
         />
       </Form.Item>
 
-      <Form.Item label="登录名（选填）" name="loginName" rules={OPTIONAL_LOGIN_NAME_RULES}>
+      <Form.Item
+        label={t('register.loginName')}
+        name="loginName"
+        rules={createOptionalLoginNameRules(t)}
+      >
         <Input
           autoCapitalize="none"
           autoComplete="username"
           disabled={isSubmitting}
-          placeholder="仅支持英文字母、数字、下划线和短横线"
+          placeholder={t('register.loginNamePlaceholder')}
         />
       </Form.Item>
 
-      <Form.Item label="昵称（选填）" name="nickname" rules={OPTIONAL_NICKNAME_RULES}>
-        <Input disabled={isSubmitting} placeholder="2–20 个字符，用于界面展示" />
+      <Form.Item
+        label={t('register.nickname')}
+        name="nickname"
+        rules={createOptionalNicknameRules(t)}
+      >
+        <Input disabled={isSubmitting} placeholder={t('register.nicknamePlaceholder')} />
       </Form.Item>
 
       <Form.Item
-        label="姓名"
+        label={t('register.realName')}
         name="realName"
         rules={[
           {
-            message: '请输入姓名。',
+            message: t('register.realNameRequired'),
             required: true,
             whitespace: true,
           },
           {
-            message: `姓名最多 ${REAL_NAME_MAX_LENGTH} 个字符。`,
+            message: t('register.realNameMax', { max: REAL_NAME_MAX_LENGTH }),
             max: REAL_NAME_MAX_LENGTH,
           },
         ]}
       >
-        <Input autoComplete="name" disabled={isSubmitting} placeholder="填写真实姓名" />
+        <Input
+          autoComplete="name"
+          disabled={isSubmitting}
+          placeholder={t('register.realNamePlaceholder')}
+        />
       </Form.Item>
 
       <Form.Item
-        label="联系电话"
+        label={t('register.phone')}
         name="phone"
         rules={[
           {
-            message: '请输入联系电话。',
+            message: t('register.phoneRequired'),
             required: true,
             whitespace: true,
           },
@@ -191,22 +214,26 @@ export function RegisterEngineerForm() {
               }
               const compact = value.replace(/[\s-]/g, '');
               if (!/^\+?\d{6,20}$/.test(compact)) {
-                throw new Error('联系电话格式不正确，请填写 6–20 位数字。');
+                throw new Error(t('register.phoneInvalid'));
               }
             },
           },
           {
-            message: `联系电话最多 ${PHONE_MAX_LENGTH} 个字符。`,
+            message: t('register.phoneMax', { max: PHONE_MAX_LENGTH }),
             max: PHONE_MAX_LENGTH,
           },
         ]}
       >
-        <Input autoComplete="tel" disabled={isSubmitting} placeholder="用于审核联系" />
+        <Input
+          autoComplete="tel"
+          disabled={isSubmitting}
+          placeholder={t('register.phonePlaceholder')}
+        />
       </Form.Item>
 
-      <Form.Item label="所属公司" required>
+      <Form.Item label={t('register.company')} required>
         <RegistrationOrganizationSelect
-          ariaLabel="所属公司"
+          ariaLabel={t('register.company')}
           disabled={isSubmitting}
           id="engineer-registration-organization"
           onCandidatesChange={handleCandidatesChange}
@@ -216,11 +243,11 @@ export function RegisterEngineerForm() {
       </Form.Item>
 
       <Form.Item
-        label="申请说明（选填）"
+        label={t('register.applicationNote')}
         name="applicationNote"
         rules={[
           {
-            message: `申请说明最多 ${APPLICATION_NOTE_MAX_LENGTH} 个字符。`,
+            message: t('register.applicationNoteMax', { max: APPLICATION_NOTE_MAX_LENGTH }),
             max: APPLICATION_NOTE_MAX_LENGTH,
           },
         ]}
@@ -229,15 +256,15 @@ export function RegisterEngineerForm() {
           autoSize={{ minRows: 2, maxRows: 5 }}
           disabled={isSubmitting}
           maxLength={APPLICATION_NOTE_MAX_LENGTH}
-          placeholder="说明加入原因或工作背景"
+          placeholder={t('register.applicationNotePlaceholder')}
         />
       </Form.Item>
 
       <div className="register-actions">
         <Button htmlType="submit" loading={isSubmitting} type="primary">
-          提交注册申请
+          {t('register.submitEngineer')}
         </Button>
-        <Button onClick={() => navigate('/login')}>返回登录</Button>
+        <Button onClick={() => navigate('/login')}>{t('register.backLogin')}</Button>
       </div>
     </Form>
   );

@@ -18,11 +18,12 @@
  * 两点边界：① INPUT_NORMALIZE_* 在 filter 的 errorCodeMap 中没有显式条目，走
  * `|| 'BAD_USER_INPUT'` 默认兜底（结论同显式映射，但 filter 里找不到这些条目）；
  * ② DTO 协议级校验（class-validator → BadRequestException）在生产环境被 filter 收敛为
- * INTERNAL_SERVER_ERROR 且不透传 errorMessage——登录名格式与密码策略说明因此由前端
- * 兜底（见 ui/account-credentials-form.tsx 与 ui/change-password-form.tsx）。
+ * INTERNAL_SERVER_ERROR 且不透传 errorMessage——输入格式说明因此由前端兜底
+ * （见 ui/account-profile-form.tsx 与 ui/change-password-form.tsx）。
  */
 
 import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
+import { type MessageKey, translateNow } from '@/shared/i18n';
 
 import type {
   AccountSettingsProfileDraft,
@@ -32,11 +33,17 @@ import type {
   ChangeMyPasswordFailureReason,
   ChangeMyPasswordInput,
   ChangeMyPasswordOutcome,
+  CustomerCompanySupplementDraft,
+  CustomerCompanySupplementFailureReason,
+  CustomerCompanySupplementResult,
+  ManagedCompanyPage,
 } from '../application/account-settings.types';
 
 import type {
   ChangeMyPasswordResultDto,
   MyAccountSettingsDto,
+  RegistrationOrganizationSearchDto,
+  SupplementMyCustomerCompanyResultDto,
   UpdateMyAccountSettingsResultDto,
 } from './account-settings.dto';
 import { mapMyAccountSettingsDtoToView } from './account-settings-mapper';
@@ -44,8 +51,11 @@ import { mapMyAccountSettingsDtoToView } from './account-settings-mapper';
 const MY_ACCOUNT_SETTINGS_FIELDS = `
       loginName
       loginEmail
+      realName
       nickname
       companyName
+      trustedCompanyName
+      adminLevel
       phone
       contactEmail
       role
@@ -81,6 +91,33 @@ const CHANGE_MY_PASSWORD_MUTATION = `
   }
 `;
 
+const SUPPLEMENT_MY_CUSTOMER_COMPANY_MUTATION = `
+  mutation SupplementMyCustomerCompany($input: SupplementMyCustomerCompanyInput!) {
+    supplementMyCustomerCompany(input: $input) {
+      isUpdated
+      sameNamedCompanyName
+      settings {
+${MY_ACCOUNT_SETTINGS_FIELDS}
+      }
+    }
+  }
+`;
+
+/** 与注册入口同一资格口径（ACTIVE + 受管），只取 id / name */
+const MANAGED_COMPANIES_QUERY = `
+  query ManagedCompanySearch($pagination: PaginationArgs!, $keyword: String) {
+    registrationOrganizationSearch(pagination: $pagination, keyword: $keyword) {
+      items {
+        id
+        name
+      }
+      total
+      page
+      pageSize
+    }
+  }
+`;
+
 type MyAccountSettingsQueryData = {
   myAccountSettings: MyAccountSettingsDto;
 };
@@ -100,6 +137,20 @@ type UpdateMyAccountSettingsInputDto = {
   loginName?: string | null;
   nickname?: string;
   phone?: string | null;
+  realName?: string | null;
+};
+
+type SupplementMyCustomerCompanyInputDto = {
+  organizationId?: number;
+  organizationName?: string;
+};
+
+type SupplementMyCustomerCompanyData = {
+  supplementMyCustomerCompany: SupplementMyCustomerCompanyResultDto;
+};
+
+type ManagedCompanySearchData = {
+  registrationOrganizationSearch: RegistrationOrganizationSearchDto;
 };
 
 type CommandReasonMap<Reason extends string> = Partial<Record<string, Reason>>;
@@ -118,11 +169,30 @@ const PASSWORD_REASON_BY_CATEGORY_CODE: CommandReasonMap<ChangeMyPasswordFailure
   INTERNAL_SERVER_ERROR: 'update-failed',
 };
 
-const FALLBACK_MESSAGE_BY_REASON: Record<string, string> = {
-  'duplicate-credential': '登录名或登录邮箱已被占用，请更换后重试。',
-  forbidden: '当前身份无权执行该操作。',
-  'invalid-input': '输入不符合要求，请检查后重新提交。',
-  'update-failed': '操作失败，请稍后重试。',
+const COMPANY_SUPPLEMENT_REASON_BY_CATEGORY_CODE: CommandReasonMap<CustomerCompanySupplementFailureReason> =
+  {
+    BAD_USER_INPUT: 'invalid-input',
+    CONFLICT: 'already-bound',
+    FORBIDDEN: 'forbidden',
+    INTERNAL_SERVER_ERROR: 'update-failed',
+  };
+
+/** 可选细化：后端暴露 extensions.errorCode 时区分「组织不可用」与普通输入非法 */
+const COMPANY_SUPPLEMENT_REFINED_REASON_BY_ERROR_CODE: CommandReasonMap<CustomerCompanySupplementFailureReason> =
+  {
+    ACCOUNT_ORGANIZATION_NOT_AVAILABLE: 'organization-not-available',
+    MY_ACCOUNT_CUSTOMER_COMPANY_ALREADY_BOUND: 'already-bound',
+    MY_ACCOUNT_CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT: 'already-bound',
+    MY_ACCOUNT_CUSTOMER_COMPANY_INPUT_INVALID: 'invalid-input',
+  };
+
+const FALLBACK_MESSAGE_BY_REASON: Record<string, MessageKey> = {
+  'already-bound': 'account.command.alreadyBound',
+  'duplicate-credential': 'account.command.duplicateCredential',
+  forbidden: 'account.command.forbidden',
+  'invalid-input': 'account.command.invalidInput',
+  'organization-not-available': 'account.command.organizationNotAvailable',
+  'update-failed': 'account.command.failed',
 };
 
 function toCommandFailure<Reason extends string>(
@@ -137,7 +207,9 @@ function toCommandFailure<Reason extends string>(
   }
 
   return {
-    message: detail.errorMessage ?? FALLBACK_MESSAGE_BY_REASON[reason] ?? '操作失败，请稍后重试。',
+    message:
+      detail.errorMessage ??
+      translateNow(FALLBACK_MESSAGE_BY_REASON[reason] ?? 'account.command.failed'),
     ok: false,
     reason,
   };
@@ -159,24 +231,17 @@ export async function fetchMyAccountSettings(): Promise<AccountSettingsView> {
 /**
  * 三态 input 构造：draft 中 `undefined` 的键保持省略（不修改），显式 `null` 原样保留（清空），
  * 字符串原样传递（设置）。本函数不做 trim / 业务裁决——草稿由调用方按当前视图 diff 生成。
+ * 本页只写 realName / nickname / phone / contactEmail；登录名与登录邮箱等旧字段不再由本页编辑。
  */
 function toUpdateInput(draft: AccountSettingsProfileDraft): UpdateMyAccountSettingsInputDto {
   const input: UpdateMyAccountSettingsInputDto = {};
 
-  if (draft.loginName !== undefined) {
-    input.loginName = draft.loginName;
-  }
-
-  if (draft.loginEmail !== undefined) {
-    input.loginEmail = draft.loginEmail;
+  if (draft.realName !== undefined) {
+    input.realName = draft.realName;
   }
 
   if (draft.nickname !== undefined) {
     input.nickname = draft.nickname;
-  }
-
-  if (draft.companyName !== undefined) {
-    input.companyName = draft.companyName;
   }
 
   if (draft.phone !== undefined) {
@@ -240,5 +305,98 @@ export async function changeMyPassword(
     }
 
     throw error;
+  }
+}
+
+/**
+ * 名单内受管公司候选（受保护只读，分页 + 关键字）。
+ *
+ * 复用注册入口的 `registrationOrganizationSearch`：资格口径由服务端决定
+ * （ACTIVE 且受管），前端不做二次过滤；空白关键字整体省略。
+ */
+export async function searchManagedCompanies(search: {
+  keyword?: string;
+  page: number;
+  pageSize: number;
+}): Promise<ManagedCompanyPage> {
+  const keyword = search.keyword?.trim();
+
+  const data = await executeGraphQL<
+    ManagedCompanySearchData,
+    {
+      pagination: { mode: 'OFFSET'; page: number; pageSize: number; withTotal: true };
+      keyword?: string;
+    }
+  >(
+    MANAGED_COMPANIES_QUERY,
+    {
+      pagination: {
+        mode: 'OFFSET',
+        page: search.page,
+        pageSize: search.pageSize,
+        withTotal: true,
+      },
+      ...(keyword ? { keyword } : {}),
+    },
+    { fetchPolicy: 'no-cache' },
+  );
+
+  const page = data.registrationOrganizationSearch;
+
+  return {
+    items: page.items,
+    page: page.page ?? search.page,
+    pageSize: page.pageSize ?? search.pageSize,
+    total: page.total ?? 0,
+  };
+}
+
+/**
+ * 缺归属客户补录本人公司（受保护 mutation）。
+ *
+ * 二选一草稿直接映射为互斥入参；成功返回后端权威视图（与资料更新同一读模型）。
+ * 业务拒绝按稳定大类码映射，`extensions.errorCode` 仅在暴露时细化「组织不可用」，
+ * 生产隐藏该字段时回退大类码，不会失效。
+ */
+export async function supplementMyCustomerCompany(
+  draft: CustomerCompanySupplementDraft,
+): Promise<CustomerCompanySupplementResult> {
+  const input: SupplementMyCustomerCompanyInputDto =
+    draft.kind === 'existing'
+      ? { organizationId: draft.organizationId }
+      : { organizationName: draft.organizationName };
+
+  try {
+    const data = await executeGraphQL<
+      SupplementMyCustomerCompanyData,
+      { input: SupplementMyCustomerCompanyInputDto }
+    >(SUPPLEMENT_MY_CUSTOMER_COMPANY_MUTATION, { input });
+
+    return {
+      isUpdated: data.supplementMyCustomerCompany.isUpdated,
+      ok: true,
+      sameNamedCompanyName: data.supplementMyCustomerCompany.sameNamedCompanyName,
+      settings: mapMyAccountSettingsDtoToView(data.supplementMyCustomerCompany.settings),
+    };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    const categoryReason = detail?.code
+      ? COMPANY_SUPPLEMENT_REASON_BY_CATEGORY_CODE[detail.code]
+      : undefined;
+
+    if (!detail || !categoryReason) {
+      throw error;
+    }
+
+    const reason =
+      (detail.errorCode
+        ? COMPANY_SUPPLEMENT_REFINED_REASON_BY_ERROR_CODE[detail.errorCode]
+        : undefined) ?? categoryReason;
+
+    return {
+      message: detail.errorMessage ?? translateNow(FALLBACK_MESSAGE_BY_REASON[reason]),
+      ok: false,
+      reason,
+    };
   }
 }

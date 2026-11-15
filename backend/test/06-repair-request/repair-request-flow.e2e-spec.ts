@@ -13,6 +13,7 @@ import {
   createOwnedResourceLedger,
   recordOwnedResource,
   runGuardedSpecCleanup,
+  updateOwnedExpectation,
   type ResidueEquipmentModelFingerprint,
 } from '../utils/e2e-scoped-cleanup';
 import { runE2eTeardown } from '../utils/e2e-teardown';
@@ -37,6 +38,20 @@ const CREATE_REPAIR_REQUEST_MUTATION = `
     }
   }
 `;
+
+/**
+ * 任务 02.4 起，新增报修要求客户已有可信公司归属（`base_user_info.customer_organization_id`）。
+ * 本规格只验证维修申请主体流程，故在 beforeEach 内用补录 Mutation 手填一家公司把前置补齐，
+ * 缺归属场景由 `customer-company-supplement.e2e-spec.ts` 与
+ * `create-repair-request.usecase.spec.ts` 覆盖。
+ */
+const SUPPLEMENT_COMPANY_MUTATION = `
+  mutation SupplementMyCustomerCompany($input: SupplementMyCustomerCompanyInput!) {
+    supplementMyCustomerCompany(input: $input) { isUpdated }
+  }
+`;
+
+const FLOW_CUSTOMER_COMPANY_NAME = 'E2E 报修流程客户公司';
 
 /**
  * 维修申请业务流程回归（core 组）
@@ -70,6 +85,84 @@ describe('维修申请业务流程 (e2e)', () => {
       variables: { input },
       token: customerToken,
     });
+
+  /**
+   * 补齐客户公司归属：走本人补录 Mutation 手填公司名，随后按事务写入的真实行补登记
+   * 公司 / 成员关系，并更新账号台账的归属预期，保证 afterEach 能精确回收。
+   */
+  const bindCustomerCompanyForRepair = async (): Promise<void> => {
+    const response = await postGql({
+      app,
+      query: SUPPLEMENT_COMPANY_MUTATION,
+      variables: { input: { organizationName: FLOW_CUSTOMER_COMPANY_NAME } },
+      token: customerToken,
+    }).expect(200);
+    if (response.body.errors) {
+      throw new Error(
+        `报修流程夹具补录公司失败：${JSON.stringify(response.body.errors as unknown)}`,
+      );
+    }
+
+    const userInfoRows = await dataSource.query<Array<{ customer_organization_id: number | null }>>(
+      'SELECT customer_organization_id FROM base_user_info WHERE account_id = ?',
+      [customerAccountId],
+    );
+    const organizationId = userInfoRows[0]?.customer_organization_id;
+    if (!organizationId) {
+      throw new Error('报修流程夹具补录后仍未写入客户公司归属');
+    }
+
+    const organizationRows = await dataSource.query<
+      Array<{
+        organization_code: string;
+        name: string;
+        kind: string;
+        status: string;
+        is_managed_company: number | boolean;
+      }>
+    >(
+      `SELECT organization_code, name, kind, status, is_managed_company
+         FROM organization WHERE id = ?`,
+      [organizationId],
+    );
+    const organization = organizationRows[0];
+    if (!organization) {
+      throw new Error(`报修流程夹具公司行不存在：${organizationId}`);
+    }
+    recordOwnedResource(ownership, 'organization', organizationId, {
+      organizationCode: organization.organization_code,
+      name: organization.name,
+      kind: organization.kind,
+      status: organization.status,
+      isManagedCompany: Number(organization.is_managed_company) === 1,
+    });
+
+    const memberships = await dataSource.query<
+      Array<{
+        id: number;
+        organization_id: number;
+        account_id: number;
+        member_role: string;
+        status: string;
+      }>
+    >(
+      `SELECT id, organization_id, account_id, member_role, status
+         FROM organization_membership WHERE account_id = ?`,
+      [customerAccountId],
+    );
+    for (const membership of memberships) {
+      recordOwnedResource(ownership, 'membership', membership.id, {
+        organizationId: membership.organization_id,
+        accountId: membership.account_id,
+        memberRole: membership.member_role,
+        status: membership.status,
+      });
+    }
+
+    updateOwnedExpectation(ownership, 'account', customerAccountId, {
+      customerOrganizationId: organizationId,
+    });
+  };
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -123,6 +216,7 @@ describe('维修申请业务流程 (e2e)', () => {
       dataSource,
       testAccountsConfig.guestPrimary.loginName,
     );
+    await bindCustomerCompanyForRepair();
   });
 
   afterEach(async () => {

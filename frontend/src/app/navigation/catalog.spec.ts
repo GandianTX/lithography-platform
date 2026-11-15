@@ -2,7 +2,9 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { getNavigationItems } from './catalog';
+import { createTranslator } from '@/shared/i18n';
+
+import { getNavigationItems, resolveNavigationItems } from './catalog';
 
 // 期望集合来自 docs/plan/薛-PR1-S1现状与设计映射-20260914.md 第 2 节菜单—路由表。
 describe('navigation catalog（S1 菜单表对账）', () => {
@@ -28,8 +30,8 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('SUPER_ADMIN 见首页、参考资料、用户管理、公司档案、注册审批、文档数据库、工单管理与账号设置', () => {
-    const paths = getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path);
+  it('一级管理员见任务 08 管理入口和全域文档数据库', () => {
+    const paths = getNavigationItems('prod', 'SUPER_ADMIN', 'GLOBAL').map((item) => item.path);
 
     expect(paths).toEqual([
       '/',
@@ -43,6 +45,23 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
+  it('2 级管理员与未知等级不出现全域管理入口（S1 范围收敛）', () => {
+    // 2 级管理员（有可信公司）与缺等级/非法等级一律不出全域入口；
+    // 本公司入口尚无正式路由，因此只保留角色通用入口。
+    for (const scope of ['ORGANIZATION', 'NONE'] as const) {
+      const paths = getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path);
+
+      expect(paths).toEqual(['/', '/reference-documents', '/account/settings']);
+    }
+
+    // 第三参缺省为 NONE：未传管理范围的调用方不会意外获得全域入口
+    expect(getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path)).toEqual([
+      '/',
+      '/reference-documents',
+      '/account/settings',
+    ]);
+  });
+
   it('匿名只见不受角色限制的入口', () => {
     const paths = getNavigationItems('prod', null).map((item) => item.path);
 
@@ -50,7 +69,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
   });
 
   it('生产环境不暴露开发入口（错误预览/实验/沙盒）', () => {
-    const paths = getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path);
+    const paths = getNavigationItems('prod', 'SUPER_ADMIN', 'GLOBAL').map((item) => item.path);
 
     expect(paths).not.toContain('/error-preview');
     expect(paths).not.toContain('/labs/game-2048');
@@ -58,7 +77,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
   });
 
   it('dev 环境暴露开发入口', () => {
-    const paths = getNavigationItems('dev', 'SUPER_ADMIN').map((item) => item.path);
+    const paths = getNavigationItems('dev', 'SUPER_ADMIN', 'GLOBAL').map((item) => item.path);
 
     expect(paths).toContain('/error-preview');
     expect(paths).toContain('/labs/game-2048');
@@ -66,7 +85,10 @@ describe('navigation catalog（S1 菜单表对账）', () => {
   });
 
   it('全部正式菜单项均为中文标签（前端主语言为中文）', () => {
-    const items = getNavigationItems('prod', 'SUPER_ADMIN');
+    const items = resolveNavigationItems(
+      getNavigationItems('prod', 'SUPER_ADMIN', 'GLOBAL'),
+      createTranslator('zh-CN'),
+    );
 
     for (const item of items) {
       expect(item.label).toMatch(/[\u4e00-\u9fa5]/);

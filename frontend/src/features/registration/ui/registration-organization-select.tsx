@@ -15,6 +15,8 @@ import { useEffect, useMemo } from 'react';
 import { Button, Select } from 'antd';
 import type { LabeledValue, SelectProps } from 'antd/es/select';
 
+import { useI18n } from '@/shared/i18n';
+
 import type {
   RegistrationOrganizationOption,
   RegistrationOrganizationSelection,
@@ -43,9 +45,10 @@ export function RegistrationOrganizationSelect({
   id,
   onCandidatesChange,
   onChange,
-  placeholder = '搜索并选择公司',
+  placeholder,
   value,
 }: RegistrationOrganizationSelectProps) {
+  const { t } = useI18n();
   const { loadMore, retry, search, state } = useRegistrationOrganizations();
 
   // 候选列表只在上游 ready 时变化；回调需由调用方保持稳定引用
@@ -65,12 +68,12 @@ export function RegistrationOrganizationSelect({
 
   const notFoundContent = (() => {
     if (state.status === 'loading') {
-      return '加载中…';
+      return t('common.loading');
     }
     if (state.status === 'failed') {
-      return '公司名单加载失败';
+      return t('register.orgLoadFailed');
     }
-    return '未找到符合条件的公司';
+    return t('register.orgNotFound');
   })();
 
   const handlePopupScroll: SelectProps['onPopupScroll'] = (event) => {
@@ -104,7 +107,7 @@ export function RegistrationOrganizationSelect({
           <span className="whitespace-normal [overflow-wrap:anywhere]">{option.label}</span>
         )}
         options={options}
-        placeholder={placeholder}
+        placeholder={placeholder ?? t('register.companyPlaceholder')}
         showSearch={{ filterOption: false, onSearch: search }}
         style={{ width: '100%' }}
         value={value ? { label: value.name, value: value.id } : undefined}
@@ -113,25 +116,25 @@ export function RegistrationOrganizationSelect({
           触摸与键盘用户都能直接读到完整称谓，不依赖原生 title / hover */}
       {value ? (
         <p className="m-0 text-xs [overflow-wrap:anywhere]" style={{ color: 'var(--text-muted)' }}>
-          已选公司：{value.name.trim()}
+          {t('register.orgSelected', { name: value.name.trim() })}
         </p>
       ) : null}
       {state.status === 'failed' ? (
         <div className="flex items-center gap-2">
           <span className="text-xs text-red-500">{state.message}</span>
           <Button onClick={retry} size="small" type="link">
-            重试
+            {t('common.retry')}
           </Button>
         </div>
       ) : null}
       {state.status === 'ready' && state.loadMoreFailed ? (
         <Button onClick={loadMore} size="small" type="link">
-          加载更多失败，重试
+          {t('register.orgLoadMoreFailed')}
         </Button>
       ) : null}
       {state.status === 'ready' && !state.loadMoreFailed && state.hasMore ? (
         <Button loading={state.loadingMore} onClick={loadMore} size="small" type="link">
-          加载更多
+          {t('register.orgLoadMore')}
         </Button>
       ) : null}
     </div>

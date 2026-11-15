@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { SessionIdentitySnapshot } from './infrastructure/auth-session-identity-graphql';
 import { fetchMySessionIdentity } from './infrastructure/auth-session-identity-graphql';
 import {
   authSessionStore,
@@ -11,6 +12,31 @@ import {
   logoutAuthSession,
   refreshCurrentAuthSessionIdentity,
 } from './auth-session-entry';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, reject, resolve };
+}
+
+function identitySnapshot(
+  restriction: SessionIdentitySnapshot['restriction'],
+): SessionIdentitySnapshot {
+  return {
+    accountId: 900201,
+    adminLevel: null,
+    customerOrganizationId: null,
+    engineerOrganizationId: null,
+    adminOrganizationId: null,
+    registrationOrganizationId: null,
+    restriction,
+  };
+}
 
 // 只在基础设施边界桩掉网络：入口层「采样身份 → 服务端复核 → 代次保护写入」的
 // 编排仍走真实实现（store + 浏览器持久化）。
@@ -155,6 +181,56 @@ describe('auth session entry', () => {
       await expect(refreshCurrentAuthSessionIdentity()).resolves.toBe(false);
 
       expect(getCurrentAuthSession()?.restriction).toBe('NONE');
+    });
+
+    it('并发复核乱序返回时只写入最新请求，旧响应不得回退限制状态', async () => {
+      authSessionStore.establishSession({
+        accessToken: 'entry-access-token',
+        accountId: 900201,
+        role: 'ENGINEER',
+        restriction: 'ENGINEER_PENDING',
+        userInfo: null,
+      });
+      const older = deferred<SessionIdentitySnapshot | null>();
+      const latest = deferred<SessionIdentitySnapshot | null>();
+      fetchMySessionIdentityMock
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(latest.promise);
+
+      const olderCall = refreshCurrentAuthSessionIdentity();
+      const latestCall = refreshCurrentAuthSessionIdentity();
+
+      latest.resolve(identitySnapshot('NONE'));
+      await expect(latestCall).resolves.toBe(true);
+      expect(getCurrentAuthSession()?.restriction).toBe('NONE');
+
+      // 旧请求迟到：必须被序号保护丢弃，不能把刚确认的 NONE 回退成待审
+      older.resolve(identitySnapshot('ENGINEER_PENDING'));
+      await expect(olderCall).resolves.toBe(false);
+      expect(getCurrentAuthSession()?.restriction).toBe('NONE');
+    });
+
+    it('最新请求失败时不回退到更早请求的成功结果', async () => {
+      authSessionStore.establishSession({
+        accessToken: 'entry-access-token',
+        accountId: 900201,
+        role: 'ENGINEER',
+        restriction: 'ENGINEER_PENDING',
+        userInfo: null,
+      });
+      const older = deferred<SessionIdentitySnapshot | null>();
+      fetchMySessionIdentityMock
+        .mockReturnValueOnce(older.promise)
+        .mockRejectedValueOnce(new Error('network'));
+
+      const olderCall = refreshCurrentAuthSessionIdentity();
+      const latestCall = refreshCurrentAuthSessionIdentity();
+
+      await expect(latestCall).rejects.toThrow('network');
+
+      older.resolve(identitySnapshot('NONE'));
+      await expect(olderCall).resolves.toBe(false);
+      expect(getCurrentAuthSession()?.restriction).toBe('ENGINEER_PENDING');
     });
   });
 });

@@ -8,82 +8,89 @@ import { useNavigate } from 'react-router';
 
 import {
   AuthSessionPanel,
-  isAuthSessionRoleAllowedAt,
+  resolveAuthSessionAdminScope,
   useAuthSession,
 } from '@/features/auth-session';
 
+import type { MessageKey } from '@/shared/i18n';
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { PageHeader } from '@/shared/ui/page-header';
 
 /**
- * 功能入口卡：目标路由与「当前产品文案」以本地常量登记，可见性交给
- * `isAuthSessionRoleAllowedAt`（与路由守卫同一判断函数），不在页面里另写一套角色表。
- * 这里只做导航，不新增业务操作、不展示虚构统计或硬编码资料。
+ * 功能入口卡：目标路由与「当前产品文案」以本地常量登记。可见性由
+ * `resolveAuthSessionAdminScope`（与路由守卫同一判定）统一决定，不在页面里
+ * 另写一套角色/等级表。这里只做导航，不新增业务操作、不展示虚构统计。
  */
 type AdminEntry = {
-  action: string;
-  description: string;
+  actionKey: MessageKey;
+  descriptionKey: MessageKey;
   icon: ReactNode;
   id: string;
   path: string;
-  title: string;
+  titleKey: MessageKey;
 };
 
+// 两个入口都是全域能力：只有 1 级管理员（GLOBAL）可见，
+// 与导航目录的 requiresAdminScope 标注、路由守卫的全域路径表同一口径。
 const ADMIN_ENTRIES: AdminEntry[] = [
   {
-    action: '进入用户管理',
-    description: '创建账号、维护资料与账号状态。',
+    actionKey: 'admin.users.action',
+    descriptionKey: 'admin.users.description',
     icon: <UserOutlined />,
     id: 'admin-users',
     path: '/admin/users',
-    title: '用户管理',
+    titleKey: 'admin.users.title',
   },
   {
-    action: '进入工单管理',
-    description: '查看全部维修工单的接单、处理与结单状态，并复用既有详情与修订能力。',
+    actionKey: 'admin.orders.action',
+    descriptionKey: 'admin.orders.description',
     icon: <FileTextOutlined />,
     id: 'admin-orders',
     path: '/admin/orders',
-    title: '工单管理',
+    titleKey: 'admin.orders.title',
   },
   {
-    action: '进入文档数据库',
-    description: 'SUPER_ADMIN 的数据聚合视图：参考资料、维修申请、AI 会话与 AI 报告。',
+    actionKey: 'admin.documents.action',
+    descriptionKey: 'admin.documents.description',
     icon: <UnorderedListOutlined />,
     id: 'admin-document-database',
     path: '/admin/document-database',
-    title: '文档数据库',
+    titleKey: 'admin.documents.title',
   },
 ];
 
+// 非全域范围的可达性说明：2 级本公司入口尚无正式路由，未知等级无全域能力，
+// 都不渲染任何链接（红线：不留死链接）。
+const ADMIN_SCOPE_UNAVAILABLE_NOTICES = {
+  ORGANIZATION: 'admin.organizationNotice',
+  NONE: 'admin.noneNotice',
+} as const satisfies Record<'ORGANIZATION' | 'NONE', MessageKey>;
+
 /**
- * 管理员入口页：保留会话信息展示（「当前账号」卡），并提供进入用户管理与文档数据库的
- * 导航卡片。页面本身位于 /admin/**，由路由层既有角色策略保证仅 SUPER_ADMIN 可达。
+ * 管理员入口页：保留会话信息展示（「当前账号」卡），并按可信管理范围决定
+ * 是否提供进入用户管理与文档数据库的导航卡片。页面本身位于 /admin/**，
+ * 由路由层既有角色策略保证仅 SUPER_ADMIN 可达。
  */
 export function AdminPage() {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { session } = useAuthSession();
-  const activeRole = session?.role ?? null;
+  const adminScope = session ? resolveAuthSessionAdminScope(session) : 'NONE';
 
-  const entryItems = useMemo(
-    () =>
-      activeRole === null
-        ? []
-        : ADMIN_ENTRIES.filter((entry) => isAuthSessionRoleAllowedAt(activeRole, entry.path)),
-    [activeRole],
-  );
+  const entryItems = adminScope === 'GLOBAL' ? ADMIN_ENTRIES : [];
 
   return (
     <div className="page-stack">
       <PageHeader
-        description="欢迎使用光刻维护平台，可从这里进入用户管理和平台资料页面。"
+        description={t('admin.description')}
         eyebrow="ADMIN WORKSPACE"
-        title="管理员工作台"
+        title={t('admin.title')}
       />
 
       <AuthSessionPanel variant="account" />
 
-      {entryItems.length > 0 ? (
+      {adminScope === 'GLOBAL' ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {entryItems.map((entry) => (
             <DataCard key={entry.id}>
@@ -92,17 +99,23 @@ export function AdminPage() {
                   {entry.icon}
                 </span>
                 <div className="admin-entry-text">
-                  <h3 className="admin-entry-title">{entry.title}</h3>
-                  <p className="admin-entry-description">{entry.description}</p>
+                  <h3 className="admin-entry-title">{t(entry.titleKey)}</h3>
+                  <p className="admin-entry-description">{t(entry.descriptionKey)}</p>
                 </div>
                 <Button type="primary" onClick={() => void navigate(entry.path)}>
-                  {entry.action}
+                  {t(entry.actionKey)}
                 </Button>
               </div>
             </DataCard>
           ))}
         </div>
-      ) : null}
+      ) : (
+        <DataCard>
+          <p className="admin-entry-description">
+            {t(ADMIN_SCOPE_UNAVAILABLE_NOTICES[adminScope])}
+          </p>
+        </DataCard>
+      )}
     </div>
   );
 }

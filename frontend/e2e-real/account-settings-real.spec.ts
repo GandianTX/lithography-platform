@@ -159,11 +159,16 @@ async function enterAccountSettingsFromNav(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '账号设置' })).toBeVisible();
 }
 
-/** 按卡片标题定位三个区块（DataCard 渲染 section.data-card + h3.data-card-title） */
+/** 按卡片标题定位区块（DataCard 渲染 section.data-card + h3.data-card-title） */
 function cardByTitle(page: Page, title: string) {
   return page.locator('section.data-card', {
     has: page.locator('h3.data-card-title', { hasText: title }),
   });
+}
+
+/** 切到「修改密码」标签：密码卡片只在该标签内可见，资料标签同时保留挂载 */
+async function openPasswordTab(page: Page): Promise<void> {
+  await page.getByRole('tab', { name: '修改密码' }).click();
 }
 
 test.describe('account settings real backend flow', () => {
@@ -186,9 +191,9 @@ test.describe('account settings real backend flow', () => {
         await enterAccountSettingsFromNav(page);
 
         // 进入后页面确实按该角色身份加载：角色胶囊与后端 role 同口径
-        const extra = cardByTitle(page, '账号信息').locator('div.data-card-extra');
+        const infoCard = cardByTitle(page, '账号信息');
 
-        await expect(extra.locator('span.status-pill').first()).toHaveText(roleCase.roleLabel);
+        await expect(infoCard.locator('span.status-pill').first()).toHaveText(roleCase.roleLabel);
       } finally {
         await context.close();
       }
@@ -205,17 +210,17 @@ test.describe('account settings real backend flow', () => {
     await enterAccountSettingsFromNav(page);
 
     const snapshot = await readSettingsSnapshot(env, loginName);
-    const extra = cardByTitle(page, '账号信息').locator('div.data-card-extra');
+    const infoCard = cardByTitle(page, '账号信息');
 
     // 角色 / 状态以只读胶囊展示，标签与后端权威枚举一一对应
     expect(snapshot.role).toBe('SUPER_ADMIN');
     expect(snapshot.status).toBe('ACTIVE');
-    await expect(extra).toContainText('角色');
-    await expect(extra).toContainText('状态');
-    await expect(extra.locator('span.status-pill')).toHaveText(['管理员', '正常']);
+    await expect(infoCard).toContainText('角色');
+    await expect(infoCard).toContainText('状态');
+    await expect(infoCard.locator('span.status-pill')).toHaveText(['管理员', '正常']);
 
     // 最近变更：zh-CN 本地化时间，后端原始 ISO 串不得直接出现在页面正文
-    await expect(cardByTitle(page, '账号信息').getByText(/^最近变更：\d{4}\//)).toBeVisible();
+    await expect(infoCard.getByText(/^最近变更：\d{4}\//)).toBeVisible();
     await expect(page.locator('body')).not.toContainText(snapshot.updatedAt);
   });
 
@@ -236,10 +241,13 @@ test.describe('account settings real backend flow', () => {
     // radiogroup + 3 个 radio），与账号设置无关，全页断言会把它误判成本页的编辑控件
     const main = page.getByRole('main');
 
-    // 先证明三个区块的表单确实渲染出来了（否则下面的「零控件」断言没有意义）
-    await expect(main.getByLabel('登录名')).toBeVisible();
-    await expect(main.getByLabel('昵称')).toBeVisible();
-    await expect(main.getByLabel('当前密码')).toBeVisible();
+    // 先证明关键区块确实渲染出来了（否则下面的「零控件」断言没有意义）：
+    // 登录名是「账号信息」里的只读事实文本，昵称在「基础资料」表单，
+    // 密码表单只在「修改密码」标签内可见
+    await expect(cardByTitle(page, '账号信息').getByText('登录名', { exact: true })).toBeVisible();
+    await expect(cardByTitle(page, '基础资料').getByLabel('昵称')).toBeVisible();
+    await openPasswordTab(page);
+    await expect(cardByTitle(page, '修改密码').getByLabel('当前密码')).toBeVisible();
 
     // 角色 / 状态没有同名表单项，也没有任何选择类控件
     await expect(main.getByLabel(/角色/)).toHaveCount(0);
@@ -256,9 +264,10 @@ test.describe('account settings real backend flow', () => {
     await expect(main.getByRole('button', { name: /角色|状态|停用|启用|封禁/ })).toHaveCount(0);
 
     // 角色 / 状态只以只读胶囊文本出现，不是任何控件的可编辑值
-    const extra = cardByTitle(page, '账号信息').locator('div.data-card-extra');
-
-    await expect(extra.locator('span.status-pill')).toHaveText(['工程师', '正常']);
+    await expect(cardByTitle(page, '账号信息').locator('span.status-pill')).toHaveText([
+      '工程师',
+      '正常',
+    ]);
   });
 
   test('修改基础资料的电话字段：保存成功、页面回显、刷新后持久', async ({ page }) => {
@@ -365,8 +374,9 @@ test.describe('account settings real backend flow', () => {
 
     await loginViaUi(page, loginName, seedPassword, homePath);
     await enterAccountSettingsFromNav(page);
+    await openPasswordTab(page);
 
-    const securityCard = cardByTitle(page, '安全设置');
+    const securityCard = cardByTitle(page, '修改密码');
 
     // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
     await securityCard.getByLabel('当前密码').fill(seedPassword);
@@ -524,8 +534,9 @@ test.describe('account settings real backend flow', () => {
           // 初始密码真实 UI 登录 → 经导航进入账号设置 → 真实提交改密
           await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/engineer');
           await enterAccountSettingsFromNav(page);
+          await openPasswordTab(page);
 
-          const securityCard = cardByTitle(page, '安全设置');
+          const securityCard = cardByTitle(page, '修改密码');
 
           // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
           await securityCard.getByLabel('当前密码').fill(INITIAL_PASSWORD);
@@ -559,11 +570,13 @@ test.describe('account settings real backend flow', () => {
           const payload = (await response.json()) as unknown;
           const settings = assertRealMyAccountSettingsSuccess(payload, dedicatedLoginName);
 
-          // 页面装配层展示与 GraphQL 数据一致（登录名、昵称两项核心表单值）
-          const main = page.getByRole('main');
-
-          await expect(main.getByLabel('登录名')).toHaveValue(settings.loginName ?? '');
-          await expect(main.getByLabel('昵称')).toHaveValue(settings.nickname);
+          // 页面装配层展示与 GraphQL 数据一致（登录名只读事实、昵称表单值）
+          await expect(
+            cardByTitle(page, '账号信息').getByText(settings.loginName ?? '', { exact: true }),
+          ).toBeVisible();
+          await expect(cardByTitle(page, '基础资料').getByLabel('昵称')).toHaveValue(
+            settings.nickname,
+          );
 
           // R4：浏览器流量绑定守卫——任何流向 127.0.0.1:3000 或其他来源的请求都判失败
           assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);

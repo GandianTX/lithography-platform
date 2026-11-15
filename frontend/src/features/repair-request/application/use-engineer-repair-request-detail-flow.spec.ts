@@ -16,6 +16,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { translate } from '@/shared/i18n';
+
 import type {
   AcceptRepairRequestResult,
   CreateEngineerResponseInput,
@@ -44,7 +46,10 @@ vi.mock('../infrastructure/engineer-repair-request-adapter', async (importOrigin
 const acceptMock = vi.mocked(engineerRepairRequestAdapter.acceptRepairRequest);
 const createMock = vi.mocked(engineerRepairRequestAdapter.createEngineerResponse);
 const fetchDetailMock = vi.mocked(engineerRepairRequestAdapter.fetchEngineerRepairRequestDetail);
-const NOT_ACCESSIBLE_MESSAGE = engineerRepairRequestAdapter.ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE;
+const NOT_ACCESSIBLE_MESSAGE = translate(
+  'zh-CN',
+  engineerRepairRequestAdapter.ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE_KEY,
+);
 
 function buildDetail(id: number, isAccepted: boolean): EngineerRepairRequestDetail {
   return {

@@ -66,7 +66,13 @@ export function updateCurrentAuthSessionNickname(accountId: number, nickname: st
  * 切换账号），store 侧拒绝写入。返回是否实际更新了会话；无会话、响应不合法或
  * 值无变化返回 false。网络 / 认证失败按既有 ingress 链路上抛，由调用方决定是否
  * 静默（UNAUTHENTICATED 已由全局 auth failure handler 收口）。
+ *
+ * 并发保护：壳层启动复核、受限页显式刷新与批准提示的进入前复核可能重叠；
+ * 只允许**最新一次**请求写入，更早请求的迟到响应一律丢弃，避免把刚确认的
+ * NONE 回退成旧限制（旧响应也不得提升资格）。
  */
+let identityRefreshSeq = 0;
+
 export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
   const identity = authSessionStore.sampleSessionIdentity();
 
@@ -74,7 +80,15 @@ export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
     return false;
   }
 
+  const seq = identityRefreshSeq + 1;
+  identityRefreshSeq = seq;
+
   const snapshot = await fetchMySessionIdentity();
+
+  // 已有更新的复核请求发出：本次响应过期，不得写入
+  if (seq !== identityRefreshSeq) {
+    return false;
+  }
 
   if (!snapshot || snapshot.accountId !== identity.accountId || snapshot.restriction === null) {
     return false;

@@ -8,14 +8,16 @@
  * 任何账号或申请 ID）。没有申请记录是正常态，不报错。
  */
 
+import { useState } from 'react';
 import { Descriptions, Typography } from 'antd';
 
+import { getCurrentAuthSession, refreshCurrentAuthSessionIdentity } from '@/features/auth-session';
 import {
-  ENGINEER_REGISTRATION_STATUS_LABELS,
   type EngineerRegistrationStatus,
   useMyEngineerRegistration,
 } from '@/features/registration';
 
+import { useI18n } from '@/shared/i18n';
 import { PrimaryButton } from '@/shared/ui/buttons';
 import { DataCard } from '@/shared/ui/data-card';
 import { ErrorState } from '@/shared/ui/error-state';
@@ -30,23 +32,57 @@ const STATUS_TONES: Record<EngineerRegistrationStatus, StatusPillTone> = {
 };
 
 export function RestrictedApplicationCard() {
-  const { retry, state } = useMyEngineerRegistration();
+  const { t } = useI18n();
+  const { refresh, retry, state } = useMyEngineerRegistration();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  /**
+   * 显式刷新：先按服务端复核当前会话限制，再决定是否需要重查申请。
+   *
+   * - 资格刚生效（restriction 变为 NONE）时由 app-layout 的既有收口跳转，
+   *   卡片不再读取申请，避免刚批准就多发一次受限查询；
+   * - 仍受限（待审 / 拒绝 / 资格无效）时重查申请，让审核决定与拒绝原因更新；
+   * - 身份复核失败不污染申请错误态，仍按当前会话事实重查申请。
+   */
+  async function handleRefresh(): Promise<void> {
+    setIsRefreshing(true);
+    try {
+      await refreshCurrentAuthSessionIdentity().catch(() => {});
+
+      const current = getCurrentAuthSession();
+      if (current !== null && current.restriction !== 'NONE') {
+        refresh();
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  const refreshButton = (
+    <PrimaryButton
+      loading={isRefreshing || state.status === 'loading'}
+      onClick={() => void handleRefresh()}
+      size="small"
+    >
+      {t('restricted.application.refresh')}
+    </PrimaryButton>
+  );
 
   if (state.status === 'loading') {
     return (
-      <DataCard title="我的工程师申请">
-        <LoadingState label="申请信息加载中…" />
+      <DataCard extra={refreshButton} title={t('restricted.application.title')}>
+        <LoadingState label={t('restricted.application.loading')} />
       </DataCard>
     );
   }
 
   if (state.status === 'failed') {
     return (
-      <DataCard title="我的工程师申请">
+      <DataCard extra={refreshButton} title={t('restricted.application.title')}>
         <ErrorState
-          action={<PrimaryButton onClick={retry}>重试</PrimaryButton>}
+          action={<PrimaryButton onClick={retry}>{t('common.retry')}</PrimaryButton>}
           description={state.message}
-          title="申请信息加载失败"
+          title={t('restricted.application.loadFailed')}
         />
       </DataCard>
     );
@@ -55,8 +91,8 @@ export function RestrictedApplicationCard() {
   const { application } = state;
   if (application === null) {
     return (
-      <DataCard title="我的工程师申请">
-        <Typography.Text type="secondary">当前账号没有工程师注册申请记录。</Typography.Text>
+      <DataCard extra={refreshButton} title={t('restricted.application.title')}>
+        <Typography.Text type="secondary">{t('restricted.application.empty')}</Typography.Text>
       </DataCard>
     );
   }
@@ -64,25 +100,33 @@ export function RestrictedApplicationCard() {
   return (
     <DataCard
       extra={
-        <StatusPill tone={STATUS_TONES[application.status]}>
-          {ENGINEER_REGISTRATION_STATUS_LABELS[application.status]}
-        </StatusPill>
+        <div className="flex items-center gap-2">
+          <StatusPill tone={STATUS_TONES[application.status]}>
+            {t(`status.registration.${application.status}`)}
+          </StatusPill>
+          {refreshButton}
+        </div>
       }
-      title="我的工程师申请"
+      title={t('restricted.application.title')}
     >
       <Descriptions bordered column={1} size="small">
-        <Descriptions.Item label="申请公司">
-          {application.organizationName ?? `公司 ID ${application.organizationId}`}
+        <Descriptions.Item label={t('restricted.application.company')}>
+          {application.organizationName ??
+            t('restricted.application.companyId', { id: application.organizationId })}
         </Descriptions.Item>
-        <Descriptions.Item label="申请说明">{application.applicationNote ?? '—'}</Descriptions.Item>
-        <Descriptions.Item label="提交时间">
+        <Descriptions.Item label={t('restricted.application.note')}>
+          {application.applicationNote ?? '—'}
+        </Descriptions.Item>
+        <Descriptions.Item label={t('restricted.application.submittedAt')}>
           {formatDateTimeText(application.submittedAt)}
         </Descriptions.Item>
-        <Descriptions.Item label="审核时间">
+        <Descriptions.Item label={t('restricted.application.reviewedAt')}>
           {application.reviewedAt === null ? '—' : formatDateTimeText(application.reviewedAt)}
         </Descriptions.Item>
         {application.reviewComment ? (
-          <Descriptions.Item label="审核意见">{application.reviewComment}</Descriptions.Item>
+          <Descriptions.Item label={t('restricted.application.reviewComment')}>
+            {application.reviewComment}
+          </Descriptions.Item>
         ) : null}
       </Descriptions>
     </DataCard>

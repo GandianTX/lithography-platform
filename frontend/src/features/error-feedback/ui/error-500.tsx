@@ -2,16 +2,20 @@
 
 import { ThunderboltOutlined } from '@ant-design/icons';
 
+import { useI18n } from '@/shared/i18n';
+
 import { ErrorBlock } from './error-block';
 
 export function Error500() {
+  const { t } = useI18n();
+
   return (
     <ErrorBlock
-      actions={[{ label: '返回工作台', to: '/' }]}
-      description={'服务端在处理请求时遇到了意外错误。\n请稍后重试，或检查后端服务状态。'}
+      actions={[{ label: t('error.backToWorkbench'), to: '/' }]}
+      description={t('error.500.description')}
       icon={<ThunderboltOutlined />}
       statusCode={500}
-      title="服务异常"
+      title={t('error.500.title')}
       tone="error"
     />
   );

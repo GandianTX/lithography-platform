@@ -5,6 +5,7 @@ import { Link } from 'react-router';
 import type { AuthSessionView } from '@/features/auth-session';
 import { LoginForm, SessionExpiredNotice } from '@/features/auth-session';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 
 export type LoginPageProps = {
@@ -22,14 +23,16 @@ export type LoginPageProps = {
  * 双栏成组居中并整体略偏页面左侧；窄屏由 CSS 改为纵向堆叠。
  */
 export function LoginPage({ onAuthenticated, sessionExpired = false }: LoginPageProps) {
+  const { t } = useI18n();
+
   return (
     <div className="login-layout">
       <div className="login-intro">
-        <h1 className="login-intro-title">欢迎登录</h1>
-        <p className="login-intro-subtitle">使用账号或邮箱进入工作台</p>
+        <h1 className="login-intro-title">{t('login.introTitle')}</h1>
+        <p className="login-intro-subtitle">{t('login.introSubtitle')}</p>
         {/* 主色短横：标题下的强调线，仅装饰 */}
         <span aria-hidden="true" className="login-intro-rule" />
-        <p className="login-intro-note">专注光刻设备 · 保障稳定运行</p>
+        <p className="login-intro-note">{t('login.introNote')}</p>
       </div>
 
       <div className="login-panel">
@@ -45,10 +48,10 @@ export function LoginPage({ onAuthenticated, sessionExpired = false }: LoginPage
             secondaryActions={
               <>
                 <Link className="login-action-link" to="/register/customer">
-                  客户注册
+                  {t('login.customerRegister')}
                 </Link>
                 <Link className="login-action-link" to="/register/engineer">
-                  工程师注册
+                  {t('login.engineerRegister')}
                 </Link>
               </>
             }

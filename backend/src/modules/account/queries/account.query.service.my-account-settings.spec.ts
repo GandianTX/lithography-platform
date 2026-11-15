@@ -29,6 +29,7 @@ describe('AccountQueryService.findMyAccountSettingsSnapshot', () => {
     ({
       accountId: ACCOUNT_ID,
       nickname: 'self_nickname',
+      realName: '张三',
       companyName: '示例公司',
       phone: '13800000000',
       email: 'contact@example.com',
@@ -49,6 +50,7 @@ describe('AccountQueryService.findMyAccountSettingsSnapshot', () => {
       loginPassword: 'pbkdf2$stored-hash$should-never-leak',
       identityHint: IdentityTypeEnum.CUSTOMER,
       status: AccountStatus.ACTIVE,
+      adminLevel: null,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       updatedAt: new Date('2026-01-01T00:00:00.000Z'),
       userInfo: buildUserInfo(),
@@ -127,11 +129,13 @@ describe('AccountQueryService.findMyAccountSettingsSnapshot', () => {
         loginName: 'self_user',
         loginEmail: 'self@example.com',
         nickname: 'self_nickname',
+        realName: '张三',
         companyName: '示例公司',
         phone: '13800000000',
         contactEmail: 'contact@example.com',
         role: IdentityTypeEnum.ENGINEER,
         status: AccountStatus.ACTIVE,
+        adminLevel: null,
         updatedAt: new Date('2026-01-01T00:00:00.000Z'),
       });
     });
@@ -177,12 +181,14 @@ describe('AccountQueryService.findMyAccountSettingsSnapshot', () => {
       const snapshot = await readSnapshot();
       expect(Object.keys(snapshot as object).sort()).toEqual([
         'accountId',
+        'adminLevel',
         'companyName',
         'contactEmail',
         'loginEmail',
         'loginName',
         'nickname',
         'phone',
+        'realName',
         'role',
         'status',
         'updatedAt',

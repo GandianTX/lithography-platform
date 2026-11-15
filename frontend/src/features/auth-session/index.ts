@@ -11,12 +11,14 @@ export type {
 export { AUTH_SESSION_RESTRICTIONS, AUTH_SESSION_ROLES } from './application/auth-session.types';
 export {
   AUTH_SESSION_RESTRICTED_PATH,
+  type AuthSessionAdminScope,
   type AuthSessionRoleCarrier,
   isAuthSessionExpiredReason,
   isAuthSessionRestricted,
   isAuthSessionRestriction,
   isAuthSessionRole,
   isAuthSessionRoleAllowedAt,
+  resolveAuthSessionAdminScope,
   resolveAuthSessionEntryPath,
   resolveAuthSessionHomePath,
   resolveEntryRouteRedirect,

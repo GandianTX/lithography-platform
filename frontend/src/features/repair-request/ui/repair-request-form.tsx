@@ -4,11 +4,16 @@ import { useCallback } from 'react';
 import { Alert, Button, Form, Input, Result, Select } from 'antd';
 import { useNavigate } from 'react-router';
 
+import { useI18n } from '@/shared/i18n';
+
 import { useRepairRequestCreateFlow } from '../application/use-repair-request-create-flow';
 import type { RepairRequestRecord } from '../infrastructure/repair-request.types';
 
 // 创建成功后的返回目标：跳转维修申请列表（T-05：列表能力已落地，替换阶段一的客户首页临时落点）
 const REPAIR_REQUESTS_LIST_PATH = '/customer/repair-requests';
+
+// 缺公司归属时服务端拒绝创建（S4 门禁）：引导用户先去账号设置补录
+const ACCOUNT_SETTINGS_PATH = '/account/settings';
 
 // 长度上限与后端契约对齐（backend/src/adapters/api/graphql/repair-request/dto/create-repair-request.input.ts），
 // 修改需同步后端，避免单边漂移导致前端误拦或漏校验。
@@ -56,6 +61,7 @@ export type RepairRequestFormProps = {
  */
 export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFormProps) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [form] = Form.useForm<RepairRequestFormValues>();
   const {
     continueCreating,
@@ -65,6 +71,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
     submit,
     submitting,
     submitError,
+    submitFailureReason,
   } = useRepairRequestCreateFlow();
 
   const modelsReady = modelsState.status === 'ready' && modelsState.models.length > 0;
@@ -92,7 +99,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
       <Result
         extra={[
           <Button key="continue" onClick={continueCreating}>
-            继续创建
+            {t('repairForm.continue')}
           </Button>,
           <Button
             key="list"
@@ -101,12 +108,12 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             }
             type="primary"
           >
-            查看维修申请
+            {t('repairForm.view')}
           </Button>,
         ]}
         status="success"
-        subTitle={`申请编号：${createdRequest.requestNo}`}
-        title="维修申请创建成功"
+        subTitle={t('repairForm.requestNo', { requestNo: createdRequest.requestNo })}
+        title={t('repairForm.successTitle')}
       />
     );
   }
@@ -117,7 +124,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
         <Alert
           action={
             <Button onClick={retryLoadModels} size="small">
-              重试
+              {t('common.retry')}
             </Button>
           }
           title={modelsState.message}
@@ -130,21 +137,39 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
         <Alert
           action={
             <Button onClick={retryLoadModels} size="small">
-              重试
+              {t('common.retry')}
             </Button>
           }
-          title="暂无可用的设备型号，请稍后再试。"
+          title={t('repairForm.noModels')}
           showIcon
           type="warning"
         />
       ) : null}
-      {submitError ? <Alert title={submitError} showIcon type="error" /> : null}
+      {submitError ? (
+        <Alert
+          action={
+            submitFailureReason === 'company-required' ? (
+              <Button onClick={() => navigate(ACCOUNT_SETTINGS_PATH)} size="small" type="primary">
+                {t('common.goAccountSettings')}
+              </Button>
+            ) : undefined
+          }
+          title={submitError}
+          description={
+            submitFailureReason === 'company-required'
+              ? t('repairForm.companyRequiredHint')
+              : undefined
+          }
+          showIcon
+          type="error"
+        />
+      ) : null}
 
       <Form form={form} layout="vertical" onFinish={(values) => void handleSubmit(values)}>
         <Form.Item
-          label={<FieldLabel hint="仅可选择已启用型号" title="设备型号" />}
+          label={<FieldLabel hint={t('repairForm.modelHint')} title={t('repairForm.modelLabel')} />}
           name="equipmentModelId"
-          rules={[{ message: '请选择设备型号', required: true }]}
+          rules={[{ message: t('repairForm.modelRequired'), required: true }]}
         >
           <Select
             disabled={!modelsReady}
@@ -157,48 +182,51 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
                   }))
                 : []
             }
-            placeholder="请选择设备型号"
+            placeholder={t('repairForm.modelPlaceholder')}
           />
         </Form.Item>
         <Form.Item
           label={
-            <FieldLabel hint={`必填，最多 ${ERROR_CODE_MAX_LENGTH} 个字符`} title="设备错误码" />
+            <FieldLabel
+              hint={t('repairForm.errorCodeHint', { max: ERROR_CODE_MAX_LENGTH })}
+              title={t('repairForm.errorCodeLabel')}
+            />
           }
           name="errorCode"
           rules={[
-            { message: '请输入设备错误码', required: true },
+            { message: t('repairForm.errorCodeRequired'), required: true },
             {
               max: ERROR_CODE_MAX_LENGTH,
-              message: `错误码不能超过 ${ERROR_CODE_MAX_LENGTH} 个字符`,
+              message: t('repairForm.errorCodeMax', { max: ERROR_CODE_MAX_LENGTH }),
             },
           ]}
         >
           <Input
             disabled={!modelsReady}
             maxLength={ERROR_CODE_MAX_LENGTH}
-            placeholder="例如：E-2001"
+            placeholder={t('repairForm.errorCodePlaceholder')}
           />
         </Form.Item>
         <Form.Item
           label={
             <FieldLabel
-              hint={`必填，最多 ${FAULT_DESCRIPTION_MAX_LENGTH} 个字符`}
-              title="故障描述"
+              hint={t('repairForm.descriptionHint', { max: FAULT_DESCRIPTION_MAX_LENGTH })}
+              title={t('repairForm.descriptionLabel')}
             />
           }
           name="faultDescription"
           rules={[
-            { message: '请输入故障描述', required: true },
+            { message: t('repairForm.descriptionRequired'), required: true },
             {
               max: FAULT_DESCRIPTION_MAX_LENGTH,
-              message: `故障描述不能超过 ${FAULT_DESCRIPTION_MAX_LENGTH} 个字符`,
+              message: t('repairForm.descriptionMax', { max: FAULT_DESCRIPTION_MAX_LENGTH }),
             },
           ]}
         >
           <Input.TextArea
             disabled={!modelsReady}
             maxLength={FAULT_DESCRIPTION_MAX_LENGTH}
-            placeholder="请描述设备故障现象与发生场景"
+            placeholder={t('repairForm.descriptionPlaceholder')}
             rows={6}
             style={{ minHeight: 150 }}
           />
@@ -207,11 +235,11 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             规则在上、按钮仍右对齐（.repair-request-form-*，见 index.css） */}
         <Form.Item>
           <div className="repair-request-form-actions">
-            <p className="repair-request-form-rule">提交后不可修改；未接单可删除</p>
+            <p className="repair-request-form-rule">{t('repairForm.rule')}</p>
             <div className="repair-request-form-buttons">
-              <Button onClick={handleCancel}>取消</Button>
+              <Button onClick={handleCancel}>{t('common.cancel')}</Button>
               <Button disabled={!modelsReady} htmlType="submit" loading={submitting} type="primary">
-                提交申请
+                {t('repairForm.submit')}
               </Button>
             </div>
           </div>

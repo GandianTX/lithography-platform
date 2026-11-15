@@ -1,6 +1,7 @@
 // src/usecases/account/my-account-settings.input.normalize.ts
 
 import { DomainError, INPUT_NORMALIZE_ERROR } from '@core/common/errors/domain-error';
+import { normalizeOptionalText } from '@core/common/input-normalize/input-normalize.policy';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   normalizeAdminUserCompanyNameInput,
@@ -62,8 +63,11 @@ export function normalizeMyAccountSettingsAccountId(session: UsecaseSession): nu
   return accountId;
 }
 
+/** 真实姓名长度上限：与 `base_user_info.real_name`（varchar(200)）列宽一致 */
+const MY_ACCOUNT_REAL_NAME_MAX_LENGTH = 200;
+
 /**
- * 账号设置更新（P2）的组合收敛：六个白名单字段逐一收敛，输出严格三态。
+ * 账号设置更新（P2）的组合收敛：七个白名单字段逐一收敛，输出严格三态。
  *
  * 与 admin 资料更新收敛（`normalizeAdminUserProfileUpdateInput()`）的结构差异只有一点：
  * 本场景**多出两个登录凭据字段**（`loginName` / `loginEmail`），它们的「至少保留一个」
@@ -73,6 +77,7 @@ export function normalizeMyAccountSettingsAccountId(session: UsecaseSession): nu
  * 委托说明：`null` / `''` / 纯空白到「清空（null）」的收敛、以及非空字符串的
  * trim / NFKC / 长度 / 格式校验，全部复用 admin 场景的单字段收敛函数
  * （依据见文件头）；本函数只持有三态语义的组合，不重复实现任何单字段规则。
+ * `realName` 的「空白即清空 + 列宽上限」见 `normalizeMyAccountRealNameInput()`。
  */
 export function normalizeMyAccountSettingsUpdateInput(
   input: UpdateMyAccountSettingsNormalizeInput,
@@ -81,10 +86,30 @@ export function normalizeMyAccountSettingsUpdateInput(
     loginName: normalizeMyAccountSettingsLoginName(input.loginName),
     loginEmail: normalizeMyAccountSettingsLoginEmail(input.loginEmail),
     nickname: normalizeMyAccountSettingsNickname(input.nickname),
+    realName: normalizeMyAccountRealNameInput(input.realName),
     companyName: normalizeMyAccountSettingsCompanyName(input.companyName),
     phone: normalizeMyAccountSettingsPhone(input.phone),
     contactEmail: normalizeMyAccountSettingsContactEmail(input.contactEmail),
   };
+}
+
+/**
+ * 真实姓名三态收敛：`undefined` = 不修改；`null` / `''` / 纯空白 = 清空；
+ * 非空字符串 trim 后校验长度不超过列宽 200。空白收敛统一走通用
+ * `normalizeOptionalText(..., 'to_null')`，不另写一份空白判定。
+ */
+function normalizeMyAccountRealNameInput(input: unknown): string | null | undefined {
+  const normalized = normalizeOptionalText(input, 'to_null', { fieldName: '姓名' });
+  if (normalized === null || normalized === undefined) {
+    return normalized;
+  }
+  if (normalized.length > MY_ACCOUNT_REAL_NAME_MAX_LENGTH) {
+    throw new DomainError(
+      INPUT_NORMALIZE_ERROR.INVALID_LIMIT_VALUE,
+      `姓名长度不能超过 ${MY_ACCOUNT_REAL_NAME_MAX_LENGTH} 个字符`,
+    );
+  }
+  return normalized;
 }
 
 /**

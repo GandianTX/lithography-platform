@@ -35,7 +35,8 @@ vi.mock('react-router', async (importOriginal) => {
 
 vi.mock('@/features/auth-session', () => ({
   clearSessionAfterPasswordChange: mocks.clearSessionAfterPasswordChangeMock,
-  getCurrentAuthSession: () => ({ accountId: 900101 }),
+  getCurrentAuthSession: () => ({ accountId: 900101, restriction: 'ENGINEER_PENDING' }),
+  refreshCurrentAuthSessionIdentity: vi.fn().mockResolvedValue(false),
   sampleCurrentAuthSessionIdentity: () => INITIATED_IDENTITY,
   updateCurrentAuthSessionNickname: mocks.updateNicknameMock,
   useAuthSession: () => ({
@@ -75,10 +76,18 @@ vi.mock('@/features/account-settings', () => ({
       reload: vi.fn(),
       state: {
         settings: {
+          adminLevel: null,
+          companyName: null,
           contactEmail: null,
           loginEmail: 'engineer@example.com',
+          loginName: 'mock_engineer',
           nickname: '陈工',
           phone: null,
+          realName: null,
+          role: 'ENGINEER',
+          status: 'ACTIVE',
+          trustedCompanyName: '测试公司',
+          updatedAt: '2026-11-14T10:00:00.000Z',
         },
         status: 'ready',
       },

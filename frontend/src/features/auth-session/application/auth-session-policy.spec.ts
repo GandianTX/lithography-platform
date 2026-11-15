@@ -6,6 +6,7 @@ import {
   createAuthSessionSnapshot,
   isAuthSessionExpiredReason,
   isAuthSessionRoleAllowedAt,
+  resolveAuthSessionAdminScope,
   resolveAuthSessionEntryPath,
   resolveAuthSessionHomePath,
   resolveEntryRouteRedirect,
@@ -120,6 +121,8 @@ describe('auth session policy', () => {
     const superAdminSession = createAuthSessionSnapshot({
       accessToken: 'access-token',
       accountId: 900001,
+      adminLevel: 1,
+      adminOrganizationId: 910003,
       role: 'SUPER_ADMIN',
       userInfo: null,
     });
@@ -139,6 +142,98 @@ describe('auth session policy', () => {
     expect(resolveProtectedRouteRedirect(superAdminSession, '/customer/repair-requests/new')).toBe(
       '/admin',
     );
+  });
+
+  it('resolves the admin scope from trusted level and organization facts (S1)', () => {
+    // 只有 SUPER_ADMIN 且等级可信才具备管理范围；非管理员即便带等级也不升级
+    expect(resolveAuthSessionAdminScope({ role: 'CUSTOMER' })).toBe('NONE');
+    expect(resolveAuthSessionAdminScope({ role: 'ENGINEER', adminLevel: 1 })).toBe('NONE');
+
+    // 1 级 = 全域，但同样要求可信组织归属：缺成员的管理员服务端也不放行组织范围操作
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 1 })).toBe('NONE');
+    expect(
+      resolveAuthSessionAdminScope({
+        role: 'SUPER_ADMIN',
+        adminLevel: 1,
+        adminOrganizationId: 910003,
+      }),
+    ).toBe('GLOBAL');
+
+    // 2 级 = 本公司，但公司归属必须是正整数才可信
+    expect(
+      resolveAuthSessionAdminScope({
+        role: 'SUPER_ADMIN',
+        adminLevel: 2,
+        adminOrganizationId: 910004,
+      }),
+    ).toBe('ORGANIZATION');
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 2 })).toBe('NONE');
+    expect(
+      resolveAuthSessionAdminScope({
+        role: 'SUPER_ADMIN',
+        adminLevel: 2,
+        adminOrganizationId: 0,
+      }),
+    ).toBe('NONE');
+
+    // 缺等级与非法等级一律不升级
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: null })).toBe('NONE');
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 3 })).toBe('NONE');
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 1.5 })).toBe('NONE');
+  });
+
+  it('keeps global admin pages for level-1 admins only, mirroring navigation (S1)', () => {
+    const globalAdmin = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900307,
+      adminLevel: 1,
+      adminOrganizationId: 910003,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+    const level2Admin = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900308,
+      adminLevel: 2,
+      adminOrganizationId: 910004,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+    const level2AdminWithoutOrg = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900308,
+      adminLevel: 2,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+    const unknownLevelAdmin = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900309,
+      adminLevel: null,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+
+    // 1 级全域能力：两个全域管理页直达放行
+    expect(resolveProtectedRouteRedirect(globalAdmin, '/admin/users')).toBeNull();
+    expect(resolveProtectedRouteRedirect(globalAdmin, '/admin/document-database')).toBeNull();
+
+    // 2 级（含缺可信公司）与未知等级：全域管理页收回管理员主页
+    for (const session of [level2Admin, level2AdminWithoutOrg, unknownLevelAdmin]) {
+      expect(resolveProtectedRouteRedirect(session, '/admin/users')).toBe('/admin');
+      expect(resolveProtectedRouteRedirect(session, '/admin/document-database')).toBe('/admin');
+    }
+
+    // 非全域范围不影响管理员主页与既有继承路由
+    expect(resolveProtectedRouteRedirect(level2Admin, '/admin')).toBeNull();
+    expect(resolveProtectedRouteRedirect(level2Admin, '/engineer')).toBeNull();
+
+    // 相似前缀不是全域路径，不能误伤 2 级管理员的 /admin 子路径
+    expect(resolveProtectedRouteRedirect(level2Admin, '/admin/users-x')).toBeNull();
+
+    // 登录 returnTo 与直达同语义：2 级管理员不会落到全域页，1 级仍可回到目标页
+    expect(resolveAuthSessionEntryPath(level2Admin, '/admin/users')).toBe('/admin');
+    expect(resolveAuthSessionEntryPath(globalAdmin, '/admin/users')).toBe('/admin/users');
   });
 
   it('funnels restricted sessions into the dedicated landing page', () => {

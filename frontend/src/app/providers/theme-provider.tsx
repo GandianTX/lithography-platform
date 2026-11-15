@@ -2,9 +2,12 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { ConfigProvider } from 'antd';
+import enUS from 'antd/locale/en_US';
+import zhCN from 'antd/locale/zh_CN';
 
 import { createAppThemeConfig } from '@/app/theme';
 
+import { useI18n } from '@/shared/i18n';
 import { MessageFeedbackProvider } from '@/shared/ui/message-feedback';
 
 import { FONT_SCALE_CONFIG, type FontScale } from './theme-constants';
@@ -25,6 +28,7 @@ function readStoredFontScale(): FontScale {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const { language } = useI18n();
   const [fontScale, setFontScale] = useState<FontScale>(readStoredFontScale);
   const themeConfig = useMemo(
     () => createAppThemeConfig({ fontSize: FONT_SCALE_CONFIG[fontScale].antdFontSize }),
@@ -43,7 +47,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   return (
     <ThemeContext.Provider value={{ fontScale, setFontScale }}>
-      <ConfigProvider theme={themeConfig}>
+      <ConfigProvider locale={language === 'en' ? enUS : zhCN} theme={themeConfig}>
         <MessageFeedbackProvider>{children}</MessageFeedbackProvider>
       </ConfigProvider>
     </ThemeContext.Provider>

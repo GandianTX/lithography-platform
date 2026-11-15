@@ -31,8 +31,7 @@ import { ChangeMyPasswordUsecase } from './change-my-password.usecase';
  * 7. 成功结果不含当前密码、新密码、哈希或 Token；
  * 8. 不新增 Token 黑名单 / tokenVersion / 服务端会话撤销；
  * 9. 全部日志（成功与失败）都不含当前密码、新密码或哈希；
- * 10. 强制改密（`mustChangePassword`）下新密码与当前密码相同时拒绝且不写哈希、不清标记；
- *    未要求强制改密时保持既有语义（同值仍按原行为处理）。
+ * 10. 无论是否强制改密，新密码与当前密码相同都拒绝且不写哈希；强制改密成功仍清除标记。
  */
 describe('ChangeMyPasswordUsecase', () => {
   const ACCOUNT_ID = 7;
@@ -254,14 +253,27 @@ describe('ChangeMyPasswordUsecase', () => {
       expect(harness.isCommitted()).toBe(true);
     });
 
-    it('未要求强制改密时保持既有语义：允许提交同值密码（不扩大契约）', async () => {
+    it('未要求强制改密时提交同值密码同样拒绝，且不写哈希', async () => {
       // beforeEach 默认快照 mustChangePassword: false
-      await expect(execute(CURRENT_PASSWORD, CURRENT_PASSWORD)).resolves.toMatchObject({
-        isUpdated: true,
-      });
+      const error = await captureThrownError(execute(CURRENT_PASSWORD, CURRENT_PASSWORD));
 
-      expect(accountService.updateAccountPasswordHash).toHaveBeenCalledTimes(1);
-      expect(harness.isCommitted()).toBe(true);
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
+        message: '新密码需与当前密码不同',
+        details: undefined,
+      });
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: ACCOUNT_ID,
+          errorCode: MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
+          phase: 'VERIFY_NEW_PASSWORD_DISTINCT',
+        }),
+        expect.any(String),
+      );
+      expect(logger.info).not.toHaveBeenCalled();
     });
   });
 

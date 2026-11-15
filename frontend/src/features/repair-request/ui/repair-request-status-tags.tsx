@@ -4,6 +4,8 @@ import {
   type RepairHandlingResultValue,
   resolveRepairClosureState,
 } from '@/shared/ui/repair-request-status-labels';
+import type { MessageKey } from '@/shared/i18n';
+import { useI18n } from '@/shared/i18n';
 import { StatusPill, type StatusPillTone } from '@/shared/ui/status-pill';
 
 import type {
@@ -25,11 +27,11 @@ import type {
  */
 const VIEW_STATUS_META: Record<
   EngineerRepairAcceptanceViewStatus,
-  { label: string; tone: StatusPillTone }
+  { labelKey: MessageKey; tone: StatusPillTone }
 > = {
-  AVAILABLE: { label: '待接单', tone: 'warn' },
-  MINE: { label: '我的接单', tone: 'ok' },
-  TAKEN_BY_OTHER: { label: '他人已接单', tone: 'neutral' },
+  AVAILABLE: { labelKey: 'engineerDetail.viewStatus.AVAILABLE', tone: 'warn' },
+  MINE: { labelKey: 'engineerDetail.viewStatus.MINE', tone: 'ok' },
+  TAKEN_BY_OTHER: { labelKey: 'engineerDetail.viewStatus.TAKEN_BY_OTHER', tone: 'neutral' },
 };
 
 export function AcceptanceViewStatusTag({
@@ -37,21 +39,25 @@ export function AcceptanceViewStatusTag({
 }: {
   viewStatus: EngineerRepairAcceptanceViewStatus | null;
 }) {
+  const { t } = useI18n();
+
   if (!viewStatus) {
     // 视角状态缺失（后端保证工程师入口非空，此处为防腐兜底）：按未接单事实展示
-    return <StatusPill tone="warn">待接单</StatusPill>;
+    return <StatusPill tone="warn">{t('engineerDetail.viewStatus.AVAILABLE')}</StatusPill>;
   }
   const meta = VIEW_STATUS_META[viewStatus];
-  return <StatusPill tone={meta.tone}>{meta.label}</StatusPill>;
+  return <StatusPill tone={meta.tone}>{t(meta.labelKey)}</StatusPill>;
 }
 
 export function ResolutionTag({ status }: { status: EngineerResolutionStatusValue | null }) {
+  const { t } = useI18n();
+
   if (!status) {
-    return <span>暂无回复</span>;
+    return <span>{t('engineerDetail.noReply')}</span>;
   }
   return (
     <StatusPill tone={status === 'RESOLVED' ? 'ok' : 'warn'}>
-      {status === 'RESOLVED' ? '已解决' : '处理中'}
+      {t(`status.resolution.${status}`)}
     </StatusPill>
   );
 }

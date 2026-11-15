@@ -16,6 +16,7 @@ import { GetAccountByIdUsecase } from '@src/usecases/account/get-account-by-id.u
 import { GetMyAccountSettingsUsecase } from '@src/usecases/account/get-my-account-settings.usecase';
 import { GetVisibleUserInfoUsecase } from '@src/usecases/account/get-visible-user-info.usecase';
 import { ListAdminUsersUsecase } from '@src/usecases/account/list-admin-users.usecase';
+import { SupplementMyCustomerCompanyUsecase } from '@src/usecases/account/supplement-my-customer-company.usecase';
 import { UpdateMyAccountSettingsUsecase } from '@src/usecases/account/update-my-account-settings.usecase';
 import {
   UpdateAccessGroupUsecase,
@@ -38,6 +39,7 @@ import {
     GetMyAccountSettingsUsecase,
     GetVisibleUserInfoUsecase,
     ListAdminUsersUsecase,
+    SupplementMyCustomerCompanyUsecase,
     UpdateMyAccountSettingsUsecase,
     UpdateVisibleUserInfoUsecase,
     UpdateAccessGroupUsecase,
@@ -56,6 +58,7 @@ import {
     GetMyAccountSettingsUsecase,
     GetVisibleUserInfoUsecase,
     ListAdminUsersUsecase,
+    SupplementMyCustomerCompanyUsecase,
     UpdateMyAccountSettingsUsecase,
     UpdateVisibleUserInfoUsecase,
     UpdateAccessGroupUsecase,

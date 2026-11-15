@@ -18,6 +18,8 @@ import {
   useAuthSession,
 } from '@/features/auth-session';
 
+import type { MessageKey } from '@/shared/i18n';
+import { useI18n } from '@/shared/i18n';
 import { PrimaryButton } from '@/shared/ui/buttons';
 import { DataCard } from '@/shared/ui/data-card';
 import { ErrorState } from '@/shared/ui/error-state';
@@ -29,22 +31,25 @@ import { RestrictedApplicationCard } from './restricted-application-card';
 type RestrictedReason = Exclude<AuthSessionRestriction, 'NONE'>;
 
 // 受限原因文案（只依据后端会话限制状态展示，不在前端推断账号/申请事实）
-const RESTRICTION_DETAILS: Record<RestrictedReason, { description: string; title: string }> = {
+const RESTRICTION_DETAIL_KEYS: Record<
+  RestrictedReason,
+  { descriptionKey: MessageKey; titleKey: MessageKey }
+> = {
   MUST_CHANGE_PASSWORD: {
-    description: '当前账号需要先修改登录密码，完成后请使用新密码重新登录。',
-    title: '请先修改登录密码',
+    descriptionKey: 'restricted.mustChangePassword.description',
+    titleKey: 'restricted.mustChangePassword.title',
   },
   ENGINEER_PENDING: {
-    description: '你的工程师注册申请正在审核中，审核通过后即可访问完整功能。',
-    title: '工程师申请审核中',
+    descriptionKey: 'restricted.engineerPending.description',
+    titleKey: 'restricted.engineerPending.title',
   },
   ENGINEER_REJECTED: {
-    description: '你的工程师注册申请未通过审核，请联系管理员了解详情。',
-    title: '工程师申请未通过',
+    descriptionKey: 'restricted.engineerRejected.description',
+    titleKey: 'restricted.engineerRejected.title',
   },
   ENGINEER_INACTIVE: {
-    description: '你的工程师申请已通过审核，但账号开通尚未完成，请联系管理员确认所属公司成员资格。',
-    title: '工程师资格尚未生效',
+    descriptionKey: 'restricted.engineerInactive.description',
+    titleKey: 'restricted.engineerInactive.title',
   },
 };
 
@@ -64,6 +69,7 @@ const RESTRICTION_DETAILS: Record<RestrictedReason, { description: string; title
  */
 export function RestrictedPage() {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { session } = useAuthSession();
   // 强制改密态只开放身份读取与改密：进入该分支不得加载账号资料与申请详情，
   // 因此必须在 hook 调用前判定并按 enabled 关闭资料链路（Hook 顺序保持不变）
@@ -85,15 +91,17 @@ export function RestrictedPage() {
   if (!session || session.restriction === 'NONE') {
     return (
       <div className="surface-panel">
-        <Alert showIcon title="当前会话没有受限访问权限，请重新登录。" type="warning" />
+        <Alert showIcon title={t('restricted.invalidSession')} type="warning" />
         <div className="page-action-row">
-          <PrimaryButton onClick={() => void navigate('/login')}>前往登录</PrimaryButton>
+          <PrimaryButton onClick={() => void navigate('/login')}>
+            {t('common.goLogin')}
+          </PrimaryButton>
         </div>
       </div>
     );
   }
 
-  const details = RESTRICTION_DETAILS[session.restriction];
+  const details = RESTRICTION_DETAIL_KEYS[session.restriction];
 
   async function handlePasswordChangeSucceeded(
     initiatedIdentity: AuthSessionIdentity | null,
@@ -113,15 +121,20 @@ export function RestrictedPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        description="当前账号处于受限状态，完成必要操作后重新登录即可恢复完整访问。"
+        description={t('restricted.headerDescription')}
         eyebrow="Restricted Session"
-        title="账号受限"
+        title={t('restricted.headerTitle')}
       />
 
-      <Alert description={details.description} showIcon title={details.title} type="warning" />
+      <Alert
+        description={t(details.descriptionKey)}
+        showIcon
+        title={t(details.titleKey)}
+        type="warning"
+      />
 
       {mustChangePassword ? (
-        <DataCard title="修改登录密码">
+        <DataCard title={t('restricted.changePasswordCard')}>
           <ChangePasswordForm
             onSubmit={updatePassword}
             onSucceeded={handlePasswordChangeSucceeded}
@@ -132,18 +145,20 @@ export function RestrictedPage() {
         <>
           <RestrictedApplicationCard />
 
-          {state.status === 'loading' ? <LoadingState label="账号资料加载中…" /> : null}
+          {state.status === 'loading' ? (
+            <LoadingState label={t('restricted.profileLoading')} />
+          ) : null}
 
           {state.status === 'failed' ? (
             <ErrorState
-              action={<PrimaryButton onClick={reload}>重试</PrimaryButton>}
+              action={<PrimaryButton onClick={reload}>{t('common.retry')}</PrimaryButton>}
               description={state.message}
-              title="账号资料加载失败"
+              title={t('restricted.profileLoadFailed')}
             />
           ) : null}
 
           {state.status === 'ready' ? (
-            <DataCard title="资料维护">
+            <DataCard title={t('restricted.profileCard')}>
               <AccountProfileForm
                 mode="restricted"
                 onSubmit={updateProfile}
@@ -153,7 +168,7 @@ export function RestrictedPage() {
             </DataCard>
           ) : null}
 
-          <DataCard title="修改登录密码">
+          <DataCard title={t('restricted.changePasswordCard')}>
             <ChangePasswordForm
               onSubmit={updatePassword}
               onSucceeded={handlePasswordChangeSucceeded}

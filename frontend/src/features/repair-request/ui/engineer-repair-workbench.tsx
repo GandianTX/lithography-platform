@@ -18,6 +18,7 @@ import { createContext, type ReactNode, useContext } from 'react';
 import { Button } from 'antd';
 import { useNavigate } from 'react-router';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
@@ -66,6 +67,7 @@ function useEngineerWorkbenchValue(): EngineerWorkbenchValue {
  * 避免展示误导性固定值（不显示「—」冒充真实数量）。
  */
 export function EngineerWorkbenchHeaderStats() {
+  const { t } = useI18n();
   const { state } = useEngineerWorkbenchValue();
 
   if (state.status !== 'ready') {
@@ -75,11 +77,11 @@ export function EngineerWorkbenchHeaderStats() {
   return (
     <>
       <StatusPill tone={state.availableTotal > 0 ? 'warn' : 'neutral'}>
-        <span>待接单</span>
+        <span>{t('workbench.headerPending')}</span>
         <span>{state.availableTotal}</span>
       </StatusPill>
       <StatusPill tone="neutral">
-        <span>我的接单</span>
+        <span>{t('workbench.headerMine')}</span>
         <span>{state.mineTotal}</span>
       </StatusPill>
     </>
@@ -110,6 +112,8 @@ function RecentItemButton({
   selected: boolean;
   onSelect: (id: number) => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <button
       aria-current={selected ? 'true' : undefined}
@@ -123,7 +127,7 @@ function RecentItemButton({
       </span>
       <span className="text-[11px] font-bold text-text">{`${item.equipmentModel.modelName}（${item.equipmentModel.modelCode}）· ${item.errorCode}`}</span>
       <span className="flex items-center justify-between gap-2 text-[9px] text-text-tertiary">
-        <span>提交时间</span>
+        <span>{t('workbench.submittedAt')}</span>
         <span>{formatDateTimeText(item.createdAt)}</span>
       </span>
     </button>
@@ -132,19 +136,22 @@ function RecentItemButton({
 
 export function EngineerRepairWorkbench() {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { state, selectedItem, select, reload } = useEngineerWorkbenchValue();
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(260px,0.72fr)_minmax(0,1.9fr)]">
-      <DataCard title="最近待接单">
+      <DataCard title={t('workbench.recent')}>
         <div className="flex flex-col gap-2">
-          {state.status === 'loading' ? <LoadingState label="正在加载最近待接单…" /> : null}
+          {state.status === 'loading' ? (
+            <LoadingState label={t('workbench.loadingRecent')} />
+          ) : null}
 
           {state.status === 'failed' ? (
             <ErrorState
               action={
                 <Button onClick={() => void reload()} size="small">
-                  重试
+                  {t('common.retry')}
                 </Button>
               }
               title={state.message}
@@ -152,7 +159,7 @@ export function EngineerRepairWorkbench() {
           ) : null}
 
           {state.status === 'ready' && state.recentItems.length === 0 ? (
-            <EmptyState title="暂无待接单的维修申请。" />
+            <EmptyState title={t('workbench.emptyRecent')} />
           ) : null}
 
           {state.status === 'ready' && state.recentItems.length > 0
@@ -177,32 +184,34 @@ export function EngineerRepairWorkbench() {
         title={
           <span className="flex flex-col gap-0.5">
             <span className="text-[9px] font-bold tracking-[0.15em] text-text-tertiary uppercase">
-              申请工作台
+              {t('workbench.eyebrow')}
             </span>
-            <span>{selectedItem ? selectedItem.requestNo : '选中申请摘要'}</span>
+            <span>{selectedItem ? selectedItem.requestNo : t('workbench.selectedSummary')}</span>
           </span>
         }
       >
         {selectedItem ? (
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <DetailSection label="设备型号">
+              <DetailSection label={t('workbench.model')}>
                 {`${selectedItem.equipmentModel.modelName}（${selectedItem.equipmentModel.modelCode}）`}
               </DetailSection>
-              <DetailSection label="错误码">{selectedItem.errorCode}</DetailSection>
+              <DetailSection label={t('workbench.errorCode')}>
+                {selectedItem.errorCode}
+              </DetailSection>
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <DetailSection label="提交时间">
+              <DetailSection label={t('workbench.submittedAt')}>
                 {formatDateTimeText(selectedItem.createdAt)}
               </DetailSection>
-              <DetailSection label="处理状态">
+              <DetailSection label={t('workbench.resolutionStatus')}>
                 <ResolutionTag status={selectedItem.latestResolutionStatus} />
               </DetailSection>
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <DetailSection label="客户">
+              <DetailSection label={t('workbench.customer')}>
                 <span className="flex flex-col gap-1">
                   <span>{selectedItem.customerNickname}</span>
                   <span className="font-normal text-text-secondary text-xs">
@@ -210,13 +219,13 @@ export function EngineerRepairWorkbench() {
                   </span>
                 </span>
               </DetailSection>
-              <DetailSection label="接单工程师">
+              <DetailSection label={t('workbench.acceptedEngineer')}>
                 <span className="flex flex-col gap-1">
                   <span>{selectedItem.acceptedEngineerNickname ?? '—'}</span>
                   <span className="font-normal text-text-secondary text-xs">
                     {selectedItem.acceptedAt
                       ? formatDateTimeText(selectedItem.acceptedAt)
-                      : '尚未接单'}
+                      : t('workbench.notAccepted')}
                   </span>
                 </span>
               </DetailSection>
@@ -227,12 +236,12 @@ export function EngineerRepairWorkbench() {
                 onClick={() => navigate(`${ENGINEER_REPAIR_REQUEST_DETAIL_PATH}${selectedItem.id}`)}
                 type="primary"
               >
-                查看详情并处理
+                {t('workbench.viewDetail')}
               </Button>
             </div>
           </div>
         ) : (
-          <EmptyState title="从左侧选择待接单申请查看摘要" />
+          <EmptyState title={t('workbench.selectHint')} />
         )}
       </DataCard>
     </div>

@@ -4,8 +4,12 @@ import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/error
 import { Injectable } from '@nestjs/common';
 import type { MyAccountSettingsSnapshot } from '@src/modules/account/account.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { PinoLogger } from 'nestjs-pino';
-import { toMyAccountSettingsView } from './my-account-settings.support';
+import {
+  resolveTrustedOrganizationId,
+  toMyAccountSettingsView,
+} from './my-account-settings.support';
 import { normalizeMyAccountSettingsAccountId } from './my-account-settings.input.normalize';
 import type {
   GetMyAccountSettingsCommand,
@@ -38,6 +42,7 @@ import type {
 export class GetMyAccountSettingsUsecase {
   constructor(
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
     private readonly logger: PinoLogger,
   ) {
     this.logger.setContext(GetMyAccountSettingsUsecase.name);
@@ -67,7 +72,29 @@ export class GetMyAccountSettingsUsecase {
       throw error;
     }
 
-    return toMyAccountSettingsView(snapshot);
+    return this.buildView(snapshot, command);
+  }
+
+  /**
+   * 按快照角色解析可信组织 ID 并读取组织名称作为可信公司名称。
+   *
+   * 口径：组织 ID 为 `null`（该角色无唯一有效组织归属）或组织名称读取为 `null`（组织行缺失）
+   * 时统一返回 `null`，**不得回退 `companyName`**——二者来源不同，回退会把用户自填的公司名
+   * 伪造成可信组织事实。逐字段显式赋值由 `toMyAccountSettingsView()` 单一实现承担。
+   */
+  private async buildView(
+    snapshot: MyAccountSettingsSnapshot,
+    command: GetMyAccountSettingsCommand,
+  ): Promise<GetMyAccountSettingsOutcome> {
+    const organizationId = resolveTrustedOrganizationId(
+      snapshot.role,
+      command.trustedOrganizations,
+    );
+    const trustedCompanyName =
+      organizationId === null
+        ? null
+        : await this.organizationQueryService.findOrganizationNameById({ organizationId });
+    return toMyAccountSettingsView(snapshot, trustedCompanyName);
   }
 
   /**

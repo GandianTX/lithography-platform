@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import type {
   AcceptRepairRequestResult,
@@ -94,7 +95,9 @@ export function useAcceptRepairRequest() {
 
         return acceptResult;
       } catch (error) {
-        const message = isGraphQLIngressError(error) ? error.userMessage : '接单失败，请稍后重试。';
+        const message = isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('engineerDetail.acceptFailed');
         const transportResult: AcceptRepairRequestResult = {
           ok: false,
           reason: 'accept-failed',

@@ -16,6 +16,7 @@
 import { useState } from 'react';
 import { Alert, Form, Input, message } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
 import { PrimaryButton, SecondaryButton } from '@/shared/ui/buttons';
 
 import type {
@@ -51,6 +52,7 @@ type ChangePasswordFormValues = {
 };
 
 export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: ChangePasswordFormProps) {
+  const { t } = useI18n();
   const [form] = Form.useForm<ChangePasswordFormValues>();
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -92,33 +94,33 @@ export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: Change
   return (
     <Form form={form} layout="vertical" onFinish={(values) => void handleFinish(values)}>
       <Form.Item<ChangePasswordFormValues>
-        label="当前密码"
+        label={t('account.currentPassword')}
         name="currentPassword"
-        rules={[{ required: true, message: '请输入当前密码' }]}
+        rules={[{ required: true, message: t('account.currentPasswordRequired') }]}
       >
         <Input.Password autoComplete="current-password" />
       </Form.Item>
 
       <Form.Item<ChangePasswordFormValues>
-        extra="密码长度需为 8～128 位，至少包含小写字母、数字和特殊字符，不能使用常见弱密码；密码强度与格式以后端校验为准。"
-        label="新密码"
+        extra={t('account.newPasswordExtra')}
+        label={t('account.newPassword')}
         name="newPassword"
-        rules={[{ required: true, message: '请输入新密码' }]}
+        rules={[{ required: true, message: t('account.newPasswordRequired') }]}
       >
         <Input.Password autoComplete="new-password" />
       </Form.Item>
 
       <Form.Item<ChangePasswordFormValues>
         dependencies={['newPassword']}
-        label="确认新密码"
+        label={t('account.confirmNewPassword')}
         name="confirmNewPassword"
         rules={[
-          { required: true, message: '请再次输入新密码' },
+          { required: true, message: t('account.confirmNewPasswordRequired') },
           ({ getFieldValue }) => ({
             validator: (_, value) =>
               value === getFieldValue('newPassword')
                 ? Promise.resolve()
-                : Promise.reject(new Error('两次输入的新密码不一致')),
+                : Promise.reject(new Error(t('account.passwordMismatch'))),
           }),
         ]}
       >
@@ -129,7 +131,7 @@ export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: Change
 
       <div className="mt-4 flex gap-2">
         <PrimaryButton htmlType="submit" loading={submitting}>
-          修改密码
+          {t('account.changePassword')}
         </PrimaryButton>
         <SecondaryButton
           disabled={submitting}
@@ -138,7 +140,7 @@ export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: Change
             setSubmitError(null);
           }}
         >
-          重置
+          {t('account.reset')}
         </SecondaryButton>
       </div>
     </Form>

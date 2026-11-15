@@ -16,6 +16,16 @@ import type { MyAccountSettingsView } from '@src/modules/account/account.types';
  */
 
 /**
+ * 可信组织事实：由 Resolver 从请求期会话（`AuthenticatedSessionUser`）取出后传入，
+ * 不得从 GraphQL 入参读取。`null` 表示该角色无唯一有效组织归属。
+ */
+export interface MyAccountTrustedOrganizationFacts {
+  readonly customerOrganizationId: number | null;
+  readonly engineerOrganizationId: number | null;
+  readonly adminOrganizationId: number | null;
+}
+
+/**
  * 读取当前账号设置的命令：**只有 Session，没有任何目标账号 ID 参数**。
  *
  * 目标账号只能来自已认证 Session（GraphQL 不接收目标
@@ -24,6 +34,8 @@ import type { MyAccountSettingsView } from '@src/modules/account/account.types';
  */
 export interface GetMyAccountSettingsCommand {
   readonly session: UsecaseSession;
+  /** 请求期会话解析出的可信组织归属，用于按当前角色解析可信公司名称 */
+  readonly trustedOrganizations: MyAccountTrustedOrganizationFacts;
 }
 
 /**
@@ -38,7 +50,7 @@ export interface GetMyAccountSettingsCommand {
 export type GetMyAccountSettingsOutcome = MyAccountSettingsView;
 
 /**
- * 账号设置更新（P2）的规范化输入：adapter 传入的六个白名单字段原值（unknown 形态，
+ * 账号设置更新（P2）的规范化输入：adapter 传入的七个白名单字段原值（unknown 形态，
  * 与 `AdminUserProfileUpdateNormalizeInput` 同口径），由
  * `normalizeMyAccountSettingsUpdateInput()` 收敛。
  */
@@ -46,6 +58,7 @@ export interface UpdateMyAccountSettingsNormalizeInput {
   readonly loginName: unknown;
   readonly loginEmail: unknown;
   readonly nickname: unknown;
+  readonly realName: unknown;
   readonly companyName: unknown;
   readonly phone: unknown;
   readonly contactEmail: unknown;
@@ -66,13 +79,14 @@ export interface UpdateMyAccountSettingsNormalizeOutput {
   readonly loginName: string | null | undefined;
   readonly loginEmail: string | null | undefined;
   readonly nickname: string | undefined;
+  readonly realName: string | null | undefined;
   readonly companyName: string | null | undefined;
   readonly phone: string | null | undefined;
   readonly contactEmail: string | null | undefined;
 }
 
 /**
- * 账号设置更新（P2）的执行入参：Session + 六个白名单字段原值。
+ * 账号设置更新（P2）的执行入参：Session + 七个白名单字段原值。
  *
  * **结构上不存在** `accountId` / `userId` / 角色 / 状态 / 密码字段——目标账号只能来自
  * 已认证 Session，与读取用例的 Command 同一约束；字段保持 `unknown`
@@ -89,9 +103,12 @@ export interface UpdateMyAccountSettingsCommand {
    * 请求上下文，不得从 GraphQL 入参读取。
    */
   readonly restriction: SessionRestriction;
+  /** 请求期会话解析出的可信组织归属，用于按当前角色解析可信公司名称 */
+  readonly trustedOrganizations: MyAccountTrustedOrganizationFacts;
   readonly loginName: unknown;
   readonly loginEmail: unknown;
   readonly nickname: unknown;
+  readonly realName: unknown;
   readonly companyName: unknown;
   readonly phone: unknown;
   readonly contactEmail: unknown;

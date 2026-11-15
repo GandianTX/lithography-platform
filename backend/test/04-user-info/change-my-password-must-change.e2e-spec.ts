@@ -143,6 +143,7 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
 
   const ownership: OwnedResourceLedger = createOwnedResourceLedger();
   const accountIds = new Map<string, number>();
+  let adminAccountId: number;
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -169,7 +170,7 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     });
 
     await seedTestAccounts({ dataSource, includeKeys: ['admin'], ownership });
-    const adminAccountId = (
+    adminAccountId = (
       await dataSource
         .getRepository(AccountEntity)
         .findOneOrFail({ where: { loginName: testAccountsConfig.admin.loginName } })
@@ -533,6 +534,33 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
         expectedRestriction: SessionRestriction.ENGINEER_PENDING,
       });
     });
+
+    it('解除强制改密后混传姓名仍被拒为 FORBIDDEN，且不产生任何写入', async () => {
+      const token = await expectLoginRestriction(
+        PENDING_ENGINEER.loginName,
+        'I1Pending#New2026',
+        SessionRestriction.ENGINEER_PENDING,
+      );
+
+      // 受限会话白名单只含 nickname / phone / contactEmail：混传 realName 整体拒绝
+      const body = await gql<{ updateMyAccountSettings?: { isUpdated: boolean } }>({
+        query: UPDATE_MY_ACCOUNT_SETTINGS_MUTATION,
+        variables: { input: { nickname: 'i1_restricted_write', realName: '受限会话不可改姓名' } },
+        token,
+      });
+
+      expect(body.data?.updateMyAccountSettings).toBeUndefined();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 整体拒绝：合法昵称也不得部分写入
+      const info = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOne({ where: { accountId: accountIds.get('pendingEngineer') as number } });
+      expect(info?.nickname).toBe(`${PENDING_ENGINEER.loginName}_nickname`);
+      expect(info?.realName).toBeNull();
+    });
   });
 
   describe('已拒绝工程师', () => {
@@ -565,6 +593,43 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
         newPassword,
         expectedRestriction: SessionRestriction.ENGINEER_REJECTED,
       });
+    });
+  });
+
+  describe('普通账号（未被要求强制改密）', () => {
+    it('提交与当前密码相同的新密码同样被拒，哈希与标记不变且会话不退出', async () => {
+      const token = await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
+      const rowBefore = await readAccountRow(adminAccountId);
+      const hashBefore = rowBefore?.loginPassword;
+      expect(rowBefore?.mustChangePassword).toBe(false);
+
+      const body = await changePassword(
+        token,
+        testAccountsConfig.admin.loginPassword,
+        testAccountsConfig.admin.loginPassword,
+      );
+
+      expect(body.data?.changeMyPassword).toBeUndefined();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+      expect(body.errors?.[0]?.extensions?.errorCode).toBe('MY_ACCOUNT_NEW_PASSWORD_UNCHANGED');
+      expect(body.errors?.[0]?.message).toBe('新密码需与当前密码不同');
+
+      const rowAfter = await readAccountRow(adminAccountId);
+      expect(rowAfter?.loginPassword).toBe(hashBefore);
+      expect(rowAfter?.mustChangePassword).toBe(false);
+
+      // 会话未退出：原 Token 仍有效，原密码仍可登录
+      expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+      await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
     });
   });
 });

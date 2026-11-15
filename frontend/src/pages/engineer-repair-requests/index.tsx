@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router';
 import type { EngineerRepairListScope } from '@/features/repair-request';
 import { EngineerRepairRequestList } from '@/features/repair-request';
 
+import { useI18n } from '@/shared/i18n';
 import { PageHeader } from '@/shared/ui/page-header';
 
 /**
@@ -31,15 +32,16 @@ function parseScopeParam(raw: string | null): EngineerRepairListScope | undefine
 }
 
 export function EngineerRepairRequestsPage() {
+  const { t } = useI18n();
   const [searchParams] = useSearchParams();
   const initialScope = parseScopeParam(searchParams.get(SCOPE_PARAM_KEY));
 
   return (
     <div className="page-stack">
       <PageHeader
-        description="查看全部、待接单、你已接单与他人已接单的维修申请，可按设备型号与客户昵称筛选。"
+        description={t('engineer.listDescription')}
         eyebrow="Repair Requests"
-        title="工程师维修申请"
+        title={t('engineer.listTitle')}
       />
       <EngineerRepairRequestList initialScope={initialScope} />
     </div>

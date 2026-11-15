@@ -41,11 +41,14 @@ type MyAccountSettingsPayload = {
   loginName: string | null;
   loginEmail: string | null;
   nickname: string;
+  realName: string | null;
   companyName: string | null;
+  trustedCompanyName: string | null;
   phone: string | null;
   contactEmail: string | null;
   role: IdentityTypeEnum;
   status: AccountStatus;
+  adminLevel: number | null;
   updatedAt: string;
 };
 
@@ -60,7 +63,7 @@ type SchemaRootPayload = {
 
 /** DTO 字段清单：集中一处，避免各用例字段漂移；刻意不含 accountId */
 const MY_ACCOUNT_SETTINGS_FIELDS =
-  'loginName loginEmail nickname companyName phone contactEmail role status updatedAt';
+  'loginName loginEmail nickname realName companyName trustedCompanyName phone contactEmail role status adminLevel updatedAt';
 
 const MY_ACCOUNT_SETTINGS_QUERY = `
   query MyAccountSettings {
@@ -212,6 +215,12 @@ describe('当前用户账号设置 myAccountSettings (e2e)', () => {
       expect(settings?.contactEmail).toBe(cfg.loginEmail);
       expect(settings?.companyName).toBeNull();
       expect(settings?.phone).toBeNull();
+      // 姓名未 seed；可信公司由组织归属解析，seed 账号无组织事实故为 null
+      // （不得回退 companyName，二者来源不同）
+      expect(settings?.realName).toBeNull();
+      expect(settings?.trustedCompanyName).toBeNull();
+      // 等级只读：seed 账号未映射 admin_level
+      expect(settings?.adminLevel).toBeNull();
       expect(settings?.role).toBe(expectedRole);
       expect(settings?.status).toBe(AccountStatus.ACTIVE);
       expect(typeof settings?.updatedAt).toBe('string');
@@ -243,14 +252,17 @@ describe('当前用户账号设置 myAccountSettings (e2e)', () => {
 
       // 显式字段清单只含公开只读字段（accountId 不在其中，故结构上不可能被暴露）
       expect(Object.keys(settings as object).sort()).toEqual([
+        'adminLevel',
         'companyName',
         'contactEmail',
         'loginEmail',
         'loginName',
         'nickname',
         'phone',
+        'realName',
         'role',
         'status',
+        'trustedCompanyName',
         'updatedAt',
       ]);
       // 字段名层面的敏感键一律不得出现（不做数值子串比对：个位数 accountId 会偶然命中时间戳）

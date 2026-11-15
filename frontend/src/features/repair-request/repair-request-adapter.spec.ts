@@ -233,7 +233,9 @@ describe('createRepairRequest', () => {
     await expect(createRepairRequest(input)).rejects.toBe(unknownError);
   });
 
-  it('FORBIDDEN 权限拒绝（SUPER_ADMIN 代创建被拒）上抛原始错误，不吞为业务拒绝', async () => {
+  // S4 归属门禁：本 mutation 内 FORBIDDEN 的唯一业务来源是客户归属缺失 / 不可用。
+  // 生产按契约隐藏 errorCode 时无法细分，统一引导「先补录公司」，不新增错误通道。
+  it('FORBIDDEN 大类码归为「需先补录公司」，优先展示后端文案', async () => {
     const forbiddenError = buildDomainIngressError({
       code: 'FORBIDDEN',
       errorCode: 'INSUFFICIENT_PERMISSIONS',
@@ -241,7 +243,42 @@ describe('createRepairRequest', () => {
     });
     executeGraphQLMock.mockRejectedValue(forbiddenError);
 
-    await expect(createRepairRequest(input)).rejects.toBe(forbiddenError);
+    await expect(createRepairRequest(input)).resolves.toEqual({
+      message: '权限不足',
+      ok: false,
+      reason: 'company-required',
+    });
+  });
+
+  it('FORBIDDEN 且后端隐藏 errorCode 时回落固定补录引导文案', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      new GraphQLIngressError({
+        type: 'graphql',
+        message: '请求处理失败。',
+        graphqlErrors: [{ message: '请求处理失败。', extensions: { code: 'FORBIDDEN' } }],
+      }),
+    );
+
+    await expect(createRepairRequest(input)).resolves.toEqual({
+      message: '请先在账号设置中补充公司信息后再提交维修申请。',
+      ok: false,
+      reason: 'company-required',
+    });
+  });
+
+  it('暴露 errorCode 时区分归属不可用（company-unavailable）', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      buildDomainIngressError({
+        code: 'FORBIDDEN',
+        errorCode: 'REPAIR_REQUEST_CUSTOMER_COMPANY_UNAVAILABLE',
+      }),
+    );
+
+    await expect(createRepairRequest(input)).resolves.toEqual({
+      message: '所属公司当前不可用，请联系管理员处理后再提交维修申请。',
+      ok: false,
+      reason: 'company-unavailable',
+    });
   });
 
   it('auth 失败上抛原始错误，不吞为业务拒绝', async () => {

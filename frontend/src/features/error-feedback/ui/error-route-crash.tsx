@@ -2,16 +2,20 @@
 
 import { BugOutlined } from '@ant-design/icons';
 
+import { useI18n } from '@/shared/i18n';
+
 import { ErrorBlock } from './error-block';
 
 export function ErrorRouteCrash() {
+  const { t } = useI18n();
+
   return (
     <ErrorBlock
-      actions={[{ label: '返回工作台', to: '/' }]}
-      description={'页面在渲染前发生了未预期的错误。\n这通常是临时问题，刷新页面后可能恢复。'}
+      actions={[{ label: t('error.backToWorkbench'), to: '/' }]}
+      description={t('error.routeCrash.description')}
       icon={<BugOutlined />}
       statusCode="ERR"
-      title="路由渲染异常"
+      title={t('error.routeCrash.title')}
       tone="error"
     />
   );

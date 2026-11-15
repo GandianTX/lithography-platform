@@ -2,6 +2,7 @@
 
 import { Button, Pagination, Popconfirm } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
@@ -54,6 +55,8 @@ function RequestItemRow({
   onSelect: (id: number) => void;
   selected: boolean;
 }) {
+  const { t } = useI18n();
+
   return (
     <div
       aria-current={selected ? 'true' : undefined}
@@ -69,7 +72,7 @@ function RequestItemRow({
         </span>
         <span className="text-[11px] font-bold break-words text-text">{`${item.equipmentModel.modelName}（${item.equipmentModel.modelCode}）· ${item.errorCode}`}</span>
         <span className="flex items-center justify-between gap-2 text-[9px] text-text-tertiary">
-          <span>提交时间</span>
+          <span>{t('customer.submittedAt')}</span>
           <span>{formatDateTimeMinuteText(item.createdAt)}</span>
         </span>
       </button>
@@ -80,26 +83,26 @@ function RequestItemRow({
       <div className="customer-workspace-item-rail">
         <span className="customer-workspace-item-status">
           <StatusPill tone={item.isAccepted ? 'ok' : 'warn'}>
-            {item.isAccepted ? '已接单' : '待接单'}
+            {item.isAccepted ? t('customer.statusAccepted') : t('customer.statusPending')}
           </StatusPill>
         </span>
         {item.isAccepted ? null : (
           <div className="customer-workspace-item-actions">
             <Popconfirm
-              cancelText="取消"
+              cancelText={t('common.cancel')}
               okButtonProps={{ loading: deleting }}
-              okText="确认删除"
+              okText={t('common.confirmDelete')}
               onConfirm={() => onDelete(item.id)}
-              title="确认删除该维修申请？"
+              title={t('common.deleteRequestTitle')}
             >
               <Button
-                aria-label={`删除申请 ${item.requestNo}`}
+                aria-label={t('customer.deleteRequestLabel', { requestNo: item.requestNo })}
                 danger
                 disabled={deleteDisabled}
                 size="small"
                 type="text"
               >
-                删除
+                {t('common.delete')}
               </Button>
             </Popconfirm>
           </div>
@@ -120,31 +123,36 @@ export function CustomerRepairRequestListPanel({
   selectedRequestId,
   state,
 }: CustomerRepairRequestListPanelProps) {
+  const { t } = useI18n();
   const ready = state.status === 'ready';
   const items = ready ? state.data.items : [];
   const total = ready ? state.data.total : 0;
 
   return (
     <DataCard
-      extra={ready ? <StatusPill tone="neutral">共 {total} 项</StatusPill> : null}
+      extra={
+        ready ? (
+          <StatusPill tone="neutral">{t('customer.totalItems', { count: total })}</StatusPill>
+        ) : null
+      }
       title={
         <button
           className="customer-workspace-list-heading"
           onClick={onOpenMyRequests}
           type="button"
         >
-          我的维修申请
+          {t('customer.myRequests')}
         </button>
       }
     >
       <div className="flex flex-col gap-2">
-        {state.status === 'loading' ? <LoadingState label="正在加载维修申请…" /> : null}
+        {state.status === 'loading' ? <LoadingState label={t('customer.loadingRequests')} /> : null}
 
         {state.status === 'failed' ? (
           <ErrorState
             action={
               <Button onClick={onRetry} size="small">
-                重试
+                {t('common.retry')}
               </Button>
             }
             title={state.message}
@@ -155,17 +163,17 @@ export function CustomerRepairRequestListPanel({
           <EmptyState
             action={
               <Button onClick={onCreateRequest} type="primary">
-                发起维修申请
+                {t('customer.createButton')}
               </Button>
             }
-            description="设备出现异常时，提交故障信息创建维修申请。"
-            title="还没有维修申请。"
+            description={t('customer.emptyDescription')}
+            title={t('customer.emptyTitle')}
           />
         ) : null}
 
         {/* 越界空页（total>0 但当前页为空）不隐藏分页，给出可恢复提示 */}
         {ready && total > 0 && items.length === 0 ? (
-          <EmptyState title="当前页暂无申请，请切换页码查看。" />
+          <EmptyState title={t('customer.pageEmpty')} />
         ) : null}
 
         {ready && items.length > 0

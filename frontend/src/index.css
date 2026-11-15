@@ -426,6 +426,24 @@ body {
   margin: 10px 14px 10px;
 }
 
+/* 语言切换：展开态侧栏字号区上方一行；双按钮组的原生焦点环由 AntD 主题承担 */
+.app-language-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.language-switch {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+/* 登录壳层：语言入口贴在品牌行右侧（原型缺开关，生产补齐） */
+.login-brand .language-switch {
+  margin-left: auto;
+}
+
 .app-sidebar-footer {
   background: var(--sidebar-footer-bg);
   border-top: 1px solid var(--ant-color-border-secondary);

@@ -3,12 +3,12 @@
 import { Alert, Button, Popconfirm, Skeleton, Timeline } from 'antd';
 import type { ReactNode } from 'react';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { formatDateTimeMinuteText } from '@/shared/ui/format-date-time';
 import { StatusPill } from '@/shared/ui/status-pill';
 
 import type { CustomerRepairRequestDetailState } from '../application/use-customer-repair-request-detail-flow';
-import { RESOLUTION_STATUS_LABELS } from '../infrastructure/repair-request-read.types';
 
 /**
  * 客户工作台右栏维修申请详情面板（PR5 整合工作台）。
@@ -59,9 +59,11 @@ export function CustomerRepairRequestDetailPanel({
   onDelete,
   state,
 }: CustomerRepairRequestDetailPanelProps) {
+  const { t } = useI18n();
+
   if (state.status === 'loading') {
     return (
-      <DataCard title="维修申请详情">
+      <DataCard title={t('customer.detailCardTitle')}>
         <Skeleton active paragraph={{ rows: 8 }} />
       </DataCard>
     );
@@ -69,12 +71,12 @@ export function CustomerRepairRequestDetailPanel({
 
   if (state.status === 'failed') {
     return (
-      <DataCard title="维修申请详情">
+      <DataCard title={t('customer.detailCardTitle')}>
         <Alert
           action={
             onBackToList ? (
               <Button onClick={onBackToList} size="small">
-                返回历史列表
+                {t('customer.backToList')}
               </Button>
             ) : null
           }
@@ -93,14 +95,14 @@ export function CustomerRepairRequestDetailPanel({
       extra={
         detail.isAccepted ? null : (
           <Popconfirm
-            cancelText="取消"
+            cancelText={t('common.cancel')}
             okButtonProps={{ loading: deleting }}
-            okText="确认删除"
+            okText={t('common.confirmDelete')}
             onConfirm={onDelete}
-            title="确认删除该维修申请？"
+            title={t('common.deleteRequestTitle')}
           >
             <Button danger disabled={deleting} type="primary">
-              删除申请
+              {t('customer.deleteRequestButton')}
             </Button>
           </Popconfirm>
         )
@@ -109,7 +111,7 @@ export function CustomerRepairRequestDetailPanel({
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-mono break-all">{detail.requestNo}</span>
           <StatusPill tone={detail.isAccepted ? 'ok' : 'warn'}>
-            {detail.isAccepted ? '已接单' : '待接单'}
+            {detail.isAccepted ? t('customer.statusAccepted') : t('customer.statusPending')}
           </StatusPill>
           {detail.isAccepted && detail.acceptedAt ? (
             <span className="text-xs font-normal text-text-tertiary">
@@ -118,7 +120,7 @@ export function CustomerRepairRequestDetailPanel({
           ) : null}
           {detail.latestResolutionStatus ? (
             <StatusPill tone={detail.latestResolutionStatus === 'RESOLVED' ? 'ok' : 'warn'}>
-              {RESOLUTION_STATUS_LABELS[detail.latestResolutionStatus]}
+              {t(`status.resolution.${detail.latestResolutionStatus}`)}
             </StatusPill>
           ) : null}
         </span>
@@ -126,24 +128,30 @@ export function CustomerRepairRequestDetailPanel({
     >
       <div className="flex flex-col gap-4">
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <SummaryTile label="设备型号">{detail.equipmentModel.modelName}</SummaryTile>
-          <SummaryTile label="型号代码">{detail.equipmentModel.modelCode}</SummaryTile>
-          <SummaryTile label="错误码">{detail.errorCode}</SummaryTile>
-          <SummaryTile label="创建时间">{formatDateTimeMinuteText(detail.createdAt)}</SummaryTile>
+          <SummaryTile label={t('customer.summary.model')}>
+            {detail.equipmentModel.modelName}
+          </SummaryTile>
+          <SummaryTile label={t('customer.summary.modelCode')}>
+            {detail.equipmentModel.modelCode}
+          </SummaryTile>
+          <SummaryTile label={t('customer.summary.errorCode')}>{detail.errorCode}</SummaryTile>
+          <SummaryTile label={t('customer.summary.createdAt')}>
+            {formatDateTimeMinuteText(detail.createdAt)}
+          </SummaryTile>
         </div>
 
-        <SectionBlock label="故障描述">
+        <SectionBlock label={t('customer.section.faultDescription')}>
           <div className="text-[13px] break-words text-text">{detail.faultDescription}</div>
         </SectionBlock>
 
         {/* 故障正文按纯文本渲染（React 文本转义边界），不切换为原始 HTML */}
-        <SectionBlock label="故障正文">
+        <SectionBlock label={t('customer.section.faultContent')}>
           <pre className="text-sm break-words whitespace-pre-wrap">{detail.contentMd}</pre>
         </SectionBlock>
 
         {/* 0 条回复时整个回复模块（含标题、计数、占位）都不渲染 */}
         {detail.responses.length > 0 ? (
-          <SectionBlock label={`工程师回复（${detail.responses.length}）`}>
+          <SectionBlock label={t('customer.section.responses', { count: detail.responses.length })}>
             <Timeline
               items={detail.responses.map((response) => ({
                 // AntD v6：items.children 已弃用（运行时告警），改用 items.content
@@ -152,7 +160,7 @@ export function CustomerRepairRequestDetailPanel({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{response.engineerNickname}</span>
                       <StatusPill tone={response.resolutionStatus === 'RESOLVED' ? 'ok' : 'warn'}>
-                        {RESOLUTION_STATUS_LABELS[response.resolutionStatus]}
+                        {t(`status.resolution.${response.resolutionStatus}`)}
                       </StatusPill>
                       <span className="text-xs text-text-secondary">
                         {formatDateTimeMinuteText(response.createdAt)}
@@ -169,7 +177,7 @@ export function CustomerRepairRequestDetailPanel({
 
         {onBackToList ? (
           <div>
-            <Button onClick={onBackToList}>返回历史列表</Button>
+            <Button onClick={onBackToList}>{t('customer.backToList')}</Button>
           </div>
         ) : null}
       </div>

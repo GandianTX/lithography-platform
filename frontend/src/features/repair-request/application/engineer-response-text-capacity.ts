@@ -12,10 +12,6 @@
 /** MySQL `TEXT` 列最大字节容量（UTF-8 计量），与后端 usecase 常量一致 */
 export const ENGINEER_RESPONSE_TEXT_MAX_BYTES = 65535;
 
-/** 超限提示文案（口径与后端输入错误文案一致） */
-export const ENGINEER_RESPONSE_TEXT_OVER_CAPACITY_MESSAGE =
-  '回复正文不能超过 65,535 字节（按 UTF-8 计算）';
-
 /** TextEncoder 输出即 UTF-8 字节序列，复用单例避免每次编码新建 */
 const textEncoder = new TextEncoder();
 

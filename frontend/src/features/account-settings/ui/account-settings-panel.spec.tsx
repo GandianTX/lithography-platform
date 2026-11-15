@@ -4,9 +4,10 @@
 /**
  * 账号设置面板组合层单测。
  *
- * 只 mock application Hook，走真实三个区块 UI：验证加载 / 失败 / 就绪三态、
- * 角色与状态只读展示（无编辑控件）、最近变更时间、in-flight 键到按钮 loading 的接线，
- * 以及修改密码成功后把会话收口回调透传给安全设置区块。
+ * 只 mock application Hook，走真实两个标签 UI：验证「个人资料 / 修改密码」标签存在、
+ * 资料读取三态只影响个人资料标签（改密标签始终可用）、只读事实展示（无编辑控件）、
+ * 新字段（姓名 / 等级 / 归属公司）展示，以及 in-flight 键到按钮 loading 的接线、
+ * 修改密码成功后把会话收口回调透传。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -35,14 +36,17 @@ vi.mock('../application/use-account-settings', async (importOriginal) => {
 const useAccountSettingsMock = vi.mocked(useAccountSettingsModule.useAccountSettings);
 
 const SETTINGS: AccountSettingsView = {
+  adminLevel: 2,
   companyName: '示例公司',
   contactEmail: 'contact@example.com',
   loginEmail: 'self@example.com',
   loginName: 'self_user',
   nickname: '陈工',
   phone: '13800000000',
+  realName: '张三',
   role: 'ENGINEER',
   status: 'ACTIVE',
+  trustedCompanyName: '可信公司',
   updatedAt: '2026-01-01T08:00:00.000Z',
 };
 
@@ -52,6 +56,7 @@ function mockHook(overrides: Partial<HookValue> & { state: AccountSettingsState 
   useAccountSettingsMock.mockReturnValue({
     isPending: () => false,
     reload: () => {},
+    supplementCompany: async () => ({ kind: 'in-flight' }),
     updatePassword: async (): Promise<AccountSettingsCommandExecution<ChangeMyPasswordResult>> => ({
       kind: 'in-flight',
     }),
@@ -60,6 +65,10 @@ function mockHook(overrides: Partial<HookValue> & { state: AccountSettingsState 
     > => ({ kind: 'in-flight' }),
     ...overrides,
   });
+}
+
+function openPasswordTab() {
+  fireEvent.click(screen.getByRole('tab', { name: '修改密码' }));
 }
 
 beforeEach(() => {
@@ -74,17 +83,35 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('AccountSettingsPanel 加载与失败态', () => {
-  it('loading 状态只展示加载态，不渲染任何表单', () => {
+describe('AccountSettingsPanel 标签与资料读取态', () => {
+  it('始终渲染「个人资料」与「修改密码」两个标签', () => {
+    mockHook({ state: { status: 'loading' } });
+    render(<AccountSettingsPanel />);
+
+    expect(screen.getByRole('tab', { name: '个人资料' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '修改密码' })).toBeInTheDocument();
+  });
+
+  it('loading 状态只在个人资料标签展示加载态，不渲染资料表单', () => {
     mockHook({ state: { status: 'loading' } });
     render(<AccountSettingsPanel />);
 
     expect(screen.getByText('账号设置加载中…')).toBeInTheDocument();
     expect(screen.queryByLabelText('昵称')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('failed 状态展示失败标题与收敛文案，点击重试触发 reload', () => {
+  it('loading 状态下改密标签仍渲染完整表单，不受资料读取影响', () => {
+    mockHook({ state: { status: 'loading' } });
+    render(<AccountSettingsPanel />);
+
+    openPasswordTab();
+
+    expect(screen.getByLabelText('当前密码')).toBeInTheDocument();
+    expect(screen.getByLabelText('新密码')).toBeInTheDocument();
+    expect(screen.getByLabelText('确认新密码')).toBeInTheDocument();
+  });
+
+  it('failed 状态在个人资料标签展示失败标题与收敛文案，点击重试触发 reload', () => {
     const reload = vi.fn();
     mockHook({ reload, state: { message: '账号设置加载失败，请稍后重试。', status: 'failed' } });
     render(<AccountSettingsPanel />);
@@ -96,22 +123,50 @@ describe('AccountSettingsPanel 加载与失败态', () => {
     fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
     expect(reload).toHaveBeenCalledTimes(1);
   });
+
+  it('failed 状态下改密标签仍渲染表单，不被资料失败态阻断', () => {
+    mockHook({ state: { message: '账号设置加载失败，请稍后重试。', status: 'failed' } });
+    render(<AccountSettingsPanel />);
+
+    openPasswordTab();
+
+    expect(screen.getByLabelText('当前密码')).toBeInTheDocument();
+    expect(screen.getByLabelText('新密码')).toBeInTheDocument();
+  });
 });
 
 describe('AccountSettingsPanel 只读事实展示', () => {
-  it('展示三个区块标题、角色与状态中文标签以及最近变更时间', () => {
+  it('展示登录名、登录邮箱、归属公司、角色、等级、状态与最近变更时间', () => {
     mockHook({ state: { settings: SETTINGS, status: 'ready' } });
     render(<AccountSettingsPanel />);
 
-    expect(screen.getByText('账号信息')).toBeInTheDocument();
-    expect(screen.getByText('基础资料')).toBeInTheDocument();
-    expect(screen.getByText('安全设置')).toBeInTheDocument();
+    expect(screen.getByText('登录名')).toBeInTheDocument();
+    expect(screen.getByText('self_user')).toBeInTheDocument();
+    expect(screen.getByText('登录邮箱')).toBeInTheDocument();
+    expect(screen.getByText('self@example.com')).toBeInTheDocument();
+    expect(screen.getAllByText('公司').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('可信公司').length).toBeGreaterThan(0);
     expect(screen.getByText('角色')).toBeInTheDocument();
     expect(screen.getByText('工程师')).toBeInTheDocument();
+    expect(screen.getByText('等级')).toBeInTheDocument();
+    expect(screen.getByText('2 级')).toBeInTheDocument();
     expect(screen.getByText('状态')).toBeInTheDocument();
     expect(screen.getByText('正常')).toBeInTheDocument();
     expect(screen.getByText(/^最近变更：\d/)).toBeInTheDocument();
     expect(screen.queryByText('2026-01-01T08:00:00.000Z')).not.toBeInTheDocument();
+  });
+
+  it('公司未关联、等级未设置时展示占位符', () => {
+    mockHook({
+      state: {
+        settings: { ...SETTINGS, adminLevel: null, trustedCompanyName: null },
+        status: 'ready',
+      },
+    });
+    render(<AccountSettingsPanel />);
+
+    expect(screen.getAllByText('未关联').length).toBeGreaterThan(0);
+    expect(screen.getByText('—')).toBeInTheDocument();
   });
 
   it('最近变更时间无法解析时展示占位符，不回显原始值', () => {
@@ -124,27 +179,20 @@ describe('AccountSettingsPanel 只读事实展示', () => {
     expect(screen.queryByText('not-a-date')).not.toBeInTheDocument();
   });
 
-  it('角色与状态只读：面板中不存在任何指向它们的编辑控件', () => {
+  it('登录凭据、公司与角色等事实均为只读：面板中不存在指向它们的编辑控件', () => {
     mockHook({ state: { settings: SETTINGS, status: 'ready' } });
     render(<AccountSettingsPanel />);
 
-    const editableLabels = [
-      '登录名',
-      '登录邮箱（登录凭据）',
-      '昵称',
-      '公司名称',
-      '电话',
-      '联系邮箱（非登录凭据）',
-      '当前密码',
-      '新密码',
-      '确认新密码',
-    ];
-
-    for (const label of editableLabels) {
+    for (const label of ['姓名', '昵称', '电话', '联系邮箱（非登录凭据）']) {
       expect(screen.getByLabelText(label)).toBeInTheDocument();
     }
 
+    for (const label of ['登录名', '登录邮箱', '公司']) {
+      expect(screen.queryByLabelText(label)).toBeNull();
+    }
+
     expect(screen.queryByLabelText(/角色/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/等级/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/状态/)).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
@@ -154,7 +202,7 @@ describe('AccountSettingsPanel 只读事实展示', () => {
     expect(buttonNames.some((name) => /角色|状态/.test(name))).toBe(false);
   });
 
-  it('不展示 accountId 等身份字段，视图事实只来自后端返回的九项', () => {
+  it('不展示 accountId 等身份字段，视图事实只来自后端返回字段', () => {
     mockHook({ state: { settings: SETTINGS, status: 'ready' } });
     const { container } = render(<AccountSettingsPanel />);
     const text = container.textContent ?? '';
@@ -168,7 +216,7 @@ describe('AccountSettingsPanel 只读事实展示', () => {
 });
 
 describe('AccountSettingsPanel 命令接线', () => {
-  it('update-profile 进行中时两个资料区块的保存按钮同时进入 loading', () => {
+  it('update-profile 进行中时只锁个人资料的保存按钮，改密按钮不受影响', () => {
     mockHook({
       isPending: (key) => key === 'update-profile',
       state: { settings: SETTINGS, status: 'ready' },
@@ -177,29 +225,30 @@ describe('AccountSettingsPanel 命令接线', () => {
 
     const saveButtons = screen.getAllByRole('button', { name: /保\s*存/ });
 
-    expect(saveButtons).toHaveLength(2);
-    for (const button of saveButtons) {
-      expect(button).toHaveClass('ant-btn-loading');
-    }
+    expect(saveButtons).toHaveLength(1);
+    expect(saveButtons[0]).toHaveClass('ant-btn-loading');
+
+    openPasswordTab();
     expect(screen.getByRole('button', { name: /修\s*改\s*密\s*码/ })).not.toHaveClass(
       'ant-btn-loading',
     );
   });
 
-  it('change-password 进行中时只有安全设置区块进入 loading，并禁用重置', () => {
+  it('change-password 进行中时只有改密区块进入 loading，并禁用重置', () => {
     mockHook({
       isPending: (key) => key === 'change-password',
       state: { settings: SETTINGS, status: 'ready' },
     });
     render(<AccountSettingsPanel />);
 
+    expect(screen.getByRole('button', { name: /保\s*存/ })).not.toHaveClass('ant-btn-loading');
+
+    openPasswordTab();
+
     expect(screen.getByRole('button', { name: /修\s*改\s*密\s*码/ })).toHaveClass(
       'ant-btn-loading',
     );
     expect(screen.getByRole('button', { name: /重\s*置/ })).toBeDisabled();
-    for (const button of screen.getAllByRole('button', { name: /保\s*存/ })) {
-      expect(button).not.toHaveClass('ant-btn-loading');
-    }
   });
 
   it('修改密码成功后把发起时采样的会话身份交给页面装配层的会话收口回调', async () => {
@@ -217,6 +266,7 @@ describe('AccountSettingsPanel 命令接线', () => {
     });
     render(<AccountSettingsPanel onPasswordChangeSucceeded={onPasswordChangeSucceeded} />);
 
+    openPasswordTab();
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'Old#Pass2026' } });
     fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'Str0ng#Pass2026' } });
     fireEvent.change(screen.getByLabelText('确认新密码'), {
@@ -235,15 +285,17 @@ describe('AccountSettingsPanel 命令接线', () => {
       state: { settings: SETTINGS, status: 'ready' },
       updateProfile: async () => ({
         kind: 'ok',
-        result: { isUpdated: true, ok: true, settings: { ...SETTINGS, nickname: '新昵称' } },
+        result: {
+          isUpdated: true,
+          ok: true,
+          settings: { ...SETTINGS, nickname: '新昵称' },
+        },
       }),
     });
     render(<AccountSettingsPanel onPasswordChangeSucceeded={onPasswordChangeSucceeded} />);
 
     fireEvent.change(screen.getByLabelText('昵称'), { target: { value: '新昵称' } });
-    const saveButtons = screen.getAllByRole('button', { name: /保\s*存/ });
-
-    fireEvent.click(saveButtons[1] as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
 
     await waitFor(() => expect(message.success).toHaveBeenCalledWith('基础资料已保存。'));
     expect(onPasswordChangeSucceeded).not.toHaveBeenCalled();

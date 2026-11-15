@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { type MessageKey, translateNow } from '@/shared/i18n';
 
 import type {
+  CreateRepairRequestFailureReason,
   EquipmentModelOption,
   RepairRequestRecord,
 } from '../infrastructure/repair-request.types';
@@ -45,8 +47,8 @@ export type RepairRequestModelsState =
   | { status: 'failed'; message: string }
   | { status: 'ready'; models: EquipmentModelOption[] };
 
-function toUserMessage(error: unknown, fallback: string): string {
-  return isGraphQLIngressError(error) ? error.userMessage : fallback;
+function toUserMessage(error: unknown, fallbackKey: MessageKey): string {
+  return isGraphQLIngressError(error) ? error.userMessage : translateNow(fallbackKey);
 }
 
 /** 纯拉取：只产出下一状态，不直接写 state，供初始加载与重试共用 */
@@ -58,7 +60,7 @@ async function loadEquipmentModelsState(): Promise<RepairRequestModelsState> {
   } catch (error) {
     return {
       status: 'failed',
-      message: toUserMessage(error, '设备型号加载失败，请稍后重试。'),
+      message: toUserMessage(error, 'common.modelsLoadFailed'),
     };
   }
 }
@@ -67,6 +69,12 @@ export function useRepairRequestCreateFlow() {
   const [modelsState, setModelsState] = useState<RepairRequestModelsState>({ status: 'loading' });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * 最近一次业务拒绝的稳定原因（null 表示没有业务拒绝，例如 transport 失败）。
+   * 供 ui 在「需先补录公司」时展示账号设置引导，而不是只显示通用失败文案。
+   */
+  const [submitFailureReason, setSubmitFailureReason] =
+    useState<CreateRepairRequestFailureReason | null>(null);
   const [createdRequest, setCreatedRequest] = useState<RepairRequestRecord | null>(null);
   const submittingRef = useRef(false);
 
@@ -99,6 +107,7 @@ export function useRepairRequestCreateFlow() {
       submittingRef.current = true;
       setSubmitting(true);
       setSubmitError(null);
+      setSubmitFailureReason(null);
 
       try {
         const result = await createRepairRequest({
@@ -115,10 +124,11 @@ export function useRepairRequestCreateFlow() {
 
         // 业务拒绝展示后端消息并保留表单内容，不做乐观成功
         setSubmitError(result.message);
+        setSubmitFailureReason(result.reason);
 
         return null;
       } catch (error) {
-        setSubmitError(toUserMessage(error, '维修申请提交失败，请稍后重试。'));
+        setSubmitError(toUserMessage(error, 'repairForm.submitFailed'));
 
         return null;
       } finally {
@@ -139,5 +149,6 @@ export function useRepairRequestCreateFlow() {
     submit,
     submitting,
     submitError,
+    submitFailureReason,
   };
 }

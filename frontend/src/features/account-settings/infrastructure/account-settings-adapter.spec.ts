@@ -15,12 +15,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as sharedGraphql from '@/shared/graphql';
 import { GraphQLIngressError } from '@/shared/graphql';
 
-import type { AccountSettingsProfileFailureReason } from '../application/account-settings.types';
+import type {
+  AccountSettingsProfileFailureReason,
+  CustomerCompanySupplementFailureReason,
+} from '../application/account-settings.types';
 
 import type { MyAccountSettingsDto } from './account-settings.dto';
 import {
   changeMyPassword,
   fetchMyAccountSettings,
+  searchManagedCompanies,
+  supplementMyCustomerCompany,
   updateMyAccountSettingsProfile,
 } from './account-settings-adapter';
 
@@ -33,14 +38,17 @@ vi.mock('@/shared/graphql', async (importOriginal) => {
 const executeGraphQLMock = vi.mocked(sharedGraphql.executeGraphQL);
 
 const SETTINGS_DTO: MyAccountSettingsDto = {
+  adminLevel: 2,
   companyName: '示例公司',
   contactEmail: 'contact@example.com',
   loginEmail: 'self@example.com',
   loginName: 'self_user',
   nickname: '陈工',
   phone: '13800000000',
+  realName: '张三',
   role: 'ENGINEER',
   status: 'ACTIVE',
+  trustedCompanyName: '可信公司',
   updatedAt: '2026-01-01T08:00:00.000Z',
 };
 
@@ -91,6 +99,9 @@ describe('fetchMyAccountSettings', () => {
       {},
     );
     expect(executeGraphQLMock.mock.calls[0]?.[0]).toContain('myAccountSettings');
+    expect(executeGraphQLMock.mock.calls[0]?.[0]).toContain('realName');
+    expect(executeGraphQLMock.mock.calls[0]?.[0]).toContain('adminLevel');
+    expect(executeGraphQLMock.mock.calls[0]?.[0]).toContain('trustedCompanyName');
     expect(executeGraphQLMock.mock.calls[0]?.[0]).not.toContain('accountId');
   });
 
@@ -111,36 +122,47 @@ describe('fetchMyAccountSettings', () => {
 });
 
 describe('updateMyAccountSettingsProfile 三态 input 构造', () => {
-  it('undefined 键省略（不修改）、null 保留（清空）、字符串原样传递（设置）', async () => {
+  it('realName 三态：undefined 省略（不修改）、null 保留（清空）、字符串原样传递（设置）', async () => {
     executeGraphQLMock.mockResolvedValue({
       updateMyAccountSettings: { isUpdated: true, settings: SETTINGS_DTO },
     });
 
     await updateMyAccountSettingsProfile({
-      companyName: null,
       contactEmail: 'new-contact@example.com',
-      loginEmail: undefined,
-      loginName: 'renamed_user',
       nickname: '新昵称',
       phone: undefined,
+      realName: null,
     });
 
     expect(executeGraphQLMock).toHaveBeenCalledWith(expect.stringContaining('mutation'), {
       input: {
-        companyName: null,
         contactEmail: 'new-contact@example.com',
-        loginName: 'renamed_user',
         nickname: '新昵称',
+        realName: null,
       },
     });
     const input = executeGraphQLMock.mock.calls[0]?.[1] as { input: Record<string, unknown> };
 
-    expect(Object.keys(input.input).sort()).toEqual([
-      'companyName',
-      'contactEmail',
-      'loginName',
-      'nickname',
-    ]);
+    expect(Object.keys(input.input).sort()).toEqual(['contactEmail', 'nickname', 'realName']);
+    // 本页不再编辑或提交登录名 / 登录邮箱 / 公司字段
+    expect(input.input).not.toHaveProperty('loginName');
+    expect(input.input).not.toHaveProperty('loginEmail');
+    expect(input.input).not.toHaveProperty('companyName');
+
+    executeGraphQLMock.mockClear();
+    await updateMyAccountSettingsProfile({ realName: '  李四  ' });
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(expect.stringContaining('mutation'), {
+      input: { realName: '  李四  ' },
+    });
+
+    executeGraphQLMock.mockClear();
+    await updateMyAccountSettingsProfile({ nickname: '仅昵称' });
+
+    // undefined 的 realName 键被省略：不修改该字段
+    expect(executeGraphQLMock).toHaveBeenCalledWith(expect.stringContaining('mutation'), {
+      input: { nickname: '仅昵称' },
+    });
   });
 
   it('草稿全部字段缺省时提交空 input，adapter 不做 trim 或业务裁决', async () => {
@@ -161,14 +183,14 @@ describe('updateMyAccountSettingsProfile 成功', () => {
     executeGraphQLMock.mockResolvedValue({
       updateMyAccountSettings: {
         isUpdated: true,
-        settings: { ...SETTINGS_DTO, loginName: 'renamed_user' },
+        settings: { ...SETTINGS_DTO, realName: '李四' },
       },
     });
 
-    await expect(updateMyAccountSettingsProfile({ loginName: 'renamed_user' })).resolves.toEqual({
+    await expect(updateMyAccountSettingsProfile({ realName: '李四' })).resolves.toEqual({
       isUpdated: true,
       ok: true,
-      settings: { ...SETTINGS_VIEW, loginName: 'renamed_user' },
+      settings: { ...SETTINGS_VIEW, realName: '李四' },
     });
   });
 
@@ -210,9 +232,11 @@ describe('updateMyAccountSettingsProfile 业务拒绝映射', () => {
       }),
     );
 
-    await expect(
-      updateMyAccountSettingsProfile({ loginEmail: 'taken@example.com' }),
-    ).resolves.toEqual({ message: '登录邮箱已被占用', ok: false, reason: 'duplicate-credential' });
+    await expect(updateMyAccountSettingsProfile({ realName: '已被占用姓名' })).resolves.toEqual({
+      message: '登录邮箱已被占用',
+      ok: false,
+      reason: 'duplicate-credential',
+    });
   });
 
   it('生产环境可能隐藏 errorMessage，此时回落到按 reason 的兜底文案', async () => {
@@ -223,9 +247,7 @@ describe('updateMyAccountSettingsProfile 业务拒绝映射', () => {
       }),
     );
 
-    await expect(
-      updateMyAccountSettingsProfile({ loginEmail: null, loginName: null }),
-    ).resolves.toEqual({
+    await expect(updateMyAccountSettingsProfile({ realName: null })).resolves.toEqual({
       message: '输入不符合要求，请检查后重新提交。',
       ok: false,
       reason: 'invalid-input',
@@ -342,5 +364,272 @@ describe('changeMyPassword', () => {
     await expect(
       changeMyPassword({ currentPassword: 'Old#Pass2026', newPassword: 'Str0ng#Pass2026' }),
     ).rejects.toBe(error);
+  });
+});
+
+const COMPANY_PAGE_DTO = {
+  items: [
+    { id: 11, name: '受管公司甲' },
+    { id: 12, name: '受管公司乙' },
+  ],
+  page: 1,
+  pageSize: 20,
+  total: 2,
+};
+
+describe('searchManagedCompanies', () => {
+  it('复用注册入口检索：OFFSET 分页透传、空白关键字整体省略、走 no-cache', async () => {
+    executeGraphQLMock.mockResolvedValue({ registrationOrganizationSearch: COMPANY_PAGE_DTO });
+
+    await expect(
+      searchManagedCompanies({ keyword: '   ', page: 1, pageSize: 20 }),
+    ).resolves.toEqual(COMPANY_PAGE_DTO);
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('query ManagedCompanySearch'),
+      {
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 20, withTotal: true },
+      },
+      { fetchPolicy: 'no-cache' },
+    );
+    const variables = executeGraphQLMock.mock.calls[0]?.[1] as Record<string, unknown>;
+
+    expect(variables).not.toHaveProperty('keyword');
+  });
+
+  it('非空关键字去首尾空格后作为 keyword 传递', async () => {
+    executeGraphQLMock.mockResolvedValue({ registrationOrganizationSearch: COMPANY_PAGE_DTO });
+
+    await searchManagedCompanies({ keyword: '  甲  ', page: 1, pageSize: 20 });
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('query ManagedCompanySearch'),
+      {
+        keyword: '甲',
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 20, withTotal: true },
+      },
+      { fetchPolicy: 'no-cache' },
+    );
+  });
+
+  it('后端省略 page / pageSize / total 时回落到请求参数与 0', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      registrationOrganizationSearch: { items: [] },
+    });
+
+    await expect(searchManagedCompanies({ page: 2, pageSize: 10 })).resolves.toEqual({
+      items: [],
+      page: 2,
+      pageSize: 10,
+      total: 0,
+    });
+  });
+
+  it('检索失败原样上抛，由 application 的检索状态机收敛', async () => {
+    const error = buildIngressError({ code: 'UNAUTHENTICATED' });
+    executeGraphQLMock.mockRejectedValue(error);
+
+    await expect(searchManagedCompanies({ page: 1, pageSize: 20 })).rejects.toBe(error);
+  });
+});
+
+describe('supplementMyCustomerCompany 入参构造', () => {
+  it('existing 草稿只提交 organizationId，self-filled 草稿只提交 organizationName', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      supplementMyCustomerCompany: {
+        isUpdated: true,
+        sameNamedCompanyName: null,
+        settings: SETTINGS_DTO,
+      },
+    });
+
+    await supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 });
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('mutation SupplementMyCustomerCompany'),
+      { input: { organizationId: 11 } },
+    );
+
+    executeGraphQLMock.mockClear();
+    await supplementMyCustomerCompany({ kind: 'self-filled', organizationName: '甲公司' });
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('mutation SupplementMyCustomerCompany'),
+      { input: { organizationName: '甲公司' } },
+    );
+    const input = executeGraphQLMock.mock.calls[0]?.[1] as { input: Record<string, unknown> };
+
+    // 二选一互斥：另一侧字段绝不出现在同一 input 中
+    expect(Object.keys(input.input)).toEqual(['organizationName']);
+  });
+});
+
+describe('supplementMyCustomerCompany 成功', () => {
+  it('返回权威视图、isUpdated 与同名提示（可为 null）', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      supplementMyCustomerCompany: {
+        isUpdated: true,
+        sameNamedCompanyName: '受管公司甲',
+        settings: { ...SETTINGS_DTO, trustedCompanyName: '甲公司' },
+      },
+    });
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'self-filled', organizationName: '甲公司' }),
+    ).resolves.toEqual({
+      isUpdated: true,
+      ok: true,
+      sameNamedCompanyName: '受管公司甲',
+      settings: { ...SETTINGS_VIEW, trustedCompanyName: '甲公司' },
+    });
+  });
+
+  it('幂等命中（isUpdated=false）同样回传权威视图', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      supplementMyCustomerCompany: {
+        isUpdated: false,
+        sameNamedCompanyName: null,
+        settings: SETTINGS_DTO,
+      },
+    });
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).resolves.toEqual({
+      isUpdated: false,
+      ok: true,
+      sameNamedCompanyName: null,
+      settings: SETTINGS_VIEW,
+    });
+  });
+});
+
+describe('supplementMyCustomerCompany 业务拒绝映射', () => {
+  it.each<[string, CustomerCompanySupplementFailureReason, string]>([
+    ['BAD_USER_INPUT', 'invalid-input', '输入不符合要求，请检查后重新提交。'],
+    ['CONFLICT', 'already-bound', '当前账号已有公司归属，不能重复补录或更换。'],
+    ['FORBIDDEN', 'forbidden', '当前身份无权执行该操作。'],
+    ['INTERNAL_SERVER_ERROR', 'update-failed', '操作失败，请稍后重试。'],
+  ])('大类码 %s 映射为 %s 并使用该原因的兜底文案', async (code, reason, message) => {
+    executeGraphQLMock.mockRejectedValue(buildIngressError({ code }));
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).resolves.toEqual({ message, ok: false, reason });
+  });
+
+  it('暴露 errorCode 时细化出「组织不可用」（覆盖同类 BAD_USER_INPUT / INTERNAL_SERVER_ERROR）', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      buildIngressError({
+        code: 'BAD_USER_INPUT',
+        errorCode: 'ACCOUNT_ORGANIZATION_NOT_AVAILABLE',
+      }),
+    );
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).resolves.toEqual({
+      message: '所选公司不存在、已停用或不具备选择资格。',
+      ok: false,
+      reason: 'organization-not-available',
+    });
+  });
+
+  it('暴露细化码时优先于大类码（CONFLICT → invalid-input）', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      buildIngressError({
+        code: 'CONFLICT',
+        errorCode: 'MY_ACCOUNT_CUSTOMER_COMPANY_INPUT_INVALID',
+      }),
+    );
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'self-filled', organizationName: '甲' }),
+    ).resolves.toEqual({
+      message: '输入不符合要求，请检查后重新提交。',
+      ok: false,
+      reason: 'invalid-input',
+    });
+  });
+
+  it('extensions.errorMessage 存在时优先展示后端业务文案，reason 仍由映射决定', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      buildIngressError({
+        code: 'CONFLICT',
+        errorCode: 'MY_ACCOUNT_CUSTOMER_COMPANY_ALREADY_BOUND',
+        errorMessage: '当前账号已有公司归属',
+      }),
+    );
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).resolves.toEqual({ message: '当前账号已有公司归属', ok: false, reason: 'already-bound' });
+  });
+
+  it('生产环境隐藏 errorCode 时回退大类码（CONFLICT 仍为 already-bound）', async () => {
+    executeGraphQLMock.mockRejectedValue(buildIngressError({ code: 'CONFLICT' }));
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).resolves.toEqual({
+      message: '当前账号已有公司归属，不能重复补录或更换。',
+      ok: false,
+      reason: 'already-bound',
+    });
+  });
+});
+
+describe('supplementMyCustomerCompany 上抛边界', () => {
+  it.each([['UNAUTHENTICATED'], ['NOT_FOUND'], ['OPERATION_UNKNOWN']])(
+    '未登记的大类码 %s 原样上抛，交共享 ingress 链路处理',
+    async (code) => {
+      const error = buildIngressError({ code });
+      executeGraphQLMock.mockRejectedValue(error);
+
+      await expect(
+        supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+      ).rejects.toBe(error);
+    },
+  );
+
+  it('缺少大类 code（只有 errorCode 细化码）时不当作业务拒绝', async () => {
+    const error = buildIngressError({
+      errorCode: 'MY_ACCOUNT_CUSTOMER_COMPANY_ALREADY_BOUND',
+    });
+    executeGraphQLMock.mockRejectedValue(error);
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).rejects.toBe(error);
+  });
+
+  it('未登记的 errorCode 回退到大类码，不因细化码未知而失效', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      buildIngressError({ code: 'BAD_USER_INPUT', errorCode: 'SOMETHING_NEW' }),
+    );
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).resolves.toEqual({
+      message: '输入不符合要求，请检查后重新提交。',
+      ok: false,
+      reason: 'invalid-input',
+    });
+  });
+
+  it('网络类 ingress 错误与非 ingress 错误均原样上抛', async () => {
+    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
+    executeGraphQLMock.mockRejectedValueOnce(networkError);
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'existing', organizationId: 11 }),
+    ).rejects.toBe(networkError);
+
+    const boom = new TypeError('unexpected');
+    executeGraphQLMock.mockRejectedValueOnce(boom);
+
+    await expect(
+      supplementMyCustomerCompany({ kind: 'self-filled', organizationName: '甲' }),
+    ).rejects.toBe(boom);
   });
 });

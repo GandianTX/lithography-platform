@@ -11,8 +11,9 @@ import type {
   RepairRequestSnapshot,
 } from '@src/modules/lithography/lithography.types';
 import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
+import type { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import type { RepairRequestService } from '@src/modules/lithography/repair-request.service';
-import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import { CreateRepairRequestUsecase } from './create-repair-request.usecase';
 import type { CreateRepairRequestCommand } from './create-repair-request.types';
@@ -22,8 +23,12 @@ type RepairRequestServiceMock = {
   readonly requestNoExists: jest.Mock<Promise<boolean>>;
 };
 
-type OrganizationContextMock = {
-  readonly tryResolveForAccount: jest.Mock;
+type AccountQueryServiceMock = {
+  readonly findCustomerOrganizationId: jest.Mock;
+};
+
+type OrganizationQueryServiceMock = {
+  readonly findActiveRegistrationOption: jest.Mock;
 };
 
 type EquipmentModelQueryServiceMock = {
@@ -45,7 +50,8 @@ describe('CreateRepairRequestUsecase', () => {
 
   let repairRequestService: RepairRequestServiceMock;
   let equipmentModelQueryService: EquipmentModelQueryServiceMock;
-  let organizationContextQueryService: OrganizationContextMock;
+  let accountQueryService: AccountQueryServiceMock;
+  let organizationQueryService: OrganizationQueryServiceMock;
   let transactionRunner: TransactionRunner;
   let usecase: CreateRepairRequestUsecase;
 
@@ -79,9 +85,12 @@ describe('CreateRepairRequestUsecase', () => {
       listEnabledModels: jest.fn(),
       findModelById: jest.fn().mockResolvedValue(enabledModel),
     };
-    // 默认：客户账号无组织归属（自注册存量路径）→ 工单不归属组织
-    organizationContextQueryService = {
-      tryResolveForAccount: jest.fn().mockResolvedValue(null),
+    // 默认：客户已有可信公司归属（77）且组织启用 → 可下单，工单归属该组织
+    accountQueryService = {
+      findCustomerOrganizationId: jest.fn().mockResolvedValue(77),
+    };
+    organizationQueryService = {
+      findActiveRegistrationOption: jest.fn().mockResolvedValue({ id: 77, name: '甲方默认组织' }),
     };
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
@@ -89,7 +98,8 @@ describe('CreateRepairRequestUsecase', () => {
     usecase = new CreateRepairRequestUsecase(
       repairRequestService as unknown as RepairRequestService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
-      organizationContextQueryService as unknown as TrustedOrganizationContextQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      organizationQueryService as unknown as OrganizationQueryService,
       transactionRunner,
     );
   });
@@ -136,15 +146,7 @@ describe('CreateRepairRequestUsecase', () => {
       expect(insertData.faultDescription).toBe('设备无法启动');
     });
 
-    it('客户归属组织只来自可信解析：写入 ownerOrganizationId，客户端自报被忽略', async () => {
-      organizationContextQueryService.tryResolveForAccount.mockResolvedValue({
-        membershipId: 1,
-        organizationId: 77,
-        organizationCode: 'CLIENT_DEFAULT',
-        organizationName: '甲方默认组织',
-        organizationKind: 'CLIENT',
-        memberRole: 'CUSTOMER',
-      });
+    it('客户归属组织只来自可信事实：写入 ownerOrganizationId，客户端自报被忽略', async () => {
       const smuggled = {
         ...buildCommand(),
         ownerOrganizationId: 999,
@@ -152,19 +154,35 @@ describe('CreateRepairRequestUsecase', () => {
 
       await usecase.execute(smuggled);
 
-      expect(organizationContextQueryService.tryResolveForAccount).toHaveBeenCalledWith({
+      expect(accountQueryService.findCustomerOrganizationId).toHaveBeenCalledWith({
         accountId: 7,
+        transactionContext,
+      });
+      expect(organizationQueryService.findActiveRegistrationOption).toHaveBeenCalledWith({
+        organizationId: 77,
         transactionContext,
       });
       const insertData = repairRequestService.insertRequest.mock.calls[0][0];
       expect(insertData.ownerOrganizationId).toBe(77);
     });
 
-    it('客户无有效组织归属：ownerOrganizationId 写 null，仍可创建（自注册存量兼容）', async () => {
-      await usecase.execute(buildCommand());
+    it('客户缺公司归属：拒绝提交且零落库（引导先补录）', async () => {
+      accountQueryService.findCustomerOrganizationId.mockResolvedValue(null);
 
-      const insertData = repairRequestService.insertRequest.mock.calls[0][0];
-      expect(insertData.ownerOrganizationId).toBeNull();
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_REQUIRED,
+      });
+      expect(repairRequestService.requestNoExists).not.toHaveBeenCalled();
+      expect(repairRequestService.insertRequest).not.toHaveBeenCalled();
+    });
+
+    it('归属公司已停用：拒绝提交且零落库', async () => {
+      organizationQueryService.findActiveRegistrationOption.mockResolvedValue(null);
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_UNAVAILABLE,
+      });
+      expect(repairRequestService.insertRequest).not.toHaveBeenCalled();
     });
   });
 

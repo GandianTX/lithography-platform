@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import type { EngineerRepairRequestListItem } from '../infrastructure/engineer-repair-request.types';
 import { fetchEngineerRepairRequests } from '../infrastructure/engineer-repair-request-adapter';
@@ -73,7 +74,7 @@ function workbenchReducer(state: EngineerRepairWorkbenchState, action: Workbench
 }
 
 function toWorkbenchUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : '工作台数据加载失败，请稍后重试。';
+  return isGraphQLIngressError(error) ? error.userMessage : translateNow('workbench.loadFailed');
 }
 
 const NO_FILTER = { equipmentModelId: null, customerNickname: null };

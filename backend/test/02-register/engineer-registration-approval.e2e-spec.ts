@@ -169,6 +169,28 @@ type StatusPayload = {
   applications: { items: ApplicationPayload[]; total: number; page: number; pageSize: number };
 };
 
+/** `myEngineerRegistration`：无 accountId 字段（调用者只能是本人） */
+type MyRegistrationPayload = {
+  applicationId: number;
+  organizationId: number;
+  organizationName: string | null;
+  status: EngineerRegistrationApplicationStatus;
+  applicationNote: string | null;
+  submittedAt: string;
+  reviewedAt: string | null;
+  reviewComment: string | null;
+};
+
+type MySessionIdentityPayload = {
+  accountId: number;
+  adminLevel: number | null;
+  adminOrganizationId: number | null;
+  customerOrganizationId: number | null;
+  engineerOrganizationId: number | null;
+  registrationOrganizationId: number | null;
+  restriction: SessionRestriction;
+};
+
 type ResubmitPayload = {
   applicationId: number;
   organizationId: number;
@@ -234,6 +256,50 @@ const LOGIN_MUTATION = `
 const USER_INFO_QUERY = `
   query UserInfo($accountId: Int!) {
     userInfo(accountId: $accountId) { id accountId nickname userState }
+  }
+`;
+
+/** 受限会话读取本人最新申请：不接受任何账号/申请 ID 参数 */
+const MY_REGISTRATION_QUERY = `
+  query MyRegistration {
+    myEngineerRegistration {
+      applicationId
+      organizationId
+      organizationName
+      status
+      applicationNote
+      submittedAt
+      reviewedAt
+      reviewComment
+    }
+  }
+`;
+
+/** 每请求复核后的会话身份：审批是否真正解除限制，以此为准 */
+const MY_SESSION_IDENTITY_QUERY = `
+  query MySessionIdentity {
+    mySessionIdentity {
+      accountId
+      adminLevel
+      adminOrganizationId
+      customerOrganizationId
+      engineerOrganizationId
+      registrationOrganizationId
+      restriction
+    }
+  }
+`;
+
+/**
+ * 越权注入探针：`myEngineerRegistration` 在 schema 中不声明任何参数，
+ * 声明并传入 applicationId/accountId 必须在校验阶段被拒绝，不得进入用例。
+ */
+const MY_REGISTRATION_INJECTION_QUERY = `
+  query MyRegistrationInjection($applicationId: Int!, $accountId: Int!) {
+    myEngineerRegistration(applicationId: $applicationId, accountId: $accountId) {
+      applicationId
+      status
+    }
   }
 `;
 
@@ -428,6 +494,8 @@ describe('工程师注册与组织审核 (e2e)', () => {
   let adminAccountId: number;
 
   const suiteOrganizationCodes = buildSuiteOrganizationCodes(`ENGREG_${RUN_TAG}`);
+  /** 主组织名同时用于种子与申请展示断言，避免两处字面量漂移 */
+  const PRIMARY_ORGANIZATION_NAME = 'E2E 工程师注册主组织';
   /** 旧入口兼容用例专用：启用但未受管公司（Web 规则不可用，旧 register 可用） */
   const LEGACY_UNMANAGED_ORGANIZATION_CODE = `E2E_ENGREG_LEGACY_UNMANAGED_${RUN_TAG}`;
   let primaryOrganizationId = 0;
@@ -461,7 +529,7 @@ describe('工程师注册与组织审核 (e2e)', () => {
       organizations: [
         {
           organizationCode: suiteOrganizationCodes.primary,
-          name: 'E2E 工程师注册主组织',
+          name: PRIMARY_ORGANIZATION_NAME,
           kind: 'CLIENT',
           // 注册候选资格为 ACTIVE + 受管公司（V44）
           isManagedCompany: true,
@@ -1463,6 +1531,42 @@ describe('工程师注册与组织审核 (e2e)', () => {
       const customerStatus = await myStatus(CUSTOMER_LOGIN_NAME, PASSWORD);
       expect(customerStatus.errors?.length ?? 0).toBeGreaterThan(0);
       expect(errorCodeOf(customerStatus)).toBe('NOT_FOUND');
+
+      // 旧 Mutation 只承诺 OFFSET 语义：CURSOR 必须在用例层显式拒绝，而不是静默改写分页
+      const cursorPagination = await gql<{ myEngineerRegistrationStatus?: StatusPayload }>({
+        query: MY_STATUS_MUTATION,
+        variables: {
+          input: { accountIdentifier: ENGINEER_PENDING.loginName, password: PASSWORD },
+          pagination: { mode: 'CURSOR', page: 1, pageSize: 20 },
+        },
+      });
+      expect(cursorPagination.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(cursorPagination)).toBe('BAD_USER_INPUT');
+    });
+
+    it('匿名读取本人申请被拒；注入 applicationId/accountId 在 schema 层被拒', async () => {
+      const anonymous = await gql<{ myEngineerRegistration?: unknown }>({
+        query: MY_REGISTRATION_QUERY,
+      });
+      expect(anonymous.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(anonymous)).toBe('UNAUTHENTICATED');
+      expect(anonymous.data?.myEngineerRegistration ?? null).toBeNull();
+
+      const anonymousIdentity = await gql<{ mySessionIdentity?: unknown }>({
+        query: MY_SESSION_IDENTITY_QUERY,
+      });
+      expect(anonymousIdentity.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(anonymousIdentity)).toBe('UNAUTHENTICATED');
+      expect(anonymousIdentity.data?.mySessionIdentity ?? null).toBeNull();
+
+      // 账号主键只能来自 Session：请求里带参数即校验失败，不进入用例、不返回任何申请
+      const injected = await gql<{ myEngineerRegistration?: unknown }>({
+        query: MY_REGISTRATION_INJECTION_QUERY,
+        variables: { applicationId, accountId: engineerAccountId },
+      });
+      expect(injected.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(injected.errors?.[0]?.message ?? '').toMatch(/Unknown argument/i);
+      expect(injected.data?.myEngineerRegistration ?? null).toBeNull();
     });
 
     it('非管理员不能查看审核队列；对侧管理员看不到且不能审核本组织申请', async () => {
@@ -1543,6 +1647,36 @@ describe('工程师注册与组织审核 (e2e)', () => {
       });
       expect(protectedBody.errors).toBeUndefined();
       expect(protectedBody.data?.userInfo?.accountId).toBe(engineerAccountId);
+
+      // 批准后申请者本人读到终态：申请已通过，展示组织为主组织
+      const myRegistration = await gql<{ myEngineerRegistration?: MyRegistrationPayload }>({
+        query: MY_REGISTRATION_QUERY,
+        token,
+      });
+      expect(myRegistration.errors).toBeUndefined();
+      expect(myRegistration.data?.myEngineerRegistration).toMatchObject({
+        applicationId,
+        organizationId: primaryOrganizationId,
+        organizationName: PRIMARY_ORGANIZATION_NAME,
+        status: EngineerRegistrationApplicationStatus.APPROVED,
+        applicationNote: '请审核我的工程师注册',
+        reviewComment: null,
+      });
+      expect(typeof myRegistration.data?.myEngineerRegistration?.submittedAt).toBe('string');
+      expect(typeof myRegistration.data?.myEngineerRegistration?.reviewedAt).toBe('string');
+
+      // 同一时刻的会话身份必须已解除限制：限制只看服务端每请求复核结果，不看前端缓存
+      const identity = await gql<{ mySessionIdentity?: MySessionIdentityPayload }>({
+        query: MY_SESSION_IDENTITY_QUERY,
+        token,
+      });
+      expect(identity.errors).toBeUndefined();
+      expect(identity.data?.mySessionIdentity).toMatchObject({
+        accountId: engineerAccountId,
+        engineerOrganizationId: primaryOrganizationId,
+        registrationOrganizationId: primaryOrganizationId,
+        restriction: SessionRestriction.NONE,
+      });
     });
   });
 

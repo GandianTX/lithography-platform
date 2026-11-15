@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import type { NotifyFeedback } from '@/shared/feedback';
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import {
   deleteMyRepairRequest,
@@ -128,7 +129,7 @@ export function useCustomerRepairRequestDetailFlow(requestId: number, notify: No
         status: 'failed',
         message: isGraphQLIngressError(error)
           ? error.userMessage
-          : '维修申请详情加载失败，请稍后重试。',
+          : translateNow('customer.detailLoadFailed'),
         notFound: false,
       });
     }
@@ -171,7 +172,7 @@ export function useCustomerRepairRequestDetailFlow(requestId: number, notify: No
       }
 
       if (result.ok) {
-        notify({ type: 'success', text: '维修申请已删除。' });
+        notify({ type: 'success', text: translateNow('customer.requestDeleted') });
 
         return true;
       }
@@ -188,7 +189,9 @@ export function useCustomerRepairRequestDetailFlow(requestId: number, notify: No
 
       notify({
         type: 'error',
-        text: isGraphQLIngressError(error) ? error.userMessage : '删除失败，请稍后重试。',
+        text: isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('customer.deleteFailed'),
       });
       setMachine({ requestId, status: 'loading' });
       void loadDetail(requestId);

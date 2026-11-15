@@ -172,7 +172,64 @@ export function isAuthSessionRoleAllowedAt(role: AuthSessionRole, path: string):
 export type AuthSessionRoleCarrier = Pick<AuthSessionSnapshot, 'role'> & {
   /** 可选：仅做路由决策的既有调用方可不携带，缺省视为正常会话 */
   restriction?: AuthSessionRestriction;
+  /** 可选：缺省视为无等级（不能进入全域管理路径） */
+  adminLevel?: number | null;
+  /** 可选：2 级管理员的本公司归属，缺省视为不可信 */
+  adminOrganizationId?: number | null;
 };
+
+/**
+ * 管理能力范围：GLOBAL 全域（1 级 + 可信组织）、ORGANIZATION 本公司
+ * （2 级 + 可信组织）、NONE 无可用管理能力（非管理员、缺等级、非法等级、
+ * 缺可信组织归属）。这是管理入口可见性与直达路由的共同唯一判定。
+ */
+export type AuthSessionAdminScope = 'GLOBAL' | 'ORGANIZATION' | 'NONE';
+
+export function resolveAuthSessionAdminScope(
+  session: AuthSessionRoleCarrier,
+): AuthSessionAdminScope {
+  if (session.role !== 'SUPER_ADMIN') {
+    return 'NONE';
+  }
+
+  // 任一等级都要求可信组织归属：缺成员的管理员在服务端同样被拒绝执行组织范围操作
+  const hasTrustedOrganization = normalizeNullableIdentityId(session.adminOrganizationId) !== null;
+
+  if (session.adminLevel === 1) {
+    return hasTrustedOrganization ? 'GLOBAL' : 'NONE';
+  }
+
+  if (session.adminLevel === 2) {
+    return hasTrustedOrganization ? 'ORGANIZATION' : 'NONE';
+  }
+
+  // 缺等级与非法等级（0/3/非整数）一律不升级
+  return 'NONE';
+}
+
+// 全域管理路径：仅 GLOBAL 范围可进。与导航目录 requiresAdminScope 标注逐项对账，
+// 二者保持同一份路径集合，避免展示与直达语义漂移。
+const AUTH_SESSION_ADMIN_GLOBAL_PATHS: readonly string[] = [
+  '/admin/users',
+  '/admin/document-database',
+];
+
+function isAuthSessionAdminGlobalPath(pathname: string): boolean {
+  return AUTH_SESSION_ADMIN_GLOBAL_PATHS.some((globalPath) =>
+    isAuthSessionRolePathAllowed(pathname, globalPath),
+  );
+}
+
+// 角色放行 + 管理范围放行的唯一组合判定：直达路由与导航可见性同语义。
+function isAuthSessionPathAllowed(session: AuthSessionRoleCarrier, pathname: string): boolean {
+  if (!isAuthSessionRoleAllowedAt(session.role, pathname)) {
+    return false;
+  }
+
+  return (
+    !isAuthSessionAdminGlobalPath(pathname) || resolveAuthSessionAdminScope(session) === 'GLOBAL'
+  );
+}
 
 // 受限会话判定：restriction 非 NONE 时只允许访问 /restricted。
 // 未携带 restriction 的载体（策略函数的既有调用点）按正常会话处理。
@@ -194,7 +251,7 @@ export function resolveAuthSessionEntryPath(
 
   const safeReturnTo = resolveSafeReturnTo(returnToCandidate);
 
-  if (safeReturnTo && isAuthSessionRoleAllowedAt(session.role, extractUrlPathname(safeReturnTo))) {
+  if (safeReturnTo && isAuthSessionPathAllowed(session, extractUrlPathname(safeReturnTo))) {
     return safeReturnTo;
   }
 
@@ -236,7 +293,9 @@ export function resolveProtectedRouteRedirect(
     return resolveAuthSessionHomePath(session.role);
   }
 
-  if (!isAuthSessionRoleAllowedAt(session.role, requestedPathname)) {
+  // 角色与管理范围共同决定放行：2 级管理员或未知等级直达全域管理路径时
+  // 与导航同语义地退回管理员主页
+  if (!isAuthSessionPathAllowed(session, requestedPathname)) {
     return resolveAuthSessionHomePath(session.role);
   }
 

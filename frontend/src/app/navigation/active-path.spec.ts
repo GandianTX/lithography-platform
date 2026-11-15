@@ -6,7 +6,14 @@ import { resolveActiveNavigationPath } from './active-path';
 import type { NavigationItem } from './types';
 
 function item(id: string, path: string): NavigationItem {
-  return { description: id, id, kind: 'stable', label: id, path, tags: [] };
+  return {
+    descriptionKey: 'nav.home.description',
+    id,
+    kind: 'stable',
+    labelKey: 'nav.home.label',
+    path,
+    tags: [],
+  };
 }
 
 const ITEMS = [

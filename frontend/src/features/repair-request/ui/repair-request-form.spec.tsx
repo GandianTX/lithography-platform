@@ -344,6 +344,47 @@ describe('提交校验与反馈', () => {
     expect(await screen.findByText('网络连接异常，请稍后重试。')).toBeTruthy();
   });
 
+  // S4 归属门禁：缺公司归属被服务端拒绝时，展示补录引导并可跳转账号设置
+  it('缺公司归属（company-required）时展示补录引导与跳转入口', async () => {
+    createRepairRequestMock.mockResolvedValue({
+      ok: false,
+      message: '请先在账号设置中补充公司信息后再提交维修申请',
+      reason: 'company-required',
+    });
+
+    renderForm();
+    await screen.findByRole('combobox');
+    await fillForm();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('请先在账号设置中补充公司信息后再提交维修申请')).toBeTruthy();
+    expect(screen.getByText('补充公司信息后返回本页即可重新提交。')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /前往账号设置/ }));
+
+    expect(navigateMock).toHaveBeenCalledWith('/account/settings');
+    // 引导不改变「保留表单内容」的既有口径
+    expect((screen.getByPlaceholderText('例如：E-2001') as HTMLInputElement).value).toBe('E-2001');
+  });
+
+  it('其他业务拒绝不出现账号设置跳转入口', async () => {
+    createRepairRequestMock.mockResolvedValue({
+      ok: false,
+      message: '所属公司当前不可用，请联系管理员处理后再提交维修申请',
+      reason: 'company-unavailable',
+    });
+
+    renderForm();
+    await screen.findByRole('combobox');
+    await fillForm();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(
+      await screen.findByText('所属公司当前不可用，请联系管理员处理后再提交维修申请'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /前往账号设置/ })).toBeNull();
+  });
+
   it('进行中的提交只发送一次 Mutation', async () => {
     const pending = deferred<{ ok: true; repairRequest: typeof CREATED_RECORD }>();
     createRepairRequestMock.mockReturnValue(pending.promise);

@@ -7,8 +7,7 @@
  * 避免两个 application 模块各写一份而漂移。公司分支差异仍留在各自模块。
  */
 
-/** 服务端未给出可展示原因时的注册失败兜底文案 */
-export const DEFAULT_REGISTER_ERROR_MESSAGE = '注册失败，请稍后重试。';
+import { translateNow } from '@/shared/i18n';
 
 /** 可选文本：去首尾空白，空白视为未填（undefined 表示不下发该字段） */
 export function normalizeOptionalText(value?: string | null): string | undefined {
@@ -19,6 +18,6 @@ export function normalizeOptionalText(value?: string | null): string | undefined
 /** 服务端显式失败（success=false）统一抛出，由文案映射统一收敛 */
 export function assertRegistrationSucceeded(result: { message: string; success: boolean }): void {
   if (!result.success) {
-    throw new Error(result.message || DEFAULT_REGISTER_ERROR_MESSAGE);
+    throw new Error(result.message || translateNow('register.failed'));
   }
 }

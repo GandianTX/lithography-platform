@@ -13,8 +13,13 @@ import { Button, Segmented } from 'antd';
 import type { ReactNode } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 
-import { getNavigationItems, resolveActiveNavigationPath } from '@/app/navigation';
-import { FONT_SCALE_OPTIONS, useTheme } from '@/app/providers';
+import type { ResolvedNavigationItem } from '@/app/navigation';
+import {
+  getNavigationItems,
+  resolveActiveNavigationPath,
+  resolveNavigationItems,
+} from '@/app/navigation';
+import { FONT_SCALE_OPTIONS, useI18n, useTheme } from '@/app/providers';
 import { APP_THEME_CSS_VAR_KEY } from '@/app/theme';
 
 import { AigcSidecar } from '@/widgets/aigc-sidecar';
@@ -24,12 +29,16 @@ import {
   isAuthSessionRestricted,
   LogoutButton,
   refreshCurrentAuthSessionIdentity,
+  resolveAuthSessionAdminScope,
   resolveAuthSessionHomePath,
   useAuthSession,
 } from '@/features/auth-session';
 
 import type { AssistantRouteCandidate } from '@/entities/assistant-session';
 
+import { LanguageSwitch } from '@/shared/ui/language-switch';
+
+import { EngineerApprovalNotice } from './engineer-approval-notice';
 import { EntryAccentGlyph } from './entry-accent-glyph';
 import {
   NavBookOpenIcon,
@@ -41,11 +50,12 @@ import {
 } from './nav-icons';
 
 // 侧栏用户卡的展示名映射：仅展示用途，角色判断一律走 auth-session 策略层。
-const ROLE_LABELS: Record<AuthSessionRole, string> = {
-  CUSTOMER: '客户',
-  ENGINEER: '工程师',
-  SUPER_ADMIN: '管理员',
-};
+// S5：目录与布局都只存词条键，渲染时按当前语言解析。
+const ROLE_LABEL_KEYS = {
+  CUSTOMER: 'layout.role.CUSTOMER',
+  ENGINEER: 'layout.role.ENGINEER',
+  SUPER_ADMIN: 'layout.role.SUPER_ADMIN',
+} as const satisfies Record<AuthSessionRole, string>;
 
 // 导航图标：按 id 映射，折叠态靠图标辨识目标（审查 P1-04 修复）。
 // 原型已对应的五个菜单用 gkj 描边 SVG（./nav-icons）；dev 专属入口仍用 AntD 图标
@@ -68,9 +78,7 @@ const NAV_ITEM_ICONS: Record<string, ReactNode> = {
 
 const FALLBACK_NAV_ICON = <AppstoreOutlined />;
 
-function toRouteCandidate(
-  item: ReturnType<typeof getNavigationItems>[number],
-): AssistantRouteCandidate {
+function toRouteCandidate(item: ResolvedNavigationItem): AssistantRouteCandidate {
   return {
     description: item.description,
     id: item.id,
@@ -119,6 +127,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       : document.hasFocus() && document.visibilityState === 'visible',
   );
   const { fontScale, setFontScale } = useTheme();
+  const { t } = useI18n();
   const { session } = useAuthSession();
   const location = useLocation();
   const navigate = useNavigate();
@@ -130,7 +139,11 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
   // 登录 / 注册页共用独立壳层（注册页按 /register/ 前缀）
   const isAuthLandingPage =
     location.pathname === LOGIN_PATH || location.pathname.startsWith(REGISTER_PATH_PREFIX);
-  const navigationItems = useMemo(() => getNavigationItems(undefined, activeRole), [activeRole]);
+  const adminScope = session ? resolveAuthSessionAdminScope(session) : 'NONE';
+  const navigationItems = useMemo(
+    () => resolveNavigationItems(getNavigationItems(undefined, activeRole, adminScope), t),
+    [activeRole, adminScope, t],
+  );
   const activeNavigationPath = useMemo(
     () => resolveActiveNavigationPath(location.pathname, navigationItems),
     [location.pathname, navigationItems],
@@ -244,7 +257,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             LF
           </span>
           <span aria-hidden="true" className="login-brand-divider" />
-          <span className="login-brand-name">光刻维护平台</span>
+          <span className="login-brand-name">{t('layout.brand')}</span>
+          {/* 生产补齐原型缺口的唯一语言入口：登录 / 注册页也可切换语言 */}
+          <LanguageSwitch />
         </div>
         <main className="login-workspace">{children ?? <Outlet />}</main>
       </div>
@@ -264,7 +279,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             </span>
             {isNavCollapsed ? null : (
               <span className="app-sidebar-brand-text">
-                <span className="app-sidebar-brand-name">光刻维护平台</span>
+                <span className="app-sidebar-brand-name">{t('layout.brand')}</span>
                 {/* 品牌辅行：装饰性英文小字，对齐基准品牌区两级文字层级 */}
                 <span className="app-sidebar-brand-subname">Service Platform</span>
               </span>
@@ -272,7 +287,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
           </Link>
           <span className="app-sidebar-collapse-button">
             <Button
-              aria-label={isNavCollapsed ? '展开导航' : '折叠导航'}
+              aria-label={isNavCollapsed ? t('layout.expandNav') : t('layout.collapseNav')}
               icon={isNavCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               size="small"
               type="text"
@@ -281,7 +296,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
           </span>
         </div>
 
-        <nav aria-label="主导航" className="app-sidebar-nav">
+        <nav aria-label={t('layout.mainNav')} className="app-sidebar-nav">
           {navigationItems.map((item) => (
             <Link
               key={item.id}
@@ -302,6 +317,10 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             （逐条复核报告 20260916 修复建议 3；基准偏差登记见 gkj-visual-baseline.md） */}
         {isNavCollapsed ? null : (
           <div className="app-font-scale-area">
+            {/* 唯一语言切换入口（展开态）：与字号档位同区，位于其上方一行 */}
+            <div className="app-language-row">
+              <LanguageSwitch />
+            </div>
             <div className="app-font-scale-control">
               <Segmented
                 onChange={(value) => {
@@ -318,6 +337,12 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
         )}
 
         <div className="app-sidebar-footer">
+          {/* 折叠态（含 ≤1024px 窄屏默认折叠）：语言入口收敛为图标按钮，保证可达 */}
+          {isNavCollapsed ? (
+            <div className="app-language-row">
+              <LanguageSwitch variant="icon" />
+            </div>
+          ) : null}
           {session ? (
             <div className="app-user-card">
               {!isNavCollapsed ? (
@@ -327,14 +352,17 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
                   aria-hidden="true"
                   className="app-user-card-avatar user-avatar user-avatar--md"
                 >
-                  {(session.userInfo?.nickname ?? '用户').trim().charAt(0).toUpperCase()}
+                  {(session.userInfo?.nickname ?? t('layout.userFallback'))
+                    .trim()
+                    .charAt(0)
+                    .toUpperCase()}
                 </span>
               ) : null}
               <div className="app-user-card-info">
                 <span className="app-user-card-name">
-                  {session.userInfo?.nickname ?? '当前用户'}
+                  {session.userInfo?.nickname ?? t('layout.currentUser')}
                 </span>
-                <span className="app-user-card-role">{ROLE_LABELS[session.role]}</span>
+                <span className="app-user-card-role">{t(ROLE_LABEL_KEYS[session.role])}</span>
               </div>
               <div className="app-user-card-actions">
                 <LogoutButton iconOnly={isNavCollapsed} />
@@ -347,7 +375,12 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       {/* 工作区先占余宽（原型 workspace-page：渐变+22px 上距），内容再入 1280px 内层；
           知识库页按精确路由切换纯色铺满变体，其余页面保持通用基准（PR3 R7） */}
       <main className={workspaceClassName}>
-        <div className={mainClassName}>{children ?? <Outlet />}</div>
+        <div className={mainClassName}>
+          {/* 资格刚生效的一次性批准提示：常驻布局层，避免被 /restricted → 角色主页
+              的收口跳转卸载；是否显示完全依据服务端确认的 restriction 与账号标记 */}
+          <EngineerApprovalNotice />
+          {children ?? <Outlet />}
+        </div>
       </main>
 
       {!isSidecarOpen ? (

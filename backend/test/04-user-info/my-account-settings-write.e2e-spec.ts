@@ -59,11 +59,14 @@ type MyAccountSettingsPayload = {
   loginName: string | null;
   loginEmail: string | null;
   nickname: string;
+  realName: string | null;
   companyName: string | null;
+  trustedCompanyName: string | null;
   phone: string | null;
   contactEmail: string | null;
   role: IdentityTypeEnum;
   status: AccountStatus;
+  adminLevel: number | null;
   updatedAt: string;
 };
 
@@ -87,7 +90,7 @@ type IntrospectionPayload = {
 
 /** DTO 字段清单：集中一处，避免各用例字段漂移；刻意不含 accountId */
 const MY_ACCOUNT_SETTINGS_FIELDS =
-  'loginName loginEmail nickname companyName phone contactEmail role status updatedAt';
+  'loginName loginEmail nickname realName companyName trustedCompanyName phone contactEmail role status adminLevel updatedAt';
 
 const MY_ACCOUNT_SETTINGS_QUERY = `
   query MyAccountSettings {
@@ -399,7 +402,7 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       );
     });
 
-    it('UpdateMyAccountSettingsInput 只有六个白名单字段，不含角色/状态/敏感字段', async () => {
+    it('UpdateMyAccountSettingsInput 只有七个白名单字段，不含角色/状态/敏感字段', async () => {
       const body = await gql<IntrospectionPayload>({
         query: TYPE_FIELDS_QUERY,
         variables: { name: 'UpdateMyAccountSettingsInput' },
@@ -414,11 +417,14 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
         'loginName',
         'nickname',
         'phone',
+        'realName',
       ]);
       for (const forbidden of [
         'accountId',
         'role',
         'status',
+        'adminLevel',
+        'trustedCompanyName',
         'identityHint',
         'accessGroup',
         'metaDigest',
@@ -728,6 +734,53 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   });
 
   // ---------------------------------------------------------------------------
+  // 5b. 姓名（realName）三态与可信公司来源
+  // ---------------------------------------------------------------------------
+
+  describe('姓名三态与可信公司来源', () => {
+    it('设置姓名后落库并回显；写入旧 companyName 不影响 trustedCompanyName', async () => {
+      const body = await updateSettings(guestToken, {
+        realName: '张三',
+        companyName: '用户自填公司（不可信）',
+      });
+
+      const settings = expectUpdated(body, {
+        realName: '张三',
+        companyName: '用户自填公司（不可信）',
+      });
+      // 可信公司只来自组织归属事实：seed 账号无组织，故为 null；
+      // 写入 companyName 不得让它变成可信公司（防止把自填值伪装成归属事实）
+      expect(settings.trustedCompanyName).toBeNull();
+
+      const row = await readUserInfoRow(guestAccountId);
+      expect(row?.realName).toBe('张三');
+      expect(row?.companyName).toBe('用户自填公司（不可信）');
+
+      const after = await readMySettings(guestToken);
+      expect(after.data?.myAccountSettings?.realName).toBe('张三');
+      expect(after.data?.myAccountSettings?.trustedCompanyName).toBeNull();
+    });
+
+    it('姓名同值提交不落库：isUpdated 为 false', async () => {
+      const body = await updateSettings(guestToken, { realName: '张三' });
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.updateMyAccountSettings?.isUpdated).toBe(false);
+      expect(body.data?.updateMyAccountSettings?.settings?.realName).toBe('张三');
+    });
+
+    it('显式 null 清空姓名，且写后读为 null', async () => {
+      const body = await updateSettings(guestToken, { realName: null });
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.updateMyAccountSettings?.isUpdated).toBe(true);
+      expect(body.data?.updateMyAccountSettings?.settings?.realName).toBeNull();
+      expect((await readUserInfoRow(guestAccountId))?.realName).toBeNull();
+      expect((await readMySettings(guestToken)).data?.myAccountSettings?.realName).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // 6. 自助改密
   // ---------------------------------------------------------------------------
 
@@ -756,6 +809,27 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       expect(body.data?.changeMyPassword).toBeUndefined();
       expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
 
+      await expectLoginSucceeds(testAccountsConfig.staffPrimary.loginName, staffPassword.current);
+    });
+
+    it('普通账号提交与当前密码相同的新密码被拒为 BAD_USER_INPUT，哈希不变且会话仍可用', async () => {
+      const rowBefore = await readAccountRow(staffAccountId);
+      const hashBefore = rowBefore?.loginPassword;
+      expect(rowBefore?.mustChangePassword).toBe(false);
+
+      const body = await changePassword(staffToken, {
+        currentPassword: staffPassword.current,
+        newPassword: staffPassword.current,
+      });
+
+      expectSingleError(body, 'BAD_USER_INPUT', 'MY_ACCOUNT_NEW_PASSWORD_UNCHANGED');
+
+      const rowAfter = await readAccountRow(staffAccountId);
+      expect(rowAfter?.loginPassword).toBe(hashBefore);
+      expect(rowAfter?.mustChangePassword).toBe(false);
+
+      // 会话未退出：原 Token 仍可读取自己的设置，原密码仍可登录
+      expect((await readMySettings(staffToken)).errors).toBeUndefined();
       await expectLoginSucceeds(testAccountsConfig.staffPrimary.loginName, staffPassword.current);
     });
 

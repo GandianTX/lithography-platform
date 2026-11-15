@@ -18,14 +18,18 @@ vi.mock('@/features/auth-session', async (importOriginal) => {
 
 const mockedGetCurrentAuthSession = vi.mocked(authSessionFeature.getCurrentAuthSession);
 
-function createSnapshot(role: AuthSessionRole, restriction: AuthSessionRestriction = 'NONE') {
+function createSnapshot(
+  role: AuthSessionRole,
+  restriction: AuthSessionRestriction = 'NONE',
+  identity: { adminLevel?: number | null; adminOrganizationId?: number | null } = {},
+) {
   return {
     accessToken: 'access-token',
     accountId: 900101,
-    adminLevel: null,
+    adminLevel: identity.adminLevel ?? null,
     customerOrganizationId: null,
     engineerOrganizationId: null,
-    adminOrganizationId: null,
+    adminOrganizationId: identity.adminOrganizationId ?? null,
     registrationOrganizationId: null,
     restriction,
     role,
@@ -166,6 +170,32 @@ describe('protected route guard wiring', () => {
     expect(
       redirectLocation(
         protectedRouteLoader(createLoaderRequest('http://localhost/customer/repair-requests/new')),
+      ),
+    ).toBe('/admin');
+  });
+
+  it('keeps global admin pages for level-1 admins only (S1)', () => {
+    // 1 级全域管理员直达放行
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1, adminOrganizationId: 910003 }),
+    );
+    expect(protectedRouteLoader(createLoaderRequest('http://localhost/admin/users'))).toBeNull();
+    expect(
+      protectedRouteLoader(createLoaderRequest('http://localhost/admin/document-database')),
+    ).toBeNull();
+
+    // 2 级（本公司）与未知等级直达全域页 → 收回管理员主页
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 2, adminOrganizationId: 910004 }),
+    );
+    expect(
+      redirectLocation(protectedRouteLoader(createLoaderRequest('http://localhost/admin/users'))),
+    ).toBe('/admin');
+
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('SUPER_ADMIN'));
+    expect(
+      redirectLocation(
+        protectedRouteLoader(createLoaderRequest('http://localhost/admin/document-database')),
       ),
     ).toBe('/admin');
   });

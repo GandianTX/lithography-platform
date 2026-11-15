@@ -1,6 +1,7 @@
 // src/features/repair-request/infrastructure/repair-request-adapter.ts
 
 import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
+import { type MessageKey, translateNow } from '@/shared/i18n';
 
 import type {
   CreateRepairRequestFailureReason,
@@ -51,11 +52,15 @@ const CREATE_REPAIR_REQUEST_MUTATION = `
 const FAILURE_REASON_BY_CATEGORY_CODE: Record<string, CreateRepairRequestFailureReason> = {
   NOT_FOUND: 'model-not-found',
   BAD_USER_INPUT: 'invalid-input',
+  // 创建门禁（S4）：本 mutation 内 FORBIDDEN 唯一来源是客户归属缺失 / 不可用；
+  // 生产隐藏 errorCode 时统一按「需先补录公司」引导，不新增错误通道。
+  FORBIDDEN: 'company-required',
   INTERNAL_SERVER_ERROR: 'creation-failed',
 };
 
 /**
- * 可选细化：后端暴露 extensions.errorCode 时（非生产环境）区分停用型号与普通输入非法。
+ * 可选细化：后端暴露 extensions.errorCode 时（非生产环境）区分停用型号与普通输入非法、
+ * 以及归属门禁的两种情况。
  * 唯一真源：backend/src/core/common/errors/domain-error.ts 的 REPAIR_REQUEST_ERROR 码组。
  * 后端按契约隐藏该字段时自动回退到大类码映射，不会失效。
  */
@@ -64,13 +69,17 @@ const REFINED_REASON_BY_ERROR_CODE: Partial<Record<string, CreateRepairRequestFa
   REPAIR_REQUEST_INVALID_PARAMS: 'invalid-input',
   INPUT_NORMALIZE_REQUIRED_TEXT_EMPTY: 'invalid-input',
   INPUT_NORMALIZE_INVALID_TEXT: 'invalid-input',
+  REPAIR_REQUEST_CUSTOMER_COMPANY_REQUIRED: 'company-required',
+  REPAIR_REQUEST_CUSTOMER_COMPANY_UNAVAILABLE: 'company-unavailable',
 };
 
-const FALLBACK_MESSAGE_BY_REASON: Record<CreateRepairRequestFailureReason, string> = {
-  'model-not-found': '所选设备型号不存在，请重新选择。',
-  'model-disabled': '所选设备型号已停用，请重新选择。',
-  'invalid-input': '输入不符合要求，请检查后重新提交。',
-  'creation-failed': '维修申请创建失败，请稍后重试。',
+const FALLBACK_MESSAGE_BY_REASON: Record<CreateRepairRequestFailureReason, MessageKey> = {
+  'model-not-found': 'repairForm.error.modelNotFound',
+  'model-disabled': 'repairForm.error.modelDisabled',
+  'invalid-input': 'repairForm.error.invalidInput',
+  'company-required': 'repairForm.error.companyRequired',
+  'company-unavailable': 'repairForm.error.companyUnavailable',
+  'creation-failed': 'repairForm.error.creationFailed',
 };
 
 type EquipmentModelsData = {
@@ -124,7 +133,7 @@ export async function createRepairRequest(
     return {
       ok: false,
       reason,
-      message: detail.errorMessage ?? FALLBACK_MESSAGE_BY_REASON[reason],
+      message: detail.errorMessage ?? translateNow(FALLBACK_MESSAGE_BY_REASON[reason]),
     };
   }
 }
@@ -231,12 +240,12 @@ const DELETE_FAILURE_REASON_BY_CATEGORY_CODE: Record<string, DeleteMyRepairReque
   INTERNAL_SERVER_ERROR: 'delete-failed',
 };
 
-const DELETE_FALLBACK_MESSAGE_BY_REASON: Record<DeleteMyRepairRequestFailureReason, string> = {
-  'not-found': '维修申请不存在或不可删除。',
-  'already-accepted': '该申请已被工程师接单，不能删除。',
-  forbidden: '仅客户账号可以删除维修申请。',
-  'invalid-input': '维修申请参数无效，请刷新后重试。',
-  'delete-failed': '维修申请删除失败，请稍后重试。',
+const DELETE_FALLBACK_MESSAGE_BY_REASON: Record<DeleteMyRepairRequestFailureReason, MessageKey> = {
+  'not-found': 'customer.deleteError.notFound',
+  'already-accepted': 'customer.deleteError.alreadyAccepted',
+  forbidden: 'customer.deleteError.forbidden',
+  'invalid-input': 'customer.deleteError.invalidInput',
+  'delete-failed': 'customer.deleteError.deleteFailed',
 };
 
 /** 查询当前客户的维修申请列表（仅本人且未删除，后端固定 createdAt DESC + id DESC） */
@@ -286,7 +295,7 @@ export async function fetchMyRepairRequest(id: number): Promise<MyRepairRequestD
       return {
         ok: false,
         reason: 'not-found',
-        message: detail.errorMessage ?? '维修申请不存在或不可查看。',
+        message: detail.errorMessage ?? translateNow('customer.detailNotFound'),
       };
     }
 
@@ -319,7 +328,7 @@ export async function deleteMyRepairRequest(id: number): Promise<DeleteMyRepairR
     return {
       ok: false,
       reason,
-      message: detail.errorMessage ?? DELETE_FALLBACK_MESSAGE_BY_REASON[reason],
+      message: detail.errorMessage ?? translateNow(DELETE_FALLBACK_MESSAGE_BY_REASON[reason]),
     };
   }
 }

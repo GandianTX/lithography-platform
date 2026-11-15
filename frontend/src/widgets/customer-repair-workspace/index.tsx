@@ -1,7 +1,7 @@
 // src/widgets/customer-repair-workspace/index.tsx
 
 import { useLayoutEffect, useRef } from 'react';
-import { Button } from 'antd';
+import { Alert, Button } from 'antd';
 import { useNavigate } from 'react-router';
 
 import { isAuthSessionRoleAllowedAt, useAuthSession } from '@/features/auth-session';
@@ -15,6 +15,7 @@ import {
   useCustomerRepairRequestList,
 } from '@/features/repair-request';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
@@ -52,6 +53,8 @@ const CUSTOMER_CREATE_PATH = '/customer';
 // 创建兼容入口：与角色放行判断（SUPER_ADMIN 例外）共用同一路径常量
 const REPAIR_REQUEST_CREATE_ENTRY_PATH = '/customer/repair-requests/new';
 const REPAIR_REQUESTS_LIST_PATH = '/customer/repair-requests';
+// 缺公司归属的补录入口（S4）：服务端门禁拒绝创建，前端只做引导，不隐藏表单
+const ACCOUNT_SETTINGS_PATH = '/account/settings';
 const repairRequestDetailPath = (id: number) => `${REPAIR_REQUESTS_LIST_PATH}/${id}`;
 
 export type CustomerRepairWorkspaceMode = 'create' | 'history-list' | 'history-detail';
@@ -127,18 +130,20 @@ function ListPlaceholderPane({
   onRetry: () => void;
   state: CustomerRepairRequestListView;
 }) {
+  const { t } = useI18n();
+
   return (
-    <DataCard title="维修申请详情">
-      {state.status === 'loading' ? <LoadingState label="正在加载维修申请…" /> : null}
+    <DataCard title={t('customer.detailCardTitle')}>
+      {state.status === 'loading' ? <LoadingState label={t('customer.loadingRequests')} /> : null}
 
       {state.status === 'failed' ? (
         <ErrorState
           action={
             <Button onClick={onRetry} size="small">
-              重试
+              {t('common.retry')}
             </Button>
           }
-          title="维修申请列表加载失败，详情暂不可用。"
+          title={t('customer.listLoadFailed')}
         />
       ) : null}
 
@@ -146,16 +151,16 @@ function ListPlaceholderPane({
         <EmptyState
           action={
             <Button onClick={onCreateRequest} type="primary">
-              发起维修申请
+              {t('customer.createButton')}
             </Button>
           }
-          description="设备出现异常时，提交故障信息创建维修申请。"
-          title="还没有维修申请。"
+          description={t('customer.emptyDescription')}
+          title={t('customer.emptyTitle')}
         />
       ) : null}
 
       {state.status === 'ready' && state.data.total > 0 ? (
-        <EmptyState title="当前页暂无申请，请切换页码查看。" />
+        <EmptyState title={t('customer.pageEmpty')} />
       ) : null}
     </DataCard>
   );
@@ -167,15 +172,15 @@ function ListPlaceholderPane({
  * onDelete 不可达）。不挂载 WorkspaceDetailPane 即不创建详情 hook、不发详情 Query、
  * 不暴露删除命令；左栏列表不受影响，仍由其自身 hook 正常加载。
  */
-const INVALID_DETAIL_TARGET_MESSAGE = '维修申请不存在或不可查看。';
-
 function InvalidDetailPane({ onBackToList }: { onBackToList: () => void }) {
+  const { t } = useI18n();
+
   return (
     <CustomerRepairRequestDetailPanel
       deleting={false}
       onBackToList={onBackToList}
       onDelete={() => undefined}
-      state={{ message: INVALID_DETAIL_TARGET_MESSAGE, notFound: true, status: 'failed' }}
+      state={{ message: t('customer.detailNotFound'), notFound: true, status: 'failed' }}
     />
   );
 }
@@ -188,33 +193,54 @@ function InvalidDetailPane({ onBackToList }: { onBackToList: () => void }) {
  */
 function CreatePane({
   canCreateRepairRequest,
+  needsCompanySupplement,
   onCreated,
   onOpenMyRequests,
+  onOpenSettings,
   onViewCreated,
 }: {
   canCreateRepairRequest: boolean;
+  needsCompanySupplement: boolean;
   onCreated: (record: RepairRequestRecord) => void;
   onOpenMyRequests: () => void;
+  onOpenSettings: () => void;
   onViewCreated: (record: RepairRequestRecord) => void;
 }) {
+  const { t } = useI18n();
+
   if (!canCreateRepairRequest) {
     return (
-      <DataCard title="发起维修申请">
+      <DataCard title={t('customer.createCardTitle')}>
         <EmptyState
-          description="创建维修申请仅对客户账号开放，管理员不能代客户发起。"
-          title="当前账号不能发起维修申请。"
+          description={t('customer.createDeniedDescription')}
+          title={t('customer.createDeniedTitle')}
         />
       </DataCard>
     );
   }
 
   return (
-    <DataCard title="发起维修申请">
+    <DataCard title={t('customer.createCardTitle')}>
       <div className="flex flex-col gap-4">
+        {/* S4：缺公司归属时服务端会拒绝创建；只做引导，不隐藏表单（以服务端判定为准） */}
+        {needsCompanySupplement ? (
+          <Alert
+            action={
+              <Button onClick={onOpenSettings} size="small" type="primary">
+                {t('common.goAccountSettings')}
+              </Button>
+            }
+            description={t('customer.supplementDescription')}
+            showIcon
+            title={t('customer.supplementTitle')}
+            type="warning"
+          />
+        ) : null}
+
         {/* 窄屏单面板下左栏被收起，此处提供进入「我的维修申请」的明确入口 */}
         <div className="customer-workspace-narrow-entry">
           <Button block onClick={onOpenMyRequests}>
-            查看我的维修申请
+            {t('customer.openMyRequests')}
           </Button>
         </div>
 
@@ -227,6 +253,7 @@ function CreatePane({
 export function CustomerRepairWorkspace({ mode, requestId }: CustomerRepairWorkspaceProps) {
   const navigate = useNavigate();
   const notify = useMessageFeedback();
+  const { t } = useI18n();
   const { session, status } = useAuthSession();
   const { state, deletingId, deleteRequest, goToPage, retry } =
     useCustomerRepairRequestList(notify);
@@ -236,6 +263,12 @@ export function CustomerRepairWorkspace({ mode, requestId }: CustomerRepairWorks
   const canCreateRepairRequest =
     status !== 'authenticated' ||
     isAuthSessionRoleAllowedAt(session.role, REPAIR_REQUEST_CREATE_ENTRY_PATH);
+
+  // S4 归属门禁的会话侧提示：客户角色且归属为空时引导补录（服务端仍会拒绝创建）
+  const needsCompanySupplement =
+    status === 'authenticated' &&
+    session.role === 'CUSTOMER' &&
+    session.customerOrganizationId === null;
 
   const listItems = state.status === 'ready' ? state.data.items : [];
 
@@ -320,19 +353,19 @@ export function CustomerRepairWorkspace({ mode, requestId }: CustomerRepairWorks
   return (
     <div className="page-stack">
       <PageHeader
-        description="提交设备维修申请，并跟踪接单情况、处理进度与工程师回复。"
+        description={t('customer.headerDescription')}
         eyebrow="Customer Workspace"
         extra={
           <div className="flex flex-col items-end gap-1">
             <Button disabled={!canCreateRepairRequest} onClick={handleCreateButton} type="primary">
-              发起维修申请
+              {t('customer.createButton')}
             </Button>
             {canCreateRepairRequest ? null : (
-              <div className="text-xs text-text-secondary">超管不能代客户发起维修申请</div>
+              <div className="text-xs text-text-secondary">{t('customer.adminCannotCreate')}</div>
             )}
           </div>
         }
-        title="客户页面"
+        title={t('customer.headerTitle')}
       />
 
       <div className="customer-workspace-grid" data-mode={mode}>
@@ -354,8 +387,10 @@ export function CustomerRepairWorkspace({ mode, requestId }: CustomerRepairWorks
           {mode === 'create' ? (
             <CreatePane
               canCreateRepairRequest={canCreateRepairRequest}
+              needsCompanySupplement={needsCompanySupplement}
               onCreated={() => retry()}
               onOpenMyRequests={handleOpenMyRequests}
+              onOpenSettings={() => navigate(ACCOUNT_SETTINGS_PATH)}
               onViewCreated={(record) => navigate(repairRequestDetailPath(record.id))}
             />
           ) : mode === 'history-detail' && detailTargetId === null ? (

@@ -17,13 +17,14 @@
  * 验证接线；会话代次本身的裁决语义由 auth-session 的 store / usecase 单测覆盖。
  */
 
+import { useMemo, useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { message } from 'antd';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AccountSettingsView } from '@/features/account-settings';
 
-const { condLogoutMock, navigateMock, panelState } = vi.hoisted(() => ({
+const { condLogoutMock, navigateMock, panelState, refreshIdentityMock } = vi.hoisted(() => ({
   condLogoutMock: vi.fn(),
   navigateMock: vi.fn(),
   panelState: {
@@ -32,7 +33,12 @@ const { condLogoutMock, navigateMock, panelState } = vi.hoisted(() => ({
     sampledIdentity: 'unsampled' as 'unsampled' | { accountId: number; epoch: number } | null,
     // 装配层回调的 resolved 返回值（true=身份匹配已清理跳转 / false=迟到响应静默）
     deliveredResult: 'unset' as 'unset' | boolean,
+    // 页面按会话事实注入的补录资格（由面板 mock 捕获）
+    canSupplementCompany: null as boolean | null,
+    // 会话视图桩：`null` 表示匿名会话
+    authSession: null as null | { restriction: string; role: string },
   },
+  refreshIdentityMock: vi.fn(),
 }));
 
 vi.mock('react-router', async (importOriginal) => {
@@ -43,11 +49,15 @@ vi.mock('react-router', async (importOriginal) => {
 
 vi.mock('@/features/account-settings', () => ({
   AccountSettingsPanel: ({
+    canSupplementCompany,
+    onCompanySupplemented,
     onPasswordChangeSucceeded,
     onProfileSaveSucceeded,
     sampleAccountId,
     sampleSessionIdentity,
   }: {
+    canSupplementCompany?: boolean;
+    onCompanySupplemented?: () => void | Promise<void>;
     onPasswordChangeSucceeded?: (
       initiatedIdentity: { accountId: number; epoch: number } | null,
     ) => boolean | Promise<boolean>;
@@ -57,49 +67,62 @@ vi.mock('@/features/account-settings', () => ({
     ) => void;
     sampleAccountId?: () => number | null;
     sampleSessionIdentity?: () => { accountId: number; epoch: number } | null;
-  }) => (
-    <>
-      <button
-        onClick={() => {
-          // 模拟改密成功链路：装配层裁决返回值由表单消费（false=完全静默）
-          void Promise.resolve(onPasswordChangeSucceeded?.(panelState.identityToDeliver)).then(
-            (resolved) => {
-              panelState.deliveredResult = resolved === undefined ? 'unset' : resolved;
-            },
-          );
-        }}
-        type="button"
-      >
-        模拟改密成功
-      </button>
-      <button
-        onClick={() => {
-          // 模拟改密请求发起前的会话代次采样（hook 在发起前调用 sampleSessionIdentity）
-          panelState.sampledIdentity = sampleSessionIdentity?.() ?? null;
-        }}
-        type="button"
-      >
-        模拟改密发起采样
-      </button>
-      <button
-        onClick={() => {
-          // 模拟 hook 契约：请求发起前采样账号身份
-          panelState.capturedAccountId = sampleAccountId?.() ?? null;
-        }}
-        type="button"
-      >
-        模拟资料保存发起
-      </button>
-      <button
-        onClick={() => {
-          onProfileSaveSucceeded?.({ nickname: 'A 保存的昵称' }, panelState.capturedAccountId);
-        }}
-        type="button"
-      >
-        模拟资料保存迟到成功
-      </button>
-    </>
-  ),
+  }) => {
+    // 捕获页面按会话事实注入的补录资格，供断言透传口径
+    panelState.canSupplementCompany = canSupplementCompany ?? null;
+
+    return (
+      <>
+        <button
+          onClick={() => {
+            void onCompanySupplemented?.();
+          }}
+          type="button"
+        >
+          模拟公司补录成功
+        </button>
+        <button
+          onClick={() => {
+            // 模拟改密成功链路：装配层裁决返回值由表单消费（false=完全静默）
+            void Promise.resolve(onPasswordChangeSucceeded?.(panelState.identityToDeliver)).then(
+              (resolved) => {
+                panelState.deliveredResult = resolved === undefined ? 'unset' : resolved;
+              },
+            );
+          }}
+          type="button"
+        >
+          模拟改密成功
+        </button>
+        <button
+          onClick={() => {
+            // 模拟改密请求发起前的会话代次采样（hook 在发起前调用 sampleSessionIdentity）
+            panelState.sampledIdentity = sampleSessionIdentity?.() ?? null;
+          }}
+          type="button"
+        >
+          模拟改密发起采样
+        </button>
+        <button
+          onClick={() => {
+            // 模拟 hook 契约：请求发起前采样账号身份
+            panelState.capturedAccountId = sampleAccountId?.() ?? null;
+          }}
+          type="button"
+        >
+          模拟资料保存发起
+        </button>
+        <button
+          onClick={() => {
+            onProfileSaveSucceeded?.({ nickname: 'A 保存的昵称' }, panelState.capturedAccountId);
+          }}
+          type="button"
+        >
+          模拟资料保存迟到成功
+        </button>
+      </>
+    );
+  },
 }));
 
 const TRIGGER_LABEL = '模拟改密成功';
@@ -108,7 +131,15 @@ async function renderAccountSettingsPage() {
   vi.doMock('@/features/auth-session', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/features/auth-session')>();
 
-    return { ...actual, clearSessionAfterPasswordChange: condLogoutMock };
+    return {
+      ...actual,
+      clearSessionAfterPasswordChange: condLogoutMock,
+      refreshCurrentAuthSessionIdentity: refreshIdentityMock,
+      useAuthSession: () => ({
+        session: panelState.authSession,
+        status: panelState.authSession === null ? 'anonymous' : 'authenticated',
+      }),
+    };
   });
   const { AccountSettingsPage } = await import('./index');
 
@@ -146,17 +177,22 @@ function readStoredNickname(): string | null {
 beforeEach(() => {
   condLogoutMock.mockReset();
   navigateMock.mockReset();
+  refreshIdentityMock.mockReset();
   condLogoutMock.mockResolvedValue(true);
+  refreshIdentityMock.mockResolvedValue(true);
   panelState.capturedAccountId = null;
   panelState.identityToDeliver = null;
   panelState.sampledIdentity = 'unsampled';
   panelState.deliveredResult = 'unset';
+  panelState.canSupplementCompany = null;
+  panelState.authSession = null;
   window.sessionStorage.clear();
   vi.resetModules();
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   window.sessionStorage.clear();
   vi.resetModules();
 });
@@ -166,7 +202,7 @@ describe('AccountSettingsPage', () => {
     await renderAccountSettingsPage();
 
     expect(screen.getByText('账号设置')).toBeInTheDocument();
-    expect(screen.getByText('维护登录凭据、基础资料与登录密码。')).toBeInTheDocument();
+    expect(screen.getByText('查看账号信息、维护基础资料与登录密码。')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: TRIGGER_LABEL })).toBeInTheDocument();
     expect(condLogoutMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
@@ -312,6 +348,65 @@ describe('AccountSettingsPage', () => {
 });
 
 /**
+ * 公司补录接线：补录资格按**会话事实**判定（客户角色 + 正常会话），页面只做透传；
+ * 补录成功后刷新会话身份，使客户首页 / 报修页按新的 customerOrganizationId 渲染；
+ * 刷新失败只提示，不回滚面板已写入的权威视图（不抛错给卡片）。
+ */
+describe('AccountSettingsPage 公司补录接线', () => {
+  it('客户角色 + 正常会话：向面板注入补录资格 true', async () => {
+    panelState.authSession = { restriction: 'NONE', role: 'CUSTOMER' };
+    await renderAccountSettingsPage();
+
+    expect(panelState.canSupplementCompany).toBe(true);
+  });
+
+  it.each([
+    ['ENGINEER', 'NONE', '非客户角色'],
+    ['CUSTOMER', 'PASSWORD_RESET_REQUIRED', '受限会话'],
+    ['SUPER_ADMIN', 'NONE', '管理员角色'],
+  ])('角色 %s / 限制 %s（%s）：不注入补录资格', async (role, restriction) => {
+    panelState.authSession = { restriction, role };
+    await renderAccountSettingsPage();
+
+    expect(panelState.canSupplementCompany).toBe(false);
+  });
+
+  it('匿名会话：不注入补录资格', async () => {
+    await renderAccountSettingsPage();
+
+    expect(panelState.canSupplementCompany).toBe(false);
+  });
+
+  it('补录成功：触发一次会话身份刷新（使新的公司归属生效）', async () => {
+    panelState.authSession = { restriction: 'NONE', role: 'CUSTOMER' };
+    await renderAccountSettingsPage();
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟公司补录成功' }));
+
+    await waitFor(() => expect(refreshIdentityMock).toHaveBeenCalledTimes(1));
+    expect(refreshIdentityMock).toHaveBeenCalledWith();
+  });
+
+  it('会话刷新失败：只以 warning 提示，不向卡片抛错（权威视图不回滚）', async () => {
+    panelState.authSession = { restriction: 'NONE', role: 'CUSTOMER' };
+    refreshIdentityMock.mockRejectedValue(new Error('refresh failed'));
+    const warningSpy = vi.spyOn(message, 'warning').mockImplementation(() => undefined as never);
+    await renderAccountSettingsPage();
+
+    expect(() =>
+      fireEvent.click(screen.getByRole('button', { name: '模拟公司补录成功' })),
+    ).not.toThrow();
+
+    await waitFor(() =>
+      expect(warningSpy).toHaveBeenCalledWith(
+        '公司信息已更新，但会话信息刷新失败，请刷新页面查看最新归属。',
+      ),
+    );
+    expect(refreshIdentityMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
  * 页面装配级失败时序（复核修正轮补充）：渲染**真实面板**（真实 hook + 真实表单 +
  * 真实装配层会话侧写），仅 mock infrastructure adapter 与条件登出出口，把
  * 「改密失败（业务 / 网络）→ 不产生任何会话动作 → 随后资料保存成功 → 权威昵称
@@ -322,14 +417,17 @@ describe('AccountSettingsPage', () => {
 describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 + mock adapter）', () => {
   const STORAGE_KEY = 'lithography-platform.auth-session.v1';
   const BASE_SETTINGS: AccountSettingsView = {
+    adminLevel: null,
     loginEmail: 'alpha@example.com',
     loginName: 'mock_customer_alpha',
     nickname: '用户A',
     companyName: null,
     contactEmail: null,
     phone: null,
+    realName: null,
     role: 'CUSTOMER',
     status: 'ACTIVE',
+    trustedCompanyName: null,
     updatedAt: '2026-09-21T00:00:00.000Z',
   };
   const SAVED_SETTINGS: AccountSettingsView = { ...BASE_SETTINGS, nickname: '保存后的昵称' };
@@ -379,11 +477,21 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
     vi.doMock('@/features/account-settings/infrastructure/account-settings-adapter', () => ({
       changeMyPassword,
       fetchMyAccountSettings: vi.fn().mockResolvedValue(BASE_SETTINGS),
+      searchManagedCompanies: vi.fn().mockResolvedValue({
+        items: [],
+        page: 1,
+        pageSize: 20,
+        total: 0,
+      }),
+      supplementMyCustomerCompany: vi.fn(),
       updateMyAccountSettingsProfile,
     }));
     vi.doMock('@/features/auth-session', async (importOriginal) => ({
       ...(await importOriginal<Record<string, unknown>>()),
       clearSessionAfterPasswordChange: condLogoutMock,
+      refreshCurrentAuthSessionIdentity: refreshIdentityMock,
+      // 本组用例聚焦改密/资料保存时序：以匿名会话桩使补录卡片保持只读、不触发检索
+      useAuthSession: () => ({ session: null, status: 'anonymous' }),
     }));
 
     const { AccountSettingsPage } = await import('./index');
@@ -421,7 +529,8 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
       await screen.findByText('账号信息');
       expect(screen.getByLabelText('昵称')).toHaveValue('用户A');
 
-      // 同一会话内先发起改密（会失败）：填三个密码字段并提交
+      // 同一会话内先发起改密（会失败）：切到改密标签，填三个密码字段并提交
+      fireEvent.click(screen.getByRole('tab', { name: '修改密码' }));
       fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'Old#Pass2026' } });
       fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'Str0ng#Pass2026' } });
       fireEvent.change(screen.getByLabelText('确认新密码'), {
@@ -436,7 +545,8 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
       expect(messageSuccessSpy).not.toHaveBeenCalledWith(expect.stringContaining('密码已更新'));
       expect(readStoredSession()).toMatchObject({ accountId: 900201 });
 
-      // 随后资料保存成功：昵称经权威视图回写内存会话与 sessionStorage（侧栏数据源）
+      // 随后资料保存成功：切回个人资料标签，昵称经权威视图回写内存会话与 sessionStorage（侧栏数据源）
+      fireEvent.click(screen.getByRole('tab', { name: '个人资料' }));
       fireEvent.change(screen.getByLabelText('昵称'), { target: { value: '保存后的昵称' } });
       const profileForm = screen.getByLabelText('昵称').closest('form');
       fireEvent.click(within(profileForm as HTMLElement).getByRole('button', { name: /保\s*存/ }));
@@ -455,4 +565,86 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
       expect(messageSuccessSpy).not.toHaveBeenCalledWith(expect.stringContaining('密码已更新'));
     },
   );
+});
+
+/**
+ * 语言切换与账号设置表单的隔离（S5）：切语言只替换界面文案，不卸载/重建面板，
+ * 已输入但未保存的字段保持；账号设置查询只发生在首次挂载（零新增 GraphQL 请求）。
+ *
+ * 本文件根级 `beforeEach` 会 `vi.resetModules()`，因此 i18n 运行时与面板都在重置后
+ * 动态导入，保证 Context 与消费方引用同一模块实例（否则 Provider 对面板不可见）。
+ */
+describe('AccountSettingsPage 装配：切换语言保持未保存表单', () => {
+  const SETTINGS: AccountSettingsView = {
+    adminLevel: null,
+    companyName: null,
+    contactEmail: null,
+    loginEmail: 'alpha@example.com',
+    loginName: 'mock_customer_alpha',
+    nickname: '用户A',
+    phone: null,
+    realName: null,
+    role: 'CUSTOMER',
+    status: 'ACTIVE',
+    trustedCompanyName: null,
+    updatedAt: '2026-09-21T00:00:00.000Z',
+  };
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('切换语言后已输入昵称保持不变，账号设置只查询一次', async () => {
+    const fetchMyAccountSettings = vi.fn().mockResolvedValue(SETTINGS);
+    vi.doMock('@/features/account-settings', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+    }));
+    vi.doMock('@/features/account-settings/infrastructure/account-settings-adapter', () => ({
+      changeMyPassword: vi.fn(),
+      fetchMyAccountSettings,
+      searchManagedCompanies: vi.fn().mockResolvedValue({
+        items: [],
+        page: 1,
+        pageSize: 20,
+        total: 0,
+      }),
+      supplementMyCustomerCompany: vi.fn(),
+      updateMyAccountSettingsProfile: vi.fn(),
+    }));
+    vi.doMock('@/features/auth-session', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      // 本用例聚焦表单保持：匿名会话让补录卡片保持只读、不触发检索
+      useAuthSession: () => ({ session: null, status: 'anonymous' }),
+    }));
+
+    const { I18nContext, createTranslator } = await import('@/shared/i18n');
+    const { LanguageSwitch } = await import('@/shared/ui/language-switch');
+    const { AccountSettingsPanel } = await import('@/features/account-settings');
+
+    function Harness() {
+      const [language, setLanguage] = useState<'zh-CN' | 'en'>('zh-CN');
+      const t = useMemo(() => createTranslator(language), [language]);
+      const value = useMemo(() => ({ language, setLanguage, t }), [language, t]);
+
+      return (
+        <I18nContext.Provider value={value}>
+          <LanguageSwitch />
+          <AccountSettingsPanel />
+        </I18nContext.Provider>
+      );
+    }
+
+    render(<Harness />);
+
+    await screen.findByText('账号信息');
+    const nicknameInput = screen.getByLabelText('昵称');
+    fireEvent.change(nicknameInput, { target: { value: '未保存的昵称' } });
+    expect(nicknameInput).toHaveValue('未保存的昵称');
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }));
+
+    expect(screen.getByLabelText('Nickname')).toHaveValue('未保存的昵称');
+    expect(fetchMyAccountSettings).toHaveBeenCalledTimes(1);
+  });
 });

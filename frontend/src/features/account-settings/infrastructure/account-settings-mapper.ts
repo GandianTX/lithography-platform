@@ -55,6 +55,22 @@ function toKnownStatus(value: unknown): AccountSettingsStatus {
   return value;
 }
 
+/**
+ * 等级归一（失败关闭）：null 表示未设置；仅接受有限整数，其他类型 / 小数 /
+ * 非有限值一律让整次映射失败，不降级成错误展示。
+ */
+function toAdminLevel(value: unknown): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+
+  throw new Error('账号设置返回了无法识别的等级。');
+}
+
 export function mapMyAccountSettingsDtoToView(dto: MyAccountSettingsDto): AccountSettingsView {
   const nickname = typeof dto.nickname === 'string' ? dto.nickname.trim() : '';
 
@@ -63,14 +79,17 @@ export function mapMyAccountSettingsDtoToView(dto: MyAccountSettingsDto): Accoun
   }
 
   return {
+    adminLevel: toAdminLevel(dto.adminLevel),
     companyName: toOptionalText(dto.companyName),
     contactEmail: toOptionalText(dto.contactEmail),
     loginEmail: toOptionalText(dto.loginEmail),
     loginName: toOptionalText(dto.loginName),
     nickname,
     phone: toOptionalText(dto.phone),
+    realName: toOptionalText(dto.realName),
     role: toKnownRole(dto.role),
     status: toKnownStatus(dto.status),
+    trustedCompanyName: toOptionalText(dto.trustedCompanyName),
     updatedAt: dto.updatedAt,
   };
 }
