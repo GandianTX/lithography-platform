@@ -407,7 +407,12 @@ async function captureEnvironment(page: Page): Promise<void> {
 
 /**
  * 单次弹窗测量：rect / computed style / 正文 overflow / 页面横向溢出。
- * 断言宽度按 V44 的 760 px 收口、窄屏按视口留 16 px 收缩，且标题与底部动作都在视口内。
+ * 断言宽度按 V44 的 760 px 收口、窄屏按视口收缩，且标题与底部动作都在视口内。
+ *
+ * 视口收缩口径跟随真实 CSS：
+ * - antd `Modal` 默认 `max-width: calc(100vw - 32px)`，`max-width: 767px` 媒体查询下降为
+ *   `calc(100vw - 16px)`（`antd/es/modal/style/index.js`）；
+ * - 公司新增/编辑弹窗由组件显式声明 `calc(100vw - 32px)`，窄屏同样保留 16 px 边距。
  */
 async function measureDialog(
   page: Page,
@@ -416,9 +421,11 @@ async function measureDialog(
   viewport: { height: number; width: number },
   baseWidth: number,
   expectBodyScroll: boolean,
+  viewportInset?: number,
 ): Promise<DialogMeasurement> {
   const viewportLabel = `${viewport.width}x${viewport.height}`;
-  const expectedWidth = Math.min(baseWidth, viewport.width - 32);
+  const inset = viewportInset ?? (viewport.width <= 767 ? 16 : 32);
+  const expectedWidth = Math.min(baseWidth, viewport.width - inset);
 
   const measured = await page.evaluate((expectedTitle: string) => {
     const boxOf = (element: Element | null) => {
@@ -524,6 +531,7 @@ async function captureDialog(
     baseWidth?: number;
     expectBodyScroll?: boolean;
     onClose?: () => Promise<void>;
+    viewportInset?: number;
   } = {},
 ): Promise<void> {
   const baseWidth = options.baseWidth ?? 520;
@@ -547,7 +555,15 @@ async function captureDialog(
       }),
     );
     dialogMeasurements.push(
-      await measureDialog(page, name, title, viewport, baseWidth, expectBodyScroll),
+      await measureDialog(
+        page,
+        name,
+        title,
+        viewport,
+        baseWidth,
+        expectBodyScroll,
+        options.viewportInset,
+      ),
     );
   }
 
@@ -826,7 +842,7 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
 
         return { title: '新增公司档案' };
       },
-      { baseWidth: 760, expectBodyScroll: true },
+      { baseWidth: 760, expectBodyScroll: true, viewportInset: 32 },
     );
 
     await captureDialog(
@@ -841,7 +857,7 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
 
         return { title: '编辑公司档案' };
       },
-      { baseWidth: 760, expectBodyScroll: true },
+      { baseWidth: 760, expectBodyScroll: true, viewportInset: 32 },
     );
 
     // 注册审批
