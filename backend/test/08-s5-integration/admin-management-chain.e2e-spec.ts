@@ -131,6 +131,14 @@ const ADMIN_CREATE_ORGANIZATION_MUTATION = `
   }
 `;
 
+const ADMIN_UPDATE_ORGANIZATION_MUTATION = `
+  mutation AdminUpdateOrganization($input: AdminUpdateOrganizationInput!) {
+    adminUpdateOrganization(input: $input) {
+      id organizationCode name kind status isManagedCompany
+    }
+  }
+`;
+
 const REVIEW_MUTATION = `
   mutation Review($input: ReviewEngineerRegistrationInput!) {
     reviewEngineerRegistration(input: $input) {
@@ -188,6 +196,12 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
     loginName: `e2es5b${RUN_TAG}`,
     loginEmail: `e2e.s5.b.${RUN_TAG}@example.com`,
   };
+  // 停用公司反例专用申请人：与既有正向/拒绝用例完全独立的账号与申请
+  const ENGINEER_C = {
+    loginName: `e2es5c${RUN_TAG}`,
+    loginEmail: `e2e.s5.c.${RUN_TAG}@example.com`,
+  };
+  const DISABLED_COMPANY_NAME = `E2E-S5-停用公司-${RUN_TAG}`;
 
   const ownership: OwnedResourceLedger = createOwnedResourceLedger();
 
@@ -347,7 +361,10 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
   const errorCodeOf = (body: GqlBody<unknown>): string | undefined =>
     body.errors?.[0]?.extensions?.code;
 
-  const engineerRegisterInput = (engineer: { loginName: string; loginEmail: string }) => ({
+  const engineerRegisterInput = (
+    engineer: { loginName: string; loginEmail: string },
+    organizationId: number = companyId,
+  ) => ({
     loginName: engineer.loginName,
     loginEmail: engineer.loginEmail,
     loginPassword: ENGINEER_PASSWORD,
@@ -356,7 +373,7 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
     realName: 'E2E S5 工程师',
     phone: '13800000000',
     type: RegisterTypeEnum.ENGINEER,
-    organizationId: companyId,
+    organizationId,
     applicationNote: 'S5 组合链路申请',
   });
 
@@ -412,25 +429,32 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
     }
   };
 
-  const recordApplication = (applicationId: number, accountId: number): void => {
+  const recordApplication = (
+    applicationId: number,
+    accountId: number,
+    organizationId: number = companyId,
+  ): void => {
     recordOwnedResource(ownership, 'engineerRegistrationApplication', applicationId, {
       accountId,
-      organizationId: companyId,
+      organizationId,
       applicationNote: 'S5 组合链路申请',
     });
   };
 
-  const registerEngineer = async (engineer: {
-    loginName: string;
-    loginEmail: string;
-  }): Promise<{
+  const registerEngineer = async (
+    engineer: {
+      loginName: string;
+      loginEmail: string;
+    },
+    organizationId: number = companyId,
+  ): Promise<{
     accountId: number;
     applicationId: number;
     body: GqlBody<{ register?: RegisterPayload }>;
   }> => {
     const body = await gql<{ register?: RegisterPayload }>({
       query: REGISTER_MUTATION,
-      variables: { input: engineerRegisterInput(engineer) },
+      variables: { input: engineerRegisterInput(engineer, organizationId) },
     });
     const payload = body.data?.register;
     const accountId = payload?.accountId;
@@ -440,7 +464,7 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
       throw new Error(`工程师注册未返回账号/申请主键：${JSON.stringify(body)}`);
     }
 
-    recordApplication(applicationId, accountId);
+    recordApplication(applicationId, accountId, organizationId);
     recordEngineerAccount(accountId, engineer);
     await verifyEngineerAccount(accountId);
 
@@ -659,6 +683,124 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
     const businessProbe = await gql<{ userInfo?: unknown }>({
       query: USER_INFO_QUERY,
       variables: { accountId: engineerBAccountId },
+      token: restrictedLogin.data?.login?.accessToken,
+    });
+    expect(businessProbe.data?.userInfo).toBeFalsy();
+    expect(errorCodeOf(businessProbe)).toBe('FORBIDDEN');
+  });
+
+  it('提交后、批准前公司被停用：批准返回 CONFLICT，申请与账号保持待审、无成员关系', async () => {
+    // 独立造数：本轮专用公司 + 申请人，与正向/拒绝用例互不影响
+    const createdCompany = await gql<{ adminCreateOrganization?: AdminOrganizationPayload }>({
+      query: ADMIN_CREATE_ORGANIZATION_MUTATION,
+      variables: {
+        input: { name: DISABLED_COMPANY_NAME, contactPhone: COMPANY_PHONE },
+      },
+      token: adminToken,
+    });
+    expect(createdCompany.errors).toBeUndefined();
+    const organization = createdCompany.data?.adminCreateOrganization;
+    expect(organization?.status).toBe('ACTIVE');
+    const disabledCompanyId = organization?.id as number;
+    expect(typeof disabledCompanyId).toBe('number');
+    recordOwnedResource(ownership, 'organization', disabledCompanyId, {
+      organizationCode: organization?.organizationCode as string,
+      name: organization?.name as string,
+      kind: organization?.kind as string,
+      status: organization?.status as string,
+      isManagedCompany: organization?.isManagedCompany,
+    });
+
+    const recorded = await registerEngineer(ENGINEER_C, disabledCompanyId);
+    expect(recorded.body.errors).toBeUndefined();
+    expect(recorded.body.data?.register?.registrationStatus).toBe(
+      RegistrationOutcomeStatus.PENDING_REVIEW,
+    );
+    const engineerCAccountId = recorded.accountId;
+    const engineerCApplicationId = recorded.applicationId;
+
+    const pendingAccount = await accountRepo().findOneOrFail({ where: { id: engineerCAccountId } });
+    expect(pendingAccount.status).toBe(AccountStatus.PENDING);
+    const pendingUserInfo = await userInfoRepo().findOneOrFail({
+      where: { accountId: engineerCAccountId },
+    });
+    expect(pendingUserInfo.userState).toBe(UserState.PENDING);
+    expect(await membershipRepo().count({ where: { accountId: engineerCAccountId } })).toBe(0);
+
+    const applicationFacts = async (): Promise<
+      Array<{
+        status: string;
+        reviewedByAccountId: number | null;
+        reviewedAt: Date | null;
+        reviewComment: string | null;
+      }>
+    > =>
+      await dataSource.query(
+        `SELECT status,
+                reviewed_by_account_id AS reviewedByAccountId,
+                reviewed_at AS reviewedAt,
+                review_comment AS reviewComment
+           FROM engineer_registration_application
+          WHERE id = ?`,
+        [engineerCApplicationId],
+      );
+
+    const beforeReview = await applicationFacts();
+    expect(beforeReview).toHaveLength(1);
+    expect(beforeReview[0]?.status).toBe(EngineerRegistrationApplicationStatus.PENDING);
+    expect(beforeReview[0]?.reviewedByAccountId).toBeNull();
+    expect(beforeReview[0]?.reviewedAt).toBeNull();
+    expect(beforeReview[0]?.reviewComment).toBeNull();
+
+    // 提交后、批准前停用本轮公司，并回读 DISABLED
+    const disabledCompany = await gql<{ adminUpdateOrganization?: AdminOrganizationPayload }>({
+      query: ADMIN_UPDATE_ORGANIZATION_MUTATION,
+      variables: { input: { organizationId: disabledCompanyId, status: 'DISABLED' } },
+      token: adminToken,
+    });
+    expect(disabledCompany.errors).toBeUndefined();
+    expect(disabledCompany.data?.adminUpdateOrganization?.status).toBe('DISABLED');
+
+    const organizationRows = await dataSource.query(
+      'SELECT status FROM organization WHERE id = ?',
+      [disabledCompanyId],
+    );
+    expect(organizationRows).toHaveLength(1);
+    expect(organizationRows[0]?.status).toBe('DISABLED');
+    updateOwnedExpectation(ownership, 'organization', disabledCompanyId, { status: 'DISABLED' });
+
+    // 批准应被拒绝：只有 CONFLICT 与业务文案，无成功数据
+    const blockedApproval = await review({
+      applicationId: engineerCApplicationId,
+      action: EngineerRegistrationReviewAction.APPROVE,
+      reviewComment: '停用公司不应通过',
+    });
+
+    expect(blockedApproval.data?.reviewEngineerRegistration).toBeUndefined();
+    expect(errorCodeOf(blockedApproval)).toBe('CONFLICT');
+    expect(blockedApproval.errors?.[0]?.message).toBe(
+      '申请所属公司已停用或不可用，无法批准。申请仍为待审。',
+    );
+
+    // 四类库内事实不变：申请终态字段、账号、资料、成员关系
+    expect(await applicationFacts()).toEqual(beforeReview);
+    const stillPendingAccount = await accountRepo().findOneOrFail({
+      where: { id: engineerCAccountId },
+    });
+    expect(stillPendingAccount.status).toBe(AccountStatus.PENDING);
+    const stillPendingUserInfo = await userInfoRepo().findOneOrFail({
+      where: { accountId: engineerCAccountId },
+    });
+    expect(stillPendingUserInfo.userState).toBe(UserState.PENDING);
+    expect(await membershipRepo().count({ where: { accountId: engineerCAccountId } })).toBe(0);
+
+    // 本人受限会话仍是待审，直调业务仍被拒绝
+    const restrictedLogin = await performLogin(ENGINEER_C.loginName, ENGINEER_PASSWORD, true);
+    expect(restrictedLogin.errors).toBeUndefined();
+    expect(restrictedLogin.data?.login?.restriction).toBe(SessionRestriction.ENGINEER_PENDING);
+    const businessProbe = await gql<{ userInfo?: unknown }>({
+      query: USER_INFO_QUERY,
+      variables: { accountId: engineerCAccountId },
       token: restrictedLogin.data?.login?.accessToken,
     });
     expect(businessProbe.data?.userInfo).toBeFalsy();

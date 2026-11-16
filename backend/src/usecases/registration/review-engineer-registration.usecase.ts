@@ -21,6 +21,7 @@ import { AccountQueryService } from '@src/modules/account/queries/account.query.
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import { EngineerRegistrationService } from '@src/modules/lithography/engineer-registration.service';
 import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
+import { organizationStatusValues } from '@src/modules/lithography/organization.types';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
@@ -58,10 +59,11 @@ import {
  * 4. 锁内复核申请仍为 PENDING、仍属可见范围；申请人三源角色收敛为 ENGINEER、
  *    双状态同为 PENDING/PENDING、且无有效成员关系——任何一项不成立即失败关闭，零写入；
  * 5. 终态写入：
- *    - `APPROVE`：建立 `ENGINEER` 成员关系（目标公司为申请公司）+ 账号 `ACTIVE` +
- *      资料 `ACTIVE` + 申请 `APPROVED`，全部同一事务；
+ *    - `APPROVE`：先按第三条锁序锁定申请目标公司并复核仍为 `ACTIVE`（停用或不存在
+ *      失败关闭为 `REVIEW_NOT_ALLOWED`，申请保持待审），再建立 `ENGINEER` 成员关系
+ *      （目标公司为锁内公司）+ 账号 `ACTIVE` + 资料 `ACTIVE` + 申请 `APPROVED`，全部同一事务；
  *    - `REJECT`：仅写申请 `REJECTED` 与必填审核意见，账号保持 `PENDING/PENDING`，
- *      可凭本人凭据重提（历史拒绝记录永久保留）；
+ *      可凭本人凭据重提（历史拒绝记录永久保留）；拒绝不做公司状态校验；
  * 6. 决策条件更新只允许从 PENDING 迁出；并发第二次决策命中 0 行 →
  *    `APPLICATION_STATE_CONFLICT`（对外 CONFLICT），不覆盖已写入的终态。
  *
@@ -170,25 +172,15 @@ export class ReviewEngineerRegistrationUsecase {
         const reviewedByAccountId = command.session.accountId;
 
         if (action === EngineerRegistrationReviewAction.APPROVE) {
-          // 同事务：有效成员关系、账号启用、资料启用、申请通过四步同成同败
-          await this.organizationMembershipService.insertMembership(
+          await this.approveWithinTransaction(
             {
-              organizationId: application.organizationId,
+              applicationId,
               accountId: application.accountId,
-              memberRole: IdentityTypeEnum.ENGINEER,
+              organizationId: lockedApplication.organizationId,
+              reviewedAt,
             },
             transactionContext,
           );
-          await this.accountService.updateAccount(
-            application.accountId,
-            { status: AccountStatus.ACTIVE, updatedAt: reviewedAt },
-            transactionContext,
-          );
-          await this.accountService.updateUserInfoFields({
-            accountId: application.accountId,
-            patch: { userState: UserState.ACTIVE },
-            transactionContext,
-          });
         }
 
         const decision = await this.engineerRegistrationService.updateApplicationDecision(
@@ -264,6 +256,66 @@ export class ReviewEngineerRegistrationUsecase {
         error,
       );
     }
+  }
+
+  /**
+   * 批准分支的同事务前置与写入：锁内复核目标公司仍启用，再启用账号与建立成员关系。
+   *
+   * 公司启用事实是工程师会话资格的一部分（登录后按有效成员所在公司的状态判定），
+   * 因此必须在同一行锁内复核目标公司，与公司编辑/停用用例串行；锁序保持
+   * 账号 → 申请 → 公司，不逆向锁账号或申请。公司停用或不存在时失败关闭为
+   * `REVIEW_NOT_ALLOWED`，申请保持待审且零写入。
+   */
+  private async approveWithinTransaction(
+    params: {
+      applicationId: number;
+      accountId: number;
+      organizationId: number;
+      reviewedAt: Date;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
+    const { applicationId, accountId, organizationId, reviewedAt } = params;
+
+    const lockedOrganization = await this.organizationQueryService.lockAdminOrganizationForUpdate({
+      organizationId,
+      transactionContext,
+    });
+    if (
+      lockedOrganization === null ||
+      lockedOrganization.status !== organizationStatusValues.ACTIVE
+    ) {
+      throw new DomainError(
+        ENGINEER_REGISTRATION_ERROR.REVIEW_NOT_ALLOWED,
+        '申请所属公司已停用或不可用，无法批准。申请仍为待审。',
+        undefined,
+        {
+          diagnostic: 'APPLICATION_ORGANIZATION_NOT_ACTIVE',
+          applicationId,
+          organizationId,
+        },
+      );
+    }
+
+    // 同事务：有效成员关系、账号启用、资料启用、申请通过四步同成同败
+    await this.organizationMembershipService.insertMembership(
+      {
+        organizationId: lockedOrganization.id,
+        accountId,
+        memberRole: IdentityTypeEnum.ENGINEER,
+      },
+      transactionContext,
+    );
+    await this.accountService.updateAccount(
+      accountId,
+      { status: AccountStatus.ACTIVE, updatedAt: reviewedAt },
+      transactionContext,
+    );
+    await this.accountService.updateUserInfoFields({
+      accountId,
+      patch: { userState: UserState.ACTIVE },
+      transactionContext,
+    });
   }
 
   /**

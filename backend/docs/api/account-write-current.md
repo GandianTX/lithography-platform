@@ -141,7 +141,7 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 `reviewEngineerRegistration` 由所选组织的管理员执行一次性终态决策：
 
 - 权限：可信 SUPER_ADMIN 会话 + 请求期管理员等级（`resolveAdminScope()` 精确 `activeRole`，一级全范围、二级仅请求期可信 `adminOrganizationId`）；二级在事务内再复核成员关系仍为本公司 `SUPER_ADMIN`（`assertEngineerRegistrationReviewPermission()`）。一级可决策任意公司申请，二级仅本公司；跨公司与不存在申请统一 `NOT_FOUND`（`APPLICATION_NOT_FOUND`，文案「注册申请不存在」），两种情形对外不可区分；
-- `APPROVE`：建立 `ENGINEER` 成员关系、账号 `ACTIVE`、资料 `ACTIVE`、申请 `APPROVED` 在同一事务内生效；
+- `APPROVE`：在同一事务内按「账号 → 申请 → 公司」锁序先行锁定申请目标公司并复核仍为 `ACTIVE`（停用或不存在返回 CONFLICT / `REVIEW_NOT_ALLOWED`，申请保持待审且零写入），再建立 `ENGINEER` 成员关系、账号 `ACTIVE`、资料 `ACTIVE`、申请 `APPROVED` 一并生效；
 - `REJECT`：只写 `REJECTED` 与必填审核意见，账号保持 `PENDING / PENDING`，可凭本人凭据重提；
 - 重复/并发决策命中 0 行返回 CONFLICT，不覆盖既有终态。
 
