@@ -103,7 +103,7 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 }
 ```
 
-所选公司只是选择参数，不建立任何关联；提交报修时由提交入口在写入事务内按同一资格口径复核，客户端自报的 `id` 不作为最终凭证。
+任务 08 提供候选查询，查询本身不建立关联。当前 `createRepairRequest` 不接收维修服务公司 ID。任务 03 接入报修提交时，须在写入事务内按 `status = ACTIVE` 且 `is_service_provider = true` 重新校验所选公司资格。
 
 ## 写权限矩阵
 
