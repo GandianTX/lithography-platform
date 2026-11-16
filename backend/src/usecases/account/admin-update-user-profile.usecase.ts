@@ -7,6 +7,10 @@ import {
   INPUT_NORMALIZE_ERROR,
   isDomainError,
 } from '@core/common/errors/domain-error';
+import {
+  resolveLevelOneAdminScope,
+  type AdminScope,
+} from '@core/account/policy/admin-scope.policy';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AdminUserView } from '@src/modules/account/account.types';
 import {
@@ -15,7 +19,6 @@ import {
 } from '@src/modules/account/base/services/account.service';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
-import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -29,7 +32,6 @@ import type {
   AdminUpdateUserProfileCommand,
   AdminUserProfileUpdateNormalizeOutput,
 } from './admin-user-management.types';
-import { assertAdminUserManagementPermission } from './admin-user-permission';
 import { loadWritableAdminUserTarget, logAdminUserWriteFailure } from './admin-user-write-support';
 
 /** 事务内的写入阶段标记，只用于服务端日志定位，不出现在任何对外响应中。 */
@@ -39,8 +41,8 @@ type AdminUpdateUserProfilePhase = 'LOCK_TARGET' | 'WRITE_PROFILE' | 'READ_BACK_
  * 管理员编辑普通用户资料用例（P0-4）。
  *
  * 执行顺序刻意固定：
- * 1. **第一步就是精确 SUPER_ADMIN 权限断言**（`assertAdminUserManagementPermission()`，
- *    全仓唯一实现），先于任何输入规范化与数据库访问；
+ * 1. **第一步就是管理员作用域断言**（`resolveLevelOneAdminScope()`，任务 08.4 起本遗留入口
+ *    只开放给一级管理员），先于任何输入规范化与数据库访问；
  * 2. 场景输入规范化：目标账号 ID（正整数、只校验不修复）+ 资料字段（trim + NFKC + 长度上限）；
  * 3. Usecase 持有的单一事务内：锁定目标 → 读取收敛 View → 目标角色保护 → 更新资料 → 回读 View。
  *
@@ -76,7 +78,6 @@ export class AdminUpdateUserProfileUsecase {
   constructor(
     private readonly accountService: AccountService,
     private readonly adminUserQueryService: AdminUserQueryService,
-    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
     private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
@@ -86,7 +87,8 @@ export class AdminUpdateUserProfileUsecase {
   }
 
   async execute(command: AdminUpdateUserProfileCommand): Promise<AdminUserView> {
-    assertAdminUserManagementPermission(command.session, '编辑资料');
+    // 遗留入口：保留签名与一级行为，但不向二级管理员开放
+    const scope = resolveLevelOneAdminScope(command.session, '编辑资料');
 
     const accountId = normalizeAdminUserTargetAccountId(command.accountId);
     // 只接收四个白名单资料字段；昵称提供时允许重复，不做任何唯一性查询
@@ -108,7 +110,7 @@ export class AdminUpdateUserProfileUsecase {
       view = await this.transactionRunner.run((transactionContext) =>
         this.updateInTransaction({
           transactionContext,
-          adminAccountId: command.session.accountId,
+          scope,
           accountId,
           patch,
         }),
@@ -234,20 +236,19 @@ export class AdminUpdateUserProfileUsecase {
    */
   private async updateInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
-    adminAccountId: number;
+    scope: AdminScope;
     accountId: number;
     patch: UserInfoUpdateData;
   }): Promise<AdminUserView> {
-    const { transactionContext, adminAccountId, accountId, patch } = params;
+    const { transactionContext, scope, accountId, patch } = params;
     let phase: AdminUpdateUserProfilePhase = 'LOCK_TARGET';
 
     try {
       await loadWritableAdminUserTarget({
         accountService: this.accountService,
         adminUserQueryService: this.adminUserQueryService,
-        organizationContextQueryService: this.organizationContextQueryService,
         organizationMembershipQueryService: this.organizationMembershipQueryService,
-        adminAccountId,
+        scope,
         accountId,
         actionLabel: '编辑资料',
         transactionContext,

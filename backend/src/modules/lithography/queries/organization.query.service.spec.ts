@@ -190,3 +190,154 @@ describe('OrganizationQueryService（注册公司资格与检索）', () => {
     });
   });
 });
+
+describe('OrganizationQueryService（管理员公司档案完整视图）', () => {
+  const entityRow = {
+    id: 7,
+    organizationCode: 'ADMIN_ORG_0001',
+    name: '光刻设备（上海）有限公司',
+    shortName: '光刻设备',
+    contactName: '张三',
+    contactPhone: '021-12345678',
+    contactEmail: 'ops@example.com',
+    address: '上海市',
+    remark: null,
+    isServiceProvider: true,
+    isManagedCompany: true,
+    kind: 'CLIENT',
+    status: 'ACTIVE',
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-02T00:00:00Z'),
+  };
+
+  let queryBuilder: QueryBuilderMock;
+  let repository: { createQueryBuilder: jest.Mock; findOne: jest.Mock };
+  let service: OrganizationQueryService;
+
+  beforeEach(() => {
+    queryBuilder = {
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[entityRow], 1]),
+      getCount: jest.fn(),
+    };
+    repository = {
+      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+      findOne: jest.fn(),
+    };
+    service = new OrganizationQueryService(repository as unknown as Repository<OrganizationEntity>);
+  });
+
+  describe('searchAdminOrganizations', () => {
+    it('关键字同时匹配全称/编号/简称，并稳定排序与分页', async () => {
+      const page = await service.searchAdminOrganizations({
+        keyword: '光刻',
+        pagination: { page: 2, pageSize: 10 },
+      });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        '(organization.name LIKE :keyword OR organization.organizationCode LIKE :keyword OR organization.shortName LIKE :keyword)',
+        { keyword: '%光刻%' },
+      );
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('organization.name', 'ASC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('organization.id', 'ASC');
+      expect(queryBuilder.skip).toHaveBeenCalledWith(10);
+      expect(queryBuilder.take).toHaveBeenCalledWith(10);
+      expect(page.total).toBe(1);
+      // 完整视图字段直通，不做业务加工
+      expect(page.items[0]).toMatchObject({
+        id: 7,
+        organizationCode: 'ADMIN_ORG_0001',
+        isManagedCompany: true,
+        isServiceProvider: true,
+        kind: 'CLIENT',
+        status: 'ACTIVE',
+      });
+    });
+
+    it('状态、受管与维修资格分别过滤；未提供则不加条件', async () => {
+      await service.searchAdminOrganizations({
+        status: 'DISABLED',
+        isManagedCompany: true,
+        isServiceProvider: false,
+        pagination: { page: 1, pageSize: 20 },
+      });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('organization.status = :status', {
+        status: 'DISABLED',
+      });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'organization.isManagedCompany = :isManagedCompany',
+        { isManagedCompany: true },
+      );
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'organization.isServiceProvider = :isServiceProvider',
+        { isServiceProvider: false },
+      );
+
+      queryBuilder.andWhere.mockClear();
+      await service.searchAdminOrganizations({ pagination: { page: 1, pageSize: 20 } });
+      expect(queryBuilder.andWhere).not.toHaveBeenCalled();
+    });
+
+    it('页大小按上限 50 截断，页码下限归一', async () => {
+      await service.searchAdminOrganizations({ pagination: { page: 0, pageSize: 500 } });
+
+      expect(queryBuilder.skip).toHaveBeenCalledWith(0);
+      expect(queryBuilder.take).toHaveBeenCalledWith(50);
+    });
+
+    it('关键字中的 LIKE 通配符按普通字符转义', async () => {
+      await service.searchAdminOrganizations({
+        keyword: '100%_公司',
+        pagination: { page: 1, pageSize: 20 },
+      });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(expect.stringContaining('LIKE :keyword'), {
+        keyword: '%100\\%\\_公司%',
+      });
+    });
+  });
+
+  describe('findAdminOrganizationView', () => {
+    it('按主键读取完整视图，不过滤状态', async () => {
+      repository.findOne.mockResolvedValue({ ...entityRow, status: 'DISABLED' });
+
+      const view = await service.findAdminOrganizationView({ organizationId: 7 });
+
+      expect(repository.findOne).toHaveBeenCalledWith({ where: { id: 7 } });
+      expect(view).toMatchObject({ id: 7, status: 'DISABLED' });
+    });
+
+    it('不存在返回 null', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(service.findAdminOrganizationView({ organizationId: 404 })).resolves.toBeNull();
+    });
+  });
+
+  describe('lockAdminOrganizationForUpdate', () => {
+    it('事务内以悲观写锁读取目标行', async () => {
+      repository.findOne.mockResolvedValue(entityRow);
+      const transactionContext = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repository,
+      } as unknown as EntityManager);
+
+      const view = await service.lockAdminOrganizationForUpdate({
+        organizationId: 7,
+        transactionContext,
+      });
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: 7 },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(view).toMatchObject({ id: 7 });
+    });
+  });
+});

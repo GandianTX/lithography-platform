@@ -1,6 +1,7 @@
 // src/modules/account/queries/admin-user.query.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { convergeAccountRole } from '@core/account/policy/account-role-convergence.policy';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import type { SortParam } from '@core/pagination/pagination.types';
@@ -11,9 +12,11 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { SearchService } from '@src/modules/common/search.module';
 import { Repository } from 'typeorm';
 import type {
+  AdminApplicantDetailView,
   AdminUserCredentialConflictField,
   AdminUserListPage,
   AdminUserListQuery,
+  AdminUserOwnershipFacts,
   AdminUserStatusFacts,
   AdminUserView,
 } from '../account.types';
@@ -87,10 +90,10 @@ const ADMIN_USER_LIST_SEARCH_OPTIONS: SearchOptions = {
  * userInfo 可见资料装配、登录引导快照等多种读取语义（465 行），再叠加管理员列表分页、
  * 三源角色收敛与写后读会把「一类事情一文件」彻底打散（`queryservice.rules.md`
  * 「单文件单语义」「当出现多种读取语义时，考虑拆分」「当出现不同权限策略时，考虑拆分」）。
- * 本文件只做管理员场景读取，不含权限断言——精确 SUPER_ADMIN 授权属**写用例的流程级授权**
- * 与列表用例的入口断言，由 `ListAdminUsersUsecase` / `AdminCreateUserUsecase` 调用
- * `assertAdminUserManagementPermission()` 完成（`queryservice.rules.md`「写用例的流程级授权
- * 由 Usecase 负责」）。
+ * 本文件只做管理员场景读取，不含权限断言——管理员授权属**写用例的流程级授权**
+ * 与列表用例的入口断言，由 `ListAdminUsersUsecase` 调用
+ * `assertAdminUserManagementScope()`、遗留写用例调用 `resolveLevelOneAdminScope()` 完成
+ * （`queryservice.rules.md`「写用例的流程级授权由 Usecase 负责」）。
  *
  * 边界（`queryservice.rules.md`）：
  * - 只读：不写库、不开启业务事务、不产生副作用（刻意不注入 logger，诊断信息以
@@ -163,14 +166,36 @@ export class AdminUserQueryService {
       .createQueryBuilder('account')
       .leftJoinAndSelect('account.userInfo', 'userInfo');
 
-    // 组织范围由 Usecase 经可信组织解析后以账号 ID 清单下推：account 域不跨域导入组织
-    // Entity，也不接受客户端自报组织。空数组直接返回空页，**不得**退化为「不筛选」——
-    // 那会把「没有可见账号」静默变成「全库账号」。
-    if (query.accountIds !== undefined) {
-      if (query.accountIds.length === 0) {
+    // 二级管理员的组织范围（V5.5 R012-01）按角色分两条来源下推：
+    // - 客户以资料列 `customer_organization_id` 为真实归属，不能以成员 ID 清单替代；
+    // - 工程师以 Usecase 解析出的本公司有效工程师成员账号 ID 为准。
+    // 条件与分页 / COUNT 共用同一 QueryBuilder，因此 total 与 items 同源。
+    if (query.organizationScope !== undefined) {
+      const { organizationId, engineerAccountIds } = query.organizationScope;
+      const params: Record<string, unknown> = {
+        scopeCustomerRole: IdentityTypeEnum.CUSTOMER,
+        scopeOrganizationId: organizationId,
+      };
+      let ownershipClause =
+        '(account.identityHint = :scopeCustomerRole AND userInfo.customerOrganizationId = :scopeOrganizationId)';
+      if (engineerAccountIds.length > 0) {
+        ownershipClause +=
+          ' OR (account.identityHint = :scopeEngineerRole AND account.id IN (:...scopeEngineerAccountIds))';
+        params.scopeEngineerRole = IdentityTypeEnum.ENGINEER;
+        params.scopeEngineerAccountIds = [...engineerAccountIds];
+      }
+      qb.andWhere(`(${ownershipClause})`, params);
+    }
+
+    // 可见角色范围由 Usecase 下推（任务 08.4：只读普通客户与工程师）。条件与分页 / COUNT
+    // 共用同一 QueryBuilder，因此 total 与 items 同源；空值域直接返回空页，不得退化为「不筛选」。
+    if (query.visibleRoles !== undefined) {
+      if (query.visibleRoles.length === 0) {
         return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
       }
-      qb.andWhere('account.id IN (:...accountIds)', { accountIds: [...query.accountIds] });
+      qb.andWhere('account.identityHint IN (:...visibleRoles)', {
+        visibleRoles: [...query.visibleRoles],
+      });
     }
 
     let searchResult: SearchResult<AccountEntity>;
@@ -255,6 +280,35 @@ export class AdminUserQueryService {
   }
 
   /**
+   * 审批详情专用的申请人读取：只装配展示所需的资料字段（含真实姓名），
+   * 不做角色三源收敛。
+   *
+   * 与 `findAdminUserViewById()` 的区别：本方法不要求角色可收敛，也不装配公司 /
+   * 角色 / 状态 / 时间戳——审批详情只消费申请状态与申请人资料，扩大返回面会无谓地
+   * 放大敏感字段范围（`queryservice.rules.md`：只返回稳定 View 与窄事实）。
+   *
+   * @returns 账号不存在时返回 `null`（由 Usecase 决定错误口径）；账号存在但资料行
+   *   缺失时按数据不变量破坏失败关闭（`USER_INFO_ROW_MISSING`）。
+   */
+  async findAdminUserDetailViewById(params: {
+    accountId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<AdminApplicantDetailView | null> {
+    try {
+      const account = await this.getAccountRepository(params.transactionContext).findOne({
+        where: { id: params.accountId },
+        relations: { userInfo: true },
+      });
+      if (!account) {
+        return null;
+      }
+      return this.toAdminApplicantDetailView(account);
+    } catch (error) {
+      this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
+    }
+  }
+
+  /**
    *
    * 为什么独立于 `findAdminUserViewById()`：第一版状态转换矩阵要求在**任何状态写入前**
    * 读取 `account.status` 与 `userInfo.user_state` 的当前值并裁决一致性与可转换性，
@@ -282,6 +336,47 @@ export class AdminUserQueryService {
         return null;
       }
       return { accountStatus: account.status, userState: account.userInfo.userState };
+    } catch (error) {
+      this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
+    }
+  }
+
+  /**
+   * 二级管理员写目标的归属复核事实（V5.5 R012-01）。
+   *
+   * 与 `findAdminUserViewById()` 的区别：本方法只返回归属判定所需的**最少事实**
+   * （收敛后的单一角色 + 客户归属列），不装配完整 View。写用例在取得目标行锁后调用，
+   * 先按角色分别核验归属（客户看资料列、工程师看本公司有效工程师成员关系），
+   * 再进入读取 View / 写动作。
+   *
+   * @returns 账号或资料行缺失、角色三源无法收敛时返回 `null`。这三种形态都不能证明
+   *   目标属于发起方公司，调用方一律按 `TARGET_NOT_FOUND` 失败关闭（与不存在同口径），
+   *   不泄露目标是否存在、资料是否缺失或角色是否异常。
+   */
+  async findAdminUserOwnershipFacts(params: {
+    accountId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<AdminUserOwnershipFacts | null> {
+    try {
+      const account = await this.getAccountRepository(params.transactionContext).findOne({
+        where: { id: params.accountId },
+        relations: { userInfo: true },
+      });
+      if (!account || !account.userInfo) {
+        return null;
+      }
+      const convergence = convergeAccountRole({
+        identityHint: account.identityHint,
+        accessGroup: account.userInfo.accessGroup,
+        metaDigest: account.userInfo.metaDigest,
+      });
+      if (!convergence.converged) {
+        return null;
+      }
+      return {
+        role: convergence.role,
+        customerOrganizationId: account.userInfo.customerOrganizationId,
+      };
     } catch (error) {
       this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
     }
@@ -380,6 +475,33 @@ export class AdminUserQueryService {
       status: account.status,
       createdAt: account.createdAt,
       updatedAt: this.resolveUpdatedAt(account.updatedAt, userInfo.updatedAt),
+    };
+  }
+
+  /**
+   * 账号 + 资料 → `AdminApplicantDetailView` 的映射点（审批详情专用）。
+   *
+   * 只直通展示字段，不做角色收敛；资料行缺失属数据不变量破坏，失败关闭。
+   * `contactEmail` 与 `loginEmail` 的口径区分见 `AdminUserView` 注释。
+   */
+  private toAdminApplicantDetailView(account: AccountEntity): AdminApplicantDetailView {
+    const userInfo: UserInfoEntity | undefined = account.userInfo;
+    if (!userInfo) {
+      throw new DomainError(
+        ADMIN_USER_ERROR.READ_FAILED,
+        '用户账号资料缺失，无法生成申请人详情',
+        undefined,
+        { diagnostic: 'USER_INFO_ROW_MISSING', accountId: account.id },
+      );
+    }
+
+    return {
+      id: account.id,
+      loginName: account.loginName,
+      nickname: userInfo.nickname,
+      realName: userInfo.realName,
+      phone: userInfo.phone,
+      contactEmail: userInfo.email,
     };
   }
 

@@ -1,10 +1,10 @@
-// src/features/admin-user-management/ui/use-dialog-session-seq.spec.ts
+// src/shared/ui/dialog-session/use-dialog-session-seq.spec.ts
 
 /**
- * Panel 侧会话代次守卫的同步性直测。
+ * 宿主侧会话代次守卫的同步性直测。
  *
  * 这一层是「A → B 切换后旧请求不得关闭 B」的唯一判定依据，而它成立的理由**不是**弹窗侧
- * `useLayoutEffect` 的时序假设，是一个更强的事实：`advance` 直接改 ref，面板在事件处理器里的
+ * `useLayoutEffect` 的时序假设，是一个更强的事实：`advance` 直接改 ref，宿主的
  * 调用顺序是「先 advance、再 setState」，所以代次在 React 开始渲染新目标之前就已推进完毕，
  * 「新目标已提交但代次尚未推进」这个窗口对外层根本不存在。
  *
@@ -50,7 +50,7 @@ describe('useDialogSessionSeq', () => {
     expect(guard.current.isCurrent('profile', latest)).toBe(true);
   });
 
-  it('五个弹窗各持一条代次：推进一个 key 不影响另一个', () => {
+  it('多个弹窗各持一条代次：推进一个 key 不影响另一个', () => {
     const guard = renderGuard();
 
     const createSeq = guard.current.capture('create');
@@ -62,7 +62,7 @@ describe('useDialogSessionSeq', () => {
   });
 
   it('会话身份未变时不推进：新鲜提交的快照必须仍然有效', () => {
-    // 面板对「同一个 accountId 的重入」与「创建入口在弹窗已打开时的重入」刻意不推进代次，
+    // 宿主对「同一个目标的重入」与「创建入口在弹窗已打开时的重入」刻意不推进代次，
     // 这里钉住不推进 ⇒ 快照仍有效，否则在途的正常提交会被误判成陈旧，成功后弹窗关不掉
     const guard = renderGuard();
 

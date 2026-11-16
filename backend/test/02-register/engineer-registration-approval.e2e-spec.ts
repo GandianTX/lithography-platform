@@ -82,6 +82,7 @@ type ApplicationPayload = {
 
 type AdminItemPayload = {
   application: ApplicationPayload;
+  organizationName: string | null;
   applicant: {
     id: number;
     loginName: string | null;
@@ -89,6 +90,39 @@ type AdminItemPayload = {
     nickname: string;
     role: IdentityTypeEnum;
     status: AccountStatus;
+  };
+};
+
+/** 既有详情契约的申请人字段面：账号管理 `AdminUserDTO` */
+type AdminDetailPayload = {
+  application: ApplicationPayload;
+  organizationName: string | null;
+  applicant: {
+    id: number;
+    loginName: string | null;
+    loginEmail: string | null;
+    nickname: string;
+    companyName: string | null;
+    phone: string | null;
+    contactEmail: string | null;
+    role: IdentityTypeEnum;
+    status: AccountStatus;
+    createdAt: string;
+    updatedAt: string;
+  };
+};
+
+/** 审批详情专用读模型：申请人资料含真实姓名，不含角色 / 账号状态 / 登录邮箱 */
+type AdminApprovalDetailPayload = {
+  application: ApplicationPayload;
+  organizationName: string | null;
+  applicant: {
+    id: number;
+    loginName: string | null;
+    nickname: string;
+    realName: string | null;
+    phone: string | null;
+    contactEmail: string | null;
   };
 };
 
@@ -149,6 +183,7 @@ const APPLICATION_FIELDS = `
 
 const ADMIN_ITEM_FIELDS = `
   application { ${APPLICATION_FIELDS} }
+  organizationName
   applicant { id loginName loginEmail nickname role status }
 `;
 
@@ -256,9 +291,53 @@ const ADMIN_LIST_QUERY = `
   }
 `;
 
+/** 既有详情契约：申请人仍是账号管理 `AdminUserDTO` 字段面（无真实姓名） */
+const ADMIN_DETAIL_FIELDS = `
+  application { ${APPLICATION_FIELDS} }
+  organizationName
+  applicant { id loginName loginEmail nickname companyName phone contactEmail role status }
+`;
+
 const ADMIN_DETAIL_QUERY = `
   query AdminDetail($applicationId: Int!) {
-    adminEngineerRegistrationDetail(applicationId: $applicationId) { ${ADMIN_ITEM_FIELDS} }
+    adminEngineerRegistrationDetail(applicationId: $applicationId) { ${ADMIN_DETAIL_FIELDS} }
+  }
+`;
+
+/** 旧客户端以 fragment 选择 `AdminUserDTO`：既有入口必须继续接受该选择集 */
+const ADMIN_DETAIL_FRAGMENT_QUERY = `
+  fragment AdminUserFields on AdminUserDTO {
+    id
+    loginName
+    loginEmail
+    nickname
+    companyName
+    phone
+    contactEmail
+    role
+    status
+    createdAt
+    updatedAt
+  }
+  query AdminDetailWithFragment($applicationId: Int!) {
+    adminEngineerRegistrationDetail(applicationId: $applicationId) {
+      application { id accountId organizationId status }
+      organizationName
+      applicant { ...AdminUserFields }
+    }
+  }
+`;
+
+/** 审批详情专用入口：窄字段面，额外提供真实姓名 */
+const ADMIN_APPROVAL_DETAIL_FIELDS = `
+  application { ${APPLICATION_FIELDS} }
+  organizationName
+  applicant { id loginName nickname realName phone contactEmail }
+`;
+
+const ADMIN_APPROVAL_DETAIL_QUERY = `
+  query AdminApprovalDetail($applicationId: Int!) {
+    adminEngineerRegistrationApprovalDetail(applicationId: $applicationId) { ${ADMIN_APPROVAL_DETAIL_FIELDS} }
   }
 `;
 
@@ -288,6 +367,18 @@ const ENGINEER_REJECT = {
 const ENGINEER_CONCURRENT = {
   loginName: 'e2eengconcurrent',
   loginEmail: 'e2e.eng.concurrent@example.com',
+};
+const ENGINEER_SCOPE_PRIMARY = {
+  loginName: 'e2engscopeown',
+  loginEmail: 'e2e.eng.scope.own@example.com',
+};
+const ENGINEER_SCOPE_PEER = {
+  loginName: 'e2engscopepeer',
+  loginEmail: 'e2e.eng.scope.peer@example.com',
+};
+const ENGINEER_CONTRACT_DETAIL = {
+  loginName: 'e2engcontractdtl',
+  loginEmail: 'e2e.eng.contract.detail@example.com',
 };
 const ENGINEER_ROLLBACK = {
   loginName: 'e2eengrollback',
@@ -415,6 +506,16 @@ describe('工程师注册与组织审核 (e2e)', () => {
         },
       ],
     });
+
+    // 审批域权限按请求期查库的管理员等级判定：一级全范围、二级仅可信公司。
+    const levelOneAdmin = await accountRepo().findOneOrFail({
+      where: { loginName: testAccountsConfig.admin.loginName },
+    });
+    await accountRepo().update(levelOneAdmin.id, { adminLevel: 1 });
+    const levelTwoAdmin = await accountRepo().findOneOrFail({
+      where: { loginName: testAccountsConfig.peerAdmin.loginName },
+    });
+    await accountRepo().update(levelTwoAdmin.id, { adminLevel: 2 });
 
     adminToken = await login({
       app,
@@ -744,9 +845,29 @@ describe('工程师注册与组织审核 (e2e)', () => {
   const adminDetail = async (
     token: string,
     applicationId: number,
-  ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminItemPayload }>> =>
-    await gql<{ adminEngineerRegistrationDetail?: AdminItemPayload }>({
+  ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>> =>
+    await gql<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>({
       query: ADMIN_DETAIL_QUERY,
+      variables: { applicationId },
+      token,
+    });
+
+  const adminDetailWithFragment = async (
+    token: string,
+    applicationId: number,
+  ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>> =>
+    await gql<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>({
+      query: ADMIN_DETAIL_FRAGMENT_QUERY,
+      variables: { applicationId },
+      token,
+    });
+
+  const adminApprovalDetail = async (
+    token: string,
+    applicationId: number,
+  ): Promise<GqlBody<{ adminEngineerRegistrationApprovalDetail?: AdminApprovalDetailPayload }>> =>
+    await gql<{ adminEngineerRegistrationApprovalDetail?: AdminApprovalDetailPayload }>({
+      query: ADMIN_APPROVAL_DETAIL_QUERY,
       variables: { applicationId },
       token,
     });
@@ -1422,6 +1543,249 @@ describe('工程师注册与组织审核 (e2e)', () => {
       });
       expect(protectedBody.errors).toBeUndefined();
       expect(protectedBody.data?.userInfo?.accountId).toBe(engineerAccountId);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 管理员作用域：一级全范围 / 二级本公司
+  // ---------------------------------------------------------------------------
+  describe('管理员作用域：一级全范围与二级本公司', () => {
+    let primaryEngineerAccountId = 0;
+    let primaryApplicationId = 0;
+    let peerEngineerAccountId = 0;
+    let peerApplicationId = 0;
+
+    beforeAll(async () => {
+      const primaryRecorded = await registerEngineerAndRecord({
+        loginName: ENGINEER_SCOPE_PRIMARY.loginName,
+        loginEmail: ENGINEER_SCOPE_PRIMARY.loginEmail,
+        note: '申请加入主组织',
+      });
+      expect(primaryRecorded.body.errors).toBeUndefined();
+      primaryEngineerAccountId = primaryRecorded.accountId;
+      primaryApplicationId = primaryRecorded.applicationId;
+
+      const peerRecorded = await registerEngineerAndRecord({
+        loginName: ENGINEER_SCOPE_PEER.loginName,
+        loginEmail: ENGINEER_SCOPE_PEER.loginEmail,
+        note: '申请加入对侧组织',
+        organizationId: peerOrganizationId,
+      });
+      expect(peerRecorded.body.errors).toBeUndefined();
+      peerEngineerAccountId = peerRecorded.accountId;
+      peerApplicationId = peerRecorded.applicationId;
+    });
+
+    it('一级管理员队列跨公司返回申请，并带出各申请的目标公司名', async () => {
+      const list = await adminList(adminToken, EngineerRegistrationApplicationStatus.PENDING);
+      expect(list.errors).toBeUndefined();
+      const items = list.data?.adminEngineerRegistrations?.items ?? [];
+      const primaryItem = items.find((item) => item.application.id === primaryApplicationId);
+      const peerItem = items.find((item) => item.application.id === peerApplicationId);
+      expect(primaryItem?.organizationName).toBe('E2E 工程师注册主组织');
+      expect(peerItem?.organizationName).toBe('E2E 工程师注册对侧组织');
+      expect(peerItem?.application.organizationId).toBe(peerOrganizationId);
+    });
+
+    it('一级管理员可跨公司读取详情', async () => {
+      const primaryDetail = await adminDetail(adminToken, primaryApplicationId);
+      expect(primaryDetail.errors).toBeUndefined();
+      expect(primaryDetail.data?.adminEngineerRegistrationDetail?.application.accountId).toBe(
+        primaryEngineerAccountId,
+      );
+
+      const peerDetail = await adminDetail(adminToken, peerApplicationId);
+      expect(peerDetail.errors).toBeUndefined();
+      expect(peerDetail.data?.adminEngineerRegistrationDetail?.application.accountId).toBe(
+        peerEngineerAccountId,
+      );
+      expect(peerDetail.data?.adminEngineerRegistrationDetail?.organizationName).toBe(
+        'E2E 工程师注册对侧组织',
+      );
+    });
+
+    it('二级管理员队列与分页总数仅含本公司，跨公司详情/审核统一 NOT_FOUND', async () => {
+      const list = await adminList(peerAdminToken, EngineerRegistrationApplicationStatus.PENDING);
+      expect(list.errors).toBeUndefined();
+      const items = list.data?.adminEngineerRegistrations?.items ?? [];
+      expect(items.map((item) => item.application.id)).toContain(peerApplicationId);
+      expect(items.every((item) => item.application.organizationId === peerOrganizationId)).toBe(
+        true,
+      );
+      expect(list.data?.adminEngineerRegistrations?.total).toBe(items.length);
+
+      const crossDetail = await adminDetail(peerAdminToken, primaryApplicationId);
+      expect(crossDetail.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(crossDetail)).toBe('NOT_FOUND');
+
+      const crossReview = await review({
+        token: peerAdminToken,
+        applicationId: primaryApplicationId,
+        action: EngineerRegistrationReviewAction.REJECT,
+        reviewComment: '越权尝试',
+      });
+      expect(crossReview.errors?.length ?? 0).toBeGreaterThan(0);
+      expect(errorCodeOf(crossReview)).toBe('NOT_FOUND');
+
+      const untouched = await dataSource.query(
+        'SELECT status FROM engineer_registration_application WHERE id = ?',
+        [primaryApplicationId],
+      );
+      expect(untouched[0]?.status).toBe(EngineerRegistrationApplicationStatus.PENDING);
+    });
+
+    it('一级管理员批准对侧公司申请：成员关系写入申请目标公司', async () => {
+      const approved = await review({
+        token: adminToken,
+        applicationId: peerApplicationId,
+        action: EngineerRegistrationReviewAction.APPROVE,
+      });
+      expect(approved.errors).toBeUndefined();
+      expect(approved.data?.reviewEngineerRegistration?.application.status).toBe(
+        EngineerRegistrationApplicationStatus.APPROVED,
+      );
+      expect(approved.data?.reviewEngineerRegistration?.organizationName).toBe(
+        'E2E 工程师注册对侧组织',
+      );
+
+      const account = await accountRepo().findOne({ where: { id: peerEngineerAccountId } });
+      expect(account?.status).toBe(AccountStatus.ACTIVE);
+      const userInfo = await userInfoRepo().findOne({
+        where: { accountId: peerEngineerAccountId },
+      });
+      expect(userInfo?.userState).toBe(UserState.ACTIVE);
+
+      const membership = await membershipRepo().findOne({
+        where: { organizationId: peerOrganizationId, accountId: peerEngineerAccountId },
+      });
+      expect(membership?.memberRole).toBe(IdentityTypeEnum.ENGINEER);
+      expect(membership?.status).toBe('ACTIVE');
+      await recordActiveMembership(peerOrganizationId, peerEngineerAccountId, 'ENGINEER');
+      updateOwnedExpectation(ownership, 'account', peerEngineerAccountId, {
+        status: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+
+      // 成员关系只落在申请目标公司，不得回落到管理员自身的可信公司。
+      const wrongMembership = await membershipRepo().count({
+        where: { organizationId: primaryOrganizationId, accountId: peerEngineerAccountId },
+      });
+      expect(wrongMembership).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 审批详情契约：既有 AdminUserDTO 入口保持兼容，新入口只提供真实姓名
+  // ---------------------------------------------------------------------------
+  describe('审批详情契约兼容与实名入口', () => {
+    let contractAccountId = 0;
+    let contractApplicationId = 0;
+    let restrictedEngineerToken = '';
+
+    beforeAll(async () => {
+      const recorded = await registerEngineerAndRecord({
+        loginName: ENGINEER_CONTRACT_DETAIL.loginName,
+        loginEmail: ENGINEER_CONTRACT_DETAIL.loginEmail,
+        note: '审批详情契约回归',
+      });
+      contractAccountId = recorded.accountId;
+      contractApplicationId = recorded.applicationId;
+
+      const loginBody = await gql<LoginPayload>({
+        query: LOGIN_MUTATION,
+        variables: {
+          input: {
+            loginName: ENGINEER_CONTRACT_DETAIL.loginName,
+            loginPassword: PASSWORD,
+            type: LoginTypeEnum.PASSWORD,
+            audience: AudienceTypeEnum.DESKTOP,
+            allowRestrictedSession: true,
+          },
+        },
+      });
+      expect(loginBody.errors).toBeUndefined();
+      expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.ENGINEER_PENDING);
+      restrictedEngineerToken = loginBody.data?.login?.accessToken ?? '';
+      expect(restrictedEngineerToken).not.toBe('');
+    });
+
+    it('既有详情入口原字段直查可用，申请人仍是 AdminUserDTO 字段面', async () => {
+      const body = await adminDetail(adminToken, contractApplicationId);
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminEngineerRegistrationDetail?.application.accountId).toBe(
+        contractAccountId,
+      );
+      expect(body.data?.adminEngineerRegistrationDetail?.applicant.role).toBe(
+        IdentityTypeEnum.ENGINEER,
+      );
+      expect(body.data?.adminEngineerRegistrationDetail?.applicant.status).toBe(
+        AccountStatus.PENDING,
+      );
+    });
+
+    it('旧 AdminUserDTO fragment 选择集继续被接受', async () => {
+      const body = await adminDetailWithFragment(adminToken, contractApplicationId);
+
+      expect(body.errors).toBeUndefined();
+      const applicant = body.data?.adminEngineerRegistrationDetail?.applicant;
+      expect(applicant?.id).toBe(contractAccountId);
+      expect(applicant?.nickname).toBe(ENGINEER_CONTRACT_DETAIL.loginName);
+      expect(typeof applicant?.createdAt).toBe('string');
+      expect(typeof applicant?.updatedAt).toBe('string');
+    });
+
+    it('新实名入口返回真实姓名，且不暴露角色 / 状态字段', async () => {
+      const body = await adminApprovalDetail(adminToken, contractApplicationId);
+
+      expect(body.errors).toBeUndefined();
+      const detail = body.data?.adminEngineerRegistrationApprovalDetail;
+      expect(detail?.application.accountId).toBe(contractAccountId);
+      expect(detail?.applicant.id).toBe(contractAccountId);
+      expect(detail?.applicant.realName).toBe('E2E 工程师');
+      expect(detail?.organizationName).toBe('E2E 工程师注册主组织');
+
+      const roleSelection = await gql<{
+        adminEngineerRegistrationApprovalDetail?: { applicant?: { role?: string } };
+      }>({
+        query: `
+          query AdminApprovalDetailRole($applicationId: Int!) {
+            adminEngineerRegistrationApprovalDetail(applicationId: $applicationId) {
+              applicant { role }
+            }
+          }
+        `,
+        variables: { applicationId: contractApplicationId },
+        token: adminToken,
+      });
+      expect(roleSelection.errors?.length ?? 0).toBeGreaterThan(0);
+    });
+
+    it('二级跨公司、匿名与受限账号在两个入口上按原口径拒绝', async () => {
+      const crossDetail = await adminDetail(peerAdminToken, contractApplicationId);
+      const crossApproval = await adminApprovalDetail(peerAdminToken, contractApplicationId);
+      expect(errorCodeOf(crossDetail)).toBe('NOT_FOUND');
+      expect(errorCodeOf(crossApproval)).toBe('NOT_FOUND');
+
+      const anonymousDetail = await gql<{
+        adminEngineerRegistrationDetail?: AdminDetailPayload;
+      }>({ query: ADMIN_DETAIL_QUERY, variables: { applicationId: contractApplicationId } });
+      const anonymousApproval = await gql<{
+        adminEngineerRegistrationApprovalDetail?: AdminApprovalDetailPayload;
+      }>({
+        query: ADMIN_APPROVAL_DETAIL_QUERY,
+        variables: { applicationId: contractApplicationId },
+      });
+      expect(errorCodeOf(anonymousDetail)).toBe('UNAUTHENTICATED');
+      expect(errorCodeOf(anonymousApproval)).toBe('UNAUTHENTICATED');
+
+      const restrictedDetail = await adminDetail(restrictedEngineerToken, contractApplicationId);
+      const restrictedApproval = await adminApprovalDetail(
+        restrictedEngineerToken,
+        contractApplicationId,
+      );
+      expect(errorCodeOf(restrictedDetail)).toBe('FORBIDDEN');
+      expect(errorCodeOf(restrictedApproval)).toBe('FORBIDDEN');
     });
   });
 

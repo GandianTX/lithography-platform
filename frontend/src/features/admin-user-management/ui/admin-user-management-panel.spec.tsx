@@ -11,7 +11,7 @@
  *
  * 走真实的 `useAdminUserList` / `useAdminUserCommands`（含 in-flight 锁与成功 reload），
  * 只替换最外层的 GraphQL adapter；时序全部由可控 deferred 推进，不使用 sleep。
- * 仅对最重的「切走再切回 A」用例给足单测预算：它要在 jsdom 里挂载三个 antd Modal
+ * 仅对最重的「切走再切回 A」用例给足单测预算：它要在 jsdom 里挂载多个 antd Modal
  *（A → B → A），单测全量并发时本身就会逼近默认 5s 上限，属于渲染成本而非等待缺陷，
  * 因此该用例显式声明预算，不整体放宽 testTimeout。
  *
@@ -26,8 +26,6 @@
  * 同理 antd `Button` 在 loading 期间会直接吞掉 click，而在途提交把 OK 按钮置为 loading，
  * 所以「新一代弹窗已有错误 + 旧结果晚到」也无法在这里驱动；
  * 两者由弹窗组件层的 spec 以 `submitting={false}` 覆盖。
- * 创建弹窗的「提交期间关闭 + 重开」另由 `admin-user-management-panel-create-session.spec.tsx`
- * 用受控替身直测面板的 create 会话代次接线，那里同样不宣称该序列对真实用户可达。
  * 本 spec 用可达的「切走再切回同一个 accountId」等价推进会话，并钉住另一侧一致性：
  * 会话身份没变的重入**不得**推进代次，否则在途提交会被误判成陈旧。
  *
@@ -62,23 +60,18 @@ vi.mock('../infrastructure/admin-user-adapter', async (importOriginal) => {
 
   return {
     ...actual,
-    adminCreateUser: vi.fn(),
-    adminResetUserPassword: vi.fn(),
+    adminResetUserPasswordToDefault: vi.fn(),
     adminSetUserStatus: vi.fn(),
-    adminUpdateUserProfile: vi.fn(),
     fetchAdminUsers: vi.fn(),
   };
 });
 
 const fetchUsersMock = vi.mocked(adminUserAdapter.fetchAdminUsers);
-const createMock = vi.mocked(adminUserAdapter.adminCreateUser);
-const updateProfileMock = vi.mocked(adminUserAdapter.adminUpdateUserProfile);
 const setStatusMock = vi.mocked(adminUserAdapter.adminSetUserStatus);
-const resetPasswordMock = vi.mocked(adminUserAdapter.adminResetUserPassword);
+const resetPasswordMock = vi.mocked(adminUserAdapter.adminResetUserPasswordToDefault);
 
-const CREATE_DIALOG_TITLE = '创建用户';
 /** 后端固定安全提示由 adapter 返回，面板逐字透传，密码本身不出现在任何反馈中 */
-const RESET_NOTICE = '密码已重置，请通过线下渠道告知用户新的初始密码。';
+const RESET_NOTICE = '密码已重置为系统默认密码，请提示用户下次登录后立即修改。';
 const STALE_FAILURE_MESSAGE = '上一代目标的失败信息';
 const BUSINESS_FAILURE_MESSAGE = '后端返回的业务失败信息';
 
@@ -162,8 +155,8 @@ function makePage(): AdminUserListPage {
   return { items: [ROW_A, ROW_B], page: 1, pageSize: 10, total: 2 };
 }
 
-async function renderPanel() {
-  render(<AdminUserManagementPanel />);
+async function renderPanel(adminLevel: number | null = 1) {
+  render(<AdminUserManagementPanel adminLevel={adminLevel} />);
 
   await screen.findByText(ROW_A.nickname);
   await screen.findByText(ROW_B.nickname);
@@ -181,44 +174,7 @@ function clickDialogButton(dialog: HTMLElement, name: RegExp) {
 }
 
 /**
- * 打开创建弹窗并填出一份能通过校验的草稿。
- *
- * 角色下拉的选项渲染在 body 层的 portal 里，而列表中「客户」角色标签也是同一段文本，
- * 因此选项必须限定在已展开的 `.ant-select-dropdown` 内查找，不能直接 `screen.findByText`。
- */
-async function openCreateDialogAndFill(draft: { loginName: string; nickname: string }) {
-  fireEvent.click(screen.getByRole('button', { name: /创\s*建\s*用\s*户/ }));
-
-  const dialog = getDialog(CREATE_DIALOG_TITLE);
-  fireEvent.mouseDown(within(dialog).getByRole('combobox'));
-
-  const dropdown = await waitFor(() => {
-    const opened = document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');
-
-    if (opened === null) {
-      throw new Error('创建弹窗的角色下拉未展开');
-    }
-
-    return opened as HTMLElement;
-  });
-  fireEvent.click(within(dropdown).getByText('客户'));
-
-  fireEvent.change(within(dialog).getByLabelText('昵称'), { target: { value: draft.nickname } });
-  fireEvent.change(within(dialog).getByLabelText('登录名（登录凭据之一）'), {
-    target: { value: draft.loginName },
-  });
-  fireEvent.change(within(dialog).getByLabelText('初始密码'), {
-    target: { value: 'Valid-create9!' },
-  });
-  fireEvent.change(within(dialog).getByLabelText('确认初始密码'), {
-    target: { value: 'Valid-create9!' },
-  });
-
-  return dialog;
-}
-
-/**
- * 三个行级弹窗的面板侧守卫用例参数化：会话代次与 accountId 双重核对的代码路径同构，
+ * 两个行级弹窗的面板侧守卫用例参数化：会话代次与 accountId 双重核对的代码路径同构，
  * 但每个弹窗各有一条独立代次，逐个覆盖才能抓住「用错了 key」这类接线错误。
  */
 type RowDialogCase = {
@@ -229,11 +185,12 @@ type RowDialogCase = {
   assertFreshSuccessFeedback: () => void;
   /** 断言陈旧成功的反馈点名了实际提交的目标，不会被误读成当前弹窗的结果 */
   assertStaleSuccessFeedback: () => void;
-  /** 新鲜失败后断言「已填内容被保留」，证明失败路径没有顺带清空草稿 */
+  /** 新鲜失败后断言「当前弹窗仍停留在目标本身」，证明失败路径没有改写会话身份 */
   assertDraftPreserved: (dialog: HTMLElement) => void;
   dialogTitleOf: (nickname: string) => string;
   name: string;
   okButtonName: RegExp;
+  /** 让弹窗进入可提交态；纯确认弹窗无需填表 */
   prepareSubmit: (dialog: HTMLElement) => void;
   /** 让 adapter 停在 in-flight，返回稍后 resolve 成功的把手 */
   stubPendingSuccess: () => { resolve: () => Promise<void> };
@@ -242,51 +199,6 @@ type RowDialogCase = {
 };
 
 const ROW_DIALOG_CASES: RowDialogCase[] = [
-  {
-    actionName: /编\s*辑\s*资\s*料/,
-    adapterCallCount: () => updateProfileMock.mock.calls.length,
-    assertDraftPreserved: (dialog) => {
-      expect(within(dialog).getByLabelText('昵称')).toHaveValue('面板改的昵称');
-    },
-    assertFreshSuccessFeedback: () => {
-      expect(message.success).toHaveBeenCalledWith('资料已更新。');
-    },
-    assertStaleSuccessFeedback: () => {
-      expect(message.success).toHaveBeenCalledWith('「用户A」的资料已更新。');
-      expect(message.success).not.toHaveBeenCalledWith('资料已更新。');
-    },
-    dialogTitleOf: (nickname) => `编辑资料：${nickname}`,
-    name: '资料编辑',
-    okButtonName: /保\s*存/,
-    prepareSubmit: (dialog) => {
-      // 差异提交要求至少改动一项，否则走弹窗内的同步校验而不发请求
-      fireEvent.change(within(dialog).getByLabelText('昵称'), {
-        target: { value: '面板改的昵称' },
-      });
-    },
-    stubPendingSuccess: () => {
-      const pending = deferred<AdminUserCommandResult>();
-      updateProfileMock.mockReturnValue(pending.promise);
-
-      return {
-        resolve: async () => {
-          await act(async () => {
-            pending.resolve({ ok: true });
-          });
-        },
-      };
-    },
-    stubResolvedFailure: (failureMessage) => {
-      updateProfileMock.mockResolvedValue({
-        ok: false,
-        reason: 'forbidden',
-        message: failureMessage,
-      });
-    },
-    stubResolvedSuccess: () => {
-      updateProfileMock.mockResolvedValue({ ok: true });
-    },
-  },
   {
     actionName: /启\s*停/,
     adapterCallCount: () => setStatusMock.mock.calls.length,
@@ -333,8 +245,10 @@ const ROW_DIALOG_CASES: RowDialogCase[] = [
     actionName: /重\s*置\s*密\s*码/,
     adapterCallCount: () => resetPasswordMock.mock.calls.length,
     assertDraftPreserved: (dialog) => {
-      // 密码字段只断言仍持有输入，不回显、不进入任何成功反馈
-      expect(within(dialog).getByLabelText('新密码')).toHaveValue('Valid-reset9!');
+      // 确认弹窗没有可填字段：失败后仍停留在同一个目标说明上
+      const text = dialog.textContent ?? '';
+      expect(text).toContain(ROW_A.nickname);
+      expect(text).toContain(String(ROW_A.accountId));
     },
     assertFreshSuccessFeedback: () => {
       expect(message.success).toHaveBeenCalledWith(RESET_NOTICE, 6);
@@ -346,16 +260,10 @@ const ROW_DIALOG_CASES: RowDialogCase[] = [
       expect(message.success).toHaveBeenCalledTimes(1);
     },
     dialogTitleOf: (nickname) => `重置密码：${nickname}`,
-    name: '密码重置',
-    okButtonName: /重\s*置\s*密\s*码/,
-    prepareSubmit: (dialog) => {
-      fireEvent.change(within(dialog).getByLabelText('新密码'), {
-        target: { value: 'Valid-reset9!' },
-      });
-      fireEvent.change(within(dialog).getByLabelText('确认新密码'), {
-        target: { value: 'Valid-reset9!' },
-      });
-    },
+    name: '重置为默认密码',
+    okButtonName: /重\s*置\s*为\s*默\s*认\s*密\s*码/,
+    // 纯确认弹窗：点开即处于可提交态，不收集任何密码字段
+    prepareSubmit: () => undefined,
     stubPendingSuccess: () => {
       const pending = deferred<AdminUserPasswordResetResult>();
       resetPasswordMock.mockReturnValue(pending.promise);
@@ -389,8 +297,6 @@ describe('管理员用户管理面板的弹窗会话代次守卫', () => {
       .mockClear();
     fetchUsersMock.mockReset();
     fetchUsersMock.mockResolvedValue(makePage());
-    createMock.mockReset();
-    updateProfileMock.mockReset();
     setStatusMock.mockReset();
     resetPasswordMock.mockReset();
   });
@@ -468,7 +374,7 @@ describe('管理员用户管理面板的弹窗会话代次守卫', () => {
   });
 
   it.each(ROW_DIALOG_CASES)(
-    '$name：正常失败在当前弹窗显示后端业务错误原文、保留已填内容且不刷新列表',
+    '$name：正常失败在当前弹窗显示后端业务错误原文、保留当前目标且不刷新列表',
     async (testCase) => {
       // 面板此前把 kind === 'ok' 且 result.ok === false 的业务失败塌缩成空 message，
       // 弹窗因此什么都不显示；这里逐个钉住业务失败必须带原文回到弹窗
@@ -485,147 +391,65 @@ describe('管理员用户管理面板的弹窗会话代次守卫', () => {
       expect(isDialogOpen(testCase.dialogTitleOf(ROW_A.nickname))).toBe(true);
       testCase.assertDraftPreserved(dialog);
       expect(message.success).not.toHaveBeenCalled();
-      // 业务失败不刷新列表，避免把用户正在编辑的 baseline 悄悄换掉
+      // 业务失败不刷新列表，避免把用户正在查看的 baseline 悄悄换掉
       expect(fetchUsersMock).toHaveBeenCalledTimes(1);
     },
   );
 
-  it('资料编辑：提交进行中把目标切到 B，A 的失败晚到不污染 B 的错误区', async () => {
-    const pending = deferred<AdminUserCommandResult>();
-    updateProfileMock.mockReturnValue(pending.promise);
+  it('重置为默认密码：提交进行中把目标切到 B，A 的失败晚到不污染 B 的错误区', async () => {
+    const pending = deferred<AdminUserPasswordResetResult>();
+    resetPasswordMock.mockReturnValue(pending.promise);
     await renderPanel();
 
-    clickRowAction(ROW_A.nickname, /编\s*辑\s*资\s*料/);
-    const dialogOfA = getDialog('编辑资料：用户A');
-    fireEvent.change(within(dialogOfA).getByLabelText('昵称'), {
-      target: { value: '面板改的昵称' },
-    });
-    clickDialogButton(dialogOfA, /保\s*存/);
-    await waitFor(() => expect(updateProfileMock).toHaveBeenCalledTimes(1));
+    clickRowAction(ROW_A.nickname, /重\s*置\s*密\s*码/);
+    const dialogOfA = getDialog('重置密码：用户A');
+    clickDialogButton(dialogOfA, /重\s*置\s*为\s*默\s*认\s*密\s*码/);
+    await waitFor(() => expect(resetPasswordMock).toHaveBeenCalledTimes(1));
 
-    clickRowAction(ROW_B.nickname, /编\s*辑\s*资\s*料/);
-    const dialogOfB = getDialog('编辑资料：用户B');
+    clickRowAction(ROW_B.nickname, /重\s*置\s*密\s*码/);
+    const dialogOfB = getDialog('重置密码：用户B');
 
     await act(async () => {
-      pending.resolve({ ok: false, reason: 'forbidden', message: STALE_FAILURE_MESSAGE });
+      pending.resolve({ ok: false, reason: 'reset-failed', message: STALE_FAILURE_MESSAGE });
     });
 
     expect(screen.queryByText(STALE_FAILURE_MESSAGE)).toBeNull();
     expect(dialogOfB.textContent).not.toContain(STALE_FAILURE_MESSAGE);
     // B 的弹窗既没被旧结果关掉，也没被写进旧错误
-    expect(isDialogOpen('编辑资料：用户B')).toBe(true);
+    expect(isDialogOpen('重置密码：用户B')).toBe(true);
     expect(message.success).not.toHaveBeenCalled();
   });
 
-  it('资料编辑：切走再切回 A，A 的旧失败不显示在新一代 A 弹窗', async () => {
-    const pending = deferred<AdminUserCommandResult>();
-    updateProfileMock.mockReturnValue(pending.promise);
+  it('重置为默认密码：提交进行中重入同一个目标不推进会话代次，成功续体仍能正常收尾', async () => {
+    // 目标 accountId 未变 = 同一次会话仍在继续：面板不得推进代次，
+    // 否则一次重入就会让在途提交被误判成陈旧，弹窗留在原地而反馈已发
+    const pending = deferred<AdminUserPasswordResetResult>();
+    resetPasswordMock.mockReturnValue(pending.promise);
     await renderPanel();
 
-    clickRowAction(ROW_A.nickname, /编\s*辑\s*资\s*料/);
-    const staleDialog = getDialog('编辑资料：用户A');
-    fireEvent.change(within(staleDialog).getByLabelText('昵称'), {
-      target: { value: '面板改的昵称' },
-    });
-    clickDialogButton(staleDialog, /保\s*存/);
-    await waitFor(() => expect(updateProfileMock).toHaveBeenCalledTimes(1));
+    clickRowAction(ROW_A.nickname, /重\s*置\s*密\s*码/);
+    const dialog = getDialog('重置密码：用户A');
+    clickDialogButton(dialog, /重\s*置\s*为\s*默\s*认\s*密\s*码/);
+    await waitFor(() => expect(resetPasswordMock).toHaveBeenCalledTimes(1));
 
-    // 切走再切回：accountId 完全相同，只有会话代次能区分这是新一代 A 弹窗
-    clickRowAction(ROW_B.nickname, /编\s*辑\s*资\s*料/);
-    clickRowAction(ROW_A.nickname, /编\s*辑\s*资\s*料/);
-    const reopenedDialog = getDialog('编辑资料：用户A');
+    clickRowAction(ROW_A.nickname, /重\s*置\s*密\s*码/);
+    expect(isDialogOpen('重置密码：用户A')).toBe(true);
 
     await act(async () => {
-      pending.resolve({ ok: false, reason: 'forbidden', message: STALE_FAILURE_MESSAGE });
+      pending.resolve({ ok: true, notice: RESET_NOTICE });
     });
 
-    // 旧失败既不得凭空出现在新一代弹窗，也不得关掉它
-    expect(screen.queryByText(STALE_FAILURE_MESSAGE)).toBeNull();
-    expect(reopenedDialog.textContent).not.toContain(STALE_FAILURE_MESSAGE);
-    expect(isDialogOpen('编辑资料：用户A')).toBe(true);
-    expect(message.success).not.toHaveBeenCalled();
-    // 失败不触发 reload，也不重放请求
-    expect(fetchUsersMock).toHaveBeenCalledTimes(1);
-    expect(updateProfileMock).toHaveBeenCalledTimes(1);
-  }, 15_000);
-
-  it('创建用户：正常成功关闭弹窗、给出成功反馈并刷新列表', async () => {
-    createMock.mockResolvedValue({ ok: true });
-    await renderPanel();
-
-    const dialog = await openCreateDialogAndFill({
-      loginName: 'mock_create_a',
-      nickname: '新建用户甲',
-    });
-    clickDialogButton(dialog, /创\s*建/);
-
-    await waitFor(() =>
-      expect(createMock).toHaveBeenCalledWith(
-        expect.objectContaining({ nickname: '新建用户甲', role: 'CUSTOMER' }),
-      ),
-    );
-    await waitFor(() => expect(isDialogOpen(CREATE_DIALOG_TITLE)).toBe(false));
-    expect(message.success).toHaveBeenCalledWith('用户已创建。');
-    await waitFor(() => expect(fetchUsersMock.mock.calls.length).toBeGreaterThanOrEqual(2));
-  });
-
-  it('创建用户：正常失败在当前弹窗显示后端业务错误原文并保留草稿', async () => {
-    createMock.mockResolvedValue({
-      ok: false,
-      reason: 'duplicate-credential',
-      message: BUSINESS_FAILURE_MESSAGE,
-    });
-    await renderPanel();
-
-    const dialog = await openCreateDialogAndFill({
-      loginName: 'mock_create_a',
-      nickname: '新建用户甲',
-    });
-    clickDialogButton(dialog, /创\s*建/);
-
-    expect(await within(dialog).findByText(BUSINESS_FAILURE_MESSAGE)).toBeTruthy();
-    expect(isDialogOpen(CREATE_DIALOG_TITLE)).toBe(true);
-    expect(within(dialog).getByLabelText('昵称')).toHaveValue('新建用户甲');
-    expect(message.success).not.toHaveBeenCalled();
-    expect(fetchUsersMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('创建用户：提交进行中重入创建入口不推进会话代次，成功续体仍能正常收尾', async () => {
-    // 创建弹窗没有 accountId，`open` 就是它的会话身份；重入时 open 不变 ⇒ 弹窗侧不推进，
-    // 面板必须给出同一个答案。否则两层判定相反：成功反馈照发、弹窗却不关闭，
-    // 已创建成功的草稿凭空留在表单里让用户再提一次
-    const pending = deferred<AdminUserCommandResult>();
-    createMock.mockReturnValue(pending.promise);
-    await renderPanel();
-
-    const dialog = await openCreateDialogAndFill({
-      loginName: 'mock_create_a',
-      nickname: '新建用户甲',
-    });
-    clickDialogButton(dialog, /创\s*建/);
-    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole('button', { name: /创\s*建\s*用\s*户/ }));
-    expect(isDialogOpen(CREATE_DIALOG_TITLE)).toBe(true);
-
-    await act(async () => {
-      pending.resolve({ ok: true });
-    });
-
-    // 会话未被推进 ⇒ 这是新鲜成功：关闭弹窗、通用措辞、刷新列表
-    expect(message.success).toHaveBeenCalledWith('用户已创建。');
-    expect(message.success).not.toHaveBeenCalledWith('「新建用户甲」已创建。');
-    await waitFor(() => expect(isDialogOpen(CREATE_DIALOG_TITLE)).toBe(false));
+    expect(message.success).toHaveBeenCalledWith(RESET_NOTICE, 6);
+    await waitFor(() => expect(isDialogOpen('重置密码：用户A')).toBe(false));
     await waitFor(() => expect(fetchUsersMock.mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 });
 
 /**
- * PR6 S2 把工具栏换成公共 `FilterBar`、把空/失败/加载态换成公共状态组件之后，
- * 面板这一层的查询语义与只读表现必须有钉住它的用例：筛选或翻页要下发后端并回到第 1 页，
- * 空/失败态要真的走公共容器且重试能再次发请求，SUPER_ADMIN 行不得出现任何可写入口。
+ * 面板这一层的查询语义、可见范围提示与只读表现必须有钉住它的用例：筛选或翻页要下发后端
+ * 并回到第 1 页，空/失败态要真的走公共容器且重试能再次发请求，页面只开放 V6.4 允许的动作。
  * 这里只驱动 UI，断言落在 adapter 收到的查询对象与 DOM 上，不改动业务/权限实现，
- * 也不重复同文件已覆盖的弹窗会话代次守卫。
+ * 也不重复文件上半部分已覆盖的弹窗会话代次守卫。
  */
 describe('管理员用户管理面板的列表查询与只读表现', () => {
   beforeEach(() => {
@@ -708,6 +532,33 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
     });
   });
 
+  it('角色筛选只提供普通用户值域，不提供管理员角色', async () => {
+    await renderPanel();
+    openFilterPanel();
+
+    const select = screen.getByText('角色筛选').closest('.ant-select') as HTMLElement;
+    fireEvent.mouseDown(within(select).getByRole('combobox'));
+
+    const dropdown = await waitFor(() => {
+      const opened = document.querySelector(
+        '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
+      );
+
+      if (opened === null) {
+        throw new Error('角色筛选下拉未展开');
+      }
+
+      return opened as HTMLElement;
+    });
+
+    const labels = Array.from(dropdown.querySelectorAll('.ant-select-item-option')).map((node) =>
+      (node.textContent ?? '').trim(),
+    );
+
+    expect(labels).toEqual(['工程师', '客户']);
+    expect(labels).not.toContain('超级管理员');
+  });
+
   it('状态筛选把单值状态下发后端并把页码回到第 1 页', async () => {
     await renderPanel();
     openFilterPanel();
@@ -736,7 +587,7 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
 
   it('列表就绪但无数据时渲染公共空态，且不渲染表格', async () => {
     fetchUsersMock.mockResolvedValue({ items: [], page: 1, pageSize: 10, total: 0 });
-    render(<AdminUserManagementPanel />);
+    render(<AdminUserManagementPanel adminLevel={1} />);
 
     await waitFor(() => {
       expect(document.querySelector('.empty-state')).not.toBeNull();
@@ -749,7 +600,7 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
     fetchUsersMock.mockRejectedValueOnce(
       new GraphQLIngressError({ message: 'load failed', type: 'network' }),
     );
-    render(<AdminUserManagementPanel />);
+    render(<AdminUserManagementPanel adminLevel={1} />);
 
     await waitFor(() => {
       expect(document.querySelector('.error-state')).not.toBeNull();
@@ -763,7 +614,42 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
     expect(document.querySelector('.error-state')).toBeNull();
   });
 
-  it('SUPER_ADMIN 行保持只读：三个写入口全部禁用且不提供角色编辑入口', async () => {
+  it('页面不提供创建、资料编辑、删除与改角色入口，行操作只剩启停与重置密码', async () => {
+    await renderPanel();
+
+    expect(screen.queryByRole('button', { name: /创\s*建\s*用\s*户/ })).toBeNull();
+
+    const row = screen.getByText(ROW_A.nickname).closest('tr') as HTMLElement;
+    const labels = within(row)
+      .getAllByRole('button')
+      .map((button) => (button.textContent ?? '').replace(/\s+/g, ''));
+
+    expect(labels).toContain('启停');
+    expect(labels).toContain('重置密码');
+    expect(labels).not.toContain('编辑资料');
+    expect(labels).not.toContain('删除');
+    expect(labels.some((label) => label.includes('角色'))).toBe(false);
+  });
+
+  it('一级管理员看到「全部公司」范围提示', async () => {
+    await renderPanel(1);
+
+    expect(screen.getByText('当前账号可查看并管理全部公司的普通用户账号。')).toBeInTheDocument();
+  });
+
+  it('二级管理员看到「本公司」范围提示', async () => {
+    await renderPanel(2);
+
+    expect(screen.getByText('当前账号仅可查看并管理本公司的普通用户账号。')).toBeInTheDocument();
+  });
+
+  it('会话等级缺失时不承诺任何范围，交由服务端判定', async () => {
+    await renderPanel(null);
+
+    expect(screen.getByText('当前账号的管理范围以服务端判定为准。')).toBeInTheDocument();
+  });
+
+  it('SUPER_ADMIN 行保持只读：两个写入口全部禁用且不提供角色编辑入口', async () => {
     const superAdminRow: AdminUserRow = {
       ...ROW_A,
       accountId: 910003,
@@ -777,11 +663,11 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
       pageSize: 10,
       total: 1,
     });
-    render(<AdminUserManagementPanel />);
+    render(<AdminUserManagementPanel adminLevel={1} />);
 
     const row = (await screen.findByText('超管')).closest('tr') as HTMLElement;
 
-    // 只读行的三个写入口被 Tooltip 包裹：按可访问名做角色查询会退化成对整棵子树的
+    // 只读行的写入口被 Tooltip 包裹：按可访问名做角色查询会退化成对整棵子树的
     // 可见性/样式计算，在这里慢到秒级。改为一次取出行内按钮再按可见文案定位，
     // 断言仍然落在 disabled 属性与入口存在性上，不依赖 class 名。
     const rowButtons = within(row).getAllByRole('button');
@@ -798,9 +684,11 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
       return button;
     }
 
-    expect(rowButton('编辑资料')).toBeDisabled();
     expect(rowButton('启停')).toBeDisabled();
     expect(rowButton('重置密码')).toBeDisabled();
+    expect(rowButtons.some((candidate) => (candidate.textContent ?? '').includes('编辑资料'))).toBe(
+      false,
+    );
     expect(rowButtons.some((candidate) => (candidate.textContent ?? '').includes('角色'))).toBe(
       false,
     );
@@ -855,7 +743,7 @@ describe('管理员用户管理面板的联系方式区块（完整值提示与�
   function renderSingleRow(row: AdminUserRow) {
     fetchUsersMock.mockResolvedValue({ items: [row], page: 1, pageSize: 10, total: 1 });
 
-    return render(<AdminUserManagementPanel />);
+    return render(<AdminUserManagementPanel adminLevel={1} />);
   }
 
   /** Tooltip 浮层渲染在 body 层 portal 里，按浮层文本断言（触发元素自身也是完整文本） */

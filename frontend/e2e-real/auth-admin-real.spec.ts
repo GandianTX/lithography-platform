@@ -8,8 +8,9 @@
 //   E2E_ALLOW_PHYSICAL_CLEANUP=1 E2E_AUTH_ADMIN_JWT_EXPIRES_IN=45s npm run test:e2e:auth-admin-real
 //
 // 覆盖的真实场景（全部以 DOM / URL / 后端权威视图断言，不把截图或录像当作自动化断言）：
-//   a. 三角色真实登录进入各自默认首页；管理员通过页面创建 ENGINEER / CUSTOMER，
-//      核对角色单值三字段、状态 ACTIVE、刷新后列表一致；
+//   a. 三角色真实登录进入各自默认首页；管理员经真实 API 创建 ENGINEER / CUSTOMER（V6.4
+//      08.4 起页面不再提供创建入口），页面列表核对角色与状态、刷新后一致，
+//      并核对角色单值三字段、状态 ACTIVE；
 //   b. 本轮专用普通账号停用后：不能登录、旧 Token 下一次真实受保护请求被拒、前端会话被清理
 //      跳登录页；重新启用后新登录可访问受保护 Query；
 //   c. 真实签发 Token 自然过期后，由真实受保护 Query 触发会话清理并回到登录页；
@@ -50,6 +51,7 @@ import {
   mysqlQuery,
   readBackendEnv,
   realGraphqlCall,
+  runGuardedFixtureWrite,
 } from '../e2e/helpers/real-backend';
 
 /** 管理员用户管理页路径（经主导航进入，不手工直达） */
@@ -183,56 +185,38 @@ async function searchAdminUser(page: Page, keyword: string): Promise<void> {
 }
 
 /**
- * 通过创建弹窗创建一名普通用户（角色仅 ENGINEER / CUSTOMER）。
+ * 经真实管理员 API 创建一名普通用户（角色仅 ENGINEER / CUSTOMER）。
  *
- * 评审 P1：点击创建前先登记响应监听，adminCreateUser 成功响应一返回即解析数据库生成 ID 并
- * **立即**登记到本轮清理清单（返回登记项）——早于弹窗关闭等待与调用方任何后续查询 / 断言；
- * 即便本函数后续的 `expect(dialog).toBeHidden()` 或调用方后续步骤失败，精确 ID 也已进入清单。
+ * V6.4 08.4 起管理页不再提供创建入口，本用例只验证「创建后列表展示正确」，
+ * 因此建号改走与页面同一条后端契约的真实 GraphQL 调用。
+ * 创建响应一返回即解析数据库生成 ID 并**立即**登记到本轮清理清单（返回登记项），
+ * 早于调用方任何后续查询 / 断言；即便后续步骤失败，精确 ID 也已进入清单。
  */
-async function createUserViaPage(
-  page: Page,
+async function createUserViaApi(
+  env: Record<string, string>,
   input: {
     role: DedicatedAccountRole;
-    roleLabel: string;
     nickname: string;
     loginName: string;
-    password: string;
     organizationId: number;
   },
   registry: RegisteredDedicatedAccount[],
 ): Promise<RegisteredDedicatedAccount> {
-  await page.getByRole('button', { name: '创建用户' }).click();
-
-  const dialog = page.getByRole('dialog');
-
-  await expect(dialog).toBeVisible();
-  // AntD Select 交互按仓库先例（engineer-repair-request-real / reference-document-real）：
-  // 点击 label 不展开下拉，必须先点 combobox 打开下拉。这里必须用 `.ant-select-item-option`
-  // （title 为中文标签）而非 getByRole('option')：AntD 6 的 role="option" 节点是零宽内部
-  // 元素（实测 rect 宽为 0），Playwright 判为不可见并一直等待。
-  await dialog.getByRole('combobox').click();
-  await page
-    .locator(`.ant-select-dropdown .ant-select-item-option[title="${input.roleLabel}"]`)
-    .click();
-  await dialog.getByLabel('昵称', { exact: true }).fill(input.nickname);
-  await dialog.getByLabel('登录名（登录凭据之一）', { exact: true }).fill(input.loginName);
-  await dialog.getByLabel('初始密码', { exact: true }).fill(input.password);
-  await dialog.getByLabel('确认初始密码', { exact: true }).fill(input.password);
-  // 点击创建前先登记响应监听：创建响应一返回即捕获精确 ID 并立即登记清理目标
-  const createResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes('/graphql') &&
-      response.request().method() === 'POST' &&
-      (response.request().postData() ?? '').includes('adminCreateUser'),
+  const createdResponse = await realGraphqlCall(
+    env,
+    ADMIN_CREATE_USER_MUTATION,
+    {
+      input: {
+        initialPassword: CREATE_PASSWORD,
+        loginName: input.loginName,
+        nickname: input.nickname,
+        role: input.role,
+      },
+    },
+    'mock_super_admin',
   );
 
-  // 弹窗底部确认按钮的可访问名是「创 建」：AntD 会在两个汉字间自动插空格
-  //（与登录按钮 /登\s*录/ 同一现象），故不能用 exact: true 的「创建」。
-  await dialog.getByRole('button', { name: /创\s*建/ }).click();
-
-  const createResponse = await createResponsePromise;
-  const createBody = (await createResponse.json().catch(() => null)) as unknown;
-  const registered = registerCreatedDedicatedAccount(registry, createBody, {
+  return registerCreatedDedicatedAccount(registry, createdResponse.body, {
     accessGroup: [input.role],
     loginName: input.loginName,
     nickname: input.nickname,
@@ -241,10 +225,6 @@ async function createUserViaPage(
     userInfoEmail: null,
     userState: 'ACTIVE',
   });
-
-  await expect(dialog).toBeHidden();
-
-  return registered;
 }
 
 /** Node 侧真实登录尝试：不抛错，返回是否拿到 Token 与首个错误大类（供负例断言用） */
@@ -375,6 +355,154 @@ async function setUserStatusViaApi(
   }
 }
 
+/** 共享合成 seed 管理员：两例都要以其身份经真实 API 跨公司建号，因而都需要一级管理员等级 */
+const SEED_ADMIN_LOGIN_NAME = 'mock_super_admin';
+
+/**
+ * 共享 seed 管理员等级状态：`originalLevel` 为运行前原值（NULL 以 `'NULL'` 表达），
+ * `appliedLevel` 记录本轮是否真的写入了一级（null 表示运行前已是一级，无需复原）。
+ */
+type SeedAdminLevelState = {
+  readonly accountId: number;
+  readonly loginName: string;
+  readonly originalLevel: string;
+  readonly actingOrganizationId: number;
+  appliedLevel: '1' | null;
+};
+
+/**
+ * 读取共享 seed 管理员的账号事实（只读，不写任何夹具）：真实账号 ID、登录名、
+ * 原始 admin_level（含 NULL）与本轮建号会用到的现有组织事实。
+ *
+ * 目标必须按登录名唯一命中，任何异常都失败关闭——后续等级写入只认这里核验过的账号。
+ */
+function readSeedAdminLevelState(): SeedAdminLevelState {
+  const rows = mysqlQuery(
+    `SELECT id, login_name, COALESCE(admin_level, 'NULL') FROM base_user_account WHERE login_name = '${SEED_ADMIN_LOGIN_NAME}'`,
+  ).split('\n');
+
+  if (rows.length !== 1) {
+    throw new Error(
+      `共享管理员 ${SEED_ADMIN_LOGIN_NAME} 账号行数异常（期望 1，实际 ${rows.length}），拒绝继续`,
+    );
+  }
+
+  const [rawId, loginName, originalLevel] = rows[0].split('\t');
+  const accountId = Number(rawId);
+
+  if (!Number.isSafeInteger(accountId) || accountId <= 0) {
+    throw new Error(`共享管理员账号 ID 异常，拒绝继续：${JSON.stringify(rawId)}`);
+  }
+
+  if (loginName !== SEED_ADMIN_LOGIN_NAME) {
+    throw new Error(`共享管理员登录名回读不一致：${JSON.stringify(loginName)}`);
+  }
+
+  if (originalLevel !== 'NULL' && originalLevel !== '1' && originalLevel !== '2') {
+    throw new Error(
+      `共享管理员原始 admin_level 值异常，拒绝继续：${JSON.stringify(originalLevel)}`,
+    );
+  }
+
+  return {
+    accountId,
+    loginName,
+    originalLevel,
+    actingOrganizationId: readActingOrganizationId(SEED_ADMIN_LOGIN_NAME),
+    appliedLevel: null,
+  };
+}
+
+/**
+ * 建号前置：把已核验的共享 seed 管理员精确设成一级（二级会被目标归属拒绝，建号必然失败）。
+ *
+ * - 运行前已是一级：不写夹具，`appliedLevel` 保持 null，收尾步骤自然跳过复原；
+ * - 否则按登录名精确写入（经 `runGuardedFixtureWrite` 的授权门 + 专用库门 + 实际
+ *   `DATABASE()` 门），写入成功即先登记「已写入」事实，再回读账号 ID 与等级——
+ *   这样即使后续回读校验抛错，收尾步骤仍会按原值复原，不会把等级留在改动后的状态。
+ */
+function prepareSeedAdminLevelOne(
+  env: Record<string, string>,
+  state: SeedAdminLevelState,
+): SeedAdminLevelState {
+  if (state.originalLevel === '1') {
+    return state;
+  }
+
+  runGuardedFixtureWrite(
+    env,
+    `UPDATE base_user_account SET admin_level = 1 WHERE login_name = '${SEED_ADMIN_LOGIN_NAME}'`,
+  );
+  state.appliedLevel = '1';
+
+  const rows = mysqlQuery(
+    `SELECT id, COALESCE(admin_level, 'NULL') FROM base_user_account WHERE login_name = '${SEED_ADMIN_LOGIN_NAME}'`,
+  ).split('\n');
+
+  if (rows.length !== 1) {
+    throw new Error(`一级写入后共享管理员账号行数异常（期望 1，实际 ${rows.length}）`);
+  }
+
+  const [rawId, level] = rows[0].split('\t');
+
+  if (Number(rawId) !== state.accountId) {
+    throw new Error(`一级写入后账号 ID 变化，拒绝继续：期望 ${state.accountId}，实际 ${rawId}`);
+  }
+
+  if (level !== '1') {
+    throw new Error(`一级写入后回读等级不符，拒绝继续：${JSON.stringify(level)}`);
+  }
+
+  return state;
+}
+
+/**
+ * 独立复原步骤：把共享 seed 管理员等级恢复为运行前原值（含 NULL）。
+ *
+ * 只在确有写入时执行。复原前先核对目标仍是同一账号、且仍是本轮写入的一级，
+ * 避免覆盖掉别处的并发改动或误指向其它行；恢复后回读，等级必须回到原始值。
+ */
+function restoreSeedAdminLevel(env: Record<string, string>, state: SeedAdminLevelState): void {
+  if (state.appliedLevel === null) {
+    return;
+  }
+
+  const rows = mysqlQuery(
+    `SELECT id, COALESCE(admin_level, 'NULL') FROM base_user_account WHERE login_name = '${SEED_ADMIN_LOGIN_NAME}'`,
+  ).split('\n');
+
+  if (rows.length !== 1) {
+    throw new Error(`复原前共享管理员账号行数异常（期望 1，实际 ${rows.length}）`);
+  }
+
+  const [rawId, currentLevel] = rows[0].split('\t');
+
+  if (Number(rawId) !== state.accountId) {
+    throw new Error(`复原前账号 ID 已变化，拒绝覆盖：期望 ${state.accountId}，实际 ${rawId}`);
+  }
+
+  if (currentLevel !== '1') {
+    throw new Error(`复原前等级不是本轮写入的一级，拒绝覆盖：${JSON.stringify(currentLevel)}`);
+  }
+
+  const restoreValue = state.originalLevel === 'NULL' ? 'NULL' : state.originalLevel;
+
+  runGuardedFixtureWrite(
+    env,
+    `UPDATE base_user_account SET admin_level = ${restoreValue} WHERE login_name = '${SEED_ADMIN_LOGIN_NAME}'`,
+  );
+
+  const restoredLevel = mysqlQuery(
+    `SELECT COALESCE(admin_level, 'NULL') FROM base_user_account WHERE login_name = '${SEED_ADMIN_LOGIN_NAME}'`,
+  );
+
+  if (restoredLevel !== state.originalLevel) {
+    throw new Error(
+      `等级复原回读不符：期望 ${state.originalLevel}，实际 ${JSON.stringify(restoredLevel)}`,
+    );
+  }
+}
+
 test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', () => {
   test('三种角色真实登录进入各自默认首页，并能经主导航进入对应入口', async ({ browser }) => {
     // 三次真实登录 + 三次导航，串行门禁下需要独立预算
@@ -408,7 +536,7 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     }
   });
 
-  test('管理员通过页面创建 ENGINEER 与 CUSTOMER：角色字段正确、状态 ACTIVE、刷新后一致', async ({
+  test('管理员经真实 API 创建 ENGINEER 与 CUSTOMER：页面列表角色与状态正确、刷新后一致', async ({
     page,
   }) => {
     // 两次真实创建 + 两次刷新核对 + API/SQL 三字段核验，串行门禁下需要独立预算
@@ -422,13 +550,16 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     preflightDedicatedAccountCleanup();
     await assertApiSqlSameDatabase(env);
 
-    // 本轮登记的精确清理目标（创建响应一返回即登记，见 createUserViaPage / 评审 P1）
+    // 本轮登记的精确清理目标（创建响应一返回即登记，见 createUserViaApi）
     const created: RegisteredDedicatedAccount[] = [];
+    // 建号前置：先只读核验共享管理员账号与原始等级，实际设置一级放在用例体内、创建请求之前
+    const seedAdmin = readSeedAdminLevelState();
     // adminCreateUser 会把 ENGINEER / CUSTOMER 绑定管理员当前有效组织，预期值取自该事实
-    const actingOrganizationId = readActingOrganizationId('mock_super_admin');
+    const actingOrganizationId = seedAdmin.actingOrganizationId;
 
     await runWithCleanup(
       async () => {
+        prepareSeedAdminLevelOne(env, seedAdmin);
         await loginViaUi(page, 'mock_super_admin', env.MOCK_SEED_PASSWORD, '/admin');
         await enterAdminUsersFromNav(page);
 
@@ -439,16 +570,14 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
           const loginName = buildDedicatedLoginName();
           const nickname = `E2E 创建-${roleCase.role}-${Date.now()}`;
 
-          // 创建辅助函数在 adminCreateUser 成功响应返回时立即登记精确 ID（早于弹窗关闭等待）
-          const registered = await createUserViaPage(
-            page,
+          // 创建辅助函数在 adminCreateUser 成功响应返回时立即登记精确 ID
+          const registered = await createUserViaApi(
+            env,
             {
               loginName,
               nickname,
               organizationId: actingOrganizationId,
-              password: CREATE_PASSWORD,
               role: roleCase.role,
-              roleLabel: roleCase.roleLabel,
             },
             created,
           );
@@ -498,12 +627,15 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
       },
       // 两个账号同批提交：整批预检通过才允许首删，任一目标不符或后序 DELETE 失败整批回滚
       () => cleanupRegisteredDedicatedAccounts(created),
+      // 等级复原与账号清理互不依赖：任一失败都不阻断另一步，主断言同时失败时错误全部保留
+      { label: '恢复共享管理员等级', run: () => restoreSeedAdminLevel(env, seedAdmin) },
     );
 
-    // 无关哨兵数据保持不变：共享 Mock 账号在专用账号清理后仍各 1 行
+    // 无关哨兵数据保持不变：共享 Mock 账号在专用账号清理后仍各 1 行，管理员等级回到运行前原值
     expect(readAccountCountByLoginName('mock_super_admin')).toBe(1);
     expect(readAccountCountByLoginName('mock_engineer_chen')).toBe(1);
     expect(readAccountCountByLoginName('mock_customer_alpha')).toBe(1);
+    expect(readSeedAdminLevelState().originalLevel).toBe(seedAdmin.originalLevel);
   });
 
   test('专用普通账号停用后：不能登录、旧 Token 受保护请求被拒并清理前端会话；重新启用后可登录访问受保护 Query', async ({
@@ -524,11 +656,14 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
     const loginName = buildDedicatedLoginName();
     // 本轮登记的精确清理目标（创建响应一返回即登记，见下）
     const created: RegisteredDedicatedAccount[] = [];
+    // 建号前置：先只读核验共享管理员账号与原始等级，实际设置一级放在用例体内、创建请求之前
+    const seedAdmin = readSeedAdminLevelState();
     // adminCreateUser 会把该 ENGINEER 绑定管理员当前有效组织，预期值取自该事实
-    const actingOrganizationId = readActingOrganizationId('mock_super_admin');
+    const actingOrganizationId = seedAdmin.actingOrganizationId;
 
     await runWithCleanup(
       async () => {
+        prepareSeedAdminLevelOne(env, seedAdmin);
         const createdResponse = await realGraphqlCall(
           env,
           ADMIN_CREATE_USER_MUTATION,
@@ -614,13 +749,16 @@ test.describe('auth & admin real backend flow（隔离库 lithography_e2e）', (
 
         assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
       },
-      // 收尾拆为两个独立步骤（最小修复计划）：账号清理失败也不阻断关闭；关闭失败不覆盖清理错误；
-      // 主断言同时失败时三类错误全部保留并通过步骤标签区分（见 runWithCleanup 聚合语义）
+      // 收尾拆为三个独立步骤（最小修复计划 + 提审前收口）：任一步失败都不阻断其它步骤；
+      // 主断言同时失败时全部错误保留并通过步骤标签区分（见 runWithCleanup 聚合语义）
       { label: '账号清理', run: () => cleanupRegisteredDedicatedAccounts(created) },
+      { label: '恢复共享管理员等级', run: () => restoreSeedAdminLevel(env, seedAdmin) },
       { label: '关闭浏览器上下文', run: () => context.close() },
     );
 
+    // 共享 Mock 管理员仍 1 行，且等级回到运行前原值
     expect(readAccountCountByLoginName('mock_super_admin')).toBe(1);
+    expect(readSeedAdminLevelState().originalLevel).toBe(seedAdmin.originalLevel);
   });
 
   test('真实签发 Token 自然过期后：受保护 Query 触发会话清理并回到登录页', async ({ page }) => {

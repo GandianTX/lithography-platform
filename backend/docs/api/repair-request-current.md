@@ -28,6 +28,7 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 - `engineerRepairRequests(scope: String = "ALL", pagination: PaginationArgs!, filter: EngineerRepairRequestFilterInput): RepairRequestEngineerPaginatedDTO`（ENGINEER / SUPER_ADMIN 准入）
 - `engineerRepairRequest(id: Int!): RepairRequestDetailDTO`（ENGINEER / SUPER_ADMIN 准入）
 - `equipmentModels: [EquipmentModelDTO]`（创建申请表单与工程师列表筛选共用）
+- `repairServiceOrganizationSearch(pagination: PaginationArgs!, keyword: String): RepairServiceOrganizationPageDTO`（仅 CUSTOMER 准入；客户身份与可信公司归属由 Usecase 精确复核）
 
 `SUPER_ADMIN` 按 roleHierarchy 继承读准入；写权限不随读权限继承，见「写权限矩阵」。
 
@@ -66,6 +67,43 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 详情 DTO 富集字段（客户入口为 null，工程师入口非空）：`customerNickname`、`customerCompanyName`、`acceptanceViewStatus`、`acceptedEngineerNickname`。客户详情不返回上述富集字段值。
 
 前端依据 `acceptanceViewStatus` 与会话业务角色控制操作可见性：AVAILABLE + 精确 ENGINEER 展示接单；MINE + 精确 ENGINEER 展示回复；TAKEN_BY_OTHER 与 SUPER_ADMIN 只读。视图状态缺失时前端失败关闭为只读。后端不依赖前端隐藏按钮，写用例独立失败关闭。
+
+## 报修服务公司候选（任务 03 选择器）
+
+`repairServiceOrganizationSearch` 供客户提交报修时选择维修服务方，准入与资格口径如下：
+
+- 会话：必须已登录；Token 缺失 / 失效 / Session 失效返回 `UNAUTHENTICATED`。
+- 身份：`roles` 必须含 `CUSTOMER`，且请求期可信 `activeRole` 精确为 `CUSTOMER`；活动角色是管理员、或活动角色缺失的历史多角色账号一律 `FORBIDDEN`（角色集合含 `CUSTOMER` 不等于当前以客户身份使用）。
+- 归属：必须已补齐可信公司归属（请求期会话给出的 `customerOrganizationId`），缺失即 `FORBIDDEN`；不按客户端自报公司名猜测，拒绝先于任何公司查询。
+- 资格：只返回 `status = ACTIVE` 且 `is_service_provider = true` 的公司；与注册候选的 `ACTIVE + is_managed_company` 口径相互独立，两个资格字段互不参与对方判断。
+- 分页：仅支持 `OFFSET`（`mode` 为非 `OFFSET` 返回分页错误）；`page` 下限归一为 1，`pageSize` 截断到 50；排序固定为名称、主键升序。
+- 字段：只返回选择所需的 `id` / `name` / `shortName`，不含组织编码、联系信息、受管归类或成员数据。
+
+任务 03 可直接使用的用例（`keyword` 缺省表示不过滤，长度上限 100）：
+
+```graphql
+query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: String) {
+  repairServiceOrganizationSearch(pagination: $pagination, keyword: $keyword) {
+    items {
+      id
+      name
+      shortName
+    }
+    total
+    page
+    pageSize
+  }
+}
+```
+
+```json
+{
+  "pagination": { "mode": "OFFSET", "page": 1, "pageSize": 20 },
+  "keyword": "上海"
+}
+```
+
+任务 08 提供候选查询，查询本身不建立关联。当前 `createRepairRequest` 不接收维修服务公司 ID。任务 03 接入报修提交时，须在写入事务内按 `status = ACTIVE` 且 `is_service_provider = true` 重新校验所选公司资格。
 
 ## 写权限矩阵
 

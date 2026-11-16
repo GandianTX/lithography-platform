@@ -503,6 +503,19 @@ const jwtConfig = registerAs('jwt', () => ({
 }));
 
 /**
+ * 生成管理员默认密码重置配置（任务 08.4）
+ *
+ * 缺失时**不提供默认值**：重置用例在运行期以 `ADMIN_USER_DEFAULT_PASSWORD_NOT_CONFIGURED`
+ * 拒绝，避免把硬编码弱口令变成可用凭据。本键同时不进入生产必填清单——它只影响单个
+ * 管理动作，缺失时按失败关闭处理即可，不应阻断整个服务启动。
+ */
+const adminAccountResetConfig: ConfigFactory = () => ({
+  adminAccountReset: {
+    defaultPassword: getOptionalEnv('ADMIN_DEFAULT_RESET_PASSWORD'),
+  },
+});
+
+/**
  * 生成分页配置
  */
 const paginationConfig = () => ({
@@ -530,6 +543,7 @@ const paginationConfig = () => ({
         aiWorkerConfig,
         emailDeliveryConfig,
         referenceDocumentStorageConfig,
+        adminAccountResetConfig,
         jwtConfig,
         paginationConfig,
       ],

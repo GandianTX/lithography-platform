@@ -5,6 +5,7 @@ import {
   IdentityTypeEnum,
   LoginTypeEnum,
 } from '@app-types/models/account.types';
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { UserState } from '@app-types/models/user-info.types';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -23,7 +24,12 @@ import {
   updateOwnedExpectation,
 } from '../utils/e2e-scoped-cleanup';
 import { runE2eTeardown } from '../utils/e2e-teardown';
-import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createTestAccount,
+  seedTestAccounts,
+  testAccountsConfig,
+  type TestAccountConfig,
+} from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
   requireOrganizationId,
@@ -32,32 +38,35 @@ import {
 } from '../utils/test-organizations';
 
 /**
- * P2-1B：管理员用户管理五个 GraphQL 操作（adminUsers + 四个写操作）的真实 MySQL E2E。
+ * 任务 08.4 普通用户管理（真实 MySQL + 真实 GraphQL）E2E。
  *
- * 与定向单测（`src/usecases/account/*.spec.ts` / `src/modules/account/queries/*.spec.ts`）的分工：
- * - 单测断言**协作契约**（写入顺序、事务边界、单元素数组、盐口径、日志脱敏）；
- * - 本文件断言**跨进程可观察事实**：三源角色列在真实数据库里确实一致、双字段状态确实同步、
- *   重置后的密码确实能通过公开登录入口验证、错误确实以契约大类出现在 `extensions.code` 上。
+ * 覆盖的管理面：
+ * - 读面 `adminUsers`：只返回普通 `ENGINEER` / `CUSTOMER`，管理员账号不在输出中；
+ *   一级管理员全平台范围，二级管理员仅请求期可信公司 A；范围先于分页与计数下推
+ *   （`total` 与 `items` 同源），不通过总数或详情泄漏外公司账号；
+ * - 写面 `adminSetUserStatus`：一级可跨公司启停普通账号，二级仅本公司；
+ *   管理员账号只读，管理员不能停用自己，不可转换状态在协议层被拒；
+ * - 默认密码重置 `adminResetUserPasswordToDefault`：不接受客户端密码，服务端读取
+ *   `ADMIN_DEFAULT_RESET_PASSWORD`，同事务写哈希并置强制改密；配置缺失或不合法时
+ *   失败关闭；回包不含密码；
+ * - 遗留入口 `adminCreateUser` / `adminUpdateUserProfile` / `adminResetUserPassword`
+ *   保留签名与一级成功路径，但二级管理员一律 `FORBIDDEN`。
+ *
+ * 夹具模型（两级管理员 + 两家公司）：
+ * - 公司 A（`E2E_ADMUSER_PRIMARY`，CLIENT）：二级管理员可信公司；
+ * - 公司 B（`E2E_ADMUSER_PEER`，PEER）：外公司；
+ * - `admin`：`admin_level=1`，A 公司 SUPER_ADMIN 成员（遗留创建需要解析管理员组织）；
+ * - `peerAdmin`：`admin_level=2`，仅 A 公司 SUPER_ADMIN 成员；
+ * - `guestPrimary`(CUSTOMER,A)、`staffPrimary`(ENGINEER,A)；
+ * - `guestSecondary`(CUSTOMER,B)、`staffSecondary`(ENGINEER,B)；
+ * - `noOrgEngineer`：ENGINEER，无任何成员关系（一级可见，二级不可见/不可写）。
  *
  * 造数纪律：
- * - 全部写入只走 GraphQL 业务入口，不直接改库绕过 Usecase；数据库只用于**只读核验**；
- * - 只 seed 三源可收敛的账号（`accessGroup` 恰为单元素）；`emptyRoles` / `staffGuest` /
- *   `hybridStaff` 的多元素或空 `access_group` 会让 `adminUsers` 整次失败关闭，故不在本文件 seed；
- * - 会改变账号事实的用例尽量自建幂等前置并在结尾恢复；两处**已知且刻意**的组内顺序依赖：
- *   「创建用户」的唯一性冲突用例依赖同组先创建出被冲突的账号；「资料编辑」会永久改写
- *   `guestPrimary` 的昵称/公司/电话/联系邮箱且不恢复——因此列表的昵称维度刻意改用全程
- *   只读的 `staffPrimary`。跨 describe 仍可任意调序或单独 `.only`。
- * - `SUPER_ADMIN` 目标只读保护在 E2E 上有一处不可达：本文件只 seed 一个 SUPER_ADMIN，
- *   它同时是发起方自己，故 `adminSetUserStatus` 命中的是「不能停用自己」这条先行显式拒绝，
- *   而非目标保护分支（其余写操作命中的是真·目标保护）。补齐它需要第二个 SUPER_ADMIN，
- *   而改 Seed 与直接改库都在禁止清单内，故该分支由
- *   `src/usecases/account/admin-set-user-status.usecase.spec.ts` 覆盖，不在此违规造数。
- * - 同理，「资料缺失或三源无法收敛时整次查询失败关闭」需要脏行才能触发，而造脏行只能
- *   绕过业务入口直接改库，故该分支由 `admin-user.query.service.spec.ts` 覆盖，不在本文件重现。
- *
- * 角色口径：普通用户角色只在管理员创建账号时单选一次，创建后角色只读；
- * 不存在任何公开角色修改 Mutation（`adminChangeUserRole` / `updateAccessGroup` 均已下线），
- * 角色只作列表展示与筛选。
+ * - 直接改库只有两处，且都没有业务入口：a) 两个管理员的 `admin_level`；b) 客户账号的
+ *   `base_user_info.customer_organization_id`（客户归属列，二级管理员归属判定的读面来源）；
+ *   其余写操作全部经 GraphQL 业务入口，数据库只用于只读核验；
+ * - 会改变账号事实的用例自建幂等前置并在结尾恢复；因清理台账不记录密码与
+ *   `must_change_password`，默认密码重置用例会在同一用例内把目标改回非强制改密状态。
  */
 
 type GqlError = {
@@ -89,6 +98,8 @@ type AdminUserListPayload = {
 };
 
 type ResetPasswordPayload = { accountId: number; isUpdated: boolean; notice: string };
+
+type LoginPayload = { accessToken?: string; restriction?: SessionRestriction };
 
 type SchemaRootPayload = {
   // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -145,9 +156,27 @@ const ADMIN_RESET_USER_PASSWORD_MUTATION = `
   }
 `;
 
+const ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION = `
+  mutation AdminResetUserPasswordToDefault($input: AdminResetUserPasswordToDefaultInput!) {
+    adminResetUserPasswordToDefault(input: $input) { accountId isUpdated notice }
+  }
+`;
+
 const LOGIN_MUTATION = `
   mutation Login($input: AuthLoginInput!) {
     login(input: $input) { accessToken }
+  }
+`;
+
+const LOGIN_WITH_RESTRICTION_MUTATION = `
+  mutation Login($input: AuthLoginInput!) {
+    login(input: $input) { accessToken restriction }
+  }
+`;
+
+const CHANGE_MY_PASSWORD_MUTATION = `
+  mutation ChangeMyPassword($input: ChangeMyPasswordInput!) {
+    changeMyPassword(input: $input) { isUpdated notice }
   }
 `;
 
@@ -164,12 +193,13 @@ const SCHEMA_ROOT_QUERY = `
   }
 `;
 
-/** 管理员写操作全清单（授权准入与错误契约用例共用同一枚举，避免漏测某个 operation） */
+/** 管理员写操作全清单（授权准入与契约面用例共用，避免漏测某个 operation） */
 const ADMIN_WRITE_MUTATIONS = [
   'adminCreateUser',
   'adminUpdateUserProfile',
   'adminSetUserStatus',
   'adminResetUserPassword',
+  'adminResetUserPasswordToDefault',
 ] as const;
 
 /** 创建路径专用账号：与 seed 账号名不重叠，便于按登录名做确定性计数 */
@@ -184,8 +214,48 @@ const EMAIL_ONLY_INITIAL_PASSWORD = 'E2eEmailOnly@2026';
 const RESET_NEW_PASSWORD = 'E2eResetPwd@2027';
 const RESET_INACTIVE_PASSWORD = 'E2eInactivePwd@2028';
 
+/** 默认密码重置后，目标用户自助改密使用的新密码（与默认密码不同即可） */
+const AFTER_DEFAULT_RESET_PASSWORD_PRIMARY = 'E2eAfterDefaultA@2026';
+const AFTER_DEFAULT_RESET_PASSWORD_PEER = 'E2eAfterDefaultB@2026';
+
 /** 必然不存在的账号 ID：用于核验 not-found 不塌缩为 UNAUTHENTICATED */
 const MISSING_ACCOUNT_ID = 2147483000;
+
+/**
+ * P1-01 归属反例矩阵专用账号（仅本规格使用，按登录名精确清理）。
+ *
+ * 归属口径：客户看 `base_user_info.customer_organization_id`，工程师看本公司有效
+ * `memberRole=ENGINEER` 成员关系。三个账号刻意让两个来源互相矛盾：
+ * - `fkPeerMembershipPrimary`：资料归 B 公司、成员关系在 A 公司 → 二级管理员既不可见也不可写；
+ * - `fkPrimaryNoMembership`：资料归 A 公司、无任何成员关系 → 二级管理员可见且可写；
+ * - `noFkMembershipPrimary`：资料归属为空、成员关系在 A 公司 → 二级管理员既不可见也不可写。
+ */
+const ownershipMatrixAccounts = {
+  fkPeerMembershipPrimary: {
+    loginName: 'testadmuserfkpeer',
+    loginEmail: 'admuser.fk.peer@example.com',
+    loginPassword: 'testAdmUserFkPeer@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  fkPrimaryNoMembership: {
+    loginName: 'testadmuserfkprimary',
+    loginEmail: 'admuser.fk.primary@example.com',
+    loginPassword: 'testAdmUserFkPrimary@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  noFkMembershipPrimary: {
+    loginName: 'testadmuserfkempty',
+    loginEmail: 'admuser.fk.empty@example.com',
+    loginPassword: 'testAdmUserFkEmpty@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+} satisfies Record<string, TestAccountConfig>;
 
 /**
  * 授权准入用例的探测凭据。
@@ -196,24 +266,46 @@ const FORBIDDEN_PROBE_LOGIN_EMAIL = 'e2e.forbidden.probe@example.com';
 
 const DEFAULT_PAGINATION = { mode: 'OFFSET', page: 1, pageSize: 20 };
 
-describe('管理员用户管理 (e2e)', () => {
+/**
+ * 运行期默认密码（部署侧配置）。为空时重置用例必须失败关闭；
+ * 非空时执行完整重置 + 强制改密链路。
+ *
+ * 该值不能写进 `.env.e2e`（默认密码属于部署配置，E2E 只能由进程级环境变量注入），
+ * 因此验证命令需显式带 `ADMIN_DEFAULT_RESET_PASSWORD=...`。
+ */
+const configuredDefaultPassword = ((): string | null => {
+  const value = process.env.ADMIN_DEFAULT_RESET_PASSWORD;
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+})();
+
+const defaultPasswordForReset = configuredDefaultPassword ?? '';
+
+describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let previousIntrospectionEnabled: string | undefined;
 
   let adminToken: string;
+  /** 二级管理员（可信公司 A）：读面范围、本公司写与遗留入口拒绝的发起方 */
+  let peerAdminToken: string;
   /** CUSTOMER 会话：授权准入用例的拒绝方，自身账号事实不被本文件修改 */
   let guestToken: string;
-  /** ENGINEER 会话：授权准入用例的拒绝方，自身账号事实不被本文件修改 */
+  /** ENGINEER 会话：授权准入用例的拒绝方 */
   let staffToken: string;
 
   let adminAccountId: number;
-  let guestAccountId: number;
+  let peerAdminAccountId: number;
+  let guestPrimaryAccountId: number;
   let guestSecondaryAccountId: number;
-  /** 外组织目标：存在但不在管理员可信组织内（无成员关系） */
+  let staffPrimaryAccountId: number;
+  let staffSecondaryAccountId: number;
   let noOrgEngineerAccountId: number;
-  /** 无有效组织成员关系的 SUPER_ADMIN 会话：操作者组织缺失的失败关闭用例 */
-  let noOrgAdminToken: string;
+  /** P1-01 归属反例矩阵：资料归 B、成员在 A 的客户 */
+  let fkPeerMembershipPrimaryAccountId: number;
+  /** P1-01 归属反例矩阵：资料归 A、无成员关系的客户 */
+  let fkPrimaryNoMembershipAccountId: number;
+  /** P1-01 归属反例矩阵：资料归属为空、成员在 A 的客户 */
+  let noFkMembershipPrimaryAccountId: number;
 
   // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMUSER');
@@ -245,16 +337,20 @@ describe('管理员用户管理 (e2e)', () => {
             name: 'E2E 甲方组织（账号管理）',
             kind: 'CLIENT',
           },
+          {
+            organizationCode: suiteOrganizationCodes.peer,
+            name: 'E2E 乙方组织（账号管理）',
+            kind: 'PEER',
+          },
         ],
         accounts: [
           testAccountsConfig.admin,
+          testAccountsConfig.peerAdmin,
           testAccountsConfig.guestPrimary,
           testAccountsConfig.guestSecondary,
           testAccountsConfig.staffPrimary,
           testAccountsConfig.staffSecondary,
-          // 外组织目标（存在但不在管理员可信组织内）与无组织操作者
           testAccountsConfig.noOrgEngineer,
-          testAccountsConfig.peerAdmin,
         ]
           .map(toResidueAccountFingerprint)
           .concat(
@@ -274,7 +370,8 @@ describe('管理员用户管理 (e2e)', () => {
               nickname: 'E2E 仅邮箱账号',
               accessGroup: [IdentityTypeEnum.CUSTOMER],
             },
-          ),
+          )
+          .concat(Object.values(ownershipMatrixAccounts).map(toResidueAccountFingerprint)),
       },
       helper: 'admin-user-management.e2e-spec beforeAll 预清理',
     });
@@ -282,19 +379,28 @@ describe('管理员用户管理 (e2e)', () => {
       dataSource,
       includeKeys: [
         'admin',
+        'peerAdmin',
         'guestPrimary',
         'guestSecondary',
         'staffPrimary',
         'staffSecondary',
         'noOrgEngineer',
-        'peerAdmin',
       ],
       ownership,
     });
 
-    // 组织隔离：管理员「只能管理本组织」。写路径按可信组织校验目标归属，列表按组织内
-    // 有效账号收窄——因此被管理/被查看的账号都必须是管理员的同组织有效成员。
-    // 管理员创建工程师时绑定其当前可信组织（S2c）：管理员必须先有 ACTIVE 成员关系。
+    // P1-01 归属反例矩阵账号：资料列与成员关系刻意互相矛盾，按登录名精确登记清理
+    const matrixAccountIds: number[] = [];
+    for (const config of Object.values(ownershipMatrixAccounts)) {
+      const created = await createTestAccount(dataSource, null, config, ownership);
+      matrixAccountIds.push(created.accountId);
+    }
+    [
+      fkPeerMembershipPrimaryAccountId,
+      fkPrimaryNoMembershipAccountId,
+      noFkMembershipPrimaryAccountId,
+    ] = matrixAccountIds;
+
     const organizationIds = await seedTestOrganizations({
       dataSource,
       organizations: [
@@ -303,28 +409,36 @@ describe('管理员用户管理 (e2e)', () => {
           name: 'E2E 甲方组织（账号管理）',
           kind: 'CLIENT',
         },
+        {
+          organizationCode: suiteOrganizationCodes.peer,
+          name: 'E2E 乙方组织（账号管理）',
+          kind: 'PEER',
+        },
       ],
       ownership,
     });
     primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
+
     await seedTestMemberships({
       dataSource,
       organizationIdsByCode: organizationIds,
       ownership,
       memberships: [
+        // 一级管理员的成员公司只服务遗留创建入口「绑定管理员当前有效组织」，不参与全范围授权
         {
           accountLoginName: testAccountsConfig.admin.loginName,
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'SUPER_ADMIN',
         },
-        // 被管理目标与列表可见账号：同组织有效成员，角色与各自账号身份一致
+        // 二级管理员：唯一有效 SUPER_ADMIN 成员关系决定请求期可信公司 A
+        {
+          accountLoginName: testAccountsConfig.peerAdmin.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+        // 写入范围与列表可见账号：A / B 各一名客户与工程师
         {
           accountLoginName: testAccountsConfig.guestPrimary.loginName,
-          organizationCode: suiteOrganizationCodes.primary,
-          memberRole: 'CUSTOMER',
-        },
-        {
-          accountLoginName: testAccountsConfig.guestSecondary.loginName,
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'CUSTOMER',
         },
@@ -334,17 +448,116 @@ describe('管理员用户管理 (e2e)', () => {
           memberRole: 'ENGINEER',
         },
         {
+          accountLoginName: testAccountsConfig.guestSecondary.loginName,
+          organizationCode: suiteOrganizationCodes.peer,
+          memberRole: 'CUSTOMER',
+        },
+        {
           accountLoginName: testAccountsConfig.staffSecondary.loginName,
-          organizationCode: suiteOrganizationCodes.primary,
+          organizationCode: suiteOrganizationCodes.peer,
           memberRole: 'ENGINEER',
         },
+        // P1-01 归属反例矩阵：这两名客户的成员关系在 A 公司，但资料归属列分别指向 B / 空，
+        // 按「客户看资料列」的口径二级管理员都不可见/不可写；fkPrimaryNoMembership 刻意不建成员关系
+        {
+          accountLoginName: ownershipMatrixAccounts.fkPeerMembershipPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: ownershipMatrixAccounts.noFkMembershipPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        // noOrgEngineer 刻意不建成员关系：一级可见，二级不可见/不可写
       ],
     });
+
+    adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
+    peerAdminAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.peerAdmin.loginName,
+    );
+    guestPrimaryAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.guestPrimary.loginName,
+    );
+    guestSecondaryAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.guestSecondary.loginName,
+    );
+    staffPrimaryAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.staffPrimary.loginName,
+    );
+    staffSecondaryAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.staffSecondary.loginName,
+    );
+    noOrgEngineerAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.noOrgEngineer.loginName,
+    );
+
+    // 直接改库（列没有业务入口）：管理员等级决定请求期作用域；
+    // 客户归属列决定二级管理员读面可见性与写面归属，两者都必须在签发 Token 之前完成。
+    const accountRepository = dataSource.getRepository(AccountEntity);
+    await accountRepository.update(adminAccountId, { adminLevel: 1 });
+    await accountRepository.update(peerAdminAccountId, { adminLevel: 2 });
+
+    const peerOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.peer);
+    const userInfoRepository = dataSource.getRepository(UserInfoEntity);
+    /**
+     * 客户资料归属写入 + 台账预期同步。
+     *
+     * 清理预检会在「客户资料 → 待删组织」存在引用边时要求台账登记可信归属预期，
+     * 因此每次受控写入后必须立刻 `updateOwnedExpectation`，不得在清理阶段回读补齐。
+     *
+     * 条件必须按 `accountId` 列写：`base_user_info.id` 与 `account_id` 是两列，
+     * 其他规格合法推进资料表自增后两列会错位，按数字主键写入会改到别的资料行。
+     * 命中数必须恰好一条，回读实际归属（含 null）一致后才登记台账预期。
+     */
+    const assignCustomerOrganization = async (
+      accountId: number,
+      customerOrganizationId: number | null,
+    ): Promise<void> => {
+      const result = await userInfoRepository.update({ accountId }, { customerOrganizationId });
+
+      if (result.affected !== 1) {
+        throw new Error(
+          `资料归属写入未恰好命中 1 行（账号 ${accountId}，实际 ${String(result.affected)}）`,
+        );
+      }
+
+      const row = await userInfoRepository.findOne({ where: { accountId } });
+
+      if (!row || row.customerOrganizationId !== customerOrganizationId) {
+        throw new Error(
+          `资料归属回读与写入不一致（账号 ${accountId}，期望 ${String(customerOrganizationId)}，` +
+            `实际 ${String(row?.customerOrganizationId ?? null)}）`,
+        );
+      }
+
+      updateOwnedExpectation(ownership, 'account', accountId, { customerOrganizationId });
+    };
+
+    // A/B 两家公司的客户按资料列归属；反例矩阵按注释里的矛盾组合写入
+    await assignCustomerOrganization(guestPrimaryAccountId, primaryOrganizationId);
+    await assignCustomerOrganization(guestSecondaryAccountId, peerOrganizationId);
+    await assignCustomerOrganization(fkPeerMembershipPrimaryAccountId, peerOrganizationId);
+    await assignCustomerOrganization(fkPrimaryNoMembershipAccountId, primaryOrganizationId);
+    // noFkMembershipPrimary 保持 customer_organization_id = NULL（成员关系在 A 也不算归属）
+    await assignCustomerOrganization(noFkMembershipPrimaryAccountId, null);
 
     adminToken = await login({
       app,
       loginName: testAccountsConfig.admin.loginName,
       loginPassword: testAccountsConfig.admin.loginPassword,
+    });
+    peerAdminToken = await login({
+      app,
+      loginName: testAccountsConfig.peerAdmin.loginName,
+      loginPassword: testAccountsConfig.peerAdmin.loginPassword,
     });
     guestToken = await login({
       app,
@@ -355,27 +568,6 @@ describe('管理员用户管理 (e2e)', () => {
       app,
       loginName: testAccountsConfig.staffPrimary.loginName,
       loginPassword: testAccountsConfig.staffPrimary.loginPassword,
-    });
-
-    adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
-    guestAccountId = await getAccountIdByLoginName(
-      dataSource,
-      testAccountsConfig.guestPrimary.loginName,
-    );
-    guestSecondaryAccountId = await getAccountIdByLoginName(
-      dataSource,
-      testAccountsConfig.guestSecondary.loginName,
-    );
-    noOrgEngineerAccountId = await getAccountIdByLoginName(
-      dataSource,
-      testAccountsConfig.noOrgEngineer.loginName,
-    );
-
-    // 无组织操作者：SUPER_ADMIN 权限足够，但没有任何 ACTIVE 成员关系
-    noOrgAdminToken = await login({
-      app,
-      loginName: testAccountsConfig.peerAdmin.loginName,
-      loginPassword: testAccountsConfig.peerAdmin.loginPassword,
     });
   });
 
@@ -428,11 +620,10 @@ describe('管理员用户管理 (e2e)', () => {
   };
 
   /**
-   * 五个 operation 的调用入口：`token` 一律为**必填首参**，刻意不提供 `?? adminToken` 默认值。
+   * 管理员 operation 的调用入口：`token` 一律为**必填首参**，刻意不提供默认值。
    *
    * 授权类用例一旦漏传 token 就会静默以管理员身份执行，把「应被拒绝」变成「成功」，
-   * 而失败信息只表现为 code 不匹配，极难定位到「token 没传」这个真因；
-   * 提为必填首参后，漏传即编译错误。
+   * 而失败信息只表现为 code 不匹配，极难定位到「token 没传」这个真因。
    */
   const listAdminUsers = (
     token: string,
@@ -532,10 +723,20 @@ describe('管理员用户管理 (e2e)', () => {
       token,
     });
 
+  const resetPasswordToDefault = (
+    token: string,
+    accountId: number,
+  ): Promise<GqlBody<{ adminResetUserPasswordToDefault?: ResetPasswordPayload }>> =>
+    gql({
+      query: ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION,
+      variables: { input: { accountId } },
+      token,
+    });
+
   const attemptLogin = (
     loginName: string,
     loginPassword: string,
-  ): Promise<GqlBody<{ login?: { accessToken?: string } }>> =>
+  ): Promise<GqlBody<{ login?: LoginPayload }>> =>
     gql({
       query: LOGIN_MUTATION,
       variables: {
@@ -546,6 +747,35 @@ describe('管理员用户管理 (e2e)', () => {
           audience: AudienceTypeEnum.DESKTOP,
         },
       },
+    });
+
+  /** Web 登录入口形态：显式允许受限会话，用于获取强制改密会话。 */
+  const loginWithRestriction = (
+    loginName: string,
+    loginPassword: string,
+  ): Promise<GqlBody<{ login?: LoginPayload }>> =>
+    gql({
+      query: LOGIN_WITH_RESTRICTION_MUTATION,
+      variables: {
+        input: {
+          loginName,
+          loginPassword,
+          type: LoginTypeEnum.PASSWORD,
+          audience: AudienceTypeEnum.DESKTOP,
+          allowRestrictedSession: true,
+        },
+      },
+    });
+
+  const changeMyPassword = (
+    token: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<GqlBody<{ changeMyPassword?: { isUpdated: boolean; notice: string } }>> =>
+    gql({
+      query: CHANGE_MY_PASSWORD_MUTATION,
+      variables: { input: { currentPassword, newPassword } },
+      token,
     });
 
   const expectSingleError = (body: GqlBody<unknown>, code: string, errorCode?: string): void => {
@@ -596,14 +826,18 @@ describe('管理员用户管理 (e2e)', () => {
     dataSource.getRepository(AccountEntity).count({ where });
 
   /** 幂等自建前置：同状态时 Usecase 零写入，故可无条件调用 */
-  const ensureStatus = async (accountId: number, status: AccountStatus): Promise<void> => {
-    const body = await setUserStatus(adminToken, { accountId, status });
+  const ensureStatus = async (
+    token: string,
+    accountId: number,
+    status: AccountStatus,
+  ): Promise<void> => {
+    const body = await setUserStatus(token, { accountId, status });
     expect(body.errors).toBeUndefined();
     expect(body.data?.adminSetUserStatus?.status).toBe(status);
   };
 
   /**
-   * 五个管理员 operation 的调用闭包表：授权准入用例共用，避免漏测某个 operation。
+   * 六个管理员 operation 的调用闭包表：授权准入用例共用，避免漏测某个 operation。
    * token 位于首参且无默认值，确保「谁在调用」在用例里一目了然。
    */
   const allAdminOperations = (params: {
@@ -646,30 +880,30 @@ describe('管理员用户管理 (e2e)', () => {
           newPassword: RESET_NEW_PASSWORD,
         }),
     ],
+    [
+      'adminResetUserPasswordToDefault',
+      () => resetPasswordToDefault(params.token, params.targetAccountId),
+    ],
   ];
 
-  /** 三个写操作对不存在目标的调用闭包表 */
-  const missingTargetOperations = (): Array<[string, () => Promise<GqlBody<unknown>>]> => [
+  /** 三个遗留写操作对指定目标的调用闭包表 */
+  const legacyWriteOperationsAgainst = (
+    token: string,
+    targetAccountId: number,
+    nickname: string,
+    newPassword: string,
+  ): Array<[string, () => Promise<GqlBody<unknown>>]> => [
     [
       'adminUpdateUserProfile',
-      () =>
-        updateUserProfile(adminToken, { accountId: MISSING_ACCOUNT_ID, nickname: '不存在目标' }),
+      () => updateUserProfile(token, { accountId: targetAccountId, nickname }),
     ],
     [
       'adminSetUserStatus',
-      () =>
-        setUserStatus(adminToken, {
-          accountId: MISSING_ACCOUNT_ID,
-          status: AccountStatus.INACTIVE,
-        }),
+      () => setUserStatus(token, { accountId: targetAccountId, status: AccountStatus.INACTIVE }),
     ],
     [
       'adminResetUserPassword',
-      () =>
-        resetUserPassword(adminToken, {
-          accountId: MISSING_ACCOUNT_ID,
-          newPassword: RESET_NEW_PASSWORD,
-        }),
+      () => resetUserPassword(token, { accountId: targetAccountId, newPassword }),
     ],
   ];
 
@@ -704,7 +938,7 @@ describe('管理员用户管理 (e2e)', () => {
     ];
 
     it.each(unauthorizedSessions)(
-      '%s 会话调用全部五个管理员接口均返回 FORBIDDEN 且不产生任何写入',
+      '%s 会话调用全部六个管理员接口均返回 FORBIDDEN 且不产生任何写入',
       async (_label, tokenOf) => {
         const operations = allAdminOperations({
           token: tokenOf(),
@@ -746,27 +980,37 @@ describe('管理员用户管理 (e2e)', () => {
   // ---------------------------------------------------------------------------
 
   describe('列表查询 adminUsers', () => {
-    it('SUPER_ADMIN 成功查询列表：seed 账号全部可见、分页字段自洽、口令哈希不外泄', async () => {
-      const body = await listAdminUsers(adminToken);
+    it('一级管理员全范围：A/B 与无组织普通账号均可见，管理员账号不在读面输出', async () => {
+      const body = await listAdminUsers(adminToken, {
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 100 },
+      });
       expect(body.errors).toBeUndefined();
       const page = body.data?.adminUsers;
       expect(page).toBeDefined();
       expect(page?.page).toBe(1);
-      expect(page?.pageSize).toBe(20);
-      // 账号总量远小于 pageSize，故 items 与 total 必须同源于同一次查询
+      expect(page?.pageSize).toBe(100);
+      // 范围、可见角色与分页 COUNT 必须同源：单页容量足够时 items 与 total 必须相等
       expect(page?.items.length ?? 0).toBe(page?.total ?? -1);
       expect(page?.total ?? 0).toBeGreaterThanOrEqual(5);
 
       const loginNames = (page?.items ?? []).map((item) => item.loginName);
       expect(loginNames).toEqual(
         expect.arrayContaining([
-          testAccountsConfig.admin.loginName,
           testAccountsConfig.guestPrimary.loginName,
           testAccountsConfig.guestSecondary.loginName,
           testAccountsConfig.staffPrimary.loginName,
           testAccountsConfig.staffSecondary.loginName,
+          testAccountsConfig.noOrgEngineer.loginName,
         ]),
       );
+
+      // 读面只输出普通账号：任何 SUPER_ADMIN（含发起方自己）都不得出现
+      for (const item of page?.items ?? []) {
+        expect([IdentityTypeEnum.ENGINEER, IdentityTypeEnum.CUSTOMER]).toContain(item.role);
+        expect(item.role).not.toBe(IdentityTypeEnum.SUPER_ADMIN);
+      }
+      expect(loginNames).not.toContain(testAccountsConfig.admin.loginName);
+      expect(loginNames).not.toContain(testAccountsConfig.peerAdmin.loginName);
 
       // DTO 形态与契约一致，且 role / status 均为已注册枚举成员
       const dtoKeys = [
@@ -784,7 +1028,6 @@ describe('管理员用户管理 (e2e)', () => {
       ];
       for (const item of page?.items ?? []) {
         expect(Object.keys(item).sort()).toEqual(dtoKeys);
-        expect(Object.values(IdentityTypeEnum)).toContain(item.role);
         expect(Object.values(AccountStatus)).toContain(item.status);
       }
 
@@ -792,6 +1035,39 @@ describe('管理员用户管理 (e2e)', () => {
       const adminRow = await readAccountRow(adminAccountId);
       expect(adminRow?.loginPassword).toBeTruthy();
       expect(JSON.stringify(body)).not.toContain(adminRow?.loginPassword ?? '__absent__');
+    });
+
+    it('二级管理员只返回可信公司 A 内普通账号：B 公司与无组织账号均不可见', async () => {
+      const body = await listAdminUsers(peerAdminToken, {
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 100 },
+      });
+      expect(body.errors).toBeUndefined();
+      const page = body.data?.adminUsers;
+      // A 公司可见普通账号三名：guestPrimary（客户，资料归属为 A）、staffPrimary（A 公司工程师）、
+      // fkPrimaryNoMembership（客户，资料归 A 但无成员关系——客户归只看资料列）。
+      // 另两名成员是 SUPER_ADMIN，被读面角色范围排除；范围与 COUNT 同源，故 total 必须精确。
+      expect(page?.items.map((item) => item.loginName).sort()).toEqual(
+        [
+          testAccountsConfig.guestPrimary.loginName,
+          testAccountsConfig.staffPrimary.loginName,
+          ownershipMatrixAccounts.fkPrimaryNoMembership.loginName,
+        ].sort(),
+      );
+      expect(page?.total).toBe(3);
+
+      // 外公司账号与无组织账号即便精确命中关键字也必须为 0（范围先于筛选）
+      for (const invisibleLoginName of [
+        testAccountsConfig.guestSecondary.loginName,
+        testAccountsConfig.noOrgEngineer.loginName,
+        // 资料归 B、成员关系在 A：客户归属以资料列为准，成员关系不能把它带回 A
+        ownershipMatrixAccounts.fkPeerMembershipPrimary.loginName,
+        // 资料归属为空、成员关系在 A：同理不可见
+        ownershipMatrixAccounts.noFkMembershipPrimary.loginName,
+      ]) {
+        const probe = await listAdminUsers(peerAdminToken, { keyword: invisibleLoginName });
+        expect(probe.errors).toBeUndefined();
+        expect(probe.data?.adminUsers?.total).toBe(0);
+      }
     });
 
     it('排序契约固定为 created_at DESC, id DESC（客户端不可改）', async () => {
@@ -834,9 +1110,7 @@ describe('管理员用户管理 (e2e)', () => {
       );
 
       // seed 昵称口径为 `${loginName}_nickname`，用于核验昵称维度确实参与搜索。
-      // 刻意选 staffPrimary：本文件「资料编辑」分组会改写 guestPrimary 的昵称且不恢复，
-      // 用 guestPrimary 会让本断言退化成对 describe 声明顺序的隐式依赖；
-      // staffPrimary 全程只作只读引用（连 accountId 都不取），昵称恒为 seed 值。
+      // 刻意选 staffPrimary：本文件「资料编辑」分组会改写 guestPrimary 的昵称且不恢复。
       const byNickname = await listAdminUsers(adminToken, {
         keyword: `${testAccountsConfig.staffPrimary.loginName}_nickname`,
       });
@@ -859,29 +1133,28 @@ describe('管理员用户管理 (e2e)', () => {
       expect(blank.data?.adminUsers?.total ?? 0).toBeGreaterThanOrEqual(5);
     });
 
-    it('role 筛选：SUPER_ADMIN 精确一条（管理员账号只读可见），ENGINEER 全为 ENGINEER', async () => {
+    it('role 筛选：SUPER_ADMIN 不再是可筛选值（BAD_USER_INPUT）；ENGINEER 结果全为工程师', async () => {
       const admins = await listAdminUsers(adminToken, { role: IdentityTypeEnum.SUPER_ADMIN });
-      expect(admins.errors).toBeUndefined();
-      expect(admins.data?.adminUsers?.total).toBe(1);
-      expect(admins.data?.adminUsers?.items[0]?.id).toBe(adminAccountId);
-      expect(admins.data?.adminUsers?.items[0]?.role).toBe(IdentityTypeEnum.SUPER_ADMIN);
+      expectSingleError(admins, 'BAD_USER_INPUT', 'INPUT_NORMALIZE_INVALID_ENUM_VALUE');
+      expect(admins.data?.adminUsers).toBeFalsy();
 
       const engineers = await listAdminUsers(adminToken, { role: IdentityTypeEnum.ENGINEER });
       expect(engineers.errors).toBeUndefined();
       const engineerItems = engineers.data?.adminUsers?.items ?? [];
-      expect(engineerItems.length).toBeGreaterThanOrEqual(2);
+      expect(engineerItems.length).toBeGreaterThanOrEqual(3);
       expect(engineerItems.every((item) => item.role === IdentityTypeEnum.ENGINEER)).toBe(true);
       expect(engineerItems.map((item) => item.loginName)).toEqual(
         expect.arrayContaining([
           testAccountsConfig.staffPrimary.loginName,
           testAccountsConfig.staffSecondary.loginName,
+          testAccountsConfig.noOrgEngineer.loginName,
         ]),
       );
       expect(engineers.data?.adminUsers?.total).toBe(engineerItems.length);
     });
 
     it('status 筛选：INACTIVE 只返回 INACTIVE（自建前置后恢复）', async () => {
-      await ensureStatus(guestSecondaryAccountId, AccountStatus.INACTIVE);
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.INACTIVE);
 
       const inactive = await listAdminUsers(adminToken, { status: AccountStatus.INACTIVE });
       expect(inactive.errors).toBeUndefined();
@@ -897,7 +1170,7 @@ describe('管理员用户管理 (e2e)', () => {
       expect(activeItems.every((item) => item.status === AccountStatus.ACTIVE)).toBe(true);
       expect(activeItems.map((item) => item.id)).not.toContain(guestSecondaryAccountId);
 
-      await ensureStatus(guestSecondaryAccountId, AccountStatus.ACTIVE);
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
     });
 
     it('分页：total 为全量匹配数且与页码无关，items 不超 pageSize，翻页无重叠', async () => {
@@ -928,10 +1201,489 @@ describe('管理员用户管理 (e2e)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 创建用户
+  // 状态切换
   // ---------------------------------------------------------------------------
 
-  describe('创建用户 adminCreateUser', () => {
+  describe('状态切换 adminSetUserStatus（双字段同步）', () => {
+    it('一级管理员可跨公司启停：B 公司账号 ACTIVE → INACTIVE 双字段同步后恢复', async () => {
+      await ensureStatus(adminToken, staffSecondaryAccountId, AccountStatus.ACTIVE);
+
+      const body = await setUserStatus(adminToken, {
+        accountId: staffSecondaryAccountId,
+        status: AccountStatus.INACTIVE,
+      });
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminSetUserStatus).toMatchObject({
+        id: staffSecondaryAccountId,
+        status: AccountStatus.INACTIVE,
+      });
+      expect(await readDualStatus(staffSecondaryAccountId)).toEqual({
+        accountStatus: AccountStatus.INACTIVE,
+        userState: UserState.INACTIVE,
+      });
+
+      await ensureStatus(adminToken, staffSecondaryAccountId, AccountStatus.ACTIVE);
+    });
+
+    it('二级管理员可启停本公司账号：A 公司 ENGINEER 恢复 ACTIVE 且旧 Token 仍可用', async () => {
+      await ensureStatus(peerAdminToken, staffPrimaryAccountId, AccountStatus.INACTIVE);
+
+      const body = await setUserStatus(peerAdminToken, {
+        accountId: staffPrimaryAccountId,
+        status: AccountStatus.ACTIVE,
+      });
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminSetUserStatus?.status).toBe(AccountStatus.ACTIVE);
+      expect(await readDualStatus(staffPrimaryAccountId)).toEqual({
+        accountStatus: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+
+      const freshToken = await login({
+        app,
+        loginName: testAccountsConfig.staffPrimary.loginName,
+        loginPassword: testAccountsConfig.staffPrimary.loginPassword,
+      });
+      const access = await gql<{ userInfo?: { nickname?: string } }>({
+        query: USER_INFO_QUERY,
+        variables: { id: staffPrimaryAccountId },
+        token: freshToken,
+      });
+      expect(access.errors).toBeUndefined();
+      expect(access.data?.userInfo).toBeDefined();
+    });
+
+    it('同状态幂等：ACTIVE → ACTIVE 零写入（updatedAt 不变）且双字段保持一致', async () => {
+      // 不用 ensureStatus 做前置：本用例自己就是幂等路径。
+      // 第一次调用后必为 ACTIVE，第二次调用必走幂等短路，因此与执行顺序无关。
+      const prepared = await setUserStatus(adminToken, {
+        accountId: guestPrimaryAccountId,
+        status: AccountStatus.ACTIVE,
+      });
+      expect(prepared.errors).toBeUndefined();
+      const updatedAtBefore = prepared.data?.adminSetUserStatus?.updatedAt;
+      expect(updatedAtBefore).toBeDefined();
+
+      const body = await setUserStatus(adminToken, {
+        accountId: guestPrimaryAccountId,
+        status: AccountStatus.ACTIVE,
+      });
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminSetUserStatus?.status).toBe(AccountStatus.ACTIVE);
+      expect(body.data?.adminSetUserStatus?.updatedAt).toBe(updatedAtBefore);
+      expect(await readDualStatus(guestPrimaryAccountId)).toEqual({
+        accountStatus: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+    });
+
+    it('停用后旧 Token 的下一次受保护请求返回 UNAUTHENTICATED（自建前置并恢复）', async () => {
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
+      const tokenBeforeDisable = await login({
+        app,
+        loginName: testAccountsConfig.guestSecondary.loginName,
+        loginPassword: testAccountsConfig.guestSecondary.loginPassword,
+      });
+
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.INACTIVE);
+
+      const body = await gql<{ userInfo?: unknown }>({
+        query: USER_INFO_QUERY,
+        variables: { id: guestSecondaryAccountId },
+        token: tokenBeforeDisable,
+      });
+      expectSingleError(body, 'UNAUTHENTICATED', 'JWT_AUTHENTICATION_FAILED');
+      expect(body.data?.userInfo).toBeFalsy();
+
+      // 恢复 ACTIVE，不遗留停用态给其他用例
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
+    });
+
+    it('管理员不能停用自己（显式自我拒绝先于目标保护）', async () => {
+      const body = await setUserStatus(adminToken, {
+        accountId: adminAccountId,
+        status: AccountStatus.INACTIVE,
+      });
+      expectSingleError(body, 'FORBIDDEN');
+      expect(body.errors?.[0]?.message).toContain('不能停用自己');
+      expect(await readDualStatus(adminAccountId)).toEqual({
+        accountStatus: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+    });
+
+    const unwritableStatuses: Array<[string, AccountStatus]> = [
+      ['SUSPENDED', AccountStatus.SUSPENDED],
+      ['BANNED', AccountStatus.BANNED],
+      ['PENDING', AccountStatus.PENDING],
+      ['DELETED', AccountStatus.DELETED],
+    ];
+
+    it.each(unwritableStatuses)(
+      '请求不可转换的目标状态 %s 被拒（BAD_USER_INPUT）且状态零变化',
+      async (_label, status) => {
+        await ensureStatus(adminToken, guestPrimaryAccountId, AccountStatus.ACTIVE);
+
+        const body = await setUserStatus(adminToken, {
+          accountId: guestPrimaryAccountId,
+          status,
+        });
+        expectSingleError(body, 'BAD_USER_INPUT', 'INPUT_NORMALIZE_INVALID_ENUM_VALUE');
+        expect(await readDualStatus(guestPrimaryAccountId)).toEqual({
+          accountStatus: AccountStatus.ACTIVE,
+          userState: UserState.ACTIVE,
+        });
+      },
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // 作用域与目标保护
+  // ---------------------------------------------------------------------------
+
+  describe('二级管理员范围与目标保护', () => {
+    /**
+     * 三个写入口在二级会话下的拒绝层不同，因此期望值必须逐入口给出：
+     * - `adminUpdateUserProfile` / `adminResetUserPassword` 是 S4 收窄的遗留入口，
+     *   入口断言为 `resolveLevelOneAdminScope`，二级会话在触达目标之前就被
+     *   `FORBIDDEN / INSUFFICIENT_PERMISSIONS` 拒绝；
+     * - `adminSetUserStatus` 是本阶段正式入口，先通过作用域断言，再在锁定目标后
+     *   复核二级归属，因此跨公司与无组织目标统一收敛为
+     *   `NOT_FOUND / ADMIN_USER_TARGET_NOT_FOUND`（与「目标不存在」同口径，不泄露存在性）。
+     */
+    const expectPeerAdminTargetProtection = async (targetAccountId: number): Promise<void> => {
+      const accountBefore = await readAccountRow(targetAccountId);
+      const userInfoBefore = await readUserInfoRow(targetAccountId);
+
+      const operations = legacyWriteOperationsAgainst(
+        peerAdminToken,
+        targetAccountId,
+        '外公司改名',
+        RESET_NEW_PASSWORD,
+      );
+      const collected = await collectErrors(operations);
+
+      expect(collected).toEqual([
+        ['adminUpdateUserProfile', 'FORBIDDEN', 'INSUFFICIENT_PERMISSIONS', undefined],
+        ['adminSetUserStatus', 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND', undefined],
+        ['adminResetUserPassword', 'FORBIDDEN', 'INSUFFICIENT_PERMISSIONS', undefined],
+      ]);
+      expect(await readAccountRow(targetAccountId)).toEqual(accountBefore);
+      expect(await readUserInfoRow(targetAccountId)).toEqual(userInfoBefore);
+    };
+
+    it('跨公司目标：遗留入口入口级 FORBIDDEN，正式启停入口 NOT_FOUND，目标逐字段不变', async () => {
+      await expectPeerAdminTargetProtection(guestSecondaryAccountId);
+    });
+
+    it('无任何组织成员关系的目标：二级管理员同样无法触达且零变化', async () => {
+      await expectPeerAdminTargetProtection(noOrgEngineerAccountId);
+    });
+
+    /**
+     * P1-01 反例矩阵：客户归属只认 `base_user_info.customer_organization_id`。
+     * 两个账号的成员关系都在 A 公司，但资料列分别指向 B / 空——旧口径（按成员关系）
+     * 会错误放行，新口径必须与不存在目标同口径拒绝，且目标逐字段不变。
+     */
+    it.each([
+      ['资料归 B 公司、成员关系在 A 公司', () => fkPeerMembershipPrimaryAccountId],
+      ['资料归属为空、成员关系在 A 公司', () => noFkMembershipPrimaryAccountId],
+    ])('%s：二级管理员无法触达且零变化', async (_label, resolveTargetAccountId) => {
+      await expectPeerAdminTargetProtection(resolveTargetAccountId());
+    });
+
+    it('资料归 A 公司、无任何成员关系：二级管理员可启停本公司客户（客户归属只看资料列）', async () => {
+      await ensureStatus(peerAdminToken, fkPrimaryNoMembershipAccountId, AccountStatus.ACTIVE);
+
+      const body = await setUserStatus(peerAdminToken, {
+        accountId: fkPrimaryNoMembershipAccountId,
+        status: AccountStatus.INACTIVE,
+      });
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminSetUserStatus?.status).toBe(AccountStatus.INACTIVE);
+      expect(await readDualStatus(fkPrimaryNoMembershipAccountId)).toEqual({
+        accountStatus: AccountStatus.INACTIVE,
+        userState: UserState.INACTIVE,
+      });
+
+      await ensureStatus(peerAdminToken, fkPrimaryNoMembershipAccountId, AccountStatus.ACTIVE);
+    });
+
+    it('SUPER_ADMIN 目标只读：一级管理员三个遗留写操作全部 FORBIDDEN 且数据库零变化', async () => {
+      const operations = legacyWriteOperationsAgainst(
+        adminToken,
+        peerAdminAccountId,
+        'E2E 管理员改名',
+        RESET_NEW_PASSWORD,
+      );
+
+      const accountBefore = await readAccountRow(peerAdminAccountId);
+      const userInfoBefore = await readUserInfoRow(peerAdminAccountId);
+
+      const collected = await collectErrors(operations);
+      expect(collected.map(([name, code]) => [name, code])).toEqual(
+        operations.map(([name]) => [name, 'FORBIDDEN']),
+      );
+
+      const accountAfter = await readAccountRow(peerAdminAccountId);
+      const userInfoAfter = await readUserInfoRow(peerAdminAccountId);
+      expect(accountAfter?.identityHint).toBe(accountBefore?.identityHint);
+      expect(accountAfter?.status).toBe(accountBefore?.status);
+      expect(accountAfter?.loginPassword).toBe(accountBefore?.loginPassword);
+      expect(userInfoAfter?.nickname).toBe(userInfoBefore?.nickname);
+      expect(userInfoAfter?.accessGroup).toEqual(userInfoBefore?.accessGroup);
+      expect(userInfoAfter?.metaDigest).toEqual(userInfoBefore?.metaDigest);
+      expect(userInfoAfter?.userState).toBe(userInfoBefore?.userState);
+      expect(await readRoleSources(peerAdminAccountId)).toEqual({
+        identityHint: IdentityTypeEnum.SUPER_ADMIN,
+        accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+        metaDigest: [IdentityTypeEnum.SUPER_ADMIN],
+      });
+
+      // 口令哈希未被改写：该管理员仍能用原密码登录
+      const stillAdminToken = await login({
+        app,
+        loginName: testAccountsConfig.peerAdmin.loginName,
+        loginPassword: testAccountsConfig.peerAdmin.loginPassword,
+      });
+      expect(stillAdminToken).toBeTruthy();
+    });
+
+    it('二级管理员即使目标在本公司内，SUPER_ADMIN 目标也一律 FORBIDDEN', async () => {
+      const body = await setUserStatus(peerAdminToken, {
+        accountId: adminAccountId,
+        status: AccountStatus.INACTIVE,
+      });
+      expectSingleError(body, 'FORBIDDEN');
+      expect(body.errors?.[0]?.message).toContain('管理员账号只读');
+      expect(await readDualStatus(adminAccountId)).toEqual({
+        accountStatus: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+    });
+
+    it('目标不存在：三个遗留写操作均返回 NOT_FOUND，不塌缩为 UNAUTHENTICATED 且 details 留空', async () => {
+      const operations: Array<[string, () => Promise<GqlBody<unknown>>]> = [
+        [
+          'adminUpdateUserProfile',
+          () =>
+            updateUserProfile(adminToken, {
+              accountId: MISSING_ACCOUNT_ID,
+              nickname: '不存在目标',
+            }),
+        ],
+        [
+          'adminSetUserStatus',
+          () =>
+            setUserStatus(adminToken, {
+              accountId: MISSING_ACCOUNT_ID,
+              status: AccountStatus.INACTIVE,
+            }),
+        ],
+        [
+          'adminResetUserPassword',
+          () =>
+            resetUserPassword(adminToken, {
+              accountId: MISSING_ACCOUNT_ID,
+              newPassword: RESET_NEW_PASSWORD,
+            }),
+        ],
+      ];
+      const collected = await collectErrors(operations);
+
+      expect(collected).toEqual(
+        operations.map(([name]) => [name, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND', undefined]),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 默认密码重置
+  // ---------------------------------------------------------------------------
+
+  (configuredDefaultPassword === null ? describe : describe.skip)(
+    '默认密码重置（未配置默认密码：失败关闭）',
+    () => {
+      it('配置缺失时返回 INTERNAL_SERVER_ERROR / ADMIN_USER_DEFAULT_PASSWORD_NOT_CONFIGURED 且零写入', async () => {
+        const targetAccountId = staffSecondaryAccountId;
+        const before = await readAccountRow(targetAccountId);
+        expect(before?.mustChangePassword).toBe(false);
+
+        const body = await resetPasswordToDefault(adminToken, targetAccountId);
+        expectSingleError(
+          body,
+          'INTERNAL_SERVER_ERROR',
+          'ADMIN_USER_DEFAULT_PASSWORD_NOT_CONFIGURED',
+        );
+        expect(body.data?.adminResetUserPasswordToDefault).toBeFalsy();
+
+        const after = await readAccountRow(targetAccountId);
+        expect(after?.loginPassword).toBe(before?.loginPassword);
+        expect(after?.mustChangePassword).toBe(false);
+      });
+    },
+  );
+
+  (configuredDefaultPassword === null ? describe.skip : describe)(
+    '默认密码重置（已配置默认密码）',
+    () => {
+      /** 完整重置 → 强制改密 → 自助换密链路；返回新密码供后续登录断言 */
+      const expectResetAndForcedChangeFlow = async (params: {
+        token: string;
+        accountId: number;
+        loginName: string;
+        oldPassword: string;
+        newPassword: string;
+      }): Promise<void> => {
+        const before = await readAccountRow(params.accountId);
+        const hashBefore = before?.loginPassword;
+        expect(before?.mustChangePassword).toBe(false);
+
+        const body = await resetPasswordToDefault(params.token, params.accountId);
+        expect(body.errors).toBeUndefined();
+        expect(body.data?.adminResetUserPasswordToDefault).toEqual({
+          accountId: params.accountId,
+          isUpdated: true,
+          notice: expect.any(String),
+        });
+        // 回包不得出现默认密码本身（含大小写变体）
+        const serialized = JSON.stringify(body);
+        expect(serialized).not.toContain(defaultPasswordForReset);
+        expect(serialized).not.toContain(defaultPasswordForReset.toLowerCase());
+
+        const after = await readAccountRow(params.accountId);
+        expect(after?.mustChangePassword).toBe(true);
+        expect(after?.loginPassword).toBeTruthy();
+        expect(after?.loginPassword).not.toBe(hashBefore);
+        expect(after?.loginPassword ?? '').not.toContain(defaultPasswordForReset);
+
+        // 旧密码立即失效：此时账号已置强制改密，登录入口的会话状态门禁
+        // （`evaluateSessionStatusCombination`）先于密码校验执行，未显式允许受限会话
+        // 时统一收敛为 `ACCOUNT_INACTIVE`（对外 FORBIDDEN），因此既拿不到令牌，
+        // 也无法用旧密码穿过状态门禁；密码错误与否都不影响该拒绝口径。
+        const staleLogin = await attemptLogin(params.loginName, params.oldPassword);
+        expect(staleLogin.data?.login?.accessToken).toBeFalsy();
+        expect(staleLogin.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+
+        // 默认密码只能签发受限会话，且必须显式允许
+        const restricted = await loginWithRestriction(params.loginName, defaultPasswordForReset);
+        expect(restricted.errors).toBeUndefined();
+        expect(restricted.data?.login?.restriction).toBe(SessionRestriction.MUST_CHANGE_PASSWORD);
+        const restrictedToken = restricted.data?.login?.accessToken;
+        expect(typeof restrictedToken).toBe('string');
+
+        // 未完成改密前，任何业务入口都必须被拒绝
+        const rejected = await gql<{ userInfo?: unknown }>({
+          query: USER_INFO_QUERY,
+          variables: { id: params.accountId },
+          token: restrictedToken,
+        });
+        expect(rejected.data?.userInfo).toBeFalsy();
+        expectSingleError(rejected, 'FORBIDDEN', 'INSUFFICIENT_PERMISSIONS');
+
+        // 用户自助换密后恢复完整会话
+        const changed = await changeMyPassword(
+          restrictedToken as string,
+          defaultPasswordForReset,
+          params.newPassword,
+        );
+        expect(changed.errors).toBeUndefined();
+        expect(changed.data?.changeMyPassword?.isUpdated).toBe(true);
+
+        const recovered = await readAccountRow(params.accountId);
+        expect(recovered?.mustChangePassword).toBe(false);
+
+        const freshLogin = await loginWithRestriction(params.loginName, params.newPassword);
+        expect(freshLogin.errors).toBeUndefined();
+        expect(freshLogin.data?.login?.restriction).toBe(SessionRestriction.NONE);
+      };
+
+      it('一级管理员可跨公司重置（B 公司账号）：强制改密链路完整', async () => {
+        await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
+        await expectResetAndForcedChangeFlow({
+          token: adminToken,
+          accountId: guestSecondaryAccountId,
+          loginName: testAccountsConfig.guestSecondary.loginName,
+          oldPassword: testAccountsConfig.guestSecondary.loginPassword,
+          newPassword: AFTER_DEFAULT_RESET_PASSWORD_PEER,
+        });
+      });
+
+      it('二级管理员可重置本公司账号（A 公司）：强制改密链路完整', async () => {
+        await ensureStatus(peerAdminToken, staffPrimaryAccountId, AccountStatus.ACTIVE);
+        await expectResetAndForcedChangeFlow({
+          token: peerAdminToken,
+          accountId: staffPrimaryAccountId,
+          loginName: testAccountsConfig.staffPrimary.loginName,
+          oldPassword: testAccountsConfig.staffPrimary.loginPassword,
+          newPassword: AFTER_DEFAULT_RESET_PASSWORD_PRIMARY,
+        });
+      });
+
+      it('二级管理员跨公司目标返回 NOT_FOUND；SUPER_ADMIN 目标返回 FORBIDDEN', async () => {
+        const crossCompany = await resetPasswordToDefault(peerAdminToken, staffSecondaryAccountId);
+        expectSingleError(crossCompany, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND');
+
+        const adminTarget = await resetPasswordToDefault(adminToken, peerAdminAccountId);
+        expectSingleError(adminTarget, 'FORBIDDEN');
+        expect(adminTarget.errors?.[0]?.message).toContain('管理员账号只读');
+
+        const missingTarget = await resetPasswordToDefault(adminToken, MISSING_ACCOUNT_ID);
+        expectSingleError(missingTarget, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND');
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // 遗留入口（仅一级管理员）
+  // ---------------------------------------------------------------------------
+
+  describe('遗留入口：二级管理员一律 FORBIDDEN', () => {
+    it('创建 / 资料编辑 / 手动重置密码三个入口均拒绝且不产生任何写入', async () => {
+      const operations: Array<[string, () => Promise<GqlBody<unknown>>]> = [
+        [
+          'adminCreateUser',
+          () =>
+            createUser(peerAdminToken, {
+              loginName: FORBIDDEN_PROBE_LOGIN_NAME,
+              loginEmail: FORBIDDEN_PROBE_LOGIN_EMAIL,
+              initialPassword: CREATED_INITIAL_PASSWORD,
+              role: IdentityTypeEnum.CUSTOMER,
+              nickname: '二级管理员探测',
+            }),
+        ],
+        [
+          'adminUpdateUserProfile',
+          () =>
+            updateUserProfile(peerAdminToken, {
+              accountId: guestPrimaryAccountId,
+              nickname: '二级管理员改名',
+            }),
+        ],
+        [
+          'adminResetUserPassword',
+          () =>
+            resetUserPassword(peerAdminToken, {
+              accountId: guestPrimaryAccountId,
+              newPassword: RESET_NEW_PASSWORD,
+            }),
+        ],
+      ];
+
+      const collected = await collectErrors(operations);
+      expect(collected.map(([name, code]) => [name, code])).toEqual(
+        operations.map(([name]) => [name, 'FORBIDDEN']),
+      );
+      expect(await countAccounts({ loginName: FORBIDDEN_PROBE_LOGIN_NAME })).toBe(0);
+      expect(await countAccounts({ loginEmail: FORBIDDEN_PROBE_LOGIN_EMAIL })).toBe(0);
+      expect(await readDualStatus(guestPrimaryAccountId)).toEqual({
+        accountStatus: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+    });
+  });
+
+  describe('创建用户 adminCreateUser（一级管理员成功路径）', () => {
     it('创建 ENGINEER 用户成功并落库：三源一致、双字段 ACTIVE、联系邮箱与登录邮箱分离、初始密码可登录', async () => {
       const body = await createUser(adminToken, {
         // 刻意带空白与大小写，核验收敛口径与 DTO 回读一致
@@ -997,7 +1749,7 @@ describe('管理员用户管理 (e2e)', () => {
         metaDigest: [IdentityTypeEnum.ENGINEER],
       });
 
-      // S2c：ENGINEER 创建时在事务内绑定管理员当前组织；成员关系落库校验
+      // 遗留创建在事务内绑定一级管理员当前可信组织 A；成员关系落库校验
       const membership = await dataSource
         .getRepository(OrganizationMembershipEntity)
         .findOne({ where: { accountId: createdAccountId } });
@@ -1054,7 +1806,7 @@ describe('管理员用户管理 (e2e)', () => {
       expect(account?.loginEmail).toBe(EMAIL_ONLY_LOGIN_EMAIL);
       expect(await countAccounts({ loginEmail: EMAIL_ONLY_LOGIN_EMAIL })).toBe(1);
 
-      // S2c 口径：管理员代建 CUSTOMER 与 ENGINEER 一样绑定管理员当前有效组织
+      // 管理员代建 CUSTOMER 与 ENGINEER 一样绑定管理员当前有效组织
       const membership = await dataSource
         .getRepository(OrganizationMembershipEntity)
         .findOne({ where: { accountId: view?.id ?? 0 } });
@@ -1119,16 +1871,12 @@ describe('管理员用户管理 (e2e)', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // 资料编辑
-  // ---------------------------------------------------------------------------
-
-  describe('资料编辑 adminUpdateUserProfile', () => {
+  describe('资料编辑 adminUpdateUserProfile（一级管理员成功路径）', () => {
     it('编辑昵称 / 公司 / 电话 / 联系邮箱成功并落库，登录凭据列与角色三源不受影响', async () => {
-      await ensureStatus(guestAccountId, AccountStatus.ACTIVE);
+      await ensureStatus(adminToken, guestPrimaryAccountId, AccountStatus.ACTIVE);
 
       const body = await updateUserProfile(adminToken, {
-        accountId: guestAccountId,
+        accountId: guestPrimaryAccountId,
         nickname: '  E2E 编辑后昵称  ',
         companyName: '  E2E 编辑后公司  ',
         phone: ' 13900000002 ',
@@ -1137,7 +1885,7 @@ describe('管理员用户管理 (e2e)', () => {
 
       expect(body.errors).toBeUndefined();
       expect(body.data?.adminUpdateUserProfile).toMatchObject({
-        id: guestAccountId,
+        id: guestPrimaryAccountId,
         nickname: 'E2E 编辑后昵称',
         companyName: 'E2E 编辑后公司',
         phone: '13900000002',
@@ -1146,17 +1894,17 @@ describe('管理员用户管理 (e2e)', () => {
         status: AccountStatus.ACTIVE,
       });
 
-      const userInfo = await readUserInfoRow(guestAccountId);
+      const userInfo = await readUserInfoRow(guestPrimaryAccountId);
       expect(userInfo?.nickname).toBe('E2E 编辑后昵称');
       expect(userInfo?.companyName).toBe('E2E 编辑后公司');
       expect(userInfo?.phone).toBe('13900000002');
       // contactEmail 落 base_user_info.email，不得改写登录凭据列
       expect(userInfo?.email).toBe('edited.contact@example.com');
 
-      const account = await readAccountRow(guestAccountId);
+      const account = await readAccountRow(guestPrimaryAccountId);
       expect(account?.loginName).toBe(testAccountsConfig.guestPrimary.loginName);
       expect(account?.loginEmail).toBe(testAccountsConfig.guestPrimary.loginEmail);
-      expect(await readRoleSources(guestAccountId)).toEqual({
+      expect(await readRoleSources(guestPrimaryAccountId)).toEqual({
         identityHint: IdentityTypeEnum.CUSTOMER,
         accessGroup: [IdentityTypeEnum.CUSTOMER],
         metaDigest: [IdentityTypeEnum.CUSTOMER],
@@ -1164,9 +1912,9 @@ describe('管理员用户管理 (e2e)', () => {
     });
 
     it('不传字段 = 不修改；显式 null = 清空', async () => {
-      await ensureStatus(guestAccountId, AccountStatus.ACTIVE);
+      await ensureStatus(adminToken, guestPrimaryAccountId, AccountStatus.ACTIVE);
       const seeded = await updateUserProfile(adminToken, {
-        accountId: guestAccountId,
+        accountId: guestPrimaryAccountId,
         nickname: 'E2E 三态昵称',
         companyName: 'E2E 待清空公司',
         phone: '13900000003',
@@ -1176,21 +1924,21 @@ describe('管理员用户管理 (e2e)', () => {
 
       // nickname 不传 → 保持；三个可选字段显式 null → 清空
       const body = await updateUserProfile(adminToken, {
-        accountId: guestAccountId,
+        accountId: guestPrimaryAccountId,
         companyName: null,
         phone: null,
         contactEmail: null,
       });
       expect(body.errors).toBeUndefined();
       expect(body.data?.adminUpdateUserProfile).toMatchObject({
-        id: guestAccountId,
+        id: guestPrimaryAccountId,
         nickname: 'E2E 三态昵称',
         companyName: null,
         phone: null,
         contactEmail: null,
       });
 
-      const userInfo = await readUserInfoRow(guestAccountId);
+      const userInfo = await readUserInfoRow(guestPrimaryAccountId);
       expect(userInfo?.nickname).toBe('E2E 三态昵称');
       expect(userInfo?.companyName).toBeNull();
       expect(userInfo?.phone).toBeNull();
@@ -1198,326 +1946,16 @@ describe('管理员用户管理 (e2e)', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // 状态切换
-  // ---------------------------------------------------------------------------
-
-  describe('状态切换 adminSetUserStatus（双字段同步）', () => {
-    it('ACTIVE → INACTIVE：account.status 与 userInfo.userState 同步', async () => {
-      await ensureStatus(guestAccountId, AccountStatus.ACTIVE);
-
-      const body = await setUserStatus(adminToken, {
-        accountId: guestAccountId,
-        status: AccountStatus.INACTIVE,
-      });
-      expect(body.errors).toBeUndefined();
-      expect(body.data?.adminSetUserStatus).toMatchObject({
-        id: guestAccountId,
-        status: AccountStatus.INACTIVE,
-      });
-      expect(await readDualStatus(guestAccountId)).toEqual({
-        accountStatus: AccountStatus.INACTIVE,
-        userState: UserState.INACTIVE,
-      });
-    });
-
-    it('INACTIVE → ACTIVE：双字段同步恢复，且重新启用后新登录可访问受保护查询', async () => {
-      await ensureStatus(guestAccountId, AccountStatus.INACTIVE);
-
-      const body = await setUserStatus(adminToken, {
-        accountId: guestAccountId,
-        status: AccountStatus.ACTIVE,
-      });
-      expect(body.errors).toBeUndefined();
-      expect(body.data?.adminSetUserStatus?.status).toBe(AccountStatus.ACTIVE);
-      expect(await readDualStatus(guestAccountId)).toEqual({
-        accountStatus: AccountStatus.ACTIVE,
-        userState: UserState.ACTIVE,
-      });
-
-      // 重新启用后走全新登录签发 Token，验证正常访问路径
-      // （原 P1 `user-state-write-guard` 点 6 的运行时半句，已收拢到本文件）
-      const freshToken = await login({
-        app,
-        loginName: testAccountsConfig.guestPrimary.loginName,
-        loginPassword: testAccountsConfig.guestPrimary.loginPassword,
-      });
-      const access = await gql<{ userInfo?: { nickname?: string } }>({
-        query: USER_INFO_QUERY,
-        variables: { id: guestAccountId },
-        token: freshToken,
-      });
-      expect(access.errors).toBeUndefined();
-      // 不断言具体昵称：「资料编辑」分组会改写 guestPrimary 的昵称且不恢复，
-      // 写死值会重新引入跨 describe 顺序依赖；本用例只需证明「能访问」。
-      expect(access.data?.userInfo).toBeDefined();
-    });
-
-    it('同状态幂等：ACTIVE → ACTIVE 零写入（updatedAt 不变）且双字段保持一致', async () => {
-      // 不用 ensureStatus 做前置：本用例自己就是幂等路径。
-      // 无论进入时是 ACTIVE 还是 INACTIVE，第一次调用后必为 ACTIVE，
-      // 第二次调用必走幂等短路，因此断言与用例执行顺序无关。
-      const prepared = await setUserStatus(adminToken, {
-        accountId: guestAccountId,
-        status: AccountStatus.ACTIVE,
-      });
-      expect(prepared.errors).toBeUndefined();
-      const updatedAtBefore = prepared.data?.adminSetUserStatus?.updatedAt;
-      expect(updatedAtBefore).toBeDefined();
-
-      const body = await setUserStatus(adminToken, {
-        accountId: guestAccountId,
-        status: AccountStatus.ACTIVE,
-      });
-      expect(body.errors).toBeUndefined();
-      expect(body.data?.adminSetUserStatus?.status).toBe(AccountStatus.ACTIVE);
-      expect(body.data?.adminSetUserStatus?.updatedAt).toBe(updatedAtBefore);
-      expect(await readDualStatus(guestAccountId)).toEqual({
-        accountStatus: AccountStatus.ACTIVE,
-        userState: UserState.ACTIVE,
-      });
-    });
-
-    it('停用后旧 Token 的下一次受保护请求返回 UNAUTHENTICATED（自建前置并恢复）', async () => {
-      await ensureStatus(guestAccountId, AccountStatus.ACTIVE);
-      const tokenBeforeDisable = await login({
-        app,
-        loginName: testAccountsConfig.guestPrimary.loginName,
-        loginPassword: testAccountsConfig.guestPrimary.loginPassword,
-      });
-
-      await ensureStatus(guestAccountId, AccountStatus.INACTIVE);
-
-      const body = await gql<{ userInfo?: unknown }>({
-        query: USER_INFO_QUERY,
-        variables: { id: guestAccountId },
-        token: tokenBeforeDisable,
-      });
-      expectSingleError(body, 'UNAUTHENTICATED', 'JWT_AUTHENTICATION_FAILED');
-      expect(body.data?.userInfo).toBeFalsy();
-
-      // 恢复 ACTIVE，不遗留停用态给其他用例
-      await ensureStatus(guestAccountId, AccountStatus.ACTIVE);
-    });
-
-    it('管理员不能停用自己（显式自我拒绝先于目标保护）', async () => {
-      const body = await setUserStatus(adminToken, {
-        accountId: adminAccountId,
-        status: AccountStatus.INACTIVE,
-      });
-      expectSingleError(body, 'FORBIDDEN');
-      expect(body.errors?.[0]?.message).toContain('不能停用自己');
-      expect(await readDualStatus(adminAccountId)).toEqual({
-        accountStatus: AccountStatus.ACTIVE,
-        userState: UserState.ACTIVE,
-      });
-    });
-
-    const unwritableStatuses: Array<[string, AccountStatus]> = [
-      ['SUSPENDED', AccountStatus.SUSPENDED],
-      ['BANNED', AccountStatus.BANNED],
-      ['PENDING', AccountStatus.PENDING],
-      ['DELETED', AccountStatus.DELETED],
-    ];
-
-    it.each(unwritableStatuses)(
-      '请求不可转换的目标状态 %s 被拒（BAD_USER_INPUT）且状态零变化',
-      async (_label, status) => {
-        await ensureStatus(guestAccountId, AccountStatus.ACTIVE);
-
-        const body = await setUserStatus(adminToken, { accountId: guestAccountId, status });
-        expectSingleError(body, 'BAD_USER_INPUT', 'INPUT_NORMALIZE_INVALID_ENUM_VALUE');
-        expect(await readDualStatus(guestAccountId)).toEqual({
-          accountStatus: AccountStatus.ACTIVE,
-          userState: UserState.ACTIVE,
-        });
-      },
-    );
-  });
-
-  // ---------------------------------------------------------------------------
-  // SUPER_ADMIN 目标写保护
-  // ---------------------------------------------------------------------------
-
-  describe('SUPER_ADMIN 目标写保护', () => {
-    /**
-     * 本文件只 seed 一个 SUPER_ADMIN（admin），它同时是发起方自己的账号，
-     * 因此 `adminSetUserStatus` 命中的是「不能停用自己」这一先行显式拒绝；
-     * 两者对外同为 FORBIDDEN，本用例只锁定「全部拒绝 + 数据库零变化」这一不变量。
-     */
-    it('资料编辑 / 启停 / 重置密码全部拒绝且数据库零变化', async () => {
-      const operations: Array<[string, () => Promise<GqlBody<unknown>>]> = [
-        [
-          'adminUpdateUserProfile',
-          () =>
-            updateUserProfile(adminToken, {
-              accountId: adminAccountId,
-              nickname: 'E2E 管理员改名',
-            }),
-        ],
-        [
-          'adminSetUserStatus',
-          () =>
-            setUserStatus(adminToken, {
-              accountId: adminAccountId,
-              status: AccountStatus.INACTIVE,
-            }),
-        ],
-        [
-          'adminResetUserPassword',
-          () =>
-            resetUserPassword(adminToken, {
-              accountId: adminAccountId,
-              newPassword: RESET_NEW_PASSWORD,
-            }),
-        ],
-      ];
-
-      const accountBefore = await readAccountRow(adminAccountId);
-      const userInfoBefore = await readUserInfoRow(adminAccountId);
-
-      const collected = await collectErrors(operations);
-      expect(collected.map(([name, code]) => [name, code])).toEqual(
-        operations.map(([name]) => [name, 'FORBIDDEN']),
-      );
-
-      const accountAfter = await readAccountRow(adminAccountId);
-      const userInfoAfter = await readUserInfoRow(adminAccountId);
-      expect(accountAfter?.identityHint).toBe(accountBefore?.identityHint);
-      expect(accountAfter?.status).toBe(accountBefore?.status);
-      expect(accountAfter?.loginPassword).toBe(accountBefore?.loginPassword);
-      expect(userInfoAfter?.nickname).toBe(userInfoBefore?.nickname);
-      expect(userInfoAfter?.accessGroup).toEqual(userInfoBefore?.accessGroup);
-      expect(userInfoAfter?.metaDigest).toEqual(userInfoBefore?.metaDigest);
-      expect(userInfoAfter?.userState).toBe(userInfoBefore?.userState);
-      expect(await readRoleSources(adminAccountId)).toEqual({
-        identityHint: IdentityTypeEnum.SUPER_ADMIN,
-        accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
-        metaDigest: [IdentityTypeEnum.SUPER_ADMIN],
-      });
-
-      // 口令哈希未被改写：管理员仍能用原密码登录
-      const stillAdminToken = await login({
-        app,
-        loginName: testAccountsConfig.admin.loginName,
-        loginPassword: testAccountsConfig.admin.loginPassword,
-      });
-      expect(stillAdminToken).toBeTruthy();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // 目标不存在（错误契约）
-  // ---------------------------------------------------------------------------
-
-  describe('目标不存在（错误契约）', () => {
-    it('三个写操作均返回 NOT_FOUND，不塌缩为 UNAUTHENTICATED 且 details 留空', async () => {
-      const operations = missingTargetOperations();
-      const collected = await collectErrors(operations);
-
-      expect(collected).toEqual(
-        operations.map(([name]) => [name, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND', undefined]),
-      );
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // 组织授权顺序：外组织目标与无组织操作者
-  // ---------------------------------------------------------------------------
-
-  /** 三个管理员写操作对指定目标的调用闭包表 */
-  const writeOperationsAgainst = (
-    token: string,
-    targetAccountId: number,
-    nickname: string,
-    newPassword: string,
-  ): Array<[string, () => Promise<GqlBody<unknown>>]> => [
-    [
-      'adminUpdateUserProfile',
-      () => updateUserProfile(token, { accountId: targetAccountId, nickname }),
-    ],
-    [
-      'adminSetUserStatus',
-      () => setUserStatus(token, { accountId: targetAccountId, status: AccountStatus.INACTIVE }),
-    ],
-    [
-      'adminResetUserPassword',
-      () => resetUserPassword(token, { accountId: targetAccountId, newPassword }),
-    ],
-  ];
-
-  describe('外组织目标（一致拒绝，不泄露目标状态）', () => {
-    it('三个写操作统一返回 NOT_FOUND，details 留空且目标逐字段不变', async () => {
-      const targetAccountId = noOrgEngineerAccountId;
-      const accountBefore = await readAccountRow(targetAccountId);
-      const userInfoBefore = await readUserInfoRow(targetAccountId);
-      expect(accountBefore).toBeTruthy();
-      expect(userInfoBefore).toBeTruthy();
-
-      const operations = writeOperationsAgainst(
-        adminToken,
-        targetAccountId,
-        '外组织改名',
-        RESET_NEW_PASSWORD,
-      );
-      const collected = await collectErrors(operations);
-
-      // 与「不存在」目标完全一致的拒绝口径：不因资料/角色差异泄露目标状态
-      expect(collected).toEqual(
-        operations.map(([name]) => [name, 'NOT_FOUND', 'ADMIN_USER_TARGET_NOT_FOUND', undefined]),
-      );
-
-      expect(await readAccountRow(targetAccountId)).toEqual(accountBefore);
-      expect(await readUserInfoRow(targetAccountId)).toEqual(userInfoBefore);
-
-      // 列表仍按管理员可信组织收窄：外组织目标不可见
-      const list = await listAdminUsers(adminToken, {
-        keyword: testAccountsConfig.noOrgEngineer.loginName,
-      });
-      expect(list.errors).toBeUndefined();
-      expect(list.data?.adminUsers?.total).toBe(0);
-    });
-
-    it('无有效组织的操作者：三个写操作统一 FORBIDDEN / ORGANIZATION_NO_ACTIVE_MEMBERSHIP 且目标零变化', async () => {
-      const targetAccountId = guestAccountId;
-      const accountBefore = await readAccountRow(targetAccountId);
-      const userInfoBefore = await readUserInfoRow(targetAccountId);
-
-      const operations = writeOperationsAgainst(
-        noOrgAdminToken,
-        targetAccountId,
-        '组织缺失操作者改名',
-        RESET_NEW_PASSWORD,
-      );
-      const collected = await collectErrors(operations);
-
-      expect(collected).toEqual(
-        operations.map(([name]) => [
-          name,
-          'FORBIDDEN',
-          'ORGANIZATION_NO_ACTIVE_MEMBERSHIP',
-          undefined,
-        ]),
-      );
-
-      expect(await readAccountRow(targetAccountId)).toEqual(accountBefore);
-      expect(await readUserInfoRow(targetAccountId)).toEqual(userInfoBefore);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // 密码重置
-  // ---------------------------------------------------------------------------
-
-  describe('密码重置 adminResetUserPassword', () => {
+  describe('密码重置 adminResetUserPassword（一级管理员成功路径）', () => {
     it('ACTIVE 目标重置成功：结果只含固定三项、新密码可登录、旧密码立即失效、响应不含密码派生物', async () => {
-      await ensureStatus(guestSecondaryAccountId, AccountStatus.ACTIVE);
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
       const hashBefore = (await readAccountRow(guestSecondaryAccountId))?.loginPassword;
 
       const body = await resetUserPassword(adminToken, {
         accountId: guestSecondaryAccountId,
         newPassword: RESET_NEW_PASSWORD,
       });
+
       expect(body.errors).toBeUndefined();
       expect(body.data?.adminResetUserPassword).toEqual({
         accountId: guestSecondaryAccountId,
@@ -1561,7 +1999,7 @@ describe('管理员用户管理 (e2e)', () => {
     });
 
     it('INACTIVE 目标（双字段一致）也允许重置，且不顺带改动状态双字段', async () => {
-      await ensureStatus(guestSecondaryAccountId, AccountStatus.INACTIVE);
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.INACTIVE);
       expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
         accountStatus: AccountStatus.INACTIVE,
         userState: UserState.INACTIVE,
@@ -1580,7 +2018,7 @@ describe('管理员用户管理 (e2e)', () => {
       });
 
       // 恢复 ACTIVE 后，重置期间写入的新密码仍可登录
-      await ensureStatus(guestSecondaryAccountId, AccountStatus.ACTIVE);
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
       const token = await login({
         app,
         loginName: testAccountsConfig.guestSecondary.loginName,
@@ -1595,7 +2033,7 @@ describe('管理员用户管理 (e2e)', () => {
   // ---------------------------------------------------------------------------
 
   describe('契约面：角色修改入口已下线、管理员现行操作已上线', () => {
-    it('Mutation root 不暴露 updateAccessGroup / adminChangeUserRole，但暴露四个管理员写操作', async () => {
+    it('Mutation root 不暴露 updateAccessGroup / adminChangeUserRole，但暴露五个管理员写操作', async () => {
       const body = await gql<SchemaRootPayload>({ query: SCHEMA_ROOT_QUERY });
       expect(body.errors).toBeUndefined();
 

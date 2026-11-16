@@ -67,13 +67,13 @@ export const createOrganizationIsolationMocks = (): {
   readonly organizationContextQueryService: TrustedOrganizationContextQueryService;
   readonly organizationMembershipQueryService: OrganizationMembershipQueryService;
   readonly resolveForAccount: jest.Mock;
-  readonly listActiveAccountIdsByOrganization: jest.Mock;
+  readonly listActiveEngineerAccountIdsByOrganization: jest.Mock;
   readonly findActiveMembership: jest.Mock;
 } => {
   const resolveForAccount = jest.fn().mockResolvedValue(createAdminOrganizationFact());
-  const listActiveAccountIdsByOrganization = jest
+  const listActiveEngineerAccountIdsByOrganization = jest
     .fn()
-    .mockResolvedValue([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
+    .mockResolvedValue([TARGET_ACCOUNT_ID]);
   const findActiveMembership = jest.fn().mockResolvedValue(createAdminOrganizationFact());
 
   return {
@@ -81,18 +81,21 @@ export const createOrganizationIsolationMocks = (): {
       resolveForAccount,
     } as unknown as TrustedOrganizationContextQueryService,
     organizationMembershipQueryService: {
-      listActiveAccountIdsByOrganization,
+      listActiveEngineerAccountIdsByOrganization,
       findActiveMembership,
     } as unknown as OrganizationMembershipQueryService,
     resolveForAccount,
-    listActiveAccountIdsByOrganization,
+    listActiveEngineerAccountIdsByOrganization,
     findActiveMembership,
   };
 };
 
 /**
  * 精确 SUPER_ADMIN 会话：`roles` 含 SUPER_ADMIN **且** `activeRole` 精确等于 SUPER_ADMIN。
- * `assertAdminUserManagementPermission()` 要求两个条件同时成立，缺一即失败关闭。
+ *
+ * 缺省同时给出 `adminLevel: 1`（一级管理员，平台全范围），因为任务 08 起所有管理端入口
+ * 都先经 `resolveAdminScope()` 校验请求期查库得到的等级；只有角色而没有等级会被
+ * `FORBIDDEN` 拒绝。二级会话请用 `createLevelTwoAdminSession()`。
  */
 export const createSuperAdminSession = (
   overrides: Partial<UsecaseSession> = {},
@@ -100,8 +103,24 @@ export const createSuperAdminSession = (
   accountId: ADMIN_ACCOUNT_ID,
   roles: [IdentityTypeEnum.SUPER_ADMIN],
   activeRole: IdentityTypeEnum.SUPER_ADMIN,
+  adminLevel: 1,
+  adminOrganizationId: null,
   ...overrides,
 });
+
+/**
+ * 二级管理员会话：等级 2 + 请求期解析出的可信公司归属。
+ * 二级管理端入口会再经 `TrustedOrganizationContextQueryService.resolveForAccount()`
+ * 复核成员关系仍是 SUPER_ADMIN 且公司一致。
+ */
+export const createLevelTwoAdminSession = (
+  overrides: Partial<UsecaseSession> = {},
+): UsecaseSession =>
+  createSuperAdminSession({
+    adminLevel: 2,
+    adminOrganizationId: ADMIN_ORGANIZATION_ID,
+    ...overrides,
+  });
 
 /**
  * 无管理员权限的会话组合：两个纯普通角色，以及两类「半管理员」矛盾会话。
@@ -282,6 +301,7 @@ export type AdminUserAccountRowSpec = {
   readonly companyName?: string | null;
   readonly phone?: string | null;
   readonly contactEmail?: string | null;
+  readonly customerOrganizationId?: number | null;
   readonly status?: AccountStatus;
   readonly userState?: UserState;
   readonly createdAt?: Date;
@@ -310,6 +330,9 @@ const buildAdminUserAccountRow = (spec: AdminUserAccountRowSpec): AccountEntity 
   userInfo.accountId = account.id;
   userInfo.nickname = spec.nickname ?? 'target_nickname';
   userInfo.companyName = spec.companyName ?? null;
+  // 客户归属缺省为管理员可信公司：二级写用例的缺省目标（CUSTOMER）因此可被合法写入
+  userInfo.customerOrganizationId =
+    spec.customerOrganizationId === undefined ? ADMIN_ORGANIZATION_ID : spec.customerOrganizationId;
   userInfo.gender = Gender.SECRET;
   userInfo.birthDate = null;
   userInfo.avatarUrl = null;
@@ -335,6 +358,7 @@ export type RealViewConversionDouble = {
   readonly queryService: AdminUserQueryService;
   readonly findAdminUserViewById: jest.Mock;
   readonly findAdminUserStatusFacts: jest.Mock;
+  readonly findAdminUserOwnershipFacts: jest.Mock;
   /** 切换当前目标行；`null` 表示账号不存在（真实服务返回 `null`） */
   readonly setAccountRow: (spec: AdminUserAccountRowSpec | null) => void;
 };
@@ -367,14 +391,20 @@ export const createRealViewConversionDouble = (
     async (params: { accountId: number; transactionContext?: PersistenceTransactionContext }) =>
       realService.findAdminUserStatusFacts({ accountId: params.accountId }),
   );
+  const findAdminUserOwnershipFacts = jest.fn(
+    async (params: { accountId: number; transactionContext?: PersistenceTransactionContext }) =>
+      realService.findAdminUserOwnershipFacts({ accountId: params.accountId }),
+  );
 
   return {
     queryService: {
       findAdminUserViewById,
       findAdminUserStatusFacts,
+      findAdminUserOwnershipFacts,
     } as unknown as AdminUserQueryService,
     findAdminUserViewById,
     findAdminUserStatusFacts,
+    findAdminUserOwnershipFacts,
     setAccountRow: (spec: AdminUserAccountRowSpec | null) => {
       row = spec === null ? null : buildAdminUserAccountRow(spec);
     },

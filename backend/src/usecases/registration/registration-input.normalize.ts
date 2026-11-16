@@ -313,16 +313,6 @@ export function normalizeRegistrationOrganizationName(value: unknown): string | 
   );
 }
 
-/**
- * 手填公司名称的同名比较归一化：去首尾空白、连续空白合并为单个空格、统一小写。
- *
- * 与前端手填表单的 `normalizeCompanyName` 同口径；只用于公开同名提示查询，
- * 不改变注册落库的原值，也不承担资格或唯一性裁决。
- */
-export function normalizeRegistrationOrganizationNameForComparison(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
 /** 注册公司分支：选择名单内公司，或手填自家公司名称；二者互斥 */
 export type RegistrationOrganizationChoice =
   { kind: 'EXISTING'; organizationId: number } | { kind: 'SELF_FILLED'; organizationName: string };

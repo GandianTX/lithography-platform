@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { MustChangePasswordGuard } from '@src/adapters/api/graphql/guards/must-change-password.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { UseGuards } from '@nestjs/common';
+import { GetAdminEngineerRegistrationApprovalDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-approval-detail.usecase';
 import { GetAdminEngineerRegistrationDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-detail.usecase';
 import { GetEngineerRegistrationStatusUsecase } from '@src/usecases/registration/get-engineer-registration-status.usecase';
 import { GetMyEngineerRegistrationUsecase } from '@src/usecases/registration/get-my-engineer-registration.usecase';
@@ -34,6 +35,10 @@ import {
   AdminEngineerRegistrationItemDTO,
   toAdminEngineerRegistrationItemDTO,
 } from './dto/admin-engineer-registration-item.dto';
+import {
+  AdminEngineerRegistrationDetailDTO,
+  toAdminEngineerRegistrationDetailDTO,
+} from './dto/admin-engineer-registration-detail.dto';
 import { AdminEngineerRegistrationPageDTO } from './dto/admin-engineer-registration-page.dto';
 import { toEngineerRegistrationApplicationDTO } from './dto/engineer-registration-application.dto';
 import { toEngineerRegistrationApplicationPageDTO } from './dto/engineer-registration-application-page.dto';
@@ -73,6 +78,7 @@ export class RegistrationResolver {
     private readonly resubmitEngineerRegistrationUsecase: ResubmitEngineerRegistrationUsecase,
     private readonly listAdminEngineerRegistrations: ListAdminEngineerRegistrationsUsecase,
     private readonly getAdminEngineerRegistrationDetail: GetAdminEngineerRegistrationDetailUsecase,
+    private readonly getAdminEngineerRegistrationApprovalDetail: GetAdminEngineerRegistrationApprovalDetailUsecase,
     private readonly reviewEngineerRegistrationUsecase: ReviewEngineerRegistrationUsecase,
     private readonly logger: PinoLogger,
   ) {
@@ -351,16 +357,17 @@ export class RegistrationResolver {
   }
 
   /**
-   * 本组织工程师注册审核队列。
+   * 工程师注册审核队列。
    *
-   * 粗粒度准入由 Guard 完成；精确权限（activeRole === SUPER_ADMIN）与可信组织范围
-   * 由用例裁决：组织由服务端解析，不接受客户端自报 organizationId。
+   * 粗粒度准入由 Guard 完成；精确权限（activeRole === SUPER_ADMIN + 请求期 admin_level）
+   * 与可见组织范围由用例裁决：一级全范围，二级仅本公司；组织由服务端解析，
+   * 不接受客户端自报 organizationId。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => AdminEngineerRegistrationPageDTO, {
     name: 'adminEngineerRegistrations',
-    description: '本组织工程师注册审核队列',
+    description: '工程师注册审核队列（一级全范围，二级仅本公司）',
   })
   @ValidateInput()
   async adminEngineerRegistrations(
@@ -388,13 +395,15 @@ export class RegistrationResolver {
   }
 
   /**
-   * 本组织工程师注册申请详情。跨组织或不存在的申请统一按 NOT_FOUND 拒绝。
+   * 工程师注册申请详情（既有契约）：返回申请人 `AdminUserDTO` 字段面，不含真实姓名。
+   *
+   * 一级任意公司；二级跨公司或不存在的申请统一按 NOT_FOUND 拒绝。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => AdminEngineerRegistrationItemDTO, {
     name: 'adminEngineerRegistrationDetail',
-    description: '本组织工程师注册申请详情',
+    description: '工程师注册申请详情（申请 + 申请人公开资料；一级全范围，二级仅本公司）',
   })
   async adminEngineerRegistrationDetail(
     @Args('applicationId', { type: () => Int, description: '申请 ID' }) applicationId: number,
@@ -409,8 +418,32 @@ export class RegistrationResolver {
   }
 
   /**
-   * 本组织管理员一次性终态审核。
+   * 审批详情读入口：同一份申请的窄字段面，额外提供真实姓名。
    *
+   * 授权与错误口径与既有详情入口一致（复用其可见性裁决）；真实姓名只在本入口可读。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => AdminEngineerRegistrationDetailDTO, {
+    name: 'adminEngineerRegistrationApprovalDetail',
+    description: '工程师注册审批详情（申请 + 申请人详情资料含真实姓名；一级全范围，二级仅本公司）',
+  })
+  async adminEngineerRegistrationApprovalDetail(
+    @Args('applicationId', { type: () => Int, description: '申请 ID' }) applicationId: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<AdminEngineerRegistrationDetailDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const item = await this.getAdminEngineerRegistrationApprovalDetail.execute({
+      session,
+      applicationId,
+    });
+    return toAdminEngineerRegistrationDetailDTO(item);
+  }
+
+  /**
+   * 管理员一次性终态审核。
+   *
+   * - 一级可跨公司批准，成员关系写入申请目标公司；二级仅限本公司；
    * - `APPROVE`：账号、资料、有效 ENGINEER 成员关系与申请终态在同一事务生效；
    * - `REJECT`：只写否决与意见，账号保持待审，可凭本人凭据重提；
    * - 重复/并发决策命中 0 行 → CONFLICT，不覆盖既有终态。
@@ -419,7 +452,7 @@ export class RegistrationResolver {
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Mutation(() => AdminEngineerRegistrationItemDTO, {
     name: 'reviewEngineerRegistration',
-    description: '组织管理员审核工程师注册申请（一次性终态）',
+    description: '管理员审核工程师注册申请（一次性终态；一级跨公司，二级仅本公司）',
   })
   @ValidateInput()
   async reviewEngineerRegistration(

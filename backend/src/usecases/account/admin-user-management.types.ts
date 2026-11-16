@@ -187,6 +187,19 @@ export interface AdminResetUserPasswordCommand {
 }
 
 /**
+ * 管理员把普通用户密码重置为系统默认密码的执行入参（任务 08.4）。
+ *
+ * - `accountId` 与旧重置同口径：语义必填，类型保持 `unknown`，正整数收敛由
+ *   `normalizeAdminUserTargetAccountId()` 统一裁决；
+ * - **不含**新密码字段：默认密码只来自运行期配置，绝不接受客户端自报，
+ *   因此本类型在结构上禁止把任意密码写入目标账号。
+ */
+export interface AdminResetUserPasswordToDefaultCommand {
+  readonly session: UsecaseSession;
+  readonly accountId: unknown;
+}
+
+/**
  * 管理员重置普通用户密码用例的执行结果（P0-6）。
  *
  * 只含目标账号 ID、是否执行了更新与固定安全提示三项；**严禁**出现新密码、旧密码、

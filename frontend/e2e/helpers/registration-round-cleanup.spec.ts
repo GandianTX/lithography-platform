@@ -25,13 +25,16 @@ import {
   insertRegistrationRoundOrganization,
   isRegistrationRoundLedgerEmpty,
   locateRegistrationRoundAccount,
+  readRegistrationRoundMembershipByScope,
   readRegistrationRoundOrganization,
   registerRegistrationRoundAccount,
+  registerRegistrationRoundApplication,
   registerRegistrationRoundMembership,
   registerRegistrationRoundOrganization,
   registerRegistrationRoundUserInfo,
   type RegistrationRoundCleanupDeps,
   type RegistrationRoundLedger,
+  retainRegistrationRoundOrganization,
 } from './registration-round-cleanup';
 
 const utf8Hex = (value: string): string => Buffer.from(value, 'utf8').toString('hex').toUpperCase();
@@ -375,6 +378,64 @@ describe('registration-round-cleanup：注册响应定位账号与归属', () =>
   });
 });
 
+describe('registration-round-cleanup：成员关系按已知范围窄查', () => {
+  const scope = {
+    accountId: 501,
+    memberRole: 'CUSTOMER',
+    organizationId: 900,
+    status: 'ACTIVE',
+  };
+
+  it('唯一命中时返回真实主键，SQL 同时限定账号 / 公司 / 角色 / 状态', () => {
+    let issued = '';
+
+    const facts = readRegistrationRoundMembershipByScope(scope, {
+      query: (sql) => {
+        issued = sql;
+        return '701\t501\t900';
+      },
+    });
+
+    expect(facts).toEqual({ accountId: 501, id: 701, organizationId: 900 });
+    expect(issued).toContain('WHERE account_id = 501');
+    expect(issued).toContain('AND organization_id = 900');
+    expect(issued).toContain("AND member_role = 'CUSTOMER'");
+    expect(issued).toContain("AND status = 'ACTIVE'");
+    // 不允许「按账号全量回读」的旧口径
+    expect(issued).not.toContain('ORDER BY id');
+  });
+
+  it('零行（业务未写入）与多行（与预期不符）都失败关闭，不产生可删除事实', () => {
+    expect(() => readRegistrationRoundMembershipByScope(scope, { query: () => '' })).toThrow(
+      /应恰好命中 1 行，实际 0 行/,
+    );
+    expect(() =>
+      readRegistrationRoundMembershipByScope(scope, {
+        query: () => '701\t501\t900\n702\t501\t900',
+      }),
+    ).toThrow(/应恰好命中 1 行，实际 2 行/);
+  });
+
+  it('非法 ID 或非受控枚举在查询前被拒绝（不拼接进 SQL）', () => {
+    let queried = false;
+    const query = (): string => {
+      queried = true;
+      return '701\t501\t900';
+    };
+
+    expect(() =>
+      readRegistrationRoundMembershipByScope({ ...scope, accountId: 0 }, { query }),
+    ).toThrow(/账号 ID/);
+    expect(() =>
+      readRegistrationRoundMembershipByScope(
+        { ...scope, memberRole: "CUSTOMER' OR 1=1" },
+        { query },
+      ),
+    ).toThrow(/成员关系角色/);
+    expect(queried).toBe(false);
+  });
+});
+
 describe('registration-round-cleanup：脚本生成（含部分台账）', () => {
   it('完整台账：只按真实 ID 删除，顺序为成员 → 资料 → 账号 → 公司，残留断言先于 COMMIT', () => {
     const ledger = seededLedger();
@@ -408,6 +469,163 @@ describe('registration-round-cleanup：脚本生成（含部分台账）', () =>
         (index, position) => index > 0 && (position === 0 || index > order[position - 1]),
       ),
     ).toBe(true);
+  });
+
+  it('申请台账：按真实主键绑定与删除，账外申请在首删前拒绝', () => {
+    const ledger = createRegistrationRoundLedger();
+    registerRegistrationRoundAccount(ledger, {
+      id: 501,
+      loginEmail: 'e2e.application.round@example.com',
+      loginName: 'e2e_application_round',
+    });
+    registerRegistrationRoundApplication(ledger, { accountId: 501, id: 801 });
+
+    const script = buildRegistrationRoundCleanupScript(
+      ledger,
+      {
+        account: [],
+        inSet: [
+          { column: 'account_id', table: 'engineer_registration_application', target: 'account' },
+        ],
+        organization: [],
+      },
+      DEDICATED_E2E_DB_NAME,
+    );
+
+    expectScriptHasNoNameBasedDeletion(script);
+    expect(script).toContain(
+      'SELECT id INTO @rc_app_801_row FROM engineer_registration_application WHERE id = 801 AND account_id = 501 FOR UPDATE',
+    );
+    expect(script).toContain('rc_app_801_binding_mismatch');
+    expect(script).toContain(
+      '(SELECT COUNT(*) FROM `engineer_registration_application` WHERE `account_id` = 501 AND id NOT IN (801))',
+    );
+    expect(script).toContain('rc_unregistered_in_set_engineer_registration_application_account_id');
+    expect(script).toContain(
+      'DELETE FROM engineer_registration_application WHERE id = 801 AND account_id = 501',
+    );
+    expect(script).toContain('rc_app_801_delete_rows_mismatch');
+    expect(script).toContain(
+      '(SELECT COUNT(*) FROM engineer_registration_application WHERE id = 801)',
+    );
+    // 申请必须先于账号删除，预检必须先于任何 DELETE
+    expect(script.indexOf('DELETE FROM engineer_registration_application')).toBeLessThan(
+      script.indexOf('DELETE FROM base_user_account'),
+    );
+    expect(
+      script.indexOf('rc_unregistered_in_set_engineer_registration_application_account_id'),
+    ).toBeLessThan(script.indexOf('DELETE FROM engineer_registration_application'));
+    expect(script.indexOf('rc_residue_must_be_zero')).toBeGreaterThan(
+      script.indexOf('DELETE FROM engineer_registration_application'),
+    );
+  });
+
+  it('用户变量名与预处理语句名都不超过 MySQL 64 字符上限（长表名/长列名边）', () => {
+    const ledger = createRegistrationRoundLedger();
+    registerRegistrationRoundAccount(ledger, {
+      id: 501,
+      loginEmail: 'e2e.long.edge@example.com',
+      loginName: 'e2e_long_edge',
+    });
+    registerRegistrationRoundApplication(ledger, { accountId: 501, id: 801 });
+
+    const script = buildRegistrationRoundCleanupScript(
+      ledger,
+      {
+        account: [],
+        inSet: [
+          {
+            column: 'pending_account_id',
+            table: 'engineer_registration_application',
+            target: 'account',
+          },
+        ],
+        organization: [],
+      },
+      DEDICATED_E2E_DB_NAME,
+    );
+
+    // MySQL 对用户变量名与 PREPARE 名称都有 64 字符上限（超限为 ERROR 3061），
+    // 旧实现用 `rc_inset_<table>_<column>` 命名，长边会直接让整批清理失败。
+    const variableNames = [...script.matchAll(/@([A-Za-z0-9_]+)/gu)].map((match) => match[1]);
+    const statementNames = [...script.matchAll(/PREPARE ([A-Za-z0-9_]+) FROM/gu)].map(
+      (match) => match[1],
+    );
+    expect(variableNames.length).toBeGreaterThan(0);
+    expect(statementNames.length).toBeGreaterThan(0);
+    expect(variableNames.filter((name) => name.length > 64)).toEqual([]);
+    expect(statementNames.filter((name) => name.length > 64)).toEqual([]);
+    // 短变量名不影响拒绝标记的可读性：标记仍保留完整边名
+    expect(script).toContain(
+      'rc_unregistered_in_set_engineer_registration_application_pending_account_id',
+    );
+  });
+
+  it('申请指向未登记账号时拒绝清理', () => {
+    const ledger = createRegistrationRoundLedger();
+    registerRegistrationRoundApplication(ledger, { accountId: 999, id: 801 });
+
+    expect(() =>
+      buildRegistrationRoundCleanupScript(ledger, { account: [], organization: [] }, 'db'),
+    ).toThrow(/申请 801 的账号 999 未登记/);
+  });
+
+  it('保留公司只放行子行归属事实，永不出现在删除脚本', () => {
+    const ledger = createRegistrationRoundLedger();
+    retainRegistrationRoundOrganization(ledger, 900);
+    registerRegistrationRoundAccount(ledger, {
+      id: 501,
+      loginEmail: 'e2e.retained.round@example.com',
+      loginName: 'e2e_retained_round',
+    });
+    registerRegistrationRoundUserInfo(ledger, {
+      accountId: 501,
+      customerOrganizationId: 900,
+      email: 'e2e.retained.round@example.com',
+      id: 601,
+    });
+    registerRegistrationRoundMembership(ledger, {
+      accountId: 501,
+      id: 701,
+      organizationId: 900,
+    });
+
+    const script = buildRegistrationRoundCleanupScript(
+      ledger,
+      { account: [], organization: [] },
+      DEDICATED_E2E_DB_NAME,
+    );
+
+    expect(script).toContain('DELETE FROM base_user_account WHERE id = 501');
+    expect(script).toContain('DELETE FROM organization_membership WHERE id = 701');
+    expect(script).toContain('DELETE FROM base_user_info WHERE id = 601');
+    // 保留公司既不加锁也不删除，且不进入残留断言
+    expect(script).not.toContain('rc_org_900');
+    expect(script).not.toContain('DELETE FROM organization WHERE');
+    expect(script).not.toContain('organization WHERE id = 900)');
+  });
+
+  it('未登记的归属公司仍然拒绝清理，已登记为可删除公司不得再声明保留', () => {
+    const missing = createRegistrationRoundLedger();
+    registerRegistrationRoundAccount(missing, {
+      id: 501,
+      loginEmail: 'e2e.missing.org@example.com',
+      loginName: 'e2e_missing_org',
+    });
+    registerRegistrationRoundUserInfo(missing, {
+      accountId: 501,
+      customerOrganizationId: 902,
+      email: 'e2e.missing.org@example.com',
+      id: 601,
+    });
+
+    expect(() =>
+      buildRegistrationRoundCleanupScript(missing, { account: [], organization: [] }, 'db'),
+    ).toThrow(/资料 601 的归属公司 902 未登记/);
+
+    expect(() => retainRegistrationRoundOrganization(seededLedger(), 77)).toThrow(
+      /已登记为本轮可删除公司/,
+    );
   });
 
   it('setup 中断（只有部分公司）：脚本只删这些公司，不触碰账号/资料/成员', () => {

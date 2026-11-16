@@ -3,6 +3,7 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
+import { resolveLevelOneAdminScope } from '@core/account/policy/admin-scope.policy';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import { PasswordPolicyService } from '@core/common/password/password-policy.service';
 import { Inject, Injectable } from '@nestjs/common';
@@ -27,7 +28,6 @@ import type {
   AdminUserCredentialNormalizeOutput,
   AdminUserProfileNormalizeOutput,
 } from './admin-user-management.types';
-import { assertAdminUserManagementPermission } from './admin-user-permission';
 import {
   assertAdminUserPasswordPolicy,
   errorMessage,
@@ -59,9 +59,10 @@ type AdminCreateUserPhase =
  * 管理员创建普通用户用例（P0-3）。
  *
  * 执行顺序刻意固定：
- * 1. **第一步就是精确 SUPER_ADMIN 权限断言**（`assertAdminUserManagementPermission()`，
- *    全仓唯一实现，同时校验 `roles` 含 SUPER_ADMIN 且 `activeRole` 精确等于 SUPER_ADMIN，
- *    缺失或矛盾即失败关闭为 `FORBIDDEN`），先于任何输入规范化与数据库访问；
+ * 1. **第一步就是管理员作用域断言**（`resolveLevelOneAdminScope()`，任务 08.4 起本遗留入口
+ *    只开放给一级管理员：同时校验 `roles` 含 SUPER_ADMIN、`activeRole` 精确等于 SUPER_ADMIN
+ *    与请求期 `adminLevel === 1`，等级缺失或为二级即失败关闭为 `FORBIDDEN`），
+ *    先于任何输入规范化与数据库访问；
  * 2. 场景输入规范化（凭据至少一个、初始密码非空断言、单值可写角色、资料字段）；
  * 3. 初始密码策略校验；
  * 4. 登录凭据唯一性预检查；
@@ -112,7 +113,8 @@ export class AdminCreateUserUsecase {
   }
 
   async execute(command: AdminCreateUserCommand): Promise<AdminUserView> {
-    assertAdminUserManagementPermission(command.session, '创建');
+    // 遗留入口：保留签名与一级行为，但不向二级管理员开放
+    resolveLevelOneAdminScope(command.session, '创建');
 
     // 登录名与登录邮箱至少一个，两者均可为 null；组合约束由 normalize 层裁决
     const credential = normalizeAdminUserCredentialInput({

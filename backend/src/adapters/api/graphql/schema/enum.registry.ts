@@ -29,6 +29,10 @@ import {
 } from '@app-types/models/registration.types';
 import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
+import {
+  organizationKindValues,
+  organizationStatusValues,
+} from '@src/modules/lithography/organization.types';
 import { registerEnumType } from '@nestjs/graphql';
 import { GqlPaginationMode, GqlSortDirection } from '@src/adapters/api/graphql/pagination.enums';
 import { OrderDirection } from '@app-types/common/sort.types';
@@ -63,4 +67,6 @@ export function registerEnums(): void {
   registerEnumType(OrderDirection, { name: 'OrderDirection' });
   registerEnumType(GqlPaginationMode, { name: 'PaginationMode' });
   registerEnumType(GqlSortDirection, { name: 'SortDirection' });
+  registerEnumType(organizationStatusValues, { name: 'OrganizationStatus' });
+  registerEnumType(organizationKindValues, { name: 'OrganizationKind' });
 }

@@ -228,6 +228,21 @@ export function normalizeAdminUserPasswordInput(input: unknown, fieldName: strin
 }
 
 /**
+ * 部署侧默认密码配置的「是否可用」收敛：不是字符串或 trim 后为空 → `null`。
+ *
+ * 刻意返回 `null` 而不是抛 `INPUT_NORMALIZE_ERROR`：默认密码来自服务端配置，
+ * 缺失属于部署配置问题，调用方必须收敛为 `DEFAULT_PASSWORD_NOT_CONFIGURED`
+ * 而不是用户输入错误；同时保留原值（不 trim 返回值），强度判定仍由
+ * `PasswordPolicyService.validatePassword()` 单点负责。
+ */
+export function normalizeAdminUserDefaultPasswordSetting(input: unknown): string | null {
+  if (typeof input !== 'string') {
+    return null;
+  }
+  return input.trim().length === 0 ? null : input;
+}
+
+/**
  * 昵称收敛：必填，执行 trim + NFKC + 长度上限。
  *
  * 不做唯一性校验。管理员创建（P0-3）与资料编辑（P0-4）流程**不得调用**

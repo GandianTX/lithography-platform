@@ -84,14 +84,23 @@ export interface AccountLoginBootstrapSnapshot {
 export type AdminUserWritableRole = IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
 
 /**
- * 管理员用户列表的角色筛选值域：查看筛选允许 `SUPER_ADMIN`（只读展示已有管理员），
- * 与可写角色值域分开声明，避免把只读角色当作可写角色使用。
+ * 管理员用户列表的角色筛选值域（任务 08.4 起只允许普通账号）。
+ *
+ * 新版页面只读普通客户与工程师，不再暴露 `SUPER_ADMIN` 筛选；管理员账号
+ * 即使出现在存量数据中也不进入列表。与可写角色值域仍分开声明。
  *
  * 同样显式列出成员：纯别名（`= IdentityTypeEnum`）在结构上与枚举完全等价，
  * 既不提供任何收窄，也会在枚举扩容时静默扩大筛选值域。
  */
-export type AdminUserListRoleFilter =
-  IdentityTypeEnum.SUPER_ADMIN | IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
+export type AdminUserListRoleFilter = IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
+
+/**
+ * 管理员列表的可见角色范围：与筛选值域同源但**独立声明**。
+ *
+ * 筛选是调用方可选的动作，可见范围是服务端强制的读面下推；两者一旦共用同一数组，
+ * 任何一侧的演进都会静默改变另一侧。当前成员相同（仅普通账号），必须各自显式修改。
+ */
+export type AdminUserVisibleRole = IdentityTypeEnum.ENGINEER | IdentityTypeEnum.CUSTOMER;
 
 /**
  * 管理员可写账号状态值域：第一版只开放 `ACTIVE` / `INACTIVE`。
@@ -174,6 +183,29 @@ export interface AdminUserView {
 }
 
 /**
+ * 审批详情专用的申请人读模型（最小面）。
+ *
+ * 为什么不复用 `AdminUserView`：审批决策需要展示**真实姓名**（`base_user_info.real_name`），
+ * 而 `AdminUserView` 是列表 / 写后读共用的稳定视图，扩大它会同时放大所有消费面的字段面；
+ * 且真实姓名对列表并非必需。因此单列一个仅供审批详情读取的窄视图，由
+ * `AdminUserQueryService.findAdminUserDetailViewById()` 产出。
+ *
+ * - 刻意不含 `role` / `status` / 时间戳：审批详情消费的是申请状态，不是账号角色；
+ * - 刻意不含角色三源收敛：详情读取只需展示资料，角色异常不应让详情不可读；
+ * - `realName` 允许为 `null`（旧数据可能未填），消费方必须显式按空展示，
+ *   **不得用 `nickname` 冒充真实姓名**；
+ * - 严禁出现密码 / 密码哈希、`metaDigest`、Token 或任何凭据字段。
+ */
+export interface AdminApplicantDetailView {
+  readonly id: number;
+  readonly loginName: string | null;
+  readonly nickname: string;
+  readonly realName: string | null;
+  readonly phone: string | null;
+  readonly contactEmail: string | null;
+}
+
+/**
  * 管理员状态写用例（P0-5）专用的**窄内部事实**：账号侧状态与资料侧用户状态的当前值
  *
  * 为什么不并入 `AdminUserView`：`user_state` 不是管理员可独立操作的字段，
@@ -190,6 +222,22 @@ export interface AdminUserView {
 export interface AdminUserStatusFacts {
   readonly accountStatus: AccountStatus;
   readonly userState: UserState;
+}
+
+/**
+ * 二级管理员写目标归属复核所需的窄内部事实（V5.5 R012-01）。
+ *
+ * 客户以 `base_user_info.customer_organization_id` 为真实归属，工程师以本公司有效的
+ * 工程师成员关系为准；因此写路径必须先拿到**收敛后的目标角色**与客户归属列，
+ * 再按角色分别核验，不能用成员关系表统一代替两条来源。
+ *
+ * 只含定位归属所需的最小字段：不包含昵称、联系方式、密码派生值或任何 Token。
+ * 角色三源无法收敛时不返回本类型（调用方按目标不存在失败关闭），避免把异常角色
+ * 当作可写目标。
+ */
+export interface AdminUserOwnershipFacts {
+  readonly role: IdentityTypeEnum;
+  readonly customerOrganizationId: number | null;
 }
 
 /**
@@ -213,15 +261,31 @@ export interface AdminUserListQuery {
   readonly role?: AdminUserListRoleFilter;
   readonly status?: AdminUserListStatusFilter;
   /**
-   * 组织范围：管理员可信组织内的有效成员账号 ID 清单，由 Usecase 经组织解析后下推。
+   * 二级管理员的组织范围（V5.5 R012-01），由 Usecase 经可信组织解析后下推。
    *
-   * - `undefined` = 不按组织收窄（仅供非组织场景的内部调用；管理员管理链路必须传入）；
-   * - 空数组 = 范围为空，QueryService 直接返回空页，**不得**退化为「不筛选」。
+   * 范围按目标真实角色分两条来源，**不能用统一的成员 ID 清单替代**：
+   * - 客户：`base_user_info.customer_organization_id = organizationId`；
+   * - 工程师：`account.id` 命中 `engineerAccountIds`（本公司有效工程师成员关系）。
    *
-   * 用账号 ID 而非 organizationId：account 域 QueryService 不跨域导入组织 Entity
+   * `undefined` = 不按组织收窄（一级管理员全范围）。
+   * `engineerAccountIds` 为空时仍需保留客户条件，所以**不能**据此返回空页。
+   *
+   * 用 ID 而非组织 Entity：account 域 QueryService 不跨域导入组织 Entity
    * （`modules.rules.md`），组织事实由 lithography 域 QueryService 解析。
    */
-  readonly accountIds?: ReadonlyArray<number>;
+  readonly organizationScope?: {
+    readonly organizationId: number;
+    readonly engineerAccountIds: ReadonlyArray<number>;
+  };
+  /**
+   * 可见角色范围（任务 08.4）：只列出该值域内的账号。
+   *
+   * - `undefined` = 不按角色收窄；
+   * - 空数组 = 范围为空，直接返回空页（与 `accountIds` 同口径）；
+   * - 条件与分页 / COUNT 共用同一 QueryBuilder，因此 `total` 与 `items` 同源，
+   *   不存在「先分页再过滤」导致的总数泄漏。
+   */
+  readonly visibleRoles?: ReadonlyArray<AdminUserVisibleRole>;
 }
 
 /**

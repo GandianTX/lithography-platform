@@ -51,6 +51,7 @@ describe('AdminUserQueryService', () => {
       accountId: TARGET_ACCOUNT_ID,
       nickname: 'target_nickname',
       companyName: '示例公司',
+      customerOrganizationId: null,
       phone: '13800000000',
       email: 'contact@example.com',
       accessGroup: [IdentityTypeEnum.CUSTOMER],
@@ -250,23 +251,39 @@ describe('AdminUserQueryService', () => {
       }
     });
 
-    it('组织范围以账号 ID 清单下推 IN，不改变其余筛选与分页', async () => {
-      await service.listAdminUsers(listQuery({ accountIds: [1, 2, 3] }));
+    it('组织范围按角色分流下推：客户比较资料归属列，工程师比较成员账号 ID', async () => {
+      await service.listAdminUsers(
+        listQuery({
+          organizationScope: { organizationId: 910001, engineerAccountIds: [2, 3] },
+        }),
+      );
 
-      // 下推为命名参数化的 IN，避免把 ID 拼进 SQL 文本
-      expect(qb.andWhere).toHaveBeenCalledWith('account.id IN (:...accountIds)', {
-        accountIds: [1, 2, 3],
-      });
+      // 两条来源共用同一查询条件：客户不能被成员 ID 清单替代，工程师不能漏掉成员关系
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        '((account.identityHint = :scopeCustomerRole AND userInfo.customerOrganizationId = :scopeOrganizationId) OR (account.identityHint = :scopeEngineerRole AND account.id IN (:...scopeEngineerAccountIds)))',
+        {
+          scopeCustomerRole: IdentityTypeEnum.CUSTOMER,
+          scopeOrganizationId: 910001,
+          scopeEngineerRole: IdentityTypeEnum.ENGINEER,
+          scopeEngineerAccountIds: [2, 3],
+        },
+      );
       expect(capturedSearchArg().params.filters).toEqual({});
     });
 
-    it('组织范围为空清单时直接返回空页，不退化为不筛选的全库查询', async () => {
-      const page = await service.listAdminUsers(listQuery({ accountIds: [] }));
+    it('公司内无有效工程师时仍保留客户归属条件，不退化为空页', async () => {
+      await service.listAdminUsers(
+        listQuery({ organizationScope: { organizationId: 910001, engineerAccountIds: [] } }),
+      );
 
-      expect(page).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
-      // 关键：不得绕过组织范围去查库——那会把「没有可见账号」静默变成「全部账号」
-      expect(searchService.search).not.toHaveBeenCalled();
-      expect(qb.andWhere).not.toHaveBeenCalled();
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        '((account.identityHint = :scopeCustomerRole AND userInfo.customerOrganizationId = :scopeOrganizationId))',
+        {
+          scopeCustomerRole: IdentityTypeEnum.CUSTOMER,
+          scopeOrganizationId: 910001,
+        },
+      );
+      expect(searchService.search).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -666,6 +683,70 @@ describe('AdminUserQueryService', () => {
     });
   });
 
+  describe('findAdminUserDetailViewById', () => {
+    it('只装配审批展示字段，含真实姓名且不含角色 / 状态 / 时间戳', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(
+        buildAccount({ userInfo: buildUserInfo({ realName: '张三' }) }),
+      );
+
+      const view = await service.findAdminUserDetailViewById({ accountId: TARGET_ACCOUNT_ID });
+
+      expect(view).toEqual({
+        id: TARGET_ACCOUNT_ID,
+        loginName: 'target_user',
+        nickname: 'target_nickname',
+        realName: '张三',
+        phone: '13800000000',
+        contactEmail: 'contact@example.com',
+      });
+    });
+
+    it('真实姓名为空时原样返回 null，不用昵称冒充', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(
+        buildAccount({ userInfo: buildUserInfo({ realName: null }) }),
+      );
+
+      const view = await service.findAdminUserDetailViewById({ accountId: TARGET_ACCOUNT_ID });
+
+      expect(view?.realName).toBeNull();
+      expect(view?.nickname).toBe('target_nickname');
+    });
+
+    it('角色三源不收敛不影响详情读取（详情只展示资料，不做角色收敛）', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(
+        buildAccount({
+          userInfo: buildUserInfo({
+            realName: '张三',
+            metaDigest: [IdentityTypeEnum.ENGINEER],
+          }),
+        }),
+      );
+
+      await expect(
+        service.findAdminUserDetailViewById({ accountId: TARGET_ACCOUNT_ID }),
+      ).resolves.toMatchObject({ id: TARGET_ACCOUNT_ID, realName: '张三' });
+    });
+
+    it('资料行缺失时失败关闭，不当作「查无此人」', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(
+        buildAccount({ userInfo: undefined }),
+      );
+
+      await expect(
+        service.findAdminUserDetailViewById({ accountId: TARGET_ACCOUNT_ID }),
+      ).rejects.toMatchObject({
+        code: ADMIN_USER_ERROR.READ_FAILED,
+        cause: { diagnostic: 'USER_INFO_ROW_MISSING', accountId: TARGET_ACCOUNT_ID },
+      });
+    });
+
+    it('账号不存在返回 null（由 Usecase 决定错误口径）', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.findAdminUserDetailViewById({ accountId: 999 })).resolves.toBeNull();
+    });
+  });
+
   describe('findAdminUserStatusFacts', () => {
     it('只返回两个状态字段的窄事实，不含身份或资料字段', async () => {
       (accountRepository.findOne as jest.Mock).mockResolvedValue(
@@ -746,6 +827,74 @@ describe('AdminUserQueryService', () => {
       expect(JSON.stringify((error as DomainError).details ?? null)).not.toContain(
         'ER_LOCK_WAIT_TIMEOUT',
       );
+    });
+  });
+
+  describe('findAdminUserOwnershipFacts', () => {
+    it('返回收敛后的角色与客户归属列，不含任何资料或凭据字段', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(
+        buildAccount({
+          identityHint: IdentityTypeEnum.CUSTOMER,
+          userInfo: buildUserInfo({ customerOrganizationId: 910020 }),
+        }),
+      );
+
+      const facts = await service.findAdminUserOwnershipFacts({ accountId: TARGET_ACCOUNT_ID });
+
+      expect(facts).toEqual({
+        role: IdentityTypeEnum.CUSTOMER,
+        customerOrganizationId: 910020,
+      });
+      expect(Object.keys(facts ?? {}).sort()).toEqual(['customerOrganizationId', 'role']);
+    });
+
+    it('工程师角色同样返回客户归属列（为空），由调用方按成员关系核验', async () => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(
+        buildAccount({
+          identityHint: IdentityTypeEnum.ENGINEER,
+          userInfo: buildUserInfo({
+            accessGroup: [IdentityTypeEnum.ENGINEER],
+            metaDigest: [IdentityTypeEnum.ENGINEER],
+          }),
+        }),
+      );
+
+      await expect(
+        service.findAdminUserOwnershipFacts({ accountId: TARGET_ACCOUNT_ID }),
+      ).resolves.toEqual({ role: IdentityTypeEnum.ENGINEER, customerOrganizationId: null });
+    });
+
+    it.each([
+      ['账号行缺失', null],
+      ['资料行缺失', buildAccount({ userInfo: undefined })],
+      [
+        '角色三源不收敛',
+        buildAccount({
+          identityHint: IdentityTypeEnum.CUSTOMER,
+          userInfo: buildUserInfo({ accessGroup: [IdentityTypeEnum.ENGINEER] }),
+        }),
+      ],
+    ])('%s 时返回 null（调用方按目标不存在失败关闭）', async (_label, account) => {
+      (accountRepository.findOne as jest.Mock).mockResolvedValue(account);
+
+      await expect(
+        service.findAdminUserOwnershipFacts({ accountId: TARGET_ACCOUNT_ID }),
+      ).resolves.toBeNull();
+    });
+
+    it('传入事务上下文时读事务 EntityManager，保证归属复核发生在目标行锁之后', async () => {
+      const txRepository = {
+        findOne: jest.fn().mockResolvedValue(buildAccount()),
+      } as unknown as Repository<AccountEntity>;
+      const { transactionContext, manager } = createTransactionContext(txRepository);
+
+      await service.findAdminUserOwnershipFacts({
+        accountId: TARGET_ACCOUNT_ID,
+        transactionContext,
+      });
+
+      expect(manager.getRepository).toHaveBeenCalledWith(AccountEntity);
+      expect(accountRepository.findOne).not.toHaveBeenCalled();
     });
   });
 

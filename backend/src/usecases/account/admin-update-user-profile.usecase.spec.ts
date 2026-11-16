@@ -6,7 +6,6 @@ import {
   ADMIN_USER_ERROR,
   DomainError,
   INPUT_NORMALIZE_ERROR,
-  ORGANIZATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import type { AccountService } from '@src/modules/account/base/services/account.service';
@@ -16,15 +15,14 @@ import {
   ADMIN_ACCOUNT_ID,
   TARGET_ACCOUNT_ID,
   captureThrownError,
-  createAdminOrganizationFact,
   createAdminUserView,
   createFakeTransactionHarness,
+  createLevelTwoAdminSession,
   createOrganizationIsolationMocks,
   createRealViewConversionDouble,
   createSuperAdminSession,
   createSuperAdminTargetView,
   createUnauthorizedSessions,
-  type AdminUserAccountRowSpec,
 } from '../../../test/support/account/admin-user.fixture';
 import { AdminUpdateUserProfileUsecase } from './admin-update-user-profile.usecase';
 
@@ -59,20 +57,9 @@ describe('AdminUpdateUserProfileUsecase', () => {
 
   const organizationIsolation = createOrganizationIsolationMocks();
 
-  /** 组织隔离替身回到「成功」缺省：管理员有单一可信组织、目标同组织有效成员 */
-  const givenOrganizationIsolation = (): void => {
-    organizationIsolation.resolveForAccount
-      .mockReset()
-      .mockResolvedValue(createAdminOrganizationFact());
-    organizationIsolation.findActiveMembership
-      .mockReset()
-      .mockResolvedValue(createAdminOrganizationFact());
-  };
-
   const usecase = new AdminUpdateUserProfileUsecase(
     accountService,
     adminUserQueryService,
-    organizationIsolation.organizationContextQueryService,
     organizationIsolation.organizationMembershipQueryService,
     logger,
     harness.transactionRunner,
@@ -113,7 +100,6 @@ describe('AdminUpdateUserProfileUsecase', () => {
     (accountService.lockByIdForUpdate as jest.Mock).mockReset().mockResolvedValue(undefined);
     (accountService.updateUserInfoFields as jest.Mock).mockReset().mockResolvedValue(undefined);
     givenLockedTarget();
-    givenOrganizationIsolation();
   });
 
   describe('精确 SUPER_ADMIN 授权', () => {
@@ -171,45 +157,37 @@ describe('AdminUpdateUserProfileUsecase', () => {
     });
   });
 
-  describe('组织隔离（管理员只能管理本组织）', () => {
-    it('目标不在管理员可信组织内时收敛为 TARGET_NOT_FOUND，零写入并回滚', async () => {
-      organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
-
-      const error = await captureThrownError(executeAsSuperAdmin({ nickname: 'new_nickname' }));
-
-      expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
-      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
-      expect(harness.isRolledBack()).toBe(true);
-      expect(harness.isCommitted()).toBe(false);
-      expect(organizationIsolation.findActiveMembership).toHaveBeenCalledWith({
-        accountId: TARGET_ACCOUNT_ID,
-        organizationId: createAdminOrganizationFact().organizationId,
-        transactionContext: harness.txContext,
-      });
-    });
-
-    it('管理员自身没有有效组织时失败关闭为 FORBIDDEN，且零写入', async () => {
-      organizationIsolation.resolveForAccount
+  describe('遗留入口仅一级管理员', () => {
+    it('一级管理员不受成员公司限制：不解析组织、不校验目标归属即可写入', async () => {
+      (adminUserQueryService.findAdminUserViewById as jest.Mock)
         .mockReset()
-        .mockRejectedValue(
-          new DomainError(
-            ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP,
-            '当前账号没有有效组织成员关系，无法执行组织范围操作',
-          ),
-        );
+        .mockResolvedValueOnce(createAdminUserView())
+        .mockResolvedValueOnce(createAdminUserView({ nickname: 'new_nickname' }));
 
-      const error = await captureThrownError(executeAsSuperAdmin({ nickname: 'new_nickname' }));
+      await expect(executeAsSuperAdmin({ nickname: 'new_nickname' })).resolves.toMatchObject({
+        nickname: 'new_nickname',
+      });
 
-      expect(error).toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
-      // 组织解析已后移到行锁之后：先锁定目标，组织裁决失败后不再读取目标资料与写入
+      // 一级是平台级角色：目标归属校验（findActiveMembership）完全不参与
       expect(accountService.lockByIdForUpdate).toHaveBeenCalledWith(
         TARGET_ACCOUNT_ID,
         harness.txContext,
       );
-      expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
+      expect(harness.isCommitted()).toBe(true);
+    });
+
+    it('二级管理员调用遗留入口时按 FORBIDDEN 拒绝，且不开启事务、不触碰数据库', async () => {
+      await expect(
+        usecase.execute({
+          session: createLevelTwoAdminSession(),
+          accountId: TARGET_ACCOUNT_ID,
+          nickname: 'new_nickname',
+        }),
+      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+
+      expect(harness.transactionRunner.run).not.toHaveBeenCalled();
+      expect(accountService.lockByIdForUpdate).not.toHaveBeenCalled();
       expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
-      expect(harness.isRolledBack()).toBe(true);
-      expect(harness.isCommitted()).toBe(false);
     });
   });
 
@@ -219,7 +197,6 @@ describe('AdminUpdateUserProfileUsecase', () => {
     const realViewUsecase = new AdminUpdateUserProfileUsecase(
       accountService,
       conversion.queryService,
-      organizationIsolation.organizationContextQueryService,
       organizationIsolation.organizationMembershipQueryService,
       logger,
       harness.transactionRunner,
@@ -234,44 +211,10 @@ describe('AdminUpdateUserProfileUsecase', () => {
 
     beforeEach(() => {
       conversion.setAccountRow({});
-      givenOrganizationIsolation();
       (accountService.updateUserInfoFields as jest.Mock).mockReset().mockResolvedValue(undefined);
     });
 
-    const dirtyRows: ReadonlyArray<[string, AdminUserAccountRowSpec]> = [
-      ['资料行缺失', { withoutUserInfo: true }],
-      [
-        '角色三源不收敛',
-        {
-          identityHint: IdentityTypeEnum.SUPER_ADMIN,
-          accessGroup: [IdentityTypeEnum.CUSTOMER],
-          metaDigest: [IdentityTypeEnum.CUSTOMER],
-        },
-      ],
-    ];
-
-    it.each(dirtyRows)(
-      '外组织目标（%s）与不存在目标使用同一拒绝口径，且不读取目标资料',
-      async (_label, row) => {
-        conversion.setAccountRow(row);
-        organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
-
-        const error = await captureThrownError(executeWithRealView());
-
-        // 外组织目标一律 TARGET_NOT_FOUND + 空 details：不因资料缺失/角色异常产生可区分错误
-        expect(error).toMatchObject({
-          code: ADMIN_USER_ERROR.TARGET_NOT_FOUND,
-          details: undefined,
-        });
-        // 归属校验先于资料读取：真实 View 转换一次都不应被触发
-        expect(conversion.findAdminUserViewById).not.toHaveBeenCalled();
-        expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
-        expect(harness.isRolledBack()).toBe(true);
-        expect(harness.isCommitted()).toBe(false);
-      },
-    );
-
-    it('同组织资料缺失保留原有失败关闭语义（READ_FAILED），不回退为 TARGET_NOT_FOUND', async () => {
+    it('资料缺失保留原有失败关闭语义（READ_FAILED），不回退为 TARGET_NOT_FOUND', async () => {
       conversion.setAccountRow({ withoutUserInfo: true });
 
       const error = await captureThrownError(executeWithRealView());
@@ -286,7 +229,7 @@ describe('AdminUpdateUserProfileUsecase', () => {
       expect(harness.isRolledBack()).toBe(true);
     });
 
-    it('同组织角色异常保留原有失败关闭语义（ROLE_DATA_INCONSISTENT）', async () => {
+    it('角色异常保留原有失败关闭语义（ROLE_DATA_INCONSISTENT）', async () => {
       conversion.setAccountRow({
         identityHint: IdentityTypeEnum.SUPER_ADMIN,
         accessGroup: [IdentityTypeEnum.CUSTOMER],
@@ -304,7 +247,7 @@ describe('AdminUpdateUserProfileUsecase', () => {
       expect(harness.isRolledBack()).toBe(true);
     });
 
-    it('正常同组织目标保持原行为：真实转换后可写入并回读提交', async () => {
+    it('正常目标保持原行为：真实转换后可写入并回读提交', async () => {
       (accountService.updateUserInfoFields as jest.Mock).mockImplementation(() => {
         // 模拟数据库落库：写后回读必须看到本次 patch
         conversion.setAccountRow({ nickname: 'new_nickname' });
@@ -319,26 +262,25 @@ describe('AdminUpdateUserProfileUsecase', () => {
       expect(harness.isRolledBack()).toBe(false);
     });
 
-    it('顺序为 锁定 → 解析操作者组织 → 核验同组织成员 → 读取并转换 View', async () => {
+    it('顺序为 锁定 → 读取并转换 View → 角色断言', async () => {
       conversion.setAccountRow({
         identityHint: IdentityTypeEnum.SUPER_ADMIN,
         accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
         metaDigest: [IdentityTypeEnum.SUPER_ADMIN],
       });
 
-      // 同组织 + 目标为只读 SUPER_ADMIN：锁定与归属校验通过后，在角色断言处失败关闭
+      // 目标为只读 SUPER_ADMIN：锁定与 View 读取通过后，在角色断言处失败关闭
       await expect(executeWithRealView()).rejects.toMatchObject({
         code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
       });
 
       const lockOrder = (accountService.lockByIdForUpdate as jest.Mock).mock.invocationCallOrder[0];
-      const resolveOrder = organizationIsolation.resolveForAccount.mock.invocationCallOrder[0];
-      const membershipOrder =
-        organizationIsolation.findActiveMembership.mock.invocationCallOrder[0];
       const viewOrder = conversion.findAdminUserViewById.mock.invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(resolveOrder);
-      expect(resolveOrder).toBeLessThan(membershipOrder);
-      expect(membershipOrder).toBeLessThan(viewOrder);
+      expect(lockOrder).toBeLessThan(viewOrder);
+      // 一级管理员不做目标归属校验
+      expect(
+        organizationIsolation.organizationMembershipQueryService.findActiveMembership,
+      ).not.toHaveBeenCalled();
       expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
     });
   });

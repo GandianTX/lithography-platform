@@ -11,6 +11,7 @@ const makeMembershipRepo = () => ({
 
 const makeOrganizationRepo = () => ({
   find: jest.fn().mockResolvedValue([]),
+  findOne: jest.fn().mockResolvedValue(null),
 });
 
 const membershipEntity = (
@@ -152,5 +153,47 @@ describe('OrganizationMembershipQueryService', () => {
       service.findActiveMembership({ accountId: 900101, organizationId: 910001 }),
     ).resolves.toBeNull();
     expect(organizationRepo.find).toHaveBeenCalled();
+  });
+
+  it('按组织列出有效工程师账号：只取 ACTIVE 且 memberRole=ENGINEER 的成员', async () => {
+    const membershipRepo = makeMembershipRepo();
+    const organizationRepo = makeOrganizationRepo();
+    membershipRepo.find.mockResolvedValue([
+      membershipEntity({ id: 1, accountId: 900101, memberRole: 'ENGINEER' }),
+      membershipEntity({ id: 2, accountId: 900102, memberRole: 'ENGINEER' }),
+    ]);
+    organizationRepo.findOne.mockResolvedValue(organizationEntity());
+    const service = new OrganizationMembershipQueryService(
+      membershipRepo as never,
+      organizationRepo as never,
+    );
+
+    const accountIds = await service.listActiveEngineerAccountIdsByOrganization({
+      organizationId: 910001,
+    });
+
+    expect(accountIds).toEqual([900101, 900102]);
+    expect(membershipRepo.find).toHaveBeenCalledWith({
+      where: { organizationId: 910001, status: 'ACTIVE', memberRole: 'ENGINEER' },
+      order: { id: 'ASC' },
+    });
+  });
+
+  it('组织停用或不存在时工程师清单为空，且不查询成员表', async () => {
+    const membershipRepo = makeMembershipRepo();
+    const organizationRepo = makeOrganizationRepo();
+    organizationRepo.findOne.mockResolvedValue(null);
+    const service = new OrganizationMembershipQueryService(
+      membershipRepo as never,
+      organizationRepo as never,
+    );
+
+    await expect(
+      service.listActiveEngineerAccountIdsByOrganization({ organizationId: 910001 }),
+    ).resolves.toEqual([]);
+    expect(membershipRepo.find).not.toHaveBeenCalled();
+    expect(organizationRepo.findOne).toHaveBeenCalledWith({
+      where: { id: 910001, status: 'ACTIVE' },
+    });
   });
 });

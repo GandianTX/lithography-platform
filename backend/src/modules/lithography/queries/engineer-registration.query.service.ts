@@ -8,10 +8,10 @@ import { Repository } from 'typeorm';
 import { EngineerRegistrationApplicationEntity } from '../entities/engineer-registration-application.entity';
 import { toEngineerRegistrationApplicationSnapshot } from '../engineer-registration.mapper';
 import {
+  AdminEngineerRegistrationQueueQuery,
   EngineerRegistrationApplicationSnapshot,
   EngineerRegistrationListPage,
   EngineerRegistrationListPagination,
-  EngineerRegistrationOrganizationQueueQuery,
 } from '../engineer-registration.types';
 
 /**
@@ -52,15 +52,21 @@ export class EngineerRegistrationQueryService {
     return entity ? toEngineerRegistrationApplicationSnapshot(entity) : null;
   }
 
-  /** 组织审核队列：按提交时间正序（先到先审），只含指定组织的申请 */
-  async listByOrganization(
-    query: EngineerRegistrationOrganizationQueueQuery,
+  /**
+   * 管理员审核队列：按提交时间正序（先到先审）。
+   *
+   * `organizationId` 由 usecase 从可信管理员作用域解析后传入：二级必传本公司，
+   * 一级不传即全范围。未提供公司时该条件不进入 `where`，状态筛选与分页仍在
+   * 同一查询内完成，保证「先限域再筛选/分页」，不会先取全量再在内存裁剪。
+   */
+  async listForAdminQueue(
+    query: AdminEngineerRegistrationQueueQuery,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<EngineerRegistrationListPage> {
     const page = Math.max(query.pagination.page, 1);
     const pageSize = Math.max(query.pagination.pageSize, 1);
     const where = {
-      organizationId: query.organizationId,
+      ...(query.organizationId === undefined ? {} : { organizationId: query.organizationId }),
       ...(query.status === undefined ? {} : { status: query.status }),
     };
     const [entities, total] = await this.getRepository(transactionContext).findAndCount({

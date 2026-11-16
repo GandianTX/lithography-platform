@@ -1,9 +1,13 @@
 // src/features/admin-user-management/ui/admin-user-management-panel.tsx
 
 /**
- * 管理员用户管理面板。
+ * 管理员用户管理面板（任务 08.4）。
  *
- * 四个写弹窗都恒定挂载在本组件中、只切换 `open` / `row`，因此弹窗归属判定集中在这一层：
+ * 本期只开放 V6.4 允许的动作：查看范围内普通用户、启停、重置为系统默认密码。
+ * 创建、资料编辑、删除、改角色/等级入口均不在页面上出现（后端遗留签名保留，
+ * 但只对一级管理员开放，前端不再调用）。
+ *
+ * 两个写弹窗都恒定挂载在本组件中、只切换 `open` / `row`，因此弹窗归属判定集中在这一层：
  * 每个弹窗一条**会话代次**（`useDialogSessionSeq`），打开 / 关闭 / 切换目标时在事件处理器里
  * 同步推进，提交入口捕获代次与目标 accountId，成功续体回来后代次与 accountId 都仍一致才允许关闭。
  * 弹窗内部的错误区另由弹窗侧的 `useStaleSubmitGuard` 把守，两层互不代替。
@@ -14,6 +18,7 @@ import { CopyOutlined } from '@ant-design/icons';
 import { Button, message, Select, Space, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 
+import { useDialogSessionSeq } from '@/shared/ui/dialog-session';
 import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
 import { FilterBar } from '@/shared/ui/filter-bar';
@@ -30,8 +35,7 @@ import {
 } from '../application/admin-user-contact-copy';
 import type {
   AdminUserCommandResult,
-  AdminUserCreateDraft,
-  AdminUserProfileEditDraft,
+  AdminUserFilterRole,
   AdminUserRole,
   AdminUserRow,
   AdminUserStatusFilter,
@@ -42,21 +46,16 @@ import {
   ADMIN_USER_ROW_READ_ONLY_REASON,
   ADMIN_USER_STATUS_FILTER_OPTIONS,
   ADMIN_USER_STATUS_LABELS,
-  canEditAdminUserProfile,
   canResetAdminUserPassword,
   canToggleAdminUserStatus,
+  isAdminUserRowReadOnly,
   isAdminUserStatusWritable,
+  resolveAdminUserScopeHint,
 } from '../application/admin-user-management-policy';
 import { useAdminUserCommands } from '../application/use-admin-user-commands';
 import { useAdminUserList } from '../application/use-admin-user-list';
 
-import { AdminUserCreateModal } from './admin-user-create-modal';
-import {
-  AdminUserProfileEditModal,
-  AdminUserResetPasswordModal,
-  AdminUserStatusModal,
-} from './admin-user-row-command-modals';
-import { useDialogSessionSeq } from './use-dialog-session-seq';
+import { AdminUserResetPasswordModal, AdminUserStatusModal } from './admin-user-row-command-modals';
 
 const ROLE_TAG_COLORS: Record<AdminUserRole, string> = {
   CUSTOMER: 'green',
@@ -67,8 +66,8 @@ const ROLE_TAG_COLORS: Record<AdminUserRole, string> = {
 /** 主搜索防抖节奏：与工程师维修申请列表保持一致（输入即时回显、防抖值才提交筛选） */
 const SEARCH_DEBOUNCE_MS = 300;
 
-/** 四个弹窗的会话标识：创建弹窗没有 accountId，会话代次就是它的完整身份；行级弹窗都以目标 accountId 为身份 */
-type AdminUserDialogKey = 'create' | 'profile' | 'status' | 'reset-password';
+/** 行级弹窗的会话标识：每个弹窗一条独立代次，以目标 accountId 为会话身份 */
+type AdminUserDialogKey = 'status' | 'reset-password';
 
 type AdminUserRowSetter = Dispatch<SetStateAction<AdminUserRow | null>>;
 
@@ -91,7 +90,7 @@ function toTargetedSuccessMessage(nickname: string | null, noun: string, verb: s
  * - 三行仍是列表已返回的既有字段，继续按现有列宽省略，不因本区块加宽表格；
  *   被省略的值悬停或键盘聚焦时用项目现有 Tooltip 展示完整值，空值只显示占位符、不挂提示。
  * - 整块（含区块内空白）就是复制区域：点击 / Enter / Space 复制本行非空基本信息。
- *   复制只读取行内既有字段，不发起任何请求，也不介入同行的编辑 / 启停 / 重置密码入口。
+ *   复制只读取行内既有字段，不发起任何请求，也不介入同行的启停 / 重置密码入口。
  */
 function AdminUserContactCell({ row }: { row: AdminUserRow }) {
   const copyContact = () => {
@@ -146,16 +145,14 @@ function AdminUserContactCell({ row }: { row: AdminUserRow }) {
   );
 }
 
-export function AdminUserManagementPanel() {
+export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | null }) {
   const list = useAdminUserList();
   const commands = useAdminUserCommands(list.reload);
   const dialogSession = useDialogSessionSeq<AdminUserDialogKey>();
   const [keywordDraft, setKeywordDraft] = useState('');
   const [debouncedKeyword, setDebouncedKeyword] = useState('');
-  // 筛选条件默认收起：常驻行只保留主搜索、筛选开关与创建入口（工程师维修申请列表同一模式）
+  // 筛选条件默认收起：常驻行只保留主搜索与筛选开关（工程师维修申请列表同一模式）
   const [filterOpen, setFilterOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [profileRow, setProfileRow] = useState<AdminUserRow | null>(null);
   const [statusRow, setStatusRow] = useState<AdminUserRow | null>(null);
   const [resetPasswordRow, setResetPasswordRow] = useState<AdminUserRow | null>(null);
 
@@ -192,8 +189,6 @@ export function AdminUserManagementPanel() {
     list.applyFilters({ keyword: null, role: null, status: null });
   };
 
-  const isCreateSubmitting = commands.isPending('create');
-  const isProfileSubmitting = commands.isPending('profile');
   const isStatusSubmitting = commands.isPending('status');
   const isResetPasswordSubmitting = commands.isPending('reset-password');
 
@@ -204,27 +199,11 @@ export function AdminUserManagementPanel() {
    * 旧请求的成功续体就能把新一代弹窗关掉。
    *
    * 边界说明：antd 6.4.3 的 `Modal.handleCancel` 在 `confirmLoading` 为真时直接 `return`，
-   * 取消按钮、右上角 X、遮罩点击与 Esc 四条关闭路径共用它，而下面四个弹窗的
+   * 取消按钮、右上角 X、遮罩点击与 Esc 四条关闭路径共用它，而下面两个弹窗的
    * `submitting` 都接到了 `commands.isPending(key)`。也就是说当前接线下用户在提交期间
    * 关不掉弹窗，本层守卫拦的是「提交期间切换目标」以及宿主接线一旦放松后的
    * 「关闭 / 重开」，而不是一个当前可复现的用户操作序列。
    */
-  const openCreateDialog = () => {
-    // 只在 closed → open 的真实翻转上推进：弹窗侧守卫以 `open` 为会话身份，
-    // 面板若在一次无效的重入上也推进，两层就会对「是否新会话」给出相反答案：
-    // 面板当成陈旧而不关闭，弹窗当成新鲜而写入错误区。
-    if (!createOpen) {
-      dialogSession.advance('create');
-    }
-
-    setCreateOpen(true);
-  };
-
-  const closeCreateDialog = () => {
-    dialogSession.advance('create');
-    setCreateOpen(false);
-  };
-
   const openRowDialog = (
     key: AdminUserDialogKey,
     currentRow: AdminUserRow | null,
@@ -243,22 +222,6 @@ export function AdminUserManagementPanel() {
   const closeRowDialog = (key: AdminUserDialogKey, setRow: AdminUserRowSetter) => {
     dialogSession.advance(key);
     setRow(null);
-  };
-
-  /**
-   * 创建弹窗成功收尾：没有 accountId，会话代次就是它的完整身份。
-   *
-   * @returns 本次成功是否属于当前会话；false ⇒ 陈旧，调用方据此改用点名目标的反馈措辞
-   */
-  const closeCreateDialogOnSuccess = (sessionSeq: number): boolean => {
-    if (!dialogSession.isCurrent('create', sessionSeq)) {
-      return false;
-    }
-
-    setCreateOpen(false);
-    dialogSession.advance('create');
-
-    return true;
   };
 
   /**
@@ -291,64 +254,6 @@ export function AdminUserManagementPanel() {
     return true;
   };
 
-  const submitCreate = async (draft: AdminUserCreateDraft): Promise<AdminUserCommandResult> => {
-    const sessionSeq = dialogSession.capture('create');
-    const execution = await commands.createUser(draft);
-
-    if (execution.kind === 'ok') {
-      if (execution.result.ok) {
-        if (closeCreateDialogOnSuccess(sessionSeq)) {
-          message.success('用户已创建。');
-        } else {
-          // 陈旧但写入确实发生：点名实际提交的草稿，避免被误读成重开后那次的结果
-          message.success(`「${draft.nickname}」已创建。`);
-        }
-      }
-
-      return execution.result;
-    }
-
-    if (execution.kind === 'unhandled-error') {
-      // 未分类失败同样回传 message，由弹窗内既有 Alert 持久展示，
-      // 不再叠加一次性 toast（in-flight 不会到达：提交按钮已 loading）
-      return { ok: false, reason: 'creation-failed', message: execution.message };
-    }
-
-    return { ok: false, reason: 'creation-failed', message: '' };
-  };
-
-  const submitProfileEdit = async (
-    draft: AdminUserProfileEditDraft,
-  ): Promise<AdminUserCommandResult> => {
-    const sessionSeq = dialogSession.capture('profile');
-    const targetAccountId = draft.accountId;
-    // 提交时刻的行快照：陈旧成功的反馈需要点名实际提交的目标
-    const targetNickname = profileRow?.accountId === targetAccountId ? profileRow.nickname : null;
-
-    const execution = await commands.updateUserProfile(draft);
-
-    if (execution.kind === 'ok') {
-      if (execution.result.ok) {
-        if (closeRowDialogOnSuccess('profile', sessionSeq, targetAccountId, setProfileRow)) {
-          message.success('资料已更新。');
-        } else {
-          message.success(toTargetedSuccessMessage(targetNickname, '资料', '已更新'));
-        }
-      }
-
-      // 业务失败原样回传：是否写进弹窗错误区由弹窗侧代次守卫判定，
-      // panel 不代为裁决，避免两层守卫对「陈旧」的定义出现分叉
-      return execution.result;
-    }
-
-    if (execution.kind === 'unhandled-error') {
-      return { ok: false, reason: 'update-failed', message: execution.message };
-    }
-
-    // in-flight：同类命令进行中，OK 按钮已 loading，静默忽略不叠加任何提示
-    return { ok: false, reason: 'update-failed', message: '' };
-  };
-
   const submitStatusChange = async (input: {
     accountId: number;
     status: AdminUserStatusFilter;
@@ -379,10 +284,9 @@ export function AdminUserManagementPanel() {
 
   const submitPasswordReset = async (input: {
     accountId: number;
-    newPassword: string;
   }): Promise<AdminUserCommandResult> => {
     const sessionSeq = dialogSession.capture('reset-password');
-    const execution = await commands.resetUserPassword(input);
+    const execution = await commands.resetPasswordToDefault(input);
 
     if (execution.kind === 'ok') {
       if (execution.result.ok) {
@@ -474,14 +378,8 @@ export function AdminUserManagementPanel() {
     {
       fixed: 'right',
       render: (_, row) => {
-        const readOnly = !canEditAdminUserProfile(row);
+        const readOnly = isAdminUserRowReadOnly(row);
         const actionButtons = [
-          {
-            disabled: readOnly,
-            key: 'profile',
-            label: '编辑资料',
-            onClick: () => openRowDialog('profile', profileRow, setProfileRow, row),
-          },
           {
             disabled: !canToggleAdminUserStatus(row),
             key: 'status',
@@ -521,7 +419,7 @@ export function AdminUserManagementPanel() {
         );
       },
       title: '操作',
-      width: 220,
+      width: 160,
     },
   ];
 
@@ -546,18 +444,12 @@ export function AdminUserManagementPanel() {
               筛选
             </ToolbarButton>
 
-            <div className="flex-1" />
-
-            <Button type="primary" onClick={openCreateDialog}>
-              创建用户
-            </Button>
-
             {/* 展开区：主搜索之外的精确条件收在这里，收起时不渲染；
-                条件与查询语义沿用原有实现，不新增筛选能力 */}
+                角色筛选只开放普通用户值域，与管理端读面一致 */}
             {filterOpen ? (
               <div className="flex w-full flex-wrap items-center gap-3">
                 <div className="w-44">
-                  <Select<AdminUserRole | undefined>
+                  <Select<AdminUserFilterRole | undefined>
                     allowClear
                     placeholder="角色筛选"
                     style={{ width: '100%' }}
@@ -589,6 +481,8 @@ export function AdminUserManagementPanel() {
             ) : null}
           </FilterBar>
 
+          <p className="text-text-secondary text-sm">{resolveAdminUserScopeHint(adminLevel)}</p>
+
           {state.status === 'failed' && list.isCurrentQueryDomain ? (
             <ErrorState
               action={
@@ -617,7 +511,7 @@ export function AdminUserManagementPanel() {
                 total: state.page.total,
               }}
               rowKey="accountId"
-              scroll={{ x: 1140 }}
+              scroll={{ x: 1080 }}
               size="middle"
             />
           ) : null}
@@ -629,20 +523,6 @@ export function AdminUserManagementPanel() {
           ) : null}
         </div>
       </TableContainer>
-
-      <AdminUserCreateModal
-        open={createOpen}
-        submitting={isCreateSubmitting}
-        onCancel={closeCreateDialog}
-        onSubmit={submitCreate}
-      />
-
-      <AdminUserProfileEditModal
-        row={profileRow}
-        submitting={isProfileSubmitting}
-        onCancel={() => closeRowDialog('profile', setProfileRow)}
-        onSubmit={submitProfileEdit}
-      />
 
       <AdminUserStatusModal
         row={statusRow}

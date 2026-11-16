@@ -5,6 +5,7 @@ import { PasswordModule } from '@src/modules/common/password/password.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { AdminCreateUserUsecase } from '@src/usecases/account/admin-create-user.usecase';
 import { AdminResetUserPasswordUsecase } from '@src/usecases/account/admin-reset-user-password.usecase';
+import { AdminResetUserPasswordToDefaultUsecase } from '@src/usecases/account/admin-reset-user-password-to-default.usecase';
 import { AdminSetUserStatusUsecase } from '@src/usecases/account/admin-set-user-status.usecase';
 import { AdminUpdateUserProfileUsecase } from '@src/usecases/account/admin-update-user-profile.usecase';
 import { ChangeMyPasswordUsecase } from '@src/usecases/account/change-my-password.usecase';
@@ -26,6 +27,7 @@ import {
   providers: [
     AdminCreateUserUsecase,
     AdminResetUserPasswordUsecase,
+    AdminResetUserPasswordToDefaultUsecase,
     AdminSetUserStatusUsecase,
     AdminUpdateUserProfileUsecase,
     ChangeMyPasswordUsecase,
@@ -43,6 +45,7 @@ import {
   exports: [
     AdminCreateUserUsecase,
     AdminResetUserPasswordUsecase,
+    AdminResetUserPasswordToDefaultUsecase,
     AdminSetUserStatusUsecase,
     AdminUpdateUserProfileUsecase,
     ChangeMyPasswordUsecase,

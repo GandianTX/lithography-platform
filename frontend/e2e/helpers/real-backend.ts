@@ -252,7 +252,51 @@ export function mysqlQuery(sql: string): string {
   ).trim();
 }
 
-// requestNo 白名单守卫：expect 断言不是安全边界，页面文本异常时断言抛错后 finally
+export interface TeardownStep {
+  readonly label: string;
+  readonly run: () => void | Promise<void>;
+}
+
+/**
+ * 收尾汇总：清理、状态复原与诊断各自独立执行，任一步失败都不跳过后续步骤，
+ * 全部失败按序汇总后一次抛出，避免首个异常掩盖其余异常（尤其是等级复原）。
+ */
+export async function runTeardownSteps(steps: readonly TeardownStep[]): Promise<Error | null> {
+  const failures: string[] = [];
+
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch (error) {
+      failures.push(`${step.label}：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return failures.length === 0
+    ? null
+    : new Error(`异常收尾汇总（${failures.length} 项失败）：\n- ${failures.join('\n- ')}`);
+}
+
+/** 主流程错误与收尾错误同时存在时一并保留，不让收尾覆盖最初失败原因 */
+export function throwPrimaryAndTeardown(primary: unknown, teardown: Error | null): void {
+  if (primary === null) {
+    if (teardown !== null) {
+      throw teardown;
+    }
+    return;
+  }
+
+  if (teardown === null) {
+    throw primary;
+  }
+
+  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
+
+  throw new Error(`主流程失败：${primaryMessage}\n收尾失败：${teardown.message}`, {
+    cause: primary,
+  });
+}
+
 // 仍会拿同一字符串执行 SQL。因此任何 requestNo 进入 SQL 前都必须在 helper 内部、
 // 访问数据库之前强制校验；失败直接抛错且绝不启动 mysql 进程（含 finally 兜底路径）。
 function assertWhitelistedRequestNo(requestNo: string): void {
@@ -1621,6 +1665,67 @@ export function runGuardedFixtureWrite(env: Record<string, string>, sql: string)
   }
 
   return mysqlQuery(sql);
+}
+
+/**
+ * 服务器侧 DELETE 计数（`Com_delete`）。
+ *
+ * 用于证明清理守卫的拒绝发生在首次 DELETE 之前：对比调用前后的增量必须为 0。
+ */
+export function readServerDeleteCounter(): number {
+  const [, value] = mysqlQuery("SHOW GLOBAL STATUS LIKE 'Com_delete'").split('\t');
+  const counter = Number(value);
+
+  if (!Number.isSafeInteger(counter) || counter < 0) {
+    throw new Error(`Com_delete 计数不是非负整数，拒绝继续：${JSON.stringify(value)}`);
+  }
+
+  return counter;
+}
+
+/**
+ * CLI 的数据库真实输出（stderr）。
+ *
+ * 只对数据库输出断言：`error.message` 含整条 SQL 命令文本，用它做证据会把
+ * 命令里的守卫标记误当成数据库报错（第三轮 P1 自查）。
+ */
+export function readMysqlErrorOutput(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return '';
+  }
+
+  const value = (error as unknown as Record<string, unknown>).stderr;
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return Buffer.isBuffer(value) ? value.toString('utf8') : '';
+}
+
+/**
+ * 以独立夹具所有者插入一条 LEFT 成员关系（未登记的「外部子行」）。
+ *
+ * `left_at` 必填以避开单账号唯一有效成员约束；返回的真实主键只由该所有者按精确主键回收，
+ * 不得进入本轮主台账——主台账清理必须在首删前把它报成未登记成员边。
+ */
+export function insertUnregisteredLeftMembership(
+  env: Record<string, string>,
+  params: { readonly accountId: number; readonly organizationId: number },
+): number {
+  const output = runGuardedFixtureWrite(
+    env,
+    'INSERT INTO organization_membership (organization_id, account_id, member_role, status, left_at)' +
+      ` VALUES (${params.organizationId}, ${params.accountId}, 'CUSTOMER', 'LEFT', CURRENT_TIMESTAMP(3));` +
+      ' SELECT LAST_INSERT_ID();',
+  );
+  const id = Number(output);
+
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error(`外部子行未返回可信主键，拒绝继续：${JSON.stringify(output)}`);
+  }
+
+  return id;
 }
 
 /** 夹具单列的本轮制造状态与原登记值 */

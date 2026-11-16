@@ -10,6 +10,7 @@ import {
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import { isDualStatusFieldsConsistent } from '@core/account/policy/dual-status-consistency.policy';
+import type { AdminScope } from '@core/account/policy/admin-scope.policy';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AdminUserStatusFacts, AdminUserView } from '@src/modules/account/account.types';
 import { AccountService } from '@src/modules/account/base/services/account.service';
@@ -26,7 +27,7 @@ import {
   normalizeAdminUserWritableStatus,
 } from './admin-user-management.input.normalize';
 import type { AdminSetUserStatusCommand } from './admin-user-management.types';
-import { assertAdminUserManagementPermission } from './admin-user-permission';
+import { assertAdminUserManagementScope } from './admin-user-scope';
 import { loadWritableAdminUserTarget, logAdminUserWriteFailure } from './admin-user-write-support';
 
 /** 事务内的写入阶段标记，只用于服务端日志定位，不出现在任何对外响应中。 */
@@ -36,8 +37,8 @@ type AdminSetUserStatusPhase =
  * 管理员设置用户状态用例（P0-5）。
  *
  * 执行顺序刻意固定：
- * 1. **第一步就是精确 SUPER_ADMIN 权限断言**（`assertAdminUserManagementPermission()`，
- *    全仓唯一实现），先于任何输入规范化与数据库访问；
+ * 1. **第一步就是管理员作用域断言**（`assertAdminUserManagementScope()`，全仓唯一实现：
+ *    一级全范围，二级限请求期可信公司），先于任何输入规范化与数据库访问；
  * 2. 场景输入规范化：目标账号 ID + 可写状态（`ACTIVE` / `INACTIVE`）；
  * 4. Usecase 持有的单一事务内：锁定目标 → 读取收敛 View → 目标角色保护 →
  *    读取双字段状态事实 → 转换矩阵裁决（不允许即失败关闭 / 同状态幂等返回）→
@@ -93,7 +94,12 @@ export class AdminSetUserStatusUsecase {
   }
 
   async execute(command: AdminSetUserStatusCommand): Promise<AdminUserView> {
-    assertAdminUserManagementPermission(command.session, '修改状态');
+    // 一级全范围，二级仅可信公司；等级缺失 / 非法一律 FORBIDDEN
+    const scope = await assertAdminUserManagementScope({
+      session: command.session,
+      actionLabel: '修改状态',
+      organizationContext: this.organizationContextQueryService,
+    });
 
     const accountId = normalizeAdminUserTargetAccountId(command.accountId);
     // 只接受 ACTIVE / INACTIVE：PENDING、SUSPENDED、BANNED、DELETED 在此即被拒绝
@@ -109,7 +115,7 @@ export class AdminSetUserStatusUsecase {
       view = await this.transactionRunner.run((transactionContext) =>
         this.setStatusInTransaction({
           transactionContext,
-          adminAccountId: command.session.accountId,
+          scope,
           accountId,
           status,
         }),
@@ -152,11 +158,11 @@ export class AdminSetUserStatusUsecase {
    */
   private async setStatusInTransaction(params: {
     transactionContext: PersistenceTransactionContext;
-    adminAccountId: number;
+    scope: AdminScope;
     accountId: number;
     status: AccountStatus.ACTIVE | AccountStatus.INACTIVE;
   }): Promise<AdminUserView> {
-    const { transactionContext, adminAccountId, accountId, status } = params;
+    const { transactionContext, scope, accountId, status } = params;
     let phase: AdminSetUserStatusPhase = 'LOCK_TARGET';
 
     try {
@@ -164,9 +170,8 @@ export class AdminSetUserStatusUsecase {
       const lockedView = await loadWritableAdminUserTarget({
         accountService: this.accountService,
         adminUserQueryService: this.adminUserQueryService,
-        organizationContextQueryService: this.organizationContextQueryService,
         organizationMembershipQueryService: this.organizationMembershipQueryService,
-        adminAccountId,
+        scope,
         accountId,
         actionLabel: '修改状态',
         transactionContext,

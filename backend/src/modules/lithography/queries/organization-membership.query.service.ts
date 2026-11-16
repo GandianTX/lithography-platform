@@ -73,16 +73,15 @@ export class OrganizationMembershipQueryService {
   }
 
   /**
-   * 指定组织内的有效成员账号 ID 列表（成员 ACTIVE 且组织 ACTIVE）。
+   * 指定组织内的有效**工程师**成员账号 ID 列表（成员 ACTIVE 且组织 ACTIVE）。
    *
-   * 供管理员用户管理按「管理员可信组织」收窄可见/可写范围：组织不存在或已停用时返回空
-   * 列表（调用方据此得到空页，而不是退化为全库账号）。账号 ID 清单由 usecase 下推给
-   * account 域 QueryService，避免 account 侧跨域导入组织 Entity。
+   * 供二级管理员用户管理按真实角色收窄工程师范围（V5.5 R012-01）：客户归属以资料列
+   * `customer_organization_id` 为准，不能复用本清单；因此这里显式只取 `ENGINEER`
+   * 成员关系，避免把客户或组织管理员成员混进工程师范围。
    *
-   * @param params.organizationId 可信解析得到的组织主键（不得取自客户端自报）
-   * @param params.transactionContext 可选事务上下文（写用例在同一事务连接上读最新事实）
+   * 组织不存在或已停用时返回空列表；调用方仍需保留客户条件，不能据此判定范围为空。
    */
-  async listActiveAccountIdsByOrganization(params: {
+  async listActiveEngineerAccountIdsByOrganization(params: {
     organizationId: number;
     transactionContext?: PersistenceTransactionContext;
   }): Promise<number[]> {
@@ -95,7 +94,11 @@ export class OrganizationMembershipQueryService {
     }
     const membershipRepository = this.getMembershipRepository(params.transactionContext);
     const memberships = await membershipRepository.find({
-      where: { organizationId: params.organizationId, status: 'ACTIVE' },
+      where: {
+        organizationId: params.organizationId,
+        status: 'ACTIVE',
+        memberRole: 'ENGINEER',
+      },
       order: { id: 'ASC' },
     });
     return memberships.map((item) => item.accountId);

@@ -7,7 +7,7 @@ import { DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error'
 /**
  * 管理员文档数据库（PR3 只读聚合）精确权限断言。
  *
- * 业务规则与 `assertAdminUserManagementPermission()`（管理员用户管理单一实现）同源：
+ * 业务规则与 `@core/account/policy/admin-scope.policy` 的管理员等级裁决同源：
  * 仅 roles 含 SUPER_ADMIN 且可信 JWT activeRole 精确为 SUPER_ADMIN 可执行；
  * activeRole 缺失、与 roles 矛盾或为非管理员角色时一律拒绝（失败关闭），
  * ENGINEER / CUSTOMER 即使直接调用管理员 operation 也被拒绝。

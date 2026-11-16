@@ -217,11 +217,14 @@ export class AccountService {
     transactionContext?: PersistenceTransactionContext;
     /** 为 true 时在同一 UPDATE 内清除 `must_change_password` 标记 */
     clearMustChangePassword?: boolean;
+    /** 为 true 时在同一 UPDATE 内置位 `must_change_password`（管理员重置为默认密码） */
+    setMustChangePassword?: boolean;
   }): Promise<void> {
     const repository = this.getAccountRepository(params.transactionContext);
     await repository.update(params.accountId, {
       loginPassword: params.passwordHash,
       ...(params.clearMustChangePassword === true ? { mustChangePassword: false } : {}),
+      ...(params.setMustChangePassword === true ? { mustChangePassword: true } : {}),
       updatedAt: new Date(),
     });
   }

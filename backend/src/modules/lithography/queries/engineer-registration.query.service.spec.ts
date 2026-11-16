@@ -81,12 +81,12 @@ describe('EngineerRegistrationQueryService', () => {
     expect(await service.findLatestByAccountId(900301)).toBeNull();
   });
 
-  it('组织审核队列限定组织并按提交时间正序分页，状态缺省表示不筛选', async () => {
+  it('管理员队列限定组织并按提交时间正序分页，状态缺省表示不筛选', async () => {
     const repo = makeRepo();
     repo.findAndCount.mockResolvedValue([[applicationRow], 2]);
     const service = new EngineerRegistrationQueryService(repo as never);
 
-    const page = await service.listByOrganization({
+    const page = await service.listForAdminQueue({
       organizationId: 910001,
       pagination: { page: 1, pageSize: 10 },
     });
@@ -101,12 +101,27 @@ describe('EngineerRegistrationQueryService', () => {
     expect(page.items[0]).toMatchObject({ id: 916001, organizationId: 910001 });
   });
 
-  it('组织审核队列带状态筛选时把状态条件下推到数据库', async () => {
+  it('一级管理员不传组织时全范围读取，不添加组织条件', async () => {
+    const repo = makeRepo();
+    repo.findAndCount.mockResolvedValue([[applicationRow], 1]);
+    const service = new EngineerRegistrationQueryService(repo as never);
+
+    await service.listForAdminQueue({ pagination: { page: 2, pageSize: 20 } });
+
+    expect(repo.findAndCount).toHaveBeenCalledWith({
+      where: {},
+      order: { submittedAt: 'ASC', id: 'ASC' },
+      skip: 20,
+      take: 20,
+    });
+  });
+
+  it('管理员队列带状态筛选时把状态条件下推到数据库', async () => {
     const repo = makeRepo();
     repo.findAndCount.mockResolvedValue([[], 0]);
     const service = new EngineerRegistrationQueryService(repo as never);
 
-    await service.listByOrganization({
+    await service.listForAdminQueue({
       organizationId: 910001,
       status: EngineerRegistrationApplicationStatus.PENDING,
       pagination: { page: 1, pageSize: 10 },

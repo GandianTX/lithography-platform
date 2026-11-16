@@ -14,6 +14,7 @@ import { RegisterWithEmailUsecase } from '@src/usecases/registration/register-wi
 import { RegisterWithThirdPartyUsecase } from '@src/usecases/registration/register-with-third-party.usecase';
 import { ResubmitEngineerRegistrationUsecase } from '@src/usecases/registration/resubmit-engineer-registration.usecase';
 import { WeappRegisterUsecase } from '@src/usecases/registration/weapp-register.usecase';
+import { GetAdminEngineerRegistrationApprovalDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-approval-detail.usecase';
 import { GetAdminEngineerRegistrationDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-detail.usecase';
 import { ListAdminEngineerRegistrationsUsecase } from '@src/usecases/registration/list-admin-engineer-registrations.usecase';
 import { ReviewEngineerRegistrationUsecase } from '@src/usecases/registration/review-engineer-registration.usecase';
@@ -38,6 +39,7 @@ import { ReviewEngineerRegistrationUsecase } from '@src/usecases/registration/re
     ResubmitEngineerRegistrationUsecase,
     ListAdminEngineerRegistrationsUsecase,
     GetAdminEngineerRegistrationDetailUsecase,
+    GetAdminEngineerRegistrationApprovalDetailUsecase,
     ReviewEngineerRegistrationUsecase,
   ],
   exports: [
@@ -52,6 +54,7 @@ import { ReviewEngineerRegistrationUsecase } from '@src/usecases/registration/re
     ResubmitEngineerRegistrationUsecase,
     ListAdminEngineerRegistrationsUsecase,
     GetAdminEngineerRegistrationDetailUsecase,
+    GetAdminEngineerRegistrationApprovalDetailUsecase,
     ReviewEngineerRegistrationUsecase,
   ],
 })

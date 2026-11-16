@@ -1,10 +1,10 @@
-// src/features/admin-user-management/ui/use-stale-submit-guard.ts
+// src/shared/ui/dialog-session/use-stale-submit-guard.ts
 
 /**
- * 弹窗提交代次守卫：四个管理员写弹窗（创建 / 资料编辑 / 启停 / 密码重置）共用的唯一实现。
+ * 弹窗提交代次守卫：管理端多个写弹窗共用的唯一实现。
  *
  * 为什么需要它：弹窗的会话可以在提交续体回来之前被推进——关闭、重新打开、切换目标行都算。
- * 而弹窗组件在 panel 里恒定挂载、只切换 `open` / `row`，`destroyOnHidden` 只销毁 Modal 子树（Form），
+ * 而弹窗组件在宿主里恒定挂载、只切换 `open` / `row`，`destroyOnHidden` 只销毁 Modal 子树（Form），
  * 不会重置弹窗自己的 `useState`。于是旧续体晚到时会造成两类可见故障：
  *
  * - 上一个目标的失败信息被写进已经切换到的新目标弹窗；
@@ -12,12 +12,12 @@
  *
  * 关于「提交期间能不能关闭弹窗」的准确边界：antd 6.4.3 的 `Modal.handleCancel` 在
  * `confirmLoading` 为真时直接 `return`，取消按钮、右上角 X、遮罩点击与 Esc 四条关闭路径共用它；
- * 面板又把 `confirmLoading` 接到了 `commands.isPending(key)`，因此**在当前宿主接线下**
+ * 宿主又把 `confirmLoading` 接到了命令 hook 的 `isPending(key)`，因此**在当前宿主接线下**
  * 用户没有可达路径在提交期间关闭弹窗。但 `submitting` 是调用方传进来的 prop，不是弹窗自己的事实：
  * 宿主传 `submitting={false}`、把 `confirmLoading` 改接别的信号、或日后加上自动关闭入口，
  * 四条路径立刻全部生效。守卫的正确性因此刻意不依赖宿主的 loading 接线。
  *
- * 守卫方式与本仓列表读路径一致（见 `use-admin-user-list.ts` 用 `requestSeq` 丢弃过期结果）：
+ * 守卫方式与本仓列表读路径一致（如 `use-admin-user-list.ts` 用 `requestSeq` 丢弃过期结果）：
  * 用单调递增的代次标记每一次弹窗会话，续体回来时代次不一致即整体丢弃。
  *
  * 代次推进时机（缺一不可，两处都在事件处理器 / commit 内，不在 render 里碰 ref）：
@@ -35,13 +35,13 @@
  * passive effect 由调度器另行执行，确实会留出窗口，在途提交的续体可能恰好落在窗口内，
  * 拿着仍然相等的代次把上一会话的结果写进新会话，所以本守卫不能用它。
  *
- * 关闭后重开同一个 accountId 会经历 `key → null → key` 两次推进，因此必然属于新代次，
+ * 关闭后重开同一个目标会经历 `key → null → key` 两次推进，因此必然属于新代次，
  * 旧续体不可能冒充新会话。
  */
 
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 
-/** 会话身份：行级弹窗传目标 accountId，创建弹窗没有目标，传 `open` 的每一次翻转 */
+/** 会话身份：行级弹窗传目标主键，创建弹窗没有目标，传 `open` 的每一次翻转 */
 export type StaleSubmitGuardTargetKey = boolean | number | string | null;
 
 export type StaleSubmitGuard = {
