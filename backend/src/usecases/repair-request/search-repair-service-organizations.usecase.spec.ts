@@ -7,7 +7,7 @@ import { OrganizationQueryService } from '@src/modules/lithography/queries/organ
 import { SearchRepairServiceOrganizationsUsecase } from './search-repair-service-organizations.usecase';
 
 /**
- * 报修服务候选检索单测：准入口径（客户 + 可信公司归属）与输入边界。
+ * 报修服务候选检索单测：准入口径（客户角色集合 + 活动客户身份 + 可信公司归属）与输入边界。
  * 资格口径（`ACTIVE + is_service_provider`）在查询服务与 E2E 中验证。
  */
 describe('SearchRepairServiceOrganizationsUsecase（报修服务公司候选）', () => {
@@ -107,6 +107,38 @@ describe('SearchRepairServiceOrganizationsUsecase（报修服务公司候选）'
         }),
       ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
     }
+
+    expect(organizationQueryService.searchServiceProviderOptions).not.toHaveBeenCalled();
+  });
+
+  it('活动角色为管理员的混合角色被拒绝且不触达查询服务', async () => {
+    await expect(
+      usecase.execute({
+        session: {
+          accountId: 31,
+          roles: [IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.CUSTOMER],
+          activeRole: IdentityTypeEnum.SUPER_ADMIN,
+          customerOrganizationId: 8,
+        },
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 10 },
+      }),
+    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+
+    expect(organizationQueryService.searchServiceProviderOptions).not.toHaveBeenCalled();
+  });
+
+  it('活动角色缺失时拒绝且不触达查询服务', async () => {
+    await expect(
+      usecase.execute({
+        session: {
+          accountId: 32,
+          roles: [IdentityTypeEnum.CUSTOMER],
+          activeRole: undefined,
+          customerOrganizationId: 8,
+        },
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 10 },
+      }),
+    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
 
     expect(organizationQueryService.searchServiceProviderOptions).not.toHaveBeenCalled();
   });

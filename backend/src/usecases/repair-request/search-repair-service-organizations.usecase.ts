@@ -22,8 +22,9 @@ export type SearchRepairServiceOrganizationsCommand = {
  * 报修服务公司候选检索（任务 08 交付、任务 03 提交报修时再次复核）。
  *
  * 准入口径（负责人 2026-11-15 答复）：
- * 1. 仅客户角色可查询——`SUPER_ADMIN` 虽在角色继承下可见部分客户入口，
- *    本入口按精确角色拒绝企业管理员调用；
+ * 1. 仅客户身份可查询——角色集合必须含 `CUSTOMER`，且当前活动角色精确为 `CUSTOMER`；
+ *    合法历史多角色（例如 `activeRole = SUPER_ADMIN` 且角色集合保留 `CUSTOMER`）在
+ *    守卫层按集合放行，本入口按当前身份精确拒绝，拒绝先于任何公司查询；
  * 2. 客户必须已补齐可信公司归属（`base_user_info.customer_organization_id`，
  *    由请求期会话复核给出），缺归属一律拒绝，不按自报公司名猜测；
  * 3. 公司资格固定为「启用且具备维修服务资格」，与注册候选的
@@ -48,7 +49,9 @@ export class SearchRepairServiceOrganizationsUsecase {
   }
 
   /**
-   * 报修候选准入：客户角色 + 已补齐可信公司归属，任一不满足即 `FORBIDDEN`。
+   * 报修候选准入：客户角色 + 当前活动角色为客户 + 已补齐可信公司归属，
+   * 任一不满足即 `FORBIDDEN`，且全部先于公司查询。
+   *
    * 不返回具体缺失项给客户端，避免暴露账号归属状态。
    */
   private assertRepairCustomerAccess(session: UsecaseSession): void {
@@ -57,6 +60,15 @@ export class SearchRepairServiceOrganizationsUsecase {
       throw new DomainError(
         PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
         '仅客户账号可以查询维修服务公司',
+      );
+    }
+
+    // 角色集合含 CUSTOMER 不等于当前以客户身份使用：活动管理员（或活动角色缺失）
+    // 不得借历史客户角色读取候选。此处按精确活动角色失败关闭。
+    if (session.activeRole !== IdentityTypeEnum.CUSTOMER) {
+      throw new DomainError(
+        PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+        '仅以客户身份使用时可查询维修服务公司',
       );
     }
 

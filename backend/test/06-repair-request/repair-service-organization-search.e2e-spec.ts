@@ -4,6 +4,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { useContainer } from 'class-validator';
 import { DataSource, Repository } from 'typeorm';
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.entity';
@@ -17,7 +18,7 @@ import {
   type OwnedResourceLedger,
 } from '../utils/e2e-scoped-cleanup';
 import { runE2eTeardown } from '../utils/e2e-teardown';
-import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import { createTestAccount, seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 
 /**
  * S1.4 · 报修服务公司候选（`repairServiceOrganizationSearch`，真实 GraphQL + MySQL）。
@@ -42,6 +43,8 @@ describe('报修服务公司候选 repairServiceOrganizationSearch (e2e)', () =>
   let guestWithOrgToken: string;
   let guestWithoutOrgToken: string;
   let adminToken: string;
+  /** 活动角色为管理员、角色集合仍含 CUSTOMER 的本轮自有合成账号（P2-01 真实登录反例） */
+  let mixedRoleAdminToken: string;
   let providerAId: number;
   let providerBId: number;
 
@@ -164,14 +167,69 @@ describe('报修服务公司候选 repairServiceOrganizationSearch (e2e)', () =>
       isManagedCompany: true,
     });
 
-    // 已补齐可信公司归属的客户：本用例固定指向 A 公司
-    const guestAccount = await dataSource
-      .getRepository(UserInfoEntity)
-      .findOneOrFail({ where: { email: testAccountsConfig.guestPrimary.loginEmail } });
-    await dataSource
-      .getRepository(UserInfoEntity)
-      .update(guestAccount.accountId, { customerOrganizationId: providerAId });
+    // 已补齐可信公司归属的客户：本用例固定指向 A 公司。
+    // 资料表主键是 `id`，`account_id` 是独立列；同一隔离库先跑公司规格会把资料主键推到
+    // 高位，按数字主键条件会命中别的资料行（P2-02）。因此按 `accountId` 条件写入，
+    // 断言恰好命中一行，再按同一账号回读核验归属后才登记清理预期。
+    const userInfoRepository = dataSource.getRepository(UserInfoEntity);
+    const guestAccount = await userInfoRepository.findOneOrFail({
+      where: { email: testAccountsConfig.guestPrimary.loginEmail },
+    });
+    const guestInfoUpdate = await userInfoRepository.update(
+      { accountId: guestAccount.accountId },
+      { customerOrganizationId: providerAId },
+    );
+    if (guestInfoUpdate.affected !== 1) {
+      throw new Error(
+        `资料归属写入未恰好命中 1 行（账号 ${guestAccount.accountId}，实际 ${String(guestInfoUpdate.affected)}）`,
+      );
+    }
+    const guestInfoReloaded = await userInfoRepository.findOneOrFail({
+      where: { accountId: guestAccount.accountId },
+    });
+    if (
+      guestInfoReloaded.accountId !== guestAccount.accountId ||
+      guestInfoReloaded.customerOrganizationId !== providerAId
+    ) {
+      throw new Error(
+        `资料归属回读与写入不一致（账号 ${guestAccount.accountId}，期望公司 ${providerAId}，实际 ${String(guestInfoReloaded.customerOrganizationId)}）`,
+      );
+    }
     updateOwnedExpectation(ownership, 'account', guestAccount.accountId, {
+      customerOrganizationId: providerAId,
+    });
+    // P2-02 回归前提证据：资料主键与账号列独立，同一隔离库先跑公司规格后两者必然错位
+    console.log(
+      `[P2-02] 夹具归属写入 guestPrimary: account_id=${guestAccount.accountId}, user_info.id=${guestInfoReloaded.id}`,
+    );
+
+    // P2-01 真实登录反例：本轮自有合成账号。三源角色收敛为同一集合
+    // `[SUPER_ADMIN, CUSTOMER]`，`identity_hint = SUPER_ADMIN` 使登录后的活动角色为
+    // `SUPER_ADMIN`，同时角色集合保留 `CUSTOMER` 并通过守卫的集合准入，
+    // 且带有有效可信客户公司，复现「活动管理员混合角色」放行路径。
+    const mixedRoleAdmin = await createTestAccount(
+      dataSource,
+      null,
+      {
+        loginName: `e2erspmix${RUN_TAG}`,
+        loginEmail: `e2e-rsp-mixed-${RUN_TAG}@example.com`,
+        loginPassword: 'E2eMixedRole#2026',
+        status: AccountStatus.ACTIVE,
+        accessGroup: [IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.CUSTOMER],
+        identityType: IdentityTypeEnum.SUPER_ADMIN,
+      },
+      ownership,
+    );
+    const mixedRoleInfoUpdate = await userInfoRepository.update(
+      { accountId: mixedRoleAdmin.accountId },
+      { customerOrganizationId: providerAId },
+    );
+    if (mixedRoleInfoUpdate.affected !== 1) {
+      throw new Error(
+        `混合角色资料归属写入未恰好命中 1 行（账号 ${mixedRoleAdmin.accountId}，实际 ${String(mixedRoleInfoUpdate.affected)}）`,
+      );
+    }
+    updateOwnedExpectation(ownership, 'account', mixedRoleAdmin.accountId, {
       customerOrganizationId: providerAId,
     });
 
@@ -189,6 +247,11 @@ describe('报修服务公司候选 repairServiceOrganizationSearch (e2e)', () =>
       app,
       loginName: testAccountsConfig.admin.loginName,
       loginPassword: testAccountsConfig.admin.loginPassword,
+    });
+    mixedRoleAdminToken = await login({
+      app,
+      loginName: `e2erspmix${RUN_TAG}`,
+      loginPassword: 'E2eMixedRole#2026',
     });
   }, 60000);
 
@@ -228,6 +291,28 @@ describe('报修服务公司候选 repairServiceOrganizationSearch (e2e)', () =>
 
   it('管理员客户入口按精确角色拒绝（FORBIDDEN）', async () => {
     const response = await search({ token: adminToken });
+    const body = response.body as PageBody;
+    expect(body.data?.repairServiceOrganizationSearch).toBeUndefined();
+    expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+  });
+
+  it('活动角色为管理员的混合角色账号被拒绝（FORBIDDEN，无候选数据）', async () => {
+    // 前置事实：真实登录后的活动角色确为管理员，角色集合仍含 CUSTOMER 且带可信公司归属。
+    // 守卫层按角色集合放行，拒绝必须由 Usecase 的活动角色精确判定承担。
+    const identityResponse = await postGql({
+      app,
+      token: mixedRoleAdminToken,
+      query: `query MixedRoleSessionIdentity { mySessionIdentity { role } }`,
+      variables: {},
+    });
+    const identityRole = (
+      identityResponse.body as {
+        data?: { mySessionIdentity?: { role: string | null } };
+      }
+    ).data?.mySessionIdentity?.role;
+    expect(identityRole).toBe('SUPER_ADMIN');
+
+    const response = await search({ token: mixedRoleAdminToken, keyword: NAME_PREFIX });
     const body = response.body as PageBody;
     expect(body.data?.repairServiceOrganizationSearch).toBeUndefined();
     expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
