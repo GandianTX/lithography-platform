@@ -72,7 +72,7 @@ describe('admin-organization.input.normalize（一级公司档案输入归一）
   });
 
   describe('normalizeAdminOrganizationCreateInput', () => {
-    it('全称与联系电话 trim 后必填；可选字段缺省为 null；维修资格缺省 false', () => {
+    it('全称与联系电话 trim 后必填；可选字段缺省为 null；状态缺省 ACTIVE；维修资格缺省 false', () => {
       expect(
         normalizeAdminOrganizationCreateInput({
           name: '  光刻设备（上海）有限公司  ',
@@ -86,8 +86,28 @@ describe('admin-organization.input.normalize（一级公司档案输入归一）
         contactEmail: null,
         address: null,
         remark: null,
+        status: 'ACTIVE',
         isServiceProvider: false,
       });
+    });
+
+    it('显式状态按入参落定，null 与缺省同义；非法状态拒绝', () => {
+      expect(
+        normalizeAdminOrganizationCreateInput({
+          name: '停用公司',
+          contactPhone: '021',
+          status: 'DISABLED',
+          isServiceProvider: true,
+        }),
+      ).toMatchObject({ status: 'DISABLED', isServiceProvider: true });
+
+      expect(
+        normalizeAdminOrganizationCreateInput({ name: '公司', contactPhone: '021', status: null }),
+      ).toMatchObject({ status: 'ACTIVE' });
+
+      expect(() =>
+        normalizeAdminOrganizationCreateInput({ name: '公司', contactPhone: '021', status: 'PAUSED' }),
+      ).toThrow(expect.objectContaining({ code: INPUT_NORMALIZE_ERROR.INVALID_ENUM_VALUE }));
     });
 
     it('全称或联系电话 trim 后为空、超长、邮箱非法时拒绝', () => {

@@ -1,6 +1,6 @@
 // src/usecases/account/admin-reset-user-password-to-default.usecase.spec.ts
 
-import { AccountStatus } from '@app-types/models/account.types';
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
 import {
   ACCOUNT_ERROR,
@@ -54,6 +54,7 @@ describe('AdminResetUserPasswordToDefaultUsecase', () => {
   const adminUserQueryService = {
     findAdminUserViewById: jest.fn(),
     findAdminUserStatusFacts: jest.fn(),
+    findAdminUserOwnershipFacts: jest.fn(),
   } as unknown as AdminUserQueryService;
 
   const passwordPolicyService = {
@@ -109,6 +110,10 @@ describe('AdminResetUserPasswordToDefaultUsecase', () => {
       .mockResolvedValue(undefined);
     (adminUserQueryService.findAdminUserViewById as jest.Mock).mockReset();
     (adminUserQueryService.findAdminUserStatusFacts as jest.Mock).mockReset();
+    (adminUserQueryService.findAdminUserOwnershipFacts as jest.Mock).mockReset().mockResolvedValue({
+      role: IdentityTypeEnum.CUSTOMER,
+      customerOrganizationId: createAdminOrganizationFact().organizationId,
+    });
     (passwordPolicyService.validatePassword as jest.Mock)
       .mockReset()
       .mockReturnValue({ isValid: true, errors: [], strength: 90 });
@@ -144,17 +149,19 @@ describe('AdminResetUserPasswordToDefaultUsecase', () => {
       expect(organizationIsolation.findActiveMembership).not.toHaveBeenCalled();
     });
 
-    it('二级管理员只操作可信公司：目标不在公司内时收敛为 TARGET_NOT_FOUND', async () => {
-      organizationIsolation.findActiveMembership.mockReset().mockResolvedValue(null);
+    it('二级管理员只操作可信公司：客户资料归属其它公司时收敛为 TARGET_NOT_FOUND', async () => {
+      (adminUserQueryService.findAdminUserOwnershipFacts as jest.Mock).mockResolvedValue({
+        role: IdentityTypeEnum.CUSTOMER,
+        customerOrganizationId: createAdminOrganizationFact().organizationId + 1,
+      });
 
       const error = await captureThrownError(execute(createLevelTwoAdminSession()));
 
       expect(error).toMatchObject({ code: ADMIN_USER_ERROR.TARGET_NOT_FOUND });
       expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
       expect(harness.isRolledBack()).toBe(true);
-      expect(organizationIsolation.findActiveMembership).toHaveBeenCalledWith({
+      expect(adminUserQueryService.findAdminUserOwnershipFacts).toHaveBeenCalledWith({
         accountId: TARGET_ACCOUNT_ID,
-        organizationId: createAdminOrganizationFact().organizationId,
         transactionContext: harness.txContext,
       });
     });

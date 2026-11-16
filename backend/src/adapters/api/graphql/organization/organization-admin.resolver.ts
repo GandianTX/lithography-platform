@@ -13,6 +13,7 @@ import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { mapGqlToCoreParams } from '@src/adapters/api/graphql/pagination.mapper';
 import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { organizationStatusValues } from '@src/modules/lithography/organization.types';
+import { CheckAdminOrganizationNameUsecase } from '@src/usecases/organization/check-admin-organization-name.usecase';
 import { CreateAdminOrganizationUsecase } from '@src/usecases/organization/create-admin-organization.usecase';
 import { GetAdminOrganizationDetailUsecase } from '@src/usecases/organization/get-admin-organization-detail.usecase';
 import { ListAdminOrganizationNamesUsecase } from '@src/usecases/organization/list-admin-organization-names.usecase';
@@ -51,6 +52,7 @@ export class OrganizationAdminResolver {
     private readonly getAdminOrganizationDetailUsecase: GetAdminOrganizationDetailUsecase,
     private readonly createAdminOrganizationUsecase: CreateAdminOrganizationUsecase,
     private readonly updateAdminOrganizationUsecase: UpdateAdminOrganizationUsecase,
+    private readonly checkAdminOrganizationNameUsecase: CheckAdminOrganizationNameUsecase,
   ) {}
 
   /**
@@ -155,8 +157,42 @@ export class OrganizationAdminResolver {
   }
 
   /**
-   * 一级管理员新增公司档案：服务端生成编号，强制进入受管名单，初始 `ACTIVE`，
-   * 维修资格可按入参设置。提交后在同一事务内回读返回真实落库结果。
+   * 一级管理员精确同名提示：覆盖全部公司档案（含停用与未受管），编辑时可排除自身。
+   *
+   * 只返回布尔提示，不阻断新增，也不改变「同名不合并」的写入语义；
+   * 公开注册的「启用且受管」口径仍由 `registrationOrganizationNameExists` 服务。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => Boolean, {
+    name: 'adminOrganizationNameExists',
+    description: '公司全称精确同名提示（一级管理员；含停用与未受管档案）',
+  })
+  @ValidateInput()
+  async adminOrganizationNameExists(
+    @Args('name', {
+      type: () => String,
+      description: '公司全称；按去首尾空白、合并连续空白、忽略大小写后精确比较',
+    })
+    name: string,
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('excludeOrganizationId', {
+      type: () => Int,
+      nullable: true,
+      description: '编辑场景排除的自身主键；新增不传',
+    })
+    excludeOrganizationId?: number,
+  ): Promise<boolean> {
+    return this.checkAdminOrganizationNameUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      name,
+      excludeOrganizationId: excludeOrganizationId ?? null,
+    });
+  }
+
+  /**
+   * 一级管理员新增公司档案：服务端生成编号，强制进入受管名单，状态按入参
+   * （缺省 `ACTIVE`），维修资格可按入参设置。提交后在同一事务内回读返回真实落库结果。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
@@ -179,6 +215,7 @@ export class OrganizationAdminResolver {
       contactEmail: input.contactEmail,
       address: input.address,
       remark: input.remark,
+      status: input.status,
       isServiceProvider: input.isServiceProvider,
     });
     return toAdminOrganizationDTO(view);

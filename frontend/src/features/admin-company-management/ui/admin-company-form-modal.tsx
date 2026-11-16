@@ -7,12 +7,15 @@
  * 新增提交 `AdminCompanyCreateDraft`，编辑提交 `AdminCompanyUpdateDraft`。
  *
  * - 字段顺序与 V44 公司弹窗一致：全称、联系人、电话、简称、邮箱、地址、备注、启用、维修服务；
- * - 新增时状态固定为启用（服务端强制 ACTIVE），只允许初设维修资格；编号、受管归类由服务端决定；
+ * - 宽度对齐 V44 的 760 px，窄屏按视口收缩，正文受控滚动，标题与底部动作始终可达；
+ * - 新增时状态与维修资格都由用户独立选择（缺省启用），编号、受管归类由服务端决定；
  * - 编辑时编号只读展示；提交差异字段（键缺省 = 不修改，空白 = 清空），
  *   避免把打开弹窗时的旧值重发而覆盖他人并发修改；
+ * - 全称精确同名只作提示（含停用与未受管档案；编辑排除自身），不阻断提交，也不自动合并；
  * - 提交期间重复提交由宿主命令 hook 的 in-flight 锁拦截，弹窗侧只负责展示错误与保留草稿。
  */
 
+import type { ModalProps } from 'antd';
 import { Alert, Form, Input, Modal, Switch } from 'antd';
 
 import { useStaleSubmitGuard } from '@/shared/ui/dialog-session';
@@ -34,6 +37,7 @@ import type {
   AdminCompanyUpdateDraft,
   AdminOrganizationStatus,
 } from '../application/admin-company-management.types';
+import { useAdminCompanyNameCheck } from '../application/use-admin-company-name-check';
 
 type CompanyFormValues = {
   address: string;
@@ -45,6 +49,20 @@ type CompanyFormValues = {
   name: string;
   remark: string;
   shortName: string;
+};
+
+/** 同名只提示、不合并：提交后仍会新增一条独立档案 */
+const SAME_NAME_HINT =
+  '已存在同名公司档案（含停用与未受管档案）。保存后会保留独立档案，不会自动合并。';
+
+/**
+ * V44 公司弹窗宽度为 760 px。窄屏按视口留出 16 px 边距后收缩；正文受控滚动，
+ * 保证标题与「取消 / 创建（保存）」始终可见可达，不靠整页滚动兜底。
+ */
+const COMPANY_MODAL_LAYOUT: Pick<ModalProps, 'style' | 'styles' | 'width'> = {
+  style: { maxWidth: 'calc(100vw - 32px)' },
+  styles: { body: { maxHeight: 'calc(100vh - 300px)', overflowY: 'auto' } },
+  width: 760,
 };
 
 const EMAIL_RULES = [
@@ -60,9 +78,11 @@ const EMAIL_RULES = [
 function CompanyFormFields({
   mode,
   organizationCode,
+  nameHint,
 }: {
   mode: 'create' | 'edit';
   organizationCode?: string;
+  nameHint?: string;
 }) {
   return (
     <>
@@ -73,6 +93,7 @@ function CompanyFormFields({
       ) : null}
 
       <Form.Item<CompanyFormValues>
+        extra={nameHint}
         label="公司全称"
         name="name"
         rules={[
@@ -168,12 +189,16 @@ function CompanyFormFields({
       </Form.Item>
 
       <Form.Item<CompanyFormValues>
-        extra={mode === 'create' ? '新增公司默认为启用状态。' : undefined}
+        extra={
+          mode === 'create'
+            ? '可在此选择启用或停用；停用公司不会出现在注册与报修候选中。'
+            : undefined
+        }
         label="公司启用"
         name="enabled"
         valuePropName="checked"
       >
-        <Switch disabled={mode === 'create'} />
+        <Switch />
       </Form.Item>
 
       <Form.Item<CompanyFormValues>
@@ -210,6 +235,8 @@ export function AdminCompanyCreateModal({
     setSubmitError,
     submitError,
   } = useStaleSubmitGuard(open);
+  const nameValue = Form.useWatch('name', form) as string | undefined;
+  const hasSameName = useAdminCompanyNameCheck({ enabled: open, name: nameValue });
 
   const handleFinish = async (values: CompanyFormValues) => {
     const submitSeq = captureSubmitSeq();
@@ -224,6 +251,7 @@ export function AdminCompanyCreateModal({
       contactEmail: values.contactEmail ?? '',
       address: values.address ?? '',
       remark: values.remark ?? '',
+      status: toStatus(values.enabled ?? true),
       isServiceProvider: values.isServiceProvider ?? false,
     });
 
@@ -244,6 +272,7 @@ export function AdminCompanyCreateModal({
       okText="创建"
       open={open}
       title="新增公司档案"
+      {...COMPANY_MODAL_LAYOUT}
       onCancel={() => {
         invalidateInFlightSubmit();
         onCancel();
@@ -257,7 +286,7 @@ export function AdminCompanyCreateModal({
         preserve={false}
         onFinish={(values) => void handleFinish(values)}
       >
-        <CompanyFormFields mode="create" />
+        <CompanyFormFields mode="create" nameHint={hasSameName ? SAME_NAME_HINT : undefined} />
 
         {submitError ? <Alert message={submitError} showIcon type="error" /> : null}
       </Form>
@@ -305,6 +334,12 @@ export function AdminCompanyEditModal({
     setSubmitError,
     submitError,
   } = useStaleSubmitGuard(company === null ? null : company.organizationId);
+  const nameValue = Form.useWatch('name', form) as string | undefined;
+  const hasSameName = useAdminCompanyNameCheck({
+    enabled: company !== null,
+    name: nameValue,
+    excludeOrganizationId: company?.organizationId ?? null,
+  });
 
   const handleFinish = async (values: CompanyFormValues) => {
     if (!company) {
@@ -388,6 +423,7 @@ export function AdminCompanyEditModal({
       okText="保存"
       open={company !== null}
       title={`编辑公司档案：${company?.name ?? ''}`}
+      {...COMPANY_MODAL_LAYOUT}
       onCancel={() => {
         invalidateInFlightSubmit();
         onCancel();
@@ -403,7 +439,11 @@ export function AdminCompanyEditModal({
         preserve={false}
         onFinish={(values) => void handleFinish(values)}
       >
-        <CompanyFormFields mode="edit" organizationCode={company?.organizationCode} />
+        <CompanyFormFields
+          mode="edit"
+          nameHint={hasSameName ? SAME_NAME_HINT : undefined}
+          organizationCode={company?.organizationCode}
+        />
 
         {submitError ? <Alert message={submitError} showIcon type="error" /> : null}
       </Form>

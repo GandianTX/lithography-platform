@@ -55,8 +55,8 @@ export class OrganizationService {
    * 一级管理员新增公司档案（任务 08.2）。
    *
    * - 编号由服务端生成（`ADMIN_ORG_<uuid>`），与名称解耦，唯一索引兜底；
-   * - 固定 `kind = CLIENT`、`status = ACTIVE`、`isManagedCompany = true`：
-   *   新增即进入一级维护名单，维修资格按入参单独设置；
+   * - 固定 `kind = CLIENT`、`isManagedCompany = true`：新增即进入一级维护名单；
+   *   状态按入参在一次写入中落定（调用方已把缺省收敛为 `ACTIVE`），维修资格独立设置；
    * - 单条 INSERT，调用方持有事务；失败不会留下半条记录。
    *
    * @returns 新公司主键与服务端生成的编号（供调用方回读与断言）
@@ -79,7 +79,7 @@ export class OrganizationService {
       isServiceProvider: data.isServiceProvider,
       isManagedCompany: true,
       kind: 'CLIENT',
-      status: 'ACTIVE',
+      status: data.status,
     });
     const saved = await repository.save(entity);
     return { id: saved.id, organizationCode: saved.organizationCode };

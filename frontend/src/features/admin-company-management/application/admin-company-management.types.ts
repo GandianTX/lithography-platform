@@ -64,7 +64,7 @@ export type AdminCompanyListPage =
       total: number;
     };
 
-/** 新增草稿：编号、受管归类、类别与状态均由服务端决定，不在草稿内 */
+/** 新增草稿：编号、受管归类与类别都由服务端决定；状态与维修资格由用户独立选择 */
 export type AdminCompanyCreateDraft = {
   name: string;
   shortName: string;
@@ -73,6 +73,7 @@ export type AdminCompanyCreateDraft = {
   contactEmail: string;
   address: string;
   remark: string;
+  status: AdminOrganizationStatus;
   isServiceProvider: boolean;
 };
 

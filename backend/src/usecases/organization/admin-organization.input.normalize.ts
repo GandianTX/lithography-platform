@@ -156,7 +156,10 @@ export function normalizeBooleanFlag(value: unknown, field: string, label: strin
   return value;
 }
 
-/** 新增公司输入收敛：全称与联系电话必填，其余可选，维修资格缺省为 false */
+/**
+ * 新增公司输入收敛：全称与联系电话必填，其余可选，维修资格缺省为 false，
+ * 状态缺省 `ACTIVE`（保留未传默认启用的兼容语义），显式传入只接受 ACTIVE / DISABLED。
+ */
 export function normalizeAdminOrganizationCreateInput(raw: {
   name: unknown;
   contactPhone: unknown;
@@ -165,6 +168,7 @@ export function normalizeAdminOrganizationCreateInput(raw: {
   contactEmail?: unknown;
   address?: unknown;
   remark?: unknown;
+  status?: unknown;
   isServiceProvider?: unknown;
 }): CreateManagedCompanyData {
   return {
@@ -200,6 +204,10 @@ export function normalizeAdminOrganizationCreateInput(raw: {
       ADMIN_ORGANIZATION_REMARK_MAX_LENGTH,
       '备注',
     ),
+    status:
+      raw.status === undefined || raw.status === null
+        ? 'ACTIVE'
+        : normalizeOrganizationStatus(raw.status),
     isServiceProvider:
       raw.isServiceProvider === undefined
         ? false

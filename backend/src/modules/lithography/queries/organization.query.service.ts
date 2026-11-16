@@ -307,6 +307,35 @@ export class OrganizationQueryService {
   }
 
   /**
+   * 一级管理员精确同名存在性（新增 / 编辑同名提示专用）。
+   *
+   * 管理档案范围覆盖全部公司档案：不过滤状态、也不过滤受管归类，停用与客户手填
+   * 的同名档案同样计入；编辑场景按实际主键排除自身。名称比较与注册同名提示共用
+   * 同一归一化口径（见 `normalizeOrganizationNameForComparison`）。
+   * 结果只用于提示，不阻断新增，也不改变同名不合并的写入语义。
+   */
+  async existsAnyOrganizationByName(params: {
+    normalizedName: string;
+    excludeOrganizationId?: number | null;
+  }): Promise<boolean> {
+    const queryBuilder = this.repository
+      .createQueryBuilder('organization')
+      .select('organization.id')
+      .where(
+        "LOWER(TRIM(REGEXP_REPLACE(organization.name, '\\\\s+', ' '))) COLLATE utf8mb4_0900_as_cs = :normalizedName COLLATE utf8mb4_0900_as_cs",
+        { normalizedName: params.normalizedName },
+      );
+
+    if (params.excludeOrganizationId !== undefined && params.excludeOrganizationId !== null) {
+      queryBuilder.andWhere('organization.id <> :excludeOrganizationId', {
+        excludeOrganizationId: params.excludeOrganizationId,
+      });
+    }
+
+    return (await queryBuilder.getCount()) > 0;
+  }
+
+  /**
    * 按主键复核组织具备 Web 注册资格（`ACTIVE` 且属于一级维护名单）。
    * 不存在、已停用或已撤销受管资格统一返回 null。
    *

@@ -13,7 +13,6 @@ import type { AdminUserListPage } from '@src/modules/account/account.types';
 import type { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import type { PinoLogger } from 'nestjs-pino';
 import {
-  ADMIN_ACCOUNT_ID,
   TARGET_ACCOUNT_ID,
   captureThrownError,
   createAdminOrganizationFact,
@@ -100,9 +99,9 @@ describe('ListAdminUsersUsecase', () => {
     organizationIsolation.resolveForAccount
       .mockReset()
       .mockResolvedValue(createAdminOrganizationFact());
-    organizationIsolation.listActiveAccountIdsByOrganization
+    organizationIsolation.listActiveEngineerAccountIdsByOrganization
       .mockReset()
-      .mockResolvedValue([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
+      .mockResolvedValue([TARGET_ACCOUNT_ID]);
   });
 
   describe('精确 SUPER_ADMIN 授权', () => {
@@ -119,12 +118,14 @@ describe('ListAdminUsersUsecase', () => {
   });
 
   describe('两级管理员作用域', () => {
-    it('一级管理员：不解析成员公司、不下推账号清单，读面即平台全范围', async () => {
+    it('一级管理员：不解析成员公司、不下推组织范围，读面即平台全范围', async () => {
       await executeAsSuperAdmin();
 
       expect(organizationIsolation.resolveForAccount).not.toHaveBeenCalled();
-      expect(organizationIsolation.listActiveAccountIdsByOrganization).not.toHaveBeenCalled();
-      expect(capturedQuery().accountIds).toBeUndefined();
+      expect(
+        organizationIsolation.listActiveEngineerAccountIdsByOrganization,
+      ).not.toHaveBeenCalled();
+      expect(capturedQuery().organizationScope).toBeUndefined();
       // 读面仍强制只返回普通用户
       expect(capturedQuery().visibleRoles).toEqual([
         IdentityTypeEnum.ENGINEER,
@@ -132,17 +133,24 @@ describe('ListAdminUsersUsecase', () => {
       ]);
     });
 
-    it('二级管理员：复核可信公司成员关系，并把公司内有效账号 ID 下推给 QueryService', async () => {
+    it('二级管理员：复核可信公司成员关系，并按角色分流下推组织范围', async () => {
       await executeAsSuperAdmin({ session: createLevelTwoAdminSession() });
 
       expect(organizationIsolation.resolveForAccount).toHaveBeenCalledWith({
         accountId: createLevelTwoAdminSession().accountId,
         transactionContext: undefined,
       });
-      expect(organizationIsolation.listActiveAccountIdsByOrganization).toHaveBeenCalledWith({
+      // 客户范围由 QueryService 按资料列比较，不依赖成员 ID 清单；
+      // 工程师范围来自本公司有效工程师成员关系
+      expect(
+        organizationIsolation.listActiveEngineerAccountIdsByOrganization,
+      ).toHaveBeenCalledWith({
         organizationId: createAdminOrganizationFact().organizationId,
       });
-      expect(capturedQuery().accountIds).toEqual([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
+      expect(capturedQuery().organizationScope).toEqual({
+        organizationId: createAdminOrganizationFact().organizationId,
+        engineerAccountIds: [TARGET_ACCOUNT_ID],
+      });
     });
 
     it('二级管理员的成员关系被撤销或公司不一致时失败关闭为 FORBIDDEN，且不触发列表查询', async () => {
@@ -156,7 +164,9 @@ describe('ListAdminUsersUsecase', () => {
         code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
       });
       expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
-      expect(organizationIsolation.listActiveAccountIdsByOrganization).not.toHaveBeenCalled();
+      expect(
+        organizationIsolation.listActiveEngineerAccountIdsByOrganization,
+      ).not.toHaveBeenCalled();
     });
 
     it('二级管理员的成员角色不再是 SUPER_ADMIN 时失败关闭为 FORBIDDEN', async () => {
@@ -172,15 +182,17 @@ describe('ListAdminUsersUsecase', () => {
       expect(adminUserQueryService.listAdminUsers).not.toHaveBeenCalled();
     });
 
-    it('组织内没有任何有效账号时下推空清单（QueryService 返回空页，不退化为全库）', async () => {
-      organizationIsolation.listActiveAccountIdsByOrganization.mockReset().mockResolvedValue([]);
-      (adminUserQueryService.listAdminUsers as jest.Mock).mockResolvedValue(
-        listPage({ items: [], total: 0 }),
-      );
+    it('公司内没有有效工程师时仍保留客户范围条件（不返回空页）', async () => {
+      organizationIsolation.listActiveEngineerAccountIdsByOrganization
+        .mockReset()
+        .mockResolvedValue([]);
 
       await executeAsSuperAdmin({ session: createLevelTwoAdminSession() });
 
-      expect(capturedQuery().accountIds).toEqual([]);
+      expect(capturedQuery().organizationScope).toEqual({
+        organizationId: createAdminOrganizationFact().organizationId,
+        engineerAccountIds: [],
+      });
       expect(adminUserQueryService.listAdminUsers).toHaveBeenCalledTimes(1);
     });
 
@@ -211,7 +223,7 @@ describe('ListAdminUsersUsecase', () => {
         keyword: 'Target_User',
         role: IdentityTypeEnum.ENGINEER,
         status: AccountStatus.INACTIVE,
-        accountIds: undefined,
+        organizationScope: undefined,
         visibleRoles: [IdentityTypeEnum.ENGINEER, IdentityTypeEnum.CUSTOMER],
       });
     });
@@ -225,7 +237,7 @@ describe('ListAdminUsersUsecase', () => {
         keyword: undefined,
         role: undefined,
         status: undefined,
-        accountIds: undefined,
+        organizationScope: undefined,
         visibleRoles: [IdentityTypeEnum.ENGINEER, IdentityTypeEnum.CUSTOMER],
       });
     });

@@ -1,7 +1,7 @@
 // src/usecases/account/admin-user-write-support.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import { AccountStatus } from '@app-types/models/account.types';
+import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import {
   ACCOUNT_ERROR,
   ADMIN_USER_ERROR,
@@ -100,6 +100,54 @@ export const extractDriverErrorCode = (error: unknown): string | number | undefi
 };
 
 /**
+ * 二级管理员的目标归属复核（V5.5 R012-01）：按目标真实角色分两条来源。
+ *
+ * - `CUSTOMER`：以 `base_user_info.customer_organization_id` 等于可信公司为准；
+ *   成员关系表里残留的旧公司关系**不能**作为客户归属证据；
+ * - `ENGINEER`：以本公司内有效且 `memberRole = ENGINEER` 的成员关系为准；
+ * - 其余（`SUPER_ADMIN` 等只读角色）：沿用既有成员关系口径先定位目标，随后由
+ *   `assertWritableAdminUserTargetRole()` 以「管理员账号只读」拒绝，避免把跨公司
+ *   管理员目标的存在性暴露给二级管理员。
+ *
+ * 失败关闭为 `TARGET_NOT_FOUND`：资料缺失、角色三源不收敛、外公司与不存在目标
+ * 对外不可区分，拒绝发生在任何写入之前。
+ */
+async function assertTargetOwnedByAdminOrganization(params: {
+  readonly accountId: number;
+  readonly organizationId: number;
+  readonly adminUserQueryService: AdminUserQueryService;
+  readonly organizationMembershipQueryService: OrganizationMembershipQueryService;
+  readonly transactionContext: PersistenceTransactionContext;
+}): Promise<void> {
+  const facts = await params.adminUserQueryService.findAdminUserOwnershipFacts({
+    accountId: params.accountId,
+    transactionContext: params.transactionContext,
+  });
+  if (facts === null) {
+    throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
+  }
+
+  let isOwnedByOrganization: boolean;
+  if (facts.role === IdentityTypeEnum.CUSTOMER) {
+    isOwnedByOrganization = facts.customerOrganizationId === params.organizationId;
+  } else {
+    const targetMembership = await params.organizationMembershipQueryService.findActiveMembership({
+      accountId: params.accountId,
+      organizationId: params.organizationId,
+      transactionContext: params.transactionContext,
+    });
+    isOwnedByOrganization =
+      targetMembership !== null &&
+      (facts.role !== IdentityTypeEnum.ENGINEER ||
+        targetMembership.memberRole === IdentityTypeEnum.ENGINEER);
+  }
+
+  if (!isOwnedByOrganization) {
+    throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
+  }
+}
+
+/**
  * 事务内加载受保护的管理员写目标：锁定 → 二级归属校验 → 读取收敛 View → 目标角色保护断言。
  *
  * 1. **先锁定目标账号**（`AccountService.lockByIdForUpdate()` 持 `SELECT ... FOR UPDATE`
@@ -150,16 +198,20 @@ export async function loadWritableAdminUserTarget(params: {
     throw error;
   }
 
-  // 二级管理员只允许操作可信公司内的账号；一级管理员可直接跨公司操作
+  // 二级管理员只允许操作可信公司内的账号；一级管理员可直接跨公司操作。
+  // 归属口径按目标真实角色分流（V5.5 R012-01）：客户以资料列
+  // `customer_organization_id` 为准，工程师以本公司有效工程师成员关系为准；
+  // 不能用成员关系表统一代替两条来源，否则「资料归 B、旧成员关系仍在 A」的外公司
+  // 客户会被错误放行。归属无法证明时（含资料缺失、角色三源不收敛）统一收敛为
+  // `TARGET_NOT_FOUND`，与不存在的目标同口径。
   if (params.scope.level === 2) {
-    const targetMembership = await params.organizationMembershipQueryService.findActiveMembership({
+    await assertTargetOwnedByAdminOrganization({
       accountId: params.accountId,
       organizationId: params.scope.organizationId,
+      adminUserQueryService: params.adminUserQueryService,
+      organizationMembershipQueryService: params.organizationMembershipQueryService,
       transactionContext: params.transactionContext,
     });
-    if (targetMembership === null) {
-      throw new DomainError(ADMIN_USER_ERROR.TARGET_NOT_FOUND, '目标用户不存在');
-    }
   }
 
   const view = await params.adminUserQueryService.findAdminUserViewById({

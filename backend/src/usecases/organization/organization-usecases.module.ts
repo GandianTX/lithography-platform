@@ -2,6 +2,7 @@
 
 import { Module } from '@nestjs/common';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
+import { CheckAdminOrganizationNameUsecase } from './check-admin-organization-name.usecase';
 import { CreateAdminOrganizationUsecase } from './create-admin-organization.usecase';
 import { GetAdminOrganizationDetailUsecase } from './get-admin-organization-detail.usecase';
 import { ListAdminOrganizationNamesUsecase } from './list-admin-organization-names.usecase';
@@ -22,6 +23,7 @@ import { UpdateAdminOrganizationUsecase } from './update-admin-organization.usec
     GetAdminOrganizationDetailUsecase,
     CreateAdminOrganizationUsecase,
     UpdateAdminOrganizationUsecase,
+    CheckAdminOrganizationNameUsecase,
   ],
   exports: [
     ListAdminOrganizationNamesUsecase,
@@ -29,6 +31,7 @@ import { UpdateAdminOrganizationUsecase } from './update-admin-organization.usec
     GetAdminOrganizationDetailUsecase,
     CreateAdminOrganizationUsecase,
     UpdateAdminOrganizationUsecase,
+    CheckAdminOrganizationNameUsecase,
   ],
 })
 export class OrganizationUsecasesModule {}

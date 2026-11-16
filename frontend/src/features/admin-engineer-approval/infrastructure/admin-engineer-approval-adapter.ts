@@ -13,19 +13,21 @@
 import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
 
 import type {
+  AdminEngineerRegistrationDetailReadResult,
   AdminEngineerRegistrationListPage,
   AdminEngineerRegistrationListQuery,
-  AdminEngineerRegistrationReadResult,
   AdminEngineerReviewDraft,
   AdminEngineerReviewFailureReason,
   AdminEngineerReviewResult,
 } from '../application/admin-engineer-approval.types';
 
 import type {
+  AdminEngineerRegistrationDetailDto,
   AdminEngineerRegistrationItemDto,
   AdminEngineerRegistrationPageDto,
 } from './admin-engineer-approval.dto';
 import {
+  mapAdminEngineerRegistrationDetailDtoToDetail,
   mapAdminEngineerRegistrationItemDtoToRow,
   mapAdminEngineerRegistrationPageDtoToListPage,
 } from './admin-engineer-approval-mapper';
@@ -58,6 +60,32 @@ const ITEM_FIELDS = `
   applicant {${APPLICANT_FIELDS}}
 `;
 
+/** 审批详情申请人字段：真实姓名与昵称分开，不请求角色 / 状态 / 登录邮箱 */
+const DETAIL_APPLICANT_FIELDS = `
+  id
+  loginName
+  nickname
+  realName
+  phone
+  contactEmail
+`;
+
+const DETAIL_ITEM_FIELDS = `
+  application {
+    id
+    accountId
+    organizationId
+    status
+    applicationNote
+    submittedAt
+    reviewedByAccountId
+    reviewedAt
+    reviewComment
+  }
+  organizationName
+  applicant {${DETAIL_APPLICANT_FIELDS}}
+`;
+
 const ADMIN_ENGINEER_REGISTRATION_LIST_QUERY = `
   query AdminEngineerRegistrations($pagination: PaginationArgs!, $status: EngineerRegistrationApplicationStatus) {
     adminEngineerRegistrations(pagination: $pagination, status: $status) {
@@ -71,7 +99,7 @@ const ADMIN_ENGINEER_REGISTRATION_LIST_QUERY = `
 
 const ADMIN_ENGINEER_REGISTRATION_DETAIL_QUERY = `
   query AdminEngineerRegistrationDetail($applicationId: Int!) {
-    adminEngineerRegistrationDetail(applicationId: $applicationId) {${ITEM_FIELDS}}
+    adminEngineerRegistrationDetail(applicationId: $applicationId) {${DETAIL_ITEM_FIELDS}}
   }
 `;
 
@@ -93,7 +121,7 @@ type AdminEngineerRegistrationListQueryData = {
 };
 
 type AdminEngineerRegistrationDetailQueryData = {
-  adminEngineerRegistrationDetail: AdminEngineerRegistrationItemDto;
+  adminEngineerRegistrationDetail: AdminEngineerRegistrationDetailDto;
 };
 
 type AdminEngineerReviewMutationData = {
@@ -180,7 +208,7 @@ export async function fetchAdminEngineerRegistrations(
 
 export async function fetchAdminEngineerRegistrationDetail(
   applicationId: number,
-): Promise<AdminEngineerRegistrationReadResult> {
+): Promise<AdminEngineerRegistrationDetailReadResult> {
   try {
     const data = await executeGraphQL<
       AdminEngineerRegistrationDetailQueryData,
@@ -189,7 +217,9 @@ export async function fetchAdminEngineerRegistrationDetail(
 
     return {
       ok: true,
-      registration: mapAdminEngineerRegistrationItemDtoToRow(data.adminEngineerRegistrationDetail),
+      registration: mapAdminEngineerRegistrationDetailDtoToDetail(
+        data.adminEngineerRegistrationDetail,
+      ),
     };
   } catch (error) {
     return toReviewFailure(error, READ_REASON_BY_CATEGORY_CODE);

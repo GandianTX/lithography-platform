@@ -28,6 +28,7 @@ export type CreateAdminOrganizationCommand = {
   readonly contactEmail?: unknown;
   readonly address?: unknown;
   readonly remark?: unknown;
+  readonly status?: unknown;
   readonly isServiceProvider?: unknown;
 };
 
@@ -35,7 +36,8 @@ export type CreateAdminOrganizationCommand = {
  * 一级管理员新增公司档案（任务 08.2）。
  *
  * 授权：仅一级管理员。新增即进入一级维护名单（`isManagedCompany = true`）、
- * 状态固定 `ACTIVE`、类别固定 `CLIENT`，编号由服务端生成。维修资格按入参单独设置。
+ * 类别固定 `CLIENT`，编号由服务端生成；状态按入参一次落定（缺省 `ACTIVE`），
+ * 维修资格按入参单独设置。
  *
  * 事务边界由本用例持有：创建后在同一事务内回读完整视图，回读失败按写入失败关闭，
  * 不返回「已提交但不可读」的假成功。编号唯一索引冲突映射为 `CODE_CONFLICT`（对外 `CONFLICT`）。
@@ -63,6 +65,7 @@ export class CreateAdminOrganizationUsecase {
       contactEmail: command.contactEmail,
       address: command.address,
       remark: command.remark,
+      status: command.status,
       isServiceProvider: command.isServiceProvider,
     });
 

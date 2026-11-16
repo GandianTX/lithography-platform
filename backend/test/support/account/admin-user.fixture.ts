@@ -67,13 +67,13 @@ export const createOrganizationIsolationMocks = (): {
   readonly organizationContextQueryService: TrustedOrganizationContextQueryService;
   readonly organizationMembershipQueryService: OrganizationMembershipQueryService;
   readonly resolveForAccount: jest.Mock;
-  readonly listActiveAccountIdsByOrganization: jest.Mock;
+  readonly listActiveEngineerAccountIdsByOrganization: jest.Mock;
   readonly findActiveMembership: jest.Mock;
 } => {
   const resolveForAccount = jest.fn().mockResolvedValue(createAdminOrganizationFact());
-  const listActiveAccountIdsByOrganization = jest
+  const listActiveEngineerAccountIdsByOrganization = jest
     .fn()
-    .mockResolvedValue([ADMIN_ACCOUNT_ID, TARGET_ACCOUNT_ID]);
+    .mockResolvedValue([TARGET_ACCOUNT_ID]);
   const findActiveMembership = jest.fn().mockResolvedValue(createAdminOrganizationFact());
 
   return {
@@ -81,11 +81,11 @@ export const createOrganizationIsolationMocks = (): {
       resolveForAccount,
     } as unknown as TrustedOrganizationContextQueryService,
     organizationMembershipQueryService: {
-      listActiveAccountIdsByOrganization,
+      listActiveEngineerAccountIdsByOrganization,
       findActiveMembership,
     } as unknown as OrganizationMembershipQueryService,
     resolveForAccount,
-    listActiveAccountIdsByOrganization,
+    listActiveEngineerAccountIdsByOrganization,
     findActiveMembership,
   };
 };
@@ -301,6 +301,7 @@ export type AdminUserAccountRowSpec = {
   readonly companyName?: string | null;
   readonly phone?: string | null;
   readonly contactEmail?: string | null;
+  readonly customerOrganizationId?: number | null;
   readonly status?: AccountStatus;
   readonly userState?: UserState;
   readonly createdAt?: Date;
@@ -329,6 +330,11 @@ const buildAdminUserAccountRow = (spec: AdminUserAccountRowSpec): AccountEntity 
   userInfo.accountId = account.id;
   userInfo.nickname = spec.nickname ?? 'target_nickname';
   userInfo.companyName = spec.companyName ?? null;
+  // 客户归属缺省为管理员可信公司：二级写用例的缺省目标（CUSTOMER）因此可被合法写入
+  userInfo.customerOrganizationId =
+    spec.customerOrganizationId === undefined
+      ? ADMIN_ORGANIZATION_ID
+      : spec.customerOrganizationId;
   userInfo.gender = Gender.SECRET;
   userInfo.birthDate = null;
   userInfo.avatarUrl = null;
@@ -354,6 +360,7 @@ export type RealViewConversionDouble = {
   readonly queryService: AdminUserQueryService;
   readonly findAdminUserViewById: jest.Mock;
   readonly findAdminUserStatusFacts: jest.Mock;
+  readonly findAdminUserOwnershipFacts: jest.Mock;
   /** 切换当前目标行；`null` 表示账号不存在（真实服务返回 `null`） */
   readonly setAccountRow: (spec: AdminUserAccountRowSpec | null) => void;
 };
@@ -386,14 +393,20 @@ export const createRealViewConversionDouble = (
     async (params: { accountId: number; transactionContext?: PersistenceTransactionContext }) =>
       realService.findAdminUserStatusFacts({ accountId: params.accountId }),
   );
+  const findAdminUserOwnershipFacts = jest.fn(
+    async (params: { accountId: number; transactionContext?: PersistenceTransactionContext }) =>
+      realService.findAdminUserOwnershipFacts({ accountId: params.accountId }),
+  );
 
   return {
     queryService: {
       findAdminUserViewById,
       findAdminUserStatusFacts,
+      findAdminUserOwnershipFacts,
     } as unknown as AdminUserQueryService,
     findAdminUserViewById,
     findAdminUserStatusFacts,
+    findAdminUserOwnershipFacts,
     setAccountRow: (spec: AdminUserAccountRowSpec | null) => {
       row = spec === null ? null : buildAdminUserAccountRow(spec);
     },

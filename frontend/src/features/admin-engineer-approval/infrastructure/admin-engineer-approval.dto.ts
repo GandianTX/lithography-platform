@@ -36,6 +36,22 @@ export type AdminEngineerRegistrationItemDto = {
   organizationName: string | null;
 };
 
+/** 审批详情专用申请人 DTO：含真实姓名，不含角色 / 账号状态 / 登录邮箱 */
+export type AdminEngineerApplicantDetailDto = {
+  id: number;
+  loginName: string | null;
+  nickname: string;
+  realName: string | null;
+  phone: string | null;
+  contactEmail: string | null;
+};
+
+export type AdminEngineerRegistrationDetailDto = {
+  application: AdminEngineerRegistrationApplicationDto;
+  applicant: AdminEngineerApplicantDetailDto;
+  organizationName: string | null;
+};
+
 export type AdminEngineerRegistrationPageDto = {
   items: AdminEngineerRegistrationItemDto[];
   page: number;

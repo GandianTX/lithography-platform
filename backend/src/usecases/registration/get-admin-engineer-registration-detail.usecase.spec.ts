@@ -1,13 +1,13 @@
 // src/usecases/registration/get-admin-engineer-registration-detail.usecase.spec.ts
 import type { UsecaseSession } from '@app-types/auth/session.types';
-import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { EngineerRegistrationApplicationStatus } from '@app-types/models/registration.types';
 import {
   ADMIN_USER_ERROR,
   ENGINEER_REGISTRATION_ERROR,
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
-import type { AdminUserView } from '@src/modules/account/account.types';
+import type { AdminApplicantDetailView } from '@src/modules/account/account.types';
 import { AdminUserQueryService } from '@src/modules/account/queries/admin-user.query.service';
 import type { EngineerRegistrationApplicationSnapshot } from '@src/modules/lithography/engineer-registration.types';
 import { EngineerRegistrationQueryService } from '@src/modules/lithography/queries/engineer-registration.query.service';
@@ -25,7 +25,7 @@ describe('GetAdminEngineerRegistrationDetailUsecase（管理员申请详情）',
 
   let session: UsecaseSession;
   let engineerRegistrationQueryService: { findById: jest.Mock };
-  let adminUserQueryService: { findAdminUserViewById: jest.Mock };
+  let adminUserQueryService: { findAdminUserDetailViewById: jest.Mock };
   let organizationContext: { resolveForAccount: jest.Mock };
   let organizationQueryService: { findOrganizationNameById: jest.Mock };
   let usecase: GetAdminEngineerRegistrationDetailUsecase;
@@ -44,18 +44,13 @@ describe('GetAdminEngineerRegistrationDetailUsecase（管理员申请详情）',
     updatedAt: CREATED_AT,
   });
 
-  const applicantView = (): AdminUserView => ({
+  const applicantView = (): AdminApplicantDetailView => ({
     id: APPLICANT_ACCOUNT_ID,
     loginName: 'pending-engineer',
-    loginEmail: 'pending@example.com',
     nickname: '待审工程师',
-    companyName: null,
+    realName: '张三',
     phone: null,
     contactEmail: null,
-    role: IdentityTypeEnum.ENGINEER,
-    status: AccountStatus.PENDING,
-    createdAt: CREATED_AT,
-    updatedAt: CREATED_AT,
   });
 
   const levelOneSession = (): UsecaseSession => ({
@@ -72,7 +67,7 @@ describe('GetAdminEngineerRegistrationDetailUsecase（管理员申请详情）',
       findById: jest.fn().mockResolvedValue(snapshot(ORGANIZATION_ID)),
     };
     adminUserQueryService = {
-      findAdminUserViewById: jest.fn().mockResolvedValue(applicantView()),
+      findAdminUserDetailViewById: jest.fn().mockResolvedValue(applicantView()),
     };
     organizationContext = {
       resolveForAccount: jest.fn().mockResolvedValue({
@@ -149,16 +144,17 @@ describe('GetAdminEngineerRegistrationDetailUsecase（管理员申请详情）',
     expect(result.application.organizationId).toBe(PEER_ORGANIZATION_ID);
   });
 
-  it('返回申请、申请人视图与目标公司名', async () => {
+  it('返回申请、申请人详情（含真实姓名）与目标公司名', async () => {
     const result = await usecase.execute({ session, applicationId: APPLICATION_ID });
 
     expect(result.application.id).toBe(APPLICATION_ID);
     expect(result.applicant.id).toBe(APPLICANT_ACCOUNT_ID);
+    expect(result.applicant.realName).toBe('张三');
     expect(result.organizationName).toBe('测试组织');
   });
 
   it('申请人账号资料缺失时读取失败关闭', async () => {
-    adminUserQueryService.findAdminUserViewById.mockResolvedValue(null);
+    adminUserQueryService.findAdminUserDetailViewById.mockResolvedValue(null);
 
     await expect(usecase.execute({ session, applicationId: APPLICATION_ID })).rejects.toMatchObject(
       { code: ADMIN_USER_ERROR.READ_FAILED },

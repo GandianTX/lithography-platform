@@ -32,6 +32,7 @@ vi.mock('../infrastructure/admin-company-adapter', async (importOriginal) => {
     ...actual,
     adminCreateCompany: vi.fn(),
     adminUpdateCompany: vi.fn(),
+    checkAdminCompanyNameExists: vi.fn(),
     fetchAdminCompanies: vi.fn(),
     fetchAdminCompanyDetail: vi.fn(),
     fetchAdminCompanyNames: vi.fn(),
@@ -43,6 +44,7 @@ const fetchNamesMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanyNames);
 const fetchDetailMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanyDetail);
 const createMock = vi.mocked(adminCompanyAdapter.adminCreateCompany);
 const updateMock = vi.mocked(adminCompanyAdapter.adminUpdateCompany);
+const nameCheckMock = vi.mocked(adminCompanyAdapter.checkAdminCompanyNameExists);
 
 const BUSINESS_FAILURE_MESSAGE = '后端返回的业务失败';
 
@@ -111,6 +113,7 @@ beforeEach(() => {
   fetchDetailMock.mockReset();
   createMock.mockReset();
   updateMock.mockReset();
+  nameCheckMock.mockReset().mockResolvedValue(false);
 });
 
 describe('AdminCompanyManagementPanel 一级管理员', () => {
@@ -146,7 +149,7 @@ describe('AdminCompanyManagementPanel 一级管理员', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
-    // 弹窗只回传用户填写的草稿，编号 / 受管归类 / 类别 / 状态由服务端决定
+    // 弹窗只回传用户填写的草稿；编号 / 受管归类 / 类别由服务端决定，状态缺省启用
     expect(createMock).toHaveBeenCalledWith({
       name: '乙公司',
       shortName: '',
@@ -155,6 +158,7 @@ describe('AdminCompanyManagementPanel 一级管理员', () => {
       contactEmail: '',
       address: '',
       remark: '',
+      status: 'ACTIVE',
       isServiceProvider: false,
     });
 
@@ -162,6 +166,77 @@ describe('AdminCompanyManagementPanel 一级管理员', () => {
     expect(message.success).toHaveBeenCalledWith('公司档案已创建。');
     // 成功后续体统一 reload 当前游标：初次加载 + 成功刷新
     await waitFor(() => expect(fetchCompaniesMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('新增时可选停用状态，并与维修资格相互独立地进入草稿', async () => {
+    createMock.mockResolvedValue({ ok: true, organization: ROW_A });
+
+    render(<AdminCompanyManagementPanel adminLevel={1} />);
+    await screen.findByText('甲公司');
+
+    fireEvent.click(screen.getByRole('button', { name: /新增公司/ }));
+    const dialog = getDialog('新增公司档案');
+
+    fireEvent.change(within(dialog).getByLabelText('公司全称'), { target: { value: '乙公司' } });
+    fireEvent.change(within(dialog).getByLabelText('联系电话'), {
+      target: { value: '13900000002' },
+    });
+
+    // 两个开关依次为「公司启用」「提供维修服务」：只关闭启用，维修资格保持开启
+    const [enabledSwitch, serviceSwitch] = within(dialog).getAllByRole('switch');
+    fireEvent.click(enabledSwitch);
+    fireEvent.click(serviceSwitch);
+    fireEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
+
+    await waitFor(() =>
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'DISABLED', isServiceProvider: true }),
+      ),
+    );
+  });
+
+  it('同名只提示不阻断：提示可见且仍按独立档案提交', async () => {
+    nameCheckMock.mockResolvedValue(true);
+    createMock.mockResolvedValue({ ok: true, organization: ROW_A });
+
+    render(<AdminCompanyManagementPanel adminLevel={1} />);
+    await screen.findByText('甲公司');
+
+    fireEvent.click(screen.getByRole('button', { name: /新增公司/ }));
+    const dialog = getDialog('新增公司档案');
+
+    fireEvent.change(within(dialog).getByLabelText('公司全称'), { target: { value: '乙公司' } });
+    fireEvent.change(within(dialog).getByLabelText('联系电话'), {
+      target: { value: '13900000002' },
+    });
+
+    expect(await within(dialog).findByText(/已存在同名公司档案/)).toBeInTheDocument();
+    expect(nameCheckMock).toHaveBeenCalledWith({ name: '乙公司', excludeOrganizationId: null });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
+
+    // 提示不是校验错误：提交照样通过，同名新增得到独立档案
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ name: '乙公司' }));
+  });
+
+  it('编辑同名检查按实际主键排除自身，命中时只提示不阻断保存', async () => {
+    nameCheckMock.mockResolvedValue(true);
+    updateMock.mockResolvedValue({ ok: true, organization: ROW_A });
+
+    render(<AdminCompanyManagementPanel adminLevel={1} />);
+    await screen.findByText('甲公司');
+
+    clickRowAction('甲公司', /编\s*辑/);
+    const dialog = getDialog('编辑公司档案：甲公司');
+
+    expect(await within(dialog).findByText(/已存在同名公司档案/)).toBeInTheDocument();
+    expect(nameCheckMock).toHaveBeenCalledWith({ name: '甲公司', excludeOrganizationId: 501 });
+
+    fireEvent.change(within(dialog).getByLabelText('联系人姓名'), { target: { value: '李四' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(1));
   });
 
   it('编辑失败时保留弹窗并展示后端业务文案，只提交发生变化的字段', async () => {

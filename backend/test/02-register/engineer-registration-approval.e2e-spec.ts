@@ -93,6 +93,20 @@ type AdminItemPayload = {
   };
 };
 
+/** 审批详情走专用读模型：申请人资料含真实姓名，不含角色 / 账号状态 / 登录邮箱 */
+type AdminDetailPayload = {
+  application: ApplicationPayload;
+  organizationName: string | null;
+  applicant: {
+    id: number;
+    loginName: string | null;
+    nickname: string;
+    realName: string | null;
+    phone: string | null;
+    contactEmail: string | null;
+  };
+};
+
 type AdminPagePayload = {
   items: AdminItemPayload[];
   total: number;
@@ -258,9 +272,15 @@ const ADMIN_LIST_QUERY = `
   }
 `;
 
+const ADMIN_DETAIL_FIELDS = `
+  application { ${APPLICATION_FIELDS} }
+  organizationName
+  applicant { id loginName nickname realName phone contactEmail }
+`;
+
 const ADMIN_DETAIL_QUERY = `
   query AdminDetail($applicationId: Int!) {
-    adminEngineerRegistrationDetail(applicationId: $applicationId) { ${ADMIN_ITEM_FIELDS} }
+    adminEngineerRegistrationDetail(applicationId: $applicationId) { ${ADMIN_DETAIL_FIELDS} }
   }
 `;
 
@@ -764,8 +784,8 @@ describe('工程师注册与组织审核 (e2e)', () => {
   const adminDetail = async (
     token: string,
     applicationId: number,
-  ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminItemPayload }>> =>
-    await gql<{ adminEngineerRegistrationDetail?: AdminItemPayload }>({
+  ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>> =>
+    await gql<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>({
       query: ADMIN_DETAIL_QUERY,
       variables: { applicationId },
       token,

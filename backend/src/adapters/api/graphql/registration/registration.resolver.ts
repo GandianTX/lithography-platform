@@ -34,6 +34,10 @@ import {
   AdminEngineerRegistrationItemDTO,
   toAdminEngineerRegistrationItemDTO,
 } from './dto/admin-engineer-registration-item.dto';
+import {
+  AdminEngineerRegistrationDetailDTO,
+  toAdminEngineerRegistrationDetailDTO,
+} from './dto/admin-engineer-registration-detail.dto';
 import { AdminEngineerRegistrationPageDTO } from './dto/admin-engineer-registration-page.dto';
 import { toEngineerRegistrationApplicationDTO } from './dto/engineer-registration-application.dto';
 import { toEngineerRegistrationApplicationPageDTO } from './dto/engineer-registration-application-page.dto';
@@ -393,20 +397,20 @@ export class RegistrationResolver {
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
-  @Query(() => AdminEngineerRegistrationItemDTO, {
+  @Query(() => AdminEngineerRegistrationDetailDTO, {
     name: 'adminEngineerRegistrationDetail',
     description: '工程师注册申请详情（一级全范围，二级仅本公司）',
   })
   async adminEngineerRegistrationDetail(
     @Args('applicationId', { type: () => Int, description: '申请 ID' }) applicationId: number,
     @currentUser() user: JwtPayload,
-  ): Promise<AdminEngineerRegistrationItemDTO> {
+  ): Promise<AdminEngineerRegistrationDetailDTO> {
     const session: UsecaseSession = mapJwtToUsecaseSession(user);
     const item = await this.getAdminEngineerRegistrationDetail.execute({
       session,
       applicationId,
     });
-    return toAdminEngineerRegistrationItemDTO(item);
+    return toAdminEngineerRegistrationDetailDTO(item);
   }
 
   /**

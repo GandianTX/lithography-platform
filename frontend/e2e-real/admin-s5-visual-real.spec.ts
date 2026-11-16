@@ -8,12 +8,14 @@
 // 口径：
 // - 只读采集：页面不做任何写操作；夹具在公司/账号/申请层面预置，收尾按本轮台账单事务回收；
 // - 一级与二级分别登录采集，二级页面呈现与服务端作用域一一对应；
-// - 工作区未提交时 `captureStableViewport` 的干净工作区门禁不成立，按 `frontend/docs/testing.md`
-//   已登记例外使用 `prepareStableViewport()` + `page.screenshot()`，标注为预提交口径。
+// - 所有整视口证据统一走 `captureStableViewport`：工作区脏或 git 不可用时失败关闭，
+//   禁止把截图伪关联到某个提交；提交级采集请在干净候选（提交后）上重跑本规格。
 //
 // 输出：
 // - `docs/plan/task08/visual/s5-<role>-<page>-<w>x<h>.png`
-// - `docs/plan/task08/visual/s5-measurements.json`（rect / computed style / overflow / 弹窗测量）
+// - `docs/plan/task08/visual/s5-<name>-<w>x<h>.png`（关键弹窗：两个桌面视口 + 390×844）
+// - `docs/plan/task08/visual/s5-measurements.json`
+//   （rect / computed style / overflow / 弹窗正文滚动 / 视口截图元数据 / 浏览器与字体环境）
 
 import { expect, type Page, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -26,7 +28,11 @@ import {
   readBackendEnv,
   runGuardedFixtureWrite,
 } from '../e2e/helpers/real-backend';
-import { prepareStableViewport, readWorkspaceEvidenceState } from '../e2e/helpers/visual-evidence';
+import {
+  captureStableViewport,
+  readWorkspaceEvidenceState,
+  type ViewportCaptureMeta,
+} from '../e2e/helpers/visual-evidence';
 
 /** 主导航入口 */
 const PAGES = [
@@ -119,10 +125,24 @@ type DialogMeasurement = {
   name: string;
   title: string;
   viewport: string;
+  expectedWidth: number;
   dialog: BoxMeasurement | null;
   content: BoxMeasurement | null;
   titleBox: BoxMeasurement | null;
+  footer: BoxMeasurement | null;
+  body: (BoxMeasurement & { clientHeight: number; scrollHeight: number }) | null;
+  documentOverflowX: number;
+  footerBottom: number | null;
   bodyText: string;
+};
+
+type EnvironmentInfo = {
+  browserName: string;
+  browserVersion: string;
+  platform: string;
+  devicePixelRatio: number;
+  bodyFontFamily: string;
+  fonts: { family: string; loaded: boolean }[];
 };
 
 let ledger: FixtureLedger = emptyLedger();
@@ -133,8 +153,10 @@ let ownCustomer = { accountId: 0, loginName: '' };
 let foreignCustomer = { accountId: 0, loginName: '' };
 let engineerApplicant = { accountId: 0, loginName: '' };
 let runTag = '';
+let environment: EnvironmentInfo | null = null;
 const measurements: PageMeasurement[] = [];
 const dialogMeasurements: DialogMeasurement[] = [];
+const viewportCaptures: ViewportCaptureMeta[] = [];
 
 function emptyLedger(): FixtureLedger {
   return {
@@ -350,30 +372,53 @@ async function capturePage(
     const viewportLabel = `${viewport.width}x${viewport.height}`;
     const fileName = `s5-${role}-${target.key}-${viewportLabel}.png`;
 
-    await prepareStableViewport(page, fileName);
-    await page.screenshot({ path: path.join(VISUAL_DIR, fileName) });
+    const meta = await captureStableViewport(page, {
+      fileName,
+      filePath: path.join(VISUAL_DIR, fileName),
+    });
+
+    viewportCaptures.push(meta);
     measurements.push(await measurePage(page, role, target.key, viewportLabel));
   }
 
   await page.setViewportSize(VIEWPORTS[0]);
 }
 
-/** 弹窗只做打开 + 截图 + Escape 关闭，不提交任何写操作 */
-async function captureDialog(
+/** 浏览器与字体环境：随证据一起交回，避免截图脱离对照环境 */
+async function captureEnvironment(page: Page): Promise<void> {
+  const browser = page.context().browser();
+
+  environment = {
+    bodyFontFamily: await page.evaluate(() => getComputedStyle(document.body).fontFamily),
+    browserName: browser?.browserType().name() ?? 'unknown',
+    browserVersion: browser?.version() ?? 'unknown',
+    devicePixelRatio: await page.evaluate(() => window.devicePixelRatio),
+    fonts: await page.evaluate(() => {
+      const families = ['Inter', 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei'];
+
+      return families.map((family) => ({
+        family,
+        loaded: document.fonts.check(`14px "${family}"`),
+      }));
+    }),
+    platform: process.platform,
+  };
+}
+
+/**
+ * 单次弹窗测量：rect / computed style / 正文 overflow / 页面横向溢出。
+ * 断言宽度按 V44 的 760 px 收口、窄屏按视口留 16 px 收缩，且标题与底部动作都在视口内。
+ */
+async function measureDialog(
   page: Page,
   name: string,
-  open: () => Promise<{ title: string }>,
-): Promise<void> {
-  const { title } = await open();
-  const dialog = visibleDialog(page);
-
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(title, { exact: false }).first()).toBeVisible();
-
-  const fileName = `s5-${name}-1440x900.png`;
-
-  await prepareStableViewport(page, fileName);
-  await page.screenshot({ path: path.join(VISUAL_DIR, fileName) });
+  title: string,
+  viewport: { height: number; width: number },
+  baseWidth: number,
+  expectBodyScroll: boolean,
+): Promise<DialogMeasurement> {
+  const viewportLabel = `${viewport.width}x${viewport.height}`;
+  const expectedWidth = Math.min(baseWidth, viewport.width - 32);
 
   const measured = await page.evaluate((expectedTitle: string) => {
     const boxOf = (element: Element | null) => {
@@ -390,40 +435,131 @@ async function captureDialog(
         height: rect.height,
         left: rect.left,
         lineHeight: style.lineHeight,
+        overflowX: style.overflowX,
         top: rect.top,
         width: rect.width,
         x: rect.x,
         y: rect.y,
-        overflowX: style.overflowX,
       };
     };
-    const dialog = Array.from(document.querySelectorAll('[role="dialog"]')).find(
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(
       (item) => (item as HTMLElement).offsetParent !== null,
     );
+    // 叠加弹窗（详情 + 拒绝）时必须定位到标题匹配的那一层，不能默认取第一个
+    const dialog =
+      dialogs.find((item) => (item.textContent ?? '').includes(expectedTitle)) ??
+      dialogs[dialogs.length - 1] ??
+      null;
     const heading = Array.from(dialog?.querySelectorAll('.ant-modal-title') ?? []).find((item) =>
       (item.textContent ?? '').includes(expectedTitle),
     );
+    const body = dialog?.querySelector('.ant-modal-body') ?? null;
+    const bodyBox = boxOf(body);
 
     return {
-      dialog: boxOf(dialog ?? null),
-      content: boxOf(dialog?.querySelector('.ant-modal-container, .ant-modal-content') ?? null),
-      titleBox: boxOf(heading ?? null),
+      body:
+        bodyBox && body instanceof HTMLElement
+          ? { ...bodyBox, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight }
+          : null,
+      bodyOverflowY: body instanceof HTMLElement ? getComputedStyle(body).overflowY : null,
       bodyText: (dialog?.textContent ?? '').replace(/\s+/gu, ' ').trim().slice(0, 300),
+      content: boxOf(dialog?.querySelector('.ant-modal-container, .ant-modal-content') ?? null),
+      dialog: boxOf(dialog ?? null),
+      documentOverflowX:
+        document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      footer: boxOf(dialog?.querySelector('.ant-modal-footer') ?? null),
+      titleBox: boxOf(heading ?? null),
     };
   }, title);
 
-  dialogMeasurements.push({
+  expect(measured.dialog, `${name} 应存在可见弹窗`).not.toBeNull();
+  expect(measured.documentOverflowX, `${name} 弹窗打开时页面不应横向溢出`).toBeLessThanOrEqual(0);
+  expect(measured.dialog?.width, `${name} 宽度应对齐 V44 750~760 px 或按视口收缩`).toBeCloseTo(
+    expectedWidth,
+    0,
+  );
+  expect(measured.dialog?.x ?? -1, `${name} 弹窗左边不应越出视口`).toBeGreaterThanOrEqual(0);
+  expect(
+    (measured.dialog?.x ?? 0) + (measured.dialog?.width ?? 0),
+    `${name} 弹窗右边不应越出视口`,
+  ).toBeLessThanOrEqual(viewport.width);
+  expect(measured.titleBox?.height ?? 0, `${name} 标题应可见`).toBeGreaterThan(0);
+  expect(measured.footer, `${name} 底部动作区应存在`).not.toBeNull();
+
+  const footerBottom = measured.footer === null ? null : measured.footer.y + measured.footer.height;
+
+  expect(footerBottom, `${name} 底部动作区应在视口内`).not.toBeNull();
+  expect(footerBottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(viewport.height + 1);
+
+  if (expectBodyScroll) {
+    // 正文受控滚动：样式必须落在 auto，超出高度时才能滚动而不是把底部动作顶出视口
+    expect(measured.bodyOverflowY, `${name} 正文应使用受控滚动`).toBe('auto');
+  }
+
+  return {
+    body: measured.body,
     bodyText: measured.bodyText,
     content: measured.content,
     dialog: measured.dialog,
+    documentOverflowX: measured.documentOverflowX,
+    expectedWidth,
+    footer: measured.footer,
+    footerBottom,
     name,
     title,
     titleBox: measured.titleBox,
-    viewport: '1440x900',
-  });
+    viewport: viewportLabel,
+  };
+}
 
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+/**
+ * 关键弹窗采集：两个桌面视口 + 390×844 各截图一次并测量。
+ * 弹窗只做打开 / 截图 / 关闭，不提交任何写操作。
+ */
+async function captureDialog(
+  page: Page,
+  name: string,
+  open: () => Promise<{ title: string }>,
+  options: {
+    baseWidth?: number;
+    expectBodyScroll?: boolean;
+    onClose?: () => Promise<void>;
+  } = {},
+): Promise<void> {
+  const baseWidth = options.baseWidth ?? 520;
+  const expectBodyScroll = options.expectBodyScroll ?? false;
+  const { title } = await open();
+
+  const targetDialog = visibleDialog(page).filter({ hasText: title }).last();
+
+  await expect(targetDialog).toBeVisible();
+  await expect(targetDialog.getByText(title, { exact: false }).first()).toBeVisible();
+
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    const viewportLabel = `${viewport.width}x${viewport.height}`;
+    const fileName = `s5-${name}-${viewportLabel}.png`;
+
+    viewportCaptures.push(
+      await captureStableViewport(page, {
+        fileName,
+        filePath: path.join(VISUAL_DIR, fileName),
+      }),
+    );
+    dialogMeasurements.push(
+      await measureDialog(page, name, title, viewport, baseWidth, expectBodyScroll),
+    );
+  }
+
+  await page.setViewportSize(VIEWPORTS[0]);
+
+  if (options.onClose) {
+    await options.onClose();
+  } else {
+    await page.keyboard.press('Escape');
+  }
+
+  await expect(visibleDialog(page)).toHaveCount(0);
 }
 
 /**
@@ -572,10 +708,17 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
           {
             capturedAt: new Date().toISOString(),
             evidenceState: readWorkspaceEvidenceState(),
+            environment,
+            prototype: {
+              dialogWidth: 760,
+              file: 'docs/plan/1114后新文档/01-光刻维护平台-DemoV44-中英文切换.html',
+              sha256: '60c92141ab3095fc73c07a600d0c9de5a99eea9d4f9865bc5c36612af79fbe3c',
+            },
             runTag,
             viewportSet: VIEWPORTS.map((item) => `${item.width}x${item.height}`),
             measurements,
             dialogs: dialogMeasurements,
+            viewportCaptures,
           },
           null,
           2,
@@ -668,27 +811,38 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
     });
 
     await loginViaUi(page, LEVEL_ONE_LOGIN, env.MOCK_SEED_PASSWORD);
+    await captureEnvironment(page);
 
     // 公司档案
     await enterPageFromNav(page, PAGES[0]);
     await expect(page.getByRole('row').filter({ hasText: foreignCompanyName })).toBeVisible();
     await capturePage(page, 'admin1', PAGES[0]);
 
-    await captureDialog(page, 'admin1-companies-add-dialog', async () => {
-      await page.getByRole('button', { name: '新增公司' }).click();
+    await captureDialog(
+      page,
+      'admin1-companies-add-dialog',
+      async () => {
+        await page.getByRole('button', { name: '新增公司' }).click();
 
-      return { title: '新增公司档案' };
-    });
+        return { title: '新增公司档案' };
+      },
+      { baseWidth: 760, expectBodyScroll: true },
+    );
 
-    await captureDialog(page, 'admin1-companies-edit-dialog', async () => {
-      await page
-        .getByRole('row')
-        .filter({ hasText: foreignCompanyName })
-        .getByRole('button', { name: '编辑' })
-        .click();
+    await captureDialog(
+      page,
+      'admin1-companies-edit-dialog',
+      async () => {
+        await page
+          .getByRole('row')
+          .filter({ hasText: foreignCompanyName })
+          .getByRole('button', { name: '编辑' })
+          .click();
 
-      return { title: '编辑公司档案' };
-    });
+        return { title: '编辑公司档案' };
+      },
+      { baseWidth: 760, expectBodyScroll: true },
+    );
 
     // 注册审批
     await enterPageFromNav(page, PAGES[1]);
@@ -697,15 +851,34 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
     ).toBeVisible();
     await capturePage(page, 'admin1', PAGES[1]);
 
-    await captureDialog(page, 'admin1-applications-reject-dialog', async () => {
-      await page
-        .getByRole('row')
-        .filter({ hasText: engineerApplicant.loginName })
-        .getByRole('button', { name: '拒绝' })
-        .click();
+    await captureDialog(
+      page,
+      'admin1-applications-reject-dialog',
+      async () => {
+        await page
+          .getByRole('row')
+          .filter({ hasText: engineerApplicant.loginName })
+          .getByRole('button', { name: '详情' })
+          .click();
 
-      return { title: '拒绝申请' };
-    });
+        const detailDialog = visibleDialog(page);
+
+        await expect(detailDialog).toBeVisible();
+        await detailDialog.getByRole('button', { name: /拒\s*绝/ }).click();
+
+        return { title: '拒绝申请' };
+      },
+      {
+        // 拒绝弹窗叠在详情弹窗上：先关拒绝，再关详情，确保下一段采集不受残留弹窗影响
+        onClose: async () => {
+          await page.keyboard.press('Escape');
+          await expect(page.getByText('拒绝申请', { exact: false })).toBeHidden();
+          await visibleDialog(page)
+            .getByRole('button', { name: /关\s*闭/ })
+            .click();
+        },
+      },
+    );
 
     // 用户管理
     await enterPageFromNav(page, PAGES[2]);

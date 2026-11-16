@@ -35,6 +35,35 @@ export type AdminEngineerRegistrationRow = {
   applicant: AdminEngineerApplicant;
 };
 
+/**
+ * 申请人详情资料（审批详情专用）。
+ *
+ * 与列表摘要分开：真实姓名只在详情展示，`realName` 可能为 `null`（旧数据未填），
+ * 消费方必须显式按空展示，**不得用 `nickname` 冒充真实姓名**。
+ */
+export type AdminEngineerApplicantDetail = {
+  id: number;
+  loginName: string | null;
+  nickname: string;
+  realName: string | null;
+  phone: string | null;
+  contactEmail: string | null;
+};
+
+/** 审批详情模型：申请事实 + 申请人详情资料 */
+export type AdminEngineerRegistrationDetail = {
+  applicationId: number;
+  accountId: number;
+  organizationId: number;
+  organizationName: string | null;
+  status: AdminEngineerRegistrationStatus;
+  applicationNote: string | null;
+  submittedAt: string;
+  reviewedAt: string | null;
+  reviewComment: string | null;
+  applicant: AdminEngineerApplicantDetail;
+};
+
 export type AdminEngineerRegistrationListQuery = {
   page: number;
   pageSize: number;
@@ -71,4 +100,6 @@ export type AdminEngineerReviewResult =
   | { ok: false; reason: AdminEngineerReviewFailureReason; message: string };
 
 /** 详情读取结果：与审核命令共用同一失败分类，渲染侧无需区分两种失败形态 */
-export type AdminEngineerRegistrationReadResult = AdminEngineerReviewResult;
+export type AdminEngineerRegistrationDetailReadResult =
+  | { ok: true; registration: AdminEngineerRegistrationDetail }
+  | { ok: false; reason: AdminEngineerReviewFailureReason; message: string };

@@ -58,6 +58,33 @@ function buildItem(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function buildDetail(overrides: Record<string, unknown> = {}) {
+  return {
+    application: {
+      id: 61,
+      accountId: 501,
+      organizationId: 9,
+      status: 'PENDING',
+      applicationNote: '希望加入组织',
+      submittedAt: '2026-11-01T08:00:00.000Z',
+      reviewedByAccountId: null,
+      reviewedAt: null,
+      reviewComment: null,
+      ...(overrides.application as Record<string, unknown> | undefined),
+    },
+    organizationName: ' 甲公司 ',
+    applicant: {
+      id: 501,
+      loginName: 'pending-engineer',
+      nickname: '待审工程师',
+      realName: ' 张三 ',
+      phone: '13800000001',
+      contactEmail: null,
+      ...(overrides.applicant as Record<string, unknown> | undefined),
+    },
+  };
+}
+
 function graphqlError(code: string, errorMessage?: string) {
   return new GraphQLIngressError({
     type: 'graphql',
@@ -134,8 +161,8 @@ describe('fetchAdminEngineerRegistrations', () => {
 });
 
 describe('fetchAdminEngineerRegistrationDetail', () => {
-  it('读取详情并按主键映射', async () => {
-    executeGraphQLMock.mockResolvedValue({ adminEngineerRegistrationDetail: buildItem() });
+  it('读取详情并按主键映射，真实姓名与昵称分开归一', async () => {
+    executeGraphQLMock.mockResolvedValue({ adminEngineerRegistrationDetail: buildDetail() });
 
     const result = await fetchAdminEngineerRegistrationDetail(61);
 
@@ -143,7 +170,27 @@ describe('fetchAdminEngineerRegistrationDetail', () => {
       expect.stringContaining('adminEngineerRegistrationDetail'),
       { applicationId: 61 },
     );
-    expect(result).toMatchObject({ ok: true, registration: { applicationId: 61 } });
+    expect(result).toMatchObject({
+      ok: true,
+      registration: {
+        applicationId: 61,
+        organizationName: '甲公司',
+        applicant: { nickname: '待审工程师', realName: '张三' },
+      },
+    });
+  });
+
+  it('真实姓名为空串时归 null，不回落成昵称', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      adminEngineerRegistrationDetail: buildDetail({ applicant: { realName: '  ' } }),
+    });
+
+    const result = await fetchAdminEngineerRegistrationDetail(61);
+
+    expect(result).toMatchObject({
+      ok: true,
+      registration: { applicant: { nickname: '待审工程师', realName: null } },
+    });
   });
 
   it('跨公司或不存在统一映射为 not-found 业务失败', async () => {

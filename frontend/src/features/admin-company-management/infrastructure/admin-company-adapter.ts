@@ -90,6 +90,12 @@ const ADMIN_CREATE_COMPANY_MUTATION = `
   }
 `;
 
+const ADMIN_COMPANY_NAME_EXISTS_QUERY = `
+  query AdminCompanyNameExists($name: String!, $excludeOrganizationId: Int) {
+    adminOrganizationNameExists(name: $name, excludeOrganizationId: $excludeOrganizationId)
+  }
+`;
+
 const ADMIN_UPDATE_COMPANY_MUTATION = `
   mutation AdminUpdateCompany($input: AdminUpdateOrganizationInput!) {
     adminUpdateOrganization(input: $input) {${ORGANIZATION_FIELDS}}
@@ -249,8 +255,32 @@ function toCreateInput(draft: AdminCompanyCreateDraft) {
     contactEmail: draft.contactEmail.trim() || null,
     address: draft.address.trim() || null,
     remark: draft.remark.trim() || null,
+    status: draft.status,
     isServiceProvider: draft.isServiceProvider,
   };
+}
+
+/**
+ * 一级管理员的精确同名提示（只读）。
+ *
+ * 服务端在全部公司档案范围内比较（含停用与未受管），编辑时传入自身主键排除自己；
+ * 结果只用于弹窗提示，不阻断提交，也不改变「同名不合并」的写入语义。
+ */
+export async function checkAdminCompanyNameExists(params: {
+  name: string;
+  excludeOrganizationId?: number | null;
+}): Promise<boolean> {
+  const data = await executeGraphQL<
+    { adminOrganizationNameExists: boolean },
+    { name: string; excludeOrganizationId?: number }
+  >(ADMIN_COMPANY_NAME_EXISTS_QUERY, {
+    name: params.name,
+    ...(params.excludeOrganizationId === undefined || params.excludeOrganizationId === null
+      ? {}
+      : { excludeOrganizationId: params.excludeOrganizationId }),
+  });
+
+  return data.adminOrganizationNameExists === true;
 }
 
 export async function adminCreateCompany(

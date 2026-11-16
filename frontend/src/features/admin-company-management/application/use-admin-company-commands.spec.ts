@@ -50,8 +50,9 @@ const CREATE_DRAFT = {
   contactEmail: '',
   address: '',
   remark: '',
+  status: 'ACTIVE',
   isServiceProvider: false,
-};
+} as const;
 
 beforeEach(() => {
   createMock.mockReset();

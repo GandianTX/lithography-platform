@@ -7,6 +7,7 @@
  */
 
 import type {
+  AdminEngineerRegistrationDetail,
   AdminEngineerRegistrationListPage,
   AdminEngineerRegistrationRow,
   AdminEngineerRegistrationStatus,
@@ -14,6 +15,7 @@ import type {
 
 import type {
   AdminEngineerRegistrationApplicationDto,
+  AdminEngineerRegistrationDetailDto,
   AdminEngineerRegistrationItemDto,
   AdminEngineerRegistrationPageDto,
 } from './admin-engineer-approval.dto';
@@ -41,20 +43,27 @@ function toKnownStatus(value: unknown): AdminEngineerRegistrationStatus {
   throw new Error('注册申请数据返回了无法识别的状态。');
 }
 
-function toApplicationRow(
-  application: AdminEngineerRegistrationApplicationDto,
-  item: AdminEngineerRegistrationItemDto,
-): AdminEngineerRegistrationRow {
+/** 申请事实归一（列表行与详情共用同一口径） */
+function toApplicationFacts(application: AdminEngineerRegistrationApplicationDto) {
   return {
     applicationId: application.id,
     accountId: application.accountId,
     organizationId: application.organizationId,
-    organizationName: toOptionalText(item.organizationName),
     status: toKnownStatus(application.status),
     applicationNote: toOptionalText(application.applicationNote),
     submittedAt: application.submittedAt,
     reviewedAt: application.reviewedAt,
     reviewComment: toOptionalText(application.reviewComment),
+  };
+}
+
+function toApplicationRow(
+  application: AdminEngineerRegistrationApplicationDto,
+  item: AdminEngineerRegistrationItemDto,
+): AdminEngineerRegistrationRow {
+  return {
+    ...toApplicationFacts(application),
+    organizationName: toOptionalText(item.organizationName),
     applicant: {
       nickname: item.applicant.nickname,
       loginName: toOptionalText(item.applicant.loginName),
@@ -70,6 +79,27 @@ export function mapAdminEngineerRegistrationItemDtoToRow(
   item: AdminEngineerRegistrationItemDto,
 ): AdminEngineerRegistrationRow {
   return toApplicationRow(item.application, item);
+}
+
+/**
+ * 详情 DTO → 详情模型。
+ * `realName` 空串 / 空白归 null，保持「未知」语义；绝不回填昵称，避免用昵称冒充真实姓名。
+ */
+export function mapAdminEngineerRegistrationDetailDtoToDetail(
+  dto: AdminEngineerRegistrationDetailDto,
+): AdminEngineerRegistrationDetail {
+  return {
+    ...toApplicationFacts(dto.application),
+    organizationName: toOptionalText(dto.organizationName),
+    applicant: {
+      id: dto.applicant.id,
+      loginName: toOptionalText(dto.applicant.loginName),
+      nickname: dto.applicant.nickname,
+      realName: toOptionalText(dto.applicant.realName),
+      phone: toOptionalText(dto.applicant.phone),
+      contactEmail: toOptionalText(dto.applicant.contactEmail),
+    },
+  };
 }
 
 export function mapAdminEngineerRegistrationPageDtoToListPage(

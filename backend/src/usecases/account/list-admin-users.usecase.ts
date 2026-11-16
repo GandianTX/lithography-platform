@@ -45,10 +45,10 @@ const MAX_PAGE_SIZE = 100;
  * 2. 分页收敛：唯一路径是 `@core/pagination/pagination.policy` 的 `applyDefaults()` +
  *    `enforceMaxPageSize()`，不在本用例另写钳制逻辑；
  * 3. 场景输入规范化（keyword / role / status 白名单）；
- * 4. 范围下推：一级不传 `accountIds`（平台全范围）；二级经
- *    `OrganizationMembershipQueryService.listActiveAccountIdsByOrganization()` 取可信公司内
- *    有效账号 ID 清单后下推。可见角色固定为普通客户与工程师（`ADMIN_USER_VISIBLE_ROLES`），
- *    与组织条件、分页、COUNT 共用同一 QueryBuilder；
+ * 4. 范围下推：一级不传 `organizationScope`（平台全范围）；二级按角色分两条来源下推——
+ *    客户归属列 `customer_organization_id` 与本公司有效工程师成员账号 ID 清单，
+ *    不允许以统一成员 ID 清单替代。可见角色固定为普通客户与工程师
+ *    （`ADMIN_USER_VISIBLE_ROLES`），与组织条件、分页、COUNT 共用同一 QueryBuilder；
  * 5. 调用 QueryService 读取。
  *
  * 依赖方向（`usecase.rules.md`）：本用例只依赖 QueryService，**不访问 Repository、
@@ -87,15 +87,22 @@ export class ListAdminUsersUsecase {
 
     const { page, pageSize } = this.resolveOffsetPagination(command.pagination);
 
-    // 组织隔离：一级管理员不按公司收窄；二级只查可信公司内的有效成员账号。
-    // 组织范围只来自请求期查库结果，绝不取客户端自报；二级成员关系被撤销或歧义时
-    // 由作用域断言失败关闭，不返回全库列表。
-    const accountIds =
+    // 组织隔离（V5.5 R012-01）：一级管理员不按公司收窄；二级按目标的真实角色分两条来源：
+    // - 客户以 `base_user_info.customer_organization_id` 为归属，由 QueryService 在查询内比较；
+    // - 工程师以本公司有效工程师成员关系为归属，先在本域取成员账号 ID 下推。
+    // 刻意**不**用「公司内所有有效成员 ID」统一收窄：那会让「客户资料归 B、旧成员关系仍在 A」
+    // 的外公司客户被列出，也会漏掉「资料归 A、但无成员关系」的客户。
+    // 组织范围只来自请求期查库结果，绝不取客户端自报。
+    const organizationScope =
       scope.level === 1
         ? undefined
-        : await this.organizationMembershipQueryService.listActiveAccountIdsByOrganization({
+        : {
             organizationId: scope.organizationId,
-          });
+            engineerAccountIds:
+              await this.organizationMembershipQueryService.listActiveEngineerAccountIdsByOrganization(
+                { organizationId: scope.organizationId },
+              ),
+          };
 
     const query: AdminUserListQuery = {
       page,
@@ -103,7 +110,7 @@ export class ListAdminUsersUsecase {
       keyword: normalizeAdminUserKeyword(command.keyword),
       role: normalizeAdminUserListRoleFilter(command.role),
       status: normalizeAdminUserListStatusFilter(command.status),
-      accountIds,
+      organizationScope,
       // 读面强制只读普通客户与工程师：条件与分页 / COUNT 共用同一 QueryBuilder，
       // 不做「先分页再剔除」，避免从总数或条数泄漏管理员账号
       visibleRoles: ADMIN_USER_VISIBLE_ROLES,

@@ -165,7 +165,14 @@ describe('StoredFileRestController', () => {
     );
 
     expect(metadataUsecase.execute).toHaveBeenCalledWith({
-      session: { accountId: 900001, roles: ['ENGINEER'], activeRole: 'ENGINEER' },
+      session: {
+        accountId: 900001,
+        roles: ['ENGINEER'],
+        activeRole: 'ENGINEER',
+        adminLevel: null,
+        adminOrganizationId: null,
+        customerOrganizationId: null,
+      },
       fileId: metadataView.fileId,
       uploadContextId: metadataView.uploadContextId,
     });

@@ -5,14 +5,15 @@
  *
  * - 队列范围由服务端按请求期会话等级裁决（一级全范围、二级仅本公司）；
  *   前端只用会话等级决定范围提示文案，不把它当授权依据；
- * - 只有 `PENDING` 申请出现「批准 / 拒绝」动作，终态一律只读；
+ * - 列表只保留摘要与「详情」入口；批准 / 拒绝放在详情弹窗内，依据刚读取的
+ *   同一申请详情与待审状态展示，终态一律只读；
  * - 拒绝原因必填（trim 非空），由弹窗内校验与服务端 BAD_USER_INPUT 双重保证；
  * - 并发第二人决定返回 CONFLICT 时提示「该申请已被处理」并重查队列/详情，
  *   不让本地快照继续冒充当前状态。
  */
 
 import { useState } from 'react';
-import { Button, message, Select, Space, Table, Tag } from 'antd';
+import { Button, message, Select, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 
 import { useDialogSessionSeq } from '@/shared/ui/dialog-session';
@@ -26,7 +27,6 @@ import {
   ADMIN_ENGINEER_STATUS_COLORS,
   ADMIN_ENGINEER_STATUS_LABELS,
   ADMIN_ENGINEER_STATUS_OPTIONS,
-  canDecide,
   resolveAdminEngineerScopeHint,
 } from '../application/admin-engineer-approval.policy';
 import type {
@@ -39,7 +39,10 @@ import { useAdminEngineerRegistrationDetail } from '../application/use-admin-eng
 import { useAdminEngineerRegistrationList } from '../application/use-admin-engineer-registration-list';
 
 import { AdminEngineerRegistrationDetailModal } from './admin-engineer-registration-detail-modal';
-import { AdminEngineerRejectModal } from './admin-engineer-reject-modal';
+import {
+  AdminEngineerRejectModal,
+  type AdminEngineerRejectTarget,
+} from './admin-engineer-reject-modal';
 
 type ApprovalDialogKey = 'reject';
 
@@ -62,7 +65,7 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
   const detail = useAdminEngineerRegistrationDetail();
   const commands = useAdminEngineerApprovalCommands();
   const dialogSession = useDialogSessionSeq<ApprovalDialogKey>();
-  const [rejectTarget, setRejectTarget] = useState<AdminEngineerRegistrationRow | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<AdminEngineerRejectTarget | null>(null);
 
   const detailApplicationId =
     detail.state.status === 'ready'
@@ -84,8 +87,8 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
     refreshDetailIfOpen(applicationId);
   };
 
-  const runApprove = async (row: AdminEngineerRegistrationRow) => {
-    const execution = await commands.approve(row.applicationId);
+  const runApprove = async (applicationId: number) => {
+    const execution = await commands.approve(applicationId);
 
     if (execution.kind === 'in-flight') {
       return;
@@ -99,24 +102,24 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
     if (execution.result.ok) {
       message.success('该申请已通过审核。');
       list.reload();
-      refreshDetailIfOpen(row.applicationId);
+      refreshDetailIfOpen(applicationId);
       return;
     }
 
     if (execution.result.reason === 'state-conflict') {
-      handleConflict(row.applicationId, execution.result.message);
+      handleConflict(applicationId, execution.result.message);
       return;
     }
 
     message.error(execution.result.message);
   };
 
-  const openRejectDialog = (row: AdminEngineerRegistrationRow) => {
-    if (rejectTarget?.applicationId !== row.applicationId) {
+  const openRejectDialog = (target: AdminEngineerRejectTarget) => {
+    if (rejectTarget?.applicationId !== target.applicationId) {
       dialogSession.advance('reject');
     }
 
-    setRejectTarget(row);
+    setRejectTarget(target);
   };
 
   const closeRejectDialog = () => {
@@ -131,7 +134,7 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
 
     const sessionSeq = dialogSession.capture('reject');
     const applicationId = rejectTarget.applicationId;
-    const targetName = rejectTarget.applicant.nickname;
+    const targetName = rejectTarget.applicantNickname;
     const execution = await commands.reject(applicationId, reviewComment);
 
     if (execution.kind === 'ok') {
@@ -218,29 +221,12 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
     {
       fixed: 'right',
       render: (_, row) => (
-        <Space size={0} wrap>
-          <Button size="small" type="link" onClick={() => void detail.open(row.applicationId)}>
-            详情
-          </Button>
-          {canDecide(row.status) ? (
-            <>
-              <Button
-                loading={commands.isPending('approve')}
-                size="small"
-                type="link"
-                onClick={() => void runApprove(row)}
-              >
-                批准
-              </Button>
-              <Button size="small" type="link" danger onClick={() => openRejectDialog(row)}>
-                拒绝
-              </Button>
-            </>
-          ) : null}
-        </Space>
+        <Button size="small" type="link" onClick={() => void detail.open(row.applicationId)}>
+          详情
+        </Button>
       ),
       title: '操作',
-      width: 150,
+      width: 100,
     },
   ];
 
@@ -306,8 +292,16 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
       </TableContainer>
 
       <AdminEngineerRegistrationDetailModal
+        approving={commands.isPending('approve')}
         state={detail.state}
+        onApprove={(registration) => void runApprove(registration.applicationId)}
         onClose={detail.close}
+        onReject={(registration) =>
+          openRejectDialog({
+            applicationId: registration.applicationId,
+            applicantNickname: registration.applicant.nickname,
+          })
+        }
         onRetry={() => {
           if (detail.state.status === 'failed') {
             void detail.open(detail.state.applicationId);

@@ -435,12 +435,13 @@ test.describe('工程师注册审批（隔离库真实链路）', () => {
       await captureScreenshots(page, 's3-admin1-approvals-list');
       await page.setViewportSize({ height: 900, width: 1440 });
 
-      // 详情：按主键单独读取，展示申请事实与目标公司
+      // 详情：按主键单独读取，展示申请事实、真实姓名与目标公司
       await row.getByRole('button', { name: '详情' }).click();
 
       const detailDialog = visibleDialog(page);
 
       await expect(detailDialog.getByText(engineerLoginName)).toBeVisible();
+      await expect(detailDialog.getByText('E2E 审批甲')).toBeVisible();
       await expect(detailDialog.getByText(`E2E S3 审批甲-${tag}`)).toBeVisible();
       await expect(detailDialog.getByText(`E2E S3 跨公司审批申请说明-${tag}`)).toBeVisible();
       await expect(detailDialog.getByText('待审核')).toBeVisible();
@@ -451,9 +452,6 @@ test.describe('工程师注册审批（隔离库真实链路）', () => {
         path: path.join(VISUAL_DIR, 's3-admin1-approvals-detail-1440x900.png'),
       });
 
-      await detailDialog.getByRole('button', { name: /关\s*闭/ }).click();
-      await expect(detailDialog).toBeHidden();
-
       const reviewResponsePromise = page.waitForResponse(
         (response) =>
           response.url().includes('/graphql') &&
@@ -461,7 +459,8 @@ test.describe('工程师注册审批（隔离库真实链路）', () => {
           (response.request().postData() ?? '').includes('ReviewEngineerRegistration'),
       );
 
-      await row.getByRole('button', { name: '批准' }).click();
+      // 批准动作位于详情内，依据刚读取的同一申请详情与待审状态展示
+      await detailDialog.getByRole('button', { name: /批\s*准/ }).click();
 
       const reviewResponse = await reviewResponsePromise;
       const reviewBody = (await reviewResponse.json()) as {
@@ -471,7 +470,11 @@ test.describe('工程师注册审批（隔离库真实链路）', () => {
       expect(reviewBody.errors).toBeUndefined();
       await expect(page.getByText('该申请已通过审核。')).toBeVisible();
       await expect(row.getByText('已通过')).toBeVisible();
-      await expect(row.getByRole('button', { name: '批准' })).toHaveCount(0);
+      await expect(detailDialog.getByText('已通过')).toBeVisible();
+      await expect(detailDialog.getByRole('button', { name: /批\s*准/ })).toHaveCount(0);
+
+      await detailDialog.getByRole('button', { name: /关\s*闭/ }).click();
+      await expect(detailDialog).toBeHidden();
 
       // 查库核验：申请终态 + 审核人、账号/资料开通、成员关系写入申请目标公司
       const application = readApplicationRow(registration.applicationId);
@@ -617,10 +620,21 @@ test.describe('工程师注册审批（隔离库真实链路）', () => {
 
       expect(firstGraphqlErrorCode(foreignDetail.body)).toBe('NOT_FOUND');
 
-      // 拒绝弹窗：空原因前端拦截，不发起任何审核命令
-      await ownRow.getByRole('button', { name: '拒绝' }).click();
+      // 拒绝动作位于详情内；详情与拒绝弹窗同时可见，按标题收敛弹窗
+      await ownRow.getByRole('button', { name: '详情' }).click();
 
-      const rejectDialog = visibleDialog(page);
+      const ownDetailDialog = page
+        .locator('[role="dialog"]:visible')
+        .filter({ hasText: `注册申请详情：审批乙${tag}` });
+
+      await expect(ownDetailDialog.getByText('E2E 审批乙')).toBeVisible();
+      await expect(ownDetailDialog.getByText('待审核')).toBeVisible();
+
+      await ownDetailDialog.getByRole('button', { name: /拒\s*绝/ }).click();
+
+      const rejectDialog = page
+        .locator('[role="dialog"]:visible')
+        .filter({ hasText: `拒绝申请：审批乙${tag}` });
 
       await expect(rejectDialog.getByText(`拒绝申请：审批乙${tag}`)).toBeVisible();
       await rejectDialog.getByRole('button', { name: /确认拒绝/ }).click();
@@ -652,7 +666,11 @@ test.describe('工程师注册审批（隔离库真实链路）', () => {
       await expect(rejectDialog).toBeHidden();
       await expect(page.getByText('该申请已拒绝。')).toBeVisible();
       await expect(ownRow.getByText('已拒绝')).toBeVisible();
-      await expect(ownRow.getByRole('button', { name: '拒绝' })).toHaveCount(0);
+      await expect(ownDetailDialog.getByText('已拒绝')).toBeVisible();
+      await expect(ownDetailDialog.getByRole('button', { name: /拒\s*绝/ })).toHaveCount(0);
+
+      await ownDetailDialog.getByRole('button', { name: /关\s*闭/ }).click();
+      await expect(ownDetailDialog).toBeHidden();
 
       // 查库核验：拒绝终态与原因落库，账号保持待审（未开通），且无成员关系
       const application = readApplicationRow(ownRegistration.applicationId);

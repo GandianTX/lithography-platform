@@ -114,6 +114,11 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     errors?: GqlError[];
   };
 
+  type BooleanBody = {
+    data?: { adminOrganizationNameExists?: boolean };
+    errors?: GqlError[];
+  };
+
   type RepairRequestCreated = { id: number; requestNo: string; isAccepted: boolean };
   type RepairRequestMutationBody = {
     data?: { createRepairRequest?: RepairRequestCreated };
@@ -302,6 +307,25 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
       variables: { pagination: { mode: 'OFFSET', page: 1, pageSize: 50 }, keyword: params.keyword },
     });
 
+  const adminNameExists = (params: {
+    token?: string;
+    name: string;
+    excludeOrganizationId?: number;
+  }) =>
+    postGql({
+      app,
+      token: params.token,
+      query: `
+        query AdminOrganizationNameExists($name: String!, $excludeOrganizationId: Int) {
+          adminOrganizationNameExists(name: $name, excludeOrganizationId: $excludeOrganizationId)
+        }
+      `,
+      variables: {
+        name: params.name,
+        excludeOrganizationId: params.excludeOrganizationId ?? null,
+      },
+    });
+
   /** 把新增成功返回的真实公司登记进台账（事实取服务端回读值，不取请求入参） */
   const trackCreatedOrganization = (organization: AdminOrganization): void => {
     recordOwnedResource(ownership, 'organization', organization.id, {
@@ -414,13 +438,44 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     await accountRepository.update(levelTwo.id, { adminLevel: 2 });
 
     // 报修候选准入要求客户已补齐可信公司归属（base_user_info.customer_organization_id）；
-    // 归属指向独立客户公司，避免与本轮被停用的受管公司耦合
-    const repairCustomerInfo = await dataSource
-      .getRepository(UserInfoEntity)
-      .findOneOrFail({ where: { email: testAccountsConfig.guestPrimary.loginEmail } });
-    await dataSource
-      .getRepository(UserInfoEntity)
-      .update(repairCustomerInfo.accountId, { customerOrganizationId: customerOrgId });
+    // 归属指向独立客户公司，避免与本轮被停用的受管公司耦合。
+    // 资料表主键是 `id`，`account_id` 是独立列：这里显式按 `accountId` 条件更新。
+    const userInfoRepository = dataSource.getRepository(UserInfoEntity);
+    const repairCustomerInfo = await userInfoRepository.findOneOrFail({
+      where: { email: testAccountsConfig.guestPrimary.loginEmail },
+    });
+
+    // 构造可区分的 `id != account_id` 场景：两者相同（对齐自增）时把资料主键移到高位，
+    // 使旧实现 `update(accountId, ...)`（按主键选择）必然命中 0 行，回归稳定变红。
+    // 迁移只发生在本轮自有资料行上，清理按 account_id 删除，无需恢复旧主键。
+    if (repairCustomerInfo.id === repairCustomerInfo.accountId) {
+      const [{ nextId }] = (await dataSource.query(
+        'SELECT MAX(id) + 1000 AS nextId FROM base_user_info',
+      )) as Array<{ nextId: number | string }>;
+
+      await dataSource.query('UPDATE base_user_info SET id = ? WHERE id = ?', [
+        Number(nextId),
+        repairCustomerInfo.id,
+      ]);
+
+      repairCustomerInfo.id = Number(nextId);
+    }
+
+    expect(repairCustomerInfo.id).not.toBe(repairCustomerInfo.accountId);
+
+    const repairCustomerUpdate = await userInfoRepository.update(
+      { accountId: repairCustomerInfo.accountId },
+      { customerOrganizationId: customerOrgId },
+    );
+
+    expect(repairCustomerUpdate.affected).toBe(1);
+
+    const repairCustomerInfoReloaded = await userInfoRepository.findOneOrFail({
+      where: { accountId: repairCustomerInfo.accountId },
+    });
+
+    expect(repairCustomerInfoReloaded.id).toBe(repairCustomerInfo.id);
+    expect(repairCustomerInfoReloaded.customerOrganizationId).toBe(customerOrgId);
     updateOwnedExpectation(ownership, 'account', repairCustomerInfo.accountId, {
       customerOrganizationId: customerOrgId,
     });
@@ -533,6 +588,13 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
       ).body as MutationBody;
       expect(updated.data?.adminUpdateOrganization).toBeUndefined();
       expect(updated.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+
+      // 同名提示同属一级入口：二级与普通客户一律拒绝，不暴露存档范围
+      const checked = (
+        await adminNameExists({ token, name: `${NAME_PREFIX}受管维修公司` })
+      ).body as BooleanBody;
+      expect(checked.data?.adminOrganizationNameExists).toBeUndefined();
+      expect(checked.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
     }
 
     // 二级仍可使用最小名称名单
@@ -586,6 +648,121 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     expect(list.data?.adminOrganizationList?.items.map((item) => item.id)).toEqual([created!.id]);
   });
 
+  it('一级新增：显式状态与维修资格组合一次落定，停用公司不进入注册与维修候选', async () => {
+    const combos = [
+      { suffix: 'ACTIVE_SERVICE', status: 'ACTIVE', isServiceProvider: true },
+      { suffix: 'ACTIVE_PLAIN', status: 'ACTIVE', isServiceProvider: false },
+      { suffix: 'DISABLED_SERVICE', status: 'DISABLED', isServiceProvider: true },
+      { suffix: 'DISABLED_PLAIN', status: 'DISABLED', isServiceProvider: false },
+    ] as const;
+
+    const createdIds = new Map<string, number>();
+    for (const combo of combos) {
+      const name = `${NAME_PREFIX}组合-${combo.suffix}`;
+      const body = (
+        await createOrganization({
+          token: levelOneToken,
+          name,
+          isServiceProvider: combo.isServiceProvider,
+          extraInput: { status: combo.status },
+        })
+      ).body as MutationBody;
+      expect(body.errors).toBeUndefined();
+      const created = body.data?.adminCreateOrganization as AdminOrganization;
+      trackCreatedOrganization(created);
+      createdIds.set(combo.suffix, created.id);
+
+      // 返回与实库回读双向一致：状态在同一次创建中落定，维修资格独立保存
+      expect(created.status).toBe(combo.status);
+      expect(created.isServiceProvider).toBe(combo.isServiceProvider);
+      expect(created.isManagedCompany).toBe(true);
+      const row = await organizationRepository.findOneOrFail({ where: { id: created.id } });
+      expect(row.status).toBe(combo.status);
+      expect(row.isServiceProvider).toBe(combo.isServiceProvider);
+    }
+
+    // 注册候选：只有启用且受管的公司可见（维修资格不参与）
+    const registration = (await registrationSearch(`${NAME_PREFIX}组合-`)).body as ListBody;
+    expect(registration.errors).toBeUndefined();
+    const registrationIds = registration.data?.registrationOrganizationSearch?.items.map(
+      (item) => item.id,
+    );
+    expect(registrationIds).toEqual(
+      expect.arrayContaining([
+        createdIds.get('ACTIVE_SERVICE'),
+        createdIds.get('ACTIVE_PLAIN'),
+      ]),
+    );
+    expect(registrationIds).not.toContain(createdIds.get('DISABLED_SERVICE'));
+    expect(registrationIds).not.toContain(createdIds.get('DISABLED_PLAIN'));
+
+    // 维修候选：启用且具备维修资格，停用公司即使有资格也不可报修
+    const repair = (
+      await repairServiceSearch({
+        token: repairCustomerToken,
+        keyword: `${NAME_PREFIX}组合-`,
+      })
+    ).body as ListBody;
+    expect(repair.errors).toBeUndefined();
+    const repairIds = repair.data?.repairServiceOrganizationSearch?.items.map((item) => item.id);
+    expect(repairIds).toEqual(expect.arrayContaining([createdIds.get('ACTIVE_SERVICE')]));
+    expect(repairIds).not.toContain(createdIds.get('ACTIVE_PLAIN'));
+    expect(repairIds).not.toContain(createdIds.get('DISABLED_SERVICE'));
+    expect(repairIds).not.toContain(createdIds.get('DISABLED_PLAIN'));
+  });
+
+  it('一级同名提示：覆盖停用与未受管档案，精确匹配且编辑排除自身', async () => {
+    const disabledName = `${NAME_PREFIX}已停用公司`;
+    const unmanagedName = `${NAME_PREFIX}非受管公司`;
+
+    // 停用公司与未受管公司都计入一级管理档案范围
+    expect(
+      ((await adminNameExists({ token: levelOneToken, name: disabledName })).body as BooleanBody)
+        .data?.adminOrganizationNameExists,
+    ).toBe(true);
+    expect(
+      ((await adminNameExists({ token: levelOneToken, name: unmanagedName })).body as BooleanBody)
+        .data?.adminOrganizationNameExists,
+    ).toBe(true);
+
+    // 归一化口径与注册一致：首尾空白（含 tab / 换行）不影响命中
+    expect(
+      (
+        (await adminNameExists({
+          token: levelOneToken,
+          name: `\t ${disabledName}  \n`,
+        })).body as BooleanBody
+      ).data?.adminOrganizationNameExists,
+    ).toBe(true);
+
+    // 编辑排除自身：只有自己一条同名时不再提示
+    expect(
+      (
+        (await adminNameExists({
+          token: levelOneToken,
+          name: disabledName,
+          excludeOrganizationId: disabledOrgId,
+        })).body as BooleanBody
+      ).data?.adminOrganizationNameExists,
+    ).toBe(false);
+
+    // 子串不命中：不是 LIKE 前缀/子串匹配
+    expect(
+      (
+        (await adminNameExists({
+          token: levelOneToken,
+          name: `${NAME_PREFIX}非受管`,
+        })).body as BooleanBody
+      ).data?.adminOrganizationNameExists,
+    ).toBe(false);
+
+    // 空白名称直接未命中，不泄露任何档案
+    expect(
+      ((await adminNameExists({ token: levelOneToken, name: '   ' })).body as BooleanBody).data
+        ?.adminOrganizationNameExists,
+    ).toBe(false);
+  });
+
   it('一级列表：关键字匹配编号与简称，状态与受管筛选生效', async () => {
     const byCode = (
       await listOrganizations({ token: levelOneToken, keyword: `${CODE_PREFIX}MANAGED` })
@@ -597,9 +774,11 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     const disabled = (
       await listOrganizations({ token: levelOneToken, keyword: NAME_PREFIX, status: 'DISABLED' })
     ).body as ListBody;
-    expect(disabled.data?.adminOrganizationList?.items.map((item) => item.id)).toEqual([
-      disabledOrgId,
-    ]);
+    const disabledIds = disabled.data?.adminOrganizationList?.items.map((item) => item.id);
+    // 本轮停用夹具 + 新增组合里的两家停用公司；启用的公司一家都不能混进来
+    expect(disabledIds).toEqual(expect.arrayContaining([disabledOrgId]));
+    expect(disabledIds).not.toContain(managedOrgId);
+    expect(disabledIds).not.toContain(unmanagedOrgId);
 
     const active = (
       await listOrganizations({ token: levelOneToken, keyword: NAME_PREFIX, status: 'ACTIVE' })

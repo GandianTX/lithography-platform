@@ -16,18 +16,21 @@ import {
   ADMIN_ENGINEER_REVIEW_COMMENT_MAX_LENGTH,
   findRejectCommentIssue,
 } from '../application/admin-engineer-approval.policy';
-import type {
-  AdminEngineerRegistrationRow,
-  AdminEngineerReviewResult,
-} from '../application/admin-engineer-approval.types';
+import type { AdminEngineerReviewResult } from '../application/admin-engineer-approval.types';
 
 type RejectFormValues = { reviewComment: string };
+
+/** 拒绝目标只需申请主键与展示名：动作来自详情，不再依赖列表行快照 */
+export type AdminEngineerRejectTarget = {
+  applicationId: number;
+  applicantNickname: string;
+};
 
 type AdminEngineerRejectModalProps = {
   onCancel: () => void;
   onSubmit: (reviewComment: string) => Promise<AdminEngineerReviewResult>;
   submitting: boolean;
-  target: AdminEngineerRegistrationRow | null;
+  target: AdminEngineerRejectTarget | null;
 };
 
 export function AdminEngineerRejectModal({
@@ -68,7 +71,7 @@ export function AdminEngineerRejectModal({
       destroyOnHidden
       okText="确认拒绝"
       open={target !== null}
-      title={target ? `拒绝申请：${target.applicant.nickname}` : '拒绝申请'}
+      title={target ? `拒绝申请：${target.applicantNickname}` : '拒绝申请'}
       onCancel={() => {
         invalidateInFlightSubmit();
         onCancel();

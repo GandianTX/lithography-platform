@@ -2,11 +2,9 @@
 
 import { DomainError, INPUT_NORMALIZE_ERROR } from '@core/common/errors';
 import { Injectable } from '@nestjs/common';
+import { normalizeOrganizationNameForComparison } from '@src/modules/lithography/organization-name.normalize';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
-import {
-  REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH,
-  normalizeRegistrationOrganizationNameForComparison,
-} from './registration-input.normalize';
+import { REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH } from './registration-input.normalize';
 
 /**
  * Web 注册手填公司名的精确同名提示（公开只读）。
@@ -29,7 +27,7 @@ export class CheckRegistrationOrganizationNameUsecase {
       });
     }
 
-    const normalizedName = normalizeRegistrationOrganizationNameForComparison(input.name);
+    const normalizedName = normalizeOrganizationNameForComparison(input.name);
     if (
       normalizedName.length === 0 ||
       normalizedName.length > REGISTRATION_ORGANIZATION_NAME_MAX_LENGTH

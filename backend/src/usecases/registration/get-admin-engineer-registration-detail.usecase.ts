@@ -12,7 +12,7 @@ import { EngineerRegistrationQueryService } from '@src/modules/lithography/queri
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type {
-  AdminEngineerRegistrationItem,
+  AdminEngineerRegistrationDetailItem,
   GetAdminEngineerRegistrationDetailCommand,
 } from './admin-engineer-registration.types';
 import { normalizeEngineerRegistrationApplicationId } from './registration-input.normalize';
@@ -41,7 +41,7 @@ export class GetAdminEngineerRegistrationDetailUsecase {
 
   async execute(
     command: GetAdminEngineerRegistrationDetailCommand,
-  ): Promise<AdminEngineerRegistrationItem> {
+  ): Promise<AdminEngineerRegistrationDetailItem> {
     const scope = await assertEngineerRegistrationReviewPermission({
       session: command.session,
       actionLabel: '查看',
@@ -55,7 +55,7 @@ export class GetAdminEngineerRegistrationDetailUsecase {
         throw new DomainError(ENGINEER_REGISTRATION_ERROR.APPLICATION_NOT_FOUND, '注册申请不存在');
       }
 
-      const applicant = await this.adminUserQueryService.findAdminUserViewById({
+      const applicant = await this.adminUserQueryService.findAdminUserDetailViewById({
         accountId: application.accountId,
       });
       if (applicant === null) {

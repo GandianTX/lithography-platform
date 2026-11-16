@@ -81,3 +81,33 @@ describe('OrganizationService.createSelfRegisteredCompany（客户手填公司�
     expect(defaultRepository.save).not.toHaveBeenCalled();
   });
 });
+
+describe('OrganizationService.createManagedCompany（一级新增公司写路径）', () => {
+  it('状态按入参一次落定，同时强制受管、类别 CLIENT 与服务端编号', async () => {
+    const repository = createRepositoryMock(7011);
+    const service = new OrganizationService(asRepository(repository));
+
+    await expect(
+      service.createManagedCompany({
+        name: '停用公司',
+        shortName: null,
+        contactName: null,
+        contactPhone: '021',
+        contactEmail: null,
+        address: null,
+        remark: null,
+        status: 'DISABLED',
+        isServiceProvider: true,
+      }),
+    ).resolves.toEqual({ id: 7011, organizationCode: expect.stringMatching(/^ADMIN_ORG_/) });
+
+    const created = repository.create.mock.calls[0][0] as Partial<OrganizationEntity>;
+    expect(created).toMatchObject({
+      name: '停用公司',
+      status: 'DISABLED',
+      isServiceProvider: true,
+      isManagedCompany: true,
+      kind: 'CLIENT',
+    });
+  });
+});

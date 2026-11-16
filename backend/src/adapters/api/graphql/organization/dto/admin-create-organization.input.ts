@@ -3,7 +3,11 @@
 import { trimTextPure } from '@core/common/text/text.helper';
 import { Field, InputType } from '@nestjs/graphql';
 import { Transform, TransformFnParams } from 'class-transformer';
-import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  organizationStatusValues,
+  type OrganizationStatus,
+} from '@src/modules/lithography/organization.types';
 
 /**
  * 一级管理员新增公司档案输入（任务 08.2）。
@@ -11,8 +15,8 @@ import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength } from 
  * 协议级只校验 shape 与基础格式；trim、空串收敛与长度上限的唯一真源在
  * `normalizeAdminOrganizationCreateInput`，本 Input 不预设字段已合法。
  *
- * 编号、类别、受管归类、状态与创建时间均不接受输入：新增固定
- * `kind = CLIENT`、`status = ACTIVE`、`isManagedCompany = true`，编号由服务端生成。
+ * 编号、类别与受管归类不接受输入：新增固定 `kind = CLIENT`、`isManagedCompany = true`，
+ * 编号由服务端生成；`status` 缺省为 `ACTIVE`，可与维修资格独立提交。
  */
 @InputType({ description: '管理员新增公司档案输入' })
 export class AdminCreateOrganizationInput {
@@ -65,6 +69,14 @@ export class AdminCreateOrganizationInput {
   @IsString({ message: '备注必须是字符串' })
   @MaxLength(2000, { message: '备注最多 2000 个字符' })
   remark?: string | null;
+
+  @Field(() => organizationStatusValues, {
+    nullable: true,
+    description: '公司状态；缺省为 ACTIVE（启用）',
+  })
+  @IsOptional()
+  @IsEnum(organizationStatusValues, { message: '公司状态无效' })
+  status?: OrganizationStatus | null;
 
   @Field(() => Boolean, { nullable: true, description: '是否提供维修服务；缺省为 false' })
   @IsOptional()

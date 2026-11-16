@@ -24,7 +24,12 @@ import {
   updateOwnedExpectation,
 } from '../utils/e2e-scoped-cleanup';
 import { runE2eTeardown } from '../utils/e2e-teardown';
-import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
+import {
+  createTestAccount,
+  seedTestAccounts,
+  testAccountsConfig,
+  type TestAccountConfig,
+} from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
   requireOrganizationId,
@@ -57,7 +62,8 @@ import {
  * - `noOrgEngineer`：ENGINEER，无任何成员关系（一级可见，二级不可见/不可写）。
  *
  * 造数纪律：
- * - 唯一一次直接改库是给两个管理员写入 `admin_level`（该列没有业务入口）；
+ * - 直接改库只有两处，且都没有业务入口：a) 两个管理员的 `admin_level`；b) 客户账号的
+ *   `base_user_info.customer_organization_id`（客户归属列，二级管理员归属判定的读面来源）；
  *   其余写操作全部经 GraphQL 业务入口，数据库只用于只读核验；
  * - 会改变账号事实的用例自建幂等前置并在结尾恢复；因清理台账不记录密码与
  *   `must_change_password`，默认密码重置用例会在同一用例内把目标改回非强制改密状态。
@@ -216,6 +222,42 @@ const AFTER_DEFAULT_RESET_PASSWORD_PEER = 'E2eAfterDefaultB@2026';
 const MISSING_ACCOUNT_ID = 2147483000;
 
 /**
+ * P1-01 归属反例矩阵专用账号（仅本规格使用，按登录名精确清理）。
+ *
+ * 归属口径：客户看 `base_user_info.customer_organization_id`，工程师看本公司有效
+ * `memberRole=ENGINEER` 成员关系。三个账号刻意让两个来源互相矛盾：
+ * - `fkPeerMembershipPrimary`：资料归 B 公司、成员关系在 A 公司 → 二级管理员既不可见也不可写；
+ * - `fkPrimaryNoMembership`：资料归 A 公司、无任何成员关系 → 二级管理员可见且可写；
+ * - `noFkMembershipPrimary`：资料归属为空、成员关系在 A 公司 → 二级管理员既不可见也不可写。
+ */
+const ownershipMatrixAccounts = {
+  fkPeerMembershipPrimary: {
+    loginName: 'testadmuserfkpeer',
+    loginEmail: 'admuser.fk.peer@example.com',
+    loginPassword: 'testAdmUserFkPeer@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  fkPrimaryNoMembership: {
+    loginName: 'testadmuserfkprimary',
+    loginEmail: 'admuser.fk.primary@example.com',
+    loginPassword: 'testAdmUserFkPrimary@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  noFkMembershipPrimary: {
+    loginName: 'testadmuserfkempty',
+    loginEmail: 'admuser.fk.empty@example.com',
+    loginPassword: 'testAdmUserFkEmpty@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+} satisfies Record<string, TestAccountConfig>;
+
+/**
  * 授权准入用例的探测凭据。
  * 被 Guard 拒绝的调用不得留下任何账号行，故这两个值在用例结尾用于反证「零写入」。
  */
@@ -258,6 +300,12 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   let staffPrimaryAccountId: number;
   let staffSecondaryAccountId: number;
   let noOrgEngineerAccountId: number;
+  /** P1-01 归属反例矩阵：资料归 B、成员在 A 的客户 */
+  let fkPeerMembershipPrimaryAccountId: number;
+  /** P1-01 归属反例矩阵：资料归 A、无成员关系的客户 */
+  let fkPrimaryNoMembershipAccountId: number;
+  /** P1-01 归属反例矩阵：资料归属为空、成员在 A 的客户 */
+  let noFkMembershipPrimaryAccountId: number;
 
   // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMUSER');
@@ -322,7 +370,8 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
               nickname: 'E2E 仅邮箱账号',
               accessGroup: [IdentityTypeEnum.CUSTOMER],
             },
-          ),
+          )
+          .concat(Object.values(ownershipMatrixAccounts).map(toResidueAccountFingerprint)),
       },
       helper: 'admin-user-management.e2e-spec beforeAll 预清理',
     });
@@ -339,6 +388,18 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       ],
       ownership,
     });
+
+    // P1-01 归属反例矩阵账号：资料列与成员关系刻意互相矛盾，按登录名精确登记清理
+    const matrixAccountIds: number[] = [];
+    for (const config of Object.values(ownershipMatrixAccounts)) {
+      const created = await createTestAccount(dataSource, null, config, ownership);
+      matrixAccountIds.push(created.accountId);
+    }
+    [
+      fkPeerMembershipPrimaryAccountId,
+      fkPrimaryNoMembershipAccountId,
+      noFkMembershipPrimaryAccountId,
+    ] = matrixAccountIds;
 
     const organizationIds = await seedTestOrganizations({
       dataSource,
@@ -396,6 +457,18 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
           organizationCode: suiteOrganizationCodes.peer,
           memberRole: 'ENGINEER',
         },
+        // P1-01 归属反例矩阵：这两名客户的成员关系在 A 公司，但资料归属列分别指向 B / 空，
+        // 按「客户看资料列」的口径二级管理员都不可见/不可写；fkPrimaryNoMembership 刻意不建成员关系
+        {
+          accountLoginName: ownershipMatrixAccounts.fkPeerMembershipPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
+        {
+          accountLoginName: ownershipMatrixAccounts.noFkMembershipPrimary.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'CUSTOMER',
+        },
         // noOrgEngineer 刻意不建成员关系：一级可见，二级不可见/不可写
       ],
     });
@@ -426,11 +499,35 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       testAccountsConfig.noOrgEngineer.loginName,
     );
 
-    // 唯一一次直接改库：管理员等级没有业务入口，必须由受控夹具写入；
-    // 请求期会话复核读取该列决定作用域，故必须在签发 Token 之前完成。
+    // 直接改库（列没有业务入口）：管理员等级决定请求期作用域；
+    // 客户归属列决定二级管理员读面可见性与写面归属，两者都必须在签发 Token 之前完成。
     const accountRepository = dataSource.getRepository(AccountEntity);
     await accountRepository.update(adminAccountId, { adminLevel: 1 });
     await accountRepository.update(peerAdminAccountId, { adminLevel: 2 });
+
+    const peerOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.peer);
+    const userInfoRepository = dataSource.getRepository(UserInfoEntity);
+    /**
+     * 客户资料归属写入 + 台账预期同步。
+     *
+     * 清理预检会在「客户资料 → 待删组织」存在引用边时要求台账登记可信归属预期，
+     * 因此每次受控写入后必须立刻 `updateOwnedExpectation`，不得在清理阶段回读补齐。
+     */
+    const assignCustomerOrganization = async (
+      accountId: number,
+      customerOrganizationId: number | null,
+    ): Promise<void> => {
+      await userInfoRepository.update(accountId, { customerOrganizationId });
+      updateOwnedExpectation(ownership, 'account', accountId, { customerOrganizationId });
+    };
+
+    // A/B 两家公司的客户按资料列归属；反例矩阵按注释里的矛盾组合写入
+    await assignCustomerOrganization(guestPrimaryAccountId, primaryOrganizationId);
+    await assignCustomerOrganization(guestSecondaryAccountId, peerOrganizationId);
+    await assignCustomerOrganization(fkPeerMembershipPrimaryAccountId, peerOrganizationId);
+    await assignCustomerOrganization(fkPrimaryNoMembershipAccountId, primaryOrganizationId);
+    // noFkMembershipPrimary 保持 customer_organization_id = NULL（成员关系在 A 也不算归属）
+    await assignCustomerOrganization(noFkMembershipPrimaryAccountId, null);
 
     adminToken = await login({
       app,
@@ -926,28 +1023,31 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       });
       expect(body.errors).toBeUndefined();
       const page = body.data?.adminUsers;
-      // A 公司只有 guestPrimary / staffPrimary 两名普通账号（另两名成员是 SUPER_ADMIN，
-      // 被读面角色范围排除）；范围与 COUNT 同源，故 total 必须精确等于可见条数
+      // A 公司可见普通账号三名：guestPrimary（客户，资料归属为 A）、staffPrimary（A 公司工程师）、
+      // fkPrimaryNoMembership（客户，资料归 A 但无成员关系——客户归只看资料列）。
+      // 另两名成员是 SUPER_ADMIN，被读面角色范围排除；范围与 COUNT 同源，故 total 必须精确。
       expect(page?.items.map((item) => item.loginName).sort()).toEqual(
         [
           testAccountsConfig.guestPrimary.loginName,
           testAccountsConfig.staffPrimary.loginName,
+          ownershipMatrixAccounts.fkPrimaryNoMembership.loginName,
         ].sort(),
       );
-      expect(page?.total).toBe(2);
+      expect(page?.total).toBe(3);
 
       // 外公司账号与无组织账号即便精确命中关键字也必须为 0（范围先于筛选）
-      const peerKeyword = await listAdminUsers(peerAdminToken, {
-        keyword: testAccountsConfig.guestSecondary.loginName,
-      });
-      expect(peerKeyword.errors).toBeUndefined();
-      expect(peerKeyword.data?.adminUsers?.total).toBe(0);
-
-      const noOrgKeyword = await listAdminUsers(peerAdminToken, {
-        keyword: testAccountsConfig.noOrgEngineer.loginName,
-      });
-      expect(noOrgKeyword.errors).toBeUndefined();
-      expect(noOrgKeyword.data?.adminUsers?.total).toBe(0);
+      for (const invisibleLoginName of [
+        testAccountsConfig.guestSecondary.loginName,
+        testAccountsConfig.noOrgEngineer.loginName,
+        // 资料归 B、成员关系在 A：客户归属以资料列为准，成员关系不能把它带回 A
+        ownershipMatrixAccounts.fkPeerMembershipPrimary.loginName,
+        // 资料归属为空、成员关系在 A：同理不可见
+        ownershipMatrixAccounts.noFkMembershipPrimary.loginName,
+      ]) {
+        const probe = await listAdminUsers(peerAdminToken, { keyword: invisibleLoginName });
+        expect(probe.errors).toBeUndefined();
+        expect(probe.data?.adminUsers?.total).toBe(0);
+      }
     });
 
     it('排序契约固定为 created_at DESC, id DESC（客户端不可改）', async () => {
@@ -1258,6 +1358,35 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
 
     it('无任何组织成员关系的目标：二级管理员同样无法触达且零变化', async () => {
       await expectPeerAdminTargetProtection(noOrgEngineerAccountId);
+    });
+
+    /**
+     * P1-01 反例矩阵：客户归属只认 `base_user_info.customer_organization_id`。
+     * 两个账号的成员关系都在 A 公司，但资料列分别指向 B / 空——旧口径（按成员关系）
+     * 会错误放行，新口径必须与不存在目标同口径拒绝，且目标逐字段不变。
+     */
+    it.each([
+      ['资料归 B 公司、成员关系在 A 公司', () => fkPeerMembershipPrimaryAccountId],
+      ['资料归属为空、成员关系在 A 公司', () => noFkMembershipPrimaryAccountId],
+    ])('%s：二级管理员无法触达且零变化', async (_label, resolveTargetAccountId) => {
+      await expectPeerAdminTargetProtection(resolveTargetAccountId());
+    });
+
+    it('资料归 A 公司、无任何成员关系：二级管理员可启停本公司客户（客户归属只看资料列）', async () => {
+      await ensureStatus(peerAdminToken, fkPrimaryNoMembershipAccountId, AccountStatus.ACTIVE);
+
+      const body = await setUserStatus(peerAdminToken, {
+        accountId: fkPrimaryNoMembershipAccountId,
+        status: AccountStatus.INACTIVE,
+      });
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminSetUserStatus?.status).toBe(AccountStatus.INACTIVE);
+      expect(await readDualStatus(fkPrimaryNoMembershipAccountId)).toEqual({
+        accountStatus: AccountStatus.INACTIVE,
+        userState: UserState.INACTIVE,
+      });
+
+      await ensureStatus(peerAdminToken, fkPrimaryNoMembershipAccountId, AccountStatus.ACTIVE);
     });
 
     it('SUPER_ADMIN 目标只读：一级管理员三个遗留写操作全部 FORBIDDEN 且数据库零变化', async () => {

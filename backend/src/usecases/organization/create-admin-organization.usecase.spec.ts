@@ -87,6 +87,7 @@ describe('CreateAdminOrganizationUsecase（一级新增公司档案）', () => {
         contactEmail: null,
         address: null,
         remark: null,
+        status: 'ACTIVE',
         isServiceProvider: false,
       },
       expect.anything(),
@@ -96,6 +97,21 @@ describe('CreateAdminOrganizationUsecase（一级新增公司档案）', () => {
       transactionContext: expect.anything(),
     });
     expect(result).toEqual(createdView);
+  });
+
+  it('显式停用状态与维修资格一起透传到存储层，一次写入落定', async () => {
+    await usecase.execute({
+      session: levelOneSession,
+      name: ' 停用公司 ',
+      contactPhone: '021',
+      status: 'DISABLED',
+      isServiceProvider: true,
+    });
+
+    expect(organizationService.createManagedCompany).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'DISABLED', isServiceProvider: true }),
+      expect.anything(),
+    );
   });
 
   it('创建后回读失败按写入失败关闭，不返回假成功', async () => {

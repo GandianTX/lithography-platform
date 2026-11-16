@@ -194,7 +194,7 @@ export type AdminOrganizationPage = {
   pageSize: number;
 };
 
-/** 一级管理员新增公司：编号由服务端生成，受管归类固定为 true、状态固定 ACTIVE */
+/** 一级管理员新增公司：编号由服务端生成，受管归类固定为 true、状态按入参（缺省 ACTIVE） */
 export type CreateManagedCompanyData = {
   name: string;
   shortName: string | null;
@@ -203,6 +203,7 @@ export type CreateManagedCompanyData = {
   contactEmail: string | null;
   address: string | null;
   remark: string | null;
+  status: OrganizationStatus;
   isServiceProvider: boolean;
 };
 

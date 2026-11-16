@@ -14,6 +14,7 @@ import { GraphQLIngressError } from '@/shared/graphql';
 import {
   adminCreateCompany,
   adminUpdateCompany,
+  checkAdminCompanyNameExists,
   fetchAdminCompanies,
   fetchAdminCompanyDetail,
   fetchAdminCompanyNames,
@@ -207,8 +208,10 @@ describe('fetchAdminCompanyDetail', () => {
 });
 
 describe('adminCreateCompany', () => {
-  it('必填字段 trim、可选空串转 null，并返回落库档案', async () => {
-    executeGraphQLMock.mockResolvedValue({ adminCreateOrganization: buildDto() });
+  it('必填字段 trim、可选空串转 null，状态与维修资格独立下发并返回落库档案', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      adminCreateOrganization: buildDto({ status: 'DISABLED' }),
+    });
 
     const result = await adminCreateCompany({
       name: '  甲公司  ',
@@ -218,6 +221,7 @@ describe('adminCreateCompany', () => {
       contactEmail: '',
       address: ' 上海 ',
       remark: '',
+      status: 'DISABLED',
       isServiceProvider: true,
     });
 
@@ -232,6 +236,7 @@ describe('adminCreateCompany', () => {
         contactEmail: null,
         address: '上海',
         remark: null,
+        status: 'DISABLED',
         isServiceProvider: true,
       },
     });
@@ -249,6 +254,7 @@ describe('adminCreateCompany', () => {
       contactEmail: '',
       address: '',
       remark: '',
+      status: 'ACTIVE',
       isServiceProvider: false,
     });
 
@@ -295,5 +301,42 @@ describe('adminUpdateCompany', () => {
     await expect(adminUpdateCompany({ organizationId: 501, name: '新名称' })).rejects.toThrow(
       '未返回落库结果',
     );
+  });
+});
+
+describe('checkAdminCompanyNameExists', () => {
+  it('新增不传排除主键，避免把 null 当作筛选值下发', async () => {
+    executeGraphQLMock.mockResolvedValue({ adminOrganizationNameExists: true });
+
+    await expect(checkAdminCompanyNameExists({ name: '甲公司' })).resolves.toBe(true);
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('adminOrganizationNameExists'),
+      {
+        name: '甲公司',
+      },
+    );
+  });
+
+  it('编辑按自身主键排除自己', async () => {
+    executeGraphQLMock.mockResolvedValue({ adminOrganizationNameExists: false });
+
+    await expect(
+      checkAdminCompanyNameExists({ name: '甲公司', excludeOrganizationId: 501 }),
+    ).resolves.toBe(false);
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('adminOrganizationNameExists'),
+      {
+        name: '甲公司',
+        excludeOrganizationId: 501,
+      },
+    );
+  });
+
+  it('缺少布尔结果时按未命中处理，不把 undefined 当作命中', async () => {
+    executeGraphQLMock.mockResolvedValue({});
+
+    await expect(checkAdminCompanyNameExists({ name: '甲公司' })).resolves.toBe(false);
   });
 });

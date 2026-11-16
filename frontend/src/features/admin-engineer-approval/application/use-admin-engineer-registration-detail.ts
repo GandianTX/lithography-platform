@@ -14,12 +14,12 @@ import { isGraphQLIngressError } from '@/shared/graphql';
 
 import { fetchAdminEngineerRegistrationDetail } from '../infrastructure/admin-engineer-approval-adapter';
 
-import type { AdminEngineerRegistrationRow } from './admin-engineer-approval.types';
+import type { AdminEngineerRegistrationDetail } from './admin-engineer-approval.types';
 
 export type AdminEngineerRegistrationDetailState =
   | { status: 'idle' }
   | { status: 'loading'; applicationId: number }
-  | { status: 'ready'; registration: AdminEngineerRegistrationRow }
+  | { status: 'ready'; registration: AdminEngineerRegistrationDetail }
   | { status: 'failed'; applicationId: number; message: string };
 
 const FALLBACK_MESSAGE = '注册申请详情加载失败，请稍后重试。';
