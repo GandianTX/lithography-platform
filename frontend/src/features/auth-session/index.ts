@@ -13,6 +13,7 @@ export {
   AUTH_SESSION_RESTRICTED_PATH,
   type AuthSessionAdminScope,
   type AuthSessionRoleCarrier,
+  isAuthSessionAdminPathAllowedAt,
   isAuthSessionExpiredReason,
   isAuthSessionRestricted,
   isAuthSessionRestriction,

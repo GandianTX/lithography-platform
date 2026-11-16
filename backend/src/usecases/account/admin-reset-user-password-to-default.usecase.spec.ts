@@ -315,8 +315,8 @@ describe('AdminResetUserPasswordToDefaultUsecase', () => {
         .calls[0][0] as Record<string, unknown>;
       expect(Object.keys(writeArg).sort()).toEqual([
         'accountId',
-        'passwordHash',
         'mustChangePassword',
+        'passwordHash',
         'transactionContext',
       ]);
     });

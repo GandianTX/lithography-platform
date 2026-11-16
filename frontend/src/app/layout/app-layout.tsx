@@ -10,7 +10,7 @@ import {
   MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import { Button, Segmented } from 'antd';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 
 import type { ResolvedNavigationItem } from '@/app/navigation';
@@ -96,6 +96,11 @@ type AppLayoutProps = {
 // 断点内用户仍可手动切换。任务书验收视口（1366×768、1440×900）不受影响。
 const NARROW_VIEWPORT_QUERY = '(max-width: 1024px)';
 
+// 覆盖式导航断点（第五轮 P2）：与 index.css 中 `@media (max-width: 768px)` 一致。
+// 该区间内展开的侧栏脱离文档流覆盖工作区，工作区必须 `inert` 暂时退出交互，
+// 否则被覆盖的表单控件仍会被点击或键盘命中。
+const OVERLAY_NAV_VIEWPORT_QUERY = '(max-width: 768px)';
+
 // 知识库页精确路由（PR3 R7）：仅本页应用工作区视觉变体——
 // 原型 #knowledge-base-page 纯色底 + 占满侧栏后剩余宽度；
 // 其他页面继续通用渐变 + 1280px 上限（frontend/docs/gkj-visual-baseline.md 第 6 节）。
@@ -118,8 +123,15 @@ const REGISTER_PATH_PREFIX = '/register/';
 
 export function AppLayout({ children }: AppLayoutProps = {}) {
   const [isNavCollapsed, setIsNavCollapsed] = useState(false);
+  const [isOverlayViewport, setIsOverlayViewport] = useState(() =>
+    typeof window === 'undefined' ? false : window.matchMedia(OVERLAY_NAV_VIEWPORT_QUERY).matches,
+  );
   const [isSidecarOpen, setIsSidecarOpen] = useState(false);
   const triggerRef = useRef<HTMLAnchorElement | HTMLButtonElement | null>(null);
+  const navToggleRef = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
+  // 覆盖式导航中的同页签跳转意图：点击发生在路由落地之前，
+  // 记录后在目标路由挂载时收起覆盖层（第六轮 P2）。
+  const pendingOverlayNavCloseRef = useRef(false);
   const wasSidecarOpenRef = useRef(isSidecarOpen);
   const [showShortcutHint, setShowShortcutHint] = useState(() =>
     typeof document === 'undefined'
@@ -152,6 +164,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
     () => navigationItems.map((item) => toRouteCandidate(item)),
     [navigationItems],
   );
+  // 覆盖式导航仅在「窄视口 + 侧栏展开」时成立：此时工作区整体 inert，
+  // 桌面（>768px）与窄屏折叠态都不受限制。
+  const isOverlayNavOpen = isOverlayViewport && !isNavCollapsed;
 
   useEffect(() => {
     const narrowQuery = window.matchMedia(NARROW_VIEWPORT_QUERY);
@@ -165,6 +180,21 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
 
     return () => {
       narrowQuery.removeEventListener('change', syncCollapsedFromViewport);
+    };
+  }, []);
+
+  useEffect(() => {
+    const overlayQuery = window.matchMedia(OVERLAY_NAV_VIEWPORT_QUERY);
+
+    function syncOverlayViewport() {
+      setIsOverlayViewport(overlayQuery.matches);
+    }
+
+    syncOverlayViewport();
+    overlayQuery.addEventListener('change', syncOverlayViewport);
+
+    return () => {
+      overlayQuery.removeEventListener('change', syncOverlayViewport);
     };
   }, []);
 
@@ -208,6 +238,41 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
     };
   }, []);
 
+  // 覆盖式导航的键盘关闭：Esc 收起侧栏并把焦点交还同一个展开/收起按钮，
+  // 收起后工作区不再 inert，Tab 可继续进入被覆盖过的表单。
+  useEffect(() => {
+    if (!isOverlayNavOpen) {
+      return;
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      setIsNavCollapsed(true);
+      navToggleRef.current?.focus();
+    }
+
+    window.addEventListener('keydown', handleEscape);
+
+    return () => {
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isOverlayNavOpen]);
+
+  // 路由落地后收起覆盖式导航（第六轮 P2）：点击意图在跳转前记录，
+  // 目标路由挂载时消费，使工作区不再被 inert 挡住；Esc / 开关按钮行为不受影响。
+  useEffect(() => {
+    if (!pendingOverlayNavCloseRef.current) {
+      return;
+    }
+
+    pendingOverlayNavCloseRef.current = false;
+    setIsNavCollapsed(true);
+  }, [location.key]);
+
   // 启动 / 刷新时按服务端复核结果校对会话限制状态：账号在别处被要求改密、
   // 工程师申请在别处被审批等变化会同步到路由落地，避免停留在过期页面。
   // 认证失效由全局 GraphQL ingress 统一收口，这里只静默失败。
@@ -234,6 +299,20 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       navigate(resolveAuthSessionHomePath(session.role), { replace: true });
     }
   }, [location.pathname, navigate, session]);
+
+  // 覆盖式导航里的同页签跳转意图：仅记录，不拦截 Link 的跳转与路由守卫。
+  // Ctrl/Cmd/Shift 等修饰键与中键属于新标签页/新窗口操作，保持原行为。
+  function handleOverlayNavIntent(event: MouseEvent<HTMLAnchorElement>) {
+    if (!isOverlayNavOpen || event.defaultPrevented) {
+      return;
+    }
+
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+
+    pendingOverlayNavCloseRef.current = true;
+  }
 
   const workspaceClassName = isKnowledgeBasePage
     ? 'app-workspace app-workspace--knowledge-base'
@@ -289,6 +368,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             <Button
               aria-label={isNavCollapsed ? t('layout.expandNav') : t('layout.collapseNav')}
               icon={isNavCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              ref={navToggleRef}
               size="small"
               type="text"
               onClick={() => setIsNavCollapsed((previousValue) => !previousValue)}
@@ -304,6 +384,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
               className={`app-nav-item${
                 item.path === activeNavigationPath ? ' app-nav-item--active' : ''
               }`}
+              onClick={handleOverlayNavIntent}
               title={item.description}
               to={item.path}
             >
@@ -373,8 +454,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       </aside>
 
       {/* 工作区先占余宽（原型 workspace-page：渐变+22px 上距），内容再入 1280px 内层；
-          知识库页按精确路由切换纯色铺满变体，其余页面保持通用基准（PR3 R7） */}
-      <main className={workspaceClassName}>
+          知识库页按精确路由切换纯色铺满变体，其余页面保持通用基准（PR3 R7）。
+          覆盖式导航展开期间整体 inert：被覆盖的表单保持挂载但暂时不可命中与聚焦。 */}
+      <main className={workspaceClassName} inert={isOverlayNavOpen}>
         <div className={mainClassName}>
           {/* 资格生效的批准结果门：在工作台内容挂载前用服务端事实确认本人批准结果，
               确认后由用户显式「进入工作台」；门本身不改变路由授权。 */}

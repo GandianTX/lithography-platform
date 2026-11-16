@@ -488,7 +488,6 @@ export const ZH_CN_MESSAGES = {
   'admin.documents.description':
     'SUPER_ADMIN 的数据聚合视图：参考资料、维修申请、AI 会话与 AI 报告。',
   'admin.documents.action': '进入文档数据库',
-  'admin.organizationNotice': '当前为二级管理员（本公司范围），本公司范围内的管理入口尚未开放。',
   'admin.noneNotice': '当前账号缺少可信的管理等级或组织归属，暂无可用的管理入口。',
 
   // 通用错误页

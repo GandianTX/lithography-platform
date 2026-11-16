@@ -179,11 +179,10 @@ export type AuthSessionRoleCarrier = Pick<AuthSessionSnapshot, 'role'> & {
 };
 
 /**
- * 管理能力范围：GLOBAL 全域（1 级 + 可信组织）、ORGANIZATION 本公司
- * （2 级 + 可信组织）、NONE 无可用管理能力（非管理员、缺等级、非法等级、
- * 缺可信组织归属）。这是管理入口可见性与直达路由的共同唯一判定。
+ * 一级平台管理员可进入任务 08 管理页；具备可信管理员组织时另可进入文档数据库。
+ * 二级管理员必须具备可信公司归属，具体读写范围仍由服务端在请求期裁决。
  */
-export type AuthSessionAdminScope = 'GLOBAL' | 'ORGANIZATION' | 'NONE';
+export type AuthSessionAdminScope = 'GLOBAL' | 'PLATFORM' | 'ORGANIZATION' | 'NONE';
 
 export function resolveAuthSessionAdminScope(
   session: AuthSessionRoleCarrier,
@@ -192,11 +191,10 @@ export function resolveAuthSessionAdminScope(
     return 'NONE';
   }
 
-  // 任一等级都要求可信组织归属：缺成员的管理员在服务端同样被拒绝执行组织范围操作
   const hasTrustedOrganization = normalizeNullableIdentityId(session.adminOrganizationId) !== null;
 
   if (session.adminLevel === 1) {
-    return hasTrustedOrganization ? 'GLOBAL' : 'NONE';
+    return hasTrustedOrganization ? 'GLOBAL' : 'PLATFORM';
   }
 
   if (session.adminLevel === 2) {
@@ -207,27 +205,36 @@ export function resolveAuthSessionAdminScope(
   return 'NONE';
 }
 
-// 全域管理路径：仅 GLOBAL 范围可进。与导航目录 requiresAdminScope 标注逐项对账，
-// 二者保持同一份路径集合，避免展示与直达语义漂移。
-const AUTH_SESSION_ADMIN_GLOBAL_PATHS: readonly string[] = [
+// 任务 08 允许一级平台管理员访问管理页，二级按可信公司范围访问。
+// 文档数据库仍要求一级且具有可信管理员组织，与该聚合能力的服务端守卫一致。
+const AUTH_SESSION_ADMIN_MANAGEMENT_PATHS: readonly string[] = [
   '/admin/users',
-  '/admin/document-database',
+  '/admin/companies',
+  '/admin/engineer-registrations',
 ];
 
-function isAuthSessionAdminGlobalPath(pathname: string): boolean {
-  return AUTH_SESSION_ADMIN_GLOBAL_PATHS.some((globalPath) =>
-    isAuthSessionRolePathAllowed(pathname, globalPath),
-  );
-}
-
-// 角色放行 + 管理范围放行的唯一组合判定：直达路由与导航可见性同语义。
-function isAuthSessionPathAllowed(session: AuthSessionRoleCarrier, pathname: string): boolean {
-  if (!isAuthSessionRoleAllowedAt(session.role, pathname)) {
-    return false;
+export function isAuthSessionAdminPathAllowedAt(
+  scope: AuthSessionAdminScope,
+  pathname: string,
+): boolean {
+  if (isAuthSessionRolePathAllowed(pathname, '/admin/document-database')) {
+    return scope === 'GLOBAL';
   }
 
+  if (
+    AUTH_SESSION_ADMIN_MANAGEMENT_PATHS.some((path) => isAuthSessionRolePathAllowed(pathname, path))
+  ) {
+    return scope !== 'NONE';
+  }
+
+  return true;
+}
+
+// 直达路由与导航可见性复用同一份管理范围判断。
+function isAuthSessionPathAllowed(session: AuthSessionRoleCarrier, pathname: string): boolean {
   return (
-    !isAuthSessionAdminGlobalPath(pathname) || resolveAuthSessionAdminScope(session) === 'GLOBAL'
+    isAuthSessionRoleAllowedAt(session.role, pathname) &&
+    isAuthSessionAdminPathAllowedAt(resolveAuthSessionAdminScope(session), pathname)
   );
 }
 

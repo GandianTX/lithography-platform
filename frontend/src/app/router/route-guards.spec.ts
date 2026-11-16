@@ -174,30 +174,33 @@ describe('protected route guard wiring', () => {
     ).toBe('/admin');
   });
 
-  it('keeps global admin pages for level-1 admins only (S1)', () => {
-    // 1 级全域管理员直达放行
+  it('applies the respective task 08 and document database scopes at the router', () => {
+    const load = (path: string) =>
+      protectedRouteLoader(createLoaderRequest(`http://localhost${path}`));
+
     mockedGetCurrentAuthSession.mockReturnValue(
       createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1, adminOrganizationId: 910003 }),
     );
-    expect(protectedRouteLoader(createLoaderRequest('http://localhost/admin/users'))).toBeNull();
-    expect(
-      protectedRouteLoader(createLoaderRequest('http://localhost/admin/document-database')),
-    ).toBeNull();
+    expect(load('/admin/users')).toBeNull();
+    expect(load('/admin/document-database')).toBeNull();
 
-    // 2 级（本公司）与未知等级直达全域页 → 收回管理员主页
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1 }),
+    );
+    expect(load('/admin/users')).toBeNull();
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+
     mockedGetCurrentAuthSession.mockReturnValue(
       createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 2, adminOrganizationId: 910004 }),
     );
-    expect(
-      redirectLocation(protectedRouteLoader(createLoaderRequest('http://localhost/admin/users'))),
-    ).toBe('/admin');
+    expect(load('/admin/users')).toBeNull();
+    expect(load('/admin/companies')).toBeNull();
+    expect(load('/admin/engineer-registrations')).toBeNull();
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
 
     mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('SUPER_ADMIN'));
-    expect(
-      redirectLocation(
-        protectedRouteLoader(createLoaderRequest('http://localhost/admin/document-database')),
-      ),
-    ).toBe('/admin');
+    expect(redirectLocation(load('/admin/users'))).toBe('/admin');
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
   });
 
   it('never renders another role content and sends cross-role visitors back home', () => {

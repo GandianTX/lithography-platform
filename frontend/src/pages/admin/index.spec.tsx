@@ -66,15 +66,12 @@ describe('AdminPage（S1 管理范围）', () => {
     expect(screen.getByTestId('auth-session-panel')).toBeInTheDocument();
   });
 
-  it('2 级管理员不渲染全域入口，说明本公司入口尚未开放', () => {
+  it('2 级管理员看到本公司用户管理入口，文档数据库不开放', () => {
     useAuthSessionMock.mockReturnValue(adminSession(2, 910004));
     renderPage();
 
-    expect(screen.queryByRole('button', { name: '进入用户管理' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '进入用户管理' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '进入文档数据库' })).not.toBeInTheDocument();
-    expect(
-      screen.getByText('当前为二级管理员（本公司范围），本公司范围内的管理入口尚未开放。'),
-    ).toBeInTheDocument();
   });
 
   it('缺等级或缺可信组织的管理员不渲染全域入口', () => {
@@ -86,14 +83,11 @@ describe('AdminPage（S1 管理范围）', () => {
       screen.getByText('当前账号缺少可信的管理等级或组织归属，暂无可用的管理入口。'),
     ).toBeInTheDocument();
 
-    // 1 级但无有效成员组织：服务端同样拒绝组织范围操作，前端不出全域入口
     view.unmount();
     useAuthSessionMock.mockReturnValue(adminSession(1, null));
     renderPage();
 
-    expect(screen.queryByRole('button', { name: '进入用户管理' })).not.toBeInTheDocument();
-    expect(
-      screen.getByText('当前账号缺少可信的管理等级或组织归属，暂无可用的管理入口。'),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '进入用户管理' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '进入文档数据库' })).not.toBeInTheDocument();
   });
 });

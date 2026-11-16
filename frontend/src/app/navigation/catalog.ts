@@ -1,6 +1,10 @@
 // src/app/navigation/catalog.ts
 
-import type { AuthSessionAdminScope, AuthSessionRole } from '@/features/auth-session';
+import {
+  type AuthSessionAdminScope,
+  type AuthSessionRole,
+  isAuthSessionAdminPathAllowedAt,
+} from '@/features/auth-session';
 
 import { type AppEnv, getAppEnv } from '@/shared/env';
 import type { Translate } from '@/shared/i18n';
@@ -65,9 +69,8 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     labelKey: 'nav.admin-users.label',
     // 仅对 SUPER_ADMIN 展示；ENGINEER / CUSTOMER 与未登录用户不显示管理员导航入口。
     // 展示过滤不替代路由守卫：未授权角色直达 /admin/users 仍由路由层拒绝。
-    // 全域能力仅 1 级管理员可见，2 级与未知等级不出现该入口（S1）。
+    // 二级管理员仅可操作本可信公司的普通账号。
     path: '/admin/users',
-    requiresAdminScope: 'GLOBAL',
     roles: ['SUPER_ADMIN'],
     tags: ['admin', 'users', 'management', '管理员', '用户管理'],
   },
@@ -101,7 +104,6 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     // PR3 S3 已交付真实聚合页；仅对 SUPER_ADMIN 展示，未授权直达由 /admin/** 路由层拒绝。
     // 同为全域能力，仅 1 级管理员可见（S1）。
     path: '/admin/document-database',
-    requiresAdminScope: 'GLOBAL',
     roles: ['SUPER_ADMIN'],
     tags: ['admin', 'database', 'documents', 'aggregation', '文档数据库', '数据聚合'],
   },
@@ -192,7 +194,7 @@ export function getNavigationItems(
       return false;
     }
 
-    return item.requiresAdminScope === undefined || item.requiresAdminScope === adminScope;
+    return isAuthSessionAdminPathAllowedAt(adminScope, item.path);
   });
 }
 

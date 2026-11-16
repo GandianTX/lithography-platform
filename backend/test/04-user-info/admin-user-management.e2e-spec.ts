@@ -6,7 +6,6 @@ import {
   IdentityTypeEnum,
   LoginTypeEnum,
 } from '@app-types/models/account.types';
-import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { UserState } from '@app-types/models/user-info.types';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -184,12 +183,6 @@ const ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION = `
 `;
 
 const LOGIN_MUTATION = `
-  mutation Login($input: AuthLoginInput!) {
-    login(input: $input) { accessToken restriction }
-  }
-`;
-
-const LOGIN_WITH_RESTRICTION_MUTATION = `
   mutation Login($input: AuthLoginInput!) {
     login(input: $input) { accessToken restriction }
   }
@@ -784,18 +777,7 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
     loginName: string,
     loginPassword: string,
   ): Promise<GqlBody<{ login?: LoginPayload }>> =>
-    gql({
-      query: LOGIN_WITH_RESTRICTION_MUTATION,
-      variables: {
-        input: {
-          loginName,
-          loginPassword,
-          type: LoginTypeEnum.PASSWORD,
-          audience: AudienceTypeEnum.DESKTOP,
-          allowRestrictedSession: true,
-        },
-      },
-    });
+    attemptLogin(loginName, loginPassword, { allowRestrictedSession: true });
 
   const changeMyPassword = (
     token: string,
@@ -1658,6 +1640,15 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
         const freshLogin = await loginWithRestriction(params.loginName, params.newPassword);
         expect(freshLogin.errors).toBeUndefined();
         expect(freshLogin.data?.login?.restriction).toBe(SessionRestriction.NONE);
+
+        // 此套件的遗留重置用例也会用原始合成凭据签发重置前 Token。
+        const freshToken = freshLogin.data?.login?.accessToken;
+        if (!freshToken) {
+          throw new Error('已完成强制改密的夹具未获得 accessToken');
+        }
+        const restored = await changeMyPassword(freshToken, params.newPassword, params.oldPassword);
+        expect(restored.errors).toBeUndefined();
+        expect(restored.data?.changeMyPassword?.isUpdated).toBe(true);
       };
 
       it('一级管理员可跨公司重置（B 公司账号）：强制改密链路完整', async () => {
@@ -2251,7 +2242,6 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       // 等级裁决先于目标锁：目标行逐字段不变（含密码哈希与强改标记）
       expect(await readAccountRow(guestSecondaryAccountId)).toEqual(before);
     });
-
   });
 
   // ---------------------------------------------------------------------------

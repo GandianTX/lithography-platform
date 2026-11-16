@@ -65,9 +65,11 @@ export const EN_MESSAGES = {
   'nav.reference-documents.description':
     'Browse the lithography maintenance knowledge base: error code manuals, guides, safety rules, and checklists.',
   'nav.admin-companies.label': 'Company records',
-  'nav.admin-companies.description': 'View and manage company records according to your permissions.',
+  'nav.admin-companies.description':
+    'View and manage company records according to your permissions.',
   'nav.admin-engineer-registrations.label': 'Registration approvals',
-  'nav.admin-engineer-registrations.description': 'Review engineer registration applications within your scope.',
+  'nav.admin-engineer-registrations.description':
+    'Review engineer registration applications within your scope.',
   'nav.admin-users.label': 'User management',
   'nav.admin-users.description': 'SUPER_ADMIN user management page.',
   'nav.admin-document-database.label': 'Document database',
@@ -518,8 +520,6 @@ export const EN_MESSAGES = {
   'admin.documents.description':
     'SUPER_ADMIN data aggregation view: reference documents, repair requests, AI sessions, and AI reports.',
   'admin.documents.action': 'Open document database',
-  'admin.organizationNotice':
-    'You are a level-2 administrator (organization scope). Organization management entries are not yet available.',
   'admin.noneNotice':
     'This account lacks a trusted admin level or organization. No management entries are available.',
 

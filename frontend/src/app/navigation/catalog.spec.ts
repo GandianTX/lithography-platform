@@ -45,16 +45,18 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('2 级管理员与未知等级不出现全域管理入口（S1 范围收敛）', () => {
-    // 2 级管理员（有可信公司）与缺等级/非法等级一律不出全域入口；
-    // 本公司入口尚无正式路由，因此只保留角色通用入口。
-    for (const scope of ['ORGANIZATION', 'NONE'] as const) {
-      const paths = getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path);
-
-      expect(paths).toEqual(['/', '/reference-documents', '/account/settings']);
+  it('任务 08 管理入口对一级平台与可信公司二级管理员可见，文档聚合仍为全域', () => {
+    for (const scope of ['PLATFORM', 'ORGANIZATION'] as const) {
+      expect(getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path)).toEqual([
+        '/',
+        '/reference-documents',
+        '/admin/users',
+        '/admin/companies',
+        '/admin/engineer-registrations',
+        '/account/settings',
+      ]);
     }
 
-    // 第三参缺省为 NONE：未传管理范围的调用方不会意外获得全域入口
     expect(getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path)).toEqual([
       '/',
       '/reference-documents',

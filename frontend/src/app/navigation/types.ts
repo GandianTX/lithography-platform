@@ -23,12 +23,6 @@ export type NavigationItem = {
    * 不在此建立第二份角色映射。
    */
   roles?: readonly AuthSessionRole[];
-  /**
-   * 可选管理范围门槛：声明该项仅对具备该管理范围的会话展示。
-   * 当前只有 GLOBAL（1 级管理员的全域能力）；展示过滤不替代路由守卫，
-   * 直达同一路径由 auth-session 策略层按相同范围拒绝。
-   */
-  requiresAdminScope?: 'GLOBAL';
   tags: readonly string[];
 };
 

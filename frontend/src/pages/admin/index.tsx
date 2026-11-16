@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router';
 
 import {
   AuthSessionPanel,
+  isAuthSessionAdminPathAllowedAt,
   resolveAuthSessionAdminScope,
   useAuthSession,
 } from '@/features/auth-session';
@@ -19,7 +20,7 @@ import { PageHeader } from '@/shared/ui/page-header';
 
 /**
  * 功能入口卡：目标路由与「当前产品文案」以本地常量登记。可见性由
- * `resolveAuthSessionAdminScope`（与路由守卫同一判定）统一决定，不在页面里
+ * `isAuthSessionAdminPathAllowedAt`（与路由守卫同一判定）统一决定，不在页面里
  * 另写一套角色/等级表。这里只做导航，不新增业务操作、不展示虚构统计。
  */
 type AdminEntry = {
@@ -31,8 +32,6 @@ type AdminEntry = {
   titleKey: MessageKey;
 };
 
-// 两个入口都是全域能力：只有 1 级管理员（GLOBAL）可见，
-// 与导航目录的 requiresAdminScope 标注、路由守卫的全域路径表同一口径。
 const ADMIN_ENTRIES: AdminEntry[] = [
   {
     actionKey: 'admin.users.action',
@@ -60,13 +59,6 @@ const ADMIN_ENTRIES: AdminEntry[] = [
   },
 ];
 
-// 非全域范围的可达性说明：2 级本公司入口尚无正式路由，未知等级无全域能力，
-// 都不渲染任何链接（红线：不留死链接）。
-const ADMIN_SCOPE_UNAVAILABLE_NOTICES = {
-  ORGANIZATION: 'admin.organizationNotice',
-  NONE: 'admin.noneNotice',
-} as const satisfies Record<'ORGANIZATION' | 'NONE', MessageKey>;
-
 /**
  * 管理员入口页：保留会话信息展示（「当前账号」卡），并按可信管理范围决定
  * 是否提供进入用户管理与文档数据库的导航卡片。页面本身位于 /admin/**，
@@ -78,7 +70,9 @@ export function AdminPage() {
   const { session } = useAuthSession();
   const adminScope = session ? resolveAuthSessionAdminScope(session) : 'NONE';
 
-  const entryItems = adminScope === 'GLOBAL' ? ADMIN_ENTRIES : [];
+  const entryItems = ADMIN_ENTRIES.filter((entry) =>
+    isAuthSessionAdminPathAllowedAt(adminScope, entry.path),
+  );
 
   return (
     <div className="page-stack">
@@ -90,7 +84,7 @@ export function AdminPage() {
 
       <AuthSessionPanel variant="account" />
 
-      {adminScope === 'GLOBAL' ? (
+      {entryItems.length > 0 ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {entryItems.map((entry) => (
             <DataCard key={entry.id}>
@@ -111,9 +105,7 @@ export function AdminPage() {
         </div>
       ) : (
         <DataCard>
-          <p className="admin-entry-description">
-            {t(ADMIN_SCOPE_UNAVAILABLE_NOTICES[adminScope])}
-          </p>
+          <p className="admin-entry-description">{t('admin.noneNotice')}</p>
         </DataCard>
       )}
     </div>

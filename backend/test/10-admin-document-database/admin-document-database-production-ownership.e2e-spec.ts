@@ -2840,10 +2840,26 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
         .find({ where: { id: In(accountIds) }, order: { id: 'ASC' } });
 
       try {
-        await expectCleanupRejectedWithoutDeletes(
-          () => runCombinedCleanup(ownership, suiteOwnership),
-          /organization_membership\.account_id/,
-        );
+        // 真实 SQL 观测：只截取组合清理调用窗口内的日志。manager.delete 探针只能证明
+        // ORM 调用数，这里直接核对驱动真正发出的语句，避免「先删后拒」被上层掩盖。
+        const logQuerySpy = jest.spyOn(dataSource.logger, 'logQuery');
+        let observedQueries: string[] = [];
+
+        try {
+          await expectCleanupRejectedWithoutDeletes(
+            () => runCombinedCleanup(ownership, suiteOwnership),
+            /organization_membership\.account_id/,
+          );
+        } finally {
+          observedQueries = logQuerySpy.mock.calls.map(([query]) =>
+            typeof query === 'string' ? query : '',
+          );
+          logQuerySpy.mockRestore();
+        }
+
+        // 探针必须真的观测到本窗口的预检查询（否则 DELETE=0 没有意义）
+        expect(observedQueries.some((query) => /^\s*SELECT\s/i.test(query))).toBe(true);
+        expect(observedQueries.filter((query) => /^\s*DELETE\s/i.test(query))).toEqual([]);
 
         expect(await batch.readOrganizations()).toEqual(orgsBefore);
         expect(await batch.readMemberships()).toEqual(membershipsBefore);

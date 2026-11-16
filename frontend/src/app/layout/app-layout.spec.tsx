@@ -77,6 +77,46 @@ function stubNarrowViewport(initialMatches: boolean) {
   };
 }
 
+// 第五轮 P2：覆盖式导航断点（≤768px）与自动折叠断点（≤1024px）相互独立。
+// 这里只桩 768 查询，1024 查询回落到 setup 的静态 shim（不匹配 → 侧栏默认展开）。
+function stubOverlayViewport(initialMatches: boolean) {
+  const listeners = new Set<QueryListener>();
+  const overlayQuery = {
+    matches: initialMatches,
+    media: '(max-width: 768px)',
+  };
+  const mediaQueryList = {
+    ...overlayQuery,
+    addEventListener: (_type: string, listener: QueryListener) => {
+      listeners.add(listener);
+    },
+    addListener: () => {},
+    dispatchEvent: () => false,
+    onchange: null,
+    removeEventListener: (_type: string, listener: QueryListener) => {
+      listeners.delete(listener);
+    },
+    removeListener: () => {},
+  };
+
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    value: (query: string) =>
+      query === '(max-width: 768px)' ? mediaQueryList : originalMatchMedia(query),
+  });
+
+  return {
+    setMatches(matches: boolean) {
+      overlayQuery.matches = matches;
+      mediaQueryList.matches = matches;
+
+      for (const listener of listeners) {
+        listener({ matches });
+      }
+    },
+  };
+}
+
 function renderLayout(pathname: string) {
   return render(
     <I18nProvider>
@@ -167,15 +207,15 @@ describe('AppLayout（S3 壳层）', () => {
     expect(screen.queryByRole('link', { name: '发起申请' })).not.toBeInTheDocument();
   });
 
-  // S1：全域管理入口只对 1 级管理员出现；2 级（本公司）与未知等级不出现，
-  // 与直达路由守卫同一范围判定。
-  it('2 级与未知等级管理员侧栏不出现全域管理入口', () => {
+  it('二级管理员看到任务 08 管理入口，未知等级不显示管理入口', () => {
     useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', 2, 910004));
     const view = renderLayout('/admin');
 
     expect(screen.getByRole('link', { name: '首页' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '用户管理' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '公司档案' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '注册审批' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
 
     view.unmount();
@@ -329,6 +369,74 @@ describe('AppLayout（S3 壳层）', () => {
     expect(screen.getByRole('button', { name: '展开导航' })).toBeInTheDocument();
 
     act(() => narrowViewport.setMatches(false));
+    expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
+  });
+
+  // 第五轮 P2：≤768px 展开侧栏为覆盖式导航，被覆盖的工作区必须 inert，
+  // 但内容保持挂载、侧栏语言入口照常可切换。
+  it('覆盖式导航展开时工作区 inert，侧栏语言入口仍可切换', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubOverlayViewport(true);
+    renderLayout('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+    // 表单/页面保持挂载，只是暂时退出交互
+    expect(screen.getByText('页面内容')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }));
+    expect(document.documentElement.lang).toBe('en');
+  });
+
+  it('Esc 关闭覆盖式导航：焦点回到展开按钮，工作区恢复可交互', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubOverlayViewport(true);
+    renderLayout('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+
+    screen.getByRole('button', { name: '折叠导航' }).focus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(screen.getByRole('button', { name: '展开导航' })).toHaveFocus();
+    expect(workspace).not.toHaveAttribute('inert');
+  });
+
+  // 第六轮 P2：覆盖式导航中从侧栏进入另一页面，真实路由落地后覆盖层自动收起，
+  // 目标工作区解除 inert（缺陷表现为 URL 已更新但工作区仍被挡住）。
+  it('覆盖式导航中点击侧栏链接跳转后自动收起，目标工作区解除 inert', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubOverlayViewport(true);
+    renderLayoutWithLocationProbe('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+
+    fireEvent.click(screen.getByRole('link', { name: '我的申请' }));
+
+    expect(screen.getByTestId('current-pathname')).toHaveTextContent('/customer/repair-requests');
+    expect(screen.getByRole('button', { name: '展开导航' })).toBeInTheDocument();
+    expect(workspace).not.toHaveAttribute('inert');
+  });
+
+  it('跨越 768px 断点后工作区退出受限，桌面展开态保持不被改写', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    const overlayViewport = stubOverlayViewport(true);
+    renderLayout('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+
+    act(() => overlayViewport.setMatches(false));
+
+    expect(workspace).not.toHaveAttribute('inert');
+    // 桌面断点由 ≤1024px 查询单独管理，这里保持用户当前的展开态
     expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
   });
 
