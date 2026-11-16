@@ -47,9 +47,21 @@ export function RestrictedApplicationCard() {
   async function handleRefresh(): Promise<void> {
     setIsRefreshing(true);
     try {
-      await refreshCurrentAuthSessionIdentity().catch(() => {});
-
+      const outcome = await refreshCurrentAuthSessionIdentity().catch(() => null);
       const current = getCurrentAuthSession();
+
+      // 本次复核未描述当前会话（无会话 / 并发刷新覆盖 / 迟到 / 已切换账号）：
+      // 不用它推断限制状态，仍按当前会话事实重查申请（服务端按会话定位本人申请）
+      if (outcome === null || outcome.status === 'stale') {
+        if (current !== null) {
+          refresh();
+        }
+        return;
+      }
+
+      // 资格刚生效（restriction 变为 NONE）时由 app-layout 的既有收口跳转，
+      // 卡片不再读取申请，避免刚批准就多发一次受限查询；
+      // 仍受限（待审 / 拒绝 / 资格无效）时重查申请，让审核决定与拒绝原因更新。
       if (current !== null && current.restriction !== 'NONE') {
         refresh();
       }

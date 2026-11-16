@@ -16,7 +16,7 @@ import type {
 } from '@src/modules/account/account.types';
 import type { AccountService } from '@src/modules/account/base/services/account.service';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
-import type { OrganizationMembershipFact } from '@src/modules/lithography/organization.types';
+import type { OrganizationMembershipBindingFact } from '@src/modules/lithography/organization.types';
 import type { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
 import type { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import type { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
@@ -75,7 +75,7 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
   } as unknown as OrganizationMembershipService;
 
   const organizationMembershipQueryService = {
-    listActiveMembershipsByAccount: jest.fn(),
+    listMembershipsForBinding: jest.fn(),
   } as unknown as OrganizationMembershipQueryService;
 
   const logger = {
@@ -131,13 +131,16 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
     updatedAt: UPDATED_AT,
   });
 
-  const membershipOf = (organizationId: number): OrganizationMembershipFact => ({
+  const membershipOf = (
+    organizationId: number,
+    overrides: Partial<OrganizationMembershipBindingFact> = {},
+  ): OrganizationMembershipBindingFact => ({
     membershipId: organizationId * 10,
     organizationId,
-    organizationCode: `ORG_${organizationId}`,
-    organizationName: `组织 ${organizationId}`,
-    organizationKind: 'CLIENT',
     memberRole: 'CUSTOMER',
+    membershipStatus: 'ACTIVE',
+    organizationStatus: 'ACTIVE',
+    ...overrides,
   });
 
   beforeEach(() => {
@@ -197,7 +200,7 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
         order.push('WRITE_MEMBERSHIP');
         return Promise.resolve({ membershipId: 1 });
       });
-    (organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock)
+    (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock)
       .mockReset()
       .mockResolvedValue([]);
   });
@@ -318,9 +321,7 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
       expect(outcome.settings.trustedCompanyName).toBe('回读公司名');
       expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
       expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
-      expect(
-        organizationMembershipQueryService.listActiveMembershipsByAccount,
-      ).not.toHaveBeenCalled();
+      expect(organizationMembershipQueryService.listMembershipsForBinding).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -369,9 +370,9 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
     });
 
     it('目标组织已有 ACTIVE 关系 → 跳过重复插入，仍只写一次 FK', async () => {
-      (
-        organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
-      ).mockResolvedValue([membershipOf(EXISTING_ORGANIZATION_ID)]);
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(EXISTING_ORGANIZATION_ID)],
+      );
 
       const outcome = await execute({ organizationId: EXISTING_ORGANIZATION_ID });
 
@@ -394,9 +395,9 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
     });
 
     it('账号已有其它组织 ACTIVE 关系 → CONFLICT，不自动修复、零写入', async () => {
-      (
-        organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
-      ).mockResolvedValue([membershipOf(555)]);
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(555)],
+      );
 
       const error = await captureThrownError(execute({ organizationId: EXISTING_ORGANIZATION_ID }));
 
@@ -404,6 +405,70 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
         code: MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
       });
       expect(organizationQueryService.findEligibleRegistrationOption).not.toHaveBeenCalled();
+      expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['ENGINEER', IdentityTypeEnum.ENGINEER],
+      ['SUPER_ADMIN', IdentityTypeEnum.SUPER_ADMIN],
+    ])('同组织已有活跃 %s 关系 → CONFLICT 角色不符，零写入', async (_label, role) => {
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(EXISTING_ORGANIZATION_ID, { memberRole: role })],
+      );
+
+      const error = await captureThrownError(execute({ organizationId: EXISTING_ORGANIZATION_ID }));
+
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+      });
+      // 角色不符在候选资格复核之前失败关闭，不进入任何写入
+      expect(organizationQueryService.findEligibleRegistrationOption).not.toHaveBeenCalled();
+      expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+      expect(customerOrganizationId).toBeNull();
+      expect(harness.isRolledBack()).toBe(true);
+    });
+
+    it('目标组织只有历史 LEFT 关系 → CONFLICT，不重复 INSERT', async () => {
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(EXISTING_ORGANIZATION_ID, { membershipStatus: 'LEFT' })],
+      );
+
+      const error = await captureThrownError(execute({ organizationId: EXISTING_ORGANIZATION_ID }));
+
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+      });
+      expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+    });
+
+    it('多条活跃关系歧义 → CONFLICT，零写入', async () => {
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(EXISTING_ORGANIZATION_ID), membershipOf(555)],
+      );
+
+      const error = await captureThrownError(execute({ organizationId: EXISTING_ORGANIZATION_ID }));
+
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+      });
+      expect(organizationQueryService.findEligibleRegistrationOption).not.toHaveBeenCalled();
+      expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
+      expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
+    });
+
+    it('停用组织上的活跃关系仍占用唯一键 → CONFLICT，不换绑', async () => {
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(555, { organizationStatus: 'DISABLED', memberRole: 'CUSTOMER' })],
+      );
+
+      const error = await captureThrownError(execute({ organizationId: EXISTING_ORGANIZATION_ID }));
+
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+      });
       expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
       expect(organizationMembershipService.insertMembership).not.toHaveBeenCalled();
     });
@@ -444,9 +509,9 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
     });
 
     it('账号已有任何 ACTIVE 关系 → CONFLICT，不建档、不写 FK', async () => {
-      (
-        organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
-      ).mockResolvedValue([membershipOf(555)]);
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(555)],
+      );
 
       const error = await captureThrownError(execute({ organizationName: '新公司' }));
 
@@ -455,6 +520,26 @@ describe('SupplementMyCustomerCompanyUsecase', () => {
       });
       expect(organizationService.createSelfRegisteredCompany).not.toHaveBeenCalled();
       expect(accountService.bindCustomerOrganization).not.toHaveBeenCalled();
+    });
+
+    it('仅有历史 LEFT 关系 → 允许新建未受管公司并写 CUSTOMER 关系', async () => {
+      (organizationMembershipQueryService.listMembershipsForBinding as jest.Mock).mockResolvedValue(
+        [membershipOf(555, { membershipStatus: 'LEFT' })],
+      );
+
+      const outcome = await execute({ organizationName: '全新公司' });
+
+      expect(outcome.isUpdated).toBe(true);
+      expect(organizationService.createSelfRegisteredCompany).toHaveBeenCalledTimes(1);
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledTimes(1);
+      expect(organizationMembershipService.insertMembership).toHaveBeenCalledWith(
+        {
+          organizationId: SELF_FILLED_ORGANIZATION_ID,
+          accountId: ACCOUNT_ID,
+          memberRole: IdentityTypeEnum.CUSTOMER,
+        },
+        harness.txContext,
+      );
     });
   });
 

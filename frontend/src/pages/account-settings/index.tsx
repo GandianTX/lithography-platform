@@ -54,7 +54,12 @@ export function AccountSettingsPage() {
         canSupplementCompany={canSupplementCompany}
         onCompanySupplemented={async () => {
           try {
-            await refreshCurrentAuthSessionIdentity();
+            const outcome = await refreshCurrentAuthSessionIdentity();
+            // stale：本次复核不代表当前会话（并发刷新覆盖 / 迟到 / 已切换账号），
+            // 不能把页面展示当作已确认，提示用户重新刷新或登录
+            if (outcome.status === 'stale') {
+              message.warning(t('account.supplementRefreshWarning'));
+            }
           } catch {
             // 权威视图已确认更新；会话刷新失败只提示，不推翻页面上已写入的公司事实
             message.warning(t('account.supplementRefreshWarning'));

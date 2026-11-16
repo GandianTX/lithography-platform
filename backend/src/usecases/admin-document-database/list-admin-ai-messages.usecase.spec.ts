@@ -1,8 +1,15 @@
 // src/usecases/admin-document-database/list-admin-ai-messages.usecase.spec.ts
 
 import type { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
-import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
+import {
+  DomainError,
+  ORGANIZATION_ERROR,
+  PERMISSION_ERROR,
+} from '@core/common/errors/domain-error';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiMessageQueryService } from '@src/modules/lithography/queries/admin-ai-message.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { createAdminDocumentDatabaseAccessMocks } from '../../../test/support/account/admin-document-database-access.fixture';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -44,9 +51,26 @@ describe('ListAdminAiMessagesUsecase', () => {
     }),
   } as unknown as AdminAiMessageQueryService;
 
-  const usecase = new ListAdminAiMessagesUsecase(adminAiMessageQueryService);
+  const access = createAdminDocumentDatabaseAccessMocks();
+
+  const accountQueryService = {
+    findAdminLevelByAccountId: access.findAdminLevelByAccountId,
+  } as unknown as AccountQueryService;
+
+  const organizationContextService = {
+    resolveForAccount: access.resolveForAccount,
+  } as unknown as TrustedOrganizationContextQueryService;
+
+  const usecase = new ListAdminAiMessagesUsecase(
+    adminAiMessageQueryService,
+    accountQueryService,
+    organizationContextService,
+  );
 
   beforeEach(() => {
+    access.setAdminLevel(1);
+    access.setMembershipError(null);
+    access.findAdminLevelByAccountId.mockClear();
     (adminAiMessageQueryService.listByConversation as jest.Mock).mockClear();
   });
 
@@ -63,8 +87,44 @@ describe('ListAdminAiMessagesUsecase', () => {
 
       expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
       expect(adminAiMessageQueryService.listByConversation).not.toHaveBeenCalled();
+      expect(access.findAdminLevelByAccountId).not.toHaveBeenCalled();
+      expect(access.resolveForAccount).not.toHaveBeenCalled();
     },
   );
+
+  it.each([2, null])('当前等级 %j 时失败关闭，不触发消息查询', async (level) => {
+    access.setAdminLevel(level);
+
+    const error = (await captureThrownError(
+      usecase.execute({
+        session: createSuperAdminSession(),
+        conversationId: 660001,
+        pagination: offsetPagination(),
+      }),
+    )) as { code?: string; message?: string };
+
+    expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
+    expect(error.message).toContain('仅一级管理员可以查看 AI 会话消息');
+    expect(adminAiMessageQueryService.listByConversation).not.toHaveBeenCalled();
+    expect(access.resolveForAccount).not.toHaveBeenCalled();
+  });
+
+  it('可信成员事实缺失时失败关闭，不触发消息查询', async () => {
+    access.setMembershipError(
+      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
+    );
+
+    const error = (await captureThrownError(
+      usecase.execute({
+        session: createSuperAdminSession(),
+        conversationId: 660001,
+        pagination: offsetPagination(),
+      }),
+    )) as { code?: string };
+
+    expect(error.code).toBe(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP);
+    expect(adminAiMessageQueryService.listByConversation).not.toHaveBeenCalled();
+  });
 
   it.each([0, -1, 1.5, Number.NaN])('会话 ID %j 非法时在查询前拒绝', async (conversationId) => {
     const error = (await captureThrownError(

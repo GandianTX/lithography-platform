@@ -179,7 +179,7 @@ beforeEach(() => {
   navigateMock.mockReset();
   refreshIdentityMock.mockReset();
   condLogoutMock.mockResolvedValue(true);
-  refreshIdentityMock.mockResolvedValue(true);
+  refreshIdentityMock.mockResolvedValue({ status: 'unchanged' });
   panelState.capturedAccountId = null;
   panelState.identityToDeliver = null;
   panelState.sampledIdentity = 'unsampled';
@@ -385,6 +385,22 @@ describe('AccountSettingsPage 公司补录接线', () => {
 
     await waitFor(() => expect(refreshIdentityMock).toHaveBeenCalledTimes(1));
     expect(refreshIdentityMock).toHaveBeenCalledWith();
+  });
+
+  it('会话复核 stale（迟到 / 被并发覆盖）：不作为当前会话结论，提示刷新', async () => {
+    panelState.authSession = { restriction: 'NONE', role: 'CUSTOMER' };
+    refreshIdentityMock.mockResolvedValue({ status: 'stale' });
+    const warningSpy = vi.spyOn(message, 'warning').mockImplementation(() => undefined as never);
+    await renderAccountSettingsPage();
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟公司补录成功' }));
+
+    await waitFor(() =>
+      expect(warningSpy).toHaveBeenCalledWith(
+        '公司信息已更新，但会话信息刷新失败，请刷新页面查看最新归属。',
+      ),
+    );
+    expect(refreshIdentityMock).toHaveBeenCalledTimes(1);
   });
 
   it('会话刷新失败：只以 warning 提示，不向卡片抛错（权威视图不回滚）', async () => {

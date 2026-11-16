@@ -124,7 +124,7 @@ describe('fetchMyAccountSettings', () => {
 describe('updateMyAccountSettingsProfile 三态 input 构造', () => {
   it('realName 三态：undefined 省略（不修改）、null 保留（清空）、字符串原样传递（设置）', async () => {
     executeGraphQLMock.mockResolvedValue({
-      updateMyAccountSettings: { isUpdated: true, settings: SETTINGS_DTO },
+      updateMyAccountProfile: { isUpdated: true, settings: SETTINGS_DTO },
     });
 
     await updateMyAccountSettingsProfile({
@@ -134,13 +134,19 @@ describe('updateMyAccountSettingsProfile 三态 input 构造', () => {
       realName: null,
     });
 
-    expect(executeGraphQLMock).toHaveBeenCalledWith(expect.stringContaining('mutation'), {
-      input: {
-        contactEmail: 'new-contact@example.com',
-        nickname: '新昵称',
-        realName: null,
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('mutation UpdateMyAccountProfile'),
+      {
+        input: {
+          contactEmail: 'new-contact@example.com',
+          nickname: '新昵称',
+          realName: null,
+        },
       },
-    });
+    );
+    // 窄写入口：文档不含旧广协议输入，结构上不可能提交凭据 / 公司字段
+    const document = executeGraphQLMock.mock.calls[0]?.[0] as string;
+    expect(document).not.toContain('UpdateMyAccountSettingsInput');
     const input = executeGraphQLMock.mock.calls[0]?.[1] as { input: Record<string, unknown> };
 
     expect(Object.keys(input.input).sort()).toEqual(['contactEmail', 'nickname', 'realName']);
@@ -167,7 +173,7 @@ describe('updateMyAccountSettingsProfile 三态 input 构造', () => {
 
   it('草稿全部字段缺省时提交空 input，adapter 不做 trim 或业务裁决', async () => {
     executeGraphQLMock.mockResolvedValue({
-      updateMyAccountSettings: { isUpdated: false, settings: SETTINGS_DTO },
+      updateMyAccountProfile: { isUpdated: false, settings: SETTINGS_DTO },
     });
 
     await updateMyAccountSettingsProfile({});
@@ -181,7 +187,7 @@ describe('updateMyAccountSettingsProfile 三态 input 构造', () => {
 describe('updateMyAccountSettingsProfile 成功', () => {
   it('返回后端权威视图与 isUpdated 标记', async () => {
     executeGraphQLMock.mockResolvedValue({
-      updateMyAccountSettings: {
+      updateMyAccountProfile: {
         isUpdated: true,
         settings: { ...SETTINGS_DTO, realName: '李四' },
       },
@@ -196,7 +202,7 @@ describe('updateMyAccountSettingsProfile 成功', () => {
 
   it('后端判定同值（isUpdated=false）时同样回传权威视图', async () => {
     executeGraphQLMock.mockResolvedValue({
-      updateMyAccountSettings: { isUpdated: false, settings: SETTINGS_DTO },
+      updateMyAccountProfile: { isUpdated: false, settings: SETTINGS_DTO },
     });
 
     await expect(updateMyAccountSettingsProfile({ nickname: '陈工' })).resolves.toEqual({

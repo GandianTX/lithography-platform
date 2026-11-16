@@ -38,7 +38,7 @@ import type { AssistantRouteCandidate } from '@/entities/assistant-session';
 
 import { LanguageSwitch } from '@/shared/ui/language-switch';
 
-import { EngineerApprovalNotice } from './engineer-approval-notice';
+import { EngineerApprovalGate } from './engineer-approval-gate';
 import { EntryAccentGlyph } from './entry-accent-glyph';
 import {
   NavBookOpenIcon,
@@ -376,10 +376,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
           知识库页按精确路由切换纯色铺满变体，其余页面保持通用基准（PR3 R7） */}
       <main className={workspaceClassName}>
         <div className={mainClassName}>
-          {/* 资格刚生效的一次性批准提示：常驻布局层，避免被 /restricted → 角色主页
-              的收口跳转卸载；是否显示完全依据服务端确认的 restriction 与账号标记 */}
-          <EngineerApprovalNotice />
-          {children ?? <Outlet />}
+          {/* 资格生效的批准结果门：在工作台内容挂载前用服务端事实确认本人批准结果，
+              确认后由用户显式「进入工作台」；门本身不改变路由授权。 */}
+          <EngineerApprovalGate>{children ?? <Outlet />}</EngineerApprovalGate>
         </div>
       </main>
 

@@ -41,3 +41,50 @@ export function assertAdminDocumentDatabasePermission(
     );
   }
 }
+
+/** 等级读取依赖（只暴露本断言需要的方法，便于用例单测注入替身）。 */
+export interface AdminLevelReader {
+  findAdminLevelByAccountId(accountId: number): Promise<number | null>;
+}
+
+/** 可信组织上下文依赖（组织/成员事实只能来自服务端读取，不接受客户端参数）。 */
+export interface TrustedOrganizationReader {
+  resolveForAccount(params: { accountId: number }): Promise<{ organizationId: number }>;
+}
+
+/**
+ * 管理员文档数据库全域入口的完整授权断言（等级 + 可信组织）。
+ *
+ * 与前端 `resolveAuthSessionAdminScope() === 'GLOBAL'` 同口径：仅
+ * `admin_level === 1` 且存在单一有效组织成员关系（成员 ACTIVE、组织 ACTIVE）的
+ * SUPER_ADMIN 可读全域文档数据库。缺等级、非法等级、二级管理员、成员停用/丢失、
+ * 多关系歧义一律失败关闭（`FORBIDDEN`），不做降级或回退全库。
+ *
+ * 顺序约束（报告 F1）：等级与成员事实必须在任何受保护业务读取之前完成。
+ * 等级取自 `base_user_account.admin_level` 的当前事实（不信任 JWT 静态等级/客户端参数），
+ * 成员事实取自 `TrustedOrganizationContextQueryService`。
+ *
+ * @returns 已解析的可信组织事实（统计入口复用，避免同一请求重复读取）
+ */
+export async function assertAdminDocumentDatabaseGlobalAccess(params: {
+  session: UsecaseSession;
+  accountQueryService: AdminLevelReader;
+  organizationContextService: TrustedOrganizationReader;
+  actionLabel: string;
+}): Promise<{ organizationId: number }> {
+  assertAdminDocumentDatabasePermission(params.session, params.actionLabel);
+
+  const adminLevel = await params.accountQueryService.findAdminLevelByAccountId(
+    params.session.accountId,
+  );
+  if (adminLevel !== 1) {
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      `仅一级管理员可以${params.actionLabel}`,
+    );
+  }
+
+  return params.organizationContextService.resolveForAccount({
+    accountId: params.session.accountId,
+  });
+}

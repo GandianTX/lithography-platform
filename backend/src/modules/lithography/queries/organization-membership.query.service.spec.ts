@@ -105,6 +105,64 @@ describe('OrganizationMembershipQueryService', () => {
     expect(organizationRepo.find).not.toHaveBeenCalled();
   });
 
+  it('补录核对全集：保留 LEFT 历史关系与停用组织上的 ACTIVE 关系', async () => {
+    const membershipRepo = makeMembershipRepo();
+    const organizationRepo = makeOrganizationRepo();
+    membershipRepo.find.mockResolvedValue([
+      membershipEntity({ id: 915001, organizationId: 910001, memberRole: 'ENGINEER' }),
+      membershipEntity({ id: 915002, organizationId: 910002, status: 'LEFT' }),
+    ]);
+    organizationRepo.find.mockResolvedValue([
+      organizationEntity({ id: 910001, status: 'DISABLED' }),
+      organizationEntity({ id: 910002, status: 'ACTIVE' }),
+    ]);
+    const service = new OrganizationMembershipQueryService(
+      membershipRepo as never,
+      organizationRepo as never,
+    );
+
+    const facts = await service.listMembershipsForBinding({ accountId: 900101 });
+
+    // 不按有效口径过滤：成员状态维度由调用方裁决，组织状态原样回传
+    expect(membershipRepo.find).toHaveBeenCalledWith({
+      where: { accountId: 900101 },
+      order: { id: 'ASC' },
+    });
+    const organizationWhere = organizationRepo.find.mock.calls[0]?.[0] as {
+      where: { id: unknown };
+    };
+    expect(findOperatorValue(organizationWhere.where.id)).toEqual([910001, 910002]);
+    expect(facts).toEqual([
+      {
+        membershipId: 915001,
+        organizationId: 910001,
+        memberRole: 'ENGINEER',
+        membershipStatus: 'ACTIVE',
+        organizationStatus: 'DISABLED',
+      },
+      {
+        membershipId: 915002,
+        organizationId: 910002,
+        memberRole: 'ENGINEER',
+        membershipStatus: 'LEFT',
+        organizationStatus: 'ACTIVE',
+      },
+    ]);
+  });
+
+  it('补录核对全集：组织行缺失的成员关系被跳过', async () => {
+    const membershipRepo = makeMembershipRepo();
+    const organizationRepo = makeOrganizationRepo();
+    membershipRepo.find.mockResolvedValue([membershipEntity()]);
+    organizationRepo.find.mockResolvedValue([]);
+    const service = new OrganizationMembershipQueryService(
+      membershipRepo as never,
+      organizationRepo as never,
+    );
+
+    await expect(service.listMembershipsForBinding({ accountId: 900101 })).resolves.toEqual([]);
+  });
+
   it('按账号与组织校验有效成员资格：命中时返回事实', async () => {
     const membershipRepo = makeMembershipRepo();
     const organizationRepo = makeOrganizationRepo();

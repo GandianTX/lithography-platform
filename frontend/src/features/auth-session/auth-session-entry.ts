@@ -60,24 +60,37 @@ export function updateCurrentAuthSessionNickname(accountId: number, nickname: st
 }
 
 /**
+ * 一次会话身份复核的可判定结果。
+ *
+ * 调用方需要区分「服务端事实已确认但无变化」与「本次响应不代表当前会话」：
+ * - `applied`：同账号同会话代次，服务端快照已写入并改变会话事实；
+ * - `unchanged`：同账号同会话代次，服务端快照合法且与当前事实一致；
+ * - `stale`：无会话、被更新的请求覆盖、账号/会话代次已变化或快照不合法——
+ *   本次响应不得被当作当前会话的复核结论（迟到响应不得提升或回退资格）。
+ */
+export type AuthSessionIdentityRefreshOutcome =
+  | { status: 'applied' }
+  | { status: 'unchanged' }
+  | { status: 'stale' };
+
+/**
  * 启动 / 刷新时用服务端当前复核结果校对会话限制状态。
  *
  * 身份（账号 + 会话代次）在请求发起前采样；响应回来时若会话已变化（退出重登 /
- * 切换账号），store 侧拒绝写入。返回是否实际更新了会话；无会话、响应不合法或
- * 值无变化返回 false。网络 / 认证失败按既有 ingress 链路上抛，由调用方决定是否
- * 静默（UNAUTHENTICATED 已由全局 auth failure handler 收口）。
+ * 切换账号），store 侧拒绝写入。网络 / 认证失败按既有 ingress 链路上抛，由调用方
+ * 决定是否静默（UNAUTHENTICATED 已由全局 auth failure handler 收口）。
  *
- * 并发保护：壳层启动复核、受限页显式刷新与批准提示的进入前复核可能重叠；
+ * 并发保护：壳层启动复核、受限页显式刷新与批准结果的进入前复核可能重叠；
  * 只允许**最新一次**请求写入，更早请求的迟到响应一律丢弃，避免把刚确认的
  * NONE 回退成旧限制（旧响应也不得提升资格）。
  */
 let identityRefreshSeq = 0;
 
-export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
+export async function refreshCurrentAuthSessionIdentity(): Promise<AuthSessionIdentityRefreshOutcome> {
   const identity = authSessionStore.sampleSessionIdentity();
 
   if (!identity) {
-    return false;
+    return { status: 'stale' };
   }
 
   const seq = identityRefreshSeq + 1;
@@ -87,14 +100,24 @@ export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
 
   // 已有更新的复核请求发出：本次响应过期，不得写入
   if (seq !== identityRefreshSeq) {
-    return false;
+    return { status: 'stale' };
   }
 
   if (!snapshot || snapshot.accountId !== identity.accountId || snapshot.restriction === null) {
-    return false;
+    return { status: 'stale' };
   }
 
-  return authSessionStore.applySessionIdentity({
+  // 等待期间退出重登或切换账号：响应描述的不再是当前会话
+  const currentIdentity = authSessionStore.sampleSessionIdentity();
+  if (
+    !currentIdentity ||
+    currentIdentity.accountId !== identity.accountId ||
+    currentIdentity.epoch !== identity.epoch
+  ) {
+    return { status: 'stale' };
+  }
+
+  const applied = authSessionStore.applySessionIdentity({
     identity,
     adminLevel: snapshot.adminLevel,
     customerOrganizationId: snapshot.customerOrganizationId,
@@ -103,6 +126,8 @@ export async function refreshCurrentAuthSessionIdentity(): Promise<boolean> {
     registrationOrganizationId: snapshot.registrationOrganizationId,
     restriction: snapshot.restriction,
   });
+
+  return applied ? { status: 'applied' } : { status: 'unchanged' };
 }
 
 // loginWithPassword 仅供 feature 内部（LoginForm）相对导入使用，不属于模块公开 API；

@@ -71,7 +71,35 @@ export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
     accessGroup: [IdentityTypeEnum.CUSTOMER],
     identityType: IdentityTypeEnum.CUSTOMER,
   },
-} satisfies Record<'admin' | 'engineer' | 'customer', TestAccountConfig>;
+  // F1 全域授权反例：同为 SUPER_ADMIN 会话，但等级/成员事实不满足全域入口
+  adminLevel2: {
+    loginName: 'testpr3coreadminl2',
+    loginEmail: 'pr3.core.admin.l2@example.com',
+    loginPassword: 'TestPr3CoreAdminL2@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+  adminNoLevel: {
+    loginName: 'testpr3coreadminnolevel',
+    loginEmail: 'pr3.core.admin.nolevel@example.com',
+    loginPassword: 'TestPr3CoreAdminNoLevel@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+  adminNoOrg: {
+    loginName: 'testpr3coreadminnoorg',
+    loginEmail: 'pr3.core.admin.noorg@example.com',
+    loginPassword: 'TestPr3CoreAdminNoOrg@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+} satisfies Record<
+  'admin' | 'engineer' | 'customer' | 'adminLevel2' | 'adminNoLevel' | 'adminNoOrg',
+  TestAccountConfig
+>;
 
 export type AdminDocFixtureAccountKey = keyof typeof ADMIN_DOC_FIXTURE_ACCOUNTS;
 

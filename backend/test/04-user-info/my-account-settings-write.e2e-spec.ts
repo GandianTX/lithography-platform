@@ -107,6 +107,15 @@ const UPDATE_MY_ACCOUNT_SETTINGS_MUTATION = `
   }
 `;
 
+const UPDATE_MY_ACCOUNT_PROFILE_MUTATION = `
+  mutation UpdateMyAccountProfile($input: UpdateMyAccountProfileInput!) {
+    updateMyAccountProfile(input: $input) {
+      isUpdated
+      settings { ${MY_ACCOUNT_SETTINGS_FIELDS} }
+    }
+  }
+`;
+
 const CHANGE_MY_PASSWORD_MUTATION = `
   mutation ChangeMyPassword($input: ChangeMyPasswordInput!) {
     changeMyPassword(input: $input) { isUpdated notice }
@@ -259,6 +268,12 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   ): Promise<GqlBody<{ updateMyAccountSettings?: UpdateSettingsPayload }>> =>
     gql({ query: UPDATE_MY_ACCOUNT_SETTINGS_MUTATION, variables: { input }, token });
 
+  const updateProfile = (
+    token: string | undefined,
+    input: Record<string, unknown>,
+  ): Promise<GqlBody<{ updateMyAccountProfile?: UpdateSettingsPayload }>> =>
+    gql({ query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION, variables: { input }, token });
+
   const changePassword = (
     token: string | undefined,
     input: Record<string, unknown>,
@@ -393,12 +408,16 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
   // ---------------------------------------------------------------------------
 
   describe('契约面', () => {
-    it('Mutation root 暴露两个写操作', async () => {
+    it('Mutation root 暴露旧广写、Web 窄写与改密三个写操作', async () => {
       const body = await gql<IntrospectionPayload>({ query: SCHEMA_ROOT_QUERY, token: adminToken });
       expect(body.errors).toBeUndefined();
       const names = (body.data?.__schema?.mutationType?.fields ?? []).map((f) => f.name);
       expect(names).toEqual(
-        expect.arrayContaining(['updateMyAccountSettings', 'changeMyPassword']),
+        expect.arrayContaining([
+          'updateMyAccountSettings',
+          'updateMyAccountProfile',
+          'changeMyPassword',
+        ]),
       );
     });
 
@@ -424,6 +443,37 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
         'role',
         'status',
         'adminLevel',
+        'trustedCompanyName',
+        'identityHint',
+        'accessGroup',
+        'metaDigest',
+        'userState',
+        'password',
+        'currentPassword',
+        'newPassword',
+      ]) {
+        expect(fields).not.toContain(forbidden);
+      }
+    });
+
+    it('UpdateMyAccountProfileInput 只有四个资料字段，不含凭据/公司/身份/归属字段', async () => {
+      const body = await gql<IntrospectionPayload>({
+        query: TYPE_FIELDS_QUERY,
+        variables: { name: 'UpdateMyAccountProfileInput' },
+        token: adminToken,
+      });
+      expect(body.errors).toBeUndefined();
+      const fields = (body.data?.__type?.inputFields ?? []).map((f) => f.name).sort();
+      expect(fields).toEqual(['contactEmail', 'nickname', 'phone', 'realName']);
+      for (const forbidden of [
+        'loginName',
+        'loginEmail',
+        'companyName',
+        'accountId',
+        'role',
+        'adminLevel',
+        'status',
+        'customerOrganizationId',
         'trustedCompanyName',
         'identityHint',
         'accessGroup',
@@ -512,6 +562,60 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       expect(accountRow?.status).toBe(AccountStatus.ACTIVE);
       expect(userInfoRow?.userState).toBe(UserState.ACTIVE);
       expect(userInfoRow?.accessGroup).toEqual([IdentityTypeEnum.CUSTOMER]);
+    });
+
+    it('Web 窄写入口硬塞凭据/公司/身份/归属字段被 GraphQL 校验拒绝，且零写入', async () => {
+      const beforeSettings = await readMySettings(guestToken);
+      const beforeAccount = await readAccountRow(guestAccountId);
+      const beforeUserInfo = await readUserInfoRow(guestAccountId);
+
+      const body = await updateProfile(guestToken, {
+        nickname: 'narrow_should_not_persist',
+        loginName: 'narrow_hijack',
+        loginEmail: 'narrow.hijack@example.com',
+        companyName: '窄写不可写公司',
+        accountId: guestAccountId,
+        role: 'SUPER_ADMIN',
+        adminLevel: 1,
+        status: AccountStatus.INACTIVE,
+        customerOrganizationId: 987654321,
+      });
+
+      expect(body.data?.updateMyAccountProfile).toBeUndefined();
+      expect(body.errors?.length).toBeGreaterThan(0);
+      body.errors?.forEach((error) => {
+        expect(error.extensions?.code).toBe('BAD_USER_INPUT');
+      });
+      const messages = (body.errors ?? []).map((error) => error.message).join(' | ');
+      for (const field of [
+        'loginName',
+        'loginEmail',
+        'companyName',
+        'accountId',
+        'role',
+        'adminLevel',
+        'status',
+        'customerOrganizationId',
+      ]) {
+        expect(messages).toContain(
+          `Field "${field}" is not defined by type "UpdateMyAccountProfileInput"`,
+        );
+      }
+
+      const afterSettings = await readMySettings(guestToken);
+      expect(afterSettings.data?.myAccountSettings?.nickname).toBe(
+        beforeSettings.data?.myAccountSettings?.nickname,
+      );
+      expect(afterSettings.data?.myAccountSettings?.role).toBe(IdentityTypeEnum.CUSTOMER);
+      expect(afterSettings.data?.myAccountSettings?.status).toBe(AccountStatus.ACTIVE);
+      const afterAccount = await readAccountRow(guestAccountId);
+      const afterUserInfo = await readUserInfoRow(guestAccountId);
+      expect(afterAccount?.loginName).toBe(beforeAccount?.loginName);
+      expect(afterAccount?.loginEmail).toBe(beforeAccount?.loginEmail);
+      expect(afterAccount?.status).toBe(AccountStatus.ACTIVE);
+      expect(afterUserInfo?.companyName).toBe(beforeUserInfo?.companyName);
+      expect(afterUserInfo?.userState).toBe(UserState.ACTIVE);
+      expect(afterUserInfo?.accessGroup).toEqual([IdentityTypeEnum.CUSTOMER]);
     });
   });
 
@@ -911,6 +1015,71 @@ describe('当前用户账号设置写链路 updateMyAccountSettings / changeMyPa
       // 未认证请求不得留下任何写入
       const after = await readMySettings(guestToken);
       expect(after.data?.myAccountSettings?.nickname).toBe('guest_profile_round2');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8. Web 正式资料页窄写入口（F5）
+  // ---------------------------------------------------------------------------
+
+  describe('Web 正式资料窄写入口', () => {
+    it('四个资料字段可写并落库；登录凭据与展示公司字段不被改动', async () => {
+      const beforeSettings = await readMySettings(guestToken);
+      const beforeAccount = await readAccountRow(guestAccountId);
+
+      const body = await updateProfile(guestToken, {
+        nickname: 'guest_narrow_profile',
+        realName: '窄写姓名',
+        phone: '13700002222',
+        contactEmail: 'narrow.contact@example.com',
+      });
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.updateMyAccountProfile?.isUpdated).toBe(true);
+      const settings = body.data?.updateMyAccountProfile?.settings;
+      expect(settings).toMatchObject({
+        nickname: 'guest_narrow_profile',
+        realName: '窄写姓名',
+        phone: '13700002222',
+        contactEmail: 'narrow.contact@example.com',
+      });
+      // 窄写入口不触碰登录凭据、展示公司与只读身份字段
+      expect(settings?.loginName).toBe(beforeSettings.data?.myAccountSettings?.loginName);
+      expect(settings?.loginEmail).toBe(beforeSettings.data?.myAccountSettings?.loginEmail);
+      expect(settings?.companyName).toBe(beforeSettings.data?.myAccountSettings?.companyName);
+      expect(settings?.role).toBe(IdentityTypeEnum.CUSTOMER);
+      expect(settings?.status).toBe(AccountStatus.ACTIVE);
+
+      const accountRow = await readAccountRow(guestAccountId);
+      const userInfoRow = await readUserInfoRow(guestAccountId);
+      expect(accountRow?.loginName).toBe(beforeAccount?.loginName);
+      expect(accountRow?.loginEmail).toBe(beforeAccount?.loginEmail);
+      expect(userInfoRow?.nickname).toBe('guest_narrow_profile');
+      expect(userInfoRow?.realName).toBe('窄写姓名');
+      expect(userInfoRow?.phone).toBe('13700002222');
+      expect(userInfoRow?.email).toBe('narrow.contact@example.com');
+      expect(userInfoRow?.userState).toBe(UserState.ACTIVE);
+      expect(userInfoRow?.accessGroup).toEqual([IdentityTypeEnum.CUSTOMER]);
+
+      updateOwnedExpectation(ownership, 'account', guestAccountId, {
+        nickname: 'guest_narrow_profile',
+        userInfoEmail: 'narrow.contact@example.com',
+      });
+    });
+
+    it('窄写入口同值提交返回 isUpdated:false，不产生无意义写入', async () => {
+      const body = await updateProfile(guestToken, { nickname: 'guest_narrow_profile' });
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.updateMyAccountProfile?.isUpdated).toBe(false);
+      expect(body.data?.updateMyAccountProfile?.settings?.nickname).toBe('guest_narrow_profile');
+    });
+
+    it('未认证调用窄写入口返回 UNAUTHENTICATED 且零写入', async () => {
+      const body = await updateProfile(undefined, { nickname: 'anonymous_narrow' });
+
+      expectSingleError(body, 'UNAUTHENTICATED');
+      expect((await readUserInfoRow(guestAccountId))?.nickname).toBe('guest_narrow_profile');
     });
   });
 });

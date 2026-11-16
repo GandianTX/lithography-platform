@@ -42,9 +42,14 @@ export const ZH_CN_MESSAGES = {
   'layout.approval.title': '申请已通过，权限已开通',
   'layout.approval.description':
     '审核结果已生效，权限已按服务端确认结果开通。进入工作台前会再次校验当前身份。',
+  'layout.approval.companyLabel': '申请公司',
+  'layout.approval.companyFallback': '公司 #{id}',
+  'layout.approval.loading': '正在确认审核结果…',
+  'layout.approval.loadFailed': '无法获取审核结果，请稍后重试。',
   'layout.approval.enter': '进入工作台',
   'layout.approval.verifyFailed': '身份校验失败，请稍后重试。',
   'layout.approval.stillRestricted': '当前身份尚未确认开通，仍保持受限访问，请稍后重试。',
+  'layout.approval.staleSession': '当前会话已变化，请刷新页面或重新登录后重试。',
 
   // 导航目录
   'nav.home.label': '首页',

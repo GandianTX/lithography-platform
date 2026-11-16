@@ -214,20 +214,26 @@ export class AccountService {
     await repository.update(id, updateData);
   }
 
+  /**
+   * 覆盖登录密码哈希，并可选地在同一 UPDATE 内设置强制改密标记。
+   *
+   * `mustChangePassword`：
+   * - `true`：管理员重置密码后要求本人下次登录先改密；
+   * - `false`：本人完成改密后清除标记；
+   * - 省略：不触碰该列（注册 / 创建 / 公开重置等既有链路保持原语义）。
+   */
   async updateAccountPasswordHash(params: {
     accountId: number;
     passwordHash: string;
     transactionContext?: PersistenceTransactionContext;
-    /** 为 true 时在同一 UPDATE 内清除 `must_change_password` 标记 */
-    clearMustChangePassword?: boolean;
-    /** 为 true 时在同一 UPDATE 内置位 `must_change_password`（管理员重置为默认密码） */
-    setMustChangePassword?: boolean;
+    mustChangePassword?: boolean;
   }): Promise<void> {
     const repository = this.getAccountRepository(params.transactionContext);
     await repository.update(params.accountId, {
       loginPassword: params.passwordHash,
-      ...(params.clearMustChangePassword === true ? { mustChangePassword: false } : {}),
-      ...(params.setMustChangePassword === true ? { mustChangePassword: true } : {}),
+      ...(params.mustChangePassword === undefined
+        ? {}
+        : { mustChangePassword: params.mustChangePassword }),
       updatedAt: new Date(),
     });
   }

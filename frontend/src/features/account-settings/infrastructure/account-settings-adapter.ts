@@ -71,9 +71,9 @@ ${MY_ACCOUNT_SETTINGS_FIELDS}
   }
 `;
 
-const UPDATE_MY_ACCOUNT_SETTINGS_MUTATION = `
-  mutation UpdateMyAccountSettings($input: UpdateMyAccountSettingsInput!) {
-    updateMyAccountSettings(input: $input) {
+const UPDATE_MY_ACCOUNT_PROFILE_MUTATION = `
+  mutation UpdateMyAccountProfile($input: UpdateMyAccountProfileInput!) {
+    updateMyAccountProfile(input: $input) {
       isUpdated
       settings {
 ${MY_ACCOUNT_SETTINGS_FIELDS}
@@ -122,19 +122,16 @@ type MyAccountSettingsQueryData = {
   myAccountSettings: MyAccountSettingsDto;
 };
 
-type UpdateMyAccountSettingsData = {
-  updateMyAccountSettings: UpdateMyAccountSettingsResultDto;
+type UpdateMyAccountProfileData = {
+  updateMyAccountProfile: UpdateMyAccountSettingsResultDto;
 };
 
 type ChangeMyPasswordData = {
   changeMyPassword: ChangeMyPasswordResultDto;
 };
 
-type UpdateMyAccountSettingsInputDto = {
-  companyName?: string | null;
+type UpdateMyAccountProfileInputDto = {
   contactEmail?: string | null;
-  loginEmail?: string | null;
-  loginName?: string | null;
   nickname?: string;
   phone?: string | null;
   realName?: string | null;
@@ -233,8 +230,8 @@ export async function fetchMyAccountSettings(): Promise<AccountSettingsView> {
  * 字符串原样传递（设置）。本函数不做 trim / 业务裁决——草稿由调用方按当前视图 diff 生成。
  * 本页只写 realName / nickname / phone / contactEmail；登录名与登录邮箱等旧字段不再由本页编辑。
  */
-function toUpdateInput(draft: AccountSettingsProfileDraft): UpdateMyAccountSettingsInputDto {
-  const input: UpdateMyAccountSettingsInputDto = {};
+function toUpdateInput(draft: AccountSettingsProfileDraft): UpdateMyAccountProfileInputDto {
+  const input: UpdateMyAccountProfileInputDto = {};
 
   if (draft.realName !== undefined) {
     input.realName = draft.realName;
@@ -261,14 +258,14 @@ export async function updateMyAccountSettingsProfile(
 ): Promise<AccountSettingsProfileUpdateResult> {
   try {
     const data = await executeGraphQL<
-      UpdateMyAccountSettingsData,
-      { input: UpdateMyAccountSettingsInputDto }
-    >(UPDATE_MY_ACCOUNT_SETTINGS_MUTATION, { input: toUpdateInput(draft) });
+      UpdateMyAccountProfileData,
+      { input: UpdateMyAccountProfileInputDto }
+    >(UPDATE_MY_ACCOUNT_PROFILE_MUTATION, { input: toUpdateInput(draft) });
 
     return {
-      isUpdated: data.updateMyAccountSettings.isUpdated,
+      isUpdated: data.updateMyAccountProfile.isUpdated,
       ok: true,
-      settings: mapMyAccountSettingsDtoToView(data.updateMyAccountSettings.settings),
+      settings: mapMyAccountSettingsDtoToView(data.updateMyAccountProfile.settings),
     };
   } catch (error) {
     const failure = toCommandFailure(error, PROFILE_REASON_BY_CATEGORY_CODE);

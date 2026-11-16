@@ -1,4 +1,5 @@
 // test/04-user-info/admin-user-management.e2e-spec.ts
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import {
   AccountStatus,
   AudienceTypeEnum,
@@ -60,6 +61,12 @@ import {
  * - `guestPrimary`(CUSTOMER,A)、`staffPrimary`(ENGINEER,A)；
  * - `guestSecondary`(CUSTOMER,B)、`staffSecondary`(ENGINEER,B)；
  * - `noOrgEngineer`：ENGINEER，无任何成员关系（一级可见，二级不可见/不可写）。
+ *
+ * 与定向单测（`src/usecases/account/*.spec.ts` / `src/modules/account/queries/*.spec.ts`）的分工：
+ * - 单测断言**协作契约**（写入顺序、事务边界、单元素数组、盐口径、日志脱敏）；
+ * - 本文件断言**跨进程可观察事实**：三源角色列在真实数据库里确实一致、双字段状态确实同步、
+ *   重置后的密码可登录但被强制改密收口、本人改密后恢复完整会话、错误确实以契约大类出现在
+ *   `extensions.code` 上。
  *
  * 造数纪律：
  * - 直接改库只有两处，且都没有业务入口：a) 两个管理员的 `admin_level`；b) 客户账号的
@@ -164,7 +171,7 @@ const ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION = `
 
 const LOGIN_MUTATION = `
   mutation Login($input: AuthLoginInput!) {
-    login(input: $input) { accessToken }
+    login(input: $input) { accessToken restriction }
   }
 `;
 
@@ -212,6 +219,7 @@ const EMAIL_ONLY_LOGIN_EMAIL = 'e2e.email.only@example.com';
 const EMAIL_ONLY_INITIAL_PASSWORD = 'E2eEmailOnly@2026';
 
 const RESET_NEW_PASSWORD = 'E2eResetPwd@2027';
+const RESET_FINAL_PASSWORD = 'E2eResetFinal@2029';
 const RESET_INACTIVE_PASSWORD = 'E2eInactivePwd@2028';
 
 /** 默认密码重置后，目标用户自助改密使用的新密码（与默认密码不同即可） */
@@ -736,6 +744,7 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   const attemptLogin = (
     loginName: string,
     loginPassword: string,
+    options?: { allowRestrictedSession?: boolean },
   ): Promise<GqlBody<{ login?: LoginPayload }>> =>
     gql({
       query: LOGIN_MUTATION,
@@ -745,6 +754,7 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
           loginPassword,
           type: LoginTypeEnum.PASSWORD,
           audience: AudienceTypeEnum.DESKTOP,
+          ...(options?.allowRestrictedSession === true ? { allowRestrictedSession: true } : {}),
         },
       },
     });
@@ -1947,9 +1957,15 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   });
 
   describe('密码重置 adminResetUserPassword（一级管理员成功路径）', () => {
-    it('ACTIVE 目标重置成功：结果只含固定三项、新密码可登录、旧密码立即失效、响应不含密码派生物', async () => {
+    it('ACTIVE 目标重置成功：新密码只能受限登录、本人改密后恢复完整会话、响应不含密码派生物', async () => {
       await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
       const hashBefore = (await readAccountRow(guestSecondaryAccountId))?.loginPassword;
+      // 重置前签发的 Token：用于核验每请求复核会读到新的强改标记（不声称服务端撤销了 Token）
+      const preResetToken = await login({
+        app,
+        loginName: testAccountsConfig.guestSecondary.loginName,
+        loginPassword: testAccountsConfig.guestSecondary.loginPassword,
+      });
 
       const body = await resetUserPassword(adminToken, {
         accountId: guestSecondaryAccountId,
@@ -1969,17 +1985,64 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(serialized).not.toContain(RESET_NEW_PASSWORD);
       expect(serialized).not.toContain(RESET_NEW_PASSWORD.toLowerCase());
 
-      // 口令哈希确实被改写，且不是明文
-      const hashAfter = (await readAccountRow(guestSecondaryAccountId))?.loginPassword;
+      // 口令哈希确实被改写，且不是明文；强制改密标记与哈希在同一事务内一并置位
+      const rowAfterReset = await readAccountRow(guestSecondaryAccountId);
+      const hashAfter = rowAfterReset?.loginPassword;
       expect(hashAfter).toBeTruthy();
       expect(hashAfter).not.toBe(hashBefore);
       expect(hashAfter ?? '').not.toContain(RESET_NEW_PASSWORD);
+      expect(rowAfterReset?.mustChangePassword).toBe(true);
 
-      // 新密码经公开登录入口可验证，并可访问受保护查询
+      // 新密码可通过公开登录入口验证，但会话被强制改密限制
+      const restrictedLogin = await attemptLogin(
+        testAccountsConfig.guestSecondary.loginName,
+        RESET_NEW_PASSWORD,
+        { allowRestrictedSession: true },
+      );
+      expect(restrictedLogin.errors).toBeUndefined();
+      expect(restrictedLogin.data?.login?.restriction).toBe(
+        SessionRestriction.MUST_CHANGE_PASSWORD,
+      );
+      const restrictedToken = restrictedLogin.data?.login?.accessToken;
+      if (typeof restrictedToken !== 'string') {
+        throw new Error('强制改密会话登录未返回 accessToken');
+      }
+
+      // 受限会话不能穿透到业务查询
+      const denied = await gql<{ userInfo?: { nickname?: string } }>({
+        query: USER_INFO_QUERY,
+        variables: { id: guestSecondaryAccountId },
+        token: restrictedToken,
+      });
+      expect(denied.data?.userInfo).toBeUndefined();
+      expect(denied.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(denied.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 重置前签发的 Token 仍能通过认证，但每请求复核读到新的强改标记后拒绝业务访问
+      const preResetAccess = await gql<{ userInfo?: { nickname?: string } }>({
+        query: USER_INFO_QUERY,
+        variables: { id: guestSecondaryAccountId },
+        token: preResetToken,
+      });
+      expect(preResetAccess.data?.userInfo).toBeUndefined();
+      expect(preResetAccess.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(preResetAccess.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 本人用重置出的初始凭据完成首次改密：真正换密并清除强改标记
+      const changed = await changeMyPassword(
+        restrictedToken,
+        RESET_NEW_PASSWORD,
+        RESET_FINAL_PASSWORD,
+      );
+      expect(changed.errors).toBeUndefined();
+      expect(changed.data?.changeMyPassword?.isUpdated).toBe(true);
+      expect((await readAccountRow(guestSecondaryAccountId))?.mustChangePassword).toBe(false);
+
+      // 完成改密后恢复 NONE，可访问受保护查询
       const freshToken = await login({
         app,
         loginName: testAccountsConfig.guestSecondary.loginName,
-        loginPassword: RESET_NEW_PASSWORD,
+        loginPassword: RESET_FINAL_PASSWORD,
       });
       const access = await gql<{ userInfo?: { nickname?: string } }>({
         query: USER_INFO_QUERY,
@@ -1989,16 +2052,23 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(access.errors).toBeUndefined();
       expect(access.data?.userInfo?.nickname).toBeTruthy();
 
-      // 旧密码立即失效
-      const staleLogin = await attemptLogin(
+      // 原始密码与管理员重置出的初始凭据均已失效
+      const staleSeedLogin = await attemptLogin(
         testAccountsConfig.guestSecondary.loginName,
         testAccountsConfig.guestSecondary.loginPassword,
       );
-      expect(staleLogin.data?.login?.accessToken).toBeFalsy();
-      expect(staleLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      expect(staleSeedLogin.data?.login?.accessToken).toBeFalsy();
+      expect(staleSeedLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      const staleResetLogin = await attemptLogin(
+        testAccountsConfig.guestSecondary.loginName,
+        RESET_NEW_PASSWORD,
+        { allowRestrictedSession: true },
+      );
+      expect(staleResetLogin.data?.login?.accessToken).toBeFalsy();
+      expect(staleResetLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     });
 
-    it('INACTIVE 目标（双字段一致）也允许重置，且不顺带改动状态双字段', async () => {
+    it('INACTIVE 目标（双字段一致）也允许重置，不顺带改动状态双字段，新密码仍被强制改密收口', async () => {
       await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.INACTIVE);
       expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
         accountStatus: AccountStatus.INACTIVE,
@@ -2016,15 +2086,18 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
         accountStatus: AccountStatus.INACTIVE,
         userState: UserState.INACTIVE,
       });
+      expect((await readAccountRow(guestSecondaryAccountId))?.mustChangePassword).toBe(true);
 
-      // 恢复 ACTIVE 后，重置期间写入的新密码仍可登录
+      // 恢复 ACTIVE 后，重置期间写入的新密码可登录，但会话仍被强制改密限制
       await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
-      const token = await login({
-        app,
-        loginName: testAccountsConfig.guestSecondary.loginName,
-        loginPassword: RESET_INACTIVE_PASSWORD,
-      });
-      expect(token).toBeTruthy();
+      const loginBody = await attemptLogin(
+        testAccountsConfig.guestSecondary.loginName,
+        RESET_INACTIVE_PASSWORD,
+        { allowRestrictedSession: true },
+      );
+      expect(loginBody.errors).toBeUndefined();
+      expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.MUST_CHANGE_PASSWORD);
+      expect(typeof loginBody.data?.login?.accessToken).toBe('string');
     });
   });
 

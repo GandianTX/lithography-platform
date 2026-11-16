@@ -1,6 +1,7 @@
 // src/app/layout/app-layout.spec.tsx
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,10 +18,15 @@ vi.mock('@/features/auth-session', async (importOriginal) => {
   return {
     ...actual,
     // 壳层测试不触网：启动期会话复核固定返回「无变化」
-    refreshCurrentAuthSessionIdentity: vi.fn().mockResolvedValue(false),
+    refreshCurrentAuthSessionIdentity: vi.fn().mockResolvedValue({ status: 'unchanged' }),
     useAuthSession: () => useAuthSessionMock(),
   };
 });
+
+// 批准结果门有自己的装配测试；壳层测试只关心内容是否被挂载在布局内。
+vi.mock('./engineer-approval-gate', () => ({
+  EngineerApprovalGate: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
 
 // sidecar 是重量级组件（会话/GraphQL 依赖），壳层测试中置空。
 vi.mock('@/widgets/aigc-sidecar', () => ({
@@ -349,27 +355,8 @@ describe('AppLayout（S3 壳层）', () => {
     });
   });
 
-  // S3：资格生效后会话从受限态变为 NONE，一次性批准提示常驻布局层，
-  // 不依赖 /restricted 页面本身（该页会立即被收口跳转卸载）。
-  it('工程师资格生效后在工作区顶部展示一次性批准提示', () => {
-    useAuthSessionMock.mockReturnValue({
-      session: { ...sessionFor('ENGINEER').session, restriction: 'ENGINEER_PENDING' },
-      status: 'authenticated',
-    });
-    const view = renderLayout('/engineer');
-
-    expect(screen.queryByText('申请已通过，权限已开通')).toBeNull();
-    view.unmount();
-
-    useAuthSessionMock.mockReturnValue({
-      session: { ...sessionFor('ENGINEER').session, restriction: 'NONE' },
-      status: 'authenticated',
-    });
-    renderLayout('/engineer');
-
-    expect(screen.getByText('申请已通过，权限已开通')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '进入工作台' })).toBeInTheDocument();
-  });
+  // S3 批准结果的展示与进入顺序由 `engineer-approval-gate.spec.tsx` 覆盖；
+  // 壳层这里只验证受限会话的落点。
 
   // S5：语言切换入口唯一（展开态只在字号区上方出现一组），切语言只换文案，
   // 不改变路由、导航结构与选中态。

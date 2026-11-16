@@ -84,8 +84,10 @@ const SUPPRESSED_MESSAGE_PHASES: ReadonlyArray<AdminResetUserPasswordPhase> = [
  *   的 UTC ISO 表示；盐来自锁内读取的 View（`AdminUserView.createdAt` 即账号创建时间），
  *   不在用例侧另取时钟。策略放行后 `preprocessPassword()` 的驳回分支不可达（论证见
  *   `assertAdminUserPasswordPolicy()` JSDoc）；
- * - 写入：`AccountService.updateAccountPasswordHash()`，只更新 `login_password` 并由该方法
- *   维护 `updated_at`。
+ * - 写入：`AccountService.updateAccountPasswordHash()`，在同一 UPDATE 内覆盖 `login_password`、
+ *   置位 `must_change_password` 并维护 `updated_at`。置位是重置语义的一部分：管理员给出的
+ *   只是「下次登录的初始凭据」，本人必须先用它登录并完成改密（02 的强改守卫与本人改密清标记
+ *   流程）后才恢复完整访问；重置与置位原子生效，不存在「已换密码但未要求改密」的中间态。
  *
  * 目标保护：任意 SUPER_ADMIN 目标一律不受理（`loadWritableAdminUserTarget()` 内
  * `assertWritableAdminUserTargetRole()` 依**锁内**数据库事实裁决）；管理员重置自己的密码
@@ -116,12 +118,13 @@ const SUPPRESSED_MESSAGE_PHASES: ReadonlyArray<AdminResetUserPasswordPhase> = [
  * 密码哈希或验证细节（`AdminResetUserPasswordResult`）。成功日志只含账号主键。
  *
  * 写入正确性口径（与 P0-5 的 `user_state` 同理）：`AdminUserView` 刻意不含密码哈希
- * 由后续独立测试计划显式覆盖；`updateAccountPasswordHash()` 失败会抛错并使整个事务回滚。
+ * 与强制改密标记，故「重置后必须改密」这一跨进程事实由 E2E 直接登录与受限查询显式覆盖；
+ * `updateAccountPasswordHash()` 失败会抛错并使整个事务回滚（密码与标记一并回滚，不出现半写）。
  *
  * 依赖方向：事务边界由本用例经 `TransactionRunner` 持有，同一个 `transactionContext`
  * 显式传给全部下游；只调用 modules 细粒度方法与 QueryService，不访问 Repository、
- * 不接触 ORM API、不持有 ORM Entity。本用例只写 `base_user_account` 行（行锁 + 密码列），
- * 不触碰 `base_user_info`；取锁顺序（account 行优先）与本组统一口径一致
+ * 不接触 ORM API、不持有 ORM Entity。本用例只写 `base_user_account` 行（行锁 + 密码列 +
+ * 强制改密标记列），不触碰 `base_user_info`；取锁顺序（account 行优先）与本组统一口径一致
  *
  * 不含数据库复核。已停用或已降级的管理员账号在旧 Access Token 到期前仍可能通过该断言，
  * 即时失效由 `ValidateAccessTokenSessionUsecase`（P0-7）承担。
@@ -256,6 +259,9 @@ export class AdminResetUserPasswordUsecase {
         accountId,
         passwordHash: AccountService.hashPasswordWithTimestamp(newPassword, lockedView.createdAt),
         transactionContext,
+        // 与哈希同一 UPDATE 置位：管理员重置的是「下次登录的初始凭据」，
+        // 本人必须先用它登录并改密后才能恢复完整访问（02 的强改守卫据此收口）
+        mustChangePassword: true,
       });
     } catch (error) {
       logAdminUserWriteFailure({

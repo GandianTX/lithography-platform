@@ -16,6 +16,7 @@ import {
 } from '../utils/e2e-scoped-cleanup';
 import {
   buildSuiteOrganizationCodes,
+  requireOrganizationId,
   seedTestMemberships,
   seedTestOrganizations,
 } from '../utils/test-organizations';
@@ -47,11 +48,17 @@ describe('AdminDocumentDatabase (e2e)', () => {
   let adminToken: string;
   let engineerToken: string;
   let customerToken: string;
+  // F1 反例身份：二级（有成员）、缺级（有成员）、一级但缺成员
+  let level2AdminToken: string;
+  let noLevelAdminToken: string;
+  let noOrgAdminToken: string;
   let fixtureIds: AdminDocFixtureIds;
   const ownership = createAdminDocFixtureOwnership();
   const suiteOwnership = createOwnedResourceLedger();
   // 规格专属测试组织（聚合统计用例的可信组织上下文；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('ADMDOC');
+  /** F1：本规格专属组织 ID（会话签发后降级/停用成员的反例断言需要精确改回） */
+  let suiteOrganizationId: number;
   /** R1：仅当 beforeAll 在「写夹具之前」完成白名单验证才置位，afterAll 据此决定能否清理。 */
   let fixtureTargetValidated = false;
 
@@ -119,6 +126,15 @@ describe('AdminDocumentDatabase (e2e)', () => {
       ...businessIds,
     };
 
+    // F1：等级事实取当前库（`base_user_account.admin_level`），不信任 JWT 静态等级。
+    // 一级账号放行；二级与缺级账号均有成员关系，用于区分「等级不足」与「成员缺失」。
+    await dataSource.query('UPDATE base_user_account SET admin_level = 1 WHERE id = ?', [
+      accountIds.admin,
+    ]);
+    await dataSource.query('UPDATE base_user_account SET admin_level = 2 WHERE id = ?', [
+      accountIds.adminLevel2,
+    ]);
+
     // 聚合统计用例（adminDocumentDatabaseStats）经可信组织上下文解析：
     // fixture 管理员需要本规格专属组织的 ACTIVE 成员关系
     const organizationIds = await seedTestOrganizations({
@@ -132,6 +148,7 @@ describe('AdminDocumentDatabase (e2e)', () => {
       ],
       ownership: suiteOwnership,
     });
+    suiteOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
     await seedTestMemberships({
       dataSource,
       organizationIdsByCode: organizationIds,
@@ -142,6 +159,17 @@ describe('AdminDocumentDatabase (e2e)', () => {
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'SUPER_ADMIN',
         },
+        {
+          accountLoginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminLevel2.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+        {
+          accountLoginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoLevel.loginName,
+          organizationCode: suiteOrganizationCodes.primary,
+          memberRole: 'SUPER_ADMIN',
+        },
+        // adminNoOrg 刻意不建成员关系：一级但缺成员，必须失败关闭
       ],
     });
 
@@ -149,6 +177,21 @@ describe('AdminDocumentDatabase (e2e)', () => {
       app,
       loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.admin.loginName,
       loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.admin.loginPassword,
+    });
+    level2AdminToken = await login({
+      app,
+      loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminLevel2.loginName,
+      loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.adminLevel2.loginPassword,
+    });
+    noLevelAdminToken = await login({
+      app,
+      loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoLevel.loginName,
+      loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoLevel.loginPassword,
+    });
+    noOrgAdminToken = await login({
+      app,
+      loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoOrg.loginName,
+      loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoOrg.loginPassword,
     });
     engineerToken = await login({
       app,
@@ -435,12 +478,168 @@ describe('AdminDocumentDatabase (e2e)', () => {
         ),
         dataSource.query<Array<{ n: number | string }>>('SELECT COUNT(*) AS n FROM ai_report'),
       ]);
+
       expect(stats).toEqual({
         repairRequestTotal: Number(repairRows[0]?.n ?? -1),
         referenceDocumentTotal: 0,
         aiConversationTotal: Number(conversationRows[0]?.n ?? -1),
         aiReportTotal: Number(reportRows[0]?.n ?? -1),
       });
+    });
+  });
+
+  describe('F1 全域授权矩阵：等级与成员事实先于业务读取', () => {
+    const pagination = { mode: 'OFFSET', page: 1, pageSize: 1, withTotal: true };
+    // 七个全域入口：统计、维修列表/摘要、AI 会话/消息/报告列表/详情
+    const entries = [
+      {
+        label: '统计',
+        query: `query { adminDocumentDatabaseStats { repairRequestTotal } }`,
+        variables: (): Record<string, unknown> => ({}),
+      },
+      {
+        label: '维修列表',
+        query: `query ($pagination: PaginationArgs!) {
+          adminRepairRequests(pagination: $pagination) { total }
+        }`,
+        variables: (): Record<string, unknown> => ({ pagination }),
+      },
+      {
+        label: '维修摘要',
+        query: `query ($id: Int!) {
+          adminRepairRequestSummary(id: $id) { id requestNo }
+        }`,
+        variables: (): Record<string, unknown> => ({ id: fixtureIds.requestAId }),
+      },
+      {
+        label: 'AI 会话列表',
+        query: `query ($pagination: PaginationArgs!) {
+          adminAiConversations(pagination: $pagination) { total }
+        }`,
+        variables: (): Record<string, unknown> => ({ pagination }),
+      },
+      {
+        label: 'AI 消息',
+        query: `query ($conversationId: Int!, $pagination: PaginationArgs!) {
+          adminAiMessages(conversationId: $conversationId, pagination: $pagination) { total }
+        }`,
+        variables: (): Record<string, unknown> => ({
+          conversationId: fixtureIds.conversationAId,
+          pagination,
+        }),
+      },
+      {
+        label: 'AI 报告列表',
+        query: `query ($pagination: PaginationArgs!) {
+          adminAiReports(pagination: $pagination) { total }
+        }`,
+        variables: (): Record<string, unknown> => ({ pagination }),
+      },
+      {
+        label: 'AI 报告详情',
+        query: `query ($id: Int!) {
+          adminAiReport(id: $id) { id contentMd }
+        }`,
+        variables: (): Record<string, unknown> => ({ id: fixtureIds.reportAId }),
+      },
+    ];
+
+    type GqlBody = {
+      data?: unknown;
+      errors?: Array<{ extensions?: { code?: string } }>;
+    };
+
+    it.each(entries)('一级且成员可信：$label 正向可读', async (entry) => {
+      const response = await executeGql(entry.query, adminToken, entry.variables()).expect(200);
+      const body = response.body as GqlBody;
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data).toBeTruthy();
+    });
+
+    it('会话签发后级别被降 / 成员停用：下一请求 FORBIDDEN 且零数据，恢复后可读', async () => {
+      // 抽样三类不同形态的受保护读取（统计聚合 / 列表 / 详情正文）
+      const sampled = entries.filter((entry) =>
+        ['统计', '维修列表', 'AI 报告详情'].includes(entry.label),
+      );
+      const expectForbidden = async (): Promise<void> => {
+        for (const entry of sampled) {
+          const response = await executeGql(entry.query, adminToken, entry.variables()).expect(200);
+          const body = response.body as GqlBody;
+
+          expect({ label: entry.label, code: body.errors?.[0]?.extensions?.code }).toEqual({
+            label: entry.label,
+            code: 'FORBIDDEN',
+          });
+          expect(body.data ?? null).toBeNull();
+        }
+      };
+
+      // 级别被降：Token 不变，准入判断读取当前库等级事实
+      try {
+        await dataSource.query('UPDATE base_user_account SET admin_level = 2 WHERE id = ?', [
+          fixtureIds.adminAccountId,
+        ]);
+        await expectForbidden();
+      } finally {
+        await dataSource.query('UPDATE base_user_account SET admin_level = 1 WHERE id = ?', [
+          fixtureIds.adminAccountId,
+        ]);
+      }
+
+      // 成员停用：组织仍 ACTIVE，仅成员关系失效（受控变更在 finally 中精确恢复）
+      try {
+        await dataSource.query(
+          `UPDATE organization_membership
+              SET status = 'LEFT', left_at = NOW()
+            WHERE organization_id = ? AND account_id = ?`,
+          [suiteOrganizationId, fixtureIds.adminAccountId],
+        );
+        await expectForbidden();
+      } finally {
+        await dataSource.query(
+          `UPDATE organization_membership
+              SET status = 'ACTIVE', left_at = NULL
+            WHERE organization_id = ? AND account_id = ?`,
+          [suiteOrganizationId, fixtureIds.adminAccountId],
+        );
+      }
+
+      // 恢复后同一 Token 重新可读：失败来自当前事实，而非会话静态缓存
+      for (const entry of sampled) {
+        const response = await executeGql(entry.query, adminToken, entry.variables()).expect(200);
+        expect(response.body.errors).toBeUndefined();
+      }
+    });
+
+    it.each(entries)('$label：二级/缺级/缺成员/工程师/客户均 FORBIDDEN 且零数据', async (entry) => {
+      const forbiddenIdentities: ReadonlyArray<readonly [string, string]> = [
+        ['二级管理员（有成员）', level2AdminToken],
+        ['缺级管理员（有成员）', noLevelAdminToken],
+        ['一级管理员缺成员', noOrgAdminToken],
+        ['工程师', engineerToken],
+        ['客户', customerToken],
+      ];
+
+      for (const [identity, token] of forbiddenIdentities) {
+        const response = await executeGql(entry.query, token, entry.variables()).expect(200);
+        const body = response.body as GqlBody;
+
+        expect({ identity, code: body.errors?.[0]?.extensions?.code }).toEqual({
+          identity,
+          code: 'FORBIDDEN',
+        });
+        // 负向零数据：错误发生时不得返回统计、列表或正文
+        expect(body.data ?? null).toBeNull();
+      }
+    });
+
+    it.each(entries)('$label：匿名返回 UNAUTHENTICATED 且零数据', async (entry) => {
+      const response = await executeGql(entry.query, undefined, entry.variables()).expect(200);
+      const body = response.body as GqlBody;
+
+      expect(body.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      expect(body.data ?? null).toBeNull();
     });
   });
 });

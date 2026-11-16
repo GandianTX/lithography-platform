@@ -1,24 +1,40 @@
 // src/app/layout/engineer-approval-notice-storage.ts
 
 /**
- * 工程师申请批准提示的一次性标记（localStorage，按 accountId 隔离）。
+ * 工程师批准结果「已确认」的一次性展示偏好（localStorage，按账号 + 申请隔离）。
  *
- * 只记录「该账号在本浏览器上曾处于工程师受限状态」，用于资格生效后跨标签刷新与
- * 退出重登仍能提示一次。标记**不是授权凭证**：是否展示还要求服务端每请求复核后的
- * `restriction === 'NONE'`。
+ * 只记录「本浏览器上该账号的这份批准结果已经被用户确认并进入工作台」，用于避免
+ * 每次刷新 / 页面跳转都重复展示结果页。它**不是授权凭证、也不是批准事实来源**：
+ * 是否展示结果由服务端 `mySessionIdentity` + `myEngineerRegistration` 决定，
+ * 标记缺失只会让结果多展示一次，标记存在也从不会放行任何访问。
  *
- * 存储不可用（隐私模式 / 配额 / 损坏 JSON）时一律静默：读取视为无标记，写入忽略。
+ * 存储不可用（隐私模式 / 配额 / 损坏 JSON）时一律静默：读取视为未确认，写入忽略。
  */
 
-const STORAGE_KEY = 'lithography.engineer-approval-pending.v1';
+const STORAGE_KEY = 'lithography.engineer-approval-acknowledged.v1';
 
-type PendingApprovalMap = Record<string, true>;
+const ACKNOWLEDGEMENT_KEY_PATTERN = /^[1-9]\d*:[1-9]\d*$/;
+
+type AcknowledgedApprovalMap = Record<string, true>;
 
 function isStorageAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 }
 
-function readMap(): PendingApprovalMap {
+function toAcknowledgementKey(accountId: number, applicationId: number): string | null {
+  if (
+    !Number.isInteger(accountId) ||
+    accountId <= 0 ||
+    !Number.isInteger(applicationId) ||
+    applicationId <= 0
+  ) {
+    return null;
+  }
+
+  return `${accountId}:${applicationId}`;
+}
+
+function readMap(): AcknowledgedApprovalMap {
   if (!isStorageAvailable()) {
     return {};
   }
@@ -34,12 +50,11 @@ function readMap(): PendingApprovalMap {
       return {};
     }
 
-    const next: PendingApprovalMap = {};
+    const next: AcknowledgedApprovalMap = {};
     for (const [key, value] of Object.entries(parsed)) {
-      const accountId = Number(key);
-      // 只接受正整数账号键与 true，脏数据一律忽略
-      if (value === true && Number.isInteger(accountId) && accountId > 0) {
-        next[String(accountId)] = true;
+      // 只接受「账号:申请」正整数键与 true，脏数据一律忽略
+      if (value === true && ACKNOWLEDGEMENT_KEY_PATTERN.test(key)) {
+        next[key] = true;
       }
     }
 
@@ -49,7 +64,7 @@ function readMap(): PendingApprovalMap {
   }
 }
 
-function writeMap(map: PendingApprovalMap): void {
+function writeMap(map: AcknowledgedApprovalMap): void {
   if (!isStorageAvailable()) {
     return;
   }
@@ -62,34 +77,27 @@ function writeMap(map: PendingApprovalMap): void {
 
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch {
-    // 存储不可写只影响跨刷新的一次性提示，不影响任何授权判断
+    // 存储不可写只影响一次性展示偏好，不影响任何授权判断
   }
 }
 
-export function markEngineerApprovalPending(accountId: number): void {
-  if (!Number.isInteger(accountId) || accountId <= 0) {
+export function hasAcknowledgedEngineerApproval(accountId: number, applicationId: number): boolean {
+  const key = toAcknowledgementKey(accountId, applicationId);
+
+  return key !== null && readMap()[key] === true;
+}
+
+export function acknowledgeEngineerApproval(accountId: number, applicationId: number): void {
+  const key = toAcknowledgementKey(accountId, applicationId);
+
+  if (key === null) {
     return;
   }
 
   const map = readMap();
-  if (map[String(accountId)] === true) {
+  if (map[key] === true) {
     return;
   }
 
-  writeMap({ ...map, [String(accountId)]: true });
-}
-
-export function hasPendingEngineerApproval(accountId: number): boolean {
-  return readMap()[String(accountId)] === true;
-}
-
-export function clearPendingEngineerApproval(accountId: number): void {
-  const map = readMap();
-  if (map[String(accountId)] !== true) {
-    return;
-  }
-
-  const next = { ...map };
-  delete next[String(accountId)];
-  writeMap(next);
+  writeMap({ ...map, [key]: true });
 }

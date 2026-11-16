@@ -22,6 +22,7 @@ import {
   recordOwnedResource,
   runGuardedSpecCleanup,
   toResidueAccountFingerprint,
+  updateOwnedExpectation,
   type OwnedResourceLedger,
   type ResidueAccountFingerprint,
 } from '../utils/e2e-scoped-cleanup';
@@ -42,7 +43,9 @@ import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
  *    待审 / 已拒绝（异值改密只解除强制改密，不改变申请事实）。
  *
  * 造数纪律：
- * - `must_change_password` 目前没有业务入口可置位，只能由受控夹具写入；夹具在同一事务成功后
+ * - `must_change_password` 的业务入口是管理员重置密码（`adminResetUserPassword` 在同一事务
+ *   内与哈希一并置位），由 `admin-user-management.e2e-spec.ts` 覆盖；本规格只关心「已处于
+ *   强制改密」后的本人改密语义，故仍由受控夹具直接写入该列；夹具在同一事务成功后
  *   才登记真实 ID 与预期事实，清理走 `runGuardedSpecCleanup` 的精确台账；
  * - 待审 / 已拒绝工程师的申请行是真实 ``engineer_registration_application`` 记录（含审核人、
  *   审核时间与拒绝意见），因此会话限制由真实申请状态而非伪造字段产生；
@@ -80,6 +83,12 @@ const MY_SESSION_IDENTITY_QUERY = `
 const UPDATE_MY_ACCOUNT_SETTINGS_MUTATION = `
   mutation UpdateMyAccountSettings($input: UpdateMyAccountSettingsInput!) {
     updateMyAccountSettings(input: $input) { isUpdated }
+  }
+`;
+
+const UPDATE_MY_ACCOUNT_PROFILE_MUTATION = `
+  mutation UpdateMyAccountProfile($input: UpdateMyAccountProfileInput!) {
+    updateMyAccountProfile(input: $input) { isUpdated }
   }
 `;
 
@@ -367,7 +376,7 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     return body.data?.mySessionIdentity?.restriction as SessionRestriction;
   };
 
-  /** 代表业务：强制改密未完成时 `updateMyAccountSettings` 必须被 MustChangePasswordGuard 拒绝。 */
+  /** 代表业务：强制改密未完成时，旧广写与 Web 窄写入口都必须被 MustChangePasswordGuard 拒绝。 */
   const expectBusinessRejected = async (token: string): Promise<void> => {
     const body = await gql<{ updateMyAccountSettings?: { isUpdated: boolean } }>({
       query: UPDATE_MY_ACCOUNT_SETTINGS_MUTATION,
@@ -378,6 +387,16 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     expect(body.errors).toHaveLength(1);
     expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
     expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+    const narrowBody = await gql<{ updateMyAccountProfile?: { isUpdated: boolean } }>({
+      query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION,
+      variables: { input: { nickname: 'i1_narrow_should_not_persist' } },
+      token,
+    });
+    expect(narrowBody.data?.updateMyAccountProfile).toBeUndefined();
+    expect(narrowBody.errors).toHaveLength(1);
+    expect(narrowBody.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+    expect(narrowBody.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
   };
 
   /** 同值提交被拒的公共断言：大类/细码、零写入、身份与代表业务均保持受限。 */
@@ -554,12 +573,51 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
       expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
       expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
 
+      // 窄写入口同样只放行白名单：混传 realName 整体拒绝且零部分写入
+      const narrowBody = await gql<{ updateMyAccountProfile?: { isUpdated: boolean } }>({
+        query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION,
+        variables: {
+          input: { nickname: 'i1_narrow_restricted_write', realName: '受限会话不可改姓名' },
+        },
+        token,
+      });
+      expect(narrowBody.data?.updateMyAccountProfile).toBeUndefined();
+      expect(narrowBody.errors).toHaveLength(1);
+      expect(narrowBody.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(narrowBody.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
       // 整体拒绝：合法昵称也不得部分写入
       const info = await dataSource
         .getRepository(UserInfoEntity)
         .findOne({ where: { accountId: accountIds.get('pendingEngineer') as number } });
       expect(info?.nickname).toBe(`${PENDING_ENGINEER.loginName}_nickname`);
       expect(info?.realName).toBeNull();
+
+      // 白名单内字段经窄写入口成功写入
+      const allowedBody = await gql<{ updateMyAccountProfile?: { isUpdated: boolean } }>({
+        query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION,
+        variables: {
+          input: {
+            nickname: 'i1_narrow_allowed',
+            phone: '13600003333',
+            contactEmail: 'i1.narrow@example.com',
+          },
+        },
+        token,
+      });
+      expect(allowedBody.errors).toBeUndefined();
+      expect(allowedBody.data?.updateMyAccountProfile?.isUpdated).toBe(true);
+      const updatedInfo = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOne({ where: { accountId: accountIds.get('pendingEngineer') as number } });
+      expect(updatedInfo?.nickname).toBe('i1_narrow_allowed');
+      expect(updatedInfo?.phone).toBe('13600003333');
+      expect(updatedInfo?.email).toBe('i1.narrow@example.com');
+      expect(updatedInfo?.realName).toBeNull();
+      updateOwnedExpectation(ownership, 'account', accountIds.get('pendingEngineer') as number, {
+        nickname: 'i1_narrow_allowed',
+        userInfoEmail: 'i1.narrow@example.com',
+      });
     });
   });
 

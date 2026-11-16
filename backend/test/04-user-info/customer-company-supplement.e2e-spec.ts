@@ -7,6 +7,7 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { EquipmentModelEntity } from '../../src/modules/lithography/entities/equipment-model.entity';
 import { OrganizationEntity } from '../../src/modules/lithography/entities/organization.entity';
+import { OrganizationMembershipEntity } from '../../src/modules/lithography/entities/organization-membership.entity';
 import { RepairRequestEntity } from '../../src/modules/lithography/entities/repair-request.entity';
 import { CreateAccountUsecase } from '../../src/usecases/account/create-account.usecase';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
@@ -37,7 +38,9 @@ import { seedTestOrganizations, type TestOrganizationSpec } from '../utils/test-
  * 2. 已归属客户换绑或重复提交 → `CONFLICT` / 幂等，零写入；
  * 3. 非 CUSTOMER、停用 / 未受管 / 伪造 organizationId、互斥与都缺 → 零写入；
  * 4. 同一账号两个不同候选并发提交：行锁串行化后仅一次落库，公司行不新增；
- * 5. 报修门禁：缺归属客户新增报修 `FORBIDDEN`（零申请），补录成功后新增报修写入
+ * 5. 存量成员关系复用口径：仅目标组织的活跃 CUSTOMER 行可复用；同组织错角色、外组织
+ *    （含停用组织上的活跃关系）、历史 LEFT 行一律 CONFLICT，且三表零变化；
+ * 6. 报修门禁：缺归属客户新增报修 `FORBIDDEN`（零申请），补录成功后新增报修写入
  *    `owner_organization_id` = 新归属；缺归属客户仍可读取本人历史申请。
  *
  * 造数纪律（同 `my-account-settings-write.e2e-spec.ts`）：
@@ -157,6 +160,38 @@ const customers = {
     accessGroup: [IdentityTypeEnum.CUSTOMER],
     identityType: IdentityTypeEnum.CUSTOMER,
   },
+  preboundCustomer: {
+    loginName: 's4companyprebound',
+    loginEmail: 's4.company.prebound@example.com',
+    loginPassword: 'S4CompanyPrebound@2026',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  wrongRoleMember: {
+    loginName: 's4companywrongrole',
+    loginEmail: 's4.company.wrongrole@example.com',
+    loginPassword: 'S4CompanyWrongRole@2026',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  historicalMember: {
+    loginName: 's4companyhistorical',
+    loginEmail: 's4.company.historical@example.com',
+    loginPassword: 'S4CompanyHistorical@2026',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
+  disabledOrgMember: {
+    loginName: 's4companydisabled',
+    loginEmail: 's4.company.disabled@example.com',
+    loginPassword: 'S4CompanyDisabled@2026',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.CUSTOMER],
+    identityType: IdentityTypeEnum.CUSTOMER,
+  },
 } satisfies Record<string, TestAccountConfig>;
 
 const CUSTOMER_CONFIGS: readonly TestAccountConfig[] = Object.values(customers);
@@ -207,12 +242,20 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
   let invalidAccountId: number;
   let concurrentAccountId: number;
   let repairAccountId: number;
+  let preboundAccountId: number;
+  let wrongRoleAccountId: number;
+  let historicalAccountId: number;
+  let disabledOrgMemberAccountId: number;
 
   let alphaToken: string;
   let betaToken: string;
   let invalidToken: string;
   let concurrentToken: string;
   let repairToken: string;
+  let preboundToken: string;
+  let wrongRoleToken: string;
+  let historicalToken: string;
+  let disabledOrgMemberToken: string;
   let engineerToken: string;
 
   let legacyRequestId: number;
@@ -272,12 +315,58 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
     invalidAccountId = await getAccountIdByLoginName(dataSource, customers.invalid.loginName);
     concurrentAccountId = await getAccountIdByLoginName(dataSource, customers.concurrent.loginName);
     repairAccountId = await getAccountIdByLoginName(dataSource, customers.repairUnbound.loginName);
+    preboundAccountId = await getAccountIdByLoginName(
+      dataSource,
+      customers.preboundCustomer.loginName,
+    );
+    wrongRoleAccountId = await getAccountIdByLoginName(
+      dataSource,
+      customers.wrongRoleMember.loginName,
+    );
+    historicalAccountId = await getAccountIdByLoginName(
+      dataSource,
+      customers.historicalMember.loginName,
+    );
+    disabledOrgMemberAccountId = await getAccountIdByLoginName(
+      dataSource,
+      customers.disabledOrgMember.loginName,
+    );
+
+    // 存量成员夹具：直接落库并登记台账（业务写入仍只走 GraphQL）
+    await seedMembership({
+      organizationId: managedCompanyAId,
+      accountId: preboundAccountId,
+      memberRole: IdentityTypeEnum.CUSTOMER,
+      status: 'ACTIVE',
+    });
+    await seedMembership({
+      organizationId: managedCompanyAId,
+      accountId: wrongRoleAccountId,
+      memberRole: IdentityTypeEnum.ENGINEER,
+      status: 'ACTIVE',
+    });
+    await seedMembership({
+      organizationId: managedCompanyBId,
+      accountId: historicalAccountId,
+      memberRole: IdentityTypeEnum.CUSTOMER,
+      status: 'LEFT',
+    });
+    await seedMembership({
+      organizationId: disabledCompanyId,
+      accountId: disabledOrgMemberAccountId,
+      memberRole: IdentityTypeEnum.CUSTOMER,
+      status: 'ACTIVE',
+    });
 
     alphaToken = await loginCustomer(customers.alpha);
     betaToken = await loginCustomer(customers.beta);
     invalidToken = await loginCustomer(customers.invalid);
     concurrentToken = await loginCustomer(customers.concurrent);
     repairToken = await loginCustomer(customers.repairUnbound);
+    preboundToken = await loginCustomer(customers.preboundCustomer);
+    wrongRoleToken = await loginCustomer(customers.wrongRoleMember);
+    historicalToken = await loginCustomer(customers.historicalMember);
+    disabledOrgMemberToken = await loginCustomer(customers.disabledOrgMember);
     engineerToken = await login({
       app,
       loginName: testAccountsConfig.staff.loginName,
@@ -342,6 +431,35 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
       kind: saved.kind,
       status: saved.status,
       isManagedCompany: saved.isManagedCompany,
+    });
+    return saved.id;
+  }
+
+  /**
+   * 存量成员关系夹具：按场景直接落库（ACTIVE/CUSTOMER 复用、ACTIVE/ENGINEER 错角色、
+   * LEFT 历史、停用组织上的 ACTIVE），并登记台账供收尾精确回收。
+   */
+  async function seedMembership(params: {
+    organizationId: number;
+    accountId: number;
+    memberRole: string;
+    status: 'ACTIVE' | 'LEFT';
+  }): Promise<number> {
+    const repository = dataSource.getRepository(OrganizationMembershipEntity);
+    const saved = await repository.save(
+      repository.create({
+        organizationId: params.organizationId,
+        accountId: params.accountId,
+        memberRole: params.memberRole,
+        status: params.status,
+        leftAt: params.status === 'LEFT' ? new Date() : null,
+      }),
+    );
+    recordOwnedResource(ownership, 'membership', saved.id, {
+      organizationId: saved.organizationId,
+      accountId: saved.accountId,
+      memberRole: saved.memberRole,
+      status: saved.status,
     });
     return saved.id;
   }
@@ -434,6 +552,22 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
     );
     return Number(rows[0]?.total ?? 0);
   };
+
+  type MembershipSnapshot = {
+    id: number;
+    organization_id: number;
+    account_id: number;
+    member_role: string;
+    status: string;
+  };
+
+  /** 成员关系全量快照（含 LEFT），用于断言失败用例的三表零副作用 */
+  const readMemberships = async (accountId: number): Promise<MembershipSnapshot[]> =>
+    dataSource.query<MembershipSnapshot[]>(
+      `SELECT id, organization_id, account_id, member_role, status
+         FROM organization_membership WHERE account_id = ? ORDER BY id ASC`,
+      [accountId],
+    );
 
   const countOrganizations = async (): Promise<number> => {
     const rows = await dataSource.query<Array<{ total: number }>>(
@@ -621,6 +755,100 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
         errorCode: REPAIR_ERROR_CODE,
         faultDescription: REPAIR_FAULT_DESCRIPTION,
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 存量成员关系复用口径（F4）
+  // ---------------------------------------------------------------------------
+
+  describe('存量成员关系与补录复用', () => {
+    it('目标组织已有活跃 CUSTOMER 关系 → 复用，不新增成员、FK 指向该公司', async () => {
+      const membershipsBefore = await readMemberships(preboundAccountId);
+      const organizationsBefore = await countOrganizations();
+      expect(membershipsBefore).toHaveLength(1);
+      expect(await countActiveMemberships(preboundAccountId)).toBe(1);
+
+      const body = await supplement(preboundToken, { organizationId: managedCompanyAId });
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.supplementMyCustomerCompany?.isUpdated).toBe(true);
+      expect(await readCustomerOrganizationId(preboundAccountId)).toBe(managedCompanyAId);
+      // 复用已有关系：不插入第二条，角色保持 CUSTOMER
+      expect(await readMemberships(preboundAccountId)).toEqual(membershipsBefore);
+      expect(await countOrganizations()).toBe(organizationsBefore);
+
+      await registerBusinessWrittenCompany(preboundAccountId);
+    });
+
+    it('同组织活跃 ENGINEER 关系 → CONFLICT，三表零变化', async () => {
+      const fkBefore = await readCustomerOrganizationId(wrongRoleAccountId);
+      const membershipsBefore = await readMemberships(wrongRoleAccountId);
+      const organizationsBefore = await countOrganizations();
+
+      const body = await supplement(wrongRoleToken, { organizationId: managedCompanyAId });
+
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors![0].extensions?.code).toBe('CONFLICT');
+      expect(body.errors![0].extensions?.errorCode).toBe(
+        'MY_ACCOUNT_CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT',
+      );
+
+      expect(await readCustomerOrganizationId(wrongRoleAccountId)).toBe(fkBefore);
+      expect(fkBefore).toBeNull();
+      expect(await readMemberships(wrongRoleAccountId)).toEqual(membershipsBefore);
+      expect(membershipsBefore[0]?.member_role).toBe(IdentityTypeEnum.ENGINEER);
+      expect(await countOrganizations()).toBe(organizationsBefore);
+    });
+
+    it('目标公司存在历史 LEFT 关系 → CONFLICT，不重复 INSERT', async () => {
+      const membershipsBefore = await readMemberships(historicalAccountId);
+      const organizationsBefore = await countOrganizations();
+      expect(membershipsBefore).toHaveLength(1);
+      expect(membershipsBefore[0]?.status).toBe('LEFT');
+
+      const body = await supplement(historicalToken, { organizationId: managedCompanyBId });
+
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors![0].extensions?.code).toBe('CONFLICT');
+      expect(body.errors![0].extensions?.errorCode).toBe(
+        'MY_ACCOUNT_CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT',
+      );
+
+      expect(await readCustomerOrganizationId(historicalAccountId)).toBeNull();
+      expect(await readMemberships(historicalAccountId)).toEqual(membershipsBefore);
+      expect(await countOrganizations()).toBe(organizationsBefore);
+    });
+
+    it('停用组织上的活跃关系占用唯一键：选择其它公司 → CONFLICT', async () => {
+      const membershipsBefore = await readMemberships(disabledOrgMemberAccountId);
+      const organizationsBefore = await countOrganizations();
+
+      const body = await supplement(disabledOrgMemberToken, { organizationId: managedCompanyAId });
+
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors![0].extensions?.code).toBe('CONFLICT');
+      expect(body.errors![0].extensions?.errorCode).toBe(
+        'MY_ACCOUNT_CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT',
+      );
+
+      expect(await readCustomerOrganizationId(disabledOrgMemberAccountId)).toBeNull();
+      expect(await readMemberships(disabledOrgMemberAccountId)).toEqual(membershipsBefore);
+      expect(await countOrganizations()).toBe(organizationsBefore);
+    });
+
+    it('停用组织上的活跃关系占用唯一键：手填公司 → CONFLICT，不建档', async () => {
+      const organizationsBefore = await countOrganizations();
+
+      const body = await supplement(disabledOrgMemberToken, {
+        organizationName: '停用成员自建公司',
+      });
+
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors![0].extensions?.code).toBe('CONFLICT');
+
+      expect(await readCustomerOrganizationId(disabledOrgMemberAccountId)).toBeNull();
+      expect(await countOrganizations()).toBe(organizationsBefore);
     });
   });
 

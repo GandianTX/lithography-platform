@@ -42,7 +42,10 @@ const REQUEST_NO_RETRY_LIMIT = 3;
  * 2. 输入决策：错误码、故障描述空白即拒绝；错误码、故障描述超长拒绝
  * 3. 事务内校验设备型号存在且启用（排他锁读，防并发停用）
  * 4. 事务内校验客户可信公司归属（`base_user_info.customer_organization_id`）：
- *    缺归属或归属组织已停用一律 FORBIDDEN，引导客户先补录；归属只来自数据库事实
+ *    缺归属或归属组织已停用一律 FORBIDDEN，引导客户先补录；归属只来自数据库事实。
+ *    组织有效性按当前读加共享行锁复核，与并发「停用组织」的写入串行：
+ *    停用先提交则本请求等锁后按最新版本判定为不可用（零落库），
+ *    本请求先取锁则停用写入等本事务结束后生效。
  * 5. 事务内生成唯一申请编号，组装 contentMd 并落库；
  *    唯一索引撞号（预检查无法感知的并发写入）时重新生成编号重试整段流程
  *
@@ -128,6 +131,8 @@ export class CreateRepairRequestUsecase {
     // 客户公司归属：只认 `base_user_info.customer_organization_id`（注册 / 补录写入的
     // 唯一真源），不再用成员关系「可空」解析，也不按 company_name / 厂家猜测。
     // 缺归属 → 引导先补录；归属组织已停用 → 归属不可用。二者都在事务内失败关闭，零落库。
+    // 组织有效性用写前复核（当前读 + 共享行锁）而不是快照读：停用写入与本次资格判定
+    // 必须串行，避免「复核通过 → 等待组织行锁 → 用已停用组织落库」。
     const customerOrganizationId = await this.accountQueryService.findCustomerOrganizationId({
       accountId: command.session.accountId,
       transactionContext,
@@ -139,7 +144,7 @@ export class CreateRepairRequestUsecase {
         { accountId: command.session.accountId },
       );
     }
-    const ownerOrganization = await this.organizationQueryService.findActiveRegistrationOption({
+    const ownerOrganization = await this.organizationQueryService.findActiveOrganizationForWrite({
       organizationId: customerOrganizationId,
       transactionContext,
     });

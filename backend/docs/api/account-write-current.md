@@ -61,7 +61,8 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 当前自助账号设置入口（仅要求已登录会话，目标账号只能来自 Session，详见「自助账号设置」）：
 
 - `myAccountSettings: MyAccountSettingsDTO`
-- `updateMyAccountSettings(input: UpdateMyAccountSettingsInput): UpdateMyAccountSettingsResultDTO`
+- `updateMyAccountProfile(input: UpdateMyAccountProfileInput): UpdateMyAccountSettingsResultDTO`（Web 正式资料页窄写入口）
+- `updateMyAccountSettings(input: UpdateMyAccountSettingsInput): UpdateMyAccountSettingsResultDTO`（旧兼容广写入口）
 - `changeMyPassword(input: ChangeMyPasswordInput): ChangeMyPasswordResultDTO`
 
 `updateAccessGroup` 已下线：不再是公开 GraphQL 入口，也不存在任何 adapter 调用入口。
@@ -286,7 +287,7 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 ## 自助账号设置
 
-三个入口全部在 `MyAccountSettingsResolver`，按 `docs/api/adapters.rules.md` 只做「协议输入映射 + Usecase 调用 + View → DTO 薄映射」；DomainError 不在 Resolver 捕获，直接上抛进全局 GraphQL exception filter。
+四个入口全部在 `MyAccountSettingsResolver`，按 `docs/api/adapters.rules.md` 只做「协议输入映射 + Usecase 调用 + View → DTO 薄映射」；DomainError 不在 Resolver 捕获，直接上抛进全局 GraphQL exception filter。
 
 ### 会话准入与目标边界
 
@@ -295,7 +296,8 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 ### 写入语义
 
-- `updateMyAccountSettings`：六字段白名单（`loginName` / `loginEmail` / `nickname` / `companyName` / `phone` / `contactEmail`），严格三态——不传 = 不修改、`null` = 清空、字符串 = 设置（`nickname` 无 `null` 成员，空值一律拒绝）；「合并当前值后至少保留一个登录凭据」由 Usecase 在锁内裁决，历史遗留的「两列均为 NULL」异常账号即使本次提交不改凭据也拒绝（失败关闭，不自动修复、不代填）；发生变化的凭据先做排除自身的唯一性预检查（友好提示），并发竞争由数据库唯一索引最终裁决并收敛为通用 `CREDENTIAL_CONFLICT`，不泄露驱动错误与索引名；全部字段同值或未提供时不落库，返回 `isUpdated: false` 与当前视图（与 admin 资料更新的「空 patch 拒绝」口径刻意不同）；`contactEmail` 映射 `base_user_info.email`（联系邮箱），与登录凭据 `loginEmail` 严格区分，patch 不含 `userState`。
+- `updateMyAccountProfile`：Web 正式资料页的**窄写入口**，输入只有 `nickname` / `realName` / `phone` / `contactEmail` 四个字段；`loginName` / `loginEmail` / `companyName` / `accountId` / 角色 / 状态 / 等级 / `customerOrganizationId` 在 Schema 层面不存在，客户端硬塞会被 GraphQL 变量校验拒绝。复用 `UpdateMyAccountSettingsUsecase` 的同一事务、三态合并、受限白名单与失败分类；公司归属继续走独立的 `supplementMyCustomerCompany`。
+- `updateMyAccountSettings`：**旧兼容广写入口**（既有客户端 / 小程序），六字段白名单（`loginName` / `loginEmail` / `nickname` / `companyName` / `phone` / `contactEmail`），严格三态——不传 = 不修改、`null` = 清空、字符串 = 设置（`nickname` 无 `null` 成员，空值一律拒绝）；「合并当前值后至少保留一个登录凭据」由 Usecase 在锁内裁决，历史遗留的「两列均为 NULL」异常账号即使本次提交不改凭据也拒绝（失败关闭，不自动修复、不代填）；发生变化的凭据先做排除自身的唯一性预检查（友好提示），并发竞争由数据库唯一索引最终裁决并收敛为通用 `CREDENTIAL_CONFLICT`，不泄露驱动错误与索引名；全部字段同值或未提供时不落库，返回 `isUpdated: false` 与当前视图（与 admin 资料更新的「空 patch 拒绝」口径刻意不同）；`contactEmail` 映射 `base_user_info.email`（联系邮箱），与登录凭据 `loginEmail` 严格区分，patch 不含 `userState`。
 - `changeMyPassword`：当前密码 + 新密码，两个密码**不做 trim**（不丢字符）；当前密码刻意不做策略校验（存量密码可能先于现行策略设立），新密码共用 `assertAdminUserPasswordPolicy()`；当前密码验证失败收敛为 `MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH`（对外 `BAD_USER_INPUT`，不得塌缩为 `UNAUTHENTICATED`）；锁内以数据库权威 `createdAt` 为盐重新哈希覆盖写（与登录校验 / 管理员重置同源实现）；成功只返回 `isUpdated: true` 与固定 `notice`，不声称服务端撤销已签发 Token——旧 Access Token 按 `JWT_EXPIRES_IN` 自然过期，前端收到成功后清除本地会话。
 
 ### 事务边界与错误类别

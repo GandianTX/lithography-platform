@@ -77,7 +77,7 @@ async function clickRefresh() {
 describe('RestrictedApplicationCard 显式刷新', () => {
   beforeEach(() => {
     mocks.currentRestriction.current = 'ENGINEER_PENDING';
-    mocks.identityRefreshMock.mockReset().mockResolvedValue(false);
+    mocks.identityRefreshMock.mockReset().mockResolvedValue({ status: 'unchanged' });
     mocks.refreshMock.mockReset();
     mocks.retryMock.mockReset();
     mocks.state.current = READY_STATE;
@@ -112,6 +112,14 @@ describe('RestrictedApplicationCard 显式刷新', () => {
     await waitFor(() => expect(mocks.refreshMock).toHaveBeenCalledTimes(1));
   });
 
+  it('复核结果为 stale（迟到 / 被覆盖）时不当作当前会话结论，仍按当前会话重查', async () => {
+    mocks.identityRefreshMock.mockResolvedValueOnce({ status: 'stale' });
+    render(<RestrictedApplicationCard />);
+    await clickRefresh();
+
+    await waitFor(() => expect(mocks.refreshMock).toHaveBeenCalledTimes(1));
+  });
+
   it('会话已失效（无当前会话）时不重查申请', async () => {
     mocks.currentRestriction.current = null as unknown as AuthSessionRestriction;
     render(<RestrictedApplicationCard />);
@@ -122,7 +130,7 @@ describe('RestrictedApplicationCard 显式刷新', () => {
   });
 
   it('复核期间刷新按钮进入 loading，避免重复提交', async () => {
-    const pending = deferred<boolean>();
+    const pending = deferred<{ status: 'unchanged' }>();
     mocks.identityRefreshMock.mockReturnValueOnce(pending.promise);
     render(<RestrictedApplicationCard />);
 
@@ -133,7 +141,7 @@ describe('RestrictedApplicationCard 显式刷新', () => {
       expect(screen.getByRole('button', { name: /刷新状态/ })).toHaveClass('ant-btn-loading');
     });
 
-    pending.resolve(false);
+    pending.resolve({ status: 'unchanged' });
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /刷新状态/ })).not.toHaveClass('ant-btn-loading');
     });

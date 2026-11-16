@@ -28,7 +28,7 @@ type AccountQueryServiceMock = {
 };
 
 type OrganizationQueryServiceMock = {
-  readonly findActiveRegistrationOption: jest.Mock;
+  readonly findActiveOrganizationForWrite: jest.Mock;
 };
 
 type EquipmentModelQueryServiceMock = {
@@ -90,7 +90,7 @@ describe('CreateRepairRequestUsecase', () => {
       findCustomerOrganizationId: jest.fn().mockResolvedValue(77),
     };
     organizationQueryService = {
-      findActiveRegistrationOption: jest.fn().mockResolvedValue({ id: 77, name: '甲方默认组织' }),
+      findActiveOrganizationForWrite: jest.fn().mockResolvedValue({ id: 77, name: '甲方默认组织' }),
     };
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
@@ -158,7 +158,7 @@ describe('CreateRepairRequestUsecase', () => {
         accountId: 7,
         transactionContext,
       });
-      expect(organizationQueryService.findActiveRegistrationOption).toHaveBeenCalledWith({
+      expect(organizationQueryService.findActiveOrganizationForWrite).toHaveBeenCalledWith({
         organizationId: 77,
         transactionContext,
       });
@@ -177,7 +177,7 @@ describe('CreateRepairRequestUsecase', () => {
     });
 
     it('归属公司已停用：拒绝提交且零落库', async () => {
-      organizationQueryService.findActiveRegistrationOption.mockResolvedValue(null);
+      organizationQueryService.findActiveOrganizationForWrite.mockResolvedValue(null);
 
       await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
         code: REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_UNAVAILABLE,

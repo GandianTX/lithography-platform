@@ -6,6 +6,7 @@ import { JwtPayload } from '@app-types/jwt.types';
 import { ValidateInput } from '@adapters/api/graphql/common/validate-input.decorator';
 import { UseGuards } from '@nestjs/common';
 import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { UpdateMyAccountProfileInput } from '@src/adapters/api/graphql/account/dto/update-my-account-profile.input';
 import { UpdateMyAccountSettingsInput } from '@src/adapters/api/graphql/account/dto/update-my-account-settings.input';
 import {
   UpdateMyAccountSettingsResultDTO,
@@ -45,8 +46,10 @@ import { UpdateMyAccountSettingsUsecase } from '@src/usecases/account/update-my-
  * 准入：`JwtAuthGuard` + `MustChangePasswordGuard`——`SUPER_ADMIN` / `ENGINEER` / `CUSTOMER`
  * 均可管理**自己的**账号设置（契约见 `docs/api/account-write-current.md`），故不加 `@Roles`；
  * 待审 / 已拒绝 / 资格未生效的受限会话仍需查看与维护本人资料，但强制改密完成前一律拒绝。
- * 目标账号只能来自已认证 Session，三个入口（1 Query + 2 Mutation）**刻意不接收任何目标
- * 账号 ID 参数**，结构上杜绝读取 / 修改他人设置的入口。
+ * 目标账号只能来自已认证 Session，各入口（1 Query + 2 Mutation + 1 窄写 Mutation +
+ * 1 补录 Mutation）**刻意不接收任何目标账号 ID 参数**，结构上杜绝读取 / 修改他人设置的入口。
+ * Web 正式资料页使用四字段窄写入口 `updateMyAccountProfile`；凭据与展示公司字段的广写
+ * 入口 `updateMyAccountSettings` 保持既有兼容语义。
  */
 @Resolver()
 export class MyAccountSettingsResolver {
@@ -113,6 +116,44 @@ export class MyAccountSettingsResolver {
       nickname: input.nickname,
       realName: input.realName,
       companyName: input.companyName,
+      phone: input.phone,
+      contactEmail: input.contactEmail,
+    });
+    return toUpdateMyAccountSettingsResultDTO(result);
+  }
+
+  /**
+   * 更新当前登录用户的资料（Web 正式资料页窄写入口，任务 02 F5）。
+   *
+   * 输入只含昵称、真实姓名、电话、联系邮箱四个字段；登录名 / 登录邮箱 / 公司名称 /
+   * 账号 ID / 角色 / 状态 / 等级 / 客户归属在 Schema 层面**不存在**，客户端硬塞会被
+   * GraphQL 变量校验拒绝。写入编排复用 `UpdateMyAccountSettingsUsecase` 的既有事务、
+   * 三态合并、受限白名单与失败分类，本方法只透传 Session、限制状态与四个资料字段。
+   */
+  @UseGuards(JwtAuthGuard, MustChangePasswordGuard)
+  @Mutation(() => UpdateMyAccountSettingsResultDTO, {
+    name: 'updateMyAccountProfile',
+    description: '更新当前登录用户的资料（窄写：昵称、真实姓名、电话、联系邮箱）',
+  })
+  @ValidateInput()
+  async updateMyAccountProfile(
+    @Args('input') input: UpdateMyAccountProfileInput,
+    @currentUser() user: AuthenticatedSessionUser,
+  ): Promise<UpdateMyAccountSettingsResultDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const result = await this.updateMyAccountSettingsUsecase.execute({
+      session,
+      restriction: user.restriction,
+      trustedOrganizations: {
+        customerOrganizationId: user.customerOrganizationId,
+        engineerOrganizationId: user.engineerOrganizationId,
+        adminOrganizationId: user.adminOrganizationId,
+      },
+      loginName: undefined,
+      loginEmail: undefined,
+      nickname: input.nickname,
+      realName: input.realName,
+      companyName: undefined,
       phone: input.phone,
       contactEmail: input.contactEmail,
     });

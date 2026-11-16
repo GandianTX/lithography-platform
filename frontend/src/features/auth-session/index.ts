@@ -27,6 +27,7 @@ export {
   resolveSafeReturnTo,
   resolveSessionExpiredLoginPath,
 } from './application/auth-session-policy';
+export type { AuthSessionIdentityRefreshOutcome } from './auth-session-entry';
 export {
   clearSessionAfterPasswordChange,
   getAuthSessionAccessToken,

@@ -29,6 +29,27 @@ export type OrganizationMembershipFact = {
 };
 
 /**
+ * 补录写入前的成员关系核对事实：**不按有效口径过滤**，保留成员状态与所属组织状态。
+ *
+ * 与 `OrganizationMembershipFact` 的差异（刻意分开，避免污染可信组织解析的有效口径）：
+ * - 停用组织上的 ACTIVE 成员关系仍返回，因为它会占用 `active_account_id` 唯一键；
+ * - `LEFT` 历史成员关系仍返回，因为它会占用 `(organization_id, account_id)` 唯一键；
+ * 调用方据此在写 FK / 成员关系之前失败关闭，而不是让唯一索引在提交时抛错。
+ */
+export type OrganizationMembershipBindingFact = {
+  /** 成员关系主键 */
+  membershipId: number;
+  /** 组织主键 */
+  organizationId: number;
+  /** 组织内角色：`SUPER_ADMIN`=组织管理员；`ENGINEER`=工程师；`CUSTOMER`=客户 */
+  memberRole: string;
+  /** 成员状态：`ACTIVE`=在籍；`LEFT`=已退出 */
+  membershipStatus: string;
+  /** 所属组织状态：`ACTIVE`=启用；`DISABLED`=停用 */
+  organizationStatus: string;
+};
+
+/**
  * 组织成员关系写入数据（管理员代建与自助注册共用同一写入入口形态）。
  *
  * `memberRole` 与实体 `chk_organization_membership_role` 值域一致；

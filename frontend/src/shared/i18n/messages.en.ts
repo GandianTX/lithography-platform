@@ -41,10 +41,16 @@ export const EN_MESSAGES = {
   'layout.approval.title': 'Application approved. Access granted.',
   'layout.approval.description':
     'The review result is in effect and access has been granted as confirmed by the server. Your identity will be verified again before entering the workspace.',
+  'layout.approval.companyLabel': 'Applied company',
+  'layout.approval.companyFallback': 'Company #{id}',
+  'layout.approval.loading': 'Checking the review result…',
+  'layout.approval.loadFailed': 'Unable to load the review result. Please try again later.',
   'layout.approval.enter': 'Enter workspace',
   'layout.approval.verifyFailed': 'Identity verification failed. Please try again later.',
   'layout.approval.stillRestricted':
     'Your access has not been confirmed yet. Restricted access remains. Please try again later.',
+  'layout.approval.staleSession':
+    'The current session has changed. Refresh the page or sign in again, then retry.',
 
   'nav.home.label': 'Home',
   'nav.home.description': 'Open the workspace home for your role.',

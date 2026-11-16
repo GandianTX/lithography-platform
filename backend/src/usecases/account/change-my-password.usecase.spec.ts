@@ -128,7 +128,7 @@ describe('ChangeMyPasswordUsecase', () => {
         accountId: 42,
         passwordHash: expect.any(String),
         transactionContext: harness.txContext,
-        clearMustChangePassword: true,
+        mustChangePassword: false,
       });
       expect(harness.isCommitted()).toBe(true);
     });
@@ -248,7 +248,7 @@ describe('ChangeMyPasswordUsecase', () => {
         accountId: ACCOUNT_ID,
         passwordHash: AccountService.hashPasswordWithTimestamp(NEW_PASSWORD, DB_CREATED_AT),
         transactionContext: harness.txContext,
-        clearMustChangePassword: true,
+        mustChangePassword: false,
       });
       expect(harness.isCommitted()).toBe(true);
     });

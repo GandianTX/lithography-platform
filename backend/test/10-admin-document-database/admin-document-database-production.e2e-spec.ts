@@ -31,6 +31,13 @@
 //   （cleanupProductionFixtureResidue）+ 夹具外哨兵链；禁止无 WHERE 整表删除，
 //   禁止以固定主键代表所有权；
 // - R6：nullable 规整矩阵（省略 / {} / null / false / true / 合法 ID / 0 / 内部异常）。
+//
+// F1 全域授权收口后的准入事实：
+// - 七个管理员查询入口统一要求「当前 admin_level=1」+「可信组织单一 ACTIVE 成员关系」，
+//   因此本 spec 的管理员夹具在造数后补写等级并建立规格专属组织成员关系；
+// - 组织/成员关系经 scoped 台账（runGuardedSpecCleanup）在账号精确回收之前清理，
+//   否则 fk_organization_membership_account 的 RESTRICT 会让 cleanupProductionFixtureByIds
+//   失败关闭；崩溃残留同样先按组织编码清理再走 cleanupProductionFixtureResidue。
 
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -43,6 +50,16 @@ import { ListAdminRepairRequestsUsecase } from '@src/usecases/admin-document-dat
 import { GqlAllExceptionsFilter } from '../../src/infrastructure/graphql/filters/graphql-exception.filter';
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
 import { login, postGql } from '../utils/e2e-graphql-utils';
+import {
+  createOwnedResourceLedger,
+  runGuardedSpecCleanup,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
+import {
+  buildSuiteOrganizationCodes,
+  seedTestMemberships,
+  seedTestOrganizations,
+} from '../utils/test-organizations';
 import { runAdminDocFixtureTeardown } from './admin-document-database-fixture';
 import {
   cleanupProductionFixtureByIds,
@@ -153,6 +170,22 @@ function wrapConfigForProduction(configService: ConfigService): ConfigService {
 
 const VALID_PAGINATION = { mode: 'OFFSET', page: 1, pageSize: 10, withTotal: true };
 
+/**
+ * F1：管理员准入所需的规格专属组织（可信组织上下文来源）。
+ * 编码带 E2E 前缀且本 spec 唯一：清理只按编码/本轮记录 ID 收敛。
+ */
+const PRODUCTION_ORGANIZATION_CODES = buildSuiteOrganizationCodes('ADMDOCPROD');
+const PRODUCTION_ORGANIZATION = {
+  organizationCode: PRODUCTION_ORGANIZATION_CODES.primary,
+  name: 'E2E 甲方组织（生产分类夹具）',
+  kind: 'CLIENT',
+} as const;
+
+/** 仅用于成员归属核验的账号指纹（账号本身由 production fixture 精确回收） */
+const RETAINED_ACCOUNT_FINGERPRINTS = Object.values(PRODUCTION_FIXTURE_ACCOUNTS).map(
+  toResidueAccountFingerprint,
+);
+
 /** 与 DTO / usecase 校验断言的期望文案一一对应（生产环境必须保留可读文案） */
 const INVALID_INPUT_CASES: ReadonlyArray<{
   readonly label: string;
@@ -262,8 +295,24 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
   const ownership: ProductionFixtureOwnership = createProductionFixtureOwnership();
   /** R6 锚点业务数据（型号 / 申请的 ID 由数据库生成） */
   let businessIds: ProductionFixtureBusinessIds;
+  /**
+   * F1：本轮创建的规格专属组织与成员关系（scoped 台账）。
+   * 成员关系必须先于账号回收删除（外键 RESTRICT），因此单独持有并最先清理。
+   */
+  const suiteOwnership = createOwnedResourceLedger();
   /** R5：仅当 beforeAll 在「写夹具之前」完成白名单验证才置位，afterAll 据此决定能否清理。 */
   let fixtureTargetValidated = false;
+
+  /** 先清组织成员/组织，再按归属精确清账号与业务行（顺序不可交换） */
+  const cleanupOrganizationThenFixture = async (ds: DataSource): Promise<void> => {
+    await runGuardedSpecCleanup({
+      dataSource: ds,
+      owned: suiteOwnership,
+      retainedAccounts: RETAINED_ACCOUNT_FINGERPRINTS,
+      helper: 'admin-document-database-production.e2e-spec 组织链清理',
+    });
+    await cleanupProductionFixtureByIds(ds, ownership);
+  };
 
   beforeAll(async () => {
     // 应用保持 E2E 配置初始化；仅真实 GqlAllExceptionsFilter 接收 production 判定，
@@ -302,6 +351,14 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
 
     // R5 精确生命周期：先按专属标记 + 完整归属校验回收上一次运行的崩溃残留，
     // 再按本轮记录的 ID 收尾；无残留时全部 no-op（连跑两遍幂等）；禁止无 WHERE 整表删除。
+    // F1：上一次中断可能留下组织成员关系（RESTRICT 会阻塞账号回收），
+    // 先按组织编码 + 账号指纹核验清理组织链残留，再回收夹具账号。
+    await runGuardedSpecCleanup({
+      dataSource,
+      residue: { organizations: [PRODUCTION_ORGANIZATION] },
+      retainedAccounts: RETAINED_ACCOUNT_FINGERPRINTS,
+      helper: 'admin-document-database-production.e2e-spec beforeAll 组织残留清理',
+    });
     await cleanupProductionFixtureResidue(dataSource);
 
     const { created, failures } = await seedProductionFixtureAccounts({
@@ -320,11 +377,39 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
     }
 
     const accountIdByKey = new Map(created.map((seed) => [seed.key, seed.accountId]));
+    const adminAccountId = accountIdByKey.get('admin');
     const customerAccountId = accountIdByKey.get('customer');
     const engineerAccountId = accountIdByKey.get('engineer');
-    if (customerAccountId === undefined || engineerAccountId === undefined) {
-      throw new Error('production 专属账号创建记录不完整（缺少 customer / engineer）');
+    if (
+      adminAccountId === undefined ||
+      customerAccountId === undefined ||
+      engineerAccountId === undefined
+    ) {
+      throw new Error('production 专属账号创建记录不完整（缺少 admin / customer / engineer）');
     }
+    // F1：等级事实取当前库（`base_user_account.admin_level`），不信任 JWT 静态等级；
+    // 管理员必须为一级，且拥有唯一 ACTIVE 组织成员关系，才能通过七个查询入口的准入判断。
+    await dataSource.query('UPDATE base_user_account SET admin_level = 1 WHERE id = ?', [
+      adminAccountId,
+    ]);
+    const organizationIds = await seedTestOrganizations({
+      dataSource,
+      organizations: [PRODUCTION_ORGANIZATION],
+      ownership: suiteOwnership,
+    });
+    await seedTestMemberships({
+      dataSource,
+      organizationIdsByCode: organizationIds,
+      ownership: suiteOwnership,
+      memberships: [
+        {
+          accountLoginName: PRODUCTION_FIXTURE_ACCOUNTS.admin.loginName,
+          organizationCode: PRODUCTION_ORGANIZATION.organizationCode,
+          memberRole: 'SUPER_ADMIN',
+        },
+      ],
+    });
+
     // R6 锚点业务数据（专属标记的型号 + 申请；主键由数据库生成，成功即记进 ownership）
     businessIds = await seedProductionFixtureBusiness({
       dataSource,
@@ -357,7 +442,7 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
       app,
       dataSource,
       targetValidated: fixtureTargetValidated,
-      cleanup: (ds) => cleanupProductionFixtureByIds(ds, ownership),
+      cleanup: cleanupOrganizationThenFixture,
     });
   });
 
@@ -636,7 +721,8 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
 
       try {
         // 只按本轮实际创建并记录的 ID 回收（不接受任何裸固定 ID）
-        await cleanupProductionFixtureByIds(dataSource, ownership);
+        // F1：组织成员关系先于账号删除，否则 RESTRICT 会使清理失败关闭
+        await cleanupOrganizationThenFixture(dataSource);
 
         // 专属账号已被精确回收（清理确实发生，而非整表删除后的错删/报错）
         expect(await findProductionFixtureAccountIds(dataSource)).toEqual([]);
@@ -649,7 +735,8 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
 
     it('连续两次精确回收幂等：第二次为 no-op，不报错且哨兵不受影响', async () => {
       // 前置：先确保文件级夹具已收口（等价于「上次残留 → 连续两次回收」的真实路径）
-      await cleanupProductionFixtureByIds(dataSource, ownership);
+      // F1：同样先清组织成员关系，保证单独运行本用例时账号回收不被 RESTRICT 阻断
+      await cleanupOrganizationThenFixture(dataSource);
 
       const sentinelOwnership = createProductionFixtureOwnership();
       const sentinelIds = await ensureProductionSentinelChain({

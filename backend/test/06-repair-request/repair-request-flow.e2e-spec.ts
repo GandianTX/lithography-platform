@@ -7,7 +7,7 @@ import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-re
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { App } from 'supertest/types';
 import { DataSource, Repository } from 'typeorm';
-import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
+import { getAccountIdByLoginName, login, postGql, sleep } from '../utils/e2e-graphql-utils';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import {
   createOwnedResourceLedger,
@@ -50,6 +50,19 @@ const SUPPLEMENT_COMPANY_MUTATION = `
     supplementMyCustomerCompany(input: $input) { isUpdated }
   }
 `;
+
+const MY_REPAIR_REQUESTS_QUERY = `
+  query MyRepairRequests($pagination: PaginationArgs!) {
+    myRepairRequests(pagination: $pagination) {
+      items { id requestNo }
+      total
+      page
+      pageSize
+    }
+  }
+`;
+
+const OFFSET_PAGINATION = { mode: 'OFFSET', page: 1, pageSize: 10, withTotal: true };
 
 const FLOW_CUSTOMER_COMPANY_NAME = 'E2E 报修流程客户公司';
 
@@ -442,6 +455,269 @@ describe('维修申请业务流程 (e2e)', () => {
 
       expect(response.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
       expect(response.body.errors[0].message).toContain('故障描述不能超过 5000 个字符');
+    });
+  });
+
+  /**
+   * 停用组织与新增报修的原子顺序（F2 回归）。
+   *
+   * 写前复核必须是当前锁定读：先持有组织行排他锁并停用（未提交）时，报修请求
+   * 不能以旧快照判定为「仍有效」后落库；停用提交后，同一请求必须按最新提交版本
+   * 判定为不可用并零落库。反向则验证有效性锁会阻塞停用写入。
+   */
+  describe('组织停用与新增报修的原子顺序', () => {
+    let customerOrganizationId: number;
+
+    const readOrganizationStatus = async (): Promise<string> => {
+      const rows = await dataSource.query<Array<{ status: string }>>(
+        'SELECT status FROM organization WHERE id = ?',
+        [customerOrganizationId],
+      );
+      return String(rows[0]?.status ?? '');
+    };
+
+    const setOrganizationStatus = async (status: 'ACTIVE' | 'DISABLED'): Promise<void> => {
+      await dataSource.query('UPDATE organization SET status = ? WHERE id = ?', [
+        status,
+        customerOrganizationId,
+      ]);
+    };
+
+    const countCustomerRequests = (): Promise<number> =>
+      requestRepository.count({ where: { customerAccountId } });
+
+    const seedUsableModel = async (): Promise<EquipmentModelEntity> => {
+      const [model] = await seedModels([
+        { modelCode: 'E2E-OK', modelName: '可用型号', enabled: true },
+      ]);
+      return model;
+    };
+
+    beforeEach(async () => {
+      const rows = await dataSource.query<Array<{ customer_organization_id: number | null }>>(
+        'SELECT customer_organization_id FROM base_user_info WHERE account_id = ?',
+        [customerAccountId],
+      );
+      customerOrganizationId = Number(rows[0]?.customer_organization_id);
+      if (!Number.isInteger(customerOrganizationId) || customerOrganizationId <= 0) {
+        throw new Error('并发顺序用例缺少客户公司归属夹具');
+      }
+    });
+
+    afterEach(async () => {
+      // 用例内可能停用组织：先恢复为清理台账登记的 ACTIVE 预期，再由外层收尾
+      await dataSource.query("UPDATE organization SET status = 'ACTIVE' WHERE id = ?", [
+        customerOrganizationId,
+      ]);
+    });
+
+    it('停用提交在先：报修等待组织行锁，停用提交后 FORBIDDEN 且零新增', async () => {
+      const model = await seedUsableModel();
+      const blocker = dataSource.createQueryRunner();
+      await blocker.connect();
+      await blocker.startTransaction();
+      try {
+        await blocker.query('SELECT id FROM organization WHERE id = ? FOR UPDATE', [
+          customerOrganizationId,
+        ]);
+        await blocker.query("UPDATE organization SET status = 'DISABLED' WHERE id = ?", [
+          customerOrganizationId,
+        ]);
+
+        const pending = postGql({
+          app,
+          query: CREATE_REPAIR_REQUEST_MUTATION,
+          variables: {
+            input: {
+              equipmentModelId: model.id,
+              errorCode: 'E2E-F2-1',
+              faultDescription: '停用提交在先的并发报修',
+            },
+          },
+          token: customerToken,
+        });
+        const settled = pending.then(
+          (value) => ({ kind: 'settled' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        );
+
+        // 停用事务仍持有组织行排他锁：报修必须阻塞在写前复核，不能提前返回成功
+        const early = await Promise.race([
+          settled,
+          sleep(500).then(() => ({ kind: 'pending' as const })),
+        ]);
+        expect(early.kind).toBe('pending');
+        expect(await countCustomerRequests()).toBe(0);
+
+        await blocker.commitTransaction();
+
+        const outcome = await settled;
+        expect(outcome.kind).toBe('settled');
+        if (outcome.kind !== 'settled') {
+          throw new Error('停用提交后报修请求仍未返回');
+        }
+        const response = outcome.value;
+        expect(response.status).toBe(200);
+        expect(response.body.errors).toHaveLength(1);
+        const extensions = response.body.errors[0].extensions as Record<string, unknown>;
+        expect(extensions.code).toBe('FORBIDDEN');
+        expect(extensions.errorCode).toBe('REPAIR_REQUEST_CUSTOMER_COMPANY_UNAVAILABLE');
+        expect(response.body.data).toBeNull();
+        expect(await readOrganizationStatus()).toBe('DISABLED');
+        expect(await countCustomerRequests()).toBe(0);
+      } finally {
+        if (blocker.isTransactionActive) {
+          await blocker.rollbackTransaction();
+        }
+        await blocker.release();
+      }
+    });
+
+    it('报修先完成：有效未受管公司可报修，随后停用使后续报修 FORBIDDEN 且零新增', async () => {
+      const model = await seedUsableModel();
+      const organizationRows = await dataSource.query<
+        Array<{ is_managed_company: number | boolean }>
+      >('SELECT is_managed_company FROM organization WHERE id = ?', [customerOrganizationId]);
+      // 补录后的自由创建公司：有效但不在受管名单（与注册候选口径不同）
+      expect(Number(organizationRows[0]?.is_managed_company)).toBe(0);
+
+      const first = await createMutation({
+        equipmentModelId: model.id,
+        errorCode: 'E2E-F2-2',
+        faultDescription: '组织仍有效时的报修',
+      }).expect(200);
+      expect(first.body.errors).toBeUndefined();
+      const created = first.body.data.createRepairRequest as { id: number; requestNo: string };
+      recordOwnedResource(ownership, 'repairRequest', created.id, {
+        requestNo: created.requestNo,
+        customerAccountId,
+        equipmentModelId: model.id,
+        errorCode: 'E2E-F2-2',
+        faultDescription: '组织仍有效时的报修',
+      });
+      const saved = await requestRepository.findOne({ where: { id: created.id } });
+      expect(saved?.ownerOrganizationId).toBe(customerOrganizationId);
+
+      await setOrganizationStatus('DISABLED');
+      expect(await readOrganizationStatus()).toBe('DISABLED');
+
+      const second = await createMutation({
+        equipmentModelId: model.id,
+        errorCode: 'E2E-F2-3',
+        faultDescription: '停用后的报修',
+      }).expect(200);
+      expect(second.body.errors).toHaveLength(1);
+      const extensions = second.body.errors[0].extensions as Record<string, unknown>;
+      expect(extensions.code).toBe('FORBIDDEN');
+      expect(extensions.errorCode).toBe('REPAIR_REQUEST_CUSTOMER_COMPANY_UNAVAILABLE');
+      expect(second.body.data).toBeNull();
+      expect(await countCustomerRequests()).toBe(1);
+    });
+
+    it('报修先持有有效性锁：停用更新等待该锁，持有方提交后才生效', async () => {
+      const holder = dataSource.createQueryRunner();
+      const writer = dataSource.createQueryRunner();
+      await holder.connect();
+      await writer.connect();
+      await holder.startTransaction();
+      await writer.startTransaction();
+      try {
+        // 与 CreateRepairRequestUsecase 写前复核相同的锁口径（当前读 + 共享行锁）
+        await holder.query('SELECT id FROM organization WHERE id = ? AND status = ? FOR SHARE', [
+          customerOrganizationId,
+          'ACTIVE',
+        ]);
+
+        const update = writer.query("UPDATE organization SET status = 'DISABLED' WHERE id = ?", [
+          customerOrganizationId,
+        ]);
+        const settled = update.then(
+          (value) => ({ kind: 'settled' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        );
+        const early = await Promise.race([
+          settled,
+          sleep(500).then(() => ({ kind: 'blocked' as const })),
+        ]);
+        expect(early.kind).toBe('blocked');
+
+        await holder.commitTransaction();
+        const outcome = await settled;
+        expect(outcome.kind).toBe('settled');
+        await writer.commitTransaction();
+        expect(await readOrganizationStatus()).toBe('DISABLED');
+      } finally {
+        if (holder.isTransactionActive) {
+          await holder.rollbackTransaction();
+        }
+        if (writer.isTransactionActive) {
+          await writer.rollbackTransaction();
+        }
+        await holder.release();
+        await writer.release();
+      }
+    });
+
+    it('无归属存量仍可读取本人历史申请，且写入口径仍失败关闭', async () => {
+      const model = await seedUsableModel();
+      const createdResponse = await createMutation({
+        equipmentModelId: model.id,
+        errorCode: 'E2E-F2-4',
+        faultDescription: '产生历史申请',
+      }).expect(200);
+      expect(createdResponse.body.errors).toBeUndefined();
+      const created = createdResponse.body.data.createRepairRequest as {
+        id: number;
+        requestNo: string;
+      };
+      recordOwnedResource(ownership, 'repairRequest', created.id, {
+        requestNo: created.requestNo,
+        customerAccountId,
+        equipmentModelId: model.id,
+        errorCode: 'E2E-F2-4',
+        faultDescription: '产生历史申请',
+      });
+
+      await dataSource.query(
+        'UPDATE base_user_info SET customer_organization_id = NULL WHERE account_id = ?',
+        [customerAccountId],
+      );
+      updateOwnedExpectation(ownership, 'account', customerAccountId, {
+        customerOrganizationId: null,
+      });
+      try {
+        const read = await postGql({
+          app,
+          query: MY_REPAIR_REQUESTS_QUERY,
+          variables: { pagination: OFFSET_PAGINATION },
+          token: customerToken,
+        }).expect(200);
+        expect(read.body.errors).toBeUndefined();
+        const ids = (read.body.data.myRepairRequests.items as Array<{ id: number }>).map(
+          (item) => item.id,
+        );
+        expect(ids).toContain(created.id);
+
+        const denied = await createMutation({
+          equipmentModelId: model.id,
+          errorCode: 'E2E-F2-5',
+          faultDescription: '无归属时的新报修',
+        }).expect(200);
+        expect(denied.body.errors).toHaveLength(1);
+        const extensions = denied.body.errors[0].extensions as Record<string, unknown>;
+        expect(extensions.code).toBe('FORBIDDEN');
+        expect(extensions.errorCode).toBe('REPAIR_REQUEST_CUSTOMER_COMPANY_REQUIRED');
+        expect(denied.body.data).toBeNull();
+        expect(await countCustomerRequests()).toBe(1);
+      } finally {
+        await dataSource.query(
+          'UPDATE base_user_info SET customer_organization_id = ? WHERE account_id = ?',
+          [customerOrganizationId, customerAccountId],
+        );
+        updateOwnedExpectation(ownership, 'account', customerAccountId, {
+          customerOrganizationId,
+        });
+      }
     });
   });
 });

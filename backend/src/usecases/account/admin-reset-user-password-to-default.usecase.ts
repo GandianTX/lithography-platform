@@ -222,7 +222,7 @@ export class AdminResetUserPasswordToDefaultUsecase {
           lockedView.createdAt,
         ),
         transactionContext,
-        setMustChangePassword: true,
+        mustChangePassword: true,
       });
     } catch (error) {
       logAdminUserWriteFailure({

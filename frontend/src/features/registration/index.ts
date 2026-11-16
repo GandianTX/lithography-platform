@@ -38,6 +38,7 @@ export {
   REGISTRATION_ORGANIZATION_PAGE_SIZE,
   useRegistrationOrganizations,
 } from './application/use-registration-organizations';
+export { fetchMyEngineerRegistration } from './infrastructure/my-engineer-registration-adapter';
 export { fetchRegistrationOrganizations } from './infrastructure/registration-organization-adapter';
 export { RegisterCustomerForm } from './ui/register-customer-form';
 export { RegisterEngineerForm } from './ui/register-engineer-form';

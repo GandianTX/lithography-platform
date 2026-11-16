@@ -56,7 +56,8 @@ type SupplementPhase =
  * - 选择受管候选与手填公司名严格互斥，互斥在 DTO、本用例与 UI 三层各自成立；
  * - 选择式复用注册候选资格（`ACTIVE + is_managed_company`）并在写事务内复核；
  * - 手填式明确创建「启用、未受管、非维修服务商」的公司档，同名不合并，只回带提示；
- * - 组织创建、客户 FK 与 CUSTOMER 成员关系在同一事务内一致，不建立工程师关系。
+ * - 组织创建、客户 FK 与 CUSTOMER 成员关系在同一事务内一致，不建立工程师关系；
+ * - 成员复用仅限「目标组织 + 活跃 + CUSTOMER」；错角色、外组织、历史 LEFT 行均失败关闭。
  *
  * 并发与原子性（写顺序即锁顺序）：
  * 1. `base_user_account` 行锁 → `base_user_info` 行锁（`lockCustomerCompanyBindingFacts`）；
@@ -275,8 +276,16 @@ export class SupplementMyCustomerCompanyUsecase {
   /**
    * 组织解析：选择式在事务内复核受管资格；手填式先判同名（只作提示），再新建未受管公司。
    *
-   * 成员关系也在本步裁决：已有其它组织的有效关系属数据不变量冲突，失败关闭不自动修复；
-   * 恰为目标组织的 ACTIVE 关系则不再插入第二条，避免重复关系。
+   * 成员关系在此步裁决，且使用**未按有效口径过滤**的全集（含停用组织上的 ACTIVE 关系与
+   * `LEFT` 历史关系），因为两个唯一键都可能让后续写入失败：
+   * - `uk_organization_membership_active_account`：一个账号只能有一条 ACTIVE 关系；
+   * - `uk_organization_membership_org_account`：`(organization_id, account_id)` 不能重复，
+   *   历史 `LEFT` 行会阻止对同一公司的再次 INSERT。
+   *
+   * 只有「目标组织上的活跃 CUSTOMER 行」允许复用；同组织 ENGINEER / SUPER_ADMIN、
+   * 其它组织的活跃关系、多条活跃关系歧义、目标公司的历史 LEFT 关系，一律在
+   * `bindCustomerOrganization` 之前以 `CONFLICT` 失败关闭，不自动改角色、不恢复历史关系、
+   * 也不重试 INSERT。
    */
   private async resolveOrganization(params: {
     choice: CustomerCompanySupplementChoice;
@@ -288,24 +297,62 @@ export class SupplementMyCustomerCompanyUsecase {
     sameNamedCompanyName: string | null;
   }> {
     const { choice, accountId, transactionContext } = params;
-    const memberships =
-      await this.organizationMembershipQueryService.listActiveMembershipsByAccount({
-        accountId,
-        transactionContext,
-      });
+    const memberships = await this.organizationMembershipQueryService.listMembershipsForBinding({
+      accountId,
+      transactionContext,
+    });
+    const activeMemberships = memberships.filter(
+      (membership) => membership.membershipStatus === 'ACTIVE',
+    );
 
     if (choice.kind === 'EXISTING') {
-      const conflicting = memberships.filter(
-        (membership) => membership.organizationId !== choice.organizationId,
-      );
-      if (conflicting.length > 0) {
+      if (activeMemberships.length > 1) {
         throw new DomainError(
           MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
-          '账号已有其它公司的成员关系，请联系管理员处理',
+          '账号存在多条有效成员关系，请联系管理员核实后再补录',
+          undefined,
+          {
+            diagnostic: 'CUSTOMER_MEMBERSHIP_AMBIGUOUS',
+            accountId,
+            membershipIds: activeMemberships.map((membership) => membership.membershipId),
+          },
+        );
+      }
+
+      const activeMembership = activeMemberships[0] ?? null;
+      if (activeMembership && activeMembership.organizationId !== choice.organizationId) {
+        throw new DomainError(
+          MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+          '账号已有其它公司的有效成员关系，请联系管理员处理',
           undefined,
           { diagnostic: 'CUSTOMER_MEMBERSHIP_ON_OTHER_ORGANIZATION', accountId },
         );
       }
+      if (activeMembership && activeMembership.memberRole !== String(IdentityTypeEnum.CUSTOMER)) {
+        throw new DomainError(
+          MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+          '账号在该公司内的成员角色不是客户，请联系管理员调整后再补录',
+          undefined,
+          {
+            diagnostic: 'CUSTOMER_MEMBERSHIP_ROLE_MISMATCH',
+            accountId,
+            memberRole: activeMembership.memberRole,
+          },
+        );
+      }
+      if (
+        !activeMembership &&
+        memberships.some((membership) => membership.organizationId === choice.organizationId)
+      ) {
+        // 只有历史 LEFT 行：唯一键不允许重复 INSERT，恢复关系需要 owner 明确允许，故失败关闭
+        throw new DomainError(
+          MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
+          '账号在该公司存在已退出的历史成员关系，请联系管理员恢复后再补录',
+          undefined,
+          { diagnostic: 'CUSTOMER_MEMBERSHIP_HISTORICAL_INACTIVE', accountId },
+        );
+      }
+
       const organization = await this.organizationQueryService.findEligibleRegistrationOption({
         organizationId: choice.organizationId,
         transactionContext,
@@ -318,17 +365,21 @@ export class SupplementMyCustomerCompanyUsecase {
       }
       return {
         organizationId: organization.id,
-        needsMembership: memberships.length === 0,
+        needsMembership: activeMembership === null,
         sameNamedCompanyName: null,
       };
     }
 
-    if (memberships.length > 0) {
+    if (activeMemberships.length > 0) {
       throw new DomainError(
         MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_MEMBERSHIP_INCONSISTENT,
-        '账号已有其它公司的成员关系，请联系管理员处理',
+        '账号已有有效成员关系，请联系管理员处理后再补录',
         undefined,
-        { diagnostic: 'CUSTOMER_MEMBERSHIP_ON_OTHER_ORGANIZATION', accountId },
+        {
+          diagnostic: 'CUSTOMER_MEMBERSHIP_EXISTS_FOR_SELF_FILLED',
+          accountId,
+          membershipIds: activeMemberships.map((membership) => membership.membershipId),
+        },
       );
     }
 
