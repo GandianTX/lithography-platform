@@ -14,9 +14,11 @@
 //
 // 权限与数据真源：等级由请求期查库得到的 `base_user_account.admin_level` 决定，
 // 本 spec 只在专用隔离库内临时设置/恢复等级与受管组织行，不触碰共享开发库；
-// 清理边界只认「创建响应返回值 + 本轮请求事实」登记的精确主键：先按库内名称/编号
-// 逐字段核验，再按主键删除。名称、编号前缀与固定测试名都不是删除授权；
-// 创建响应丢失时只做只读诊断，绝不按名称猜测归属，也不删除未登记行。
+// 清理边界只认「创建响应返回值 + 本轮夹具 INSERT 的真实主键」登记的精确主键：
+// 所有权绑定、子行/集合外引用预检与按主键 DELETE 在**同一事务**内完成，任一预检
+// 不通过都在首次 DELETE 之前中止（`rc_*` 标记，可与外键兜底 1451 区分）。
+// 名称、编号前缀与固定测试名都不是删除授权；快照差集只用于发现缺失/变更/新增，
+// 无法归属的对象保留待确认；创建响应丢失时只做只读诊断，绝不按名称猜测归属。
 //
 // 截图证据写入 docs/plan/task08/visual/（S2 前缀，避免覆盖 S0 原型截图）。
 
@@ -29,7 +31,17 @@ import {
   readBackendEnv,
   realGraphqlCall,
   runGuardedFixtureWrite,
+  runTeardownSteps,
+  throwPrimaryAndTeardown,
 } from '../e2e/helpers/real-backend';
+import {
+  cleanupRegistrationRound,
+  createRegistrationRoundLedger,
+  discoverRegistrationRoundReferences,
+  readRegistrationRoundOrganization,
+  registerRegistrationRoundOrganization,
+  type RegistrationRoundLedger,
+} from '../e2e/helpers/registration-round-cleanup';
 import { prepareStableViewport } from '../e2e/helpers/visual-evidence';
 
 /** 主导航入口与页面标题 */
@@ -281,31 +293,51 @@ function insertExternalLeftMembership(
 }
 
 /**
- * 按登记事实回收本轮公司：逐字段核验通过后才按主键 DELETE。
+ * 按登记事实回收本轮公司：单一事务内先绑定所有权并预检子行/集合外引用，再按主键删除。
  *
- * 只有主键、名称与编号都与登记一致才可删除；硬编码名称、编号前缀与固定测试名
- * 都不构成所有权证据。核验失败或外键拒绝时保留行并抛错，不做降级删除。
+ * 所有权证据只有「创建响应返回值」或「本轮夹具 INSERT 的真实主键」+ 名称 + 编号；
+ * 联系人、维修资格等业务可变字段不参与绑定，避免把用例内的正常编辑误判成归属变化。
+ * 子行与外部引用由共享台账的 `rc_*` 守卫在首删前拒绝：预检未通过时不会执行任何
+ * DELETE（实际删除计数为 0），与数据库外键兜底（1451）在错误文本上可区分。
  */
-function deleteRegisteredOrganization(
-  env: Record<string, string>,
-  registered: RegisteredOrganizationFacts,
-): void {
-  const row = readOrganizationRow(registered.id);
+function deleteRegisteredOrganization(registered: RegisteredOrganizationFacts): void {
+  const current = readRegistrationRoundOrganization(registered.id);
+  const ledger = createRegistrationRoundLedger();
 
-  if (row.name !== registered.name || row.organizationCode !== registered.organizationCode) {
-    throw new Error(
-      `清理前置核验失败：id=${registered.id} 的库内名称/编号与登记事实不一致` +
-        `（库内 name=${JSON.stringify(row.name)} code=${JSON.stringify(row.organizationCode)}），拒绝删除`,
-    );
+  registerRegistrationRoundOrganization(ledger, {
+    ...current,
+    id: registered.id,
+    name: registered.name,
+    organizationCode: registered.organizationCode,
+  });
+
+  cleanupRegistrationRound(ledger);
+}
+
+/** 服务器侧 DELETE 计数：用于证明守卫拒绝发生在首次 DELETE 之前 */
+function readDeleteCounter(): number {
+  const [, value] = mysqlQuery("SHOW GLOBAL STATUS LIKE 'Com_delete'").split('\t');
+
+  return Number(value);
+}
+
+function readErrorField(error: unknown, field: 'stdout' | 'stderr'): string {
+  if (!(error instanceof Error)) {
+    return '';
   }
 
-  runGuardedFixtureWrite(env, `DELETE FROM organization WHERE id = ${registered.id}`);
+  const value = (error as unknown as Record<string, unknown>)[field];
 
-  const remaining = readOrganizationCountById(registered.id);
-
-  if (remaining !== 0) {
-    throw new Error(`清理后仍残留 id=${registered.id} 的组织行 ${remaining} 条`);
+  if (typeof value === 'string') {
+    return value;
   }
+
+  return Buffer.isBuffer(value) ? value.toString('utf8') : '';
+}
+
+/** 数据库真实输出（stderr）：只对 CLI 输出断言，避免把整条 SQL 命令文本当作证据 */
+function readMysqlErrorOutput(error: unknown): string {
+  return readErrorField(error, 'stderr');
 }
 
 /** 哨兵行必须保持登记时的名称与编号（缺行同样视为被误删） */
@@ -334,11 +366,11 @@ interface OrganizationSnapshotRow {
   readonly id: number;
   readonly name: string;
   readonly organizationCode: string;
-  /** 除主键外的字段拼串，用于识别既有行是否被改写 */
-  readonly fields: string;
+  /** 除主键外的字段值（结构化数组，避免拼接分隔符带来的歧义） */
+  readonly fields: readonly string[];
 }
 
-/** 组织表全量快照（只读）：用于越权反例前后比对，任何新增/改写都必须可解释 */
+/** 组织表全量快照（只读）：用于越权反例前后比对，任何缺失/改写/新增都必须可解释 */
 function readOrganizationSnapshot(): OrganizationSnapshotRow[] {
   const output = mysqlQuery(
     "SELECT id, organization_code, name, COALESCE(contact_name, '<NULL>'), status, is_managed_company, is_service_provider, kind FROM organization ORDER BY id",
@@ -369,7 +401,7 @@ function readOrganizationSnapshot(): OrganizationSnapshotRow[] {
         isManagedCompany,
         isServiceProvider,
         kind,
-      ].join('|'),
+      ],
       id: Number(idText),
       name,
       organizationCode,
@@ -377,63 +409,94 @@ function readOrganizationSnapshot(): OrganizationSnapshotRow[] {
   });
 }
 
+interface OrganizationSnapshotDiff {
+  readonly missingRows: OrganizationSnapshotRow[];
+  readonly changedRows: Array<{
+    readonly id: number;
+    readonly before: readonly string[];
+    readonly after: readonly string[];
+  }>;
+  readonly newRows: OrganizationSnapshotRow[];
+}
+
+function sameSnapshotFields(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** 既有行的缺失、变更、新增分别报告；不把任何一类静默折叠进另一类 */
 function diffOrganizationSnapshot(
   before: readonly OrganizationSnapshotRow[],
   after: readonly OrganizationSnapshotRow[],
-): { readonly newRows: OrganizationSnapshotRow[]; readonly changedExistingIds: number[] } {
-  const beforeFieldsById = new Map(before.map((row) => [row.id, row.fields]));
+): OrganizationSnapshotDiff {
+  const beforeById = new Map(before.map((row) => [row.id, row]));
+  const afterIds = new Set(after.map((row) => row.id));
+  const changedRows: OrganizationSnapshotDiff['changedRows'] = [];
+
+  for (const row of after) {
+    const previous = beforeById.get(row.id);
+
+    if (previous !== undefined && !sameSnapshotFields(previous.fields, row.fields)) {
+      changedRows.push({ after: row.fields, before: previous.fields, id: row.id });
+    }
+  }
 
   return {
-    changedExistingIds: after
-      .filter((row) => beforeFieldsById.has(row.id) && beforeFieldsById.get(row.id) !== row.fields)
-      .map((row) => row.id),
-    newRows: after.filter((row) => !beforeFieldsById.has(row.id)),
+    changedRows,
+    missingRows: before.filter((row) => !afterIds.has(row.id)),
+    newRows: after.filter((row) => !beforeById.has(row.id)),
   };
 }
 
-interface TeardownStep {
-  readonly label: string;
-  readonly run: () => void | Promise<void>;
+function describeSnapshotRow(row: OrganizationSnapshotRow): string {
+  return `id=${row.id} name=${JSON.stringify(row.name)} code=${JSON.stringify(row.organizationCode)}`;
+}
+
+/** 差集报告：结构化值逐项列出，供「异常待确认」结论直接引用 */
+function describeSnapshotDiff(diff: OrganizationSnapshotDiff): string {
+  const sections: string[] = [];
+
+  if (diff.missingRows.length > 0) {
+    sections.push(`缺失：[${diff.missingRows.map(describeSnapshotRow).join('；')}]`);
+  }
+  if (diff.changedRows.length > 0) {
+    sections.push(
+      `变更：[${diff.changedRows
+        .map(
+          ({ id, before, after }) =>
+            `id=${id} before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,
+        )
+        .join('；')}]`,
+    );
+  }
+  if (diff.newRows.length > 0) {
+    sections.push(`新增：[${diff.newRows.map(describeSnapshotRow).join('；')}]`);
+  }
+
+  return sections.length === 0 ? '无差异' : sections.join(' / ');
 }
 
 /**
- * 收尾汇总：清理、状态复原与诊断各自独立执行，任一步失败都不跳过后续步骤，
- * 全部失败按序汇总后一次抛出，避免首个异常掩盖其余异常。
+ * 从意外成功的创建响应中提取可核验归属的真实主键与名称/编号。
+ * 响应缺失或字段不完整时返回 null：调用方只能做只读诊断并报待确认。
  */
-async function runTeardownSteps(steps: readonly TeardownStep[]): Promise<Error | null> {
-  const failures: string[] = [];
+function parseUnexpectedCreatedOrganization(payload: unknown): RegisteredOrganizationFacts | null {
+  const candidate = payload as Partial<RegisteredOrganization> | null | undefined;
 
-  for (const step of steps) {
-    try {
-      await step.run();
-    } catch (error) {
-      failures.push(`${step.label}：${error instanceof Error ? error.message : String(error)}`);
-    }
+  if (
+    candidate === null ||
+    candidate === undefined ||
+    typeof candidate.id !== 'number' ||
+    !Number.isSafeInteger(candidate.id) ||
+    candidate.id <= 0 ||
+    typeof candidate.organizationCode !== 'string' ||
+    candidate.organizationCode === '' ||
+    typeof candidate.name !== 'string' ||
+    candidate.name === ''
+  ) {
+    return null;
   }
 
-  return failures.length === 0
-    ? null
-    : new Error(`异常收尾汇总（${failures.length} 项失败）：\n- ${failures.join('\n- ')}`);
-}
-
-/** 主流程错误与收尾错误同时存在时一并保留，不让收尾覆盖最初失败原因 */
-function throwPrimaryAndTeardown(primary: unknown, teardown: Error | null): void {
-  if (primary === null) {
-    if (teardown !== null) {
-      throw teardown;
-    }
-    return;
-  }
-
-  if (teardown === null) {
-    throw primary;
-  }
-
-  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
-
-  throw new Error(`主流程失败：${primaryMessage}\n收尾失败：${teardown.message}`, {
-    cause: primary,
-  });
+  return { id: candidate.id, name: candidate.name, organizationCode: candidate.organizationCode };
 }
 
 async function captureScreenshots(
@@ -617,7 +680,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
         label: created === null ? '未登记创建结果的只读诊断' : '按登记事实回收本轮公司',
         run: () => {
           if (created !== null) {
-            deleteRegisteredOrganization(env, created);
+            deleteRegisteredOrganization(created);
             return;
           }
 
@@ -670,7 +733,23 @@ test.describe('公司档案（隔离库真实链路）', () => {
       organizationCode: forbiddenSentinelCode,
     };
     const beforeSnapshot = readOrganizationSnapshot();
-    const unexpectedOrganizations: RegisteredOrganizationFacts[] = [];
+    // 快照之后新增的独立同名哨兵：只有本轮夹具 INSERT 的真实主键可解释它，
+    // 名称相同既不能认领它、也不能删除它。
+    const postSnapshotSentinelCode = `E2E_SENTINEL_POST_SNAPSHOT_${Date.now()}`;
+    const postSnapshotSentinel: RegisteredOrganizationFacts = {
+      id: insertFixtureOrganization(env, {
+        name: forbiddenName,
+        organizationCode: postSnapshotSentinelCode,
+      }),
+      name: forbiddenName,
+      organizationCode: postSnapshotSentinelCode,
+    };
+    const sentinels: readonly RegisteredOrganizationFacts[] = [
+      forbiddenSentinel,
+      postSnapshotSentinel,
+    ];
+    // 只有「意外成功响应里结构化返回的真实主键」可登记为待回收对象
+    const confirmedUnexpectedWrites: RegisteredOrganizationFacts[] = [];
     let primaryError: unknown = null;
 
     try {
@@ -716,8 +795,34 @@ test.describe('公司档案（隔离库真实链路）', () => {
 
       for (const { label, query, variables } of forbiddenCases) {
         const { body } = await realGraphqlCall(env, query, variables, LEVEL_TWO_LOGIN);
+        const code = firstGraphqlErrorCode(body);
 
-        expect(firstGraphqlErrorCode(body), `${label} 应拒绝二级管理员`).toBe('FORBIDDEN');
+        if (code !== null) {
+          expect(code, `${label} 应拒绝二级管理员`).toBe('FORBIDDEN');
+          continue;
+        }
+
+        // 意外成功：保留原失败；创建响应的真实主键可作精确清理，其余只能报待确认
+        const payload = (body as { data?: { adminCreateOrganization?: unknown } }).data
+          ?.adminCreateOrganization;
+        const confirmed =
+          label === 'adminCreateOrganization' ? parseUnexpectedCreatedOrganization(payload) : null;
+
+        if (confirmed !== null) {
+          confirmedUnexpectedWrites.push(confirmed);
+        }
+
+        const diagnostic = readOrganizationDiagnosticsByName(forbiddenName);
+
+        throw new Error(
+          `${label} 对二级管理员意外成功，保留原失败：` +
+            (confirmed === null
+              ? '响应缺少可核验主键/编号，只做只读诊断并保留待确认：' +
+                `${diagnostic === '' ? '（无同名行）' : diagnostic}`
+              : `已登记真实 id=${confirmed.id} code=${JSON.stringify(confirmed.organizationCode)}，` +
+                '将按精确主键清理') +
+            `；响应=${JSON.stringify(body)}`,
+        );
       }
 
       // 名称名单仍可用，且只返回 id / name
@@ -743,47 +848,69 @@ test.describe('公司档案（隔离库真实链路）', () => {
 
     const teardownError = await runTeardownSteps([
       {
-        label: '比对越权前后组织集合并登记意外写入',
+        label: '比对越权前后组织集合并报出无法归属的变化',
         run: () => {
-          const { newRows, changedExistingIds } = diffOrganizationSnapshot(
-            beforeSnapshot,
-            readOrganizationSnapshot(),
+          const diff = diffOrganizationSnapshot(beforeSnapshot, readOrganizationSnapshot());
+          const knownSentinelIds = new Set(sentinels.map((sentinel) => sentinel.id));
+          const confirmedIds = new Set(
+            confirmedUnexpectedWrites.map((organization) => organization.id),
           );
+          const pendingDiff: OrganizationSnapshotDiff = {
+            changedRows: diff.changedRows.filter((row) => !knownSentinelIds.has(row.id)),
+            missingRows: diff.missingRows.filter((row) => !knownSentinelIds.has(row.id)),
+            newRows: diff.newRows.filter(
+              (row) => !knownSentinelIds.has(row.id) && !confirmedIds.has(row.id),
+            ),
+          };
+          const problems: string[] = [];
+          const removedSentinels = diff.missingRows.filter((row) => knownSentinelIds.has(row.id));
+          const rewrittenSentinels = diff.changedRows.filter((row) => knownSentinelIds.has(row.id));
 
-          if (changedExistingIds.length > 0) {
-            throw new Error(
-              `越权反例期间既有组织行发生变化（id=${changedExistingIds.join(',')}），拒绝继续清理`,
+          if (removedSentinels.length > 0) {
+            problems.push(
+              `同名哨兵被意外删除：${removedSentinels.map(describeSnapshotRow).join('；')}`,
+            );
+          }
+          if (rewrittenSentinels.length > 0) {
+            problems.push(
+              `同名哨兵被意外改写：${describeSnapshotDiff({
+                changedRows: rewrittenSentinels,
+                missingRows: [],
+                newRows: [],
+              })}`,
+            );
+          }
+          if (
+            pendingDiff.missingRows.length > 0 ||
+            pendingDiff.changedRows.length > 0 ||
+            pendingDiff.newRows.length > 0
+          ) {
+            problems.push(
+              '存在无法归属的外部变化，已保留相关对象待确认：' + describeSnapshotDiff(pendingDiff),
             );
           }
 
-          for (const row of newRows) {
-            if (row.name !== forbiddenName) {
-              throw new Error(
-                `越权反例发现无法归属的新组织行（id=${row.id} name=${JSON.stringify(row.name)}），` +
-                  '缺少本轮登记事实，拒绝按名称删除',
-              );
-            }
-
-            unexpectedOrganizations.push({
-              id: row.id,
-              name: row.name,
-              organizationCode: row.organizationCode,
-            });
+          if (problems.length > 0) {
+            throw new Error(problems.join('；'));
           }
         },
       },
       {
-        label: '按精确主键回收越权新增行',
+        label: '按响应返回的精确主键回收意外成功写入',
         run: () => {
-          for (const organization of unexpectedOrganizations) {
-            deleteRegisteredOrganization(env, organization);
+          for (const organization of confirmedUnexpectedWrites) {
+            deleteRegisteredOrganization(organization);
           }
         },
       },
       {
-        // 旧实现会在 finally 里按固定名称 DELETE，这里必须在清理后仍为 1
-        label: '核验同名哨兵未被删除',
-        run: () => assertOrganizationRowUnchanged(forbiddenSentinel),
+        // 旧实现会在 finally 里按固定名称 DELETE，这里必须在清理前仍保持原值
+        label: '核验同名哨兵未被删除或改写',
+        run: () => {
+          for (const sentinel of sentinels) {
+            assertOrganizationRowUnchanged(sentinel);
+          }
+        },
       },
       {
         label: '恢复二级管理员等级',
@@ -791,30 +918,37 @@ test.describe('公司档案（隔离库真实链路）', () => {
       },
       {
         label: '按精确主键删除同名哨兵',
-        run: () => deleteRegisteredOrganization(env, forbiddenSentinel),
+        run: () => {
+          for (const sentinel of sentinels) {
+            if (readOrganizationCountById(sentinel.id) !== 0) {
+              deleteRegisteredOrganization(sentinel);
+            }
+          }
+        },
       },
     ]);
 
     throwPrimaryAndTeardown(primaryError, teardownError);
 
     // 反向用例不得留下任何组织行，哨兵也按精确主键回收
-    expect(readOrganizationCountById(forbiddenSentinel.id)).toBe(0);
+    expect(sentinels.map((sentinel) => readOrganizationCountById(sentinel.id))).toEqual([0, 0]);
     expect(
       Number(mysqlQuery(`SELECT COUNT(*) FROM organization WHERE name = '${forbiddenName}'`)),
     ).toBe(0);
   });
 
   /**
-   * 清理边界回归（P1-02）。
+   * 清理边界回归（P1-02 / 第二轮 P1-01）。
    *
    * 直接驱动同一套清理 helper，证明：
    * - 精确主键删除只命中本轮行，同名哨兵 1→1、编号前缀相似哨兵不变；
-   * - 登记事实与库内不一致时前置核验实际失败，不执行 DELETE；
+   * - 登记事实与库内不一致时，事务内绑定守卫拒绝且实际 DELETE 为 0；
    * - 未收到创建结果时只有只读诊断，绝不按名称删除；
-   * - 外部子行介入时 DELETE 被外键拒绝且行保留，子行删除后才可回收。
+   * - 账号下挂未登记的 LEFT 成员关系时，守卫在首删前拒绝，原有资源与外部子行均不变；
+   * - 后序失败（注入错误）时整批回滚，错误文本可区分「前置拒绝」与「数据库兜底」。
    */
-  test('清理边界回归：同名与编号前缀相似哨兵不被误删，缺前置核验拒绝删除', async () => {
-    test.setTimeout(60_000);
+  test('清理边界回归：同名哨兵不被误删，未登记子行与后序失败均按事务拒绝', async () => {
+    test.setTimeout(90_000);
     const env = readBackendEnv();
 
     assertPhysicalCleanupAllowed(env);
@@ -846,11 +980,12 @@ test.describe('公司档案（隔离库真实链路）', () => {
     };
 
     let externalChildId: number | null = null;
+    let rollbackLedger: RegistrationRoundLedger | null = null;
     let primaryError: unknown = null;
 
     try {
       // 1. 精确主键回收本轮行：同名哨兵 1→1，编号前缀相似哨兵不变
-      deleteRegisteredOrganization(env, round);
+      deleteRegisteredOrganization(round);
 
       expect(readOrganizationCountById(round.id)).toBe(0);
       expect(readOrganizationCountById(sameNameSentinel.id)).toBe(1);
@@ -858,20 +993,27 @@ test.describe('公司档案（隔离库真实链路）', () => {
       assertOrganizationRowUnchanged(sameNameSentinel);
       assertOrganizationRowUnchanged(prefixPeerSentinel);
 
-      // 2. 缺前置核验：登记名称与库内不一致时必须实际失败且零删除
-      expect(() =>
-        deleteRegisteredOrganization(env, {
-          ...sameNameSentinel,
-          name: `${roundName}-伪造`,
-        }),
-      ).toThrow(/清理前置核验失败/u);
+      // 2. 缺前置核验：事务内绑定守卫拒绝，实际 DELETE 为 0（错误标记可区分于外键兜底）
+      const deleteBeforeMismatch = readDeleteCounter();
+      let mismatchError: unknown = null;
+
+      try {
+        deleteRegisteredOrganization({ ...sameNameSentinel, name: `${roundName}-伪造` });
+      } catch (error) {
+        mismatchError = error;
+      }
+
+      const mismatchText = readMysqlErrorOutput(mismatchError);
+      expect(mismatchText).toMatch(/rc_org_\d+_binding_mismatch/u);
+      expect(mismatchText).not.toContain('Cannot delete or update a parent row');
+      expect(readDeleteCounter() - deleteBeforeMismatch).toBe(0);
       expect(readOrganizationCountById(sameNameSentinel.id)).toBe(1);
 
       // 3. 未收到创建结果：只读诊断命中同名行，但绝不按名称删除
       expect(readOrganizationDiagnosticsByName(roundName)).toContain(`${sameNameSentinel.id}|`);
       expect(readOrganizationCountById(sameNameSentinel.id)).toBe(1);
 
-      // 4. 外部子行介入：DELETE 被外键拒绝，目标行保留
+      // 4. 账号下挂未登记的 LEFT 成员关系：守卫在首删前拒绝，计数为 0 且外部子行不变
       const seedAccountId = Number(
         mysqlQuery(`SELECT id FROM base_user_account WHERE login_name = '${LEVEL_ONE_LOGIN}'`),
       );
@@ -882,8 +1024,90 @@ test.describe('公司档案（隔离库真实链路）', () => {
         organizationId: sameNameSentinel.id,
       });
 
-      expect(() => deleteRegisteredOrganization(env, sameNameSentinel)).toThrow();
+      const deleteBeforeMembership = readDeleteCounter();
+      let membershipGuardError: unknown = null;
+
+      try {
+        deleteRegisteredOrganization(sameNameSentinel);
+      } catch (error) {
+        membershipGuardError = error;
+      }
+
+      const membershipText = readMysqlErrorOutput(membershipGuardError);
+      expect(membershipText).toContain(
+        'rc_unregistered_in_set_organization_membership_organization_id',
+      );
+      expect(membershipText).not.toContain('Cannot delete or update a parent row');
+      expect(readDeleteCounter() - deleteBeforeMembership).toBe(0);
       expect(readOrganizationCountById(sameNameSentinel.id)).toBe(1);
+      expect(
+        Number(
+          mysqlQuery(`SELECT COUNT(*) FROM organization_membership WHERE id = ${externalChildId}`),
+        ),
+      ).toBe(1);
+
+      // 5. 后序失败整批回滚：去掉 COMMIT，在事务内加探针后再注入失败
+      const rollbackA: RegisteredOrganizationFacts = {
+        id: insertFixtureOrganization(env, {
+          name: `E2E 整批回滚-A-${runTag}`,
+          organizationCode: `E2E_ROLLBACK_A_${runTag}`,
+        }),
+        name: `E2E 整批回滚-A-${runTag}`,
+        organizationCode: `E2E_ROLLBACK_A_${runTag}`,
+      };
+      const rollbackB: RegisteredOrganizationFacts = {
+        id: insertFixtureOrganization(env, {
+          name: `E2E 整批回滚-B-${runTag}`,
+          organizationCode: `E2E_ROLLBACK_B_${runTag}`,
+        }),
+        name: `E2E 整批回滚-B-${runTag}`,
+        organizationCode: `E2E_ROLLBACK_B_${runTag}`,
+      };
+
+      rollbackLedger = createRegistrationRoundLedger();
+      for (const facts of [rollbackA, rollbackB]) {
+        registerRegistrationRoundOrganization(
+          rollbackLedger,
+          readRegistrationRoundOrganization(facts.id),
+        );
+      }
+
+      let rollbackError: unknown = null;
+
+      try {
+        cleanupRegistrationRound(rollbackLedger, {
+          discoverReferences: discoverRegistrationRoundReferences,
+          query: mysqlQuery,
+          readEnv: readBackendEnv,
+          write: (writeEnv, script) => {
+            const head = script.split('; COMMIT')[0];
+            const probe =
+              `SELECT 'RC_IN_TX', (SELECT COUNT(*) FROM organization WHERE id = ${rollbackA.id}), ` +
+              `(SELECT COUNT(*) FROM organization WHERE id = ${rollbackB.id})`;
+
+            return runGuardedFixtureWrite(
+              writeEnv,
+              `${head}; ${probe}; SELECT rc_injected_rollback_probe`,
+            );
+          },
+        });
+      } catch (error) {
+        rollbackError = error;
+      }
+
+      const rollbackText = readMysqlErrorOutput(rollbackError);
+      // 注入失败属于「后序失败」（DELETE 已执行后由数据库报错），不是前置守卫标记
+      expect(rollbackText).toContain('rc_injected_rollback_probe');
+      expect(rollbackText).not.toContain('rc_unregistered_in_set_');
+      const inTxLine = readErrorField(rollbackError, 'stdout')
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.startsWith('RC_IN_TX'));
+
+      // 事务内可见两行都已删除；未 COMMIT 且连接关闭 → 整批回滚，两行都还在
+      expect(inTxLine).toBe('RC_IN_TX\t0\t0');
+      expect(readOrganizationCountById(rollbackA.id)).toBe(1);
+      expect(readOrganizationCountById(rollbackB.id)).toBe(1);
     } catch (error) {
       primaryError = error;
     }
@@ -916,7 +1140,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
         label: '按精确主键删除同名哨兵',
         run: () => {
           if (readOrganizationCountById(sameNameSentinel.id) !== 0) {
-            deleteRegisteredOrganization(env, sameNameSentinel);
+            deleteRegisteredOrganization(sameNameSentinel);
           }
         },
       },
@@ -924,7 +1148,15 @@ test.describe('公司档案（隔离库真实链路）', () => {
         label: '按精确主键删除编号前缀相似哨兵',
         run: () => {
           if (readOrganizationCountById(prefixPeerSentinel.id) !== 0) {
-            deleteRegisteredOrganization(env, prefixPeerSentinel);
+            deleteRegisteredOrganization(prefixPeerSentinel);
+          }
+        },
+      },
+      {
+        label: '按台账回收整批回滚场景的两行',
+        run: () => {
+          if (rollbackLedger !== null) {
+            cleanupRegistrationRound(rollbackLedger);
           }
         },
       },
@@ -932,7 +1164,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
         label: '按精确主键删除未回收的本轮行',
         run: () => {
           if (readOrganizationCountById(round.id) !== 0) {
-            deleteRegisteredOrganization(env, round);
+            deleteRegisteredOrganization(round);
           }
         },
       },

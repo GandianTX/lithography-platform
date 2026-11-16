@@ -14,9 +14,10 @@
 // - 空台账直接 no-op，不启动 mysql；成功清理后台账立即释放，避免重复删除误报；
 // - 入口复用 real-backend 的显式许可 + 严格专用库名 + 实际 DATABASE() 门；
 // - 生成单一事务脚本：先全量 FOR UPDATE 锁定核验、再核对集合外引用与
-//   **台账内子表的账外子行**（base_user_info / organization_membership）均为 0，
-//   全部通过后才按「成员关系 → 资料 → 账号 → 自有未受管公司 → 受管夹具公司」
-//   逐条删除（ROW_COUNT=1），最后核对全批残留为 0 并 COMMIT。
+//   **台账内子表的账外子行**（base_user_info / organization_membership /
+//   engineer_registration_application）均为 0，全部通过后才按「申请 → 成员关系 →
+//   资料 → 账号 → 自有未受管公司 → 受管夹具公司」逐条删除（ROW_COUNT=1），
+//   最后核对全批残留为 0 并 COMMIT。
 
 import { DEDICATED_E2E_DB_NAME } from '../../e2e-real/dedicated-e2e-environment';
 
@@ -61,12 +62,24 @@ export interface RegistrationRoundMembershipFacts {
   readonly organizationId: number;
 }
 
+/** 本轮经真实注册入口产生的工程师待审申请：删除只认登记的真实主键 */
+export interface RegistrationRoundApplicationFacts {
+  readonly id: number;
+  readonly accountId: number;
+}
+
 /** 本轮创建并登记的资源台账（清理由此精确推导，禁止再按名称/前缀扫描）。 */
 export interface RegistrationRoundLedger {
   organizations: RegistrationRoundOrganizationFacts[];
   accounts: RegistrationRoundAccountFacts[];
   userInfos: RegistrationRoundUserInfoFacts[];
   memberships: RegistrationRoundMembershipFacts[];
+  applications: RegistrationRoundApplicationFacts[];
+  /**
+   * 仅被本轮资料/成员关系引用、但**不属于本轮创建**的公司（例如 seed 可信公司）。
+   * 它们只用于放行子行的归属事实，永不进入删除脚本。
+   */
+  retainedOrganizationIds: number[];
 }
 
 export const createRegistrationRoundLedger = (): RegistrationRoundLedger => ({
@@ -74,6 +87,8 @@ export const createRegistrationRoundLedger = (): RegistrationRoundLedger => ({
   accounts: [],
   userInfos: [],
   memberships: [],
+  applications: [],
+  retainedOrganizationIds: [],
 });
 
 export interface RegistrationRoundOrganizationInput {
@@ -107,7 +122,11 @@ export interface RegistrationRoundInSetReference extends RegistrationRoundCleanu
 }
 
 /** 台账内可产生「指向本轮父行」子行的表 */
-const IN_SET_CHILD_TABLES: readonly string[] = ['base_user_info', 'organization_membership'];
+const IN_SET_CHILD_TABLES: readonly string[] = [
+  'base_user_info',
+  'engineer_registration_application',
+  'organization_membership',
+];
 
 /** 可注入依赖：单测据此覆盖空台账、许可、库名、写入失败等反向场景。 */
 export interface RegistrationRoundCleanupDeps {
@@ -196,7 +215,8 @@ export const isRegistrationRoundLedgerEmpty = (ledger: RegistrationRoundLedger):
   ledger.organizations.length === 0 &&
   ledger.accounts.length === 0 &&
   ledger.userInfos.length === 0 &&
-  ledger.memberships.length === 0;
+  ledger.memberships.length === 0 &&
+  ledger.applications.length === 0;
 
 export function registerRegistrationRoundOrganization(
   ledger: RegistrationRoundLedger,
@@ -261,6 +281,97 @@ export function registerRegistrationRoundMembership(
     throw new Error(`成员关系台账登记被拒绝：ID ${facts.id} 重复登记`);
   }
   ledger.memberships.push({ ...facts });
+}
+
+export function registerRegistrationRoundApplication(
+  ledger: RegistrationRoundLedger,
+  facts: RegistrationRoundApplicationFacts,
+): void {
+  assertPositiveInteger(facts.id, '申请 ID');
+  assertPositiveInteger(facts.accountId, '申请归属账号 ID');
+
+  if (ledger.applications.some((item) => item.id === facts.id)) {
+    throw new Error(`申请台账登记被拒绝：ID ${facts.id} 重复登记`);
+  }
+  ledger.applications.push({ ...facts });
+}
+
+/**
+ * 登记「只被引用、不删除」的外部公司（seed 可信公司等）。
+ *
+ * 只影响台账完整性校验：资料 / 成员关系允许归属到这些公司，但删除脚本只按
+ * `organizations` 里的本轮创建行生成，保留公司永远不会出现在任何 DELETE 中。
+ */
+export function retainRegistrationRoundOrganization(
+  ledger: RegistrationRoundLedger,
+  organizationId: number,
+): void {
+  const id = assertPositiveInteger(organizationId, '保留公司 ID');
+
+  if (ledger.organizations.some((item) => item.id === id)) {
+    throw new Error(`保留公司 ${id} 已登记为本轮可删除公司，拒绝重复登记`);
+  }
+  if (!ledger.retainedOrganizationIds.includes(id)) {
+    ledger.retainedOrganizationIds.push(id);
+  }
+}
+
+/**
+ * 按登记的账号 ID 回读 `base_user_info` 真实 ID 与归属事实（只读）。
+ *
+ * 账号注册成功后立即调用并登记，避免清理阶段把「父账号下所有资料行」当成夹具。
+ */
+export function readRegistrationRoundUserInfoByAccountId(
+  accountId: number,
+  deps: Pick<RegistrationRoundCleanupDeps, 'query'> = defaultDeps,
+): RegistrationRoundUserInfoFacts {
+  assertPositiveInteger(accountId, '资料回读账号 ID');
+
+  const row = requireSingleRow(
+    deps.query(
+      [
+        'SELECT id, account_id, email, COALESCE(customer_organization_id, 0)',
+        'FROM base_user_info',
+        `WHERE account_id = ${accountId}`,
+      ].join(' '),
+    ),
+    `账号 ${accountId} 的资料行`,
+  );
+  const customerOrganizationId = Number(row[3]);
+
+  return {
+    accountId: Number(row[1]),
+    customerOrganizationId: customerOrganizationId === 0 ? null : customerOrganizationId,
+    email: row[2],
+    id: Number(row[0]),
+  };
+}
+
+/**
+ * 按登记的账号 ID 回读成员关系真实 ID（只读）。
+ *
+ * 只返回归属该账号的行；调用方仍需逐条登记，清理不会自动删除父账号下的其他成员关系。
+ */
+export function readRegistrationRoundMembershipsByAccountId(
+  accountId: number,
+  deps: Pick<RegistrationRoundCleanupDeps, 'query'> = defaultDeps,
+): RegistrationRoundMembershipFacts[] {
+  assertPositiveInteger(accountId, '成员关系回读账号 ID');
+
+  const output = deps.query(
+    [
+      'SELECT id, account_id, organization_id',
+      'FROM organization_membership',
+      `WHERE account_id = ${accountId}`,
+      'ORDER BY id',
+    ].join(' '),
+  );
+
+  return parseTabRows(output).map(([id, accountIdText, organizationIdText]) => ({
+    accountId: Number(accountIdText),
+    id: Number(id),
+    organizationId: Number(organizationIdText),
+  }));
 }
 
 /**
@@ -595,9 +706,10 @@ const assertLedgerIntegrity = (ledger: RegistrationRoundLedger): void => {
   const accountIds = new Set(
     ledger.accounts.map((item) => assertPositiveInteger(item.id, '账号 ID')),
   );
-  const organizationIds = new Set(
-    ledger.organizations.map((item) => assertPositiveInteger(item.id, '公司 ID')),
-  );
+  const organizationIds = new Set([
+    ...ledger.organizations.map((item) => assertPositiveInteger(item.id, '公司 ID')),
+    ...ledger.retainedOrganizationIds.map((id) => assertPositiveInteger(id, '保留公司 ID')),
+  ]);
 
   for (const membership of ledger.memberships) {
     assertPositiveInteger(membership.id, '成员关系 ID');
@@ -626,6 +738,15 @@ const assertLedgerIntegrity = (ledger: RegistrationRoundLedger): void => {
     ) {
       throw new Error(
         `台账预检失败：资料 ${userInfo.id} 的归属公司 ${userInfo.customerOrganizationId} 未登记，拒绝清理`,
+      );
+    }
+  }
+
+  for (const application of ledger.applications) {
+    assertPositiveInteger(application.id, '申请 ID');
+    if (!accountIds.has(application.accountId)) {
+      throw new Error(
+        `台账预检失败：申请 ${application.id} 的账号 ${application.accountId} 未登记，拒绝清理`,
       );
     }
   }
@@ -667,6 +788,18 @@ export function buildRegistrationRoundCleanupScript(
   ];
 
   // 第一阶段：按真实 ID 锁定并核对全部绑定，任何不符都在首删前中止。
+  for (const application of ledger.applications) {
+    const name = `rc_app_${application.id}`;
+    statements.push(
+      `SELECT id INTO @${name}_row FROM engineer_registration_application WHERE id = ${application.id} AND account_id = ${application.accountId} FOR UPDATE`,
+      ...renderGuardedAssertion(
+        name,
+        `@${name}_row = ${application.id}`,
+        `${name}_binding_mismatch`,
+      ),
+    );
+  }
+
   for (const membership of ledger.memberships) {
     const name = `rc_mem_${membership.id}`;
     statements.push(
@@ -716,11 +849,18 @@ export function buildRegistrationRoundCleanupScript(
   }
 
   // 第二阶段：集合外引用必须为 0（仍在首删之前）。
+  const externalTermOf = (
+    id: number,
+    references: readonly RegistrationRoundCleanupReference[],
+  ): string => {
+    const sum = referenceSum(id, references);
+    return sum === '' ? '0' : `(${sum})`;
+  };
   const accountExternal = ledger.accounts
-    .map((account) => `(${referenceSum(account.id, references.account)})`)
+    .map((account) => externalTermOf(account.id, references.account))
     .join(' + ');
   const organizationExternal = ledger.organizations
-    .map((organization) => `(${referenceSum(organization.id, references.organization)})`)
+    .map((organization) => externalTermOf(organization.id, references.organization))
     .join(' + ');
   const externalTerms = [accountExternal, organizationExternal].filter((term) => term.length > 0);
   const externalTotal = externalTerms.length > 0 ? externalTerms.join(' + ') : '0';
@@ -746,10 +886,14 @@ export function buildRegistrationRoundCleanupScript(
     if (table === 'organization_membership') {
       return ledger.memberships.map((item) => item.id);
     }
+    if (table === 'engineer_registration_application') {
+      return ledger.applications.map((item) => item.id);
+    }
     return [];
   };
 
-  for (const reference of references.inSet ?? []) {
+  const inSetReferences = references.inSet ?? [];
+  for (const [index, reference] of inSetReferences.entries()) {
     const parentIds =
       reference.target === 'account'
         ? ledger.accounts.map((account) => account.id)
@@ -763,7 +907,9 @@ export function buildRegistrationRoundCleanupScript(
       (id) =>
         `(SELECT COUNT(*) FROM \`${reference.table}\` WHERE \`${reference.column}\` = ${id}${exclusion})`,
     );
-    const name = `rc_inset_${reference.table}_${reference.column}`;
+    // MySQL 用户变量名上限 64 字符：`rc_inset_<table>_<column>` 在长表名下会超限
+    // （ERROR 3061 直接让整批清理失败）。变量名改用序号短名，拒绝标记仍保留完整边名。
+    const name = `rc_inset_${index}`;
     statements.push(
       `SET @${name}_count = ${terms.join(' + ')}`,
       ...renderGuardedAssertion(
@@ -774,7 +920,20 @@ export function buildRegistrationRoundCleanupScript(
     );
   }
 
-  // 第三阶段：删除。成员关系 → 资料 → 账号 → 自有未受管公司 → 受管夹具公司。
+  // 第三阶段：删除。申请 → 成员关系 → 资料 → 账号 → 自有未受管公司 → 受管夹具公司。
+  for (const application of ledger.applications) {
+    const name = `rc_app_${application.id}`;
+    statements.push(
+      `DELETE FROM engineer_registration_application WHERE id = ${application.id} AND account_id = ${application.accountId}`,
+      'SET @rc_deleted = ROW_COUNT()',
+      ...renderGuardedAssertion(
+        `${name}_delete`,
+        '@rc_deleted = 1',
+        `${name}_delete_rows_mismatch`,
+      ),
+    );
+  }
+
   for (const membership of ledger.memberships) {
     const name = `rc_mem_${membership.id}`;
     statements.push(
@@ -837,6 +996,9 @@ export function buildRegistrationRoundCleanupScript(
 
   // 第四阶段：全批残留必须为 0，然后才 COMMIT。
   const residueTerms = [
+    ...ledger.applications.map(
+      ({ id }) => `(SELECT COUNT(*) FROM engineer_registration_application WHERE id = ${id})`,
+    ),
     ...ledger.memberships.map(
       ({ id }) => `(SELECT COUNT(*) FROM organization_membership WHERE id = ${id})`,
     ),
@@ -864,6 +1026,8 @@ export function releaseRegistrationRoundLedger(ledger: RegistrationRoundLedger):
   ledger.accounts.length = 0;
   ledger.userInfos.length = 0;
   ledger.memberships.length = 0;
+  ledger.applications.length = 0;
+  ledger.retainedOrganizationIds.length = 0;
 }
 
 /**

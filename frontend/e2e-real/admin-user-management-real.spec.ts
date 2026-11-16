@@ -33,7 +33,21 @@ import {
   readBackendEnv,
   realGraphqlCall,
   runGuardedFixtureWrite,
+  runTeardownSteps,
+  throwPrimaryAndTeardown,
 } from '../e2e/helpers/real-backend';
+import {
+  cleanupRegistrationRound,
+  createRegistrationRoundLedger,
+  insertRegistrationRoundOrganization,
+  readRegistrationRoundMembershipsByAccountId,
+  readRegistrationRoundUserInfoByAccountId,
+  registerRegistrationRoundAccount,
+  registerRegistrationRoundMembership,
+  registerRegistrationRoundUserInfo,
+  type RegistrationRoundLedger,
+  retainRegistrationRoundOrganization,
+} from '../e2e/helpers/registration-round-cleanup';
 import { prepareStableViewport } from '../e2e/helpers/visual-evidence';
 
 /** 主导航入口与页面标题 */
@@ -130,14 +144,7 @@ type GqlBody<T> = {
 
 type LoginPayload = { accessToken: string | null; restriction: string | null };
 
-/** 本轮夹具台账：清理只认这里登记的精确 ID */
-type FixtureLedger = {
-  accounts: Array<{ accountId: number; loginName: string }>;
-  organizations: Array<{ id: number; organizationCode: string }>;
-  /** 二级用例临时改写的 seed 组织受管标记原值（1/0） */
-  restoredManagedCompany: { organizationId: number; original: string } | null;
-};
-
+/** 本轮夹具台账由共享 helper 持有：清理只认登记的真实主键 */
 let runCounter = 0;
 
 /** 本轮唯一标识：登录名 / 邮箱 / 公司编码与名称共用同一后缀 */
@@ -218,26 +225,38 @@ function restoreAdminLevel(env: Record<string, string>, loginName: string, origi
 
 /** 新建一家参与本轮用例的受管公司（Web 客户注册资格：ACTIVE + 受管） */
 function createFixtureCompany(
-  env: Record<string, string>,
+  ledger: RegistrationRoundLedger,
   organizationCode: string,
   name: string,
 ): { id: number; organizationCode: string } {
-  runGuardedFixtureWrite(
-    env,
-    `INSERT INTO organization
-       (organization_code, name, kind, status, is_managed_company, is_service_provider, created_at, updated_at)
-     VALUES ('${organizationCode}', '${name}', 'CLIENT', 'ACTIVE', 1, 0, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))`,
-  );
-
-  const id = Number(
-    mysqlQuery(`SELECT id FROM organization WHERE organization_code = '${organizationCode}'`),
-  );
-
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error(`夹具公司写入后未回读到主键：${organizationCode}`);
-  }
+  const id = insertRegistrationRoundOrganization(ledger, {
+    isManagedCompany: true,
+    kind: 'CLIENT',
+    name,
+    organizationCode,
+  });
 
   return { id, organizationCode };
+}
+
+/** 客户注册在事务内即建成员关系：按真实 ID 回读资料与成员关系并登记 */
+function registerFixtureCustomer(
+  ledger: RegistrationRoundLedger,
+  facts: { accountId: number; loginEmail: string; loginName: string },
+): void {
+  registerRegistrationRoundAccount(ledger, {
+    id: facts.accountId,
+    loginEmail: facts.loginEmail,
+    loginName: facts.loginName,
+  });
+  registerRegistrationRoundUserInfo(
+    ledger,
+    readRegistrationRoundUserInfoByAccountId(facts.accountId),
+  );
+
+  for (const membership of readRegistrationRoundMembershipsByAccountId(facts.accountId)) {
+    registerRegistrationRoundMembership(ledger, membership);
+  }
 }
 
 /**
@@ -381,67 +400,6 @@ async function captureScreenshots(
 }
 
 /**
- * 台账清理（单事务、先核验后删除）。
- *
- * 顺序按外键依赖：成员关系 → 资料 → 账号 → 公司；删除前逐条核验账号登录名与
- * 组织编码仍与本轮登记一致，任一不符即中止。
- */
-function cleanupFixtureLedger(env: Record<string, string>, ledger: FixtureLedger): void {
-  for (const account of ledger.accounts) {
-    const actualLoginName = mysqlQuery(
-      `SELECT COALESCE(login_name, 'NULL') FROM base_user_account WHERE id = ${account.accountId}`,
-    );
-
-    if (actualLoginName !== account.loginName) {
-      throw new Error(
-        `清理前置核验失败：账号 ${account.accountId} 当前登录名与本轮登记不一致，拒绝删除`,
-      );
-    }
-  }
-
-  for (const organization of ledger.organizations) {
-    const actualCode = mysqlQuery(
-      `SELECT organization_code FROM organization WHERE id = ${organization.id}`,
-    );
-
-    if (actualCode !== organization.organizationCode) {
-      throw new Error(
-        `清理前置核验失败：公司 ${organization.id} 当前编码与本轮登记不一致，拒绝删除`,
-      );
-    }
-  }
-
-  const statements: string[] = ['START TRANSACTION'];
-
-  if (ledger.accounts.length > 0) {
-    const accountIdList = ledger.accounts.map((item) => item.accountId).join(',');
-
-    statements.push(
-      `DELETE FROM organization_membership WHERE account_id IN (${accountIdList})`,
-      `DELETE FROM base_user_info WHERE account_id IN (${accountIdList})`,
-      `DELETE FROM base_user_account WHERE id IN (${accountIdList})`,
-    );
-  }
-
-  if (ledger.organizations.length > 0) {
-    statements.push(
-      `DELETE FROM organization WHERE id IN (${ledger.organizations.map((item) => item.id).join(',')})`,
-    );
-  }
-
-  if (ledger.restoredManagedCompany !== null) {
-    statements.push(
-      `UPDATE organization SET is_managed_company = ${ledger.restoredManagedCompany.original}
-        WHERE id = ${ledger.restoredManagedCompany.organizationId}`,
-    );
-  }
-
-  statements.push('COMMIT');
-
-  runGuardedFixtureWrite(env, statements.join(';\n'));
-}
-
-/**
  * 在页面上把目标账号停用：打开启停弹窗、选择「停用」、截图后确认。
  * 截图带上目标昵称，便于人工核对弹窗确实对应被操作的那一行。
  */
@@ -538,38 +496,47 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
     assertPhysicalCleanupAllowed(env);
 
     const tag = buildRunTag();
-    const ledger: FixtureLedger = { accounts: [], organizations: [], restoredManagedCompany: null };
+    const ledger = createRegistrationRoundLedger();
     const originalAdminLevel = readAdminLevel(LEVEL_ONE_LOGIN);
+    let primaryError: unknown = null;
 
     try {
       setAdminLevel(env, LEVEL_ONE_LOGIN, 1);
 
-      const companyA = createFixtureCompany(env, `E2E_S4_ORG_A_${tag}`, `E2E S4 客户甲-${tag}`);
-      const companyB = createFixtureCompany(env, `E2E_S4_ORG_B_${tag}`, `E2E S4 客户乙-${tag}`);
-
-      ledger.organizations.push(companyA, companyB);
+      const companyA = createFixtureCompany(ledger, `E2E_S4_ORG_A_${tag}`, `E2E S4 客户甲-${tag}`);
+      const companyB = createFixtureCompany(ledger, `E2E_S4_ORG_B_${tag}`, `E2E S4 客户乙-${tag}`);
 
       const loginNameA = `e2es4a${tag}`;
       const nicknameA = `客户甲${tag}`;
+      const loginEmailA = `e2e.s4a.${tag}@example.com`;
       const accountIdA = await registerCustomer({
-        loginEmail: `e2e.s4a.${tag}@example.com`,
+        loginEmail: loginEmailA,
         loginName: loginNameA,
         nickname: nicknameA,
         organizationId: companyA.id,
       });
 
-      ledger.accounts.push({ accountId: accountIdA, loginName: loginNameA });
+      registerFixtureCustomer(ledger, {
+        accountId: accountIdA,
+        loginEmail: loginEmailA,
+        loginName: loginNameA,
+      });
 
       const loginNameB = `e2es4b${tag}`;
       const nicknameB = `客户乙${tag}`;
+      const loginEmailB = `e2e.s4b.${tag}@example.com`;
       const accountIdB = await registerCustomer({
-        loginEmail: `e2e.s4b.${tag}@example.com`,
+        loginEmail: loginEmailB,
         loginName: loginNameB,
         nickname: nicknameB,
         organizationId: companyB.id,
       });
 
-      ledger.accounts.push({ accountId: accountIdB, loginName: loginNameB });
+      registerFixtureCustomer(ledger, {
+        accountId: accountIdB,
+        loginEmail: loginEmailB,
+        loginName: loginNameB,
+      });
 
       await loginViaUi(page, LEVEL_ONE_LOGIN, env.MOCK_SEED_PASSWORD, '/admin');
       await enterAdminUsersFromNav(page);
@@ -663,9 +630,19 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
 
       expect(freshLogin.errors).toBeUndefined();
       expect(freshLogin.data?.login?.restriction).toBe('NONE');
+    } catch (error) {
+      primaryError = error;
     } finally {
-      cleanupFixtureLedger(env, ledger);
-      restoreAdminLevel(env, LEVEL_ONE_LOGIN, originalAdminLevel);
+      throwPrimaryAndTeardown(
+        primaryError,
+        await runTeardownSteps([
+          { label: '清理本轮台账', run: () => cleanupRegistrationRound(ledger) },
+          {
+            label: '恢复一级管理员等级',
+            run: () => restoreAdminLevel(env, LEVEL_ONE_LOGIN, originalAdminLevel),
+          },
+        ]),
+      );
     }
 
     // 清理后：本轮账号与公司均无残留
@@ -696,8 +673,9 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
     assertPhysicalCleanupAllowed(env);
 
     const tag = buildRunTag();
-    const ledger: FixtureLedger = { accounts: [], organizations: [], restoredManagedCompany: null };
+    const ledger = createRegistrationRoundLedger();
     const originalAdminLevel = readAdminLevel(LEVEL_TWO_LOGIN);
+    let primaryError: unknown = null;
 
     // 二级管理员的可信公司：seed 同行隔离测试组织，临时置为受管以满足 Web 客户注册资格
     const peerOrganizationId = Number(
@@ -725,40 +703,46 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
         `UPDATE organization SET is_managed_company = 1 WHERE id = ${peerOrganizationId}`,
       );
 
-      ledger.restoredManagedCompany = {
-        organizationId: peerOrganizationId,
-        original: originalManagedCompany,
-      };
+      // seed 可信公司只被本轮账号引用，不进入删除范围
+      retainRegistrationRoundOrganization(ledger, peerOrganizationId);
 
       const foreignCompany = createFixtureCompany(
-        env,
+        ledger,
         `E2E_S4_ORG_C_${tag}`,
         `E2E S4 客户丙外公司-${tag}`,
       );
 
-      ledger.organizations.push(foreignCompany);
-
       const ownLoginName = `e2es4o${tag}`;
       const ownNickname = `客户丁${tag}`;
+      const ownLoginEmail = `e2e.s4o.${tag}@example.com`;
       const ownAccountId = await registerCustomer({
-        loginEmail: `e2e.s4o.${tag}@example.com`,
+        loginEmail: ownLoginEmail,
         loginName: ownLoginName,
         nickname: ownNickname,
         organizationId: peerOrganizationId,
       });
 
-      ledger.accounts.push({ accountId: ownAccountId, loginName: ownLoginName });
+      registerFixtureCustomer(ledger, {
+        accountId: ownAccountId,
+        loginEmail: ownLoginEmail,
+        loginName: ownLoginName,
+      });
 
       const foreignLoginName = `e2es4f${tag}`;
       const foreignNickname = `客户戊${tag}`;
+      const foreignLoginEmail = `e2e.s4f.${tag}@example.com`;
       const foreignAccountId = await registerCustomer({
-        loginEmail: `e2e.s4f.${tag}@example.com`,
+        loginEmail: foreignLoginEmail,
         loginName: foreignLoginName,
         nickname: foreignNickname,
         organizationId: foreignCompany.id,
       });
 
-      ledger.accounts.push({ accountId: foreignAccountId, loginName: foreignLoginName });
+      registerFixtureCustomer(ledger, {
+        accountId: foreignAccountId,
+        loginEmail: foreignLoginEmail,
+        loginName: foreignLoginName,
+      });
 
       await loginViaUi(page, LEVEL_TWO_LOGIN, env.MOCK_SEED_PASSWORD, '/admin');
       await enterAdminUsersFromNav(page);
@@ -817,9 +801,34 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
 
       expect(foreignListBody.data?.adminUsers?.items ?? []).toEqual([]);
       expect(foreignListBody.data?.adminUsers?.total ?? 0).toBe(0);
+    } catch (error) {
+      primaryError = error;
     } finally {
-      cleanupFixtureLedger(env, ledger);
-      restoreAdminLevel(env, LEVEL_TWO_LOGIN, originalAdminLevel);
+      throwPrimaryAndTeardown(
+        primaryError,
+        await runTeardownSteps([
+          { label: '清理本轮台账', run: () => cleanupRegistrationRound(ledger) },
+          {
+            label: '恢复可信公司受管标记',
+            run: () => {
+              const current = mysqlQuery(
+                `SELECT is_managed_company FROM organization WHERE id = ${peerOrganizationId}`,
+              );
+
+              if (current !== originalManagedCompany) {
+                runGuardedFixtureWrite(
+                  env,
+                  `UPDATE organization SET is_managed_company = ${originalManagedCompany} WHERE id = ${peerOrganizationId}`,
+                );
+              }
+            },
+          },
+          {
+            label: '恢复二级管理员等级',
+            run: () => restoreAdminLevel(env, LEVEL_TWO_LOGIN, originalAdminLevel),
+          },
+        ]),
+      );
     }
 
     // 清理后：本轮账号、公司均无残留；seed 公司受管标记恢复原值

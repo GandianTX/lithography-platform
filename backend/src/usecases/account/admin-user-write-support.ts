@@ -139,7 +139,7 @@ async function assertTargetOwnedByAdminOrganization(params: {
     isOwnedByOrganization =
       targetMembership !== null &&
       (facts.role !== IdentityTypeEnum.ENGINEER ||
-        targetMembership.memberRole === IdentityTypeEnum.ENGINEER);
+        targetMembership.memberRole === String(IdentityTypeEnum.ENGINEER));
   }
 
   if (!isOwnedByOrganization) {

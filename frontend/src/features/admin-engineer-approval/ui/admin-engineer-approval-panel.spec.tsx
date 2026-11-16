@@ -24,6 +24,7 @@ import type {
   AdminEngineerRegistrationDetail,
   AdminEngineerRegistrationListPage,
   AdminEngineerRegistrationRow,
+  AdminEngineerReviewResult,
 } from '../application/admin-engineer-approval.types';
 import * as adapter from '../infrastructure/admin-engineer-approval-adapter';
 
@@ -132,7 +133,18 @@ function isDialogOpen(title: string): boolean {
 }
 
 function clickRowAction(applicantName: string, actionName: RegExp) {
-  const row = screen.getByText(applicantName).closest('tr') as HTMLElement;
+  // 弹窗内也会出现同名文本：只在带「详情」按钮的表格行内查找，避免命中弹窗
+  const row = screen
+    .getAllByRole('row')
+    .find(
+      (candidate) =>
+        within(candidate).queryByText(applicantName) !== null &&
+        within(candidate).queryByRole('button', { name: /详\s*情/ }) !== null,
+    );
+
+  if (row === undefined) {
+    throw new Error(`未找到申请人为「${applicantName}」的表格行`);
+  }
 
   fireEvent.click(within(row).getByRole('button', { name: actionName }));
 }
@@ -144,6 +156,16 @@ async function openDetail(applicantName: string): Promise<HTMLElement> {
   await screen.findByText(title, { selector: '.ant-modal-title' });
 
   return getDialog(title);
+}
+
+/** 手动控制完成时机的审批响应：用于制造「晚到」的批准 / 拒绝结果 */
+function deferredReviewResult() {
+  let resolve!: (value: AdminEngineerReviewResult) => void;
+  const promise = new Promise<AdminEngineerReviewResult>((settle) => {
+    resolve = settle;
+  });
+
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -229,6 +251,10 @@ describe('AdminEngineerApprovalPanel', () => {
     await waitFor(() => expect(message.success).toHaveBeenCalledWith('该申请已通过审核。'));
     // 初次加载 + 成功刷新
     await waitFor(() => expect(fetchListMock).toHaveBeenCalledTimes(2));
+    // 同一打开会话内成功：详情也按主键重查
+    await waitFor(() =>
+      expect(fetchDetailMock.mock.calls.filter(([id]) => id === 61)).toHaveLength(2),
+    );
   });
 
   it('拒绝原因为空时前端拦截，不发起命令', async () => {
@@ -328,5 +354,128 @@ describe('AdminEngineerApprovalPanel', () => {
 
     expect(realNameRow).toHaveTextContent('—');
     expect(realNameRow).not.toHaveTextContent('待审工程师');
+  });
+
+  it('晚到的批准成功不重开已切换到 B 的详情，但列表仍刷新', async () => {
+    const deferred = deferredReviewResult();
+    reviewMock.mockImplementation(() => deferred.promise);
+
+    render(<AdminEngineerApprovalPanel adminLevel={1} />);
+    await screen.findByText('待审工程师');
+
+    const dialogA = await openDetail('待审工程师');
+    fireEvent.click(within(dialogA).getByRole('button', { name: /批\s*准/ }));
+    await waitFor(() => expect(reviewMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(dialogA).getByRole('button', { name: /关\s*闭/ }));
+    await waitFor(() => expect(isDialogOpen('注册申请详情：待审工程师')).toBe(false));
+
+    await openDetail('已通过工程师');
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+
+    deferred.resolve({ ok: true, registration: { ...PENDING_ROW, status: 'APPROVED' } });
+
+    // 陈旧成功提示点名真实被批准的目标，避免被误读成当前详情（B）的结果
+    await waitFor(() =>
+      expect(message.success).toHaveBeenCalledWith('「待审工程师」的申请已通过审核。'),
+    );
+    await waitFor(() => expect(fetchListMock).toHaveBeenCalledTimes(2));
+    // 不再为 61 触发详情查询，B 的界面保持不变
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+    expect(isDialogOpen('注册申请详情：已通过工程师')).toBe(true);
+  });
+
+  it('关闭后重新打开同一申请属于新会话，晚到成功不再触发详情重查', async () => {
+    const deferred = deferredReviewResult();
+    reviewMock.mockImplementation(() => deferred.promise);
+
+    render(<AdminEngineerApprovalPanel adminLevel={1} />);
+    await screen.findByText('待审工程师');
+
+    const dialogA = await openDetail('待审工程师');
+    fireEvent.click(within(dialogA).getByRole('button', { name: /批\s*准/ }));
+    await waitFor(() => expect(reviewMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(dialogA).getByRole('button', { name: /关\s*闭/ }));
+    await waitFor(() => expect(isDialogOpen('注册申请详情：待审工程师')).toBe(false));
+
+    await openDetail('待审工程师');
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+
+    deferred.resolve({ ok: true, registration: { ...PENDING_ROW, status: 'APPROVED' } });
+
+    await waitFor(() =>
+      expect(message.success).toHaveBeenCalledWith('「待审工程师」的申请已通过审核。'),
+    );
+    await waitFor(() => expect(fetchListMock).toHaveBeenCalledTimes(2));
+    // 新一代打开会话不受上一代命令续体影响：仍停留在重开时的详情快照
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+    expect(isDialogOpen('注册申请详情：待审工程师')).toBe(true);
+  });
+
+  it('晚到的冲突提示不清空已切换的详情，列表仍刷新', async () => {
+    const deferred = deferredReviewResult();
+    reviewMock.mockImplementation(() => deferred.promise);
+
+    render(<AdminEngineerApprovalPanel adminLevel={1} />);
+    await screen.findByText('待审工程师');
+
+    const dialogA = await openDetail('待审工程师');
+    fireEvent.click(within(dialogA).getByRole('button', { name: /批\s*准/ }));
+    await waitFor(() => expect(reviewMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(dialogA).getByRole('button', { name: /关\s*闭/ }));
+    await waitFor(() => expect(isDialogOpen('注册申请详情：待审工程师')).toBe(false));
+
+    await openDetail('已通过工程师');
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+
+    deferred.resolve({
+      ok: false,
+      reason: 'state-conflict',
+      message: '该申请已被处理，请刷新后查看最新状态。',
+    });
+
+    await waitFor(() =>
+      expect(message.warning).toHaveBeenCalledWith('该申请已被处理，请刷新后查看最新状态。'),
+    );
+    await waitFor(() => expect(fetchListMock).toHaveBeenCalledTimes(2));
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+    expect(isDialogOpen('注册申请详情：已通过工程师')).toBe(true);
+  });
+
+  it('拒绝响应晚到时切换详情到 B：不再重查旧申请，仅刷新列表', async () => {
+    const deferred = deferredReviewResult();
+    reviewMock.mockImplementation(() => deferred.promise);
+
+    render(<AdminEngineerApprovalPanel adminLevel={1} />);
+    await screen.findByText('待审工程师');
+
+    const detailDialog = await openDetail('待审工程师');
+    fireEvent.click(within(detailDialog).getByRole('button', { name: /拒\s*绝/ }));
+
+    const rejectDialog = getDialog('拒绝申请：待审工程师');
+    fireEvent.change(within(rejectDialog).getByLabelText('拒绝原因'), {
+      target: { value: '资料不足，请补充授权证明' },
+    });
+    fireEvent.click(within(rejectDialog).getByRole('button', { name: /确认拒绝/ }));
+    await waitFor(() => expect(reviewMock).toHaveBeenCalledTimes(1));
+
+    // 拒绝请求仍在飞行：把详情切换到 B
+    clickRowAction('已通过工程师', /详\s*情/);
+    await screen.findByText('注册申请详情：已通过工程师', { selector: '.ant-modal-title' });
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+
+    deferred.resolve({
+      ok: true,
+      registration: { ...PENDING_ROW, status: 'REJECTED', reviewComment: '资料不足' },
+    });
+
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith('该申请已拒绝。'));
+    await waitFor(() => expect(fetchListMock).toHaveBeenCalledTimes(2));
+    // 61 的详情不再被晚到响应重查，B 仍是当前界面
+    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
+    expect(isDialogOpen('注册申请详情：已通过工程师')).toBe(true);
+    expect(isDialogOpen('拒绝申请：待审工程师')).toBe(false);
   });
 });

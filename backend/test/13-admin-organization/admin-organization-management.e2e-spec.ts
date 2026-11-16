@@ -449,9 +449,9 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     // 使旧实现 `update(accountId, ...)`（按主键选择）必然命中 0 行，回归稳定变红。
     // 迁移只发生在本轮自有资料行上，清理按 account_id 删除，无需恢复旧主键。
     if (repairCustomerInfo.id === repairCustomerInfo.accountId) {
-      const [{ nextId }] = (await dataSource.query(
+      const [{ nextId }] = await dataSource.query(
         'SELECT MAX(id) + 1000 AS nextId FROM base_user_info',
-      )) as Array<{ nextId: number | string }>;
+      );
 
       await dataSource.query('UPDATE base_user_info SET id = ? WHERE id = ?', [
         Number(nextId),
@@ -590,9 +590,8 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
       expect(updated.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
 
       // 同名提示同属一级入口：二级与普通客户一律拒绝，不暴露存档范围
-      const checked = (
-        await adminNameExists({ token, name: `${NAME_PREFIX}受管维修公司` })
-      ).body as BooleanBody;
+      const checked = (await adminNameExists({ token, name: `${NAME_PREFIX}受管维修公司` }))
+        .body as BooleanBody;
       expect(checked.data?.adminOrganizationNameExists).toBeUndefined();
       expect(checked.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
     }
@@ -688,10 +687,7 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
       (item) => item.id,
     );
     expect(registrationIds).toEqual(
-      expect.arrayContaining([
-        createdIds.get('ACTIVE_SERVICE'),
-        createdIds.get('ACTIVE_PLAIN'),
-      ]),
+      expect.arrayContaining([createdIds.get('ACTIVE_SERVICE'), createdIds.get('ACTIVE_PLAIN')]),
     );
     expect(registrationIds).not.toContain(createdIds.get('DISABLED_SERVICE'));
     expect(registrationIds).not.toContain(createdIds.get('DISABLED_PLAIN'));
@@ -728,31 +724,37 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     // 归一化口径与注册一致：首尾空白（含 tab / 换行）不影响命中
     expect(
       (
-        (await adminNameExists({
-          token: levelOneToken,
-          name: `\t ${disabledName}  \n`,
-        })).body as BooleanBody
+        (
+          await adminNameExists({
+            token: levelOneToken,
+            name: `\t ${disabledName}  \n`,
+          })
+        ).body as BooleanBody
       ).data?.adminOrganizationNameExists,
     ).toBe(true);
 
     // 编辑排除自身：只有自己一条同名时不再提示
     expect(
       (
-        (await adminNameExists({
-          token: levelOneToken,
-          name: disabledName,
-          excludeOrganizationId: disabledOrgId,
-        })).body as BooleanBody
+        (
+          await adminNameExists({
+            token: levelOneToken,
+            name: disabledName,
+            excludeOrganizationId: disabledOrgId,
+          })
+        ).body as BooleanBody
       ).data?.adminOrganizationNameExists,
     ).toBe(false);
 
     // 子串不命中：不是 LIKE 前缀/子串匹配
     expect(
       (
-        (await adminNameExists({
-          token: levelOneToken,
-          name: `${NAME_PREFIX}非受管`,
-        })).body as BooleanBody
+        (
+          await adminNameExists({
+            token: levelOneToken,
+            name: `${NAME_PREFIX}非受管`,
+          })
+        ).body as BooleanBody
       ).data?.adminOrganizationNameExists,
     ).toBe(false);
 

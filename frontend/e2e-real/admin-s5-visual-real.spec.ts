@@ -27,7 +27,22 @@ import {
   mysqlQuery,
   readBackendEnv,
   runGuardedFixtureWrite,
+  runTeardownSteps,
+  throwPrimaryAndTeardown,
 } from '../e2e/helpers/real-backend';
+import {
+  cleanupRegistrationRound,
+  createRegistrationRoundLedger,
+  insertRegistrationRoundOrganization,
+  readRegistrationRoundMembershipsByAccountId,
+  readRegistrationRoundUserInfoByAccountId,
+  registerRegistrationRoundAccount,
+  registerRegistrationRoundApplication,
+  registerRegistrationRoundMembership,
+  registerRegistrationRoundUserInfo,
+  type RegistrationRoundLedger,
+  retainRegistrationRoundOrganization,
+} from '../e2e/helpers/registration-round-cleanup';
 import {
   captureStableViewport,
   readWorkspaceEvidenceState,
@@ -77,10 +92,8 @@ const REGISTER_WEB_MUTATION = `
   }
 `;
 
-type FixtureLedger = {
-  accounts: Array<{ accountId: number; loginName: string }>;
-  organizations: Array<{ id: number; organizationCode: string }>;
-  applications: Array<{ applicationId: number; accountId: number }>;
+/** 本轮临时改写的 seed 状态：与共享台账分离，收尾时独立复原 */
+type RestorationLedger = {
   restoredManagedCompany: { organizationId: number; original: string } | null;
   restoredAdminLevels: Array<{ loginName: string; original: string }>;
 };
@@ -145,7 +158,8 @@ type EnvironmentInfo = {
   fonts: { family: string; loaded: boolean }[];
 };
 
-let ledger: FixtureLedger = emptyLedger();
+let ledger: RegistrationRoundLedger = createRegistrationRoundLedger();
+let restoration: RestorationLedger = { restoredAdminLevels: [], restoredManagedCompany: null };
 let env: Record<string, string> = {};
 let peerOrganizationId = 0;
 let foreignCompanyName = '';
@@ -157,16 +171,6 @@ let environment: EnvironmentInfo | null = null;
 const measurements: PageMeasurement[] = [];
 const dialogMeasurements: DialogMeasurement[] = [];
 const viewportCaptures: ViewportCaptureMeta[] = [];
-
-function emptyLedger(): FixtureLedger {
-  return {
-    accounts: [],
-    applications: [],
-    organizations: [],
-    restoredAdminLevels: [],
-    restoredManagedCompany: null,
-  };
-}
 
 function buildRunTag(): string {
   const tag = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -204,20 +208,43 @@ function createFixtureCompany(
   code: string,
   name: string,
 ): { id: number; organizationCode: string } {
-  runGuardedFixtureWrite(
-    env,
-    `INSERT INTO organization
-       (organization_code, name, kind, status, is_managed_company, is_service_provider, created_at, updated_at)
-     VALUES ('${code}', '${name}', 'CLIENT', 'ACTIVE', 1, 0, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))`,
-  );
-
-  const id = Number(mysqlQuery(`SELECT id FROM organization WHERE organization_code = '${code}'`));
-
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error(`夹具公司写入后未回读到主键：${code}`);
-  }
+  const id = insertRegistrationRoundOrganization(ledger, {
+    isManagedCompany: true,
+    kind: 'CLIENT',
+    name,
+    organizationCode: code,
+  });
 
   return { id, organizationCode: code };
+}
+
+/** 注册响应回读真实资料 / 成员关系 ID 后连同账号、申请一起登记 */
+function registerFixtureAccount(facts: {
+  accountId: number;
+  applicationId: number | null;
+  loginEmail: string;
+  loginName: string;
+}): void {
+  registerRegistrationRoundAccount(ledger, {
+    id: facts.accountId,
+    loginEmail: facts.loginEmail,
+    loginName: facts.loginName,
+  });
+  registerRegistrationRoundUserInfo(
+    ledger,
+    readRegistrationRoundUserInfoByAccountId(facts.accountId),
+  );
+
+  for (const membership of readRegistrationRoundMembershipsByAccountId(facts.accountId)) {
+    registerRegistrationRoundMembership(ledger, membership);
+  }
+
+  if (facts.applicationId !== null) {
+    registerRegistrationRoundApplication(ledger, {
+      accountId: facts.accountId,
+      id: facts.applicationId,
+    });
+  }
 }
 
 async function registerWeb(input: {
@@ -579,70 +606,46 @@ async function captureDialog(
 }
 
 /**
- * 台账清理（单事务、先核验后删除）。
- * 顺序按外键依赖：申请 → 成员关系 → 资料 → 账号 → 公司；删除前核验登录名与公司编码。
+ * 收尾步骤：共享台账单事务回收夹具，seed 受管标记与管理员等级各自独立复原。
+ * 任一步失败都不跳过后续步骤，最终汇总抛出。
  */
-function cleanupFixtureLedger(target: FixtureLedger): void {
-  for (const account of target.accounts) {
-    const actual = mysqlQuery(
-      `SELECT COALESCE(login_name, 'NULL') FROM base_user_account WHERE id = ${account.accountId}`,
-    );
+async function runS5Teardown(): Promise<Error | null> {
+  return runTeardownSteps([
+    { label: '清理本轮台账', run: () => cleanupRegistrationRound(ledger) },
+    {
+      label: '恢复 seed 公司受管标记',
+      run: () => {
+        const target = restoration.restoredManagedCompany;
 
-    if (actual !== account.loginName) {
-      throw new Error(
-        `清理前置核验失败：账号 ${account.accountId} 当前登录名与本轮登记不一致，拒绝删除`,
-      );
-    }
-  }
+        if (target === null) {
+          return;
+        }
 
-  for (const organization of target.organizations) {
-    const actual = mysqlQuery(
-      `SELECT organization_code FROM organization WHERE id = ${organization.id}`,
-    );
-
-    if (actual !== organization.organizationCode) {
-      throw new Error(
-        `清理前置核验失败：公司 ${organization.id} 当前编码与本轮登记不一致，拒绝删除`,
-      );
-    }
-  }
-
-  const accountIds = target.accounts.map((item) => item.accountId);
-  const accountList = accountIds.join(',');
-  const statements = ['START TRANSACTION'];
-
-  if (target.applications.length > 0) {
-    statements.push(
-      `DELETE FROM engineer_registration_application WHERE id IN (${target.applications
-        .map((item) => item.applicationId)
-        .join(',')})`,
-    );
-  }
-  if (accountIds.length > 0) {
-    statements.push(`DELETE FROM organization_membership WHERE account_id IN (${accountList})`);
-    statements.push(`DELETE FROM base_user_info WHERE account_id IN (${accountList})`);
-    statements.push(`DELETE FROM base_user_account WHERE id IN (${accountList})`);
-  }
-  if (target.organizations.length > 0) {
-    statements.push(
-      `DELETE FROM organization WHERE id IN (${target.organizations
-        .map((item) => item.id)
-        .join(',')})`,
-    );
-  }
-  if (target.restoredManagedCompany) {
-    statements.push(
-      `UPDATE organization SET is_managed_company = ${target.restoredManagedCompany.original} ` +
-        `WHERE id = ${target.restoredManagedCompany.organizationId}`,
-    );
-  }
-
-  statements.push('COMMIT');
-  runGuardedFixtureWrite(env, statements.join(';\n'));
-
-  for (const level of target.restoredAdminLevels) {
-    restoreAdminLevel(level.loginName, level.original);
-  }
+        if (
+          Number(
+            mysqlQuery(
+              `SELECT is_managed_company FROM organization WHERE id = ${target.organizationId}`,
+            ),
+          ) !== Number(target.original)
+        ) {
+          runGuardedFixtureWrite(
+            env,
+            `UPDATE organization SET is_managed_company = ${target.original} WHERE id = ${target.organizationId}`,
+          );
+        }
+      },
+    },
+    {
+      label: '恢复管理员等级',
+      run: () => {
+        for (const level of restoration.restoredAdminLevels) {
+          if (readAdminLevel(level.loginName) !== level.original) {
+            restoreAdminLevel(level.loginName, level.original);
+          }
+        }
+      },
+    },
+  ]);
 }
 
 test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）', () => {
@@ -651,7 +654,8 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
     assertPhysicalCleanupAllowed(env);
 
     runTag = buildRunTag();
-    ledger = emptyLedger();
+    ledger = createRegistrationRoundLedger();
+    restoration = { restoredAdminLevels: [], restoredManagedCompany: null };
 
     peerOrganizationId = Number(
       mysqlQuery(
@@ -671,14 +675,16 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
       throw new Error(`原始 is_managed_company 值异常，拒绝改写：${originalManaged}`);
     }
 
-    ledger.restoredManagedCompany = {
+    restoration.restoredManagedCompany = {
       organizationId: peerOrganizationId,
       original: originalManaged,
     };
-    ledger.restoredAdminLevels = [
+    restoration.restoredAdminLevels = [
       { loginName: LEVEL_ONE_LOGIN, original: readAdminLevel(LEVEL_ONE_LOGIN) },
       { loginName: LEVEL_TWO_LOGIN, original: readAdminLevel(LEVEL_TWO_LOGIN) },
     ];
+    // seed 可信公司只被本轮账号引用，不进入删除范围
+    retainRegistrationRoundOrganization(ledger, peerOrganizationId);
 
     setAdminLevel(LEVEL_ONE_LOGIN, 1);
     setAdminLevel(LEVEL_TWO_LOGIN, 2);
@@ -689,12 +695,15 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
   });
 
   test.afterAll(async () => {
-    try {
-      if (ledger.restoredManagedCompany === null && ledger.restoredAdminLevels.length === 0) {
-        return;
-      }
+    let primaryError: unknown = null;
 
-      cleanupFixtureLedger(ledger);
+    try {
+      // 清理与 seed 复原各自独立执行：任一失败都不跳过后续步骤
+      const teardown = await runS5Teardown();
+
+      if (teardown !== null) {
+        throw teardown;
+      }
 
       // 残留核验：本轮前缀必须为 0；非本轮哨兵账号保持存在
       const residueAccounts = Number(
@@ -741,28 +750,11 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
         )}\n`,
         'utf-8',
       );
-    } finally {
-      if (
-        ledger.restoredManagedCompany !== null &&
-        Number(
-          mysqlQuery(
-            `SELECT is_managed_company FROM organization WHERE id = ${ledger.restoredManagedCompany.organizationId}`,
-          ),
-        ) !== Number(ledger.restoredManagedCompany.original)
-      ) {
-        runGuardedFixtureWrite(
-          env,
-          `UPDATE organization SET is_managed_company = ${ledger.restoredManagedCompany.original} ` +
-            `WHERE id = ${ledger.restoredManagedCompany.organizationId}`,
-        );
-      }
-
-      for (const level of ledger.restoredAdminLevels) {
-        if (readAdminLevel(level.loginName) !== level.original) {
-          restoreAdminLevel(level.loginName, level.original);
-        }
-      }
+    } catch (error) {
+      primaryError = error;
     }
+
+    throwPrimaryAndTeardown(primaryError, null);
   });
 
   test('一级管理员：三页与关键弹窗只读采集', async ({ page }) => {
@@ -784,30 +776,42 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
     foreignCompanyName = `E2E S5 视觉外公司-${runTag}`;
 
     const foreignCompany = createFixtureCompany(`E2E_S5V_ORG_${runTag}`, foreignCompanyName);
-    ledger.organizations.push(foreignCompany);
 
+    const ownLoginEmail = `e2e.s5v.own.${runTag}@example.com`;
     const own = await registerWeb({
-      loginEmail: `e2e.s5v.own.${runTag}@example.com`,
+      loginEmail: ownLoginEmail,
       loginName: ownCustomer.loginName,
       nickname: `视觉客户甲${runTag.slice(-4)}`,
       organizationId: peerOrganizationId,
       type: 'CUSTOMER',
     });
     ownCustomer.accountId = own.accountId;
-    ledger.accounts.push({ accountId: own.accountId, loginName: ownCustomer.loginName });
+    registerFixtureAccount({
+      accountId: own.accountId,
+      applicationId: own.applicationId,
+      loginEmail: ownLoginEmail,
+      loginName: ownCustomer.loginName,
+    });
 
+    const foreignLoginEmail = `e2e.s5v.foreign.${runTag}@example.com`;
     const foreign = await registerWeb({
-      loginEmail: `e2e.s5v.foreign.${runTag}@example.com`,
+      loginEmail: foreignLoginEmail,
       loginName: foreignCustomer.loginName,
       nickname: `视觉客户乙${runTag.slice(-4)}`,
       organizationId: foreignCompany.id,
       type: 'CUSTOMER',
     });
     foreignCustomer.accountId = foreign.accountId;
-    ledger.accounts.push({ accountId: foreign.accountId, loginName: foreignCustomer.loginName });
+    registerFixtureAccount({
+      accountId: foreign.accountId,
+      applicationId: foreign.applicationId,
+      loginEmail: foreignLoginEmail,
+      loginName: foreignCustomer.loginName,
+    });
 
+    const engineerLoginEmail = `e2e.s5v.engineer.${runTag}@example.com`;
     const engineer = await registerWeb({
-      loginEmail: `e2e.s5v.engineer.${runTag}@example.com`,
+      loginEmail: engineerLoginEmail,
       loginName: engineerApplicant.loginName,
       nickname: `视觉工程师${runTag.slice(-4)}`,
       organizationId: peerOrganizationId,
@@ -816,14 +820,16 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
       type: 'ENGINEER',
     });
     engineerApplicant.accountId = engineer.accountId;
-    ledger.accounts.push({ accountId: engineer.accountId, loginName: engineerApplicant.loginName });
 
     if (engineer.applicationId === null) {
       throw new Error('待审工程师申请未返回 applicationId');
     }
-    ledger.applications.push({
+
+    registerFixtureAccount({
       accountId: engineer.accountId,
       applicationId: engineer.applicationId,
+      loginEmail: engineerLoginEmail,
+      loginName: engineerApplicant.loginName,
     });
 
     await loginViaUi(page, LEVEL_ONE_LOGIN, env.MOCK_SEED_PASSWORD);

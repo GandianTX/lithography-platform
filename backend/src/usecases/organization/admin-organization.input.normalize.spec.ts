@@ -106,7 +106,11 @@ describe('admin-organization.input.normalize（一级公司档案输入归一）
       ).toMatchObject({ status: 'ACTIVE' });
 
       expect(() =>
-        normalizeAdminOrganizationCreateInput({ name: '公司', contactPhone: '021', status: 'PAUSED' }),
+        normalizeAdminOrganizationCreateInput({
+          name: '公司',
+          contactPhone: '021',
+          status: 'PAUSED',
+        }),
       ).toThrow(expect.objectContaining({ code: INPUT_NORMALIZE_ERROR.INVALID_ENUM_VALUE }));
     });
 

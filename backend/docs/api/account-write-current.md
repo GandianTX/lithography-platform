@@ -48,9 +48,14 @@ Source of truth: Current resolver/usecase/type code remains executable truth; th
 
 - `adminEngineerRegistrations(pagination: PaginationArgs!, status: EngineerRegistrationApplicationStatus): AdminEngineerRegistrationPageDTO`
 - `adminEngineerRegistrationDetail(applicationId: Int!): AdminEngineerRegistrationItemDTO`
+- `adminEngineerRegistrationApprovalDetail(applicationId: Int!): AdminEngineerRegistrationDetailDTO`
 - `reviewEngineerRegistration(input: ReviewEngineerRegistrationInput!): AdminEngineerRegistrationItemDTO`
 
 审核条目的 `applicant` 复用 account 域 `AdminUserDTO` 的字段集（账号 ID、登录名/邮箱、昵称、角色与状态等公开资料），不额外定义第二套账号 DTO；字段明细见 `adminUsers` 的返回类型说明。
+
+`adminEngineerRegistrationDetail` 保持既有契约：返回 `AdminEngineerRegistrationItemDTO`，`applicant` 仍是 `AdminUserDTO`，不包含真实姓名。审批决策所需的真实姓名由独立入口 `adminEngineerRegistrationApprovalDetail` 提供，其 `applicant` 为窄字段面 `AdminEngineerRegistrationApplicantDTO`（`id`、`loginName`、`nickname`、`realName`、`phone`、`contactEmail`），不含角色、账号状态与登录邮箱；`realName` 可为空，前端必须按空展示，不得用昵称冒充。
+
+两个详情入口的可见范围与错误口径一致：一级管理员可读任意公司，二级管理员仅本公司；申请不存在与跨公司统一返回 `NOT_FOUND`，不区分两种情形。真实姓名只在 `adminEngineerRegistrationApprovalDetail` 及其授权范围内可读。
 
 当前自助账号设置入口（仅要求已登录会话，目标账号只能来自 Session，详见「自助账号设置」）：
 

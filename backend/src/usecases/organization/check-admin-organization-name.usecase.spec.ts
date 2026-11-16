@@ -39,8 +39,16 @@ describe('CheckAdminOrganizationNameUsecase（一级公司同名提示）', () =
   });
 
   it('编辑按实际主键排除自身，空值视为不排除', async () => {
-    await usecase.execute({ session: levelOneSession, name: '同名公司', excludeOrganizationId: 12 });
-    await usecase.execute({ session: levelOneSession, name: '同名公司', excludeOrganizationId: null });
+    await usecase.execute({
+      session: levelOneSession,
+      name: '同名公司',
+      excludeOrganizationId: 12,
+    });
+    await usecase.execute({
+      session: levelOneSession,
+      name: '同名公司',
+      excludeOrganizationId: null,
+    });
 
     expect(organizationQueryService.existsAnyOrganizationByName).toHaveBeenNthCalledWith(1, {
       normalizedName: '同名公司',
@@ -70,9 +78,9 @@ describe('CheckAdminOrganizationNameUsecase（一级公司同名提示）', () =
   });
 
   it('非字符串名称拒绝', async () => {
-    await expect(
-      usecase.execute({ session: levelOneSession, name: 123 }),
-    ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.INVALID_TEXT });
+    await expect(usecase.execute({ session: levelOneSession, name: 123 })).rejects.toMatchObject({
+      code: INPUT_NORMALIZE_ERROR.INVALID_TEXT,
+    });
   });
 
   it('二级管理员与普通客户拒绝，且不发起查询', async () => {

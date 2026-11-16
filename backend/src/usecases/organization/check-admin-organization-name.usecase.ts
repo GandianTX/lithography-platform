@@ -40,10 +40,7 @@ export class CheckAdminOrganizationNameUsecase {
     }
 
     const normalizedName = normalizeOrganizationNameForComparison(command.name);
-    if (
-      normalizedName.length === 0 ||
-      normalizedName.length > ADMIN_ORGANIZATION_NAME_MAX_LENGTH
-    ) {
+    if (normalizedName.length === 0 || normalizedName.length > ADMIN_ORGANIZATION_NAME_MAX_LENGTH) {
       return false;
     }
 

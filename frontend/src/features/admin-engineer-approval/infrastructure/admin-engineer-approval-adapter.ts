@@ -98,8 +98,8 @@ const ADMIN_ENGINEER_REGISTRATION_LIST_QUERY = `
 `;
 
 const ADMIN_ENGINEER_REGISTRATION_DETAIL_QUERY = `
-  query AdminEngineerRegistrationDetail($applicationId: Int!) {
-    adminEngineerRegistrationDetail(applicationId: $applicationId) {${DETAIL_ITEM_FIELDS}}
+  query AdminEngineerRegistrationApprovalDetail($applicationId: Int!) {
+    adminEngineerRegistrationApprovalDetail(applicationId: $applicationId) {${DETAIL_ITEM_FIELDS}}
   }
 `;
 
@@ -121,7 +121,7 @@ type AdminEngineerRegistrationListQueryData = {
 };
 
 type AdminEngineerRegistrationDetailQueryData = {
-  adminEngineerRegistrationDetail: AdminEngineerRegistrationDetailDto;
+  adminEngineerRegistrationApprovalDetail: AdminEngineerRegistrationDetailDto;
 };
 
 type AdminEngineerReviewMutationData = {
@@ -218,7 +218,7 @@ export async function fetchAdminEngineerRegistrationDetail(
     return {
       ok: true,
       registration: mapAdminEngineerRegistrationDetailDtoToDetail(
-        data.adminEngineerRegistrationDetail,
+        data.adminEngineerRegistrationApprovalDetail,
       ),
     };
   } catch (error) {

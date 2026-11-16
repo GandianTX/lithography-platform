@@ -3,7 +3,15 @@
 import { trimTextPure } from '@core/common/text/text.helper';
 import { Field, InputType } from '@nestjs/graphql';
 import { Transform, TransformFnParams } from 'class-transformer';
-import { IsBoolean, IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import {
   organizationStatusValues,
   type OrganizationStatus,

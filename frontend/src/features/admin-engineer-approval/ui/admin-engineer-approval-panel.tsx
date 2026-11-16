@@ -30,6 +30,7 @@ import {
   resolveAdminEngineerScopeHint,
 } from '../application/admin-engineer-approval.policy';
 import type {
+  AdminEngineerRegistrationDetail,
   AdminEngineerRegistrationRow,
   AdminEngineerRegistrationStatus,
   AdminEngineerReviewResult,
@@ -67,27 +68,23 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
   const dialogSession = useDialogSessionSeq<ApprovalDialogKey>();
   const [rejectTarget, setRejectTarget] = useState<AdminEngineerRejectTarget | null>(null);
 
-  const detailApplicationId =
-    detail.state.status === 'ready'
-      ? detail.state.registration.applicationId
-      : detail.state.status === 'idle'
-        ? null
-        : detail.state.applicationId;
-
-  /** 详情正在展示同一申请时，命令后必须重查，避免继续展示旧状态 */
-  const refreshDetailIfOpen = (applicationId: number) => {
-    if (detailApplicationId === applicationId) {
-      void detail.open(applicationId);
-    }
-  };
-
-  const handleConflict = (applicationId: number, text: string) => {
+  /**
+   * 命令发起时捕获当前详情打开会话；成功 / 冲突续体只在仍是同一会话时重查。
+   * 判定读取 hook 的实时会话，不使用渲染时的目标 ID，避免晚到响应重开旧详情。
+   */
+  const handleConflict = (
+    text: string,
+    detailSession: ReturnType<typeof detail.captureCurrent>,
+  ) => {
     message.warning(text);
     list.reload();
-    refreshDetailIfOpen(applicationId);
+    detail.refreshIfCurrent(detailSession);
   };
 
-  const runApprove = async (applicationId: number) => {
+  const runApprove = async (registration: AdminEngineerRegistrationDetail) => {
+    const applicationId = registration.applicationId;
+    const targetName = registration.applicant.nickname;
+    const detailSession = detail.captureCurrent();
     const execution = await commands.approve(applicationId);
 
     if (execution.kind === 'in-flight') {
@@ -100,14 +97,20 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
     }
 
     if (execution.result.ok) {
-      message.success('该申请已通过审核。');
+      if (detail.isCurrentSession(detailSession)) {
+        message.success('该申请已通过审核。');
+      } else {
+        // 陈旧但写入确实发生：点名实际被批准的申请人，避免被误读成当前详情的结果
+        message.success(`「${targetName}」的申请已通过审核。`);
+      }
+
       list.reload();
-      refreshDetailIfOpen(applicationId);
+      detail.refreshIfCurrent(detailSession);
       return;
     }
 
     if (execution.result.reason === 'state-conflict') {
-      handleConflict(applicationId, execution.result.message);
+      handleConflict(execution.result.message, detailSession);
       return;
     }
 
@@ -135,6 +138,7 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
     const sessionSeq = dialogSession.capture('reject');
     const applicationId = rejectTarget.applicationId;
     const targetName = rejectTarget.applicantNickname;
+    const detailSession = detail.captureCurrent();
     const execution = await commands.reject(applicationId, reviewComment);
 
     if (execution.kind === 'ok') {
@@ -149,7 +153,7 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
         }
 
         list.reload();
-        refreshDetailIfOpen(applicationId);
+        detail.refreshIfCurrent(detailSession);
       } else if (execution.result.reason === 'state-conflict') {
         // 并发第二人决定：关闭弹窗并重查，避免本地快照继续冒充当前状态
         if (dialogSession.isCurrent('reject', sessionSeq)) {
@@ -157,7 +161,7 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
           dialogSession.advance('reject');
         }
 
-        handleConflict(applicationId, execution.result.message);
+        handleConflict(execution.result.message, detailSession);
       }
 
       // 其它业务失败原样回传：是否写进弹窗错误区由弹窗侧代次守卫判定
@@ -294,7 +298,7 @@ export function AdminEngineerApprovalPanel({ adminLevel }: { adminLevel: number 
       <AdminEngineerRegistrationDetailModal
         approving={commands.isPending('approve')}
         state={detail.state}
-        onApprove={(registration) => void runApprove(registration.applicationId)}
+        onApprove={(registration) => void runApprove(registration)}
         onClose={detail.close}
         onReject={(registration) =>
           openRejectDialog({

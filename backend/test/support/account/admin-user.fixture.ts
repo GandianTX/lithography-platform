@@ -332,9 +332,7 @@ const buildAdminUserAccountRow = (spec: AdminUserAccountRowSpec): AccountEntity 
   userInfo.companyName = spec.companyName ?? null;
   // 客户归属缺省为管理员可信公司：二级写用例的缺省目标（CUSTOMER）因此可被合法写入
   userInfo.customerOrganizationId =
-    spec.customerOrganizationId === undefined
-      ? ADMIN_ORGANIZATION_ID
-      : spec.customerOrganizationId;
+    spec.customerOrganizationId === undefined ? ADMIN_ORGANIZATION_ID : spec.customerOrganizationId;
   userInfo.gender = Gender.SECRET;
   userInfo.birthDate = null;
   userInfo.avatarUrl = null;

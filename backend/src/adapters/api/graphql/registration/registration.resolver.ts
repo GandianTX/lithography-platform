@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { MustChangePasswordGuard } from '@src/adapters/api/graphql/guards/must-change-password.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { UseGuards } from '@nestjs/common';
+import { GetAdminEngineerRegistrationApprovalDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-approval-detail.usecase';
 import { GetAdminEngineerRegistrationDetailUsecase } from '@src/usecases/registration/get-admin-engineer-registration-detail.usecase';
 import { GetEngineerRegistrationStatusUsecase } from '@src/usecases/registration/get-engineer-registration-status.usecase';
 import { GetMyEngineerRegistrationUsecase } from '@src/usecases/registration/get-my-engineer-registration.usecase';
@@ -77,6 +78,7 @@ export class RegistrationResolver {
     private readonly resubmitEngineerRegistrationUsecase: ResubmitEngineerRegistrationUsecase,
     private readonly listAdminEngineerRegistrations: ListAdminEngineerRegistrationsUsecase,
     private readonly getAdminEngineerRegistrationDetail: GetAdminEngineerRegistrationDetailUsecase,
+    private readonly getAdminEngineerRegistrationApprovalDetail: GetAdminEngineerRegistrationApprovalDetailUsecase,
     private readonly reviewEngineerRegistrationUsecase: ReviewEngineerRegistrationUsecase,
     private readonly logger: PinoLogger,
   ) {
@@ -393,20 +395,45 @@ export class RegistrationResolver {
   }
 
   /**
-   * 工程师注册申请详情。一级任意公司；二级跨公司或不存在的申请统一按 NOT_FOUND 拒绝。
+   * 工程师注册申请详情（既有契约）：返回申请人 `AdminUserDTO` 字段面，不含真实姓名。
+   *
+   * 一级任意公司；二级跨公司或不存在的申请统一按 NOT_FOUND 拒绝。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
-  @Query(() => AdminEngineerRegistrationDetailDTO, {
+  @Query(() => AdminEngineerRegistrationItemDTO, {
     name: 'adminEngineerRegistrationDetail',
-    description: '工程师注册申请详情（一级全范围，二级仅本公司）',
+    description: '工程师注册申请详情（申请 + 申请人公开资料；一级全范围，二级仅本公司）',
   })
   async adminEngineerRegistrationDetail(
     @Args('applicationId', { type: () => Int, description: '申请 ID' }) applicationId: number,
     @currentUser() user: JwtPayload,
-  ): Promise<AdminEngineerRegistrationDetailDTO> {
+  ): Promise<AdminEngineerRegistrationItemDTO> {
     const session: UsecaseSession = mapJwtToUsecaseSession(user);
     const item = await this.getAdminEngineerRegistrationDetail.execute({
+      session,
+      applicationId,
+    });
+    return toAdminEngineerRegistrationItemDTO(item);
+  }
+
+  /**
+   * 审批详情读入口：同一份申请的窄字段面，额外提供真实姓名。
+   *
+   * 授权与错误口径与既有详情入口一致（复用其可见性裁决）；真实姓名只在本入口可读。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => AdminEngineerRegistrationDetailDTO, {
+    name: 'adminEngineerRegistrationApprovalDetail',
+    description: '工程师注册审批详情（申请 + 申请人详情资料含真实姓名；一级全范围，二级仅本公司）',
+  })
+  async adminEngineerRegistrationApprovalDetail(
+    @Args('applicationId', { type: () => Int, description: '申请 ID' }) applicationId: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<AdminEngineerRegistrationDetailDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const item = await this.getAdminEngineerRegistrationApprovalDetail.execute({
       session,
       applicationId,
     });

@@ -93,8 +93,27 @@ type AdminItemPayload = {
   };
 };
 
-/** 审批详情走专用读模型：申请人资料含真实姓名，不含角色 / 账号状态 / 登录邮箱 */
+/** 既有详情契约的申请人字段面：账号管理 `AdminUserDTO` */
 type AdminDetailPayload = {
+  application: ApplicationPayload;
+  organizationName: string | null;
+  applicant: {
+    id: number;
+    loginName: string | null;
+    loginEmail: string | null;
+    nickname: string;
+    companyName: string | null;
+    phone: string | null;
+    contactEmail: string | null;
+    role: IdentityTypeEnum;
+    status: AccountStatus;
+    createdAt: string;
+    updatedAt: string;
+  };
+};
+
+/** 审批详情专用读模型：申请人资料含真实姓名，不含角色 / 账号状态 / 登录邮箱 */
+type AdminApprovalDetailPayload = {
   application: ApplicationPayload;
   organizationName: string | null;
   applicant: {
@@ -272,15 +291,53 @@ const ADMIN_LIST_QUERY = `
   }
 `;
 
+/** 既有详情契约：申请人仍是账号管理 `AdminUserDTO` 字段面（无真实姓名） */
 const ADMIN_DETAIL_FIELDS = `
   application { ${APPLICATION_FIELDS} }
   organizationName
-  applicant { id loginName nickname realName phone contactEmail }
+  applicant { id loginName loginEmail nickname companyName phone contactEmail role status }
 `;
 
 const ADMIN_DETAIL_QUERY = `
   query AdminDetail($applicationId: Int!) {
     adminEngineerRegistrationDetail(applicationId: $applicationId) { ${ADMIN_DETAIL_FIELDS} }
+  }
+`;
+
+/** 旧客户端以 fragment 选择 `AdminUserDTO`：既有入口必须继续接受该选择集 */
+const ADMIN_DETAIL_FRAGMENT_QUERY = `
+  fragment AdminUserFields on AdminUserDTO {
+    id
+    loginName
+    loginEmail
+    nickname
+    companyName
+    phone
+    contactEmail
+    role
+    status
+    createdAt
+    updatedAt
+  }
+  query AdminDetailWithFragment($applicationId: Int!) {
+    adminEngineerRegistrationDetail(applicationId: $applicationId) {
+      application { id accountId organizationId status }
+      organizationName
+      applicant { ...AdminUserFields }
+    }
+  }
+`;
+
+/** 审批详情专用入口：窄字段面，额外提供真实姓名 */
+const ADMIN_APPROVAL_DETAIL_FIELDS = `
+  application { ${APPLICATION_FIELDS} }
+  organizationName
+  applicant { id loginName nickname realName phone contactEmail }
+`;
+
+const ADMIN_APPROVAL_DETAIL_QUERY = `
+  query AdminApprovalDetail($applicationId: Int!) {
+    adminEngineerRegistrationApprovalDetail(applicationId: $applicationId) { ${ADMIN_APPROVAL_DETAIL_FIELDS} }
   }
 `;
 
@@ -318,6 +375,10 @@ const ENGINEER_SCOPE_PRIMARY = {
 const ENGINEER_SCOPE_PEER = {
   loginName: 'e2engscopepeer',
   loginEmail: 'e2e.eng.scope.peer@example.com',
+};
+const ENGINEER_CONTRACT_DETAIL = {
+  loginName: 'e2engcontractdtl',
+  loginEmail: 'e2e.eng.contract.detail@example.com',
 };
 const ENGINEER_ROLLBACK = {
   loginName: 'e2eengrollback',
@@ -787,6 +848,26 @@ describe('工程师注册与组织审核 (e2e)', () => {
   ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>> =>
     await gql<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>({
       query: ADMIN_DETAIL_QUERY,
+      variables: { applicationId },
+      token,
+    });
+
+  const adminDetailWithFragment = async (
+    token: string,
+    applicationId: number,
+  ): Promise<GqlBody<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>> =>
+    await gql<{ adminEngineerRegistrationDetail?: AdminDetailPayload }>({
+      query: ADMIN_DETAIL_FRAGMENT_QUERY,
+      variables: { applicationId },
+      token,
+    });
+
+  const adminApprovalDetail = async (
+    token: string,
+    applicationId: number,
+  ): Promise<GqlBody<{ adminEngineerRegistrationApprovalDetail?: AdminApprovalDetailPayload }>> =>
+    await gql<{ adminEngineerRegistrationApprovalDetail?: AdminApprovalDetailPayload }>({
+      query: ADMIN_APPROVAL_DETAIL_QUERY,
       variables: { applicationId },
       token,
     });
@@ -1590,6 +1671,121 @@ describe('工程师注册与组织审核 (e2e)', () => {
         where: { organizationId: primaryOrganizationId, accountId: peerEngineerAccountId },
       });
       expect(wrongMembership).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 审批详情契约：既有 AdminUserDTO 入口保持兼容，新入口只提供真实姓名
+  // ---------------------------------------------------------------------------
+  describe('审批详情契约兼容与实名入口', () => {
+    let contractAccountId = 0;
+    let contractApplicationId = 0;
+    let restrictedEngineerToken = '';
+
+    beforeAll(async () => {
+      const recorded = await registerEngineerAndRecord({
+        loginName: ENGINEER_CONTRACT_DETAIL.loginName,
+        loginEmail: ENGINEER_CONTRACT_DETAIL.loginEmail,
+        note: '审批详情契约回归',
+      });
+      contractAccountId = recorded.accountId;
+      contractApplicationId = recorded.applicationId;
+
+      const loginBody = await gql<LoginPayload>({
+        query: LOGIN_MUTATION,
+        variables: {
+          input: {
+            loginName: ENGINEER_CONTRACT_DETAIL.loginName,
+            loginPassword: PASSWORD,
+            type: LoginTypeEnum.PASSWORD,
+            audience: AudienceTypeEnum.DESKTOP,
+            allowRestrictedSession: true,
+          },
+        },
+      });
+      expect(loginBody.errors).toBeUndefined();
+      expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.ENGINEER_PENDING);
+      restrictedEngineerToken = loginBody.data?.login?.accessToken ?? '';
+      expect(restrictedEngineerToken).not.toBe('');
+    });
+
+    it('既有详情入口原字段直查可用，申请人仍是 AdminUserDTO 字段面', async () => {
+      const body = await adminDetail(adminToken, contractApplicationId);
+
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.adminEngineerRegistrationDetail?.application.accountId).toBe(
+        contractAccountId,
+      );
+      expect(body.data?.adminEngineerRegistrationDetail?.applicant.role).toBe(
+        IdentityTypeEnum.ENGINEER,
+      );
+      expect(body.data?.adminEngineerRegistrationDetail?.applicant.status).toBe(
+        AccountStatus.PENDING,
+      );
+    });
+
+    it('旧 AdminUserDTO fragment 选择集继续被接受', async () => {
+      const body = await adminDetailWithFragment(adminToken, contractApplicationId);
+
+      expect(body.errors).toBeUndefined();
+      const applicant = body.data?.adminEngineerRegistrationDetail?.applicant;
+      expect(applicant?.id).toBe(contractAccountId);
+      expect(applicant?.nickname).toBe(ENGINEER_CONTRACT_DETAIL.loginName);
+      expect(typeof applicant?.createdAt).toBe('string');
+      expect(typeof applicant?.updatedAt).toBe('string');
+    });
+
+    it('新实名入口返回真实姓名，且不暴露角色 / 状态字段', async () => {
+      const body = await adminApprovalDetail(adminToken, contractApplicationId);
+
+      expect(body.errors).toBeUndefined();
+      const detail = body.data?.adminEngineerRegistrationApprovalDetail;
+      expect(detail?.application.accountId).toBe(contractAccountId);
+      expect(detail?.applicant.id).toBe(contractAccountId);
+      expect(detail?.applicant.realName).toBe('E2E 工程师');
+      expect(detail?.organizationName).toBe('E2E 工程师注册主组织');
+
+      const roleSelection = await gql<{
+        adminEngineerRegistrationApprovalDetail?: { applicant?: { role?: string } };
+      }>({
+        query: `
+          query AdminApprovalDetailRole($applicationId: Int!) {
+            adminEngineerRegistrationApprovalDetail(applicationId: $applicationId) {
+              applicant { role }
+            }
+          }
+        `,
+        variables: { applicationId: contractApplicationId },
+        token: adminToken,
+      });
+      expect(roleSelection.errors?.length ?? 0).toBeGreaterThan(0);
+    });
+
+    it('二级跨公司、匿名与受限账号在两个入口上按原口径拒绝', async () => {
+      const crossDetail = await adminDetail(peerAdminToken, contractApplicationId);
+      const crossApproval = await adminApprovalDetail(peerAdminToken, contractApplicationId);
+      expect(errorCodeOf(crossDetail)).toBe('NOT_FOUND');
+      expect(errorCodeOf(crossApproval)).toBe('NOT_FOUND');
+
+      const anonymousDetail = await gql<{
+        adminEngineerRegistrationDetail?: AdminDetailPayload;
+      }>({ query: ADMIN_DETAIL_QUERY, variables: { applicationId: contractApplicationId } });
+      const anonymousApproval = await gql<{
+        adminEngineerRegistrationApprovalDetail?: AdminApprovalDetailPayload;
+      }>({
+        query: ADMIN_APPROVAL_DETAIL_QUERY,
+        variables: { applicationId: contractApplicationId },
+      });
+      expect(errorCodeOf(anonymousDetail)).toBe('UNAUTHENTICATED');
+      expect(errorCodeOf(anonymousApproval)).toBe('UNAUTHENTICATED');
+
+      const restrictedDetail = await adminDetail(restrictedEngineerToken, contractApplicationId);
+      const restrictedApproval = await adminApprovalDetail(
+        restrictedEngineerToken,
+        contractApplicationId,
+      );
+      expect(errorCodeOf(restrictedDetail)).toBe('FORBIDDEN');
+      expect(errorCodeOf(restrictedApproval)).toBe('FORBIDDEN');
     });
   });
 

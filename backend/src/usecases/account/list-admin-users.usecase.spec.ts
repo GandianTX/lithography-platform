@@ -142,11 +142,11 @@ describe('ListAdminUsersUsecase', () => {
       });
       // 客户范围由 QueryService 按资料列比较，不依赖成员 ID 清单；
       // 工程师范围来自本公司有效工程师成员关系
-      expect(
-        organizationIsolation.listActiveEngineerAccountIdsByOrganization,
-      ).toHaveBeenCalledWith({
-        organizationId: createAdminOrganizationFact().organizationId,
-      });
+      expect(organizationIsolation.listActiveEngineerAccountIdsByOrganization).toHaveBeenCalledWith(
+        {
+          organizationId: createAdminOrganizationFact().organizationId,
+        },
+      );
       expect(capturedQuery().organizationScope).toEqual({
         organizationId: createAdminOrganizationFact().organizationId,
         engineerAccountIds: [TARGET_ACCOUNT_ID],

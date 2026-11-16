@@ -19,7 +19,10 @@ import {
   type TransactionRunner,
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import { PinoLogger } from 'nestjs-pino';
-import { normalizeAdminUserTargetAccountId } from './admin-user-management.input.normalize';
+import {
+  normalizeAdminUserDefaultPasswordSetting,
+  normalizeAdminUserTargetAccountId,
+} from './admin-user-management.input.normalize';
 import type {
   AdminResetUserPasswordResult,
   AdminResetUserPasswordToDefaultCommand,
@@ -147,8 +150,8 @@ export class AdminResetUserPasswordToDefaultUsecase {
    * 配置问题，必须收敛为统一的 `DEFAULT_PASSWORD_NOT_CONFIGURED` 且不回显策略原因。
    */
   private resolveDefaultPassword(): string {
-    const configured = this.resetOptions.defaultPassword;
-    if (typeof configured !== 'string' || configured.trim().length === 0) {
+    const configured = normalizeAdminUserDefaultPasswordSetting(this.resetOptions.defaultPassword);
+    if (configured === null) {
       throw new DomainError(
         ADMIN_USER_ERROR.DEFAULT_PASSWORD_NOT_CONFIGURED,
         '系统未配置默认密码，暂时无法重置',

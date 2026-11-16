@@ -162,12 +162,14 @@ describe('fetchAdminEngineerRegistrations', () => {
 
 describe('fetchAdminEngineerRegistrationDetail', () => {
   it('读取详情并按主键映射，真实姓名与昵称分开归一', async () => {
-    executeGraphQLMock.mockResolvedValue({ adminEngineerRegistrationDetail: buildDetail() });
+    executeGraphQLMock.mockResolvedValue({
+      adminEngineerRegistrationApprovalDetail: buildDetail(),
+    });
 
     const result = await fetchAdminEngineerRegistrationDetail(61);
 
     expect(executeGraphQLMock).toHaveBeenCalledWith(
-      expect.stringContaining('adminEngineerRegistrationDetail'),
+      expect.stringContaining('adminEngineerRegistrationApprovalDetail'),
       { applicationId: 61 },
     );
     expect(result).toMatchObject({
@@ -182,7 +184,7 @@ describe('fetchAdminEngineerRegistrationDetail', () => {
 
   it('真实姓名为空串时归 null，不回落成昵称', async () => {
     executeGraphQLMock.mockResolvedValue({
-      adminEngineerRegistrationDetail: buildDetail({ applicant: { realName: '  ' } }),
+      adminEngineerRegistrationApprovalDetail: buildDetail({ applicant: { realName: '  ' } }),
     });
 
     const result = await fetchAdminEngineerRegistrationDetail(61);

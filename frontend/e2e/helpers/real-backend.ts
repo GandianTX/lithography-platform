@@ -252,7 +252,51 @@ export function mysqlQuery(sql: string): string {
   ).trim();
 }
 
-// requestNo 白名单守卫：expect 断言不是安全边界，页面文本异常时断言抛错后 finally
+export interface TeardownStep {
+  readonly label: string;
+  readonly run: () => void | Promise<void>;
+}
+
+/**
+ * 收尾汇总：清理、状态复原与诊断各自独立执行，任一步失败都不跳过后续步骤，
+ * 全部失败按序汇总后一次抛出，避免首个异常掩盖其余异常（尤其是等级复原）。
+ */
+export async function runTeardownSteps(steps: readonly TeardownStep[]): Promise<Error | null> {
+  const failures: string[] = [];
+
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch (error) {
+      failures.push(`${step.label}：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return failures.length === 0
+    ? null
+    : new Error(`异常收尾汇总（${failures.length} 项失败）：\n- ${failures.join('\n- ')}`);
+}
+
+/** 主流程错误与收尾错误同时存在时一并保留，不让收尾覆盖最初失败原因 */
+export function throwPrimaryAndTeardown(primary: unknown, teardown: Error | null): void {
+  if (primary === null) {
+    if (teardown !== null) {
+      throw teardown;
+    }
+    return;
+  }
+
+  if (teardown === null) {
+    throw primary;
+  }
+
+  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
+
+  throw new Error(`主流程失败：${primaryMessage}\n收尾失败：${teardown.message}`, {
+    cause: primary,
+  });
+}
+
 // 仍会拿同一字符串执行 SQL。因此任何 requestNo 进入 SQL 前都必须在 helper 内部、
 // 访问数据库之前强制校验；失败直接抛错且绝不启动 mysql 进程（含 finally 兜底路径）。
 function assertWhitelistedRequestNo(requestNo: string): void {
