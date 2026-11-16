@@ -1667,6 +1667,67 @@ export function runGuardedFixtureWrite(env: Record<string, string>, sql: string)
   return mysqlQuery(sql);
 }
 
+/**
+ * 服务器侧 DELETE 计数（`Com_delete`）。
+ *
+ * 用于证明清理守卫的拒绝发生在首次 DELETE 之前：对比调用前后的增量必须为 0。
+ */
+export function readServerDeleteCounter(): number {
+  const [, value] = mysqlQuery("SHOW GLOBAL STATUS LIKE 'Com_delete'").split('\t');
+  const counter = Number(value);
+
+  if (!Number.isSafeInteger(counter) || counter < 0) {
+    throw new Error(`Com_delete 计数不是非负整数，拒绝继续：${JSON.stringify(value)}`);
+  }
+
+  return counter;
+}
+
+/**
+ * CLI 的数据库真实输出（stderr）。
+ *
+ * 只对数据库输出断言：`error.message` 含整条 SQL 命令文本，用它做证据会把
+ * 命令里的守卫标记误当成数据库报错（第三轮 P1 自查）。
+ */
+export function readMysqlErrorOutput(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return '';
+  }
+
+  const value = (error as unknown as Record<string, unknown>).stderr;
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return Buffer.isBuffer(value) ? value.toString('utf8') : '';
+}
+
+/**
+ * 以独立夹具所有者插入一条 LEFT 成员关系（未登记的「外部子行」）。
+ *
+ * `left_at` 必填以避开单账号唯一有效成员约束；返回的真实主键只由该所有者按精确主键回收，
+ * 不得进入本轮主台账——主台账清理必须在首删前把它报成未登记成员边。
+ */
+export function insertUnregisteredLeftMembership(
+  env: Record<string, string>,
+  params: { readonly accountId: number; readonly organizationId: number },
+): number {
+  const output = runGuardedFixtureWrite(
+    env,
+    'INSERT INTO organization_membership (organization_id, account_id, member_role, status, left_at)' +
+      ` VALUES (${params.organizationId}, ${params.accountId}, 'CUSTOMER', 'LEFT', CURRENT_TIMESTAMP(3));` +
+      ' SELECT LAST_INSERT_ID();',
+  );
+  const id = Number(output);
+
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error(`外部子行未返回可信主键，拒绝继续：${JSON.stringify(output)}`);
+  }
+
+  return id;
+}
+
 /** 夹具单列的本轮制造状态与原登记值 */
 export interface ReferenceDocumentFixtureColumnMutation {
   readonly column: ReferenceDocumentFixtureColumn;

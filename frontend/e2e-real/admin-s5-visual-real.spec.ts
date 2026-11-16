@@ -34,7 +34,7 @@ import {
   cleanupRegistrationRound,
   createRegistrationRoundLedger,
   insertRegistrationRoundOrganization,
-  readRegistrationRoundMembershipsByAccountId,
+  readRegistrationRoundMembershipByScope,
   readRegistrationRoundUserInfoByAccountId,
   registerRegistrationRoundAccount,
   registerRegistrationRoundApplication,
@@ -218,12 +218,20 @@ function createFixtureCompany(
   return { id, organizationCode: code };
 }
 
-/** 注册响应回读真实资料 / 成员关系 ID 后连同账号、申请一起登记 */
+/**
+ * 注册响应回读真实资料 ID 后连同账号、申请一起登记。
+ *
+ * 成员关系只按调用处已知的目标公司窄查登记：CUSTOMER 注册在事务内即建
+ * `CUSTOMER/ACTIVE` 行；ENGINEER 待审阶段不产生成员关系，因此跳过登记。
+ * 不得按账号全量回读成员行（第三轮 P1）。
+ */
 function registerFixtureAccount(facts: {
   accountId: number;
   applicationId: number | null;
   loginEmail: string;
   loginName: string;
+  organizationId: number;
+  type: 'CUSTOMER' | 'ENGINEER';
 }): void {
   registerRegistrationRoundAccount(ledger, {
     id: facts.accountId,
@@ -235,8 +243,16 @@ function registerFixtureAccount(facts: {
     readRegistrationRoundUserInfoByAccountId(facts.accountId),
   );
 
-  for (const membership of readRegistrationRoundMembershipsByAccountId(facts.accountId)) {
-    registerRegistrationRoundMembership(ledger, membership);
+  if (facts.type === 'CUSTOMER') {
+    registerRegistrationRoundMembership(
+      ledger,
+      readRegistrationRoundMembershipByScope({
+        accountId: facts.accountId,
+        memberRole: 'CUSTOMER',
+        organizationId: facts.organizationId,
+        status: 'ACTIVE',
+      }),
+    );
   }
 
   if (facts.applicationId !== null) {
@@ -791,6 +807,8 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
       applicationId: own.applicationId,
       loginEmail: ownLoginEmail,
       loginName: ownCustomer.loginName,
+      organizationId: peerOrganizationId,
+      type: 'CUSTOMER',
     });
 
     const foreignLoginEmail = `e2e.s5v.foreign.${runTag}@example.com`;
@@ -807,6 +825,8 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
       applicationId: foreign.applicationId,
       loginEmail: foreignLoginEmail,
       loginName: foreignCustomer.loginName,
+      organizationId: foreignCompany.id,
+      type: 'CUSTOMER',
     });
 
     const engineerLoginEmail = `e2e.s5v.engineer.${runTag}@example.com`;
@@ -830,6 +850,8 @@ test.describe.serial('S5 管理端三页视觉复验（隔离库真实链路）'
       applicationId: engineer.applicationId,
       loginEmail: engineerLoginEmail,
       loginName: engineerApplicant.loginName,
+      organizationId: peerOrganizationId,
+      type: 'ENGINEER',
     });
 
     await loginViaUi(page, LEVEL_ONE_LOGIN, env.MOCK_SEED_PASSWORD);

@@ -25,6 +25,7 @@ import {
   insertRegistrationRoundOrganization,
   isRegistrationRoundLedgerEmpty,
   locateRegistrationRoundAccount,
+  readRegistrationRoundMembershipByScope,
   readRegistrationRoundOrganization,
   registerRegistrationRoundAccount,
   registerRegistrationRoundApplication,
@@ -374,6 +375,64 @@ describe('registration-round-cleanup：注册响应定位账号与归属', () =>
       ),
     ).toThrow(/应恰好命中 1 行/);
     expect(ledger.organizations).toHaveLength(0);
+  });
+});
+
+describe('registration-round-cleanup：成员关系按已知范围窄查', () => {
+  const scope = {
+    accountId: 501,
+    memberRole: 'CUSTOMER',
+    organizationId: 900,
+    status: 'ACTIVE',
+  };
+
+  it('唯一命中时返回真实主键，SQL 同时限定账号 / 公司 / 角色 / 状态', () => {
+    let issued = '';
+
+    const facts = readRegistrationRoundMembershipByScope(scope, {
+      query: (sql) => {
+        issued = sql;
+        return '701\t501\t900';
+      },
+    });
+
+    expect(facts).toEqual({ accountId: 501, id: 701, organizationId: 900 });
+    expect(issued).toContain('WHERE account_id = 501');
+    expect(issued).toContain('AND organization_id = 900');
+    expect(issued).toContain("AND member_role = 'CUSTOMER'");
+    expect(issued).toContain("AND status = 'ACTIVE'");
+    // 不允许「按账号全量回读」的旧口径
+    expect(issued).not.toContain('ORDER BY id');
+  });
+
+  it('零行（业务未写入）与多行（与预期不符）都失败关闭，不产生可删除事实', () => {
+    expect(() => readRegistrationRoundMembershipByScope(scope, { query: () => '' })).toThrow(
+      /应恰好命中 1 行，实际 0 行/,
+    );
+    expect(() =>
+      readRegistrationRoundMembershipByScope(scope, {
+        query: () => '701\t501\t900\n702\t501\t900',
+      }),
+    ).toThrow(/应恰好命中 1 行，实际 2 行/);
+  });
+
+  it('非法 ID 或非受控枚举在查询前被拒绝（不拼接进 SQL）', () => {
+    let queried = false;
+    const query = (): string => {
+      queried = true;
+      return '701\t501\t900';
+    };
+
+    expect(() =>
+      readRegistrationRoundMembershipByScope({ ...scope, accountId: 0 }, { query }),
+    ).toThrow(/账号 ID/);
+    expect(() =>
+      readRegistrationRoundMembershipByScope(
+        { ...scope, memberRole: "CUSTOMER' OR 1=1" },
+        { query },
+      ),
+    ).toThrow(/成员关系角色/);
+    expect(queried).toBe(false);
   });
 });
 

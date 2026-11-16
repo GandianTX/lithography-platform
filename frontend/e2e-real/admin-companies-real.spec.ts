@@ -27,8 +27,11 @@ import path from 'node:path';
 
 import {
   assertPhysicalCleanupAllowed,
+  insertUnregisteredLeftMembership,
   mysqlQuery,
   readBackendEnv,
+  readMysqlErrorOutput,
+  readServerDeleteCounter,
   realGraphqlCall,
   runGuardedFixtureWrite,
   runTeardownSteps,
@@ -272,26 +275,6 @@ function insertFixtureOrganization(
   return id;
 }
 
-/** 插入一条 LEFT 成员关系作为「外部子行」（left_at 必填，避开单账号唯一有效成员约束） */
-function insertExternalLeftMembership(
-  env: Record<string, string>,
-  params: { readonly organizationId: number; readonly accountId: number },
-): number {
-  const output = runGuardedFixtureWrite(
-    env,
-    'INSERT INTO organization_membership (organization_id, account_id, member_role, status, left_at)' +
-      ` VALUES (${params.organizationId}, ${params.accountId}, 'CUSTOMER', 'LEFT', CURRENT_TIMESTAMP(3));` +
-      ' SELECT LAST_INSERT_ID();',
-  );
-  const id = Number(output);
-
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error(`外部子行未返回可信主键，拒绝继续：${JSON.stringify(output)}`);
-  }
-
-  return id;
-}
-
 /**
  * 按登记事实回收本轮公司：单一事务内先绑定所有权并预检子行/集合外引用，再按主键删除。
  *
@@ -314,13 +297,7 @@ function deleteRegisteredOrganization(registered: RegisteredOrganizationFacts): 
   cleanupRegistrationRound(ledger);
 }
 
-/** 服务器侧 DELETE 计数：用于证明守卫拒绝发生在首次 DELETE 之前 */
-function readDeleteCounter(): number {
-  const [, value] = mysqlQuery("SHOW GLOBAL STATUS LIKE 'Com_delete'").split('\t');
-
-  return Number(value);
-}
-
+/** 取 mysql CLI 的 stdout / stderr 原始输出（仅用于区分事务内探针与后序失败） */
 function readErrorField(error: unknown, field: 'stdout' | 'stderr'): string {
   if (!(error instanceof Error)) {
     return '';
@@ -333,11 +310,6 @@ function readErrorField(error: unknown, field: 'stdout' | 'stderr'): string {
   }
 
   return Buffer.isBuffer(value) ? value.toString('utf8') : '';
-}
-
-/** 数据库真实输出（stderr）：只对 CLI 输出断言，避免把整条 SQL 命令文本当作证据 */
-function readMysqlErrorOutput(error: unknown): string {
-  return readErrorField(error, 'stderr');
 }
 
 /** 哨兵行必须保持登记时的名称与编号（缺行同样视为被误删） */
@@ -994,7 +966,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
       assertOrganizationRowUnchanged(prefixPeerSentinel);
 
       // 2. 缺前置核验：事务内绑定守卫拒绝，实际 DELETE 为 0（错误标记可区分于外键兜底）
-      const deleteBeforeMismatch = readDeleteCounter();
+      const deleteBeforeMismatch = readServerDeleteCounter();
       let mismatchError: unknown = null;
 
       try {
@@ -1006,7 +978,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
       const mismatchText = readMysqlErrorOutput(mismatchError);
       expect(mismatchText).toMatch(/rc_org_\d+_binding_mismatch/u);
       expect(mismatchText).not.toContain('Cannot delete or update a parent row');
-      expect(readDeleteCounter() - deleteBeforeMismatch).toBe(0);
+      expect(readServerDeleteCounter() - deleteBeforeMismatch).toBe(0);
       expect(readOrganizationCountById(sameNameSentinel.id)).toBe(1);
 
       // 3. 未收到创建结果：只读诊断命中同名行，但绝不按名称删除
@@ -1019,12 +991,12 @@ test.describe('公司档案（隔离库真实链路）', () => {
       );
 
       expect(Number.isSafeInteger(seedAccountId) && seedAccountId > 0).toBe(true);
-      externalChildId = insertExternalLeftMembership(env, {
+      externalChildId = insertUnregisteredLeftMembership(env, {
         accountId: seedAccountId,
         organizationId: sameNameSentinel.id,
       });
 
-      const deleteBeforeMembership = readDeleteCounter();
+      const deleteBeforeMembership = readServerDeleteCounter();
       let membershipGuardError: unknown = null;
 
       try {
@@ -1038,7 +1010,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
         'rc_unregistered_in_set_organization_membership_organization_id',
       );
       expect(membershipText).not.toContain('Cannot delete or update a parent row');
-      expect(readDeleteCounter() - deleteBeforeMembership).toBe(0);
+      expect(readServerDeleteCounter() - deleteBeforeMembership).toBe(0);
       expect(readOrganizationCountById(sameNameSentinel.id)).toBe(1);
       expect(
         Number(

@@ -29,8 +29,11 @@ import path from 'node:path';
 import {
   assertPhysicalCleanupAllowed,
   BACKEND_GRAPHQL,
+  insertUnregisteredLeftMembership,
   mysqlQuery,
   readBackendEnv,
+  readMysqlErrorOutput,
+  readServerDeleteCounter,
   realGraphqlCall,
   runGuardedFixtureWrite,
   runTeardownSteps,
@@ -40,7 +43,7 @@ import {
   cleanupRegistrationRound,
   createRegistrationRoundLedger,
   insertRegistrationRoundOrganization,
-  readRegistrationRoundMembershipsByAccountId,
+  readRegistrationRoundMembershipByScope,
   readRegistrationRoundUserInfoByAccountId,
   registerRegistrationRoundAccount,
   registerRegistrationRoundMembership,
@@ -239,10 +242,21 @@ function createFixtureCompany(
   return { id, organizationCode };
 }
 
-/** 客户注册在事务内即建成员关系：按真实 ID 回读资料与成员关系并登记 */
+/**
+ * 客户注册在事务内即建成员关系：只按「账号 + 调用处已知目标公司 + CUSTOMER + ACTIVE」
+ * 回读唯一成员行后登记真实主键。
+ *
+ * 不得按账号全量回读：同账号下的其它成员行（例如随后注入的 LEFT 哨兵）不属于本轮
+ * 创建证据，误收后首删前的成员主键预检就无法识别它们（第三轮 P1）。
+ */
 function registerFixtureCustomer(
   ledger: RegistrationRoundLedger,
-  facts: { accountId: number; loginEmail: string; loginName: string },
+  facts: {
+    accountId: number;
+    loginEmail: string;
+    loginName: string;
+    organizationId: number;
+  },
 ): void {
   registerRegistrationRoundAccount(ledger, {
     id: facts.accountId,
@@ -253,10 +267,15 @@ function registerFixtureCustomer(
     ledger,
     readRegistrationRoundUserInfoByAccountId(facts.accountId),
   );
-
-  for (const membership of readRegistrationRoundMembershipsByAccountId(facts.accountId)) {
-    registerRegistrationRoundMembership(ledger, membership);
-  }
+  registerRegistrationRoundMembership(
+    ledger,
+    readRegistrationRoundMembershipByScope({
+      accountId: facts.accountId,
+      memberRole: 'CUSTOMER',
+      organizationId: facts.organizationId,
+      status: 'ACTIVE',
+    }),
+  );
 }
 
 /**
@@ -520,6 +539,7 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
         accountId: accountIdA,
         loginEmail: loginEmailA,
         loginName: loginNameA,
+        organizationId: companyA.id,
       });
 
       const loginNameB = `e2es4b${tag}`;
@@ -536,6 +556,7 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
         accountId: accountIdB,
         loginEmail: loginEmailB,
         loginName: loginNameB,
+        organizationId: companyB.id,
       });
 
       await loginViaUi(page, LEVEL_ONE_LOGIN, env.MOCK_SEED_PASSWORD, '/admin');
@@ -726,6 +747,7 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
         accountId: ownAccountId,
         loginEmail: ownLoginEmail,
         loginName: ownLoginName,
+        organizationId: peerOrganizationId,
       });
 
       const foreignLoginName = `e2es4f${tag}`;
@@ -742,6 +764,7 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
         accountId: foreignAccountId,
         loginEmail: foreignLoginEmail,
         loginName: foreignLoginName,
+        organizationId: foreignCompany.id,
       });
 
       await loginViaUi(page, LEVEL_TWO_LOGIN, env.MOCK_SEED_PASSWORD, '/admin');
@@ -849,5 +872,199 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
     expect(
       mysqlQuery(`SELECT is_managed_company FROM organization WHERE id = ${peerOrganizationId}`),
     ).toBe(originalManagedCompany);
+  });
+
+  /**
+   * 第三轮 P1 定向回归（客户路径）：只登记调用处已知目标公司的 ACTIVE 行。
+   *
+   * 客户注册在事务内创建成员关系；随后由独立夹具所有者在另一家公司插入一条 LEFT 行。
+   * 主台账必须只含合法 `CUSTOMER/ACTIVE` 行，LEFT 哨兵不得入账——否则首删前的成员
+   * 主键预检会把它当成「已登记子行」放行。这里共用同一保护断言：首删前拒绝、
+   * DELETE 增量为 0、哨兵与父行都保留；哨兵按精确主键回收后原台账清到零残留。
+   */
+  test('清理边界：客户登记只入账目标公司 ACTIVE 行，LEFT 哨兵不入账且可精确回收', async () => {
+    test.setTimeout(120_000);
+    const env = readBackendEnv();
+
+    assertPhysicalCleanupAllowed(env);
+
+    const tag = buildRunTag();
+    const ledger = createRegistrationRoundLedger();
+    let sentinelOrganizationId: number | null = null;
+    let sentinelMembershipId: number | null = null;
+    let primaryError: unknown = null;
+
+    try {
+      const company = createFixtureCompany(ledger, `E2E_S4_ORG_G_${tag}`, `E2E S4 客户哨兵-${tag}`);
+      const loginName = `e2es4g${tag}`;
+      const loginEmail = `e2e.s4g.${tag}@example.com`;
+      const accountId = await registerCustomer({
+        loginEmail,
+        loginName,
+        nickname: `客户哨兵${tag}`,
+        organizationId: company.id,
+      });
+
+      registerFixtureCustomer(ledger, {
+        accountId,
+        loginEmail,
+        loginName,
+        organizationId: company.id,
+      });
+
+      // 合法 ACTIVE 行唯一入账，且就是目标公司的那一条
+      expect(ledger.memberships).toHaveLength(1);
+      expect(ledger.memberships[0]).toMatchObject({
+        accountId,
+        organizationId: company.id,
+      });
+
+      // 独立夹具所有者：另建一家公司并插入一条 LEFT 成员行
+      const sentinelOrganizationCode = `E2E_S4_ORG_S_${tag}`;
+      const sentinelOrganizationName = `E2E S4 哨兵外部公司-${tag}`;
+
+      sentinelOrganizationId = Number(
+        runGuardedFixtureWrite(
+          env,
+          'INSERT INTO organization (organization_code, name, kind, status, is_managed_company, is_service_provider)' +
+            ` VALUES ('${sentinelOrganizationCode}', '${sentinelOrganizationName}', 'CLIENT', 'ACTIVE', 0, 0);` +
+            ' SELECT LAST_INSERT_ID();',
+        ),
+      );
+      expect(Number.isSafeInteger(sentinelOrganizationId)).toBe(true);
+
+      sentinelMembershipId = insertUnregisteredLeftMembership(env, {
+        accountId,
+        organizationId: sentinelOrganizationId,
+      });
+
+      // LEFT 哨兵未入账；主台账仍只有合法 ACTIVE 行
+      expect(ledger.memberships).toHaveLength(1);
+      expect(ledger.memberships.map((item) => item.id)).not.toContain(sentinelMembershipId);
+
+      // 首删前拒绝：报未登记成员边，实际 DELETE 为 0，哨兵与父行都保留
+      const deleteBeforeGuard = readServerDeleteCounter();
+      let guardError: unknown = null;
+
+      try {
+        cleanupRegistrationRound(ledger);
+      } catch (error) {
+        guardError = error;
+      }
+
+      const guardText = readMysqlErrorOutput(guardError);
+      expect(guardText).toContain('rc_unregistered_in_set_organization_membership_account_id');
+      expect(guardText).not.toContain('Cannot delete or update a parent row');
+      expect(readServerDeleteCounter() - deleteBeforeGuard).toBe(0);
+      expect(
+        Number(
+          mysqlQuery(
+            `SELECT COUNT(*) FROM organization_membership WHERE id = ${sentinelMembershipId}`,
+          ),
+        ),
+      ).toBe(1);
+      expect(
+        Number(mysqlQuery(`SELECT COUNT(*) FROM base_user_account WHERE id = ${accountId}`)),
+      ).toBe(1);
+      expect(Number(mysqlQuery(`SELECT COUNT(*) FROM organization WHERE id = ${company.id}`))).toBe(
+        1,
+      );
+
+      // 哨兵所有者按精确主键回收，原台账随后正常清理到零残留
+      runGuardedFixtureWrite(
+        env,
+        `DELETE FROM organization_membership WHERE id = ${sentinelMembershipId}`,
+      );
+      expect(
+        Number(
+          mysqlQuery(
+            `SELECT COUNT(*) FROM organization_membership WHERE id = ${sentinelMembershipId}`,
+          ),
+        ),
+      ).toBe(0);
+      sentinelMembershipId = null;
+
+      runGuardedFixtureWrite(env, `DELETE FROM organization WHERE id = ${sentinelOrganizationId}`);
+      expect(
+        Number(
+          mysqlQuery(`SELECT COUNT(*) FROM organization WHERE id = ${sentinelOrganizationId}`),
+        ),
+      ).toBe(0);
+      sentinelOrganizationId = null;
+
+      cleanupRegistrationRound(ledger);
+
+      expect(
+        Number(mysqlQuery(`SELECT COUNT(*) FROM base_user_account WHERE id = ${accountId}`)),
+      ).toBe(0);
+      expect(Number(mysqlQuery(`SELECT COUNT(*) FROM organization WHERE id = ${company.id}`))).toBe(
+        0,
+      );
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      throwPrimaryAndTeardown(
+        primaryError,
+        await runTeardownSteps([
+          {
+            label: '按精确主键回收 LEFT 哨兵',
+            run: () => {
+              if (sentinelMembershipId !== null) {
+                runGuardedFixtureWrite(
+                  env,
+                  `DELETE FROM organization_membership WHERE id = ${sentinelMembershipId}`,
+                );
+
+                if (
+                  Number(
+                    mysqlQuery(
+                      `SELECT COUNT(*) FROM organization_membership WHERE id = ${sentinelMembershipId}`,
+                    ),
+                  ) !== 0
+                ) {
+                  throw new Error(`哨兵成员行 ${sentinelMembershipId} 回收失败`);
+                }
+
+                sentinelMembershipId = null;
+              }
+
+              if (sentinelOrganizationId !== null) {
+                runGuardedFixtureWrite(
+                  env,
+                  `DELETE FROM organization WHERE id = ${sentinelOrganizationId}`,
+                );
+
+                if (
+                  Number(
+                    mysqlQuery(
+                      `SELECT COUNT(*) FROM organization WHERE id = ${sentinelOrganizationId}`,
+                    ),
+                  ) !== 0
+                ) {
+                  throw new Error(`哨兵公司 ${sentinelOrganizationId} 回收失败`);
+                }
+
+                sentinelOrganizationId = null;
+              }
+            },
+          },
+          { label: '清理本轮台账', run: () => cleanupRegistrationRound(ledger) },
+        ]),
+      );
+    }
+
+    // 收尾后零残留
+    expect(
+      Number(
+        mysqlQuery(`SELECT COUNT(*) FROM base_user_account WHERE login_name = 'e2es4g${tag}'`),
+      ),
+    ).toBe(0);
+    expect(
+      Number(
+        mysqlQuery(
+          `SELECT COUNT(*) FROM organization WHERE organization_code = 'E2E_S4_ORG_S_${tag}'`,
+        ),
+      ),
+    ).toBe(0);
   });
 });

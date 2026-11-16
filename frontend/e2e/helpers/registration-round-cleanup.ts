@@ -348,30 +348,47 @@ export function readRegistrationRoundUserInfoByAccountId(
 }
 
 /**
- * 按登记的账号 ID 回读成员关系真实 ID（只读）。
+ * 按「账号 + 公司 + 角色 + 状态」窄条件回读**唯一**成员关系真实 ID（只读）。
  *
- * 只返回归属该账号的行；调用方仍需逐条登记，清理不会自动删除父账号下的其他成员关系。
+ * 登记证据只能是调用处已知的目标事实：成员关系在注册事务内由业务写入，
+ * 因此必须先按已知账号与目标公司定位，再在结果唯一时登记真实主键。
+ * 按账号回读全量成员行会把「同账号下其它成员关系」一并吸收进台账，
+ * 首删前的预检只看成员主键是否登记，因此无法识别这类误收行（第三轮 P1）。
+ * 零行（业务未写入）或多行（与预期不符）一律失败关闭，由调用方保留不明行。
  */
-export function readRegistrationRoundMembershipsByAccountId(
-  accountId: number,
+export function readRegistrationRoundMembershipByScope(
+  scope: {
+    accountId: number;
+    memberRole: string;
+    organizationId: number;
+    status: string;
+  },
   deps: Pick<RegistrationRoundCleanupDeps, 'query'> = defaultDeps,
-): RegistrationRoundMembershipFacts[] {
-  assertPositiveInteger(accountId, '成员关系回读账号 ID');
+): RegistrationRoundMembershipFacts {
+  const accountId = assertPositiveInteger(scope.accountId, '成员关系回读账号 ID');
+  const organizationId = assertPositiveInteger(scope.organizationId, '成员关系回读公司 ID');
+  const memberRole = assertEnumToken(scope.memberRole, '成员关系角色');
+  const status = assertEnumToken(scope.status, '成员关系状态');
 
-  const output = deps.query(
-    [
-      'SELECT id, account_id, organization_id',
-      'FROM organization_membership',
-      `WHERE account_id = ${accountId}`,
-      'ORDER BY id',
-    ].join(' '),
+  const row = requireSingleRow(
+    deps.query(
+      [
+        'SELECT id, account_id, organization_id',
+        'FROM organization_membership',
+        `WHERE account_id = ${accountId}`,
+        `AND organization_id = ${organizationId}`,
+        `AND member_role = '${memberRole}'`,
+        `AND status = '${status}'`,
+      ].join(' '),
+    ),
+    `账号 ${accountId} 在组织 ${organizationId} 的 ${memberRole}/${status} 成员关系`,
   );
 
-  return parseTabRows(output).map(([id, accountIdText, organizationIdText]) => ({
-    accountId: Number(accountIdText),
-    id: Number(id),
-    organizationId: Number(organizationIdText),
-  }));
+  return {
+    accountId: Number(row[1]),
+    id: Number(row[0]),
+    organizationId: Number(row[2]),
+  };
 }
 
 /**
