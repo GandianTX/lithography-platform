@@ -8,7 +8,8 @@
  * 的客户端拦截、密码强度不在前端裁决（策略以后端为准）、当前密码错误 / 弱密码等
  * 业务拒绝文案原样展示，以及成功链路的**身份裁决先于提示**——先交由调用方
  * （装配层）裁决发起会话身份，仅裁决为「仍是当前会话」时才展示成功提示；
- * 身份不匹配（迟到响应）完全静默。
+ * 身份不匹配（迟到响应）完全静默。真实提交失败（业务拒绝 / 请求失败）后三个密码
+ * 输入必须清空且错误提示保持可见；in-flight 未真实提交时不清空。
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -253,7 +254,10 @@ describe('ChangePasswordForm 业务拒绝与失败边界', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('当前密码不正确');
     expect(message.success).not.toHaveBeenCalled();
     expect(onSucceeded).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('当前密码')).toHaveValue('Wrong#Pass2026');
+    // 真实提交失败后清空三个密码输入，错误提示保持可见
+    expect(screen.getByLabelText('当前密码')).toHaveValue('');
+    expect(screen.getByLabelText('新密码')).toHaveValue('');
+    expect(screen.getByLabelText('确认新密码')).toHaveValue('');
   });
 
   it('新密码不符合后端策略时展示后端返回的策略文案', async () => {
@@ -298,6 +302,11 @@ describe('ChangePasswordForm 业务拒绝与失败边界', () => {
     expect(await screen.findByText('网络连接异常，请稍后重试。')).toBeInTheDocument();
     expect(onSucceeded).not.toHaveBeenCalled();
     expect(message.success).not.toHaveBeenCalled();
+    // 请求失败同样清空三个密码输入，错误提示保持可见
+    expect(screen.getByRole('alert')).toHaveTextContent('网络连接异常，请稍后重试。');
+    expect(screen.getByLabelText('当前密码')).toHaveValue('');
+    expect(screen.getByLabelText('新密码')).toHaveValue('');
+    expect(screen.getByLabelText('确认新密码')).toHaveValue('');
   });
 
   it('同类命令进行中被拒（in-flight）时静默忽略', async () => {
@@ -310,9 +319,36 @@ describe('ChangePasswordForm 业务拒绝与失败边界', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(message.success).not.toHaveBeenCalled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // 未真实提交（未发出请求）时不清空输入
+    expect(screen.getByLabelText('当前密码')).toHaveValue(CURRENT_PASSWORD);
+    expect(screen.getByLabelText('新密码')).toHaveValue(NEW_PASSWORD);
+    expect(screen.getByLabelText('确认新密码')).toHaveValue(NEW_PASSWORD);
   });
 
-  it('失败后点击重置会清空三个字段并移除错误提示', async () => {
+  it('失败清空后可重新输入并成功提交', async () => {
+    const onSucceeded = vi.fn().mockResolvedValue(true);
+    const onSubmit = vi
+      .fn()
+      .mockResolvedValueOnce(failureExecution('当前密码不正确'))
+      .mockResolvedValueOnce(successExecution());
+    renderForm(onSubmit, { onSucceeded });
+
+    fillPasswords('Wrong#Pass2026', NEW_PASSWORD, NEW_PASSWORD);
+    fireEvent.click(getSubmitButton());
+    expect(await screen.findByText('当前密码不正确')).toBeInTheDocument();
+
+    fillPasswords(CURRENT_PASSWORD, NEW_PASSWORD, NEW_PASSWORD);
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => expect(message.success).toHaveBeenCalledWith(NOTICE));
+    expect(onSubmit).toHaveBeenLastCalledWith({
+      currentPassword: CURRENT_PASSWORD,
+      newPassword: NEW_PASSWORD,
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('失败后点击重置会移除错误提示，三个字段保持为空', async () => {
     const onSubmit = vi.fn().mockResolvedValue(failureExecution('当前密码不正确'));
     renderForm(onSubmit);
 

@@ -343,6 +343,9 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   [MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH]: 'BAD_USER_INPUT',
   // 强制改密提交同值密码属客户端输入类拒绝：映射 UNAUTHENTICATED 会让前端误判会话失效
   [MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED]: 'BAD_USER_INPUT',
+  // 任务 02.2：本人改密提交不被允许的新密码属客户端输入类拒绝；显式登记避免依赖
+  // 未命中默认分支，也不得映射 UNAUTHENTICATED
+  [MY_ACCOUNT_ERROR.NEW_PASSWORD_NOT_ALLOWED]: 'BAD_USER_INPUT',
   // 缺归属客户补录（任务 02.4）：已归属/关系冲突是明确的当前状态冲突（CONFLICT）；
   // 二选一或名称非法属输入类（BAD_USER_INPUT）
   [MY_ACCOUNT_ERROR.CUSTOMER_COMPANY_ALREADY_BOUND]: 'CONFLICT',

@@ -391,6 +391,12 @@ Object.freeze(ENGINEER_REGISTRATION_ERROR);
  *   强制改密场景下此类提交会清掉强制改密标记却不真正更换凭据，等于绕过管理员要求；
  *   普通主动改密提交同值同样没有实际更换凭据。两种情形统一按客户端输入类拒绝并映射
  *   `BAD_USER_INPUT`。不得映射 `UNAUTHENTICATED`，否则前端会误判会话失效。
+ * - `NEW_PASSWORD_NOT_ALLOWED`：提交的新密码不被允许（当前实现用于部署侧配置的默认
+ *   重置密码及其 NFKC 等价值，任务 02.2「拒绝重置默认值」）。该默认值是管理员重置入口
+ *   的公开可猜凭据，本人改密若允许设成它，等于自行把账号恢复为默认口令；但细码与文案
+ *   必须是通用提示，不得让调用方确认命中了哪一条部署配置。该判断只在当前密码核验
+ *   成功后执行，错误当前密码的请求只会得到既有的「当前密码不正确」。
+ *   按客户端输入类拒绝并映射 `BAD_USER_INPUT`；响应、日志与取证不得回显配置值。
  *
  * `details` 一律留空：字段级提示走 `message`，账号主键与诊断分类只进 `DomainError.cause`
  * （全局过滤器不序列化 `cause`）。
@@ -400,6 +406,9 @@ export const MY_ACCOUNT_ERROR = {
   CREDENTIAL_CONFLICT: 'MY_ACCOUNT_CREDENTIAL_CONFLICT',
   CURRENT_PASSWORD_MISMATCH: 'MY_ACCOUNT_CURRENT_PASSWORD_MISMATCH',
   NEW_PASSWORD_UNCHANGED: 'MY_ACCOUNT_NEW_PASSWORD_UNCHANGED',
+  // 任务 02.2：新密码不被允许（默认重置密码及其 NFKC 等价值），通用细码与文案，
+  // 客户端输入类拒绝（对外 BAD_USER_INPUT）
+  NEW_PASSWORD_NOT_ALLOWED: 'MY_ACCOUNT_NEW_PASSWORD_NOT_ALLOWED',
   // 缺归属旧客户补录（任务 02.4）：本人已有可信公司归属，不得换绑/重复补录，对外 CONFLICT
   CUSTOMER_COMPANY_ALREADY_BOUND: 'MY_ACCOUNT_CUSTOMER_COMPANY_ALREADY_BOUND',
   // 补录（任务 02.4）：账号已有其它组织的有效成员关系而公司 FK 为空，属数据不变量冲突，

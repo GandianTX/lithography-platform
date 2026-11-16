@@ -12,6 +12,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
+import { ADMIN_ACCOUNT_RESET_OPTIONS } from '../../src/modules/account/admin-account-reset.contract';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
 import { AccountService } from '../../src/modules/account/base/services/account.service';
@@ -97,6 +98,11 @@ const ORG_NAME = 'E2E I1 强制改密规格组织';
 
 const APPLICATION_NOTE = 'E2E I1 强制改密规格申请';
 
+/** 部署默认重置密码（经 DI 覆盖注入，与管理员默认重置入口同一配置项） */
+const DEPLOY_DEFAULT_PASSWORD = 'E2eDeploy#Default2026';
+/** 与默认密码 NFKC 等价的整角写法：策略层先做 NFKC，故能到达默认密码守卫 */
+const FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD = 'Ｅ２ｅＤｅｐｌｏｙ＃Ｄｅｆａｕｌｔ２０２６';
+
 interface ForcedChangeAccountSpec {
   readonly loginName: string;
   readonly loginEmail: string;
@@ -159,7 +165,11 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [ApiModule],
-    }).compile();
+    })
+      // 显式注入部署默认重置密码：覆盖真实环境配置，使「拒绝默认值」用例可确定复现
+      .overrideProvider(ADMIN_ACCOUNT_RESET_OPTIONS)
+      .useValue({ defaultPassword: DEPLOY_DEFAULT_PASSWORD })
+      .compile();
     app = moduleFixture.createNestApplication();
     await app.init();
     dataSource = moduleFixture.get<DataSource>(DataSource);
@@ -465,6 +475,42 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     expect(await readSessionRestriction(freshToken)).toBe(params.expectedRestriction);
   };
 
+  /**
+   * 提交部署默认重置密码被拒的公共断言：`BAD_USER_INPUT` / 通用细码 `MY_ACCOUNT_NEW_PASSWORD_NOT_ALLOWED`、
+   * 通用文案、零写入（哈希与标记不变）、会话不退出、原密码仍可登录，且响应不回显配置值。
+   */
+  const expectDefaultPasswordRejected = async (newPassword: string): Promise<void> => {
+    const token = await expectLoginRestriction(
+      testAccountsConfig.admin.loginName,
+      testAccountsConfig.admin.loginPassword,
+      SessionRestriction.NONE,
+    );
+    const rowBefore = await readAccountRow(adminAccountId);
+    const hashBefore = rowBefore?.loginPassword;
+    expect(rowBefore?.mustChangePassword).toBe(false);
+
+    const body = await changePassword(token, testAccountsConfig.admin.loginPassword, newPassword);
+
+    expect(body.data?.changeMyPassword).toBeUndefined();
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+    expect(body.errors?.[0]?.extensions?.errorCode).toBe('MY_ACCOUNT_NEW_PASSWORD_NOT_ALLOWED');
+    expect(body.errors?.[0]?.message).toBe('新密码不被允许，请更换其他密码');
+    expect(JSON.stringify(body)).not.toContain(DEPLOY_DEFAULT_PASSWORD);
+    expect(JSON.stringify(body)).not.toContain(FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD);
+
+    const rowAfter = await readAccountRow(adminAccountId);
+    expect(rowAfter?.loginPassword).toBe(hashBefore);
+    expect(rowAfter?.mustChangePassword).toBe(false);
+
+    expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+    await expectLoginRestriction(
+      testAccountsConfig.admin.loginName,
+      testAccountsConfig.admin.loginPassword,
+      SessionRestriction.NONE,
+    );
+  };
+
   describe('正常客户', () => {
     it('同值改密被拒：哈希与标记不变、仍为 MUST_CHANGE_PASSWORD、代表业务仍受限', async () => {
       const token = await expectLoginRestriction(
@@ -655,6 +701,58 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
   });
 
   describe('普通账号（未被要求强制改密）', () => {
+    it('提交部署默认重置密码被拒：哈希与标记不变、会话不退出、原密码仍可登录', async () => {
+      await expectDefaultPasswordRejected(DEPLOY_DEFAULT_PASSWORD);
+    });
+
+    it('与部署默认密码 NFKC 等价的整角写法同样被拒，不能改写默认值守卫', async () => {
+      await expectDefaultPasswordRejected(FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD);
+    });
+
+    it('同一错误当前密码下，默认值 / NFKC 等价 / 其他合规值返回完全一致的当前密码错误', async () => {
+      // 独立复验双请求反例的固化：持有有效会话但没有当前密码时，响应不得暴露
+      // 「猜中了部署默认值」——三次提交的大类码、细码、文案必须完全一致。
+      const token = await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
+      const hashBefore = (await readAccountRow(adminAccountId))?.loginPassword;
+      const wrongCurrentPassword = 'Totally#Wrong2026';
+      const candidates = [
+        DEPLOY_DEFAULT_PASSWORD,
+        FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD,
+        'I1Admin#Another2026',
+      ];
+      const bodies: Array<Awaited<ReturnType<typeof changePassword>>> = [];
+
+      for (const candidate of candidates) {
+        bodies.push(await changePassword(token, wrongCurrentPassword, candidate));
+      }
+
+      for (const body of bodies) {
+        expect(body.data?.changeMyPassword).toBeUndefined();
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+        expect(body.errors?.[0]?.extensions?.errorCode).toBe(
+          'MY_ACCOUNT_CURRENT_PASSWORD_MISMATCH',
+        );
+        expect(body.errors?.[0]?.message).toBe('当前密码不正确');
+        expect(JSON.stringify(body)).not.toContain(DEPLOY_DEFAULT_PASSWORD);
+        expect(JSON.stringify(body)).not.toContain(FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD);
+      }
+
+      const rowAfter = await readAccountRow(adminAccountId);
+      expect(rowAfter?.loginPassword).toBe(hashBefore);
+      expect(rowAfter?.mustChangePassword).toBe(false);
+      expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+      await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
+    });
+
     it('提交与当前密码相同的新密码同样被拒，哈希与标记不变且会话不退出', async () => {
       const token = await expectLoginRestriction(
         testAccountsConfig.admin.loginName,

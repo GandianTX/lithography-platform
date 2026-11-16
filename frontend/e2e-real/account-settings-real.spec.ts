@@ -45,7 +45,13 @@ import {
   assertBrowserRequestsBoundToDedicatedOrigins,
   assertRealMyAccountSettingsSuccess,
 } from '../e2e/helpers/dedicated-real-link-assertions';
-import { BACKEND_GRAPHQL, readBackendEnv, realGraphqlCall } from '../e2e/helpers/real-backend';
+import {
+  BACKEND_GRAPHQL,
+  mysqlQuery,
+  readBackendEnv,
+  realGraphqlCall,
+  runGuardedFixtureWrite,
+} from '../e2e/helpers/real-backend';
 
 const SETTINGS_PATH = '/account/settings';
 
@@ -169,6 +175,104 @@ function cardByTitle(page: Page, title: string) {
 /** 切到「修改密码」标签：密码卡片只在该标签内可见，资料标签同时保留挂载 */
 async function openPasswordTab(page: Page): Promise<void> {
   await page.getByRole('tab', { name: '修改密码' }).click();
+}
+
+/** 创建专用账号时充当「一级管理员」的 seed 账号（admin_level 由本规格临时置 1 并恢复） */
+const FIXTURE_ADMIN_LOGIN_NAME = 'mock_super_admin';
+
+/** 读取夹具管理员原始 admin_level（NULL 以字符串 NULL 返回，便于原样恢复） */
+function readFixtureAdminLevel(): string {
+  return mysqlQuery(
+    `SELECT COALESCE(admin_level, 'NULL') FROM base_user_account WHERE login_name = '${FIXTURE_ADMIN_LOGIN_NAME}'`,
+  );
+}
+
+/** 只接受受控等级形态，避免把意外内容拼进 SQL；非法值在第一条写入前失败关闭 */
+function toAdminLevelSqlValue(level: string | 1 | 2 | null): 'NULL' | '1' | '2' {
+  const value = level === null ? 'NULL' : String(level);
+
+  if (value !== 'NULL' && value !== '1' && value !== '2') {
+    throw new Error(`admin_level 值异常，拒绝写入 / 恢复：${JSON.stringify(level)}`);
+  }
+
+  return value;
+}
+
+function writeFixtureAdminLevel(env: Record<string, string>, level: string | 1 | 2 | null): void {
+  runGuardedFixtureWrite(
+    env,
+    `UPDATE base_user_account SET admin_level = ${toAdminLevelSqlValue(level)} WHERE login_name = '${FIXTURE_ADMIN_LOGIN_NAME}'`,
+  );
+}
+
+/**
+ * 让夹具管理员满足 `adminCreateUser` 的一级管理员门槛（`admin_level = 1` 且唯一 ACTIVE
+ * 可信组织），返回该管理员的有效组织与恢复函数。
+ * GraphQL 发起方与 SQL 探针因此是同一账号 / 同一组织；恢复函数按原值写回并再次核对。
+ * 只临时改写专用隔离库的一行，调用方必须在清理阶段调用恢复函数。
+ *
+ * 顺序契约（安全关键）：先完成只读事实检查（原始等级 + 有效组织）并构造恢复动作，
+ * 再做第一条 UPDATE；原始值已为 1 时跳过写入。写入成功后任何异常都先尝试恢复，
+ * 并把原始异常（或同时含恢复异常的 AggregateError）抛给调用方，绝不留下等级 1。
+ *
+ * `hooks.afterFixtureWrite` 是故障回归的唯一注入点：在第一条 UPDATE 成功之后、
+ * 第一次回读之前执行，用于证明恢复动作不依赖后续步骤成功。
+ */
+function ensureLevelOneAdminFixture(
+  env: Record<string, string>,
+  hooks: { afterFixtureWrite?: () => void } = {},
+): {
+  organizationId: number;
+  restore: () => void;
+} {
+  const originalLevel = toAdminLevelSqlValue(readFixtureAdminLevel());
+  const organizationId = readActingOrganizationId(FIXTURE_ADMIN_LOGIN_NAME);
+
+  const restore = (): void => {
+    writeFixtureAdminLevel(env, originalLevel);
+
+    const restoredLevel = readFixtureAdminLevel();
+    if (restoredLevel !== originalLevel) {
+      throw new Error(
+        `夹具管理员 admin_level 恢复失败：期望 ${JSON.stringify(originalLevel)}，实际 ${JSON.stringify(restoredLevel)}`,
+      );
+    }
+  };
+
+  if (originalLevel === '1') {
+    return { organizationId, restore };
+  }
+
+  try {
+    writeFixtureAdminLevel(env, 1);
+    hooks.afterFixtureWrite?.();
+
+    const appliedLevel = readFixtureAdminLevel();
+    if (appliedLevel !== '1') {
+      throw new Error(`夹具管理员 admin_level 置 1 失败：${JSON.stringify(appliedLevel)}`);
+    }
+  } catch (primaryError) {
+    let restoreFailure: unknown = null;
+
+    try {
+      restore();
+    } catch (restoreError) {
+      restoreFailure = restoreError;
+    }
+
+    if (restoreFailure !== null) {
+      // 原始异常与恢复异常同时保留：errors 含两者，cause 指向主错误
+      throw new AggregateError(
+        [primaryError, restoreFailure],
+        '夹具管理员等级恢复失败：原始错误与恢复错误均已保留',
+        { cause: primaryError },
+      );
+    }
+
+    throw primaryError;
+  }
+
+  return { organizationId, restore };
 }
 
 test.describe('account settings real backend flow', () => {
@@ -491,6 +595,8 @@ test.describe('account settings real backend flow', () => {
       }));
       // 本轮创建资源台账：创建响应一到即登记，finally 只清这些记录
       const registry: RegisteredDedicatedAccount[] = [];
+      // 夹具管理员等级恢复动作：主流程开始时赋值，清理阶段无条件调用
+      let restoreFixtureLevel: (() => void) | null = null;
 
       // R4：浏览器流量绑定守卫——本用例所有页面请求必须落在专用前端（4174，同源代理）
       // 或专用后端（3100）；出现 127.0.0.1:3000 即判失败
@@ -502,8 +608,11 @@ test.describe('account settings real backend flow', () => {
       // 主流程错误与清理错误都保留：任一失败都让本用例非零（不再用 finally 之后的断言吞掉清理错误）
       await runWithCleanup(
         async () => {
-          // 创建前先取管理员当前有效组织：这是 adminCreateUser 绑定专用账号时的预期归属
-          const organizationId = readActingOrganizationId('mock_super_admin');
+          // 创建前把夹具管理员提升为一级管理员并取当前有效组织：这既是
+          // adminCreateUser 的资格门槛，也是专用账号归属与 SQL 探针的同一组织来源
+          const adminFixture = ensureLevelOneAdminFixture(env);
+          restoreFixtureLevel = adminFixture.restore;
+          const organizationId = adminFixture.organizationId;
 
           const created = await realGraphqlCall(
             env,
@@ -603,7 +712,54 @@ test.describe('account settings real backend flow', () => {
             }
           },
         },
+        {
+          label: '夹具管理员等级恢复',
+          run: () => {
+            // 独立成一步：专用账号清理即使失败，也不跳过夹具等级恢复
+            restoreFixtureLevel?.();
+          },
+        },
       );
     });
   }
+
+  /**
+   * P2 故障回归（真实 MySQL 观测）：合成管理员初始 `admin_level = NULL`。
+   * 在「写入 1 成功之后、第一次回读之前」注入异常，生产式夹具清理必须保留该原始异常，
+   * 并把同一管理员的等级恢复为 NULL。修复前这里会失败在「等级仍为 1」：异常返回了，
+   * 但恢复动作尚未登记，外层清理无从执行。
+   */
+  test('夹具准备中途失败：保留原始异常并把 admin_level 恢复为 NULL', async () => {
+    test.setTimeout(60_000);
+    const env = readBackendEnv();
+
+    // 只读预检：本次回归依赖合成管理员的初始等级为 NULL
+    expect(readFixtureAdminLevel()).toBe('NULL');
+
+    const injected = new Error('injected: 夹具写入 1 后、第一次回读前失败');
+    let thrown: unknown = null;
+
+    try {
+      ensureLevelOneAdminFixture(env, {
+        afterFixtureWrite: () => {
+          throw injected;
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // 探针只读取清理后的真实库状态，再断言
+    const cleanedLevel = readFixtureAdminLevel();
+
+    try {
+      expect(thrown).toBe(injected);
+      expect(cleanedLevel).toBe('NULL');
+    } finally {
+      // 探针自身的兜底恢复只用于安全退出：断言失败也不能把等级留在 1
+      if (readFixtureAdminLevel() !== 'NULL') {
+        writeFixtureAdminLevel(env, null);
+      }
+    }
+  });
 });

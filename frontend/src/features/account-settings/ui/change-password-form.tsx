@@ -56,6 +56,15 @@ export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: Change
   const [form] = Form.useForm<ChangePasswordFormValues>();
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  /**
+   * 真实提交失败后清空三个密码输入（含校验态），只保留可见的错误提示：
+   * 业务拒绝（当前密码错误 / 弱密码 / 等于默认密码等）与请求失败都不在界面上留存凭据，
+   * 也避免用户重试时把旧值误当作本次输入。提交中（in-flight）不清空。
+   */
+  const clearPasswordInputs = () => {
+    form.resetFields(['currentPassword', 'newPassword', 'confirmNewPassword']);
+  };
+
   const handleFinish = async (values: ChangePasswordFormValues) => {
     setSubmitError(null);
 
@@ -67,6 +76,7 @@ export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: Change
     if (execution.kind !== 'ok') {
       if (execution.kind === 'unhandled-error') {
         setSubmitError(execution.message);
+        clearPasswordInputs();
       }
 
       return;
@@ -76,6 +86,7 @@ export function ChangePasswordForm({ onSucceeded, onSubmit, submitting }: Change
 
     if (!result.ok) {
       setSubmitError(result.message);
+      clearPasswordInputs();
 
       return;
     }
