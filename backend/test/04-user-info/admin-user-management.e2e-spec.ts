@@ -512,12 +512,32 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
      *
      * 清理预检会在「客户资料 → 待删组织」存在引用边时要求台账登记可信归属预期，
      * 因此每次受控写入后必须立刻 `updateOwnedExpectation`，不得在清理阶段回读补齐。
+     *
+     * 条件必须按 `accountId` 列写：`base_user_info.id` 与 `account_id` 是两列，
+     * 其他规格合法推进资料表自增后两列会错位，按数字主键写入会改到别的资料行。
+     * 命中数必须恰好一条，回读实际归属（含 null）一致后才登记台账预期。
      */
     const assignCustomerOrganization = async (
       accountId: number,
       customerOrganizationId: number | null,
     ): Promise<void> => {
-      await userInfoRepository.update(accountId, { customerOrganizationId });
+      const result = await userInfoRepository.update({ accountId }, { customerOrganizationId });
+
+      if (result.affected !== 1) {
+        throw new Error(
+          `资料归属写入未恰好命中 1 行（账号 ${accountId}，实际 ${String(result.affected)}）`,
+        );
+      }
+
+      const row = await userInfoRepository.findOne({ where: { accountId } });
+
+      if (!row || row.customerOrganizationId !== customerOrganizationId) {
+        throw new Error(
+          `资料归属回读与写入不一致（账号 ${accountId}，期望 ${String(customerOrganizationId)}，` +
+            `实际 ${String(row?.customerOrganizationId ?? null)}）`,
+        );
+      }
+
       updateOwnedExpectation(ownership, 'account', accountId, { customerOrganizationId });
     };
 
