@@ -91,6 +91,29 @@ describe('assertAdminDocumentDatabaseGlobalAccess', () => {
     });
   });
 
+  it.each(['ENGINEER', 'CUSTOMER'])(
+    '一级但可信成员角色为 %s 时失败关闭，且不进入业务读取',
+    async (memberRole) => {
+      const { access, deps } = createDeps();
+      access.setMemberRole(memberRole);
+
+      const error = (await captureThrownError(
+        assertAdminDocumentDatabaseGlobalAccess({
+          session: createSuperAdminSession(),
+          ...deps,
+          actionLabel: '查看文档数据库统计',
+        }),
+      )) as DomainError;
+
+      expect(error).toBeInstanceOf(DomainError);
+      expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
+      expect(error.message).toContain('仅组织管理员可以查看文档数据库统计');
+      expect(deps.organizationContextService.resolveForAccount).toHaveBeenCalledWith({
+        accountId: createSuperAdminSession().accountId,
+      });
+    },
+  );
+
   it.each([2, null, 0, 3])('当前等级 %j 时失败关闭，且不读取成员事实', async (level) => {
     const { access, deps } = createDeps();
     access.setAdminLevel(level);

@@ -49,7 +49,9 @@ export interface AdminLevelReader {
 
 /** 可信组织上下文依赖（组织/成员事实只能来自服务端读取，不接受客户端参数）。 */
 export interface TrustedOrganizationReader {
-  resolveForAccount(params: { accountId: number }): Promise<{ organizationId: number }>;
+  resolveForAccount(params: {
+    accountId: number;
+  }): Promise<{ organizationId: number; memberRole: string }>;
 }
 
 /**
@@ -60,9 +62,14 @@ export interface TrustedOrganizationReader {
  * SUPER_ADMIN 可读全域文档数据库。缺等级、非法等级、二级管理员、成员停用/丢失、
  * 多关系歧义一律失败关闭（`FORBIDDEN`），不做降级或回退全库。
  *
- * 顺序约束（报告 F1）：等级与成员事实必须在任何受保护业务读取之前完成。
+ * 顺序约束（报告 F1/G1）：等级、成员事实与成员角色必须在任何受保护业务读取之前完成。
  * 等级取自 `base_user_account.admin_level` 的当前事实（不信任 JWT 静态等级/客户端参数），
  * 成员事实取自 `TrustedOrganizationContextQueryService`。
+ *
+ * 角色约束（G1）：可信组织解析只保证「单一有效成员」，不保证该成员是管理员；
+ * 全域文档数据库口径与 `ResolveSessionRestrictionUsecase` 的组织管理员集合一致，
+ * 要求这条成员关系的 `memberRole` 精确为 `SUPER_ADMIN`。同组织内的 ENGINEER /
+ * CUSTOMER 成员关系即使等级为一级也失败关闭（`FORBIDDEN`），不做降级或回退。
  *
  * @returns 已解析的可信组织事实（统计入口复用，避免同一请求重复读取）
  */
@@ -84,7 +91,17 @@ export async function assertAdminDocumentDatabaseGlobalAccess(params: {
     );
   }
 
-  return params.organizationContextService.resolveForAccount({
+  const organizationContext = await params.organizationContextService.resolveForAccount({
     accountId: params.session.accountId,
   });
+  // memberRole 在组织成员事实中以 string 承载（OrganizationMembershipFact）；
+  // 这里与 IdentityTypeEnum.SUPER_ADMIN 的字面值比较，避免把共享类型收窄成枚举。
+  if (organizationContext.memberRole !== 'SUPER_ADMIN') {
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      `仅组织管理员可以${params.actionLabel}`,
+    );
+  }
+
+  return { organizationId: organizationContext.organizationId };
 }

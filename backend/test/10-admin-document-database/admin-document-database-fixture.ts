@@ -46,6 +46,8 @@ import {
 } from '../utils/e2e-db-guard';
 import { createTestAccount, type TestAccountConfig } from '../utils/test-accounts';
 
+// 基础夹具：普通业务 E2E 与所有权规格共享的三个角色。所有权规格按「只清本轮资源」
+// 断言集合规模，因此这里保持最小角色集合，不夹带权限矩阵专用账号。
 export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
   admin: {
     loginName: 'testpr3coreadmin',
@@ -71,7 +73,12 @@ export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
     accessGroup: [IdentityTypeEnum.CUSTOMER],
     identityType: IdentityTypeEnum.CUSTOMER,
   },
-  // F1 全域授权反例：同为 SUPER_ADMIN 会话，但等级/成员事实不满足全域入口
+} satisfies Record<'admin' | 'engineer' | 'customer', TestAccountConfig>;
+
+// F1 全域授权反例：同为 SUPER_ADMIN 会话，但等级/成员事实不满足全域入口。
+// 只有需要权限矩阵的 E2E 显式调用 seedAdminDocumentFixtureAdminMatrixAccounts 扩展，
+// 普通业务 E2E 与所有权规格不会被这三个账号改变集合语义。
+export const ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS = {
   adminLevel2: {
     loginName: 'testpr3coreadminl2',
     loginEmail: 'pr3.core.admin.l2@example.com',
@@ -96,12 +103,18 @@ export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
     accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
     identityType: IdentityTypeEnum.SUPER_ADMIN,
   },
-} satisfies Record<
-  'admin' | 'engineer' | 'customer' | 'adminLevel2' | 'adminNoLevel' | 'adminNoOrg',
-  TestAccountConfig
->;
+} satisfies Record<'adminLevel2' | 'adminNoLevel' | 'adminNoOrg', TestAccountConfig>;
+
+// 残留核验/回收需要识别全部可能的夹具账号（矩阵账号同样带专属 loginName），
+// 但「本轮创建集合」仍由调用方选择的基础/矩阵 seeder 决定。
+const ALL_ADMIN_DOC_FIXTURE_ACCOUNTS = {
+  ...ADMIN_DOC_FIXTURE_ACCOUNTS,
+  ...ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS,
+};
 
 export type AdminDocFixtureAccountKey = keyof typeof ADMIN_DOC_FIXTURE_ACCOUNTS;
+export type AdminDocFixtureAdminMatrixAccountKey =
+  keyof typeof ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS;
 
 export const ADMIN_DOC_FIXTURE_MARKERS = {
   modelCode: 'E2E-ADM-DOCDB-CORE-MODEL',
@@ -235,7 +248,7 @@ const assertNoUnknownIds = (
 };
 
 const expectedAccountByLoginName = new Map(
-  Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map((config) => [config.loginName, config]),
+  Object.values(ALL_ADMIN_DOC_FIXTURE_ACCOUNTS).map((config) => [config.loginName, config]),
 );
 
 type InboundReferenceCheck = { readonly label: string; readonly count: () => Promise<number> };
@@ -913,25 +926,44 @@ export const cleanupAdminDocumentFixtureByIds = async (
   });
 };
 
-export const seedAdminDocumentFixtureAccounts = async (opts: {
-  dataSource: DataSource;
-  ownership: AdminDocFixtureOwnership;
-  createAccountUsecase?: CreateAccountUsecase | null;
-}): Promise<Record<AdminDocFixtureAccountKey, number>> => {
+const seedFixtureAccounts = async <Key extends string>(
+  opts: {
+    dataSource: DataSource;
+    ownership: AdminDocFixtureOwnership;
+    createAccountUsecase?: CreateAccountUsecase | null;
+  },
+  accounts: Record<Key, TestAccountConfig>,
+): Promise<Record<Key, number>> => {
   await assertFixtureTarget(opts.dataSource, 'seedAdminDocumentFixtureAccounts');
-  const result = {} as Record<AdminDocFixtureAccountKey, number>;
-  const keys = Object.keys(ADMIN_DOC_FIXTURE_ACCOUNTS) as AdminDocFixtureAccountKey[];
+  const result = {} as Record<Key, number>;
+  const keys = Object.keys(accounts) as Key[];
   for (const key of keys) {
     const created = await createTestAccount(
       opts.dataSource,
       opts.createAccountUsecase ?? null,
-      ADMIN_DOC_FIXTURE_ACCOUNTS[key],
+      accounts[key],
     );
     recordId(opts.ownership.accountIds, created.accountId);
     result[key] = created.accountId;
   }
   return result;
 };
+
+/** 基础三角色夹具（普通业务 E2E 与所有权规格的默认集合）。 */
+export const seedAdminDocumentFixtureAccounts = async (opts: {
+  dataSource: DataSource;
+  ownership: AdminDocFixtureOwnership;
+  createAccountUsecase?: CreateAccountUsecase | null;
+}): Promise<Record<AdminDocFixtureAccountKey, number>> =>
+  seedFixtureAccounts(opts, ADMIN_DOC_FIXTURE_ACCOUNTS);
+
+/** 权限矩阵扩展（二级 / 缺级 / 缺成员），仅由需要这些反例的 E2E 显式调用。 */
+export const seedAdminDocumentFixtureAdminMatrixAccounts = async (opts: {
+  dataSource: DataSource;
+  ownership: AdminDocFixtureOwnership;
+  createAccountUsecase?: CreateAccountUsecase | null;
+}): Promise<Record<AdminDocFixtureAdminMatrixAccountKey, number>> =>
+  seedFixtureAccounts(opts, ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS);
 
 /** 创建普通 spec 完整业务图；测试可注入阶段失败以验证 beforeAll 部分成功清理。 */
 export const seedAdminDocumentFixtureBusiness = async (opts: {

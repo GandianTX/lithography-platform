@@ -8,7 +8,8 @@
  * 是否展示结果由服务端 `mySessionIdentity` + `myEngineerRegistration` 决定，
  * 标记缺失只会让结果多展示一次，标记存在也从不会放行任何访问。
  *
- * 存储不可用（隐私模式 / 配额 / 损坏 JSON）时一律静默：读取视为未确认，写入忽略。
+ * 存储不可用（隐私模式 / 配额 / 损坏 JSON / 属性访问被浏览器策略拒绝）时一律静默：
+ * 读取视为未确认，写入忽略。
  */
 
 const STORAGE_KEY = 'lithography.engineer-approval-acknowledged.v1';
@@ -18,7 +19,17 @@ const ACKNOWLEDGEMENT_KEY_PATTERN = /^[1-9]\d*:[1-9]\d*$/;
 type AcknowledgedApprovalMap = Record<string, true>;
 
 function isStorageAvailable(): boolean {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  // 浏览器策略可能在**读取 `window.localStorage` 属性本身**时抛 SecurityError
+  // （禁用站点数据 / 沙箱 iframe），可用性探测必须与后续读写同在容错边界内。
+  try {
+    return typeof window.localStorage !== 'undefined';
+  } catch {
+    return false;
+  }
 }
 
 function toAcknowledgementKey(accountId: number, applicationId: number): string | null {

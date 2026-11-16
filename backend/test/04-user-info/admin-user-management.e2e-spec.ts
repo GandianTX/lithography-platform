@@ -2099,6 +2099,32 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.MUST_CHANGE_PASSWORD);
       expect(typeof loginBody.data?.login?.accessToken).toBe('string');
     });
+
+    it('缺级操作者（同组织同级会话）被拒：FORBIDDEN 且密码哈希与强改标记零变化', async () => {
+      const before = await readAccountRow(guestSecondaryAccountId);
+      expect(before).toBeTruthy();
+
+      try {
+        await dataSource.query('UPDATE base_user_account SET admin_level = NULL WHERE id = ?', [
+          adminAccountId,
+        ]);
+        const body = await resetUserPassword(adminToken, {
+          accountId: guestSecondaryAccountId,
+          newPassword: 'N0Level#Reset2026',
+        });
+        expect(body.data?.adminResetUserPassword ?? null).toBeNull();
+        expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+        expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+      } finally {
+        await dataSource.query('UPDATE base_user_account SET admin_level = 1 WHERE id = ?', [
+          adminAccountId,
+        ]);
+      }
+
+      // 等级裁决先于目标锁：目标行逐字段不变（含密码哈希与强改标记）
+      expect(await readAccountRow(guestSecondaryAccountId)).toEqual(before);
+    });
+
   });
 
   // ---------------------------------------------------------------------------

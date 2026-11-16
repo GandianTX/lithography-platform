@@ -22,12 +22,14 @@ import {
 } from '../utils/test-organizations';
 import {
   ADMIN_DOC_FIXTURE_ACCOUNTS,
+  ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS,
   ADMIN_DOC_FIXTURE_MARKERS,
   cleanupAdminDocumentFixtureByIds,
   cleanupAdminDocumentFixtureResidue,
   createAdminDocFixtureOwnership,
   runAdminDocFixtureTeardown,
   seedAdminDocumentFixtureAccounts,
+  seedAdminDocumentFixtureAdminMatrixAccounts,
   seedAdminDocumentFixtureBusiness,
   type AdminDocFixtureIds,
 } from './admin-document-database-fixture';
@@ -64,6 +66,11 @@ describe('AdminDocumentDatabase (e2e)', () => {
 
   const REQUEST_NO_A = ADMIN_DOC_FIXTURE_MARKERS.requestA;
   const TOTAL_MESSAGES = 200; // 100 轮 × 每轮 USER + ASSISTANT
+  // 本规格显式扩展了权限矩阵账号：组织链清理时的身份归属核验需覆盖基础 + 矩阵全集
+  const retainedFixtureAccountFingerprints = [
+    ...Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS),
+    ...Object.values(ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS),
+  ].map(toResidueAccountFingerprint);
 
   beforeAll(async () => {
     initGraphQLSchema();
@@ -101,7 +108,7 @@ describe('AdminDocumentDatabase (e2e)', () => {
         ],
       },
       // fixture 账号由相邻的 cleanupAdminDocumentFixture* 事务管理：这里只用于成员归属核验
-      retainedAccounts: Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map(toResidueAccountFingerprint),
+      retainedAccounts: retainedFixtureAccountFingerprints,
       helper: 'admin-document-database.e2e-spec beforeAll 预清理',
     });
 
@@ -109,6 +116,12 @@ describe('AdminDocumentDatabase (e2e)', () => {
     await cleanupAdminDocumentFixtureResidue(dataSource);
 
     const accountIds = await seedAdminDocumentFixtureAccounts({
+      dataSource,
+      ownership,
+      createAccountUsecase: app.get(CreateAccountUsecase),
+    });
+    // 权限矩阵显式扩展：仅本规格需要二级 / 缺级 / 缺成员三个反例身份
+    const matrixAccountIds = await seedAdminDocumentFixtureAdminMatrixAccounts({
       dataSource,
       ownership,
       createAccountUsecase: app.get(CreateAccountUsecase),
@@ -132,7 +145,7 @@ describe('AdminDocumentDatabase (e2e)', () => {
       accountIds.admin,
     ]);
     await dataSource.query('UPDATE base_user_account SET admin_level = 2 WHERE id = ?', [
-      accountIds.adminLevel2,
+      matrixAccountIds.adminLevel2,
     ]);
 
     // 聚合统计用例（adminDocumentDatabaseStats）经可信组织上下文解析：
@@ -160,12 +173,12 @@ describe('AdminDocumentDatabase (e2e)', () => {
           memberRole: 'SUPER_ADMIN',
         },
         {
-          accountLoginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminLevel2.loginName,
+          accountLoginName: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminLevel2.loginName,
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'SUPER_ADMIN',
         },
         {
-          accountLoginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoLevel.loginName,
+          accountLoginName: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminNoLevel.loginName,
           organizationCode: suiteOrganizationCodes.primary,
           memberRole: 'SUPER_ADMIN',
         },
@@ -180,18 +193,18 @@ describe('AdminDocumentDatabase (e2e)', () => {
     });
     level2AdminToken = await login({
       app,
-      loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminLevel2.loginName,
-      loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.adminLevel2.loginPassword,
+      loginName: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminLevel2.loginName,
+      loginPassword: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminLevel2.loginPassword,
     });
     noLevelAdminToken = await login({
       app,
-      loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoLevel.loginName,
-      loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoLevel.loginPassword,
+      loginName: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminNoLevel.loginName,
+      loginPassword: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminNoLevel.loginPassword,
     });
     noOrgAdminToken = await login({
       app,
-      loginName: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoOrg.loginName,
-      loginPassword: ADMIN_DOC_FIXTURE_ACCOUNTS.adminNoOrg.loginPassword,
+      loginName: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminNoOrg.loginName,
+      loginPassword: ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS.adminNoOrg.loginPassword,
     });
     engineerToken = await login({
       app,
@@ -218,9 +231,7 @@ describe('AdminDocumentDatabase (e2e)', () => {
         await runGuardedSpecCleanup({
           dataSource: ds,
           owned: suiteOwnership,
-          retainedAccounts: Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map(
-            toResidueAccountFingerprint,
-          ),
+          retainedAccounts: retainedFixtureAccountFingerprints,
           helper: 'admin-document-database.e2e-spec afterAll 组织链清理',
         });
         await cleanupAdminDocumentFixtureByIds(ds, ownership);
@@ -607,6 +618,47 @@ describe('AdminDocumentDatabase (e2e)', () => {
 
       // 恢复后同一 Token 重新可读：失败来自当前事实，而非会话静态缓存
       for (const entry of sampled) {
+        const response = await executeGql(entry.query, adminToken, entry.variables()).expect(200);
+        expect(response.body.errors).toBeUndefined();
+      }
+    });
+
+    it('一级会话保留组织、仅成员角色改为 ENGINEER/CUSTOMER：七个入口均 FORBIDDEN 且零数据', async () => {
+      for (const memberRole of ['ENGINEER', 'CUSTOMER'] as const) {
+        try {
+          await dataSource.query(
+            `UPDATE organization_membership
+                SET member_role = ?
+              WHERE organization_id = ? AND account_id = ?`,
+            [memberRole, suiteOrganizationId, fixtureIds.adminAccountId],
+          );
+
+          for (const entry of entries) {
+            const response = await executeGql(entry.query, adminToken, entry.variables()).expect(
+              200,
+            );
+            const body = response.body as GqlBody;
+
+            expect({
+              role: memberRole,
+              label: entry.label,
+              code: body.errors?.[0]?.extensions?.code,
+            }).toEqual({ role: memberRole, label: entry.label, code: 'FORBIDDEN' });
+            // 负向零数据：角色不符时不得返回统计、列表或正文
+            expect(body.data ?? null).toBeNull();
+          }
+        } finally {
+          await dataSource.query(
+            `UPDATE organization_membership
+                SET member_role = 'SUPER_ADMIN'
+              WHERE organization_id = ? AND account_id = ?`,
+            [suiteOrganizationId, fixtureIds.adminAccountId],
+          );
+        }
+      }
+
+      // 恢复角色后同一 Token 重新可读：失败来自当前成员事实，而非会话静态缓存
+      for (const entry of entries) {
         const response = await executeGql(entry.query, adminToken, entry.variables()).expect(200);
         expect(response.body.errors).toBeUndefined();
       }
