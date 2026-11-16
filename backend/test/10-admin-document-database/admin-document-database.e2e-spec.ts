@@ -10,8 +10,8 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 import { login, postGql } from '../utils/e2e-graphql-utils';
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
 import {
+  clearOwnedResourceLedger,
   createOwnedResourceLedger,
-  runGuardedSpecCleanup,
   toResidueAccountFingerprint,
 } from '../utils/e2e-scoped-cleanup';
 import {
@@ -24,9 +24,11 @@ import {
   ADMIN_DOC_FIXTURE_ACCOUNTS,
   ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS,
   ADMIN_DOC_FIXTURE_MARKERS,
-  cleanupAdminDocumentFixtureByIds,
-  cleanupAdminDocumentFixtureResidue,
+  clearAdminDocFixtureOwnership,
   createAdminDocFixtureOwnership,
+  prepareAdminDocumentFixtureByIdsCleanup,
+  prepareAdminDocumentFixtureResidueCleanup,
+  runAdminDocCombinedCleanup,
   runAdminDocFixtureTeardown,
   seedAdminDocumentFixtureAccounts,
   seedAdminDocumentFixtureAdminMatrixAccounts,
@@ -93,27 +95,29 @@ describe('AdminDocumentDatabase (e2e)', () => {
     // afterAll 只关闭 app，不会在未授权目标上 DELETE。
     fixtureTargetValidated = true;
 
-    // A-PR0 组织适配：先按组织编码清理残留成员/组织（fk_organization_membership_account
-    // RESTRICT 会阻塞 fixture 账号回收）；删除经双门禁（许可+库名，互相独立），
-    // 再清 fixture 残留
-    await runGuardedSpecCleanup({
+    // A-PR0 组织适配 + 上轮残留：组织链与夹具共用同一事务管理器，
+    // 两段预检（字段、父子关系、集合外引用）全部通过后才执行首条 DELETE。
+    // 删除经双门禁（许可+库名，互相独立），任一后序失败整批回滚。
+    await runAdminDocCombinedCleanup({
       dataSource,
-      residue: {
-        organizations: [
-          {
-            organizationCode: suiteOrganizationCodes.primary,
-            name: 'E2E 甲方组织（文档库统计）',
-            kind: 'CLIENT',
-          },
-        ],
+      helper: 'admin-document-database.e2e-spec beforeAll 组合预清理',
+      organization: {
+        residue: {
+          organizations: [
+            {
+              organizationCode: suiteOrganizationCodes.primary,
+              name: 'E2E 甲方组织（文档库统计）',
+              kind: 'CLIENT',
+            },
+          ],
+        },
+        // fixture 账号由夹具侧 prepared 管理：这里只用于成员归属核验
+        retainedAccounts: retainedFixtureAccountFingerprints,
       },
-      // fixture 账号由相邻的 cleanupAdminDocumentFixture* 事务管理：这里只用于成员归属核验
-      retainedAccounts: retainedFixtureAccountFingerprints,
-      helper: 'admin-document-database.e2e-spec beforeAll 预清理',
+      // 上轮残留只能按专属标记定位，逐字段/引用核验通过后才在事务中精确回收。
+      prepareFixture: (manager, _database, context) =>
+        prepareAdminDocumentFixtureResidueCleanup(manager, context),
     });
-
-    // 上轮残留只能按专属标记定位，逐字段/引用核验通过后才在事务中精确回收。
-    await cleanupAdminDocumentFixtureResidue(dataSource);
 
     const accountIds = await seedAdminDocumentFixtureAccounts({
       dataSource,
@@ -226,15 +230,22 @@ describe('AdminDocumentDatabase (e2e)', () => {
       dataSource,
       targetValidated: fixtureTargetValidated,
       cleanup: async (ds) => {
-        // 先清组织成员/组织（否则成员关系阻塞 fixture 账号回收，组织链清理经双门禁），
-        // 再按归属精确清 fixture
-        await runGuardedSpecCleanup({
+        // 组织成员/组织（否则成员关系阻塞 fixture 账号回收）与夹具同一事务：
+        // 整批预检通过才删，提交成功才清空本轮台账。
+        await runAdminDocCombinedCleanup({
           dataSource: ds,
-          owned: suiteOwnership,
-          retainedAccounts: retainedFixtureAccountFingerprints,
-          helper: 'admin-document-database.e2e-spec afterAll 组织链清理',
+          helper: 'admin-document-database.e2e-spec afterAll 组合清理',
+          organization: {
+            owned: suiteOwnership,
+            retainedAccounts: retainedFixtureAccountFingerprints,
+          },
+          prepareFixture: (manager, _database, context) =>
+            prepareAdminDocumentFixtureByIdsCleanup(manager, ownership, context),
+          onCommitted: () => {
+            clearOwnedResourceLedger(suiteOwnership);
+            clearAdminDocFixtureOwnership(ownership);
+          },
         });
-        await cleanupAdminDocumentFixtureByIds(ds, ownership);
       },
     });
   });

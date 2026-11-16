@@ -122,12 +122,14 @@ export const assertLockObservationCapability = async (
     throw new Error('当前账号缺少 PROCESS 观测能力，拒绝创建夹具（零造数）');
   }
 
-  try {
-    await query('SELECT 1 FROM performance_schema.data_lock_waits LIMIT 1');
-  } catch (error) {
-    throw new Error('当前账号无法读取 performance_schema.data_lock_waits，拒绝创建夹具（零造数）', {
-      cause: error,
-    });
+  for (const table of ['data_lock_waits', 'data_locks'] as const) {
+    try {
+      await query(`SELECT 1 FROM performance_schema.${table} LIMIT 1`);
+    } catch (error) {
+      throw new Error(`当前账号无法读取 performance_schema.${table}，拒绝创建夹具（零造数）`, {
+        cause: error,
+      });
+    }
   }
 };
 

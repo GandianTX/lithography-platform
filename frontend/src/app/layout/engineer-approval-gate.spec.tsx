@@ -207,7 +207,13 @@ describe('EngineerApprovalGate', () => {
       expect.objectContaining({ accountId: 1, role: 'ENGINEER' }),
       '/engineer',
     );
-    expect(screen.getByText('工作台内容')).toBeInTheDocument();
+
+    // 导航断言完成时子内容可能尚未提交：独立等待工作台探针的 Effect 落地，
+    // 再断言业务请求恰好一次（避免把「还未执行」误判成「未重复」）。
+    await waitFor(() => {
+      expect(screen.getByText('工作台内容')).toBeInTheDocument();
+      expect(workbenchRequestMock).toHaveBeenCalledTimes(1);
+    });
     expect(workbenchRequestMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('申请已通过，权限已开通')).toBeNull();
   });

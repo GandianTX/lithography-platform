@@ -22,6 +22,8 @@
   --color-ai-accent: #cc6b46;
   --color-ai-accent-hover: #b35a37;
   --z-index-main-base: 0;
+  /* 窄屏展开导航的覆盖层：高于工作区内容、低于 AI 侧栏抽屉 */
+  --z-index-nav-overlay: 1000;
   --z-index-sidecar-container: 1100;
   --shell-header-height: 64px;
   --error-block-min-height: 60vh;
@@ -2192,6 +2194,26 @@ body {
 
 /* 窄屏：双栏改纵向堆叠，欢迎文案在登录卡上方；不缩字号、不横向溢出 */
 @media (max-width: 768px) {
+  /* 窄屏展开导航改为覆盖式：侧栏脱离文档流，工作区保持完整视口宽度。
+     否则 210px 侧栏会把 390px 视口压到 180px，英文强改操作组（Change password /
+     Reset）被推出右界、需要横向滚动。折叠态不受影响，桌面（>768px）保持原有挤压布局。 */
+  .app-sidebar:not(.app-sidebar--collapsed) {
+    bottom: 0;
+    box-shadow: var(--nav-shadow);
+    left: 0;
+    position: fixed;
+    top: 0;
+    z-index: var(--z-index-nav-overlay);
+  }
+
+  /* 英文品牌名比中文长（nowrap），窄屏只靠品牌行单行排布会把语言组推出右界；
+     允许换行，语言组换到第二行并保持右对齐 */
+  .login-brand {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 16px 20px;
+  }
+
   .login-workspace {
     align-items: flex-start;
     padding: 16px 20px 40px;

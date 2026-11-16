@@ -1070,33 +1070,147 @@ describe('useAccountSettings 公司补录命令', () => {
     expect(result.current.state).toEqual({ settings: RELOADED_SETTINGS, status: 'ready' });
   });
 
-  it('资料更新进行中不阻塞公司补录（两类命令各持独立 in-flight 键）', async () => {
+  it('资料更新与公司补录互斥：交叠期补录不发出请求，资料结束后可正常重试', async () => {
     const profileGate = deferred<AccountSettingsProfileUpdateResult>();
     updateProfileMock.mockReturnValue(profileGate.promise);
     supplementMock.mockResolvedValue({
       isUpdated: true,
       ok: true,
       sameNamedCompanyName: null,
-      settings: SETTINGS,
+      settings: { ...SETTINGS, trustedCompanyName: '受管公司甲' },
     });
     const { result } = renderHook(() => useAccountSettings());
     await waitFor(() => expect(result.current.state.status).toBe('ready'));
 
     let profileExecution: Promise<ProfileExecution> = Promise.resolve({ kind: 'in-flight' });
-    let supplementExecution: SupplementExecution = { kind: 'in-flight' };
+    let blocked: SupplementExecution = { kind: 'in-flight' };
 
     await act(async () => {
       profileExecution = result.current.updateProfile(DRAFT);
-      supplementExecution = await result.current.supplementCompany(EXISTING_DRAFT);
+      blocked = await result.current.supplementCompany(EXISTING_DRAFT);
     });
 
-    expect(supplementExecution).toMatchObject({ kind: 'ok' });
+    expect(blocked).toEqual({ kind: 'in-flight' });
+    expect(supplementMock).not.toHaveBeenCalled();
     expect(result.current.isPending('update-profile')).toBe(true);
-    expect(result.current.isPending('supplement-company')).toBe(false);
 
     await act(async () => {
       profileGate.resolve({ isUpdated: true, ok: true, settings: SETTINGS });
       await profileExecution;
     });
+
+    let retried: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      retried = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(retried).toMatchObject({ kind: 'ok' });
+    expect(supplementMock).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toEqual({
+      settings: { ...SETTINGS, trustedCompanyName: '受管公司甲' },
+      status: 'ready',
+    });
+  });
+});
+
+describe('useAccountSettings 资料/补录双写互斥（补录回显不被后发资料丢弃）', () => {
+  it('补录先发、资料后发且失败：交叠期资料请求不发出，补录权威视图保留且失败结果照常透传', async () => {
+    const supplementGate = deferred<CustomerCompanySupplementResult>();
+    supplementMock.mockReturnValue(supplementGate.promise);
+    const failure = {
+      message: '登录名或登录邮箱已被占用，请更换后重试。',
+      ok: false as const,
+      reason: 'duplicate-credential' as const,
+    };
+    updateProfileMock.mockResolvedValue(failure);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let supplementExecution: Promise<SupplementExecution> = Promise.resolve({
+      kind: 'in-flight',
+    });
+    let blockedProfile: ProfileExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      // 补录先发；随后的资料保存必须因互斥被拒，不得发出请求
+      supplementExecution = result.current.supplementCompany(EXISTING_DRAFT);
+      blockedProfile = await result.current.updateProfile(DRAFT);
+    });
+
+    expect(blockedProfile).toEqual({ kind: 'in-flight' });
+    expect(updateProfileMock).not.toHaveBeenCalled();
+
+    const bound: AccountSettingsView = { ...SETTINGS, trustedCompanyName: '受管公司甲' };
+
+    await act(async () => {
+      supplementGate.resolve({
+        isUpdated: true,
+        ok: true,
+        sameNamedCompanyName: null,
+        settings: bound,
+      });
+      expect(await supplementExecution).toMatchObject({ kind: 'ok' });
+    });
+
+    // 补录成功后：可信公司已回显（补录入口随之关闭）
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
+
+    let profileFailure: ProfileExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      profileFailure = await result.current.updateProfile(DRAFT);
+    });
+
+    // 后发的资料保存失败只返回可理解反馈，不覆盖补录已回显的权威视图
+    expect(profileFailure).toEqual({ kind: 'ok', result: failure });
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
+    expect(updateProfileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('响应反序不可发生：资料在途时补录被拒，资料失败后补录重试成功即成为权威视图', async () => {
+    const profileGate = deferred<AccountSettingsProfileUpdateResult>();
+    updateProfileMock.mockReturnValue(profileGate.promise);
+    const bound: AccountSettingsView = { ...SETTINGS, trustedCompanyName: '受管公司甲' };
+    supplementMock.mockResolvedValue({
+      isUpdated: true,
+      ok: true,
+      sameNamedCompanyName: null,
+      settings: bound,
+    });
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let profileExecution: Promise<ProfileExecution> = Promise.resolve({ kind: 'in-flight' });
+    let blocked: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      profileExecution = result.current.updateProfile(DRAFT);
+      blocked = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(blocked).toEqual({ kind: 'in-flight' });
+    expect(supplementMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      // 资料保存失败（业务拒绝）：视图保持加载时的旧事实
+      profileGate.resolve({
+        message: '登录名或登录邮箱已被占用，请更换后重试。',
+        ok: false,
+        reason: 'duplicate-credential',
+      });
+      await profileExecution;
+    });
+    expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' });
+
+    let retried: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      retried = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    // 顺序由互斥保证：补录在资料收尾后发起，其后到的权威视图不会被旧序号丢弃
+    expect(retried).toMatchObject({ kind: 'ok' });
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
   });
 });

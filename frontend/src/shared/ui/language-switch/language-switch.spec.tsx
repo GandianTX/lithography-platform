@@ -75,6 +75,19 @@ describe('LanguageSwitch（inline）', () => {
     expect(screen.getByRole('button', { name: CHINESE_BUTTON })).toHaveAttribute('lang', 'zh-CN');
     expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('lang', 'en');
   });
+
+  it('切换后焦点回到被激活的同一个按钮（键盘可继续操作）', () => {
+    renderSwitch();
+
+    const englishButton = screen.getByRole('button', { name: 'English' });
+    englishButton.focus();
+    fireEvent.click(englishButton);
+
+    // text / primary 之间换样式会让按钮节点被重建；更新完成后焦点必须回到新节点
+    const switchedButton = screen.getByRole('button', { name: 'English' });
+    expect(switchedButton).toHaveAttribute('aria-pressed', 'true');
+    expect(document.activeElement).toBe(switchedButton);
+  });
 });
 
 describe('LanguageSwitch（icon）', () => {
@@ -92,5 +105,16 @@ describe('LanguageSwitch（icon）', () => {
     renderSwitch('icon');
 
     expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
+  it('切换后焦点回到图标按钮（窄屏折叠侧栏的键盘入口）', () => {
+    renderSwitch('icon');
+
+    const iconButton = screen.getByRole('button', { name: '切换到英文' });
+    iconButton.focus();
+    fireEvent.click(iconButton);
+
+    expect(document.activeElement).toBe(iconButton);
+    expect(iconButton).toHaveAccessibleName('Switch to Chinese');
   });
 });

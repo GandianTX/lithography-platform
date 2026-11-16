@@ -5,8 +5,10 @@
  *
  * - 读取：挂载即加载；transport / auth 失败收敛为 failed 状态与兜底文案，
  *   UNAUTHENTICATED 的会话失效处理仍由共享 ingress 链路负责；
- * - 写命令（资料更新 / 修改密码 / 公司补录）：各持独立的 in-flight 键，同类命令进行中
- *   拒绝重复提交；命令的显式业务结果（成功 / 业务拒绝）由 adapter 归一后透传；
+ * - 写命令（资料更新 / 修改密码 / 公司补录）：各持独立的 in-flight 键；改密只与同类互斥。
+ *   资料更新与公司补录同属「个人资料」标签内的写动作，共用一把互斥锁：任一在途时
+ *   另一条直接返回 in-flight 且不发起请求——二者的权威视图互不覆盖，也就不存在
+ *   「补录成功后又被后发资料的失败/旧视图丢弃」的时序问题；
  * - 陈旧响应防护：与 use-admin-user-list 的 requestSeq 同一口径——**设置视图序号**
  *   只在初始加载 / reload / 资料保存 / 公司补录这几类会改写设置视图的动作发起时推进，
  *   结果回来时序号已推进即整体丢弃。改密不触碰视图序号（不产生设置视图事实，
@@ -184,7 +186,12 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
     async (
       draft: AccountSettingsProfileDraft,
     ): Promise<AccountSettingsCommandExecution<AccountSettingsProfileUpdateResult>> => {
-      if (pendingKeysRef.current.has('update-profile')) {
+      // 与公司补录共用同一把互斥锁：二者都改写设置视图，交叠会让先完成的权威视图
+      // 被后发动作的序号推进丢弃（补录成功回显消失）。交叠期的第二条命令不发出请求。
+      if (
+        pendingKeysRef.current.has('update-profile') ||
+        pendingKeysRef.current.has('supplement-company')
+      ) {
         return { kind: 'in-flight' };
       }
 
@@ -226,7 +233,11 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
     async (
       draft: CustomerCompanySupplementDraft,
     ): Promise<AccountSettingsCommandExecution<CustomerCompanySupplementResult>> => {
-      if (pendingKeysRef.current.has('supplement-company')) {
+      // 与资料更新共用同一把互斥锁（见 updateProfile）：交叠期的第二条命令不发出请求
+      if (
+        pendingKeysRef.current.has('supplement-company') ||
+        pendingKeysRef.current.has('update-profile')
+      ) {
         return { kind: 'in-flight' };
       }
 

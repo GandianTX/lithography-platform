@@ -77,6 +77,19 @@ import {
  *   `must_change_password`，默认密码重置用例会在同一用例内把目标改回非强制改密状态。
  */
 
+/**
+ * 并发锁观测专项入口（默认关闭）。
+ *
+ * 这条用例需要 `PROCESS` 权限以及 `performance_schema.data_lock_waits` / `data_locks`
+ * 读取能力。默认 E2E 测试账号是低权限账号，直接注册会让整个管理员规格因观测能力不足失败。
+ * 因此默认跳过并在规格输出中明确提示「专项未启用」；只有显式设置
+ * `E2E_ADMIN_USER_LOCK_OBSERVATION=1`（或使用
+ * `npm --prefix backend run test:e2e:admin-user-lock`）才注册该用例。
+ */
+const ADMIN_USER_LOCK_OBSERVATION_ENV = 'E2E_ADMIN_USER_LOCK_OBSERVATION';
+const adminUserLockObservationEnabled = process.env[ADMIN_USER_LOCK_OBSERVATION_ENV] === '1';
+const itLockObservation = adminUserLockObservationEnabled ? it : it.skip;
+
 type GqlError = {
   message: string;
   extensions?: { code?: string; errorCode?: string; details?: unknown };
@@ -322,6 +335,12 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
+    if (!adminUserLockObservationEnabled) {
+      console.log(
+        `[admin-user-management] 并发锁观测专项未启用（${ADMIN_USER_LOCK_OBSERVATION_ENV}!=1）：` +
+          '已跳过“并发转待审先提交”用例（该用例需要 PROCESS 与两张 performance_schema 锁表）',
+      );
+    }
     // E2E 基线默认关闭 introspection；本 spec 只在 API 初始化期间临时开启，用于核验公开契约面，
     // 不修改任何 .env / Entity / Migration / schema 产物。
     previousIntrospectionEnabled = process.env.GRAPHQL_INTROSPECTION_ENABLED;
@@ -2133,72 +2152,80 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(typeof loginBody.data?.login?.accessToken).toBe('string');
     });
 
-    it('并发转待审先提交：重置观察到目标行锁后按 PENDING 拒绝，哈希与强改标记不变', async () => {
-      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
-      // 观测能力不足时在任何夹具写入之前失败关闭（零造数）
-      await assertLockObservationCapability((sql: string) => dataSource.query(sql));
-      const before = await readAccountRow(guestSecondaryAccountId);
-      expect(before?.status).toBe(AccountStatus.ACTIVE);
+    itLockObservation(
+      '并发转待审先提交：重置观察到目标行锁后按 PENDING 拒绝，哈希与强改标记不变',
+      async () => {
+        // 专项入口：先验证 PROCESS 与两张 performance_schema 锁表读取能力，
+        // 能力不足时在本用例状态准备（ensureStatus）之前失败关闭（零造数）。
+        await assertLockObservationCapability((sql: string) => dataSource.query(sql));
+        await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
+        const before = await readAccountRow(guestSecondaryAccountId);
+        expect(before?.status).toBe(AccountStatus.ACTIVE);
 
-      const blocker = dataSource.createQueryRunner();
-      let request: Promise<GqlBody<{ adminResetUserPassword?: ResetPasswordPayload }>> | null =
-        null;
-      await blocker.connect();
-      await blocker.startTransaction();
-      try {
-        // 连接 A：双字段转 PENDING，持有目标账号行锁，暂不提交
-        await blocker.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
-          AccountStatus.PENDING,
-          guestSecondaryAccountId,
-        ]);
-        await blocker.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
-          UserState.PENDING,
-          guestSecondaryAccountId,
-        ]);
+        const blocker = dataSource.createQueryRunner();
+        let request: Promise<GqlBody<{ adminResetUserPassword?: ResetPasswordPayload }>> | null =
+          null;
+        await blocker.connect();
+        await blocker.startTransaction();
+        try {
+          // 连接 A：双字段转 PENDING，持有目标账号行锁，暂不提交
+          await blocker.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
+            AccountStatus.PENDING,
+            guestSecondaryAccountId,
+          ]);
+          await blocker.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
+            UserState.PENDING,
+            guestSecondaryAccountId,
+          ]);
 
-        // 连接 B：合规管理员发起真实重置请求
-        request = resetUserPassword(adminToken, {
-          accountId: guestSecondaryAccountId,
-          newPassword: 'C0ncurrent#Reset2026',
-        });
+          // 连接 B：合规管理员发起真实重置请求
+          request = resetUserPassword(adminToken, {
+            accountId: guestSecondaryAccountId,
+            newPassword: 'C0ncurrent#Reset2026',
+          });
 
-        // 先证明请求确实阻塞在目标账号的行锁上，再提交转待审（不以等待毫秒数代替该观测）
-        await waitForTargetAccountRowLockWait(guestSecondaryAccountId);
-        await blocker.commitTransaction();
+          // 先证明请求确实阻塞在目标账号的行锁上，再提交转待审（不以等待毫秒数代替该观测）
+          await waitForTargetAccountRowLockWait(guestSecondaryAccountId);
+          await blocker.commitTransaction();
 
-        const body = await request;
-        // 转待审先提交后，重置必须读到当前库状态并按既有状态规则失败关闭
-        expect(body.data?.adminResetUserPassword ?? null).toBeNull();
-        expectSingleError(body, 'CONFLICT', 'ADMIN_USER_PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED');
+          const body = await request;
+          // 转待审先提交后，重置必须读到当前库状态并按既有状态规则失败关闭
+          expect(body.data?.adminResetUserPassword ?? null).toBeNull();
+          expectSingleError(
+            body,
+            'CONFLICT',
+            'ADMIN_USER_PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED',
+          );
 
-        // 拒绝发生在哈希生成与写入之前：原有哈希与强改标记逐字段不变
-        const after = await readAccountRow(guestSecondaryAccountId);
-        expect(after?.loginPassword).toBe(before?.loginPassword);
-        expect(after?.mustChangePassword).toBe(before?.mustChangePassword);
-        expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
-          accountStatus: AccountStatus.PENDING,
-          userState: UserState.PENDING,
-        });
-      } finally {
-        if (blocker.isTransactionActive) {
-          await blocker.rollbackTransaction();
+          // 拒绝发生在哈希生成与写入之前：原有哈希与强改标记逐字段不变
+          const after = await readAccountRow(guestSecondaryAccountId);
+          expect(after?.loginPassword).toBe(before?.loginPassword);
+          expect(after?.mustChangePassword).toBe(before?.mustChangePassword);
+          expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
+            accountStatus: AccountStatus.PENDING,
+            userState: UserState.PENDING,
+          });
+        } finally {
+          if (blocker.isTransactionActive) {
+            await blocker.rollbackTransaction();
+          }
+          await blocker.release();
+          if (request !== null) {
+            // 断言失败路径也必须收敛在途请求，避免残留事务影响后续用例
+            await request.catch(() => undefined);
+          }
+          // 并发夹具不经过启停业务入口（其状态矩阵不接受 PENDING 起点），按双字段直接还原
+          await dataSource.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
+            AccountStatus.ACTIVE,
+            guestSecondaryAccountId,
+          ]);
+          await dataSource.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
+            UserState.ACTIVE,
+            guestSecondaryAccountId,
+          ]);
         }
-        await blocker.release();
-        if (request !== null) {
-          // 断言失败路径也必须收敛在途请求，避免残留事务影响后续用例
-          await request.catch(() => undefined);
-        }
-        // 并发夹具不经过启停业务入口（其状态矩阵不接受 PENDING 起点），按双字段直接还原
-        await dataSource.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
-          AccountStatus.ACTIVE,
-          guestSecondaryAccountId,
-        ]);
-        await dataSource.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
-          UserState.ACTIVE,
-          guestSecondaryAccountId,
-        ]);
-      }
-    });
+      },
+    );
 
     it('缺级操作者（同组织同级会话）被拒：FORBIDDEN 且密码哈希与强改标记零变化', async () => {
       const before = await readAccountRow(guestSecondaryAccountId);

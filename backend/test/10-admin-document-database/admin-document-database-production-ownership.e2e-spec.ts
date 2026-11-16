@@ -39,11 +39,17 @@ import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.ent
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
 import { MaintenanceReportEntity } from '@src/modules/lithography/entities/maintenance-report.entity';
 import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
+import { OrganizationMembershipEntity } from '@src/modules/lithography/entities/organization-membership.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
 import { assertFixedIdsVacant, insertOnlyAtFixedIds } from '../utils/e2e-insert-only-seed';
+import {
+  clearOwnedResourceLedger,
+  createOwnedResourceLedger,
+  toResidueAccountFingerprint,
+} from '../utils/e2e-scoped-cleanup';
 import {
   assertNoTriggerCaseFailures,
   assertTriggerNameFormat,
@@ -56,17 +62,24 @@ import {
   type TriggerOwnershipTracker,
 } from '../utils/e2e-trigger-ownership';
 import { createTestAccount, type TestAccountConfig } from '../utils/test-accounts';
-import { runAdminDocFixtureTeardown } from './admin-document-database-fixture';
+import { seedTestMemberships, seedTestOrganizations } from '../utils/test-organizations';
 import {
+  runAdminDocCombinedCleanup,
+  runAdminDocFixtureTeardown,
+} from './admin-document-database-fixture';
+import {
+  PRODUCTION_FIXTURE_ACCOUNTS,
   PRODUCTION_FIXTURE_MARKERS,
   PRODUCTION_SENTINEL,
   PRODUCTION_SENTINEL_MODEL_SPEC,
   cleanupProductionFixtureByIds,
   cleanupProductionFixtureResidue,
   cleanupProductionSentinelChain,
+  clearProductionFixtureOwnership,
   createProductionFixtureOwnership,
   ensureProductionSentinelChain,
   findProductionFixtureAccountIds,
+  prepareProductionFixtureByIdsCleanup,
   readProductionSentinelSnapshot,
   seedProductionFixtureAccounts,
   seedProductionFixtureBusiness,
@@ -2676,5 +2689,279 @@ describe('production fixture 所有权：固定主键碰撞不得影响外部数
       request: null,
     });
     expect(await readForeignSnapshot()).toEqual(foreignBefore);
+  });
+
+  // -------------------------------------------------------------------------------------
+  // 第十六轮 P2：production 组合入口（组织链 + 夹具）必须在首条 DELETE 之前完成全量预检。
+  // 之前入向引用检查留在夹具 `execute()`，组织链会先删除；外部成员反例实测 DELETE=2。
+  // -------------------------------------------------------------------------------------
+  describe('production 组合入口：首删前全量预检', () => {
+    let combinedCaseSeq = 0;
+    const nextOrgCodes = (): { primary: string; external: string } => {
+      combinedCaseSeq += 1;
+      const suffix = `${process.pid}_${Date.now()}_${combinedCaseSeq}`;
+      return {
+        primary: `E2E_PR3_COMBINED_PRIMARY_${suffix}`,
+        external: `E2E_PR3_COMBINED_EXTERNAL_${suffix}`,
+      };
+    };
+
+    // 组织台账里的批次内成员关系指向 production 夹具账号；这些账号由夹具侧精确回收，
+    // 因此在组织链的成员关系核验中必须作为「保留账号」传入，否则会被误判为范围外引用。
+    const retainedAccounts = Object.values(PRODUCTION_FIXTURE_ACCOUNTS).map(
+      toResidueAccountFingerprint,
+    );
+
+    const runCombinedCleanup = async (
+      ownership: ProductionFixtureOwnership,
+      suiteOwnership: ReturnType<typeof createOwnedResourceLedger>,
+    ): Promise<void> => {
+      await runAdminDocCombinedCleanup({
+        dataSource,
+        helper: 'production-ownership 组合清理用例',
+        organization: { owned: suiteOwnership, retainedAccounts },
+        prepareFixture: (manager, database, context) =>
+          prepareProductionFixtureByIdsCleanup(manager, database, ownership, context),
+        onCommitted: () => {
+          clearOwnedResourceLedger(suiteOwnership);
+          clearProductionFixtureOwnership(ownership);
+        },
+      });
+    };
+
+    /** 造一批 production 账号 + 批次内组织与成员，返回定位信息。 */
+    const seedOwnedOrganizationBatch = async (opts: {
+      ownership: ProductionFixtureOwnership;
+      suiteOwnership: ReturnType<typeof createOwnedResourceLedger>;
+      codes: { primary: string; external: string };
+      withExternalMembership: boolean;
+    }): Promise<{
+      primaryOrgId: number;
+      externalOrgId: number | null;
+      readOrganizations: () => Promise<OrganizationEntity[]>;
+      readMemberships: () => Promise<OrganizationMembershipEntity[]>;
+    }> => {
+      const { ownership, suiteOwnership, codes, withExternalMembership } = opts;
+      const seeded = await seedProductionFixtureAccounts({
+        dataSource,
+        ownership,
+        createAccountUsecase: app.get(CreateAccountUsecase),
+      });
+      expect(seeded.failures).toEqual([]);
+
+      const primaryIds = await seedTestOrganizations({
+        dataSource,
+        organizations: [
+          {
+            organizationCode: codes.primary,
+            name: '生产组合清理批次组织',
+            kind: 'CLIENT',
+          },
+        ],
+        ownership: suiteOwnership,
+      });
+      await seedTestMemberships({
+        dataSource,
+        memberships: [
+          {
+            accountLoginName: PRODUCTION_FIXTURE_ACCOUNTS.customer.loginName,
+            organizationCode: codes.primary,
+            memberRole: 'CUSTOMER',
+          },
+        ],
+        organizationIdsByCode: primaryIds,
+        ownership: suiteOwnership,
+      });
+
+      let externalOrgId: number | null = null;
+      if (withExternalMembership) {
+        // 外部组织与外部成员都不进本轮台账：它们不是本批次拥有的资源，只用于反例
+        const externalIds = await seedTestOrganizations({
+          dataSource,
+          organizations: [
+            {
+              organizationCode: codes.external,
+              name: '生产组合清理外部组织',
+              kind: 'CLIENT',
+            },
+          ],
+        });
+        externalOrgId = externalIds.get(codes.external) ?? null;
+        if (externalOrgId === null) {
+          throw new Error('外部组织未返回主键，拒绝继续');
+        }
+        await seedTestMemberships({
+          dataSource,
+          memberships: [
+            {
+              accountLoginName: PRODUCTION_FIXTURE_ACCOUNTS.customer.loginName,
+              organizationCode: codes.external,
+              memberRole: 'CUSTOMER',
+              status: 'LEFT',
+            },
+          ],
+          organizationIdsByCode: externalIds,
+        });
+      }
+
+      const primaryOrgId = primaryIds.get(codes.primary);
+      if (primaryOrgId === undefined) {
+        throw new Error('批次组织未返回主键，拒绝继续');
+      }
+      const orgIds = [primaryOrgId, ...(externalOrgId === null ? [] : [externalOrgId])];
+      const orgRepo = dataSource.getRepository(OrganizationEntity);
+      const membershipRepo = dataSource.getRepository(OrganizationMembershipEntity);
+      return {
+        primaryOrgId,
+        externalOrgId,
+        readOrganizations: () => orgRepo.find({ where: { id: In(orgIds) }, order: { id: 'ASC' } }),
+        readMemberships: () =>
+          membershipRepo.find({ where: { organizationId: In(orgIds) }, order: { id: 'ASC' } }),
+      };
+    };
+
+    it('外部组织成员引用夹具账号：首条 DELETE 前拒绝，DELETE=0 且组织/成员逐字段不变', async () => {
+      await cleanupProductionFixtureResidue(dataSource);
+      const foreignBefore = await readForeignSnapshot();
+      const ownership = createProductionFixtureOwnership();
+      const suiteOwnership = createOwnedResourceLedger();
+      const codes = nextOrgCodes();
+      const batch = await seedOwnedOrganizationBatch({
+        ownership,
+        suiteOwnership,
+        codes,
+        withExternalMembership: true,
+      });
+      const accountIds = [...ownership.createdAccountIds];
+      const orgsBefore = await batch.readOrganizations();
+      const membershipsBefore = await batch.readMemberships();
+      const accountsBefore = await dataSource
+        .getRepository(AccountEntity)
+        .find({ where: { id: In(accountIds) }, order: { id: 'ASC' } });
+
+      try {
+        await expectCleanupRejectedWithoutDeletes(
+          () => runCombinedCleanup(ownership, suiteOwnership),
+          /organization_membership\.account_id/,
+        );
+
+        expect(await batch.readOrganizations()).toEqual(orgsBefore);
+        expect(await batch.readMemberships()).toEqual(membershipsBefore);
+        expect(
+          await dataSource
+            .getRepository(AccountEntity)
+            .find({ where: { id: In(accountIds) }, order: { id: 'ASC' } }),
+        ).toEqual(accountsBefore);
+        expect(await readForeignSnapshot()).toEqual(foreignBefore);
+        // 拒绝时台账保持原样（未提交，不能提前清空）
+        expect(ownership.createdAccountIds).toEqual(accountIds);
+        expect(suiteOwnership.organizationIds.length).toBeGreaterThan(0);
+      } finally {
+        // 先移除外部成员/组织，再走正式组合入口回收本批次与夹具
+        const membershipRepo = dataSource.getRepository(OrganizationMembershipEntity);
+        const orgRepo = dataSource.getRepository(OrganizationEntity);
+        if (batch.externalOrgId !== null) {
+          await membershipRepo.delete({ organizationId: batch.externalOrgId });
+          await orgRepo.delete({ id: batch.externalOrgId });
+        }
+        await runCombinedCleanup(ownership, suiteOwnership);
+      }
+
+      expect(await batch.readOrganizations()).toEqual([]);
+      expect(await batch.readMemberships()).toEqual([]);
+      expect(await findProductionFixtureAccountIds(dataSource)).toEqual([]);
+      expect(await readForeignSnapshot()).toEqual(foreignBefore);
+    });
+
+    it('批次内组织成员可清：组合清理一次回收组织链与夹具账号', async () => {
+      await cleanupProductionFixtureResidue(dataSource);
+      const foreignBefore = await readForeignSnapshot();
+      const ownership = createProductionFixtureOwnership();
+      const suiteOwnership = createOwnedResourceLedger();
+      const codes = nextOrgCodes();
+      const batch = await seedOwnedOrganizationBatch({
+        ownership,
+        suiteOwnership,
+        codes,
+        withExternalMembership: false,
+      });
+      expect(await batch.readMemberships()).toHaveLength(1);
+
+      await runCombinedCleanup(ownership, suiteOwnership);
+
+      expect(await batch.readOrganizations()).toEqual([]);
+      expect(await batch.readMemberships()).toEqual([]);
+      expect(await findProductionFixtureAccountIds(dataSource)).toEqual([]);
+      // 提交成功后才清空台账
+      expect(ownership.createdAccountIds).toEqual([]);
+      expect(suiteOwnership.organizationIds).toEqual([]);
+      expect(await readForeignSnapshot()).toEqual(foreignBefore);
+    });
+
+    it('组织链先删后夹具真实 DELETE 失败：整批回滚，组织/成员/夹具逐字段不变', async () => {
+      await cleanupProductionFixtureResidue(dataSource);
+      const foreignBefore = await readForeignSnapshot();
+      const ownership = createProductionFixtureOwnership();
+      const suiteOwnership = createOwnedResourceLedger();
+      const codes = nextOrgCodes();
+      const triggerName = nextTriggerName('combined');
+      const tracker = createTriggerOwnershipTracker();
+
+      let batch: Awaited<ReturnType<typeof seedOwnedOrganizationBatch>> | undefined;
+      let orgsBefore: OrganizationEntity[] = [];
+      let membershipsBefore: OrganizationMembershipEntity[] = [];
+      let accountsBefore: AccountEntity[] = [];
+
+      const failures = await runWithOwnedTrigger({
+        dataSource,
+        triggerName,
+        tableName: ROLLBACK_TRIGGER_TABLE,
+        body: ROLLBACK_TRIGGER_BODY,
+        setup: async () => {
+          batch = await seedOwnedOrganizationBatch({
+            ownership,
+            suiteOwnership,
+            codes,
+            withExternalMembership: false,
+          });
+          orgsBefore = await batch.readOrganizations();
+          membershipsBefore = await batch.readMemberships();
+          accountsBefore = await dataSource
+            .getRepository(AccountEntity)
+            .find({ where: { id: In([...ownership.createdAccountIds]) }, order: { id: 'ASC' } });
+          expect(orgsBefore).toHaveLength(1);
+          expect(membershipsBefore).toHaveLength(1);
+        },
+        run: async () => {
+          // 组织链已先删除；夹具删除 user_info 时触发器失败 → 整批回滚
+          const activeBatch = batch;
+          if (!activeBatch) {
+            throw new Error('回滚用例未完成造数');
+          }
+          await expect(runCombinedCleanup(ownership, suiteOwnership)).rejects.toThrow();
+
+          expect(await activeBatch.readOrganizations()).toEqual(orgsBefore);
+          expect(await activeBatch.readMemberships()).toEqual(membershipsBefore);
+          expect(
+            await dataSource
+              .getRepository(AccountEntity)
+              .find({ where: { id: In([...ownership.createdAccountIds]) }, order: { id: 'ASC' } }),
+          ).toEqual(accountsBefore);
+          expect(await readForeignSnapshot()).toEqual(foreignBefore);
+        },
+        cleanupFixture: () => runCombinedCleanup(ownership, suiteOwnership),
+        tracker,
+      });
+      assertNoTriggerCaseFailures(failures, 'production 组合入口后序删除失败回滚');
+
+      expect(await readOwnedTriggerFact(dataSource, triggerName)).toBeNull();
+      expect(await findProductionFixtureAccountIds(dataSource)).toEqual([]);
+      expect(
+        await dataSource
+          .getRepository(OrganizationEntity)
+          .findOne({ where: { organizationCode: codes.primary } }),
+      ).toBeNull();
+      expect(await readForeignSnapshot()).toEqual(foreignBefore);
+    });
   });
 });

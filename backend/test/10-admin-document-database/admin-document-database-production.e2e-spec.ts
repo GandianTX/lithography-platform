@@ -51,8 +51,8 @@ import { GqlAllExceptionsFilter } from '../../src/infrastructure/graphql/filters
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
 import { login, postGql } from '../utils/e2e-graphql-utils';
 import {
+  clearOwnedResourceLedger,
   createOwnedResourceLedger,
-  runGuardedSpecCleanup,
   toResidueAccountFingerprint,
 } from '../utils/e2e-scoped-cleanup';
 import {
@@ -60,14 +60,19 @@ import {
   seedTestMemberships,
   seedTestOrganizations,
 } from '../utils/test-organizations';
-import { runAdminDocFixtureTeardown } from './admin-document-database-fixture';
+import {
+  runAdminDocCombinedCleanup,
+  runAdminDocFixtureTeardown,
+} from './admin-document-database-fixture';
 import {
   cleanupProductionFixtureByIds,
-  cleanupProductionFixtureResidue,
   cleanupProductionSentinelChain,
+  clearProductionFixtureOwnership,
   createProductionFixtureOwnership,
   ensureProductionSentinelChain,
   findProductionFixtureAccountIds,
+  prepareProductionFixtureByIdsCleanup,
+  prepareProductionFixtureResidueCleanup,
   PRODUCTION_FIXTURE_ACCOUNTS,
   PRODUCTION_FIXTURE_MARKERS,
   type ProductionFixtureBusinessIds,
@@ -303,15 +308,25 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
   /** R5：仅当 beforeAll 在「写夹具之前」完成白名单验证才置位，afterAll 据此决定能否清理。 */
   let fixtureTargetValidated = false;
 
-  /** 先清组织成员/组织，再按归属精确清账号与业务行（顺序不可交换） */
+  /**
+   * 组织成员/组织与夹具账号共用同一事务：整批预检通过才执行首条 DELETE，
+   * 任一后序失败整批回滚；事务提交成功才清空本轮台账。
+   */
   const cleanupOrganizationThenFixture = async (ds: DataSource): Promise<void> => {
-    await runGuardedSpecCleanup({
+    await runAdminDocCombinedCleanup({
       dataSource: ds,
-      owned: suiteOwnership,
-      retainedAccounts: RETAINED_ACCOUNT_FINGERPRINTS,
-      helper: 'admin-document-database-production.e2e-spec 组织链清理',
+      helper: 'admin-document-database-production.e2e-spec 组织链+夹具组合清理',
+      organization: {
+        owned: suiteOwnership,
+        retainedAccounts: RETAINED_ACCOUNT_FINGERPRINTS,
+      },
+      prepareFixture: (manager, database, context) =>
+        prepareProductionFixtureByIdsCleanup(manager, database, ownership, context),
+      onCommitted: () => {
+        clearOwnedResourceLedger(suiteOwnership);
+        clearProductionFixtureOwnership(ownership);
+      },
     });
-    await cleanupProductionFixtureByIds(ds, ownership);
   };
 
   beforeAll(async () => {
@@ -352,14 +367,17 @@ describe('admin-document-database 生产环境输入错误分类 (e2e, NODE_ENV=
     // R5 精确生命周期：先按专属标记 + 完整归属校验回收上一次运行的崩溃残留，
     // 再按本轮记录的 ID 收尾；无残留时全部 no-op（连跑两遍幂等）；禁止无 WHERE 整表删除。
     // F1：上一次中断可能留下组织成员关系（RESTRICT 会阻塞账号回收），
-    // 先按组织编码 + 账号指纹核验清理组织链残留，再回收夹具账号。
-    await runGuardedSpecCleanup({
+    // 组织链残留与夹具残留共用同一事务，整批预检通过才执行首条 DELETE。
+    await runAdminDocCombinedCleanup({
       dataSource,
-      residue: { organizations: [PRODUCTION_ORGANIZATION] },
-      retainedAccounts: RETAINED_ACCOUNT_FINGERPRINTS,
-      helper: 'admin-document-database-production.e2e-spec beforeAll 组织残留清理',
+      helper: 'admin-document-database-production.e2e-spec beforeAll 组合预清理',
+      organization: {
+        residue: { organizations: [PRODUCTION_ORGANIZATION] },
+        retainedAccounts: RETAINED_ACCOUNT_FINGERPRINTS,
+      },
+      prepareFixture: (manager, database, context) =>
+        prepareProductionFixtureResidueCleanup(manager, database, context),
     });
-    await cleanupProductionFixtureResidue(dataSource);
 
     const { created, failures } = await seedProductionFixtureAccounts({
       dataSource,

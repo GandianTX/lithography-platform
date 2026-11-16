@@ -234,6 +234,19 @@ describe('AccountSettingsPanel 命令接线', () => {
     );
   });
 
+  it('补录在途时资料保存按钮同样进入 loading（两类写动作共用互斥锁）', () => {
+    mockHook({
+      isPending: (key) => key === 'supplement-company',
+      state: { settings: SETTINGS, status: 'ready' },
+    });
+    render(<AccountSettingsPanel />);
+
+    const saveButtons = screen.getAllByRole('button', { name: /保\s*存/ });
+
+    expect(saveButtons).toHaveLength(1);
+    expect(saveButtons[0]).toHaveClass('ant-btn-loading');
+  });
+
   it('change-password 进行中时只有改密区块进入 loading，并禁用重置', () => {
     mockHook({
       isPending: (key) => key === 'change-password',

@@ -145,6 +145,10 @@ export function AccountSettingsPanel({
       sampleSessionIdentity,
     });
 
+  // 资料更新与公司补录共用一把互斥锁（见 useAccountSettings）：任一在途时两个提交入口
+  // 都按进行中展示，避免用户在交叠期点到被静默拒绝的第二条命令。
+  const profileWritePending = isPending('update-profile') || isPending('supplement-company');
+
   const profileTab =
     state.status === 'loading' ? (
       <LoadingState label={t('account.loading')} />
@@ -164,7 +168,7 @@ export function AccountSettingsPanel({
           <AccountProfileForm
             onSubmit={updateProfile}
             settings={state.settings}
-            submitting={isPending('update-profile')}
+            submitting={profileWritePending}
           />
         </DataCard>
 
@@ -174,7 +178,7 @@ export function AccountSettingsPanel({
           onSubmit={supplementCompany}
           onSupplemented={onCompanySupplemented}
           settings={state.settings}
-          submitting={isPending('supplement-company')}
+          submitting={profileWritePending}
         />
       </div>
     );
