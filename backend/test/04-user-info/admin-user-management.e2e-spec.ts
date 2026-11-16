@@ -31,6 +31,7 @@ import {
   testAccountsConfig,
   type TestAccountConfig,
 } from '../utils/test-accounts';
+import { assertLockObservationCapability } from '../utils/upload-race-runner';
 import {
   buildSuiteOrganizationCodes,
   requireOrganizationId,
@@ -847,6 +848,38 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   };
 
   /**
+   * 观测「某个事务正在等待目标账号行的记录锁」，用于并发顺序断言。
+   *
+   * 只以 `performance_schema` 中真实的锁等待为判据，不以固定毫秒数推断「应该已经在等」：
+   * 请求必须先被观察到阻塞在 `base_user_account` 的主键记录锁上，才允许提交并发事务。
+   * 观测能力由 `assertLockObservationCapability()` 在写入夹具前前置校验（缺失即失败关闭）。
+   */
+  const waitForTargetAccountRowLockWait = async (accountId: number): Promise<void> => {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const rows: Array<{ total?: number | string }> = await dataSource.query(
+        `SELECT COUNT(*) AS total
+           FROM performance_schema.data_lock_waits w
+           JOIN performance_schema.data_locks l
+             ON l.ENGINE = w.ENGINE
+            AND l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+          WHERE l.OBJECT_SCHEMA = DATABASE()
+            AND l.OBJECT_NAME = 'base_user_account'
+            AND l.LOCK_TYPE = 'RECORD'
+            AND l.LOCK_DATA = ?`,
+        [String(accountId)],
+      );
+      if (Number(rows[0]?.total ?? 0) > 0) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`未观测到重置请求等待目标账号 ${accountId} 的行锁`);
+  };
+
+  /**
+   * 五个管理员 operation 的调用闭包表：授权准入用例共用，避免漏测某个 operation。
+   /**
    * 六个管理员 operation 的调用闭包表：授权准入用例共用，避免漏测某个 operation。
    * token 位于首参且无默认值，确保「谁在调用」在用例里一目了然。
    */
@@ -2098,6 +2131,73 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(loginBody.errors).toBeUndefined();
       expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.MUST_CHANGE_PASSWORD);
       expect(typeof loginBody.data?.login?.accessToken).toBe('string');
+    });
+
+    it('并发转待审先提交：重置观察到目标行锁后按 PENDING 拒绝，哈希与强改标记不变', async () => {
+      await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
+      // 观测能力不足时在任何夹具写入之前失败关闭（零造数）
+      await assertLockObservationCapability((sql: string) => dataSource.query(sql));
+      const before = await readAccountRow(guestSecondaryAccountId);
+      expect(before?.status).toBe(AccountStatus.ACTIVE);
+
+      const blocker = dataSource.createQueryRunner();
+      let request: Promise<GqlBody<{ adminResetUserPassword?: ResetPasswordPayload }>> | null =
+        null;
+      await blocker.connect();
+      await blocker.startTransaction();
+      try {
+        // 连接 A：双字段转 PENDING，持有目标账号行锁，暂不提交
+        await blocker.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
+          AccountStatus.PENDING,
+          guestSecondaryAccountId,
+        ]);
+        await blocker.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
+          UserState.PENDING,
+          guestSecondaryAccountId,
+        ]);
+
+        // 连接 B：合规管理员发起真实重置请求
+        request = resetUserPassword(adminToken, {
+          accountId: guestSecondaryAccountId,
+          newPassword: 'C0ncurrent#Reset2026',
+        });
+
+        // 先证明请求确实阻塞在目标账号的行锁上，再提交转待审（不以等待毫秒数代替该观测）
+        await waitForTargetAccountRowLockWait(guestSecondaryAccountId);
+        await blocker.commitTransaction();
+
+        const body = await request;
+        // 转待审先提交后，重置必须读到当前库状态并按既有状态规则失败关闭
+        expect(body.data?.adminResetUserPassword ?? null).toBeNull();
+        expectSingleError(body, 'CONFLICT', 'ADMIN_USER_PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED');
+
+        // 拒绝发生在哈希生成与写入之前：原有哈希与强改标记逐字段不变
+        const after = await readAccountRow(guestSecondaryAccountId);
+        expect(after?.loginPassword).toBe(before?.loginPassword);
+        expect(after?.mustChangePassword).toBe(before?.mustChangePassword);
+        expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
+          accountStatus: AccountStatus.PENDING,
+          userState: UserState.PENDING,
+        });
+      } finally {
+        if (blocker.isTransactionActive) {
+          await blocker.rollbackTransaction();
+        }
+        await blocker.release();
+        if (request !== null) {
+          // 断言失败路径也必须收敛在途请求，避免残留事务影响后续用例
+          await request.catch(() => undefined);
+        }
+        // 并发夹具不经过启停业务入口（其状态矩阵不接受 PENDING 起点），按双字段直接还原
+        await dataSource.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
+          AccountStatus.ACTIVE,
+          guestSecondaryAccountId,
+        ]);
+        await dataSource.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
+          UserState.ACTIVE,
+          guestSecondaryAccountId,
+        ]);
+      }
     });
 
     it('缺级操作者（同组织同级会话）被拒：FORBIDDEN 且密码哈希与强改标记零变化', async () => {
