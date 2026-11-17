@@ -23,12 +23,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EngineerRepairRequestDetailPage } from './index';
 
-const { navigateMock, useParamsMock, authSessionViewMock, panelMountLog } = vi.hoisted(() => ({
-  navigateMock: vi.fn(),
-  useParamsMock: vi.fn(),
-  authSessionViewMock: vi.fn(),
-  panelMountLog: [] as Array<{ canHandleAsEngineer: boolean; requestId: number | null }>,
-}));
+const { navigateMock, useParamsMock, authSessionViewMock, sessionIdentityMock, panelMountLog } =
+  vi.hoisted(() => ({
+    navigateMock: vi.fn(),
+    useParamsMock: vi.fn(),
+    authSessionViewMock: vi.fn(),
+    sessionIdentityMock: vi.fn(),
+    panelMountLog: [] as Array<{
+      canHandleAsEngineer: boolean;
+      requestId: number | null;
+      scopeKey: string | undefined;
+    }>,
+  }));
 
 vi.mock('react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router')>();
@@ -40,19 +46,27 @@ vi.mock('react-router', async (importOriginal) => {
 vi.mock('@/features/auth-session', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/auth-session')>();
 
-  return { ...actual, useAuthSession: () => authSessionViewMock() };
+  return {
+    ...actual,
+    useAuthSession: () => authSessionViewMock(),
+    sampleCurrentAuthSessionIdentity: () => sessionIdentityMock(),
+  };
 });
 
 // 只 mock feature 公开 barrel 的面板出口：接线测试不深入 feature 内部模块
 vi.mock('@/features/repair-request', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/repair-request')>();
 
-  function PanelStub(props: { canHandleAsEngineer: boolean; requestId: number | null }) {
-    const { canHandleAsEngineer, requestId } = props;
-    // 仅在挂载时记录：key 变化触发重挂载，log 长度即可区分重建与复用
+  function PanelStub(props: {
+    canHandleAsEngineer: boolean;
+    requestId: number | null;
+    scopeKey?: string;
+  }) {
+    const { canHandleAsEngineer, requestId, scopeKey } = props;
+    // 仅在挂载/身份变化时记录：key 变化触发重挂载，log 长度即可区分重建与复用
     useEffect(() => {
-      panelMountLog.push({ canHandleAsEngineer, requestId });
-    }, [canHandleAsEngineer, requestId]);
+      panelMountLog.push({ canHandleAsEngineer, requestId, scopeKey });
+    }, [canHandleAsEngineer, requestId, scopeKey]);
 
     return null;
   }
@@ -78,6 +92,8 @@ beforeEach(() => {
   navigateMock.mockReset();
   useParamsMock.mockReset();
   authSessionViewMock.mockReset();
+  sessionIdentityMock.mockReset();
+  sessionIdentityMock.mockReturnValue({ accountId: 900101, epoch: 7 });
 });
 
 describe('页面接线：会话角色 → canHandleAsEngineer', () => {
@@ -87,7 +103,9 @@ describe('页面接线：会话角色 → canHandleAsEngineer', () => {
 
     render(<EngineerRepairRequestDetailPage />);
 
-    expect(panelMountLog).toEqual([{ canHandleAsEngineer: true, requestId: 21 }]);
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: true, requestId: 21, scopeKey: '900101:7' },
+    ]);
   });
 
   it('SUPER_ADMIN 只读：面板仍装配，但 canHandleAsEngineer=false（读权限继承不等于接单权限）', () => {
@@ -96,7 +114,9 @@ describe('页面接线：会话角色 → canHandleAsEngineer', () => {
 
     render(<EngineerRepairRequestDetailPage />);
 
-    expect(panelMountLog).toEqual([{ canHandleAsEngineer: false, requestId: 21 }]);
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: false, requestId: 21, scopeKey: '900101:7' },
+    ]);
   });
 
   it('CUSTOMER 同样 canHandleAsEngineer=false，判断由页面生产代码决定', () => {
@@ -105,7 +125,9 @@ describe('页面接线：会话角色 → canHandleAsEngineer', () => {
 
     render(<EngineerRepairRequestDetailPage />);
 
-    expect(panelMountLog).toEqual([{ canHandleAsEngineer: false, requestId: 21 }]);
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: false, requestId: 21, scopeKey: '900101:7' },
+    ]);
   });
 });
 
@@ -121,7 +143,9 @@ describe('页面接线：路由参数解析', () => {
 
     render(<EngineerRepairRequestDetailPage />);
 
-    expect(panelMountLog).toEqual([{ canHandleAsEngineer: true, requestId: expected }]);
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: true, requestId: expected, scopeKey: '900101:7' },
+    ]);
   });
 
   it('页面标题来自 PageHeader 装配', () => {
@@ -140,7 +164,9 @@ describe('页面接线：key 随路由参数隔离重建', () => {
     setRouteParam('21');
 
     const { rerender } = render(<EngineerRepairRequestDetailPage />);
-    expect(panelMountLog).toEqual([{ canHandleAsEngineer: true, requestId: 21 }]);
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: true, requestId: 21, scopeKey: '900101:7' },
+    ]);
 
     // 同一路由由 21 直接切到 22（不经返回列表重新挂载）
     setRouteParam('22');
@@ -148,8 +174,29 @@ describe('页面接线：key 随路由参数隔离重建', () => {
 
     // 重挂载产生第二条挂载记录，且新实例拿到新参数
     expect(panelMountLog).toEqual([
-      { canHandleAsEngineer: true, requestId: 21 },
-      { canHandleAsEngineer: true, requestId: 22 },
+      { canHandleAsEngineer: true, requestId: 21, scopeKey: '900101:7' },
+      { canHandleAsEngineer: true, requestId: 22, scopeKey: '900101:7' },
+    ]);
+  });
+});
+
+describe('页面接线：scopeKey 取账号 + 会话代次', () => {
+  it('同一工单上会话代次变化时传入新的 scopeKey，不把旧会话事实当成新会话', () => {
+    setRole('ENGINEER');
+    setRouteParam('21');
+
+    const { rerender } = render(<EngineerRepairRequestDetailPage />);
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: true, requestId: 21, scopeKey: '900101:7' },
+    ]);
+
+    // 同账号重新登录：accountId 不变、会话代次变化
+    sessionIdentityMock.mockReturnValue({ accountId: 900101, epoch: 8 });
+    rerender(<EngineerRepairRequestDetailPage />);
+
+    expect(panelMountLog).toEqual([
+      { canHandleAsEngineer: true, requestId: 21, scopeKey: '900101:7' },
+      { canHandleAsEngineer: true, requestId: 21, scopeKey: '900101:8' },
     ]);
   });
 });

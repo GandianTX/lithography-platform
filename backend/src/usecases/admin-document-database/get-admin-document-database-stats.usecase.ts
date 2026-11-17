@@ -2,13 +2,16 @@
 
 import { Injectable } from '@nestjs/common';
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import { AdminAiConversationQueryService } from '@src/modules/lithography/queries/admin-ai-conversation.query.service';
 import { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
 import { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
 import type { AdminDocumentDatabaseStatsView } from '@src/modules/lithography/admin-document-database.types';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
+import { resolveAdminOrganizationScope } from './admin-organization-scope';
 
 /**
  * 管理员文档数据库统计用例（PR3）。
@@ -20,7 +23,8 @@ import { assertAdminDocumentDatabasePermission } from './admin-document-database
  *   以 pageSize=1 的 withTotal 查询取真实总数，不伪造演示数字。
  *
  * A-PR0 §4.3：参考资料统计与资料列表使用相同组织范围（经可信组织上下文解析）；
- * 不改造维修申请、AI 会话/报告等其他业务的组织设计。
+ * 维修申请统计与工单列表共用 `resolveAdminOrganizationScope`：一级全公司、二级本公司，
+ * 保证统计与列表 `total` 口径一致；AI 会话/报告保持全量口径不变。
  */
 @Injectable()
 export class GetAdminDocumentDatabaseStatsUsecase {
@@ -30,25 +34,45 @@ export class GetAdminDocumentDatabaseStatsUsecase {
     private readonly adminAiReportQueryService: AdminAiReportQueryService,
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly accountQueryService: AccountQueryService,
   ) {}
 
   async execute(params: { session: UsecaseSession }): Promise<AdminDocumentDatabaseStatsView> {
     assertAdminDocumentDatabasePermission(params.session, '查看文档数据库统计');
 
-    // 组织范围先解析：无有效成员关系/多关系歧义在此拒绝，不进入任何统计查询
-    const membership = await this.organizationContextService.resolveForAccount({
-      accountId: params.session.accountId,
+    // 与工单列表/详情共用同一组织范围解析：一级无需组织，二级无组织失败关闭
+    const organizationScope = await resolveAdminOrganizationScope({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      trustedOrganizationContext: this.organizationContextService,
     });
+
+    // 参考资料读链路本身要求组织（A-PR0 §4.3）：一级管理员无成员关系时保持既有失败关闭，
+    // 不伪造全局数字；工单统计按 scope 口径（一级全公司 / 二级本公司）。
+    const referenceOrganizationId =
+      organizationScope.organizationId ??
+      (
+        await this.organizationContextService.tryResolveForAccount({
+          accountId: params.session.accountId,
+        })
+      )?.organizationId ??
+      null;
+    if (referenceOrganizationId === null) {
+      throw new DomainError(
+        PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+        '参考资料统计需要有效的组织成员关系',
+      );
+    }
 
     const [repairRequestTotal, aiConversationTotal, aiReportTotal, referenceDocumentPage] =
       await Promise.all([
-        this.adminRepairRequestQueryService.countAll(),
+        this.adminRepairRequestQueryService.countAll(organizationScope.organizationId),
         this.adminAiConversationQueryService.countAll(),
         this.adminAiReportQueryService.countAll(),
         this.referenceDocumentQueryService.listDocuments({
           filter: {},
           pagination: { page: 1, pageSize: 1, withTotal: true },
-          organizationId: membership.organizationId,
+          organizationId: referenceOrganizationId,
         }),
       ]);
 

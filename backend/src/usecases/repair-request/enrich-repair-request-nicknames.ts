@@ -98,6 +98,13 @@ export async function enrichRepairRequestDetailNicknames(
         nicknames.get(response.engineerAccountId) ?? ENGINEER_NICKNAME_FALLBACK,
       ),
     ),
+    closureStatus: result.closureStatus,
+    closedAt: result.closedAt,
+    closureReason: result.closureReason,
+    handlingResult: result.handlingResult,
+    handlingStatus: result.handlingStatus,
+    // 客户视图不包含任何内部维修过程或原件（即使未来读服务装配口径变化也不外泄）
+    processEntries: [],
   };
 }
 
@@ -188,6 +195,12 @@ export async function enrichEngineerRepairRequestDetail(
         nicknames.get(response.engineerAccountId) ?? ENGINEER_NICKNAME_FALLBACK,
       ),
     ),
+    closureStatus: result.closureStatus,
+    closedAt: result.closedAt,
+    closureReason: result.closureReason,
+    handlingResult: result.handlingResult,
+    handlingStatus: result.handlingStatus,
+    processEntries: result.processEntries,
     customerNickname: customerProfile?.nickname ?? CUSTOMER_NICKNAME_FALLBACK,
     customerCompanyName: customerProfile?.companyName ?? null,
     acceptanceViewStatus: computeAcceptanceViewStatus(

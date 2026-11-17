@@ -21,6 +21,7 @@ import type {
   AdminRepairRequestSummary,
 } from '../infrastructure/admin-document-database.types';
 import {
+  appendAdminRepairRequestRevision,
   fetchAdminEquipmentModelOptions,
   fetchAdminRepairRequests,
   fetchAdminRepairRequestSummary,
@@ -34,11 +35,14 @@ vi.mock('../infrastructure/admin-document-database-adapter', async (importOrigin
 
   return {
     ...actual,
+    appendAdminRepairRequestRevision: vi.fn(),
     fetchAdminEquipmentModelOptions: vi.fn(),
     fetchAdminRepairRequestSummary: vi.fn(),
     fetchAdminRepairRequests: vi.fn(),
   };
 });
+
+const appendRevisionMock = vi.mocked(appendAdminRepairRequestRevision);
 
 const fetchRepairMock = vi.mocked(fetchAdminRepairRequests);
 const fetchSummaryMock = vi.mocked(fetchAdminRepairRequestSummary);
@@ -67,6 +71,15 @@ function buildSummary(id: number): AdminRepairRequestSummary {
     ...buildRepairItem(id),
     faultDescription: '曝光光路异常',
     contentMd: '## 故障描述\n\n曝光光路异常。',
+    closureStatus: null,
+    closedAt: null,
+    closureReason: null,
+    handlingResult: null,
+    handlingStatus: null,
+    currentRevisionNo: 0,
+    processEntries: [],
+    responses: [],
+    revisions: [],
   };
 }
 
@@ -79,6 +92,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  appendRevisionMock.mockReset();
   fetchRepairMock.mockReset();
   fetchSummaryMock.mockReset();
   fetchModelOptionsMock.mockReset();
@@ -106,7 +120,7 @@ describe('AdminRepairRequestsTab（R3/R7 S5 知识库卡容器）', () => {
     await act(async () => {});
   });
 
-  it('有数据：表格与卡底分页在知识库卡内，摘要 Drawer 在卡外且可打开', async () => {
+  it('有数据：表格与卡底分页在知识库卡内，详情 Drawer 在卡外且可打开', async () => {
     const { container } = render(<AdminRepairRequestsTab />);
 
     expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
@@ -114,10 +128,10 @@ describe('AdminRepairRequestsTab（R3/R7 S5 知识库卡容器）', () => {
     expect(card?.querySelector('.kb-table-scope table')).not.toBeNull();
     expect(card?.querySelector('.kb-card-footer .ant-pagination')).not.toBeNull();
 
-    fireEvent.click(screen.getAllByRole('button', { name: /摘\s*要/ })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: /详\s*情/ })[0]);
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
-    expect(await screen.findByText(/维修申请摘要/)).toBeInTheDocument();
+    expect(await screen.findByText(/工单详情/)).toBeInTheDocument();
     expect(container.querySelector('.kb-card .ant-drawer')).toBeNull();
   });
 
@@ -265,5 +279,131 @@ describe('AdminRepairRequestsTab（R4 有效筛选单一真源）', () => {
 
     expect(screen.queryByText('RR-20260901-001')).toBeNull();
     expect(screen.getByText('RR-20260902-001')).toBeInTheDocument();
+  });
+});
+
+describe('AdminRepairRequestsTab（修订迟到响应身份守卫）', () => {
+  type RevisionOutcome = Awaited<ReturnType<typeof appendAdminRepairRequestRevision>>;
+
+  const REVISION_RESULT = {
+    requestId: 1,
+    currentRevisionNo: 1,
+    revisionNo: 1,
+    previousVersion: 0,
+    reason: 'A 修订原因',
+    actorNickname: 'admin',
+    createdAt: '2026-09-01T09:00:00.000Z',
+  };
+
+  function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((settle) => {
+      resolve = settle;
+    });
+    return { promise, resolve };
+  }
+
+  async function openRevisionFor(index: number): Promise<void> {
+    fireEvent.click(screen.getAllByRole('button', { name: /详\s*情/ })[index]);
+    await screen.findByText(new RegExp(`工单详情 · RR-2026090${index + 1}-001`));
+    fireEvent.click(screen.getByRole('button', { name: /修\s*订/ }));
+    await screen.findByPlaceholderText('说明本次修订的原因与依据');
+  }
+
+  async function closeDrawer(): Promise<void> {
+    const close = document.querySelector('.ant-drawer-close');
+    expect(close).not.toBeNull();
+    fireEvent.click(close as HTMLElement);
+    await waitFor(() => expect(screen.queryByText(/工单详情 ·/)).toBeNull());
+  }
+
+  beforeEach(() => {
+    fetchSummaryMock.mockImplementation(async (target) => ({
+      ok: true,
+      detail: buildSummary(target),
+    }));
+  });
+
+  it('A 迟到成功不关闭 B 弹窗、不重载 A、不污染 B', async () => {
+    const pending = createDeferred<RevisionOutcome>();
+    appendRevisionMock.mockReturnValueOnce(pending.promise);
+
+    render(<AdminRepairRequestsTab />);
+    await screen.findByText('RR-20260901-001');
+
+    await openRevisionFor(0);
+    fireEvent.change(screen.getByDisplayValue(/## 故障描述/), {
+      target: { value: '# A 修订稿' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('说明本次修订的原因与依据'), {
+      target: { value: 'A 修订原因' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存修订' }));
+    await waitFor(() => expect(appendRevisionMock).toHaveBeenCalledTimes(1));
+
+    // 响应前关闭 A 的修订弹窗与详情，改开 B 的修订弹窗
+    fireEvent.click(screen.getByRole('button', { name: /取\s*消/ }));
+    await closeDrawer();
+    await openRevisionFor(1);
+    fireEvent.change(screen.getByPlaceholderText('说明本次修订的原因与依据'), {
+      target: { value: 'B 修订原因' },
+    });
+    fireEvent.change(screen.getByDisplayValue(/## 故障描述/), {
+      target: { value: '# B 修订稿' },
+    });
+
+    // A 的提交此刻才成功返回
+    await act(async () => {
+      pending.resolve({ ok: true, result: REVISION_RESULT });
+    });
+
+    // B 弹窗仍在、B 输入未被覆盖；A 的详情未被重新加载
+    expect(screen.getByDisplayValue('B 修订原因')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('# B 修订稿')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('A 修订原因')).toBeNull();
+    expect(screen.getByText(/工单详情 · RR-20260902-001/)).toBeInTheDocument();
+    expect(fetchSummaryMock.mock.calls.map((call) => call[0])).toEqual([1, 2]);
+  });
+
+  it('A 迟到失败不覆盖 B 的错误与输入', async () => {
+    const pending = createDeferred<RevisionOutcome>();
+    appendRevisionMock.mockReturnValueOnce(pending.promise);
+
+    render(<AdminRepairRequestsTab />);
+    await screen.findByText('RR-20260901-001');
+
+    await openRevisionFor(0);
+    fireEvent.change(screen.getByDisplayValue(/## 故障描述/), {
+      target: { value: '# A 修订稿' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('说明本次修订的原因与依据'), {
+      target: { value: 'A 修订原因' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存修订' }));
+    await waitFor(() => expect(appendRevisionMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: /取\s*消/ }));
+    await closeDrawer();
+    await openRevisionFor(1);
+
+    // B 自身产生校验错误，并保留已输入内容
+    fireEvent.change(screen.getByDisplayValue(/## 故障描述/), {
+      target: { value: '# B 修订稿' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存修订' }));
+    expect(await screen.findByText('请填写修订原因。')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('说明本次修订的原因与依据'), {
+      target: { value: 'B 修订原因' },
+    });
+
+    // A 的提交此刻以业务失败返回
+    await act(async () => {
+      pending.resolve({ ok: false, message: 'A 迟到冲突' });
+    });
+
+    expect(screen.queryByText('A 迟到冲突')).toBeNull();
+    expect(screen.getByText('请填写修订原因。')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('B 修订原因')).toBeInTheDocument();
+    expect(fetchSummaryMock.mock.calls.map((call) => call[0])).toEqual([1, 2]);
   });
 });

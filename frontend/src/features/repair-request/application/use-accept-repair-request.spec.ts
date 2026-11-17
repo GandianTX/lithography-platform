@@ -46,6 +46,12 @@ const ACCEPTED_DETAIL: EngineerRepairRequestDetail = {
   customerCompanyName: '林氏精密制造',
   acceptanceViewStatus: 'MINE',
   acceptedEngineerNickname: '陈工',
+  closureStatus: null,
+  closedAt: null,
+  closureReason: null,
+  handlingResult: null,
+  handlingStatus: null,
+  processEntries: [],
   responses: [],
 };
 

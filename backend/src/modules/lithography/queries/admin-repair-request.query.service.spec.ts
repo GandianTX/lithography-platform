@@ -7,6 +7,7 @@ import { captureThrownError } from '../../../../test/support/account/admin-user.
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { AdminRepairRequestQueryService } from './admin-repair-request.query.service';
+import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
 
 /**
  * PR3 S4：管理员维修申请读侧 QueryService 单测。
@@ -18,15 +19,22 @@ import { AdminRepairRequestQueryService } from './admin-repair-request.query.ser
 describe('AdminRepairRequestQueryService', () => {
   const pagination = { page: 1, pageSize: 10, withTotal: true };
 
-  const makeRequestRepo = () => ({
+  const makeIntakeRepo = () => ({ findOne: jest.fn().mockResolvedValue(null) });
+  const makeRequestRepo = (intakeRepo = makeIntakeRepo()) => ({
     find: jest.fn().mockResolvedValue([]),
     count: jest.fn().mockResolvedValue(0),
     findOne: jest.fn().mockResolvedValue(null),
+    manager: { getRepository: jest.fn(() => intakeRepo) },
   });
   const makeResponseRepo = () => ({ find: jest.fn().mockResolvedValue([]) });
   const makeModelRepo = () => ({
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn().mockResolvedValue(null),
+  });
+  const makeRevisionRepo = () => ({ find: jest.fn().mockResolvedValue([]) });
+  const makeProcessEntryQuery = () => ({
+    listByRequest: jest.fn().mockResolvedValue([]),
+    listByRequestTextOnly: jest.fn().mockResolvedValue([]),
   });
 
   const requestEntity = (overrides: Partial<RepairRequestEntity> = {}) =>
@@ -41,6 +49,14 @@ describe('AdminRepairRequestQueryService', () => {
       isAccepted: false,
       acceptedAt: null,
       acceptedByEngineerAccountId: null,
+      ownerOrganizationId: null,
+      serviceOrganizationId: null,
+      handlingResult: null,
+      handlingStatus: null,
+      closureStatus: null,
+      closedAt: null,
+      closureReason: null,
+      currentRevisionNo: 0,
       deprecated: false,
       createdAt: new Date('2026-09-01T08:00:00.000Z'),
       updatedAt: new Date('2026-09-01T08:00:00.000Z'),
@@ -66,9 +82,11 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
-    await service.listAll({ filter: {}, pagination });
+    await service.listAll({ filter: {}, pagination, organizationId: null });
 
     expect(requestRepo.find).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -87,11 +105,14 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
     await service.listAll({
       filter: {},
       pagination: { page: 3, pageSize: 20, withTotal: false },
+      organizationId: null,
     });
 
     expect(requestRepo.find).toHaveBeenCalledWith(expect.objectContaining({ skip: 40, take: 20 }));
@@ -104,11 +125,14 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
     await service.listAll({
       filter: {},
       pagination: { page: 0, pageSize: -5, withTotal: true },
+      organizationId: null,
     });
 
     expect(requestRepo.find).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, take: 1 }));
@@ -120,6 +144,8 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
     await service.listAll({
@@ -130,6 +156,7 @@ describe('AdminRepairRequestQueryService', () => {
         equipmentModelId: 930001,
       },
       pagination,
+      organizationId: null,
     });
 
     const call = requestRepo.find.mock.calls[0][0];
@@ -148,6 +175,8 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
     await service.listAll({
@@ -157,6 +186,7 @@ describe('AdminRepairRequestQueryService', () => {
         isAccepted: null as unknown as boolean,
       },
       pagination,
+      organizationId: null,
     });
 
     const call = requestRepo.find.mock.calls[0][0];
@@ -170,6 +200,8 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
     const from = new Date('2026-09-01T00:00:00.000Z');
     const to = new Date('2026-09-30T23:59:59.000Z');
@@ -177,6 +209,7 @@ describe('AdminRepairRequestQueryService', () => {
     await service.listAll({
       filter: { customerAccountIds: [900001, 900002], createdAtFrom: from, createdAtTo: to },
       pagination,
+      organizationId: null,
     });
 
     const call = requestRepo.find.mock.calls[0][0];
@@ -190,6 +223,8 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
     const from = new Date('2026-09-01T00:00:00.000Z');
     const before = new Date();
@@ -197,6 +232,7 @@ describe('AdminRepairRequestQueryService', () => {
     await service.listAll({
       filter: { createdAtFrom: from },
       pagination,
+      organizationId: null,
     });
 
     const where = (requestRepo.find.mock.calls[0][0] as { where: { createdAt: unknown } }).where;
@@ -212,11 +248,14 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
     const page = await service.listAll({
       filter: { customerAccountIds: [] },
       pagination,
+      organizationId: null,
     });
 
     expect(page).toEqual({ items: [], total: 0, page: 1, pageSize: 10 });
@@ -241,9 +280,11 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       responseRepo as never,
       modelRepo as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
-    const page = await service.listAll({ filter: {}, pagination });
+    const page = await service.listAll({ filter: {}, pagination, organizationId: null });
 
     // N+1 防护断言：2 条申请只触发 1 次机型批量与 1 次回复批量
     expect(modelRepo.find).toHaveBeenCalledTimes(1);
@@ -265,14 +306,16 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       modelRepo as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
-    const notFound = await captureThrownError(service.findSummaryById(880001));
+    const notFound = await captureThrownError(service.findSummaryById(880001, null));
     expect(notFound).toBeInstanceOf(DomainError);
     expect((notFound as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
 
     requestRepo.findOne.mockResolvedValue(requestEntity({ deprecated: true }));
-    const deleted = await captureThrownError(service.findSummaryById(880001));
+    const deleted = await captureThrownError(service.findSummaryById(880001, null));
     expect((deleted as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
     expect(modelRepo.findOne).not.toHaveBeenCalled();
   });
@@ -290,9 +333,11 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       responseRepo as never,
       modelRepo as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
-    const summary = await service.findSummaryById(880001);
+    const summary = await service.findSummaryById(880001, null);
 
     expect(summary).toMatchObject({
       id: 880001,
@@ -306,6 +351,501 @@ describe('AdminRepairRequestQueryService', () => {
     expect(summary.equipmentModel.modelCode).toBe('ASML-TWINSCAN-NXT-1980DI');
   });
 
+  it('二级管理员列表：服务公司与历史 owner 两分支同口径，分页 total 使用同一 where', async () => {
+    const requestRepo = makeRequestRepo();
+    const service = new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
+    );
+
+    await service.listAll({ filter: {}, pagination, organizationId: 700001 });
+
+    const findArg = requestRepo.find.mock.calls[0][0] as { where: unknown[] };
+    expect(findArg.where).toHaveLength(2);
+    expect(findArg.where[0]).toMatchObject({
+      deprecated: false,
+      serviceOrganizationId: 700001,
+    });
+    expect(findArg.where[1]).toMatchObject({
+      deprecated: false,
+      ownerOrganizationId: 700001,
+    });
+    // 分页 total 必须复用与列表相同的组织范围条件
+    expect(requestRepo.count).toHaveBeenCalledWith({ where: findArg.where });
+  });
+
+  it('一级管理员列表：不附加组织条件，跨公司可见且 total 同口径', async () => {
+    const requestRepo = makeRequestRepo();
+    const service = new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
+    );
+
+    await service.listAll({ filter: {}, pagination, organizationId: null });
+
+    const findArg = requestRepo.find.mock.calls[0][0] as { where: Record<string, unknown> };
+    expect(Array.isArray(findArg.where)).toBe(false);
+    expect(findArg.where).toMatchObject({ deprecated: false });
+    expect(findArg.where).not.toHaveProperty('serviceOrganizationId');
+    expect(findArg.where).not.toHaveProperty('ownerOrganizationId');
+    expect(requestRepo.count).toHaveBeenCalledWith({ where: findArg.where });
+  });
+
+  it('一级管理员详情可跨公司读取（组织 ID 只影响二级范围）', async () => {
+    const requestRepo = makeRequestRepo();
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({ serviceOrganizationId: 700001, ownerOrganizationId: 700002 }),
+    );
+    const modelRepo = makeModelRepo();
+    modelRepo.findOne.mockResolvedValue(modelEntity());
+    const service = new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      modelRepo as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
+    );
+
+    await expect(service.findSummaryById(880001, null)).resolves.toMatchObject({
+      id: 880001,
+    });
+    expect(modelRepo.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  it('二级管理员详情：本公司（service 优先，缺失回落 owner）可读，外公司统一 NOT_FOUND', async () => {
+    const requestRepo = makeRequestRepo();
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({ serviceOrganizationId: null, ownerOrganizationId: 700001 }),
+    );
+    const modelRepo = makeModelRepo();
+    modelRepo.findOne.mockResolvedValue(modelEntity());
+    const service = new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      modelRepo as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
+    );
+
+    await expect(service.findSummaryById(880001, 700001)).resolves.toMatchObject({
+      id: 880001,
+    });
+
+    const denied = await captureThrownError(service.findSummaryById(880001, 700002));
+    expect(denied).toBeInstanceOf(DomainError);
+    expect((denied as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    expect(modelRepo.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  const processEntryWithFile = () => ({
+    id: '1',
+    entryUuid: 'entry-uuid-1',
+    requestId: 880001,
+    operationText: '更换部件',
+    testResult: null,
+    occurredAt: null,
+    timeSource: 'SERVER',
+    fileId: 'file-1',
+    versionNo: 1,
+    createdAt: new Date('2026-09-02T00:00:00.000Z'),
+    file: {
+      fileId: 'file-1',
+      originalFilename: 'a.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 10,
+      checksumSha256: 'checksum',
+    },
+  });
+
+  const processEntryTextOnly = () => ({
+    ...processEntryWithFile(),
+    fileId: null,
+    file: null,
+  });
+
+  const makeSummaryService = (
+    requestRepo: ReturnType<typeof makeRequestRepo>,
+    processEntryQuery: ReturnType<typeof makeProcessEntryQuery>,
+  ) => {
+    const modelRepo = makeModelRepo();
+    modelRepo.findOne.mockResolvedValue(modelEntity());
+    processEntryQuery.listByRequest.mockResolvedValue([processEntryWithFile()]);
+    processEntryQuery.listByRequestTextOnly.mockResolvedValue([processEntryTextOnly()]);
+    return new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      modelRepo as never,
+      makeRevisionRepo() as never,
+      processEntryQuery as never,
+    );
+  };
+
+  /** 使用真实过程投影（仓储替身）验证详情展示，不经 listByRequest mock。 */
+  const makeSummaryServiceWithProcessQuery = (
+    requestRepo: ReturnType<typeof makeRequestRepo>,
+    processEntryQuery: RepairProcessEntryQueryService,
+  ) => {
+    const modelRepo = makeModelRepo();
+    modelRepo.findOne.mockResolvedValue(modelEntity());
+    return new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      modelRepo as never,
+      makeRevisionRepo() as never,
+      processEntryQuery,
+    );
+  };
+
+  const makeRealProcessEntryProjection = (rows: Array<Record<string, unknown>>) => {
+    const queryBuilder = {
+      leftJoin: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
+    };
+    const projection = new RepairProcessEntryQueryService({
+      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+    } as never);
+    return { projection, queryBuilder };
+  };
+
+  const makeRealProcessEntryQuery = (rows: Array<Record<string, unknown>>) =>
+    makeRealProcessEntryProjection(rows).projection;
+
+  /**
+   * 管理员详情过程行（仓储替身原始行）。
+   * businessId='880001' 表示原件已正式绑定当前工单。
+   */
+  const processRow = (overrides: Record<string, unknown> = {}) => ({
+    id: '1',
+    entryUuid: 'entry-uuid-1',
+    requestId: '880001',
+    operationText: '更换部件',
+    testResult: null,
+    occurredAt: null,
+    timeSource: 'SERVER',
+    fileId: 'file-1',
+    versionNo: '1',
+    createdAt: '2026-09-02T00:00:00.000Z',
+    fileFileId: 'file-1',
+    fileOriginalFilename: 'a.pdf',
+    fileMimeType: 'application/pdf',
+    fileByteSize: '10',
+    fileChecksumSha256: 'checksum',
+    fileStatus: 'VALID',
+    fileBindingStatus: 'BOUND',
+    fileVerifiedAt: '2026-09-02T00:00:00.000Z',
+    fileBusinessId: '880001',
+    fileBusinessType: 'REPAIR_PROCESS',
+    ...overrides,
+  });
+
+  it('组合 a：service=A、intake=A、owner=B，二级管理员 A 应展示原件（与任务 11 授权一致）', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700001 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const service = makeSummaryService(requestRepo, makeProcessEntryQuery());
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBe('file-1');
+    expect(summary.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
+  });
+
+  it('组合 b：service=NULL、owner=A，二级管理员 A 不应展示原件（任务 11 不回退 owner）', async () => {
+    const intakeRepo = makeIntakeRepo();
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: null,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBeNull();
+    expect(summary.processEntries[0].file).toBeNull();
+    expect(summary.processEntries[0].operationText).toBe('更换部件');
+    expect(summary.processEntries[0].versionNo).toBe(1);
+    expect(intakeRepo.findOne).not.toHaveBeenCalled();
+    // 组织授权失败后只能走无原件的文本投影
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).toHaveBeenCalledWith(880001);
+  });
+
+  it('组合 c：service=A、intake=B、owner=A，二级管理员 A 不应展示原件', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700002 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBeNull();
+    expect(summary.processEntries[0].file).toBeNull();
+    expect(summary.processEntries[0].operationText).toBe('更换部件');
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).toHaveBeenCalledWith(880001);
+    // 组织（intake）授权必须先于任何过程/原件查询
+    expect(intakeRepo.findOne.mock.invocationCallOrder[0]).toBeLessThan(
+      processEntryQuery.listByRequestTextOnly.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('一级管理员详情保留全部原件；intake 缺失时二级失败关闭', async () => {
+    const intakeRepo = makeIntakeRepo();
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: null,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const global = await service.findSummaryById(880001, null);
+    expect(global.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
+    expect(processEntryQuery.listByRequest).toHaveBeenCalledTimes(1);
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
+
+    processEntryQuery.listByRequest.mockClear();
+    processEntryQuery.listByRequestTextOnly.mockClear();
+    const scoped = await service.findSummaryById(880001, 700001);
+    expect(scoped.processEntries[0].file).toBeNull();
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).toHaveBeenCalledWith(880001);
+  });
+
+  it('一级管理员：有效 BOUND 原件展示；INVALID 原件隐藏且保留过程文本', async () => {
+    const requestRepo = makeRequestRepo();
+    requestRepo.findOne.mockResolvedValue(requestEntity());
+    const service = makeSummaryServiceWithProcessQuery(
+      requestRepo,
+      makeRealProcessEntryQuery([
+        processRow(),
+        processRow({
+          id: '2',
+          entryUuid: 'entry-uuid-2',
+          operationText: '复测',
+          versionNo: '2',
+          fileStatus: 'FAILED',
+        }),
+      ]),
+    );
+
+    const summary = await service.findSummaryById(880001, null);
+
+    expect(summary.processEntries[0].fileId).toBe('file-1');
+    expect(summary.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
+    expect(summary.processEntries[1].fileId).toBeNull();
+    expect(summary.processEntries[1].file).toBeNull();
+    expect(summary.processEntries[1].operationText).toBe('复测');
+    expect(summary.processEntries[1].versionNo).toBe(2);
+    expect(JSON.stringify(summary.processEntries[1])).not.toContain('checksum');
+  });
+
+  it('一级管理员：verifiedAt 缺失、TEMPORARY 或 businessId 指向其他工单均隐藏原件', async () => {
+    const requestRepo = makeRequestRepo();
+    requestRepo.findOne.mockResolvedValue(requestEntity());
+    const service = makeSummaryServiceWithProcessQuery(
+      requestRepo,
+      makeRealProcessEntryQuery([
+        processRow({ id: '1', fileVerifiedAt: null }),
+        processRow({ id: '2', entryUuid: 'entry-uuid-2', fileBindingStatus: 'TEMPORARY' }),
+        processRow({ id: '3', entryUuid: 'entry-uuid-3', fileBusinessId: '880002' }),
+      ]),
+    );
+
+    const summary = await service.findSummaryById(880001, null);
+
+    expect(summary.processEntries).toHaveLength(3);
+    for (const entry of summary.processEntries) {
+      expect(entry.fileId).toBeNull();
+      expect(entry.file).toBeNull();
+      expect(entry.operationText).toBe('更换部件');
+    }
+  });
+
+  it('二级管理员 A：service=A、intake=A 时有效原件展示，无效原件隐藏', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700001 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const service = makeSummaryServiceWithProcessQuery(
+      requestRepo,
+      makeRealProcessEntryQuery([
+        processRow(),
+        processRow({
+          id: '2',
+          entryUuid: 'entry-uuid-2',
+          operationText: '复测',
+          fileStatus: 'INVALID',
+        }),
+      ]),
+    );
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBe('file-1');
+    expect(summary.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
+    expect(summary.processEntries[1].fileId).toBeNull();
+    expect(summary.processEntries[1].file).toBeNull();
+    expect(summary.processEntries[1].operationText).toBe('复测');
+  });
+
+  it('二级管理员 A：service=A、intake=B 时即使文件事实有效也不展示（不回退 owner）', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700002 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const service = makeSummaryServiceWithProcessQuery(
+      requestRepo,
+      makeRealProcessEntryQuery([processRow()]),
+    );
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBeNull();
+    expect(summary.processEntries[0].file).toBeNull();
+    expect(summary.processEntries[0].operationText).toBe('更换部件');
+  });
+
+  it('二级拒绝（service=A、intake=B）：先组织授权，再执行无 stored_file 联接的文本投影', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700002 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const { projection, queryBuilder } = makeRealProcessEntryProjection([
+      {
+        id: '1',
+        entryUuid: 'entry-uuid-1',
+        requestId: '880001',
+        operationText: '更换部件',
+        testResult: null,
+        occurredAt: null,
+        timeSource: 'SERVER',
+        versionNo: '1',
+        createdAt: '2026-09-02T00:00:00.000Z',
+      },
+    ]);
+    const service = makeSummaryServiceWithProcessQuery(requestRepo, projection);
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0]).toMatchObject({
+      operationText: '更换部件',
+      versionNo: 1,
+      fileId: null,
+      file: null,
+    });
+    expect(queryBuilder.leftJoin).not.toHaveBeenCalled();
+    const selected = queryBuilder.select.mock.calls[0][0] as string[];
+    expect(selected.join('\n')).not.toContain('entry.file_id');
+    expect(selected.join('\n')).not.toContain('file.');
+    expect(selected).toEqual(
+      expect.arrayContaining([
+        'entry.operation_text AS operationText',
+        'entry.version_no AS versionNo',
+      ]),
+    );
+    // 组织授权（intake 读取）必须先于投影执行
+    expect(intakeRepo.findOne.mock.invocationCallOrder[0]).toBeLessThan(
+      queryBuilder.getRawMany.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('二级允许（service=A、intake=A）：仍执行含原件事实的投影并展示有效原件', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700001 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const { projection, queryBuilder } = makeRealProcessEntryProjection([processRow()]);
+    const service = makeSummaryServiceWithProcessQuery(requestRepo, projection);
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBe('file-1');
+    expect(queryBuilder.leftJoin).toHaveBeenCalled();
+    const selected = queryBuilder.select.mock.calls[0][0] as string[];
+    expect(selected.join('\n')).toContain('entry.file_id AS fileId');
+    expect(selected.join('\n')).toContain('file.original_filename AS fileOriginalFilename');
+  });
+
+  it('二级管理员 A：service=A、intake=A 但文件 businessId 指向其他工单时隐藏', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700001 });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const service = makeSummaryServiceWithProcessQuery(
+      requestRepo,
+      makeRealProcessEntryQuery([processRow({ fileBusinessId: '880002' })]),
+    );
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.processEntries[0].fileId).toBeNull();
+    expect(summary.processEntries[0].file).toBeNull();
+  });
+
   it('统计口径与默认列表过滤一致：仅统计未删除申请', async () => {
     const requestRepo = makeRequestRepo();
     requestRepo.count.mockResolvedValue(7);
@@ -313,9 +853,11 @@ describe('AdminRepairRequestQueryService', () => {
       requestRepo as never,
       makeResponseRepo() as never,
       makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
     );
 
-    await expect(service.countAll()).resolves.toBe(7);
+    await expect(service.countAll(null)).resolves.toBe(7);
     expect(requestRepo.count).toHaveBeenCalledWith({ where: { deprecated: false } });
   });
 });

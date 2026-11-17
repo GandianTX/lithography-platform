@@ -14,6 +14,8 @@ import type {
   AdminRepairRequestFilter,
   AdminRepairRequestListItem,
   AdminRepairRequestSummary,
+  AdminRepairRevisionInput,
+  AdminRepairRevisionResult,
 } from './admin-document-database.types';
 
 /**
@@ -81,6 +83,59 @@ const ADMIN_REPAIR_REQUEST_SUMMARY_QUERY = `
       acceptedAt
       acceptedByEngineerNickname
       latestResolutionStatus
+      createdAt
+      closureStatus
+      closedAt
+      closureReason
+      handlingResult
+      handlingStatus
+      currentRevisionNo
+      processEntries {
+        id
+        entryUuid
+        requestId
+        operationText
+        testResult
+        occurredAt
+        timeSource
+        fileId
+        versionNo
+        createdAt
+        file {
+          fileId
+          originalFilename
+          mimeType
+          byteSize
+          checksumSha256
+        }
+      }
+      responses {
+        id
+        responseText
+        resolutionStatus
+        engineerNickname
+        createdAt
+      }
+      revisions {
+        revisionNo
+        previousVersion
+        reason
+        actorNickname
+        createdAt
+      }
+    }
+  }
+`;
+
+const APPEND_ADMIN_REPAIR_REQUEST_REVISION_MUTATION = `
+  mutation AppendRepairRequestRevision($input: AppendRepairRequestRevisionInput!) {
+    appendRepairRequestRevision(input: $input) {
+      requestId
+      revisionNo
+      previousVersion
+      reason
+      actorNickname
+      currentRevisionNo
       createdAt
     }
   }
@@ -357,6 +412,35 @@ export async function fetchAdminRepairRequestSummary(
     return { ok: true, detail: data.adminRepairRequestSummary };
   } catch (error) {
     return toNotFoundResult(error, '维修申请不存在或不可查看。');
+  }
+}
+
+export type AdminRevisionMutationResult =
+  | { ok: true; result: AdminRepairRevisionResult }
+  | { ok: false; message: string };
+
+/**
+ * 管理员按版本条件修订工单已提交事实。
+ *
+ * 业务拒绝（BAD_USER_INPUT / CONFLICT / FORBIDDEN / NOT_FOUND）归并为可展示消息；
+ * transport 失败继续上抛由调用方统一处理。服务端失败整体回滚，前端成功后必须
+ * 重新读取详情，不本地拼接「已修订」事实。
+ */
+export async function appendAdminRepairRequestRevision(
+  input: AdminRepairRevisionInput,
+): Promise<AdminRevisionMutationResult> {
+  try {
+    const data = await executeGraphQL<
+      { appendRepairRequestRevision: AdminRepairRevisionResult },
+      { input: AdminRepairRevisionInput }
+    >(APPEND_ADMIN_REPAIR_REQUEST_REVISION_MUTATION, { input });
+    return { ok: true, result: data.appendRepairRequestRevision };
+  } catch (error) {
+    if (isGraphQLIngressError(error)) {
+      const detail = readGraphQLErrorDetail(error);
+      return { ok: false, message: detail?.errorMessage ?? error.userMessage };
+    }
+    throw error;
   }
 }
 

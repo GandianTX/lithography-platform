@@ -128,12 +128,12 @@ function useAdminDetail<TDetail>(
   return { state, retry };
 }
 
-/** 维修申请只读摘要 */
+/** 维修申请只读详情（已提交事实） */
 export function useAdminRepairRequestSummary(requestId: number | null) {
   return useAdminDetail<AdminRepairRequestSummary>(
     (target) => fetchAdminRepairRequestSummary(target),
     requestId,
-    '维修申请摘要加载失败，请稍后重试。',
+    '维修申请详情加载失败，请稍后重试。',
   );
 }
 

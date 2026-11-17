@@ -3,6 +3,8 @@
 import {
   EngineerResolutionStatus,
   RepairRequestAcceptanceViewStatus,
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
 import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
 import type { AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
@@ -18,7 +20,9 @@ import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { mapGqlToCoreParams } from '@src/adapters/api/graphql/pagination.mapper';
 import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { AcceptRepairRequestUsecase } from '@src/usecases/repair-request/accept-repair-request.usecase';
+import { CloseRepairRequestUsecase } from '@src/usecases/repair-request/close-repair-request.usecase';
 import { CreateEngineerResponseUsecase } from '@src/usecases/repair-request/create-engineer-response.usecase';
+import { CreateRepairProcessEntryUsecase } from '@src/usecases/repair-request/create-repair-process-entry.usecase';
 import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
@@ -26,8 +30,14 @@ import { GetMyRepairRequestDetailUsecase } from '@src/usecases/repair-request/ge
 import { ListEngineerRepairRequestsUsecase } from '@src/usecases/repair-request/list-engineer-repair-requests.usecase';
 import { ListMyRepairRequestsUsecase } from '@src/usecases/repair-request/list-my-repair-requests.usecase';
 import { SearchRepairServiceOrganizationsUsecase } from '@src/usecases/repair-request/search-repair-service-organizations.usecase';
+import { UpdateRepairProcessEntryUsecase } from '@src/usecases/repair-request/update-repair-process-entry.usecase';
 import { CreateEngineerResponseInput } from './dto/create-engineer-response.input';
+import { CreateRepairProcessEntryInput } from './dto/create-repair-process-entry.input';
 import { CreateRepairRequestInput } from './dto/create-repair-request.input';
+import { UpdateRepairProcessEntryInput } from './dto/update-repair-process-entry.input';
+import { CloseRepairRequestInput } from './dto/close-repair-request.input';
+import { RepairRequestClosureDTO } from './dto/repair-request-closure.dto';
+import { RepairProcessEntryDTO } from './dto/repair-process-entry.dto';
 import { DeleteMyRepairRequestResultDTO } from './dto/delete-my-repair-request-result.dto';
 import {
   RepairServiceOrganizationPageDTO,
@@ -56,6 +66,9 @@ export class RepairRequestResolver {
     private readonly createRepairRequestUsecase: CreateRepairRequestUsecase,
     private readonly acceptRepairRequestUsecase: AcceptRepairRequestUsecase,
     private readonly createEngineerResponseUsecase: CreateEngineerResponseUsecase,
+    private readonly createRepairProcessEntryUsecase: CreateRepairProcessEntryUsecase,
+    private readonly updateRepairProcessEntryUsecase: UpdateRepairProcessEntryUsecase,
+    private readonly closeRepairRequestUsecase: CloseRepairRequestUsecase,
     private readonly deleteMyRepairRequestUsecase: DeleteMyRepairRequestUsecase,
     private readonly listMyRepairRequestsUsecase: ListMyRepairRequestsUsecase,
     private readonly listEngineerRepairRequestsUsecase: ListEngineerRepairRequestsUsecase,
@@ -175,6 +188,77 @@ export class RepairRequestResolver {
       resolutionStatus: input.resolutionStatus,
     });
     return this.toResponseDTO(view);
+  }
+
+  /**
+   * 工程师创建内部维修过程（可选在同一事务内绑定暂存原件）
+   * 写权限、接单人、组织范围、工单状态与作者均由 usecase 在同一事务内裁决；
+   * 结单后过程只读；客户不可调用
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER)
+  @Mutation(() => RepairProcessEntryDTO, { description: '工程师创建内部维修过程' })
+  @ValidateInput()
+  async createRepairProcessEntry(
+    @Args('input') input: CreateRepairProcessEntryInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<RepairProcessEntryDTO> {
+    const snapshot = await this.createRepairProcessEntryUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId: input.requestId,
+      operationText: input.operationText,
+      testResult: input.testResult,
+      occurredAt: input.occurredAt,
+      file: input.file,
+    });
+    return this.toProcessEntryDTO(snapshot);
+  }
+
+  /**
+   * 工程师编辑内部维修过程
+   * 仅作者本人、接单人、同组织可编辑；expectedVersion 不符返回冲突；
+   * 仅当前过程无原件时可补传一份暂存原件；已有原件不允许替换/移除；结单后只读
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER)
+  @Mutation(() => RepairProcessEntryDTO, { description: '工程师编辑内部维修过程' })
+  @ValidateInput()
+  async updateRepairProcessEntry(
+    @Args('input') input: UpdateRepairProcessEntryInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<RepairProcessEntryDTO> {
+    const snapshot = await this.updateRepairProcessEntryUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId: input.requestId,
+      entryId: input.entryId,
+      expectedVersion: input.expectedVersion,
+      operationText: input.operationText,
+      testResult: input.testResult,
+      occurredAt: input.occurredAt,
+      file: input.file,
+    });
+    return this.toProcessEntryDTO(snapshot);
+  }
+
+  /**
+   * 工程师结单
+   * 仅接单工程师本人、同组织可结单；处理结果经固定策略映射为三态状态；
+   * 结单与回复互相独立；结单后过程与回复只读
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER)
+  @Mutation(() => RepairRequestClosureDTO, { description: '工程师结单' })
+  @ValidateInput()
+  async closeRepairRequest(
+    @Args('input') input: CloseRepairRequestInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<RepairRequestClosureDTO> {
+    return this.closeRepairRequestUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId: input.requestId,
+      handlingResult: input.handlingResult,
+      closureReason: input.closureReason,
+    });
   }
 
   /**
@@ -331,6 +415,36 @@ export class RepairRequestResolver {
   }
 
   /**
+   * 内部维修过程视图 → DTO（创建/编辑成功返回；file 为 null 时前端刷新详情读取绑定信息）
+   */
+  private toProcessEntryDTO(entry: {
+    id: string;
+    entryUuid: string;
+    requestId: number;
+    operationText: string;
+    testResult: string | null;
+    occurredAt: Date | null;
+    timeSource: string;
+    fileId: string | null;
+    versionNo: number;
+    createdAt: Date;
+  }): RepairProcessEntryDTO {
+    return {
+      id: entry.id,
+      entryUuid: entry.entryUuid,
+      requestId: entry.requestId,
+      operationText: entry.operationText,
+      testResult: entry.testResult,
+      occurredAt: entry.occurredAt,
+      timeSource: entry.timeSource,
+      fileId: entry.fileId,
+      file: null,
+      versionNo: entry.versionNo,
+      createdAt: entry.createdAt,
+    };
+  }
+
+  /**
    * 详情视图 → DTO（回复含工程师安全昵称，不返回工程师账号 ID）
    * 工程师入口富集字段（客户/接单工程师资料与视角状态）存在时透传，客户入口为空
    */
@@ -356,6 +470,30 @@ export class RepairRequestResolver {
     customerCompanyName?: string | null;
     acceptanceViewStatus?: RepairRequestAcceptanceViewStatus | null;
     acceptedEngineerNickname?: string | null;
+    closureStatus: string | null;
+    closedAt: Date | null;
+    closureReason: string | null;
+    handlingResult: RepairRequestHandlingResult | null;
+    handlingStatus: RepairRequestHandlingStatus | null;
+    processEntries: Array<{
+      id: string;
+      entryUuid: string;
+      requestId: number;
+      operationText: string;
+      testResult: string | null;
+      occurredAt: Date | null;
+      timeSource: string;
+      fileId: string | null;
+      versionNo: number;
+      createdAt: Date;
+      file: {
+        fileId: string;
+        originalFilename: string;
+        mimeType: string;
+        byteSize: number;
+        checksumSha256: string;
+      } | null;
+    }>;
   }): RepairRequestDetailDTO {
     return {
       ...this.toListItemDTO(detail),
@@ -366,6 +504,15 @@ export class RepairRequestResolver {
       customerCompanyName: detail.customerCompanyName ?? null,
       acceptanceViewStatus: detail.acceptanceViewStatus ?? null,
       acceptedEngineerNickname: detail.acceptedEngineerNickname ?? null,
+      closureStatus: detail.closureStatus,
+      closedAt: detail.closedAt,
+      closureReason: detail.closureReason,
+      handlingResult: detail.handlingResult,
+      handlingStatus: detail.handlingStatus,
+      processEntries: detail.processEntries.map((entry) => ({
+        ...this.toProcessEntryDTO(entry),
+        file: entry.file,
+      })),
     };
   }
 

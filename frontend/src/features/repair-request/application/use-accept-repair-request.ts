@@ -1,6 +1,6 @@
 // src/features/repair-request/application/use-accept-repair-request.ts
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
 
@@ -15,10 +15,13 @@ import { invalidateEngineerRepairLists } from './engineer-repair-list-refresh';
 /**
  * 工程师接单流程（command 状态，收束在 feature application）。
  *
- * - 进行中防重复提交：按钮禁用之外，ref 锁保证连点不会产生并行 Mutation；
- *   accept 返回 null 表示“上一次接单仍在进行中，本次请求被拒绝”，调用方必须处理；
+ * - 进行中防重复提交：按钮禁用之外，按「归属键（工单 + 会话）」记录 ref 锁，
+ *   连点不会产生并行 Mutation；accept 返回 null 表示同一归属下上一次接单仍在进行中；
+ *   不同归属（换会话后新会话）互不继承在飞锁；
  * - 业务拒绝（已被接单 / 不可访问 / 无权限 / 系统失败）以显式结果返回，
  *   大类 CONFLICT 是稳定运行时分支，提示文案不依赖生产可能隐藏的细节码；
+ * - 异步边界后的副作用按调用方提供的归属判定：不再属于发起时的实例/工单/会话时，
+ *   不写反馈、不宣告列表失效（只隔离客户端副作用，不宣称请求被取消或服务端未写入）；
  * - 接单成功、冲突（申请已被接单）与 accept-failed（接单结果不确定：
  *   事务可能已提交但事务外详情读取或传输失败）后宣告工程师两个范围的列表失效，
  *   挂载中的列表自动刷新，不保留“仍可接单”的过期假象
@@ -31,23 +34,52 @@ import { invalidateEngineerRepairLists } from './engineer-repair-list-refresh';
  * - auth 错误不在这里特殊处理，仍由共享 GraphQL + auth-session 全局链路负责。
  */
 
+/** 单次接单的归属上下文；语义与回复 command 的归属上下文一致 */
+export type AcceptRepairRequestOwnership = {
+  key: string;
+  isCurrent: () => boolean;
+};
+
+const DEFAULT_OWNERSHIP: AcceptRepairRequestOwnership = {
+  key: 'default',
+  isCurrent: () => true,
+};
+
 export function useAcceptRepairRequest() {
-  const [accepting, setAccepting] = useState(false);
+  const [acceptingKey, setAcceptingKey] = useState<string | null>(null);
   const [result, setResult] = useState<AcceptRepairRequestResult | null>(null);
-  const acceptingRef = useRef(false);
+  /** 忙令牌按归属键记录：旧请求的 finally 只删除自己的键与令牌 */
+  const busyRef = useRef(new Map<string, number>());
+  const tokenSeqRef = useRef(0);
+  /** 实例是否仍挂载：卸载后的迟到接单结果不得再写反馈或宣告列表失效 */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const accept = useCallback(
-    async (requestId: number): Promise<AcceptRepairRequestResult | null> => {
-      if (acceptingRef.current) {
+    async (
+      requestId: number,
+      ownership: AcceptRepairRequestOwnership = DEFAULT_OWNERSHIP,
+    ): Promise<AcceptRepairRequestResult | null> => {
+      const { key, isCurrent } = ownership;
+      if (!mountedRef.current || busyRef.current.has(key)) {
         return null;
       }
 
-      acceptingRef.current = true;
-      setAccepting(true);
+      const token = ++tokenSeqRef.current;
+      busyRef.current.set(key, token);
+      setAcceptingKey(key);
       setResult(null);
 
       try {
         const acceptResult = await acceptRepairRequest(requestId);
+        if (!mountedRef.current || !isCurrent()) {
+          return acceptResult;
+        }
         setResult(acceptResult);
 
         // 成功 / 已被接单（冲突）/ 接单结果不确定（accept-failed）时，
@@ -68,14 +100,21 @@ export function useAcceptRepairRequest() {
           reason: 'accept-failed',
           message,
         };
-        setResult(transportResult);
-        // transport 失败同样视为接单结果不确定（请求可能已在服务端生效），
-        // 与显式 accept-failed 结果一致宣告列表失效
-        invalidateEngineerRepairLists();
+        if (mountedRef.current && isCurrent()) {
+          setResult(transportResult);
+          // transport 失败同样视为接单结果不确定（请求可能已在服务端生效），
+          // 与显式 accept-failed 结果一致宣告列表失效
+          invalidateEngineerRepairLists();
+        }
         return transportResult;
       } finally {
-        acceptingRef.current = false;
-        setAccepting(false);
+        // 只释放自己取得的令牌：新会话的忙状态不被旧请求的 finally 清掉
+        if (busyRef.current.get(key) === token) {
+          busyRef.current.delete(key);
+          if (mountedRef.current) {
+            setAcceptingKey((current) => (current === key ? null : current));
+          }
+        }
       }
     },
     [],
@@ -86,8 +125,18 @@ export function useAcceptRepairRequest() {
    * 重查结果与查询状态机同一数据源，确认已接单后把最近一次结果改写为成功。
    */
   const convergeToAccepted = useCallback((detail: EngineerRepairRequestDetail) => {
+    if (!mountedRef.current) {
+      return;
+    }
     setResult({ ok: true, detail });
   }, []);
 
-  return { accept, accepting, result, convergeToAccepted };
+  return {
+    accept,
+    /** 是否有任意归属的接单在飞（兼容独立使用）；编排层按 acceptingKey 判断当前会话 */
+    accepting: acceptingKey !== null,
+    acceptingKey,
+    result,
+    convergeToAccepted,
+  };
 }

@@ -15,6 +15,7 @@ import { GraphQLIngressError } from '@/shared/graphql';
 import type {
   EngineerRepairRequestDetail,
   EngineerRepairRequestDetailResult,
+  EngineerRepairRequestResponseItem,
 } from '../infrastructure/engineer-repair-request.types';
 import * as engineerRepairRequestAdapter from '../infrastructure/engineer-repair-request-adapter';
 
@@ -52,8 +53,22 @@ function buildDetail(id: number, isAccepted: boolean): EngineerRepairRequestDeta
     customerCompanyName: '林氏精密制造',
     acceptanceViewStatus: isAccepted ? 'MINE' : 'AVAILABLE',
     acceptedEngineerNickname: isAccepted ? '陈工' : null,
+    closureStatus: null,
+    closedAt: null,
+    closureReason: null,
+    handlingResult: null,
+    handlingStatus: null,
+    processEntries: [],
     responses: [],
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -223,7 +238,7 @@ describe('useEngineerRepairRequestDetail', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('loading 态下 applyDetail 被丢弃，不抢占查询结果', async () => {
+  it('loading 态下 applyDetail 原子注入并结束 loading，此前发出的旧查询不得覆盖', async () => {
     let resolveDetail: (value: EngineerRepairRequestDetailResult) => void = () => {};
     const pending = new Promise<EngineerRepairRequestDetailResult>((resolve) => {
       resolveDetail = resolve;
@@ -233,17 +248,25 @@ describe('useEngineerRepairRequestDetail', () => {
     const { result } = renderHook(() => useEngineerRepairRequestDetail(21));
     expect(result.current.state.status).toBe('loading');
 
+    // 接单 Mutation 返回的是已确认的较新写事实：不能被 loading 吞掉
     await act(async () => {
       result.current.applyDetail(buildDetail(21, true));
     });
-    expect(result.current.state.status).toBe('loading');
+    expect(result.current.state).toMatchObject({
+      status: 'ready',
+      detail: buildDetail(21, true),
+    });
 
+    // 早于注入发出的读取晚到：旧快照不得覆盖已确认的 Mutation 结果
     await act(async () => {
       resolveDetail({ ok: true, detail: buildDetail(21, false) });
       await pending;
     });
 
-    expect(result.current.state).toMatchObject({ detail: buildDetail(21, false) });
+    expect(result.current.state).toMatchObject({
+      status: 'ready',
+      detail: buildDetail(21, true),
+    });
   });
 
   it('failed 态下 applyDetail 被丢弃，不复活为可接单的 ready 状态', async () => {
@@ -587,6 +610,274 @@ describe('useEngineerRepairRequestDetail 的 recheckSilently（静默重查）',
 
     expect(outcome).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+    unmount();
+  });
+});
+
+describe('useEngineerRepairRequestDetail 的统一读取代次（回复重查 vs 写后回读）', () => {
+  const INITIAL = { ...buildDetail(21, true), contentMd: '# 初始详情' };
+  const FRESH = { ...buildDetail(21, true), contentMd: '# 最新回读' };
+  const STALE = { ...buildDetail(21, true), contentMd: '# 旧重查快照' };
+
+  async function renderReady() {
+    fetchMock.mockResolvedValueOnce({ ok: true, detail: INITIAL });
+    const rendered = renderHook(() => useEngineerRepairRequestDetail(21));
+    await waitFor(() => expect(rendered.result.current.state.status).toBe('ready'));
+
+    return rendered;
+  }
+
+  it('回复重查先发、写后回读后发：回读先返回后，旧重查成功晚到不得让详情倒退', async () => {
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const { result, unmount } = await renderReady();
+    fetchMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+
+    let recheck: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      recheck = result.current.recheckSilently();
+      readback = result.current.reload({ silent: true });
+    });
+
+    await act(async () => {
+      readbackDeferred.resolve({ ok: true, detail: FRESH });
+      await readback;
+    });
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: STALE });
+      await recheck;
+    });
+
+    // 旧重查晚到：详情必须仍是后发回读结果
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    unmount();
+  });
+
+  it('相反返回顺序：旧重查先返回，后发回读后返回，最终仍为最新请求结果', async () => {
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const { result, unmount } = await renderReady();
+    fetchMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+
+    let recheck: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      recheck = result.current.recheckSilently();
+      readback = result.current.reload({ silent: true });
+    });
+
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: STALE });
+      await recheck;
+    });
+    // 后发回读「开始」不使仍有效的先发重查失效：先返回时允许先提交，
+    // 随后被后发回读结果取代
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: STALE });
+
+    await act(async () => {
+      readbackDeferred.resolve({ ok: true, detail: FRESH });
+      await readback;
+    });
+
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    unmount();
+  });
+
+  it('旧重查先返回、后发的结单/保存回读失败晚到：不得把共享详情改成失败', async () => {
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const { result, unmount } = await renderReady();
+    fetchMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+
+    let recheck: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      recheck = result.current.recheckSilently();
+      readback = result.current.reload({ silent: true });
+    });
+
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: FRESH });
+      await recheck;
+    });
+    // 后发回读「开始」不使仍有效的先发重查失效：先返回时允许先提交
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+
+    await act(async () => {
+      readbackDeferred.resolve({
+        ok: false,
+        reason: 'load-failed',
+        message: '回读失败-SENTINEL',
+      });
+      await readback;
+    });
+
+    // 最新回读失败：静默请求不写共享失败态，保留当前详情（先发重查结果）
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    unmount();
+  });
+
+  it('写后回读先返回、旧重查失败晚到：不回写旧错误且返回该失败结果', async () => {
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const { result, unmount } = await renderReady();
+    fetchMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+
+    let recheck: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      recheck = result.current.recheckSilently();
+      readback = result.current.reload({ silent: true });
+    });
+
+    await act(async () => {
+      readbackDeferred.resolve({ ok: true, detail: FRESH });
+      await readback;
+    });
+
+    let recheckOutcome: EngineerRepairRequestDetailLoadOutcome | null = null;
+    await act(async () => {
+      recheckDeferred.resolve({
+        ok: false,
+        reason: 'load-failed',
+        message: '旧重查失败-SENTINEL',
+      });
+      recheckOutcome = await recheck;
+    });
+
+    expect(recheckOutcome).toEqual({
+      ok: false,
+      reason: 'load-failed',
+      message: '旧重查失败-SENTINEL',
+    });
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    unmount();
+  });
+
+  it('两条静默读取在飞时切工单：旧工单结果不得写入新工单共享详情', async () => {
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    fetchMock.mockResolvedValueOnce({ ok: true, detail: INITIAL });
+    fetchMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+    fetchMock.mockResolvedValueOnce({ ok: true, detail: buildDetail(22, false) });
+
+    const { result, rerender, unmount } = renderHook(
+      ({ requestId }: { requestId: number }) => useEngineerRepairRequestDetail(requestId),
+      { initialProps: { requestId: 21 } },
+    );
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let recheck: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      recheck = result.current.recheckSilently();
+      readback = result.current.reload({ silent: true });
+    });
+
+    rerender({ requestId: 22 });
+    await waitFor(() =>
+      expect(result.current.state).toMatchObject({
+        status: 'ready',
+        detail: buildDetail(22, false),
+      }),
+    );
+
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: STALE });
+      readbackDeferred.resolve({ ok: true, detail: FRESH });
+      await Promise.all([recheck, readback]);
+    });
+
+    expect(result.current.state).toMatchObject({
+      status: 'ready',
+      detail: buildDetail(22, false),
+    });
+    unmount();
+  });
+});
+
+describe('useEngineerRepairRequestDetail 写后回读的采用信号', () => {
+  it('回读结果实际写入共享详情时才通知 onApplied', async () => {
+    const initial = { ...buildDetail(21, true), contentMd: '# 初始详情' };
+    const readback = { ...initial, contentMd: '# 已被采用的回读' };
+    fetchMock.mockResolvedValueOnce({ ok: true, detail: initial });
+    const { result, unmount } = renderHook(() => useEngineerRepairRequestDetail(21));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    const applied: EngineerRepairRequestDetail[] = [];
+    fetchMock.mockResolvedValueOnce({ ok: true, detail: readback });
+    await act(async () => {
+      await result.current.reload({
+        silent: true,
+        mutation: true,
+        onApplied: (detail) => applied.push(detail),
+      });
+    });
+
+    expect(applied).toEqual([readback]);
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: readback });
+    unmount();
+  });
+
+  it('回读请求成功但被期间 Mutation 注入取代：不通知 onApplied', async () => {
+    const initial = { ...buildDetail(21, true), contentMd: '# 初始详情' };
+    const superseded = { ...initial, contentMd: '# 未采用的旧回读' };
+    const response: EngineerRepairRequestResponseItem = {
+      id: 901,
+      engineerNickname: '陈工',
+      responseText: '已更换备件',
+      resolutionStatus: 'PENDING',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    fetchMock.mockResolvedValueOnce({ ok: true, detail: initial });
+    const { result, unmount } = renderHook(() => useEngineerRepairRequestDetail(21));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    fetchMock
+      .mockReturnValueOnce(readbackDeferred.promise)
+      // 被 Mutation 取代后的补读：返回失败，避免再次采用
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: 'load-failed',
+        message: '补读失败-SENTINEL',
+      });
+    const onApplied = vi.fn();
+
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      readback = result.current.reload({ silent: true, mutation: true, onApplied });
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      result.current.applyResponse(response, 21);
+    });
+
+    await act(async () => {
+      readbackDeferred.resolve({ ok: true, detail: superseded });
+      await readback;
+    });
+
+    expect(onApplied).not.toHaveBeenCalled();
+    expect(result.current.state.status).toBe('ready');
+    if (result.current.state.status === 'ready') {
+      expect(result.current.state.detail.contentMd).toBe('# 初始详情');
+      expect(result.current.state.detail.responses).toEqual([response]);
+    }
     unmount();
   });
 });

@@ -2,12 +2,18 @@
 // 管理员文档数据库（PR3 只读聚合）GraphQL 输出对象
 // 不返回任何归属类账号 ID；昵称/公司名为服务端富集展示字段
 
-import { Field, Int, ObjectType } from '@nestjs/graphql';
+import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
-import { EngineerResolutionStatus } from '@app-types/models/repair-request.types';
+import {
+  EngineerResolutionStatus,
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
+} from '@app-types/models/repair-request.types';
 import type {
   AdminAiReportDetailView,
   AdminRepairRequestListItemView,
+  AdminRepairRequestResponseView,
+  AdminRepairRequestRevisionView,
   AdminRepairRequestSummaryView,
 } from '@src/modules/lithography/admin-document-database.types';
 import { paginatedTypeFactory } from '@src/adapters/api/graphql/pagination.type-factory';
@@ -59,13 +65,142 @@ export class AdminRepairRequestListItemDTO {
   latestResolutionStatus?: EngineerResolutionStatus | null;
 }
 
-@ObjectType({ description: '管理员维修申请只读摘要' })
+@ObjectType({ description: '管理员工单内已保存原件的安全字段（不含存储引用）' })
+export class AdminRepairProcessEntryFileDTO {
+  @Field(() => String, { description: '原件 ID' })
+  fileId!: string;
+
+  @Field(() => String, { description: '原始文件名' })
+  originalFilename!: string;
+
+  @Field(() => String, { description: 'MIME 类型' })
+  mimeType!: string;
+
+  @Field(() => Int, { description: '字节数' })
+  byteSize!: number;
+
+  @Field(() => String, { description: 'SHA-256 校验值' })
+  checksumSha256!: string;
+}
+
+@ObjectType({ description: '管理员工单内部维修过程（只读）' })
+export class AdminRepairProcessEntryDTO {
+  @Field(() => ID, { description: '过程记录 ID' })
+  id!: string;
+
+  @Field(() => String, { description: '过程记录业务 UUID' })
+  entryUuid!: string;
+
+  @Field(() => Int, { description: '所属维修申请 ID' })
+  requestId!: number;
+
+  @Field(() => String, { description: '操作内容' })
+  operationText!: string;
+
+  @Field(() => String, { nullable: true, description: '测试结果' })
+  testResult?: string | null;
+
+  @Field(() => Date, { nullable: true, description: '发生时间' })
+  occurredAt?: Date | null;
+
+  @Field(() => String, { description: '时间来源（SERVER / MANUAL）' })
+  timeSource!: string;
+
+  @Field(() => String, { nullable: true, description: '已绑定原件 ID' })
+  fileId?: string | null;
+
+  @Field(() => AdminRepairProcessEntryFileDTO, {
+    nullable: true,
+    description: '已保存绑定的原件安全字段（未绑定为空）',
+  })
+  file?: AdminRepairProcessEntryFileDTO | null;
+
+  @Field(() => Int, { description: '过程当前版本号（用于管理修订）' })
+  versionNo!: number;
+
+  @Field(() => Date, { description: '创建时间' })
+  createdAt!: Date;
+}
+
+@ObjectType({ description: '管理员工单客户回复（只读）' })
+export class AdminRepairResponseDTO {
+  @Field(() => Int, { description: '回复 ID' })
+  id!: number;
+
+  @Field(() => String, { description: '回复正文' })
+  responseText!: string;
+
+  @Field(() => EngineerResolutionStatus, { description: '回复处理状态' })
+  resolutionStatus!: EngineerResolutionStatus;
+
+  @Field(() => String, { description: '回复工程师当前昵称' })
+  engineerNickname!: string;
+
+  @Field(() => Date, { description: '创建时间' })
+  createdAt!: Date;
+}
+
+@ObjectType({ description: '管理员工单修订历史项' })
+export class AdminRepairRevisionDTO {
+  @Field(() => Int, { description: '修订后版本号' })
+  revisionNo!: number;
+
+  @Field(() => Int, { description: '修订前版本号' })
+  previousVersion!: number;
+
+  @Field(() => String, { description: '修订原因' })
+  reason!: string;
+
+  @Field(() => String, { description: '修订人当前昵称' })
+  actorNickname!: string;
+
+  @Field(() => Date, { description: '修订时间' })
+  createdAt!: Date;
+}
+
+@ObjectType({ description: '管理员工单只读详情（已提交事实）' })
 export class AdminRepairRequestSummaryDTO extends AdminRepairRequestListItemDTO {
   @Field(() => String, { description: '故障描述' })
   faultDescription!: string;
 
-  @Field(() => String, { description: '申请正文（Markdown）' })
+  @Field(() => String, { description: '申请正文（Markdown，当前生效版本）' })
   contentMd!: string;
+
+  @Field(() => String, { nullable: true, description: '结单状态（CLOSED / 空）' })
+  closureStatus?: string | null;
+
+  @Field(() => Date, { nullable: true, description: '结单时间' })
+  closedAt?: Date | null;
+
+  @Field(() => String, { nullable: true, description: '结单原因' })
+  closureReason?: string | null;
+
+  @Field(() => RepairRequestHandlingResult, { nullable: true, description: '处理结果' })
+  handlingResult?: RepairRequestHandlingResult | null;
+
+  @Field(() => RepairRequestHandlingStatus, { nullable: true, description: '处理状态' })
+  handlingStatus?: RepairRequestHandlingStatus | null;
+
+  @Field(() => Int, { description: '当前修订版本号' })
+  currentRevisionNo!: number;
+
+  @Field(() => [AdminRepairProcessEntryDTO], { description: '内部维修过程（已提交）' })
+  processEntries!: AdminRepairProcessEntryDTO[];
+
+  @Field(() => [AdminRepairResponseDTO], { description: '客户可见回复时间线' })
+  responses!: AdminRepairResponseDTO[];
+
+  @Field(() => [AdminRepairRevisionDTO], { description: '修订历史（新版本在前）' })
+  revisions!: AdminRepairRevisionDTO[];
+}
+
+@ObjectType({ description: '管理员工单修订结果' })
+export class AdminRepairRevisionResultDTO extends AdminRepairRevisionDTO {
+  @Field(() => Int, { description: '维修申请 ID' })
+  requestId!: number;
+
+  @Field(() => Int, { description: '修订后的当前版本号' })
+  currentRevisionNo!: number;
 }
 
 @ObjectType({ description: '管理员维修申请分页结果' })
@@ -233,6 +368,81 @@ export function toAdminRepairRequestSummaryDTO(
     ...base,
     faultDescription: summary.faultDescription,
     contentMd: summary.contentMd,
+    closureStatus: summary.closureStatus,
+    closedAt: summary.closedAt,
+    closureReason: summary.closureReason,
+    handlingResult: summary.handlingResult,
+    handlingStatus: summary.handlingStatus,
+    currentRevisionNo: summary.currentRevisionNo,
+    processEntries: summary.processEntries.map(toAdminRepairProcessEntryDTO),
+    responses: summary.responses.map(toAdminRepairResponseDTO),
+    revisions: summary.revisions.map(toAdminRepairRevisionDTO),
+  };
+}
+
+function toAdminRepairProcessEntryDTO(entry: {
+  id: string;
+  entryUuid: string;
+  requestId: number;
+  operationText: string;
+  testResult: string | null;
+  occurredAt: Date | null;
+  timeSource: string;
+  fileId: string | null;
+  versionNo: number;
+  createdAt: Date;
+  file: {
+    fileId: string;
+    originalFilename: string;
+    mimeType: string;
+    byteSize: number;
+    checksumSha256: string;
+  } | null;
+}): AdminRepairProcessEntryDTO {
+  return {
+    id: entry.id,
+    entryUuid: entry.entryUuid,
+    requestId: entry.requestId,
+    operationText: entry.operationText,
+    testResult: entry.testResult,
+    occurredAt: entry.occurredAt,
+    timeSource: entry.timeSource,
+    fileId: entry.fileId,
+    file: entry.file
+      ? {
+          fileId: entry.file.fileId,
+          originalFilename: entry.file.originalFilename,
+          mimeType: entry.file.mimeType,
+          byteSize: entry.file.byteSize,
+          checksumSha256: entry.file.checksumSha256,
+        }
+      : null,
+    versionNo: entry.versionNo,
+    createdAt: entry.createdAt,
+  };
+}
+
+function toAdminRepairResponseDTO(
+  response: AdminRepairRequestResponseView,
+): AdminRepairResponseDTO {
+  return {
+    id: response.id,
+    responseText: response.responseText,
+    resolutionStatus: response.resolutionStatus,
+    engineerNickname: response.engineerNickname,
+    createdAt: response.createdAt,
+  };
+}
+
+function toAdminRepairRevisionDTO(
+  revision: AdminRepairRequestRevisionView,
+): AdminRepairRevisionDTO {
+  return {
+    revisionNo: revision.revisionNo,
+    previousVersion: revision.previousVersion,
+    reason: revision.reason,
+    actorNickname: revision.actorNickname,
+    createdAt: revision.createdAt,
   };
 }
 

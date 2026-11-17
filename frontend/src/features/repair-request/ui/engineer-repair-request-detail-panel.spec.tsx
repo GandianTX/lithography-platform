@@ -53,6 +53,12 @@ const READY_DETAIL: EngineerRepairRequestDetail = {
   customerCompanyName: '林氏精密制造',
   acceptanceViewStatus: 'AVAILABLE',
   acceptedEngineerNickname: null,
+  closureStatus: null,
+  closedAt: null,
+  closureReason: null,
+  handlingResult: null,
+  handlingStatus: null,
+  processEntries: [],
   responses: [],
 };
 
@@ -337,7 +343,7 @@ describe('工程师详情面板的回复区域', () => {
   }
 
   async function selectResolved() {
-    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.mouseDown(screen.getByLabelText('处理状态'));
     fireEvent.click(await screen.findByText('已解决'));
   }
 
@@ -404,7 +410,7 @@ describe('工程师详情面板的回复区域', () => {
     const { createMock } = renderPanel(true);
 
     expect(isControlDisabled(screen.getByLabelText('回复正文'))).toBe(true);
-    expect(isControlDisabled(screen.getByRole('combobox'))).toBe(true);
+    expect(isControlDisabled(screen.getByLabelText('处理状态'))).toBe(true);
     // antd 的 loading 按钮不加 disabled 属性（仅 loading 样式 + 内部拦截点击），
     // 因此断言 loading 态并验证点击不会产生提交
     const submitButton = screen.getByRole('button', { name: /提交回复/ });
@@ -523,7 +529,7 @@ describe('工程师详情面板的回复区域', () => {
     renderPanel(true);
 
     expect(isControlDisabled(screen.getByLabelText('回复正文'))).toBe(true);
-    expect(isControlDisabled(screen.getByRole('combobox'))).toBe(true);
+    expect(isControlDisabled(screen.getByLabelText('处理状态'))).toBe(true);
     expect(screen.getByRole('button', { name: /提交回复/ })).toHaveClass('ant-btn-loading');
     expect(isControlDisabled(screen.getByRole('button', { name: '重新加载详情' }))).toBe(true);
   });

@@ -56,6 +56,7 @@ import { MaintenanceReportQueryService } from './queries/maintenance-report.quer
 import { OrganizationMembershipQueryService } from './queries/organization-membership.query.service';
 import { OrganizationQueryService } from './queries/organization.query.service';
 import { ReferenceDocumentQueryService } from './queries/reference-document.query.service';
+import { RepairProcessEntryQueryService } from './queries/repair-process-entry.query.service';
 import { RepairRequestQueryService } from './queries/repair-request.query.service';
 import { StoredFileQueryService } from './queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from './queries/trusted-organization-context.query.service';
@@ -68,6 +69,8 @@ import { OrganizationMembershipService } from './organization-membership.service
 import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
 import { ReferenceDocumentService } from './reference-document.service';
+import { RepairProcessEntryService } from './repair-process-entry.service';
+import { RepairRequestRevisionService } from './repair-request-revision.service';
 import { RepairRequestService } from './repair-request.service';
 import { StoredFileService } from './stored-file.service';
 
@@ -124,11 +127,14 @@ const LITHOGRAPHY_ENTITIES = [
     EquipmentModelQueryService,
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
+    RepairProcessEntryQueryService,
     AdminRepairRequestQueryService,
     AdminAiConversationQueryService,
     AdminAiMessageQueryService,
     AdminAiReportQueryService,
     RepairRequestService,
+    RepairRequestRevisionService,
+    RepairProcessEntryService,
     StoredFileService,
     StoredFileQueryService,
     ReferenceDocumentService,
@@ -153,11 +159,14 @@ const LITHOGRAPHY_ENTITIES = [
     EquipmentModelQueryService,
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
+    RepairProcessEntryQueryService,
     AdminRepairRequestQueryService,
     AdminAiConversationQueryService,
     AdminAiMessageQueryService,
     AdminAiReportQueryService,
     RepairRequestService,
+    RepairRequestRevisionService,
+    RepairProcessEntryService,
     StoredFileService,
     StoredFileQueryService,
     ReferenceDocumentService,

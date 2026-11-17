@@ -4,7 +4,9 @@ import { loadExplicitEnvConfig } from '@src/infrastructure/database/incremental-
 import { DataSource } from 'typeorm';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
+import { RepairProcessEntryEntity } from '../entities/repair-process-entry.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import { REPAIR_REQUEST_ORG_READ_FIXTURE_ENTITIES } from '../../../../test/utils/local-entity-sets';
 import {
   assertFixtureIdsAvailable,
@@ -15,6 +17,7 @@ import {
   type ReferenceGuard,
   runOwnedFixtureCleanup,
 } from '../../../../test/utils/e2e-owned-fixture';
+import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
 import { RepairRequestQueryService } from './repair-request.query.service';
 
 /**
@@ -29,6 +32,11 @@ import { RepairRequestQueryService } from './repair-request.query.service';
  *
  * 前置：`env/.env.e2e` 指向隔离库 `lithography_e2e`，且该库为当前迁移终态。
  * 夹具使用固定高位 ID 并在收尾时按精确 ID 删除、核对零残留。
+ *
+ * 当前限制：本文件既有业务夹具仍按旧 `owner_organization_id` 口径构造，
+ * 未写入 intake / `service_organization_id`，断言也尚未覆盖现行
+ * 「intake 服务公司 = 工单服务公司 = 查看者组织」口径。默认跳过；
+ * 在夹具与断言按现行口径修订并完成实库验证前，不得启用或宣称通过。
  */
 const ENABLED = process.env.REPAIR_REQUEST_ORG_INTEGRATION === '1';
 const describeIntegration = ENABLED ? describe : describe.skip;
@@ -306,6 +314,8 @@ describeIntegration('维修申请组织范围实库验收', () => {
       dataSource.getRepository(RepairRequestEntity),
       dataSource.getRepository(EngineerResponseEntity),
       dataSource.getRepository(EquipmentModelEntity),
+      dataSource.getRepository(RepairRequestIntakeEntity),
+      new RepairProcessEntryQueryService(dataSource.getRepository(RepairProcessEntryEntity)),
     );
   });
 

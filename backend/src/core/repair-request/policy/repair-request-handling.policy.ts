@@ -34,3 +34,34 @@ export function isTerminalHandlingStatus(status: RepairRequestHandlingStatus): b
     status === RepairRequestHandlingStatus.UNRESOLVED
   );
 }
+
+const HANDLING_RESULT_VALUES: ReadonlySet<string> = new Set(
+  Object.values(RepairRequestHandlingResult),
+);
+const HANDLING_STATUS_VALUES: ReadonlySet<string> = new Set(
+  Object.values(RepairRequestHandlingStatus),
+);
+
+function isRepairRequestHandlingResult(value: string): value is RepairRequestHandlingResult {
+  return HANDLING_RESULT_VALUES.has(value);
+}
+
+function isRepairRequestHandlingStatus(value: string): value is RepairRequestHandlingStatus {
+  return HANDLING_STATUS_VALUES.has(value);
+}
+
+/**
+ * 读取既有行时把数据库字符串收敛为稳定枚举：仅接受枚举成员，未知值返回 null。
+ * 供读侧把 Entity 的裸字符串转成共享枚举，避免 adapter 用类型断言掩盖契约漂移。
+ */
+export function parseRepairRequestHandlingResult(
+  value: string | null,
+): RepairRequestHandlingResult | null {
+  return value !== null && isRepairRequestHandlingResult(value) ? value : null;
+}
+
+export function parseRepairRequestHandlingStatus(
+  value: string | null,
+): RepairRequestHandlingStatus | null {
+  return value !== null && isRepairRequestHandlingStatus(value) ? value : null;
+}

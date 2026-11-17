@@ -4,13 +4,14 @@ import { mapJwtToUsecaseSession } from '@app-types/auth/session.types';
 import { JwtPayload } from '@app-types/jwt.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { UseGuards } from '@nestjs/common';
-import { Args, Int, Query, Resolver } from '@nestjs/graphql';
+import { Args, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { mapGqlToCoreParams } from '@src/adapters/api/graphql/pagination.mapper';
 import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
+import { AppendRepairRequestRevisionUsecase } from '@src/usecases/admin-document-database/append-repair-request-revision.usecase';
 import { GetAdminAiReportDetailUsecase } from '@src/usecases/admin-document-database/get-admin-ai-report-detail.usecase';
 import { GetAdminDocumentDatabaseStatsUsecase } from '@src/usecases/admin-document-database/get-admin-document-database-stats.usecase';
 import { GetAdminRepairRequestSummaryUsecase } from '@src/usecases/admin-document-database/get-admin-repair-request-summary.usecase';
@@ -26,10 +27,12 @@ import {
   AdminDocumentDatabaseStatsDTO,
   AdminRepairRequestPaginatedDTO,
   AdminRepairRequestSummaryDTO,
+  AdminRepairRevisionResultDTO,
   toAdminAiReportDetailDTO,
   toAdminRepairRequestListItemDTO,
   toAdminRepairRequestSummaryDTO,
 } from './dto/admin-document-database.dto';
+import { AppendRepairRequestRevisionInput } from './dto/append-repair-request-revision.input';
 import {
   AdminAiConversationFilterInput,
   AdminAiReportFilterInput,
@@ -49,7 +52,8 @@ import { ValidateAdminDocumentDatabaseInput } from './validate-admin-document-da
  *   会被生产过滤器降级为 INTERNAL_SERVER_ERROR，不得用于本模块入口）；
  * - 权限口径：守卫层 @Roles(SUPER_ADMIN) 粗准入；精确授权（activeRole === SUPER_ADMIN，
  *   失败关闭）由每个 usecase 首行断言；停用/降级账号旧 Token 由 P0-7 每请求复核；
- * - 只读：不提供任何 Mutation；排序由契约固定（创建时间倒序 + 主键倒序；
+ * - 工单域提供唯一受控写入口 `appendRepairRequestRevision`（版本条件 + 字段白名单），
+ *   其余标签保持只读；排序由契约固定（创建时间倒序 + 主键倒序；
  *   AI 消息为 messageSeq 升序），不采纳客户端排序字段；
  * - 参考资料标签复用既有 referenceDocuments / referenceDocument 查询
  *   （工程师/管理员读契约），本解析器不另建平行链路。
@@ -59,6 +63,7 @@ export class AdminDocumentDatabaseResolver {
   constructor(
     private readonly listAdminRepairRequestsUsecase: ListAdminRepairRequestsUsecase,
     private readonly getAdminRepairRequestSummaryUsecase: GetAdminRepairRequestSummaryUsecase,
+    private readonly appendRepairRequestRevisionUsecase: AppendRepairRequestRevisionUsecase,
     private readonly listAdminAiConversationsUsecase: ListAdminAiConversationsUsecase,
     private readonly listAdminAiMessagesUsecase: ListAdminAiMessagesUsecase,
     private readonly listAdminAiReportsUsecase: ListAdminAiReportsUsecase,
@@ -73,7 +78,7 @@ export class AdminDocumentDatabaseResolver {
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => AdminRepairRequestPaginatedDTO, {
     name: 'adminRepairRequests',
-    description: '管理员分页查询全局维修申请列表（仅 SUPER_ADMIN）',
+    description: '管理员分页查询维修申请列表（一级全公司，二级限本公司）',
   })
   @ValidateAdminDocumentDatabaseInput()
   async adminRepairRequests(
@@ -106,13 +111,13 @@ export class AdminDocumentDatabaseResolver {
   }
 
   /**
-   * 管理员维修申请只读摘要（含故障描述与申请正文）
+   * 管理员维修申请只读详情（含已提交过程、客户回复、结单事实与修订历史）
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => AdminRepairRequestSummaryDTO, {
     name: 'adminRepairRequestSummary',
-    description: '管理员查询维修申请只读摘要（仅 SUPER_ADMIN）',
+    description: '管理员查询维修申请只读详情（仅 SUPER_ADMIN；二级限本公司）',
   })
   async adminRepairRequestSummary(
     @Args({ name: 'id', type: () => Int, description: '维修申请 ID' }) id: number,
@@ -123,6 +128,39 @@ export class AdminDocumentDatabaseResolver {
       requestId: id,
     });
     return toAdminRepairRequestSummaryDTO(summary);
+  }
+
+  /**
+   * 管理员修订已提交工单事实（唯一写入口；一级全公司，二级限可信本公司）。
+   * 不代接单、不代写过程/总结，不修改客户原始提交与模型输出。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => AdminRepairRevisionResultDTO, {
+    name: 'appendRepairRequestRevision',
+    description: '管理员按版本条件修订工单已提交事实（仅 SUPER_ADMIN）',
+  })
+  @ValidateAdminDocumentDatabaseInput()
+  async appendRepairRequestRevision(
+    @Args('input') input: AppendRepairRequestRevisionInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<AdminRepairRevisionResultDTO> {
+    return this.appendRepairRequestRevisionUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId: input.requestId,
+      expectedVersion: input.expectedVersion,
+      reason: input.reason,
+      contentMd: input.contentMd ?? undefined,
+      handlingResult: input.handlingResult ?? undefined,
+      closureReason: input.closureReason ?? undefined,
+      processEntries:
+        input.processEntries?.map((entry) => ({
+          entryId: entry.entryId,
+          expectedVersion: entry.expectedVersion,
+          operationText: entry.operationText,
+          testResult: entry.testResult ?? undefined,
+        })) ?? undefined,
+    });
   }
 
   /**

@@ -4,11 +4,13 @@ import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { EngineerResolutionStatus } from '@app-types/models/repair-request.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import {
+  DomainError,
   INPUT_NORMALIZE_ERROR,
   PERMISSION_ERROR,
   REPAIR_REQUEST_ERROR,
 } from '@src/core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type {
   EngineerResponseTargetSnapshot,
   EngineerResponseWriteSnapshot,
@@ -27,6 +29,10 @@ type EngineerResponseServiceMock = {
 
 type AccountQueryServiceMock = {
   readonly findNicknamesByAccountIds: jest.Mock<Promise<Map<number, string>>>;
+};
+
+type TrustedOrganizationContextMock = {
+  readonly resolveForAccount: jest.Mock;
 };
 
 /**
@@ -53,6 +59,9 @@ describe('CreateEngineerResponseUsecase', () => {
     isAccepted: true,
     acceptedByEngineerAccountId: engineerSession.accountId,
     deprecated: false,
+    handlingStatus: null,
+    closureStatus: null,
+    serviceOrganizationId: 77,
   };
 
   const writeSnapshot: EngineerResponseWriteSnapshot = {
@@ -67,6 +76,7 @@ describe('CreateEngineerResponseUsecase', () => {
   let repairRequestService: RepairRequestServiceMock;
   let engineerResponseService: EngineerResponseServiceMock;
   let accountQueryService: AccountQueryServiceMock;
+  let trustedOrganizationContext: TrustedOrganizationContextMock;
   let transactionRunner: TransactionRunner;
   let usecase: CreateEngineerResponseUsecase;
 
@@ -85,10 +95,21 @@ describe('CreateEngineerResponseUsecase', () => {
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
     };
+    trustedOrganizationContext = {
+      resolveForAccount: jest.fn().mockResolvedValue({
+        membershipId: 1,
+        organizationId: 77,
+        organizationCode: 'SERVICE_B',
+        organizationName: '服务公司 B',
+        organizationKind: 'SERVICE_PROVIDER',
+        memberRole: 'ENGINEER',
+      }),
+    };
     usecase = new CreateEngineerResponseUsecase(
       repairRequestService as unknown as RepairRequestService,
       engineerResponseService,
       accountQueryService as unknown as AccountQueryService,
+      trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
       transactionRunner,
     );
   });
@@ -384,6 +405,76 @@ describe('CreateEngineerResponseUsecase', () => {
       expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
     });
 
+    it('客户公司 A、服务公司 B：工程师属于 B 且本人接单 → 允许回复', async () => {
+      repairRequestService.findResponseTargetForUpdate.mockResolvedValue({
+        ...acceptedTarget,
+        serviceOrganizationId: 88,
+      });
+      trustedOrganizationContext.resolveForAccount.mockResolvedValue({
+        membershipId: 1,
+        organizationId: 88,
+        organizationCode: 'SERVICE_B',
+        organizationName: '服务公司 B',
+        organizationKind: 'SERVICE_PROVIDER',
+        memberRole: 'ENGINEER',
+      });
+
+      await expect(usecase.execute(command())).resolves.toMatchObject({ id: writeSnapshot.id });
+      expect(engineerResponseService.insertResponse).toHaveBeenCalledTimes(1);
+    });
+
+    it('工程师属于客户公司 A、工单服务公司为 B：NOT_FOUND 且不写回复（不按客户公司兜底）', async () => {
+      repairRequestService.findResponseTargetForUpdate.mockResolvedValue({
+        ...acceptedTarget,
+        serviceOrganizationId: 88,
+      });
+
+      await expect(usecase.execute(command())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+        details: { requestId },
+      });
+      expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
+    });
+
+    it('intake 缺失或无服务归属（可信服务公司为 null）：NOT_FOUND 且不写回复（不按历史接单人兜底）', async () => {
+      repairRequestService.findResponseTargetForUpdate.mockResolvedValue({
+        ...acceptedTarget,
+        serviceOrganizationId: null,
+      });
+
+      await expect(usecase.execute(command())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+        details: { requestId },
+      });
+      expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
+    });
+
+    it('工单与 intake 两处服务公司冲突（可信服务公司为 null）：NOT_FOUND 且不写回复', async () => {
+      repairRequestService.findResponseTargetForUpdate.mockResolvedValue({
+        ...acceptedTarget,
+        serviceOrganizationId: null,
+      });
+
+      await expect(usecase.execute(command())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.NOT_FOUND,
+      });
+      expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
+    });
+
+    it('工程师无组织归属：FORBIDDEN 且不写回复', async () => {
+      trustedOrganizationContext.resolveForAccount.mockRejectedValue(
+        new DomainError(
+          PERMISSION_ERROR.ACCESS_DENIED,
+          '当前账号不存在可信组织关系，无法执行该操作',
+        ),
+      );
+
+      await expect(usecase.execute(command())).rejects.toMatchObject({
+        code: PERMISSION_ERROR.ACCESS_DENIED,
+      });
+      expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
+    });
+
     it('尚未接单返回 NOT_ACCEPTED（业务状态冲突，提示先接单后回复）', async () => {
       repairRequestService.findResponseTargetForUpdate.mockResolvedValue({
         ...acceptedTarget,
@@ -425,6 +516,22 @@ describe('CreateEngineerResponseUsecase', () => {
       // 错误 details 只含申请标识，不携带接单工程师身份
       expect(JSON.stringify((caught as { details?: unknown }).details ?? null)).not.toContain('42');
       expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
+    });
+
+    it('已结单 / 处理已终结时拒绝回复，且不写回复（结单后回复只读）', async () => {
+      for (const target of [
+        { ...acceptedTarget, closureStatus: 'CLOSED' },
+        { ...acceptedTarget, handlingStatus: 'COMPLETED' },
+        { ...acceptedTarget, handlingStatus: 'UNRESOLVED' },
+      ]) {
+        repairRequestService.findResponseTargetForUpdate.mockResolvedValueOnce(target);
+
+        await expect(usecase.execute(command())).rejects.toMatchObject({
+          code: REPAIR_REQUEST_ERROR.CLOSED_STATE_CONFLICT,
+          details: { requestId },
+        });
+        expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
+      }
     });
   });
 

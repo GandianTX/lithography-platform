@@ -14,6 +14,8 @@ import { Gender, UserState } from '@app-types/models/user-info.types';
 import {
   EngineerResolutionStatus,
   RepairRequestAcceptanceViewStatus,
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
 import {
   CreatableVerificationRecordType,
@@ -64,6 +66,8 @@ export function registerEnums(): void {
   registerEnumType(RepairRequestAcceptanceViewStatus, {
     name: 'RepairRequestAcceptanceViewStatus',
   });
+  registerEnumType(RepairRequestHandlingResult, { name: 'RepairRequestHandlingResult' });
+  registerEnumType(RepairRequestHandlingStatus, { name: 'RepairRequestHandlingStatus' });
   registerEnumType(OrderDirection, { name: 'OrderDirection' });
   registerEnumType(GqlPaginationMode, { name: 'PaginationMode' });
   registerEnumType(GqlSortDirection, { name: 'SortDirection' });

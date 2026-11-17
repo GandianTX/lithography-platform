@@ -1,7 +1,12 @@
 // src/modules/lithography/admin-document-database.types.ts
 
-import type { EngineerResolutionStatus } from '@app-types/models/repair-request.types';
+import type {
+  EngineerResolutionStatus,
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
+} from '@app-types/models/repair-request.types';
 import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
+import type { RepairProcessEntryView } from './lithography.types';
 
 // ============================================================================
 // PR3: 管理员 Document Database 聚合查询类型（只读）
@@ -77,20 +82,72 @@ export type AdminRepairRequestListItemView = Omit<
   acceptedByEngineerNickname: string | null;
 };
 
-/** 管理员维修申请摘要装配结果（昵称富集前；账号 ID 不对外输出） */
+/** 管理员工单客户回复装配结果（昵称富集前；账号 ID 不对外输出） */
+export type AdminRepairRequestResponseQueryResult = {
+  id: number;
+  requestId: number;
+  engineerAccountId: number;
+  customerAccountId: number;
+  responseText: string;
+  resolutionStatus: EngineerResolutionStatus;
+  createdAt: Date;
+};
+
+/** 管理员工单客户回复稳定读视图 */
+export type AdminRepairRequestResponseView = Omit<
+  AdminRepairRequestResponseQueryResult,
+  'engineerAccountId' | 'customerAccountId'
+> & {
+  engineerNickname: string;
+};
+
+/** 管理员工单修订历史装配结果（修订人昵称富集前） */
+export type AdminRepairRequestRevisionQueryResult = {
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorAccountId: number;
+  createdAt: Date;
+};
+
+/** 管理员工单修订历史稳定读视图 */
+export type AdminRepairRequestRevisionView = Omit<
+  AdminRepairRequestRevisionQueryResult,
+  'actorAccountId'
+> & {
+  actorNickname: string;
+};
+
+/**
+ * 管理员维修申请详情装配结果（昵称富集前；账号 ID 不对外输出）。
+ *
+ * 只装配工单域已提交事实：申请原文、内部过程、客户回复、结单事实与修订历史。
+ * 不装配未提交草稿、私有 AI 内容或其他来源原件；原件仅经过程行的安全字段返回。
+ */
 export type AdminRepairRequestSummaryQueryResult = AdminRepairRequestListItemQueryResult & {
   faultDescription: string;
   contentMd: string;
+  closureStatus: string | null;
+  closedAt: Date | null;
+  closureReason: string | null;
+  handlingResult: RepairRequestHandlingResult | null;
+  handlingStatus: RepairRequestHandlingStatus | null;
+  currentRevisionNo: number;
+  responses: AdminRepairRequestResponseQueryResult[];
+  processEntries: RepairProcessEntryView[];
+  revisions: AdminRepairRequestRevisionQueryResult[];
 };
 
-/** 管理员维修申请摘要稳定读视图（只读摘要，不进入既有客户/工程师详情链路） */
+/** 管理员维修申请详情稳定读视图（只读，不进入既有客户/工程师详情链路） */
 export type AdminRepairRequestSummaryView = Omit<
   AdminRepairRequestSummaryQueryResult,
-  'customerAccountId' | 'acceptedByEngineerAccountId'
+  'customerAccountId' | 'acceptedByEngineerAccountId' | 'responses' | 'revisions'
 > & {
   customerNickname: string;
   companyName: string | null;
   acceptedByEngineerNickname: string | null;
+  responses: AdminRepairRequestResponseView[];
+  revisions: AdminRepairRequestRevisionView[];
 };
 
 /** 管理员维修申请列表页 */

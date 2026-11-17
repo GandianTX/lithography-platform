@@ -4,6 +4,7 @@ import { UserInfoEntity } from '@src/modules/account/base/entities/user-info.ent
 import { EngineerResponseEntity } from '@src/modules/lithography/entities/engineer-response.entity';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
 import { OrganizationEntity } from '@src/modules/lithography/entities/organization.entity';
+import { RepairProcessEntryEntity } from '@src/modules/lithography/entities/repair-process-entry.entity';
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from '@src/modules/lithography/entities/repair-request-intake.entity';
 import { StoredFileEntity } from '@src/modules/lithography/entities/stored-file.entity';
@@ -37,5 +38,6 @@ export const REPAIR_REQUEST_ORG_READ_FIXTURE_ENTITIES = [
   AccountEntity,
   UserInfoEntity,
   RepairRequestIntakeEntity,
+  RepairProcessEntryEntity,
   StoredFileEntity,
 ] as const;

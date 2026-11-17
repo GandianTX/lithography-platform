@@ -1,6 +1,8 @@
-import {
+import type {
   EngineerResolutionStatus,
   RepairRequestAcceptanceViewStatus,
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
 import { StoredFileBindingStatus, StoredFileStatus } from '@app-types/models/stored-file.types';
 
@@ -100,6 +102,23 @@ export type EngineerResponseTargetSnapshot = {
   isAccepted: boolean;
   acceptedByEngineerAccountId: number | null;
   deprecated: boolean;
+  /** 已结束事实（COMPLETED/UNRESOLVED/CLOSED）；旧行可空 */
+  handlingStatus: string | null;
+  closureStatus: string | null;
+  /** 可信服务公司ID；intake 缺失、服务公司缺失或两处冲突时为 null（必须失败关闭） */
+  serviceOrganizationId: number | null;
+};
+
+/**
+ * 接单目标锁读快照：仅接单用例在事务内做组织范围与接单资格裁决，
+ * 不得流入 Adapter 或前端。
+ */
+export type RepairRequestAcceptTargetSnapshot = {
+  id: number;
+  deprecated: boolean;
+  isAccepted: boolean;
+  /** 可信服务公司ID；intake 缺失、服务公司缺失或两处冲突时为 null（必须失败关闭） */
+  serviceOrganizationId: number | null;
 };
 
 /**
@@ -269,6 +288,38 @@ export type RepairRequestEngineerListQueryPage = {
   pageSize: number;
 };
 
+/** 内部维修过程已绑定原件的安全展示字段（不暴露存储引用） */
+export type RepairProcessEntryStoredFileView = {
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+};
+
+/**
+ * 内部维修过程写事务快照（模块内细粒度写操作产物）。
+ * authorAccountId 仅用于事务内作者校验，不进入对外视图。
+ */
+export type RepairProcessEntrySnapshot = {
+  id: string;
+  entryUuid: string;
+  requestId: number;
+  authorAccountId: number;
+  operationText: string;
+  testResult: string | null;
+  occurredAt: Date | null;
+  timeSource: string;
+  fileId: string | null;
+  versionNo: number;
+  createdAt: Date;
+};
+
+/** 内部维修过程稳定读视图：仅接单工程师可见，不暴露作者账号 ID */
+export type RepairProcessEntryView = Omit<RepairProcessEntrySnapshot, 'authorAccountId'> & {
+  file: RepairProcessEntryStoredFileView | null;
+};
+
 /**
  * 维修申请详情稳定读视图（客户与工程师入口共用结构，读权限由 QueryService 按身份判定）。
  * responses 按 createdAt ASC + id ASC 排序；不暴露归属类账号 ID。
@@ -286,6 +337,14 @@ export type RepairRequestDetailView = {
   /** 最新回复处理状态（按 createdAt DESC + id DESC 取末条）；尚无回复时为 null */
   latestResolutionStatus: EngineerResolutionStatus | null;
   responses: EngineerResponseView[];
+  /** 结单事实（旧行可空）；客户可见，不包含内部过程与原件 */
+  closureStatus: string | null;
+  closedAt: Date | null;
+  closureReason: string | null;
+  handlingResult: RepairRequestHandlingResult | null;
+  handlingStatus: RepairRequestHandlingStatus | null;
+  /** 内部维修过程；仅接单工程师本人可见，客户入口恒为空数组 */
+  processEntries: RepairProcessEntryView[];
 };
 
 /**

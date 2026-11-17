@@ -24,9 +24,10 @@ import { assertEngineerWritePermission } from './engineer-write-permission';
  *    守卫层只做入口粗粒度准入（按 accessGroup），混合角色账号
  *    （如 SUPER_ADMIN + ENGINEER）以 activeRole=SUPER_ADMIN 进入时在此被拒绝；
  *    SUPER_ADMIN 的既有读权限继承语义不受影响（读权限继承不等于写权限继承）
- * 2. 组织范围：接单要求工单具备可信组织归属且与工程师当前组织一致；
- *    无归属存量工单一律按 NOT_FOUND 处理，不因组织列缺失向全体工程师开放
- * 3. 事务内原子条件更新：未删除且未接单才可写入，竞争时仅一方成功
+ * 2. 组织范围：只认工单与报修 intake 一致的可信服务公司，且必须与工程师可信组织一致；
+ *    intake 缺失、服务公司缺失或两处冲突一律按 NOT_FOUND 处理，
+ *    不按旧 owner、客户公司、客户端组织或历史接单人兜底
+ * 3. 事务内先锁工单行再核权，并以「未删除且未接单」条件更新保证原子防并发
  * 4. 未命中（affected = 0）时按最小状态读取裁决错误类别：
  *    不存在/已删除 → NOT_FOUND；已接单 → CONFLICT
  * 5. 接单成功后复用现有工程师详情读链路返回更新后的详情
@@ -61,29 +62,37 @@ export class AcceptRepairRequestUsecase {
     assertRepairRequestId(params.requestId);
 
     await this.transactionRunner.run(async (transactionContext) => {
-      // 组织范围：接单必须基于可信归属事实。已归属工单仅本组织工程师可接单；
-      // 无归属存量工单不因组织列缺失而向全体工程师开放，统一按不可接单处理
-      // （归入归属异常清单，由维护者显式处置，不以放宽权限掩盖归属缺失）。
-      const ownerOrganizationId = await this.repairRequestService.findOwnerOrganizationId(
-        params.requestId,
-        transactionContext,
-      );
-      if (ownerOrganizationId === undefined || ownerOrganizationId === null) {
-        throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在或不可接单', {
-          requestId: params.requestId,
-        });
-      }
-      const organizationFact = await this.organizationContextQueryService.tryResolveForAccount({
+      // 组织范围：只认工单与报修 intake 一致的可信服务公司，且必须与工程师可信组织一致。
+      // 无组织成员按 FORBIDDEN；工单 intake/服务公司缺失或两处冲突时按不可接单处理
+      // （不按旧 owner、客户公司、客户端组织或历史接单人兜底）。
+      const organizationFact = await this.organizationContextQueryService.resolveForAccount({
         accountId: params.session.accountId,
         transactionContext,
       });
-      if (!organizationFact || organizationFact.organizationId !== ownerOrganizationId) {
+      const target = await this.repairRequestService.findAcceptTargetForUpdate(
+        params.requestId,
+        transactionContext,
+      );
+      if (
+        !target ||
+        target.deprecated ||
+        target.serviceOrganizationId === null ||
+        target.serviceOrganizationId !== organizationFact.organizationId
+      ) {
         throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在或不可接单', {
           requestId: params.requestId,
         });
       }
+      if (target.isAccepted) {
+        throw new DomainError(
+          REPAIR_REQUEST_ERROR.ALREADY_ACCEPTED,
+          '维修申请已被接单，请刷新后查看最新状态',
+          { requestId: params.requestId },
+        );
+      }
 
-      // acceptedAt 使用后端系统事件时间，客户端不可传入
+      // acceptedAt 使用后端系统事件时间，客户端不可传入；
+      // 行锁内裁决后仍保留「未删除且未接单」条件更新作为原子防并发兜底
       const writeResult = await this.repairRequestService.acceptRequest(
         {
           requestId: params.requestId,

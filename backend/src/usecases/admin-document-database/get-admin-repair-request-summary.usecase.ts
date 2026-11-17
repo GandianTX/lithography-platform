@@ -5,8 +5,10 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminRepairRequestSummaryView } from '@src/modules/lithography/admin-document-database.types';
 import { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
 import { assertPositiveId } from './admin-document-database-filter.normalize';
+import { resolveAdminOrganizationScope } from './admin-organization-scope';
 import { enrichAdminRepairRequestSummary } from './enrich-admin-account-display';
 
 /**
@@ -23,6 +25,7 @@ export class GetAdminRepairRequestSummaryUsecase {
   constructor(
     private readonly adminRepairRequestQueryService: AdminRepairRequestQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
@@ -31,8 +34,16 @@ export class GetAdminRepairRequestSummaryUsecase {
   }): Promise<AdminRepairRequestSummaryView> {
     assertAdminDocumentDatabasePermission(params.session, '查看维修申请数据库');
     assertPositiveId(params.requestId, '维修申请 ID', 'requestId');
+    const organizationScope = await resolveAdminOrganizationScope({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      trustedOrganizationContext: this.trustedOrganizationContext,
+    });
 
-    const result = await this.adminRepairRequestQueryService.findSummaryById(params.requestId);
+    const result = await this.adminRepairRequestQueryService.findSummaryById(
+      params.requestId,
+      organizationScope.organizationId,
+    );
     return enrichAdminRepairRequestSummary(this.accountQueryService, result);
   }
 }
