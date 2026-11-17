@@ -63,6 +63,29 @@ export class AdminRepairRequestListItemDTO {
     description: '最新回复处理状态（尚无回复为空）',
   })
   latestResolutionStatus?: EngineerResolutionStatus | null;
+
+  // ---- 工单真实进度（列表与详情复用；旧行可为空）----
+
+  @Field(() => String, {
+    nullable: true,
+    description: '结单状态（OPEN / CLOSED）；字段缺失为 null，展示层按不可确认处理',
+  })
+  closureStatus?: string | null;
+
+  @Field(() => Date, { nullable: true, description: '结单时间；未结单为空' })
+  closedAt?: Date | null;
+
+  @Field(() => RepairRequestHandlingResult, {
+    nullable: true,
+    description: '处理结果；尚未处理为空',
+  })
+  handlingResult?: RepairRequestHandlingResult | null;
+
+  @Field(() => RepairRequestHandlingStatus, {
+    nullable: true,
+    description: '实际处理状态；尚未处理为空',
+  })
+  handlingStatus?: RepairRequestHandlingStatus | null;
 }
 
 @ObjectType({ description: '管理员工单内已保存原件的安全字段（不含存储引用）' })
@@ -166,20 +189,8 @@ export class AdminRepairRequestSummaryDTO extends AdminRepairRequestListItemDTO 
   @Field(() => String, { description: '申请正文（Markdown，当前生效版本）' })
   contentMd!: string;
 
-  @Field(() => String, { nullable: true, description: '结单状态（CLOSED / 空）' })
-  closureStatus?: string | null;
-
-  @Field(() => Date, { nullable: true, description: '结单时间' })
-  closedAt?: Date | null;
-
   @Field(() => String, { nullable: true, description: '结单原因' })
   closureReason?: string | null;
-
-  @Field(() => RepairRequestHandlingResult, { nullable: true, description: '处理结果' })
-  handlingResult?: RepairRequestHandlingResult | null;
-
-  @Field(() => RepairRequestHandlingStatus, { nullable: true, description: '处理状态' })
-  handlingStatus?: RepairRequestHandlingStatus | null;
 
   @Field(() => Int, { description: '当前修订版本号' })
   currentRevisionNo!: number;
@@ -357,6 +368,10 @@ export function toAdminRepairRequestListItemDTO(
     acceptedAt: item.acceptedAt,
     acceptedByEngineerNickname: item.acceptedByEngineerNickname,
     latestResolutionStatus: item.latestResolutionStatus,
+    closureStatus: item.closureStatus,
+    closedAt: item.closedAt,
+    handlingResult: item.handlingResult,
+    handlingStatus: item.handlingStatus,
   };
 }
 

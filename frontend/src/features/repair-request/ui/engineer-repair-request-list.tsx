@@ -33,6 +33,11 @@ import { ErrorState } from '@/shared/ui/error-state';
 import { FilterBar } from '@/shared/ui/filter-bar';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { LoadingState } from '@/shared/ui/loading-state';
+import {
+  REPAIR_HANDLING_RESULT_LABELS,
+  REPAIR_HANDLING_STATUS_LABELS,
+  resolveRepairClosureState,
+} from '@/shared/ui/repair-request-status-labels';
 import { TableContainer } from '@/shared/ui/table-container';
 import { ToolbarButton, ToolbarSearchField } from '@/shared/ui/toolbar-controls';
 
@@ -45,7 +50,11 @@ import type { EquipmentModelOption } from '../infrastructure/repair-request.type
 import { fetchEquipmentModels } from '../infrastructure/repair-request-adapter';
 
 import { ENGINEER_REPAIR_REQUEST_DETAIL_PATH } from './engineer-repair-request-paths';
-import { AcceptanceViewStatusTag, ResolutionTag } from './repair-request-status-tags';
+import {
+  AcceptanceViewStatusTag,
+  ClosureStatusTag,
+  ResolutionTag,
+} from './repair-request-status-tags';
 
 const SCOPE_OPTIONS: Array<{ label: string; value: EngineerRepairListScope }> = [
   { label: '全部', value: 'ALL' },
@@ -66,13 +75,68 @@ const FILTER_NO_RESULT_TEXT = '没有符合筛选条件的维修申请。';
 /** 主搜索防抖：输入即时回显，防抖到期后才提交筛选（与参考资料库标题搜索同一口径） */
 export const SEARCH_DEBOUNCE_MS = 300;
 
-/** 四组列宽合计 850：1440×900 主内容宽度内无需横向滚动，窄屏只在表格内部滚动 */
+/** 四组列宽合计 860：1440×900 主内容宽度内无需横向滚动，窄屏只在表格内部滚动 */
 const COLUMNS_MIN_WIDTH = 880;
 
 type ModelOptionsState =
   | { status: 'loading' }
   | { status: 'failed'; message: string }
   | { status: 'ready'; models: EquipmentModelOption[] };
+
+function WorkOrderProgressCell({ record }: { record: EngineerRepairRequestListItem }) {
+  const closureState = resolveRepairClosureState(record.closureStatus, record.closedAt);
+  const closed = closureState === 'CLOSED';
+  const resultLabel = record.handlingResult
+    ? REPAIR_HANDLING_RESULT_LABELS[record.handlingResult]
+    : null;
+  const statusLabel = record.handlingStatus
+    ? REPAIR_HANDLING_STATUS_LABELS[record.handlingStatus]
+    : null;
+  const showResultText =
+    resultLabel !== null && !(closed && record.handlingResult === 'INTERRUPTED');
+
+  return (
+    <span className="flex min-w-0 flex-col gap-1">
+      <span className="flex flex-wrap items-center gap-1">
+        <AcceptanceViewStatusTag viewStatus={record.acceptanceViewStatus} />
+        <ClosureStatusTag
+          closureStatus={record.closureStatus}
+          closedAt={record.closedAt}
+          handlingResult={record.handlingResult}
+        />
+        {showResultText ? <span className="text-text-secondary text-xs">{resultLabel}</span> : null}
+      </span>
+      <span className="text-text-secondary text-xs">
+        {closed
+          ? record.closedAt
+            ? `结单于 ${formatDateTimeText(record.closedAt)}`
+            : '已结单'
+          : closureState === 'UNKNOWN'
+            ? `结单状态未知 · 处理状态：${statusLabel ?? '未记录'}`
+            : `处理状态：${statusLabel ?? '未记录'}`}
+      </span>
+      {record.latestResolutionStatus ? (
+        <span className="flex flex-wrap items-center gap-1 text-text-tertiary text-xs">
+          <span>最后回复</span>
+          <ResolutionTag status={record.latestResolutionStatus} />
+        </span>
+      ) : null}
+      {record.acceptedEngineerNickname || record.acceptedAt ? (
+        <span className="flex flex-wrap items-center gap-1 text-xs">
+          <span className="font-bold text-text">{record.acceptedEngineerNickname ?? '—'}</span>
+          <span aria-hidden className="text-text-tertiary">
+            ·
+          </span>
+          <span className="text-text-tertiary">
+            {record.acceptedAt ? formatDateTimeText(record.acceptedAt) : '尚未接单'}
+          </span>
+        </span>
+      ) : (
+        <span className="text-text-tertiary text-xs">尚未接单</span>
+      )}
+    </span>
+  );
+}
 
 function toModelOptionsUserMessage(error: unknown): string {
   return isGraphQLIngressError(error) ? error.userMessage : '设备型号加载失败，请稍后重试。';
@@ -137,29 +201,9 @@ const columns: TableColumnsType<EngineerRepairRequestListItem> = [
   },
   {
     key: 'progress',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-1">
-        <span className="flex flex-wrap items-center gap-1">
-          <AcceptanceViewStatusTag viewStatus={record.acceptanceViewStatus} />
-          <ResolutionTag status={record.latestResolutionStatus} />
-        </span>
-        {record.acceptedEngineerNickname || record.acceptedAt ? (
-          <span className="flex flex-wrap items-center gap-1 text-xs">
-            <span className="font-bold text-text">{record.acceptedEngineerNickname ?? '—'}</span>
-            <span aria-hidden className="text-text-tertiary">
-              ·
-            </span>
-            <span className="text-text-tertiary">
-              {record.acceptedAt ? formatDateTimeText(record.acceptedAt) : '尚未接单'}
-            </span>
-          </span>
-        ) : (
-          <span className="text-text-tertiary text-xs">尚未接单</span>
-        )}
-      </span>
-    ),
+    render: (_value, record) => <WorkOrderProgressCell record={record} />,
     title: '处理进度',
-    width: 230,
+    width: 240,
   },
 ];
 

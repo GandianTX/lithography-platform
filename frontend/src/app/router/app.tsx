@@ -15,6 +15,7 @@ import { AdminPage } from '@/pages/admin';
 import { AdminCompaniesPage } from '@/pages/admin-companies';
 import { AdminDocumentDatabasePage } from '@/pages/admin-document-database';
 import { AdminEngineerApprovalsPage } from '@/pages/admin-engineer-approvals';
+import { AdminOrderDetailPage, AdminOrdersPage } from '@/pages/admin-orders';
 import { AdminUsersPage } from '@/pages/admin-users';
 import {
   CustomerPage,
@@ -141,6 +142,19 @@ const router = createBrowserRouter([
         element: <AdminDocumentDatabasePage />,
         loader: protectedRouteLoader,
         path: 'admin/document-database',
+      },
+      {
+        // 工单管理直达页（任务 04）：复用 admin-document-database 的维修申请列表/
+        // 详情/修订能力；路由治理沿用 protectedRouteLoader 与 /admin/** 角色策略。
+        element: <AdminOrdersPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/orders',
+      },
+      {
+        // 工单管理独立详情页（任务 04）：从列表进入，return 时恢复筛选与分页。
+        element: <AdminOrderDetailPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/orders/:requestId',
       },
       {
         // 公司档案页（任务 08.2）：路由治理复用 protectedRouteLoader 与既有 /admin/**

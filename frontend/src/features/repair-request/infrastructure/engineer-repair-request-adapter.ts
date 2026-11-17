@@ -77,6 +77,10 @@ const ENGINEER_REPAIR_REQUESTS_QUERY = `
         customerCompanyName
         acceptanceViewStatus
         acceptedEngineerNickname
+        closureStatus
+        closedAt
+        handlingResult
+        handlingStatus
       }
       total
       page
@@ -382,6 +386,12 @@ function mapListItemDTO(dto: RepairRequestListItemDTO): EngineerRepairRequestLis
     customerCompanyName: dto.customerCompanyName ?? null,
     acceptanceViewStatus: dto.acceptanceViewStatus,
     acceptedEngineerNickname: dto.acceptedEngineerNickname ?? null,
+    // 结单事实保留「字段缺失（undefined）」与「显式 null」的区别，
+    // 供 UI 区分合法未结单与读模型未透传；不得用 ?? null 合并。
+    closureStatus: 'closureStatus' in dto ? dto.closureStatus : undefined,
+    closedAt: 'closedAt' in dto ? dto.closedAt : undefined,
+    handlingResult: dto.handlingResult ?? null,
+    handlingStatus: dto.handlingStatus ?? null,
   };
 }
 
@@ -404,8 +414,9 @@ function mapDetailDTO(dto: RepairRequestDetailDTO): EngineerRepairRequestDetail 
     customerCompanyName: dto.customerCompanyName ?? null,
     acceptanceViewStatus: dto.acceptanceViewStatus ?? null,
     acceptedEngineerNickname: dto.acceptedEngineerNickname ?? null,
-    closureStatus: dto.closureStatus ?? null,
-    closedAt: dto.closedAt ?? null,
+    // 同列表项：结单字段保留缺失 vs 显式 null 的区别，不在此合并
+    closureStatus: 'closureStatus' in dto ? dto.closureStatus : undefined,
+    closedAt: 'closedAt' in dto ? dto.closedAt : undefined,
     closureReason: dto.closureReason ?? null,
     handlingResult: dto.handlingResult ?? null,
     handlingStatus: dto.handlingStatus ?? null,

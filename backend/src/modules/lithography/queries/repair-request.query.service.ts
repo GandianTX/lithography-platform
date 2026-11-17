@@ -395,6 +395,10 @@ export class RepairRequestQueryService {
       ...this.toListItemView(entity, context),
       customerAccountId: entity.customerAccountId,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
+      closureStatus: entity.closureStatus,
+      closedAt: entity.closedAt,
+      handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
+      handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
     }));
   }
 

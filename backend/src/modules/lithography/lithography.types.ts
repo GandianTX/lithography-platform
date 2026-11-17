@@ -254,6 +254,10 @@ export type RepairRequestEngineerListFilterInternal = {
 export type RepairRequestEngineerListItemQueryResult = RepairRequestListItemView & {
   customerAccountId: number;
   acceptedByEngineerAccountId: number | null;
+  closureStatus?: string | null;
+  closedAt?: Date | null;
+  handlingResult?: RepairRequestHandlingResult | null;
+  handlingStatus?: RepairRequestHandlingStatus | null;
 };
 
 /**
@@ -266,6 +270,11 @@ export type RepairRequestEngineerListItemView = RepairRequestListItemView & {
   acceptanceViewStatus: RepairRequestAcceptanceViewStatus;
   /** 接单工程师当前昵称；未接单为 null */
   acceptedEngineerNickname: string | null;
+  /** 结单事实（CLOSED）；未结单为 null。仅用于列表展示真实工单进度 */
+  closureStatus?: string | null;
+  closedAt?: Date | null;
+  handlingResult?: RepairRequestHandlingResult | null;
+  handlingStatus?: RepairRequestHandlingStatus | null;
 };
 
 /**

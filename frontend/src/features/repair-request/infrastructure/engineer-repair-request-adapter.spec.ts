@@ -239,9 +239,13 @@ describe('fetchEngineerRepairRequests', () => {
             customerCompanyName: '林氏精密制造',
             acceptanceViewStatus: 'MINE',
             acceptedEngineerNickname: '陈工',
+            closureStatus: 'CLOSED',
+            closedAt: '2026-09-02T09:00:00.000Z',
+            handlingResult: 'FIXED',
+            handlingStatus: 'COMPLETED',
           },
           {
-            // 待接单：后端返回 null / 字段缺省两种形态都必须归一为 null
+            // 后端返回 null 与字段缺省两种形态必须分别保留，不得用 ?? null 合并
             id: 22,
             requestNo: 'RR20260902110000DEF456',
             equipmentModel: { id: 4, modelCode: 'LITHO-8000', modelName: '光刻机 8000' },
@@ -253,21 +257,36 @@ describe('fetchEngineerRepairRequests', () => {
             customerCompanyName: null,
             acceptanceViewStatus: 'AVAILABLE',
           },
+          {
+            // 显式 null：字段存在但值为空（数据库合法未结单）
+            id: 23,
+            requestNo: 'RR20260902120000GHI789',
+            equipmentModel: { id: 4, modelCode: 'LITHO-8000', modelName: '光刻机 8000' },
+            errorCode: 'E-300',
+            createdAt: '2026-09-02T08:20:00.000Z',
+            isAccepted: false,
+            acceptedAt: null,
+            customerNickname: '钱客户',
+            customerCompanyName: null,
+            acceptanceViewStatus: 'AVAILABLE',
+            closureStatus: null,
+            closedAt: null,
+          },
         ],
-        total: 2,
+        total: 3,
         page: 1,
         pageSize: 10,
       },
     });
 
-    await expect(
-      fetchEngineerRepairRequests({
-        scope: 'AVAILABLE',
-        filter: NO_FILTER,
-        page: 1,
-        pageSize: 10,
-      }),
-    ).resolves.toEqual({
+    const page = await fetchEngineerRepairRequests({
+      scope: 'AVAILABLE',
+      filter: NO_FILTER,
+      page: 1,
+      pageSize: 10,
+    });
+
+    expect(page).toEqual({
       items: [
         {
           id: 21,
@@ -282,6 +301,10 @@ describe('fetchEngineerRepairRequests', () => {
           customerCompanyName: '林氏精密制造',
           acceptanceViewStatus: 'MINE',
           acceptedEngineerNickname: '陈工',
+          closureStatus: 'CLOSED',
+          closedAt: '2026-09-02T09:00:00.000Z',
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
         },
         {
           id: 22,
@@ -296,12 +319,40 @@ describe('fetchEngineerRepairRequests', () => {
           customerCompanyName: null,
           acceptanceViewStatus: 'AVAILABLE',
           acceptedEngineerNickname: null,
+          closureStatus: undefined,
+          closedAt: undefined,
+          handlingResult: null,
+          handlingStatus: null,
+        },
+        {
+          id: 23,
+          requestNo: 'RR20260902120000GHI789',
+          equipmentModel: { id: 4, modelCode: 'LITHO-8000', modelName: '光刻机 8000' },
+          errorCode: 'E-300',
+          createdAt: '2026-09-02T08:20:00.000Z',
+          isAccepted: false,
+          acceptedAt: null,
+          latestResolutionStatus: null,
+          customerNickname: '钱客户',
+          customerCompanyName: null,
+          acceptanceViewStatus: 'AVAILABLE',
+          acceptedEngineerNickname: null,
+          closureStatus: null,
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: null,
         },
       ],
-      total: 2,
+      total: 3,
       page: 1,
       pageSize: 10,
     });
+
+    // 缺失字段保持 undefined（不可确认），显式 null 保持 null（合法未结单）
+    expect(page.items[1].closureStatus).toBeUndefined();
+    expect(page.items[1].closedAt).toBeUndefined();
+    expect(page.items[2].closureStatus).toBeNull();
+    expect(page.items[2].closedAt).toBeNull();
   });
 
   it('分页字段缺省时回落查询参数，不向 application 泄出 undefined', async () => {

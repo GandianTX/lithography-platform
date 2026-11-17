@@ -140,6 +140,10 @@ export async function enrichEngineerListItems(
       isAccepted: item.isAccepted,
       acceptedAt: item.acceptedAt,
       latestResolutionStatus: item.latestResolutionStatus,
+      closureStatus: item.closureStatus,
+      closedAt: item.closedAt,
+      handlingResult: item.handlingResult,
+      handlingStatus: item.handlingStatus,
       customerNickname:
         profiles.get(item.customerAccountId)?.nickname ?? CUSTOMER_NICKNAME_FALLBACK,
       customerCompanyName: profiles.get(item.customerAccountId)?.companyName ?? null,

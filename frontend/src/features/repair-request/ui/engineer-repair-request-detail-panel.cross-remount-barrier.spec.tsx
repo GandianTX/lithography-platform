@@ -184,7 +184,7 @@ function renderPanel(requestId: number, scopeKey: string) {
 async function selectHandlingResult() {
   const comboboxes = screen.getAllByRole('combobox');
   fireEvent.mouseDown(comboboxes[comboboxes.length - 1]);
-  fireEvent.click(await screen.findByText('已修复'));
+  fireEvent.click(await screen.findByText('故障修复'));
 }
 
 async function submitClose() {
@@ -355,14 +355,14 @@ describe('结单屏障跨页面重挂载', () => {
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expect(screen.getByRole('button', { name: RETRY_REFRESH })).toBeTruthy();
     expect(screen.getByText('A 服务端已有过程')).toBeTruthy();
-    expect(screen.queryByText('结单时间')).toBeNull();
-    expect(screen.queryByText('结单状态')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
+    expect(screen.getByText('结单状态')).toBeTruthy();
     expectNoWritableEntries();
     expectNoAdapterWrites();
 
     // 重挂载后的重试采用已结束详情：服务端事实接管只读，未确认提示清除
     fireEvent.click(screen.getByRole('button', { name: RETRY_REFRESH }));
-    expect(await screen.findByText('结单时间')).toBeTruthy();
+    expect(await screen.findByText('已结单')).toBeTruthy();
     expect(screen.getByText('A 服务端最新过程')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull());
     expectNoWritableEntries();

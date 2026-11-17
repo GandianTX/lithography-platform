@@ -89,10 +89,17 @@ function toListUserMessage(error: unknown, fallback: string): string {
 export function useAdminDocumentList<TItem>(
   fetcher: AdminListFetcher<TItem>,
   reloadKey: string,
-  options?: { pageSize?: number; enabled?: boolean; failureMessage?: string },
+  options?: {
+    pageSize?: number;
+    enabled?: boolean;
+    failureMessage?: string;
+    /** 首次加载页码（从详情返回时恢复分页）；筛选变化仍回到第 1 页 */
+    initialPage?: number;
+  },
 ) {
   const pageSize = options?.pageSize ?? 10;
   const enabled = options?.enabled ?? true;
+  const initialPage = options?.initialPage ?? 1;
   const [state, dispatch] = useReducer(createAdminListReducer<TItem>(), {
     status: 'loading',
     requestSeq: 0,
@@ -143,10 +150,11 @@ export function useAdminDocumentList<TItem>(
       appliedKeyRef.current !== reloadKey ||
       (state.status === 'loading' && state.requestSeq === 0)
     ) {
+      const isFirstLoad = appliedKeyRef.current === null;
       appliedKeyRef.current = reloadKey;
-      void loadPage(1);
+      void loadPage(isFirstLoad ? initialPage : 1);
     }
-  }, [enabled, reloadKey, loadPage, state.status, state.requestSeq]);
+  }, [enabled, reloadKey, loadPage, state.status, state.requestSeq, initialPage]);
 
   const goToPage = useCallback(
     (page: number) => {

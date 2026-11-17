@@ -70,6 +70,10 @@ export type AdminRepairRequestListItemQueryResult = {
   acceptedAt: Date | null;
   acceptedByEngineerAccountId: number | null;
   latestResolutionStatus: EngineerResolutionStatus | null;
+  closureStatus?: string | null;
+  closedAt?: Date | null;
+  handlingResult?: RepairRequestHandlingResult | null;
+  handlingStatus?: RepairRequestHandlingStatus | null;
 };
 
 /** 管理员维修申请列表项稳定读视图（客户展示信息经 usecase 跨域富集） */

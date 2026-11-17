@@ -1,6 +1,6 @@
 // src/features/admin-document-database/ui/admin-repair-requests-tab.tsx
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { TableColumnsType } from 'antd';
 import {
   Alert,
@@ -16,9 +16,15 @@ import {
   Tag,
   Tooltip,
 } from 'antd';
+import dayjs from 'dayjs';
 
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { KbSearchField, KbToolbarButton } from '@/shared/ui/knowledge-base';
+import {
+  REPAIR_HANDLING_RESULT_LABELS,
+  REPAIR_HANDLING_STATUS_LABELS,
+  resolveRepairClosureState,
+} from '@/shared/ui/repair-request-status-labels';
 import { StatusPill } from '@/shared/ui/status-pill';
 
 import { useAdminRepairRequestSummary } from '../application/use-admin-document-detail';
@@ -44,31 +50,108 @@ const RESOLUTION_STATUS_LABELS: Record<'PENDING' | 'RESOLVED', string> = {
   RESOLVED: '已解决',
 };
 
-const HANDLING_RESULT_LABELS: Record<string, string> = {
-  FIXED: '故障修复',
-  PART_PURCHASED: '购买新部件',
-  PROVIDE_PLAN_SELF_EXECUTE: '提供方案由厂方执行',
-  INTERRUPTED: '因厂方或其他原因中断',
-  UNREPAIRABLE: '无法修复',
+type PersistedListViewState = {
+  requestNoKeyword: string;
+  customerKeyword: string;
+  errorCode: string;
+  isAccepted: boolean | undefined;
+  equipmentModelId: number | undefined;
+  createdAtFrom: string | null;
+  createdAtTo: string | null;
+  page: number;
 };
 
-const HANDLING_STATUS_LABELS: Record<string, string> = {
-  COMPLETED: '已完成',
-  IN_PROGRESS: '处理中',
-  UNRESOLVED: '未解决',
-};
+function readPersistedListViewState(key: string | undefined): PersistedListViewState | null {
+  if (!key) return null;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as PersistedListViewState) : null;
+  } catch {
+    return null;
+  }
+}
 
-/** 维修申请标签：管理员全局只读列表 + 组合筛选 + 只读摘要（不创建维护记录管理）
+function toPersistedRange(from: string | null, to: string | null): AdminCreatedAtRangeState {
+  if (!from && !to) return null;
+  return [from ? dayjs(from) : null, to ? dayjs(to) : null];
+}
+
+/**
+ * 列表工单真实进度：主状态由 closureStatus 与 closedAt 联合判定（未结单不得写成已结单），
+ * 处理结果/状态为辅助事实；最后回复单独标注，避免把「已解决」误读成工单已结单。
+ * 显式未结单显示「未结单」；字段缺失、非法值或状态与时间矛盾按不可确认展示。
+ */
+function AdminWorkOrderStatusCell({ record }: { record: AdminRepairRequestListItem }) {
+  const closureState = resolveRepairClosureState(record.closureStatus, record.closedAt);
+  const closed = closureState === 'CLOSED';
+  const resultLabel = record.handlingResult
+    ? REPAIR_HANDLING_RESULT_LABELS[record.handlingResult]
+    : null;
+  const statusLabel = record.handlingStatus
+    ? REPAIR_HANDLING_STATUS_LABELS[record.handlingStatus]
+    : null;
+  const showResultText =
+    resultLabel !== null && !(closed && record.handlingResult === 'INTERRUPTED');
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1 text-xs">
+      <div className="flex flex-wrap items-center gap-1">
+        {closed ? (
+          <StatusPill tone="ok">
+            {record.handlingResult === 'INTERRUPTED' ? '已结单 · 维修中断' : '已结单'}
+          </StatusPill>
+        ) : closureState === 'OPEN' ? (
+          <StatusPill tone="warn">未结单</StatusPill>
+        ) : (
+          <StatusPill tone="neutral">结单状态未知</StatusPill>
+        )}
+        {showResultText ? <span className="text-text-secondary">{resultLabel}</span> : null}
+      </div>
+      <span className="text-text-secondary">
+        {closed
+          ? record.closedAt
+            ? `结单于 ${formatDateTimeText(record.closedAt)}`
+            : '已结单'
+          : closureState === 'UNKNOWN'
+            ? `结单状态未知 · 处理状态：${statusLabel ?? '未记录'}`
+            : `处理状态：${statusLabel ?? '未记录'}`}
+      </span>
+      {record.latestResolutionStatus ? (
+        <span className="text-text-tertiary">
+          最后回复：{RESOLUTION_STATUS_LABELS[record.latestResolutionStatus]}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** 维修申请标签：管理员全局只读列表 + 组合筛选 + 详情入口
  *
  * PR3 R7 S5：整体迁入单张知识库卡（卡内工具区 + 主搜索 + 筛选展开区 +
- * 紧凑表格 + 卡底分页）；精确条件全部保留，仅常态入口收进「筛选」。 */
-export function AdminRepairRequestsTab() {
-  const [requestNoKeyword, setRequestNoKeyword] = useState('');
-  const [customerKeyword, setCustomerKeyword] = useState('');
-  const [errorCode, setErrorCode] = useState('');
-  const [isAccepted, setIsAccepted] = useState<boolean | undefined>(undefined);
-  const [equipmentModelId, setEquipmentModelId] = useState<number | undefined>(undefined);
-  const [createdAtRange, setCreatedAtRange] = useState<AdminCreatedAtRangeState>(null);
+ * 紧凑表格 + 卡底分页）；精确条件全部保留，仅常态入口收进「筛选」。
+ *
+ * 详情有两种承载方式：
+ * - 传入 onOpenDetail（工单管理页）：点击详情进入独立详情页；
+ * - 未传入（文档数据库内嵌标签）：保持原有侧边抽屉。
+ * viewStateKey 用于从详情返回时尽量恢复筛选与分页。 */
+export function AdminRepairRequestsTab({
+  onOpenDetail,
+  viewStateKey,
+}: {
+  onOpenDetail?: (requestId: number) => void;
+  viewStateKey?: string;
+} = {}) {
+  const [persisted] = useState(() => readPersistedListViewState(viewStateKey));
+  const [requestNoKeyword, setRequestNoKeyword] = useState(persisted?.requestNoKeyword ?? '');
+  const [customerKeyword, setCustomerKeyword] = useState(persisted?.customerKeyword ?? '');
+  const [errorCode, setErrorCode] = useState(persisted?.errorCode ?? '');
+  const [isAccepted, setIsAccepted] = useState<boolean | undefined>(persisted?.isAccepted);
+  const [equipmentModelId, setEquipmentModelId] = useState<number | undefined>(
+    persisted?.equipmentModelId,
+  );
+  const [createdAtRange, setCreatedAtRange] = useState<AdminCreatedAtRangeState>(() =>
+    toPersistedRange(persisted?.createdAtFrom ?? null, persisted?.createdAtTo ?? null),
+  );
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [summaryRequestId, setSummaryRequestId] = useState<number | null>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -150,11 +233,53 @@ export function AdminRepairRequestsTab() {
     reloadKey,
     {
       failureMessage: '维修申请列表加载失败，请稍后重试。',
+      initialPage: persisted?.page ?? 1,
     },
   );
   const summary = useAdminRepairRequestSummary(summaryRequestId);
 
-  // 紧凑列宽 + ellipsis/Tooltip：scroll.x 由 1350 收紧到 1040，1366 视口即可完整可见；
+  // 从独立详情页返回时恢复筛选与分页（仅工单管理页启用）
+  useEffect(() => {
+    if (!viewStateKey) return;
+    const snapshot: PersistedListViewState = {
+      requestNoKeyword,
+      customerKeyword,
+      errorCode,
+      isAccepted,
+      equipmentModelId,
+      createdAtFrom: createdAtRange?.[0]?.toISOString() ?? null,
+      createdAtTo: createdAtRange?.[1]?.toISOString() ?? null,
+      page: state.status === 'ready' ? state.page : (persisted?.page ?? 1),
+    };
+    try {
+      window.sessionStorage.setItem(viewStateKey, JSON.stringify(snapshot));
+    } catch {
+      // 会话存储不可用时忽略，不阻断列表
+    }
+  }, [
+    viewStateKey,
+    requestNoKeyword,
+    customerKeyword,
+    errorCode,
+    isAccepted,
+    equipmentModelId,
+    createdAtRange,
+    state,
+    persisted,
+  ]);
+
+  const openDetail = useCallback(
+    (requestId: number) => {
+      if (onOpenDetail) {
+        onOpenDetail(requestId);
+        return;
+      }
+      setSummaryRequestId(requestId);
+    },
+    [onOpenDetail],
+  );
+
+  // 紧凑列宽 + ellipsis/Tooltip：scroll.x 约 1144，1366 视口即可完整可见；
   // 操作列 fixed right 作为窄视口下的可发现性保障（字段一个不删，PR3 R7 S5/视觉报告 3.5）
   const columns = useMemo<TableColumnsType<AdminRepairRequestListItem>>(
     () => [
@@ -222,12 +347,11 @@ export function AdminRepairRequestsTab() {
         width: 92,
       },
       {
-        dataIndex: 'latestResolutionStatus',
-        key: 'latestResolutionStatus',
-        render: (value: 'PENDING' | 'RESOLVED' | null) =>
-          value ? RESOLUTION_STATUS_LABELS[value] : '—',
-        title: '处理状态',
-        width: 92,
+        dataIndex: 'closureStatus',
+        key: 'workOrderStatus',
+        render: (_value, record) => <AdminWorkOrderStatusCell record={record} />,
+        title: '工单状态',
+        width: 196,
       },
       {
         dataIndex: 'createdAt',
@@ -240,7 +364,7 @@ export function AdminRepairRequestsTab() {
         fixed: 'right',
         key: 'actions',
         render: (_value, record) => (
-          <Button onClick={() => setSummaryRequestId(record.id)} size="small" type="link">
+          <Button onClick={() => openDetail(record.id)} size="small" type="link">
             详情
           </Button>
         ),
@@ -248,7 +372,7 @@ export function AdminRepairRequestsTab() {
         width: 92,
       },
     ],
-    [],
+    [openDetail],
   );
 
   return (
@@ -452,20 +576,37 @@ export function AdminRepairRequestsTab() {
                     key: 'handlingResult',
                     label: '处理结果',
                     children: summary.state.detail.handlingResult
-                      ? (HANDLING_RESULT_LABELS[summary.state.detail.handlingResult] ?? '—')
-                      : '—',
+                      ? REPAIR_HANDLING_RESULT_LABELS[summary.state.detail.handlingResult]
+                      : '未记录',
                   },
                   {
                     key: 'handlingStatus',
                     label: '处理状态',
                     children: summary.state.detail.handlingStatus
-                      ? (HANDLING_STATUS_LABELS[summary.state.detail.handlingStatus] ?? '—')
-                      : '—',
+                      ? REPAIR_HANDLING_STATUS_LABELS[summary.state.detail.handlingStatus]
+                      : '未记录',
+                  },
+                  {
+                    key: 'latestResolutionStatus',
+                    label: '最后回复状态',
+                    children: summary.state.detail.latestResolutionStatus
+                      ? RESOLUTION_STATUS_LABELS[summary.state.detail.latestResolutionStatus]
+                      : '未记录',
                   },
                   {
                     key: 'closureStatus',
                     label: '结单状态',
-                    children: summary.state.detail.closureStatus === 'CLOSED' ? '已结单' : '未结单',
+                    children: (() => {
+                      const closureState = resolveRepairClosureState(
+                        summary.state.detail.closureStatus,
+                        summary.state.detail.closedAt,
+                      );
+                      return closureState === 'CLOSED'
+                        ? '已结单'
+                        : closureState === 'OPEN'
+                          ? '未结单'
+                          : '结单状态未知（数据缺失）';
+                    })(),
                   },
                   {
                     key: 'closedAt',

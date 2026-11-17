@@ -317,6 +317,10 @@ export class AdminRepairRequestQueryService {
       acceptedAt: entity.acceptedAt,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
       latestResolutionStatus: latestStatusByRequestId.get(entity.id) ?? null,
+      closureStatus: entity.closureStatus,
+      closedAt: entity.closedAt,
+      handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
+      handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
     }));
   }
 

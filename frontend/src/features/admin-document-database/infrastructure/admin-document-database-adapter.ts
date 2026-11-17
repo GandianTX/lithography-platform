@@ -1,6 +1,7 @@
 // src/features/admin-document-database/infrastructure/admin-document-database-adapter.ts
 
 import { executeGraphQL, isGraphQLIngressError, readGraphQLErrorDetail } from '@/shared/graphql';
+import { fetchRestWithAuthRetry, parseAttachmentFilename } from '@/shared/http';
 
 import type {
   AdminAiConversationFilter,
@@ -57,6 +58,10 @@ const ADMIN_REPAIR_REQUESTS_QUERY = `
         acceptedAt
         acceptedByEngineerNickname
         latestResolutionStatus
+        closureStatus
+        closedAt
+        handlingResult
+        handlingStatus
         createdAt
       }
       total
@@ -456,5 +461,46 @@ export async function fetchAdminAiReportDetail(
     return { ok: true, detail: data.adminAiReport };
   } catch (error) {
     return toNotFoundResult(error, 'AI 报告不存在或不可查看。');
+  }
+}
+
+export type AdminRepairProcessFileDownloadResult =
+  | { ok: true; blob: Blob; filename: string }
+  | { ok: false; message: string };
+
+/**
+ * 下载已绑定维修过程原件（复用既有 REST 授权下载接口）。
+ *
+ * 后端该接口仅授权 SUPER_ADMIN / ENGINEER；管理员侧只提供下载入口，
+ * 不新增上传、替换或移除能力。
+ */
+export async function downloadAdminRepairProcessFile(
+  fileId: string,
+): Promise<AdminRepairProcessFileDownloadResult> {
+  let response: Response;
+  try {
+    response = await fetchRestWithAuthRetry(
+      `/api/stored-files/${encodeURIComponent(fileId)}/download`,
+      {},
+    );
+  } catch {
+    return { ok: false, message: '原件下载失败，请检查网络后重试。' };
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: response.status === 403 ? '当前账号无权下载该原件。' : '原件下载失败，请稍后重试。',
+    };
+  }
+
+  try {
+    const blob = await response.blob();
+    const filename =
+      parseAttachmentFilename(response.headers.get('Content-Disposition')) ??
+      `repair-process-${fileId}`;
+    return { ok: true, blob, filename };
+  } catch {
+    return { ok: false, message: '原件下载失败，请稍后重试。' };
   }
 }

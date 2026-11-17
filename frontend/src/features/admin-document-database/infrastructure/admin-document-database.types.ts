@@ -34,6 +34,11 @@ export type AdminRepairRequestListItem = {
   acceptedAt: string | null;
   acceptedByEngineerNickname: string | null;
   latestResolutionStatus: 'PENDING' | 'RESOLVED' | null;
+  /** 工单真实进度：结单事实与处理结果（旧数据可为 null） */
+  closureStatus: string | null;
+  closedAt: string | null;
+  handlingResult: AdminRepairHandlingResult | null;
+  handlingStatus: AdminRepairHandlingStatus | null;
   createdAt: string;
 };
 

@@ -48,7 +48,10 @@ const fetchRepairMock = vi.mocked(fetchAdminRepairRequests);
 const fetchSummaryMock = vi.mocked(fetchAdminRepairRequestSummary);
 const fetchModelOptionsMock = vi.mocked(fetchAdminEquipmentModelOptions);
 
-function buildRepairItem(id: number): AdminRepairRequestListItem {
+function buildRepairItem(
+  id: number,
+  overrides: Partial<AdminRepairRequestListItem> = {},
+): AdminRepairRequestListItem {
   return {
     id,
     requestNo: `RR-2026090${id}-001`,
@@ -62,7 +65,12 @@ function buildRepairItem(id: number): AdminRepairRequestListItem {
     acceptedAt: null,
     acceptedByEngineerNickname: null,
     latestResolutionStatus: null,
+    closureStatus: null,
+    closedAt: null,
+    handlingResult: null,
+    handlingStatus: null,
     createdAt: '2026-09-01T08:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -133,6 +141,59 @@ describe('AdminRepairRequestsTab（R3/R7 S5 知识库卡容器）', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(await screen.findByText(/工单详情/)).toBeInTheDocument();
     expect(container.querySelector('.kb-card .ant-drawer')).toBeNull();
+  });
+
+  it('工单状态列联合判定结单事实，最后回复单独标注，缺失字段不写成未结单', async () => {
+    fetchRepairMock.mockResolvedValue(
+      buildPage([
+        buildRepairItem(1, {
+          closureStatus: 'CLOSED',
+          closedAt: '2026-09-02T09:00:00.000Z',
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'IN_PROGRESS',
+          latestResolutionStatus: 'PENDING',
+        }),
+        buildRepairItem(2, {
+          closureStatus: 'OPEN',
+          closedAt: null,
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+          latestResolutionStatus: 'RESOLVED',
+        }),
+        buildRepairItem(3, {
+          closureStatus: null,
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: null,
+        }),
+        buildRepairItem(4, {
+          closureStatus: undefined,
+          closedAt: undefined,
+          handlingResult: null,
+          handlingStatus: null,
+        }),
+      ]),
+    );
+
+    render(<AdminRepairRequestsTab />);
+
+    expect(await screen.findByText('已结单 · 维修中断')).toBeInTheDocument();
+    // 明确 OPEN 与显式 null/null（数据库合法未结单）都显示「未结单」
+    expect(screen.getAllByText('未结单')).toHaveLength(2);
+    expect(screen.getByText('处理状态：已完成')).toBeInTheDocument();
+    expect(screen.getByText('最后回复：已解决')).toBeInTheDocument();
+    expect(screen.getByText('结单状态未知')).toBeInTheDocument();
+    expect(screen.getByText('结单状态未知 · 处理状态：未记录')).toBeInTheDocument();
+  });
+
+  it('传入 onOpenDetail 时点击详情不打开抽屉，交给外层进入独立详情页', async () => {
+    const onOpenDetail = vi.fn();
+    render(<AdminRepairRequestsTab onOpenDetail={onOpenDetail} />);
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /详\s*情/ }))[0]);
+
+    expect(onOpenDetail).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('加载失败：错误告警在知识库卡内呈现，重试可恢复数据', async () => {

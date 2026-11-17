@@ -532,6 +532,10 @@ export class RepairRequestResolver {
     customerCompanyName: string | null;
     acceptanceViewStatus: RepairRequestAcceptanceViewStatus;
     acceptedEngineerNickname: string | null;
+    closureStatus?: string | null;
+    closedAt?: Date | null;
+    handlingResult?: RepairRequestHandlingResult | null;
+    handlingStatus?: RepairRequestHandlingStatus | null;
   }): RepairRequestEngineerListItemDTO {
     return {
       ...this.toListItemDTO(view),
@@ -539,6 +543,10 @@ export class RepairRequestResolver {
       customerCompanyName: view.customerCompanyName,
       acceptanceViewStatus: view.acceptanceViewStatus,
       acceptedEngineerNickname: view.acceptedEngineerNickname,
+      closureStatus: view.closureStatus,
+      closedAt: view.closedAt,
+      handlingResult: view.handlingResult,
+      handlingStatus: view.handlingStatus,
     };
   }
 

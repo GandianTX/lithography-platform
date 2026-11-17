@@ -104,6 +104,11 @@ export type RepairRequestListItemDTO = {
   customerCompanyName?: string | null;
   acceptanceViewStatus: EngineerRepairAcceptanceViewStatus;
   acceptedEngineerNickname?: string | null;
+  closureStatus?: string | null;
+  /** ISO 字符串（后端 Date 标量） */
+  closedAt?: string | null;
+  handlingResult?: RepairRequestHandlingResult | null;
+  handlingStatus?: RepairRequestHandlingStatus | null;
 };
 
 export type EngineerResponseDTO = {
@@ -175,6 +180,14 @@ export type EngineerRepairRequestListItem = RepairRequestListItem & {
   customerCompanyName: string | null;
   acceptanceViewStatus: EngineerRepairAcceptanceViewStatus;
   acceptedEngineerNickname: string | null;
+  /**
+   * 工单真实进度：结单事实与处理结果，供列表与详情同口径展示。
+   * undefined 表示响应缺少字段（不可确认），null 表示字段存在且明确为空。
+   */
+  closureStatus: string | null | undefined;
+  closedAt: string | null | undefined;
+  handlingResult: RepairRequestHandlingResult | null;
+  handlingStatus: RepairRequestHandlingStatus | null;
 };
 
 /** 工程师详情内部模型：公共详情 + 工程师入口富集字段（可空字段收拢为 null） */
@@ -183,8 +196,9 @@ export type EngineerRepairRequestDetail = RepairRequestDetail & {
   customerCompanyName: string | null;
   acceptanceViewStatus: EngineerRepairAcceptanceViewStatus | null;
   acceptedEngineerNickname: string | null;
-  closureStatus: string | null;
-  closedAt: string | null;
+  /** undefined = 响应缺少字段；null = 字段存在且明确为空 */
+  closureStatus: string | null | undefined;
+  closedAt: string | null | undefined;
   closureReason: string | null;
   handlingResult: RepairRequestHandlingResult | null;
   handlingStatus: RepairRequestHandlingStatus | null;

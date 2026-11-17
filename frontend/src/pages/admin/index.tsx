@@ -1,7 +1,7 @@
 // src/pages/admin/index.tsx
 
 import { useMemo } from 'react';
-import { UnorderedListOutlined, UserOutlined } from '@ant-design/icons';
+import { FileTextOutlined, UnorderedListOutlined, UserOutlined } from '@ant-design/icons';
 import { Button } from 'antd';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router';
@@ -37,6 +37,14 @@ const ADMIN_ENTRIES: AdminEntry[] = [
     id: 'admin-users',
     path: '/admin/users',
     title: '用户管理',
+  },
+  {
+    action: '进入工单管理',
+    description: '查看全部维修工单的接单、处理与结单状态，并复用既有详情与修订能力。',
+    icon: <FileTextOutlined />,
+    id: 'admin-orders',
+    path: '/admin/orders',
+    title: '工单管理',
   },
   {
     action: '进入文档数据库',

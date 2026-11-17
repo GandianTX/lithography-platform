@@ -1,5 +1,9 @@
 // src/features/repair-request/ui/repair-request-status-tags.tsx
 
+import {
+  type RepairHandlingResultValue,
+  resolveRepairClosureState,
+} from '@/shared/ui/repair-request-status-labels';
 import { StatusPill, type StatusPillTone } from '@/shared/ui/status-pill';
 
 import type {
@@ -50,4 +54,33 @@ export function ResolutionTag({ status }: { status: EngineerResolutionStatusValu
       {status === 'RESOLVED' ? '已解决' : '处理中'}
     </StatusPill>
   );
+}
+
+/**
+ * 结单事实标签：由 closureStatus 与 closedAt 联合判定（共用 resolveRepairClosureState）。
+ * 处理状态终结（COMPLETED / UNRESOLVED）不得推断为已结单。
+ * 已结单且处理结果为「中断」时合并展示「已结单 · 维修中断」，
+ * 避免主状态仍被误读为进行中。
+ * 显式未结单（OPEN/null + null）显示「未结单」；
+ * 字段缺失、非法值或状态与时间矛盾显示不可确认。
+ */
+export function ClosureStatusTag({
+  closureStatus,
+  closedAt,
+  handlingResult,
+}: {
+  closureStatus: string | null | undefined;
+  closedAt: string | null | undefined;
+  handlingResult: RepairHandlingResultValue | null | undefined;
+}) {
+  const closureState = resolveRepairClosureState(closureStatus, closedAt);
+  if (closureState === 'UNKNOWN') {
+    return <StatusPill tone="neutral">结单状态未知</StatusPill>;
+  }
+  if (closureState === 'OPEN') {
+    return <StatusPill tone="warn">未结单</StatusPill>;
+  }
+
+  const interrupted = handlingResult === 'INTERRUPTED';
+  return <StatusPill tone="ok">{interrupted ? '已结单 · 维修中断' : '已结单'}</StatusPill>;
 }

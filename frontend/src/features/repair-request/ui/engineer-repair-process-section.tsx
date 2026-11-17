@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, Popconfirm, Select, Tag, Timeline } from 'antd';
 
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
+import { REPAIR_HANDLING_RESULT_OPTIONS } from '@/shared/ui/repair-request-status-labels';
 
 import type { RepairProcessFormInput } from '../application/use-engineer-repair-process-workbench';
 import { useEngineerRepairProcessWorkbench } from '../application/use-engineer-repair-process-workbench';
@@ -26,16 +27,45 @@ import type {
   RepairRequestHandlingResult,
 } from '../infrastructure/engineer-repair-request.types';
 
-const HANDLING_RESULT_OPTIONS: Array<{ value: RepairRequestHandlingResult; label: string }> = [
-  { value: 'FIXED', label: '已修复' },
-  { value: 'PART_PURCHASED', label: '部分采购' },
-  { value: 'PROVIDE_PLAN_SELF_EXECUTE', label: '提供方案自行执行' },
-  { value: 'INTERRUPTED', label: '中断' },
-  { value: 'UNREPAIRABLE', label: '无法修复' },
-];
+/** 五项处理结果文案与管理员侧共用 shared 真源，避免两套中文全称 */
+const HANDLING_RESULT_OPTIONS: Array<{ value: RepairRequestHandlingResult; label: string }> =
+  REPAIR_HANDLING_RESULT_OPTIONS;
 
 function requiresReason(result: RepairRequestHandlingResult | undefined): boolean {
   return result === 'INTERRUPTED' || result === 'UNREPAIRABLE';
+}
+
+/** 与后端 stored-file 上传合同保持一致的格式与大小上限（后端仍是最终裁决方） */
+const PROCESS_FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.txt,.md,.csv';
+const PROCESS_FILE_ACCEPTED_EXTENSIONS = [
+  'pdf',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'png',
+  'jpg',
+  'jpeg',
+  'txt',
+  'md',
+  'csv',
+];
+const PROCESS_FILE_MAX_BYTES = 20_000_000;
+
+function validateProcessFile(file: File): string | null {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  if (!PROCESS_FILE_ACCEPTED_EXTENSIONS.includes(extension)) {
+    return '不支持该文件类型，请选择 PDF、Word、Excel、PPT、图片、TXT、MD 或 CSV。';
+  }
+  if (file.size === 0) {
+    return '原件不能为空，请重新选择。';
+  }
+  if (file.size > PROCESS_FILE_MAX_BYTES) {
+    return '原件不能超过 20 MB，请压缩后重试。';
+  }
+  return null;
 }
 
 type ProcessFormValues = {
@@ -280,6 +310,12 @@ export function EngineerRepairProcessSection({
     if (!file || !canWrite || readOnly) return;
     setUploadError(null);
     setEditBlockedMessage(null);
+    const validationError = validateProcessFile(file);
+    if (validationError) {
+      setUploadError(validationError);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     const result = await uploadFile(file);
     if (result && !result.ok) {
       setUploadError(result.message);
@@ -393,18 +429,15 @@ export function EngineerRepairProcessSection({
                   编辑不修改已绑定原件；如需追加另一份原件请新建过程记录。
                 </div>
               ) : (
-                <Form.Item label={editingEntry ? '补传原件（可选）' : '原件（可选）'}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      disabled={saving || uploading}
-                      onChange={(event) => void handleUpload(event.target.files?.[0])}
-                      ref={fileInputRef}
-                      type="file"
-                    />
-                    {uploading ? <span className="text-sm">上传中…</span> : null}
+                <Form.Item
+                  extra="步骤：选择文件后自动上传为暂存 → 点击「保存过程」才把原件绑定到该记录。"
+                  label={editingEntry ? '补传原件（可选）' : '原件（可选）'}
+                >
+                  <div className="flex flex-col gap-2">
                     {stagedFile ? (
-                      <>
+                      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-[var(--panel-border)] p-3">
                         <Tag color="orange">已上传暂存</Tag>
+                        <span className="text-text-secondary text-xs">未保存</span>
                         <span className="text-sm">{stagedFile.originalFilename}</span>
                         <span className="text-text-secondary text-xs">
                           {stagedFile.byteSize} 字节
@@ -413,17 +446,57 @@ export function EngineerRepairProcessSection({
                           disabled={saving}
                           onClick={() => {
                             clearStagedFile();
+                            setUploadError(null);
                             if (fileInputRef.current) fileInputRef.current.value = '';
                           }}
                           size="small"
                           type="link"
                         >
-                          移除
+                          移除暂存
                         </Button>
-                      </>
+                      </div>
                     ) : (
-                      <span className="text-text-secondary text-xs">尚未上传原件。</span>
+                      <label
+                        className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[var(--panel-border)] px-4 py-6 text-center transition-colors hover:border-[var(--accent)] hover:bg-[var(--filter-bar-bg)] ${
+                          saving || uploading ? 'cursor-not-allowed opacity-60' : ''
+                        }`}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (saving || uploading) return;
+                          void handleUpload(event.dataTransfer.files?.[0]);
+                        }}
+                      >
+                        <input
+                          accept={PROCESS_FILE_ACCEPT}
+                          aria-label="选择过程原件"
+                          className="hidden"
+                          disabled={saving || uploading}
+                          onChange={(event) => void handleUpload(event.target.files?.[0])}
+                          ref={fileInputRef}
+                          type="file"
+                        />
+                        {uploading ? (
+                          <>
+                            <Tag color="processing">上传中</Tag>
+                            <span className="text-sm">正在上传原件，请稍候…</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-sm font-medium">点击选择或拖拽文件到此处</span>
+                            <span className="text-text-secondary text-xs">
+                              支持 PDF / Word / Excel / PPT / 图片 / TXT / MD / CSV，单个文件不超过
+                              20 MB。
+                            </span>
+                          </>
+                        )}
+                      </label>
                     )}
+                    {stagedFile ? (
+                      <div className="text-text-secondary text-xs">
+                        暂存尚未绑定：保存过程后才会出现在该记录的「已保存绑定」中，并可下载。
+                      </div>
+                    ) : null}
                   </div>
                 </Form.Item>
               )}
@@ -439,7 +512,13 @@ export function EngineerRepairProcessSection({
 
               <div className="flex flex-wrap gap-2">
                 <Button htmlType="submit" loading={saving} type="primary">
-                  {editingEntry ? '保存修改' : '保存过程'}
+                  {editingEntry
+                    ? stagedFile
+                      ? '保存修改并绑定原件'
+                      : '保存修改'
+                    : stagedFile
+                      ? '保存过程并绑定原件'
+                      : '保存过程'}
                 </Button>
                 {editingEntry ? (
                   <Button disabled={saving} onClick={handleCancelEdit}>

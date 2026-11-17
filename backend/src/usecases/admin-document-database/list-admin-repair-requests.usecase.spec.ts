@@ -204,6 +204,81 @@ describe('ListAdminRepairRequestsUsecase', () => {
     expect(call.filter.errorCode).toBe('E-001');
   });
 
+  it('列表透传结单与处理事实：与工程师列表同一工单口径一致，字段缺失不补成未结单', async () => {
+    const closedAt = new Date('2026-09-02T09:00:00.000Z');
+    const baseItem = {
+      customerAccountId: 900001,
+      equipmentModel: { id: 930001, modelCode: 'M', modelName: 'NXT' },
+      errorCode: 'E-001',
+      createdAt: new Date('2026-09-01T08:00:00.000Z'),
+      isAccepted: true,
+      acceptedAt: new Date('2026-09-01T09:00:00.000Z'),
+      acceptedByEngineerAccountId: 900020,
+      latestResolutionStatus: 'PENDING' as const,
+    };
+    (adminRepairRequestQueryService.listAll as jest.Mock).mockResolvedValue({
+      items: [
+        {
+          ...baseItem,
+          id: 880011,
+          requestNo: 'RR-11',
+          closureStatus: 'CLOSED',
+          closedAt,
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+        },
+        {
+          ...baseItem,
+          id: 880012,
+          requestNo: 'RR-12',
+          closureStatus: 'CLOSED',
+          closedAt,
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'UNRESOLVED',
+        },
+        {
+          ...baseItem,
+          id: 880013,
+          requestNo: 'RR-13',
+          closureStatus: 'OPEN',
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: 'IN_PROGRESS',
+        },
+        { ...baseItem, id: 880014, requestNo: 'RR-14' },
+      ],
+      total: 4,
+      page: 1,
+      pageSize: 10,
+    });
+
+    const page = await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+    });
+
+    expect(page.items[0]).toMatchObject({
+      closureStatus: 'CLOSED',
+      closedAt,
+      handlingResult: 'FIXED',
+      handlingStatus: 'COMPLETED',
+    });
+    expect(page.items[1]).toMatchObject({
+      closureStatus: 'CLOSED',
+      handlingResult: 'INTERRUPTED',
+      handlingStatus: 'UNRESOLVED',
+    });
+    expect(page.items[2]).toMatchObject({
+      closureStatus: 'OPEN',
+      closedAt: null,
+      handlingResult: null,
+      handlingStatus: 'IN_PROGRESS',
+    });
+    expect(page.items[3].closureStatus).toBeUndefined();
+    expect(page.items[3].handlingResult).toBeUndefined();
+    expect(page.items[3].handlingStatus).toBeUndefined();
+  });
+
   it('二级管理员唯一 SUPER_ADMIN 公司：列表与 total 共用同一可信公司，旧会话公司不覆盖', async () => {
     (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
     (trustedOrganizationContext.resolveForAccount as jest.Mock).mockResolvedValue({

@@ -157,7 +157,7 @@ function renderPanel(requestId = 21) {
 async function selectHandlingResult() {
   const comboboxes = screen.getAllByRole('combobox');
   fireEvent.mouseDown(comboboxes[comboboxes.length - 1]);
-  fireEvent.click(await screen.findByText('已修复'));
+  fireEvent.click(await screen.findByText('故障修复'));
 }
 
 async function submitClose() {
@@ -278,9 +278,9 @@ describe('结单成功后的本地只读屏障', () => {
       expect(screen.getByRole('button', { name: RETRY_REFRESH })).toBeTruthy();
       // 结单仍显示成功，不把结单改报为失败
       expect(screen.queryByText('结单失败，请稍后重试。')).toBeNull();
-      // 回读未确认前不编造结单时间/状态
-      expect(screen.queryByText('结单时间')).toBeNull();
-      expect(screen.queryByText('结单状态')).toBeNull();
+      // 回读未确认前不编造服务端结单事实，只展示本地「待刷新确认」状态与恒定标签
+      expect(screen.queryByText('已结单')).toBeNull();
+      expect(screen.getByText('结单状态')).toBeTruthy();
       expect(screen.getByText('服务端已有过程')).toBeTruthy();
     },
   );
@@ -302,7 +302,7 @@ describe('结单成功后的本地只读屏障', () => {
 
     fireEvent.click(screen.getByRole('button', { name: RETRY_REFRESH }));
 
-    expect(await screen.findByText('结单时间')).toBeTruthy();
+    expect(await screen.findByText('已结单')).toBeTruthy();
     expect(screen.getByText('服务端最新过程')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull());
   });
@@ -330,8 +330,8 @@ describe('结单成功后的本地只读屏障', () => {
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expectNoWritableEntries();
     expect(screen.getByRole('button', { name: RETRY_REFRESH })).toBeTruthy();
-    expect(screen.queryByText('结单时间')).toBeNull();
-    expect(screen.queryByText('结单状态')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
+    expect(screen.getByText('结单状态')).toBeTruthy();
     expect(screen.queryByText(/结单失败/)).toBeNull();
     expect(screen.queryByText(/回滚/)).toBeNull();
   });
@@ -358,7 +358,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(await screen.findByText(CLOSE_UNCONFIRMED)).toBeTruthy();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expectNoWritableEntries();
-    expect(screen.queryByText('结单时间')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
   });
 
   it('重试失败后再次重试采用已结束详情：服务端状态接管只读并清除未确认提示', async () => {
@@ -388,7 +388,7 @@ describe('结单成功后的本地只读屏障', () => {
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
 
-    expect(await screen.findByText('结单时间')).toBeTruthy();
+    expect(await screen.findByText('已结单')).toBeTruthy();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expect(screen.getByText('工单已结单，内部维修过程只读。')).toBeTruthy();
@@ -408,7 +408,7 @@ describe('结单成功后的本地只读屏障', () => {
     await selectHandlingResult();
     await submitClose();
 
-    expect(await screen.findByText('结单时间')).toBeTruthy();
+    expect(await screen.findByText('已结单')).toBeTruthy();
     expect(screen.getByText('服务端最新过程')).toBeTruthy();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
@@ -458,7 +458,7 @@ describe('结单成功后的本地只读屏障', () => {
       readback21.resolve({ ok: true, detail: CLOSED_DETAIL });
     });
     expect(await screen.findByText(BARRIER_HINT)).toBeTruthy();
-    expect(screen.queryByText('结单时间')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
     expectNoWritableEntries();
 
     // B 自己的回读仍未结束：屏障与未确认提示都保留
@@ -468,7 +468,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(await screen.findByText(CLOSE_UNCONFIRMED)).toBeTruthy();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expectNoWritableEntries();
-    expect(screen.queryByText('结单时间')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
   });
 
   it('A→B→A 重新进入：A 的结单只读屏障保持，B 按自身状态可写', async () => {
@@ -515,7 +515,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(screen.getByText(CLOSE_UNCONFIRMED)).toBeTruthy();
     expect(screen.getByRole('button', { name: RETRY_REFRESH })).toBeTruthy();
     expectNoWritableEntries();
-    expect(screen.queryByText('结单时间')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
     // 初次加载、结单回读、重新进入各一次
     expect(calls21).toBe(3);
   });
@@ -574,7 +574,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(screen.getByText('新增维修过程')).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
-    expect(screen.queryByText('结单时间')).toBeNull();
+    expect(screen.queryByText('已结单')).toBeNull();
   });
 
   it('结单 mutation 本身失败：不建立只读屏障，保留原有失败反馈和写入口', async () => {

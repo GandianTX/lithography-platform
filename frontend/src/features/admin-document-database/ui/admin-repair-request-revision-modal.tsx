@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Divider, Input, message, Modal, Select, Space, Typography } from 'antd';
 
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
+import { REPAIR_HANDLING_RESULT_OPTIONS } from '@/shared/ui/repair-request-status-labels';
 
 import type {
   AdminRepairHandlingResult,
@@ -12,13 +13,9 @@ import type {
 } from '../infrastructure/admin-document-database.types';
 import { appendAdminRepairRequestRevision } from '../infrastructure/admin-document-database-adapter';
 
-const HANDLING_RESULT_OPTIONS: Array<{ label: string; value: AdminRepairHandlingResult }> = [
-  { label: '故障修复', value: 'FIXED' },
-  { label: '购买新部件', value: 'PART_PURCHASED' },
-  { label: '提供方案由厂方执行', value: 'PROVIDE_PLAN_SELF_EXECUTE' },
-  { label: '因厂方或其他原因中断', value: 'INTERRUPTED' },
-  { label: '无法修复', value: 'UNREPAIRABLE' },
-];
+/** 修订弹窗与工程师结单共用五项中文全称（shared 单一真源） */
+const HANDLING_RESULT_OPTIONS: Array<{ label: string; value: AdminRepairHandlingResult }> =
+  REPAIR_HANDLING_RESULT_OPTIONS;
 
 function requiresClosureReason(result: AdminRepairHandlingResult | null): boolean {
   return result === 'INTERRUPTED' || result === 'UNREPAIRABLE';

@@ -151,6 +151,28 @@ describe(EngineerRepairProcessSection.name, () => {
     expect(hookMock.beginEditScope).toHaveBeenCalledWith('102');
   });
 
+  it('上传区提示真实格式与大小限制，非法类型与超限文件在本地拦截', () => {
+    renderSection([ENTRY_WITHOUT_FILE]);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+
+    expect(screen.getByText(/支持 PDF \/ Word \/ Excel \/ PPT \/ 图片/)).toBeTruthy();
+    expect(screen.getByText(/单个文件不超过\s*20 MB/)).toBeTruthy();
+    const fileInput = screen.getByLabelText('选择过程原件') as HTMLInputElement;
+
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['demo'], 'malware.exe')] },
+    });
+    expect(screen.getByText(/不支持该文件类型/)).toBeTruthy();
+    expect(hookMock.uploadFile).not.toHaveBeenCalled();
+
+    const oversized = new File(['demo'], 'big.pdf');
+    Object.defineProperty(oversized, 'size', { value: 20_000_001 });
+    fireEvent.change(fileInput, { target: { files: [oversized] } });
+    expect(screen.getByText(/原件不能超过 20 MB/)).toBeTruthy();
+    expect(hookMock.uploadFile).not.toHaveBeenCalled();
+  });
+
   it('已绑定原件在过程列表只读展示且可下载', () => {
     renderSection([ENTRY_WITH_FILE]);
 

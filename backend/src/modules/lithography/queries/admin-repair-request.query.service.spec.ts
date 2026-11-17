@@ -266,7 +266,12 @@ describe('AdminRepairRequestQueryService', () => {
   it('列表批量装配防 N+1：机型与最新回复各一次批量查询；机型缺失回落占位', async () => {
     const requestRepo = makeRequestRepo();
     requestRepo.find.mockResolvedValue([
-      requestEntity(),
+      requestEntity({
+        closureStatus: 'CLOSED',
+        closedAt: new Date('2026-09-02T00:00:00.000Z'),
+        handlingResult: 'FIXED',
+        handlingStatus: 'COMPLETED',
+      }),
       requestEntity({ id: 880002, equipmentModelId: 930001 }),
     ]);
     const modelRepo = makeModelRepo();
@@ -296,7 +301,19 @@ describe('AdminRepairRequestQueryService', () => {
     expect(inValue).toEqual([930001]);
     // 最新回复状态取排序末条（DESC 排序后的第一条）
     expect(page.items[0].latestResolutionStatus).toBe('PENDING');
+    expect(page.items[0]).toMatchObject({
+      closureStatus: 'CLOSED',
+      closedAt: new Date('2026-09-02T00:00:00.000Z'),
+      handlingResult: 'FIXED',
+      handlingStatus: 'COMPLETED',
+    });
     expect(page.items[1].latestResolutionStatus).toBeNull();
+    expect(page.items[1]).toMatchObject({
+      closureStatus: null,
+      closedAt: null,
+      handlingResult: null,
+      handlingStatus: null,
+    });
   });
 
   it('摘要：不存在与已软删统一 NOT_FOUND（防删除状态探测），不发起装配查询', async () => {

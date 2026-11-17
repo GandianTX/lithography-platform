@@ -375,6 +375,10 @@ describe('RepairRequestQueryService', () => {
           isAccepted: true,
           acceptedByEngineerAccountId: 21,
           acceptedAt: new Date('2026-08-31T00:00:00.000Z'),
+          closureStatus: 'CLOSED',
+          closedAt: new Date('2026-09-01T00:00:00.000Z'),
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'IN_PROGRESS',
         }),
       ]);
       requestRepository.createQueryBuilder.mockReturnValue(queryBuilder);
@@ -398,6 +402,10 @@ describe('RepairRequestQueryService', () => {
         id: 2,
         customerAccountId: 10,
         acceptedByEngineerAccountId: 21,
+        closureStatus: 'CLOSED',
+        closedAt: new Date('2026-09-01T00:00:00.000Z'),
+        handlingResult: 'INTERRUPTED',
+        handlingStatus: 'IN_PROGRESS',
       });
     });
   });
