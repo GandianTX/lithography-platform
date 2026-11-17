@@ -42,6 +42,8 @@ function buildTarget(
     errorCode: 'E-001',
     faultDescription: '曝光光路异常',
     contentMd: '# 原始正文',
+    intakeId: null,
+    intakeServiceOrganizationId: null,
     serviceOrganizationId: null,
     ownerOrganizationId: 700001,
     createdAt: new Date('2026-09-01T08:00:00.000Z'),
@@ -239,6 +241,152 @@ describe('AppendRepairRequestRevisionUsecase', () => {
     });
 
     await expect(usecase.execute(baseCommand)).resolves.toMatchObject({ revisionNo: 3 });
+  });
+
+  it('二级管理员有 intake：工单与 intake 服务公司均等于本公司时放行', async () => {
+    const { usecase, revisionService } = createHarness({
+      adminLevel: 2,
+      organizationId: 700001,
+      target: buildTarget({
+        intakeId: 660001,
+        intakeServiceOrganizationId: 700001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    });
+
+    await expect(usecase.execute(baseCommand)).resolves.toMatchObject({ revisionNo: 3 });
+    expect(revisionService.insertRevision).toHaveBeenCalledTimes(1);
+  });
+
+  it('二级管理员有 intake 但 intake 服务公司冲突：NOT_FOUND 且不产生任何写入', async () => {
+    const { usecase, revisionService } = createHarness({
+      adminLevel: 2,
+      organizationId: 700001,
+      target: buildTarget({
+        intakeId: 660001,
+        intakeServiceOrganizationId: 700002,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    });
+
+    const error = await captureThrownError(usecase.execute(baseCommand));
+
+    expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.NOT_FOUND);
+    expect(revisionService.lockProcessEntriesForRevision).not.toHaveBeenCalled();
+    expect(revisionService.updateRequestRevisionFields).not.toHaveBeenCalled();
+    expect(revisionService.updateProcessEntryRevision).not.toHaveBeenCalled();
+    expect(revisionService.insertRevision).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员有 intake 但工单服务公司缺失：不回退 owner，NOT_FOUND', async () => {
+    const { usecase, revisionService } = createHarness({
+      adminLevel: 2,
+      organizationId: 700001,
+      target: buildTarget({
+        intakeId: 660001,
+        intakeServiceOrganizationId: 700001,
+        serviceOrganizationId: null,
+        ownerOrganizationId: 700001,
+      }),
+    });
+
+    const error = await captureThrownError(usecase.execute(baseCommand));
+
+    expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.NOT_FOUND);
+    expect(revisionService.updateRequestRevisionFields).not.toHaveBeenCalled();
+    expect(revisionService.insertRevision).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员有 intake 但关联记录不可用（服务公司为空）：NOT_FOUND', async () => {
+    const { usecase, revisionService } = createHarness({
+      adminLevel: 2,
+      organizationId: 700001,
+      target: buildTarget({
+        intakeId: 660001,
+        intakeServiceOrganizationId: null,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    });
+
+    const error = await captureThrownError(usecase.execute(baseCommand));
+
+    expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.NOT_FOUND);
+    expect(revisionService.insertRevision).not.toHaveBeenCalled();
+  });
+
+  it('有 intake 的 A/B 双向跨公司修订均 NOT_FOUND', async () => {
+    const cases = [
+      { organizationId: 700001, requestService: 700001, intakeService: 700002 },
+      { organizationId: 700002, requestService: 700002, intakeService: 700001 },
+    ];
+
+    for (const item of cases) {
+      const { usecase, revisionService } = createHarness({
+        adminLevel: 2,
+        organizationId: item.organizationId,
+        target: buildTarget({
+          intakeId: 660001,
+          intakeServiceOrganizationId: item.intakeService,
+          serviceOrganizationId: item.requestService,
+          ownerOrganizationId: item.organizationId,
+        }),
+      });
+
+      const error = await captureThrownError(usecase.execute(baseCommand));
+
+      expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.NOT_FOUND);
+      expect(revisionService.updateRequestRevisionFields).not.toHaveBeenCalled();
+      expect(revisionService.insertRevision).not.toHaveBeenCalled();
+    }
+  });
+
+  it('一级管理员即使 intake 归属冲突仍可修订（全公司范围）', async () => {
+    const { usecase } = createHarness({
+      adminLevel: 1,
+      target: buildTarget({
+        intakeId: 660001,
+        intakeServiceOrganizationId: 700002,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700003,
+      }),
+    });
+
+    await expect(usecase.execute(baseCommand)).resolves.toMatchObject({ revisionNo: 3 });
+  });
+
+  it('事务提交成功后昵称查询失败：仍返回成功与回退昵称，且只写一条修订历史', async () => {
+    const { usecase, revisionService, accountQueryService } = createHarness({
+      adminLevel: 1,
+    });
+    accountQueryService.findNicknamesByAccountIds.mockRejectedValue(
+      new Error('account query unavailable'),
+    );
+
+    await expect(usecase.execute(baseCommand)).resolves.toMatchObject({
+      requestId: 880001,
+      revisionNo: 3,
+      previousVersion: 2,
+      currentRevisionNo: 3,
+      actorNickname: '管理员',
+    });
+    expect(revisionService.insertRevision).toHaveBeenCalledTimes(1);
+    expect(revisionService.updateRequestRevisionFields).toHaveBeenCalledTimes(1);
+  });
+
+  it('事务自身失败时仍返回失败，不误报成功且不做昵称富集', async () => {
+    const { usecase, revisionService, accountQueryService } = createHarness({
+      adminLevel: 1,
+    });
+    revisionService.insertRevision.mockRejectedValue(new Error('transaction failed'));
+
+    const error = await captureThrownError(usecase.execute(baseCommand));
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('transaction failed');
+    expect(accountQueryService.findNicknamesByAccountIds).not.toHaveBeenCalled();
   });
 
   it('二级管理员只有 ENGINEER 成员关系：失败关闭，不进入事务与任何写入', async () => {

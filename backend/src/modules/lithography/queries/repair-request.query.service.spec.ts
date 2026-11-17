@@ -616,6 +616,34 @@ describe('RepairRequestQueryService', () => {
       ).resolves.toMatchObject({ id: 1 });
     });
 
+    it('方案 B：intake 已软删除但两处服务公司一致，工程师入口仍可读', async () => {
+      requestRepository.findOne.mockResolvedValue(
+        makeEngineerVisibleRequest({
+          intakeId: 3,
+          serviceOrganizationId: 88,
+          isAccepted: true,
+          acceptedByEngineerAccountId: 20,
+        }),
+      );
+      intakeRepository.findOne.mockResolvedValue(
+        makeIntake({
+          serviceOrganizationId: 88,
+          deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+        }),
+      );
+      equipmentModelRepository.findOne.mockResolvedValue(makeModel());
+      responseRepository.find.mockResolvedValue([]);
+
+      await expect(
+        service.findDetail({
+          requestId: 1,
+          session: engineerSession,
+          scope: 'ENGINEER',
+          viewerOrganizationId: 88,
+        }),
+      ).resolves.toMatchObject({ id: 1 });
+    });
+
     it('ENGINEER intake 缺失但仍是原接单人：拒绝（不按历史接单人兜底）', async () => {
       requestRepository.findOne.mockResolvedValue(
         makeRequest({

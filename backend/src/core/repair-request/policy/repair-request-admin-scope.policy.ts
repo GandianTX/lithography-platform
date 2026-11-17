@@ -1,20 +1,28 @@
 // src/core/repair-request/policy/repair-request-admin-scope.policy.ts
-// 管理员工单组织范围判定（单一口径，供管理员工单列表 / total / 详情使用）。
+// 管理员工单组织范围判定（单一口径，供管理员工单列表 / total / 详情 / 修订使用）。
 //
 // 服务公司字段当前存在两种历史语义：
 // - service_organization_id：V13 新增的服务公司证据列；
 // - owner_organization_id：既有一致性组织范围列（工程师读写与任务 11 绑定均使用）。
 //
-// 历史数据中 service_organization_id 可能为空，而 owner_organization_id 有值。
-// 为避免二级管理员因新列为空而看不到本公司既有工单，统一取
-// `service_organization_id ?? owner_organization_id` 作为有效服务公司；
-// 两列都为空时视为无组织证据，仅一级管理员可见。
+// 工单一旦关联原始报修 intake，服务公司事实必须以 intake 为准：
+// `intake.service_organization_id` 与工单 `service_organization_id` 均存在、相等且
+// 等于二级管理员可信组织时才可读取或修订；任一缺失、冲突或 intake 关联记录不可用
+// 均失败关闭，绝不回退 owner_organization_id。
+//
+// 仅「无 intake」的历史工单沿用 `service_organization_id ?? owner_organization_id`，
+// 避免历史数据因新列为空而整体不可见。一级管理员始终为全公司范围。
 
 import { DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 
 export type RepairRequestOrganizationFacts = {
   serviceOrganizationId: number | null;
   ownerOrganizationId: number | null;
+};
+
+/** 管理员工单组织范围判定所需事实：历史回退列 + intake 关联 */
+export type RepairRequestAdminScopeFacts = RepairRequestOrganizationFacts & {
+  intakeId: number | null;
 };
 
 /** 管理员工单组织范围：level 1 为全公司（organizationId = null），level 2 为本公司 */
@@ -61,16 +69,33 @@ export function resolveEffectiveServiceOrganizationId(
 }
 
 /**
- * 管理员工单组织范围判定。
+ * 管理员工单组织范围判定（列表 / total / 详情 / 修订共用语义）。
  *
+ * @param facts 工单组织事实；`intakeId` 必须来自同一次读取/同一事务快照
  * @param organizationId 一级管理员为 null（全公司）；二级管理员为可信本公司 ID
+ * @param intakeServiceOrganizationId 按 `intakeId` 读取到的 intake 服务公司；
+ *   intake 关联记录不存在或不可用时传 null（失败关闭）
+ *
+ * 二级管理员规则：
+ * - 有 intake：intake 必须存在，且工单 service 与 intake service 均存在、
+ *   相等并等于本公司；不回退 owner；
+ * - 无 intake（历史工单）：沿用 `service ?? owner` 既有口径；
+ * - 其余冲突/缺失一律失败关闭。
  */
 export function isRepairRequestVisibleToAdminOrganization(
-  facts: RepairRequestOrganizationFacts,
+  facts: RepairRequestAdminScopeFacts,
   organizationId: number | null,
+  intakeServiceOrganizationId: number | null = null,
 ): boolean {
   if (organizationId === null) {
     return true;
   }
-  return resolveEffectiveServiceOrganizationId(facts) === organizationId;
+  if ((facts.intakeId ?? null) === null) {
+    return resolveEffectiveServiceOrganizationId(facts) === organizationId;
+  }
+  return (
+    facts.serviceOrganizationId !== null &&
+    facts.serviceOrganizationId === organizationId &&
+    intakeServiceOrganizationId === organizationId
+  );
 }

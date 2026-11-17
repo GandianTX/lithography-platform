@@ -91,9 +91,13 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 - **一级管理员（`admin_level = 1`）**：工单列表、分页 `total` 与详情均为全公司。
 - **管理员等级失败关闭**：`admin_level` 为 `NULL` 或非法值时不按一级放行，统一按 `FORBIDDEN` 拒绝，见 `docs/database/v13-deployment/data-contracts.md` §5/§6.1。
 - **二级管理员（`admin_level = 2`）**：组织 ID 只取服务端可信组织成员事实（`TrustedOrganizationContextQueryService`），无唯一有效组织时失败关闭为 `FORBIDDEN`，不回退全库。
-- **有效服务公司口径**：`service_organization_id ?? owner_organization_id`。历史数据中新列可能为空，统一回落到既有一致性组织列；两列都为空时仅一级管理员可见。
-- **同口径强制**：列表 SQL where、分页 `total` 与详情可见性共用 `isRepairRequestVisibleToAdminOrganization` 语义。二级管理员列表生成「service = 本公司」与「service 为空且 owner = 本公司」两个分支，`total` 复用同一 where。详情对跨公司、已删除、不存在统一返回 `ADMIN_DOCUMENT_DATABASE_NOT_FOUND`，不区分对外表述。
-- **原件**：详情仅返回工单域过程行已绑定的原件元数据；二级管理员只有在工单 `service_organization_id` 与原始报修 intake 的 `service_organization_id` 均存在、一致且等于本公司时才展示，任一缺失或冲突均隐藏（不回退 `owner_organization_id`），与任务 11 正式绑定读取授权一致，避免「可见即有权」。一级管理员按任务 11 口径可见全部。本轮不新增原件下载入口。
+- **组织范围统一口径（有 intake / 历史无 intake）**：列表、分页 `total`、详情与修订共用 `isRepairRequestVisibleToAdminOrganization` 语义：
+  - **有 intake（`intake_id` 非空）**：必须同时满足 intake 存在、工单 `service_organization_id` 与 intake `service_organization_id` 均存在、相等并等于本公司；归属冲突、服务公司缺失或关联记录不存在时**失败关闭**，不回退 `owner_organization_id`。intake 的逻辑删除（`deleted_at` 非空）**不单独**使已关联工单不可见：仍按上述「双方服务公司一致且等于本公司」判定；一级管理员与无 intake 历史工单的规则不变。
+  - **无 intake 的历史工单**：维持既有 `service_organization_id ?? owner_organization_id` 口径。
+  - 无 intake 且两列都为空时仅一级管理员可见。
+- **同口径强制**：列表 SQL where、分页 `total` 与详情可见性复用上述语义。二级管理员列表生成三类分支：有 intake 的一致性 EXISTS 分支、无 intake 的 `service = 本公司` 分支、无 intake 且 service 为空时的 `owner = 本公司` 分支；全部条件在分页前执行，`total` 复用同一 where。详情对跨公司、归属冲突、已删除、不存在统一返回 `ADMIN_DOCUMENT_DATABASE_NOT_FOUND`，不区分对外表述。
+- **修订**：`appendRepairRequestRevision` 在同一事务内按上述同一口径核对（含 intake 服务公司）；不满足时按 `REPAIR_REQUEST_NOT_FOUND` 失败关闭，不读取内部过程/原件且不产生任何写入。
+- **原件**：仍按任务 11 独立契约（工单 service 与 intake service 一致）控制；本节的「组织范围统一」不改变任务 11 的下载/绑定授权，也不宣称全平台权限统一。无 intake 的历史工单，二级管理员仅可见过程文本，不展示原件元数据。
 
 ## 管理员工单修订（`appendRepairRequestRevision`）
 
@@ -115,10 +119,11 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 
 并发与事务：
 
-- 事务内先 `SELECT repair_request ... FOR UPDATE`，再锁过程行；锁顺序固定「工单 → 过程」，不持有原件锁。
+- 事务内先 `SELECT repair_request ... FOR UPDATE`，有 `intake_id` 时再以共享锁读取 intake 服务公司核对归属，最后锁过程行；锁顺序固定「工单 → intake → 过程」，不持有原件锁，与「原件 → 工单 → 过程」写路径无反向锁序。窄窗口内 intake 归属被并发改写时由共享锁阻塞，授权结论基于同一事务快照。
 - 条件更新 `WHERE id AND deprecated = false AND current_revision_no = expectedVersion`；命中 0 行按 `REPAIR_REQUEST_PROCESS_VERSION_CONFLICT`（`CONFLICT`）拒绝。过程行按 `(id, request_id, version_no)` 条件更新，命中 0 行同样冲突。
 - 修订行写入 `repair_request_revision`：`revision_no = expectedVersion + 1`、`previous_version`、`before_snapshot` / `after_snapshot`（`schema_version = 1`）、`actor_account_id`、`reason`。快照保留原始提交、组织归属、接单人、处理/结单事实与客户回复，供审计对比。
 - 任一写入失败整体回滚，不产生部分更新；成功后详情按当前生效值返回。
+- 事务明确提交成功后才查询操作者昵称用于展示；昵称查询失败仅回退为占位昵称，不改变已提交结果、不重试 mutation；事务自身失败仍返回失败，不误报成功。
 - 审计：修订历史行即审计证据；按 R030 不写 `management_audit_event`。
 - 二级管理员跨公司修订、目标不存在/已删除统一 `REPAIR_REQUEST_NOT_FOUND`；未接单工单修订处理结果按 `REPAIR_REQUEST_HANDLING_NOT_AVAILABLE`（`CONFLICT`）拒绝。
 

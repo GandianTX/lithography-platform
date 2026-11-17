@@ -259,8 +259,19 @@ export class AppendRepairRequestRevisionUsecase {
 
     return {
       ...result,
-      actorNickname: await this.findAdminNickname(command.session.accountId),
+      // 事务已明确提交成功后再做展示富集；昵称查询失败只回退展示值，
+      // 不改写已提交结果，也不重试 mutation。
+      actorNickname: await this.findAdminNicknameSafely(command.session.accountId),
     };
+  }
+
+  private async findAdminNicknameSafely(accountId: number): Promise<string> {
+    try {
+      return await this.findAdminNickname(accountId);
+    } catch {
+      // 修订事务已成功；昵称属于非关键展示字段，失败关闭为占位昵称。
+      return '管理员';
+    }
   }
 
   private async findAdminNickname(accountId: number): Promise<string> {
@@ -277,7 +288,11 @@ function requireAccessibleRevisionTarget(
   if (
     !target ||
     target.deprecated ||
-    !isRepairRequestVisibleToAdminOrganization(target, organizationId)
+    !isRepairRequestVisibleToAdminOrganization(
+      target,
+      organizationId,
+      target.intakeServiceOrganizationId,
+    )
   ) {
     throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在或不可访问', {
       requestId,

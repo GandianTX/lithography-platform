@@ -16,6 +16,7 @@ import { RepairRequestRevisionService } from './repair-request-revision.service'
 describe('RepairRequestRevisionService', () => {
   const createdAt = new Date('2026-11-16T08:00:00.000Z');
   let requestRepository: ReturnType<typeof createMockRepository>;
+  let intakeRepository: ReturnType<typeof createMockRepository>;
   let revisionRepository: ReturnType<typeof createMockRepository>;
   let processEntryRepository: ReturnType<typeof createMockRepository>;
   let responseRepository: ReturnType<typeof createMockRepository>;
@@ -44,6 +45,10 @@ describe('RepairRequestRevisionService', () => {
 
   beforeEach(() => {
     requestRepository = createMockRepository();
+    intakeRepository = createMockRepository();
+    (requestRepository as unknown as { manager: { getRepository: jest.Mock } }).manager = {
+      getRepository: jest.fn(() => intakeRepository),
+    };
     revisionRepository = createMockRepository();
     processEntryRepository = createMockRepository();
     responseRepository = createMockRepository();
@@ -80,6 +85,7 @@ describe('RepairRequestRevisionService', () => {
       closureReason: null,
       handlingEndedAt: null,
       currentRevisionNo: 2,
+      intakeId: null,
     });
 
     await expect(
@@ -88,17 +94,116 @@ describe('RepairRequestRevisionService', () => {
       id: 11,
       requestNo: 'RR20261116000000ABC123',
       currentRevisionNo: 2,
+      intakeId: null,
+      intakeServiceOrganizationId: null,
       serviceOrganizationId: 22,
     });
     expect(requestRepository.findOne).toHaveBeenCalledWith({
       where: { id: 11 },
       lock: { mode: 'pessimistic_write' },
     });
+    expect(intakeRepository.findOne).not.toHaveBeenCalled();
 
     requestRepository.findOne.mockResolvedValueOnce(null);
     await expect(
       service.lockRequestForRevision(99, asContext(requestRepository)),
     ).resolves.toBeNull();
+  });
+
+  it('lockRequestForRevision 有 intake 时在同一事务内共享锁读取 intake 服务公司', async () => {
+    requestRepository.findOne.mockResolvedValue({
+      id: 11,
+      intakeId: 660001,
+      serviceOrganizationId: 22,
+      ownerOrganizationId: 22,
+      deprecated: false,
+      currentRevisionNo: 2,
+    });
+    intakeRepository.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 22 });
+
+    await expect(
+      service.lockRequestForRevision(11, asContext(requestRepository)),
+    ).resolves.toMatchObject({
+      intakeId: 660001,
+      intakeServiceOrganizationId: 22,
+      serviceOrganizationId: 22,
+    });
+    expect(intakeRepository.findOne).toHaveBeenCalledWith({
+      where: { id: 660001 },
+      select: { id: true, serviceOrganizationId: true },
+      lock: { mode: 'pessimistic_read' },
+    });
+    // 锁顺序固定「工单 → intake」：工单行排他锁必须先于 intake 共享锁
+    expect(requestRepository.findOne.mock.invocationCallOrder[0]).toBeLessThan(
+      intakeRepository.findOne.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('方案 B：intake 已软删除时仍以其服务公司作为归属事实，不因 deleted_at 置空', async () => {
+    requestRepository.findOne.mockResolvedValue({
+      id: 11,
+      intakeId: 660001,
+      serviceOrganizationId: 22,
+      ownerOrganizationId: 22,
+      deprecated: false,
+      currentRevisionNo: 2,
+    });
+    intakeRepository.findOne.mockResolvedValue({
+      id: 660001,
+      serviceOrganizationId: 22,
+      deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+
+    await expect(
+      service.lockRequestForRevision(11, asContext(requestRepository)),
+    ).resolves.toMatchObject({
+      intakeId: 660001,
+      intakeServiceOrganizationId: 22,
+      serviceOrganizationId: 22,
+    });
+  });
+
+  it('方案 B：intake 已软删除但服务公司冲突时仍原样返回，由用例失败关闭', async () => {
+    requestRepository.findOne.mockResolvedValue({
+      id: 11,
+      intakeId: 660001,
+      serviceOrganizationId: 22,
+      ownerOrganizationId: 22,
+      deprecated: false,
+      currentRevisionNo: 2,
+    });
+    intakeRepository.findOne.mockResolvedValue({
+      id: 660001,
+      serviceOrganizationId: 23,
+      deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+
+    await expect(
+      service.lockRequestForRevision(11, asContext(requestRepository)),
+    ).resolves.toMatchObject({
+      intakeId: 660001,
+      intakeServiceOrganizationId: 23,
+      serviceOrganizationId: 22,
+    });
+  });
+
+  it('lockRequestForRevision intake 关联缺失时返回空服务公司，交由用例失败关闭', async () => {
+    requestRepository.findOne.mockResolvedValue({
+      id: 11,
+      intakeId: 660001,
+      serviceOrganizationId: 22,
+      ownerOrganizationId: 22,
+      deprecated: false,
+      currentRevisionNo: 2,
+    });
+    intakeRepository.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.lockRequestForRevision(11, asContext(requestRepository)),
+    ).resolves.toMatchObject({
+      intakeId: 660001,
+      intakeServiceOrganizationId: null,
+    });
   });
 
   it('lockRequestForRevision 数据库异常包装为修订写失败且不泄漏 SQL', async () => {

@@ -297,7 +297,7 @@ export function AdminRepairRequestDetailPanel({
             detail={detail}
             key={`${detail.id}:${detail.currentRevisionNo}:${revisionOpen}`}
             onClose={() => setRevisionOpen(false)}
-            onSaved={summary.retry}
+            onSaved={summary.reload}
             open={revisionOpen}
           />
         </>

@@ -39,7 +39,7 @@ export function AdminRepairRequestRevisionModal({
   detail: AdminRepairRequestSummary;
   open: boolean;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: () => void | Promise<boolean>;
 }) {
   const [contentMd, setContentMd] = useState(detail.contentMd);
   const [handlingResult, setHandlingResult] = useState<AdminRepairHandlingResult | null>(
@@ -163,8 +163,19 @@ export function AdminRepairRequestRevisionModal({
         return;
       }
       message.success('工单修订已保存。');
-      onSaved();
       onClose();
+      // 修订已在服务端提交成功：详情刷新属于独立的后续读取。
+      // 刷新失败只能提示「已保存但刷新失败」，绝不能改写为保存失败，
+      // 否则会诱导用户用旧版本重复提交。
+      let refreshed = true;
+      try {
+        refreshed = (await onSaved()) !== false;
+      } catch {
+        refreshed = false;
+      }
+      if (!refreshed) {
+        message.warning('修订已保存，但详情刷新失败，请刷新页面后查看最新版本。');
+      }
     } catch {
       if (!isCurrentSubmission()) {
         return;

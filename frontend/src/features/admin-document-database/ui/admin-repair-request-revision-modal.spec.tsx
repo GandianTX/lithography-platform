@@ -68,6 +68,9 @@ describe('AdminRepairRequestRevisionModal', () => {
     vi.spyOn(message, 'success')
       .mockImplementation(() => undefined as never)
       .mockClear();
+    vi.spyOn(message, 'warning')
+      .mockImplementation(() => undefined as never)
+      .mockClear();
   });
 
   afterEach(() => {
@@ -140,6 +143,93 @@ describe('AdminRepairRequestRevisionModal', () => {
     });
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(message.success).toHaveBeenCalledWith('工单修订已保存。');
+    expect(message.warning).not.toHaveBeenCalled();
+  });
+
+  it('修订已成功但详情刷新失败：同时提示成功与刷新失败，绝不提示保存失败', async () => {
+    appendMock.mockResolvedValue({
+      ok: true,
+      result: {
+        requestId: 880001,
+        revisionNo: 3,
+        previousVersion: 2,
+        currentRevisionNo: 3,
+        reason: '订正正文',
+        actorNickname: '管理员甲',
+        createdAt: '2026-09-02T08:00:00.000Z',
+      },
+    });
+    const onSaved = vi.fn().mockResolvedValue(false);
+
+    render(
+      <AdminRepairRequestRevisionModal
+        detail={buildDetail()}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+        open
+      />,
+    );
+
+    fireEvent.change(screen.getByDisplayValue('# 原始正文'), {
+      target: { value: '# 订正正文' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('说明本次修订的原因与依据'), {
+      target: { value: '订正已提交事实' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存修订' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(message.success).toHaveBeenCalledWith('工单修订已保存。');
+    await waitFor(() =>
+      expect(message.warning).toHaveBeenCalledWith(
+        '修订已保存，但详情刷新失败，请刷新页面后查看最新版本。',
+      ),
+    );
+    expect(screen.queryByText('修订保存失败，请稍后重试。')).not.toBeInTheDocument();
+    // 不自动重试 mutation：一次操作只提交一次
+    expect(appendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('刷新详情抛错时仍按「已保存 + 刷新失败」提示，不误报保存失败', async () => {
+    appendMock.mockResolvedValue({
+      ok: true,
+      result: {
+        requestId: 880001,
+        revisionNo: 3,
+        previousVersion: 2,
+        currentRevisionNo: 3,
+        reason: '订正正文',
+        actorNickname: '管理员甲',
+        createdAt: '2026-09-02T08:00:00.000Z',
+      },
+    });
+    const onSaved = vi.fn().mockRejectedValue(new Error('refresh failed'));
+
+    render(
+      <AdminRepairRequestRevisionModal
+        detail={buildDetail()}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+        open
+      />,
+    );
+
+    fireEvent.change(screen.getByDisplayValue('# 原始正文'), {
+      target: { value: '# 订正正文' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('说明本次修订的原因与依据'), {
+      target: { value: '订正已提交事实' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存修订' }));
+
+    await waitFor(() =>
+      expect(message.warning).toHaveBeenCalledWith(
+        '修订已保存，但详情刷新失败，请刷新页面后查看最新版本。',
+      ),
+    );
+    expect(message.success).toHaveBeenCalledWith('工单修订已保存。');
+    expect(screen.queryByText('修订保存失败，请稍后重试。')).not.toBeInTheDocument();
+    expect(appendMock).toHaveBeenCalledTimes(1);
   });
 
   it('版本冲突时保留弹窗、显示服务端消息且不触发 onSaved', async () => {

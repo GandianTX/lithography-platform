@@ -13,6 +13,7 @@ import { Repository } from 'typeorm';
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
 import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
 
 export type RepairRequestRevisionTargetSnapshot = {
@@ -23,6 +24,9 @@ export type RepairRequestRevisionTargetSnapshot = {
   errorCode: string;
   faultDescription: string;
   contentMd: string;
+  intakeId: number | null;
+  /** 按 intakeId 读取到的 intake 服务公司；intake 缺失/不可用时为 null */
+  intakeServiceOrganizationId: number | null;
   serviceOrganizationId: number | null;
   ownerOrganizationId: number | null;
   createdAt: Date;
@@ -123,8 +127,16 @@ export class RepairRequestRevisionService {
   ) {}
 
   /**
-   * 工单行锁读（pessimistic_write）。修订锁顺序固定为「工单 → 过程」，
-   * 与结单/过程写入的「原件 → 工单 → 过程」不发生反向持锁。
+   * 工单行锁读（pessimistic_write），并在同一事务内核对 intake 归属事实。
+   *
+   * 锁顺序固定为「工单 → intake（共享锁）→ 过程」：
+   * - 工单行先以排他锁固定组织归属与版本；
+   * - 有 intake 时以共享锁读取 intake 服务公司，防止读取后被并发改写；
+   * - 过程行随后排他锁定。
+   *
+   * 现有写路径（结单/过程写入）为「原件 → 工单 → 过程」，不持有 intake 锁；
+   * 本路径在工单之后才取 intake 共享锁，不构成反向锁序。intake 记录缺失或
+   * 读取失败时返回 null，由用例按失败关闭拒绝，不回退 owner。
    */
   async lockRequestForRevision(
     requestId: number,
@@ -136,7 +148,23 @@ export class RepairRequestRevisionService {
         where: { id: requestId },
         lock: { mode: 'pessimistic_write' },
       });
-      return entity ? this.toTargetSnapshot(entity) : null;
+      if (!entity) {
+        return null;
+      }
+      const snapshot = this.toTargetSnapshot(entity);
+      const intakeId = entity.intakeId ?? null;
+      if (intakeId === null) {
+        return { ...snapshot, intakeServiceOrganizationId: null };
+      }
+      const intake = await repository.manager.getRepository(RepairRequestIntakeEntity).findOne({
+        where: { id: intakeId },
+        select: { id: true, serviceOrganizationId: true },
+        lock: { mode: 'pessimistic_read' },
+      });
+      return {
+        ...snapshot,
+        intakeServiceOrganizationId: intake?.serviceOrganizationId ?? null,
+      };
     } catch (error) {
       throw new DomainError(
         REPAIR_REQUEST_ERROR.PROCESS_WRITE_FAILED,
@@ -309,6 +337,8 @@ export class RepairRequestRevisionService {
       errorCode: entity.errorCode,
       faultDescription: entity.faultDescription,
       contentMd: entity.contentMd,
+      intakeId: entity.intakeId,
+      intakeServiceOrganizationId: null,
       serviceOrganizationId: entity.serviceOrganizationId,
       ownerOrganizationId: entity.ownerOrganizationId,
       createdAt: entity.createdAt,

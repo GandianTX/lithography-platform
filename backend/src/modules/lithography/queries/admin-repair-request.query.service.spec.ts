@@ -1,6 +1,6 @@
 // src/modules/lithography/queries/admin-repair-request.query.service.spec.ts
 
-import { Between } from 'typeorm';
+import { Between, IsNull } from 'typeorm';
 
 import { ADMIN_DOCUMENT_DATABASE_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { captureThrownError } from '../../../../test/support/account/admin-user.fixture';
@@ -49,6 +49,7 @@ describe('AdminRepairRequestQueryService', () => {
       isAccepted: false,
       acceptedAt: null,
       acceptedByEngineerAccountId: null,
+      intakeId: null,
       ownerOrganizationId: null,
       serviceOrganizationId: null,
       handlingResult: null,
@@ -368,7 +369,7 @@ describe('AdminRepairRequestQueryService', () => {
     expect(summary.equipmentModel.modelCode).toBe('ASML-TWINSCAN-NXT-1980DI');
   });
 
-  it('二级管理员列表：服务公司与历史 owner 两分支同口径，分页 total 使用同一 where', async () => {
+  it('二级管理员列表：有 intake 一致性 + 无 intake 历史两分支，分页 total 使用同一 where', async () => {
     const requestRepo = makeRequestRepo();
     const service = new AdminRepairRequestQueryService(
       requestRepo as never,
@@ -380,18 +381,73 @@ describe('AdminRepairRequestQueryService', () => {
 
     await service.listAll({ filter: {}, pagination, organizationId: 700001 });
 
-    const findArg = requestRepo.find.mock.calls[0][0] as { where: unknown[] };
-    expect(findArg.where).toHaveLength(2);
+    const findArg = requestRepo.find.mock.calls[0][0] as {
+      where: Array<Record<string, unknown>>;
+      skip: number;
+      take: number;
+    };
+    expect(findArg.where).toHaveLength(3);
+    // 历史无 intake：service 优先
     expect(findArg.where[0]).toMatchObject({
+      deprecated: false,
+      intakeId: IsNull(),
+      serviceOrganizationId: 700001,
+    });
+    // 历史无 intake：service 缺失回落 owner
+    expect(findArg.where[1]).toMatchObject({
+      deprecated: false,
+      intakeId: IsNull(),
+      serviceOrganizationId: IsNull(),
+      ownerOrganizationId: 700001,
+    });
+    // 有 intake：工单 service = 本公司，且 EXISTS 约束 intake service = 本公司
+    expect(findArg.where[2]).toMatchObject({
       deprecated: false,
       serviceOrganizationId: 700001,
     });
-    expect(findArg.where[1]).toMatchObject({
-      deprecated: false,
-      ownerOrganizationId: 700001,
-    });
+    const existsParams = findOperatorField(
+      findArg.where[2].intakeId,
+      '_objectLiteralParameters',
+    ) as { organizationId?: number };
+    expect(existsParams.organizationId).toBe(700001);
+    // 组织范围条件与分页在同一查询下发，分页前完成过滤
+    expect(findArg).toMatchObject({ skip: 0, take: 10 });
     // 分页 total 必须复用与列表相同的组织范围条件
     expect(requestRepo.count).toHaveBeenCalledWith({ where: findArg.where });
+  });
+
+  it('方案 B：intake 软删除不缩小列表/统计范围，EXISTS 不引用 deleted_at 且 total 同口径', async () => {
+    const requestRepo = makeRequestRepo();
+    const service = new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      makeModelRepo() as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
+    );
+
+    await service.listAll({ filter: {}, pagination, organizationId: 700001 });
+
+    const findArg = requestRepo.find.mock.calls[0][0] as {
+      where: Array<Record<string, unknown>>;
+    };
+    expect(findArg.where).toHaveLength(3);
+    const listExistsSql = (
+      findOperatorField(findArg.where[2].intakeId, '_getSql') as (alias: string) => string
+    )('`RepairRequestEntity`.`intake_id`');
+    expect(listExistsSql).toContain('repair_request_intake');
+    // 方案 B：已关联工单不因 intake.deleted_at 非空而从列表/统计中消失
+    expect(listExistsSql).not.toMatch(/deleted_at/);
+    expect(findArg.where[2]).not.toHaveProperty('deletedAt');
+    expect(requestRepo.count).toHaveBeenCalledWith({ where: findArg.where });
+
+    await service.countAll(700001);
+    const statsWhere = requestRepo.count.mock.calls[1][0].where as Array<Record<string, unknown>>;
+    expect(statsWhere).toHaveLength(3);
+    const statsExistsSql = (
+      findOperatorField(statsWhere[2].intakeId, '_getSql') as (alias: string) => string
+    )('`RepairRequestEntity`.`intake_id`');
+    expect(statsExistsSql).not.toMatch(/deleted_at/);
   });
 
   it('一级管理员列表：不附加组织条件，跨公司可见且 total 同口径', async () => {
@@ -435,10 +491,14 @@ describe('AdminRepairRequestQueryService', () => {
     expect(modelRepo.findOne).toHaveBeenCalledTimes(1);
   });
 
-  it('二级管理员详情：本公司（service 优先，缺失回落 owner）可读，外公司统一 NOT_FOUND', async () => {
+  it('二级管理员详情：无 intake 历史工单 service 为空时按 owner 可读，外公司统一 NOT_FOUND', async () => {
     const requestRepo = makeRequestRepo();
     requestRepo.findOne.mockResolvedValue(
-      requestEntity({ serviceOrganizationId: null, ownerOrganizationId: 700001 }),
+      requestEntity({
+        intakeId: null,
+        serviceOrganizationId: null,
+        ownerOrganizationId: 700001,
+      }),
     );
     const modelRepo = makeModelRepo();
     modelRepo.findOne.mockResolvedValue(modelEntity());
@@ -458,6 +518,35 @@ describe('AdminRepairRequestQueryService', () => {
     expect(denied).toBeInstanceOf(DomainError);
     expect((denied as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
     expect(modelRepo.findOne).toHaveBeenCalledTimes(1);
+    // 历史工单无 intake，不发起 intake 读取
+    expect(requestRepo.manager.getRepository).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员详情：无 intake 历史工单 service 有值时优先于 owner', async () => {
+    const requestRepo = makeRequestRepo();
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: null,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const modelRepo = makeModelRepo();
+    modelRepo.findOne.mockResolvedValue(modelEntity());
+    const service = new AdminRepairRequestQueryService(
+      requestRepo as never,
+      makeResponseRepo() as never,
+      modelRepo as never,
+      makeRevisionRepo() as never,
+      makeProcessEntryQuery() as never,
+    );
+
+    await expect(service.findSummaryById(880001, 700001)).resolves.toMatchObject({
+      id: 880001,
+    });
+
+    const denied = await captureThrownError(service.findSummaryById(880001, 700002));
+    expect((denied as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
   });
 
   const processEntryWithFile = () => ({
@@ -584,8 +673,9 @@ describe('AdminRepairRequestQueryService', () => {
     expect(summary.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
   });
 
-  it('组合 b：service=NULL、owner=A，二级管理员 A 不应展示原件（任务 11 不回退 owner）', async () => {
+  it('组合 b：有 intake 但工单服务公司缺失，二级管理员失败关闭 NOT_FOUND，不回退 owner', async () => {
     const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700001 });
     const requestRepo = makeRequestRepo(intakeRepo);
     requestRepo.findOne.mockResolvedValue(
       requestEntity({
@@ -597,19 +687,18 @@ describe('AdminRepairRequestQueryService', () => {
     const processEntryQuery = makeProcessEntryQuery();
     const service = makeSummaryService(requestRepo, processEntryQuery);
 
-    const summary = await service.findSummaryById(880001, 700001);
+    const error = await captureThrownError(service.findSummaryById(880001, 700001));
 
-    expect(summary.processEntries[0].fileId).toBeNull();
-    expect(summary.processEntries[0].file).toBeNull();
-    expect(summary.processEntries[0].operationText).toBe('更换部件');
-    expect(summary.processEntries[0].versionNo).toBe(1);
-    expect(intakeRepo.findOne).not.toHaveBeenCalled();
-    // 组织授权失败后只能走无原件的文本投影
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    // 先读取 intake 归属事实，再失败关闭
+    expect(intakeRepo.findOne).toHaveBeenCalledTimes(1);
+    // 不读取内部过程或原件元数据
     expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
-    expect(processEntryQuery.listByRequestTextOnly).toHaveBeenCalledWith(880001);
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
   });
 
-  it('组合 c：service=A、intake=B、owner=A，二级管理员 A 不应展示原件', async () => {
+  it('组合 c：有 intake 但归属冲突（service=A、intake=B），二级管理员失败关闭 NOT_FOUND', async () => {
     const intakeRepo = makeIntakeRepo();
     intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700002 });
     const requestRepo = makeRequestRepo(intakeRepo);
@@ -623,20 +712,154 @@ describe('AdminRepairRequestQueryService', () => {
     const processEntryQuery = makeProcessEntryQuery();
     const service = makeSummaryService(requestRepo, processEntryQuery);
 
-    const summary = await service.findSummaryById(880001, 700001);
+    const error = await captureThrownError(service.findSummaryById(880001, 700001));
 
-    expect(summary.processEntries[0].fileId).toBeNull();
-    expect(summary.processEntries[0].file).toBeNull();
-    expect(summary.processEntries[0].operationText).toBe('更换部件');
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
     expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
-    expect(processEntryQuery.listByRequestTextOnly).toHaveBeenCalledWith(880001);
-    // 组织（intake）授权必须先于任何过程/原件查询
-    expect(intakeRepo.findOne.mock.invocationCallOrder[0]).toBeLessThan(
-      processEntryQuery.listByRequestTextOnly.mock.invocationCallOrder[0],
-    );
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
   });
 
-  it('一级管理员详情保留全部原件；intake 缺失时二级失败关闭', async () => {
+  it('有 intake 但关联记录缺失：二级管理员失败关闭 NOT_FOUND，不回退 owner', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue(null);
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const error = await captureThrownError(service.findSummaryById(880001, 700001));
+
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
+  });
+
+  it('方案 B：intake 已软删除但双方公司一致，二级管理员详情可用并展示原件', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({
+      id: 660001,
+      serviceOrganizationId: 700001,
+      deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const service = makeSummaryService(requestRepo, makeProcessEntryQuery());
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.id).toBe(880001);
+    expect(summary.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
+  });
+
+  it('方案 B：intake 已软删除仍不放宽归属冲突，拒绝前不读取过程/原件', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({
+      id: 660001,
+      serviceOrganizationId: 700002,
+      deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const error = await captureThrownError(service.findSummaryById(880001, 700001));
+
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
+  });
+
+  it('方案 B：intake 已软删除不改变跨公司拒绝（管理员不属于该公司）', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({
+      id: 660001,
+      serviceOrganizationId: 700001,
+      deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const error = await captureThrownError(service.findSummaryById(880001, 700002));
+
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
+  });
+
+  it('方案 B：一级管理员不受 intake 软删除影响，且不读取 intake', async () => {
+    const intakeRepo = makeIntakeRepo();
+    intakeRepo.findOne.mockResolvedValue({
+      id: 660001,
+      serviceOrganizationId: 700001,
+      deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: 660001,
+        serviceOrganizationId: 700001,
+        ownerOrganizationId: 700002,
+      }),
+    );
+    const service = makeSummaryService(requestRepo, makeProcessEntryQuery());
+
+    const summary = await service.findSummaryById(880001, null);
+
+    expect(summary.processEntries[0].file).toMatchObject({ fileId: 'file-1' });
+    expect(intakeRepo.findOne).not.toHaveBeenCalled();
+  });
+
+  it('方案 B：无 intake 历史工单 owner 回退可见且二级仅过程文本，不读取 intake', async () => {
+    const intakeRepo = makeIntakeRepo();
+    const requestRepo = makeRequestRepo(intakeRepo);
+    requestRepo.findOne.mockResolvedValue(
+      requestEntity({
+        intakeId: null,
+        serviceOrganizationId: null,
+        ownerOrganizationId: 700001,
+      }),
+    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
+
+    const summary = await service.findSummaryById(880001, 700001);
+
+    expect(summary.id).toBe(880001);
+    expect(summary.processEntries[0].file).toBeNull();
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).toHaveBeenCalledWith(880001);
+    expect(intakeRepo.findOne).not.toHaveBeenCalled();
+  });
+
+  it('一级管理员详情保留全部原件；无 intake 历史工单二级仅过程文本', async () => {
     const intakeRepo = makeIntakeRepo();
     const requestRepo = makeRequestRepo(intakeRepo);
     requestRepo.findOne.mockResolvedValue(
@@ -745,7 +968,7 @@ describe('AdminRepairRequestQueryService', () => {
     expect(summary.processEntries[1].operationText).toBe('复测');
   });
 
-  it('二级管理员 A：service=A、intake=B 时即使文件事实有效也不展示（不回退 owner）', async () => {
+  it('二级管理员 A：有 intake 但 service=A、intake=B 时详情 NOT_FOUND，绝不回退 owner', async () => {
     const intakeRepo = makeIntakeRepo();
     intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700002 });
     const requestRepo = makeRequestRepo(intakeRepo);
@@ -756,19 +979,18 @@ describe('AdminRepairRequestQueryService', () => {
         ownerOrganizationId: 700001,
       }),
     );
-    const service = makeSummaryServiceWithProcessQuery(
-      requestRepo,
-      makeRealProcessEntryQuery([processRow()]),
-    );
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
 
-    const summary = await service.findSummaryById(880001, 700001);
+    const error = await captureThrownError(service.findSummaryById(880001, 700001));
 
-    expect(summary.processEntries[0].fileId).toBeNull();
-    expect(summary.processEntries[0].file).toBeNull();
-    expect(summary.processEntries[0].operationText).toBe('更换部件');
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
   });
 
-  it('二级拒绝（service=A、intake=B）：先组织授权，再执行无 stored_file 联接的文本投影', async () => {
+  it('二级拒绝（service=A、intake=B）：先读 intake 授权事实，随后 NOT_FOUND 且不执行任何过程投影', async () => {
     const intakeRepo = makeIntakeRepo();
     intakeRepo.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 700002 });
     const requestRepo = makeRequestRepo(intakeRepo);
@@ -779,43 +1001,16 @@ describe('AdminRepairRequestQueryService', () => {
         ownerOrganizationId: 700001,
       }),
     );
-    const { projection, queryBuilder } = makeRealProcessEntryProjection([
-      {
-        id: '1',
-        entryUuid: 'entry-uuid-1',
-        requestId: '880001',
-        operationText: '更换部件',
-        testResult: null,
-        occurredAt: null,
-        timeSource: 'SERVER',
-        versionNo: '1',
-        createdAt: '2026-09-02T00:00:00.000Z',
-      },
-    ]);
-    const service = makeSummaryServiceWithProcessQuery(requestRepo, projection);
+    const processEntryQuery = makeProcessEntryQuery();
+    const service = makeSummaryService(requestRepo, processEntryQuery);
 
-    const summary = await service.findSummaryById(880001, 700001);
+    const error = await captureThrownError(service.findSummaryById(880001, 700001));
 
-    expect(summary.processEntries[0]).toMatchObject({
-      operationText: '更换部件',
-      versionNo: 1,
-      fileId: null,
-      file: null,
-    });
-    expect(queryBuilder.leftJoin).not.toHaveBeenCalled();
-    const selected = queryBuilder.select.mock.calls[0][0] as string[];
-    expect(selected.join('\n')).not.toContain('entry.file_id');
-    expect(selected.join('\n')).not.toContain('file.');
-    expect(selected).toEqual(
-      expect.arrayContaining([
-        'entry.operation_text AS operationText',
-        'entry.version_no AS versionNo',
-      ]),
-    );
-    // 组织授权（intake 读取）必须先于投影执行
-    expect(intakeRepo.findOne.mock.invocationCallOrder[0]).toBeLessThan(
-      queryBuilder.getRawMany.mock.invocationCallOrder[0],
-    );
+    expect((error as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+    // 组织授权（intake 读取）先于任何过程投影；失败后连文本投影也不执行
+    expect(intakeRepo.findOne).toHaveBeenCalledTimes(1);
+    expect(processEntryQuery.listByRequest).not.toHaveBeenCalled();
+    expect(processEntryQuery.listByRequestTextOnly).not.toHaveBeenCalled();
   });
 
   it('二级允许（service=A、intake=A）：仍执行含原件事实的投影并展示有效原件', async () => {

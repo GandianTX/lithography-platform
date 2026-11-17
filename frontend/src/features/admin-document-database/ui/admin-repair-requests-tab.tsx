@@ -719,7 +719,7 @@ export function AdminRepairRequestsTab({
           detail={summary.state.detail}
           key={`${summary.state.detail.id}:${summary.state.detail.currentRevisionNo}:${revisionOpen}`}
           onClose={() => setRevisionOpen(false)}
-          onSaved={summary.retry}
+          onSaved={summary.reload}
           open={revisionOpen}
         />
       ) : null}
