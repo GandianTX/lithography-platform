@@ -182,3 +182,13 @@ export type AdminCompanyCredentialView = {
 
 /** 读入口模式：一级完整读写；二级 / 等级未知只读最小名称名单 */
 export type AdminCompanyListMode = 'full' | 'name-only';
+
+/**
+ * 提交归属所需的会话身份快照（账号 + 会话代次，不含 Token）。
+ *
+ * 由页面注入：本 feature 不直接依赖 auth-session feature，保持 features 之间零耦合。
+ */
+export type AdminCompanySessionIdentity = {
+  accountId: number;
+  epoch: number;
+};

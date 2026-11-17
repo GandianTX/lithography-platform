@@ -39,12 +39,19 @@ import type {
   AdminCompanyProvisionResult,
   AdminCompanyRecordResult,
   AdminCompanyRow,
+  AdminCompanySessionIdentity,
   AdminCompanyUpdateDraft,
   AdminOrganizationStatus,
 } from '../application/admin-company-management.types';
 import {
-  clearSubmissionKey,
-  loadOrCreateSubmissionKey,
+  adoptLegacySubmissionKey,
+  clearLegacySubmissionKey,
+  clearSubmissionIfMatches,
+  loadOrCreateSubmissionRecord,
+  readLegacySubmissionKey,
+  readSubmissionRecord,
+  rememberSubmissionDraft,
+  startNewSubmission,
 } from '../application/admin-company-submission-key';
 import { useAdminCompanyAdminBindings } from '../application/use-admin-company-admin-bindings';
 import { useAdminCompanyCommands } from '../application/use-admin-company-commands';
@@ -68,6 +75,8 @@ const SEARCH_DEBOUNCE_MS = 300;
  *
  * `save-failed`（含网络不确定与 `in-flight`）不在此列：先保留标识，重试仍落在
  * 同一次提交上，避免超时重试产生第二家公司与第二个管理员。
+ * `submission-conflict` 同样必须保留：服务端已有同标识的已提交记录，
+ * 清标识只会让下一次提交另起一户，必须走冲突恢复或用户显式另起。
  */
 const CREATE_CONFIRMED_ZERO_SUBMIT_REASONS: ReadonlySet<AdminCompanyCommandFailureReason> =
   new Set<AdminCompanyCommandFailureReason>([
@@ -75,7 +84,6 @@ const CREATE_CONFIRMED_ZERO_SUBMIT_REASONS: ReadonlySet<AdminCompanyCommandFailu
     'forbidden',
     'not-found',
     'duplicate-code',
-    'submission-conflict',
   ]);
 
 // antd Select 的选项值只接受字符串/数字：维修资格用 'true' / 'false' 承载，
@@ -86,6 +94,17 @@ const SERVICE_PROVIDER_FILTER_OPTIONS: { label: string; value: 'true' | 'false' 
 ];
 
 type AdminCompanyDialogKey = 'create' | 'edit' | 'credential-confirm';
+
+/**
+ * 新增弹窗的恢复提示：
+ * - `restored`：刷新/重开时恢复上次未提交内容，沿用同一标识；
+ * - `conflict`：服务端已有同标识但内容不同，恢复首次内容供同标识重放；
+ * - `legacy`：只找到来源账号未知的旧标识，必须显式选择沿用或另起。
+ */
+type CreateRecovery = {
+  notice: 'conflict' | 'legacy' | 'restored';
+  draft: AdminCompanyCreateDraft | null;
+};
 
 function renderOptionalText(value: string | null): string {
   return value ?? '—';
@@ -109,7 +128,17 @@ function toPaginationProps(page: AdminCompanyListPage) {
   };
 }
 
-export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number | null }) {
+export function AdminCompanyManagementPanel({
+  adminLevel,
+  sampleSessionIdentity,
+}: {
+  adminLevel: number | null;
+  /**
+   * 提交归属用的会话身份采样（页面注入）。
+   * feature 之间不允许互相依赖，因此不在这里直接 import auth-session。
+   */
+  sampleSessionIdentity: () => AdminCompanySessionIdentity | null;
+}) {
   const mode = resolveAdminCompanyListMode(adminLevel);
   const list = useAdminCompanyList(mode);
   const commands = useAdminCompanyCommands(list.reload);
@@ -120,6 +149,7 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
   const [debouncedKeyword, setDebouncedKeyword] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createRecovery, setCreateRecovery] = useState<CreateRecovery | null>(null);
   const [editTarget, setEditTarget] = useState<AdminCompanyRow | null>(null);
   const [reissueTarget, setReissueTarget] = useState<AdminCompanyReissueTarget | null>(null);
   const [reissueError, setReissueError] = useState<string | null>(null);
@@ -173,11 +203,36 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
     list.applyFilters({ isServiceProvider: null, keyword: null, status: null });
   };
 
+  /**
+   * 打开新增弹窗前读取当前账号的未定案记录：
+   * 有首次草稿就回填（沿用同一标识）；只有来源未知的旧全局记录时提示显式选择。
+   * 这里不生成标识——用户放弃的空白弹窗不应占用一次提交。
+   */
+  const syncCreateEntry = () => {
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      setCreateRecovery(null);
+      return;
+    }
+
+    const record = readSubmissionRecord(identity.accountId, window.sessionStorage);
+
+    if (record !== null && record.draft !== null) {
+      setCreateRecovery({ notice: 'restored', draft: record.draft });
+      return;
+    }
+
+    const legacyKey = readLegacySubmissionKey(window.sessionStorage);
+    setCreateRecovery(legacyKey === null ? null : { notice: 'legacy', draft: null });
+  };
+
   const openCreateDialog = () => {
     // 只在 closed → open 的真实翻转上推进：弹窗侧守卫以 `open` 为会话身份，
     // 面板若在一次无效的重入上也推进，两层就会对「是否新会话」给出相反答案
     if (!createOpen) {
       dialogSession.advance('create');
+      syncCreateEntry();
     }
 
     setCreateOpen(true);
@@ -186,6 +241,36 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
   const closeCreateDialog = () => {
     dialogSession.advance('create');
     setCreateOpen(false);
+  };
+
+  /** 用户明确另起一次新提交：换标识、清空恢复提示，并清掉来源未知的旧标识。 */
+  const startNewCreateSubmission = () => {
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      return;
+    }
+
+    if (createRecovery?.notice === 'legacy') {
+      clearLegacySubmissionKey(window.sessionStorage);
+    }
+
+    startNewSubmission(identity.accountId, Date.now(), window.sessionStorage);
+    setCreateRecovery(null);
+  };
+
+  /** 用户明确沿用来源未知的旧标识：落到当前账号后才允许提交。 */
+  const adoptLegacyCreateSubmission = () => {
+    const identity = sampleSessionIdentity();
+    const legacyKey = readLegacySubmissionKey(window.sessionStorage);
+
+    if (identity === null || legacyKey === null) {
+      return;
+    }
+
+    adoptLegacySubmissionKey(identity.accountId, legacyKey, Date.now(), window.sessionStorage);
+    // 只切换标识归属，不清空用户已填写内容（草稿仍为 null，弹窗无需回填）
+    setCreateRecovery(null);
   };
 
   const openEditDialog = (row: AdminCompanyRow) => {
@@ -206,18 +291,37 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
     draft: AdminCompanyCreateDraft,
   ): Promise<AdminCompanyProvisionResult> => {
     const sessionSeq = dialogSession.capture('create');
-    // 提交标识在发送前读取（缺失/过期则生成）：双击、超时重试、刷新恢复都复用同一标识
-    const submissionKey = loadOrCreateSubmissionKey(Date.now(), window.sessionStorage);
+    // 身份快照先于请求：标识按实际发起账号归属，无会话时不发请求
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      return { ok: false, reason: 'forbidden', message: '登录状态已失效，请重新登录后再提交。' };
+    }
+
+    const storage = window.sessionStorage;
+    // 标识在发送前读取（缺失则生成）：双击、超时、刷新恢复都复用同一标识，不按等待时长换键
+    const submissionKey = loadOrCreateSubmissionRecord(identity.accountId, Date.now(), storage).key;
+
+    // 首次发送前的内容作为恢复草稿；重试改内容不覆盖，冲突时才能回到原内容
+    rememberSubmissionDraft(identity.accountId, submissionKey, draft, storage);
+
     const execution = await commands.createCompany(draft, submissionKey);
 
     if (execution.kind === 'ok') {
       const result = execution.result;
+      const isCurrentDialog = dialogSession.isCurrent('create', sessionSeq);
 
       if (result.ok) {
-        // 成功即本次提交已定案，下一位新增必须换新标识
-        clearSubmissionKey(window.sessionStorage);
+        // 成功即本次提交已定案，下一位新增必须换新标识（仅清本账号本条记录）
+        clearSubmissionIfMatches(identity.accountId, submissionKey, storage);
 
-        if (dialogSession.isCurrent('create', sessionSeq)) {
+        // 关闭弹窗与展示凭据前再取一次快照：换号后不得展示他人会话的口令
+        const currentIdentity = sampleSessionIdentity();
+        const sameActor =
+          currentIdentity !== null && currentIdentity.accountId === identity.accountId;
+
+        if (sameActor && isCurrentDialog) {
+          setCreateRecovery(null);
           setCreateOpen(false);
           dialogSession.advance('create');
           // 业务字段与凭据全部来自同一创建结果；口令只进组件 state 的短生命周期弹窗
@@ -232,12 +336,22 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
           });
           message.success('公司档案已创建。');
         } else {
-          // 陈旧但写入确实发生：点名实际提交的公司，且不展示已失效会话的口令
+          // 陈旧/换号但写入确实发生：点名实际提交的公司，且不展示已失效会话的口令
           message.success(`「${result.organization.name}」已创建。`);
+        }
+      } else if (result.reason === 'submission-conflict') {
+        // 冲突不代表零提交：标识必须保留，回填首次内容供同标识重放或用户显式另起
+        if (isCurrentDialog) {
+          const stored = readSubmissionRecord(identity.accountId, storage);
+
+          setCreateRecovery({
+            notice: 'conflict',
+            draft: stored !== null && stored.key === submissionKey ? stored.draft : null,
+          });
         }
       } else if (CREATE_CONFIRMED_ZERO_SUBMIT_REASONS.has(result.reason)) {
         // 服务端已明确拒绝且零提交：标识无复用价值，清除避免下次新增被误判为回放
-        clearSubmissionKey(window.sessionStorage);
+        clearSubmissionIfMatches(identity.accountId, submissionKey, storage);
       }
       // save-failed（含网络不确定）保留标识：重试仍落在同一次提交上
 
@@ -610,9 +724,13 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
       {mode === 'full' ? (
         <>
           <AdminCompanyCreateModal
+            initialDraft={createRecovery?.draft ?? null}
             open={createOpen}
+            recoveryNotice={createRecovery?.notice ?? null}
             submitting={commands.isPending('create')}
+            onAdoptLegacySubmission={adoptLegacyCreateSubmission}
             onCancel={closeCreateDialog}
+            onStartNewSubmission={startNewCreateSubmission}
             onSubmit={submitCreate}
           />
 

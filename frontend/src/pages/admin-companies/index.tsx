@@ -1,7 +1,7 @@
 // src/pages/admin-companies/index.tsx
 
 import { AdminCompanyManagementPanel } from '@/features/admin-company-management';
-import { useAuthSession } from '@/features/auth-session';
+import { sampleCurrentAuthSessionIdentity, useAuthSession } from '@/features/auth-session';
 
 import { PageHeader } from '@/shared/ui/page-header';
 
@@ -24,7 +24,11 @@ export function AdminCompaniesPage() {
       />
 
       {/* 身份/等级变化即重挂载：在途请求与短生命周期凭据 state 一并丢弃 */}
-      <AdminCompanyManagementPanel key={adminLevel ?? 'none'} adminLevel={adminLevel} />
+      <AdminCompanyManagementPanel
+        key={adminLevel ?? 'none'}
+        adminLevel={adminLevel}
+        sampleSessionIdentity={sampleCurrentAuthSessionIdentity}
+      />
     </div>
   );
 }

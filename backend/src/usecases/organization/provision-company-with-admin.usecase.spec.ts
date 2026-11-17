@@ -25,10 +25,7 @@ import {
 } from '@src/modules/lithography/admin-organization-provisioning.service';
 import { OrganizationMembershipService } from '@src/modules/lithography/organization-membership.service';
 import { OrganizationService } from '@src/modules/lithography/organization.service';
-import type {
-  AdminOrganizationView,
-  OrganizationMembershipFact,
-} from '@src/modules/lithography/organization.types';
+import type { AdminOrganizationView } from '@src/modules/lithography/organization.types';
 import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import type { ProvisionCompanyWithAdminCommand } from './company-provisioning.types';
@@ -82,13 +79,13 @@ const organizationView: AdminOrganizationView = {
   updatedAt: new Date('2026-01-01T00:00:00Z'),
 };
 
-const membershipFact: OrganizationMembershipFact = {
-  membershipId: 11,
-  organizationId: ORGANIZATION_ID,
-  organizationCode: ORGANIZATION_CODE,
-  organizationName: COMPANY_NAME,
-  organizationKind: 'CLIENT',
-  memberRole: IdentityTypeEnum.SUPER_ADMIN,
+/** 回放窄读的原始成员关系（不按公司状态过滤）。 */
+const RAW_MEMBERSHIP_ID = 11;
+const rawMembership = {
+  membershipId: RAW_MEMBERSHIP_ID,
+  accountId: ADMIN_ACCOUNT_ID,
+  memberRole: String(IdentityTypeEnum.SUPER_ADMIN),
+  status: 'ACTIVE',
 };
 
 const authoritySnapshot = {
@@ -152,7 +149,7 @@ type Mocks = {
   organizationService: { createManagedCompany: jest.Mock };
   organizationQueryService: { findAdminOrganizationView: jest.Mock };
   organizationMembershipService: { insertMembership: jest.Mock };
-  organizationMembershipQueryService: { findActiveMembership: jest.Mock };
+  organizationMembershipQueryService: { listMembershipsByOrganization: jest.Mock };
   accountService: {
     insertAccount: jest.Mock;
     updateAccountPasswordHash: jest.Mock;
@@ -191,12 +188,10 @@ describe('ProvisionCompanyWithAdminUsecase（同事务开通 + 提交标识幂�
         findAdminOrganizationView: jest.fn().mockResolvedValue(organizationView),
       },
       organizationMembershipService: {
-        insertMembership: jest
-          .fn()
-          .mockResolvedValue({ membershipId: membershipFact.membershipId }),
+        insertMembership: jest.fn().mockResolvedValue({ membershipId: RAW_MEMBERSHIP_ID }),
       },
       organizationMembershipQueryService: {
-        findActiveMembership: jest.fn().mockResolvedValue(membershipFact),
+        listMembershipsByOrganization: jest.fn().mockResolvedValue([rawMembership]),
       },
       accountService: {
         insertAccount: jest.fn().mockResolvedValue({
@@ -439,11 +434,63 @@ describe('ProvisionCompanyWithAdminUsecase（同事务开通 + 提交标识幂�
 
   it('回放校验失败：活动成员关系缺失时同样按提交冲突拒绝', async () => {
     mocks.provisioningService.findByKey.mockResolvedValue(completedFact(expectedFingerprint()));
-    mocks.organizationMembershipQueryService.findActiveMembership.mockResolvedValue(null);
+    mocks.organizationMembershipQueryService.listMembershipsByOrganization.mockResolvedValue([]);
 
     await expect(usecase.execute(command())).rejects.toMatchObject({
       code: ORGANIZATION_MANAGEMENT_ERROR.SUBMISSION_CONFLICT,
     });
+  });
+
+  it('回放窄读不按公司状态过滤：公司已停用仍返回既有安全结果', async () => {
+    mocks.provisioningService.findByKey.mockResolvedValue(completedFact(expectedFingerprint()));
+    mocks.organizationQueryService.findAdminOrganizationView.mockResolvedValue({
+      ...organizationView,
+      status: 'DISABLED',
+    });
+
+    const result = await usecase.execute(command());
+
+    expect(
+      mocks.organizationMembershipQueryService.listMembershipsByOrganization,
+    ).toHaveBeenCalledWith({ organizationId: ORGANIZATION_ID });
+    expect(result.organization.status).toBe('DISABLED');
+    expect(result.submission).toEqual({ submissionId: REQUEST_ID, replayed: true });
+    expect(result.temporaryPassword).toBeNull();
+  });
+
+  it('回放校验失败：唯一成员边角色不是 SUPER_ADMIN 时拒绝', async () => {
+    mocks.provisioningService.findByKey.mockResolvedValue(completedFact(expectedFingerprint()));
+    mocks.organizationMembershipQueryService.listMembershipsByOrganization.mockResolvedValue([
+      { ...rawMembership, memberRole: String(IdentityTypeEnum.ENGINEER) },
+    ]);
+
+    await expect(usecase.execute(command())).rejects.toMatchObject({
+      code: ORGANIZATION_MANAGEMENT_ERROR.SUBMISSION_CONFLICT,
+    });
+  });
+
+  it('回放校验失败：两条活动 SUPER_ADMIN 成员边（歧义）时拒绝', async () => {
+    mocks.provisioningService.findByKey.mockResolvedValue(completedFact(expectedFingerprint()));
+    mocks.organizationMembershipQueryService.listMembershipsByOrganization.mockResolvedValue([
+      rawMembership,
+      { ...rawMembership, membershipId: RAW_MEMBERSHIP_ID + 1, accountId: ADMIN_ACCOUNT_ID + 1 },
+    ]);
+
+    await expect(usecase.execute(command())).rejects.toMatchObject({
+      code: ORGANIZATION_MANAGEMENT_ERROR.SUBMISSION_CONFLICT,
+    });
+  });
+
+  it('回放校验失败：唯一活动 SUPER_ADMIN 边指向其他账号时拒绝', async () => {
+    mocks.provisioningService.findByKey.mockResolvedValue(completedFact(expectedFingerprint()));
+    mocks.organizationMembershipQueryService.listMembershipsByOrganization.mockResolvedValue([
+      { ...rawMembership, accountId: ADMIN_ACCOUNT_ID + 1 },
+    ]);
+
+    await expect(usecase.execute(command())).rejects.toMatchObject({
+      code: ORGANIZATION_MANAGEMENT_ERROR.SUBMISSION_CONFLICT,
+    });
+    expect(mocks.adminUserQueryService.findAdminUserViewById).not.toHaveBeenCalled();
   });
 
   it('新入口缺标识：null 直接 SUBMISSION_KEY_INVALID，任何数据库访问都不发生', async () => {

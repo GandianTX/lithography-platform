@@ -308,6 +308,10 @@ export class ProvisionCompanyWithAdminUsecase {
    *
    * 任一校验不通过（指纹不同、状态未完成、公司/账号缺失、角色或归属复核失败）
    * 统一 `SUBMISSION_CONFLICT`，不泄露差异细节。
+   *
+   * 成员绑定使用不过滤公司状态的原始关系窄读：公司 DISABLED 本身不使历史结果失效，
+   * 但仍要求同一公司存在唯一 ACTIVE SUPER_ADMIN 绑定边且指向本次开通的账号。
+   * 共享 `findActiveMembership` 保持原有业务准入语义，不为回放改口径。
    */
   private async replay(params: {
     fact: ProvisioningRequestFact;
@@ -360,13 +364,7 @@ export class ProvisionCompanyWithAdminUsecase {
       throw this.conflict();
     }
 
-    const membership = await this.organizationMembershipQueryService.findActiveMembership({
-      accountId: adminAccountId,
-      organizationId,
-    });
-    if (membership === null || membership.memberRole !== String(IdentityTypeEnum.SUPER_ADMIN)) {
-      throw this.conflict();
-    }
+    await this.assertUniqueActiveSuperAdminBinding({ organizationId, adminAccountId });
 
     const adminUser = await this.adminUserQueryService.findAdminUserViewById({
       accountId: adminAccountId,
@@ -393,6 +391,34 @@ export class ProvisionCompanyWithAdminUsecase {
       submission: { submissionId: fact.id, replayed: true },
       temporaryPassword: null,
     };
+  }
+
+  /**
+   * 回放绑定复核：不过滤公司状态的原始成员关系窄读。
+   *
+   * 要求同一公司恰有一条 ACTIVE SUPER_ADMIN 成员边且指向本次开通的账号；
+   * 绑定缺失、漂移、歧义或指向他人时统一按提交冲突拒绝。
+   */
+  private async assertUniqueActiveSuperAdminBinding(params: {
+    organizationId: number;
+    adminAccountId: number;
+  }): Promise<void> {
+    const memberships = await this.organizationMembershipQueryService.listMembershipsByOrganization(
+      {
+        organizationId: params.organizationId,
+      },
+    );
+    const activeSuperAdminMemberships = memberships.filter(
+      (item) =>
+        item.status === 'ACTIVE' && item.memberRole === String(IdentityTypeEnum.SUPER_ADMIN),
+    );
+
+    if (
+      activeSuperAdminMemberships.length !== 1 ||
+      activeSuperAdminMemberships[0].accountId !== params.adminAccountId
+    ) {
+      throw this.conflict();
+    }
   }
 
   private conflict(): DomainError {

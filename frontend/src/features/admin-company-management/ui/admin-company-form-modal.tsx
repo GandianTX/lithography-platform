@@ -15,8 +15,9 @@
  * - 提交期间重复提交由宿主命令 hook 的 in-flight 锁拦截，弹窗侧只负责展示错误与保留草稿。
  */
 
+import { useEffect } from 'react';
 import type { ModalProps } from 'antd';
-import { Alert, Form, Input, Modal, Switch } from 'antd';
+import { Alert, Button, Form, Input, Modal, Switch } from 'antd';
 
 import { useStaleSubmitGuard } from '@/shared/ui/dialog-session';
 
@@ -216,14 +217,60 @@ function CompanyFormFields({
 type AdminCompanyCreateModalProps = {
   open: boolean;
   submitting: boolean;
+  /** 需要回填的首次提交内容（刷新恢复 / 冲突恢复）；null 表示空表单 */
+  initialDraft?: AdminCompanyCreateDraft | null;
+  /** 恢复提示：冲突恢复 / 上次草稿 / 来源未知的旧标识 */
+  recoveryNotice?: 'conflict' | 'legacy' | 'restored' | null;
   onCancel: () => void;
+  /** 用户明确另起一次新提交：换标识并清空表单，不触发提交 */
+  onStartNewSubmission?: () => void;
+  /** 来源未知旧标识的显式沿用 */
+  onAdoptLegacySubmission?: () => void;
   onSubmit: (draft: AdminCompanyCreateDraft) => Promise<AdminCompanyRecordResult>;
 };
 
+function toCreateFormValues(draft: AdminCompanyCreateDraft | null): CompanyFormValues {
+  return {
+    address: draft?.address ?? '',
+    contactEmail: draft?.contactEmail ?? '',
+    contactName: draft?.contactName ?? '',
+    contactPhone: draft?.contactPhone ?? '',
+    enabled: draft === null ? true : draft.status === 'ACTIVE',
+    isServiceProvider: draft?.isServiceProvider ?? false,
+    name: draft?.name ?? '',
+    remark: draft?.remark ?? '',
+    shortName: draft?.shortName ?? '',
+  };
+}
+
+const CREATE_RECOVERY_TEXT: Record<
+  'conflict' | 'legacy' | 'restored',
+  { message: string; description: string }
+> = {
+  conflict: {
+    message: '本次提交内容与已提交记录不一致',
+    description:
+      '已恢复首次提交时填写的内容。可用原内容重新提交以恢复同一次开通结果，或另起一次新的开通。',
+  },
+  legacy: {
+    message: '检测到来源账号未知的上次提交标识',
+    description:
+      '该标识没有账号归属，无法确认是否属于当前登录账号。请选择沿用上次标识重试，或另起一次新的开通；未选择前不能提交。',
+  },
+  restored: {
+    message: '已恢复上次未提交的内容',
+    description: '继续提交会沿用同一次提交标识，不会重复开通。',
+  },
+};
+
 export function AdminCompanyCreateModal({
+  initialDraft = null,
+  onAdoptLegacySubmission,
   onCancel,
+  onStartNewSubmission,
   onSubmit,
   open,
+  recoveryNotice = null,
   submitting,
 }: AdminCompanyCreateModalProps) {
   const [form] = Form.useForm<CompanyFormValues>();
@@ -237,6 +284,15 @@ export function AdminCompanyCreateModal({
   } = useStaleSubmitGuard(open);
   const nameValue = Form.useWatch('name', form) as string | undefined;
   const hasSameName = useAdminCompanyNameCheck({ enabled: open, name: nameValue });
+
+  // 冲突恢复或显式另起都发生在弹窗已打开时：需要主动改写表单，而不是依赖 initialValues
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    form.setFieldsValue(toCreateFormValues(initialDraft));
+  }, [form, initialDraft, open]);
 
   const handleFinish = async (values: CompanyFormValues) => {
     const submitSeq = captureSubmitSeq();
@@ -264,11 +320,14 @@ export function AdminCompanyCreateModal({
     }
   };
 
+  const recoveryText = recoveryNotice === null ? null : CREATE_RECOVERY_TEXT[recoveryNotice];
+
   return (
     <Modal
       cancelText="取消"
       confirmLoading={submitting}
       destroyOnHidden
+      okButtonProps={{ disabled: recoveryNotice === 'legacy' }}
       okText="创建"
       open={open}
       title="新增公司档案"
@@ -281,11 +340,34 @@ export function AdminCompanyCreateModal({
     >
       <Form
         form={form}
-        initialValues={{ enabled: true, isServiceProvider: false }}
+        initialValues={toCreateFormValues(initialDraft)}
         layout="vertical"
         preserve={false}
         onFinish={(values) => void handleFinish(values)}
       >
+        {recoveryText !== null ? (
+          <Alert
+            action={
+              <div className="flex flex-col gap-2">
+                {recoveryNotice === 'legacy' && onAdoptLegacySubmission ? (
+                  <Button size="small" onClick={onAdoptLegacySubmission}>
+                    沿用上次标识
+                  </Button>
+                ) : null}
+                {onStartNewSubmission ? (
+                  <Button size="small" onClick={onStartNewSubmission}>
+                    另起新提交
+                  </Button>
+                ) : null}
+              </div>
+            }
+            description={recoveryText.description}
+            message={recoveryText.message}
+            showIcon
+            type={recoveryNotice === 'conflict' ? 'warning' : 'info'}
+          />
+        ) : null}
+
         <CompanyFormFields mode="create" nameHint={hasSameName ? SAME_NAME_HINT : undefined} />
 
         {submitError ? <Alert message={submitError} showIcon type="error" /> : null}

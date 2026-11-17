@@ -148,6 +148,8 @@ describe('S2 新增公司并开通二级管理员·提交标识幂等 (e2e)', ()
 
   let adminToken = '';
   let adminAccountId = 0;
+  let peerAdminToken = '';
+  let peerAdminAccountId = 0;
 
   const accountRepo = () => dataSource.getRepository(AccountEntity);
   const userInfoRepo = () => dataSource.getRepository(UserInfoEntity);
@@ -235,7 +237,7 @@ describe('S2 新增公司并开通二级管理员·提交标识幂等 (e2e)', ()
     await app.init();
     dataSource = moduleFixture.get<DataSource>(DataSource);
 
-    await seedTestAccounts({ dataSource, includeKeys: ['admin'], ownership });
+    await seedTestAccounts({ dataSource, includeKeys: ['admin', 'peerAdmin'], ownership });
 
     // 一级管理员：等级由请求期查库的 admin_level 决定（不写 JWT 字段）
     const admin = await accountRepo().findOneOrFail({
@@ -251,6 +253,24 @@ describe('S2 新增公司并开通二级管理员·提交标识幂等 (e2e)', ()
       audience: AudienceTypeEnum.DESKTOP,
     });
     adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
+
+    // 另一名一级管理员：用于证明同标识不能被非原演员恢复原记录。
+    const peerAdmin = await accountRepo().findOneOrFail({
+      where: { loginName: testAccountsConfig.peerAdmin.loginName },
+    });
+    await accountRepo().update(peerAdmin.id, { adminLevel: 1 });
+
+    peerAdminToken = await login({
+      app,
+      loginName: testAccountsConfig.peerAdmin.loginName,
+      loginPassword: testAccountsConfig.peerAdmin.loginPassword,
+      type: LoginTypeEnum.PASSWORD,
+      audience: AudienceTypeEnum.DESKTOP,
+    });
+    peerAdminAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.peerAdmin.loginName,
+    );
   });
 
   afterAll(async () => {
@@ -419,6 +439,204 @@ describe('S2 新增公司并开通二级管理员·提交标识幂等 (e2e)', ()
       organizationId: created.organization.id,
       adminAccountId: created.provisionedAdmin.accountId,
     });
+  });
+
+  it('初始停用创建：公司 DISABLED 仍成功，同标识重放返回同一安全结果', async () => {
+    const submissionKey = randomUUID();
+    const name = `E2E-S2-初始停用-${RUN_TAG}`;
+    const input = { ...personInput(name), status: 'DISABLED' };
+
+    const first = await provisionCompany({ ...input, submissionKey });
+    expect(first.status).toBe(200);
+    expect(first.body.errors).toBeUndefined();
+    const created = first.body.data?.adminProvisionCompany;
+    if (!created) throw new Error('初始停用创建缺少返回结果');
+    expect(created.organization.status).toBe('DISABLED');
+    expect(created.submission.replayed).toBe(false);
+
+    const replay = await provisionCompany({ ...input, submissionKey });
+    expect(replay.status).toBe(200);
+    expect(replay.body.errors).toBeUndefined();
+    const replayed = replay.body.data?.adminProvisionCompany;
+    if (!replayed) throw new Error('初始停用重放缺少返回结果');
+    expect(replayed.submission).toEqual({
+      submissionId: created.submission.submissionId,
+      replayed: true,
+    });
+    expect(replayed.organization.id).toBe(created.organization.id);
+    expect(replayed.organization.status).toBe('DISABLED');
+    expect(replayed.provisionedAdmin.accountId).toBe(created.provisionedAdmin.accountId);
+    expect(replayed.temporaryPassword).toBeNull();
+
+    expect(
+      await countOf('SELECT COUNT(*) AS total FROM `organization` WHERE name = ?', [name]),
+    ).toBe(1);
+    expect(
+      await countOf('SELECT COUNT(*) AS total FROM base_user_account WHERE login_name = ?', [
+        created.provisionedAdmin.loginName,
+      ]),
+    ).toBe(1);
+
+    const submissionId = created.submission.submissionId;
+    if (submissionId === null) throw new Error('首次创建缺少提交行主键');
+    trackOrganization(created.organization);
+    await trackProvisionedAdmin(created.provisionedAdmin);
+    trackProvisioningRequest({
+      submissionId,
+      organizationId: created.organization.id,
+      adminAccountId: created.provisionedAdmin.accountId,
+    });
+  });
+
+  it('创建后被停用：同标识重放不回退为冲突，仍返回已提交结果', async () => {
+    const submissionKey = randomUUID();
+    const name = `E2E-S2-停用回放-${RUN_TAG}`;
+    const input = personInput(name);
+
+    const first = await provisionCompany({ ...input, submissionKey });
+    expect(first.status).toBe(200);
+    const created = first.body.data?.adminProvisionCompany;
+    if (!created) throw new Error('停用回放缺少首次结果');
+    expect(created.organization.status).toBe('ACTIVE');
+
+    await dataSource.query('UPDATE `organization` SET status = ? WHERE id = ?', [
+      'DISABLED',
+      created.organization.id,
+    ]);
+
+    // 公司停用本身不使历史结果失效：绑定仍可信时回放必须成功。
+    const replay = await provisionCompany({ ...input, submissionKey });
+    expect(replay.status).toBe(200);
+    expect(replay.body.errors).toBeUndefined();
+    const replayed = replay.body.data?.adminProvisionCompany;
+    if (!replayed) throw new Error('停用后重放缺少返回结果');
+    expect(replayed.submission).toEqual({
+      submissionId: created.submission.submissionId,
+      replayed: true,
+    });
+    expect(replayed.organization.id).toBe(created.organization.id);
+    expect(replayed.organization.status).toBe('DISABLED');
+    expect(replayed.provisionedAdmin.accountId).toBe(created.provisionedAdmin.accountId);
+    expect(replayed.temporaryPassword).toBeNull();
+
+    expect(
+      await countOf('SELECT COUNT(*) AS total FROM `organization` WHERE name = ?', [name]),
+    ).toBe(1);
+
+    // 复原启停状态，保证收尾台账与库内事实一致。
+    await dataSource.query('UPDATE `organization` SET status = ? WHERE id = ?', [
+      'ACTIVE',
+      created.organization.id,
+    ]);
+
+    const submissionId = created.submission.submissionId;
+    if (submissionId === null) throw new Error('首次创建缺少提交行主键');
+    trackOrganization(created.organization);
+    await trackProvisionedAdmin(created.provisionedAdmin);
+    trackProvisioningRequest({
+      submissionId,
+      organizationId: created.organization.id,
+      adminAccountId: created.provisionedAdmin.accountId,
+    });
+  });
+
+  it('绑定漂移：成员关系离开后同标识重放按提交冲突拒绝且零新增', async () => {
+    const submissionKey = randomUUID();
+    const name = `E2E-S2-绑定漂移-${RUN_TAG}`;
+    const input = personInput(name);
+
+    const first = await provisionCompany({ ...input, submissionKey });
+    expect(first.status).toBe(200);
+    const created = first.body.data?.adminProvisionCompany;
+    if (!created) throw new Error('绑定漂移缺少首次结果');
+
+    await dataSource.query(
+      "UPDATE `organization_membership` SET status = 'LEFT', left_at = CURRENT_TIMESTAMP(3) WHERE organization_id = ? AND account_id = ?",
+      [created.organization.id, created.provisionedAdmin.accountId],
+    );
+
+    const replay = await provisionCompany({ ...input, submissionKey });
+    expect(replay.body.errors?.[0]?.extensions?.code).toBe('CONFLICT');
+    expect(replay.body.data?.adminProvisionCompany).toBeUndefined();
+    expect(
+      await countOf('SELECT COUNT(*) AS total FROM `organization` WHERE name = ?', [name]),
+    ).toBe(1);
+
+    // 复原成员状态，保证受控清理按登记事实执行。
+    await dataSource.query(
+      "UPDATE `organization_membership` SET status = 'ACTIVE', left_at = NULL WHERE organization_id = ? AND account_id = ?",
+      [created.organization.id, created.provisionedAdmin.accountId],
+    );
+
+    const submissionId = created.submission.submissionId;
+    if (submissionId === null) throw new Error('首次创建缺少提交行主键');
+    trackOrganization(created.organization);
+    await trackProvisionedAdmin(created.provisionedAdmin);
+    trackProvisioningRequest({
+      submissionId,
+      organizationId: created.organization.id,
+      adminAccountId: created.provisionedAdmin.accountId,
+    });
+  });
+
+  it('另一一级管理员使用相同标识：不复用原演员记录，各自独立开通', async () => {
+    const submissionKey = randomUUID();
+    const name = `E2E-S2-跨演员-${RUN_TAG}`;
+    const input = personInput(name);
+
+    const first = await provisionCompany({ ...input, submissionKey });
+    expect(first.status).toBe(200);
+    const created = first.body.data?.adminProvisionCompany;
+    if (!created) throw new Error('原演员开通缺少结果');
+    expect(created.submission.replayed).toBe(false);
+
+    const peer = await gql<{ adminProvisionCompany: ProvisionResult }>(
+      PROVISION_MUTATION,
+      { input: { ...input, submissionKey } },
+      { token: peerAdminToken },
+    );
+    expect(peer.status).toBe(200);
+    expect(peer.body.errors).toBeUndefined();
+    const peerCreated = peer.body.data?.adminProvisionCompany;
+    if (!peerCreated) throw new Error('另一一级开通缺少结果');
+    expect(peerCreated.submission.replayed).toBe(false);
+    expect(peerCreated.organization.id).not.toBe(created.organization.id);
+    expect(peerCreated.provisionedAdmin.accountId).not.toBe(created.provisionedAdmin.accountId);
+    expect(peerCreated.temporaryPassword).not.toBeNull();
+
+    expect(
+      await countOf('SELECT COUNT(*) AS total FROM `organization` WHERE name = ?', [name]),
+    ).toBe(2);
+    expect(
+      await countOf(
+        'SELECT COUNT(*) AS total FROM admin_organization_provisioning_request WHERE purpose = ? AND actor_account_id = ? AND submission_key = ?',
+        ['ADMIN_CREATE_ORGANIZATION', adminAccountId, submissionKey],
+      ),
+    ).toBe(1);
+    expect(
+      await countOf(
+        'SELECT COUNT(*) AS total FROM admin_organization_provisioning_request WHERE purpose = ? AND actor_account_id = ? AND submission_key = ?',
+        ['ADMIN_CREATE_ORGANIZATION', peerAdminAccountId, submissionKey],
+      ),
+    ).toBe(1);
+
+    // 原演员再用同标识仍回到自己的原记录，没有被跨演员改写。
+    const replay = await provisionCompany({ ...input, submissionKey });
+    expect(replay.body.errors).toBeUndefined();
+    expect(replay.body.data?.adminProvisionCompany?.organization.id).toBe(created.organization.id);
+    expect(replay.body.data?.adminProvisionCompany?.temporaryPassword).toBeNull();
+
+    for (const result of [created, peerCreated]) {
+      const submissionId = result.submission.submissionId;
+      if (submissionId === null) throw new Error('新入口成功却缺少提交行主键');
+      trackOrganization(result.organization);
+      await trackProvisionedAdmin(result.provisionedAdmin);
+      trackProvisioningRequest({
+        submissionId,
+        organizationId: result.organization.id,
+        adminAccountId: result.provisionedAdmin.accountId,
+      });
+    }
   });
 
   it('同标识改内容：提交冲突且库中零新增', async () => {
