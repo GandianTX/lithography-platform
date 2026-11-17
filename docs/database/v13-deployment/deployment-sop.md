@@ -144,6 +144,7 @@ npm run database:deploy -- \
 - 如果库已完整迁移且终态校验通过，命令返回「无变化」。
 - 生产新库只创建迁移带来的必要系统数据（如 `local_installation`）；业务样例、开发账号和样例文件一律不生成。
 - 生产新库通常在同一条命令追加组织与管理员映射（见 4.2 的对应参数）；这是「一条命令完成迁移 + 系统数据 + 3 个一级管理员 + 显式默认受管公司的二级管理员」的正式口径。二级管理员数量由 `default_managed_companies` 显式决定，允许 0 家。
+- production 入口（含省略 `--environment` 的默认行为）只要提供管理员映射，就必须是 `schema_version=2`；`schema_version=1` 会在创建连接前直接失败，不产生迁移、业务表或管理员。仅结构 init 与 upgrade 不受该守卫影响。
 
 ### 4.2 开发新库一键初始化（迁移 + 6 管理员 + 联调样例）
 
@@ -262,6 +263,7 @@ npm run database:deploy -- \
 - 冲突（多候选/等级/角色/成员/归属异常）、配置账号名已被其他账号占用、缺失绑定但配置账号名已存在时，
   整批拒绝并输出 `organization_code + account_id + 脱敏登录名` 的可定位清单；不删除、不重置、不补级、不改绑；
 - 开发夹具 `dev-admin.example.json` 保持 `schema_version=1`，仅用于开发入口，不套用 3+N 规则。
+- production 入口（含省略 `--environment` 的默认行为）在建立连接前校验映射版本：`schema_version !== 2` 直接失败，不会写入任何数据；开发 v1 映射必须显式提供 `--environment=development`（以及开发入口要求的实例指纹与目标库确认）。
 
 #### 4.2.4 开发样例账号（显式、默认关闭）
 

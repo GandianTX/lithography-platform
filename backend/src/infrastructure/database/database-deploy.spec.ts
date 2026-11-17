@@ -16,6 +16,7 @@ import { parseAdminBootstrapConfig } from './admin-bootstrap';
 import {
   assertInitializationEmailConflicts,
   parseDeployCliArgs,
+  runDatabaseDeploy,
   runInitializationDataTransaction,
   type InitializationQueryRunner,
 } from './database-deploy';
@@ -1534,5 +1535,174 @@ describe('初始化映射邮箱冲突（不连接实库）', () => {
     const dev = devConfig('dev-customer-01@example.com');
     expect(() => assertInitializationEmailConflicts(admin, dev)).not.toThrow();
     expect(() => assertInitializationEmailConflicts(admin, dev)).not.toThrow();
+  });
+});
+
+describe('正式部署管理员映射版本守卫（不连接实库）', () => {
+  const GUARD_DATABASE = 'lithography_dev_v13_guard';
+  const silentLogger = {
+    info: (): void => undefined,
+    warn: (): void => undefined,
+    error: (): void => undefined,
+  };
+  const v1AdminFile = join(DOCS_DIR, 'dev-admin.example.json');
+  const v2AdminFile = join(DOCS_DIR, 'admin-bootstrap.example.json');
+  let guardRoot = '';
+  let envFile = '';
+
+  beforeAll(() => {
+    guardRoot = mkdtempSync(join(tmpdir(), 'deploy-admin-version-'));
+    envFile = join(guardRoot, 'deploy.env');
+    writeFileSync(
+      envFile,
+      [
+        'DB_HOST=127.0.0.1',
+        'DB_PORT=3306',
+        'DB_USER=deploy_probe',
+        'DB_PASS=probe',
+        `DB_NAME=${GUARD_DATABASE}`,
+      ].join('\n'),
+    );
+  });
+
+  afterAll(() => {
+    rmSync(guardRoot, { recursive: true, force: true });
+  });
+
+  const createProbe = (): {
+    readonly dependencies: {
+      createDataSource: () => never;
+      lockTimeoutSeconds: number;
+    };
+    readonly created: () => boolean;
+  } => {
+    let created = false;
+    return {
+      dependencies: {
+        createDataSource: (): never => {
+          created = true;
+          throw new Error('STUB_DATA_SOURCE_CREATED');
+        },
+        lockTimeoutSeconds: 0,
+      },
+      created: () => created,
+    };
+  };
+
+  it('省略 environment 时视为 production，v1 映射在连接前早拒', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          adminBootstrapFile: v1AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/schema_version=2/);
+    expect(probe.created()).toBe(false);
+  });
+
+  it('显式 production 时 v1 映射同样在连接前早拒', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+          adminBootstrapFile: v1AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/production 环境的管理员初始化只接受 schema_version=2/);
+    expect(probe.created()).toBe(false);
+  });
+
+  it('production 的 v2 正式映射通过守卫并进入连接', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+          adminBootstrapFile: v2AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
+  });
+
+  it('development 显式传入开发标志、目标库与实例指纹时 v1 映射仍可执行', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'development',
+          expectServerUuid: '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+          confirmDevTarget: GUARD_DATABASE,
+          adminBootstrapFile: v1AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
+  });
+
+  it('仅结构 init（无管理员映射）不受版本守卫影响', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
+  });
+
+  it('upgrade 不含初始化文件时保持原行为', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'upgrade',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
   });
 });
