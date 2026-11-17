@@ -26,6 +26,7 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 | `adminUpdateOrganization` | 允许 | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
 | `adminOrganizationNameList` | 允许（全范围） | 允许（跨公司只读最小字段） | `FORBIDDEN` | `UNAUTHENTICATED` |
 | `adminCompanyAdminBinding` | 允许 | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
+| `adminCompanyAdminAccountDetail` | 允许 | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
 | `adminBoundLevelTwoAdmins` | 允许 | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
 | `adminReissueCompanyAdminCredential` | 允许（仅待首次改密目标） | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
 | `adminResetLevelTwoAdminCredential` | 允许（必填原因） | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
@@ -47,6 +48,7 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 | 9 | `adminBoundLevelTwoAdmins` | Query | `pagination!`, `keyword?` | `AdminBoundLevelTwoAdminPageDTO` | 一级专用「已绑定二级管理员」选择器；只列 `BOUND` |
 | 10 | `adminReissueCompanyAdminCredential` | Mutation | `input: AdminReissueLevelTwoCredentialInput!` | `AdminLevelTwoCredentialResultDTO` | 补发：仅尚待首次改密的目标 |
 | 11 | `adminResetLevelTwoAdminCredential` | Mutation | `input: AdminResetLevelTwoCredentialInput!` | `AdminLevelTwoCredentialResultDTO` | 二级专用重置：已改密目标亦可，原因必填 |
+| 12 | `adminCompanyAdminAccountDetail` | Query | `organizationId: Int!` | `AdminCompanyAdminAccountDetailDTO` | 一级按需账号详情（唯一合法绑定时含完整登录名，无凭据字段） |
 
 ## 输入结构
 
@@ -114,6 +116,30 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 | `boundLoginNameMasked` | `String` | **唯一**对外登录名形态（首尾各留 1 字符，中间 `***`） |
 | `candidateCount` | `Int!` | 候选账号数量（0 表示未配置） |
 | `accountDisabled` | `Boolean!` | 绑定账号是否停用（账号或资料任一非 ACTIVE） |
+
+### `AdminCompanyAdminAccountDetailDTO`（按需账号详情）
+
+列表读面只保留状态与脱敏信息；点击行内「二级管理员账号」时再按 `organizationId` 窄查询本接口。
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| `organizationId` / `organizationCode` / `companyName` | `Int!` / `String!` / `String!` | 目标公司 |
+| `isManagedCompany` | `Boolean!` | 非受管公司直接返回 `UNCONFIGURED`，不读成员与候选 |
+| `companyStatus` | `OrganizationStatus!` | `ACTIVE` / `DISABLED` |
+| `status` | `String!` | 同绑定摘要四态 |
+| `reason` | `String` | 同绑定冲突原因枚举 |
+| `accountId` | `Int` | **仅** `BOUND` 且唯一合法绑定时返回，其余恒为 `null` |
+| `loginName` | `String` | **仅** `BOUND` 且唯一合法绑定时返回完整登录名，其余恒为 `null`（不猜名） |
+| `nickname` | `String` | 同上 |
+| `mustChangePassword` | `Boolean` | **仅** `BOUND` 且唯一合法绑定时返回开通状态（账号行缺失时为 `null`，不伪造） |
+| `accountDisabled` | `Boolean!` | 绑定账号是否停用 |
+| `candidateCount` | `Int!` | 候选账号数量（0 表示未配置） |
+
+空值口径：
+
+- `CONFLICT` / `COMPANY_DISABLED` / `UNCONFIGURED`：`accountId`、`loginName`、`nickname`、`mustChangePassword` 一律 `null`，只提示归属与状态。
+- 账号行缺失（外键不应允许）：完整登录名仍来自绑定判定，`mustChangePassword` 为 `null`。
+- 本查询只读、无事务、无锁、无口令字段；补发资格仍由 `adminReissueCompanyAdminCredential` 在锁内复核 `must_change_password=true`。
 
 ### `AdminBoundLevelTwoAdminPageDTO`
 

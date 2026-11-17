@@ -29,6 +29,29 @@ export type CompanyAdminBindingView = {
 };
 
 /**
+ * 一级管理员按公司查询的二级管理员账号详情（D 组窄查询）。
+ *
+ * 安全口径与摘要视图不同：`loginName` / `nickname` / `mustChangePassword` 只在
+ * `status === 'BOUND'` 且唯一合法绑定时有值；冲突 / 未绑 / 公司停用一律为 null，
+ * 不猜测账号归属，也不输出任何凭据。
+ */
+export type CompanyAdminAccountDetailView = {
+  readonly organizationId: number;
+  readonly organizationCode: string;
+  readonly companyName: string;
+  readonly isManagedCompany: boolean;
+  readonly companyStatus: OrganizationStatus;
+  readonly status: AdminBindingStatus;
+  readonly reason: AdminBindingConflictReason | null;
+  readonly accountId: number | null;
+  readonly loginName: string | null;
+  readonly nickname: string | null;
+  readonly mustChangePassword: boolean | null;
+  readonly accountDisabled: boolean;
+  readonly candidateCount: number;
+};
+
+/**
  * 「已绑定二级管理员」一级专用列表项。
  *
  * 只包含 `BOUND` 绑定：公司、账号定位、登录名与昵称，供用户管理选择目标。

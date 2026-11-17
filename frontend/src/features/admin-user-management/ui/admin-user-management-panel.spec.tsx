@@ -47,10 +47,12 @@ import { getGraphQLClient, GraphQLIngressError } from '@/shared/graphql';
 
 import type {
   AdminBoundLevelTwoAdmin,
+  AdminLevelTwoCredentialCommandResult,
   AdminUserCommandResult,
   AdminUserListPage,
   AdminUserPasswordResetResult,
   AdminUserRow,
+  AdminUserSessionIdentity,
 } from '../application/admin-user-management.types';
 import * as adminUserAdapter from '../infrastructure/admin-user-adapter';
 
@@ -160,8 +162,31 @@ function makePage(): AdminUserListPage {
   return { items: [ROW_A, ROW_B], page: 1, pageSize: 10, total: 2 };
 }
 
+/**
+ * 会话身份快照（页面在生产里注入 `sampleCurrentAuthSessionIdentity`）。
+ * 默认同一账号同一代次；需要模拟「回包前换号 / 重新登录」时改写 `current`。
+ */
+const DEFAULT_SESSION_IDENTITY: AdminUserSessionIdentity = { accountId: 770001, epoch: 1 };
+const sessionIdentityRef: { current: AdminUserSessionIdentity | null } = {
+  current: DEFAULT_SESSION_IDENTITY,
+};
+
+function sampleSessionIdentity(): AdminUserSessionIdentity | null {
+  return sessionIdentityRef.current;
+}
+
+// 身份是跨用例共享的可变快照，每个用例结束后必须回到默认值，避免串扰
+afterEach(() => {
+  sessionIdentityRef.current = DEFAULT_SESSION_IDENTITY;
+});
+
 async function renderPanel(adminLevel: number | null = 1) {
-  render(<AdminUserManagementPanel adminLevel={adminLevel} />);
+  render(
+    <AdminUserManagementPanel
+      adminLevel={adminLevel}
+      sampleSessionIdentity={sampleSessionIdentity}
+    />,
+  );
 
   await screen.findByText(ROW_A.nickname);
   await screen.findByText(ROW_B.nickname);
@@ -592,7 +617,9 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
 
   it('列表就绪但无数据时渲染公共空态，且不渲染表格', async () => {
     fetchUsersMock.mockResolvedValue({ items: [], page: 1, pageSize: 10, total: 0 });
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     await waitFor(() => {
       expect(document.querySelector('.empty-state')).not.toBeNull();
@@ -605,7 +632,9 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
     fetchUsersMock.mockRejectedValueOnce(
       new GraphQLIngressError({ message: 'load failed', type: 'network' }),
     );
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     await waitFor(() => {
       expect(document.querySelector('.error-state')).not.toBeNull();
@@ -668,7 +697,9 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
       pageSize: 10,
       total: 1,
     });
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     const row = (await screen.findByText('超管')).closest('tr') as HTMLElement;
 
@@ -748,7 +779,9 @@ describe('管理员用户管理面板的联系方式区块（完整值提示与�
   function renderSingleRow(row: AdminUserRow) {
     fetchUsersMock.mockResolvedValue({ items: [row], page: 1, pageSize: 10, total: 1 });
 
-    return render(<AdminUserManagementPanel adminLevel={1} />);
+    return render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
   }
 
   /** Tooltip 浮层渲染在 body 层 portal 里，按浮层文本断言（触发元素自身也是完整文本） */
@@ -1010,7 +1043,9 @@ describe('管理员用户管理面板的二级管理员凭据入口', () => {
       },
     });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const view = render(<AdminUserManagementPanel adminLevel={1} />);
+    const view = render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     await screen.findByText(ROW_A.nickname);
     const dialog = await openConfirmDialog();
@@ -1049,7 +1084,9 @@ describe('管理员用户管理面板的二级管理员凭据入口', () => {
     expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
 
     // 重新挂载等价刷新：入口回到选择步骤，旧口令无法再次查看
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
     await screen.findByText(ROW_A.nickname);
     await openSelectDialog();
     expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
@@ -1060,6 +1097,44 @@ describe('管理员用户管理面板的二级管理员凭据入口', () => {
     );
 
     consoleErrorSpy.mockRestore();
+  }, 15_000);
+
+  it('凭据回包前会话代次推进时丢弃口令，不进入展示态也不提示成功', async () => {
+    const pending = deferred<AdminLevelTwoCredentialCommandResult>();
+    resetLevelTwoMock.mockReturnValue(pending.promise);
+    await renderPanel(1);
+    const dialog = await openConfirmDialog();
+
+    fireEvent.change(within(dialog).getByPlaceholderText(REASON_PLACEHOLDER), {
+      target: { value: '管理员遗忘密码' },
+    });
+    clickDialogButton(dialog, /确认重置/);
+    await waitFor(() => expect(resetLevelTwoMock).toHaveBeenCalledTimes(1));
+
+    // 回包前同一账号重新登录：accountId 不变、代次推进，凭据归属已经失效
+    sessionIdentityRef.current = {
+      accountId: DEFAULT_SESSION_IDENTITY.accountId,
+      epoch: DEFAULT_SESSION_IDENTITY.epoch + 1,
+    };
+
+    await act(async () => {
+      pending.resolve({
+        ok: true,
+        credential: {
+          adminAccountId: BOUND_ADMIN.accountId,
+          loginName: BOUND_ADMIN.loginName,
+          mustChangePassword: true,
+          nickname: BOUND_ADMIN.nickname,
+          organizationId: BOUND_ADMIN.organizationId,
+          temporaryPassword: LEVEL_TWO_PASSWORD,
+        },
+      });
+    });
+
+    // 口令整包丢弃：不进入展示态、不出现在 DOM，也不给成功提示
+    expect(queryDialog('二级管理员临时密码')).toBeNull();
+    expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(message.success).not.toHaveBeenCalled();
   }, 15_000);
 
   it('业务失败停在核对步骤并展示后端原文，不展示口令也不给成功反馈', async () => {

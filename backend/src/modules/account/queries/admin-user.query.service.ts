@@ -1,7 +1,7 @@
 // src/modules/account/queries/admin-user.query.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import { IdentityTypeEnum } from '@app-types/models/account.types';
+import { type AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { convergeAccountRole } from '@core/account/policy/account-role-convergence.policy';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import type { SortParam } from '@core/pagination/pagination.types';
@@ -439,6 +439,38 @@ export class AdminUserQueryService {
         });
       }
       return facts;
+    } catch (error) {
+      this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
+    }
+  }
+
+  /**
+   * 按账号主键读取「开通状态」窄事实（D 组账号详情只读）。
+   *
+   * 只返回账号状态与 `must_change_password`，不读取密码哈希、不返回任何凭据；
+   * 不加锁、不开启事务：本方法只服务一级管理员按需查看详情，写操作仍在
+   * `reissue-level-two-credential` 的事务与锁内独立复核。
+   *
+   * @returns 账号行不存在时返回 null，由调用方决定展示口径。
+   */
+  async findAccountOpeningStatus(params: {
+    accountId: number;
+  }): Promise<{ accountStatus: AccountStatus; mustChangePassword: boolean } | null> {
+    if (!Number.isInteger(params.accountId) || params.accountId <= 0) {
+      return null;
+    }
+    try {
+      const account = await this.accountRepository.findOne({
+        select: { id: true, status: true, mustChangePassword: true },
+        where: { id: params.accountId },
+      });
+      if (account === null) {
+        return null;
+      }
+      return {
+        accountStatus: account.status,
+        mustChangePassword: account.mustChangePassword === true,
+      };
     } catch (error) {
       this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
     }

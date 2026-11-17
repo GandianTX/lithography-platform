@@ -5,6 +5,9 @@
  *
  * 详情按主键单独读取，加载中 / 失败（含重试）/ 就绪三态齐全；
  * 数据由 `useAdminCompanyDetail` 持有，本组件只负责渲染，不自行发起请求。
+ *
+ * 本弹窗不含任何写入口：补发统一由「二级管理员账号」弹窗发起，
+ * 避免在只读绑定摘要上按快照露出已失效的写操作。
  */
 
 import { Button, Descriptions, Modal, Tag } from 'antd';
@@ -18,7 +21,6 @@ import {
   ADMIN_COMPANY_BINDING_STATUS_LABELS,
   ADMIN_COMPANY_KIND_LABELS,
   ADMIN_COMPANY_STATUS_LABELS,
-  canReissueCompanyAdminCredential,
 } from '../application/admin-company-management.policy';
 import type { AdminCompanyBindingEntry } from '../application/use-admin-company-admin-bindings';
 import type { AdminCompanyDetailState } from '../application/use-admin-company-detail';
@@ -26,7 +28,6 @@ import type { AdminCompanyDetailState } from '../application/use-admin-company-d
 type AdminCompanyDetailModalProps = {
   binding?: AdminCompanyBindingEntry | null;
   onClose: () => void;
-  onReissue?: () => void;
   onRetry: () => void;
   state: AdminCompanyDetailState;
 };
@@ -71,14 +72,10 @@ function renderBinding(
 export function AdminCompanyDetailModal({
   binding,
   onClose,
-  onReissue,
   onRetry,
   state,
 }: AdminCompanyDetailModalProps) {
   const company = state.status === 'ready' ? state.organization : null;
-  const bindingFact = binding?.status === 'ready' ? binding.binding : null;
-  const showReissue =
-    company !== null && onReissue !== undefined && canReissueCompanyAdminCredential(bindingFact);
 
   return (
     <Modal
@@ -140,12 +137,6 @@ export function AdminCompanyDetailModal({
             {formatDateTimeText(company.updatedAt)}
           </Descriptions.Item>
         </Descriptions>
-      ) : null}
-
-      {showReissue ? (
-        <div className="mt-4 flex justify-end">
-          <Button onClick={onReissue}>补发临时密码</Button>
-        </div>
       ) : null}
     </Modal>
   );

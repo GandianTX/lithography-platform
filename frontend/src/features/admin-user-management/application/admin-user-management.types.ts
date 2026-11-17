@@ -117,3 +117,13 @@ export type AdminLevelTwoCredentialView = AdminLevelTwoCredentialResult & {
 export type AdminLevelTwoCredentialCommandResult =
   | { ok: true; credential: AdminLevelTwoCredentialResult }
   | { ok: false; reason: AdminUserCommandFailureReason; message: string };
+
+/**
+ * 凭据回包归属所需的会话身份快照（账号 + 会话代次，不含 Token）。
+ *
+ * 由页面注入：本 feature 不直接依赖 auth-session feature，保持 features 之间零耦合。
+ */
+export type AdminUserSessionIdentity = {
+  accountId: number;
+  epoch: number;
+};

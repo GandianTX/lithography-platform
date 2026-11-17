@@ -15,6 +15,7 @@ import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { organizationStatusValues } from '@src/modules/lithography/organization.types';
 import { CheckAdminOrganizationNameUsecase } from '@src/usecases/organization/check-admin-organization-name.usecase';
 import { CreateAdminOrganizationUsecase } from '@src/usecases/organization/create-admin-organization.usecase';
+import { GetAdminCompanyAdminAccountDetailUsecase } from '@src/usecases/organization/get-admin-company-admin-account-detail.usecase';
 import { GetAdminCompanyAdminBindingUsecase } from '@src/usecases/organization/get-admin-company-admin-binding.usecase';
 import { GetAdminOrganizationDetailUsecase } from '@src/usecases/organization/get-admin-organization-detail.usecase';
 import { ListAdminOrganizationNamesUsecase } from '@src/usecases/organization/list-admin-organization-names.usecase';
@@ -29,6 +30,10 @@ import {
   AdminBoundLevelTwoAdminPageDTO,
   toAdminBoundLevelTwoAdminPageDTO,
 } from './dto/admin-bound-level-two-admin.dto';
+import {
+  AdminCompanyAdminAccountDetailDTO,
+  toAdminCompanyAdminAccountDetailDTO,
+} from './dto/admin-company-admin-account-detail.dto';
 import {
   AdminCompanyAdminBindingDTO,
   toAdminCompanyAdminBindingDTO,
@@ -78,6 +83,7 @@ export class OrganizationAdminResolver {
     private readonly updateAdminOrganizationUsecase: UpdateAdminOrganizationUsecase,
     private readonly checkAdminOrganizationNameUsecase: CheckAdminOrganizationNameUsecase,
     private readonly getAdminCompanyAdminBindingUsecase: GetAdminCompanyAdminBindingUsecase,
+    private readonly getAdminCompanyAdminAccountDetailUsecase: GetAdminCompanyAdminAccountDetailUsecase,
     private readonly listBoundLevelTwoAdminsUsecase: ListBoundLevelTwoAdminsUsecase,
     private readonly reissueLevelTwoCredentialUsecase: ReissueLevelTwoCredentialUsecase,
     private readonly resetLevelTwoCredentialUsecase: ResetLevelTwoCredentialUsecase,
@@ -241,6 +247,32 @@ export class OrganizationAdminResolver {
       organizationId,
     });
     return toAdminCompanyAdminBindingDTO(view);
+  }
+
+  /**
+   * 一级管理员按公司 ID 查询二级管理员账号详情（D 组按需窄查询）。
+   *
+   * 仅唯一合法绑定时返回完整登录名、昵称与「是否待首次改密」；
+   * 冲突 / 未绑 / 停用只返回状态与归属提示，不猜测账号、不输出凭据。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => AdminCompanyAdminAccountDetailDTO, {
+    name: 'adminCompanyAdminAccountDetail',
+    description:
+      '按公司查询二级管理员账号详情（一级管理员；唯一合法绑定时返回完整登录名与开通状态）',
+  })
+  @ValidateInput()
+  async adminCompanyAdminAccountDetail(
+    @Args('organizationId', { type: () => Int, description: '公司主键' })
+    organizationId: number,
+    @currentUser() user: AuthenticatedSessionUser,
+  ): Promise<AdminCompanyAdminAccountDetailDTO> {
+    const view = await this.getAdminCompanyAdminAccountDetailUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      organizationId,
+    });
+    return toAdminCompanyAdminAccountDetailDTO(view);
   }
 
   /**

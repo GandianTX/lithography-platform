@@ -86,6 +86,23 @@ export type AdminCompanyAdminBindingDto = {
   accountDisabled: boolean;
 };
 
+/** 一级按公司窄查询的账号详情（只读、无凭据字段） */
+export type AdminCompanyAdminAccountDetailDto = {
+  organizationId: number;
+  organizationCode: string;
+  companyName: string;
+  isManagedCompany: boolean;
+  companyStatus: string;
+  status: string;
+  reason: string | null;
+  accountId: number | null;
+  loginName: string | null;
+  nickname: string | null;
+  mustChangePassword: boolean | null;
+  accountDisabled: boolean;
+  candidateCount: number;
+};
+
 /** 补发 / 重置结果：临时密码只在本次成功响应中出现 */
 export type AdminLevelTwoCredentialResultDto = {
   organizationId: number;

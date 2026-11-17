@@ -7,6 +7,7 @@
  */
 
 import type {
+  AdminCompanyAdminAccountDetail,
   AdminCompanyAdminBinding,
   AdminCompanyAdminBindingStatus,
   AdminCompanyCredentialResult,
@@ -19,6 +20,7 @@ import type {
 } from '../application/admin-company-management.types';
 
 import type {
+  AdminCompanyAdminAccountDetailDto,
   AdminCompanyAdminBindingDto,
   AdminCompanyProvisioningResultDto,
   AdminLevelTwoCredentialResultDto,
@@ -134,6 +136,27 @@ export function mapAdminCompanyAdminBindingDto(
     boundLoginNameMasked: toOptionalText(dto.boundLoginNameMasked),
     candidateCount: typeof dto.candidateCount === 'number' ? dto.candidateCount : 0,
     accountDisabled: dto.accountDisabled === true,
+  };
+}
+
+/** 账号详情：同绑定事实口径，账号字段只在唯一合法绑定时透出，其余保持 null */
+export function mapAdminCompanyAdminAccountDetailDto(
+  dto: AdminCompanyAdminAccountDetailDto,
+): AdminCompanyAdminAccountDetail {
+  return {
+    organizationId: dto.organizationId,
+    organizationCode: dto.organizationCode,
+    companyName: dto.companyName,
+    isManagedCompany: dto.isManagedCompany,
+    companyStatus: toKnownStatus(dto.companyStatus),
+    status: toKnownBindingStatus(dto.status),
+    reason: toOptionalText(dto.reason),
+    accountId: typeof dto.accountId === 'number' ? dto.accountId : null,
+    loginName: toOptionalText(dto.loginName),
+    nickname: toOptionalText(dto.nickname),
+    mustChangePassword: typeof dto.mustChangePassword === 'boolean' ? dto.mustChangePassword : null,
+    accountDisabled: dto.accountDisabled === true,
+    candidateCount: typeof dto.candidateCount === 'number' ? dto.candidateCount : 0,
   };
 }
 

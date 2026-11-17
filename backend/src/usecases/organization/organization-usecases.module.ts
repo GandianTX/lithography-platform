@@ -6,6 +6,7 @@ import { PasswordModule } from '@src/modules/common/password/password.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { CheckAdminOrganizationNameUsecase } from './check-admin-organization-name.usecase';
 import { CreateAdminOrganizationUsecase } from './create-admin-organization.usecase';
+import { GetAdminCompanyAdminAccountDetailUsecase } from './get-admin-company-admin-account-detail.usecase';
 import { GetAdminCompanyAdminBindingUsecase } from './get-admin-company-admin-binding.usecase';
 import { GetAdminOrganizationDetailUsecase } from './get-admin-organization-detail.usecase';
 import { ListAdminOrganizationNamesUsecase } from './list-admin-organization-names.usecase';
@@ -36,6 +37,7 @@ import { UpdateAdminOrganizationUsecase } from './update-admin-organization.usec
     UpdateAdminOrganizationUsecase,
     CheckAdminOrganizationNameUsecase,
     GetAdminCompanyAdminBindingUsecase,
+    GetAdminCompanyAdminAccountDetailUsecase,
     ListBoundLevelTwoAdminsUsecase,
     ReissueLevelTwoCredentialUsecase,
     ResetLevelTwoCredentialUsecase,
@@ -49,6 +51,7 @@ import { UpdateAdminOrganizationUsecase } from './update-admin-organization.usec
     UpdateAdminOrganizationUsecase,
     CheckAdminOrganizationNameUsecase,
     GetAdminCompanyAdminBindingUsecase,
+    GetAdminCompanyAdminAccountDetailUsecase,
     ListBoundLevelTwoAdminsUsecase,
     ReissueLevelTwoCredentialUsecase,
     ResetLevelTwoCredentialUsecase,

@@ -140,6 +140,28 @@ export type AdminCompanyAdminBinding = {
   accountDisabled: boolean;
 };
 
+/**
+ * 一级按公司窄查询的账号详情（只读，无凭据）。
+ *
+ * 只有 `status === 'BOUND'` 且唯一合法绑定时 `accountId / loginName / nickname /
+ * mustChangePassword` 才有值；冲突 / 未绑 / 公司停用一律 null，前端不猜名。
+ */
+export type AdminCompanyAdminAccountDetail = {
+  organizationId: number;
+  organizationCode: string;
+  companyName: string;
+  isManagedCompany: boolean;
+  companyStatus: AdminOrganizationStatus;
+  status: AdminCompanyAdminBindingStatus;
+  reason: string | null;
+  accountId: number | null;
+  loginName: string | null;
+  nickname: string | null;
+  mustChangePassword: boolean | null;
+  accountDisabled: boolean;
+  candidateCount: number;
+};
+
 /** 新增公司并开通的完整结果：临时密码只在首次成功时为字符串，回放为 null */
 export type AdminCompanyProvisionResult =
   | {

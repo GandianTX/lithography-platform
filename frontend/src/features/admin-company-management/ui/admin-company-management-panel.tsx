@@ -53,12 +53,14 @@ import {
   rememberSubmissionDraft,
   startNewSubmission,
 } from '../application/admin-company-submission-key';
+import { useAdminCompanyAdminAccountDetail } from '../application/use-admin-company-admin-account-detail';
 import { useAdminCompanyAdminBindings } from '../application/use-admin-company-admin-bindings';
 import { useAdminCompanyCommands } from '../application/use-admin-company-commands';
 import { useAdminCompanyCredential } from '../application/use-admin-company-credential';
 import { useAdminCompanyDetail } from '../application/use-admin-company-detail';
 import { useAdminCompanyList } from '../application/use-admin-company-list';
 
+import { AdminCompanyAdminAccountModal } from './admin-company-admin-account-modal';
 import {
   AdminCompanyCredentialConfirmModal,
   AdminCompanyCredentialModal,
@@ -143,6 +145,7 @@ export function AdminCompanyManagementPanel({
   const list = useAdminCompanyList(mode);
   const commands = useAdminCompanyCommands(list.reload);
   const detail = useAdminCompanyDetail();
+  const accountDetail = useAdminCompanyAdminAccountDetail();
   const dialogSession = useDialogSessionSeq<AdminCompanyDialogKey>();
   const credential = useAdminCompanyCredential();
   const [keywordDraft, setKeywordDraft] = useState('');
@@ -315,10 +318,12 @@ export function AdminCompanyManagementPanel({
         // 成功即本次提交已定案，下一位新增必须换新标识（仅清本账号本条记录）
         clearSubmissionIfMatches(identity.accountId, submissionKey, storage);
 
-        // 关闭弹窗与展示凭据前再取一次快照：换号后不得展示他人会话的口令
+        // 关闭弹窗与展示凭据前再取一次快照：同级换号或重新登录后不得展示旧会话的口令
         const currentIdentity = sampleSessionIdentity();
         const sameActor =
-          currentIdentity !== null && currentIdentity.accountId === identity.accountId;
+          currentIdentity !== null &&
+          currentIdentity.accountId === identity.accountId &&
+          currentIdentity.epoch === identity.epoch;
 
         if (sameActor && isCurrentDialog) {
           setCreateRecovery(null);
@@ -398,9 +403,17 @@ export function AdminCompanyManagementPanel({
     return { ok: false, reason: 'save-failed', message: '' };
   };
 
+  const openAccountDialog = (organizationId: number) => {
+    void accountDetail.open(organizationId);
+  };
+
+  const closeAccountDialog = () => {
+    accountDetail.close();
+  };
+
   const openReissueConfirm = (target: AdminCompanyReissueTarget) => {
-    // 详情与确认是两个独立会话：先关详情，再为确认弹窗新建代次
-    detail.close();
+    // 账号详情与确认是两个独立会话：先关账号详情，再为确认弹窗新建代次
+    accountDetail.close();
     setReissueError(null);
     setReissueTarget(target);
     dialogSession.advance('credential-confirm');
@@ -420,6 +433,14 @@ export function AdminCompanyManagementPanel({
     }
 
     const sessionSeq = dialogSession.capture('credential-confirm');
+    // 身份快照先于请求：回包必须同时匹配发起账号与会话代次
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      setReissueError('登录状态已失效，请重新登录后再补发。');
+      return;
+    }
+
     setReissueError(null);
 
     const execution = await commands.reissueCredential(target.organizationId);
@@ -451,7 +472,22 @@ export function AdminCompanyManagementPanel({
       return;
     }
 
-    if (result.organizationId !== target.organizationId) {
+    const currentIdentity = sampleSessionIdentity();
+
+    if (
+      currentIdentity === null ||
+      currentIdentity.accountId !== identity.accountId ||
+      currentIdentity.epoch !== identity.epoch
+    ) {
+      // 同级换号或重新登录：口令一律丢弃，避免交给新会话
+      setReissueError('登录身份已变化，口令已丢弃，请重新核对后重试。');
+      return;
+    }
+
+    if (
+      result.organizationId !== target.organizationId ||
+      result.adminAccountId !== target.accountId
+    ) {
       // 响应归属与确认目标不一致：口令一律丢弃，避免把 A 公司换出的口令挂在 B 名下
       setReissueError('补发结果与目标公司不一致，口令已丢弃，请刷新后重试。');
       return;
@@ -575,10 +611,13 @@ export function AdminCompanyManagementPanel({
           <Button size="small" type="link" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
+          <Button size="small" type="link" onClick={() => openAccountDialog(row.organizationId)}>
+            二级管理员账号
+          </Button>
         </Space>
       ),
       title: '操作',
-      width: 130,
+      width: 230,
     },
   ];
 
@@ -749,25 +788,29 @@ export function AdminCompanyManagementPanel({
             }
             state={detail.state}
             onClose={detail.close}
-            onReissue={() => {
-              if (detail.state.status !== 'ready') {
-                return;
-              }
-
-              const company = detail.state.organization;
-              const entry = bindings.bindingOf(company.organizationId);
-              const fact = entry?.status === 'ready' ? entry.binding : null;
-
-              openReissueConfirm({
-                companyName: company.name,
-                loginNameMasked: fact?.boundLoginNameMasked ?? null,
-                organizationId: company.organizationId,
-              });
-            }}
             onRetry={() => {
               if (detail.state.status === 'failed') {
                 void detail.open(detail.state.organizationId);
               }
+            }}
+          />
+
+          <AdminCompanyAdminAccountModal
+            state={accountDetail.state}
+            onClose={closeAccountDialog}
+            onRetry={accountDetail.retry}
+            onReissue={(account) => {
+              // 只有唯一合法绑定且有完整登录名时才会走到这里（策略已裁决）
+              if (account.accountId === null || account.loginName === null) {
+                return;
+              }
+
+              openReissueConfirm({
+                accountId: account.accountId,
+                companyName: account.companyName,
+                loginName: account.loginName,
+                organizationId: account.organizationId,
+              });
             }}
           />
 

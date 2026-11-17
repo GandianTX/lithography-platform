@@ -1113,7 +1113,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
             throw new Error(
               `${label} 对二级管理员意外成功，已登记真实 id=${confirmed.organizationId}` +
                 ` code=${JSON.stringify(confirmed.organizationCode)}，将按精确主键清理；` +
-                `响应=${JSON.stringify(body)}`,
+                '响应含一次性口令，已省略不落日志',
             );
           }
 
@@ -1122,7 +1122,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
           throw new Error(
             `${label} 对二级管理员意外成功，但${unreadableReason}；` +
               '只做只读诊断并保留待确认：' +
-              `${diagnostic === '' ? '（无同名行）' : diagnostic}；响应=${JSON.stringify(body)}`,
+              `${diagnostic === '' ? '（无同名行）' : diagnostic}；响应含一次性口令，已省略不落日志`,
           );
         }
 

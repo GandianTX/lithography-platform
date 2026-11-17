@@ -16,8 +16,11 @@ import type { AdminCompanyCredentialView } from '../application/admin-company-ma
 
 export type AdminCompanyReissueTarget = {
   organizationId: number;
+  /** 确认弹窗按账号主键回校响应归属 */
+  accountId: number;
   companyName: string;
-  loginNameMasked: string | null;
+  /** 完整登录名来自账号详情窄查询；不是凭据，不写入任何存储 */
+  loginName: string | null;
 };
 
 type AdminCompanyCredentialConfirmModalProps = {
@@ -49,7 +52,7 @@ export function AdminCompanyCredentialConfirmModal({
       <div className="flex flex-col gap-3">
         <Descriptions bordered column={1} size="small">
           <Descriptions.Item label="目标公司">{target?.companyName ?? '—'}</Descriptions.Item>
-          <Descriptions.Item label="管理员账号">{target?.loginNameMasked ?? '—'}</Descriptions.Item>
+          <Descriptions.Item label="管理员账号">{target?.loginName ?? '—'}</Descriptions.Item>
         </Descriptions>
 
         <Alert

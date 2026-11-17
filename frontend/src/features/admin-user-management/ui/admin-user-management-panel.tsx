@@ -38,6 +38,7 @@ import type {
   AdminUserFilterRole,
   AdminUserRole,
   AdminUserRow,
+  AdminUserSessionIdentity,
   AdminUserStatusFilter,
 } from '../application/admin-user-management.types';
 import {
@@ -152,7 +153,17 @@ function AdminUserContactCell({ row }: { row: AdminUserRow }) {
   );
 }
 
-export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | null }) {
+export function AdminUserManagementPanel({
+  adminLevel,
+  sampleSessionIdentity,
+}: {
+  adminLevel: number | null;
+  /**
+   * 凭据回包归属用的会话身份采样（页面注入）。
+   * feature 之间不允许互相依赖，因此不在这里直接 import auth-session。
+   */
+  sampleSessionIdentity: () => AdminUserSessionIdentity | null;
+}) {
   const list = useAdminUserList();
   const commands = useAdminUserCommands(list.reload);
   const dialogSession = useDialogSessionSeq<AdminUserDialogKey>();
@@ -338,6 +349,13 @@ export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | 
     input: AdminLevelTwoResetInput,
   ): Promise<AdminLevelTwoResetOutcome> => {
     const sessionSeq = dialogSession.capture('level-two-credential');
+    // 身份快照先于请求：回包必须同时匹配发起账号与会话代次
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      return { ok: false, message: '登录状态已失效，请重新登录后再重置。' };
+    }
+
     const execution = await commands.resetLevelTwoCredential({
       adminAccountId: input.adminAccountId,
       organizationId: input.organizationId,
@@ -358,14 +376,28 @@ export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | 
       return { ok: false, message: execution.result.message };
     }
 
-    if (dialogSession.isCurrent('level-two-credential', sessionSeq)) {
-      levelTwoCredential.show({
-        ...execution.result.credential,
-        companyName: input.companyName,
-        reason: input.reason,
-      });
-      message.success('二级管理员临时密码已重置。');
+    if (!dialogSession.isCurrent('level-two-credential', sessionSeq)) {
+      // 弹窗已关闭/重开：口令随本次会话失效，不进入展示态
+      return { ok: true };
     }
+
+    const currentIdentity = sampleSessionIdentity();
+
+    if (
+      currentIdentity === null ||
+      currentIdentity.accountId !== identity.accountId ||
+      currentIdentity.epoch !== identity.epoch
+    ) {
+      // 同级换号或重新登录：口令一律丢弃（列表仍由命令层刷新）
+      return { ok: true };
+    }
+
+    levelTwoCredential.show({
+      ...execution.result.credential,
+      companyName: input.companyName,
+      reason: input.reason,
+    });
+    message.success('二级管理员临时密码已重置。');
 
     return { ok: true };
   };

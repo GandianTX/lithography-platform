@@ -20,6 +20,7 @@
 import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
 
 import type {
+  AdminCompanyAdminAccountDetail,
   AdminCompanyAdminBinding,
   AdminCompanyCommandFailureReason,
   AdminCompanyCreateDraft,
@@ -32,6 +33,7 @@ import type {
 } from '../application/admin-company-management.types';
 
 import type {
+  AdminCompanyAdminAccountDetailDto,
   AdminCompanyAdminBindingDto,
   AdminCompanyProvisioningResultDto,
   AdminLevelTwoCredentialResultDto,
@@ -40,6 +42,7 @@ import type {
   AdminOrganizationPageDto,
 } from './admin-company-management.dto';
 import {
+  mapAdminCompanyAdminAccountDetailDto,
   mapAdminCompanyAdminBindingDto,
   mapAdminCompanyProvisioningResultDto,
   mapAdminLevelTwoCredentialResultDto,
@@ -114,6 +117,15 @@ const ADMIN_COMPANY_ADMIN_BINDING_QUERY = `
   }
 `;
 
+const ADMIN_COMPANY_ADMIN_ACCOUNT_DETAIL_QUERY = `
+  query AdminCompanyAdminAccountDetail($organizationId: Int!) {
+    adminCompanyAdminAccountDetail(organizationId: $organizationId) {
+      organizationId organizationCode companyName isManagedCompany companyStatus
+      status reason accountId loginName nickname mustChangePassword accountDisabled candidateCount
+    }
+  }
+`;
+
 const ADMIN_REISSUE_LEVEL_TWO_CREDENTIAL_MUTATION = `
   mutation AdminReissueCompanyAdminCredential($input: AdminReissueLevelTwoCredentialInput!) {
     adminReissueCompanyAdminCredential(input: $input) {
@@ -163,6 +175,10 @@ type AdminCompanyProvisioningData = {
 
 type AdminCompanyAdminBindingData = {
   adminCompanyAdminBinding?: AdminCompanyAdminBindingDto;
+};
+
+type AdminCompanyAdminAccountDetailData = {
+  adminCompanyAdminAccountDetail?: AdminCompanyAdminAccountDetailDto;
 };
 
 type AdminLevelTwoCredentialData = {
@@ -399,6 +415,34 @@ export async function fetchAdminCompanyAdminBinding(
     return {
       ok: true,
       binding: mapAdminCompanyAdminBindingDto(data.adminCompanyAdminBinding),
+    };
+  } catch (error) {
+    return toCommandFailure(error, READ_REASON_BY_CATEGORY_CODE);
+  }
+}
+
+/**
+ * 一级按公司窄查询二级管理员账号详情（只读，无凭据）。
+ *
+ * 与 `fetchAdminCompanyAdminBinding` 分开：本接口只在唯一合法绑定时返回完整登录名与
+ * `mustChangePassword`，列表与详情都按需调用，不把完整登录名放进列表读面。
+ */
+export async function fetchAdminCompanyAdminAccountDetail(
+  organizationId: number,
+): Promise<{ ok: true; detail: AdminCompanyAdminAccountDetail } | { ok: false; message: string }> {
+  try {
+    const data = await executeGraphQL<
+      AdminCompanyAdminAccountDetailData,
+      { organizationId: number }
+    >(ADMIN_COMPANY_ADMIN_ACCOUNT_DETAIL_QUERY, { organizationId });
+
+    if (!data.adminCompanyAdminAccountDetail) {
+      throw new Error('账号详情查询未返回结果。');
+    }
+
+    return {
+      ok: true,
+      detail: mapAdminCompanyAdminAccountDetailDto(data.adminCompanyAdminAccountDetail),
     };
   } catch (error) {
     return toCommandFailure(error, READ_REASON_BY_CATEGORY_CODE);

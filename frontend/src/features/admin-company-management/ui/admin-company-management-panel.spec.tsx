@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphQLIngressError } from '@/shared/graphql';
 
 import type {
+  AdminCompanyAdminAccountDetail,
   AdminCompanyAdminBinding,
   AdminCompanyListPage,
   AdminCompanyProvisionResult,
@@ -40,6 +41,7 @@ vi.mock('../infrastructure/admin-company-adapter', async (importOriginal) => {
     adminUpdateCompany: vi.fn(),
     checkAdminCompanyNameExists: vi.fn(),
     fetchAdminCompanies: vi.fn(),
+    fetchAdminCompanyAdminAccountDetail: vi.fn(),
     fetchAdminCompanyAdminBinding: vi.fn(),
     fetchAdminCompanyDetail: vi.fn(),
     fetchAdminCompanyNames: vi.fn(),
@@ -49,6 +51,7 @@ vi.mock('../infrastructure/admin-company-adapter', async (importOriginal) => {
 const fetchCompaniesMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanies);
 const fetchNamesMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanyNames);
 const fetchDetailMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanyDetail);
+const fetchAccountDetailMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanyAdminAccountDetail);
 const fetchBindingMock = vi.mocked(adminCompanyAdapter.fetchAdminCompanyAdminBinding);
 const createMock = vi.mocked(adminCompanyAdapter.adminCreateCompany);
 const updateMock = vi.mocked(adminCompanyAdapter.adminUpdateCompany);
@@ -90,6 +93,22 @@ const BINDING_A: AdminCompanyAdminBinding = {
   boundLoginNameMasked: 'adm***01',
   candidateCount: 1,
   accountDisabled: false,
+};
+
+const ACCOUNT_DETAIL_A: AdminCompanyAdminAccountDetail = {
+  organizationId: 501,
+  organizationCode: 'ADMIN_ORG_501',
+  companyName: '甲公司',
+  isManagedCompany: true,
+  companyStatus: 'ACTIVE',
+  status: 'BOUND',
+  reason: null,
+  accountId: 9001,
+  loginName: 'admin_org_501',
+  nickname: '甲公司管理员',
+  mustChangePassword: true,
+  accountDisabled: false,
+  candidateCount: 1,
 };
 
 const PROVISION_SUCCESS: AdminCompanyProvisionResult = {
@@ -175,6 +194,7 @@ beforeEach(() => {
   fetchCompaniesMock.mockReset().mockResolvedValue(fullPage());
   fetchNamesMock.mockReset().mockResolvedValue(namePage());
   fetchDetailMock.mockReset();
+  fetchAccountDetailMock.mockReset().mockResolvedValue({ ok: true, detail: ACCOUNT_DETAIL_A });
   fetchBindingMock.mockReset().mockResolvedValue({ ok: true, binding: BINDING_A });
   createMock.mockReset().mockResolvedValue(PROVISION_SUCCESS);
   updateMock.mockReset();
@@ -204,6 +224,7 @@ describe('AdminCompanyManagementPanel 一级管理员', () => {
     const row = screen.getByText('甲公司').closest('tr') as HTMLElement;
     expect(within(row).getByRole('button', { name: '详情' })).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: '编辑' })).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: '二级管理员账号' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /新增公司/ })).toBeInTheDocument();
   }, 15_000); // 首例包含完整表格首屏渲染；并行全量跑时曾触及默认 5s
 
@@ -505,51 +526,99 @@ describe('AdminCompanyManagementPanel 二级管理员账号与一次性凭据', 
     expect(within(dialog).queryByRole('textbox')).toBeNull();
   });
 
+  it('行内账号入口按需窄查询一次，并展示完整登录名与开通状态', async () => {
+    renderPanel(1);
+    await screen.findByText('甲公司');
+
+    clickRowAction('甲公司', /二级管理员账号/);
+    const dialog = await waitFor(() => getDialog('二级管理员账号：甲公司'));
+
+    // 只在点击后查询一次，不随列表预取完整登录名
+    expect(fetchAccountDetailMock).toHaveBeenCalledTimes(1);
+    expect(fetchAccountDetailMock).toHaveBeenCalledWith(501);
+    expect(within(dialog).getByText('admin_org_501')).toBeInTheDocument();
+    expect(within(dialog).getByText('甲公司管理员')).toBeInTheDocument();
+    expect(within(dialog).getByText('待首次改密')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '补发临时密码' })).toBeInTheDocument();
+  });
+
+  it('已首次改密的账号不展示补发入口', async () => {
+    fetchAccountDetailMock.mockResolvedValue({
+      ok: true,
+      detail: { ...ACCOUNT_DETAIL_A, mustChangePassword: false },
+    });
+
+    renderPanel(1);
+    await screen.findByText('甲公司');
+
+    clickRowAction('甲公司', /二级管理员账号/);
+    const dialog = await waitFor(() => getDialog('二级管理员账号：甲公司'));
+
+    expect(within(dialog).getByText('已改密')).toBeInTheDocument();
+    expect(await within(dialog).findByText('该账号已完成首次改密')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '补发临时密码' })).toBeNull();
+  });
+
   it.each([
     {
       label: '未配置',
+      expectedText: '尚未配置二级管理员账号',
       patch: {
         status: 'UNCONFIGURED',
-        reason: 'NO_CANDIDATE',
-        boundAccountId: null,
-        boundLoginNameMasked: null,
+        accountId: null,
+        loginName: null,
+        nickname: null,
+        mustChangePassword: null,
+        candidateCount: 0,
       } as const,
     },
     {
       label: '冲突',
+      expectedText: '归属存在冲突（候选 2 个）',
       patch: {
         status: 'CONFLICT',
-        reason: 'MULTIPLE_CANDIDATES',
+        reason: 'MULTIPLE_BINDINGS',
+        accountId: null,
+        loginName: null,
+        nickname: null,
+        mustChangePassword: null,
         candidateCount: 2,
-        boundAccountId: null,
-        boundLoginNameMasked: null,
       } as const,
     },
     {
       label: '公司停用',
+      expectedText: '公司已停用，不可补发',
       patch: {
         status: 'COMPANY_DISABLED',
         companyStatus: 'DISABLED',
-        boundAccountId: null,
-        boundLoginNameMasked: null,
+        accountId: null,
+        loginName: null,
+        nickname: null,
+        mustChangePassword: null,
       } as const,
     },
-    { label: '已绑定', patch: { status: 'BOUND', accountDisabled: true } as const },
-  ])('绑定状态为 $label 时不渲染补发入口', async ({ label, patch }) => {
-    fetchBindingMock.mockResolvedValue({ ok: true, binding: { ...BINDING_A, ...patch } });
-    fetchDetailMock.mockResolvedValue({ ok: true, organization: ROW_A });
+    {
+      label: '账号停用',
+      expectedText: '绑定账号已停用',
+      patch: { accountDisabled: true } as const,
+    },
+  ])('账号详情为 $label 时只给归属提示且不渲染补发入口', async ({ expectedText, patch }) => {
+    fetchAccountDetailMock.mockResolvedValue({
+      ok: true,
+      detail: { ...ACCOUNT_DETAIL_A, ...patch },
+    });
 
     renderPanel(1);
     await screen.findByText('甲公司');
-    clickRowAction('甲公司', /详\s*情/);
 
-    const dialog = await waitFor(() => getDialog('公司详情：甲公司'));
-    // 先等绑定事实进入详情：仍在「正在读取绑定状态…」时断言无入口会成为假通过
-    await within(dialog).findByText(label);
+    clickRowAction('甲公司', /二级管理员账号/);
+    const dialog = await waitFor(() => getDialog('二级管理员账号：甲公司'));
+
+    expect(await within(dialog).findByText(expectedText)).toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: '补发临时密码' })).toBeNull();
   });
 
-  it('详情仅在绑定允许补发时出现补发入口，确认后展示本次新口令', async () => {
+  it('账号详情允许补发时确认后展示本次新口令', async () => {
     const reissueMock = vi.mocked(adminCompanyAdapter.adminReissueLevelTwoCredential);
     reissueMock.mockReset().mockResolvedValue({
       ok: true,
@@ -560,18 +629,16 @@ describe('AdminCompanyManagementPanel 二级管理员账号与一次性凭据', 
       mustChangePassword: true,
       temporaryPassword: 'Temp-Stub-Reissue-1',
     });
-    fetchDetailMock.mockResolvedValue({ ok: true, organization: ROW_A });
 
     renderPanel(1);
     await screen.findByText('甲公司');
 
-    clickRowAction('甲公司', /详\s*情/);
-    await screen.findByText('公司详情：甲公司', { selector: '.ant-modal-title' });
-    // 等待绑定状态回读到详情弹窗后再断言补发入口
-    expect(await screen.findByRole('button', { name: '补发临时密码' })).toBeInTheDocument();
+    clickRowAction('甲公司', /二级管理员账号/);
+    const accountDialog = await waitFor(() => getDialog('二级管理员账号：甲公司'));
+    fireEvent.click(within(accountDialog).getByRole('button', { name: '补发临时密码' }));
 
-    fireEvent.click(screen.getByRole('button', { name: '补发临时密码' }));
     const confirmDialog = getDialog('补发二级管理员临时密码');
+    expect(within(confirmDialog).getByText('admin_org_501')).toBeInTheDocument();
     fireEvent.click(within(confirmDialog).getByRole('button', { name: /确认补发/ }));
 
     await waitFor(() => expect(reissueMock).toHaveBeenCalledWith(501));
@@ -581,7 +648,7 @@ describe('AdminCompanyManagementPanel 二级管理员账号与一次性凭据', 
     ).toBeInTheDocument();
   });
 
-  it('补发响应与确认目标公司不一致时丢弃口令并提示', async () => {
+  it('补发响应与确认目标不一致时丢弃口令并提示', async () => {
     const reissueMock = vi.mocked(adminCompanyAdapter.adminReissueLevelTwoCredential);
     reissueMock.mockReset().mockResolvedValue({
       ok: true,
@@ -593,16 +660,14 @@ describe('AdminCompanyManagementPanel 二级管理员账号与一次性凭据', 
       mustChangePassword: true,
       temporaryPassword: 'Temp-Stub-Mismatch-1',
     });
-    fetchDetailMock.mockResolvedValue({ ok: true, organization: ROW_A });
 
     renderPanel(1);
     await screen.findByText('甲公司');
 
-    clickRowAction('甲公司', /详\s*情/);
-    await screen.findByText('公司详情：甲公司', { selector: '.ant-modal-title' });
-    expect(await screen.findByRole('button', { name: '补发临时密码' })).toBeInTheDocument();
+    clickRowAction('甲公司', /二级管理员账号/);
+    const accountDialog = await waitFor(() => getDialog('二级管理员账号：甲公司'));
+    fireEvent.click(within(accountDialog).getByRole('button', { name: '补发临时密码' }));
 
-    fireEvent.click(screen.getByRole('button', { name: '补发临时密码' }));
     const confirmDialog = getDialog('补发二级管理员临时密码');
     fireEvent.click(within(confirmDialog).getByRole('button', { name: /确认补发/ }));
 
@@ -614,6 +679,46 @@ describe('AdminCompanyManagementPanel 二级管理员账号与一次性凭据', 
     ).toBeInTheDocument();
     expect(screen.queryByText('二级管理员账号凭据', { selector: '.ant-modal-title' })).toBeNull();
     expect(document.body.textContent).not.toContain('Temp-Stub-Mismatch-1');
+  });
+
+  it('补发回包前会话代次已变化时丢弃口令', async () => {
+    const reissueMock = vi.mocked(adminCompanyAdapter.adminReissueLevelTwoCredential);
+    const pending: {
+      resolve?: (value: Awaited<ReturnType<typeof reissueMock>>) => void;
+    } = {};
+    reissueMock.mockReset().mockReturnValue(
+      new Promise((resolve) => {
+        pending.resolve = resolve;
+      }),
+    );
+
+    renderPanel(1);
+    await screen.findByText('甲公司');
+
+    clickRowAction('甲公司', /二级管理员账号/);
+    const accountDialog = await waitFor(() => getDialog('二级管理员账号：甲公司'));
+    fireEvent.click(within(accountDialog).getByRole('button', { name: '补发临时密码' }));
+
+    const confirmDialog = getDialog('补发二级管理员临时密码');
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: /确认补发/ }));
+    await waitFor(() => expect(reissueMock).toHaveBeenCalledTimes(1));
+
+    // 同一账号重新登录：accountId 不变、epoch 变化，口令不得交给新会话
+    sessionIdentity = { accountId: ACCOUNT_ID, epoch: 2 };
+    pending.resolve?.({
+      ok: true,
+      organizationId: 501,
+      adminAccountId: 9001,
+      loginName: 'orgadmin_abcdef0123456789abcd',
+      nickname: '甲公司',
+      mustChangePassword: true,
+      temporaryPassword: 'Temp-Stub-Stale-Epoch-1',
+    });
+
+    expect(
+      await within(confirmDialog).findByText('登录身份已变化，口令已丢弃，请重新核对后重试。'),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Temp-Stub-Stale-Epoch-1');
   });
 });
 
