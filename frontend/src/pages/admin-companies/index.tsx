@@ -23,7 +23,8 @@ export function AdminCompaniesPage() {
         title="公司档案"
       />
 
-      <AdminCompanyManagementPanel adminLevel={adminLevel} />
+      {/* 身份/等级变化即重挂载：在途请求与短生命周期凭据 state 一并丢弃 */}
+      <AdminCompanyManagementPanel key={adminLevel ?? 'none'} adminLevel={adminLevel} />
     </div>
   );
 }

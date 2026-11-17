@@ -1,3 +1,6 @@
+import { convergeAccountRole } from '@core/account/policy/account-role-convergence.policy';
+import type { AdminBindingCandidate } from '@core/account/policy/admin-binding.policy';
+
 import type { EntityManager } from 'typeorm';
 
 import type { FieldCipher } from '../field-encryption/field-encryption.cipher';
@@ -173,4 +176,132 @@ export async function loadActiveMembership(
     return null;
   }
   return rows[0] as BootstrapMembershipRow;
+}
+
+/**
+ * 读取某公司内可能构成二级管理员绑定的账号事实。
+ *
+ * 候选口径刻意同时覆盖两类异常，避免把“已有错误绑定”误判为“未配置”后重复建号：
+ * - `admin_level = 2` 且在本公司存在 ACTIVE 成员关系（成员角色不符也是候选，由策略判冲突）；
+ * - 在本公司存在 ACTIVE `SUPER_ADMIN` 成员关系但等级不是 2（错绑/补级风险，由策略判冲突）。
+ *
+ * 只读取 ACTIVE 且未退出的成员关系：已结束的成员关系不构成当前绑定，也不应导致误报。
+ */
+export interface AdminBindingCandidateRow {
+  readonly accountId: number;
+  readonly loginName: string;
+  readonly adminLevel: number | null;
+  readonly accountStatus: string;
+  readonly userState: string | null;
+  readonly customerOrganizationId: number | null;
+  readonly identityHint: unknown;
+  readonly accessGroup: unknown;
+  readonly metaDigest: unknown;
+  readonly membershipRole: string;
+  readonly membershipActive: boolean;
+}
+
+export async function loadAdminBindingCandidateRows(
+  manager: Pick<EntityManager, 'query'>,
+  organizationId: number,
+  options?: { readonly forUpdate?: boolean },
+): Promise<ReadonlyArray<AdminBindingCandidateRow>> {
+  const rows: unknown = await manager.query(
+    `
+      SELECT
+        a.\`id\` AS \`account_id\`,
+        a.\`login_name\`,
+        a.\`admin_level\`,
+        a.\`identity_hint\`,
+        a.\`status\` AS \`account_status\`,
+        i.\`user_state\`,
+        i.\`customer_organization_id\`,
+        i.\`access_group\`,
+        i.\`meta_digest\`,
+        m.\`member_role\`,
+        m.\`status\` AS \`membership_status\`,
+        m.\`left_at\`
+      FROM \`organization_membership\` AS m
+      INNER JOIN \`base_user_account\` AS a ON a.\`id\` = m.\`account_id\`
+      LEFT JOIN \`base_user_info\` AS i ON i.\`account_id\` = a.\`id\`
+      WHERE m.\`organization_id\` = ?
+        AND m.\`status\` = 'ACTIVE'
+        AND m.\`left_at\` IS NULL
+        AND (a.\`admin_level\` = 2 OR m.\`member_role\` = 'SUPER_ADMIN')
+      ORDER BY a.\`id\` ASC
+      ${options?.forUpdate === true ? 'FOR UPDATE' : ''}
+    `,
+    [organizationId],
+  );
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  return rows.map((value): AdminBindingCandidateRow => {
+    const row = value as {
+      readonly account_id: number;
+      readonly login_name: string;
+      readonly admin_level: number | null;
+      readonly identity_hint: unknown;
+      readonly account_status: string;
+      readonly user_state: string | null;
+      readonly customer_organization_id: number | null;
+      readonly access_group: unknown;
+      readonly meta_digest: unknown;
+      readonly member_role: string;
+      readonly membership_status: string;
+      readonly left_at: Date | null;
+    };
+    return {
+      accountId: Number(row.account_id),
+      loginName: row.login_name,
+      adminLevel: row.admin_level === null ? null : Number(row.admin_level),
+      accountStatus: row.account_status,
+      userState: row.user_state,
+      customerOrganizationId:
+        row.customer_organization_id === null ? null : Number(row.customer_organization_id),
+      identityHint: row.identity_hint,
+      accessGroup: parseJsonColumn(row.access_group),
+      metaDigest: row.meta_digest,
+      membershipRole: row.member_role,
+      membershipActive: row.membership_status === 'ACTIVE' && row.left_at === null,
+    };
+  });
+}
+
+/**
+ * 把候选行转换为绑定策略输入；`meta_digest` 解密或角色三源收敛失败时失败关闭，
+ * 由策略归为 `ROLE_NOT_CONVERGED`，不在读取层静默修复。
+ */
+export function toAdminBindingCandidate(
+  row: AdminBindingCandidateRow,
+  cipher: FieldCipher,
+): AdminBindingCandidate {
+  const convergeRole = (): { readonly roleConverged: boolean; readonly role: string | null } => {
+    try {
+      const convergence = convergeAccountRole({
+        identityHint: row.identityHint,
+        accessGroup: row.accessGroup,
+        metaDigest: decryptMetaDigest(row.metaDigest, cipher),
+      });
+      return convergence.converged
+        ? { roleConverged: true, role: convergence.role }
+        : { roleConverged: false, role: null };
+    } catch {
+      return { roleConverged: false, role: null };
+    }
+  };
+  const { roleConverged, role } = convergeRole();
+
+  return {
+    accountId: row.accountId,
+    loginName: row.loginName,
+    adminLevel: row.adminLevel,
+    accountStatus: row.accountStatus,
+    userState: row.userState,
+    roleConverged,
+    role,
+    membershipRole: row.membershipRole,
+    membershipActive: row.membershipActive,
+    customerOrganizationId: row.customerOrganizationId,
+  };
 }

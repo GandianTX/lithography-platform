@@ -7,10 +7,12 @@
 // 若本机专用库不是默认 lithography_e2e，追加 E2E_DEDICATED_DB_NAME=<白名单库>。
 //
 // 覆盖：
-//   1. 一级管理员：经主导航进入公司档案，真实新增 → 详情回读 → 编辑（编号只读）；
-//      新增/编辑前后按同一 ID 查库比对字段差集；清理后残留计数为 0，哨兵组织不变。
+//   1. 一级管理员：经主导航进入公司档案，真实「新增公司并开通二级管理员」→ 一次性口令弹窗
+//      → 详情回读 → 补发口令 → 编辑（编号只读）；列表「二级管理员账号」列按绑定事实展示；
+//      口令只在当次弹窗出现，关闭/刷新后 DOM 与存储均不可查；补发后旧口令立即失效。
+//      新增/编辑前后按同一 ID 查库比对字段差集；清理后六表残留计数为 0，哨兵组织不变。
 //   2. 二级管理员：只看到最小名称名单与只读提示，无新增/编辑/详情入口；
-//      服务端 list / detail / create / update 一律 FORBIDDEN，名称名单仅 id/name 可用。
+//      服务端 list / detail / create / update 与 S4 四个新入口一律 FORBIDDEN，名称名单仅 id/name 可用。
 //
 // 权限与数据真源：等级由请求期查库得到的 `base_user_account.admin_level` 决定，
 // 本 spec 只在专用隔离库内临时设置/恢复等级与受管组织行，不触碰共享开发库；
@@ -22,9 +24,18 @@
 //
 // 截图证据写入 docs/plan/task08/visual/（S2 前缀，避免覆盖 S0 原型截图）。
 
-import { expect, type Page, test } from '@playwright/test';
+import { expect, type Page, type Request, test } from '@playwright/test';
 import path from 'node:path';
 
+import {
+  attemptPasswordLogin,
+  cleanupProvisionedCompany,
+  maskLoginName,
+  type ProvisionedCompanyFacts,
+  readProvisionedAdminFacts,
+  readProvisionedCompanyFacts,
+  readProvisionedCompanyResidue,
+} from '../e2e/helpers/provisioned-company-cleanup';
 import {
   assertPhysicalCleanupAllowed,
   insertUnregisteredLeftMembership,
@@ -85,6 +96,49 @@ const ADMIN_CREATE_MUTATION = `
       id
       organizationCode
       name
+    }
+  }
+`;
+
+/** S4 新入口（与前端 adapter 的 operation 逐字一致） */
+const ADMIN_PROVISION_MUTATION = `
+  mutation AdminProvisionCompany($input: AdminCreateOrganizationInput!) {
+    adminProvisionCompany(input: $input) {
+      organization { id organizationCode name }
+      provisionedAdmin { accountId loginName nickname mustChangePassword }
+      submission { submissionId replayed }
+      temporaryPassword
+    }
+  }
+`;
+
+const ADMIN_COMPANY_BINDING_QUERY = `
+  query AdminCompanyAdminBinding($organizationId: Int!) {
+    adminCompanyAdminBinding(organizationId: $organizationId) {
+      organizationId
+      status
+      boundAccountId
+      boundLoginNameMasked
+    }
+  }
+`;
+
+const ADMIN_REISSUE_CREDENTIAL_MUTATION = `
+  mutation AdminReissueCompanyAdminCredential($input: AdminReissueLevelTwoCredentialInput!) {
+    adminReissueCompanyAdminCredential(input: $input) {
+      organizationId
+      adminAccountId
+      loginName
+      temporaryPassword
+    }
+  }
+`;
+
+const ADMIN_BOUND_LEVEL_TWO_ADMINS_QUERY = `
+  query AdminBoundLevelTwoAdmins($keyword: String, $pagination: PaginationArgs!) {
+    adminBoundLevelTwoAdmins(keyword: $keyword, pagination: $pagination) {
+      items { accountId organizationId loginName }
+      total
     }
   }
 `;
@@ -207,34 +261,42 @@ function readOrganizationCountByCode(code: string): number {
 }
 
 /**
- * 创建响应一返回就登记本轮公司。
+ * 开通响应一返回就登记本轮公司与二级管理员。
  *
  * 只使用服务端返回值与本轮请求事实，不回读数据库补齐：后续断言失败时，
  * 清理仍能按精确主键执行，而不是退化成按名称/编号前缀删除。
+ * 一次性口令只用于当次展示断言，不写入任何返回结构或证据。
  */
-function registerCreatedOrganization(
-  payload: RegisteredOrganization,
+function registerProvisionedCompany(
+  payload: unknown,
   expectedName: string,
-): RegisteredOrganization {
-  const { id, organizationCode, name } = payload;
+): { facts: ProvisionedCompanyFacts; temporaryPassword: string } {
+  const { facts, temporaryPassword } = readProvisionedCompanyFacts(payload);
 
-  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) {
-    throw new Error(
-      `adminCreateOrganization 未返回可信主键，无法建立清理边界：${JSON.stringify(payload)}`,
-    );
+  if (facts.organizationName !== expectedName) {
+    throw new Error('adminProvisionCompany 返回名称与本轮请求不一致，拒绝登记');
   }
 
-  if (typeof organizationCode !== 'string' || organizationCode === '') {
-    throw new Error(`adminCreateOrganization 未返回编号，无法核验归属：${JSON.stringify(payload)}`);
+  return { facts, temporaryPassword };
+}
+
+/**
+ * 从**本次真实请求体**提取提交标识（幂等键）。
+ *
+ * 提交标识在发送前生成、成功后被 `clearSubmissionKey()` 清除，因此成功后不能再读
+ * `sessionStorage`；回放断言只能取实际发出的请求事实，也顺带证明请求确实带上了该标识。
+ */
+function readCreateSubmissionKeyFromRequest(request: Request): string {
+  const body = request.postDataJSON() as {
+    variables?: { input?: { submissionKey?: unknown } };
+  };
+  const submissionKey = body.variables?.input?.submissionKey;
+
+  if (typeof submissionKey !== 'string' || submissionKey === '') {
+    throw new Error('未能从开通请求体读取提交标识，拒绝继续回放断言');
   }
 
-  if (name !== expectedName) {
-    throw new Error(
-      `adminCreateOrganization 返回名称与本轮请求不一致，拒绝登记：${JSON.stringify(name)}`,
-    );
-  }
-
-  return { id, organizationCode, name };
+  return submissionKey;
 }
 
 /** 拼接进 SQL 前的最小字面量白名单：排除单引号与反斜杠，并限制长度 */
@@ -514,15 +576,19 @@ function buildForbiddenCompanyName(): string {
 }
 
 test.describe('公司档案（隔离库真实链路）', () => {
-  test('一级管理员：新增 → 详情 → 编辑，按同一 ID 查库差异正确且清理无残留', async ({ page }) => {
-    test.setTimeout(180_000);
+  test('一级管理员：开通公司并交付一次性口令 → 详情补发 → 编辑，清理后六表无残留', async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
     const env = readBackendEnv();
 
     assertPhysicalCleanupAllowed(env);
 
     const companyName = buildCompanyName();
+    const contactPhone = '13900008888';
     const originalAdminLevel = readAdminLevel(LEVEL_ONE_LOGIN);
-    let created: RegisteredOrganization | null = null;
+    let provisioned: ProvisionedCompanyFacts | null = null;
+    let firstPassword: string;
     let primaryError: unknown = null;
 
     try {
@@ -533,6 +599,8 @@ test.describe('公司档案（隔离库真实链路）', () => {
 
       // 列表初始就绪：seed 组织经真实查询可见（antd 测量行也会占用 role=row，按内容收敛）
       await expect(page.getByRole('row').filter({ hasText: '甲方默认组织' })).toBeVisible();
+      // S4：一级列表新增绑定状态列
+      await expect(page.getByRole('columnheader', { name: '二级管理员账号' })).toBeVisible();
       await captureScreenshots(page, 's2-admin1-companies-list');
 
       // 截图会把视口收窄到移动端，交互前回到桌面视口
@@ -541,49 +609,90 @@ test.describe('公司档案（隔离库真实链路）', () => {
       // 新增：全称 + 电话必填，初设维修资格（状态默认启用且不可改）
       await page.getByRole('button', { name: /新增公司/ }).click();
 
-      const createDialog = visibleDialog(page);
+      // 成功后面临两个弹窗交叠（新增 → 凭据），因此按标题锁定新增弹窗，避免 :visible 匹配多个
+      const createDialog = page.getByRole('dialog').filter({ hasText: '新增公司档案' });
 
       await expect(createDialog).toBeVisible();
       await createDialog.getByLabel('公司全称', { exact: true }).fill(companyName);
-      await createDialog.getByLabel('联系电话', { exact: true }).fill('13900008888');
+      await createDialog.getByLabel('联系电话', { exact: true }).fill(contactPhone);
       // 两个 Switch：公司启用（禁用）与提供维修服务
       await createDialog.getByRole('switch').nth(1).click();
 
       await page.setViewportSize({ height: 900, width: 1440 });
-      await prepareStableViewport(page, 's2-admin1-companies-add-dialog-1440x900.png');
+      await prepareStableViewport(page, 's4-admin1-companies-add-dialog-1440x900.png');
       await page.screenshot({
-        path: path.join(VISUAL_DIR, 's2-admin1-companies-add-dialog-1440x900.png'),
+        path: path.join(VISUAL_DIR, 's4-admin1-companies-add-dialog-1440x900.png'),
       });
 
-      const createResponsePromise = page.waitForResponse(
+      // 提交标识在首次发送前生成、成功后清除：回放断言只能复用实际请求体里的标识
+      const provisionResponsePromise = page.waitForResponse(
         (response) =>
           response.url().includes('/graphql') &&
           response.request().method() === 'POST' &&
-          (response.request().postData() ?? '').includes('adminCreateOrganization'),
+          (response.request().postData() ?? '').includes('adminProvisionCompany'),
       );
 
       await createDialog.getByRole('button', { name: /创\s*建/ }).click();
 
-      const createResponse = await createResponsePromise;
-      const createBody = (await createResponse.json()) as {
-        data?: { adminCreateOrganization?: RegisteredOrganization };
+      const provisionResponse = await provisionResponsePromise;
+      const submissionKey = readCreateSubmissionKeyFromRequest(provisionResponse.request());
+      const provisionBody = (await provisionResponse.json()) as {
+        data?: { adminProvisionCompany?: unknown };
       };
-      const createdPayload = createBody.data?.adminCreateOrganization;
+      const provisionPayload = provisionBody.data?.adminProvisionCompany;
 
-      if (!createdPayload) {
-        throw new Error(`adminCreateOrganization 未返回落库结果：${JSON.stringify(createBody)}`);
+      if (provisionPayload === undefined) {
+        throw new Error('adminProvisionCompany 未返回落库结果，拒绝继续断言');
       }
 
       // 创建响应一返回就登记真实主键与请求事实：后续任何断言失败仍可按精确主键回收
-      created = registerCreatedOrganization(createdPayload, companyName);
+      const registered = registerProvisionedCompany(provisionPayload, companyName);
+
+      provisioned = registered.facts;
+      firstPassword = registered.temporaryPassword;
 
       await expect(createDialog).toBeHidden();
 
+      // 首次成功才有的口令弹窗：只展示本次响应里的临时密码，且不写入任何持久化位置
+      const credentialDialog = page.getByRole('dialog').filter({ hasText: '二级管理员账号凭据' });
+
+      await expect(credentialDialog).toBeVisible();
+      await expect(credentialDialog.getByText('本次临时密码只显示一次')).toBeVisible();
+      // 口令断言只比较布尔结果：断言失败时不得把口令明文写进日志
+      expect((await credentialDialog.locator('input').first().inputValue()) === firstPassword).toBe(
+        true,
+      );
+
+      const storageDump = await page.evaluate(() =>
+        JSON.stringify({
+          local: { ...window.localStorage },
+          session: { ...window.sessionStorage },
+        }),
+      );
+
+      expect(storageDump.includes(firstPassword)).toBe(false);
+
+      await credentialDialog.getByRole('button', { name: '我已记录并关闭' }).click();
+      await expect(page.getByRole('dialog').filter({ hasText: '二级管理员账号凭据' })).toHaveCount(
+        0,
+      );
+      expect((await page.evaluate(() => document.body.innerText)).includes(firstPassword)).toBe(
+        false,
+      );
+
+      // 刷新后仍不可查：口令只存在于已销毁的弹窗节点
+      await page.reload();
+      await expect(page.getByRole('heading', { name: ADMIN_COMPANIES_LABEL })).toBeVisible();
+      await expect(page.getByRole('row').filter({ hasText: '甲方默认组织' })).toBeVisible();
+      expect((await page.evaluate(() => document.body.innerText)).includes(firstPassword)).toBe(
+        false,
+      );
+
       // 服务端生成编号、受管归类与状态：查库核对初始落库事实
-      const initial = readOrganizationRow(created.id);
+      const initial = readOrganizationRow(provisioned.organizationId);
 
       expect(initial.name).toBe(companyName);
-      expect(initial.organizationCode).toBe(created.organizationCode);
+      expect(initial.organizationCode).toBe(provisioned.organizationCode);
       expect(initial.organizationCode.startsWith('ADMIN_ORG_')).toBe(true);
       expect(initial.isManagedCompany).toBe('1');
       expect(initial.kind).toBe('CLIENT');
@@ -591,23 +700,151 @@ test.describe('公司档案（隔离库真实链路）', () => {
       expect(initial.isServiceProvider).toBe('1');
       expect(initial.contactName).toBe('NULL');
 
-      // 列表刷新后按关键字收敛到本轮新增行
+      // 开通出的二级管理员：ACTIVE + 强制改密 + 组织管理员成员关系
+      const adminFacts = readProvisionedAdminFacts(provisioned.adminAccountId);
+
+      expect(adminFacts.loginName).toBe(provisioned.adminLoginName);
+      expect(adminFacts.adminLevel).toBe('2');
+      expect(adminFacts.status).toBe('ACTIVE');
+      expect(adminFacts.mustChangePassword).toBe('1');
+      expect(adminFacts.memberRole).toBe('SUPER_ADMIN');
+      expect(adminFacts.membershipStatus).toBe('ACTIVE');
+
+      // 首次口令可签发受限会话（待首次改密）
+      const firstLogin = await attemptPasswordLogin(
+        provisioned.adminLoginName,
+        firstPassword,
+        true,
+      );
+
+      expect(firstLogin.accessToken).toBeTruthy();
+
+      // 同标识同内容回放：不得再次返回口令，且仍指向本轮公司
+      const replay = await realGraphqlCall(
+        env,
+        ADMIN_PROVISION_MUTATION,
+        {
+          input: {
+            address: null,
+            contactEmail: null,
+            contactName: null,
+            contactPhone,
+            isServiceProvider: true,
+            name: companyName,
+            remark: null,
+            shortName: null,
+            status: 'ACTIVE',
+            submissionKey,
+          },
+        },
+        LEVEL_ONE_LOGIN,
+      );
+      const replayPayload = (
+        replay.body as {
+          data?: {
+            adminProvisionCompany?: {
+              organization?: { id?: number };
+              submission?: { replayed?: boolean; submissionId?: number | null };
+              temporaryPassword?: string | null;
+            };
+          };
+        }
+      ).data?.adminProvisionCompany;
+
+      expect(firstGraphqlErrorCode(replay.body)).toBeNull();
+      expect(replayPayload?.submission?.replayed).toBe(true);
+      expect(replayPayload?.submission?.submissionId).toBe(provisioned.provisioningRequestId);
+      expect(replayPayload?.organization?.id).toBe(provisioned.organizationId);
+      expect(replayPayload?.temporaryPassword).toBeNull();
+
+      // 列表刷新后按关键字收敛到本轮新增行：绑定列展示状态 + 脱敏登录名
       await page.getByPlaceholder('搜索公司全称 / 编号 / 简称').fill(companyName);
 
       const row = page.getByRole('row').filter({ hasText: companyName });
 
       await expect(row).toBeVisible();
       await expect(row.getByText('是')).toBeVisible();
+      await expect(row.getByText('已绑定')).toBeVisible();
+      await expect(row.getByText(maskLoginName(provisioned.adminLoginName))).toBeVisible();
+      // 完整登录名不得出现在列表（只给脱敏值）
+      await expect(row.getByText(provisioned.adminLoginName, { exact: true })).toHaveCount(0);
 
-      // 详情：按主键单独读取，展示编号与受管事实
+      // 详情：按主键单独读取，展示编号、受管事实与绑定状态
       await row.getByRole('button', { name: '详情' }).click();
 
-      const detailDialog = visibleDialog(page);
+      // 补发确认会叠加在详情之上：详情同样按标题锁定，避免 :visible 同时匹配两层弹窗
+      const detailDialog = page.getByRole('dialog').filter({ hasText: '公司详情：' });
 
-      await expect(detailDialog.getByText(created.organizationCode)).toBeVisible();
+      await expect(detailDialog.getByText(provisioned.organizationCode)).toBeVisible();
       await expect(detailDialog.getByText('受管公司')).toBeVisible();
-      await detailDialog.getByRole('button', { name: /关\s*闭/ }).click();
-      await expect(detailDialog).toBeHidden();
+      await expect(detailDialog.getByText('已绑定')).toBeVisible();
+
+      // 补发：二次确认只展示公司名与脱敏登录名，不展示任何口令
+      await detailDialog.getByRole('button', { name: '补发临时密码' }).click();
+
+      const confirmDialog = page.getByRole('dialog').filter({ hasText: '补发二级管理员临时密码' });
+
+      await expect(confirmDialog).toBeVisible();
+      await expect(confirmDialog.getByText(companyName)).toBeVisible();
+      await expect(
+        confirmDialog.getByText(maskLoginName(provisioned.adminLoginName)),
+      ).toBeVisible();
+      await expect(confirmDialog.getByText('补发会立即作废旧口令与旧登录会话')).toBeVisible();
+
+      const reissuePromise = page.waitForResponse(
+        (response) =>
+          response.url().includes('/graphql') &&
+          response.request().method() === 'POST' &&
+          (response.request().postData() ?? '').includes('adminReissueCompanyAdminCredential'),
+      );
+
+      await confirmDialog.getByRole('button', { name: '确认补发' }).click();
+
+      const reissueBody = (await (await reissuePromise).json()) as {
+        data?: { adminReissueCompanyAdminCredential?: { temporaryPassword?: string } };
+      };
+      const reissuedPassword =
+        reissueBody.data?.adminReissueCompanyAdminCredential?.temporaryPassword;
+
+      if (typeof reissuedPassword !== 'string' || reissuedPassword === '') {
+        throw new Error('补发响应未返回新的临时密码，拒绝继续断言');
+      }
+
+      expect(reissuedPassword !== firstPassword).toBe(true);
+
+      const reissuedDialog = page.getByRole('dialog').filter({ hasText: '二级管理员账号凭据' });
+
+      await expect(reissuedDialog).toBeVisible();
+      expect(
+        (await reissuedDialog.locator('input').first().inputValue()) === reissuedPassword,
+      ).toBe(true);
+
+      await reissuedDialog.getByRole('button', { name: '我已记录并关闭' }).click();
+      await expect(page.getByRole('dialog').filter({ hasText: '二级管理员账号凭据' })).toHaveCount(
+        0,
+      );
+      expect((await page.evaluate(() => document.body.innerText)).includes(reissuedPassword)).toBe(
+        false,
+      );
+
+      // 旧口令立即失效，新口令可签发受限会话
+      const staleLogin = await attemptPasswordLogin(
+        provisioned.adminLoginName,
+        firstPassword,
+        true,
+      );
+
+      expect(staleLogin.accessToken).toBeNull();
+      expect(staleLogin.code).toBe('UNAUTHENTICATED');
+
+      const freshLogin = await attemptPasswordLogin(
+        provisioned.adminLoginName,
+        reissuedPassword,
+        true,
+      );
+
+      expect(freshLogin.accessToken).toBeTruthy();
+      expect(readProvisionedAdminFacts(provisioned.adminAccountId).mustChangePassword).toBe('1');
 
       // 编辑：编号只读，只改联系人与维修资格
       await row.getByRole('button', { name: '编辑' }).click();
@@ -618,21 +855,21 @@ test.describe('公司档案（隔离库真实链路）', () => {
       const codeInput = editDialog.locator('input').first();
 
       await expect(codeInput).toBeDisabled();
-      await expect(codeInput).toHaveValue(created.organizationCode);
+      await expect(codeInput).toHaveValue(provisioned.organizationCode);
       await editDialog.getByLabel('联系人姓名', { exact: true }).fill('E2E 联系人');
       await editDialog.getByRole('switch').nth(1).click();
 
       await page.setViewportSize({ height: 900, width: 1440 });
-      await prepareStableViewport(page, 's2-admin1-companies-edit-dialog-1440x900.png');
+      await prepareStableViewport(page, 's4-admin1-companies-edit-dialog-1440x900.png');
       await page.screenshot({
-        path: path.join(VISUAL_DIR, 's2-admin1-companies-edit-dialog-1440x900.png'),
+        path: path.join(VISUAL_DIR, 's4-admin1-companies-edit-dialog-1440x900.png'),
       });
 
       await editDialog.getByRole('button', { name: /保\s*存/ }).click();
       await expect(editDialog).toBeHidden();
 
       // 同一 ID 回读：仅联系人与维修资格变化，编号/受管/类别/状态保持
-      const updated = readOrganizationRow(created.id);
+      const updated = readOrganizationRow(provisioned.organizationId);
 
       expect(updated.contactName).toBe('E2E 联系人');
       expect(updated.isServiceProvider).toBe('0');
@@ -649,10 +886,10 @@ test.describe('公司档案（隔离库真实链路）', () => {
 
     const teardownError = await runTeardownSteps([
       {
-        label: created === null ? '未登记创建结果的只读诊断' : '按登记事实回收本轮公司',
+        label: provisioned === null ? '未登记开通结果的只读诊断' : '按登记事实回收本轮开通数据',
         run: () => {
-          if (created !== null) {
-            deleteRegisteredOrganization(created);
+          if (provisioned !== null) {
+            cleanupProvisionedCompany(provisioned);
             return;
           }
 
@@ -661,7 +898,7 @@ test.describe('公司档案（隔离库真实链路）', () => {
 
           if (diagnostic !== '') {
             throw new Error(
-              '本轮未取得可信创建结果，但库内存在同名组织行；' +
+              '本轮未取得可信开通结果，但库内存在同名组织行；' +
                 `只读诊断如下，拒绝按名称删除并保留待人工核对：${diagnostic}`,
             );
           }
@@ -675,14 +912,21 @@ test.describe('公司档案（隔离库真实链路）', () => {
 
     throwPrimaryAndTeardown(primaryError, teardownError);
 
-    const registered = created;
+    const registered = provisioned;
 
     if (registered === null) {
-      throw new Error('本轮没有登记到公司主键，无法核验清理残留');
+      throw new Error('本轮没有登记到开通主键，无法核验清理残留');
     }
 
-    // 清理后：本轮登记的精确主键残留为 0，seed 哨兵组织保持原值
-    expect(readOrganizationCountById(registered.id)).toBe(0);
+    // 清理后：六张表全部零残留，seed 哨兵组织保持原值
+    expect(readProvisionedCompanyResidue(registered)).toEqual({
+      account: 0,
+      audit: 0,
+      membership: 0,
+      organization: 0,
+      provisioningRequest: 0,
+      userInfo: 0,
+    });
     expect(readOrganizationCountByCode(SENTINEL_ORGANIZATION_CODE)).toBe(1);
   });
 
@@ -722,6 +966,8 @@ test.describe('公司档案（隔离库真实链路）', () => {
     ];
     // 只有「意外成功响应里结构化返回的真实主键」可登记为待回收对象
     const confirmedUnexpectedWrites: RegisteredOrganizationFacts[] = [];
+    // S4 新入口意外成功时：开通响应可登记公司 + 管理员的整链路精确回收
+    const unexpectedProvisioned: ProvisionedCompanyFacts[] = [];
     let primaryError: unknown = null;
 
     try {
@@ -797,6 +1043,95 @@ test.describe('公司档案（隔离库真实链路）', () => {
         );
       }
 
+      // S4 新入口：开通 / 绑定查询 / 补发 / 已绑定名单对二级一律 FORBIDDEN。
+      // 开通之外的三个入口没有写副作用，意外成功只报待确认；开通成功可凭响应主键整链路回收。
+      const s4ForbiddenCases: ReadonlyArray<{
+        readonly label: string;
+        readonly query: string;
+        readonly variables: Record<string, unknown>;
+      }> = [
+        {
+          label: 'adminProvisionCompany',
+          query: ADMIN_PROVISION_MUTATION,
+          variables: {
+            input: {
+              address: null,
+              contactEmail: null,
+              contactName: null,
+              contactPhone: '13900000000',
+              isServiceProvider: false,
+              name: forbiddenName,
+              remark: null,
+              shortName: null,
+              status: 'ACTIVE',
+              submissionKey: `e2e-forbidden-${Date.now()}`,
+            },
+          },
+        },
+        {
+          label: 'adminCompanyAdminBinding',
+          query: ADMIN_COMPANY_BINDING_QUERY,
+          variables: { organizationId: forbiddenSentinel.id },
+        },
+        {
+          label: 'adminReissueCompanyAdminCredential',
+          query: ADMIN_REISSUE_CREDENTIAL_MUTATION,
+          variables: { input: { organizationId: forbiddenSentinel.id } },
+        },
+        {
+          label: 'adminBoundLevelTwoAdmins',
+          query: ADMIN_BOUND_LEVEL_TWO_ADMINS_QUERY,
+          variables: { pagination },
+        },
+      ];
+
+      for (const { label, query, variables } of s4ForbiddenCases) {
+        const { body } = await realGraphqlCall(env, query, variables, LEVEL_TWO_LOGIN);
+        const code = firstGraphqlErrorCode(body);
+
+        if (code !== null) {
+          expect(code, `${label} 应拒绝二级管理员`).toBe('FORBIDDEN');
+          continue;
+        }
+
+        const payload = (body as { data?: Record<string, unknown> }).data?.[label];
+
+        if (label === 'adminProvisionCompany') {
+          let confirmed: ProvisionedCompanyFacts | null = null;
+          let unreadableReason = '';
+
+          try {
+            confirmed = readProvisionedCompanyFacts(payload).facts;
+          } catch (parseError) {
+            unreadableReason =
+              parseError instanceof Error ? parseError.message : String(parseError);
+          }
+
+          if (confirmed !== null) {
+            unexpectedProvisioned.push(confirmed);
+
+            throw new Error(
+              `${label} 对二级管理员意外成功，已登记真实 id=${confirmed.organizationId}` +
+                ` code=${JSON.stringify(confirmed.organizationCode)}，将按精确主键清理；` +
+                `响应=${JSON.stringify(body)}`,
+            );
+          }
+
+          const diagnostic = readOrganizationDiagnosticsByName(forbiddenName);
+
+          throw new Error(
+            `${label} 对二级管理员意外成功，但${unreadableReason}；` +
+              '只做只读诊断并保留待确认：' +
+              `${diagnostic === '' ? '（无同名行）' : diagnostic}；响应=${JSON.stringify(body)}`,
+          );
+        }
+
+        throw new Error(
+          `${label} 对二级管理员意外成功，保留原失败并保留待确认（本入口不应产生写副作用）；` +
+            `响应=${JSON.stringify(body)}`,
+        );
+      }
+
       // 名称名单仍可用，且只返回 id / name
       const names = await realGraphqlCall(
         env,
@@ -824,9 +1159,10 @@ test.describe('公司档案（隔离库真实链路）', () => {
         run: () => {
           const diff = diffOrganizationSnapshot(beforeSnapshot, readOrganizationSnapshot());
           const knownSentinelIds = new Set(sentinels.map((sentinel) => sentinel.id));
-          const confirmedIds = new Set(
-            confirmedUnexpectedWrites.map((organization) => organization.id),
-          );
+          const confirmedIds = new Set([
+            ...confirmedUnexpectedWrites.map((organization) => organization.id),
+            ...unexpectedProvisioned.map((facts) => facts.organizationId),
+          ]);
           const pendingDiff: OrganizationSnapshotDiff = {
             changedRows: diff.changedRows.filter((row) => !knownSentinelIds.has(row.id)),
             missingRows: diff.missingRows.filter((row) => !knownSentinelIds.has(row.id)),
@@ -872,6 +1208,14 @@ test.describe('公司档案（隔离库真实链路）', () => {
         run: () => {
           for (const organization of confirmedUnexpectedWrites) {
             deleteRegisteredOrganization(organization);
+          }
+        },
+      },
+      {
+        label: '按开通响应返回的精确主键回收意外成功开通',
+        run: () => {
+          for (const facts of unexpectedProvisioned) {
+            cleanupProvisionedCompany(facts);
           }
         },
       },

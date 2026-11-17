@@ -14,6 +14,11 @@ export interface BasicLoginResult {
   accountId: number;
   roleFromHint: IdentityTypeEnum | null;
   accessGroup: IdentityTypeEnum[];
+  /**
+   * 当前账号的凭据代次（`base_user_account.credential_version`）。
+   * 供登录用例重建 access token payload 时写入，保证签发声明与数据库事实同源。
+   */
+  credentialVersion: number;
   account: MinimalAccountInfo;
   userInfo: MinimalUserInfo;
 }

@@ -129,5 +129,6 @@ Remove-Item Env:E2E_ALLOW_PHYSICAL_CLEANUP
 | `e2e-real/admin-user-management-real.spec.ts`   | `docs/plan/task08/visual/s4-*.png`                            | 全视口实现截图（`page.screenshot`）       | S4 检查轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据                                              |
 | `e2e-real/admin-s5-visual-real.spec.ts`         | `docs/plan/task08/visual/s5-*.png`                            | 全视口实现截图（`page.screenshot`）       | S5 检查轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据                                              |
 | `e2e-real/task02-b-review-visual-real.spec.ts`  | `docs/plan/task02/acceptance/B审查修复-20261118/visual/*.png` | 全视口实现截图（`page.screenshot`）       | 任务 02 · B 审查 R2 补证：候选改动保留在工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，并在 measurements JSON 中登记 HEAD、脏文件清单与 `git diff` 指纹 |
+| `e2e-real/admin-s4-credential-visual-real.spec.ts` | `docs/plan/task08/visual/s4-*.png`            | 全视口实现截图（`page.screenshot`）       | S4 执行轮预提交证据：工作区未提交，`captureStableViewport` 的干净工作区门禁不成立；截图前调用 `prepareStableViewport()`，仅作人工构图对照，不作为提交级最终证据 |
 
 以上例外截图前均调用 `prepareStableViewport()`；全视口最终证据不得以登记表例外替代（预提交阶段的实现截图须在提交后由 `captureStableViewport()` 重采替换）。

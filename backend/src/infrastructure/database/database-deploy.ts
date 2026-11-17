@@ -456,6 +456,12 @@ export function assertInitializationEmailConflicts(
   for (const entry of adminBootstrap?.accounts ?? []) {
     add(entry.loginEmail, `管理员 ${entry.loginName}`);
   }
+  for (const company of adminBootstrap?.defaultManagedCompanies ?? []) {
+    add(
+      company.account.loginEmail,
+      `二级管理员 ${company.account.loginName}（公司 ${company.organizationCode}）`,
+    );
+  }
   for (const entry of devAccounts?.customers ?? []) {
     add(entry.loginEmail, `开发客户 ${entry.loginName}`);
   }
@@ -1007,6 +1013,23 @@ async function runInit(
     logger.info(
       `管理员映射 ${item.loginName} → 等级 ${String(item.adminLevel)} / 公司 ${item.organizationCode}：${item.outcome}`,
     );
+    if (item.temporaryPasswordIssued === true) {
+      logger.info(
+        `管理员 ${item.loginName} 为本次新建账号，首次临时密码必须通过受控渠道单独交付，不得写入日志`,
+      );
+    }
+    if (item.bindingNote === 'REUSED_EXISTING_BINDING') {
+      logger.warn(
+        `管理员 ${item.loginName} 复用了公司 ${item.organizationCode} 已有的唯一合法绑定；` +
+          '配置登录名与历史账号不同，未改绑、未重置密码',
+      );
+    }
+    if (item.bindingNote === 'BOUND_ACCOUNT_NOT_ACTIVE') {
+      logger.warn(
+        `管理员 ${item.loginName} 已合法绑定公司 ${item.organizationCode} 但账号或资料非 ACTIVE；` +
+          '已沿用原账号标识且保持原状态，未新建第二个账号',
+      );
+    }
   }
   for (const item of initialized.devAccounts ?? []) {
     logger.info(

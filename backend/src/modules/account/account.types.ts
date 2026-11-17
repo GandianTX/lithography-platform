@@ -27,6 +27,8 @@ export interface AccountCredentialSnapshot {
    * `MUST_CHANGE_PASSWORD` 限制一致。
    */
   readonly mustChangePassword: boolean;
+  /** `base_user_account.credential_version`：凭据代次，用于永久撤销旧 access token */
+  readonly credentialVersion: number;
 }
 
 /**
@@ -58,6 +60,8 @@ export interface AccountLoginBootstrapSnapshot {
     readonly identityHint: string | null;
     readonly createdAt: Date;
     readonly updatedAt: Date;
+    /** `base_user_account.credential_version`：签发 access token 时写入声明 */
+    readonly credentialVersion: number;
   };
   readonly userInfo: {
     readonly id: number;
@@ -241,6 +245,26 @@ export interface AdminUserOwnershipFacts {
 }
 
 /**
+ * 二级管理员绑定判定所需的账号侧候选事实（S3 内部读模型）。
+ *
+ * 只承载 `evaluateAdminBinding()` 所需字段：完整登录名只供内部比较，任何对外输出
+ * 必须改用 `maskLoginName()` 的脱敏值；不含密码、哈希、Token 或身份摘要原文。
+ * 成员关系角色与有效性由组织侧查询提供，在本类型之外与账号事实合并。
+ */
+export interface AdminBindingCandidateFacts {
+  readonly accountId: number;
+  /** 完整登录名（空串兜底；对外必须脱敏） */
+  readonly loginName: string;
+  readonly nickname: string | null;
+  readonly adminLevel: number | null;
+  readonly accountStatus: AccountStatus;
+  readonly userState: UserState | null;
+  readonly roleConverged: boolean;
+  readonly role: IdentityTypeEnum | null;
+  readonly customerOrganizationId: number | null;
+}
+
+/**
  * 管理员用户列表查询入参：筛选与分页的**单一契约**，已由 Usecase 完成场景规范化
  * 与白名单收敛后传入 QueryService。
  *
@@ -386,6 +410,8 @@ export interface AccountSessionAuthoritySnapshot {
   readonly identityHint: string | null;
   /** `base_user_account.must_change_password`（账号行缺失时为 false） */
   readonly mustChangePassword: boolean;
+  /** `base_user_account.credential_version`（账号行缺失时为 0） */
+  readonly credentialVersion: number;
   /** `base_user_account.admin_level`（1 / 2 / null） */
   readonly adminLevel: number | null;
   readonly userInfo: {

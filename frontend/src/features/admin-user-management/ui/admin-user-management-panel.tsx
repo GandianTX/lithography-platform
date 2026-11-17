@@ -46,15 +46,22 @@ import {
   ADMIN_USER_ROW_READ_ONLY_REASON,
   ADMIN_USER_STATUS_FILTER_OPTIONS,
   ADMIN_USER_STATUS_LABELS,
+  canManageLevelTwoCredentials,
   canResetAdminUserPassword,
   canToggleAdminUserStatus,
   isAdminUserRowReadOnly,
   isAdminUserStatusWritable,
   resolveAdminUserScopeHint,
 } from '../application/admin-user-management-policy';
+import { useAdminLevelTwoCredential } from '../application/use-admin-level-two-credential';
 import { useAdminUserCommands } from '../application/use-admin-user-commands';
 import { useAdminUserList } from '../application/use-admin-user-list';
 
+import {
+  AdminLevelTwoCredentialModal,
+  type AdminLevelTwoResetInput,
+  type AdminLevelTwoResetOutcome,
+} from './admin-level-two-credential-modal';
 import { AdminUserResetPasswordModal, AdminUserStatusModal } from './admin-user-row-command-modals';
 
 const ROLE_TAG_COLORS: Record<AdminUserRole, string> = {
@@ -67,7 +74,7 @@ const ROLE_TAG_COLORS: Record<AdminUserRole, string> = {
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** 行级弹窗的会话标识：每个弹窗一条独立代次，以目标 accountId 为会话身份 */
-type AdminUserDialogKey = 'status' | 'reset-password';
+type AdminUserDialogKey = 'status' | 'reset-password' | 'level-two-credential';
 
 type AdminUserRowSetter = Dispatch<SetStateAction<AdminUserRow | null>>;
 
@@ -155,6 +162,8 @@ export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | 
   const [filterOpen, setFilterOpen] = useState(false);
   const [statusRow, setStatusRow] = useState<AdminUserRow | null>(null);
   const [resetPasswordRow, setResetPasswordRow] = useState<AdminUserRow | null>(null);
+  const levelTwoCredential = useAdminLevelTwoCredential();
+  const [levelTwoCredentialOpen, setLevelTwoCredentialOpen] = useState(false);
 
   // 主搜索防抖：输入即时回显，防抖到期才把草稿交给下一步的应用 effect
   useEffect(() => {
@@ -309,6 +318,58 @@ export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | 
     return { ok: false, reason: 'reset-failed', message: '' };
   };
 
+  const openLevelTwoCredential = () => {
+    dialogSession.advance('level-two-credential');
+    setLevelTwoCredentialOpen(true);
+  };
+
+  const closeLevelTwoCredential = () => {
+    dialogSession.advance('level-two-credential');
+    setLevelTwoCredentialOpen(false);
+    // 口令的唯一存放点：关闭即销毁，不留任何页面级残留
+    levelTwoCredential.clear();
+  };
+
+  /**
+   * 二级管理员凭据重置：成功且仍属当前会话才把本次口令交给展示态；
+   * 陈旧成功一律丢弃口令，只让弹窗回到选择步骤。
+   */
+  const submitLevelTwoReset = async (
+    input: AdminLevelTwoResetInput,
+  ): Promise<AdminLevelTwoResetOutcome> => {
+    const sessionSeq = dialogSession.capture('level-two-credential');
+    const execution = await commands.resetLevelTwoCredential({
+      adminAccountId: input.adminAccountId,
+      organizationId: input.organizationId,
+      reason: input.reason,
+    });
+
+    if (execution.kind === 'in-flight') {
+      return { ok: false, message: '' };
+    }
+
+    if (execution.kind === 'unhandled-error') {
+      return dialogSession.isCurrent('level-two-credential', sessionSeq)
+        ? { ok: false, message: execution.message }
+        : { ok: false, message: '' };
+    }
+
+    if (!execution.result.ok) {
+      return { ok: false, message: execution.result.message };
+    }
+
+    if (dialogSession.isCurrent('level-two-credential', sessionSeq)) {
+      levelTwoCredential.show({
+        ...execution.result.credential,
+        companyName: input.companyName,
+        reason: input.reason,
+      });
+      message.success('二级管理员临时密码已重置。');
+    }
+
+    return { ok: true };
+  };
+
   const columns: ColumnsType<AdminUserRow> = [
     {
       dataIndex: 'nickname',
@@ -444,6 +505,11 @@ export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | 
               筛选
             </ToolbarButton>
 
+            {/* 一级专用入口：二级与等级缺失不渲染（服务端仍独立拒绝越权调用） */}
+            {canManageLevelTwoCredentials(adminLevel) ? (
+              <Button onClick={openLevelTwoCredential}>二级管理员凭据</Button>
+            ) : null}
+
             {/* 展开区：主搜索之外的精确条件收在这里，收起时不渲染；
                 角色筛选只开放普通用户值域，与管理端读面一致 */}
             {filterOpen ? (
@@ -537,6 +603,16 @@ export function AdminUserManagementPanel({ adminLevel }: { adminLevel: number | 
         onCancel={() => closeRowDialog('reset-password', setResetPasswordRow)}
         onSubmit={submitPasswordReset}
       />
+
+      {canManageLevelTwoCredentials(adminLevel) ? (
+        <AdminLevelTwoCredentialModal
+          credential={levelTwoCredential.credential}
+          open={levelTwoCredentialOpen}
+          submitting={commands.isPending('reset-level-two-credential')}
+          onClose={closeLevelTwoCredential}
+          onSubmit={submitLevelTwoReset}
+        />
+      ) : null}
     </>
   );
 }

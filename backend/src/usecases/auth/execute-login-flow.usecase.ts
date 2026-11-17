@@ -139,7 +139,7 @@ export class ExecuteLoginFlowUsecase {
     accessToken: string;
     refreshToken: string;
   } {
-    const { userWithAccessGroup, userInfo } = userData;
+    const { userWithAccessGroup, userInfo, account } = userData;
 
     // 创建 JWT payload
     const jwtPayload = this.tokenHelper.createPayloadFromUser({
@@ -147,6 +147,7 @@ export class ExecuteLoginFlowUsecase {
       nickname: userInfo.nickname,
       loginEmail: userWithAccessGroup.loginEmail,
       accessGroup: userWithAccessGroup.accessGroup,
+      credentialVersion: account.credentialVersion,
     });
 
     // 生成 tokens，传入 audience 参数

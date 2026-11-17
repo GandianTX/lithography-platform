@@ -17,17 +17,23 @@ import { useCallback, useRef, useState } from 'react';
 import { isGraphQLIngressError } from '@/shared/graphql';
 
 import {
+  adminResetLevelTwoAdminCredential,
   adminResetUserPasswordToDefault,
   adminSetUserStatus,
 } from '../infrastructure/admin-user-adapter';
 
 import type {
+  AdminLevelTwoCredentialCommandResult,
   AdminUserCommandResult,
   AdminUserPasswordResetResult,
   AdminUserStatusFilter,
 } from './admin-user-management.types';
 
-export const ADMIN_USER_COMMAND_KEYS = ['status', 'reset-password'] as const;
+export const ADMIN_USER_COMMAND_KEYS = [
+  'status',
+  'reset-password',
+  'reset-level-two-credential',
+] as const;
 
 export type AdminUserCommandKey = (typeof ADMIN_USER_COMMAND_KEYS)[number];
 
@@ -122,10 +128,25 @@ export function useAdminUserCommands(reload: () => void) {
     [runReloadingCommand],
   );
 
+  /**
+   * 二级管理员凭据重置（一级专用）：成功后不刷新普通用户列表——
+   * 该动作只影响绑定管理员的凭据与强制改密标志，不在 `adminUsers` 读面内。
+   */
+  const resetLevelTwoCredential = useCallback(
+    (input: {
+      adminAccountId: number;
+      organizationId: number;
+      reason: string;
+    }): Promise<AdminUserCommandExecution<AdminLevelTwoCredentialCommandResult>> =>
+      runCommand('reset-level-two-credential', () => adminResetLevelTwoAdminCredential(input)),
+    [runCommand],
+  );
+
   const isPending = useCallback((key: AdminUserCommandKey) => pendingKeys.has(key), [pendingKeys]);
 
   return {
     isPending,
+    resetLevelTwoCredential,
     resetPasswordToDefault,
     setUserStatus,
   };

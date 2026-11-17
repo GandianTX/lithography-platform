@@ -21,6 +21,7 @@ describe('ValidateAccessTokenSessionUsecase', () => {
     identityHint: IdentityTypeEnum.ENGINEER,
     mustChangePassword: false,
     adminLevel: null,
+    credentialVersion: 0,
     userInfo: {
       userState: UserState.ACTIVE,
       accessGroup: [IdentityTypeEnum.ENGINEER],
@@ -364,5 +365,31 @@ describe('ValidateAccessTokenSessionUsecase', () => {
       engineerOrganizationId: 777,
       registrationOrganizationId: 501,
     });
+  });
+
+  it('未声明凭据代次的旧 Token 按 0 处理，可与库内代次 0 兼容', async () => {
+    mockSnapshot(snapshot({ credentialVersion: 0 }));
+
+    await expect(usecase.execute({ payload: payload() })).resolves.toBeDefined();
+  });
+
+  it('Token 与库内凭据代次一致时放行', async () => {
+    mockSnapshot(snapshot({ credentialVersion: 4 }));
+
+    await expect(
+      usecase.execute({ payload: payload({ credentialVersion: 4 }) }),
+    ).resolves.toBeDefined();
+  });
+
+  it('凭据代次不一致时旧 Token 永久失效（门禁 7）', async () => {
+    mockSnapshot(snapshot({ credentialVersion: 3 }));
+
+    await expect(
+      usecase.execute({ payload: payload({ credentialVersion: 2 }) }),
+    ).rejects.toMatchObject({ code: 'JWT_AUTHENTICATION_FAILED' });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ gate: 7, reason: 'CREDENTIAL_VERSION_MISMATCH' }),
+      expect.any(String),
+    );
   });
 });

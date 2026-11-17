@@ -1,6 +1,6 @@
 # S1 对象与字段清单（34 现有表 + 17 候选 + 全部目标设计行）
 
-> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、44 条迁移及正式校验契约为准，不依赖本地计划目录。
+> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、47 条迁移及正式校验契约为准，不依赖本地计划目录。
 
 > 来源：`数据库表设计说明-V1.1`。现有字段/约束来自各 Entity 与设计说明；目标字段逐行列出。**组合字段按一行展示但注明包含多列，逻辑/部署约束不计为新增列**。
 
@@ -37,6 +37,7 @@
 | ---------------------- | -------- | ------------------------------------------------------------- | ------ | -------- | --------------------------------- | ---------------------------------------- | ------------------------------------------------------------------ | --------------------------- |
 | `admin_level`          | tinyint  | 可空；仅管理员取1/2，非法不提权；新增：固定等级，不作为新角色 | 不存在 | **新增** | ADD COLUMN（先可空/默认，后收紧） | `src/modules/account/account.module.ts`… | 5 个：`src/modules/account/base/services/account.service.spec.ts`… | S2 结构已实现（待实库验证） |
 | `must_change_password` | boolean  | 非空，默认false；新增：默认密码重置后的业务限制               | 不存在 | **新增** | ADD COLUMN（先可空/默认，后收紧） | `src/modules/account/account.module.ts`… | 5 个：`src/modules/account/base/services/account.service.spec.ts`… | S2 结构已实现（待实库验证） |
+| `credential_version`   | int unsigned | 非空，默认0；S3：凭据代次，登录签发时写入 access token，补发/重置/改密/公司启停同事务递增，请求期比对使旧 Token 永久失效 | 不存在 | **新增** | ADD COLUMN（非空默认0，存量行自动取默认值） | `src/modules/account/base/services/account.service.ts`、`src/modules/account/../token.helper.ts`、`src/usecases/auth/validate-access-token-session.usecase.ts` | `validate-access-token-session.usecase.spec.ts`、`level-two-credential.usecases.spec.ts`、`change-my-password.usecase.spec.ts`、`update-admin-organization.usecase.spec.ts`、`test/13-admin-organization/level-two-credential.e2e-spec.ts` | S3 已实现（待实库 E2E 验证） |
 
 <details><summary>现有约束（Entity 声明，3 条）</summary>
 
@@ -1416,8 +1417,9 @@
 #### 4.17 `management_audit_event`
 
 - 落位：云；建表建议：独立建表（待用户确认）；删除策略：默认 RESTRICT。
-- 需求：拟新增业务记录；依据R089、R092。仅三类管理操作，复用对应业务实际结果，非独立审计平台。
+- 需求：拟新增业务记录；依据R089、R092。仅管理操作（S2 三类；S3 增加凭据补发/重置两类），复用对应业务实际结果，非独立审计平台。
 - **D3 结构对齐（2026-11-09，第 42 条迁移）**：实现字段名与设计稿等价映射为 `event_id`←`id`、`actor_admin_level`←`actor_level_snapshot`、`target_type`←`resource_type`、`target_id`←`resource_id`、`detail`←`reason`、`created_at`←`occurred_at`；`before_version`/`after_version` 未实现，不重复加列。第 42 条只收紧 `operation` CHECK 为三类已确认操作；旧审计类型不自动映射，存在时迁移失败关闭。
+- **S3 扩展（2026-11-17，第 46 条迁移）**：`chk_management_audit_operation` 在原三类之外增加 `REISSUE_LEVEL2_CREDENTIAL` 与 `RESET_LEVEL2_CREDENTIAL`，仍为固定枚举、不做自由文本；两类操作由管理员凭据补发/重置在同一事务内写入，`detail` 仅允许 `{reason?, loginNameMasked?}`（重置必填 `reason`，补发无 `reason`），不写密码、哈希、Token 或任何派生值。审计插入失败时业务事务整体回滚，不返回成功。
 
 | 字段                | 类型         | 约束                                                                        | 用途                                                                                  | 迁移方式     | 消费者                | 测试            | 状态                        |
 | ------------------- | ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------ | --------------------- | --------------- | --------------------------- |
@@ -1425,7 +1427,7 @@
 | `actor_account_id`  | int          | 非空FK账号                                                                  | 实际发起三类管理操作的管理员；平台代写不等于自动任务无操作者                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
 | `actor_admin_level` | tinyint      | 非空，仅1或2                                                                | 实际操作时等级；查询权限仍读取当前可信身份，不信任前端                                | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
 | `organization_id`   | int          | 可空FK目标公司；未知归属记录仅1级可查                                       | 有可信公司时保存实际目标公司；2级仅organization_id=本人可信公司，不因NULL获得全局记录 | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
-| `operation`         | varchar(32)  | 仅ADMIN_DELETE_DOCUMENT／CORRECT_DOCUMENT_OWNERSHIP／RESTORE_LOCAL_BUSINESS | 管理员删除正式资料、更正上传者与公司、恢复本机业务                                    | 第42条收紧   | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | 第42条已实现（待实库验证）  |
+| `operation`         | varchar(32)  | 仅五类：ADMIN_DELETE_DOCUMENT／CORRECT_DOCUMENT_OWNERSHIP／RESTORE_LOCAL_BUSINESS／REISSUE_LEVEL2_CREDENTIAL／RESET_LEVEL2_CREDENTIAL | 管理员删除正式资料、更正上传者与公司、恢复本机业务、补发或重置二级管理员凭据            | 第42条收紧；第46条扩两值 | 后续执行器 + 清理入口 | S2/S3 定向 SQL/e2e | 第46条已实现（待实库验证）  |
 | `target_type`       | varchar(32)  | 非空                                                                        | 目标类型（等价设计 resource_type）                                                    | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
 | `target_id`         | varchar(64)  | 非空                                                                        | 目标编号（等价设计 resource_id）                                                      | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |
 | `result`            | varchar(16)  | 非空                                                                        | 阶段真实结果                                                                          | CREATE TABLE | 后续执行器 + 清理入口 | S2 定向 SQL/e2e | S2 结构已实现（待实库验证） |

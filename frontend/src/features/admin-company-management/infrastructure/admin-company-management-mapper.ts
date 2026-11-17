@@ -7,14 +7,21 @@
  */
 
 import type {
+  AdminCompanyAdminBinding,
+  AdminCompanyAdminBindingStatus,
+  AdminCompanyCredentialResult,
   AdminCompanyListPage,
   AdminCompanyNameOption,
+  AdminCompanyProvisionResult,
   AdminCompanyRow,
   AdminOrganizationKind,
   AdminOrganizationStatus,
 } from '../application/admin-company-management.types';
 
 import type {
+  AdminCompanyAdminBindingDto,
+  AdminCompanyProvisioningResultDto,
+  AdminLevelTwoCredentialResultDto,
   AdminOrganizationDto,
   AdminOrganizationNameDto,
   AdminOrganizationNamePageDto,
@@ -23,6 +30,12 @@ import type {
 
 const KNOWN_STATUSES: readonly AdminOrganizationStatus[] = ['ACTIVE', 'DISABLED'];
 const KNOWN_KINDS: readonly AdminOrganizationKind[] = ['CLIENT', 'PEER'];
+const KNOWN_BINDING_STATUSES: readonly AdminCompanyAdminBindingStatus[] = [
+  'BOUND',
+  'UNCONFIGURED',
+  'CONFLICT',
+  'COMPANY_DISABLED',
+];
 
 /** 可选文本归一：空串、纯空白与非字符串一律归 null，不让脏值流入内部模型 */
 export function toOptionalText(value: unknown): string | null {
@@ -94,5 +107,74 @@ export function mapAdminOrganizationNamePageDtoToListPage(
     page: dto.page,
     pageSize: dto.pageSize,
     total: dto.total,
+  };
+}
+
+function toKnownBindingStatus(value: unknown): AdminCompanyAdminBindingStatus {
+  if (typeof value === 'string' && (KNOWN_BINDING_STATUSES as readonly string[]).includes(value)) {
+    return value as AdminCompanyAdminBindingStatus;
+  }
+
+  throw new Error('公司绑定数据返回了无法识别的状态。');
+}
+
+/** 绑定事实：只映射安全字段，`boundLoginNameMasked` 之外的登录名一律不进入内部模型 */
+export function mapAdminCompanyAdminBindingDto(
+  dto: AdminCompanyAdminBindingDto,
+): AdminCompanyAdminBinding {
+  return {
+    organizationId: dto.organizationId,
+    organizationCode: dto.organizationCode,
+    companyName: dto.companyName,
+    isManagedCompany: dto.isManagedCompany,
+    companyStatus: toKnownStatus(dto.companyStatus),
+    status: toKnownBindingStatus(dto.status),
+    reason: toOptionalText(dto.reason),
+    boundAccountId: typeof dto.boundAccountId === 'number' ? dto.boundAccountId : null,
+    boundLoginNameMasked: toOptionalText(dto.boundLoginNameMasked),
+    candidateCount: typeof dto.candidateCount === 'number' ? dto.candidateCount : 0,
+    accountDisabled: dto.accountDisabled === true,
+  };
+}
+
+/** 新增公司结果：回放时 `temporaryPassword` 必须为空，不因外部脏值把口令带出 */
+export function mapAdminCompanyProvisioningResultDto(
+  dto: AdminCompanyProvisioningResultDto,
+): Extract<AdminCompanyProvisionResult, { ok: true }> {
+  return {
+    ok: true,
+    organization: mapAdminOrganizationDtoToRow(dto.organization),
+    provisionedAdmin: {
+      accountId: dto.provisionedAdmin.accountId,
+      loginName: dto.provisionedAdmin.loginName,
+      nickname: dto.provisionedAdmin.nickname,
+      mustChangePassword: dto.provisionedAdmin.mustChangePassword,
+    },
+    submission: {
+      submissionId: dto.submission?.submissionId ?? null,
+      replayed: dto.submission?.replayed === true,
+    },
+    temporaryPassword: toOptionalText(dto.temporaryPassword),
+  };
+}
+
+/** 补发 / 重置结果：成功响应必须带可用临时密码，缺失按契约破坏失败关闭 */
+export function mapAdminLevelTwoCredentialResultDto(
+  dto: AdminLevelTwoCredentialResultDto,
+): Extract<AdminCompanyCredentialResult, { ok: true }> {
+  const temporaryPassword = toOptionalText(dto.temporaryPassword);
+
+  if (temporaryPassword === null) {
+    throw new Error('凭据结果缺少临时密码。');
+  }
+
+  return {
+    ok: true,
+    organizationId: dto.organizationId,
+    adminAccountId: dto.adminAccountId,
+    loginName: dto.loginName,
+    nickname: toOptionalText(dto.nickname),
+    mustChangePassword: dto.mustChangePassword === true,
+    temporaryPassword,
   };
 }

@@ -68,3 +68,52 @@ export type AdminUserCommandResult =
 export type AdminUserPasswordResetResult =
   | { ok: true; notice: string }
   | { ok: false; reason: AdminUserCommandFailureReason; message: string };
+
+/** 已绑定二级管理员（一级专用窄查询的 feature 内部模型；无凭据字段） */
+export type AdminBoundLevelTwoAdmin = {
+  accountDisabled: boolean;
+  accountId: number;
+  companyName: string;
+  companyStatus: string;
+  loginName: string;
+  nickname: string | null;
+  organizationCode: string;
+  organizationId: number;
+};
+
+export type AdminBoundLevelTwoAdminListQuery = {
+  keyword: string | null;
+  page: number;
+  pageSize: number;
+};
+
+export type AdminBoundLevelTwoAdminPage = {
+  items: AdminBoundLevelTwoAdmin[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+/**
+ * 二级管理员凭据结果（成功才有的模型）。
+ * `temporaryPassword` 只允许经组件 state 交给当次成功弹窗，不落任何持久化或缓存。
+ */
+export type AdminLevelTwoCredentialResult = {
+  adminAccountId: number;
+  loginName: string;
+  mustChangePassword: boolean;
+  nickname: string | null;
+  organizationId: number;
+  temporaryPassword: string;
+};
+
+/** 凭据弹窗的展示快照：额外带上目标公司名与本次重置原因，关闭即销毁 */
+export type AdminLevelTwoCredentialView = AdminLevelTwoCredentialResult & {
+  companyName: string;
+  reason: string;
+};
+
+/** 二级管理员凭据重置命令结果：成功携带本次新口令，失败沿用统一业务拒绝原因 */
+export type AdminLevelTwoCredentialCommandResult =
+  | { ok: true; credential: AdminLevelTwoCredentialResult }
+  | { ok: false; reason: AdminUserCommandFailureReason; message: string };

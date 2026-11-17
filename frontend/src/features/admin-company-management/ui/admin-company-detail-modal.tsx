@@ -14,13 +14,19 @@ import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { LoadingState } from '@/shared/ui/loading-state';
 
 import {
+  ADMIN_COMPANY_BINDING_STATUS_COLORS,
+  ADMIN_COMPANY_BINDING_STATUS_LABELS,
   ADMIN_COMPANY_KIND_LABELS,
   ADMIN_COMPANY_STATUS_LABELS,
+  canReissueCompanyAdminCredential,
 } from '../application/admin-company-management.policy';
+import type { AdminCompanyBindingEntry } from '../application/use-admin-company-admin-bindings';
 import type { AdminCompanyDetailState } from '../application/use-admin-company-detail';
 
 type AdminCompanyDetailModalProps = {
+  binding?: AdminCompanyBindingEntry | null;
   onClose: () => void;
+  onReissue?: () => void;
   onRetry: () => void;
   state: AdminCompanyDetailState;
 };
@@ -29,8 +35,50 @@ function renderText(value: string | null): string {
   return value ?? '—';
 }
 
-export function AdminCompanyDetailModal({ onClose, onRetry, state }: AdminCompanyDetailModalProps) {
+/**
+ * 绑定状态展示：未受管公司不进入绑定判定，直接说明「不适用」；
+ * 受管但仍在读取时显示加载中，避免把「尚未返回」误读成「未配置」。
+ */
+function renderBinding(
+  isManagedCompany: boolean,
+  binding: AdminCompanyBindingEntry | null | undefined,
+) {
+  if (!isManagedCompany) {
+    return <span className="text-text-tertiary">不受管</span>;
+  }
+
+  if (!binding || binding.status === 'loading') {
+    return <span className="text-text-tertiary">正在读取绑定状态…</span>;
+  }
+
+  if (binding.status === 'failed') {
+    return <span className="text-text-tertiary">{binding.message}</span>;
+  }
+
+  const { binding: fact } = binding;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Tag color={ADMIN_COMPANY_BINDING_STATUS_COLORS[fact.status]}>
+        {ADMIN_COMPANY_BINDING_STATUS_LABELS[fact.status]}
+      </Tag>
+      <span>{renderText(fact.boundLoginNameMasked)}</span>
+      {fact.accountDisabled ? <Tag color="default">账号停用</Tag> : null}
+    </div>
+  );
+}
+
+export function AdminCompanyDetailModal({
+  binding,
+  onClose,
+  onReissue,
+  onRetry,
+  state,
+}: AdminCompanyDetailModalProps) {
   const company = state.status === 'ready' ? state.organization : null;
+  const bindingFact = binding?.status === 'ready' ? binding.binding : null;
+  const showReissue =
+    company !== null && onReissue !== undefined && canReissueCompanyAdminCredential(bindingFact);
 
   return (
     <Modal
@@ -82,6 +130,9 @@ export function AdminCompanyDetailModal({ onClose, onRetry, state }: AdminCompan
           <Descriptions.Item label="管理名单">
             {company.isManagedCompany ? '受管公司' : '非受管（客户手填）'}
           </Descriptions.Item>
+          <Descriptions.Item label="二级管理员账号">
+            {renderBinding(company.isManagedCompany, binding)}
+          </Descriptions.Item>
           <Descriptions.Item label="创建时间">
             {formatDateTimeText(company.createdAt)}
           </Descriptions.Item>
@@ -89,6 +140,12 @@ export function AdminCompanyDetailModal({ onClose, onRetry, state }: AdminCompan
             {formatDateTimeText(company.updatedAt)}
           </Descriptions.Item>
         </Descriptions>
+      ) : null}
+
+      {showReissue ? (
+        <div className="mt-4 flex justify-end">
+          <Button onClick={onReissue}>补发临时密码</Button>
+        </div>
       ) : null}
     </Modal>
   );

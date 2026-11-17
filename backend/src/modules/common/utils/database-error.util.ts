@@ -19,3 +19,29 @@ export function isDuplicateKeyError(error: unknown, depth = 0): boolean {
     isDuplicateKeyError(candidate.cause, depth + 1)
   );
 }
+
+/**
+ * 读取唯一键冲突命中的索引名（如 `uk_provisioning_purpose_actor_key`）。
+ *
+ * MySQL 驱动文本形如 `Duplicate entry '...' for key 'table.index'`；
+ * 驱动版本差异可能存在裸索引名与 `table.index` 两种形态，调用方需同时兼容。
+ * 不命中（非重复键、文本不含索引名或已超过包装层数）时返回 `null`。
+ */
+export function findDuplicateKeyName(error: unknown, depth = 0): string | null {
+  if (typeof error !== 'object' || error === null || depth > 3) return null;
+  const candidate = error as {
+    message?: unknown;
+    driverError?: unknown;
+    cause?: unknown;
+  };
+
+  if (typeof candidate.message === 'string') {
+    const matched = /for key '([^']+)'/.exec(candidate.message);
+    if (matched !== null) return matched[1];
+  }
+
+  return (
+    findDuplicateKeyName(candidate.driverError, depth + 1) ??
+    findDuplicateKeyName(candidate.cause, depth + 1)
+  );
+}

@@ -68,7 +68,10 @@ export type OwnedResourceCategory =
   | 'recordPackageItem'
   | 'backupAsset'
   | 'backupRestoreRun'
-  | 'managementAuditEvent';
+  | 'managementAuditEvent'
+  // 一级管理员新增公司开通提交台账：三个外键（操作者/公司/管理员账号）均 RESTRICT，
+  // 必须先于组织与账号删除；归属证明 = 公司 + 管理员账号 + 用途 + 终态。
+  | 'provisioningRequest';
 
 type OwnedIdKey = Exclude<keyof OwnedResourceLedger, 'facts'>;
 
@@ -107,6 +110,7 @@ const LEDGER_KEY_BY_CATEGORY: Record<OwnedResourceCategory, OwnedIdKey> = {
   backupAsset: 'backupAssetIds',
   backupRestoreRun: 'backupRestoreRunIds',
   managementAuditEvent: 'managementAuditEventIds',
+  provisioningRequest: 'provisioningRequestIds',
 };
 
 /**
@@ -391,6 +395,20 @@ export interface OwnedManagementAuditEventFacts {
   readonly result: string;
 }
 
+/**
+ * admin_organization_provisioning_request：开通提交台账。
+ *
+ * 归属证明 = 本次提交实际落库的公司与二级管理员账号（两列创建即定）+ 用途 + 终态；
+ * 提交标识与输入指纹属于敏感恢复元数据，刻意不进入台账事实。
+ * PENDING 行两列均为 NULL，不可能由本类别接管（登记要求非空公司/账号）。
+ */
+export interface OwnedProvisioningRequestFacts {
+  readonly purpose: string;
+  readonly organizationId: number;
+  readonly adminAccountId: number;
+  readonly state: string;
+}
+
 /** 登记时必须携带预期事实的类别：全部类别均为事实承载（R02），无豁免。 */
 export interface OwnedFactsByCategory {
   organization: OwnedOrganizationFacts;
@@ -420,6 +438,7 @@ export interface OwnedFactsByCategory {
   backupAsset: OwnedBackupAssetFacts;
   backupRestoreRun: OwnedBackupRestoreRunFacts;
   managementAuditEvent: OwnedManagementAuditEventFacts;
+  provisioningRequest: OwnedProvisioningRequestFacts;
 }
 
 export type FactBearingCategory = keyof OwnedFactsByCategory;
@@ -477,6 +496,11 @@ export interface OwnedResourceLedger {
   backupAssetIds: Array<number | string>;
   backupRestoreRunIds: Array<number | string>;
   managementAuditEventIds: Array<number | string>;
+  /**
+   * 开通提交台账：登记 `submissionId`（提交行真实主键）。
+   * 该行对公司与管理员账号均为 FK RESTRICT，必须先于二者删除。
+   */
+  provisioningRequestIds: number[];
   /**
    * 按类别登记的最小预期事实；每个已登记 ID 必须有对应事实，
    * 缺失即失败关闭，绝不回退为“只按 ID 删除”。
@@ -558,6 +582,7 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
   backupAssetIds: [],
   backupRestoreRunIds: [],
   managementAuditEventIds: [],
+  provisioningRequestIds: [],
   facts: {
     organization: new Map(),
     account: new Map(),
@@ -586,6 +611,7 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
     backupAsset: new Map(),
     backupRestoreRun: new Map(),
     managementAuditEvent: new Map(),
+    provisioningRequest: new Map(),
   },
 });
 
@@ -822,6 +848,7 @@ interface CleanupPlan {
   backupAssetIds: Array<number | string>;
   backupRestoreRunIds: Array<number | string>;
   managementAuditEventIds: Array<number | string>;
+  provisioningRequestIds: number[];
 }
 
 const emptyPlan = (): CleanupPlan => ({
@@ -859,6 +886,7 @@ const emptyPlan = (): CleanupPlan => ({
   backupAssetIds: [],
   backupRestoreRunIds: [],
   managementAuditEventIds: [],
+  provisioningRequestIds: [],
 });
 
 const hasAnyResource = (plan: CleanupPlan): boolean =>
@@ -1147,6 +1175,14 @@ interface ManagementAuditEventRow {
   target_type: string;
   target_id: string;
   result: string;
+}
+
+interface ProvisioningRequestRow {
+  id: number;
+  purpose: string;
+  organization_id: unknown;
+  admin_account_id: unknown;
+  state: string;
 }
 
 /**
@@ -1682,6 +1718,7 @@ const FACT_BEARING_CATEGORIES: readonly FactBearingCategory[] = [
   'backupAsset',
   'backupRestoreRun',
   'managementAuditEvent',
+  'provisioningRequest',
 ];
 
 /**
@@ -2546,6 +2583,34 @@ const verifyOwnedExpectations = async (
       if (mismatches.length > 0) drift('managementAuditEvent', id, mismatches);
     }
   }
+
+  if (owned.facts.provisioningRequest.size > 0) {
+    const ids = [...owned.facts.provisioningRequest.keys()];
+    const rows: ProvisioningRequestRow[] = await manager.query(
+      `SELECT id, purpose, organization_id, admin_account_id, state
+         FROM admin_organization_provisioning_request
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.provisioningRequest) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.purpose !== expected.purpose) mismatches.push('purpose');
+      if (!nullableNumberEquals(row.organization_id, expected.organizationId)) {
+        mismatches.push('organization_id');
+      }
+      if (!nullableNumberEquals(row.admin_account_id, expected.adminAccountId)) {
+        mismatches.push('admin_account_id');
+      }
+      if (row.state !== expected.state) mismatches.push('state');
+      if (mismatches.length > 0) drift('provisioningRequest', id, mismatches);
+    }
+  }
 };
 
 /**
@@ -3134,6 +3199,60 @@ const collectOwnedGraph = async (
 
   await collectSpecialOwnedGraph(manager, plan, helper);
   await collectV13OwnedGraph(manager, plan, helper);
+
+  // 开通提交台账：组织与管理员账号两个父列都必须落在本轮范围；
+  // 两个父行都在范围内也不构成删除授权，命中行必须已按事实登记（R01）。
+  if (orgIds.length > 0 || accountIds.length > 0) {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (orgIds.length > 0) {
+      conditions.push(`organization_id IN (${inClause(orgIds)})`);
+      params.push(...orgIds);
+    }
+    if (accountIds.length > 0) {
+      conditions.push(`admin_account_id IN (${inClause(accountIds)})`);
+      params.push(...accountIds);
+    }
+    const rows: ProvisioningRequestRow[] = await manager.query(
+      `SELECT id, purpose, organization_id, admin_account_id, state
+         FROM admin_organization_provisioning_request
+        WHERE ${conditions.join(' OR ')}
+        FOR UPDATE`,
+      params,
+    );
+    for (const row of rows) {
+      const id = asNumber(row.id);
+      const organizationId =
+        row.organization_id === null || row.organization_id === undefined
+          ? null
+          : asNumber(row.organization_id);
+      const adminAccountId =
+        row.admin_account_id === null || row.admin_account_id === undefined
+          ? null
+          : asNumber(row.admin_account_id);
+      if (
+        organizationId === null ||
+        !orgIds.includes(organizationId) ||
+        adminAccountId === null ||
+        !accountIds.includes(adminAccountId)
+      ) {
+        conflict(
+          helper,
+          'provisioningRequest',
+          String(id),
+          '提交行指向本轮范围外的组织或管理员账号，拒绝删除',
+        );
+      }
+      if (!plan.provisioningRequestIds.includes(id)) {
+        conflict(
+          helper,
+          'provisioningRequest',
+          String(id),
+          '提交行在本轮范围但未登记归属证据，关联关系不是删除授权，拒绝删除',
+        );
+      }
+    }
+  }
 
   if (orgIds.length > 0 || accountIds.length > 0 || membershipAccountIds.length > 0) {
     const conditions: string[] = [];
@@ -3895,6 +4014,13 @@ const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Pr
     'engineer_registration_application',
     plan.engineerRegistrationApplicationIds,
   );
+  // 开通提交行对操作者/公司/管理员账号均为 FK RESTRICT，
+  // 必须先于下面的成员关系、组织与账号删除。
+  await deleteByIds(
+    manager,
+    'admin_organization_provisioning_request',
+    plan.provisioningRequestIds,
+  );
   await deleteByIds(manager, 'organization_membership', plan.membershipIds);
   // base_user_info.customer_organization_id 对 organization 为 FK RESTRICT：
   // 客户账号资料必须先于组织删除，否则本轮组织的删除会因客户归属被拒。
@@ -4028,6 +4154,7 @@ const buildOwnedCleanupPlan = (
   plan.backupAssetIds = toMixedIdList(owned.backupAssetIds);
   plan.backupRestoreRunIds = toMixedIdList(owned.backupRestoreRunIds);
   plan.managementAuditEventIds = toMixedIdList(owned.managementAuditEventIds);
+  plan.provisioningRequestIds = toIdList(owned.provisioningRequestIds);
   if (retained !== undefined) {
     // 套件级保留集合：冲突现场及其必要父资源即使仍在台账中，也禁止再次认领删除。
     // 过滤发生在事务与任何 DELETE 之前；保留 ID 的事实核验仍由 verifyOwnedExpectations 只读完成。

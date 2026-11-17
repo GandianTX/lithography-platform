@@ -138,6 +138,7 @@ describe('ChangeMyPasswordUsecase', () => {
         passwordHash: expect.any(String),
         transactionContext: harness.txContext,
         mustChangePassword: false,
+        incrementCredentialVersion: true,
       });
       expect(harness.isCommitted()).toBe(true);
     });
@@ -219,6 +220,7 @@ describe('ChangeMyPasswordUsecase', () => {
         loginPassword: STORED_HASH,
         createdAt: DB_CREATED_AT,
         mustChangePassword: true,
+        credentialVersion: 0,
       });
     };
 
@@ -258,6 +260,7 @@ describe('ChangeMyPasswordUsecase', () => {
         passwordHash: AccountService.hashPasswordWithTimestamp(NEW_PASSWORD, DB_CREATED_AT),
         transactionContext: harness.txContext,
         mustChangePassword: false,
+        incrementCredentialVersion: true,
       });
       expect(harness.isCommitted()).toBe(true);
     });
@@ -295,6 +298,7 @@ describe('ChangeMyPasswordUsecase', () => {
         loginPassword: AccountService.hashPasswordWithTimestamp(legacyPassword, DB_CREATED_AT),
         createdAt: DB_CREATED_AT,
         mustChangePassword: false,
+        credentialVersion: 0,
       });
 
       await expect(execute(legacyPassword, NEW_PASSWORD)).resolves.toMatchObject({
@@ -455,6 +459,7 @@ describe('ChangeMyPasswordUsecase', () => {
         loginPassword: AccountService.hashPasswordWithTimestamp(CURRENT_PASSWORD, OTHER_CREATED_AT),
         createdAt: OTHER_CREATED_AT,
         mustChangePassword: false,
+        credentialVersion: 0,
       });
 
       await execute(CURRENT_PASSWORD, NEW_PASSWORD);

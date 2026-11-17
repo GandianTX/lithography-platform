@@ -158,6 +158,91 @@ export class OrganizationMembershipQueryService {
   }
 
   /**
+   * 指定组织的全部成员关系（不按状态过滤，由调用方判定成员是否有效）。
+   *
+   * 供绑定判定与凭据写入口使用：`memberRole` / 成员状态都是判定输入，因此不能在
+   * 查询层提前丢弃；按成员关系主键升序稳定输出。`forUpdate=true` 时取
+   * `pessimistic_write`（写用例在持有公司行锁后调用，锁序 organization → account →
+   * membership）。
+   */
+  async listMembershipsByOrganization(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+    forUpdate?: boolean;
+  }): Promise<
+    Array<{ membershipId: number; accountId: number; memberRole: string; status: string }>
+  > {
+    const membershipRepository = this.getMembershipRepository(params.transactionContext);
+    const memberships = await membershipRepository.find({
+      where: { organizationId: params.organizationId },
+      order: { id: 'ASC' },
+      ...(params.forUpdate === true ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+    });
+    return memberships.map((item) => ({
+      membershipId: item.id,
+      accountId: item.accountId,
+      memberRole: item.memberRole,
+      status: item.status,
+    }));
+  }
+
+  /**
+   * 批量读取多个组织的 ACTIVE 成员关系（一次 `IN` 查询，按成员关系主键升序）。
+   *
+   * 供「已绑定二级管理员」列表在不做 N+1 的前提下装配绑定判定输入；只返回
+   * 判定所需的账号、成员角色与成员状态，不返回组织联系方式或账号资料。
+   * 不按组织状态过滤：是否受管、是否停用由调用方按公司事实裁决。
+   */
+  async listActiveMembershipsByOrganizationIds(params: {
+    organizationIds: ReadonlyArray<number>;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<Map<number, Array<{ accountId: number; memberRole: string; status: string }>>> {
+    const organizationIds = [
+      ...new Set(params.organizationIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (organizationIds.length === 0) {
+      return new Map();
+    }
+    const membershipRepository = this.getMembershipRepository(params.transactionContext);
+    const memberships = await membershipRepository.find({
+      where: { organizationId: In(organizationIds), status: 'ACTIVE' },
+      order: { id: 'ASC' },
+    });
+    const grouped = new Map<
+      number,
+      Array<{ accountId: number; memberRole: string; status: string }>
+    >();
+    for (const item of memberships) {
+      const list = grouped.get(item.organizationId) ?? [];
+      list.push({ accountId: item.accountId, memberRole: item.memberRole, status: item.status });
+      grouped.set(item.organizationId, list);
+    }
+    return grouped;
+  }
+
+  /**
+   * 指定组织内全部有效成员关系的账号 ID 列表（成员 ACTIVE，去重，按成员关系主键升序）。
+   *
+   * 刻意**不**按组织状态过滤：调用方已在事务内持有公司行锁并刚刚变更其状态，
+   * 停用后组织行即为非 ACTIVE，若在此过滤会漏掉需要撤销会话的成员。快照撤销以
+   * 「变更前仍处于 ACTIVE 的成员关系」为准，组织状态由调用方裁决。
+   *
+   * 是否只撤销管理类成员由调用方用账号侧事实（`admin_level`）再筛，本服务不跨域
+   * 读取账号表。
+   */
+  async listActiveMembershipAccountIdsByOrganization(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<number[]> {
+    const membershipRepository = this.getMembershipRepository(params.transactionContext);
+    const memberships = await membershipRepository.find({
+      where: { organizationId: params.organizationId, status: 'ACTIVE' },
+      order: { id: 'ASC' },
+    });
+    return Array.from(new Set(memberships.map((item) => item.accountId)));
+  }
+
+  /**
    * 批量装配组织事实，仅保留组织仍为 ACTIVE 的成员关系（单次 IN 查询，避免逐行读取）。
    */
   private async attachActiveOrganizations(

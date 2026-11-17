@@ -99,9 +99,11 @@ const CHANGE_MY_PASSWORD_WARN_ERROR_CODES: ReadonlyArray<string> = [
  * 并转译为「当前密码不正确」：无法通过预处理的输入形态不可能验证成功，语义等价且不泄露
  * 密码构成信息。normalize 层的非空断言先行拦截空值，本拦截是首尾空白形态的兜底。
  *
- * Token 语义：旧密码提交成功后立即不能再登录（哈希已被覆盖），已签发 Access Token 按
- * `JWT_EXPIRES_IN` 自然过期；本用例不新增 Token 黑名单、tokenVersion、Refresh Token 或
- * 服务端 Session 撤销（刻意不做）。REPEATABLE READ 下已建立的登录读快照
+ * Token 语义：旧密码提交成功后立即不能再登录（哈希已被覆盖），且同一 UPDATE 递增
+ * `credential_version`，变更前签发的 Access Token 在每次受保护请求复核时因代次不匹配
+ * 被永久拒绝（与补发 / 重置 / 公司启停共用同一撤销事实）。本用例不新增 Token 黑名单、
+ * tokenVersion、Refresh Token 或服务端 Session；仓库也没有 refresh/续签消费者，因此
+ * 不存在用 refresh 复活旧会话的入口。REPEATABLE READ 下已建立的登录读快照
  * 可能在极短窗口内以旧密码通过验证，属快照隔离固有语义，不经本用例消除。
  *
  * 依赖方向：事务边界由本用例经 `TransactionRunner` 持有；只调用 modules 细粒度方法与
@@ -250,6 +252,8 @@ export class ChangeMyPasswordUsecase {
         // 「必须改密」是管理员对下次登录的要求；用户完成改密后必须在同一 UPDATE 内清除，
         // 否则重新登录仍会被判为受限会话
         mustChangePassword: false,
+        // 凭据变更必须撤销旧 access token：同一 UPDATE 递增凭据代次
+        incrementCredentialVersion: true,
       });
     } catch (error) {
       logAdminUserWriteFailure({

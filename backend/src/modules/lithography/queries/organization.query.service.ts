@@ -43,6 +43,38 @@ export class OrganizationQueryService {
   ) {}
 
   /**
+   * 一级维护名单（受管公司）的窄引用列表，供「已绑定二级管理员」在线列表使用。
+   *
+   * 只返回定位与绑定判定所需字段（主键、编号、名称、状态），不返回联系方式或成员。
+   * 按主键升序稳定输出；读取 `limit + 1` 行用于显式检测超限，`overflow=true` 时调用方
+   * 必须失败关闭而不是静默截断。
+   */
+  async listManagedCompanyRefs(params: {
+    limit: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<{
+    items: Array<{ id: number; organizationCode: string; name: string; status: string }>;
+    overflow: boolean;
+  }> {
+    const repository = this.getRepository(params.transactionContext);
+    const rows = await repository.find({
+      where: { isManagedCompany: true },
+      select: { id: true, organizationCode: true, name: true, status: true },
+      order: { id: 'ASC' },
+      take: params.limit + 1,
+    });
+    return {
+      items: rows.slice(0, params.limit).map((row) => ({
+        id: row.id,
+        organizationCode: row.organizationCode,
+        name: row.name,
+        status: row.status,
+      })),
+      overflow: rows.length > params.limit,
+    };
+  }
+
+  /**
    * 兼容入口：全部 `ACTIVE` 组织（按名称、主键稳定排序，不分页、不区分受管资格）。
    *
    * 仅服务主线既有契约的 `registrationOrganizations { id name }`（小程序注册、

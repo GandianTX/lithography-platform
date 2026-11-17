@@ -82,6 +82,12 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
   } | null = null;
 
   type GqlError = { message: string; extensions?: { code?: string } };
+  type ProvisionedAdmin = {
+    accountId: number;
+    loginName: string;
+    nickname: string;
+    mustChangePassword: boolean;
+  };
   type AdminOrganization = {
     id: number;
     organizationCode: string;
@@ -96,6 +102,7 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     isManagedCompany: boolean;
     kind: string;
     status: string;
+    provisionedAdmin?: ProvisionedAdmin | null;
   };
   type MutationBody = { data?: Record<string, AdminOrganization>; errors?: GqlError[] };
   type ListBody = {
@@ -134,6 +141,12 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
   const ADMIN_ORGANIZATION_FIELDS = `
     id organizationCode name shortName contactName contactPhone contactEmail
     address remark isServiceProvider isManagedCompany kind status
+  `;
+
+  /** 新增入口额外返回同事务开通的二级管理员安全摘要（列表/详情/编辑恒为 null）。 */
+  const CREATED_ORGANIZATION_FIELDS = `
+    ${ADMIN_ORGANIZATION_FIELDS}
+    provisionedAdmin { accountId loginName nickname mustChangePassword }
   `;
 
   const CREATE_REPAIR_REQUEST_MUTATION = `
@@ -238,7 +251,7 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
       token: params.token,
       query: `
         mutation AdminCreateOrganization($input: AdminCreateOrganizationInput!) {
-          adminCreateOrganization(input: $input) { ${ADMIN_ORGANIZATION_FIELDS} }
+          adminCreateOrganization(input: $input) { ${CREATED_ORGANIZATION_FIELDS} }
         }
       `,
       variables: {
@@ -327,13 +340,33 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     });
 
   /** 把新增成功返回的真实公司登记进台账（事实取服务端回读值，不取请求入参） */
-  const trackCreatedOrganization = (organization: AdminOrganization): void => {
+  const trackCreatedOrganization = async (organization: AdminOrganization): Promise<void> => {
     recordOwnedResource(ownership, 'organization', organization.id, {
       organizationCode: organization.organizationCode,
       name: organization.name,
       kind: organization.kind,
       status: organization.status,
       isManagedCompany: organization.isManagedCompany,
+    });
+
+    // 同事务开通的二级管理员账号与成员关系也必须登记，否则组织删除会被 FK RESTRICT 阻断。
+    const admin = organization.provisionedAdmin;
+    if (!admin) return;
+    const account = await accountRepository.findOneOrFail({ where: { id: admin.accountId } });
+    const userInfoRepository = dataSource.getRepository(UserInfoEntity);
+    const userInfo = await userInfoRepository.findOneOrFail({
+      where: { accountId: admin.accountId },
+    });
+    recordOwnedResource(ownership, 'account', admin.accountId, {
+      loginName: account.loginName,
+      loginEmail: account.loginEmail,
+      status: account.status,
+      identityHint: account.identityHint,
+      accessGroup: userInfo.accessGroup,
+      nickname: userInfo.nickname,
+      userInfoEmail: userInfo.email,
+      userState: userInfo.userState,
+      customerOrganizationId: userInfo.customerOrganizationId,
     });
   };
 
@@ -619,7 +652,7 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
     expect(body.errors).toBeUndefined();
     const created = body.data?.adminCreateOrganization;
     expect(created).toBeDefined();
-    trackCreatedOrganization(created as AdminOrganization);
+    await trackCreatedOrganization(created as AdminOrganization);
 
     expect(created?.name).toBe(name);
     expect(created?.contactPhone).toBe('021-88886666');
@@ -668,7 +701,7 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
       ).body as MutationBody;
       expect(body.errors).toBeUndefined();
       const created = body.data?.adminCreateOrganization as AdminOrganization;
-      trackCreatedOrganization(created);
+      await trackCreatedOrganization(created);
       createdIds.set(combo.suffix, created.id);
 
       // 返回与实库回读双向一致：状态在同一次创建中落定，维修资格独立保存
@@ -932,8 +965,8 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
 
     expect(first.errors).toBeUndefined();
     expect(second.errors).toBeUndefined();
-    trackCreatedOrganization(first.data?.adminCreateOrganization as AdminOrganization);
-    trackCreatedOrganization(second.data?.adminCreateOrganization as AdminOrganization);
+    await trackCreatedOrganization(first.data?.adminCreateOrganization as AdminOrganization);
+    await trackCreatedOrganization(second.data?.adminCreateOrganization as AdminOrganization);
 
     const firstOrg = first.data?.adminCreateOrganization as AdminOrganization;
     const secondOrg = second.data?.adminCreateOrganization as AdminOrganization;
@@ -1090,7 +1123,7 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
         name: `${NAME_PREFIX}哨兵对照公司`,
       })
     ).body as MutationBody;
-    trackCreatedOrganization(created.data?.adminCreateOrganization as AdminOrganization);
+    await trackCreatedOrganization(created.data?.adminCreateOrganization as AdminOrganization);
 
     const current = await organizationRepository.findOneOrFail({ where: { id: sentinel.id } });
     expect(current.name).toBe(SENTINEL_NAME);

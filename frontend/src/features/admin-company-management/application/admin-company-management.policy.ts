@@ -8,6 +8,8 @@
  */
 
 import type {
+  AdminCompanyAdminBinding,
+  AdminCompanyAdminBindingStatus,
   AdminCompanyListMode,
   AdminOrganizationStatus,
 } from './admin-company-management.types';
@@ -35,6 +37,42 @@ export const ADMIN_COMPANY_KIND_LABELS: Record<'CLIENT' | 'PEER', string> = {
   CLIENT: '甲方',
   PEER: '同行',
 };
+
+/** 绑定状态标签：与后端 `evaluateAdminBinding` 四态同口径 */
+export const ADMIN_COMPANY_BINDING_STATUS_LABELS: Record<AdminCompanyAdminBindingStatus, string> = {
+  BOUND: '已绑定',
+  UNCONFIGURED: '未配置',
+  CONFLICT: '冲突',
+  COMPANY_DISABLED: '公司停用',
+};
+
+type BindingTagColor = 'success' | 'default' | 'warning' | 'error';
+
+export const ADMIN_COMPANY_BINDING_STATUS_COLORS: Record<
+  AdminCompanyAdminBindingStatus,
+  BindingTagColor
+> = {
+  BOUND: 'success',
+  UNCONFIGURED: 'default',
+  CONFLICT: 'error',
+  COMPANY_DISABLED: 'warning',
+};
+
+/**
+ * 补发资格只按绑定事实判断：已绑定、账号未停用、公司启用。
+ * 「是否仍待首次改密」由服务端在锁内复核，前端不据列表快照推定。
+ */
+export function canReissueCompanyAdminCredential(
+  binding: AdminCompanyAdminBinding | null | undefined,
+): boolean {
+  return (
+    binding !== null &&
+    binding !== undefined &&
+    binding.status === 'BOUND' &&
+    !binding.accountDisabled &&
+    binding.companyStatus === 'ACTIVE'
+  );
+}
 
 /**
  * 读入口选择：只有请求期会话等级为 1 时使用完整列表；

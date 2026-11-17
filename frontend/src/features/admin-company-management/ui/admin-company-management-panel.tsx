@@ -12,7 +12,7 @@
  * 同步推进，提交入口捕获代次与目标主键，成功续体回来后代次与目标都仍一致才允许关闭。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, message, Select, Space, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 
@@ -25,28 +25,58 @@ import { TableContainer } from '@/shared/ui/table-container';
 import { ToolbarButton, ToolbarSearchField } from '@/shared/ui/toolbar-controls';
 
 import {
+  ADMIN_COMPANY_BINDING_STATUS_COLORS,
+  ADMIN_COMPANY_BINDING_STATUS_LABELS,
   ADMIN_COMPANY_STATUS_LABELS,
   ADMIN_COMPANY_STATUS_OPTIONS,
   resolveAdminCompanyListMode,
 } from '../application/admin-company-management.policy';
 import type {
+  AdminCompanyCommandFailureReason,
   AdminCompanyCreateDraft,
   AdminCompanyListPage,
   AdminCompanyNameOption,
+  AdminCompanyProvisionResult,
   AdminCompanyRecordResult,
   AdminCompanyRow,
   AdminCompanyUpdateDraft,
   AdminOrganizationStatus,
 } from '../application/admin-company-management.types';
+import {
+  clearSubmissionKey,
+  loadOrCreateSubmissionKey,
+} from '../application/admin-company-submission-key';
+import { useAdminCompanyAdminBindings } from '../application/use-admin-company-admin-bindings';
 import { useAdminCompanyCommands } from '../application/use-admin-company-commands';
+import { useAdminCompanyCredential } from '../application/use-admin-company-credential';
 import { useAdminCompanyDetail } from '../application/use-admin-company-detail';
 import { useAdminCompanyList } from '../application/use-admin-company-list';
 
+import {
+  AdminCompanyCredentialConfirmModal,
+  AdminCompanyCredentialModal,
+  type AdminCompanyReissueTarget,
+} from './admin-company-credential-modal';
 import { AdminCompanyDetailModal } from './admin-company-detail-modal';
 import { AdminCompanyCreateModal, AdminCompanyEditModal } from './admin-company-form-modal';
 
 /** 主搜索防抖节奏：与管理员用户列表保持一致 */
 const SEARCH_DEBOUNCE_MS = 300;
+
+/**
+ * 服务端已明确拒绝且**零提交**的失败原因：此时提交标识无复用价值，必须清除。
+ *
+ * `save-failed`（含网络不确定与 `in-flight`）不在此列：先保留标识，重试仍落在
+ * 同一次提交上，避免超时重试产生第二家公司与第二个管理员。
+ */
+const CREATE_CONFIRMED_ZERO_SUBMIT_REASONS: ReadonlySet<AdminCompanyCommandFailureReason> =
+  new Set<AdminCompanyCommandFailureReason>([
+    'invalid-input',
+    'forbidden',
+    'not-found',
+    'duplicate-code',
+    'submission-conflict',
+  ]);
 
 // antd Select 的选项值只接受字符串/数字：维修资格用 'true' / 'false' 承载，
 // 在 onChange 处转回布尔，避免伪造字符串进查询模型。
@@ -55,7 +85,7 @@ const SERVICE_PROVIDER_FILTER_OPTIONS: { label: string; value: 'true' | 'false' 
   { label: '不提供维修服务', value: 'false' },
 ];
 
-type AdminCompanyDialogKey = 'create' | 'edit';
+type AdminCompanyDialogKey = 'create' | 'edit' | 'credential-confirm';
 
 function renderOptionalText(value: string | null): string {
   return value ?? '—';
@@ -85,11 +115,30 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
   const commands = useAdminCompanyCommands(list.reload);
   const detail = useAdminCompanyDetail();
   const dialogSession = useDialogSessionSeq<AdminCompanyDialogKey>();
+  const credential = useAdminCompanyCredential();
   const [keywordDraft, setKeywordDraft] = useState('');
   const [debouncedKeyword, setDebouncedKeyword] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<AdminCompanyRow | null>(null);
+  const [reissueTarget, setReissueTarget] = useState<AdminCompanyReissueTarget | null>(null);
+  const [reissueError, setReissueError] = useState<string | null>(null);
+
+  // 当前页公司主键：绑定状态只按可见行逐条读取，不额外拉取全量受管公司
+  const pageOrganizationIds = useMemo(() => {
+    const state = list.state;
+
+    return state.status === 'ready' && state.page.kind === 'full'
+      ? state.page.items.map((item) => item.organizationId)
+      : [];
+  }, [list.state]);
+
+  const bindings = useAdminCompanyAdminBindings({
+    enabled: mode === 'full',
+    organizationIds: pageOrganizationIds,
+    // 列表每次重新加载都会推进请求序号：写入成功后统一回读当前页绑定状态
+    revision: list.state.requestSeq,
+  });
 
   // 主搜索防抖：输入即时回显，防抖到期才把草稿交给下一步的应用 effect
   useEffect(() => {
@@ -155,23 +204,44 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
 
   const submitCreate = async (
     draft: AdminCompanyCreateDraft,
-  ): Promise<AdminCompanyRecordResult> => {
+  ): Promise<AdminCompanyProvisionResult> => {
     const sessionSeq = dialogSession.capture('create');
-    const execution = await commands.createCompany(draft);
+    // 提交标识在发送前读取（缺失/过期则生成）：双击、超时重试、刷新恢复都复用同一标识
+    const submissionKey = loadOrCreateSubmissionKey(Date.now(), window.sessionStorage);
+    const execution = await commands.createCompany(draft, submissionKey);
 
     if (execution.kind === 'ok') {
-      if (execution.result.ok) {
+      const result = execution.result;
+
+      if (result.ok) {
+        // 成功即本次提交已定案，下一位新增必须换新标识
+        clearSubmissionKey(window.sessionStorage);
+
         if (dialogSession.isCurrent('create', sessionSeq)) {
           setCreateOpen(false);
           dialogSession.advance('create');
+          // 业务字段与凭据全部来自同一创建结果；口令只进组件 state 的短生命周期弹窗
+          credential.show({
+            organizationId: result.organization.organizationId,
+            organizationName: result.organization.name,
+            loginName: result.provisionedAdmin.loginName,
+            nickname: result.provisionedAdmin.nickname || null,
+            temporaryPassword: result.temporaryPassword,
+            mustChangePassword: result.provisionedAdmin.mustChangePassword,
+            replayed: result.submission.replayed,
+          });
           message.success('公司档案已创建。');
         } else {
-          // 陈旧但写入确实发生：点名实际提交的公司，避免被误读成重开后那次的结果
-          message.success(`「${execution.result.organization.name}」已创建。`);
+          // 陈旧但写入确实发生：点名实际提交的公司，且不展示已失效会话的口令
+          message.success(`「${result.organization.name}」已创建。`);
         }
+      } else if (CREATE_CONFIRMED_ZERO_SUBMIT_REASONS.has(result.reason)) {
+        // 服务端已明确拒绝且零提交：标识无复用价值，清除避免下次新增被误判为回放
+        clearSubmissionKey(window.sessionStorage);
       }
+      // save-failed（含网络不确定）保留标识：重试仍落在同一次提交上
 
-      return execution.result;
+      return result;
     }
 
     if (execution.kind === 'unhandled-error') {
@@ -212,6 +282,79 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
     }
 
     return { ok: false, reason: 'save-failed', message: '' };
+  };
+
+  const openReissueConfirm = (target: AdminCompanyReissueTarget) => {
+    // 详情与确认是两个独立会话：先关详情，再为确认弹窗新建代次
+    detail.close();
+    setReissueError(null);
+    setReissueTarget(target);
+    dialogSession.advance('credential-confirm');
+  };
+
+  const closeReissueConfirm = () => {
+    dialogSession.advance('credential-confirm');
+    setReissueTarget(null);
+    setReissueError(null);
+  };
+
+  const confirmReissue = async () => {
+    const target = reissueTarget;
+
+    if (target === null) {
+      return;
+    }
+
+    const sessionSeq = dialogSession.capture('credential-confirm');
+    setReissueError(null);
+
+    const execution = await commands.reissueCredential(target.organizationId);
+
+    if (execution.kind === 'unhandled-error') {
+      if (dialogSession.isCurrent('credential-confirm', sessionSeq)) {
+        setReissueError(execution.message);
+      }
+
+      return;
+    }
+
+    if (execution.kind === 'in-flight') {
+      return;
+    }
+
+    const result = execution.result;
+
+    if (!result.ok) {
+      if (dialogSession.isCurrent('credential-confirm', sessionSeq)) {
+        setReissueError(result.message);
+      }
+
+      return;
+    }
+
+    if (!dialogSession.isCurrent('credential-confirm', sessionSeq)) {
+      // 成功但确认弹窗已被关闭/重开：口令不再展示（它随本次会话失效）
+      return;
+    }
+
+    if (result.organizationId !== target.organizationId) {
+      // 响应归属与确认目标不一致：口令一律丢弃，避免把 A 公司换出的口令挂在 B 名下
+      setReissueError('补发结果与目标公司不一致，口令已丢弃，请刷新后重试。');
+      return;
+    }
+
+    setReissueTarget(null);
+    dialogSession.advance('credential-confirm');
+    credential.show({
+      organizationId: result.organizationId,
+      organizationName: target.companyName,
+      loginName: result.loginName,
+      nickname: result.nickname,
+      temporaryPassword: result.temporaryPassword,
+      mustChangePassword: result.mustChangePassword,
+      replayed: false,
+    });
+    message.success('临时密码已补发。');
   };
 
   const fullColumns: ColumnsType<AdminCompanyRow> = [
@@ -265,6 +408,48 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
       ),
       title: '维修服务',
       width: 100,
+    },
+    {
+      key: 'adminBinding',
+      render: (_, row) => {
+        // 未受管公司不进入绑定判定，直接说明「不适用」，避免与「未配置」混淆
+        if (!row.isManagedCompany) {
+          return <span className="text-text-tertiary">不受管</span>;
+        }
+
+        const entry = bindings.bindingOf(row.organizationId);
+
+        if (!entry || entry.status === 'loading') {
+          return <span className="text-text-tertiary">读取中…</span>;
+        }
+
+        if (entry.status === 'failed') {
+          return (
+            <Space size={4}>
+              <span className="text-text-tertiary text-xs">{entry.message}</span>
+              <Button size="small" type="link" onClick={bindings.retry}>
+                重试
+              </Button>
+            </Space>
+          );
+        }
+
+        const fact = entry.binding;
+
+        return (
+          <div className="flex flex-wrap items-center gap-1">
+            <Tag color={ADMIN_COMPANY_BINDING_STATUS_COLORS[fact.status]}>
+              {ADMIN_COMPANY_BINDING_STATUS_LABELS[fact.status]}
+            </Tag>
+            <span className="text-text-secondary text-xs">
+              {renderOptionalText(fact.boundLoginNameMasked)}
+            </span>
+            {fact.accountDisabled ? <Tag color="default">账号停用</Tag> : null}
+          </div>
+        );
+      },
+      title: '二级管理员账号',
+      width: 170,
     },
     {
       fixed: 'right',
@@ -393,7 +578,7 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
                 onChange: list.goToPage,
               }}
               rowKey="organizationId"
-              scroll={{ x: 1080 }}
+              scroll={{ x: 1280 }}
               size="middle"
             />
           ) : null}
@@ -439,13 +624,46 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
           />
 
           <AdminCompanyDetailModal
+            binding={
+              detail.state.status === 'ready'
+                ? (bindings.bindingOf(detail.state.organization.organizationId) ?? null)
+                : null
+            }
             state={detail.state}
             onClose={detail.close}
+            onReissue={() => {
+              if (detail.state.status !== 'ready') {
+                return;
+              }
+
+              const company = detail.state.organization;
+              const entry = bindings.bindingOf(company.organizationId);
+              const fact = entry?.status === 'ready' ? entry.binding : null;
+
+              openReissueConfirm({
+                companyName: company.name,
+                loginNameMasked: fact?.boundLoginNameMasked ?? null,
+                organizationId: company.organizationId,
+              });
+            }}
             onRetry={() => {
               if (detail.state.status === 'failed') {
                 void detail.open(detail.state.organizationId);
               }
             }}
+          />
+
+          <AdminCompanyCredentialConfirmModal
+            errorMessage={reissueError}
+            submitting={commands.isPending('reissue-credential')}
+            target={reissueTarget}
+            onCancel={closeReissueConfirm}
+            onConfirm={() => void confirmReissue()}
+          />
+
+          <AdminCompanyCredentialModal
+            credential={credential.credential}
+            onClose={credential.clear}
           />
         </>
       ) : null}

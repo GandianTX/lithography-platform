@@ -24,7 +24,8 @@ export function AdminUsersPage() {
         title="用户管理"
       />
 
-      <AdminUserManagementPanel adminLevel={adminLevel} />
+      {/* 身份/等级变化即重挂载：在途请求与短生命周期凭据 state 一并丢弃 */}
+      <AdminUserManagementPanel key={adminLevel ?? 'none'} adminLevel={adminLevel} />
     </div>
   );
 }

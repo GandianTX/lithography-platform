@@ -18,6 +18,8 @@ export const ADMIN_ORGANIZATION_ADDRESS_MAX_LENGTH = 1000;
 export const ADMIN_ORGANIZATION_REMARK_MAX_LENGTH = 2000;
 /** 公司列表 / 名称名单关键字上限 */
 export const ADMIN_ORGANIZATION_KEYWORD_MAX_LENGTH = 100;
+/** 二级管理员凭据重置原因上限（管理端备注级文案） */
+export const ADMIN_CREDENTIAL_RESET_REASON_MAX_LENGTH = 200;
 
 const ORGANIZATION_STATUSES: readonly OrganizationStatus[] = ['ACTIVE', 'DISABLED'];
 
@@ -57,6 +59,16 @@ export function normalizeOrganizationId(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
     throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, '公司 ID 必须是正整数', {
       field: 'organizationId',
+    });
+  }
+  return value;
+}
+
+/** 目标账号主键：必须为正整数，不接受字符串或浮点 */
+export function normalizeAccountId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new DomainError(INPUT_NORMALIZE_ERROR.INVALID_TEXT, '管理员账号 ID 必须是正整数', {
+      field: 'adminAccountId',
     });
   }
   return value;

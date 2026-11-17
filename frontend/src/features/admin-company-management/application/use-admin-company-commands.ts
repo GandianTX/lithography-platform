@@ -14,15 +14,21 @@ import { useCallback, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
 
-import { adminCreateCompany, adminUpdateCompany } from '../infrastructure/admin-company-adapter';
+import {
+  adminCreateCompany,
+  adminReissueLevelTwoCredential,
+  adminUpdateCompany,
+} from '../infrastructure/admin-company-adapter';
 
 import type {
   AdminCompanyCreateDraft,
+  AdminCompanyCredentialResult,
+  AdminCompanyProvisionResult,
   AdminCompanyRecordResult,
   AdminCompanyUpdateDraft,
 } from './admin-company-management.types';
 
-export const ADMIN_COMPANY_COMMAND_KEYS = ['create', 'update'] as const;
+export const ADMIN_COMPANY_COMMAND_KEYS = ['create', 'update', 'reissue-credential'] as const;
 
 export type AdminCompanyCommandKey = (typeof ADMIN_COMPANY_COMMAND_KEYS)[number];
 
@@ -97,8 +103,9 @@ export function useAdminCompanyCommands(reload: () => void) {
   const createCompany = useCallback(
     (
       draft: AdminCompanyCreateDraft,
-    ): Promise<AdminCompanyCommandExecution<AdminCompanyRecordResult>> =>
-      runReloadingCommand('create', () => adminCreateCompany(draft)),
+      submissionKey: string,
+    ): Promise<AdminCompanyCommandExecution<AdminCompanyProvisionResult>> =>
+      runReloadingCommand('create', () => adminCreateCompany(draft, submissionKey)),
     [runReloadingCommand],
   );
 
@@ -110,10 +117,19 @@ export function useAdminCompanyCommands(reload: () => void) {
     [runReloadingCommand],
   );
 
+  /** 补发临时密码：成功即回读列表与绑定状态（旧凭据已被服务端作废） */
+  const reissueCredential = useCallback(
+    (organizationId: number): Promise<AdminCompanyCommandExecution<AdminCompanyCredentialResult>> =>
+      runReloadingCommand('reissue-credential', () =>
+        adminReissueLevelTwoCredential(organizationId),
+      ),
+    [runReloadingCommand],
+  );
+
   const isPending = useCallback(
     (key: AdminCompanyCommandKey) => pendingKeys.has(key),
     [pendingKeys],
   );
 
-  return { createCompany, isPending, updateCompany };
+  return { createCompany, isPending, reissueCredential, updateCompany };
 }

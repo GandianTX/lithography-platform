@@ -2,44 +2,20 @@
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
-import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import {
-  INPUT_NORMALIZE_ERROR,
-  ORGANIZATION_MANAGEMENT_ERROR,
-  PERMISSION_ERROR,
-} from '@core/common/errors/domain-error';
-import type { PinoLogger } from 'nestjs-pino';
-import { OrganizationService } from '@src/modules/lithography/organization.service';
-import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
-import type { AdminOrganizationView } from '@src/modules/lithography/organization.types';
 import { CreateAdminOrganizationUsecase } from './create-admin-organization.usecase';
+import type {
+  CompanyProvisioningResult,
+  ProvisionCompanyWithAdminCommand,
+  ProvisionedAdminSummary,
+} from './company-provisioning.types';
+import { ProvisionCompanyWithAdminUsecase } from './provision-company-with-admin.usecase';
 
-describe('CreateAdminOrganizationUsecase（一级新增公司档案）', () => {
-  const createdView: AdminOrganizationView = {
-    id: 501,
-    organizationCode: 'ADMIN_ORG_0001',
-    name: '光刻设备（上海）有限公司',
-    shortName: null,
-    contactName: null,
-    contactPhone: '021-12345678',
-    contactEmail: null,
-    address: null,
-    remark: null,
-    isServiceProvider: false,
-    isManagedCompany: true,
-    kind: 'CLIENT',
-    status: 'ACTIVE',
-    createdAt: new Date('2026-01-01T00:00:00Z'),
-    updatedAt: new Date('2026-01-01T00:00:00Z'),
-  };
-
-  let organizationService: { createManagedCompany: jest.Mock };
-  let organizationQueryService: { findAdminOrganizationView: jest.Mock };
-  let logger: { setContext: jest.Mock; info: jest.Mock; error: jest.Mock };
-  let transactionRunner: { run: jest.Mock };
-  let usecase: CreateAdminOrganizationUsecase;
-
-  const levelOneSession: UsecaseSession = {
+/**
+ * 旧合同入口在 S2 起是**纯委托层**：本 spec 只验证透传与返回形状裁剪，
+ * 完整开通/幂等/回滚语义由 `provision-company-with-admin.usecase.spec.ts` 覆盖。
+ */
+describe('CreateAdminOrganizationUsecase（旧合同委托层）', () => {
+  const session: UsecaseSession = {
     accountId: 30,
     roles: [IdentityTypeEnum.SUPER_ADMIN],
     activeRole: IdentityTypeEnum.SUPER_ADMIN,
@@ -47,125 +23,102 @@ describe('CreateAdminOrganizationUsecase（一级新增公司档案）', () => {
     adminOrganizationId: null,
   };
 
+  const admin: ProvisionedAdminSummary = {
+    accountId: 901,
+    loginName: 'orgadmin_abcdef0123456789abcd',
+    nickname: '光刻设备（上海）有限公司',
+    mustChangePassword: true,
+  };
+
+  const provisionResult: CompanyProvisioningResult = {
+    organization: {
+      id: 501,
+      organizationCode: 'ADMIN_ORG_0001',
+      name: '光刻设备（上海）有限公司',
+      shortName: null,
+      contactName: null,
+      contactPhone: '021-12345678',
+      contactEmail: null,
+      address: null,
+      remark: null,
+      isServiceProvider: false,
+      isManagedCompany: true,
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+    },
+    admin,
+    submission: { submissionId: 77, replayed: false },
+    temporaryPassword: 'Aa1!secret',
+  };
+
+  let provisionUsecase: {
+    execute: jest.Mock<Promise<CompanyProvisioningResult>, [ProvisionCompanyWithAdminCommand]>;
+  };
+  let usecase: CreateAdminOrganizationUsecase;
+
   beforeEach(() => {
-    organizationService = {
-      createManagedCompany: jest
-        .fn()
-        .mockResolvedValue({ id: 501, organizationCode: 'ADMIN_ORG_0001' }),
-    };
-    organizationQueryService = {
-      findAdminOrganizationView: jest.fn().mockResolvedValue(createdView),
-    };
-    logger = { setContext: jest.fn(), info: jest.fn(), error: jest.fn() };
-    transactionRunner = {
-      run: jest.fn(async (callback: (tx: PersistenceTransactionContext) => Promise<unknown>) =>
-        callback({} as PersistenceTransactionContext),
-      ),
-    };
+    provisionUsecase = { execute: jest.fn().mockResolvedValue(provisionResult) };
     usecase = new CreateAdminOrganizationUsecase(
-      organizationService as unknown as OrganizationService,
-      organizationQueryService as unknown as OrganizationQueryService,
-      logger as unknown as PinoLogger,
-      transactionRunner,
+      provisionUsecase as unknown as ProvisionCompanyWithAdminUsecase,
     );
   });
 
-  it('一级管理员新增：归一整填入参，事务内创建后回读返回真实落库视图', async () => {
-    const result = await usecase.execute({
-      session: levelOneSession,
-      name: '  光刻设备（上海）有限公司 ',
-      contactPhone: ' 021-12345678 ',
-    });
-
-    expect(transactionRunner.run).toHaveBeenCalledTimes(1);
-    expect(organizationService.createManagedCompany).toHaveBeenCalledWith(
-      {
-        name: '光刻设备（上海）有限公司',
-        contactPhone: '021-12345678',
-        shortName: null,
-        contactName: null,
-        contactEmail: null,
-        address: null,
-        remark: null,
-        status: 'ACTIVE',
-        isServiceProvider: false,
-      },
-      expect.anything(),
-    );
-    expect(organizationQueryService.findAdminOrganizationView).toHaveBeenCalledWith({
-      organizationId: 501,
-      transactionContext: expect.anything(),
-    });
-    expect(result).toEqual(createdView);
-  });
-
-  it('显式停用状态与维修资格一起透传到存储层，一次写入落定', async () => {
+  it('全部输入字段原样透传到开通用例', async () => {
     await usecase.execute({
-      session: levelOneSession,
-      name: ' 停用公司 ',
+      session,
+      name: '公司',
       contactPhone: '021',
+      shortName: '简称',
+      contactName: '联系人',
+      contactEmail: 'contact@example.com',
+      address: '地址',
+      remark: '备注',
       status: 'DISABLED',
       isServiceProvider: true,
     });
 
-    expect(organizationService.createManagedCompany).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'DISABLED', isServiceProvider: true }),
-      expect.anything(),
-    );
+    expect(provisionUsecase.execute).toHaveBeenCalledTimes(1);
+    expect(provisionUsecase.execute.mock.calls[0][0]).toEqual({
+      session,
+      submissionKey: undefined,
+      name: '公司',
+      contactPhone: '021',
+      shortName: '简称',
+      contactName: '联系人',
+      contactEmail: 'contact@example.com',
+      address: '地址',
+      remark: '备注',
+      status: 'DISABLED',
+      isServiceProvider: true,
+    });
   });
 
-  it('创建后回读失败按写入失败关闭，不返回假成功', async () => {
-    organizationQueryService.findAdminOrganizationView.mockResolvedValue(null);
+  it('旧合同不传提交标识时保持 undefined，走无幂等路径', async () => {
+    await usecase.execute({ session, name: '公司', contactPhone: '021' });
 
-    await expect(
-      usecase.execute({ session: levelOneSession, name: '公司', contactPhone: '021' }),
-    ).rejects.toMatchObject({ code: ORGANIZATION_MANAGEMENT_ERROR.WRITE_FAILED });
-
-    expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+    const command = provisionUsecase.execute.mock.calls[0][0];
+    expect(command.submissionKey).toBeUndefined();
+    expect('submissionKey' in command).toBe(true);
   });
 
-  it('编号唯一索引冲突映射为 CODE_CONFLICT', async () => {
-    organizationService.createManagedCompany.mockRejectedValue({ code: 'ER_DUP_ENTRY' });
+  it('调用方显式提供提交标识时原样透传（不在此层归一化）', async () => {
+    const submissionKey = ' 3F2504E0-4F89-11D3-9A0C-0305E82C3301 ';
 
-    await expect(
-      usecase.execute({ session: levelOneSession, name: '公司', contactPhone: '021' }),
-    ).rejects.toMatchObject({ code: ORGANIZATION_MANAGEMENT_ERROR.CODE_CONFLICT });
+    await usecase.execute({ session, name: '公司', contactPhone: '021', submissionKey });
+
+    expect(provisionUsecase.execute.mock.calls[0][0].submissionKey).toBe(submissionKey);
   });
 
-  it('其他数据库异常收敛为 WRITE_FAILED 且不泄露原始错误', async () => {
-    organizationService.createManagedCompany.mockRejectedValue(new Error('connect ECONNREFUSED'));
+  it('只返回公司与管理员摘要，丢弃提交标识结果与一次性临时密码', async () => {
+    const result = await usecase.execute({ session, name: '公司', contactPhone: '021' });
 
-    await expect(
-      usecase.execute({ session: levelOneSession, name: '公司', contactPhone: '021' }),
-    ).rejects.toMatchObject({ code: ORGANIZATION_MANAGEMENT_ERROR.WRITE_FAILED });
-  });
-
-  it('二级管理员与非管理员拒绝，且不开启事务', async () => {
-    const rejectedSessions: UsecaseSession[] = [
-      { accountId: 1, roles: [IdentityTypeEnum.CUSTOMER], activeRole: IdentityTypeEnum.CUSTOMER },
-      {
-        accountId: 31,
-        roles: [IdentityTypeEnum.SUPER_ADMIN],
-        activeRole: IdentityTypeEnum.SUPER_ADMIN,
-        adminLevel: 2,
-        adminOrganizationId: 27,
-      },
-    ];
-
-    for (const session of rejectedSessions) {
-      await expect(
-        usecase.execute({ session, name: '公司', contactPhone: '021' }),
-      ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
-    }
-
-    expect(transactionRunner.run).not.toHaveBeenCalled();
-  });
-
-  it('全称或联系电话 trim 后为空时在事务前拒绝', async () => {
-    await expect(
-      usecase.execute({ session: levelOneSession, name: '   ', contactPhone: '021' }),
-    ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.REQUIRED_TEXT_EMPTY });
-
-    expect(transactionRunner.run).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      organization: provisionResult.organization,
+      admin,
+    });
+    expect('temporaryPassword' in result).toBe(false);
+    expect('submission' in result).toBe(false);
   });
 });

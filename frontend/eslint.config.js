@@ -463,6 +463,7 @@ export default defineConfig([
     files: [
       'e2e-real/admin-companies-real.spec.ts',
       'e2e-real/admin-engineer-approval-real.spec.ts',
+      'e2e-real/admin-s4-credential-visual-real.spec.ts',
       'e2e-real/admin-s5-visual-real.spec.ts',
       'e2e-real/admin-user-management-real.spec.ts',
       'e2e-real/task02-b-review-visual-real.spec.ts',

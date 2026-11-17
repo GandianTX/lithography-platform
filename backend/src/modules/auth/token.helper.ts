@@ -205,17 +205,23 @@ export class TokenHelper {
     nickname,
     loginEmail,
     accessGroup,
+    credentialVersion,
   }: {
     id: number;
     nickname: string;
     loginEmail: string | null;
     accessGroup: string[];
-  }): Pick<JwtPayload, 'sub' | 'username' | 'email' | 'accessGroup'> {
-    const payload: Pick<JwtPayload, 'sub' | 'username' | 'email' | 'accessGroup'> = {
+    credentialVersion?: number;
+  }): Pick<JwtPayload, 'sub' | 'username' | 'email' | 'accessGroup' | 'credentialVersion'> {
+    const payload: Pick<
+      JwtPayload,
+      'sub' | 'username' | 'email' | 'accessGroup' | 'credentialVersion'
+    > = {
       sub: id,
       username: nickname,
       email: loginEmail,
       accessGroup: accessGroup,
+      ...(credentialVersion === undefined ? {} : { credentialVersion }),
     };
     return payload;
   }

@@ -13,6 +13,7 @@ import { SearchService } from '@src/modules/common/search.module';
 import { Repository } from 'typeorm';
 import type {
   AdminApplicantDetailView,
+  AdminBindingCandidateFacts,
   AdminUserCredentialConflictField,
   AdminUserListPage,
   AdminUserListQuery,
@@ -377,6 +378,67 @@ export class AdminUserQueryService {
         role: convergence.role,
         customerOrganizationId: account.userInfo.customerOrganizationId,
       };
+    } catch (error) {
+      this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
+    }
+  }
+
+  /**
+   * 二级管理员绑定判定所需的批量账号事实（S3）。
+   *
+   * 供在线绑定查询与凭据补发/重置在**同一事务**内复核候选账号：账号行、资料行与
+   * 三源角色收敛结果一次读取，返回 `Map<accountId, facts>`，缺失的账号不进入结果
+   * （调用方按不存在处理）。
+   *
+   * 走 entity 水合路径（`leftJoinAndSelect` + `getMany`）：`meta_digest` 是加密列，
+   * 只有水合路径的订阅者会解密并 `JSON.parse`，禁止 `getRawMany()` 绕过。
+   *
+   * `forUpdate=true` 时对命中行取 `pessimistic_write`：写用例在已持有公司行锁后调用，
+   * 锁序为 organization → account。调用方必须传入真实事务上下文。
+   */
+  async findAdminBindingCandidateFacts(params: {
+    accountIds: ReadonlyArray<number>;
+    transactionContext?: PersistenceTransactionContext;
+    forUpdate?: boolean;
+  }): Promise<Map<number, AdminBindingCandidateFacts>> {
+    const uniqueIds = [
+      ...new Set(params.accountIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (uniqueIds.length === 0) {
+      return new Map();
+    }
+    try {
+      const queryBuilder = this.getAccountRepository(params.transactionContext)
+        .createQueryBuilder('account')
+        .leftJoinAndSelect('account.userInfo', 'userInfo')
+        .where('account.id IN (:...accountIds)', { accountIds: uniqueIds })
+        .orderBy('account.id', 'ASC');
+      if (params.forUpdate === true) {
+        queryBuilder.setLock('pessimistic_write');
+      }
+      const accounts = await queryBuilder.getMany();
+
+      const facts = new Map<number, AdminBindingCandidateFacts>();
+      for (const account of accounts) {
+        const userInfo = account.userInfo;
+        const convergence = convergeAccountRole({
+          identityHint: account.identityHint,
+          accessGroup: userInfo?.accessGroup ?? null,
+          metaDigest: userInfo?.metaDigest ?? null,
+        });
+        facts.set(account.id, {
+          accountId: account.id,
+          loginName: account.loginName ?? '',
+          nickname: userInfo?.nickname ?? null,
+          adminLevel: account.adminLevel ?? null,
+          accountStatus: account.status,
+          userState: userInfo?.userState ?? null,
+          roleConverged: convergence.converged,
+          role: convergence.converged ? convergence.role : null,
+          customerOrganizationId: userInfo?.customerOrganizationId ?? null,
+        });
+      }
+      return facts;
     } catch (error) {
       this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
     }

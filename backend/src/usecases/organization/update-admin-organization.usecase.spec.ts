@@ -6,8 +6,11 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { ORGANIZATION_MANAGEMENT_ERROR, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import type { PinoLogger } from 'nestjs-pino';
 import { OrganizationService } from '@src/modules/lithography/organization.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import type { AdminOrganizationView } from '@src/modules/lithography/organization.types';
+import type { AccountService } from '@src/modules/account/base/services/account.service';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { UpdateAdminOrganizationUsecase } from './update-admin-organization.usecase';
 
 describe('UpdateAdminOrganizationUsecase（一级编辑公司档案）', () => {
@@ -36,6 +39,11 @@ describe('UpdateAdminOrganizationUsecase（一级编辑公司档案）', () => {
   };
   let logger: { setContext: jest.Mock; info: jest.Mock; error: jest.Mock };
   let transactionRunner: { run: jest.Mock };
+  let organizationMembershipQueryService: {
+    listActiveMembershipAccountIdsByOrganization: jest.Mock;
+  };
+  let accountService: { incrementCredentialVersionsByAccountIds: jest.Mock };
+  let accountQueryService: { listAdminAccountIdsAmong: jest.Mock };
   let usecase: UpdateAdminOrganizationUsecase;
 
   const levelOneSession: UsecaseSession = {
@@ -59,6 +67,15 @@ describe('UpdateAdminOrganizationUsecase（一级编辑公司档案）', () => {
       }),
     };
     logger = { setContext: jest.fn(), info: jest.fn(), error: jest.fn() };
+    organizationMembershipQueryService = {
+      listActiveMembershipAccountIdsByOrganization: jest.fn().mockResolvedValue([]),
+    };
+    accountService = {
+      incrementCredentialVersionsByAccountIds: jest.fn().mockResolvedValue(undefined),
+    };
+    accountQueryService = {
+      listAdminAccountIdsAmong: jest.fn().mockResolvedValue([]),
+    };
     transactionRunner = {
       run: jest.fn(async (callback: (tx: PersistenceTransactionContext) => Promise<unknown>) =>
         callback({} as PersistenceTransactionContext),
@@ -67,6 +84,9 @@ describe('UpdateAdminOrganizationUsecase（一级编辑公司档案）', () => {
     usecase = new UpdateAdminOrganizationUsecase(
       organizationService as unknown as OrganizationService,
       organizationQueryService as unknown as OrganizationQueryService,
+      organizationMembershipQueryService as unknown as OrganizationMembershipQueryService,
+      accountService as unknown as AccountService,
+      accountQueryService as unknown as AccountQueryService,
       logger as unknown as PinoLogger,
       transactionRunner as never,
     );
@@ -160,5 +180,53 @@ describe('UpdateAdminOrganizationUsecase（一级编辑公司档案）', () => {
 
     expect(transactionRunner.run).not.toHaveBeenCalled();
     expect(organizationQueryService.lockAdminOrganizationForUpdate).not.toHaveBeenCalled();
+  });
+
+  it('公司状态实际变化时只递增管理类成员的凭据代次（客户成员不在范围）', async () => {
+    organizationMembershipQueryService.listActiveMembershipAccountIdsByOrganization.mockResolvedValue(
+      [101, 102],
+    );
+    accountQueryService.listAdminAccountIdsAmong.mockResolvedValue([101]);
+
+    await usecase.execute({ session: levelOneSession, organizationId: 7, status: 'DISABLED' });
+
+    expect(
+      organizationMembershipQueryService.listActiveMembershipAccountIdsByOrganization,
+    ).toHaveBeenCalledWith({ organizationId: 7, transactionContext: expect.anything() });
+    expect(accountQueryService.listAdminAccountIdsAmong).toHaveBeenCalledWith({
+      accountIds: [101, 102],
+      transactionContext: expect.anything(),
+    });
+    expect(accountService.incrementCredentialVersionsByAccountIds).toHaveBeenCalledWith({
+      accountIds: [101],
+      transactionContext: expect.anything(),
+    });
+  });
+
+  it('公司状态未变化时不递增凭据代次（重复提交不误伤既有会话）', async () => {
+    organizationQueryService.findAdminOrganizationView.mockResolvedValue({ ...lockedView });
+
+    await usecase.execute({ session: levelOneSession, organizationId: 7, status: 'ACTIVE' });
+
+    expect(
+      organizationMembershipQueryService.listActiveMembershipAccountIdsByOrganization,
+    ).not.toHaveBeenCalled();
+    expect(accountQueryService.listAdminAccountIdsAmong).not.toHaveBeenCalled();
+    expect(accountService.incrementCredentialVersionsByAccountIds).not.toHaveBeenCalled();
+  });
+
+  it('仅编辑非状态字段时不递增凭据代次', async () => {
+    organizationQueryService.findAdminOrganizationView.mockResolvedValue({
+      ...lockedView,
+      name: '新全称',
+    });
+
+    await usecase.execute({ session: levelOneSession, organizationId: 7, name: '新全称' });
+
+    expect(
+      organizationMembershipQueryService.listActiveMembershipAccountIdsByOrganization,
+    ).not.toHaveBeenCalled();
+    expect(accountQueryService.listAdminAccountIdsAmong).not.toHaveBeenCalled();
+    expect(accountService.incrementCredentialVersionsByAccountIds).not.toHaveBeenCalled();
   });
 });

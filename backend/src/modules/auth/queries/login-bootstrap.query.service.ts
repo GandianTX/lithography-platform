@@ -16,6 +16,7 @@ export interface LoginUserDataCollection {
     identityHint: string | null;
     createdAt: Date;
     updatedAt: Date;
+    credentialVersion: number;
   };
   userInfo: {
     id: number;
@@ -38,6 +39,7 @@ export class LoginBootstrapQueryService {
       identityHint: string | null;
       createdAt: Date;
       updatedAt: Date;
+      credentialVersion: number;
     };
     userInfo: {
       id: number;
@@ -63,6 +65,7 @@ export class LoginBootstrapQueryService {
         identityHint: params.account.identityHint,
         createdAt: params.account.createdAt,
         updatedAt: params.account.updatedAt,
+        credentialVersion: params.account.credentialVersion,
       },
       userInfo: {
         id: params.userInfo.id,

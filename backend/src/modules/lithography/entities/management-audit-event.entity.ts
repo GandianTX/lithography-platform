@@ -16,7 +16,7 @@ import { Check, Column, Entity, ForeignKey, Index, PrimaryColumn } from 'typeorm
 })
 @Check(
   'chk_management_audit_operation',
-  "`operation` IN ('ADMIN_DELETE_DOCUMENT', 'CORRECT_DOCUMENT_OWNERSHIP', 'RESTORE_LOCAL_BUSINESS')",
+  "`operation` IN ('ADMIN_DELETE_DOCUMENT', 'CORRECT_DOCUMENT_OWNERSHIP', 'RESTORE_LOCAL_BUSINESS', 'REISSUE_LEVEL2_CREDENTIAL', 'RESET_LEVEL2_CREDENTIAL')",
 )
 export class ManagementAuditEventEntity {
   @PrimaryColumn({ name: 'event_id', type: 'char', length: 36, comment: '审计事件ID' })
@@ -35,7 +35,7 @@ export class ManagementAuditEventEntity {
     type: 'varchar',
     length: 32,
     comment:
-      '管理操作类型：ADMIN_DELETE_DOCUMENT/CORRECT_DOCUMENT_OWNERSHIP/RESTORE_LOCAL_BUSINESS',
+      '管理操作类型：ADMIN_DELETE_DOCUMENT/CORRECT_DOCUMENT_OWNERSHIP/RESTORE_LOCAL_BUSINESS/REISSUE_LEVEL2_CREDENTIAL/RESET_LEVEL2_CREDENTIAL',
   })
   operation!: string;
 

@@ -19,6 +19,9 @@
 import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
 
 import type {
+  AdminBoundLevelTwoAdminListQuery,
+  AdminBoundLevelTwoAdminPage,
+  AdminLevelTwoCredentialCommandResult,
   AdminUserCommandFailureReason,
   AdminUserCommandResult,
   AdminUserFilterRole,
@@ -29,10 +32,16 @@ import type {
 } from '../application/admin-user-management.types';
 
 import type {
+  AdminBoundLevelTwoAdminPageDto,
+  AdminLevelTwoCredentialResultDto,
   AdminResetUserPasswordResultDto,
   AdminUserListPageDto,
 } from './admin-user-management.dto';
-import { mapAdminUserListPageDtoToListPage } from './admin-user-management-mapper';
+import {
+  mapAdminBoundLevelTwoAdminPageDto,
+  mapAdminLevelTwoCredentialResultDto,
+  mapAdminUserListPageDtoToListPage,
+} from './admin-user-management-mapper';
 
 const ADMIN_USERS_QUERY = `
   query AdminUsers($keyword: String, $pagination: PaginationArgs!, $role: IdentityTypeEnum, $status: AccountStatus) {
@@ -81,6 +90,52 @@ const ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION = `
 
 type AdminUsersQueryData = {
   adminUsers: AdminUserListPageDto;
+};
+
+/** 一级专用窄查询：只含合法绑定的二级管理员，不带任何凭据字段 */
+const ADMIN_BOUND_LEVEL_TWO_ADMINS_QUERY = `
+  query AdminBoundLevelTwoAdmins($keyword: String, $pagination: PaginationArgs!) {
+    adminBoundLevelTwoAdmins(keyword: $keyword, pagination: $pagination) {
+      items {
+        accountId
+        accountDisabled
+        companyName
+        companyStatus
+        loginName
+        nickname
+        organizationCode
+        organizationId
+      }
+      page
+      pageSize
+      total
+    }
+  }
+`;
+
+/**
+ * 二级管理员密码重置（一级专用）：必须提供目标公司与账号，并写入必填原因审计。
+ * 协议层不接受客户端自报密码；新口令只出现在本次成功响应里。
+ */
+const ADMIN_RESET_LEVEL_TWO_ADMIN_CREDENTIAL_MUTATION = `
+  mutation AdminResetLevelTwoAdminCredential($input: AdminResetLevelTwoCredentialInput!) {
+    adminResetLevelTwoAdminCredential(input: $input) {
+      organizationId
+      adminAccountId
+      loginName
+      nickname
+      mustChangePassword
+      temporaryPassword
+    }
+  }
+`;
+
+type AdminBoundLevelTwoAdminsQueryData = {
+  adminBoundLevelTwoAdmins: AdminBoundLevelTwoAdminPageDto;
+};
+
+type AdminResetLevelTwoCredentialData = {
+  adminResetLevelTwoAdminCredential: AdminLevelTwoCredentialResultDto;
 };
 
 type AdminSetUserStatusData = {
@@ -216,6 +271,62 @@ export async function adminResetUserPasswordToDefault(input: {
 
     // 密码本身不出现在任何结果中，只回传后端固定安全提示
     return { ok: true, notice: data.adminResetUserPasswordToDefault.notice };
+  } catch (error) {
+    return toCommandFailure(error, RESET_PASSWORD_REASON_BY_CATEGORY_CODE);
+  }
+}
+
+/**
+ * 一级专用窄查询：已绑定二级管理员（服务端分页 + 关键字）。
+ * 只返回合法绑定，不含凭据字段；失败按共享 ingress 错误模型上抛，由 hook 归一展示。
+ */
+export async function fetchAdminBoundLevelTwoAdmins(
+  query: AdminBoundLevelTwoAdminListQuery,
+): Promise<AdminBoundLevelTwoAdminPage> {
+  const data = await executeGraphQL<
+    AdminBoundLevelTwoAdminsQueryData,
+    {
+      keyword?: string;
+      pagination: { mode: 'OFFSET'; page: number; pageSize: number; withTotal: true };
+    }
+  >(ADMIN_BOUND_LEVEL_TWO_ADMINS_QUERY, {
+    pagination: {
+      mode: 'OFFSET',
+      page: query.page,
+      pageSize: query.pageSize,
+      withTotal: true,
+    },
+    ...(query.keyword ? { keyword: query.keyword } : {}),
+  });
+
+  return mapAdminBoundLevelTwoAdminPageDto(data.adminBoundLevelTwoAdmins);
+}
+
+/**
+ * 二级管理员密码重置（一级专用，必填原因写审计）。
+ *
+ * 成功响应携带本次新口令；mutation 由 shared/graphql 统一强制 `no-cache`，
+ * 口令不会进入 Apollo 缓存。失败按稳定大类码归一为显式业务拒绝。
+ */
+export async function adminResetLevelTwoAdminCredential(input: {
+  adminAccountId: number;
+  organizationId: number;
+  reason: string;
+}): Promise<AdminLevelTwoCredentialCommandResult> {
+  try {
+    const data = await executeGraphQL<
+      AdminResetLevelTwoCredentialData,
+      { input: { adminAccountId: number; organizationId: number; reason: string } }
+    >(ADMIN_RESET_LEVEL_TWO_ADMIN_CREDENTIAL_MUTATION, { input });
+
+    if (!data.adminResetLevelTwoAdminCredential) {
+      throw new Error('重置二级管理员密码未返回结果。');
+    }
+
+    return {
+      ok: true,
+      credential: mapAdminLevelTwoCredentialResultDto(data.adminResetLevelTwoAdminCredential),
+    };
   } catch (error) {
     return toCommandFailure(error, RESET_PASSWORD_REASON_BY_CATEGORY_CODE);
   }

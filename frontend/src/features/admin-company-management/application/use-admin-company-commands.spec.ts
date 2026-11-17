@@ -54,23 +54,39 @@ const CREATE_DRAFT = {
   isServiceProvider: false,
 } as const;
 
+const SUBMISSION_KEY = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+
+const PROVISION_RESULT = {
+  ok: true,
+  organization: COMPANY,
+  provisionedAdmin: {
+    accountId: 9001,
+    loginName: 'admin_org_501',
+    nickname: '甲公司管理员',
+    mustChangePassword: true,
+  },
+  submission: { submissionId: 77, replayed: false },
+  temporaryPassword: 'Temp-Only-For-Test-1',
+} as const;
+
 beforeEach(() => {
   createMock.mockReset();
   updateMock.mockReset();
 });
 
 describe('useAdminCompanyCommands', () => {
-  it('新增成功后刷新列表并透传显式结果', async () => {
+  it('新增成功后刷新列表并透传显式结果，提交标识原样传给 adapter', async () => {
     const reload = vi.fn();
-    createMock.mockResolvedValue({ ok: true, organization: COMPANY });
+    createMock.mockResolvedValue(PROVISION_RESULT);
     const { result } = renderHook(() => useAdminCompanyCommands(reload));
 
     let execution: Awaited<ReturnType<typeof result.current.createCompany>> | undefined;
     await act(async () => {
-      execution = await result.current.createCompany(CREATE_DRAFT);
+      execution = await result.current.createCompany(CREATE_DRAFT, SUBMISSION_KEY);
     });
 
-    expect(execution).toEqual({ kind: 'ok', result: { ok: true, organization: COMPANY } });
+    expect(createMock).toHaveBeenCalledWith(CREATE_DRAFT, SUBMISSION_KEY);
+    expect(execution).toEqual({ kind: 'ok', result: PROVISION_RESULT });
     expect(reload).toHaveBeenCalledTimes(1);
     expect(result.current.isPending('create')).toBe(false);
   });
@@ -104,16 +120,16 @@ describe('useAdminCompanyCommands', () => {
 
     let first: Promise<unknown> | undefined;
     act(() => {
-      first = result.current.createCompany(CREATE_DRAFT);
+      first = result.current.createCompany(CREATE_DRAFT, SUBMISSION_KEY);
     });
 
     await act(async () => {
-      const duplicate = await result.current.createCompany(CREATE_DRAFT);
+      const duplicate = await result.current.createCompany(CREATE_DRAFT, SUBMISSION_KEY);
       expect(duplicate).toEqual({ kind: 'in-flight' });
     });
 
     await act(async () => {
-      resolveCreate({ ok: true, organization: COMPANY });
+      resolveCreate(PROVISION_RESULT);
       await first;
     });
 

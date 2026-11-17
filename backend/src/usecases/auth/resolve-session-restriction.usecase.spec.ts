@@ -30,6 +30,7 @@ describe('ResolveSessionRestrictionUsecase', () => {
     accountStatus: AccountStatus.ACTIVE,
     identityHint: IdentityTypeEnum.ENGINEER,
     mustChangePassword: false,
+    credentialVersion: 0,
     adminLevel: null,
     userInfo: {
       userState: UserState.ACTIVE,

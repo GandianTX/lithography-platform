@@ -1242,9 +1242,18 @@ describe('仓库无密值模板（不连接实库）', () => {
     );
     expect(organizations.organizations).toHaveLength(2);
 
+    const productionAdmins = parseAdminBootstrapConfig(
+      readFileSync(join(DOCS_DIR, 'admin-bootstrap.example.json'), 'utf8'),
+    );
+    expect(productionAdmins.schemaVersion).toBe(2);
+    expect(productionAdmins.accounts).toHaveLength(3);
+    expect(productionAdmins.defaultManagedCompanies).toHaveLength(1);
+    expect(productionAdmins.defaultManagedCompanies[0]?.account.adminLevel).toBe(2);
+
     const admins = parseAdminBootstrapConfig(
       readFileSync(join(DOCS_DIR, 'dev-admin.example.json'), 'utf8'),
     );
+    expect(admins.schemaVersion).toBe(1);
     expect(admins.accounts.filter((entry) => entry.adminLevel === 1)).toHaveLength(3);
     expect(admins.accounts.filter((entry) => entry.adminLevel === 2)).toHaveLength(3);
 
@@ -1286,7 +1295,7 @@ describe('管理员映射文件（不连接实库）', () => {
 
   it('schema_version 不匹配、等级越界、重复账号与未知字段均失败关闭', () => {
     expect(() =>
-      parseAdminBootstrapConfig(JSON.stringify({ schema_version: 2, accounts: [] })),
+      parseAdminBootstrapConfig(JSON.stringify({ schema_version: 3, accounts: [] })),
     ).toThrow(/schema_version/);
     expect(() =>
       parseAdminBootstrapConfig(
@@ -1470,6 +1479,52 @@ describe('初始化映射邮箱冲突（不连接实库）', () => {
       }),
     );
     expect(() => assertInitializationEmailConflicts(adminConfig('same@example.com'), dev)).toThrow(
+      /初始化映射邮箱冲突/,
+    );
+  });
+
+  it('正式初始化的二级管理员与开发客户邮箱冲突时拒绝', () => {
+    const admin = parseAdminBootstrapConfig(
+      JSON.stringify({
+        schema_version: 2,
+        level_one_accounts: [
+          {
+            login_name: 'admin01',
+            login_email: 'admin01@example.com',
+            password: 'valid-password-01',
+            organization_code: 'ORG-CLIENT-A',
+            nickname: '管理员一',
+          },
+          {
+            login_name: 'admin02',
+            login_email: 'admin02@example.com',
+            password: 'valid-password-02',
+            organization_code: 'ORG-CLIENT-A',
+            nickname: '管理员二',
+          },
+          {
+            login_name: 'admin03',
+            login_email: 'admin03@example.com',
+            password: 'valid-password-03',
+            organization_code: 'ORG-CLIENT-A',
+            nickname: '管理员三',
+          },
+        ],
+        default_managed_companies: [
+          {
+            organization_code: 'ORG-PEER-A',
+            account: {
+              login_name: 'managed01',
+              login_email: 'same@example.com',
+              password: 'valid-password-04',
+              nickname: '二级管理员一',
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(() => assertInitializationEmailConflicts(admin, devConfig('SAME@example.com'))).toThrow(
       /初始化映射邮箱冲突/,
     );
   });

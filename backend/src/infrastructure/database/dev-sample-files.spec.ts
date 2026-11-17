@@ -573,7 +573,7 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
     const openMock = fsp.open as jest.MockedFunction<typeof fsp.open>;
     const realOpen = jest.requireActual<typeof import('node:fs/promises')>('node:fs/promises').open;
     let swapped = false;
-    openMock.mockImplementation(((target: fs.PathLike, flags?: string | number, mode?: fs.Mode) => {
+    openMock.mockImplementation((target: fs.PathLike, flags?: string | number, mode?: fs.Mode) => {
       if (!swapped && String(target) === dir) {
         // 守卫通过之后、真正打开目录之前，把上级目录换成指向另存目录的符号链接。
         swapped = true;
@@ -581,7 +581,7 @@ describe('开发样例原件写入与核对（不连接实库）', () => {
         fs.symlinkSync(other, container);
       }
       return realOpen(target, flags, mode);
-    }) as typeof fsp.open);
+    });
 
     try {
       await expect(claimOwned(dir)).rejects.toThrow(/句柄指向的路径与配置不一致/);

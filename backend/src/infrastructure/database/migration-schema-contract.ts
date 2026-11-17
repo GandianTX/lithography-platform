@@ -57,6 +57,7 @@ export const REQUIRED_TABLES = [
   'backup_asset',
   'backup_restore_run',
   'management_audit_event',
+  'admin_organization_provisioning_request',
 ] as const;
 
 export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
@@ -204,6 +205,12 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
   { table: 'management_audit_event', index: 'idx_management_audit_organization' },
   { table: 'management_audit_event', index: 'idx_management_audit_target' },
   {
+    table: 'admin_organization_provisioning_request',
+    index: 'uk_provisioning_purpose_actor_key',
+  },
+  { table: 'admin_organization_provisioning_request', index: 'idx_provisioning_organization' },
+  { table: 'admin_organization_provisioning_request', index: 'idx_provisioning_admin_account' },
+  {
     table: 'engineer_registration_application',
     index: 'uk_engineer_registration_application_pending_account',
   },
@@ -305,6 +312,7 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'engineer_registration_application', column: 'pending_account_id' },
   { table: 'base_user_account', column: 'admin_level' },
   { table: 'base_user_account', column: 'must_change_password', notNull: true },
+  { table: 'base_user_account', column: 'credential_version', notNull: true },
   { table: 'base_user_info', column: 'real_name' },
   { table: 'base_user_info', column: 'customer_organization_id' },
   { table: 'organization', column: 'short_name' },
@@ -510,6 +518,16 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'management_audit_event', column: 'organization_id' },
   { table: 'management_audit_event', column: 'target_id', notNull: true },
   { table: 'management_audit_event', column: 'target_type', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'id', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'purpose', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'submission_key', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'actor_account_id', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'input_fingerprint', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'state', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'organization_id' },
+  { table: 'admin_organization_provisioning_request', column: 'admin_account_id' },
+  { table: 'admin_organization_provisioning_request', column: 'created_at', notNull: true },
+  { table: 'admin_organization_provisioning_request', column: 'updated_at', notNull: true },
   { table: 'organization', column: 'name', notNull: true },
   { table: 'record_package_import', column: 'completed_at' },
   { table: 'record_package_import', column: 'created_at', notNull: true },
@@ -656,6 +674,18 @@ export const GENERATED_COLUMN_DEFINITIONS: Readonly<
  * 新增表的每个字段都必须同时登记在 REQUIRED_COLUMNS 与 COLUMN_DEFINITIONS。
  */
 export const DELIVERY_NEW_TABLE_COLUMNS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  admin_organization_provisioning_request: [
+    'actor_account_id',
+    'admin_account_id',
+    'created_at',
+    'id',
+    'input_fingerprint',
+    'organization_id',
+    'purpose',
+    'state',
+    'submission_key',
+    'updated_at',
+  ],
   ai_message_analysis: [
     'answer_message_id',
     'completed_at',
@@ -923,6 +953,7 @@ export const DELIVERY_EXISTING_TABLE_COLUMNS: ReadonlyArray<string> = [
   'ai_message.content_version',
   'ai_message.question_uuid',
   'base_user_account.admin_level',
+  'base_user_account.credential_version',
   'base_user_account.must_change_password',
   'base_user_info.customer_organization_id',
   'base_user_info.real_name',
@@ -986,6 +1017,11 @@ export const DELIVERY_COLUMNS: ReadonlyArray<string> = [
 
 /** 本期交付的 CHECK（新增表全量 + 既有表新增/调整）。 */
 export const DELIVERY_CHECKS: ReadonlyArray<string> = [
+  'admin_organization_provisioning_request.chk_provisioning_completion',
+  'admin_organization_provisioning_request.chk_provisioning_fingerprint_length',
+  'admin_organization_provisioning_request.chk_provisioning_key_nonempty',
+  'admin_organization_provisioning_request.chk_provisioning_purpose',
+  'admin_organization_provisioning_request.chk_provisioning_state',
   'ai_conversation.chk_ai_conversation_completion',
   'ai_conversation.chk_ai_conversation_content_version',
   'ai_message_analysis.chk_ai_message_analysis_completed',
@@ -1100,6 +1136,9 @@ export const DELIVERY_CHECKS: ReadonlyArray<string> = [
 
 /** 本期交付的索引（新增表全量 + 既有表新增/调整）。 */
 export const DELIVERY_INDEXES: ReadonlyArray<string> = [
+  'admin_organization_provisioning_request.idx_provisioning_admin_account',
+  'admin_organization_provisioning_request.idx_provisioning_organization',
+  'admin_organization_provisioning_request.uk_provisioning_purpose_actor_key',
   'ai_conversation.idx_ai_conversation_owner_created',
   'ai_message_analysis.idx_ai_message_analysis_conversation_status',
   'ai_message_analysis.uk_ai_message_analysis_question',
@@ -1147,6 +1186,9 @@ export const DELIVERY_INDEXES: ReadonlyArray<string> = [
 
 /** 本期交付的外键（新增表全量 + 既有表新增/调整）。 */
 export const DELIVERY_FOREIGN_KEYS: ReadonlyArray<string> = [
+  'admin_organization_provisioning_request.fk_provisioning_actor',
+  'admin_organization_provisioning_request.fk_provisioning_admin_account',
+  'admin_organization_provisioning_request.fk_provisioning_organization',
   'ai_conversation.fk_ai_conversation_owner_organization',
   'ai_message_analysis.fk_ai_message_analysis_answer_message',
   'ai_message_analysis.fk_ai_message_analysis_conversation',
@@ -1568,6 +1610,20 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
   { table: 'management_audit_event', constraint: 'chk_management_audit_operation' },
   { table: 'management_audit_event', constraint: 'chk_management_audit_result' },
   { table: 'management_audit_event', constraint: 'chk_management_audit_target' },
+  {
+    table: 'admin_organization_provisioning_request',
+    constraint: 'chk_provisioning_completion',
+  },
+  {
+    table: 'admin_organization_provisioning_request',
+    constraint: 'chk_provisioning_fingerprint_length',
+  },
+  {
+    table: 'admin_organization_provisioning_request',
+    constraint: 'chk_provisioning_key_nonempty',
+  },
+  { table: 'admin_organization_provisioning_request', constraint: 'chk_provisioning_purpose' },
+  { table: 'admin_organization_provisioning_request', constraint: 'chk_provisioning_state' },
 ];
 
 export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
@@ -2125,6 +2181,21 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
     constraint: 'fk_management_audit_organization',
     referencedTable: 'organization',
   },
+  {
+    table: 'admin_organization_provisioning_request',
+    constraint: 'fk_provisioning_actor',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'admin_organization_provisioning_request',
+    constraint: 'fk_provisioning_admin_account',
+    referencedTable: 'base_user_account',
+  },
+  {
+    table: 'admin_organization_provisioning_request',
+    constraint: 'fk_provisioning_organization',
+    referencedTable: 'organization',
+  },
 ];
 
 /* eslint-disable @typescript-eslint/naming-convention -- 键为 `表名.对象名` 的数据库标识，不能改为驼峰 */
@@ -2183,6 +2254,7 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
   backup_asset: 1775501500000,
   backup_restore_run: 1775501500000,
   management_audit_event: 1775501500000,
+  admin_organization_provisioning_request: 1775502300000,
 };
 
 const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
@@ -2296,6 +2368,9 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'management_audit_event.idx_management_audit_actor': 1775501500000,
   'management_audit_event.idx_management_audit_organization': 1775501500000,
   'management_audit_event.idx_management_audit_target': 1775501500000,
+  'admin_organization_provisioning_request.idx_provisioning_admin_account': 1775502300000,
+  'admin_organization_provisioning_request.idx_provisioning_organization': 1775502300000,
+  'admin_organization_provisioning_request.uk_provisioning_purpose_actor_key': 1775502300000,
   'engineer_registration_application.uk_engineer_registration_application_pending_account': 1775401500000,
   'engineer_registration_application.idx_engineer_registration_application_org_status_submitted': 1775401500000,
   'engineer_registration_application.idx_engineer_registration_application_account_submitted': 1775401500000,
@@ -2385,6 +2460,7 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'engineer_registration_application.pending_account_id': 1775401500000,
   'base_user_account.admin_level': 1775501000000,
   'base_user_account.must_change_password': 1775501000000,
+  'base_user_account.credential_version': 1775502400000,
   'base_user_info.real_name': 1775501000000,
   'base_user_info.customer_organization_id': 1775501000000,
   'organization.short_name': 1775501000000,
@@ -2664,6 +2740,16 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'sync_receipt.resource_type': 1775501400000,
   'sync_receipt.source_system': 1775501900000,
   'sync_receipt.version_no': 1775501400000,
+  'admin_organization_provisioning_request.id': 1775502300000,
+  'admin_organization_provisioning_request.purpose': 1775502300000,
+  'admin_organization_provisioning_request.submission_key': 1775502300000,
+  'admin_organization_provisioning_request.actor_account_id': 1775502300000,
+  'admin_organization_provisioning_request.input_fingerprint': 1775502300000,
+  'admin_organization_provisioning_request.state': 1775502300000,
+  'admin_organization_provisioning_request.organization_id': 1775502300000,
+  'admin_organization_provisioning_request.admin_account_id': 1775502300000,
+  'admin_organization_provisioning_request.created_at': 1775502300000,
+  'admin_organization_provisioning_request.updated_at': 1775502300000,
 };
 
 export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
@@ -2867,6 +2953,11 @@ export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   'management_audit_event.chk_management_audit_operation': 1775501500000,
   'management_audit_event.chk_management_audit_result': 1775501500000,
   'management_audit_event.chk_management_audit_target': 1775501500000,
+  'admin_organization_provisioning_request.chk_provisioning_completion': 1775502300000,
+  'admin_organization_provisioning_request.chk_provisioning_fingerprint_length': 1775502300000,
+  'admin_organization_provisioning_request.chk_provisioning_key_nonempty': 1775502300000,
+  'admin_organization_provisioning_request.chk_provisioning_purpose': 1775502300000,
+  'admin_organization_provisioning_request.chk_provisioning_state': 1775502300000,
   // D3（1775502000000）
   'sync_conflict.chk_sync_conflict_versions': 1775502000000,
   'sync_conflict.chk_sync_conflict_decision': 1775502000000,
@@ -2983,6 +3074,9 @@ const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
   'backup_restore_run.fk_backup_restore_run_target': 1775501900000,
   'management_audit_event.fk_management_audit_actor': 1775501500000,
   'management_audit_event.fk_management_audit_organization': 1775501500000,
+  'admin_organization_provisioning_request.fk_provisioning_actor': 1775502300000,
+  'admin_organization_provisioning_request.fk_provisioning_admin_account': 1775502300000,
+  'admin_organization_provisioning_request.fk_provisioning_organization': 1775502300000,
 };
 
 /**
@@ -3429,6 +3523,18 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'management_audit_event.idx_management_audit_target': {
     unique: false,
     columns: ['target_type', 'target_id', 'created_at'],
+  },
+  'admin_organization_provisioning_request.uk_provisioning_purpose_actor_key': {
+    unique: true,
+    columns: ['purpose', 'actor_account_id', 'submission_key'],
+  },
+  'admin_organization_provisioning_request.idx_provisioning_organization': {
+    unique: false,
+    columns: ['organization_id'],
+  },
+  'admin_organization_provisioning_request.idx_provisioning_admin_account': {
+    unique: false,
+    columns: ['admin_account_id'],
   },
   'engineer_registration_application.uk_engineer_registration_application_pending_account': {
     unique: true,
@@ -4101,6 +4207,27 @@ export const FOREIGN_KEY_DEFINITIONS: Readonly<Record<string, ForeignKeyDefiniti
     onDelete: 'RESTRICT',
     onUpdate: 'RESTRICT',
   },
+  'admin_organization_provisioning_request.fk_provisioning_actor': {
+    referenceTable: 'base_user_account',
+    localColumns: ['actor_account_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'admin_organization_provisioning_request.fk_provisioning_organization': {
+    referenceTable: 'organization',
+    localColumns: ['organization_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'admin_organization_provisioning_request.fk_provisioning_admin_account': {
+    referenceTable: 'base_user_account',
+    localColumns: ['admin_account_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
 };
 
 export type PrefixStructureKind = 'table' | 'index' | 'column' | 'check' | 'foreign_key';
@@ -4145,6 +4272,66 @@ export interface CheckDefinition extends CheckStageDefinition {
  */
 /* eslint-disable @typescript-eslint/naming-convention -- 键为 table.column / table.constraint 结构标识 */
 export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
+  'admin_organization_provisioning_request.admin_account_id': {
+    since: 1775502300000,
+    columnType: 'int',
+    nullable: true,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.actor_account_id': {
+    since: 1775502300000,
+    columnType: 'int',
+    nullable: false,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.created_at': {
+    since: 1775502300000,
+    columnType: 'timestamp(3)',
+    nullable: false,
+    defaultValue: 'CURRENT_TIMESTAMP(3)',
+  },
+  'admin_organization_provisioning_request.id': {
+    since: 1775502300000,
+    columnType: 'int',
+    nullable: false,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.input_fingerprint': {
+    since: 1775502300000,
+    columnType: 'char(64)',
+    nullable: false,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.organization_id': {
+    since: 1775502300000,
+    columnType: 'int',
+    nullable: true,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.purpose': {
+    since: 1775502300000,
+    columnType: 'varchar(32)',
+    nullable: false,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.state': {
+    since: 1775502300000,
+    columnType: 'varchar(16)',
+    nullable: false,
+    defaultValue: 'PENDING',
+  },
+  'admin_organization_provisioning_request.submission_key': {
+    since: 1775502300000,
+    columnType: 'varchar(36)',
+    nullable: false,
+    defaultValue: null,
+  },
+  'admin_organization_provisioning_request.updated_at': {
+    since: 1775502300000,
+    columnType: 'timestamp(3)',
+    nullable: false,
+    defaultValue: 'CURRENT_TIMESTAMP(3)',
+  },
   'repair_request.is_historical': {
     since: 1775501900000,
     columnType: 'tinyint(1)',
@@ -4654,6 +4841,12 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
   'base_user_account.must_change_password': {
     since: 1775501000000,
     columnType: 'tinyint(1)',
+    nullable: false,
+    defaultValue: '0',
+  },
+  'base_user_account.credential_version': {
+    since: 1775502400000,
+    columnType: 'int unsigned',
     nullable: false,
     defaultValue: '0',
   },
@@ -5835,6 +6028,27 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
  * 同名不同定义属于真实漂移，必须由 verify 拒绝。
  */
 export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
+  'admin_organization_provisioning_request.chk_provisioning_purpose': {
+    since: 1775502300000,
+    clause: "`purpose` = 'ADMIN_CREATE_ORGANIZATION'",
+  },
+  'admin_organization_provisioning_request.chk_provisioning_state': {
+    since: 1775502300000,
+    clause: "`state` IN ('PENDING', 'COMPLETED')",
+  },
+  'admin_organization_provisioning_request.chk_provisioning_key_nonempty': {
+    since: 1775502300000,
+    clause: 'CHAR_LENGTH(TRIM(`submission_key`)) > 0',
+  },
+  'admin_organization_provisioning_request.chk_provisioning_fingerprint_length': {
+    since: 1775502300000,
+    clause: 'CHAR_LENGTH(`input_fingerprint`) = 64',
+  },
+  'admin_organization_provisioning_request.chk_provisioning_completion': {
+    since: 1775502300000,
+    clause:
+      "`state` = 'PENDING' OR (`organization_id` IS NOT NULL AND `admin_account_id` IS NOT NULL)",
+  },
   // 一轮完整性补登记：以下 CHECK 由前 44 条迁移创建、从未被后续迁移替换，
   // 但此前只登记了名称/所属迁移，未登记精确表达式。生效阶段以创建迁移为准，
   // 不得按本期交付阶段要求（旧态不提前要求）。
@@ -6012,13 +6226,20 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   },
   // D3（1775502000000）：本轮交付字段与约束
   'management_audit_event.chk_management_audit_operation': {
-    since: 1775502000000,
+    since: 1775502500000,
     clause:
-      "(`operation` IN ('ADMIN_DELETE_DOCUMENT', 'CORRECT_DOCUMENT_OWNERSHIP', 'RESTORE_LOCAL_BUSINESS'))",
+      "(`operation` IN ('ADMIN_DELETE_DOCUMENT', 'CORRECT_DOCUMENT_OWNERSHIP', " +
+      "'RESTORE_LOCAL_BUSINESS', 'REISSUE_LEVEL2_CREDENTIAL', 'RESET_LEVEL2_CREDENTIAL'))",
     stages: [
       {
         since: 1775501500000,
         clause: "`operation` IN ('MANAGE_ACCOUNT', 'ASSIGN_RESOURCE', 'MANAGE_COMPANY')",
+      },
+      {
+        since: 1775502000000,
+        clause:
+          "(`operation` IN ('ADMIN_DELETE_DOCUMENT', 'CORRECT_DOCUMENT_OWNERSHIP', " +
+          "'RESTORE_LOCAL_BUSINESS'))",
       },
     ],
   },
