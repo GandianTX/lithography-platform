@@ -9,8 +9,8 @@
 // - 只读采集：不触发补发 / 重置提交，因此除开通夹具外没有任何写操作；
 // - 开通夹具经真实 `adminProvisionCompany` 建立「已绑定」事实，只登记主键与公司/账号事实，
 //   一次性口令即用即弃，不写入截图、测量文件、日志或断言消息；
-// - 采集范围：公司档案列表的「二级管理员账号」列、公司详情、补发确认弹窗、
-//   用户管理「二级管理员凭据」弹窗第一步与第二步；
+// - 采集范围：公司档案列表的「二级管理员账号」列、公司详情、二级管理员账号弹窗、
+//   补发确认弹窗、用户管理「二级管理员凭据」弹窗第一步与第二步；
 // - 每个状态都断言 `document.documentElement.scrollWidth - clientWidth <= 0`，
 //   弹窗另测宽度与左右边界；
 // - 截图走 `prepareStableViewport()` + `page.screenshot()`（工作区未提交时
@@ -184,10 +184,12 @@ async function captureState(
       const expectedWidth = Math.min(DEFAULT_DIALOG_WIDTH, viewport.width - inset);
 
       expect(resolved.dialogWidth, `${state} 应存在可见弹窗`).not.toBeNull();
-      expect(resolved.dialogWidth ?? 0, `${state} 弹窗宽度应贴齐默认宽度或按视口收缩`).toBeCloseTo(
-        expectedWidth,
-        0,
-      );
+      // 亚像素容差 1px：不同弹窗内容（如出现纵向滚动条）会让实测宽度带 <1px 取整差异，
+      // 断言只负责识别「未贴齐默认宽度 / 未按视口收缩」的实质偏差
+      expect(
+        Math.abs((resolved.dialogWidth ?? 0) - expectedWidth),
+        `${state} 弹窗宽度应贴齐默认宽度或按视口收缩`,
+      ).toBeLessThanOrEqual(1);
       expect(resolved.dialogX ?? -1, `${state} 弹窗左边不应越出视口`).toBeGreaterThanOrEqual(0);
       expect(
         resolved.dialogRight ?? Number.POSITIVE_INFINITY,
@@ -325,7 +327,7 @@ test.describe.serial('S4 凭据保护视觉取证（隔离库真实链路）', (
     await expect(row.getByText(facts.adminLoginName, { exact: true })).toHaveCount(0);
     await captureState(page, 'admin1-companies-binding');
 
-    // 2. 详情：绑定事实与补发入口（不提交）
+    // 2. 详情：只读绑定事实；补发入口已收敛到「二级管理员账号」弹窗
     await row.getByRole('button', { name: '详情' }).click();
 
     const detailDialog = visibleDialog(page).filter({ hasText: '公司详情' });
@@ -333,19 +335,34 @@ test.describe.serial('S4 凭据保护视觉取证（隔离库真实链路）', (
     await expect(detailDialog).toBeVisible();
     await expect(detailDialog.getByText('二级管理员账号')).toBeVisible();
     await expect(detailDialog.getByText(maskedLoginName)).toBeVisible();
-    await expect(detailDialog.getByRole('button', { name: '补发临时密码' })).toBeVisible();
+    await expect(detailDialog.getByRole('button', { name: '补发临时密码' })).toHaveCount(0);
     await captureState(page, 'admin1-company-detail', { dialog: true });
 
-    // 3. 补发二次确认：只有公司名与脱敏登录名，没有任何口令
-    await detailDialog.getByRole('button', { name: '补发临时密码' }).click();
+    // 3. 账号弹窗：唯一的补发入口，展示完整登录名与开通状态（不提交）
+    await detailDialog.getByRole('button', { name: '关 闭' }).click();
+    await expect(detailDialog).toHaveCount(0);
+
+    await row.getByRole('button', { name: '二级管理员账号' }).click();
+
+    const accountDialog = visibleDialog(page).filter({
+      hasText: `二级管理员账号：${companyName}`,
+    });
+
+    await expect(accountDialog).toBeVisible();
+    await expect(accountDialog.getByText(facts.adminLoginName, { exact: true })).toBeVisible();
+    await expect(accountDialog.getByText('待首次改密')).toBeVisible();
+    await expect(accountDialog.getByRole('button', { name: '补发临时密码' })).toBeVisible();
+    await captureState(page, 'admin1-company-account', { dialog: true });
+
+    // 4. 补发二次确认：目标公司 + 完整登录名（账号弹窗已核对过身份，确认弹窗按它展示），无口令
+    await accountDialog.getByRole('button', { name: '补发临时密码' }).click();
 
     const confirmDialog = visibleDialog(page).filter({ hasText: '补发二级管理员临时密码' });
 
     await expect(confirmDialog).toBeVisible();
     await expect(confirmDialog.getByText(companyName)).toBeVisible();
-    await expect(confirmDialog.getByText(maskedLoginName)).toBeVisible();
+    await expect(confirmDialog.getByText(facts.adminLoginName, { exact: true })).toBeVisible();
     await expect(confirmDialog.getByText('补发会立即作废旧口令与旧登录会话')).toBeVisible();
-    await expect(confirmDialog.getByText(facts.adminLoginName, { exact: true })).toHaveCount(0);
     await captureState(page, 'admin1-company-reissue-confirm', { dialog: true });
 
     await page.setViewportSize(VIEWPORTS[0]);
