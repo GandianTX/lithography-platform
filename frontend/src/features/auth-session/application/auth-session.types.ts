@@ -15,6 +15,7 @@ export const AUTH_SESSION_RESTRICTIONS = [
   'ENGINEER_PENDING',
   'ENGINEER_REJECTED',
   'ENGINEER_INACTIVE',
+  'ADMIN_ORGANIZATION_INACTIVE',
 ] as const;
 
 export type AuthSessionRestriction = (typeof AUTH_SESSION_RESTRICTIONS)[number];

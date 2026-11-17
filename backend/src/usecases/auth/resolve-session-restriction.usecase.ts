@@ -16,6 +16,8 @@ import { OrganizationMembershipQueryService } from '@src/modules/lithography/que
  * - `restriction`：供登录签发、每请求复核与凭据式门禁共用；
  * - `latestEngineerApplication`：账号最新一份工程师申请（非工程师身份为 null）；
  * - `engineerOrganizationId` / `adminOrganizationId`：唯一有效成员组织，0 条或多条均为 null；
+ * - 二级管理员（`admin_level=2`）缺少唯一有效 `SUPER_ADMIN` 成员组织时，`restriction`
+ *   为 `ADMIN_ORGANIZATION_INACTIVE`，登录与每请求复核共用该结论；
  * - 申请目标组织只经 `latestEngineerApplication.organizationId` 表达，不在此授予任何权限。
  */
 export interface SessionRestrictionResolution {
@@ -67,6 +69,8 @@ export class ResolveSessionRestrictionUsecase {
       latestEngineerApplicationStatus: latestEngineerApplication?.status ?? null,
       latestEngineerApplicationOrganizationId: latestEngineerApplication?.organizationId ?? null,
       effectiveEngineerOrganizationIds: engineerOrganizationIds,
+      adminLevel: snapshot.adminLevel,
+      effectiveAdminOrganizationIds: adminOrganizationIds,
     });
 
     return {

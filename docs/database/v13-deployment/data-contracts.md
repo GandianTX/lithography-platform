@@ -151,6 +151,7 @@
 | 递增时机（同一事务） | 一级补发临时密码、二级专用重置、本人自助改密、公司状态实际变更（启用↔停用）时对受影响账号递增；公司状态未变化或仅编辑其它字段不递增 |
 | 失效范围 | 递增后该账号全部旧 access token 立即永久失效；当前仓库**没有** refresh/续签消费入口，refresh token 不构成复活通道 |
 | 强制改密 | 补发与重置都置 `must_change_password=true`；`GraphQL` 与 `REST` 业务入口由 `RolesGuard` / `SessionRestrictionGuard` / `MustChangePasswordGuard` 统一拒绝非 `NONE` 受限会话，仅放行本人核验、本人改密与登出 |
+| 二级管理员公司失效 | `admin_level=2` 的账号在请求期若无唯一有效且角色为 `SUPER_ADMIN` 的可信公司成员（公司停用、成员缺失/角色不符、多公司歧义），会话限制为 `ADMIN_ORGANIZATION_INACTIVE`；登录签发与每请求复核共用 `ResolveSessionRestrictionUsecase`，业务入口统一拒绝，本人资料维护/改密/登出不受影响；`admin_level=1` 为平台级身份，不因缺少成员公司受限。公司启停仍递增管理员凭据代次，旧 Token 永久失效 |
 | 审计 | `management_audit_event.operation` 的 CHECK 扩展为五值：原三类 + `REISSUE_LEVEL2_CREDENTIAL` + `RESET_LEVEL2_CREDENTIAL`；凭据类审计与写哈希同事务，`detail` 只允许 `{ reason?, loginNameMasked }`，禁止写入口令、哈希或派生值 |
 
 ## 6. 历史数据与旧接口兼容

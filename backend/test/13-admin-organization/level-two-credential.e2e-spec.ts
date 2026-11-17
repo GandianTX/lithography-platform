@@ -188,11 +188,28 @@ const UPDATE_ORGANIZATION_MUTATION = `
   }
 `;
 
+const SESSION_IDENTITY_QUERY = `
+  query MySessionIdentity {
+    mySessionIdentity { accountId restriction }
+  }
+`;
+
+const EQUIPMENT_MODELS_QUERY = `
+  query EquipmentModels { equipmentModels { id } }
+`;
+
+const ENGINEER_REPAIR_REQUESTS_QUERY = `
+  query EngineerRepairRequests($pagination: PaginationArgs!) {
+    engineerRepairRequests(pagination: $pagination) { total }
+  }
+`;
+
 const PAGINATION = { mode: 'OFFSET', page: 1, pageSize: 50 } as const;
 const RESET_REASON = 'S3 E2E 重置原因';
 const FIRST_CHANGED_PASSWORD = 'E2eS3First#2026';
 const SECOND_CHANGED_PASSWORD = 'E2eS3Second#2026';
 const COMPANY_TOGGLE_PASSWORD = 'E2eS3Toggle#2026';
+const DISABLED_PHASE_PASSWORD = 'E2eS3Disabled#2026';
 
 describe('S3 二级管理员绑定与凭据补发/重置 (e2e)', () => {
   let app: INestApplication;
@@ -819,6 +836,94 @@ describe('S3 二级管理员绑定与凭据补发/重置 (e2e)', () => {
       'JWT_AUTHENTICATION_FAILED',
     );
 
+    // P1 回归：停用期间重新登录只能得到受限会话，业务入口必须失败关闭。
+    const disabledPhaseLogin = await tryLogin(boundAdmin.loginName, COMPANY_TOGGLE_PASSWORD);
+    if (disabledPhaseLogin.token === null) throw new Error('公司停用期间重新登录失败');
+    const disabledPhaseToken = disabledPhaseLogin.token;
+
+    const identityProbe = await gql<{
+      mySessionIdentity: { accountId: number; restriction: string };
+    }>(SESSION_IDENTITY_QUERY, {}, disabledPhaseToken);
+    expect(identityProbe.body.errors).toBeUndefined();
+    expect(identityProbe.body.data?.mySessionIdentity.restriction).toBe(
+      'ADMIN_ORGANIZATION_INACTIVE',
+    );
+
+    // 原漏洞入口一：设备型号。
+    const equipmentProbe = await gql<{ equipmentModels: Array<{ id: number }> }>(
+      EQUIPMENT_MODELS_QUERY,
+      {},
+      disabledPhaseToken,
+    );
+    expect(equipmentProbe.body.data?.equipmentModels).toBeUndefined();
+    expect(equipmentProbe.body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+    expect(equipmentProbe.body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+    // 原漏洞入口二：工程师工单列表（SUPER_ADMIN 按角色继承准入）。
+    const engineerProbe = await gql<{ engineerRepairRequests: { total: number } }>(
+      ENGINEER_REPAIR_REQUESTS_QUERY,
+      { pagination: PAGINATION },
+      disabledPhaseToken,
+    );
+    expect(engineerProbe.body.data?.engineerRepairRequests).toBeUndefined();
+    expect(engineerProbe.body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+
+    // 管理入口同样拒绝。
+    const disabledNameListProbe = await gql<{ adminOrganizationNameList: { total: number } }>(
+      NAME_LIST_PROBE,
+      { pagination: PAGINATION },
+      disabledPhaseToken,
+    );
+    expect(disabledNameListProbe.body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+
+    // 实际 REST 原件入口。
+    const restProbe = await request(app.getHttpServer())
+      .get('/api/stored-files/1')
+      .set('Authorization', `Bearer ${disabledPhaseToken}`);
+    expect(restProbe.status).toBe(403);
+
+    // 本人资料读取与改密仍在受限会话白名单内。
+    const settingsProbe = await gql<{ myAccountSettings: { loginName: string | null } }>(
+      'query { myAccountSettings { loginName } }',
+      {},
+      disabledPhaseToken,
+    );
+    expect(settingsProbe.body.errors).toBeUndefined();
+    const changeWhileDisabled = await gql<{ changeMyPassword: { isUpdated: boolean } }>(
+      CHANGE_PASSWORD_MUTATION,
+      { input: { currentPassword: COMPANY_TOGGLE_PASSWORD, newPassword: DISABLED_PHASE_PASSWORD } },
+      disabledPhaseToken,
+    );
+    expect(changeWhileDisabled.body.errors).toBeUndefined();
+    expect(changeWhileDisabled.body.data?.changeMyPassword.isUpdated).toBe(true);
+
+    // 一级管理员不因平台级身份被缩权。
+    const levelOneProbe = await gql<{ adminOrganizationNameList: { total: number } }>(
+      NAME_LIST_PROBE,
+      { pagination: PAGINATION },
+      adminToken,
+    );
+    expect(levelOneProbe.body.errors).toBeUndefined();
+
+    // 停用期改密后的新登录仍为受限会话（限制来自公司事实而非某一枚 Token）。
+    const disabledPhaseRelogin = await tryLogin(boundAdmin.loginName, DISABLED_PHASE_PASSWORD);
+    if (disabledPhaseRelogin.token === null) throw new Error('停用期间改密后重新登录失败');
+    const disabledPhaseReloginToken = disabledPhaseRelogin.token;
+    const reloginIdentity = await gql<{ mySessionIdentity: { restriction: string } }>(
+      SESSION_IDENTITY_QUERY,
+      {},
+      disabledPhaseReloginToken,
+    );
+    expect(reloginIdentity.body.data?.mySessionIdentity.restriction).toBe(
+      'ADMIN_ORGANIZATION_INACTIVE',
+    );
+    const reloginEquipmentProbe = await gql<{ equipmentModels: Array<{ id: number }> }>(
+      EQUIPMENT_MODELS_QUERY,
+      {},
+      disabledPhaseReloginToken,
+    );
+    expect(reloginEquipmentProbe.body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+
     expect(await updateStatus('ACTIVE')).toMatchObject({
       id: organizationId,
       status: 'ACTIVE',
@@ -835,6 +940,16 @@ describe('S3 二级管理员绑定与凭据补发/重置 (e2e)', () => {
       'JWT_AUTHENTICATION_FAILED',
     );
 
+    // 停用期间签发的 Token 在启用时同样被代次递增撤销。
+    const disabledPhaseAfterEnable = await gql<{ mySessionIdentity: { restriction: string } }>(
+      SESSION_IDENTITY_QUERY,
+      {},
+      disabledPhaseReloginToken,
+    );
+    expect(disabledPhaseAfterEnable.body.errors?.[0]?.extensions?.errorCode).toBe(
+      'JWT_AUTHENTICATION_FAILED',
+    );
+
     const bindingEnabled = await gql<{ adminCompanyAdminBinding: BindingView }>(BINDING_QUERY, {
       organizationId,
     });
@@ -844,9 +959,22 @@ describe('S3 二级管理员绑定与凭据补发/重置 (e2e)', () => {
       boundAccountId: boundAdmin.accountId,
     });
 
-    // 账号本身未停用：重新登录可签发新会话，证明旧会话失效来自凭据代次。
-    const freshLogin = await tryLogin(boundAdmin.loginName, COMPANY_TOGGLE_PASSWORD);
-    expect(freshLogin.token).not.toBeNull();
+    // 账号本身未停用：重新登录可签发普通会话并恢复业务入口。
+    const freshLogin = await tryLogin(boundAdmin.loginName, DISABLED_PHASE_PASSWORD);
+    if (freshLogin.token === null) throw new Error('公司重新启用后登录失败');
+    const restoredIdentity = await gql<{ mySessionIdentity: { restriction: string } }>(
+      SESSION_IDENTITY_QUERY,
+      {},
+      freshLogin.token,
+    );
+    expect(restoredIdentity.body.data?.mySessionIdentity.restriction).toBe('NONE');
+    const restoredEquipment = await gql<{ equipmentModels: Array<{ id: number }> }>(
+      EQUIPMENT_MODELS_QUERY,
+      {},
+      freshLogin.token,
+    );
+    expect(restoredEquipment.body.errors).toBeUndefined();
+    expect(Array.isArray(restoredEquipment.body.data?.equipmentModels)).toBe(true);
 
     await trackManagementAuditEvents(organizationId);
   });

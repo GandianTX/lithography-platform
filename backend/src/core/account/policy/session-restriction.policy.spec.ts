@@ -20,6 +20,8 @@ describe('会话限制解析策略', () => {
     latestEngineerApplicationStatus: null,
     latestEngineerApplicationOrganizationId: null,
     effectiveEngineerOrganizationIds: [],
+    adminLevel: null,
+    effectiveAdminOrganizationIds: [],
     ...overrides,
   });
 
@@ -127,6 +129,59 @@ describe('会话限制解析策略', () => {
         facts({ identityHint: IdentityTypeEnum.CUSTOMER, accountStatus: AccountStatus.ACTIVE }),
       ),
     ).toBe(SessionRestriction.NONE);
+  });
+
+  describe('二级管理员可信公司判定', () => {
+    const adminFacts = (overrides: Partial<SessionRestrictionFacts> = {}) =>
+      facts({
+        identityHint: IdentityTypeEnum.SUPER_ADMIN,
+        adminLevel: 2,
+        ...overrides,
+      });
+
+    it('唯一有效 SUPER_ADMIN 成员组织时保持 NONE', () => {
+      expect(resolveSessionRestriction(adminFacts({ effectiveAdminOrganizationIds: [501] }))).toBe(
+        SessionRestriction.NONE,
+      );
+    });
+
+    it.each([
+      ['公司停用 / 成员缺失（0 条有效成员）', []],
+      ['多公司成员歧义（2 条有效成员）', [501, 502]],
+    ])('%s 时返回 ADMIN_ORGANIZATION_INACTIVE', (_label, organizationIds) => {
+      expect(
+        resolveSessionRestriction(adminFacts({ effectiveAdminOrganizationIds: organizationIds })),
+      ).toBe(SessionRestriction.ADMIN_ORGANIZATION_INACTIVE);
+    });
+
+    it('一级管理员不因缺少成员组织被缩权', () => {
+      expect(resolveSessionRestriction(adminFacts({ adminLevel: 1 }))).toBe(
+        SessionRestriction.NONE,
+      );
+    });
+
+    it('必须改密仍优先于管理员公司限制', () => {
+      expect(resolveSessionRestriction(adminFacts({ mustChangePassword: true }))).toBe(
+        SessionRestriction.MUST_CHANGE_PASSWORD,
+      );
+    });
+
+    it('工程师待审优先于管理员公司限制', () => {
+      expect(
+        resolveSessionRestriction(
+          adminFacts({
+            identityHint: IdentityTypeEnum.ENGINEER,
+            latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus.PENDING,
+          }),
+        ),
+      ).toBe(SessionRestriction.ENGINEER_PENDING);
+    });
+
+    it('非管理员不受该规则影响', () => {
+      expect(resolveSessionRestriction(facts({ identityHint: IdentityTypeEnum.CUSTOMER }))).toBe(
+        SessionRestriction.NONE,
+      );
+    });
   });
 });
 
