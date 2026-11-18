@@ -208,6 +208,7 @@ export function resolveAuthSessionAdminScope(
 // 任务 08 允许一级平台管理员访问管理页，二级按可信公司范围访问。
 // 文档数据库仍要求一级且具有可信管理员组织，与该聚合能力的服务端守卫一致。
 const AUTH_SESSION_ADMIN_MANAGEMENT_PATHS: readonly string[] = [
+  '/admin/orders',
   '/admin/users',
   '/admin/companies',
   '/admin/engineer-registrations',

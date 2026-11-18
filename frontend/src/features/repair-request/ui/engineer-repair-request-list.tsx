@@ -155,48 +155,48 @@ function GroupPrimary({ children, truncate = false }: { children: string; trunca
 
 function createColumns(t: Translate): TableColumnsType<EngineerRepairRequestListItem> {
   return [
-  {
-    key: 'application',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="font-bold font-mono text-primary text-xs">{record.requestNo}</span>
-        <span className="text-text-tertiary text-xs">{formatDateTimeText(record.createdAt)}</span>
-      </span>
-    ),
-    title: '申请',
-    width: 210,
-  },
-  {
-    key: 'customer',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <GroupPrimary>{record.customerNickname}</GroupPrimary>
-        <span className="text-text-secondary text-xs">{record.customerCompanyName ?? '—'}</span>
-      </span>
-    ),
-    title: '客户',
-    width: 170,
-  },
-  {
-    key: 'equipment',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <GroupPrimary
-          truncate
-        >{`${record.equipmentModel.modelName}（${record.equipmentModel.modelCode}）`}</GroupPrimary>
-        <span className="text-text-secondary text-xs">{record.errorCode}</span>
-      </span>
-    ),
-    title: '设备',
-    width: 240,
-  },
-  {
-    key: 'progress',
-    render: (_value, record) => <WorkOrderProgressCell record={record} />,
-    title: '处理进度',
-    width: 240,
-  },
-];
+    {
+      key: 'application',
+      render: (_value, record) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="font-bold font-mono text-primary text-xs">{record.requestNo}</span>
+          <span className="text-text-tertiary text-xs">{formatDateTimeText(record.createdAt)}</span>
+        </span>
+      ),
+      title: t('repairList.col.application'),
+      width: 210,
+    },
+    {
+      key: 'customer',
+      render: (_value, record) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <GroupPrimary>{record.customerNickname}</GroupPrimary>
+          <span className="text-text-secondary text-xs">{record.customerCompanyName ?? '—'}</span>
+        </span>
+      ),
+      title: t('repairList.col.customer'),
+      width: 170,
+    },
+    {
+      key: 'equipment',
+      render: (_value, record) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <GroupPrimary
+            truncate
+          >{`${record.equipmentModel.modelName}（${record.equipmentModel.modelCode}）`}</GroupPrimary>
+          <span className="text-text-secondary text-xs">{record.errorCode}</span>
+        </span>
+      ),
+      title: t('repairList.col.equipment'),
+      width: 240,
+    },
+    {
+      key: 'progress',
+      render: (_value, record) => <WorkOrderProgressCell record={record} />,
+      title: t('repairList.col.progress'),
+      width: 240,
+    },
+  ];
 }
 
 export function EngineerRepairRequestList({

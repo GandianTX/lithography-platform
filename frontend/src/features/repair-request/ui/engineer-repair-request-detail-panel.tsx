@@ -64,9 +64,7 @@ import {
   resolveRepairClosureState,
 } from '@/shared/ui/repair-request-status-labels';
 
-import {
-  isEngineerResponseTextOverCapacity,
-} from '../application/engineer-response-text-capacity';
+import { isEngineerResponseTextOverCapacity } from '../application/engineer-response-text-capacity';
 import { isEngineerRepairRequestEnded } from '../application/repair-request-ended';
 import { useEngineerRepairRequestDetailFlow } from '../application/use-engineer-repair-request-detail-flow';
 import type {

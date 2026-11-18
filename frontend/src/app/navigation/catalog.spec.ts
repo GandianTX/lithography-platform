@@ -53,6 +53,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
         '/admin/users',
         '/admin/companies',
         '/admin/engineer-registrations',
+        '/admin/orders',
         '/account/settings',
       ]);
     }

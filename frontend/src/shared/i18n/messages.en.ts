@@ -10,9 +10,11 @@ import type { MessageKey } from './types';
  */
 export const EN_MESSAGES = {
   'nav.admin-orders.label': 'Work orders',
-  'nav.admin-orders.description': 'View acceptance, handling and closure states of authorized work orders.',
+  'nav.admin-orders.description':
+    'View acceptance, handling and closure states of authorized work orders.',
   'admin.orders.action': 'Open work orders',
-  'admin.orders.description': 'View acceptance, handling and closure states of authorized work orders, including details and revisions.',
+  'admin.orders.description':
+    'View acceptance, handling and closure states of authorized work orders, including details and revisions.',
   'admin.orders.title': 'Work orders',
   'common.retry': 'Retry',
   'common.cancel': 'Cancel',

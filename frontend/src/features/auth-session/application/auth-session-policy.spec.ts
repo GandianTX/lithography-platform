@@ -215,7 +215,13 @@ describe('auth session policy', () => {
     });
 
     const level1WithoutOrg = { ...globalAdmin, adminOrganizationId: null };
-    for (const path of ['/admin/users', '/admin/companies', '/admin/engineer-registrations']) {
+    for (const path of [
+      '/admin/users',
+      '/admin/companies',
+      '/admin/engineer-registrations',
+      '/admin/orders',
+      '/admin/orders/1',
+    ]) {
       for (const session of [globalAdmin, level1WithoutOrg, level2Admin]) {
         expect(resolveProtectedRouteRedirect(session, path)).toBeNull();
       }

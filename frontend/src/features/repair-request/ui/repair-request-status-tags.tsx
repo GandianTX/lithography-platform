@@ -1,11 +1,11 @@
 // src/features/repair-request/ui/repair-request-status-tags.tsx
 
+import type { MessageKey } from '@/shared/i18n';
+import { useI18n } from '@/shared/i18n';
 import {
   type RepairHandlingResultValue,
   resolveRepairClosureState,
 } from '@/shared/ui/repair-request-status-labels';
-import type { MessageKey } from '@/shared/i18n';
-import { useI18n } from '@/shared/i18n';
 import { StatusPill, type StatusPillTone } from '@/shared/ui/status-pill';
 
 import type {
