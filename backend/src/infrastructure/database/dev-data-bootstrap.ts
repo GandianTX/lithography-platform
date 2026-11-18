@@ -73,8 +73,53 @@ export interface DevEquipmentModelSeed {
   readonly enabled: boolean;
 }
 
+/** 报修来源声明；存在时先创建原始报修，再创建带 intake_id 的工单并回写双向关联。 */
+export interface DevRepairRequestIntakeSeed {
+  readonly recordUuid: string;
+}
+
+export const DEV_MAINTENANCE_STEP_RESULTS = ['RESOLVED', 'UNRESOLVED', 'NEW_FAULT'] as const;
+export type DevMaintenanceStepResult = (typeof DEV_MAINTENANCE_STEP_RESULTS)[number];
+
+export const DEV_FAULT_PANEL_TYPES = ['INITIAL', 'STEP_NEW_FAULT', 'RESET_NEW_FAULT'] as const;
+export type DevFaultPanelType = (typeof DEV_FAULT_PANEL_TYPES)[number];
+
+export interface DevMaintenanceStepSeed {
+  readonly stepNo: number;
+  readonly errorCode: string | null;
+  readonly partName: string | null;
+  readonly actionText: string;
+  readonly resultCode: DevMaintenanceStepResult;
+}
+
+export interface DevFaultPanelSeed {
+  readonly panelType: DevFaultPanelType;
+  /** 仅 STEP_NEW_FAULT 使用；指向同工单内 step_no，写入时换算为实际 BIGINT 主键。 */
+  readonly stepNo: number | null;
+  readonly phaseCode: DevPhaseCode | null;
+  readonly mainError: string | null;
+  readonly unitError: string | null;
+  readonly source: string | null;
+  readonly errorType: string | null;
+  readonly gpibStatus: string | null;
+  readonly faultStatus: string | null;
+  readonly description: string;
+  readonly action: string | null;
+}
+
+/** 已接单工单的可选维修明细；没有真实附件时附件引用固定为空。 */
+export interface DevRepairRequestMaintenanceSeed {
+  readonly maintenanceDate: string;
+  readonly resetResult: DevReportResetResult;
+  readonly supplementaryNote: string | null;
+  readonly steps: ReadonlyArray<DevMaintenanceStepSeed>;
+  readonly panels: ReadonlyArray<DevFaultPanelSeed>;
+}
+
 export interface DevRepairRequestSeed {
   readonly requestNo: string;
+  readonly intake: DevRepairRequestIntakeSeed | null;
+  readonly maintenance: DevRepairRequestMaintenanceSeed | null;
   readonly customerLoginName: string;
   readonly serviceOrganizationCode: string;
   readonly equipmentModelCode: string;
@@ -200,6 +245,8 @@ const CONFIG_KEYS = new Set([
 const EQUIPMENT_KEYS = new Set(['model_code', 'model_name', 'sort_order', 'enabled']);
 const REQUEST_KEYS = new Set([
   'request_no',
+  'intake',
+  'maintenance',
   'customer_login_name',
   'service_organization_code',
   'equipment_model_code',
@@ -274,10 +321,40 @@ const REFERENCE_FILE_KEYS = new Set([
   'sha256',
   'content',
 ]);
+const INTAKE_KEYS = new Set(['record_uuid']);
+const MAINTENANCE_KEYS = new Set([
+  'maintenance_date',
+  'reset_result',
+  'supplementary_note',
+  'diagnostic_steps',
+  'fault_panels',
+]);
+const MAINTENANCE_STEP_KEYS = new Set([
+  'step_no',
+  'error_code',
+  'part_name',
+  'action_text',
+  'result_code',
+]);
+const FAULT_PANEL_KEYS = new Set([
+  'panel_type',
+  'step_no',
+  'phase_code',
+  'main_error',
+  'unit_error',
+  'source',
+  'error_type',
+  'gpib_status',
+  'fault_status',
+  'description',
+  'action',
+]);
 
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SEED_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{2,99}$/;
+const RECORD_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const INTAKE_FAULT_DESCRIPTION_MAX_LENGTH = 5000;
 const MIN_EQUIPMENT_MODELS = 2;
 const MIN_REPAIR_REQUESTS = 3;
 const MIN_MAINTENANCE_REPORTS = 2;
@@ -373,6 +450,19 @@ function readInteger(
   return value;
 }
 
+function readOptionalInteger(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  min: number,
+  max: number,
+): number | null {
+  if (record[key] === undefined || record[key] === null) {
+    return null;
+  }
+  return readInteger(record, key, label, min, max);
+}
+
 function readArray(record: Record<string, unknown>, key: string, label: string): unknown[] {
   const value = record[key];
   if (!Array.isArray(value)) {
@@ -419,6 +509,17 @@ function parseEnum<T extends string>(value: unknown, allowed: ReadonlyArray<T>, 
   return value as T;
 }
 
+function parseOptionalEnum<T extends string>(
+  value: unknown,
+  allowed: ReadonlyArray<T>,
+  label: string,
+): T | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return parseEnum(value, allowed, label);
+}
+
 function parseEquipmentModels(value: unknown): ReadonlyArray<DevEquipmentModelSeed> {
   if (!Array.isArray(value)) {
     throw new Error('开发样例 equipment_models 必须为数组');
@@ -444,11 +545,208 @@ function parseEquipmentModels(value: unknown): ReadonlyArray<DevEquipmentModelSe
   });
 }
 
+function parseRepairRequestIntake(
+  value: unknown,
+  label: string,
+): DevRepairRequestIntakeSeed | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${label}.intake 必须为对象或省略`);
+  }
+  assertNoUnknownKeys(value, INTAKE_KEYS, `${label}.intake`);
+  const recordUuid = readString(value, 'record_uuid', `${label}.intake`, 36);
+  if (!RECORD_UUID_PATTERN.test(recordUuid)) {
+    throw new Error(`${label}.intake.record_uuid 必须是 36 位小写 UUID`);
+  }
+  return { recordUuid };
+}
+
+function parseMaintenanceSteps(
+  value: unknown,
+  label: string,
+): ReadonlyArray<DevMaintenanceStepSeed> {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} 必须为数组`);
+  }
+  if (value.length === 0) {
+    throw new Error(`${label} 至少需要一条排查步骤`);
+  }
+  return value.map((item, index): DevMaintenanceStepSeed => {
+    const itemLabel = `${label}[${String(index)}]`;
+    if (!isRecord(item)) {
+      throw new Error(`${itemLabel} 必须是对象`);
+    }
+    assertNoUnknownKeys(item, MAINTENANCE_STEP_KEYS, itemLabel);
+    const stepNo = readInteger(item, 'step_no', itemLabel, 1, 65_535);
+    if (stepNo !== index + 1) {
+      throw new Error(`${label} 的 step_no 必须从 1 连续递增，期望 ${String(index + 1)}`);
+    }
+    return {
+      stepNo,
+      errorCode: readOptionalString(item, 'error_code', itemLabel, 300),
+      partName: readOptionalString(item, 'part_name', itemLabel, 300),
+      actionText: readString(item, 'action_text', itemLabel, 10_000),
+      resultCode: parseEnum(
+        item.result_code,
+        DEV_MAINTENANCE_STEP_RESULTS,
+        `${itemLabel}.result_code`,
+      ),
+    };
+  });
+}
+
+function parseFaultPanels(value: unknown, label: string): ReadonlyArray<DevFaultPanelSeed> {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} 必须为数组`);
+  }
+  return value.map((item, index): DevFaultPanelSeed => {
+    const itemLabel = `${label}[${String(index)}]`;
+    if (!isRecord(item)) {
+      throw new Error(`${itemLabel} 必须是对象`);
+    }
+    assertNoUnknownKeys(item, FAULT_PANEL_KEYS, itemLabel);
+    return {
+      panelType: parseEnum(item.panel_type, DEV_FAULT_PANEL_TYPES, `${itemLabel}.panel_type`),
+      stepNo: readOptionalInteger(item, 'step_no', itemLabel, 1, 65_535),
+      phaseCode: parseOptionalEnum(
+        item.phase_code,
+        DEV_ALARM_PHASE_CODES,
+        `${itemLabel}.phase_code`,
+      ),
+      mainError: readOptionalString(item, 'main_error', itemLabel, 300),
+      unitError: readOptionalString(item, 'unit_error', itemLabel, 300),
+      source: readOptionalString(item, 'source', itemLabel, 300),
+      errorType: readOptionalString(item, 'error_type', itemLabel, 300),
+      gpibStatus: readOptionalString(item, 'gpib_status', itemLabel, 300),
+      faultStatus: readOptionalString(item, 'fault_status', itemLabel, 300),
+      description: readString(item, 'description', itemLabel, 10_000),
+      action: readOptionalString(item, 'action', itemLabel, 10_000),
+    };
+  });
+}
+
+/**
+ * 解析维修明细并校验步骤/面板组合。
+ *
+ * 只允许在已接单工单上声明；初始面板唯一，步骤新故障面板必须指向同工单内
+ * 结果为 NEW_FAULT 的步骤，复位新故障面板只允许在 reset_result=NEW_FAULT 时出现。
+ * 附件引用不接受配置，写入时固定为空。
+ */
+function parseRepairRequestMaintenance(
+  value: unknown,
+  label: string,
+  accepted: boolean,
+): DevRepairRequestMaintenanceSeed | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!accepted) {
+    throw new Error(`${label}.maintenance 只允许在已接单工单上声明`);
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${label}.maintenance 必须为对象或省略`);
+  }
+  assertNoUnknownKeys(value, MAINTENANCE_KEYS, `${label}.maintenance`);
+
+  const maintenanceDate = parseDateOnly(
+    readString(value, 'maintenance_date', `${label}.maintenance`, 10),
+    `${label}.maintenance.maintenance_date`,
+  );
+  const resetResult = parseEnum(
+    value.reset_result,
+    DEV_REPORT_RESET_RESULTS,
+    `${label}.maintenance.reset_result`,
+  );
+  const steps = parseMaintenanceSteps(
+    readArray(value, 'diagnostic_steps', `${label}.maintenance`),
+    `${label}.maintenance.diagnostic_steps`,
+  );
+  const panels = parseFaultPanels(
+    readArray(value, 'fault_panels', `${label}.maintenance`),
+    `${label}.maintenance.fault_panels`,
+  );
+
+  const stepsByNo = new Map(steps.map((step) => [step.stepNo, step]));
+  const panelStepNos = new Set<number>();
+  let initialPanels = 0;
+  let resetPanels = 0;
+  for (const panel of panels) {
+    if (panel.panelType === 'INITIAL') {
+      initialPanels += 1;
+      if (panel.stepNo !== null) {
+        throw new Error(`${label}.maintenance 初始面板不得引用步骤`);
+      }
+      continue;
+    }
+    if (panel.panelType === 'RESET_NEW_FAULT') {
+      resetPanels += 1;
+      if (panel.stepNo !== null) {
+        throw new Error(`${label}.maintenance 复位新故障面板不得引用步骤`);
+      }
+      continue;
+    }
+    if (panel.stepNo === null) {
+      throw new Error(`${label}.maintenance 步骤新故障面板必须引用 step_no`);
+    }
+    const step = stepsByNo.get(panel.stepNo);
+    if (step === undefined) {
+      throw new Error(
+        `${label}.maintenance 步骤新故障面板引用的步骤 ${String(panel.stepNo)} 不存在`,
+      );
+    }
+    if (step.resultCode !== 'NEW_FAULT') {
+      throw new Error(
+        `${label}.maintenance 步骤新故障面板只能引用结果为 NEW_FAULT 的步骤 ${String(panel.stepNo)}`,
+      );
+    }
+    if (panelStepNos.has(panel.stepNo)) {
+      throw new Error(`${label}.maintenance 步骤 ${String(panel.stepNo)} 存在多个新故障面板`);
+    }
+    panelStepNos.add(panel.stepNo);
+  }
+
+  if (initialPanels !== 1) {
+    throw new Error(`${label}.maintenance 必须且只能提供一个初始故障面板`);
+  }
+  if (resetPanels > 1) {
+    throw new Error(`${label}.maintenance 只能提供一个复位新故障面板`);
+  }
+  for (const step of steps) {
+    if (step.resultCode === 'NEW_FAULT' && !panelStepNos.has(step.stepNo)) {
+      throw new Error(
+        `${label}.maintenance 步骤 ${String(step.stepNo)} 结果为 NEW_FAULT，必须提供步骤新故障面板`,
+      );
+    }
+  }
+  if (resetResult === 'NEW_FAULT' && resetPanels !== 1) {
+    throw new Error(`${label}.maintenance 复位结果为 NEW_FAULT 时必须提供复位新故障面板`);
+  }
+  if (resetResult !== 'NEW_FAULT' && resetPanels > 0) {
+    throw new Error(`${label}.maintenance 仅复位结果为 NEW_FAULT 时允许复位新故障面板`);
+  }
+
+  return {
+    maintenanceDate,
+    resetResult,
+    supplementaryNote: readOptionalString(
+      value,
+      'supplementary_note',
+      `${label}.maintenance`,
+      10_000,
+    ),
+    steps,
+    panels,
+  };
+}
+
 function parseRepairRequests(value: unknown): ReadonlyArray<DevRepairRequestSeed> {
   if (!Array.isArray(value)) {
     throw new Error('开发样例 repair_requests 必须为数组');
   }
   const seen = new Set<string>();
+  const seenIntakes = new Set<string>();
   return value.map((item, index): DevRepairRequestSeed => {
     const label = `开发样例 repair_requests[${String(index)}]`;
     if (!isRecord(item)) {
@@ -460,6 +758,14 @@ function parseRepairRequests(value: unknown): ReadonlyArray<DevRepairRequestSeed
       throw new Error(`开发样例存在重复工单号 ${requestNo}`);
     }
     seen.add(requestNo);
+
+    const intake = parseRepairRequestIntake(item.intake, label);
+    if (intake !== null) {
+      if (seenIntakes.has(intake.recordUuid)) {
+        throw new Error(`开发样例存在重复报修来源编号 ${intake.recordUuid}`);
+      }
+      seenIntakes.add(intake.recordUuid);
+    }
 
     const acceptedByLoginName = readOptionalString(item, 'accepted_by_login_name', label, 30);
     const acceptedAt = parseOptionalTimestamp(item, 'accepted_at', label);
@@ -535,13 +841,32 @@ function parseRepairRequests(value: unknown): ReadonlyArray<DevRepairRequestSeed
       `${label}.handling_ended_at 不得早于 handling_recorded_at`,
     );
 
+    const faultDescription = readString(item, 'fault_description', label, 20_000);
+    if (
+      intake !== null &&
+      Array.from(faultDescription).length > INTAKE_FAULT_DESCRIPTION_MAX_LENGTH
+    ) {
+      throw new Error(
+        `${label} 声明报修来源时 fault_description 不得超过 ${String(
+          INTAKE_FAULT_DESCRIPTION_MAX_LENGTH,
+        )} 字`,
+      );
+    }
+    const maintenance = parseRepairRequestMaintenance(
+      item.maintenance,
+      label,
+      acceptedByLoginName !== null,
+    );
+
     return {
       requestNo,
+      intake,
+      maintenance,
       customerLoginName: readString(item, 'customer_login_name', label, 30),
       serviceOrganizationCode: readString(item, 'service_organization_code', label, 64),
       equipmentModelCode: readString(item, 'equipment_model_code', label, 50),
       errorCode: readString(item, 'error_code', label, 100),
-      faultDescription: readString(item, 'fault_description', label, 20_000),
+      faultDescription,
       contentMd: readString(item, 'content_md', label, 200_000),
       createdAt,
       acceptedByLoginName,
@@ -1101,9 +1426,11 @@ export function decideEquipmentModel(
 export interface RepairRequestIdentity {
   readonly id: number;
   readonly customerAccountId: number;
+  readonly customerOrganizationId: number | null;
   readonly equipmentModelId: number;
   readonly ownerOrganizationId: number | null;
   readonly serviceOrganizationId: number | null;
+  readonly intakeId: number | null;
 }
 
 export interface ExpectedRepairRequestIdentity {
@@ -1111,6 +1438,10 @@ export interface ExpectedRepairRequestIdentity {
   readonly equipmentModelId: number;
   readonly ownerOrganizationId: number;
   readonly serviceOrganizationId: number;
+  /** 仅新样例声明报修来源时核对；省略表示保留旧样例原有行为。 */
+  readonly intakeId?: number | null;
+  /** 仅新样例声明报修来源时核对；旧样例不受工单客户公司差异影响。 */
+  readonly customerOrganizationId?: number;
 }
 
 export function decideRepairRequest(
@@ -1121,6 +1452,23 @@ export function decideRepairRequest(
   if (existing === null) {
     return 'CREATE';
   }
+  if (expected.intakeId !== undefined && existing.intakeId !== expected.intakeId) {
+    throw new Error(
+      `工单号 ${requestNo} 的报修来源关联已断裂（期望 intake_id=${String(
+        expected.intakeId,
+      )}，实际 ${String(existing.intakeId)}），拒绝自动修复`,
+    );
+  }
+  if (
+    expected.customerOrganizationId !== undefined &&
+    existing.customerOrganizationId !== expected.customerOrganizationId
+  ) {
+    throw new Error(
+      `工单号 ${requestNo} 的客户公司与报修来源/开发样例不一致（期望 ${String(
+        expected.customerOrganizationId,
+      )}，实际 ${String(existing.customerOrganizationId)}），拒绝按开发样例接管`,
+    );
+  }
   const same =
     existing.customerAccountId === expected.customerAccountId &&
     existing.equipmentModelId === expected.equipmentModelId &&
@@ -1128,6 +1476,45 @@ export function decideRepairRequest(
     existing.serviceOrganizationId === expected.serviceOrganizationId;
   if (!same) {
     throw new Error(`工单号 ${requestNo} 已被其他客户/公司/机型占用，拒绝按开发样例接管`);
+  }
+  return 'UNCHANGED';
+}
+
+export interface RepairRequestIntakeIdentity {
+  readonly id: number;
+  readonly customerAccountId: number;
+  readonly customerOrganizationId: number;
+  readonly serviceOrganizationId: number;
+  readonly equipmentModelId: number;
+  readonly convertedRequestId: number | null;
+  readonly deletedAt: Date | null;
+}
+
+export interface ExpectedRepairRequestIntakeIdentity {
+  readonly customerAccountId: number;
+  readonly customerOrganizationId: number;
+  readonly serviceOrganizationId: number;
+  readonly equipmentModelId: number;
+}
+
+export function decideRepairRequestIntake(
+  existing: RepairRequestIntakeIdentity | null,
+  expected: ExpectedRepairRequestIntakeIdentity,
+  recordUuid: string,
+): 'CREATE' | 'UNCHANGED' {
+  if (existing === null) {
+    return 'CREATE';
+  }
+  if (existing.deletedAt !== null) {
+    throw new Error(`报修来源 ${recordUuid} 已逻辑删除，拒绝按开发样例接管`);
+  }
+  const same =
+    existing.customerAccountId === expected.customerAccountId &&
+    existing.customerOrganizationId === expected.customerOrganizationId &&
+    existing.serviceOrganizationId === expected.serviceOrganizationId &&
+    existing.equipmentModelId === expected.equipmentModelId;
+  if (!same) {
+    throw new Error(`报修来源 ${recordUuid} 已被其他客户/公司/机型占用，拒绝按开发样例接管`);
   }
   return 'UNCHANGED';
 }
@@ -1262,6 +1649,27 @@ function readInsertId(result: unknown, label: string): number {
     throw new Error(`${label} 的自增主键超出安全整数范围: ${text}`);
   }
   return id;
+}
+
+function readAffectedRows(result: unknown, label: string): number {
+  const raw = (result as { affectedRows?: unknown } | null)?.affectedRows;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) {
+    throw new Error(`${label} 未返回有效影响行数`);
+  }
+  return raw;
+}
+
+function toNullableDate(value: unknown): Date | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return new Date(value);
+  }
+  throw new Error('数据库时间字段类型无效');
 }
 
 async function loadAccountDisplayName(
@@ -1491,7 +1899,180 @@ async function upsertEquipmentModels(
   return { results, ids };
 }
 
-async function upsertRepairRequests(
+interface ResolvedIntake {
+  readonly id: number;
+  readonly outcome: 'CREATED' | 'UNCHANGED';
+  readonly convertedRequestId: number | null;
+}
+
+async function upsertRepairRequestIntake(
+  manager: EntityManager,
+  seed: DevRepairRequestSeed,
+  customer: { readonly account: ResolvedAccount; readonly organization: OrganizationRow },
+  serviceOrganization: OrganizationRow,
+  modelId: number,
+): Promise<ResolvedIntake> {
+  const intakeSeed = seed.intake;
+  if (intakeSeed === null) {
+    throw new Error(`工单 ${seed.requestNo} 未声明报修来源`);
+  }
+  const rows = rowsOf(
+    await manager.query(
+      `
+        SELECT
+          \`id\`, \`customer_account_id\`, \`customer_organization_id\`,
+          \`service_organization_id\`, \`equipment_model_id\`,
+          \`converted_request_id\`, \`deleted_at\`
+        FROM \`repair_request_intake\`
+        WHERE \`record_uuid\` = ?
+        LIMIT 1 FOR UPDATE
+      `,
+      [intakeSeed.recordUuid],
+    ),
+  );
+  const existing =
+    rows.length === 0
+      ? null
+      : {
+          id: Number(rows[0].id),
+          customerAccountId: Number(rows[0].customer_account_id),
+          customerOrganizationId: Number(rows[0].customer_organization_id),
+          serviceOrganizationId: Number(rows[0].service_organization_id),
+          equipmentModelId: Number(rows[0].equipment_model_id),
+          convertedRequestId:
+            rows[0].converted_request_id === null ? null : Number(rows[0].converted_request_id),
+          deletedAt: toNullableDate(rows[0].deleted_at),
+        };
+  const expected = {
+    customerAccountId: customer.account.id,
+    customerOrganizationId: customer.organization.id,
+    serviceOrganizationId: serviceOrganization.id,
+    equipmentModelId: modelId,
+  };
+  const decision = decideRepairRequestIntake(existing, expected, intakeSeed.recordUuid);
+  if (decision === 'UNCHANGED') {
+    if (existing === null) {
+      throw new Error(`报修来源 ${intakeSeed.recordUuid} 的复用结果缺失`);
+    }
+    return {
+      id: existing.id,
+      outcome: 'UNCHANGED',
+      convertedRequestId: existing.convertedRequestId,
+    };
+  }
+
+  // 未实际分析的开发样例保持 WAITING：不调用模型、不创建分析尝试或成功结果。
+  const inserted: unknown = await manager.query(
+    `
+      INSERT INTO \`repair_request_intake\`
+        (\`record_uuid\`, \`customer_account_id\`, \`customer_organization_id\`,
+         \`service_organization_id\`, \`equipment_model_id\`, \`error_code\`,
+         \`fault_description\`, \`file_id\`, \`analysis_status\`,
+         \`analysis_generation\`, \`converted_request_id\`, \`deleted_at\`, \`created_at\`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'WAITING', 0, NULL, NULL, ?)
+    `,
+    [
+      intakeSeed.recordUuid,
+      customer.account.id,
+      customer.organization.id,
+      serviceOrganization.id,
+      modelId,
+      seed.errorCode,
+      seed.faultDescription,
+      new Date(seed.createdAt),
+    ],
+  );
+  return {
+    id: readInsertId(inserted, `报修来源 ${intakeSeed.recordUuid}`),
+    outcome: 'CREATED',
+    convertedRequestId: null,
+  };
+}
+
+async function linkRepairIntakeToRequest(
+  manager: EntityManager,
+  intakeId: number,
+  requestId: number,
+  requestNo: string,
+): Promise<void> {
+  const result: unknown = await manager.query(
+    `
+      UPDATE \`repair_request_intake\`
+      SET \`converted_request_id\` = ?
+      WHERE \`id\` = ? AND \`converted_request_id\` IS NULL
+    `,
+    [requestId, intakeId],
+  );
+  const affected = readAffectedRows(result, `工单 ${requestNo} 回写报修来源`);
+  if (affected !== 1) {
+    throw new Error(
+      `工单 ${requestNo} 回写报修来源 ${String(intakeId)} 失败：影响行数为 ${String(affected)}`,
+    );
+  }
+}
+
+/** 首次创建才写入维修子表；步骤主键按同工单内 step_no 映射给步骤新故障面板。 */
+async function insertRepairRequestMaintenance(
+  manager: EntityManager,
+  requestId: number,
+  requestNo: string,
+  maintenance: DevRepairRequestMaintenanceSeed,
+): Promise<void> {
+  const stepIds = new Map<number, string>();
+  for (const step of maintenance.steps) {
+    const inserted: unknown = await manager.query(
+      `
+        INSERT INTO \`repair_request_diagnostic_step\`
+          (\`request_id\`, \`step_no\`, \`error_code\`, \`part_name\`,
+           \`action_text\`, \`result_code\`)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [requestId, step.stepNo, step.errorCode, step.partName, step.actionText, step.resultCode],
+    );
+    stepIds.set(
+      step.stepNo,
+      String(readInsertId(inserted, `工单 ${requestNo} 排查步骤 ${String(step.stepNo)}`)),
+    );
+  }
+
+  for (const panel of maintenance.panels) {
+    let stepId: string | null = null;
+    if (panel.panelType === 'STEP_NEW_FAULT') {
+      const resolved = panel.stepNo === null ? undefined : stepIds.get(panel.stepNo);
+      if (resolved === undefined) {
+        throw new Error(
+          `工单 ${requestNo} 的步骤新故障面板缺少已写入的步骤 ${String(panel.stepNo)}`,
+        );
+      }
+      stepId = resolved;
+    }
+    await manager.query(
+      `
+        INSERT INTO \`repair_request_fault_panel\`
+          (\`request_id\`, \`panel_type\`, \`step_id\`, \`phase_code\`,
+           \`main_error\`, \`unit_error\`, \`source\`, \`error_type\`,
+           \`gpib_status\`, \`fault_status\`, \`description\`, \`action\`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        requestId,
+        panel.panelType,
+        stepId,
+        panel.phaseCode,
+        panel.mainError,
+        panel.unitError,
+        panel.source,
+        panel.errorType,
+        panel.gpibStatus,
+        panel.faultStatus,
+        panel.description,
+        panel.action,
+      ],
+    );
+  }
+}
+
+export async function upsertRepairRequests(
   manager: EntityManager,
   seeds: ReadonlyArray<DevRepairRequestSeed>,
   modelIds: ReadonlyMap<string, number>,
@@ -1523,13 +2104,23 @@ async function upsertRepairRequests(
             seed.handlingRecordedByLoginName,
             serviceOrganization,
           );
+    if (seed.maintenance !== null && engineer === null) {
+      throw new Error(`工单 ${seed.requestNo} 声明维修明细但缺少接单工程师`);
+    }
+
+    // 新样例先落原始报修，保留 WAITING；旧样例没有 intake 时保持原有行为。
+    const intake =
+      seed.intake === null
+        ? null
+        : await upsertRepairRequestIntake(manager, seed, customer, serviceOrganization, modelId);
 
     const rows = rowsOf(
       await manager.query(
         `
           SELECT
-            \`id\`, \`customer_account_id\`, \`equipment_model_id\`,
-            \`owner_organization_id\`, \`service_organization_id\`
+            \`id\`, \`customer_account_id\`, \`customer_organization_id\`,
+            \`equipment_model_id\`, \`owner_organization_id\`,
+            \`service_organization_id\`, \`intake_id\`
           FROM \`repair_request\`
           WHERE \`request_no\` = ?
           LIMIT 1 FOR UPDATE
@@ -1543,6 +2134,10 @@ async function upsertRepairRequests(
         : {
             id: Number(rows[0].id),
             customerAccountId: Number(rows[0].customer_account_id),
+            customerOrganizationId:
+              rows[0].customer_organization_id === null
+                ? null
+                : Number(rows[0].customer_organization_id),
             equipmentModelId: Number(rows[0].equipment_model_id),
             ownerOrganizationId:
               rows[0].owner_organization_id === null ? null : Number(rows[0].owner_organization_id),
@@ -1550,21 +2145,33 @@ async function upsertRepairRequests(
               rows[0].service_organization_id === null
                 ? null
                 : Number(rows[0].service_organization_id),
+            intakeId: rows[0].intake_id === null ? null : Number(rows[0].intake_id),
           };
-    const expected = {
+    const expected: ExpectedRepairRequestIdentity = {
       customerAccountId: customer.account.id,
       equipmentModelId: modelId,
       ownerOrganizationId: serviceOrganization.id,
       serviceOrganizationId: serviceOrganization.id,
+      ...(intake === null
+        ? {}
+        : { intakeId: intake.id, customerOrganizationId: customer.organization.id }),
     };
     const decision = decideRepairRequest(existing, expected, seed.requestNo);
 
     let requestId: number;
     if (decision === 'CREATE') {
+      if (intake !== null && intake.outcome === 'UNCHANGED' && intake.convertedRequestId !== null) {
+        throw new Error(
+          `报修来源 ${seed.intake?.recordUuid ?? ''} 已关联其他工单 ${String(
+            intake.convertedRequestId,
+          )}，拒绝按工单号 ${seed.requestNo} 重复接管`,
+        );
+      }
       const handlingStatus =
         seed.handlingResult === null ? null : handlingStatusOf(seed.handlingResult);
       const closureStatus =
         handlingStatus === 'COMPLETED' || handlingStatus === 'UNRESOLVED' ? 'CLOSED' : 'OPEN';
+      const maintenance = seed.maintenance;
       const inserted: unknown = await manager.query(
         `
           INSERT INTO \`repair_request\`
@@ -1576,8 +2183,11 @@ async function upsertRepairRequests(
              \`handling_recorded_by_account_id\`, \`handling_ended_at\`,
              \`intake_id\`, \`customer_organization_id\`, \`service_organization_id\`,
              \`closure_status\`, \`closed_at\`, \`closure_reason\`,
-             \`current_revision_no\`, \`is_historical\`)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)
+             \`current_revision_no\`, \`is_historical\`,
+             \`maintenance_date\`, \`maintenance_engineer_name_snapshot\`,
+             \`reset_result\`, \`supplementary_note\`,
+             \`maintenance_attachment_file_id\`, \`maintenance_version_no\`)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, NULL, ?)
         `,
         [
           seed.requestNo,
@@ -1596,6 +2206,7 @@ async function upsertRepairRequests(
           seed.handlingRecordedAt === null ? null : new Date(seed.handlingRecordedAt),
           recorder === null ? null : recorder.id,
           seed.handlingEndedAt === null ? null : new Date(seed.handlingEndedAt),
+          intake === null ? null : intake.id,
           customer.organization.id,
           serviceOrganization.id,
           closureStatus,
@@ -1603,12 +2214,32 @@ async function upsertRepairRequests(
             ? new Date(seed.handlingEndedAt)
             : null,
           seed.closureReason,
+          maintenance === null ? null : maintenance.maintenanceDate,
+          maintenance === null || engineer === null ? null : engineer.displayName,
+          maintenance === null ? null : maintenance.resetResult,
+          maintenance === null ? null : maintenance.supplementaryNote,
+          maintenance === null ? 0 : 1,
         ],
       );
       requestId = readInsertId(inserted, `工单 ${seed.requestNo}`);
+      if (intake !== null) {
+        await linkRepairIntakeToRequest(manager, intake.id, requestId, seed.requestNo);
+      }
+      if (maintenance !== null) {
+        await insertRepairRequestMaintenance(manager, requestId, seed.requestNo, maintenance);
+      }
       results.push({ key: seed.requestNo, outcome: 'CREATED', id: requestId });
     } else {
       requestId = existing === null ? 0 : existing.id;
+      if (intake !== null) {
+        if (intake.convertedRequestId !== requestId) {
+          throw new Error(
+            `工单号 ${seed.requestNo} 与报修来源 ${seed.intake?.recordUuid ?? ''} 的双向关联不一致（来源指向 ${String(
+              intake.convertedRequestId,
+            )}），拒绝自动修复`,
+          );
+        }
+      }
       results.push({ key: seed.requestNo, outcome: 'UNCHANGED', id: requestId });
     }
 

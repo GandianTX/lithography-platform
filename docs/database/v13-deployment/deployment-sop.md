@@ -109,7 +109,7 @@
 - 开发组织映射模板：[dev-organizations.example.json](dev-organizations.example.json)（2 家模拟公司，均标记受管/服务商）。
 - 开发管理员映射模板：[dev-admin.example.json](dev-admin.example.json)（3 个一级 + 3 个二级，分别覆盖两家公司）。
 - 开发账号映射模板：[dev-accounts.example.json](dev-accounts.example.json)（3 个客户，其中 1 个为同公司对照；2 个工程师）。
-- 开发联调业务样例模板：[dev-data.example.json](dev-data.example.json)（2 个机型、3 张工单、2 份报告、2 条参考资料，资料含 `.txt` 原件与 SHA-256）。
+- 开发联调业务样例模板：[dev-data.example.json](dev-data.example.json)（2 个机型、9 张工单、2 份报告、2 条参考资料，资料含 `.txt` 原件与 SHA-256）。
 - 上述 JSON 均含 `REPLACE_` 占位符，直接使用会因密码策略/必填校验失败；真实清单由上线负责人提供且不入库。
 - 环境变量键固定为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASS`、`DB_NAME`、`DB_TIMEZONE`、`DB_SYNCHRONIZE=false`。
 - 初始化账号还需要 `FIELD_ENCRYPTION_KEY` 与 `FIELD_ENCRYPTION_IV`（16 字符），用于写入并校验 `meta_digest`；缺失时交付失败关闭。
@@ -284,19 +284,27 @@ npm run database:deploy -- \
 
 `--dev-data-file` 在开发账号之后、同一事务内补齐静态可验收样例；它引用账号与公司稳定键，
 不创建管理员，也不调用任何外部服务。
+完整样例模板包含一份已审核报告，审核人为 `ORG-DEV-A` 的开发二级管理员 `dev-admin-l2-01`。
+目标库中没有该审核人时，必须在同一次 `init` 提供包含该账号的开发管理员映射及确认参数；
+仅提供开发客户和工程师映射不足以初始化完整样例。
 
 | 能力/页面 | 样例口径 | 说明 |
 | --- | --- | --- |
 | 公司与账号归属 | 2 家模拟公司，A 有 2 个客户（含同公司对照）、B 有 1 个客户；各 1 个工程师 | 用于 A/B 隔离与同公司对照验收 |
 | 设备机型 | 2 个全局机型 | 工单/报告/资料引用同一机型键 |
-| 工单列表与详情 | 3 张：待接单、处理中、已完成 | 含 1 张跨公司工单（客户 A、服务公司 B） |
+| 工单列表与详情 | 9 张：旧 3 张（待接单/处理中/已完成）+ 新增 6 张（A/B 两家各 1 张待接单、处理中、已结单） | 含跨公司工单（客户 A、服务公司 B）；新增单均关联客户原始报修 |
+| 维修明细 | 4 张已接单新样例写入维修日期、工程师姓名快照、复位结果、补充说明与维修版本 1 | 处理中覆盖步骤新故障，已结单覆盖复位新故障；待接单不预填，维修版本为 0 |
 | 维修报告 | 2 份：DRAFT + APPROVED | 正式报告含冻结版本、审核记录、报警与步骤 |
 | 参考资料 | 2 条：分别归属 A/B，`MATERIAL` + 正文 + 纯文本原件 | 原件写入目标库专属目录，回读核对字节数与 SHA-256 |
 | 样例文件/下载 | 2 个 `.txt` 原件 | 只允许无敏感信息的纯文本；存储引用由不可变 `seed_key` 派生，私有暂存排他创建、回读校验后不覆盖发布 |
 | AI 分析/会话/Worker | 不造数 | 必须调用真实模型或 Worker，禁止伪造成功 |
 | 同步/备份/恢复/导入 | 不造数 | 必须连接外部服务或真实文件，禁止伪造回执 |
 
-- 稳定键：机型 `model_code`、工单 `request_no`、报告 `repair_request_id`、参考资料 `seed_key`。
+- 稳定键：机型 `model_code`、工单 `request_no`、报修来源 `record_uuid`、报告 `repair_request_id`、参考资料 `seed_key`。
+- 新增 6 张工单先建 `repair_request_intake`（`analysis_status=WAITING`、`analysis_generation=0`、无附件、无分析结果），
+  再建带 `intake_id` 的工单并回写 `converted_request_id`；双方必须互为唯一引用，断裂或同键异主整批失败。
+- 维修明细只在工单首次创建时写入：排查步骤按 `step_no` 引用，步骤新故障面板写入同工单实际步骤主键；
+  没有真实文件时 `maintenance_attachment_file_id` 留空。重跑只核对归属与双向关联，不增行、不回填、不覆盖已编辑内容。
 - 参考资料必须有显式、不可变的 `seed_key`；`title` 只用于展示，不参与认领。存储引用固定为
   `sha256("lithography-dev-sample-reference:v1\n" + seed_key)` 前 32 位十六进制 + `.txt`，
   正式编辑路径只改标题/正文，不改写该引用。本轮只支持带原件的资料样例；无原件样例没有可证明的
