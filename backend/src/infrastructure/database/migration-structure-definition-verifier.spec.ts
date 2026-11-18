@@ -512,11 +512,11 @@ describe('collectDefinitionCoverageIssues', () => {
     expect(collectDefinitionCoverageIssues()).toEqual([]);
 
     expect(collectDefinitionCoverageStatistics()).toEqual([
-      { kind: 'column', expected: 291, covered: 291, missing: 0, inherited: 79 },
-      { kind: 'check', expected: 115, covered: 115, missing: 0, inherited: 89 },
-      { kind: 'index', expected: 46, covered: 46, missing: 0, inherited: 70 },
-      { kind: 'foreignKey', expected: 54, covered: 54, missing: 0, inherited: 59 },
-      { kind: 'generatedColumn', expected: 0, covered: 0, missing: 0, inherited: 4 },
+      { kind: 'column', expected: 321, covered: 321, missing: 0, inherited: 81 },
+      { kind: 'check', expected: 124, covered: 124, missing: 0, inherited: 89 },
+      { kind: 'index', expected: 52, covered: 52, missing: 0, inherited: 70 },
+      { kind: 'foreignKey', expected: 58, covered: 58, missing: 0, inherited: 59 },
+      { kind: 'generatedColumn', expected: 2, covered: 2, missing: 0, inherited: 4 },
     ]);
   });
 });

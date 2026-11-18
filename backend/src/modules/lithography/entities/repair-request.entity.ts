@@ -22,6 +22,9 @@ import {
 @Index('uk_repair_request_intake', ['intakeId'], { unique: true })
 @Index('idx_repair_request_customer_organization', ['customerOrganizationId', 'createdAt'])
 @Index('idx_repair_request_service_organization', ['serviceOrganizationId', 'createdAt'])
+@Index('uk_repair_request_maintenance_attachment', ['maintenanceAttachmentFileId'], {
+  unique: true,
+})
 @ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
   name: 'fk_repair_request_owner_organization',
   onDelete: 'RESTRICT',
@@ -59,6 +62,11 @@ import {
 })
 @ForeignKey('AccountEntity', ['acceptedByEngineerAccountId'], ['id'], {
   name: 'fk_repair_request_engineer_account',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('StoredFileEntity', ['maintenanceAttachmentFileId'], ['fileId'], {
+  name: 'fk_repair_request_maintenance_attachment',
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
@@ -105,6 +113,11 @@ import {
   "(`is_historical` = 1 OR `handling_result` IS NULL OR `handling_result` NOT IN ('INTERRUPTED', 'UNREPAIRABLE') OR (`closure_reason` IS NOT NULL AND CHAR_LENGTH(TRIM(`closure_reason`)) > 0))",
 )
 @Check('chk_repair_request_current_revision', '`current_revision_no` >= 0')
+@Check(
+  'chk_repair_request_maintenance_reset_result',
+  "`reset_result` IS NULL OR `reset_result` IN ('NORMAL', 'SAME_FAULT', 'NEW_FAULT')",
+)
+@Check('chk_repair_request_maintenance_version', '`maintenance_version_no` >= 0')
 export class RepairRequestEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '维修申请主键ID' })
   id!: number;
@@ -270,6 +283,53 @@ export class RepairRequestEntity {
     comment: '终结时间；完成/未完成必填，处理中必须为空',
   })
   handlingEndedAt!: Date | null;
+
+  @Column({ name: 'maintenance_date', type: 'date', nullable: true, comment: '维修日期' })
+  maintenanceDate!: string | null;
+
+  @Column({
+    name: 'maintenance_engineer_name_snapshot',
+    type: 'varchar',
+    length: 200,
+    nullable: true,
+    comment: '维修工程师姓名快照',
+  })
+  maintenanceEngineerNameSnapshot!: string | null;
+
+  @Column({
+    name: 'reset_result',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: '复位结果：NORMAL/SAME_FAULT/NEW_FAULT',
+  })
+  resetResult!: string | null;
+
+  @Column({
+    name: 'supplementary_note',
+    type: 'text',
+    nullable: true,
+    comment: '维修补充说明',
+  })
+  supplementaryNote!: string | null;
+
+  @Column({
+    name: 'maintenance_attachment_file_id',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '维修附件原件ID',
+  })
+  maintenanceAttachmentFileId!: string | null;
+
+  @Column({
+    name: 'maintenance_version_no',
+    type: 'int',
+    unsigned: true,
+    default: 0,
+    comment: '维修版本号；独立于管理修订版本',
+  })
+  maintenanceVersionNo!: number;
 
   @Column({ type: 'boolean', default: false, comment: '是否已撤回/作废' })
   deprecated!: boolean;

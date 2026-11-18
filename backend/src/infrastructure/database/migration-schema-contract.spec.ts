@@ -6,6 +6,7 @@ import { DataSource, type EntityMetadata } from 'typeorm';
 import {
   collectPrefixStructureRequirements,
   assertStructureDefinitionsComplete,
+  COLUMN_DEFINITIONS,
   type PrefixForeignKeyRequirement,
 } from './migration-schema-contract';
 
@@ -24,7 +25,7 @@ const BASELINE_TIMESTAMPS = [
 const V13_TIMESTAMPS = [
   1775501000000, 1775501100000, 1775501200000, 1775501300000, 1775501400000, 1775501500000,
   1775501600000, 1775501700000, 1775501800000, 1775501900000, 1775502000000, 1775502100000,
-  1775502200000, 1775502300000, 1775502400000, 1775502500000,
+  1775502200000, 1775502300000, 1775502400000, 1775502500000, 1775502600000,
 ];
 
 const V13_TABLES = [
@@ -46,6 +47,8 @@ const V13_TABLES = [
   'backup_restore_run',
   'management_audit_event',
   'admin_organization_provisioning_request',
+  'repair_request_diagnostic_step',
+  'repair_request_fault_panel',
 ];
 
 function readMigrationTimestamps(): number[] {
@@ -123,7 +126,7 @@ describe('V13 结构契约（不连接实库）', () => {
     expect(timestamps.slice(BASELINE_TIMESTAMPS.length)).toEqual(V13_TIMESTAMPS);
   });
 
-  it('18 个候选对象按独立表登记，且各自绑定所属迁移', () => {
+  it('20 个候选对象按独立表登记，且各自绑定所属迁移', () => {
     const requirements = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
     const tableRequirements = requirements.filter((item) => item.kind === 'table');
     for (const table of V13_TABLES) {
@@ -131,6 +134,52 @@ describe('V13 结构契约（不连接实库）', () => {
       expect(requirement).toBeDefined();
       expect(V13_TIMESTAMPS).toContain(requirement?.since);
     }
+  });
+
+  it('第 48 条工单明细只从终态前缀生效', () => {
+    const previous = collectPrefixStructureRequirements(
+      new Set(V13_TIMESTAMPS.filter((timestamp) => timestamp < 1775502600000)),
+    );
+    expect(previous.some((item) => item.table === 'repair_request_diagnostic_step')).toBe(false);
+    expect(previous.some((item) => item.table === 'repair_request_fault_panel')).toBe(false);
+    expect(
+      previous.some(
+        (item) =>
+          item.kind === 'column' &&
+          item.table === 'repair_request' &&
+          item.name === 'maintenance_date',
+      ),
+    ).toBe(false);
+
+    const terminal = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
+    for (const table of ['repair_request_diagnostic_step', 'repair_request_fault_panel']) {
+      expect(terminal.find((item) => item.kind === 'table' && item.table === table)?.since).toBe(
+        1775502600000,
+      );
+    }
+    expect(
+      terminal.find(
+        (item) =>
+          item.kind === 'column' &&
+          item.table === 'repair_request' &&
+          item.name === 'maintenance_version_no',
+      )?.since,
+    ).toBe(1775502600000);
+    const panelStep = terminal.find(
+      (item) => item.kind === 'foreign_key' && item.name === 'fk_repair_request_fault_panel_step',
+    );
+    expect(
+      panelStep && panelStep.kind === 'foreign_key' ? panelStep.localColumns : undefined,
+    ).toEqual(['request_id', 'step_id']);
+    expect(
+      panelStep && panelStep.kind === 'foreign_key' ? panelStep.referenceColumns : undefined,
+    ).toEqual(['request_id', 'id']);
+    const initialSlot = terminal.find(
+      (item) => item.kind === 'index' && item.name === 'uk_repair_request_fault_panel_initial',
+    );
+    expect(initialSlot && initialSlot.kind === 'index' ? initialSlot.columns : undefined).toEqual([
+      'initial_request_id',
+    ]);
   });
 
   it('记录包检查/导入状态列由第 39 条迁移登记，导入结果允许未执行', () => {
@@ -322,6 +371,39 @@ describe('V13 结构契约（不连接实库）', () => {
     });
 
     expect(notUnique).toEqual([]);
+  });
+
+  it('排查步骤与故障面板的 BIGINT 列在 Entity 中声明 unsigned，与迁移定义一致', async () => {
+    const source = await loadEntityMetadata();
+    const cases = [
+      { table: 'repair_request_diagnostic_step', column: 'id', nullable: false },
+      { table: 'repair_request_fault_panel', column: 'id', nullable: false },
+      { table: 'repair_request_fault_panel', column: 'step_id', nullable: true },
+    ] as const;
+
+    for (const item of cases) {
+      const key = `${item.table}.${item.column}`;
+      const column = source.getMetadata(item.table).findColumnWithDatabaseName(item.column);
+      expect(column).toBeDefined();
+      expect(column?.type).toBe('bigint');
+      expect(column?.unsigned).toBe(true);
+      expect(column?.isNullable).toBe(item.nullable);
+      expect(COLUMN_DEFINITIONS[key].columnType).toBe('bigint unsigned');
+      expect(COLUMN_DEFINITIONS[key].nullable).toBe(item.nullable);
+    }
+  });
+
+  it('故障面板复合外键在 Entity 中保持 (request_id, step_id) → (request_id, id)', async () => {
+    const source = await loadEntityMetadata();
+    const metadata = source.getMetadata('repair_request_fault_panel');
+    const foreignKey = metadata.foreignKeys.find(
+      (candidate) => candidate.name === 'fk_repair_request_fault_panel_step',
+    );
+
+    expect(foreignKey).toBeDefined();
+    expect(foreignKey?.columnNames).toEqual(['request_id', 'step_id']);
+    expect(foreignKey?.referencedEntityMetadata.tableName).toBe('repair_request_diagnostic_step');
+    expect(foreignKey?.referencedColumnNames).toEqual(['request_id', 'id']);
   });
 
   it('record_package_item 两条外键引用父实体真实主键列而非默认 id', async () => {

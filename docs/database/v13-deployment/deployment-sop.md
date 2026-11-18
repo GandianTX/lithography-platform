@@ -425,6 +425,25 @@ npm run database:deploy -- \
   - 该迁移跨表执行多条 `ALTER`，MySQL DDL 隐式提交**不能整体回滚**；失败信息会列出已完成步骤，
     已存在的列/约束在重跑时跳过。修复后直接重跑 `upgrade` 即可续跑，不要手工删迁移历史。
 
+#### 4.3.1 当前 47 态 → 48 态（工单维修事实与排查明细）
+
+- 适用起点：`migration:status` 显示已执行前 47 条，仅剩 `1775502600000`。
+- 命令与 4.3 相同，继续使用 `database:deploy --mode=upgrade`，不新增部署入口。
+  执行前确认 `--database` 与 `--confirm-database` 一致；需要核对实例时带 `--expect-server-uuid`。
+- 维护窗口与备份：执行前完成可恢复备份并验证恢复路径；升级期间停止业务写入和 Worker，
+  避免在 DDL 隐式提交点产生新的工单/附件引用。
+- 变更内容：`repair_request` 用单条 `ALTER` 追加 6 列、附件唯一键/外键与 2 条 `CHECK`；
+  随后创建 `repair_request_diagnostic_step` 和 `repair_request_fault_panel`。
+  不搬迁旧数据：维修列保持 `NULL`，`maintenance_version_no` 默认 `0`，不猜测回填旧附件或旧排查步骤。
+- 约束影响：附件引用 `stored_file.file_id`，面板/步骤/工单关系全部 `RESTRICT`。
+  删除顺序必须先面板、再步骤、再工单；被附件引用的原件不得删除。
+  面板唯一槽由生成列保证：每工单 1 个 `INITIAL`、1 个 `RESET_NEW_FAULT`，每个步骤 1 个 `STEP_NEW_FAULT`。
+- 失败与恢复：迁移在任何 DDL 前先做半迁移预检；任一目标列/表已存在即失败关闭，禁止盲目重跑。
+  MySQL DDL 隐式提交不能整体回滚；按错误定位已生效对象，人工核对并恢复到可重跑状态后再执行 `upgrade`。
+  不得手工删迁移历史，也不得为通过升级而放宽旧约束。
+- 终态验证：`npm run migration:verify`（只读）核对 6 列、2 表、6 个索引、4 个外键与 9 条 `CHECK`；
+  真实库的执行结果必须单独记录，不能用离线契约测试代替。
+
 ### 4.4 历史工单身份清单（31 态旧库 / 旧版增量已执行库）
 
 `1775501100000-alter-repair-ai-report-for-v13.migration.ts` 在收紧中断/无法修复原因约束前，

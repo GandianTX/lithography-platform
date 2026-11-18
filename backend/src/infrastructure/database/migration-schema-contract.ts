@@ -58,6 +58,8 @@ export const REQUIRED_TABLES = [
   'backup_restore_run',
   'management_audit_event',
   'admin_organization_provisioning_request',
+  'repair_request_diagnostic_step',
+  'repair_request_fault_panel',
 ] as const;
 
 export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
@@ -180,6 +182,12 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
   { table: 'repair_request_intake', index: 'uk_repair_request_intake_converted' },
   { table: 'repair_request_intake', index: 'idx_repair_request_intake_customer_created' },
   { table: 'repair_request_intake', index: 'idx_repair_request_intake_organization_status' },
+  { table: 'repair_request', index: 'uk_repair_request_maintenance_attachment' },
+  { table: 'repair_request_diagnostic_step', index: 'uk_repair_request_diagnostic_step_no' },
+  { table: 'repair_request_diagnostic_step', index: 'uk_repair_request_diagnostic_step_id' },
+  { table: 'repair_request_fault_panel', index: 'uk_repair_request_fault_panel_initial' },
+  { table: 'repair_request_fault_panel', index: 'uk_repair_request_fault_panel_reset' },
+  { table: 'repair_request_fault_panel', index: 'uk_repair_request_fault_panel_step' },
   { table: 'intake_analysis_attempt', index: 'uk_intake_analysis_attempt_generation' },
   { table: 'repair_process_entry', index: 'uk_repair_process_entry_uuid' },
   { table: 'repair_process_entry', index: 'idx_repair_process_entry_request_created' },
@@ -447,7 +455,7 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'sync_conflict', column: 'cloud_version' },
   { table: 'sync_conflict', column: 'displayed_cloud_version' },
   { table: 'sync_conflict', column: 'decision' },
-  // V13 本期交付（1775501000000—1775502100000）：新增/调整字段全量登记
+  // V13 本期交付（1775501000000—1775502600000）：新增/调整字段全量登记
   { table: 'ai_conversation', column: 'request_id' },
   { table: 'ai_message_analysis', column: 'answer_message_id' },
   { table: 'ai_message_analysis', column: 'completed_at' },
@@ -610,6 +618,38 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'sync_receipt', column: 'resource_type', notNull: true },
   { table: 'sync_receipt', column: 'source_system', notNull: true },
   { table: 'sync_receipt', column: 'version_no', notNull: true },
+  { table: 'repair_request', column: 'maintenance_date' },
+  { table: 'repair_request', column: 'maintenance_engineer_name_snapshot' },
+  { table: 'repair_request', column: 'reset_result' },
+  { table: 'repair_request', column: 'supplementary_note' },
+  { table: 'repair_request', column: 'maintenance_attachment_file_id' },
+  { table: 'repair_request', column: 'maintenance_version_no', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'id', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'request_id', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'step_no', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'error_code' },
+  { table: 'repair_request_diagnostic_step', column: 'part_name' },
+  { table: 'repair_request_diagnostic_step', column: 'action_text', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'result_code', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'created_at', notNull: true },
+  { table: 'repair_request_diagnostic_step', column: 'updated_at', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'id', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'request_id', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'panel_type', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'step_id' },
+  { table: 'repair_request_fault_panel', column: 'phase_code' },
+  { table: 'repair_request_fault_panel', column: 'main_error' },
+  { table: 'repair_request_fault_panel', column: 'unit_error' },
+  { table: 'repair_request_fault_panel', column: 'source' },
+  { table: 'repair_request_fault_panel', column: 'error_type' },
+  { table: 'repair_request_fault_panel', column: 'gpib_status' },
+  { table: 'repair_request_fault_panel', column: 'fault_status' },
+  { table: 'repair_request_fault_panel', column: 'description', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'action' },
+  { table: 'repair_request_fault_panel', column: 'created_at', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'updated_at', notNull: true },
+  { table: 'repair_request_fault_panel', column: 'initial_request_id' },
+  { table: 'repair_request_fault_panel', column: 'reset_request_id' },
 ];
 
 export const FORBIDDEN_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
@@ -631,6 +671,8 @@ export const REQUIRED_GENERATED_COLUMNS: ReadonlyArray<{
   { table: 'maintenance_report_attachment', column: 'active_sort_order' },
   { table: 'local_backup_run', column: 'active_installation_id' },
   { table: 'engineer_registration_application', column: 'pending_account_id' },
+  { table: 'repair_request_fault_panel', column: 'initial_request_id' },
+  { table: 'repair_request_fault_panel', column: 'reset_request_id' },
 ];
 
 /**
@@ -665,13 +707,27 @@ export const GENERATED_COLUMN_DEFINITIONS: Readonly<
     expression: "IF(`status` = 'PENDING', `account_id`, NULL)",
     stored: true,
   },
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- 键为 table.column 结构标识
+  'repair_request_fault_panel.initial_request_id': {
+    since: 1775502600000,
+    expression: "IF(`panel_type` = 'INITIAL', `request_id`, NULL)",
+    stored: true,
+  },
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- 键为 table.column 结构标识
+  'repair_request_fault_panel.reset_request_id': {
+    since: 1775502600000,
+    expression: "IF(`panel_type` = 'RESET_NEW_FAULT', `request_id`, NULL)",
+    stored: true,
+  },
 };
 
 /**
- * 本期交付（V13 增量迁移 1775501000000—1775502100000）新增表的全字段清单。
+ * 本期交付（V13 增量迁移 1775501000000—1775502600000）新增表的全字段清单。
  *
  * 范围来自冻结设计、字段字典与最终迁移的逐项核对，不从既有定义字典反推；
- * 新增表的每个字段都必须同时登记在 REQUIRED_COLUMNS 与 COLUMN_DEFINITIONS。
+ * 新增表的每个字段都必须同时登记在 REQUIRED_COLUMNS 与 COLUMN_DEFINITIONS；
+ * 生成列不在此重复登记（避免信息模式表达式文本逐字比较），统一走
+ * DELIVERY_GENERATED_COLUMNS 与 GENERATED_COLUMN_DEFINITIONS。
  */
 export const DELIVERY_NEW_TABLE_COLUMNS: Readonly<Record<string, ReadonlyArray<string>>> = {
   admin_organization_provisioning_request: [
@@ -881,6 +937,34 @@ export const DELIVERY_NEW_TABLE_COLUMNS: Readonly<Record<string, ReadonlyArray<s
     'record_uuid',
     'service_organization_id',
   ],
+  repair_request_diagnostic_step: [
+    'action_text',
+    'created_at',
+    'error_code',
+    'id',
+    'part_name',
+    'request_id',
+    'result_code',
+    'step_no',
+    'updated_at',
+  ],
+  repair_request_fault_panel: [
+    'action',
+    'created_at',
+    'description',
+    'error_type',
+    'fault_status',
+    'gpib_status',
+    'id',
+    'main_error',
+    'panel_type',
+    'phase_code',
+    'request_id',
+    'source',
+    'step_id',
+    'unit_error',
+    'updated_at',
+  ],
   repair_request_revision: [
     'actor_account_id',
     'after_snapshot',
@@ -1004,7 +1088,13 @@ export const DELIVERY_EXISTING_TABLE_COLUMNS: ReadonlyArray<string> = [
   'repair_request.customer_organization_id',
   'repair_request.intake_id',
   'repair_request.is_historical',
+  'repair_request.maintenance_attachment_file_id',
+  'repair_request.maintenance_date',
+  'repair_request.maintenance_engineer_name_snapshot',
+  'repair_request.maintenance_version_no',
+  'repair_request.reset_result',
   'repair_request.service_organization_id',
+  'repair_request.supplementary_note',
 ];
 
 /** 本期交付字段全集（新增表全字段 + 既有表新增/调整字段）。 */
@@ -1105,6 +1195,13 @@ export const DELIVERY_CHECKS: ReadonlyArray<string> = [
   'repair_process_entry.chk_repair_process_entry_operation',
   'repair_process_entry.chk_repair_process_entry_time_source',
   'repair_process_entry.chk_repair_process_entry_version',
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_action',
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_no',
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_result',
+  'repair_request_fault_panel.chk_repair_request_fault_panel_description',
+  'repair_request_fault_panel.chk_repair_request_fault_panel_phase',
+  'repair_request_fault_panel.chk_repair_request_fault_panel_step',
+  'repair_request_fault_panel.chk_repair_request_fault_panel_type',
   'repair_request_intake.chk_repair_request_intake_analysis_status',
   'repair_request_intake.chk_repair_request_intake_description',
   'repair_request_intake.chk_repair_request_intake_generation',
@@ -1115,6 +1212,8 @@ export const DELIVERY_CHECKS: ReadonlyArray<string> = [
   'repair_request.chk_repair_request_closure',
   'repair_request.chk_repair_request_closure_reason',
   'repair_request.chk_repair_request_current_revision',
+  'repair_request.chk_repair_request_maintenance_reset_result',
+  'repair_request.chk_repair_request_maintenance_version',
   'repair_request.chk_repair_request_new_intake_companies',
   'stored_file.chk_stored_file_binding_pair',
   'stored_file.chk_stored_file_binding_status',
@@ -1166,6 +1265,11 @@ export const DELIVERY_INDEXES: ReadonlyArray<string> = [
   'reference_document.uk_reference_document_source_report_version',
   'repair_process_entry.idx_repair_process_entry_request_created',
   'repair_process_entry.uk_repair_process_entry_uuid',
+  'repair_request_diagnostic_step.uk_repair_request_diagnostic_step_id',
+  'repair_request_diagnostic_step.uk_repair_request_diagnostic_step_no',
+  'repair_request_fault_panel.uk_repair_request_fault_panel_initial',
+  'repair_request_fault_panel.uk_repair_request_fault_panel_reset',
+  'repair_request_fault_panel.uk_repair_request_fault_panel_step',
   'repair_request_intake.idx_repair_request_intake_customer_created',
   'repair_request_intake.idx_repair_request_intake_organization_status',
   'repair_request_intake.uk_repair_request_intake_converted',
@@ -1174,6 +1278,7 @@ export const DELIVERY_INDEXES: ReadonlyArray<string> = [
   'repair_request.idx_repair_request_customer_organization',
   'repair_request.idx_repair_request_service_organization',
   'repair_request.uk_repair_request_intake',
+  'repair_request.uk_repair_request_maintenance_attachment',
   'stored_file.idx_stored_file_business',
   'stored_file.idx_stored_file_owner_created',
   'stored_file.idx_stored_file_status_created',
@@ -1224,6 +1329,9 @@ export const DELIVERY_FOREIGN_KEYS: ReadonlyArray<string> = [
   'repair_process_entry.fk_repair_process_entry_author',
   'repair_process_entry.fk_repair_process_entry_file',
   'repair_process_entry.fk_repair_process_entry_request',
+  'repair_request_diagnostic_step.fk_repair_request_diagnostic_step_request',
+  'repair_request_fault_panel.fk_repair_request_fault_panel_request',
+  'repair_request_fault_panel.fk_repair_request_fault_panel_step',
   'repair_request_intake.fk_repair_request_intake_converted_request',
   'repair_request_intake.fk_repair_request_intake_customer_account',
   'repair_request_intake.fk_repair_request_intake_customer_organization',
@@ -1234,6 +1342,7 @@ export const DELIVERY_FOREIGN_KEYS: ReadonlyArray<string> = [
   'repair_request_revision.fk_repair_request_revision_request',
   'repair_request.fk_repair_request_customer_organization',
   'repair_request.fk_repair_request_intake',
+  'repair_request.fk_repair_request_maintenance_attachment',
   'repair_request.fk_repair_request_service_organization',
   'stored_file.fk_stored_file_owner_organization',
   'stored_file.fk_stored_file_uploader',
@@ -1242,8 +1351,11 @@ export const DELIVERY_FOREIGN_KEYS: ReadonlyArray<string> = [
   'sync_receipt.fk_sync_receipt_organization',
 ];
 
-/** 本期交付涉及的生成列；V13 增量迁移未新增生成列，历史生成列列为沿用。 */
-export const DELIVERY_GENERATED_COLUMNS: ReadonlyArray<string> = [];
+/** 本期交付涉及的生成列；历史生成列列为沿用。 */
+export const DELIVERY_GENERATED_COLUMNS: ReadonlyArray<string> = [
+  'repair_request_fault_panel.initial_request_id',
+  'repair_request_fault_panel.reset_request_id',
+];
 
 export interface DeliveryStructureRegistry {
   readonly newTableColumns: Readonly<Record<string, ReadonlyArray<string>>>;
@@ -1497,6 +1609,24 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
   { table: 'repair_request', constraint: 'chk_repair_request_closure' },
   { table: 'repair_request', constraint: 'chk_repair_request_closure_reason' },
   { table: 'repair_request', constraint: 'chk_repair_request_current_revision' },
+  { table: 'repair_request', constraint: 'chk_repair_request_maintenance_reset_result' },
+  { table: 'repair_request', constraint: 'chk_repair_request_maintenance_version' },
+  { table: 'repair_request_diagnostic_step', constraint: 'chk_repair_request_diagnostic_step_no' },
+  {
+    table: 'repair_request_diagnostic_step',
+    constraint: 'chk_repair_request_diagnostic_step_action',
+  },
+  {
+    table: 'repair_request_diagnostic_step',
+    constraint: 'chk_repair_request_diagnostic_step_result',
+  },
+  { table: 'repair_request_fault_panel', constraint: 'chk_repair_request_fault_panel_type' },
+  { table: 'repair_request_fault_panel', constraint: 'chk_repair_request_fault_panel_step' },
+  { table: 'repair_request_fault_panel', constraint: 'chk_repair_request_fault_panel_phase' },
+  {
+    table: 'repair_request_fault_panel',
+    constraint: 'chk_repair_request_fault_panel_description',
+  },
   { table: 'ai_conversation', constraint: 'chk_ai_conversation_content_version' },
   { table: 'ai_message', constraint: 'chk_ai_message_content_version' },
   { table: 'maintenance_report_step', constraint: 'chk_maintenance_report_step_result_code' },
@@ -1947,6 +2077,26 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
     referencedTable: 'repair_request_intake',
   },
   {
+    table: 'repair_request',
+    constraint: 'fk_repair_request_maintenance_attachment',
+    referencedTable: 'stored_file',
+  },
+  {
+    table: 'repair_request_diagnostic_step',
+    constraint: 'fk_repair_request_diagnostic_step_request',
+    referencedTable: 'repair_request',
+  },
+  {
+    table: 'repair_request_fault_panel',
+    constraint: 'fk_repair_request_fault_panel_request',
+    referencedTable: 'repair_request',
+  },
+  {
+    table: 'repair_request_fault_panel',
+    constraint: 'fk_repair_request_fault_panel_step',
+    referencedTable: 'repair_request_diagnostic_step',
+  },
+  {
     table: 'ai_conversation',
     constraint: 'fk_ai_conversation_owner_organization',
     referencedTable: 'organization',
@@ -2255,6 +2405,8 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
   backup_restore_run: 1775501500000,
   management_audit_event: 1775501500000,
   admin_organization_provisioning_request: 1775502300000,
+  repair_request_diagnostic_step: 1775502600000,
+  repair_request_fault_panel: 1775502600000,
 };
 
 const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
@@ -2330,6 +2482,12 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'local_backup_run.idx_local_backup_run_organization': 1775501100000,
   'base_user_info.idx_base_user_info_customer_organization': 1775501000000,
   'repair_request.uk_repair_request_intake': 1775501100000,
+  'repair_request.uk_repair_request_maintenance_attachment': 1775502600000,
+  'repair_request_diagnostic_step.uk_repair_request_diagnostic_step_no': 1775502600000,
+  'repair_request_diagnostic_step.uk_repair_request_diagnostic_step_id': 1775502600000,
+  'repair_request_fault_panel.uk_repair_request_fault_panel_initial': 1775502600000,
+  'repair_request_fault_panel.uk_repair_request_fault_panel_reset': 1775502600000,
+  'repair_request_fault_panel.uk_repair_request_fault_panel_step': 1775502600000,
   'repair_request.idx_repair_request_customer_organization': 1775501100000,
   'repair_request.idx_repair_request_service_organization': 1775501100000,
   'ai_message.uk_ai_message_question_uuid': 1775501100000,
@@ -2478,6 +2636,38 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'repair_request.closed_at': 1775501100000,
   'repair_request.closure_reason': 1775501100000,
   'repair_request.current_revision_no': 1775501100000,
+  'repair_request.maintenance_date': 1775502600000,
+  'repair_request.maintenance_engineer_name_snapshot': 1775502600000,
+  'repair_request.reset_result': 1775502600000,
+  'repair_request.supplementary_note': 1775502600000,
+  'repair_request.maintenance_attachment_file_id': 1775502600000,
+  'repair_request.maintenance_version_no': 1775502600000,
+  'repair_request_diagnostic_step.id': 1775502600000,
+  'repair_request_diagnostic_step.request_id': 1775502600000,
+  'repair_request_diagnostic_step.step_no': 1775502600000,
+  'repair_request_diagnostic_step.error_code': 1775502600000,
+  'repair_request_diagnostic_step.part_name': 1775502600000,
+  'repair_request_diagnostic_step.action_text': 1775502600000,
+  'repair_request_diagnostic_step.result_code': 1775502600000,
+  'repair_request_diagnostic_step.created_at': 1775502600000,
+  'repair_request_diagnostic_step.updated_at': 1775502600000,
+  'repair_request_fault_panel.id': 1775502600000,
+  'repair_request_fault_panel.request_id': 1775502600000,
+  'repair_request_fault_panel.panel_type': 1775502600000,
+  'repair_request_fault_panel.step_id': 1775502600000,
+  'repair_request_fault_panel.phase_code': 1775502600000,
+  'repair_request_fault_panel.main_error': 1775502600000,
+  'repair_request_fault_panel.unit_error': 1775502600000,
+  'repair_request_fault_panel.source': 1775502600000,
+  'repair_request_fault_panel.error_type': 1775502600000,
+  'repair_request_fault_panel.gpib_status': 1775502600000,
+  'repair_request_fault_panel.fault_status': 1775502600000,
+  'repair_request_fault_panel.description': 1775502600000,
+  'repair_request_fault_panel.action': 1775502600000,
+  'repair_request_fault_panel.created_at': 1775502600000,
+  'repair_request_fault_panel.updated_at': 1775502600000,
+  'repair_request_fault_panel.initial_request_id': 1775502600000,
+  'repair_request_fault_panel.reset_request_id': 1775502600000,
   'ai_conversation.owner_organization_id': 1775501100000,
   'ai_conversation.content_version': 1775501100000,
   'ai_message.question_uuid': 1775501100000,
@@ -2587,7 +2777,7 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'sync_conflict.cloud_version': 1775502000000,
   'sync_conflict.displayed_cloud_version': 1775502000000,
   'sync_conflict.decision': 1775502000000,
-  // V13 本期交付（1775501000000—1775502100000）
+  // V13 本期交付（1775501000000—1775502600000）
   'ai_conversation.request_id': 1775501100000,
   'ai_message_analysis.answer_message_id': 1775501200000,
   'ai_message_analysis.completed_at': 1775501200000,
@@ -2858,6 +3048,15 @@ export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   'repair_request.chk_repair_request_closure': 1775501100000,
   'repair_request.chk_repair_request_closure_reason': 1775501100000,
   'repair_request.chk_repair_request_current_revision': 1775501100000,
+  'repair_request.chk_repair_request_maintenance_reset_result': 1775502600000,
+  'repair_request.chk_repair_request_maintenance_version': 1775502600000,
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_no': 1775502600000,
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_action': 1775502600000,
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_result': 1775502600000,
+  'repair_request_fault_panel.chk_repair_request_fault_panel_type': 1775502600000,
+  'repair_request_fault_panel.chk_repair_request_fault_panel_step': 1775502600000,
+  'repair_request_fault_panel.chk_repair_request_fault_panel_phase': 1775502600000,
+  'repair_request_fault_panel.chk_repair_request_fault_panel_description': 1775502600000,
   'ai_conversation.chk_ai_conversation_content_version': 1775501100000,
   'ai_message.chk_ai_message_content_version': 1775501100000,
   'maintenance_report_step.chk_maintenance_report_step_result_code': 1775501100000,
@@ -3027,6 +3226,10 @@ const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
   'repair_request.fk_repair_request_customer_organization': 1775501100000,
   'repair_request.fk_repair_request_service_organization': 1775501100000,
   'repair_request.fk_repair_request_intake': 1775501200000,
+  'repair_request.fk_repair_request_maintenance_attachment': 1775502600000,
+  'repair_request_diagnostic_step.fk_repair_request_diagnostic_step_request': 1775502600000,
+  'repair_request_fault_panel.fk_repair_request_fault_panel_request': 1775502600000,
+  'repair_request_fault_panel.fk_repair_request_fault_panel_step': 1775502600000,
   'ai_conversation.fk_ai_conversation_owner_organization': 1775501100000,
   'reference_document.fk_reference_document_source_report_version': 1775501100000,
   'local_backup_run.fk_local_backup_run_organization': 1775501100000,
@@ -3371,6 +3574,30 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'repair_request.uk_repair_request_intake': {
     unique: true,
     columns: ['intake_id'],
+  },
+  'repair_request.uk_repair_request_maintenance_attachment': {
+    unique: true,
+    columns: ['maintenance_attachment_file_id'],
+  },
+  'repair_request_diagnostic_step.uk_repair_request_diagnostic_step_no': {
+    unique: true,
+    columns: ['request_id', 'step_no'],
+  },
+  'repair_request_diagnostic_step.uk_repair_request_diagnostic_step_id': {
+    unique: true,
+    columns: ['request_id', 'id'],
+  },
+  'repair_request_fault_panel.uk_repair_request_fault_panel_initial': {
+    unique: true,
+    columns: ['initial_request_id'],
+  },
+  'repair_request_fault_panel.uk_repair_request_fault_panel_reset': {
+    unique: true,
+    columns: ['reset_request_id'],
+  },
+  'repair_request_fault_panel.uk_repair_request_fault_panel_step': {
+    unique: true,
+    columns: ['request_id', 'step_id'],
   },
   'repair_request.idx_repair_request_customer_organization': {
     unique: false,
@@ -3878,6 +4105,34 @@ export const FOREIGN_KEY_DEFINITIONS: Readonly<Record<string, ForeignKeyDefiniti
     onDelete: 'RESTRICT',
     onUpdate: 'RESTRICT',
   },
+  'repair_request.fk_repair_request_maintenance_attachment': {
+    referenceTable: 'stored_file',
+    localColumns: ['maintenance_attachment_file_id'],
+    referenceColumns: ['file_id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'repair_request_diagnostic_step.fk_repair_request_diagnostic_step_request': {
+    referenceTable: 'repair_request',
+    localColumns: ['request_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'repair_request_fault_panel.fk_repair_request_fault_panel_request': {
+    referenceTable: 'repair_request',
+    localColumns: ['request_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'repair_request_fault_panel.fk_repair_request_fault_panel_step': {
+    referenceTable: 'repair_request_diagnostic_step',
+    localColumns: ['request_id', 'step_id'],
+    referenceColumns: ['request_id', 'id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
   'ai_conversation.fk_ai_conversation_owner_organization': {
     referenceTable: 'organization',
     localColumns: ['owner_organization_id'],
@@ -4266,7 +4521,7 @@ export interface CheckDefinition extends CheckStageDefinition {
 }
 
 /**
- * 本期交付（V13 增量迁移 1775501000000—1775502100000）新增/变更列的精确定义。
+ * 本期交付（V13 增量迁移 1775501000000—1775502600000）新增/变更列的精确定义。
  * 键与 REQUIRED_COLUMNS 的 `table.column` 对应，且是该列在 since 时刻之后的终态定义。
  * 覆盖范围由 DELIVERY_STRUCTURE_REGISTRY 显式登记，不再按时间戳推断。
  */
@@ -4597,7 +4852,7 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     nullable: true,
     defaultValue: 'PENDING',
   },
-  // V13 本期交付（1775501000000—1775502100000）：字段精确定义
+  // V13 本期交付（1775501000000—1775502600000）：字段精确定义
   'ai_conversation.content_version': {
     since: 1775501100000,
     columnType: 'int unsigned',
@@ -5780,6 +6035,186 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     nullable: false,
     defaultValue: '0',
   },
+  'repair_request.maintenance_date': {
+    since: 1775502600000,
+    columnType: 'date',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request.maintenance_engineer_name_snapshot': {
+    since: 1775502600000,
+    columnType: 'varchar(200)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request.reset_result': {
+    since: 1775502600000,
+    columnType: 'varchar(16)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request.supplementary_note': {
+    since: 1775502600000,
+    columnType: 'text',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request.maintenance_attachment_file_id': {
+    since: 1775502600000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request.maintenance_version_no': {
+    since: 1775502600000,
+    columnType: 'int unsigned',
+    nullable: false,
+    defaultValue: '0',
+  },
+  'repair_request_diagnostic_step.id': {
+    since: 1775502600000,
+    columnType: 'bigint unsigned',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.request_id': {
+    since: 1775502600000,
+    columnType: 'int',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.step_no': {
+    since: 1775502600000,
+    columnType: 'int unsigned',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.error_code': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.part_name': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.action_text': {
+    since: 1775502600000,
+    columnType: 'text',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.result_code': {
+    since: 1775502600000,
+    columnType: 'varchar(16)',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_diagnostic_step.created_at': {
+    since: 1775502600000,
+    columnType: 'timestamp(3)',
+    nullable: false,
+    defaultValue: 'CURRENT_TIMESTAMP(3)',
+  },
+  'repair_request_diagnostic_step.updated_at': {
+    since: 1775502600000,
+    columnType: 'timestamp(3)',
+    nullable: false,
+    defaultValue: 'CURRENT_TIMESTAMP(3)',
+  },
+  'repair_request_fault_panel.id': {
+    since: 1775502600000,
+    columnType: 'bigint unsigned',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.request_id': {
+    since: 1775502600000,
+    columnType: 'int',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.panel_type': {
+    since: 1775502600000,
+    columnType: 'varchar(24)',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.step_id': {
+    since: 1775502600000,
+    columnType: 'bigint unsigned',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.phase_code': {
+    since: 1775502600000,
+    columnType: 'varchar(16)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.main_error': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.unit_error': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.source': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.error_type': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.gpib_status': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.fault_status': {
+    since: 1775502600000,
+    columnType: 'varchar(300)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.description': {
+    since: 1775502600000,
+    columnType: 'text',
+    nullable: false,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.action': {
+    since: 1775502600000,
+    columnType: 'text',
+    nullable: true,
+    defaultValue: null,
+  },
+  'repair_request_fault_panel.created_at': {
+    since: 1775502600000,
+    columnType: 'timestamp(3)',
+    nullable: false,
+    defaultValue: 'CURRENT_TIMESTAMP(3)',
+  },
+  'repair_request_fault_panel.updated_at': {
+    since: 1775502600000,
+    columnType: 'timestamp(3)',
+    nullable: false,
+    defaultValue: 'CURRENT_TIMESTAMP(3)',
+  },
   'repair_request.customer_organization_id': {
     since: 1775501100000,
     columnType: 'int',
@@ -6253,7 +6688,7 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
     since: 1775502000000,
     clause: "(`decision` IS NULL OR `decision` IN ('PENDING', 'LOCAL', 'CLOUD'))",
   },
-  // V13 本期交付（1775501000000—1775502100000）：CHECK 精确表达式
+  // V13 本期交付（1775501000000—1775502600000）：CHECK 精确表达式
   'ai_conversation.chk_ai_conversation_completion': {
     since: 1775501100000,
     clause:
@@ -6629,6 +7064,44 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'repair_request.chk_repair_request_current_revision': {
     since: 1775501100000,
     clause: '`current_revision_no` >= 0',
+  },
+  'repair_request.chk_repair_request_maintenance_reset_result': {
+    since: 1775502600000,
+    clause: "`reset_result` IS NULL OR `reset_result` IN ('NORMAL', 'SAME_FAULT', 'NEW_FAULT')",
+  },
+  'repair_request.chk_repair_request_maintenance_version': {
+    since: 1775502600000,
+    clause: '`maintenance_version_no` >= 0',
+  },
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_no': {
+    since: 1775502600000,
+    clause: '`step_no` >= 1',
+  },
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_action': {
+    since: 1775502600000,
+    clause: 'CHAR_LENGTH(TRIM(`action_text`)) > 0',
+  },
+  'repair_request_diagnostic_step.chk_repair_request_diagnostic_step_result': {
+    since: 1775502600000,
+    clause: "`result_code` IN ('RESOLVED', 'UNRESOLVED', 'NEW_FAULT')",
+  },
+  'repair_request_fault_panel.chk_repair_request_fault_panel_type': {
+    since: 1775502600000,
+    clause: "`panel_type` IN ('INITIAL', 'STEP_NEW_FAULT', 'RESET_NEW_FAULT')",
+  },
+  'repair_request_fault_panel.chk_repair_request_fault_panel_step': {
+    since: 1775502600000,
+    clause:
+      "((`panel_type` = 'STEP_NEW_FAULT') AND (`step_id` IS NOT NULL)) OR ((`panel_type` <> 'STEP_NEW_FAULT') AND (`step_id` IS NULL))",
+  },
+  'repair_request_fault_panel.chk_repair_request_fault_panel_phase': {
+    since: 1775502600000,
+    clause:
+      "`phase_code` IS NULL OR `phase_code` IN ('PHASE_01', 'PHASE_02', 'PHASE_03', 'PHASE_04', 'PHASE_05', 'PHASE_06', 'PHASE_07', 'PHASE_08', 'PHASE_09', 'PHASE_10')",
+  },
+  'repair_request_fault_panel.chk_repair_request_fault_panel_description': {
+    since: 1775502600000,
+    clause: 'CHAR_LENGTH(TRIM(`description`)) > 0',
   },
   'repair_request.chk_repair_request_new_intake_companies': {
     since: 1775501100000,

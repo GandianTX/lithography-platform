@@ -39,7 +39,9 @@ import { ReferenceDocumentCaseDetailEntity } from './entities/reference-document
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
 import { ReferenceDocumentRevisionEntity } from './entities/reference-document-revision.entity';
 import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
+import { RepairRequestDiagnosticStepEntity } from './entities/repair-request-diagnostic-step.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestFaultPanelEntity } from './entities/repair-request-fault-panel.entity';
 import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
 import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
 import { StoredFileEntity } from './entities/stored-file.entity';
@@ -112,6 +114,8 @@ const LITHOGRAPHY_ENTITIES = [
   AiMessageAnalysisEntity,
   MaintenanceReportFaultEntity,
   RepairRequestRevisionEntity,
+  RepairRequestDiagnosticStepEntity,
+  RepairRequestFaultPanelEntity,
   ReferenceDocumentRevisionEntity,
   LocalAccountAuthorizationEntity,
   LocalCompanySettingEntity,
