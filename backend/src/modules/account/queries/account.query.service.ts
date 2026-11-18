@@ -241,6 +241,27 @@ export class AccountQueryService {
   }
 
   /**
+   * 客户可信公司归属的窄读（任务 02.4）：供业务写入在**同一事务内**复核当前归属。
+   *
+   * 仅返回 `base_user_info.customer_organization_id`，不做角色收敛与状态判定——调用方
+   * 已通过认证链与业务角色门禁确认身份；本方法只回答「此刻有没有可信归属」，避免把
+   * 账号设置快照的全部事实（含昵称、姓名）扩散到无关用例。
+   *
+   * 账号行或资料行缺失返回 `null`（失败关闭由调用方裁决，不塌缩为未认证）。
+   */
+  async findCustomerOrganizationId(params: {
+    accountId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<number | null> {
+    const userInfoRepository = this.getUserInfoRepository(params.transactionContext);
+    const userInfo = await userInfoRepository.findOne({
+      where: { accountId: params.accountId },
+      select: { id: true, customerOrganizationId: true },
+    });
+    return userInfo?.customerOrganizationId ?? null;
+  }
+
+  /**
    * 账号 + 资料 → 内部窄快照 `MyAccountSettingsSnapshot` 的唯一映射点。
    *
    * 三类失败关闭判定集中在此，`findMyAccountSettingsSnapshot()` 不重复实现：
@@ -308,11 +329,13 @@ export class AccountQueryService {
       loginName: account.loginName,
       loginEmail: account.loginEmail,
       nickname: userInfo.nickname,
+      realName: userInfo.realName,
       companyName: userInfo.companyName,
       phone: userInfo.phone,
       contactEmail: userInfo.email,
       role: convergence.role,
       status: account.status,
+      adminLevel: account.adminLevel ?? null,
       updatedAt: this.resolveSettingsUpdatedAt(account.updatedAt, userInfo.updatedAt),
     };
   }

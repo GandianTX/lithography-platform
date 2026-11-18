@@ -422,12 +422,28 @@ export interface MyAccountSettingsSnapshot {
   readonly loginName: string | null;
   readonly loginEmail: string | null;
   readonly nickname: string;
+  /** `base_user_info.real_name`：真实姓名（可空，与昵称分开） */
+  readonly realName: string | null;
   readonly companyName: string | null;
   readonly phone: string | null;
   readonly contactEmail: string | null;
   readonly role: IdentityTypeEnum;
   readonly status: AccountStatus;
+  /** `base_user_account.admin_level`（1 / 2 / null） */
+  readonly adminLevel: number | null;
   readonly updatedAt: Date;
+}
+
+/**
+ * 缺归属客户补录（任务 02.4）的锁内最小事实。
+ *
+ * 只承载「是否已有可信公司归属」这一判定所需字段：账号行与资料行已由调用方按
+ * 「account 优先、资料随后」顺序加排他锁，本类型不表示任何权限结论。
+ */
+export interface CustomerCompanyBindingFacts {
+  readonly accountId: number;
+  /** `base_user_info.customer_organization_id`：客户可信公司归属（可空） */
+  readonly customerOrganizationId: number | null;
 }
 
 /**
@@ -449,11 +465,17 @@ export interface MyAccountSettingsView {
   readonly loginName: string | null;
   readonly loginEmail: string | null;
   readonly nickname: string;
+  /** `base_user_info.real_name`：真实姓名（可空） */
+  readonly realName: string | null;
   readonly companyName: string | null;
+  /** 可信公司名称：按当前角色解析出的组织名称；无归属或名称缺失时为 null，不回退 companyName */
+  readonly trustedCompanyName: string | null;
   readonly phone: string | null;
   readonly contactEmail: string | null;
   readonly role: IdentityTypeEnum;
   readonly status: AccountStatus;
+  /** `base_user_account.admin_level`（1 / 2 / null） */
+  readonly adminLevel: number | null;
   readonly updatedAt: Date;
 }
 
@@ -462,7 +484,7 @@ export interface MyAccountSettingsView {
  * 在事务内对 account 行取悲观锁后读取，仅供 `UpdateMyAccountSettingsUsecase` 做合并、
  * 「至少保留一个登录凭据」判定与同值抑制，不进入任何 GraphQL DTO。
  *
- * 与 `MyAccountSettingsSnapshot` 的差异：只含六个**可写字段的当前值**，刻意不含
+ * 与 `MyAccountSettingsSnapshot` 的差异：只含七个**可写字段的当前值**，刻意不含
  * `role` / `status` / `updatedAt` ——它们不参与合并裁决，写后校验由事务内回读
  * `findMyAccountSettingsSnapshot()`（三源收敛 + 双状态判定）承担，本事实不重复实现。
  *
@@ -474,6 +496,7 @@ export interface MyAccountSettingsUpdateFacts {
   readonly loginName: string | null;
   readonly loginEmail: string | null;
   readonly nickname: string;
+  readonly realName: string | null;
   readonly companyName: string | null;
   readonly phone: string | null;
   readonly contactEmail: string | null;

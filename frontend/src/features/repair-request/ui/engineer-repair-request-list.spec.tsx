@@ -15,10 +15,12 @@
  * - 加载 / 失败重试 / 四态全局空态 / 筛选无结果 / 当前页空态。
  */
 
+import { useMemo, useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GraphQLIngressError } from '@/shared/graphql';
+import { type AppLanguage, createTranslator, I18nContext } from '@/shared/i18n';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 
 import type {
@@ -423,5 +425,59 @@ describe('EngineerRepairRequestList', () => {
 
     expect(navigateMock).toHaveBeenCalledTimes(1);
     expect(navigateMock).toHaveBeenCalledWith('/engineer/repair-requests/22');
+  });
+});
+
+/**
+ * 语言切换与请求解耦：`t` 只用于渲染，不进入数据拉取的依赖。
+ * 用 `I18nContext` 直接装配最小状态容器（features 层禁止依赖 app 的 Provider）。
+ */
+describe('EngineerRepairRequestList 的语言切换', () => {
+  function LanguageHarness() {
+    const [language, setLanguage] = useState<AppLanguage>('zh-CN');
+    const t = useMemo(() => createTranslator(language), [language]);
+    const value = useMemo(() => ({ language, setLanguage, t }), [language, t]);
+
+    return (
+      <I18nContext.Provider value={value}>
+        <button onClick={() => setLanguage('en')} type="button">
+          switch-language
+        </button>
+        <EngineerRepairRequestList />
+      </I18nContext.Provider>
+    );
+  }
+
+  it('切换界面语言只重渲染，不重发设备型号与列表请求', async () => {
+    fetchMock.mockResolvedValue(buildPage([buildItem(21)]));
+
+    render(<LanguageHarness />);
+    await screen.findByText('RR20260902100000ABC21');
+
+    expect(fetchModelsMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch-language' }));
+
+    // 面板标题随语言切换为英文
+    await screen.findByText('Repair request list');
+    // 语言变化不得连带重发任何数据请求
+    expect(fetchModelsMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('设备型号加载失败的兜底文案跟随当前语言，且不重发请求', async () => {
+    fetchModelsMock.mockReset();
+    fetchModelsMock.mockRejectedValueOnce(new Error('models unavailable'));
+    fetchMock.mockResolvedValue(buildPage([buildItem(21)]));
+
+    render(<LanguageHarness />);
+    await screen.findByText('设备型号加载失败，请稍后重试。');
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch-language' }));
+
+    await screen.findByText('Failed to load equipment models. Please try again later.');
+    expect(fetchModelsMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -28,6 +28,8 @@ import { Button, Pagination, Segmented, Select, Table, Tooltip } from 'antd';
 import { useNavigate } from 'react-router';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import type { Translate } from '@/shared/i18n';
+import { useI18n } from '@/shared/i18n';
 import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
 import { FilterBar } from '@/shared/ui/filter-bar';
@@ -56,21 +58,7 @@ import {
   ResolutionTag,
 } from './repair-request-status-tags';
 
-const SCOPE_OPTIONS: Array<{ label: string; value: EngineerRepairListScope }> = [
-  { label: '全部', value: 'ALL' },
-  { label: '待接单', value: 'AVAILABLE' },
-  { label: '我的接单', value: 'MINE' },
-  { label: '他人已接单', value: 'TAKEN_BY_OTHER' },
-];
-
-const EMPTY_TEXT_BY_SCOPE: Record<EngineerRepairListScope, string> = {
-  ALL: '暂无维修申请。',
-  AVAILABLE: '暂无待接单的维修申请。',
-  MINE: '暂无你的接单记录。',
-  TAKEN_BY_OTHER: '暂无他人已接单的维修申请。',
-};
-
-const FILTER_NO_RESULT_TEXT = '没有符合筛选条件的维修申请。';
+const SCOPE_VALUES: EngineerRepairListScope[] = ['ALL', 'AVAILABLE', 'MINE', 'TAKEN_BY_OTHER'];
 
 /** 主搜索防抖：输入即时回显，防抖到期后才提交筛选（与参考资料库标题搜索同一口径） */
 export const SEARCH_DEBOUNCE_MS = 300;
@@ -80,7 +68,9 @@ const COLUMNS_MIN_WIDTH = 880;
 
 type ModelOptionsState =
   | { status: 'loading' }
-  | { status: 'failed'; message: string }
+  // 失败态保留原始 error，文案在渲染期按当前语言翻译：
+  // 若在拉取时把 t 写进状态与 useCallback 依赖，切语言会连带重发 EquipmentModels。
+  | { status: 'failed'; error: unknown }
   | { status: 'ready'; models: EquipmentModelOption[] };
 
 function WorkOrderProgressCell({ record }: { record: EngineerRepairRequestListItem }) {
@@ -138,8 +128,8 @@ function WorkOrderProgressCell({ record }: { record: EngineerRepairRequestListIt
   );
 }
 
-function toModelOptionsUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : '设备型号加载失败，请稍后重试。';
+function toModelOptionsUserMessage(error: unknown, t: Translate): string {
+  return isGraphQLIngressError(error) ? error.userMessage : t('common.modelsLoadFailed');
 }
 
 /** 纯拉取：只产出下一状态，不直接写 state（与创建表单同一模式），供初始加载与重试共用 */
@@ -148,7 +138,7 @@ async function loadModelOptionsState(): Promise<ModelOptionsState> {
     const models = await fetchEquipmentModels();
     return { status: 'ready', models };
   } catch (error) {
-    return { status: 'failed', message: toModelOptionsUserMessage(error) };
+    return { status: 'failed', error };
   }
 }
 
@@ -163,49 +153,51 @@ function GroupPrimary({ children, truncate = false }: { children: string; trunca
   );
 }
 
-const columns: TableColumnsType<EngineerRepairRequestListItem> = [
-  {
-    key: 'application',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="font-bold font-mono text-primary text-xs">{record.requestNo}</span>
-        <span className="text-text-tertiary text-xs">{formatDateTimeText(record.createdAt)}</span>
-      </span>
-    ),
-    title: '申请',
-    width: 210,
-  },
-  {
-    key: 'customer',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <GroupPrimary>{record.customerNickname}</GroupPrimary>
-        <span className="text-text-secondary text-xs">{record.customerCompanyName ?? '—'}</span>
-      </span>
-    ),
-    title: '客户',
-    width: 170,
-  },
-  {
-    key: 'equipment',
-    render: (_value, record) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <GroupPrimary
-          truncate
-        >{`${record.equipmentModel.modelName}（${record.equipmentModel.modelCode}）`}</GroupPrimary>
-        <span className="text-text-secondary text-xs">{record.errorCode}</span>
-      </span>
-    ),
-    title: '设备',
-    width: 240,
-  },
-  {
-    key: 'progress',
-    render: (_value, record) => <WorkOrderProgressCell record={record} />,
-    title: '处理进度',
-    width: 240,
-  },
-];
+function createColumns(t: Translate): TableColumnsType<EngineerRepairRequestListItem> {
+  return [
+    {
+      key: 'application',
+      render: (_value, record) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="font-bold font-mono text-primary text-xs">{record.requestNo}</span>
+          <span className="text-text-tertiary text-xs">{formatDateTimeText(record.createdAt)}</span>
+        </span>
+      ),
+      title: t('repairList.col.application'),
+      width: 210,
+    },
+    {
+      key: 'customer',
+      render: (_value, record) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <GroupPrimary>{record.customerNickname}</GroupPrimary>
+          <span className="text-text-secondary text-xs">{record.customerCompanyName ?? '—'}</span>
+        </span>
+      ),
+      title: t('repairList.col.customer'),
+      width: 170,
+    },
+    {
+      key: 'equipment',
+      render: (_value, record) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <GroupPrimary
+            truncate
+          >{`${record.equipmentModel.modelName}（${record.equipmentModel.modelCode}）`}</GroupPrimary>
+          <span className="text-text-secondary text-xs">{record.errorCode}</span>
+        </span>
+      ),
+      title: t('repairList.col.equipment'),
+      width: 240,
+    },
+    {
+      key: 'progress',
+      render: (_value, record) => <WorkOrderProgressCell record={record} />,
+      title: t('repairList.col.progress'),
+      width: 240,
+    },
+  ];
+}
 
 export function EngineerRepairRequestList({
   initialScope = 'ALL',
@@ -214,6 +206,7 @@ export function EngineerRepairRequestList({
   initialScope?: EngineerRepairListScope;
 }) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { state, scope, filter, setScope, setFilter, goToPage, reload } =
     useEngineerRepairRequestList(initialScope);
 
@@ -269,7 +262,7 @@ export function EngineerRepairRequestList({
   };
 
   return (
-    <TableContainer title="维修申请列表">
+    <TableContainer title={t('repairList.title')}>
       <div className="flex flex-col gap-4">
         <FilterBar>
           {/* 四态选项宽度不可压缩：容器按可用宽度收缩，超出部分由本控件自身滚动，
@@ -277,14 +270,17 @@ export function EngineerRepairRequestList({
           <div className="max-w-full min-w-0 overflow-x-auto">
             <Segmented
               onChange={(value) => setScope(value as EngineerRepairListScope)}
-              options={SCOPE_OPTIONS}
+              options={SCOPE_VALUES.map((value) => ({
+                label: t(`repairList.scope.${value}`),
+                value,
+              }))}
               value={scope}
             />
           </div>
           <ToolbarSearchField
-            clearLabel="清除客户昵称搜索"
+            clearLabel={t('repairList.searchClear')}
             onChange={setNicknameDraft}
-            placeholder="按客户昵称搜索"
+            placeholder={t('repairList.searchPlaceholder')}
             value={nicknameDraft}
           />
           <ToolbarButton
@@ -292,7 +288,7 @@ export function EngineerRepairRequestList({
             aria-expanded={filterOpen}
             onClick={() => setFilterOpen((previous) => !previous)}
           >
-            筛选
+            {t('repairList.filter')}
           </ToolbarButton>
 
           {/* 展开区：主搜索之外的精确条件；原型无展开态，属业务扩展 */}
@@ -311,11 +307,15 @@ export function EngineerRepairRequestList({
                       }))
                     : []
                 }
-                placeholder={modelsState.status === 'failed' ? '设备型号不可用' : '按设备型号筛选'}
+                placeholder={
+                  modelsState.status === 'failed'
+                    ? t('repairList.modelUnavailable')
+                    : t('repairList.filterByModel')
+                }
                 style={{ minWidth: 220 }}
                 value={filter.equipmentModelId}
               />
-              <ToolbarButton onClick={clearFilters}>清除筛选</ToolbarButton>
+              <ToolbarButton onClick={clearFilters}>{t('repairList.clearFilter')}</ToolbarButton>
             </>
           ) : null}
         </FilterBar>
@@ -324,20 +324,20 @@ export function EngineerRepairRequestList({
           <ErrorState
             action={
               <Button onClick={retryModels} size="small">
-                重试
+                {t('common.retry')}
               </Button>
             }
-            title={modelsState.message}
+            title={toModelOptionsUserMessage(modelsState.error, t)}
           />
         ) : null}
 
-        {state.status === 'loading' ? <LoadingState label="正在加载维修申请…" /> : null}
+        {state.status === 'loading' ? <LoadingState label={t('repairList.loading')} /> : null}
 
         {state.status === 'failed' ? (
           <ErrorState
             action={
               <Button onClick={reload} size="small">
-                重试
+                {t('common.retry')}
               </Button>
             }
             title={state.message}
@@ -349,13 +349,13 @@ export function EngineerRepairRequestList({
             <EmptyState
               action={
                 <Button onClick={clearFilters} size="small">
-                  清除筛选
+                  {t('repairList.clearFilter')}
                 </Button>
               }
-              title={FILTER_NO_RESULT_TEXT}
+              title={t('repairList.noFilterResult')}
             />
           ) : (
-            <EmptyState title={EMPTY_TEXT_BY_SCOPE[scope]} />
+            <EmptyState title={t(`repairList.empty.${scope}`)} />
           )
         ) : null}
 
@@ -363,7 +363,7 @@ export function EngineerRepairRequestList({
           <div className="flex flex-col gap-4">
             {state.items.length > 0 ? (
               <Table<EngineerRepairRequestListItem>
-                columns={columns}
+                columns={createColumns(t)}
                 dataSource={state.items}
                 onRow={(record) => ({
                   onClick: () => navigate(`${ENGINEER_REPAIR_REQUEST_DETAIL_PATH}${record.id}`),
@@ -374,10 +374,12 @@ export function EngineerRepairRequestList({
                 scroll={{ x: COLUMNS_MIN_WIDTH }}
               />
             ) : (
-              <EmptyState title="当前页暂无数据，请翻页返回。" />
+              <EmptyState title={t('repairList.pageEmpty')} />
             )}
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-text-secondary text-xs">{`共 ${state.total} 条`}</span>
+              <span className="text-text-secondary text-xs">
+                {t('repairList.total', { count: state.total })}
+              </span>
               <Pagination
                 current={state.page}
                 onChange={goToPage}

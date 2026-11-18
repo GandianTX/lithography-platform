@@ -293,11 +293,11 @@ describe('AdminResetUserPasswordToDefaultUsecase', () => {
         accountId: number;
         passwordHash: string;
         transactionContext: unknown;
-        setMustChangePassword?: boolean;
+        mustChangePassword?: boolean;
       };
       expect(writeArg.accountId).toBe(TARGET_ACCOUNT_ID);
       expect(writeArg.transactionContext).toBe(harness.txContext);
-      expect(writeArg.setMustChangePassword).toBe(true);
+      expect(writeArg.mustChangePassword).toBe(true);
       expect(writeArg.passwordHash).toBe(
         AccountService.hashPasswordWithTimestamp(DEFAULT_PASSWORD, createdAt),
       );
@@ -315,8 +315,8 @@ describe('AdminResetUserPasswordToDefaultUsecase', () => {
         .calls[0][0] as Record<string, unknown>;
       expect(Object.keys(writeArg).sort()).toEqual([
         'accountId',
+        'mustChangePassword',
         'passwordHash',
-        'setMustChangePassword',
         'transactionContext',
       ]);
     });

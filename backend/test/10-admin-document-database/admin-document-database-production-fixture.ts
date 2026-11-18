@@ -51,6 +51,7 @@ import {
   DataSource,
   EntityManager,
   In,
+  Not,
   type FindOptionsWhere,
   type ObjectLiteral,
   type Repository,
@@ -62,6 +63,7 @@ import {
   assertPhysicalCleanupConsent,
 } from '../utils/e2e-db-guard';
 import { createTestAccount, TestAccountConfig } from '../utils/test-accounts';
+import type { AdminDocFixtureCleanupContext } from './admin-document-database-fixture';
 
 /** 本 spec 专属账号（固定 loginName；所有权边界仅此三者） */
 export const PRODUCTION_FIXTURE_ACCOUNTS = {
@@ -865,6 +867,8 @@ const assertNoExternalInboundReferences = async (
     readonly accountIds: readonly number[];
     readonly equipmentModelIds: readonly number[];
     readonly repairRequestIds: readonly number[];
+    /** 同一事务内组织链计划删除的成员关系：批次内引用，不计入外部引用。 */
+    readonly batchOwnedMembershipIds?: readonly number[];
   },
 ): Promise<void> => {
   const checks: InboundReferenceCheck[] = [];
@@ -923,7 +927,12 @@ const assertNoExternalInboundReferences = async (
     label: 'organization_membership.account_id',
     repo: manager.getRepository(OrganizationMembershipEntity),
     ids: sets.accountIds,
-    where: (ids) => ({ accountId: In(ids) }),
+    where: (ids) => {
+      const batchMembershipIds = sets.batchOwnedMembershipIds ?? [];
+      return batchMembershipIds.length > 0
+        ? { accountId: In(ids), id: Not(In([...batchMembershipIds])) }
+        : { accountId: In(ids) };
+    },
   });
   addInbound({
     label: 'ai_conversation.engineer_account_id',
@@ -1063,25 +1072,36 @@ const assertNoExternalInboundReferences = async (
 };
 
 /**
- * 精确删除：先子后父（申请 → 型号 → user_info → account）。
- *
- * 归属边界（0922 P2）：
+ * 精确删除计划（归属边界，0922 P2）：
  * - `targets` 必须完全落在 `verified`（已验证所有权集合）内；
  * - 删除账号前先**枚举全部引用这些账号的申请**（客户 / 接单两个方向）并逐条核验归属：
  *   任一申请不在 `verified` 内 → 失败关闭，绝不按账号 ID 批量兜底删除；
  * - 其余新增表（维修报告 / 投稿 / 注册申请 / 组织成员 / 参考资料等）的入向引用在同一
  *   事务内、首次 DELETE 之前逐表统计，外部记录只导致拒绝，不被认领或扩大删除范围。
  *
- * 调用方必须传入**事务内**的 EntityManager：预检与整批删除在同一连接、同一事务中，
+ * 所有检查都在生成计划时完成；调用方必须传入**事务内**的 EntityManager，
  * 任一后序失败整批回滚，不允许前序删除独立提交。
  */
-const deleteOwnedRows = async (
+type OwnedDeletionPlan = {
+  readonly requestIds: readonly number[];
+  readonly modelIds: readonly number[];
+  readonly accountIds: readonly number[];
+};
+
+/**
+ * 生成删除计划（事务内、首条 DELETE 之前）：归属核验 + 账号关联申请核验 + 入向引用闭包。
+ *
+ * `context.batchOwnedMembershipIds` 只允许排除同一事务内组织链已预检、计划先删的成员关系；
+ * 其他任何外部引用仍然失败关闭。
+ */
+const buildOwnedDeletionPlan = async (
   manager: EntityManager,
   helper: string,
   database: string,
   targets: OwnedIdSet,
   verified: OwnedIdSet,
-): Promise<void> => {
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
+): Promise<OwnedDeletionPlan> => {
   const requestIds = uniquePositiveIds(targets.repairRequestIds);
   const modelIds = uniquePositiveIds(targets.equipmentModelIds);
   const accountIds = uniquePositiveIds(targets.accountIds);
@@ -1121,18 +1141,140 @@ const deleteOwnedRows = async (
     accountIds,
     equipmentModelIds: modelIds,
     repairRequestIds: allRequestIds,
+    batchOwnedMembershipIds: context.batchOwnedMembershipIds,
   });
 
-  if (allRequestIds.length > 0) {
-    await manager.getRepository(RepairRequestEntity).delete({ id: In(allRequestIds) });
+  return { requestIds: allRequestIds, modelIds, accountIds };
+};
+
+/** 执行已核验计划：只做精确删除（先申请 → 型号 → user_info → account）。 */
+const executeOwnedDeletionPlan = async (
+  manager: EntityManager,
+  plan: OwnedDeletionPlan,
+): Promise<void> => {
+  if (plan.requestIds.length > 0) {
+    await manager.getRepository(RepairRequestEntity).delete({ id: In([...plan.requestIds]) });
   }
-  if (modelIds.length > 0) {
-    await manager.getRepository(EquipmentModelEntity).delete({ id: In(modelIds) });
+  if (plan.modelIds.length > 0) {
+    await manager.getRepository(EquipmentModelEntity).delete({ id: In([...plan.modelIds]) });
   }
-  if (accountIds.length > 0) {
-    await manager.getRepository(UserInfoEntity).delete({ accountId: In(accountIds) });
-    await manager.getRepository(AccountEntity).delete({ id: In(accountIds) });
+  if (plan.accountIds.length > 0) {
+    await manager.getRepository(UserInfoEntity).delete({ accountId: In([...plan.accountIds]) });
+    await manager.getRepository(AccountEntity).delete({ id: In([...plan.accountIds]) });
   }
+};
+
+/**
+ * 预检 + 执行一步完成（必须已在事务内）：供不做 prepare/execute 拆分的独立入口使用。
+ */
+const deleteOwnedRows = async (
+  manager: EntityManager,
+  helper: string,
+  database: string,
+  targets: OwnedIdSet,
+  verified: OwnedIdSet,
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
+): Promise<void> => {
+  const plan = await buildOwnedDeletionPlan(manager, helper, database, targets, verified, context);
+  await executeOwnedDeletionPlan(manager, plan);
+};
+
+/** 事务内预检结果：`execute()` 只执行已核验计划内的精确删除。 */
+export type PreparedProductionFixtureCleanup = {
+  execute(): Promise<void>;
+};
+
+export type PreparedProductionFixtureResidueCleanup = PreparedProductionFixtureCleanup & {
+  readonly result: {
+    repairRequestIds: number[];
+    equipmentModelIds: number[];
+    accountIds: number[];
+  };
+};
+
+/** 清空本轮夹具台账但保留对象引用（组合清理提交成功后调用）。 */
+export const clearProductionFixtureOwnership = (ownership: ProductionFixtureOwnership): void => {
+  Object.assign(ownership, createProductionFixtureOwnership());
+};
+
+/**
+ * 崩溃残留（事务内）：按专属标记定位 + 完整归属校验，构造删除计划但不执行。
+ * 空集合返回 null；调用方必须已在同一事务内完成目标库连接校验。
+ */
+export const prepareProductionFixtureResidueCleanup = async (
+  manager: EntityManager,
+  database: string,
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
+): Promise<PreparedProductionFixtureResidueCleanup | null> => {
+  const helper = 'cleanupProductionFixtureResidue';
+  const resolved = await resolveOwnedRows(manager, helper, database);
+
+  // 已验证集合 = 事务内「标记定位 + 逐字段/关系核验」的结果；
+  // 目标集合由已验证结果单独生成（不得用同一集合兼任两者，避免断言形同虚设）
+  const verified: OwnedIdSet = {
+    repairRequestIds: [...resolved.fixtureRequestIds, ...resolved.sentinelRequestIds],
+    equipmentModelIds: [...resolved.fixtureModelIds, ...resolved.sentinelModelIds],
+    accountIds: resolved.accountIds,
+  };
+  const targets: OwnedIdSet = {
+    repairRequestIds: [...verified.repairRequestIds],
+    equipmentModelIds: [...verified.equipmentModelIds],
+    accountIds: [...verified.accountIds],
+  };
+  if (
+    targets.repairRequestIds.length === 0 &&
+    targets.equipmentModelIds.length === 0 &&
+    targets.accountIds.length === 0
+  ) {
+    return null;
+  }
+
+  // 首条 DELETE 之前生成已验证计划：冲突在预检阶段失败关闭，执行闭包只做精确删除
+  const plan = await buildOwnedDeletionPlan(manager, helper, database, targets, verified, context);
+
+  return {
+    result: {
+      repairRequestIds: [...targets.repairRequestIds],
+      equipmentModelIds: [...targets.equipmentModelIds],
+      accountIds: [...targets.accountIds],
+    },
+    execute: async () => {
+      await executeOwnedDeletionPlan(manager, plan);
+    },
+  };
+};
+
+/**
+ * 本轮收尾（事务内）：只接受本轮记录的 ID，核验登记事实后构造删除计划但不执行。
+ * 空 ID 集合返回 null。
+ */
+export const prepareProductionFixtureByIdsCleanup = async (
+  manager: EntityManager,
+  database: string,
+  ownership: ProductionFixtureOwnership,
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
+): Promise<PreparedProductionFixtureCleanup | null> => {
+  const requestIds = uniquePositiveIds(ownership.createdRepairRequestIds);
+  const modelIds = uniquePositiveIds(ownership.createdEquipmentModelIds);
+  const accountIds = uniquePositiveIds(ownership.createdAccountIds);
+  if (requestIds.length === 0 && modelIds.length === 0 && accountIds.length === 0) {
+    return null;
+  }
+  const helper = 'cleanupProductionFixtureByIds';
+  const { targets, verified } = await verifyRegisteredOwnership(
+    manager,
+    helper,
+    database,
+    { accountIds, equipmentModelIds: modelIds, repairRequestIds: requestIds },
+    ownership.createdFacts,
+  );
+  // 首条 DELETE 之前生成已验证计划：冲突在预检阶段失败关闭，执行闭包只做精确删除
+  const plan = await buildOwnedDeletionPlan(manager, helper, database, targets, verified, context);
+  return {
+    execute: async () => {
+      await executeOwnedDeletionPlan(manager, plan);
+    },
+  };
 };
 
 /**
@@ -1149,27 +1291,12 @@ export const cleanupProductionFixtureResidue = async (
   // 预检与整批删除在同一清理连接、同一事务内：任一后序失败整批回滚，不允许前序删除独立提交
   return ds.transaction(async (manager) => {
     await assertManagerOnExpectedE2eDatabase(manager, database);
-    const resolved = await resolveOwnedRows(manager, helper, database);
-
-    // 已验证集合 = 事务内「标记定位 + 逐字段/关系核验」的结果；
-    // 目标集合由已验证结果单独生成（不得用同一集合兼任两者，避免断言形同虚设）
-    const verified: OwnedIdSet = {
-      repairRequestIds: [...resolved.fixtureRequestIds, ...resolved.sentinelRequestIds],
-      equipmentModelIds: [...resolved.fixtureModelIds, ...resolved.sentinelModelIds],
-      accountIds: resolved.accountIds,
-    };
-    const targets: OwnedIdSet = {
-      repairRequestIds: [...verified.repairRequestIds],
-      equipmentModelIds: [...verified.equipmentModelIds],
-      accountIds: [...verified.accountIds],
-    };
-    await deleteOwnedRows(manager, helper, database, targets, verified);
-
-    return {
-      repairRequestIds: [...targets.repairRequestIds],
-      equipmentModelIds: [...targets.equipmentModelIds],
-      accountIds: [...targets.accountIds],
-    };
+    const prepared = await prepareProductionFixtureResidueCleanup(manager, database);
+    if (!prepared) {
+      return { repairRequestIds: [], equipmentModelIds: [], accountIds: [] };
+    }
+    await prepared.execute();
+    return prepared.result;
   });
 };
 
@@ -1199,14 +1326,10 @@ export const cleanupProductionFixtureByIds = async (
   // 删除计划只能在「登记事实 ↔ 当前行」逐字段核验通过后生成（第十五轮 P2）
   await ds.transaction(async (manager) => {
     await assertManagerOnExpectedE2eDatabase(manager, database);
-    const { targets, verified } = await verifyRegisteredOwnership(
-      manager,
-      helper,
-      database,
-      { accountIds, equipmentModelIds: modelIds, repairRequestIds: requestIds },
-      ownership.createdFacts,
-    );
-    await deleteOwnedRows(manager, helper, database, targets, verified);
+    const prepared = await prepareProductionFixtureByIdsCleanup(manager, database, ownership);
+    if (prepared) {
+      await prepared.execute();
+    }
   });
 };
 

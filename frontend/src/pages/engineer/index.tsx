@@ -13,6 +13,8 @@ import {
   EngineerWorkbenchHeaderStats,
 } from '@/features/repair-request';
 
+import type { MessageKey } from '@/shared/i18n';
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { PageHeader } from '@/shared/ui/page-header';
 
@@ -25,28 +27,32 @@ const MY_REPAIR_REQUESTS_PATH = `${ENGINEER_REPAIR_REQUEST_LIST_PATH}?scope=MINE
 const REFERENCE_DOCUMENTS_PATH = '/reference-documents';
 const ACCOUNT_SETTINGS_PATH = '/account/settings';
 
-const QUICK_ENTRIES = [
+const QUICK_ENTRIES: ReadonlyArray<{
+  descriptionKey: MessageKey;
+  labelKey: MessageKey;
+  path: string;
+}> = [
   {
-    description: '查看全部维修申请，按型号与客户筛选',
-    label: '全部维修申请',
+    descriptionKey: 'engineer.quick.allDescription',
+    labelKey: 'engineer.quick.all',
     path: ENGINEER_REPAIR_REQUEST_LIST_PATH,
   },
   {
-    description: '继续跟进你已接单的维修申请',
-    label: '我的接单',
+    descriptionKey: 'engineer.quick.mineDescription',
+    labelKey: 'engineer.quick.mine',
     path: MY_REPAIR_REQUESTS_PATH,
   },
   {
-    description: '查阅设备维修参考资料',
-    label: '参考资料库',
+    descriptionKey: 'engineer.quick.referenceDescription',
+    labelKey: 'engineer.quick.reference',
     path: REFERENCE_DOCUMENTS_PATH,
   },
   {
-    description: '维护你的登录密码等账号信息',
-    label: '账号设置',
+    descriptionKey: 'engineer.quick.accountDescription',
+    labelKey: 'engineer.quick.account',
     path: ACCOUNT_SETTINGS_PATH,
   },
-] as const;
+];
 
 /**
  * 工程师首页工作台：
@@ -62,6 +68,7 @@ const QUICK_ENTRIES = [
  */
 export function EngineerPage() {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { session } = useAuthSession();
   // 记录加载失败的 URL 而不是布尔量：会话换头像后自动重试，不残留失败态
   const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
@@ -76,16 +83,16 @@ export function EngineerPage() {
     <EngineerRepairWorkbenchProvider>
       <div className="page-stack">
         <PageHeader
-          description="ENGINEER 工作区。查看最近待接单申请，跟进已接单维修，快捷前往常用页面。"
+          description={t('engineer.workspaceDescription')}
           eyebrow="Engineer Workspace"
           extra={<EngineerWorkbenchHeaderStats />}
-          title="工程师工作台"
+          title={t('engineer.workspaceTitle')}
         />
 
         <EngineerRepairWorkbench />
 
         {/* 快捷入口独立成区：只连接真实路由，与底部个人信息条职责分离 */}
-        <DataCard title="快捷入口">
+        <DataCard title={t('engineer.quickEntries')}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {QUICK_ENTRIES.map((entry) => (
               <button
@@ -94,8 +101,10 @@ export function EngineerPage() {
                 onClick={() => navigate(entry.path)}
                 type="button"
               >
-                <span className="font-bold text-sm text-text">{entry.label}</span>
-                <span className="text-text-tertiary text-xs leading-snug">{entry.description}</span>
+                <span className="font-bold text-sm text-text">{t(entry.labelKey)}</span>
+                <span className="text-text-tertiary text-xs leading-snug">
+                  {t(entry.descriptionKey)}
+                </span>
               </button>
             ))}
           </div>
@@ -110,7 +119,7 @@ export function EngineerPage() {
           <div className="relative flex min-w-0 flex-wrap items-center gap-x-8 gap-y-3 pr-9">
             {/* 设置入口贴合卡片右上角（原型 28×28 / radius 8px，悬停取条目同组交互色） */}
             <button
-              aria-label="账号设置"
+              aria-label={t('engineer.quick.account')}
               className="absolute -top-1 right-0 flex size-7 items-center justify-center rounded-lg border border-(--panel-border) bg-(--activity-item-bg) text-(--text-muted) transition-colors hover:border-(--activity-item-hover-border) hover:bg-(--activity-item-hover-bg) hover:text-primary"
               onClick={() => navigate(ACCOUNT_SETTINGS_PATH)}
               type="button"
@@ -147,7 +156,7 @@ export function EngineerPage() {
               <dl className="flex min-w-0 flex-wrap items-center gap-x-8 gap-y-3 sm:ml-auto">
                 <div className="flex min-w-0 flex-col">
                   <dt className="text-[8px] font-extrabold tracking-[0.12em] text-(--empty-text)">
-                    账号 ID
+                    {t('engineer.accountId')}
                   </dt>
                   <dd className="mt-0.75 text-[11px] font-bold text-(--control-text-body)">
                     {session.accountId}

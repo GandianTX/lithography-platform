@@ -45,7 +45,13 @@ import {
   assertBrowserRequestsBoundToDedicatedOrigins,
   assertRealMyAccountSettingsSuccess,
 } from '../e2e/helpers/dedicated-real-link-assertions';
-import { BACKEND_GRAPHQL, readBackendEnv, realGraphqlCall } from '../e2e/helpers/real-backend';
+import {
+  BACKEND_GRAPHQL,
+  mysqlQuery,
+  readBackendEnv,
+  realGraphqlCall,
+  runGuardedFixtureWrite,
+} from '../e2e/helpers/real-backend';
 
 const SETTINGS_PATH = '/account/settings';
 
@@ -159,11 +165,219 @@ async function enterAccountSettingsFromNav(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '账号设置' })).toBeVisible();
 }
 
-/** 按卡片标题定位三个区块（DataCard 渲染 section.data-card + h3.data-card-title） */
+/** 按卡片标题定位区块（DataCard 渲染 section.data-card + h3.data-card-title） */
 function cardByTitle(page: Page, title: string) {
   return page.locator('section.data-card', {
     has: page.locator('h3.data-card-title', { hasText: title }),
   });
+}
+
+/** 切到「修改密码」标签：密码卡片只在该标签内可见，资料标签同时保留挂载 */
+async function openPasswordTab(page: Page, tabName = '修改密码'): Promise<void> {
+  await page.getByRole('tab', { name: tabName }).click();
+}
+
+/** 界面语言（改密反馈双语回归使用） */
+type UiLanguage = 'en' | 'zh-CN';
+
+/** 本地化操作反馈词条（与前端 messages.zh-CN / messages.en 一致） */
+const ZH_SUCCESS_MESSAGE = '密码已更新，请使用新密码重新登录。';
+const EN_SUCCESS_MESSAGE = 'Password updated. Sign in again with your new password.';
+const ZH_REJECTED_MESSAGE = '密码未更新，请核对当前密码及新密码要求后重试。';
+const EN_REJECTED_MESSAGE =
+  'Password not updated. Check your current password and the new password requirements, then try again.';
+
+/** 账号设置页改密卡片在中英文下的定位与断言文案 */
+const SETTINGS_PASSWORD_COPY = {
+  'zh-CN': {
+    cardTitle: '修改密码',
+    confirmLabel: '确认新密码',
+    currentLabel: '当前密码',
+    newLabel: '新密码',
+    rejectedMessage: ZH_REJECTED_MESSAGE,
+    submitName: /修\s*改\s*密\s*码/,
+    successMessage: ZH_SUCCESS_MESSAGE,
+    tabName: '修改密码',
+  },
+  en: {
+    cardTitle: 'Change password',
+    confirmLabel: 'Confirm new password',
+    currentLabel: 'Current password',
+    newLabel: 'New password',
+    rejectedMessage: EN_REJECTED_MESSAGE,
+    submitName: /Change password/,
+    successMessage: EN_SUCCESS_MESSAGE,
+    tabName: 'Change password',
+  },
+} as const;
+
+/** 受限强改页在中英文下的定位与断言文案 */
+const RESTRICTED_PASSWORD_COPY = {
+  'zh-CN': {
+    cardTitle: '修改登录密码',
+    confirmLabel: '确认新密码',
+    currentLabel: '当前密码',
+    newLabel: '新密码',
+    rejectedMessage: ZH_REJECTED_MESSAGE,
+    restrictionTitle: '请先修改登录密码',
+    submitName: /修\s*改\s*密\s*码/,
+    successMessage: ZH_SUCCESS_MESSAGE,
+  },
+  en: {
+    cardTitle: 'Change login password',
+    confirmLabel: 'Confirm new password',
+    currentLabel: 'Current password',
+    newLabel: 'New password',
+    rejectedMessage: EN_REJECTED_MESSAGE,
+    restrictionTitle: 'Change your login password first',
+    submitName: /Change password/,
+    successMessage: EN_SUCCESS_MESSAGE,
+  },
+} as const;
+
+/** 在已登录页面切换界面语言（页头语言切换组；按钮文案固定为「中文」「English」） */
+async function switchUiLanguage(page: Page, language: UiLanguage): Promise<void> {
+  await page.getByRole('button', { name: language === 'en' ? 'English' : '中文' }).click();
+}
+
+/** 按语言填写改密三框并提交 */
+async function submitPasswordChange(
+  card: ReturnType<typeof cardByTitle>,
+  copy: {
+    confirmLabel: string;
+    currentLabel: string;
+    newLabel: string;
+    submitName: RegExp;
+  },
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
+  await card.getByLabel(copy.currentLabel).fill(currentPassword);
+  await card.getByLabel(copy.newLabel, { exact: true }).fill(newPassword);
+  await card.getByLabel(copy.confirmLabel).fill(newPassword);
+  await card.getByRole('button', { name: copy.submitName }).click();
+}
+
+/** 按界面语言执行真实 UI 登录（登录页文案随语言变化） */
+async function loginViaUiInLanguage(
+  page: Page,
+  loginName: string,
+  password: string,
+  homePath: string,
+  language: UiLanguage,
+): Promise<void> {
+  await page.goto('/login');
+
+  if (language === 'en') {
+    await page.getByLabel('Account or email').fill(loginName);
+    await page.getByLabel('Password').fill(password);
+    await page.getByRole('button', { name: /Sign in/ }).click();
+  } else {
+    await page.getByLabel('账号或邮箱').fill(loginName);
+    await page.getByLabel('密码').fill(password);
+    await page.getByRole('button', { name: /登\s*录/ }).click();
+  }
+
+  await expect(page).toHaveURL(new RegExp(`${homePath}$`));
+}
+
+/** 创建专用账号时充当「一级管理员」的 seed 账号（admin_level 由本规格临时置 1 并恢复） */
+const FIXTURE_ADMIN_LOGIN_NAME = 'mock_super_admin';
+
+/** 读取夹具管理员原始 admin_level（NULL 以字符串 NULL 返回，便于原样恢复） */
+function readFixtureAdminLevel(): string {
+  return mysqlQuery(
+    `SELECT COALESCE(admin_level, 'NULL') FROM base_user_account WHERE login_name = '${FIXTURE_ADMIN_LOGIN_NAME}'`,
+  );
+}
+
+/** 只接受受控等级形态，避免把意外内容拼进 SQL；非法值在第一条写入前失败关闭 */
+function toAdminLevelSqlValue(level: string | 1 | 2 | null): 'NULL' | '1' | '2' {
+  const value = level === null ? 'NULL' : String(level);
+
+  if (value !== 'NULL' && value !== '1' && value !== '2') {
+    throw new Error(`admin_level 值异常，拒绝写入 / 恢复：${JSON.stringify(level)}`);
+  }
+
+  return value;
+}
+
+function writeFixtureAdminLevel(env: Record<string, string>, level: string | 1 | 2 | null): void {
+  runGuardedFixtureWrite(
+    env,
+    `UPDATE base_user_account SET admin_level = ${toAdminLevelSqlValue(level)} WHERE login_name = '${FIXTURE_ADMIN_LOGIN_NAME}'`,
+  );
+}
+
+/**
+ * 让夹具管理员满足 `adminCreateUser` 的一级管理员门槛（`admin_level = 1` 且唯一 ACTIVE
+ * 可信组织），返回该管理员的有效组织与恢复函数。
+ * GraphQL 发起方与 SQL 探针因此是同一账号 / 同一组织；恢复函数按原值写回并再次核对。
+ * 只临时改写专用隔离库的一行，调用方必须在清理阶段调用恢复函数。
+ *
+ * 顺序契约（安全关键）：先完成只读事实检查（原始等级 + 有效组织）并构造恢复动作，
+ * 再做第一条 UPDATE；原始值已为 1 时跳过写入。写入成功后任何异常都先尝试恢复，
+ * 并把原始异常（或同时含恢复异常的 AggregateError）抛给调用方，绝不留下等级 1。
+ *
+ * `hooks.afterFixtureWrite` 是故障回归的唯一注入点：在第一条 UPDATE 成功之后、
+ * 第一次回读之前执行，用于证明恢复动作不依赖后续步骤成功。
+ */
+function ensureLevelOneAdminFixture(
+  env: Record<string, string>,
+  hooks: { afterFixtureWrite?: () => void } = {},
+): {
+  organizationId: number;
+  restore: () => void;
+} {
+  const originalLevel = toAdminLevelSqlValue(readFixtureAdminLevel());
+  const organizationId = readActingOrganizationId(FIXTURE_ADMIN_LOGIN_NAME);
+
+  const restore = (): void => {
+    writeFixtureAdminLevel(env, originalLevel);
+
+    const restoredLevel = readFixtureAdminLevel();
+    if (restoredLevel !== originalLevel) {
+      throw new Error(
+        `夹具管理员 admin_level 恢复失败：期望 ${JSON.stringify(originalLevel)}，实际 ${JSON.stringify(restoredLevel)}`,
+      );
+    }
+  };
+
+  if (originalLevel === '1') {
+    return { organizationId, restore };
+  }
+
+  try {
+    writeFixtureAdminLevel(env, 1);
+    hooks.afterFixtureWrite?.();
+
+    const appliedLevel = readFixtureAdminLevel();
+    if (appliedLevel !== '1') {
+      throw new Error(`夹具管理员 admin_level 置 1 失败：${JSON.stringify(appliedLevel)}`);
+    }
+  } catch (primaryError) {
+    let restoreFailure: unknown = null;
+
+    try {
+      restore();
+    } catch (restoreError) {
+      restoreFailure = restoreError;
+    }
+
+    if (restoreFailure !== null) {
+      // 原始异常与恢复异常同时保留：errors 含两者，cause 指向主错误
+      throw new AggregateError(
+        [primaryError, restoreFailure],
+        '夹具管理员等级恢复失败：原始错误与恢复错误均已保留',
+        { cause: primaryError },
+      );
+    }
+
+    throw primaryError;
+  }
+
+  return { organizationId, restore };
 }
 
 test.describe('account settings real backend flow', () => {
@@ -186,9 +400,9 @@ test.describe('account settings real backend flow', () => {
         await enterAccountSettingsFromNav(page);
 
         // 进入后页面确实按该角色身份加载：角色胶囊与后端 role 同口径
-        const extra = cardByTitle(page, '账号信息').locator('div.data-card-extra');
+        const infoCard = cardByTitle(page, '账号信息');
 
-        await expect(extra.locator('span.status-pill').first()).toHaveText(roleCase.roleLabel);
+        await expect(infoCard.locator('span.status-pill').first()).toHaveText(roleCase.roleLabel);
       } finally {
         await context.close();
       }
@@ -205,17 +419,17 @@ test.describe('account settings real backend flow', () => {
     await enterAccountSettingsFromNav(page);
 
     const snapshot = await readSettingsSnapshot(env, loginName);
-    const extra = cardByTitle(page, '账号信息').locator('div.data-card-extra');
+    const infoCard = cardByTitle(page, '账号信息');
 
     // 角色 / 状态以只读胶囊展示，标签与后端权威枚举一一对应
     expect(snapshot.role).toBe('SUPER_ADMIN');
     expect(snapshot.status).toBe('ACTIVE');
-    await expect(extra).toContainText('角色');
-    await expect(extra).toContainText('状态');
-    await expect(extra.locator('span.status-pill')).toHaveText(['管理员', '正常']);
+    await expect(infoCard).toContainText('角色');
+    await expect(infoCard).toContainText('状态');
+    await expect(infoCard.locator('span.status-pill')).toHaveText(['管理员', '正常']);
 
     // 最近变更：zh-CN 本地化时间，后端原始 ISO 串不得直接出现在页面正文
-    await expect(cardByTitle(page, '账号信息').getByText(/^最近变更：\d{4}\//)).toBeVisible();
+    await expect(infoCard.getByText(/^最近变更：\d{4}\//)).toBeVisible();
     await expect(page.locator('body')).not.toContainText(snapshot.updatedAt);
   });
 
@@ -236,10 +450,13 @@ test.describe('account settings real backend flow', () => {
     // radiogroup + 3 个 radio），与账号设置无关，全页断言会把它误判成本页的编辑控件
     const main = page.getByRole('main');
 
-    // 先证明三个区块的表单确实渲染出来了（否则下面的「零控件」断言没有意义）
-    await expect(main.getByLabel('登录名')).toBeVisible();
-    await expect(main.getByLabel('昵称')).toBeVisible();
-    await expect(main.getByLabel('当前密码')).toBeVisible();
+    // 先证明关键区块确实渲染出来了（否则下面的「零控件」断言没有意义）：
+    // 登录名是「账号信息」里的只读事实文本，昵称在「基础资料」表单，
+    // 密码表单只在「修改密码」标签内可见
+    await expect(cardByTitle(page, '账号信息').getByText('登录名', { exact: true })).toBeVisible();
+    await expect(cardByTitle(page, '基础资料').getByLabel('昵称')).toBeVisible();
+    await openPasswordTab(page);
+    await expect(cardByTitle(page, '修改密码').getByLabel('当前密码')).toBeVisible();
 
     // 角色 / 状态没有同名表单项，也没有任何选择类控件
     await expect(main.getByLabel(/角色/)).toHaveCount(0);
@@ -256,9 +473,10 @@ test.describe('account settings real backend flow', () => {
     await expect(main.getByRole('button', { name: /角色|状态|停用|启用|封禁/ })).toHaveCount(0);
 
     // 角色 / 状态只以只读胶囊文本出现，不是任何控件的可编辑值
-    const extra = cardByTitle(page, '账号信息').locator('div.data-card-extra');
-
-    await expect(extra.locator('span.status-pill')).toHaveText(['工程师', '正常']);
+    await expect(cardByTitle(page, '账号信息').locator('span.status-pill')).toHaveText([
+      '工程师',
+      '正常',
+    ]);
   });
 
   test('修改基础资料的电话字段：保存成功、页面回显、刷新后持久', async ({ page }) => {
@@ -365,8 +583,9 @@ test.describe('account settings real backend flow', () => {
 
     await loginViaUi(page, loginName, seedPassword, homePath);
     await enterAccountSettingsFromNav(page);
+    await openPasswordTab(page);
 
-    const securityCard = cardByTitle(page, '安全设置');
+    const securityCard = cardByTitle(page, '修改密码');
 
     // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
     await securityCard.getByLabel('当前密码').fill(seedPassword);
@@ -385,8 +604,9 @@ test.describe('account settings real backend flow', () => {
       newPassword: NEW_PASSWORD,
     });
 
-    // 后端固定安全提示原样展示
-    await expect(page.getByText(CHANGE_PASSWORD_NOTICE)).toBeVisible();
+    // 界面展示本地化成功提示；后端 notice 仍按原协议回传，但不直接透传到界面
+    await expect(page.getByText(ZH_SUCCESS_MESSAGE)).toBeVisible();
+    await expect(page.getByText(CHANGE_PASSWORD_NOTICE)).toHaveCount(0);
 
     // 会话收口：唯一会话真源被清理，随后跳转登录页（不依赖服务端撤销）
     await expect(page).toHaveURL(/\/login$/);
@@ -449,11 +669,15 @@ test.describe('account settings real backend flow', () => {
   // 同库探针（探针失败禁止业务写入）；finally 内经 cleanupRegisteredDedicatedAccounts
   // 按本轮登记的完整资源记录（账号 ID + 资料 / 成员关系主键 + 创建预期）精确物理删除。
   // 清理后分别核对主记录、userInfo 与关联业务表均为 0，且无关 mock 哨兵账号原样存在。
-  for (const run of [1, 2]) {
-    test(`真实改密链路（第 ${run} 次）：专用账号改密后旧密码失效、新密码可登录受保护页`, async ({
+  for (const run of [1, 2] as const) {
+    // 第 1 次走中文界面，第 2 次走英文界面：R1 要求成功／拒绝反馈按界面语言本地化
+    const language: UiLanguage = run === 1 ? 'zh-CN' : 'en';
+    const settingsCopy = SETTINGS_PASSWORD_COPY[language];
+
+    test(`真实改密链路（第 ${run} 次 · ${language}）：专用账号改密后旧密码失效、新密码可登录受保护页`, async ({
       page,
     }) => {
-      // 创建账号 + 两次真实登录 + 两次导航进入 + 改密 + 登录尝试 + 数据级断言，需独立预算
+      // 创建账号 + 多次真实登录 + 两次导航进入 + 安全失败 + 改密 + 登录尝试 + 数据级断言
       test.setTimeout(150_000);
       const env = readBackendEnv();
 
@@ -464,9 +688,11 @@ test.describe('account settings real backend flow', () => {
 
       // 登录名口径：4~30 位字母/数字/下划线/短横线；时间戳保证库内唯一
       const dedicatedLoginName = `e2e-pw-${Date.now()}`;
-      // 两个密码均满足现行策略（8～128 位、含小写字母/数字/特殊字符、非黑名单、无连续序列）
+      // 三个密码均满足现行策略（8～128 位、含小写字母/数字/特殊字符、非黑名单、无连续序列）
       const INITIAL_PASSWORD = 'E2eInit#2026Pass';
       const NEW_PASSWORD = 'E2eChanged#2026Pass';
+      // 安全失败只用于触发 BAD_USER_INPUT，不参与任何成功链路
+      const WRONG_CURRENT_PASSWORD = 'E2eWrong#2026Pass';
       const DEDICATED_NICKNAME = 'E2E 改密专用账号';
       const UNRELATED_SENTINELS = [
         'mock_super_admin',
@@ -481,6 +707,8 @@ test.describe('account settings real backend flow', () => {
       }));
       // 本轮创建资源台账：创建响应一到即登记，finally 只清这些记录
       const registry: RegisteredDedicatedAccount[] = [];
+      // 夹具管理员等级恢复动作：主流程开始时赋值，清理阶段无条件调用
+      let restoreFixtureLevel: (() => void) | null = null;
 
       // R4：浏览器流量绑定守卫——本用例所有页面请求必须落在专用前端（4174，同源代理）
       // 或专用后端（3100）；出现 127.0.0.1:3000 即判失败
@@ -492,8 +720,11 @@ test.describe('account settings real backend flow', () => {
       // 主流程错误与清理错误都保留：任一失败都让本用例非零（不再用 finally 之后的断言吞掉清理错误）
       await runWithCleanup(
         async () => {
-          // 创建前先取管理员当前有效组织：这是 adminCreateUser 绑定专用账号时的预期归属
-          const organizationId = readActingOrganizationId('mock_super_admin');
+          // 创建前把夹具管理员提升为一级管理员并取当前有效组织：这既是
+          // adminCreateUser 的资格门槛，也是专用账号归属与 SQL 探针的同一组织来源
+          const adminFixture = ensureLevelOneAdminFixture(env);
+          restoreFixtureLevel = adminFixture.restore;
+          const organizationId = adminFixture.organizationId;
 
           const created = await realGraphqlCall(
             env,
@@ -521,17 +752,36 @@ test.describe('account settings real backend flow', () => {
             userState: 'ACTIVE',
           });
 
-          // 初始密码真实 UI 登录 → 经导航进入账号设置 → 真实提交改密
+          // 初始密码真实 UI 登录 → 经导航进入账号设置 → 切到本次运行语言
           await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/engineer');
           await enterAccountSettingsFromNav(page);
+          if (language === 'en') {
+            await switchUiLanguage(page, 'en');
+          }
+          await openPasswordTab(page, settingsCopy.tabName);
 
-          const securityCard = cardByTitle(page, '安全设置');
+          const securityCard = cardByTitle(page, settingsCopy.cardTitle);
 
-          // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
-          await securityCard.getByLabel('当前密码').fill(INITIAL_PASSWORD);
-          await securityCard.getByLabel('新密码', { exact: true }).fill(NEW_PASSWORD);
-          await securityCard.getByLabel('确认新密码').fill(NEW_PASSWORD);
-          await securityCard.getByRole('button', { name: /修\s*改\s*密\s*码/ }).click();
+          // 先跑安全失败（错误当前密码）：显示本地固定提示、会话与页面保持，
+          // 三个密码框被清空（界面不残留凭据）
+          await submitPasswordChange(
+            securityCard,
+            settingsCopy,
+            WRONG_CURRENT_PASSWORD,
+            NEW_PASSWORD,
+          );
+          await expect(page.getByText(settingsCopy.rejectedMessage)).toBeVisible();
+          await expect(page).toHaveURL(new RegExp(`${SETTINGS_PATH}$`));
+          expect(await readStoredAuthSession(page)).not.toBeNull();
+          await expect(securityCard.getByLabel(settingsCopy.currentLabel)).toHaveValue('');
+          await expect(securityCard.getByLabel(settingsCopy.newLabel, { exact: true })).toHaveValue(
+            '',
+          );
+          await expect(securityCard.getByLabel(settingsCopy.confirmLabel)).toHaveValue('');
+
+          // 再跑真正的成功改密：本地成功提示 + 会话收口跳登录页
+          await submitPasswordChange(securityCard, settingsCopy, INITIAL_PASSWORD, NEW_PASSWORD);
+          await expect(page.getByText(settingsCopy.successMessage)).toBeVisible();
 
           // 会话收口：唯一会话真源被清理，随后跳转登录页（不依赖服务端撤销）
           await expect(page).toHaveURL(/\/login$/);
@@ -543,8 +793,13 @@ test.describe('account settings real backend flow', () => {
           expect(oldAttempt.accessToken).toBeNull();
           expect(oldAttempt.errorCode).toBe('UNAUTHENTICATED');
 
-          // 新密码经真实 UI 登录成功并落到受保护主页
-          await loginViaUi(page, dedicatedLoginName, NEW_PASSWORD, '/engineer');
+          // 新密码按本次运行语言真实 UI 登录成功并落到受保护主页
+          await loginViaUiInLanguage(page, dedicatedLoginName, NEW_PASSWORD, '/engineer', language);
+
+          // 后续账号设置页面断言统一用中文定位：英文运行先切回中文
+          if (language === 'en') {
+            await switchUiLanguage(page, 'zh-CN');
+          }
 
           // R4 P5：在点击「账号设置」前注册 MyAccountSettings 响应等待，做 GraphQL 数据级
           // 断言（真实响应、无 route.fulfill）：errors 为空、data.myAccountSettings 存在、
@@ -559,11 +814,13 @@ test.describe('account settings real backend flow', () => {
           const payload = (await response.json()) as unknown;
           const settings = assertRealMyAccountSettingsSuccess(payload, dedicatedLoginName);
 
-          // 页面装配层展示与 GraphQL 数据一致（登录名、昵称两项核心表单值）
-          const main = page.getByRole('main');
-
-          await expect(main.getByLabel('登录名')).toHaveValue(settings.loginName ?? '');
-          await expect(main.getByLabel('昵称')).toHaveValue(settings.nickname);
+          // 页面装配层展示与 GraphQL 数据一致（登录名只读事实、昵称表单值）
+          await expect(
+            cardByTitle(page, '账号信息').getByText(settings.loginName ?? '', { exact: true }),
+          ).toBeVisible();
+          await expect(cardByTitle(page, '基础资料').getByLabel('昵称')).toHaveValue(
+            settings.nickname,
+          );
 
           // R4：浏览器流量绑定守卫——任何流向 127.0.0.1:3000 或其他来源的请求都判失败
           assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
@@ -590,7 +847,200 @@ test.describe('account settings real backend flow', () => {
             }
           },
         },
+        {
+          label: '夹具管理员等级恢复',
+          run: () => {
+            // 独立成一步：专用账号清理即使失败，也不跳过夹具等级恢复
+            restoreFixtureLevel?.();
+          },
+        },
       );
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // 强制改密链路（/restricted，零拦截）：专用账号端到端双语回归
+  // ---------------------------------------------------------------------------
+
+  // MUST_CHANGE_PASSWORD 会话只允许停留在 /restricted：失败必须保留限制事实与原会话，
+  // 成功后清会话回登录页，旧密码失效、新密码登录不再受限。中英文各跑一次，
+  // 断言的是本地化反馈（R1），不是后端中文原文。
+  for (const language of ['zh-CN', 'en'] as const) {
+    const restrictedCopy = RESTRICTED_PASSWORD_COPY[language];
+
+    test(`强制改密链路（${language}）：失败保留受限会话、成功后旧密码失效`, async ({ page }) => {
+      test.setTimeout(150_000);
+      const env = readBackendEnv();
+
+      preflightDedicatedAccountCleanup();
+      await assertApiSqlSameDatabase(env);
+
+      // 清理台账只接受 e2e-pw-<时间戳> 形态的专用账号登录名
+      const dedicatedLoginName = `e2e-pw-${Date.now()}`;
+      const INITIAL_PASSWORD = 'E2eInit#2026Pass';
+      const NEW_PASSWORD = 'E2eChanged#2026Pass';
+      const WRONG_CURRENT_PASSWORD = 'E2eWrong#2026Pass';
+      const DEDICATED_NICKNAME = 'E2E 强改专用账号';
+      const UNRELATED_SENTINELS = [
+        'mock_super_admin',
+        'mock_engineer_li',
+        'mock_engineer_chen',
+        'mock_customer_alpha',
+      ] as const;
+      const sentinelBaseline = UNRELATED_SENTINELS.map((loginName) => ({
+        count: readAccountCountByLoginName(loginName),
+        loginName,
+      }));
+      const registry: RegisteredDedicatedAccount[] = [];
+      let restoreFixtureLevel: (() => void) | null = null;
+
+      const browserRequestUrls: string[] = [];
+      page.on('request', (request) => {
+        browserRequestUrls.push(request.url());
+      });
+
+      await runWithCleanup(
+        async () => {
+          const adminFixture = ensureLevelOneAdminFixture(env);
+          restoreFixtureLevel = adminFixture.restore;
+          const organizationId = adminFixture.organizationId;
+
+          const created = await realGraphqlCall(
+            env,
+            ADMIN_CREATE_USER_MUTATION,
+            {
+              input: {
+                initialPassword: INITIAL_PASSWORD,
+                loginName: dedicatedLoginName,
+                nickname: DEDICATED_NICKNAME,
+                role: 'ENGINEER',
+              },
+            },
+            'mock_super_admin',
+          );
+
+          registerCreatedDedicatedAccount(registry, created.body, {
+            accessGroup: ['ENGINEER'],
+            loginName: dedicatedLoginName,
+            nickname: DEDICATED_NICKNAME,
+            organizationId,
+            role: 'ENGINEER',
+            userInfoEmail: null,
+            userState: 'ACTIVE',
+          });
+
+          // 受控夹具写入：把本轮专用账号置为「必须改密」（账号在清理阶段物理删除）
+          runGuardedFixtureWrite(
+            env,
+            `UPDATE base_user_account SET must_change_password = 1 WHERE login_name = '${dedicatedLoginName}'`,
+          );
+
+          // 初始密码真实登录必须落到受限页；先切到本次运行语言再断言本地化强改提示
+          // （新上下文默认中文，英文运行若先断言英文文案会误判为未渲染）
+          await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/restricted');
+
+          if (language === 'en') {
+            await switchUiLanguage(page, 'en');
+          }
+
+          await expect(page.getByText(restrictedCopy.restrictionTitle)).toBeVisible();
+
+          const securityCard = cardByTitle(page, restrictedCopy.cardTitle);
+
+          // 安全失败：本地固定提示、仍在受限页、限制事实与会话保持，密码框清空
+          await submitPasswordChange(
+            securityCard,
+            restrictedCopy,
+            WRONG_CURRENT_PASSWORD,
+            NEW_PASSWORD,
+          );
+          await expect(page.getByText(restrictedCopy.rejectedMessage)).toBeVisible();
+          await expect(page).toHaveURL(/\/restricted$/);
+          expect(await readStoredAuthSession(page)).toContain(
+            '"restriction":"MUST_CHANGE_PASSWORD"',
+          );
+          await expect(securityCard.getByLabel(restrictedCopy.currentLabel)).toHaveValue('');
+
+          // 成功改密：本地成功提示 + 会话收口回登录页
+          await submitPasswordChange(securityCard, restrictedCopy, INITIAL_PASSWORD, NEW_PASSWORD);
+          await expect(page.getByText(restrictedCopy.successMessage)).toBeVisible();
+          await expect(page).toHaveURL(/\/login$/);
+          expect(await readStoredAuthSession(page)).toBeNull();
+
+          // 旧密码失效、新密码登录不再受限（落到工程师主页）
+          const oldAttempt = await attemptRealLogin(dedicatedLoginName, INITIAL_PASSWORD);
+
+          expect(oldAttempt.accessToken).toBeNull();
+          expect(oldAttempt.errorCode).toBe('UNAUTHENTICATED');
+          await loginViaUiInLanguage(page, dedicatedLoginName, NEW_PASSWORD, '/engineer', language);
+
+          assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
+        },
+        {
+          label: '专用账号清理',
+          run: () => {
+            cleanupRegisteredDedicatedAccounts(registry);
+
+            for (const account of registry) {
+              expect(readDedicatedAccountCleanupResidue(account.id)).toEqual({
+                account: 0,
+                relatedBusiness: 0,
+                userInfo: 0,
+              });
+            }
+
+            for (const sentinel of sentinelBaseline) {
+              expect(readAccountCountByLoginName(sentinel.loginName)).toBe(sentinel.count);
+            }
+          },
+        },
+        {
+          label: '夹具管理员等级恢复',
+          run: () => {
+            restoreFixtureLevel?.();
+          },
+        },
+      );
+    });
+  }
+
+  /**
+   * P2 故障回归（真实 MySQL 观测）：合成管理员初始 `admin_level = NULL`。
+   * 在「写入 1 成功之后、第一次回读之前」注入异常，生产式夹具清理必须保留该原始异常，
+   * 并把同一管理员的等级恢复为 NULL。修复前这里会失败在「等级仍为 1」：异常返回了，
+   * 但恢复动作尚未登记，外层清理无从执行。
+   */
+  test('夹具准备中途失败：保留原始异常并把 admin_level 恢复为 NULL', async () => {
+    test.setTimeout(60_000);
+    const env = readBackendEnv();
+
+    // 只读预检：本次回归依赖合成管理员的初始等级为 NULL
+    expect(readFixtureAdminLevel()).toBe('NULL');
+
+    const injected = new Error('injected: 夹具写入 1 后、第一次回读前失败');
+    let thrown: unknown = null;
+
+    try {
+      ensureLevelOneAdminFixture(env, {
+        afterFixtureWrite: () => {
+          throw injected;
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // 探针只读取清理后的真实库状态，再断言
+    const cleanedLevel = readFixtureAdminLevel();
+
+    try {
+      expect(thrown).toBe(injected);
+      expect(cleanedLevel).toBe('NULL');
+    } finally {
+      // 探针自身的兜底恢复只用于安全退出：断言失败也不能把等级留在 1
+      if (readFixtureAdminLevel() !== 'NULL') {
+        writeFixtureAdminLevel(env, null);
+      }
+    }
+  });
 });

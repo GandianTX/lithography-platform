@@ -53,6 +53,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Alert, Button, Descriptions, Form, Input, Popconfirm, Select, Timeline } from 'antd';
 import { useNavigate } from 'react-router';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { ErrorState } from '@/shared/ui/error-state';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
@@ -63,10 +64,7 @@ import {
   resolveRepairClosureState,
 } from '@/shared/ui/repair-request-status-labels';
 
-import {
-  ENGINEER_RESPONSE_TEXT_OVER_CAPACITY_MESSAGE,
-  isEngineerResponseTextOverCapacity,
-} from '../application/engineer-response-text-capacity';
+import { isEngineerResponseTextOverCapacity } from '../application/engineer-response-text-capacity';
 import { isEngineerRepairRequestEnded } from '../application/repair-request-ended';
 import { useEngineerRepairRequestDetailFlow } from '../application/use-engineer-repair-request-detail-flow';
 import type {
@@ -85,12 +83,14 @@ import { ENGINEER_REPAIR_REQUEST_LIST_PATH } from './engineer-repair-request-pat
 import { AcceptanceViewStatusTag, ResolutionTag } from './repair-request-status-tags';
 
 function AcceptFeedbackAlert({ result }: { result: AcceptRepairRequestResult | null }) {
+  const { t } = useI18n();
+
   if (!result) {
     return null;
   }
 
   if (result.ok) {
-    return <Alert showIcon title="你已接单该维修申请，后续请跟进处理。" type="success" />;
+    return <Alert showIcon title={t('engineerDetail.acceptSuccess')} type="success" />;
   }
 
   if (result.reason === 'already-accepted') {
@@ -99,11 +99,6 @@ function AcceptFeedbackAlert({ result }: { result: AcceptRepairRequestResult | n
 
   return <Alert showIcon title={result.message} type="error" />;
 }
-
-/** 状态选项：复用公共读模型的状态标签映射（单一展示口径），不新建第三套文案 */
-const RESOLUTION_STATUS_OPTIONS = (
-  Object.entries(RESOLUTION_STATUS_LABELS) as [EngineerResolutionStatusValue, string][]
-).map(([value, label]) => ({ value, label }));
 
 /**
  * 回复反馈（内联 Alert，与接单反馈先例一致）。
@@ -122,12 +117,14 @@ function CreateResponseFeedbackAlert({
   onReload: () => void;
   reloading: boolean;
 }) {
+  const { t } = useI18n();
+
   if (!result) {
     return null;
   }
 
   if (result.ok) {
-    return <Alert showIcon title="回复已提交。" type="success" />;
+    return <Alert showIcon title={t('engineerDetail.replySuccess')} type="success" />;
   }
 
   if (result.reason === 'not-accepted') {
@@ -139,10 +136,10 @@ function CreateResponseFeedbackAlert({
       <Alert
         action={
           <Button disabled={reloading} onClick={onReload} size="small">
-            重新加载详情
+            {t('engineerDetail.reloadDetail')}
           </Button>
         }
-        description="回复可能已提交成功，请刷新后检查回复时间线，避免重复提交。"
+        description={t('engineerDetail.replyUncertain')}
         showIcon
         title={result.message}
         type="error"
@@ -182,7 +179,11 @@ function EngineerResponseForm({
   onSubmit: (input: CreateEngineerResponseInput) => void;
   onReload: () => void;
 }) {
+  const { t } = useI18n();
   const [form] = Form.useForm<EngineerResponseFormValues>();
+  const resolutionStatusOptions = (
+    Object.keys(RESOLUTION_STATUS_LABELS) as EngineerResolutionStatusValue[]
+  ).map((value) => ({ value, label: t(`status.resolution.${value}`) }));
 
   useEffect(() => {
     if (lastResult?.ok) {
@@ -215,31 +216,35 @@ function EngineerResponseForm({
         </div>
       )}
       <Form.Item
-        label="回复正文"
+        label={t('engineerDetail.responseLabel')}
         name="responseText"
         rules={[
-          { message: '请输入回复正文。', required: true, whitespace: true },
+          { message: t('engineerDetail.responseRequired'), required: true, whitespace: true },
           {
             // 容量策略来自 application（UI 不复制 TextEncoder 实现）：
             // 超出 MySQL TEXT 的 UTF-8 字节容量时提交前拦截，不发 Mutation、草稿保留。
             validator: (_rule, value: string) =>
               !value || !isEngineerResponseTextOverCapacity(value)
                 ? Promise.resolve()
-                : Promise.reject(new Error(ENGINEER_RESPONSE_TEXT_OVER_CAPACITY_MESSAGE)),
+                : Promise.reject(new Error(t('engineerDetail.responseTooLong'))),
           },
         ]}
       >
-        <Input.TextArea disabled={submitting} placeholder="填写本次处理说明…" rows={4} />
+        <Input.TextArea
+          disabled={submitting}
+          placeholder={t('engineerDetail.responsePlaceholder')}
+          rows={4}
+        />
       </Form.Item>
       <Form.Item
-        label="处理状态"
+        label={t('engineerDetail.resolutionStatus')}
         name="resolutionStatus"
-        rules={[{ required: true, message: '请选择处理状态。' }]}
+        rules={[{ required: true, message: t('engineerDetail.resolutionRequired') }]}
       >
-        <Select disabled={submitting} options={RESOLUTION_STATUS_OPTIONS} />
+        <Select disabled={submitting} options={resolutionStatusOptions} />
       </Form.Item>
       <Button htmlType="submit" loading={submitting} type="primary">
-        提交回复
+        {t('engineerDetail.submitReply')}
       </Button>
     </Form>
   );
@@ -277,6 +282,7 @@ export function EngineerRepairRequestDetailPanel({
 }) {
   const navigate = useNavigate();
   const scopeKeyValue = scopeKey ?? 'default';
+  const { t } = useI18n();
   const {
     state,
     accepting,
@@ -297,7 +303,7 @@ export function EngineerRepairRequestDetailPanel({
   if (state.status === 'loading') {
     return (
       <DataCard>
-        <LoadingState label="正在加载维修申请详情…" />
+        <LoadingState label={t('engineerDetail.loading')} />
       </DataCard>
     );
   }
@@ -317,7 +323,7 @@ export function EngineerRepairRequestDetailPanel({
             <ErrorState
               action={
                 <Button onClick={() => navigate(ENGINEER_REPAIR_REQUEST_LIST_PATH)} type="primary">
-                  返回维修申请列表
+                  {t('engineerDetail.backToList')}
                 </Button>
               }
               title={state.message}
@@ -326,7 +332,7 @@ export function EngineerRepairRequestDetailPanel({
             <ErrorState
               action={
                 <Button onClick={() => void reload()} size="small">
-                  重试
+                  {t('common.retry')}
                 </Button>
               }
               title={state.message}
@@ -354,11 +360,11 @@ export function EngineerRepairRequestDetailPanel({
       ? '工单已结单，内部维修过程与回复均为只读。'
       : !canAccept && !canReply
         ? !canHandleAsEngineer
-          ? '当前账号仅可查看详情，接单与回复需使用工程师账号。'
+          ? t('engineerDetail.readOnlyEngineer')
           : viewStatus === 'TAKEN_BY_OTHER'
-            ? '该申请已由其他工程师接单跟进，当前为只读查看。'
+            ? t('engineerDetail.readOnlyTaken')
             : viewStatus === null
-              ? '该申请的接单状态暂不可用，当前为只读查看。'
+              ? t('engineerDetail.readOnlyUnknown')
               : null
         : null;
 
@@ -383,52 +389,52 @@ export function EngineerRepairRequestDetailPanel({
     : '未记录';
 
   return (
-    <DataCard title="申请信息">
+    <DataCard title={t('engineerDetail.infoCard')}>
       <Descriptions
         bordered
         column={{ lg: 2, md: 1, sm: 1, xs: 1 }}
         items={[
-          { children: detail.requestNo, key: 'requestNo', label: '申请编号' },
+          { children: detail.requestNo, key: 'requestNo', label: t('engineerDetail.requestNo') },
           {
             children: detail.customerNickname ?? '—',
             key: 'customerNickname',
-            label: '客户昵称',
+            label: t('engineerDetail.customerNickname'),
           },
           {
             children: detail.customerCompanyName ?? '—',
             key: 'customerCompanyName',
-            label: '客户公司',
+            label: t('engineerDetail.customerCompany'),
           },
           {
             children: `${detail.equipmentModel.modelName}（${detail.equipmentModel.modelCode}）`,
             key: 'equipmentModel',
-            label: '设备型号',
+            label: t('engineerDetail.model'),
           },
-          { children: detail.errorCode, key: 'errorCode', label: '错误码' },
+          { children: detail.errorCode, key: 'errorCode', label: t('engineerDetail.errorCode') },
           {
             children: formatDateTimeText(detail.createdAt),
             key: 'createdAt',
-            label: '提交时间',
+            label: t('engineerDetail.submittedAt'),
           },
           {
             children: <AcceptanceViewStatusTag viewStatus={viewStatus} />,
             key: 'acceptanceViewStatus',
-            label: '接单状态',
+            label: t('engineerDetail.acceptanceStatus'),
           },
           {
             children: detail.acceptedEngineerNickname ?? '—',
             key: 'acceptedEngineerNickname',
-            label: '接单工程师',
+            label: t('engineerDetail.acceptedEngineer'),
           },
           {
             children: detail.acceptedAt ? formatDateTimeText(detail.acceptedAt) : '—',
             key: 'acceptedAt',
-            label: '接单时间',
+            label: t('engineerDetail.acceptedAt'),
           },
           {
             children: <ResolutionTag status={detail.latestResolutionStatus} />,
             key: 'latestResolutionStatus',
-            label: '最后回复状态',
+            label: t('engineerDetail.latestResolution'),
           },
           {
             children: closureStatusText,
@@ -462,12 +468,12 @@ export function EngineerRepairRequestDetailPanel({
         size="small"
       />
 
-      <PanelSection title="故障描述">
+      <PanelSection title={t('engineerDetail.faultDescription')}>
         <div className="text-sm whitespace-pre-wrap">{detail.faultDescription}</div>
       </PanelSection>
 
       {detail.contentMd ? (
-        <PanelSection title="补充说明">
+        <PanelSection title={t('engineerDetail.supplement')}>
           <div className="text-sm whitespace-pre-wrap">{detail.contentMd}</div>
         </PanelSection>
       ) : null}
@@ -509,7 +515,7 @@ export function EngineerRepairRequestDetailPanel({
             }))}
           />
         ) : (
-          <div className="text-sm text-text-secondary">暂无工程师回复。</div>
+          <div className="text-sm text-text-secondary">{t('engineerDetail.noResponses')}</div>
         )}
 
         {canReply ? (
@@ -534,18 +540,18 @@ export function EngineerRepairRequestDetailPanel({
             <div className="flex flex-col gap-2">
               <div>
                 <Popconfirm
-                  cancelText="取消"
-                  description="接单后该维修申请将由你跟进处理。"
-                  okText="确认接单"
+                  cancelText={t('common.cancel')}
+                  description={t('engineerDetail.acceptConfirmDescription')}
+                  okText={t('engineerDetail.acceptConfirmOk')}
                   onConfirm={() => void accept()}
-                  title="确认接单该维修申请？"
+                  title={t('engineerDetail.acceptConfirmTitle')}
                 >
                   <Button loading={accepting} type="primary">
-                    接单
+                    {t('engineerDetail.accept')}
                   </Button>
                 </Popconfirm>
               </div>
-              <div className="text-sm text-text-secondary">请先接单后才能回复该申请。</div>
+              <div className="text-sm text-text-secondary">{t('engineerDetail.replyFirst')}</div>
             </div>
           </div>
         </PanelSection>
@@ -586,7 +592,7 @@ export function EngineerRepairRequestDetailPanel({
        */}
       <div className="mt-5 border-t border-border pt-4">
         <Button onClick={() => navigate(ENGINEER_REPAIR_REQUEST_LIST_PATH)}>
-          返回维修申请列表
+          {t('engineerDetail.backToList')}
         </Button>
       </div>
     </DataCard>

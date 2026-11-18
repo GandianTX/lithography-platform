@@ -78,6 +78,80 @@ describe('useMyEngineerRegistration（受限页本人申请加载）', () => {
     expect(result.current.state).toEqual({ application: APPLICATION, status: 'ready' });
   });
 
+  it('ready 态 refresh 保留当前数据，直到新结果返回', async () => {
+    fetchMock.mockResolvedValueOnce(APPLICATION);
+
+    const { result } = renderHook(() => useMyEngineerRegistration());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    const next = deferred<MyEngineerRegistrationView | null>();
+    fetchMock.mockReturnValueOnce(next.promise);
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    // 刷新期间不把已有申请打成 loading，避免卡片闪断
+    expect(result.current.state).toEqual({ application: APPLICATION, status: 'ready' });
+
+    const approved: MyEngineerRegistrationView = { ...APPLICATION, status: 'APPROVED' };
+    next.resolve(approved);
+
+    await waitFor(() =>
+      expect(result.current.state).toEqual({ application: approved, status: 'ready' }),
+    );
+  });
+
+  it('refresh 失败进入 failed，可再次 retry 恢复', async () => {
+    fetchMock.mockResolvedValueOnce(APPLICATION);
+
+    const { result } = renderHook(() => useMyEngineerRegistration());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    fetchMock.mockRejectedValueOnce(new Error('network'));
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(result.current.state.status).toBe('failed'));
+
+    fetchMock.mockResolvedValueOnce(APPLICATION);
+    act(() => {
+      result.current.retry();
+    });
+
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+  });
+
+  it('连续刷新时较早请求的迟到结果不覆盖最新结果', async () => {
+    fetchMock.mockResolvedValueOnce(APPLICATION);
+
+    const { result } = renderHook(() => useMyEngineerRegistration());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    const older = deferred<MyEngineerRegistrationView | null>();
+    fetchMock.mockReturnValueOnce(older.promise);
+
+    const approved: MyEngineerRegistrationView = { ...APPLICATION, status: 'APPROVED' };
+    act(() => {
+      result.current.refresh();
+    });
+
+    fetchMock.mockResolvedValueOnce(approved);
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() =>
+      expect(result.current.state).toEqual({ application: approved, status: 'ready' }),
+    );
+
+    older.resolve(APPLICATION);
+    await waitFor(() =>
+      expect(result.current.state).toEqual({ application: approved, status: 'ready' }),
+    );
+  });
+
   it('重试后旧请求的迟到失败不覆盖新结果', async () => {
     const first = deferred<MyEngineerRegistrationView | null>();
     fetchMock.mockReturnValueOnce(first.promise);

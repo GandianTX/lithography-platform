@@ -590,6 +590,14 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
 });
 
 /**
+ * 清空本轮台账但保留对象引用：组合清理只在事务提交成功后调用，
+ * 规格各处按引用持有台账，不能替换成新对象。
+ */
+export const clearOwnedResourceLedger = (ledger: OwnedResourceLedger): void => {
+  Object.assign(ledger, createOwnedResourceLedger());
+};
+
+/**
  * 残留第三方绑定指纹：账号自然键只用于定位，绑定 `provider + provider_user_id`
  * 与 `union_id` 必须逐项匹配；外部账号的同 provider 绑定绝不被接管。
  */
@@ -1707,7 +1715,7 @@ export const mergeOwnedResourceLedger = (
  * 每个已登记 ID 都必须有最小预期事实；缺事实时在第一条 DELETE 前失败关闭（R02）。
  * 不接受 `skipFingerprint` / `trustOwnedId` 之类的豁免。
  */
-const assertOwnedFactsComplete = (owned: OwnedResourceLedger, helper: string): void => {
+export const assertOwnedFactsComplete = (owned: OwnedResourceLedger, helper: string): void => {
   for (const category of FACT_BEARING_CATEGORIES) {
     const ids = owned[LEDGER_KEY_BY_CATEGORY[category]] as ReadonlyArray<number | string>;
     for (const id of ids) {
@@ -3953,8 +3961,7 @@ export const runGuardedScopedCleanup = async (params: {
  * - 两者都为空时纯 no-op，不开启事务、不执行任何 DELETE；
  * - 预检与删除同事务，任何归属/引用冲突都会在第一条 DELETE 前失败。
  */
-export const runGuardedSpecCleanup = async (params: {
-  readonly dataSource: DataSource;
+export interface GuardedSpecCleanupInput {
   readonly helper: string;
   readonly owned?: OwnedResourceLedger;
   readonly residue?: {
@@ -3976,9 +3983,141 @@ export const runGuardedSpecCleanup = async (params: {
    * 也绝不在本轮清理中再次认领删除。
    */
   readonly retained?: RetainedCleanupResources;
-  /** 显式预期目标库；缺省时取 DataSource.options.database（N04）。 */
-  readonly expectedDatabase?: string;
-}): Promise<void> => {
+}
+
+/** 纯内存计划构建：owned 台账 → 清理计划（含套件级保留集合过滤）。 */
+const buildOwnedCleanupPlan = (
+  owned: OwnedResourceLedger | undefined,
+  retained: RetainedCleanupResources | undefined,
+): CleanupPlan => {
+  const plan = emptyPlan();
+  if (!owned) {
+    return plan;
+  }
+  plan.organizationIds = toIdList(owned.organizationIds);
+  plan.accountIds = toIdList(owned.accountIds);
+  plan.membershipIds = toIdList(owned.membershipIds);
+  plan.submissionIds = toIdList(owned.submissionIds);
+  plan.revisionIds = toIdList(owned.revisionIds);
+  plan.attachmentIds = toIdList(owned.attachmentIds);
+  plan.materialDetailIds = toIdList(owned.materialDetailIds);
+  plan.faultCaseDetailIds = toIdList(owned.faultCaseDetailIds);
+  plan.reviewIds = toIdList(owned.reviewIds);
+  plan.documentIds = toIdList(owned.documentIds);
+  plan.documentCaseDetailIds = toIdList(owned.documentCaseDetailIds);
+  plan.equipmentModelIds = toIdList(owned.equipmentModelIds);
+  plan.thirdPartyAuthIds = toIdList(owned.thirdPartyAuthIds);
+  plan.verificationRecordIds = toIdList(owned.verificationRecordIds);
+  plan.repairRequestIds = toIdList(owned.repairRequestIds);
+  plan.engineerResponseIds = toIdList(owned.engineerResponseIds);
+  plan.engineerRegistrationApplicationIds = toIdList(owned.engineerRegistrationApplicationIds);
+  plan.storedFileIds = toMixedIdList(owned.storedFileIds);
+  plan.repairRequestIntakeIds = toIdList(owned.repairRequestIntakeIds);
+  plan.intakeAnalysisAttemptIds = toIdList(owned.intakeAnalysisAttemptIds);
+  plan.repairProcessEntryIds = toIdList(owned.repairProcessEntryIds);
+  plan.aiMessageAnalysisIds = toMixedIdList(owned.aiMessageAnalysisIds);
+  plan.maintenanceReportFaultIds = toIdList(owned.maintenanceReportFaultIds);
+  plan.repairRequestRevisionIds = toIdList(owned.repairRequestRevisionIds);
+  plan.referenceDocumentRevisionIds = toIdList(owned.referenceDocumentRevisionIds);
+  plan.localAccountAuthorizationIds = toIdList(owned.localAccountAuthorizationIds);
+  plan.localCompanySettingIds = toIdList(owned.localCompanySettingIds);
+  plan.syncReceiptIds = toMixedIdList(owned.syncReceiptIds);
+  plan.syncConflictIds = toMixedIdList(owned.syncConflictIds);
+  plan.recordPackageImportIds = toMixedIdList(owned.recordPackageImportIds);
+  plan.recordPackageItemIds = toIdList(owned.recordPackageItemIds);
+  plan.backupAssetIds = toMixedIdList(owned.backupAssetIds);
+  plan.backupRestoreRunIds = toMixedIdList(owned.backupRestoreRunIds);
+  plan.managementAuditEventIds = toMixedIdList(owned.managementAuditEventIds);
+  if (retained !== undefined) {
+    // 套件级保留集合：冲突现场及其必要父资源即使仍在台账中，也禁止再次认领删除。
+    // 过滤发生在事务与任何 DELETE 之前；保留 ID 的事实核验仍由 verifyOwnedExpectations 只读完成。
+    plan.organizationIds = excludeRetainedIdList(plan.organizationIds, retained.organizationIds);
+    plan.accountIds = excludeRetainedIdList(plan.accountIds, retained.accountIds);
+    plan.storedFileIds = excludeRetainedIdList(plan.storedFileIds, retained.storedFileIds);
+  }
+  return plan;
+};
+
+/** 纯内存判断：残留/保留指纹是否构成需要开启事务的候选。 */
+const hasResidueCleanupCandidates = (
+  residue: GuardedSpecCleanupInput['residue'],
+  retainedAccounts: readonly ResidueAccountFingerprint[],
+): boolean =>
+  (residue?.organizations?.length ?? 0) > 0 ||
+  (residue?.accounts?.length ?? 0) > 0 ||
+  (residue?.equipmentModels?.length ?? 0) > 0 ||
+  (residue?.thirdPartyAuths?.length ?? 0) > 0 ||
+  (residue?.verificationRecords?.length ?? 0) > 0 ||
+  (residue?.repairRequests?.length ?? 0) > 0 ||
+  (residue?.engineerResponses?.length ?? 0) > 0 ||
+  retainedAccounts.length > 0;
+
+export interface PreparedGuardedSpecCleanup {
+  readonly hasResources: boolean;
+  /**
+   * 本轮计划删除的成员关系 ID（同一事务内、首条 DELETE 之前已锁定并核验）。
+   * 相邻守护清理步骤（夹具侧）需要把它们视为“批次内引用”，
+   * 不能误判为外部入向引用。
+   */
+  readonly membershipIds: readonly number[];
+  execute(): Promise<void>;
+}
+
+/**
+ * 事务内预检：只做事实核验与删除计划构建，不执行任何 DELETE。
+ *
+ * 组合清理入口（组织链 + 夹具共用同一 EntityManager）先用它把两段预检全部跑完，
+ * 整批通过后才依次调用各自的 `execute()`；空计划返回 null，避免无意义删除。
+ * 调用方必须已在同一事务内完成目标库连接校验。
+ */
+export const prepareGuardedSpecCleanupInTransaction = async (
+  manager: EntityManager,
+  params: GuardedSpecCleanupInput,
+): Promise<PreparedGuardedSpecCleanup | null> => {
+  const { helper, owned, residue, retainedAccounts = [], retained } = params;
+
+  const plan = buildOwnedCleanupPlan(owned, retained);
+  const residueHasCandidates = hasResidueCleanupCandidates(residue, retainedAccounts);
+  if (!residueHasCandidates && !hasAnyResource(plan)) {
+    return null;
+  }
+
+  if (owned) {
+    // R02：同一事务内锁定登记资源并核对预期事实，任何漂移都先于第一条 DELETE 失败。
+    await verifyOwnedExpectations(manager, owned, helper);
+  }
+  let retainedAccountIds: number[] = [];
+  if (residueHasCandidates) {
+    const resolved = await resolveResidue(manager, residue ?? {}, retainedAccounts, helper, plan);
+    retainedAccountIds = resolved.retainedAccountIds;
+  }
+  await collectOwnedGraph(
+    manager,
+    plan,
+    [...plan.accountIds, ...retainedAccountIds],
+    helper,
+    owned,
+  );
+  if (!hasAnyResource(plan)) {
+    return null;
+  }
+
+  return {
+    hasResources: true,
+    membershipIds: [...plan.membershipIds],
+    execute: async () => {
+      await deleteVerifiedPlan(manager, plan);
+    },
+  };
+};
+
+export const runGuardedSpecCleanup = async (
+  params: GuardedSpecCleanupInput & {
+    readonly dataSource: DataSource;
+    /** 显式预期目标库；缺省时取 DataSource.options.database（N04）。 */
+    readonly expectedDatabase?: string;
+  },
+): Promise<void> => {
   const {
     dataSource,
     helper,
@@ -4004,61 +4143,8 @@ export const runGuardedSpecCleanup = async (params: {
     assertOwnedFactsComplete(owned, helper);
   }
 
-  const plan = emptyPlan();
-  if (owned) {
-    plan.organizationIds = toIdList(owned.organizationIds);
-    plan.accountIds = toIdList(owned.accountIds);
-    plan.membershipIds = toIdList(owned.membershipIds);
-    plan.submissionIds = toIdList(owned.submissionIds);
-    plan.revisionIds = toIdList(owned.revisionIds);
-    plan.attachmentIds = toIdList(owned.attachmentIds);
-    plan.materialDetailIds = toIdList(owned.materialDetailIds);
-    plan.faultCaseDetailIds = toIdList(owned.faultCaseDetailIds);
-    plan.reviewIds = toIdList(owned.reviewIds);
-    plan.documentIds = toIdList(owned.documentIds);
-    plan.documentCaseDetailIds = toIdList(owned.documentCaseDetailIds);
-    plan.equipmentModelIds = toIdList(owned.equipmentModelIds);
-    plan.thirdPartyAuthIds = toIdList(owned.thirdPartyAuthIds);
-    plan.verificationRecordIds = toIdList(owned.verificationRecordIds);
-    plan.repairRequestIds = toIdList(owned.repairRequestIds);
-    plan.engineerResponseIds = toIdList(owned.engineerResponseIds);
-    plan.engineerRegistrationApplicationIds = toIdList(owned.engineerRegistrationApplicationIds);
-    plan.storedFileIds = toMixedIdList(owned.storedFileIds);
-    plan.repairRequestIntakeIds = toIdList(owned.repairRequestIntakeIds);
-    plan.intakeAnalysisAttemptIds = toIdList(owned.intakeAnalysisAttemptIds);
-    plan.repairProcessEntryIds = toIdList(owned.repairProcessEntryIds);
-    plan.aiMessageAnalysisIds = toMixedIdList(owned.aiMessageAnalysisIds);
-    plan.maintenanceReportFaultIds = toIdList(owned.maintenanceReportFaultIds);
-    plan.repairRequestRevisionIds = toIdList(owned.repairRequestRevisionIds);
-    plan.referenceDocumentRevisionIds = toIdList(owned.referenceDocumentRevisionIds);
-    plan.localAccountAuthorizationIds = toIdList(owned.localAccountAuthorizationIds);
-    plan.localCompanySettingIds = toIdList(owned.localCompanySettingIds);
-    plan.syncReceiptIds = toMixedIdList(owned.syncReceiptIds);
-    plan.syncConflictIds = toMixedIdList(owned.syncConflictIds);
-    plan.recordPackageImportIds = toMixedIdList(owned.recordPackageImportIds);
-    plan.recordPackageItemIds = toIdList(owned.recordPackageItemIds);
-    plan.backupAssetIds = toMixedIdList(owned.backupAssetIds);
-    plan.backupRestoreRunIds = toMixedIdList(owned.backupRestoreRunIds);
-    plan.managementAuditEventIds = toMixedIdList(owned.managementAuditEventIds);
-    if (retained !== undefined) {
-      // 套件级保留集合：冲突现场及其必要父资源即使仍在台账中，也禁止再次认领删除。
-      // 过滤发生在事务与任何 DELETE 之前；保留 ID 的事实核验仍由 verifyOwnedExpectations 只读完成。
-      plan.organizationIds = excludeRetainedIdList(plan.organizationIds, retained.organizationIds);
-      plan.accountIds = excludeRetainedIdList(plan.accountIds, retained.accountIds);
-      plan.storedFileIds = excludeRetainedIdList(plan.storedFileIds, retained.storedFileIds);
-    }
-  }
-
-  const residueHasCandidates =
-    (residue?.organizations?.length ?? 0) > 0 ||
-    (residue?.accounts?.length ?? 0) > 0 ||
-    (residue?.equipmentModels?.length ?? 0) > 0 ||
-    (residue?.thirdPartyAuths?.length ?? 0) > 0 ||
-    (residue?.verificationRecords?.length ?? 0) > 0 ||
-    (residue?.repairRequests?.length ?? 0) > 0 ||
-    (residue?.engineerResponses?.length ?? 0) > 0 ||
-    retainedAccounts.length > 0;
-  if (!residueHasCandidates && !hasAnyResource(plan)) {
+  const residueHasCandidates = hasResidueCleanupCandidates(residue, retainedAccounts);
+  if (!residueHasCandidates && !hasAnyResource(buildOwnedCleanupPlan(owned, retained))) {
     return;
   }
 
@@ -4066,26 +4152,16 @@ export const runGuardedSpecCleanup = async (params: {
     // N04：实际删除连接（同一事务 manager）必须再次核对预期库名，
     // 不能只依赖连接池另一条连接上的入口校验。
     await assertManagerOnExpectedE2eDatabase(manager, expected);
-    if (owned) {
-      // R02：同一事务内锁定登记资源并核对预期事实，任何漂移都先于第一条 DELETE 失败。
-      await verifyOwnedExpectations(manager, owned, helper);
-    }
-    let retainedAccountIds: number[] = [];
-    if (residueHasCandidates) {
-      const resolved = await resolveResidue(manager, residue ?? {}, retainedAccounts, helper, plan);
-      retainedAccountIds = resolved.retainedAccountIds;
-    }
-    await collectOwnedGraph(
-      manager,
-      plan,
-      [...plan.accountIds, ...retainedAccountIds],
+    const prepared = await prepareGuardedSpecCleanupInTransaction(manager, {
       helper,
       owned,
-    );
-    if (!hasAnyResource(plan)) {
-      return;
+      residue,
+      retainedAccounts,
+      retained,
+    });
+    if (prepared) {
+      await prepared.execute();
     }
-    await deleteVerifiedPlan(manager, plan);
   });
 };
 

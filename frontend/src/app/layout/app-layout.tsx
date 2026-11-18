@@ -10,11 +10,16 @@ import {
   MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import { Button, Segmented } from 'antd';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 
-import { getNavigationItems, resolveActiveNavigationPath } from '@/app/navigation';
-import { FONT_SCALE_OPTIONS, useTheme } from '@/app/providers';
+import type { ResolvedNavigationItem } from '@/app/navigation';
+import {
+  getNavigationItems,
+  resolveActiveNavigationPath,
+  resolveNavigationItems,
+} from '@/app/navigation';
+import { FONT_SCALE_OPTIONS, useI18n, useTheme } from '@/app/providers';
 import { APP_THEME_CSS_VAR_KEY } from '@/app/theme';
 
 import { AigcSidecar } from '@/widgets/aigc-sidecar';
@@ -24,12 +29,16 @@ import {
   isAuthSessionRestricted,
   LogoutButton,
   refreshCurrentAuthSessionIdentity,
+  resolveAuthSessionAdminScope,
   resolveAuthSessionHomePath,
   useAuthSession,
 } from '@/features/auth-session';
 
 import type { AssistantRouteCandidate } from '@/entities/assistant-session';
 
+import { LanguageSwitch } from '@/shared/ui/language-switch';
+
+import { EngineerApprovalGate } from './engineer-approval-gate';
 import { EntryAccentGlyph } from './entry-accent-glyph';
 import {
   NavBookOpenIcon,
@@ -41,11 +50,12 @@ import {
 } from './nav-icons';
 
 // 侧栏用户卡的展示名映射：仅展示用途，角色判断一律走 auth-session 策略层。
-const ROLE_LABELS: Record<AuthSessionRole, string> = {
-  CUSTOMER: '客户',
-  ENGINEER: '工程师',
-  SUPER_ADMIN: '管理员',
-};
+// S5：目录与布局都只存词条键，渲染时按当前语言解析。
+const ROLE_LABEL_KEYS = {
+  CUSTOMER: 'layout.role.CUSTOMER',
+  ENGINEER: 'layout.role.ENGINEER',
+  SUPER_ADMIN: 'layout.role.SUPER_ADMIN',
+} as const satisfies Record<AuthSessionRole, string>;
 
 // 导航图标：按 id 映射，折叠态靠图标辨识目标（审查 P1-04 修复）。
 // 原型已对应的五个菜单用 gkj 描边 SVG（./nav-icons）；dev 专属入口仍用 AntD 图标
@@ -68,9 +78,7 @@ const NAV_ITEM_ICONS: Record<string, ReactNode> = {
 
 const FALLBACK_NAV_ICON = <AppstoreOutlined />;
 
-function toRouteCandidate(
-  item: ReturnType<typeof getNavigationItems>[number],
-): AssistantRouteCandidate {
+function toRouteCandidate(item: ResolvedNavigationItem): AssistantRouteCandidate {
   return {
     description: item.description,
     id: item.id,
@@ -87,6 +95,11 @@ type AppLayoutProps = {
 // 窄视口断点（S4）：≤1024px 时侧栏自动折叠，跨越断点时自动收敛/展开；
 // 断点内用户仍可手动切换。任务书验收视口（1366×768、1440×900）不受影响。
 const NARROW_VIEWPORT_QUERY = '(max-width: 1024px)';
+
+// 覆盖式导航断点（第五轮 P2）：与 index.css 中 `@media (max-width: 768px)` 一致。
+// 该区间内展开的侧栏脱离文档流覆盖工作区，工作区必须 `inert` 暂时退出交互，
+// 否则被覆盖的表单控件仍会被点击或键盘命中。
+const OVERLAY_NAV_VIEWPORT_QUERY = '(max-width: 768px)';
 
 // 知识库页精确路由（PR3 R7）：仅本页应用工作区视觉变体——
 // 原型 #knowledge-base-page 纯色底 + 占满侧栏后剩余宽度；
@@ -110,8 +123,15 @@ const REGISTER_PATH_PREFIX = '/register/';
 
 export function AppLayout({ children }: AppLayoutProps = {}) {
   const [isNavCollapsed, setIsNavCollapsed] = useState(false);
+  const [isOverlayViewport, setIsOverlayViewport] = useState(() =>
+    typeof window === 'undefined' ? false : window.matchMedia(OVERLAY_NAV_VIEWPORT_QUERY).matches,
+  );
   const [isSidecarOpen, setIsSidecarOpen] = useState(false);
   const triggerRef = useRef<HTMLAnchorElement | HTMLButtonElement | null>(null);
+  const navToggleRef = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
+  // 覆盖式导航中的同页签跳转意图：点击发生在路由落地之前，
+  // 记录后在目标路由挂载时收起覆盖层（第六轮 P2）。
+  const pendingOverlayNavCloseRef = useRef(false);
   const wasSidecarOpenRef = useRef(isSidecarOpen);
   const [showShortcutHint, setShowShortcutHint] = useState(() =>
     typeof document === 'undefined'
@@ -119,6 +139,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       : document.hasFocus() && document.visibilityState === 'visible',
   );
   const { fontScale, setFontScale } = useTheme();
+  const { t } = useI18n();
   const { session } = useAuthSession();
   const location = useLocation();
   const navigate = useNavigate();
@@ -130,7 +151,11 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
   // 登录 / 注册页共用独立壳层（注册页按 /register/ 前缀）
   const isAuthLandingPage =
     location.pathname === LOGIN_PATH || location.pathname.startsWith(REGISTER_PATH_PREFIX);
-  const navigationItems = useMemo(() => getNavigationItems(undefined, activeRole), [activeRole]);
+  const adminScope = session ? resolveAuthSessionAdminScope(session) : 'NONE';
+  const navigationItems = useMemo(
+    () => resolveNavigationItems(getNavigationItems(undefined, activeRole, adminScope), t),
+    [activeRole, adminScope, t],
+  );
   const activeNavigationPath = useMemo(
     () => resolveActiveNavigationPath(location.pathname, navigationItems),
     [location.pathname, navigationItems],
@@ -139,6 +164,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
     () => navigationItems.map((item) => toRouteCandidate(item)),
     [navigationItems],
   );
+  // 覆盖式导航仅在「窄视口 + 侧栏展开」时成立：此时工作区整体 inert，
+  // 桌面（>768px）与窄屏折叠态都不受限制。
+  const isOverlayNavOpen = isOverlayViewport && !isNavCollapsed;
 
   useEffect(() => {
     const narrowQuery = window.matchMedia(NARROW_VIEWPORT_QUERY);
@@ -152,6 +180,21 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
 
     return () => {
       narrowQuery.removeEventListener('change', syncCollapsedFromViewport);
+    };
+  }, []);
+
+  useEffect(() => {
+    const overlayQuery = window.matchMedia(OVERLAY_NAV_VIEWPORT_QUERY);
+
+    function syncOverlayViewport() {
+      setIsOverlayViewport(overlayQuery.matches);
+    }
+
+    syncOverlayViewport();
+    overlayQuery.addEventListener('change', syncOverlayViewport);
+
+    return () => {
+      overlayQuery.removeEventListener('change', syncOverlayViewport);
     };
   }, []);
 
@@ -195,6 +238,41 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
     };
   }, []);
 
+  // 覆盖式导航的键盘关闭：Esc 收起侧栏并把焦点交还同一个展开/收起按钮，
+  // 收起后工作区不再 inert，Tab 可继续进入被覆盖过的表单。
+  useEffect(() => {
+    if (!isOverlayNavOpen) {
+      return;
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      setIsNavCollapsed(true);
+      navToggleRef.current?.focus();
+    }
+
+    window.addEventListener('keydown', handleEscape);
+
+    return () => {
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isOverlayNavOpen]);
+
+  // 路由落地后收起覆盖式导航（第六轮 P2）：点击意图在跳转前记录，
+  // 目标路由挂载时消费，使工作区不再被 inert 挡住；Esc / 开关按钮行为不受影响。
+  useEffect(() => {
+    if (!pendingOverlayNavCloseRef.current) {
+      return;
+    }
+
+    pendingOverlayNavCloseRef.current = false;
+    setIsNavCollapsed(true);
+  }, [location.key]);
+
   // 启动 / 刷新时按服务端复核结果校对会话限制状态：账号在别处被要求改密、
   // 工程师申请在别处被审批等变化会同步到路由落地，避免停留在过期页面。
   // 认证失效由全局 GraphQL ingress 统一收口，这里只静默失败。
@@ -222,6 +300,20 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
     }
   }, [location.pathname, navigate, session]);
 
+  // 覆盖式导航里的同页签跳转意图：仅记录，不拦截 Link 的跳转与路由守卫。
+  // Ctrl/Cmd/Shift 等修饰键与中键属于新标签页/新窗口操作，保持原行为。
+  function handleOverlayNavIntent(event: MouseEvent<HTMLAnchorElement>) {
+    if (!isOverlayNavOpen || event.defaultPrevented) {
+      return;
+    }
+
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+
+    pendingOverlayNavCloseRef.current = true;
+  }
+
   const workspaceClassName = isKnowledgeBasePage
     ? 'app-workspace app-workspace--knowledge-base'
     : isReferenceLibraryPage
@@ -244,7 +336,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             LF
           </span>
           <span aria-hidden="true" className="login-brand-divider" />
-          <span className="login-brand-name">光刻维护平台</span>
+          <span className="login-brand-name">{t('layout.brand')}</span>
+          {/* 生产补齐原型缺口的唯一语言入口：登录 / 注册页也可切换语言 */}
+          <LanguageSwitch />
         </div>
         <main className="login-workspace">{children ?? <Outlet />}</main>
       </div>
@@ -264,7 +358,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             </span>
             {isNavCollapsed ? null : (
               <span className="app-sidebar-brand-text">
-                <span className="app-sidebar-brand-name">光刻维护平台</span>
+                <span className="app-sidebar-brand-name">{t('layout.brand')}</span>
                 {/* 品牌辅行：装饰性英文小字，对齐基准品牌区两级文字层级 */}
                 <span className="app-sidebar-brand-subname">Service Platform</span>
               </span>
@@ -272,8 +366,9 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
           </Link>
           <span className="app-sidebar-collapse-button">
             <Button
-              aria-label={isNavCollapsed ? '展开导航' : '折叠导航'}
+              aria-label={isNavCollapsed ? t('layout.expandNav') : t('layout.collapseNav')}
               icon={isNavCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              ref={navToggleRef}
               size="small"
               type="text"
               onClick={() => setIsNavCollapsed((previousValue) => !previousValue)}
@@ -281,7 +376,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
           </span>
         </div>
 
-        <nav aria-label="主导航" className="app-sidebar-nav">
+        <nav aria-label={t('layout.mainNav')} className="app-sidebar-nav">
           {navigationItems.map((item) => (
             <Link
               key={item.id}
@@ -289,6 +384,7 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
               className={`app-nav-item${
                 item.path === activeNavigationPath ? ' app-nav-item--active' : ''
               }`}
+              onClick={handleOverlayNavIntent}
               title={item.description}
               to={item.path}
             >
@@ -302,6 +398,10 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
             （逐条复核报告 20260916 修复建议 3；基准偏差登记见 gkj-visual-baseline.md） */}
         {isNavCollapsed ? null : (
           <div className="app-font-scale-area">
+            {/* 唯一语言切换入口（展开态）：与字号档位同区，位于其上方一行 */}
+            <div className="app-language-row">
+              <LanguageSwitch />
+            </div>
             <div className="app-font-scale-control">
               <Segmented
                 onChange={(value) => {
@@ -318,6 +418,12 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
         )}
 
         <div className="app-sidebar-footer">
+          {/* 折叠态（含 ≤1024px 窄屏默认折叠）：语言入口收敛为图标按钮，保证可达 */}
+          {isNavCollapsed ? (
+            <div className="app-language-row">
+              <LanguageSwitch variant="icon" />
+            </div>
+          ) : null}
           {session ? (
             <div className="app-user-card">
               {!isNavCollapsed ? (
@@ -327,14 +433,17 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
                   aria-hidden="true"
                   className="app-user-card-avatar user-avatar user-avatar--md"
                 >
-                  {(session.userInfo?.nickname ?? '用户').trim().charAt(0).toUpperCase()}
+                  {(session.userInfo?.nickname ?? t('layout.userFallback'))
+                    .trim()
+                    .charAt(0)
+                    .toUpperCase()}
                 </span>
               ) : null}
               <div className="app-user-card-info">
                 <span className="app-user-card-name">
-                  {session.userInfo?.nickname ?? '当前用户'}
+                  {session.userInfo?.nickname ?? t('layout.currentUser')}
                 </span>
-                <span className="app-user-card-role">{ROLE_LABELS[session.role]}</span>
+                <span className="app-user-card-role">{t(ROLE_LABEL_KEYS[session.role])}</span>
               </div>
               <div className="app-user-card-actions">
                 <LogoutButton iconOnly={isNavCollapsed} />
@@ -345,9 +454,14 @@ export function AppLayout({ children }: AppLayoutProps = {}) {
       </aside>
 
       {/* 工作区先占余宽（原型 workspace-page：渐变+22px 上距），内容再入 1280px 内层；
-          知识库页按精确路由切换纯色铺满变体，其余页面保持通用基准（PR3 R7） */}
-      <main className={workspaceClassName}>
-        <div className={mainClassName}>{children ?? <Outlet />}</div>
+          知识库页按精确路由切换纯色铺满变体，其余页面保持通用基准（PR3 R7）。
+          覆盖式导航展开期间整体 inert：被覆盖的表单保持挂载但暂时不可命中与聚焦。 */}
+      <main className={workspaceClassName} inert={isOverlayNavOpen}>
+        <div className={mainClassName}>
+          {/* 资格生效的批准结果门：在工作台内容挂载前用服务端事实确认本人批准结果，
+              确认后由用户显式「进入工作台」；门本身不改变路由授权。 */}
+          <EngineerApprovalGate>{children ?? <Outlet />}</EngineerApprovalGate>
+        </div>
       </main>
 
       {!isSidecarOpen ? (

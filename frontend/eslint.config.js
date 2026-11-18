@@ -457,13 +457,15 @@ export default defineConfig([
   },
   {
     // 已登记预提交实现截图例外（frontend/docs/testing.md 例外登记表）：任务 08 · S2/S3/S4/S5 检查轮
-    // 证据在未提交工作区采集，captureStableViewport 的干净工作区门禁不成立；这些 spec 已在
-    // 登记表登记，截图前统一调用 prepareStableViewport()，提交后须以 captureStableViewport 重采。
+    // 与任务 02 · B 审查 R2 补证的证据在未提交工作区采集，captureStableViewport 的干净工作区门禁
+    // 不成立；这些 spec 已在登记表登记，截图前统一调用 prepareStableViewport()，提交后须以
+    // captureStableViewport 重采。
     files: [
       'e2e-real/admin-companies-real.spec.ts',
       'e2e-real/admin-engineer-approval-real.spec.ts',
       'e2e-real/admin-s5-visual-real.spec.ts',
       'e2e-real/admin-user-management-real.spec.ts',
+      'e2e-real/task02-b-review-visual-real.spec.ts',
     ],
     rules: {
       'no-restricted-syntax': 'off',

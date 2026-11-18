@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import { fetchRegistrationOrganizations } from '../infrastructure/registration-organization-adapter';
 
@@ -21,8 +22,6 @@ import type { RegistrationOrganizationOption } from './registration.types';
 
 /** 默认单页数量（与服务端公开查询上限 50 之内） */
 export const REGISTRATION_ORGANIZATION_PAGE_SIZE = 20;
-
-const LOAD_FAILED_MESSAGE = '公司名单加载失败。';
 
 export type RegistrationOrganizationsState =
   | { status: 'loading' }
@@ -101,7 +100,7 @@ export function useRegistrationOrganizations(options: UseRegistrationOrganizatio
         setState((previous) =>
           mode === 'append' && previous.status === 'ready'
             ? { ...previous, loadingMore: false, loadMoreFailed: true }
-            : { status: 'failed', message: LOAD_FAILED_MESSAGE },
+            : { status: 'failed', message: translateNow('register.orgLoadFailed') },
         );
       }
     },

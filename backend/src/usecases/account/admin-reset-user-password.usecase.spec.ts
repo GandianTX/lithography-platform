@@ -386,10 +386,13 @@ describe('AdminResetUserPasswordUsecase', () => {
 
       const writeArg = (accountService.updateAccountPasswordHash as jest.Mock).mock.calls[0][0] as {
         passwordHash: string;
+        mustChangePassword?: boolean;
       };
       expect(writeArg.passwordHash).toBe(
         AccountService.hashPasswordWithTimestamp(VALID_PASSWORD, createdAt),
       );
+      // 重置与「必须改密」置位是同一 UPDATE 的原子语义，不允许只换密码不置位
+      expect(writeArg.mustChangePassword).toBe(true);
       expect(harness.isCommitted()).toBe(true);
       expect(harness.isRolledBack()).toBe(false);
     });
@@ -442,12 +445,14 @@ describe('AdminResetUserPasswordUsecase', () => {
 
       const writeArg = (accountService.updateAccountPasswordHash as jest.Mock).mock
         .calls[0][0] as Record<string, unknown>;
-      // 只更新密码列：不存在「重置密码顺带启用账号」的隐藏副作用
+      // 只更新密码列与强制改密标记：不存在「重置密码顺带启用账号」的隐藏副作用
       expect(Object.keys(writeArg).sort()).toEqual([
         'accountId',
+        'mustChangePassword',
         'passwordHash',
         'transactionContext',
       ]);
+      expect(writeArg.mustChangePassword).toBe(true);
       expect(adminUserQueryService.findAdminUserStatusFacts).toHaveBeenCalledWith({
         accountId: TARGET_ACCOUNT_ID,
         transactionContext: harness.txContext,

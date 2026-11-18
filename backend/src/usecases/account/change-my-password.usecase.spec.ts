@@ -31,8 +31,7 @@ import { ChangeMyPasswordUsecase } from './change-my-password.usecase';
  * 7. 成功结果不含当前密码、新密码、哈希或 Token；
  * 8. 不新增 Token 黑名单 / tokenVersion / 服务端会话撤销；
  * 9. 全部日志（成功与失败）都不含当前密码、新密码或哈希；
- * 10. 强制改密（`mustChangePassword`）下新密码与当前密码相同时拒绝且不写哈希、不清标记；
- *    未要求强制改密时保持既有语义（同值仍按原行为处理）。
+ * 10. 无论是否强制改密，新密码与当前密码相同都拒绝且不写哈希；强制改密成功仍清除标记。
  */
 describe('ChangeMyPasswordUsecase', () => {
   const ACCOUNT_ID = 7;
@@ -44,6 +43,10 @@ describe('ChangeMyPasswordUsecase', () => {
   const CURRENT_PASSWORD = 'Old#Pass2026';
   const NEW_PASSWORD = 'Str0ng#Pass2026';
   const NOTICE = '密码已更新，请使用新密码重新登录';
+  /** 部署默认重置密码（与管理员默认重置入口同一配置项） */
+  const DEFAULT_RESET_PASSWORD = 'Deploy#Reset2026';
+  /** 与默认密码 NFKC 等价的整角写法：凭据哈希侧按 NFKC 归一化，必须同样被拒绝 */
+  const FULL_WIDTH_DEFAULT_RESET_PASSWORD = 'Ｄｅｐｌｏｙ＃Ｒｅｓｅｔ２０２６';
 
   const STORED_HASH = AccountService.hashPasswordWithTimestamp(CURRENT_PASSWORD, DB_CREATED_AT);
 
@@ -65,11 +68,15 @@ describe('ChangeMyPasswordUsecase', () => {
     error: jest.fn(),
   } as unknown as PinoLogger;
 
+  /** 部署默认重置密码配置：每个用例在 beforeEach 重置为已配置，个例可改写 / 删除 */
+  const resetOptions: { defaultPassword?: string } = {};
+
   const usecase = new ChangeMyPasswordUsecase(
     accountService,
     passwordPolicyService,
     logger,
     harness.transactionRunner,
+    resetOptions,
   );
 
   const session = (overrides: Partial<UsecaseSession> = {}): UsecaseSession => ({
@@ -102,6 +109,7 @@ describe('ChangeMyPasswordUsecase', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     harness.reset();
+    resetOptions.defaultPassword = DEFAULT_RESET_PASSWORD;
     (accountService.lockMyAccountCredentialSnapshot as jest.Mock).mockReset().mockResolvedValue({
       id: ACCOUNT_ID,
       status: AccountStatus.ACTIVE,
@@ -129,7 +137,7 @@ describe('ChangeMyPasswordUsecase', () => {
         accountId: 42,
         passwordHash: expect.any(String),
         transactionContext: harness.txContext,
-        clearMustChangePassword: true,
+        mustChangePassword: false,
       });
       expect(harness.isCommitted()).toBe(true);
     });
@@ -249,19 +257,32 @@ describe('ChangeMyPasswordUsecase', () => {
         accountId: ACCOUNT_ID,
         passwordHash: AccountService.hashPasswordWithTimestamp(NEW_PASSWORD, DB_CREATED_AT),
         transactionContext: harness.txContext,
-        clearMustChangePassword: true,
+        mustChangePassword: false,
       });
       expect(harness.isCommitted()).toBe(true);
     });
 
-    it('未要求强制改密时保持既有语义：允许提交同值密码（不扩大契约）', async () => {
+    it('未要求强制改密时提交同值密码同样拒绝，且不写哈希', async () => {
       // beforeEach 默认快照 mustChangePassword: false
-      await expect(execute(CURRENT_PASSWORD, CURRENT_PASSWORD)).resolves.toMatchObject({
-        isUpdated: true,
-      });
+      const error = await captureThrownError(execute(CURRENT_PASSWORD, CURRENT_PASSWORD));
 
-      expect(accountService.updateAccountPasswordHash).toHaveBeenCalledTimes(1);
-      expect(harness.isCommitted()).toBe(true);
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
+        message: '新密码需与当前密码不同',
+        details: undefined,
+      });
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: ACCOUNT_ID,
+          errorCode: MY_ACCOUNT_ERROR.NEW_PASSWORD_UNCHANGED,
+          phase: 'VERIFY_NEW_PASSWORD_DISTINCT',
+        }),
+        expect.any(String),
+      );
+      expect(logger.info).not.toHaveBeenCalled();
     });
   });
 
@@ -318,6 +339,94 @@ describe('ChangeMyPasswordUsecase', () => {
       await execute(CURRENT_PASSWORD, NEW_PASSWORD);
 
       expect(passwordPolicyService.validatePassword).toHaveBeenCalledWith(NEW_PASSWORD);
+    });
+  });
+
+  describe('拒绝部署默认重置密码（当前密码核验通过后才判断）', () => {
+    it('当前密码正确时提交默认值被拒：已进入锁内事务、不写哈希、不回显配置值', async () => {
+      const error = await captureThrownError(execute(CURRENT_PASSWORD, DEFAULT_RESET_PASSWORD));
+
+      expect(error).toMatchObject({
+        code: MY_ACCOUNT_ERROR.NEW_PASSWORD_NOT_ALLOWED,
+        message: '新密码不被允许，请更换其他密码',
+        details: undefined,
+        cause: undefined,
+      });
+      // 顺序契约：先核验当前密码，再判断依赖部署配置的新密码等价性
+      expect(harness.transactionRunner.run).toHaveBeenCalledTimes(1);
+      expect(accountService.lockMyAccountCredentialSnapshot).toHaveBeenCalledTimes(1);
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+      // 守卫位于新密码策略校验之后：策略仍只对新密码校验一次
+      expect(passwordPolicyService.validatePassword).toHaveBeenCalledTimes(1);
+      expect(passwordPolicyService.validatePassword).toHaveBeenCalledWith(DEFAULT_RESET_PASSWORD);
+    });
+
+    it('与默认密码 NFKC 等价的整角写法同样在锁内拒绝', async () => {
+      const error = await captureThrownError(
+        execute(CURRENT_PASSWORD, FULL_WIDTH_DEFAULT_RESET_PASSWORD),
+      );
+
+      expect(error).toMatchObject({ code: MY_ACCOUNT_ERROR.NEW_PASSWORD_NOT_ALLOWED });
+      expect(accountService.lockMyAccountCredentialSnapshot).toHaveBeenCalledTimes(1);
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+    });
+
+    it('同一错误当前密码下，默认值 / NFKC 等价 / 其他合规值返回完全一致的当前密码错误', async () => {
+      const wrongCurrentPassword = 'Totally#Wrong2026';
+      const candidates = [DEFAULT_RESET_PASSWORD, FULL_WIDTH_DEFAULT_RESET_PASSWORD, NEW_PASSWORD];
+      const errors: unknown[] = [];
+
+      for (const candidate of candidates) {
+        jest.clearAllMocks();
+        harness.reset();
+        errors.push(await captureThrownError(execute(wrongCurrentPassword, candidate)));
+      }
+
+      // 三次请求的大类码、细码与文案必须一致：响应不得暴露「猜中了部署默认值」
+      for (const error of errors) {
+        expect(error).toMatchObject({
+          code: MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH,
+          message: '当前密码不正确',
+          details: undefined,
+        });
+      }
+      expect(new Set(errors.map((error) => (error as { message: string }).message)).size).toBe(1);
+      expect(new Set(errors.map((error) => (error as { code: string }).code))).toEqual(
+        new Set([MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH]),
+      );
+
+      // 三次都没有越过当前密码核验：零写入、均回滚
+      expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();
+      expect(harness.isRolledBack()).toBe(true);
+    });
+
+    it('默认密码未配置或为空白时不干预合法自助改密', async () => {
+      delete resetOptions.defaultPassword;
+      await expect(execute(CURRENT_PASSWORD, NEW_PASSWORD)).resolves.toMatchObject({
+        isUpdated: true,
+      });
+
+      jest.clearAllMocks();
+      harness.reset();
+      resetOptions.defaultPassword = '   ';
+      await expect(execute(CURRENT_PASSWORD, NEW_PASSWORD)).resolves.toMatchObject({
+        isUpdated: true,
+      });
+      expect(accountService.updateAccountPasswordHash).toHaveBeenCalledTimes(1);
+      expect(harness.isCommitted()).toBe(true);
+    });
+
+    it('拒绝文案为通用提示且全部日志都不回显配置的默认密码', async () => {
+      const error = await captureThrownError(execute(CURRENT_PASSWORD, DEFAULT_RESET_PASSWORD));
+
+      expect((error as Error).message).not.toContain(DEFAULT_RESET_PASSWORD);
+      // 通用提示不确认命中部署配置，也不出现「默认密码」字样
+      expect((error as Error).message).not.toMatch(/默认|系统/);
+      expect(error).toMatchObject({ details: undefined, cause: undefined });
+      expect(loggedText()).not.toContain(DEFAULT_RESET_PASSWORD);
+      expect(logger.info).not.toHaveBeenCalled();
     });
   });
 
@@ -424,12 +533,13 @@ describe('ChangeMyPasswordUsecase', () => {
       expect(serialized).not.toContain('token');
     });
 
-    it('不新增 Token 黑名单 / 服务端撤销：依赖面只有四个，成功日志只含账号主键', async () => {
+    it('不新增 Token 黑名单 / 服务端撤销：依赖面只有密码原语与事务，成功日志只含账号主键', async () => {
       await execute(CURRENT_PASSWORD, NEW_PASSWORD);
 
-      // 构造函数只接受 AccountService、PasswordPolicyService、PinoLogger、TransactionRunner：
-      // 结构上不存在 Token / Session / 黑名单依赖，故不可能做服务端撤销
-      expect(ChangeMyPasswordUsecase.length).toBe(4);
+      // 构造函数只接受 AccountService、PasswordPolicyService、PinoLogger、TransactionRunner
+      // 与部署默认密码配置（ADMIN_ACCOUNT_RESET_OPTIONS）：结构上不存在 Token / Session /
+      // 黑名单依赖，故不可能做服务端撤销
+      expect(ChangeMyPasswordUsecase.length).toBe(5);
       expect(accountService.lockMyAccountCredentialSnapshot).toHaveBeenCalledTimes(1);
       expect(accountService.updateAccountPasswordHash).toHaveBeenCalledTimes(1);
       expect(logger.info).toHaveBeenCalledWith({ accountId: ACCOUNT_ID }, expect.any(String));

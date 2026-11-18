@@ -2,6 +2,7 @@
 
 import { RegisterCustomerForm } from '@/features/registration';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 
 /**
@@ -10,15 +11,17 @@ import { DataCard } from '@/shared/ui/data-card';
  * 底部为「注册并开通」与「返回登录」并排动作。
  */
 export function RegisterCustomerPage() {
+  const { t } = useI18n();
+
   return (
     <div className="register-layout">
       <header className="register-header">
-        <h1 className="register-title">客户注册</h1>
-        <p className="register-subtitle">注册即开通账号并关联所属公司。</p>
+        <h1 className="register-title">{t('register.customerTitle')}</h1>
+        <p className="register-subtitle">{t('register.customerSubtitle')}</p>
       </header>
 
       <div className="register-panel">
-        <DataCard title="注册资料">
+        <DataCard title={t('register.cardTitle')}>
           <RegisterCustomerForm />
         </DataCard>
       </div>

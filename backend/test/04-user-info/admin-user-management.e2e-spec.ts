@@ -1,11 +1,11 @@
 // test/04-user-info/admin-user-management.e2e-spec.ts
+import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import {
   AccountStatus,
   AudienceTypeEnum,
   IdentityTypeEnum,
   LoginTypeEnum,
 } from '@app-types/models/account.types';
-import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import { UserState } from '@app-types/models/user-info.types';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -30,6 +30,7 @@ import {
   testAccountsConfig,
   type TestAccountConfig,
 } from '../utils/test-accounts';
+import { assertLockObservationCapability } from '../utils/upload-race-runner';
 import {
   buildSuiteOrganizationCodes,
   requireOrganizationId,
@@ -61,6 +62,12 @@ import {
  * - `guestSecondary`(CUSTOMER,B)、`staffSecondary`(ENGINEER,B)；
  * - `noOrgEngineer`：ENGINEER，无任何成员关系（一级可见，二级不可见/不可写）。
  *
+ * 与定向单测（`src/usecases/account/*.spec.ts` / `src/modules/account/queries/*.spec.ts`）的分工：
+ * - 单测断言**协作契约**（写入顺序、事务边界、单元素数组、盐口径、日志脱敏）；
+ * - 本文件断言**跨进程可观察事实**：三源角色列在真实数据库里确实一致、双字段状态确实同步、
+ *   重置后的密码可登录但被强制改密收口、本人改密后恢复完整会话、错误确实以契约大类出现在
+ *   `extensions.code` 上。
+ *
  * 造数纪律：
  * - 直接改库只有两处，且都没有业务入口：a) 两个管理员的 `admin_level`；b) 客户账号的
  *   `base_user_info.customer_organization_id`（客户归属列，二级管理员归属判定的读面来源）；
@@ -68,6 +75,19 @@ import {
  * - 会改变账号事实的用例自建幂等前置并在结尾恢复；因清理台账不记录密码与
  *   `must_change_password`，默认密码重置用例会在同一用例内把目标改回非强制改密状态。
  */
+
+/**
+ * 并发锁观测专项入口（默认关闭）。
+ *
+ * 这条用例需要 `PROCESS` 权限以及 `performance_schema.data_lock_waits` / `data_locks`
+ * 读取能力。默认 E2E 测试账号是低权限账号，直接注册会让整个管理员规格因观测能力不足失败。
+ * 因此默认跳过并在规格输出中明确提示「专项未启用」；只有显式设置
+ * `E2E_ADMIN_USER_LOCK_OBSERVATION=1`（或使用
+ * `npm --prefix backend run test:e2e:admin-user-lock`）才注册该用例。
+ */
+const ADMIN_USER_LOCK_OBSERVATION_ENV = 'E2E_ADMIN_USER_LOCK_OBSERVATION';
+const adminUserLockObservationEnabled = process.env[ADMIN_USER_LOCK_OBSERVATION_ENV] === '1';
+const itLockObservation = adminUserLockObservationEnabled ? it : it.skip;
 
 type GqlError = {
   message: string;
@@ -164,12 +184,6 @@ const ADMIN_RESET_USER_PASSWORD_TO_DEFAULT_MUTATION = `
 
 const LOGIN_MUTATION = `
   mutation Login($input: AuthLoginInput!) {
-    login(input: $input) { accessToken }
-  }
-`;
-
-const LOGIN_WITH_RESTRICTION_MUTATION = `
-  mutation Login($input: AuthLoginInput!) {
     login(input: $input) { accessToken restriction }
   }
 `;
@@ -212,6 +226,7 @@ const EMAIL_ONLY_LOGIN_EMAIL = 'e2e.email.only@example.com';
 const EMAIL_ONLY_INITIAL_PASSWORD = 'E2eEmailOnly@2026';
 
 const RESET_NEW_PASSWORD = 'E2eResetPwd@2027';
+const RESET_FINAL_PASSWORD = 'E2eResetFinal@2029';
 const RESET_INACTIVE_PASSWORD = 'E2eInactivePwd@2028';
 
 /** 默认密码重置后，目标用户自助改密使用的新密码（与默认密码不同即可） */
@@ -313,6 +328,12 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   const ownership = createOwnedResourceLedger();
 
   beforeAll(async () => {
+    if (!adminUserLockObservationEnabled) {
+      console.log(
+        `[admin-user-management] 并发锁观测专项未启用（${ADMIN_USER_LOCK_OBSERVATION_ENV}!=1）：` +
+          '已跳过“并发转待审先提交”用例（该用例需要 PROCESS 与两张 performance_schema 锁表）',
+      );
+    }
     // E2E 基线默认关闭 introspection；本 spec 只在 API 初始化期间临时开启，用于核验公开契约面，
     // 不修改任何 .env / Entity / Migration / schema 产物。
     previousIntrospectionEnabled = process.env.GRAPHQL_INTROSPECTION_ENABLED;
@@ -736,6 +757,7 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   const attemptLogin = (
     loginName: string,
     loginPassword: string,
+    options?: { allowRestrictedSession?: boolean },
   ): Promise<GqlBody<{ login?: LoginPayload }>> =>
     gql({
       query: LOGIN_MUTATION,
@@ -745,6 +767,7 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
           loginPassword,
           type: LoginTypeEnum.PASSWORD,
           audience: AudienceTypeEnum.DESKTOP,
+          ...(options?.allowRestrictedSession === true ? { allowRestrictedSession: true } : {}),
         },
       },
     });
@@ -754,18 +777,7 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
     loginName: string,
     loginPassword: string,
   ): Promise<GqlBody<{ login?: LoginPayload }>> =>
-    gql({
-      query: LOGIN_WITH_RESTRICTION_MUTATION,
-      variables: {
-        input: {
-          loginName,
-          loginPassword,
-          type: LoginTypeEnum.PASSWORD,
-          audience: AudienceTypeEnum.DESKTOP,
-          allowRestrictedSession: true,
-        },
-      },
-    });
+    attemptLogin(loginName, loginPassword, { allowRestrictedSession: true });
 
   const changeMyPassword = (
     token: string,
@@ -837,6 +849,38 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   };
 
   /**
+   * 观测「某个事务正在等待目标账号行的记录锁」，用于并发顺序断言。
+   *
+   * 只以 `performance_schema` 中真实的锁等待为判据，不以固定毫秒数推断「应该已经在等」：
+   * 请求必须先被观察到阻塞在 `base_user_account` 的主键记录锁上，才允许提交并发事务。
+   * 观测能力由 `assertLockObservationCapability()` 在写入夹具前前置校验（缺失即失败关闭）。
+   */
+  const waitForTargetAccountRowLockWait = async (accountId: number): Promise<void> => {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const rows: Array<{ total?: number | string }> = await dataSource.query(
+        `SELECT COUNT(*) AS total
+           FROM performance_schema.data_lock_waits w
+           JOIN performance_schema.data_locks l
+             ON l.ENGINE = w.ENGINE
+            AND l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+          WHERE l.OBJECT_SCHEMA = DATABASE()
+            AND l.OBJECT_NAME = 'base_user_account'
+            AND l.LOCK_TYPE = 'RECORD'
+            AND l.LOCK_DATA = ?`,
+        [String(accountId)],
+      );
+      if (Number(rows[0]?.total ?? 0) > 0) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`未观测到重置请求等待目标账号 ${accountId} 的行锁`);
+  };
+
+  /**
+   * 五个管理员 operation 的调用闭包表：授权准入用例共用，避免漏测某个 operation。
+   /**
    * 六个管理员 operation 的调用闭包表：授权准入用例共用，避免漏测某个 operation。
    * token 位于首参且无默认值，确保「谁在调用」在用例里一目了然。
    */
@@ -1596,6 +1640,15 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
         const freshLogin = await loginWithRestriction(params.loginName, params.newPassword);
         expect(freshLogin.errors).toBeUndefined();
         expect(freshLogin.data?.login?.restriction).toBe(SessionRestriction.NONE);
+
+        // 此套件的遗留重置用例也会用原始合成凭据签发重置前 Token。
+        const freshToken = freshLogin.data?.login?.accessToken;
+        if (!freshToken) {
+          throw new Error('已完成强制改密的夹具未获得 accessToken');
+        }
+        const restored = await changeMyPassword(freshToken, params.newPassword, params.oldPassword);
+        expect(restored.errors).toBeUndefined();
+        expect(restored.data?.changeMyPassword?.isUpdated).toBe(true);
       };
 
       it('一级管理员可跨公司重置（B 公司账号）：强制改密链路完整', async () => {
@@ -1947,9 +2000,15 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
   });
 
   describe('密码重置 adminResetUserPassword（一级管理员成功路径）', () => {
-    it('ACTIVE 目标重置成功：结果只含固定三项、新密码可登录、旧密码立即失效、响应不含密码派生物', async () => {
+    it('ACTIVE 目标重置成功：新密码只能受限登录、本人改密后恢复完整会话、响应不含密码派生物', async () => {
       await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
       const hashBefore = (await readAccountRow(guestSecondaryAccountId))?.loginPassword;
+      // 重置前签发的 Token：用于核验每请求复核会读到新的强改标记（不声称服务端撤销了 Token）
+      const preResetToken = await login({
+        app,
+        loginName: testAccountsConfig.guestSecondary.loginName,
+        loginPassword: testAccountsConfig.guestSecondary.loginPassword,
+      });
 
       const body = await resetUserPassword(adminToken, {
         accountId: guestSecondaryAccountId,
@@ -1969,17 +2028,64 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(serialized).not.toContain(RESET_NEW_PASSWORD);
       expect(serialized).not.toContain(RESET_NEW_PASSWORD.toLowerCase());
 
-      // 口令哈希确实被改写，且不是明文
-      const hashAfter = (await readAccountRow(guestSecondaryAccountId))?.loginPassword;
+      // 口令哈希确实被改写，且不是明文；强制改密标记与哈希在同一事务内一并置位
+      const rowAfterReset = await readAccountRow(guestSecondaryAccountId);
+      const hashAfter = rowAfterReset?.loginPassword;
       expect(hashAfter).toBeTruthy();
       expect(hashAfter).not.toBe(hashBefore);
       expect(hashAfter ?? '').not.toContain(RESET_NEW_PASSWORD);
+      expect(rowAfterReset?.mustChangePassword).toBe(true);
 
-      // 新密码经公开登录入口可验证，并可访问受保护查询
+      // 新密码可通过公开登录入口验证，但会话被强制改密限制
+      const restrictedLogin = await attemptLogin(
+        testAccountsConfig.guestSecondary.loginName,
+        RESET_NEW_PASSWORD,
+        { allowRestrictedSession: true },
+      );
+      expect(restrictedLogin.errors).toBeUndefined();
+      expect(restrictedLogin.data?.login?.restriction).toBe(
+        SessionRestriction.MUST_CHANGE_PASSWORD,
+      );
+      const restrictedToken = restrictedLogin.data?.login?.accessToken;
+      if (typeof restrictedToken !== 'string') {
+        throw new Error('强制改密会话登录未返回 accessToken');
+      }
+
+      // 受限会话不能穿透到业务查询
+      const denied = await gql<{ userInfo?: { nickname?: string } }>({
+        query: USER_INFO_QUERY,
+        variables: { id: guestSecondaryAccountId },
+        token: restrictedToken,
+      });
+      expect(denied.data?.userInfo).toBeUndefined();
+      expect(denied.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(denied.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 重置前签发的 Token 仍能通过认证，但每请求复核读到新的强改标记后拒绝业务访问
+      const preResetAccess = await gql<{ userInfo?: { nickname?: string } }>({
+        query: USER_INFO_QUERY,
+        variables: { id: guestSecondaryAccountId },
+        token: preResetToken,
+      });
+      expect(preResetAccess.data?.userInfo).toBeUndefined();
+      expect(preResetAccess.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(preResetAccess.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 本人用重置出的初始凭据完成首次改密：真正换密并清除强改标记
+      const changed = await changeMyPassword(
+        restrictedToken,
+        RESET_NEW_PASSWORD,
+        RESET_FINAL_PASSWORD,
+      );
+      expect(changed.errors).toBeUndefined();
+      expect(changed.data?.changeMyPassword?.isUpdated).toBe(true);
+      expect((await readAccountRow(guestSecondaryAccountId))?.mustChangePassword).toBe(false);
+
+      // 完成改密后恢复 NONE，可访问受保护查询
       const freshToken = await login({
         app,
         loginName: testAccountsConfig.guestSecondary.loginName,
-        loginPassword: RESET_NEW_PASSWORD,
+        loginPassword: RESET_FINAL_PASSWORD,
       });
       const access = await gql<{ userInfo?: { nickname?: string } }>({
         query: USER_INFO_QUERY,
@@ -1989,16 +2095,23 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
       expect(access.errors).toBeUndefined();
       expect(access.data?.userInfo?.nickname).toBeTruthy();
 
-      // 旧密码立即失效
-      const staleLogin = await attemptLogin(
+      // 原始密码与管理员重置出的初始凭据均已失效
+      const staleSeedLogin = await attemptLogin(
         testAccountsConfig.guestSecondary.loginName,
         testAccountsConfig.guestSecondary.loginPassword,
       );
-      expect(staleLogin.data?.login?.accessToken).toBeFalsy();
-      expect(staleLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      expect(staleSeedLogin.data?.login?.accessToken).toBeFalsy();
+      expect(staleSeedLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      const staleResetLogin = await attemptLogin(
+        testAccountsConfig.guestSecondary.loginName,
+        RESET_NEW_PASSWORD,
+        { allowRestrictedSession: true },
+      );
+      expect(staleResetLogin.data?.login?.accessToken).toBeFalsy();
+      expect(staleResetLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     });
 
-    it('INACTIVE 目标（双字段一致）也允许重置，且不顺带改动状态双字段', async () => {
+    it('INACTIVE 目标（双字段一致）也允许重置，不顺带改动状态双字段，新密码仍被强制改密收口', async () => {
       await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.INACTIVE);
       expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
         accountStatus: AccountStatus.INACTIVE,
@@ -2016,15 +2129,118 @@ describe('管理员普通用户管理（任务 08.4）(e2e)', () => {
         accountStatus: AccountStatus.INACTIVE,
         userState: UserState.INACTIVE,
       });
+      expect((await readAccountRow(guestSecondaryAccountId))?.mustChangePassword).toBe(true);
 
-      // 恢复 ACTIVE 后，重置期间写入的新密码仍可登录
+      // 恢复 ACTIVE 后，重置期间写入的新密码可登录，但会话仍被强制改密限制
       await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
-      const token = await login({
-        app,
-        loginName: testAccountsConfig.guestSecondary.loginName,
-        loginPassword: RESET_INACTIVE_PASSWORD,
-      });
-      expect(token).toBeTruthy();
+      const loginBody = await attemptLogin(
+        testAccountsConfig.guestSecondary.loginName,
+        RESET_INACTIVE_PASSWORD,
+        { allowRestrictedSession: true },
+      );
+      expect(loginBody.errors).toBeUndefined();
+      expect(loginBody.data?.login?.restriction).toBe(SessionRestriction.MUST_CHANGE_PASSWORD);
+      expect(typeof loginBody.data?.login?.accessToken).toBe('string');
+    });
+
+    itLockObservation(
+      '并发转待审先提交：重置观察到目标行锁后按 PENDING 拒绝，哈希与强改标记不变',
+      async () => {
+        // 专项入口：先验证 PROCESS 与两张 performance_schema 锁表读取能力，
+        // 能力不足时在本用例状态准备（ensureStatus）之前失败关闭（零造数）。
+        await assertLockObservationCapability((sql: string) => dataSource.query(sql));
+        await ensureStatus(adminToken, guestSecondaryAccountId, AccountStatus.ACTIVE);
+        const before = await readAccountRow(guestSecondaryAccountId);
+        expect(before?.status).toBe(AccountStatus.ACTIVE);
+
+        const blocker = dataSource.createQueryRunner();
+        let request: Promise<GqlBody<{ adminResetUserPassword?: ResetPasswordPayload }>> | null =
+          null;
+        await blocker.connect();
+        await blocker.startTransaction();
+        try {
+          // 连接 A：双字段转 PENDING，持有目标账号行锁，暂不提交
+          await blocker.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
+            AccountStatus.PENDING,
+            guestSecondaryAccountId,
+          ]);
+          await blocker.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
+            UserState.PENDING,
+            guestSecondaryAccountId,
+          ]);
+
+          // 连接 B：合规管理员发起真实重置请求
+          request = resetUserPassword(adminToken, {
+            accountId: guestSecondaryAccountId,
+            newPassword: 'C0ncurrent#Reset2026',
+          });
+
+          // 先证明请求确实阻塞在目标账号的行锁上，再提交转待审（不以等待毫秒数代替该观测）
+          await waitForTargetAccountRowLockWait(guestSecondaryAccountId);
+          await blocker.commitTransaction();
+
+          const body = await request;
+          // 转待审先提交后，重置必须读到当前库状态并按既有状态规则失败关闭
+          expect(body.data?.adminResetUserPassword ?? null).toBeNull();
+          expectSingleError(
+            body,
+            'CONFLICT',
+            'ADMIN_USER_PASSWORD_RESET_TARGET_STATUS_NOT_ALLOWED',
+          );
+
+          // 拒绝发生在哈希生成与写入之前：原有哈希与强改标记逐字段不变
+          const after = await readAccountRow(guestSecondaryAccountId);
+          expect(after?.loginPassword).toBe(before?.loginPassword);
+          expect(after?.mustChangePassword).toBe(before?.mustChangePassword);
+          expect(await readDualStatus(guestSecondaryAccountId)).toEqual({
+            accountStatus: AccountStatus.PENDING,
+            userState: UserState.PENDING,
+          });
+        } finally {
+          if (blocker.isTransactionActive) {
+            await blocker.rollbackTransaction();
+          }
+          await blocker.release();
+          if (request !== null) {
+            // 断言失败路径也必须收敛在途请求，避免残留事务影响后续用例
+            await request.catch(() => undefined);
+          }
+          // 并发夹具不经过启停业务入口（其状态矩阵不接受 PENDING 起点），按双字段直接还原
+          await dataSource.query('UPDATE base_user_account SET status = ? WHERE id = ?', [
+            AccountStatus.ACTIVE,
+            guestSecondaryAccountId,
+          ]);
+          await dataSource.query('UPDATE base_user_info SET user_state = ? WHERE account_id = ?', [
+            UserState.ACTIVE,
+            guestSecondaryAccountId,
+          ]);
+        }
+      },
+    );
+
+    it('缺级操作者（同组织同级会话）被拒：FORBIDDEN 且密码哈希与强改标记零变化', async () => {
+      const before = await readAccountRow(guestSecondaryAccountId);
+      expect(before).toBeTruthy();
+
+      try {
+        await dataSource.query('UPDATE base_user_account SET admin_level = NULL WHERE id = ?', [
+          adminAccountId,
+        ]);
+        const body = await resetUserPassword(adminToken, {
+          accountId: guestSecondaryAccountId,
+          newPassword: 'N0Level#Reset2026',
+        });
+        expect(body.data?.adminResetUserPassword ?? null).toBeNull();
+        expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+        expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+      } finally {
+        await dataSource.query('UPDATE base_user_account SET admin_level = 1 WHERE id = ?', [
+          adminAccountId,
+        ]);
+      }
+
+      // 等级裁决先于目标锁：目标行逐字段不变（含密码哈希与强改标记）
+      expect(await readAccountRow(guestSecondaryAccountId)).toEqual(before);
     });
   });
 

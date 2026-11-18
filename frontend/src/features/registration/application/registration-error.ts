@@ -13,11 +13,10 @@
  */
 
 import { isGraphQLIngressError, readGraphQLErrorDetail } from '@/shared/graphql';
+import { createTranslator, type Translate } from '@/shared/i18n';
 
-import { DEFAULT_REGISTER_ERROR_MESSAGE } from './registration-input';
-
-const DUPLICATE_ACCOUNT_MESSAGE = '该登录邮箱或登录名已被注册，请更换后重试。';
-const INVALID_INPUT_MESSAGE = '提交信息有误，请检查后重新提交。';
+/** 未显式传入翻译器时的中文兜底（保持既有调用方与单测行为不变） */
+const DEFAULT_TRANSLATOR = createTranslator('zh-CN');
 
 export type RegistrationErrorMessages = {
   /** 所选公司失效时的可操作提示（各注册类型对后续动作不同） */
@@ -27,11 +26,10 @@ export type RegistrationErrorMessages = {
 export function resolveRegistrationErrorMessage(
   error: unknown,
   messages: RegistrationErrorMessages,
+  t: Translate = DEFAULT_TRANSLATOR,
 ): string {
   if (!isGraphQLIngressError(error)) {
-    return error instanceof Error && error.message.trim()
-      ? error.message
-      : DEFAULT_REGISTER_ERROR_MESSAGE;
+    return error instanceof Error && error.message.trim() ? error.message : t('register.failed');
   }
 
   if (error.type === 'network' || error.type === 'http' || error.type === 'malformed') {
@@ -41,11 +39,11 @@ export function resolveRegistrationErrorMessage(
   const detail = readGraphQLErrorDetail(error);
 
   if (!detail) {
-    return DEFAULT_REGISTER_ERROR_MESSAGE;
+    return t('register.failed');
   }
 
   if (detail.code === 'CONFLICT') {
-    return DUPLICATE_ACCOUNT_MESSAGE;
+    return t('register.duplicate');
   }
 
   if (detail.code === 'BAD_USER_INPUT') {
@@ -56,8 +54,8 @@ export function resolveRegistrationErrorMessage(
 
     // 生产环境只保留大类码：字段校验失败（密码强度、格式等）统一用通用输入文案，
     // 不能借用公司文案，否则会把密码问题误报成公司问题
-    return detail.errorMessage ?? INVALID_INPUT_MESSAGE;
+    return detail.errorMessage ?? t('register.invalidInput');
   }
 
-  return DEFAULT_REGISTER_ERROR_MESSAGE;
+  return t('register.failed');
 }

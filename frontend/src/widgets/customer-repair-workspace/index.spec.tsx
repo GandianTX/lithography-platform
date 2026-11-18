@@ -222,7 +222,12 @@ function renderWorkspace(props: {
 
 beforeEach(() => {
   authViewMock.mockReturnValue({
-    session: { accountId: 900101, role: 'CUSTOMER', userInfo: null },
+    session: {
+      accountId: 900101,
+      customerOrganizationId: 7001,
+      role: 'CUSTOMER',
+      userInfo: null,
+    },
     status: 'authenticated',
   });
   detailFlowCalls.length = 0;
@@ -578,6 +583,36 @@ describe('CustomerRepairWorkspace 的创建页信息架构', () => {
     expect(screen.queryByText('填写提示')).toBeNull();
     expect(container.querySelector('.customer-workspace-detail-pane aside')).toBeNull();
     expect(screen.getByTestId('mock-repair-request-form')).toBeTruthy();
+  });
+
+  // S4 归属门禁：缺公司归属只在表单上方引导补录，不隐藏表单（以服务端判定为准）
+  it('客户归属为空时在表单上方展示补录引导，并可跳转账号设置', () => {
+    authViewMock.mockReturnValue({
+      session: {
+        accountId: 900101,
+        customerOrganizationId: null,
+        role: 'CUSTOMER',
+        userInfo: null,
+      },
+      status: 'authenticated',
+    });
+    setupReadyList();
+    renderWorkspace({ mode: 'create' });
+
+    expect(screen.getByText('请先在账号设置中补充公司信息。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '前往账号设置' }));
+
+    expect(navigateMock).toHaveBeenCalledWith('/account/settings');
+    // 表单仍挂载：门禁裁决留给服务端，前端不以会话事实替代授权
+    expect(screen.getByTestId('mock-repair-request-form')).toBeTruthy();
+  });
+
+  it('客户已有归属时不展示补录引导', () => {
+    setupReadyList();
+    renderWorkspace({ mode: 'create' });
+
+    expect(screen.queryByText('请先在账号设置中补充公司信息。')).toBeNull();
+    expect(screen.queryByRole('button', { name: '前往账号设置' })).toBeNull();
   });
 });
 

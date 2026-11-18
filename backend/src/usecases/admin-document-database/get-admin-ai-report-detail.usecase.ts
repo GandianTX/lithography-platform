@@ -5,7 +5,8 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiReportDetailView } from '@src/modules/lithography/admin-document-database.types';
 import { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
-import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { assertAdminDocumentDatabaseGlobalAccess } from './admin-document-database-permission';
 import { assertPositiveId } from './admin-document-database-filter.normalize';
 import { enrichAdminAiReportDetail } from './enrich-admin-account-display';
 
@@ -23,13 +24,19 @@ export class GetAdminAiReportDetailUsecase {
   constructor(
     private readonly adminAiReportQueryService: AdminAiReportQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextService: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
     session: UsecaseSession;
     reportId: number;
   }): Promise<AdminAiReportDetailView> {
-    assertAdminDocumentDatabasePermission(params.session, '查看 AI 报告详情');
+    await assertAdminDocumentDatabaseGlobalAccess({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      organizationContextService: this.organizationContextService,
+      actionLabel: '查看 AI 报告详情',
+    });
     assertPositiveId(params.reportId, 'AI 报告 ID', 'reportId');
 
     const result = await this.adminAiReportQueryService.findDetailById(params.reportId);

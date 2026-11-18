@@ -40,14 +40,20 @@ export const ACCOUNT_SETTINGS_STATUS_LABELS: Record<AccountSettingsStatus, strin
 
 /** 当前账号设置的稳定读视图（与后端 myAccountSettings 契约同形，不含 accountId） */
 export type AccountSettingsView = {
+  /** 账号等级；null 表示未设置，展示层以占位符呈现 */
+  adminLevel: number | null;
   companyName: string | null;
   contactEmail: string | null;
   loginEmail: string | null;
   loginName: string | null;
   nickname: string;
   phone: string | null;
+  /** 本人姓名；null 表示未设置 */
+  realName: string | null;
   role: AccountSettingsRole;
   status: AccountSettingsStatus;
+  /** 账号归属公司（由后端账号归属决定，页面只读展示） */
+  trustedCompanyName: string | null;
   /** 后端 Date 标量序列化为 ISO 字符串；展示层经 shared formatDateTimeText 兜底 */
   updatedAt: string;
 };
@@ -59,12 +65,10 @@ export type AccountSettingsView = {
  * - `string`：设置该字段（已 trim 的非空值）。
  */
 export type AccountSettingsProfileDraft = {
-  companyName?: string | null;
   contactEmail?: string | null;
-  loginEmail?: string | null;
-  loginName?: string | null;
   nickname?: string;
   phone?: string | null;
+  realName?: string | null;
 };
 
 export type AccountSettingsProfileFailureReason =
@@ -105,3 +109,45 @@ export type ChangeMyPasswordOutcome =
 export type ChangeMyPasswordResult =
   | { initiatedIdentity: ChangePasswordSessionIdentity | null; notice: string; ok: true }
   | { message: string; ok: false; reason: ChangeMyPasswordFailureReason };
+
+/**
+ * 缺归属客户补录公司的二选一草稿（与后端 Mutation 入参一一对应）：
+ * - `existing`：从名单内受管公司中选定一个组织 ID；
+ * - `self-filled`：手填自家公司名称（同名不自动合并，后端回带同名提示）。
+ */
+export type CustomerCompanySupplementDraft =
+  | { kind: 'existing'; organizationId: number }
+  | { kind: 'self-filled'; organizationName: string };
+
+export type CustomerCompanySupplementFailureReason =
+  | 'already-bound'
+  | 'organization-not-available'
+  | 'invalid-input'
+  | 'forbidden'
+  | 'update-failed';
+
+/**
+ * 补录结果：成功时携带后端权威视图与（可选）同名提示；失败时给出稳定原因与文案。
+ * 幂等命中（已归属且选择同一候选）同样以 `ok: true` + `isUpdated: false` 返回。
+ */
+export type CustomerCompanySupplementResult =
+  | {
+      isUpdated: boolean;
+      ok: true;
+      sameNamedCompanyName: string | null;
+      settings: AccountSettingsView;
+    }
+  | { message: string; ok: false; reason: CustomerCompanySupplementFailureReason };
+
+/** 名单内受管公司候选（与注册入口同一资格：ACTIVE 且受管） */
+export type ManagedCompanyOption = {
+  id: number;
+  name: string;
+};
+
+export type ManagedCompanyPage = {
+  items: ManagedCompanyOption[];
+  page: number;
+  pageSize: number;
+  total: number;
+};

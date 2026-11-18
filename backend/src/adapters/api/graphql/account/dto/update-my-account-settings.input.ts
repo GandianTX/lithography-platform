@@ -80,6 +80,16 @@ export class UpdateMyAccountSettingsInput {
   @IsNotEmpty({ message: '昵称不能为空' })
   nickname?: string;
 
+  @Field(() => String, {
+    description: '真实姓名（不传 = 不修改，null / 空白 = 清空，字符串 = 设置）',
+    nullable: true,
+  })
+  @IsOptional()
+  @Transform(({ value }: TransformFnParams) => trimTextPure(value))
+  @IsString({ message: '真实姓名必须是字符串' })
+  @MaxLength(200, { message: '真实姓名长度不能超过 200 个字符' })
+  realName?: string | null;
+
   @Field(() => String, { description: '公司名称（不传 = 不修改，null = 清空）', nullable: true })
   @IsOptional()
   @Transform(({ value }: TransformFnParams) => trimTextPure(value))

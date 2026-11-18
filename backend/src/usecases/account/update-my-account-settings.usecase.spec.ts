@@ -15,12 +15,14 @@ import type {
 } from '@src/modules/account/account.types';
 import type { AccountService } from '@src/modules/account/base/services/account.service';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import type { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import type { PinoLogger } from 'nestjs-pino';
 import {
   captureThrownError,
   createFakeTransactionHarness,
 } from '../../../test/support/account/admin-user.fixture';
 import { UpdateMyAccountSettingsUsecase } from './update-my-account-settings.usecase';
+import type { MyAccountTrustedOrganizationFacts } from './my-account-settings.types';
 
 /**
  * P2：`UpdateMyAccountSettingsUsecase` 的目标来源、凭据组合裁决、三态写入与原子性。
@@ -50,6 +52,7 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     loginName: string | null;
     loginEmail: string | null;
     nickname: string;
+    realName: string | null;
     companyName: string | null;
     phone: string | null;
     contactEmail: string | null;
@@ -59,6 +62,7 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     loginName: 'self_user',
     loginEmail: 'self@example.com',
     nickname: 'self_nickname',
+    realName: '张三',
     companyName: '示例公司',
     phone: '13800000000',
     contactEmail: 'contact@example.com',
@@ -79,6 +83,10 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     findMyAccountSettingsSnapshot: jest.fn(),
   } as unknown as AccountQueryService;
 
+  const organizationQueryService = {
+    findOrganizationNameById: jest.fn(),
+  } as unknown as OrganizationQueryService;
+
   const logger = {
     setContext: jest.fn(),
     info: jest.fn(),
@@ -89,6 +97,7 @@ describe('UpdateMyAccountSettingsUsecase', () => {
   const usecase = new UpdateMyAccountSettingsUsecase(
     accountService,
     accountQueryService,
+    organizationQueryService,
     logger,
     harness.transactionRunner,
   );
@@ -100,11 +109,24 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     ...overrides,
   });
 
-  /** 执行入口：六个字段必须显式给出，`undefined` 才表达「未提供」 */
+  /** 请求期会话解析出的可信组织事实：本文件快照角色固定为 CUSTOMER */
+  const trustedOrganizations: MyAccountTrustedOrganizationFacts = {
+    customerOrganizationId: 11,
+    engineerOrganizationId: 22,
+    adminOrganizationId: 33,
+  };
+
+  /** 执行入口：七个字段必须显式给出，`undefined` 才表达「未提供」 */
   const execute = (
     fields: Partial<
       Record<
-        'loginName' | 'loginEmail' | 'nickname' | 'companyName' | 'phone' | 'contactEmail',
+        | 'loginName'
+        | 'loginEmail'
+        | 'nickname'
+        | 'realName'
+        | 'companyName'
+        | 'phone'
+        | 'contactEmail',
         unknown
       >
     > = {},
@@ -114,9 +136,11 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     usecase.execute({
       session: session(overrides),
       restriction,
+      trustedOrganizations,
       loginName: fields.loginName,
       loginEmail: fields.loginEmail,
       nickname: fields.nickname,
+      realName: fields.realName,
       companyName: fields.companyName,
       phone: fields.phone,
       contactEmail: fields.contactEmail,
@@ -127,6 +151,7 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     ...source,
     role: IdentityTypeEnum.CUSTOMER,
     status: AccountStatus.ACTIVE,
+    adminLevel: null,
     updatedAt: UPDATED_AT,
   });
 
@@ -170,6 +195,7 @@ describe('UpdateMyAccountSettingsUsecase', () => {
         order.push('WRITE_PROFILE');
         const patch = params.patch;
         if ('nickname' in patch) row.nickname = patch.nickname as string;
+        if ('realName' in patch) row.realName = patch.realName as string | null;
         if ('companyName' in patch) row.companyName = patch.companyName as string | null;
         if ('phone' in patch) row.phone = patch.phone as string | null;
         // 联系邮箱的实体列名是 email，协议名仍是 contactEmail
@@ -188,6 +214,9 @@ describe('UpdateMyAccountSettingsUsecase', () => {
         order.push('READ_BACK');
         return Promise.resolve(snapshotOf(row));
       });
+    (organizationQueryService.findOrganizationNameById as jest.Mock)
+      .mockReset()
+      .mockResolvedValue('可信公司');
   });
 
   describe('目标账号只来自 Session', () => {
@@ -258,12 +287,18 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     it.each([
       ['公司名称（字符串）', { companyName: '伪造公司' }, ['companyName']],
       ['公司名称（显式 null）', { companyName: null }, ['companyName']],
+      ['真实姓名', { realName: '伪造姓名' }, ['realName']],
       ['登录名（显式 null）', { loginName: null }, ['loginName']],
       ['登录邮箱', { loginEmail: 'other@example.com' }, ['loginEmail']],
       [
         '合法字段与越界字段混传',
-        { nickname: 'renamed', companyName: '伪造公司', loginName: 'other_login' },
-        ['loginName', 'companyName'],
+        {
+          nickname: 'renamed',
+          realName: '伪造姓名',
+          companyName: '伪造公司',
+          loginName: 'other_login',
+        },
+        ['loginName', 'realName', 'companyName'],
       ],
     ])('受限会话提交 %s 整体拒绝且零写入', async (_label, fields, rejectedFields) => {
       const error = await captureThrownError(
@@ -437,11 +472,12 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     });
   });
 
-  describe('六字段三态语义', () => {
+  describe('七字段三态语义', () => {
     it('undefined = 不修改：未提供的字段既不进资料 patch 也不改写凭据', async () => {
       await execute({ nickname: 'renamed' });
 
       expect(capturedPatch()).toEqual({ nickname: 'renamed' });
+      expect(capturedPatch()).not.toHaveProperty('realName');
       expect(capturedPatch()).not.toHaveProperty('companyName');
       expect(capturedPatch()).not.toHaveProperty('phone');
       expect(capturedPatch()).not.toHaveProperty('email');
@@ -449,9 +485,34 @@ describe('UpdateMyAccountSettingsUsecase', () => {
     });
 
     it('null = 清空：可空字段写 NULL，与「未提供」区分对待', async () => {
-      await execute({ companyName: null, phone: null, contactEmail: null });
+      await execute({ realName: null, companyName: null, phone: null, contactEmail: null });
 
-      expect(capturedPatch()).toEqual({ companyName: null, phone: null, email: null });
+      expect(capturedPatch()).toEqual({
+        realName: null,
+        companyName: null,
+        phone: null,
+        email: null,
+      });
+    });
+
+    it('真实姓名 string = 设置：trim 后写入 realName 列', async () => {
+      const outcome = await execute({ realName: '  李四  ' });
+
+      expect(capturedPatch()).toEqual({ realName: '李四' });
+      expect(outcome.settings.realName).toBe('李四');
+    });
+
+    it('真实姓名同值提交不写库', async () => {
+      const outcome = await execute({ realName: '张三' });
+
+      expect(outcome.isUpdated).toBe(false);
+      expect(accountService.updateUserInfoFields).not.toHaveBeenCalled();
+    });
+
+    it('真实姓名空白字符串 = 清空', async () => {
+      await execute({ realName: '   ' });
+
+      expect(capturedPatch()).toEqual({ realName: null });
     });
 
     it('string = 设置：归一后的新值写入，contactEmail 落到实体列 email', async () => {
@@ -547,11 +608,14 @@ describe('UpdateMyAccountSettingsUsecase', () => {
         loginName: 'self_user',
         loginEmail: 'self@example.com',
         nickname: 'self_nickname',
+        realName: '张三',
         companyName: '示例公司',
+        trustedCompanyName: '可信公司',
         phone: '13800000000',
         contactEmail: 'contact@example.com',
         role: IdentityTypeEnum.CUSTOMER,
         status: AccountStatus.ACTIVE,
+        adminLevel: null,
         updatedAt: UPDATED_AT,
       });
       expect(logger.info).toHaveBeenCalledWith(
@@ -589,6 +653,10 @@ describe('UpdateMyAccountSettingsUsecase', () => {
       });
       expect(accountQueryService.findMyAccountSettingsSnapshot).toHaveBeenCalledWith({
         accountId: ACCOUNT_ID,
+        transactionContext: harness.txContext,
+      });
+      expect(organizationQueryService.findOrganizationNameById).toHaveBeenCalledWith({
+        organizationId: 11,
         transactionContext: harness.txContext,
       });
       expect(harness.isCommitted()).toBe(true);
@@ -664,6 +732,21 @@ describe('UpdateMyAccountSettingsUsecase', () => {
       expect(logger.info).not.toHaveBeenCalled();
     });
 
+    it('写后回读未反映 realName 写入时按写失败关闭并回滚', async () => {
+      (accountQueryService.findMyAccountSettingsSnapshot as jest.Mock).mockResolvedValue(
+        snapshotOf(initialRow()),
+      );
+
+      const error = await captureThrownError(execute({ realName: '李四' }));
+
+      expect(error).toMatchObject({
+        code: ADMIN_USER_ERROR.WRITE_FAILED,
+        cause: { diagnostic: 'SETTINGS_NOT_REFLECTED_AFTER_WRITE', accountId: ACCOUNT_ID },
+      });
+      expect(harness.isRolledBack()).toBe(true);
+      expect(harness.isCommitted()).toBe(false);
+    });
+
     it('回读抛出领域异常（三源角色不收敛）时原样冒泡，不改写错误码', async () => {
       (accountQueryService.findMyAccountSettingsSnapshot as jest.Mock).mockRejectedValue(
         Object.assign(new Error('boom'), {
@@ -695,18 +778,21 @@ describe('UpdateMyAccountSettingsUsecase', () => {
   });
 
   describe('公开 View 与只读字段边界', () => {
-    it('返回的 View 只含九个公开字段，不含 accountId 与任何敏感 / 内部字段', async () => {
+    it('返回的 View 只含十二个公开字段，不含 accountId 与任何敏感 / 内部字段', async () => {
       const { settings } = await execute({ nickname: 'renamed' });
 
       expect(Object.keys(settings).sort()).toEqual([
+        'adminLevel',
         'companyName',
         'contactEmail',
         'loginEmail',
         'loginName',
         'nickname',
         'phone',
+        'realName',
         'role',
         'status',
+        'trustedCompanyName',
         'updatedAt',
       ]);
       for (const forbidden of [

@@ -172,7 +172,72 @@ export function isAuthSessionRoleAllowedAt(role: AuthSessionRole, path: string):
 export type AuthSessionRoleCarrier = Pick<AuthSessionSnapshot, 'role'> & {
   /** 可选：仅做路由决策的既有调用方可不携带，缺省视为正常会话 */
   restriction?: AuthSessionRestriction;
+  /** 可选：缺省视为无等级（不能进入全域管理路径） */
+  adminLevel?: number | null;
+  /** 可选：2 级管理员的本公司归属，缺省视为不可信 */
+  adminOrganizationId?: number | null;
 };
+
+/**
+ * 一级平台管理员可进入任务 08 管理页；具备可信管理员组织时另可进入文档数据库。
+ * 二级管理员必须具备可信公司归属，具体读写范围仍由服务端在请求期裁决。
+ */
+export type AuthSessionAdminScope = 'GLOBAL' | 'PLATFORM' | 'ORGANIZATION' | 'NONE';
+
+export function resolveAuthSessionAdminScope(
+  session: AuthSessionRoleCarrier,
+): AuthSessionAdminScope {
+  if (session.role !== 'SUPER_ADMIN') {
+    return 'NONE';
+  }
+
+  const hasTrustedOrganization = normalizeNullableIdentityId(session.adminOrganizationId) !== null;
+
+  if (session.adminLevel === 1) {
+    return hasTrustedOrganization ? 'GLOBAL' : 'PLATFORM';
+  }
+
+  if (session.adminLevel === 2) {
+    return hasTrustedOrganization ? 'ORGANIZATION' : 'NONE';
+  }
+
+  // 缺等级与非法等级（0/3/非整数）一律不升级
+  return 'NONE';
+}
+
+// 任务 08 允许一级平台管理员访问管理页，二级按可信公司范围访问。
+// 文档数据库仍要求一级且具有可信管理员组织，与该聚合能力的服务端守卫一致。
+const AUTH_SESSION_ADMIN_MANAGEMENT_PATHS: readonly string[] = [
+  '/admin/orders',
+  '/admin/users',
+  '/admin/companies',
+  '/admin/engineer-registrations',
+];
+
+export function isAuthSessionAdminPathAllowedAt(
+  scope: AuthSessionAdminScope,
+  pathname: string,
+): boolean {
+  if (isAuthSessionRolePathAllowed(pathname, '/admin/document-database')) {
+    return scope === 'GLOBAL';
+  }
+
+  if (
+    AUTH_SESSION_ADMIN_MANAGEMENT_PATHS.some((path) => isAuthSessionRolePathAllowed(pathname, path))
+  ) {
+    return scope !== 'NONE';
+  }
+
+  return true;
+}
+
+// 直达路由与导航可见性复用同一份管理范围判断。
+function isAuthSessionPathAllowed(session: AuthSessionRoleCarrier, pathname: string): boolean {
+  return (
+    isAuthSessionRoleAllowedAt(session.role, pathname) &&
+    isAuthSessionAdminPathAllowedAt(resolveAuthSessionAdminScope(session), pathname)
+  );
+}
 
 // 受限会话判定：restriction 非 NONE 时只允许访问 /restricted。
 // 未携带 restriction 的载体（策略函数的既有调用点）按正常会话处理。
@@ -194,7 +259,7 @@ export function resolveAuthSessionEntryPath(
 
   const safeReturnTo = resolveSafeReturnTo(returnToCandidate);
 
-  if (safeReturnTo && isAuthSessionRoleAllowedAt(session.role, extractUrlPathname(safeReturnTo))) {
+  if (safeReturnTo && isAuthSessionPathAllowed(session, extractUrlPathname(safeReturnTo))) {
     return safeReturnTo;
   }
 
@@ -236,7 +301,9 @@ export function resolveProtectedRouteRedirect(
     return resolveAuthSessionHomePath(session.role);
   }
 
-  if (!isAuthSessionRoleAllowedAt(session.role, requestedPathname)) {
+  // 角色与管理范围共同决定放行：2 级管理员或未知等级直达全域管理路径时
+  // 与导航同语义地退回管理员主页
+  if (!isAuthSessionPathAllowed(session, requestedPathname)) {
     return resolveAuthSessionHomePath(session.role);
   }
 

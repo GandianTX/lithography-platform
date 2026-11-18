@@ -5,7 +5,8 @@
  * 基础资料表单 UI 单测。
  *
  * 走真实组件与真实 antd 校验规则，onSubmit 由测试注入：验证昵称必填守卫、
- * 四字段三态草稿构造（空 → null、非空 trim）、成功 / 未变化两种提示、
+ * 四字段三态草稿构造（空 → null、非空 trim、姓名三态）、公司只读展示、
+ * 受限模式下不渲染也不提交姓名/公司、成功 / 未变化两种提示、
  * 「联系邮箱不是登录凭据」的界面口径，以及 editVersionRef 陈旧响应守卫。
  */
 
@@ -23,14 +24,17 @@ import type { AccountSettingsCommandExecution } from '../application/use-account
 import { AccountProfileForm } from './account-profile-form';
 
 const SETTINGS: AccountSettingsView = {
+  adminLevel: 2,
   companyName: '示例公司',
   contactEmail: 'contact@example.com',
   loginEmail: 'self@example.com',
   loginName: 'self_user',
   nickname: '陈工',
   phone: '13800000000',
+  realName: '张三',
   role: 'ENGINEER',
   status: 'ACTIVE',
+  trustedCompanyName: '可信公司',
   updatedAt: '2026-01-01T08:00:00.000Z',
 };
 
@@ -114,18 +118,34 @@ describe('AccountProfileForm 客户端校验与草稿构造', () => {
     const onSubmit = vi.fn().mockResolvedValue(successResult());
     renderForm(onSubmit);
 
+    fill('姓名', '  李四  ');
     fill('昵称', '  新昵称  ');
-    fill('公司名称', '');
     fill('电话', '   ');
     fill('联系邮箱（非登录凭据）', 'new-contact@example.com');
     fireEvent.click(getSubmitButton());
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit).toHaveBeenCalledWith({
-      companyName: null,
       contactEmail: 'new-contact@example.com',
       nickname: '新昵称',
       phone: null,
+      realName: '李四',
+    });
+  });
+
+  it('姓名可清空：空输入按三态语义提交 null', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(successResult({ realName: null }));
+    renderForm(onSubmit);
+
+    fill('姓名', '   ');
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith({
+      contactEmail: 'contact@example.com',
+      nickname: '陈工',
+      phone: '13800000000',
+      realName: null,
     });
   });
 
@@ -144,10 +164,10 @@ describe('AccountProfileForm 客户端校验与草稿构造', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit).toHaveBeenCalledWith({
-      companyName: '示例公司',
       contactEmail: 'new-contact@example.com',
       nickname: '陈工',
       phone: '13800000000',
+      realName: '张三',
     });
     expect(screen.queryByText('联系邮箱格式不正确')).not.toBeInTheDocument();
   });
@@ -161,10 +181,10 @@ describe('AccountProfileForm 客户端校验与草稿构造', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit).toHaveBeenCalledWith({
-      companyName: '示例公司',
       contactEmail: null,
       nickname: '陈工',
       phone: '13800000000',
+      realName: '张三',
     });
     expect(screen.queryByText('联系邮箱格式不正确')).not.toBeInTheDocument();
   });
@@ -177,11 +197,33 @@ describe('AccountProfileForm 客户端校验与草稿构造', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit).toHaveBeenCalledWith({
-      companyName: '示例公司',
       contactEmail: 'contact@example.com',
       nickname: '陈工',
       phone: '13800000000',
+      realName: '张三',
     });
+  });
+
+  it('公司只读展示后端归属结果，不提供编辑控件，草稿不含公司字段', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(successResult());
+    renderForm(onSubmit);
+
+    expect(screen.getByText('可信公司')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '公司由账号归属决定；未关联时请在下方「公司信息」中补充，变更请联系管理员。',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('公司')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: /公司/ })).toBeNull();
+
+    fill('昵称', '新昵称');
+    fireEvent.click(getSubmitButton());
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const draft = onSubmit.mock.calls[0]?.[0] as AccountSettingsProfileDraft;
+
+    expect(draft).not.toHaveProperty('companyName');
   });
 
   it('联系邮箱不用于登录：界面明示口径，草稿中不含任何登录凭据字段', async () => {
@@ -197,22 +239,29 @@ describe('AccountProfileForm 客户端校验与草稿构造', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     const draft = onSubmit.mock.calls[0]?.[0] as AccountSettingsProfileDraft;
 
-    expect(Object.keys(draft).sort()).toEqual(['companyName', 'contactEmail', 'nickname', 'phone']);
+    expect(Object.keys(draft).sort()).toEqual(['contactEmail', 'nickname', 'phone', 'realName']);
     expect(draft).not.toHaveProperty('loginName');
     expect(draft).not.toHaveProperty('loginEmail');
   });
 });
 
 describe('AccountProfileForm 受限会话模式', () => {
-  it('公司名称只读展示可信申请结果，提交草稿不含 companyName 键', async () => {
+  it('不渲染姓名编辑控件，公司只读展示可信归属结果', () => {
+    renderForm(vi.fn(), 'restricted');
+
+    expect(screen.queryByLabelText('姓名')).toBeNull();
+    expect(screen.getByText('可信公司')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '公司由账号归属决定；未关联时请在下方「公司信息」中补充，变更请联系管理员。',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('公司')).toBeNull();
+  });
+
+  it('提交草稿不含 realName 与 companyName 键，只提交昵称、电话与联系邮箱', async () => {
     const onSubmit = vi.fn().mockResolvedValue(successResult());
     renderForm(onSubmit, 'restricted');
-
-    expect(screen.getByLabelText('公司名称')).toBeDisabled();
-    expect(screen.getByLabelText('公司名称')).toHaveValue('示例公司');
-    expect(
-      screen.getByText('公司名称由注册申请审核结果决定，如需变更请联系管理员。'),
-    ).toBeInTheDocument();
 
     fill('昵称', '新昵称');
     fireEvent.click(getSubmitButton());
@@ -225,12 +274,13 @@ describe('AccountProfileForm 受限会话模式', () => {
       nickname: '新昵称',
       phone: '13800000000',
     });
+    expect(draft).not.toHaveProperty('realName');
     expect(draft).not.toHaveProperty('companyName');
     expect(draft).not.toHaveProperty('loginName');
     expect(draft).not.toHaveProperty('loginEmail');
   });
 
-  it('清空电话与联系邮箱只提交 null，不夹带公司字段的空值', async () => {
+  it('清空电话与联系邮箱只提交 null，不夹带姓名字段的空值', async () => {
     const onSubmit = vi.fn().mockResolvedValue(successResult());
     renderForm(onSubmit, 'restricted');
 
@@ -246,20 +296,8 @@ describe('AccountProfileForm 受限会话模式', () => {
       nickname: '陈工',
       phone: null,
     });
+    expect(draft).not.toHaveProperty('realName');
     expect(draft).not.toHaveProperty('companyName');
-  });
-
-  it('保存成功后以后端权威公司值回写只读展示', async () => {
-    const { onSubmit, resolve } = deferredSubmit();
-    renderForm(onSubmit, 'restricted');
-
-    fill('昵称', '新昵称');
-    fireEvent.click(getSubmitButton());
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-
-    resolve(successResult({ companyName: '审核通过公司', nickname: '新昵称' }));
-
-    await waitFor(() => expect(screen.getByLabelText('公司名称')).toHaveValue('审核通过公司'));
   });
 });
 
@@ -291,12 +329,14 @@ describe('AccountProfileForm 提交结果处理', () => {
     });
     renderForm(onSubmit);
 
+    fill('姓名', '被拒绝的姓名');
     fill('昵称', '被拒绝的昵称');
     fill('电话', '123');
     fireEvent.click(getSubmitButton());
 
     expect(await screen.findByText('输入不符合要求，请检查后重新提交。')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('输入不符合要求，请检查后重新提交。');
+    expect(screen.getByLabelText('姓名')).toHaveValue('被拒绝的姓名');
     expect(screen.getByLabelText('昵称')).toHaveValue('被拒绝的昵称');
     expect(screen.getByLabelText('电话')).toHaveValue('123');
     expect(message.success).not.toHaveBeenCalled();
@@ -310,7 +350,7 @@ describe('AccountProfileForm 失败与重复提交边界', () => {
       .mockResolvedValue({ kind: 'unhandled-error', message: '网络连接异常，请稍后重试。' });
     renderForm(onSubmit);
 
-    fill('公司名称', '新公司');
+    fill('姓名', '新姓名');
     fireEvent.click(getSubmitButton());
 
     expect(await screen.findByText('网络连接异常，请稍后重试。')).toBeInTheDocument();
@@ -359,18 +399,18 @@ describe('AccountProfileForm 编辑版本守卫', () => {
     expect(screen.getByLabelText('电话')).toHaveValue('13900000000');
   });
 
-  it('请求期间没有继续输入时，把后端归一结果回写表单', async () => {
+  it('请求期间没有继续输入时，把后端归一结果回写表单（含姓名）', async () => {
     const { onSubmit, resolve } = deferredSubmit();
     renderForm(onSubmit);
 
-    fill('公司名称', '  归一公司  ');
+    fill('姓名', '  归一姓名  ');
     fill('电话', '');
     fireEvent.click(getSubmitButton());
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
 
-    resolve(successResult({ companyName: '归一公司', phone: null }));
+    resolve(successResult({ phone: null, realName: '归一姓名' }));
 
-    await waitFor(() => expect(screen.getByLabelText('公司名称')).toHaveValue('归一公司'));
+    await waitFor(() => expect(screen.getByLabelText('姓名')).toHaveValue('归一姓名'));
     expect(screen.getByLabelText('电话')).toHaveValue('');
   });
 });

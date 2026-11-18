@@ -1,8 +1,9 @@
 // src/features/account-settings/ui/account-profile-form.tsx
 
 /**
- * 基础资料区块：昵称（必填）、公司名称、电话与联系邮箱的编辑表单。
+ * 基础资料区块：姓名（可选）、昵称（必填）、电话与联系邮箱的编辑表单。
  *
+ * 公司由账号归属决定，本表单只读展示，不提供编辑控件，也不提交公司字段。
  * 联系邮箱不用于登录，与账号信息区块的「登录邮箱」严格区分；其格式校验**先 trim 再判断**，
  * 与后端「先 `@Transform(trimTextPure)` 再 `@IsEmail`」同序（trim 只作用于校验值，
  * 不改写用户输入过程中的显示值）。
@@ -14,8 +15,9 @@
  */
 
 import { useRef, useState } from 'react';
-import { Alert, Form, Input, message } from 'antd';
+import { Alert, Form, Input, message, Typography } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
 import { PrimaryButton } from '@/shared/ui/buttons';
 
 import type {
@@ -27,9 +29,10 @@ import type { AccountSettingsCommandExecution } from '../application/use-account
 
 type AccountProfileFormProps = {
   /**
-   * `full`（默认）：账号设置页，可维护公司名称；
-   * `restricted`：受限会话页，公司名称只读展示可信申请结果，提交草稿只含昵称、电话与
-   * 联系邮箱——不得附带旧公司值、`null` 或其他只读字段（后端白名单对越界字段整体拒绝）。
+   * `full`（默认）：账号设置页，可维护姓名、昵称、电话与联系邮箱；
+   * `restricted`：受限会话页，不渲染也不提交姓名，公司只读展示可信归属结果，
+   * 提交草稿只含昵称、电话与联系邮箱——不得附带公司值、`null` 或其他只读字段
+   * （后端白名单对越界字段整体拒绝）。
    */
   mode?: 'full' | 'restricted';
   onSubmit: (
@@ -40,10 +43,10 @@ type AccountProfileFormProps = {
 };
 
 type AccountProfileFormValues = {
-  companyName: string;
   contactEmail: string;
   nickname: string;
   phone: string;
+  realName: string;
 };
 
 /** 表单空输入 → 三态草稿的 null（清空）；非空 trim 后设置 */
@@ -59,6 +62,7 @@ export function AccountProfileForm({
   settings,
   submitting,
 }: AccountProfileFormProps) {
+  const { t } = useI18n();
   const [form] = Form.useForm<AccountProfileFormValues>();
   const [submitError, setSubmitError] = useState<string | null>(null);
   const editVersionRef = useRef(0);
@@ -74,9 +78,9 @@ export function AccountProfileForm({
       phone: toOptionalDraftValue(values.phone),
     };
 
-    // 受限会话：公司名称由注册申请审核结果决定，提交草稿中不出现该键
+    // 受限会话：姓名不在可维护范围内，提交草稿中不出现该键
     if (!isRestricted) {
-      draft.companyName = toOptionalDraftValue(values.companyName);
+      draft.realName = toOptionalDraftValue(values.realName);
     }
 
     const execution = await onSubmit(draft);
@@ -97,15 +101,15 @@ export function AccountProfileForm({
       return;
     }
 
-    message.success(result.isUpdated ? '基础资料已保存。' : '基础资料未发生变化。');
+    message.success(result.isUpdated ? t('account.saved') : t('account.unchanged'));
 
     // setFieldsValue 不触发 onValuesChange，回写不会推进编辑版本
     if (editVersionRef.current === editVersionAtSubmit) {
       form.setFieldsValue({
-        companyName: result.settings.companyName ?? '',
         contactEmail: result.settings.contactEmail ?? '',
         nickname: result.settings.nickname,
         phone: result.settings.phone ?? '',
+        ...(isRestricted ? {} : { realName: result.settings.realName ?? '' }),
       });
     }
   };
@@ -114,10 +118,10 @@ export function AccountProfileForm({
     <Form
       form={form}
       initialValues={{
-        companyName: settings.companyName ?? '',
         contactEmail: settings.contactEmail ?? '',
         nickname: settings.nickname,
         phone: settings.phone ?? '',
+        ...(isRestricted ? {} : { realName: settings.realName ?? '' }),
       }}
       layout="vertical"
       onFinish={(values) => void handleFinish(values)}
@@ -125,33 +129,35 @@ export function AccountProfileForm({
         editVersionRef.current += 1;
       }}
     >
+      {isRestricted ? null : (
+        <Form.Item<AccountProfileFormValues> label={t('account.field.realName')} name="realName">
+          <Input autoComplete="off" placeholder={t('account.realNamePlaceholder')} />
+        </Form.Item>
+      )}
+
       <Form.Item<AccountProfileFormValues>
-        label="昵称"
+        label={t('account.field.nickname')}
         name="nickname"
-        rules={[{ required: true, whitespace: true, message: '请输入昵称' }]}
+        rules={[{ required: true, whitespace: true, message: t('account.nicknameRequired') }]}
       >
-        <Input autoComplete="off" placeholder="昵称允许重复" />
+        <Input autoComplete="off" placeholder={t('account.nicknamePlaceholder')} />
       </Form.Item>
 
-      <Form.Item<AccountProfileFormValues>
-        extra={isRestricted ? '公司名称由注册申请审核结果决定，如需变更请联系管理员。' : undefined}
-        label="公司名称"
-        name="companyName"
-      >
-        <Input autoComplete="off" disabled={isRestricted} />
+      <Form.Item extra={t('account.companyExtra')} label={t('account.field.company')}>
+        <Typography.Text>{settings.trustedCompanyName ?? t('common.notLinked')}</Typography.Text>
       </Form.Item>
 
-      <Form.Item<AccountProfileFormValues> label="电话" name="phone">
+      <Form.Item<AccountProfileFormValues> label={t('account.field.phone')} name="phone">
         <Input autoComplete="off" />
       </Form.Item>
 
       <Form.Item<AccountProfileFormValues>
-        extra="联系邮箱不用于登录，仅作联系方式。"
-        label="联系邮箱（非登录凭据）"
+        extra={t('account.contactEmailExtra')}
+        label={t('account.field.contactEmail')}
         name="contactEmail"
         rules={[
           {
-            message: '联系邮箱格式不正确',
+            message: t('account.contactEmailInvalid'),
             // 只转换**校验值**（与后端「先 @Transform(trimTextPure) 再 @IsEmail」同序）。
             // 刻意不用 Input 的 normalize：那会在用户输入过程中改写显示值，吞掉刚敲下的空格。
             // 纯空白 trim 后成为空串，由 async-validator 的空值短路放行，落到既有清空语义。
@@ -167,7 +173,7 @@ export function AccountProfileForm({
 
       <div className="mt-4">
         <PrimaryButton htmlType="submit" loading={submitting}>
-          保存
+          {t('account.save')}
         </PrimaryButton>
       </div>
     </Form>

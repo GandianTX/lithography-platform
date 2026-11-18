@@ -8,6 +8,8 @@
  * - 失败文案复用客户注册的共用映射，仅覆盖「公司不可用」口径。
  */
 
+import { type Translate, translateNow } from '@/shared/i18n';
+
 import {
   registerEngineerAccount,
   type RegisterEngineerMutationInput,
@@ -15,10 +17,6 @@ import {
 
 import { resolveRegistrationErrorMessage } from './registration-error';
 import { assertRegistrationSucceeded, normalizeOptionalText } from './registration-input';
-
-const ENGINEER_ERROR_MESSAGES = {
-  organizationUnavailable: '所选公司当前不可用，请重新选择后重试。',
-};
 
 export type RegisterEngineerInput = {
   realName: string;
@@ -67,6 +65,13 @@ export async function submitRegisterEngineer(
 }
 
 /** 把注册失败转换为可操作文案（已注册 / 公司不可用 / 输入不合法 / 网络失败） */
-export function resolveRegisterEngineerErrorMessage(error: unknown): string {
-  return resolveRegistrationErrorMessage(error, ENGINEER_ERROR_MESSAGES);
+export function resolveRegisterEngineerErrorMessage(error: unknown, t?: Translate): string {
+  return resolveRegistrationErrorMessage(
+    error,
+    {
+      organizationUnavailable:
+        t?.('register.companyUnavailable') ?? translateNow('register.companyUnavailable'),
+    },
+    t,
+  );
 }

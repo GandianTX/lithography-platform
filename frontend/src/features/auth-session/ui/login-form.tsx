@@ -3,6 +3,8 @@
 import { type ReactNode, useRef, useState } from 'react';
 import { Alert, Button, Form, Input } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
+
 import type { AuthSessionView } from '../application/auth-session.types';
 import { resolveLoginErrorMessage } from '../application/login-error';
 import { loginWithPassword } from '../auth-session-entry';
@@ -29,6 +31,7 @@ type LoginFeedback =
     };
 
 export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps) {
+  const { t } = useI18n();
   const [form] = Form.useForm<LoginFormValues>();
   const submittingRef = useRef(false);
   const [feedback, setFeedback] = useState<LoginFeedback | null>(null);
@@ -53,7 +56,7 @@ export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps)
       form.setFieldValue('loginPassword', '');
 
       setFeedback({
-        message: resolveLoginErrorMessage(error),
+        message: resolveLoginErrorMessage(error, t),
         type: 'error',
       });
     } finally {
@@ -67,7 +70,7 @@ export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps)
 
     form.setFieldValue('loginPassword', '');
     setFeedback({
-      message: '登录成功，会话已建立。',
+      message: t('auth.loginSuccess'),
       type: 'success',
     });
     onAuthenticated?.(authenticatedSession);
@@ -88,11 +91,11 @@ export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps)
       ) : null}
 
       <Form.Item
-        label="账号或邮箱"
+        label={t('auth.loginName')}
         name="loginName"
         rules={[
           {
-            message: '请输入账号或邮箱。',
+            message: t('auth.loginNameRequired'),
             required: true,
             whitespace: true,
           },
@@ -102,16 +105,16 @@ export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps)
           autoCapitalize="none"
           autoComplete="username"
           disabled={isSubmitting}
-          placeholder="请输入账号或邮箱"
+          placeholder={t('auth.loginNamePlaceholder')}
         />
       </Form.Item>
 
       <Form.Item
-        label="密码"
+        label={t('auth.password')}
         name="loginPassword"
         rules={[
           {
-            message: '请输入密码。',
+            message: t('auth.passwordRequired'),
             required: true,
             whitespace: true,
           },
@@ -120,14 +123,14 @@ export function LoginForm({ onAuthenticated, secondaryActions }: LoginFormProps)
         <Input.Password
           autoComplete="current-password"
           disabled={isSubmitting}
-          placeholder="请输入密码"
+          placeholder={t('auth.passwordPlaceholder')}
         />
       </Form.Item>
 
       <Form.Item>
         <div className="login-actions">
           <Button htmlType="submit" loading={isSubmitting} type="primary">
-            登录
+            {t('auth.login')}
           </Button>
           {secondaryActions}
         </div>

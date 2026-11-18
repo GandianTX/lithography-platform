@@ -22,12 +22,15 @@ import type {
   AccountSettingsView,
   ChangeMyPasswordOutcome,
   ChangeMyPasswordResult,
+  CustomerCompanySupplementDraft,
+  CustomerCompanySupplementResult,
 } from './account-settings.types';
 import type { AccountSettingsCommandExecution } from './use-account-settings';
 import { useAccountSettings } from './use-account-settings';
 
 type ProfileExecution = AccountSettingsCommandExecution<AccountSettingsProfileUpdateResult>;
 type PasswordExecution = AccountSettingsCommandExecution<ChangeMyPasswordResult>;
+type SupplementExecution = AccountSettingsCommandExecution<CustomerCompanySupplementResult>;
 
 vi.mock('../infrastructure/account-settings-adapter', async (importOriginal) => {
   const actual = await importOriginal<typeof accountSettingsAdapter>();
@@ -36,6 +39,7 @@ vi.mock('../infrastructure/account-settings-adapter', async (importOriginal) => 
     ...actual,
     changeMyPassword: vi.fn(),
     fetchMyAccountSettings: vi.fn(),
+    supplementMyCustomerCompany: vi.fn(),
     updateMyAccountSettingsProfile: vi.fn(),
   };
 });
@@ -43,16 +47,20 @@ vi.mock('../infrastructure/account-settings-adapter', async (importOriginal) => 
 const fetchMock = vi.mocked(accountSettingsAdapter.fetchMyAccountSettings);
 const updateProfileMock = vi.mocked(accountSettingsAdapter.updateMyAccountSettingsProfile);
 const updatePasswordMock = vi.mocked(accountSettingsAdapter.changeMyPassword);
+const supplementMock = vi.mocked(accountSettingsAdapter.supplementMyCustomerCompany);
 
 const SETTINGS: AccountSettingsView = {
+  adminLevel: 2,
   companyName: '示例公司',
   contactEmail: 'contact@example.com',
   loginEmail: 'self@example.com',
   loginName: 'self_user',
   nickname: '陈工',
   phone: '13800000000',
+  realName: '张三',
   role: 'ENGINEER',
   status: 'ACTIVE',
+  trustedCompanyName: '可信公司',
   updatedAt: '2026-01-01T08:00:00.000Z',
 };
 
@@ -80,6 +88,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   updateProfileMock.mockReset();
   updatePasswordMock.mockReset();
+  supplementMock.mockReset();
   fetchMock.mockResolvedValue(SETTINGS);
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -784,7 +793,7 @@ describe('useAccountSettings 错误收敛与日志安全边界', () => {
     let execution: ProfileExecution = { kind: 'in-flight' };
 
     await act(async () => {
-      execution = await result.current.updateProfile({ loginName: 'sensitive_login_name' });
+      execution = await result.current.updateProfile({ realName: 'sensitive_real_name' });
     });
 
     expect(execution).toEqual({
@@ -794,7 +803,7 @@ describe('useAccountSettings 错误收敛与日志安全边界', () => {
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(console.error).toHaveBeenCalledWith(expect.any(String), boom);
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(
-      'sensitive_login_name',
+      'sensitive_real_name',
     );
     expect(result.current.isPending('update-profile')).toBe(false);
   });
@@ -868,5 +877,340 @@ describe('useAccountSettings 错误收敛与日志安全边界', () => {
       message: '登录状态已失效，请重新登录后再试。',
     });
     expect(console.error).not.toHaveBeenCalled();
+  });
+});
+
+const EXISTING_DRAFT: CustomerCompanySupplementDraft = { kind: 'existing', organizationId: 11 };
+
+describe('useAccountSettings 公司补录命令', () => {
+  it('成功时把 adapter 返回的权威视图写回状态，并原样透传结果', async () => {
+    const bound: AccountSettingsView = {
+      ...SETTINGS,
+      role: 'CUSTOMER',
+      trustedCompanyName: '受管公司甲',
+    };
+    const success: CustomerCompanySupplementResult = {
+      isUpdated: true,
+      ok: true,
+      sameNamedCompanyName: null,
+      settings: bound,
+    };
+    supplementMock.mockResolvedValue(success);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let execution: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      execution = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(execution).toEqual({ kind: 'ok', result: success });
+    expect(supplementMock).toHaveBeenCalledTimes(1);
+    expect(supplementMock).toHaveBeenCalledWith(EXISTING_DRAFT);
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
+    // 写结果自带权威视图，不再触发第二次读取
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.isPending('supplement-company')).toBe(false);
+  });
+
+  it('幂等命中（isUpdated=false）同样写回权威视图并透传结果', async () => {
+    const success: CustomerCompanySupplementResult = {
+      isUpdated: false,
+      ok: true,
+      sameNamedCompanyName: null,
+      settings: SETTINGS,
+    };
+    supplementMock.mockResolvedValue(success);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let execution: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      execution = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(execution).toEqual({ kind: 'ok', result: success });
+    expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' });
+  });
+
+  it('业务拒绝（ok=false，如已被补录的并发场景）原样透传，不改写已加载的视图', async () => {
+    const failure = {
+      message: '当前账号已有公司归属，不能重复补录或更换。',
+      ok: false as const,
+      reason: 'already-bound' as const,
+    };
+    supplementMock.mockResolvedValue(failure);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let execution: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      execution = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(execution).toEqual({ kind: 'ok', result: failure });
+    expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' });
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it('同类命令进行中重复提交被拒，adapter 只被调用一次', async () => {
+    const gate = deferred<CustomerCompanySupplementResult>();
+    supplementMock.mockReturnValue(gate.promise);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let first: Promise<SupplementExecution> = Promise.resolve({ kind: 'in-flight' });
+    let second: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      first = result.current.supplementCompany({ kind: 'existing', organizationId: 11 });
+      second = await result.current.supplementCompany({
+        kind: 'self-filled',
+        organizationName: '第二次',
+      });
+    });
+
+    expect(second).toEqual({ kind: 'in-flight' });
+    expect(supplementMock).toHaveBeenCalledTimes(1);
+    expect(supplementMock).toHaveBeenCalledWith({ kind: 'existing', organizationId: 11 });
+    expect(result.current.isPending('supplement-company')).toBe(true);
+
+    await act(async () => {
+      gate.resolve({
+        isUpdated: true,
+        ok: true,
+        sameNamedCompanyName: null,
+        settings: SETTINGS,
+      });
+      expect(await first).toMatchObject({ kind: 'ok' });
+    });
+    expect(result.current.isPending('supplement-company')).toBe(false);
+  });
+
+  it('未分类错误返回兜底文案，日志只带 error 对象不带草稿内容', async () => {
+    const boom = new TypeError('unexpected');
+    supplementMock.mockRejectedValue(boom);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let execution: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      execution = await result.current.supplementCompany({
+        kind: 'self-filled',
+        organizationName: 'sensitive_company_name',
+      });
+    });
+
+    expect(execution).toEqual({ kind: 'unhandled-error', message: UNHANDLED_FALLBACK_MESSAGE });
+    expect(console.error).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith(expect.any(String), boom);
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(
+      'sensitive_company_name',
+    );
+    expect(result.current.isPending('supplement-company')).toBe(false);
+  });
+
+  it('ingress 错误使用共享 userMessage，且不额外打印日志', async () => {
+    supplementMock.mockRejectedValue(
+      new GraphQLIngressError({ type: 'network', message: 'fetch failed' }),
+    );
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let execution: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      execution = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(execution).toEqual({
+      kind: 'unhandled-error',
+      message: '网络连接异常，请稍后重试。',
+    });
+    expect(console.error).not.toHaveBeenCalled();
+    expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' });
+  });
+
+  it('补录进行中发起 reload 后，过期补录结果被整体丢弃（不覆盖 reload 的新事实）', async () => {
+    const gate = deferred<CustomerCompanySupplementResult>();
+    supplementMock.mockReturnValue(gate.promise);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(SETTINGS).mockResolvedValueOnce(RELOADED_SETTINGS);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() =>
+      expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' }),
+    );
+
+    let first: Promise<SupplementExecution> = Promise.resolve({ kind: 'in-flight' });
+
+    await act(async () => {
+      first = result.current.supplementCompany(EXISTING_DRAFT);
+      result.current.reload();
+    });
+    await waitFor(() =>
+      expect(result.current.state).toEqual({ settings: RELOADED_SETTINGS, status: 'ready' }),
+    );
+
+    const bound: AccountSettingsView = { ...SETTINGS, trustedCompanyName: '受管公司甲' };
+
+    await act(async () => {
+      gate.resolve({
+        isUpdated: true,
+        ok: true,
+        sameNamedCompanyName: null,
+        settings: bound,
+      });
+      expect(await first).toMatchObject({ kind: 'ok' });
+    });
+
+    expect(result.current.state).toEqual({ settings: RELOADED_SETTINGS, status: 'ready' });
+  });
+
+  it('资料更新与公司补录互斥：交叠期补录不发出请求，资料结束后可正常重试', async () => {
+    const profileGate = deferred<AccountSettingsProfileUpdateResult>();
+    updateProfileMock.mockReturnValue(profileGate.promise);
+    supplementMock.mockResolvedValue({
+      isUpdated: true,
+      ok: true,
+      sameNamedCompanyName: null,
+      settings: { ...SETTINGS, trustedCompanyName: '受管公司甲' },
+    });
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let profileExecution: Promise<ProfileExecution> = Promise.resolve({ kind: 'in-flight' });
+    let blocked: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      profileExecution = result.current.updateProfile(DRAFT);
+      blocked = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(blocked).toEqual({ kind: 'in-flight' });
+    expect(supplementMock).not.toHaveBeenCalled();
+    expect(result.current.isPending('update-profile')).toBe(true);
+
+    await act(async () => {
+      profileGate.resolve({ isUpdated: true, ok: true, settings: SETTINGS });
+      await profileExecution;
+    });
+
+    let retried: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      retried = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(retried).toMatchObject({ kind: 'ok' });
+    expect(supplementMock).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toEqual({
+      settings: { ...SETTINGS, trustedCompanyName: '受管公司甲' },
+      status: 'ready',
+    });
+  });
+});
+
+describe('useAccountSettings 资料/补录双写互斥（补录回显不被后发资料丢弃）', () => {
+  it('补录先发、资料后发且失败：交叠期资料请求不发出，补录权威视图保留且失败结果照常透传', async () => {
+    const supplementGate = deferred<CustomerCompanySupplementResult>();
+    supplementMock.mockReturnValue(supplementGate.promise);
+    const failure = {
+      message: '登录名或登录邮箱已被占用，请更换后重试。',
+      ok: false as const,
+      reason: 'duplicate-credential' as const,
+    };
+    updateProfileMock.mockResolvedValue(failure);
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let supplementExecution: Promise<SupplementExecution> = Promise.resolve({
+      kind: 'in-flight',
+    });
+    let blockedProfile: ProfileExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      // 补录先发；随后的资料保存必须因互斥被拒，不得发出请求
+      supplementExecution = result.current.supplementCompany(EXISTING_DRAFT);
+      blockedProfile = await result.current.updateProfile(DRAFT);
+    });
+
+    expect(blockedProfile).toEqual({ kind: 'in-flight' });
+    expect(updateProfileMock).not.toHaveBeenCalled();
+
+    const bound: AccountSettingsView = { ...SETTINGS, trustedCompanyName: '受管公司甲' };
+
+    await act(async () => {
+      supplementGate.resolve({
+        isUpdated: true,
+        ok: true,
+        sameNamedCompanyName: null,
+        settings: bound,
+      });
+      expect(await supplementExecution).toMatchObject({ kind: 'ok' });
+    });
+
+    // 补录成功后：可信公司已回显（补录入口随之关闭）
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
+
+    let profileFailure: ProfileExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      profileFailure = await result.current.updateProfile(DRAFT);
+    });
+
+    // 后发的资料保存失败只返回可理解反馈，不覆盖补录已回显的权威视图
+    expect(profileFailure).toEqual({ kind: 'ok', result: failure });
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
+    expect(updateProfileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('响应反序不可发生：资料在途时补录被拒，资料失败后补录重试成功即成为权威视图', async () => {
+    const profileGate = deferred<AccountSettingsProfileUpdateResult>();
+    updateProfileMock.mockReturnValue(profileGate.promise);
+    const bound: AccountSettingsView = { ...SETTINGS, trustedCompanyName: '受管公司甲' };
+    supplementMock.mockResolvedValue({
+      isUpdated: true,
+      ok: true,
+      sameNamedCompanyName: null,
+      settings: bound,
+    });
+    const { result } = renderHook(() => useAccountSettings());
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let profileExecution: Promise<ProfileExecution> = Promise.resolve({ kind: 'in-flight' });
+    let blocked: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      profileExecution = result.current.updateProfile(DRAFT);
+      blocked = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    expect(blocked).toEqual({ kind: 'in-flight' });
+    expect(supplementMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      // 资料保存失败（业务拒绝）：视图保持加载时的旧事实
+      profileGate.resolve({
+        message: '登录名或登录邮箱已被占用，请更换后重试。',
+        ok: false,
+        reason: 'duplicate-credential',
+      });
+      await profileExecution;
+    });
+    expect(result.current.state).toEqual({ settings: SETTINGS, status: 'ready' });
+
+    let retried: SupplementExecution = { kind: 'in-flight' };
+
+    await act(async () => {
+      retried = await result.current.supplementCompany(EXISTING_DRAFT);
+    });
+
+    // 顺序由互斥保证：补录在资料收尾后发起，其后到的权威视图不会被旧序号丢弃
+    expect(retried).toMatchObject({ kind: 'ok' });
+    expect(result.current.state).toEqual({ settings: bound, status: 'ready' });
   });
 });

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import type { NotifyFeedback } from '@/shared/feedback';
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import {
   deleteMyRepairRequest,
@@ -50,7 +51,7 @@ type CustomerRepairRequestListAction =
   | { type: 'load-failed'; requestSeq: number; message: string };
 
 function toUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : '维修申请列表加载失败，请稍后重试。';
+  return isGraphQLIngressError(error) ? error.userMessage : translateNow('repairList.loadFailed');
 }
 
 /** 删除后当前页可能删空：回退一页避免停留在空页 */
@@ -173,7 +174,7 @@ export function useCustomerRepairRequestList(notify: NotifyFeedback, pageSize = 
         deleteSucceeded = result.ok;
 
         if (result.ok) {
-          notify({ type: 'success', text: '维修申请已删除。' });
+          notify({ type: 'success', text: translateNow('customer.requestDeleted') });
         } else {
           // 删除失败必须给出明确原因（不得当作删除成功）
           notify({ type: 'error', text: result.message });
@@ -181,7 +182,9 @@ export function useCustomerRepairRequestList(notify: NotifyFeedback, pageSize = 
       } catch (error) {
         notify({
           type: 'error',
-          text: isGraphQLIngressError(error) ? error.userMessage : '删除失败，请稍后重试。',
+          text: isGraphQLIngressError(error)
+            ? error.userMessage
+            : translateNow('customer.deleteFailed'),
         });
       } finally {
         // 回刷时序：成功 / 业务拒绝 / transport 异常共用同一规则。

@@ -1,10 +1,11 @@
 // src/app/layout/app-layout.spec.tsx
 
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ThemeProvider } from '@/app/providers';
+import { I18nProvider, ThemeProvider } from '@/app/providers';
 
 import { AppLayout } from './app-layout';
 
@@ -17,10 +18,15 @@ vi.mock('@/features/auth-session', async (importOriginal) => {
   return {
     ...actual,
     // 壳层测试不触网：启动期会话复核固定返回「无变化」
-    refreshCurrentAuthSessionIdentity: vi.fn().mockResolvedValue(false),
+    refreshCurrentAuthSessionIdentity: vi.fn().mockResolvedValue({ status: 'unchanged' }),
     useAuthSession: () => useAuthSessionMock(),
   };
 });
+
+// 批准结果门有自己的装配测试；壳层测试只关心内容是否被挂载在布局内。
+vi.mock('./engineer-approval-gate', () => ({
+  EngineerApprovalGate: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
 
 // sidecar 是重量级组件（会话/GraphQL 依赖），壳层测试中置空。
 vi.mock('@/widgets/aigc-sidecar', () => ({
@@ -71,15 +77,57 @@ function stubNarrowViewport(initialMatches: boolean) {
   };
 }
 
+// 第五轮 P2：覆盖式导航断点（≤768px）与自动折叠断点（≤1024px）相互独立。
+// 这里只桩 768 查询，1024 查询回落到 setup 的静态 shim（不匹配 → 侧栏默认展开）。
+function stubOverlayViewport(initialMatches: boolean) {
+  const listeners = new Set<QueryListener>();
+  const overlayQuery = {
+    matches: initialMatches,
+    media: '(max-width: 768px)',
+  };
+  const mediaQueryList = {
+    ...overlayQuery,
+    addEventListener: (_type: string, listener: QueryListener) => {
+      listeners.add(listener);
+    },
+    addListener: () => {},
+    dispatchEvent: () => false,
+    onchange: null,
+    removeEventListener: (_type: string, listener: QueryListener) => {
+      listeners.delete(listener);
+    },
+    removeListener: () => {},
+  };
+
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    value: (query: string) =>
+      query === '(max-width: 768px)' ? mediaQueryList : originalMatchMedia(query),
+  });
+
+  return {
+    setMatches(matches: boolean) {
+      overlayQuery.matches = matches;
+      mediaQueryList.matches = matches;
+
+      for (const listener of listeners) {
+        listener({ matches });
+      }
+    },
+  };
+}
+
 function renderLayout(pathname: string) {
   return render(
-    <ThemeProvider>
-      <MemoryRouter initialEntries={[pathname]}>
-        <Routes>
-          <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
-        </Routes>
-      </MemoryRouter>
-    </ThemeProvider>,
+    <I18nProvider>
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[pathname]}>
+          <Routes>
+            <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>
+    </I18nProvider>,
   );
 }
 
@@ -92,22 +140,31 @@ function LocationProbe() {
 
 function renderLayoutWithLocationProbe(pathname: string) {
   return render(
-    <ThemeProvider>
-      <MemoryRouter initialEntries={[pathname]}>
-        <LocationProbe />
-        <Routes>
-          <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
-        </Routes>
-      </MemoryRouter>
-    </ThemeProvider>,
+    <I18nProvider>
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[pathname]}>
+          <LocationProbe />
+          <Routes>
+            <Route element={<AppLayout>页面内容</AppLayout>} path="*" />
+          </Routes>
+        </MemoryRouter>
+      </ThemeProvider>
+    </I18nProvider>,
   );
 }
 
-function sessionFor(role: 'CUSTOMER' | 'ENGINEER' | 'SUPER_ADMIN') {
+// 管理员默认按 1 级（全域）构造会话；2 级/未知等级用例显式覆盖等级事实。
+function sessionFor(
+  role: 'CUSTOMER' | 'ENGINEER' | 'SUPER_ADMIN',
+  adminLevel: number | null = role === 'SUPER_ADMIN' ? 1 : null,
+  adminOrganizationId: number | null = role === 'SUPER_ADMIN' ? 910003 : null,
+) {
   return {
     session: {
       accessToken: 'token',
       accountId: 1,
+      adminLevel,
+      adminOrganizationId,
       role,
       userInfo: { accessGroup: [role], avatarUrl: null, nickname: `用户-${role}` },
     },
@@ -119,6 +176,8 @@ describe('AppLayout（S3 壳层）', () => {
   afterEach(() => {
     cleanup();
     useAuthSessionMock.mockReset();
+    // 一次性批准提示按账号写入 localStorage：用例之间必须清空，避免串场
+    window.localStorage.clear();
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: originalMatchMedia,
@@ -146,6 +205,25 @@ describe('AppLayout（S3 壳层）', () => {
     expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '文档数据库' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '发起申请' })).not.toBeInTheDocument();
+  });
+
+  it('二级管理员看到任务 08 管理入口，未知等级不显示管理入口', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', 2, 910004));
+    const view = renderLayout('/admin');
+
+    expect(screen.getByRole('link', { name: '首页' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '用户管理' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '公司档案' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '注册审批' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
+
+    view.unmount();
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', null));
+    renderLayout('/admin');
+
+    expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
   });
 
   it('业务子路由刷新后选中态按前缀恢复（/admin/users 选中用户管理而非首页）', () => {
@@ -294,6 +372,74 @@ describe('AppLayout（S3 壳层）', () => {
     expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
   });
 
+  // 第五轮 P2：≤768px 展开侧栏为覆盖式导航，被覆盖的工作区必须 inert，
+  // 但内容保持挂载、侧栏语言入口照常可切换。
+  it('覆盖式导航展开时工作区 inert，侧栏语言入口仍可切换', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubOverlayViewport(true);
+    renderLayout('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+    // 表单/页面保持挂载，只是暂时退出交互
+    expect(screen.getByText('页面内容')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }));
+    expect(document.documentElement.lang).toBe('en');
+  });
+
+  it('Esc 关闭覆盖式导航：焦点回到展开按钮，工作区恢复可交互', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubOverlayViewport(true);
+    renderLayout('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+
+    screen.getByRole('button', { name: '折叠导航' }).focus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(screen.getByRole('button', { name: '展开导航' })).toHaveFocus();
+    expect(workspace).not.toHaveAttribute('inert');
+  });
+
+  // 第六轮 P2：覆盖式导航中从侧栏进入另一页面，真实路由落地后覆盖层自动收起，
+  // 目标工作区解除 inert（缺陷表现为 URL 已更新但工作区仍被挡住）。
+  it('覆盖式导航中点击侧栏链接跳转后自动收起，目标工作区解除 inert', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubOverlayViewport(true);
+    renderLayoutWithLocationProbe('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+
+    fireEvent.click(screen.getByRole('link', { name: '我的申请' }));
+
+    expect(screen.getByTestId('current-pathname')).toHaveTextContent('/customer/repair-requests');
+    expect(screen.getByRole('button', { name: '展开导航' })).toBeInTheDocument();
+    expect(workspace).not.toHaveAttribute('inert');
+  });
+
+  it('跨越 768px 断点后工作区退出受限，桌面展开态保持不被改写', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    const overlayViewport = stubOverlayViewport(true);
+    renderLayout('/customer');
+
+    const workspace = document.querySelector('main.app-workspace');
+
+    expect(workspace).toHaveAttribute('inert');
+
+    act(() => overlayViewport.setMatches(false));
+
+    expect(workspace).not.toHaveAttribute('inert');
+    // 桌面断点由 ≤1024px 查询单独管理，这里保持用户当前的展开态
+    expect(screen.getByRole('button', { name: '折叠导航' })).toBeInTheDocument();
+  });
+
   // S1.4：会话限制状态由服务端每请求复核，壳层按快照做导航裁决（策略函数在
   // auth-session-policy 单测覆盖，这里只验证壳层的落点）。
   it('受限会话停留在业务路由时收回 /restricted', async () => {
@@ -315,5 +461,52 @@ describe('AppLayout（S3 壳层）', () => {
     await waitFor(() => {
       expect(screen.getByTestId('current-pathname')).toHaveTextContent('/customer');
     });
+  });
+
+  // S3 批准结果的展示与进入顺序由 `engineer-approval-gate.spec.tsx` 覆盖；
+  // 壳层这里只验证受限会话的落点。
+
+  // S5：语言切换入口唯一（展开态只在字号区上方出现一组），切语言只换文案，
+  // 不改变路由、导航结构与选中态。
+  it('展开态侧栏只提供一个语言入口，切换英文后文案变化而路由与选中态不变', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN'));
+    renderLayout('/admin/users');
+
+    const groups = screen.getAllByRole('group', { name: '界面语言' });
+    expect(groups).toHaveLength(1);
+    expect(within(groups[0]).getAllByRole('button')).toHaveLength(2);
+
+    const usersLink = screen.getByRole('link', { name: '用户管理' });
+    const href = usersLink.getAttribute('href');
+
+    fireEvent.click(within(groups[0]).getByRole('button', { name: 'English' }));
+
+    expect(screen.getByText('Lithography Service Platform')).toBeInTheDocument();
+    const englishUsersLink = screen.getByRole('link', { name: 'User management' });
+    expect(englishUsersLink).toHaveAttribute('href', href);
+    expect(englishUsersLink).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('group', { name: 'Interface language' })).toBeInTheDocument();
+  });
+
+  it('折叠态侧栏以图标入口保留语言切换，可访问名称随语言变化', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    stubNarrowViewport(true);
+    renderLayout('/customer');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到英文' }));
+
+    // 切到英文后按钮的可访问名称随界面语言本地化
+    expect(screen.getByRole('button', { name: 'Switch to Chinese' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
+  });
+
+  it('刷新后按已存语言偏好恢复英文界面', () => {
+    window.localStorage.setItem('ui-language', 'en');
+    useAuthSessionMock.mockReturnValue(sessionFor('CUSTOMER'));
+    renderLayout('/customer');
+
+    expect(screen.getByText('Lithography Service Platform')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'New request' })).toBeInTheDocument();
   });
 });

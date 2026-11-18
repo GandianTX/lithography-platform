@@ -33,6 +33,7 @@
     "test:e2e:smoke": "cross-env TZ=Asia/Shanghai NODE_ENV=e2e node ./test/run-e2e-group.js smoke",
     "test:e2e:all": "npm run test:e2e:core && npm run test:e2e:worker",
     "test:e2e:file": "cross-env TZ=Asia/Shanghai NODE_ENV=e2e node ./test/run-e2e-group.js --file",
+    "test:e2e:admin-user-lock": "cross-env TZ=Asia/Shanghai NODE_ENV=e2e E2E_ADMIN_USER_LOCK_OBSERVATION=1 node ./test/run-e2e-group.js --file test/04-user-info/admin-user-management.e2e-spec.ts",
     "test:e2e:watch": "cross-env TZ=Asia/Shanghai NODE_ENV=e2e node ./test/run-e2e-group.js --file --watch",
     "test:e2e:debug": "cross-env TZ=Asia/Shanghai NODE_ENV=e2e node ./test/run-e2e-group.js --file --inspect-brk",
     "migration:drill:empty-db": "cross-env TZ=Asia/Shanghai NODE_ENV=e2e ts-node -r tsconfig-paths/register src/infrastructure/database/verify-empty-db-migrations.ts",

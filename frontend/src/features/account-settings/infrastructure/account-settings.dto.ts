@@ -8,14 +8,17 @@
  */
 
 export type MyAccountSettingsDto = {
+  adminLevel: number | null;
   companyName: string | null;
   contactEmail: string | null;
   loginEmail: string | null;
   loginName: string | null;
   nickname: string;
   phone: string | null;
+  realName: string | null;
   role: string;
   status: string;
+  trustedCompanyName: string | null;
   updatedAt: string;
 };
 
@@ -27,4 +30,17 @@ export type UpdateMyAccountSettingsResultDto = {
 export type ChangeMyPasswordResultDto = {
   isUpdated: boolean;
   notice: string;
+};
+
+export type SupplementMyCustomerCompanyResultDto = {
+  isUpdated: boolean;
+  sameNamedCompanyName: string | null;
+  settings: MyAccountSettingsDto;
+};
+
+export type RegistrationOrganizationSearchDto = {
+  items: Array<{ id: number; name: string }>;
+  page: number | null;
+  pageSize: number | null;
+  total: number | null;
 };

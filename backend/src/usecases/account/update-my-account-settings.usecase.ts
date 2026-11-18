@@ -19,6 +19,7 @@ import {
   type UserInfoUpdateData,
 } from '@src/modules/account/base/services/account.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -28,9 +29,13 @@ import {
   normalizeMyAccountSettingsAccountId,
   normalizeMyAccountSettingsUpdateInput,
 } from './my-account-settings.input.normalize';
-import { toMyAccountSettingsView } from './my-account-settings.support';
+import {
+  resolveTrustedOrganizationId,
+  toMyAccountSettingsView,
+} from './my-account-settings.support';
 import { logAdminUserWriteFailure } from './admin-user-write-support';
 import type {
+  MyAccountTrustedOrganizationFacts,
   UpdateMyAccountSettingsCommand,
   UpdateMyAccountSettingsNormalizeOutput,
   UpdateMyAccountSettingsOutcome,
@@ -102,6 +107,7 @@ export class UpdateMyAccountSettingsUsecase {
   constructor(
     private readonly accountService: AccountService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -118,6 +124,7 @@ export class UpdateMyAccountSettingsUsecase {
       loginName: command.loginName,
       loginEmail: command.loginEmail,
       nickname: command.nickname,
+      realName: command.realName,
       companyName: command.companyName,
       phone: command.phone,
       contactEmail: command.contactEmail,
@@ -126,7 +133,12 @@ export class UpdateMyAccountSettingsUsecase {
     let result: UpdateMyAccountSettingsTxResult;
     try {
       result = await this.transactionRunner.run((transactionContext) =>
-        this.updateInTransaction({ transactionContext, accountId, input }),
+        this.updateInTransaction({
+          transactionContext,
+          accountId,
+          input,
+          trustedOrganizations: command.trustedOrganizations,
+        }),
       );
     } catch (error) {
       // 事务内各阶段的异常已由 updateInTransaction 的 catch 记录日志并收敛为 DomainError；
@@ -178,7 +190,15 @@ export class UpdateMyAccountSettingsUsecase {
 
     const allowedFields = new Set<string>(RESTRICTED_PROFILE_ALLOWED_FIELDS);
     const rejectedFields = (
-      ['loginName', 'loginEmail', 'nickname', 'companyName', 'phone', 'contactEmail'] as const
+      [
+        'loginName',
+        'loginEmail',
+        'nickname',
+        'realName',
+        'companyName',
+        'phone',
+        'contactEmail',
+      ] as const
     ).filter((field) => !allowedFields.has(field) && command[field] !== undefined);
     if (rejectedFields.length === 0) {
       return;
@@ -213,8 +233,9 @@ export class UpdateMyAccountSettingsUsecase {
     transactionContext: PersistenceTransactionContext;
     accountId: number;
     input: UpdateMyAccountSettingsNormalizeOutput;
+    trustedOrganizations: MyAccountTrustedOrganizationFacts;
   }): Promise<UpdateMyAccountSettingsTxResult> {
-    const { transactionContext, accountId, input } = params;
+    const { transactionContext, accountId, input, trustedOrganizations } = params;
     let phase: UpdateMyAccountSettingsPhase = 'LOCK_TARGET';
     const updatedFields: string[] = [];
 
@@ -327,10 +348,20 @@ export class UpdateMyAccountSettingsUsecase {
         );
       }
       this.assertSettingsReflected({ snapshot, input, facts, accountId });
+      // 可信公司名称与写入同事务读取：组织 ID 按回读快照的角色解析；id 或名称缺失一律 null，
+      // 不回退 companyName（二者来源不同，回退会把用户自填公司名伪造成可信事实）
+      const organizationId = resolveTrustedOrganizationId(snapshot.role, trustedOrganizations);
+      const trustedCompanyName =
+        organizationId === null
+          ? null
+          : await this.organizationQueryService.findOrganizationNameById({
+              organizationId,
+              transactionContext,
+            });
       return {
         isUpdated: updatedFields.length > 0,
         updatedFields,
-        settings: toMyAccountSettingsView(snapshot),
+        settings: toMyAccountSettingsView(snapshot, trustedCompanyName),
       };
     } catch (error) {
       logAdminUserWriteFailure({
@@ -371,6 +402,7 @@ export class UpdateMyAccountSettingsUsecase {
     input: UpdateMyAccountSettingsNormalizeOutput,
     facts: {
       readonly nickname: string;
+      readonly realName: string | null;
       readonly companyName: string | null;
       readonly phone: string | null;
       readonly contactEmail: string | null;
@@ -384,6 +416,10 @@ export class UpdateMyAccountSettingsUsecase {
     if (input.nickname !== undefined && input.nickname !== facts.nickname) {
       patch.nickname = input.nickname;
       fields.push('nickname');
+    }
+    if (input.realName !== undefined && input.realName !== facts.realName) {
+      patch.realName = input.realName;
+      fields.push('realName');
     }
     if (input.companyName !== undefined && input.companyName !== facts.companyName) {
       patch.companyName = input.companyName;
@@ -417,6 +453,7 @@ export class UpdateMyAccountSettingsUsecase {
       readonly loginName: string | null;
       readonly loginEmail: string | null;
       readonly nickname: string;
+      readonly realName: string | null;
       readonly companyName: string | null;
       readonly phone: string | null;
       readonly contactEmail: string | null;
@@ -427,6 +464,7 @@ export class UpdateMyAccountSettingsUsecase {
     const expectedLoginName = input.loginName === undefined ? facts.loginName : input.loginName;
     const expectedLoginEmail = input.loginEmail === undefined ? facts.loginEmail : input.loginEmail;
     const expectedNickname = input.nickname === undefined ? facts.nickname : input.nickname;
+    const expectedRealName = input.realName === undefined ? facts.realName : input.realName;
     const expectedCompanyName =
       input.companyName === undefined ? facts.companyName : input.companyName;
     const expectedPhone = input.phone === undefined ? facts.phone : input.phone;
@@ -437,6 +475,7 @@ export class UpdateMyAccountSettingsUsecase {
       snapshot.loginName === expectedLoginName &&
       snapshot.loginEmail === expectedLoginEmail &&
       snapshot.nickname === expectedNickname &&
+      snapshot.realName === expectedRealName &&
       snapshot.companyName === expectedCompanyName &&
       snapshot.phone === expectedPhone &&
       snapshot.contactEmail === expectedContactEmail;

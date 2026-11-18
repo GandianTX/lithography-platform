@@ -9,6 +9,8 @@
  *   （见 docs/api/graphql-error-contract-current.md），不解析自由文本。
  */
 
+import { type Translate, translateNow } from '@/shared/i18n';
+
 import {
   registerCustomerAccount,
   type RegisterCustomerMutationInput,
@@ -16,11 +18,6 @@ import {
 
 import { resolveRegistrationErrorMessage } from './registration-error';
 import { assertRegistrationSucceeded, normalizeOptionalText } from './registration-input';
-
-/** 客户注册可改为手填自家公司，因此公司失效文案比工程师注册多一条出路 */
-const CUSTOMER_ERROR_MESSAGES = {
-  organizationUnavailable: '所选公司当前不可用，请重新选择或改为填写自家公司名称。',
-};
 
 export type RegisterCustomerInput = {
   loginEmail: string;
@@ -68,6 +65,15 @@ export async function submitRegisterCustomer(
 }
 
 /** 把注册失败转换为可操作文案（已注册 / 公司不可用 / 输入不合法 / 网络失败） */
-export function resolveRegisterCustomerErrorMessage(error: unknown): string {
-  return resolveRegistrationErrorMessage(error, CUSTOMER_ERROR_MESSAGES);
+export function resolveRegisterCustomerErrorMessage(error: unknown, t?: Translate): string {
+  return resolveRegistrationErrorMessage(
+    error,
+    {
+      // 客户注册可改为手填自家公司，因此公司失效文案比工程师注册多一条出路
+      organizationUnavailable:
+        t?.('register.companyUnavailableCustomer') ??
+        translateNow('register.companyUnavailableCustomer'),
+    },
+    t,
+  );
 }

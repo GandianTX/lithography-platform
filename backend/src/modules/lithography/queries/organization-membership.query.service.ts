@@ -7,7 +7,10 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { In, Repository } from 'typeorm';
 import { OrganizationEntity } from '../entities/organization.entity';
 import { OrganizationMembershipEntity } from '../entities/organization-membership.entity';
-import { OrganizationMembershipFact } from '../organization.types';
+import {
+  OrganizationMembershipFact,
+  OrganizationMembershipBindingFact,
+} from '../organization.types';
 
 /**
  * 组织成员事实查询服务（A-PR0 计划 §2.1）
@@ -70,6 +73,56 @@ export class OrganizationMembershipQueryService {
     }
     const facts = await this.attachActiveOrganizations([membership], params.transactionContext);
     return facts[0] ?? null;
+  }
+
+  /**
+   * 写入前核对用的成员关系全集（**不按有效口径过滤**）。
+   *
+   * 与 `listActiveMembershipsByAccount` 刻意分开：客户补录等写入场景必须同时看到
+   * 「停用组织上的 ACTIVE 成员关系」与「`LEFT` 历史成员关系」，因为它们分别占用
+   * `uk_organization_membership_active_account` 与
+   * `uk_organization_membership_org_account` 两个唯一键。返回事实含成员状态与组织状态，
+   * 由调用方在写 FK / 成员之前裁决并失败关闭。
+   *
+   * 组织行缺失时（外键 RESTRICT 下不应发生）跳过该行，避免给出不可判定的成员事实。
+   *
+   * @param params.accountId 账号 ID（必须来自可信 Session）
+   * @param params.transactionContext 可选事务上下文（写用例在同一事务连接上读最新事实）
+   */
+  async listMembershipsForBinding(params: {
+    accountId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<OrganizationMembershipBindingFact[]> {
+    const membershipRepository = this.getMembershipRepository(params.transactionContext);
+    const memberships = await membershipRepository.find({
+      where: { accountId: params.accountId },
+      order: { id: 'ASC' },
+    });
+    if (memberships.length === 0) {
+      return [];
+    }
+    const organizationIds = Array.from(new Set(memberships.map((item) => item.organizationId)));
+    const organizationRepository = this.getOrganizationRepository(params.transactionContext);
+    const organizations = await organizationRepository.find({
+      where: { id: In(organizationIds) },
+    });
+    const organizationById = new Map(organizations.map((item) => [item.id, item] as const));
+
+    const facts: OrganizationMembershipBindingFact[] = [];
+    for (const membership of memberships) {
+      const organization = organizationById.get(membership.organizationId);
+      if (!organization) {
+        continue;
+      }
+      facts.push({
+        membershipId: membership.id,
+        organizationId: membership.organizationId,
+        memberRole: membership.memberRole,
+        membershipStatus: membership.status,
+        organizationStatus: organization.status,
+      });
+    }
+    return facts;
   }
 
   /**

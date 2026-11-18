@@ -177,6 +177,43 @@ describe('OrganizationQueryService（注册公司资格与检索）', () => {
     });
   });
 
+  describe('findActiveOrganizationForWrite（写前复核）', () => {
+    it('仅按主键与 ACTIVE 复核，不要求受管资格（补录后的未受管公司同样有效）', async () => {
+      repository.findOne.mockResolvedValue({ id: 9, name: '未受管客户公司' });
+
+      const result = await service.findActiveOrganizationForWrite({ organizationId: 9 });
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: 9, status: 'ACTIVE' },
+        select: { id: true, name: true },
+      });
+      expect(result).toEqual({ id: 9, name: '未受管客户公司' });
+    });
+
+    it('停用时返回 null（写流程失败关闭）', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.findActiveOrganizationForWrite({ organizationId: 9 }),
+      ).resolves.toBeNull();
+    });
+
+    it('事务内按当前读加共享行锁，与并发停用写入串行', async () => {
+      repository.findOne.mockResolvedValue({ id: 9, name: '未受管客户公司' });
+      const transactionContext = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repository,
+      } as unknown as EntityManager);
+
+      await service.findActiveOrganizationForWrite({ organizationId: 9, transactionContext });
+
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: 9, status: 'ACTIVE' },
+        select: { id: true, name: true },
+        lock: { mode: 'pessimistic_read' },
+      });
+    });
+  });
+
   describe('findActiveRegistrationOption（旧入口口径）', () => {
     it('仅按主键与 ACTIVE 复核，不要求受管资格', async () => {
       repository.findOne.mockResolvedValue({ id: 9, name: '普通公司' });

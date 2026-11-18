@@ -11,6 +11,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GraphQLIngressError } from '@/shared/graphql';
+import { translate } from '@/shared/i18n';
 
 import type {
   EngineerRepairRequestDetail,
@@ -34,8 +35,11 @@ vi.mock('../infrastructure/engineer-repair-request-adapter', async (importOrigin
 });
 
 const fetchMock = vi.mocked(engineerRepairRequestAdapter.fetchEngineerRepairRequestDetail);
-// 统一不可访问文案的唯一真源（adapter 导出），测试不复制第二份
-const NOT_ACCESSIBLE_MESSAGE = engineerRepairRequestAdapter.ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE;
+// 统一不可访问文案的唯一真源（adapter 导出的词条键），测试不复制第二份
+const NOT_ACCESSIBLE_MESSAGE = translate(
+  'zh-CN',
+  engineerRepairRequestAdapter.ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE_KEY,
+);
 
 function buildDetail(id: number, isAccepted: boolean): EngineerRepairRequestDetail {
   return {

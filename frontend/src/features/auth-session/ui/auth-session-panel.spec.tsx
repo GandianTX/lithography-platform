@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { createTranslator, I18nContext } from '@/shared/i18n';
+
 import { authSessionStore } from '../auth-session-entry';
 
 import { AuthSessionPanel } from './auth-session-panel';
@@ -33,6 +35,24 @@ function renderAccountPanelRoute() {
         </Routes>
       </MemoryRouter>
     </AuthSessionProvider>,
+  );
+}
+
+/** 英文界面下的账号卡：用 I18nContext 装配最小状态容器（features 层禁止依赖 app 的 Provider）。 */
+function renderAccountPanelRouteInEnglish() {
+  return render(
+    <I18nContext.Provider
+      value={{ language: 'en', setLanguage: () => undefined, t: createTranslator('en') }}
+    >
+      <AuthSessionProvider>
+        <MemoryRouter initialEntries={['/admin']}>
+          <Routes>
+            <Route element={<AuthSessionPanel variant="account" />} path="/admin" />
+            <Route element={<div>account-settings-page-marker</div>} path="/account/settings" />
+          </Routes>
+        </MemoryRouter>
+      </AuthSessionProvider>
+    </I18nContext.Provider>,
   );
 }
 
@@ -90,6 +110,27 @@ describe('AuthSessionPanel', () => {
       expect(screen.getByText('account-settings-page-marker')).toBeInTheDocument();
     });
     expect(document.body.textContent).not.toContain('test-only-access-token');
+  });
+
+  it('账号卡在英文界面下不残留中文文案', () => {
+    authSessionStore.establishSession({
+      accessToken: 'test-only-access-token',
+      accountId: 900301,
+      role: 'SUPER_ADMIN',
+      userInfo: {
+        accessGroup: ['SUPER_ADMIN'],
+        avatarUrl: null,
+        nickname: 'Admin User',
+      },
+    });
+
+    renderAccountPanelRouteInEnglish();
+
+    expect(screen.getByRole('heading', { name: 'Current account' })).toBeInTheDocument();
+    expect(screen.getByText('Account ID: 900301')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Account settings/ })).toBeInTheDocument();
+    // 卡内所有可见文案均为英文，不残留任何汉字
+    expect(document.body.textContent).not.toMatch(/[\u4e00-\u9fff]/);
   });
 
   it('offers a login entry for anonymous visitors instead of a blank panel', async () => {

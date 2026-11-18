@@ -5,10 +5,12 @@
  *
  * - 读取：挂载即加载；transport / auth 失败收敛为 failed 状态与兜底文案，
  *   UNAUTHENTICATED 的会话失效处理仍由共享 ingress 链路负责；
- * - 写命令（资料更新 / 修改密码）：各持独立的 in-flight 键，同类命令进行中
- *   拒绝重复提交；命令的显式业务结果（成功 / 业务拒绝）由 adapter 归一后透传；
+ * - 写命令（资料更新 / 修改密码 / 公司补录）：各持独立的 in-flight 键；改密只与同类互斥。
+ *   资料更新与公司补录同属「个人资料」标签内的写动作，共用一把互斥锁：任一在途时
+ *   另一条直接返回 in-flight 且不发起请求——二者的权威视图互不覆盖，也就不存在
+ *   「补录成功后又被后发资料的失败/旧视图丢弃」的时序问题；
  * - 陈旧响应防护：与 use-admin-user-list 的 requestSeq 同一口径——**设置视图序号**
- *   只在初始加载 / reload / 资料保存这三类会改写设置视图的动作发起时推进，
+ *   只在初始加载 / reload / 资料保存 / 公司补录这几类会改写设置视图的动作发起时推进，
  *   结果回来时序号已推进即整体丢弃。改密不触碰视图序号（不产生设置视图事实，
  *   成功后由页面装配层清理会话并跳转登录页），与资料保存互不阻塞、互不丢弃；
  * - 日志安全边界：命令失败日志只记录 error 对象，不得携带命令入参
@@ -18,10 +20,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import {
   changeMyPassword,
   fetchMyAccountSettings,
+  supplementMyCustomerCompany,
   updateMyAccountSettingsProfile,
 } from '../infrastructure/account-settings-adapter';
 
@@ -33,6 +37,8 @@ import type {
   ChangeMyPasswordOutcome,
   ChangeMyPasswordResult,
   ChangePasswordSessionIdentity,
+  CustomerCompanySupplementDraft,
+  CustomerCompanySupplementResult,
 } from './account-settings.types';
 
 /** Hook 级可选项：账号身份采样与资料保存成功回调（均由页面装配层注入） */
@@ -69,20 +75,16 @@ export type AccountSettingsState =
   | { settings: AccountSettingsView; status: 'ready' }
   | { status: 'loading' };
 
-export type AccountSettingsCommandKey = 'change-password' | 'update-profile';
+export type AccountSettingsCommandKey = 'change-password' | 'supplement-company' | 'update-profile';
 
 export type AccountSettingsCommandExecution<T> =
   | { kind: 'ok'; result: T }
   | { kind: 'in-flight' }
   | { kind: 'unhandled-error'; message: string };
 
-const UNHANDLED_FALLBACK_MESSAGE = '操作失败，请稍后重试。';
-
 function toUnhandledUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : UNHANDLED_FALLBACK_MESSAGE;
+  return isGraphQLIngressError(error) ? error.userMessage : translateNow('account.command.failed');
 }
-
-const LOAD_FAILED_MESSAGE = '账号设置加载失败，请稍后重试。';
 
 export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
   const { enabled = true, onProfileSaved, sampleAccountId, sampleSessionIdentity } = options;
@@ -133,7 +135,7 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
         }
 
         if (!cancelled && viewSeqRef.current === viewSeq) {
-          setState({ message: LOAD_FAILED_MESSAGE, status: 'failed' });
+          setState({ message: translateNow('account.loadFailedRetry'), status: 'failed' });
         }
       }
     }
@@ -168,7 +170,7 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
         }
 
         if (viewSeqRef.current === viewSeq) {
-          setState({ message: LOAD_FAILED_MESSAGE, status: 'failed' });
+          setState({ message: translateNow('account.loadFailedRetry'), status: 'failed' });
         }
       });
   }, [enabled]);
@@ -184,7 +186,12 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
     async (
       draft: AccountSettingsProfileDraft,
     ): Promise<AccountSettingsCommandExecution<AccountSettingsProfileUpdateResult>> => {
-      if (pendingKeysRef.current.has('update-profile')) {
+      // 与公司补录共用同一把互斥锁：二者都改写设置视图，交叠会让先完成的权威视图
+      // 被后发动作的序号推进丢弃（补录成功回显消失）。交叠期的第二条命令不发出请求。
+      if (
+        pendingKeysRef.current.has('update-profile') ||
+        pendingKeysRef.current.has('supplement-company')
+      ) {
         return { kind: 'in-flight' };
       }
 
@@ -215,6 +222,48 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
       }
     },
     [onProfileSaved, sampleAccountId, setPending],
+  );
+
+  /**
+   * 缺归属客户补录公司：成功时与资料更新同构地推进设置视图序号并写回权威视图
+   * （期间若用户又发起别的动作，过期结果不得覆盖新状态）。命令自身不判定
+   * 「能否补录」——资格由服务端裁决，前端只把业务拒绝原样透传。
+   */
+  const supplementCompany = useCallback(
+    async (
+      draft: CustomerCompanySupplementDraft,
+    ): Promise<AccountSettingsCommandExecution<CustomerCompanySupplementResult>> => {
+      // 与资料更新共用同一把互斥锁（见 updateProfile）：交叠期的第二条命令不发出请求
+      if (
+        pendingKeysRef.current.has('supplement-company') ||
+        pendingKeysRef.current.has('update-profile')
+      ) {
+        return { kind: 'in-flight' };
+      }
+
+      viewSeqRef.current += 1;
+      const viewSeq = viewSeqRef.current;
+      setPending('supplement-company', true);
+
+      try {
+        const result = await supplementMyCustomerCompany(draft);
+
+        if (result.ok && viewSeqRef.current === viewSeq) {
+          setState({ settings: result.settings, status: 'ready' });
+        }
+
+        return { kind: 'ok', result };
+      } catch (error) {
+        if (!isGraphQLIngressError(error)) {
+          console.error('公司补录出现未分类错误：', error);
+        }
+
+        return { kind: 'unhandled-error', message: toUnhandledUserMessage(error) };
+      } finally {
+        setPending('supplement-company', false);
+      }
+    },
+    [setPending],
   );
 
   /** 修改密码：成功结果只回传固定提示与**发起前采样**的会话身份（迟到响应由
@@ -262,5 +311,5 @@ export function useAccountSettings(options: UseAccountSettingsOptions = {}) {
     [pendingKeys],
   );
 
-  return { isPending, reload, state, updatePassword, updateProfile };
+  return { isPending, reload, state, supplementCompany, updatePassword, updateProfile };
 }

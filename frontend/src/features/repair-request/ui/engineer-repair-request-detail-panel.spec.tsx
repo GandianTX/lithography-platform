@@ -6,9 +6,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { translate } from '@/shared/i18n';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 
-import { ENGINEER_RESPONSE_TEXT_OVER_CAPACITY_MESSAGE } from '../application/engineer-response-text-capacity';
 import type { EngineerRepairRequestDetailState } from '../application/use-engineer-repair-request-detail';
 import type {
   AcceptRepairRequestResult,
@@ -37,6 +37,11 @@ vi.mock('../application/use-engineer-repair-request-detail-flow', () => ({
 
 const CONFLICT_MESSAGE = '该维修申请已被接单，请刷新后查看最新状态';
 const NOT_ACCESSIBLE_MESSAGE = '维修申请不存在，或当前账号无权查看。';
+/** 默认（中文）语言下按词条真源翻译，避免在测试里复制第二份文案 */
+const ENGINEER_RESPONSE_TEXT_OVER_CAPACITY_MESSAGE = translate(
+  'zh-CN',
+  'engineerDetail.responseTooLong',
+);
 
 const READY_DETAIL: EngineerRepairRequestDetail = {
   id: 123,

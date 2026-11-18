@@ -12,6 +12,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
+import { ADMIN_ACCOUNT_RESET_OPTIONS } from '../../src/modules/account/admin-account-reset.contract';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
 import { AccountService } from '../../src/modules/account/base/services/account.service';
@@ -22,6 +23,7 @@ import {
   recordOwnedResource,
   runGuardedSpecCleanup,
   toResidueAccountFingerprint,
+  updateOwnedExpectation,
   type OwnedResourceLedger,
   type ResidueAccountFingerprint,
 } from '../utils/e2e-scoped-cleanup';
@@ -42,7 +44,9 @@ import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
  *    待审 / 已拒绝（异值改密只解除强制改密，不改变申请事实）。
  *
  * 造数纪律：
- * - `must_change_password` 目前没有业务入口可置位，只能由受控夹具写入；夹具在同一事务成功后
+ * - `must_change_password` 的业务入口是管理员重置密码（`adminResetUserPassword` 在同一事务
+ *   内与哈希一并置位），由 `admin-user-management.e2e-spec.ts` 覆盖；本规格只关心「已处于
+ *   强制改密」后的本人改密语义，故仍由受控夹具直接写入该列；夹具在同一事务成功后
  *   才登记真实 ID 与预期事实，清理走 `runGuardedSpecCleanup` 的精确台账；
  * - 待审 / 已拒绝工程师的申请行是真实 ``engineer_registration_application`` 记录（含审核人、
  *   审核时间与拒绝意见），因此会话限制由真实申请状态而非伪造字段产生；
@@ -83,10 +87,21 @@ const UPDATE_MY_ACCOUNT_SETTINGS_MUTATION = `
   }
 `;
 
+const UPDATE_MY_ACCOUNT_PROFILE_MUTATION = `
+  mutation UpdateMyAccountProfile($input: UpdateMyAccountProfileInput!) {
+    updateMyAccountProfile(input: $input) { isUpdated }
+  }
+`;
+
 const ORG_CODE = 'E2E_I1_PRIMARY';
 const ORG_NAME = 'E2E I1 强制改密规格组织';
 
 const APPLICATION_NOTE = 'E2E I1 强制改密规格申请';
+
+/** 部署默认重置密码（经 DI 覆盖注入，与管理员默认重置入口同一配置项） */
+const DEPLOY_DEFAULT_PASSWORD = 'E2eDeploy#Default2026';
+/** 与默认密码 NFKC 等价的整角写法：策略层先做 NFKC，故能到达默认密码守卫 */
+const FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD = 'Ｅ２ｅＤｅｐｌｏｙ＃Ｄｅｆａｕｌｔ２０２６';
 
 interface ForcedChangeAccountSpec {
   readonly loginName: string;
@@ -143,13 +158,18 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
 
   const ownership: OwnedResourceLedger = createOwnedResourceLedger();
   const accountIds = new Map<string, number>();
+  let adminAccountId: number;
 
   beforeAll(async () => {
     initGraphQLSchema();
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [ApiModule],
-    }).compile();
+    })
+      // 显式注入部署默认重置密码：覆盖真实环境配置，使「拒绝默认值」用例可确定复现
+      .overrideProvider(ADMIN_ACCOUNT_RESET_OPTIONS)
+      .useValue({ defaultPassword: DEPLOY_DEFAULT_PASSWORD })
+      .compile();
     app = moduleFixture.createNestApplication();
     await app.init();
     dataSource = moduleFixture.get<DataSource>(DataSource);
@@ -169,7 +189,7 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     });
 
     await seedTestAccounts({ dataSource, includeKeys: ['admin'], ownership });
-    const adminAccountId = (
+    adminAccountId = (
       await dataSource
         .getRepository(AccountEntity)
         .findOneOrFail({ where: { loginName: testAccountsConfig.admin.loginName } })
@@ -366,7 +386,7 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     return body.data?.mySessionIdentity?.restriction as SessionRestriction;
   };
 
-  /** 代表业务：强制改密未完成时 `updateMyAccountSettings` 必须被 MustChangePasswordGuard 拒绝。 */
+  /** 代表业务：强制改密未完成时，旧广写与 Web 窄写入口都必须被 MustChangePasswordGuard 拒绝。 */
   const expectBusinessRejected = async (token: string): Promise<void> => {
     const body = await gql<{ updateMyAccountSettings?: { isUpdated: boolean } }>({
       query: UPDATE_MY_ACCOUNT_SETTINGS_MUTATION,
@@ -377,6 +397,16 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     expect(body.errors).toHaveLength(1);
     expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
     expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+    const narrowBody = await gql<{ updateMyAccountProfile?: { isUpdated: boolean } }>({
+      query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION,
+      variables: { input: { nickname: 'i1_narrow_should_not_persist' } },
+      token,
+    });
+    expect(narrowBody.data?.updateMyAccountProfile).toBeUndefined();
+    expect(narrowBody.errors).toHaveLength(1);
+    expect(narrowBody.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+    expect(narrowBody.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
   };
 
   /** 同值提交被拒的公共断言：大类/细码、零写入、身份与代表业务均保持受限。 */
@@ -443,6 +473,42 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
       params.expectedRestriction,
     );
     expect(await readSessionRestriction(freshToken)).toBe(params.expectedRestriction);
+  };
+
+  /**
+   * 提交部署默认重置密码被拒的公共断言：`BAD_USER_INPUT` / 通用细码 `MY_ACCOUNT_NEW_PASSWORD_NOT_ALLOWED`、
+   * 通用文案、零写入（哈希与标记不变）、会话不退出、原密码仍可登录，且响应不回显配置值。
+   */
+  const expectDefaultPasswordRejected = async (newPassword: string): Promise<void> => {
+    const token = await expectLoginRestriction(
+      testAccountsConfig.admin.loginName,
+      testAccountsConfig.admin.loginPassword,
+      SessionRestriction.NONE,
+    );
+    const rowBefore = await readAccountRow(adminAccountId);
+    const hashBefore = rowBefore?.loginPassword;
+    expect(rowBefore?.mustChangePassword).toBe(false);
+
+    const body = await changePassword(token, testAccountsConfig.admin.loginPassword, newPassword);
+
+    expect(body.data?.changeMyPassword).toBeUndefined();
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+    expect(body.errors?.[0]?.extensions?.errorCode).toBe('MY_ACCOUNT_NEW_PASSWORD_NOT_ALLOWED');
+    expect(body.errors?.[0]?.message).toBe('新密码不被允许，请更换其他密码');
+    expect(JSON.stringify(body)).not.toContain(DEPLOY_DEFAULT_PASSWORD);
+    expect(JSON.stringify(body)).not.toContain(FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD);
+
+    const rowAfter = await readAccountRow(adminAccountId);
+    expect(rowAfter?.loginPassword).toBe(hashBefore);
+    expect(rowAfter?.mustChangePassword).toBe(false);
+
+    expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+    await expectLoginRestriction(
+      testAccountsConfig.admin.loginName,
+      testAccountsConfig.admin.loginPassword,
+      SessionRestriction.NONE,
+    );
   };
 
   describe('正常客户', () => {
@@ -533,6 +599,72 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
         expectedRestriction: SessionRestriction.ENGINEER_PENDING,
       });
     });
+
+    it('解除强制改密后混传姓名仍被拒为 FORBIDDEN，且不产生任何写入', async () => {
+      const token = await expectLoginRestriction(
+        PENDING_ENGINEER.loginName,
+        'I1Pending#New2026',
+        SessionRestriction.ENGINEER_PENDING,
+      );
+
+      // 受限会话白名单只含 nickname / phone / contactEmail：混传 realName 整体拒绝
+      const body = await gql<{ updateMyAccountSettings?: { isUpdated: boolean } }>({
+        query: UPDATE_MY_ACCOUNT_SETTINGS_MUTATION,
+        variables: { input: { nickname: 'i1_restricted_write', realName: '受限会话不可改姓名' } },
+        token,
+      });
+
+      expect(body.data?.updateMyAccountSettings).toBeUndefined();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(body.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 窄写入口同样只放行白名单：混传 realName 整体拒绝且零部分写入
+      const narrowBody = await gql<{ updateMyAccountProfile?: { isUpdated: boolean } }>({
+        query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION,
+        variables: {
+          input: { nickname: 'i1_narrow_restricted_write', realName: '受限会话不可改姓名' },
+        },
+        token,
+      });
+      expect(narrowBody.data?.updateMyAccountProfile).toBeUndefined();
+      expect(narrowBody.errors).toHaveLength(1);
+      expect(narrowBody.errors?.[0]?.extensions?.code).toBe('FORBIDDEN');
+      expect(narrowBody.errors?.[0]?.extensions?.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+
+      // 整体拒绝：合法昵称也不得部分写入
+      const info = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOne({ where: { accountId: accountIds.get('pendingEngineer') as number } });
+      expect(info?.nickname).toBe(`${PENDING_ENGINEER.loginName}_nickname`);
+      expect(info?.realName).toBeNull();
+
+      // 白名单内字段经窄写入口成功写入
+      const allowedBody = await gql<{ updateMyAccountProfile?: { isUpdated: boolean } }>({
+        query: UPDATE_MY_ACCOUNT_PROFILE_MUTATION,
+        variables: {
+          input: {
+            nickname: 'i1_narrow_allowed',
+            phone: '13600003333',
+            contactEmail: 'i1.narrow@example.com',
+          },
+        },
+        token,
+      });
+      expect(allowedBody.errors).toBeUndefined();
+      expect(allowedBody.data?.updateMyAccountProfile?.isUpdated).toBe(true);
+      const updatedInfo = await dataSource
+        .getRepository(UserInfoEntity)
+        .findOne({ where: { accountId: accountIds.get('pendingEngineer') as number } });
+      expect(updatedInfo?.nickname).toBe('i1_narrow_allowed');
+      expect(updatedInfo?.phone).toBe('13600003333');
+      expect(updatedInfo?.email).toBe('i1.narrow@example.com');
+      expect(updatedInfo?.realName).toBeNull();
+      updateOwnedExpectation(ownership, 'account', accountIds.get('pendingEngineer') as number, {
+        nickname: 'i1_narrow_allowed',
+        userInfoEmail: 'i1.narrow@example.com',
+      });
+    });
   });
 
   describe('已拒绝工程师', () => {
@@ -565,6 +697,95 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
         newPassword,
         expectedRestriction: SessionRestriction.ENGINEER_REJECTED,
       });
+    });
+  });
+
+  describe('普通账号（未被要求强制改密）', () => {
+    it('提交部署默认重置密码被拒：哈希与标记不变、会话不退出、原密码仍可登录', async () => {
+      await expectDefaultPasswordRejected(DEPLOY_DEFAULT_PASSWORD);
+    });
+
+    it('与部署默认密码 NFKC 等价的整角写法同样被拒，不能改写默认值守卫', async () => {
+      await expectDefaultPasswordRejected(FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD);
+    });
+
+    it('同一错误当前密码下，默认值 / NFKC 等价 / 其他合规值返回完全一致的当前密码错误', async () => {
+      // 独立复验双请求反例的固化：持有有效会话但没有当前密码时，响应不得暴露
+      // 「猜中了部署默认值」——三次提交的大类码、细码、文案必须完全一致。
+      const token = await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
+      const hashBefore = (await readAccountRow(adminAccountId))?.loginPassword;
+      const wrongCurrentPassword = 'Totally#Wrong2026';
+      const candidates = [
+        DEPLOY_DEFAULT_PASSWORD,
+        FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD,
+        'I1Admin#Another2026',
+      ];
+      const bodies: Array<Awaited<ReturnType<typeof changePassword>>> = [];
+
+      for (const candidate of candidates) {
+        bodies.push(await changePassword(token, wrongCurrentPassword, candidate));
+      }
+
+      for (const body of bodies) {
+        expect(body.data?.changeMyPassword).toBeUndefined();
+        expect(body.errors).toHaveLength(1);
+        expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+        expect(body.errors?.[0]?.extensions?.errorCode).toBe(
+          'MY_ACCOUNT_CURRENT_PASSWORD_MISMATCH',
+        );
+        expect(body.errors?.[0]?.message).toBe('当前密码不正确');
+        expect(JSON.stringify(body)).not.toContain(DEPLOY_DEFAULT_PASSWORD);
+        expect(JSON.stringify(body)).not.toContain(FULL_WIDTH_DEPLOY_DEFAULT_PASSWORD);
+      }
+
+      const rowAfter = await readAccountRow(adminAccountId);
+      expect(rowAfter?.loginPassword).toBe(hashBefore);
+      expect(rowAfter?.mustChangePassword).toBe(false);
+      expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+      await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
+    });
+
+    it('提交与当前密码相同的新密码同样被拒，哈希与标记不变且会话不退出', async () => {
+      const token = await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
+      const rowBefore = await readAccountRow(adminAccountId);
+      const hashBefore = rowBefore?.loginPassword;
+      expect(rowBefore?.mustChangePassword).toBe(false);
+
+      const body = await changePassword(
+        token,
+        testAccountsConfig.admin.loginPassword,
+        testAccountsConfig.admin.loginPassword,
+      );
+
+      expect(body.data?.changeMyPassword).toBeUndefined();
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+      expect(body.errors?.[0]?.extensions?.errorCode).toBe('MY_ACCOUNT_NEW_PASSWORD_UNCHANGED');
+      expect(body.errors?.[0]?.message).toBe('新密码需与当前密码不同');
+
+      const rowAfter = await readAccountRow(adminAccountId);
+      expect(rowAfter?.loginPassword).toBe(hashBefore);
+      expect(rowAfter?.mustChangePassword).toBe(false);
+
+      // 会话未退出：原 Token 仍有效，原密码仍可登录
+      expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+      await expectLoginRestriction(
+        testAccountsConfig.admin.loginName,
+        testAccountsConfig.admin.loginPassword,
+        SessionRestriction.NONE,
+      );
     });
   });
 });

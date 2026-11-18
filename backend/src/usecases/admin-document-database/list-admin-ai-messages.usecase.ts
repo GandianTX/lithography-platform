@@ -9,9 +9,11 @@ import {
 import { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
 import { Injectable } from '@nestjs/common';
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiMessageListPage } from '@src/modules/lithography/admin-document-database.types';
 import { AdminAiMessageQueryService } from '@src/modules/lithography/queries/admin-ai-message.query.service';
-import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { assertAdminDocumentDatabaseGlobalAccess } from './admin-document-database-permission';
 
 /** 页大小上限：与 GraphQL 边界 PaginationArgs @Max(100) 对齐（统一分页策略） */
 const MAX_PAGE_SIZE = 100;
@@ -26,14 +28,23 @@ const MAX_PAGE_SIZE = 100;
  */
 @Injectable()
 export class ListAdminAiMessagesUsecase {
-  constructor(private readonly adminAiMessageQueryService: AdminAiMessageQueryService) {}
+  constructor(
+    private readonly adminAiMessageQueryService: AdminAiMessageQueryService,
+    private readonly accountQueryService: AccountQueryService,
+    private readonly organizationContextService: TrustedOrganizationContextQueryService,
+  ) {}
 
   async execute(params: {
     session: UsecaseSession;
     conversationId: number;
     pagination: PaginationParams;
   }): Promise<AdminAiMessageListPage> {
-    assertAdminDocumentDatabasePermission(params.session, '查看 AI 会话消息');
+    await assertAdminDocumentDatabaseGlobalAccess({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      organizationContextService: this.organizationContextService,
+      actionLabel: '查看 AI 会话消息',
+    });
 
     if (!Number.isInteger(params.conversationId) || params.conversationId <= 0) {
       throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.INVALID_PARAMS, '会话 ID 无效', {

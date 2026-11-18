@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { SessionIdentitySnapshot } from './infrastructure/auth-session-identity-graphql';
 import { fetchMySessionIdentity } from './infrastructure/auth-session-identity-graphql';
 import {
   authSessionStore,
@@ -11,6 +12,31 @@ import {
   logoutAuthSession,
   refreshCurrentAuthSessionIdentity,
 } from './auth-session-entry';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, reject, resolve };
+}
+
+function identitySnapshot(
+  restriction: SessionIdentitySnapshot['restriction'],
+): SessionIdentitySnapshot {
+  return {
+    accountId: 900201,
+    adminLevel: null,
+    customerOrganizationId: null,
+    engineerOrganizationId: null,
+    adminOrganizationId: null,
+    registrationOrganizationId: null,
+    restriction,
+  };
+}
 
 // 只在基础设施边界桩掉网络：入口层「采样身份 → 服务端复核 → 代次保护写入」的
 // 编排仍走真实实现（store + 浏览器持久化）。
@@ -79,7 +105,7 @@ describe('auth session entry', () => {
     it('无会话时不请求服务端', async () => {
       authSessionStore.clearSession();
 
-      await expect(refreshCurrentAuthSessionIdentity()).resolves.toBe(false);
+      await expect(refreshCurrentAuthSessionIdentity()).resolves.toEqual({ status: 'stale' });
       expect(fetchMySessionIdentityMock).not.toHaveBeenCalled();
     });
 
@@ -100,7 +126,7 @@ describe('auth session entry', () => {
         restriction: 'ENGINEER_PENDING',
       });
 
-      await expect(refreshCurrentAuthSessionIdentity()).resolves.toBe(true);
+      await expect(refreshCurrentAuthSessionIdentity()).resolves.toEqual({ status: 'applied' });
 
       expect(getCurrentAuthSession()).toMatchObject({
         adminLevel: 2,
@@ -130,7 +156,7 @@ describe('auth session entry', () => {
         restriction: null,
       });
 
-      await expect(refreshCurrentAuthSessionIdentity()).resolves.toBe(false);
+      await expect(refreshCurrentAuthSessionIdentity()).resolves.toEqual({ status: 'stale' });
 
       expect(getCurrentAuthSession()?.restriction).toBe('NONE');
     });
@@ -152,8 +178,71 @@ describe('auth session entry', () => {
         restriction: 'MUST_CHANGE_PASSWORD',
       });
 
-      await expect(refreshCurrentAuthSessionIdentity()).resolves.toBe(false);
+      await expect(refreshCurrentAuthSessionIdentity()).resolves.toEqual({ status: 'stale' });
 
+      expect(getCurrentAuthSession()?.restriction).toBe('NONE');
+    });
+
+    it('并发复核乱序返回时只写入最新请求，旧响应不得回退限制状态', async () => {
+      authSessionStore.establishSession({
+        accessToken: 'entry-access-token',
+        accountId: 900201,
+        role: 'ENGINEER',
+        restriction: 'ENGINEER_PENDING',
+        userInfo: null,
+      });
+      const older = deferred<SessionIdentitySnapshot | null>();
+      const latest = deferred<SessionIdentitySnapshot | null>();
+      fetchMySessionIdentityMock
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(latest.promise);
+
+      const olderCall = refreshCurrentAuthSessionIdentity();
+      const latestCall = refreshCurrentAuthSessionIdentity();
+
+      latest.resolve(identitySnapshot('NONE'));
+      await expect(latestCall).resolves.toEqual({ status: 'applied' });
+      expect(getCurrentAuthSession()?.restriction).toBe('NONE');
+
+      // 旧请求迟到：必须被序号保护丢弃，不能把刚确认的 NONE 回退成待审
+      older.resolve(identitySnapshot('ENGINEER_PENDING'));
+      await expect(olderCall).resolves.toEqual({ status: 'stale' });
+      expect(getCurrentAuthSession()?.restriction).toBe('NONE');
+    });
+
+    it('最新请求失败时不回退到更早请求的成功结果', async () => {
+      authSessionStore.establishSession({
+        accessToken: 'entry-access-token',
+        accountId: 900201,
+        role: 'ENGINEER',
+        restriction: 'ENGINEER_PENDING',
+        userInfo: null,
+      });
+      const older = deferred<SessionIdentitySnapshot | null>();
+      fetchMySessionIdentityMock
+        .mockReturnValueOnce(older.promise)
+        .mockRejectedValueOnce(new Error('network'));
+
+      const olderCall = refreshCurrentAuthSessionIdentity();
+      const latestCall = refreshCurrentAuthSessionIdentity();
+
+      await expect(latestCall).rejects.toThrow('network');
+
+      older.resolve(identitySnapshot('NONE'));
+      await expect(olderCall).resolves.toEqual({ status: 'stale' });
+      expect(getCurrentAuthSession()?.restriction).toBe('ENGINEER_PENDING');
+    });
+
+    it('复核结果与当前快照一致时返回 unchanged（区别于迟到 / 无效的 stale）', async () => {
+      authSessionStore.establishSession({
+        accessToken: 'entry-access-token',
+        accountId: 900201,
+        role: 'ENGINEER',
+        userInfo: null,
+      });
+      fetchMySessionIdentityMock.mockResolvedValue(identitySnapshot('NONE'));
+
+      await expect(refreshCurrentAuthSessionIdentity()).resolves.toEqual({ status: 'unchanged' });
       expect(getCurrentAuthSession()?.restriction).toBe('NONE');
     });
   });

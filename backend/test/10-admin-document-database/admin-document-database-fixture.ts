@@ -35,6 +35,7 @@ import {
   DataSource,
   EntityManager,
   In,
+  Not,
   type FindOptionsWhere,
   type ObjectLiteral,
   type Repository,
@@ -42,10 +43,19 @@ import {
 
 import {
   assertDataSourceOnAllowedE2eDatabase,
+  assertManagerOnExpectedE2eDatabase,
   assertPhysicalCleanupConsent,
+  resolveExpectedE2eDatabase,
 } from '../utils/e2e-db-guard';
+import {
+  assertOwnedFactsComplete,
+  prepareGuardedSpecCleanupInTransaction,
+  type GuardedSpecCleanupInput,
+} from '../utils/e2e-scoped-cleanup';
 import { createTestAccount, type TestAccountConfig } from '../utils/test-accounts';
 
+// 基础夹具：普通业务 E2E 与所有权规格共享的三个角色。所有权规格按「只清本轮资源」
+// 断言集合规模，因此这里保持最小角色集合，不夹带权限矩阵专用账号。
 export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
   admin: {
     loginName: 'testpr3coreadmin',
@@ -73,7 +83,46 @@ export const ADMIN_DOC_FIXTURE_ACCOUNTS = {
   },
 } satisfies Record<'admin' | 'engineer' | 'customer', TestAccountConfig>;
 
+// F1 全域授权反例：同为 SUPER_ADMIN 会话，但等级/成员事实不满足全域入口。
+// 只有需要权限矩阵的 E2E 显式调用 seedAdminDocumentFixtureAdminMatrixAccounts 扩展，
+// 普通业务 E2E 与所有权规格不会被这三个账号改变集合语义。
+export const ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS = {
+  adminLevel2: {
+    loginName: 'testpr3coreadminl2',
+    loginEmail: 'pr3.core.admin.l2@example.com',
+    loginPassword: 'TestPr3CoreAdminL2@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+  adminNoLevel: {
+    loginName: 'testpr3coreadminnolevel',
+    loginEmail: 'pr3.core.admin.nolevel@example.com',
+    loginPassword: 'TestPr3CoreAdminNoLevel@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+  adminNoOrg: {
+    loginName: 'testpr3coreadminnoorg',
+    loginEmail: 'pr3.core.admin.noorg@example.com',
+    loginPassword: 'TestPr3CoreAdminNoOrg@2024',
+    status: AccountStatus.ACTIVE,
+    accessGroup: [IdentityTypeEnum.SUPER_ADMIN],
+    identityType: IdentityTypeEnum.SUPER_ADMIN,
+  },
+} satisfies Record<'adminLevel2' | 'adminNoLevel' | 'adminNoOrg', TestAccountConfig>;
+
+// 残留核验/回收需要识别全部可能的夹具账号（矩阵账号同样带专属 loginName），
+// 但「本轮创建集合」仍由调用方选择的基础/矩阵 seeder 决定。
+const ALL_ADMIN_DOC_FIXTURE_ACCOUNTS = {
+  ...ADMIN_DOC_FIXTURE_ACCOUNTS,
+  ...ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS,
+};
+
 export type AdminDocFixtureAccountKey = keyof typeof ADMIN_DOC_FIXTURE_ACCOUNTS;
+export type AdminDocFixtureAdminMatrixAccountKey =
+  keyof typeof ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS;
 
 export const ADMIN_DOC_FIXTURE_MARKERS = {
   modelCode: 'E2E-ADM-DOCDB-CORE-MODEL',
@@ -207,8 +256,16 @@ const assertNoUnknownIds = (
 };
 
 const expectedAccountByLoginName = new Map(
-  Object.values(ADMIN_DOC_FIXTURE_ACCOUNTS).map((config) => [config.loginName, config]),
+  Object.values(ALL_ADMIN_DOC_FIXTURE_ACCOUNTS).map((config) => [config.loginName, config]),
 );
+
+/**
+ * 组合清理上下文：同一事务内组织链已经核验、并将在夹具删除之前执行的成员关系 ID。
+ * 这些行属于“批次内引用”，不是外部引用，入向闭包必须排除，否则会在首条 DELETE 前误拒。
+ */
+export type AdminDocFixtureCleanupContext = {
+  readonly batchOwnedMembershipIds: readonly number[];
+};
 
 type InboundReferenceCheck = { readonly label: string; readonly count: () => Promise<number> };
 
@@ -227,6 +284,8 @@ const assertNoExternalInboundReferences = async (
     readonly accountIds: readonly number[];
     readonly equipmentModelIds: readonly number[];
     readonly repairRequestIds: readonly number[];
+    /** 同一事务内组织链计划删除的成员关系：批次内引用，不计入外部引用。 */
+    readonly batchOwnedMembershipIds?: readonly number[];
   },
 ): Promise<void> => {
   const checks: InboundReferenceCheck[] = [];
@@ -285,7 +344,12 @@ const assertNoExternalInboundReferences = async (
     label: 'organization_membership.account_id',
     repo: manager.getRepository(OrganizationMembershipEntity),
     ids: sets.accountIds,
-    where: (ids) => ({ accountId: In(ids) }),
+    where: (ids) => {
+      const batchMembershipIds = sets.batchOwnedMembershipIds ?? [];
+      return batchMembershipIds.length > 0
+        ? { accountId: In(ids), id: Not(In([...batchMembershipIds])) }
+        : { accountId: In(ids) };
+    },
   });
   addInbound({
     label: 'maintenance_report.maintenance_engineer_account_id',
@@ -371,6 +435,7 @@ const resolveAndVerifyFixture = async (
   manager: EntityManager,
   helper: string,
   expected: AdminDocFixtureOwnership | null,
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
 ): Promise<AdminDocFixtureOwnership> => {
   const accountRepo = manager.getRepository(AccountEntity);
   const userInfoRepo = manager.getRepository(UserInfoEntity);
@@ -791,6 +856,7 @@ const resolveAndVerifyFixture = async (
     accountIds,
     equipmentModelIds,
     repairRequestIds,
+    batchOwnedMembershipIds: context.batchOwnedMembershipIds,
   });
 
   const resolved: AdminDocFixtureOwnership = {
@@ -856,6 +922,54 @@ const deleteVerifiedFixture = async (
 const hasOwnershipIds = (ownership: AdminDocFixtureOwnership): boolean =>
   Object.values(ownership).some((ids) => ids.length > 0);
 
+/** 事务内预检结果：`execute()` 只执行已核验计划内的精确删除。 */
+export type PreparedAdminDocFixtureCleanup = {
+  readonly verified: AdminDocFixtureOwnership;
+  execute(): Promise<void>;
+};
+
+/** 清空本轮夹具台账但保留对象引用（组合清理提交成功后调用）。 */
+export const clearAdminDocFixtureOwnership = (ownership: AdminDocFixtureOwnership): void => {
+  Object.assign(ownership, createAdminDocFixtureOwnership());
+};
+
+/** 上轮残留（事务内）：专属标记定位 + 全图归属核验，空集合返回 null。 */
+export const prepareAdminDocumentFixtureResidueCleanup = async (
+  manager: EntityManager,
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
+): Promise<PreparedAdminDocFixtureCleanup | null> => {
+  const helper = 'cleanupAdminDocumentFixtureResidue';
+  const verified = await resolveAndVerifyFixture(manager, helper, null, context);
+  if (!hasOwnershipIds(verified)) {
+    return null;
+  }
+  return {
+    verified,
+    execute: async () => {
+      await deleteVerifiedFixture(manager, verified);
+    },
+  };
+};
+
+/** 本轮收尾（事务内）：只接受运行时记录 ID，空集合返回 null。 */
+export const prepareAdminDocumentFixtureByIdsCleanup = async (
+  manager: EntityManager,
+  ownership: AdminDocFixtureOwnership,
+  context: AdminDocFixtureCleanupContext = { batchOwnedMembershipIds: [] },
+): Promise<PreparedAdminDocFixtureCleanup | null> => {
+  if (!hasOwnershipIds(ownership)) {
+    return null;
+  }
+  const helper = 'cleanupAdminDocumentFixtureByIds';
+  const verified = await resolveAndVerifyFixture(manager, helper, ownership, context);
+  return {
+    verified,
+    execute: async () => {
+      await deleteVerifiedFixture(manager, verified);
+    },
+  };
+};
+
 /** 恢复上轮崩溃残留：专属标记定位 → 全图归属核验 → 事务内精确回收。 */
 export const cleanupAdminDocumentFixtureResidue = async (
   ds: DataSource,
@@ -863,9 +977,12 @@ export const cleanupAdminDocumentFixtureResidue = async (
   const helper = 'cleanupAdminDocumentFixtureResidue';
   await assertFixtureDeleteTarget(ds, helper);
   return ds.transaction(async (manager) => {
-    const verified = await resolveAndVerifyFixture(manager, helper, null);
-    await deleteVerifiedFixture(manager, verified);
-    return verified;
+    const prepared = await prepareAdminDocumentFixtureResidueCleanup(manager);
+    if (!prepared) {
+      return createAdminDocFixtureOwnership();
+    }
+    await prepared.execute();
+    return prepared.verified;
   });
 };
 
@@ -880,30 +997,119 @@ export const cleanupAdminDocumentFixtureByIds = async (
   const helper = 'cleanupAdminDocumentFixtureByIds';
   await assertFixtureDeleteTarget(ds, helper);
   await ds.transaction(async (manager) => {
-    const verified = await resolveAndVerifyFixture(manager, helper, ownership);
-    await deleteVerifiedFixture(manager, verified);
+    const prepared = await prepareAdminDocumentFixtureByIdsCleanup(manager, ownership);
+    if (prepared) {
+      await prepared.execute();
+    }
   });
 };
 
-export const seedAdminDocumentFixtureAccounts = async (opts: {
-  dataSource: DataSource;
-  ownership: AdminDocFixtureOwnership;
-  createAccountUsecase?: CreateAccountUsecase | null;
-}): Promise<Record<AdminDocFixtureAccountKey, number>> => {
+export type AdminDocCombinedCleanupParams = {
+  readonly dataSource: DataSource;
+  readonly helper: string;
+  /** 显式预期目标库；缺省时取 DataSource.options.database。 */
+  readonly expectedDatabase?: string;
+  /** 组织链清理范围（owned 或 residue），与夹具共用同一事务。 */
+  readonly organization?: Omit<GuardedSpecCleanupInput, 'helper'>;
+  /** 夹具侧事务内预检；返回 null 表示本轮没有需要回收的夹具行。 */
+  readonly prepareFixture: (
+    manager: EntityManager,
+    database: string,
+    context: AdminDocFixtureCleanupContext,
+  ) => Promise<{ execute(): Promise<void> } | null>;
+  /** 事务提交成功后回调（用于清空本轮台账）；失败不调用。 */
+  readonly onCommitted?: () => void;
+};
+
+/**
+ * 组合清理入口：组织链与夹具使用同一事务管理器。
+ *
+ * 顺序：双门禁 → 两段事务内预检全部通过 → 组织 `execute()` → 夹具 `execute()`。
+ * 任一预检失败时两段都未执行首条 DELETE；任一后序删除失败整批回滚；
+ * 只有事务提交成功才调用 `onCommitted` 清空台账。
+ */
+export const runAdminDocCombinedCleanup = async (
+  params: AdminDocCombinedCleanupParams,
+): Promise<void> => {
+  const { dataSource, helper, expectedDatabase, organization, prepareFixture, onCommitted } =
+    params;
+
+  try {
+    assertPhysicalCleanupConsent();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`[${helper}] 阶段=清理许可门禁 拒绝执行删除：${detail}`, { cause: error });
+  }
+
+  const expected = resolveExpectedE2eDatabase(dataSource, expectedDatabase);
+  await assertDataSourceOnAllowedE2eDatabase(dataSource, expected);
+
+  if (organization?.owned) {
+    // 纯内存完整性检查：缺事实时不开启事务、不执行任何 DELETE。
+    assertOwnedFactsComplete(organization.owned, helper);
+  }
+
+  await dataSource.transaction(async (manager) => {
+    await assertManagerOnExpectedE2eDatabase(manager, expected);
+
+    const organizationPrepared = organization
+      ? await prepareGuardedSpecCleanupInTransaction(manager, { ...organization, helper })
+      : null;
+    // 两段预检都完成之前不执行任何 DELETE。
+    // 组织链计划删除的成员关系属于批次内引用，夹具侧入向闭包必须排除。
+    const fixturePrepared = await prepareFixture(manager, expected, {
+      batchOwnedMembershipIds: organizationPrepared?.membershipIds ?? [],
+    });
+
+    if (organizationPrepared) {
+      await organizationPrepared.execute();
+    }
+    if (fixturePrepared) {
+      await fixturePrepared.execute();
+    }
+  });
+
+  onCommitted?.();
+};
+
+const seedFixtureAccounts = async <Key extends string>(
+  opts: {
+    dataSource: DataSource;
+    ownership: AdminDocFixtureOwnership;
+    createAccountUsecase?: CreateAccountUsecase | null;
+  },
+  accounts: Record<Key, TestAccountConfig>,
+): Promise<Record<Key, number>> => {
   await assertFixtureTarget(opts.dataSource, 'seedAdminDocumentFixtureAccounts');
-  const result = {} as Record<AdminDocFixtureAccountKey, number>;
-  const keys = Object.keys(ADMIN_DOC_FIXTURE_ACCOUNTS) as AdminDocFixtureAccountKey[];
+  const result = {} as Record<Key, number>;
+  const keys = Object.keys(accounts) as Key[];
   for (const key of keys) {
     const created = await createTestAccount(
       opts.dataSource,
       opts.createAccountUsecase ?? null,
-      ADMIN_DOC_FIXTURE_ACCOUNTS[key],
+      accounts[key],
     );
     recordId(opts.ownership.accountIds, created.accountId);
     result[key] = created.accountId;
   }
   return result;
 };
+
+/** 基础三角色夹具（普通业务 E2E 与所有权规格的默认集合）。 */
+export const seedAdminDocumentFixtureAccounts = async (opts: {
+  dataSource: DataSource;
+  ownership: AdminDocFixtureOwnership;
+  createAccountUsecase?: CreateAccountUsecase | null;
+}): Promise<Record<AdminDocFixtureAccountKey, number>> =>
+  seedFixtureAccounts(opts, ADMIN_DOC_FIXTURE_ACCOUNTS);
+
+/** 权限矩阵扩展（二级 / 缺级 / 缺成员），仅由需要这些反例的 E2E 显式调用。 */
+export const seedAdminDocumentFixtureAdminMatrixAccounts = async (opts: {
+  dataSource: DataSource;
+  ownership: AdminDocFixtureOwnership;
+  createAccountUsecase?: CreateAccountUsecase | null;
+}): Promise<Record<AdminDocFixtureAdminMatrixAccountKey, number>> =>
+  seedFixtureAccounts(opts, ADMIN_DOC_FIXTURE_ADMIN_MATRIX_ACCOUNTS);
 
 /** 创建普通 spec 完整业务图；测试可注入阶段失败以验证 beforeAll 部分成功清理。 */
 export const seedAdminDocumentFixtureBusiness = async (opts: {

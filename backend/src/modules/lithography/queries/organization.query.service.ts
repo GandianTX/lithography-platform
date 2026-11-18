@@ -361,6 +361,30 @@ export class OrganizationQueryService {
   }
 
   /**
+   * 按主键复核组织仍为 ACTIVE（写前复核，事务内带共享行锁）。
+   *
+   * 仅用于既有业务写流程在事务内复核「已归属组织是否仍有效」（当前为新建维修申请）：
+   * 不要求 `is_managed_company`——补录后自由创建的未受管客户公司同样可以报修；
+   * 与注册候选口径（`findEligibleRegistrationOption` 的 ACTIVE + 受管）刻意分开。
+   *
+   * 携带事务上下文时按当前读加共享行锁（`pessimistic_read`）：与「停用组织」的
+   * UPDATE 串行。停用先提交时，本方法等锁结束后按最新提交版本判定并返回 null；
+   * 本方法先取锁时，停用写入必须等本事务提交。非事务调用保持普通快照读。
+   */
+  async findActiveOrganizationForWrite(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<OrganizationRegistrationOption | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({
+      where: { id: params.organizationId, status: 'ACTIVE' },
+      select: { id: true, name: true },
+      ...(params.transactionContext ? { lock: { mode: 'pessimistic_read' as const } } : {}),
+    });
+    return row ? { id: row.id, name: row.name } : null;
+  }
+
+  /**
    * 按主键复核组织仍为 ACTIVE（旧入口口径）。
    *
    * 旧 `register` 入口（`RegistrationEntryChannel.LEGACY`）、`WeappRegisterUsecase` 与

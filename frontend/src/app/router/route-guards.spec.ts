@@ -18,14 +18,18 @@ vi.mock('@/features/auth-session', async (importOriginal) => {
 
 const mockedGetCurrentAuthSession = vi.mocked(authSessionFeature.getCurrentAuthSession);
 
-function createSnapshot(role: AuthSessionRole, restriction: AuthSessionRestriction = 'NONE') {
+function createSnapshot(
+  role: AuthSessionRole,
+  restriction: AuthSessionRestriction = 'NONE',
+  identity: { adminLevel?: number | null; adminOrganizationId?: number | null } = {},
+) {
   return {
     accessToken: 'access-token',
     accountId: 900101,
-    adminLevel: null,
+    adminLevel: identity.adminLevel ?? null,
     customerOrganizationId: null,
     engineerOrganizationId: null,
-    adminOrganizationId: null,
+    adminOrganizationId: identity.adminOrganizationId ?? null,
     registrationOrganizationId: null,
     restriction,
     role,
@@ -168,6 +172,35 @@ describe('protected route guard wiring', () => {
         protectedRouteLoader(createLoaderRequest('http://localhost/customer/repair-requests/new')),
       ),
     ).toBe('/admin');
+  });
+
+  it('applies the respective task 08 and document database scopes at the router', () => {
+    const load = (path: string) =>
+      protectedRouteLoader(createLoaderRequest(`http://localhost${path}`));
+
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1, adminOrganizationId: 910003 }),
+    );
+    expect(load('/admin/users')).toBeNull();
+    expect(load('/admin/document-database')).toBeNull();
+
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1 }),
+    );
+    expect(load('/admin/users')).toBeNull();
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 2, adminOrganizationId: 910004 }),
+    );
+    expect(load('/admin/users')).toBeNull();
+    expect(load('/admin/companies')).toBeNull();
+    expect(load('/admin/engineer-registrations')).toBeNull();
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('SUPER_ADMIN'));
+    expect(redirectLocation(load('/admin/users'))).toBe('/admin');
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
   });
 
   it('never renders another role content and sends cross-role visitors back home', () => {

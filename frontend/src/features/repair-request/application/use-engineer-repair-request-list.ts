@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n';
 
 import type {
   EngineerRepairListFilter,
@@ -62,7 +63,7 @@ type EngineerRepairListAction =
   | { type: 'load-failed'; requestId: number; message: string };
 
 function toListUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : '维修申请列表加载失败，请稍后重试。';
+  return isGraphQLIngressError(error) ? error.userMessage : translateNow('repairList.loadFailed');
 }
 
 function engineerRepairListReducer(

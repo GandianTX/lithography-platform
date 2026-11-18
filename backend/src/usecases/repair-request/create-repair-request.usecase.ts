@@ -11,9 +11,10 @@ import {
 } from '@core/common/errors/domain-error';
 import { normalizeRequiredText } from '@core/common/input-normalize/input-normalize.policy';
 import { Inject, Injectable } from '@nestjs/common';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EquipmentModelDetailSnapshot } from '@src/modules/lithography/lithography.types';
 import { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
-import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -40,7 +41,12 @@ const REQUEST_NO_RETRY_LIMIT = 3;
  * 1. 角色决策：仅 CUSTOMER 可提交（ENGINEER / SUPER_ADMIN 拒绝，兜底守卫误放）
  * 2. 输入决策：错误码、故障描述空白即拒绝；错误码、故障描述超长拒绝
  * 3. 事务内校验设备型号存在且启用（排他锁读，防并发停用）
- * 4. 事务内生成唯一申请编号，组装 contentMd 并落库；
+ * 4. 事务内校验客户可信公司归属（`base_user_info.customer_organization_id`）：
+ *    缺归属或归属组织已停用一律 FORBIDDEN，引导客户先补录；归属只来自数据库事实。
+ *    组织有效性按当前读加共享行锁复核，与并发「停用组织」的写入串行：
+ *    停用先提交则本请求等锁后按最新版本判定为不可用（零落库），
+ *    本请求先取锁则停用写入等本事务结束后生效。
+ * 5. 事务内生成唯一申请编号，组装 contentMd 并落库；
  *    唯一索引撞号（预检查无法感知的并发写入）时重新生成编号重试整段流程
  *
  * customerAccountId 仅取自会话（JWT），客户端不可传入
@@ -50,7 +56,8 @@ export class CreateRepairRequestUsecase {
   constructor(
     private readonly repairRequestService: RepairRequestService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
-    private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly accountQueryService: AccountQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -121,12 +128,33 @@ export class CreateRepairRequestUsecase {
       );
     }
 
-    // 组织归属：自注册客户可能无有效组织，此时保持 NULL（仅本人可见的存量兼容语义），
-    // 不按 company_name/厂家猜测；有可信成员关系时必须写入真实组织。
-    const organizationFact = await this.organizationContextQueryService.tryResolveForAccount({
+    // 客户公司归属：只认 `base_user_info.customer_organization_id`（注册 / 补录写入的
+    // 唯一真源），不再用成员关系「可空」解析，也不按 company_name / 厂家猜测。
+    // 缺归属 → 引导先补录；归属组织已停用 → 归属不可用。二者都在事务内失败关闭，零落库。
+    // 组织有效性用写前复核（当前读 + 共享行锁）而不是快照读：停用写入与本次资格判定
+    // 必须串行，避免「复核通过 → 等待组织行锁 → 用已停用组织落库」。
+    const customerOrganizationId = await this.accountQueryService.findCustomerOrganizationId({
       accountId: command.session.accountId,
       transactionContext,
     });
+    if (customerOrganizationId === null) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_REQUIRED,
+        '请先在账号设置中补充公司信息后再提交维修申请',
+        { accountId: command.session.accountId },
+      );
+    }
+    const ownerOrganization = await this.organizationQueryService.findActiveOrganizationForWrite({
+      organizationId: customerOrganizationId,
+      transactionContext,
+    });
+    if (!ownerOrganization) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_UNAVAILABLE,
+        '所属公司当前不可用，请联系管理员处理后再提交维修申请',
+        { accountId: command.session.accountId, organizationId: customerOrganizationId },
+      );
+    }
 
     let conflict: DomainError | undefined;
     for (let attempt = 0; attempt < REQUEST_NO_RETRY_LIMIT; attempt += 1) {
@@ -146,7 +174,7 @@ export class CreateRepairRequestUsecase {
             errorCode,
             faultDescription,
             contentMd,
-            ownerOrganizationId: organizationFact?.organizationId ?? null,
+            ownerOrganizationId: ownerOrganization.id,
           },
           transactionContext,
         );

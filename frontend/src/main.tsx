@@ -8,7 +8,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 
 import { bootstrapGraphQLRuntime } from '@/app/bootstrap';
-import { GraphQLProvider, ThemeProvider } from '@/app/providers';
+import { GraphQLProvider, I18nProvider, ThemeProvider } from '@/app/providers';
 import { App } from '@/app/router';
 
 import { AuthSessionProvider } from '@/features/auth-session';
@@ -21,9 +21,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <AuthSessionProvider>
       <GraphQLProvider>
-        <ThemeProvider>
-          <App />
-        </ThemeProvider>
+        <I18nProvider>
+          <ThemeProvider>
+            <App />
+          </ThemeProvider>
+        </I18nProvider>
       </GraphQLProvider>
     </AuthSessionProvider>
   </React.StrictMode>,

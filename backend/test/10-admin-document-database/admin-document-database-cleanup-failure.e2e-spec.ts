@@ -15,16 +15,20 @@
 //   admin-document-database-production.e2e-spec.ts /
 //   admin-document-database-production-ownership.e2e-spec.ts 在 lithography_e2e 上验证。
 
-import type { DataSource } from 'typeorm';
+import { In, type DataSource, type EntityManager } from 'typeorm';
 
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
+import { AccountEntity } from '@src/modules/account/base/entities/account.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { assertDataSourceOnAllowedE2eDatabase } from '../utils/e2e-db-guard';
+import { createOwnedResourceLedger, type OwnedResourceLedger } from '../utils/e2e-scoped-cleanup';
 import {
   cleanupAdminDocumentFixtureByIds,
   createAdminDocFixtureOwnership,
+  runAdminDocCombinedCleanup,
   runAdminDocFixtureTeardown,
   shouldRunAdminDocFixtureCleanup,
+  type AdminDocFixtureCleanupContext,
 } from './admin-document-database-fixture';
 import {
   PRODUCTION_FIXTURE_ACCOUNTS,
@@ -57,6 +61,8 @@ type MockState = {
   transactionCalls: number;
   /** 事务回调抛错次数（用于证明失败时整批回滚而非逐条独立提交）。 */
   transactionRollbacks: number;
+  /** 原始 SQL 的 DELETE 语句（组织链经 manager.query 删除，不属于实体仓库 delete）。 */
+  deleteQueries: string[];
 };
 
 /** 依据 where 条件（含 TypeORM In 操作符）在 mock 行集合中筛选 */
@@ -81,6 +87,8 @@ const createMockDataSource = (options: {
   rowsByEntity?: Record<string, Array<Record<string, unknown>>>;
   /** 本轮创建登记事实：按实体名生成与之逐字段一致的行（删除前核验的对照真源） */
   facts?: ProductionFixtureFacts;
+  /** 非守卫原始查询的返回行（组织链预检读取 organization / organization_membership 等）。 */
+  queryRows?: (sql: string) => unknown[] | undefined;
 }): { dataSource: DataSource; state: MockState } => {
   const state: MockState = {
     deleteCalls: [],
@@ -88,6 +96,7 @@ const createMockDataSource = (options: {
     guardQueryCalls: 0,
     transactionCalls: 0,
     transactionRollbacks: 0,
+    deleteQueries: [],
   };
   /** 事务嵌套深度：用于断言「删除发生在事务内」而不是逐条独立提交。 */
   let transactionDepth = 0;
@@ -167,14 +176,23 @@ const createMockDataSource = (options: {
 
   const getRepository = (entity: unknown) => createRepository(entity);
 
+  const runQuery = (sql: unknown): Promise<unknown[]> => {
+    const text = typeof sql === 'string' ? sql : '';
+    if (/DATABASE\s*\(\s*\)/i.test(text)) {
+      state.guardQueryCalls += 1;
+      return Promise.resolve([{ current_database: options.database }]);
+    }
+    if (/^\s*DELETE\s+/i.test(text)) {
+      state.deleteQueries.push(text);
+    }
+    return Promise.resolve(options.queryRows?.(text) ?? []);
+  };
+
   const runInTransaction = <T>(run: (manager: unknown) => Promise<T>): Promise<T> => {
     state.transactionCalls += 1;
     transactionDepth += 1;
     const manager = {
-      query: (): Promise<Array<{ current_database: string }>> => {
-        state.guardQueryCalls += 1;
-        return Promise.resolve([{ current_database: options.database }]);
-      },
+      query: runQuery,
       getRepository,
     };
     return run(manager)
@@ -193,10 +211,7 @@ const createMockDataSource = (options: {
     // N04：fake DataSource 必须像真实 DataSource 一样显式给出预期库，
     // 不允许以「没有配置」为由跳过预期目标库解析。
     options: { database: options.database },
-    query: (): Promise<Array<{ current_database: string }>> => {
-      state.guardQueryCalls += 1;
-      return Promise.resolve([{ current_database: options.database }]);
-    },
+    query: runQuery,
     getRepository,
     // 事务语义：生产夹具的预检与整批删除在同一事务内完成。
     // 替身把回调交给共享同一 state 的 manager，供断言事务内守卫与删除范围。
@@ -686,6 +701,185 @@ describe('admin-document-database 夹具清理失败路径（R1 回归）', () =
       ]);
       expect(extractInValues(state.deleteCalls[0].criteria, 'accountId')).toEqual([601, 603]);
       expect(extractInValues(state.deleteCalls[1].criteria, 'id')).toEqual([601, 603]);
+    });
+  });
+
+  describe('P1 组合清理：组织链与夹具同一事务', () => {
+    const organizationFact = {
+      organizationCode: 'E2E-P1-COMBINED-ORG',
+      name: 'E2E 组合清理组织',
+      kind: 'CLIENT',
+      status: 'ACTIVE',
+    } as const;
+
+    /** 组织链台账：组织 401，可选成员关系；事实同步登记（缺事实会在开启事务前拒绝）。 */
+    const buildOrganizationLedger = (membershipId?: number): OwnedResourceLedger => {
+      const ledger = createOwnedResourceLedger();
+      ledger.organizationIds.push(401);
+      ledger.facts.organization.set(401, { ...organizationFact });
+      if (membershipId !== undefined) {
+        ledger.membershipIds.push(membershipId);
+        ledger.facts.membership.set(membershipId, {
+          organizationId: 401,
+          accountId: 701,
+          memberRole: 'MEMBER',
+          status: 'ACTIVE',
+        });
+      }
+      return ledger;
+    };
+
+    /** 组织链预检读取的原始行；可按需篡改以制造归属漂移。 */
+    const organizationQueryRows =
+      (overrides?: { readonly organizationName?: string }) =>
+      (sql: string): unknown[] | undefined => {
+        if (/FROM organization_membership/i.test(sql) && /member_role/i.test(sql)) {
+          return [
+            {
+              id: 501,
+              organization_id: 401,
+              account_id: 701,
+              member_role: 'MEMBER',
+              status: 'ACTIVE',
+            },
+          ];
+        }
+        if (/FROM organization\b/i.test(sql)) {
+          return [
+            {
+              id: 401,
+              organization_code: organizationFact.organizationCode,
+              name: overrides?.organizationName ?? organizationFact.name,
+              kind: organizationFact.kind,
+              status: organizationFact.status,
+              is_managed_company: 0,
+            },
+          ];
+        }
+        return undefined;
+      };
+
+    it('夹具预检失败：首条 DELETE 之前失败、整批回滚、台账不清空', async () => {
+      const { dataSource, state } = createMockDataSource({
+        database: 'lithography_e2e',
+        queryRows: organizationQueryRows(),
+      });
+      const onCommitted = jest.fn();
+      const prepareFixture = jest.fn().mockRejectedValue(new Error('模拟夹具预检失败'));
+
+      await expect(
+        runAdminDocCombinedCleanup({
+          dataSource,
+          helper: 'mock 组合清理（夹具预检失败）',
+          organization: { owned: buildOrganizationLedger(501) },
+          prepareFixture,
+          onCommitted,
+        }),
+      ).rejects.toThrow('模拟夹具预检失败');
+
+      expect(state.deleteQueries).toHaveLength(0);
+      expect(state.deleteCalls).toHaveLength(0);
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(1);
+      expect(onCommitted).not.toHaveBeenCalled();
+    });
+
+    it('组织归属漂移：首条 DELETE 之前拒绝，DELETE 数为 0', async () => {
+      const { dataSource, state } = createMockDataSource({
+        database: 'lithography_e2e',
+        queryRows: organizationQueryRows({ organizationName: '被篡改的组织名' }),
+      });
+      const onCommitted = jest.fn();
+      const prepareFixture = jest.fn();
+
+      await expect(
+        runAdminDocCombinedCleanup({
+          dataSource,
+          helper: 'mock 组合清理（归属漂移）',
+          organization: { owned: buildOrganizationLedger() },
+          prepareFixture,
+          onCommitted,
+        }),
+      ).rejects.toThrow(/漂移/);
+
+      expect(prepareFixture).not.toHaveBeenCalled();
+      expect(state.deleteQueries).toHaveLength(0);
+      expect(state.deleteCalls).toHaveLength(0);
+      expect(state.transactionRollbacks).toBe(1);
+      expect(onCommitted).not.toHaveBeenCalled();
+    });
+
+    it('两段预检全部通过才删除：成员关系批次内引用传给夹具，提交成功才清空台账', async () => {
+      const { dataSource, state } = createMockDataSource({
+        database: 'lithography_e2e',
+        queryRows: organizationQueryRows(),
+      });
+      const onCommitted = jest.fn();
+      const observedContexts: AdminDocFixtureCleanupContext[] = [];
+      const prepareFixture = jest.fn(
+        (
+          manager: EntityManager,
+          _database: string,
+          context: AdminDocFixtureCleanupContext,
+        ): Promise<{ execute(): Promise<void> }> => {
+          observedContexts.push(context);
+          return Promise.resolve({
+            execute: async (): Promise<void> => {
+              await manager.getRepository(AccountEntity).delete({ id: In([701]) });
+            },
+          });
+        },
+      );
+
+      await runAdminDocCombinedCleanup({
+        dataSource,
+        helper: 'mock 组合清理（成功路径）',
+        organization: { owned: buildOrganizationLedger(501) },
+        prepareFixture,
+        onCommitted,
+      });
+
+      // 组织链计划删除的成员关系以“批次内引用”传给夹具预检
+      expect(observedContexts).toEqual([{ batchOwnedMembershipIds: [501] }]);
+      // 预检两段都在首条 DELETE 之前完成；删除顺序保持外键安全（成员关系先于组织）
+      expect(state.deleteQueries.map((sql) => /DELETE FROM (\w+)/i.exec(sql)?.[1])).toEqual([
+        'organization_membership',
+        'organization',
+      ]);
+      expect(state.deleteCalls.map((call) => call.entityName)).toEqual(['AccountEntity']);
+      expect(state.deleteCalls.every((call) => call.inTransaction)).toBe(true);
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(0);
+      expect(onCommitted).toHaveBeenCalledTimes(1);
+    });
+
+    it('夹具后序删除失败：组织前序删除随同一事务整批回滚，台账不清空', async () => {
+      const { dataSource, state } = createMockDataSource({
+        database: 'lithography_e2e',
+        queryRows: organizationQueryRows(),
+      });
+      const onCommitted = jest.fn();
+      const prepareFixture = jest.fn(() =>
+        Promise.resolve({
+          execute: (): Promise<void> => Promise.reject(new Error('模拟夹具后序删除失败')),
+        }),
+      );
+
+      await expect(
+        runAdminDocCombinedCleanup({
+          dataSource,
+          helper: 'mock 组合清理（后序失败）',
+          organization: { owned: buildOrganizationLedger(501) },
+          prepareFixture,
+          onCommitted,
+        }),
+      ).rejects.toThrow('模拟夹具后序删除失败');
+
+      // 组织前序删除已经执行，但仍在同一事务内 → 事务回调抛错即整批回滚
+      expect(state.deleteQueries).toHaveLength(2);
+      expect(state.transactionCalls).toBe(1);
+      expect(state.transactionRollbacks).toBe(1);
+      expect(onCommitted).not.toHaveBeenCalled();
     });
   });
 });

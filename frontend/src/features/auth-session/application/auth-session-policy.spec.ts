@@ -6,6 +6,7 @@ import {
   createAuthSessionSnapshot,
   isAuthSessionExpiredReason,
   isAuthSessionRoleAllowedAt,
+  resolveAuthSessionAdminScope,
   resolveAuthSessionEntryPath,
   resolveAuthSessionHomePath,
   resolveEntryRouteRedirect,
@@ -120,6 +121,8 @@ describe('auth session policy', () => {
     const superAdminSession = createAuthSessionSnapshot({
       accessToken: 'access-token',
       accountId: 900001,
+      adminLevel: 1,
+      adminOrganizationId: 910003,
       role: 'SUPER_ADMIN',
       userInfo: null,
     });
@@ -139,6 +142,115 @@ describe('auth session policy', () => {
     expect(resolveProtectedRouteRedirect(superAdminSession, '/customer/repair-requests/new')).toBe(
       '/admin',
     );
+  });
+
+  it('resolves the admin scope from trusted level and organization facts (S1)', () => {
+    // 只有 SUPER_ADMIN 且等级可信才具备管理范围；非管理员即便带等级也不升级
+    expect(resolveAuthSessionAdminScope({ role: 'CUSTOMER' })).toBe('NONE');
+    expect(resolveAuthSessionAdminScope({ role: 'ENGINEER', adminLevel: 1 })).toBe('NONE');
+
+    // 一级无可信组织仍可访问任务 08 平台管理入口
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 1 })).toBe('PLATFORM');
+    expect(
+      resolveAuthSessionAdminScope({
+        role: 'SUPER_ADMIN',
+        adminLevel: 1,
+        adminOrganizationId: 910003,
+      }),
+    ).toBe('GLOBAL');
+
+    // 2 级 = 本公司，但公司归属必须是正整数才可信
+    expect(
+      resolveAuthSessionAdminScope({
+        role: 'SUPER_ADMIN',
+        adminLevel: 2,
+        adminOrganizationId: 910004,
+      }),
+    ).toBe('ORGANIZATION');
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 2 })).toBe('NONE');
+    expect(
+      resolveAuthSessionAdminScope({
+        role: 'SUPER_ADMIN',
+        adminLevel: 2,
+        adminOrganizationId: 0,
+      }),
+    ).toBe('NONE');
+
+    // 缺等级与非法等级一律不升级
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: null })).toBe('NONE');
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 3 })).toBe('NONE');
+    expect(resolveAuthSessionAdminScope({ role: 'SUPER_ADMIN', adminLevel: 1.5 })).toBe('NONE');
+  });
+
+  it('distinguishes task 08 management from the document database using trusted scope', () => {
+    const globalAdmin = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900307,
+      adminLevel: 1,
+      adminOrganizationId: 910003,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+    const level2Admin = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900308,
+      adminLevel: 2,
+      adminOrganizationId: 910004,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+    const level2AdminWithoutOrg = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900308,
+      adminLevel: 2,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+    const unknownLevelAdmin = createAuthSessionSnapshot({
+      accessToken: 'access-token',
+      accountId: 900309,
+      adminLevel: null,
+      role: 'SUPER_ADMIN',
+      userInfo: null,
+    });
+
+    const level1WithoutOrg = { ...globalAdmin, adminOrganizationId: null };
+    for (const path of [
+      '/admin/users',
+      '/admin/companies',
+      '/admin/engineer-registrations',
+      '/admin/orders',
+      '/admin/orders/1',
+    ]) {
+      for (const session of [globalAdmin, level1WithoutOrg, level2Admin]) {
+        expect(resolveProtectedRouteRedirect(session, path)).toBeNull();
+      }
+      for (const session of [level2AdminWithoutOrg, unknownLevelAdmin]) {
+        expect(resolveProtectedRouteRedirect(session, path)).toBe('/admin');
+      }
+    }
+
+    expect(resolveProtectedRouteRedirect(globalAdmin, '/admin/document-database')).toBeNull();
+    for (const session of [
+      level1WithoutOrg,
+      level2Admin,
+      level2AdminWithoutOrg,
+      unknownLevelAdmin,
+    ]) {
+      expect(resolveProtectedRouteRedirect(session, '/admin/document-database')).toBe('/admin');
+    }
+
+    // 非全域范围不影响管理员主页与既有继承路由
+    expect(resolveProtectedRouteRedirect(level2Admin, '/admin')).toBeNull();
+    expect(resolveProtectedRouteRedirect(level2Admin, '/engineer')).toBeNull();
+
+    // 相似前缀不是全域路径，不能误伤 2 级管理员的 /admin 子路径
+    expect(resolveProtectedRouteRedirect(level2Admin, '/admin/users-x')).toBeNull();
+
+    // 登录 returnTo 与直达同语义。
+    expect(resolveAuthSessionEntryPath(level2Admin, '/admin/document-database')).toBe('/admin');
+    expect(resolveAuthSessionEntryPath(level2Admin, '/admin/users')).toBe('/admin/users');
+    expect(resolveAuthSessionEntryPath(globalAdmin, '/admin/users')).toBe('/admin/users');
   });
 
   it('funnels restricted sessions into the dedicated landing page', () => {

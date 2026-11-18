@@ -5,6 +5,8 @@ import { LogoutOutlined } from '@ant-design/icons';
 import { Button, Tooltip } from 'antd';
 import { useNavigate } from 'react-router';
 
+import { useI18n } from '@/shared/i18n';
+
 import { logoutAuthSession } from '../auth-session-entry';
 
 type LogoutButtonProps = {
@@ -14,6 +16,7 @@ type LogoutButtonProps = {
 
 export function LogoutButton({ iconOnly = false }: LogoutButtonProps = {}) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   async function handleLogout() {
@@ -34,15 +37,15 @@ export function LogoutButton({ iconOnly = false }: LogoutButtonProps = {}) {
 
   const button = (
     <Button
-      aria-label={iconOnly ? '退出登录' : undefined}
+      aria-label={iconOnly ? t('layout.logout') : undefined}
       disabled={isLoggingOut}
       icon={iconOnly ? <LogoutOutlined /> : undefined}
       loading={isLoggingOut}
       onClick={() => void handleLogout()}
     >
-      {iconOnly ? null : '退出登录'}
+      {iconOnly ? null : t('layout.logout')}
     </Button>
   );
 
-  return iconOnly ? <Tooltip title="退出登录">{button}</Tooltip> : button;
+  return iconOnly ? <Tooltip title={t('layout.logout')}>{button}</Tooltip> : button;
 }

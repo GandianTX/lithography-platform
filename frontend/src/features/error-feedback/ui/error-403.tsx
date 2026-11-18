@@ -2,16 +2,20 @@
 
 import { StopOutlined } from '@ant-design/icons';
 
+import { useI18n } from '@/shared/i18n';
+
 import { ErrorBlock } from './error-block';
 
 export function Error403() {
+  const { t } = useI18n();
+
   return (
     <ErrorBlock
-      actions={[{ label: '返回工作台', to: '/' }]}
-      description="当前环境或权限不允许访问这个页面。如果你认为这是一个错误，请检查访问入口或联系维护者。"
+      actions={[{ label: t('error.backToWorkbench'), to: '/' }]}
+      description={t('error.403.description')}
       icon={<StopOutlined />}
       statusCode={403}
-      title="访问被拒绝"
+      title={t('error.403.title')}
       tone="warning"
     />
   );
