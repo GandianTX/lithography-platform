@@ -12,8 +12,10 @@ import {
   decideMaintenanceReport,
   decideReferenceDocument,
   decideRepairRequest,
+  decideRepairRequestIntake,
   parseDevDataConfig,
   upsertReferenceDocuments,
+  upsertRepairRequests,
   type DevDataConfig,
   type DevReferenceDocumentSeed,
 } from './dev-data-bootstrap';
@@ -208,6 +210,334 @@ function cloneValid(): Record<string, unknown> {
   return JSON.parse(JSON.stringify(validConfig())) as Record<string, unknown>;
 }
 
+/** 在旧三张样例上追加两张带报修来源与维修明细的工单，用于关联/重跑回归。 */
+function rawWithIntakeAndMaintenance(): Record<string, unknown> {
+  const raw = cloneValid();
+  const requests = raw.repair_requests as Array<Record<string, unknown>>;
+  requests[1].intake = { record_uuid: '00000000-0000-4000-8000-000000000101' };
+  requests[1].maintenance = {
+    maintenance_date: '2026-10-03',
+    reset_result: 'SAME_FAULT',
+    supplementary_note: '步骤排查发现新故障，等待备件。',
+    diagnostic_steps: [
+      {
+        step_no: 1,
+        error_code: 'DEV-E-2001',
+        part_name: '光学模组',
+        action_text: '检查光路并记录报警。',
+        result_code: 'UNRESOLVED',
+      },
+      {
+        step_no: 2,
+        error_code: 'DEV-E-2002',
+        part_name: '真空单元',
+        action_text: '检查真空压力，发现持续偏低。',
+        result_code: 'NEW_FAULT',
+      },
+    ],
+    fault_panels: [
+      {
+        panel_type: 'INITIAL',
+        phase_code: 'PHASE_02',
+        main_error: 'DEV-E-2001',
+        unit_error: 'ALM-101',
+        source: 'MAIN',
+        error_type: 'EQUIPMENT',
+        gpib_status: 'NORMAL',
+        fault_status: 'ACTIVE',
+        description: '曝光异常。',
+        action: '检查光路。',
+      },
+      {
+        panel_type: 'STEP_NEW_FAULT',
+        step_no: 2,
+        phase_code: 'PHASE_04',
+        main_error: 'DEV-E-2002',
+        unit_error: 'ALM-104',
+        source: 'UNIT',
+        error_type: 'EQUIPMENT',
+        gpib_status: 'ABNORMAL',
+        fault_status: 'ACTIVE',
+        description: '真空压力持续偏低。',
+        action: '等待备件。',
+      },
+    ],
+  };
+  requests[2].intake = { record_uuid: '00000000-0000-4000-8000-000000000102' };
+  requests[2].maintenance = {
+    maintenance_date: '2026-10-05',
+    reset_result: 'NEW_FAULT',
+    supplementary_note: '复位后出现新的对准报警。',
+    diagnostic_steps: [
+      {
+        step_no: 1,
+        error_code: 'DEV-E-3001',
+        part_name: '光源',
+        action_text: '更换光源并复测功率。',
+        result_code: 'RESOLVED',
+      },
+    ],
+    fault_panels: [
+      {
+        panel_type: 'INITIAL',
+        phase_code: 'PHASE_03',
+        main_error: 'DEV-E-3001',
+        unit_error: 'ALM-201',
+        source: 'MAIN',
+        error_type: 'EQUIPMENT',
+        gpib_status: 'NORMAL',
+        fault_status: 'ACTIVE',
+        description: '光源功率不足。',
+        action: '更换光源。',
+      },
+      {
+        panel_type: 'RESET_NEW_FAULT',
+        phase_code: 'PHASE_07',
+        main_error: 'DEV-E-3002',
+        unit_error: 'ALM-207',
+        source: 'UNIT',
+        error_type: 'EQUIPMENT',
+        gpib_status: 'ABNORMAL',
+        fault_status: 'ACTIVE',
+        description: '复位后出现新的对准报警。',
+        action: '记录并交接。',
+      },
+    ],
+  };
+  return raw;
+}
+
+interface FakeSeedState {
+  readonly organizations: Map<string, Record<string, unknown>>;
+  readonly accounts: Map<string, Record<string, unknown>>;
+  readonly memberships: Map<string, Record<string, unknown>>;
+  readonly requests: Array<Record<string, unknown>>;
+  readonly intakes: Array<Record<string, unknown>>;
+  readonly steps: Array<Record<string, unknown>>;
+  readonly panels: Array<Record<string, unknown>>;
+  failOn?: string;
+}
+
+/**
+ * 仅供单测使用的最小数据库替身：按固定开发账号/公司事实响应 SQL，
+ * 并用内存数组记录工单、报修来源与两张维修子表，便于核对双向引用与重跑。
+ */
+function createSeedManager(): { manager: EntityManager; state: FakeSeedState } {
+  const state: FakeSeedState = {
+    organizations: new Map([
+      [
+        'ORG-DEV-A',
+        {
+          id: 31,
+          name: '开发维修公司 A',
+          short_name: '公司 A',
+          kind: 'PEER',
+          is_managed_company: 1,
+          is_service_provider: 1,
+          status: 'ACTIVE',
+        },
+      ],
+      [
+        'ORG-DEV-B',
+        {
+          id: 32,
+          name: '开发维修公司 B',
+          short_name: '公司 B',
+          kind: 'PEER',
+          is_managed_company: 1,
+          is_service_provider: 1,
+          status: 'ACTIVE',
+        },
+      ],
+    ]),
+    accounts: new Map([
+      ['dev-customer-a1', fakeAccount(11, 31, 'CUSTOMER', '开发客户 A1')],
+      ['dev-customer-a2', fakeAccount(12, 31, 'CUSTOMER', '开发客户 A2')],
+      ['dev-customer-b1', fakeAccount(13, 32, 'CUSTOMER', '开发客户 B1')],
+      ['dev-engineer-a', fakeAccount(51, 31, 'ENGINEER', '开发工程师 A')],
+      ['dev-engineer-b', fakeAccount(52, 32, 'ENGINEER', '开发工程师 B')],
+    ]),
+    memberships: new Map([
+      ['11:31', { member_role: 'CUSTOMER', left_at: null }],
+      ['12:31', { member_role: 'CUSTOMER', left_at: null }],
+      ['13:32', { member_role: 'CUSTOMER', left_at: null }],
+      ['51:31', { member_role: 'ENGINEER', left_at: null }],
+      ['52:32', { member_role: 'ENGINEER', left_at: null }],
+    ]),
+    requests: [],
+    intakes: [],
+    steps: [],
+    panels: [],
+  };
+  let nextRequestId = 100;
+  let nextIntakeId = 200;
+  let nextStepId = 300;
+  let nextPanelId = 400;
+
+  const manager = {
+    async query(sql: string, params: unknown[] = []): Promise<unknown> {
+      await Promise.resolve();
+      const text = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (state.failOn !== undefined && text.includes(state.failOn.toLowerCase())) {
+        throw new Error('模拟子表写入失败');
+      }
+      if (text.includes('from `organization`')) {
+        if (text.includes('organization_code')) {
+          const organization = state.organizations.get(String(params[0]));
+          return organization === undefined ? [] : [organization];
+        }
+        const organization = [...state.organizations.values()].find(
+          (row) => row.id === Number(params[0]),
+        );
+        return organization === undefined ? [] : [{ ...organization, status: 'ACTIVE' }];
+      }
+      if (text.includes('from `base_user_account`')) {
+        const account = state.accounts.get(String(params[0]));
+        return account === undefined ? [] : [account];
+      }
+      if (text.includes('from `organization_membership`')) {
+        const membership = state.memberships.get(`${String(params[0])}:${String(params[1])}`);
+        return membership === undefined ? [] : [membership];
+      }
+      if (text.includes('from `base_user_info`') && text.includes('nickname')) {
+        const account = [...state.accounts.values()].find((row) => row.id === Number(params[0]));
+        return account === undefined
+          ? []
+          : [{ nickname: account.nickname, real_name: account.real_name }];
+      }
+      if (text.includes('from `repair_request_intake`')) {
+        const intake = state.intakes.find((row) => row.record_uuid === params[0]);
+        return intake === undefined ? [] : [intake];
+      }
+      if (text.startsWith('select') && text.includes('from `repair_request`')) {
+        const request = state.requests.find((row) => row.request_no === params[0]);
+        return request === undefined ? [] : [request];
+      }
+      if (text.startsWith('insert into `repair_request_intake`')) {
+        const id = nextIntakeId++;
+        state.intakes.push({
+          id,
+          record_uuid: params[0],
+          customer_account_id: params[1],
+          customer_organization_id: params[2],
+          service_organization_id: params[3],
+          equipment_model_id: params[4],
+          error_code: params[5],
+          fault_description: params[6],
+          file_id: null,
+          analysis_status: 'WAITING',
+          analysis_generation: 0,
+          converted_request_id: null,
+          deleted_at: null,
+          created_at: params[7],
+        });
+        return { insertId: id, affectedRows: 1 };
+      }
+      if (text.startsWith('insert into `repair_request`')) {
+        const id = nextRequestId++;
+        state.requests.push({
+          id,
+          request_no: params[0],
+          customer_account_id: params[1],
+          equipment_model_id: params[2],
+          error_code: params[3],
+          fault_description: params[4],
+          content_md: params[5],
+          created_at: params[6],
+          is_accepted: params[7],
+          accepted_by_engineer_account_id: params[8],
+          accepted_at: params[9],
+          owner_organization_id: params[10],
+          handling_result: params[11],
+          handling_status: params[12],
+          handling_recorded_at: params[13],
+          handling_recorded_by_account_id: params[14],
+          handling_ended_at: params[15],
+          intake_id: params[16],
+          customer_organization_id: params[17],
+          service_organization_id: params[18],
+          closure_status: params[19],
+          closed_at: params[20],
+          closure_reason: params[21],
+          current_revision_no: 0,
+          is_historical: 0,
+          maintenance_date: params[22],
+          maintenance_engineer_name_snapshot: params[23],
+          reset_result: params[24],
+          supplementary_note: params[25],
+          maintenance_attachment_file_id: null,
+          maintenance_version_no: params[26],
+        });
+        return { insertId: id, affectedRows: 1 };
+      }
+      if (text.startsWith('update `repair_request_intake`')) {
+        const intake = state.intakes.find((row) => row.id === Number(params[1]));
+        if (intake === undefined || intake.converted_request_id !== null) {
+          return { affectedRows: 0 };
+        }
+        intake.converted_request_id = params[0];
+        return { affectedRows: 1 };
+      }
+      if (text.startsWith('insert into `repair_request_diagnostic_step`')) {
+        const id = nextStepId++;
+        state.steps.push({
+          id,
+          request_id: params[0],
+          step_no: params[1],
+          error_code: params[2],
+          part_name: params[3],
+          action_text: params[4],
+          result_code: params[5],
+        });
+        return { insertId: id, affectedRows: 1 };
+      }
+      if (text.startsWith('insert into `repair_request_fault_panel`')) {
+        const id = nextPanelId++;
+        state.panels.push({
+          id,
+          request_id: params[0],
+          panel_type: params[1],
+          step_id: params[2],
+          phase_code: params[3],
+          main_error: params[4],
+          unit_error: params[5],
+          source: params[6],
+          error_type: params[7],
+          gpib_status: params[8],
+          fault_status: params[9],
+          description: params[10],
+          action: params[11],
+        });
+        return { insertId: id, affectedRows: 1 };
+      }
+      throw new Error(`测试替身未实现的 SQL: ${text.slice(0, 120)}`);
+    },
+  } as unknown as EntityManager;
+  return { manager, state };
+}
+
+function fakeAccount(
+  id: number,
+  customerOrganizationId: number,
+  role: string,
+  nickname: string,
+): Record<string, unknown> {
+  return {
+    id,
+    admin_level: null,
+    identity_hint: null,
+    login_email: null,
+    account_status: 'ACTIVE',
+    info_id: id,
+    customer_organization_id: role === 'CUSTOMER' ? customerOrganizationId : null,
+    access_group: null,
+    meta_digest: null,
+    user_state: 'ACTIVE',
+    nickname,
+    real_name: null,
+  };
+}
+
 describe('开发联调样例配置（不连接实库）', () => {
   it('合法配置覆盖机型、待接单/处理中/已完成、草稿/正式报告与两家公司资料', () => {
     const config = parseValid();
@@ -344,6 +674,94 @@ describe('开发联调样例配置（不连接实库）', () => {
     documents[1].owner_organization_code = 'ORG-DEV-A';
     expect(() => parseDevDataConfig(JSON.stringify(singleOwner))).toThrow(/至少 2 家归属公司/);
   });
+
+  it('旧三张工单模板保持兼容：可省略报修来源与维修明细', () => {
+    const config = parseValid();
+    expect(config.repairRequests).toHaveLength(3);
+    expect(config.repairRequests.every((entry) => entry.intake === null)).toBe(true);
+    expect(config.repairRequests.every((entry) => entry.maintenance === null)).toBe(true);
+  });
+
+  it('新增样例可声明报修来源与维修明细，步骤新故障关联同工单步骤号', () => {
+    const config = parseDevDataConfig(JSON.stringify(rawWithIntakeAndMaintenance()));
+    expect(
+      config.repairRequests.map((entry) =>
+        entry.intake === null ? null : entry.intake.recordUuid,
+      ),
+    ).toEqual([
+      null,
+      '00000000-0000-4000-8000-000000000101',
+      '00000000-0000-4000-8000-000000000102',
+    ]);
+    const inProgress = config.repairRequests[1].maintenance;
+    expect(inProgress?.resetResult).toBe('SAME_FAULT');
+    expect(inProgress?.steps.map((step) => step.resultCode)).toEqual(['UNRESOLVED', 'NEW_FAULT']);
+    expect(inProgress?.panels.map((panel) => panel.panelType)).toEqual([
+      'INITIAL',
+      'STEP_NEW_FAULT',
+    ]);
+    expect(inProgress?.panels[1].stepNo).toBe(2);
+  });
+
+  it('维修明细非法组合失败关闭：未接单、步骤/面板错配、复位结果不一致', () => {
+    const pending = rawWithIntakeAndMaintenance();
+    const pendingRequests = pending.repair_requests as Array<Record<string, unknown>>;
+    pendingRequests[0].maintenance = pendingRequests[1].maintenance;
+    delete pendingRequests[1].maintenance;
+    expect(() => parseDevDataConfig(JSON.stringify(pending))).toThrow(/只允许在已接单工单/);
+
+    const wrongStep = rawWithIntakeAndMaintenance();
+    const wrongStepRequests = wrongStep.repair_requests as Array<Record<string, unknown>>;
+    const wrongStepMaintenance = wrongStepRequests[1].maintenance as Record<string, unknown>;
+    (wrongStepMaintenance.fault_panels as Array<Record<string, unknown>>)[1].step_no = 1;
+    expect(() => parseDevDataConfig(JSON.stringify(wrongStep))).toThrow(/只能引用结果为 NEW_FAULT/);
+
+    const missingStepPanel = rawWithIntakeAndMaintenance();
+    const missingStepRequests = missingStepPanel.repair_requests as Array<Record<string, unknown>>;
+    const missingStepMaintenance = missingStepRequests[1].maintenance as Record<string, unknown>;
+    (missingStepMaintenance.fault_panels as Array<Record<string, unknown>>).pop();
+    expect(() => parseDevDataConfig(JSON.stringify(missingStepPanel))).toThrow(
+      /必须提供步骤新故障面板/,
+    );
+
+    const wrongReset = rawWithIntakeAndMaintenance();
+    const wrongResetRequests = wrongReset.repair_requests as Array<Record<string, unknown>>;
+    const wrongResetMaintenance = wrongResetRequests[1].maintenance as Record<string, unknown>;
+    wrongResetMaintenance.reset_result = 'NEW_FAULT';
+    expect(() => parseDevDataConfig(JSON.stringify(wrongReset))).toThrow(/必须提供复位新故障面板/);
+
+    const extraReset = rawWithIntakeAndMaintenance();
+    const extraResetRequests = extraReset.repair_requests as Array<Record<string, unknown>>;
+    const extraResetMaintenance = extraResetRequests[2].maintenance as Record<string, unknown>;
+    extraResetMaintenance.reset_result = 'NORMAL';
+    expect(() => parseDevDataConfig(JSON.stringify(extraReset))).toThrow(/仅复位结果为 NEW_FAULT/);
+  });
+
+  it('维修明细结构非法时失败关闭：缺初始面板、步骤号不连续、未知字段、重复来源', () => {
+    const noInitial = rawWithIntakeAndMaintenance();
+    const noInitialRequests = noInitial.repair_requests as Array<Record<string, unknown>>;
+    const noInitialMaintenance = noInitialRequests[1].maintenance as Record<string, unknown>;
+    (noInitialMaintenance.fault_panels as Array<Record<string, unknown>>).shift();
+    expect(() => parseDevDataConfig(JSON.stringify(noInitial))).toThrow(/初始故障面板/);
+
+    const gap = rawWithIntakeAndMaintenance();
+    const gapRequests = gap.repair_requests as Array<Record<string, unknown>>;
+    const gapMaintenance = gapRequests[1].maintenance as Record<string, unknown>;
+    (gapMaintenance.diagnostic_steps as Array<Record<string, unknown>>)[1].step_no = 3;
+    expect(() => parseDevDataConfig(JSON.stringify(gap))).toThrow(/连续递增/);
+
+    const unknown = rawWithIntakeAndMaintenance();
+    const unknownRequests = unknown.repair_requests as Array<Record<string, unknown>>;
+    (unknownRequests[1].intake as Record<string, unknown>).extra = 'x';
+    expect(() => parseDevDataConfig(JSON.stringify(unknown))).toThrow(/不支持的字段/);
+
+    const duplicateIntake = rawWithIntakeAndMaintenance();
+    const duplicateRequests = duplicateIntake.repair_requests as Array<Record<string, unknown>>;
+    (duplicateRequests[2].intake as Record<string, unknown>).record_uuid = (
+      duplicateRequests[1].intake as Record<string, unknown>
+    ).record_uuid;
+    expect(() => parseDevDataConfig(JSON.stringify(duplicateIntake))).toThrow(/重复报修来源编号/);
+  });
 });
 
 describe('开发联调样例幂等决策（不连接实库）', () => {
@@ -363,13 +781,49 @@ describe('开发联调样例幂等决策（不连接实库）', () => {
       ownerOrganizationId: 31,
       serviceOrganizationId: 31,
     };
-    expect(decideRepairRequest({ id: 41, ...expected }, expected, 'DEV-RR-A-001')).toBe(
-      'UNCHANGED',
-    );
+    const existing = {
+      id: 41,
+      customerOrganizationId: 31,
+      intakeId: null,
+      ...expected,
+    };
+    expect(decideRepairRequest(existing, expected, 'DEV-RR-A-001')).toBe('UNCHANGED');
     expect(decideRepairRequest(null, expected, 'DEV-RR-A-001')).toBe('CREATE');
     expect(() =>
-      decideRepairRequest({ id: 41, ...expected, customerAccountId: 99 }, expected, 'DEV-RR-A-001'),
+      decideRepairRequest({ ...existing, customerAccountId: 99 }, expected, 'DEV-RR-A-001'),
     ).toThrow(/拒绝/);
+    expect(() =>
+      decideRepairRequest(
+        { ...existing, intakeId: 81 },
+        { ...expected, intakeId: 82 },
+        'DEV-RR-A-001',
+      ),
+    ).toThrow(/报修来源关联已断裂/);
+    expect(() =>
+      decideRepairRequest(
+        { ...existing, customerOrganizationId: 32 },
+        { ...expected, customerOrganizationId: 31 },
+        'DEV-RR-A-001',
+      ),
+    ).toThrow(/客户公司/);
+  });
+
+  it('报修来源同键同归属保持 UNCHANGED，已删除或异主拒绝', () => {
+    const expected = {
+      customerAccountId: 11,
+      customerOrganizationId: 31,
+      serviceOrganizationId: 31,
+      equipmentModelId: 21,
+    };
+    const existing = { id: 71, convertedRequestId: null, deletedAt: null, ...expected };
+    expect(decideRepairRequestIntake(existing, expected, 'source-a')).toBe('UNCHANGED');
+    expect(decideRepairRequestIntake(null, expected, 'source-a')).toBe('CREATE');
+    expect(() =>
+      decideRepairRequestIntake({ ...existing, serviceOrganizationId: 32 }, expected, 'source-a'),
+    ).toThrow(/占用/);
+    expect(() =>
+      decideRepairRequestIntake({ ...existing, deletedAt: new Date() }, expected, 'source-a'),
+    ).toThrow(/逻辑删除/);
   });
 
   it('报告同键同归属保持 UNCHANGED（状态推进不覆盖），异主/异来源拒绝', () => {
@@ -491,6 +945,7 @@ function makeReferenceManager(initial: ReadonlyArray<FakeReferenceRow>): {
   const inserts: FakeReferenceRow[] = [];
   let nextId = 100;
   const query = jest.fn(async (sql: string, params?: ReadonlyArray<unknown>) => {
+    await Promise.resolve();
     if (sql.includes('FROM `organization`')) {
       return [
         {
@@ -563,6 +1018,177 @@ function makeReferenceManager(initial: ReadonlyArray<FakeReferenceRow>): {
   });
   return { manager: { query } as unknown as EntityManager, rows, inserts };
 }
+
+describe('开发联调工单双向关联与维修子表（不连接实库）', () => {
+  const modelIds = new Map<string, number>([
+    ['DEV-MODEL-A', 21],
+    ['DEV-MODEL-B', 22],
+  ]);
+  const legacyConfig = parseValid();
+  const linkedConfig = parseDevDataConfig(JSON.stringify(rawWithIntakeAndMaintenance()));
+
+  it('旧模板三张工单首次创建时不写报修来源与维修明细', async () => {
+    const { manager, state } = createSeedManager();
+    const result = await upsertRepairRequests(manager, legacyConfig.repairRequests, modelIds);
+    expect(result.results.map((entry) => entry.outcome)).toEqual(['CREATED', 'CREATED', 'CREATED']);
+    expect(state.requests).toHaveLength(3);
+    expect(state.intakes).toHaveLength(0);
+    expect(state.steps).toHaveLength(0);
+    expect(state.panels).toHaveLength(0);
+    for (const request of state.requests) {
+      expect(request.intake_id).toBeNull();
+      expect(request.maintenance_version_no).toBe(0);
+      expect(request.maintenance_date).toBeNull();
+      expect(request.maintenance_attachment_file_id).toBeNull();
+    }
+  });
+
+  it('首次创建按数据库实际 ID 双向关联，并写入维修字段与真实步骤 ID', async () => {
+    const { manager, state } = createSeedManager();
+    const result = await upsertRepairRequests(manager, linkedConfig.repairRequests, modelIds);
+    expect(result.results.map((entry) => entry.outcome)).toEqual(['CREATED', 'CREATED', 'CREATED']);
+    expect(state.requests).toHaveLength(3);
+    expect(state.intakes).toHaveLength(2);
+    expect(state.steps).toHaveLength(3);
+    expect(state.panels).toHaveLength(4);
+
+    const requestB = state.requests.find((row) => row.request_no === 'DEV-RR-B-001');
+    const intakeB = state.intakes.find(
+      (row) => row.record_uuid === '00000000-0000-4000-8000-000000000101',
+    );
+    expect(requestB).toBeDefined();
+    expect(intakeB).toBeDefined();
+    expect(requestB?.intake_id).toBe(intakeB?.id);
+    expect(intakeB?.converted_request_id).toBe(requestB?.id);
+    expect(intakeB?.analysis_status).toBe('WAITING');
+    expect(intakeB?.analysis_generation).toBe(0);
+    expect(intakeB?.file_id).toBeNull();
+    expect(requestB?.maintenance_version_no).toBe(1);
+    expect(requestB?.maintenance_date).toBe('2026-10-03');
+    expect(requestB?.maintenance_engineer_name_snapshot).toBe('开发工程师 B');
+    expect(requestB?.reset_result).toBe('SAME_FAULT');
+    expect(requestB?.supplementary_note).toBe('步骤排查发现新故障，等待备件。');
+    expect(requestB?.maintenance_attachment_file_id).toBeNull();
+
+    const step2 = state.steps.find((row) => row.request_id === requestB?.id && row.step_no === 2);
+    const stepPanel = state.panels.find(
+      (row) => row.request_id === requestB?.id && row.panel_type === 'STEP_NEW_FAULT',
+    );
+    expect(step2).toBeDefined();
+    expect(stepPanel?.step_id).toBe(String(step2?.id));
+    expect(stepPanel?.step_id).not.toBe('2');
+    expect(stepPanel?.description).toBe('真空压力持续偏低。');
+
+    const requestA = state.requests.find((row) => row.request_no === 'DEV-RR-A-002');
+    const resetPanel = state.panels.find(
+      (row) => row.request_id === requestA?.id && row.panel_type === 'RESET_NEW_FAULT',
+    );
+    const initialPanel = state.panels.find(
+      (row) => row.request_id === requestA?.id && row.panel_type === 'INITIAL',
+    );
+    expect(resetPanel?.step_id).toBeNull();
+    expect(initialPanel?.step_id).toBeNull();
+    expect(requestA?.maintenance_date).toBe('2026-10-05');
+    expect(requestA?.reset_result).toBe('NEW_FAULT');
+    expect(requestA?.maintenance_engineer_name_snapshot).toBe('开发工程师 A');
+  });
+
+  it('重跑不增行、不重置接单人/状态/版本或人工编辑内容', async () => {
+    const { manager, state } = createSeedManager();
+    await upsertRepairRequests(manager, linkedConfig.repairRequests, modelIds);
+    const requestB = state.requests.find((row) => row.request_no === 'DEV-RR-B-001');
+    expect(requestB).toBeDefined();
+    if (requestB === undefined) {
+      throw new Error('缺少测试工单');
+    }
+    requestB.accepted_by_engineer_account_id = 999;
+    requestB.handling_status = 'COMPLETED';
+    requestB.maintenance_version_no = 9;
+    requestB.supplementary_note = '人工编辑保留';
+    requestB.maintenance_date = '2099-01-01';
+
+    const result = await upsertRepairRequests(manager, linkedConfig.repairRequests, modelIds);
+    expect(result.results.map((entry) => entry.outcome)).toEqual([
+      'UNCHANGED',
+      'UNCHANGED',
+      'UNCHANGED',
+    ]);
+    expect(state.requests).toHaveLength(3);
+    expect(state.intakes).toHaveLength(2);
+    expect(state.steps).toHaveLength(3);
+    expect(state.panels).toHaveLength(4);
+    expect(requestB.accepted_by_engineer_account_id).toBe(999);
+    expect(requestB.handling_status).toBe('COMPLETED');
+    expect(requestB.maintenance_version_no).toBe(9);
+    expect(requestB.supplementary_note).toBe('人工编辑保留');
+    expect(requestB.maintenance_date).toBe('2099-01-01');
+  });
+
+  it('同键异主或双向引用不一致时整批失败', async () => {
+    const owner = createSeedManager();
+    await upsertRepairRequests(owner.manager, linkedConfig.repairRequests, modelIds);
+    const ownerRequest = owner.state.requests.find((row) => row.request_no === 'DEV-RR-B-001');
+    if (ownerRequest === undefined) {
+      throw new Error('缺少测试工单');
+    }
+    ownerRequest.customer_account_id = 99;
+    await expect(
+      upsertRepairRequests(owner.manager, linkedConfig.repairRequests, modelIds),
+    ).rejects.toThrow(/占用|客户公司/);
+
+    const intakeOwner = createSeedManager();
+    await upsertRepairRequests(intakeOwner.manager, linkedConfig.repairRequests, modelIds);
+    const intake = intakeOwner.state.intakes.find(
+      (row) => row.record_uuid === '00000000-0000-4000-8000-000000000101',
+    );
+    if (intake === undefined) {
+      throw new Error('缺少测试报修来源');
+    }
+    intake.service_organization_id = 999;
+    await expect(
+      upsertRepairRequests(intakeOwner.manager, linkedConfig.repairRequests, modelIds),
+    ).rejects.toThrow(/占用/);
+
+    const brokenLink = createSeedManager();
+    await upsertRepairRequests(brokenLink.manager, linkedConfig.repairRequests, modelIds);
+    const brokenIntake = brokenLink.state.intakes.find(
+      (row) => row.record_uuid === '00000000-0000-4000-8000-000000000101',
+    );
+    if (brokenIntake === undefined) {
+      throw new Error('缺少测试报修来源');
+    }
+    brokenIntake.converted_request_id = 999;
+    await expect(
+      upsertRepairRequests(brokenLink.manager, linkedConfig.repairRequests, modelIds),
+    ).rejects.toThrow(/双向关联不一致/);
+
+    const missingIntake = createSeedManager();
+    await upsertRepairRequests(missingIntake.manager, linkedConfig.repairRequests, modelIds);
+    const missingIntakeRequest = missingIntake.state.requests.find(
+      (row) => row.request_no === 'DEV-RR-B-001',
+    );
+    if (missingIntakeRequest === undefined) {
+      throw new Error('缺少测试工单');
+    }
+    missingIntakeRequest.intake_id = null;
+    await expect(
+      upsertRepairRequests(missingIntake.manager, linkedConfig.repairRequests, modelIds),
+    ).rejects.toThrow(/报修来源关联已断裂/);
+  });
+
+  it('维修子表写入失败时向上抛出，不返回半成功结果', async () => {
+    const { manager, state } = createSeedManager();
+    state.failOn = '`repair_request_fault_panel`';
+    // 事务由 database:deploy 持有；这里验证失败向上传播，令调用方整批回滚。
+    await expect(
+      upsertRepairRequests(manager, linkedConfig.repairRequests, modelIds),
+    ).rejects.toThrow(/模拟子表写入失败/);
+    expect(state.requests.map((row) => row.request_no)).toEqual(['DEV-RR-A-001', 'DEV-RR-B-001']);
+    expect(state.intakes).toHaveLength(1);
+    expect(state.steps).toHaveLength(2);
+    expect(state.panels).toHaveLength(0);
+  });
+});
 
 describe('参考资料稳定身份（不连接实库）', () => {
   const config = parseValid();

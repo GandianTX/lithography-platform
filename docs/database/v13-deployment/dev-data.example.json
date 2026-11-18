@@ -65,6 +65,316 @@
       "handling_recorded_at": "2026-10-05T02:00:00.000Z",
       "handling_ended_at": "2026-10-06T02:00:00.000Z",
       "closure_reason": null
+    },
+    {
+      "request_no": "DEV-RR-A-101",
+      "intake": {
+        "record_uuid": "00000000-0000-4000-8000-000000000101"
+      },
+      "customer_login_name": "dev-customer-a1",
+      "service_organization_code": "ORG-DEV-A",
+      "equipment_model_code": "DEV-LITHO-A",
+      "error_code": "DEV-E-6101",
+      "fault_description": "开发联调：客户 A 报修，设备联锁后无法启动，等待维修厂家 A 接单。",
+      "content_md": "## 现象\n\n设备联锁后无法启动。\n\n## 期望\n\n维修厂家 A 接单后确认现场。",
+      "created_at": "2026-10-10T01:00:00.000Z",
+      "accepted_by_login_name": null,
+      "accepted_at": null,
+      "handling_result": null,
+      "handling_recorded_by_login_name": null,
+      "handling_recorded_at": null,
+      "handling_ended_at": null,
+      "closure_reason": null
+    },
+    {
+      "request_no": "DEV-RR-A-102",
+      "intake": {
+        "record_uuid": "00000000-0000-4000-8000-000000000102"
+      },
+      "maintenance": {
+        "maintenance_date": "2026-10-12",
+        "reset_result": "SAME_FAULT",
+        "supplementary_note": "排查中发现新的真空报警，等待备件确认后继续。",
+        "diagnostic_steps": [
+          {
+            "step_no": 1,
+            "error_code": "DEV-E-4101",
+            "part_name": "光学模组",
+            "action_text": "检查光源功率并复测曝光输出。",
+            "result_code": "UNRESOLVED"
+          },
+          {
+            "step_no": 2,
+            "error_code": "DEV-E-4102",
+            "part_name": "真空吸附单元",
+            "action_text": "检查真空回路压力，发现压力持续偏低。",
+            "result_code": "NEW_FAULT"
+          }
+        ],
+        "fault_panels": [
+          {
+            "panel_type": "INITIAL",
+            "phase_code": "PHASE_02",
+            "main_error": "DEV-E-4101",
+            "unit_error": "ALM-401",
+            "source": "MAIN",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "NORMAL",
+            "fault_status": "ACTIVE",
+            "description": "曝光输出功率不足，设备暂停。",
+            "action": "检查光源与曝光控制参数。"
+          },
+          {
+            "panel_type": "STEP_NEW_FAULT",
+            "step_no": 2,
+            "phase_code": "PHASE_04",
+            "main_error": "DEV-E-4102",
+            "unit_error": "ALM-410",
+            "source": "UNIT",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "ABNORMAL",
+            "fault_status": "ACTIVE",
+            "description": "真空压力持续偏低，疑似吸附单元泄漏。",
+            "action": "等待备件后更换密封件。"
+          }
+        ]
+      },
+      "customer_login_name": "dev-customer-a2",
+      "service_organization_code": "ORG-DEV-A",
+      "equipment_model_code": "DEV-LITHO-B",
+      "error_code": "DEV-E-4101",
+      "fault_description": "开发联调：客户 A 报修，曝光输出功率不足，维修厂家 A 处理中。",
+      "content_md": "## 现象\n\n曝光输出功率不足。\n\n## 已做检查\n\n已确认现场供电正常，等待进一步排查。",
+      "created_at": "2026-10-11T01:00:00.000Z",
+      "accepted_by_login_name": "dev-engineer-a",
+      "accepted_at": "2026-10-11T02:00:00.000Z",
+      "handling_result": "INTERRUPTED",
+      "handling_recorded_by_login_name": "dev-engineer-a",
+      "handling_recorded_at": "2026-10-12T02:00:00.000Z",
+      "handling_ended_at": null,
+      "closure_reason": "等待新故障备件确认"
+    },
+    {
+      "request_no": "DEV-RR-A-103",
+      "intake": {
+        "record_uuid": "00000000-0000-4000-8000-000000000103"
+      },
+      "maintenance": {
+        "maintenance_date": "2026-10-14",
+        "reset_result": "NEW_FAULT",
+        "supplementary_note": "复位后出现新的对准报警，已记录并交接。",
+        "diagnostic_steps": [
+          {
+            "step_no": 1,
+            "error_code": "DEV-E-5101",
+            "part_name": "光学模组",
+            "action_text": "检查镜片清洁度并完成清洁。",
+            "result_code": "UNRESOLVED"
+          },
+          {
+            "step_no": 2,
+            "error_code": "DEV-E-5102",
+            "part_name": "工件台",
+            "action_text": "复位后复测工件台定位精度。",
+            "result_code": "RESOLVED"
+          }
+        ],
+        "fault_panels": [
+          {
+            "panel_type": "INITIAL",
+            "phase_code": "PHASE_03",
+            "main_error": "DEV-E-5101",
+            "unit_error": "ALM-501",
+            "source": "MAIN",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "NORMAL",
+            "fault_status": "ACTIVE",
+            "description": "镜片污染导致曝光异常。",
+            "action": "清洁镜片并复测。"
+          },
+          {
+            "panel_type": "RESET_NEW_FAULT",
+            "phase_code": "PHASE_07",
+            "main_error": "DEV-E-5103",
+            "unit_error": "ALM-507",
+            "source": "UNIT",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "ABNORMAL",
+            "fault_status": "ACTIVE",
+            "description": "复位后出现新的对准报警。",
+            "action": "记录新故障并安排下一次上门。"
+          }
+        ]
+      },
+      "customer_login_name": "dev-customer-a1",
+      "service_organization_code": "ORG-DEV-A",
+      "equipment_model_code": "DEV-LITHO-A",
+      "error_code": "DEV-E-5101",
+      "fault_description": "开发联调：客户 A 报修，镜片污染导致曝光异常，维修厂家 A 已结单。",
+      "content_md": "## 现象\n\n镜片污染导致曝光异常。\n\n## 处理结果\n\n清洁镜片后恢复，复位出现新对准报警。",
+      "created_at": "2026-10-13T01:00:00.000Z",
+      "accepted_by_login_name": "dev-engineer-a",
+      "accepted_at": "2026-10-13T02:00:00.000Z",
+      "handling_result": "FIXED",
+      "handling_recorded_by_login_name": "dev-engineer-a",
+      "handling_recorded_at": "2026-10-14T02:00:00.000Z",
+      "handling_ended_at": "2026-10-15T02:00:00.000Z",
+      "closure_reason": null
+    },
+    {
+      "request_no": "DEV-RR-B-101",
+      "intake": {
+        "record_uuid": "00000000-0000-4000-8000-000000000104"
+      },
+      "customer_login_name": "dev-customer-a1",
+      "service_organization_code": "ORG-DEV-B",
+      "equipment_model_code": "DEV-LITHO-A",
+      "error_code": "DEV-E-6201",
+      "fault_description": "开发联调：客户 A 指定维修厂家 B，设备温控报警，待接单。",
+      "content_md": "## 现象\n\n设备温控报警后停机。\n\n## 期望\n\n维修厂家 B 接单后确认温控回路。",
+      "created_at": "2026-10-16T01:00:00.000Z",
+      "accepted_by_login_name": null,
+      "accepted_at": null,
+      "handling_result": null,
+      "handling_recorded_by_login_name": null,
+      "handling_recorded_at": null,
+      "handling_ended_at": null,
+      "closure_reason": null
+    },
+    {
+      "request_no": "DEV-RR-B-102",
+      "intake": {
+        "record_uuid": "00000000-0000-4000-8000-000000000105"
+      },
+      "maintenance": {
+        "maintenance_date": "2026-10-18",
+        "reset_result": "SAME_FAULT",
+        "supplementary_note": "排查中发现新的传感器信号异常，继续观察。",
+        "diagnostic_steps": [
+          {
+            "step_no": 1,
+            "error_code": "DEV-E-4201",
+            "part_name": "温控回路",
+            "action_text": "检查温控传感器接线与读数。",
+            "result_code": "UNRESOLVED"
+          },
+          {
+            "step_no": 2,
+            "error_code": "DEV-E-4202",
+            "part_name": "温度传感器",
+            "action_text": "对比备用传感器读数，发现信号漂移。",
+            "result_code": "NEW_FAULT"
+          }
+        ],
+        "fault_panels": [
+          {
+            "panel_type": "INITIAL",
+            "phase_code": "PHASE_05",
+            "main_error": "DEV-E-4201",
+            "unit_error": "ALM-421",
+            "source": "MAIN",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "NORMAL",
+            "fault_status": "ACTIVE",
+            "description": "温控回路读数异常，设备停机。",
+            "action": "检查传感器接线与温控参数。"
+          },
+          {
+            "panel_type": "STEP_NEW_FAULT",
+            "step_no": 2,
+            "phase_code": "PHASE_06",
+            "main_error": "DEV-E-4202",
+            "unit_error": "ALM-422",
+            "source": "UNIT",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "ABNORMAL",
+            "fault_status": "ACTIVE",
+            "description": "备用传感器信号漂移，判断为传感器故障。",
+            "action": "等待备件更换温度传感器。"
+          }
+        ]
+      },
+      "customer_login_name": "dev-customer-b1",
+      "service_organization_code": "ORG-DEV-B",
+      "equipment_model_code": "DEV-LITHO-B",
+      "error_code": "DEV-E-4201",
+      "fault_description": "开发联调：客户 B 报修，温控回路读数异常，维修厂家 B 处理中。",
+      "content_md": "## 现象\n\n温控回路读数异常，设备停机。\n\n## 已做检查\n\n已确认环境温度正常，等待传感器排查。",
+      "created_at": "2026-10-17T01:00:00.000Z",
+      "accepted_by_login_name": "dev-engineer-b",
+      "accepted_at": "2026-10-17T02:00:00.000Z",
+      "handling_result": "INTERRUPTED",
+      "handling_recorded_by_login_name": "dev-engineer-b",
+      "handling_recorded_at": "2026-10-18T02:00:00.000Z",
+      "handling_ended_at": null,
+      "closure_reason": "等待温度传感器备件"
+    },
+    {
+      "request_no": "DEV-RR-B-103",
+      "intake": {
+        "record_uuid": "00000000-0000-4000-8000-000000000106"
+      },
+      "maintenance": {
+        "maintenance_date": "2026-10-20",
+        "reset_result": "NEW_FAULT",
+        "supplementary_note": "复位后出现新的气路压力报警，已记录并安排复检。",
+        "diagnostic_steps": [
+          {
+            "step_no": 1,
+            "error_code": "DEV-E-5201",
+            "part_name": "气路单元",
+            "action_text": "检查气路压力并紧固接头。",
+            "result_code": "UNRESOLVED"
+          },
+          {
+            "step_no": 2,
+            "error_code": "DEV-E-5202",
+            "part_name": "压力开关",
+            "action_text": "复位后复测压力开关动作值。",
+            "result_code": "RESOLVED"
+          }
+        ],
+        "fault_panels": [
+          {
+            "panel_type": "INITIAL",
+            "phase_code": "PHASE_08",
+            "main_error": "DEV-E-5201",
+            "unit_error": "ALM-521",
+            "source": "MAIN",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "NORMAL",
+            "fault_status": "ACTIVE",
+            "description": "气路压力不足导致设备停机。",
+            "action": "检查气路并紧固接头。"
+          },
+          {
+            "panel_type": "RESET_NEW_FAULT",
+            "phase_code": "PHASE_09",
+            "main_error": "DEV-E-5203",
+            "unit_error": "ALM-529",
+            "source": "UNIT",
+            "error_type": "EQUIPMENT",
+            "gpib_status": "ABNORMAL",
+            "fault_status": "ACTIVE",
+            "description": "复位后出现新的气路压力报警。",
+            "action": "记录新故障并安排复检。"
+          }
+        ]
+      },
+      "customer_login_name": "dev-customer-b1",
+      "service_organization_code": "ORG-DEV-B",
+      "equipment_model_code": "DEV-LITHO-A",
+      "error_code": "DEV-E-5201",
+      "fault_description": "开发联调：客户 B 报修，气路压力不足导致停机，维修厂家 B 已结单。",
+      "content_md": "## 现象\n\n气路压力不足导致停机。\n\n## 处理结果\n\n紧固接头后恢复，复位出现新压力报警。",
+      "created_at": "2026-10-19T01:00:00.000Z",
+      "accepted_by_login_name": "dev-engineer-b",
+      "accepted_at": "2026-10-19T02:00:00.000Z",
+      "handling_result": "FIXED",
+      "handling_recorded_by_login_name": "dev-engineer-b",
+      "handling_recorded_at": "2026-10-20T02:00:00.000Z",
+      "handling_ended_at": "2026-10-21T02:00:00.000Z",
+      "closure_reason": null
     }
   ],
   "maintenance_reports": [

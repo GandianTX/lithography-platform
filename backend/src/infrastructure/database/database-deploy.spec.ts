@@ -1267,7 +1267,9 @@ describe('仓库无密值模板（不连接实库）', () => {
     const business = parseDevDataConfig(
       readFileSync(join(DOCS_DIR, 'dev-data.example.json'), 'utf8'),
     );
-    expect(business.repairRequests).toHaveLength(3);
+    expect(business.repairRequests).toHaveLength(9);
+    expect(business.repairRequests.filter((entry) => entry.intake !== null)).toHaveLength(6);
+    expect(business.repairRequests.filter((entry) => entry.maintenance !== null)).toHaveLength(4);
     expect(business.maintenanceReports).toHaveLength(2);
     expect(business.referenceDocuments).toHaveLength(2);
     expect(new Set(business.referenceDocuments.map((entry) => entry.seedKey)).size).toBe(2);
