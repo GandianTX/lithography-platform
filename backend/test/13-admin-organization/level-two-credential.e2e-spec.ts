@@ -10,6 +10,7 @@ import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { AccountEntity } from '../../src/modules/account/base/entities/account.entity';
 import { UserInfoEntity } from '../../src/modules/account/base/entities/user-info.entity';
+import { AccountQueryService } from '../../src/modules/account/queries/account.query.service';
 import { getAccountIdByLoginName, postGql } from '../utils/e2e-graphql-utils';
 import {
   createOwnedResourceLedger,
@@ -1066,4 +1067,136 @@ describe('S3 二级管理员绑定与凭据补发/重置 (e2e)', () => {
       ),
     ).toBe(0);
   });
+  it.each(['after-credential', 'before-bootstrap', 'after-bootstrap'] as const)(
+    '并发登录与一级重置：%s 不使旧凭据获得可用新会话',
+    async (stage) => {
+      const provisioned = await provisionCompany(`E2E-S3-login-race-${stage}-${RUN_TAG}`);
+      const target = provisioned.provisionedAdmin;
+      const oldPassword = provisioned.temporaryPassword;
+      if (oldPassword === null) throw new Error('并发夹具缺少初始凭据');
+      const previousLogin = await tryLogin(target.loginName, oldPassword);
+      if (previousLogin.token === null) throw new Error('并发前无法取得旧会话');
+      const before = await readAccountCredentialFacts(target.accountId);
+      const queries = app.get(AccountQueryService);
+      let signalReached: () => void = () => undefined;
+      let release: () => void = () => undefined;
+      const reached = new Promise<void>((resolve) => {
+        signalReached = resolve;
+      });
+      const resume = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let paused = false;
+      const pause = async (): Promise<void> => {
+        paused = true;
+        signalReached();
+        await resume;
+      };
+      const readCredential = queries.findCredentialByLoginName.bind(queries);
+      const readBootstrap = queries.getLoginBootstrapSnapshot.bind(queries);
+      const credentialSpy = jest
+        .spyOn(queries, 'findCredentialByLoginName')
+        .mockImplementation(async (input) => {
+          const result = await readCredential(input);
+          if (stage === 'after-credential' && input.loginName === target.loginName && !paused)
+            await pause();
+          return result;
+        });
+      const bootstrapSpy = jest
+        .spyOn(queries, 'getLoginBootstrapSnapshot')
+        .mockImplementation(async (input) => {
+          if (stage === 'before-bootstrap' && input.accountId === target.accountId && !paused)
+            await pause();
+          const result = await readBootstrap(input);
+          if (stage === 'after-bootstrap' && input.accountId === target.accountId && !paused)
+            await pause();
+          return result;
+        });
+      const inFlight = tryLogin(target.loginName, oldPassword);
+      // 立即附加错误处理：失败也能唤醒协调方，避免悬空请求或未处理拒绝。
+      const settled = inFlight.then(
+        (result) => {
+          signalReached();
+          return { result };
+        },
+        (error: unknown) => {
+          signalReached();
+          return { error };
+        },
+      );
+      let resetResult: CredentialResult | undefined;
+      try {
+        await reached;
+        expect(paused).toBe(true);
+        const reset = await gql<{ adminResetLevelTwoAdminCredential: CredentialResult }>(
+          RESET_MUTATION,
+          {
+            input: {
+              organizationId: provisioned.organization.id,
+              adminAccountId: target.accountId,
+              reason: RESET_REASON,
+            },
+          },
+        );
+        // 写入成功即登记审计，后续断言失败也不会漏清本轮资源。
+        await trackManagementAuditEvents(provisioned.organization.id);
+        expect(reset.body.errors).toBeUndefined();
+        resetResult = reset.body.data?.adminResetLevelTwoAdminCredential;
+        if (!resetResult) throw new Error('并发重置缺少结果');
+        const after = await readAccountCredentialFacts(target.accountId);
+        expect(after.credentialVersion).toBe(before.credentialVersion + 1);
+      } finally {
+        release();
+        await settled;
+        credentialSpy.mockRestore();
+        bootstrapSpy.mockRestore();
+      }
+      const outcome = await settled;
+      if ('error' in outcome) throw outcome.error;
+      const oldLogin = outcome.result;
+      if (oldLogin.token !== null) {
+        // 任一交错窗口返回的旧凭据令牌都不得可用；最后一次读取后的交错可只靠代次拒绝。
+        const probe = await gql<{ mySessionIdentity: { restriction: string } }>(
+          'query LoginRaceIdentity { mySessionIdentity { restriction } }',
+          {},
+          oldLogin.token,
+        );
+        expect(probe.body.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      }
+      if (stage !== 'after-bootstrap') {
+        expect(oldLogin.token === null).toBe(true);
+        expect(oldLogin.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      }
+      const oldProbe = await gql<unknown>(
+        NAME_LIST_PROBE,
+        { pagination: PAGINATION },
+        previousLogin.token,
+      );
+      expect(oldProbe.body.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+      const stalePasswordLogin = await tryLogin(target.loginName, oldPassword);
+      expect(stalePasswordLogin.token === null).toBe(true);
+      if (!resetResult) throw new Error('并发重置结果缺失');
+      const fresh = await tryLogin(target.loginName, resetResult.temporaryPassword);
+      if (fresh.token === null) throw new Error('新凭据无法登录');
+      const identity = await gql<{ mySessionIdentity: { restriction: string } }>(
+        'query LoginRaceFreshIdentity { mySessionIdentity { restriction } }',
+        {},
+        fresh.token,
+      );
+      expect(identity.body.errors).toBeUndefined();
+      expect(identity.body.data?.mySessionIdentity.restriction).toBe('MUST_CHANGE_PASSWORD');
+      const changed = await gql<{ changeMyPassword: { isUpdated: boolean } }>(
+        CHANGE_PASSWORD_MUTATION,
+        {
+          input: {
+            currentPassword: resetResult.temporaryPassword,
+            newPassword: `RaceFresh#2026-${stage}`,
+          },
+        },
+        fresh.token,
+      );
+      expect(changed.body.errors).toBeUndefined();
+      expect(changed.body.data?.changeMyPassword.isUpdated).toBe(true);
+    },
+  );
 });

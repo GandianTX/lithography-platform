@@ -67,6 +67,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     status,
     loginEmail: 'engineer-pending@example.com',
     loginPassword: 'hashed-secret',
+    credentialVersion: 0,
     createdAt: new Date('2026-01-01T00:00:00Z'),
   });
 
@@ -78,6 +79,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     accountStatus: status,
     identityHint: IdentityTypeEnum.ENGINEER,
     mustChangePassword: false,
+    credentialVersion: 0,
     adminLevel: null,
     userInfo: {
       userState: status === AccountStatus.PENDING ? UserState.PENDING : UserState.ACTIVE,
@@ -231,6 +233,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     );
     (executeLoginFlowUsecase.execute as jest.Mock).mockResolvedValue({
       tokens: { accessToken: 'basic-access', refreshToken: 'refresh' },
+      credentialVersion: 0,
       accountId: 9001,
       roleFromHint: IdentityTypeEnum.ENGINEER,
       accessGroup: [IdentityTypeEnum.ENGINEER],
@@ -326,6 +329,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     ).mockResolvedValue([{ organizationId: 501, memberRole: IdentityTypeEnum.ENGINEER }]);
     (executeLoginFlowUsecase.execute as jest.Mock).mockResolvedValue({
       tokens: { accessToken: 'basic-access', refreshToken: 'refresh' },
+      credentialVersion: 0,
       accountId: 9001,
       roleFromHint: IdentityTypeEnum.ENGINEER,
       accessGroup: [IdentityTypeEnum.ENGINEER],
@@ -384,6 +388,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     );
     (executeLoginFlowUsecase.execute as jest.Mock).mockResolvedValue({
       tokens: { accessToken: 'basic-access', refreshToken: 'refresh' },
+      credentialVersion: 0,
       accountId: 9001,
       roleFromHint: IdentityTypeEnum.ENGINEER,
       accessGroup: [IdentityTypeEnum.ENGINEER],
@@ -429,5 +434,62 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     expect(executeLoginFlowUsecase.execute).toHaveBeenCalledWith(
       expect.objectContaining({ accountId: 9001, allowPendingAccount: false }),
     );
+  });
+  describe('密码验证与令牌签发绑定同一凭据版本', () => {
+    const prepareVersions = (
+      verifiedVersion: number,
+      authorityVersion: number,
+      basicVersion: number,
+    ) => {
+      (accountQueryService.findCredentialByLoginName as jest.Mock).mockResolvedValue({
+        ...credential(AccountStatus.ACTIVE),
+        credentialVersion: verifiedVersion,
+      });
+      (accountQueryService.findSessionAuthoritySnapshot as jest.Mock).mockResolvedValue(
+        authoritySnapshot(AccountStatus.ACTIVE, { credentialVersion: authorityVersion }),
+      );
+      (executeLoginFlowUsecase.execute as jest.Mock).mockResolvedValue({
+        accountId: 9001,
+        credentialVersion: basicVersion,
+        tokens: { accessToken: 'basic-access', refreshToken: 'refresh' },
+        accessGroup: [IdentityTypeEnum.ENGINEER],
+        account: { loginEmail: 'engineer@example.com' },
+        userInfo: { nickname: '工程师' },
+      });
+      (decideLoginRoleUsecase.execute as jest.Mock).mockReturnValue({
+        finalRole: IdentityTypeEnum.ENGINEER,
+        reason: 'hint',
+      });
+      (tokenHelper.generateAccessToken as jest.Mock).mockReturnValue('access-token');
+      (enrichLoginWithIdentityUsecase.execute as jest.Mock).mockResolvedValue({
+        accessToken: 'access-token',
+      });
+    };
+
+    it('凭据读取后发生重置，授权快照版本变化时拒绝旧密码登录', async () => {
+      prepareVersions(4, 5, 5);
+      await expect(login()).rejects.toMatchObject({ code: AUTH_ERROR.INVALID_PASSWORD });
+      expect(AccountService.verifyPassword).toHaveBeenCalled();
+      expect(executeLoginFlowUsecase.execute).not.toHaveBeenCalled();
+      expect(tokenHelper.generateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('密码验证后发生重置，基础登录版本变化时不返回新代次令牌', async () => {
+      prepareVersions(4, 4, 5);
+      await expect(login()).rejects.toMatchObject({ code: AUTH_ERROR.INVALID_PASSWORD });
+      expect(executeLoginFlowUsecase.execute).toHaveBeenCalledTimes(1);
+      expect(tokenHelper.generateAccessToken).not.toHaveBeenCalled();
+      expect(enrichLoginWithIdentityUsecase.execute).not.toHaveBeenCalled();
+    });
+
+    it('版本一致时以实际验证通过的非零版本签发', async () => {
+      prepareVersions(4, 4, 4);
+      await expect(login()).resolves.toMatchObject({ accessToken: 'access-token' });
+      expect(tokenHelper.generateAccessToken).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({ sub: 9001, credentialVersion: 4 }),
+        }),
+      );
+    });
   });
 });
