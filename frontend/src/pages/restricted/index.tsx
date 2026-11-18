@@ -52,9 +52,8 @@ const RESTRICTION_DETAIL_KEYS: Record<
     titleKey: 'restricted.engineerInactive.title',
   },
   ADMIN_ORGANIZATION_INACTIVE: {
-    description:
-      '你所属的公司已停用或管理员绑定无效，暂不能使用管理功能，请联系一级管理员确认公司状态。',
-    title: '所属公司不可用',
+    descriptionKey: 'restricted.adminOrganizationInactive.description',
+    titleKey: 'restricted.adminOrganizationInactive.title',
   },
 };
 

@@ -188,6 +188,9 @@ export const ZH_CN_MESSAGES = {
   'restricted.engineerInactive.title': '工程师资格尚未生效',
   'restricted.engineerInactive.description':
     '你的工程师申请已通过审核，但账号开通尚未完成，请联系管理员确认所属公司成员资格。',
+  'restricted.adminOrganizationInactive.title': '所属公司不可用',
+  'restricted.adminOrganizationInactive.description':
+    '你所属的公司已停用或管理员绑定无效，暂不能使用管理功能，请联系一级管理员确认公司状态。',
   'restricted.changePasswordCard': '修改登录密码',
   'restricted.profileLoading': '账号资料加载中…',
   'restricted.profileLoadFailed': '账号资料加载失败',

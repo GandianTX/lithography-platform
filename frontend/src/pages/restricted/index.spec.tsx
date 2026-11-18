@@ -216,4 +216,22 @@ describe('RestrictedPage', () => {
 
     expect(screen.getByText('工程师资格尚未生效')).toBeInTheDocument();
   });
+
+  it('所属公司不可用时展示公司停用说明，保留本人资料与改密、不展示工程师申请卡片', async () => {
+    mocks.restriction.current = 'ADMIN_ORGANIZATION_INACTIVE';
+    await renderRestrictedPage();
+
+    expect(screen.getByText('所属公司不可用')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '你所属的公司已停用或管理员绑定无效，暂不能使用管理功能，请联系一级管理员确认公司状态。',
+      ),
+    ).toBeInTheDocument();
+    // 该状态不是工程师资格问题：不出现工程师申请卡片与申请审核文案
+    expect(screen.queryByText('我的工程师申请')).toBeNull();
+    expect(screen.queryByText('工程师资格尚未生效')).toBeNull();
+    // 仍保留本人资料维护与改密入口
+    expect(screen.getByTestId('account-profile-form')).toHaveAttribute('data-mode', 'restricted');
+    expect(screen.getByRole('button', { name: '模拟改密成功' })).toBeInTheDocument();
+  });
 });
