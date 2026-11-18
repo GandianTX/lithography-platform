@@ -746,6 +746,11 @@ const runInitWithAdmin = async (adminBootstrapFile: string): Promise<DeployRepor
       envFile: CONFIG_FILE,
       database: EXPECTED_DB,
       confirmDatabase: EXPECTED_DB,
+      // 本专项使用 schema_version=1 的开发夹具，必须显式走开发入口，
+      // 并保持实例指纹与目标库两道安全门完整。
+      environment: 'development',
+      expectServerUuid: EXPECTED_SERVER_UUID,
+      confirmDevTarget: EXPECTED_DB,
       adminBootstrapFile,
       confirmAdminBootstrap: ADMIN_BOOTSTRAP_CONFIRM_VALUE,
     },

@@ -65,6 +65,14 @@ export function canResetAdminUserPassword(row: AdminUserRow): boolean {
 }
 
 /**
+ * 二级管理员凭据重置入口：仅一级管理员出现。
+ * 等级缺失 / 非法 / 为二时一律不渲染入口（服务端仍独立裁决并返回 FORBIDDEN）。
+ */
+export function canManageLevelTwoCredentials(adminLevel: number | null): boolean {
+  return adminLevel === 1;
+}
+
+/**
  * 可见范围提示：等级只用于文案，不是授权依据。
  * 等级缺失或非法时不承诺任何范围，避免误导为「全部公司」。
  */

@@ -16,6 +16,7 @@ import { parseAdminBootstrapConfig } from './admin-bootstrap';
 import {
   assertInitializationEmailConflicts,
   parseDeployCliArgs,
+  runDatabaseDeploy,
   runInitializationDataTransaction,
   type InitializationQueryRunner,
 } from './database-deploy';
@@ -1242,9 +1243,18 @@ describe('仓库无密值模板（不连接实库）', () => {
     );
     expect(organizations.organizations).toHaveLength(2);
 
+    const productionAdmins = parseAdminBootstrapConfig(
+      readFileSync(join(DOCS_DIR, 'admin-bootstrap.example.json'), 'utf8'),
+    );
+    expect(productionAdmins.schemaVersion).toBe(2);
+    expect(productionAdmins.accounts).toHaveLength(3);
+    expect(productionAdmins.defaultManagedCompanies).toHaveLength(1);
+    expect(productionAdmins.defaultManagedCompanies[0]?.account.adminLevel).toBe(2);
+
     const admins = parseAdminBootstrapConfig(
       readFileSync(join(DOCS_DIR, 'dev-admin.example.json'), 'utf8'),
     );
+    expect(admins.schemaVersion).toBe(1);
     expect(admins.accounts.filter((entry) => entry.adminLevel === 1)).toHaveLength(3);
     expect(admins.accounts.filter((entry) => entry.adminLevel === 2)).toHaveLength(3);
 
@@ -1286,7 +1296,7 @@ describe('管理员映射文件（不连接实库）', () => {
 
   it('schema_version 不匹配、等级越界、重复账号与未知字段均失败关闭', () => {
     expect(() =>
-      parseAdminBootstrapConfig(JSON.stringify({ schema_version: 2, accounts: [] })),
+      parseAdminBootstrapConfig(JSON.stringify({ schema_version: 3, accounts: [] })),
     ).toThrow(/schema_version/);
     expect(() =>
       parseAdminBootstrapConfig(
@@ -1474,10 +1484,225 @@ describe('初始化映射邮箱冲突（不连接实库）', () => {
     );
   });
 
+  it('正式初始化的二级管理员与开发客户邮箱冲突时拒绝', () => {
+    const admin = parseAdminBootstrapConfig(
+      JSON.stringify({
+        schema_version: 2,
+        level_one_accounts: [
+          {
+            login_name: 'admin01',
+            login_email: 'admin01@example.com',
+            password: 'valid-password-01',
+            organization_code: 'ORG-CLIENT-A',
+            nickname: '管理员一',
+          },
+          {
+            login_name: 'admin02',
+            login_email: 'admin02@example.com',
+            password: 'valid-password-02',
+            organization_code: 'ORG-CLIENT-A',
+            nickname: '管理员二',
+          },
+          {
+            login_name: 'admin03',
+            login_email: 'admin03@example.com',
+            password: 'valid-password-03',
+            organization_code: 'ORG-CLIENT-A',
+            nickname: '管理员三',
+          },
+        ],
+        default_managed_companies: [
+          {
+            organization_code: 'ORG-PEER-A',
+            account: {
+              login_name: 'managed01',
+              login_email: 'same@example.com',
+              password: 'valid-password-04',
+              nickname: '二级管理员一',
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(() => assertInitializationEmailConflicts(admin, devConfig('SAME@example.com'))).toThrow(
+      /初始化映射邮箱冲突/,
+    );
+  });
+
   it('合法配置复跑保持幂等校验通过', () => {
     const admin = adminConfig('admin01@example.com');
     const dev = devConfig('dev-customer-01@example.com');
     expect(() => assertInitializationEmailConflicts(admin, dev)).not.toThrow();
     expect(() => assertInitializationEmailConflicts(admin, dev)).not.toThrow();
+  });
+});
+
+describe('正式部署管理员映射版本守卫（不连接实库）', () => {
+  const GUARD_DATABASE = 'lithography_dev_v13_guard';
+  const silentLogger = {
+    info: (): void => undefined,
+    warn: (): void => undefined,
+    error: (): void => undefined,
+  };
+  const v1AdminFile = join(DOCS_DIR, 'dev-admin.example.json');
+  const v2AdminFile = join(DOCS_DIR, 'admin-bootstrap.example.json');
+  let guardRoot = '';
+  let envFile = '';
+
+  beforeAll(() => {
+    guardRoot = mkdtempSync(join(tmpdir(), 'deploy-admin-version-'));
+    envFile = join(guardRoot, 'deploy.env');
+    writeFileSync(
+      envFile,
+      [
+        'DB_HOST=127.0.0.1',
+        'DB_PORT=3306',
+        'DB_USER=deploy_probe',
+        'DB_PASS=probe',
+        `DB_NAME=${GUARD_DATABASE}`,
+      ].join('\n'),
+    );
+  });
+
+  afterAll(() => {
+    rmSync(guardRoot, { recursive: true, force: true });
+  });
+
+  const createProbe = (): {
+    readonly dependencies: {
+      createDataSource: () => never;
+      lockTimeoutSeconds: number;
+    };
+    readonly created: () => boolean;
+  } => {
+    let created = false;
+    return {
+      dependencies: {
+        createDataSource: (): never => {
+          created = true;
+          throw new Error('STUB_DATA_SOURCE_CREATED');
+        },
+        lockTimeoutSeconds: 0,
+      },
+      created: () => created,
+    };
+  };
+
+  it('省略 environment 时视为 production，v1 映射在连接前早拒', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          adminBootstrapFile: v1AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/schema_version=2/);
+    expect(probe.created()).toBe(false);
+  });
+
+  it('显式 production 时 v1 映射同样在连接前早拒', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+          adminBootstrapFile: v1AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/production 环境的管理员初始化只接受 schema_version=2/);
+    expect(probe.created()).toBe(false);
+  });
+
+  it('production 的 v2 正式映射通过守卫并进入连接', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+          adminBootstrapFile: v2AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
+  });
+
+  it('development 显式传入开发标志、目标库与实例指纹时 v1 映射仍可执行', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'development',
+          expectServerUuid: '6ccd2f7e-1b0f-11ee-be56-0242ac120002',
+          confirmDevTarget: GUARD_DATABASE,
+          adminBootstrapFile: v1AdminFile,
+          confirmAdminBootstrap: 'APPLY-ADMIN-BOOTSTRAP',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
+  });
+
+  it('仅结构 init（无管理员映射）不受版本守卫影响', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'init',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
+  });
+
+  it('upgrade 不含初始化文件时保持原行为', async () => {
+    const probe = createProbe();
+    await expect(
+      runDatabaseDeploy(
+        {
+          mode: 'upgrade',
+          envFile,
+          database: GUARD_DATABASE,
+          confirmDatabase: GUARD_DATABASE,
+          environment: 'production',
+        },
+        silentLogger,
+        probe.dependencies,
+      ),
+    ).rejects.toThrow(/STUB_DATA_SOURCE_CREATED/);
+    expect(probe.created()).toBe(true);
   });
 });

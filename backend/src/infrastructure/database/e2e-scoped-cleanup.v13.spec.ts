@@ -370,6 +370,17 @@ const CLEANER_SCHEMA: Record<string, readonly string[]> = {
     'target_id',
     'result',
   ],
+  // 一级管理员新增公司开通提交台账（三个外键均 RESTRICT）。
+  admin_organization_provisioning_request: [
+    'id',
+    'purpose',
+    'submission_key',
+    'actor_account_id',
+    'input_fingerprint',
+    'state',
+    'organization_id',
+    'admin_account_id',
+  ],
   // 旧表入向引用闭包查询面。
   maintenance_report: [
     'id',
@@ -1300,6 +1311,98 @@ describe('G-3 V13 清理闭包纯替身', () => {
       expect(task.calls.selectSql).toHaveLength(0);
       expect(task.calls.deleteStatements).toHaveLength(0);
       expect(task.calls.commitMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  describe('开通提交台账（admin_organization_provisioning_request）', () => {
+    const provisioningFacts = () => ({
+      purpose: 'ADMIN_CREATE_ORGANIZATION',
+      organizationId: 100,
+      adminAccountId: 200,
+      state: 'COMPLETED',
+    });
+
+    const provisioningRow: FakeRow = {
+      id: 7001,
+      purpose: 'ADMIN_CREATE_ORGANIZATION',
+      organization_id: 100,
+      admin_account_id: 200,
+      state: 'COMPLETED',
+    };
+
+    it('登记真实提交 ID 时必须携带公司/管理员账号/用途/终态事实', () => {
+      const ledger = createOwnedResourceLedger();
+      recordAny(ledger, 'provisioningRequest', 7001, provisioningFacts());
+
+      expect(ledger.provisioningRequestIds).toEqual([7001]);
+      expect(ledger.facts.provisioningRequest.get(7001)).toEqual(provisioningFacts());
+    });
+
+    it('提交行落在本轮范围但未登记：拒绝且 DELETE=0', async () => {
+      const ledger = createOwnedResourceLedger();
+      registerOrgAndAccount(ledger);
+
+      const task = runCleanup(
+        ledger,
+        {
+          organization: [orgRow],
+          base_user_account: [accountRow],
+          admin_organization_provisioning_request: [provisioningRow],
+        },
+        'v13-provisioning-unregistered',
+      );
+
+      await expect(task).rejects.toThrow(/未登记归属证据/);
+      expect(task.calls.deleteStatements).toHaveLength(0);
+      expect(task.calls.rollbackMock).toHaveBeenCalled();
+    });
+
+    it('登记事实漂移（state 非 COMPLETED）：第一条 DELETE 前拒绝', async () => {
+      const ledger = createOwnedResourceLedger();
+      registerOrgAndAccount(ledger);
+      recordAny(ledger, 'provisioningRequest', 7001, provisioningFacts());
+
+      const task = runCleanup(
+        ledger,
+        {
+          organization: [orgRow],
+          base_user_account: [accountRow],
+          admin_organization_provisioning_request: [{ ...provisioningRow, state: 'PENDING' }],
+        },
+        'v13-provisioning-drift',
+      );
+
+      await expect(task).rejects.toThrow(/事实漂移.*state/);
+      expect(task.calls.deleteStatements).toHaveLength(0);
+    });
+
+    it('提交行先于组织与管理员账号删除', async () => {
+      const ledger = createOwnedResourceLedger();
+      registerOrgAndAccount(ledger);
+      recordAny(ledger, 'provisioningRequest', 7001, provisioningFacts());
+
+      const task = runCleanup(
+        ledger,
+        {
+          organization: [orgRow],
+          base_user_account: [accountRow],
+          admin_organization_provisioning_request: [provisioningRow],
+        },
+        'v13-provisioning-order',
+      );
+      await task;
+
+      const deletes = task.calls.deleteStatements;
+      const idxOf = (table: string): number =>
+        deletes.findIndex((s) => s.includes(`DELETE FROM ${table} `));
+      expect(idxOf('admin_organization_provisioning_request')).toBeGreaterThanOrEqual(0);
+      expect(idxOf('admin_organization_provisioning_request')).toBeLessThan(idxOf('organization'));
+      expect(idxOf('admin_organization_provisioning_request')).toBeLessThan(
+        idxOf('base_user_account'),
+      );
+      expect(deletes[idxOf('admin_organization_provisioning_request')]).toContain('WHERE id IN');
+      expect(task.calls.commitMock).toHaveBeenCalled();
     });
   });
 });

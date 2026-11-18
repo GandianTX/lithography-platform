@@ -15,7 +15,7 @@ import { normalizeEmail } from '@core/common/normalize/normalize.helper';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { Repository, In, Raw } from 'typeorm';
+import { Repository, In, IsNull, Not, Raw } from 'typeorm';
 import type {
   AccountCredentialSnapshot,
   AccountDisplayInfo,
@@ -108,6 +108,31 @@ export class AccountQueryService {
     return account.adminLevel;
   }
 
+  /**
+   * 批量筛选带管理员等级（`admin_level` 非空）的账号，保持入参去重。
+   *
+   * 供公司启停撤销会话时区分「管理类成员」与客户成员：本服务只返回账号侧事实，
+   * 不读取组织成员关系，也不做权限判定。空入参直接返回空数组（不生成 SQL）。
+   */
+  async listAdminAccountIdsAmong(params: {
+    accountIds: ReadonlyArray<number>;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<number[]> {
+    const uniqueIds = [
+      ...new Set(params.accountIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (uniqueIds.length === 0) {
+      return [];
+    }
+    const accountRepository = this.getAccountRepository(params.transactionContext);
+    const accounts = await accountRepository.find({
+      where: { id: In(uniqueIds), adminLevel: Not(IsNull()) },
+      select: { id: true, adminLevel: true },
+      order: { id: 'ASC' },
+    });
+    return accounts.map((account) => account.id);
+  }
+
   async getUserAccountViewById(params: {
     accountId: number;
     transactionContext?: PersistenceTransactionContext;
@@ -160,6 +185,7 @@ export class AccountQueryService {
         accountStatus: null,
         identityHint: null,
         mustChangePassword: false,
+        credentialVersion: 0,
         adminLevel: null,
         userInfo: null,
       };
@@ -171,6 +197,7 @@ export class AccountQueryService {
       accountStatus: account.status,
       identityHint: account.identityHint,
       mustChangePassword: account.mustChangePassword === true,
+      credentialVersion: account.credentialVersion ?? 0,
       adminLevel: account.adminLevel ?? null,
       userInfo: userInfo
         ? {
@@ -415,6 +442,7 @@ export class AccountQueryService {
       loginPassword: account.loginPassword,
       createdAt: account.createdAt,
       mustChangePassword: account.mustChangePassword,
+      credentialVersion: account.credentialVersion ?? 0,
     };
   }
 
@@ -654,6 +682,7 @@ export class AccountQueryService {
         identityHint: account.identityHint,
         createdAt: account.createdAt,
         updatedAt: account.updatedAt,
+        credentialVersion: account.credentialVersion ?? 0,
       },
       userInfo: {
         id: userInfo.id,

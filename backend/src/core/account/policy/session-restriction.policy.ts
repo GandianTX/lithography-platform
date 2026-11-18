@@ -14,7 +14,10 @@ import { SessionRestriction } from '@app-types/auth/session-restriction.types';
  * - `latestEngineerApplicationStatus`：账号最新一份工程师申请状态，无申请记录时为 `null`；
  * - `latestEngineerApplicationOrganizationId`：最新申请的目标公司，无申请记录时为 `null`；
  * - `effectiveEngineerOrganizationIds`：账号持有有效 `ENGINEER` 成员关系的组织集合
- *   （成员 ACTIVE 且组织 ACTIVE，由 `OrganizationMembershipQueryService` 过滤后传入）。
+ *   （成员 ACTIVE 且组织 ACTIVE，由 `OrganizationMembershipQueryService` 过滤后传入）；
+ * - `adminLevel`：账号管理员等级（`base_user_account.admin_level`，非管理员为 `null`）；
+ * - `effectiveAdminOrganizationIds`：账号持有有效 `SUPER_ADMIN` 成员关系的组织集合
+ *   （成员 ACTIVE 且组织 ACTIVE，同一查询服务过滤后传入）。
  */
 export interface SessionRestrictionFacts {
   readonly mustChangePassword: boolean;
@@ -24,6 +27,8 @@ export interface SessionRestrictionFacts {
   readonly latestEngineerApplicationStatus: EngineerRegistrationApplicationStatus | null;
   readonly latestEngineerApplicationOrganizationId: number | null;
   readonly effectiveEngineerOrganizationIds: readonly number[];
+  readonly adminLevel: number | null;
+  readonly effectiveAdminOrganizationIds: readonly number[];
 }
 
 /**
@@ -38,7 +43,13 @@ export interface SessionRestrictionFacts {
  *    （组织停用、成员缺失、成员角色不符、目标组织不一致都视为未生效）；
  * 5. 无申请记录时回落到状态事实：`identity_hint=ENGINEER` 且账号或资料为 `PENDING`
  *    → `ENGINEER_PENDING`（覆盖历史待审账号在申请表中无记录的情况）；
- * 6. 其余（含申请已 `APPROVED` 且资格生效、无申请记录的存量工程师）→ `NONE`。
+ * 6. `admin_level=2` 且没有**恰好一条**有效 `SUPER_ADMIN` 成员组织（组织 ACTIVE、成员
+ *    ACTIVE）→ `ADMIN_ORGANIZATION_INACTIVE`：公司停用、成员缺失、角色不符或多公司歧义
+ *    都视为二级管理员失去可信公司，一切管理业务失败关闭；
+ * 7. 其余（含申请已 `APPROVED` 且资格生效、无申请记录的存量工程师）→ `NONE`。
+ *
+ * 第 6 步位于工程师判定之后：待审 / 已拒绝 / 资格未生效本身已是受限会话，先按更具体的
+ * 原因展示；必须改密仍最高优先。`admin_level=1` 是平台级身份，不因缺少成员组织受限。
  *
  * 第 2/3 步以申请状态为准、先于第 5 步：待审与拒绝工程师的账号/资料可能同时为
  * `PENDING`，若先按状态回落会把「已拒绝」误判为「待审」。
@@ -74,6 +85,13 @@ export function resolveSessionRestriction(facts: SessionRestrictionFacts): Sessi
     (facts.accountStatus === AccountStatus.PENDING || facts.userState === UserState.PENDING)
   ) {
     return SessionRestriction.ENGINEER_PENDING;
+  }
+
+  // 二级管理员的可信公司是全部管理业务的作用域来源：唯一有效 SUPER_ADMIN 成员组织缺失、
+  // 公司停用（查询服务已过滤）、角色不符或多公司歧义时不得回到普通会话。
+  // 一级管理员是平台级身份，不走本规则。
+  if (facts.adminLevel === 2 && facts.effectiveAdminOrganizationIds.length !== 1) {
+    return SessionRestriction.ADMIN_ORGANIZATION_INACTIVE;
   }
 
   return SessionRestriction.NONE;

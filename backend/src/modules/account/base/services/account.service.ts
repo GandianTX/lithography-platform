@@ -35,6 +35,13 @@ export interface AccountCreateData {
   status?: AccountStatus;
   audience?: AudienceTypeEnum;
   identityHint?: string | null;
+  /**
+   * 管理员等级：**只允许**受控开通/初始化用例显式提供（如二级管理员开通传 2），
+   * 普通建号入口不得设置，避免绕过管理员授权链路自行提权。
+   */
+  adminLevel?: number | null;
+  /** 是否必须先修改密码：同样只由受控开通用例提供。 */
+  mustChangePassword?: boolean;
   recentLoginHistory?: LoginHistoryItemModel[] | null;
   createdAt?: Date;
   updatedAt?: Date;
@@ -227,6 +234,15 @@ export class AccountService {
     passwordHash: string;
     transactionContext?: PersistenceTransactionContext;
     mustChangePassword?: boolean;
+    /** 为 true 时在同一 UPDATE 内清除 `must_change_password` 标记 */
+    clearMustChangePassword?: boolean;
+    /** 为 true 时在同一 UPDATE 内置位 `must_change_password`（管理员重置为默认密码） */
+    setMustChangePassword?: boolean;
+    /**
+     * 为 true 时在同一 UPDATE 内递增 `credential_version`。
+     * 补发 / 二级专用重置 / 自助改密必须开启，使变更前签发的 access token 永久失效。
+     */
+    incrementCredentialVersion?: boolean;
   }): Promise<void> {
     const repository = this.getAccountRepository(params.transactionContext);
     await repository.update(params.accountId, {
@@ -234,8 +250,38 @@ export class AccountService {
       ...(params.mustChangePassword === undefined
         ? {}
         : { mustChangePassword: params.mustChangePassword }),
+      ...(params.clearMustChangePassword === true ? { mustChangePassword: false } : {}),
+      ...(params.setMustChangePassword === true ? { mustChangePassword: true } : {}),
+      ...(params.incrementCredentialVersion === true
+        ? { credentialVersion: () => 'credential_version + 1' }
+        : {}),
       updatedAt: new Date(),
     });
+  }
+
+  /**
+   * 批量递增账号凭据代次（公司启停的会话撤销）。
+   *
+   * 空集合 no-op（不生成 SQL）；单条 UPDATE 原子完成，调用方已在同一事务内持有
+   * 公司行锁，锁序为 organization → account。只递增代次，不改密码、标记或状态。
+   */
+  async incrementCredentialVersionsByAccountIds(params: {
+    accountIds: ReadonlyArray<number>;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<void> {
+    const uniqueIds = [
+      ...new Set(params.accountIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (uniqueIds.length === 0) {
+      return;
+    }
+    const repository = this.getAccountRepository(params.transactionContext);
+    await repository
+      .createQueryBuilder()
+      .update(AccountEntity)
+      .set({ credentialVersion: () => 'credential_version + 1' })
+      .whereInIds(uniqueIds)
+      .execute();
   }
 
   /**
@@ -430,6 +476,7 @@ export class AccountService {
       loginPassword: account.loginPassword,
       createdAt: account.createdAt,
       mustChangePassword: account.mustChangePassword,
+      credentialVersion: account.credentialVersion ?? 0,
     };
   }
 

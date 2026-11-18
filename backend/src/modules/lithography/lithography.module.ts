@@ -13,6 +13,7 @@ import { ContentSubmissionRevisionEntity } from './entities/content-submission-r
 import { EngineerRegistrationApplicationEntity } from './entities/engineer-registration-application.entity';
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { EquipmentModelEntity } from './entities/equipment-model.entity';
+import { AdminOrganizationProvisioningRequestEntity } from './entities/admin-organization-provisioning-request.entity';
 import { FaultCaseSubmissionDetailEntity } from './entities/fault-case-submission-detail.entity';
 import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.entity';
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
@@ -61,10 +62,12 @@ import { RepairRequestQueryService } from './queries/repair-request.query.servic
 import { StoredFileQueryService } from './queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from './queries/trusted-organization-context.query.service';
 import { ContentSubmissionService } from './content-submission.service';
+import { AdminOrganizationProvisioningService } from './admin-organization-provisioning.service';
 import { EngineerRegistrationService } from './engineer-registration.service';
 import { EngineerResponseService } from './engineer-response.service';
 import { LocalRuntimeService } from './local-runtime.service';
 import { MaintenanceReportService } from './maintenance-report.service';
+import { ManagementAuditService } from './management-audit.service';
 import { OrganizationMembershipService } from './organization-membership.service';
 import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
@@ -119,6 +122,7 @@ const LITHOGRAPHY_ENTITIES = [
   BackupAssetEntity,
   BackupRestoreRunEntity,
   ManagementAuditEventEntity,
+  AdminOrganizationProvisioningRequestEntity,
 ] as const;
 
 @Module({
@@ -144,6 +148,7 @@ const LITHOGRAPHY_ENTITIES = [
     OrganizationQueryService,
     OrganizationMembershipService,
     OrganizationService,
+    AdminOrganizationProvisioningService,
     EngineerRegistrationQueryService,
     EngineerRegistrationService,
     TrustedOrganizationContextQueryService,
@@ -153,6 +158,7 @@ const LITHOGRAPHY_ENTITIES = [
     MaintenanceReportQueryService,
     LocalRuntimeService,
     LocalRuntimeQueryService,
+    ManagementAuditService,
   ],
   exports: [
     TypeOrmModule,
@@ -176,6 +182,7 @@ const LITHOGRAPHY_ENTITIES = [
     OrganizationQueryService,
     OrganizationMembershipService,
     OrganizationService,
+    AdminOrganizationProvisioningService,
     EngineerRegistrationQueryService,
     EngineerRegistrationService,
     TrustedOrganizationContextQueryService,
@@ -185,6 +192,7 @@ const LITHOGRAPHY_ENTITIES = [
     MaintenanceReportQueryService,
     LocalRuntimeService,
     LocalRuntimeQueryService,
+    ManagementAuditService,
   ],
 })
 export class LithographyModule {}

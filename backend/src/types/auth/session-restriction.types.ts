@@ -13,6 +13,10 @@ import { IdentityTypeEnum } from '../models/account.types';
  * - `ENGINEER_INACTIVE`：申请已批准但资格未生效——双状态未同时 ACTIVE，或申请目标
  *   组织内没有有效 `ENGINEER` 成员关系（含组织停用、角色不符、多组织歧义）。
  *   已批准事实单独不授予业务权限，必须由服务端成员事实确认。
+ * - `ADMIN_ORGANIZATION_INACTIVE`：二级管理员当前没有唯一有效且角色为 `SUPER_ADMIN`
+ *   的可信公司成员（公司停用、成员缺失、角色不符或多公司歧义均命中）。该限制只约束
+ *   管理业务；本人资料维护、改密与登出沿用受限会话既有白名单。一级管理员是平台级
+ *   身份，不因缺少成员公司被缩权。
  *
  * 判定实现归属 `src/core/account/policy/session-restriction.policy.ts` 的纯函数，
  * 鉴权层只消费结论，不在 Usecase / Guard 内各自推导。
@@ -23,6 +27,7 @@ export enum SessionRestriction {
   ENGINEER_PENDING = 'ENGINEER_PENDING',
   ENGINEER_REJECTED = 'ENGINEER_REJECTED',
   ENGINEER_INACTIVE = 'ENGINEER_INACTIVE',
+  ADMIN_ORGANIZATION_INACTIVE = 'ADMIN_ORGANIZATION_INACTIVE',
 }
 
 /**

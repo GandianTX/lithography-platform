@@ -54,6 +54,8 @@ export class LoginWithPasswordUsecase {
         allowRestrictedSession,
       });
       const account = loginContext.account;
+      // 固定真正通过密码验证的快照代次，后续读取不得把旧密码提升为新代次会话。
+      const verifiedCredentialVersion = account.credentialVersion;
 
       // Execute: 执行基础登录流程（受限会话允许 PENDING 账号继续签发令牌）
       const basicResult = await this.executeLoginFlowUsecase.execute({
@@ -62,6 +64,11 @@ export class LoginWithPasswordUsecase {
         audience,
         allowPendingAccount: loginContext.allowPendingAccount,
       });
+
+      // 若密码验证之后发生改密 / 补发 / 重置或公司状态变更，本次登录必须失败关闭。
+      if (basicResult.credentialVersion !== verifiedCredentialVersion) {
+        throw new DomainError(AUTH_ERROR.INVALID_PASSWORD, '密码错误');
+      }
 
       // Decide: 决策最终角色
       const { finalRole, reason } = this.decideLoginRoleUsecase.execute(
@@ -97,6 +104,7 @@ export class LoginWithPasswordUsecase {
         username: basicResult.userInfo.nickname,
         email: basicResult.account.loginEmail,
         accessGroup: basicResult.accessGroup,
+        credentialVersion: verifiedCredentialVersion,
         ...(hasRoles ? { activeRole: finalRole } : {}),
       };
       const accessToken = this.tokenHelper.generateAccessToken({ payload, audience });
@@ -202,6 +210,12 @@ export class LoginWithPasswordUsecase {
     );
 
     if (!isPasswordValid) {
+      throw new DomainError(AUTH_ERROR.INVALID_PASSWORD, '密码错误');
+    }
+
+    // 授权读取期间若凭据已更换，刚验证的旧哈希不能借新授权快照继续登录。
+    // 使用既有凭据错误，避免向调用方暴露代次或重置事实。
+    if (snapshot.credentialVersion !== account.credentialVersion) {
       throw new DomainError(AUTH_ERROR.INVALID_PASSWORD, '密码错误');
     }
 

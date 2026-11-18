@@ -8,6 +8,9 @@
  */
 
 import type {
+  AdminCompanyAdminAccountDetail,
+  AdminCompanyAdminBinding,
+  AdminCompanyAdminBindingStatus,
   AdminCompanyListMode,
   AdminOrganizationStatus,
 } from './admin-company-management.types';
@@ -35,6 +38,64 @@ export const ADMIN_COMPANY_KIND_LABELS: Record<'CLIENT' | 'PEER', string> = {
   CLIENT: '甲方',
   PEER: '同行',
 };
+
+/** 绑定状态标签：与后端 `evaluateAdminBinding` 四态同口径 */
+export const ADMIN_COMPANY_BINDING_STATUS_LABELS: Record<AdminCompanyAdminBindingStatus, string> = {
+  BOUND: '已绑定',
+  UNCONFIGURED: '未配置',
+  CONFLICT: '冲突',
+  COMPANY_DISABLED: '公司停用',
+};
+
+type BindingTagColor = 'success' | 'default' | 'warning' | 'error';
+
+export const ADMIN_COMPANY_BINDING_STATUS_COLORS: Record<
+  AdminCompanyAdminBindingStatus,
+  BindingTagColor
+> = {
+  BOUND: 'success',
+  UNCONFIGURED: 'default',
+  CONFLICT: 'error',
+  COMPANY_DISABLED: 'warning',
+};
+
+/**
+ * 补发资格只按绑定事实判断：已绑定、账号未停用、公司启用。
+ * 「是否仍待首次改密」由服务端在锁内复核，前端不据列表快照推定。
+ *
+ * 仅供列表/详情只读摘要使用；写入口已迁移到账号详情弹窗
+ * （`canReissueCompanyAdminCredentialFromDetail`），本函数不再驱动任何补发按钮。
+ */
+export function canReissueCompanyAdminCredential(
+  binding: AdminCompanyAdminBinding | null | undefined,
+): boolean {
+  return (
+    binding !== null &&
+    binding !== undefined &&
+    binding.status === 'BOUND' &&
+    !binding.accountDisabled &&
+    binding.companyStatus === 'ACTIVE'
+  );
+}
+
+/**
+ * 账号详情弹窗的补发呈现条件：唯一合法绑定、公司启用、账号未停用、
+ * **且服务端明确返回仍待首次改密**。已改密等禁止补发状态不展示写操作；
+ * 服务端仍在 `reissue-level-two-credential` 锁内独立复核。
+ */
+export function canReissueCompanyAdminCredentialFromDetail(
+  detail: AdminCompanyAdminAccountDetail | null | undefined,
+): boolean {
+  return (
+    detail !== null &&
+    detail !== undefined &&
+    detail.status === 'BOUND' &&
+    detail.companyStatus === 'ACTIVE' &&
+    !detail.accountDisabled &&
+    detail.mustChangePassword === true &&
+    detail.loginName !== null
+  );
+}
 
 /**
  * 读入口选择：只有请求期会话等级为 1 时使用完整列表；

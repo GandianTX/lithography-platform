@@ -90,4 +90,21 @@ export class AdminCreateOrganizationInput {
   @IsOptional()
   @IsBoolean({ message: '提供维修服务必须是布尔值' })
   isServiceProvider?: boolean | null;
+
+  /**
+   * 提交标识（幂等键）。
+   *
+   * 只做 shape 与长度校验；归一化（trim + 小写 + UUID 校验）的唯一真源是
+   * `normalizeProvisioningSubmissionKey`。旧合同不传该字段时，走无幂等路径；
+   * 新 mutation 缺失时由用例显式拒绝（`SUBMISSION_KEY_INVALID`）。
+   */
+  @Field(() => String, {
+    nullable: true,
+    description: '提交标识（UUID）；缺省表示旧合同无幂等路径',
+  })
+  @IsOptional()
+  @Transform(({ value }: TransformFnParams) => trimTextPure(value))
+  @IsString({ message: '提交标识必须是字符串' })
+  @MaxLength(36, { message: '提交标识最多 36 个字符' })
+  submissionKey?: string | null;
 }

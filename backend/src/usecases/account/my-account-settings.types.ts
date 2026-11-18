@@ -142,9 +142,10 @@ export interface ChangeMyPasswordCommand {
  * 自助修改密码（P3）的执行结果：只含 `isUpdated` 与固定成功 `notice`。
  *
  * **严禁**出现当前密码、新密码、密码哈希或验证细节（与 `AdminResetUserPasswordResult`
- * 同一最小信息面）。`notice` 是固定文案，不声称服务端撤销了已签发 Token——旧 Access Token
- * 按 `JWT_EXPIRES_IN` 自然过期，前端收到成功结果后清除本地 Session 并跳转登录
- * （客户端会话收口）。
+ * 同一最小信息面）。同一条 UPDATE 在换哈希、清强制改密标记的同时递增凭据代次，
+ * 变更前签发的 Access Token 在后续受保护请求复核时被拒绝；本用例不新增 Token 黑名单、
+ * RefreshToken 或独立会话服务。`notice` 仍是固定文案，不描述内部撤销机制；
+ * 前端收到成功结果后清除本地 Session 并跳转登录（客户端会话收口）。
  */
 export interface ChangeMyPasswordOutcome {
   readonly isUpdated: boolean;

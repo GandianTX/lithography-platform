@@ -456,6 +456,12 @@ export function assertInitializationEmailConflicts(
   for (const entry of adminBootstrap?.accounts ?? []) {
     add(entry.loginEmail, `管理员 ${entry.loginName}`);
   }
+  for (const company of adminBootstrap?.defaultManagedCompanies ?? []) {
+    add(
+      company.account.loginEmail,
+      `二级管理员 ${company.account.loginName}（公司 ${company.organizationCode}）`,
+    );
+  }
   for (const entry of devAccounts?.customers ?? []) {
     add(entry.loginEmail, `开发客户 ${entry.loginName}`);
   }
@@ -1007,6 +1013,23 @@ async function runInit(
     logger.info(
       `管理员映射 ${item.loginName} → 等级 ${String(item.adminLevel)} / 公司 ${item.organizationCode}：${item.outcome}`,
     );
+    if (item.temporaryPasswordIssued === true) {
+      logger.info(
+        `管理员 ${item.loginName} 为本次新建账号，首次临时密码必须通过受控渠道单独交付，不得写入日志`,
+      );
+    }
+    if (item.bindingNote === 'REUSED_EXISTING_BINDING') {
+      logger.warn(
+        `管理员 ${item.loginName} 复用了公司 ${item.organizationCode} 已有的唯一合法绑定；` +
+          '配置登录名与历史账号不同，未改绑、未重置密码',
+      );
+    }
+    if (item.bindingNote === 'BOUND_ACCOUNT_NOT_ACTIVE') {
+      logger.warn(
+        `管理员 ${item.loginName} 已合法绑定公司 ${item.organizationCode} 但账号或资料非 ACTIVE；` +
+          '已沿用原账号标识且保持原状态，未新建第二个账号',
+      );
+    }
   }
   for (const item of initialized.devAccounts ?? []) {
     logger.info(
@@ -1104,6 +1127,30 @@ function assertDeployEnvironmentOptions(options: DeployCliOptions, database: str
   }
 }
 
+/**
+ * 正式部署的管理员映射版本守卫。
+ *
+ * production（省略 --environment 时的默认口径）只接受 schema_version=2 的正式映射；
+ * 开发 v1 夹具必须显式声明 development。守卫放在运行时入口且早于连接，
+ * 直接函数调用同样无法绕过。
+ */
+function assertProductionAdminBootstrapVersion(
+  environment: DeployEnvironment,
+  adminBootstrap: AdminBootstrapConfig | null,
+): void {
+  if (environment !== 'production' || adminBootstrap === null) {
+    return;
+  }
+  if (adminBootstrap.schemaVersion === 2) {
+    return;
+  }
+  throw new Error(
+    `production 环境的管理员初始化只接受 schema_version=2 的正式映射，当前为 ${String(
+      adminBootstrap.schemaVersion,
+    )}；开发 v1 映射必须显式指定 environment=development 后再执行；已在建立连接前停止`,
+  );
+}
+
 async function readServerUuid(dataSource: DataSource): Promise<string> {
   const rows: unknown = await dataSource.query('SELECT @@server_uuid AS server_uuid');
   const row =
@@ -1150,6 +1197,11 @@ export async function runDatabaseDeploy(
     devData: options.devDataFile ? loadDevDataFile(options.devDataFile) : null,
     devSampleFilesDir: options.devSampleFilesDir ?? null,
   };
+  // 正式入口只接受 v2 正式映射；该守卫早于任何连接、迁移与初始化写入。
+  assertProductionAdminBootstrapVersion(
+    options.environment ?? 'production',
+    initialization.adminBootstrap,
+  );
   const hasSampleFiles =
     initialization.devData !== null && containsDevSampleFiles(initialization.devData);
   if (hasSampleFiles) {

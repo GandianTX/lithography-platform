@@ -33,3 +33,32 @@ export type AdminResetUserPasswordResultDto = {
   isUpdated: boolean;
   notice: string;
 };
+
+/** 已绑定二级管理员（一级专用窄查询；无任何凭据字段） */
+export type AdminBoundLevelTwoAdminDto = {
+  accountDisabled: boolean;
+  accountId: number;
+  companyName: string;
+  companyStatus: string;
+  loginName: string;
+  nickname: string | null;
+  organizationCode: string;
+  organizationId: number;
+};
+
+export type AdminBoundLevelTwoAdminPageDto = {
+  items: AdminBoundLevelTwoAdminDto[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+/** 二级管理员凭据结果（口令仅本次响应出现一次） */
+export type AdminLevelTwoCredentialResultDto = {
+  adminAccountId: number;
+  loginName: string;
+  mustChangePassword: boolean;
+  nickname: string | null;
+  organizationId: number;
+  temporaryPassword: string;
+};

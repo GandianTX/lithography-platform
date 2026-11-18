@@ -8,8 +8,11 @@ import {
   ORGANIZATION_MANAGEMENT_ERROR,
 } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
+import { AccountService } from '@src/modules/account/base/services/account.service';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { isDuplicateKeyError } from '@src/modules/common/utils/database-error.util';
 import { OrganizationService } from '@src/modules/lithography/organization.service';
+import { OrganizationMembershipQueryService } from '@src/modules/lithography/queries/organization-membership.query.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import type {
   AdminOrganizationView,
@@ -52,6 +55,9 @@ export class UpdateAdminOrganizationUsecase {
   constructor(
     private readonly organizationService: OrganizationService,
     private readonly organizationQueryService: OrganizationQueryService,
+    private readonly organizationMembershipQueryService: OrganizationMembershipQueryService,
+    private readonly accountService: AccountService,
+    private readonly accountQueryService: AccountQueryService,
     private readonly logger: PinoLogger,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -95,6 +101,27 @@ export class UpdateAdminOrganizationUsecase {
           updatedAt: new Date(),
           transactionContext,
         });
+
+        // 公司启停需撤销管理员会话：状态实际变化时，在已持有的公司行锁之后读取
+        // 变更前仍 ACTIVE 的成员账号，再用账号侧 `admin_level` 收窄到管理类成员，并
+        // 批量递增凭据代次（锁序 organization → account）。仅靠状态复核时，停用后
+        // 重新启用会让旧 Token 复活；代次递增使其永久失效。客户成员不在范围：
+        // 公司停用不应把客户强制下线（客户仍需读取自有工单等历史数据）。
+        const statusChanged = patch.status !== undefined && patch.status !== locked.status;
+        if (statusChanged) {
+          const memberAccountIds =
+            await this.organizationMembershipQueryService.listActiveMembershipAccountIdsByOrganization(
+              { organizationId, transactionContext },
+            );
+          const adminAccountIds = await this.accountQueryService.listAdminAccountIdsAmong({
+            accountIds: memberAccountIds,
+            transactionContext,
+          });
+          await this.accountService.incrementCredentialVersionsByAccountIds({
+            accountIds: adminAccountIds,
+            transactionContext,
+          });
+        }
 
         const readBack = await this.organizationQueryService.findAdminOrganizationView({
           organizationId,

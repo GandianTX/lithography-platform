@@ -88,3 +88,44 @@ describe('executeGraphQL auth failure signaling', () => {
     expect(onAuthFailure).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 含凭据的 mutation 必须走可验证的无缓存路径：
+ * 强制点在 transport 层，而不是各个 feature 自己记得传 `fetchPolicy`。
+ */
+describe('executeGraphQL cache policy', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function useRecordingClient(data: unknown) {
+    const mutate = vi.fn().mockResolvedValue({ data });
+    const query = vi.fn().mockResolvedValue({ data });
+
+    mockedGetGraphQLClient.mockReturnValue({ mutate, query } as never);
+
+    return { mutate, query };
+  }
+
+  it('mutation 强制 no-cache，调用方传入其它策略也不生效', async () => {
+    const { mutate } = useRecordingClient({ adminReissueCompanyAdminCredential: { ok: true } });
+
+    await executeGraphQL(
+      'mutation Probe($input: Int!) { probe(input: $input) { ok } }',
+      { input: 1 },
+      { fetchPolicy: 'cache-first' },
+    );
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ fetchPolicy: 'no-cache' }));
+  });
+
+  it('query 缺省同样走 no-cache', async () => {
+    const { query } = useRecordingClient({ viewer: { id: 1 } });
+
+    await executeGraphQL('query Probe { viewer { id } }', {});
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith(expect.objectContaining({ fetchPolicy: 'no-cache' }));
+  });
+});

@@ -51,6 +51,10 @@ const RESTRICTION_DETAIL_KEYS: Record<
     descriptionKey: 'restricted.engineerInactive.description',
     titleKey: 'restricted.engineerInactive.title',
   },
+  ADMIN_ORGANIZATION_INACTIVE: {
+    descriptionKey: 'restricted.adminOrganizationInactive.description',
+    titleKey: 'restricted.adminOrganizationInactive.title',
+  },
 };
 
 /**
@@ -60,6 +64,7 @@ const RESTRICTION_DETAIL_KEYS: Record<
  * 的会话停留在本页；受限会话访问其他受保护路由时被统一收回这里。
  *
  * - 必须改密：只呈现改密所需的改密表单（改密前不得读写其他账号事实）；
+ * - 管理员公司失效：展示公司状态说明，保留本人资料维护与改密（不展示工程师申请卡片）；
  * - 其余限制态（待审 / 已拒绝 / 资格未生效）：只读展示本人最新申请的
  *   `myEngineerRegistration`，并允许维护昵称、电话、联系邮箱等本人资料与登录密码；
  *   角色、等级、公司与审批状态不提供任何修改入口。
@@ -143,7 +148,9 @@ export function RestrictedPage() {
         </DataCard>
       ) : (
         <>
-          <RestrictedApplicationCard />
+          {session.restriction === 'ADMIN_ORGANIZATION_INACTIVE' ? null : (
+            <RestrictedApplicationCard />
+          )}
 
           {state.status === 'loading' ? (
             <LoadingState label={t('restricted.profileLoading')} />

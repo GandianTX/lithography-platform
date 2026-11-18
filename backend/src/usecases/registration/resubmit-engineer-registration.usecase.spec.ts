@@ -57,6 +57,7 @@ describe('ResubmitEngineerRegistrationUsecase（拒绝后重提）', () => {
     loginPassword: PASSWORD_HASH,
     createdAt: CREATED_AT,
     mustChangePassword,
+    credentialVersion: 0,
   });
 
   const lockedCredential = (mustChangePassword = false): AccountCredentialSnapshot => ({
@@ -65,6 +66,7 @@ describe('ResubmitEngineerRegistrationUsecase（拒绝后重提）', () => {
     loginPassword: PASSWORD_HASH,
     createdAt: CREATED_AT,
     mustChangePassword,
+    credentialVersion: 0,
   });
 
   const application = (

@@ -12,7 +12,7 @@
  * 同步推进，提交入口捕获代次与目标主键，成功续体回来后代次与目标都仍一致才允许关闭。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, message, Select, Space, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 
@@ -25,28 +25,68 @@ import { TableContainer } from '@/shared/ui/table-container';
 import { ToolbarButton, ToolbarSearchField } from '@/shared/ui/toolbar-controls';
 
 import {
+  ADMIN_COMPANY_BINDING_STATUS_COLORS,
+  ADMIN_COMPANY_BINDING_STATUS_LABELS,
   ADMIN_COMPANY_STATUS_LABELS,
   ADMIN_COMPANY_STATUS_OPTIONS,
   resolveAdminCompanyListMode,
 } from '../application/admin-company-management.policy';
 import type {
+  AdminCompanyCommandFailureReason,
   AdminCompanyCreateDraft,
   AdminCompanyListPage,
   AdminCompanyNameOption,
+  AdminCompanyProvisionResult,
   AdminCompanyRecordResult,
   AdminCompanyRow,
+  AdminCompanySessionIdentity,
   AdminCompanyUpdateDraft,
   AdminOrganizationStatus,
 } from '../application/admin-company-management.types';
+import {
+  adoptLegacySubmissionKey,
+  clearLegacySubmissionKey,
+  clearSubmissionIfMatches,
+  loadOrCreateSubmissionRecord,
+  readLegacySubmissionKey,
+  readSubmissionRecord,
+  rememberSubmissionDraft,
+  startNewSubmission,
+} from '../application/admin-company-submission-key';
+import { useAdminCompanyAdminAccountDetail } from '../application/use-admin-company-admin-account-detail';
+import { useAdminCompanyAdminBindings } from '../application/use-admin-company-admin-bindings';
 import { useAdminCompanyCommands } from '../application/use-admin-company-commands';
+import { useAdminCompanyCredential } from '../application/use-admin-company-credential';
 import { useAdminCompanyDetail } from '../application/use-admin-company-detail';
 import { useAdminCompanyList } from '../application/use-admin-company-list';
 
+import { AdminCompanyAdminAccountModal } from './admin-company-admin-account-modal';
+import {
+  AdminCompanyCredentialConfirmModal,
+  AdminCompanyCredentialModal,
+  type AdminCompanyReissueTarget,
+} from './admin-company-credential-modal';
 import { AdminCompanyDetailModal } from './admin-company-detail-modal';
 import { AdminCompanyCreateModal, AdminCompanyEditModal } from './admin-company-form-modal';
 
 /** 主搜索防抖节奏：与管理员用户列表保持一致 */
 const SEARCH_DEBOUNCE_MS = 300;
+
+/**
+ * 服务端已明确拒绝且**零提交**的失败原因：此时提交标识无复用价值，必须清除。
+ *
+ * `save-failed`（含网络不确定与 `in-flight`）不在此列：先保留标识，重试仍落在
+ * 同一次提交上，避免超时重试产生第二家公司与第二个管理员。
+ * `submission-conflict` 同样必须保留：服务端已有同标识的已提交记录，
+ * 清标识只会让下一次提交另起一户，必须走冲突恢复或用户显式另起。
+ */
+const CREATE_CONFIRMED_ZERO_SUBMIT_REASONS: ReadonlySet<AdminCompanyCommandFailureReason> =
+  new Set<AdminCompanyCommandFailureReason>([
+    'invalid-input',
+    'forbidden',
+    'not-found',
+    'duplicate-code',
+  ]);
 
 // antd Select 的选项值只接受字符串/数字：维修资格用 'true' / 'false' 承载，
 // 在 onChange 处转回布尔，避免伪造字符串进查询模型。
@@ -55,7 +95,18 @@ const SERVICE_PROVIDER_FILTER_OPTIONS: { label: string; value: 'true' | 'false' 
   { label: '不提供维修服务', value: 'false' },
 ];
 
-type AdminCompanyDialogKey = 'create' | 'edit';
+type AdminCompanyDialogKey = 'create' | 'edit' | 'credential-confirm';
+
+/**
+ * 新增弹窗的恢复提示：
+ * - `restored`：刷新/重开时恢复上次未提交内容，沿用同一标识；
+ * - `conflict`：服务端已有同标识但内容不同，恢复首次内容供同标识重放；
+ * - `legacy`：只找到来源账号未知的旧标识，必须显式选择沿用或另起。
+ */
+type CreateRecovery = {
+  notice: 'conflict' | 'legacy' | 'restored';
+  draft: AdminCompanyCreateDraft | null;
+};
 
 function renderOptionalText(value: string | null): string {
   return value ?? '—';
@@ -79,17 +130,48 @@ function toPaginationProps(page: AdminCompanyListPage) {
   };
 }
 
-export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number | null }) {
+export function AdminCompanyManagementPanel({
+  adminLevel,
+  sampleSessionIdentity,
+}: {
+  adminLevel: number | null;
+  /**
+   * 提交归属用的会话身份采样（页面注入）。
+   * feature 之间不允许互相依赖，因此不在这里直接 import auth-session。
+   */
+  sampleSessionIdentity: () => AdminCompanySessionIdentity | null;
+}) {
   const mode = resolveAdminCompanyListMode(adminLevel);
   const list = useAdminCompanyList(mode);
   const commands = useAdminCompanyCommands(list.reload);
   const detail = useAdminCompanyDetail();
+  const accountDetail = useAdminCompanyAdminAccountDetail();
   const dialogSession = useDialogSessionSeq<AdminCompanyDialogKey>();
+  const credential = useAdminCompanyCredential();
   const [keywordDraft, setKeywordDraft] = useState('');
   const [debouncedKeyword, setDebouncedKeyword] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createRecovery, setCreateRecovery] = useState<CreateRecovery | null>(null);
   const [editTarget, setEditTarget] = useState<AdminCompanyRow | null>(null);
+  const [reissueTarget, setReissueTarget] = useState<AdminCompanyReissueTarget | null>(null);
+  const [reissueError, setReissueError] = useState<string | null>(null);
+
+  // 当前页公司主键：绑定状态只按可见行逐条读取，不额外拉取全量受管公司
+  const pageOrganizationIds = useMemo(() => {
+    const state = list.state;
+
+    return state.status === 'ready' && state.page.kind === 'full'
+      ? state.page.items.map((item) => item.organizationId)
+      : [];
+  }, [list.state]);
+
+  const bindings = useAdminCompanyAdminBindings({
+    enabled: mode === 'full',
+    organizationIds: pageOrganizationIds,
+    // 列表每次重新加载都会推进请求序号：写入成功后统一回读当前页绑定状态
+    revision: list.state.requestSeq,
+  });
 
   // 主搜索防抖：输入即时回显，防抖到期才把草稿交给下一步的应用 effect
   useEffect(() => {
@@ -124,11 +206,36 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
     list.applyFilters({ isServiceProvider: null, keyword: null, status: null });
   };
 
+  /**
+   * 打开新增弹窗前读取当前账号的未定案记录：
+   * 有首次草稿就回填（沿用同一标识）；只有来源未知的旧全局记录时提示显式选择。
+   * 这里不生成标识——用户放弃的空白弹窗不应占用一次提交。
+   */
+  const syncCreateEntry = () => {
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      setCreateRecovery(null);
+      return;
+    }
+
+    const record = readSubmissionRecord(identity.accountId, window.sessionStorage);
+
+    if (record !== null && record.draft !== null) {
+      setCreateRecovery({ notice: 'restored', draft: record.draft });
+      return;
+    }
+
+    const legacyKey = readLegacySubmissionKey(window.sessionStorage);
+    setCreateRecovery(legacyKey === null ? null : { notice: 'legacy', draft: null });
+  };
+
   const openCreateDialog = () => {
     // 只在 closed → open 的真实翻转上推进：弹窗侧守卫以 `open` 为会话身份，
     // 面板若在一次无效的重入上也推进，两层就会对「是否新会话」给出相反答案
     if (!createOpen) {
       dialogSession.advance('create');
+      syncCreateEntry();
     }
 
     setCreateOpen(true);
@@ -137,6 +244,36 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
   const closeCreateDialog = () => {
     dialogSession.advance('create');
     setCreateOpen(false);
+  };
+
+  /** 用户明确另起一次新提交：换标识、清空恢复提示，并清掉来源未知的旧标识。 */
+  const startNewCreateSubmission = () => {
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      return;
+    }
+
+    if (createRecovery?.notice === 'legacy') {
+      clearLegacySubmissionKey(window.sessionStorage);
+    }
+
+    startNewSubmission(identity.accountId, Date.now(), window.sessionStorage);
+    setCreateRecovery(null);
+  };
+
+  /** 用户明确沿用来源未知的旧标识：落到当前账号后才允许提交。 */
+  const adoptLegacyCreateSubmission = () => {
+    const identity = sampleSessionIdentity();
+    const legacyKey = readLegacySubmissionKey(window.sessionStorage);
+
+    if (identity === null || legacyKey === null) {
+      return;
+    }
+
+    adoptLegacySubmissionKey(identity.accountId, legacyKey, Date.now(), window.sessionStorage);
+    // 只切换标识归属，不清空用户已填写内容（草稿仍为 null，弹窗无需回填）
+    setCreateRecovery(null);
   };
 
   const openEditDialog = (row: AdminCompanyRow) => {
@@ -155,23 +292,75 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
 
   const submitCreate = async (
     draft: AdminCompanyCreateDraft,
-  ): Promise<AdminCompanyRecordResult> => {
+  ): Promise<AdminCompanyProvisionResult> => {
     const sessionSeq = dialogSession.capture('create');
-    const execution = await commands.createCompany(draft);
+    // 身份快照先于请求：标识按实际发起账号归属，无会话时不发请求
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      return { ok: false, reason: 'forbidden', message: '登录状态已失效，请重新登录后再提交。' };
+    }
+
+    const storage = window.sessionStorage;
+    // 标识在发送前读取（缺失则生成）：双击、超时、刷新恢复都复用同一标识，不按等待时长换键
+    const submissionKey = loadOrCreateSubmissionRecord(identity.accountId, Date.now(), storage).key;
+
+    // 首次发送前的内容作为恢复草稿；重试改内容不覆盖，冲突时才能回到原内容
+    rememberSubmissionDraft(identity.accountId, submissionKey, draft, storage);
+
+    const execution = await commands.createCompany(draft, submissionKey);
 
     if (execution.kind === 'ok') {
-      if (execution.result.ok) {
-        if (dialogSession.isCurrent('create', sessionSeq)) {
+      const result = execution.result;
+      const isCurrentDialog = dialogSession.isCurrent('create', sessionSeq);
+
+      if (result.ok) {
+        // 成功即本次提交已定案，下一位新增必须换新标识（仅清本账号本条记录）
+        clearSubmissionIfMatches(identity.accountId, submissionKey, storage);
+
+        // 关闭弹窗与展示凭据前再取一次快照：同级换号或重新登录后不得展示旧会话的口令
+        const currentIdentity = sampleSessionIdentity();
+        const sameActor =
+          currentIdentity !== null &&
+          currentIdentity.accountId === identity.accountId &&
+          currentIdentity.epoch === identity.epoch;
+
+        if (sameActor && isCurrentDialog) {
+          setCreateRecovery(null);
           setCreateOpen(false);
           dialogSession.advance('create');
+          // 业务字段与凭据全部来自同一创建结果；口令只进组件 state 的短生命周期弹窗
+          credential.show({
+            organizationId: result.organization.organizationId,
+            organizationName: result.organization.name,
+            loginName: result.provisionedAdmin.loginName,
+            nickname: result.provisionedAdmin.nickname || null,
+            temporaryPassword: result.temporaryPassword,
+            mustChangePassword: result.provisionedAdmin.mustChangePassword,
+            replayed: result.submission.replayed,
+          });
           message.success('公司档案已创建。');
         } else {
-          // 陈旧但写入确实发生：点名实际提交的公司，避免被误读成重开后那次的结果
-          message.success(`「${execution.result.organization.name}」已创建。`);
+          // 陈旧/换号但写入确实发生：点名实际提交的公司，且不展示已失效会话的口令
+          message.success(`「${result.organization.name}」已创建。`);
         }
-      }
+      } else if (result.reason === 'submission-conflict') {
+        // 冲突不代表零提交：标识必须保留，回填首次内容供同标识重放或用户显式另起
+        if (isCurrentDialog) {
+          const stored = readSubmissionRecord(identity.accountId, storage);
 
-      return execution.result;
+          setCreateRecovery({
+            notice: 'conflict',
+            draft: stored !== null && stored.key === submissionKey ? stored.draft : null,
+          });
+        }
+      } else if (CREATE_CONFIRMED_ZERO_SUBMIT_REASONS.has(result.reason)) {
+        // 服务端已明确拒绝且零提交：标识无复用价值，清除避免下次新增被误判为回放
+        clearSubmissionIfMatches(identity.accountId, submissionKey, storage);
+      }
+      // save-failed（含网络不确定）保留标识：重试仍落在同一次提交上
+
+      return result;
     }
 
     if (execution.kind === 'unhandled-error') {
@@ -212,6 +401,110 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
     }
 
     return { ok: false, reason: 'save-failed', message: '' };
+  };
+
+  const openAccountDialog = (organizationId: number) => {
+    void accountDetail.open(organizationId);
+  };
+
+  const closeAccountDialog = () => {
+    accountDetail.close();
+  };
+
+  const openReissueConfirm = (target: AdminCompanyReissueTarget) => {
+    // 账号详情与确认是两个独立会话：先关账号详情，再为确认弹窗新建代次
+    accountDetail.close();
+    setReissueError(null);
+    setReissueTarget(target);
+    dialogSession.advance('credential-confirm');
+  };
+
+  const closeReissueConfirm = () => {
+    dialogSession.advance('credential-confirm');
+    setReissueTarget(null);
+    setReissueError(null);
+  };
+
+  const confirmReissue = async () => {
+    const target = reissueTarget;
+
+    if (target === null) {
+      return;
+    }
+
+    const sessionSeq = dialogSession.capture('credential-confirm');
+    // 身份快照先于请求：回包必须同时匹配发起账号与会话代次
+    const identity = sampleSessionIdentity();
+
+    if (identity === null) {
+      setReissueError('登录状态已失效，请重新登录后再补发。');
+      return;
+    }
+
+    setReissueError(null);
+
+    const execution = await commands.reissueCredential(target.organizationId);
+
+    if (execution.kind === 'unhandled-error') {
+      if (dialogSession.isCurrent('credential-confirm', sessionSeq)) {
+        setReissueError(execution.message);
+      }
+
+      return;
+    }
+
+    if (execution.kind === 'in-flight') {
+      return;
+    }
+
+    const result = execution.result;
+
+    if (!result.ok) {
+      if (dialogSession.isCurrent('credential-confirm', sessionSeq)) {
+        setReissueError(result.message);
+      }
+
+      return;
+    }
+
+    if (!dialogSession.isCurrent('credential-confirm', sessionSeq)) {
+      // 成功但确认弹窗已被关闭/重开：口令不再展示（它随本次会话失效）
+      return;
+    }
+
+    const currentIdentity = sampleSessionIdentity();
+
+    if (
+      currentIdentity === null ||
+      currentIdentity.accountId !== identity.accountId ||
+      currentIdentity.epoch !== identity.epoch
+    ) {
+      // 同级换号或重新登录：口令一律丢弃，避免交给新会话
+      setReissueError('登录身份已变化，口令已丢弃，请重新核对后重试。');
+      return;
+    }
+
+    if (
+      result.organizationId !== target.organizationId ||
+      result.adminAccountId !== target.accountId
+    ) {
+      // 响应归属与确认目标不一致：口令一律丢弃，避免把 A 公司换出的口令挂在 B 名下
+      setReissueError('补发结果与目标公司不一致，口令已丢弃，请刷新后重试。');
+      return;
+    }
+
+    setReissueTarget(null);
+    dialogSession.advance('credential-confirm');
+    credential.show({
+      organizationId: result.organizationId,
+      organizationName: target.companyName,
+      loginName: result.loginName,
+      nickname: result.nickname,
+      temporaryPassword: result.temporaryPassword,
+      mustChangePassword: result.mustChangePassword,
+      replayed: false,
+    });
+    message.success('临时密码已补发。');
   };
 
   const fullColumns: ColumnsType<AdminCompanyRow> = [
@@ -267,6 +560,48 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
       width: 100,
     },
     {
+      key: 'adminBinding',
+      render: (_, row) => {
+        // 未受管公司不进入绑定判定，直接说明「不适用」，避免与「未配置」混淆
+        if (!row.isManagedCompany) {
+          return <span className="text-text-tertiary">不受管</span>;
+        }
+
+        const entry = bindings.bindingOf(row.organizationId);
+
+        if (!entry || entry.status === 'loading') {
+          return <span className="text-text-tertiary">读取中…</span>;
+        }
+
+        if (entry.status === 'failed') {
+          return (
+            <Space size={4}>
+              <span className="text-text-tertiary text-xs">{entry.message}</span>
+              <Button size="small" type="link" onClick={bindings.retry}>
+                重试
+              </Button>
+            </Space>
+          );
+        }
+
+        const fact = entry.binding;
+
+        return (
+          <div className="flex flex-wrap items-center gap-1">
+            <Tag color={ADMIN_COMPANY_BINDING_STATUS_COLORS[fact.status]}>
+              {ADMIN_COMPANY_BINDING_STATUS_LABELS[fact.status]}
+            </Tag>
+            <span className="text-text-secondary text-xs">
+              {renderOptionalText(fact.boundLoginNameMasked)}
+            </span>
+            {fact.accountDisabled ? <Tag color="default">账号停用</Tag> : null}
+          </div>
+        );
+      },
+      title: '二级管理员账号',
+      width: 170,
+    },
+    {
       fixed: 'right',
       render: (_, row) => (
         <Space size={0} wrap>
@@ -276,10 +611,13 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
           <Button size="small" type="link" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
+          <Button size="small" type="link" onClick={() => openAccountDialog(row.organizationId)}>
+            二级管理员账号
+          </Button>
         </Space>
       ),
       title: '操作',
-      width: 130,
+      width: 230,
     },
   ];
 
@@ -393,7 +731,7 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
                 onChange: list.goToPage,
               }}
               rowKey="organizationId"
-              scroll={{ x: 1080 }}
+              scroll={{ x: 1280 }}
               size="middle"
             />
           ) : null}
@@ -425,9 +763,13 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
       {mode === 'full' ? (
         <>
           <AdminCompanyCreateModal
+            initialDraft={createRecovery?.draft ?? null}
             open={createOpen}
+            recoveryNotice={createRecovery?.notice ?? null}
             submitting={commands.isPending('create')}
+            onAdoptLegacySubmission={adoptLegacyCreateSubmission}
             onCancel={closeCreateDialog}
+            onStartNewSubmission={startNewCreateSubmission}
             onSubmit={submitCreate}
           />
 
@@ -439,6 +781,11 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
           />
 
           <AdminCompanyDetailModal
+            binding={
+              detail.state.status === 'ready'
+                ? (bindings.bindingOf(detail.state.organization.organizationId) ?? null)
+                : null
+            }
             state={detail.state}
             onClose={detail.close}
             onRetry={() => {
@@ -446,6 +793,38 @@ export function AdminCompanyManagementPanel({ adminLevel }: { adminLevel: number
                 void detail.open(detail.state.organizationId);
               }
             }}
+          />
+
+          <AdminCompanyAdminAccountModal
+            state={accountDetail.state}
+            onClose={closeAccountDialog}
+            onRetry={accountDetail.retry}
+            onReissue={(account) => {
+              // 只有唯一合法绑定且有完整登录名时才会走到这里（策略已裁决）
+              if (account.accountId === null || account.loginName === null) {
+                return;
+              }
+
+              openReissueConfirm({
+                accountId: account.accountId,
+                companyName: account.companyName,
+                loginName: account.loginName,
+                organizationId: account.organizationId,
+              });
+            }}
+          />
+
+          <AdminCompanyCredentialConfirmModal
+            errorMessage={reissueError}
+            submitting={commands.isPending('reissue-credential')}
+            target={reissueTarget}
+            onCancel={closeReissueConfirm}
+            onConfirm={() => void confirmReissue()}
+          />
+
+          <AdminCompanyCredentialModal
+            credential={credential.credential}
+            onClose={credential.clear}
           />
         </>
       ) : null}

@@ -105,12 +105,112 @@ export type AdminCompanyCommandFailureReason =
   | 'invalid-input'
   | 'load-failed'
   | 'not-found'
-  | 'save-failed';
+  | 'save-failed'
+  /** 同一提交标识已提交过但内容不同：服务端明确拒绝，不得原样重试 */
+  | 'submission-conflict'
+  /** 补发/重置目标未绑定或与唯一绑定不一致 */
+  | 'credential-conflict'
+  /** 补发/重置目标当前不具备资格（已首次改密、公司停用、账号停用、绑定冲突） */
+  | 'credential-not-allowed';
 
 /** 详情 / 新增 / 编辑统一返回落库后的完整档案，便于列表与弹窗直接回读 */
 export type AdminCompanyRecordResult =
   | { ok: true; organization: AdminCompanyRow }
   | { ok: false; reason: AdminCompanyCommandFailureReason; message: string };
 
+/** 绑定状态：与后端 `evaluateAdminBinding` 四态同口径 */
+export type AdminCompanyAdminBindingStatus =
+  | 'BOUND'
+  | 'UNCONFIGURED'
+  | 'CONFLICT'
+  | 'COMPANY_DISABLED';
+
+/** 一级按公司查询的绑定事实（只读，仅脱敏登录名，无任何凭据） */
+export type AdminCompanyAdminBinding = {
+  organizationId: number;
+  organizationCode: string;
+  companyName: string;
+  isManagedCompany: boolean;
+  companyStatus: AdminOrganizationStatus;
+  status: AdminCompanyAdminBindingStatus;
+  reason: string | null;
+  boundAccountId: number | null;
+  boundLoginNameMasked: string | null;
+  candidateCount: number;
+  accountDisabled: boolean;
+};
+
+/**
+ * 一级按公司窄查询的账号详情（只读，无凭据）。
+ *
+ * 只有 `status === 'BOUND'` 且唯一合法绑定时 `accountId / loginName / nickname /
+ * mustChangePassword` 才有值；冲突 / 未绑 / 公司停用一律 null，前端不猜名。
+ */
+export type AdminCompanyAdminAccountDetail = {
+  organizationId: number;
+  organizationCode: string;
+  companyName: string;
+  isManagedCompany: boolean;
+  companyStatus: AdminOrganizationStatus;
+  status: AdminCompanyAdminBindingStatus;
+  reason: string | null;
+  accountId: number | null;
+  loginName: string | null;
+  nickname: string | null;
+  mustChangePassword: boolean | null;
+  accountDisabled: boolean;
+  candidateCount: number;
+};
+
+/** 新增公司并开通的完整结果：临时密码只在首次成功时为字符串，回放为 null */
+export type AdminCompanyProvisionResult =
+  | {
+      ok: true;
+      organization: AdminCompanyRow;
+      provisionedAdmin: {
+        accountId: number;
+        loginName: string;
+        nickname: string;
+        mustChangePassword: boolean;
+      };
+      submission: { submissionId: number | null; replayed: boolean };
+      temporaryPassword: string | null;
+    }
+  | { ok: false; reason: AdminCompanyCommandFailureReason; message: string };
+
+/** 补发 / 重置结果：临时密码只在本组件生命周期内展示 */
+export type AdminCompanyCredentialResult =
+  | {
+      ok: true;
+      organizationId: number;
+      adminAccountId: number;
+      loginName: string;
+      nickname: string | null;
+      mustChangePassword: boolean;
+      temporaryPassword: string;
+    }
+  | { ok: false; reason: AdminCompanyCommandFailureReason; message: string };
+
+/** 凭据弹窗的数据快照：只存在于组件 state，关闭/卸载即销毁 */
+export type AdminCompanyCredentialView = {
+  organizationId: number;
+  organizationName: string;
+  loginName: string;
+  nickname: string | null;
+  temporaryPassword: string | null;
+  mustChangePassword: boolean;
+  replayed: boolean;
+};
+
 /** 读入口模式：一级完整读写；二级 / 等级未知只读最小名称名单 */
 export type AdminCompanyListMode = 'full' | 'name-only';
+
+/**
+ * 提交归属所需的会话身份快照（账号 + 会话代次，不含 Token）。
+ *
+ * 由页面注入：本 feature 不直接依赖 auth-session feature，保持 features 之间零耦合。
+ */
+export type AdminCompanySessionIdentity = {
+  accountId: number;
+  epoch: number;
+};

@@ -7,12 +7,21 @@
  */
 
 import type {
+  AdminBoundLevelTwoAdmin,
+  AdminBoundLevelTwoAdminPage,
+  AdminLevelTwoCredentialResult,
   AdminUserListPage,
   AdminUserRole,
   AdminUserRow,
 } from '../application/admin-user-management.types';
 
-import type { AdminUserDto, AdminUserListPageDto } from './admin-user-management.dto';
+import type {
+  AdminBoundLevelTwoAdminDto,
+  AdminBoundLevelTwoAdminPageDto,
+  AdminLevelTwoCredentialResultDto,
+  AdminUserDto,
+  AdminUserListPageDto,
+} from './admin-user-management.dto';
 
 const KNOWN_ROLES: readonly AdminUserRole[] = ['SUPER_ADMIN', 'ENGINEER', 'CUSTOMER'];
 
@@ -62,5 +71,54 @@ export function mapAdminUserListPageDtoToListPage(dto: AdminUserListPageDto): Ad
     page: dto.page,
     pageSize: dto.pageSize,
     total: dto.total,
+  };
+}
+
+export function mapAdminBoundLevelTwoAdminDto(
+  dto: AdminBoundLevelTwoAdminDto,
+): AdminBoundLevelTwoAdmin {
+  return {
+    accountDisabled: dto.accountDisabled === true,
+    accountId: dto.accountId,
+    companyName: dto.companyName,
+    companyStatus: dto.companyStatus,
+    loginName: dto.loginName,
+    nickname: toOptionalText(dto.nickname),
+    organizationCode: dto.organizationCode,
+    organizationId: dto.organizationId,
+  };
+}
+
+export function mapAdminBoundLevelTwoAdminPageDto(
+  dto: AdminBoundLevelTwoAdminPageDto,
+): AdminBoundLevelTwoAdminPage {
+  return {
+    items: dto.items.map((item) => mapAdminBoundLevelTwoAdminDto(item)),
+    page: dto.page,
+    pageSize: dto.pageSize,
+    total: dto.total,
+  };
+}
+
+/**
+ * 凭据结果守卫：口令缺失或空白一律让本次映射失败（而不是展示空口令），
+ * 避免一次异常响应被当成「成功但无凭据」而误导管理员。
+ */
+export function mapAdminLevelTwoCredentialResultDto(
+  dto: AdminLevelTwoCredentialResultDto,
+): AdminLevelTwoCredentialResult {
+  const temporaryPassword = toOptionalText(dto.temporaryPassword);
+
+  if (temporaryPassword === null) {
+    throw new Error('二级管理员凭据结果缺少临时密码。');
+  }
+
+  return {
+    adminAccountId: dto.adminAccountId,
+    loginName: dto.loginName,
+    mustChangePassword: dto.mustChangePassword === true,
+    nickname: toOptionalText(dto.nickname),
+    organizationId: dto.organizationId,
+    temporaryPassword,
   };
 }

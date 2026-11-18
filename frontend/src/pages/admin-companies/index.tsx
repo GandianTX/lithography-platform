@@ -1,7 +1,7 @@
 // src/pages/admin-companies/index.tsx
 
 import { AdminCompanyManagementPanel } from '@/features/admin-company-management';
-import { useAuthSession } from '@/features/auth-session';
+import { sampleCurrentAuthSessionIdentity, useAuthSession } from '@/features/auth-session';
 
 import { PageHeader } from '@/shared/ui/page-header';
 
@@ -14,6 +14,9 @@ import { PageHeader } from '@/shared/ui/page-header';
 export function AdminCompaniesPage() {
   const sessionState = useAuthSession();
   const adminLevel = sessionState.session?.adminLevel ?? null;
+  const identity = sampleCurrentAuthSessionIdentity();
+  // 同级换号或重新登录必须重挂载：否则旧面板的在途回包与短生命周期凭据 state 会被新会话复用
+  const panelKey = `${identity?.accountId ?? 'none'}:${identity?.epoch ?? 'none'}:${adminLevel ?? 'none'}`;
 
   return (
     <div className="page-stack">
@@ -23,7 +26,12 @@ export function AdminCompaniesPage() {
         title="公司档案"
       />
 
-      <AdminCompanyManagementPanel adminLevel={adminLevel} />
+      {/* 身份/等级变化即重挂载：在途请求与短生命周期凭据 state 一并丢弃 */}
+      <AdminCompanyManagementPanel
+        key={panelKey}
+        adminLevel={adminLevel}
+        sampleSessionIdentity={sampleCurrentAuthSessionIdentity}
+      />
     </div>
   );
 }

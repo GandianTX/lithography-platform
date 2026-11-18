@@ -24,7 +24,7 @@ const BASELINE_TIMESTAMPS = [
 const V13_TIMESTAMPS = [
   1775501000000, 1775501100000, 1775501200000, 1775501300000, 1775501400000, 1775501500000,
   1775501600000, 1775501700000, 1775501800000, 1775501900000, 1775502000000, 1775502100000,
-  1775502200000,
+  1775502200000, 1775502300000, 1775502400000, 1775502500000,
 ];
 
 const V13_TABLES = [
@@ -45,6 +45,7 @@ const V13_TABLES = [
   'backup_asset',
   'backup_restore_run',
   'management_audit_event',
+  'admin_organization_provisioning_request',
 ];
 
 function readMigrationTimestamps(): number[] {
@@ -122,7 +123,7 @@ describe('V13 结构契约（不连接实库）', () => {
     expect(timestamps.slice(BASELINE_TIMESTAMPS.length)).toEqual(V13_TIMESTAMPS);
   });
 
-  it('17 个候选对象按独立表登记，且各自绑定所属迁移', () => {
+  it('18 个候选对象按独立表登记，且各自绑定所属迁移', () => {
     const requirements = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
     const tableRequirements = requirements.filter((item) => item.kind === 'table');
     for (const table of V13_TABLES) {

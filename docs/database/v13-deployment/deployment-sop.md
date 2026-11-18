@@ -3,7 +3,7 @@
 > 适用范围：`backend` 的 `database:deploy`（`--mode=init` / `--mode=upgrade`）。
 > 工具负责结构与迁移复核；仅在显式文件与确认口令下初始化组织、管理员和开发联调样例。
 > `init` 按 `--environment=production|development` 区分生产入口与开发入口：
-> 生产入口只创建组织、必要系统数据和 6 个管理员；开发入口可额外创建开发账号与业务样例。
+> 生产入口只创建组织、必要系统数据、3 个一级管理员与显式默认受管公司的二级管理员；开发入口可额外创建开发账号与业务样例。
 > `upgrade` 只执行 pending 迁移，不补样例、不清数据、不重置密码。
 > 不创建数据库、不创建 MySQL 账号、不授予系统权限、不启动 API/Worker。
 
@@ -105,7 +105,7 @@
 - 已知部署角色与运行期账号由运维另行创建。
 - 环境文件模板：[database-deploy.env.example](database-deploy.env.example)。真实文件放在仓库外。
 - 生产组织映射模板：[organization-bootstrap.example.json](organization-bootstrap.example.json)。
-- 生产管理员映射模板：[admin-bootstrap.example.json](admin-bootstrap.example.json)（默认 6 个：1 级 3 个、2 级 3 个）。
+- 生产管理员映射模板：[admin-bootstrap.example.json](admin-bootstrap.example.json)（`schema_version=2`：3 个一级 + 0..N 家显式列出的默认受管公司，每家公司 1 个二级账号；模板示例 1 家）。
 - 开发组织映射模板：[dev-organizations.example.json](dev-organizations.example.json)（2 家模拟公司，均标记受管/服务商）。
 - 开发管理员映射模板：[dev-admin.example.json](dev-admin.example.json)（3 个一级 + 3 个二级，分别覆盖两家公司）。
 - 开发账号映射模板：[dev-accounts.example.json](dev-accounts.example.json)（3 个客户，其中 1 个为同公司对照；2 个工程师）。
@@ -143,7 +143,8 @@ npm run database:deploy -- \
 - 工具会检查实际连接目标、获取互斥锁、执行全部迁移、复核终态。
 - 如果库已完整迁移且终态校验通过，命令返回「无变化」。
 - 生产新库只创建迁移带来的必要系统数据（如 `local_installation`）；业务样例、开发账号和样例文件一律不生成。
-- 生产新库通常在同一条命令追加组织与 6 个管理员映射（见 4.2 的对应参数）；这是「一条命令完成迁移 + 系统数据 + 6 个管理员」的正式口径。
+- 生产新库通常在同一条命令追加组织与管理员映射（见 4.2 的对应参数）；这是「一条命令完成迁移 + 系统数据 + 3 个一级管理员 + 显式默认受管公司的二级管理员」的正式口径。二级管理员数量由 `default_managed_companies` 显式决定，允许 0 家。
+- production 入口（含省略 `--environment` 的默认行为）只要提供管理员映射，就必须是 `schema_version=2`；`schema_version=1` 会在创建连接前直接失败，不产生迁移、业务表或管理员。仅结构 init 与 upgrade 不受该守卫影响。
 
 ### 4.2 开发新库一键初始化（迁移 + 6 管理员 + 联调样例）
 
@@ -185,10 +186,12 @@ npm run database:deploy -- \
 
 - 一条命令完成：全部迁移、必要系统数据、3 个一级管理员、3 个二级管理员、开发客户/工程师，
   以及计划要求的机型、工单、报告与参考资料。**不需要**再单独运行 Mock 或 Seed 命令。
+- 开发夹具 `dev-admin.example.json` 沿用 `schema_version=1`，不套用生产 3+N 规则；生产正式
+  初始化必须使用 `schema_version=2`，二级账号只来自 `default_managed_companies`（可 0 家）。
 - 不额外创建管理员；开发账号与管理员总数、公司归属完全由映射文件决定。
 - 生产新库使用同一入口但省略全部 `--dev-*` 参数，并可用
   `--environment=production` 显式声明（默认即生产）：
-  只创建迁移、必要系统数据、组织与 6 个管理员。生产入口会直接拒绝开发账号、开发样例与开发目标确认。
+  只创建迁移、必要系统数据、组织与 3 个一级 + 显式默认受管公司的二级管理员。生产入口会直接拒绝开发账号、开发样例与开发目标确认。
 
 ```bash
 npm run database:deploy -- \
@@ -246,11 +249,21 @@ npm run database:deploy -- \
 
 #### 4.2.3 管理员映射
 
-- 默认交付口径：1 级 3 个、2 级 3 个（模板即 3+3）；具体账号、公司与凭据由受控配置决定；
+正式初始化使用 `schema_version=2`：
+
+- 必须恰好 3 个一级账号（`level_one_accounts`），每个一级账号仍只绑定 `CLIENT` 公司；
+- 二级账号只来自 `default_managed_companies` 显式列出的默认受管公司，允许 0 家；每家公司只能配置 1 个二级账号，重复公司编码直接失败；
 - 初始密码必须通过项目密码策略（与登录/注册同一 `PasswordPolicyService`）；真实密码只在库外受限配置，不打印；
 - 新账号写入 ACTIVE 账号、ACTIVE 资料、SUPER_ADMIN 三源角色事实与 ACTIVE 组织成员关系，并标记必须修改初始密码；
-- 账号已存在时绝不重置密码；已有等级/公司归属不被覆盖；与映射不一致时失败关闭；
-- 公司编码不存在时失败关闭，不猜测公司。
+- 已存在账号时绝不重置密码；已有等级/公司归属不被覆盖；与映射不一致时失败关闭；
+- 公司必须在当前库中真实存在、`status=ACTIVE` 且 `is_managed_company=true`；缺失、停用或非受管公司失败关闭，不猜测公司；
+- 绑定判定统一使用同一策略：公司内唯一候选、等级 2、三源角色收敛为 `SUPER_ADMIN`、存在同公司 ACTIVE `SUPER_ADMIN` 成员关系、账号与资料正常；
+- 已有唯一合法绑定但登录名与配置不同时复用历史账号（`REUSED_EXISTING_BINDING`），不新建、不改绑；
+  合法绑定但账号停用时沿用原账号并保持原状态（`BOUND_ACCOUNT_NOT_ACTIVE`），不得再建第二个；
+- 冲突（多候选/等级/角色/成员/归属异常）、配置账号名已被其他账号占用、缺失绑定但配置账号名已存在时，
+  整批拒绝并输出 `organization_code + account_id + 脱敏登录名` 的可定位清单；不删除、不重置、不补级、不改绑；
+- 开发夹具 `dev-admin.example.json` 保持 `schema_version=1`，仅用于开发入口，不套用 3+N 规则。
+- production 入口（含省略 `--environment` 的默认行为）在建立连接前校验映射版本：`schema_version !== 2` 直接失败，不会写入任何数据；开发 v1 映射必须显式提供 `--environment=development`（以及开发入口要求的实例指纹与目标库确认）。
 
 #### 4.2.4 开发样例账号（显式、默认关闭）
 
@@ -349,6 +362,40 @@ npm run database:deploy -- \
    也不得手工删除后当作零残留证据。任一不符即停止验收并保留现场。
 6. 正式改名重跑：通过正式编辑路径修改资料标题后重跑 init，核对行数、ID、`storage_reference`、
    文件 SHA-256 均不变，正式标题保留，目录无新增文件；不得为验证而改动模板 `seed_key`。
+
+#### 4.2.7 存量二级管理员盘点与受控应用
+
+存量库不重跑 `init`，先只读盘点，再按审查清单受控应用缺失绑定：
+
+```bash
+cd backend
+# 1) 只读盘点：不写库、不锁行，输出脱敏清单
+npm run admin-binding:inventory -- \
+  --mode=report \
+  --config-file=/secure/path/lithography-deploy.env \
+  --database=lithography_v13 \
+  --confirm-database=lithography_v13
+
+# 2) 受控应用：只对已审查的 UNCONFIGURED 计划 ID 建号
+npm run admin-binding:inventory -- \
+  --mode=apply \
+  --config-file=/secure/path/lithography-deploy.env \
+  --database=lithography_v13 \
+  --confirm-database=lithography_v13 \
+  --admin-bootstrap-file=/secure/path/admin-bootstrap.json \
+  --approve=L2-UNCONFIGURED-<id> \
+  --confirm-apply=lithography_v13
+```
+
+- 计划 ID 形如 `L2-<状态>-<公司主键>`；状态变化后旧 ID 失效，避免把审查过的缺失项误用到已变化目标。
+- `report` 不接受 `--admin-bootstrap-file`、`--approve` 或 `--confirm-apply`，也不会写入任何数据；
+  输出只含 `account_id` 与脱敏登录名。
+- `apply` 只接受当前盘点中仍为 `UNCONFIGURED` 的 ID，且必须存在该公司的显式二级账号映射；
+  冲突、错绑、公司停用、已绑定项一律拒绝，整批零写入。
+- 逐公司在锁内复核公司状态、受管标记与绑定状态；锁内发现状态变化、配置账号名已存在时整批回滚，
+  不删除、不重置、不补级、不改绑。
+- 重跑同一批准清单时，已创建的公司变为 `BOUND`，旧计划 ID 不再匹配，因此零新增；既有密码哈希不变。
+- 需要 `FIELD_ENCRYPTION_KEY/IV` 校验三源角色事实；缺失时拒绝执行。
 
 ### 4.3 升级（存量库）
 
@@ -488,7 +535,7 @@ SELECT COUNT(*) FROM reference_document WHERE source_report_version_id IS NOT NU
 
 ## 8. 初始化数据上线前置
 
-- 真实「公司 → 编码 → 类别/标记」清单、默认 6 个管理员（3 个 1 级、3 个 2 级）的
+- 真实「公司 → 编码 → 类别/标记」清单与「3 个一级 + 显式默认受管公司二级」的
   「账号 → 等级 → 公司」清单必须在上线前完成评审，均放在库外受限配置。
 - 开发联调清单中的公司、账号、机型、工单、报告与资料名称需同样评审；只允许使用无敏感信息的测试内容。
 - 未映射管理员在运行时失败关闭，不自动提升等级、不猜测公司。

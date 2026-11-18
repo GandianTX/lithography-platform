@@ -30,6 +30,7 @@ describe('ResolveSessionRestrictionUsecase', () => {
     accountStatus: AccountStatus.ACTIVE,
     identityHint: IdentityTypeEnum.ENGINEER,
     mustChangePassword: false,
+    credentialVersion: 0,
     adminLevel: null,
     userInfo: {
       userState: UserState.ACTIVE,
@@ -165,5 +166,75 @@ describe('ResolveSessionRestrictionUsecase', () => {
 
     expect(result.latestEngineerApplication).toBeNull();
     expect(result.restriction).toBe(SessionRestriction.NONE);
+  });
+
+  describe('二级管理员可信公司', () => {
+    const adminSnapshot = (overrides: Partial<AccountSessionAuthoritySnapshot> = {}) =>
+      snapshot({
+        identityHint: IdentityTypeEnum.SUPER_ADMIN,
+        adminLevel: 2,
+        ...overrides,
+      });
+
+    it('唯一有效 SUPER_ADMIN 成员组织时保持 NONE 并给出可信公司', async () => {
+      (
+        organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
+      ).mockResolvedValue([
+        membership({ organizationId: 501, memberRole: IdentityTypeEnum.SUPER_ADMIN }),
+      ]);
+
+      const result = await usecase.execute({ accountId: 7, snapshot: adminSnapshot() });
+
+      expect(result.restriction).toBe(SessionRestriction.NONE);
+      expect(result.adminOrganizationId).toBe(501);
+    });
+
+    it('公司停用或成员缺失（0 条有效成员）时返回 ADMIN_ORGANIZATION_INACTIVE', async () => {
+      const result = await usecase.execute({ accountId: 7, snapshot: adminSnapshot() });
+
+      expect(result.restriction).toBe(SessionRestriction.ADMIN_ORGANIZATION_INACTIVE);
+      expect(result.adminOrganizationId).toBeNull();
+    });
+
+    it('成员角色不是 SUPER_ADMIN 时返回 ADMIN_ORGANIZATION_INACTIVE', async () => {
+      (
+        organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
+      ).mockResolvedValue([membership({ organizationId: 501 })]);
+
+      const result = await usecase.execute({ accountId: 7, snapshot: adminSnapshot() });
+
+      expect(result.restriction).toBe(SessionRestriction.ADMIN_ORGANIZATION_INACTIVE);
+    });
+
+    it('多公司成员歧义时返回 ADMIN_ORGANIZATION_INACTIVE', async () => {
+      (
+        organizationMembershipQueryService.listActiveMembershipsByAccount as jest.Mock
+      ).mockResolvedValue([
+        membership({
+          membershipId: 1,
+          organizationId: 501,
+          memberRole: IdentityTypeEnum.SUPER_ADMIN,
+        }),
+        membership({
+          membershipId: 2,
+          organizationId: 502,
+          memberRole: IdentityTypeEnum.SUPER_ADMIN,
+        }),
+      ]);
+
+      const result = await usecase.execute({ accountId: 7, snapshot: adminSnapshot() });
+
+      expect(result.restriction).toBe(SessionRestriction.ADMIN_ORGANIZATION_INACTIVE);
+      expect(result.adminOrganizationId).toBeNull();
+    });
+
+    it('一级管理员缺少成员组织时仍为 NONE', async () => {
+      const result = await usecase.execute({
+        accountId: 7,
+        snapshot: adminSnapshot({ adminLevel: 1 }),
+      });
+
+      expect(result.restriction).toBe(SessionRestriction.NONE);
+    });
   });
 });

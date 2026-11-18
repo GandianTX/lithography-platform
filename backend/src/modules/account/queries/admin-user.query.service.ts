@@ -1,7 +1,7 @@
 // src/modules/account/queries/admin-user.query.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import { IdentityTypeEnum } from '@app-types/models/account.types';
+import { type AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { convergeAccountRole } from '@core/account/policy/account-role-convergence.policy';
 import { ADMIN_USER_ERROR, DomainError, isDomainError } from '@core/common/errors/domain-error';
 import type { SortParam } from '@core/pagination/pagination.types';
@@ -13,6 +13,7 @@ import { SearchService } from '@src/modules/common/search.module';
 import { Repository } from 'typeorm';
 import type {
   AdminApplicantDetailView,
+  AdminBindingCandidateFacts,
   AdminUserCredentialConflictField,
   AdminUserListPage,
   AdminUserListQuery,
@@ -376,6 +377,99 @@ export class AdminUserQueryService {
       return {
         role: convergence.role,
         customerOrganizationId: account.userInfo.customerOrganizationId,
+      };
+    } catch (error) {
+      this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
+    }
+  }
+
+  /**
+   * 二级管理员绑定判定所需的批量账号事实（S3）。
+   *
+   * 供在线绑定查询与凭据补发/重置在**同一事务**内复核候选账号：账号行、资料行与
+   * 三源角色收敛结果一次读取，返回 `Map<accountId, facts>`，缺失的账号不进入结果
+   * （调用方按不存在处理）。
+   *
+   * 走 entity 水合路径（`leftJoinAndSelect` + `getMany`）：`meta_digest` 是加密列，
+   * 只有水合路径的订阅者会解密并 `JSON.parse`，禁止 `getRawMany()` 绕过。
+   *
+   * `forUpdate=true` 时对命中行取 `pessimistic_write`：写用例在已持有公司行锁后调用，
+   * 锁序为 organization → account。调用方必须传入真实事务上下文。
+   */
+  async findAdminBindingCandidateFacts(params: {
+    accountIds: ReadonlyArray<number>;
+    transactionContext?: PersistenceTransactionContext;
+    forUpdate?: boolean;
+  }): Promise<Map<number, AdminBindingCandidateFacts>> {
+    const uniqueIds = [
+      ...new Set(params.accountIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (uniqueIds.length === 0) {
+      return new Map();
+    }
+    try {
+      const queryBuilder = this.getAccountRepository(params.transactionContext)
+        .createQueryBuilder('account')
+        .leftJoinAndSelect('account.userInfo', 'userInfo')
+        .where('account.id IN (:...accountIds)', { accountIds: uniqueIds })
+        .orderBy('account.id', 'ASC');
+      if (params.forUpdate === true) {
+        queryBuilder.setLock('pessimistic_write');
+      }
+      const accounts = await queryBuilder.getMany();
+
+      const facts = new Map<number, AdminBindingCandidateFacts>();
+      for (const account of accounts) {
+        const userInfo = account.userInfo;
+        const convergence = convergeAccountRole({
+          identityHint: account.identityHint,
+          accessGroup: userInfo?.accessGroup ?? null,
+          metaDigest: userInfo?.metaDigest ?? null,
+        });
+        facts.set(account.id, {
+          accountId: account.id,
+          loginName: account.loginName ?? '',
+          nickname: userInfo?.nickname ?? null,
+          adminLevel: account.adminLevel ?? null,
+          accountStatus: account.status,
+          userState: userInfo?.userState ?? null,
+          roleConverged: convergence.converged,
+          role: convergence.converged ? convergence.role : null,
+          customerOrganizationId: userInfo?.customerOrganizationId ?? null,
+        });
+      }
+      return facts;
+    } catch (error) {
+      this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');
+    }
+  }
+
+  /**
+   * 按账号主键读取「开通状态」窄事实（D 组账号详情只读）。
+   *
+   * 只返回账号状态与 `must_change_password`，不读取密码哈希、不返回任何凭据；
+   * 不加锁、不开启事务：本方法只服务一级管理员按需查看详情，写操作仍在
+   * `reissue-level-two-credential` 的事务与锁内独立复核。
+   *
+   * @returns 账号行不存在时返回 null，由调用方决定展示口径。
+   */
+  async findAccountOpeningStatus(params: {
+    accountId: number;
+  }): Promise<{ accountStatus: AccountStatus; mustChangePassword: boolean } | null> {
+    if (!Number.isInteger(params.accountId) || params.accountId <= 0) {
+      return null;
+    }
+    try {
+      const account = await this.accountRepository.findOne({
+        select: { id: true, status: true, mustChangePassword: true },
+        where: { id: params.accountId },
+      });
+      if (account === null) {
+        return null;
+      }
+      return {
+        accountStatus: account.status,
+        mustChangePassword: account.mustChangePassword === true,
       };
     } catch (error) {
       this.rethrowAsReadFailure(error, '用户账号读取失败，请稍后重试');

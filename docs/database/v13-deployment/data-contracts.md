@@ -26,6 +26,31 @@
 
 推荐技术取舍：不在 MySQL 中做“摘要自动生成列”，由应用在事务内计算并写入，避免规范化规则变更导致生成列无法演进；唯一键只做最终防线。
 
+### 1.3 管理员新增公司开通提交标识
+
+一级管理员「新增公司并开通二级管理员」使用独立表承载提交标识，不复用 `maintenance_report`。
+
+| 项       | 目标                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------- |
+| 表       | `admin_organization_provisioning_request`                                                          |
+| 用途     | `purpose varchar(32)`，当前仅 `ADMIN_CREATE_ORGANIZATION`（CHECK 固定枚举）                        |
+| 提交标识 | `submission_key varchar(36)`，客户端首次发送前生成（UUID），双击/超时/刷新恢复复用                |
+| 操作者   | `actor_account_id int`，请求期可信会话账号，不是前端传入值                                         |
+| 输入指纹 | `input_fingerprint char(64)`，对规范化后的公司+管理员输入做 SHA-256                                |
+| 唯一键   | `UNIQUE(purpose, actor_account_id, submission_key)`，即并发与重试的串行点                          |
+| 状态     | `state varchar(16)`：`PENDING` → `COMPLETED`；COMPLETED 时 `organization_id` 与 `admin_account_id` 必填 |
+| 引用     | `organization_id` / `admin_account_id` 可空，均 `ON DELETE RESTRICT ON UPDATE RESTRICT`            |
+
+判定规则：
+
+1. 首次请求在业务事务首条语句插入 `PENDING` 行；唯一键冲突者等待先到事务结束，再在事务外回读已提交行。
+2. 回读行 `state='COMPLETED'` 且 `input_fingerprint` 相同：返回同一公司/账号的安全引用，不重复创建。
+3. 回读行指纹不同：返回业务冲突（`SUBMISSION_CONFLICT`），不覆盖旧提交。
+4. 每次请求在任何写操作前先复核操作者一级管理员资格；回放时复核被开通账号的角色收敛、等级 2、资料公司归属与成员关系（同一公司唯一 `ACTIVE` `SUPER_ADMIN` 成员边且指向被开通账号），只返回安全引用，**永不返回首次临时密码**。公司当前启用状态不使已提交结果失效：创建后被停用的公司仍返回同一安全引用。
+5. 不同提交标识即使公司名称相同也视为新提交，由公司编号/登录名唯一约束兜底，不做名称判重。
+6. 表内不保存任何密码、密码哈希或令牌；日志与异常同样不得出现原始口令或哈希。
+7. 旧入口（未提供 `submissionKey`）不写本表，不具备幂等；该路径仍在同一事务内完成公司、账号、资料、角色与成员绑定。
+
 ## 2. 同报告版本的复合外键
 
 ### 2.1 目标结构
@@ -104,7 +129,7 @@
 | 字段       | `base_user_account.admin_level tinyint NULL`                                                                                                                         |
 | CHECK      | `admin_level IS NULL OR admin_level IN (1,2)`                                                                                                                        |
 | 身份       | 1 级=甲方平台管理员；2 级=受管公司管理员；`identity_hint` 不得单独作为授权依据                                                                                       |
-| 受控初始化 | 1 级 3 个（甲方公司）、2 级 3 个（各受管公司）；登录名/邮箱等为部署配置。**由显式 `--admin-bootstrap` 等受控参数触发**，不是每次 `init` 必然重建；未提供时跳过并记录 |
+| 受控初始化 | 正式初始化 `schema_version=2`：1 级恰好 3 个（甲方公司）；2 级只来自 `default_managed_companies` 显式列出的受管公司（可 0 家，每家公司 1 个）。登录名/邮箱等为部署配置。**由显式 `--admin-bootstrap` 等受控参数触发**，不是每次 `init` 必然重建；未提供时跳过并记录 |
 | 初始密码   | 仅在显式初始化时设置；`must_change_password=true`；重跑不重置密码                                                                                                    |
 | 范围       | 1 级全平台；2 级限本公司 `organization_id`；审计 NULL 行不放大到全局                                                                                                 |
 | 失败关闭   | 缺失/非法等级不提升为 1 级；碰撞/身份不明拒绝                                                                                                                        |
@@ -115,6 +140,19 @@
 - 工具契约：输入“登录名 → admin_level（1/2）→ 组织”映射清单；输出预检报告（命中/未命中/歧义/冲突）。
 - 验收：每个目标账号唯一命中；未映射账号保持 `admin_level=NULL`，管理操作失败关闭；重跑 0 变更；不自动推断等级。
 - 映射清单不入库、不提交；仅由部署者按受控路径提供。
+
+### 5.1 凭据代次与强制改密（S3）
+
+| 项 | 目标 |
+| --- | --- |
+| 字段 | `base_user_account.credential_version int unsigned NOT NULL DEFAULT 0` |
+| 语义 | 账号凭据代次；access token 签发时写入 `credentialVersion` 声明，受保护请求由 `ValidateAccessTokenSessionUsecase` 与库内当前值逐次比对（门禁 7） |
+| 旧 Token 兼容 | 未声明该字段的存量令牌按 `0` 处理；仅当库内代次仍为 `0` 时继续放行 |
+| 递增时机（同一事务） | 一级补发临时密码、二级专用重置、本人自助改密、公司状态实际变更（启用↔停用）时对受影响账号递增；公司状态未变化或仅编辑其它字段不递增 |
+| 失效范围 | 递增后该账号全部旧 access token 立即永久失效；当前仓库**没有** refresh/续签消费入口，refresh token 不构成复活通道 |
+| 强制改密 | 补发与重置都置 `must_change_password=true`；`GraphQL` 与 `REST` 业务入口由 `RolesGuard` / `SessionRestrictionGuard` / `MustChangePasswordGuard` 统一拒绝非 `NONE` 受限会话，仅放行本人核验、本人改密与登出 |
+| 二级管理员公司失效 | `admin_level=2` 的账号在请求期若无唯一有效且角色为 `SUPER_ADMIN` 的可信公司成员（公司停用、成员缺失/角色不符、多公司歧义），会话限制为 `ADMIN_ORGANIZATION_INACTIVE`；登录签发与每请求复核共用 `ResolveSessionRestrictionUsecase`，业务入口统一拒绝，本人资料维护/改密/登出不受影响；`admin_level=1` 为平台级身份，不因缺少成员公司受限。公司启停仍递增管理员凭据代次，旧 Token 永久失效 |
+| 审计 | `management_audit_event.operation` 的 CHECK 扩展为五值：原三类 + `REISSUE_LEVEL2_CREDENTIAL` + `RESET_LEVEL2_CREDENTIAL`；凭据类审计与写哈希同事务，`detail` 只允许 `{ reason?, loginNameMasked }`，禁止写入口令、哈希或派生值 |
 
 ## 6. 历史数据与旧接口兼容
 

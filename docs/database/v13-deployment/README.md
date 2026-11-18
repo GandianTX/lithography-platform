@@ -23,9 +23,11 @@
 
 ## 当前交付边界
 
-- 44 条迁移，51 张业务表；预建空库后使用 `database:deploy --mode=init`。
-- 生产入口（`--environment=production`，默认）一条命令完成迁移、必要系统数据、组织与 3 个一级 + 3 个二级管理员；
-  不创建开发账号、模拟公司、业务样例或样例文件。
+- 47 条迁移，52 张业务表；预建空库后使用 `database:deploy --mode=init`。
+- 生产入口（`--environment=production`，默认）一条命令完成迁移、必要系统数据、组织与 3 个一级管理员，
+  以及 `default_managed_companies` 显式列出的默认受管公司二级管理员（可 0 家，每家公司 1 个）；
+  不创建开发账号、模拟公司、业务样例或样例文件。存量库先用 `admin-binding:inventory` 只读盘点，
+  再按审查清单受控应用缺失绑定。
 - 开发入口（`--environment=development` + `--expect-server-uuid` + `--confirm-dev-target`）可在同一条命令中
   追加组织、6 个管理员、开发客户/工程师与计划要求的机型/工单/报告/资料样例；开发数据默认关闭，
   目标库须通过实例 UUID、实际库名、确认库与开发标记四项核对，现有共享库直接拒绝。

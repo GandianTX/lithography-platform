@@ -33,6 +33,12 @@ export type JwtPayload = {
   activeRole?: IdentityTypeEnum;
   type?: 'access' | 'refresh';
   tokenVersion?: number; // Refresh 控制用
+  /**
+   * 凭据代次（access token 专用）：与 `base_user_account.credential_version` 比对，
+   * 补发 / 重置 / 自助改密 / 公司启停后递增，使旧 access token 永久失效。
+   * 缺失声明的旧 Token 按 0 处理。
+   */
+  credentialVersion?: number;
   // 自动管理字段
   iat?: number; // 签发时间
   exp?: number; // 过期时间

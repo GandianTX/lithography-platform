@@ -24,8 +24,17 @@
 // 使用 `prepareStableViewport()` + `page.screenshot()`，并已在 frontend/docs/testing.md 登记。
 
 import { expect, type Page, test } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import {
+  cleanupProvisionedCompany,
+  maskLoginName,
+  provisionCompanyViaApi,
+  type ProvisionedCompanyFacts,
+  readProvisionedAdminFacts,
+  readProvisionedCompanyResidue,
+} from '../e2e/helpers/provisioned-company-cleanup';
 import {
   assertPhysicalCleanupAllowed,
   BACKEND_GRAPHQL,
@@ -771,6 +780,8 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
       await enterAdminUsersFromNav(page);
 
       await expect(page.getByText('当前账号仅可查看并管理本公司的普通用户账号。')).toBeVisible();
+      // 一级专用入口不对二级渲染（服务端仍独立拒绝越权调用）
+      await expect(page.getByRole('button', { name: '二级管理员凭据' })).toHaveCount(0);
 
       await searchAdminUser(page, ownLoginName);
       await expect(page.getByRole('row').filter({ hasText: ownLoginName })).toBeVisible();
@@ -872,6 +883,236 @@ test.describe('普通用户管理（隔离库真实链路）', () => {
     expect(
       mysqlQuery(`SELECT is_managed_company FROM organization WHERE id = ${peerOrganizationId}`),
     ).toBe(originalManagedCompany);
+  });
+
+  /**
+   * 一级专用「二级管理员凭据」三步链路（S4）。
+   *
+   * 覆盖：入口仅一级渲染 → 选择已绑定目标 → 空白原因本地拒绝 → 必填原因写入审计 →
+   * 本次口令只在成功弹窗出现（存储 / 关闭后 / 重开后均不可查）→ 旧口令立即失效、
+   * 新口令只签发受限会话且仍需首次改密 → 按开通响应主键回收后六表零残留。
+   */
+  test('一级管理员：二级管理员凭据三步重置，口令只在当次弹窗出现且旧口令立即失效', async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const env = readBackendEnv();
+
+    assertPhysicalCleanupAllowed(env);
+
+    const tag = buildRunTag();
+    const companyName = `E2E S4 凭据公司-${tag}`;
+    const reason = `E2E 凭据重置原因-${tag}`;
+    const originalAdminLevel = readAdminLevel(LEVEL_ONE_LOGIN);
+    let provisioned: ProvisionedCompanyFacts | null = null;
+    let firstPassword: string;
+    let primaryError: unknown = null;
+
+    try {
+      setAdminLevel(env, LEVEL_ONE_LOGIN, 1);
+
+      // 独立夹具：真实开通公司 + 二级管理员，口令只用于本用例前后对照
+      const provisioning = await provisionCompanyViaApi(env, {
+        contactPhone: '13900007777',
+        isServiceProvider: false,
+        name: companyName,
+        operatorLogin: LEVEL_ONE_LOGIN,
+        // 提交标识必须是 UUID：服务端按 UUID 归一化，非 UUID 直接拒绝
+        submissionKey: randomUUID(),
+      });
+
+      provisioned = provisioning.facts;
+      firstPassword = provisioning.temporaryPassword;
+
+      // 基线：首次口令可签发受限会话，补发后必须立即失效
+      const initialLogin = await attemptLogin(provisioned.adminLoginName, firstPassword, true);
+
+      expect(initialLogin.errors).toBeUndefined();
+      expect(initialLogin.data?.login?.accessToken).toBeTruthy();
+
+      await loginViaUi(page, LEVEL_ONE_LOGIN, env.MOCK_SEED_PASSWORD, '/admin');
+      await enterAdminUsersFromNav(page);
+
+      const entry = page.getByRole('button', { name: '二级管理员凭据' });
+
+      await expect(entry).toBeVisible();
+      await entry.click();
+
+      const dialog = visibleDialog(page);
+
+      // 第一步：只能看到已绑定的二级管理员
+      await expect(dialog.getByText('选择已绑定的二级管理员')).toBeVisible();
+      await dialog.getByPlaceholder('搜索公司全称 / 编号 / 登录名 / 昵称').fill(companyName);
+
+      const candidateRow = dialog.getByRole('row').filter({ hasText: companyName });
+
+      await expect(candidateRow).toBeVisible();
+      await expect(candidateRow.getByText(provisioned.adminLoginName)).toBeVisible();
+      await expect(candidateRow.getByText('正常', { exact: true })).toBeVisible();
+
+      await candidateRow.getByRole('button', { name: '选择' }).click();
+
+      // 第二步：核对目标；空白原因在本地即拒绝，不发请求
+      await expect(dialog.getByText('核对目标与重置原因')).toBeVisible();
+      // 昵称缺省与公司名相同，核对区会有两处同名文本：断言「公司名称」行命中即可
+      await expect(dialog.getByText(companyName).first()).toBeVisible();
+      await expect(dialog.getByText(provisioned.organizationCode)).toBeVisible();
+      await expect(dialog.getByText(provisioned.adminLoginName, { exact: true })).toBeVisible();
+
+      await dialog.getByRole('button', { name: '确认重置' }).click();
+      await expect(dialog.getByText('请填写重置原因。')).toBeVisible();
+
+      await dialog.getByPlaceholder('例如：管理员遗忘密码，经电话核实后重置').fill(reason);
+
+      const resetResponsePromise = page.waitForResponse(
+        (response) =>
+          response.url().includes('/graphql') &&
+          response.request().method() === 'POST' &&
+          (response.request().postData() ?? '').includes('AdminResetLevelTwoAdminCredential'),
+      );
+
+      await dialog.getByRole('button', { name: '确认重置' }).click();
+
+      const resetBody = (await (await resetResponsePromise).json()) as {
+        data?: {
+          adminResetLevelTwoAdminCredential?: {
+            adminAccountId?: number;
+            loginName?: string;
+            temporaryPassword?: string;
+          };
+        };
+        errors?: unknown[];
+      };
+
+      expect(resetBody.errors).toBeUndefined();
+
+      const resetPayload = resetBody.data?.adminResetLevelTwoAdminCredential;
+      const newPassword = resetPayload?.temporaryPassword;
+
+      expect(resetPayload?.adminAccountId).toBe(provisioned.adminAccountId);
+      expect(resetPayload?.loginName).toBe(provisioned.adminLoginName);
+
+      if (typeof newPassword !== 'string' || newPassword === '') {
+        throw new Error('重置响应未返回本次临时密码，拒绝继续断言');
+      }
+
+      // 口令断言只比较布尔结果：断言失败时不得把口令明文写进日志
+      expect(newPassword !== firstPassword).toBe(true);
+
+      // 第三步：口令只在当次弹窗，且不进入任何持久化位置
+      const credentialDialog = page
+        .getByRole('dialog')
+        .filter({ hasText: '本次临时密码只显示一次' });
+
+      await expect(credentialDialog).toBeVisible();
+      await expect(credentialDialog.getByText(reason)).toBeVisible();
+      expect((await credentialDialog.locator('input').first().inputValue()) === newPassword).toBe(
+        true,
+      );
+
+      const storageDump = await page.evaluate(() =>
+        JSON.stringify({
+          local: { ...window.localStorage },
+          session: { ...window.sessionStorage },
+        }),
+      );
+
+      expect(storageDump.includes(newPassword)).toBe(false);
+
+      await credentialDialog.getByRole('button', { name: '我已记录并关闭' }).click();
+      await expect(
+        page.getByRole('dialog').filter({ hasText: '本次临时密码只显示一次' }),
+      ).toHaveCount(0);
+      expect((await page.evaluate(() => document.body.innerText)).includes(newPassword)).toBe(
+        false,
+      );
+
+      // 重新打开必须回到第一步：这一步之后口令不可再查
+      await entry.click();
+      await expect(dialog.getByText('选择已绑定的二级管理员')).toBeVisible();
+      expect((await page.evaluate(() => document.body.innerText)).includes(newPassword)).toBe(
+        false,
+      );
+
+      // antd 对两字中文按钮自动插入空格：按正则可匹配「关 闭」
+      await dialog.getByRole('button', { name: /关\s*闭/u }).click();
+      await expect(
+        page.getByRole('dialog').filter({ hasText: '选择已绑定的二级管理员' }),
+      ).toHaveCount(0);
+
+      // 服务端事实与审计：仍待首次改密，原因与脱敏登录名入库，口令不入库
+      const adminFacts = readProvisionedAdminFacts(provisioned.adminAccountId);
+
+      expect(adminFacts.status).toBe('ACTIVE');
+      expect(adminFacts.mustChangePassword).toBe('1');
+
+      const auditRows = mysqlQuery(
+        `SELECT detail FROM management_audit_event
+          WHERE organization_id = ${provisioned.organizationId}
+            AND operation = 'RESET_LEVEL2_CREDENTIAL'`,
+      );
+
+      expect(auditRows).toContain(maskLoginName(provisioned.adminLoginName));
+      expect(auditRows).toContain(reason);
+      expect(auditRows.includes(newPassword)).toBe(false);
+      expect(
+        Number(
+          mysqlQuery(
+            `SELECT COUNT(*) FROM management_audit_event
+              WHERE organization_id = ${provisioned.organizationId}
+                AND operation = 'RESET_LEVEL2_CREDENTIAL'`,
+          ),
+        ),
+      ).toBe(1);
+
+      // 旧口令立即失效；新口令只签发受限会话
+      const staleLogin = await attemptLogin(provisioned.adminLoginName, firstPassword, true);
+
+      expect(staleLogin.data?.login?.accessToken).toBeFalsy();
+      expect(firstGraphqlError(staleLogin).code).toBe('UNAUTHENTICATED');
+
+      const freshLogin = await attemptLogin(provisioned.adminLoginName, newPassword, true);
+
+      expect(freshLogin.errors).toBeUndefined();
+      expect(freshLogin.data?.login?.restriction).toBe('MUST_CHANGE_PASSWORD');
+      expect(typeof freshLogin.data?.login?.accessToken).toBe('string');
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      throwPrimaryAndTeardown(
+        primaryError,
+        await runTeardownSteps([
+          {
+            label: '按开通响应主键回收本轮公司与二级管理员',
+            run: () => {
+              if (provisioned !== null) {
+                cleanupProvisionedCompany(provisioned);
+              }
+            },
+          },
+          {
+            label: '恢复一级管理员等级',
+            run: () => restoreAdminLevel(env, LEVEL_ONE_LOGIN, originalAdminLevel),
+          },
+        ]),
+      );
+    }
+
+    const registered = provisioned;
+
+    if (registered === null) {
+      throw new Error('本轮没有登记到开通主键，无法核验清理残留');
+    }
+
+    // 清理后：六张表全部零残留
+    expect(readProvisionedCompanyResidue(registered)).toEqual({
+      account: 0,
+      audit: 0,
+      membership: 0,
+      organization: 0,
+      provisioningRequest: 0,
+      userInfo: 0,
+    });
   });
 
   /**

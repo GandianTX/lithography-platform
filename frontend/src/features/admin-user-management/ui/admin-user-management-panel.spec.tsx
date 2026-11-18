@@ -43,13 +43,16 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { message } from 'antd';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { GraphQLIngressError } from '@/shared/graphql';
+import { getGraphQLClient, GraphQLIngressError } from '@/shared/graphql';
 
 import type {
+  AdminBoundLevelTwoAdmin,
+  AdminLevelTwoCredentialCommandResult,
   AdminUserCommandResult,
   AdminUserListPage,
   AdminUserPasswordResetResult,
   AdminUserRow,
+  AdminUserSessionIdentity,
 } from '../application/admin-user-management.types';
 import * as adminUserAdapter from '../infrastructure/admin-user-adapter';
 
@@ -60,8 +63,10 @@ vi.mock('../infrastructure/admin-user-adapter', async (importOriginal) => {
 
   return {
     ...actual,
+    adminResetLevelTwoAdminCredential: vi.fn(),
     adminResetUserPasswordToDefault: vi.fn(),
     adminSetUserStatus: vi.fn(),
+    fetchAdminBoundLevelTwoAdmins: vi.fn(),
     fetchAdminUsers: vi.fn(),
   };
 });
@@ -69,6 +74,8 @@ vi.mock('../infrastructure/admin-user-adapter', async (importOriginal) => {
 const fetchUsersMock = vi.mocked(adminUserAdapter.fetchAdminUsers);
 const setStatusMock = vi.mocked(adminUserAdapter.adminSetUserStatus);
 const resetPasswordMock = vi.mocked(adminUserAdapter.adminResetUserPasswordToDefault);
+const fetchBoundAdminsMock = vi.mocked(adminUserAdapter.fetchAdminBoundLevelTwoAdmins);
+const resetLevelTwoMock = vi.mocked(adminUserAdapter.adminResetLevelTwoAdminCredential);
 
 /** 后端固定安全提示由 adapter 返回，面板逐字透传，密码本身不出现在任何反馈中 */
 const RESET_NOTICE = '密码已重置为系统默认密码，请提示用户下次登录后立即修改。';
@@ -155,8 +162,31 @@ function makePage(): AdminUserListPage {
   return { items: [ROW_A, ROW_B], page: 1, pageSize: 10, total: 2 };
 }
 
+/**
+ * 会话身份快照（页面在生产里注入 `sampleCurrentAuthSessionIdentity`）。
+ * 默认同一账号同一代次；需要模拟「回包前换号 / 重新登录」时改写 `current`。
+ */
+const DEFAULT_SESSION_IDENTITY: AdminUserSessionIdentity = { accountId: 770001, epoch: 1 };
+const sessionIdentityRef: { current: AdminUserSessionIdentity | null } = {
+  current: DEFAULT_SESSION_IDENTITY,
+};
+
+function sampleSessionIdentity(): AdminUserSessionIdentity | null {
+  return sessionIdentityRef.current;
+}
+
+// 身份是跨用例共享的可变快照，每个用例结束后必须回到默认值，避免串扰
+afterEach(() => {
+  sessionIdentityRef.current = DEFAULT_SESSION_IDENTITY;
+});
+
 async function renderPanel(adminLevel: number | null = 1) {
-  render(<AdminUserManagementPanel adminLevel={adminLevel} />);
+  render(
+    <AdminUserManagementPanel
+      adminLevel={adminLevel}
+      sampleSessionIdentity={sampleSessionIdentity}
+    />,
+  );
 
   await screen.findByText(ROW_A.nickname);
   await screen.findByText(ROW_B.nickname);
@@ -587,7 +617,9 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
 
   it('列表就绪但无数据时渲染公共空态，且不渲染表格', async () => {
     fetchUsersMock.mockResolvedValue({ items: [], page: 1, pageSize: 10, total: 0 });
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     await waitFor(() => {
       expect(document.querySelector('.empty-state')).not.toBeNull();
@@ -600,7 +632,9 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
     fetchUsersMock.mockRejectedValueOnce(
       new GraphQLIngressError({ message: 'load failed', type: 'network' }),
     );
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     await waitFor(() => {
       expect(document.querySelector('.error-state')).not.toBeNull();
@@ -663,7 +697,9 @@ describe('管理员用户管理面板的列表查询与只读表现', () => {
       pageSize: 10,
       total: 1,
     });
-    render(<AdminUserManagementPanel adminLevel={1} />);
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
 
     const row = (await screen.findByText('超管')).closest('tr') as HTMLElement;
 
@@ -743,7 +779,9 @@ describe('管理员用户管理面板的联系方式区块（完整值提示与�
   function renderSingleRow(row: AdminUserRow) {
     fetchUsersMock.mockResolvedValue({ items: [row], page: 1, pageSize: 10, total: 1 });
 
-    return render(<AdminUserManagementPanel adminLevel={1} />);
+    return render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
   }
 
   /** Tooltip 浮层渲染在 body 层 portal 里，按浮层文本断言（触发元素自身也是完整文本） */
@@ -890,5 +928,232 @@ describe('管理员用户管理面板的联系方式区块（完整值提示与�
 
     expect(fetchUsersMock.mock.calls.length).toBe(baselineFetches);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+});
+
+/**
+ * 一级专用「二级管理员凭据」入口。
+ *
+ * 凭据只允许出现在「本次成功」的展示态：关闭、重新挂载（等价刷新）后都不可再查；
+ * 口令不进入 Web Storage / Apollo 缓存 / 错误日志。二级与等级缺失不渲染入口，
+ * 与服务端独立拒绝越权调用构成两层防线。
+ */
+describe('管理员用户管理面板的二级管理员凭据入口', () => {
+  const BOUND_ADMIN: AdminBoundLevelTwoAdmin = {
+    accountDisabled: false,
+    accountId: 920001,
+    companyName: '甲公司',
+    companyStatus: 'ACTIVE',
+    loginName: 'orgadmin_501',
+    nickname: '甲公司管理员',
+    organizationCode: 'ADMIN_ORG_501',
+    organizationId: 501,
+  };
+
+  const LEVEL_TWO_PASSWORD = 'Temp-LevelTwo-Only-1';
+
+  const REASON_PLACEHOLDER = '例如：管理员遗忘密码，经电话核实后重置';
+
+  beforeEach(() => {
+    vi.spyOn(message, 'success')
+      .mockImplementation(() => undefined as never)
+      .mockClear();
+    fetchUsersMock.mockReset();
+    fetchUsersMock.mockResolvedValue(makePage());
+    fetchBoundAdminsMock.mockReset();
+    fetchBoundAdminsMock.mockResolvedValue({
+      items: [BOUND_ADMIN],
+      page: 1,
+      pageSize: 8,
+      total: 1,
+    });
+    resetLevelTwoMock.mockReset();
+  });
+
+  /** 打开入口并等到候选表就绪（候选来自一级专用窄查询，与普通用户列表无关） */
+  async function openSelectDialog(): Promise<HTMLElement> {
+    fireEvent.click(screen.getByRole('button', { name: '二级管理员凭据' }));
+
+    const dialog = await waitFor(() => {
+      const opened = queryDialog('选择已绑定的二级管理员');
+
+      if (opened === null) {
+        throw new Error('凭据弹窗未打开');
+      }
+
+      return opened;
+    });
+
+    return dialog;
+  }
+
+  async function openConfirmDialog(): Promise<HTMLElement> {
+    const selectDialog = await openSelectDialog();
+
+    await within(selectDialog).findByText(BOUND_ADMIN.companyName);
+    fireEvent.click(within(selectDialog).getByRole('button', { name: /选\s*择/ }));
+
+    return getDialog('核对目标与重置原因');
+  }
+
+  it.each([
+    { level: 1, visible: true },
+    { level: 2, visible: false },
+    { level: null, visible: false },
+  ])('管理等级 $level 时入口可见性为 $visible', async ({ level, visible }) => {
+    await renderPanel(level);
+
+    const entry = screen.queryByRole('button', { name: '二级管理员凭据' });
+
+    if (visible) {
+      expect(entry).toBeInTheDocument();
+      return;
+    }
+
+    expect(entry).toBeNull();
+    // 入口不渲染就没有候选查询：二级与等级缺失不会误打一级专用读面
+    expect(fetchBoundAdminsMock).not.toHaveBeenCalled();
+  });
+
+  it('重置原因为空白时拦截提交，不调用重置命令', async () => {
+    await renderPanel(1);
+    const dialog = await openConfirmDialog();
+
+    fireEvent.change(within(dialog).getByPlaceholderText(REASON_PLACEHOLDER), {
+      target: { value: '   ' },
+    });
+    clickDialogButton(dialog, /确认重置/);
+
+    expect(await within(dialog).findByText('请填写重置原因。')).toBeTruthy();
+    expect(resetLevelTwoMock).not.toHaveBeenCalled();
+    // 仍停在核对步骤，不会因为空原因直接关闭会话
+    expect(isDialogOpen('核对目标与重置原因')).toBe(true);
+  }, 15_000);
+
+  it('成功只在当次弹窗展示一次口令，关闭与重新挂载后均不可再查且不落持久层', async () => {
+    resetLevelTwoMock.mockResolvedValue({
+      ok: true,
+      credential: {
+        adminAccountId: BOUND_ADMIN.accountId,
+        loginName: BOUND_ADMIN.loginName,
+        mustChangePassword: true,
+        nickname: BOUND_ADMIN.nickname,
+        organizationId: BOUND_ADMIN.organizationId,
+        temporaryPassword: LEVEL_TWO_PASSWORD,
+      },
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
+
+    await screen.findByText(ROW_A.nickname);
+    const dialog = await openConfirmDialog();
+    fireEvent.change(within(dialog).getByPlaceholderText(REASON_PLACEHOLDER), {
+      target: { value: '  管理员遗忘密码  ' },
+    });
+    clickDialogButton(dialog, /确认重置/);
+
+    const credentialDialog = await waitFor(() => {
+      const opened = queryDialog('二级管理员临时密码');
+
+      if (opened === null) {
+        throw new Error('未进入凭据展示态');
+      }
+
+      return opened;
+    });
+
+    expect(within(credentialDialog).getByDisplayValue(LEVEL_TWO_PASSWORD)).toBeInTheDocument();
+    // 原因 trim 后才进入命令，审计里不会出现两侧空白
+    expect(resetLevelTwoMock).toHaveBeenCalledWith({
+      adminAccountId: BOUND_ADMIN.accountId,
+      organizationId: BOUND_ADMIN.organizationId,
+      reason: '管理员遗忘密码',
+    });
+    expect(message.success).toHaveBeenCalledWith('二级管理员临时密码已重置。');
+    // 口令不得进入任何持久层或缓存
+    expect(JSON.stringify({ ...window.sessionStorage })).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(JSON.stringify({ ...window.localStorage })).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(JSON.stringify(getGraphQLClient().cache.extract())).not.toContain(LEVEL_TWO_PASSWORD);
+
+    clickDialogButton(credentialDialog, /我已记录并关闭/);
+    await waitFor(() => expect(isDialogOpen('二级管理员临时密码')).toBe(false));
+
+    view.unmount();
+    expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
+
+    // 重新挂载等价刷新：入口回到选择步骤，旧口令无法再次查看
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
+    await screen.findByText(ROW_A.nickname);
+    await openSelectDialog();
+    expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(JSON.stringify({ ...window.sessionStorage })).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(JSON.stringify({ ...window.localStorage })).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(consoleErrorSpy.mock.calls.flat().map(String).join(' ')).not.toContain(
+      LEVEL_TWO_PASSWORD,
+    );
+
+    consoleErrorSpy.mockRestore();
+  }, 15_000);
+
+  it('凭据回包前会话代次推进时丢弃口令，不进入展示态也不提示成功', async () => {
+    const pending = deferred<AdminLevelTwoCredentialCommandResult>();
+    resetLevelTwoMock.mockReturnValue(pending.promise);
+    await renderPanel(1);
+    const dialog = await openConfirmDialog();
+
+    fireEvent.change(within(dialog).getByPlaceholderText(REASON_PLACEHOLDER), {
+      target: { value: '管理员遗忘密码' },
+    });
+    clickDialogButton(dialog, /确认重置/);
+    await waitFor(() => expect(resetLevelTwoMock).toHaveBeenCalledTimes(1));
+
+    // 回包前同一账号重新登录：accountId 不变、代次推进，凭据归属已经失效
+    sessionIdentityRef.current = {
+      accountId: DEFAULT_SESSION_IDENTITY.accountId,
+      epoch: DEFAULT_SESSION_IDENTITY.epoch + 1,
+    };
+
+    await act(async () => {
+      pending.resolve({
+        ok: true,
+        credential: {
+          adminAccountId: BOUND_ADMIN.accountId,
+          loginName: BOUND_ADMIN.loginName,
+          mustChangePassword: true,
+          nickname: BOUND_ADMIN.nickname,
+          organizationId: BOUND_ADMIN.organizationId,
+          temporaryPassword: LEVEL_TWO_PASSWORD,
+        },
+      });
+    });
+
+    // 口令整包丢弃：不进入展示态、不出现在 DOM，也不给成功提示
+    expect(queryDialog('二级管理员临时密码')).toBeNull();
+    expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
+    expect(message.success).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('业务失败停在核对步骤并展示后端原文，不展示口令也不给成功反馈', async () => {
+    resetLevelTwoMock.mockResolvedValue({
+      ok: false,
+      reason: 'status-conflict',
+      message: BUSINESS_FAILURE_MESSAGE,
+    });
+    await renderPanel(1);
+    const dialog = await openConfirmDialog();
+
+    fireEvent.change(within(dialog).getByPlaceholderText(REASON_PLACEHOLDER), {
+      target: { value: '管理员遗忘密码' },
+    });
+    clickDialogButton(dialog, /确认重置/);
+
+    expect(await within(dialog).findByText(BUSINESS_FAILURE_MESSAGE)).toBeTruthy();
+    expect(isDialogOpen('核对目标与重置原因')).toBe(true);
+    expect(message.success).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
   });
 });

@@ -85,6 +85,7 @@ export class LoginByAccountIdUsecase {
       username: basicResult.userInfo.nickname,
       email: basicResult.account.loginEmail,
       accessGroup: basicResult.accessGroup,
+      credentialVersion: basicResult.credentialVersion,
       ...(hasRoles ? { activeRole: finalRole } : {}),
     };
     const accessToken = this.tokenHelper.generateAccessToken({ payload, audience });

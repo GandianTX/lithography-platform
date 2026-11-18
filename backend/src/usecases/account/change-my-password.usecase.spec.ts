@@ -29,7 +29,8 @@ import { ChangeMyPasswordUsecase } from './change-my-password.usecase';
  * 5. 新哈希的时间盐取**锁内数据库行的 `createdAt`**，不是应用时钟；
  * 6. 写哈希失败 ⇒ 整个事务回滚，且失败日志抑制 `message`（UPDATE 绑定参数含哈希）；
  * 7. 成功结果不含当前密码、新密码、哈希或 Token；
- * 8. 不新增 Token 黑名单 / tokenVersion / 服务端会话撤销；
+ * 8. 不新增 Token 黑名单 / tokenVersion / RefreshToken / 独立会话服务
+ *    （旧 access token 由同一 UPDATE 递增的凭据代次在复核时拒绝）；
  * 9. 全部日志（成功与失败）都不含当前密码、新密码或哈希；
  * 10. 无论是否强制改密，新密码与当前密码相同都拒绝且不写哈希；强制改密成功仍清除标记。
  */
@@ -138,6 +139,7 @@ describe('ChangeMyPasswordUsecase', () => {
         passwordHash: expect.any(String),
         transactionContext: harness.txContext,
         mustChangePassword: false,
+        incrementCredentialVersion: true,
       });
       expect(harness.isCommitted()).toBe(true);
     });
@@ -219,6 +221,7 @@ describe('ChangeMyPasswordUsecase', () => {
         loginPassword: STORED_HASH,
         createdAt: DB_CREATED_AT,
         mustChangePassword: true,
+        credentialVersion: 0,
       });
     };
 
@@ -258,6 +261,7 @@ describe('ChangeMyPasswordUsecase', () => {
         passwordHash: AccountService.hashPasswordWithTimestamp(NEW_PASSWORD, DB_CREATED_AT),
         transactionContext: harness.txContext,
         mustChangePassword: false,
+        incrementCredentialVersion: true,
       });
       expect(harness.isCommitted()).toBe(true);
     });
@@ -295,6 +299,7 @@ describe('ChangeMyPasswordUsecase', () => {
         loginPassword: AccountService.hashPasswordWithTimestamp(legacyPassword, DB_CREATED_AT),
         createdAt: DB_CREATED_AT,
         mustChangePassword: false,
+        credentialVersion: 0,
       });
 
       await expect(execute(legacyPassword, NEW_PASSWORD)).resolves.toMatchObject({
@@ -455,6 +460,7 @@ describe('ChangeMyPasswordUsecase', () => {
         loginPassword: AccountService.hashPasswordWithTimestamp(CURRENT_PASSWORD, OTHER_CREATED_AT),
         createdAt: OTHER_CREATED_AT,
         mustChangePassword: false,
+        credentialVersion: 0,
       });
 
       await execute(CURRENT_PASSWORD, NEW_PASSWORD);
@@ -533,17 +539,17 @@ describe('ChangeMyPasswordUsecase', () => {
       expect(serialized).not.toContain('token');
     });
 
-    it('不新增 Token 黑名单 / 服务端撤销：依赖面只有密码原语与事务，成功日志只含账号主键', async () => {
+    it('不新增 Token 黑名单 / RefreshToken / 独立会话服务：撤销只有凭据代次，成功日志只含账号主键', async () => {
       await execute(CURRENT_PASSWORD, NEW_PASSWORD);
 
       // 构造函数只接受 AccountService、PasswordPolicyService、PinoLogger、TransactionRunner
       // 与部署默认密码配置（ADMIN_ACCOUNT_RESET_OPTIONS）：结构上不存在 Token / Session /
-      // 黑名单依赖，故不可能做服务端撤销
+      // 黑名单依赖；旧 access token 只靠同一 UPDATE 递增的凭据代次在复核时被拒绝
       expect(ChangeMyPasswordUsecase.length).toBe(5);
       expect(accountService.lockMyAccountCredentialSnapshot).toHaveBeenCalledTimes(1);
       expect(accountService.updateAccountPasswordHash).toHaveBeenCalledTimes(1);
       expect(logger.info).toHaveBeenCalledWith({ accountId: ACCOUNT_ID }, expect.any(String));
-      // 文案不声称已撤销 Token（旧 Access Token 按 JWT_EXPIRES_IN 自然过期）
+      // 固定文案不描述内部撤销机制（只要求使用新密码重新登录）
       expect(NOTICE).not.toMatch(/撤销|失效|Token|token/);
     });
 

@@ -36,6 +36,7 @@ describe('GetEngineerRegistrationStatusUsecase（本人凭据证明与可见范�
     loginPassword: PASSWORD_HASH,
     createdAt: CREATED_AT,
     mustChangePassword,
+    credentialVersion: 0,
   });
 
   const view = (identityHint: IdentityTypeEnum): UserAccountView =>

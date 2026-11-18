@@ -58,6 +58,12 @@ type AdminOrganizationPayload = {
   kind: string;
   status: string;
   isManagedCompany: boolean;
+  provisionedAdmin?: {
+    accountId: number;
+    loginName: string;
+    nickname: string;
+    mustChangePassword: boolean;
+  } | null;
 };
 
 type ApplicationPayload = {
@@ -127,6 +133,7 @@ const ADMIN_CREATE_ORGANIZATION_MUTATION = `
   mutation AdminCreateOrganization($input: AdminCreateOrganizationInput!) {
     adminCreateOrganization(input: $input) {
       id organizationCode name kind status isManagedCompany
+      provisionedAdmin { accountId loginName nickname mustChangePassword }
     }
   }
 `;
@@ -429,6 +436,33 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
     }
   };
 
+  /**
+   * 新增公司同事务开通的二级管理员：按真实回读登记账号与资料事实。
+   * 成员关系由清理器按已登记账号自动扩图，组织删除前必须先清掉。
+   */
+  const recordProvisionedAdmin = async (organization: AdminOrganizationPayload): Promise<void> => {
+    const admin = organization.provisionedAdmin;
+    if (!admin) {
+      throw new Error(`新增公司 ${organization.id} 未返回已开通管理员`);
+    }
+    const account = await accountRepo().findOneOrFail({ where: { id: admin.accountId } });
+    const userInfo = await userInfoRepo().findOneOrFail({ where: { accountId: admin.accountId } });
+    const accessGroup = Array.isArray(userInfo.accessGroup)
+      ? userInfo.accessGroup
+      : (JSON.parse(userInfo.accessGroup) as string[]);
+    recordOwnedResource(ownership, 'account', admin.accountId, {
+      loginName: account.loginName,
+      loginEmail: account.loginEmail,
+      status: account.status,
+      identityHint: account.identityHint,
+      accessGroup,
+      nickname: userInfo.nickname,
+      userInfoEmail: userInfo.email,
+      userState: userInfo.userState,
+      customerOrganizationId: userInfo.customerOrganizationId,
+    });
+  };
+
   const recordApplication = (
     applicationId: number,
     accountId: number,
@@ -544,6 +578,7 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
       status: organization?.status as string,
       isManagedCompany: organization?.isManagedCompany,
     });
+    await recordProvisionedAdmin(organization as AdminOrganizationPayload);
   });
 
   it('工程师 Web 注册进入待审：PENDING/PENDING、无成员关系，受限会话直调业务接口被拒', async () => {
@@ -710,6 +745,7 @@ describe('S5 管理端组合链路：新增公司 → Web 注册 → 待审受�
       status: organization?.status as string,
       isManagedCompany: organization?.isManagedCompany,
     });
+    await recordProvisionedAdmin(organization as AdminOrganizationPayload);
 
     const recorded = await registerEngineer(ENGINEER_C, disabledCompanyId);
     expect(recorded.body.errors).toBeUndefined();

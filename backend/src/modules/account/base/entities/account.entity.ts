@@ -76,6 +76,15 @@ export class AccountEntity {
   })
   mustChangePassword!: boolean;
 
+  @Column({
+    name: 'credential_version',
+    type: 'int',
+    unsigned: true,
+    default: 0,
+    comment: '凭据代次：补发/重置/改密/公司启停时递增，用于永久撤销旧访问令牌',
+  })
+  credentialVersion!: number;
+
   /**
    * 用户详细信息关联
    * 一对一关系的反向端（inverse side）

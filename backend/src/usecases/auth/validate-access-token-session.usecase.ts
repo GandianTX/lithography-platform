@@ -30,7 +30,10 @@ import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.
  * 4. 数据库 `access_group` 与解密后的 `meta_digest` 必须是同一非空、无重复、合法
  *    角色集合，且 `identity_hint` 必须是该集合成员；管理员写链路仍使用单角色收敛；
  * 5. Token `accessGroup` 经统一映射后的角色集合必须与数据库集合完全一致；
- * 6. Token `activeRole` 可缺失；存在时必须是数据库集合成员。
+ * 6. Token `activeRole` 可缺失；存在时必须是数据库集合成员；
+ * 7. Token `credentialVersion`（缺失按 0）必须与数据库 `credential_version` 一致：
+ *    补发 / 二级专用重置 / 自助改密 / 公司启停都会在各自事务内递增该列，
+ *    因此旧 Token 在到期前也会被永久拒绝（不依赖再启用或角色恢复）。
  *
  * 服务端诊断日志（R10-3）：任一门禁拒绝时先以 `warn` 记录门禁序号、原因分类与账号主键
  * 再抛错。三源角色原值、收敛细节与任何凭据派生物不进日志，抛出的 `DomainError` 不携带
@@ -50,15 +53,21 @@ import { ResolveSessionRestrictionUsecase } from './resolve-session-restriction.
  * 为什么停用和改角色能使旧 Token 失效：access token 在 `JWT_EXPIRES_IN` 内是静态的，
  * 但本用例在**每次受保护请求**读取数据库当前事实并与 Token 声明比对——`status` /
  * `user_state` 被停用、三源角色被改写、`activeRole` 不再匹配，任一变化都会在下一次
- * 在旧 Token 到期前被重新启用且角色恢复一致，旧 Token 会重新通过复核——本轮没有
- * 持久化撤销版本可永久区分该 Token，不在本 PR 扩展解决。
+ * 请求被拒绝。仅靠状态复核时，若停用后又被重新启用且角色恢复一致，旧 Token 会重新
+ * 通过——凭据代次（门禁 7）为此提供**持久撤销**：公司启停在同事务内递增
+ * `credential_version`，旧 Token 声明不再匹配，永久失效。
  *
- * 为什么密码重置不会使 Access Token 立即失效：本复核只比对状态与角色事实，不读取、
- * 不影响已签发 Token，旧登录态按 `JWT_EXPIRES_IN` 自然过期；不在此追加密码版本判断。
+ * 为什么凭据变更会使旧 Access Token 失效：登录签发时把当时的 `credential_version`
+ * 写入 access token；补发、二级专用重置、自助改密与公司启停都在写事务内递增该列，
+ * 本用例逐请求比对。旧 Token 缺失该声明时按 0 处理，因此存量令牌在首次凭据变更前
+ * 自然兼容，变更后即被拒绝。refresh token 在本仓库没有续签消费者（`generateRefreshToken`
+ * 签发的 refresh token 无端点使用），故不存在「用 refresh 复活旧会话」的入口；
+ * 若未来新增续签入口，必须在续签时同样校验并沿用最新 `credential_version`。
  *
  * 不引入新的 Session 真源：数据库 `base_user_account` / `base_user_info` 行就是唯一
  * 授权事实来源，本用例只做「Token 签发时声明」与「请求时数据库事实」的比对；
- * 不新增 Redis Session、Refresh Token、Token Version、黑名单或认证中间件
+ * 不新增 Redis Session、黑名单或额外认证中间件。`credential_version` 是账号行上的
+ * 持久撤销事实，不是第二份授权状态。
  */
 @Injectable()
 export class ValidateAccessTokenSessionUsecase {
@@ -136,6 +145,12 @@ export class ValidateAccessTokenSessionUsecase {
     // 6. activeRole 是可选的历史声明；存在时必须属于当前数据库角色集合。
     if (tokenSession.activeRole !== undefined && !roleSet.roles.includes(tokenSession.activeRole)) {
       this.reject(6, 'ACTIVE_ROLE_NOT_IN_ROLE_SET', payload.sub);
+    }
+
+    // 7. 凭据代次必须与数据库当前值一致：补发 / 重置 / 改密 / 公司启停递增后，
+    //    旧 access token（含未声明该字段的存量令牌，按 0 处理）永久失效。
+    if ((payload.credentialVersion ?? 0) !== snapshot.credentialVersion) {
+      this.reject(7, 'CREDENTIAL_VERSION_MISMATCH', payload.sub);
     }
 
     // 复核通过：返回 JWT 声明 + 请求期会话事实（restriction / 身份字段），Strategy 与下游

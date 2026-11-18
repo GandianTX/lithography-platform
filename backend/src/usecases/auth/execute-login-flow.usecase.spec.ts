@@ -15,7 +15,7 @@ describe('ExecuteLoginFlowUsecase 账户状态检查', () => {
   const createUsecase = (accountStatus: AccountStatus) => {
     const accountQueryService = {
       getLoginBootstrapSnapshot: jest.fn().mockResolvedValue({
-        account: { id: 9001, status: accountStatus },
+        account: { id: 9001, status: accountStatus, credentialVersion: 0 },
         userInfo: { nickname: '待审工程师' },
       }),
     };
@@ -30,6 +30,7 @@ describe('ExecuteLoginFlowUsecase 账户状态检查', () => {
           accessGroup: [],
         },
         userInfo: { nickname: '待审工程师' },
+        account: { id: 9001, credentialVersion: 0 },
       }),
     };
     const tokenHelper = {

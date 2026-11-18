@@ -66,4 +66,17 @@ describe('translate', () => {
     expect(t('language.groupLabel')).toBe('Interface language');
     expect(t('repairForm.requestNo', { requestNo: 'R-1' })).toBe('Request number: R-1');
   });
+
+  it('公司不可用限制态有中英双语标题与说明', () => {
+    expect(translate('zh-CN', 'restricted.adminOrganizationInactive.title')).toBe('所属公司不可用');
+    expect(translate('zh-CN', 'restricted.adminOrganizationInactive.description')).toContain(
+      '公司已停用',
+    );
+    expect(translate('en', 'restricted.adminOrganizationInactive.title')).toBe(
+      'Company unavailable',
+    );
+    expect(translate('en', 'restricted.adminOrganizationInactive.description')).toContain(
+      'administrator binding is invalid',
+    );
+  });
 });

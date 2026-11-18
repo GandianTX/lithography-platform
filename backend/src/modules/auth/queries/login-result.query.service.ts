@@ -18,6 +18,7 @@ export class LoginResultQueryService {
       accountId: userData.account.id,
       roleFromHint: parsedIdentityHint,
       accessGroup: userData.userWithAccessGroup.accessGroup,
+      credentialVersion: userData.account.credentialVersion,
       account: {
         id: userData.account.id,
         loginName: userData.account.loginName,

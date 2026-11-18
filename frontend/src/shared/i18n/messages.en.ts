@@ -198,6 +198,9 @@ export const EN_MESSAGES = {
   'restricted.engineerInactive.title': 'Engineer access not yet effective',
   'restricted.engineerInactive.description':
     'Your engineer application was approved, but account activation is not complete. Contact an administrator to confirm your company membership.',
+  'restricted.adminOrganizationInactive.title': 'Company unavailable',
+  'restricted.adminOrganizationInactive.description':
+    'Your company is disabled or its administrator binding is invalid, so management features are unavailable. Contact a level-one administrator to confirm the company status.',
   'restricted.changePasswordCard': 'Change login password',
   'restricted.profileLoading': 'Loading account profile…',
   'restricted.profileLoadFailed': 'Failed to load account profile',
