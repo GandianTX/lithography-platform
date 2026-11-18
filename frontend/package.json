@@ -23,6 +23,7 @@
     "test:e2e:admin-s5-visual-real": "playwright test --config=playwright.admin-s5-visual-real.config.ts e2e-real/admin-s5-visual-real.spec.ts",
     "test:e2e:real-backend-dedicated": "playwright test --config=playwright.real-backend-dedicated.config.ts",
     "test:unit:watch": "vitest",
+    "verify:credential-artifact-isolation": "node scripts/verify-credential-artifact-isolation.mjs",
     "check": "npm run format:check && npm run lint && npm run build",
     "security:audit": "npm audit --registry=https://registry.npmjs.org",
     "security:signatures": "npm audit signatures --registry=https://registry.npmjs.org",

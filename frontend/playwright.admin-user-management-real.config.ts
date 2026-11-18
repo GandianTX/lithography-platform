@@ -21,6 +21,7 @@ import { defineConfig } from '@playwright/test';
 import {
   assertNoArtifactOverrides,
   CREDENTIAL_SAFE_USE,
+  enableCredentialArtifactIsolation,
 } from './e2e-real/credential-evidence-policy';
 import {
   DEDICATED_BACKEND_ORIGIN,
@@ -31,6 +32,9 @@ import {
 // 本套用例在断言中持有重置后的一次性临时口令：trace / video / screenshot 必须全程关闭，
 // 且拒绝任何 CLI 覆盖（含 reporter 附件），失败诊断只靠断言文本与 list reporter
 assertNoArtifactOverrides();
+// 失败时 Playwright 仍会独立生成 ARIA error context；同一策略在加载期主动关闭该快照，
+// 避免 readonly 口令框被写入 error-context.md（配置加载早于 worker 启动，子进程会继承）
+enableCredentialArtifactIsolation();
 
 /**
  * 专用目标注入：外部**未设置**时写入专用值；外部已设置且与专用值冲突则硬失败。

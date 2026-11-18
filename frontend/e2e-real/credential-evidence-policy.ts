@@ -47,3 +47,22 @@ export function assertNoArtifactOverrides(argv: readonly string[] = process.argv
     );
   }
 }
+
+/** 当前安装实现用于跳过失败页面 ARIA 快照的私有控制变量 */
+export const CREDENTIAL_ARTIFACT_ISOLATION_ENV = 'PLAYWRIGHT_NO_COPY_PROMPT';
+
+/**
+ * 在凭据专用配置加载期主动打开失败附件隔离。
+ *
+ * 安装的 Playwright 1.62.1 在测试失败时会把页面 ARIA 快照写入 `error-context.md`
+ * （`node_modules/playwright/lib/index.js` 的 `_takePageSnapshot` / `didFinishTest`），
+ * 这条路径不受 screenshot / trace / video 开关控制，readonly 口令框同样会被收录。
+ * 当前实现的 `_takePageSnapshot` 在 `PLAYWRIGHT_NO_COPY_PROMPT` 为真时直接返回，
+ * 因此必须在配置加载期写入该变量，让 runner 与其派生的 worker 进程一起继承。
+ *
+ * 注意：这是安装实现的私有控制点，不是公开 API；升级 Playwright 后必须用
+ * `verify:credential-artifact-isolation` 的真实失败探针重新确认，不能假定长期有效。
+ */
+export function enableCredentialArtifactIsolation(env: NodeJS.ProcessEnv = process.env): void {
+  env[CREDENTIAL_ARTIFACT_ISOLATION_ENV] = '1';
+}
