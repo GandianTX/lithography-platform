@@ -1,5 +1,9 @@
 /// <reference types="jest" />
 import { DomainError, REPAIR_REQUEST_ERROR } from '@src/core/common/errors/domain-error';
+import {
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
+} from '@app-types/models/repair-request.types';
 import { createTypeOrmPersistenceTransactionContext } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { EntityManager, QueryFailedError, Repository } from 'typeorm';
 import { RepairRequestEntity } from './entities/repair-request.entity';
@@ -162,6 +166,251 @@ describe('RepairRequestService', () => {
       }),
     );
     expect(intakeFindOne).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 71 } }));
+  });
+
+  describe('任务 04 工程师读写锁读与结单', () => {
+    const createIntakeRepo = (serviceOrganizationId: number | null, found = true) => ({
+      findOne: jest.fn().mockResolvedValue(found ? { id: 71, serviceOrganizationId } : null),
+    });
+    const asContext = (repo: unknown) =>
+      createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repo,
+      } as unknown as EntityManager);
+
+    it.each([
+      { orderCompany: 22, intakeCompany: 22, found: true, expected: 22, intakeId: 71 },
+      { orderCompany: 22, intakeCompany: 33, found: true, expected: null, intakeId: 71 },
+      { orderCompany: 22, intakeCompany: 22, found: false, expected: null, intakeId: 71 },
+      { orderCompany: null, intakeCompany: 22, found: true, expected: null, intakeId: 71 },
+      { orderCompany: 22, intakeCompany: 22, found: true, expected: null, intakeId: null },
+    ])(
+      'findAcceptTargetForUpdate 只接受与 intake 一致的服务公司：%j',
+      async ({ orderCompany, intakeCompany, found, expected, intakeId }) => {
+        const intakeRepo = createIntakeRepo(intakeCompany, found);
+        const txRepository = {
+          findOne: jest.fn().mockResolvedValue({
+            id: 11,
+            intakeId,
+            serviceOrganizationId: orderCompany,
+            isAccepted: false,
+            deprecated: false,
+          }),
+          manager: { getRepository: () => intakeRepo },
+        };
+        const context = createTypeOrmPersistenceTransactionContext({
+          getRepository: () => txRepository,
+        } as unknown as EntityManager);
+
+        await expect(service.findAcceptTargetForUpdate(11, context)).resolves.toEqual({
+          id: 11,
+          isAccepted: false,
+          deprecated: false,
+          serviceOrganizationId: expected,
+        });
+        expect(txRepository.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 11 },
+            lock: { mode: 'pessimistic_write' },
+            select: expect.objectContaining({
+              intakeId: true,
+              serviceOrganizationId: true,
+            }),
+          }),
+        );
+        if (orderCompany === null || intakeId === null) {
+          expect(intakeRepo.findOne).not.toHaveBeenCalled();
+        }
+      },
+    );
+
+    it('findAcceptTargetForUpdate 工单不存在返回 null，数据库异常包装为接单失败且不泄漏细节', async () => {
+      repository.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.findAcceptTargetForUpdate(11, asContext(repository)),
+      ).resolves.toBeNull();
+
+      const dbError = new Error('select * from repair_request where id = 11');
+      repository.findOne.mockRejectedValueOnce(dbError);
+      let caught: unknown;
+      try {
+        await service.findAcceptTargetForUpdate(11, asContext(repository));
+      } catch (error) {
+        caught = error;
+      }
+      const domainError = caught as DomainError;
+      expect(domainError.code).toBe(REPAIR_REQUEST_ERROR.ACCEPT_FAILED);
+      expect(domainError.details).toEqual({ requestId: 11 });
+      expect(JSON.stringify(domainError.details)).not.toContain('repair_request');
+      expect(domainError.cause).toBe(dbError);
+    });
+
+    it('findProcessWriteTargetForUpdate 返回含结单事实与可信服务公司的写快照', async () => {
+      const intakeRepo = createIntakeRepo(22);
+      const txRepository = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 11,
+          ownerOrganizationId: 7,
+          intakeId: 71,
+          serviceOrganizationId: 22,
+          isAccepted: true,
+          acceptedByEngineerAccountId: 9,
+          deprecated: false,
+          handlingStatus: 'IN_PROGRESS',
+          closureStatus: 'OPEN',
+        }),
+        manager: { getRepository: () => intakeRepo },
+      };
+      const context = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => txRepository,
+      } as unknown as EntityManager);
+
+      await expect(service.findProcessWriteTargetForUpdate(11, context)).resolves.toEqual({
+        id: 11,
+        ownerOrganizationId: 7,
+        intakeId: 71,
+        serviceOrganizationId: 22,
+        isAccepted: true,
+        acceptedByEngineerAccountId: 9,
+        deprecated: false,
+        handlingStatus: 'IN_PROGRESS',
+        closureStatus: 'OPEN',
+      });
+      expect(txRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
+      );
+      expect(intakeRepo.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 71 } }),
+      );
+    });
+
+    it('findProcessWriteTargetForUpdate 冲突时失败关闭，异常包装为过程写失败', async () => {
+      const intakeRepo = createIntakeRepo(33);
+      repository.findOne.mockResolvedValueOnce({
+        id: 11,
+        ownerOrganizationId: 7,
+        intakeId: 71,
+        serviceOrganizationId: 22,
+        isAccepted: true,
+        acceptedByEngineerAccountId: 9,
+        deprecated: false,
+        handlingStatus: 'IN_PROGRESS',
+        closureStatus: 'OPEN',
+      });
+      (repository as unknown as { manager: unknown }).manager = {
+        getRepository: () => intakeRepo,
+      };
+
+      await expect(
+        service.findProcessWriteTargetForUpdate(11, asContext(repository)),
+      ).resolves.toMatchObject({
+        serviceOrganizationId: null,
+      });
+
+      const dbError = new Error('lock wait timeout');
+      repository.findOne.mockRejectedValueOnce(dbError);
+      await expect(
+        service.findProcessWriteTargetForUpdate(11, asContext(repository)),
+      ).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.PROCESS_WRITE_FAILED,
+        details: { requestId: 11 },
+      });
+    });
+
+    const createUpdateBuilder = (affected: number) => {
+      const execute = jest.fn().mockResolvedValue({ affected });
+      const chain = {
+        update: jest.fn(),
+        set: jest.fn(),
+        where: jest.fn(),
+        andWhere: jest.fn(),
+        execute,
+      };
+      chain.update.mockReturnValue(chain);
+      chain.set.mockReturnValue(chain);
+      chain.where.mockReturnValue(chain);
+      chain.andWhere.mockReturnValue(chain);
+      return chain;
+    };
+
+    it('closeRequest 条件更新结单事实，处理中结果不写 handlingEndedAt', async () => {
+      const builder = createUpdateBuilder(1);
+      repository.createQueryBuilder.mockReturnValueOnce(builder);
+
+      const closedAt = new Date('2026-11-16T10:00:00.000Z');
+      await expect(
+        service.closeRequest(
+          {
+            requestId: 11,
+            engineerAccountId: 9,
+            handlingResult: RepairRequestHandlingResult.INTERRUPTED,
+            handlingStatus: RepairRequestHandlingStatus.COMPLETED,
+            handlingEndedAt: null,
+            closureReason: '厂方原因中断',
+            closedAt,
+          },
+          asContext(repository),
+        ),
+      ).resolves.toBe(1);
+
+      expect(builder.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'COMPLETED',
+          handlingEndedAt: null,
+          closureStatus: 'CLOSED',
+          closedAt,
+          closureReason: '厂方原因中断',
+        }),
+      );
+      const conditions = builder.andWhere.mock.calls.map((call) => call[0]);
+      expect(conditions).toEqual(
+        expect.arrayContaining([
+          'deprecated = :deprecated',
+          'is_accepted = :isAccepted',
+          'accepted_by_engineer_account_id = :engineerAccountId',
+          '(closure_status IS NULL OR closure_status <> :closed)',
+        ]),
+      );
+    });
+
+    it('closeRequest 条件未命中返回 0，异常包装为结单失败', async () => {
+      repository.createQueryBuilder.mockReturnValueOnce(createUpdateBuilder(0));
+      await expect(
+        service.closeRequest(
+          {
+            requestId: 11,
+            engineerAccountId: 9,
+            handlingResult: RepairRequestHandlingResult.FIXED,
+            handlingStatus: RepairRequestHandlingStatus.COMPLETED,
+            handlingEndedAt: new Date('2026-11-16T10:00:00.000Z'),
+            closureReason: null,
+            closedAt: new Date('2026-11-16T10:00:00.000Z'),
+          },
+          asContext(repository),
+        ),
+      ).resolves.toBe(0);
+
+      repository.createQueryBuilder.mockImplementationOnce(() => {
+        throw new Error('connection lost');
+      });
+      await expect(
+        service.closeRequest(
+          {
+            requestId: 11,
+            engineerAccountId: 9,
+            handlingResult: RepairRequestHandlingResult.FIXED,
+            handlingStatus: RepairRequestHandlingStatus.COMPLETED,
+            handlingEndedAt: new Date('2026-11-16T10:00:00.000Z'),
+            closureReason: null,
+            closedAt: new Date('2026-11-16T10:00:00.000Z'),
+          },
+          asContext(repository),
+        ),
+      ).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.CLOSE_FAILED,
+        details: { requestId: 11 },
+      });
+    });
   });
 
   it('requestNoExists 按计数结果返回是否存在', async () => {

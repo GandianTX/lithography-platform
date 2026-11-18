@@ -672,6 +672,7 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
         fault_description: request.description,
         content_md: request.content,
         owner_organization_id: FIXTURE.orgA.id,
+        intake_id: null,
         is_accepted: 1,
         accepted_by_engineer_account_id: FIXTURE.engineerA,
       });

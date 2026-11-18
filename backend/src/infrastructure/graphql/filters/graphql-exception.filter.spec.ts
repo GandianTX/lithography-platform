@@ -5,6 +5,7 @@ import {
   ORGANIZATION_ERROR,
   REFERENCE_DOCUMENT_ERROR,
   REPAIR_REQUEST_ERROR,
+  STORED_FILE_ERROR,
 } from '@core/common/errors';
 import {
   BadRequestException,
@@ -54,6 +55,8 @@ describe(GqlAllExceptionsFilter.name, () => {
     // 回复：未接单属业务状态冲突 CONFLICT，回复落库失败属系统侧故障
     [REPAIR_REQUEST_ERROR.NOT_ACCEPTED, 'CONFLICT'],
     [REPAIR_REQUEST_ERROR.RESPONSE_FAILED, 'INTERNAL_SERVER_ERROR'],
+    // 编辑补传原件：已有原件时不允许替换/移除，属明确的当前状态冲突
+    [REPAIR_REQUEST_ERROR.PROCESS_ORIGINAL_IMMUTABLE, 'CONFLICT'],
   ])('maps repair request error %s to GraphQL code %s', (errorCode, gqlCode) => {
     const configService = {
       get: jest.fn().mockReturnValue('production'),
@@ -65,6 +68,41 @@ describe(GqlAllExceptionsFilter.name, () => {
     const filter = new GqlAllExceptionsFilter(configService);
 
     const error = filter.catch(new DomainError(errorCode, '维修申请错误'), host) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({
+      code: gqlCode,
+      errorCode,
+    });
+  });
+
+  it.each([
+    // 共用原件绑定经 GraphQL 写入口暴露：不存在/无权 NOT_FOUND；
+    // 状态与占用冲突 CONFLICT（不得落到默认 BAD_USER_INPUT）；输入非法 BAD_USER_INPUT；
+    // 存储、落库、完整性异常属系统侧故障
+    [STORED_FILE_ERROR.INVALID_PARAMS, 'BAD_USER_INPUT'],
+    [STORED_FILE_ERROR.PURPOSE_NOT_SUPPORTED, 'BAD_USER_INPUT'],
+    [STORED_FILE_ERROR.UPLOAD_FILE_MISSING, 'BAD_USER_INPUT'],
+    [STORED_FILE_ERROR.UPLOAD_FILE_TOO_LARGE, 'BAD_USER_INPUT'],
+    [STORED_FILE_ERROR.UPLOAD_FILE_TYPE_NOT_ALLOWED, 'BAD_USER_INPUT'],
+    [STORED_FILE_ERROR.NOT_FOUND, 'NOT_FOUND'],
+    [STORED_FILE_ERROR.NOT_BINDABLE, 'CONFLICT'],
+    [STORED_FILE_ERROR.ALREADY_BOUND, 'CONFLICT'],
+    [STORED_FILE_ERROR.WORK_ORDER_NOT_BINDABLE, 'CONFLICT'],
+    [STORED_FILE_ERROR.UPLOAD_FAILED, 'INTERNAL_SERVER_ERROR'],
+    [STORED_FILE_ERROR.FILE_NOT_AVAILABLE, 'INTERNAL_SERVER_ERROR'],
+    [STORED_FILE_ERROR.INTEGRITY_FAILED, 'INTERNAL_SERVER_ERROR'],
+    [STORED_FILE_ERROR.BIND_FAILED, 'INTERNAL_SERVER_ERROR'],
+  ])('maps stored file error %s to GraphQL code %s', (errorCode, gqlCode) => {
+    const configService = {
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'testField' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    const error = filter.catch(new DomainError(errorCode, '原件错误'), host) as GraphQLError;
 
     expect(error.extensions).toMatchObject({
       code: gqlCode,

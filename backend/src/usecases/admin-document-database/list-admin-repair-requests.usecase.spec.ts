@@ -1,5 +1,6 @@
 // src/usecases/admin-document-database/list-admin-repair-requests.usecase.spec.ts
 
+import { IdentityTypeEnum } from '@app-types/models/account.types';
 import type { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
 import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import type {
@@ -8,6 +9,7 @@ import type {
 } from '@src/modules/lithography/admin-document-database.types';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -58,15 +60,24 @@ describe('ListAdminRepairRequestsUsecase', () => {
   } as unknown as AdminRepairRequestQueryService;
 
   const accountQueryService = {
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
     findAccountIdsByDisplayKeyword: jest
       .fn()
       .mockResolvedValue({ accountIds: [], totalMatched: 0 }),
     findAccountDisplayInfosByAccountIds: jest.fn().mockResolvedValue(new Map()),
   } as unknown as AccountQueryService;
 
+  const trustedOrganizationContext = {
+    resolveForAccount: jest.fn().mockResolvedValue({
+      organizationId: 700001,
+      memberRole: IdentityTypeEnum.SUPER_ADMIN,
+    }),
+  } as unknown as TrustedOrganizationContextQueryService;
+
   const usecase = new ListAdminRepairRequestsUsecase(
     adminRepairRequestQueryService,
     accountQueryService,
+    trustedOrganizationContext,
   );
 
   beforeEach(() => {
@@ -79,6 +90,10 @@ describe('ListAdminRepairRequestsUsecase', () => {
     (accountQueryService.findAccountDisplayInfosByAccountIds as jest.Mock)
       .mockClear()
       .mockResolvedValue(new Map());
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
+    (trustedOrganizationContext.resolveForAccount as jest.Mock)
+      .mockClear()
+      .mockResolvedValue({ organizationId: 700001, memberRole: IdentityTypeEnum.SUPER_ADMIN });
   });
 
   it.each(createUnauthorizedSessions().map(([label, session]) => ({ label, session })))(
@@ -187,5 +202,121 @@ describe('ListAdminRepairRequestsUsecase', () => {
     const call = (adminRepairRequestQueryService.listAll as jest.Mock).mock.calls[0][0];
     expect(call.filter.requestNo).toBeUndefined();
     expect(call.filter.errorCode).toBe('E-001');
+  });
+
+  it('列表透传结单与处理事实：与工程师列表同一工单口径一致，字段缺失不补成未结单', async () => {
+    const closedAt = new Date('2026-09-02T09:00:00.000Z');
+    const baseItem = {
+      customerAccountId: 900001,
+      equipmentModel: { id: 930001, modelCode: 'M', modelName: 'NXT' },
+      errorCode: 'E-001',
+      createdAt: new Date('2026-09-01T08:00:00.000Z'),
+      isAccepted: true,
+      acceptedAt: new Date('2026-09-01T09:00:00.000Z'),
+      acceptedByEngineerAccountId: 900020,
+      latestResolutionStatus: 'PENDING' as const,
+    };
+    (adminRepairRequestQueryService.listAll as jest.Mock).mockResolvedValue({
+      items: [
+        {
+          ...baseItem,
+          id: 880011,
+          requestNo: 'RR-11',
+          closureStatus: 'CLOSED',
+          closedAt,
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+        },
+        {
+          ...baseItem,
+          id: 880012,
+          requestNo: 'RR-12',
+          closureStatus: 'CLOSED',
+          closedAt,
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'UNRESOLVED',
+        },
+        {
+          ...baseItem,
+          id: 880013,
+          requestNo: 'RR-13',
+          closureStatus: 'OPEN',
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: 'IN_PROGRESS',
+        },
+        { ...baseItem, id: 880014, requestNo: 'RR-14' },
+      ],
+      total: 4,
+      page: 1,
+      pageSize: 10,
+    });
+
+    const page = await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+    });
+
+    expect(page.items[0]).toMatchObject({
+      closureStatus: 'CLOSED',
+      closedAt,
+      handlingResult: 'FIXED',
+      handlingStatus: 'COMPLETED',
+    });
+    expect(page.items[1]).toMatchObject({
+      closureStatus: 'CLOSED',
+      handlingResult: 'INTERRUPTED',
+      handlingStatus: 'UNRESOLVED',
+    });
+    expect(page.items[2]).toMatchObject({
+      closureStatus: 'OPEN',
+      closedAt: null,
+      handlingResult: null,
+      handlingStatus: 'IN_PROGRESS',
+    });
+    expect(page.items[3].closureStatus).toBeUndefined();
+    expect(page.items[3].handlingResult).toBeUndefined();
+    expect(page.items[3].handlingStatus).toBeUndefined();
+  });
+
+  it('二级管理员唯一 SUPER_ADMIN 公司：列表与 total 共用同一可信公司，旧会话公司不覆盖', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+    (trustedOrganizationContext.resolveForAccount as jest.Mock).mockResolvedValue({
+      organizationId: 700001,
+      memberRole: IdentityTypeEnum.SUPER_ADMIN,
+    });
+
+    await usecase.execute({
+      session: createSuperAdminSession({ adminLevel: 2, adminOrganizationId: 700099 }),
+      pagination: offsetPagination(),
+    });
+
+    expect(adminRepairRequestQueryService.listAll).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pagination: { page: 1, pageSize: 10, withTotal: true },
+        organizationId: 700001,
+      }),
+    );
+    expect(trustedOrganizationContext.resolveForAccount).toHaveBeenCalledWith({
+      accountId: createSuperAdminSession().accountId,
+    });
+  });
+
+  it('二级管理员只有 ENGINEER 成员关系：失败关闭，列表与 total 均不发起查询', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+    (trustedOrganizationContext.resolveForAccount as jest.Mock).mockResolvedValue({
+      organizationId: 700001,
+      memberRole: IdentityTypeEnum.ENGINEER,
+    });
+
+    const error = (await captureThrownError(
+      usecase.execute({
+        session: createSuperAdminSession({ adminLevel: 2, adminOrganizationId: 700001 }),
+        pagination: offsetPagination(),
+      }),
+    )) as { code?: string };
+
+    expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
+    expect(adminRepairRequestQueryService.listAll).not.toHaveBeenCalled();
   });
 });

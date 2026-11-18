@@ -1,6 +1,8 @@
 // src/usecases/admin-document-database/get-admin-document-database-stats.usecase.spec.ts
 
+import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminAiConversationQueryService } from '@src/modules/lithography/queries/admin-ai-conversation.query.service';
 import type { AdminAiReportQueryService } from '@src/modules/lithography/queries/admin-ai-report.query.service';
 import type { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
@@ -36,6 +38,10 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
         pageSize: 1,
       }),
     }) as unknown as ReferenceDocumentQueryService;
+  const makeAccountQueryService = () =>
+    ({
+      findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
+    }) as unknown as AccountQueryService;
   const makeOrganizationContextService = () =>
     ({
       resolveForAccount: jest.fn().mockResolvedValue({
@@ -44,7 +50,15 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
         organizationCode: 'CLIENT_DEFAULT',
         organizationName: '甲方默认组织',
         organizationKind: 'CLIENT',
-        memberRole: 'ADMIN',
+        memberRole: IdentityTypeEnum.SUPER_ADMIN,
+      }),
+      tryResolveForAccount: jest.fn().mockResolvedValue({
+        membershipId: 950001,
+        organizationId: 910001,
+        organizationCode: 'CLIENT_DEFAULT',
+        organizationName: '甲方默认组织',
+        organizationKind: 'CLIENT',
+        memberRole: IdentityTypeEnum.SUPER_ADMIN,
       }),
     }) as unknown as TrustedOrganizationContextQueryService;
 
@@ -60,6 +74,7 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       report,
       reference,
       organizationContext,
+      makeAccountQueryService(),
     );
 
     const stats = await usecase.execute({ session: createSuperAdminSession() });
@@ -77,10 +92,10 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       pagination: { page: 1, pageSize: 1, withTotal: true },
       organizationId: 910001,
     });
-    expect(organizationContext.resolveForAccount).toHaveBeenCalledWith({
+    expect(organizationContext.tryResolveForAccount).toHaveBeenCalledWith({
       accountId: createSuperAdminSession().accountId,
     });
-    expect(repair.countAll).toHaveBeenCalledWith();
+    expect(repair.countAll).toHaveBeenCalledWith(null);
     expect(conversation.countAll).toHaveBeenCalledWith();
     expect(report.countAll).toHaveBeenCalledWith();
   });
@@ -99,6 +114,7 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
         report,
         reference,
         organizationContext,
+        makeAccountQueryService(),
       );
 
       const error = (await captureThrownError(usecase.execute({ session }))) as { code?: string };
@@ -111,6 +127,45 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       expect(reference.listDocuments).not.toHaveBeenCalled();
       // 组织解析也不应触发：授权拒绝先于组织解析
       expect(organizationContext.resolveForAccount).not.toHaveBeenCalled();
+      expect(organizationContext.tryResolveForAccount).not.toHaveBeenCalled();
     },
   );
+
+  it('二级管理员只有 ENGINEER 成员关系：维修申请 total 失败关闭且不发起任何统计查询', async () => {
+    const repair = makeRepairQueryService();
+    const conversation = makeConversationQueryService();
+    const report = makeReportQueryService();
+    const reference = makeReferenceQueryService();
+    const organizationContext = {
+      resolveForAccount: jest.fn().mockResolvedValue({
+        organizationId: 910001,
+        memberRole: IdentityTypeEnum.ENGINEER,
+      }),
+      tryResolveForAccount: jest.fn(),
+    } as unknown as TrustedOrganizationContextQueryService;
+    const accountQueryService = {
+      findAdminLevelByAccountId: jest.fn().mockResolvedValue(2),
+    } as unknown as AccountQueryService;
+    const usecase = new GetAdminDocumentDatabaseStatsUsecase(
+      repair,
+      conversation,
+      report,
+      reference,
+      organizationContext,
+      accountQueryService,
+    );
+
+    const error = (await captureThrownError(
+      usecase.execute({
+        session: createSuperAdminSession({ adminLevel: 2, adminOrganizationId: 910001 }),
+      }),
+    )) as { code?: string };
+
+    expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
+    expect(repair.countAll).not.toHaveBeenCalled();
+    expect(conversation.countAll).not.toHaveBeenCalled();
+    expect(report.countAll).not.toHaveBeenCalled();
+    expect(reference.listDocuments).not.toHaveBeenCalled();
+    expect(organizationContext.tryResolveForAccount).not.toHaveBeenCalled();
+  });
 });

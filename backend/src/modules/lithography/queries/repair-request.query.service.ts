@@ -4,12 +4,18 @@ import { UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { hasRole } from '@core/account/policy/role-access.policy';
 import { DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error';
+import {
+  parseRepairRequestHandlingResult,
+  parseRepairRequestHandlingStatus,
+} from '@core/repair-request/policy/repair-request-handling.policy';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, IsNull, Not, Repository } from 'typeorm';
+import { FindOptionsWhere, In, Repository } from 'typeorm';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
+import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
 import {
   EngineerResponseQueryResult,
   EquipmentModelView,
@@ -57,6 +63,9 @@ export class RepairRequestQueryService {
     private readonly responseRepository: Repository<EngineerResponseEntity>,
     @InjectRepository(EquipmentModelEntity)
     private readonly equipmentModelRepository: Repository<EquipmentModelEntity>,
+    @InjectRepository(RepairRequestIntakeEntity)
+    private readonly intakeRepository: Repository<RepairRequestIntakeEntity>,
+    private readonly repairProcessEntryQueryService: RepairProcessEntryQueryService,
   ) {}
 
   /**
@@ -72,11 +81,13 @@ export class RepairRequestQueryService {
 
   /**
    * 工程师维度列表（四态，数据库侧完成全部筛选后再分页计数）：
-   * - ALL：本组织全部未删除申请；
-   * - AVAILABLE：本组织未删除且未接单（待接单池）；
-   * - MINE：本人已接单（含无归属存量，归属缺失不放大可见范围）；
-   * - TAKEN_BY_OTHER：本组织内其他账号已接单。
-   * 无组织上下文的账号在非 MINE 视角直接得到空页，不把归属缺失当作全库可见。
+   * - ALL：本人可信服务公司的全部未删除申请；
+   * - AVAILABLE：可信服务公司内未删除且未接单（待接单池）；
+   * - MINE：可信服务公司内本人已接单；
+   * - TAKEN_BY_OTHER：可信服务公司内其他账号已接单。
+   * 可信服务公司 = 工单服务公司列 与 原始报修 intake 服务公司 一致时的该值；
+   * intake 缺失、服务公司缺失或两处冲突的工单不会进入工程师任何视角，
+   * 也不按旧 owner、客户公司、客户端组织或历史接单人兜底。
    * 客户昵称筛选已由 usecase 解析为客户账号 ID 集合，在本方法内以 IN 条件
    * 参与分页与 total 计算；列表项为富集前装配结果（含归属类账号 ID，不对外输出）。
    */
@@ -85,45 +96,14 @@ export class RepairRequestQueryService {
     scope: RepairRequestEngineerListScope;
     filter: RepairRequestEngineerListFilterInternal;
     pagination: RepairRequestListPagination;
-    /** 可信组织上下文；为空表示无组织归属（仅可见无归属存量工单） */
+    /** 可信组织上下文；为空表示无组织归属（无任何可见工单） */
     viewerOrganizationId?: number | null;
   }): Promise<RepairRequestEngineerListQueryPage> {
-    const where: FindOptionsWhere<RepairRequestEntity> = { deprecated: false };
-    switch (params.scope) {
-      case 'AVAILABLE':
-        where.isAccepted = false;
-        break;
-      case 'MINE':
-        where.acceptedByEngineerAccountId = params.engineerAccountId;
-        break;
-      case 'TAKEN_BY_OTHER':
-        // 不变式：isAccepted=true ⇒ 接单账号非空（写契约保证），Not 等值安全
-        where.isAccepted = true;
-        where.acceptedByEngineerAccountId = Not(params.engineerAccountId);
-        break;
-      default:
-        break;
-    }
-    if (params.filter.equipmentModelId !== undefined) {
-      where.equipmentModelId = params.filter.equipmentModelId;
-    }
-    if (params.filter.customerAccountIds) {
-      where.customerAccountId = In(params.filter.customerAccountIds);
-    }
-    // 组织范围：已归属工单仅本组织可见；无归属存量工单不向全体工程师开放，
-    // 仅在 MINE（本人已接单）视角保留，避免用放宽权限掩盖归属缺失
     const viewerOrganizationId = params.viewerOrganizationId ?? null;
-    const scopeVariants: FindOptionsWhere<RepairRequestEntity>[] = [];
-    if (viewerOrganizationId !== null) {
-      scopeVariants.push({ ...where, ownerOrganizationId: viewerOrganizationId });
-    }
-    if (params.scope === 'MINE') {
-      scopeVariants.push({ ...where, ownerOrganizationId: IsNull() });
-    }
-    if (scopeVariants.length === 0) {
-      // 无组织上下文且非 MINE：无任何可见组织事实，直接空页（不查库、不放宽）
-      const page = Math.max(params.pagination.page, 1);
-      const pageSize = Math.max(params.pagination.pageSize, 1);
+    const page = Math.max(params.pagination.page, 1);
+    const pageSize = Math.max(params.pagination.pageSize, 1);
+    if (viewerOrganizationId === null) {
+      // 无可信组织上下文：无任何可见组织事实，直接空页（不查库、不放宽）
       return {
         items: [],
         total: params.pagination.withTotal ? 0 : undefined,
@@ -131,19 +111,84 @@ export class RepairRequestQueryService {
         pageSize,
       };
     }
-    return this.listPage(scopeVariants, params.pagination, (entities) =>
-      this.toEngineerListItemQueryResults(entities),
-    );
+    if (params.filter.customerAccountIds && params.filter.customerAccountIds.length === 0) {
+      return {
+        items: [],
+        total: params.pagination.withTotal ? 0 : undefined,
+        page,
+        pageSize,
+      };
+    }
+
+    // 内连接 intake 并强制两处服务公司一致：冲突或缺失的工单天然被排除
+    const query = this.requestRepository
+      .createQueryBuilder('request')
+      .innerJoin(
+        RepairRequestIntakeEntity,
+        'intake',
+        'intake.id = request.intakeId AND intake.serviceOrganizationId = request.serviceOrganizationId',
+      )
+      .where('request.deprecated = :deprecated', { deprecated: false })
+      .andWhere('request.serviceOrganizationId = :viewerOrganizationId', { viewerOrganizationId });
+
+    switch (params.scope) {
+      case 'AVAILABLE':
+        query.andWhere('request.isAccepted = :isAccepted', { isAccepted: false });
+        break;
+      case 'MINE':
+        query.andWhere('request.acceptedByEngineerAccountId = :engineerAccountId', {
+          engineerAccountId: params.engineerAccountId,
+        });
+        break;
+      case 'TAKEN_BY_OTHER':
+        // 不变式：isAccepted=true ⇒ 接单账号非空（写契约保证）
+        query
+          .andWhere('request.isAccepted = :isAccepted', { isAccepted: true })
+          .andWhere('request.acceptedByEngineerAccountId <> :engineerAccountId', {
+            engineerAccountId: params.engineerAccountId,
+          });
+        break;
+      default:
+        break;
+    }
+    if (params.filter.equipmentModelId !== undefined) {
+      query.andWhere('request.equipmentModelId = :equipmentModelId', {
+        equipmentModelId: params.filter.equipmentModelId,
+      });
+    }
+    if (params.filter.customerAccountIds) {
+      query.andWhere('request.customerAccountId IN (:...customerAccountIds)', {
+        customerAccountIds: params.filter.customerAccountIds,
+      });
+    }
+
+    query
+      .orderBy('request.createdAt', 'DESC')
+      .addOrderBy('request.id', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    const totalPromise = params.pagination.withTotal
+      ? query.clone().getCount()
+      : Promise.resolve(undefined);
+    const entities = await query.getMany();
+    const total = await totalPromise;
+    return {
+      items: await this.toEngineerListItemQueryResults(entities),
+      total,
+      page,
+      pageSize,
+    };
   }
 
   /**
    * 详情读取（客户 / 工程师入口共用），细粒度读权限在本方法内按 scope 判定。
    *
-   * 权限口径（对接方案第三节 + 负责人 20260901 裁定 2）：
+   * 权限口径：
    * - scope=CUSTOMER：仅本人申请；已删除视为不可访问
-   * - scope=ENGINEER：本组织未删除申请可读；无归属存量仅接单工程师本人可读
-   *   （AVAILABLE / MINE / TAKEN_BY_OTHER 视角由 usecase 计算；未接单的
-   *   无归属存量不因组织列缺失而开放），写权限仍由各写用例独立失败关闭
+   * - scope=ENGINEER：仅「工单服务公司 = 原始报修 intake 服务公司」且等于查看者
+   *   可信组织的未删除申请可读；intake 缺失、服务公司缺失或两处冲突一律拒绝，
+   *   不按旧 owner、客户公司、客户端组织或历史接单人兜底
    * - SUPER_ADMIN 按角色继承规则展开为 ENGINEER + CUSTOMER（roleHierarchy）
    *
    * 不存在、已删除与越权统一拒绝，不区分对外表述，防止资源存在性探测。
@@ -158,15 +203,24 @@ export class RepairRequestQueryService {
     viewerOrganizationId?: number | null;
   }): Promise<RepairRequestDetailQueryResult> {
     const entity = await this.requestRepository.findOne({ where: { id: params.requestId } });
-    if (
-      !entity ||
-      !this.canReadRequest(entity, params.session, params.scope) ||
-      (params.scope === 'ENGINEER' && !this.isEngineerScopeVisible(entity, params))
-    ) {
+    if (!entity || !this.canReadRequest(entity, params.session, params.scope)) {
       // details 仅含申请标识，不泄露归属与存在性
       throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '维修申请不存在或不可查看', {
         id: params.requestId,
       });
+    }
+    if (params.scope === 'ENGINEER') {
+      // 可信服务公司 = 工单服务公司 与 原始报修 intake 服务公司 一致时的该值；
+      // 缺失或冲突时直接拒绝，不回退旧 owner、客户公司、客户端组织或历史接单人
+      const trustedServiceOrganizationId = await this.resolveTrustedServiceOrganizationId(entity);
+      if (
+        trustedServiceOrganizationId === null ||
+        trustedServiceOrganizationId !== (params.viewerOrganizationId ?? null)
+      ) {
+        throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '维修申请不存在或不可查看', {
+          id: params.requestId,
+        });
+      }
     }
 
     const [model, responses] = await Promise.all([
@@ -176,6 +230,13 @@ export class RepairRequestQueryService {
         order: { createdAt: 'ASC', id: 'ASC' },
       }),
     ]);
+    // 内部维修过程仅对接单工程师本人开放；客户入口及其他工程师恒为空数组
+    const processEntries =
+      params.scope === 'ENGINEER' &&
+      entity.acceptedByEngineerAccountId !== null &&
+      entity.acceptedByEngineerAccountId === params.session.accountId
+        ? await this.repairProcessEntryQueryService.listByRequest(entity.id)
+        : [];
 
     return {
       id: entity.id,
@@ -190,6 +251,12 @@ export class RepairRequestQueryService {
       latestResolutionStatus:
         responses.length > 0 ? responses[responses.length - 1].resolutionStatus : null,
       responses: responses.map((response) => this.toResponseQueryResult(response)),
+      closureStatus: entity.closureStatus,
+      closedAt: entity.closedAt,
+      closureReason: entity.closureReason,
+      handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
+      handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
+      processEntries,
       // 内部富集输入：仅供 usecase 关联客户/接单工程师安全展示资料，不进入对外视图
       customerAccountId: entity.customerAccountId,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
@@ -220,21 +287,23 @@ export class RepairRequestQueryService {
   }
 
   /**
-   * 工程师入口的组织范围判定（与列表口径一致）：
-   * - 有归属工单：仅同组织可见；
-   * - 无归属存量工单：仅接单工程师本人可见，不因组织列缺失而向全体工程师放开。
+   * 工程师入口的组织范围判定：
+   * 只认「工单服务公司 = 原始报修 intake 服务公司」且等于查看者可信组织；
+   * intake 缺失、服务公司缺失或两处冲突一律不可见（失败关闭）。
    */
-  private isEngineerScopeVisible(
+  private async resolveTrustedServiceOrganizationId(
     entity: RepairRequestEntity,
-    params: { session: UsecaseSession; viewerOrganizationId?: number | null },
-  ): boolean {
-    if (entity.ownerOrganizationId !== null) {
-      return entity.ownerOrganizationId === (params.viewerOrganizationId ?? null);
+  ): Promise<number | null> {
+    if (entity.intakeId === null || entity.serviceOrganizationId === null) {
+      return null;
     }
-    return (
-      entity.acceptedByEngineerAccountId !== null &&
-      entity.acceptedByEngineerAccountId === params.session.accountId
-    );
+    const intake = await this.intakeRepository.findOne({
+      where: { id: entity.intakeId },
+      select: { id: true, serviceOrganizationId: true },
+    });
+    return intake !== null && intake.serviceOrganizationId === entity.serviceOrganizationId
+      ? entity.serviceOrganizationId
+      : null;
   }
 
   private async listPage<T>(
@@ -326,6 +395,10 @@ export class RepairRequestQueryService {
       ...this.toListItemView(entity, context),
       customerAccountId: entity.customerAccountId,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
+      closureStatus: entity.closureStatus,
+      closedAt: entity.closedAt,
+      handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
+      handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
     }));
   }
 

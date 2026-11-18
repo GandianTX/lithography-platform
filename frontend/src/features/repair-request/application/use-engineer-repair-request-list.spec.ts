@@ -60,6 +60,10 @@ function buildItem(
     customerCompanyName: null,
     acceptanceViewStatus: 'AVAILABLE',
     acceptedEngineerNickname: null,
+    closureStatus: null,
+    closedAt: null,
+    handlingResult: null,
+    handlingStatus: null,
     ...overrides,
   };
 }

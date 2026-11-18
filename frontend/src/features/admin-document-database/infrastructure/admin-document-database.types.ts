@@ -34,9 +34,62 @@ export type AdminRepairRequestListItem = {
   acceptedAt: string | null;
   acceptedByEngineerNickname: string | null;
   latestResolutionStatus: 'PENDING' | 'RESOLVED' | null;
+  /** 工单真实进度：结单事实与处理结果（旧数据可为 null） */
+  closureStatus: string | null;
+  closedAt: string | null;
+  handlingResult: AdminRepairHandlingResult | null;
+  handlingStatus: AdminRepairHandlingStatus | null;
   createdAt: string;
 };
 
+export type AdminRepairProcessEntryFile = {
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+};
+
+export type AdminRepairProcessEntry = {
+  id: string;
+  entryUuid: string;
+  requestId: number;
+  operationText: string;
+  testResult: string | null;
+  occurredAt: string | null;
+  timeSource: 'SERVER' | 'MANUAL';
+  fileId: string | null;
+  file: AdminRepairProcessEntryFile | null;
+  versionNo: number;
+  createdAt: string;
+};
+
+export type AdminRepairResponse = {
+  id: number;
+  responseText: string;
+  resolutionStatus: 'PENDING' | 'RESOLVED';
+  engineerNickname: string;
+  createdAt: string;
+};
+
+export type AdminRepairRevision = {
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: string;
+};
+
+export type AdminRepairHandlingResult =
+  | 'FIXED'
+  | 'PART_PURCHASED'
+  | 'PROVIDE_PLAN_SELF_EXECUTE'
+  | 'INTERRUPTED'
+  | 'UNREPAIRABLE';
+
+export type AdminRepairHandlingStatus = 'COMPLETED' | 'IN_PROGRESS' | 'UNRESOLVED';
+
+/** 管理员工单只读详情：仅已提交事实（不包含未提交草稿与私有 AI 内容） */
 export type AdminRepairRequestSummary = {
   id: number;
   requestNo: string;
@@ -53,6 +106,39 @@ export type AdminRepairRequestSummary = {
   acceptedByEngineerNickname: string | null;
   latestResolutionStatus: 'PENDING' | 'RESOLVED' | null;
   createdAt: string;
+  closureStatus: string | null;
+  closedAt: string | null;
+  closureReason: string | null;
+  handlingResult: AdminRepairHandlingResult | null;
+  handlingStatus: AdminRepairHandlingStatus | null;
+  currentRevisionNo: number;
+  processEntries: AdminRepairProcessEntry[];
+  responses: AdminRepairResponse[];
+  revisions: AdminRepairRevision[];
+};
+
+// ---- 管理员修订 ----
+
+export type AdminRepairProcessRevisionInput = {
+  entryId: string;
+  expectedVersion: number;
+  operationText: string;
+  testResult?: string | null;
+};
+
+export type AdminRepairRevisionInput = {
+  requestId: number;
+  expectedVersion: number;
+  reason: string;
+  contentMd?: string | null;
+  handlingResult?: AdminRepairHandlingResult | null;
+  closureReason?: string | null;
+  processEntries?: AdminRepairProcessRevisionInput[];
+};
+
+export type AdminRepairRevisionResult = AdminRepairRevision & {
+  requestId: number;
+  currentRevisionNo: number;
 };
 
 // ---- AI 会话与消息 ----

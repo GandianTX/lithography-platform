@@ -9,13 +9,15 @@
  *   读权限继承不等于写权限，仅精确 ENGINEER 展示接单与回复提交入口；
  * - key 随路由参数强制隔离：参数直接变化时重建面板实例，
  *   上一申请的接单反馈/流程状态不带到下一申请；
+ * - scopeKey 取「账号 + 会话代次」的窄身份：同一工单的结单本地只读事实
+ *   只在该身份/会话内复用，换账号或同账号新会话不会继承旧会话事实；
  * - 详情展示、接单流程与反馈全部来自 feature 公开 barrel；
  * - 路由由 app/router 注册并复用 protectedRouteLoader。
  */
 
 import { useParams } from 'react-router';
 
-import { useAuthSession } from '@/features/auth-session';
+import { sampleCurrentAuthSessionIdentity, useAuthSession } from '@/features/auth-session';
 import { EngineerRepairRequestDetailPanel } from '@/features/repair-request';
 
 import { PageHeader } from '@/shared/ui/page-header';
@@ -33,6 +35,11 @@ export function EngineerRepairRequestDetailPage() {
   const { requestId } = useParams<{ requestId: string }>();
   const { session, status } = useAuthSession();
   const parsedRequestId = parseRequestId(requestId);
+  // 请求外的窄身份（不含凭据）：账号 + 会话代次，随 auth-session 生命周期变化。
+  const sessionIdentity = sampleCurrentAuthSessionIdentity();
+  const sessionScopeKey = sessionIdentity
+    ? `${sessionIdentity.accountId}:${sessionIdentity.epoch}`
+    : 'anonymous';
 
   // session.role 是后端登录角色决策产出的单值业务角色；
   // SUPER_ADMIN 继承的是读权限，不展示接单/回复提交入口（后端守卫 + usecase 双重拦截仍在）。
@@ -48,8 +55,9 @@ export function EngineerRepairRequestDetailPage() {
       />
       <EngineerRepairRequestDetailPanel
         canHandleAsEngineer={canHandleAsEngineer}
-        key={parsedRequestId === null ? 'invalid' : parsedRequestId}
+        key={parsedRequestId === null ? 'invalid' : `${sessionScopeKey}:${parsedRequestId}`}
         requestId={parsedRequestId}
+        scopeKey={sessionScopeKey}
       />
     </div>
   );

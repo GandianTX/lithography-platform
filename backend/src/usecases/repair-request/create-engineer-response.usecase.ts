@@ -3,6 +3,7 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { EngineerResolutionStatus } from '@app-types/models/repair-request.types';
 import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
+import { isRepairRequestEnded } from '@core/repair-request/policy/repair-process-write.policy';
 import {
   normalizeEnumValue,
   normalizeRequiredText,
@@ -11,6 +12,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EngineerResponseService } from '@src/modules/lithography/engineer-response.service';
 import type { EngineerResponseWriteSnapshot } from '@src/modules/lithography/lithography.types';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -55,6 +57,7 @@ export class CreateEngineerResponseUsecase {
     private readonly repairRequestService: RepairRequestService,
     private readonly engineerResponseService: EngineerResponseService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -111,30 +114,47 @@ export class CreateEngineerResponseUsecase {
     resolutionStatus: EngineerResolutionStatus,
     transactionContext: PersistenceTransactionContext,
   ): Promise<EngineerResponseWriteSnapshot> {
-    // 1. 锁定并读取回复目标最小快照（同一事务内后续写入受同一行锁保护）
+    // 1. 组织范围：只认工单与报修 intake 一致的可信服务公司，且必须与工程师可信组织一致。
+    //    intake 缺失、服务公司缺失或两处冲突一律不可访问，不按旧 owner/客户公司/接单人兜底。
+    const organizationFact = await this.trustedOrganizationContext.resolveForAccount({
+      accountId: command.session.accountId,
+      transactionContext,
+    });
+    // 2. 锁定并读取回复目标最小快照（同一事务内后续写入受同一行锁保护）
     const target = await this.repairRequestService.findResponseTargetForUpdate(
       command.requestId,
       transactionContext,
     );
-    // 2. 不存在或已删除：统一不可访问结果
-    if (!target || target.deprecated) {
+    // 3. 不存在、已删除或不在本人可信服务范围内：统一不可访问结果
+    if (
+      !target ||
+      target.deprecated ||
+      target.serviceOrganizationId === null ||
+      target.serviceOrganizationId !== organizationFact.organizationId
+    ) {
       throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在或不可访问', {
         requestId: command.requestId,
       });
     }
-    // 3. 未接单：业务状态冲突，提示先接单后回复
+    // 4. 未接单：业务状态冲突，提示先接单后回复
     if (!target.isAccepted) {
       throw new DomainError(REPAIR_REQUEST_ERROR.NOT_ACCEPTED, '维修申请尚未接单，请先接单后回复', {
         requestId: command.requestId,
       });
     }
-    // 4. 接单工程师不是当前账号：统一不可访问结果，不泄露他人接单状态
+    // 5. 接单工程师不是当前账号：统一不可访问结果，不泄露他人接单状态
     if (target.acceptedByEngineerAccountId !== command.session.accountId) {
       throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在或不可访问', {
         requestId: command.requestId,
       });
     }
-    // 5. 归属派生并追加回复：engineerAccountId 仅取自可信 Session，
+    // 6. 工单已结单/处理已终结：回复只读（结单与回复独立，但结单后两者均只读）
+    if (isRepairRequestEnded(target)) {
+      throw new DomainError(REPAIR_REQUEST_ERROR.CLOSED_STATE_CONFLICT, '工单已结单，回复只读', {
+        requestId: command.requestId,
+      });
+    }
+    // 6. 归属派生并追加回复：engineerAccountId 仅取自可信 Session，
     // customerAccountId 仅取自申请快照；返回事务内写入快照
     return this.engineerResponseService.insertResponse(
       {

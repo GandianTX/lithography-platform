@@ -397,6 +397,26 @@ describe('StoredFileQueryService 读授权', () => {
       ).resolves.toMatchObject({ fileId: fileRow().fileId });
     });
 
+    it('方案 B：intake 已软删除但三方公司一致，二级管理员仍可读取原件', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(entry);
+      repositories.request.findOne.mockResolvedValueOnce(
+        request({ serviceOrganizationId: 700002, ownerOrganizationId: 700002 }),
+      );
+      repositories.intake.findOne.mockResolvedValueOnce({
+        id: 7001,
+        serviceOrganizationId: 700002,
+        deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+      });
+
+      await expect(
+        service.findAuthorizedMetadata(
+          adminQuery({ viewerOrganizationId: 700002, adminOrganizationId: 700002 }),
+        ),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+    });
+
     it('二级管理员跨公司读取拒绝（即使存在真实过程关联）', async () => {
       const { service, repositories } = makeService();
       repositories.storedFile.findOne.mockResolvedValue(boundFile());

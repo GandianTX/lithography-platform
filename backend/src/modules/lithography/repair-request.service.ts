@@ -1,6 +1,10 @@
 // src/modules/lithography/repair-request.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import type {
+  RepairRequestHandlingResult,
+  RepairRequestHandlingStatus,
+} from '@app-types/models/repair-request.types';
 import {
   DomainError,
   REPAIR_REQUEST_ERROR,
@@ -15,6 +19,7 @@ import { RepairRequestIntakeEntity } from './entities/repair-request-intake.enti
 import {
   EngineerResponseTargetSnapshot,
   RepairProcessBindingTargetSnapshot,
+  RepairRequestAcceptTargetSnapshot,
   RepairRequestAcceptanceStatusSnapshot,
   RepairRequestAcceptData,
   RepairRequestAcceptWriteResult,
@@ -183,20 +188,50 @@ export class RepairRequestService {
   }
 
   /**
-   * 读取工单组织归属（接单/回复/处理结果的组织范围门禁）。
-   * @returns undefined 表示工单不存在
+   * 接单目标锁读（pessimistic_write，必须与接单条件更新同事务）：
+   * 返工单状态事实与可信服务公司；是否可接单由 usecase 裁决。
+   *
+   * 可信服务公司只认「报修原始输入 intake 的服务公司」，且要求与工单反规范化列一致；
+   * 任一缺失或两处冲突返回 null，调用方必须失败关闭，不得回退旧 owner、客户公司或接单人。
    */
-  async findOwnerOrganizationId(
+  async findAcceptTargetForUpdate(
     requestId: number,
-    transactionContext?: PersistenceTransactionContext,
-  ): Promise<number | null | undefined> {
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairRequestAcceptTargetSnapshot | null> {
     const repository = this.getRepository(transactionContext);
-    const entity = await repository.findOne({
-      where: { id: requestId },
-      select: { id: true, ownerOrganizationId: true, deprecated: true },
-    });
-    if (!entity) return undefined;
-    return entity.ownerOrganizationId ?? null;
+    try {
+      const entity = await repository.findOne({
+        where: { id: requestId },
+        select: {
+          id: true,
+          intakeId: true,
+          serviceOrganizationId: true,
+          isAccepted: true,
+          deprecated: true,
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!entity) {
+        return null;
+      }
+      return {
+        id: entity.id,
+        isAccepted: entity.isAccepted,
+        deprecated: entity.deprecated,
+        serviceOrganizationId: await this.resolveTrustedServiceOrganizationId(
+          entity.intakeId,
+          entity.serviceOrganizationId,
+          repository,
+        ),
+      };
+    } catch (error) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.ACCEPT_FAILED,
+        '维修申请接单失败，请稍后重试',
+        { requestId },
+        error,
+      );
+    }
   }
 
   /**
@@ -351,9 +386,13 @@ export class RepairRequestService {
         select: {
           id: true,
           customerAccountId: true,
+          intakeId: true,
+          serviceOrganizationId: true,
           isAccepted: true,
           acceptedByEngineerAccountId: true,
           deprecated: true,
+          handlingStatus: true,
+          closureStatus: true,
         },
         lock: { mode: 'pessimistic_write' },
       });
@@ -366,6 +405,13 @@ export class RepairRequestService {
         isAccepted: entity.isAccepted,
         acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
         deprecated: entity.deprecated,
+        handlingStatus: entity.handlingStatus,
+        closureStatus: entity.closureStatus,
+        serviceOrganizationId: await this.resolveTrustedServiceOrganizationId(
+          entity.intakeId,
+          entity.serviceOrganizationId,
+          repository,
+        ),
       };
     } catch (error) {
       throw new DomainError(
@@ -407,23 +453,15 @@ export class RepairRequestService {
       if (!entity) {
         return null;
       }
-      const intakeServiceOrganizationId =
-        entity.intakeId === null
-          ? null
-          : ((
-              await repository.manager.getRepository(RepairRequestIntakeEntity).findOne({
-                where: { id: entity.intakeId },
-                select: { id: true, serviceOrganizationId: true },
-              })
-            )?.serviceOrganizationId ?? null);
       return {
         id: entity.id,
         ownerOrganizationId: entity.ownerOrganizationId,
         intakeId: entity.intakeId,
-        serviceOrganizationId:
-          intakeServiceOrganizationId === entity.serviceOrganizationId
-            ? intakeServiceOrganizationId
-            : null,
+        serviceOrganizationId: await this.resolveTrustedServiceOrganizationId(
+          entity.intakeId,
+          entity.serviceOrganizationId,
+          repository,
+        ),
         isAccepted: entity.isAccepted,
         acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
         deprecated: entity.deprecated,
@@ -438,6 +476,137 @@ export class RepairRequestService {
         error,
       );
     }
+  }
+
+  /**
+   * 内部维修过程写目标锁读（pessimistic_write，与过程写入同事务）：
+   * 与原件绑定共享同一行的加锁顺序（原件 → 工单），错误码归入内部过程写路径。
+   */
+  async findProcessWriteTargetForUpdate(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairProcessBindingTargetSnapshot | null> {
+    const repository = this.getRepository(transactionContext);
+    try {
+      const entity = await repository.findOne({
+        where: { id: requestId },
+        select: {
+          id: true,
+          ownerOrganizationId: true,
+          intakeId: true,
+          serviceOrganizationId: true,
+          isAccepted: true,
+          acceptedByEngineerAccountId: true,
+          deprecated: true,
+          handlingStatus: true,
+          closureStatus: true,
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!entity) {
+        return null;
+      }
+      return {
+        id: entity.id,
+        ownerOrganizationId: entity.ownerOrganizationId,
+        intakeId: entity.intakeId,
+        serviceOrganizationId: await this.resolveTrustedServiceOrganizationId(
+          entity.intakeId,
+          entity.serviceOrganizationId,
+          repository,
+        ),
+        isAccepted: entity.isAccepted,
+        acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
+        deprecated: entity.deprecated,
+        handlingStatus: entity.handlingStatus,
+        closureStatus: entity.closureStatus,
+      };
+    } catch (error) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.PROCESS_WRITE_FAILED,
+        '内部维修过程保存失败，请稍后重试',
+        { requestId },
+        error,
+      );
+    }
+  }
+
+  /**
+   * 结单：在工单行锁保护下写入结果、时间与原因，并置 closure_status = CLOSED。
+   * 处理中结果（INTERRUPTED）不写 handling_ended_at，满足实体时间一致性约束。
+   * 只返回命中行数，业务裁决归 usecase。
+   */
+  async closeRequest(
+    data: {
+      requestId: number;
+      engineerAccountId: number;
+      handlingResult: RepairRequestHandlingResult;
+      handlingStatus: RepairRequestHandlingStatus;
+      handlingEndedAt: Date | null;
+      closureReason: string | null;
+      closedAt: Date;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<number> {
+    const repository = this.getRepository(transactionContext);
+    try {
+      const result = await repository
+        .createQueryBuilder()
+        .update(RepairRequestEntity)
+        .set({
+          handlingResult: data.handlingResult,
+          handlingStatus: data.handlingStatus,
+          handlingRecordedAt: data.closedAt,
+          handlingRecordedByAccountId: data.engineerAccountId,
+          handlingEndedAt: data.handlingEndedAt,
+          closureStatus: 'CLOSED',
+          closedAt: data.closedAt,
+          closureReason: data.closureReason,
+        })
+        .where('id = :requestId', { requestId: data.requestId })
+        .andWhere('deprecated = :deprecated', { deprecated: false })
+        .andWhere('is_accepted = :isAccepted', { isAccepted: true })
+        .andWhere('accepted_by_engineer_account_id = :engineerAccountId', {
+          engineerAccountId: data.engineerAccountId,
+        })
+        .andWhere('(closure_status IS NULL OR closure_status <> :closed)', { closed: 'CLOSED' })
+        .andWhere('(handling_status IS NULL OR handling_status NOT IN (:...terminalStatuses))', {
+          terminalStatuses: ['COMPLETED', 'UNRESOLVED'],
+        })
+        .execute();
+      return result.affected ?? 0;
+    } catch (error) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.CLOSE_FAILED,
+        '工单结单失败，请稍后重试',
+        { requestId: data.requestId },
+        error,
+      );
+    }
+  }
+
+  /**
+   * 统一解析可信服务公司（所有工程师读写入口共用）：
+   * - intakeId 或工单服务公司任一缺失 → null；
+   * - intake 不存在或两处服务公司不一致 → null；
+   * - 仅两者一致时返回该服务公司。
+   * 返回 null 的调用方必须失败关闭，不得回退旧 owner、客户公司、客户端组织或历史接单人。
+   */
+  private async resolveTrustedServiceOrganizationId(
+    intakeId: number | null,
+    serviceOrganizationId: number | null,
+    repository: Repository<RepairRequestEntity>,
+  ): Promise<number | null> {
+    if (intakeId === null || serviceOrganizationId === null) {
+      return null;
+    }
+    const intake = await repository.manager.getRepository(RepairRequestIntakeEntity).findOne({
+      where: { id: intakeId },
+      select: { id: true, serviceOrganizationId: true },
+    });
+    return intake !== null && intake.serviceOrganizationId === serviceOrganizationId
+      ? serviceOrganizationId
+      : null;
   }
 
   private toSnapshot(entity: RepairRequestEntity): RepairRequestSnapshot {

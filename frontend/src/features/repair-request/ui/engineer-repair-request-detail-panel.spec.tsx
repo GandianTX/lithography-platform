@@ -53,6 +53,12 @@ const READY_DETAIL: EngineerRepairRequestDetail = {
   customerCompanyName: '林氏精密制造',
   acceptanceViewStatus: 'AVAILABLE',
   acceptedEngineerNickname: null,
+  closureStatus: 'OPEN',
+  closedAt: null,
+  closureReason: null,
+  handlingResult: null,
+  handlingStatus: null,
+  processEntries: [],
   responses: [],
 };
 
@@ -337,7 +343,7 @@ describe('工程师详情面板的回复区域', () => {
   }
 
   async function selectResolved() {
-    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.mouseDown(screen.getByLabelText('处理状态'));
     fireEvent.click(await screen.findByText('已解决'));
   }
 
@@ -404,7 +410,7 @@ describe('工程师详情面板的回复区域', () => {
     const { createMock } = renderPanel(true);
 
     expect(isControlDisabled(screen.getByLabelText('回复正文'))).toBe(true);
-    expect(isControlDisabled(screen.getByRole('combobox'))).toBe(true);
+    expect(isControlDisabled(screen.getByLabelText('处理状态'))).toBe(true);
     // antd 的 loading 按钮不加 disabled 属性（仅 loading 样式 + 内部拦截点击），
     // 因此断言 loading 态并验证点击不会产生提交
     const submitButton = screen.getByRole('button', { name: /提交回复/ });
@@ -523,7 +529,7 @@ describe('工程师详情面板的回复区域', () => {
     renderPanel(true);
 
     expect(isControlDisabled(screen.getByLabelText('回复正文'))).toBe(true);
-    expect(isControlDisabled(screen.getByRole('combobox'))).toBe(true);
+    expect(isControlDisabled(screen.getByLabelText('处理状态'))).toBe(true);
     expect(screen.getByRole('button', { name: /提交回复/ })).toHaveClass('ant-btn-loading');
     expect(isControlDisabled(screen.getByRole('button', { name: '重新加载详情' }))).toBe(true);
   });
@@ -622,13 +628,85 @@ describe('工程师详情面板的单卡片结构', () => {
     expect(card.contains(screen.getByText('光刻机对准模块异常。'))).toBe(true);
     // 卡片内小标题保留原分区语义（不新增第二张卡片承载它们）
     expect(card.contains(screen.getByText('故障描述'))).toBe(true);
-    expect(card.contains(screen.getByText('工程师回复'))).toBe(true);
-    expect(card.contains(screen.getByText('接单与回复'))).toBe(true);
+    expect(card.contains(screen.getByText('客户可见回复'))).toBe(true);
+    expect(card.contains(screen.getByText('接单'))).toBe(true);
+    expect(card.contains(screen.getByText('结单状态'))).toBe(true);
+    expect(card.contains(screen.getByText('未结单'))).toBe(true);
     expect(card.contains(screen.getByRole('button', { name: /接\s*单/ }))).toBe(true);
     // 返回列表入口固定在卡片底部（仍在卡片内）
     expect(card.contains(screen.getByRole('button', { name: '返回维修申请列表' }))).toBe(true);
     // 未接单不提供回复表单
     expect(screen.queryByLabelText('回复正文')).toBeNull();
+  });
+
+  it('结单字段缺失：详情按不可确认展示，不写成未结单', () => {
+    setFlow(
+      {
+        detail: { ...READY_DETAIL, closureStatus: undefined, closedAt: undefined },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    expect(screen.getByText('结单状态未知（数据缺失）')).toBeTruthy();
+    expect(screen.queryByText('未结单')).toBeNull();
+  });
+
+  it('结单状态与时间矛盾：详情按不可确认展示，不推断为已结单', () => {
+    setFlow(
+      {
+        detail: { ...READY_DETAIL, closureStatus: 'CLOSED', closedAt: null },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    expect(screen.getByText('结单状态未知（数据缺失）')).toBeTruthy();
+    expect(screen.queryByText('已结单')).toBeNull();
+  });
+
+  it('本人已接单：内部维修过程先于客户可见回复，结单区独立且过程与回复同卡', () => {
+    setFlow(
+      {
+        detail: {
+          ...ACCEPTED_DETAIL,
+          processEntries: [
+            {
+              createdAt: '2026-09-02T10:00:00.000Z',
+              entryUuid: '11111111-1111-4111-8111-111111111111',
+              file: null,
+              fileId: null,
+              id: '71',
+              occurredAt: '2026-09-02T10:00:00.000Z',
+              operationText: '检查对准模块并记录测试结果',
+              requestId: 123,
+              testResult: '测试通过',
+              timeSource: 'MANUAL',
+              versionNo: 1,
+            },
+          ],
+          responses: [HISTORY_RESPONSE],
+        },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    const processHeading = screen.getByText('内部维修过程');
+    const repliesHeading = screen.getByText('客户可见回复');
+    expect(
+      processHeading.compareDocumentPosition(repliesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(Array.from(document.querySelectorAll('h4')).map((node) => node.textContent)).toContain(
+      '结单',
+    );
+    expect(screen.getByText('检查对准模块并记录测试结果')).toBeTruthy();
   });
 
   it('精确 ENGINEER + 本人已接单：唯一卡片内含回复表单与历史时间线', () => {

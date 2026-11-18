@@ -1,22 +1,30 @@
 // src/features/admin-document-database/ui/admin-repair-requests-tab.tsx
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { TableColumnsType } from 'antd';
 import {
   Alert,
   Button,
   Descriptions,
+  Divider,
   Drawer,
   Input,
   Pagination,
   Select,
   Skeleton,
   Table,
+  Tag,
   Tooltip,
 } from 'antd';
+import dayjs from 'dayjs';
 
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { KbSearchField, KbToolbarButton } from '@/shared/ui/knowledge-base';
+import {
+  REPAIR_HANDLING_RESULT_LABELS,
+  REPAIR_HANDLING_STATUS_LABELS,
+  resolveRepairClosureState,
+} from '@/shared/ui/repair-request-status-labels';
 import { StatusPill } from '@/shared/ui/status-pill';
 
 import { useAdminRepairRequestSummary } from '../application/use-admin-document-detail';
@@ -35,25 +43,118 @@ import { AdminCreatedAtFilter } from './admin-created-at-filter';
 import { type AdminCreatedAtRangeState, toAdminCreatedAtRange } from './admin-created-at-range';
 import { toEffectiveAdminFilter } from './admin-effective-filter';
 import { AdminListStates } from './admin-list-states';
+import { AdminRepairRequestRevisionModal } from './admin-repair-request-revision-modal';
 
 const RESOLUTION_STATUS_LABELS: Record<'PENDING' | 'RESOLVED', string> = {
   PENDING: '处理中',
   RESOLVED: '已解决',
 };
 
-/** 维修申请标签：管理员全局只读列表 + 组合筛选 + 只读摘要（不创建维护记录管理）
+type PersistedListViewState = {
+  requestNoKeyword: string;
+  customerKeyword: string;
+  errorCode: string;
+  isAccepted: boolean | undefined;
+  equipmentModelId: number | undefined;
+  createdAtFrom: string | null;
+  createdAtTo: string | null;
+  page: number;
+};
+
+function readPersistedListViewState(key: string | undefined): PersistedListViewState | null {
+  if (!key) return null;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as PersistedListViewState) : null;
+  } catch {
+    return null;
+  }
+}
+
+function toPersistedRange(from: string | null, to: string | null): AdminCreatedAtRangeState {
+  if (!from && !to) return null;
+  return [from ? dayjs(from) : null, to ? dayjs(to) : null];
+}
+
+/**
+ * 列表工单真实进度：主状态由 closureStatus 与 closedAt 联合判定（未结单不得写成已结单），
+ * 处理结果/状态为辅助事实；最后回复单独标注，避免把「已解决」误读成工单已结单。
+ * 显式未结单显示「未结单」；字段缺失、非法值或状态与时间矛盾按不可确认展示。
+ */
+function AdminWorkOrderStatusCell({ record }: { record: AdminRepairRequestListItem }) {
+  const closureState = resolveRepairClosureState(record.closureStatus, record.closedAt);
+  const closed = closureState === 'CLOSED';
+  const resultLabel = record.handlingResult
+    ? REPAIR_HANDLING_RESULT_LABELS[record.handlingResult]
+    : null;
+  const statusLabel = record.handlingStatus
+    ? REPAIR_HANDLING_STATUS_LABELS[record.handlingStatus]
+    : null;
+  const showResultText =
+    resultLabel !== null && !(closed && record.handlingResult === 'INTERRUPTED');
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1 text-xs">
+      <div className="flex flex-wrap items-center gap-1">
+        {closed ? (
+          <StatusPill tone="ok">
+            {record.handlingResult === 'INTERRUPTED' ? '已结单 · 维修中断' : '已结单'}
+          </StatusPill>
+        ) : closureState === 'OPEN' ? (
+          <StatusPill tone="warn">未结单</StatusPill>
+        ) : (
+          <StatusPill tone="neutral">结单状态未知</StatusPill>
+        )}
+        {showResultText ? <span className="text-text-secondary">{resultLabel}</span> : null}
+      </div>
+      <span className="text-text-secondary">
+        {closed
+          ? record.closedAt
+            ? `结单于 ${formatDateTimeText(record.closedAt)}`
+            : '已结单'
+          : closureState === 'UNKNOWN'
+            ? `结单状态未知 · 处理状态：${statusLabel ?? '未记录'}`
+            : `处理状态：${statusLabel ?? '未记录'}`}
+      </span>
+      {record.latestResolutionStatus ? (
+        <span className="text-text-tertiary">
+          最后回复：{RESOLUTION_STATUS_LABELS[record.latestResolutionStatus]}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** 维修申请标签：管理员全局只读列表 + 组合筛选 + 详情入口
  *
  * PR3 R7 S5：整体迁入单张知识库卡（卡内工具区 + 主搜索 + 筛选展开区 +
- * 紧凑表格 + 卡底分页）；精确条件全部保留，仅常态入口收进「筛选」。 */
-export function AdminRepairRequestsTab() {
-  const [requestNoKeyword, setRequestNoKeyword] = useState('');
-  const [customerKeyword, setCustomerKeyword] = useState('');
-  const [errorCode, setErrorCode] = useState('');
-  const [isAccepted, setIsAccepted] = useState<boolean | undefined>(undefined);
-  const [equipmentModelId, setEquipmentModelId] = useState<number | undefined>(undefined);
-  const [createdAtRange, setCreatedAtRange] = useState<AdminCreatedAtRangeState>(null);
+ * 紧凑表格 + 卡底分页）；精确条件全部保留，仅常态入口收进「筛选」。
+ *
+ * 详情有两种承载方式：
+ * - 传入 onOpenDetail（工单管理页）：点击详情进入独立详情页；
+ * - 未传入（文档数据库内嵌标签）：保持原有侧边抽屉。
+ * viewStateKey 用于从详情返回时尽量恢复筛选与分页。 */
+export function AdminRepairRequestsTab({
+  onOpenDetail,
+  viewStateKey,
+}: {
+  onOpenDetail?: (requestId: number) => void;
+  viewStateKey?: string;
+} = {}) {
+  const [persisted] = useState(() => readPersistedListViewState(viewStateKey));
+  const [requestNoKeyword, setRequestNoKeyword] = useState(persisted?.requestNoKeyword ?? '');
+  const [customerKeyword, setCustomerKeyword] = useState(persisted?.customerKeyword ?? '');
+  const [errorCode, setErrorCode] = useState(persisted?.errorCode ?? '');
+  const [isAccepted, setIsAccepted] = useState<boolean | undefined>(persisted?.isAccepted);
+  const [equipmentModelId, setEquipmentModelId] = useState<number | undefined>(
+    persisted?.equipmentModelId,
+  );
+  const [createdAtRange, setCreatedAtRange] = useState<AdminCreatedAtRangeState>(() =>
+    toPersistedRange(persisted?.createdAtFrom ?? null, persisted?.createdAtTo ?? null),
+  );
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [summaryRequestId, setSummaryRequestId] = useState<number | null>(null);
+  const [revisionOpen, setRevisionOpen] = useState(false);
   // 设备型号下拉：调用本 feature 自己的 adapter（fetchAdminEquipmentModelOptions），
   // 保持 feature 之间不直接跨依赖（frontend/docs/dependency-rules.md）。
   // 注：equipmentModels 查询目前在 reference-document / repair-request / 本 feature
@@ -132,11 +233,53 @@ export function AdminRepairRequestsTab() {
     reloadKey,
     {
       failureMessage: '维修申请列表加载失败，请稍后重试。',
+      initialPage: persisted?.page ?? 1,
     },
   );
   const summary = useAdminRepairRequestSummary(summaryRequestId);
 
-  // 紧凑列宽 + ellipsis/Tooltip：scroll.x 由 1350 收紧到 1040，1366 视口即可完整可见；
+  // 从独立详情页返回时恢复筛选与分页（仅工单管理页启用）
+  useEffect(() => {
+    if (!viewStateKey) return;
+    const snapshot: PersistedListViewState = {
+      requestNoKeyword,
+      customerKeyword,
+      errorCode,
+      isAccepted,
+      equipmentModelId,
+      createdAtFrom: createdAtRange?.[0]?.toISOString() ?? null,
+      createdAtTo: createdAtRange?.[1]?.toISOString() ?? null,
+      page: state.status === 'ready' ? state.page : (persisted?.page ?? 1),
+    };
+    try {
+      window.sessionStorage.setItem(viewStateKey, JSON.stringify(snapshot));
+    } catch {
+      // 会话存储不可用时忽略，不阻断列表
+    }
+  }, [
+    viewStateKey,
+    requestNoKeyword,
+    customerKeyword,
+    errorCode,
+    isAccepted,
+    equipmentModelId,
+    createdAtRange,
+    state,
+    persisted,
+  ]);
+
+  const openDetail = useCallback(
+    (requestId: number) => {
+      if (onOpenDetail) {
+        onOpenDetail(requestId);
+        return;
+      }
+      setSummaryRequestId(requestId);
+    },
+    [onOpenDetail],
+  );
+
+  // 紧凑列宽 + ellipsis/Tooltip：scroll.x 约 1144，1366 视口即可完整可见；
   // 操作列 fixed right 作为窄视口下的可发现性保障（字段一个不删，PR3 R7 S5/视觉报告 3.5）
   const columns = useMemo<TableColumnsType<AdminRepairRequestListItem>>(
     () => [
@@ -204,12 +347,11 @@ export function AdminRepairRequestsTab() {
         width: 92,
       },
       {
-        dataIndex: 'latestResolutionStatus',
-        key: 'latestResolutionStatus',
-        render: (value: 'PENDING' | 'RESOLVED' | null) =>
-          value ? RESOLUTION_STATUS_LABELS[value] : '—',
-        title: '处理状态',
-        width: 92,
+        dataIndex: 'closureStatus',
+        key: 'workOrderStatus',
+        render: (_value, record) => <AdminWorkOrderStatusCell record={record} />,
+        title: '工单状态',
+        width: 196,
       },
       {
         dataIndex: 'createdAt',
@@ -222,15 +364,15 @@ export function AdminRepairRequestsTab() {
         fixed: 'right',
         key: 'actions',
         render: (_value, record) => (
-          <Button onClick={() => setSummaryRequestId(record.id)} size="small" type="link">
-            摘要
+          <Button onClick={() => openDetail(record.id)} size="small" type="link">
+            详情
           </Button>
         ),
         title: '操作',
         width: 92,
       },
     ],
-    [],
+    [openDetail],
   );
 
   return (
@@ -345,9 +487,19 @@ export function AdminRepairRequestsTab() {
 
       <Drawer
         destroyOnHidden
-        onClose={() => setSummaryRequestId(null)}
+        extra={
+          summary.state.status === 'ready' ? (
+            <Button onClick={() => setRevisionOpen(true)} size="small" type="primary">
+              修订
+            </Button>
+          ) : null
+        }
+        onClose={() => {
+          setRevisionOpen(false);
+          setSummaryRequestId(null);
+        }}
         open={summaryRequestId !== null}
-        title={`维修申请摘要${summary.state.status === 'ready' ? ` · ${summary.state.detail.requestNo}` : ''}`}
+        title={`工单详情${summary.state.status === 'ready' ? ` · ${summary.state.detail.requestNo}` : ''}`}
         size="large"
       >
         {summary.state.status === 'loading' ? <Skeleton active /> : null}
@@ -397,18 +549,180 @@ export function AdminRepairRequestsTab() {
                   label: '创建时间',
                   children: formatDateTimeText(summary.state.detail.createdAt),
                 },
+                {
+                  key: 'revision',
+                  label: '当前修订版本',
+                  children: `v${summary.state.detail.currentRevisionNo}`,
+                },
               ]}
               size="small"
             />
+
             <div>
               <p className="mb-2 font-medium">申请正文</p>
               <pre className="max-h-[420px] overflow-auto rounded border border-[var(--panel-border)] bg-[var(--filter-bar-bg)] p-3 text-xs whitespace-pre-wrap">
                 {summary.state.detail.contentMd}
               </pre>
             </div>
+
+            <Divider style={{ marginBlock: 0 }} />
+
+            <div>
+              <p className="mb-2 font-medium">结单与处理结果</p>
+              <Descriptions
+                column={1}
+                items={[
+                  {
+                    key: 'handlingResult',
+                    label: '处理结果',
+                    children: summary.state.detail.handlingResult
+                      ? REPAIR_HANDLING_RESULT_LABELS[summary.state.detail.handlingResult]
+                      : '未记录',
+                  },
+                  {
+                    key: 'handlingStatus',
+                    label: '处理状态',
+                    children: summary.state.detail.handlingStatus
+                      ? REPAIR_HANDLING_STATUS_LABELS[summary.state.detail.handlingStatus]
+                      : '未记录',
+                  },
+                  {
+                    key: 'latestResolutionStatus',
+                    label: '最后回复状态',
+                    children: summary.state.detail.latestResolutionStatus
+                      ? RESOLUTION_STATUS_LABELS[summary.state.detail.latestResolutionStatus]
+                      : '未记录',
+                  },
+                  {
+                    key: 'closureStatus',
+                    label: '结单状态',
+                    children: (() => {
+                      const closureState = resolveRepairClosureState(
+                        summary.state.detail.closureStatus,
+                        summary.state.detail.closedAt,
+                      );
+                      return closureState === 'CLOSED'
+                        ? '已结单'
+                        : closureState === 'OPEN'
+                          ? '未结单'
+                          : '结单状态未知（数据缺失）';
+                    })(),
+                  },
+                  {
+                    key: 'closedAt',
+                    label: '结单时间',
+                    children: summary.state.detail.closedAt
+                      ? formatDateTimeText(summary.state.detail.closedAt)
+                      : '—',
+                  },
+                  {
+                    key: 'closureReason',
+                    label: '结单原因',
+                    children: summary.state.detail.closureReason || '—',
+                  },
+                ]}
+                size="small"
+              />
+            </div>
+
+            <Divider style={{ marginBlock: 0 }} />
+
+            <div>
+              <p className="mb-2 font-medium">内部维修过程</p>
+              {summary.state.detail.processEntries.length === 0 ? (
+                <p className="text-text-tertiary text-sm">暂无已提交过程。</p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {summary.state.detail.processEntries.map((entry) => (
+                    <div className="rounded border border-[var(--panel-border)] p-3" key={entry.id}>
+                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
+                        <Tag>v{entry.versionNo}</Tag>
+                        <span>{formatDateTimeText(entry.createdAt)}</span>
+                        <span>时间来源 {entry.timeSource === 'SERVER' ? '服务端' : '人工'}</span>
+                        {entry.file ? (
+                          <span>
+                            原件：{entry.file.originalFilename}（{entry.file.byteSize} 字节）
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="whitespace-pre-wrap text-sm">{entry.operationText}</p>
+                      {entry.testResult ? (
+                        <p className="text-text-secondary mt-1 text-xs">
+                          测试结果：{entry.testResult}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <Divider style={{ marginBlock: 0 }} />
+
+            <div>
+              <p className="mb-2 font-medium">客户回复</p>
+              {summary.state.detail.responses.length === 0 ? (
+                <p className="text-text-tertiary text-sm">暂无客户可见回复。</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {summary.state.detail.responses.map((response) => (
+                    <div
+                      className="rounded border border-[var(--panel-border)] p-3"
+                      key={response.id}
+                    >
+                      <div className="text-text-secondary mb-1 flex flex-wrap items-center gap-x-3 text-xs">
+                        <span>{response.engineerNickname}</span>
+                        <span>{formatDateTimeText(response.createdAt)}</span>
+                        <Tag color={response.resolutionStatus === 'RESOLVED' ? 'green' : 'blue'}>
+                          {RESOLUTION_STATUS_LABELS[response.resolutionStatus]}
+                        </Tag>
+                      </div>
+                      <p className="whitespace-pre-wrap text-sm">{response.responseText}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <Divider style={{ marginBlock: 0 }} />
+
+            <div>
+              <p className="mb-2 font-medium">修订历史</p>
+              {summary.state.detail.revisions.length === 0 ? (
+                <p className="text-text-tertiary text-sm">暂无修订记录。</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {summary.state.detail.revisions.map((revision) => (
+                    <div
+                      className="rounded border border-[var(--panel-border)] p-3 text-sm"
+                      key={revision.revisionNo}
+                    >
+                      <div className="text-text-secondary mb-1 flex flex-wrap items-center gap-x-3 text-xs">
+                        <Tag>
+                          v{revision.previousVersion} → v{revision.revisionNo}
+                        </Tag>
+                        <span>{revision.actorNickname}</span>
+                        <span>{formatDateTimeText(revision.createdAt)}</span>
+                      </div>
+                      <p className="whitespace-pre-wrap">{revision.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ) : null}
       </Drawer>
+
+      {summary.state.status === 'ready' ? (
+        <AdminRepairRequestRevisionModal
+          detail={summary.state.detail}
+          key={`${summary.state.detail.id}:${summary.state.detail.currentRevisionNo}:${revisionOpen}`}
+          onClose={() => setRevisionOpen(false)}
+          onSaved={summary.reload}
+          open={revisionOpen}
+        />
+      ) : null}
     </div>
   );
 }

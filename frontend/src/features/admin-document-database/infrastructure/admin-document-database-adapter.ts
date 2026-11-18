@@ -1,6 +1,7 @@
 // src/features/admin-document-database/infrastructure/admin-document-database-adapter.ts
 
 import { executeGraphQL, isGraphQLIngressError, readGraphQLErrorDetail } from '@/shared/graphql';
+import { fetchRestWithAuthRetry, parseAttachmentFilename } from '@/shared/http';
 
 import type {
   AdminAiConversationFilter,
@@ -14,6 +15,8 @@ import type {
   AdminRepairRequestFilter,
   AdminRepairRequestListItem,
   AdminRepairRequestSummary,
+  AdminRepairRevisionInput,
+  AdminRepairRevisionResult,
 } from './admin-document-database.types';
 
 /**
@@ -55,6 +58,10 @@ const ADMIN_REPAIR_REQUESTS_QUERY = `
         acceptedAt
         acceptedByEngineerNickname
         latestResolutionStatus
+        closureStatus
+        closedAt
+        handlingResult
+        handlingStatus
         createdAt
       }
       total
@@ -81,6 +88,59 @@ const ADMIN_REPAIR_REQUEST_SUMMARY_QUERY = `
       acceptedAt
       acceptedByEngineerNickname
       latestResolutionStatus
+      createdAt
+      closureStatus
+      closedAt
+      closureReason
+      handlingResult
+      handlingStatus
+      currentRevisionNo
+      processEntries {
+        id
+        entryUuid
+        requestId
+        operationText
+        testResult
+        occurredAt
+        timeSource
+        fileId
+        versionNo
+        createdAt
+        file {
+          fileId
+          originalFilename
+          mimeType
+          byteSize
+          checksumSha256
+        }
+      }
+      responses {
+        id
+        responseText
+        resolutionStatus
+        engineerNickname
+        createdAt
+      }
+      revisions {
+        revisionNo
+        previousVersion
+        reason
+        actorNickname
+        createdAt
+      }
+    }
+  }
+`;
+
+const APPEND_ADMIN_REPAIR_REQUEST_REVISION_MUTATION = `
+  mutation AppendRepairRequestRevision($input: AppendRepairRequestRevisionInput!) {
+    appendRepairRequestRevision(input: $input) {
+      requestId
+      revisionNo
+      previousVersion
+      reason
+      actorNickname
+      currentRevisionNo
       createdAt
     }
   }
@@ -360,6 +420,35 @@ export async function fetchAdminRepairRequestSummary(
   }
 }
 
+export type AdminRevisionMutationResult =
+  | { ok: true; result: AdminRepairRevisionResult }
+  | { ok: false; message: string };
+
+/**
+ * 管理员按版本条件修订工单已提交事实。
+ *
+ * 业务拒绝（BAD_USER_INPUT / CONFLICT / FORBIDDEN / NOT_FOUND）归并为可展示消息；
+ * transport 失败继续上抛由调用方统一处理。服务端失败整体回滚，前端成功后必须
+ * 重新读取详情，不本地拼接「已修订」事实。
+ */
+export async function appendAdminRepairRequestRevision(
+  input: AdminRepairRevisionInput,
+): Promise<AdminRevisionMutationResult> {
+  try {
+    const data = await executeGraphQL<
+      { appendRepairRequestRevision: AdminRepairRevisionResult },
+      { input: AdminRepairRevisionInput }
+    >(APPEND_ADMIN_REPAIR_REQUEST_REVISION_MUTATION, { input });
+    return { ok: true, result: data.appendRepairRequestRevision };
+  } catch (error) {
+    if (isGraphQLIngressError(error)) {
+      const detail = readGraphQLErrorDetail(error);
+      return { ok: false, message: detail?.errorMessage ?? error.userMessage };
+    }
+    throw error;
+  }
+}
+
 export async function fetchAdminAiReportDetail(
   id: number,
 ): Promise<AdminDetailResult<AdminAiReportDetail>> {
@@ -372,5 +461,46 @@ export async function fetchAdminAiReportDetail(
     return { ok: true, detail: data.adminAiReport };
   } catch (error) {
     return toNotFoundResult(error, 'AI 报告不存在或不可查看。');
+  }
+}
+
+export type AdminRepairProcessFileDownloadResult =
+  | { ok: true; blob: Blob; filename: string }
+  | { ok: false; message: string };
+
+/**
+ * 下载已绑定维修过程原件（复用既有 REST 授权下载接口）。
+ *
+ * 后端该接口仅授权 SUPER_ADMIN / ENGINEER；管理员侧只提供下载入口，
+ * 不新增上传、替换或移除能力。
+ */
+export async function downloadAdminRepairProcessFile(
+  fileId: string,
+): Promise<AdminRepairProcessFileDownloadResult> {
+  let response: Response;
+  try {
+    response = await fetchRestWithAuthRetry(
+      `/api/stored-files/${encodeURIComponent(fileId)}/download`,
+      {},
+    );
+  } catch {
+    return { ok: false, message: '原件下载失败，请检查网络后重试。' };
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: response.status === 403 ? '当前账号无权下载该原件。' : '原件下载失败，请稍后重试。',
+    };
+  }
+
+  try {
+    const blob = await response.blob();
+    const filename =
+      parseAttachmentFilename(response.headers.get('Content-Disposition')) ??
+      `repair-process-${fileId}`;
+    return { ok: true, blob, filename };
+  } catch {
+    return { ok: false, message: '原件下载失败，请稍后重试。' };
   }
 }

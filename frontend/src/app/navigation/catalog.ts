@@ -100,6 +100,16 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['admin', 'database', 'documents', 'aggregation', '文档数据库', '数据聚合'],
   },
   {
+    description: 'SUPER_ADMIN 的工单直达入口：查看全部维修工单的接单、处理与结单状态。',
+    id: 'admin-orders',
+    kind: 'stable',
+    label: '工单管理',
+    // 复用文档数据库的维修申请列表/详情/修订能力；未授权直达由 /admin/** 路由层拒绝。
+    path: '/admin/orders',
+    roles: ['SUPER_ADMIN'],
+    tags: ['admin', 'orders', 'repair', 'workbench', '管理员', '工单管理', '维修申请'],
+  },
+  {
     description: '维护登录凭据、基础资料与登录密码；修改密码成功后需重新登录。',
     id: 'account-settings',
     kind: 'stable',

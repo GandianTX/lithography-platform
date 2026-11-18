@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as sharedGraphql from '@/shared/graphql';
 import { GraphQLIngressError } from '@/shared/graphql';
+import * as sharedHttp from '@/shared/http';
 
 import type {
   EngineerRepairListScope,
@@ -21,10 +22,15 @@ import type {
 } from './engineer-repair-request.types';
 import {
   acceptRepairRequest,
+  closeRepairRequest,
   createEngineerResponse,
+  createRepairProcessEntry,
+  downloadRepairProcessFile,
   ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE,
   fetchEngineerRepairRequestDetail,
   fetchEngineerRepairRequests,
+  updateRepairProcessEntry,
+  uploadRepairProcessFile,
 } from './engineer-repair-request-adapter';
 
 vi.mock('@/shared/graphql', async (importOriginal) => {
@@ -36,7 +42,17 @@ vi.mock('@/shared/graphql', async (importOriginal) => {
   };
 });
 
+vi.mock('@/shared/http', async (importOriginal) => {
+  const actual = await importOriginal<typeof sharedHttp>();
+
+  return {
+    ...actual,
+    fetchRestWithAuthRetry: vi.fn(),
+  };
+});
+
 const executeGraphQLMock = vi.mocked(sharedGraphql.executeGraphQL);
+const fetchRestWithAuthRetryMock = vi.mocked(sharedHttp.fetchRestWithAuthRetry);
 
 const DETAIL_DTO: RepairRequestDetailDTO = {
   id: 21,
@@ -53,6 +69,12 @@ const DETAIL_DTO: RepairRequestDetailDTO = {
   customerCompanyName: '林氏精密制造',
   acceptanceViewStatus: 'MINE',
   acceptedEngineerNickname: '陈工',
+  closureStatus: null,
+  closedAt: null,
+  closureReason: null,
+  handlingResult: null,
+  handlingStatus: null,
+  processEntries: [],
   responses: [
     {
       id: 51,
@@ -80,6 +102,12 @@ const DETAIL_MODEL = {
   customerCompanyName: '林氏精密制造',
   acceptanceViewStatus: 'MINE',
   acceptedEngineerNickname: '陈工',
+  closureStatus: null,
+  closedAt: null,
+  closureReason: null,
+  handlingResult: null,
+  handlingStatus: null,
+  processEntries: [],
   responses: [
     {
       id: 51,
@@ -113,6 +141,7 @@ function buildDomainIngressError(options: {
 
 beforeEach(() => {
   executeGraphQLMock.mockReset();
+  fetchRestWithAuthRetryMock.mockReset();
 });
 
 const NO_FILTER = { equipmentModelId: null, customerNickname: null };
@@ -210,9 +239,13 @@ describe('fetchEngineerRepairRequests', () => {
             customerCompanyName: '林氏精密制造',
             acceptanceViewStatus: 'MINE',
             acceptedEngineerNickname: '陈工',
+            closureStatus: 'CLOSED',
+            closedAt: '2026-09-02T09:00:00.000Z',
+            handlingResult: 'FIXED',
+            handlingStatus: 'COMPLETED',
           },
           {
-            // 待接单：后端返回 null / 字段缺省两种形态都必须归一为 null
+            // 后端返回 null 与字段缺省两种形态必须分别保留，不得用 ?? null 合并
             id: 22,
             requestNo: 'RR20260902110000DEF456',
             equipmentModel: { id: 4, modelCode: 'LITHO-8000', modelName: '光刻机 8000' },
@@ -224,21 +257,36 @@ describe('fetchEngineerRepairRequests', () => {
             customerCompanyName: null,
             acceptanceViewStatus: 'AVAILABLE',
           },
+          {
+            // 显式 null：字段存在但值为空（数据库合法未结单）
+            id: 23,
+            requestNo: 'RR20260902120000GHI789',
+            equipmentModel: { id: 4, modelCode: 'LITHO-8000', modelName: '光刻机 8000' },
+            errorCode: 'E-300',
+            createdAt: '2026-09-02T08:20:00.000Z',
+            isAccepted: false,
+            acceptedAt: null,
+            customerNickname: '钱客户',
+            customerCompanyName: null,
+            acceptanceViewStatus: 'AVAILABLE',
+            closureStatus: null,
+            closedAt: null,
+          },
         ],
-        total: 2,
+        total: 3,
         page: 1,
         pageSize: 10,
       },
     });
 
-    await expect(
-      fetchEngineerRepairRequests({
-        scope: 'AVAILABLE',
-        filter: NO_FILTER,
-        page: 1,
-        pageSize: 10,
-      }),
-    ).resolves.toEqual({
+    const page = await fetchEngineerRepairRequests({
+      scope: 'AVAILABLE',
+      filter: NO_FILTER,
+      page: 1,
+      pageSize: 10,
+    });
+
+    expect(page).toEqual({
       items: [
         {
           id: 21,
@@ -253,6 +301,10 @@ describe('fetchEngineerRepairRequests', () => {
           customerCompanyName: '林氏精密制造',
           acceptanceViewStatus: 'MINE',
           acceptedEngineerNickname: '陈工',
+          closureStatus: 'CLOSED',
+          closedAt: '2026-09-02T09:00:00.000Z',
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
         },
         {
           id: 22,
@@ -267,12 +319,40 @@ describe('fetchEngineerRepairRequests', () => {
           customerCompanyName: null,
           acceptanceViewStatus: 'AVAILABLE',
           acceptedEngineerNickname: null,
+          closureStatus: undefined,
+          closedAt: undefined,
+          handlingResult: null,
+          handlingStatus: null,
+        },
+        {
+          id: 23,
+          requestNo: 'RR20260902120000GHI789',
+          equipmentModel: { id: 4, modelCode: 'LITHO-8000', modelName: '光刻机 8000' },
+          errorCode: 'E-300',
+          createdAt: '2026-09-02T08:20:00.000Z',
+          isAccepted: false,
+          acceptedAt: null,
+          latestResolutionStatus: null,
+          customerNickname: '钱客户',
+          customerCompanyName: null,
+          acceptanceViewStatus: 'AVAILABLE',
+          acceptedEngineerNickname: null,
+          closureStatus: null,
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: null,
         },
       ],
-      total: 2,
+      total: 3,
       page: 1,
       pageSize: 10,
     });
+
+    // 缺失字段保持 undefined（不可确认），显式 null 保持 null（合法未结单）
+    expect(page.items[1].closureStatus).toBeUndefined();
+    expect(page.items[1].closedAt).toBeUndefined();
+    expect(page.items[2].closureStatus).toBeNull();
+    expect(page.items[2].closedAt).toBeNull();
   });
 
   it('分页字段缺省时回落查询参数，不向 application 泄出 undefined', async () => {
@@ -540,5 +620,253 @@ describe('createEngineerResponse', () => {
       executeGraphQLMock.mockRejectedValueOnce(error);
       await expect(createEngineerResponse(RESPONSE_INPUT)).rejects.toBe(error);
     }
+  });
+});
+
+/* ------------------------ 内部维修过程 / 结单 / 原件 ------------------------ */
+
+const PROCESS_ENTRY_DTO = {
+  id: '101',
+  entryUuid: '4f0c5f6a-1111-4111-8111-111111111111',
+  requestId: 21,
+  operationText: '更换干涉仪镜片',
+  testResult: '精度恢复至 1nm',
+  occurredAt: null,
+  timeSource: 'SERVER',
+  fileId: null,
+  versionNo: 1,
+  createdAt: '2026-09-02T10:00:00.000Z',
+};
+
+describe('createRepairProcessEntry', () => {
+  it('携带暂存原件时同一 Mutation 提交 fileId/uploadContextId，并映射返回过程', async () => {
+    executeGraphQLMock.mockResolvedValue({ createRepairProcessEntry: PROCESS_ENTRY_DTO });
+
+    const result = await createRepairProcessEntry({
+      requestId: 21,
+      operationText: '更换干涉仪镜片',
+      testResult: null,
+      occurredAt: null,
+      file: { fileId: 'file-1', uploadContextId: 'context-1' },
+    });
+
+    const [, variables] = executeGraphQLMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.input).toEqual({
+      requestId: 21,
+      operationText: '更换干涉仪镜片',
+      testResult: null,
+      occurredAt: null,
+      file: { fileId: 'file-1', uploadContextId: 'context-1' },
+    });
+    expect(result).toEqual({
+      ok: true,
+      entry: {
+        id: '101',
+        entryUuid: '4f0c5f6a-1111-4111-8111-111111111111',
+        requestId: 21,
+        operationText: '更换干涉仪镜片',
+        testResult: '精度恢复至 1nm',
+        occurredAt: null,
+        timeSource: 'SERVER',
+        fileId: null,
+        file: null,
+        versionNo: 1,
+        createdAt: '2026-09-02T10:00:00.000Z',
+      },
+    });
+  });
+
+  it('CONFLICT 大类（版本冲突 / 已结单只读）映射为 conflict 并优先后端消息', async () => {
+    executeGraphQLMock.mockRejectedValue(
+      buildDomainIngressError({
+        code: 'CONFLICT',
+        errorMessage: '维修过程已被修改或工单已结单',
+      }),
+    );
+
+    await expect(
+      createRepairProcessEntry({
+        requestId: 21,
+        operationText: '补记过程',
+        testResult: null,
+        occurredAt: null,
+        file: null,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'conflict',
+      message: '维修过程已被修改或工单已结单',
+    });
+  });
+});
+
+describe('updateRepairProcessEntry', () => {
+  it('编辑入参携带 entryId 与 expectedVersion，且不携带原件', async () => {
+    executeGraphQLMock.mockResolvedValue({ updateRepairProcessEntry: PROCESS_ENTRY_DTO });
+
+    await updateRepairProcessEntry({
+      requestId: 21,
+      entryId: '101',
+      expectedVersion: 2,
+      operationText: '复核镜片',
+      testResult: null,
+      occurredAt: '2026-09-02T10:00:00.000Z',
+    });
+
+    const [, variables] = executeGraphQLMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.input).toEqual({
+      requestId: 21,
+      entryId: '101',
+      expectedVersion: 2,
+      operationText: '复核镜片',
+      testResult: null,
+      occurredAt: '2026-09-02T10:00:00.000Z',
+    });
+    expect(variables.input).not.toHaveProperty('file');
+  });
+
+  it('编辑无原件补传时携带 fileId 与 uploadContextId', async () => {
+    executeGraphQLMock.mockResolvedValue({ updateRepairProcessEntry: PROCESS_ENTRY_DTO });
+
+    await updateRepairProcessEntry({
+      requestId: 21,
+      entryId: '101',
+      expectedVersion: 2,
+      operationText: '补传现场照片',
+      testResult: null,
+      occurredAt: null,
+      file: { fileId: 'file-9', uploadContextId: 'context-9' },
+    });
+
+    const [, variables] = executeGraphQLMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.input).toEqual({
+      requestId: 21,
+      entryId: '101',
+      expectedVersion: 2,
+      operationText: '补传现场照片',
+      testResult: null,
+      occurredAt: null,
+      file: { fileId: 'file-9', uploadContextId: 'context-9' },
+    });
+  });
+});
+
+describe('closeRepairRequest', () => {
+  it('成功时返回后端结单事实，不在前端伪造状态', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      closeRepairRequest: {
+        requestId: 21,
+        closureStatus: 'CLOSED',
+        closedAt: '2026-09-02T12:00:00.000Z',
+        closureReason: '已修复',
+        handlingResult: 'FIXED',
+        handlingStatus: 'COMPLETED',
+        handlingEndedAt: '2026-09-02T11:00:00.000Z',
+      },
+    });
+
+    await expect(
+      closeRepairRequest({ requestId: 21, handlingResult: 'FIXED', closureReason: '已修复' }),
+    ).resolves.toEqual({
+      ok: true,
+      closure: {
+        requestId: 21,
+        closureStatus: 'CLOSED',
+        closedAt: '2026-09-02T12:00:00.000Z',
+        closureReason: '已修复',
+        handlingResult: 'FIXED',
+        handlingStatus: 'COMPLETED',
+        handlingEndedAt: '2026-09-02T11:00:00.000Z',
+      },
+    });
+  });
+
+  it('CONFLICT（已结单 / 非终结处理结果）映射为 closed', async () => {
+    executeGraphQLMock.mockRejectedValue(buildDomainIngressError({ code: 'CONFLICT' }));
+
+    await expect(
+      closeRepairRequest({ requestId: 21, handlingResult: 'FIXED', closureReason: null }),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'closed',
+      message: '工单已结单，请刷新后查看最新状态',
+    });
+  });
+});
+
+describe('uploadRepairProcessFile', () => {
+  it('以 multipart 提交 businessType=REPAIR_PROCESS，并解包 REST { data } 信封', async () => {
+    fetchRestWithAuthRetryMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          fileId: 'file-1',
+          uploadContextId: 'context-1',
+          originalFilename: 'report.pdf',
+          mimeType: 'application/pdf',
+          byteSize: 128,
+          checksumSha256: 'abc123',
+        },
+      }),
+    } as Response);
+
+    const file = new File(['demo'], 'report.pdf', { type: 'application/pdf' });
+    const result = await uploadRepairProcessFile(file);
+
+    expect(fetchRestWithAuthRetryMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchRestWithAuthRetryMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/stored-files');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get('businessType')).toBe('REPAIR_PROCESS');
+    expect(result).toEqual({
+      ok: true,
+      file: {
+        fileId: 'file-1',
+        uploadContextId: 'context-1',
+        originalFilename: 'report.pdf',
+        mimeType: 'application/pdf',
+        byteSize: 128,
+        checksumSha256: 'abc123',
+      },
+    });
+  });
+
+  it('REST 错误码映射为明确失败原因', async () => {
+    fetchRestWithAuthRetryMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        data: { code: 'STORED_FILE_UPLOAD_FILE_TOO_LARGE', message: '原件过大' },
+      }),
+    } as Response);
+
+    await expect(uploadRepairProcessFile(new File(['demo'], 'big.bin'))).resolves.toEqual({
+      ok: false,
+      reason: 'file-too-large',
+      message: '原件过大',
+    });
+  });
+});
+
+describe('downloadRepairProcessFile', () => {
+  it('成功时返回 Blob 与 Content-Disposition 文件名', async () => {
+    const blob = new Blob(['demo']);
+    fetchRestWithAuthRetryMock.mockResolvedValue({
+      ok: true,
+      blob: async () => blob,
+      headers: new Headers({ 'Content-Disposition': 'attachment; filename="report.pdf"' }),
+    } as Response);
+
+    await expect(downloadRepairProcessFile('file-1')).resolves.toEqual({
+      ok: true,
+      blob,
+      filename: 'report.pdf',
+    });
+    expect(fetchRestWithAuthRetryMock).toHaveBeenCalledWith(
+      '/api/stored-files/file-1/download',
+      {},
+    );
   });
 });

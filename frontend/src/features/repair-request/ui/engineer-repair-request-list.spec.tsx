@@ -79,6 +79,10 @@ function buildItem(
     customerCompanyName: null,
     acceptanceViewStatus: 'AVAILABLE',
     acceptedEngineerNickname: null,
+    closureStatus: null,
+    closedAt: null,
+    handlingResult: null,
+    handlingStatus: null,
     ...overrides,
   };
 }
@@ -149,6 +153,57 @@ describe('EngineerRepairRequestList', () => {
     expect(pillTexts).toContain('我的接单');
     expect(pillTexts).toContain('处理中');
     expect(screen.getByText('共 1 条')).toBeTruthy();
+  });
+
+  it('工单主状态联合判定结单事实：明确未结单、已结单中断、合法空值与字段缺失可区分', async () => {
+    fetchMock.mockResolvedValue(
+      buildPage([
+        buildItem(31, {
+          isAccepted: true,
+          closureStatus: 'OPEN',
+          closedAt: null,
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+          latestResolutionStatus: 'RESOLVED',
+        }),
+        buildItem(32, {
+          isAccepted: true,
+          closureStatus: 'CLOSED',
+          closedAt: '2026-09-02T09:00:00.000Z',
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'IN_PROGRESS',
+          latestResolutionStatus: 'PENDING',
+        }),
+        buildItem(33, {
+          isAccepted: true,
+          closureStatus: null,
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: null,
+        }),
+        buildItem(34, {
+          isAccepted: true,
+          closureStatus: undefined,
+          closedAt: undefined,
+          handlingResult: null,
+          handlingStatus: null,
+        }),
+      ]),
+    );
+
+    render(<EngineerRepairRequestList />);
+
+    await screen.findByText('RR20260902100000ABC31');
+    // 明确 OPEN 与显式 null/null（数据库合法未结单）都显示「未结单」
+    expect(screen.getAllByText('未结单')).toHaveLength(2);
+    expect(screen.getByText('处理状态：已完成')).toBeTruthy();
+    // 已结单但最后回复仍为「处理中」：列表主状态仍是已结单，回复状态单独展示
+    expect(screen.getByText('已结单 · 维修中断')).toBeTruthy();
+    expect(screen.getByText('处理中')).toBeTruthy();
+    expect(screen.queryByText('处理状态：处理中')).toBeNull();
+    // 字段缺失不得写成未结单
+    expect(screen.getByText('结单状态未知')).toBeTruthy();
+    expect(screen.getByText('结单状态未知 · 处理状态：未记录')).toBeTruthy();
   });
 
   it.each<EngineerRepairListScope>(['ALL', 'AVAILABLE', 'MINE', 'TAKEN_BY_OTHER'])(

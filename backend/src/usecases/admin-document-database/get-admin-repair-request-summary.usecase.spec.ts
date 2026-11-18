@@ -1,9 +1,11 @@
 // src/usecases/admin-document-database/get-admin-repair-request-summary.usecase.spec.ts
 
+import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { ADMIN_DOCUMENT_DATABASE_ERROR, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { AdminRepairRequestSummaryQueryResult } from '@src/modules/lithography/admin-document-database.types';
 import type { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   captureThrownError,
   createSuperAdminSession,
@@ -31,6 +33,15 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
     acceptedAt: null,
     acceptedByEngineerAccountId: null,
     latestResolutionStatus: null,
+    closureStatus: null,
+    closedAt: null,
+    closureReason: null,
+    handlingResult: null,
+    handlingStatus: null,
+    currentRevisionNo: 0,
+    responses: [],
+    processEntries: [],
+    revisions: [],
   } as unknown as AdminRepairRequestSummaryQueryResult;
 
   const adminRepairRequestQueryService = {
@@ -38,14 +49,23 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
   } as unknown as AdminRepairRequestQueryService;
 
   const accountQueryService = {
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
     findAccountDisplayInfosByAccountIds: jest
       .fn()
       .mockResolvedValue(new Map([[900001, { nickname: '客户甲', companyName: '甲公司' }]])),
   } as unknown as AccountQueryService;
 
+  const trustedOrganizationContext = {
+    resolveForAccount: jest.fn().mockResolvedValue({
+      organizationId: 700001,
+      memberRole: IdentityTypeEnum.SUPER_ADMIN,
+    }),
+  } as unknown as TrustedOrganizationContextQueryService;
+
   const usecase = new GetAdminRepairRequestSummaryUsecase(
     adminRepairRequestQueryService,
     accountQueryService,
+    trustedOrganizationContext,
   );
 
   beforeEach(() => {
@@ -55,6 +75,10 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
     (accountQueryService.findAccountDisplayInfosByAccountIds as jest.Mock)
       .mockClear()
       .mockResolvedValue(new Map([[900001, { nickname: '客户甲', companyName: '甲公司' }]]));
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockClear().mockResolvedValue(1);
+    (trustedOrganizationContext.resolveForAccount as jest.Mock)
+      .mockClear()
+      .mockResolvedValue({ organizationId: 700001, memberRole: IdentityTypeEnum.SUPER_ADMIN });
   });
 
   it.each(createUnauthorizedSessions().map(([label, session]) => ({ label, session })))(
@@ -109,5 +133,34 @@ describe('GetAdminRepairRequestSummaryUsecase', () => {
     expect(error.code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
     // NOT_FOUND 后不进行富集
     expect(accountQueryService.findAccountDisplayInfosByAccountIds).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员唯一 SUPER_ADMIN 公司：详情按可信公司 A 读取，旧会话公司不覆盖', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+
+    await usecase.execute({
+      session: createSuperAdminSession({ adminLevel: 2, adminOrganizationId: 700099 }),
+      requestId: 880001,
+    });
+
+    expect(adminRepairRequestQueryService.findSummaryById).toHaveBeenCalledWith(880001, 700001);
+  });
+
+  it('二级管理员只有 ENGINEER 成员关系：失败关闭，详情查询不触发', async () => {
+    (accountQueryService.findAdminLevelByAccountId as jest.Mock).mockResolvedValue(2);
+    (trustedOrganizationContext.resolveForAccount as jest.Mock).mockResolvedValue({
+      organizationId: 700001,
+      memberRole: IdentityTypeEnum.ENGINEER,
+    });
+
+    const error = (await captureThrownError(
+      usecase.execute({
+        session: createSuperAdminSession({ adminLevel: 2, adminOrganizationId: 700001 }),
+        requestId: 880001,
+      }),
+    )) as { code?: string };
+
+    expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
+    expect(adminRepairRequestQueryService.findSummaryById).not.toHaveBeenCalled();
   });
 });

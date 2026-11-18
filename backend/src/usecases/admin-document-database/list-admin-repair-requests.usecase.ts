@@ -16,6 +16,7 @@ import type {
   AdminRepairRequestQueryFilter,
 } from '@src/modules/lithography/admin-document-database.types';
 import { AdminRepairRequestQueryService } from '@src/modules/lithography/queries/admin-repair-request.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   ADMIN_KEYWORD_ACCOUNT_LIMIT,
   assertKeywordAccountLimit,
@@ -24,6 +25,7 @@ import {
   normalizeOptionalKeyword,
 } from './admin-document-database-filter.normalize';
 import { assertAdminDocumentDatabasePermission } from './admin-document-database-permission';
+import { resolveAdminOrganizationScope } from './admin-organization-scope';
 import { enrichAdminRepairRequestListItems } from './enrich-admin-account-display';
 
 /** 页大小上限：与 GraphQL 边界 PaginationArgs @Max(100) 对齐（统一分页策略） */
@@ -44,6 +46,7 @@ export class ListAdminRepairRequestsUsecase {
   constructor(
     private readonly adminRepairRequestQueryService: AdminRepairRequestQueryService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
   ) {}
 
   async execute(params: {
@@ -52,6 +55,11 @@ export class ListAdminRepairRequestsUsecase {
     filter?: AdminRepairRequestListFilter;
   }): Promise<AdminRepairRequestListPage> {
     assertAdminDocumentDatabasePermission(params.session, '查看维修申请数据库');
+    const organizationScope = await resolveAdminOrganizationScope({
+      session: params.session,
+      accountQueryService: this.accountQueryService,
+      trustedOrganizationContext: this.trustedOrganizationContext,
+    });
 
     if (!isOffsetMode(params.pagination)) {
       throw new DomainError(
@@ -101,6 +109,7 @@ export class ListAdminRepairRequestsUsecase {
     const listPage = await this.adminRepairRequestQueryService.listAll({
       filter: queryFilter,
       pagination: { page, pageSize, withTotal: withTotal ?? false },
+      organizationId: organizationScope.organizationId,
     });
     const items = await enrichAdminRepairRequestListItems(this.accountQueryService, listPage.items);
     return { ...listPage, items };

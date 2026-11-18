@@ -27,6 +27,7 @@ import type {
 import * as engineerRepairRequestAdapter from '../infrastructure/engineer-repair-request-adapter';
 
 import { onEngineerRepairListsInvalidated } from './engineer-repair-list-refresh';
+import type { EngineerRepairRequestDetailLoadOutcome } from './use-engineer-repair-request-detail';
 import { useEngineerRepairRequestDetailFlow } from './use-engineer-repair-request-detail-flow';
 
 vi.mock('../infrastructure/engineer-repair-request-adapter', async (importOriginal) => {
@@ -61,8 +62,22 @@ function buildDetail(id: number, isAccepted: boolean): EngineerRepairRequestDeta
     customerCompanyName: '林氏精密制造',
     acceptanceViewStatus: isAccepted ? 'MINE' : 'AVAILABLE',
     acceptedEngineerNickname: isAccepted ? '陈工' : null,
+    closureStatus: null,
+    closedAt: null,
+    closureReason: null,
+    handlingResult: null,
+    handlingStatus: null,
+    processEntries: [],
     responses: [],
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 const CONFLICT_RESULT: AcceptRepairRequestResult = {
@@ -505,14 +520,14 @@ describe('useEngineerRepairRequestDetailFlow 的回复编排', () => {
     unmount();
   });
 
-  it('response-failed 只静默重查一次，匹配到新回复时收敛为成功，不重发 Mutation', async () => {
+  it('response-failed 只静默重查一次：重查更新详情，但相同文本不判定本次提交成功', async () => {
     createMock.mockResolvedValue({
       ok: false,
       reason: 'response-failed',
       message: '处理回复失败，请稍后重试',
     });
     fetchDetailMock.mockResolvedValueOnce({ ok: true, detail: buildDetail(21, true) });
-    // 重查发现服务端已有规范化正文 + 相同状态的新回复
+    // 重查发现服务端有一条正文与状态都相同的新回复（也可能来自并发中的其他提交）
     fetchDetailMock.mockResolvedValueOnce({
       ok: true,
       detail: { ...buildDetail(21, true), responses: [RESPONSE] },
@@ -524,8 +539,17 @@ describe('useEngineerRepairRequestDetailFlow 的回复编排', () => {
       submitResult = await result.current.createResponse(INPUT);
     });
 
-    expect(submitResult).toEqual({ ok: true, response: RESPONSE });
-    expect(result.current.lastCreateResponseResult).toEqual({ ok: true, response: RESPONSE });
+    // 不能仅凭「回读中有相同文本」断言本次请求确定成功：保留不确定反馈
+    expect(submitResult).toEqual({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    expect(result.current.lastCreateResponseResult).toEqual({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
     // 只一次 Mutation + 一次静默重查（不切 loading，详情随重查原子更新）
     expect(createMock).toHaveBeenCalledTimes(1);
     expect(fetchDetailMock).toHaveBeenCalledTimes(2);
@@ -533,6 +557,7 @@ describe('useEngineerRepairRequestDetailFlow 的回复编排', () => {
       status: 'ready',
       detail: { responses: [RESPONSE] },
     });
+    expect(result.current.reconciling).toBe(false);
     unmount();
   });
 
@@ -884,6 +909,183 @@ describe('useEngineerRepairRequestDetailFlow 的手动确认回复结果（confi
     });
     expect(result.current.reconciling).toBe(false);
     expect(createMock).not.toHaveBeenCalled();
+    unmount();
+  });
+});
+
+describe('useEngineerRepairRequestDetailFlow 回复不确定与写后回读交错', () => {
+  const INPUT = { requestId: 21, responseText: '已更换备件', resolutionStatus: 'PENDING' as const };
+  const RESPONSE: EngineerRepairRequestResponseItem = {
+    id: 901,
+    engineerNickname: '陈工',
+    responseText: INPUT.responseText,
+    resolutionStatus: 'PENDING',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const FRESH = {
+    ...buildDetail(21, true),
+    contentMd: '# 回读含新回复',
+    responses: [RESPONSE],
+    latestResolutionStatus: 'PENDING' as const,
+  };
+  const STALE_WITHOUT_RESPONSE = {
+    ...buildDetail(21, true),
+    contentMd: '# 旧重查无新回复',
+    responses: [],
+    latestResolutionStatus: null,
+  };
+
+  it('回读先返回、旧重查后返回且未匹配新回复：详情保持回读结果，反馈收敛为不确定', async () => {
+    createMock.mockResolvedValue({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    fetchDetailMock.mockResolvedValueOnce({ ok: true, detail: buildDetail(21, true) });
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    fetchDetailMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+
+    const { result, unmount } = renderHook(() => useEngineerRepairRequestDetailFlow(21));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let submit: Promise<CreateEngineerResponseResult | null> = Promise.resolve(null);
+    await act(async () => {
+      submit = result.current.createResponse(INPUT);
+    });
+    await waitFor(() => expect(fetchDetailMock).toHaveBeenCalledTimes(2));
+
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      readback = result.current.reload({ silent: true });
+    });
+    await act(async () => {
+      readbackDeferred.resolve({ ok: true, detail: FRESH });
+      await readback;
+    });
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    expect(result.current.reconciling).toBe(true);
+
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: STALE_WITHOUT_RESPONSE });
+      await submit;
+    });
+
+    // 旧重查快照被丢弃，业务反馈仍为“结果不确定”，不卡在 loading
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    expect(result.current.reconciling).toBe(false);
+    expect(result.current.lastCreateResponseResult).toEqual({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    expect(createMock).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it('回读先返回、旧重查后返回但出现相同回复：仍保留不确定反馈，详情保持回读结果', async () => {
+    createMock.mockResolvedValue({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    fetchDetailMock.mockResolvedValueOnce({ ok: true, detail: buildDetail(21, true) });
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    const readbackDeferred = deferred<EngineerRepairRequestDetailResult>();
+    fetchDetailMock
+      .mockReturnValueOnce(recheckDeferred.promise)
+      .mockReturnValueOnce(readbackDeferred.promise);
+
+    const { result, unmount } = renderHook(() => useEngineerRepairRequestDetailFlow(21));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let submit: Promise<CreateEngineerResponseResult | null> = Promise.resolve(null);
+    await act(async () => {
+      submit = result.current.createResponse(INPUT);
+    });
+    await waitFor(() => expect(fetchDetailMock).toHaveBeenCalledTimes(2));
+
+    let readback: Promise<EngineerRepairRequestDetailLoadOutcome | null> = Promise.resolve(null);
+    await act(async () => {
+      readback = result.current.reload({ silent: true });
+    });
+    await act(async () => {
+      readbackDeferred.resolve({ ok: true, detail: FRESH });
+      await readback;
+    });
+
+    const staleMatched = {
+      ...buildDetail(21, true),
+      contentMd: '# 旧重查匹配但较旧',
+      responses: [RESPONSE],
+      latestResolutionStatus: 'PENDING' as const,
+    };
+    let submitResult: CreateEngineerResponseResult | null = null;
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: staleMatched });
+      submitResult = await submit;
+    });
+
+    // 回读中出现相同文本不能证明本次请求确定成功：保留不确定反馈，旧快照不覆盖回读
+    expect(submitResult).toEqual({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    expect(result.current.lastCreateResponseResult).toEqual({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    expect(result.current.state).toMatchObject({ status: 'ready', detail: FRESH });
+    expect(result.current.reconciling).toBe(false);
+    unmount();
+  });
+
+  it('回复不确定重查在飞时切工单：旧结果不写入新工单且 reconciling 正常收敛', async () => {
+    createMock.mockResolvedValue({
+      ok: false,
+      reason: 'response-failed',
+      message: '处理回复失败，请稍后重试',
+    });
+    fetchDetailMock.mockResolvedValueOnce({ ok: true, detail: buildDetail(21, true) });
+    const recheckDeferred = deferred<EngineerRepairRequestDetailResult>();
+    fetchDetailMock.mockReturnValueOnce(recheckDeferred.promise);
+    fetchDetailMock.mockResolvedValueOnce({ ok: true, detail: buildDetail(22, false) });
+
+    const { result, rerender, unmount } = renderHook(
+      ({ requestId }: { requestId: number }) => useEngineerRepairRequestDetailFlow(requestId),
+      { initialProps: { requestId: 21 } },
+    );
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    let submit: Promise<CreateEngineerResponseResult | null> = Promise.resolve(null);
+    await act(async () => {
+      submit = result.current.createResponse(INPUT);
+    });
+    await waitFor(() => expect(fetchDetailMock).toHaveBeenCalledTimes(2));
+
+    rerender({ requestId: 22 });
+    await waitFor(() =>
+      expect(result.current.state).toMatchObject({
+        status: 'ready',
+        detail: buildDetail(22, false),
+      }),
+    );
+
+    await act(async () => {
+      recheckDeferred.resolve({ ok: true, detail: STALE_WITHOUT_RESPONSE });
+      await submit;
+    });
+
+    expect(result.current.state).toMatchObject({
+      status: 'ready',
+      detail: buildDetail(22, false),
+    });
+    expect(result.current.reconciling).toBe(false);
+    expect(result.current.lastCreateResponseResult).not.toMatchObject({ ok: true });
     unmount();
   });
 });

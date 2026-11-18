@@ -386,11 +386,88 @@ describe('ListEngineerRepairRequestsUsecase', () => {
       pagination: { mode: 'OFFSET', page: 1, pageSize: 10 },
     });
 
-    expect(result.items[0]).toMatchObject({
-      customerNickname: '客户',
-      customerCompanyName: null,
-      acceptedEngineerNickname: null,
+    expect(result.items[0].customerNickname).toBe('客户');
+    expect(result.items[0].customerCompanyName).toBeNull();
+    expect(result.items[0].acceptedEngineerNickname).toBeNull();
+  });
+
+  it('列表透传结单与处理事实：已结单修复/已结单中断/明确未结单/字段缺失均不臆造', async () => {
+    const queryService = makeQueryService();
+    const closedAt = new Date('2026-09-02T09:00:00.000Z');
+    const baseItem = {
+      equipmentModel: { id: 5, modelCode: 'M', modelName: 'N' },
+      errorCode: 'E-01',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      isAccepted: true,
+      acceptedAt: new Date('2026-09-01T01:00:00.000Z'),
+      latestResolutionStatus: null,
+      customerAccountId: 10,
+      acceptedByEngineerAccountId: 20,
+    };
+    queryService.listByEngineer.mockResolvedValue({
+      items: [
+        {
+          ...baseItem,
+          id: 11,
+          requestNo: '920_011',
+          closureStatus: 'CLOSED',
+          closedAt,
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+        },
+        {
+          ...baseItem,
+          id: 12,
+          requestNo: '920_012',
+          closureStatus: 'CLOSED',
+          closedAt,
+          handlingResult: 'INTERRUPTED',
+          handlingStatus: 'UNRESOLVED',
+        },
+        {
+          ...baseItem,
+          id: 13,
+          requestNo: '920_013',
+          closureStatus: 'OPEN',
+          closedAt: null,
+          handlingResult: null,
+          handlingStatus: 'IN_PROGRESS',
+        },
+        // 旧数据/读模型未透传：字段缺失，不得在列表侧补成未结单
+        { ...baseItem, id: 14, requestNo: '920_014' },
+      ],
+      page: 1,
+      pageSize: 10,
     });
+    const usecase = makeUsecase(queryService);
+
+    const result = await usecase.execute({
+      session: engineerSession,
+      scope: 'ALL',
+      pagination: { mode: 'OFFSET', page: 1, pageSize: 10 },
+    });
+
+    expect(result.items[0]).toMatchObject({
+      closureStatus: 'CLOSED',
+      closedAt,
+      handlingResult: 'FIXED',
+      handlingStatus: 'COMPLETED',
+    });
+    expect(result.items[1]).toMatchObject({
+      closureStatus: 'CLOSED',
+      handlingResult: 'INTERRUPTED',
+      handlingStatus: 'UNRESOLVED',
+    });
+    expect(result.items[2]).toMatchObject({
+      closureStatus: 'OPEN',
+      closedAt: null,
+      handlingResult: null,
+      handlingStatus: 'IN_PROGRESS',
+    });
+    expect(result.items[3].closureStatus).toBeUndefined();
+    expect(result.items[3].closedAt).toBeUndefined();
+    expect(result.items[3].handlingResult).toBeUndefined();
+    expect(result.items[3].handlingStatus).toBeUndefined();
   });
 });
 

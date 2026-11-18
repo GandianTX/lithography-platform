@@ -66,16 +66,28 @@ export async function enrichAdminRepairRequestListItems(
   });
 }
 
-/** 管理员维修申请摘要富集（单条）：口径与列表富集一致 */
+/**
+ * 管理员维修申请详情富集（单条，一次账户域批量查询）：
+ * 客户、接单工程师、回复工程师与修订人展示昵称统一填充，
+ * 并剥离所有归属类账号 ID。
+ */
 export async function enrichAdminRepairRequestSummary(
   accountQueryService: AccountQueryService,
   result: AdminRepairRequestSummaryQueryResult,
 ): Promise<AdminRepairRequestSummaryView> {
-  const accountIds: number[] = [result.customerAccountId];
+  const accountIds = new Set<number>([result.customerAccountId]);
   if (result.acceptedByEngineerAccountId !== null) {
-    accountIds.push(result.acceptedByEngineerAccountId);
+    accountIds.add(result.acceptedByEngineerAccountId);
   }
-  const displayInfos = await accountQueryService.findAccountDisplayInfosByAccountIds(accountIds);
+  for (const response of result.responses) {
+    accountIds.add(response.engineerAccountId);
+  }
+  for (const revision of result.revisions) {
+    accountIds.add(revision.actorAccountId);
+  }
+  const displayInfos = await accountQueryService.findAccountDisplayInfosByAccountIds([
+    ...accountIds,
+  ]);
   const customer = displayInfos.get(result.customerAccountId);
   const engineer =
     result.acceptedByEngineerAccountId !== null
@@ -90,6 +102,16 @@ export async function enrichAdminRepairRequestSummary(
       result.acceptedByEngineerAccountId !== null
         ? (engineer?.nickname ?? ADMIN_ENGINEER_NICKNAME_FALLBACK)
         : null,
+    responses: result.responses.map((response) => ({
+      ...stripKeys(response, ['engineerAccountId', 'customerAccountId']),
+      engineerNickname:
+        displayInfos.get(response.engineerAccountId)?.nickname ?? ADMIN_ENGINEER_NICKNAME_FALLBACK,
+    })),
+    revisions: result.revisions.map((revision) => ({
+      ...stripKeys(revision, ['actorAccountId']),
+      actorNickname:
+        displayInfos.get(revision.actorAccountId)?.nickname ?? ADMIN_ENGINEER_NICKNAME_FALLBACK,
+    })),
   };
 }
 

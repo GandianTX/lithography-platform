@@ -93,6 +93,10 @@ function buildRepairItem(id: number): AdminRepairRequestListItem {
     acceptedAt: null,
     acceptedByEngineerNickname: null,
     latestResolutionStatus: null,
+    closureStatus: null,
+    closedAt: null,
+    handlingResult: null,
+    handlingStatus: null,
     createdAt: '2026-09-01T08:00:00.000Z',
   };
 }

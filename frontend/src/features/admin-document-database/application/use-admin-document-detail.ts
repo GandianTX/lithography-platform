@@ -86,7 +86,7 @@ function useAdminDetail<TDetail>(
   }, [fetcher]);
 
   const load = useCallback(
-    async (target: number) => {
+    async (target: number): Promise<boolean> => {
       requestIdRef.current += 1;
       const requestId = requestIdRef.current;
 
@@ -97,15 +97,17 @@ function useAdminDetail<TDetail>(
 
         if (result.ok) {
           dispatch({ type: 'load-ready', requestId, detail: result.detail });
-        } else {
-          dispatch({ type: 'load-failed', requestId, message: result.message });
+          return true;
         }
+        dispatch({ type: 'load-failed', requestId, message: result.message });
+        return false;
       } catch (error) {
         dispatch({
           type: 'load-failed',
           requestId,
           message: toDetailUserMessage(error, fallbackMessage),
         });
+        return false;
       }
     },
     [fallbackMessage],
@@ -125,15 +127,27 @@ function useAdminDetail<TDetail>(
     }
   }, [targetId, load]);
 
-  return { state, retry };
+  /**
+   * 主动刷新并返回是否成功。供「修订已提交后刷新详情」使用：
+   * false 表示具名详情读取失败（面板自身已进入 failed 可重试状态），
+   * 调用方据此区分「保存成功」与「保存成功但刷新失败」，不得反向提示保存失败。
+   */
+  const reload = useCallback(async (): Promise<boolean> => {
+    if (targetId === null) {
+      return false;
+    }
+    return load(targetId);
+  }, [targetId, load]);
+
+  return { state, retry, reload };
 }
 
-/** 维修申请只读摘要 */
+/** 维修申请只读详情（已提交事实） */
 export function useAdminRepairRequestSummary(requestId: number | null) {
   return useAdminDetail<AdminRepairRequestSummary>(
     (target) => fetchAdminRepairRequestSummary(target),
     requestId,
-    '维修申请摘要加载失败，请稍后重试。',
+    '维修申请详情加载失败，请稍后重试。',
   );
 }
 

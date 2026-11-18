@@ -98,6 +98,8 @@ describe('enrich-admin-account-display', () => {
       ...repairItem(),
       faultDescription: '描述',
       contentMd: '# 正文',
+      responses: [],
+      revisions: [],
     } as unknown as AdminRepairRequestSummaryQueryResult;
 
     const view = await enrichAdminRepairRequestSummary(accountQueryService, result);

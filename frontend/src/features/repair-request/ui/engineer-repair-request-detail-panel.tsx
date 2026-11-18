@@ -6,7 +6,12 @@
  * - 唯一业务入口是 feature application 的编排 hook；
  *   UI 不触碰 adapter，不解析 Apollo 原始错误；
  * - 展示申请编号、客户昵称/公司、设备型号、错误码、提交时间、接单视角状态、
- *   接单工程师与接单时间、故障描述、contentMd 与已有工程师回复的只读时间线；
+ *   接单工程师与接单时间、结单事实（状态/时间/原因）、处理结果与状态、
+ *   最后回复状态、故障描述、contentMd、内部维修过程与客户可见回复时间线；
+ * - 结单状态/时间/原因与处理结果/状态始终展示：未结单显示「未结单」、
+ *   未处理显示「未记录」，不把处理状态终结推断成已结单，也不只在结单后出现；
+ * - 就绪内容顺序：申请事实 → 故障描述/补充说明 → 内部维修过程 →
+ *   客户可见回复（含追加回复表单）→ 接单 → 结单专区 → 返回入口；
  * - 操作可见性由「后端视角状态 + 会话单值业务角色」共同精确控制（三态 + 角色）：
  *   AVAILABLE + 精确 ENGINEER → 接单；MINE + 精确 ENGINEER → 回复；
  *   TAKEN_BY_OTHER → 只读；SUPER_ADMIN（非精确工程师写身份）→ 只读；
@@ -52,11 +57,17 @@ import { DataCard } from '@/shared/ui/data-card';
 import { ErrorState } from '@/shared/ui/error-state';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { LoadingState } from '@/shared/ui/loading-state';
+import {
+  REPAIR_HANDLING_RESULT_LABELS,
+  REPAIR_HANDLING_STATUS_LABELS,
+  resolveRepairClosureState,
+} from '@/shared/ui/repair-request-status-labels';
 
 import {
   ENGINEER_RESPONSE_TEXT_OVER_CAPACITY_MESSAGE,
   isEngineerResponseTextOverCapacity,
 } from '../application/engineer-response-text-capacity';
+import { isEngineerRepairRequestEnded } from '../application/repair-request-ended';
 import { useEngineerRepairRequestDetailFlow } from '../application/use-engineer-repair-request-detail-flow';
 import type {
   AcceptRepairRequestResult,
@@ -66,6 +77,10 @@ import type {
 } from '../infrastructure/engineer-repair-request.types';
 import { RESOLUTION_STATUS_LABELS } from '../infrastructure/repair-request-read.types';
 
+import {
+  EngineerRepairCloseSection,
+  EngineerRepairProcessSection,
+} from './engineer-repair-process-section';
 import { ENGINEER_REPAIR_REQUEST_LIST_PATH } from './engineer-repair-request-paths';
 import { AcceptanceViewStatusTag, ResolutionTag } from './repair-request-status-tags';
 
@@ -254,11 +269,14 @@ function PanelSection({ children, title }: { children: ReactNode; title: string 
 export function EngineerRepairRequestDetailPanel({
   requestId,
   canHandleAsEngineer,
+  scopeKey,
 }: {
   requestId: number | null;
   canHandleAsEngineer: boolean;
+  scopeKey?: string;
 }) {
   const navigate = useNavigate();
+  const scopeKeyValue = scopeKey ?? 'default';
   const {
     state,
     accepting,
@@ -268,9 +286,13 @@ export function EngineerRepairRequestDetailPanel({
     reconciling,
     lastCreateResponseResult,
     createResponse,
+    canWriteRequest,
     reload,
     confirmResponseResult,
-  } = useEngineerRepairRequestDetailFlow(requestId);
+    closureBarrier,
+    markClosureSucceeded,
+    markClosureReadbackSucceeded,
+  } = useEngineerRepairRequestDetailFlow(requestId, scopeKeyValue);
 
   if (state.status === 'loading') {
     return (
@@ -303,7 +325,7 @@ export function EngineerRepairRequestDetailPanel({
           ) : (
             <ErrorState
               action={
-                <Button onClick={reload} size="small">
+                <Button onClick={() => void reload()} size="small">
                   重试
                 </Button>
               }
@@ -317,20 +339,48 @@ export function EngineerRepairRequestDetailPanel({
 
   const detail = state.detail;
   const viewStatus = detail.acceptanceViewStatus;
+  // 结单或处理终结后，内部过程与回复统一只读（结单与回复互相独立，但都受同一结束边界约束）
+  const isClosed = isEngineerRepairRequestEnded(detail);
+  // 结单 mutation 已明确成功但回读未确认时，本地屏障先于服务端详情接管只读；
+  // 只有回读被采用且确认已结束时屏障才撤销，再由服务端结束事实继续控制只读。
+  const writeBlocked = isClosed || closureBarrier;
+  const showInternalProcess = viewStatus === 'MINE';
   // 操作可见性 = 后端视角状态（事实）× 会话单值业务角色（写身份），失败关闭：
   // 视角缺失或 TAKEN_BY_OTHER 一律只读；AVAILABLE/MINE 还需精确 ENGINEER 才出现写入口
   const canAccept = viewStatus === 'AVAILABLE' && canHandleAsEngineer;
-  const canReply = viewStatus === 'MINE' && canHandleAsEngineer;
+  const canReply = viewStatus === 'MINE' && canHandleAsEngineer && !writeBlocked;
   const readOnlyHint =
-    !canAccept && !canReply
-      ? !canHandleAsEngineer
-        ? '当前账号仅可查看详情，接单与回复需使用工程师账号。'
-        : viewStatus === 'TAKEN_BY_OTHER'
-          ? '该申请已由其他工程师接单跟进，当前为只读查看。'
-          : viewStatus === null
-            ? '该申请的接单状态暂不可用，当前为只读查看。'
-            : null
-      : null;
+    viewStatus === 'MINE' && writeBlocked
+      ? '工单已结单，内部维修过程与回复均为只读。'
+      : !canAccept && !canReply
+        ? !canHandleAsEngineer
+          ? '当前账号仅可查看详情，接单与回复需使用工程师账号。'
+          : viewStatus === 'TAKEN_BY_OTHER'
+            ? '该申请已由其他工程师接单跟进，当前为只读查看。'
+            : viewStatus === null
+              ? '该申请的接单状态暂不可用，当前为只读查看。'
+              : null
+        : null;
+
+  // 结单展示由 closureStatus + closedAt 联合判定（处理状态终结不得推断为已结单）；
+  // 结单 Mutation 已成功但回读未确认时，用「待刷新确认」表达本地屏障，不编造结单时间/原因。
+  // 字段缺失、非法时间或状态与时间矛盾不得写成「已结单」或「未结单」，按不可确认展示。
+  // 只读屏障仍由 isEngineerRepairRequestEnded 按服务端结束事实控制，不随展示判定放宽。
+  const closureState = resolveRepairClosureState(detail.closureStatus, detail.closedAt);
+  const closureStatusText =
+    closureState === 'CLOSED'
+      ? '已结单'
+      : closureBarrier
+        ? '结单已提交，待刷新确认'
+        : closureState === 'OPEN'
+          ? '未结单'
+          : '结单状态未知（数据缺失）';
+  const handlingResultText = detail.handlingResult
+    ? REPAIR_HANDLING_RESULT_LABELS[detail.handlingResult]
+    : '未记录';
+  const handlingStatusText = detail.handlingStatus
+    ? REPAIR_HANDLING_STATUS_LABELS[detail.handlingStatus]
+    : '未记录';
 
   return (
     <DataCard title="申请信息">
@@ -378,7 +428,35 @@ export function EngineerRepairRequestDetailPanel({
           {
             children: <ResolutionTag status={detail.latestResolutionStatus} />,
             key: 'latestResolutionStatus',
-            label: '最新处理状态',
+            label: '最后回复状态',
+          },
+          {
+            children: closureStatusText,
+            key: 'closureStatus',
+            label: '结单状态',
+          },
+          {
+            children:
+              closureState === 'CLOSED' && detail.closedAt
+                ? formatDateTimeText(detail.closedAt)
+                : '—',
+            key: 'closedAt',
+            label: '结单时间',
+          },
+          {
+            children: closureState === 'CLOSED' ? (detail.closureReason ?? '—') : '—',
+            key: 'closureReason',
+            label: '结单原因',
+          },
+          {
+            children: handlingResultText,
+            key: 'handlingResult',
+            label: '处理结果',
+          },
+          {
+            children: handlingStatusText,
+            key: 'handlingStatus',
+            label: '处理状态',
           },
         ]}
         size="small"
@@ -394,7 +472,24 @@ export function EngineerRepairRequestDetailPanel({
         </PanelSection>
       ) : null}
 
-      <PanelSection title="工程师回复">
+      {/*
+       * 内部维修过程先于客户可见回复：先呈现排查/操作/测试事实与原件，
+       * 再呈现对客户可见的回复，避免回复时间线遮住过程记录。
+       */}
+      {showInternalProcess ? (
+        <EngineerRepairProcessSection
+          canWrite={canReply}
+          key={`process:${scopeKeyValue}`}
+          processEntries={detail.processEntries}
+          readOnly={writeBlocked}
+          reload={reload}
+          requestId={detail.id}
+          scopeKey={scopeKeyValue}
+          writeEligible={canWriteRequest}
+        />
+      ) : null}
+
+      <PanelSection title="客户可见回复">
         {detail.responses.length > 0 ? (
           <Timeline
             items={detail.responses.map((response) => ({
@@ -416,14 +511,26 @@ export function EngineerRepairRequestDetailPanel({
         ) : (
           <div className="text-sm text-text-secondary">暂无工程师回复。</div>
         )}
+
+        {canReply ? (
+          <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4">
+            <div className="font-medium text-sm">追加处理回复</div>
+            <EngineerResponseForm
+              key={`response:${scopeKeyValue}`}
+              lastResult={lastCreateResponseResult}
+              onReload={() => void confirmResponseResult()}
+              onSubmit={(input) => void createResponse(input)}
+              requestId={detail.id}
+              submitting={submitting || reconciling}
+            />
+          </div>
+        ) : null}
       </PanelSection>
 
-      {/* 操作区：接单 / 回复 / 只读提示共用一块，反馈紧邻对应入口 */}
-      <PanelSection title="接单与回复">
-        <div className="flex flex-col gap-4">
-          <AcceptFeedbackAlert result={lastAcceptResult} />
-
-          {canAccept ? (
+      {canAccept ? (
+        <PanelSection title="接单">
+          <div className="flex flex-col gap-4">
+            <AcceptFeedbackAlert result={lastAcceptResult} />
             <div className="flex flex-col gap-2">
               <div>
                 <Popconfirm
@@ -440,28 +547,38 @@ export function EngineerRepairRequestDetailPanel({
               </div>
               <div className="text-sm text-text-secondary">请先接单后才能回复该申请。</div>
             </div>
-          ) : null}
+          </div>
+        </PanelSection>
+      ) : null}
 
-          {canReply ? (
-            <div className="flex flex-col gap-2">
-              <div className="font-medium text-sm">追加处理回复</div>
-              <EngineerResponseForm
-                lastResult={lastCreateResponseResult}
-                onReload={() => void confirmResponseResult()}
-                onSubmit={(input) => void createResponse(input)}
-                requestId={detail.id}
-                submitting={submitting || reconciling}
-              />
-            </div>
-          ) : null}
+      {/*
+       * 只读/操作说明：接单成功后保留接单反馈；
+       * 精确 ENGINEER 结单后给出只读原因；非精确工程师写身份提示使用工程师账号。
+       */}
+      {!canAccept && (lastAcceptResult || readOnlyHint) ? (
+        <PanelSection title="处理说明">
+          <div className="flex flex-col gap-3">
+            <AcceptFeedbackAlert result={lastAcceptResult} />
+            {readOnlyHint ? (
+              <div className="text-sm text-text-secondary">{readOnlyHint}</div>
+            ) : null}
+          </div>
+        </PanelSection>
+      ) : null}
 
-          {/*
-           * 只读提示：精确 ENGINEER 看到的是事实性状态说明（视角缺失为防腐兜底分支），
-           * 非精确工程师写身份（如查看用超管）只读并提示使用工程师账号。
-           */}
-          {readOnlyHint ? <div className="text-sm text-text-secondary">{readOnlyHint}</div> : null}
-        </div>
-      </PanelSection>
+      {showInternalProcess && canHandleAsEngineer && !isClosed ? (
+        <EngineerRepairCloseSection
+          canWrite={canHandleAsEngineer}
+          closedByMutation={closureBarrier}
+          key={`close:${scopeKeyValue}`}
+          onCloseReadbackSucceeded={markClosureReadbackSucceeded}
+          onCloseSucceeded={markClosureSucceeded}
+          reload={reload}
+          requestId={detail.id}
+          scopeKey={scopeKeyValue}
+          writeEligible={canWriteRequest}
+        />
+      ) : null}
 
       {/*
        * 卡片底部常驻返回入口：不依赖接单状态与查看者角色，

@@ -634,6 +634,7 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
         fault_description: request.description,
         content_md: request.content,
         owner_organization_id: FIXTURE.org.id,
+        intake_id: null,
         is_accepted: 1,
         accepted_by_engineer_account_id: FIXTURE.engineer,
         handling_result: null,

@@ -30,4 +30,5 @@ export {
 } from './infrastructure/admin-document-database-adapter';
 export { AdminAiConversationsTab } from './ui/admin-ai-conversations-tab';
 export { AdminAiReportsTab } from './ui/admin-ai-reports-tab';
+export { AdminRepairRequestDetailPanel } from './ui/admin-repair-request-detail-panel';
 export { AdminRepairRequestsTab } from './ui/admin-repair-requests-tab';

@@ -16,15 +16,28 @@
 
 import { executeGraphQL } from '@/shared/graphql';
 import { readGraphQLErrorDetail } from '@/shared/graphql';
+import {
+  fetchRestWithAuthRetry,
+  parseAttachmentFilename,
+  readRestErrorField,
+  type RestErrorEnvelope,
+  toRestErrorEnvelope,
+} from '@/shared/http';
 
 import type {
   AcceptRepairRequestFailureReason,
   AcceptRepairRequestResult,
+  CloseRepairRequestFailureReason,
+  CloseRepairRequestInput,
+  CloseRepairRequestResult,
   CreateEngineerResponseFailureReason,
   CreateEngineerResponseInput,
   CreateEngineerResponseResult,
+  CreateRepairProcessEntryInput,
+  DownloadRepairProcessFileResult,
   EngineerRepairListFilter,
   EngineerRepairListQuery,
+  EngineerRepairProcessEntry,
   EngineerRepairRequestDetail,
   EngineerRepairRequestDetailFailureReason,
   EngineerRepairRequestDetailResult,
@@ -34,10 +47,18 @@ import type {
   EngineerRepairRequestResponseItem,
   EngineerResponseDTO,
   EquipmentModelDTO,
+  RepairProcessEntryDTO,
+  RepairProcessWriteFailureReason,
+  RepairProcessWriteResult,
+  RepairRequestClosure,
   RepairRequestDetailDTO,
   RepairRequestListItemDTO,
   RepairRequestPaginatedDTO,
   RepairRequestPaginationVariables,
+  StagedRepairProcessFile,
+  UpdateRepairProcessEntryInput,
+  UploadRepairProcessFileFailureReason,
+  UploadRepairProcessFileResult,
 } from './engineer-repair-request.types';
 
 const ENGINEER_REPAIR_REQUESTS_QUERY = `
@@ -56,6 +77,10 @@ const ENGINEER_REPAIR_REQUESTS_QUERY = `
         customerCompanyName
         acceptanceViewStatus
         acceptedEngineerNickname
+        closureStatus
+        closedAt
+        handlingResult
+        handlingStatus
       }
       total
       page
@@ -81,6 +106,24 @@ const ENGINEER_REPAIR_REQUEST_DETAIL_QUERY = `
       customerCompanyName
       acceptanceViewStatus
       acceptedEngineerNickname
+      closureStatus
+      closedAt
+      closureReason
+      handlingResult
+      handlingStatus
+      processEntries {
+        id
+        entryUuid
+        requestId
+        operationText
+        testResult
+        occurredAt
+        timeSource
+        fileId
+        versionNo
+        createdAt
+        file { fileId originalFilename mimeType byteSize checksumSha256 }
+      }
       responses {
         id
         engineerNickname
@@ -109,6 +152,24 @@ const ACCEPT_REPAIR_REQUEST_MUTATION = `
       customerCompanyName
       acceptanceViewStatus
       acceptedEngineerNickname
+      closureStatus
+      closedAt
+      closureReason
+      handlingResult
+      handlingStatus
+      processEntries {
+        id
+        entryUuid
+        requestId
+        operationText
+        testResult
+        occurredAt
+        timeSource
+        fileId
+        versionNo
+        createdAt
+        file { fileId originalFilename mimeType byteSize checksumSha256 }
+      }
       responses {
         id
         engineerNickname
@@ -131,6 +192,60 @@ const CREATE_ENGINEER_RESPONSE_MUTATION = `
     }
   }
 `;
+
+const CREATE_REPAIR_PROCESS_ENTRY_MUTATION = `
+  mutation CreateRepairProcessEntry($input: CreateRepairProcessEntryInput!) {
+    createRepairProcessEntry(input: $input) {
+      id
+      entryUuid
+      requestId
+      operationText
+      testResult
+      occurredAt
+      timeSource
+      fileId
+      versionNo
+      createdAt
+    }
+  }
+`;
+
+const UPDATE_REPAIR_PROCESS_ENTRY_MUTATION = `
+  mutation UpdateRepairProcessEntry($input: UpdateRepairProcessEntryInput!) {
+    updateRepairProcessEntry(input: $input) {
+      id
+      entryUuid
+      requestId
+      operationText
+      testResult
+      occurredAt
+      timeSource
+      fileId
+      versionNo
+      createdAt
+    }
+  }
+`;
+
+const CLOSE_REPAIR_REQUEST_MUTATION = `
+  mutation CloseRepairRequest($input: CloseRepairRequestInput!) {
+    closeRepairRequest(input: $input) {
+      requestId
+      closureStatus
+      closedAt
+      closureReason
+      handlingResult
+      handlingStatus
+      handlingEndedAt
+    }
+  }
+`;
+
+const STORED_FILE_UPLOAD_ENDPOINT = '/api/stored-files';
+
+function storedFileDownloadEndpoint(fileId: string): string {
+  return `/api/stored-files/${encodeURIComponent(fileId)}/download`;
+}
 
 /* -------------------------- 业务拒绝映射 -------------------------- */
 
@@ -271,6 +386,12 @@ function mapListItemDTO(dto: RepairRequestListItemDTO): EngineerRepairRequestLis
     customerCompanyName: dto.customerCompanyName ?? null,
     acceptanceViewStatus: dto.acceptanceViewStatus,
     acceptedEngineerNickname: dto.acceptedEngineerNickname ?? null,
+    // 结单事实保留「字段缺失（undefined）」与「显式 null」的区别，
+    // 供 UI 区分合法未结单与读模型未透传；不得用 ?? null 合并。
+    closureStatus: 'closureStatus' in dto ? dto.closureStatus : undefined,
+    closedAt: 'closedAt' in dto ? dto.closedAt : undefined,
+    handlingResult: dto.handlingResult ?? null,
+    handlingStatus: dto.handlingStatus ?? null,
   };
 }
 
@@ -293,6 +414,37 @@ function mapDetailDTO(dto: RepairRequestDetailDTO): EngineerRepairRequestDetail 
     customerCompanyName: dto.customerCompanyName ?? null,
     acceptanceViewStatus: dto.acceptanceViewStatus ?? null,
     acceptedEngineerNickname: dto.acceptedEngineerNickname ?? null,
+    // 同列表项：结单字段保留缺失 vs 显式 null 的区别，不在此合并
+    closureStatus: 'closureStatus' in dto ? dto.closureStatus : undefined,
+    closedAt: 'closedAt' in dto ? dto.closedAt : undefined,
+    closureReason: dto.closureReason ?? null,
+    handlingResult: dto.handlingResult ?? null,
+    handlingStatus: dto.handlingStatus ?? null,
+    processEntries: (dto.processEntries ?? []).map(mapProcessEntryDTO),
+  };
+}
+
+function mapProcessEntryDTO(dto: RepairProcessEntryDTO): EngineerRepairProcessEntry {
+  return {
+    id: dto.id,
+    entryUuid: dto.entryUuid,
+    requestId: dto.requestId,
+    operationText: dto.operationText,
+    testResult: dto.testResult ?? null,
+    occurredAt: dto.occurredAt ?? null,
+    timeSource: dto.timeSource,
+    fileId: dto.fileId ?? null,
+    file: dto.file
+      ? {
+          fileId: dto.file.fileId,
+          originalFilename: dto.file.originalFilename,
+          mimeType: dto.file.mimeType,
+          byteSize: dto.file.byteSize,
+          checksumSha256: dto.file.checksumSha256,
+        }
+      : null,
+    versionNo: dto.versionNo,
+    createdAt: dto.createdAt,
   };
 }
 
@@ -469,4 +621,296 @@ export async function createEngineerResponse(
       message: detail.errorMessage ?? CREATE_RESPONSE_FALLBACK_MESSAGE_BY_REASON[reason],
     };
   }
+}
+
+/* ------------------------ 内部维修过程 / 结单 ------------------------ */
+
+/**
+ * 过程写入业务拒绝主映射：CONFLICT 同时覆盖「版本冲突」与「已结单只读」，
+ * 生产分支不依赖可能隐藏的 errorCode，统一提示刷新；
+ * errorCode 可见时仅用于细化文案，不改变 reason 大类。
+ */
+const PROCESS_WRITE_FAILURE_REASON_BY_CATEGORY_CODE: Record<
+  string,
+  RepairProcessWriteFailureReason
+> = {
+  CONFLICT: 'conflict',
+  NOT_FOUND: 'not-accessible',
+  FORBIDDEN: 'insufficient-permission',
+  BAD_USER_INPUT: 'invalid-input',
+  INTERNAL_SERVER_ERROR: 'write-failed',
+};
+
+const PROCESS_WRITE_FALLBACK_MESSAGE_BY_REASON: Record<RepairProcessWriteFailureReason, string> = {
+  'not-accessible': '维修申请不存在或无权操作',
+  conflict: '维修过程已被修改或工单已结单，请刷新后重试',
+  'insufficient-permission': '当前账号无权记录维修过程',
+  'invalid-input': '维修过程内容无效，请检查后重试',
+  'write-failed': '维修过程保存失败，请稍后重试',
+};
+
+const CLOSE_FAILURE_REASON_BY_CATEGORY_CODE: Record<string, CloseRepairRequestFailureReason> = {
+  CONFLICT: 'closed',
+  NOT_FOUND: 'not-accessible',
+  FORBIDDEN: 'insufficient-permission',
+  BAD_USER_INPUT: 'invalid-input',
+  INTERNAL_SERVER_ERROR: 'close-failed',
+};
+
+const CLOSE_FALLBACK_MESSAGE_BY_REASON: Record<CloseRepairRequestFailureReason, string> = {
+  'not-accessible': '维修申请不存在或无权操作',
+  closed: '工单已结单，请刷新后查看最新状态',
+  'insufficient-permission': '当前账号无权结单',
+  'invalid-input': '结单信息无效，请检查后重试',
+  'close-failed': '结单失败，请稍后重试',
+};
+
+type CreateRepairProcessEntryData = { createRepairProcessEntry: RepairProcessEntryDTO };
+type UpdateRepairProcessEntryData = { updateRepairProcessEntry: RepairProcessEntryDTO };
+type CloseRepairRequestData = { closeRepairRequest: RepairRequestClosure };
+
+function toProcessMutationInput(
+  input: CreateRepairProcessEntryInput | UpdateRepairProcessEntryInput,
+) {
+  return {
+    requestId: input.requestId,
+    operationText: input.operationText,
+    testResult: input.testResult,
+    occurredAt: input.occurredAt,
+    ...('file' in input && input.file
+      ? { file: { fileId: input.file.fileId, uploadContextId: input.file.uploadContextId } }
+      : {}),
+    ...('entryId' in input
+      ? { entryId: input.entryId, expectedVersion: input.expectedVersion }
+      : {}),
+  };
+}
+
+/** 创建内部维修过程；携带暂存原件时后端与过程写入同一事务绑定 */
+export async function createRepairProcessEntry(
+  input: CreateRepairProcessEntryInput,
+): Promise<RepairProcessWriteResult> {
+  try {
+    const data = await executeGraphQL<
+      CreateRepairProcessEntryData,
+      { input: ReturnType<typeof toProcessMutationInput> }
+    >(CREATE_REPAIR_PROCESS_ENTRY_MUTATION, { input: toProcessMutationInput(input) });
+
+    return { ok: true, entry: mapProcessEntryDTO(data.createRepairProcessEntry) };
+  } catch (error) {
+    return mapProcessWriteFailure(error);
+  }
+}
+
+/** 编辑内部维修过程（expectedVersion 不符返回 conflict，不自动重试） */
+export async function updateRepairProcessEntry(
+  input: UpdateRepairProcessEntryInput,
+): Promise<RepairProcessWriteResult> {
+  try {
+    const data = await executeGraphQL<
+      UpdateRepairProcessEntryData,
+      { input: ReturnType<typeof toProcessMutationInput> }
+    >(UPDATE_REPAIR_PROCESS_ENTRY_MUTATION, { input: toProcessMutationInput(input) });
+
+    return { ok: true, entry: mapProcessEntryDTO(data.updateRepairProcessEntry) };
+  } catch (error) {
+    return mapProcessWriteFailure(error);
+  }
+}
+
+function mapProcessWriteFailure(error: unknown): RepairProcessWriteResult {
+  const detail = readGraphQLErrorDetail(error);
+  const reason = detail?.code
+    ? PROCESS_WRITE_FAILURE_REASON_BY_CATEGORY_CODE[detail.code]
+    : undefined;
+
+  if (!detail || !reason) {
+    throw error;
+  }
+
+  return {
+    ok: false,
+    reason,
+    message: detail.errorMessage ?? PROCESS_WRITE_FALLBACK_MESSAGE_BY_REASON[reason],
+  };
+}
+
+/** 工程师结单（与回复互相独立；成功后详情中过程与回复转为只读） */
+export async function closeRepairRequest(
+  input: CloseRepairRequestInput,
+): Promise<CloseRepairRequestResult> {
+  try {
+    const data = await executeGraphQL<CloseRepairRequestData, { input: CloseRepairRequestInput }>(
+      CLOSE_REPAIR_REQUEST_MUTATION,
+      { input },
+    );
+
+    return { ok: true, closure: data.closeRepairRequest };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    const reason = detail?.code ? CLOSE_FAILURE_REASON_BY_CATEGORY_CODE[detail.code] : undefined;
+
+    if (!detail || !reason) {
+      throw error;
+    }
+
+    return {
+      ok: false,
+      reason,
+      message: detail.errorMessage ?? CLOSE_FALLBACK_MESSAGE_BY_REASON[reason],
+    };
+  }
+}
+
+/* ---------------------------- 原件 REST ---------------------------- */
+
+const UPLOAD_FAILURE_REASON_BY_CODE: Record<string, UploadRepairProcessFileFailureReason> = {
+  STORED_FILE_UPLOAD_FILE_TOO_LARGE: 'file-too-large',
+  STORED_FILE_UPLOAD_FILE_TYPE_NOT_ALLOWED: 'file-type-not-allowed',
+  STORED_FILE_INVALID_PARAMS: 'invalid-input',
+  STORED_FILE_PURPOSE_NOT_SUPPORTED: 'invalid-input',
+  STORED_FILE_UPLOAD_FILE_MISSING: 'invalid-input',
+  FORBIDDEN: 'insufficient-permission',
+};
+
+const UPLOAD_FALLBACK_MESSAGE_BY_REASON: Record<UploadRepairProcessFileFailureReason, string> = {
+  'invalid-input': '上传内容不符合要求，请检查后重试',
+  'file-too-large': '原件超过大小限制',
+  'file-type-not-allowed': '不允许上传该类型的原件',
+  'insufficient-permission': '当前账号无权上传维修过程原件',
+  'upload-failed': '原件上传失败，请检查网络后重试',
+};
+
+const DOWNLOAD_FAILURE_REASON_BY_CODE: Record<
+  string,
+  Extract<DownloadRepairProcessFileResult, { ok: false }>['reason']
+> = {
+  STORED_FILE_NOT_FOUND: 'not-found',
+  STORED_FILE_FILE_NOT_AVAILABLE: 'file-not-available',
+  FORBIDDEN: 'insufficient-permission',
+};
+
+const DOWNLOAD_FALLBACK_MESSAGE_BY_REASON: Record<
+  Extract<DownloadRepairProcessFileResult, { ok: false }>['reason'],
+  string
+> = {
+  'not-found': '原件不存在或无权下载',
+  'file-not-available': '原件暂不可下载',
+  'insufficient-permission': '当前账号无原件下载权限',
+  'download-failed': '原件下载失败，请稍后重试',
+};
+
+/**
+ * 上传维修过程原件（REST，暂存态）。
+ * 只允许 REPAIR_PROCESS 用途；成功返回正式 uploadContextId 与校验元数据。
+ */
+export async function uploadRepairProcessFile(file: File): Promise<UploadRepairProcessFileResult> {
+  const formData = new FormData();
+  formData.append('businessType', 'REPAIR_PROCESS');
+  formData.append('file', file, file.name);
+
+  let response: Response;
+  try {
+    response = await fetchRestWithAuthRetry(STORED_FILE_UPLOAD_ENDPOINT, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch {
+    return { ok: false, reason: 'upload-failed', message: '原件上传失败，请检查网络后重试' };
+  }
+
+  if (response.ok) {
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return { ok: false, reason: 'upload-failed', message: '原件上传失败，请稍后重试' };
+    }
+
+    const data = (payload as { data?: Partial<StagedRepairProcessFile> } | null)?.data;
+    if (
+      data &&
+      typeof data.fileId === 'string' &&
+      typeof data.uploadContextId === 'string' &&
+      typeof data.originalFilename === 'string' &&
+      typeof data.mimeType === 'string' &&
+      typeof data.byteSize === 'number' &&
+      typeof data.checksumSha256 === 'string'
+    ) {
+      return {
+        ok: true,
+        file: {
+          fileId: data.fileId,
+          uploadContextId: data.uploadContextId,
+          originalFilename: data.originalFilename,
+          mimeType: data.mimeType,
+          byteSize: data.byteSize,
+          checksumSha256: data.checksumSha256,
+        },
+      };
+    }
+
+    return { ok: false, reason: 'upload-failed', message: '原件上传失败，请稍后重试' };
+  }
+
+  let envelope: RestErrorEnvelope = {};
+  try {
+    envelope = toRestErrorEnvelope(await response.json());
+  } catch {
+    // 非 JSON 错误体，走兜底
+  }
+
+  const code = readRestErrorField(envelope, 'code');
+  const message = readRestErrorField(envelope, 'message');
+  const reason = code ? UPLOAD_FAILURE_REASON_BY_CODE[code] : undefined;
+
+  if (reason) {
+    return { ok: false, reason, message: message ?? UPLOAD_FALLBACK_MESSAGE_BY_REASON[reason] };
+  }
+
+  return { ok: false, reason: 'upload-failed', message: message ?? '原件上传失败，请稍后重试' };
+}
+
+/** 下载已绑定原件（REST 授权下载；客户与无权账号不可借 ID 读取） */
+export async function downloadRepairProcessFile(
+  fileId: string,
+): Promise<DownloadRepairProcessFileResult> {
+  let response: Response;
+  try {
+    response = await fetchRestWithAuthRetry(storedFileDownloadEndpoint(fileId), {});
+  } catch {
+    return { ok: false, reason: 'download-failed', message: '原件下载失败，请检查网络后重试' };
+  }
+
+  if (response.ok) {
+    let blob: Blob;
+    try {
+      blob = await response.blob();
+    } catch {
+      return { ok: false, reason: 'download-failed', message: '原件下载失败，请稍后重试' };
+    }
+
+    const filename =
+      parseAttachmentFilename(response.headers.get('Content-Disposition')) ??
+      `repair-process-${fileId}`;
+
+    return { ok: true, blob, filename };
+  }
+
+  let envelope: RestErrorEnvelope = {};
+  try {
+    envelope = toRestErrorEnvelope(await response.json());
+  } catch {
+    // 非 JSON 错误体，走兜底
+  }
+
+  const code = readRestErrorField(envelope, 'code');
+  const message = readRestErrorField(envelope, 'message');
+  const reason = code ? DOWNLOAD_FAILURE_REASON_BY_CODE[code] : undefined;
+
+  if (reason) {
+    return { ok: false, reason, message: message ?? DOWNLOAD_FALLBACK_MESSAGE_BY_REASON[reason] };
+  }
+
+  return { ok: false, reason: 'download-failed', message: message ?? '原件下载失败，请稍后重试' };
 }
