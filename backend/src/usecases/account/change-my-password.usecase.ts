@@ -39,7 +39,7 @@ type ChangeMyPasswordPhase =
   | 'VERIFY_NEW_PASSWORD_DISTINCT'
   | 'WRITE_PASSWORD_HASH';
 
-/** 固定成功提示：不声称服务端撤销了已签发 Token。 */
+/** 固定成功提示：只要求重新登录，不描述内部撤销机制（同一 UPDATE 已递增凭据代次）。 */
 const CHANGE_MY_PASSWORD_NOTICE = '密码已更新，请使用新密码重新登录';
 
 /** 写哈希阶段（UPDATE 绑定参数嵌新密码派生哈希）的失败日志抑制 `message`（P0-6 同款纵深防御）。 */

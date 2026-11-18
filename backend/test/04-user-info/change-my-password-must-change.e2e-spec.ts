@@ -41,7 +41,8 @@ import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
  *    `must_change_password` 均不变，重新登录仍为 `MUST_CHANGE_PASSWORD`，代表业务仍受限；
  * 2. 错误当前密码同样保持哈希与标记（既有语义对照）；
  * 3. 异值提交真正生效：旧密码登录失败、新密码登录成功；正常客户恢复 `NONE`，工程师仍为
- *    待审 / 已拒绝（异值改密只解除强制改密，不改变申请事实）。
+ *    待审 / 已拒绝（异值改密只解除强制改密，不改变申请事实）；同一 UPDATE 递增
+ *    `credential_version`，改密前签发的旧 Access Token 被认证层明确拒绝。
  *
  * 造数纪律：
  * - `must_change_password` 的业务入口是管理员重置密码（`adminResetUserPassword` 在同一事务
@@ -386,6 +387,22 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     return body.data?.mySessionIdentity?.restriction as SessionRestriction;
   };
 
+  /**
+   * 改密后旧 Access Token 的认证层拒绝：走正式 `mySessionIdentity` 请求，
+   * 只断言安全错误码（不读 restriction、不输出 Token 或响应原文）。
+   */
+  const expectOldTokenRejected = async (token: string): Promise<void> => {
+    const body = await gql<{ mySessionIdentity?: SessionIdentityPayload }>({
+      query: MY_SESSION_IDENTITY_QUERY,
+      token,
+    });
+
+    expect(body.data?.mySessionIdentity).toBeUndefined();
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    expect(body.errors?.[0]?.extensions?.errorCode).toBe('JWT_AUTHENTICATION_FAILED');
+  };
+
   /** 代表业务：强制改密未完成时，旧广写与 Web 窄写入口都必须被 MustChangePasswordGuard 拒绝。 */
   const expectBusinessRejected = async (token: string): Promise<void> => {
     const body = await gql<{ updateMyAccountSettings?: { isUpdated: boolean } }>({
@@ -447,7 +464,10 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
     await expectBusinessRejected(reloginToken);
   };
 
-  /** 异值提交成功的公共断言：真正换密，并按申请事实重算限制状态。 */
+  /**
+   * 异值提交成功的公共断言：真正换密，并按申请事实重算限制状态；
+   * 同一 UPDATE 递增凭据代次，改密前签发的旧 Access Token 被认证层拒绝（客户 / 待审 / 已拒绝共用）。
+   */
   const expectChangedPassword = async (params: {
     spec: ForcedChangeAccountSpec;
     accountId: number;
@@ -473,6 +493,8 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
       params.expectedRestriction,
     );
     expect(await readSessionRestriction(freshToken)).toBe(params.expectedRestriction);
+
+    await expectOldTokenRejected(params.token);
   };
 
   /**
@@ -563,8 +585,8 @@ describe('changeMyPassword 强制改密必须实际换密 (e2e)', () => {
         expectedRestriction: SessionRestriction.NONE,
       });
 
-      // 改密前的旧 Token 按既有契约不做服务端撤销，但每请求复核已按数据库事实重算为 NONE
-      expect(await readSessionRestriction(token)).toBe(SessionRestriction.NONE);
+      // 改密前的旧 Token 不再可用：同一 UPDATE 递增凭据代次，认证层明确拒绝（不是重算为 NONE）
+      await expectOldTokenRejected(token);
     });
   });
 
