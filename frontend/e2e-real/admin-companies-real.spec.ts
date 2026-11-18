@@ -8,7 +8,8 @@
 //
 // 覆盖：
 //   1. 一级管理员：经主导航进入公司档案，真实「新增公司并开通二级管理员」→ 一次性口令弹窗
-//      → 详情回读 → 补发口令 → 编辑（编号只读）；列表「二级管理员账号」列按绑定事实展示；
+//      → 详情只读回读 → 行内「二级管理员账号」核对完整登录名/待首次改密 → 补发口令
+//      → 编辑（编号只读）；列表「二级管理员账号」列按绑定事实展示；
 //      口令只在当次弹窗出现，关闭/刷新后 DOM 与存储均不可查；补发后旧口令立即失效。
 //      新增/编辑前后按同一 ID 查库比对字段差集；清理后六表残留计数为 0，哨兵组织不变。
 //   2. 二级管理员：只看到最小名称名单与只读提示，无新增/编辑/详情入口；
@@ -769,25 +770,43 @@ test.describe('公司档案（隔离库真实链路）', () => {
       // 完整登录名不得出现在列表（只给脱敏值）
       await expect(row.getByText(provisioned.adminLoginName, { exact: true })).toHaveCount(0);
 
-      // 详情：按主键单独读取，展示编号、受管事实与绑定状态
+      // 详情：按主键单独读取，展示编号、受管事实与绑定状态；写入口已收敛到账号弹窗
       await row.getByRole('button', { name: '详情' }).click();
 
-      // 补发确认会叠加在详情之上：详情同样按标题锁定，避免 :visible 同时匹配两层弹窗
+      // 详情同样按标题锁定，避免 :visible 同时匹配叠层弹窗
       const detailDialog = page.getByRole('dialog').filter({ hasText: '公司详情：' });
 
       await expect(detailDialog.getByText(provisioned.organizationCode)).toBeVisible();
       await expect(detailDialog.getByText('受管公司')).toBeVisible();
       await expect(detailDialog.getByText('已绑定')).toBeVisible();
+      // 详情是只读视图：补发入口只在行内「二级管理员账号」弹窗，不能被测试顺手加回
+      await expect(detailDialog.getByRole('button', { name: '补发临时密码' })).toHaveCount(0);
 
-      // 补发：二次确认只展示公司名与脱敏登录名，不展示任何口令
-      await detailDialog.getByRole('button', { name: '补发临时密码' }).click();
+      await detailDialog.getByRole('button', { name: '关 闭' }).click();
+      await expect(detailDialog).toHaveCount(0);
 
+      // 账号入口：唯一的补发入口，展示完整登录名与开通状态
+      await row.getByRole('button', { name: '二级管理员账号' }).click();
+
+      const accountDialog = page
+        .getByRole('dialog')
+        .filter({ hasText: `二级管理员账号：${companyName}` });
+
+      await expect(accountDialog).toBeVisible();
+      await expect(
+        accountDialog.getByText(provisioned.adminLoginName, { exact: true }),
+      ).toBeVisible();
+      await expect(accountDialog.getByText('待首次改密')).toBeVisible();
+
+      await accountDialog.getByRole('button', { name: '补发临时密码' }).click();
+
+      // 二次确认：一级授权弹窗展示公司名与完整登录名，不展示任何口令
       const confirmDialog = page.getByRole('dialog').filter({ hasText: '补发二级管理员临时密码' });
 
       await expect(confirmDialog).toBeVisible();
       await expect(confirmDialog.getByText(companyName)).toBeVisible();
       await expect(
-        confirmDialog.getByText(maskLoginName(provisioned.adminLoginName)),
+        confirmDialog.getByText(provisioned.adminLoginName, { exact: true }),
       ).toBeVisible();
       await expect(confirmDialog.getByText('补发会立即作废旧口令与旧登录会话')).toBeVisible();
 
@@ -826,6 +845,11 @@ test.describe('公司档案（隔离库真实链路）', () => {
       expect((await page.evaluate(() => document.body.innerText)).includes(reissuedPassword)).toBe(
         false,
       );
+
+      // 三层弹窗实际关闭行为：发起确认时账号弹窗已关闭；补发成功后确认弹窗关闭并弹出凭据；
+      // 凭据关闭后不得残留遮罩，编辑入口必须可直接点击
+      await expect(confirmDialog).toHaveCount(0);
+      await expect(accountDialog).toHaveCount(0);
 
       // 旧口令立即失效，新口令可签发受限会话
       const staleLogin = await attemptPasswordLogin(
