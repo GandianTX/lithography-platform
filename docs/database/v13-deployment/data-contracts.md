@@ -228,9 +228,9 @@
   `maintenance_report_fault → maintenance_report`、`reference_document → maintenance_report_version/report`、
   `reference_document_revision → reference_document`、`sync_conflict/record_package_item → sync_receipt/record_package_import`、
   `backup_asset/backup_restore_run → local_company_setting/local_installation`（按实际 FK）。
-- 推荐删除顺序（仅清理登记对象，不扩范围）：审计/绑定 → 修订 → 资料 → 报告子表 → 报告 → 工单修订/过程/响应 → 工单 → 分析尝试 → 报修入口 → AI 分析 → AI 消息/会话 → 同步冲突/包条目/包批次/回执 → 上传/恢复/资产/备份 → 本地授权/公司设置 → 安装。
+- 推荐删除顺序（仅清理登记对象，不扩范围）：审计/绑定 → 修订 → 资料 → 报告子表 → 报告 → 工单故障面板 → 工单排查步骤 → 工单修订/过程/响应 → 工单 → 分析尝试 → 报修入口 → AI 分析 → AI 消息/会话 → 同步冲突/包条目/包批次/回执 → 上传/恢复/资产/备份 → 本地授权/公司设置 → 安装。删除工单前先解除附件引用并删除其面板/步骤；被附件引用的原件不得删除。
 - 多态引用（`stored_file.business_*`、`management_audit_event.target_*`）没有 FK，清理必须按显式登记逐条处理，不能靠 DB 级联。
-- 现有 58 条 FK 的清理顺序不得改动语义；只在新 FK 处插入。
+- 前 58 条 FK 的清理顺序不得改动语义；第 48 条新增 4 条 FK 只做插入，不重排旧关系。
 
 ## 8. 终态迁移数 N 与表数 M（估算，不是预设指标）
 
@@ -290,3 +290,24 @@
 - 旧数据：包 `RUNNING/SUCCEEDED/PARTIAL` → `PASSED`；条目 `SUCCEEDED` → `PASSED`；其余保持 `NULL`；迁移前预检失败时报告定位 ID，不做猜测回填。**该映射是 R072 需求前提驱动的迁移假设，不是旧记录已检查的证明；见 OI-15。**
 - DDL 风险：MySQL DDL 隐式提交，跨表部分成功不能整体回滚；失败信息列出已完成步骤，
   已存在列/约束在重跑时跳过，可受控续跑。
+
+## 12. 工单维修事实与排查面板（第 48 条迁移契约）
+
+- 对象：`repair_request` 的 `maintenance_date`、`maintenance_engineer_name_snapshot`、`reset_result`、
+  `supplementary_note`、`maintenance_attachment_file_id`、`maintenance_version_no`；
+- 新表：`repair_request_diagnostic_step`、`repair_request_fault_panel`。
+- 历史数据：前 47 条存量工单的维修列保持 `NULL`，`maintenance_version_no` 为 `0`；
+  不搬迁、不猜测旧附件或旧排查步骤。`maintenance_version_no` 独立于 `current_revision_no`。
+- 步骤归属：`request_id` 必须指向存在的工单；`step_no >= 1` 且同一工单内唯一；
+  `action_text` 去空白后非空；`result_code` 仅 `RESOLVED/UNRESOLVED/NEW_FAULT`。
+- 面板唯一性：`INITIAL` 与 `RESET_NEW_FAULT` 每个工单各至多 1 条，由生成列 `initial_request_id`、
+  `reset_request_id` 上的唯一键保证；`STEP_NEW_FAULT` 每个步骤至多 1 条，由 `(request_id, step_id)` 唯一键保证。
+- 面板归属：仅 `STEP_NEW_FAULT` 允许且必须填 `step_id`，其余类型必须为空；
+  复合外键 `(request_id, step_id) → repair_request_diagnostic_step(request_id, id)` 保证步骤与面板属于同一工单。
+- 面板取值：`panel_type` 三值枚举；`phase_code` 为 `NULL` 或 `PHASE_01`—`PHASE_10`；
+  `description` 去空白后非空；报警代码字段可空，不强制。
+- 附件引用：`maintenance_attachment_file_id` 可空但唯一，外键指向既有 `stored_file.file_id`，
+  `RESTRICT/RESTRICT`；不得借迁移改写原件行。
+- 清理边界：两块新表尚未被通用清理夹具自动纳管；删除必须面板 → 步骤 → 工单，
+  存在子行或附件引用时 FK 失败关闭。不得为清理方便关闭外键检查或改为级联删除。
+- 升级失败：迁移先做半迁移预检，任一目标列/表已存在即拒绝；不得盲目重跑或手工删迁移历史。

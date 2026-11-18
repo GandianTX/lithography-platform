@@ -23,7 +23,7 @@
 
 ## 当前交付边界
 
-- 47 条迁移，52 张业务表；预建空库后使用 `database:deploy --mode=init`。
+- 48 条迁移，54 张业务表；预建空库后使用 `database:deploy --mode=init`。
 - 生产入口（`--environment=production`，默认）一条命令完成迁移、必要系统数据、组织与 3 个一级管理员，
   以及 `default_managed_companies` 显式列出的默认受管公司二级管理员（可 0 家，每家公司 1 个）；
   不创建开发账号、模拟公司、业务样例或样例文件。存量库先用 `admin-binding:inventory` 只读盘点，
@@ -37,6 +37,9 @@
   首次认领须排他记录实例 UUID + 精确库名，写入后回读核对字节数与 SHA-256，重跑只核对不覆盖。
 - `upgrade` 仅执行 pending，拒绝任何初始化数据；只用于已经确认来源与起点的库。现有合成旧态证据不等于任意真实业务库已验收；无法满足新约束时拒绝，不猜测回填、不删数据制造成功。
 - `previous_version` 最终非空、无默认版本；第 44 条预检发现未知历史值即拒绝。
+- 第 48 条只追加维修事实与排查明细：`repair_request` 增 6 列（历史行保持 NULL，维修版本号默认 0），
+  新增 `repair_request_diagnostic_step` 与 `repair_request_fault_panel`；附件、步骤、面板外键全部
+  `RESTRICT`，不搬迁旧数据，也不修改任务 06 的报告表。
 - 接口、前端、真实登录、Worker、Redis、云端执行器与完整业务 core 不因本目录资料而宣称完成。
 
 ## 最近补验与保留现场

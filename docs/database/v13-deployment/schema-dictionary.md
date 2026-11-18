@@ -1,6 +1,6 @@
 # S1 对象与字段清单（34 现有表 + 17 候选 + 全部目标设计行）
 
-> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、47 条迁移及正式校验契约为准，不依赖本地计划目录。
+> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、48 条迁移及正式校验契约为准，不依赖本地计划目录。
 
 > 来源：`数据库表设计说明-V1.1`。现有字段/约束来自各 Entity 与设计说明；目标字段逐行列出。**组合字段按一行展示但注明包含多列，逻辑/部署约束不计为新增列**。
 
@@ -23,6 +23,10 @@
 结论：91 项需求不是 91 列。源稿共有 **267 条目标设计行**（71 现有表 + 196 候选字段）；本期真正的目标新增物理列按 **243 列估算**（47 现有表 + 196 候选；17 候选按独立表实施，OI-04 已裁决），另有 29 个既有列引用需调整、5 条逻辑/关系/部署规则。243 为估算值：候选归并或技术字段变化时更新逐项清单与统计，不为凑数字修改设计。旧稿的 439/59/255/238 分别修正为 **442/71/267/243**；差异来源见 §5。
 
 > **S2 实施状态（2026-11-08）**：267 条源设计行已落到 6 条前向迁移、17 个新 Entity、11 个既有 Entity 与 `migration-schema-contract.ts`。既有表共新增物理列 47；候选字段按 17 张独立表建列；`engineer_response.resolution_status` 与 `local_installation` 沿用现有结构（无 DDL）。表中状态「S2 结构已实现（待实库验证）」仅表示代码与迁移已写，**不代表 MySQL 约束、事务或清理已通过**；实库项见 [S2-db-verification-specs.md](https://github.com/GandianTX/lithography-platform/blob/de742a59700450b42a951b64f0a41cddb12d294c/backend/plans/database-v13-deploy/S2-db-verification-specs.md)。
+
+> **S3 增量（2026-11-18，第 48 条迁移 `1775502600000`）**：`repair_request` 追加 6 个维修事实列；新增
+> `repair_request_diagnostic_step`、`repair_request_fault_panel` 两张子表。前 47 条迁移、上一版统计与历史状态保持不变；
+> 下表新增行与 §3.32.1、§3.32.2 标注「S3 结构已实现（待实库验证）」。真实库约束、唯一槽与清理顺序仍需实库验证。
 
 ## 2. 34 张现有表逐表清单
 
@@ -954,6 +958,12 @@
 | `closed_at`                                           | timestamp(3)                           | OPEN为空，CLOSED必有；新增：结束事实时间                                                             | 不存在                                                | **新增**                           | ADD COLUMN（先可空/默认，后收紧） | `src/modules/lithography/lithography.module.ts`… | 4 个：`src/modules/lithography/repair-request.service.spec.ts`… | S2 结构已实现（待实库验证） |
 | `closure_reason`                                      | text                                   | 中断或无法修复时必填；新增：结束原因                                                                 | 不存在                                                | **新增**                           | ADD COLUMN（先可空/默认，后收紧） | `src/modules/lithography/lithography.module.ts`… | 4 个：`src/modules/lithography/repair-request.service.spec.ts`… | S2 结构已实现（待实库验证） |
 | `current_revision_no`                                 | int unsigned                           | 非空，≥0；新增：管理版本                                                                             | 不存在                                                | **新增**                           | ADD COLUMN（先可空/默认，后收紧） | `src/modules/lithography/lithography.module.ts`… | 4 个：`src/modules/lithography/repair-request.service.spec.ts`… | S2 结构已实现（待实库验证） |
+| `maintenance_date`                                    | date                                   | 可空；维修日期                                                                                       | 不存在                                                | **新增**                           | ADD COLUMN                        | 工单维修写入/查询（后续任务）                    | 结构契约                                                        | S3 结构已实现（待实库验证） |
+| `maintenance_engineer_name_snapshot`                  | varchar(200)                           | 可空；维修工程师姓名快照                                                                             | 不存在                                                | **新增**                           | ADD COLUMN                        | 工单维修写入/查询（后续任务）                    | 结构契约                                                        | S3 结构已实现（待实库验证） |
+| `reset_result`                                        | varchar(16)                            | 可空；NORMAL/SAME_FAULT/NEW_FAULT                                                                    | 不存在                                                | **新增**                           | ADD COLUMN + CHECK                | 工单维修写入/查询（后续任务）                    | 结构契约                                                        | S3 结构已实现（待实库验证） |
+| `supplementary_note`                                  | text                                   | 可空；维修补充说明                                                                                   | 不存在                                                | **新增**                           | ADD COLUMN                        | 工单维修写入/查询（后续任务）                    | 结构契约                                                        | S3 结构已实现（待实库验证） |
+| `maintenance_attachment_file_id`                      | char(36)                               | 可空；唯一，FK `stored_file.file_id`，RESTRICT                                                       | 不存在                                                | **新增**                           | ADD COLUMN + UK + FK              | 工单维修写入/清理（后续任务）                    | 结构契约                                                        | S3 结构已实现（待实库验证） |
+| `maintenance_version_no`                              | int unsigned                           | 非空，默认 0；独立于 `current_revision_no`                                                           | 不存在                                                | **新增**                           | ADD COLUMN + CHECK                | 工单维修写入/查询（后续任务）                    | 结构契约                                                        | S3 结构已实现（待实库验证） |
 | `handling_result／handling_status／handling_ended_at` | varchar(32)／varchar(16)／timestamp(3) | 旧映射不能继续决定是否结束；调整：中断有原因也可结单，旧数据保留原语义；前向改 CHECK，不批量改写历史 | varchar(32) 可空；varchar(16) 可空；timestamp(3) 可空 | **调整（3 个既有列，扩展 CHECK）** | MODIFY/扩展 CHECK（先扩展后收紧） | `src/modules/lithography/lithography.module.ts`… | 4 个：`src/modules/lithography/repair-request.service.spec.ts`… | S2 结构已实现（待实库验证） |
 
 <details><summary>现有约束（Entity 声明，24 条）</summary>
@@ -989,6 +999,61 @@
 
 消费者文件（23）：
 `src/modules/lithography/lithography.module.ts`, `src/modules/lithography/repair-request.service.spec.ts`, `src/modules/lithography/repair-request.service.ts`, `src/modules/lithography/maintenance-report.service.ts`, `src/modules/lithography/queries/admin-repair-request.query.service.ts`, `src/modules/lithography/queries/admin-ai-conversation.query.service.ts`, `src/modules/lithography/queries/admin-ai-report.query.service.ts`, `src/modules/lithography/queries/repair-request.query.service.ts`, `src/modules/lithography/queries/repair-request.query.service.spec.ts`, `src/modules/lithography/queries/repair-request.organization.integration.spec.ts`, `src/modules/lithography/queries/admin-repair-request.query.service.spec.ts`, `test/utils/e2e-scoped-cleanup-ownership.e2e-spec.ts` …
+
+### 3.32.1 `repair_request_diagnostic_step`
+
+- 定位：新增表；Entity [repair-request-diagnostic-step.entity.ts](../../../backend/src/modules/lithography/entities/repair-request-diagnostic-step.entity.ts)；迁移 [1775502600000-add-repair-work-order-detail-for-v13.migration.ts](../../../backend/src/infrastructure/database/migrations/1775502600000-add-repair-work-order-detail-for-v13.migration.ts)
+- 说明：同一工单下的排查步骤；`step_no` 在工单内从 1 起连续唯一，步骤归属由 `request_id` 固定。
+- 状态：S3 结构已实现（待实库验证）
+
+| 字段         | 类型            | 可空 | 约束/用途                                          |
+| ------------ | --------------- | ---- | -------------------------------------------------- |
+| `id`         | bigint unsigned | 否   | 主键，自增                                         |
+| `request_id` | int             | 否   | FK `repair_request.id`，RESTRICT                   |
+| `step_no`    | int unsigned    | 否   | `>= 1`；UK（request_id, step_no）                  |
+| `error_code` | varchar(300)    | 是   | 步骤报错代码，保留前导零                           |
+| `part_name`  | varchar(300)    | 是   | 零件/部位，选填                                    |
+| `action_text`| text            | 否   | 排查动作；TRIM 后非空                              |
+| `result_code`| varchar(16)     | 否   | `RESOLVED`/`UNRESOLVED`/`NEW_FAULT`                 |
+| `created_at` | timestamp(3)    | 否   | 默认 CURRENT_TIMESTAMP(3)                          |
+| `updated_at` | timestamp(3)    | 否   | 默认/更新 CURRENT_TIMESTAMP(3)                     |
+
+- 索引：`uk_repair_request_diagnostic_step_no`（request_id, step_no）、`uk_repair_request_diagnostic_step_id`（request_id, id，供面板复合外键引用）。
+- 外键：`fk_repair_request_diagnostic_step_request` → `repair_request`，`RESTRICT/RESTRICT`。
+- CHECK：`chk_repair_request_diagnostic_step_no`、`chk_repair_request_diagnostic_step_action`、`chk_repair_request_diagnostic_step_result`。
+- 清理：删除工单前必须先删本表行；通用清理尚未自动纳管本表，FK 失败关闭。
+
+### 3.32.2 `repair_request_fault_panel`
+
+- 定位：新增表；Entity [repair-request-fault-panel.entity.ts](../../../backend/src/modules/lithography/entities/repair-request-fault-panel.entity.ts)；迁移同 §3.32.1。
+- 说明：同一工单的初始故障、步骤新故障与复位新故障面板；`INITIAL`、`RESET_NEW_FAULT` 各至多 1 条，每个步骤至多 1 条 `STEP_NEW_FAULT`。
+- 状态：S3 结构已实现（待实库验证）
+
+| 字段            | 类型            | 可空 | 约束/用途                                      |
+| --------------- | --------------- | ---- | ---------------------------------------------- |
+| `id`            | bigint unsigned | 否   | 主键，自增                                     |
+| `request_id`    | int             | 否   | FK `repair_request.id`，RESTRICT               |
+| `panel_type`    | varchar(24)     | 否   | `INITIAL`/`STEP_NEW_FAULT`/`RESET_NEW_FAULT`    |
+| `step_id`       | bigint unsigned | 是   | 仅 `STEP_NEW_FAULT` 非空；复合 FK 同工单步骤   |
+| `phase_code`    | varchar(16)     | 是   | NULL 或 `PHASE_01`—`PHASE_10`                   |
+| `main_error`    | varchar(300)    | 是   | 主报警代码                                     |
+| `unit_error`    | varchar(300)    | 是   | 单元报警代码                                   |
+| `source`        | varchar(300)    | 是   | 来源                                           |
+| `error_type`    | varchar(300)    | 是   | 错误类型                                       |
+| `gpib_status`   | varchar(300)    | 是   | GPIB 状态                                      |
+| `fault_status`  | varchar(300)    | 是   | 故障状态                                       |
+| `description`   | text            | 否   | 故障描述；TRIM 后非空                          |
+| `action`        | text            | 是   | 处理动作                                       |
+| `created_at`    | timestamp(3)    | 否   | 默认 CURRENT_TIMESTAMP(3)                      |
+| `updated_at`    | timestamp(3)    | 否   | 默认/更新 CURRENT_TIMESTAMP(3)                 |
+| `initial_request_id` | int        | 是   | 生成列 STORED，`INITIAL` 时为 request_id       |
+| `reset_request_id`   | int        | 是   | 生成列 STORED，`RESET_NEW_FAULT` 时为 request_id |
+
+- 索引：`uk_repair_request_fault_panel_initial`（initial_request_id）、`uk_repair_request_fault_panel_reset`（reset_request_id）、`uk_repair_request_fault_panel_step`（request_id, step_id）。
+- 外键：`fk_repair_request_fault_panel_request` → `repair_request`；`fk_repair_request_fault_panel_step`（request_id, step_id）→ 步骤表（request_id, id）；均为 `RESTRICT/RESTRICT`。
+- CHECK：`chk_repair_request_fault_panel_type`、`chk_repair_request_fault_panel_step`、`chk_repair_request_fault_panel_phase`、`chk_repair_request_fault_panel_description`。
+- 唯一槽：生成列 + 唯一键保证每工单 1 个初始面板、1 个复位新故障面板；`(request_id, step_id)` 唯一键保证每个步骤 1 个步骤新故障面板（`step_id` 可空但仅步骤面板非空）。
+- 清理：删除顺序面板 → 步骤 → 工单；通用清理尚未自动纳管本表，FK 失败关闭。
 
 ### 3.33 `base_third_party_auth`
 

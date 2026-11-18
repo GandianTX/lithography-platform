@@ -368,7 +368,7 @@ describe('collectGeneratedColumnIssues', () => {
     );
 
     expect(issues).toEqual([]);
-    expect(dataSource.query).toHaveBeenCalledTimes(4);
+    expect(dataSource.query).toHaveBeenCalledTimes(6);
   });
 
   it('生成列缺失或表达式为空时逐项报出', async () => {
@@ -392,6 +392,8 @@ describe('collectGeneratedColumnIssues', () => {
       '生成列缺少生成表达式: maintenance_report_attachment.active_sort_order',
       '生成列缺少生成表达式: local_backup_run.active_installation_id',
       '生成列缺少生成表达式: engineer_registration_application.pending_account_id',
+      '生成列缺少生成表达式: repair_request_fault_panel.initial_request_id',
+      '生成列缺少生成表达式: repair_request_fault_panel.reset_request_id',
     ]);
   });
 });
