@@ -266,6 +266,8 @@ export const ZH_CN_MESSAGES = {
   'account.confirmNewPassword': '确认新密码',
   'account.confirmNewPasswordRequired': '请再次输入新密码',
   'account.passwordMismatch': '两次输入的新密码不一致',
+  'account.passwordUpdated': '密码已更新，请使用新密码重新登录。',
+  'account.passwordRejected': '密码未更新，请核对当前密码及新密码要求后重试。',
   'account.changePassword': '修改密码',
   'account.reset': '重置',
   'account.companyCard': '公司信息',

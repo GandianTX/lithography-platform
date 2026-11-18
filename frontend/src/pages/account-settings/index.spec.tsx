@@ -450,7 +450,8 @@ describe('AccountSettingsPage 页面装配：改密失败时序（真实面板 +
 
   const FAILURE_CASES = [
     {
-      expectedAlert: '当前密码不正确，请重试。',
+      // 改密表单按稳定原因输出本地化提示，不透传后端 errorMessage
+      expectedAlert: '密码未更新，请核对当前密码及新密码要求后重试。',
       changeBehavior: () =>
         Promise.resolve({
           message: '当前密码不正确，请重试。',

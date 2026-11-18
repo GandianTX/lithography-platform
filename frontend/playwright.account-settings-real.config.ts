@@ -69,7 +69,13 @@ export default defineConfig({
   // e2e-real 目录同时承载 vitest 单测（如专用配置模块 spec），Playwright 只收集真实用例；
   // 两个专用入口共用同一套 webServer / global-setup，故 testMatch 并列，
   // 需要单独执行时以命令行位置参数定位（见 package.json 的两个 npm script）。
-  testMatch: ['**/account-settings-real.spec.ts', '**/pr5-real-flow.spec.ts'],
+  // B 审查 R2 视觉补证（2026-11-18）同为该专用环境下的只读采集，登记在册但不在
+  // 账号设置验收命令中执行（该命令以位置参数只跑 account-settings-real.spec.ts）。
+  testMatch: [
+    '**/account-settings-real.spec.ts',
+    '**/pr5-real-flow.spec.ts',
+    '**/task02-b-review-visual-real.spec.ts',
+  ],
   timeout: 120_000,
   use: {
     baseURL: 'http://127.0.0.1:4174',

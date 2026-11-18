@@ -217,7 +217,9 @@ test('a rejected password change keeps the restricted session on the page', asyn
   await page.locator('#confirmNewPassword').fill('Str0ng#Pass2026');
   await page.getByRole('button', { name: /修\s*改\s*密\s*码/ }).click();
 
-  await expect(page.getByText('当前密码不正确，请重试。')).toBeVisible();
+  // 界面展示本地化固定提示，后端中文 errorMessage 不透传到界面
+  await expect(page.getByText('密码未更新，请核对当前密码及新密码要求后重试。')).toBeVisible();
+  await expect(page.getByText('当前密码不正确，请重试。')).toHaveCount(0);
   await expect(page).toHaveURL(/\/restricted$/);
   const storedSession = await readStoredAuthSession(page);
   expect(storedSession).toContain('"restriction":"MUST_CHANGE_PASSWORD"');

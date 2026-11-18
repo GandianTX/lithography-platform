@@ -173,8 +173,113 @@ function cardByTitle(page: Page, title: string) {
 }
 
 /** 切到「修改密码」标签：密码卡片只在该标签内可见，资料标签同时保留挂载 */
-async function openPasswordTab(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: '修改密码' }).click();
+async function openPasswordTab(page: Page, tabName = '修改密码'): Promise<void> {
+  await page.getByRole('tab', { name: tabName }).click();
+}
+
+/** 界面语言（改密反馈双语回归使用） */
+type UiLanguage = 'en' | 'zh-CN';
+
+/** 本地化操作反馈词条（与前端 messages.zh-CN / messages.en 一致） */
+const ZH_SUCCESS_MESSAGE = '密码已更新，请使用新密码重新登录。';
+const EN_SUCCESS_MESSAGE = 'Password updated. Sign in again with your new password.';
+const ZH_REJECTED_MESSAGE = '密码未更新，请核对当前密码及新密码要求后重试。';
+const EN_REJECTED_MESSAGE =
+  'Password not updated. Check your current password and the new password requirements, then try again.';
+
+/** 账号设置页改密卡片在中英文下的定位与断言文案 */
+const SETTINGS_PASSWORD_COPY = {
+  'zh-CN': {
+    cardTitle: '修改密码',
+    confirmLabel: '确认新密码',
+    currentLabel: '当前密码',
+    newLabel: '新密码',
+    rejectedMessage: ZH_REJECTED_MESSAGE,
+    submitName: /修\s*改\s*密\s*码/,
+    successMessage: ZH_SUCCESS_MESSAGE,
+    tabName: '修改密码',
+  },
+  en: {
+    cardTitle: 'Change password',
+    confirmLabel: 'Confirm new password',
+    currentLabel: 'Current password',
+    newLabel: 'New password',
+    rejectedMessage: EN_REJECTED_MESSAGE,
+    submitName: /Change password/,
+    successMessage: EN_SUCCESS_MESSAGE,
+    tabName: 'Change password',
+  },
+} as const;
+
+/** 受限强改页在中英文下的定位与断言文案 */
+const RESTRICTED_PASSWORD_COPY = {
+  'zh-CN': {
+    cardTitle: '修改登录密码',
+    confirmLabel: '确认新密码',
+    currentLabel: '当前密码',
+    newLabel: '新密码',
+    rejectedMessage: ZH_REJECTED_MESSAGE,
+    restrictionTitle: '请先修改登录密码',
+    submitName: /修\s*改\s*密\s*码/,
+    successMessage: ZH_SUCCESS_MESSAGE,
+  },
+  en: {
+    cardTitle: 'Change login password',
+    confirmLabel: 'Confirm new password',
+    currentLabel: 'Current password',
+    newLabel: 'New password',
+    rejectedMessage: EN_REJECTED_MESSAGE,
+    restrictionTitle: 'Change your login password first',
+    submitName: /Change password/,
+    successMessage: EN_SUCCESS_MESSAGE,
+  },
+} as const;
+
+/** 在已登录页面切换界面语言（页头语言切换组；按钮文案固定为「中文」「English」） */
+async function switchUiLanguage(page: Page, language: UiLanguage): Promise<void> {
+  await page.getByRole('button', { name: language === 'en' ? 'English' : '中文' }).click();
+}
+
+/** 按语言填写改密三框并提交 */
+async function submitPasswordChange(
+  card: ReturnType<typeof cardByTitle>,
+  copy: {
+    confirmLabel: string;
+    currentLabel: string;
+    newLabel: string;
+    submitName: RegExp;
+  },
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
+  await card.getByLabel(copy.currentLabel).fill(currentPassword);
+  await card.getByLabel(copy.newLabel, { exact: true }).fill(newPassword);
+  await card.getByLabel(copy.confirmLabel).fill(newPassword);
+  await card.getByRole('button', { name: copy.submitName }).click();
+}
+
+/** 按界面语言执行真实 UI 登录（登录页文案随语言变化） */
+async function loginViaUiInLanguage(
+  page: Page,
+  loginName: string,
+  password: string,
+  homePath: string,
+  language: UiLanguage,
+): Promise<void> {
+  await page.goto('/login');
+
+  if (language === 'en') {
+    await page.getByLabel('Account or email').fill(loginName);
+    await page.getByLabel('Password').fill(password);
+    await page.getByRole('button', { name: /Sign in/ }).click();
+  } else {
+    await page.getByLabel('账号或邮箱').fill(loginName);
+    await page.getByLabel('密码').fill(password);
+    await page.getByRole('button', { name: /登\s*录/ }).click();
+  }
+
+  await expect(page).toHaveURL(new RegExp(`${homePath}$`));
 }
 
 /** 创建专用账号时充当「一级管理员」的 seed 账号（admin_level 由本规格临时置 1 并恢复） */
@@ -499,8 +604,9 @@ test.describe('account settings real backend flow', () => {
       newPassword: NEW_PASSWORD,
     });
 
-    // 后端固定安全提示原样展示
-    await expect(page.getByText(CHANGE_PASSWORD_NOTICE)).toBeVisible();
+    // 界面展示本地化成功提示；后端 notice 仍按原协议回传，但不直接透传到界面
+    await expect(page.getByText(ZH_SUCCESS_MESSAGE)).toBeVisible();
+    await expect(page.getByText(CHANGE_PASSWORD_NOTICE)).toHaveCount(0);
 
     // 会话收口：唯一会话真源被清理，随后跳转登录页（不依赖服务端撤销）
     await expect(page).toHaveURL(/\/login$/);
@@ -563,11 +669,15 @@ test.describe('account settings real backend flow', () => {
   // 同库探针（探针失败禁止业务写入）；finally 内经 cleanupRegisteredDedicatedAccounts
   // 按本轮登记的完整资源记录（账号 ID + 资料 / 成员关系主键 + 创建预期）精确物理删除。
   // 清理后分别核对主记录、userInfo 与关联业务表均为 0，且无关 mock 哨兵账号原样存在。
-  for (const run of [1, 2]) {
-    test(`真实改密链路（第 ${run} 次）：专用账号改密后旧密码失效、新密码可登录受保护页`, async ({
+  for (const run of [1, 2] as const) {
+    // 第 1 次走中文界面，第 2 次走英文界面：R1 要求成功／拒绝反馈按界面语言本地化
+    const language: UiLanguage = run === 1 ? 'zh-CN' : 'en';
+    const settingsCopy = SETTINGS_PASSWORD_COPY[language];
+
+    test(`真实改密链路（第 ${run} 次 · ${language}）：专用账号改密后旧密码失效、新密码可登录受保护页`, async ({
       page,
     }) => {
-      // 创建账号 + 两次真实登录 + 两次导航进入 + 改密 + 登录尝试 + 数据级断言，需独立预算
+      // 创建账号 + 多次真实登录 + 两次导航进入 + 安全失败 + 改密 + 登录尝试 + 数据级断言
       test.setTimeout(150_000);
       const env = readBackendEnv();
 
@@ -578,9 +688,11 @@ test.describe('account settings real backend flow', () => {
 
       // 登录名口径：4~30 位字母/数字/下划线/短横线；时间戳保证库内唯一
       const dedicatedLoginName = `e2e-pw-${Date.now()}`;
-      // 两个密码均满足现行策略（8～128 位、含小写字母/数字/特殊字符、非黑名单、无连续序列）
+      // 三个密码均满足现行策略（8～128 位、含小写字母/数字/特殊字符、非黑名单、无连续序列）
       const INITIAL_PASSWORD = 'E2eInit#2026Pass';
       const NEW_PASSWORD = 'E2eChanged#2026Pass';
+      // 安全失败只用于触发 BAD_USER_INPUT，不参与任何成功链路
+      const WRONG_CURRENT_PASSWORD = 'E2eWrong#2026Pass';
       const DEDICATED_NICKNAME = 'E2E 改密专用账号';
       const UNRELATED_SENTINELS = [
         'mock_super_admin',
@@ -640,18 +752,36 @@ test.describe('account settings real backend flow', () => {
             userState: 'ACTIVE',
           });
 
-          // 初始密码真实 UI 登录 → 经导航进入账号设置 → 真实提交改密
+          // 初始密码真实 UI 登录 → 经导航进入账号设置 → 切到本次运行语言
           await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/engineer');
           await enterAccountSettingsFromNav(page);
-          await openPasswordTab(page);
+          if (language === 'en') {
+            await switchUiLanguage(page, 'en');
+          }
+          await openPasswordTab(page, settingsCopy.tabName);
 
-          const securityCard = cardByTitle(page, '修改密码');
+          const securityCard = cardByTitle(page, settingsCopy.cardTitle);
 
-          // 「新密码」用 exact 匹配，否则会同时命中「确认新密码」触发 strict mode 冲突
-          await securityCard.getByLabel('当前密码').fill(INITIAL_PASSWORD);
-          await securityCard.getByLabel('新密码', { exact: true }).fill(NEW_PASSWORD);
-          await securityCard.getByLabel('确认新密码').fill(NEW_PASSWORD);
-          await securityCard.getByRole('button', { name: /修\s*改\s*密\s*码/ }).click();
+          // 先跑安全失败（错误当前密码）：显示本地固定提示、会话与页面保持，
+          // 三个密码框被清空（界面不残留凭据）
+          await submitPasswordChange(
+            securityCard,
+            settingsCopy,
+            WRONG_CURRENT_PASSWORD,
+            NEW_PASSWORD,
+          );
+          await expect(page.getByText(settingsCopy.rejectedMessage)).toBeVisible();
+          await expect(page).toHaveURL(new RegExp(`${SETTINGS_PATH}$`));
+          expect(await readStoredAuthSession(page)).not.toBeNull();
+          await expect(securityCard.getByLabel(settingsCopy.currentLabel)).toHaveValue('');
+          await expect(securityCard.getByLabel(settingsCopy.newLabel, { exact: true })).toHaveValue(
+            '',
+          );
+          await expect(securityCard.getByLabel(settingsCopy.confirmLabel)).toHaveValue('');
+
+          // 再跑真正的成功改密：本地成功提示 + 会话收口跳登录页
+          await submitPasswordChange(securityCard, settingsCopy, INITIAL_PASSWORD, NEW_PASSWORD);
+          await expect(page.getByText(settingsCopy.successMessage)).toBeVisible();
 
           // 会话收口：唯一会话真源被清理，随后跳转登录页（不依赖服务端撤销）
           await expect(page).toHaveURL(/\/login$/);
@@ -663,8 +793,13 @@ test.describe('account settings real backend flow', () => {
           expect(oldAttempt.accessToken).toBeNull();
           expect(oldAttempt.errorCode).toBe('UNAUTHENTICATED');
 
-          // 新密码经真实 UI 登录成功并落到受保护主页
-          await loginViaUi(page, dedicatedLoginName, NEW_PASSWORD, '/engineer');
+          // 新密码按本次运行语言真实 UI 登录成功并落到受保护主页
+          await loginViaUiInLanguage(page, dedicatedLoginName, NEW_PASSWORD, '/engineer', language);
+
+          // 后续账号设置页面断言统一用中文定位：英文运行先切回中文
+          if (language === 'en') {
+            await switchUiLanguage(page, 'zh-CN');
+          }
 
           // R4 P5：在点击「账号设置」前注册 MyAccountSettings 响应等待，做 GraphQL 数据级
           // 断言（真实响应、无 route.fulfill）：errors 为空、data.myAccountSettings 存在、
@@ -716,6 +851,152 @@ test.describe('account settings real backend flow', () => {
           label: '夹具管理员等级恢复',
           run: () => {
             // 独立成一步：专用账号清理即使失败，也不跳过夹具等级恢复
+            restoreFixtureLevel?.();
+          },
+        },
+      );
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 强制改密链路（/restricted，零拦截）：专用账号端到端双语回归
+  // ---------------------------------------------------------------------------
+
+  // MUST_CHANGE_PASSWORD 会话只允许停留在 /restricted：失败必须保留限制事实与原会话，
+  // 成功后清会话回登录页，旧密码失效、新密码登录不再受限。中英文各跑一次，
+  // 断言的是本地化反馈（R1），不是后端中文原文。
+  for (const language of ['zh-CN', 'en'] as const) {
+    const restrictedCopy = RESTRICTED_PASSWORD_COPY[language];
+
+    test(`强制改密链路（${language}）：失败保留受限会话、成功后旧密码失效`, async ({ page }) => {
+      test.setTimeout(150_000);
+      const env = readBackendEnv();
+
+      preflightDedicatedAccountCleanup();
+      await assertApiSqlSameDatabase(env);
+
+      // 清理台账只接受 e2e-pw-<时间戳> 形态的专用账号登录名
+      const dedicatedLoginName = `e2e-pw-${Date.now()}`;
+      const INITIAL_PASSWORD = 'E2eInit#2026Pass';
+      const NEW_PASSWORD = 'E2eChanged#2026Pass';
+      const WRONG_CURRENT_PASSWORD = 'E2eWrong#2026Pass';
+      const DEDICATED_NICKNAME = 'E2E 强改专用账号';
+      const UNRELATED_SENTINELS = [
+        'mock_super_admin',
+        'mock_engineer_li',
+        'mock_engineer_chen',
+        'mock_customer_alpha',
+      ] as const;
+      const sentinelBaseline = UNRELATED_SENTINELS.map((loginName) => ({
+        count: readAccountCountByLoginName(loginName),
+        loginName,
+      }));
+      const registry: RegisteredDedicatedAccount[] = [];
+      let restoreFixtureLevel: (() => void) | null = null;
+
+      const browserRequestUrls: string[] = [];
+      page.on('request', (request) => {
+        browserRequestUrls.push(request.url());
+      });
+
+      await runWithCleanup(
+        async () => {
+          const adminFixture = ensureLevelOneAdminFixture(env);
+          restoreFixtureLevel = adminFixture.restore;
+          const organizationId = adminFixture.organizationId;
+
+          const created = await realGraphqlCall(
+            env,
+            ADMIN_CREATE_USER_MUTATION,
+            {
+              input: {
+                initialPassword: INITIAL_PASSWORD,
+                loginName: dedicatedLoginName,
+                nickname: DEDICATED_NICKNAME,
+                role: 'ENGINEER',
+              },
+            },
+            'mock_super_admin',
+          );
+
+          registerCreatedDedicatedAccount(registry, created.body, {
+            accessGroup: ['ENGINEER'],
+            loginName: dedicatedLoginName,
+            nickname: DEDICATED_NICKNAME,
+            organizationId,
+            role: 'ENGINEER',
+            userInfoEmail: null,
+            userState: 'ACTIVE',
+          });
+
+          // 受控夹具写入：把本轮专用账号置为「必须改密」（账号在清理阶段物理删除）
+          runGuardedFixtureWrite(
+            env,
+            `UPDATE base_user_account SET must_change_password = 1 WHERE login_name = '${dedicatedLoginName}'`,
+          );
+
+          // 初始密码真实登录必须落到受限页；先切到本次运行语言再断言本地化强改提示
+          // （新上下文默认中文，英文运行若先断言英文文案会误判为未渲染）
+          await loginViaUi(page, dedicatedLoginName, INITIAL_PASSWORD, '/restricted');
+
+          if (language === 'en') {
+            await switchUiLanguage(page, 'en');
+          }
+
+          await expect(page.getByText(restrictedCopy.restrictionTitle)).toBeVisible();
+
+          const securityCard = cardByTitle(page, restrictedCopy.cardTitle);
+
+          // 安全失败：本地固定提示、仍在受限页、限制事实与会话保持，密码框清空
+          await submitPasswordChange(
+            securityCard,
+            restrictedCopy,
+            WRONG_CURRENT_PASSWORD,
+            NEW_PASSWORD,
+          );
+          await expect(page.getByText(restrictedCopy.rejectedMessage)).toBeVisible();
+          await expect(page).toHaveURL(/\/restricted$/);
+          expect(await readStoredAuthSession(page)).toContain(
+            '"restriction":"MUST_CHANGE_PASSWORD"',
+          );
+          await expect(securityCard.getByLabel(restrictedCopy.currentLabel)).toHaveValue('');
+
+          // 成功改密：本地成功提示 + 会话收口回登录页
+          await submitPasswordChange(securityCard, restrictedCopy, INITIAL_PASSWORD, NEW_PASSWORD);
+          await expect(page.getByText(restrictedCopy.successMessage)).toBeVisible();
+          await expect(page).toHaveURL(/\/login$/);
+          expect(await readStoredAuthSession(page)).toBeNull();
+
+          // 旧密码失效、新密码登录不再受限（落到工程师主页）
+          const oldAttempt = await attemptRealLogin(dedicatedLoginName, INITIAL_PASSWORD);
+
+          expect(oldAttempt.accessToken).toBeNull();
+          expect(oldAttempt.errorCode).toBe('UNAUTHENTICATED');
+          await loginViaUiInLanguage(page, dedicatedLoginName, NEW_PASSWORD, '/engineer', language);
+
+          assertBrowserRequestsBoundToDedicatedOrigins(browserRequestUrls);
+        },
+        {
+          label: '专用账号清理',
+          run: () => {
+            cleanupRegisteredDedicatedAccounts(registry);
+
+            for (const account of registry) {
+              expect(readDedicatedAccountCleanupResidue(account.id)).toEqual({
+                account: 0,
+                relatedBusiness: 0,
+                userInfo: 0,
+              });
+            }
+
+            for (const sentinel of sentinelBaseline) {
+              expect(readAccountCountByLoginName(sentinel.loginName)).toBe(sentinel.count);
+            }
+          },
+        },
+        {
+          label: '夹具管理员等级恢复',
+          run: () => {
             restoreFixtureLevel?.();
           },
         },

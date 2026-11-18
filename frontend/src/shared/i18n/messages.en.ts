@@ -277,6 +277,9 @@ export const EN_MESSAGES = {
   'account.confirmNewPassword': 'Confirm new password',
   'account.confirmNewPasswordRequired': 'Enter the new password again',
   'account.passwordMismatch': 'The passwords do not match',
+  'account.passwordUpdated': 'Password updated. Sign in again with your new password.',
+  'account.passwordRejected':
+    'Password not updated. Check your current password and the new password requirements, then try again.',
   'account.changePassword': 'Change password',
   'account.reset': 'Reset',
   'account.companyCard': 'Company information',
