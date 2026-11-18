@@ -37,7 +37,7 @@ import {
 )
 @Check('chk_repair_request_fault_panel_description', 'CHAR_LENGTH(TRIM(`description`)) > 0')
 export class RepairRequestFaultPanelEntity {
-  @PrimaryGeneratedColumn({ type: 'bigint', comment: '故障面板主键ID' })
+  @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true, comment: '故障面板主键ID' })
   id!: string;
 
   @Column({ name: 'request_id', type: 'int', comment: '所属工单ID' })
@@ -54,6 +54,7 @@ export class RepairRequestFaultPanelEntity {
   @Column({
     name: 'step_id',
     type: 'bigint',
+    unsigned: true,
     nullable: true,
     comment: '来源步骤；仅 STEP_NEW_FAULT 非空',
   })

@@ -39,6 +39,12 @@ const makeRequest = (overrides: PartialRequest = {}): RepairRequestEntity => ({
   handlingRecordedAt: null,
   handlingRecordedByAccountId: null,
   handlingEndedAt: null,
+  maintenanceDate: null,
+  maintenanceEngineerNameSnapshot: null,
+  resetResult: null,
+  supplementaryNote: null,
+  maintenanceAttachmentFileId: null,
+  maintenanceVersionNo: 0,
   ...overrides,
 });
 

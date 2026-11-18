@@ -24,7 +24,7 @@ import {
   "`result_code` IN ('RESOLVED', 'UNRESOLVED', 'NEW_FAULT')",
 )
 export class RepairRequestDiagnosticStepEntity {
-  @PrimaryGeneratedColumn({ type: 'bigint', comment: '排查步骤主键ID' })
+  @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true, comment: '排查步骤主键ID' })
   id!: string;
 
   @Column({ name: 'request_id', type: 'int', comment: '所属工单ID' })

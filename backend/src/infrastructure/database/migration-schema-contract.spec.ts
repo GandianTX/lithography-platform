@@ -6,6 +6,7 @@ import { DataSource, type EntityMetadata } from 'typeorm';
 import {
   collectPrefixStructureRequirements,
   assertStructureDefinitionsComplete,
+  COLUMN_DEFINITIONS,
   type PrefixForeignKeyRequirement,
 } from './migration-schema-contract';
 
@@ -370,6 +371,39 @@ describe('V13 结构契约（不连接实库）', () => {
     });
 
     expect(notUnique).toEqual([]);
+  });
+
+  it('排查步骤与故障面板的 BIGINT 列在 Entity 中声明 unsigned，与迁移定义一致', async () => {
+    const source = await loadEntityMetadata();
+    const cases = [
+      { table: 'repair_request_diagnostic_step', column: 'id', nullable: false },
+      { table: 'repair_request_fault_panel', column: 'id', nullable: false },
+      { table: 'repair_request_fault_panel', column: 'step_id', nullable: true },
+    ] as const;
+
+    for (const item of cases) {
+      const key = `${item.table}.${item.column}`;
+      const column = source.getMetadata(item.table).findColumnWithDatabaseName(item.column);
+      expect(column).toBeDefined();
+      expect(column?.type).toBe('bigint');
+      expect(column?.unsigned).toBe(true);
+      expect(column?.isNullable).toBe(item.nullable);
+      expect(COLUMN_DEFINITIONS[key].columnType).toBe('bigint unsigned');
+      expect(COLUMN_DEFINITIONS[key].nullable).toBe(item.nullable);
+    }
+  });
+
+  it('故障面板复合外键在 Entity 中保持 (request_id, step_id) → (request_id, id)', async () => {
+    const source = await loadEntityMetadata();
+    const metadata = source.getMetadata('repair_request_fault_panel');
+    const foreignKey = metadata.foreignKeys.find(
+      (candidate) => candidate.name === 'fk_repair_request_fault_panel_step',
+    );
+
+    expect(foreignKey).toBeDefined();
+    expect(foreignKey?.columnNames).toEqual(['request_id', 'step_id']);
+    expect(foreignKey?.referencedEntityMetadata.tableName).toBe('repair_request_diagnostic_step');
+    expect(foreignKey?.referencedColumnNames).toEqual(['request_id', 'id']);
   });
 
   it('record_package_item 两条外键引用父实体真实主键列而非默认 id', async () => {
