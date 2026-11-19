@@ -29,6 +29,8 @@ import {
   downloadRepairProcessFile,
   ENGINEER_DETAIL_NOT_ACCESSIBLE_MESSAGE_KEY,
   fetchEngineerRepairRequestDetail,
+  fetchEngineerRepairRequestRevisionDetail,
+  fetchEngineerRepairRequestRevisionHistory,
   fetchEngineerRepairRequests,
   updateRepairProcessEntry,
   uploadRepairProcessFile,
@@ -109,6 +111,11 @@ const DETAIL_MODEL = {
   handlingResult: null,
   handlingStatus: null,
   processEntries: [],
+  maintenance: null,
+  maintenanceSteps: [],
+  maintenanceFaultPanels: [],
+  intake: null,
+  canEditMaintenance: false,
   responses: [
     {
       id: 51,
@@ -770,7 +777,12 @@ describe('closeRepairRequest', () => {
     });
 
     await expect(
-      closeRepairRequest({ requestId: 21, handlingResult: 'FIXED', closureReason: '已修复' }),
+      closeRepairRequest({
+        requestId: 21,
+        handlingResult: 'FIXED',
+        closureReason: '已修复',
+        maintenanceVersionNo: 0,
+      }),
     ).resolves.toEqual({
       ok: true,
       closure: {
@@ -789,7 +801,12 @@ describe('closeRepairRequest', () => {
     executeGraphQLMock.mockRejectedValue(buildDomainIngressError({ code: 'CONFLICT' }));
 
     await expect(
-      closeRepairRequest({ requestId: 21, handlingResult: 'FIXED', closureReason: null }),
+      closeRepairRequest({
+        requestId: 21,
+        handlingResult: 'FIXED',
+        closureReason: null,
+        maintenanceVersionNo: 3,
+      }),
     ).resolves.toEqual({
       ok: false,
       reason: 'closed',
@@ -872,5 +889,130 @@ describe('downloadRepairProcessFile', () => {
       '/api/stored-files/file-1/download',
       {},
     );
+  });
+});
+
+/* ------------------------ 工程师侧修订历史（只读） ------------------------ */
+
+describe('fetchEngineerRepairRequestRevisionHistory', () => {
+  it('按 requestId 查询并映射历史元数据与对比原因码', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      engineerRepairRequestRevisionHistory: [
+        {
+          revisionNo: 2,
+          previousVersion: 1,
+          reason: '修正维修步骤',
+          actorNickname: '管理员甲',
+          createdAt: '2026-09-03T10:00:00.000Z',
+          hasComparableSnapshot: true,
+          hasVisibleMaintenanceChange: true,
+          compareUnavailableReason: null,
+        },
+        {
+          revisionNo: 1,
+          previousVersion: 0,
+          reason: '旧快照修订',
+          actorNickname: '管理员乙',
+          createdAt: '2026-09-02T10:00:00.000Z',
+          hasComparableSnapshot: false,
+          hasVisibleMaintenanceChange: false,
+          compareUnavailableReason: 'NO_COMPARABLE_SNAPSHOT',
+        },
+      ],
+    });
+
+    await expect(fetchEngineerRepairRequestRevisionHistory(123)).resolves.toEqual({
+      ok: true,
+      items: [
+        {
+          revisionNo: 2,
+          previousVersion: 1,
+          reason: '修正维修步骤',
+          actorNickname: '管理员甲',
+          createdAt: '2026-09-03T10:00:00.000Z',
+          hasComparableSnapshot: true,
+          hasVisibleMaintenanceChange: true,
+          compareUnavailableReason: null,
+        },
+        {
+          revisionNo: 1,
+          previousVersion: 0,
+          reason: '旧快照修订',
+          actorNickname: '管理员乙',
+          createdAt: '2026-09-02T10:00:00.000Z',
+          hasComparableSnapshot: false,
+          hasVisibleMaintenanceChange: false,
+          compareUnavailableReason: 'NO_COMPARABLE_SNAPSHOT',
+        },
+      ],
+    });
+    const [, variables] = executeGraphQLMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables).toEqual({ requestId: 123 });
+  });
+
+  it('业务拒绝返回显式失败结果；transport 错误继续上抛', async () => {
+    executeGraphQLMock.mockRejectedValueOnce(
+      buildDomainIngressError({
+        code: 'FORBIDDEN',
+        errorCode: 'PERMISSION_DENIED',
+        errorMessage: '维修申请不存在或不可查看',
+      }),
+    );
+    await expect(fetchEngineerRepairRequestRevisionHistory(123)).resolves.toEqual({
+      ok: false,
+      message: '维修申请不存在或不可查看',
+    });
+
+    const authError = new GraphQLIngressError({ type: 'auth', message: 'token invalid' });
+    executeGraphQLMock.mockRejectedValueOnce(authError);
+    await expect(fetchEngineerRepairRequestRevisionHistory(123)).rejects.toBe(authError);
+  });
+});
+
+describe('fetchEngineerRepairRequestRevisionDetail', () => {
+  it('映射前后工程师可见维修快照与不可对比原因', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      engineerRepairRequestRevision: {
+        requestId: 123,
+        revisionNo: 2,
+        previousVersion: 1,
+        reason: '修正维修步骤',
+        actorNickname: '管理员甲',
+        createdAt: '2026-09-03T10:00:00.000Z',
+        hasComparableSnapshot: true,
+        hasVisibleMaintenanceChange: true,
+        compareUnavailableReason: null,
+        before: {
+          maintenanceDate: '2026-09-02',
+          engineerName: '陈工',
+          resetResult: 'NORMAL',
+          supplementaryNote: null,
+          steps: [],
+          panels: [],
+        },
+        after: {
+          maintenanceDate: '2026-09-02',
+          engineerName: '陈工（修订）',
+          resetResult: 'NORMAL',
+          supplementaryNote: '补充',
+          steps: [],
+          panels: [],
+        },
+      },
+    });
+
+    await expect(fetchEngineerRepairRequestRevisionDetail(123, 2)).resolves.toMatchObject({
+      ok: true,
+      detail: {
+        requestId: 123,
+        revisionNo: 2,
+        previousVersion: 1,
+        compareUnavailableReason: null,
+        before: { engineerName: '陈工' },
+        after: { engineerName: '陈工（修订）', supplementaryNote: '补充' },
+      },
+    });
+    const [, variables] = executeGraphQLMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables).toEqual({ requestId: 123, revisionNo: 2 });
   });
 });

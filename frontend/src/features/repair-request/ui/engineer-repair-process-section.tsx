@@ -9,15 +9,21 @@
  * - 暂存原件进入编辑前显式交接或拦截，不进编辑后静默丢弃；
  * - 保存过程后走正式详情读接口回读，列表以读回结果为准；
  * - 编辑按 expectedVersion 提交，冲突不自动重试；
- * - 结单二次确认，成功后由应用层回读详情并转为只读。
+ * - 结单二次确认，成功后由应用层回读详情并转为只读；
+ * - 结单前检查维修记录草稿门禁：确认框打开前与最终提交前各检查一次，
+ *   有未保存内容或写入未落定时只提示，保留输入且不发出结单请求。
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, Popconfirm, Select, Tag, Timeline } from 'antd';
 
-import { formatDateTimeText } from '@/shared/ui/format-date-time';
+import { useI18n } from '@/shared/i18n';
 import { REPAIR_HANDLING_RESULT_OPTIONS } from '@/shared/ui/repair-request-status-labels';
 
+import {
+  type MaintenanceDraftGuardState,
+  resolveMaintenanceClosureBlockReason,
+} from '../application/repair-request-closure-draft-guard';
 import type { RepairProcessFormInput } from '../application/use-engineer-repair-process-workbench';
 import { useEngineerRepairProcessWorkbench } from '../application/use-engineer-repair-process-workbench';
 import type {
@@ -26,6 +32,8 @@ import type {
   RepairProcessWriteResult,
   RepairRequestHandlingResult,
 } from '../infrastructure/engineer-repair-request.types';
+
+import { RepairProcessEntryView } from './repair-process-entry-view';
 
 /** 五项处理结果文案与管理员侧共用 shared 真源，避免两套中文全称 */
 const HANDLING_RESULT_OPTIONS: Array<{ value: RepairRequestHandlingResult; label: string }> =
@@ -195,58 +203,6 @@ function CloseFeedbackAlert({
   return <Alert showIcon title={result.message} type="error" />;
 }
 
-function ProcessEntryItem({
-  entry,
-  onDownload,
-  onEdit,
-  disabled,
-}: {
-  entry: EngineerRepairProcessEntry;
-  onDownload: (fileId: string) => void;
-  onEdit: (entry: EngineerRepairProcessEntry) => void;
-  disabled: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium text-sm">
-          {entry.occurredAt ? formatDateTimeText(entry.occurredAt) : '服务端记录时间'}
-        </span>
-        <Tag color={entry.timeSource === 'MANUAL' ? 'blue' : 'default'}>
-          {entry.timeSource === 'MANUAL' ? '人工时间' : '系统时间'}
-        </Tag>
-        <span className="text-text-secondary text-xs">版本 {entry.versionNo}</span>
-        {!disabled ? (
-          <Button onClick={() => onEdit(entry)} size="small" type="link">
-            编辑
-          </Button>
-        ) : null}
-      </div>
-      <div className="text-sm whitespace-pre-wrap">{entry.operationText}</div>
-      {entry.testResult ? (
-        <div className="text-sm text-text-secondary whitespace-pre-wrap">
-          测试事实：{entry.testResult}
-        </div>
-      ) : null}
-      {entry.file ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Tag color="green">已保存绑定</Tag>
-          <span className="text-sm">{entry.file.originalFilename}</span>
-          <span className="text-text-secondary text-xs">
-            {entry.file.byteSize} 字节 · SHA-256 {entry.file.checksumSha256.slice(0, 12)}…
-          </span>
-          <Button onClick={() => onDownload(entry.file!.fileId)} size="small">
-            下载原件
-          </Button>
-        </div>
-      ) : null}
-      <div className="text-text-secondary text-xs">
-        记录于 {formatDateTimeText(entry.createdAt)}
-      </div>
-    </div>
-  );
-}
-
 export function EngineerRepairProcessSection({
   requestId,
   scopeKey,
@@ -380,7 +336,7 @@ export function EngineerRepairProcessSection({
           <Timeline
             items={processEntries.map((entry) => ({
               content: (
-                <ProcessEntryItem
+                <RepairProcessEntryView
                   disabled={!canWrite || readOnly}
                   entry={entry}
                   onDownload={(fileId) => void handleDownload(fileId)}
@@ -544,6 +500,8 @@ export function EngineerRepairCloseSection({
   canWrite,
   reload,
   closedByMutation,
+  maintenanceVersionNo,
+  maintenanceDraft,
   onCloseSucceeded,
   onCloseReadbackSucceeded,
   writeEligible,
@@ -553,16 +511,23 @@ export function EngineerRepairCloseSection({
   canWrite: boolean;
   reload: (options?: { shouldApply?: () => boolean; silent?: boolean }) => Promise<unknown>;
   closedByMutation: boolean;
+  /** 当前详情里的维修记录版本；null 表示版本未加载，不能发起结单 */
+  maintenanceVersionNo: number | null;
+  /** 维修记录草稿门禁状态：有未保存内容或写入未落定时拦截结单 */
+  maintenanceDraft: MaintenanceDraftGuardState;
   onCloseSucceeded: () => void;
   onCloseReadbackSucceeded: () => void;
   writeEligible?: (requestId: number | null, scopeKey: string) => boolean;
 }) {
+  const { t } = useI18n();
   const {
     closing,
     lastCloseResult,
+    lastInterruptResult,
     closeReadbackFailed,
     closeReadbackRetrying,
     closeRequest,
+    interruptRequest,
     retryCloseReadback,
   } = useEngineerRepairProcessWorkbench(requestId, reload, {
     writeBlocked: closedByMutation,
@@ -576,10 +541,24 @@ export function EngineerRepairCloseSection({
     closureReason?: string;
   }>();
   const selectedResult = Form.useWatch('handlingResult', form);
+  // 用户打开结单确认那一刻看到的维修版本；提交时不得悄悄替换为最新版本。
+  const capturedMaintenanceVersionRef = useRef<number | null>(null);
+  const [closeVersionMissing, setCloseVersionMissing] = useState(false);
+  // 结单确认的展开由本组件控制：打开前与最终提交前各检查一次草稿门禁。
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  // 草稿门禁拦截提示：只在用户尝试结单被拦下后展示，不主动干扰编辑。
+  const [blockedAttempt, setBlockedAttempt] = useState(false);
 
   useEffect(() => {
     form.resetFields();
+    capturedMaintenanceVersionRef.current = null;
   }, [requestId, scopeKey, form]);
+
+  // 记录中断不是结单，不建立只读屏障，因此不受维修草稿门禁约束。
+  const draftBlockReason =
+    selectedResult === 'INTERRUPTED'
+      ? null
+      : resolveMaintenanceClosureBlockReason(maintenanceDraft);
 
   if (!canWrite) {
     return null;
@@ -623,12 +602,29 @@ export function EngineerRepairCloseSection({
       <Form
         form={form}
         layout="vertical"
-        onFinish={(values) =>
-          void closeRequest(
-            values.handlingResult,
-            values.closureReason?.trim() ? values.closureReason.trim() : null,
-          )
-        }
+        onFinish={(values) => {
+          const reason = values.closureReason?.trim() ? values.closureReason.trim() : null;
+          // 维修中断与结单分离：中断只记录原因与处理状态，不结单、不建立只读屏障。
+          if (values.handlingResult === 'INTERRUPTED') {
+            void interruptRequest(reason ?? '');
+            return;
+          }
+          // 最终确认、发请求前再检查一次：确认框打开后草稿可能又被改动，
+          // 有未保存内容就保留输入并停在本地，不发出结单请求。
+          if (resolveMaintenanceClosureBlockReason(maintenanceDraft) !== null) {
+            setBlockedAttempt(true);
+            setConfirmOpen(false);
+            return;
+          }
+          setBlockedAttempt(false);
+          const capturedVersion = capturedMaintenanceVersionRef.current;
+          if (capturedVersion === null) {
+            setCloseVersionMissing(true);
+            return;
+          }
+          setCloseVersionMissing(false);
+          void closeRequest(values.handlingResult, reason, capturedVersion);
+        }}
       >
         <Form.Item
           label="处理结果"
@@ -661,15 +657,76 @@ export function EngineerRepairCloseSection({
           readbackRetrying={closeReadbackRetrying}
           result={lastCloseResult}
         />
+        {closeVersionMissing ? (
+          <div className="mb-3">
+            <Alert
+              showIcon
+              title="维修记录版本尚未就绪，请刷新详情后重新确认结单。"
+              type="warning"
+            />
+          </div>
+        ) : null}
+        {lastInterruptResult ? (
+          <div className="mb-3">
+            <Alert
+              title={
+                lastInterruptResult.ok
+                  ? '已记录维修中断，工单未结单，仍可继续保存维修记录和回复。'
+                  : lastInterruptResult.message
+              }
+              showIcon
+              type={lastInterruptResult.ok ? 'success' : 'error'}
+            />
+          </div>
+        ) : null}
+        {blockedAttempt && draftBlockReason !== null ? (
+          <div className="mb-3">
+            <Alert
+              showIcon
+              title={
+                draftBlockReason === 'write-pending'
+                  ? t('engineerDetail.closeBlockedByPendingMaintenance')
+                  : t('engineerDetail.closeBlockedByUnsavedMaintenance')
+              }
+              type="warning"
+            />
+          </div>
+        ) : null}
+        {/*
+         * 打开结单确认前检查一次：有未保存内容或写入未落定时只提示，
+         * 不展开确认、不记录维修版本，也不触发任何结单请求。
+         */}
         <Popconfirm
           cancelText="取消"
-          description="结单后内部过程与回复将只读，且不可再次结单。"
-          okText="确认结单"
+          description={
+            selectedResult === 'INTERRUPTED'
+              ? '记录中断不会结单，之后仍可继续处理。'
+              : '结单后内部过程与回复将只读，且不可再次结单。'
+          }
+          okText={selectedResult === 'INTERRUPTED' ? '记录中断' : '确认结单'}
           onConfirm={() => form.submit()}
-          title="确认结单该维修申请？"
+          onOpenChange={(open) => {
+            if (!open) {
+              setConfirmOpen(false);
+              return;
+            }
+            if (draftBlockReason !== null) {
+              setBlockedAttempt(true);
+              setConfirmOpen(false);
+              return;
+            }
+            setBlockedAttempt(false);
+            capturedMaintenanceVersionRef.current = maintenanceVersionNo;
+            setCloseVersionMissing(false);
+            setConfirmOpen(true);
+          }}
+          open={confirmOpen}
+          title={
+            selectedResult === 'INTERRUPTED' ? '确认记录本次维修中断？' : '确认结单该维修申请？'
+          }
         >
           <Button loading={closing} type="primary">
-            结单
+            {selectedResult === 'INTERRUPTED' ? '记录中断' : '结单'}
           </Button>
         </Popconfirm>
       </Form>

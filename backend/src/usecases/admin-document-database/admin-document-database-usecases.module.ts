@@ -6,6 +6,7 @@ import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { AppendRepairRequestRevisionUsecase } from './append-repair-request-revision.usecase';
 import { GetAdminAiReportDetailUsecase } from './get-admin-ai-report-detail.usecase';
 import { GetAdminDocumentDatabaseStatsUsecase } from './get-admin-document-database-stats.usecase';
+import { GetAdminRepairRequestRevisionDetailUsecase } from './get-admin-repair-request-revision-detail.usecase';
 import { GetAdminRepairRequestSummaryUsecase } from './get-admin-repair-request-summary.usecase';
 import { ListAdminAiConversationsUsecase } from './list-admin-ai-conversations.usecase';
 import { ListAdminAiMessagesUsecase } from './list-admin-ai-messages.usecase';
@@ -22,6 +23,7 @@ import { ListAdminRepairRequestsUsecase } from './list-admin-repair-requests.use
   providers: [
     ListAdminRepairRequestsUsecase,
     GetAdminRepairRequestSummaryUsecase,
+    GetAdminRepairRequestRevisionDetailUsecase,
     AppendRepairRequestRevisionUsecase,
     ListAdminAiConversationsUsecase,
     ListAdminAiMessagesUsecase,
@@ -32,6 +34,7 @@ import { ListAdminRepairRequestsUsecase } from './list-admin-repair-requests.use
   exports: [
     ListAdminRepairRequestsUsecase,
     GetAdminRepairRequestSummaryUsecase,
+    GetAdminRepairRequestRevisionDetailUsecase,
     AppendRepairRequestRevisionUsecase,
     ListAdminAiConversationsUsecase,
     ListAdminAiMessagesUsecase,

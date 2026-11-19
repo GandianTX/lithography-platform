@@ -3,7 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Divider, Input, message, Modal, Select, Space, Typography } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
+import { MaintenanceRecordEditor } from '@/shared/ui/maintenance-record-editor';
+import {
+  createMaintenanceEditorValue,
+  serializeMaintenanceEditorValue,
+  toMaintenancePanelPayloads,
+  toMaintenanceStepPayloads,
+  validateMaintenanceEditorValue,
+} from '@/shared/ui/maintenance-record-editor/model';
 import { REPAIR_HANDLING_RESULT_OPTIONS } from '@/shared/ui/repair-request-status-labels';
 
 import type {
@@ -34,19 +43,41 @@ export function AdminRepairRequestRevisionModal({
   detail,
   open,
   onClose,
+  onDownloadAttachment,
   onSaved,
 }: {
   detail: AdminRepairRequestSummary;
   open: boolean;
   onClose: () => void;
+  onDownloadAttachment: (fileId: string) => Promise<{ ok: boolean; message?: string }>;
   onSaved: () => void | Promise<boolean>;
 }) {
+  const { t } = useI18n();
+  const initialMaintenanceValue = useMemo(
+    () =>
+      createMaintenanceEditorValue({
+        maintenanceDate: detail.maintenance?.maintenanceDate ?? null,
+        engineerName: detail.maintenance?.engineerName ?? null,
+        resetResult: detail.maintenance?.resetResult ?? null,
+        supplementaryNote: detail.maintenance?.supplementaryNote ?? null,
+        attachment: detail.maintenance?.attachment ?? null,
+        steps: detail.maintenanceSteps ?? [],
+        panels: detail.maintenanceFaultPanels ?? [],
+      }),
+    [detail],
+  );
+  const initialMaintenanceSerialized = useMemo(
+    () => serializeMaintenanceEditorValue(initialMaintenanceValue),
+    [initialMaintenanceValue],
+  );
+  const [maintenanceValue, setMaintenanceValue] = useState(initialMaintenanceValue);
+  const [maintenanceDownloadError, setMaintenanceDownloadError] = useState<string | null>(null);
   const [contentMd, setContentMd] = useState(detail.contentMd);
   const [handlingResult, setHandlingResult] = useState<AdminRepairHandlingResult | null>(
     detail.handlingResult,
   );
   const [closureReason, setClosureReason] = useState(detail.closureReason ?? '');
-  const [processEdits, setProcessEdits] = useState<Record<string, ProcessEdit>>(() =>
+  const [processEdits] = useState<Record<string, ProcessEdit>>(() =>
     Object.fromEntries(
       detail.processEntries.map((entry) => [
         entry.id,
@@ -102,14 +133,25 @@ export function AdminRepairRequestRevisionModal({
       handlingChanged: (handlingResult ?? null) !== detail.handlingResult,
       closureReasonChanged: closureReason !== (detail.closureReason ?? ''),
       changedProcessEntries,
+      maintenanceChanged:
+        serializeMaintenanceEditorValue(maintenanceValue) !== initialMaintenanceSerialized,
     };
-  }, [detail, contentMd, handlingResult, closureReason, processEdits]);
+  }, [
+    detail,
+    contentMd,
+    handlingResult,
+    closureReason,
+    processEdits,
+    maintenanceValue,
+    initialMaintenanceSerialized,
+  ]);
 
   const hasChanges =
     revisionFields.contentChanged ||
     revisionFields.handlingChanged ||
     revisionFields.closureReasonChanged ||
-    revisionFields.changedProcessEntries.length > 0;
+    revisionFields.changedProcessEntries.length > 0 ||
+    revisionFields.maintenanceChanged;
 
   const effectiveHandlingResult = handlingResult ?? detail.handlingResult;
 
@@ -144,6 +186,29 @@ export function AdminRepairRequestRevisionModal({
     }
     if (revisionFields.changedProcessEntries.length > 0) {
       input.processEntries = revisionFields.changedProcessEntries;
+    }
+    if (revisionFields.maintenanceChanged) {
+      const issues = validateMaintenanceEditorValue(maintenanceValue, t);
+      if (issues.length > 0) {
+        setSubmitError(issues.join('；'));
+        return;
+      }
+      input.expectedMaintenanceVersion = detail.maintenanceVersionNo ?? 0;
+      input.maintenance = {
+        maintenanceDate:
+          maintenanceValue.maintenanceDate.trim() === ''
+            ? null
+            : maintenanceValue.maintenanceDate.trim(),
+        engineerName:
+          maintenanceValue.engineerName.trim() === '' ? null : maintenanceValue.engineerName.trim(),
+        resetResult: maintenanceValue.resetResult === '' ? null : maintenanceValue.resetResult,
+        supplementaryNote:
+          maintenanceValue.supplementaryNote.trim() === ''
+            ? null
+            : maintenanceValue.supplementaryNote.trim(),
+        steps: toMaintenanceStepPayloads(maintenanceValue),
+        panels: toMaintenancePanelPayloads(maintenanceValue),
+      };
     }
 
     const requestId = detail.id;
@@ -188,6 +253,16 @@ export function AdminRepairRequestRevisionModal({
     }
   };
 
+  const handleMaintenanceDownload = async (fileId: string) => {
+    setMaintenanceDownloadError(null);
+    const result = await onDownloadAttachment(fileId);
+    if (!result.ok) {
+      setMaintenanceDownloadError(
+        result.message ?? t('adminRepairRequest.versionHistory.downloadFailed'),
+      );
+    }
+  };
+
   return (
     <Modal
       destroyOnHidden
@@ -208,7 +283,7 @@ export function AdminRepairRequestRevisionModal({
       onCancel={onClose}
       open={open}
       title={`修订工单 · ${detail.requestNo}（当前版本 ${detail.currentRevisionNo}）`}
-      width={760}
+      width={960}
     >
       <div className="flex flex-col gap-4">
         <Alert
@@ -256,7 +331,12 @@ export function AdminRepairRequestRevisionModal({
         <Divider style={{ marginBlock: 0 }} />
 
         <div>
-          <p className="mb-2 font-medium">内部维修过程（仅订正文本）</p>
+          <p className="mb-2 font-medium">内部维修过程（旧过程已只读）</p>
+          <div className="mb-2">
+            <Typography.Text type="secondary">
+              旧维修过程仅可查看，不能在此订正；请使用新版结构化维修记录。
+            </Typography.Text>
+          </div>
           {detail.processEntries.length === 0 ? (
             <Typography.Text type="secondary">暂无已提交过程。</Typography.Text>
           ) : (
@@ -280,38 +360,44 @@ export function AdminRepairRequestRevisionModal({
                     </div>
                     <Input.TextArea
                       autoSize={{ minRows: 2, maxRows: 8 }}
-                      onChange={(event) =>
-                        setProcessEdits((previous) => ({
-                          ...previous,
-                          [entry.id]: {
-                            ...edit,
-                            operationText: event.target.value,
-                          },
-                        }))
-                      }
+                      disabled
                       value={edit.operationText}
                     />
                     <div className="mt-2">
-                      <Input
-                        maxLength={255}
-                        onChange={(event) =>
-                          setProcessEdits((previous) => ({
-                            ...previous,
-                            [entry.id]: {
-                              ...edit,
-                              testResult: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder="测试结果（可选）"
-                        value={edit.testResult}
-                      />
+                      <Input disabled placeholder="测试结果（可选）" value={edit.testResult} />
                     </div>
                   </div>
                 );
               })}
             </div>
           )}
+        </div>
+
+        <Divider style={{ marginBlock: 0 }} />
+
+        <div>
+          <p className="mb-1 font-medium">{t('adminRepairRequest.revisionModal.maintenance')}</p>
+          <p className="mb-2 text-xs text-text-secondary">
+            {t('adminRepairRequest.revisionModal.maintenanceHint')}
+          </p>
+          <MaintenanceRecordEditor
+            attachment={{
+              onClearStaged: () => undefined,
+              onDownload: (fileId) => void handleMaintenanceDownload(fileId),
+              onSelectFile: () => undefined,
+              readOnly: true,
+              stagedFile: null,
+              uploading: false,
+            }}
+            disabled={submitting}
+            onChange={setMaintenanceValue}
+            value={maintenanceValue}
+          />
+          {maintenanceDownloadError ? (
+            <div className="mt-2">
+              <Alert showIcon title={maintenanceDownloadError} type="error" />
+            </div>
+          ) : null}
         </div>
 
         <div>

@@ -16,6 +16,11 @@ export class CloseRepairRequestInput {
   @IsEnum(RepairRequestHandlingResult, { message: '处理结果无效' })
   handlingResult!: RepairRequestHandlingResult;
 
+  @Field(() => Int, { description: '工程师打开结单确认时看到的维修记录版本号（0 合法）' })
+  @IsInt({ message: '维修记录版本号必须是整数' })
+  @Min(0, { message: '维修记录版本号不能小于 0' })
+  maintenanceVersionNo!: number;
+
   @Field(() => String, { nullable: true, description: '结单原因（中断/无法修复时必填）' })
   @IsOptional()
   @IsString({ message: '结单原因必须是字符串' })

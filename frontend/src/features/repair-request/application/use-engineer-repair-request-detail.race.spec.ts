@@ -531,7 +531,7 @@ describe('操作后回读与 Mutation 注入交叉', () => {
 
     let closePromise!: Promise<unknown>;
     act(() => {
-      closePromise = result.current.workbench.closeRequest('FIXED', null);
+      closePromise = result.current.workbench.closeRequest('FIXED', null, 0);
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 

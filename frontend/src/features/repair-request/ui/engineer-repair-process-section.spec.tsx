@@ -8,13 +8,18 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { translate } from '@/shared/i18n';
+
 import type {
   EngineerRepairProcessEntry,
   RepairProcessWriteResult,
   StagedRepairProcessFile,
 } from '../infrastructure/engineer-repair-request.types';
 
-import { EngineerRepairProcessSection } from './engineer-repair-process-section';
+import {
+  EngineerRepairCloseSection,
+  EngineerRepairProcessSection,
+} from './engineer-repair-process-section';
 
 const { hookMock } = vi.hoisted(() => ({
   hookMock: {
@@ -27,6 +32,14 @@ const { hookMock } = vi.hoisted(() => ({
     saveProcess: vi.fn(),
     downloadFile: vi.fn(),
     beginEditScope: vi.fn(),
+    closing: false,
+    lastCloseResult: null as null,
+    lastInterruptResult: null as null,
+    closeReadbackFailed: false,
+    closeReadbackRetrying: false,
+    closeRequest: vi.fn(),
+    interruptRequest: vi.fn(),
+    retryCloseReadback: vi.fn(),
   },
 }));
 
@@ -102,6 +115,14 @@ beforeEach(() => {
     filename: '现场照片.jpg',
   });
   hookMock.beginEditScope.mockReset();
+  hookMock.closing = false;
+  hookMock.lastCloseResult = null;
+  hookMock.lastInterruptResult = null;
+  hookMock.closeReadbackFailed = false;
+  hookMock.closeReadbackRetrying = false;
+  hookMock.closeRequest.mockReset();
+  hookMock.interruptRequest.mockReset();
+  hookMock.retryCloseReadback.mockReset();
   reload.mockClear();
 });
 
@@ -213,5 +234,117 @@ describe(EngineerRepairProcessSection.name, () => {
     expect(textarea.value).toBe('冲突后仍需保留的输入');
     expect(screen.getByText('维修过程已被修改，请刷新后重试')).toBeTruthy();
     expect(screen.getByRole('button', { name: '刷新详情' })).toBeTruthy();
+  });
+});
+
+describe(EngineerRepairCloseSection.name, () => {
+  const closeProps = {
+    requestId: 21,
+    scopeKey: '21',
+    canWrite: true,
+    reload,
+    closedByMutation: false,
+    maintenanceDraft: { hasUnsavedChanges: false, writePending: false },
+    onCloseSucceeded: vi.fn(),
+    onCloseReadbackSucceeded: vi.fn(),
+  };
+
+  async function selectHandlingResult() {
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByText('故障修复'));
+  }
+
+  it('维修版本缺失：确认后阻止提交并提示刷新，不假装是 0', async () => {
+    render(<EngineerRepairCloseSection {...closeProps} maintenanceVersionNo={null} />);
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认结单' }));
+
+    expect(
+      await screen.findByText('维修记录版本尚未就绪，请刷新详情后重新确认结单。'),
+    ).toBeTruthy();
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('确认打开后详情版本变化：仍提交打开时捕获的版本（0 合法）', async () => {
+    const view = render(<EngineerRepairCloseSection {...closeProps} maintenanceVersionNo={0} />);
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+
+    // 确认框已打开后，后台详情推进到新版本
+    view.rerender(<EngineerRepairCloseSection {...closeProps} maintenanceVersionNo={5} />);
+    fireEvent.click(await screen.findByRole('button', { name: '确认结单' }));
+
+    await waitFor(() => expect(hookMock.closeRequest).toHaveBeenCalledWith('FIXED', null, 0));
+  });
+
+  it('有未保存维修内容：打开确认前即拦截，只提示且不发结单请求', async () => {
+    render(
+      <EngineerRepairCloseSection
+        {...closeProps}
+        maintenanceDraft={{ hasUnsavedChanges: true, writePending: false }}
+        maintenanceVersionNo={1}
+      />,
+    );
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+
+    expect(
+      await screen.findByText(
+        translate('zh-CN', 'engineerDetail.closeBlockedByUnsavedMaintenance'),
+      ),
+    ).toBeTruthy();
+    // 确认框没有展开，也没有发出任何结单请求
+    expect(screen.queryByRole('button', { name: '确认结单' })).toBeNull();
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('确认框已打开后草稿变为未保存：最终确认时再拦截一次，不发结单请求', async () => {
+    const view = render(<EngineerRepairCloseSection {...closeProps} maintenanceVersionNo={1} />);
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+    await screen.findByRole('button', { name: '确认结单' });
+
+    // 用户打开确认后草稿又被改动（例如编辑器仍可交互的场景）
+    view.rerender(
+      <EngineerRepairCloseSection
+        {...closeProps}
+        maintenanceDraft={{ hasUnsavedChanges: true, writePending: false }}
+        maintenanceVersionNo={1}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '确认结单' }));
+
+    expect(
+      await screen.findByText(
+        translate('zh-CN', 'engineerDetail.closeBlockedByUnsavedMaintenance'),
+      ),
+    ).toBeTruthy();
+    // 只拦截提交：不记录维修版本、不发结单请求（弹层是否保留 DOM 由 antd 决定）
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('维修记录写入未落定：提示稍后确认，不发结单请求', async () => {
+    render(
+      <EngineerRepairCloseSection
+        {...closeProps}
+        maintenanceDraft={{ hasUnsavedChanges: false, writePending: true }}
+        maintenanceVersionNo={1}
+      />,
+    );
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+
+    expect(
+      await screen.findByText(
+        translate('zh-CN', 'engineerDetail.closeBlockedByPendingMaintenance'),
+      ),
+    ).toBeTruthy();
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
   });
 });

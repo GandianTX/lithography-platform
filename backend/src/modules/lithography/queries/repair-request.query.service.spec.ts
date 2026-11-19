@@ -7,6 +7,7 @@ import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
+import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
 import { RepairRequestQueryService } from './repair-request.query.service';
 
 type PartialRequest = Partial<RepairRequestEntity>;
@@ -93,6 +94,12 @@ describe('RepairRequestQueryService', () => {
       {
         listByRequest: jest.fn().mockResolvedValue([]),
       } as unknown as RepairProcessEntryQueryService,
+      {
+        findRecord: jest.fn().mockResolvedValue(null),
+        listSteps: jest.fn().mockResolvedValue([]),
+        listFaultPanels: jest.fn().mockResolvedValue([]),
+        findIntakeSource: jest.fn().mockResolvedValue(null),
+      } as unknown as RepairRequestMaintenanceQueryService,
     );
     // 列表装配默认空集合，单测内按需覆盖
     equipmentModelRepository.find.mockResolvedValue([]);
@@ -796,6 +803,12 @@ describe('RepairRequestQueryService', () => {
         equipmentModelRepository as unknown as Repository<EquipmentModelEntity>,
         intakeRepository as unknown as Repository<RepairRequestIntakeEntity>,
         projection,
+        {
+          findRecord: jest.fn().mockResolvedValue(null),
+          listSteps: jest.fn().mockResolvedValue([]),
+          listFaultPanels: jest.fn().mockResolvedValue([]),
+          findIntakeSource: jest.fn().mockResolvedValue(null),
+        } as unknown as RepairRequestMaintenanceQueryService,
       );
       return projection;
     };

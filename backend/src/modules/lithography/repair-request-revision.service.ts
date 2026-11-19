@@ -12,9 +12,15 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { Repository } from 'typeorm';
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
+import { RepairRequestDiagnosticStepEntity } from './entities/repair-request-diagnostic-step.entity';
+import { RepairRequestFaultPanelEntity } from './entities/repair-request-fault-panel.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
 import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
+import type {
+  RepairMaintenanceFaultPanelView,
+  RepairMaintenanceStepView,
+} from './lithography.types';
 
 export type RepairRequestRevisionTargetSnapshot = {
   id: number;
@@ -43,6 +49,13 @@ export type RepairRequestRevisionTargetSnapshot = {
   closureReason: string | null;
   handlingEndedAt: Date | null;
   currentRevisionNo: number;
+  // ---- 结构化维修记录（管理修订可订正，但不允许改附件绑定）----
+  maintenanceDate: string | null;
+  maintenanceEngineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  maintenanceVersionNo: number;
+  maintenanceAttachmentFileId: string | null;
 };
 
 export type RepairRequestProcessRevisionTarget = {
@@ -124,6 +137,10 @@ export class RepairRequestRevisionService {
     private readonly processEntryRepository: Repository<RepairProcessEntryEntity>,
     @InjectRepository(EngineerResponseEntity)
     private readonly responseRepository: Repository<EngineerResponseEntity>,
+    @InjectRepository(RepairRequestDiagnosticStepEntity)
+    private readonly stepRepository: Repository<RepairRequestDiagnosticStepEntity>,
+    @InjectRepository(RepairRequestFaultPanelEntity)
+    private readonly panelRepository: Repository<RepairRequestFaultPanelEntity>,
   ) {}
 
   /**
@@ -328,6 +345,56 @@ export class RepairRequestRevisionService {
     }
   }
 
+  /** 修订前锁定并读取排查步骤（快照与差异原料） */
+  async lockMaintenanceSteps(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceStepView[]> {
+    const rows = await this.getStepRepository(transactionContext).find({
+      where: { requestId },
+      order: { stepNo: 'ASC', id: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return rows.map(toStepView);
+  }
+
+  /** 修订前锁定并读取故障面板（快照与差异原料） */
+  async lockMaintenancePanels(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceFaultPanelView[]> {
+    const rows = await this.getPanelRepository(transactionContext).find({
+      where: { requestId },
+      order: { id: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return rows.map(toPanelView);
+  }
+
+  /** 同事务内读取写入后的步骤（含未提交变更） */
+  async listMaintenanceStepsAfterWrite(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceStepView[]> {
+    const rows = await this.getStepRepository(transactionContext).find({
+      where: { requestId },
+      order: { stepNo: 'ASC', id: 'ASC' },
+    });
+    return rows.map(toStepView);
+  }
+
+  /** 同事务内读取写入后的故障面板（含未提交变更） */
+  async listMaintenancePanelsAfterWrite(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceFaultPanelView[]> {
+    const rows = await this.getPanelRepository(transactionContext).find({
+      where: { requestId },
+      order: { id: 'ASC' },
+    });
+    return rows.map(toPanelView);
+  }
+
   private toTargetSnapshot(entity: RepairRequestEntity): RepairRequestRevisionTargetSnapshot {
     return {
       id: entity.id,
@@ -355,6 +422,12 @@ export class RepairRequestRevisionService {
       closureReason: entity.closureReason,
       handlingEndedAt: entity.handlingEndedAt,
       currentRevisionNo: entity.currentRevisionNo,
+      maintenanceDate: normalizeDateValue(entity.maintenanceDate),
+      maintenanceEngineerName: entity.maintenanceEngineerNameSnapshot,
+      resetResult: entity.resetResult,
+      supplementaryNote: entity.supplementaryNote,
+      maintenanceVersionNo: entity.maintenanceVersionNo,
+      maintenanceAttachmentFileId: entity.maintenanceAttachmentFileId,
     };
   }
 
@@ -400,4 +473,53 @@ export class RepairRequestRevisionService {
     const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
     return manager ? manager.getRepository(EngineerResponseEntity) : this.responseRepository;
   }
+
+  private getStepRepository(
+    transactionContext?: PersistenceTransactionContext,
+  ): Repository<RepairRequestDiagnosticStepEntity> {
+    const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
+    return manager ? manager.getRepository(RepairRequestDiagnosticStepEntity) : this.stepRepository;
+  }
+
+  private getPanelRepository(
+    transactionContext?: PersistenceTransactionContext,
+  ): Repository<RepairRequestFaultPanelEntity> {
+    const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
+    return manager ? manager.getRepository(RepairRequestFaultPanelEntity) : this.panelRepository;
+  }
+}
+
+function toStepView(row: RepairRequestDiagnosticStepEntity): RepairMaintenanceStepView {
+  return {
+    id: String(row.id),
+    stepNo: row.stepNo,
+    errorCode: row.errorCode,
+    partName: row.partName,
+    actionText: row.actionText,
+    resultCode: row.resultCode,
+  };
+}
+
+function toPanelView(row: RepairRequestFaultPanelEntity): RepairMaintenanceFaultPanelView {
+  return {
+    id: String(row.id),
+    panelType: row.panelType,
+    stepId: row.stepId,
+    phaseCode: row.phaseCode,
+    mainError: row.mainError,
+    unitError: row.unitError,
+    source: row.source,
+    errorType: row.errorType,
+    gpibStatus: row.gpibStatus,
+    faultStatus: row.faultStatus,
+    description: row.description,
+    action: row.action,
+  };
+}
+
+function normalizeDateValue(value: string | Date | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value.slice(0, 10);
 }

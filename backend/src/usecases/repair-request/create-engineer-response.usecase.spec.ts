@@ -518,6 +518,18 @@ describe('CreateEngineerResponseUsecase', () => {
       expect(engineerResponseService.insertResponse).not.toHaveBeenCalled();
     });
 
+    it('中断记录后仍处理中（IN_PROGRESS）可继续回复', async () => {
+      repairRequestService.findResponseTargetForUpdate.mockResolvedValueOnce({
+        ...acceptedTarget,
+        handlingStatus: 'IN_PROGRESS',
+        closureStatus: null,
+      });
+
+      await usecase.execute(command());
+
+      expect(engineerResponseService.insertResponse).toHaveBeenCalledTimes(1);
+    });
+
     it('已结单 / 处理已终结时拒绝回复，且不写回复（结单后回复只读）', async () => {
       for (const target of [
         { ...acceptedTarget, closureStatus: 'CLOSED' },

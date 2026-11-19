@@ -197,7 +197,7 @@ async function callEditProcess(workbench: Workbench) {
 
 async function callClose(workbench: Workbench) {
   await act(async () => {
-    await workbench.closeRequest('FIXED', null);
+    await workbench.closeRequest('FIXED', null, 0);
   });
 }
 

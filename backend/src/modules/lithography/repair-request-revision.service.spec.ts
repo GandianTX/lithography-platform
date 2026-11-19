@@ -9,7 +9,9 @@ import {
 import { EntityManager, Repository } from 'typeorm';
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
+import { RepairRequestDiagnosticStepEntity } from './entities/repair-request-diagnostic-step.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestFaultPanelEntity } from './entities/repair-request-fault-panel.entity';
 import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
 import { RepairRequestRevisionService } from './repair-request-revision.service';
 
@@ -20,6 +22,8 @@ describe('RepairRequestRevisionService', () => {
   let revisionRepository: ReturnType<typeof createMockRepository>;
   let processEntryRepository: ReturnType<typeof createMockRepository>;
   let responseRepository: ReturnType<typeof createMockRepository>;
+  let stepRepository: ReturnType<typeof createMockRepository>;
+  let panelRepository: ReturnType<typeof createMockRepository>;
   let service: RepairRequestRevisionService;
 
   const asContext = (repo: unknown) =>
@@ -52,11 +56,15 @@ describe('RepairRequestRevisionService', () => {
     revisionRepository = createMockRepository();
     processEntryRepository = createMockRepository();
     responseRepository = createMockRepository();
+    stepRepository = createMockRepository();
+    panelRepository = createMockRepository();
     service = new RepairRequestRevisionService(
       requestRepository as unknown as Repository<RepairRequestEntity>,
       revisionRepository as unknown as Repository<RepairRequestRevisionEntity>,
       processEntryRepository as unknown as Repository<RepairProcessEntryEntity>,
       responseRepository as unknown as Repository<EngineerResponseEntity>,
+      stepRepository as unknown as Repository<RepairRequestDiagnosticStepEntity>,
+      panelRepository as unknown as Repository<RepairRequestFaultPanelEntity>,
     );
   });
 
@@ -85,6 +93,12 @@ describe('RepairRequestRevisionService', () => {
       closureReason: null,
       handlingEndedAt: null,
       currentRevisionNo: 2,
+      maintenanceDate: null,
+      maintenanceEngineerNameSnapshot: null,
+      resetResult: null,
+      supplementaryNote: null,
+      maintenanceVersionNo: 0,
+      maintenanceAttachmentFileId: null,
       intakeId: null,
     });
 
@@ -118,6 +132,12 @@ describe('RepairRequestRevisionService', () => {
       ownerOrganizationId: 22,
       deprecated: false,
       currentRevisionNo: 2,
+      maintenanceDate: null,
+      maintenanceEngineerNameSnapshot: null,
+      resetResult: null,
+      supplementaryNote: null,
+      maintenanceVersionNo: 0,
+      maintenanceAttachmentFileId: null,
     });
     intakeRepository.findOne.mockResolvedValue({ id: 660001, serviceOrganizationId: 22 });
 
@@ -147,6 +167,12 @@ describe('RepairRequestRevisionService', () => {
       ownerOrganizationId: 22,
       deprecated: false,
       currentRevisionNo: 2,
+      maintenanceDate: null,
+      maintenanceEngineerNameSnapshot: null,
+      resetResult: null,
+      supplementaryNote: null,
+      maintenanceVersionNo: 0,
+      maintenanceAttachmentFileId: null,
     });
     intakeRepository.findOne.mockResolvedValue({
       id: 660001,
@@ -171,6 +197,12 @@ describe('RepairRequestRevisionService', () => {
       ownerOrganizationId: 22,
       deprecated: false,
       currentRevisionNo: 2,
+      maintenanceDate: null,
+      maintenanceEngineerNameSnapshot: null,
+      resetResult: null,
+      supplementaryNote: null,
+      maintenanceVersionNo: 0,
+      maintenanceAttachmentFileId: null,
     });
     intakeRepository.findOne.mockResolvedValue({
       id: 660001,
@@ -195,6 +227,12 @@ describe('RepairRequestRevisionService', () => {
       ownerOrganizationId: 22,
       deprecated: false,
       currentRevisionNo: 2,
+      maintenanceDate: null,
+      maintenanceEngineerNameSnapshot: null,
+      resetResult: null,
+      supplementaryNote: null,
+      maintenanceVersionNo: 0,
+      maintenanceAttachmentFileId: null,
     });
     intakeRepository.findOne.mockResolvedValue(null);
 

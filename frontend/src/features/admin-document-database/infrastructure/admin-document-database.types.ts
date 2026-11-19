@@ -78,6 +78,60 @@ export type AdminRepairRevision = {
   reason: string;
   actorNickname: string;
   createdAt: string;
+  /** 服务端明确返回 false 时视为不可比（缺少可比前后快照） */
+  hasComparableSnapshot?: boolean;
+  schemaVersion?: number;
+};
+
+/** 管理员视图中的结构化维修记录（与工程师端同构，只读） */
+export type AdminRepairMaintenanceAttachment = AdminRepairProcessEntryFile;
+
+export type AdminRepairMaintenanceRecord = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  versionNo: number;
+  attachment: AdminRepairMaintenanceAttachment | null;
+};
+
+export type AdminRepairMaintenanceStep = {
+  id: string;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+export type AdminRepairMaintenanceFaultPanel = {
+  id: string;
+  panelType: string;
+  stepId: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+export type AdminRepairIntakeAnalysis = {
+  status: string;
+  generation: number;
+  outputText: string | null;
+  failureReason: string | null;
+  finishedAt: string | null;
+};
+
+export type AdminRepairIntake = {
+  intakeId: string;
+  faultDescription: string | null;
+  customerFile: AdminRepairProcessEntryFile | null;
+  analysis: AdminRepairIntakeAnalysis | null;
 };
 
 export type AdminRepairHandlingResult =
@@ -115,6 +169,12 @@ export type AdminRepairRequestSummary = {
   processEntries: AdminRepairProcessEntry[];
   responses: AdminRepairResponse[];
   revisions: AdminRepairRevision[];
+  /** 任务 04：结构化维修记录（旧响应/夹具可缺省，UI 按空值兜底） */
+  maintenanceVersionNo?: number;
+  maintenance?: AdminRepairMaintenanceRecord | null;
+  maintenanceSteps?: AdminRepairMaintenanceStep[];
+  maintenanceFaultPanels?: AdminRepairMaintenanceFaultPanel[];
+  intake?: AdminRepairIntake | null;
 };
 
 // ---- 管理员修订 ----
@@ -126,6 +186,40 @@ export type AdminRepairProcessRevisionInput = {
   testResult?: string | null;
 };
 
+export type AdminMaintenanceStepInput = {
+  id: string | null;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+export type AdminMaintenanceFaultPanelInput = {
+  id: string | null;
+  panelType: string;
+  stepNo: number | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 管理员修订维修区块：附件绑定不可经修订修改，input 不含附件字段 */
+export type AdminMaintenanceRevisionInput = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  steps: AdminMaintenanceStepInput[];
+  panels: AdminMaintenanceFaultPanelInput[];
+};
+
 export type AdminRepairRevisionInput = {
   requestId: number;
   expectedVersion: number;
@@ -134,11 +228,71 @@ export type AdminRepairRevisionInput = {
   handlingResult?: AdminRepairHandlingResult | null;
   closureReason?: string | null;
   processEntries?: AdminRepairProcessRevisionInput[];
+  /** 同时修订维修区块时的乐观并发版本（当前 maintenanceVersionNo） */
+  expectedMaintenanceVersion?: number | null;
+  maintenance?: AdminMaintenanceRevisionInput | null;
 };
 
 export type AdminRepairRevisionResult = AdminRepairRevision & {
   requestId: number;
   currentRevisionNo: number;
+};
+
+/** 修订快照中的排查步骤（与维修记录同构，只读） */
+export type AdminRevisionStep = {
+  id: string;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+/** 修订快照中的故障面板（与维修记录同构，只读） */
+export type AdminRevisionPanel = {
+  id: string;
+  panelType: string;
+  stepId: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 修订前后快照：用于只读查看与差异对比，不拼接当前工单 */
+export type AdminRepairRevisionSnapshot = {
+  schemaVersion: number;
+  contentMd: string;
+  handlingResult: string | null;
+  handlingStatus: string | null;
+  closureReason: string | null;
+  maintenanceDate: string | null;
+  maintenanceEngineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  maintenanceVersionNo: number;
+  maintenanceAttachmentFileId: string | null;
+  steps: AdminRevisionStep[];
+  panels: AdminRevisionPanel[];
+};
+
+export type AdminRepairRequestRevisionDetail = {
+  requestId: number;
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: string;
+  comparable: boolean;
+  hasMaintenanceData: boolean;
+  incomparableReason: string | null;
+  before: AdminRepairRevisionSnapshot | null;
+  after: AdminRepairRevisionSnapshot | null;
 };
 
 // ---- AI 会话与消息 ----

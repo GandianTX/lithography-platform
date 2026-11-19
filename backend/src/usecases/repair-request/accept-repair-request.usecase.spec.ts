@@ -69,6 +69,11 @@ describe('AcceptRepairRequestUsecase', () => {
     handlingResult: null,
     handlingStatus: null,
     processEntries: [],
+    maintenance: null,
+    maintenanceSteps: [],
+    maintenanceFaultPanels: [],
+    intake: null,
+    canEditMaintenance: false,
   };
 
   let repairRequestService: RepairRequestServiceMock;

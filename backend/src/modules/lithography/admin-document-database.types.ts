@@ -112,6 +112,102 @@ export type AdminRepairRequestRevisionQueryResult = {
   reason: string;
   actorAccountId: number;
   createdAt: Date;
+  /** 前后快照均可解析且为 v2 时才可做维修维度对比 */
+  hasComparableSnapshot: boolean;
+  /** 快照结构版本；旧快照可能为 1 */
+  schemaVersion: number;
+};
+
+/** 管理员可见的维修原件元数据（不含存储引用） */
+export type AdminRepairMaintenanceAttachmentView = {
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+};
+
+/** 管理员可见的结构化维修记录 */
+export type AdminRepairMaintenanceRecordView = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  versionNo: number;
+  attachment: AdminRepairMaintenanceAttachmentView | null;
+};
+
+/** 管理员可见的客户原始报修与首次 AI 分析 */
+export type AdminRepairIntakeSourceView = {
+  intakeId: number;
+  faultDescription: string;
+  customerFile: AdminRepairMaintenanceAttachmentView | null;
+  analysis: {
+    status: string;
+    generation: number;
+    outputText: string | null;
+    failureReason: string | null;
+    finishedAt: Date | null;
+  } | null;
+};
+
+/** 管理员修订快照视图（只读；不含附件二进制与存储引用） */
+export type AdminRepairRequestRevisionSnapshotView = {
+  schemaVersion: number;
+  contentMd: string;
+  handlingResult: string | null;
+  handlingStatus: string | null;
+  closureReason: string | null;
+  maintenanceDate: string | null;
+  maintenanceEngineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  maintenanceVersionNo: number;
+  maintenanceAttachmentFileId: string | null;
+  steps: AdminRepairRequestRevisionStepView[];
+  panels: AdminRepairRequestRevisionPanelView[];
+};
+
+export type AdminRepairRequestRevisionStepView = {
+  id: string;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+export type AdminRepairRequestRevisionPanelView = {
+  id: string;
+  panelType: string;
+  stepId: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 管理员修订详情（查看版本 / 对比上一版） */
+export type AdminRepairRequestRevisionDetailView = {
+  requestId: number;
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: Date;
+  /** 前后快照是否都可解析 */
+  comparable: boolean;
+  /** 是否包含 v2 维修区块（旧快照为 false） */
+  hasMaintenanceData: boolean;
+  /** 不可比时的明确原因；可比时为 null */
+  incomparableReason: string | null;
+  before: AdminRepairRequestRevisionSnapshotView | null;
+  after: AdminRepairRequestRevisionSnapshotView | null;
 };
 
 /** 管理员工单修订历史稳定读视图 */
@@ -140,6 +236,12 @@ export type AdminRepairRequestSummaryQueryResult = AdminRepairRequestListItemQue
   responses: AdminRepairRequestResponseQueryResult[];
   processEntries: RepairProcessEntryView[];
   revisions: AdminRepairRequestRevisionQueryResult[];
+  // ---- 结构化维修记录（管理员编辑器与版本卡片使用）----
+  maintenanceVersionNo: number;
+  maintenance: AdminRepairMaintenanceRecordView | null;
+  maintenanceSteps: AdminRepairRequestRevisionStepView[];
+  maintenanceFaultPanels: AdminRepairRequestRevisionPanelView[];
+  intake: AdminRepairIntakeSourceView | null;
 };
 
 /** 管理员维修申请详情稳定读视图（只读，不进入既有客户/工程师详情链路） */

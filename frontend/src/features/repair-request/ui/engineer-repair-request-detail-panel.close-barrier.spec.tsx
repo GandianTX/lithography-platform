@@ -7,7 +7,7 @@
  * 走真实详情 hook、真实 workbench hook 与真实 UI，只 mock 外部 adapter，
  * 用可控 Promise 验证 mutation 成功与回读结果解耦：
  * - 结单 mutant 成功、回读失败（网络/业务）→ 立即只读，明确展示结单成功 + 刷新失败并可重试；
- * - 过程保存成功、回读失败 → 明确区分保存成功与刷新失败，不声称回滚；
+ * - 维修记录保存成功、回读失败 → 明确区分保存成功与刷新失败，不声称回滚；
  * - 回读重试成功 → 展示服务端最新结果并清除刷新失败提示；
  * - 回读期间切工单 → 旧屏障/迟到回调不影响新工单；
  * - mutation 本身失败 → 不建立只读屏障，保留原有失败行为。
@@ -21,10 +21,11 @@ import { resetRepairRequestClosureBarriersForTests } from '../application/repair
 import { useEngineerRepairRequestDetailFlow } from '../application/use-engineer-repair-request-detail-flow';
 import type {
   CloseRepairRequestResult,
-  EngineerRepairProcessEntry,
+  EngineerRepairMaintenanceRecord,
+  EngineerRepairMaintenanceStep,
   EngineerRepairRequestDetail,
   EngineerRepairRequestDetailResult,
-  RepairProcessWriteResult,
+  RepairMaintenanceWriteResult,
 } from '../infrastructure/engineer-repair-request.types';
 import * as engineerRepairRequestAdapter from '../infrastructure/engineer-repair-request-adapter';
 
@@ -41,6 +42,7 @@ vi.mock('../infrastructure/engineer-repair-request-adapter', async (importOrigin
     uploadRepairProcessFile: vi.fn(),
     createRepairProcessEntry: vi.fn(),
     updateRepairProcessEntry: vi.fn(),
+    saveRepairRequestMaintenance: vi.fn(),
     closeRepairRequest: vi.fn(),
     downloadRepairProcessFile: vi.fn(),
   };
@@ -48,37 +50,50 @@ vi.mock('../infrastructure/engineer-repair-request-adapter', async (importOrigin
 
 const fetchMock = vi.mocked(engineerRepairRequestAdapter.fetchEngineerRepairRequestDetail);
 const closeMock = vi.mocked(engineerRepairRequestAdapter.closeRepairRequest);
+const saveMaintenanceMock = vi.mocked(engineerRepairRequestAdapter.saveRepairRequestMaintenance);
 const createProcessMock = vi.mocked(engineerRepairRequestAdapter.createRepairProcessEntry);
 const updateProcessMock = vi.mocked(engineerRepairRequestAdapter.updateRepairProcessEntry);
 const uploadMock = vi.mocked(engineerRepairRequestAdapter.uploadRepairProcessFile);
 const createResponseMock = vi.mocked(engineerRepairRequestAdapter.createEngineerResponse);
 
 const CLOSE_UNCONFIRMED = '工单已结单，但详情尚未确认。';
-const PROCESS_REFRESH_FAILED = '内部维修过程已保存，但详情刷新失败。';
 const RETRY_REFRESH = '重试刷新';
 const BARRIER_HINT = '工单已结单，内部维修过程与回复均为只读。';
+const READBACK_FAILED = '已保存，刷新失败';
+const SAVE_BUTTON = /保存维修记录/;
+const ANTI_ROLLBACK_HINT = '历史版本仅供查看与对比，不提供回滚或恢复。';
+const EDIT_MAINTENANCE = '编辑维修记录';
+const FILL_MAINTENANCE = '填写维修记录';
+const MAINTENANCE_STEP_PLACEHOLDER = '记录实际执行的排查动作与观察结果…';
 
-const PROCESS_ENTRY: EngineerRepairProcessEntry = {
-  id: '101',
-  entryUuid: '4f0c5f6a-1111-4111-8111-111111111111',
-  requestId: 21,
-  operationText: '服务端已有过程',
-  testResult: null,
-  occurredAt: null,
-  timeSource: 'SERVER',
-  fileId: null,
-  file: null,
+const OPEN_MAINTENANCE: EngineerRepairMaintenanceRecord = {
+  maintenanceDate: '2026-11-16',
+  engineerName: '原维修工程师',
+  resetResult: null,
+  supplementaryNote: null,
   versionNo: 1,
-  createdAt: '2026-11-16T02:10:00.000Z',
+  attachment: null,
 };
 
-const NEW_SERVER_ENTRY: EngineerRepairProcessEntry = {
-  ...PROCESS_ENTRY,
-  id: '102',
-  entryUuid: '5f0c5f6a-2222-4222-8222-222222222222',
-  operationText: '服务端最新过程',
+const MAINTENANCE_STEP: EngineerRepairMaintenanceStep = {
+  id: 'step-101',
+  stepNo: 1,
+  errorCode: null,
+  partName: null,
+  actionText: '服务端已有维修步骤',
+  resultCode: 'RESOLVED',
+};
+
+const LATEST_MAINTENANCE: EngineerRepairMaintenanceRecord = {
+  ...OPEN_MAINTENANCE,
+  engineerName: '最新维修工程师',
   versionNo: 2,
-  createdAt: '2026-11-16T02:20:00.000Z',
+};
+
+const SAVED_MAINTENANCE: EngineerRepairMaintenanceRecord = {
+  ...OPEN_MAINTENANCE,
+  engineerName: '保存后维修工程师',
+  versionNo: 2,
 };
 
 function makeDetail(
@@ -104,8 +119,13 @@ function makeDetail(
     closureReason: null,
     handlingResult: null,
     handlingStatus: 'IN_PROGRESS',
-    processEntries: [PROCESS_ENTRY],
+    processEntries: [],
+    maintenance: OPEN_MAINTENANCE,
+    maintenanceSteps: [MAINTENANCE_STEP],
+    maintenanceFaultPanels: [],
     responses: [],
+    // 接单本人且后端允许编辑：可写夹具必须显式覆盖，避免默认只读导致断言失真
+    canEditMaintenance: true,
     ...overrides,
   };
 }
@@ -116,7 +136,9 @@ const CLOSED_DETAIL = makeDetail({
   closedAt: '2026-11-16T04:00:00.000Z',
   handlingResult: 'FIXED',
   handlingStatus: 'COMPLETED',
-  processEntries: [PROCESS_ENTRY, NEW_SERVER_ENTRY],
+  canEditMaintenance: false,
+  maintenance: LATEST_MAINTENANCE,
+  maintenanceSteps: [MAINTENANCE_STEP],
 });
 
 const CLOSE_OK: CloseRepairRequestResult = {
@@ -132,7 +154,7 @@ const CLOSE_OK: CloseRepairRequestResult = {
   },
 };
 
-const PROCESS_OK: RepairProcessWriteResult = { ok: true, entry: PROCESS_ENTRY };
+const SAVE_OK: RepairMaintenanceWriteResult = { ok: true, record: SAVED_MAINTENANCE };
 
 const READBACK_NETWORK_FAILED: EngineerRepairRequestDetailResult = {
   ok: false,
@@ -165,19 +187,21 @@ async function submitClose() {
   fireEvent.click(await screen.findByRole('button', { name: '确认结单' }));
 }
 
-async function submitProcess() {
-  fireEvent.change(screen.getByPlaceholderText('记录实际执行的操作…'), {
-    target: { value: '更换干涉仪镜片' },
+async function submitMaintenance(actionText = '更换干涉仪镜片') {
+  fireEvent.click(screen.getByRole('button', { name: EDIT_MAINTENANCE }));
+  fireEvent.change(await screen.findByPlaceholderText(MAINTENANCE_STEP_PLACEHOLDER), {
+    target: { value: actionText },
   });
-  fireEvent.click(screen.getByRole('button', { name: '保存过程' }));
+  fireEvent.click(screen.getByRole('button', { name: SAVE_BUTTON }));
 }
 
 /** 屏障生效后所有实际写入口都不可用（不只是隐藏某个提交按钮） */
 function expectNoWritableEntries() {
   expect(screen.queryByText('追加处理回复')).toBeNull();
-  expect(screen.queryByText('新增维修过程')).toBeNull();
-  expect(screen.queryByText('编辑维修过程')).toBeNull();
-  expect(screen.queryByPlaceholderText('记录实际执行的操作…')).toBeNull();
+  expect(screen.queryByText(FILL_MAINTENANCE)).toBeNull();
+  expect(screen.queryByText(EDIT_MAINTENANCE)).toBeNull();
+  expect(screen.queryByPlaceholderText(MAINTENANCE_STEP_PLACEHOLDER)).toBeNull();
+  expect(screen.queryByRole('button', { name: SAVE_BUTTON })).toBeNull();
   expect(screen.queryByRole('button', { name: /^结\s*单$/ })).toBeNull();
   expect(document.querySelector('input[type="file"]')).toBeNull();
 }
@@ -186,12 +210,12 @@ function makeDetail22(): EngineerRepairRequestDetail {
   return makeDetail({
     id: 22,
     requestNo: 'RR-20261116-002',
-    processEntries: [
+    maintenance: { ...OPEN_MAINTENANCE, engineerName: '工单 22 维修工程师' },
+    maintenanceSteps: [
       {
-        ...PROCESS_ENTRY,
-        requestId: 22,
-        entryUuid: '6f0c5f6a-3333-4333-8333-333333333333',
-        operationText: '工单 22 的过程',
+        ...MAINTENANCE_STEP,
+        id: 'step-22',
+        actionText: '工单 22 的维修步骤',
       },
     ],
   });
@@ -211,6 +235,7 @@ beforeEach(() => {
   resetRepairRequestClosureBarriersForTests();
   fetchMock.mockReset();
   closeMock.mockReset();
+  saveMaintenanceMock.mockReset();
   createProcessMock.mockReset();
   updateProcessMock.mockReset();
   uploadMock.mockReset();
@@ -254,7 +279,7 @@ describe('结单成功后的本地只读屏障', () => {
       closeMock.mockResolvedValue(CLOSE_OK);
 
       renderPanel();
-      expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+      expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
       await selectHandlingResult();
       await submitClose();
@@ -262,9 +287,9 @@ describe('结单成功后的本地只读屏障', () => {
       // mutation 成功、回读尚未返回：只读屏障已生效，所有实际写入口不可用
       expect(await screen.findByText(BARRIER_HINT)).toBeTruthy();
       expect(screen.queryByText('追加处理回复')).toBeNull();
-      expect(screen.queryByText('新增维修过程')).toBeNull();
+      expect(screen.queryByText(EDIT_MAINTENANCE)).toBeNull();
       expect(screen.queryByRole('button', { name: /^结\s*单$/ })).toBeNull();
-      expect(screen.getByText('服务端已有过程')).toBeTruthy();
+      expect(screen.getByText('原维修工程师')).toBeTruthy();
 
       await act(async () => {
         if (failureKind === 'network') {
@@ -281,7 +306,7 @@ describe('结单成功后的本地只读屏障', () => {
       // 回读未确认前不编造服务端结单事实，只展示本地「待刷新确认」状态与恒定标签
       expect(screen.queryByText('已结单')).toBeNull();
       expect(screen.getByText('结单状态')).toBeTruthy();
-      expect(screen.getByText('服务端已有过程')).toBeTruthy();
+      expect(screen.getByText('原维修工程师')).toBeTruthy();
     },
   );
 
@@ -293,7 +318,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -303,7 +328,7 @@ describe('结单成功后的本地只读屏障', () => {
     fireEvent.click(screen.getByRole('button', { name: RETRY_REFRESH }));
 
     expect(await screen.findByText('已结单')).toBeTruthy();
-    expect(screen.getByText('服务端最新过程')).toBeTruthy();
+    expect(screen.getByText('最新维修工程师')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull());
   });
 
@@ -315,7 +340,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -333,7 +358,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(screen.queryByText('已结单')).toBeNull();
     expect(screen.getByText('结单状态')).toBeTruthy();
     expect(screen.queryByText(/结单失败/)).toBeNull();
-    expect(screen.queryByText(/回滚/)).toBeNull();
+    expect(screen.getByText(ANTI_ROLLBACK_HINT)).toBeTruthy();
   });
 
   it('初次回读失败后，重试返回未结束详情：屏障仍保持', async () => {
@@ -344,7 +369,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -370,7 +395,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -391,7 +416,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(await screen.findByText('已结单')).toBeTruthy();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
-    expect(screen.getByText('工单已结单，内部维修过程只读。')).toBeTruthy();
+    expect(screen.getByText('工单已结单，维修记录只读。')).toBeTruthy();
     expectNoWritableEntries();
     expect(screen.queryByRole('button', { name: RETRY_REFRESH })).toBeNull();
   });
@@ -403,13 +428,13 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
 
     expect(await screen.findByText('已结单')).toBeTruthy();
-    expect(screen.getByText('服务端最新过程')).toBeTruthy();
+    expect(screen.getByText('最新维修工程师')).toBeTruthy();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expectNoWritableEntries();
@@ -435,7 +460,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     const { rerender } = renderPanel(21);
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -446,7 +471,7 @@ describe('结单成功后的本地只读屏障', () => {
         <EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={22} />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('工单 22 的过程')).toBeTruthy();
+    expect(await screen.findByText('工单 22 维修工程师')).toBeTruthy();
 
     // 工单 B 也完成结单 mutation，建立 B 自己的局部屏障
     await selectHandlingResult();
@@ -484,7 +509,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     const { rerender } = renderPanel(21);
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -496,10 +521,10 @@ describe('结单成功后的本地只读屏障', () => {
         <EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={22} />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('工单 22 的过程')).toBeTruthy();
+    expect(await screen.findByText('工单 22 维修工程师')).toBeTruthy();
     // B 不受 A 的本地结单事实影响
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
 
@@ -508,7 +533,7 @@ describe('结单成功后的本地只读屏障', () => {
         <EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={21} />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     // 重新进入 A：服务端回读仍未结束，结单成功事实不得随页面切换丢失
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
@@ -545,7 +570,7 @@ describe('结单成功后的本地只读屏障', () => {
         />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -561,9 +586,9 @@ describe('结单成功后的本地只读屏障', () => {
         />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
 
     // 旧账号页面的回读迟到：不得污染新账号页面
@@ -571,7 +596,7 @@ describe('结单成功后的本地只读屏障', () => {
       oldReadback.resolve({ ok: true, detail: CLOSED_DETAIL });
     });
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.queryByText('已结单')).toBeNull();
@@ -587,7 +612,7 @@ describe('结单成功后的本地只读屏障', () => {
     fetchMock.mockResolvedValue({ ok: true, detail: OPEN_DETAIL });
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -596,7 +621,7 @@ describe('结单成功后的本地只读屏障', () => {
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.getByRole('button', { name: /^结\s*单$/ })).toBeTruthy();
   });
 
@@ -608,7 +633,7 @@ describe('结单成功后的本地只读屏障', () => {
       .mockResolvedValue({ ok: true, detail: CLOSED_DETAIL });
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     fireEvent.click(screen.getByRole('button', { name: /^结\s*单$/ }));
@@ -634,12 +659,12 @@ describe('结单成功后的本地只读屏障', () => {
     const detail22 = makeDetail({
       id: 22,
       requestNo: 'RR-20261116-002',
-      processEntries: [
+      maintenance: { ...OPEN_MAINTENANCE, engineerName: '工单 22 维修工程师' },
+      maintenanceSteps: [
         {
-          ...PROCESS_ENTRY,
-          requestId: 22,
-          entryUuid: '6f0c5f6a-3333-4333-8333-333333333333',
-          operationText: '工单 22 的过程',
+          ...MAINTENANCE_STEP,
+          id: 'step-22',
+          actionText: '工单 22 的维修步骤',
         },
       ],
     });
@@ -650,7 +675,7 @@ describe('结单成功后的本地只读屏障', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     const { rerender } = renderPanel(21);
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -661,9 +686,9 @@ describe('结单成功后的本地只读屏障', () => {
         <EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={22} />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('工单 22 的过程')).toBeTruthy();
+    expect(await screen.findByText('工单 22 维修工程师')).toBeTruthy();
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
 
     await act(async () => {
@@ -673,78 +698,88 @@ describe('结单成功后的本地只读屏障', () => {
     await waitFor(() => expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull());
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
   });
 });
 
-describe('过程保存成功后的回读失败反馈', () => {
-  it('保存成功但回读失败：明确区分保存成功与刷新失败，不声称回滚，详情保留并可重试', async () => {
+describe('维修记录保存成功后的回读失败反馈', () => {
+  it('维修记录保存成功但回读失败：明确区分保存成功与刷新失败，不声称回滚，详情保留并可重试', async () => {
+    const savedDetail = makeDetail({
+      maintenance: SAVED_MAINTENANCE,
+      maintenanceSteps: [MAINTENANCE_STEP],
+    });
     fetchMock
       .mockResolvedValueOnce({ ok: true, detail: OPEN_DETAIL })
       .mockResolvedValueOnce(READBACK_NETWORK_FAILED)
-      .mockResolvedValueOnce({
-        ok: true,
-        detail: makeDetail({ processEntries: [PROCESS_ENTRY, NEW_SERVER_ENTRY] }),
-      });
-    createProcessMock.mockResolvedValue(PROCESS_OK);
+      .mockResolvedValueOnce({ ok: true, detail: savedDetail });
+    saveMaintenanceMock.mockResolvedValue(SAVE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
-    await submitProcess();
+    await submitMaintenance();
 
-    expect(await screen.findByText(PROCESS_REFRESH_FAILED)).toBeTruthy();
-    expect(createProcessMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('服务端已有过程')).toBeTruthy();
-    expect(screen.queryByText(/回滚/)).toBeNull();
-    expect(screen.queryByText('内部维修过程保存失败。')).toBeNull();
-    // 保存成功按既有合同退出编辑；新建过程路径的输入按现状保留，不额外引入清空流程
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
-    expect((screen.getByPlaceholderText('记录实际执行的操作…') as HTMLTextAreaElement).value).toBe(
-      '更换干涉仪镜片',
-    );
+    expect(await screen.findByText(READBACK_FAILED)).toBeTruthy();
+    expect(saveMaintenanceMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('原维修工程师')).toBeTruthy();
+    expect(screen.getByText(ANTI_ROLLBACK_HINT)).toBeTruthy();
+    expect(screen.queryByText('维修记录保存失败，请稍后重试。')).toBeNull();
+    // 保存已明确成功：退出编辑态，避免重复提交；只保留重试读取入口
+    expect(screen.queryByRole('button', { name: SAVE_BUTTON })).toBeNull();
+    expect(screen.queryByPlaceholderText(MAINTENANCE_STEP_PLACEHOLDER)).toBeNull();
+    expect(screen.queryByText(EDIT_MAINTENANCE)).toBeNull();
+    expect(screen.getByText('请先重试刷新最新记录再编辑。')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: RETRY_REFRESH }));
 
-    expect(await screen.findByText('服务端最新过程')).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText(PROCESS_REFRESH_FAILED)).toBeNull());
+    expect(await screen.findByText('保存后维修工程师')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(READBACK_FAILED)).toBeNull());
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
   });
 
-  it('保存成功但回读业务失败：同样明确区分保存成功与刷新失败', async () => {
+  it('维修记录保存成功但回读业务失败：同样明确区分保存成功与刷新失败', async () => {
     fetchMock
       .mockResolvedValueOnce({ ok: true, detail: OPEN_DETAIL })
       .mockResolvedValueOnce(READBACK_BUSINESS_FAILED);
-    createProcessMock.mockResolvedValue(PROCESS_OK);
+    saveMaintenanceMock.mockResolvedValue(SAVE_OK);
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
-    await submitProcess();
+    await submitMaintenance();
 
-    expect(await screen.findByText(PROCESS_REFRESH_FAILED)).toBeTruthy();
-    expect(createProcessMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('服务端已有过程')).toBeTruthy();
-    expect(screen.queryByText(/回滚/)).toBeNull();
-    expect(screen.queryByText('内部维修过程保存失败。')).toBeNull();
+    expect(await screen.findByText(READBACK_FAILED)).toBeTruthy();
+    expect(saveMaintenanceMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('原维修工程师')).toBeTruthy();
+    expect(screen.getByText(ANTI_ROLLBACK_HINT)).toBeTruthy();
+    expect(screen.queryByText('维修记录保存失败，请稍后重试。')).toBeNull();
     expect(screen.getByRole('button', { name: RETRY_REFRESH })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: SAVE_BUTTON })).toBeNull();
   });
 
-  it('过程保存 mutation 失败：不进入回读失败提示，保留原有失败行为', async () => {
-    const failed: RepairProcessWriteResult = {
+  it('维修记录保存请求失败：保留输入，不误提示「已保存」', async () => {
+    const failed: RepairMaintenanceWriteResult = {
       ok: false,
       reason: 'conflict',
-      message: '维修过程已被修改，请刷新后重试',
+      message: '维修记录已被更新或工单已结单，请刷新后重试。',
     };
-    createProcessMock.mockResolvedValue(failed);
+    saveMaintenanceMock.mockResolvedValue(failed);
     fetchMock.mockResolvedValue({ ok: true, detail: OPEN_DETAIL });
 
     renderPanel();
-    expect(await screen.findByText('服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('原维修工程师')).toBeTruthy();
 
-    await submitProcess();
+    await submitMaintenance('保留的维修动作');
 
     expect(await screen.findByText(failed.message)).toBeTruthy();
-    expect(screen.queryByText(PROCESS_REFRESH_FAILED)).toBeNull();
+    expect(saveMaintenanceMock).toHaveBeenCalledTimes(1);
+    // 保存未成功：不得出现保存成功/读回失败提示，也不提供重试读取
+    expect(screen.queryByText(READBACK_FAILED)).toBeNull();
     expect(screen.queryByRole('button', { name: RETRY_REFRESH })).toBeNull();
+    // 保留编辑器与用户输入，便于直接重试
+    expect(
+      (screen.getByPlaceholderText(MAINTENANCE_STEP_PLACEHOLDER) as HTMLTextAreaElement).value,
+    ).toBe('保留的维修动作');
+    expect(screen.getByRole('button', { name: SAVE_BUTTON })).toBeTruthy();
   });
 });

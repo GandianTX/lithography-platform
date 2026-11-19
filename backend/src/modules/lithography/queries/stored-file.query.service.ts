@@ -60,9 +60,12 @@ type StoredFileAccessRow = {
  *
  * 统一的读授权口径（不按文件 ID / 上下文 ID / 前端组织参数单独放行）：
  * - 暂存（TEMPORARY）：原上传者 + 可信当前公司一致 + 用途一致 + upload_context_id 精确匹配；
- * - 正式绑定（BOUND REPAIR_PROCESS）：必须存在 repair_process_entry 真实关联，
+ * - 正式绑定（BOUND REPAIR_PROCESS）：必须存在真实业务关联，
+ *   旧路径为 repair_process_entry，新路径为 repair_request.maintenance_attachment_file_id；
  *   且读取者具备工程师角色，工单及 intake 的服务公司一致并匹配读取者可信组织；
+ *   新路径仅限接单工程师本人（旧过程关联保持既有同公司工程师口径）；
  *   管理员分支复用管理员工单授权策略：一级全公司、二级仅本公司（见 adminOrganizationId）；
+ *   已结单只限制写入，不阻止原本有权的工程师下载已绑定原件；
  * - 客户、外公司、同公司非工程师账号一律返回 null，不泄露原件存在性或内部过程。
  */
 @Injectable()
@@ -231,10 +234,19 @@ export class StoredFileQueryService {
           serviceOrganizationId: true,
           ownerOrganizationId: true,
           deprecated: true,
+          maintenanceAttachmentFileId: true,
+          isAccepted: true,
+          acceptedByEngineerAccountId: true,
         },
       }),
     ]);
-    if (!entry || !request || request.deprecated) {
+    if (!request || request.deprecated) {
+      return false;
+    }
+
+    const referencedByProcessEntry = entry !== null;
+    const referencedByMaintenanceAttachment = request.maintenanceAttachmentFileId === file.fileId;
+    if (!referencedByProcessEntry && !referencedByMaintenanceAttachment) {
       return false;
     }
 
@@ -242,7 +254,11 @@ export class StoredFileQueryService {
       return this.canAccessBoundAsAdmin(request, query.adminOrganizationId);
     }
 
-    return this.canAccessBoundAsEngineer(request, query);
+    if (referencedByProcessEntry) {
+      return this.canAccessBoundAsEngineer(request, query);
+    }
+
+    return this.canAccessBoundAsMaintenanceEngineer(request, file.fileId, query);
   }
 
   /** 工程师分支：工单 intake 服务公司须与读取者可信公司一致 */
@@ -262,6 +278,29 @@ export class StoredFileQueryService {
       select: { id: true, serviceOrganizationId: true },
     });
     return intake !== null && intake.serviceOrganizationId === request.serviceOrganizationId;
+  }
+
+  /**
+   * 新版维修原件分支：工单必须实际通过 `maintenance_attachment_file_id`
+   * 引用该文件，且读取者就是接单本人。
+   *
+   * 旧 `repair_process_entry` 关联不进入本分支，保持既有同公司工程师口径；
+   * 客户、外公司、同公司非接单工程师均不得因新关联获得内部原件权限；
+   * 结单状态不参与读取判定（结单只限制写入）。
+   */
+  private async canAccessBoundAsMaintenanceEngineer(
+    request: RepairRequestEntity,
+    fileId: string,
+    query: StoredFileAccessQuery,
+  ): Promise<boolean> {
+    if (
+      request.maintenanceAttachmentFileId !== fileId ||
+      !request.isAccepted ||
+      request.acceptedByEngineerAccountId !== query.session.accountId
+    ) {
+      return false;
+    }
+    return this.canAccessBoundAsEngineer(request, query);
   }
 
   /**

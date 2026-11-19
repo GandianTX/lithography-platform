@@ -1143,7 +1143,12 @@ describe('管理员用户管理面板的二级管理员凭据入口', () => {
       reason: 'status-conflict',
       message: BUSINESS_FAILURE_MESSAGE,
     });
-    await renderPanel(1);
+    // 本用例只走二级管理员凭据链路，用户列表内容与断言无关：
+    // 用空页跳过无关表格行渲染，保留真实的核对弹窗与失败反馈交互。
+    fetchUsersMock.mockResolvedValue({ items: [], page: 1, pageSize: 10, total: 0 });
+    render(
+      <AdminUserManagementPanel adminLevel={1} sampleSessionIdentity={sampleSessionIdentity} />,
+    );
     const dialog = await openConfirmDialog();
 
     fireEvent.change(within(dialog).getByPlaceholderText(REASON_PLACEHOLDER), {
@@ -1155,5 +1160,7 @@ describe('管理员用户管理面板的二级管理员凭据入口', () => {
     expect(isDialogOpen('核对目标与重置原因')).toBe(true);
     expect(message.success).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain(LEVEL_TWO_PASSWORD);
-  });
+    // 保留真实的核对弹窗与失败反馈交互；面板与两级 antd 弹窗在 jsdom 下渲染成本高，
+    // 实测单跑已约 4.4s，全量并发时会越过默认 5s，属渲染成本而非等待缺陷。
+  }, 15_000);
 });

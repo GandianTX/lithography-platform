@@ -354,6 +354,16 @@ export type RepairRequestDetailView = {
   handlingStatus: RepairRequestHandlingStatus | null;
   /** 内部维修过程；仅接单工程师本人可见，客户入口恒为空数组 */
   processEntries: RepairProcessEntryView[];
+  /** 结构化内部维修记录；仅工程师入口返回，客户入口为 null（不泄露内部记录与维修原件） */
+  maintenance: RepairMaintenanceRecordView | null;
+  /** 排查步骤；仅工程师入口返回，客户入口恒为空数组 */
+  maintenanceSteps: RepairMaintenanceStepView[];
+  /** 故障面板；仅工程师入口返回，客户入口恒为空数组 */
+  maintenanceFaultPanels: RepairMaintenanceFaultPanelView[];
+  /** 客户原始报修与首次 AI 分析；仅工程师入口返回，客户入口为 null */
+  intake: RepairIntakeSourceView | null;
+  /** 当前会话是否可保存结构化维修记录（接单本人 + 未结束） */
+  canEditMaintenance: boolean;
 };
 
 /**
@@ -668,6 +678,172 @@ export type RepairProcessBindingTargetSnapshot = {
   deprecated: boolean;
   handlingStatus: string | null;
   closureStatus: string | null;
+  /** 维修记录版本号；结单必须基于确认时看到的版本 */
+  maintenanceVersionNo: number;
+};
+
+// ---------- 结构化内部维修记录（任务 04） ----------
+
+/** 维修附件安全展示字段（不暴露存储引用与上传者/公司账号 ID） */
+export type RepairMaintenanceAttachmentView = {
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+};
+
+/** 排查步骤读视图 */
+export type RepairMaintenanceStepView = {
+  id: string;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+/** 故障面板读视图 */
+export type RepairMaintenanceFaultPanelView = {
+  id: string;
+  panelType: string;
+  stepId: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 工单维修事实读视图（日期为 YYYY-MM-DD 字符串，不回传时区语义） */
+export type RepairMaintenanceRecordView = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  versionNo: number;
+  attachment: RepairMaintenanceAttachmentView | null;
+};
+
+/**
+ * 工程师可见的修订快照：仅维修事实、排查步骤与故障面板。
+ * 不包含附件、处理结果、结单信息或其他管理员快照字段。
+ */
+export type EngineerRepairRevisionSnapshotView = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  steps: RepairMaintenanceStepView[];
+  panels: RepairMaintenanceFaultPanelView[];
+};
+
+/** 修订对比不可用原因（稳定码，由前端本地化） */
+export type EngineerRepairRevisionCompareUnavailableReason =
+  'NO_COMPARABLE_SNAPSHOT' | 'NO_VISIBLE_MAINTENANCE_CHANGE';
+
+/** 工程师修订历史行查询结果（含内部修订人账号 ID，由用例富集昵称后剥离） */
+export type EngineerRepairRevisionHistoryItemQueryResult = {
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorAccountId: number;
+  createdAt: Date;
+  hasComparableSnapshot: boolean;
+  hasVisibleMaintenanceChange: boolean;
+  compareUnavailableReason: EngineerRepairRevisionCompareUnavailableReason | null;
+};
+
+export type EngineerRepairRevisionHistoryItemView = Omit<
+  EngineerRepairRevisionHistoryItemQueryResult,
+  'actorAccountId'
+> & { actorNickname: string };
+
+/** 工程师修订详情查询结果：只含工程师可见的维修快照与必要历史元数据 */
+export type EngineerRepairRevisionDetailQueryResult = {
+  requestId: number;
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorAccountId: number;
+  createdAt: Date;
+  hasComparableSnapshot: boolean;
+  hasVisibleMaintenanceChange: boolean;
+  compareUnavailableReason: EngineerRepairRevisionCompareUnavailableReason | null;
+  before: EngineerRepairRevisionSnapshotView | null;
+  after: EngineerRepairRevisionSnapshotView | null;
+};
+
+export type EngineerRepairRevisionDetailView = Omit<
+  EngineerRepairRevisionDetailQueryResult,
+  'actorAccountId'
+> & { actorNickname: string };
+
+/** 首次 AI 分析读视图（仅工程师/管理员可见） */
+export type RepairIntakeAnalysisView = {
+  status: string;
+  generation: number;
+  outputText: string | null;
+  failureReason: string | null;
+  finishedAt: Date | null;
+};
+
+/** 客户原始报修读视图（工程师/管理员可见；客户入口不返回） */
+export type RepairIntakeSourceView = {
+  intakeId: number;
+  faultDescription: string;
+  customerFile: RepairMaintenanceAttachmentView | null;
+  analysis: RepairIntakeAnalysisView | null;
+};
+
+/** 维修保存目标锁读快照（仅用例在事务内裁决，不对外） */
+export type RepairRequestMaintenanceTargetSnapshot = {
+  id: number;
+  intakeId: number | null;
+  serviceOrganizationId: number | null;
+  isAccepted: boolean;
+  acceptedByEngineerAccountId: number | null;
+  deprecated: boolean;
+  handlingStatus: string | null;
+  closureStatus: string | null;
+  maintenanceAttachmentFileId: string | null;
+  maintenanceVersionNo: number;
+};
+
+/** 维修保存写入数据（业务判定与归一已完成） */
+export type RepairMaintenanceSaveData = {
+  requestId: number;
+  expectedVersion: number;
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  steps: ReadonlyArray<{
+    id: string | null;
+    stepNo: number;
+    errorCode: string | null;
+    partName: string | null;
+    actionText: string;
+    resultCode: string;
+  }>;
+  panels: ReadonlyArray<{
+    id: string | null;
+    panelType: string;
+    stepNo: number | null;
+    phaseCode: string | null;
+    mainError: string | null;
+    unitError: string | null;
+    source: string | null;
+    errorType: string | null;
+    gpibStatus: string | null;
+    faultStatus: string | null;
+    description: string;
+    action: string | null;
+  }>;
 };
 
 /**

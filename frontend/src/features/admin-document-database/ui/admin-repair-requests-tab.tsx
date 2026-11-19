@@ -18,6 +18,7 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 
+import { triggerBrowserDownload } from '@/shared/ui/download-blob';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { KbSearchField, KbToolbarButton } from '@/shared/ui/knowledge-base';
 import {
@@ -35,6 +36,7 @@ import type {
   AdminRepairRequestListItem,
 } from '../infrastructure/admin-document-database.types';
 import {
+  downloadAdminRepairProcessFile,
   fetchAdminEquipmentModelOptions,
   fetchAdminRepairRequests,
 } from '../infrastructure/admin-document-database-adapter';
@@ -163,6 +165,16 @@ export function AdminRepairRequestsTab({
     { id: number; modelCode: string; modelName: string }[]
   >([]);
   const [modelsFailed, setModelsFailed] = useState(false);
+
+  const handleDownloadAttachment = useCallback(
+    async (fileId: string): Promise<{ ok: boolean; message?: string }> => {
+      const result = await downloadAdminRepairProcessFile(fileId);
+      if (!result.ok) return { ok: false, message: result.message };
+      triggerBrowserDownload(result.blob, result.filename);
+      return { ok: true };
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -719,6 +731,7 @@ export function AdminRepairRequestsTab({
           detail={summary.state.detail}
           key={`${summary.state.detail.id}:${summary.state.detail.currentRevisionNo}:${revisionOpen}`}
           onClose={() => setRevisionOpen(false)}
+          onDownloadAttachment={handleDownloadAttachment}
           onSaved={summary.reload}
           open={revisionOpen}
         />

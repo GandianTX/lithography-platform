@@ -7,6 +7,7 @@ import {
 } from '@src/modules/account/queries/account.query.service';
 import {
   EngineerResponseView,
+  RepairMaintenanceRecordView,
   RepairRequestDetailQueryResult,
   RepairRequestDetailView,
   RepairRequestEngineerDetailView,
@@ -103,8 +104,14 @@ export async function enrichRepairRequestDetailNicknames(
     closureReason: result.closureReason,
     handlingResult: result.handlingResult,
     handlingStatus: result.handlingStatus,
-    // 客户视图不包含任何内部维修过程或原件（即使未来读服务装配口径变化也不外泄）
+    // 客户视图不包含任何内部维修过程、结构化维修记录、原件或 AI 分析
+    // （即使未来读服务装配口径变化也不外泄）
     processEntries: [],
+    maintenance: null,
+    maintenanceSteps: [],
+    maintenanceFaultPanels: [],
+    intake: null,
+    canEditMaintenance: false,
   };
 }
 
@@ -181,6 +188,18 @@ export async function enrichEngineerRepairRequestDetail(
     result.acceptedByEngineerAccountId !== null
       ? profiles.get(result.acceptedByEngineerAccountId)
       : undefined;
+  // v0 工单尚无维修姓名快照：为接单本人回填接单人真实姓名（只读展示）；
+  // 资料缺失时不伪造姓名，保持快照为空。
+  const maintenance =
+    result.maintenance &&
+    result.maintenance.engineerName === null &&
+    result.acceptedByEngineerAccountId !== null
+      ? await withTrustedEngineerName(
+          accountQueryService,
+          result.maintenance,
+          result.acceptedByEngineerAccountId,
+        )
+      : result.maintenance;
   // 显式装配：昵称查询与展示资料查询各一次，归属类账号 ID 不进入对外视图
   return {
     id: result.id,
@@ -205,6 +224,11 @@ export async function enrichEngineerRepairRequestDetail(
     handlingResult: result.handlingResult,
     handlingStatus: result.handlingStatus,
     processEntries: result.processEntries,
+    maintenance,
+    maintenanceSteps: result.maintenanceSteps,
+    maintenanceFaultPanels: result.maintenanceFaultPanels,
+    intake: result.intake,
+    canEditMaintenance: result.canEditMaintenance,
     customerNickname: customerProfile?.nickname ?? CUSTOMER_NICKNAME_FALLBACK,
     customerCompanyName: customerProfile?.companyName ?? null,
     acceptanceViewStatus: computeAcceptanceViewStatus(
@@ -214,4 +238,16 @@ export async function enrichEngineerRepairRequestDetail(
     ),
     acceptedEngineerNickname: acceptedProfile ? acceptedProfile.nickname : null,
   };
+}
+
+/** 仅用接单人可信资料回填只读姓名；资料缺失时返回空姓名，不回落到昵称。 */
+async function withTrustedEngineerName(
+  accountQueryService: AccountQueryService,
+  maintenance: RepairMaintenanceRecordView,
+  acceptedByEngineerAccountId: number,
+): Promise<RepairMaintenanceRecordView> {
+  const realName = await accountQueryService.findRealNameByAccountId({
+    accountId: acceptedByEngineerAccountId,
+  });
+  return realName === null ? maintenance : { ...maintenance, engineerName: realName };
 }

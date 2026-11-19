@@ -14,6 +14,7 @@ import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { AppendRepairRequestRevisionUsecase } from '@src/usecases/admin-document-database/append-repair-request-revision.usecase';
 import { GetAdminAiReportDetailUsecase } from '@src/usecases/admin-document-database/get-admin-ai-report-detail.usecase';
 import { GetAdminDocumentDatabaseStatsUsecase } from '@src/usecases/admin-document-database/get-admin-document-database-stats.usecase';
+import { GetAdminRepairRequestRevisionDetailUsecase } from '@src/usecases/admin-document-database/get-admin-repair-request-revision-detail.usecase';
 import { GetAdminRepairRequestSummaryUsecase } from '@src/usecases/admin-document-database/get-admin-repair-request-summary.usecase';
 import { ListAdminAiConversationsUsecase } from '@src/usecases/admin-document-database/list-admin-ai-conversations.usecase';
 import { ListAdminAiMessagesUsecase } from '@src/usecases/admin-document-database/list-admin-ai-messages.usecase';
@@ -26,10 +27,12 @@ import {
   AdminAiReportPaginatedDTO,
   AdminDocumentDatabaseStatsDTO,
   AdminRepairRequestPaginatedDTO,
+  AdminRepairRequestRevisionDetailDTO,
   AdminRepairRequestSummaryDTO,
   AdminRepairRevisionResultDTO,
   toAdminAiReportDetailDTO,
   toAdminRepairRequestListItemDTO,
+  toAdminRepairRequestRevisionDetailDTO,
   toAdminRepairRequestSummaryDTO,
 } from './dto/admin-document-database.dto';
 import { AppendRepairRequestRevisionInput } from './dto/append-repair-request-revision.input';
@@ -64,6 +67,7 @@ export class AdminDocumentDatabaseResolver {
     private readonly listAdminRepairRequestsUsecase: ListAdminRepairRequestsUsecase,
     private readonly getAdminRepairRequestSummaryUsecase: GetAdminRepairRequestSummaryUsecase,
     private readonly appendRepairRequestRevisionUsecase: AppendRepairRequestRevisionUsecase,
+    private readonly getAdminRepairRequestRevisionDetailUsecase: GetAdminRepairRequestRevisionDetailUsecase,
     private readonly listAdminAiConversationsUsecase: ListAdminAiConversationsUsecase,
     private readonly listAdminAiMessagesUsecase: ListAdminAiMessagesUsecase,
     private readonly listAdminAiReportsUsecase: ListAdminAiReportsUsecase,
@@ -160,7 +164,64 @@ export class AdminDocumentDatabaseResolver {
           operationText: entry.operationText,
           testResult: entry.testResult ?? undefined,
         })) ?? undefined,
+      expectedMaintenanceVersion: input.expectedMaintenanceVersion ?? null,
+      maintenance: input.maintenance
+        ? {
+            maintenanceDate: input.maintenance.maintenanceDate ?? null,
+            engineerName: input.maintenance.engineerName ?? null,
+            resetResult: input.maintenance.resetResult ?? null,
+            supplementaryNote: input.maintenance.supplementaryNote ?? null,
+            steps: input.maintenance.steps.map((step) => ({
+              id: step.id ?? null,
+              stepNo: step.stepNo,
+              errorCode: step.errorCode ?? null,
+              partName: step.partName ?? null,
+              actionText: step.actionText,
+              resultCode: step.resultCode,
+            })),
+            panels: input.maintenance.panels.map((panel) => ({
+              id: panel.id ?? null,
+              panelType: panel.panelType,
+              stepNo: panel.stepNo ?? null,
+              phaseCode: panel.phaseCode ?? null,
+              mainError: panel.mainError ?? null,
+              unitError: panel.unitError ?? null,
+              source: panel.source ?? null,
+              errorType: panel.errorType ?? null,
+              gpibStatus: panel.gpibStatus ?? null,
+              faultStatus: panel.faultStatus ?? null,
+              description: panel.description,
+              action: panel.action ?? null,
+            })),
+          }
+        : null,
     });
+  }
+
+  /**
+   * 管理员查看单个修订版本 / 对比上一版（只读，不提供回滚）。
+   *
+   * 旧快照缺少可比数据时返回 comparable=false 与明确原因，
+   * 不拼接当前工单、不用当前值补齐历史。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => AdminRepairRequestRevisionDetailDTO, {
+    name: 'adminRepairRequestRevisionDetail',
+    description: '管理员查看工单修订版本与前后快照（仅 SUPER_ADMIN；二级限本公司）',
+  })
+  @ValidateAdminDocumentDatabaseInput()
+  async adminRepairRequestRevisionDetail(
+    @Args('requestId', { type: () => Int }) requestId: number,
+    @Args('revisionNo', { type: () => Int }) revisionNo: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<AdminRepairRequestRevisionDetailDTO> {
+    const detail = await this.getAdminRepairRequestRevisionDetailUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId,
+      revisionNo,
+    });
+    return toAdminRepairRequestRevisionDetailDTO(detail);
   }
 
   /**

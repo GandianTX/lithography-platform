@@ -42,6 +42,12 @@ vi.mock('../infrastructure/admin-document-database-adapter', async (importOrigin
   };
 });
 
+// 迟到响应身份守卫只看修订弹窗的提交续体；维修记录编辑器只是同卡展示内容，
+// 不参与身份判定。替换为轻量占位，避免每条用例重复渲染重型受控表单。
+vi.mock('@/shared/ui/maintenance-record-editor', () => ({
+  MaintenanceRecordEditor: () => null,
+}));
+
 const appendRevisionMock = vi.mocked(appendAdminRepairRequestRevision);
 
 const fetchRepairMock = vi.mocked(fetchAdminRepairRequests);
@@ -385,6 +391,8 @@ describe('AdminRepairRequestsTab（修订迟到响应身份守卫）', () => {
     }));
   });
 
+  // 完整交互（表格 → 抽屉 → 修订弹窗，A/B 各一轮 + 受控 deferred）需要真实挂载两轮
+  // antd 抽屉/弹窗；实测单跑约 3.6s，全量并发时会越过默认 5s，属渲染成本而非等待缺陷。
   it('A 迟到成功不关闭 B 弹窗、不重载 A、不污染 B', async () => {
     const pending = createDeferred<RevisionOutcome>();
     appendRevisionMock.mockReturnValueOnce(pending.promise);
@@ -424,8 +432,9 @@ describe('AdminRepairRequestsTab（修订迟到响应身份守卫）', () => {
     expect(screen.queryByDisplayValue('A 修订原因')).toBeNull();
     expect(screen.getByText(/工单详情 · RR-20260902-001/)).toBeInTheDocument();
     expect(fetchSummaryMock.mock.calls.map((call) => call[0])).toEqual([1, 2]);
-  });
+  }, 15_000);
 
+  // 同上：真实抽屉与弹窗各挂载两轮，保留完整交互，只放宽本用例预算。
   it('A 迟到失败不覆盖 B 的错误与输入', async () => {
     const pending = createDeferred<RevisionOutcome>();
     appendRevisionMock.mockReturnValueOnce(pending.promise);
@@ -466,5 +475,5 @@ describe('AdminRepairRequestsTab（修订迟到响应身份守卫）', () => {
     expect(screen.getByText('请填写修订原因。')).toBeInTheDocument();
     expect(screen.getByDisplayValue('B 修订原因')).toBeInTheDocument();
     expect(fetchSummaryMock.mock.calls.map((call) => call[0])).toEqual([1, 2]);
-  });
+  }, 15_000);
 });

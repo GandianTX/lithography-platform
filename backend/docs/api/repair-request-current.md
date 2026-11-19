@@ -120,15 +120,15 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 
 ## 写权限矩阵
 
-| 操作                 | CUSTOMER                         | 精确 ENGINEER                  | SUPER_ADMIN（activeRole=SUPER_ADMIN） |
-| -------------------- | -------------------------------- | ------------------------------ | ------------------------------------- |
-| 创建申请             | 允许（仅本人账号）               | 拒绝                           | 拒绝（不继承客户写入口）              |
-| 删除自己的未接单申请 | 允许（软删除，重复删除幂等成功） | 拒绝                           | 拒绝                                  |
-| 接单                 | 拒绝                             | 允许                           | 拒绝（读继承不等于写继承）            |
-| 追加处理回复         | 拒绝                             | 仅实际接单工程师               | 拒绝                                  |
-| 创建内部维修过程     | 拒绝                             | 仅实际接单工程师（可信服务公司一致） | 拒绝                             |
-| 编辑内部维修过程     | 拒绝                             | 仅过程作者本人、接单人、可信服务公司一致 | 拒绝                             |
-| 结单                 | 拒绝                             | 仅实际接单工程师（可信服务公司一致） | 拒绝                             |
+| 操作                 | CUSTOMER                         | 精确 ENGINEER                            | SUPER_ADMIN（activeRole=SUPER_ADMIN） |
+| -------------------- | -------------------------------- | ---------------------------------------- | ------------------------------------- |
+| 创建申请             | 允许（仅本人账号）               | 拒绝                                     | 拒绝（不继承客户写入口）              |
+| 删除自己的未接单申请 | 允许（软删除，重复删除幂等成功） | 拒绝                                     | 拒绝                                  |
+| 接单                 | 拒绝                             | 允许                                     | 拒绝（读继承不等于写继承）            |
+| 追加处理回复         | 拒绝                             | 仅实际接单工程师                         | 拒绝                                  |
+| 创建内部维修过程     | 拒绝                             | 仅实际接单工程师（可信服务公司一致）     | 拒绝                                  |
+| 编辑内部维修过程     | 拒绝                             | 仅过程作者本人、接单人、可信服务公司一致 | 拒绝                                  |
+| 结单                 | 拒绝                             | 仅实际接单工程师（可信服务公司一致）     | 拒绝                                  |
 
 写权限规则：仅 roles 含 ENGINEER 且可信 JWT activeRole 精确为 ENGINEER 可接单/回复/记录过程/编辑过程/结单（`assertEngineerWritePermission` 单一实现）；守卫层只做入口粗粒度准入；接单工程师与过程作者取自可信 Session，接单时间、结单时间与过程时间来源由后端生成，客户端不可传入。结单后回复、创建过程与编辑过程均按 `CLOSED_STATE_CONFLICT` 拒绝（处理状态为 `COMPLETED` / `UNRESOLVED` 同样视为已结束）。
 
@@ -149,22 +149,19 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 
 ## 内部维修过程与原件
 
-`createRepairProcessEntry(input)`：`requestId`、`operationText`（必填，去首尾空白后非空）、`testResult`（可空，空白归一为 null）、`occurredAt`（可空）、`file`（可空，`{ fileId, uploadContextId }` 必须同时提供且为合法 UUID）。
+`createRepairProcessEntry(input)`、`updateRepairProcessEntry(input)` 为历史入口，当前写入合同已冻结：
 
-- 作者只取自 Session；未传 `occurredAt` 时使用服务端时间且 `timeSource = SERVER`，否则 `timeSource = MANUAL`。
-- `occurredAt` 只接受完整的日期时间字符串（可带时区偏移）；纯日期（`YYYY-MM-DD`）、epoch 数字、`Date` 实例与非法格式均按输入错误拒绝。持久化字段沿用既有 `datetime` 口径（不带时区后缀的字符串按服务端本地时间解释，带偏移的字符串按其瞬时值写入），本轮不改变 Entity / Migration 的时间语义。
-- 目标裁决：不存在/已删除/跨公司 → NOT_FOUND；未接单或非本人 → NOT_ACCEPTED；已结单或处理已终结 → CLOSED_STATE_CONFLICT。
-- 携带原件时，在同一调用方事务内先执行任务 11 绑定（锁顺序：原件行锁 → 工单行锁），再插入引用该 `fileId` 的过程行；绑定或过程写入任一失败整体回滚，不产生「已绑定但无过程」或「有过程但未绑定」。未携带原件时只锁工单行。
+- 两者仍保留在 schema 中，但任何新增、更新或改绑请求一律返回 `PROCESS_READONLY`（对外 `BAD_USER_INPUT`），不开启事务，不写 `repair_process_entries`，不绑定或替换原件。
+- 校验顺序：Session / 角色与写权限仍先裁决；通过后立即按 `PROCESS_READONLY` 拒绝，不再读取或规范化旧入参。
+- 旧过程历史继续可读，已授权原件继续按任务 11 的下载入口读取；读取不因写入冻结而失效。
+- 新增或修订维修事实统一走 `saveRepairRequestMaintenance`（工程师）或管理员新版明细修订；不得再用旧入口承载新内容。
 
-`updateRepairProcessEntry(input)`：`requestId`、`entryId`、`expectedVersion`、`operationText`、`testResult`、`occurredAt`、`file`（可空，`{ fileId, uploadContextId }`）。
+`saveRepairRequestMaintenance(input)`：`requestId`、`expectedVersion`（必填，`>= 0`）、维修日期/工程师/复位结果/补充说明、可选 `attachment { fileId, uploadContextId }`、`steps[]`、`panels[]`。
 
-- 仅过程作者本人、接单人、同组织可编辑；非作者按 PROCESS_NOT_FOUND 处理，不泄露他人过程。
-- `expectedVersion` 必须等于当前 `versionNo`，条件更新 `(id, request_id, author_account_id, version_no)` 命中 0 行即 PROCESS_VERSION_CONFLICT；客户端应刷新详情后重试，后端不做自动合并。
-- 仅支持「当前过程尚无原件时补传一份原件」：传入 `file` 时，在同一调用方事务内先执行任务 11 绑定（锁顺序：原件行锁 → 工单行锁），再锁过程行并按 `(version_no, file_id IS NULL)` 条件更新，成功后过程关联该 `fileId` 且 `versionNo + 1`；绑定或过程更新任一失败整体回滚，落败方的暂存原件不会被消耗。
-- 当前过程已有原件时传入 `file` 返回 PROCESS_ORIGINAL_IMMUTABLE（对外 CONFLICT），明确拒绝且不覆盖原文件；替换、移除原件以及追加第二份原件均不在本期范围，追加请新建过程记录。
-- 省略 `file` 表示保持原绑定不变，条件更新不触碰 `file_id`；明确传 `file: null` 不被解释为移除原件，按输入错误（STORED_FILE_INVALID_PARAMS）拒绝。
-- 编辑时省略 `occurredAt`（或传空白）等价于重置为服务端当前时间并写 `timeSource = SERVER`，不会保留旧事件时间；`occurredAt` 校验规则与创建一致。
-- 已结单或处理已终结时只读（CLOSED_STATE_CONFLICT）。
+- 工程师姓名不接受客户端覆盖：后端始终以接单人可信资料（`real_name`）落库；旧客户端传 `null` 或任意姓名均被忽略；接单人可信资料缺失时返回 `ENGINEER_PROFILE_INCOMPLETE`，不写任何维修字段。
+- `expectedVersion` 必须等于当前 `maintenance_version_no`；不一致返回 `PROCESS_VERSION_CONFLICT`，不出保存回执。
+- 保存回执在写事务内生成并读回最新维修记录，事务提交成功后才返回给客户端；事务失败时不返回「已保存」，由调用方按失败处理。
+- 前端保存成功后如详情刷新失败，应提示「已保存，刷新失败」并仅重试详情读取，不得重发保存 mutation。
 
 原件上传与下载复用任务 11 共用入口，不新增临时 HTTP：
 
@@ -174,10 +171,34 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 
 前端区分「已上传暂存（TEMPORARY）」与「已保存绑定（BOUND）」：只有保存过程成功后，暂存才转为绑定；保存成功与刷新均以正式详情读接口为准，换工单或换账号不复用旧暂存上下文。编辑场景仅对「无原件过程」提供补传入口；已有原件的过程只读展示原件，不提供替换/移除，暂存原件在进入编辑前显式交接或拦截，不会静默丢弃。
 
+## 工程师侧修订历史（只读）
+
+本轮新增两个工程师侧只读查询，供工单详情底部「版本与修订历史」使用；不新增 Mutation、不提供回滚，也不替代管理员修订接口。
+
+`engineerRepairRequestRevisionHistory(requestId: Int!)`：返回最新在前的修订历史列表。
+
+- 权限：Session 必须是该工单的接单人、具备 ENGINEER 角色、属于该工单可信服务厂家，且工单未删除；客户、非接单人、外厂家与可信厂家缺失/冲突统一按 PERMISSION 大类拒绝。
+- 仅返回既有管理员修订记录的必要元数据：`revisionNo`、`previousVersion`、`reason`、修订人昵称、修订时间，以及可对比性标记；不返回管理员完整快照。
+- `revisionNo` 是管理员修订号，不是 `maintenance_version_no`，也不作为历史快照版本。
+- `hasComparableSnapshot` 表示修订前后快照是否都包含 v2 维修数据；`hasVisibleMaintenanceChange` 表示其中是否存在可展示的维修字段/步骤/面板差异。
+- `compareUnavailableReason` 为稳定原因码：`NO_COMPARABLE_SNAPSHOT`（缺少可比快照）或 `NO_VISIBLE_MAINTENANCE_CHANGE`（可比但无可见维修差异）；前端据此禁用「对比上一版」并本地化提示。
+- 工程师普通保存维修记录不新增修订行；无修订记录时返回空数组。
+
+`engineerRepairRequestRevision(requestId: Int!, revisionNo: Int!)`：返回单个修订的工程师可见详情。
+
+- 与列表复用同一读取授权；跨工单修订 ID 按修订不存在处理（NOT_FOUND），不泄露其他工单。
+- `before` / `after` 仅包含维修日期、维修工程师、复位结果、补充说明、排查步骤与故障面板；不包含附件、处理结果、结单信息、`contentMd` 或其他管理员快照字段。
+- 历史附件不进入输出，历史查询不会扩大原件下载权限。
+- 缺少可比快照或无可见维修差异时，详情仍可查看已有维修快照，并通过 `compareUnavailableReason` 说明不可对比原因；不会用当前工单拼历史，也不会虚构 Seed 历史。
+
+GraphQL schema 由 Nest 自动生成，本文只描述契约，不手改生成产物。
+
 ## 结单
 
-`closeRepairRequest(input)`：`requestId`、`handlingResult`、`closureReason`（可空）。
+`closeRepairRequest(input)`：`requestId`、`handlingResult`、`closureReason`（可空）、`maintenanceVersionNo`（必填 `Int!`，`>= 0`）。
 
+- `maintenanceVersionNo` 必须是用户在结单确认界面看到的维修记录版本；`0` 是合法版本（v0 未保存记录），缺失或非法值在 GraphQL / 输入校验层拒绝，不得省略或按 `0` 兜底。
+- 提交版本与当前 `maintenance_version_no` 不一致时返回 `PROCESS_VERSION_CONFLICT`，且不写 `closure_status`、`closed_at`、`handling_*`；前端提示刷新并重新确认，不自动重试。
 - `RepairRequestHandlingResult` 五值：`FIXED`、`PART_PURCHASED`、`PROVIDE_PLAN_SELF_EXECUTE`、`INTERRUPTED`、`UNREPAIRABLE`；经固定策略映射为三态 `RepairRequestHandlingStatus`：前三者 → `COMPLETED`，`INTERRUPTED` → `IN_PROGRESS`，`UNREPAIRABLE` → `UNRESOLVED`。客户端不能自报状态。
 - `INTERRUPTED` / `UNREPAIRABLE` 必须填写 `closureReason`，其他结果可选。
 - 结单写入 `handling_result`、`handling_status`、`handling_recorded_at/by`、`closure_status='CLOSED'`、`closed_at`、`closure_reason`；`INTERRUPTED` 不写 `handling_ended_at`，结单事实由 `closure_status` / `closed_at` 表达。
@@ -187,6 +208,6 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 
 - 读侧：不存在、已删除与越权统一拒绝（PERMISSION 大类），不区分对外表述，防止资源存在性探测。
 - 删除：不存在/非本人统一 NOT_FOUND，已接单 CONFLICT。
-- 内部过程：非作者编辑 → NOT_FOUND；版本不一致 → CONFLICT；已结单写入 → CONFLICT；写失败兜底 → INTERNAL_SERVER_ERROR。
+- 内部过程：旧新增/更新/改绑一律 `PROCESS_READONLY`（对外 BAD_USER_INPUT），且无过程行或附件写入；旧历史读取与已授权原件下载不受影响。
 - 原件绑定失败（不存在/无权、已绑定、用途或上下文不匹配、完整性核对失败、工单不可绑定）按任务 11 的领域错误返回，并回滚同事务内的过程写入。经 GraphQL 写入口暴露时的分类：`NOT_FOUND` → NOT_FOUND；`NOT_BINDABLE` / `ALREADY_BOUND` / `WORK_ORDER_NOT_BINDABLE` → CONFLICT（状态冲突不得落为输入错误）；`INVALID_PARAMS` / `PURPOSE_NOT_SUPPORTED` / `UPLOAD_FILE_MISSING` / `UPLOAD_FILE_TOO_LARGE` / `UPLOAD_FILE_TYPE_NOT_ALLOWED` → BAD_USER_INPUT；`UPLOAD_FAILED` / `FILE_NOT_AVAILABLE` / `INTEGRITY_FAILED` / `BIND_FAILED` → INTERNAL_SERVER_ERROR。`errorCode` 仅在非生产环境暴露，客户端主分支只依赖 GraphQL 大类。
 - 详细的 GraphQL 错误分类见 `docs/api/graphql-error-contract-current.md`。

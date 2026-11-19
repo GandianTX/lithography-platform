@@ -83,6 +83,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={vi.fn()}
         open
       />,
@@ -96,7 +97,7 @@ describe('AdminRepairRequestRevisionModal', () => {
     expect(appendMock).not.toHaveBeenCalled();
   });
 
-  it('只提交发生变化的字段，并携带工单与过程版本号', async () => {
+  it('只提交发生变化的可编辑字段，不把只读旧过程当作待提交变更', async () => {
     appendMock.mockResolvedValue({
       ok: true,
       result: {
@@ -115,6 +116,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,
@@ -123,6 +125,7 @@ describe('AdminRepairRequestRevisionModal', () => {
     fireEvent.change(screen.getByDisplayValue('# 原始正文'), {
       target: { value: '# 订正正文' },
     });
+    // 旧过程文本为只读：即使触发编辑事件也不得进入提交负载
     fireEvent.change(screen.getByDisplayValue('原始操作'), {
       target: { value: '订正操作' },
     });
@@ -132,15 +135,14 @@ describe('AdminRepairRequestRevisionModal', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存修订' }));
 
     await waitFor(() => expect(appendMock).toHaveBeenCalledTimes(1));
-    expect(appendMock).toHaveBeenCalledWith({
+    const payload = appendMock.mock.calls[0][0];
+    expect(payload).toMatchObject({
       requestId: 880001,
       expectedVersion: 2,
       reason: '订正已提交事实',
       contentMd: '# 订正正文',
-      processEntries: [
-        { entryId: '11', expectedVersion: 1, operationText: '订正操作', testResult: null },
-      ],
     });
+    expect(payload.processEntries).toBeUndefined();
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(message.success).toHaveBeenCalledWith('工单修订已保存。');
     expect(message.warning).not.toHaveBeenCalled();
@@ -165,6 +167,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,
@@ -209,6 +212,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,
@@ -240,6 +244,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,

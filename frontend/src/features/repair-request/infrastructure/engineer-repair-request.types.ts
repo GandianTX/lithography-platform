@@ -120,6 +120,59 @@ export type EngineerResponseDTO = {
   createdAt: string;
 };
 
+/** 已保存绑定的维修原件（与通用原件安全展示字段一致） */
+export type RepairMaintenanceAttachmentDTO = RepairProcessEntryFileDTO;
+
+/** 结构化维修记录 DTO（repair-maintenance.dto.ts） */
+export type RepairMaintenanceRecordDTO = {
+  maintenanceDate?: string | null;
+  engineerName?: string | null;
+  resetResult?: string | null;
+  supplementaryNote?: string | null;
+  versionNo: number;
+  attachment?: RepairMaintenanceAttachmentDTO | null;
+};
+
+export type RepairMaintenanceStepDTO = {
+  id: string;
+  stepNo: number;
+  errorCode?: string | null;
+  partName?: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+export type RepairMaintenanceFaultPanelDTO = {
+  id: string;
+  panelType: string;
+  stepId?: string | null;
+  phaseCode?: string | null;
+  mainError?: string | null;
+  unitError?: string | null;
+  source?: string | null;
+  errorType?: string | null;
+  gpibStatus?: string | null;
+  faultStatus?: string | null;
+  description: string;
+  action?: string | null;
+};
+
+export type RepairIntakeAnalysisDTO = {
+  status: string;
+  generation: number;
+  outputText?: string | null;
+  failureReason?: string | null;
+  /** ISO 字符串（后端 Date 标量） */
+  finishedAt?: string | null;
+};
+
+export type RepairIntakeSourceDTO = {
+  intakeId: string;
+  faultDescription?: string | null;
+  customerFile?: RepairProcessEntryFileDTO | null;
+  analysis?: RepairIntakeAnalysisDTO | null;
+};
+
 export type RepairRequestDetailDTO = {
   id: number;
   requestNo: string;
@@ -144,6 +197,14 @@ export type RepairRequestDetailDTO = {
   handlingResult?: RepairRequestHandlingResult | null;
   handlingStatus?: RepairRequestHandlingStatus | null;
   processEntries?: RepairProcessEntryDTO[];
+  /** 任务 04：结构化内部维修记录（仅接单工程师本人可见） */
+  maintenance?: RepairMaintenanceRecordDTO | null;
+  maintenanceSteps?: RepairMaintenanceStepDTO[] | null;
+  maintenanceFaultPanels?: RepairMaintenanceFaultPanelDTO[] | null;
+  /** 客户原始报修与首次 AI 分析（工程师详情入口富集；客户入口为空） */
+  intake?: RepairIntakeSourceDTO | null;
+  /** 当前会话是否可编辑结构化维修记录（后端权威判定） */
+  canEditMaintenance?: boolean | null;
 };
 
 export type RepairRequestPaginatedDTO = {
@@ -203,6 +264,61 @@ export type EngineerRepairRequestDetail = RepairRequestDetail & {
   handlingResult: RepairRequestHandlingResult | null;
   handlingStatus: RepairRequestHandlingStatus | null;
   processEntries: EngineerRepairProcessEntry[];
+  /** 任务 04：可缺省以兼容既有响应/测试夹具，UI 按空值兜底 */
+  maintenance?: EngineerRepairMaintenanceRecord | null;
+  maintenanceSteps?: EngineerRepairMaintenanceStep[];
+  maintenanceFaultPanels?: EngineerRepairMaintenanceFaultPanel[];
+  intake?: EngineerRepairIntake | null;
+  canEditMaintenance?: boolean;
+};
+
+/** 结构化维修记录内部模型（可空字段收拢为 null） */
+export type EngineerRepairMaintenanceRecord = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  versionNo: number;
+  attachment: RepairProcessEntryFileDTO | null;
+};
+
+export type EngineerRepairMaintenanceStep = {
+  id: string;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+export type EngineerRepairMaintenanceFaultPanel = {
+  id: string;
+  panelType: string;
+  stepId: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+export type EngineerRepairIntakeAnalysis = {
+  status: string;
+  generation: number;
+  outputText: string | null;
+  failureReason: string | null;
+  finishedAt: string | null;
+};
+
+export type EngineerRepairIntake = {
+  intakeId: string;
+  faultDescription: string | null;
+  customerFile: RepairProcessEntryFileDTO | null;
+  analysis: EngineerRepairIntakeAnalysis | null;
 };
 
 /** 内部维修过程内部模型（DTO 显式映射；可空字段收拢为 null） */
@@ -327,6 +443,8 @@ export type UpdateRepairProcessEntryInput = {
 export type CloseRepairRequestInput = {
   requestId: number;
   handlingResult: RepairRequestHandlingResult;
+  /** 打开结单确认时看到的维修记录版本号；必须显式传入，0 合法 */
+  maintenanceVersionNo: number;
   closureReason: string | null;
 };
 
@@ -351,6 +469,25 @@ export type RepairProcessWriteFailureReason =
 export type RepairProcessWriteResult =
   | { ok: true; entry: EngineerRepairProcessEntry }
   | { ok: false; reason: RepairProcessWriteFailureReason; message: string };
+
+export type InterruptRepairRequestInput = {
+  requestId: number;
+  reason: string;
+};
+
+export type RepairRequestInterruption = {
+  requestId: number;
+  closureStatus: string | null;
+  closedAt: string | null;
+  closureReason: string | null;
+  handlingResult: RepairRequestHandlingResult;
+  handlingStatus: RepairRequestHandlingStatus;
+  handlingEndedAt: string | null;
+};
+
+export type InterruptRepairRequestResult =
+  | { ok: true; interruption: RepairRequestInterruption }
+  | { ok: false; reason: CloseRepairRequestFailureReason; message: string };
 
 export type CloseRepairRequestFailureReason =
   | 'not-accessible'
@@ -391,3 +528,141 @@ export type DownloadRepairProcessFileResult =
       reason: 'not-found' | 'file-not-available' | 'insufficient-permission' | 'download-failed';
       message: string;
     };
+
+/* ------------------------------------------------------------------ */
+/* 结构化内部维修记录（任务 04）                                       */
+/* ------------------------------------------------------------------ */
+
+export type RepairMaintenanceStepInput = {
+  id: string | null;
+  stepNo: number;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: string;
+};
+
+export type RepairMaintenanceFaultPanelInput = {
+  id: string | null;
+  panelType: string;
+  stepNo: number | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/**
+ * 保存维修记录输入。
+ * expectedVersion 取当前详情 maintenance.versionNo ?? 0（乐观并发）；
+ * attachment 为已上传暂存原件，仅在尚未绑定原件时提交。
+ */
+export type SaveRepairRequestMaintenanceInput = {
+  requestId: number;
+  expectedVersion: number;
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  attachment: { fileId: string; uploadContextId: string } | null;
+  steps: RepairMaintenanceStepInput[];
+  panels: RepairMaintenanceFaultPanelInput[];
+};
+
+export type RepairMaintenanceWriteResult =
+  | { ok: true; record: EngineerRepairMaintenanceRecord }
+  | { ok: false; reason: RepairProcessWriteFailureReason; message: string };
+
+/* ------------------------------------------------------------------ */
+/* 工程师侧修订历史（只读）                                            */
+/* ------------------------------------------------------------------ */
+
+/** 修订对比不可用原因码（后端稳定码，前端本地化） */
+export type EngineerRepairRevisionCompareUnavailableReason =
+  | 'NO_COMPARABLE_SNAPSHOT'
+  | 'NO_VISIBLE_MAINTENANCE_CHANGE';
+
+/** 工程师可见的修订维修快照（不含附件、处理结果与结单信息） */
+export type EngineerRepairRevisionSnapshotDTO = {
+  maintenanceDate?: string | null;
+  engineerName?: string | null;
+  resetResult?: string | null;
+  supplementaryNote?: string | null;
+  steps?: RepairMaintenanceStepDTO[];
+  panels?: RepairMaintenanceFaultPanelDTO[];
+};
+
+export type EngineerRepairRevisionHistoryItemDTO = {
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  /** ISO 字符串（后端 Date 标量） */
+  createdAt: string;
+  hasComparableSnapshot: boolean;
+  hasVisibleMaintenanceChange: boolean;
+  compareUnavailableReason?: EngineerRepairRevisionCompareUnavailableReason | null;
+};
+
+export type EngineerRepairRevisionDetailDTO = {
+  requestId: number;
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  /** ISO 字符串（后端 Date 标量） */
+  createdAt: string;
+  hasComparableSnapshot: boolean;
+  hasVisibleMaintenanceChange: boolean;
+  compareUnavailableReason?: EngineerRepairRevisionCompareUnavailableReason | null;
+  before?: EngineerRepairRevisionSnapshotDTO | null;
+  after?: EngineerRepairRevisionSnapshotDTO | null;
+};
+
+/** 工程师侧快照内部模型（可空字段收拢为 null） */
+export type EngineerRepairRevisionSnapshot = {
+  maintenanceDate: string | null;
+  engineerName: string | null;
+  resetResult: string | null;
+  supplementaryNote: string | null;
+  steps: EngineerRepairMaintenanceStep[];
+  panels: EngineerRepairMaintenanceFaultPanel[];
+};
+
+export type EngineerRepairRevisionHistoryItem = {
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: string;
+  hasComparableSnapshot: boolean;
+  hasVisibleMaintenanceChange: boolean;
+  compareUnavailableReason: EngineerRepairRevisionCompareUnavailableReason | null;
+};
+
+export type EngineerRepairRevisionDetail = {
+  requestId: number;
+  revisionNo: number;
+  previousVersion: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: string;
+  hasComparableSnapshot: boolean;
+  hasVisibleMaintenanceChange: boolean;
+  compareUnavailableReason: EngineerRepairRevisionCompareUnavailableReason | null;
+  before: EngineerRepairRevisionSnapshot | null;
+  after: EngineerRepairRevisionSnapshot | null;
+};
+
+export type EngineerRepairRevisionHistoryResult =
+  | { ok: true; items: EngineerRepairRevisionHistoryItem[] }
+  | { ok: false; message: string };
+
+export type EngineerRepairRevisionDetailResult =
+  | { ok: true; detail: EngineerRepairRevisionDetail }
+  | { ok: false; message: string };

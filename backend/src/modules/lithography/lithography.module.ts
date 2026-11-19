@@ -53,6 +53,7 @@ import { AdminAiMessageQueryService } from './queries/admin-ai-message.query.ser
 import { AdminAiReportQueryService } from './queries/admin-ai-report.query.service';
 import { AdminRepairRequestQueryService } from './queries/admin-repair-request.query.service';
 import { EngineerRegistrationQueryService } from './queries/engineer-registration.query.service';
+import { EngineerRepairRevisionQueryService } from './queries/engineer-repair-revision.query.service';
 import { EquipmentModelQueryService } from './queries/equipment-model.query.service';
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
 import { MaintenanceReportQueryService } from './queries/maintenance-report.query.service';
@@ -60,6 +61,7 @@ import { OrganizationMembershipQueryService } from './queries/organization-membe
 import { OrganizationQueryService } from './queries/organization.query.service';
 import { ReferenceDocumentQueryService } from './queries/reference-document.query.service';
 import { RepairProcessEntryQueryService } from './queries/repair-process-entry.query.service';
+import { RepairRequestMaintenanceQueryService } from './queries/repair-request-maintenance.query.service';
 import { RepairRequestQueryService } from './queries/repair-request.query.service';
 import { StoredFileQueryService } from './queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from './queries/trusted-organization-context.query.service';
@@ -75,6 +77,7 @@ import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
 import { ReferenceDocumentService } from './reference-document.service';
 import { RepairProcessEntryService } from './repair-process-entry.service';
+import { RepairRequestMaintenanceService } from './repair-request-maintenance.service';
 import { RepairRequestRevisionService } from './repair-request-revision.service';
 import { RepairRequestService } from './repair-request.service';
 import { StoredFileService } from './stored-file.service';
@@ -136,12 +139,15 @@ const LITHOGRAPHY_ENTITIES = [
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
     RepairProcessEntryQueryService,
+    RepairRequestMaintenanceQueryService,
+    EngineerRepairRevisionQueryService,
     AdminRepairRequestQueryService,
     AdminAiConversationQueryService,
     AdminAiMessageQueryService,
     AdminAiReportQueryService,
     RepairRequestService,
     RepairRequestRevisionService,
+    RepairRequestMaintenanceService,
     RepairProcessEntryService,
     StoredFileService,
     StoredFileQueryService,
@@ -170,12 +176,15 @@ const LITHOGRAPHY_ENTITIES = [
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
     RepairProcessEntryQueryService,
+    RepairRequestMaintenanceQueryService,
+    EngineerRepairRevisionQueryService,
     AdminRepairRequestQueryService,
     AdminAiConversationQueryService,
     AdminAiMessageQueryService,
     AdminAiReportQueryService,
     RepairRequestService,
     RepairRequestRevisionService,
+    RepairRequestMaintenanceService,
     RepairProcessEntryService,
     StoredFileService,
     StoredFileQueryService,

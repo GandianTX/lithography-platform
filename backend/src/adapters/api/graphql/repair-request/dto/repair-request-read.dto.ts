@@ -11,6 +11,12 @@ import {
 import { Field, Int, ObjectType } from '@nestjs/graphql';
 import { paginatedTypeFactory } from '@src/adapters/api/graphql/pagination.type-factory';
 import { EquipmentModelDTO } from '../../equipment-model/dto/equipment-model.dto';
+import {
+  RepairIntakeSourceDTO,
+  RepairMaintenanceFaultPanelDTO,
+  RepairMaintenanceRecordDTO,
+  RepairMaintenanceStepDTO,
+} from './repair-maintenance.dto';
 import { RepairProcessEntryDTO } from './repair-process-entry.dto';
 
 /**
@@ -144,6 +150,35 @@ export class RepairRequestDetailDTO {
     description: '内部维修过程（仅接单工程师本人可见；客户入口为空数组）',
   })
   processEntries!: RepairProcessEntryDTO[];
+
+  // ---- 结构化内部维修记录（任务 04；仅接单工程师本人可见，客户入口为空）----
+
+  @Field(() => RepairMaintenanceRecordDTO, {
+    nullable: true,
+    description: '结构化维修记录（仅接单工程师本人可见；客户入口为空）',
+  })
+  maintenance?: RepairMaintenanceRecordDTO | null;
+
+  @Field(() => [RepairMaintenanceStepDTO], {
+    description: '排查步骤（仅接单工程师本人可见；客户入口为空数组）',
+  })
+  maintenanceSteps!: RepairMaintenanceStepDTO[];
+
+  @Field(() => [RepairMaintenanceFaultPanelDTO], {
+    description: '故障面板（仅接单工程师本人可见；客户入口为空数组）',
+  })
+  maintenanceFaultPanels!: RepairMaintenanceFaultPanelDTO[];
+
+  @Field(() => RepairIntakeSourceDTO, {
+    nullable: true,
+    description: '客户原始报修与首次 AI 分析（仅工程师入口；客户入口为空）',
+  })
+  intake?: RepairIntakeSourceDTO | null;
+
+  @Field(() => Boolean, {
+    description: '当前会话能否保存结构化维修记录（接单本人且工单未结束）',
+  })
+  canEditMaintenance!: boolean;
 
   // ---- 工程师入口富集字段（客户入口为空；accept Mutation 成功输出复用工程师入口）----
 
