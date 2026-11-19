@@ -94,6 +94,27 @@ export class AdminAiConversationQueryService {
     return this.conversationRepository.count();
   }
 
+  /**
+   * 会话归属事实（管理员范围校验用）。
+   *
+   * 会话不存在返回 null；调用方据此区分「不存在」与「范围外」（后者按拒绝处理）。
+   */
+  async findOwnershipFacts(
+    conversationId: number,
+  ): Promise<{ ownerAccountId: number; ownerOrganizationId: number | null } | null> {
+    const conversation = await this.conversationRepository.findOne({
+      where: { id: conversationId },
+      select: { id: true, engineerAccountId: true, ownerOrganizationId: true },
+    });
+    if (!conversation) {
+      return null;
+    }
+    return {
+      ownerAccountId: conversation.engineerAccountId,
+      ownerOrganizationId: conversation.ownerOrganizationId,
+    };
+  }
+
   private applyFilters(
     qb: SelectQueryBuilder<AiConversationEntity>,
     filter?: AdminAiConversationQueryFilter,
@@ -112,6 +133,12 @@ export class AdminAiConversationQueryService {
     }
     if (filter.status) {
       qb.andWhere('conversation.status = :status', { status: filter.status });
+    }
+    if (filter.organizationId !== undefined && filter.organizationId !== null) {
+      // 二级管理员：仅本公司会话（服务端内部范围，不接受客户端传入）
+      qb.andWhere('conversation.ownerOrganizationId = :scopeOrganizationId', {
+        scopeOrganizationId: filter.organizationId,
+      });
     }
     if (filter.createdAtFrom || filter.createdAtTo) {
       qb.andWhere(
@@ -183,6 +210,7 @@ export class AdminAiConversationQueryService {
       engineerAccountId: entity.engineerAccountId,
       status: entity.status,
       aiFeedback: entity.aiFeedback,
+      contentVersion: entity.contentVersion,
       createdAt: entity.createdAt,
       completedAt: entity.completedAt,
       messageCount: messageCounts.get(entity.id) ?? 0,

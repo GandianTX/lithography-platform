@@ -222,6 +222,12 @@ export function isAuthSessionAdminPathAllowedAt(
     return scope === 'GLOBAL';
   }
 
+  // AI 会话只读页（任务 05 S4.1）：一级跨公司、二级本公司，服务端按级别裁决范围，
+  // 故两级管理员均可进入；文档数据库整体页仍保持一级专属。
+  if (isAuthSessionRolePathAllowed(pathname, '/admin/ai-conversations')) {
+    return scope !== 'NONE';
+  }
+
   if (
     AUTH_SESSION_ADMIN_MANAGEMENT_PATHS.some((path) => isAuthSessionRolePathAllowed(pathname, path))
   ) {

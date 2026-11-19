@@ -24,16 +24,18 @@ import {
   normalizeOptionalFilterText,
   normalizeOptionalKeyword,
 } from './admin-document-database-filter.normalize';
-import { assertAdminDocumentDatabaseGlobalAccess } from './admin-document-database-permission';
+import { resolveAdminAiConversationScope } from './admin-ai-conversation-scope';
 import { enrichAdminAiConversationListItems } from './enrich-admin-account-display';
 
 /** 页大小上限：与 GraphQL 边界 PaginationArgs @Max(100) 对齐（统一分页策略） */
 const MAX_PAGE_SIZE = 100;
 
 /**
- * 管理员全局 AI 会话列表用例（PR3 只读聚合）
+ * 管理员 AI 会话列表用例（PR3 只读聚合）
  *
  * - 精确授权先行：activeRole === SUPER_ADMIN（失败关闭）
+ * - 组织范围：一级跨公司、二级仅本公司（服务端内部过滤，不接受客户端传入公司 ID）；
+ *   范围裁决与任务 05 的只读详情、导出复用同一 core 策略
  * - 仅 OFFSET 分页；排序由契约固定（创建时间倒序 + 主键倒序），不采纳客户端排序入参
  * - engineerKeyword 为跨账户域展示关键字：先经账户域解析为账号 ID 有界集合，
  *   命中超上限显式拒绝（不静默截断漏数），无命中时短路返回空页；
@@ -53,11 +55,10 @@ export class ListAdminAiConversationsUsecase {
     pagination: PaginationParams;
     filter?: AdminAiConversationListFilter;
   }): Promise<AdminAiConversationListPage> {
-    await assertAdminDocumentDatabaseGlobalAccess({
+    const scope = await resolveAdminAiConversationScope({
       session: params.session,
       accountQueryService: this.accountQueryService,
       organizationContextService: this.organizationContextService,
-      actionLabel: '查看 AI 会话数据库',
     });
 
     if (!isOffsetMode(params.pagination)) {
@@ -101,6 +102,8 @@ export class ListAdminAiConversationsUsecase {
       status: filter?.status,
       createdAtFrom: filter?.createdAtFrom,
       createdAtTo: filter?.createdAtTo,
+      // 二级管理员仅本公司（一级为 null = 全公司）
+      organizationId: scope.kind === 'ADMIN_ORGANIZATION' ? scope.organizationId : null,
     };
 
     const listPage = await this.adminAiConversationQueryService.listAll({

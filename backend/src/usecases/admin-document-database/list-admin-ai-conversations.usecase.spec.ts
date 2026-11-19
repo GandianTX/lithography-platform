@@ -11,6 +11,7 @@ import type { AdminAiConversationQueryService } from '@src/modules/lithography/q
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { createAdminDocumentDatabaseAccessMocks } from '../../../test/support/account/admin-document-database-access.fixture';
 import {
+  ADMIN_ORGANIZATION_ID,
   captureThrownError,
   createSuperAdminSession,
   createUnauthorizedSessions,
@@ -66,6 +67,7 @@ describe('ListAdminAiConversationsUsecase', () => {
 
   const organizationContextService = {
     resolveForAccount: access.resolveForAccount,
+    tryResolveForAccount: access.tryResolveForAccount,
   } as unknown as TrustedOrganizationContextQueryService;
 
   const usecase = new ListAdminAiConversationsUsecase(
@@ -77,7 +79,9 @@ describe('ListAdminAiConversationsUsecase', () => {
   beforeEach(() => {
     access.setAdminLevel(1);
     access.setMembershipError(null);
+    access.setMemberRole('SUPER_ADMIN');
     access.findAdminLevelByAccountId.mockClear();
+    access.tryResolveForAccount.mockClear();
     (adminAiConversationQueryService.listAll as jest.Mock).mockClear();
     (accountQueryService.findAccountIdsByDisplayKeyword as jest.Mock)
       .mockClear()
@@ -97,23 +101,54 @@ describe('ListAdminAiConversationsUsecase', () => {
       expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
       expect(adminAiConversationQueryService.listAll).not.toHaveBeenCalled();
       expect(access.findAdminLevelByAccountId).not.toHaveBeenCalled();
-      expect(access.resolveForAccount).not.toHaveBeenCalled();
+      expect(access.tryResolveForAccount).not.toHaveBeenCalled();
     },
   );
 
-  it.each([2, null])('当前等级 %j 时失败关闭，本域与账户域零读取', async (level) => {
-    access.setAdminLevel(level);
+  it('等级缺失或非法时失败关闭，本域与账户域零读取', async () => {
+    access.setAdminLevel(null);
 
     const error = (await captureThrownError(
       usecase.execute({ session: createSuperAdminSession(), pagination: offsetPagination() }),
     )) as { code?: string; message?: string };
 
     expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
-    expect(error.message).toContain('仅一级管理员可以查看 AI 会话数据库');
     expect(adminAiConversationQueryService.listAll).not.toHaveBeenCalled();
     expect(accountQueryService.findAccountIdsByDisplayKeyword).not.toHaveBeenCalled();
     expect(accountQueryService.findNicknamesByAccountIds).not.toHaveBeenCalled();
-    expect(access.resolveForAccount).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员按本公司范围过滤（一级为全公司）', async () => {
+    access.setAdminLevel(2);
+
+    await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+    });
+
+    const call = (adminAiConversationQueryService.listAll as jest.Mock).mock.calls[0][0];
+    expect(call.filter.organizationId).toBe(ADMIN_ORGANIZATION_ID);
+  });
+
+  it('一级管理员不按公司过滤（跨公司范围）', async () => {
+    await usecase.execute({
+      session: createSuperAdminSession(),
+      pagination: offsetPagination(),
+    });
+
+    const call = (adminAiConversationQueryService.listAll as jest.Mock).mock.calls[0][0];
+    expect(call.filter.organizationId).toBeNull();
+  });
+
+  it('成员角色不是组织管理员时失败关闭（账号等级不能单独授予公司范围）', async () => {
+    access.setMemberRole('ENGINEER');
+
+    const error = (await captureThrownError(
+      usecase.execute({ session: createSuperAdminSession(), pagination: offsetPagination() }),
+    )) as { code?: string };
+
+    expect(error.code).toBe(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS);
+    expect(adminAiConversationQueryService.listAll).not.toHaveBeenCalled();
   });
 
   it('可信成员事实缺失时失败关闭，不返回任何会话数据', async () => {

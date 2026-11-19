@@ -21,6 +21,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApiController } from './api.controller';
 import { ApiService } from './api.service';
+import { ApiWorkflowAdmissionModule } from './api-workflow-admission.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { ApiService } from './api.service';
     MiddlewareModule,
     DatabaseModule,
     TypeOrmTransactionModule,
+    ApiWorkflowAdmissionModule,
     LocalReferenceDocumentStorageModule,
     AppGraphQLModule,
     GraphQLAdapterModule,

@@ -313,6 +313,8 @@ export type AdminAiConversationListItem = {
   requestId: number;
   status: AdminAiConversationStatus;
   engineerNickname: string;
+  /** 会话内容版本（导出按此固定消息范围与截止点） */
+  contentVersion: number;
   messageCount: number;
   reportCount: number;
   createdAt: string;
@@ -322,6 +324,9 @@ export type AdminAiConversationListItem = {
 
 export type AdminAiMessageRole = 'ASSISTANT' | 'SYSTEM' | 'TOOL' | 'USER';
 
+/** 分析状态（与后端 AiMessageAnalysisStatus 正式枚举一致） */
+export type AdminAiMessageAnalysisStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+
 export type AdminAiMessageListItem = {
   id: number;
   conversationId: number;
@@ -329,7 +334,48 @@ export type AdminAiMessageListItem = {
   turnNo: number | null;
   role: AdminAiMessageRole;
   contentText: string;
+  /** 消息内容版本（与同轮分析、会话版本一致） */
+  contentVersion: number;
+  /** 所属轮次的分析状态（无分析记录时为空） */
+  analysisStatus: AdminAiMessageAnalysisStatus | null;
+  /** 所属轮次的失败原因（仅失败轮次） */
+  failureReason: string | null;
   createdAt: string;
+};
+
+/** 管理员只读会话详情的单条消息 */
+export type AdminAiConversationMessage = {
+  messageId: number;
+  messageSeq: number;
+  turnNo: number | null;
+  role: AdminAiMessageRole;
+  questionUuid: string | null;
+  text: string;
+  contentVersion: number;
+  createdAt: string;
+};
+
+/** 管理员只读会话详情的单轮（问题 / 回答 / 状态与失败原因） */
+export type AdminAiConversationTurn = {
+  questionUuid: string;
+  turnNo: number | null;
+  analysisStatus: AdminAiMessageAnalysisStatus | null;
+  failureReason: string | null;
+  analysisContentVersion: number | null;
+  question: AdminAiConversationMessage | null;
+  answer: AdminAiConversationMessage | null;
+};
+
+/** 管理员只读会话详情（一级跨公司；二级本公司；直传外公司 ID 拒绝） */
+export type AdminAiConversationDetail = {
+  conversationId: number;
+  requestId: number | null;
+  requestNo: string;
+  status: string;
+  contentVersion: number;
+  engineerNickname: string;
+  createdAt: string;
+  turns: AdminAiConversationTurn[];
 };
 
 // ---- AI 报告 ----

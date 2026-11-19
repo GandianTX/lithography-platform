@@ -26,6 +26,8 @@ export default defineConfig({
     '**/repair-request-create-real.spec.ts',
     '**/registration-organization-name-real.spec.ts',
     '**/registration-organization-name-fault.spec.ts',
+    '**/ai-diagnosis-real-backend.spec.ts',
+    '**/ai-conversation-admin-real-backend.spec.ts',
   ],
   timeout: 20_000,
   use: {

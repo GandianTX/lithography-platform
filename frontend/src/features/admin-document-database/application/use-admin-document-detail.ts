@@ -5,6 +5,7 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { isGraphQLIngressError } from '@/shared/graphql';
 
 import type {
+  AdminAiConversationDetail,
   AdminAiMessageListItem,
   AdminAiReportDetail,
   AdminListPage,
@@ -12,6 +13,7 @@ import type {
 } from '../infrastructure/admin-document-database.types';
 import {
   type AdminDetailResult,
+  fetchAdminAiConversationDetail,
   fetchAdminAiMessages,
   fetchAdminAiReportDetail,
   fetchAdminRepairRequestSummary,
@@ -205,6 +207,57 @@ export function useAdminAiConversationMessages(conversationId: number | null, pa
       void load(conversationId, page);
     }
   }, [conversationId, page, load]);
+
+  return { state, retry };
+}
+
+/**
+ * 管理员只读会话详情（任务 05 · S4.1 · R038-01）。
+ *
+ * 只读读取：不提供提问入口；会话范围（跨公司 / 本公司）由服务端裁决，
+ * 直传外公司 ID 时按「无权访问」提示，不回显外公司内容。
+ */
+export function useAdminAiConversationDetail(conversationId: number | null) {
+  const [state, dispatch] = useReducer(
+    createAdminDetailReducer<AdminAiConversationDetail>(),
+    {
+      status: 'loading',
+      requestId: 0,
+    },
+  );
+  const requestIdRef = useRef(0);
+
+  const load = useCallback(async (target: number) => {
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
+
+    dispatch({ type: 'load-start', requestId });
+
+    try {
+      const detail = await fetchAdminAiConversationDetail(target);
+      dispatch({ type: 'load-ready', requestId, detail });
+    } catch (error) {
+      dispatch({
+        type: 'load-failed',
+        requestId,
+        message: toDetailUserMessage(error, '会话详情加载失败，请稍后重试。'),
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (conversationId === null) {
+      return;
+    }
+
+    void load(conversationId);
+  }, [conversationId, load]);
+
+  const retry = useCallback(() => {
+    if (conversationId !== null) {
+      void load(conversationId);
+    }
+  }, [conversationId, load]);
 
   return { state, retry };
 }

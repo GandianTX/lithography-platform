@@ -2477,3 +2477,238 @@ body {
 .admin-user-contact:hover .admin-user-contact-copy-icon {
   opacity: 1;
 }
+
+/* ===== AI 诊断工作区（任务05 S3） =====
+   尺寸与色板对齐 V44 原型（AI33/AI36 系列）：
+
+   - 工作区：grid-template-columns: minmax(0,1fr) minmax(315px,34%)；
+     height: clamp(590px, calc(100dvh - 256px), 850px)；overflow:hidden；
+   - 场景区：radial-gradient(ellipse at 52% 43%, 起止色取 --ai-scene-bg-start/end)；
+     padding: 20px 20px 15px；
+   - 对话面板：边框 --ai-panel-line、底色 --ai-panel-bg；
+     线程区渐变 --ai-thread-bg-start/end，消息底色 --ai-message-bg；
+   - 图例 chip：radius 5px，底色 --ai-chip-bg，文字 --ai-chip-text。
+
+   颜色一律以 token 落地（组件内不写死色值）；深色模式由 .dark 覆盖。
+   几何/相机/配色由前端定义，模型只回 partId + display。 */
+:root {
+  /* 几何配色（Canvas 2D 伪 3D） */
+  --ai-geo-part-normal: #334458;
+  --ai-geo-part-highlight: #158bb6;
+  --ai-geo-part-warning: #d99436;
+  --ai-geo-part-hidden: #cbd5e1;
+  --ai-geo-part-fault: #e86066;
+  --ai-geo-outline: #50869d;
+  --ai-geo-outline-highlight: #2a9fd6;
+  --ai-geo-outline-warning: #ffcd77;
+  --ai-geo-outline-fault: #ff9aa1;
+  --ai-geo-base: #3b495d;
+  --ai-geo-base-dark: #283449;
+  --ai-geo-grid: #65c9e7;
+  --ai-geo-scan: #41ccef;
+  --ai-geo-legend-highlight-bg: #d7edf7;
+  --ai-geo-legend-highlight-text: #175577;
+  --ai-geo-legend-warning-bg: #f8e5be;
+  --ai-geo-legend-warning-text: #794813;
+  /* 工作区与面板色板（V44 对照） */
+  --ai-workspace-bg: #ecf4ff;
+  --ai-workspace-ink: #23364f;
+  --ai-workspace-muted: #526982;
+  --ai-scene-bg-start: #f7f9fc;
+  --ai-scene-bg-end: #cbd2dc;
+  --ai-panel-bg: #eaf3ff;
+  --ai-panel-line: #abc6ed;
+  --ai-thread-bg-start: #ebf4ff;
+  --ai-thread-bg-end: #deebfa;
+  --ai-thread-line: #c1d7f6;
+  --ai-message-bg: #fbfdff;
+  --ai-message-line: #cadcf3;
+  --ai-compose-bg: #f1f7ff;
+  --ai-chip-bg: #e5f5fe;
+  --ai-chip-text: #084d70;
+}
+
+.dark {
+  --ai-geo-part-normal: #46566b;
+  --ai-geo-part-highlight: #2aa1cf;
+  --ai-geo-part-warning: #e0a04a;
+  --ai-geo-part-hidden: #3c4757;
+  --ai-geo-part-fault: #f07a80;
+  --ai-geo-outline: #6f9bb0;
+  --ai-geo-outline-highlight: #52c2ef;
+  --ai-geo-outline-warning: #ffd68f;
+  --ai-geo-outline-fault: #ffb3b6;
+  --ai-geo-base: #47576c;
+  --ai-geo-base-dark: #334052;
+  --ai-geo-grid: #7ad3ec;
+  --ai-geo-scan: #62d4f5;
+  --ai-geo-legend-highlight-bg: #17414f;
+  --ai-geo-legend-highlight-text: #bfe8f6;
+  --ai-geo-legend-warning-bg: #4a3213;
+  --ai-geo-legend-warning-text: #f6d9a8;
+  --ai-workspace-bg: #141d2b;
+  --ai-workspace-ink: #e6edf6;
+  --ai-workspace-muted: #9fb0c6;
+  --ai-scene-bg-start: #22304a;
+  --ai-scene-bg-end: #101722;
+  --ai-panel-bg: #182233;
+  --ai-panel-line: #2f4462;
+  --ai-thread-bg-start: #1b2739;
+  --ai-thread-bg-end: #16202f;
+  --ai-thread-line: #2a3a54;
+  --ai-message-bg: #1e2b3e;
+  --ai-message-line: #33445f;
+  --ai-compose-bg: #1a2536;
+  --ai-chip-bg: #17384a;
+  --ai-chip-text: #bfe8f6;
+}
+
+.ai-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.ai-workspace-header {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.ai-workspace-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  height: clamp(590px, calc(100dvh - 256px), 850px);
+  overflow: hidden;
+}
+
+@media (min-width: 981px) {
+  .ai-workspace-grid {
+    gap: 0;
+    grid-template-columns: minmax(0, 1fr) minmax(315px, 34%);
+  }
+}
+
+.ai-scene {
+  background: radial-gradient(ellipse at 52% 43%, var(--ai-scene-bg-start), var(--ai-scene-bg-end));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 20px 20px 15px;
+}
+
+.ai-scene-canvas {
+  flex: 1;
+  min-height: 200px;
+  position: relative;
+}
+
+.ai-scene-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.ai-panel {
+  background: var(--ai-panel-bg);
+  border-left: 1px solid var(--ai-panel-line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.ai-panel-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.ai-thread {
+  background: linear-gradient(var(--ai-thread-bg-start), var(--ai-thread-bg-end));
+  border-block: 1px solid var(--ai-thread-line);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 110px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.ai-message {
+  align-self: flex-start;
+  background: var(--ai-message-bg);
+  border: 1px solid var(--ai-message-line);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 96%;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+}
+
+.ai-message--mine {
+  align-self: flex-end;
+}
+
+.ai-compose {
+  background: var(--ai-compose-bg);
+  display: grid;
+  gap: 8px;
+  padding: 13px;
+}
+
+.ai-part-legend {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 7px;
+  min-height: 24px;
+}
+
+.ai-part-chip {
+  background: var(--ai-chip-bg);
+  border-radius: 5px;
+  color: var(--ai-chip-text);
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.ai-part-chip--warning {
+  background: var(--ai-geo-legend-warning-bg);
+  color: var(--ai-geo-legend-warning-text);
+}
+
+@media (max-width: 980px) {
+  .ai-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+
+  .ai-scene {
+    min-height: 425px;
+    padding: 12px;
+  }
+
+  .ai-panel {
+    border-left: 0;
+    border-top: 1px solid var(--ai-panel-line);
+    min-height: 430px;
+  }
+
+  .ai-thread {
+    max-height: 380px;
+  }
+}

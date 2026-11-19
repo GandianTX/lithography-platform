@@ -16,11 +16,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  AdminAiConversationDetail,
   AdminAiConversationListItem,
   AdminAiMessageListItem,
   AdminListPage,
 } from '../infrastructure/admin-document-database.types';
 import {
+  exportAdminAiConversationPdf,
+  fetchAdminAiConversationDetail,
   fetchAdminAiConversations,
   fetchAdminAiMessages,
 } from '../infrastructure/admin-document-database-adapter';
@@ -35,11 +38,15 @@ vi.mock('../infrastructure/admin-document-database-adapter', async (importOrigin
     ...actual,
     fetchAdminAiConversations: vi.fn(),
     fetchAdminAiMessages: vi.fn(),
+    fetchAdminAiConversationDetail: vi.fn(),
+    exportAdminAiConversationPdf: vi.fn(),
   };
 });
 
 const fetchConversationsMock = vi.mocked(fetchAdminAiConversations);
 const fetchMessagesMock = vi.mocked(fetchAdminAiMessages);
+const fetchDetailMock = vi.mocked(fetchAdminAiConversationDetail);
+const exportPdfMock = vi.mocked(exportAdminAiConversationPdf);
 
 function buildConversationItem(id: number): AdminAiConversationListItem {
   return {
@@ -48,6 +55,7 @@ function buildConversationItem(id: number): AdminAiConversationListItem {
     requestId: id,
     status: 'COMPLETED',
     engineerNickname: '陈工程师',
+    contentVersion: id,
     messageCount: 12,
     reportCount: 1,
     createdAt: '2026-09-02T09:00:00.000Z',
@@ -64,7 +72,42 @@ function buildMessageItem(id: number, seq: number): AdminAiMessageListItem {
     turnNo: 1,
     role: 'ASSISTANT',
     contentText: `消息正文 ${seq}`,
+    contentVersion: 1,
+    analysisStatus: 'SUCCEEDED',
+    failureReason: null,
     createdAt: '2026-09-02T09:05:00.000Z',
+  };
+}
+
+function buildConversationDetail(): AdminAiConversationDetail {
+  return {
+    conversationId: 1,
+    requestId: 1,
+    requestNo: 'RR-20260901-001',
+    status: 'COMPLETED',
+    contentVersion: 3,
+    engineerNickname: '陈工程师',
+    createdAt: '2026-09-02T09:00:00.000Z',
+    turns: [
+      {
+        questionUuid: 'uuid-1',
+        turnNo: 1,
+        analysisStatus: 'FAILED',
+        failureReason: '模型调用超时',
+        analysisContentVersion: 3,
+        question: {
+          messageId: 101,
+          messageSeq: 1,
+          turnNo: 1,
+          role: 'USER',
+          questionUuid: 'uuid-1',
+          text: '曝光异常如何排查',
+          contentVersion: 3,
+          createdAt: '2026-09-02T09:01:00.000Z',
+        },
+        answer: null,
+      },
+    ],
   };
 }
 
@@ -79,9 +122,11 @@ afterEach(() => {
 beforeEach(() => {
   fetchConversationsMock.mockReset();
   fetchMessagesMock.mockReset();
+  fetchDetailMock.mockReset();
 
   fetchConversationsMock.mockResolvedValue(buildPage([buildConversationItem(1)]));
   fetchMessagesMock.mockResolvedValue(buildPage([buildMessageItem(101, 1)]));
+  fetchDetailMock.mockResolvedValue(buildConversationDetail());
 });
 
 describe('AdminAiConversationsTab（R3/R7 S5 知识库卡容器）', () => {
@@ -203,5 +248,84 @@ describe('AdminAiConversationsTab（R4 有效筛选单一真源）', () => {
     await waitFor(() => expect(fetchConversationsMock).toHaveBeenCalledTimes(2));
     expect(fetchConversationsMock).toHaveBeenLastCalledWith(2, 10, {});
     expect(await screen.findByText('RR-20260905-001')).toBeInTheDocument();
+  });
+});
+
+describe('管理员只读问答弹窗（任务 05 · S4.1 · R038-01）', () => {
+  it('点击「查看问答」打开只读弹窗，展示逐轮问答与失败原因', async () => {
+    render(<AdminAiConversationsTab />);
+
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '查看问答' }));
+
+    expect(await screen.findByText('会话问答（只读）')).toBeInTheDocument();
+    expect(await screen.findByText('曝光异常如何排查')).toBeInTheDocument();
+    expect(await screen.findByText('模型调用超时')).toBeInTheDocument();
+    expect(await screen.findByText('（未保存回答）')).toBeInTheDocument();
+    expect(fetchDetailMock).toHaveBeenCalledWith(1);
+  });
+
+  it('只读弹窗不提供提问入口', async () => {
+    render(<AdminAiConversationsTab />);
+
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '查看问答' }));
+
+    expect(await screen.findByText('会话问答（只读）')).toBeInTheDocument();
+    // 弹窗内不提供任何可编辑输入与提交入口（只读）
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.querySelector('textarea')).toBeNull();
+    expect(dialog.querySelector('input')).toBeNull();
+    // 抽屉自带的关闭/重试按钮之外，不提供任何提问或提交入口
+    expect(screen.queryByRole('button', { name: /提交|发送|提问|重试本轮/ })).toBeNull();
+  });
+
+  it('直传外公司会话被拒绝时提示失败，不展示外公司内容', async () => {
+    fetchDetailMock.mockRejectedValue(new Error('会话不存在或无权访问'));
+    render(<AdminAiConversationsTab />);
+
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '查看问答' }));
+
+    expect(await screen.findByText('会话详情加载失败，请稍后重试。')).toBeInTheDocument();
+    expect(screen.queryByText('曝光异常如何排查')).toBeNull();
+  });
+});
+
+describe('管理员导出固定版本 PDF（任务 05 · S4.2 · R039-01）', () => {
+  it('点击导出按列表记录的内容版本生成文件并提示版本与截止点', async () => {
+    exportPdfMock.mockResolvedValue({
+      contentBase64: btoa('%PDF-mock'),
+      contentVersion: 3,
+      filename: 'ai-conversation-1-v3.pdf',
+      lastMessageSeq: 6,
+      mimeType: 'application/pdf',
+    });
+
+    render(<AdminAiConversationsTab />);
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '导出 PDF' }));
+
+    expect(await screen.findByText(/已导出 ai-conversation-1-v3\.pdf/)).toBeInTheDocument();
+    expect(exportPdfMock).toHaveBeenCalledWith({ contentVersion: 1, conversationId: 1 });
+  });
+
+  it('导出失败时给出错误提示', async () => {
+    exportPdfMock.mockRejectedValue(new Error('export failed'));
+
+    render(<AdminAiConversationsTab />);
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '导出 PDF' }));
+
+    expect(await screen.findByText('导出失败，请稍后重试。')).toBeInTheDocument();
+  });
+
+  it('页面不提供受控原始 JSON 导出入口', async () => {
+    render(<AdminAiConversationsTab />);
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+
+    expect(screen.queryByRole('button', { name: /JSON/i })).toBeNull();
   });
 });

@@ -15,6 +15,8 @@ import { createAdminOrganizationFact } from './admin-user.fixture';
 export const createAdminDocumentDatabaseAccessMocks = (): {
   readonly findAdminLevelByAccountId: jest.Mock;
   readonly resolveForAccount: jest.Mock;
+  /** 可选组织解析（无有效成员关系时返回 null；解析异常仍抛出） */
+  readonly tryResolveForAccount: jest.Mock;
   /** 覆盖当前等级事实（null 表示账号存在但未映射等级） */
   readonly setAdminLevel: (level: number | null) => void;
   /** 覆盖成员解析结果（null 表示恢复缺省有效成员） */
@@ -33,10 +35,17 @@ export const createAdminDocumentDatabaseAccessMocks = (): {
     }
     return Promise.resolve(createAdminOrganizationFact({ memberRole }));
   });
+  const tryResolveForAccount = jest.fn(() => {
+    if (membershipError) {
+      return Promise.reject(membershipError);
+    }
+    return Promise.resolve(createAdminOrganizationFact({ memberRole }));
+  });
 
   return {
     findAdminLevelByAccountId,
     resolveForAccount,
+    tryResolveForAccount,
     setAdminLevel: (level) => {
       adminLevel = level;
     },

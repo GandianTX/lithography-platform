@@ -2,9 +2,9 @@
 
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 
+import { saveBlobAsFile } from '@/shared/download';
 import type { NotifyFeedback } from '@/shared/feedback';
 
-import { saveBlobAsFile } from '../infrastructure/browser-file-download-adapter';
 import type {
   DeleteReferenceDocumentResult,
   UpdateReferenceDocumentPatch,

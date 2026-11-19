@@ -589,7 +589,11 @@ test.describe('mocked admin document database - knowledge base visual baseline (
   }, testInfo) => {
     test.setTimeout(300_000);
     await installAdminDocumentKbGraphqlMocks(page);
-    await seedAuthSession(page, 'SUPER_ADMIN');
+    // /admin/** 为一级管理员专属路由：守卫要求 adminLevel=1 且有可信公司
+    await seedAuthSession(page, 'SUPER_ADMIN', {
+      adminLevel: 1,
+      adminOrganizationId: 910003,
+    });
 
     const evidenceDir = testInfo.outputPath();
     mkdirSync(evidenceDir, { recursive: true });
@@ -821,7 +825,11 @@ test.describe('mocked admin document database - knowledge base visual baseline (
   }) => {
     test.setTimeout(90_000);
     await installAdminDocumentKbGraphqlMocks(page);
-    await seedAuthSession(page, 'SUPER_ADMIN');
+    // /admin/** 为一级管理员专属路由：守卫要求 adminLevel=1 且有可信公司
+    await seedAuthSession(page, 'SUPER_ADMIN', {
+      adminLevel: 1,
+      adminOrganizationId: 910003,
+    });
 
     await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto(PAGE_PATH);

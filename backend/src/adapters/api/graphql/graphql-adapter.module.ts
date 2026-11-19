@@ -12,6 +12,7 @@ import { MaintenanceReportUsecasesModule } from '@src/usecases/maintenance-repor
 import { RegistrationUsecasesModule } from '@src/usecases/registration/registration-usecases.module';
 import { ReferenceDocumentUsecasesModule } from '@src/usecases/reference-document/reference-document-usecases.module';
 import { RepairRequestUsecasesModule } from '@src/usecases/repair-request/repair-request-usecases.module';
+import { AiConversationUsecasesModule } from '@src/usecases/ai-conversation/ai-conversation-usecases.module';
 import { OrganizationUsecasesModule } from '@src/usecases/organization/organization-usecases.module';
 import { ThirdPartyAccountsUsecasesModule } from '@src/usecases/third-party-accounts/third-party-accounts-usecases.module';
 import { VerificationRecordUsecasesModule } from '@src/usecases/verification-record/verification-record-usecases.module';
@@ -36,6 +37,9 @@ import { ReferenceDocumentResolver } from './reference-document/reference-docume
 import { OrganizationAdminResolver } from './organization/organization-admin.resolver';
 import { RegistrationResolver } from './registration/registration.resolver';
 import { RepairRequestResolver } from './repair-request/repair-request.resolver';
+import { AiConversationEvaluationResolver } from './ai-conversation/ai-conversation-evaluation.resolver';
+import { AiConversationExportResolver } from './ai-conversation/ai-conversation-export.resolver';
+import { AiConversationResolver } from './ai-conversation/ai-conversation.resolver';
 import { ThirdPartyAuthResolver } from './third-party-auth/third-party-auth.resolver';
 import { VerificationRecordResolver } from './verification-record/verification-record.resolver';
 
@@ -71,6 +75,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     RegistrationUsecasesModule,
     ReferenceDocumentUsecasesModule,
     RepairRequestUsecasesModule,
+    AiConversationUsecasesModule,
     OrganizationUsecasesModule,
     ThirdPartyAccountsUsecasesModule,
     VerificationRecordUsecasesModule,
@@ -123,6 +128,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     OrganizationAdminResolver,
     RegistrationResolver,
     RepairRequestResolver,
+    AiConversationResolver,
+    AiConversationExportResolver,
+    AiConversationEvaluationResolver,
     VerificationRecordResolver,
     UserInfoResolver,
     // Guards
@@ -147,6 +155,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     OrganizationAdminResolver,
     RegistrationResolver,
     RepairRequestResolver,
+    AiConversationResolver,
+    AiConversationExportResolver,
+    AiConversationEvaluationResolver,
     VerificationRecordResolver,
     UserInfoResolver,
     QmWorkerEntryGuard,

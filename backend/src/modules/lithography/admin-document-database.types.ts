@@ -5,7 +5,11 @@ import type {
   RepairRequestHandlingResult,
   RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
-import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
+import {
+  AiConversationStatus,
+  AiMessageAnalysisStatus,
+  AiMessageRole,
+} from '@app-types/models/ai-conversation.types';
 import type { RepairProcessEntryView } from './lithography.types';
 
 // ============================================================================
@@ -283,6 +287,11 @@ export type AdminAiConversationQueryFilter = {
   status?: AiConversationStatus;
   createdAtFrom?: Date;
   createdAtTo?: Date;
+  /**
+   * 管理员组织范围（二级管理员的本公司）。
+   * 为 null / 不传时按全公司读取（一级管理员）；服务端内部行为，不接受客户端传入。
+   */
+  organizationId?: number | null;
 };
 
 /** 管理员 AI 会话列表项装配结果（昵称富集前；账号 ID 不对外输出） */
@@ -293,6 +302,8 @@ export type AdminAiConversationListItemQueryResult = {
   engineerAccountId: number;
   status: AiConversationStatus;
   aiFeedback: string | null;
+  /** 会话内容版本（导出按此固定消息范围与截止点） */
+  contentVersion: number;
   createdAt: Date;
   completedAt: Date | null;
   messageCount: number;
@@ -323,6 +334,12 @@ export type AdminAiMessageListItemView = {
   turnNo: number | null;
   role: AiMessageRole;
   contentText: string;
+  /** 消息内容版本（与同轮分析、会话版本一致） */
+  contentVersion: number;
+  /** 所属轮次的分析状态（无分析记录时为空） */
+  analysisStatus: AiMessageAnalysisStatus | null;
+  /** 所属轮次的失败原因（仅失败轮次） */
+  failureReason: string | null;
   createdAt: Date;
 };
 
