@@ -605,6 +605,7 @@ export function EngineerRepairRequestDetailPanel({
             canWrite={canHandleAsEngineer}
             closedByMutation={closureBarrier}
             key={`close:${scopeKeyValue}`}
+            maintenanceVersionNo={detail.maintenance?.versionNo ?? null}
             onCloseReadbackSucceeded={markClosureReadbackSucceeded}
             onCloseSucceeded={markClosureSucceeded}
             reload={reload}

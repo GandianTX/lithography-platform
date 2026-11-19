@@ -443,6 +443,8 @@ export type UpdateRepairProcessEntryInput = {
 export type CloseRepairRequestInput = {
   requestId: number;
   handlingResult: RepairRequestHandlingResult;
+  /** 打开结单确认时看到的维修记录版本号；必须显式传入，0 合法 */
+  maintenanceVersionNo: number;
   closureReason: string | null;
 };
 

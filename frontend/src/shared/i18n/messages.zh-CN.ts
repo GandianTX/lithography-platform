@@ -520,6 +520,7 @@ export const ZH_CN_MESSAGES = {
   'maintenance.maintenanceDate': '维修日期',
   'maintenance.engineerName': '维修工程师',
   'maintenance.engineerNamePlaceholder': '填写实际执行维修的工程师姓名',
+  'maintenance.engineerNameReadOnlyHint': '由系统按工单接单账号的资料写入',
   'maintenance.initialFault': '初始故障',
   'maintenance.resetResult': '复位结果',
   'maintenance.resetResultPlaceholder': '选择复位结果',

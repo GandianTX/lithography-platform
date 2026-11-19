@@ -508,6 +508,7 @@ export function useEngineerRepairProcessWorkbench(
     async (
       handlingResult: RepairRequestHandlingResult,
       closureReason: string | null,
+      maintenanceVersionNo: number,
     ): Promise<CloseRepairRequestResult | null> => {
       if (!canWriteNow(requestId)) return null;
       const instance = instanceRef.current;
@@ -528,7 +529,12 @@ export function useEngineerRepairProcessWorkbench(
       setLastCloseResult(null);
       setCloseReadbackFailed(false);
       try {
-        const result = await closeRepairRequest({ requestId, handlingResult, closureReason });
+        const result = await closeRepairRequest({
+          requestId,
+          handlingResult,
+          maintenanceVersionNo,
+          closureReason,
+        });
         if (!matchesCurrent(instance)) {
           return null;
         }

@@ -204,7 +204,7 @@ async function callEditProcess(workbench: Workbench) {
 
 async function callClose(workbench: Workbench) {
   await act(async () => {
-    await workbench.closeRequest('FIXED', null);
+    await workbench.closeRequest('FIXED', null, 0);
   });
 }
 
@@ -1171,7 +1171,7 @@ describe('六类写入口：已发出请求迟到后的客户端副作用边界'
     },
     {
       name: '结单',
-      start: (workbench) => workbench.closeRequest('FIXED', null),
+      start: (workbench) => workbench.closeRequest('FIXED', null, 0),
       adapter: closeMock,
       success: CLOSE_OK,
     },
@@ -1278,8 +1278,8 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
     let first!: Promise<CloseRepairRequestResult | null>;
     let second!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      first = h.result.current.workbench.closeRequest('FIXED', null);
-      second = h.result.current.workbench.closeRequest('FIXED', null);
+      first = h.result.current.workbench.closeRequest('FIXED', null, 0);
+      second = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
 
     // 旧实现：第二条在同一事件轮次通过归属检查，实际触达 adapter 两次
@@ -1317,7 +1317,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
     await waitFor(() => expect(h.result.current.flow.state.status).toBe('ready'));
 
     await act(async () => {
-      await h.result.current.workbench.closeRequest('FIXED', null);
+      await h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
 
     expect(closeMock).toHaveBeenCalledTimes(1);
@@ -1327,7 +1327,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
 
     let retry!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      retry = h.result.current.workbench.closeRequest('FIXED', null);
+      retry = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
     await waitFor(() => expect(hasRepairRequestClosureSucceeded('default', 21)).toBe(true));
     expect(closeMock).toHaveBeenCalledTimes(2);
@@ -1354,7 +1354,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
 
     let pending!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      pending = h.result.current.workbench.closeRequest('FIXED', null);
+      pending = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
     await waitFor(() => expect(hasRepairRequestClosureSucceeded('default', 21)).toBe(true));
     expect(h.result.current.workbench.closing).toBe(true);
@@ -1393,7 +1393,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
 
     let pendingA!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      pendingA = h.result.current.workbench.closeRequest('FIXED', null);
+      pendingA = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
     expect(closeMock).toHaveBeenCalledTimes(1);
 
@@ -1409,7 +1409,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
 
     let pendingB!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      pendingB = h.result.current.workbench.closeRequest('FIXED', null);
+      pendingB = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
     expect(closeMock).toHaveBeenCalledTimes(2);
     expect(h.result.current.workbench.closing).toBe(true);
@@ -1461,7 +1461,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
 
     let pendingA!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      pendingA = h.result.current.workbench.closeRequest('FIXED', null);
+      pendingA = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
 
     fetchMock.mockResolvedValueOnce(detailOk(buildDetail(21, 'SESSION-B')));
@@ -1475,7 +1475,7 @@ describe('结单防重：同一实例同一轮次只认一个结单令牌', () =
 
     let pendingB!: Promise<CloseRepairRequestResult | null>;
     act(() => {
-      pendingB = h.result.current.workbench.closeRequest('FIXED', null);
+      pendingB = h.result.current.workbench.closeRequest('FIXED', null, 0);
     });
 
     fetchMock.mockResolvedValueOnce(

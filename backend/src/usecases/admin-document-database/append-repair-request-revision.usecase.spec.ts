@@ -145,7 +145,13 @@ function createHarness(options: {
     transactionRunner as unknown as TransactionRunner,
   );
 
-  return { usecase, revisionService, accountQueryService, trustedOrganizationContext };
+  return {
+    usecase,
+    revisionService,
+    maintenanceService,
+    accountQueryService,
+    trustedOrganizationContext,
+  };
 }
 
 const baseCommand: AppendRepairRequestRevisionCommand = {
@@ -164,12 +170,7 @@ describe('AppendRepairRequestRevisionUsecase', () => {
       processEntries: [buildProcessEntry({ operationText: '原始操作', versionNo: 1 })],
     });
 
-    const result = await usecase.execute({
-      ...baseCommand,
-      processEntries: [
-        { entryId: '11', expectedVersion: 1, operationText: '订正操作', testResult: null },
-      ],
-    });
+    const result = await usecase.execute({ ...baseCommand });
 
     expect(result).toMatchObject({
       requestId: 880001,
@@ -187,10 +188,8 @@ describe('AppendRepairRequestRevisionUsecase', () => {
       }),
       TRANSACTION_CONTEXT,
     );
-    expect(revisionService.updateProcessEntryRevision).toHaveBeenCalledWith(
-      expect.objectContaining({ entryId: '11', expectedVersion: 1, operationText: '订正操作' }),
-      TRANSACTION_CONTEXT,
-    );
+    // 旧过程只读：修订正文不得触碰旧过程行
+    expect(revisionService.updateProcessEntryRevision).not.toHaveBeenCalled();
     expect(revisionService.insertRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         revisionNo: 3,
@@ -220,8 +219,8 @@ describe('AppendRepairRequestRevisionUsecase', () => {
     expect(after.request.content_md).toBe('# 订正后正文');
     expect(after.request.current_revision_no).toBe(3);
     expect(after.process_entries[0]).toMatchObject({
-      operation_text: '订正操作',
-      version_no: 2,
+      operation_text: '原始操作',
+      version_no: 1,
     });
   });
 
@@ -433,25 +432,58 @@ describe('AppendRepairRequestRevisionUsecase', () => {
     expect(revisionService.insertRevision).not.toHaveBeenCalled();
   });
 
-  it('过程版本冲突中途失败：不写修订历史（真实事务由集成验证整体回滚）', async () => {
-    const { usecase, revisionService } = createHarness({
-      processEntries: [buildProcessEntry({ id: '11' }), buildProcessEntry({ id: '12' })],
+  it('管理员提交旧过程文本改动按 PROCESS_READONLY 拒绝，且不进入任何写流程', async () => {
+    const { usecase, revisionService, maintenanceService } = createHarness({
+      processEntries: [buildProcessEntry({ id: '11' })],
     });
-    revisionService.updateProcessEntryRevision.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
 
     const error = await captureThrownError(
       usecase.execute({
         ...baseCommand,
         processEntries: [
-          { entryId: '11', expectedVersion: 1, operationText: '订正一', testResult: null },
-          { entryId: '12', expectedVersion: 1, operationText: '订正二', testResult: null },
+          { entryId: '11', expectedVersion: 1, operationText: '订正操作', testResult: null },
         ],
       }),
     );
 
-    expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.PROCESS_VERSION_CONFLICT);
-    expect(revisionService.updateProcessEntryRevision).toHaveBeenCalledTimes(2);
+    expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.PROCESS_READONLY);
+    expect(revisionService.lockRequestForRevision).not.toHaveBeenCalled();
+    expect(revisionService.updateRequestRevisionFields).not.toHaveBeenCalled();
+    expect(revisionService.updateProcessEntryRevision).not.toHaveBeenCalled();
     expect(revisionService.insertRevision).not.toHaveBeenCalled();
+    expect(maintenanceService.saveMaintenance).not.toHaveBeenCalled();
+  });
+
+  it('管理员修订新版结构化维修记录仍成功，且不触碰旧过程行', async () => {
+    const { usecase, revisionService, maintenanceService } = createHarness({
+      processEntries: [buildProcessEntry({ id: '11' })],
+    });
+
+    const result = await usecase.execute({
+      ...baseCommand,
+      expectedMaintenanceVersion: 0,
+      maintenance: {
+        maintenanceDate: '2026-09-03',
+        engineerName: '张工',
+        resetResult: null,
+        supplementaryNote: '补充说明',
+        steps: [],
+        panels: [],
+      },
+    });
+
+    expect(result.revisionNo).toBe(3);
+    expect(maintenanceService.saveMaintenance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: 880001,
+        expectedVersion: 0,
+        engineerName: '张工',
+        supplementaryNote: '补充说明',
+      }),
+      TRANSACTION_CONTEXT,
+    );
+    expect(revisionService.updateProcessEntryRevision).not.toHaveBeenCalled();
+    expect(revisionService.insertRevision).toHaveBeenCalledTimes(1);
   });
 
   it('中断/无法修复未填结单原因时按 BAD_USER_INPUT 拒绝，不进入写流程', async () => {

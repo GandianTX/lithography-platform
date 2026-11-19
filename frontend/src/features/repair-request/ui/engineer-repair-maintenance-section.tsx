@@ -75,11 +75,11 @@ export function EngineerRepairMaintenanceSection({
   const steps = detail.maintenanceSteps ?? [];
   const panels = detail.maintenanceFaultPanels ?? [];
   // 后端会为接单人返回 versionNo=0、内容为空的维修对象；这不是已保存记录。
+  // v0 首屏的可信姓名来自接单人资料回填，只用于只读展示，不能作为「已有记录」依据。
   const hasRecord =
     serverVersion > 0 ||
     Boolean(
       maintenance?.maintenanceDate ||
-      maintenance?.engineerName ||
       maintenance?.resetResult ||
       maintenance?.supplementaryNote ||
       maintenance?.attachment,
@@ -228,6 +228,7 @@ export function EngineerRepairMaintenanceSection({
                 downloadingFileId,
               }}
               disabled={saving || uploading}
+              engineerNameReadOnly
               onChange={(next) => {
                 setValue(next);
                 if (validationIssues.length > 0) setValidationIssues([]);

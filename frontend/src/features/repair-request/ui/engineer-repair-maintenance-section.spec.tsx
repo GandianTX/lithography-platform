@@ -35,11 +35,13 @@ vi.mock('@/shared/ui/maintenance-record-editor', () => ({
   MaintenanceRecordEditor: ({
     onChange,
     value,
+    engineerNameReadOnly,
   }: {
     onChange: (next: Record<string, unknown>) => void;
     value: Record<string, unknown> & { engineerName: string };
+    engineerNameReadOnly?: boolean;
   }) => (
-    <div>
+    <div data-testid="maintenance-editor" data-readonly={String(engineerNameReadOnly)}>
       <input
         aria-label="维修工程师输入"
         onChange={(event) => onChange({ ...value, engineerName: event.target.value })}
@@ -168,6 +170,27 @@ describe('工程师结构化维修记录：无记录入口', () => {
     );
 
     expect(screen.getByLabelText('维修工程师输入')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: translate('zh-CN', 'maintenance.save') }),
+    ).toBeTruthy();
+  });
+
+  it('v0 有可信姓名回填：首屏仍为可填写状态，姓名只读且非空', () => {
+    renderSection({
+      detail: makeDetail({
+        maintenance: {
+          versionNo: 0,
+          maintenanceDate: null,
+          engineerName: '李工',
+          resetResult: null,
+          supplementaryNote: null,
+          attachment: null,
+        },
+      }),
+    });
+
+    expect(screen.getByTestId('maintenance-editor').dataset.readonly).toBe('true');
+    expect((screen.getByLabelText('维修工程师输入') as HTMLInputElement).value).toBe('李工');
     expect(
       screen.getByRole('button', { name: translate('zh-CN', 'maintenance.save') }),
     ).toBeTruthy();

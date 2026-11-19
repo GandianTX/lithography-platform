@@ -1,5 +1,6 @@
 // src/modules/lithography/queries/repair-request-maintenance.query.service.ts
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import {
   StoredFileBindingStatus,
   StoredFileBusinessType,
@@ -7,6 +8,7 @@ import {
 } from '@app-types/models/stored-file.types';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository } from 'typeorm';
 import { IntakeAnalysisAttemptEntity } from '../entities/intake-analysis-attempt.entity';
 import { RepairRequestDiagnosticStepEntity } from '../entities/repair-request-diagnostic-step.entity';
@@ -46,8 +48,14 @@ export class RepairRequestMaintenanceQueryService {
     private readonly panelRepository: Repository<RepairRequestFaultPanelEntity>,
   ) {}
 
-  async findRecord(requestId: number): Promise<RepairMaintenanceRecordView | null> {
-    const entity = await this.requestRepository.findOne({ where: { id: requestId } });
+  async findRecord(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceRecordView | null> {
+    const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
+    const entity = await (
+      manager ? manager.getRepository(RepairRequestEntity) : this.requestRepository
+    ).findOne({ where: { id: requestId } });
     if (!entity) {
       return null;
     }
@@ -57,12 +65,22 @@ export class RepairRequestMaintenanceQueryService {
       resetResult: entity.resetResult,
       supplementaryNote: entity.supplementaryNote,
       versionNo: entity.maintenanceVersionNo,
-      attachment: await this.resolveAttachment(entity.id, entity.maintenanceAttachmentFileId),
+      attachment: await this.resolveAttachment(
+        entity.id,
+        entity.maintenanceAttachmentFileId,
+        transactionContext,
+      ),
     };
   }
 
-  async listSteps(requestId: number): Promise<RepairMaintenanceStepView[]> {
-    const rows = await this.stepRepository.find({
+  async listSteps(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceStepView[]> {
+    const repository = transactionContext
+      ? getTypeOrmEntityManager(transactionContext).getRepository(RepairRequestDiagnosticStepEntity)
+      : this.stepRepository;
+    const rows = await repository.find({
       where: { requestId },
       order: { stepNo: 'ASC', id: 'ASC' },
     });
@@ -76,8 +94,14 @@ export class RepairRequestMaintenanceQueryService {
     }));
   }
 
-  async listFaultPanels(requestId: number): Promise<RepairMaintenanceFaultPanelView[]> {
-    const rows = await this.panelRepository.find({
+  async listFaultPanels(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairMaintenanceFaultPanelView[]> {
+    const repository = transactionContext
+      ? getTypeOrmEntityManager(transactionContext).getRepository(RepairRequestFaultPanelEntity)
+      : this.panelRepository;
+    const rows = await repository.find({
       where: { requestId },
       order: { id: 'ASC' },
     });
@@ -139,13 +163,15 @@ export class RepairRequestMaintenanceQueryService {
   private async resolveAttachment(
     requestId: number,
     fileId: string | null,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<RepairMaintenanceAttachmentView | null> {
     if (fileId === null) {
       return null;
     }
-    const file = await this.requestRepository.manager
-      .getRepository(StoredFileEntity)
-      .findOne({ where: { fileId } });
+    const manager = transactionContext
+      ? getTypeOrmEntityManager(transactionContext)
+      : this.requestRepository.manager;
+    const file = await manager.getRepository(StoredFileEntity).findOne({ where: { fileId } });
     if (!canExposeMaintenanceFile(requestId, fileId, file) || file === null) {
       return null;
     }

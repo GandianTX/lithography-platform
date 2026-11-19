@@ -1,6 +1,7 @@
 // src/usecases/repair-request/save-repair-request-maintenance.usecase.ts
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
 import {
   normalizeMaintenanceRecord,
@@ -8,6 +9,7 @@ import {
 } from '@core/repair-request/policy/repair-request-maintenance.policy';
 import { isRepairRequestEnded } from '@core/repair-request/policy/repair-process-write.policy';
 import { Inject, Injectable } from '@nestjs/common';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type {
   RepairMaintenanceFaultPanelView,
   RepairMaintenanceRecordView,
@@ -68,6 +70,8 @@ export class SaveRepairRequestMaintenanceUsecase {
     private readonly bindOriginalUsecase: BindRepairProcessOriginalUsecase,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
+    @Inject(AccountQueryService)
+    private readonly accountQueryService?: AccountQueryService,
   ) {}
 
   async execute(
@@ -81,7 +85,8 @@ export class SaveRepairRequestMaintenanceUsecase {
 
     const normalized = normalizeMaintenanceRecord({
       maintenanceDate: command.maintenanceDate,
-      engineerName: command.engineerName,
+      // 姓名快照只取工单接单账号的可信资料；客户端值即使非空也不参与归一化
+      engineerName: null,
       resetResult: command.resetResult,
       supplementaryNote: command.supplementaryNote,
       steps: command.steps,
@@ -100,7 +105,8 @@ export class SaveRepairRequestMaintenanceUsecase {
       }
     }
 
-    await this.transactionRunner.run(async (transactionContext) => {
+    // 回执必须在事务内读取：提交成功才返回，失败/回滚不会留下“已保存”的假象
+    return this.transactionRunner.run(async (transactionContext) => {
       const membership = await this.trustedOrganizationContext.resolveForAccount({
         accountId: command.session.accountId,
         transactionContext,
@@ -119,11 +125,16 @@ export class SaveRepairRequestMaintenanceUsecase {
         );
       }
 
-      const target = await this.maintenanceService.findTargetForUpdate(
-        command.requestId,
+      const target = this.assertWritableTarget(
+        await this.maintenanceService.findTargetForUpdate(command.requestId, transactionContext),
+        command,
+        membership.organizationId,
+      );
+
+      const engineerName = await this.resolveTrustedEngineerName(
+        target.acceptedByEngineerAccountId!,
         transactionContext,
       );
-      this.assertWritableTarget(target, command, membership.organizationId);
 
       if (command.attachment) {
         await this.maintenanceService.attachMaintenanceFile(
@@ -139,7 +150,7 @@ export class SaveRepairRequestMaintenanceUsecase {
           requestId: command.requestId,
           expectedVersion: command.expectedVersion,
           maintenanceDate: normalized.maintenanceDate,
-          engineerName: normalized.engineerName,
+          engineerName,
           resetResult: normalized.resetResult,
           supplementaryNote: normalized.supplementaryNote,
           steps: normalized.steps,
@@ -147,24 +158,50 @@ export class SaveRepairRequestMaintenanceUsecase {
         },
         transactionContext,
       );
-    });
 
-    const record = await this.maintenanceQueryService.findRecord(command.requestId);
-    if (!record) {
-      throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在');
+      const record = await this.maintenanceQueryService.findRecord(
+        command.requestId,
+        transactionContext,
+      );
+      if (!record) {
+        throw new DomainError(REPAIR_REQUEST_ERROR.NOT_FOUND, '维修申请不存在');
+      }
+      return {
+        record,
+        steps: await this.maintenanceQueryService.listSteps(command.requestId, transactionContext),
+        panels: await this.maintenanceQueryService.listFaultPanels(
+          command.requestId,
+          transactionContext,
+        ),
+      };
+    });
+  }
+
+  /**
+   * 按工单接单账号读取可信姓名；缺失时失败关闭，绝不以表单值/其他账号兜底。
+   */
+  private async resolveTrustedEngineerName(
+    acceptedByEngineerAccountId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<string> {
+    const realName = await this.accountQueryService?.findRealNameByAccountId({
+      accountId: acceptedByEngineerAccountId,
+      transactionContext,
+    });
+    if (!realName) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.ENGINEER_PROFILE_INCOMPLETE,
+        '接单工程师资料缺少真实姓名，无法保存维修记录，请联系管理员补全资料',
+      );
     }
-    return {
-      record,
-      steps: await this.maintenanceQueryService.listSteps(command.requestId),
-      panels: await this.maintenanceQueryService.listFaultPanels(command.requestId),
-    };
+    return realName;
   }
 
   private assertWritableTarget(
     target: RepairRequestMaintenanceTargetSnapshot | null,
     command: SaveRepairRequestMaintenanceCommand,
     viewerOrganizationId: number,
-  ): void {
+  ): RepairRequestMaintenanceTargetSnapshot {
     if (
       !target ||
       target.deprecated ||
@@ -204,5 +241,6 @@ export class SaveRepairRequestMaintenanceUsecase {
         { requestId: command.requestId },
       );
     }
+    return target;
   }
 }

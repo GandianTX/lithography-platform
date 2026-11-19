@@ -544,6 +544,7 @@ export function EngineerRepairCloseSection({
   canWrite,
   reload,
   closedByMutation,
+  maintenanceVersionNo,
   onCloseSucceeded,
   onCloseReadbackSucceeded,
   writeEligible,
@@ -553,6 +554,8 @@ export function EngineerRepairCloseSection({
   canWrite: boolean;
   reload: (options?: { shouldApply?: () => boolean; silent?: boolean }) => Promise<unknown>;
   closedByMutation: boolean;
+  /** 当前详情里的维修记录版本；null 表示版本未加载，不能发起结单 */
+  maintenanceVersionNo: number | null;
   onCloseSucceeded: () => void;
   onCloseReadbackSucceeded: () => void;
   writeEligible?: (requestId: number | null, scopeKey: string) => boolean;
@@ -578,9 +581,13 @@ export function EngineerRepairCloseSection({
     closureReason?: string;
   }>();
   const selectedResult = Form.useWatch('handlingResult', form);
+  // 用户打开结单确认那一刻看到的维修版本；提交时不得悄悄替换为最新版本。
+  const capturedMaintenanceVersionRef = useRef<number | null>(null);
+  const [closeVersionMissing, setCloseVersionMissing] = useState(false);
 
   useEffect(() => {
     form.resetFields();
+    capturedMaintenanceVersionRef.current = null;
   }, [requestId, scopeKey, form]);
 
   if (!canWrite) {
@@ -632,7 +639,13 @@ export function EngineerRepairCloseSection({
             void interruptRequest(reason ?? '');
             return;
           }
-          void closeRequest(values.handlingResult, reason);
+          const capturedVersion = capturedMaintenanceVersionRef.current;
+          if (capturedVersion === null) {
+            setCloseVersionMissing(true);
+            return;
+          }
+          setCloseVersionMissing(false);
+          void closeRequest(values.handlingResult, reason, capturedVersion);
         }}
       >
         <Form.Item
@@ -666,6 +679,15 @@ export function EngineerRepairCloseSection({
           readbackRetrying={closeReadbackRetrying}
           result={lastCloseResult}
         />
+        {closeVersionMissing ? (
+          <div className="mb-3">
+            <Alert
+              showIcon
+              title="维修记录版本尚未就绪，请刷新详情后重新确认结单。"
+              type="warning"
+            />
+          </div>
+        ) : null}
         {lastInterruptResult ? (
           <div className="mb-3">
             <Alert
@@ -688,6 +710,11 @@ export function EngineerRepairCloseSection({
           }
           okText={selectedResult === 'INTERRUPTED' ? '记录中断' : '确认结单'}
           onConfirm={() => form.submit()}
+          onOpenChange={(open) => {
+            if (!open) return;
+            capturedMaintenanceVersionRef.current = maintenanceVersionNo;
+            setCloseVersionMissing(false);
+          }}
           title={
             selectedResult === 'INTERRUPTED' ? '确认记录本次维修中断？' : '确认结单该维修申请？'
           }

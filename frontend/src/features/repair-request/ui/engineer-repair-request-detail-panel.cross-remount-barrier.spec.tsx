@@ -231,7 +231,11 @@ type ApplicationEntryApi = {
     input: RepairProcessFormInput,
     editingEntry: EngineerRepairProcessEntry | null,
   ) => Promise<RepairProcessWriteResult | null>;
-  closeRequest: (handlingResult: 'FIXED', closureReason: string | null) => Promise<unknown>;
+  closeRequest: (
+    handlingResult: 'FIXED',
+    closureReason: string | null,
+    maintenanceVersionNo: number,
+  ) => Promise<unknown>;
 };
 
 /**
@@ -425,7 +429,7 @@ describe('结单屏障跨页面重挂载', () => {
         { operationText: '迟到的过程', testResult: null, occurredAt: null },
         null,
       );
-      await returnRef.current?.closeRequest('FIXED', null);
+      await returnRef.current?.closeRequest('FIXED', null, 0);
     });
 
     expectNoAdapterWrites();

@@ -30,6 +30,7 @@ const target = (overrides: Record<string, unknown> = {}) => ({
   deprecated: false,
   handlingStatus: null,
   closureStatus: null,
+  maintenanceVersionNo: 3,
   ...overrides,
 });
 
@@ -64,6 +65,7 @@ const command = (overrides: Partial<Parameters<CloseRepairRequestUsecase['execut
   requestId,
   handlingResult: RepairRequestHandlingResult.FIXED,
   closureReason: null,
+  maintenanceVersionNo: 3,
   ...overrides,
 });
 
@@ -145,6 +147,66 @@ describe('CloseRepairRequestUsecase（任务 04 主链）', () => {
       ),
     ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.INVALID_PARAMS });
     expect(transactionRunner.run).not.toHaveBeenCalled();
+    expect(repairRequestService.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('缺少结单确认版本时拒绝，不把缺失当作 0，也不开启事务', async () => {
+    const { usecase, transactionRunner, repairRequestService } = makeUsecase();
+
+    await expect(
+      usecase.execute(command({ maintenanceVersionNo: undefined as unknown as number })),
+    ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.INVALID_PARAMS });
+
+    expect(transactionRunner.run).not.toHaveBeenCalled();
+    expect(repairRequestService.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '3', null])(
+    '非法结单确认版本 %p 在开启事务前拒绝',
+    async (maintenanceVersionNo) => {
+      const { usecase, transactionRunner, repairRequestService } = makeUsecase();
+
+      await expect(
+        usecase.execute(
+          command({ maintenanceVersionNo: maintenanceVersionNo as unknown as number }),
+        ),
+      ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.INVALID_PARAMS });
+
+      expect(transactionRunner.run).not.toHaveBeenCalled();
+      expect(repairRequestService.closeRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it('合法的 0 版本可正常结单', async () => {
+    const { usecase, repairRequestService } = makeUsecase({
+      repairRequestService: {
+        findProcessWriteTargetForUpdate: jest
+          .fn()
+          .mockResolvedValue(target({ maintenanceVersionNo: 0 })),
+        closeRequest: jest.fn().mockResolvedValue(1),
+      },
+    });
+
+    const result = await usecase.execute(command({ maintenanceVersionNo: 0 }));
+
+    expect(result.closureStatus).toBe('CLOSED');
+    expect(repairRequestService.closeRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('确认版本落后于当前维修版本：拒绝且不写结单状态与时间', async () => {
+    const { usecase, repairRequestService } = makeUsecase({
+      repairRequestService: {
+        findProcessWriteTargetForUpdate: jest
+          .fn()
+          .mockResolvedValue(target({ maintenanceVersionNo: 4 })),
+        closeRequest: jest.fn(),
+      },
+    });
+
+    await expect(usecase.execute(command({ maintenanceVersionNo: 3 }))).rejects.toMatchObject({
+      code: REPAIR_REQUEST_ERROR.PROCESS_VERSION_CONFLICT,
+    });
+
     expect(repairRequestService.closeRequest).not.toHaveBeenCalled();
   });
 

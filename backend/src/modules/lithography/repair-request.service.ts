@@ -447,6 +447,7 @@ export class RepairRequestService {
           deprecated: true,
           handlingStatus: true,
           closureStatus: true,
+          maintenanceVersionNo: true,
         },
         lock: { mode: 'pessimistic_write' },
       });
@@ -467,6 +468,7 @@ export class RepairRequestService {
         deprecated: entity.deprecated,
         handlingStatus: entity.handlingStatus,
         closureStatus: entity.closureStatus,
+        maintenanceVersionNo: entity.maintenanceVersionNo,
       };
     } catch (error) {
       throw new DomainError(
@@ -500,6 +502,7 @@ export class RepairRequestService {
           deprecated: true,
           handlingStatus: true,
           closureStatus: true,
+          maintenanceVersionNo: true,
         },
         lock: { mode: 'pessimistic_write' },
       });
@@ -520,6 +523,7 @@ export class RepairRequestService {
         deprecated: entity.deprecated,
         handlingStatus: entity.handlingStatus,
         closureStatus: entity.closureStatus,
+        maintenanceVersionNo: entity.maintenanceVersionNo,
       };
     } catch (error) {
       throw new DomainError(

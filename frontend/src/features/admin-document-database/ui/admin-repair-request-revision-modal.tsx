@@ -77,7 +77,7 @@ export function AdminRepairRequestRevisionModal({
     detail.handlingResult,
   );
   const [closureReason, setClosureReason] = useState(detail.closureReason ?? '');
-  const [processEdits, setProcessEdits] = useState<Record<string, ProcessEdit>>(() =>
+  const [processEdits] = useState<Record<string, ProcessEdit>>(() =>
     Object.fromEntries(
       detail.processEntries.map((entry) => [
         entry.id,
@@ -331,7 +331,12 @@ export function AdminRepairRequestRevisionModal({
         <Divider style={{ marginBlock: 0 }} />
 
         <div>
-          <p className="mb-2 font-medium">内部维修过程（仅订正文本）</p>
+          <p className="mb-2 font-medium">内部维修过程（旧过程已只读）</p>
+          <div className="mb-2">
+            <Typography.Text type="secondary">
+              旧维修过程仅可查看，不能在此订正；请使用新版结构化维修记录。
+            </Typography.Text>
+          </div>
           {detail.processEntries.length === 0 ? (
             <Typography.Text type="secondary">暂无已提交过程。</Typography.Text>
           ) : (
@@ -355,32 +360,11 @@ export function AdminRepairRequestRevisionModal({
                     </div>
                     <Input.TextArea
                       autoSize={{ minRows: 2, maxRows: 8 }}
-                      onChange={(event) =>
-                        setProcessEdits((previous) => ({
-                          ...previous,
-                          [entry.id]: {
-                            ...edit,
-                            operationText: event.target.value,
-                          },
-                        }))
-                      }
+                      disabled
                       value={edit.operationText}
                     />
                     <div className="mt-2">
-                      <Input
-                        maxLength={255}
-                        onChange={(event) =>
-                          setProcessEdits((previous) => ({
-                            ...previous,
-                            [entry.id]: {
-                              ...edit,
-                              testResult: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder="测试结果（可选）"
-                        value={edit.testResult}
-                      />
+                      <Input disabled placeholder="测试结果（可选）" value={edit.testResult} />
                     </div>
                   </div>
                 );

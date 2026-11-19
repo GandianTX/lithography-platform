@@ -29,6 +29,8 @@ export type CloseRepairRequestCommand = {
   handlingResult: RepairRequestHandlingResult;
   /** 中断/无法修复必须填写原因；其他结果可选 */
   closureReason?: string | null;
+  /** 工程师打开结单确认时看到的维修记录版本号；必须显式传入，0 是合法值 */
+  maintenanceVersionNo?: number;
 };
 
 export type RepairRequestClosureView = {
@@ -68,6 +70,7 @@ export class CloseRepairRequestUsecase {
         '维修中断请使用中断记录操作，不通过结单写入',
       );
     }
+    const maintenanceVersionNo = normalizeMaintenanceVersionNo(command.maintenanceVersionNo);
     const closureReason = normalizeClosureReason(command.closureReason, handlingResult);
     const now = new Date();
     const handlingStatus = resolveRepairRequestHandlingStatus(handlingResult);
@@ -82,7 +85,7 @@ export class CloseRepairRequestUsecase {
         command.requestId,
         transactionContext,
       );
-      this.assertClosableTarget(target, command, membership.organizationId);
+      this.assertClosableTarget(target, command, membership.organizationId, maintenanceVersionNo);
 
       const affected = await this.repairRequestService.closeRequest(
         {
@@ -120,6 +123,7 @@ export class CloseRepairRequestUsecase {
     target: RepairProcessBindingTargetSnapshot | null,
     command: CloseRepairRequestCommand,
     viewerOrganizationId: number,
+    maintenanceVersionNo: number,
   ): void {
     if (
       !target ||
@@ -141,7 +145,28 @@ export class CloseRepairRequestUsecase {
         requestId: command.requestId,
       });
     }
+    if (target.maintenanceVersionNo !== maintenanceVersionNo) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.PROCESS_VERSION_CONFLICT,
+        '维修记录已更新，请刷新后重新确认结单',
+        {
+          requestId: command.requestId,
+          submittedMaintenanceVersionNo: maintenanceVersionNo,
+          currentMaintenanceVersionNo: target.maintenanceVersionNo,
+        },
+      );
+    }
   }
+}
+
+function normalizeMaintenanceVersionNo(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new DomainError(
+      REPAIR_REQUEST_ERROR.INVALID_PARAMS,
+      '缺少或非法的维修记录版本号，请刷新后重新确认结单',
+    );
+  }
+  return value;
 }
 
 function normalizeHandlingResult(value: RepairRequestHandlingResult): RepairRequestHandlingResult {

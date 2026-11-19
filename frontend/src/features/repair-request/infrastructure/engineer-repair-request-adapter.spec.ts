@@ -777,7 +777,12 @@ describe('closeRepairRequest', () => {
     });
 
     await expect(
-      closeRepairRequest({ requestId: 21, handlingResult: 'FIXED', closureReason: '已修复' }),
+      closeRepairRequest({
+        requestId: 21,
+        handlingResult: 'FIXED',
+        closureReason: '已修复',
+        maintenanceVersionNo: 0,
+      }),
     ).resolves.toEqual({
       ok: true,
       closure: {
@@ -796,7 +801,12 @@ describe('closeRepairRequest', () => {
     executeGraphQLMock.mockRejectedValue(buildDomainIngressError({ code: 'CONFLICT' }));
 
     await expect(
-      closeRepairRequest({ requestId: 21, handlingResult: 'FIXED', closureReason: null }),
+      closeRepairRequest({
+        requestId: 21,
+        handlingResult: 'FIXED',
+        closureReason: null,
+        maintenanceVersionNo: 3,
+      }),
     ).resolves.toEqual({
       ok: false,
       reason: 'closed',

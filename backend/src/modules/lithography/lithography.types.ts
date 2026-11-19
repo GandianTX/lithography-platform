@@ -678,6 +678,8 @@ export type RepairProcessBindingTargetSnapshot = {
   deprecated: boolean;
   handlingStatus: string | null;
   closureStatus: string | null;
+  /** 维修记录版本号；结单必须基于确认时看到的版本 */
+  maintenanceVersionNo: number;
 };
 
 // ---------- 结构化内部维修记录（任务 04） ----------

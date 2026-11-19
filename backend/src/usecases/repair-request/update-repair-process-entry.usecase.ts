@@ -71,6 +71,9 @@ export class UpdateRepairProcessEntryUsecase {
   async execute(command: UpdateRepairProcessEntryCommand): Promise<RepairProcessEntrySnapshot> {
     assertEngineerWritePermission(command.session, '编辑内部维修过程');
     assertRepairRequestId(command.requestId);
+    // 任务 04 旧过程已转为历史只读：保留旧 API 形状，但后端拒绝一切更新/改绑。
+    this.rejectLegacyProcessWrite(command.requestId);
+
     const entryId = normalizeRepairProcessEntryId(command.entryId);
     const expectedVersion = normalizeRepairProcessExpectedVersion(command.expectedVersion);
     const operationText = normalizeProcessOperationText(command.operationText);
@@ -178,6 +181,15 @@ export class UpdateRepairProcessEntryUsecase {
       );
     }
     return normalizeProcessOriginalFile(file);
+  }
+
+  // 返回类型声明为 void：函数体始终抛错，但避免 TS 将后续旧实现判为不可达而丢失类型收窄。
+  private rejectLegacyProcessWrite(requestId: number): void {
+    throw new DomainError(
+      REPAIR_REQUEST_ERROR.PROCESS_READONLY,
+      '旧维修过程已只读，请使用结构化维修记录',
+      { requestId },
+    );
   }
 
   private assertWritableTarget(

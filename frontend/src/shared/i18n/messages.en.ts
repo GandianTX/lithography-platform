@@ -558,6 +558,7 @@ export const EN_MESSAGES = {
   'maintenance.maintenanceDate': 'Maintenance date',
   'maintenance.engineerName': 'Maintenance engineer',
   'maintenance.engineerNamePlaceholder': 'Enter the engineer who performed the maintenance',
+  'maintenance.engineerNameReadOnlyHint': 'Written by the system from the assigned account profile',
   'maintenance.initialFault': 'Initial fault',
   'maintenance.resetResult': 'Reset result',
   'maintenance.resetResultPlaceholder': 'Select the reset result',

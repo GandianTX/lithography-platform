@@ -149,22 +149,19 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 
 ## 内部维修过程与原件
 
-`createRepairProcessEntry(input)`：`requestId`、`operationText`（必填，去首尾空白后非空）、`testResult`（可空，空白归一为 null）、`occurredAt`（可空）、`file`（可空，`{ fileId, uploadContextId }` 必须同时提供且为合法 UUID）。
+`createRepairProcessEntry(input)`、`updateRepairProcessEntry(input)` 为历史入口，当前写入合同已冻结：
 
-- 作者只取自 Session；未传 `occurredAt` 时使用服务端时间且 `timeSource = SERVER`，否则 `timeSource = MANUAL`。
-- `occurredAt` 只接受完整的日期时间字符串（可带时区偏移）；纯日期（`YYYY-MM-DD`）、epoch 数字、`Date` 实例与非法格式均按输入错误拒绝。持久化字段沿用既有 `datetime` 口径（不带时区后缀的字符串按服务端本地时间解释，带偏移的字符串按其瞬时值写入），本轮不改变 Entity / Migration 的时间语义。
-- 目标裁决：不存在/已删除/跨公司 → NOT_FOUND；未接单或非本人 → NOT_ACCEPTED；已结单或处理已终结 → CLOSED_STATE_CONFLICT。
-- 携带原件时，在同一调用方事务内先执行任务 11 绑定（锁顺序：原件行锁 → 工单行锁），再插入引用该 `fileId` 的过程行；绑定或过程写入任一失败整体回滚，不产生「已绑定但无过程」或「有过程但未绑定」。未携带原件时只锁工单行。
+- 两者仍保留在 schema 中，但任何新增、更新或改绑请求一律返回 `PROCESS_READONLY`（对外 `BAD_USER_INPUT`），不开启事务，不写 `repair_process_entries`，不绑定或替换原件。
+- 校验顺序：Session / 角色与写权限仍先裁决；通过后立即按 `PROCESS_READONLY` 拒绝，不再读取或规范化旧入参。
+- 旧过程历史继续可读，已授权原件继续按任务 11 的下载入口读取；读取不因写入冻结而失效。
+- 新增或修订维修事实统一走 `saveRepairRequestMaintenance`（工程师）或管理员新版明细修订；不得再用旧入口承载新内容。
 
-`updateRepairProcessEntry(input)`：`requestId`、`entryId`、`expectedVersion`、`operationText`、`testResult`、`occurredAt`、`file`（可空，`{ fileId, uploadContextId }`）。
+`saveRepairRequestMaintenance(input)`：`requestId`、`expectedVersion`（必填，`>= 0`）、维修日期/工程师/复位结果/补充说明、可选 `attachment { fileId, uploadContextId }`、`steps[]`、`panels[]`。
 
-- 仅过程作者本人、接单人、同组织可编辑；非作者按 PROCESS_NOT_FOUND 处理，不泄露他人过程。
-- `expectedVersion` 必须等于当前 `versionNo`，条件更新 `(id, request_id, author_account_id, version_no)` 命中 0 行即 PROCESS_VERSION_CONFLICT；客户端应刷新详情后重试，后端不做自动合并。
-- 仅支持「当前过程尚无原件时补传一份原件」：传入 `file` 时，在同一调用方事务内先执行任务 11 绑定（锁顺序：原件行锁 → 工单行锁），再锁过程行并按 `(version_no, file_id IS NULL)` 条件更新，成功后过程关联该 `fileId` 且 `versionNo + 1`；绑定或过程更新任一失败整体回滚，落败方的暂存原件不会被消耗。
-- 当前过程已有原件时传入 `file` 返回 PROCESS_ORIGINAL_IMMUTABLE（对外 CONFLICT），明确拒绝且不覆盖原文件；替换、移除原件以及追加第二份原件均不在本期范围，追加请新建过程记录。
-- 省略 `file` 表示保持原绑定不变，条件更新不触碰 `file_id`；明确传 `file: null` 不被解释为移除原件，按输入错误（STORED_FILE_INVALID_PARAMS）拒绝。
-- 编辑时省略 `occurredAt`（或传空白）等价于重置为服务端当前时间并写 `timeSource = SERVER`，不会保留旧事件时间；`occurredAt` 校验规则与创建一致。
-- 已结单或处理已终结时只读（CLOSED_STATE_CONFLICT）。
+- 工程师姓名不接受客户端覆盖：后端始终以接单人可信资料（`real_name`）落库；旧客户端传 `null` 或任意姓名均被忽略；接单人可信资料缺失时返回 `ENGINEER_PROFILE_INCOMPLETE`，不写任何维修字段。
+- `expectedVersion` 必须等于当前 `maintenance_version_no`；不一致返回 `PROCESS_VERSION_CONFLICT`，不出保存回执。
+- 保存回执在写事务内生成并读回最新维修记录，事务提交成功后才返回给客户端；事务失败时不返回「已保存」，由调用方按失败处理。
+- 前端保存成功后如详情刷新失败，应提示「已保存，刷新失败」并仅重试详情读取，不得重发保存 mutation。
 
 原件上传与下载复用任务 11 共用入口，不新增临时 HTTP：
 
@@ -198,8 +195,10 @@ GraphQL schema 由 Nest 自动生成，本文只描述契约，不手改生成�
 
 ## 结单
 
-`closeRepairRequest(input)`：`requestId`、`handlingResult`、`closureReason`（可空）。
+`closeRepairRequest(input)`：`requestId`、`handlingResult`、`closureReason`（可空）、`maintenanceVersionNo`（必填 `Int!`，`>= 0`）。
 
+- `maintenanceVersionNo` 必须是用户在结单确认界面看到的维修记录版本；`0` 是合法版本（v0 未保存记录），缺失或非法值在 GraphQL / 输入校验层拒绝，不得省略或按 `0` 兜底。
+- 提交版本与当前 `maintenance_version_no` 不一致时返回 `PROCESS_VERSION_CONFLICT`，且不写 `closure_status`、`closed_at`、`handling_*`；前端提示刷新并重新确认，不自动重试。
 - `RepairRequestHandlingResult` 五值：`FIXED`、`PART_PURCHASED`、`PROVIDE_PLAN_SELF_EXECUTE`、`INTERRUPTED`、`UNREPAIRABLE`；经固定策略映射为三态 `RepairRequestHandlingStatus`：前三者 → `COMPLETED`，`INTERRUPTED` → `IN_PROGRESS`，`UNREPAIRABLE` → `UNRESOLVED`。客户端不能自报状态。
 - `INTERRUPTED` / `UNREPAIRABLE` 必须填写 `closureReason`，其他结果可选。
 - 结单写入 `handling_result`、`handling_status`、`handling_recorded_at/by`、`closure_status='CLOSED'`、`closed_at`、`closure_reason`；`INTERRUPTED` 不写 `handling_ended_at`，结单事实由 `closure_status` / `closed_at` 表达。
@@ -209,6 +208,6 @@ GraphQL schema 由 Nest 自动生成，本文只描述契约，不手改生成�
 
 - 读侧：不存在、已删除与越权统一拒绝（PERMISSION 大类），不区分对外表述，防止资源存在性探测。
 - 删除：不存在/非本人统一 NOT_FOUND，已接单 CONFLICT。
-- 内部过程：非作者编辑 → NOT_FOUND；版本不一致 → CONFLICT；已结单写入 → CONFLICT；写失败兜底 → INTERNAL_SERVER_ERROR。
+- 内部过程：旧新增/更新/改绑一律 `PROCESS_READONLY`（对外 BAD_USER_INPUT），且无过程行或附件写入；旧历史读取与已授权原件下载不受影响。
 - 原件绑定失败（不存在/无权、已绑定、用途或上下文不匹配、完整性核对失败、工单不可绑定）按任务 11 的领域错误返回，并回滚同事务内的过程写入。经 GraphQL 写入口暴露时的分类：`NOT_FOUND` → NOT_FOUND；`NOT_BINDABLE` / `ALREADY_BOUND` / `WORK_ORDER_NOT_BINDABLE` → CONFLICT（状态冲突不得落为输入错误）；`INVALID_PARAMS` / `PURPOSE_NOT_SUPPORTED` / `UPLOAD_FILE_MISSING` / `UPLOAD_FILE_TOO_LARGE` / `UPLOAD_FILE_TYPE_NOT_ALLOWED` → BAD_USER_INPUT；`UPLOAD_FAILED` / `FILE_NOT_AVAILABLE` / `INTEGRITY_FAILED` / `BIND_FAILED` → INTERNAL_SERVER_ERROR。`errorCode` 仅在非生产环境暴露，客户端主分支只依赖 GraphQL 大类。
 - 详细的 GraphQL 错误分类见 `docs/api/graphql-error-contract-current.md`。

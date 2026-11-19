@@ -289,6 +289,25 @@ export class AccountQueryService {
   }
 
   /**
+   * 接单工程师可信姓名的窄读（任务 04）：只返回 `base_user_info.real_name`。
+   *
+   * 维修记录快照必须以工单接单账号的可信资料为准，不能采用客户端表单值。
+   * 资料行缺失、姓名为空或仅空白统一返回 `null`，由调用方失败关闭。
+   */
+  async findRealNameByAccountId(params: {
+    accountId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<string | null> {
+    const userInfoRepository = this.getUserInfoRepository(params.transactionContext);
+    const userInfo = await userInfoRepository.findOne({
+      where: { accountId: params.accountId },
+      select: { id: true, realName: true },
+    });
+    const realName = userInfo?.realName?.trim();
+    return realName ? realName : null;
+  }
+
+  /**
    * 账号 + 资料 → 内部窄快照 `MyAccountSettingsSnapshot` 的唯一映射点。
    *
    * 三类失败关闭判定集中在此，`findMyAccountSettingsSnapshot()` 不重复实现：

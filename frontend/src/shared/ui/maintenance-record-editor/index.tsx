@@ -290,6 +290,7 @@ function AttachmentArea({
 export function MaintenanceRecordEditor({
   attachment,
   disabled = false,
+  engineerNameReadOnly = false,
   onChange,
   readOnly = false,
   value,
@@ -298,10 +299,13 @@ export function MaintenanceRecordEditor({
   onChange: (value: MaintenanceEditorValue) => void;
   readOnly?: boolean;
   disabled?: boolean;
+  /** 工单场景：姓名由后端按接单账号写入，编辑器只读展示快照 */
+  engineerNameReadOnly?: boolean;
   attachment?: MaintenanceEditorAttachmentProps;
 }) {
   const { t } = useI18n();
   const locked = readOnly || disabled;
+  const engineerNameLocked = locked || engineerNameReadOnly;
 
   const updateStep = (key: string, patch: Partial<MaintenanceStepValue>) => {
     onChange({
@@ -383,12 +387,21 @@ export function MaintenanceRecordEditor({
           </Field>
           <Field label={t('maintenance.engineerName')}>
             <Input
-              disabled={locked}
+              disabled={engineerNameLocked}
               maxLength={MAX_ENGINEER_NAME_LENGTH}
               onChange={(event) => onChange({ ...value, engineerName: event.target.value })}
-              placeholder={t('maintenance.engineerNamePlaceholder')}
+              placeholder={
+                engineerNameReadOnly
+                  ? t('maintenance.engineerNameReadOnlyHint')
+                  : t('maintenance.engineerNamePlaceholder')
+              }
               value={value.engineerName}
             />
+            {engineerNameReadOnly ? (
+              <span className="text-text-secondary text-xs">
+                {t('maintenance.engineerNameReadOnlyHint')}
+              </span>
+            ) : null}
           </Field>
         </div>
       </section>

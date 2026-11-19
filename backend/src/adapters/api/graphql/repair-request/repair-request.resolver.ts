@@ -342,6 +342,7 @@ export class RepairRequestResolver {
       session: mapJwtToUsecaseSession(user),
       requestId: input.requestId,
       handlingResult: input.handlingResult,
+      maintenanceVersionNo: input.maintenanceVersionNo,
       closureReason: input.closureReason,
     });
   }

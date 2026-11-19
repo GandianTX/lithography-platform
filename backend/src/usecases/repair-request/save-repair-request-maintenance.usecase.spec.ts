@@ -2,7 +2,9 @@
 
 /// <reference types="jest" />
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { RepairRequestMaintenanceQueryService } from '@src/modules/lithography/queries/repair-request-maintenance.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { RepairRequestMaintenanceService } from '@src/modules/lithography/repair-request-maintenance.service';
@@ -49,6 +51,7 @@ const makeUsecase = (
     target?: ReturnType<typeof target> | null;
     bind?: jest.Mock;
     save?: jest.Mock;
+    realName?: string | null;
   } = {},
 ) => {
   const maintenanceService = {
@@ -68,8 +71,14 @@ const makeUsecase = (
   const bindOriginalUsecase = {
     executeInTransaction: options.bind ?? jest.fn().mockResolvedValue({}),
   };
+  const accountQueryService = {
+    findRealNameByAccountId: jest
+      .fn()
+      .mockResolvedValue(options.realName === undefined ? '李工' : options.realName),
+  };
+  const transactionContext = { transaction: 'mock' } as unknown as PersistenceTransactionContext;
   const transactionRunner: TransactionRunner = {
-    run: async (callback) => callback({} as never),
+    run: async (callback) => callback(transactionContext),
   };
   return {
     usecase: new SaveRepairRequestMaintenanceUsecase(
@@ -78,10 +87,13 @@ const makeUsecase = (
       trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
       bindOriginalUsecase as unknown as BindRepairProcessOriginalUsecase,
       transactionRunner,
+      accountQueryService as unknown as AccountQueryService,
     ),
     maintenanceService,
     maintenanceQueryService,
     bindOriginalUsecase,
+    accountQueryService,
+    transactionContext,
   };
 };
 
@@ -137,15 +149,51 @@ describe('SaveRepairRequestMaintenanceUsecase', () => {
     await expectCode(usecase.execute(command()), REPAIR_REQUEST_ERROR.CLOSED_STATE_CONFLICT);
   });
 
-  it('保存成功：按 expectedVersion 原子写入并返回最新记录', async () => {
-    const { usecase, maintenanceService, maintenanceQueryService } = makeUsecase();
-    const result = await usecase.execute(command());
+  it('保存成功：姓名取自接单人可信资料，回执在同一事务内读取并返回', async () => {
+    const { usecase, maintenanceService, maintenanceQueryService, transactionContext } =
+      makeUsecase();
+    const result = await usecase.execute(command({ engineerName: '客户端伪造姓名' }));
     expect(maintenanceService.saveMaintenance).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 102, expectedVersion: 3 }),
-      expect.anything(),
+      expect.objectContaining({ requestId: 102, expectedVersion: 3, engineerName: '李工' }),
+      transactionContext,
     );
-    expect(maintenanceQueryService.findRecord).toHaveBeenCalledWith(102);
+    expect(maintenanceQueryService.findRecord).toHaveBeenCalledWith(102, transactionContext);
     expect(result.record).toEqual({ versionNo: 4 });
+  });
+
+  it.each([null, '', '其他姓名'])(
+    '旧客户端传入工程师姓名 %p 不参与归属，落库仍为实际接单人资料',
+    async (engineerName) => {
+      const { usecase, maintenanceService, accountQueryService } = makeUsecase();
+
+      await usecase.execute(command({ engineerName }));
+
+      expect(accountQueryService.findRealNameByAccountId).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 900001 }),
+      );
+      expect(maintenanceService.saveMaintenance).toHaveBeenCalledWith(
+        expect.objectContaining({ engineerName: '李工' }),
+        expect.anything(),
+      );
+    },
+  );
+
+  it('接单人可信资料缺失：失败关闭，不写维修记录也不返回回执', async () => {
+    const { usecase, maintenanceService, maintenanceQueryService } = makeUsecase({
+      realName: null,
+    });
+
+    await expectCode(usecase.execute(command()), REPAIR_REQUEST_ERROR.ENGINEER_PROFILE_INCOMPLETE);
+    expect(maintenanceService.saveMaintenance).not.toHaveBeenCalled();
+    expect(maintenanceQueryService.findRecord).not.toHaveBeenCalled();
+  });
+
+  it('事务内保存失败：向上抛错，不读取也不返回保存回执', async () => {
+    const save = jest.fn().mockRejectedValue(new Error('write failed'));
+    const { usecase, maintenanceQueryService } = makeUsecase({ save });
+
+    await expect(usecase.execute(command())).rejects.toThrow('write failed');
+    expect(maintenanceQueryService.findRecord).not.toHaveBeenCalled();
   });
 
   it('提供原件时先在事务内绑定，再保存维修记录', async () => {

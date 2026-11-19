@@ -199,13 +199,14 @@ describe(useEngineerRepairProcessWorkbench.name, () => {
       await result.current.uploadFile(new File(['demo'], 'report.pdf'));
     });
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
 
     expect(closeMock).toHaveBeenCalledWith({
       requestId: 21,
       handlingResult: 'FIXED',
       closureReason: null,
+      maintenanceVersionNo: 0,
     });
     expect(reload).toHaveBeenCalledTimes(1);
     expect(result.current.stagedFile).toBeNull();
@@ -868,7 +869,7 @@ describe('写后回读失败的反馈与屏障', () => {
 
     let pending: Promise<CloseRepairRequestResult | null> | null = null;
     act(() => {
-      pending = result.current.closeRequest('FIXED', null);
+      pending = result.current.closeRequest('FIXED', null, 0);
     });
 
     // mutation 成功即通知页面进入只读，此时回读仍未返回
@@ -902,13 +903,52 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
 
     expect(result.current.lastCloseResult).toEqual(failed);
     expect(result.current.closeReadbackFailed).toBe(false);
     expect(onCloseSucceeded).not.toHaveBeenCalled();
     expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('结单提交原样携带调用方捕获的版本，不读取或替换为最新值', async () => {
+    closeMock.mockResolvedValue(CLOSE_OK);
+    const reload = vi.fn().mockResolvedValue(READBACK_OK);
+    const { result } = renderHook(() => useEngineerRepairProcessWorkbench(21, reload, {}));
+
+    await act(async () => {
+      await result.current.closeRequest('FIXED', null, 7);
+    });
+
+    expect(closeMock).toHaveBeenCalledTimes(1);
+    expect(closeMock).toHaveBeenCalledWith({
+      requestId: 21,
+      handlingResult: 'FIXED',
+      closureReason: null,
+      maintenanceVersionNo: 7,
+    });
+  });
+
+  it('结单版本冲突：只提交一次、不自动重试，保留服务端反馈等待重新确认', async () => {
+    const conflict: CloseRepairRequestResult = {
+      ok: false,
+      reason: 'closed',
+      message: '维修记录已更新，请刷新后重新确认结单。',
+    };
+    closeMock.mockResolvedValue(conflict);
+    const reload = vi.fn().mockResolvedValue(READBACK_OK);
+
+    const { result } = renderHook(() => useEngineerRepairProcessWorkbench(21, reload, {}));
+
+    await act(async () => {
+      await result.current.closeRequest('FIXED', null, 3);
+    });
+
+    expect(closeMock).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
+    expect(result.current.lastCloseResult).toEqual(conflict);
+    expect(result.current.closing).toBe(false);
   });
 
   it('结单回读重试成功：清除刷新失败标记并通知页面由服务端事实接管', async () => {
@@ -927,7 +967,7 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
     expect(result.current.closeReadbackFailed).toBe(true);
 
@@ -950,7 +990,7 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
 
     expect(result.current.lastCloseResult).toEqual(CLOSE_OK);
@@ -969,7 +1009,7 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
 
     expect(result.current.closeReadbackFailed).toBe(true);
@@ -986,7 +1026,7 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
 
     expect(result.current.closeReadbackFailed).toBe(false);
@@ -1011,7 +1051,7 @@ describe('写后回读失败的反馈与屏障', () => {
 
     let pending: Promise<CloseRepairRequestResult | null> | null = null;
     act(() => {
-      pending = result.current.closeRequest('FIXED', null);
+      pending = result.current.closeRequest('FIXED', null, 0);
     });
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
 
@@ -1043,7 +1083,7 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
     expect(result.current.closeReadbackFailed).toBe(true);
 
@@ -1068,7 +1108,7 @@ describe('写后回读失败的反馈与屏障', () => {
     );
 
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
     expect(result.current.closeReadbackFailed).toBe(true);
 
@@ -1170,7 +1210,7 @@ describe('写后回读失败的反馈与屏障', () => {
       );
     });
     await act(async () => {
-      await result.current.closeRequest('FIXED', null);
+      await result.current.closeRequest('FIXED', null, 0);
     });
 
     expect(uploadMock).not.toHaveBeenCalled();

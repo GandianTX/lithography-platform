@@ -137,6 +137,15 @@ export class AppendRepairRequestRevisionUsecase {
     const handlingResult = normalizeOptionalHandlingResult(command.handlingResult);
     const closureReasonInput = command.closureReason;
     const processEntries = normalizeProcessEntries(command.processEntries);
+    if (processEntries.length > 0) {
+      // 任务 04 旧过程转为历史只读：管理员修订不能成为写旧过程文本的旁路。
+      // 新版结构化维修记录的修订仍走 maintenance 分支。
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.PROCESS_READONLY,
+        '旧维修过程已只读，管理员不能修订旧过程文本；请在新版结构化维修记录中修订',
+        { requestId: command.requestId },
+      );
+    }
     const maintenance = normalizeAdminMaintenance(command);
     if (
       contentMd === null &&
