@@ -197,11 +197,46 @@ const collectFieldEncryptionRuleErrors = (): string[] => {
   return errors;
 };
 
+const collectRagDiagnosisRuleErrors = (): string[] => {
+  const errors: string[] = [];
+  const mode = getOptionalEnv('LITHO_RAG_MODE')?.toLowerCase();
+  if (mode && mode !== 'disabled' && mode !== 'remote') {
+    errors.push('LITHO_RAG_MODE must be either disabled or remote');
+  }
+
+  // 显式 disabled 时功能未启用：残留的 URL、密钥、超时与私网开关都不参与预检，
+  // 避免无关的 API／Worker 进程因残留配置而无法启动。
+  if (mode === 'disabled') {
+    return errors;
+  }
+
+  const allowRaw = process.env.LITHO_RAG_ALLOW_TAILNET_HTTP;
+  if (allowRaw !== undefined && parseBooleanInput(allowRaw) === undefined) {
+    errors.push('LITHO_RAG_ALLOW_TAILNET_HTTP must be a boolean-like value');
+  }
+
+  const timeoutRaw = getOptionalEnv('LITHO_RAG_TIMEOUT_MS');
+  if (timeoutRaw && !Number.isInteger(parseStrictInteger(timeoutRaw))) {
+    errors.push('LITHO_RAG_TIMEOUT_MS must be an integer');
+  }
+
+  const baseUrl = getOptionalEnv('LITHO_RAG_BASE_URL');
+  const apiKey = getOptionalEnv('LITHO_RAG_API_KEY');
+  if (Boolean(baseUrl) !== Boolean(apiKey)) {
+    errors.push('LITHO_RAG_BASE_URL and LITHO_RAG_API_KEY must be configured together');
+  }
+  if (mode === 'remote' && (!baseUrl || !apiKey)) {
+    errors.push('LITHO_RAG_MODE=remote requires LITHO_RAG_BASE_URL and LITHO_RAG_API_KEY');
+  }
+  return errors;
+};
+
 const collectProductionRuleErrors = (): string[] => {
   return [
     ...collectDbAndCorsRuleErrors(),
     ...collectAiProviderRuleErrors(),
     ...collectFieldEncryptionRuleErrors(),
+    ...collectRagDiagnosisRuleErrors(),
   ];
 };
 
@@ -441,6 +476,45 @@ const aiWorkerConfig: ConfigFactory = () => ({
   },
 });
 
+/**
+ * 生成 RAG 公共诊断客户端配置。
+ *
+ * 三种模式：
+ * - 显式 `disabled`：跳过 RAG 专属配置检查与参数解析；合法诊断请求由客户端按
+ *   `CONFIG_ERROR` 失败关闭且零出站，残留的 URL／密钥／超时／开关均被忽略。
+ * - 未设置：保留 `remote` 默认；生产允许 URL 与密钥都不设，但只配一项会在预检失败。
+ * - 显式 `remote`：要求 `LITHO_RAG_BASE_URL` 与 `LITHO_RAG_API_KEY` 同时齐全。
+ *
+ * 其余运行期不可用的配置继续由客户端在 `diagnose` 时按 `CONFIG_ERROR` 失败关闭，
+ * 不在启动期抛错，保证无 RAG 密钥的进程仍可启用原有功能。
+ */
+const ragDiagnosisConfig: ConfigFactory = () => {
+  const mode = process.env.LITHO_RAG_MODE?.trim().toLowerCase() || 'remote';
+
+  // 显式 disabled 时不解析 RAG 专属参数：残留的非法超时或布尔值不得阻断启动。
+  if (mode === 'disabled') {
+    return {
+      ragDiagnosis: {
+        mode,
+        baseUrl: '',
+        apiKey: '',
+        allowInsecureHttp: false,
+        timeoutMs: 30000,
+      },
+    };
+  }
+
+  return {
+    ragDiagnosis: {
+      mode,
+      baseUrl: getOptionalEnv('LITHO_RAG_BASE_URL') ?? '',
+      apiKey: getOptionalEnv('LITHO_RAG_API_KEY') ?? '',
+      allowInsecureHttp: getBooleanEnvWithDefault('LITHO_RAG_ALLOW_TAILNET_HTTP', false),
+      timeoutMs: getIntEnvWithDefault('LITHO_RAG_TIMEOUT_MS', 30000),
+    },
+  };
+};
+
 const emailDeliveryConfig: ConfigFactory = () => ({
   emailDelivery: {
     sendAsUser: getOptionalEnv('EMAIL_SEND_AS_USER'),
@@ -541,6 +615,7 @@ const paginationConfig = () => ({
         qmWorkerEntryConfig,
         capabilityRuntimeConfig,
         aiWorkerConfig,
+        ragDiagnosisConfig,
         emailDeliveryConfig,
         referenceDocumentStorageConfig,
         adminAccountResetConfig,
