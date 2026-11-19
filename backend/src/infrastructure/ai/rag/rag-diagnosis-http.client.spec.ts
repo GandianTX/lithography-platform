@@ -287,6 +287,144 @@ describe('RagDiagnosisHttpClient', () => {
     }
   });
 
+  it('工单带历史按 V44 协议发送 role/text，字段名与顺序独立校对', async () => {
+    const expectedHistory: readonly { role: 'USER' | 'ASSISTANT'; text: string }[] = [
+      { role: 'USER', text: '手臂 1 运送掩模板中途停住，报警 E1042。' },
+      { role: 'ASSISTANT', text: '请核对取板台真空与手臂位置传感器。' },
+    ];
+    const expectedEnvelope = {
+      schemaVersion: 1,
+      requestId: '55555555-5555-4555-8555-555555555555',
+      sceneId: 'LITHO_WORKFLOW_V1',
+      question: '按上轮建议核对后仍中断，下一步检查什么？',
+      history: expectedHistory,
+      context: {
+        mode: 'WORK_ORDER' as const,
+        equipmentModelCode: 'MODEL-INDEPENDENT',
+        stage: 4,
+        fault: {
+          mainError: 'E1042',
+          unitError: null,
+          source: null,
+          errorType: null,
+          gpibStatus: '0',
+          description: null,
+          action: null,
+          status: null,
+        },
+      },
+    };
+
+    const { server, requests, baseUrl } = await startServer((_req, res) => {
+      sendJson(res, 200, {
+        schemaVersion: 1,
+        requestId: expectedEnvelope.requestId,
+        content: { text: '独立样例正文', visualization: null },
+      });
+    });
+
+    try {
+      const result = await buildClient({ baseUrl }).diagnose({
+        requestId: expectedEnvelope.requestId,
+        question: expectedEnvelope.question,
+        history: expectedHistory,
+        context: expectedEnvelope.context,
+      });
+      expect(result).toEqual({
+        ok: true,
+        requestId: expectedEnvelope.requestId,
+        text: '独立样例正文',
+        visualization: null,
+      });
+      expect(requests).toHaveLength(1);
+
+      const sent = JSON.parse(requests[0].body) as Record<string, unknown>;
+      expect(sent).toEqual(expectedEnvelope);
+      const sentHistory = sent.history as { role: string; text: string }[];
+      expect(sentHistory.map((item) => Object.keys(item))).toEqual([
+        ['role', 'text'],
+        ['role', 'text'],
+      ]);
+      expect(requests[0].body).not.toContain('"content"');
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it.each([
+    ['根输入未知字段', { unexpected: true }],
+    ['context 未知字段', { context: { ...fixtureInput().context, unexpected: true } }],
+    [
+      'fault 未知字段',
+      {
+        context: {
+          ...fixtureInput().context,
+          fault: { ...(fixtureInput().context.fault ?? {}), unexpected: true },
+        },
+      },
+    ],
+  ])('%s 时返回 INVALID_INPUT 且零请求', async (_title, patch) => {
+    const { server, requests, baseUrl } = await startServer((_req, res) => {
+      sendJson(res, 200, successPayload());
+    });
+
+    try {
+      const result = await buildClient({ baseUrl }).diagnose({
+        ...fixtureInput(),
+        ...patch,
+      });
+      expect(failureCode(result)).toBe(RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT);
+      expect(requests).toHaveLength(0);
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it.each([
+    ['带尾随空白', `${fixtureInput().requestId} `],
+    ['带前导空白', ` ${fixtureInput().requestId}`],
+    ['非 UUID', 'not-a-uuid'],
+  ])('requestId %s 时返回 INVALID_INPUT 且零请求', async (_title, requestId) => {
+    const { server, requests, baseUrl } = await startServer((_req, res) => {
+      sendJson(res, 200, successPayload());
+    });
+
+    try {
+      const result = await buildClient({ baseUrl }).diagnose({ ...fixtureInput(), requestId });
+      expect(failureCode(result)).toBe(RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT);
+      expect(requests).toHaveLength(0);
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it('合法 UUID 原样发送并回显，成功结果使用同一 ID', async () => {
+    const uppercaseId = 'ABCDEF01-2345-4678-9ABC-DEF012345678';
+    const { server, requests, baseUrl } = await startServer((_req, res) => {
+      sendJson(res, 200, {
+        schemaVersion: 1,
+        requestId: uppercaseId,
+        content: { text: '正文', visualization: null },
+      });
+    });
+
+    try {
+      const result = await buildClient({ baseUrl }).diagnose({
+        ...fixtureInput(),
+        requestId: uppercaseId,
+      });
+      expect(result).toEqual({
+        ok: true,
+        requestId: uppercaseId,
+        text: '正文',
+        visualization: null,
+      });
+      expect((JSON.parse(requests[0].body) as { requestId: string }).requestId).toBe(uppercaseId);
+    } finally {
+      await stopServer(server);
+    }
+  });
+
   it('发起前已取消时零请求', async () => {
     const { server, requests, baseUrl } = await startServer((_req, res) => {
       sendJson(res, 200, successPayload());

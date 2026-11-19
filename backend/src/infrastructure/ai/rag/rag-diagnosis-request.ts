@@ -55,6 +55,18 @@ export type RagDiagnosisRequestBuildResult =
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// 未知字段必须在本层拒绝（V1.1 A01）：根输入、context、history 项、fault 均按白名单校验。
+// 根输入由调用方提供 requestId／question／history／context，schemaVersion 与 sceneId 由客户端注入。
+const ROOT_INPUT_KEYS: ReadonlySet<string> = new Set([
+  'requestId',
+  'question',
+  'history',
+  'context',
+]);
+const CONTEXT_KEYS: ReadonlySet<string> = new Set(['mode', 'equipmentModelCode', 'stage', 'fault']);
+const HISTORY_ITEM_KEYS: ReadonlySet<string> = new Set(['role', 'text']);
+const FAULT_KEYS: ReadonlySet<string> = new Set(RAG_DIAGNOSIS_FAULT_KEYS);
+
 const INVALID_INPUT: RagDiagnosisRequestBuildResult = {
   ok: false,
   code: RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT,
@@ -62,6 +74,9 @@ const INVALID_INPUT: RagDiagnosisRequestBuildResult = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const hasOnlyKeys = (value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean =>
+  Object.keys(value).every((key) => allowed.has(key));
 
 const normalizeOptionalText = (value: unknown): string | null | undefined => {
   if (value === null || value === undefined) {
@@ -80,18 +95,18 @@ const normalizeHistory = (value: unknown): readonly RagDiagnosisHistoryItem[] | 
   }
   const history: RagDiagnosisHistoryItem[] = [];
   for (const item of value) {
-    if (!isRecord(item)) {
+    if (!isRecord(item) || !hasOnlyKeys(item, HISTORY_ITEM_KEYS)) {
       return null;
     }
     const role: unknown = item.role;
     if (role !== 'USER' && role !== 'ASSISTANT') {
       return null;
     }
-    const content = typeof item.content === 'string' ? item.content.trim() : '';
-    if (content.length < 1 || content.length > RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS) {
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (text.length < 1 || text.length > RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS) {
       return null;
     }
-    history.push({ role, content });
+    history.push({ role, text });
   }
   return history;
 };
@@ -115,7 +130,7 @@ const normalizeFault = (value: unknown): RagDiagnosisWireFault | null | undefine
   if (value === null || value === undefined) {
     return null;
   }
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyKeys(value, FAULT_KEYS)) {
     return undefined;
   }
 
@@ -134,7 +149,7 @@ const normalizeFault = (value: unknown): RagDiagnosisWireFault | null | undefine
 };
 
 const normalizeContext = (value: unknown): RagDiagnosisRequestEnvelope['context'] | null => {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyKeys(value, CONTEXT_KEYS)) {
     return null;
   }
   const mode: unknown = value.mode;
@@ -162,10 +177,20 @@ const normalizeContext = (value: unknown): RagDiagnosisRequestEnvelope['context'
  * 校验失败返回 `INVALID_INPUT`，调用方据此保证零网络请求。
  */
 export function buildRagDiagnosisRequest(input: RagDiagnosisInput): RagDiagnosisRequestBuildResult {
-  const requestId = typeof input?.requestId === 'string' ? input.requestId.trim() : '';
-  if (!UUID_PATTERN.test(requestId)) {
+  if (!isRecord(input) || !hasOnlyKeys(input, ROOT_INPUT_KEYS)) {
     return INVALID_INPUT;
   }
+
+  // 标准 UUID 原样发送：前后带空白不属于可归一化输入，发请求前直接拒绝。
+  const rawRequestId: unknown = input.requestId;
+  if (
+    typeof rawRequestId !== 'string' ||
+    rawRequestId !== rawRequestId.trim() ||
+    !UUID_PATTERN.test(rawRequestId)
+  ) {
+    return INVALID_INPUT;
+  }
+  const requestId = rawRequestId;
 
   const question = typeof input.question === 'string' ? input.question.trim() : '';
   if (question.length < 1 || question.length > RAG_DIAGNOSIS_QUESTION_MAX_UNITS) {

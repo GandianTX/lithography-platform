@@ -101,9 +101,9 @@ describe('RAG 诊断合成样例', () => {
       expect(fixture.input.history.length).toBeLessThanOrEqual(RAG_DIAGNOSIS_HISTORY_LIMIT);
       for (const item of fixture.input.history) {
         expect(['USER', 'ASSISTANT']).toContain(item.role);
-        expect(item.content).toBe(item.content.trim());
-        expect(item.content.length).toBeGreaterThanOrEqual(1);
-        expect(item.content.length).toBeLessThanOrEqual(RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS);
+        expect(item.text).toBe(item.text.trim());
+        expect(item.text.length).toBeGreaterThanOrEqual(1);
+        expect(item.text.length).toBeLessThanOrEqual(RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS);
       }
     }
   });

@@ -50,8 +50,8 @@ export class RagDiagnosisHttpClient implements RagDiagnosisClient {
     input: RagDiagnosisInput,
     options?: RagDiagnosisOptions,
   ): Promise<RagDiagnosisResult> {
-    const requestId =
-      isRecord(input) && typeof input.requestId === 'string' ? input.requestId.trim() : '';
+    // 失败结果只回显调用方传入的原始 ID，不在此归一化；发送与回显比较统一使用已校验信封 ID。
+    const requestId = isRecord(input) && typeof input.requestId === 'string' ? input.requestId : '';
 
     try {
       // 发起前已取消：不读配置、不构造请求，直接零请求返回。
@@ -74,7 +74,7 @@ export class RagDiagnosisHttpClient implements RagDiagnosisClient {
       }
 
       return await this.execute({
-        input,
+        requestId: built.envelope.requestId,
         body: built.body,
         config: resolved.config,
         externalSignal: options?.signal,
@@ -86,12 +86,12 @@ export class RagDiagnosisHttpClient implements RagDiagnosisClient {
   }
 
   private async execute(params: {
-    readonly input: RagDiagnosisInput;
+    readonly requestId: string;
     readonly body: string;
     readonly config: ResolvedRagDiagnosisConfig;
     readonly externalSignal?: AbortSignal;
   }): Promise<RagDiagnosisResult> {
-    const { input, body, config, externalSignal } = params;
+    const { requestId, body, config, externalSignal } = params;
     const startedAt = Date.now();
     const controller = new AbortController();
     let terminal: RagDiagnosisTerminalCause | null = null;
@@ -133,7 +133,7 @@ export class RagDiagnosisHttpClient implements RagDiagnosisClient {
         });
       } catch {
         return this.loggedFailure({
-          requestId: input.requestId,
+          requestId,
           code: this.classifyTerminal(terminal),
           durationMs: Date.now() - startedAt,
           endpoint: config.endpoint,
@@ -142,14 +142,14 @@ export class RagDiagnosisHttpClient implements RagDiagnosisClient {
 
       return await this.handleResponse({
         response,
-        requestId: input.requestId,
+        requestId,
         startedAt,
         config,
         getTerminal,
       });
     } catch {
       return this.loggedFailure({
-        requestId: input.requestId,
+        requestId,
         code: this.classifyTerminal(terminal),
         durationMs: Date.now() - startedAt,
         endpoint: config.endpoint,

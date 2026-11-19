@@ -102,7 +102,6 @@ const PRODUCTION_BOOLEAN_KEYS = [
   'JWT_ENABLE_REFRESH',
   'AI_QUEUE_DEBUG_ENABLED',
   'EMAIL_QUEUE_DEBUG_ENABLED',
-  'LITHO_RAG_ALLOW_TAILNET_HTTP',
 ] as const;
 
 const PRODUCTION_INTEGER_KEYS = [
@@ -111,7 +110,6 @@ const PRODUCTION_INTEGER_KEYS = [
   'DB_POOL_SIZE',
   'REDIS_PORT',
   'REDIS_DB',
-  'LITHO_RAG_TIMEOUT_MS',
 ] as const;
 
 const collectRequiredEnvErrors = (): string[] => {
@@ -204,6 +202,22 @@ const collectRagDiagnosisRuleErrors = (): string[] => {
   const mode = getOptionalEnv('LITHO_RAG_MODE')?.toLowerCase();
   if (mode && mode !== 'disabled' && mode !== 'remote') {
     errors.push('LITHO_RAG_MODE must be either disabled or remote');
+  }
+
+  // 显式 disabled 时功能未启用：残留的 URL、密钥、超时与私网开关都不参与预检，
+  // 避免无关的 API／Worker 进程因残留配置而无法启动。
+  if (mode === 'disabled') {
+    return errors;
+  }
+
+  const allowRaw = process.env.LITHO_RAG_ALLOW_TAILNET_HTTP;
+  if (allowRaw !== undefined && parseBooleanInput(allowRaw) === undefined) {
+    errors.push('LITHO_RAG_ALLOW_TAILNET_HTTP must be a boolean-like value');
+  }
+
+  const timeoutRaw = getOptionalEnv('LITHO_RAG_TIMEOUT_MS');
+  if (timeoutRaw && !Number.isInteger(parseStrictInteger(timeoutRaw))) {
+    errors.push('LITHO_RAG_TIMEOUT_MS must be an integer');
   }
 
   const baseUrl = getOptionalEnv('LITHO_RAG_BASE_URL');
@@ -468,15 +482,32 @@ const aiWorkerConfig: ConfigFactory = () => ({
  * 缺失或不完整时不在启动期抛错：客户端在 `diagnose` 时按 `CONFIG_ERROR` 失败关闭，
  * 保证无 RAG 密钥的进程仍可启用原有功能。
  */
-const ragDiagnosisConfig: ConfigFactory = () => ({
-  ragDiagnosis: {
-    mode: process.env.LITHO_RAG_MODE?.trim().toLowerCase() || 'remote',
-    baseUrl: getOptionalEnv('LITHO_RAG_BASE_URL') ?? '',
-    apiKey: getOptionalEnv('LITHO_RAG_API_KEY') ?? '',
-    allowInsecureHttp: getBooleanEnvWithDefault('LITHO_RAG_ALLOW_TAILNET_HTTP', false),
-    timeoutMs: getIntEnvWithDefault('LITHO_RAG_TIMEOUT_MS', 30000),
-  },
-});
+const ragDiagnosisConfig: ConfigFactory = () => {
+  const mode = process.env.LITHO_RAG_MODE?.trim().toLowerCase() || 'remote';
+
+  // 显式 disabled 时不解析 RAG 专属参数：残留的非法超时或布尔值不得阻断启动。
+  if (mode === 'disabled') {
+    return {
+      ragDiagnosis: {
+        mode,
+        baseUrl: '',
+        apiKey: '',
+        allowInsecureHttp: false,
+        timeoutMs: 30000,
+      },
+    };
+  }
+
+  return {
+    ragDiagnosis: {
+      mode,
+      baseUrl: getOptionalEnv('LITHO_RAG_BASE_URL') ?? '',
+      apiKey: getOptionalEnv('LITHO_RAG_API_KEY') ?? '',
+      allowInsecureHttp: getBooleanEnvWithDefault('LITHO_RAG_ALLOW_TAILNET_HTTP', false),
+      timeoutMs: getIntEnvWithDefault('LITHO_RAG_TIMEOUT_MS', 30000),
+    },
+  };
+};
 
 const emailDeliveryConfig: ConfigFactory = () => ({
   emailDelivery: {

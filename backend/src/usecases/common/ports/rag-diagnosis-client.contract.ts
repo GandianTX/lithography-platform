@@ -93,9 +93,13 @@ export type RagDiagnosisPartId = (typeof RAG_VISUALIZATION_PART_IDS)[number];
 
 export type RagDiagnosisDisplay = (typeof RAG_VISUALIZATION_DISPLAYS)[number];
 
+/** 历史项：与《01-模型API约定-对齐V44》《02-AI对话页面逻辑与模型API约定》一致，线上字段为 role + text。
+ *
+ * 注意区分：回复正文仍取 `content.text`，请求历史项不使用 `content`。
+ */
 export type RagDiagnosisHistoryItem = Readonly<{
   role: RagDiagnosisHistoryRole;
-  content: string;
+  text: string;
 }>;
 
 /** 故障事实八字段。

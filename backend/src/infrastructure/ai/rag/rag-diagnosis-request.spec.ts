@@ -61,18 +61,17 @@ describe('buildRagDiagnosisRequest', () => {
     }
   });
 
-  it('去除问题、历史与故障字段外侧空白，未知 fault 键被丢弃', () => {
+  it('去除问题、历史与故障字段外侧空白', () => {
     const input = asInput({
       ...baseInput(),
       question: '  手臂仍在中途停住  ',
-      history: [{ role: 'USER', content: '  已核对取板台真空  ' }],
+      history: [{ role: 'USER', text: '  已核对取板台真空  ' }],
       context: {
         ...baseInput().context,
         equipmentModelCode: '  SYNTH-FIXTURE-MODEL  ',
         fault: {
           mainError: '  E1042  ',
           gpibStatus: '0',
-          unknownField: 'should-be-dropped',
         },
       },
     });
@@ -84,11 +83,33 @@ describe('buildRagDiagnosisRequest', () => {
     }
 
     expect(built.envelope.question).toBe('手臂仍在中途停住');
-    expect(built.envelope.history).toEqual([{ role: 'USER', content: '已核对取板台真空' }]);
+    expect(built.envelope.history).toEqual([{ role: 'USER', text: '已核对取板台真空' }]);
     expect(built.envelope.context.equipmentModelCode).toBe('SYNTH-FIXTURE-MODEL');
     expect(Object.keys(built.envelope.context.fault ?? {})).toEqual([...RAG_DIAGNOSIS_FAULT_KEYS]);
     expect(built.envelope.context.fault?.mainError).toBe('E1042');
     expect(built.envelope.context.fault?.gpibStatus).toBe('0');
+  });
+
+  it('请求历史按 V44 协议使用 role 与 text，不输出 content', () => {
+    const built = buildRagDiagnosisRequest(baseInput());
+    expect(built.ok).toBe(true);
+    if (!built.ok) {
+      return;
+    }
+
+    expect(built.envelope.history).toHaveLength(2);
+    expect(built.envelope.history[0]).toEqual({
+      role: 'USER',
+      text: '掩模板运送至取板台时，手臂 1 动作中断，已记录报警原文 E1042。',
+    });
+    expect(built.envelope.history[1]).toEqual({
+      role: 'ASSISTANT',
+      text: '请先核对取板台真空与手臂位置传感器，再按规程复现一次运送动作。',
+    });
+    for (const item of built.envelope.history) {
+      expect(Object.keys(item)).toEqual(['role', 'text']);
+    }
+    expect(built.body).not.toContain('"content"');
   });
 
   it('按 UTF-8 字节而非字符数计入 256 KiB 上限', () => {
@@ -109,7 +130,7 @@ describe('buildRagDiagnosisRequest', () => {
       asInput({
         ...baseInput(),
         question: 'a'.repeat(RAG_DIAGNOSIS_QUESTION_MAX_UNITS),
-        history: [{ role: 'USER', content: 'b'.repeat(RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS) }],
+        history: [{ role: 'USER', text: 'b'.repeat(RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS) }],
       }),
     );
     expect(atLimit.ok).toBe(true);
@@ -124,9 +145,7 @@ describe('buildRagDiagnosisRequest', () => {
       buildRagDiagnosisRequest(
         asInput({
           ...baseInput(),
-          history: [
-            { role: 'USER', content: 'b'.repeat(RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS + 1) },
-          ],
+          history: [{ role: 'USER', text: 'b'.repeat(RAG_DIAGNOSIS_HISTORY_ITEM_MAX_UNITS + 1) }],
         }),
       ),
     ).toEqual({ ok: false, code: RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT });
@@ -175,11 +194,11 @@ describe('buildRagDiagnosisRequest', () => {
       {
         history: Array.from({ length: RAG_DIAGNOSIS_HISTORY_LIMIT + 1 }, () => ({
           role: 'USER',
-          content: 'x',
+          text: 'x',
         })),
       },
     ],
-    ['非法历史角色', { history: [{ role: 'SYSTEM', content: 'x' }] }],
+    ['非法历史角色', { history: [{ role: 'SYSTEM', text: 'x' }] }],
     ['非法上下文模式', { context: { ...baseInput().context, mode: 'UNKNOWN' } }],
     ['阶段小于 1', { context: { ...baseInput().context, stage: 0 } }],
     ['阶段大于 10', { context: { ...baseInput().context, stage: 11 } }],
@@ -198,5 +217,73 @@ describe('buildRagDiagnosisRequest', () => {
   ])('拒绝%s', (_title, patch) => {
     const built = buildRagDiagnosisRequest(asInput({ ...baseInput(), ...patch }));
     expect(built).toEqual({ ok: false, code: RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT });
+  });
+
+  it.each([
+    ['根输入含未知字段', { unexpected: true }],
+    ['context 含未知字段', { context: { ...baseInput().context, unexpected: true } }],
+    ['history 项含未知字段', { history: [{ role: 'USER', text: '已核对', content: '已核对' }] }],
+    [
+      'fault 含未知字段',
+      { context: { ...baseInput().context, fault: { mainError: 'E1042', unknownField: 'x' } } },
+    ],
+  ])('%s 时按 INVALID_INPUT 拒绝，不构造请求', (_title, patch) => {
+    const built = buildRagDiagnosisRequest(asInput({ ...baseInput(), ...patch }));
+    expect(built).toEqual({ ok: false, code: RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT });
+  });
+
+  it.each([
+    ['带前导空白', ` ${baseInput().requestId}`],
+    ['带尾随空白', `${baseInput().requestId} `],
+    ['前后均有空白', `\t${baseInput().requestId}\n`],
+  ])('requestId %s 时按 INVALID_INPUT 拒绝，不做 trim 归一化', (_title, requestId) => {
+    expect(buildRagDiagnosisRequest(asInput({ ...baseInput(), requestId }))).toEqual({
+      ok: false,
+      code: RAG_DIAGNOSIS_ERROR_CODES.INVALID_INPUT,
+    });
+  });
+
+  it('合法缺省与 null 不被未知字段校验误拒，fault 缺省字段补 null', () => {
+    const nullContext = buildRagDiagnosisRequest(
+      asInput({
+        ...baseInput(),
+        history: [],
+        context: { mode: 'INDEPENDENT', equipmentModelCode: null, stage: null, fault: null },
+      }),
+    );
+    expect(nullContext.ok).toBe(true);
+    if (nullContext.ok) {
+      expect(nullContext.envelope.context).toEqual({
+        mode: 'INDEPENDENT',
+        equipmentModelCode: null,
+        stage: null,
+        fault: null,
+      });
+    }
+
+    const sparseFault = buildRagDiagnosisRequest(
+      asInput({
+        ...baseInput(),
+        context: {
+          mode: 'WORK_ORDER',
+          equipmentModelCode: null,
+          stage: 4,
+          fault: { mainError: 'E1042' },
+        },
+      }),
+    );
+    expect(sparseFault.ok).toBe(true);
+    if (sparseFault.ok) {
+      expect(sparseFault.envelope.context.fault).toEqual({
+        mainError: 'E1042',
+        unitError: null,
+        source: null,
+        errorType: null,
+        gpibStatus: null,
+        description: null,
+        action: null,
+        status: null,
+      });
+    }
   });
 });

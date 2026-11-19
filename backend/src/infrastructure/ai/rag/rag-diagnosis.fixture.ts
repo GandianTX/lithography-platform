@@ -177,11 +177,11 @@ const workOrderWithHistory: RagDiagnosisFixture = {
     history: [
       {
         role: 'USER',
-        content: '掩模板运送至取板台时，手臂 1 动作中断，已记录报警原文 E1042。',
+        text: '掩模板运送至取板台时，手臂 1 动作中断，已记录报警原文 E1042。',
       },
       {
         role: 'ASSISTANT',
-        content: '请先核对取板台真空与手臂位置传感器，再按规程复现一次运送动作。',
+        text: '请先核对取板台真空与手臂位置传感器，再按规程复现一次运送动作。',
       },
     ],
     context: {
@@ -208,11 +208,11 @@ const workOrderWithHistory: RagDiagnosisFixture = {
     history: [
       {
         role: 'USER',
-        content: '掩模板运送至取板台时，手臂 1 动作中断，已记录报警原文 E1042。',
+        text: '掩模板运送至取板台时，手臂 1 动作中断，已记录报警原文 E1042。',
       },
       {
         role: 'ASSISTANT',
-        content: '请先核对取板台真空与手臂位置传感器，再按规程复现一次运送动作。',
+        text: '请先核对取板台真空与手臂位置传感器，再按规程复现一次运送动作。',
       },
     ],
     context: {
