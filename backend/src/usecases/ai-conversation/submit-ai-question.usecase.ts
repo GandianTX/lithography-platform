@@ -19,9 +19,10 @@ import {
   DomainError,
   isDomainError,
 } from '@core/common/errors/domain-error';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
 import type { AiConversationLockSnapshot } from '@src/modules/lithography/ai-conversation.types';
+import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
@@ -32,6 +33,7 @@ import {
   assertEngineerAiPermission,
   resolveEngineerTrustedOrganization,
 } from './engineer-ai-access';
+import { assertEngineerConversationWritable } from './engineer-conversation-access.guard';
 import type { SubmitAiQuestionCommand, SubmitAiQuestionResult } from './submit-ai-question.types';
 
 /**
@@ -49,9 +51,12 @@ import type { SubmitAiQuestionCommand, SubmitAiQuestionResult } from './submit-a
  */
 @Injectable()
 export class SubmitAiQuestionUsecase {
+  private readonly logger = new Logger(SubmitAiQuestionUsecase.name);
+
   constructor(
     private readonly aiConversationService: AiConversationService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly repairRequestQueryService: RepairRequestQueryService,
     private readonly dispatchAiQuestionUsecase: DispatchAiQuestionUsecase,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -128,16 +133,38 @@ export class SubmitAiQuestionUsecase {
   }): Promise<SubmitAiQuestionResult> {
     const { command, accepted, questionUuid, normalizedText, stage } = input;
 
-    const dispatchResult = await this.dispatchAiQuestionUsecase.execute({
-      session: command.session,
-      conversationId: command.conversationId,
-      questionUuid,
-      questionText: normalizedText,
-      turnNo: accepted.turnNo,
-      messageSeq: accepted.messageSeq,
-      contentVersion: accepted.contentVersion,
-      stage,
-    });
+    let dispatchResult: { status: AiConversationDispatchStatus };
+    try {
+      dispatchResult = await this.dispatchAiQuestionUsecase.execute({
+        session: command.session,
+        conversationId: command.conversationId,
+        questionUuid,
+        questionText: normalizedText,
+        turnNo: accepted.turnNo,
+        messageSeq: accepted.messageSeq,
+        contentVersion: accepted.contentVersion,
+        stage,
+      });
+    } catch (error) {
+      // Q01：受理事务已提交，派发阶段异常时必须显式落失败态，
+      // 否则本轮会停在 PENDING 让前端无限等待。
+      await this.aiConversationService
+        .markAnalysisFailed({ questionUuid, reason: 'reply_dispatch_failed' })
+        .catch(() => undefined);
+      this.logger.warn(
+        {
+          conversationId: command.conversationId,
+          questionUuid,
+          error: error instanceof Error ? error.message : 'unknown',
+        },
+        'AI 会话派发异常，本轮已标记为可重试失败',
+      );
+      return {
+        ...accepted,
+        status: AiMessageAnalysisStatus.FAILED,
+        dispatchStatus: AiConversationDispatchStatus.FAILED,
+      };
+    }
 
     if (dispatchResult.status === AiConversationDispatchStatus.FAILED) {
       return {
@@ -155,7 +182,8 @@ export class SubmitAiQuestionUsecase {
     normalizedText: string,
     transactionContext: PersistenceTransactionContext,
   ): Promise<SubmitAiQuestionResult> {
-    await resolveEngineerTrustedOrganization({
+    // F01：当前可信公司必须真正用于判定，不能只解析后丢弃
+    const organizationId = await resolveEngineerTrustedOrganization({
       organizationContextService: this.organizationContextService,
       accountId: command.session.accountId,
       transactionContext,
@@ -170,7 +198,15 @@ export class SubmitAiQuestionUsecase {
         conversationId: command.conversationId,
       });
     }
-    this.assertConversationWritableBy(command.session.accountId, conversation);
+    await assertEngineerConversationWritable({
+      conversation,
+      accountId: command.session.accountId,
+      organizationId,
+      repairRequestQueryService: this.repairRequestQueryService,
+      transactionContext,
+      actionLabel: '提问',
+    });
+    this.assertConversationActive(conversation);
 
     const existing = await this.aiConversationService.findQuestionByUuid(
       questionUuid,
@@ -236,16 +272,8 @@ export class SubmitAiQuestionUsecase {
     };
   }
 
-  /** 写权限仅归会话所有者；同公司可读不等于可续写 */
-  private assertConversationWritableBy(
-    accountId: number,
-    conversation: AiConversationLockSnapshot,
-  ): void {
-    if (conversation.engineerAccountId !== accountId) {
-      throw new DomainError(AI_CONVERSATION_ERROR.NOT_FOUND, 'AI 会话不存在或无权提问', {
-        conversationId: conversation.id,
-      });
-    }
+  /** 会话状态：写权限与资源复核已由 guard 完成，这里只判 ACTIVE */
+  private assertConversationActive(conversation: AiConversationLockSnapshot): void {
     if (conversation.status !== AiConversationStatus.ACTIVE) {
       throw new DomainError(
         AI_CONVERSATION_ERROR.CONVERSATION_NOT_ACTIVE,

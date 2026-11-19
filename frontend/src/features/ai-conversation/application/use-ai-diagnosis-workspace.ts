@@ -43,6 +43,12 @@ function isTerminalStatus(status: AiQuestionStatus['status']): boolean {
 
 export type AiDiagnosisWorkspaceState = {
   conversations: AiConversationListItem[];
+  /** 服务端会话总数（F08：首页为空与真的没有记录必须可区分） */
+  conversationsTotal: number;
+  /** 已加载到第几页 */
+  conversationsPage: number;
+  /** 正在加载更多 */
+  loadingMore: boolean;
   conversation: AiConversationDetail | null;
   selectedId: number | null;
   /** 手动选择的维修阶段（1–10；随问题快照提交） */
@@ -68,6 +74,9 @@ export type AiDiagnosisWorkspaceState = {
 
 const INITIAL_STATE: AiDiagnosisWorkspaceState = {
   conversations: [],
+  conversationsTotal: 0,
+  conversationsPage: 0,
+  loadingMore: false,
   conversation: null,
   selectedId: null,
   stage: null,
@@ -97,6 +106,9 @@ export function useAiDiagnosisWorkspace() {
   /** 同文本重试沿用同一 UUID：受理结果不明时再次提交不重复提问 */
   const pendingQuestion = useRef<{ text: string; uuid: string } | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** F06：创建/提交的同步防重入（按钮禁用不足以拦截连点与回车连发） */
+  const creatingRef = useRef(false);
+  const submittingRef = useRef(false);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current !== null) {
@@ -131,7 +143,13 @@ export function useAiDiagnosisWorkspace() {
     setState((current) => ({ ...current, loading: true, errorMessage: null }));
     try {
       const page = await listMyAiConversations({ page: 1, pageSize: PAGE_SIZE });
-      setState((current) => ({ ...current, conversations: page.items, loading: false }));
+      setState((current) => ({
+        ...current,
+        conversations: page.items,
+        conversationsTotal: page.total ?? page.items.length,
+        conversationsPage: 1,
+        loading: false,
+      }));
     } catch (error) {
       setState((current) => ({
         ...current,
@@ -140,6 +158,37 @@ export function useAiDiagnosisWorkspace() {
       }));
     }
   }, []);
+
+  /** F08：加载下一页并追加（首页为空但 total>0 时可继续取） */
+  const loadMoreConversations = useCallback(async () => {
+    if (state.loadingMore || state.loading) {
+      return;
+    }
+    const nextPage = state.conversationsPage + 1;
+    setState((current) => ({ ...current, loadingMore: true, errorMessage: null }));
+    try {
+      const page = await listMyAiConversations({ page: nextPage, pageSize: PAGE_SIZE });
+      setState((current) => {
+        const seen = new Set(current.conversations.map((item) => item.id));
+        return {
+          ...current,
+          conversations: [
+            ...current.conversations,
+            ...page.items.filter((item) => !seen.has(item.id)),
+          ],
+          conversationsTotal: page.total ?? current.conversationsTotal,
+          conversationsPage: nextPage,
+          loadingMore: false,
+        };
+      });
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loadingMore: false,
+        errorMessage: describeAiConversationError(error),
+      }));
+    }
+  }, [state.conversationsPage, state.loading, state.loadingMore]);
 
   const applyVisualization = useCallback(
     (status: AiQuestionStatus) => {
@@ -230,6 +279,35 @@ export function useAiDiagnosisWorkspace() {
           return;
         }
         setState((current) => ({ ...current, conversation: detail, loading: false }));
+
+        // F03：刷新/切换后恢复最后一轮的活跃问题与生成状态（不能只恢复列表与工具条）。
+        // 以服务端状态为准：终态拉一次图形，未终态继续轮询直到结束。
+        const latestTurn = [...detail.turns].sort((left, right) => (left.turnNo ?? 0) - (right.turnNo ?? 0)).at(-1);
+        if (latestTurn !== undefined && conversationEpoch.current === sessionToken) {
+          const stillRunning =
+            latestTurn.analysisStatus === 'PENDING' || latestTurn.analysisStatus === 'RUNNING';
+          setState((current) => ({
+            ...current,
+            activeQuestionUuid: latestTurn.questionUuid,
+            generating: stillRunning,
+          }));
+          if (stillRunning) {
+            // 未终态：继续按服务端事实推进，直到结束
+            void pollQuestionStatus(detail.id, latestTurn.questionUuid);
+          } else {
+            // 已终态：只补一次本轮图形（图形不进库），不启动背景轮询
+            void getAiQuestionStatus({
+              conversationId: detail.id,
+              questionUuid: latestTurn.questionUuid,
+            })
+              .then((status) => {
+                if (conversationEpoch.current === sessionToken) {
+                  applyVisualization(status);
+                }
+              })
+              .catch(() => undefined);
+          }
+        }
       } catch (error) {
         if (conversationEpoch.current !== sessionToken) {
           return;
@@ -241,11 +319,16 @@ export function useAiDiagnosisWorkspace() {
         }));
       }
     },
-    [clearPollTimer],
+    [applyVisualization, clearPollTimer, pollQuestionStatus],
   );
 
   const createConversation = useCallback(
     async (requestId: number | null) => {
+      // F06-01：创建请求在飞时忽略后续触发，避免并发创建多个会话
+      if (creatingRef.current) {
+        return null;
+      }
+      creatingRef.current = true;
       resetSessionState();
       setState((current) => ({ ...current, loading: true, errorMessage: null }));
       try {
@@ -261,6 +344,8 @@ export function useAiDiagnosisWorkspace() {
           errorMessage: describeAiConversationError(error),
         }));
         return null;
+      } finally {
+        creatingRef.current = false;
       }
     },
     [resetSessionState, selectConversation],
@@ -281,6 +366,10 @@ export function useAiDiagnosisWorkspace() {
 
   const submitQuestion = useCallback(
     async (question: string) => {
+      // F06-01：同一时刻只允许一个提交在飞（回车连发 / 连点）
+      if (submittingRef.current) {
+        return null;
+      }
       const conversationId = state.selectedId;
       if (conversationId === null) {
         setState((current) => ({ ...current, errorMessage: '请先选择或新建一个会话' }));
@@ -310,11 +399,15 @@ export function useAiDiagnosisWorkspace() {
       const turnToken = turnEpoch.current + 1;
       turnEpoch.current = turnToken;
 
+      submittingRef.current = true;
       setState((current) => ({
         ...current,
         submitting: true,
         errorMessage: null,
         noticeMessage: null,
+        // F10：新一轮开始即清除上一轮图形定位，不等首次轮询返回
+        visualization: null,
+        visualizationDegraded: false,
       }));
 
       try {
@@ -384,6 +477,8 @@ export function useAiDiagnosisWorkspace() {
           errorMessage: describeAiConversationError(error),
         }));
         return null;
+      } finally {
+        submittingRef.current = false;
       }
     },
     [confirmAcceptedQuestion, pollQuestionStatus, state.selectedId, state.stage],
@@ -405,6 +500,9 @@ export function useAiDiagnosisWorkspace() {
       retrying: true,
       errorMessage: null,
       noticeMessage: null,
+      // F10：重试同样从干净图形状态开始
+      visualization: null,
+      visualizationDegraded: false,
     }));
     try {
       const result = await retryAiQuestion({
@@ -511,6 +609,7 @@ export function useAiDiagnosisWorkspace() {
   return {
     ...state,
     loadConversations,
+    loadMoreConversations,
     selectConversation,
     createConversation,
     submitQuestion,

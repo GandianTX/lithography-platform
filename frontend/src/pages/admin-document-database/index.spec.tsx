@@ -108,6 +108,8 @@ function buildConversationItem(id: number): AdminAiConversationListItem {
     requestId: 1,
     status: 'COMPLETED',
     engineerNickname: '陈工程师',
+    // 版本随记录派生：让多行夹具具备可区分的版本事实，避免固定值掩盖映射错误
+    contentVersion: id,
     messageCount: 12,
     reportCount: 1,
     createdAt: '2026-09-02T09:00:00.000Z',

@@ -8,6 +8,7 @@ import {
 } from '@app-types/models/ai-conversation.types';
 import { AI_CONVERSATION_ERROR, DomainError } from '@src/core/common/errors/domain-error';
 import type { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
+import type { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import type { DispatchAiQuestionUsecase } from './dispatch-ai-question.usecase';
@@ -43,6 +44,7 @@ describe('SubmitAiQuestionUsecase', () => {
 
   let aiConversationService: AiConversationServiceMock;
   let organizationContextService: OrganizationContextMock;
+  let repairRequestQueryService: { findAssociationTarget: jest.Mock };
   let dispatchUsecase: { execute: jest.Mock };
   let transactionRunner: TransactionRunner;
   let usecase: SubmitAiQuestionUsecase;
@@ -61,6 +63,10 @@ describe('SubmitAiQuestionUsecase', () => {
       resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 2, memberRole: 'ENGINEER' }),
       tryResolveForAccount: jest.fn(),
     };
+    repairRequestQueryService = {
+      // 独立会话不读取工单事实；工单会话用例按需覆盖
+      findAssociationTarget: jest.fn().mockResolvedValue(null),
+    };
     dispatchUsecase = {
       execute: jest
         .fn()
@@ -75,6 +81,7 @@ describe('SubmitAiQuestionUsecase', () => {
     usecase = new SubmitAiQuestionUsecase(
       aiConversationService as unknown as AiConversationService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      repairRequestQueryService as unknown as RepairRequestQueryService,
       dispatchUsecase as unknown as DispatchAiQuestionUsecase,
       transactionRunner,
     );
@@ -264,6 +271,87 @@ describe('SubmitAiQuestionUsecase', () => {
       code: AI_CONVERSATION_ERROR.NOT_FOUND,
     });
     expect(aiConversationService.insertUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('F01：工单可信服务公司已变更（当前公司≠工单服务公司）时拒绝且零写入', async () => {
+    aiConversationService.lockConversationForWrite.mockResolvedValue(
+      lockSnapshot({ requestId: 900 }),
+    );
+    repairRequestQueryService.findAssociationTarget.mockResolvedValue({
+      id: 900,
+      requestNo: 'RR-900',
+      trustedServiceOrganizationId: 3,
+      deletedAt: null,
+      isHistorical: false,
+    });
+
+    await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+      code: AI_CONVERSATION_ERROR.NOT_FOUND,
+    });
+    expect(aiConversationService.insertUserMessage).not.toHaveBeenCalled();
+    expect(aiConversationService.insertAnalysis).not.toHaveBeenCalled();
+    expect(dispatchUsecase.execute).not.toHaveBeenCalled();
+  });
+
+  it('F01：成员关系变更后（会话归属公司≠当前公司）拒绝工单会话提问', async () => {
+    aiConversationService.lockConversationForWrite.mockResolvedValue(
+      lockSnapshot({ requestId: 900, ownerOrganizationId: 3 }),
+    );
+    repairRequestQueryService.findAssociationTarget.mockResolvedValue({
+      id: 900,
+      requestNo: 'RR-900',
+      trustedServiceOrganizationId: 3,
+      deletedAt: null,
+      isHistorical: false,
+    });
+
+    await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+      code: AI_CONVERSATION_ERROR.NOT_FOUND,
+    });
+    expect(aiConversationService.insertUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('F01 对照：工单未删除且可信服务公司一致时仍可正常提问', async () => {
+    aiConversationService.lockConversationForWrite.mockResolvedValue(
+      lockSnapshot({ requestId: 900 }),
+    );
+    aiConversationService.findQuestionByUuid.mockResolvedValue(null);
+    aiConversationService.getSequenceFacts.mockResolvedValue({ maxMessageSeq: 4, maxTurnNo: 2 });
+    aiConversationService.insertUserMessage.mockResolvedValue({
+      id: 21,
+      conversationId: 7,
+      questionUuid: QUESTION_UUID,
+      messageSeq: 5,
+      turnNo: 3,
+      contentText: '对准偏差 3μm 如何排查？',
+      contentVersion: 4,
+      createdAt: new Date('2026-11-18T10:00:00.000Z'),
+    });
+    aiConversationService.bumpContentVersion.mockResolvedValue(4);
+    aiConversationService.insertAnalysis.mockResolvedValue({
+      questionUuid: QUESTION_UUID,
+      conversationId: 7,
+      questionMessageId: 21,
+      answerMessageId: null,
+      status: AiMessageAnalysisStatus.PENDING,
+      failureReason: null,
+      contentVersion: 4,
+      savedAt: new Date('2026-11-18T10:00:00.000Z'),
+      completedAt: null,
+    });
+    repairRequestQueryService.findAssociationTarget.mockResolvedValue({
+      id: 900,
+      requestNo: 'RR-900',
+      trustedServiceOrganizationId: 2,
+      deletedAt: null,
+      isHistorical: false,
+    });
+
+    await expect(usecase.execute(buildCommand())).resolves.toMatchObject({
+      replayed: false,
+      conversationId: 7,
+    });
+    expect(aiConversationService.insertUserMessage).toHaveBeenCalledTimes(1);
   });
 
   it('已达到 100 轮：返回 TURN_LIMIT_REACHED 且不写库', async () => {

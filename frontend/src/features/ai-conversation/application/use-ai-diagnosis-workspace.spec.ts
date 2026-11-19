@@ -118,6 +118,8 @@ describe('useAiDiagnosisWorkspace', () => {
   });
 
   it('提交成功后进入生成中，轮询到成功并应用本轮图形', async () => {
+    // F03 后 selectConversation 会恢复最后一轮；此处模拟新建的空会话
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValueOnce(buildDetail({ turns: [] }));
     const statusSpy = vi
       .spyOn(adapter, 'getAiQuestionStatus')
       .mockResolvedValueOnce(buildStatus())
@@ -198,6 +200,10 @@ describe('useAiDiagnosisWorkspace', () => {
   });
 
   it('切换会话后旧会话的迟到响应被丢弃', async () => {
+    // 两个会话都按「无历史轮次」处理，让迟到响应只可能来自被切走的旧会话
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, turns: [] }),
+    );
     let releaseStatus: ((value: AiQuestionStatus) => void) | null = null;
     vi.spyOn(adapter, 'getAiQuestionStatus').mockImplementation(
       () =>
@@ -372,5 +378,133 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
     });
 
     expect(exportSpy).not.toHaveBeenCalled();
+  });
+  it('F03：切回仍在生成的会话时恢复生成中并继续轮询到终态', async () => {
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(buildDetail());
+    const statusSpy = vi
+      .spyOn(adapter, 'getAiQuestionStatus')
+      .mockResolvedValueOnce(buildStatus({ status: 'PENDING' }))
+      .mockResolvedValue(
+        buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('WARNING') as never }),
+      );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+
+    expect(result.current.generating).toBe(true);
+    expect(result.current.activeQuestionUuid).toBe(QUESTION_UUID);
+
+    await waitFor(() => expect(result.current.generating).toBe(false), { timeout: 4000 });
+    expect(statusSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(result.current.visualization).not.toBeNull();
+  });
+
+  it('F03：最后一轮已终态时只补一次图形，不启动背景轮询', async () => {
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(
+      buildDetail({
+        turns: [
+          {
+            questionUuid: QUESTION_UUID,
+            turnNo: 1,
+            question: null,
+            answer: null,
+            analysisStatus: 'SUCCEEDED',
+            failureReason: null,
+            analysisContentVersion: 2,
+            completedAt: null,
+          },
+        ],
+      }),
+    );
+    const statusSpy = vi
+      .spyOn(adapter, 'getAiQuestionStatus')
+      .mockResolvedValue(buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('NORMAL') as never }));
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+
+    await waitFor(() => expect(result.current.visualization).not.toBeNull(), { timeout: 2000 });
+    expect(result.current.generating).toBe(false);
+    expect(statusSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('F06：创建请求在飞时重复触发不会创建第二个会话', async () => {
+    let releaseCreate: ((value: unknown) => void) | null = null;
+    const createSpy = vi.spyOn(adapter, 'createAiConversation').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseCreate = resolve as (value: unknown) => void;
+        }) as never,
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    let first: Promise<unknown> | null = null;
+    let second: Promise<unknown> | null = null;
+    await act(async () => {
+      first = result.current.createConversation(null);
+      second = result.current.createConversation(null);
+      releaseCreate?.({
+        id: CONVERSATION_ID,
+        requestId: null,
+        requestNo: '',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+      await Promise.all([first, second]);
+    });
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('F06：提交在飞时再次提交被忽略（连点/回车连发）', async () => {
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(buildDetail({ turns: [] }));
+    let releaseSubmit: ((value: unknown) => void) | null = null;
+    const submitSpy = vi.spyOn(adapter, 'submitAiQuestion').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseSubmit = resolve as (value: unknown) => void;
+        }) as never,
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      const first = result.current.submitQuestion('手臂 1 无动作');
+      const second = result.current.submitQuestion('手臂 1 无动作');
+      releaseSubmit?.(buildSubmitResult());
+      await Promise.all([first, second]);
+    });
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('F10：新一轮提交立即清除上一轮图形定位', async () => {
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(buildDetail({ turns: [] }));
+    vi.spyOn(adapter, 'getAiQuestionStatus')
+      .mockResolvedValueOnce(buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('WARNING') as never }))
+      .mockImplementation(() => new Promise<AiQuestionStatus>(() => undefined));
+    vi.spyOn(adapter, 'submitAiQuestion').mockResolvedValue(buildSubmitResult());
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      await result.current.submitQuestion('第一轮问题');
+    });
+    await waitFor(() => expect(result.current.visualization).not.toBeNull(), { timeout: 4000 });
+
+    await act(async () => {
+      void result.current.submitQuestion('第二轮问题');
+    });
+
+    expect(result.current.visualization).toBeNull();
   });
 });

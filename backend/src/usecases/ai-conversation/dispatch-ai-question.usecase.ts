@@ -4,9 +4,15 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { AiConversationDispatchStatus } from '@app-types/models/ai-conversation.types';
+import { canWriteEngineerConversation } from '@core/ai/engineer-conversation-access.policy';
 import { buildAiConversationRequest } from '@src/core/ai/ai-conversation-request.policy';
 import { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
+import type { AiConversationLockSnapshot } from '@src/modules/lithography/ai-conversation.types';
 import { AiConversationQueryService } from '@src/modules/lithography/queries/ai-conversation.query.service';
+import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
+import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+
+import { resolveEngineerTrustedOrganization } from './engineer-ai-access';
 import {
   AI_WORKFLOW_ADMISSION_PORT,
   type AiWorkflowAdmissionPort,
@@ -49,6 +55,8 @@ export class DispatchAiQuestionUsecase {
   constructor(
     private readonly aiConversationService: AiConversationService,
     private readonly aiConversationQueryService: AiConversationQueryService,
+    private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly repairRequestQueryService: RepairRequestQueryService,
     @Inject(AI_WORKFLOW_ADMISSION_PORT)
     private readonly workflowAdmission: AiWorkflowAdmissionPort,
     @Inject(AI_CONVERSATION_DISPATCH_OPTIONS)
@@ -60,6 +68,14 @@ export class DispatchAiQuestionUsecase {
       input.conversationId,
     );
     if (!conversation) {
+      await this.markDispatchFailed(input.questionUuid);
+      return { status: AiConversationDispatchStatus.FAILED, workflowId: null, jobId: null };
+    }
+
+    // F01：派发前用当前事实复核资源仍可写；权限在受理与派发之间被撤销时
+    // 不得继续把上下文交给模型（宁可本轮失败可重试，也不泄露已失效的上下文）。
+    const stillWritable = await this.isConversationStillWritable(input.session, conversation);
+    if (!stillWritable) {
       await this.markDispatchFailed(input.questionUuid);
       return { status: AiConversationDispatchStatus.FAILED, workflowId: null, jobId: null };
     }
@@ -136,6 +152,53 @@ export class DispatchAiQuestionUsecase {
       );
       await this.markDispatchFailed(input.questionUuid);
       return { status: AiConversationDispatchStatus.FAILED, workflowId: null, jobId: null };
+    }
+  }
+
+  /**
+   * 派发前的资源复核（F01）：当前可信公司 + 关联工单当前事实。
+   *
+   * 任何解析或读取失败都按「不可写」处理（失败关闭），由调用方转为本轮可重试失败。
+   */
+  private async isConversationStillWritable(
+    session: UsecaseSession,
+    conversation: AiConversationLockSnapshot,
+  ): Promise<boolean> {
+    try {
+      const organizationId = await resolveEngineerTrustedOrganization({
+        organizationContextService: this.organizationContextService,
+        accountId: session.accountId,
+      });
+      const requestFacts =
+        conversation.requestId === null
+          ? null
+          : await this.repairRequestQueryService.findAssociationTarget({
+              requestId: conversation.requestId,
+            });
+
+      return canWriteEngineerConversation({
+        requestId: conversation.requestId,
+        conversationOwnerAccountId: conversation.engineerAccountId,
+        conversationOwnerOrganizationId: conversation.ownerOrganizationId,
+        viewerAccountId: session.accountId,
+        viewerOrganizationId: organizationId,
+        requestFacts:
+          requestFacts === null
+            ? null
+            : {
+                deletedAt: requestFacts.deletedAt,
+                trustedServiceOrganizationId: requestFacts.trustedServiceOrganizationId,
+              },
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          conversationId: conversation.id,
+          error: error instanceof Error ? error.message : 'unknown',
+        },
+        'AI 会话派发前资源复核失败（按不可写处理）',
+      );
+      return false;
     }
   }
 

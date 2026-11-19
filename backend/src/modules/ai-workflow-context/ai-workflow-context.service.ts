@@ -168,6 +168,29 @@ export class AiWorkflowContextService {
     return entity ? this.toView(entity) : null;
   }
 
+  /**
+   * 按业务目标读取「最近创建」的工作流执行 ID（任务05 F04 的当前执行判定输入）。
+   *
+   * 同一业务子键（如问题 UUID）在重试后会新建一条上下文；最近创建者即当前执行，
+   * 旧执行迟到时与本值不一致，可据此拒绝写回。只读最小字段，不返回负载内容。
+   */
+  async findLatestWorkflowIdByBizTarget(input: {
+    readonly bizType: string;
+    readonly bizSubKey: string;
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<string | null> {
+    const repository = this.resolveRepository(input.transactionContext);
+    const entity = await repository.findOne({
+      where: {
+        bizType: normalizeRequiredString(input.bizType, 'bizType'),
+        bizSubKey: normalizeRequiredString(input.bizSubKey, 'bizSubKey'),
+      },
+      select: { workflowId: true },
+      order: { createdAt: 'DESC', workflowId: 'DESC' },
+    });
+    return entity?.workflowId ?? null;
+  }
+
   async findActiveByDedupKey(input: {
     readonly workflowType: string;
     readonly workflowDedupKey: string;

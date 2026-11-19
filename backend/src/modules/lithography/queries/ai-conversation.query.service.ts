@@ -20,15 +20,18 @@ import { AiConversationEntity } from '../entities/ai-conversation.entity';
 import { AiMessageAnalysisEntity } from '../entities/ai-message-analysis.entity';
 import { AiMessageEntity } from '../entities/ai-message.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
+import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 
 /**
  * 工程师侧 AI 会话读侧查询服务（任务 05）
  *
- * 可见性口径（R036-01／R036-02）：
+ * 可见性口径（R036-01／R036-02，F01 修订）：
  * - 独立会话（`request_id IS NULL`）**仅会话发起工程师本人**可见；
- * - 工单会话按本公司范围：`owner_organization_id` 必须等于当前可信公司，
- *   且关联工单未删除（`deleted_at IS NULL`）；同公司互看私人会话被本条排除。
+ * - 工单会话必须同时满足：固定归属公司 = 当前可信公司、工单未软删，
+ *   且工单当前**可信服务公司**（`service_organization_id` 与 intake 一致）
+ *   也等于当前可信公司；同公司互看私人会话被本条排除。
+ *   该判定与 `@core/ai/engineer-conversation-access.policy` 等价，两处须同步。
  *
  * 职责范围：列表装配（申请编号、消息数、最后消息时间）、详情装配（逐条消息、
  * 逐问题分析状态）。
@@ -61,7 +64,8 @@ export class AiConversationQueryService {
 
     const base = this.conversationRepository
       .createQueryBuilder('conversation')
-      .leftJoin(RepairRequestEntity, 'request', 'request.id = conversation.requestId');
+      .leftJoin(RepairRequestEntity, 'request', 'request.id = conversation.requestId')
+      .leftJoin(RepairRequestIntakeEntity, 'intake', 'intake.id = request.intakeId');
     this.applyVisibility(base, params.viewer);
 
     const [entities, total] = await Promise.all([
@@ -94,6 +98,7 @@ export class AiConversationQueryService {
     const qb = this.conversationRepository
       .createQueryBuilder('conversation')
       .leftJoin(RepairRequestEntity, 'request', 'request.id = conversation.requestId')
+      .leftJoin(RepairRequestIntakeEntity, 'intake', 'intake.id = request.intakeId')
       .where('conversation.id = :conversationId', { conversationId: params.conversationId });
     this.applyVisibility(qb, params.viewer);
     const conversation = await qb.getOne();
@@ -201,6 +206,7 @@ export class AiConversationQueryService {
     const qb = this.conversationRepository
       .createQueryBuilder('conversation')
       .leftJoin(RepairRequestEntity, 'request', 'request.id = conversation.requestId')
+      .leftJoin(RepairRequestIntakeEntity, 'intake', 'intake.id = request.intakeId')
       .where('conversation.id = :conversationId', { conversationId: params.conversationId });
     this.applyVisibility(qb, params.viewer);
     const conversation = await qb.getOne();
@@ -287,27 +293,36 @@ export class AiConversationQueryService {
     return model?.modelCode ?? null;
   }
 
-  /** 可见性条件注入（独立会话只归本人；工单会话限本公司且工单未删除） */
+  /**
+   * 可见性条件注入（结构由 `buildEngineerVisibilityClauses` 决定，便于单测覆盖）。
+   *
+   * 独立会话只归本人；工单会话限本公司、工单未删除且可信服务公司一致。
+   */
   private applyVisibility(
     qb: SelectQueryBuilder<AiConversationEntity>,
     viewer: AiConversationViewerScope,
   ): void {
+    const clauses = buildEngineerVisibilityClauses(viewer.organizationId);
+    const [independentFirst, ...independentRest] = clauses.independent;
+    const [workOrderFirst, ...workOrderRest] = clauses.workOrder ?? [];
+
     qb.andWhere(
       new Brackets((where) => {
         where.where(
           new Brackets((independent) => {
-            independent
-              .where('conversation.requestId IS NULL')
-              .andWhere('conversation.engineerAccountId = :viewerAccountId');
+            let scoped = independent.where(independentFirst);
+            for (const clause of independentRest) {
+              scoped = scoped.andWhere(clause);
+            }
           }),
         );
-        if (viewer.organizationId !== null) {
+        if (workOrderFirst !== undefined) {
           where.orWhere(
             new Brackets((organization) => {
-              organization
-                .where('conversation.requestId IS NOT NULL')
-                .andWhere('conversation.ownerOrganizationId = :viewerOrganizationId')
-                .andWhere('request.deletedAt IS NULL');
+              let scoped = organization.where(workOrderFirst);
+              for (const clause of workOrderRest) {
+                scoped = scoped.andWhere(clause);
+              }
             }),
           );
         }
@@ -438,4 +453,37 @@ export class AiConversationQueryService {
       completedAt: entity.completedAt,
     };
   }
+}
+
+/**
+ * 工程师会话可见性条件（F01）。
+ *
+ * 读侧 SQL 与 `@core/ai/engineer-conversation-access.policy` 等价：
+ * - 独立会话：仅本人；
+ * - 工单会话：固定归属公司、工单未软删、工单当前可信服务公司三者都等于当前可信公司；
+ *   可信服务公司口径与 04 一致（工单服务公司 = intake 服务公司，缺失即不可见）。
+ *
+ * 查看者无公司归属时只保留独立会话分支（不生成工单分支）。
+ */
+export function buildEngineerVisibilityClauses(viewerOrganizationId: number | null): {
+  readonly independent: readonly string[];
+  readonly workOrder: readonly string[] | null;
+} {
+  return {
+    independent: [
+      'conversation.requestId IS NULL',
+      'conversation.engineerAccountId = :viewerAccountId',
+    ],
+    workOrder:
+      viewerOrganizationId === null
+        ? null
+        : [
+            'conversation.requestId IS NOT NULL',
+            'conversation.ownerOrganizationId = :viewerOrganizationId',
+            'request.deletedAt IS NULL',
+            'request.serviceOrganizationId = :viewerOrganizationId',
+            'intake.serviceOrganizationId IS NOT NULL',
+            'intake.serviceOrganizationId = request.serviceOrganizationId',
+          ],
+  };
 }

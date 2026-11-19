@@ -10,9 +10,10 @@ import {
 import { isAiConversationStageValid } from '@core/ai/ai-conversation-request.policy';
 import { isAiQuestionUuid, normalizeAiQuestionUuid } from '@core/ai/ai-question.policy';
 import { AI_CONVERSATION_ERROR, DomainError } from '@core/common/errors/domain-error';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
 import type { AiConversationLockSnapshot } from '@src/modules/lithography/ai-conversation.types';
+import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
@@ -24,6 +25,7 @@ import {
   assertEngineerAiPermission,
   resolveEngineerTrustedOrganization,
 } from './engineer-ai-access';
+import { assertEngineerConversationWritable } from './engineer-conversation-access.guard';
 import type { SubmitAiQuestionResult } from './submit-ai-question.types';
 
 export interface RetryAiQuestionCommand {
@@ -43,9 +45,12 @@ export interface RetryAiQuestionCommand {
  */
 @Injectable()
 export class RetryAiQuestionUsecase {
+  private readonly logger = new Logger(RetryAiQuestionUsecase.name);
+
   constructor(
     private readonly aiConversationService: AiConversationService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly repairRequestQueryService: RepairRequestQueryService,
     private readonly dispatchAiQuestionUsecase: DispatchAiQuestionUsecase,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -76,16 +81,37 @@ export class RetryAiQuestionUsecase {
       this.prepareRetry(command, questionUuid, transactionContext),
     );
 
-    const dispatchResult = await this.dispatchAiQuestionUsecase.execute({
-      session: command.session,
-      conversationId: command.conversationId,
-      questionUuid,
-      questionText: accepted.questionText,
-      turnNo: accepted.result.turnNo,
-      messageSeq: accepted.result.messageSeq,
-      contentVersion: accepted.result.contentVersion,
-      stage,
-    });
+    let dispatchResult: { status: AiConversationDispatchStatus };
+    try {
+      dispatchResult = await this.dispatchAiQuestionUsecase.execute({
+        session: command.session,
+        conversationId: command.conversationId,
+        questionUuid,
+        questionText: accepted.questionText,
+        turnNo: accepted.result.turnNo,
+        messageSeq: accepted.result.messageSeq,
+        contentVersion: accepted.result.contentVersion,
+        stage,
+      });
+    } catch (error) {
+      // Q01：重试的受理事务已提交，派发异常同样必须落失败态，避免停在 PENDING
+      await this.aiConversationService
+        .markAnalysisFailed({ questionUuid, reason: 'reply_dispatch_failed' })
+        .catch(() => undefined);
+      this.logger.warn(
+        {
+          conversationId: command.conversationId,
+          questionUuid,
+          error: error instanceof Error ? error.message : 'unknown',
+        },
+        'AI 会话重试派发异常，本轮已标记为可重试失败',
+      );
+      return {
+        ...accepted.result,
+        status: AiMessageAnalysisStatus.FAILED,
+        dispatchStatus: AiConversationDispatchStatus.FAILED,
+      };
+    }
 
     if (dispatchResult.status === AiConversationDispatchStatus.FAILED) {
       return {
@@ -102,7 +128,8 @@ export class RetryAiQuestionUsecase {
     questionUuid: string,
     transactionContext: PersistenceTransactionContext,
   ): Promise<{ readonly result: SubmitAiQuestionResult; readonly questionText: string }> {
-    await resolveEngineerTrustedOrganization({
+    // F01：重试同样必须复核当前可信公司与工单资源事实，不能只判发起人
+    const organizationId = await resolveEngineerTrustedOrganization({
       organizationContextService: this.organizationContextService,
       accountId: command.session.accountId,
       transactionContext,
@@ -117,7 +144,15 @@ export class RetryAiQuestionUsecase {
         conversationId: command.conversationId,
       });
     }
-    this.assertOwnerAndActive(command.session.accountId, conversation);
+    await assertEngineerConversationWritable({
+      conversation,
+      accountId: command.session.accountId,
+      organizationId,
+      repairRequestQueryService: this.repairRequestQueryService,
+      transactionContext,
+      actionLabel: '重试',
+    });
+    this.assertConversationActive(conversation);
 
     const [analysis, question] = await Promise.all([
       this.aiConversationService.findAnalysisByQuestion(questionUuid, transactionContext),
@@ -169,12 +204,7 @@ export class RetryAiQuestionUsecase {
     };
   }
 
-  private assertOwnerAndActive(accountId: number, conversation: AiConversationLockSnapshot): void {
-    if (conversation.engineerAccountId !== accountId) {
-      throw new DomainError(AI_CONVERSATION_ERROR.NOT_FOUND, 'AI 会话不存在或无权重试', {
-        conversationId: conversation.id,
-      });
-    }
+  private assertConversationActive(conversation: AiConversationLockSnapshot): void {
     if (conversation.status !== AiConversationStatus.ACTIVE) {
       throw new DomainError(AI_CONVERSATION_ERROR.CONVERSATION_NOT_ACTIVE, '会话已结束，无法重试', {
         conversationId: conversation.id,

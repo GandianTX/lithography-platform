@@ -2516,14 +2516,17 @@ body {
   --ai-workspace-muted: #526982;
   --ai-scene-bg-start: #f7f9fc;
   --ai-scene-bg-end: #cbd2dc;
-  --ai-panel-bg: #eaf3ff;
-  --ai-panel-line: #abc6ed;
-  --ai-thread-bg-start: #ebf4ff;
-  --ai-thread-bg-end: #deebfa;
-  --ai-thread-line: #c1d7f6;
-  --ai-message-bg: #fbfdff;
-  --ai-message-line: #cadcf3;
-  --ai-compose-bg: #f1f7ff;
+  /* V44 正式工作区实际运行值（#/engineer/ai/chat，1440×900 实测） */
+  --ai-panel-bg: #fafcfe;
+  --ai-panel-line: #dce5ee;
+  --ai-thread-bg-start: #f5f8fc;
+  --ai-thread-bg-end: #f5f8fc;
+  --ai-thread-line: #dce5ee;
+  --ai-message-bg: #ffffff;
+  --ai-message-line: #e0e8f2;
+  --ai-message-mine-bg: #e6efff;
+  --ai-message-mine-line: #dae7ff;
+  --ai-compose-bg: #ffffff;
   --ai-chip-bg: #e5f5fe;
   --ai-chip-text: #084d70;
 }
@@ -2558,6 +2561,8 @@ body {
   --ai-thread-line: #2a3a54;
   --ai-message-bg: #1e2b3e;
   --ai-message-line: #33445f;
+  --ai-message-mine-bg: #223a5c;
+  --ai-message-mine-line: #33507a;
   --ai-compose-bg: #1a2536;
   --ai-chip-bg: #17384a;
   --ai-chip-text: #bfe8f6;
@@ -2583,14 +2588,22 @@ body {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 1fr);
-  height: clamp(590px, calc(100dvh - 256px), 850px);
+  /* V44：工作区铺满可用高度（由 .ai-workspace 的 flex 列分配，不再写死视口偏移） */
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
 @media (min-width: 981px) {
   .ai-workspace-grid {
     gap: 0;
-    grid-template-columns: minmax(0, 1fr) minmax(315px, 34%);
+    /* V44 实测列宽 799.5 / 430.5（≈ 65% / 35%） */
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 35%);
+  }
+
+  /* 05 局部避让：右下固定 AI 入口移出对话面板，避免压住输入框/发送/历史 */
+  body:has(.ai-workspace) .entry-trigger-shell {
+    right: calc(35% + 24px);
   }
 }
 
@@ -2601,6 +2614,32 @@ body {
   gap: 8px;
   min-height: 0;
   padding: 20px 20px 15px;
+}
+
+.ai-scene-header {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 16px 20px 8px;
+}
+
+.ai-scene-stage {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ai-scene-stage > span {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ai-scene-stage .ant-select {
+  min-width: 0;
+  width: 200px;
 }
 
 .ai-scene-canvas {
@@ -2626,47 +2665,72 @@ body {
 
 .ai-panel-header {
   align-items: center;
+  background: #ffffff;
+  border-bottom: 1px solid var(--ai-panel-line);
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   justify-content: space-between;
-  padding: 12px;
+  padding: 16px 20px;
 }
 
 .ai-thread {
-  background: linear-gradient(var(--ai-thread-bg-start), var(--ai-thread-bg-end));
-  border-block: 1px solid var(--ai-thread-line);
+  background: var(--ai-thread-bg-start);
+  border: 1px solid var(--ai-thread-line);
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 9px;
+  gap: 14px;
   min-height: 110px;
   overflow: auto;
-  padding: 12px;
+  padding: 18px 20px;
 }
 
 .ai-message {
   align-self: flex-start;
   background: var(--ai-message-bg);
   border: 1px solid var(--ai-message-line);
-  border-radius: 10px;
+  /* V44 实测：AI 气泡 12/12/12/4，提问气泡 12/12/4；行高 22.4px（14px × 1.6） */
+  border-radius: 12px 12px 12px 4px;
+  font-size: 14px;
+  line-height: 1.6;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: 96%;
+  max-width: 95%;
   overflow-wrap: anywhere;
-  padding: 8px 10px;
+  padding: 10px 12px;
 }
 
 .ai-message--mine {
   align-self: flex-end;
+  background: var(--ai-message-mine-bg);
+  border-color: var(--ai-message-mine-line);
+  border-radius: 12px 12px 4px;
+}
+
+.ai-message p {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* V44 该路由无模拟推理日志；真实生成中提示保持轻量，仅用于状态播报 */
+.ai-progress {
+  color: var(--ai-workspace-muted);
+  font-size: 12px;
+  margin: 0;
+  padding: 0 2px;
 }
 
 .ai-compose {
   background: var(--ai-compose-bg);
   display: grid;
-  gap: 8px;
-  padding: 13px;
+  gap: 10px;
+  /* 输入区贴底，线程占满剩余高度（V44 面板为网格行分布） */
+  margin-top: auto;
+  padding: 16px 20px;
 }
 
 .ai-part-legend {
@@ -2692,7 +2756,13 @@ body {
 }
 
 @media (max-width: 980px) {
+  /* 右下固定 AI 入口（bottom 32 / 高 40）会压住输入区；预留底部安全区保证发送可达 */
+  .ai-workspace {
+    padding-bottom: 72px;
+  }
+
   .ai-workspace-grid {
+    flex: 0 0 auto;
     grid-template-columns: minmax(0, 1fr);
     height: auto;
   }

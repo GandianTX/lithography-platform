@@ -25,6 +25,10 @@ import type {
   AiWorkflowJsonPayload,
 } from '@src/modules/ai-workflow-context/ai-workflow-context.types';
 import {
+  AI_CONVERSATION_EXECUTION_LOOKUP,
+  type AiConversationExecutionLookupPort,
+} from '@src/usecases/common/ports/ai-conversation-execution.contract';
+import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
 } from '@src/usecases/common/ports/transaction-runner.contract';
@@ -38,6 +42,16 @@ import type {
 import { AiWorkflowNonRetryableError } from './ai-workflow-worker-errors';
 
 const REPLY_TEXT_MAX_UNITS = 12000;
+
+/** 与派发侧一致的业务对象类型（当前执行查询使用） */
+const EXECUTION_BIZ_TYPE = 'ai_conversation';
+
+/** 写回事务内发现已被更新执行接管时使用（事务回滚，不写答案） */
+class ExecutionSupersededError extends Error {
+  constructor() {
+    super('本轮已由更新的执行接管');
+  }
+}
 
 interface AiConversationReplyPayload {
   readonly conversationId: number;
@@ -74,6 +88,8 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
     private readonly visualizationStore: AiConversationVisualizationStore,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
+    @Inject(AI_CONVERSATION_EXECUTION_LOOKUP)
+    private readonly executionLookup: AiConversationExecutionLookupPort,
   ) {}
 
   async handle(input: AiWorkflowHandlerProcessInput): Promise<AiWorkflowHandlerProcessResult> {
@@ -97,6 +113,13 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
       );
     }
 
+    // F04：模型调用前确认本执行仍是当前执行；旧执行不得再调用模型
+    await this.assertCurrentExecution({
+      questionUuid: payload.questionUuid,
+      workflowId: input.context.workflowId,
+      message: '本轮已由更新的执行接管，本次不再调用模型',
+    });
+
     const providerStartedAtFallback = new Date();
     let invocation;
     try {
@@ -112,16 +135,38 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
       });
     } catch (error) {
       const reason = this.resolveFailureReason(error);
-      await this.aiConversationService.markAnalysisFailed({
-        questionUuid: payload.questionUuid,
-        reason,
-      });
-      throw new AiWorkflowNonRetryableError('模型调用或回复解析失败', reason);
+      // F04：旧执行的失败不得覆盖新执行的 PENDING 状态
+      if (
+        await this.isCurrentExecution({
+          questionUuid: payload.questionUuid,
+          workflowId: input.context.workflowId,
+        })
+      ) {
+        await this.aiConversationService.markAnalysisFailed({
+          questionUuid: payload.questionUuid,
+          reason,
+        });
+        throw new AiWorkflowNonRetryableError('模型调用或回复解析失败', reason);
+      }
+      throw new AiWorkflowNonRetryableError(
+        '本轮已由更新的执行接管，本次失败不写回',
+        'execution_superseded',
+      );
     }
 
     let saved: { readonly answerMessageId: number; readonly messageSeq: number } | null;
     try {
       saved = await this.transactionRunner.run(async (transactionContext) => {
+        // F04：写回前在同一事务内再次核对当前执行，旧执行不得占用新的 PENDING
+        if (
+          !(await this.isCurrentExecution({
+            questionUuid: payload.questionUuid,
+            workflowId: input.context.workflowId,
+            transactionContext,
+          }))
+        ) {
+          throw new ExecutionSupersededError();
+        }
         const facts = await this.aiConversationService.getSequenceFacts(
           payload.conversationId,
           transactionContext,
@@ -151,6 +196,12 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
         return { answerMessageId: answer.id, messageSeq: answer.messageSeq };
       });
     } catch (error) {
+      if (error instanceof ExecutionSupersededError) {
+        throw new AiWorkflowNonRetryableError(
+          '本轮已由更新的执行接管，本次结果丢弃',
+          'execution_superseded',
+        );
+      }
       if (!(error instanceof AnalysisRaceLostError)) {
         throw error;
       }
@@ -203,6 +254,41 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
           }
         : {}),
     };
+  }
+
+  /** 当前执行断言：不成立即按不可重试失败终止（F04） */
+  private async assertCurrentExecution(input: {
+    readonly questionUuid: string;
+    readonly workflowId: string;
+    readonly message: string;
+    readonly transactionContext?: import('@app-types/common/transaction.types').PersistenceTransactionContext;
+  }): Promise<void> {
+    if (await this.isCurrentExecution(input)) {
+      return;
+    }
+    throw new AiWorkflowNonRetryableError(input.message, 'execution_superseded');
+  }
+
+  /**
+   * 当前有效执行判定（F04）：该问题最近创建的工作流执行 ID 是否等于本执行。
+   *
+   * 无法证明（无记录或读取失败）时按「不是当前执行」处理，避免旧执行写入。
+   */
+  private async isCurrentExecution(input: {
+    readonly questionUuid: string;
+    readonly workflowId: string;
+    readonly transactionContext?: import('@app-types/common/transaction.types').PersistenceTransactionContext;
+  }): Promise<boolean> {
+    try {
+      const latest = await this.executionLookup.findLatestWorkflowIdByBizTarget({
+        bizType: EXECUTION_BIZ_TYPE,
+        bizSubKey: input.questionUuid,
+        transactionContext: input.transactionContext,
+      });
+      return latest !== null && latest === input.workflowId;
+    } catch {
+      return false;
+    }
   }
 
   private buildReusedResult(

@@ -138,8 +138,20 @@ export class AiConversationSnapshotService {
     contentVersion: number,
     engineerNickname: string,
   ): AiExportSnapshot {
-    // 选定版本不得高于会话当前版本（避免读取未达成的版本）
-    const selectedVersion = Math.min(contentVersion, detail.contentVersion);
+    // F05：选定版本必须是「已达成」的版本；高于当前版本说明调用方数据过期，
+    // 必须显式拒绝，不能静默降级成当前版本（否则不同调用方拿到不同范围却同名文件）。
+    if (contentVersion > detail.contentVersion) {
+      throw new DomainError(
+        AI_CONVERSATION_ERROR.INVALID_PARAMS,
+        '指定的内容版本尚不存在，请刷新后重试',
+        {
+          conversationId: detail.id,
+          requestedContentVersion: contentVersion,
+          currentContentVersion: detail.contentVersion,
+        },
+      );
+    }
+    const selectedVersion = contentVersion;
     // 轮次状态：分析记录经问题消息的 turn_no 归位（如实标记失败/未完成）
     const messageTurnNos = detail.messageTurnNos ?? new Map<number, number | null>();
     const turnStates = new Map<number, AiExportTurnState>();

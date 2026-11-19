@@ -10,6 +10,7 @@ import {
 } from '@app-types/models/ai-conversation.types';
 import { AI_CONVERSATION_ERROR } from '@src/core/common/errors/domain-error';
 import type { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
+import type { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 
@@ -28,6 +29,7 @@ describe('RetryAiQuestionUsecase', () => {
   const transactionContext = Symbol('tx') as unknown as PersistenceTransactionContext;
 
   let aiConversationService: Record<string, jest.Mock>;
+  let repairRequestQueryService: { findAssociationTarget: jest.Mock };
   let organizationContextService: { resolveForAccount: jest.Mock; tryResolveForAccount: jest.Mock };
   let dispatchUsecase: { execute: jest.Mock };
   let transactionRunner: TransactionRunner;
@@ -44,6 +46,9 @@ describe('RetryAiQuestionUsecase', () => {
       resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 2, memberRole: 'ENGINEER' }),
       tryResolveForAccount: jest.fn(),
     };
+    repairRequestQueryService = {
+      findAssociationTarget: jest.fn().mockResolvedValue(null),
+    };
     dispatchUsecase = {
       execute: jest
         .fn()
@@ -58,6 +63,7 @@ describe('RetryAiQuestionUsecase', () => {
     usecase = new RetryAiQuestionUsecase(
       aiConversationService as unknown as AiConversationService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      repairRequestQueryService as unknown as RepairRequestQueryService,
       dispatchUsecase as unknown as DispatchAiQuestionUsecase,
       transactionRunner,
     );

@@ -843,6 +843,7 @@ export const EN_MESSAGES = {
   'ai.scene.degradedHint':
     'The visualization for this turn is unavailable. The reply is kept and the flow reference is shown.',
   'ai.panel.label': 'Diagnostic conversation',
+  'ai.panel.turnCount': '{count} turns',
   'ai.panel.title': 'Diagnostic conversation',
   'ai.panel.history': 'Chat history',
   'ai.panel.exportPdf': 'Export PDF',
@@ -868,6 +869,10 @@ export const EN_MESSAGES = {
   'ai.history.title': 'Chat history',
   'ai.history.empty': 'No chats yet',
   'ai.history.standalone': 'Standalone chat',
+  'ai.history.loading': 'Loading chats…',
+  'ai.history.emptyPage': 'No chats on this page yet — load more',
+  'ai.history.loadedSummary': 'Loaded {loaded} of {total}',
+  'ai.history.loadMore': 'Load more',
   'ai.legend.label': 'Part markers',
   'ai.legend.aiHighlights': 'AI highlights',
   'ai.legend.relatedParts': 'Related parts',

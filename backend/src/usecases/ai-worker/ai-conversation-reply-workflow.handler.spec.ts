@@ -76,6 +76,7 @@ describe('AiConversationReplyWorkflowHandler', () => {
   let modelInvoker: { invoke: jest.Mock };
   let visualizationStore: { save: jest.Mock; load: jest.Mock };
   let transactionRunner: TransactionRunner;
+  let executionLookup: { findLatestWorkflowIdByBizTarget: jest.Mock };
   let handler: AiConversationReplyWorkflowHandler;
 
   beforeEach(() => {
@@ -94,11 +95,17 @@ describe('AiConversationReplyWorkflowHandler', () => {
       ),
     } as unknown as TransactionRunner;
 
+    // 默认：本执行即当前执行；F04 反例再覆盖为更新的执行
+    executionLookup = {
+      findLatestWorkflowIdByBizTarget: jest.fn().mockResolvedValue(CONTEXT.workflowId),
+    };
+
     handler = new AiConversationReplyWorkflowHandler(
       aiConversationService as unknown as AiConversationService,
       modelInvoker,
       visualizationStore,
       transactionRunner,
+      executionLookup,
     );
   });
 
@@ -256,6 +263,48 @@ describe('AiConversationReplyWorkflowHandler', () => {
     aiConversationService.findAnalysisByQuestion.mockResolvedValue(null);
 
     await expect(run()).rejects.toMatchObject({ reason: 'analysis_missing' });
+    expect(modelInvoker.invoke).not.toHaveBeenCalled();
+  });
+  it('F04：旧执行迟到（当前执行已是新 workflow）时不调用模型也不写答案', async () => {
+    aiConversationService.findAnalysisByQuestion.mockResolvedValue(analysis());
+    executionLookup.findLatestWorkflowIdByBizTarget.mockResolvedValue('wf-2');
+
+    await expect(run()).rejects.toMatchObject({ reason: 'execution_superseded' });
+    expect(modelInvoker.invoke).not.toHaveBeenCalled();
+    expect(aiConversationService.insertAnswerMessage).not.toHaveBeenCalled();
+    expect(aiConversationService.completeAnalysis).not.toHaveBeenCalled();
+    expect(aiConversationService.markAnalysisFailed).not.toHaveBeenCalled();
+  });
+
+  it('F04：模型已返回但写回前被新执行接管时，事务回滚且不改状态', async () => {
+    aiConversationService.findAnalysisByQuestion.mockResolvedValue(analysis());
+    executionLookup.findLatestWorkflowIdByBizTarget
+      .mockResolvedValueOnce(CONTEXT.workflowId)
+      .mockResolvedValue('wf-2');
+
+    await expect(run()).rejects.toMatchObject({ reason: 'execution_superseded' });
+    expect(modelInvoker.invoke).toHaveBeenCalledTimes(1);
+    expect(aiConversationService.insertAnswerMessage).not.toHaveBeenCalled();
+    expect(aiConversationService.completeAnalysis).not.toHaveBeenCalled();
+    expect(aiConversationService.markAnalysisFailed).not.toHaveBeenCalled();
+  });
+
+  it('F04：模型失败但已被新执行接管时，不把新执行标记为失败', async () => {
+    aiConversationService.findAnalysisByQuestion.mockResolvedValue(analysis());
+    modelInvoker.invoke.mockRejectedValue(new DomainError('MODEL_ERROR', '模型超时'));
+    executionLookup.findLatestWorkflowIdByBizTarget
+      .mockResolvedValueOnce(CONTEXT.workflowId)
+      .mockResolvedValue('wf-2');
+
+    await expect(run()).rejects.toMatchObject({ reason: 'execution_superseded' });
+    expect(aiConversationService.markAnalysisFailed).not.toHaveBeenCalled();
+  });
+
+  it('F04：无法证明当前执行（查不到记录）时失败关闭', async () => {
+    aiConversationService.findAnalysisByQuestion.mockResolvedValue(analysis());
+    executionLookup.findLatestWorkflowIdByBizTarget.mockResolvedValue(null);
+
+    await expect(run()).rejects.toMatchObject({ reason: 'execution_superseded' });
     expect(modelInvoker.invoke).not.toHaveBeenCalled();
   });
 });

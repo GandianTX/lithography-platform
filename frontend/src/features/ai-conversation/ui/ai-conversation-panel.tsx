@@ -89,7 +89,11 @@ export function AiConversationPanel({
       className="ai-panel"
     >
       <header className="ai-panel-header">
-        <h2 className="m-0 text-base font-semibold text-text-primary">{t('ai.panel.title')}</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="m-0 text-base font-semibold text-text-primary">{t('ai.panel.title')}</h2>
+          {/* V44：卡头展示轮次计数，便于判断会话进度 */}
+          <Tag>{t('ai.panel.turnCount', { count: turns.length })}</Tag>
+        </div>
         <div className="flex items-center gap-2">
           <Button onClick={onOpenHistory} size="small">
             {t('ai.panel.history')}
@@ -144,9 +148,10 @@ export function AiConversationPanel({
         <Alert closable message={noticeMessage} showIcon type="info" />
       ) : null}
       {generating ? (
-        <p aria-live="polite" className="m-0 text-xs text-text-secondary">
+        // V44：生成中在对话流内显示独立进度块（深色等宽），改由读屏播报
+        <div aria-live="polite" className="ai-progress" role="status">
           {t('ai.panel.generating')}
-        </p>
+        </div>
       ) : null}
 
       <div className="ai-compose">

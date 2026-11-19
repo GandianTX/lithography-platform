@@ -53,22 +53,27 @@ export function EngineerAiPage() {
           <h1 className="m-0 text-lg font-semibold text-text-primary">{t('ai.page.title')}</h1>
           <p className="m-0 text-xs text-text-secondary">{t('ai.page.subtitle')}</p>
         </div>
-        <label className="flex items-center gap-2 text-xs text-text-secondary">
-          <span>{t('ai.page.stageLabel')}</span>
-          <div className="w-56">
-            <Select
-              onChange={(value: string) =>
-                workspace.setStage(value === '' ? null : Number(value))
-              }
-              options={stageOptions}
-              value={workspace.stage === null ? '' : String(workspace.stage)}
-            />
-          </div>
-        </label>
       </header>
 
       <div className="ai-workspace-grid">
         <section aria-label={t('ai.scene.label')} className="ai-scene">
+          {/* V44：场景头部承载流程标题与维修阶段选择（不是页面级工具条） */}
+          <header className="ai-scene-header">
+            <div>
+              <h2 className="m-0 text-sm font-semibold text-text-primary">
+                {t('ai.scene.label')}
+              </h2>
+            </div>
+            <label className="ai-scene-stage">
+              <span>{t('ai.page.stageLabel')}</span>
+              <Select
+                onChange={(value: string) => workspace.setStage(value === '' ? null : Number(value))}
+                options={stageOptions}
+                size="small"
+                value={workspace.stage === null ? '' : String(workspace.stage)}
+              />
+            </label>
+          </header>
           <div className="ai-scene-canvas">
             <LithoWorkflowCanvas
               ariaLabel={t('ai.scene.canvasLabel')}
@@ -121,6 +126,8 @@ export function EngineerAiPage() {
       <AiHistoryDrawer
         conversations={workspace.conversations}
         loading={workspace.loading}
+        loadingMore={workspace.loadingMore}
+        onLoadMore={() => void workspace.loadMoreConversations()}
         onClose={() => setHistoryOpen(false)}
         onSelect={(conversationId) => {
           setHistoryOpen(false);
@@ -129,6 +136,7 @@ export function EngineerAiPage() {
         }}
         open={historyOpen}
         selectedId={workspace.selectedId}
+        total={workspace.conversationsTotal}
       />
     </div>
   );
