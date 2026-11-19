@@ -11,7 +11,8 @@
  * - 结单状态/时间/原因与处理结果/状态始终展示：未结单显示「未结单」、
  *   未处理显示「未记录」，不把处理状态终结推断成已结单，也不只在结单后出现；
  * - 就绪内容顺序：申请事实 → 故障描述/补充说明 → 原始报修/AI 分析 →
- *   结构化维修记录 → 客户可见回复（含追加回复表单）→ 接单 → 结单专区 → 返回入口；
+ *   结构化维修记录 → 旧维修历史（只读，仅有旧过程时出现）→
+ *   客户可见回复（含追加回复表单）→ 接单 → 结单专区 → 返回入口；
  *   页面最底部为接单工程师可见的「版本与修订历史」；
  * - 操作可见性由「后端视角状态 + 会话单值业务角色」共同精确控制（三态 + 角色）：
  *   AVAILABLE + 精确 ENGINEER → 接单；MINE + 精确 ENGINEER → 回复；
@@ -38,9 +39,11 @@
  *   结果不确定）用内联 Alert，结果不确定时附重新加载入口，
  *   不引入全局 toast；
  * - 统一不可访问反馈引导返回工程师列表，不泄露申请归属；
- * - 就绪状态渲染一张主申请 DataCard；旧内部维修过程区块已移除，
- *   结构化维修记录是该页面唯一维修录入入口，客户可见回复保持独立；
+ * - 就绪状态渲染一张主申请 DataCard；结构化维修记录是唯一的维修录入入口，
+ *   旧内部维修过程只以只读历史展示（有 processEntries 才出现），客户可见回复保持独立；
  *   页面最底部追加只读版本历史卡片；
+ * - 维修记录草稿门禁：维修记录分区上报「未保存变更 / 写入未落定」，
+ *   结单区在打开确认与最终提交前拦截，保留输入且不发出结单请求；
  * - 详情就绪后始终提供「返回维修申请列表」入口（与接单状态、查看者角色无关），
  *   且固定前往列表路径，保证从地址栏直达详情页也能稳定返回；该入口固定在主卡片底部；
  * - 附件不属于维修申请功能：不渲染附件区域，也不渲染「暂无附件」类占位；
@@ -49,7 +52,7 @@
  *   （裸 div 不写字号会落到浏览器默认 16px，与同页 14px 正文层级不一致）。
  */
 
-import { type ReactNode, useEffect } from 'react';
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Form, Input, Popconfirm, Select, Timeline } from 'antd';
 import { useNavigate } from 'react-router';
 
@@ -65,6 +68,10 @@ import {
 } from '@/shared/ui/repair-request-status-labels';
 
 import { isEngineerResponseTextOverCapacity } from '../application/engineer-response-text-capacity';
+import {
+  MAINTENANCE_DRAFT_GUARD_IDLE,
+  type MaintenanceDraftGuardState,
+} from '../application/repair-request-closure-draft-guard';
 import { isEngineerRepairRequestEnded } from '../application/repair-request-ended';
 import { useEngineerRepairRequestDetailFlow } from '../application/use-engineer-repair-request-detail-flow';
 import type {
@@ -79,6 +86,7 @@ import {
   EngineerRepairAiAnalysisSection,
   EngineerRepairIntakeSection,
 } from './engineer-repair-intake-analysis-section';
+import { EngineerRepairLegacyProcessSection } from './engineer-repair-legacy-process-section';
 import { EngineerRepairMaintenanceSection } from './engineer-repair-maintenance-section';
 import { EngineerRepairCloseSection } from './engineer-repair-process-section';
 import { ENGINEER_REPAIR_REQUEST_LIST_PATH } from './engineer-repair-request-paths';
@@ -318,6 +326,34 @@ export function EngineerRepairRequestDetailPanel({
     markClosureReadbackSucceeded,
   } = useEngineerRepairRequestDetailFlow(requestId, scopeKeyValue);
 
+  /**
+   * 维修记录草稿门禁：维修记录分区上报「未保存变更 / 写入未落定」，
+   * 结单区据此在打开确认与发请求前拦截。
+   * 状态随身携带作用域键：换工单/换会话后旧实例的上报不再被信任（失败关闭为「可结单」，
+   * 因为新工单的维修记录分区会立即上报自己的真实状态）。
+   */
+  const draftScopeKey = `${String(requestId)}:${scopeKeyValue}`;
+  const [maintenanceDraft, setMaintenanceDraft] = useState<{
+    scopeKey: string;
+    state: MaintenanceDraftGuardState;
+  }>({ scopeKey: draftScopeKey, state: MAINTENANCE_DRAFT_GUARD_IDLE });
+  const handleMaintenanceDraftGuardChange = useCallback(
+    (next: MaintenanceDraftGuardState) => {
+      setMaintenanceDraft((previous) =>
+        previous.scopeKey === draftScopeKey &&
+        previous.state.hasUnsavedChanges === next.hasUnsavedChanges &&
+        previous.state.writePending === next.writePending
+          ? previous
+          : { scopeKey: draftScopeKey, state: next },
+      );
+    },
+    [draftScopeKey],
+  );
+  const maintenanceDraftState =
+    maintenanceDraft.scopeKey === draftScopeKey
+      ? maintenanceDraft.state
+      : MAINTENANCE_DRAFT_GUARD_IDLE;
+
   if (state.status === 'loading') {
     return (
       <DataCard>
@@ -499,8 +535,9 @@ export function EngineerRepairRequestDetailPanel({
 
         {/*
          * 分区顺序（任务 04 本轮调整）：客户原始报修 → 首次 AI 分析 → 结构化内部维修记录
-         * → 客户可见回复。原始报修与 AI 原文只读，不提供编辑控件；
-         * 旧内部维修过程入口已移除；维修记录仅在接单工程师本人视角出现。
+         * → 旧维修历史（只读）→ 客户可见回复。原始报修与 AI 原文只读，不提供编辑控件；
+         * 旧内部维修过程的写入口已移除，只读历史见下方独立区块；
+         * 维修记录与旧历史均仅在接单工程师本人视角出现。
          */}
         <EngineerRepairIntakeSection intake={detail.intake ?? null} />
         <EngineerRepairAiAnalysisSection analysis={detail.intake?.analysis ?? null} />
@@ -510,6 +547,7 @@ export function EngineerRepairRequestDetailPanel({
             canWrite={canReply && !writeBlocked && (detail.canEditMaintenance ?? false)}
             detail={detail}
             key={`maintenance:${scopeKeyValue}:${detail.id}`}
+            onDraftGuardChange={handleMaintenanceDraftGuardChange}
             readOnly={writeBlocked || !(detail.canEditMaintenance ?? false)}
             reload={reload}
             requestId={detail.id}
@@ -519,10 +557,15 @@ export function EngineerRepairRequestDetailPanel({
         ) : null}
 
         {/*
-         * 旧「内部维修过程 / 新增维修过程 / 执行操作 / 测试事实 / 事件时间」入口已移除：
-         * 结构化维修记录是该页面唯一的维修录入入口，客户可见回复保持独立。
-         * 旧 repair_process_entry 历史行与仍被其他页面使用的组件/接口均保留。
+         * 旧版内部维修过程（repair_process_entry）只保留只读历史：
+         * 不重新挂载旧编辑入口，不提供新增/编辑/改绑/删除，仅展示与授权下载。
+         * 数据来自详情响应已有的 processEntries（后端只对接单工程师本人返回）。
          */}
+        {showInternalProcess && detail.processEntries.length > 0 ? (
+          <PanelSection title={t('engineerDetail.legacyProcessTitle')}>
+            <EngineerRepairLegacyProcessSection processEntries={detail.processEntries} />
+          </PanelSection>
+        ) : null}
         <PanelSection title={t('engineerDetail.customerVisibleReplies')}>
           {detail.responses.length > 0 ? (
             <Timeline
@@ -605,6 +648,7 @@ export function EngineerRepairRequestDetailPanel({
             canWrite={canHandleAsEngineer}
             closedByMutation={closureBarrier}
             key={`close:${scopeKeyValue}`}
+            maintenanceDraft={maintenanceDraftState}
             maintenanceVersionNo={detail.maintenance?.versionNo ?? null}
             onCloseReadbackSucceeded={markClosureReadbackSucceeded}
             onCloseSucceeded={markClosureSucceeded}

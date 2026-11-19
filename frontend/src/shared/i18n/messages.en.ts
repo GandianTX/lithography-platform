@@ -699,6 +699,13 @@ export const EN_MESSAGES = {
     'The request is closed; the repair record is read-only.',
   'engineerDetail.maintenanceReadbackRetryHint': 'Retry loading the latest record before editing.',
   'engineerDetail.maintenanceVersion': 'Record version v{version}',
+  'engineerDetail.closeBlockedByUnsavedMaintenance':
+    'Save the repair record before confirming the closure.',
+  'engineerDetail.closeBlockedByPendingMaintenance':
+    'The repair record is being saved or the latest version has not been reloaded. Confirm the closure later.',
+  'engineerDetail.legacyProcessTitle': 'Legacy repair history (read-only)',
+  'engineerDetail.legacyProcessHint':
+    'Legacy internal process entries are read-only; only viewing and original file download are available.',
 
   'engineerRepairHistory.title': 'Versions and revision history',
   'engineerRepairHistory.empty': 'No revisions yet.',

@@ -8,6 +8,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { translate } from '@/shared/i18n';
+
 import type {
   EngineerRepairProcessEntry,
   RepairProcessWriteResult,
@@ -242,6 +244,7 @@ describe(EngineerRepairCloseSection.name, () => {
     canWrite: true,
     reload,
     closedByMutation: false,
+    maintenanceDraft: { hasUnsavedChanges: false, writePending: false },
     onCloseSucceeded: vi.fn(),
     onCloseReadbackSucceeded: vi.fn(),
   };
@@ -275,5 +278,73 @@ describe(EngineerRepairCloseSection.name, () => {
     fireEvent.click(await screen.findByRole('button', { name: '确认结单' }));
 
     await waitFor(() => expect(hookMock.closeRequest).toHaveBeenCalledWith('FIXED', null, 0));
+  });
+
+  it('有未保存维修内容：打开确认前即拦截，只提示且不发结单请求', async () => {
+    render(
+      <EngineerRepairCloseSection
+        {...closeProps}
+        maintenanceDraft={{ hasUnsavedChanges: true, writePending: false }}
+        maintenanceVersionNo={1}
+      />,
+    );
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+
+    expect(
+      await screen.findByText(
+        translate('zh-CN', 'engineerDetail.closeBlockedByUnsavedMaintenance'),
+      ),
+    ).toBeTruthy();
+    // 确认框没有展开，也没有发出任何结单请求
+    expect(screen.queryByRole('button', { name: '确认结单' })).toBeNull();
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('确认框已打开后草稿变为未保存：最终确认时再拦截一次，不发结单请求', async () => {
+    const view = render(<EngineerRepairCloseSection {...closeProps} maintenanceVersionNo={1} />);
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+    await screen.findByRole('button', { name: '确认结单' });
+
+    // 用户打开确认后草稿又被改动（例如编辑器仍可交互的场景）
+    view.rerender(
+      <EngineerRepairCloseSection
+        {...closeProps}
+        maintenanceDraft={{ hasUnsavedChanges: true, writePending: false }}
+        maintenanceVersionNo={1}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '确认结单' }));
+
+    expect(
+      await screen.findByText(
+        translate('zh-CN', 'engineerDetail.closeBlockedByUnsavedMaintenance'),
+      ),
+    ).toBeTruthy();
+    // 只拦截提交：不记录维修版本、不发结单请求（弹层是否保留 DOM 由 antd 决定）
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('维修记录写入未落定：提示稍后确认，不发结单请求', async () => {
+    render(
+      <EngineerRepairCloseSection
+        {...closeProps}
+        maintenanceDraft={{ hasUnsavedChanges: false, writePending: true }}
+        maintenanceVersionNo={1}
+      />,
+    );
+
+    await selectHandlingResult();
+    fireEvent.click(screen.getByRole('button', { name: /结\s*单/ }));
+
+    expect(
+      await screen.findByText(
+        translate('zh-CN', 'engineerDetail.closeBlockedByPendingMaintenance'),
+      ),
+    ).toBeTruthy();
+    expect(hookMock.closeRequest).not.toHaveBeenCalled();
   });
 });

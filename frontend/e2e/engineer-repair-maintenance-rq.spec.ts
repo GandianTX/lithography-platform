@@ -183,6 +183,11 @@ async function openDetail(page: Page) {
   await expect(page.getByText('内部维修记录')).toBeVisible();
 }
 
+async function selectHandlingResult(page: Page) {
+  await page.getByLabel('处理结果').click();
+  await page.locator('.ant-select-dropdown .ant-select-item-option[title="故障修复"]').click();
+}
+
 test('D 首次保存并绑定原件后详情读回失败：已保存，刷新失败；重试只重发详情查询', async ({
   page,
 }) => {
@@ -375,4 +380,158 @@ test('A 结单版本冲突：提示刷新并重新确认，不自动重试', asy
   expect(counters.close).toBe(2);
   // 第二次确认提交的是刷新后看到的版本 4，而不是旧捕获值或自动重试
   expect(submittedVersions).toEqual([0, 4]);
+});
+
+test('P2 未保存维修内容拦截结单：保存并读回后重新确认才结单', async ({ page }) => {
+  await seedAuthSession(page, 'ENGINEER');
+
+  let detailVersion = 0;
+  let closed = false;
+  const submittedVersions: unknown[] = [];
+
+  const counters = await installRoutes(page, {
+    onDetail: async (route) => {
+      await fulfillData(route, {
+        engineerRepairRequest: buildDetail({
+          closureStatus: closed ? 'CLOSED' : null,
+          closedAt: closed ? '2026-11-19T09:00:00.000Z' : null,
+          handlingResult: closed ? 'FIXED' : null,
+          handlingStatus: closed ? 'COMPLETED' : null,
+          maintenance: {
+            maintenanceDate: detailVersion === 0 ? null : '2026-11-19',
+            engineerName: ENGINEER_NAME,
+            resetResult: null,
+            supplementaryNote: detailVersion === 0 ? null : '未保存的补充说明',
+            versionNo: detailVersion,
+            attachment: null,
+          },
+          canEditMaintenance: !closed,
+        }),
+      });
+    },
+    onClose: async (route, input) => {
+      submittedVersions.push(input.maintenanceVersionNo);
+      closed = true;
+      await fulfillData(route, {
+        closeRepairRequest: {
+          requestId: REQUEST_ID,
+          closureStatus: 'CLOSED',
+          closedAt: '2026-11-19T09:00:00.000Z',
+          closureReason: null,
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+          handlingEndedAt: '2026-11-19T09:00:00.000Z',
+        },
+      });
+    },
+    onSave: async (route, input) => {
+      expect(input).toMatchObject({ requestId: REQUEST_ID, expectedVersion: 0 });
+      detailVersion = 1;
+      await fulfillData(route, {
+        saveRepairRequestMaintenance: {
+          maintenanceDate: '2026-11-19',
+          engineerName: ENGINEER_NAME,
+          resetResult: null,
+          supplementaryNote: '未保存的补充说明',
+          versionNo: 1,
+          attachment: null,
+        },
+      });
+    },
+  });
+
+  await openDetail(page);
+
+  const note = page.getByPlaceholder('补充其他维修事实、备件或后续建议…');
+  await note.fill('未保存的补充说明');
+
+  await selectHandlingResult(page);
+  await page.getByRole('button', { name: /^结\s*单$/ }).click();
+
+  // 有未保存内容：只提示，不展开确认，不发结单请求，输入保留
+  await expect(page.getByText('请先保存维修记录，再确认结单。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '确认结单' })).toHaveCount(0);
+  expect(counters.close).toBe(0);
+  await expect(note).toHaveValue('未保存的补充说明');
+
+  // 用户主动保存并读回后，门禁解除，重新确认可以结单
+  await page.getByRole('button', { name: '保存维修记录' }).click();
+  await expect(note).toHaveCount(0);
+  expect(counters.save).toBe(1);
+
+  await page.getByRole('button', { name: /^结\s*单$/ }).click();
+  await page.getByRole('button', { name: '确认结单' }).click();
+
+  // 读回后进入结单只读视图
+  await expect(page.getByText('工单已结单，维修记录只读。')).toBeVisible();
+  await expect.poll(() => counters.close).toBe(1);
+  expect(submittedVersions).toEqual([1]);
+});
+
+test('P2 结单后旧维修历史只读可见，并可走授权入口下载原件', async ({ page }) => {
+  await seedAuthSession(page, 'ENGINEER');
+
+  let downloadRequests = 0;
+
+  await installRoutes(page, {
+    onDetail: async (route) => {
+      await fulfillData(route, {
+        engineerRepairRequest: buildDetail({
+          closureStatus: 'CLOSED',
+          closedAt: '2026-11-19T09:00:00.000Z',
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+          canEditMaintenance: false,
+          processEntries: [
+            {
+              id: '101',
+              entryUuid: '4f0c5f6a-1111-4111-8111-111111111111',
+              requestId: REQUEST_ID,
+              operationText: '更换干涉仪镜片',
+              testResult: '复测通过',
+              occurredAt: '2026-11-14T03:00:00.000Z',
+              timeSource: 'MANUAL',
+              fileId: 'file-legacy-1',
+              file: {
+                fileId: 'file-legacy-1',
+                originalFilename: '现场照片.jpg',
+                mimeType: 'image/jpeg',
+                byteSize: 2048,
+                checksumSha256: 'a'.repeat(64),
+              },
+              versionNo: 1,
+              createdAt: '2026-11-14T03:05:00.000Z',
+            },
+          ],
+        }),
+      });
+    },
+    onClose: async (route) => {
+      await fulfillData(route, { closeRepairRequest: { requestId: REQUEST_ID } });
+    },
+    onSave: async (route) => {
+      await fulfillGraphQLError(route, 'CONFLICT', '未登记的保存路径');
+    },
+  });
+
+  await page.route('**/api/stored-files/*/download', async (route) => {
+    downloadRequests += 1;
+    await route.fulfill({
+      body: 'legacy-file',
+      contentType: 'application/octet-stream',
+      headers: { 'Content-Disposition': 'attachment; filename="现场照片.jpg"' },
+      status: 200,
+    });
+  });
+
+  await openDetail(page);
+
+  // 结单后旧过程仍可见，但只保留展示与授权下载，没有编辑入口
+  await expect(page.getByText('旧维修历史（只读）')).toBeVisible();
+  await expect(page.getByText('更换干涉仪镜片')).toBeVisible();
+  await expect(page.getByRole('button', { name: '编辑' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^结\s*单$/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '下载原件' }).click();
+  await expect.poll(() => downloadRequests).toBe(1);
 });

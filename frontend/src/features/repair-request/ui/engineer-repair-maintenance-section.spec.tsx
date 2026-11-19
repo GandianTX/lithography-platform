@@ -38,7 +38,7 @@ vi.mock('@/shared/ui/maintenance-record-editor', () => ({
     engineerNameReadOnly,
   }: {
     onChange: (next: Record<string, unknown>) => void;
-    value: Record<string, unknown> & { engineerName: string };
+    value: Record<string, unknown> & { engineerName: string; supplementaryNote: string };
     engineerNameReadOnly?: boolean;
   }) => (
     <div data-testid="maintenance-editor" data-readonly={String(engineerNameReadOnly)}>
@@ -46,6 +46,11 @@ vi.mock('@/shared/ui/maintenance-record-editor', () => ({
         aria-label="维修工程师输入"
         onChange={(event) => onChange({ ...value, engineerName: event.target.value })}
         value={value.engineerName}
+      />
+      <textarea
+        aria-label="补充说明输入"
+        onChange={(event) => onChange({ ...value, supplementaryNote: event.target.value })}
+        value={value.supplementaryNote}
       />
     </div>
   ),
@@ -119,13 +124,15 @@ function renderSection(
     canWrite?: boolean;
     detail?: EngineerRepairRequestDetail;
     readOnly?: boolean;
+    onDraftGuardChange?: (state: { hasUnsavedChanges: boolean; writePending: boolean }) => void;
   } = {},
 ) {
-  const { canWrite = true, detail = makeDetail(), readOnly = false } = options;
+  const { canWrite = true, detail = makeDetail(), readOnly = false, onDraftGuardChange } = options;
   return render(
     <EngineerRepairMaintenanceSection
       canWrite={canWrite}
       detail={detail}
+      onDraftGuardChange={onDraftGuardChange}
       readOnly={readOnly}
       reload={vi.fn().mockResolvedValue(undefined)}
       requestId={123}
@@ -388,5 +395,109 @@ describe('工程师结构化维修记录：保存后卡片与再次编辑', () =
     expect(
       screen.getByText(translate('zh-CN', 'engineerDetail.maintenanceClosedReadOnly')),
     ).toBeTruthy();
+  });
+});
+
+describe('工程师结构化维修记录：草稿门禁上报', () => {
+  const existingDetail = makeDetail({
+    maintenance: {
+      versionNo: 1,
+      maintenanceDate: '2026-09-02',
+      engineerName: '陈工',
+      resetResult: null,
+      supplementaryNote: null,
+      attachment: null,
+    },
+    maintenanceSteps: [
+      {
+        id: 'step-1',
+        stepNo: 1,
+        errorCode: null,
+        partName: null,
+        actionText: '更换备件并复测',
+        resultCode: 'RESOLVED',
+      },
+    ],
+    maintenanceFaultPanels: [],
+  });
+
+  beforeEach(() => {
+    workbenchMock.mockReset();
+    saveMock.mockReset();
+    retryReadbackMock.mockReset();
+    workbenchMock.mockReturnValue(baseWorkbench());
+  });
+
+  it('空白 v0：编辑器已打开但未修改，不算未保存变更', async () => {
+    const guardMock = vi.fn();
+    renderSection({ detail: makeEmptyMaintenanceDetail(), onDraftGuardChange: guardMock });
+
+    expect(screen.getByLabelText('维修工程师输入')).toBeTruthy();
+    await waitFor(() =>
+      expect(guardMock).toHaveBeenLastCalledWith({
+        hasUnsavedChanges: false,
+        writePending: false,
+      }),
+    );
+  });
+
+  it('首次填写：输入内容后上报未保存变更', async () => {
+    const guardMock = vi.fn();
+    renderSection({ detail: makeEmptyMaintenanceDetail(), onDraftGuardChange: guardMock });
+
+    fireEvent.change(screen.getByLabelText('补充说明输入'), {
+      target: { value: '首次填写的补充说明' },
+    });
+
+    await waitFor(() =>
+      expect(guardMock).toHaveBeenLastCalledWith({
+        hasUnsavedChanges: true,
+        writePending: false,
+      }),
+    );
+  });
+
+  it('编辑已有记录：只打开编辑器不算修改，只改补充说明也算未保存变更', async () => {
+    const guardMock = vi.fn();
+    renderSection({ detail: existingDetail, onDraftGuardChange: guardMock });
+
+    await waitFor(() =>
+      expect(guardMock).toHaveBeenLastCalledWith({
+        hasUnsavedChanges: false,
+        writePending: false,
+      }),
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: translate('zh-CN', 'engineerDetail.maintenanceEdit') }),
+    );
+    expect(guardMock).toHaveBeenLastCalledWith({
+      hasUnsavedChanges: false,
+      writePending: false,
+    });
+
+    fireEvent.change(screen.getByLabelText('补充说明输入'), {
+      target: { value: '只改补充说明' },
+    });
+
+    await waitFor(() =>
+      expect(guardMock).toHaveBeenLastCalledWith({
+        hasUnsavedChanges: true,
+        writePending: false,
+      }),
+    );
+  });
+
+  it('保存中或已保存但最新版本未读回：上报写入未落定', async () => {
+    workbenchMock.mockReturnValue(baseWorkbench({ saving: true }));
+    const guardMock = vi.fn();
+    renderSection({ detail: makeEmptyMaintenanceDetail(), onDraftGuardChange: guardMock });
+
+    await waitFor(() =>
+      expect(guardMock).toHaveBeenLastCalledWith({
+        hasUnsavedChanges: false,
+        writePending: true,
+      }),
+    );
   });
 });

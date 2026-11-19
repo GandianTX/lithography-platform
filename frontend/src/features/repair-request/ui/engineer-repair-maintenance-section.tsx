@@ -10,10 +10,13 @@
  * - 保存失败保留输入；写入成功但读回失败时提示「已保存，刷新失败」并提供重试读取；
  * - 版本冲突保留冲突提示与刷新入口，不自动重试；
  * - 已结单 / 无编辑权限时只展示记录，不显示编辑入口；
- * - 保留既有权限、附件绑定与下载规则。
+ * - 保留既有权限、附件绑定与下载规则；
+ * - 向详情面板上报草稿门禁状态：草稿与上次成功读回记录不一致（含只改补充说明、
+ *   含未绑定暂存原件）才算未保存变更，只打开编辑器不计入；保存/上传中或已保存
+ *   但最新版本未读回时标记写入未落定，供结单区拦截。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Tag } from 'antd';
 
 import { useI18n } from '@/shared/i18n';
@@ -25,11 +28,13 @@ import {
   describeResetResult,
   describeStepResult,
   type MaintenanceEditorSource,
+  serializeMaintenanceEditorValue,
   toMaintenancePanelPayloads,
   toMaintenanceStepPayloads,
   validateMaintenanceEditorValue,
 } from '@/shared/ui/maintenance-record-editor/model';
 
+import type { MaintenanceDraftGuardState } from '../application/repair-request-closure-draft-guard';
 import { useRepairMaintenanceWorkbench } from '../application/use-repair-maintenance-workbench';
 import { useRepairOriginalDownload } from '../application/use-repair-original-download';
 import type { EngineerRepairRequestDetail } from '../infrastructure/engineer-repair-request.types';
@@ -50,6 +55,7 @@ function toMaintenanceSource(detail: EngineerRepairRequestDetail): MaintenanceEd
 export function EngineerRepairMaintenanceSection({
   canWrite,
   detail,
+  onDraftGuardChange,
   readOnly,
   reload,
   requestId,
@@ -61,6 +67,8 @@ export function EngineerRepairMaintenanceSection({
   canWrite: boolean;
   readOnly: boolean;
   scopeKey?: string;
+  /** 草稿门禁状态上报（结单区据此拦截未保存的维修内容） */
+  onDraftGuardChange?: (state: MaintenanceDraftGuardState) => void;
   reload: (options?: {
     shouldApply?: () => boolean;
     silent?: boolean;
@@ -112,9 +120,16 @@ export function EngineerRepairMaintenanceSection({
     clearError: clearDownloadError,
   } = useRepairOriginalDownload();
 
-  const [value, setValue] = useState(() =>
-    createMaintenanceEditorValue(toMaintenanceSource(detail)),
-  );
+  /**
+   * 草稿值与其「上次成功读回记录」的规范化快照成对保存：
+   * 草稿差异只与快照比较，不把「编辑器已打开」当成有修改；
+   * 版本推进、开始编辑与取消编辑时两者一起刷新，避免快照与值不同步。
+   */
+  const [editorState, setEditorState] = useState(() => {
+    const initialValue = createMaintenanceEditorValue(toMaintenanceSource(detail));
+    return { baseline: serializeMaintenanceEditorValue(initialValue), value: initialValue };
+  });
+  const value = editorState.value;
   const [validationIssues, setValidationIssues] = useState<string[]>([]);
   const [localDownloadError, setLocalDownloadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<boolean | null>(null);
@@ -129,7 +144,8 @@ export function EngineerRepairMaintenanceSection({
       return;
     }
     syncedVersionRef.current = serverVersion;
-    setValue(createMaintenanceEditorValue(toMaintenanceSource(detail)));
+    const nextValue = createMaintenanceEditorValue(toMaintenanceSource(detail));
+    setEditorState({ baseline: serializeMaintenanceEditorValue(nextValue), value: nextValue });
     setValidationIssues([]);
   }, [detail, serverVersion]);
 
@@ -141,6 +157,23 @@ export function EngineerRepairMaintenanceSection({
     !readbackFailed &&
     (editing ?? !hasRecord) &&
     (saving || !lastResult?.ok || lastResult === editingStartResult);
+
+  const draftSerialized = useMemo(() => serializeMaintenanceEditorValue(value), [value]);
+  // 未保存变更：编辑中且草稿与上次成功读回记录不同，含只改补充说明与未绑定暂存原件；
+  // 空白编辑器、仅打开编辑器、取消编辑后都不计入。
+  const hasUnsavedChanges =
+    editSessionActive && (stagedFile !== null || draftSerialized !== editorState.baseline);
+  // 写入未落定：保存/上传在途，或已保存但最新版本还没读回（此时用旧版本号结单不安全）。
+  const writePending = saving || uploading || retryingReadback || readbackFailed;
+
+  // 上报用 ref 持有最新回调，避免父级回调身份变化触发额外的上报循环。
+  const onDraftGuardChangeRef = useRef(onDraftGuardChange);
+  useEffect(() => {
+    onDraftGuardChangeRef.current = onDraftGuardChange;
+  }, [onDraftGuardChange]);
+  useEffect(() => {
+    onDraftGuardChangeRef.current?.({ hasUnsavedChanges, writePending });
+  }, [hasUnsavedChanges, writePending]);
 
   const handleDownload = async (fileId: string) => {
     setLocalDownloadError(null);
@@ -156,14 +189,16 @@ export function EngineerRepairMaintenanceSection({
   };
 
   const handleStartEdit = () => {
-    setValue(createMaintenanceEditorValue(toMaintenanceSource(detail)));
+    const nextValue = createMaintenanceEditorValue(toMaintenanceSource(detail));
+    setEditorState({ baseline: serializeMaintenanceEditorValue(nextValue), value: nextValue });
     setValidationIssues([]);
     setEditingStartResult(lastResult);
     setEditing(true);
   };
 
   const handleCancelEdit = () => {
-    setValue(createMaintenanceEditorValue(toMaintenanceSource(detail)));
+    const nextValue = createMaintenanceEditorValue(toMaintenanceSource(detail));
+    setEditorState({ baseline: serializeMaintenanceEditorValue(nextValue), value: nextValue });
     setValidationIssues([]);
     setEditing(false);
   };
@@ -230,7 +265,8 @@ export function EngineerRepairMaintenanceSection({
               disabled={saving || uploading}
               engineerNameReadOnly
               onChange={(next) => {
-                setValue(next);
+                // 只更新草稿值，快照保持不变：差异即为未保存变更
+                setEditorState((previous) => ({ ...previous, value: next }));
                 if (validationIssues.length > 0) setValidationIssues([]);
               }}
               readOnly={readOnly}

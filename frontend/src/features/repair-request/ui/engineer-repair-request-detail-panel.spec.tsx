@@ -679,7 +679,7 @@ describe('工程师详情面板的单卡片结构', () => {
     expect(screen.queryByText('已结单')).toBeNull();
   });
 
-  it('本人已接单：旧内部维修过程入口不再显示，客户可见回复与版本历史保留', () => {
+  it('本人已接单：旧内部维修过程只读展示，写入口不再显示，客户可见回复与版本历史保留', () => {
     setFlow(
       {
         detail: {
@@ -708,13 +708,16 @@ describe('工程师详情面板的单卡片结构', () => {
     );
     render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
 
-    // 旧「内部维修过程／新增维修过程／执行操作／测试事实／事件时间」入口全部移除
+    // 旧「内部维修过程／新增维修过程／执行操作／事件时间」写入口全部移除
     expect(screen.queryByText('内部维修过程')).toBeNull();
     expect(screen.queryByText('新增维修过程')).toBeNull();
     expect(screen.queryByText('执行操作')).toBeNull();
-    expect(screen.queryByText('测试事实')).toBeNull();
     expect(screen.queryByText('事件时间')).toBeNull();
-    expect(screen.queryByText('检查对准模块并记录测试结果')).toBeNull();
+    // 旧过程改以只读历史展示（展示与授权下载复用，不挂载旧编辑组件）
+    expect(screen.getByText(translate('zh-CN', 'engineerDetail.legacyProcessTitle'))).toBeTruthy();
+    expect(screen.getByText('检查对准模块并记录测试结果')).toBeTruthy();
+    expect(screen.getByText(/测试事实：测试通过/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
 
     // 客户可见回复保持独立展示，不被旧模块移除影响
     expect(screen.getByText('客户可见回复')).toBeTruthy();
@@ -924,5 +927,114 @@ describe('工程师详情英文展示', () => {
     expect(screen.getAllByText('Not recorded')).toHaveLength(2);
     expect(screen.queryByText('未结单')).toBeNull();
     expect(screen.queryByText('未记录')).toBeNull();
+  });
+});
+/**
+ * P2-2：旧维修历史（只读）只在接单工程师本人视角、且详情确有 processEntries 时展示；
+ * 结单前后都可见，非接单人视角即使收到数据也不渲染内部历史。
+ */
+describe('工程师详情面板的旧维修历史（只读）', () => {
+  beforeEach(() => {
+    flowMock.mockReset();
+    navigateMock.mockReset();
+  });
+
+  const LEGACY_ENTRY = {
+    id: '101',
+    entryUuid: '4f0c5f6a-1111-4111-8111-111111111111',
+    requestId: 123,
+    operationText: '更换干涉仪镜片',
+    testResult: '复测通过',
+    occurredAt: '2026-11-14T03:00:00.000Z',
+    timeSource: 'MANUAL',
+    fileId: 'file-1',
+    file: {
+      fileId: 'file-1',
+      originalFilename: '现场照片.jpg',
+      mimeType: 'image/jpeg',
+      byteSize: 2048,
+      checksumSha256: 'abcdef1234567890',
+    },
+    versionNo: 1,
+    createdAt: '2026-11-14T03:05:00.000Z',
+  };
+
+  const MINE_OPEN_DETAIL: EngineerRepairRequestDetail = {
+    ...READY_DETAIL,
+    isAccepted: true,
+    acceptedAt: '2026-09-02T09:00:00.000Z',
+    acceptanceViewStatus: 'MINE',
+    acceptedEngineerNickname: '陈工',
+    processEntries: [LEGACY_ENTRY],
+  };
+
+  const LEGACY_TITLE = translate('zh-CN', 'engineerDetail.legacyProcessTitle');
+
+  it('处理中可见旧维修历史与已绑定原件', () => {
+    setFlow({ detail: MINE_OPEN_DETAIL, requestSeq: 1, status: 'ready' }, null);
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    expect(screen.getByText(LEGACY_TITLE)).toBeTruthy();
+    expect(screen.getByText('更换干涉仪镜片')).toBeTruthy();
+    expect(screen.getByText('现场照片.jpg')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '下载原件' })).toBeTruthy();
+  });
+
+  it('结单后旧维修历史仍可见（只读）', () => {
+    setFlow(
+      {
+        detail: {
+          ...MINE_OPEN_DETAIL,
+          closureStatus: 'CLOSED',
+          closedAt: '2026-11-19T03:33:44.000Z',
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+        },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    expect(screen.getByText(LEGACY_TITLE)).toBeTruthy();
+    expect(screen.getByText('更换干涉仪镜片')).toBeTruthy();
+    // 结单后不再提供结单入口，历史区本身也没有编辑入口
+    expect(screen.queryByRole('button', { name: /^结\s*单$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+  });
+
+  it('非接单人视角不展示内部历史，即使响应里带了旧过程数据', () => {
+    setFlow(
+      {
+        detail: {
+          ...MINE_OPEN_DETAIL,
+          acceptanceViewStatus: 'TAKEN_BY_OTHER',
+          acceptedEngineerNickname: '其他工程师',
+        },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={false} requestId={123} />);
+
+    expect(screen.queryByText(LEGACY_TITLE)).toBeNull();
+    expect(screen.queryByText('更换干涉仪镜片')).toBeNull();
+    expect(screen.queryByRole('button', { name: '下载原件' })).toBeNull();
+  });
+
+  it('没有旧过程时整块不出现', () => {
+    setFlow(
+      {
+        detail: { ...MINE_OPEN_DETAIL, processEntries: [] },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    expect(screen.queryByText(LEGACY_TITLE)).toBeNull();
   });
 });

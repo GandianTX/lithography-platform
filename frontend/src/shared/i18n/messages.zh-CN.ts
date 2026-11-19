@@ -649,6 +649,12 @@ export const ZH_CN_MESSAGES = {
   'engineerDetail.maintenanceClosedReadOnly': '工单已结单，维修记录只读。',
   'engineerDetail.maintenanceReadbackRetryHint': '请先重试刷新最新记录再编辑。',
   'engineerDetail.maintenanceVersion': '记录版本 v{version}',
+  'engineerDetail.closeBlockedByUnsavedMaintenance': '请先保存维修记录，再确认结单。',
+  'engineerDetail.closeBlockedByPendingMaintenance':
+    '维修记录正在保存或尚未读回最新版本，请稍后再确认结单。',
+  'engineerDetail.legacyProcessTitle': '旧维修历史（只读）',
+  'engineerDetail.legacyProcessHint':
+    '旧版内部维修过程仅供查看与下载原件，不提供新增、编辑或删除。',
 
   'engineerRepairHistory.title': '版本与修订历史',
   'engineerRepairHistory.empty': '暂无修订记录。',
