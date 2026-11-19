@@ -479,8 +479,14 @@ const aiWorkerConfig: ConfigFactory = () => ({
 /**
  * 生成 RAG 公共诊断客户端配置。
  *
- * 缺失或不完整时不在启动期抛错：客户端在 `diagnose` 时按 `CONFIG_ERROR` 失败关闭，
- * 保证无 RAG 密钥的进程仍可启用原有功能。
+ * 三种模式：
+ * - 显式 `disabled`：跳过 RAG 专属配置检查与参数解析；合法诊断请求由客户端按
+ *   `CONFIG_ERROR` 失败关闭且零出站，残留的 URL／密钥／超时／开关均被忽略。
+ * - 未设置：保留 `remote` 默认；生产允许 URL 与密钥都不设，但只配一项会在预检失败。
+ * - 显式 `remote`：要求 `LITHO_RAG_BASE_URL` 与 `LITHO_RAG_API_KEY` 同时齐全。
+ *
+ * 其余运行期不可用的配置继续由客户端在 `diagnose` 时按 `CONFIG_ERROR` 失败关闭，
+ * 不在启动期抛错，保证无 RAG 密钥的进程仍可启用原有功能。
  */
 const ragDiagnosisConfig: ConfigFactory = () => {
   const mode = process.env.LITHO_RAG_MODE?.trim().toLowerCase() || 'remote';
