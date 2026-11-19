@@ -103,8 +103,14 @@ export async function enrichRepairRequestDetailNicknames(
     closureReason: result.closureReason,
     handlingResult: result.handlingResult,
     handlingStatus: result.handlingStatus,
-    // 客户视图不包含任何内部维修过程或原件（即使未来读服务装配口径变化也不外泄）
+    // 客户视图不包含任何内部维修过程、结构化维修记录、原件或 AI 分析
+    // （即使未来读服务装配口径变化也不外泄）
     processEntries: [],
+    maintenance: null,
+    maintenanceSteps: [],
+    maintenanceFaultPanels: [],
+    intake: null,
+    canEditMaintenance: false,
   };
 }
 
@@ -205,6 +211,11 @@ export async function enrichEngineerRepairRequestDetail(
     handlingResult: result.handlingResult,
     handlingStatus: result.handlingStatus,
     processEntries: result.processEntries,
+    maintenance: result.maintenance,
+    maintenanceSteps: result.maintenanceSteps,
+    maintenanceFaultPanels: result.maintenanceFaultPanels,
+    intake: result.intake,
+    canEditMaintenance: result.canEditMaintenance,
     customerNickname: customerProfile?.nickname ?? CUSTOMER_NICKNAME_FALLBACK,
     customerCompanyName: customerProfile?.companyName ?? null,
     acceptanceViewStatus: computeAcceptanceViewStatus(

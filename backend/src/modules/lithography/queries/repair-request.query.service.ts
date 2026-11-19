@@ -8,6 +8,7 @@ import {
   parseRepairRequestHandlingResult,
   parseRepairRequestHandlingStatus,
 } from '@core/repair-request/policy/repair-request-handling.policy';
+import { isRepairRequestEnded } from '@core/repair-request/policy/repair-process-write.policy';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, In, Repository } from 'typeorm';
@@ -16,6 +17,7 @@ import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
+import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
 import {
   EngineerResponseQueryResult,
   EquipmentModelView,
@@ -66,6 +68,7 @@ export class RepairRequestQueryService {
     @InjectRepository(RepairRequestIntakeEntity)
     private readonly intakeRepository: Repository<RepairRequestIntakeEntity>,
     private readonly repairProcessEntryQueryService: RepairProcessEntryQueryService,
+    private readonly maintenanceQueryService: RepairRequestMaintenanceQueryService,
   ) {}
 
   /**
@@ -230,13 +233,31 @@ export class RepairRequestQueryService {
         order: { createdAt: 'ASC', id: 'ASC' },
       }),
     ]);
-    // 内部维修过程仅对接单工程师本人开放；客户入口及其他工程师恒为空数组
-    const processEntries =
+    // 内部维修过程与结构化维修记录仅对接单工程师本人开放；客户入口及其他工程师恒为空
+    const isAcceptingEngineer =
       params.scope === 'ENGINEER' &&
       entity.acceptedByEngineerAccountId !== null &&
-      entity.acceptedByEngineerAccountId === params.session.accountId
-        ? await this.repairProcessEntryQueryService.listByRequest(entity.id)
-        : [];
+      entity.acceptedByEngineerAccountId === params.session.accountId;
+
+    const [processEntries, maintenance, maintenanceSteps, maintenanceFaultPanels, intake] =
+      await Promise.all([
+        isAcceptingEngineer
+          ? this.repairProcessEntryQueryService.listByRequest(entity.id)
+          : Promise.resolve([]),
+        isAcceptingEngineer
+          ? this.maintenanceQueryService.findRecord(entity.id)
+          : Promise.resolve(null),
+        isAcceptingEngineer
+          ? this.maintenanceQueryService.listSteps(entity.id)
+          : Promise.resolve([]),
+        isAcceptingEngineer
+          ? this.maintenanceQueryService.listFaultPanels(entity.id)
+          : Promise.resolve([]),
+        // 客户原始报修与首次 AI 分析：仅工程师入口（同公司工程师均可读）；客户入口不返回
+        params.scope === 'ENGINEER'
+          ? this.maintenanceQueryService.findIntakeSource(entity.id)
+          : Promise.resolve(null),
+      ]);
 
     return {
       id: entity.id,
@@ -257,6 +278,16 @@ export class RepairRequestQueryService {
       handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
       handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
       processEntries,
+      maintenance,
+      maintenanceSteps,
+      maintenanceFaultPanels,
+      intake,
+      canEditMaintenance:
+        isAcceptingEngineer &&
+        !isRepairRequestEnded({
+          handlingStatus: entity.handlingStatus,
+          closureStatus: entity.closureStatus,
+        }),
       // 内部富集输入：仅供 usecase 关联客户/接单工程师安全展示资料，不进入对外视图
       customerAccountId: entity.customerAccountId,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,

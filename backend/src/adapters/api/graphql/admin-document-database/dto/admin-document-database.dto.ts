@@ -13,10 +13,22 @@ import type {
   AdminAiReportDetailView,
   AdminRepairRequestListItemView,
   AdminRepairRequestResponseView,
+  AdminRepairRequestRevisionDetailView,
+  AdminRepairRequestRevisionSnapshotView,
   AdminRepairRequestRevisionView,
   AdminRepairRequestSummaryView,
 } from '@src/modules/lithography/admin-document-database.types';
 import { paginatedTypeFactory } from '@src/adapters/api/graphql/pagination.type-factory';
+import {
+  RepairIntakeSourceDTO,
+  RepairMaintenanceFaultPanelDTO,
+  RepairMaintenanceRecordDTO,
+  RepairMaintenanceStepDTO,
+  toRepairIntakeSourceDTO,
+  toRepairMaintenanceFaultPanelDTO,
+  toRepairMaintenanceRecordDTO,
+  toRepairMaintenanceStepDTO,
+} from '@src/adapters/api/graphql/repair-request/dto/repair-maintenance.dto';
 
 // ---------- 维修申请 ----------
 
@@ -179,6 +191,155 @@ export class AdminRepairRevisionDTO {
 
   @Field(() => Date, { description: '修订时间' })
   createdAt!: Date;
+
+  @Field(() => Boolean, {
+    description: '是否保存了可用于维修维度对比的前后快照（旧快照为 false）',
+  })
+  hasComparableSnapshot!: boolean;
+
+  @Field(() => Int, { description: '快照结构版本' })
+  schemaVersion!: number;
+}
+
+@ObjectType({ description: '修订快照中的排查步骤' })
+export class AdminRevisionStepDTO {
+  @Field(() => String)
+  id!: string;
+
+  @Field(() => Int)
+  stepNo!: number;
+
+  @Field(() => String, { nullable: true })
+  errorCode!: string | null;
+
+  @Field(() => String, { nullable: true })
+  partName!: string | null;
+
+  @Field(() => String)
+  actionText!: string;
+
+  @Field(() => String)
+  resultCode!: string;
+}
+
+@ObjectType({ description: '修订快照中的故障面板' })
+export class AdminRevisionPanelDTO {
+  @Field(() => String)
+  id!: string;
+
+  @Field(() => String)
+  panelType!: string;
+
+  @Field(() => String, { nullable: true })
+  stepId!: string | null;
+
+  @Field(() => String, { nullable: true })
+  phaseCode!: string | null;
+
+  @Field(() => String, { nullable: true })
+  mainError!: string | null;
+
+  @Field(() => String, { nullable: true })
+  unitError!: string | null;
+
+  @Field(() => String, { nullable: true })
+  source!: string | null;
+
+  @Field(() => String, { nullable: true })
+  errorType!: string | null;
+
+  @Field(() => String, { nullable: true })
+  gpibStatus!: string | null;
+
+  @Field(() => String, { nullable: true })
+  faultStatus!: string | null;
+
+  @Field(() => String)
+  description!: string;
+
+  @Field(() => String, { nullable: true })
+  action!: string | null;
+}
+
+@ObjectType({ description: '管理修订快照（只读，不含存储引用）' })
+export class AdminRevisionSnapshotDTO {
+  @Field(() => Int)
+  schemaVersion!: number;
+
+  @Field(() => String)
+  contentMd!: string;
+
+  @Field(() => String, { nullable: true })
+  handlingResult!: string | null;
+
+  @Field(() => String, { nullable: true })
+  handlingStatus!: string | null;
+
+  @Field(() => String, { nullable: true })
+  closureReason!: string | null;
+
+  @Field(() => String, { nullable: true })
+  maintenanceDate!: string | null;
+
+  @Field(() => String, { nullable: true })
+  maintenanceEngineerName!: string | null;
+
+  @Field(() => String, { nullable: true })
+  resetResult!: string | null;
+
+  @Field(() => String, { nullable: true })
+  supplementaryNote!: string | null;
+
+  @Field(() => Int)
+  maintenanceVersionNo!: number;
+
+  @Field(() => String, { nullable: true })
+  maintenanceAttachmentFileId!: string | null;
+
+  @Field(() => [AdminRevisionStepDTO])
+  steps!: AdminRevisionStepDTO[];
+
+  @Field(() => [AdminRevisionPanelDTO])
+  panels!: AdminRevisionPanelDTO[];
+}
+
+@ObjectType({ description: '管理员修订详情（查看版本 / 对比上一版）' })
+export class AdminRepairRequestRevisionDetailDTO {
+  @Field(() => Int)
+  requestId!: number;
+
+  @Field(() => Int)
+  revisionNo!: number;
+
+  @Field(() => Int)
+  previousVersion!: number;
+
+  @Field(() => String)
+  reason!: string;
+
+  @Field(() => String)
+  actorNickname!: string;
+
+  @Field(() => Date)
+  createdAt!: Date;
+
+  @Field(() => Boolean, { description: '前后快照是否都可解析；false 时只可查看不可比' })
+  comparable!: boolean;
+
+  @Field(() => Boolean, { description: '前后快照是否包含 v2 维修区块' })
+  hasMaintenanceData!: boolean;
+
+  @Field(() => String, {
+    nullable: true,
+    description: '不可比时的明确原因；可比时为空',
+  })
+  incomparableReason!: string | null;
+
+  @Field(() => AdminRevisionSnapshotDTO, { nullable: true })
+  before!: AdminRevisionSnapshotDTO | null;
+
+  @Field(() => AdminRevisionSnapshotDTO, { nullable: true })
+  after!: AdminRevisionSnapshotDTO | null;
 }
 
 @ObjectType({ description: '管理员工单只读详情（已提交事实）' })
@@ -203,6 +364,26 @@ export class AdminRepairRequestSummaryDTO extends AdminRepairRequestListItemDTO 
 
   @Field(() => [AdminRepairRevisionDTO], { description: '修订历史（新版本在前）' })
   revisions!: AdminRepairRevisionDTO[];
+
+  // ---- 结构化维修记录（管理员编辑器与版本卡片使用）----
+
+  @Field(() => Int, { description: '当前维修版本号（管理员修订时回传）' })
+  maintenanceVersionNo!: number;
+
+  @Field(() => RepairMaintenanceRecordDTO, { nullable: true, description: '结构化维修记录' })
+  maintenance?: RepairMaintenanceRecordDTO | null;
+
+  @Field(() => [RepairMaintenanceStepDTO], { description: '排查步骤' })
+  maintenanceSteps!: RepairMaintenanceStepDTO[];
+
+  @Field(() => [RepairMaintenanceFaultPanelDTO], { description: '故障面板' })
+  maintenanceFaultPanels!: RepairMaintenanceFaultPanelDTO[];
+
+  @Field(() => RepairIntakeSourceDTO, {
+    nullable: true,
+    description: '客户原始报修与首次 AI 分析（只读）',
+  })
+  intake?: RepairIntakeSourceDTO | null;
 }
 
 @ObjectType({ description: '管理员工单修订结果' })
@@ -392,6 +573,11 @@ export function toAdminRepairRequestSummaryDTO(
     processEntries: summary.processEntries.map(toAdminRepairProcessEntryDTO),
     responses: summary.responses.map(toAdminRepairResponseDTO),
     revisions: summary.revisions.map(toAdminRepairRevisionDTO),
+    maintenanceVersionNo: summary.maintenanceVersionNo,
+    maintenance: toRepairMaintenanceRecordDTO(summary.maintenance),
+    maintenanceSteps: summary.maintenanceSteps.map(toRepairMaintenanceStepDTO),
+    maintenanceFaultPanels: summary.maintenanceFaultPanels.map(toRepairMaintenanceFaultPanelDTO),
+    intake: toRepairIntakeSourceDTO(summary.intake),
   };
 }
 
@@ -458,6 +644,46 @@ function toAdminRepairRevisionDTO(
     reason: revision.reason,
     actorNickname: revision.actorNickname,
     createdAt: revision.createdAt,
+    hasComparableSnapshot: revision.hasComparableSnapshot,
+    schemaVersion: revision.schemaVersion,
+  };
+}
+
+export function toAdminRepairRequestRevisionDetailDTO(
+  detail: AdminRepairRequestRevisionDetailView,
+): AdminRepairRequestRevisionDetailDTO {
+  return {
+    requestId: detail.requestId,
+    revisionNo: detail.revisionNo,
+    previousVersion: detail.previousVersion,
+    reason: detail.reason,
+    actorNickname: detail.actorNickname,
+    createdAt: detail.createdAt,
+    comparable: detail.comparable,
+    hasMaintenanceData: detail.hasMaintenanceData,
+    incomparableReason: detail.incomparableReason,
+    before: detail.before === null ? null : toAdminRevisionSnapshotDTO(detail.before),
+    after: detail.after === null ? null : toAdminRevisionSnapshotDTO(detail.after),
+  };
+}
+
+function toAdminRevisionSnapshotDTO(
+  snapshot: AdminRepairRequestRevisionSnapshotView,
+): AdminRevisionSnapshotDTO {
+  return {
+    schemaVersion: snapshot.schemaVersion,
+    contentMd: snapshot.contentMd,
+    handlingResult: snapshot.handlingResult,
+    handlingStatus: snapshot.handlingStatus,
+    closureReason: snapshot.closureReason,
+    maintenanceDate: snapshot.maintenanceDate,
+    maintenanceEngineerName: snapshot.maintenanceEngineerName,
+    resetResult: snapshot.resetResult,
+    supplementaryNote: snapshot.supplementaryNote,
+    maintenanceVersionNo: snapshot.maintenanceVersionNo,
+    maintenanceAttachmentFileId: snapshot.maintenanceAttachmentFileId,
+    steps: snapshot.steps.map((step) => ({ ...step })),
+    panels: snapshot.panels.map((panel) => ({ ...panel })),
   };
 }
 

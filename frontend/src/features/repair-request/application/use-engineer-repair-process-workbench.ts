@@ -7,6 +7,7 @@ import type {
   DownloadRepairProcessFileResult,
   EngineerRepairProcessEntry,
   EngineerRepairRequestDetail,
+  InterruptRepairRequestResult,
   RepairProcessWriteResult,
   RepairRequestHandlingResult,
   StagedRepairProcessFile,
@@ -16,6 +17,7 @@ import {
   closeRepairRequest,
   createRepairProcessEntry,
   downloadRepairProcessFile,
+  interruptRepairRequest,
   updateRepairProcessEntry,
   uploadRepairProcessFile,
 } from '../infrastructure/engineer-repair-request-adapter';
@@ -139,6 +141,8 @@ export function useEngineerRepairProcessWorkbench(
   const [closing, setClosing] = useState(false);
   const [lastProcessResult, setLastProcessResult] = useState<RepairProcessWriteResult | null>(null);
   const [lastCloseResult, setLastCloseResult] = useState<CloseRepairRequestResult | null>(null);
+  const [lastInterruptResult, setLastInterruptResult] =
+    useState<InterruptRepairRequestResult | null>(null);
   const [processReadbackFailed, setProcessReadbackFailed] = useState(false);
   const [processReadbackRetrying, setProcessReadbackRetrying] = useState(false);
   const [closeReadbackFailed, setCloseReadbackFailed] = useState(false);
@@ -202,6 +206,7 @@ export function useEngineerRepairProcessWorkbench(
     setClosing(false);
     setLastProcessResult(null);
     setLastCloseResult(null);
+    setLastInterruptResult(null);
     setProcessReadbackFailed(false);
     setProcessReadbackRetrying(false);
     setCloseReadbackFailed(false);
@@ -565,6 +570,50 @@ export function useEngineerRepairProcessWorkbench(
     ],
   );
 
+  /**
+   * 记录维修中断：与结单互斥占用同一在途锁，但不建立只读屏障。
+   * 成功后仅回读详情，接单人仍可继续保存维修记录和回复。
+   */
+  const interruptRequest = useCallback(
+    async (reason: string): Promise<InterruptRepairRequestResult | null> => {
+      if (!canWriteNow(requestId)) return null;
+      const instance = instanceRef.current;
+      if (requestId === null || requestId !== instance.requestId || !matchesCurrent(instance)) {
+        return null;
+      }
+
+      const key = instanceKey(instance);
+      if (closeBusyRef.current.has(key)) {
+        return null;
+      }
+      const token = Symbol('interrupt');
+      closeBusyRef.current.set(key, token);
+
+      setClosing(true);
+      setLastInterruptResult(null);
+      try {
+        const result = await interruptRepairRequest({ requestId, reason });
+        if (!matchesCurrent(instance)) {
+          return null;
+        }
+        setLastInterruptResult(result);
+        if (result.ok) {
+          // 中断不结单：只回读服务端事实，不通知页面建立只读屏障。
+          await confirmReadback(instance);
+        }
+        return result;
+      } finally {
+        if (closeBusyRef.current.get(key) === token) {
+          closeBusyRef.current.delete(key);
+          if (matchesCurrent(instance)) {
+            setClosing(false);
+          }
+        }
+      }
+    },
+    [requestId, matchesCurrent, confirmReadback, canWriteNow],
+  );
+
   const downloadFile = useCallback(
     (fileId: string): Promise<DownloadRepairProcessFileResult> => downloadRepairProcessFile(fileId),
     [],
@@ -580,6 +629,7 @@ export function useEngineerRepairProcessWorkbench(
     closing,
     lastProcessResult,
     lastCloseResult,
+    lastInterruptResult,
     processReadbackFailed,
     processReadbackRetrying,
     closeReadbackFailed,
@@ -589,6 +639,7 @@ export function useEngineerRepairProcessWorkbench(
     beginEditScope,
     saveProcess,
     closeRequest,
+    interruptRequest,
     retryProcessReadback,
     retryCloseReadback,
     downloadFile,

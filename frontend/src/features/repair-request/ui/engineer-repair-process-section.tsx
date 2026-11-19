@@ -560,9 +560,11 @@ export function EngineerRepairCloseSection({
   const {
     closing,
     lastCloseResult,
+    lastInterruptResult,
     closeReadbackFailed,
     closeReadbackRetrying,
     closeRequest,
+    interruptRequest,
     retryCloseReadback,
   } = useEngineerRepairProcessWorkbench(requestId, reload, {
     writeBlocked: closedByMutation,
@@ -623,12 +625,15 @@ export function EngineerRepairCloseSection({
       <Form
         form={form}
         layout="vertical"
-        onFinish={(values) =>
-          void closeRequest(
-            values.handlingResult,
-            values.closureReason?.trim() ? values.closureReason.trim() : null,
-          )
-        }
+        onFinish={(values) => {
+          const reason = values.closureReason?.trim() ? values.closureReason.trim() : null;
+          // 维修中断与结单分离：中断只记录原因与处理状态，不结单、不建立只读屏障。
+          if (values.handlingResult === 'INTERRUPTED') {
+            void interruptRequest(reason ?? '');
+            return;
+          }
+          void closeRequest(values.handlingResult, reason);
+        }}
       >
         <Form.Item
           label="处理结果"
@@ -661,15 +666,34 @@ export function EngineerRepairCloseSection({
           readbackRetrying={closeReadbackRetrying}
           result={lastCloseResult}
         />
+        {lastInterruptResult ? (
+          <div className="mb-3">
+            <Alert
+              title={
+                lastInterruptResult.ok
+                  ? '已记录维修中断，工单未结单，仍可继续保存维修记录和回复。'
+                  : lastInterruptResult.message
+              }
+              showIcon
+              type={lastInterruptResult.ok ? 'success' : 'error'}
+            />
+          </div>
+        ) : null}
         <Popconfirm
           cancelText="取消"
-          description="结单后内部过程与回复将只读，且不可再次结单。"
-          okText="确认结单"
+          description={
+            selectedResult === 'INTERRUPTED'
+              ? '记录中断不会结单，之后仍可继续处理。'
+              : '结单后内部过程与回复将只读，且不可再次结单。'
+          }
+          okText={selectedResult === 'INTERRUPTED' ? '记录中断' : '确认结单'}
           onConfirm={() => form.submit()}
-          title="确认结单该维修申请？"
+          title={
+            selectedResult === 'INTERRUPTED' ? '确认记录本次维修中断？' : '确认结单该维修申请？'
+          }
         >
           <Button loading={closing} type="primary">
-            结单
+            {selectedResult === 'INTERRUPTED' ? '记录中断' : '结单'}
           </Button>
         </Popconfirm>
       </Form>

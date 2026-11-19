@@ -117,33 +117,33 @@ describe('CloseRepairRequestUsecase（任务 04 主链）', () => {
     expect(data.handlingEndedAt).toBeInstanceOf(Date);
   });
 
-  it('INTERRUPTED 结单：IN_PROGRESS 且不写处理终结时间，原因必填', async () => {
-    const { usecase, repairRequestService } = makeUsecase();
-
-    const result = await usecase.execute(
-      command({
-        handlingResult: RepairRequestHandlingResult.INTERRUPTED,
-        closureReason: '客户暂停生产',
-      }),
-    );
-
-    const data = repairRequestService.closeRequest.mock.calls[0][0];
-    expect(data.handlingStatus).toBe(RepairRequestHandlingStatus.IN_PROGRESS);
-    expect(data.handlingEndedAt).toBeNull();
-    expect(result).toMatchObject({ closureStatus: 'CLOSED', handlingEndedAt: null });
-  });
-
-  it('中断/无法修复缺少原因时在开启事务前拒绝', async () => {
+  it('INTERRUPTED 不通过结单写入，拒绝且不开启事务', async () => {
     const { usecase, transactionRunner, repairRequestService } = makeUsecase();
 
-    for (const handlingResult of [
-      RepairRequestHandlingResult.INTERRUPTED,
-      RepairRequestHandlingResult.UNREPAIRABLE,
-    ]) {
-      await expect(
-        usecase.execute(command({ handlingResult, closureReason: '  ' })),
-      ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.INVALID_PARAMS });
-    }
+    await expect(
+      usecase.execute(
+        command({
+          handlingResult: RepairRequestHandlingResult.INTERRUPTED,
+          closureReason: '客户暂停生产',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.INVALID_PARAMS });
+
+    expect(transactionRunner.run).not.toHaveBeenCalled();
+    expect(repairRequestService.closeRequest).not.toHaveBeenCalled();
+  });
+
+  it('无法修复缺少原因时在开启事务前拒绝', async () => {
+    const { usecase, transactionRunner, repairRequestService } = makeUsecase();
+
+    await expect(
+      usecase.execute(
+        command({
+          handlingResult: RepairRequestHandlingResult.UNREPAIRABLE,
+          closureReason: '  ',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.INVALID_PARAMS });
     expect(transactionRunner.run).not.toHaveBeenCalled();
     expect(repairRequestService.closeRequest).not.toHaveBeenCalled();
   });

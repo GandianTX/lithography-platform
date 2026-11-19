@@ -26,17 +26,29 @@ import { CreateRepairProcessEntryUsecase } from '@src/usecases/repair-request/cr
 import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
+import { GetEngineerRepairRequestRevisionDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-detail.usecase';
+import { GetEngineerRepairRequestRevisionHistoryUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-history.usecase';
 import { GetMyRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-my-repair-request-detail.usecase';
+import { InterruptRepairRequestUsecase } from '@src/usecases/repair-request/interrupt-repair-request.usecase';
 import { ListEngineerRepairRequestsUsecase } from '@src/usecases/repair-request/list-engineer-repair-requests.usecase';
 import { ListMyRepairRequestsUsecase } from '@src/usecases/repair-request/list-my-repair-requests.usecase';
 import { SearchRepairServiceOrganizationsUsecase } from '@src/usecases/repair-request/search-repair-service-organizations.usecase';
+import { SaveRepairRequestMaintenanceUsecase } from '@src/usecases/repair-request/save-repair-request-maintenance.usecase';
 import { UpdateRepairProcessEntryUsecase } from '@src/usecases/repair-request/update-repair-process-entry.usecase';
+import type {
+  RepairIntakeSourceView,
+  RepairMaintenanceFaultPanelView,
+  RepairMaintenanceRecordView,
+  RepairMaintenanceStepView,
+} from '@src/modules/lithography/lithography.types';
 import { CreateEngineerResponseInput } from './dto/create-engineer-response.input';
 import { CreateRepairProcessEntryInput } from './dto/create-repair-process-entry.input';
 import { CreateRepairRequestInput } from './dto/create-repair-request.input';
 import { UpdateRepairProcessEntryInput } from './dto/update-repair-process-entry.input';
 import { CloseRepairRequestInput } from './dto/close-repair-request.input';
 import { RepairRequestClosureDTO } from './dto/repair-request-closure.dto';
+import { RepairRequestInterruptionDTO } from './dto/repair-request-interruption.dto';
+import { InterruptRepairRequestInput } from './dto/interrupt-repair-request.input';
 import { RepairProcessEntryDTO } from './dto/repair-process-entry.dto';
 import { DeleteMyRepairRequestResultDTO } from './dto/delete-my-repair-request-result.dto';
 import {
@@ -46,6 +58,18 @@ import {
 import { RepairRequestDTO } from './dto/repair-request.dto';
 import { EngineerRepairRequestFilterInput } from './dto/engineer-repair-request-filter.input';
 import { ValidateRepairRequestInput } from './validate-repair-request-input.decorator';
+import {
+  toRepairIntakeSourceDTO,
+  toRepairMaintenanceFaultPanelDTO,
+  toRepairMaintenanceRecordDTO,
+  toRepairMaintenanceStepDTO,
+  RepairMaintenanceRecordDTO,
+} from './dto/repair-maintenance.dto';
+import { SaveRepairRequestMaintenanceInput } from './dto/save-repair-request-maintenance.input';
+import {
+  EngineerRepairRevisionDetailDTO,
+  EngineerRepairRevisionHistoryItemDTO,
+} from './dto/engineer-repair-revision.dto';
 import {
   EngineerResponseDTO,
   RepairRequestDetailDTO,
@@ -68,12 +92,16 @@ export class RepairRequestResolver {
     private readonly createEngineerResponseUsecase: CreateEngineerResponseUsecase,
     private readonly createRepairProcessEntryUsecase: CreateRepairProcessEntryUsecase,
     private readonly updateRepairProcessEntryUsecase: UpdateRepairProcessEntryUsecase,
+    private readonly saveRepairRequestMaintenanceUsecase: SaveRepairRequestMaintenanceUsecase,
     private readonly closeRepairRequestUsecase: CloseRepairRequestUsecase,
+    private readonly interruptRepairRequestUsecase: InterruptRepairRequestUsecase,
     private readonly deleteMyRepairRequestUsecase: DeleteMyRepairRequestUsecase,
     private readonly listMyRepairRequestsUsecase: ListMyRepairRequestsUsecase,
     private readonly listEngineerRepairRequestsUsecase: ListEngineerRepairRequestsUsecase,
     private readonly getMyRepairRequestDetailUsecase: GetMyRepairRequestDetailUsecase,
     private readonly getEngineerRepairRequestDetailUsecase: GetEngineerRepairRequestDetailUsecase,
+    private readonly getEngineerRepairRequestRevisionHistoryUsecase: GetEngineerRepairRequestRevisionHistoryUsecase,
+    private readonly getEngineerRepairRequestRevisionDetailUsecase: GetEngineerRepairRequestRevisionDetailUsecase,
     private readonly searchRepairServiceOrganizationsUsecase: SearchRepairServiceOrganizationsUsecase,
   ) {}
 
@@ -241,6 +269,63 @@ export class RepairRequestResolver {
   }
 
   /**
+   * 工程师保存结构化内部维修记录（任务 04）
+   *
+   * - 同事务保存维修字段、排查步骤、故障面板与（可选）原件绑定；
+   * - expectedVersion 对接 maintenance_version_no，冲突返回 CONFLICT；
+   * - 仅接单工程师本人、可信服务公司一致、工单未结束时允许；
+   * - 不写历史维修报告表，不新增草稿表。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER)
+  @Mutation(() => RepairMaintenanceRecordDTO, {
+    description: '保存工单结构化内部维修记录（步骤/面板/原件同事务）',
+  })
+  @ValidateInput()
+  async saveRepairRequestMaintenance(
+    @Args('input') input: SaveRepairRequestMaintenanceInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<RepairMaintenanceRecordDTO> {
+    const result = await this.saveRepairRequestMaintenanceUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId: input.requestId,
+      expectedVersion: input.expectedVersion,
+      maintenanceDate: input.maintenanceDate ?? null,
+      engineerName: input.engineerName ?? null,
+      resetResult: input.resetResult ?? null,
+      supplementaryNote: input.supplementaryNote ?? null,
+      attachment: input.attachment ?? null,
+      steps: input.steps.map((step) => ({
+        id: step.id ?? null,
+        stepNo: step.stepNo,
+        errorCode: step.errorCode ?? null,
+        partName: step.partName ?? null,
+        actionText: step.actionText,
+        resultCode: step.resultCode,
+      })),
+      panels: input.panels.map((panel) => ({
+        id: panel.id ?? null,
+        panelType: panel.panelType,
+        stepNo: panel.stepNo ?? null,
+        phaseCode: panel.phaseCode ?? null,
+        mainError: panel.mainError ?? null,
+        unitError: panel.unitError ?? null,
+        source: panel.source ?? null,
+        errorType: panel.errorType ?? null,
+        gpibStatus: panel.gpibStatus ?? null,
+        faultStatus: panel.faultStatus ?? null,
+        description: panel.description,
+        action: panel.action ?? null,
+      })),
+    });
+    const record = toRepairMaintenanceRecordDTO(result.record);
+    if (record === null) {
+      throw new Error('维修记录保存结果缺失');
+    }
+    return record;
+  }
+
+  /**
    * 工程师结单
    * 仅接单工程师本人、同组织可结单；处理结果经固定策略映射为三态状态；
    * 结单与回复互相独立；结单后过程与回复只读
@@ -258,6 +343,26 @@ export class RepairRequestResolver {
       requestId: input.requestId,
       handlingResult: input.handlingResult,
       closureReason: input.closureReason,
+    });
+  }
+
+  /**
+   * 工程师记录维修中断
+   * 与结单分离：只写处理结果/原因，不写结单状态与结束时间；
+   * 记录后接单人仍可继续保存维修记录和回复
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER)
+  @Mutation(() => RepairRequestInterruptionDTO, { description: '工程师记录维修中断（不结单）' })
+  @ValidateInput()
+  async interruptRepairRequest(
+    @Args('input') input: InterruptRepairRequestInput,
+    @currentUser() user: JwtPayload,
+  ): Promise<RepairRequestInterruptionDTO> {
+    return this.interruptRepairRequestUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      requestId: input.requestId,
+      reason: input.reason,
     });
   }
 
@@ -395,6 +500,53 @@ export class RepairRequestResolver {
   }
 
   /**
+   * 接单工程师只读查询工单修订历史（最新在前）。
+   *
+   * 权限由 QueryService 精确判定：本人为接单人、属于可信服务厂家且有读取权限；
+   * 非接单人、外厂家、客户与跨工单修订号均被拒绝；
+   * 只返回工程师可见的维修快照与必要历史元数据，不暴露管理员完整快照与历史附件。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => [EngineerRepairRevisionHistoryItemDTO], {
+    name: 'engineerRepairRequestRevisionHistory',
+    description: '接单工程师查询工单修订历史（只读）',
+  })
+  async engineerRepairRequestRevisionHistory(
+    @Args({ name: 'requestId', type: () => Int, description: '维修申请 ID' }) requestId: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<EngineerRepairRevisionHistoryItemDTO[]> {
+    return this.getEngineerRepairRequestRevisionHistoryUsecase.execute({
+      requestId,
+      session: mapJwtToUsecaseSession(user),
+    });
+  }
+
+  /**
+   * 接单工程师只读查询单个修订详情（查看版本 / 对比上一版）。
+   *
+   * 与历史列表复用同一读取授权；跨工单修订 ID 按不存在处理；
+   * 不提供回滚，且历史附件不进入输出。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => EngineerRepairRevisionDetailDTO, {
+    name: 'engineerRepairRequestRevision',
+    description: '接单工程师查询单个修订详情（只读）',
+  })
+  async engineerRepairRequestRevision(
+    @Args({ name: 'requestId', type: () => Int, description: '维修申请 ID' }) requestId: number,
+    @Args({ name: 'revisionNo', type: () => Int, description: '修订版本号' }) revisionNo: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<EngineerRepairRevisionDetailDTO> {
+    return this.getEngineerRepairRequestRevisionDetailUsecase.execute({
+      requestId,
+      revisionNo,
+      session: mapJwtToUsecaseSession(user),
+    });
+  }
+
+  /**
    * 单条回复视图 → DTO（回复 Mutation 成功输出与详情 responses 复用同一映射，
    * 不各写一份；不返回工程师账号 ID）
    */
@@ -494,6 +646,11 @@ export class RepairRequestResolver {
         checksumSha256: string;
       } | null;
     }>;
+    maintenance?: RepairMaintenanceRecordView | null;
+    maintenanceSteps?: RepairMaintenanceStepView[];
+    maintenanceFaultPanels?: RepairMaintenanceFaultPanelView[];
+    intake?: RepairIntakeSourceView | null;
+    canEditMaintenance?: boolean;
   }): RepairRequestDetailDTO {
     return {
       ...this.toListItemDTO(detail),
@@ -513,6 +670,13 @@ export class RepairRequestResolver {
         ...this.toProcessEntryDTO(entry),
         file: entry.file,
       })),
+      maintenance: toRepairMaintenanceRecordDTO(detail.maintenance ?? null),
+      maintenanceSteps: (detail.maintenanceSteps ?? []).map(toRepairMaintenanceStepDTO),
+      maintenanceFaultPanels: (detail.maintenanceFaultPanels ?? []).map(
+        toRepairMaintenanceFaultPanelDTO,
+      ),
+      intake: toRepairIntakeSourceDTO(detail.intake ?? null),
+      canEditMaintenance: detail.canEditMaintenance ?? false,
     };
   }
 

@@ -31,10 +31,19 @@ describe('AdminRepairRequestQueryService', () => {
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn().mockResolvedValue(null),
   });
-  const makeRevisionRepo = () => ({ find: jest.fn().mockResolvedValue([]) });
+  const makeRevisionRepo = () => ({
+    find: jest.fn().mockResolvedValue([]),
+    findOne: jest.fn().mockResolvedValue(null),
+  });
   const makeProcessEntryQuery = () => ({
     listByRequest: jest.fn().mockResolvedValue([]),
     listByRequestTextOnly: jest.fn().mockResolvedValue([]),
+  });
+  const makeMaintenanceQuery = () => ({
+    findRecord: jest.fn().mockResolvedValue(null),
+    listSteps: jest.fn().mockResolvedValue([]),
+    listFaultPanels: jest.fn().mockResolvedValue([]),
+    findIntakeSource: jest.fn().mockResolvedValue(null),
   });
 
   const requestEntity = (overrides: Partial<RepairRequestEntity> = {}) =>
@@ -91,6 +100,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({ filter: {}, pagination, organizationId: null });
@@ -114,6 +124,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({
@@ -134,6 +145,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({
@@ -153,6 +165,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({
@@ -184,6 +197,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({
@@ -209,6 +223,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
     const from = new Date('2026-09-01T00:00:00.000Z');
     const to = new Date('2026-09-30T23:59:59.000Z');
@@ -232,6 +247,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
     const from = new Date('2026-09-01T00:00:00.000Z');
     const before = new Date();
@@ -257,6 +273,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     const page = await service.listAll({
@@ -294,6 +311,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     const page = await service.listAll({ filter: {}, pagination, organizationId: null });
@@ -332,6 +350,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     const notFound = await captureThrownError(service.findSummaryById(880001, null));
@@ -359,6 +378,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     const summary = await service.findSummaryById(880001, null);
@@ -383,6 +403,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({ filter: {}, pagination, organizationId: 700001 });
@@ -430,6 +451,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({ filter: {}, pagination, organizationId: 700001 });
@@ -464,6 +486,7 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await service.listAll({ filter: {}, pagination, organizationId: null });
@@ -489,6 +512,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await expect(service.findSummaryById(880001, null)).resolves.toMatchObject({
@@ -514,6 +538,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await expect(service.findSummaryById(880001, 700001)).resolves.toMatchObject({
@@ -545,6 +570,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await expect(service.findSummaryById(880001, 700001)).resolves.toMatchObject({
@@ -595,6 +621,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       processEntryQuery as never,
+      makeMaintenanceQuery() as never,
     );
   };
 
@@ -611,6 +638,7 @@ describe('AdminRepairRequestQueryService', () => {
       modelRepo as never,
       makeRevisionRepo() as never,
       processEntryQuery,
+      makeMaintenanceQuery() as never,
     );
   };
 
@@ -1073,9 +1101,209 @@ describe('AdminRepairRequestQueryService', () => {
       makeModelRepo() as never,
       makeRevisionRepo() as never,
       makeProcessEntryQuery() as never,
+      makeMaintenanceQuery() as never,
     );
 
     await expect(service.countAll(null)).resolves.toBe(7);
     expect(requestRepo.count).toHaveBeenCalledWith({ where: { deprecated: false } });
+  });
+
+  describe('findRevisionDetail 版本与修订历史', () => {
+    const v2Snapshot = (contentMd: string, stepAction: string) =>
+      JSON.stringify({
+        schema_version: 2,
+        request: {
+          content_md: contentMd,
+          handling_result: null,
+          handling_status: null,
+          closure_reason: null,
+          maintenance_date: '2026-09-01',
+          maintenance_engineer_name: '张工',
+          reset_result: 'NEW_FAULT',
+          supplementary_note: null,
+          maintenance_version_no: 3,
+          maintenance_attachment_file_id: 'file-1',
+        },
+        diagnostic_steps: [
+          {
+            id: 'step-1',
+            step_no: 1,
+            error_code: 'E-1',
+            part_name: '镜头',
+            action_text: stepAction,
+            result_code: 'NEW_FAULT',
+          },
+        ],
+        fault_panels: [
+          {
+            id: 'panel-1',
+            panel_type: 'STEP_NEW_FAULT',
+            step_id: 'step-1',
+            phase_code: 'PHASE_02',
+            main_error: 'M-1',
+            unit_error: null,
+            source: null,
+            error_type: null,
+            gpib_status: null,
+            fault_status: null,
+            description: '新故障',
+            action: '更换',
+          },
+        ],
+        process_entries: [],
+        responses: [],
+      });
+
+    const revisionEntity = (beforeSnapshot: string, afterSnapshot: string) => ({
+      requestId: 880001,
+      revisionNo: 1,
+      previousVersion: 0,
+      reason: '订正维修记录',
+      actorAccountId: 42,
+      createdAt: new Date('2026-09-03T00:00:00.000Z'),
+      beforeSnapshot,
+      afterSnapshot,
+    });
+
+    it('二级管理员跨公司查看历史快照被拒（与详情同一组织口径）', async () => {
+      const requestRepo = makeRequestRepo();
+      requestRepo.findOne.mockResolvedValue(
+        requestEntity({
+          intakeId: null,
+          serviceOrganizationId: 700001,
+          ownerOrganizationId: 700001,
+        }),
+      );
+      const revisionRepo = makeRevisionRepo();
+      const service = new AdminRepairRequestQueryService(
+        requestRepo as never,
+        makeResponseRepo() as never,
+        makeModelRepo() as never,
+        revisionRepo as never,
+        makeProcessEntryQuery() as never,
+        makeMaintenanceQuery() as never,
+      );
+
+      const denied = await captureThrownError(
+        service.findRevisionDetail({ requestId: 880001, revisionNo: 1, organizationId: 700002 }),
+      );
+      expect(denied).toBeInstanceOf(DomainError);
+      expect((denied as DomainError).code).toBe(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND);
+      expect(revisionRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('历史快照独立于当前工单：返回保存时的正文、步骤顺序与面板绑定', async () => {
+      const requestRepo = makeRequestRepo();
+      requestRepo.findOne.mockResolvedValue(
+        requestEntity({ contentMd: '当前已更新的正文', serviceOrganizationId: 700001 }),
+      );
+      const revisionRepo = makeRevisionRepo();
+      revisionRepo.findOne.mockResolvedValue(
+        revisionEntity(
+          v2Snapshot('# 修订前正文', '清洁镜头'),
+          v2Snapshot('# 修订后正文', '清洁并复位'),
+        ),
+      );
+      const service = new AdminRepairRequestQueryService(
+        requestRepo as never,
+        makeResponseRepo() as never,
+        makeModelRepo() as never,
+        revisionRepo as never,
+        makeProcessEntryQuery() as never,
+        makeMaintenanceQuery() as never,
+      );
+
+      const detail = await service.findRevisionDetail({
+        requestId: 880001,
+        revisionNo: 1,
+        organizationId: 700001,
+      });
+
+      expect(detail.comparable).toBe(true);
+      expect(detail.hasMaintenanceData).toBe(true);
+      expect(detail.incomparableReason).toBeNull();
+      expect(detail.before?.contentMd).toBe('# 修订前正文');
+      expect(detail.after?.contentMd).toBe('# 修订后正文');
+      expect(detail.before?.steps).toEqual([
+        {
+          id: 'step-1',
+          stepNo: 1,
+          errorCode: 'E-1',
+          partName: '镜头',
+          actionText: '清洁镜头',
+          resultCode: 'NEW_FAULT',
+        },
+      ]);
+      expect(detail.before?.panels[0]).toMatchObject({
+        panelType: 'STEP_NEW_FAULT',
+        stepId: 'step-1',
+        phaseCode: 'PHASE_02',
+      });
+      expect(detail.after?.steps[0].actionText).toBe('清洁并复位');
+      expect(detail.actorAccountId).toBe(42);
+    });
+
+    it('旧 v1 快照：可比但无维修数据，明确提示不可比且不拼当前工单', async () => {
+      const requestRepo = makeRequestRepo();
+      requestRepo.findOne.mockResolvedValue(
+        requestEntity({ contentMd: '当前正文', serviceOrganizationId: 700001 }),
+      );
+      const v1 = (contentMd: string) =>
+        JSON.stringify({
+          schema_version: 1,
+          request: { content_md: contentMd, handling_result: null },
+          process_entries: [],
+          responses: [],
+        });
+      const revisionRepo = makeRevisionRepo();
+      revisionRepo.findOne.mockResolvedValue(revisionEntity(v1('旧正文'), v1('旧正文')));
+      const service = new AdminRepairRequestQueryService(
+        requestRepo as never,
+        makeResponseRepo() as never,
+        makeModelRepo() as never,
+        revisionRepo as never,
+        makeProcessEntryQuery() as never,
+        makeMaintenanceQuery() as never,
+      );
+
+      const detail = await service.findRevisionDetail({
+        requestId: 880001,
+        revisionNo: 1,
+        organizationId: 700001,
+      });
+
+      expect(detail.comparable).toBe(true);
+      expect(detail.hasMaintenanceData).toBe(false);
+      expect(detail.incomparableReason).toContain('旧版本');
+      expect(detail.before?.steps).toEqual([]);
+      expect(detail.before?.contentMd).toBe('旧正文');
+    });
+
+    it('损坏快照不伪装成可比，也不以当前工单回填', async () => {
+      const requestRepo = makeRequestRepo();
+      requestRepo.findOne.mockResolvedValue(
+        requestEntity({ contentMd: '当前正文', serviceOrganizationId: 700001 }),
+      );
+      const revisionRepo = makeRevisionRepo();
+      revisionRepo.findOne.mockResolvedValue(revisionEntity('{', v2Snapshot('新正文', '动作')));
+      const service = new AdminRepairRequestQueryService(
+        requestRepo as never,
+        makeResponseRepo() as never,
+        makeModelRepo() as never,
+        revisionRepo as never,
+        makeProcessEntryQuery() as never,
+        makeMaintenanceQuery() as never,
+      );
+
+      const detail = await service.findRevisionDetail({
+        requestId: 880001,
+        revisionNo: 1,
+        organizationId: 700001,
+      });
+
+      expect(detail.comparable).toBe(false);
+      expect(detail.before).toBeNull();
+      expect(detail.incomparableReason).toContain('无法对比');
+    });
   });
 });

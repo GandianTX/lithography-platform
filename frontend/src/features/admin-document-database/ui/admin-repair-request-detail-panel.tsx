@@ -1,10 +1,13 @@
 // src/features/admin-document-database/ui/admin-repair-request-detail-panel.tsx
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, Button, Descriptions, Skeleton, Tag } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
+import { MaintenanceRecordEditor } from '@/shared/ui/maintenance-record-editor';
+import { createMaintenanceEditorValue } from '@/shared/ui/maintenance-record-editor/model';
 import {
   REPAIR_HANDLING_RESULT_LABELS,
   REPAIR_HANDLING_STATUS_LABELS,
@@ -16,6 +19,7 @@ import { useAdminRepairRequestSummary } from '../application/use-admin-document-
 import { downloadAdminRepairProcessFile } from '../infrastructure/admin-document-database-adapter';
 
 import { AdminRepairRequestRevisionModal } from './admin-repair-request-revision-modal';
+import { AdminRepairRequestVersionHistory } from './admin-repair-request-version-history';
 
 const RESOLUTION_STATUS_LABELS: Record<'PENDING' | 'RESOLVED', string> = {
   PENDING: '处理中',
@@ -45,27 +49,48 @@ export function AdminRepairRequestDetailPanel({
   requestId: number;
   onBack?: () => void;
 }) {
+  const { t } = useI18n();
   const summary = useAdminRepairRequestSummary(requestId);
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
 
-  const handleDownload = async (fileId: string) => {
+  const handleDownload = async (
+    fileId: string,
+  ): Promise<{ ok: boolean; message?: string }> => {
     setDownloadError(null);
     setDownloadingFileId(fileId);
     const result = await downloadAdminRepairProcessFile(fileId);
     setDownloadingFileId(null);
     if (!result.ok) {
       setDownloadError(result.message);
-      return;
+      return { ok: false, message: result.message };
     }
     triggerBrowserDownload(result.blob, result.filename);
+    return { ok: true };
   };
 
   const detail = summary.state.status === 'ready' ? summary.state.detail : null;
   const closureState = detail
     ? resolveRepairClosureState(detail.closureStatus, detail.closedAt)
     : 'UNKNOWN';
+  const maintenanceValue = useMemo(
+    () =>
+      createMaintenanceEditorValue({
+        maintenanceDate: detail?.maintenance?.maintenanceDate ?? null,
+        engineerName: detail?.maintenance?.engineerName ?? null,
+        resetResult: detail?.maintenance?.resetResult ?? null,
+        supplementaryNote: detail?.maintenance?.supplementaryNote ?? null,
+        attachment: detail?.maintenance?.attachment ?? null,
+        steps: detail?.maintenanceSteps ?? [],
+        panels: detail?.maintenanceFaultPanels ?? [],
+      }),
+    [detail],
+  );
+  const hasMaintenance =
+    Boolean(detail?.maintenance) ||
+    (detail?.maintenanceSteps?.length ?? 0) > 0 ||
+    (detail?.maintenanceFaultPanels?.length ?? 0) > 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -197,6 +222,35 @@ export function AdminRepairRequestDetailPanel({
             />
           </DataCard>
 
+          <DataCard
+            extra={
+              hasMaintenance && detail.maintenanceVersionNo !== undefined ? (
+                <Tag>v{detail.maintenanceVersionNo}</Tag>
+              ) : null
+            }
+            title={t('adminRepairRequest.maintenanceCard')}
+          >
+            {!hasMaintenance ? (
+              <p className="text-sm text-text-tertiary">
+                {t('adminRepairRequest.maintenanceEmpty')}
+              </p>
+            ) : (
+              <MaintenanceRecordEditor
+                attachment={{
+                  onClearStaged: () => undefined,
+                  onDownload: (fileId) => void handleDownload(fileId),
+                  onSelectFile: () => undefined,
+                  readOnly: true,
+                  stagedFile: null,
+                  uploading: false,
+                }}
+                onChange={() => undefined}
+                readOnly
+                value={maintenanceValue}
+              />
+            )}
+          </DataCard>
+
           <DataCard title="内部维修过程">
             {detail.processEntries.length === 0 ? (
               <p className="text-sm text-text-tertiary">暂无已提交过程。</p>
@@ -269,34 +323,17 @@ export function AdminRepairRequestDetailPanel({
             )}
           </DataCard>
 
-          <DataCard title="修订历史">
-            {detail.revisions.length === 0 ? (
-              <p className="text-sm text-text-tertiary">暂无修订记录。</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {detail.revisions.map((revision) => (
-                  <div
-                    className="rounded border border-[var(--panel-border)] p-3 text-sm"
-                    key={revision.revisionNo}
-                  >
-                    <div className="mb-1 flex flex-wrap items-center gap-x-3 text-xs text-[var(--text-secondary)]">
-                      <Tag>
-                        v{revision.previousVersion} → v{revision.revisionNo}
-                      </Tag>
-                      <span>{revision.actorNickname}</span>
-                      <span>{formatDateTimeText(revision.createdAt)}</span>
-                    </div>
-                    <p className="whitespace-pre-wrap">{revision.reason}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </DataCard>
+          <AdminRepairRequestVersionHistory
+            onDownloadAttachment={handleDownload}
+            requestId={detail.id}
+            revisions={detail.revisions}
+          />
 
           <AdminRepairRequestRevisionModal
             detail={detail}
             key={`${detail.id}:${detail.currentRevisionNo}:${revisionOpen}`}
             onClose={() => setRevisionOpen(false)}
+            onDownloadAttachment={handleDownload}
             onSaved={summary.reload}
             open={revisionOpen}
           />

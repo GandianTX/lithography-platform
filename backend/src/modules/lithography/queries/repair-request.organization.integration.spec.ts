@@ -5,7 +5,9 @@ import { DataSource } from 'typeorm';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { RepairProcessEntryEntity } from '../entities/repair-process-entry.entity';
+import { RepairRequestDiagnosticStepEntity } from '../entities/repair-request-diagnostic-step.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
+import { RepairRequestFaultPanelEntity } from '../entities/repair-request-fault-panel.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import { REPAIR_REQUEST_ORG_READ_FIXTURE_ENTITIES } from '../../../../test/utils/local-entity-sets';
 import {
@@ -18,6 +20,7 @@ import {
   runOwnedFixtureCleanup,
 } from '../../../../test/utils/e2e-owned-fixture';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
+import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
 import { RepairRequestQueryService } from './repair-request.query.service';
 
 /**
@@ -316,6 +319,11 @@ describeIntegration('维修申请组织范围实库验收', () => {
       dataSource.getRepository(EquipmentModelEntity),
       dataSource.getRepository(RepairRequestIntakeEntity),
       new RepairProcessEntryQueryService(dataSource.getRepository(RepairProcessEntryEntity)),
+      new RepairRequestMaintenanceQueryService(
+        dataSource.getRepository(RepairRequestEntity),
+        dataSource.getRepository(RepairRequestDiagnosticStepEntity),
+        dataSource.getRepository(RepairRequestFaultPanelEntity),
+      ),
     );
   });
 

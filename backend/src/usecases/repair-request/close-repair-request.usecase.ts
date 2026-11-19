@@ -45,8 +45,7 @@ export type RepairRequestClosureView = {
  * 工单结单用例（任务 04 第一轮）。
  *
  * - 仅工单接单工程师本人、同组织可结单；非接单人或跨公司失败关闭；
- * - 五类结果经固定策略映射为三态处理状态，客户端不能自报状态；
- * - 中断（IN_PROGRESS）不写 handling_ended_at，结单事实由 closure_status/closed_at 表达；
+ * - 四类终结结果经固定策略映射为终结处理状态；中断改由独立用例记录，不在此结单；
  * - 结单与回复互相独立：本用例不删除、不改写任何回复记录，也不依赖回复存在；
  * - 结单后内部过程与回复由各自写用例按 CLOSED_STATE_CONFLICT 拒绝写入。
  */
@@ -63,6 +62,12 @@ export class CloseRepairRequestUsecase {
     assertEngineerWritePermission(command.session, '结单');
     assertRepairRequestId(command.requestId);
     const handlingResult = normalizeHandlingResult(command.handlingResult);
+    if (handlingResult === RepairRequestHandlingResult.INTERRUPTED) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.INVALID_PARAMS,
+        '维修中断请使用中断记录操作，不通过结单写入',
+      );
+    }
     const closureReason = normalizeClosureReason(command.closureReason, handlingResult);
     const now = new Date();
     const handlingStatus = resolveRepairRequestHandlingStatus(handlingResult);

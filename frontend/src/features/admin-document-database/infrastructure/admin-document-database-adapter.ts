@@ -2,6 +2,7 @@
 
 import { executeGraphQL, isGraphQLIngressError, readGraphQLErrorDetail } from '@/shared/graphql';
 import { fetchRestWithAuthRetry, parseAttachmentFilename } from '@/shared/http';
+import { translateNow } from '@/shared/i18n';
 
 import type {
   AdminAiConversationFilter,
@@ -14,6 +15,7 @@ import type {
   AdminListPage,
   AdminRepairRequestFilter,
   AdminRepairRequestListItem,
+  AdminRepairRequestRevisionDetail,
   AdminRepairRequestSummary,
   AdminRepairRevisionInput,
   AdminRepairRevisionResult,
@@ -127,7 +129,110 @@ const ADMIN_REPAIR_REQUEST_SUMMARY_QUERY = `
         reason
         actorNickname
         createdAt
+        hasComparableSnapshot
+        schemaVersion
       }
+      maintenanceVersionNo
+      maintenance {
+        maintenanceDate
+        engineerName
+        resetResult
+        supplementaryNote
+        versionNo
+        attachment {
+          fileId
+          originalFilename
+          mimeType
+          byteSize
+          checksumSha256
+        }
+      }
+      maintenanceSteps {
+        id
+        stepNo
+        errorCode
+        partName
+        actionText
+        resultCode
+      }
+      maintenanceFaultPanels {
+        id
+        panelType
+        stepId
+        phaseCode
+        mainError
+        unitError
+        source
+        errorType
+        gpibStatus
+        faultStatus
+        description
+        action
+      }
+      intake {
+        intakeId
+        faultDescription
+        customerFile {
+          fileId
+          originalFilename
+          mimeType
+          byteSize
+          checksumSha256
+        }
+        analysis {
+          status
+          generation
+          outputText
+          failureReason
+          finishedAt
+        }
+      }
+    }
+  }
+`;
+
+const ADMIN_REPAIR_REQUEST_REVISION_DETAIL_QUERY = `
+  query AdminRepairRequestRevisionDetail($requestId: Int!, $revisionNo: Int!) {
+    adminRepairRequestRevisionDetail(requestId: $requestId, revisionNo: $revisionNo) {
+      requestId
+      revisionNo
+      previousVersion
+      reason
+      actorNickname
+      createdAt
+      comparable
+      hasMaintenanceData
+      incomparableReason
+      before { ...AdminRevisionSnapshotFields }
+      after { ...AdminRevisionSnapshotFields }
+    }
+  }
+  fragment AdminRevisionSnapshotFields on AdminRevisionSnapshotDTO {
+    schemaVersion
+    contentMd
+    handlingResult
+    handlingStatus
+    closureReason
+    maintenanceDate
+    maintenanceEngineerName
+    resetResult
+    supplementaryNote
+    maintenanceVersionNo
+    maintenanceAttachmentFileId
+    steps { id stepNo errorCode partName actionText resultCode }
+    panels {
+      id
+      panelType
+      stepId
+      phaseCode
+      mainError
+      unitError
+      source
+      errorType
+      gpibStatus
+      faultStatus
+      description
+      action
     }
   }
 `;
@@ -417,6 +522,29 @@ export async function fetchAdminRepairRequestSummary(
     return { ok: true, detail: data.adminRepairRequestSummary };
   } catch (error) {
     return toNotFoundResult(error, '维修申请不存在或不可查看。');
+  }
+}
+
+/**
+ * 读取单个修订版本的详情与前后快照（只读查看 / 对比上一版）。
+ * 不可比原因由服务端明确返回，不在前端拼接当前工单补全快照。
+ */
+export async function fetchAdminRepairRequestRevisionDetail(
+  requestId: number,
+  revisionNo: number,
+): Promise<AdminDetailResult<AdminRepairRequestRevisionDetail>> {
+  try {
+    const data = await executeGraphQL<
+      { adminRepairRequestRevisionDetail: AdminRepairRequestRevisionDetail },
+      { requestId: number; revisionNo: number }
+    >(ADMIN_REPAIR_REQUEST_REVISION_DETAIL_QUERY, { requestId, revisionNo });
+
+    return { ok: true, detail: data.adminRepairRequestRevisionDetail };
+  } catch (error) {
+    return toNotFoundResult(
+      error,
+      translateNow('adminRepairRequest.versionHistory.notAccessible'),
+    );
   }
 }
 

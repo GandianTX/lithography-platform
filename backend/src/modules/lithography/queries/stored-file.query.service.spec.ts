@@ -324,6 +324,171 @@ describe('StoredFileQueryService 读授权', () => {
     });
   });
 
+  describe('新版维修原件（repair_request.maintenance_attachment_file_id）', () => {
+    const boundFile = (overrides: Partial<ReturnType<typeof fileRow>> = {}) =>
+      fileRow({ bindingStatus: 'BOUND', businessId: '42', uploadContextId: 'ctx', ...overrides });
+    const maintenanceRequest = (overrides: Record<string, unknown> = {}) => ({
+      id: 42,
+      intakeId: 7001,
+      serviceOrganizationId: 910001,
+      ownerOrganizationId: 920002,
+      deprecated: false,
+      isAccepted: true,
+      acceptedByEngineerAccountId: 900001,
+      maintenanceAttachmentFileId: fileRow().fileId,
+      ...overrides,
+    });
+    const maintenanceQuery = (overrides: Partial<StoredFileAccessQuery> = {}) =>
+      accessQuery({ uploadContextId: null, ...overrides });
+
+    it('接单工程师本人可读取并下载新版维修原件，且授权按工单真实关联判定', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(null);
+      repositories.request.findOne.mockResolvedValueOnce(maintenanceRequest());
+
+      await expect(service.findAuthorizedMetadata(maintenanceQuery())).resolves.toMatchObject({
+        fileId: fileRow().fileId,
+        businessId: '42',
+        bindingStatus: 'BOUND',
+      });
+
+      expect(repositories.request.findOne).toHaveBeenCalledWith({
+        where: { id: 42 },
+        select: expect.objectContaining({
+          maintenanceAttachmentFileId: true,
+          isAccepted: true,
+          acceptedByEngineerAccountId: true,
+        }),
+      });
+
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(null);
+      repositories.request.findOne.mockResolvedValueOnce(maintenanceRequest());
+
+      await expect(service.findAuthorizedDownload(maintenanceQuery())).resolves.toMatchObject({
+        fileId: fileRow().fileId,
+        storageReference: fileRow().storageReference,
+        checksumSha256: 'checksum',
+      });
+    });
+
+    it('已结单不阻止接单工程师下载已绑定原件（结单只限制写入）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce(null);
+      repositories.request.findOne.mockResolvedValueOnce(
+        maintenanceRequest({
+          closureStatus: 'CLOSED',
+          closedAt: new Date('2026-11-19T03:33:44.000Z'),
+        }),
+      );
+
+      await expect(service.findAuthorizedDownload(maintenanceQuery())).resolves.toMatchObject({
+        fileId: fileRow().fileId,
+        storageReference: fileRow().storageReference,
+      });
+    });
+
+    it('客户、外厂家、同公司非接单工程师均不得因新关联获得内部原件权限', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(null);
+      repositories.request.findOne.mockResolvedValue(maintenanceRequest());
+
+      await expect(
+        service.findAuthorizedMetadata(maintenanceQuery({ session: customer })),
+      ).resolves.toBeNull();
+      await expect(
+        service.findAuthorizedDownload(maintenanceQuery({ viewerOrganizationId: 920002 })),
+      ).resolves.toBeNull();
+      // 同公司但非接单人（account 900002）
+      await expect(
+        service.findAuthorizedDownload(maintenanceQuery({ session: otherEngineer })),
+      ).resolves.toBeNull();
+      await expect(
+        service.findAuthorizedMetadata(maintenanceQuery({ session: nonEngineerSameOrg })),
+      ).resolves.toBeNull();
+    });
+
+    it('工单引用缺失、指向其他文件或工单不存在时拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(null);
+
+      // repair_request 没有实际引用该文件
+      repositories.request.findOne.mockResolvedValueOnce(
+        maintenanceRequest({ maintenanceAttachmentFileId: null }),
+      );
+      await expect(service.findAuthorizedDownload(maintenanceQuery())).resolves.toBeNull();
+
+      // repair_request 引用了另一个文件
+      repositories.request.findOne.mockResolvedValueOnce(
+        maintenanceRequest({
+          maintenanceAttachmentFileId: '33333333-3333-4333-8333-333333333333',
+        }),
+      );
+      await expect(service.findAuthorizedDownload(maintenanceQuery())).resolves.toBeNull();
+
+      // 工单不存在
+      repositories.request.findOne.mockResolvedValueOnce(null);
+      await expect(service.findAuthorizedMetadata(maintenanceQuery())).resolves.toBeNull();
+
+      // BOUND 但缺少业务工单号
+      repositories.storedFile.findOne.mockResolvedValue(boundFile({ businessId: null }));
+      await expect(service.findAuthorizedMetadata(maintenanceQuery())).resolves.toBeNull();
+    });
+
+    it('旧 repair_process_entry 原件授权保持既有同公司工程师口径', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValueOnce(boundFile());
+      repositories.processEntry.findOne.mockResolvedValueOnce({ id: 700001 });
+      // 旧路径不要求读取者是接单人
+      repositories.request.findOne.mockResolvedValueOnce(
+        maintenanceRequest({
+          isAccepted: true,
+          acceptedByEngineerAccountId: 900002,
+          maintenanceAttachmentFileId: null,
+        }),
+      );
+
+      await expect(service.findAuthorizedDownload(maintenanceQuery())).resolves.toMatchObject({
+        fileId: fileRow().fileId,
+      });
+    });
+
+    it('管理员沿用既有工单组织范围：二级本公司可读，跨公司拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundFile());
+      repositories.processEntry.findOne.mockResolvedValue(null);
+      repositories.request.findOne.mockResolvedValue(maintenanceRequest());
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        serviceOrganizationId: 910001,
+      });
+
+      await expect(
+        service.findAuthorizedDownload(
+          maintenanceQuery({
+            session: admin,
+            viewerOrganizationId: 910001,
+            adminOrganizationId: 910001,
+          }),
+        ),
+      ).resolves.toMatchObject({ fileId: fileRow().fileId });
+
+      await expect(
+        service.findAuthorizedMetadata(
+          maintenanceQuery({
+            session: admin,
+            viewerOrganizationId: 700002,
+            adminOrganizationId: 700002,
+          }),
+        ),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe('管理员读取（BOUND REPAIR_PROCESS）', () => {
     const boundFile = () =>
       fileRow({ bindingStatus: 'BOUND', businessId: '42', uploadContextId: 'ctx' });

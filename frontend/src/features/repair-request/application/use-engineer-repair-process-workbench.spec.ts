@@ -30,6 +30,7 @@ vi.mock('../infrastructure/engineer-repair-request-adapter', async (importOrigin
     createRepairProcessEntry: vi.fn(),
     updateRepairProcessEntry: vi.fn(),
     closeRepairRequest: vi.fn(),
+    interruptRepairRequest: vi.fn(),
   };
 });
 
@@ -37,6 +38,7 @@ const uploadMock = vi.mocked(engineerRepairRequestAdapter.uploadRepairProcessFil
 const createMock = vi.mocked(engineerRepairRequestAdapter.createRepairProcessEntry);
 const updateMock = vi.mocked(engineerRepairRequestAdapter.updateRepairProcessEntry);
 const closeMock = vi.mocked(engineerRepairRequestAdapter.closeRepairRequest);
+const interruptMock = vi.mocked(engineerRepairRequestAdapter.interruptRepairRequest);
 
 const STAGED_FILE: StagedRepairProcessFile = {
   fileId: 'file-1',
@@ -152,6 +154,37 @@ describe(useEngineerRepairProcessWorkbench.name, () => {
       occurredAt: null,
       file: null,
     });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('中断成功后回读详情，但不建立结单只读屏障', async () => {
+    interruptMock.mockResolvedValue({
+      ok: true,
+      interruption: {
+        requestId: 21,
+        closureStatus: null,
+        closedAt: null,
+        closureReason: '客户暂停生产',
+        handlingResult: 'INTERRUPTED',
+        handlingStatus: 'IN_PROGRESS',
+        handlingEndedAt: null,
+      },
+    });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const onCloseSucceeded = vi.fn();
+
+    const { result } = renderHook(() =>
+      useEngineerRepairProcessWorkbench(21, reload, { onCloseSucceeded }),
+    );
+
+    await act(async () => {
+      await result.current.interruptRequest('客户暂停生产');
+    });
+
+    expect(interruptMock).toHaveBeenCalledWith({ requestId: 21, reason: '客户暂停生产' });
+    expect(result.current.lastInterruptResult?.ok).toBe(true);
+    expect(result.current.lastCloseResult).toBeNull();
+    expect(onCloseSucceeded).not.toHaveBeenCalled();
     expect(reload).toHaveBeenCalledTimes(1);
   });
 

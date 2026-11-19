@@ -1,7 +1,7 @@
 // src/modules/lithography/repair-request.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
-import type {
+import {
   RepairRequestHandlingResult,
   RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
@@ -579,6 +579,61 @@ export class RepairRequestService {
       throw new DomainError(
         REPAIR_REQUEST_ERROR.CLOSE_FAILED,
         '工单结单失败，请稍后重试',
+        { requestId: data.requestId },
+        error,
+      );
+    }
+  }
+
+  /**
+   * 记录维修中断：只写处理结果与原因，不写结单事实。
+   *
+   * - handling_status = IN_PROGRESS、handling_ended_at = NULL；
+   * - closure_status / closed_at 保持 NULL，工单仍可由接单人继续保存和回复；
+   * - 原因写入 closure_reason（数据库设计 V1.2：中断或无法修复必填），
+   *   后续主动结单时按新的结单原因覆盖；
+   * - 条件更新保证非接单人、已结单、已终结处理状态不会被改写。
+   */
+  async recordInterruption(
+    data: {
+      requestId: number;
+      engineerAccountId: number;
+      reason: string;
+      recordedAt: Date;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<number> {
+    const repository = this.getRepository(transactionContext);
+    try {
+      const result = await repository
+        .createQueryBuilder()
+        .update(RepairRequestEntity)
+        .set({
+          handlingResult: RepairRequestHandlingResult.INTERRUPTED,
+          handlingStatus: RepairRequestHandlingStatus.IN_PROGRESS,
+          handlingRecordedAt: data.recordedAt,
+          handlingRecordedByAccountId: data.engineerAccountId,
+          handlingEndedAt: null,
+          closureStatus: null,
+          closedAt: null,
+          closureReason: data.reason,
+        })
+        .where('id = :requestId', { requestId: data.requestId })
+        .andWhere('deprecated = :deprecated', { deprecated: false })
+        .andWhere('is_accepted = :isAccepted', { isAccepted: true })
+        .andWhere('accepted_by_engineer_account_id = :engineerAccountId', {
+          engineerAccountId: data.engineerAccountId,
+        })
+        .andWhere('(closure_status IS NULL OR closure_status <> :closed)', { closed: 'CLOSED' })
+        .andWhere('(handling_status IS NULL OR handling_status NOT IN (:...terminalStatuses))', {
+          terminalStatuses: ['COMPLETED', 'UNRESOLVED'],
+        })
+        .execute();
+      return result.affected ?? 0;
+    } catch (error) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.CLOSE_FAILED,
+        '维修中断记录失败，请稍后重试',
         { requestId: data.requestId },
         error,
       );

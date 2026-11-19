@@ -11,10 +11,14 @@ import { CreateRepairProcessEntryUsecase } from './create-repair-process-entry.u
 import { CreateRepairRequestUsecase } from './create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from './delete-my-repair-request.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from './get-engineer-repair-request-detail.usecase';
+import { GetEngineerRepairRequestRevisionDetailUsecase } from './get-engineer-repair-request-revision-detail.usecase';
+import { GetEngineerRepairRequestRevisionHistoryUsecase } from './get-engineer-repair-request-revision-history.usecase';
 import { GetMyRepairRequestDetailUsecase } from './get-my-repair-request-detail.usecase';
+import { InterruptRepairRequestUsecase } from './interrupt-repair-request.usecase';
 import { ListEquipmentModelsUsecase } from './list-equipment-models.usecase';
 import { ListEngineerRepairRequestsUsecase } from './list-engineer-repair-requests.usecase';
 import { ListMyRepairRequestsUsecase } from './list-my-repair-requests.usecase';
+import { SaveRepairRequestMaintenanceUsecase } from './save-repair-request-maintenance.usecase';
 import { SearchRepairServiceOrganizationsUsecase } from './search-repair-service-organizations.usecase';
 import { UpdateRepairProcessEntryUsecase } from './update-repair-process-entry.usecase';
 
@@ -29,10 +33,14 @@ import { UpdateRepairProcessEntryUsecase } from './update-repair-process-entry.u
     CreateRepairRequestUsecase,
     DeleteMyRepairRequestUsecase,
     GetEngineerRepairRequestDetailUsecase,
+    GetEngineerRepairRequestRevisionDetailUsecase,
+    GetEngineerRepairRequestRevisionHistoryUsecase,
     GetMyRepairRequestDetailUsecase,
+    InterruptRepairRequestUsecase,
     ListEquipmentModelsUsecase,
     ListEngineerRepairRequestsUsecase,
     ListMyRepairRequestsUsecase,
+    SaveRepairRequestMaintenanceUsecase,
     SearchRepairServiceOrganizationsUsecase,
     UpdateRepairProcessEntryUsecase,
   ],
@@ -45,10 +53,14 @@ import { UpdateRepairProcessEntryUsecase } from './update-repair-process-entry.u
     CreateRepairRequestUsecase,
     DeleteMyRepairRequestUsecase,
     GetEngineerRepairRequestDetailUsecase,
+    GetEngineerRepairRequestRevisionDetailUsecase,
+    GetEngineerRepairRequestRevisionHistoryUsecase,
     GetMyRepairRequestDetailUsecase,
+    InterruptRepairRequestUsecase,
     ListEquipmentModelsUsecase,
     ListEngineerRepairRequestsUsecase,
     ListMyRepairRequestsUsecase,
+    SaveRepairRequestMaintenanceUsecase,
     SearchRepairServiceOrganizationsUsecase,
     UpdateRepairProcessEntryUsecase,
   ],

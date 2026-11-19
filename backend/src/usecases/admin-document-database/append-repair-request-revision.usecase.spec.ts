@@ -22,6 +22,7 @@ import type {
   RepairRequestRevisionService,
   RepairRequestRevisionTargetSnapshot,
 } from '@src/modules/lithography/repair-request-revision.service';
+import type { RepairRequestMaintenanceService } from '@src/modules/lithography/repair-request-maintenance.service';
 import type { TransactionRunner } from '../common/ports/transaction-runner.contract';
 import {
   AppendRepairRequestRevisionUsecase,
@@ -60,6 +61,12 @@ function buildTarget(
     closureReason: null,
     handlingEndedAt: null,
     currentRevisionNo: 2,
+    maintenanceDate: null,
+    maintenanceEngineerName: null,
+    resetResult: null,
+    supplementaryNote: null,
+    maintenanceVersionNo: 0,
+    maintenanceAttachmentFileId: null,
     ...overrides,
   };
 }
@@ -95,6 +102,10 @@ function createHarness(options: {
     lockRequestForRevision: jest.fn().mockResolvedValue(target),
     lockProcessEntriesForRevision: jest.fn().mockResolvedValue(processEntries),
     listResponsesForSnapshot: jest.fn().mockResolvedValue([]),
+    lockMaintenanceSteps: jest.fn().mockResolvedValue([]),
+    lockMaintenancePanels: jest.fn().mockResolvedValue([]),
+    listMaintenanceStepsAfterWrite: jest.fn().mockResolvedValue([]),
+    listMaintenancePanelsAfterWrite: jest.fn().mockResolvedValue([]),
     updateRequestRevisionFields: jest.fn().mockResolvedValue(1),
     updateProcessEntryRevision: jest.fn().mockResolvedValue(1),
     insertRevision: jest.fn().mockResolvedValue({
@@ -104,6 +115,9 @@ function createHarness(options: {
       actorAccountId: ADMIN_ACCOUNT_ID,
       createdAt: new Date('2026-09-02T08:00:00.000Z'),
     }),
+  };
+  const maintenanceService = {
+    saveMaintenance: jest.fn().mockResolvedValue(undefined),
   };
   const accountQueryService = {
     findAdminLevelByAccountId: jest.fn().mockResolvedValue(options.adminLevel ?? 1),
@@ -125,6 +139,7 @@ function createHarness(options: {
 
   const usecase = new AppendRepairRequestRevisionUsecase(
     revisionService as unknown as RepairRequestRevisionService,
+    maintenanceService as unknown as RepairRequestMaintenanceService,
     accountQueryService as unknown as AccountQueryService,
     trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
     transactionRunner as unknown as TransactionRunner,
@@ -180,7 +195,7 @@ describe('AppendRepairRequestRevisionUsecase', () => {
       expect.objectContaining({
         revisionNo: 3,
         previousVersion: 2,
-        schemaVersion: 1,
+        schemaVersion: 2,
         actorAccountId: ADMIN_ACCOUNT_ID,
         reason: '订正已提交事实',
       }),

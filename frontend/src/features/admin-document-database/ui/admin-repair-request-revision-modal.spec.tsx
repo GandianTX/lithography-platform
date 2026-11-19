@@ -83,6 +83,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={vi.fn()}
         open
       />,
@@ -115,6 +116,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,
@@ -165,6 +167,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,
@@ -209,6 +212,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,
@@ -240,6 +244,7 @@ describe('AdminRepairRequestRevisionModal', () => {
       <AdminRepairRequestRevisionModal
         detail={buildDetail()}
         onClose={vi.fn()}
+        onDownloadAttachment={vi.fn().mockResolvedValue({ ok: true })}
         onSaved={onSaved}
         open
       />,

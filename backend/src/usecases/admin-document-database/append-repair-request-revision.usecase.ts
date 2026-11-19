@@ -11,7 +11,14 @@ import { isRepairRequestVisibleToAdminOrganization } from '@core/repair-request/
 import {
   REPAIR_REQUEST_REVISION_SCHEMA_VERSION,
   buildRepairRequestRevisionSnapshot,
+  type RepairRequestRevisionSnapshotPanel,
+  type RepairRequestRevisionSnapshotStep,
 } from '@core/repair-request/policy/repair-request-revision.policy';
+import {
+  normalizeMaintenanceRecord,
+  type MaintenanceRecordRawInput,
+  type NormalizedMaintenanceRecord,
+} from '@core/repair-request/policy/repair-request-maintenance.policy';
 import {
   isTerminalHandlingStatus,
   parseRepairRequestHandlingResult,
@@ -29,6 +36,11 @@ import {
 import { Inject, Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import type {
+  RepairMaintenanceFaultPanelView,
+  RepairMaintenanceStepView,
+} from '@src/modules/lithography/lithography.types';
+import { RepairRequestMaintenanceService } from '@src/modules/lithography/repair-request-maintenance.service';
 import {
   RepairRequestProcessRevisionTarget,
   RepairRequestRevisionService,
@@ -60,6 +72,12 @@ export type AppendRepairRequestRevisionCommand = {
   handlingResult?: RepairRequestHandlingResult | null;
   closureReason?: string | null;
   processEntries?: ReadonlyArray<RepairRequestProcessRevisionCommand>;
+  /**
+   * 结构化维修记录修订（可选）。提供时必须同时给出 expectedMaintenanceVersion；
+   * 只允许订正维修字段、步骤与面板，不允许改附件绑定（attachment 字段不开放）。
+   */
+  expectedMaintenanceVersion?: number | null;
+  maintenance?: MaintenanceRecordRawInput | null;
 };
 
 export type RepairRequestRevisionView = {
@@ -70,6 +88,8 @@ export type RepairRequestRevisionView = {
   currentRevisionNo: number;
   actorNickname: string;
   createdAt: Date;
+  hasComparableSnapshot: boolean;
+  schemaVersion: number;
 };
 
 const MAX_REASON_LENGTH = 1000;
@@ -95,6 +115,7 @@ const MAX_REASON_LENGTH = 1000;
 export class AppendRepairRequestRevisionUsecase {
   constructor(
     private readonly revisionService: RepairRequestRevisionService,
+    private readonly maintenanceService: RepairRequestMaintenanceService,
     private readonly accountQueryService: AccountQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
     @Inject(TRANSACTION_RUNNER)
@@ -116,11 +137,13 @@ export class AppendRepairRequestRevisionUsecase {
     const handlingResult = normalizeOptionalHandlingResult(command.handlingResult);
     const closureReasonInput = command.closureReason;
     const processEntries = normalizeProcessEntries(command.processEntries);
+    const maintenance = normalizeAdminMaintenance(command);
     if (
       contentMd === null &&
       handlingResult === null &&
       closureReasonInput === undefined &&
-      processEntries.length === 0
+      processEntries.length === 0 &&
+      maintenance === null
     ) {
       throw new DomainError(REPAIR_REQUEST_ERROR.INVALID_PARAMS, '未检测到需要修订的字段');
     }
@@ -160,6 +183,29 @@ export class AppendRepairRequestRevisionUsecase {
         command.requestId,
         transactionContext,
       );
+      const beforeMaintenanceSteps = await this.revisionService.lockMaintenanceSteps(
+        command.requestId,
+        transactionContext,
+      );
+      const beforeMaintenancePanels = await this.revisionService.lockMaintenancePanels(
+        command.requestId,
+        transactionContext,
+      );
+
+      if (maintenance !== null) {
+        assertExpectedMaintenanceVersion(command.expectedMaintenanceVersion);
+        if (target.maintenanceVersionNo !== command.expectedMaintenanceVersion) {
+          throw new DomainError(
+            REPAIR_REQUEST_ERROR.PROCESS_VERSION_CONFLICT,
+            '维修记录已被其他操作更新，请刷新后重试',
+            {
+              requestId: command.requestId,
+              expectedMaintenanceVersion: command.expectedMaintenanceVersion,
+            },
+          );
+        }
+      }
+
       const nextProcessEntries = resolveNextProcessEntries(processTargets, processEntries);
       const nextRequest = resolveNextRequest(target, {
         contentMd,
@@ -168,13 +214,21 @@ export class AppendRepairRequestRevisionUsecase {
         now,
         actorAccountId: command.session.accountId,
         nextRevisionNo: target.currentRevisionNo + 1,
+        maintenance,
       });
 
       if (
         nextRequest.contentMd === target.contentMd &&
         nextRequest.handlingResult === target.handlingResult &&
         nextRequest.closureReason === target.closureReason &&
-        nextProcessEntries.changed.length === 0
+        nextProcessEntries.changed.length === 0 &&
+        (maintenance === null ||
+          !hasMaintenanceChanges(
+            target,
+            beforeMaintenanceSteps,
+            beforeMaintenancePanels,
+            maintenance,
+          ))
       ) {
         throw new DomainError(REPAIR_REQUEST_ERROR.INVALID_PARAMS, '未检测到需要修订的字段');
       }
@@ -183,6 +237,8 @@ export class AppendRepairRequestRevisionUsecase {
         request: target,
         processEntries: processTargets,
         responses,
+        maintenanceSteps: beforeMaintenanceSteps.map(toSnapshotStep),
+        maintenanceFaultPanels: beforeMaintenancePanels.map(toSnapshotPanel),
       });
 
       const affected = await this.revisionService.updateRequestRevisionFields(
@@ -228,10 +284,38 @@ export class AppendRepairRequestRevisionUsecase {
         }
       }
 
+      // 维修记录写入与工单/过程修订同事务；附件绑定不在管理员白名单内，故不传 attachment
+      if (maintenance !== null) {
+        await this.maintenanceService.saveMaintenance(
+          {
+            requestId: command.requestId,
+            expectedVersion: target.maintenanceVersionNo,
+            maintenanceDate: maintenance.maintenanceDate,
+            engineerName: maintenance.engineerName,
+            resetResult: maintenance.resetResult,
+            supplementaryNote: maintenance.supplementaryNote,
+            steps: maintenance.steps,
+            panels: maintenance.panels,
+          },
+          transactionContext,
+        );
+      }
+
+      const afterMaintenanceSteps = await this.revisionService.listMaintenanceStepsAfterWrite(
+        command.requestId,
+        transactionContext,
+      );
+      const afterMaintenancePanels = await this.revisionService.listMaintenancePanelsAfterWrite(
+        command.requestId,
+        transactionContext,
+      );
+
       const afterSnapshot = buildRepairRequestRevisionSnapshot({
         request: nextRequest.requestSnapshot,
         processEntries: nextProcessEntries.after,
         responses,
+        maintenanceSteps: afterMaintenanceSteps.map(toSnapshotStep),
+        maintenanceFaultPanels: afterMaintenancePanels.map(toSnapshotPanel),
       });
       const revision = await this.revisionService.insertRevision(
         {
@@ -254,6 +338,9 @@ export class AppendRepairRequestRevisionUsecase {
         reason: revision.reason,
         currentRevisionNo: nextRequest.currentRevisionNo,
         createdAt: revision.createdAt,
+        // 本用例写入的始终是当前结构版本，前后快照完整可比
+        hasComparableSnapshot: true,
+        schemaVersion: REPAIR_REQUEST_REVISION_SCHEMA_VERSION,
       };
     });
 
@@ -484,6 +571,7 @@ function resolveNextRequest(
     now: Date;
     actorAccountId: number;
     nextRevisionNo: number;
+    maintenance: NormalizedMaintenanceRecord | null;
   },
 ): {
   requestSnapshot: Parameters<typeof buildRepairRequestRevisionSnapshot>[0]['request'];
@@ -506,6 +594,26 @@ function resolveNextRequest(
   });
   const closureReason =
     input.closureReason === undefined ? target.closureReason : (input.closureReason ?? null);
+  const maintenanceFacts =
+    input.maintenance === null
+      ? {
+          maintenanceDate: target.maintenanceDate,
+          maintenanceEngineerName: target.maintenanceEngineerName,
+          resetResult: target.resetResult,
+          supplementaryNote: target.supplementaryNote,
+          maintenanceVersionNo: target.maintenanceVersionNo,
+          maintenanceAttachmentFileId: target.maintenanceAttachmentFileId,
+        }
+      : {
+          maintenanceDate: input.maintenance.maintenanceDate,
+          maintenanceEngineerName: input.maintenance.engineerName,
+          resetResult: input.maintenance.resetResult,
+          supplementaryNote: input.maintenance.supplementaryNote,
+          // 保存成功会原子递增维修版本号
+          maintenanceVersionNo: target.maintenanceVersionNo + 1,
+          // 附件绑定不在管理员白名单内，保持原值
+          maintenanceAttachmentFileId: target.maintenanceAttachmentFileId,
+        };
 
   return {
     requestSnapshot: {
@@ -530,6 +638,7 @@ function resolveNextRequest(
       closedAt: target.closedAt,
       closureReason,
       currentRevisionNo: input.nextRevisionNo,
+      ...maintenanceFacts,
     },
     currentRevisionNo: input.nextRevisionNo,
     contentMd,
@@ -544,6 +653,113 @@ function resolveNextRequest(
     closureReason,
     closureReasonValue: input.closureReason,
   };
+}
+
+/**
+ * 管理员维修修订归一：必须显式携带维修版本号；附件绑定不在白名单内。
+ */
+function normalizeAdminMaintenance(
+  command: AppendRepairRequestRevisionCommand,
+): NormalizedMaintenanceRecord | null {
+  if (command.maintenance === undefined || command.maintenance === null) {
+    return null;
+  }
+  assertExpectedMaintenanceVersion(command.expectedMaintenanceVersion);
+  return normalizeMaintenanceRecord(command.maintenance);
+}
+
+function assertExpectedMaintenanceVersion(value: number | null | undefined): void {
+  if (value === undefined || value === null) {
+    throw new DomainError(REPAIR_REQUEST_ERROR.INVALID_PARAMS, '修订维修记录时必须提供维修版本号');
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new DomainError(REPAIR_REQUEST_ERROR.INVALID_PARAMS, '维修版本号格式不合法');
+  }
+}
+
+/** 维修字段/步骤/面板与当前值是否真实变化（调序也算变化） */
+function hasMaintenanceChanges(
+  target: RepairRequestRevisionTargetSnapshot,
+  steps: RepairMaintenanceStepView[],
+  panels: RepairMaintenanceFaultPanelView[],
+  next: NormalizedMaintenanceRecord,
+): boolean {
+  if (
+    target.maintenanceDate !== next.maintenanceDate ||
+    target.maintenanceEngineerName !== next.engineerName ||
+    target.resetResult !== next.resetResult ||
+    target.supplementaryNote !== next.supplementaryNote
+  ) {
+    return true;
+  }
+  const currentSteps = steps.map((step) => ({
+    id: step.id,
+    stepNo: step.stepNo,
+    errorCode: step.errorCode,
+    partName: step.partName,
+    actionText: step.actionText,
+    resultCode: step.resultCode,
+  }));
+  const nextSteps = next.steps.map((step) => ({
+    id: step.id,
+    stepNo: step.stepNo,
+    errorCode: step.errorCode,
+    partName: step.partName,
+    actionText: step.actionText,
+    resultCode: step.resultCode,
+  }));
+  if (stableStepJson(currentSteps) !== stableStepJson(nextSteps)) {
+    return true;
+  }
+
+  const stepNoById = new Map(steps.map((step) => [step.id, step.stepNo]));
+  const currentPanels = panels.map((panel) => ({
+    id: panel.id,
+    panelType: panel.panelType,
+    stepNo: panel.stepId === null ? null : (stepNoById.get(panel.stepId) ?? null),
+    phaseCode: panel.phaseCode,
+    mainError: panel.mainError,
+    unitError: panel.unitError,
+    source: panel.source,
+    errorType: panel.errorType,
+    gpibStatus: panel.gpibStatus,
+    faultStatus: panel.faultStatus,
+    description: panel.description,
+    action: panel.action,
+  }));
+  const nextPanels = next.panels.map((panel) => ({
+    id: panel.id,
+    panelType: panel.panelType,
+    stepNo: panel.stepNo,
+    phaseCode: panel.phaseCode,
+    mainError: panel.mainError,
+    unitError: panel.unitError,
+    source: panel.source,
+    errorType: panel.errorType,
+    gpibStatus: panel.gpibStatus,
+    faultStatus: panel.faultStatus,
+    description: panel.description,
+    action: panel.action,
+  }));
+  return stablePanelJson(currentPanels) !== stablePanelJson(nextPanels);
+}
+
+function stableStepJson(rows: ReadonlyArray<Record<string, unknown>>): string {
+  return JSON.stringify([...rows].sort((a, b) => Number(a.stepNo) - Number(b.stepNo)));
+}
+
+function stablePanelJson(rows: ReadonlyArray<Record<string, unknown>>): string {
+  return JSON.stringify([...rows].sort((a, b) => String(a.id).localeCompare(String(b.id))));
+}
+
+function toSnapshotStep(step: RepairMaintenanceStepView): RepairRequestRevisionSnapshotStep {
+  return { ...step };
+}
+
+function toSnapshotPanel(
+  panel: RepairMaintenanceFaultPanelView,
+): RepairRequestRevisionSnapshotPanel {
+  return { ...panel };
 }
 
 type NextHandlingFacts = {

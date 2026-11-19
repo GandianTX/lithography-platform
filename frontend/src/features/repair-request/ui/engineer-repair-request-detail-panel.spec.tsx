@@ -6,7 +6,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { translate } from '@/shared/i18n';
+import { createTranslator, I18nContext, translate } from '@/shared/i18n';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 
 import type { EngineerRepairRequestDetailState } from '../application/use-engineer-repair-request-detail';
@@ -33,6 +33,11 @@ vi.mock('react-router', async (importOriginal) => {
 
 vi.mock('../application/use-engineer-repair-request-detail-flow', () => ({
   useEngineerRepairRequestDetailFlow: () => flowMock(),
+}));
+
+// 版本历史有独立测试；面板测试只验证挂载位置与可见性，避免真实 GraphQL 读取。
+vi.mock('./engineer-repair-version-history', () => ({
+  EngineerRepairVersionHistory: () => <div data-testid="engineer-repair-version-history" />,
 }));
 
 const CONFLICT_MESSAGE = '该维修申请已被接单，请刷新后查看最新状态';
@@ -674,7 +679,7 @@ describe('工程师详情面板的单卡片结构', () => {
     expect(screen.queryByText('已结单')).toBeNull();
   });
 
-  it('本人已接单：内部维修过程先于客户可见回复，结单区独立且过程与回复同卡', () => {
+  it('本人已接单：旧内部维修过程入口不再显示，客户可见回复与版本历史保留', () => {
     setFlow(
       {
         detail: {
@@ -703,15 +708,37 @@ describe('工程师详情面板的单卡片结构', () => {
     );
     render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
 
-    const processHeading = screen.getByText('内部维修过程');
-    const repliesHeading = screen.getByText('客户可见回复');
-    expect(
-      processHeading.compareDocumentPosition(repliesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(Array.from(document.querySelectorAll('h4')).map((node) => node.textContent)).toContain(
-      '结单',
+    // 旧「内部维修过程／新增维修过程／执行操作／测试事实／事件时间」入口全部移除
+    expect(screen.queryByText('内部维修过程')).toBeNull();
+    expect(screen.queryByText('新增维修过程')).toBeNull();
+    expect(screen.queryByText('执行操作')).toBeNull();
+    expect(screen.queryByText('测试事实')).toBeNull();
+    expect(screen.queryByText('事件时间')).toBeNull();
+    expect(screen.queryByText('检查对准模块并记录测试结果')).toBeNull();
+
+    // 客户可见回复保持独立展示，不被旧模块移除影响
+    expect(screen.getByText('客户可见回复')).toBeTruthy();
+    expect(screen.getByText(HISTORY_RESPONSE.responseText)).toBeTruthy();
+    // 页面底部仍挂载版本历史卡片（接单工程师本人视角）
+    expect(screen.getByTestId('engineer-repair-version-history')).toBeTruthy();
+  });
+
+  it('非接单人视角不挂载版本历史（避免无权限查询）', () => {
+    setFlow(
+      {
+        detail: {
+          ...ACCEPTED_DETAIL,
+          acceptanceViewStatus: 'TAKEN_BY_OTHER',
+          acceptedEngineerNickname: '赵工',
+        },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
     );
-    expect(screen.getByText('检查对准模块并记录测试结果')).toBeTruthy();
+    render(<EngineerRepairRequestDetailPanel canHandleAsEngineer={true} requestId={123} />);
+
+    expect(screen.queryByTestId('engineer-repair-version-history')).toBeNull();
   });
 
   it('精确 ENGINEER + 本人已接单：唯一卡片内含回复表单与历史时间线', () => {
@@ -812,5 +839,90 @@ describe('工程师详情面板的单卡片结构', () => {
     expect(card.contains(screen.getByText('你已接单该维修申请，后续请跟进处理。'))).toBe(true);
     expect(card.contains(screen.getByLabelText('回复正文'))).toBe(true);
     expect(card.contains(screen.getByRole('button', { name: '返回维修申请列表' }))).toBe(true);
+  });
+});
+
+describe('工程师详情英文展示', () => {
+  beforeEach(() => {
+    flowMock.mockReset();
+    navigateMock.mockReset();
+  });
+
+  function renderEnglish(canHandleAsEngineer: boolean) {
+    return render(
+      <I18nContext.Provider
+        value={{
+          language: 'en',
+          setLanguage: vi.fn(),
+          t: createTranslator('en'),
+        }}
+      >
+        <EngineerRepairRequestDetailPanel
+          canHandleAsEngineer={canHandleAsEngineer}
+          requestId={123}
+        />
+      </I18nContext.Provider>,
+    );
+  }
+
+  it('已结单详情：7 处字段、状态值与客户回复空态按英文展示，不回落中文硬编码', () => {
+    setFlow(
+      {
+        detail: {
+          ...READY_DETAIL,
+          closureStatus: 'CLOSED',
+          closedAt: '2026-11-19T03:33:44.000Z',
+          closureReason: '客户确认修复',
+          handlingResult: 'FIXED',
+          handlingStatus: 'COMPLETED',
+        },
+        requestSeq: 1,
+        status: 'ready',
+      },
+      null,
+    );
+    renderEnglish(false);
+
+    for (const text of [
+      'Closure status',
+      'Closed at',
+      'Closure reason',
+      'Handling result',
+      'Handling status',
+      'Customer-visible replies',
+      'Handling notes',
+      'Closed',
+      'Fault fixed',
+      'Completed',
+      'No engineer replies yet.',
+    ]) {
+      expect(screen.getByText(text)).toBeTruthy();
+    }
+
+    for (const hardcoded of [
+      '结单状态',
+      '结单时间',
+      '结单原因',
+      '处理结果',
+      '处理状态',
+      '客户可见回复',
+      '处理说明',
+      '已结单',
+      '故障修复',
+      '已完成',
+      '暂无工程师回复。',
+    ]) {
+      expect(screen.queryByText(hardcoded)).toBeNull();
+    }
+  });
+
+  it('未结单空态：Open 与 Not recorded 随语言切换', () => {
+    setFlow({ detail: READY_DETAIL, requestSeq: 1, status: 'ready' }, null);
+    renderEnglish(false);
+
+    expect(screen.getByText('Open')).toBeTruthy();
+    expect(screen.getAllByText('Not recorded')).toHaveLength(2);
+    expect(screen.queryByText('未结单')).toBeNull();
+    expect(screen.queryByText('未记录')).toBeNull();
   });
 });

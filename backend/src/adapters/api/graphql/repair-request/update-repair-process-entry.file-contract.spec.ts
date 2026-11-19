@@ -32,8 +32,10 @@ import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
 import { GetMyRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-my-repair-request-detail.usecase';
+import { InterruptRepairRequestUsecase } from '@src/usecases/repair-request/interrupt-repair-request.usecase';
 import { ListEngineerRepairRequestsUsecase } from '@src/usecases/repair-request/list-engineer-repair-requests.usecase';
 import { ListMyRepairRequestsUsecase } from '@src/usecases/repair-request/list-my-repair-requests.usecase';
+import { SaveRepairRequestMaintenanceUsecase } from '@src/usecases/repair-request/save-repair-request-maintenance.usecase';
 import { SearchRepairServiceOrganizationsUsecase } from '@src/usecases/repair-request/search-repair-service-organizations.usecase';
 import { UpdateRepairProcessEntryUsecase } from '@src/usecases/repair-request/update-repair-process-entry.usecase';
 import { TRANSACTION_RUNNER } from '@src/usecases/common/ports/transaction-runner.contract';
@@ -164,6 +166,14 @@ describe('UpdateRepairProcessEntryInput file 省略/null GraphQL 入口合同', 
         },
         {
           provide: CloseRepairRequestUsecase,
+          useValue: { execute: jest.fn() },
+        },
+        {
+          provide: InterruptRepairRequestUsecase,
+          useValue: { execute: jest.fn() },
+        },
+        {
+          provide: SaveRepairRequestMaintenanceUsecase,
           useValue: { execute: jest.fn() },
         },
         {

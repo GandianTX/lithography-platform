@@ -19,9 +19,16 @@ import type {
   AdminRepairRequestListItemQueryResult,
   AdminRepairRequestListPage,
   AdminRepairRequestQueryFilter,
+  AdminRepairRequestRevisionDetailView,
+  AdminRepairRequestRevisionSnapshotView,
   AdminRepairRequestSummaryQueryResult,
 } from '../admin-document-database.types';
+import {
+  parseRepairRequestRevisionSnapshot,
+  type ParsedRepairRequestRevisionSnapshot,
+} from '@core/repair-request/policy/repair-request-revision.policy';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
+import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
 
 /** 列表固定排序：创建时间倒序，次级主键倒序（与既有维修申请读模型同口径） */
 const LIST_ORDER = { createdAt: 'DESC', id: 'DESC' } as const;
@@ -57,6 +64,7 @@ export class AdminRepairRequestQueryService {
     @InjectRepository(RepairRequestRevisionEntity)
     private readonly revisionRepository: Repository<RepairRequestRevisionEntity>,
     private readonly repairProcessEntryQueryService: RepairProcessEntryQueryService,
+    private readonly maintenanceQueryService: RepairRequestMaintenanceQueryService,
   ) {}
 
   /**
@@ -234,7 +242,16 @@ export class AdminRepairRequestQueryService {
       ? this.repairProcessEntryQueryService.listByRequest(entity.id)
       : this.repairProcessEntryQueryService.listByRequestTextOnly(entity.id);
 
-    const [model, responses, processEntries, revisions] = await Promise.all([
+    const [
+      model,
+      responses,
+      processEntries,
+      revisions,
+      maintenance,
+      maintenanceSteps,
+      maintenanceFaultPanels,
+      intake,
+    ] = await Promise.all([
       this.equipmentModelRepository.findOne({ where: { id: entity.equipmentModelId } }),
       this.responseRepository.find({
         where: { requestId: entity.id },
@@ -245,6 +262,10 @@ export class AdminRepairRequestQueryService {
         where: { requestId: entity.id },
         order: { revisionNo: 'DESC' },
       }),
+      this.maintenanceQueryService.findRecord(entity.id),
+      this.maintenanceQueryService.listSteps(entity.id),
+      this.maintenanceQueryService.listFaultPanels(entity.id),
+      this.maintenanceQueryService.findIntakeSource(entity.id),
     ]);
 
     return {
@@ -277,13 +298,86 @@ export class AdminRepairRequestQueryService {
         createdAt: response.createdAt,
       })),
       processEntries,
-      revisions: revisions.map((revision) => ({
-        revisionNo: revision.revisionNo,
-        previousVersion: revision.previousVersion,
-        reason: revision.reason,
-        actorAccountId: revision.actorAccountId,
-        createdAt: revision.createdAt,
-      })),
+      revisions: revisions.map((revision) => {
+        const before = parseRepairRequestRevisionSnapshot(revision.beforeSnapshot);
+        const after = parseRepairRequestRevisionSnapshot(revision.afterSnapshot);
+        return {
+          revisionNo: revision.revisionNo,
+          previousVersion: revision.previousVersion,
+          reason: revision.reason,
+          actorAccountId: revision.actorAccountId,
+          createdAt: revision.createdAt,
+          hasComparableSnapshot:
+            before !== null &&
+            after !== null &&
+            before.hasMaintenanceData &&
+            after.hasMaintenanceData,
+          schemaVersion: revision.schemaVersion,
+        };
+      }),
+      maintenanceVersionNo: entity.maintenanceVersionNo,
+      maintenance,
+      maintenanceSteps,
+      maintenanceFaultPanels,
+      intake,
+    };
+  }
+
+  /**
+   * 管理员修订详情（查看版本 / 对比上一版）。
+   *
+   * - 先按管理员工单组织范围授权，未授权统一 NOT_FOUND；
+   * - 只读取该修订自身保存的前后快照，不拼接当前工单数据、不回滚；
+   * - 快照损坏或为 v1（无维修区块）时返回 comparable=false / hasMaintenanceData=false，
+   *   由调用方显式提示不可比原因。
+   */
+  async findRevisionDetail(params: {
+    requestId: number;
+    revisionNo: number;
+    organizationId: number | null;
+  }): Promise<AdminRepairRequestRevisionDetailView & { actorAccountId: number }> {
+    const entity = await this.requestRepository.findOne({
+      where: { id: params.requestId, deprecated: false },
+    });
+    if (!entity) {
+      throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, '维修申请不存在或不可访问');
+    }
+    const resolvedIntakeOrg =
+      entity.intakeId === null ? null : await this.findIntakeServiceOrganizationId(entity.intakeId);
+    if (
+      !isRepairRequestVisibleToAdminOrganization(entity, params.organizationId, resolvedIntakeOrg)
+    ) {
+      throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, '维修申请不存在或不可访问');
+    }
+
+    const revision = await this.revisionRepository.findOne({
+      where: { requestId: params.requestId, revisionNo: params.revisionNo },
+    });
+    if (!revision) {
+      throw new DomainError(ADMIN_DOCUMENT_DATABASE_ERROR.NOT_FOUND, '修订记录不存在');
+    }
+    const beforeParsed = parseRepairRequestRevisionSnapshot(revision.beforeSnapshot);
+    const afterParsed = parseRepairRequestRevisionSnapshot(revision.afterSnapshot);
+    const comparable = beforeParsed !== null && afterParsed !== null;
+    const hasMaintenanceData =
+      comparable && beforeParsed.hasMaintenanceData && afterParsed.hasMaintenanceData;
+    return {
+      requestId: params.requestId,
+      revisionNo: revision.revisionNo,
+      previousVersion: revision.previousVersion,
+      reason: revision.reason,
+      actorNickname: '',
+      actorAccountId: revision.actorAccountId,
+      createdAt: revision.createdAt,
+      comparable,
+      hasMaintenanceData,
+      incomparableReason: comparable
+        ? hasMaintenanceData
+          ? null
+          : '该修订快照为旧版本，未保存维修步骤与故障面板，无法按当前结构对比'
+        : '该修订快照结构损坏或缺少可比数据，无法对比',
+      before: beforeParsed === null ? null : toRevisionSnapshotView(beforeParsed),
+      after: afterParsed === null ? null : toRevisionSnapshotView(afterParsed),
     };
   }
 
@@ -295,6 +389,8 @@ export class AdminRepairRequestQueryService {
    * 不向调用方暴露 intake 其他字段。
    */
   private async findIntakeServiceOrganizationId(intakeId: number): Promise<number | null> {
+    // 见类注释：失败关闭，不允许用其他工单事实替代
+
     const intake = await this.requestRepository.manager
       .getRepository(RepairRequestIntakeEntity)
       .findOne({
@@ -386,4 +482,25 @@ export class AdminRepairRequestQueryService {
       modelName: entity.modelName,
     };
   }
+}
+
+/** 快照解析结果 → 稳定只读视图（字段缺失按 null/空数组，不拼当前工单数据） */
+function toRevisionSnapshotView(
+  snapshot: ParsedRepairRequestRevisionSnapshot,
+): AdminRepairRequestRevisionSnapshotView {
+  return {
+    schemaVersion: snapshot.schemaVersion,
+    contentMd: snapshot.contentMd,
+    handlingResult: snapshot.handlingResult,
+    handlingStatus: snapshot.handlingStatus,
+    closureReason: snapshot.closureReason,
+    maintenanceDate: snapshot.maintenance.maintenanceDate,
+    maintenanceEngineerName: snapshot.maintenance.engineerName,
+    resetResult: snapshot.maintenance.resetResult,
+    supplementaryNote: snapshot.maintenance.supplementaryNote,
+    maintenanceVersionNo: snapshot.maintenance.versionNo,
+    maintenanceAttachmentFileId: snapshot.maintenance.attachmentFileId,
+    steps: snapshot.steps.map((step) => ({ ...step })),
+    panels: snapshot.panels.map((panel) => ({ ...panel })),
+  };
 }

@@ -7,11 +7,12 @@
  *   UI 不触碰 adapter，不解析 Apollo 原始错误；
  * - 展示申请编号、客户昵称/公司、设备型号、错误码、提交时间、接单视角状态、
  *   接单工程师与接单时间、结单事实（状态/时间/原因）、处理结果与状态、
- *   最后回复状态、故障描述、contentMd、内部维修过程与客户可见回复时间线；
+ *   最后回复状态、故障描述、contentMd、结构化内部维修记录与客户可见回复时间线；
  * - 结单状态/时间/原因与处理结果/状态始终展示：未结单显示「未结单」、
  *   未处理显示「未记录」，不把处理状态终结推断成已结单，也不只在结单后出现；
- * - 就绪内容顺序：申请事实 → 故障描述/补充说明 → 内部维修过程 →
- *   客户可见回复（含追加回复表单）→ 接单 → 结单专区 → 返回入口；
+ * - 就绪内容顺序：申请事实 → 故障描述/补充说明 → 原始报修/AI 分析 →
+ *   结构化维修记录 → 客户可见回复（含追加回复表单）→ 接单 → 结单专区 → 返回入口；
+ *   页面最底部为接单工程师可见的「版本与修订历史」；
  * - 操作可见性由「后端视角状态 + 会话单值业务角色」共同精确控制（三态 + 角色）：
  *   AVAILABLE + 精确 ENGINEER → 接单；MINE + 精确 ENGINEER → 回复；
  *   TAKEN_BY_OTHER → 只读；SUPER_ADMIN（非精确工程师写身份）→ 只读；
@@ -37,12 +38,11 @@
  *   结果不确定）用内联 Alert，结果不确定时附重新加载入口，
  *   不引入全局 toast；
  * - 统一不可访问反馈引导返回工程师列表，不泄露申请归属；
- * - 就绪状态只渲染一个公共 DataCard（负责人单卡片计划 P1）：一笔申请收进一个面板，
- *   申请信息、故障描述、可选的补充说明、回复时间线与接单/回复操作作为卡片内分区，
- *   用卡片内小标题、间距与细分隔线保持层次，不改变既有字段、状态文案、权限判断、
- *   反馈、草稿与提交逻辑；
+ * - 就绪状态渲染一张主申请 DataCard；旧内部维修过程区块已移除，
+ *   结构化维修记录是该页面唯一维修录入入口，客户可见回复保持独立；
+ *   页面最底部追加只读版本历史卡片；
  * - 详情就绪后始终提供「返回维修申请列表」入口（与接单状态、查看者角色无关），
- *   且固定前往列表路径，保证从地址栏直达详情页也能稳定返回；该入口固定在卡片底部；
+ *   且固定前往列表路径，保证从地址栏直达详情页也能稳定返回；该入口固定在主卡片底部；
  * - 附件不属于维修申请功能：不渲染附件区域，也不渲染「暂无附件」类占位；
  * - 本仓库无 markdown 渲染依赖，contentMd 按保留换行的纯文本展示；
  * - 故障描述、补充说明、回复正文与只读/空态提示统一取应用正文基准 text-sm
@@ -53,14 +53,14 @@ import { type ReactNode, useEffect } from 'react';
 import { Alert, Button, Descriptions, Form, Input, Popconfirm, Select, Timeline } from 'antd';
 import { useNavigate } from 'react-router';
 
-import { useI18n } from '@/shared/i18n';
+import { type MessageKey, useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { ErrorState } from '@/shared/ui/error-state';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { LoadingState } from '@/shared/ui/loading-state';
 import {
-  REPAIR_HANDLING_RESULT_LABELS,
-  REPAIR_HANDLING_STATUS_LABELS,
+  type RepairHandlingResultValue,
+  type RepairHandlingStatusValue,
   resolveRepairClosureState,
 } from '@/shared/ui/repair-request-status-labels';
 
@@ -76,11 +76,29 @@ import type {
 import { RESOLUTION_STATUS_LABELS } from '../infrastructure/repair-request-read.types';
 
 import {
-  EngineerRepairCloseSection,
-  EngineerRepairProcessSection,
-} from './engineer-repair-process-section';
+  EngineerRepairAiAnalysisSection,
+  EngineerRepairIntakeSection,
+} from './engineer-repair-intake-analysis-section';
+import { EngineerRepairMaintenanceSection } from './engineer-repair-maintenance-section';
+import { EngineerRepairCloseSection } from './engineer-repair-process-section';
 import { ENGINEER_REPAIR_REQUEST_LIST_PATH } from './engineer-repair-request-paths';
+import { EngineerRepairVersionHistory } from './engineer-repair-version-history';
 import { AcceptanceViewStatusTag, ResolutionTag } from './repair-request-status-tags';
+
+/** 结单/处理枚举 → 词条键：展示文案随界面语言切换，不复制第二套全称 */
+const HANDLING_RESULT_LABEL_KEYS: Record<RepairHandlingResultValue, MessageKey> = {
+  FIXED: 'status.handlingResult.FIXED',
+  PART_PURCHASED: 'status.handlingResult.PART_PURCHASED',
+  PROVIDE_PLAN_SELF_EXECUTE: 'status.handlingResult.PROVIDE_PLAN_SELF_EXECUTE',
+  INTERRUPTED: 'status.handlingResult.INTERRUPTED',
+  UNREPAIRABLE: 'status.handlingResult.UNREPAIRABLE',
+};
+
+const HANDLING_STATUS_LABEL_KEYS: Record<RepairHandlingStatusValue, MessageKey> = {
+  IN_PROGRESS: 'status.handlingStatus.IN_PROGRESS',
+  COMPLETED: 'status.handlingStatus.COMPLETED',
+  UNRESOLVED: 'status.handlingStatus.UNRESOLVED',
+};
 
 function AcceptFeedbackAlert({ result }: { result: AcceptRepairRequestResult | null }) {
   const { t } = useI18n();
@@ -375,226 +393,243 @@ export function EngineerRepairRequestDetailPanel({
   const closureState = resolveRepairClosureState(detail.closureStatus, detail.closedAt);
   const closureStatusText =
     closureState === 'CLOSED'
-      ? '已结单'
+      ? t('engineerDetail.closureStatus.CLOSED')
       : closureBarrier
-        ? '结单已提交，待刷新确认'
+        ? t('engineerDetail.closureStatus.PENDING_CONFIRM')
         : closureState === 'OPEN'
-          ? '未结单'
-          : '结单状态未知（数据缺失）';
+          ? t('engineerDetail.closureStatus.OPEN')
+          : t('engineerDetail.closureStatus.UNKNOWN');
   const handlingResultText = detail.handlingResult
-    ? REPAIR_HANDLING_RESULT_LABELS[detail.handlingResult]
-    : '未记录';
+    ? t(HANDLING_RESULT_LABEL_KEYS[detail.handlingResult])
+    : t('engineerDetail.notRecorded');
   const handlingStatusText = detail.handlingStatus
-    ? REPAIR_HANDLING_STATUS_LABELS[detail.handlingStatus]
-    : '未记录';
+    ? t(HANDLING_STATUS_LABEL_KEYS[detail.handlingStatus])
+    : t('engineerDetail.notRecorded');
 
   return (
-    <DataCard title={t('engineerDetail.infoCard')}>
-      <Descriptions
-        bordered
-        column={{ lg: 2, md: 1, sm: 1, xs: 1 }}
-        items={[
-          { children: detail.requestNo, key: 'requestNo', label: t('engineerDetail.requestNo') },
-          {
-            children: detail.customerNickname ?? '—',
-            key: 'customerNickname',
-            label: t('engineerDetail.customerNickname'),
-          },
-          {
-            children: detail.customerCompanyName ?? '—',
-            key: 'customerCompanyName',
-            label: t('engineerDetail.customerCompany'),
-          },
-          {
-            children: `${detail.equipmentModel.modelName}（${detail.equipmentModel.modelCode}）`,
-            key: 'equipmentModel',
-            label: t('engineerDetail.model'),
-          },
-          { children: detail.errorCode, key: 'errorCode', label: t('engineerDetail.errorCode') },
-          {
-            children: formatDateTimeText(detail.createdAt),
-            key: 'createdAt',
-            label: t('engineerDetail.submittedAt'),
-          },
-          {
-            children: <AcceptanceViewStatusTag viewStatus={viewStatus} />,
-            key: 'acceptanceViewStatus',
-            label: t('engineerDetail.acceptanceStatus'),
-          },
-          {
-            children: detail.acceptedEngineerNickname ?? '—',
-            key: 'acceptedEngineerNickname',
-            label: t('engineerDetail.acceptedEngineer'),
-          },
-          {
-            children: detail.acceptedAt ? formatDateTimeText(detail.acceptedAt) : '—',
-            key: 'acceptedAt',
-            label: t('engineerDetail.acceptedAt'),
-          },
-          {
-            children: <ResolutionTag status={detail.latestResolutionStatus} />,
-            key: 'latestResolutionStatus',
-            label: t('engineerDetail.latestResolution'),
-          },
-          {
-            children: closureStatusText,
-            key: 'closureStatus',
-            label: '结单状态',
-          },
-          {
-            children:
-              closureState === 'CLOSED' && detail.closedAt
-                ? formatDateTimeText(detail.closedAt)
-                : '—',
-            key: 'closedAt',
-            label: '结单时间',
-          },
-          {
-            children: closureState === 'CLOSED' ? (detail.closureReason ?? '—') : '—',
-            key: 'closureReason',
-            label: '结单原因',
-          },
-          {
-            children: handlingResultText,
-            key: 'handlingResult',
-            label: '处理结果',
-          },
-          {
-            children: handlingStatusText,
-            key: 'handlingStatus',
-            label: '处理状态',
-          },
-        ]}
-        size="small"
-      />
-
-      <PanelSection title={t('engineerDetail.faultDescription')}>
-        <div className="text-sm whitespace-pre-wrap">{detail.faultDescription}</div>
-      </PanelSection>
-
-      {detail.contentMd ? (
-        <PanelSection title={t('engineerDetail.supplement')}>
-          <div className="text-sm whitespace-pre-wrap">{detail.contentMd}</div>
-        </PanelSection>
-      ) : null}
-
-      {/*
-       * 内部维修过程先于客户可见回复：先呈现排查/操作/测试事实与原件，
-       * 再呈现对客户可见的回复，避免回复时间线遮住过程记录。
-       */}
-      {showInternalProcess ? (
-        <EngineerRepairProcessSection
-          canWrite={canReply}
-          key={`process:${scopeKeyValue}`}
-          processEntries={detail.processEntries}
-          readOnly={writeBlocked}
-          reload={reload}
-          requestId={detail.id}
-          scopeKey={scopeKeyValue}
-          writeEligible={canWriteRequest}
+    <div className="flex flex-col gap-4">
+      <DataCard title={t('engineerDetail.infoCard')}>
+        <Descriptions
+          bordered
+          column={{ lg: 2, md: 1, sm: 1, xs: 1 }}
+          items={[
+            { children: detail.requestNo, key: 'requestNo', label: t('engineerDetail.requestNo') },
+            {
+              children: detail.customerNickname ?? '—',
+              key: 'customerNickname',
+              label: t('engineerDetail.customerNickname'),
+            },
+            {
+              children: detail.customerCompanyName ?? '—',
+              key: 'customerCompanyName',
+              label: t('engineerDetail.customerCompany'),
+            },
+            {
+              children: `${detail.equipmentModel.modelName}（${detail.equipmentModel.modelCode}）`,
+              key: 'equipmentModel',
+              label: t('engineerDetail.model'),
+            },
+            { children: detail.errorCode, key: 'errorCode', label: t('engineerDetail.errorCode') },
+            {
+              children: formatDateTimeText(detail.createdAt),
+              key: 'createdAt',
+              label: t('engineerDetail.submittedAt'),
+            },
+            {
+              children: <AcceptanceViewStatusTag viewStatus={viewStatus} />,
+              key: 'acceptanceViewStatus',
+              label: t('engineerDetail.acceptanceStatus'),
+            },
+            {
+              children: detail.acceptedEngineerNickname ?? '—',
+              key: 'acceptedEngineerNickname',
+              label: t('engineerDetail.acceptedEngineer'),
+            },
+            {
+              children: detail.acceptedAt ? formatDateTimeText(detail.acceptedAt) : '—',
+              key: 'acceptedAt',
+              label: t('engineerDetail.acceptedAt'),
+            },
+            {
+              children: <ResolutionTag status={detail.latestResolutionStatus} />,
+              key: 'latestResolutionStatus',
+              label: t('engineerDetail.latestResolution'),
+            },
+            {
+              children: closureStatusText,
+              key: 'closureStatus',
+              label: t('engineerDetail.closureStatusLabel'),
+            },
+            {
+              children:
+                closureState === 'CLOSED' && detail.closedAt
+                  ? formatDateTimeText(detail.closedAt)
+                  : '—',
+              key: 'closedAt',
+              label: t('engineerDetail.closedAtLabel'),
+            },
+            {
+              children: closureState === 'CLOSED' ? (detail.closureReason ?? '—') : '—',
+              key: 'closureReason',
+              label: t('engineerDetail.closureReasonLabel'),
+            },
+            {
+              children: handlingResultText,
+              key: 'handlingResult',
+              label: t('engineerDetail.handlingResultLabel'),
+            },
+            {
+              children: handlingStatusText,
+              key: 'handlingStatus',
+              label: t('engineerDetail.handlingStatusLabel'),
+            },
+          ]}
+          size="small"
         />
-      ) : null}
 
-      <PanelSection title="客户可见回复">
-        {detail.responses.length > 0 ? (
-          <Timeline
-            items={detail.responses.map((response) => ({
-              children: (
-                <div className="flex flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{response.engineerNickname}</span>
-                    <ResolutionTag status={response.resolutionStatus} />
-                    <span className="text-text-secondary text-xs">
-                      {formatDateTimeText(response.createdAt)}
-                    </span>
-                  </div>
-                  <div className="text-sm whitespace-pre-wrap">{response.responseText}</div>
-                </div>
-              ),
-              key: response.id,
-            }))}
-          />
-        ) : (
-          <div className="text-sm text-text-secondary">{t('engineerDetail.noResponses')}</div>
-        )}
+        <PanelSection title={t('engineerDetail.faultDescription')}>
+          <div className="text-sm whitespace-pre-wrap">{detail.faultDescription}</div>
+        </PanelSection>
 
-        {canReply ? (
-          <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4">
-            <div className="font-medium text-sm">追加处理回复</div>
-            <EngineerResponseForm
-              key={`response:${scopeKeyValue}`}
-              lastResult={lastCreateResponseResult}
-              onReload={() => void confirmResponseResult()}
-              onSubmit={(input) => void createResponse(input)}
-              requestId={detail.id}
-              submitting={submitting || reconciling}
-            />
-          </div>
+        {detail.contentMd ? (
+          <PanelSection title={t('engineerDetail.supplement')}>
+            <div className="text-sm whitespace-pre-wrap">{detail.contentMd}</div>
+          </PanelSection>
         ) : null}
-      </PanelSection>
 
-      {canAccept ? (
-        <PanelSection title="接单">
-          <div className="flex flex-col gap-4">
-            <AcceptFeedbackAlert result={lastAcceptResult} />
-            <div className="flex flex-col gap-2">
-              <div>
-                <Popconfirm
-                  cancelText={t('common.cancel')}
-                  description={t('engineerDetail.acceptConfirmDescription')}
-                  okText={t('engineerDetail.acceptConfirmOk')}
-                  onConfirm={() => void accept()}
-                  title={t('engineerDetail.acceptConfirmTitle')}
-                >
-                  <Button loading={accepting} type="primary">
-                    {t('engineerDetail.accept')}
-                  </Button>
-                </Popconfirm>
-              </div>
-              <div className="text-sm text-text-secondary">{t('engineerDetail.replyFirst')}</div>
+        {/*
+         * 分区顺序（任务 04 本轮调整）：客户原始报修 → 首次 AI 分析 → 结构化内部维修记录
+         * → 客户可见回复。原始报修与 AI 原文只读，不提供编辑控件；
+         * 旧内部维修过程入口已移除；维修记录仅在接单工程师本人视角出现。
+         */}
+        <EngineerRepairIntakeSection intake={detail.intake ?? null} />
+        <EngineerRepairAiAnalysisSection analysis={detail.intake?.analysis ?? null} />
+
+        {showInternalProcess ? (
+          <EngineerRepairMaintenanceSection
+            canWrite={canReply && !writeBlocked && (detail.canEditMaintenance ?? false)}
+            detail={detail}
+            key={`maintenance:${scopeKeyValue}:${detail.id}`}
+            readOnly={writeBlocked || !(detail.canEditMaintenance ?? false)}
+            reload={reload}
+            requestId={detail.id}
+            scopeKey={scopeKeyValue}
+            writeEligible={canWriteRequest}
+          />
+        ) : null}
+
+        {/*
+         * 旧「内部维修过程 / 新增维修过程 / 执行操作 / 测试事实 / 事件时间」入口已移除：
+         * 结构化维修记录是该页面唯一的维修录入入口，客户可见回复保持独立。
+         * 旧 repair_process_entry 历史行与仍被其他页面使用的组件/接口均保留。
+         */}
+        <PanelSection title={t('engineerDetail.customerVisibleReplies')}>
+          {detail.responses.length > 0 ? (
+            <Timeline
+              items={detail.responses.map((response) => ({
+                children: (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{response.engineerNickname}</span>
+                      <ResolutionTag status={response.resolutionStatus} />
+                      <span className="text-text-secondary text-xs">
+                        {formatDateTimeText(response.createdAt)}
+                      </span>
+                    </div>
+                    <div className="text-sm whitespace-pre-wrap">{response.responseText}</div>
+                  </div>
+                ),
+                key: response.id,
+              }))}
+            />
+          ) : (
+            <div className="text-sm text-text-secondary">{t('engineerDetail.noResponses')}</div>
+          )}
+
+          {canReply ? (
+            <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4">
+              <div className="font-medium text-sm">追加处理回复</div>
+              <EngineerResponseForm
+                key={`response:${scopeKeyValue}`}
+                lastResult={lastCreateResponseResult}
+                onReload={() => void confirmResponseResult()}
+                onSubmit={(input) => void createResponse(input)}
+                requestId={detail.id}
+                submitting={submitting || reconciling}
+              />
             </div>
-          </div>
+          ) : null}
         </PanelSection>
-      ) : null}
+
+        {canAccept ? (
+          <PanelSection title="接单">
+            <div className="flex flex-col gap-4">
+              <AcceptFeedbackAlert result={lastAcceptResult} />
+              <div className="flex flex-col gap-2">
+                <div>
+                  <Popconfirm
+                    cancelText={t('common.cancel')}
+                    description={t('engineerDetail.acceptConfirmDescription')}
+                    okText={t('engineerDetail.acceptConfirmOk')}
+                    onConfirm={() => void accept()}
+                    title={t('engineerDetail.acceptConfirmTitle')}
+                  >
+                    <Button loading={accepting} type="primary">
+                      {t('engineerDetail.accept')}
+                    </Button>
+                  </Popconfirm>
+                </div>
+                <div className="text-sm text-text-secondary">{t('engineerDetail.replyFirst')}</div>
+              </div>
+            </div>
+          </PanelSection>
+        ) : null}
+
+        {/*
+         * 只读/操作说明：接单成功后保留接单反馈；
+         * 精确 ENGINEER 结单后给出只读原因；非精确工程师写身份提示使用工程师账号。
+         */}
+        {!canAccept && (lastAcceptResult || readOnlyHint) ? (
+          <PanelSection title={t('engineerDetail.handlingNotes')}>
+            <div className="flex flex-col gap-3">
+              <AcceptFeedbackAlert result={lastAcceptResult} />
+              {readOnlyHint ? (
+                <div className="text-sm text-text-secondary">{readOnlyHint}</div>
+              ) : null}
+            </div>
+          </PanelSection>
+        ) : null}
+
+        {showInternalProcess && canHandleAsEngineer && !isClosed ? (
+          <EngineerRepairCloseSection
+            canWrite={canHandleAsEngineer}
+            closedByMutation={closureBarrier}
+            key={`close:${scopeKeyValue}`}
+            onCloseReadbackSucceeded={markClosureReadbackSucceeded}
+            onCloseSucceeded={markClosureSucceeded}
+            reload={reload}
+            requestId={detail.id}
+            scopeKey={scopeKeyValue}
+            writeEligible={canWriteRequest}
+          />
+        ) : null}
+
+        {/*
+         * 卡片底部常驻返回入口：不依赖接单状态与查看者角色，
+         * 固定前往列表路径（不用 navigate(-1)），从地址栏直达详情页也能稳定返回。
+         */}
+        <div className="mt-5 border-t border-border pt-4">
+          <Button onClick={() => navigate(ENGINEER_REPAIR_REQUEST_LIST_PATH)}>
+            {t('engineerDetail.backToList')}
+          </Button>
+        </div>
+      </DataCard>
 
       {/*
-       * 只读/操作说明：接单成功后保留接单反馈；
-       * 精确 ENGINEER 结单后给出只读原因；非精确工程师写身份提示使用工程师账号。
+       * 页面最底部「版本与修订历史」：只对当前接单工程师展示；
+       * 仅调用工程师侧只读查询，失败不影响上方工单详情与当前维修记录。
        */}
-      {!canAccept && (lastAcceptResult || readOnlyHint) ? (
-        <PanelSection title="处理说明">
-          <div className="flex flex-col gap-3">
-            <AcceptFeedbackAlert result={lastAcceptResult} />
-            {readOnlyHint ? (
-              <div className="text-sm text-text-secondary">{readOnlyHint}</div>
-            ) : null}
-          </div>
-        </PanelSection>
-      ) : null}
-
-      {showInternalProcess && canHandleAsEngineer && !isClosed ? (
-        <EngineerRepairCloseSection
-          canWrite={canHandleAsEngineer}
-          closedByMutation={closureBarrier}
-          key={`close:${scopeKeyValue}`}
-          onCloseReadbackSucceeded={markClosureReadbackSucceeded}
-          onCloseSucceeded={markClosureSucceeded}
-          reload={reload}
-          requestId={detail.id}
-          scopeKey={scopeKeyValue}
-          writeEligible={canWriteRequest}
-        />
-      ) : null}
-
-      {/*
-       * 卡片底部常驻返回入口：不依赖接单状态与查看者角色，
-       * 固定前往列表路径（不用 navigate(-1)），从地址栏直达详情页也能稳定返回。
-       */}
-      <div className="mt-5 border-t border-border pt-4">
-        <Button onClick={() => navigate(ENGINEER_REPAIR_REQUEST_LIST_PATH)}>
-          {t('engineerDetail.backToList')}
-        </Button>
-      </div>
-    </DataCard>
+      {showInternalProcess ? <EngineerRepairVersionHistory requestId={detail.id} /> : null}
+    </div>
   );
 }

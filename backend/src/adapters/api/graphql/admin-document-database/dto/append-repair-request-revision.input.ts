@@ -13,6 +13,10 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import {
+  RepairMaintenanceFaultPanelInput,
+  RepairMaintenanceStepInput,
+} from '@src/adapters/api/graphql/repair-request/dto/save-repair-request-maintenance.input';
 
 /** 单条内部维修过程的文本修订；只允许订正操作与测试事实，不转绑原件 */
 @InputType({ description: '维修过程文本修订输入' })
@@ -34,6 +38,48 @@ export class RepairProcessEntryRevisionInput {
   @IsOptional()
   @IsString({ message: '测试事实必须是字符串' })
   testResult?: string | null;
+}
+
+/**
+ * 管理员维修记录修订输入。
+ *
+ * 只开放维修字段、步骤与面板；不开放附件绑定、服务厂家、接单人、
+ * 流程状态、原报修与 AI 原文（这些字段不在 input 类型中，whitelist 会拒绝）。
+ */
+@InputType({ description: '管理员维修记录修订输入（字段白名单）' })
+export class MaintenanceRevisionInput {
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  maintenanceDate?: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  engineerName?: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  resetResult?: string | null;
+
+  @Field(() => String, { nullable: true })
+  @IsOptional()
+  @IsString()
+  supplementaryNote?: string | null;
+
+  @Field(() => [RepairMaintenanceStepInput], { defaultValue: [] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RepairMaintenanceStepInput)
+  steps!: RepairMaintenanceStepInput[];
+
+  @Field(() => [RepairMaintenanceFaultPanelInput], { defaultValue: [] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RepairMaintenanceFaultPanelInput)
+  panels!: RepairMaintenanceFaultPanelInput[];
 }
 
 /**
@@ -85,4 +131,22 @@ export class AppendRepairRequestRevisionInput {
   @ValidateNested({ each: true })
   @Type(() => RepairProcessEntryRevisionInput)
   processEntries?: RepairProcessEntryRevisionInput[] | null;
+
+  @Field(() => Int, {
+    nullable: true,
+    description: '工单当前维修版本号；修订维修记录时必填',
+  })
+  @IsOptional()
+  @IsInt({ message: '维修版本号必须是整数' })
+  @Min(0, { message: '维修版本号不能小于 0' })
+  expectedMaintenanceVersion?: number | null;
+
+  @Field(() => MaintenanceRevisionInput, {
+    nullable: true,
+    description: '结构化维修记录修订（故障面板/步骤/维修字段）',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MaintenanceRevisionInput)
+  maintenance?: MaintenanceRevisionInput | null;
 }

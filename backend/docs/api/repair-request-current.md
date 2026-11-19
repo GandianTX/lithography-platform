@@ -120,15 +120,15 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 
 ## 写权限矩阵
 
-| 操作                 | CUSTOMER                         | 精确 ENGINEER                  | SUPER_ADMIN（activeRole=SUPER_ADMIN） |
-| -------------------- | -------------------------------- | ------------------------------ | ------------------------------------- |
-| 创建申请             | 允许（仅本人账号）               | 拒绝                           | 拒绝（不继承客户写入口）              |
-| 删除自己的未接单申请 | 允许（软删除，重复删除幂等成功） | 拒绝                           | 拒绝                                  |
-| 接单                 | 拒绝                             | 允许                           | 拒绝（读继承不等于写继承）            |
-| 追加处理回复         | 拒绝                             | 仅实际接单工程师               | 拒绝                                  |
-| 创建内部维修过程     | 拒绝                             | 仅实际接单工程师（可信服务公司一致） | 拒绝                             |
-| 编辑内部维修过程     | 拒绝                             | 仅过程作者本人、接单人、可信服务公司一致 | 拒绝                             |
-| 结单                 | 拒绝                             | 仅实际接单工程师（可信服务公司一致） | 拒绝                             |
+| 操作                 | CUSTOMER                         | 精确 ENGINEER                            | SUPER_ADMIN（activeRole=SUPER_ADMIN） |
+| -------------------- | -------------------------------- | ---------------------------------------- | ------------------------------------- |
+| 创建申请             | 允许（仅本人账号）               | 拒绝                                     | 拒绝（不继承客户写入口）              |
+| 删除自己的未接单申请 | 允许（软删除，重复删除幂等成功） | 拒绝                                     | 拒绝                                  |
+| 接单                 | 拒绝                             | 允许                                     | 拒绝（读继承不等于写继承）            |
+| 追加处理回复         | 拒绝                             | 仅实际接单工程师                         | 拒绝                                  |
+| 创建内部维修过程     | 拒绝                             | 仅实际接单工程师（可信服务公司一致）     | 拒绝                                  |
+| 编辑内部维修过程     | 拒绝                             | 仅过程作者本人、接单人、可信服务公司一致 | 拒绝                                  |
+| 结单                 | 拒绝                             | 仅实际接单工程师（可信服务公司一致）     | 拒绝                                  |
 
 写权限规则：仅 roles 含 ENGINEER 且可信 JWT activeRole 精确为 ENGINEER 可接单/回复/记录过程/编辑过程/结单（`assertEngineerWritePermission` 单一实现）；守卫层只做入口粗粒度准入；接单工程师与过程作者取自可信 Session，接单时间、结单时间与过程时间来源由后端生成，客户端不可传入。结单后回复、创建过程与编辑过程均按 `CLOSED_STATE_CONFLICT` 拒绝（处理状态为 `COMPLETED` / `UNRESOLVED` 同样视为已结束）。
 
@@ -173,6 +173,28 @@ query RepairServiceOrganizationSearch($pagination: PaginationArgs!, $keyword: St
 - `GET /api/stored-files/:fileId/download`（ENGINEER / SUPER_ADMIN）：暂存读取需 `uploadContextId`，正式绑定读取按业务关联与工单访问权校验；只返回授权后的文件流，不暴露存储引用。
 
 前端区分「已上传暂存（TEMPORARY）」与「已保存绑定（BOUND）」：只有保存过程成功后，暂存才转为绑定；保存成功与刷新均以正式详情读接口为准，换工单或换账号不复用旧暂存上下文。编辑场景仅对「无原件过程」提供补传入口；已有原件的过程只读展示原件，不提供替换/移除，暂存原件在进入编辑前显式交接或拦截，不会静默丢弃。
+
+## 工程师侧修订历史（只读）
+
+本轮新增两个工程师侧只读查询，供工单详情底部「版本与修订历史」使用；不新增 Mutation、不提供回滚，也不替代管理员修订接口。
+
+`engineerRepairRequestRevisionHistory(requestId: Int!)`：返回最新在前的修订历史列表。
+
+- 权限：Session 必须是该工单的接单人、具备 ENGINEER 角色、属于该工单可信服务厂家，且工单未删除；客户、非接单人、外厂家与可信厂家缺失/冲突统一按 PERMISSION 大类拒绝。
+- 仅返回既有管理员修订记录的必要元数据：`revisionNo`、`previousVersion`、`reason`、修订人昵称、修订时间，以及可对比性标记；不返回管理员完整快照。
+- `revisionNo` 是管理员修订号，不是 `maintenance_version_no`，也不作为历史快照版本。
+- `hasComparableSnapshot` 表示修订前后快照是否都包含 v2 维修数据；`hasVisibleMaintenanceChange` 表示其中是否存在可展示的维修字段/步骤/面板差异。
+- `compareUnavailableReason` 为稳定原因码：`NO_COMPARABLE_SNAPSHOT`（缺少可比快照）或 `NO_VISIBLE_MAINTENANCE_CHANGE`（可比但无可见维修差异）；前端据此禁用「对比上一版」并本地化提示。
+- 工程师普通保存维修记录不新增修订行；无修订记录时返回空数组。
+
+`engineerRepairRequestRevision(requestId: Int!, revisionNo: Int!)`：返回单个修订的工程师可见详情。
+
+- 与列表复用同一读取授权；跨工单修订 ID 按修订不存在处理（NOT_FOUND），不泄露其他工单。
+- `before` / `after` 仅包含维修日期、维修工程师、复位结果、补充说明、排查步骤与故障面板；不包含附件、处理结果、结单信息、`contentMd` 或其他管理员快照字段。
+- 历史附件不进入输出，历史查询不会扩大原件下载权限。
+- 缺少可比快照或无可见维修差异时，详情仍可查看已有维修快照，并通过 `compareUnavailableReason` 说明不可对比原因；不会用当前工单拼历史，也不会虚构 Seed 历史。
+
+GraphQL schema 由 Nest 自动生成，本文只描述契约，不手改生成产物。
 
 ## 结单
 

@@ -36,8 +36,13 @@ import type {
   CreateEngineerResponseResult,
   CreateRepairProcessEntryInput,
   DownloadRepairProcessFileResult,
+  EngineerRepairIntake,
+  EngineerRepairIntakeAnalysis,
   EngineerRepairListFilter,
   EngineerRepairListQuery,
+  EngineerRepairMaintenanceFaultPanel,
+  EngineerRepairMaintenanceRecord,
+  EngineerRepairMaintenanceStep,
   EngineerRepairProcessEntry,
   EngineerRepairRequestDetail,
   EngineerRepairRequestDetailFailureReason,
@@ -46,16 +51,34 @@ import type {
   EngineerRepairRequestListItem,
   EngineerRepairRequestPage,
   EngineerRepairRequestResponseItem,
+  EngineerRepairRevisionCompareUnavailableReason,
+  EngineerRepairRevisionDetail,
+  EngineerRepairRevisionDetailDTO,
+  EngineerRepairRevisionDetailResult,
+  EngineerRepairRevisionHistoryItem,
+  EngineerRepairRevisionHistoryItemDTO,
+  EngineerRepairRevisionHistoryResult,
+  EngineerRepairRevisionSnapshot,
+  EngineerRepairRevisionSnapshotDTO,
   EngineerResponseDTO,
   EquipmentModelDTO,
+  InterruptRepairRequestInput,
+  InterruptRepairRequestResult,
+  RepairIntakeSourceDTO,
+  RepairMaintenanceFaultPanelDTO,
+  RepairMaintenanceRecordDTO,
+  RepairMaintenanceStepDTO,
+  RepairMaintenanceWriteResult,
   RepairProcessEntryDTO,
   RepairProcessWriteFailureReason,
   RepairProcessWriteResult,
   RepairRequestClosure,
   RepairRequestDetailDTO,
+  RepairRequestInterruption,
   RepairRequestListItemDTO,
   RepairRequestPaginatedDTO,
   RepairRequestPaginationVariables,
+  SaveRepairRequestMaintenanceInput,
   StagedRepairProcessFile,
   UpdateRepairProcessEntryInput,
   UploadRepairProcessFileFailureReason,
@@ -90,94 +113,180 @@ const ENGINEER_REPAIR_REQUESTS_QUERY = `
   }
 `;
 
+/**
+ * 工程师详情字段片段：详情查询与接单 Mutation 共用同一份字段集合，
+ * 保证接单成功后的原子回填包含结构化维修记录/客户原始报修/AI 分析。
+ */
+const ENGINEER_REPAIR_REQUEST_DETAIL_FIELDS = `
+  fragment EngineerRepairRequestDetailFields on RepairRequestDetailDTO {
+    id
+    requestNo
+    equipmentModel { id modelCode modelName }
+    errorCode
+    faultDescription
+    contentMd
+    createdAt
+    isAccepted
+    acceptedAt
+    latestResolutionStatus
+    customerNickname
+    customerCompanyName
+    acceptanceViewStatus
+    acceptedEngineerNickname
+    closureStatus
+    closedAt
+    closureReason
+    handlingResult
+    handlingStatus
+    processEntries {
+      id
+      entryUuid
+      requestId
+      operationText
+      testResult
+      occurredAt
+      timeSource
+      fileId
+      versionNo
+      createdAt
+      file { fileId originalFilename mimeType byteSize checksumSha256 }
+    }
+    maintenance {
+      maintenanceDate
+      engineerName
+      resetResult
+      supplementaryNote
+      versionNo
+      attachment { fileId originalFilename mimeType byteSize checksumSha256 }
+    }
+    maintenanceSteps { id stepNo errorCode partName actionText resultCode }
+    maintenanceFaultPanels {
+      id
+      panelType
+      stepId
+      phaseCode
+      mainError
+      unitError
+      source
+      errorType
+      gpibStatus
+      faultStatus
+      description
+      action
+    }
+    intake {
+      intakeId
+      faultDescription
+      customerFile { fileId originalFilename mimeType byteSize checksumSha256 }
+      analysis { status generation outputText failureReason finishedAt }
+    }
+    canEditMaintenance
+    responses {
+      id
+      engineerNickname
+      resolutionStatus
+      responseText
+      createdAt
+    }
+  }
+`;
+
 const ENGINEER_REPAIR_REQUEST_DETAIL_QUERY = `
   query EngineerRepairRequest($id: Int!) {
     engineerRepairRequest(id: $id) {
-      id
-      requestNo
-      equipmentModel { id modelCode modelName }
-      errorCode
-      faultDescription
-      contentMd
+      ...EngineerRepairRequestDetailFields
+    }
+  }
+  ${ENGINEER_REPAIR_REQUEST_DETAIL_FIELDS}
+`;
+
+const ENGINEER_REPAIR_REVISION_SNAPSHOT_FIELDS = `
+  maintenanceDate
+  engineerName
+  resetResult
+  supplementaryNote
+  steps {
+    id
+    stepNo
+    errorCode
+    partName
+    actionText
+    resultCode
+  }
+  panels {
+    id
+    panelType
+    stepId
+    phaseCode
+    mainError
+    unitError
+    source
+    errorType
+    gpibStatus
+    faultStatus
+    description
+    action
+  }
+`;
+
+const ENGINEER_REPAIR_REVISION_HISTORY_QUERY = `
+  query EngineerRepairRequestRevisionHistory($requestId: Int!) {
+    engineerRepairRequestRevisionHistory(requestId: $requestId) {
+      revisionNo
+      previousVersion
+      reason
+      actorNickname
       createdAt
-      isAccepted
-      acceptedAt
-      latestResolutionStatus
-      customerNickname
-      customerCompanyName
-      acceptanceViewStatus
-      acceptedEngineerNickname
-      closureStatus
-      closedAt
-      closureReason
-      handlingResult
-      handlingStatus
-      processEntries {
-        id
-        entryUuid
-        requestId
-        operationText
-        testResult
-        occurredAt
-        timeSource
-        fileId
-        versionNo
-        createdAt
-        file { fileId originalFilename mimeType byteSize checksumSha256 }
+      hasComparableSnapshot
+      hasVisibleMaintenanceChange
+      compareUnavailableReason
+    }
+  }
+`;
+
+const ENGINEER_REPAIR_REVISION_DETAIL_QUERY = `
+  query EngineerRepairRequestRevision($requestId: Int!, $revisionNo: Int!) {
+    engineerRepairRequestRevision(requestId: $requestId, revisionNo: $revisionNo) {
+      requestId
+      revisionNo
+      previousVersion
+      reason
+      actorNickname
+      createdAt
+      hasComparableSnapshot
+      hasVisibleMaintenanceChange
+      compareUnavailableReason
+      before {
+        ...EngineerRepairRevisionSnapshotFields
       }
-      responses {
-        id
-        engineerNickname
-        resolutionStatus
-        responseText
-        createdAt
+      after {
+        ...EngineerRepairRevisionSnapshotFields
       }
     }
+  }
+  fragment EngineerRepairRevisionSnapshotFields on EngineerRepairRevisionSnapshotDTO {
+    ${ENGINEER_REPAIR_REVISION_SNAPSHOT_FIELDS}
   }
 `;
 
 const ACCEPT_REPAIR_REQUEST_MUTATION = `
   mutation AcceptRepairRequest($id: Int!) {
     acceptRepairRequest(id: $id) {
-      id
-      requestNo
-      equipmentModel { id modelCode modelName }
-      errorCode
-      faultDescription
-      contentMd
-      createdAt
-      isAccepted
-      acceptedAt
-      latestResolutionStatus
-      customerNickname
-      customerCompanyName
-      acceptanceViewStatus
-      acceptedEngineerNickname
-      closureStatus
-      closedAt
-      closureReason
-      handlingResult
-      handlingStatus
-      processEntries {
-        id
-        entryUuid
-        requestId
-        operationText
-        testResult
-        occurredAt
-        timeSource
-        fileId
-        versionNo
-        createdAt
-        file { fileId originalFilename mimeType byteSize checksumSha256 }
-      }
-      responses {
-        id
-        engineerNickname
-        resolutionStatus
-        responseText
-        createdAt
-      }
+      ...EngineerRepairRequestDetailFields
+    }
+  }
+  ${ENGINEER_REPAIR_REQUEST_DETAIL_FIELDS}
+`;
+
+const SAVE_REPAIR_REQUEST_MAINTENANCE_MUTATION = `
+  mutation SaveRepairRequestMaintenance($input: SaveRepairRequestMaintenanceInput!) {
+    saveRepairRequestMaintenance(input: $input) {
+      maintenanceDate
+      engineerName
+      resetResult
+      supplementaryNote
+      versionNo
+      attachment { fileId originalFilename mimeType byteSize checksumSha256 }
     }
   }
 `;
@@ -231,6 +340,20 @@ const UPDATE_REPAIR_PROCESS_ENTRY_MUTATION = `
 const CLOSE_REPAIR_REQUEST_MUTATION = `
   mutation CloseRepairRequest($input: CloseRepairRequestInput!) {
     closeRepairRequest(input: $input) {
+      requestId
+      closureStatus
+      closedAt
+      closureReason
+      handlingResult
+      handlingStatus
+      handlingEndedAt
+    }
+  }
+`;
+
+const INTERRUPT_REPAIR_REQUEST_MUTATION = `
+  mutation InterruptRepairRequest($input: InterruptRepairRequestInput!) {
+    interruptRepairRequest(input: $input) {
       requestId
       closureStatus
       closedAt
@@ -353,6 +476,14 @@ type EngineerRepairRequestDetailData = {
   engineerRepairRequest: RepairRequestDetailDTO;
 };
 
+type EngineerRepairRevisionHistoryData = {
+  engineerRepairRequestRevisionHistory: EngineerRepairRevisionHistoryItemDTO[];
+};
+
+type EngineerRepairRevisionDetailData = {
+  engineerRepairRequestRevision: EngineerRepairRevisionDetailDTO;
+};
+
 type AcceptRepairRequestData = {
   acceptRepairRequest: RepairRequestDetailDTO;
 };
@@ -425,6 +556,142 @@ function mapDetailDTO(dto: RepairRequestDetailDTO): EngineerRepairRequestDetail 
     handlingResult: dto.handlingResult ?? null,
     handlingStatus: dto.handlingStatus ?? null,
     processEntries: (dto.processEntries ?? []).map(mapProcessEntryDTO),
+    maintenance: dto.maintenance ? mapMaintenanceRecordDTO(dto.maintenance) : null,
+    maintenanceSteps: (dto.maintenanceSteps ?? []).map(mapMaintenanceStepDTO),
+    maintenanceFaultPanels: (dto.maintenanceFaultPanels ?? []).map(mapMaintenanceFaultPanelDTO),
+    intake: dto.intake ? mapIntakeDTO(dto.intake) : null,
+    canEditMaintenance: dto.canEditMaintenance ?? false,
+  };
+}
+
+function mapMaintenanceAttachmentDTO(dto: {
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+  checksumSha256: string;
+}): EngineerRepairMaintenanceRecord['attachment'] {
+  return {
+    fileId: dto.fileId,
+    originalFilename: dto.originalFilename,
+    mimeType: dto.mimeType,
+    byteSize: dto.byteSize,
+    checksumSha256: dto.checksumSha256,
+  };
+}
+
+function mapMaintenanceRecordDTO(dto: RepairMaintenanceRecordDTO): EngineerRepairMaintenanceRecord {
+  return {
+    maintenanceDate: dto.maintenanceDate ?? null,
+    engineerName: dto.engineerName ?? null,
+    resetResult: dto.resetResult ?? null,
+    supplementaryNote: dto.supplementaryNote ?? null,
+    versionNo: dto.versionNo ?? 0,
+    attachment: dto.attachment ? mapMaintenanceAttachmentDTO(dto.attachment) : null,
+  };
+}
+
+function mapMaintenanceStepDTO(dto: RepairMaintenanceStepDTO): EngineerRepairMaintenanceStep {
+  return {
+    id: dto.id,
+    stepNo: dto.stepNo,
+    errorCode: dto.errorCode ?? null,
+    partName: dto.partName ?? null,
+    actionText: dto.actionText,
+    resultCode: dto.resultCode,
+  };
+}
+
+function mapMaintenanceFaultPanelDTO(
+  dto: RepairMaintenanceFaultPanelDTO,
+): EngineerRepairMaintenanceFaultPanel {
+  return {
+    id: dto.id,
+    panelType: dto.panelType,
+    stepId: dto.stepId ?? null,
+    phaseCode: dto.phaseCode ?? null,
+    mainError: dto.mainError ?? null,
+    unitError: dto.unitError ?? null,
+    source: dto.source ?? null,
+    errorType: dto.errorType ?? null,
+    gpibStatus: dto.gpibStatus ?? null,
+    faultStatus: dto.faultStatus ?? null,
+    description: dto.description,
+    action: dto.action ?? null,
+  };
+}
+
+function mapRevisionCompareUnavailableReason(
+  value: EngineerRepairRevisionCompareUnavailableReason | null | undefined,
+): EngineerRepairRevisionCompareUnavailableReason | null {
+  return value ?? null;
+}
+
+function mapRevisionSnapshotDTO(
+  dto: EngineerRepairRevisionSnapshotDTO | null | undefined,
+): EngineerRepairRevisionSnapshot | null {
+  if (!dto) {
+    return null;
+  }
+  return {
+    maintenanceDate: dto.maintenanceDate ?? null,
+    engineerName: dto.engineerName ?? null,
+    resetResult: dto.resetResult ?? null,
+    supplementaryNote: dto.supplementaryNote ?? null,
+    steps: (dto.steps ?? []).map(mapMaintenanceStepDTO),
+    panels: (dto.panels ?? []).map(mapMaintenanceFaultPanelDTO),
+  };
+}
+
+function mapRevisionHistoryItemDTO(
+  dto: EngineerRepairRevisionHistoryItemDTO,
+): EngineerRepairRevisionHistoryItem {
+  return {
+    revisionNo: dto.revisionNo,
+    previousVersion: dto.previousVersion,
+    reason: dto.reason,
+    actorNickname: dto.actorNickname,
+    createdAt: dto.createdAt,
+    hasComparableSnapshot: dto.hasComparableSnapshot,
+    hasVisibleMaintenanceChange: dto.hasVisibleMaintenanceChange,
+    compareUnavailableReason: mapRevisionCompareUnavailableReason(dto.compareUnavailableReason),
+  };
+}
+
+function mapRevisionDetailDTO(dto: EngineerRepairRevisionDetailDTO): EngineerRepairRevisionDetail {
+  return {
+    requestId: dto.requestId,
+    revisionNo: dto.revisionNo,
+    previousVersion: dto.previousVersion,
+    reason: dto.reason,
+    actorNickname: dto.actorNickname,
+    createdAt: dto.createdAt,
+    hasComparableSnapshot: dto.hasComparableSnapshot,
+    hasVisibleMaintenanceChange: dto.hasVisibleMaintenanceChange,
+    compareUnavailableReason: mapRevisionCompareUnavailableReason(dto.compareUnavailableReason),
+    before: mapRevisionSnapshotDTO(dto.before),
+    after: mapRevisionSnapshotDTO(dto.after),
+  };
+}
+
+function mapIntakeAnalysisDTO(
+  dto: NonNullable<RepairIntakeSourceDTO['analysis']>,
+): EngineerRepairIntakeAnalysis {
+  return {
+    status: dto.status,
+    generation: dto.generation ?? 0,
+    outputText: dto.outputText ?? null,
+    failureReason: dto.failureReason ?? null,
+    finishedAt: dto.finishedAt ?? null,
+  };
+}
+
+function mapIntakeDTO(dto: RepairIntakeSourceDTO): EngineerRepairIntake {
+  return {
+    intakeId: dto.intakeId,
+    faultDescription: dto.faultDescription ?? null,
+    customerFile: dto.customerFile ? mapMaintenanceAttachmentDTO(dto.customerFile) : null,
+    analysis: dto.analysis ? mapIntakeAnalysisDTO(dto.analysis) : null,
   };
 }
 
@@ -542,6 +809,61 @@ export async function fetchEngineerRepairRequestDetail(
       reason: categoryReason,
       message:
         detail.errorMessage ?? translateNow(DETAIL_FALLBACK_MESSAGE_BY_REASON[categoryReason]),
+    };
+  }
+}
+
+/**
+ * 工程师侧修订历史（只读）。
+ *
+ * 历史查询失败单独返回显式失败结果，不影响工单详情与当前维修记录展示；
+ * transport / auth 类失败仍按共享错误模型上抛。
+ */
+export async function fetchEngineerRepairRequestRevisionHistory(
+  requestId: number,
+): Promise<EngineerRepairRevisionHistoryResult> {
+  try {
+    const data = await executeGraphQL<EngineerRepairRevisionHistoryData, { requestId: number }>(
+      ENGINEER_REPAIR_REVISION_HISTORY_QUERY,
+      { requestId },
+    );
+    return {
+      ok: true,
+      items: (data.engineerRepairRequestRevisionHistory ?? []).map(mapRevisionHistoryItemDTO),
+    };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    if (!detail) {
+      throw error;
+    }
+    return {
+      ok: false,
+      message: detail.errorMessage ?? translateNow('engineerRepairHistory.loadFailed'),
+    };
+  }
+}
+
+/**
+ * 工程师侧单个修订详情（查看版本 / 对比上一版）。
+ */
+export async function fetchEngineerRepairRequestRevisionDetail(
+  requestId: number,
+  revisionNo: number,
+): Promise<EngineerRepairRevisionDetailResult> {
+  try {
+    const data = await executeGraphQL<
+      EngineerRepairRevisionDetailData,
+      { requestId: number; revisionNo: number }
+    >(ENGINEER_REPAIR_REVISION_DETAIL_QUERY, { requestId, revisionNo });
+    return { ok: true, detail: mapRevisionDetailDTO(data.engineerRepairRequestRevision) };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    if (!detail) {
+      throw error;
+    }
+    return {
+      ok: false,
+      message: detail.errorMessage ?? translateNow('engineerRepairHistory.detailFailed'),
     };
   }
 }
@@ -674,6 +996,7 @@ const CLOSE_FALLBACK_MESSAGE_BY_REASON: Record<CloseRepairRequestFailureReason, 
 type CreateRepairProcessEntryData = { createRepairProcessEntry: RepairProcessEntryDTO };
 type UpdateRepairProcessEntryData = { updateRepairProcessEntry: RepairProcessEntryDTO };
 type CloseRepairRequestData = { closeRepairRequest: RepairRequestClosure };
+type InterruptRepairRequestData = { interruptRepairRequest: RepairRequestInterruption };
 
 function toProcessMutationInput(
   input: CreateRepairProcessEntryInput | UpdateRepairProcessEntryInput,
@@ -741,6 +1064,58 @@ function mapProcessWriteFailure(error: unknown): RepairProcessWriteResult {
   };
 }
 
+const MAINTENANCE_WRITE_FALLBACK_MESSAGE_BY_REASON: Record<
+  RepairProcessWriteFailureReason,
+  MessageKey
+> = {
+  'not-accessible': 'maintenance.error.notAccessible',
+  conflict: 'maintenance.error.conflict',
+  'insufficient-permission': 'maintenance.error.insufficientPermission',
+  'invalid-input': 'maintenance.error.invalidInput',
+  'write-failed': 'maintenance.error.writeFailed',
+};
+
+type SaveRepairRequestMaintenanceData = {
+  saveRepairRequestMaintenance: RepairMaintenanceRecordDTO;
+};
+
+/**
+ * 保存结构化内部维修记录（任务 04）。
+ *
+ * - expectedVersion 由调用方取当前详情 maintenance.versionNo ?? 0；
+ * - attachment 与记录写入同一事务绑定，仅在尚未绑定原件时提交；
+ * - CONFLICT 同时覆盖版本冲突与结单只读，统一提示刷新，不自动重试；
+ * - 成功返回最新记录，调用方仍需回读详情以同步步骤/面板。
+ */
+export async function saveRepairRequestMaintenance(
+  input: SaveRepairRequestMaintenanceInput,
+): Promise<RepairMaintenanceWriteResult> {
+  try {
+    const data = await executeGraphQL<
+      SaveRepairRequestMaintenanceData,
+      { input: SaveRepairRequestMaintenanceInput }
+    >(SAVE_REPAIR_REQUEST_MAINTENANCE_MUTATION, { input });
+
+    return { ok: true, record: mapMaintenanceRecordDTO(data.saveRepairRequestMaintenance) };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    const reason = detail?.code
+      ? PROCESS_WRITE_FAILURE_REASON_BY_CATEGORY_CODE[detail.code]
+      : undefined;
+
+    if (!detail || !reason) {
+      throw error;
+    }
+
+    return {
+      ok: false,
+      reason,
+      message:
+        detail.errorMessage ?? translateNow(MAINTENANCE_WRITE_FALLBACK_MESSAGE_BY_REASON[reason]),
+    };
+  }
+}
+
 /** 工程师结单（与回复互相独立；成功后详情中过程与回复转为只读） */
 export async function closeRepairRequest(
   input: CloseRepairRequestInput,
@@ -752,6 +1127,33 @@ export async function closeRepairRequest(
     );
 
     return { ok: true, closure: data.closeRepairRequest };
+  } catch (error) {
+    const detail = readGraphQLErrorDetail(error);
+    const reason = detail?.code ? CLOSE_FAILURE_REASON_BY_CATEGORY_CODE[detail.code] : undefined;
+
+    if (!detail || !reason) {
+      throw error;
+    }
+
+    return {
+      ok: false,
+      reason,
+      message: detail.errorMessage ?? CLOSE_FALLBACK_MESSAGE_BY_REASON[reason],
+    };
+  }
+}
+
+/** 工程师记录维修中断（不结单；成功后仍可继续保存与回复） */
+export async function interruptRepairRequest(
+  input: InterruptRepairRequestInput,
+): Promise<InterruptRepairRequestResult> {
+  try {
+    const data = await executeGraphQL<
+      InterruptRepairRequestData,
+      { input: InterruptRepairRequestInput }
+    >(INTERRUPT_REPAIR_REQUEST_MUTATION, { input });
+
+    return { ok: true, interruption: data.interruptRepairRequest };
   } catch (error) {
     const detail = readGraphQLErrorDetail(error);
     const reason = detail?.code ? CLOSE_FAILURE_REASON_BY_CATEGORY_CODE[detail.code] : undefined;
