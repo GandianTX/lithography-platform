@@ -129,9 +129,7 @@ function PanelFields({
           <Select
             allowClear
             disabled={disabled}
-            onChange={(next: MaintenancePhaseCode | undefined) =>
-              update({ phaseCode: next ?? '' })
-            }
+            onChange={(next: MaintenancePhaseCode | undefined) => update({ phaseCode: next ?? '' })}
             options={MAINTENANCE_PHASE_CODES.map((code) => ({
               label: t(PHASE_LABEL_KEYS[code]),
               value: code,
@@ -176,8 +174,7 @@ export type MaintenanceEditorAttachmentProps = {
   readOnly?: boolean;
 };
 
-const ATTACHMENT_ACCEPT =
-  '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.txt,.md,.csv';
+const ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.txt,.md,.csv';
 
 function AttachmentArea({
   attachment,
@@ -198,9 +195,7 @@ function AttachmentArea({
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-[var(--panel-border)] p-3">
           <Tag color="green">{t('maintenance.attachmentBound')}</Tag>
           <span className="text-sm">{value.attachment.originalFilename}</span>
-          <span className="text-text-secondary text-xs">
-            {value.attachment.byteSize} B
-          </span>
+          <span className="text-text-secondary text-xs">{value.attachment.byteSize} B</span>
           <Button
             loading={attachment.downloadingFileId === value.attachment.fileId}
             onClick={() => attachment.onDownload(value.attachment!.fileId)}
@@ -210,7 +205,9 @@ function AttachmentArea({
           </Button>
         </div>
         <div className="text-text-secondary text-xs">
-          {readOnly ? t('maintenance.attachmentAdminReadOnly') : t('maintenance.attachmentImmutable')}
+          {readOnly
+            ? t('maintenance.attachmentAdminReadOnly')
+            : t('maintenance.attachmentImmutable')}
         </div>
       </div>
     );
@@ -279,7 +276,9 @@ function AttachmentArea({
         ) : (
           <>
             <span className="font-medium text-sm">{t('maintenance.attachmentSelect')}</span>
-            <span className="text-text-secondary text-xs">{t('maintenance.attachmentTypeHint')}</span>
+            <span className="text-text-secondary text-xs">
+              {t('maintenance.attachmentTypeHint')}
+            </span>
           </>
         )}
       </label>
@@ -504,9 +503,7 @@ export function MaintenanceRecordEditor({
                   <Field label={`${t('maintenance.stepAction')} *`} wide>
                     <Input.TextArea
                       disabled={locked}
-                      onChange={(event) =>
-                        updateStep(step.key, { actionText: event.target.value })
-                      }
+                      onChange={(event) => updateStep(step.key, { actionText: event.target.value })}
                       placeholder={t('maintenance.stepActionPlaceholder')}
                       rows={3}
                       value={step.actionText}

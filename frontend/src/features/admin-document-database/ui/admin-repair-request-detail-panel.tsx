@@ -55,9 +55,7 @@ export function AdminRepairRequestDetailPanel({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
 
-  const handleDownload = async (
-    fileId: string,
-  ): Promise<{ ok: boolean; message?: string }> => {
+  const handleDownload = async (fileId: string): Promise<{ ok: boolean; message?: string }> => {
     setDownloadError(null);
     setDownloadingFileId(fileId);
     const result = await downloadAdminRepairProcessFile(fileId);

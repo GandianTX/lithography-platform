@@ -48,7 +48,11 @@ const FIELD_DEFINITIONS: Array<{
   labelKey: MessageKey;
   multiline?: boolean;
 }> = [
-  { key: 'contentMd', labelKey: 'adminRepairRequest.versionHistory.field.contentMd', multiline: true },
+  {
+    key: 'contentMd',
+    labelKey: 'adminRepairRequest.versionHistory.field.contentMd',
+    multiline: true,
+  },
   { key: 'handlingResult', labelKey: 'adminRepairRequest.versionHistory.field.handlingResult' },
   { key: 'handlingStatus', labelKey: 'adminRepairRequest.versionHistory.field.handlingStatus' },
   { key: 'closureReason', labelKey: 'adminRepairRequest.versionHistory.field.closureReason' },
@@ -214,10 +218,7 @@ function SnapshotView({
               ? describeResetResult(raw as string | null, t)
               : textOf(raw as string | null);
           return (
-            <div
-              className={field.multiline ? 'sm:col-span-2' : ''}
-              key={String(field.key)}
-            >
+            <div className={field.multiline ? 'sm:col-span-2' : ''} key={String(field.key)}>
               <div className="text-text-secondary text-xs">{t(field.labelKey)}</div>
               <div className="text-sm whitespace-pre-wrap">
                 {value === '' ? t('adminRepairRequest.versionHistory.value.empty') : value}
@@ -246,10 +247,7 @@ function SnapshotView({
         ) : (
           <div className="flex flex-col gap-2">
             {snapshot.steps.map((step) => (
-              <div
-                className="rounded-lg border border-[var(--panel-border)] p-3"
-                key={step.id}
-              >
+              <div className="rounded-lg border border-[var(--panel-border)] p-3" key={step.id}>
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-sm">
                   <span className="font-medium">#{step.stepNo}</span>
                   <Tag>{describeStepResult(step.resultCode, t)}</Tag>
@@ -274,10 +272,7 @@ function SnapshotView({
         ) : (
           <div className="flex flex-col gap-2">
             {snapshot.panels.map((panel) => (
-              <div
-                className="rounded-lg border border-[var(--panel-border)] p-3"
-                key={panel.id}
-              >
+              <div className="rounded-lg border border-[var(--panel-border)] p-3" key={panel.id}>
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-sm">
                   <Tag>{panel.panelType}</Tag>
                   <span>{describePhaseCode(panel.phaseCode, t)}</span>
@@ -311,8 +306,7 @@ function DiffView({
   });
   const stepChanges = diffSteps(before.steps, after.steps);
   const panelChanges = diffPanels(before.panels, after.panels);
-  const hasChanges =
-    fieldChanges.length > 0 || stepChanges.length > 0 || panelChanges.length > 0;
+  const hasChanges = fieldChanges.length > 0 || stepChanges.length > 0 || panelChanges.length > 0;
 
   if (!hasChanges) {
     return (
@@ -429,10 +423,7 @@ export function AdminRepairRequestVersionHistory({
 }) {
   const { t } = useI18n();
   const [selection, setSelection] = useState<RevisionSelection | null>(null);
-  const { state, retry } = useAdminRepairRevisionDetail(
-    requestId,
-    selection?.revisionNo ?? null,
-  );
+  const { state, retry } = useAdminRepairRevisionDetail(requestId, selection?.revisionNo ?? null);
 
   const sortedRevisions = useMemo(
     () => [...revisions].sort((left, right) => right.revisionNo - left.revisionNo),
@@ -443,7 +434,9 @@ export function AdminRepairRequestVersionHistory({
     {
       key: 'version',
       render: (_, revision) => (
-        <Tag>{t('adminRepairRequest.versionHistory.versionLabel', { version: revision.revisionNo })}</Tag>
+        <Tag>
+          {t('adminRepairRequest.versionHistory.versionLabel', { version: revision.revisionNo })}
+        </Tag>
       ),
       title: t('adminRepairRequest.versionHistory.col.version'),
       width: 100,
@@ -481,9 +474,7 @@ export function AdminRepairRequestVersionHistory({
             </Button>
             {comparable ? (
               <Button
-                onClick={() =>
-                  setSelection({ revisionNo: revision.revisionNo, mode: 'compare' })
-                }
+                onClick={() => setSelection({ revisionNo: revision.revisionNo, mode: 'compare' })}
                 size="small"
               >
                 {t('adminRepairRequest.versionHistory.compare')}
@@ -515,12 +506,9 @@ export function AdminRepairRequestVersionHistory({
         })
     : '';
 
-  const incomparable =
-    state.status === 'ready' && state.detail.comparable === false;
+  const incomparable = state.status === 'ready' && state.detail.comparable === false;
   const hasBothSnapshots =
-    state.status === 'ready' &&
-    state.detail.before !== null &&
-    state.detail.after !== null;
+    state.status === 'ready' && state.detail.before !== null && state.detail.after !== null;
 
   return (
     <DataCard
@@ -612,11 +600,7 @@ export function AdminRepairRequestVersionHistory({
                 </div>
               )
             ) : !incomparable && hasBothSnapshots ? (
-              <DiffView
-                after={state.detail.after!}
-                before={state.detail.before!}
-                t={t}
-              />
+              <DiffView after={state.detail.after!} before={state.detail.before!} t={t} />
             ) : null}
 
             <div className="text-text-secondary text-xs">

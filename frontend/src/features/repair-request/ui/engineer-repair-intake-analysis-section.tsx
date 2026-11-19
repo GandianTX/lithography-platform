@@ -92,7 +92,7 @@ export function EngineerRepairIntakeSection({ intake }: { intake: EngineerRepair
               <div className="text-sm text-text-secondary">{t('engineerDetail.intakeNoFile')}</div>
             )}
           </div>
-          {error ?? localError ? (
+          {(error ?? localError) ? (
             <Alert showIcon title={error ?? localError ?? ''} type="error" />
           ) : null}
         </div>
@@ -127,16 +127,18 @@ export function EngineerRepairAiAnalysisSection({
               )}
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-text-secondary text-xs">{t('engineerDetail.aiGeneration')}</span>
+              <span className="text-text-secondary text-xs">
+                {t('engineerDetail.aiGeneration')}
+              </span>
               <span>
                 {t('engineerDetail.aiGenerationValue', { generation: analysis.generation })}
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-text-secondary text-xs">{t('engineerDetail.aiFinishedAt')}</span>
-              <span>
-                {analysis.finishedAt ? formatDateTimeText(analysis.finishedAt) : '—'}
+              <span className="text-text-secondary text-xs">
+                {t('engineerDetail.aiFinishedAt')}
               </span>
+              <span>{analysis.finishedAt ? formatDateTimeText(analysis.finishedAt) : '—'}</span>
             </div>
           </div>
           {analysis.failureReason ? (

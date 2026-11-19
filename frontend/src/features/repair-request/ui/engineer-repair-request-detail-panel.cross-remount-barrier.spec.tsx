@@ -29,6 +29,8 @@ import type {
   CloseRepairRequestResult,
   CreateEngineerResponseInput,
   CreateEngineerResponseResult,
+  EngineerRepairMaintenanceRecord,
+  EngineerRepairMaintenanceStep,
   EngineerRepairProcessEntry,
   EngineerRepairRequestDetail,
   EngineerRepairRequestDetailResult,
@@ -64,36 +66,43 @@ const createResponseMock = vi.mocked(engineerRepairRequestAdapter.createEngineer
 const CLOSE_UNCONFIRMED = '工单已结单，但详情尚未确认。';
 const RETRY_REFRESH = '重试刷新';
 const BARRIER_HINT = '工单已结单，内部维修过程与回复均为只读。';
+const EDIT_MAINTENANCE = '编辑维修记录';
+const FILL_MAINTENANCE = '填写维修记录';
+const MAINTENANCE_STEP_PLACEHOLDER = '记录实际执行的排查动作与观察结果…';
 
-const PROCESS_ENTRY_A: EngineerRepairProcessEntry = {
-  id: '101',
-  entryUuid: '4f0c5f6a-1111-4111-8111-111111111111',
-  requestId: 21,
-  operationText: 'A 服务端已有过程',
-  testResult: null,
-  occurredAt: null,
-  timeSource: 'SERVER',
-  fileId: null,
-  file: null,
+const MAINTENANCE_A: EngineerRepairMaintenanceRecord = {
+  maintenanceDate: '2026-11-16',
+  engineerName: 'A 原维修工程师',
+  resetResult: null,
+  supplementaryNote: null,
   versionNo: 1,
-  createdAt: '2026-11-16T02:10:00.000Z',
+  attachment: null,
 };
 
-const PROCESS_ENTRY_B: EngineerRepairProcessEntry = {
-  ...PROCESS_ENTRY_A,
-  id: '201',
-  entryUuid: '6f0c5f6a-3333-4333-8333-333333333333',
-  requestId: 22,
-  operationText: 'B 服务端已有过程',
+const MAINTENANCE_B: EngineerRepairMaintenanceRecord = {
+  ...MAINTENANCE_A,
+  engineerName: 'B 维修工程师',
 };
 
-const CLOSED_ENTRY_A: EngineerRepairProcessEntry = {
-  ...PROCESS_ENTRY_A,
-  id: '102',
-  entryUuid: '5f0c5f6a-2222-4222-8222-222222222222',
-  operationText: 'A 服务端最新过程',
+const CLOSED_MAINTENANCE_A: EngineerRepairMaintenanceRecord = {
+  ...MAINTENANCE_A,
+  engineerName: 'A 最新维修工程师',
   versionNo: 2,
-  createdAt: '2026-11-16T02:20:00.000Z',
+};
+
+const STEP_A: EngineerRepairMaintenanceStep = {
+  id: 'step-a',
+  stepNo: 1,
+  errorCode: null,
+  partName: null,
+  actionText: 'A 的维修步骤',
+  resultCode: 'RESOLVED',
+};
+
+const STEP_B: EngineerRepairMaintenanceStep = {
+  ...STEP_A,
+  id: 'step-b',
+  actionText: 'B 的维修步骤',
 };
 
 function makeDetail(
@@ -119,8 +128,13 @@ function makeDetail(
     closureReason: null,
     handlingResult: null,
     handlingStatus: 'IN_PROGRESS',
-    processEntries: [PROCESS_ENTRY_A],
+    processEntries: [],
+    maintenance: MAINTENANCE_A,
+    maintenanceSteps: [STEP_A],
+    maintenanceFaultPanels: [],
     responses: [],
+    // 接单本人且后端允许编辑：可写夹具必须显式覆盖
+    canEditMaintenance: true,
     ...overrides,
   };
 }
@@ -129,14 +143,17 @@ const OPEN_DETAIL_A = makeDetail();
 const OPEN_DETAIL_B = makeDetail({
   id: 22,
   requestNo: 'RR-20261116-002',
-  processEntries: [PROCESS_ENTRY_B],
+  maintenance: MAINTENANCE_B,
+  maintenanceSteps: [STEP_B],
 });
 const CLOSED_DETAIL_A = makeDetail({
   closureStatus: 'CLOSED',
   closedAt: '2026-11-16T04:00:00.000Z',
   handlingResult: 'FIXED',
   handlingStatus: 'COMPLETED',
-  processEntries: [PROCESS_ENTRY_A, CLOSED_ENTRY_A],
+  canEditMaintenance: false,
+  maintenance: CLOSED_MAINTENANCE_A,
+  maintenanceSteps: [STEP_A],
 });
 
 const CLOSE_OK: CloseRepairRequestResult = {
@@ -195,9 +212,10 @@ async function submitClose() {
 /** 屏障生效后所有实际写入口都不可用（不只是隐藏某个提交按钮） */
 function expectNoWritableEntries() {
   expect(screen.queryByText('追加处理回复')).toBeNull();
-  expect(screen.queryByText('新增维修过程')).toBeNull();
-  expect(screen.queryByText('编辑维修过程')).toBeNull();
-  expect(screen.queryByPlaceholderText('记录实际执行的操作…')).toBeNull();
+  expect(screen.queryByText(FILL_MAINTENANCE)).toBeNull();
+  expect(screen.queryByText(EDIT_MAINTENANCE)).toBeNull();
+  expect(screen.queryByPlaceholderText(MAINTENANCE_STEP_PLACEHOLDER)).toBeNull();
+  expect(screen.queryByRole('button', { name: '保存维修记录' })).toBeNull();
   expect(screen.queryByRole('button', { name: /^结\s*单$/ })).toBeNull();
   expect(document.querySelector('input[type="file"]')).toBeNull();
 }
@@ -269,6 +287,8 @@ beforeEach(() => {
 });
 
 describe('结单屏障跨页面重挂载', () => {
+  // 用例要在 jsdom 中真实挂载 A→B→A 三轮完整面板（含维修记录与详情回读）；
+  // 实测单跑约 2.9s，全量并发时常越过默认 5s，属渲染成本而非等待缺陷。
   it('A 结单成功→回读未结束→B→返回 A（重挂载）→再回读未结束：A 保持只读，B 不受影响', async () => {
     const closeReadback = deferred<EngineerRepairRequestDetailResult>();
     const returnLoad = deferred<EngineerRepairRequestDetailResult>();
@@ -292,7 +312,7 @@ describe('结单屏障跨页面重挂载', () => {
     closeMock.mockResolvedValue(CLOSE_OK);
 
     const view = renderPanel(21, 'session-a');
-    expect(await screen.findByText('A 服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('A 原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -322,9 +342,9 @@ describe('结单屏障跨页面重挂载', () => {
         />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('B 服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('B 维修工程师')).toBeTruthy();
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.getByRole('button', { name: /^结\s*单$/ })).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
@@ -342,7 +362,7 @@ describe('结单屏障跨页面重挂载', () => {
     );
 
     // 返回 A 的详情仍在加载：不出现任何写入口，且没有任何写请求发出
-    expect(screen.queryByText('A 服务端已有过程')).toBeNull();
+    expect(screen.queryByText('A 原维修工程师')).toBeNull();
     expectNoWritableEntries();
     expectNoAdapterWrites();
 
@@ -354,7 +374,7 @@ describe('结单屏障跨页面重挂载', () => {
     expect(await screen.findByText(CLOSE_UNCONFIRMED)).toBeTruthy();
     expect(screen.getByText(BARRIER_HINT)).toBeTruthy();
     expect(screen.getByRole('button', { name: RETRY_REFRESH })).toBeTruthy();
-    expect(screen.getByText('A 服务端已有过程')).toBeTruthy();
+    expect(screen.getByText('A 原维修工程师')).toBeTruthy();
     expect(screen.queryByText('已结单')).toBeNull();
     expect(screen.getByText('结单状态')).toBeTruthy();
     expectNoWritableEntries();
@@ -363,11 +383,11 @@ describe('结单屏障跨页面重挂载', () => {
     // 重挂载后的重试采用已结束详情：服务端事实接管只读，未确认提示清除
     fireEvent.click(screen.getByRole('button', { name: RETRY_REFRESH }));
     expect(await screen.findByText('已结单')).toBeTruthy();
-    expect(screen.getByText('A 服务端最新过程')).toBeTruthy();
+    expect(screen.getByText('A 最新维修工程师')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull());
     expectNoWritableEntries();
     expect(screen.queryByRole('button', { name: RETRY_REFRESH })).toBeNull();
-  });
+  }, 15_000);
 
   it('返回 A 且详情 loading 时直接调用各应用层写入口：adapter 均未被调用', async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, detail: OPEN_DETAIL_A });
@@ -438,7 +458,7 @@ describe('结单屏障跨页面重挂载', () => {
         />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('A 服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('A 原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -462,7 +482,7 @@ describe('结单屏障跨页面重挂载', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.getByRole('button', { name: /^结\s*单$/ })).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
@@ -492,7 +512,7 @@ describe('结单屏障跨页面重挂载', () => {
     });
 
     const view = renderPanel(21, 'session-a');
-    expect(await screen.findByText('A 服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('A 原维修工程师')).toBeTruthy();
 
     await selectHandlingResult();
     await submitClose();
@@ -505,11 +525,11 @@ describe('结单屏障跨页面重挂载', () => {
     view.unmount();
     renderPanel(21, 'session-a');
 
-    expect(await screen.findByText('A 服务端已有过程')).toBeTruthy();
+    expect(await screen.findByText('A 原维修工程师')).toBeTruthy();
     expect(screen.queryByText(BARRIER_HINT)).toBeNull();
     expect(screen.queryByText(CLOSE_UNCONFIRMED)).toBeNull();
     expect(screen.getByText('追加处理回复')).toBeTruthy();
-    expect(screen.getByText('新增维修过程')).toBeTruthy();
+    expect(screen.getByText(EDIT_MAINTENANCE)).toBeTruthy();
     expect(screen.getByRole('button', { name: /^结\s*单$/ })).toBeTruthy();
   });
 });

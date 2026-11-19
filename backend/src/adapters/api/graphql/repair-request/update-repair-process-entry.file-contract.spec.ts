@@ -31,6 +31,8 @@ import { CreateRepairProcessEntryUsecase } from '@src/usecases/repair-request/cr
 import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
+import { GetEngineerRepairRequestRevisionDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-detail.usecase';
+import { GetEngineerRepairRequestRevisionHistoryUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-history.usecase';
 import { GetMyRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-my-repair-request-detail.usecase';
 import { InterruptRepairRequestUsecase } from '@src/usecases/repair-request/interrupt-repair-request.usecase';
 import { ListEngineerRepairRequestsUsecase } from '@src/usecases/repair-request/list-engineer-repair-requests.usecase';
@@ -194,6 +196,14 @@ describe('UpdateRepairProcessEntryInput file 省略/null GraphQL 入口合同', 
         },
         {
           provide: GetEngineerRepairRequestDetailUsecase,
+          useValue: { execute: jest.fn() },
+        },
+        {
+          provide: GetEngineerRepairRequestRevisionHistoryUsecase,
+          useValue: { execute: jest.fn() },
+        },
+        {
+          provide: GetEngineerRepairRequestRevisionDetailUsecase,
           useValue: { execute: jest.fn() },
         },
         {

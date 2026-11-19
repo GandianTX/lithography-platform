@@ -316,9 +316,7 @@ export function createMaintenanceEditorValue(
   });
 
   const panels: MaintenancePanelValue[] = [
-    initialSource
-      ? toPanelValue(initialSource, 'INITIAL', null)
-      : createEmptyPanel('INITIAL'),
+    initialSource ? toPanelValue(initialSource, 'INITIAL', null) : createEmptyPanel('INITIAL'),
   ];
 
   const resetResult = toResetResult(source.resetResult);
@@ -386,9 +384,7 @@ function hasPanelContent(panel: MaintenancePanelValue): boolean {
 }
 
 /** 本次会随保存提交的有效面板（只含有内容的面板，避免提交空描述面板） */
-export function collectEffectivePanels(
-  value: MaintenanceEditorValue,
-): MaintenancePanelValue[] {
+export function collectEffectivePanels(value: MaintenanceEditorValue): MaintenancePanelValue[] {
   const panels: MaintenancePanelValue[] = [];
   const initial = findInitialPanel(value);
   if (initial && hasPanelContent(initial)) {
@@ -412,9 +408,7 @@ export function collectEffectivePanels(
   return panels;
 }
 
-export function toMaintenanceStepPayloads(
-  value: MaintenanceEditorValue,
-): MaintenanceStepPayload[] {
+export function toMaintenanceStepPayloads(value: MaintenanceEditorValue): MaintenanceStepPayload[] {
   return value.steps.map((step, index) => ({
     id: step.id,
     stepNo: index + 1,
@@ -433,9 +427,7 @@ export function toMaintenancePanelPayloads(
     id: panel.id,
     panelType: panel.panelType,
     stepNo:
-      panel.panelType === 'STEP_NEW_FAULT'
-        ? (stepNoByKey.get(panel.stepKey ?? '') ?? null)
-        : null,
+      panel.panelType === 'STEP_NEW_FAULT' ? (stepNoByKey.get(panel.stepKey ?? '') ?? null) : null,
     phaseCode: panel.phaseCode === '' ? null : panel.phaseCode,
     mainError: normalizeNullableText(panel.mainError),
     unitError: normalizeNullableText(panel.unitError),
@@ -498,9 +490,7 @@ export function validateMaintenanceEditorValue(
     }
   }
   if (value.engineerName.trim().length > MAX_ENGINEER_NAME_LENGTH) {
-    issues.push(
-      t('maintenance.validation.engineerNameTooLong', { max: MAX_ENGINEER_NAME_LENGTH }),
-    );
+    issues.push(t('maintenance.validation.engineerNameTooLong', { max: MAX_ENGINEER_NAME_LENGTH }));
   }
   if (value.supplementaryNote.length > MAX_NOTE_LENGTH) {
     issues.push(t('maintenance.validation.noteTooLong', { max: MAX_NOTE_LENGTH }));
@@ -541,7 +531,9 @@ export function validateMaintenanceEditorValue(
       }
     }
     if (panel.action.trim().length > MAX_NOTE_LENGTH) {
-      issues.push(t('maintenance.validation.panelTextTooLong', { panel: label, max: MAX_NOTE_LENGTH }));
+      issues.push(
+        t('maintenance.validation.panelTextTooLong', { panel: label, max: MAX_NOTE_LENGTH }),
+      );
     }
   }
   return issues;

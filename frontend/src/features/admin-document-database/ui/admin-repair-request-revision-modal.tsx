@@ -200,11 +200,8 @@ export function AdminRepairRequestRevisionModal({
             ? null
             : maintenanceValue.maintenanceDate.trim(),
         engineerName:
-          maintenanceValue.engineerName.trim() === ''
-            ? null
-            : maintenanceValue.engineerName.trim(),
-        resetResult:
-          maintenanceValue.resetResult === '' ? null : maintenanceValue.resetResult,
+          maintenanceValue.engineerName.trim() === '' ? null : maintenanceValue.engineerName.trim(),
+        resetResult: maintenanceValue.resetResult === '' ? null : maintenanceValue.resetResult,
         supplementaryNote:
           maintenanceValue.supplementaryNote.trim() === ''
             ? null
@@ -395,9 +392,7 @@ export function AdminRepairRequestRevisionModal({
         <Divider style={{ marginBlock: 0 }} />
 
         <div>
-          <p className="mb-1 font-medium">
-            {t('adminRepairRequest.revisionModal.maintenance')}
-          </p>
+          <p className="mb-1 font-medium">{t('adminRepairRequest.revisionModal.maintenance')}</p>
           <p className="mb-2 text-xs text-text-secondary">
             {t('adminRepairRequest.revisionModal.maintenanceHint')}
           </p>

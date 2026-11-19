@@ -541,10 +541,7 @@ export async function fetchAdminRepairRequestRevisionDetail(
 
     return { ok: true, detail: data.adminRepairRequestRevisionDetail };
   } catch (error) {
-    return toNotFoundResult(
-      error,
-      translateNow('adminRepairRequest.versionHistory.notAccessible'),
-    );
+    return toNotFoundResult(error, translateNow('adminRepairRequest.versionHistory.notAccessible'));
   }
 }
 

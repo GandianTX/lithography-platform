@@ -125,7 +125,13 @@ describe(AdminRepairRequestDetailPanel.name, () => {
     render(<AdminRepairRequestDetailPanel onBack={vi.fn()} requestId={1} />);
 
     expect(await screen.findByText('工单详情 · RR-20260901-001')).toBeInTheDocument();
-    for (const title of ['基础信息', '处理结果', '内部维修过程', '客户可见回复', '版本与修订历史']) {
+    for (const title of [
+      '基础信息',
+      '处理结果',
+      '内部维修过程',
+      '客户可见回复',
+      '版本与修订历史',
+    ]) {
       expect(screen.getAllByText(title).length).toBeGreaterThan(0);
     }
     expect(screen.getByText('已结单')).toBeInTheDocument();
