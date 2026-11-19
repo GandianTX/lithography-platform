@@ -102,6 +102,7 @@ const PRODUCTION_BOOLEAN_KEYS = [
   'JWT_ENABLE_REFRESH',
   'AI_QUEUE_DEBUG_ENABLED',
   'EMAIL_QUEUE_DEBUG_ENABLED',
+  'LITHO_RAG_ALLOW_TAILNET_HTTP',
 ] as const;
 
 const PRODUCTION_INTEGER_KEYS = [
@@ -110,6 +111,7 @@ const PRODUCTION_INTEGER_KEYS = [
   'DB_POOL_SIZE',
   'REDIS_PORT',
   'REDIS_DB',
+  'LITHO_RAG_TIMEOUT_MS',
 ] as const;
 
 const collectRequiredEnvErrors = (): string[] => {
@@ -197,11 +199,30 @@ const collectFieldEncryptionRuleErrors = (): string[] => {
   return errors;
 };
 
+const collectRagDiagnosisRuleErrors = (): string[] => {
+  const errors: string[] = [];
+  const mode = getOptionalEnv('LITHO_RAG_MODE')?.toLowerCase();
+  if (mode && mode !== 'disabled' && mode !== 'remote') {
+    errors.push('LITHO_RAG_MODE must be either disabled or remote');
+  }
+
+  const baseUrl = getOptionalEnv('LITHO_RAG_BASE_URL');
+  const apiKey = getOptionalEnv('LITHO_RAG_API_KEY');
+  if (Boolean(baseUrl) !== Boolean(apiKey)) {
+    errors.push('LITHO_RAG_BASE_URL and LITHO_RAG_API_KEY must be configured together');
+  }
+  if (mode === 'remote' && (!baseUrl || !apiKey)) {
+    errors.push('LITHO_RAG_MODE=remote requires LITHO_RAG_BASE_URL and LITHO_RAG_API_KEY');
+  }
+  return errors;
+};
+
 const collectProductionRuleErrors = (): string[] => {
   return [
     ...collectDbAndCorsRuleErrors(),
     ...collectAiProviderRuleErrors(),
     ...collectFieldEncryptionRuleErrors(),
+    ...collectRagDiagnosisRuleErrors(),
   ];
 };
 
@@ -441,6 +462,22 @@ const aiWorkerConfig: ConfigFactory = () => ({
   },
 });
 
+/**
+ * 生成 RAG 公共诊断客户端配置。
+ *
+ * 缺失或不完整时不在启动期抛错：客户端在 `diagnose` 时按 `CONFIG_ERROR` 失败关闭，
+ * 保证无 RAG 密钥的进程仍可启用原有功能。
+ */
+const ragDiagnosisConfig: ConfigFactory = () => ({
+  ragDiagnosis: {
+    mode: process.env.LITHO_RAG_MODE?.trim().toLowerCase() || 'remote',
+    baseUrl: getOptionalEnv('LITHO_RAG_BASE_URL') ?? '',
+    apiKey: getOptionalEnv('LITHO_RAG_API_KEY') ?? '',
+    allowInsecureHttp: getBooleanEnvWithDefault('LITHO_RAG_ALLOW_TAILNET_HTTP', false),
+    timeoutMs: getIntEnvWithDefault('LITHO_RAG_TIMEOUT_MS', 30000),
+  },
+});
+
 const emailDeliveryConfig: ConfigFactory = () => ({
   emailDelivery: {
     sendAsUser: getOptionalEnv('EMAIL_SEND_AS_USER'),
@@ -541,6 +578,7 @@ const paginationConfig = () => ({
         qmWorkerEntryConfig,
         capabilityRuntimeConfig,
         aiWorkerConfig,
+        ragDiagnosisConfig,
         emailDeliveryConfig,
         referenceDocumentStorageConfig,
         adminAccountResetConfig,
