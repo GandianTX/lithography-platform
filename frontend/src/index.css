@@ -2684,14 +2684,6 @@ body {
   }
 }
 
-@media (max-width: 980px) {
-  /* 窄屏：模型区高度对齐 V44 原型窄屏实测 540.2（原型 .ai33-scene），
-     画布随剩余空间伸展，保持原型「模型区主导」的层次。 */
-  .ai-scene {
-    min-height: 540px;
-  }
-}
-
 @media (min-width: 981px) {
   .ai-workspace-grid {
     gap: 0;
@@ -2728,6 +2720,15 @@ body {
   gap: 8px;
   min-height: 0;
   padding: 0;
+}
+
+@media (max-width: 980px) {
+  /* 窄屏：模型区高度对齐 V44 原型窄屏实测 540.2（原型 .ai33-scene），
+     画布随剩余空间伸展，保持原型「模型区主导」的层次。
+     必须放在 .ai-scene 基础规则之后，否则会被后者的 min-height: 0 覆盖。 */
+  .ai-scene {
+    min-height: 540px;
+  }
 }
 
 .ai-scene-header {
