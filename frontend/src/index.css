@@ -2722,15 +2722,6 @@ body {
   padding: 0;
 }
 
-@media (max-width: 980px) {
-  /* 窄屏：模型区高度对齐 V44 原型窄屏实测 540.2（原型 .ai33-scene），
-     画布随剩余空间伸展，保持原型「模型区主导」的层次。
-     必须放在 .ai-scene 基础规则之后，否则会被后者的 min-height: 0 覆盖。 */
-  .ai-scene {
-    min-height: 540px;
-  }
-}
-
 .ai-scene-header {
   align-items: flex-start;
   display: flex;
@@ -3102,7 +3093,9 @@ body {
   }
 
   .ai-scene {
-    min-height: 425px;
+    /* V44 原型窄屏模型区实测 540.2（.ai33-scene）：模型区主导窄屏首屏，
+       画布随剩余空间伸展，模型按画布宽度等比缩放 */
+    min-height: 540px;
   }
 
   .ai-panel {
