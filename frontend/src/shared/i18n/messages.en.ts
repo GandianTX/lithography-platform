@@ -887,7 +887,11 @@ export const EN_MESSAGES = {
   'ai.panel.error.emptyQuestion': 'Question text is required',
   'ai.panel.error.questionTooLong': 'Question text must be 1-{max} characters',
   'ai.panel.error.createUnknown':
-    'The previous conversation creation failed and its result is unknown. Click "New chat" and send again.',
+    'The previous conversation creation failed and its result is unknown. Check whether it was created, or start a new chat to abandon it (your text is kept).',
+  'ai.panel.recoverCreate': 'Check if it was created',
+  'ai.panel.createRecovered': 'Found the conversation created earlier; you can continue sending.',
+  'ai.panel.createNotFound': 'No created conversation found; you can send again directly.',
+  'ai.panel.createAbandoned': 'Abandoned this attempt; your question text is kept and you can send again.',
   'ai.panel.refreshTurn': 'Refresh turn',
   'ai.panel.retry': 'Retry turn',
   'ai.panel.retryTurnAria': 'Retry turn {turn}',

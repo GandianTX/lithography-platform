@@ -34,7 +34,10 @@ import {
   submitAiQuestion,
 } from '../infrastructure/ai-conversation-adapter';
 
-import { describeAiConversationError } from './ai-conversation-error';
+import {
+  classifyAiConversationCreateFailure,
+  describeAiConversationError,
+} from './ai-conversation-error';
 
 const PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 1500;
@@ -59,6 +62,41 @@ function hasActiveTurns(detail: AiConversationDetail | null): boolean {
 /** 关注轮次：默认取最新一轮（不改变「当前图形只看关注轮」的规则） */
 function pickFocusTurn(detail: AiConversationDetail): AiConversationTurn | undefined {
   return [...detail.turns].sort((left, right) => (left.turnNo ?? 0) - (right.turnNo ?? 0)).at(-1);
+}
+
+/** 一次会话创建尝试的上下文（供未知结果的恢复核对使用） */
+export type AiConversationCreateAttempt = {
+  /** 发起创建请求的时刻（服务端 createdAt 不早于它才算本次尝试建出） */
+  readonly at: number;
+  /** 目标工单（独立会话为 null） */
+  readonly requestId: number | null;
+};
+
+/**
+ * 在列表结果中定位「本次创建尝试可能已经建出」的会话。
+ *
+ * 三个条件同时成立才算候选：
+ * - 绑定的工单与本次尝试一致（独立会话同为 null）；
+ * - 创建时间不早于本次尝试（更早的会话是用户此前留下的，不接管）；
+ * - 尚无任何消息（创建后首问未受理才会留下空会话）。
+ *
+ * 命中多个时取最新创建的一个。
+ */
+export function findCreatedConversation(
+  items: readonly AiConversationListItem[],
+  attempt: AiConversationCreateAttempt,
+): AiConversationListItem | undefined {
+  return items
+    .filter((item) => item.requestId === attempt.requestId)
+    .filter((item) => item.messageCount === 0)
+    .filter((item) => {
+      const createdAt = new Date(item.createdAt).getTime();
+      return Number.isFinite(createdAt) && createdAt >= attempt.at;
+    })
+    .sort(
+      (left, right) =>
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    )[0];
 }
 
 export type AiDiagnosisWorkspaceState = {
@@ -91,9 +129,12 @@ export type AiDiagnosisWorkspaceState = {
   /**
    * 上一次会话创建结果未知（请求已发出但失败）。
    *
-   * 此时不得再次隐式创建，否则可能重复建会话；需用户显式「新建对话」后重试。
+   * 此时不得再次隐式创建，否则可能重复建会话；需用户显式「核对并继续」或
+   * 「放弃本次」后重试。两种恢复都必须保留用户草稿与工单选择。
    */
   createUnknown: boolean;
+  /** 正在核对未知创建结果（恢复动作在飞） */
+  recoveringCreate: boolean;
   loading: boolean;
   /** 正在创建会话（U05：创建期间锁定新建入口与工单输入） */
   creating: boolean;
@@ -123,6 +164,7 @@ const INITIAL_STATE: AiDiagnosisWorkspaceState = {
   draft: '',
   draftRequestId: null,
   createUnknown: false,
+  recoveringCreate: false,
   loading: false,
   creating: false,
   submitting: false,
@@ -160,6 +202,15 @@ export function useAiDiagnosisWorkspace() {
   /** F06：创建/提交的同步防重入（按钮禁用不足以拦截连点与回车连发） */
   const creatingRef = useRef(false);
   const submittingRef = useRef(false);
+  /** 未知创建结果的恢复防重入 */
+  const recoveringRef = useRef(false);
+  /**
+   * 本次会话创建尝试的上下文。
+   *
+   * 创建结果未知时用它核对服务端是否已经建出会话，避免重复创建，
+   * 同时不丢用户草稿与工单选择。
+   */
+  const createAttempt = useRef<AiConversationCreateAttempt | null>(null);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current !== null) {
@@ -173,6 +224,8 @@ export function useAiDiagnosisWorkspace() {
     conversationEpoch.current += 1;
     turnEpoch.current += 1;
     pendingQuestion.current = null;
+    // 未知创建的上下文随会话态一起作废（用户已放弃或切换）
+    createAttempt.current = null;
     clearPollTimer();
     setState((current) => ({
       ...current,
@@ -550,7 +603,8 @@ export function useAiDiagnosisWorkspace() {
       let conversationId: number | null = state.selectedId;
       try {
         if (conversationId === null) {
-          // 创建结果未知时不再隐式重建：否则可能重复建会话，需用户显式「新建对话」确认
+          // 创建结果未知时不再隐式重建：否则可能重复建会话，
+          // 需用户显式「核对并继续」或「放弃本次」后重试（两者都保留草稿）
           if (state.createUnknown) {
             setState((current) => ({
               ...current,
@@ -560,12 +614,15 @@ export function useAiDiagnosisWorkspace() {
             return null;
           }
           setState((current) => ({ ...current, creating: true }));
+          // 记录本次创建尝试：结果未知时据此核对服务端是否已建出会话
+          createAttempt.current = { at: Date.now(), requestId: draftRequestId };
           try {
             const created = await createAiConversation(draftRequestId);
             if (sessionToken !== conversationEpoch.current) {
               return null;
             }
             conversationId = created.id;
+            createAttempt.current = null;
             setState((current) => ({
               ...current,
               selectedId: created.id,
@@ -585,12 +642,16 @@ export function useAiDiagnosisWorkspace() {
             if (sessionToken !== conversationEpoch.current) {
               return null;
             }
-            // 创建失败：保留草稿与工单选择，标记结果未知，禁止自动再建
+            // 创建失败的两种性质（服务端是否已答复）：
+            // - 明确拒绝：会话确定未创建 → 不阻断重试，保留草稿与工单选择，
+            //   用户可改工单后重新发送；
+            // - 结果未知：请求可能已到达服务端 → 阻断隐式重建，等待用户核对或放弃。
+            const failure = classifyAiConversationCreateFailure(error);
             setState((current) => ({
               ...current,
               creating: false,
               submitting: false,
-              createUnknown: true,
+              createUnknown: failure === 'UNKNOWN',
               errorMessage: describeAiConversationError(error),
             }));
             return null;
@@ -849,14 +910,125 @@ export function useAiDiagnosisWorkspace() {
   }, []);
 
   /**
+   * 接管一个已存在的会话（未知创建结果的恢复路径）。
+   *
+   * 与 `selectConversation` 的区别：**不清空用户草稿**——恢复时用户的现场描述
+   * 必须留下，可继续发送；会话已绑定工单，后续以服务端事实为准。
+   */
+  const adoptConversation = useCallback(
+    async (conversationId: number) => {
+      const sessionToken = conversationEpoch.current + 1;
+      conversationEpoch.current = sessionToken;
+      turnEpoch.current += 1;
+      pendingQuestion.current = null;
+      clearPollTimer();
+      setState((current) => ({
+        ...current,
+        selectedId: conversationId,
+        conversation: null,
+        createUnknown: false,
+        recoveringCreate: false,
+        generating: false,
+        loading: true,
+        errorMessage: null,
+        noticeMessage: t('ai.panel.createRecovered'),
+        // 会话已绑定工单，后续以服务端事实为准
+        draftRequestId: null,
+      }));
+      try {
+        const detail = await getMyAiConversation(conversationId);
+        if (conversationEpoch.current !== sessionToken) {
+          return;
+        }
+        setState((current) => ({ ...current, conversation: detail, loading: false }));
+      } catch (error) {
+        if (conversationEpoch.current !== sessionToken) {
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          loading: false,
+          errorMessage: describeAiConversationError(error),
+        }));
+      }
+    },
+    [clearPollTimer, t],
+  );
+
+  /**
+   * 未知创建结果的恢复动作（S1）：先核对服务端是否已经建出会话。
+   *
+   * - 找到（本次尝试后创建、同工单、尚无消息）→ 接管该会话，用户草稿保留，可继续发送；
+   * - 没找到 → 本次创建确定未落地，解除阻断，允许直接重新发送。
+   *
+   * 两种结果都保留草稿与工单选择；核对失败时同样只提示错误，不丢现场。
+   */
+  const recoverUnknownCreate = useCallback(async () => {
+    if (state.createUnknown !== true || recoveringRef.current) {
+      return null;
+    }
+    recoveringRef.current = true;
+    const sessionToken = conversationEpoch.current;
+    setState((current) => ({ ...current, recoveringCreate: true, errorMessage: null }));
+    try {
+      const page = await listMyAiConversations({ page: 1, pageSize: PAGE_SIZE });
+      if (sessionToken !== conversationEpoch.current) {
+        return null;
+      }
+      const attempt = createAttempt.current;
+      const candidate =
+        attempt === null ? undefined : findCreatedConversation(page.items, attempt);
+      if (candidate !== undefined) {
+        await adoptConversation(candidate.id);
+        return candidate.id;
+      }
+      setState((current) => ({
+        ...current,
+        recoveringCreate: false,
+        createUnknown: false,
+        noticeMessage: t('ai.panel.createNotFound'),
+      }));
+      return null;
+    } catch (error) {
+      if (sessionToken !== conversationEpoch.current) {
+        return null;
+      }
+      setState((current) => ({
+        ...current,
+        recoveringCreate: false,
+        errorMessage: describeAiConversationError(error),
+      }));
+      return null;
+    } finally {
+      recoveringRef.current = false;
+    }
+  }, [adoptConversation, state.createUnknown, t]);
+
+  /**
    * S1：新建回到空草稿（不创建空会话、不产生写请求）。
    *
    * 会话与工单绑定都在首次发送时才落库；这里只清本地草稿态。
+   *
+   * 例外：创建结果未知时，这个动作的语义是「放弃这次未知的创建」，
+   * 必须保留用户草稿与工单选择，不得丢现场描述（此时另有「核对并继续」）。
    */
   const startNewDraft = useCallback(() => {
+    if (state.createUnknown) {
+      const keptDraft = state.draft;
+      const keptRequestId = state.draftRequestId;
+      resetSessionState();
+      setState((current) => ({
+        ...current,
+        loading: false,
+        draft: keptDraft,
+        draftRequestId: keptRequestId,
+        noticeMessage: t('ai.panel.createAbandoned'),
+      }));
+      return;
+    }
     resetSessionState();
     setState((current) => ({ ...current, loading: false }));
-  }, [resetSessionState]);
+  }, [resetSessionState, state.createUnknown, state.draft, state.draftRequestId, t]);
 
   const dismissNotice = useCallback(() => {
     setState((current) => ({ ...current, noticeMessage: null }));
@@ -886,6 +1058,7 @@ export function useAiDiagnosisWorkspace() {
     selectConversation,
     createConversation,
     startNewDraft,
+    recoverUnknownCreate,
     submitQuestion,
     retryCurrentTurn,
     retryTurn,

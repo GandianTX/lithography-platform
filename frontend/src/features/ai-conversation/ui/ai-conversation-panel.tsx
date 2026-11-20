@@ -29,6 +29,10 @@ export type AiConversationPanelProps = {
   draft: string;
   errorMessage: string | null;
   noticeMessage: string | null;
+  /** 上一次会话创建结果未知（需显式核对或放弃，草稿已保留） */
+  createUnknown: boolean;
+  /** 正在核对未知创建结果 */
+  recoveringCreate: boolean;
   /** 草稿态下已选工单；会话已存在时以 conversation.requestId 为准 */
   workOrderId: number | null;
   workOrders: readonly AiWorkOrderOption[];
@@ -41,6 +45,7 @@ export type AiConversationPanelProps = {
   onLoadMoreWorkOrders: () => void;
   onReloadWorkOrders: () => void;
   onNewChat: () => void;
+  onRecoverCreate: () => void;
   onSubmit: () => void;
   onRetryTurn: (questionUuid: string) => void;
   onRefreshTurn: (questionUuid: string) => void;
@@ -146,6 +151,17 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
         {props.errorMessage !== null ? (
           <div className="ai-compose-alert" role="alert">
             {props.errorMessage}
+            {props.createUnknown ? (
+              // 结果未知：先核对服务端是否已建出会话（避免重复创建）；草稿始终保留
+              <Button
+                disabled={props.recoveringCreate}
+                loading={props.recoveringCreate}
+                onClick={props.onRecoverCreate}
+                size="small"
+              >
+                {t('ai.panel.recoverCreate')}
+              </Button>
+            ) : null}
           </div>
         ) : null}
         {props.noticeMessage !== null ? (

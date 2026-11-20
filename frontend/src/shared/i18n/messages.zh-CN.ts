@@ -821,7 +821,12 @@ export const ZH_CN_MESSAGES = {
   'ai.panel.send': '发送问题',
   'ai.panel.error.emptyQuestion': '问题正文不能为空',
   'ai.panel.error.questionTooLong': '问题正文长度必须在 1–{max} 字之间',
-  'ai.panel.error.createUnknown': '上一次会话创建失败且结果未知：请点击「新建对话」后再重新发送。',
+  'ai.panel.error.createUnknown':
+    '上一次会话创建失败且结果未知：请点「核对是否已创建」确认，或点「新建对话」放弃本次（问题内容会保留）。',
+  'ai.panel.recoverCreate': '核对是否已创建',
+  'ai.panel.createRecovered': '已找到此前创建的会话，可继续发送。',
+  'ai.panel.createNotFound': '未发现已创建的会话，可直接重新发送。',
+  'ai.panel.createAbandoned': '已放弃本次创建，问题内容已保留，可重新发送。',
   'ai.panel.refreshTurn': '重新查询本轮',
   'ai.panel.retry': '重试本轮',
   'ai.panel.retryTurnAria': '重试第 {turn} 轮',

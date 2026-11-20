@@ -156,6 +156,7 @@ export function EngineerAiPage() {
             canExportPdf={workspace.conversation !== null}
             conversation={workspace.conversation}
             creating={workspace.creating}
+            createUnknown={workspace.createUnknown}
             draft={workspace.draft}
             errorMessage={workspace.errorMessage}
             exporting={workspace.exporting}
@@ -172,9 +173,11 @@ export function EngineerAiPage() {
               workspace.startNewDraft();
             }}
             onRefreshTurn={() => void workspace.refreshCurrentTurn()}
+            onRecoverCreate={() => void workspace.recoverUnknownCreate()}
             onReloadWorkOrders={workOrders.reload}
             onRetryTurn={(questionUuid) => void workspace.retryTurn(questionUuid)}
             onSubmit={() => void workspace.submitQuestion(workspace.draft)}
+            recoveringCreate={workspace.recoveringCreate}
             onWorkOrderChange={workspace.setDraftRequestId}
             retrying={workspace.retrying}
             submitting={workspace.submitting}
