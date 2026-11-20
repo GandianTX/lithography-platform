@@ -34,6 +34,8 @@
 //   R07a 合法循环引用                 → 解环 UPDATE 后按序回收
 //   R07b 额外引用                     → 零解环、零删除、逐字段不变
 //   R08 多态 stored_file 引用         → 按事实核验，不自动认领
+//   R10 报告附件引用本轮原件          → 第 49 条 file_id 入边：首删前拒绝（R10a）、
+//                                       无引用正常清理（R10b）、历史 NULL 不误报（R10c）
 //
 // 运行（授权后，仅目标库）：
 //   E2E_REAL_DB_SPECS=1 E2E_ALLOW_PHYSICAL_CLEANUP=1 \
@@ -46,9 +48,13 @@
 // - 外部记录（maintenance_report / ai_conversation / local_backup_run 等无登记类别）
 //   也由本轮创建，使用独立的 externalLedger，绝不参与任何用例台账的删除范围。
 // - 造数与断言从创建前进入 try/finally；主错误、回收、回滚与关闭错误分别保留。
+// - 用例收尾由 runCaseCleanupPlan 统一分流：成功项不重做；失败项与其后未执行项转入
+//   套件级责任登记薄（cleanupDebts），显式结清前阻断后续用例写入。R02-CONFLICT 与
+//   FAULT-UPDATE-CONFLICT 的受控恢复冲突在核验保留事实后显式结清。
 // - 故障注入只用可恢复的 Proxy 包装，不创建临时触发器。
 
 import { randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import * as path from 'path';
 
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
@@ -64,15 +70,25 @@ import {
 } from '../../../test/utils/consumer-instrumentation';
 import {
   assertCasRestoreAffectedOne,
+  assertCleanupDebtsSettled,
   assertTransactionObservationCapability,
   byteExactTextMatchCondition,
   classifyThreadInstrumentationWrite,
   countActiveOwnTransactions,
+  createCaseFailure,
+  createCleanupDebtRegistry,
   createOwnedResourceLedger,
+  describeErrorChain,
+  executeRegisteredCleanups,
   planThreadInstrumentationRecovery,
   recordOwnedResource,
+  runCaseCleanupPlan,
   runGuardedScopedCleanup,
   runGuardedSpecCleanup,
+  summarizeOwnedResourceLedger,
+  type CaseCleanupDebt,
+  type CaseCleanupReport,
+  type CaseCleanupStep,
   type OwnedResourceLedger,
   type RetainedCleanupResources,
   type ThreadInstrumentationWriteDecision,
@@ -187,6 +203,15 @@ const ENABLED = TARGET !== null;
 const EXPECTED_DB = TARGET?.database ?? '';
 const EXPECTED_SERVER_UUID = TARGET?.serverUuid ?? '';
 
+/**
+ * 本分支终态迁移条数（冻结值）。
+ *
+ * 第 49 条 `add-maintenance-report-attachment-file-for-v13`（1775502700000）是本分支最后一条，
+ * 因此仓库清单长度与实库历史长度都必须等于 49。两处断言共用本常量，避免再次出现
+ * “beforeAll=44、R09=49” 的双写不一致；新增迁移时必须只改这一个常量。
+ */
+export const EXPECTED_REPOSITORY_MIGRATION_COUNT = 49;
+
 const describeRealDb = ENABLED ? describe : describe.skip;
 
 jest.setTimeout(180000);
@@ -250,6 +275,38 @@ const registerThreadStopExecutorRecovery = (params: {
   };
 };
 
+/**
+ * 用例复位前的未兑现登记清点（纯函数，离线可回归）。
+ *
+ * `resetCase` 不得丢弃尚未兑现的登记责任：仍留在 `executorCasRestores` /
+ * `caseDirectCleanups` 里的条目会被转为带阶段、步骤与定位标签的债务，由调用方
+ * 转入套件级登记薄后阻断后续写入。空队列（含 `beforeAll` 首次复位的真实路径）
+ * 必须安全通过且不产生任何债务——这正是本函数与初始化时序共同守住的约定。
+ */
+const collectUnexecutedCaseDebts = (
+  executorCasRestores: ReadonlyArray<ExecutorCasRestore>,
+  caseDirectCleanups: ReadonlyArray<CaseCleanupStep>,
+): CaseCleanupDebt[] => {
+  const unexecuted: CaseCleanupDebt[] = [];
+  executorCasRestores.forEach((restore, index) => {
+    unexecuted.push({
+      stage: '测试执行者恢复',
+      step: index + 1,
+      totalSteps: executorCasRestores.length,
+      label: `CAS 恢复 ${restore.label} targetId=${String(restore.targetId)}`,
+    });
+  });
+  caseDirectCleanups.forEach((step, index) => {
+    unexecuted.push({
+      stage: '干扰行回收',
+      step: index + 1,
+      totalSteps: caseDirectCleanups.length,
+      label: step.label,
+    });
+  });
+  return unexecuted;
+};
+
 interface ZeroHitSettlement {
   readonly release: boolean;
   readonly destroy: boolean;
@@ -292,16 +349,7 @@ const planZeroHitControlSettlement = (params: {
   };
 };
 
-const messageOf = (error: unknown): string => {
-  if (error instanceof AggregateError) {
-    return `${error.message}: ${error.errors.map(messageOf).join(' | ')}`;
-  }
-  if (error instanceof Error) {
-    const cause = (error as Error & { cause?: unknown }).cause;
-    return cause === undefined ? error.message : `${error.message} <- ${messageOf(cause)}`;
-  }
-  return String(error);
-};
+const messageOf = (error: unknown): string => describeErrorChain(error);
 
 /**
  * 将数据库时间字符串规范化为 timestamp(3) 的毫秒精度。
@@ -392,9 +440,18 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
    * 避免“预检连接通过、后续池连接未知”。池内其他连接由 helper 的同用户前台线程检查覆盖。
    */
   let observationRunner: QueryRunner;
-  let externalLedger: OwnedResourceLedger;
-  let caseLedger: OwnedResourceLedger;
-  let caseDirectCleanups: Array<() => Promise<void>>;
+  // RQ 复位回归：全部用例状态在声明处即初始化。`beforeAll` 在外部父行造数完成后
+  // 会立即调用 `resetCase`（首次复位真实路径），任何读取都必须安全；初始化只此一处，
+  // 不靠捕获 TypeError 或跳过债务检查兜底。
+  let externalLedger: OwnedResourceLedger = createOwnedResourceLedger();
+  let caseLedger: OwnedResourceLedger = createOwnedResourceLedger();
+  /**
+   * 用例内已登记的精确回收责任。
+   *
+   * 每条都必须带可定位标签（真实 ID / 表名 / 原值），失败或未执行时按标签保留责任；
+   * 不允许只登记匿名闭包，否则失败后无法说清“还欠哪一笔”。
+   */
+  let caseDirectCleanups: CaseCleanupStep[] = [];
   /**
    * 测试执行者的独立收尾台账。
    *
@@ -403,8 +460,17 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
    * R03 的集合外工单因归属核验要求客户账号/机型同在删除范围，
    * 改用 caseDirectCleanups 登记精确删除。
    */
-  let executorLedger: OwnedResourceLedger;
-  let executorCasRestores: ExecutorCasRestore[];
+  let executorLedger: OwnedResourceLedger = createOwnedResourceLedger();
+  let executorCasRestores: ExecutorCasRestore[] = [];
+  /**
+   * 套件级未兑现责任登记薄。
+   *
+   * 用例复位时，仍留在 `caseDirectCleanups` / `executorCasRestores` 里的责任会被
+   * 转入这里：不再由下一个用例执行（防止错误认领前一个现场），但也绝不静默消失；
+   * 在责任被显式结清前，后续用例的写入入口直接阻断。
+   */
+  const cleanupDebts = createCleanupDebtRegistry();
+  let cleanupBlockedReason: string | null = null;
   /**
    * 套件级保留集合（P3）：冲突现场及其必要父资源一旦登记，
    * 用例收尾、通用清理和 afterAll 都不得再次认领删除；也不得为追求零残留反向删除。
@@ -683,11 +749,49 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     }
   };
 
-  const resetCase = (): void => {
+  /**
+   * 用例复位：清空内存台账，但**不得丢弃尚未兑现的登记责任**。
+   *
+   * 正常收尾路径由 `cleanupCase` 先把全部登记分流为“已兑现/未兑现”才复位，
+   * 因此这里通常没有剩余项；一旦仍有登记（异常路径或未来的新调用点），
+   * 责任转入套件级登记薄并保持阻断，绝不随 `= []` 静默消失。
+   */
+  const resetCase = (context: string): void => {
+    const unexecuted = collectUnexecutedCaseDebts(executorCasRestores, caseDirectCleanups);
+    if (unexecuted.length > 0) {
+      cleanupDebts.preserve(context, unexecuted);
+      cleanupBlockedReason ??= `${context} 复位时仍有 ${unexecuted.length} 条未兑现登记`;
+    }
     caseLedger = createOwnedResourceLedger();
     caseDirectCleanups = [];
     executorLedger = createOwnedResourceLedger();
     executorCasRestores = [];
+  };
+
+  /**
+   * 写入前检查：只要还有未兑现的清理责任，就明确阻断后续用例继续写入。
+   *
+   * 阻断不是“跳过用例”：抛错即失败，并输出责任定位与原始错误，现场保持原样，
+   * 等待显式结清或人工处置。
+   */
+  const assertCleanupSettled = (context: string): void => {
+    assertCleanupDebtsSettled(cleanupDebts, context, cleanupBlockedReason);
+  };
+
+  /**
+   * 显式结清本轮已按设计保留的收尾责任。
+   *
+   * 只允许在用例自己完成独立处置、并核验保留事实之后调用（例如 R02-CONFLICT
+   * 的冲突文件按 P3 保留）；结清原因会输出到实际测试日志。
+   */
+  const settleCleanupDebts = (helperPrefix: string, reason: string): void => {
+    const settled = cleanupDebts.settle(helperPrefix, reason);
+    for (const message of settled) {
+      console.info(`[S4-E] 收尾责任已结清：${message}`);
+    }
+    if (cleanupDebts.unresolved().length === 0) {
+      cleanupBlockedReason = null;
+    }
   };
 
   const faultArmedFor = (caseId: string): boolean =>
@@ -731,57 +835,66 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
 
   /**
    * 用例收尾：先执行测试执行者登记的恢复/回收，再回收干扰行，最后按被测台账回收。
-   * 任一步失败即停止，不扩大删除范围；内存台账始终复位，避免后续用例误认领现场。
+   *
+   * 由 `runCaseCleanupPlan` 统一保证生命周期：
+   * - 成功兑现的登记只执行一次，不会在 finally 里重做；
+   * - 任一条失败即停止后续全部阶段（不扩大删除范围），失败项与其后未执行项
+   *   原样作为“未兑现责任”转存到套件级登记薄，不随内存复位消失；
+   * - 阻断标志让后续用例在写入前明确失败，而不是错误认领前一个现场。
    */
-  const cleanupCase = async (helper: string): Promise<unknown[]> => {
-    const diagnostics: unknown[] = [];
+  const cleanupCase = async (helper: string): Promise<CaseCleanupReport> => {
+    const restoreSteps: CaseCleanupStep[] = executorCasRestores.map((restore, index) => ({
+      label:
+        `CAS 恢复 ${restore.label} targetId=${String(restore.targetId)}` +
+        `（第 ${index + 1}/${executorCasRestores.length} 条）`,
+      run: () => guardedCasRestore(restore),
+    }));
+    const executorSteps: CaseCleanupStep[] = [
+      {
+        label: `测试执行者台账 ${summarizeOwnedResourceLedger(executorLedger)}`,
+        run: () =>
+          runGuardedSpecCleanup({
+            dataSource,
+            helper: `${helper}/测试执行者台账回收`,
+            owned: executorLedger,
+            retained: retainedCleanupView(),
+            expectedDatabase: EXPECTED_DB,
+          }),
+      },
+    ];
+    const caseSteps: CaseCleanupStep[] = [
+      {
+        label: `用例台账 ${summarizeOwnedResourceLedger(caseLedger)}`,
+        run: () =>
+          runGuardedSpecCleanup({
+            dataSource,
+            helper: `${helper}/台账回收`,
+            owned: caseLedger,
+            retained: retainedCleanupView(),
+            expectedDatabase: EXPECTED_DB,
+          }),
+      },
+    ];
+
     try {
-      for (const restore of executorCasRestores.splice(0)) {
-        try {
-          await guardedCasRestore(restore);
-        } catch (error) {
-          diagnostics.push(
-            new Error(`${helper} 测试执行者恢复失败: ${restore.label}`, { cause: error }),
-          );
-          // 冲突行按设计保留：立即停止，绝不进入后续通用清理再次认领/删除。
-          return diagnostics;
-        }
+      const report = await runCaseCleanupPlan(helper, [
+        { name: '测试执行者恢复', steps: restoreSteps },
+        { name: '测试执行者台账回收', steps: executorSteps },
+        { name: '干扰行回收', steps: caseDirectCleanups },
+        { name: '用例台账回收', steps: caseSteps },
+      ]);
+      // 计划已接管全部登记：成功项已兑现，未兑现项进入责任登记薄；
+      // 此时清空内存队列才不会丢失任何责任。
+      caseDirectCleanups = [];
+      executorCasRestores = [];
+      cleanupDebts.preserve(helper, report.debts);
+      if (report.blocked) {
+        cleanupBlockedReason ??= `${helper} 收尾仍有 ${report.debts.length} 条未兑现责任`;
       }
-      try {
-        await runGuardedSpecCleanup({
-          dataSource,
-          helper: `${helper}/测试执行者台账回收`,
-          owned: executorLedger,
-          retained: retainedCleanupView(),
-          expectedDatabase: EXPECTED_DB,
-        });
-      } catch (error) {
-        diagnostics.push(new Error(`${helper} 测试执行者台账回收失败`, { cause: error }));
-        return diagnostics;
-      }
-      for (const step of caseDirectCleanups.splice(0)) {
-        try {
-          await step();
-        } catch (error) {
-          diagnostics.push(new Error(`${helper} 干扰行回收失败`, { cause: error }));
-          return diagnostics;
-        }
-      }
-      try {
-        await runGuardedSpecCleanup({
-          dataSource,
-          helper: `${helper}/台账回收`,
-          owned: caseLedger,
-          retained: retainedCleanupView(),
-          expectedDatabase: EXPECTED_DB,
-        });
-      } catch (error) {
-        diagnostics.push(new Error(`${helper} 用例台账回收失败`, { cause: error }));
-      }
+      return report;
     } finally {
-      resetCase();
+      resetCase(`${helper}/收尾复位`);
     }
-    return diagnostics;
   };
 
   const rejectWithoutDestructiveCalls = async (
@@ -903,6 +1016,38 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       uploadContextId,
     });
     return fileId;
+  };
+
+  /**
+   * 报告附件：第 49 条新增 `maintenance_report_attachment.file_id → stored_file.file_id`。
+   *
+   * 附件是「范围外子行」——清理器没有该表的删除能力，也从不登记它；
+   * 这里只造出引用事实（或历史 NULL 行）用于证明预检拒绝/放行，绝不进入任何台账。
+   * 回收由用例的 `caseDirectCleanups` 精确按 id 完成。
+   */
+  const insertMaintenanceReportAttachment = async (parameters: {
+    readonly fileId: string | null;
+    readonly sortOrder: number;
+    readonly tag: string;
+  }): Promise<number> => {
+    const result = await dataSource.query(
+      `INSERT INTO maintenance_report_attachment
+         (report_id, original_filename, mime_type, byte_size, checksum_sha256,
+          storage_backend, storage_reference, sort_order, description,
+          uploaded_by_account_id, file_id)
+       VALUES (?, ?, 'text/plain', 100, ?, 'LOCAL', ?, ?, ?, ?, ?)`,
+      [
+        external.reportId,
+        `s4e-${parameters.tag}.txt`,
+        'b'.repeat(64),
+        `local://s4e/${parameters.tag}.txt`,
+        parameters.sortOrder,
+        `S4-E 报告附件 ${parameters.tag}`,
+        external.accountId,
+        parameters.fileId,
+      ],
+    );
+    return insertIdOf(result);
   };
 
   const insertIntake = async (
@@ -1518,7 +1663,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         timestamp: Number(row.timestamp),
       })),
     ).toEqual(repositoryMigrations);
-    expect(repositoryMigrations).toHaveLength(44);
+    expect(repositoryMigrations).toHaveLength(EXPECTED_REPOSITORY_MIGRATION_COUNT);
 
     // 冻结种子按业务标识定位：读取单行表并核验唯一性/事实，再以 installation_id 为只读基线键。
     const seedInstallationRows = await plainRows(
@@ -1635,7 +1780,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     );
     external.backupRunId = insertIdOf(backupRunResult);
 
-    resetCase();
+    resetCase('S4-E/beforeAll 外部父行造数完成');
   });
 
   beforeEach(() => {
@@ -1645,12 +1790,24 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     if (instrumentInjectionBlocked) {
       throw new Error('线程采集状态未确认：已停止本实例上的后续测试及故障注入，等待执行者处置');
     }
+    // 上一用例若留下未兑现清理责任，本用例在产生任何写入之前就被明确阻断。
+    assertCleanupSettled('下一个用例写入前');
   });
 
   afterAll(async () => {
     const diagnostics: unknown[] = [];
+    const unresolvedDebts = cleanupDebts.unresolved();
+    if (unresolvedDebts.length > 0) {
+      // 有未兑现责任时保留现场：afterAll 不得代行删除，避免把“欠账”变成“已清理”的假象。
+      diagnostics.push(
+        new Error(
+          `S4-E 存在 ${unresolvedDebts.length} 条未兑现清理责任，已保留现场且不再认领删除：` +
+            cleanupDebts.describe(),
+        ),
+      );
+    }
 
-    if (setupAllowed) {
+    if (setupAllowed && unresolvedDebts.length === 0) {
       // 先精确回收无登记类别的外部父行；任一步失败即停止，保留现场。
       try {
         await runGuardedScopedCleanup({
@@ -1704,7 +1861,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       }
 
       if (diagnostics.length === 0) {
-        // 非目标基线：种子行、44 条迁移与触发器数量必须完全不变。
+        // 非目标基线：种子行、终态迁移条数与触发器数量必须完全不变。
         try {
           expect(await snapshotRows('organization', 'id', [1])).toEqual(baseline.seedOrganization);
           expect(
@@ -1748,14 +1905,21 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     }
 
     if (diagnostics.length > 0) {
-      throw new AggregateError(diagnostics, 'S4-E afterAll 存在失败诊断');
+      // 把每一项的具体错误内联到 message：默认的 AggregateError 标题不足以定位。
+      throw new AggregateError(
+        diagnostics,
+        `S4-E afterAll 存在 ${diagnostics.length} 项失败诊断：` +
+          diagnostics.map(messageOf).join('；'),
+      );
     }
   });
 
   const runCase = async (name: string, body: () => Promise<void>): Promise<void> => {
+    // 上一个用例若留下未兑现责任，这里在造数之前阻断，绝不把旧现场当成本用例的资源。
+    assertCleanupSettled(`${name} 写入前`);
     let primary: unknown;
     let hasPrimary = false;
-    const diagnostics: unknown[] = [];
+    let report: CaseCleanupReport;
     try {
       await body();
     } catch (error) {
@@ -1763,20 +1927,30 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       hasPrimary = true;
     } finally {
       try {
-        diagnostics.push(...(await cleanupCase(name)));
+        report = await cleanupCase(name);
       } catch (error) {
-        diagnostics.push(new Error(`${name} 收尾诊断收集失败`, { cause: error }));
+        report = {
+          diagnostics: [
+            new Error(`${name} 收尾诊断收集失败：${messageOf(error)}`, { cause: error }),
+          ],
+          debts: cleanupDebts.unresolved(),
+          blocked: true,
+        };
       }
     }
-    if (hasPrimary && diagnostics.length > 0) {
-      throw new AggregateError([primary, ...diagnostics], `${name} 主错误与收尾错误`);
+    const hasDiagnostics = report.diagnostics.length > 0;
+    if (!hasPrimary && !hasDiagnostics && report.debts.length === 0) {
+      return;
     }
-    if (hasPrimary) {
+    if (hasPrimary && !hasDiagnostics && report.debts.length === 0) {
       throw primary;
     }
-    if (diagnostics.length > 0) {
-      throw new AggregateError(diagnostics, `${name} 收尾失败`);
-    }
+    // 主错误与收尾错误同时存在时，两者（含未兑现责任）都必须出现在实际输出中。
+    throw createCaseFailure(name, {
+      primary: hasPrimary ? primary : undefined,
+      diagnostics: report.diagnostics,
+      debts: report.debts,
+    });
   };
 
   // =========================================================================
@@ -2059,6 +2233,9 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       if (recoveryError !== undefined) {
         throw recoveryError;
       }
+      // 本用例的 CAS 恢复冲突是受控预期：独立收尾已按预期字节处置并核验保留事实。
+      // 显式结清收尾责任，解除对后续用例的写入阻断（未结清时下一个用例会在写入前失败）。
+      settleCleanupDebts('S4-E/R02-CONFLICT', '恢复冲突已由独立收尾按预期字节处置并核验保留事实');
     },
   );
 
@@ -2101,18 +2278,21 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         // 保留“集合外记录”语义。回收条件同时限定真实 ID 与创建事实，且在用例台账
         // 之前执行，先解除 intake_id 外键引用；不能放进测试执行者台账，
         // 因为该台账的归属核验要求客户账号/机型也在本轮删除范围内。
-        caseDirectCleanups.push(async () => {
-          await guardedDirect(
-            'DELETE FROM repair_request WHERE id = ? AND request_no = ? ' +
-              'AND customer_account_id = ? AND equipment_model_id = ? AND intake_id = ?',
-            [
-              externalRequestId,
-              externalRequestNo,
-              external.accountId,
-              external.equipmentModelId,
-              intakeId,
-            ],
-          );
+        caseDirectCleanups.push({
+          label: `repair_request id=${externalRequestId} request_no=${externalRequestNo}`,
+          run: async () => {
+            await guardedDirect(
+              'DELETE FROM repair_request WHERE id = ? AND request_no = ? ' +
+                'AND customer_account_id = ? AND equipment_model_id = ? AND intake_id = ?',
+              [
+                externalRequestId,
+                externalRequestNo,
+                external.accountId,
+                external.equipmentModelId,
+                intakeId,
+              ],
+            );
+          },
         });
 
         const before = {
@@ -2272,7 +2452,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         owned: caseLedger,
         expectedDatabase: EXPECTED_DB,
       });
-      resetCase();
+      resetCase('S4-E/R04 受控记录器清理完成');
       await assertNoActiveTransactions();
 
       const calls = recorder.calls;
@@ -2469,7 +2649,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         owned: caseLedger,
         expectedDatabase: EXPECTED_DB,
       });
-      resetCase();
+      resetCase('S4-E/R05 回滚后恢复回收完成');
       expect(await snapshotRows('repair_request', 'id', [requestId])).toEqual([]);
       expect(await snapshotRows('repair_request_intake', 'id', [intakeId])).toEqual([]);
       expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
@@ -2516,7 +2696,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         owned: caseLedger,
         expectedDatabase: EXPECTED_DB,
       });
-      resetCase();
+      resetCase('S4-E/R06 重复清理完成');
       await assertNoActiveTransactions();
 
       expect(second.calls.length).toBeGreaterThan(0);
@@ -2585,7 +2765,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
         owned: caseLedger,
         expectedDatabase: EXPECTED_DB,
       });
-      resetCase();
+      resetCase('S4-E/R07a 解环清理完成');
       await assertNoActiveTransactions();
 
       expect(recorder.calls[0]).toEqual(
@@ -2620,16 +2800,28 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       });
       const originalRequestRow = (await snapshotRows('repair_request', 'id', [requestId]))[0];
       const originalIntakeId = originalRequestRow.intake_id ?? null;
+      // 标签只用于定位：intake_id 实际为整数或 NULL，未知类型不得走默认字符串化。
+      const originalIntakeLabel =
+        typeof originalIntakeId === 'number'
+          ? String(originalIntakeId)
+          : originalIntakeId === null
+            ? 'NULL'
+            : '未知';
       await dataSource.query('UPDATE repair_request SET intake_id = ? WHERE id = ?', [
         intakeId,
         requestId,
       ]);
       // RQ6：UPDATE 成功后立即登记原值与恢复条件，之后才执行可能失败的查询/断言。
-      caseDirectCleanups.push(async () => {
-        await guardedDirect(
-          'UPDATE repair_request SET intake_id = ? WHERE id = ? AND intake_id = ?',
-          [originalIntakeId, requestId, intakeId],
-        );
+      caseDirectCleanups.push({
+        label:
+          `repair_request id=${requestId} intake_id 恢复` +
+          `（原值=${originalIntakeLabel}，写入值=${String(intakeId)}）`,
+        run: async () => {
+          await guardedDirect(
+            'UPDATE repair_request SET intake_id = ? WHERE id = ? AND intake_id = ?',
+            [originalIntakeId, requestId, intakeId],
+          );
+        },
       });
 
       // 额外引用：集合外处理记录通过 request_id 指向本轮登记的 request。
@@ -2644,8 +2836,11 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       );
       const externalEntryId = insertIdOf(externalEntryResult);
       // RQ6：INSERT 成功后立即登记真实 ID，之后才执行可能失败的查询/断言。
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [externalEntryId]);
+      caseDirectCleanups.push({
+        label: `repair_process_entry id=${externalEntryId}（S4-E/R07b 集合外处理记录）`,
+        run: async () => {
+          await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [externalEntryId]);
+        },
       });
 
       const before = {
@@ -2691,8 +2886,11 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
       );
       const externalIntakeId = insertIdOf(externalIntakeResult);
       // RQ6：INSERT 成功后立即登记真实 ID，之后才执行可能失败的查询/断言。
-      caseDirectCleanups.push(async () => {
-        await guardedDirect('DELETE FROM repair_request_intake WHERE id = ?', [externalIntakeId]);
+      caseDirectCleanups.push({
+        label: `repair_request_intake id=${externalIntakeId}（S4-E/R08 集合外多态引用行）`,
+        run: async () => {
+          await guardedDirect('DELETE FROM repair_request_intake WHERE id = ?', [externalIntakeId]);
+        },
       });
 
       const before = {
@@ -2710,6 +2908,177 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
   });
 
   // =========================================================================
+  // R10：第 49 条 maintenance_report_attachment.file_id 入向引用
+  // 附件不在清理范围；引用本轮待删原件时必须在首条 DELETE 之前整批拒绝。
+  // 是否发生 DELETE 一律以受控记录器捕获的实际语句为准，不以回滚结果推断。
+  // =========================================================================
+
+  it('R10a 范围外报告附件引用本轮原件：首删前拒绝，附件与原件均保留', async () => {
+    const failure = await captureFailure(async () =>
+      runCase('S4-E/R10a', async () => {
+        const parents = await createCaseParents(caseLedger, 'r10a');
+        const fileId = await insertStoredFile(caseLedger, {
+          uploaderAccountId: parents.accountId,
+          ownerOrganizationId: parents.organizationId,
+          tag: 'r10a',
+        });
+        const attachmentId = await insertMaintenanceReportAttachment({
+          fileId,
+          sortOrder: 1,
+          tag: 'r10a',
+        });
+        caseDirectCleanups.push({
+          label:
+            `maintenance_report_attachment id=${attachmentId} file_id=${fileId}` +
+            '（S4-E/R10a 集合外附件）',
+          run: async () => {
+            const deleted = await guardedDirect(
+              'DELETE FROM maintenance_report_attachment WHERE id = ?',
+              [attachmentId],
+            );
+            if (deleted !== 1) {
+              throw new Error(
+                `报告附件干扰行回收未精确命中：id=${attachmentId}，affectedRows=${deleted}`,
+              );
+            }
+          },
+        });
+
+        const before = {
+          file: await snapshotRows('stored_file', 'file_id', [fileId]),
+          attachment: await snapshotRows('maintenance_report_attachment', 'id', [attachmentId]),
+        };
+        expect(before.file).toHaveLength(1);
+        expect(before.attachment).toHaveLength(1);
+        expect(before.attachment[0].file_id).toBe(fileId);
+
+        const recorder = createDestructiveRecorder(dataSource);
+        let caught: unknown;
+        try {
+          await runGuardedSpecCleanup({
+            dataSource: recorder.dataSource,
+            helper: 'S4-E/R10a',
+            owned: caseLedger,
+            expectedDatabase: EXPECTED_DB,
+          });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(Error);
+        const message = messageOf(caught);
+        // 冲突必须可定位：表名 + 附件 ID + 文件 ID。
+        expect(message).toContain('maintenance_report_attachment');
+        expect(message).toContain(String(attachmentId));
+        expect(message).toContain(fileId);
+        // 直接记录：整批清理零 DELETE、零 UPDATE（不自动解绑/认领/删除附件）。
+        expect(recorder.calls).toEqual([]);
+        await assertNoActiveTransactions();
+
+        // 两个记录均保留且逐字段不变。
+        expect({
+          file: await snapshotRows('stored_file', 'file_id', [fileId]),
+          attachment: await snapshotRows('maintenance_report_attachment', 'id', [attachmentId]),
+        }).toEqual(before);
+      }),
+    );
+    if (failure !== undefined) {
+      throw failure instanceof Error ? failure : new Error(messageOf(failure));
+    }
+  });
+
+  it('R10b 无报告附件引用：已登记且归属核验通过的原件正常清理', async () => {
+    await runCase('S4-E/R10b', async () => {
+      const parents = await createCaseParents(caseLedger, 'r10b');
+      const fileId = await insertStoredFile(caseLedger, {
+        uploaderAccountId: parents.accountId,
+        ownerOrganizationId: parents.organizationId,
+        tag: 'r10b',
+      });
+      expect(await snapshotRows('stored_file', 'file_id', [fileId])).toHaveLength(1);
+
+      const recorder = createDestructiveRecorder(dataSource);
+      await runGuardedSpecCleanup({
+        dataSource: recorder.dataSource,
+        helper: 'S4-E/R10b',
+        owned: caseLedger,
+        expectedDatabase: EXPECTED_DB,
+      });
+      resetCase('S4-E/R10b 原件清理完成');
+      await assertNoActiveTransactions();
+
+      // 直接记录：stored_file 的 DELETE 真实发生且正好影响 1 行。
+      const storedFileDeletes = recorder.calls.filter(
+        (call) => call.kind === 'DELETE' && call.table === 'stored_file',
+      );
+      expect(storedFileDeletes).toHaveLength(1);
+      expect(storedFileDeletes[0].affectedRows).toBe(1);
+      expect(recorder.calls.filter((call) => call.kind === 'UPDATE')).toEqual([]);
+      expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
+    });
+  });
+
+  it('R10c 历史附件 file_id=NULL：不误报，原件正常清理且附件不被触碰', async () => {
+    await runCase('S4-E/R10c', async () => {
+      const parents = await createCaseParents(caseLedger, 'r10c');
+      const fileId = await insertStoredFile(caseLedger, {
+        uploaderAccountId: parents.accountId,
+        ownerOrganizationId: parents.organizationId,
+        tag: 'r10c',
+      });
+      const attachmentId = await insertMaintenanceReportAttachment({
+        fileId: null,
+        sortOrder: 2,
+        tag: 'r10c-null',
+      });
+      const deleteRangeExternalAttachment = async (): Promise<void> => {
+        const deleted = await guardedDirect(
+          'DELETE FROM maintenance_report_attachment WHERE id = ?',
+          [attachmentId],
+        );
+        if (deleted !== 1) {
+          throw new Error(
+            `历史附件干扰行回收未精确命中：id=${attachmentId}，affectedRows=${deleted}`,
+          );
+        }
+      };
+      // 中断路径：断言抛错时由 runCase 的 finally 兑现这条登记。
+      caseDirectCleanups.push({
+        label: `报告附件 file_id=NULL id=${attachmentId}（S4-E/R10c 集合外历史附件）`,
+        run: deleteRangeExternalAttachment,
+      });
+
+      const attachmentBefore = await snapshotRows('maintenance_report_attachment', 'id', [
+        attachmentId,
+      ]);
+      expect(attachmentBefore).toHaveLength(1);
+      expect(attachmentBefore[0].file_id).toBeNull();
+
+      const recorder = createDestructiveRecorder(dataSource);
+      await runGuardedSpecCleanup({
+        dataSource: recorder.dataSource,
+        helper: 'S4-E/R10c',
+        owned: caseLedger,
+        expectedDatabase: EXPECTED_DB,
+      });
+      await assertNoActiveTransactions();
+
+      const storedFileDeletes = recorder.calls.filter(
+        (call) => call.kind === 'DELETE' && call.table === 'stored_file',
+      );
+      expect(storedFileDeletes).toHaveLength(1);
+      expect(storedFileDeletes[0].affectedRows).toBe(1);
+      expect(await snapshotRows('stored_file', 'file_id', [fileId])).toEqual([]);
+      // 范围外历史附件不得被清理器触碰。
+      expect(await snapshotRows('maintenance_report_attachment', 'id', [attachmentId])).toEqual(
+        attachmentBefore,
+      );
+      // 成功路径：显式兑现登记（只删一次），再重置；失败时登记保留，交给 finally 重试。
+      await executeRegisteredCleanups(caseDirectCleanups, 'S4-E/R10c 干扰行回收');
+      resetCase('S4-E/R10c 登记已显式兑现');
+    });
+  });
+
+  // =========================================================================
   // R09：非目标基线与迁移种子不变
   // =========================================================================
 
@@ -2721,7 +3090,7 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
     expect(await plainRows('SELECT id, name, timestamp FROM migrations ORDER BY id')).toEqual(
       baseline.migrations,
     );
-    expect(baseline.migrations).toHaveLength(44);
+    expect(baseline.migrations).toHaveLength(EXPECTED_REPOSITORY_MIGRATION_COUNT);
     expect(
       Number(
         (
@@ -2798,8 +3167,11 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           );
           entryId = insertIdOf(result);
           // 成功即登记真实 ID，随后再抛断言失败。
-          caseDirectCleanups.push(async () => {
-            await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [entryId]);
+          caseDirectCleanups.push({
+            label: `repair_process_entry id=${entryId}（S4-E/FAULT-CREATE 受控故障行）`,
+            run: async () => {
+              await guardedDirect('DELETE FROM repair_process_entry WHERE id = ?', [entryId]);
+            },
           });
           throw new Error('__CONTROLLED_ASSERTION_FAILURE__');
         }),
@@ -2861,30 +3233,36 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           [changedStatus, writtenFinishedAt, external.backupRunId],
         );
         // UPDATE 成功后立即登记原值、本轮写入值与字节精确 CAS 条件。
-        caseDirectCleanups.push(async () => {
-          try {
-            // 按写入值条件恢复：status 字节精确且 finished_at 一致才回滚，
-            // 避免另一连接仅改大小写/尾部空格时被普通等号误判并覆盖。
-            await guardedCasRestore({
-              label: 'local_backup_run.status+finished_at',
-              targetId: external.backupRunId,
-              sql:
-                'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ? AND ' +
-                `${byteExactTextMatchCondition('status')} AND finished_at = ?`,
-              parameters: [
-                original.status,
-                originalFinishedAt,
-                external.backupRunId,
-                changedStatus,
-                writtenFinishedAt,
-              ],
-            });
-          } catch (error) {
-            // P2：在实际恢复冲突发生的位置立即登记套件级保留；
-            // 即使后续断言失败，用例收尾、通用清理与 afterAll 也不得删除该行。
-            retainConflictBackupRun(external.backupRunId);
-            throw error;
-          }
+        caseDirectCleanups.push({
+          label:
+            `local_backup_run id=${external.backupRunId} status+finished_at 恢复` +
+            `（原值=${String(original.status)}/${String(originalFinishedAt)}，` +
+            `写入值=${changedStatus}/${writtenFinishedAt}）`,
+          run: async () => {
+            try {
+              // 按写入值条件恢复：status 字节精确且 finished_at 一致才回滚，
+              // 避免另一连接仅改大小写/尾部空格时被普通等号误判并覆盖。
+              await guardedCasRestore({
+                label: 'local_backup_run.status+finished_at',
+                targetId: external.backupRunId,
+                sql:
+                  'UPDATE local_backup_run SET status = ?, finished_at = ? WHERE id = ? AND ' +
+                  `${byteExactTextMatchCondition('status')} AND finished_at = ?`,
+                parameters: [
+                  original.status,
+                  originalFinishedAt,
+                  external.backupRunId,
+                  changedStatus,
+                  writtenFinishedAt,
+                ],
+              });
+            } catch (error) {
+              // P2：在实际恢复冲突发生的位置立即登记套件级保留；
+              // 即使后续断言失败，用例收尾、通用清理与 afterAll 也不得删除该行。
+              retainConflictBackupRun(external.backupRunId);
+              throw error;
+            }
+          },
         });
         if (withConflict) {
           // 受控外部连接改写 finished_at：CAS 必须拒绝覆盖并保留异主值。
@@ -2999,6 +3377,8 @@ describeRealDb('S4-E V13 新增 17 表清理实库专项', () => {
           `status=${result.changedStatus} finished_at=${result.externalFinishedAt}`,
       );
       await assertNoActiveTransactions();
+      // 恢复冲突是受控预期：保留事实已核验，显式结清收尾责任，解除后续用例写入阻断。
+      settleCleanupDebts('S4-E/FAULT-UPDATE-CONFLICT', '备份行恢复冲突已按 P3 保留并核验异主值');
     },
   );
 
@@ -4059,5 +4439,157 @@ describe('S4-E 零命中对照恢复责任与收尾（离线）', () => {
     expect(settlement.destroy).toBe(true);
     expect(settlement.blockInjection).toBe(true);
     expect(settlement.reason).toContain('恢复未确认');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 离线用例复位回归（无需数据库 / 不依赖 E2E_REAL_DB_SPECS）
+//
+// 覆盖 `resetCase` 的真实调用语义（与实库路径共用 `collectUnexecutedCaseDebts`、
+// `createCleanupDebtRegistry`、`assertCleanupDebtsSettled`）：
+// - beforeAll 首次复位的真实路径：声明初始化后的空队列必须安全复位；
+// - 有未兑现登记时：责任按阶段/步骤/标签转入套件级登记薄并阻断后续写入，
+//   显式结清后解除阻断。
+// ---------------------------------------------------------------------------
+
+describe('S4-E 用例复位与未兑现责任阻断（离线）', () => {
+  const casRestore: ExecutorCasRestore = {
+    label: 'filename 原值恢复',
+    targetId: 42,
+    sql: 'UPDATE stored_file SET filename = ? WHERE file_id = ?',
+    parameters: ['原值.pdf', '00000000-0000-0000-0000-000000000042'],
+  };
+  const directCleanup: CaseCleanupStep = {
+    label: '干扰行 repair_work_order id=7 精确回收',
+    run: () => Promise.resolve(),
+  };
+
+  it('beforeAll 首次复位：声明初始化后的空队列安全复位，不登记责任、不阻断写入', () => {
+    // 与实库 describeRealDb 声明处完全一致的初始状态（首次 resetCase 之前的真实形态）。
+    const executorCasRestores: ExecutorCasRestore[] = [];
+    const caseDirectCleanups: CaseCleanupStep[] = [];
+    const cleanupDebts = createCleanupDebtRegistry();
+
+    const unexecuted = collectUnexecutedCaseDebts(executorCasRestores, caseDirectCleanups);
+    expect(unexecuted).toEqual([]);
+    cleanupDebts.preserve('S4-E/beforeAll 外部父行造数完成', unexecuted);
+    expect(cleanupDebts.unresolved()).toEqual([]);
+
+    // 与 beforeEach 的写入前检查同一实现：首次复位后必须允许后续用例继续。
+    expect(() => assertCleanupDebtsSettled(cleanupDebts, '下一个用例写入前', null)).not.toThrow();
+  });
+
+  it('复位时仍有未兑现登记：按阶段/步骤/标签保留责任并阻断后续写入，结清后解除', () => {
+    const executorCasRestores: ExecutorCasRestore[] = [casRestore];
+    const caseDirectCleanups: CaseCleanupStep[] = [directCleanup, directCleanup];
+    const cleanupDebts = createCleanupDebtRegistry();
+
+    const unexecuted = collectUnexecutedCaseDebts(executorCasRestores, caseDirectCleanups);
+    expect(unexecuted).toEqual([
+      {
+        stage: '测试执行者恢复',
+        step: 1,
+        totalSteps: 1,
+        label: `CAS 恢复 ${casRestore.label} targetId=42`,
+      },
+      { stage: '干扰行回收', step: 1, totalSteps: 2, label: directCleanup.label },
+      { stage: '干扰行回收', step: 2, totalSteps: 2, label: directCleanup.label },
+    ]);
+
+    const context = 'S4-E/R99 异常路径复位';
+    cleanupDebts.preserve(context, unexecuted);
+    const blockedReason = `${context} 复位时仍有 ${unexecuted.length} 条未兑现登记`;
+
+    // 与 beforeEach 的写入前检查同一实现：责任未结清前，任何写入/认领都被阻断。
+    expect(() =>
+      assertCleanupDebtsSettled(cleanupDebts, '下一个用例写入前', blockedReason),
+    ).toThrow(/拒绝在 下一个用例写入前 继续写入：存在 3 条未兑现清理责任/);
+    expect(() =>
+      assertCleanupDebtsSettled(cleanupDebts, '下一个用例写入前', blockedReason),
+    ).toThrow(new RegExp(`${casRestore.label}|${directCleanup.label}`));
+
+    // 显式结清（如 R02-CONFLICT 的 P3 保留）后阻断解除，责任不静默消失而是留有审计输出。
+    const settled = cleanupDebts.settle(context, '事实核验通过后显式结清');
+    expect(settled).toHaveLength(3);
+    expect(settled[0]).toContain('测试执行者恢复第 1/1 条');
+    expect(settled[0]).toContain('已结清：事实核验通过后显式结清');
+    expect(cleanupDebts.unresolved()).toEqual([]);
+    expect(() => assertCleanupDebtsSettled(cleanupDebts, '下一个用例写入前', null)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 离线迁移终态回归（无需数据库 / 不依赖 E2E_REAL_DB_SPECS）
+// ---------------------------------------------------------------------------
+
+interface RepositoryMigrationEntry {
+  readonly name: string;
+  readonly timestamp: number;
+}
+
+/**
+ * 按 `resolveMigrationName` / `resolveMigrationTimestamp` 的同一口径从迁移目录静态推导仓库清单：
+ * 取 `name` 属性（缺省时取类名），名称末尾 13 位即时间戳。不连库、不实例化 DataSource，
+ * 因此可以在默认单测中运行，用来守住“终态条数”这一前置。
+ */
+const readRepositoryMigrationsFromDisk = (): RepositoryMigrationEntry[] => {
+  const directory = path.resolve(__dirname, './migrations');
+  const entries: RepositoryMigrationEntry[] = [];
+  for (const file of readdirSync(directory).filter((item) => item.endsWith('.migration.ts'))) {
+    const source = readFileSync(path.resolve(directory, file), 'utf8');
+    const declaredName = /^\s*(?:public\s+)?name\s*=\s*'([^']+)'/m.exec(source)?.[1];
+    const className = /export class ([A-Za-z0-9_]+)/.exec(source)?.[1];
+    const name = declaredName ?? className;
+    if (name === undefined) {
+      throw new Error(`迁移文件缺少可识别名称：${file}`);
+    }
+    entries.push({ name, timestamp: Number.parseInt(name.slice(-13), 10) });
+  }
+  return entries.sort((left, right) => left.timestamp - right.timestamp);
+};
+
+describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
+  it('仓库迁移条数等于终态常量，名称/时间戳唯一且递增，末条为第 49 条', () => {
+    const entries = readRepositoryMigrationsFromDisk();
+    expect(entries).toHaveLength(EXPECTED_REPOSITORY_MIGRATION_COUNT);
+    expect(new Set(entries.map((entry) => entry.name)).size).toBe(entries.length);
+    expect(new Set(entries.map((entry) => entry.timestamp)).size).toBe(entries.length);
+    const timestamps = entries.map((entry) => entry.timestamp);
+    expect(timestamps).toEqual([...timestamps].sort((left, right) => left - right));
+    expect(entries[entries.length - 1]).toEqual({
+      name: 'AddMaintenanceReportAttachmentFileForV131775502700000',
+      timestamp: 1775502700000,
+    });
+  });
+
+  it('44 条旧态历史与终态清单不等：逐条比对即拒绝，不靠数量断言兜底', () => {
+    const entries = readRepositoryMigrationsFromDisk();
+    const legacyHistory = entries.slice(0, 44);
+    // beforeAll 先做逐条 toEqual、再比对长度；旧态在第一步就失败。
+    expect(legacyHistory).not.toEqual(entries);
+    expect(legacyHistory).toHaveLength(44);
+    expect(legacyHistory.length).not.toBe(EXPECTED_REPOSITORY_MIGRATION_COUNT);
+    // 旧态缺的正是第 45~49 条：逐条比对会精确指出这 5 条，而不是只报“长度不符”。
+    expect(entries.slice(44).map((entry) => entry.name)).toEqual([
+      'CreateAdminOrganizationProvisioningRequestForV131775502300000',
+      'AddCredentialVersionForV131775502400000',
+      'ExtendManagementAuditOperationForV131775502500000',
+      'AddRepairWorkOrderDetailForV131775502600000',
+      'AddMaintenanceReportAttachmentFileForV131775502700000',
+    ]);
+  });
+
+  it('规格源码的两条数量断言都读取同一常量（单点定义）', () => {
+    const source = readFileSync(__filename, 'utf8');
+    expect(source).toContain(
+      'expect(repositoryMigrations).toHaveLength(EXPECTED_REPOSITORY_MIGRATION_COUNT);',
+    );
+    expect(source).toContain(
+      'expect(baseline.migrations).toHaveLength(EXPECTED_REPOSITORY_MIGRATION_COUNT);',
+    );
+    // 单点定义：常量只声明一次，避免前端/尾部再写第二份数字。
+    expect(source.match(/export const EXPECTED_REPOSITORY_MIGRATION_COUNT = \d+;/g)).toHaveLength(
+      1,
+    );
   });
 });

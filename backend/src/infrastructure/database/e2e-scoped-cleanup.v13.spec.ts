@@ -25,10 +25,17 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  assertCleanupDebtsSettled,
+  createCaseFailure,
+  createCleanupDebtRegistry,
   createOwnedResourceLedger,
+  describeErrorChain,
+  executeRegisteredCleanups,
   recordOwnedResource,
   mergeOwnedResourceLedger,
+  runCaseCleanupPlan,
   runGuardedSpecCleanup,
+  type CaseCleanupStep,
   type OwnedResourceLedger,
 } from '../../../test/utils/e2e-scoped-cleanup';
 import type { DataSource, EntityManager } from 'typeorm';
@@ -393,7 +400,8 @@ const CLEANER_SCHEMA: Record<string, readonly string[]> = {
   ],
   maintenance_report_version: ['id', 'report_id', 'submitted_by_account_id'],
   maintenance_report_review: ['id', 'report_id', 'reviewed_by_account_id'],
-  maintenance_report_attachment: ['id', 'report_id', 'uploaded_by_account_id'],
+  // file_id 是第 49 条迁移新增的 stored_file 入边（清理闭包预检按该列发现范围外附件）。
+  maintenance_report_attachment: ['id', 'report_id', 'uploaded_by_account_id', 'file_id'],
   maintenance_report_step: ['id', 'report_id'],
   ai_conversation: ['id', 'engineer_account_id', 'request_id'],
   ai_report: ['id', 'engineer_account_id', 'request_id'],
@@ -1404,5 +1412,332 @@ describe('G-3 V13 清理闭包纯替身', () => {
       expect(deletes[idxOf('admin_organization_provisioning_request')]).toContain('WHERE id IN');
       expect(task.calls.commitMock).toHaveBeenCalled();
     });
+  });
+
+  // =========================================================================
+  // 第 49 条：maintenance_report_attachment.file_id 入向引用
+  // 报告附件不在清理范围；引用本轮待删原件时必须在首条 DELETE 之前整批拒绝。
+  // 断言直接读取替身捕获的 DELETE/UPDATE 记录，不以最终回滚推断“是否发生过删除”。
+  // =========================================================================
+  describe('报告附件入向引用（第 49 条 file_id）', () => {
+    const storedFileRow: FakeRow = {
+      file_id: 'file-49',
+      uploaded_by_account_id: 200,
+      owner_organization_id: 100,
+      storage_reference: 'oss://bucket/file-1',
+      original_filename: 'a.txt',
+      checksum_sha256: 'c'.repeat(64),
+      upload_context_id: 'ctx-1',
+    };
+
+    it('范围外报告附件引用本轮原件：首条 DELETE 前拒绝，冲突含表名/附件 ID/文件 ID', async () => {
+      const ledger = createOwnedResourceLedger();
+      recordAny(ledger, 'storedFile', 'file-49', V13_FACT_FIXTURES.storedFile());
+      const rows: Record<string, FakeRow[]> = {
+        stored_file: [storedFileRow],
+        maintenance_report_attachment: [
+          { id: 77, report_id: 9001, uploaded_by_account_id: 200, file_id: 'file-49' },
+        ],
+      };
+
+      const task = runCleanup(ledger, rows, 'v13-report-attachment-ref');
+
+      await expect(task).rejects.toThrow(/maintenance_report_attachment/);
+      await expect(task).rejects.toThrow(/\b77\b/);
+      await expect(task).rejects.toThrow(/file_id=file-49/);
+      // 直接记录：整批清理零 DELETE、零 UPDATE（不自动解绑/认领附件）。
+      expect(task.calls.deleteStatements).toHaveLength(0);
+      expect(task.calls.updateStatements).toHaveLength(0);
+      expect(task.calls.commitMock).not.toHaveBeenCalled();
+      expect(task.calls.rollbackMock).toHaveBeenCalled();
+    });
+
+    it('无报告附件引用（历史 file_id=NULL 不算引用）：正常删除原件，DELETE 直接可见', async () => {
+      const ledger = createOwnedResourceLedger();
+      recordAny(ledger, 'storedFile', 'file-49', V13_FACT_FIXTURES.storedFile());
+      const rows: Record<string, FakeRow[]> = {
+        stored_file: [storedFileRow],
+        // 历史附件行：file_id 为 NULL，不得误判为引用。
+        maintenance_report_attachment: [
+          { id: 78, report_id: 9001, uploaded_by_account_id: 200, file_id: null },
+        ],
+      };
+
+      const task = runCleanup(ledger, rows, 'v13-report-attachment-null');
+      await task;
+
+      // 闭包查询确实按 file_id 过滤（不是按 id/report_id 列）。
+      expect(
+        task.calls.selectSql.some(
+          (sql) =>
+            sql.startsWith('SELECT id, file_id FROM maintenance_report_attachment') &&
+            sql.includes('WHERE file_id IN'),
+        ),
+      ).toBe(true);
+      // 直接记录：stored_file 的 DELETE 真实发生（本轮计划内只有这一个文件），
+      // 不是靠最终事务回滚结果反推。
+      const storedFileDeletes = task.calls.deleteStatements.filter((sql) =>
+        sql.startsWith('DELETE FROM stored_file WHERE file_id IN'),
+      );
+      expect(storedFileDeletes).toHaveLength(1);
+      expect(task.calls.commitMock).toHaveBeenCalled();
+    });
+
+    it('本轮无待删原件：不发附件闭包查询（不扩大清理范围）', async () => {
+      const ledger = createOwnedResourceLedger();
+      registerOrgAndAccount(ledger);
+
+      const task = runCleanup(
+        ledger,
+        { organization: [orgRow], base_user_account: [accountRow] },
+        'v13-report-attachment-skip',
+      );
+      await task;
+
+      // 账号链路仍会按 uploaded_by_account_id 查该表；这里只断言“按 file_id 的
+      // 原件入向闭包查询”没有发出（无待删原件时不扩大清理范围）。
+      expect(
+        task.calls.selectSql.some(
+          (sql) =>
+            sql.includes('FROM maintenance_report_attachment') && sql.includes('WHERE file_id IN'),
+        ),
+      ).toBe(false);
+      expect(task.calls.commitMock).toHaveBeenCalled();
+    });
+  });
+});
+
+// ===========================================================================
+// R10c 收尾责任：登记队列生命周期（真实 helper + 规格源码接线回归）
+//
+// 真实缺陷：`cleanupCase` 先 `caseDirectCleanups.splice(0)` 取走全部登记再逐条执行，
+// 任一条失败就提前 return，finally 又 `resetCase()` 清空台账 —— 失败项与其后未执行项
+// 被静默丢弃（R10c 曾因此遗留 `maintenance_report_attachment` 干扰行）。
+//
+// 这里不复制一份“等价实现”自证正确，而是直接覆盖规格实际调用的
+// `runCaseCleanupPlan` / `executeRegisteredCleanups` / `createCleanupDebtRegistry`
+// / `createCaseFailure`，并用源码接线断言证明 realdb 规格确实走这些路径。
+// ===========================================================================
+
+describe('R10c 收尾责任：登记队列生命周期（真实 helper）', () => {
+  it('成功路径先兑现再复位：只回收一次，复位不再重复', async () => {
+    const calls: string[] = [];
+    const queue: CaseCleanupStep[] = [
+      {
+        label: 'maintenance_report_attachment id=2（file_id=NULL）',
+        run: () => {
+          calls.push('delete-attachment');
+          return Promise.resolve();
+        },
+      },
+    ];
+
+    await executeRegisteredCleanups(queue, 'S4-E/R10c 干扰行回收');
+    expect(queue).toEqual([]);
+
+    // 复位后 finally 再走一次收尾计划：队列已空，不得重做。
+    const report = await runCaseCleanupPlan('S4-E/R10c', [{ name: '干扰行回收', steps: queue }]);
+
+    expect(calls).toEqual(['delete-attachment']);
+    expect(report.diagnostics).toEqual([]);
+    expect(report.debts).toEqual([]);
+    expect(report.blocked).toBe(false);
+  });
+
+  it('断言中断：已登记责任仍由收尾计划执行，主错误保留', async () => {
+    const calls: string[] = [];
+    const queue: CaseCleanupStep[] = [
+      {
+        label: 'maintenance_report_attachment id=2（file_id=NULL）',
+        run: () => {
+          calls.push('delete-attachment');
+          return Promise.resolve();
+        },
+      },
+    ];
+
+    let primary: unknown;
+    try {
+      throw new Error('断言中断：附件快照不符 id=2');
+    } catch (error) {
+      primary = error;
+    }
+    const report = await runCaseCleanupPlan('S4-E/R10c', [{ name: '干扰行回收', steps: queue }]);
+
+    expect(calls).toEqual(['delete-attachment']);
+    expect(report.diagnostics).toEqual([]);
+    expect(report.debts).toEqual([]);
+    expect((primary as Error).message).toContain('断言中断');
+  });
+
+  it('三条登记：首条成功、次条失败、第三条未执行 —— 不重做、不继续、责任可定位', async () => {
+    const calls: string[] = [];
+    const queue: CaseCleanupStep[] = [
+      {
+        label: 'stored_file file_id=file-1',
+        run: () => {
+          calls.push('step-1');
+          return Promise.resolve();
+        },
+      },
+      {
+        label: 'maintenance_report_attachment id=77 file_id=file-1',
+        run: () => {
+          calls.push('step-2');
+          return Promise.reject(new Error('报告附件干扰行回收未精确命中：id=77，affectedRows=0'));
+        },
+      },
+      {
+        label: 'repair_request id=88',
+        run: () => {
+          calls.push('step-3');
+          return Promise.resolve();
+        },
+      },
+    ];
+
+    const report = await runCaseCleanupPlan('S4-E/R10c', [{ name: '干扰行回收', steps: queue }]);
+
+    // 第一条成功兑现后不得重做；第二条失败后第三条不得继续执行。
+    expect(calls).toEqual(['step-1', 'step-2']);
+    expect(report.blocked).toBe(true);
+    expect(report.diagnostics).toHaveLength(1);
+    const message = report.diagnostics[0].message;
+    expect(message).toContain('S4-E/R10c');
+    expect(message).toContain('第 2/3 条');
+    expect(message).toContain('maintenance_report_attachment id=77');
+    expect(message).toContain('id=77');
+    expect(message).toContain('affectedRows=0');
+    expect(message).toContain('已跳过后续通用清理');
+    // 失败项保留实际错误；未执行项保留定位信息（无错误，因为从未执行）。
+    expect(report.debts).toHaveLength(2);
+    expect(report.debts[0]).toMatchObject({
+      stage: '干扰行回收',
+      step: 2,
+      totalSteps: 3,
+      label: 'maintenance_report_attachment id=77 file_id=file-1',
+    });
+    expect(describeErrorChain(report.debts[0].error)).toContain('affectedRows=0');
+    expect(report.debts[1]).toMatchObject({
+      stage: '干扰行回收',
+      step: 3,
+      totalSteps: 3,
+      label: 'repair_request id=88',
+    });
+    expect(report.debts[1].error).toBeUndefined();
+  });
+
+  it('测试主体与清理同时失败：两者具体错误都出现在实际输出中', async () => {
+    const queue: CaseCleanupStep[] = [
+      {
+        label: 'maintenance_report_attachment id=77',
+        run: () => Promise.reject(new Error('报告附件干扰行回收未精确命中：id=77，affectedRows=0')),
+      },
+    ];
+    const report = await runCaseCleanupPlan('S4-E/R10c', [{ name: '干扰行回收', steps: queue }]);
+    const failure = createCaseFailure('S4-E/R10c', {
+      primary: new Error('断言中断：附件快照不符 id=77'),
+      diagnostics: report.diagnostics,
+      debts: report.debts,
+    });
+
+    // 除 AggregateError 标题外，两个具体错误都必须可见。
+    expect(failure.message).toContain('主错误=断言中断：附件快照不符 id=77');
+    expect(failure.message).toContain('收尾错误=');
+    expect(failure.message).toContain('affectedRows=0');
+    expect(failure.message).toContain('未兑现清理责任=');
+    expect(failure.message).toContain('干扰行回收第 1/1 条');
+    expect(failure.errors).toHaveLength(2);
+    expect(describeErrorChain(failure.errors[0])).toContain('断言中断');
+    expect(describeErrorChain(failure.errors[1])).toContain('affectedRows=0');
+  });
+
+  it('清理失败后的责任：下一个用例不认领、写入被阻断，显式结清后恢复', async () => {
+    const registry = createCleanupDebtRegistry();
+    const failed: CaseCleanupStep[] = [
+      {
+        label: 'maintenance_report_attachment id=77',
+        run: () => Promise.reject(new Error('报告附件干扰行回收未精确命中：id=77，affectedRows=0')),
+      },
+    ];
+    const first = await runCaseCleanupPlan('S4-E/首个用例', [
+      { name: '干扰行回收', steps: failed },
+    ]);
+    registry.preserve('S4-E/首个用例', first.debts);
+
+    // 下一个用例只执行自己的登记，绝不认领上一个用例的责任。
+    let claimed = 0;
+    const next = await runCaseCleanupPlan('S4-E/下一个用例', [
+      {
+        name: '干扰行回收',
+        steps: [
+          {
+            label: '下一个用例自己的附件 id=99',
+            run: () => {
+              claimed += 1;
+              return Promise.resolve();
+            },
+          },
+        ],
+      },
+    ]);
+    expect(claimed).toBe(1);
+    expect(next.debts).toEqual([]);
+
+    // 旧责任仍可定位；写入入口被明确阻断（不跳过用例，直接失败）。
+    expect(registry.unresolved()).toHaveLength(1);
+    expect(registry.describe()).toContain('S4-E/首个用例');
+    expect(registry.describe()).toContain('maintenance_report_attachment id=77');
+    expect(() => assertCleanupDebtsSettled(registry, '下一个用例写入前')).toThrow(
+      /拒绝在 下一个用例写入前 继续写入.*未兑现清理责任/,
+    );
+    expect(() => assertCleanupDebtsSettled(registry, '下一个用例写入前')).toThrow(/id=77/);
+
+    const settled = registry.settle('S4-E/首个用例', '人工核验后保留现场');
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toContain('人工核验后保留现场');
+    expect(registry.unresolved()).toEqual([]);
+    expect(() => assertCleanupDebtsSettled(registry, '下一个用例写入前')).not.toThrow();
+  });
+
+  it('规格源码接线：收尾走真实 helper，复位不丢弃未兑现登记', () => {
+    const source = readFileSync(join(__dirname, 'e2e-scoped-cleanup.v13.realdb.spec.ts'), 'utf8');
+
+    // cleanupCase 必须调用真实收尾计划，且不得再用 splice(0) 取走全部登记。
+    expect(source).toContain('runCaseCleanupPlan(helper, [');
+    expect(source).not.toContain('caseDirectCleanups.splice(0)');
+    expect(source).toContain("name: '测试执行者恢复'");
+    expect(source).toContain("name: '干扰行回收'");
+
+    // resetCase 未兑现登记必须转入登记薄，不能直接丢弃。
+    const resetStart = source.indexOf('const resetCase = (context: string): void => {');
+    expect(resetStart).toBeGreaterThan(-1);
+    const resetBody = source.slice(resetStart, source.indexOf('const faultArmedFor', resetStart));
+    expect(resetBody).toContain('cleanupDebts.preserve(context, unexecuted)');
+
+    // 写入入口断路与“双错误可见”的构造路径确实被规格使用。
+    expect(source).toContain('assertCleanupSettled(`${name} 写入前`)');
+    expect(source).toContain("assertCleanupSettled('下一个用例写入前')");
+    expect(source).toContain('createCaseFailure(name, {');
+  });
+
+  it('源码回归：R10c 在 resetCase 之前兑现登记，且登记带可定位标签', () => {
+    const source = readFileSync(join(__dirname, 'e2e-scoped-cleanup.v13.realdb.spec.ts'), 'utf8');
+    const start = source.indexOf("it('R10c ");
+    const end = source.indexOf("it('R09 ", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+
+    const drainAt = body.indexOf('executeRegisteredCleanups(caseDirectCleanups');
+    const resetAt = body.lastIndexOf('resetCase(');
+    expect(drainAt).toBeGreaterThan(-1);
+    expect(resetAt).toBeGreaterThan(drainAt);
+    // 登记带 file_id / ID 定位标签，失败时责任可定位。
+    expect(body).toContain('caseDirectCleanups.push({');
+    expect(body).toContain('file_id=NULL id=${attachmentId}');
+    // R10c 原断言保持：集合外附件 file_id 为 NULL，且不被被测清理器触碰。
+    expect(body).toContain('expect(attachmentBefore[0].file_id).toBeNull();');
+    expect(body).toContain("'maintenance_report_attachment', 'id', [attachmentId]");
   });
 });
