@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertC2GraphQLBinding,
   assertC2Runtime,
   type C2Fetch,
   type C2TargetSummary,
@@ -68,6 +69,13 @@ describe('C2 启用判定', () => {
     expect(resolveC2Target({ env: {} }).kind).toBe('disabled');
   });
 
+  it('普通真实用例可以覆盖后端地址，遗留 C2 标记仍拒绝', () => {
+    const env = { AI_E2E_BACKEND_URL: API_URL };
+    expect(resolveC2Target({ env }).kind).toBe('disabled');
+    expect(resolveC2Target({ env: { ...env, AI_E2E_C2_TOKEN: 'leftover' } }).kind).toBe('invalid');
+    expect(resolveC2Target({ env: { AI_E2E_C2: '1' } }).kind).toBe('invalid');
+  });
+
   it('遗留 C2 变量但未显式启用时拒绝（不允许半启用）', () => {
     const resolution = resolveC2Target({
       env: { AI_E2E_C2_TOKEN: 'C2-FAIL-cafebabe', AI_C2_CONTROL_URL: CONTROL_URL },
@@ -124,6 +132,23 @@ describe('C2 启用判定', () => {
 });
 
 describe('C2 浏览器绑定', () => {
+  it('健康探测通过也拒绝浏览器使用其他 GraphQL 地址', async () => {
+    const baseURL = 'http://127.0.0.1:4278';
+    const resolution = resolveWith(makeEnv());
+    if (resolution.kind !== 'enabled') throw new Error('预期启用 C2');
+    const health = { status: 'ok', service: 'api', uptimeSeconds: 5, instanceTag: RUN_TAG };
+    await assertC2Runtime({
+      baseURL,
+      resolution,
+      fetchImpl: fakeFetch({ [`${API_URL}/health`]: health, [`${baseURL}/health`]: health }),
+    });
+    expect(() => assertC2GraphQLBinding(`${baseURL}/login`, 'http://127.0.0.1:43118/graphql')).toThrow(
+      '浏览器 GraphQL 地址与本轮同源 /graphql 不一致',
+    );
+    expect(() => assertC2GraphQLBinding(`${baseURL}/login`, '/other-graphql')).toThrow();
+    expect(() => assertC2GraphQLBinding(`${baseURL}/login`, '/graphql')).not.toThrow();
+  });
+
   const enabled = (() => {
     const resolution = resolveWith(makeEnv());
     if (resolution.kind !== 'enabled') {

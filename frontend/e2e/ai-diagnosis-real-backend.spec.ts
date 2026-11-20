@@ -9,10 +9,10 @@
 // C2 的早轮失败由 loopback 故障 provider 通过正式模型调用路径产生：
 // 浏览器进程不持有数据库写权限，测试也不直接改 analysis / workflow 状态。
 
-import { expect, type Page,test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 
-import { assertC2Runtime, resolveC2Target } from './helpers/c2-target';
+import { assertC2GraphQLBinding, assertC2Runtime, resolveC2Target } from './helpers/c2-target';
 
 const LOGIN_NAME = process.env.AI_E2E_LOGIN_NAME ?? '';
 const LOGIN_PASSWORD = process.env.AI_E2E_LOGIN_PASSWORD ?? '';
@@ -39,8 +39,9 @@ interface ConversationDetailResponse {
   readonly errors?: ReadonlyArray<{ readonly message: string }>;
 }
 
-async function loginAsEngineer(page: Page) {
+async function loginAsEngineer(page: Page, checkBeforeSubmit?: () => Promise<void>) {
   await page.goto('/login');
+  await checkBeforeSubmit?.();
   await page.getByPlaceholder(/账号|邮箱|account|email/i).fill(LOGIN_NAME);
   await page.getByPlaceholder(/密码|password/i).fill(LOGIN_PASSWORD);
   await page.locator('button[type="submit"]').click();
@@ -119,12 +120,23 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     }
 
     // 登录前核验：即使误用其他 Playwright 配置单独收集本 spec，也不能仅凭故障变量进入登录
-    await assertC2Runtime({
-      baseURL: String(test.info().project.use.baseURL ?? ''),
-      resolution,
-    });
+    const baseURL = String(test.info().project.use.baseURL ?? '');
+    await assertC2Runtime({ baseURL, resolution });
 
-    await loginAsEngineer(page);
+    // 在输入凭据前直接读取 Vite 页面加载的同一个配置模块。
+    await loginAsEngineer(page, async () => {
+      const endpoint = await page.evaluate(async () => {
+        const moduleUrl = '/src/shared/env/index.ts';
+        const appEnv = (await import(/* @vite-ignore */ moduleUrl)) as {
+          getGraphQLEndpoint: () => string;
+        };
+        return appEnv.getGraphQLEndpoint();
+      });
+      if (new URL(page.url()).origin !== new URL(baseURL).origin) {
+        throw new Error('[c2] 登录页跳转到了本轮前端之外的地址');
+      }
+      assertC2GraphQLBinding(page.url(), endpoint);
+    });
     await page.goto('/engineer/ai');
     await page.waitForLoadState('networkidle');
 

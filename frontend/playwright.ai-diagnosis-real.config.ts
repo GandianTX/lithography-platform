@@ -2,14 +2,22 @@
 // 任务05 S3.3 专用入口：AI 诊断工作区 · 真实后端 + 真实浏览器联调。
 //
 // 与默认 mock-only 入口隔离：
-// - 独立端口（前端 4175），避免与默认入口的 4173 复用同一 dev server；
+// - 独立端口（前端默认 4176），避免与默认入口的 4173 复用同一 dev server；
 // - DEV_API_PROXY_TARGET 指向真实后端（默认 127.0.0.1:3005 开发库）；
 // - 凭据只从环境变量读取，不入库；缺失时用例自动 skip。
 
 import { defineConfig } from '@playwright/test';
 
+import { C2_GRAPHQL_PATH, resolveC2Target } from './e2e/helpers/c2-target';
+
+const c2 = resolveC2Target();
+if (c2.kind === 'invalid') {
+  throw new Error(`[c2-target] ${c2.reason}`);
+}
+
 const frontendPort = Number(process.env.AI_E2E_FRONTEND_PORT ?? 4176);
-const backendTarget = process.env.AI_E2E_BACKEND_URL ?? 'http://127.0.0.1:3005';
+const backendTarget =
+  c2.kind === 'enabled' ? c2.backendUrl : (process.env.AI_E2E_BACKEND_URL ?? 'http://127.0.0.1:3005');
 
 export default defineConfig({
   expect: {
@@ -34,10 +42,10 @@ export default defineConfig({
     command: `npm run dev -- --host 127.0.0.1 --port ${frontendPort} --strictPort`,
     env: {
       DEV_API_PROXY_TARGET: backendTarget,
+      ...(c2.kind === 'enabled' ? { VITE_GRAPHQL_ENDPOINT: C2_GRAPHQL_PATH } : {}),
     },
-    // 复用外部已按 DEV_API_PROXY_TARGET 指向真实后端启动的 dev server；
-    // C2 的归属由 globalSetup 核对（端口 + 实例 uptime + 目标摘要）
-    reuseExistingServer: true,
+    // C2 由 Playwright 独占启动前端，保证健康和业务代理采用同一配置。
+    reuseExistingServer: c2.kind !== 'enabled',
     timeout: 60_000,
     url: `http://127.0.0.1:${frontendPort}`,
   },

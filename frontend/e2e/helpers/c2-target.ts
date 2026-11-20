@@ -23,7 +23,6 @@ export const C2_ENV = {
 
 /** 除启用开关外的 C2 专有变量；普通 AI 登录变量不在此列 */
 const C2_OWNED_KEYS: readonly string[] = [
-  C2_ENV.backend,
   C2_ENV.targetFile,
   C2_ENV.failToken,
   C2_ENV.okTag,
@@ -35,6 +34,15 @@ const DEFAULT_DEV_BACKEND = 'http://127.0.0.1:3005';
 const HASH_PATTERN = /^[0-9a-f]{12}$/;
 const MAX_INSTANCE_AGE_SECONDS = 900;
 const STARTUP_TOLERANCE_SECONDS = 30;
+export const C2_GRAPHQL_PATH = '/graphql';
+
+/** The browser resolves the app's configured endpoint relative to its current origin. */
+export function assertC2GraphQLBinding(baseURL: string, endpoint: string): void {
+  const expected = new URL(C2_GRAPHQL_PATH, baseURL);
+  if (new URL(endpoint, baseURL).href !== expected.href) {
+    throw new Error('[c2-target] 浏览器 GraphQL 地址与本轮同源 /graphql 不一致');
+  }
+}
 
 export interface C2TargetSummary {
   readonly apiBaseUrl: string;
