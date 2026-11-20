@@ -97,6 +97,16 @@ async function readConversation(page: Page, conversationId: number): Promise<Con
   return detail;
 }
 
+/**
+ * 轮次块定位
+ *
+ * S1 面板重构后轮次块由 <article> 改为 <section aria-label>（role=region），
+ * 这里按可访问名定位，避免依赖元素标签。
+ */
+function turnBlocks(page: Page) {
+  return page.getByRole('log').getByRole('region', { name: /单轮问答|Question and answer/i });
+}
+
 /** 用应用自身的会话凭证走正式 GraphQL 查询，读回本人会话列表的真实轮次 */
 async function readConversationListItem(
   page: Page,
@@ -264,10 +274,7 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(1);
     const firstUuid = submitUuids[0];
 
-    const firstTurn = page
-      .getByRole('log')
-      .locator('article')
-      .filter({ hasText: resolution.failToken });
+    const firstTurn = turnBlocks(page).filter({ hasText: resolution.failToken });
     // 重试入口只在「正式 FAILED 且无回答」时出现，等价于等待正式失败落库
     await expect(firstTurn.getByRole('button')).toBeVisible({ timeout: 120_000 });
 
@@ -279,10 +286,7 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     const secondUuid = submitUuids[1];
     expect(secondUuid).not.toBe(firstUuid);
 
-    const secondTurn = page
-      .getByRole('log')
-      .locator('article')
-      .filter({ hasText: resolution.okTag });
+    const secondTurn = turnBlocks(page).filter({ hasText: resolution.okTag });
     await expect(secondTurn).toContainText(FIXTURE_REPLY_MARK, { timeout: 120_000 });
 
     const beforeRetry = await readConversation(page, conversationId);
@@ -304,12 +308,9 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
       .getByRole('dialog')
       .getByRole('button', { name: new RegExp(`#${conversationId}\\b`) })
       .click();
-    await expect(page.getByRole('log').locator('article')).toHaveCount(2, { timeout: 30_000 });
+    await expect(turnBlocks(page)).toHaveCount(2, { timeout: 30_000 });
 
-    const selectedFirstTurn = page
-      .getByRole('log')
-      .locator('article')
-      .filter({ hasText: resolution.failToken });
+    const selectedFirstTurn = turnBlocks(page).filter({ hasText: resolution.failToken });
     await expect(selectedFirstTurn.getByRole('button')).toBeVisible({ timeout: 30_000 });
 
     const beforeResume = await readConversation(page, conversationId);
@@ -517,13 +518,13 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await page.getByRole('button', { name: /新建对话|New chat/i }).click();
     const log = page.getByRole('log');
     // 草稿优先：新建后是空草稿，消息流没有任何轮次
-    await expect(log.locator('article')).toHaveCount(0, { timeout: 15_000 });
+    await expect(turnBlocks(page)).toHaveCount(0, { timeout: 15_000 });
     await expect(log).toContainText(/描述报警|还没有提问|请选择或新建一个会话/i);
     await expect(log).not.toContainText('C4 旧轮迟到响应用例');
 
     // 迟到的旧响应返回后，新会话画面不被回填
     await page.waitForTimeout(5000);
     await expect(log).not.toContainText('C4 旧轮迟到响应用例');
-    await expect(log.locator('article')).toHaveCount(0);
+    await expect(turnBlocks(page)).toHaveCount(0);
   });
 });
