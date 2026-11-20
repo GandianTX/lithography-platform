@@ -174,7 +174,7 @@ describe('AiConversationSnapshotService（F05 固定范围）', () => {
     });
 
     expect(atQuestionVersion.messages.map((item) => item.messageId)).toEqual([11]);
-    expect(atQuestionVersion.messages[0].turnState).toBe('PENDING');
+    expect(atQuestionVersion.messages[0].turnState).toBe('UNKNOWN');
     expect(atAnswerVersion.messages.map((item) => item.messageId)).toEqual([11, 12]);
     expect(atAnswerVersion.messages[0].turnState).toBe('SUCCEEDED');
   });
@@ -187,6 +187,52 @@ describe('AiConversationSnapshotService（F05 固定范围）', () => {
     });
 
     const secondTurnQuestion = snapshot.messages.find((message) => message.messageSeq === 3);
-    expect(secondTurnQuestion?.turnState).toBe('PENDING');
+    expect(secondTurnQuestion?.turnState).toBe('UNKNOWN');
+  });
+
+  it('P2-2：同一版本不随当前分析状态漂移（失败→重试→成功期间判定一致）', async () => {
+    const readAtV3 = async (
+      analyses: ReadonlyArray<{ questionMessageId: number; status: string }>,
+    ) => {
+      queryService.findVisibleDetail.mockResolvedValue({
+        ...DETAIL,
+        contentVersion: 3,
+        analyses: analyses.map((item) => ({ ...item, failureReason: null })),
+      });
+      const snapshot = await service.resolveReadableSnapshot({
+        session: SESSION,
+        conversationId: 7,
+        contentVersion: 3,
+      });
+      return {
+        cutoff: snapshot.lastMessageSeq,
+        ids: snapshot.messages.map((message) => message.messageId),
+        states: snapshot.messages.map((message) => message.turnState),
+      };
+    };
+
+    // 真实时序：首次受理 → 失败 → 正式重试再次挂起 → 成功，四次读取同一 v3
+    const pending = await readAtV3([
+      { questionMessageId: 1, status: 'SUCCEEDED' },
+      { questionMessageId: 3, status: 'PENDING' },
+    ]);
+    const failed = await readAtV3([
+      { questionMessageId: 1, status: 'SUCCEEDED' },
+      { questionMessageId: 3, status: 'FAILED' },
+    ]);
+    const retrying = await readAtV3([
+      { questionMessageId: 1, status: 'SUCCEEDED' },
+      { questionMessageId: 3, status: 'RUNNING' },
+    ]);
+    const succeeded = await readAtV3([
+      { questionMessageId: 1, status: 'SUCCEEDED' },
+      { questionMessageId: 3, status: 'SUCCEEDED' },
+    ]);
+
+    expect(failed).toEqual(pending);
+    expect(retrying).toEqual(pending);
+    expect(succeeded).toEqual(pending);
+    // 版本内有已保存回答的轮次恒为成功；无回答的轮次恒为「本版未收录回答」
+    expect(pending.states).toEqual(['SUCCEEDED', 'SUCCEEDED', 'UNKNOWN']);
   });
 });

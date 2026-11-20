@@ -19,11 +19,20 @@ export interface AiExportMessageSnapshot {
   readonly text: string;
   readonly contentVersion: number;
   readonly createdAt: string;
-  /** 该消息是否属于失败/未完成轮次（如实标记用） */
+  /** 该消息所属轮次在本次固定版本内的状态（如实标记用） */
   readonly turnState: AiExportTurnState;
 }
 
-/** 轮次状态（如实标记，不美化） */
+/**
+ * 轮次状态（如实标记，不美化）。
+ *
+ * `SUCCEEDED` / `UNKNOWN` 是当前口径的产出：
+ * - `SUCCEEDED`：本版本范围内已有该轮已保存的回答；
+ * - `UNKNOWN`：本版本范围内没有该轮回答（PDF 显示「本版未收录回答」）。
+ *
+ * `FAILED` / `PENDING` / `RUNNING` 仅保留枚举兼容（旧 JSON 消费者与历史产物），
+ * 固定版本快照不再根据当前 `analysis.status` 产出这三个值。
+ */
 export type AiExportTurnState = 'SUCCEEDED' | 'FAILED' | 'PENDING' | 'RUNNING' | 'UNKNOWN';
 
 /** 导出快照（服务端选定版本与消息范围） */
@@ -41,7 +50,16 @@ export interface AiExportSnapshot {
   readonly createdAt: string;
 }
 
-/** 选择导出范围内消息：仅保留版本号 ≤ 选定版本的消息 */
+/**
+ * 选择导出范围内消息：仅保留版本号 ≤ 选定版本的消息。
+ *
+ * P2-2 口径：轮次状态只由「本版本范围内保存了什么」推出，不读取当前 `analysis.status`。
+ * - 范围内已有该轮 ASSISTANT 回答 → `SUCCEEDED`；
+ * - 范围内没有该轮回答（含问题版本内、回答版本更晚的半轮）→ `UNKNOWN`（本版未收录回答）。
+ *
+ * 失败与正式重试会原地改写 `analysis.status`，若跟随当前状态，同一个 V 的 JSON/PDF
+ * 会在两次读取之间漂移；按版本内消息推导后，同一 V 的产物只随消息追加而改变。
+ */
 export function selectAiExportMessages(input: {
   readonly messages: ReadonlyArray<{
     readonly messageId: number;
@@ -53,50 +71,39 @@ export function selectAiExportMessages(input: {
     readonly createdAt: string;
   }>;
   readonly contentVersion: number;
-  readonly turnStates: ReadonlyMap<number, AiExportTurnState>;
 }): AiExportMessageSnapshot[] {
   const messages = input.messages
     .filter((message) => message.contentVersion <= input.contentVersion)
     .sort((left, right) => left.messageSeq - right.messageSeq);
 
-  // F05：回答属于它自己写回时推进到的版本。选定版本早于回答版本时，
-  // 库里分析状态可能已是 SUCCEEDED，但本次范围内还没有这条回答——
-  // 此时必须按「本版本尚未完成」如实标记，不能让半轮看起来已经成功。
-  // 只有在「回答确实存在但版本更晚」时降级；库里根本没有回答的异常数据不臆造状态。
   const answeredInScope = new Set<number>();
-  const answeredAfterCut = new Set<number>();
-  for (const message of input.messages) {
-    if (message.role !== 'ASSISTANT' || message.turnNo === null) {
-      continue;
-    }
-    if (message.contentVersion <= input.contentVersion) {
+  for (const message of messages) {
+    if (message.role === 'ASSISTANT' && message.turnNo !== null) {
       answeredInScope.add(message.turnNo);
-    } else {
-      answeredAfterCut.add(message.turnNo);
     }
   }
 
-  return messages.map((message) => {
-    const scopedState =
-      message.turnNo === null ? 'UNKNOWN' : (input.turnStates.get(message.turnNo) ?? 'UNKNOWN');
-    const turnState: AiExportTurnState =
-      scopedState === 'SUCCEEDED' &&
-      message.turnNo !== null &&
-      !answeredInScope.has(message.turnNo) &&
-      answeredAfterCut.has(message.turnNo)
-        ? 'PENDING'
-        : scopedState;
-    return {
-      messageId: message.messageId,
-      messageSeq: message.messageSeq,
-      turnNo: message.turnNo,
-      role: message.role,
-      text: message.text,
-      contentVersion: message.contentVersion,
-      createdAt: message.createdAt,
-      turnState,
-    };
-  });
+  return messages.map((message) => ({
+    messageId: message.messageId,
+    messageSeq: message.messageSeq,
+    turnNo: message.turnNo,
+    role: message.role,
+    text: message.text,
+    contentVersion: message.contentVersion,
+    createdAt: message.createdAt,
+    turnState: resolveTurnStateInVersion(message.turnNo, answeredInScope),
+  }));
+}
+
+/** 版本内轮次状态：有已保存回答才算成功，否则无法确定执行状态 */
+function resolveTurnStateInVersion(
+  turnNo: number | null,
+  answeredInScope: ReadonlySet<number>,
+): AiExportTurnState {
+  if (turnNo === null) {
+    return 'UNKNOWN';
+  }
+  return answeredInScope.has(turnNo) ? 'SUCCEEDED' : 'UNKNOWN';
 }
 
 /** 计算快照截止点（范围内最后一条消息序号；无消息时为 0） */

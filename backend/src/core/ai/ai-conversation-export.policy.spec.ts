@@ -7,7 +7,6 @@ import {
   resolveAiExportCutoffSeq,
   selectAiExportMessages,
   type AiExportSnapshot,
-  type AiExportTurnState,
 } from './ai-conversation-export.policy';
 
 /**
@@ -38,7 +37,6 @@ describe('AI 对话导出策略', () => {
           message({ messageId: 4, messageSeq: 4, contentVersion: 3 }),
         ],
         contentVersion: 2,
-        turnStates: new Map<number, AiExportTurnState>([[1, 'SUCCEEDED']]),
       });
 
       expect(selected.map((item) => item.messageId)).toEqual([1, 2, 3]);
@@ -52,36 +50,46 @@ describe('AI 对话导出策略', () => {
           message({ messageId: 1, messageSeq: 1 }),
         ],
         contentVersion: 5,
-        turnStates: new Map(),
       });
       expect(selected.map((item) => item.messageSeq)).toEqual([1, 2]);
     });
 
-    it('轮次状态如实标记：失败与未完成不被美化', () => {
+    it('轮次状态由本版本已保存的回答推出：有回答即成功，无回答为 UNKNOWN（不美化）', () => {
       const selected = selectAiExportMessages({
         messages: [
           message({ messageId: 1, messageSeq: 1, turnNo: 1 }),
-          message({ messageId: 2, messageSeq: 2, turnNo: 2 }),
-          message({ messageId: 3, messageSeq: 3, turnNo: 3 }),
-          message({ messageId: 4, messageSeq: 4, turnNo: null }),
+          message({ messageId: 2, messageSeq: 2, turnNo: 1, role: 'ASSISTANT' }),
+          message({ messageId: 3, messageSeq: 3, turnNo: 2 }),
+          message({ messageId: 4, messageSeq: 4, turnNo: 3 }),
+          message({ messageId: 5, messageSeq: 5, turnNo: null }),
         ],
         contentVersion: 5,
-        turnStates: new Map<number, AiExportTurnState>([
-          [1, 'SUCCEEDED'],
-          [2, 'FAILED'],
-          [3, 'PENDING'],
-        ]),
       });
 
       expect(selected.map((item) => item.turnState)).toEqual([
         'SUCCEEDED',
-        'FAILED',
-        'PENDING',
+        'SUCCEEDED',
+        'UNKNOWN',
+        'UNKNOWN',
         'UNKNOWN',
       ]);
     });
 
-    it('F05：回答写回版本晚于选定版本时，该轮按未完成标记（半轮不美化）', () => {
+    it('P2-2：同一版本同一输入输出稳定（判定只依赖版本内消息，与当前执行状态无关）', () => {
+      const messages = [
+        message({ messageId: 1, messageSeq: 1, turnNo: 1, role: 'USER', contentVersion: 1 }),
+        message({ messageId: 2, messageSeq: 2, turnNo: 1, role: 'ASSISTANT', contentVersion: 2 }),
+        message({ messageId: 3, messageSeq: 3, turnNo: 2, role: 'USER', contentVersion: 2 }),
+      ];
+      const states = () =>
+        selectAiExportMessages({ messages, contentVersion: 2 }).map((item) => item.turnState);
+
+      // 策略入参已不含分析状态：失败/重试期间的连续读取必须完全一致
+      expect(states()).toEqual(states());
+      expect(states()).toEqual(['SUCCEEDED', 'SUCCEEDED', 'UNKNOWN']);
+    });
+
+    it('F05：回答写回版本晚于选定版本时，该轮标记为本版未收录回答（半轮不美化）', () => {
       const selected = selectAiExportMessages({
         messages: [
           message({ messageId: 1, messageSeq: 1, turnNo: 1, role: 'USER', contentVersion: 2 }),
@@ -94,12 +102,11 @@ describe('AI 对话导出策略', () => {
           }),
         ],
         contentVersion: 2,
-        turnStates: new Map<number, AiExportTurnState>([[1, 'SUCCEEDED']]),
       });
 
       // 范围内只有问题：库里的 SUCCEEDED 属于 v3，不能拿来标记 v2 的这半轮
       expect(selected).toHaveLength(1);
-      expect(selected[0].turnState).toBe('PENDING');
+      expect(selected[0].turnState).toBe('UNKNOWN');
       expect(selected[0].contentVersion).toBe(2);
     });
 

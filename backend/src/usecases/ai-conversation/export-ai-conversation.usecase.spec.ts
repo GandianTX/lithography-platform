@@ -141,19 +141,7 @@ describe('ExportAiConversationUsecase', () => {
   });
 
   it('工程师路径与管理员路径的轮次状态一致（同一会话同一版本不因身份而异）', async () => {
-    // 回归：工程师路径曾缺少 messageTurnNos，导致 turnState 全为 UNKNOWN，
-    // 同一会话对工程师导出的轮次标记与管理员不一致（S5 真实链路发现）
-    const withTurnNos = detail({
-      messageTurnNos: new Map<number, number | null>([
-        [1, 1],
-        [2, 1],
-        [3, 2],
-        [4, 2],
-      ]),
-    });
-    (queryService.findVisibleDetail as jest.Mock).mockResolvedValue(withTurnNos);
-    (queryService.findAdminDetail as jest.Mock).mockResolvedValue(withTurnNos);
-
+    // 回归：轮次状态只由版本内的消息与轮次关联决定，读取身份不得改变判定
     const engineerResult = await makeUsecase().execute({
       session: ENGINEER_SESSION,
       conversationId: 66,
@@ -186,7 +174,7 @@ describe('ExportAiConversationUsecase', () => {
     expect(engineerSnapshot.messages.map((m) => m.turnState)).toEqual(
       adminSnapshot.messages.map((m) => m.turnState),
     );
-    // 轮次状态经问题消息归位后不得为 UNKNOWN
+    // 该版本内两轮都有已保存回答，因此不得出现「本版未收录回答」
     expect(engineerSnapshot.messages.map((m) => m.turnState)).not.toContain('UNKNOWN');
   });
 
@@ -210,7 +198,18 @@ describe('ExportAiConversationUsecase', () => {
     expect(payload.messages.map((item) => item.messageSeq)).toEqual([1, 2]);
   });
 
-  it('失败轮次在导出内容中如实标记', async () => {
+  it('本版本无回答的轮次标记为「本版未收录回答」（不跟随当前失败状态）', async () => {
+    // 真实反例：W 侧失败后当前 analysis.status 为 FAILED，但该版本范围内没有任何回答。
+    // 固定版本产物不得把会变化的执行状态写进本版标记。
+    (queryService.findAdminDetail as jest.Mock).mockResolvedValue(
+      detail({
+        messages: [
+          message({ id: 1, messageSeq: 1, turnNo: 1, role: 'USER', contentVersion: 1 }),
+          message({ id: 2, messageSeq: 2, turnNo: 1, role: 'ASSISTANT', contentVersion: 1 }),
+          message({ id: 3, messageSeq: 3, turnNo: 2, role: 'USER', contentVersion: 2 }),
+        ],
+      }),
+    );
     const usecase = makeUsecase();
     const result = await usecase.execute({
       session: ADMIN_SESSION,
@@ -226,8 +225,7 @@ describe('ExportAiConversationUsecase', () => {
     expect(payload.messages.map((item) => item.turnState)).toEqual([
       'SUCCEEDED',
       'SUCCEEDED',
-      'FAILED',
-      'FAILED',
+      'UNKNOWN',
     ]);
   });
 

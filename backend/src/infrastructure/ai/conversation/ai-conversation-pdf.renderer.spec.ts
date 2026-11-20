@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { AI_CONVERSATION_ERROR } from '@core/common/errors/domain-error';
 import type { AiExportSnapshot } from '@src/core/ai/ai-conversation-export.policy';
 
-import { renderAiConversationPdf } from './ai-conversation-pdf.renderer';
+import { renderAiConversationPdf, resolveAiTurnStateLabel } from './ai-conversation-pdf.renderer';
 
 /**
  * PDF 渲染器单测（任务 05 · S4.2 · R039-01）。
@@ -30,6 +30,12 @@ describe('AI 对话 PDF 渲染器', () => {
     engineerNickname: '陈工程师',
     messages,
     createdAt: '2026-11-01T00:00:00.000Z',
+  });
+
+  it('P2-2：本版无回答的轮次标注为「本版未收录回答」，不表述成生成中或失败', () => {
+    expect(resolveAiTurnStateLabel('UNKNOWN')).toBe('本版未收录回答');
+    expect(resolveAiTurnStateLabel('UNKNOWN')).not.toMatch(/生成中|失败|待执行/);
+    expect(resolveAiTurnStateLabel('SUCCEEDED')).toBe('已保存');
   });
 
   it('缺少中文字体时失败关闭，不产出空文件', async () => {

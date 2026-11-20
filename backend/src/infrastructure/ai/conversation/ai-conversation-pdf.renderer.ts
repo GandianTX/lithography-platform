@@ -23,14 +23,25 @@ export interface AiConversationPdfRenderInput {
   readonly fontPath: string;
 }
 
-/** 轮次状态的中文标注（如实标记） */
+/**
+ * 轮次状态的中文标注（如实标记当前固定版本）。
+ *
+ * 口径（P2-2）：PDF 只描述「本版本保存了什么」，实时执行状态由状态读取与历史界面提供。
+ * `UNKNOWN` 因此显示为「本版未收录回答」，不得表述成正在生成或执行失败。
+ * `FAILED` / `PENDING` / `RUNNING` 仅保留旧产物的展示兼容。
+ */
 const TURN_STATE_LABELS: Record<AiExportTurnState, string> = {
   SUCCEEDED: '已保存',
   FAILED: '失败',
   PENDING: '待执行',
   RUNNING: '生成中',
-  UNKNOWN: '状态未知',
+  UNKNOWN: '本版未收录回答',
 };
+
+/** 轮次状态标注（导出/测试共用的单一来源） */
+export function resolveAiTurnStateLabel(state: AiExportTurnState): string {
+  return TURN_STATE_LABELS[state];
+}
 
 const ROLE_LABELS: Record<string, string> = {
   USER: '工程师提问',
@@ -137,7 +148,7 @@ function writeMessages(document: PDFKit.PDFDocument, snapshot: AiExportSnapshot)
   for (const message of snapshot.messages) {
     const roleLabel = ROLE_LABELS[message.role] ?? message.role;
     const turnLabel = message.turnNo === null ? '' : ` · 第 ${message.turnNo} 轮`;
-    const stateLabel = TURN_STATE_LABELS[message.turnState];
+    const stateLabel = resolveAiTurnStateLabel(message.turnState);
     document
       .fontSize(BODY_SIZE)
       .fillColor('#1f4e79')

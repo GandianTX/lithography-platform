@@ -8,7 +8,6 @@ import {
   resolveAiExportCutoffSeq,
   selectAiExportMessages,
   type AiExportSnapshot,
-  type AiExportTurnState,
 } from '@src/core/ai/ai-conversation-export.policy';
 import { Injectable } from '@nestjs/common';
 
@@ -31,7 +30,8 @@ const ENGINEER_NICKNAME_FALLBACK = '工程师';
  * 所有「按内容版本读取会话内容」的能力（导出、评价范围契约）共用本服务：
  * - 读取权边界单一真源：工程师（本人／本公司工单）、管理员（一级跨公司、二级本公司）；
  * - 固定内容版本：只取 `contentVersion ≤ 选定版本` 的消息，导出期间新消息不混入；
- * - 不重算模型；失败与未完成轮次如实标记；
+ * - 不重算模型；轮次状态只按「本版本保存了什么」标注（有回答＝成功，无回答＝本版未收录回答），
+ *   不读取会随失败/重试原地变化的当前分析状态；
  * - 会话不存在与无权访问同口径（不暴露会话是否存在）。
  */
 @Injectable()
@@ -127,13 +127,6 @@ export class AiConversationSnapshotService {
         contentVersion: number;
         createdAt: Date;
       }>;
-      analyses: ReadonlyArray<{
-        questionMessageId: number;
-        status: string;
-        failureReason: string | null;
-      }>;
-      /** 消息 ID → 轮次（分析记录经问题消息关联轮次） */
-      messageTurnNos?: ReadonlyMap<number, number | null>;
     },
     contentVersion: number,
     engineerNickname: string,
@@ -152,16 +145,8 @@ export class AiConversationSnapshotService {
       );
     }
     const selectedVersion = contentVersion;
-    // 轮次状态：分析记录经问题消息的 turn_no 归位（如实标记失败/未完成）
-    const messageTurnNos = detail.messageTurnNos ?? new Map<number, number | null>();
-    const turnStates = new Map<number, AiExportTurnState>();
-    for (const analysis of detail.analyses) {
-      const turnNo = messageTurnNos.get(analysis.questionMessageId);
-      if (turnNo === undefined || turnNo === null) {
-        continue;
-      }
-      turnStates.set(turnNo, toTurnState(analysis.status));
-    }
+    // P2-2：轮次状态由「本版本范围内保存了什么」推出（策略层负责），
+    // 不读取会随失败/重试原地变化的当前 analysis.status，保证同一版本产物稳定。
     const messages = selectAiExportMessages({
       messages: detail.messages.map((message) => ({
         messageId: message.id,
@@ -173,7 +158,6 @@ export class AiConversationSnapshotService {
         createdAt: message.createdAt.toISOString(),
       })),
       contentVersion: selectedVersion,
-      turnStates,
     });
     return {
       conversationId: detail.id,
@@ -197,21 +181,4 @@ export class AiConversationSnapshotService {
     ]);
     return nicknames.get(detail.ownerAccountId) ?? ENGINEER_NICKNAME_FALLBACK;
   }
-}
-
-/** 分析状态映射为导出轮次状态（如实标记，不美化） */
-function toTurnState(status: string): AiExportTurnState {
-  if (status === 'SUCCEEDED') {
-    return 'SUCCEEDED';
-  }
-  if (status === 'FAILED') {
-    return 'FAILED';
-  }
-  if (status === 'PENDING') {
-    return 'PENDING';
-  }
-  if (status === 'RUNNING') {
-    return 'RUNNING';
-  }
-  return 'UNKNOWN';
 }
