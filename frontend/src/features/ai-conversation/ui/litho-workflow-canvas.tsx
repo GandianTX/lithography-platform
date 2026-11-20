@@ -75,15 +75,23 @@ export type LithoWorkflowCanvasProps = {
   readonly ariaLabel: string;
 };
 
+type ResolvedFaceColors = {
+  /** 顶面 */
+  readonly top: string;
+  /** 奇数侧面（较暗） */
+  readonly sideA: string;
+  /** 偶数侧面（中间调） */
+  readonly sideB: string;
+};
+
 type ResolvedColors = {
-  readonly fill: Record<string, string>;
+  readonly fill: Record<string, ResolvedFaceColors>;
   readonly outline: Record<string, string>;
-  readonly base: string;
-  readonly baseDark: string;
+  readonly base: ResolvedFaceColors;
   readonly grid: string;
   readonly scan: string;
-  /** 面片斜向网格线（原型技术线框质感） */
-  readonly hatch: string;
+  /** 面片斜向网格线（原型技术线框质感），按展示态分档 */
+  readonly hatch: Record<string, string>;
   /** 悬停高亮填充（V44 原型同值，见 --ai-geo-hover-fill 基准登记） */
   readonly hoverFill: string;
   /** 悬停高亮描边（V44 原型同值，见 --ai-geo-outline-hover 基准登记） */
@@ -100,26 +108,41 @@ function readToken(token: string, fallback: string): string {
 
 function resolveColors(): ResolvedColors {
   const read = (token: string) => readToken(token, 'currentColor');
+  const face = (prefix: string): ResolvedFaceColors => ({
+    top: read(`--ai-geo-part-${prefix}-top`),
+    sideA: read(`--ai-geo-part-${prefix}-side-a`),
+    sideB: read(`--ai-geo-part-${prefix}-side-b`),
+  });
+  const hidden = read('--ai-geo-part-hidden');
   return {
     fill: {
-      NORMAL: read('--ai-geo-part-normal'),
-      HIGHLIGHT: read('--ai-geo-part-highlight'),
-      WARNING: read('--ai-geo-part-warning'),
-      HIDDEN: read('--ai-geo-part-hidden'),
-      FAULT: read('--ai-geo-part-fault'),
+      NORMAL: face('normal'),
+      HIGHLIGHT: face('highlight'),
+      WARNING: face('warning'),
+      HIDDEN: { top: hidden, sideA: hidden, sideB: hidden },
+      FAULT: face('fault'),
     },
     outline: {
       NORMAL: read('--ai-geo-outline'),
-      HIGHLIGHT: read('--ai-geo-outline-highlight'),
+      HIGHLIGHT: read('--ai-geo-outline'),
       WARNING: read('--ai-geo-outline-warning'),
       HIDDEN: read('--ai-geo-outline'),
       FAULT: read('--ai-geo-outline-fault'),
     },
-    base: read('--ai-geo-base'),
-    baseDark: read('--ai-geo-base-dark'),
+    base: {
+      top: read('--ai-geo-base-top'),
+      sideA: read('--ai-geo-base-side-a'),
+      sideB: read('--ai-geo-base-side-b'),
+    },
     grid: read('--ai-geo-grid'),
     scan: read('--ai-geo-scan'),
-    hatch: read('--ai-geo-hatch'),
+    hatch: {
+      NORMAL: read('--ai-geo-hatch'),
+      HIGHLIGHT: read('--ai-geo-hatch'),
+      WARNING: read('--ai-geo-hatch-warning'),
+      HIDDEN: read('--ai-geo-hatch'),
+      FAULT: read('--ai-geo-hatch-fault'),
+    },
     hoverFill: read('--ai-geo-hover-fill'),
     outlineHover: read('--ai-geo-outline-hover'),
   };
@@ -148,12 +171,15 @@ function isBackFace(polygon: ReadonlyArray<{ x: number; y: number }>): boolean {
   return (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x) <= 0.01;
 }
 
-/** 分面明暗：顶面最亮，侧面两档（原型每种展示态三档面色） */
-function faceAlpha(faceIndex: number): number {
+/**
+ * 分面明暗：顶面最亮、奇数侧面较暗、偶数侧面居中（原型 AI33Paint 同规则）。
+ * 用实色表达，不叠加透明度。
+ */
+function pickFaceColor(palette: ResolvedFaceColors, faceIndex: number): string {
   if (faceIndex === 4) {
-    return 1;
+    return palette.top;
   }
-  return faceIndex % 2 === 1 ? 0.72 : 0.88;
+  return faceIndex % 2 === 1 ? palette.sideA : palette.sideB;
 }
 
 /** 平滑步进（原型 smoothstep：m²(3-2m)） */
@@ -186,18 +212,21 @@ export function LithoWorkflowCanvas({
     baseAngle: number;
     baseZoom: number;
   } | null>(null);
-  /** 实际用于绘制的视角（用户操作 + 镜头聚焦偏移），命中测试同源 */
-  const viewRef = useRef<{ angle: number; zoom: number }>({ angle: INITIAL_ANGLE, zoom: 1 });
+  /**
+   * 相机事实的唯一持有者：绘制、命中测试、故障锚点与用户操作共用同一份「当前相机」。
+   *
+   * 关键语义（P2-1）：动画结束边界后**保持**聚焦终值，不得回退到旧基准；
+   * 用户接管时以这里记录的「屏幕上实际看到的相机」为起点，不产生跳变。
+   */
+  const cameraRef = useRef<{ angle: number; zoom: number }>({ angle: INITIAL_ANGLE, zoom: 1 });
   /** 用户已接管视角：不再叠加镜头聚焦偏移（避免与用户操作打架） */
   const cameraTakenOverRef = useRef(false);
-  const [angle, setAngle] = useState(INITIAL_ANGLE);
-  const [zoom, setZoom] = useState(1);
   const [hoveredPartId, setHoveredPartId] = useState<string | null>(null);
   /** 指针在画布内的位置（原型 tooltip 跟随指针） */
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
   const [tipPosition, setTipPosition] = useState({ x: 0, y: 0 });
   const [locked, setLocked] = useState(false);
-  const dragRef = useRef<{ x: number; angle: number } | null>(null);
+  const dragRef = useRef<{ x: number; angle: number | null } | null>(null);
 
   const visibleParts = useMemo(
     () =>
@@ -257,8 +286,8 @@ export function LithoWorkflowCanvas({
           animationRef.current = {
             identity,
             startedAt: timestamp,
-            baseAngle: viewRef.current.angle,
-            baseZoom: viewRef.current.zoom,
+            baseAngle: cameraRef.current.angle,
+            baseZoom: cameraRef.current.zoom,
           };
           cameraTakenOverRef.current = false;
         }
@@ -268,16 +297,13 @@ export function LithoWorkflowCanvas({
       const elapsed =
         animation === null ? 0 : reduced ? ANIMATION_DURATION_MS : timestamp - animation.startedAt;
 
-      // 镜头聚焦：未锁定前平滑旋转到目标视角并轻微放大；用户接管后不再叠加
-      let viewAngle = angle;
-      let viewZoom = zoom;
-      if (
-        animation !== null &&
-        !reduced &&
-        !cameraTakenOverRef.current &&
-        elapsed < ANIMATION_DURATION_MS
-      ) {
-        const ease = smoothStep(elapsed / FOCUS_CAMERA_MS);
+      // 镜头聚焦：进度饱和后保持终值（结束边界后不回退到旧基准）。
+      // reduced-motion 时直接呈现目标终态（原型同口径：立即到目标视角）。
+      let viewAngle = cameraRef.current.angle;
+      let viewZoom = cameraRef.current.zoom;
+      if (animation !== null && !cameraTakenOverRef.current) {
+        const focusProgress = reduced ? 1 : Math.min(1, elapsed / FOCUS_CAMERA_MS);
+        const ease = smoothStep(focusProgress);
         const delta = FOCUS_TARGET_ANGLE - animation.baseAngle;
         const direction = Math.atan2(Math.sin(delta), Math.cos(delta)) * ease;
         const compact = width < COMPACT_WIDTH_PX;
@@ -285,7 +311,11 @@ export function LithoWorkflowCanvas({
         viewAngle = animation.baseAngle + direction;
         viewZoom = clampZoom(animation.baseZoom * (1 - ease) + ease * factor);
       }
-      viewRef.current = { angle: viewAngle, zoom: viewZoom };
+      cameraRef.current = { angle: viewAngle, zoom: viewZoom };
+      // 可观测相机事实：绘制、命中测试与故障锚点共用同一份当前相机。
+      // 供回归测试直接断言「动画结束后相机保持终态」，不依赖像素采样或截图等待。
+      canvas.dataset.cameraAngle = String(viewAngle);
+      canvas.dataset.cameraZoom = String(viewZoom);
 
       const options = { width, height, angle: viewAngle, zoom: viewZoom };
       const isLocked = elapsed >= LOCK_START_MS;
@@ -317,17 +347,27 @@ export function LithoWorkflowCanvas({
         frameRef.current = null;
       }
     },
-    [
-      angle,
-      displays,
-      faultIdentity,
-      focusGeometry,
-      focusPartId,
-      hoveredPartId,
-      locked,
-      visibleParts,
-      zoom,
-    ],
+    [displays, faultIdentity, focusGeometry, focusPartId, hoveredPartId, locked, visibleParts],
+  );
+
+  /** 请求重绘一帧（用户操作后触发；动画循环进行中时不重复安排） */
+  const scheduleDraw = useCallback(() => {
+    if (frameRef.current === null) {
+      frameRef.current = requestAnimationFrame((timestamp) => drawRef.current?.(timestamp));
+    }
+  }, []);
+
+  /** 用户操作相机：以「屏幕上实际看到的相机」为基准继续，不产生跳变 */
+  const updateCamera = useCallback(
+    (next: { angle?: number; zoom?: number }) => {
+      const current = cameraRef.current;
+      cameraRef.current = {
+        angle: next.angle ?? current.angle,
+        zoom: next.zoom ?? current.zoom,
+      };
+      scheduleDraw();
+    },
+    [scheduleDraw],
   );
 
   useEffect(() => {
@@ -348,11 +388,12 @@ export function LithoWorkflowCanvas({
       return;
     }
     const observer = new ResizeObserver(() => {
-      frameRef.current = requestAnimationFrame((timestamp) => drawRef.current?.(timestamp));
+      // 走统一的重绘调度：避免覆盖动画循环持有的帧句柄（卸载时才能完整取消）
+      scheduleDraw();
     });
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [draw]);
+  }, [draw, scheduleDraw]);
 
   const hitTest = useCallback(
     (clientX: number, clientY: number): string | null => {
@@ -362,12 +403,12 @@ export function LithoWorkflowCanvas({
       }
       const rect = canvas.getBoundingClientRect();
       const point = { x: clientX - rect.left, y: clientY - rect.top };
-      const view = viewRef.current;
+      const camera = cameraRef.current;
       const options = {
         width: rect.width,
         height: rect.height,
-        angle: view.angle,
-        zoom: view.zoom,
+        angle: camera.angle,
+        zoom: camera.zoom,
       };
       // 与绘制共用同一套面集合：从最后绘制（最前）的面逆序查找，
       // 命中的必然是屏幕上最靠前的部件。
@@ -418,31 +459,36 @@ export function LithoWorkflowCanvas({
         aria-label={ariaLabel}
         className="block h-full w-full cursor-grab touch-pan-y"
         onKeyDown={(event) => {
+          if (!['ArrowLeft', 'ArrowRight', '+', '=', '-', '_', 'Home'].includes(event.key)) {
+            return;
+          }
           takeOverCamera();
           if (event.key === 'ArrowLeft') {
-            setAngle((current) => current - KEYBOARD_ROTATE_STEP);
+            updateCamera({ angle: cameraRef.current.angle - KEYBOARD_ROTATE_STEP });
             event.preventDefault();
           } else if (event.key === 'ArrowRight') {
-            setAngle((current) => current + KEYBOARD_ROTATE_STEP);
+            updateCamera({ angle: cameraRef.current.angle + KEYBOARD_ROTATE_STEP });
             event.preventDefault();
           } else if (event.key === '+' || event.key === '=') {
-            setZoom((current) => clampZoom(current * KEYBOARD_ZOOM_FACTOR));
+            updateCamera({ zoom: clampZoom(cameraRef.current.zoom * KEYBOARD_ZOOM_FACTOR) });
             event.preventDefault();
           } else if (event.key === '-' || event.key === '_') {
-            setZoom((current) => clampZoom(current / KEYBOARD_ZOOM_FACTOR));
+            updateCamera({ zoom: clampZoom(cameraRef.current.zoom / KEYBOARD_ZOOM_FACTOR) });
             event.preventDefault();
           } else if (event.key === 'Home') {
-            setAngle(INITIAL_ANGLE);
-            setZoom(1);
+            updateCamera({ angle: INITIAL_ANGLE, zoom: 1 });
             event.preventDefault();
           }
         }}
         onMouseDown={(event) => {
-          takeOverCamera();
+          if (event.button !== 0) {
+            return;
+          }
           setHoveredPartId(null);
           setHoverPoint(null);
           onHoverPart?.(null);
-          dragRef.current = { x: event.clientX, angle };
+          // 仅在实际拖动时接管；普通点击不应中断自动聚焦。
+          dragRef.current = { x: event.clientX, angle: null };
           event.currentTarget.focus();
         }}
         onMouseLeave={() => {
@@ -454,8 +500,14 @@ export function LithoWorkflowCanvas({
         onMouseMove={(event) => {
           const drag = dragRef.current;
           if (drag !== null) {
+            if (drag.angle === null) {
+              if (event.clientX === drag.x) {
+                return;
+              }
+              drag.angle = cameraRef.current.angle;
+            }
             takeOverCamera();
-            setAngle(drag.angle + (event.clientX - drag.x) * 0.012);
+            updateCamera({ angle: drag.angle + (event.clientX - drag.x) * 0.012 });
             return;
           }
           const partId = hitTest(event.clientX, event.clientY);
@@ -471,7 +523,9 @@ export function LithoWorkflowCanvas({
         }}
         onWheel={(event) => {
           takeOverCamera();
-          setZoom((current) => clampZoom(current * (event.deltaY < 0 ? 1.1 : 1 / 1.1)));
+          updateCamera({
+            zoom: clampZoom(cameraRef.current.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1)),
+          });
         }}
         ref={canvasRef}
         role="img"
@@ -570,10 +624,10 @@ function drawSurface(
     return;
   }
   const display = surface.renderState ?? 'NORMAL';
-  const fill = surface.isBase ? colors.base : (colors.fill[display] ?? colors.fill.NORMAL);
+  const palette = surface.isBase ? colors.base : (colors.fill[display] ?? colors.fill.NORMAL);
   const hovered = surface.partId !== null && surface.partId === hoveredPartId;
   const outline = surface.isBase
-    ? colors.baseDark
+    ? colors.base.sideA
     : hovered && display !== 'FAULT'
       ? colors.outlineHover
       : (colors.outline[display] ?? colors.outline.NORMAL);
@@ -585,11 +639,11 @@ function drawSurface(
   }
   context.closePath();
 
-  // 分面明暗形成透明层次（原型每种展示态三档面色）
-  const shade = faceAlpha(surface.faceIndex);
+  // 分面明暗用三档实色表达（原型 AI33Paint 同规则：顶面最亮、奇数侧较暗、偶数侧居中），
+  // 正常态不再通过降低 globalAlpha 与背景混合，避免发灰与透出后方底座。
+  context.fillStyle = pickFaceColor(palette, surface.faceIndex);
   // 聚焦期间其他部件淡出（原型 ghost：填充 0.28 / 描边 0.52）
-  context.globalAlpha = (surface.ghost ? 0.28 : 1) * shade;
-  context.fillStyle = fill;
+  context.globalAlpha = surface.ghost ? 0.28 : 1;
   context.fill();
 
   // 悬停高亮（原型：叠加半透明高亮填充）
@@ -599,18 +653,13 @@ function drawSurface(
     context.fill();
   }
 
-  context.globalAlpha = (surface.ghost ? 0.52 : 1) * shade;
+  context.globalAlpha = surface.ghost ? 0.52 : 1;
   context.strokeStyle = outline;
   context.lineWidth = hovered ? 1.8 : 1;
   context.stroke();
   drawFaceHatch(context, polygon, {
-    color:
-      display === 'FAULT'
-        ? colors.outline.FAULT
-        : display === 'WARNING'
-          ? colors.outline.WARNING
-          : colors.hatch,
-    alpha: (surface.ghost ? 0.52 : 1) * (display === 'WARNING' || display === 'FAULT' ? 0.5 : 1),
+    color: colors.hatch[display] ?? colors.hatch.NORMAL,
+    alpha: surface.ghost ? 0.52 : 1,
   });
   context.globalAlpha = 1;
 }

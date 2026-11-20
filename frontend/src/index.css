@@ -2511,22 +2511,34 @@ body {
    颜色一律以 token 落地（组件内不写死色值）；深色模式由 .dark 覆盖。
    几何/相机/配色由前端定义，模型只回 partId + display。 */
 :root {
-  /* 几何配色（Canvas 2D 伪 3D） */
-  --ai-geo-part-normal: #334458;
-  --ai-geo-part-highlight: #158bb6;
-  --ai-geo-part-warning: #d99436;
+  /* 几何配色（Canvas 2D 伪 3D）
+     每种展示态三档实色：顶面 / 侧A（奇数面）/ 侧B（偶数面），与 V44 原型 AI33Paint 同值。
+     正常态用实色表达明暗，不再靠降低 globalAlpha 与背景混合。 */
+  --ai-geo-part-normal-top: #334458;
+  --ai-geo-part-normal-side-a: #1c293a;
+  --ai-geo-part-normal-side-b: #26374a;
+  --ai-geo-part-highlight-top: #158bb6;
+  --ai-geo-part-highlight-side-a: #145e83;
+  --ai-geo-part-highlight-side-b: #176f97;
+  --ai-geo-part-warning-top: #d99436;
+  --ai-geo-part-warning-side-a: #91521b;
+  --ai-geo-part-warning-side-b: #b87223;
+  --ai-geo-part-fault-top: #e86066;
+  --ai-geo-part-fault-side-a: #882f45;
+  --ai-geo-part-fault-side-b: #b33b50;
   --ai-geo-part-hidden: #cbd5e1;
-  --ai-geo-part-fault: #e86066;
   --ai-geo-outline: #50869d;
-  --ai-geo-outline-highlight: #2a9fd6;
   --ai-geo-outline-warning: #ffcd77;
   --ai-geo-outline-fault: #ff9aa1;
-  --ai-geo-base: #3b495d;
-  --ai-geo-base-dark: #283449;
+  --ai-geo-base-top: #3b495d;
+  --ai-geo-base-side-a: #283449;
+  --ai-geo-base-side-b: #303e52;
   --ai-geo-grid: #65c9e7;
   --ai-geo-scan: #41ccef;
   /* 面片斜向网格线（V44 原型同色低透明度，取值见视觉基线登记） */
-  --ai-geo-hatch: #65c9e74d;
+  --ai-geo-hatch: #65c9e754;
+  --ai-geo-hatch-warning: #ffcb7a80;
+  --ai-geo-hatch-fault: #ffc0c785;
   /* 悬停高亮（V44 原型同值，取值见视觉基线登记） */
   --ai-geo-hover-fill: #73caff38;
   --ai-geo-outline-hover: #91e0ff;
@@ -2589,22 +2601,32 @@ body {
 }
 
 .dark {
-  --ai-geo-part-normal: #46566b;
-  --ai-geo-part-highlight: #2aa1cf;
-  --ai-geo-part-warning: #e0a04a;
+  --ai-geo-part-normal-top: #46566b;
+  --ai-geo-part-normal-side-a: #334052;
+  --ai-geo-part-normal-side-b: #3d4b5e;
+  --ai-geo-part-highlight-top: #2aa1cf;
+  --ai-geo-part-highlight-side-a: #1d7ea6;
+  --ai-geo-part-highlight-side-b: #248fb9;
+  --ai-geo-part-warning-top: #e0a04a;
+  --ai-geo-part-warning-side-a: #a8711f;
+  --ai-geo-part-warning-side-b: #c48830;
+  --ai-geo-part-fault-top: #f07a80;
+  --ai-geo-part-fault-side-a: #a93f4d;
+  --ai-geo-part-fault-side-b: #cc5a61;
   --ai-geo-part-hidden: #3c4757;
-  --ai-geo-part-fault: #f07a80;
   --ai-failure-bg: #3a1f22;
   --ai-failure-line: #6b3237;
   --ai-fault-card-bg: #1b2434;
   --ai-fault-card-text: #e6ecf8;
   --ai-geo-outline: #6f9bb0;
-  --ai-geo-outline-highlight: #52c2ef;
   --ai-geo-outline-warning: #ffd68f;
   --ai-geo-outline-fault: #ffb3b6;
   --ai-geo-hatch: #65c9e73d;
-  --ai-geo-base: #47576c;
-  --ai-geo-base-dark: #334052;
+  --ai-geo-hatch-warning: #ffcb7a80;
+  --ai-geo-hatch-fault: #ffc0c785;
+  --ai-geo-base-top: #47576c;
+  --ai-geo-base-side-a: #334052;
+  --ai-geo-base-side-b: #3d4c60;
   --ai-geo-grid: #7ad3ec;
   --ai-geo-scan: #62d4f5;
   --ai-geo-legend-highlight-bg: #17414f;
@@ -3118,9 +3140,10 @@ body {
 
 .ai-thread-empty {
   color: var(--ai-workspace-muted);
-  font-size: 13px;
-  margin: auto;
-  text-align: center;
+  font-size: 12px;
+  /* V44 原型 `.ai33-thread` 为 flex column，空态提示是第一项：贴线程左上，不居中 */
+  margin: 4px 0;
+  text-align: left;
 }
 
 .ai-thread-shell {
