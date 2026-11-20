@@ -746,6 +746,10 @@ test.describe('AI 会话导出与管理员只读（任务05 S4）', () => {
 
 // 提交级视觉证据：仅在干净 HEAD 下采集（helper 会对脏工作区失败关闭）
 test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', () => {
+  test.beforeEach(async ({ page }) => {
+    await seedAuthSession(page, 'ENGINEER');
+  });
+
   const EVIDENCE_DIR = process.env.AI_VISUAL_DIR ?? '';
 
   for (const viewport of [
