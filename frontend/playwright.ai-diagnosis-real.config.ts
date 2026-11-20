@@ -16,6 +16,8 @@ export default defineConfig({
     timeout: 15_000,
   },
   fullyParallel: false,
+  // C2 会在首个业务请求前核对「后端就是本轮启动器启动的实例」，不满足则整轮失败
+  globalSetup: './e2e/helpers/c2-target-guard.ts',
   reporter: 'list',
   retries: 0,
   testDir: './e2e',
@@ -33,7 +35,8 @@ export default defineConfig({
     env: {
       DEV_API_PROXY_TARGET: backendTarget,
     },
-    // 复用外部已按 DEV_API_PROXY_TARGET 指向真实后端启动的 dev server
+    // 复用外部已按 DEV_API_PROXY_TARGET 指向真实后端启动的 dev server；
+    // C2 的归属由 globalSetup 核对（端口 + 实例 uptime + 目标摘要）
     reuseExistingServer: true,
     timeout: 60_000,
     url: `http://127.0.0.1:${frontendPort}`,

@@ -1,18 +1,44 @@
 // e2e/ai-diagnosis-real-backend.spec.ts
 // 任务05 S3.3：真实后端 + 真实浏览器联调（不入默认 mock-only 入口）
 //
-// 前置：后端已运行在 127.0.0.1:3005（开发库），前端 dev server 以
-// DEV_API_PROXY_TARGET 指向该后端。凭据来自环境变量（不入库）。
+// 前置：后端由隔离启动器启动，前端 dev server 以 DEV_API_PROXY_TARGET 指向该后端。
+// 凭据与 C2 夹具标识只从环境变量读取，不入库。
 // 运行：npx playwright test e2e/ai-diagnosis-real-backend.spec.ts \
 //        --config=playwright.ai-diagnosis-real.config.ts
+//
+// C2 的早轮失败由 loopback 故障 provider 通过正式模型调用路径产生：
+// 浏览器进程不持有数据库写权限，测试也不直接改 analysis / workflow 状态。
 
 import { expect, type Page,test } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 
 const LOGIN_NAME = process.env.AI_E2E_LOGIN_NAME ?? '';
 const LOGIN_PASSWORD = process.env.AI_E2E_LOGIN_PASSWORD ?? '';
-const MYSQL_CNF = process.env.AI_E2E_MYSQL_CNF ?? '';
-const MYSQL_DB = process.env.AI_E2E_DB ?? '';
+const C2_FAIL_TOKEN = process.env.AI_E2E_C2_TOKEN ?? '';
+const C2_OK_TAG = process.env.AI_E2E_C2_OK_TAG ?? '';
+const C2_CONTROL_URL = process.env.AI_C2_CONTROL_URL ?? '';
+const AUTH_SESSION_KEY = 'lithography-platform.auth-session.v1';
+const FIXTURE_REPLY_MARK = 'C2 故障夹具回复';
+
+interface ConversationTurn {
+  readonly analysisStatus: string;
+  readonly answer: { readonly text: string } | null;
+  readonly failureReason: string | null;
+  readonly question: { readonly text: string } | null;
+  readonly questionUuid: string;
+  readonly turnNo: number | null;
+}
+
+interface ConversationDetail {
+  readonly contentVersion: number;
+  readonly id: number;
+  readonly turns: ConversationTurn[];
+}
+
+interface ConversationDetailResponse {
+  readonly data?: { readonly myAiConversation?: ConversationDetail };
+  readonly errors?: ReadonlyArray<{ readonly message: string }>;
+}
 
 async function loginAsEngineer(page: Page) {
   await page.goto('/login');
@@ -22,18 +48,35 @@ async function loginAsEngineer(page: Page) {
   await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 });
 }
 
-/** 把指定轮次改成失败（真实库夹具），用于在浏览器里走正式「重试本轮」入口 */
-function markTurnFailed(questionUuid: string) {
-  const sql = [
-    `SET @q := '${questionUuid}';`,
-    `SET @a := (SELECT answer_message_id FROM ai_message_analysis WHERE question_uuid = @q);`,
-    `UPDATE ai_message_analysis SET status='FAILED', failure_reason='fixture-c2', completed_at=NOW(3), answer_message_id=NULL WHERE question_uuid=@q;`,
-    `DELETE FROM ai_message WHERE id = @a;`,
-    `UPDATE ai_workflow_context SET status='FAILED', error_code='fixture_c2', updated_at=NOW(3) WHERE biz_sub_key=@q;`,
-  ].join(' ');
-  execFileSync('mysql', [`--defaults-file=${MYSQL_CNF}`, '-D', MYSQL_DB, '-e', sql], {
-    stdio: 'inherit',
-  });
+/** 用应用自身的会话凭证走正式 GraphQL 查询，读回会话真实状态 */
+async function readConversation(page: Page, conversationId: number): Promise<ConversationDetail> {
+  const response = await page.evaluate(
+    async ({ id, key }) => {
+      const stored = sessionStorage.getItem(key);
+      const token = stored === null ? '' : (JSON.parse(stored) as { accessToken?: string }).accessToken;
+      const result = await fetch('/graphql', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          query:
+            'query($input: AiConversationIdInput!){ myAiConversation(input:$input){ id contentVersion turns { ' +
+            'questionUuid turnNo analysisStatus failureReason question { text } answer { text } } } }',
+          variables: { input: { conversationId: id } },
+        }),
+      });
+      return (await result.json()) as ConversationDetailResponse;
+    },
+    { id: conversationId, key: AUTH_SESSION_KEY },
+  );
+
+  const detail = response.data?.myAiConversation;
+  if (!detail) {
+    throw new Error(`读取会话 ${conversationId} 失败：${JSON.stringify(response.errors ?? [])}`);
+  }
+  return detail;
 }
 
 test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
@@ -66,56 +109,136 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     expect(overflow).toBeLessThanOrEqual(1);
   });
 
-  test('C2：早轮失败后点重试，沿用原问题 UUID 且最终成功', async ({ page }) => {
-    test.skip(MYSQL_CNF.length === 0 || MYSQL_DB.length === 0, '缺少 AI_E2E_MYSQL_CNF / AI_E2E_DB');
+  test('C2：早轮正式失败、末轮成功，重试沿用原 UUID 并成功', async ({ page }) => {
+    test.skip(
+      C2_FAIL_TOKEN.length === 0 || C2_CONTROL_URL.length === 0,
+      '缺少 C2 故障夹具（AI_E2E_C2_TOKEN / AI_C2_CONTROL_URL）',
+    );
 
     await loginAsEngineer(page);
     await page.goto('/engineer/ai');
     await page.waitForLoadState('networkidle');
-    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
 
-    let questionUuid = '';
+    let conversationId = 0;
+    const submitUuids: string[] = [];
     page.on('response', async (response) => {
       if (!response.url().includes('/graphql')) return;
       const post = response.request().postData() ?? '';
-      if (!post.includes('submitAiQuestion')) return;
       const body = (await response.json().catch(() => null)) as {
-        data?: { submitAiQuestion?: { questionUuid?: string } };
+        data?: {
+          createAiConversation?: { id?: number };
+          submitAiQuestion?: { questionUuid?: string };
+        };
       } | null;
-      questionUuid = body?.data?.submitAiQuestion?.questionUuid ?? '';
+      if (post.includes('createAiConversation') && body?.data?.createAiConversation?.id) {
+        conversationId = Number(body.data.createAiConversation.id);
+      }
+      const submitted = body?.data?.submitAiQuestion?.questionUuid;
+      if (post.includes('submitAiQuestion') && submitted) {
+        submitUuids.push(submitted);
+      }
     });
 
-    await page.getByLabel(/AI 提问|Ask AI/i).fill('C2 失败轮次重试用例');
+    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
+    await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
+
+    // 第 1 问：故障 provider 对该问题稳定失败，Worker 走完正式重试后落 FAILED
+    const failQuestion = `${C2_FAIL_TOKEN} 第一问：取板台真空报警时如何排查？`;
+    await page.getByLabel(/AI 提问|Ask AI/i).fill(failQuestion);
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
-    await expect(page.getByRole('log')).toContainText(/已保存|已收到问题/i, { timeout: 90_000 });
-    await expect.poll(() => questionUuid, { timeout: 10_000 }).not.toBe('');
+    await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(1);
+    const firstUuid = submitUuids[0];
 
-    // 真实库夹具：把该轮改成失败（等价于模型两次失败后的终态），再走正式重试入口
-    markTurnFailed(questionUuid);
+    const firstTurn = page.getByRole('log').locator('article').filter({ hasText: C2_FAIL_TOKEN });
+    // 重试入口只在「正式 FAILED 且无回答」时出现，等价于等待正式失败落库
+    await expect(firstTurn.getByRole('button')).toBeVisible({ timeout: 120_000 });
 
+    // 第 2 问：同一会话成功，用于验证末轮状态不被早轮重试破坏
+    const okQuestion = `${C2_OK_TAG} 第二问：定位激光异常时如何确认状态？`;
+    await page.getByLabel(/AI 提问|Ask AI/i).fill(okQuestion);
+    await page.getByRole('button', { name: /发送问题|Send/i }).click();
+    await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(2);
+    const secondUuid = submitUuids[1];
+    expect(secondUuid).not.toBe(firstUuid);
+
+    const secondTurn = page.getByRole('log').locator('article').filter({ hasText: C2_OK_TAG });
+    await expect(secondTurn).toContainText(FIXTURE_REPLY_MARK, { timeout: 120_000 });
+
+    const beforeRetry = await readConversation(page, conversationId);
+    expect(beforeRetry.turns).toHaveLength(2);
+    expect(beforeRetry.turns[0].questionUuid).toBe(firstUuid);
+    expect(beforeRetry.turns[0].analysisStatus).toBe('FAILED');
+    expect(beforeRetry.turns[1].questionUuid).toBe(secondUuid);
+    expect(beforeRetry.turns[1].analysisStatus).toBe('SUCCEEDED');
+
+    // 刷新后按本轮会话 ID 精确选中（不依赖「最近一条」）
     await page.reload();
     await page.getByRole('button', { name: /历史会话|History/i }).click();
     await page
       .getByRole('dialog')
-      .getByRole('button')
-      .filter({ hasText: '#' })
-      .first()
+      .getByRole('button', { name: new RegExp(`#${conversationId}\\b`) })
       .click();
+    await expect(page.getByRole('log').locator('article')).toHaveCount(2, { timeout: 30_000 });
 
-    const retry = page.getByRole('button', { name: /重试本轮|Retry/i }).first();
-    await expect(retry).toBeVisible({ timeout: 30_000 });
+    const selectedFirstTurn = page
+      .getByRole('log')
+      .locator('article')
+      .filter({ hasText: C2_FAIL_TOKEN });
+    await expect(selectedFirstTurn.getByRole('button')).toBeVisible({ timeout: 30_000 });
+
+    const beforeResume = await readConversation(page, conversationId);
 
     const retryBodies: string[] = [];
+    const submitBodiesAfterRetry: string[] = [];
     page.on('request', (request) => {
       const post = request.postData();
-      if (post !== null && post.includes('retryAiQuestion')) retryBodies.push(post);
+      if (post === null) return;
+      if (post.includes('retryAiQuestion')) retryBodies.push(post);
+      if (post.includes('submitAiQuestion')) submitBodiesAfterRetry.push(post);
     });
 
-    await retry.click();
-    await expect.poll(() => retryBodies.join('\n'), { timeout: 30_000 }).toContain(questionUuid);
-    await expect(page.getByRole('log')).toContainText(/已保存/i, { timeout: 90_000 });
-    await expect(page.getByRole('button', { name: /重试本轮|Retry/i })).toHaveCount(0, {
-      timeout: 90_000,
+    // 放行该问题的故障后再触发正式重试：新执行走正式模型路径成功
+    const releaseResponse = await fetch(`${C2_CONTROL_URL}/__control/release`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: C2_FAIL_TOKEN }),
+    });
+    expect(releaseResponse.ok).toBe(true);
+
+    await selectedFirstTurn.getByRole('button').click();
+    await expect.poll(() => retryBodies.join('\n'), { timeout: 30_000 }).toContain(firstUuid);
+    expect(retryBodies.join('\n')).toContain(`"conversationId":${conversationId}`);
+    expect(submitBodiesAfterRetry).toHaveLength(0);
+
+    await expect(selectedFirstTurn).toContainText(FIXTURE_REPLY_MARK, { timeout: 120_000 });
+
+    const afterResume = await readConversation(page, conversationId);
+    expect(afterResume.turns.map((turn) => turn.questionUuid)).toEqual([firstUuid, secondUuid]);
+    expect(afterResume.turns[0].analysisStatus).toBe('SUCCEEDED');
+    expect(afterResume.turns[0].answer?.text).toContain(FIXTURE_REPLY_MARK);
+    expect(afterResume.turns[1].analysisStatus).toBe('SUCCEEDED');
+    expect(afterResume.turns[1].answer?.text).toBe(beforeRetry.turns[1].answer?.text);
+
+    // 第 1 问容器内只应有「问题 + 一条新回答」
+    await expect(selectedFirstTurn.locator('p')).toHaveCount(2);
+
+    const statesPath = test.info().outputPath('c2-turn-states.json');
+    const statesBody = JSON.stringify(
+      {
+        afterResume,
+        beforeResume,
+        beforeRetry,
+        conversationId,
+        firstUuid,
+        secondUuid,
+      },
+      null,
+      2,
+    );
+    writeFileSync(statesPath, statesBody);
+    await test.info().attach('c2-turn-states.json', {
+      contentType: 'application/json',
+      path: statesPath,
     });
   });
 
@@ -136,7 +259,8 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await page.getByRole('button', { name: /新建对话|New chat/i }).click();
     await page.getByLabel(/AI 提问|Ask AI/i).fill('C4 旧轮迟到响应用例');
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
-    await expect(page.getByRole('log')).toContainText(/已收到问题|已保存/i, { timeout: 60_000 });
+    // 真实入口的回复由本轮 provider 返回，按回复正文判定「已产生回答」
+    await expect(page.getByRole('log')).toContainText(/已处理问题|已保存/i, { timeout: 60_000 });
 
     // 旧轮状态仍在路上时切到新会话
     await page.getByRole('button', { name: /新建对话|New chat/i }).click();
