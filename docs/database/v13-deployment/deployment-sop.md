@@ -452,6 +452,23 @@ npm run database:deploy -- \
 - 终态验证：`npm run migration:verify`（只读）核对 6 列、2 表、6 个索引、4 个外键与 9 条 `CHECK`；
   真实库的执行结果必须单独记录，不能用离线契约测试代替。
 
+#### 4.3.2 当前 48 态 → 49 态（报告附件关联原件）
+
+- 适用起点：`migration:status` 显示已执行前 48 条，仅剩 `1775502700000`。
+- 命令与 4.3 相同，继续使用 `database:deploy --mode=upgrade`，不新增部署入口；
+  执行前确认 `--database` 与 `--confirm-database` 一致。
+- 变更内容：`maintenance_report_attachment` 用单条 `ALTER` 追加可空 `file_id`（`char(36)`，
+  字符集与排序规则显式与 `stored_file.file_id` 一致）、普通索引 `idx_maintenance_report_attachment_file`
+  与指向 `stored_file.file_id` 的 `RESTRICT` 外键 `fk_maintenance_report_attachment_file`。
+  不新建表，也不修改 `stored_file`、`maintenance_report_version_attachment` 或历史迁移。
+- 数据影响：历史附件行 `file_id` 保持 `NULL`，不回填、不猜测旧原件；被附件引用的原件不得删除，
+  硬删会被外键拒绝。
+- 失败与恢复：迁移在任何 `ALTER` 前做半迁移预检（前置表缺失或 `file_id` 已存在即失败关闭）；
+  MySQL DDL 隐式提交不能整体回滚，按错误定位人工核对到可重跑状态后再执行 `upgrade`。
+- 回退：先删外键、再删索引、最后删列；回退不删除、不改写历史行。
+- 终态验证：`npm run migration:verify`（只读）核对新列、1 个索引与 1 个外键；
+  真实库执行结果必须单独记录，不能用离线契约测试代替。
+
 ### 4.4 历史工单身份清单（31 态旧库 / 旧版增量已执行库）
 
 `1775501100000-alter-repair-ai-report-for-v13.migration.ts` 在收紧中断/无法修复原因约束前，

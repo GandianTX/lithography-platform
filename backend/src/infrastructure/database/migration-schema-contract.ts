@@ -143,6 +143,10 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
     table: 'maintenance_report_attachment',
     index: 'idx_maintenance_report_attachment_report_status',
   },
+  {
+    table: 'maintenance_report_attachment',
+    index: 'idx_maintenance_report_attachment_file',
+  },
   { table: 'maintenance_report_version', index: 'uk_maintenance_report_version_no' },
   { table: 'maintenance_report_version', index: 'uk_maintenance_report_version_id_report' },
   { table: 'maintenance_report_version', index: 'idx_maintenance_report_version_submitted' },
@@ -288,6 +292,7 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'maintenance_report_attachment', column: 'status', notNull: true },
   { table: 'maintenance_report_attachment', column: 'storage_reference', notNull: true },
   { table: 'maintenance_report_attachment', column: 'active_sort_order' },
+  { table: 'maintenance_report_attachment', column: 'file_id' },
   { table: 'maintenance_report_version', column: 'version_no', notNull: true },
   { table: 'maintenance_report_version', column: 'change_kind', notNull: true },
   { table: 'maintenance_report_version', column: 'change_reason' },
@@ -1997,6 +2002,11 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
     referencedTable: 'base_user_account',
   },
   {
+    table: 'maintenance_report_attachment',
+    constraint: 'fk_maintenance_report_attachment_file',
+    referencedTable: 'stored_file',
+  },
+  {
     table: 'maintenance_report_version',
     constraint: 'fk_maintenance_report_version_report',
     referencedTable: 'maintenance_report',
@@ -2463,6 +2473,7 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'maintenance_report_attachment.uk_maintenance_report_attachment_id_report': 1775401300000,
   'maintenance_report_attachment.uk_maintenance_report_attachment_active_slot': 1775401300000,
   'maintenance_report_attachment.idx_maintenance_report_attachment_report_status': 1775401300000,
+  'maintenance_report_attachment.idx_maintenance_report_attachment_file': 1775502700000,
   'maintenance_report_version.uk_maintenance_report_version_no': 1775401300000,
   'maintenance_report_version.uk_maintenance_report_version_id_report': 1775401300000,
   'maintenance_report_version.idx_maintenance_report_version_submitted': 1775401300000,
@@ -2586,6 +2597,7 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'maintenance_report_attachment.status': 1775401300000,
   'maintenance_report_attachment.storage_reference': 1775401300000,
   'maintenance_report_attachment.active_sort_order': 1775401300000,
+  'maintenance_report_attachment.file_id': 1775502700000,
   'maintenance_report_version.version_no': 1775401300000,
   'maintenance_report_version.change_kind': 1775401300000,
   'maintenance_report_version.change_reason': 1775401300000,
@@ -3210,6 +3222,7 @@ const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
   'maintenance_report_step.fk_maintenance_report_step_report': 1775401200000,
   'maintenance_report_attachment.fk_maintenance_report_attachment_report': 1775401300000,
   'maintenance_report_attachment.fk_maintenance_report_attachment_uploaded_by': 1775401300000,
+  'maintenance_report_attachment.fk_maintenance_report_attachment_file': 1775502700000,
   'maintenance_report_version.fk_maintenance_report_version_report': 1775401300000,
   'maintenance_report_version.fk_maintenance_report_version_submitted_by': 1775401300000,
   'maintenance_report_version_attachment.fk_maintenance_report_version_attachment_version': 1775401300000,
@@ -3498,6 +3511,10 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'maintenance_report_attachment.idx_maintenance_report_attachment_report_status': {
     unique: false,
     columns: ['report_id', 'status', 'sort_order'],
+  },
+  'maintenance_report_attachment.idx_maintenance_report_attachment_file': {
+    unique: false,
+    columns: ['file_id'],
   },
   'maintenance_report_version.uk_maintenance_report_version_no': {
     unique: true,
@@ -4016,6 +4033,13 @@ export const FOREIGN_KEY_DEFINITIONS: Readonly<Record<string, ForeignKeyDefiniti
     referenceTable: 'base_user_account',
     localColumns: ['uploaded_by_account_id'],
     referenceColumns: ['id'],
+  },
+  'maintenance_report_attachment.fk_maintenance_report_attachment_file': {
+    referenceTable: 'stored_file',
+    localColumns: ['file_id'],
+    referenceColumns: ['file_id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
   },
   'maintenance_report_version.fk_maintenance_report_version_report': {
     referenceTable: 'maintenance_report',
@@ -5300,6 +5324,12 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
   'local_upload_task.task_kind': {
     since: 1775501100000,
     columnType: 'varchar(32)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'maintenance_report_attachment.file_id': {
+    since: 1775502700000,
+    columnType: 'char(36)',
     nullable: true,
     defaultValue: null,
   },

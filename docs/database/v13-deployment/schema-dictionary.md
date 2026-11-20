@@ -1,6 +1,6 @@
 # S1 对象与字段清单（34 现有表 + 17 候选 + 全部目标设计行）
 
-> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、48 条迁移及正式校验契约为准，不依赖本地计划目录。
+> 正式交接副本：从本地执行资料迁出，仅调整仓库链接。下文统计与阶段状态保留各自历史时点；最终执行定义以 Entity、49 条迁移及正式校验契约为准，不依赖本地计划目录。
 
 > 来源：`数据库表设计说明-V1.1`。现有字段/约束来自各 Entity 与设计说明；目标字段逐行列出。**组合字段按一行展示但注明包含多列，逻辑/部署约束不计为新增列**。
 
@@ -27,6 +27,12 @@
 > **S3 增量（2026-11-18，第 48 条迁移 `1775502600000`）**：`repair_request` 追加 6 个维修事实列；新增
 > `repair_request_diagnostic_step`、`repair_request_fault_panel` 两张子表。前 47 条迁移、上一版统计与历史状态保持不变；
 > 下表新增行与 §3.32.1、§3.32.2 标注「S3 结构已实现（待实库验证）」。真实库约束、唯一槽与清理顺序仍需实库验证。
+>
+> **S4 增量（第 49 条迁移 `1775502700000`）**：`maintenance_report_attachment` 追加可空 `file_id`
+> （`char(36)`，字符集/排序规则与 `stored_file.file_id` 一致）、普通索引 `idx_maintenance_report_attachment_file`
+> 与指向 `stored_file.file_id` 的 `RESTRICT` 外键 `fk_maintenance_report_attachment_file`。
+> 历史附件行保持 `NULL`，不新建表，不改 `stored_file` 与 `maintenance_report_version_attachment`；
+> 前 48 条迁移与上表既有行保持不变。真实库约束仍需实库验证。
 
 ## 2. 34 张现有表逐表清单
 
@@ -587,21 +593,23 @@
 
 ### 3.21 `maintenance_report_attachment`
 
-- 定位：现有表；Entity [maintenance-report-attachment.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-attachment.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)
+- 定位：现有表；Entity [maintenance-report-attachment.entity.ts](../../../backend/src/modules/lithography/entities/maintenance-report-attachment.entity.ts)；创建迁移 [1775401300000-create-maintenance-report-attachment-version-review.migration.ts](../../../backend/src/infrastructure/database/migrations/1775401300000-create-maintenance-report-attachment-version-review.migration.ts)；追加迁移 [1775502700000-add-maintenance-report-attachment-file-for-v13.migration.ts](../../../backend/src/infrastructure/database/migrations/1775502700000-add-maintenance-report-attachment-file-for-v13.migration.ts)
 - 说明：保存报告当前及历史附件关联；正式提交和读取均核验本报告的有效原件。
 - 本期处理：复用现有数据与关联，按V13授权和状态规则使用
-- 规模：现有字段 16；目标设计行 0；现有约束 12；直接消费者 8；测试 0
-- 目标：**无字段/约束增改，按既有复用**；保留全部现有字段、索引、FK、CHECK 与生成列。
+- 规模：现有字段 17（含第 49 条追加 `file_id`）；目标设计行 0；现有约束 14；直接消费者 8；测试 0
+- 目标：**第 49 条仅追加可空 `file_id`、其普通索引与原件外键**；其余字段、索引、FK、CHECK 与生成列按既有复用，历史行 `file_id` 保持 `NULL`。
 
-<details><summary>现有约束（Entity 声明，12 条）</summary>
+<details><summary>现有约束（Entity 声明，14 条）</summary>
 
 | 类别       | 名称/字段                                         | 声明                                                                                                     |
 | ---------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | 唯一约束   | `uk_maintenance_report_attachment_active_slot`    | （report_id, active_sort_order）                                                                         |
 | 唯一约束   | `uk_maintenance_report_attachment_id_report`      | （id, report_id）                                                                                        |
 | 索引       | `idx_maintenance_report_attachment_report_status` | （report_id, status, sort_order）                                                                        |
+| 索引       | `idx_maintenance_report_attachment_file`          | （file_id）；第 49 条追加                                                                                |
 | 外键       | `fk_maintenance_report_attachment_report`         | （report_id）→ maintenance_report（id）；ON DELETE RESTRICT；ON UPDATE RESTRICT                          |
 | 外键       | `fk_maintenance_report_attachment_uploaded_by`    | （uploaded_by_account_id）→ base_user_account（id）；ON DELETE RESTRICT；ON UPDATE RESTRICT              |
+| 外键       | `fk_maintenance_report_attachment_file`           | （file_id）→ stored_file（file_id）；ON DELETE RESTRICT；ON UPDATE RESTRICT；第 49 条追加                |
 | CHECK      | `chk_maintenance_report_attachment_byte_size`     | `byte_size` > 0 AND `byte_size` <= 20971520                                                              |
 | CHECK      | `chk_maintenance_report_attachment_sort`          | `sort_order` BETWEEN 1 AND 10                                                                            |
 | CHECK      | `chk_maintenance_report_attachment_status`        | `status` IN ('CURRENT', 'RETIRED')                                                                       |

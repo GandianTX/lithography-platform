@@ -25,7 +25,7 @@ const BASELINE_TIMESTAMPS = [
 const V13_TIMESTAMPS = [
   1775501000000, 1775501100000, 1775501200000, 1775501300000, 1775501400000, 1775501500000,
   1775501600000, 1775501700000, 1775501800000, 1775501900000, 1775502000000, 1775502100000,
-  1775502200000, 1775502300000, 1775502400000, 1775502500000, 1775502600000,
+  1775502200000, 1775502300000, 1775502400000, 1775502500000, 1775502600000, 1775502700000,
 ];
 
 const V13_TABLES = [
@@ -180,6 +180,65 @@ describe('V13 结构契约（不连接实库）', () => {
     expect(initialSlot && initialSlot.kind === 'index' ? initialSlot.columns : undefined).toEqual([
       'initial_request_id',
     ]);
+  });
+
+  it('第 49 条报告附件关联原件只从终态前缀生效，且外键按 RESTRICT 登记', () => {
+    const previous = collectPrefixStructureRequirements(
+      new Set(V13_TIMESTAMPS.filter((timestamp) => timestamp < 1775502700000)),
+    );
+    expect(
+      previous.some(
+        (item) =>
+          item.kind === 'column' &&
+          item.table === 'maintenance_report_attachment' &&
+          item.name === 'file_id',
+      ),
+    ).toBe(false);
+
+    const terminal = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
+    const column = terminal.find(
+      (item) =>
+        item.kind === 'column' &&
+        item.table === 'maintenance_report_attachment' &&
+        item.name === 'file_id',
+    );
+    expect(column?.since).toBe(1775502700000);
+    if (column?.kind !== 'column') {
+      throw new Error('未生成 maintenance_report_attachment.file_id 结构要求');
+    }
+    expect(column.notNull).toBeUndefined();
+    expect(column.definition).toEqual({
+      since: 1775502700000,
+      columnType: 'char(36)',
+      nullable: true,
+      defaultValue: null,
+    });
+
+    const index = terminal.find(
+      (item) =>
+        item.kind === 'index' &&
+        item.table === 'maintenance_report_attachment' &&
+        item.name === 'idx_maintenance_report_attachment_file',
+    );
+    expect(index?.since).toBe(1775502700000);
+    expect(index?.kind === 'index' ? index.unique : undefined).toBe(false);
+    expect(index?.kind === 'index' ? index.columns : undefined).toEqual(['file_id']);
+
+    const foreignKey = terminal.find(
+      (item) =>
+        item.kind === 'foreign_key' &&
+        item.table === 'maintenance_report_attachment' &&
+        item.name === 'fk_maintenance_report_attachment_file',
+    );
+    expect(foreignKey?.since).toBe(1775502700000);
+    if (foreignKey?.kind !== 'foreign_key') {
+      throw new Error('未生成 maintenance_report_attachment.fk_maintenance_report_attachment_file');
+    }
+    expect(foreignKey.referenceTable).toBe('stored_file');
+    expect(foreignKey.localColumns).toEqual(['file_id']);
+    expect(foreignKey.referenceColumns).toEqual(['file_id']);
+    expect(foreignKey.onDelete).toBe('RESTRICT');
+    expect(foreignKey.onUpdate).toBe('RESTRICT');
   });
 
   it('记录包检查/导入状态列由第 39 条迁移登记，导入结果允许未执行', () => {

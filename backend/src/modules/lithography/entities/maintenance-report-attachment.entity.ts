@@ -15,7 +15,8 @@ import {
  * 数据库另有生成列 `active_sort_order`（CURRENT 时为 sort_order，否则 NULL）
  * 与其唯一键，用于保证「同一报告内当前附件排序不重复」的库级约束。
  * 按项目既定规则，生成列以只读列声明，保证 Entity 与迁移结构一致。
- * 结构真源见迁移 1775401300000-create-maintenance-report-attachment-version-review。
+ * 结构真源见迁移 1775401300000-create-maintenance-report-attachment-version-review；
+ * 可空 `file_id` 与指向 stored_file 的 RESTRICT 外键由前向迁移 1775502700000 追加。
  */
 @Entity('maintenance_report_attachment', { comment: '维修报告当前附件集合表' })
 @Index('uk_maintenance_report_attachment_active_slot', ['reportId', 'activeSortOrder'], {
@@ -23,6 +24,7 @@ import {
 })
 @Index('uk_maintenance_report_attachment_id_report', ['id', 'reportId'], { unique: true })
 @Index('idx_maintenance_report_attachment_report_status', ['reportId', 'status', 'sortOrder'])
+@Index('idx_maintenance_report_attachment_file', ['fileId'])
 @ForeignKey('MaintenanceReportEntity', ['reportId'], ['id'], {
   name: 'fk_maintenance_report_attachment_report',
   onDelete: 'RESTRICT',
@@ -30,6 +32,11 @@ import {
 })
 @ForeignKey('AccountEntity', ['uploadedByAccountId'], ['id'], {
   name: 'fk_maintenance_report_attachment_uploaded_by',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('StoredFileEntity', ['fileId'], ['fileId'], {
+  name: 'fk_maintenance_report_attachment_file',
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
@@ -48,6 +55,15 @@ export class MaintenanceReportAttachmentEntity {
 
   @Column({ name: 'report_id', type: 'int', comment: '所属报告ID' })
   reportId!: number;
+
+  @Column({
+    name: 'file_id',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '关联原件ID；历史行保持 NULL',
+  })
+  fileId!: string | null;
 
   @Column({
     name: 'original_filename',
