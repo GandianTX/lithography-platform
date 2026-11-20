@@ -13,6 +13,7 @@ import { expect, type Page, test } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 
 import { assertC2GraphQLBinding, assertC2Runtime, resolveC2Target } from './helpers/c2-target';
+import { captureStableViewport } from './helpers/visual-evidence';
 
 const LOGIN_NAME = process.env.AI_E2E_LOGIN_NAME ?? '';
 const LOGIN_PASSWORD = process.env.AI_E2E_LOGIN_PASSWORD ?? '';
@@ -36,6 +37,22 @@ interface ConversationDetail {
 
 interface ConversationDetailResponse {
   readonly data?: { readonly myAiConversation?: ConversationDetail };
+  readonly errors?: ReadonlyArray<{ readonly message: string }>;
+}
+
+interface ConversationListItem {
+  readonly id: number;
+  readonly messageCount: number;
+  readonly status: string;
+  readonly turnCount: number;
+}
+
+interface ConversationListResponse {
+  readonly data?: {
+    readonly myAiConversations?: {
+      readonly items: ConversationListItem[];
+    };
+  };
   readonly errors?: ReadonlyArray<{ readonly message: string }>;
 }
 
@@ -78,6 +95,46 @@ async function readConversation(page: Page, conversationId: number): Promise<Con
     throw new Error(`读取会话 ${conversationId} 失败：${JSON.stringify(response.errors ?? [])}`);
   }
   return detail;
+}
+
+/** 用应用自身的会话凭证走正式 GraphQL 查询，读回本人会话列表的真实轮次 */
+async function readConversationListItem(
+  page: Page,
+  conversationId: number,
+): Promise<ConversationListItem> {
+  const response = await page.evaluate(
+    async ({ key }) => {
+      const stored = sessionStorage.getItem(key);
+      const token =
+        stored === null ? '' : (JSON.parse(stored) as { accessToken?: string }).accessToken;
+      const result = await fetch('/graphql', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          query:
+            'query($pagination: PaginationArgs!){ myAiConversations(pagination:$pagination){ ' +
+            'items { id status messageCount turnCount } } }',
+          variables: {
+            pagination: { mode: 'OFFSET', page: 1, pageSize: 50, withTotal: true },
+          },
+        }),
+      });
+      return (await result.json()) as ConversationListResponse;
+    },
+    { key: AUTH_SESSION_KEY },
+  );
+
+  const items = response.data?.myAiConversations?.items ?? [];
+  const item = items.find((candidate) => candidate.id === conversationId);
+  if (item === undefined) {
+    throw new Error(
+      `会话 ${conversationId} 不在列表中：${JSON.stringify(response.errors ?? items)}`,
+    );
+  }
+  return item;
 }
 
 test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
@@ -201,6 +258,11 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     expect(beforeRetry.turns[1].questionUuid).toBe(secondUuid);
     expect(beforeRetry.turns[1].analysisStatus).toBe('SUCCEEDED');
 
+    // 失败轮 + 成功轮共 2 个真实轮次（失败轮同样计入轮次）
+    const listBeforeRetry = await readConversationListItem(page, conversationId);
+    expect(listBeforeRetry.turnCount).toBe(2);
+    expect(listBeforeRetry.messageCount).toBe(3);
+
     // 刷新后按本轮会话 ID 精确选中（不依赖「最近一条」）
     await page.reload();
     await page.getByRole('button', { name: /历史会话|History/i }).click();
@@ -252,6 +314,11 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     // 第 1 问容器内只应有「问题 + 一条新回答」
     await expect(selectedFirstTurn.locator('p')).toHaveCount(2);
 
+    // 失败后重试不增加轮次：轮次仍为 2，消息条数 +1（重试的回答）
+    const listAfterRetry = await readConversationListItem(page, conversationId);
+    expect(listAfterRetry.turnCount).toBe(2);
+    expect(listAfterRetry.messageCount).toBe(listBeforeRetry.messageCount + 1);
+
     const statesPath = test.info().outputPath('c2-turn-states.json');
     const statesBody = JSON.stringify(
       {
@@ -270,6 +337,124 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
       contentType: 'application/json',
       path: statesPath,
     });
+  });
+
+  test('真实轮次：空会话 0、一轮 1、两轮 2，并与详情逐项一致', async ({ page }) => {
+    await loginAsEngineer(page);
+    await page.goto('/engineer/ai');
+    await page.waitForLoadState('networkidle');
+
+    let conversationId = 0;
+    page.on('response', async (response) => {
+      if (!response.url().includes('/graphql')) return;
+      const post = response.request().postData() ?? '';
+      if (!post.includes('createAiConversation')) return;
+      const body = (await response.json().catch(() => null)) as {
+        data?: { createAiConversation?: { id?: number } };
+      } | null;
+      if (body?.data?.createAiConversation?.id) {
+        conversationId = Number(body.data.createAiConversation.id);
+      }
+    });
+
+    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
+    await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
+
+    // 空会话：已建会话但还没有任何提问，真实轮次必须为 0
+    const emptyItem = await readConversationListItem(page, conversationId);
+    expect(emptyItem.turnCount).toBe(0);
+    expect(emptyItem.messageCount).toBe(0);
+
+    // 第一轮：受控 provider 正常回复后落库，列表真实轮次为 1
+    await page.getByLabel(/AI 提问|Ask AI/i).fill('真实轮次核对：第一轮问题');
+    await page.getByRole('button', { name: /发送问题|Send/i }).click();
+    await expect(page.getByRole('log')).toContainText(/已处理问题|受控 WARNING 夹具/, {
+      timeout: 120_000,
+    });
+    await expect
+      .poll(async () => (await readConversationListItem(page, conversationId)).turnCount, {
+        timeout: 30_000,
+      })
+      .toBe(1);
+
+    // 第二轮：真实轮次为 2，消息条数为 4（每轮一问一答）
+    await page.getByLabel(/AI 提问|Ask AI/i).fill('真实轮次核对：第二轮问题');
+    await page.getByRole('button', { name: /发送问题|Send/i }).click();
+    await expect
+      .poll(async () => (await readConversationListItem(page, conversationId)).turnCount, {
+        timeout: 60_000,
+      })
+      .toBe(2);
+    const twoTurnItem = await readConversationListItem(page, conversationId);
+    expect(twoTurnItem.messageCount).toBe(4);
+
+    // 与详情逐项比对：列表轮次必须等于详情轮次编号去重数
+    const detail = await readConversation(page, conversationId);
+    const distinctTurnNos = new Set(detail.turns.map((turn) => turn.turnNo)).size;
+    expect(detail.turns).toHaveLength(2);
+    expect(distinctTurnNos).toBe(2);
+    expect(twoTurnItem.turnCount).toBe(distinctTurnNos);
+
+    const turnCountPath = test.info().outputPath('turn-count-states.json');
+    writeFileSync(turnCountPath, JSON.stringify({ detail, twoTurnItem }, null, 2));
+    await test.info().attach('turn-count-states.json', {
+      contentType: 'application/json',
+      path: turnCountPath,
+    });
+  });
+
+  test('WARNING 正式链：受控 provider 返回合法图形后落定故障短卡与本轮阶段', async ({ page }) => {
+    const resolution = resolveC2Target();
+    if (resolution.kind === 'invalid') {
+      throw new Error(`[c2] ${resolution.reason}`);
+    }
+    test.skip(resolution.kind === 'disabled', '未启用 C2（未提供任何 C2 专有变量）');
+    if (resolution.kind !== 'enabled') {
+      return;
+    }
+    test.skip(resolution.warnToken.length === 0, '本轮未提供受控 WARNING 标识');
+
+    const baseURL = String(test.info().project.use.baseURL ?? '');
+    await assertC2Runtime({ baseURL, resolution });
+
+    await loginAsEngineer(page);
+    await page.goto('/engineer/ai');
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
+
+    // 受控 provider 对带标识的问题返回合法图形信封（11 部件，reticle_arm 为 WARNING）
+    await page
+      .getByLabel(/AI 提问|Ask AI/i)
+      .fill(`${resolution.warnToken} 掩模板手臂动作中断，如何排查？`);
+    await page.getByRole('button', { name: /发送问题|Send/i }).click();
+
+    // 正式链路：受控 provider → Worker → Redis → 浏览器轮询拿到本轮图形
+    const card = page.locator('.ai-fault-card');
+    await expect(card).toBeVisible({ timeout: 120_000 });
+    await expect(card).toHaveAttribute('data-locked', 'true', { timeout: 120_000 });
+    await expect(card).toContainText('手臂1（掩模板）');
+    await expect(card).toContainText('故障锁定');
+
+    // 图例按警示语义呈现，且与短卡指向同一部件
+    await expect(page.locator('.ai-scene-footer')).toContainText('警示 · 手臂1（掩模板）');
+
+    // 本轮阶段与本轮回答正文一致（正式链路返回的图形 stage=2）
+    await expect(page.getByText(/本轮阶段\s*2/)).toBeVisible();
+    await expect(page.getByRole('log')).toContainText('受控 WARNING 夹具', { timeout: 120_000 });
+
+    // 提交级视觉证据：正式链路落定的故障短卡（截图走统一取证入口）
+    const capture = await captureStableViewport(page, {
+      fileName: 'ai-diagnosis-real-warning-chain',
+      filePath: test.info().outputPath('ai-diagnosis-real-warning-chain.png'),
+    });
+    await test.info().attach('ai-diagnosis-real-warning-chain.meta.json', {
+      contentType: 'application/json',
+      body: JSON.stringify(capture, null, 2),
+    });
+
+    // 轮次身份：切到新会话后不得残留上一轮的故障定位
+    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
+    await expect(card).toBeHidden({ timeout: 30_000 });
   });
 
   test('C4：旧轮状态响应迟到时不覆盖新会话画面', async ({ page }) => {

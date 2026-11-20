@@ -19,6 +19,7 @@ export const C2_ENV = {
   runTag: 'AI_E2E_C2_RUN_TAG',
   backend: 'AI_E2E_BACKEND_URL',
   targetFile: 'AI_E2E_C2_TARGET_FILE',
+  warnToken: 'AI_E2E_C2_WARN_TOKEN',
 } as const;
 
 /** 除启用开关外的 C2 专有变量；普通 AI 登录变量不在此列 */
@@ -28,6 +29,7 @@ const C2_OWNED_KEYS: readonly string[] = [
   C2_ENV.okTag,
   C2_ENV.controlUrl,
   C2_ENV.runTag,
+  C2_ENV.warnToken,
 ];
 
 const DEFAULT_DEV_BACKEND = 'http://127.0.0.1:3005';
@@ -69,6 +71,8 @@ export type C2Resolution =
       readonly okTag: string;
       readonly runTag: string;
       readonly target: C2TargetSummary;
+      /** 受控 WARNING 夹具标识；为空表示本轮未提供 WARNING 用例 */
+      readonly warnToken: string;
     };
 
 export interface C2HealthPayload {
@@ -203,6 +207,7 @@ export function resolveC2Target(options: C2ResolveOptions = {}): C2Resolution {
     okTag: readEnv(env, C2_ENV.okTag),
     runTag,
     target,
+    warnToken: readEnv(env, C2_ENV.warnToken),
   };
 }
 

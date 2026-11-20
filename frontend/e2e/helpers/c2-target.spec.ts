@@ -129,6 +129,22 @@ describe('C2 启用判定', () => {
       expect(resolution.target.frontendPort).toBe(4278);
     }
   });
+
+  it('受控 WARNING 标识可选：缺省为空，提供时原样透传', () => {
+    const withoutWarn = resolveWith(makeEnv());
+    if (withoutWarn.kind !== 'enabled') throw new Error('预期启用 C2');
+    expect(withoutWarn.warnToken).toBe('');
+
+    const withWarn = resolveWith(makeEnv({ AI_E2E_C2_WARN_TOKEN: 'C2-WARN-cafebabe' }));
+    if (withWarn.kind !== 'enabled') throw new Error('预期启用 C2');
+    expect(withWarn.warnToken).toBe('C2-WARN-cafebabe');
+  });
+
+  it('只提供 WARNING 标识但未显式启用时同样拒绝（不允许半启用）', () => {
+    expect(resolveC2Target({ env: { AI_E2E_C2_WARN_TOKEN: 'C2-WARN-cafebabe' } }).kind).toBe(
+      'invalid',
+    );
+  });
 });
 
 describe('C2 浏览器绑定', () => {

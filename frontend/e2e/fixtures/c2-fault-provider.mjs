@@ -7,6 +7,7 @@
 // 编排规则（不使用全局请求计数）：
 // - 请求体 prompt 是 `JSON.stringify(request)`，其中 `question` 带本轮唯一标识；
 // - 命中标识的问题在 `/__control/release` 之前一律返回 500（稳定阻断该问题的所有执行）；
+// - 命中 WARNING 标识的问题返回合法图形信封（11 个部件，reticle_arm 为 WARNING）；
 // - 其他问题直接返回符合正式信封的成功响应；
 // - 放行后同一问题恢复正常，便于验证正式 retry 的成功路径。
 
@@ -14,8 +15,26 @@ import { createServer } from 'node:http';
 
 const port = Number(process.env.C2_PROVIDER_PORT ?? 4399);
 const failToken = process.env.C2_FAIL_TOKEN ?? '';
+const warnToken = process.env.C2_WARN_TOKEN ?? '';
 const releasedTokens = new Set();
 const calls = [];
+
+/** 服务端图形信封白名单：11 个部件，缺失即降级 */
+const SCENE_ID = 'LITHO_WORKFLOW_V1';
+const PART_IDS = [
+  'controller',
+  'reticle_cassette',
+  'reticle_arm',
+  'reticle_table',
+  'reticle_vacuum',
+  'positioning_laser',
+  'wafer_cassette',
+  'wafer_arm',
+  'alignment_table',
+  'wafer_stage',
+  'projection_lens',
+];
+const WARNING_PART_ID = 'reticle_arm';
 
 /** @param {import('node:http').IncomingMessage} request */
 function readJsonBody(request) {
@@ -45,12 +64,26 @@ function sendJson(response, status, payload) {
 
 function buildEnvelope(requestId, question) {
   const trimmed = question.slice(0, 40);
+  const isWarnQuestion = warnToken.length > 0 && question.includes(warnToken);
+  const content = {
+    text: isWarnQuestion
+      ? '受控 WARNING 夹具：掩模板手臂动作中断，建议先检查取板台真空吸附与激光定位组件。'
+      : `C2 故障夹具回复：已处理问题「${trimmed}」。这是正式模型调用路径返回的成功信封。`,
+  };
+  if (isWarnQuestion) {
+    content.visualization = {
+      sceneId: SCENE_ID,
+      stage: 2,
+      parts: PART_IDS.map((partId) => ({
+        partId,
+        display: partId === WARNING_PART_ID ? 'WARNING' : 'NORMAL',
+      })),
+    };
+  }
   return {
     schemaVersion: 1,
     requestId,
-    content: {
-      text: `C2 故障夹具回复：已处理问题「${trimmed}」。这是正式模型调用路径返回的成功信封。`,
-    },
+    content,
   };
 }
 
