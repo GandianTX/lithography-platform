@@ -3149,8 +3149,12 @@ body {
 }
 
 @media (max-width: 650px) {
+  /* 窄屏画布可用宽度有限：短卡改停靠左下角，避免遮住锁定中的故障部件 */
   .ai-fault-card {
-    right: 9px;
+    bottom: 34px;
+    left: 9px;
+    right: auto;
+    top: auto;
     width: min(186px, calc(100% - 18px));
   }
 }
