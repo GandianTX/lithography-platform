@@ -302,13 +302,10 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     expect(listBeforeRetry.turnCount).toBe(2);
     expect(listBeforeRetry.messageCount).toBe(3);
 
-    // 刷新后按本轮会话 ID 精确选中（不依赖「最近一条」）
+    // 刷新后按本轮会话 ID 精确选中（不依赖「最近一条」；与本人问答记录页「打开」同一入口）
     await page.reload();
-    await page.getByRole('button', { name: /历史会话|History/i }).click();
-    await page
-      .getByRole('dialog')
-      .getByRole('button', { name: new RegExp(`#${conversationId}\\b`) })
-      .click();
+    await page.goto(`/engineer/ai?conversation=${conversationId}`);
+    await expect(page).toHaveURL(new RegExp(`conversation=${conversationId}\\b`));
     await expect(turnBlocks(page)).toHaveCount(2, { timeout: 30_000 });
 
     const selectedFirstTurn = turnBlocks(page).filter({ hasText: resolution.failToken });
