@@ -137,6 +137,39 @@ async function readConversationListItem(
   return item;
 }
 
+/** 用应用自身的会话凭证走正式建会话 mutation，造一个没有任何轮次的空会话 */
+async function createConversationViaApi(page: Page): Promise<number> {
+  const response = await page.evaluate(
+    async ({ key }) => {
+      const stored = sessionStorage.getItem(key);
+      const token =
+        stored === null ? '' : (JSON.parse(stored) as { accessToken?: string }).accessToken;
+      const result = await fetch('/graphql', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          query: 'mutation{ createAiConversation(input:{}){ id } }',
+          variables: {},
+        }),
+      });
+      return (await result.json()) as {
+        data?: { createAiConversation?: { id?: number } };
+        errors?: ReadonlyArray<{ readonly message: string }>;
+      };
+    },
+    { key: AUTH_SESSION_KEY },
+  );
+
+  const id = response.data?.createAiConversation?.id;
+  if (typeof id !== 'number') {
+    throw new Error(`正式建会话失败：${JSON.stringify(response.errors ?? response)}`);
+  }
+  return id;
+}
+
 test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
   test('工程师登录后新建会话、提问，收到回答与部件标记', async ({ page }) => {
     test.skip(
@@ -221,12 +254,13 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     });
 
     await page.getByRole('button', { name: /新建对话|New chat/i }).click();
-    await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
 
     // 第 1 问：故障 provider 对该问题稳定失败，Worker 走完正式重试后落 FAILED
     const failQuestion = `${resolution.failToken} 第一问：取板台真空报警时如何排查？`;
     await page.getByLabel(/AI 提问|Ask AI/i).fill(failQuestion);
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
+    // 草稿优先：首次发送时才正式建会话，因此先等会话号再等受理结果
+    await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
     await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(1);
     const firstUuid = submitUuids[0];
 
@@ -357,17 +391,19 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
       }
     });
 
-    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
-    await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
-
-    // 空会话：已建会话但还没有任何提问，真实轮次必须为 0
-    const emptyItem = await readConversationListItem(page, conversationId);
+    // 空会话：草稿优先下页面不会留下空会话，这里直接走正式建会话 mutation 造一个空会话
+    const emptyConversationId = await createConversationViaApi(page);
+    const emptyItem = await readConversationListItem(page, emptyConversationId);
     expect(emptyItem.turnCount).toBe(0);
     expect(emptyItem.messageCount).toBe(0);
+    const emptyDetail = await readConversation(page, emptyConversationId);
+    expect(emptyDetail.turns).toHaveLength(0);
 
-    // 第一轮：受控 provider 正常回复后落库，列表真实轮次为 1
+    // 第一轮：草稿优先下首次发送才建会话，受控 provider 正常回复后落库，列表真实轮次为 1
+    await page.getByRole('button', { name: /新建对话|New chat/i }).click();
     await page.getByLabel(/AI 提问|Ask AI/i).fill('真实轮次核对：第一轮问题');
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
+    await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
     await expect(page.getByRole('log')).toContainText(/已处理问题|受控 WARNING 夹具/, {
       timeout: 120_000,
     });
@@ -480,12 +516,14 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     // 旧轮状态仍在路上时切到新会话
     await page.getByRole('button', { name: /新建对话|New chat/i }).click();
     const log = page.getByRole('log');
-    await expect(log).toContainText(/暂无数据|还没有提问/i, { timeout: 15_000 });
+    // 草稿优先：新建后是空草稿，消息流没有任何轮次
+    await expect(log.locator('article')).toHaveCount(0, { timeout: 15_000 });
+    await expect(log).toContainText(/描述报警|还没有提问|请选择或新建一个会话/i);
     await expect(log).not.toContainText('C4 旧轮迟到响应用例');
 
     // 迟到的旧响应返回后，新会话画面不被回填
     await page.waitForTimeout(5000);
     await expect(log).not.toContainText('C4 旧轮迟到响应用例');
-    await expect(log).toContainText(/暂无数据|还没有提问/i);
+    await expect(log.locator('article')).toHaveCount(0);
   });
 });
