@@ -133,6 +133,52 @@ describe('AiConversationSnapshotService（F05 固定范围）', () => {
     );
   });
 
+  it('F05：回答在自己的写回版本里，读取问题那一版不含回答且不宣称完成', async () => {
+    // 模拟真实写入顺序：问题 v2 → 回答在同一写回事务里推进到 v3
+    queryService.findVisibleDetail.mockResolvedValue({
+      ...DETAIL,
+      contentVersion: 3,
+      messages: [
+        {
+          id: 11,
+          messageSeq: 1,
+          turnNo: 1,
+          role: 'USER',
+          contentText: '问题一',
+          contentVersion: 2,
+          createdAt: new Date('2026-11-18T09:01:00.000Z'),
+        },
+        {
+          id: 12,
+          messageSeq: 2,
+          turnNo: 1,
+          role: 'ASSISTANT',
+          contentText: '回答一',
+          contentVersion: 3,
+          createdAt: new Date('2026-11-18T09:02:00.000Z'),
+        },
+      ],
+      analyses: [{ questionMessageId: 11, status: 'SUCCEEDED', failureReason: null }],
+      messageTurnNos: new Map<number, number | null>([[11, 1]]),
+    });
+
+    const atQuestionVersion = await service.resolveReadableSnapshot({
+      session: SESSION,
+      conversationId: 7,
+      contentVersion: 2,
+    });
+    const atAnswerVersion = await service.resolveReadableSnapshot({
+      session: SESSION,
+      conversationId: 7,
+      contentVersion: 3,
+    });
+
+    expect(atQuestionVersion.messages.map((item) => item.messageId)).toEqual([11]);
+    expect(atQuestionVersion.messages[0].turnState).toBe('PENDING');
+    expect(atAnswerVersion.messages.map((item) => item.messageId)).toEqual([11, 12]);
+    expect(atAnswerVersion.messages[0].turnState).toBe('SUCCEEDED');
+  });
+
   it('截止在中间态时如实标记轮次状态（半轮不美化）', async () => {
     const snapshot = await service.resolveReadableSnapshot({
       session: SESSION,

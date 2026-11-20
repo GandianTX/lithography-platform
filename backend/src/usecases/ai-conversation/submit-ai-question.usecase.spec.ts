@@ -45,7 +45,7 @@ describe('SubmitAiQuestionUsecase', () => {
   let aiConversationService: AiConversationServiceMock;
   let organizationContextService: OrganizationContextMock;
   let repairRequestQueryService: { findAssociationTarget: jest.Mock };
-  let dispatchUsecase: { execute: jest.Mock };
+  let dispatchUsecase: { prepareWithinTransaction: jest.Mock; admitPrepared: jest.Mock };
   let transactionRunner: TransactionRunner;
   let usecase: SubmitAiQuestionUsecase;
 
@@ -68,7 +68,10 @@ describe('SubmitAiQuestionUsecase', () => {
       findAssociationTarget: jest.fn().mockResolvedValue(null),
     };
     dispatchUsecase = {
-      execute: jest
+      prepareWithinTransaction: jest
+        .fn()
+        .mockResolvedValue({ status: 'PREPARED', workflowId: 'wf-1' }),
+      admitPrepared: jest
         .fn()
         .mockResolvedValue({ status: 'QUEUED', workflowId: 'wf-1', jobId: 'job-1' }),
     };
@@ -156,7 +159,50 @@ describe('SubmitAiQuestionUsecase', () => {
       expect.objectContaining({ questionUuid: QUESTION_UUID, contentVersion: 4 }),
       transactionContext,
     );
+    // Q01／B2：执行事实与问题／分析同一事务，投递发生在提交之后
+    expect(dispatchUsecase.prepareWithinTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 7,
+        questionUuid: QUESTION_UUID,
+        messageSeq: 5,
+        contentVersion: 4,
+      }),
+      transactionContext,
+    );
+    expect(dispatchUsecase.admitPrepared).toHaveBeenCalledWith({ workflowId: 'wf-1' });
     expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('Q01／B2：执行事实准备失败时整笔受理失败，不留无执行的问题', async () => {
+    aiConversationService.lockConversationForWrite.mockResolvedValue(lockSnapshot());
+    aiConversationService.findQuestionByUuid.mockResolvedValue(null);
+    aiConversationService.getSequenceFacts.mockResolvedValue({ maxMessageSeq: 4, maxTurnNo: 2 });
+    aiConversationService.bumpContentVersion.mockResolvedValue(4);
+    aiConversationService.insertUserMessage.mockResolvedValue({
+      id: 21,
+      conversationId: 7,
+      questionUuid: QUESTION_UUID,
+      messageSeq: 5,
+      turnNo: 3,
+      contentText: '对准偏差 3μm 如何排查？',
+      contentVersion: 4,
+      createdAt: new Date('2026-11-18T10:00:00.000Z'),
+    });
+    aiConversationService.insertAnalysis.mockResolvedValue({
+      questionUuid: QUESTION_UUID,
+      conversationId: 7,
+      questionMessageId: 21,
+      answerMessageId: null,
+      status: AiMessageAnalysisStatus.PENDING,
+      failureReason: null,
+      contentVersion: 4,
+      savedAt: new Date('2026-11-18T10:00:00.000Z'),
+      completedAt: null,
+    });
+    dispatchUsecase.prepareWithinTransaction.mockRejectedValue(new Error('context_create_failed'));
+
+    await expect(usecase.execute(buildCommand())).rejects.toThrow('context_create_failed');
+    expect(dispatchUsecase.admitPrepared).not.toHaveBeenCalled();
   });
 
   it('同 UUID 同内容：幂等回放既有分析，不新增消息', async () => {
@@ -290,7 +336,7 @@ describe('SubmitAiQuestionUsecase', () => {
     });
     expect(aiConversationService.insertUserMessage).not.toHaveBeenCalled();
     expect(aiConversationService.insertAnalysis).not.toHaveBeenCalled();
-    expect(dispatchUsecase.execute).not.toHaveBeenCalled();
+    expect(dispatchUsecase.prepareWithinTransaction).not.toHaveBeenCalled();
   });
 
   it('F01：成员关系变更后（会话归属公司≠当前公司）拒绝工单会话提问', async () => {

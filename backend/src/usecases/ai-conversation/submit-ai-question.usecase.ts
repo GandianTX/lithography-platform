@@ -4,7 +4,6 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import {
   AiConversationDispatchStatus,
   AiConversationStatus,
-  AiMessageAnalysisStatus,
 } from '@app-types/models/ai-conversation.types';
 import { isAiConversationStageValid } from '@core/ai/ai-conversation-request.policy';
 import {
@@ -35,6 +34,13 @@ import {
 } from './engineer-ai-access';
 import { assertEngineerConversationWritable } from './engineer-conversation-access.guard';
 import type { SubmitAiQuestionCommand, SubmitAiQuestionResult } from './submit-ai-question.types';
+
+/** 受理事务的返回值：对外结果 + 事务内已落库的执行事实（Q01） */
+interface SubmitAcceptance {
+  readonly result: SubmitAiQuestionResult;
+  readonly workflowId: string | null;
+  readonly workflowDisposition: 'PREPARED' | 'EXISTING_ACTIVE';
+}
 
 /**
  * 提交 AI 问题用例（R034-01／R034-02／A05-02）
@@ -97,10 +103,16 @@ export class SubmitAiQuestionUsecase {
       );
     }
 
-    let accepted: SubmitAiQuestionResult;
+    let accepted: SubmitAcceptance;
     try {
       accepted = await this.transactionRunner.run(async (transactionContext) =>
-        this.submitWithinTransaction(command, questionUuid, normalizedText, transactionContext),
+        this.submitWithinTransaction(
+          command,
+          questionUuid,
+          normalizedText,
+          stage,
+          transactionContext,
+        ),
       );
     } catch (error) {
       if (isDomainError(error) && error.code === AI_CONVERSATION_ERROR.QUESTION_CONFLICT) {
@@ -110,78 +122,36 @@ export class SubmitAiQuestionUsecase {
       throw error;
     }
 
-    if (accepted.replayed) {
-      return accepted;
+    if (accepted.result.replayed) {
+      return accepted.result;
     }
 
-    return await this.dispatchAcceptedQuestion({
-      command,
-      accepted,
-      questionUuid,
-      normalizedText,
-      stage,
-    });
+    return await this.admitAcceptedQuestion(accepted);
   }
 
-  /** 受理提交后派发（S2.1）：派发结果回填到受理事实，失败时本轮转为可重试失败 */
-  private async dispatchAcceptedQuestion(input: {
-    readonly command: SubmitAiQuestionCommand;
-    readonly accepted: SubmitAiQuestionResult;
-    readonly questionUuid: string;
-    readonly normalizedText: string;
-    readonly stage: number | null;
-  }): Promise<SubmitAiQuestionResult> {
-    const { command, accepted, questionUuid, normalizedText, stage } = input;
-
-    let dispatchResult: { status: AiConversationDispatchStatus };
-    try {
-      dispatchResult = await this.dispatchAiQuestionUsecase.execute({
-        session: command.session,
-        conversationId: command.conversationId,
-        questionUuid,
-        questionText: normalizedText,
-        turnNo: accepted.turnNo,
-        messageSeq: accepted.messageSeq,
-        contentVersion: accepted.contentVersion,
-        stage,
-      });
-    } catch (error) {
-      // Q01：受理事务已提交，派发阶段异常时必须显式落失败态，
-      // 否则本轮会停在 PENDING 让前端无限等待。
-      await this.aiConversationService
-        .markAnalysisFailed({ questionUuid, reason: 'reply_dispatch_failed' })
-        .catch(() => undefined);
-      this.logger.warn(
-        {
-          conversationId: command.conversationId,
-          questionUuid,
-          error: error instanceof Error ? error.message : 'unknown',
-        },
-        'AI 会话派发异常，本轮已标记为可重试失败',
-      );
-      return {
-        ...accepted,
-        status: AiMessageAnalysisStatus.FAILED,
-        dispatchStatus: AiConversationDispatchStatus.FAILED,
-      };
+  /**
+   * 受理事务提交后投递（Q01）：只投递事务内已落库的执行事实。
+   *
+   * 投递失败不再把本轮判成失败——数据库里的待准入事实会被正式 housekeeping 重投，
+   * 因此不会出现「已受理但既无执行又不可重试」的孤儿 PENDING。
+   */
+  private async admitAcceptedQuestion(accepted: SubmitAcceptance): Promise<SubmitAiQuestionResult> {
+    if (accepted.workflowId === null || accepted.workflowDisposition === 'EXISTING_ACTIVE') {
+      return { ...accepted.result, dispatchStatus: AiConversationDispatchStatus.DEFERRED };
     }
-
-    if (dispatchResult.status === AiConversationDispatchStatus.FAILED) {
-      return {
-        ...accepted,
-        status: AiMessageAnalysisStatus.FAILED,
-        dispatchStatus: AiConversationDispatchStatus.FAILED,
-      };
-    }
-    return { ...accepted, dispatchStatus: dispatchResult.status };
+    const dispatchResult = await this.dispatchAiQuestionUsecase.admitPrepared({
+      workflowId: accepted.workflowId,
+    });
+    return { ...accepted.result, dispatchStatus: dispatchResult.status };
   }
 
   private async submitWithinTransaction(
     command: SubmitAiQuestionCommand,
     questionUuid: string,
     normalizedText: string,
+    stage: number | null,
     transactionContext: PersistenceTransactionContext,
-  ): Promise<SubmitAiQuestionResult> {
+  ): Promise<SubmitAcceptance> {
     // F01：当前可信公司必须真正用于判定，不能只解析后丢弃
     const organizationId = await resolveEngineerTrustedOrganization({
       organizationContextService: this.organizationContextService,
@@ -213,7 +183,15 @@ export class SubmitAiQuestionUsecase {
       transactionContext,
     );
     if (existing) {
-      return this.resolveExistingQuestion(existing, command.conversationId, normalizedText);
+      return {
+        result: await this.resolveExistingQuestion(
+          existing,
+          command.conversationId,
+          normalizedText,
+        ),
+        workflowId: null,
+        workflowDisposition: 'EXISTING_ACTIVE',
+      };
     }
 
     const { maxMessageSeq, maxTurnNo } = await this.aiConversationService.getSequenceFacts(
@@ -259,16 +237,36 @@ export class SubmitAiQuestionUsecase {
       transactionContext,
     );
 
+    // Q01／B2：执行事实与问题／分析在同一事务内落下，
+    // 提交后再投递；任一步失败整体回滚，不存在「已受理但无执行」的窗口
+    const prepared = await this.dispatchAiQuestionUsecase.prepareWithinTransaction(
+      {
+        session: command.session,
+        conversationId: command.conversationId,
+        questionUuid,
+        questionText: normalizedText,
+        turnNo: nextTurnNo,
+        messageSeq,
+        contentVersion,
+        stage,
+      },
+      transactionContext,
+    );
+
     return {
-      conversationId: command.conversationId,
-      questionUuid,
-      status: analysis.status,
-      turnNo: nextTurnNo,
-      messageSeq,
-      contentVersion: analysis.contentVersion,
-      replayed: false,
-      // 事务内尚未派发：对外由 dispatchAcceptedQuestion 覆盖为真实结果
-      dispatchStatus: AiConversationDispatchStatus.DEFERRED,
+      result: {
+        conversationId: command.conversationId,
+        questionUuid,
+        status: analysis.status,
+        turnNo: nextTurnNo,
+        messageSeq,
+        contentVersion: analysis.contentVersion,
+        replayed: false,
+        // 事务内尚未投递：对外由 admitAcceptedQuestion 覆盖为真实结果
+        dispatchStatus: AiConversationDispatchStatus.DEFERRED,
+      },
+      workflowId: prepared.workflowId,
+      workflowDisposition: prepared.status,
     };
   }
 

@@ -81,6 +81,28 @@ describe('AI 对话导出策略', () => {
       ]);
     });
 
+    it('F05：回答写回版本晚于选定版本时，该轮按未完成标记（半轮不美化）', () => {
+      const selected = selectAiExportMessages({
+        messages: [
+          message({ messageId: 1, messageSeq: 1, turnNo: 1, role: 'USER', contentVersion: 2 }),
+          message({
+            messageId: 2,
+            messageSeq: 2,
+            turnNo: 1,
+            role: 'ASSISTANT',
+            contentVersion: 3,
+          }),
+        ],
+        contentVersion: 2,
+        turnStates: new Map<number, AiExportTurnState>([[1, 'SUCCEEDED']]),
+      });
+
+      // 范围内只有问题：库里的 SUCCEEDED 属于 v3，不能拿来标记 v2 的这半轮
+      expect(selected).toHaveLength(1);
+      expect(selected[0].turnState).toBe('PENDING');
+      expect(selected[0].contentVersion).toBe(2);
+    });
+
     it('截止点取范围内最大消息序号；无消息时为 0', () => {
       expect(resolveAiExportCutoffSeq([])).toBe(0);
       expect(

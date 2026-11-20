@@ -78,56 +78,22 @@ export class RetryAiQuestionUsecase {
     }
 
     const accepted = await this.transactionRunner.run(async (transactionContext) =>
-      this.prepareRetry(command, questionUuid, transactionContext),
+      this.prepareRetry(command, questionUuid, stage, transactionContext),
     );
 
-    let dispatchResult: { status: AiConversationDispatchStatus };
-    try {
-      dispatchResult = await this.dispatchAiQuestionUsecase.execute({
-        session: command.session,
-        conversationId: command.conversationId,
-        questionUuid,
-        questionText: accepted.questionText,
-        turnNo: accepted.result.turnNo,
-        messageSeq: accepted.result.messageSeq,
-        contentVersion: accepted.result.contentVersion,
-        stage,
-      });
-    } catch (error) {
-      // Q01：重试的受理事务已提交，派发异常同样必须落失败态，避免停在 PENDING
-      await this.aiConversationService
-        .markAnalysisFailed({ questionUuid, reason: 'reply_dispatch_failed' })
-        .catch(() => undefined);
-      this.logger.warn(
-        {
-          conversationId: command.conversationId,
-          questionUuid,
-          error: error instanceof Error ? error.message : 'unknown',
-        },
-        'AI 会话重试派发异常，本轮已标记为可重试失败',
-      );
-      return {
-        ...accepted.result,
-        status: AiMessageAnalysisStatus.FAILED,
-        dispatchStatus: AiConversationDispatchStatus.FAILED,
-      };
-    }
-
-    if (dispatchResult.status === AiConversationDispatchStatus.FAILED) {
-      return {
-        ...accepted.result,
-        status: AiMessageAnalysisStatus.FAILED,
-        dispatchStatus: AiConversationDispatchStatus.FAILED,
-      };
-    }
+    // 事务提交后只投递；投递失败时待准入事实仍在库内，由正式 housekeeping 重投（Q01）
+    const dispatchResult = await this.dispatchAiQuestionUsecase.admitPrepared({
+      workflowId: accepted.workflowId,
+    });
     return { ...accepted.result, dispatchStatus: dispatchResult.status };
   }
 
   private async prepareRetry(
     command: RetryAiQuestionCommand,
     questionUuid: string,
+    stage: number | null,
     transactionContext: PersistenceTransactionContext,
-  ): Promise<{ readonly result: SubmitAiQuestionResult; readonly questionText: string }> {
+  ): Promise<{ readonly result: SubmitAiQuestionResult; readonly workflowId: string }> {
     // F01：重试同样必须复核当前可信公司与工单资源事实，不能只判发起人
     const organizationId = await resolveEngineerTrustedOrganization({
       organizationContextService: this.organizationContextService,
@@ -189,8 +155,32 @@ export class RetryAiQuestionUsecase {
       );
     }
 
+    // F04／B1：新执行与「重置为 PENDING」同一事务。
+    // 上一执行尚未收尾时 createContext 返回 EXISTING_ACTIVE：此时不能把它当成
+    // 新一次重试成功，抛出后整笔回滚，analysis 保持 FAILED 供用户稍后再试。
+    const prepared = await this.dispatchAiQuestionUsecase.prepareWithinTransaction(
+      {
+        session: command.session,
+        conversationId: command.conversationId,
+        questionUuid,
+        questionText: question.contentText,
+        turnNo: question.turnNo ?? 0,
+        messageSeq: question.messageSeq,
+        contentVersion: analysis.contentVersion,
+        stage,
+      },
+      transactionContext,
+    );
+    if (prepared.status !== 'PREPARED') {
+      throw new DomainError(
+        AI_CONVERSATION_ERROR.RETRY_NOT_ALLOWED,
+        '上一轮执行尚未收尾，请稍后再重试',
+        { conversationId: command.conversationId, questionUuid, workflowId: prepared.workflowId },
+      );
+    }
+
     return {
-      questionText: question.contentText,
+      workflowId: prepared.workflowId,
       result: {
         conversationId: command.conversationId,
         questionUuid,

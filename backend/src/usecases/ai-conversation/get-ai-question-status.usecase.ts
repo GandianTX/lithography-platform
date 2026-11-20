@@ -21,7 +21,14 @@ import { assertEngineerAiPermission } from './engineer-ai-access';
 /**
  * 查询单轮问题受理状态用例（R034「结果未知先查原问题」）
  *
- * - 只读：不触发模型调用、不重算、不改写状态或正文；
+ * 纯只读：不触发投递、不触发模型调用、不重算正文、不写 analysis 状态。
+ *
+ * 2026-11-20 纠偏：此前本用例在读状态时调用恢复编排（可能重新投递任务并写 analysis），
+ * 使「查询」隐含写入与投递能力，与「状态查询只读、恢复由正式运行入口负责」的约定冲突。
+ * 现在未终态轮次的恢复由 Worker 生命周期的正式扫描负责：
+ * - 准入／投递重试与准入超时收敛：`RunAiWorkflowHousekeepingUsecase`；
+ * - 执行终止后的 analysis 补写：`AiQuestionAnalysisSettlementService`。
+ *
  * - 先做会话可见性校验，再按 `question_uuid` 读取分析事实；
  * - 成功时返回已保存正文与内容版本；未成功时返回状态与失败原因。
  */

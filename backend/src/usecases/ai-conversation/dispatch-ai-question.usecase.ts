@@ -3,19 +3,17 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { AiConversationDispatchStatus } from '@app-types/models/ai-conversation.types';
-import { canWriteEngineerConversation } from '@core/ai/engineer-conversation-access.policy';
 import { buildAiConversationRequest } from '@src/core/ai/ai-conversation-request.policy';
+import { AI_CONVERSATION_ERROR, DomainError } from '@src/core/common/errors/domain-error';
 import { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
-import type { AiConversationLockSnapshot } from '@src/modules/lithography/ai-conversation.types';
 import { AiConversationQueryService } from '@src/modules/lithography/queries/ai-conversation.query.service';
-import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
-import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 
-import { resolveEngineerTrustedOrganization } from './engineer-ai-access';
 import {
   AI_WORKFLOW_ADMISSION_PORT,
   type AiWorkflowAdmissionPort,
+  type AiWorkflowAdmissionPrepareResult,
 } from '@src/usecases/common/ports/ai-workflow-admission.contract';
 
 import {
@@ -39,14 +37,14 @@ export interface DispatchAcceptedQuestionInput {
 }
 
 /**
- * 受理后的派发用例（S2.1）：提交与重试共用。
+ * 受理后的工作流派发用例（S2／Q01／B2）。
  *
- * - 用「受理那一刻的事实」组装请求信封快照（历史、机型、阶段、问题 UUID），
- *   写入工作流上下文 `inputPayload`；重试不会重新读取后来的消息；
- * - 复用 `CreateAndAdmitAiWorkflowUsecase`：队列不可用时落到 `ADMISSION_WAITING`，
- *   由 housekeeping 重投，而不是把用户请求判失败；
- * - 派发异常时把本轮标记为可重试失败（`dispatch_failed`），避免界面长期停在「生成中」；
- * - 本用例不抛业务异常（返回 FAILED），避免已提交的问题因派发问题而「看不到」。
+ * 拆成两步，避免「先提交 PENDING、再创建执行」之间出现无执行事实的窗口：
+ *
+ * 1. `prepareWithinTransaction`：与问题／分析记录同一个数据库事务内，
+ *    用受理那一刻的事实组装请求信封并落下 `ADMISSION_WAITING` 待准入事实；
+ * 2. `admitPrepared`：事务提交后只做投递；投递失败时数据库事实仍在，
+ *    由正式 housekeeping 恢复，不再把本轮判成失败。
  */
 @Injectable()
 export class DispatchAiQuestionUsecase {
@@ -55,53 +53,53 @@ export class DispatchAiQuestionUsecase {
   constructor(
     private readonly aiConversationService: AiConversationService,
     private readonly aiConversationQueryService: AiConversationQueryService,
-    private readonly organizationContextService: TrustedOrganizationContextQueryService,
-    private readonly repairRequestQueryService: RepairRequestQueryService,
     @Inject(AI_WORKFLOW_ADMISSION_PORT)
     private readonly workflowAdmission: AiWorkflowAdmissionPort,
     @Inject(AI_CONVERSATION_DISPATCH_OPTIONS)
     private readonly dispatchOptions: AiConversationDispatchOptions,
   ) {}
 
-  async execute(input: DispatchAcceptedQuestionInput): Promise<AiConversationDispatchResult> {
+  /**
+   * 受理事务内准备执行事实。
+   *
+   * 必须由调用方在自己的事务内调用：任一步失败都要让问题／分析整体回滚（B2）。
+   */
+  async prepareWithinTransaction(
+    input: DispatchAcceptedQuestionInput,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<AiWorkflowAdmissionPrepareResult> {
     const conversation = await this.aiConversationService.findConversationById(
       input.conversationId,
+      transactionContext,
     );
     if (!conversation) {
-      await this.markDispatchFailed(input.questionUuid);
-      return { status: AiConversationDispatchStatus.FAILED, workflowId: null, jobId: null };
-    }
-
-    // F01：派发前用当前事实复核资源仍可写；权限在受理与派发之间被撤销时
-    // 不得继续把上下文交给模型（宁可本轮失败可重试，也不泄露已失效的上下文）。
-    const stillWritable = await this.isConversationStillWritable(input.session, conversation);
-    if (!stillWritable) {
-      await this.markDispatchFailed(input.questionUuid);
-      return { status: AiConversationDispatchStatus.FAILED, workflowId: null, jobId: null };
+      throw new DomainError(AI_CONVERSATION_ERROR.NOT_FOUND, 'AI 会话不存在，无法受理本轮', {
+        conversationId: input.conversationId,
+      });
     }
 
     const model = this.dispatchOptions.model;
     const provider = this.dispatchOptions.provider;
 
     const [history, equipmentModelCode] = await Promise.all([
-      this.aiConversationService.listHistoryBeforeSeq({
-        conversationId: input.conversationId,
-        messageSeq: input.messageSeq,
-      }),
+      this.aiConversationService.listHistoryBeforeSeq(
+        { conversationId: input.conversationId, messageSeq: input.messageSeq },
+        transactionContext,
+      ),
       this.aiConversationQueryService.findEquipmentModelCodeByRequestId(conversation.requestId),
     ]);
 
-    try {
-      const requestPayload = buildAiConversationRequest({
-        questionUuid: input.questionUuid,
-        question: input.questionText,
-        history,
-        mode: conversation.requestId === null ? 'INDEPENDENT' : 'WORK_ORDER',
-        equipmentModelCode,
-        stage: input.stage,
-      });
+    const requestPayload = buildAiConversationRequest({
+      questionUuid: input.questionUuid,
+      question: input.questionText,
+      history,
+      mode: conversation.requestId === null ? 'INDEPENDENT' : 'WORK_ORDER',
+      equipmentModelCode,
+      stage: input.stage,
+    });
 
-      const result = await this.workflowAdmission.execute({
+    return await this.workflowAdmission.prepareInTransaction(
+      {
         workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
         // 同一问题（含重试）共用去重键：前一次执行终态后哈希释放可重新受理；
         // 仍在执行中时返回 EXISTING_ACTIVE，不重复调用模型。
@@ -123,99 +121,41 @@ export class DispatchAiQuestionUsecase {
         actorActiveRole: input.session.activeRole ?? null,
         provider,
         model,
-      });
-
-      const status: AiConversationDispatchStatus =
-        result.status === 'QUEUED' || result.status === 'STALE_QUEUED'
-          ? AiConversationDispatchStatus.QUEUED
-          : result.status === 'EXISTING_ACTIVE' || result.status === 'ADMISSION_WAITING'
-            ? AiConversationDispatchStatus.DEFERRED
-            : AiConversationDispatchStatus.FAILED;
-
-      if (status === AiConversationDispatchStatus.FAILED) {
-        await this.markDispatchFailed(input.questionUuid);
-      }
-
-      return {
-        status,
-        workflowId: result.workflowId,
-        jobId: result.jobId,
-      };
-    } catch (error) {
-      this.logger.error(
-        {
-          conversationId: input.conversationId,
-          questionUuid: input.questionUuid,
-          error: error instanceof Error ? error.message.slice(0, 200) : 'dispatch_error',
-        },
-        'AI 对话派发异常',
-      );
-      await this.markDispatchFailed(input.questionUuid);
-      return { status: AiConversationDispatchStatus.FAILED, workflowId: null, jobId: null };
-    }
+      },
+      transactionContext,
+    );
   }
 
   /**
-   * 派发前的资源复核（F01）：当前可信公司 + 关联工单当前事实。
+   * 事务提交后投递已准备的执行。
    *
-   * 任何解析或读取失败都按「不可写」处理（失败关闭），由调用方转为本轮可重试失败。
+   * 投递失败不再写失败态：数据库中的 `ADMISSION_WAITING`／`QUEUED` 事实由
+   * housekeeping 重投，界面按「延迟」处理而不是让用户重试（Q01／B2）。
    */
-  private async isConversationStillWritable(
-    session: UsecaseSession,
-    conversation: AiConversationLockSnapshot,
-  ): Promise<boolean> {
+  async admitPrepared(input: {
+    readonly workflowId: string;
+  }): Promise<AiConversationDispatchResult> {
     try {
-      const organizationId = await resolveEngineerTrustedOrganization({
-        organizationContextService: this.organizationContextService,
-        accountId: session.accountId,
-      });
-      const requestFacts =
-        conversation.requestId === null
-          ? null
-          : await this.repairRequestQueryService.findAssociationTarget({
-              requestId: conversation.requestId,
-            });
-
-      return canWriteEngineerConversation({
-        requestId: conversation.requestId,
-        conversationOwnerAccountId: conversation.engineerAccountId,
-        conversationOwnerOrganizationId: conversation.ownerOrganizationId,
-        viewerAccountId: session.accountId,
-        viewerOrganizationId: organizationId,
-        requestFacts:
-          requestFacts === null
-            ? null
-            : {
-                deletedAt: requestFacts.deletedAt,
-                trustedServiceOrganizationId: requestFacts.trustedServiceOrganizationId,
-              },
-      });
+      const result = await this.workflowAdmission.admitExisting({ workflowId: input.workflowId });
+      const status: AiConversationDispatchStatus =
+        result.status === 'QUEUED' || result.status === 'STALE_QUEUED'
+          ? AiConversationDispatchStatus.QUEUED
+          : // ADMISSION_WAITING / EXISTING_ACTIVE / CONFLICT：执行事实已在库内，等待重投
+            AiConversationDispatchStatus.DEFERRED;
+      return { status, workflowId: result.workflowId, jobId: result.jobId };
     } catch (error) {
       this.logger.warn(
         {
-          conversationId: conversation.id,
-          error: error instanceof Error ? error.message : 'unknown',
+          workflowId: input.workflowId,
+          error: error instanceof Error ? error.message.slice(0, 200) : 'admission_error',
         },
-        'AI 会话派发前资源复核失败（按不可写处理）',
+        'AI 对话投递异常，已保留待准入事实等待正式调度恢复',
       );
-      return false;
-    }
-  }
-
-  private async markDispatchFailed(questionUuid: string): Promise<void> {
-    try {
-      await this.aiConversationService.markAnalysisFailed({
-        questionUuid,
-        reason: 'dispatch_failed',
-      });
-    } catch (error) {
-      this.logger.warn(
-        {
-          questionUuid,
-          error: error instanceof Error ? error.message.slice(0, 200) : 'mark_failed_error',
-        },
-        'AI 对话派发失败标记写入失败',
-      );
+      return {
+        status: AiConversationDispatchStatus.DEFERRED,
+        workflowId: input.workflowId,
+        jobId: null,
+      };
     }
   }
 }

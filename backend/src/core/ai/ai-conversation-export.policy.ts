@@ -55,10 +55,38 @@ export function selectAiExportMessages(input: {
   readonly contentVersion: number;
   readonly turnStates: ReadonlyMap<number, AiExportTurnState>;
 }): AiExportMessageSnapshot[] {
-  return input.messages
+  const messages = input.messages
     .filter((message) => message.contentVersion <= input.contentVersion)
-    .sort((left, right) => left.messageSeq - right.messageSeq)
-    .map((message) => ({
+    .sort((left, right) => left.messageSeq - right.messageSeq);
+
+  // F05：回答属于它自己写回时推进到的版本。选定版本早于回答版本时，
+  // 库里分析状态可能已是 SUCCEEDED，但本次范围内还没有这条回答——
+  // 此时必须按「本版本尚未完成」如实标记，不能让半轮看起来已经成功。
+  // 只有在「回答确实存在但版本更晚」时降级；库里根本没有回答的异常数据不臆造状态。
+  const answeredInScope = new Set<number>();
+  const answeredAfterCut = new Set<number>();
+  for (const message of input.messages) {
+    if (message.role !== 'ASSISTANT' || message.turnNo === null) {
+      continue;
+    }
+    if (message.contentVersion <= input.contentVersion) {
+      answeredInScope.add(message.turnNo);
+    } else {
+      answeredAfterCut.add(message.turnNo);
+    }
+  }
+
+  return messages.map((message) => {
+    const scopedState =
+      message.turnNo === null ? 'UNKNOWN' : (input.turnStates.get(message.turnNo) ?? 'UNKNOWN');
+    const turnState: AiExportTurnState =
+      scopedState === 'SUCCEEDED' &&
+      message.turnNo !== null &&
+      !answeredInScope.has(message.turnNo) &&
+      answeredAfterCut.has(message.turnNo)
+        ? 'PENDING'
+        : scopedState;
+    return {
       messageId: message.messageId,
       messageSeq: message.messageSeq,
       turnNo: message.turnNo,
@@ -66,9 +94,9 @@ export function selectAiExportMessages(input: {
       text: message.text,
       contentVersion: message.contentVersion,
       createdAt: message.createdAt,
-      turnState:
-        message.turnNo === null ? 'UNKNOWN' : (input.turnStates.get(message.turnNo) ?? 'UNKNOWN'),
-    }));
+      turnState,
+    };
+  });
 }
 
 /** 计算快照截止点（范围内最后一条消息序号；无消息时为 0） */
