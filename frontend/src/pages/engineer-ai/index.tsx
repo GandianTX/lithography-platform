@@ -139,7 +139,7 @@ export function EngineerAiPage() {
               }
               workspace.startNewDraft();
             }}
-            onRefreshTurn={(questionUuid) => void workspace.refreshTurn(questionUuid)}
+            onRefreshTurn={() => void workspace.refreshCurrentTurn()}
             onReloadWorkOrders={workOrders.reload}
             onRetryTurn={(questionUuid) => void workspace.retryTurn(questionUuid)}
             onSubmit={() => void workspace.submitQuestion(workspace.draft)}

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Input, Select, Space, Tag, Typography } from 'antd';
 import type { UIEvent } from 'react';
 
+import type { MessageKey } from '@/shared/i18n';
 import { useI18n } from '@/shared/i18n';
 
 import type {
@@ -45,7 +46,7 @@ export type AiConversationPanelProps = {
   onExportPdf: () => void;
 };
 
-const TURN_STATUS_KEY: Record<AiMessageAnalysisStatus, string> = {
+const TURN_STATUS_KEY: Record<AiMessageAnalysisStatus, MessageKey> = {
   PENDING: 'ai.panel.turnStatus.pending',
   RUNNING: 'ai.panel.turnStatus.running',
   SUCCEEDED: 'ai.panel.turnStatus.succeeded',
