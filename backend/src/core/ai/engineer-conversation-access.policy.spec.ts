@@ -4,6 +4,9 @@
 import {
   canReadEngineerConversation,
   canWriteEngineerConversation,
+  ENGINEER_INDEPENDENT_VISIBILITY_CONDITIONS,
+  ENGINEER_WORK_ORDER_VISIBILITY_CONDITIONS,
+  evaluateEngineerVisibilityConditions,
   type EngineerConversationAccessFacts,
 } from './engineer-conversation-access.policy';
 
@@ -92,6 +95,73 @@ describe('工程师会话访问判定（F01）', () => {
     it('查看者无公司归属时失败关闭', () => {
       const noCompany = workOrder({ viewerOrganizationId: null });
       expect(canReadEngineerConversation(noCompany)).toBe(false);
+    });
+  });
+
+  /**
+   * 读侧 SQL 与判定函数的单一真源守护。
+   *
+   * 读侧（`AiConversationQueryService`）不再自维护 SQL 字符串，而是把 core 的
+   * 结构化条件翻译成片段；本组用例对同一批事实同时跑「条件求值」与「判定函数」，
+   * 任何一侧改动导致口径漂移都会在这里失败。
+   */
+  describe('可见性条件与判定函数行为等价', () => {
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly facts: EngineerConversationAccessFacts;
+    }> = [
+      { name: '独立会话·本人', facts: BASE },
+      { name: '独立会话·同公司同事', facts: { ...BASE, viewerAccountId: 11 } },
+      { name: '独立会话·公司变化', facts: { ...BASE, viewerOrganizationId: 6 } },
+      { name: '工单会话·归属公司一致', facts: workOrder() },
+      { name: '工单会话·成员关系改到 B', facts: workOrder({ viewerOrganizationId: 6 }) },
+      {
+        name: '工单会话·可信服务公司改到 B',
+        facts: workOrder({ requestFacts: { deletedAt: null, trustedServiceOrganizationId: 6 } }),
+      },
+      {
+        name: '工单会话·软删',
+        facts: workOrder({
+          requestFacts: { deletedAt: new Date(), trustedServiceOrganizationId: 5 },
+        }),
+      },
+      { name: '工单会话·工单事实缺失', facts: workOrder({ requestFacts: null }) },
+      {
+        name: '工单会话·可信服务公司缺失',
+        facts: workOrder({ requestFacts: { deletedAt: null, trustedServiceOrganizationId: null } }),
+      },
+      { name: '工单会话·同公司同事（可读不可写）', facts: workOrder({ viewerAccountId: 11 }) },
+      {
+        name: '工单会话·会话归属公司为空',
+        facts: workOrder({ conversationOwnerOrganizationId: null }),
+      },
+      { name: '工单会话·查看者无公司归属', facts: workOrder({ viewerOrganizationId: null }) },
+    ];
+
+    it.each(cases)('$name：条件组求值与判定函数结论一致', ({ facts }) => {
+      const independent = evaluateEngineerVisibilityConditions(
+        ENGINEER_INDEPENDENT_VISIBILITY_CONDITIONS,
+        facts,
+      );
+      const workOrderVisible = evaluateEngineerVisibilityConditions(
+        ENGINEER_WORK_ORDER_VISIBILITY_CONDITIONS,
+        facts,
+      );
+      expect(independent || workOrderVisible).toBe(canReadEngineerConversation(facts));
+    });
+
+    it('条件组互斥：独立会话分支不命中工单分支，反之亦然', () => {
+      for (const { facts } of cases) {
+        const independent = evaluateEngineerVisibilityConditions(
+          ENGINEER_INDEPENDENT_VISIBILITY_CONDITIONS,
+          facts,
+        );
+        const workOrderVisible = evaluateEngineerVisibilityConditions(
+          ENGINEER_WORK_ORDER_VISIBILITY_CONDITIONS,
+          facts,
+        );
+        expect(independent && workOrderVisible).toBe(false);
+      }
     });
   });
 });

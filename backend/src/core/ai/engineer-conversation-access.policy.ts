@@ -10,8 +10,9 @@
 // 工单当前「可信服务公司」= 工单 `service_organization_id` 与原始报修 intake
 // `service_organization_id` 一致时的该值；缺失或冲突一律不可见（失败关闭）。
 //
-// 读侧 SQL（`AiConversationQueryService.applyVisibility`）必须与本文件判定等价，
-// 任一处改动都要同步另一处与对应测试。
+// 读侧 SQL 与本文件共用同一份可见性条件（`ENGINEER_*_VISIBILITY_CONDITIONS`）：
+// 语义条件只在 core 定义一次，读侧只负责把条件翻译成 SQL 片段；
+// `evaluateEngineerVisibilityConditions` 与判定函数的行为等价由本文件用例守护。
 
 /** 工单当前资源事实（requestId 非空时由 04 查询服务提供） */
 export interface EngineerConversationRequestFacts {
@@ -69,4 +70,101 @@ export function canWriteEngineerConversation(facts: EngineerConversationAccessFa
     return false;
   }
   return canReadEngineerConversation(facts);
+}
+
+/**
+ * 工程师会话可见性条件（结构化单一真源）。
+ *
+ * 判定函数与读侧 SQL 条件共用本文件：
+ * - 语义只在此定义一次，读侧（`AiConversationQueryService`）只把条件翻译成 SQL 片段，
+ *   不再各自维护一份字符串；
+ * - `evaluateEngineerVisibilityConditions` 是纯求值器，用例用它与判定函数对同一组
+ *   事实做行为等价断言，防止两套口径漂移。
+ */
+export type EngineerVisibilityCondition =
+  /** 独立会话（会话未绑定工单） */
+  | { readonly kind: 'INDEPENDENT_SESSION' }
+  /** 会话归属账号是查看者本人 */
+  | { readonly kind: 'OWNED_BY_VIEWER' }
+  /** 会话绑定了工单 */
+  | { readonly kind: 'REQUEST_EXISTS' }
+  /** 会话归属公司等于查看者当前可信公司 */
+  | { readonly kind: 'OWNED_BY_VIEWER_ORGANIZATION' }
+  /** 工单未软删 */
+  | { readonly kind: 'REQUEST_NOT_DELETED' }
+  /** 工单当前可信服务公司等于查看者当前可信公司 */
+  | { readonly kind: 'REQUEST_IN_VIEWER_ORGANIZATION' }
+  /** 工单存在可信服务公司（工单服务公司与 intake 服务公司一致才有取值） */
+  | { readonly kind: 'INTAKE_SERVICE_ORGANIZATION_PRESENT' }
+  /** intake 服务公司与工单服务公司一致（由可信服务公司的取值规则保证） */
+  | { readonly kind: 'INTAKE_MATCHES_REQUEST_SERVICE_ORGANIZATION' };
+
+/** 独立会话可见性条件：未绑定工单且归属本人 */
+export const ENGINEER_INDEPENDENT_VISIBILITY_CONDITIONS: readonly EngineerVisibilityCondition[] = [
+  { kind: 'INDEPENDENT_SESSION' },
+  { kind: 'OWNED_BY_VIEWER' },
+];
+
+/** 工单会话可见性条件：归属公司一致、工单未软删、当前可信服务公司一致 */
+export const ENGINEER_WORK_ORDER_VISIBILITY_CONDITIONS: readonly EngineerVisibilityCondition[] = [
+  { kind: 'REQUEST_EXISTS' },
+  { kind: 'OWNED_BY_VIEWER_ORGANIZATION' },
+  { kind: 'REQUEST_NOT_DELETED' },
+  { kind: 'REQUEST_IN_VIEWER_ORGANIZATION' },
+  { kind: 'INTAKE_SERVICE_ORGANIZATION_PRESENT' },
+  { kind: 'INTAKE_MATCHES_REQUEST_SERVICE_ORGANIZATION' },
+];
+
+/**
+ * 求值单个可见性条件（纯函数）。
+ *
+ * 与判定函数同源：`trustedServiceOrganizationId` 的取值规则本身已要求
+ * 「工单服务公司 = intake 服务公司」，缺失或冲突即不可见（失败关闭），
+ * 因此 intake 一致性条件与其存在性条件同真同假。
+ */
+export function evaluateEngineerVisibilityCondition(
+  condition: EngineerVisibilityCondition,
+  facts: EngineerConversationAccessFacts,
+): boolean {
+  switch (condition.kind) {
+    case 'INDEPENDENT_SESSION':
+      return facts.requestId === null;
+    case 'OWNED_BY_VIEWER':
+      return facts.conversationOwnerAccountId === facts.viewerAccountId;
+    case 'REQUEST_EXISTS':
+      return facts.requestId !== null;
+    case 'OWNED_BY_VIEWER_ORGANIZATION':
+      return (
+        facts.viewerOrganizationId !== null &&
+        facts.conversationOwnerOrganizationId === facts.viewerOrganizationId
+      );
+    case 'REQUEST_NOT_DELETED':
+      return facts.requestFacts !== null && facts.requestFacts.deletedAt === null;
+    case 'REQUEST_IN_VIEWER_ORGANIZATION':
+      return (
+        facts.viewerOrganizationId !== null &&
+        facts.requestFacts !== null &&
+        facts.requestFacts.trustedServiceOrganizationId === facts.viewerOrganizationId
+      );
+    case 'INTAKE_SERVICE_ORGANIZATION_PRESENT':
+      return (
+        facts.requestFacts !== null && facts.requestFacts.trustedServiceOrganizationId !== null
+      );
+    case 'INTAKE_MATCHES_REQUEST_SERVICE_ORGANIZATION':
+      return (
+        facts.requestFacts !== null && facts.requestFacts.trustedServiceOrganizationId !== null
+      );
+    default: {
+      const exhaustive: never = condition;
+      return exhaustive;
+    }
+  }
+}
+
+/** 求值一组可见性条件（全部成立才可见） */
+export function evaluateEngineerVisibilityConditions(
+  conditions: readonly EngineerVisibilityCondition[],
+  facts: EngineerConversationAccessFacts,
+): boolean {
+  return conditions.every((condition) => evaluateEngineerVisibilityCondition(condition, facts));
 }

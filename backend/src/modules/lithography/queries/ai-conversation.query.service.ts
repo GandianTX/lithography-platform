@@ -3,6 +3,11 @@
 import type { AiConversationStatus } from '@app-types/models/ai-conversation.types';
 import { parseAiMessageAnalysisStatus } from '@core/ai/ai-message-analysis-status.policy';
 import type { AiAdminConversationScope } from '@core/ai/ai-conversation-read-access.policy';
+import {
+  ENGINEER_INDEPENDENT_VISIBILITY_CONDITIONS,
+  ENGINEER_WORK_ORDER_VISIBILITY_CONDITIONS,
+  type EngineerVisibilityCondition,
+} from '@core/ai/engineer-conversation-access.policy';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, Repository, SelectQueryBuilder } from 'typeorm';
@@ -31,7 +36,8 @@ import { RepairRequestEntity } from '../entities/repair-request.entity';
  * - 工单会话必须同时满足：固定归属公司 = 当前可信公司、工单未软删，
  *   且工单当前**可信服务公司**（`service_organization_id` 与 intake 一致）
  *   也等于当前可信公司；同公司互看私人会话被本条排除。
- *   该判定与 `@core/ai/engineer-conversation-access.policy` 等价，两处须同步。
+ *   该判定与 `@core/ai/engineer-conversation-access.policy` 共用同一份可见性条件，
+ *   本文件只做条件 → SQL 的翻译。
  *
  * 职责范围：列表装配（申请编号、消息数、最后消息时间）、详情装配（逐条消息、
  * 逐问题分析状态）。
@@ -466,7 +472,8 @@ export class AiConversationQueryService {
 /**
  * 工程师会话可见性条件（F01）。
  *
- * 读侧 SQL 与 `@core/ai/engineer-conversation-access.policy` 等价：
+ * 语义条件定义在 `@core/ai/engineer-conversation-access.policy`（与判定函数同一份），
+ * 本文件只负责把条件翻译成 SQL 片段：
  * - 独立会话：仅本人；
  * - 工单会话：固定归属公司、工单未软删、工单当前可信服务公司三者都等于当前可信公司；
  *   可信服务公司口径与 04 一致（工单服务公司 = intake 服务公司，缺失即不可见）。
@@ -478,20 +485,41 @@ export function buildEngineerVisibilityClauses(viewerOrganizationId: number | nu
   readonly workOrder: readonly string[] | null;
 } {
   return {
-    independent: [
-      'conversation.requestId IS NULL',
-      'conversation.engineerAccountId = :viewerAccountId',
-    ],
+    independent: ENGINEER_INDEPENDENT_VISIBILITY_CONDITIONS.map(translateVisibilityCondition),
     workOrder:
       viewerOrganizationId === null
         ? null
-        : [
-            'conversation.requestId IS NOT NULL',
-            'conversation.ownerOrganizationId = :viewerOrganizationId',
-            'request.deletedAt IS NULL',
-            'request.serviceOrganizationId = :viewerOrganizationId',
-            'intake.serviceOrganizationId IS NOT NULL',
-            'intake.serviceOrganizationId = request.serviceOrganizationId',
-          ],
+        : ENGINEER_WORK_ORDER_VISIBILITY_CONDITIONS.map(translateVisibilityCondition),
   };
+}
+
+/**
+ * 可见性条件 → SQL 片段（唯一翻译点）。
+ *
+ * 条件语义只在 core 策略定义；此处只负责把同一语义落到具体列上，
+ * 避免判定与 SQL 各维护一份字符串而漂移。
+ */
+function translateVisibilityCondition(condition: EngineerVisibilityCondition): string {
+  switch (condition.kind) {
+    case 'INDEPENDENT_SESSION':
+      return 'conversation.requestId IS NULL';
+    case 'OWNED_BY_VIEWER':
+      return 'conversation.engineerAccountId = :viewerAccountId';
+    case 'REQUEST_EXISTS':
+      return 'conversation.requestId IS NOT NULL';
+    case 'OWNED_BY_VIEWER_ORGANIZATION':
+      return 'conversation.ownerOrganizationId = :viewerOrganizationId';
+    case 'REQUEST_NOT_DELETED':
+      return 'request.deletedAt IS NULL';
+    case 'REQUEST_IN_VIEWER_ORGANIZATION':
+      return 'request.serviceOrganizationId = :viewerOrganizationId';
+    case 'INTAKE_SERVICE_ORGANIZATION_PRESENT':
+      return 'intake.serviceOrganizationId IS NOT NULL';
+    case 'INTAKE_MATCHES_REQUEST_SERVICE_ORGANIZATION':
+      return 'intake.serviceOrganizationId = request.serviceOrganizationId';
+    default: {
+      const exhaustive: never = condition;
+      return exhaustive;
+    }
+  }
 }
