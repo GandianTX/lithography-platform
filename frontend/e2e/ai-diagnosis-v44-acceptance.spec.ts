@@ -208,13 +208,18 @@ test.describe('V44 展示层验收（任务05 S4）', () => {
       await capture(page, `ai-diagnosis-${viewport.name}-chat`);
 
       // 4) 警示落定：故障短卡锁定，指向与图例同一部件
+      // 夹具与 V44 原型 AI33Mock 同语义：阶段 2 重点部件 reticle_table 为 HIGHLIGHT（关联），
+      // reticle_arm 额外升级为 WARNING（目标）。原型图例同时列出「关注·手臂1」与「取板台」。
       state.statusQueue = [
         {
           status: 'SUCCEEDED',
           visualization: {
             sceneId: 'LITHO_WORKFLOW_V1',
             stage: 2,
-            parts: buildParts('NORMAL', { reticle_arm: 'WARNING' }),
+            parts: buildParts('NORMAL', {
+              reticle_arm: 'WARNING',
+              reticle_table: 'HIGHLIGHT',
+            }),
           },
         },
       ];
@@ -224,6 +229,8 @@ test.describe('V44 展示层验收（任务05 S4）', () => {
       await expect(card).toHaveAttribute('data-locked', 'true', { timeout: 10000 });
       await expect(card).toContainText('手臂1（掩模板）');
       await expect(page.getByLabel('部件标记')).toContainText('警示 · 手臂1（掩模板）');
+      // V05-07：图例同时列「警示部件」与「关联部件」（原型同款两个 chip）
+      await expect(page.getByLabel('部件标记')).toContainText('关联 · 取板台');
       await expect(page.getByText('本轮阶段 2')).toBeVisible();
       metrics.warning = await measure(page);
       assertLayout(metrics.warning, viewport.stacked, `${viewport.name}/警示落定`);
