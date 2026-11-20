@@ -102,11 +102,11 @@ export class ListAdminAiConversationsUsecase {
       status: filter?.status,
       createdAtFrom: filter?.createdAtFrom,
       createdAtTo: filter?.createdAtTo,
-      // 二级管理员仅本公司（一级为 null = 全公司）
-      organizationId: scope.kind === 'ADMIN_ORGANIZATION' ? scope.organizationId : null,
     };
 
     const listPage = await this.adminAiConversationQueryService.listAll({
+      // 授权范围显式传入（一级跨公司 / 二级本公司），不靠「不传即全公司」
+      scope,
       filter: queryFilter,
       pagination: { page, pageSize, withTotal: withTotal ?? false },
     });

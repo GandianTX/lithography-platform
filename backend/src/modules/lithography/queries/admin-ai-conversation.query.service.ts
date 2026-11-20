@@ -3,6 +3,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, Repository, SelectQueryBuilder } from 'typeorm';
+import type { AiAdminConversationScope } from '@core/ai/ai-conversation-read-access.policy';
 import { AiConversationEntity } from '../entities/ai-conversation.entity';
 import { AiMessageEntity } from '../entities/ai-message.entity';
 import { AiReportEntity } from '../entities/ai-report.entity';
@@ -51,8 +52,12 @@ export class AdminAiConversationQueryService {
   /**
    * 全局列表：固定排序，OFFSET 分页。账号 ID 集合筛选由 usecase 解析后传入；
    * 空集合在进入查询前短路，不产生空 IN 查询。
+   *
+   * `scope` 为必填的授权范围裁决结果（一级跨公司 / 二级本公司）：
+   * 显式传范围而不是「不传即全公司」，避免新增调用方漏传后静默放大可见面。
    */
   async listAll(params: {
+    scope: AiAdminConversationScope;
     filter?: AdminAiConversationQueryFilter;
     pagination: AdminListPagination;
   }): Promise<
@@ -74,11 +79,13 @@ export class AdminAiConversationQueryService {
       .offset((page - 1) * pageSize)
       .limit(pageSize);
 
-    this.applyFilters(qb, filter);
+    this.applyFilters(qb, params.scope, filter);
 
     const [entities, total] = await Promise.all([
       qb.getMany(),
-      params.pagination.withTotal ? this.countByFilter(filter) : Promise.resolve(undefined),
+      params.pagination.withTotal
+        ? this.countByFilter(params.scope, filter)
+        : Promise.resolve(undefined),
     ]);
 
     return {
@@ -117,8 +124,15 @@ export class AdminAiConversationQueryService {
 
   private applyFilters(
     qb: SelectQueryBuilder<AiConversationEntity>,
+    scope: AiAdminConversationScope,
     filter?: AdminAiConversationQueryFilter,
   ): void {
+    // 二级管理员：仅本公司会话（范围来自 core 裁决结果，不接受客户端传入）
+    if (scope.kind === 'ADMIN_ORGANIZATION') {
+      qb.andWhere('conversation.ownerOrganizationId = :scopeOrganizationId', {
+        scopeOrganizationId: scope.organizationId,
+      });
+    }
     if (!filter) {
       return;
     }
@@ -134,12 +148,6 @@ export class AdminAiConversationQueryService {
     if (filter.status) {
       qb.andWhere('conversation.status = :status', { status: filter.status });
     }
-    if (filter.organizationId !== undefined && filter.organizationId !== null) {
-      // 二级管理员：仅本公司会话（服务端内部范围，不接受客户端传入）
-      qb.andWhere('conversation.ownerOrganizationId = :scopeOrganizationId', {
-        scopeOrganizationId: filter.organizationId,
-      });
-    }
     if (filter.createdAtFrom || filter.createdAtTo) {
       qb.andWhere(
         new Brackets((where) => {
@@ -154,11 +162,14 @@ export class AdminAiConversationQueryService {
     }
   }
 
-  private countByFilter(filter?: AdminAiConversationQueryFilter): Promise<number> {
+  private countByFilter(
+    scope: AiAdminConversationScope,
+    filter?: AdminAiConversationQueryFilter,
+  ): Promise<number> {
     const qb = this.conversationRepository
       .createQueryBuilder('conversation')
       .leftJoin(RepairRequestEntity, 'request', 'request.id = conversation.requestId');
-    this.applyFilters(qb, filter);
+    this.applyFilters(qb, scope, filter);
     return qb.getCount();
   }
 

@@ -127,7 +127,10 @@ describe('ListAdminAiConversationsUsecase', () => {
     });
 
     const call = (adminAiConversationQueryService.listAll as jest.Mock).mock.calls[0][0];
-    expect(call.filter.organizationId).toBe(ADMIN_ORGANIZATION_ID);
+    expect(call.scope).toEqual({
+      kind: 'ADMIN_ORGANIZATION',
+      organizationId: ADMIN_ORGANIZATION_ID,
+    });
   });
 
   it('一级管理员不按公司过滤（跨公司范围）', async () => {
@@ -137,7 +140,7 @@ describe('ListAdminAiConversationsUsecase', () => {
     });
 
     const call = (adminAiConversationQueryService.listAll as jest.Mock).mock.calls[0][0];
-    expect(call.filter.organizationId).toBeNull();
+    expect(call.scope).toEqual({ kind: 'ADMIN_GLOBAL' });
   });
 
   it('成员角色不是组织管理员时失败关闭（账号等级不能单独授予公司范围）', async () => {

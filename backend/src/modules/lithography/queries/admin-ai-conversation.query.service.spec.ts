@@ -13,6 +13,10 @@ import { AdminAiConversationQueryService } from './admin-ai-conversation.query.s
  */
 describe('AdminAiConversationQueryService', () => {
   const pagination = { page: 1, pageSize: 10, withTotal: true };
+  /** 一级管理员：跨公司（范围显式传入，不靠「不传即全公司」） */
+  const globalScope = { kind: 'ADMIN_GLOBAL' } as const;
+  /** 二级管理员：仅本公司 */
+  const organizationScope = { kind: 'ADMIN_ORGANIZATION', organizationId: 700001 } as const;
 
   /** 链式 QueryBuilder 替身：中间方法 returnThis，终端方法可按用例注入返回值 */
   const makeQbStub = () => {
@@ -64,7 +68,7 @@ describe('AdminAiConversationQueryService', () => {
       repos.requestRepo as never,
     );
 
-    await service.listAll({ filter: {}, pagination });
+    await service.listAll({ scope: globalScope, filter: {}, pagination });
 
     const listQb = repos.conversationRepo.createQueryBuilder.mock.results[0].value;
     expect(listQb.orderBy).toHaveBeenCalledWith('conversation.createdAt', 'DESC');
@@ -96,6 +100,7 @@ describe('AdminAiConversationQueryService', () => {
     );
 
     const page = await service.listAll({
+      scope: globalScope,
       filter: { engineerAccountIds: [] },
       pagination,
     });
@@ -114,6 +119,7 @@ describe('AdminAiConversationQueryService', () => {
     );
 
     await service.listAll({
+      scope: globalScope,
       filter: {
         requestNo: '100%_x',
         engineerAccountIds: [900002],
@@ -165,7 +171,7 @@ describe('AdminAiConversationQueryService', () => {
       repos.requestRepo as never,
     );
 
-    const page = await service.listAll({ filter: {}, pagination });
+    const page = await service.listAll({ scope: globalScope, filter: {}, pagination });
 
     expect(repos.requestRepo.find).toHaveBeenCalledTimes(1);
     const inValue = (
@@ -199,7 +205,7 @@ describe('AdminAiConversationQueryService', () => {
       repos.requestRepo as never,
     );
 
-    const page = await service.listAll({ filter: {}, pagination });
+    const page = await service.listAll({ scope: globalScope, filter: {}, pagination });
 
     expect(page.items[0].requestNo).toBe('');
   });
@@ -227,10 +233,51 @@ describe('AdminAiConversationQueryService', () => {
       repos.requestRepo as never,
     );
 
-    await service.listAll({ filter: {}, pagination });
+    await service.listAll({ scope: globalScope, filter: {}, pagination });
 
     expect(repos.requestRepo.find).not.toHaveBeenCalled();
     expect(repos.messageRepo.createQueryBuilder).not.toHaveBeenCalled();
     expect(repos.reportRepo.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  describe('授权范围显式化', () => {
+    it('二级管理员：SQL 侧强制按本公司收窄', async () => {
+      const repos = makeRepos();
+      const service = new AdminAiConversationQueryService(
+        repos.conversationRepo as never,
+        repos.messageRepo as never,
+        repos.reportRepo as never,
+        repos.requestRepo as never,
+      );
+
+      await service.listAll({ scope: organizationScope, filter: {}, pagination });
+
+      const listQb = repos.conversationRepo.createQueryBuilder.mock.results[0].value;
+      expect(listQb.andWhere).toHaveBeenCalledWith(
+        'conversation.ownerOrganizationId = :scopeOrganizationId',
+        { scopeOrganizationId: 700001 },
+      );
+      // 计数与列表同条件
+      const countQb = repos.conversationRepo.createQueryBuilder.mock.results[1].value;
+      expect(countQb.andWhere).toHaveBeenCalledWith(
+        'conversation.ownerOrganizationId = :scopeOrganizationId',
+        { scopeOrganizationId: 700001 },
+      );
+    });
+
+    it('一级管理员：显式跨公司，不追加公司条件', async () => {
+      const repos = makeRepos();
+      const service = new AdminAiConversationQueryService(
+        repos.conversationRepo as never,
+        repos.messageRepo as never,
+        repos.reportRepo as never,
+        repos.requestRepo as never,
+      );
+
+      await service.listAll({ scope: globalScope, filter: {}, pagination });
+
+      const listQb = repos.conversationRepo.createQueryBuilder.mock.results[0].value;
+      expect(listQb.andWhere).not.toHaveBeenCalled();
+    });
   });
 });
