@@ -90,6 +90,8 @@ type ResolvedColors = {
   readonly baseDark: string;
   readonly grid: string;
   readonly scan: string;
+  /** 面片斜向网格线（原型技术线框质感） */
+  readonly hatch: string;
 };
 
 function readToken(token: string, fallback: string): string {
@@ -121,6 +123,7 @@ function resolveColors(): ResolvedColors {
     baseDark: read('--ai-geo-base-dark'),
     grid: read('--ai-geo-grid'),
     scan: read('--ai-geo-scan'),
+    hatch: read('--ai-geo-hatch'),
   };
 }
 
@@ -589,8 +592,57 @@ function drawPart(
     context.strokeStyle = outline;
     context.lineWidth = display === 'WARNING' || display === 'FAULT' ? 1.6 : 1;
     context.stroke();
+    drawFaceHatch(context, face.polygon, {
+      color:
+        display === 'FAULT'
+          ? colors.outline.FAULT
+          : display === 'WARNING'
+            ? colors.outline.WARNING
+            : colors.hatch,
+      alpha:
+        (modifiers.ghost ? 0.52 : 1) * (display === 'WARNING' || display === 'FAULT' ? 0.5 : 1),
+    });
   }
   context.globalAlpha = 1;
+}
+
+/**
+ * 面片内部斜向网格线（原型技术线框质感）
+ *
+ * 原型在每个可见面片内绘制两组四等分斜线，使部件呈现工程示意图的通透质感；
+ * 只画线不填充，不影响部件色面与拾取判定。
+ */
+function drawFaceHatch(
+  context: CanvasRenderingContext2D,
+  polygon: ReadonlyArray<{ x: number; y: number }>,
+  options: { color: string; alpha: number },
+): void {
+  const [a, b, c, d] = polygon;
+  if (a === undefined || b === undefined || c === undefined || d === undefined) {
+    return;
+  }
+  context.save();
+  context.globalAlpha = options.alpha;
+  context.strokeStyle = options.color;
+  context.lineWidth = 0.55;
+  for (let index = 1; index < 4; index += 1) {
+    const ratio = index / 4;
+    // a→b 与 d→c 之间连线
+    context.beginPath();
+    context.moveTo(lerpNumber(a.x, b.x, ratio), lerpNumber(a.y, b.y, ratio));
+    context.lineTo(lerpNumber(d.x, c.x, ratio), lerpNumber(d.y, c.y, ratio));
+    context.stroke();
+    // a→d 与 b→c 之间连线
+    context.beginPath();
+    context.moveTo(lerpNumber(a.x, d.x, ratio), lerpNumber(a.y, d.y, ratio));
+    context.lineTo(lerpNumber(b.x, c.x, ratio), lerpNumber(b.y, c.y, ratio));
+    context.stroke();
+  }
+  context.restore();
+}
+
+function lerpNumber(from: number, to: number, ratio: number): number {
+  return from + (to - from) * ratio;
 }
 
 /** 故障部件的定位锚点：部件中心高度 72% 处（与原型一致） */

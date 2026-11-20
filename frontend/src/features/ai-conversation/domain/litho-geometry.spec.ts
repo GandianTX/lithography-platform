@@ -50,7 +50,20 @@ describe('litho-geometry', () => {
     expect(scale).toBeCloseTo(100, 5);
     const projected = projectAiVertex({ x: 1, y: 1, z: 0 }, options);
     expect(projected.x).toBeCloseTo(620 + scale, 5);
-    expect(projected.y).toBeCloseTo(415 - Math.cos(0.56) * scale, 5);
+    // 垂直落位对齐 V44 原型：原点在场景高度 56%，几何基准高度 1.18
+    expect(projected.y).toBeCloseTo(830 * 0.56 + 0.18 * Math.cos(0.56) * scale, 5);
+  });
+
+  it('模型整体下移：底座落在场景中下部，顶部不出现大片空白', () => {
+    const options = { width: 1240, height: 830, angle: 0, zoom: 1 };
+    const scale = resolveAiScale(options);
+    // 底座 y = -0.18（几何基准）应落在场景高度 56% 之下
+    const base = projectAiVertex({ x: 0, y: -0.18, z: 0 }, options);
+    expect(base.y).toBeGreaterThan(830 * 0.56);
+    // 顶面 y = 2（最高部件）应高于场景中线
+    const top = projectAiVertex({ x: 0, y: 2, z: 0 }, options);
+    expect(top.y).toBeLessThan(830 * 0.56);
+    expect(base.y - top.y).toBeCloseTo(2.18 * Math.cos(0.56) * scale, 5);
   });
 
   it('部件几何可按 partId 查找，未知部件返回 null', () => {

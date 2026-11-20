@@ -2514,6 +2514,8 @@ body {
   --ai-geo-base-dark: #283449;
   --ai-geo-grid: #65c9e7;
   --ai-geo-scan: #41ccef;
+  /* 面片斜向网格线（V44 原型同色低透明度，取值见视觉基线登记） */
+  --ai-geo-hatch: #65c9e74d;
   --ai-geo-legend-highlight-bg: #d7edf7;
   --ai-geo-legend-highlight-text: #175577;
   --ai-geo-legend-warning-bg: #f8e5be;
@@ -2563,6 +2565,7 @@ body {
   --ai-geo-outline-highlight: #52c2ef;
   --ai-geo-outline-warning: #ffd68f;
   --ai-geo-outline-fault: #ffb3b6;
+  --ai-geo-hatch: #65c9e73d;
   --ai-geo-base: #47576c;
   --ai-geo-base-dark: #334052;
   --ai-geo-grid: #7ad3ec;

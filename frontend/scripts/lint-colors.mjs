@@ -49,6 +49,7 @@ const ALLOWED_INDEX_CSS_COLOR_TOKENS = new Set([
   '--ai-geo-base-dark',
   '--ai-geo-grid',
   '--ai-geo-scan',
+  '--ai-geo-hatch',
   '--ai-geo-legend-highlight-bg',
   '--ai-geo-legend-highlight-text',
   '--ai-geo-legend-warning-bg',

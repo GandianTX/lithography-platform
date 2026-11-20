@@ -304,6 +304,15 @@ export type AiProjectedVertex = {
   readonly depth: number;
 };
 
+/**
+ * 模型在场景中的垂直落位（V44 原型实测口径）
+ *
+ * 原型把几何原点放在场景高度的 56%，并按基准高度 1.18 上移，
+ * 使底座落在场景中下部、部件位于中上部，场景顶部不出现大片空白。
+ */
+const MODEL_ORIGIN_Y_RATIO = 0.56;
+const MODEL_BASE_HEIGHT = 1.18;
+
 /** 正交投影：绕 Y 轴旋转后按俯仰角压扁，输出屏幕坐标 */
 export function projectAiVertex(
   vertex: { x: number; y: number; z: number },
@@ -317,7 +326,9 @@ export function projectAiVertex(
   const scale = resolveAiScale(options);
   return {
     x: options.width / 2 + rotatedX * scale,
-    y: options.height / 2 - (vertex.y * Math.cos(tilt) - rotatedZ * Math.sin(tilt)) * scale,
+    y:
+      options.height * MODEL_ORIGIN_Y_RATIO +
+      (rotatedZ * Math.sin(tilt) - (vertex.y - MODEL_BASE_HEIGHT) * Math.cos(tilt)) * scale,
     depth: vertex.y * Math.sin(tilt) + rotatedZ * Math.cos(tilt),
   };
 }
