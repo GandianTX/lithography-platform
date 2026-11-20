@@ -104,7 +104,12 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
       analysis.answerMessageId !== null
     ) {
       // 重复回放：不再调用模型，直接以已保存事实结束
-      return this.buildReusedResult(input.context, payload, analysis.answerMessageId);
+      return this.buildReusedResult(
+        input.context,
+        payload,
+        analysis.answerMessageId,
+        analysis.contentVersion,
+      );
     }
     if (analysis.status === AiMessageAnalysisStatus.FAILED) {
       throw new AiWorkflowNonRetryableError(
@@ -117,6 +122,7 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
     await this.assertCurrentExecution({
       questionUuid: payload.questionUuid,
       workflowId: input.context.workflowId,
+      jobId: input.context.jobId,
       message: '本轮已由更新的执行接管，本次不再调用模型',
     });
 
@@ -140,6 +146,7 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
         await this.isCurrentExecution({
           questionUuid: payload.questionUuid,
           workflowId: input.context.workflowId,
+          jobId: input.context.jobId,
         })
       ) {
         await this.aiConversationService.markAnalysisFailed({
@@ -154,20 +161,39 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
       );
     }
 
-    let saved: { readonly answerMessageId: number; readonly messageSeq: number } | null;
+    let saved: {
+      readonly answerMessageId: number;
+      readonly messageSeq: number;
+      readonly contentVersion: number;
+    } | null;
     try {
       saved = await this.transactionRunner.run(async (transactionContext) => {
-        // F04：写回前在同一事务内再次核对当前执行，旧执行不得占用新的 PENDING
+        // F04：统一锁顺序——先会话行锁，再执行身份当前读，然后才计算消息序号与版本
+        const conversation = await this.aiConversationService.lockConversationForWrite(
+          payload.conversationId,
+          transactionContext,
+        );
+        if (!conversation) {
+          throw new AiWorkflowNonRetryableError('本轮会话不存在', 'conversation_missing');
+        }
+        // 写回前在同一事务内再次核对当前执行，旧执行不得占用新的 PENDING
         if (
           !(await this.isCurrentExecution({
             questionUuid: payload.questionUuid,
             workflowId: input.context.workflowId,
+            jobId: input.context.jobId,
             transactionContext,
+            forUpdate: true,
           }))
         ) {
           throw new ExecutionSupersededError();
         }
         const facts = await this.aiConversationService.getSequenceFacts(
+          payload.conversationId,
+          transactionContext,
+        );
+        // F05：回答是追加内容，必须取新的内容版本；不能沿用受理时（问题那一版）的版本
+        const answerContentVersion = await this.aiConversationService.bumpContentVersion(
           payload.conversationId,
           transactionContext,
         );
@@ -177,7 +203,7 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
             messageSeq: facts.maxMessageSeq + 1,
             turnNo: payload.turnNo,
             contentText: invocation.text.slice(0, REPLY_TEXT_MAX_UNITS),
-            contentVersion: payload.contentVersion,
+            contentVersion: answerContentVersion,
           },
           transactionContext,
         );
@@ -185,7 +211,7 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
           {
             questionUuid: payload.questionUuid,
             answerMessageId: answer.id,
-            contentVersion: payload.contentVersion,
+            contentVersion: answerContentVersion,
             completedAt: new Date(),
           },
           transactionContext,
@@ -193,7 +219,11 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
         if (!won) {
           throw new AnalysisRaceLostError();
         }
-        return { answerMessageId: answer.id, messageSeq: answer.messageSeq };
+        return {
+          answerMessageId: answer.id,
+          messageSeq: answer.messageSeq,
+          contentVersion: answerContentVersion,
+        };
       });
     } catch (error) {
       if (error instanceof ExecutionSupersededError) {
@@ -213,7 +243,12 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
           'analysis_state_conflict',
         );
       }
-      return this.buildReusedResult(input.context, payload, latest.answerMessageId);
+      return this.buildReusedResult(
+        input.context,
+        payload,
+        latest.answerMessageId,
+        latest.contentVersion,
+      );
     }
 
     const visualizationSaved =
@@ -223,7 +258,8 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
             {
               conversationId: payload.conversationId,
               questionUuid: payload.questionUuid,
-              contentVersion: payload.contentVersion,
+              // 图形与已保存回答同属新版本；读取固定版本 V 时才包含它
+              contentVersion: saved.contentVersion,
             },
             invocation.visualization,
           );
@@ -234,7 +270,7 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
         questionUuid: payload.questionUuid,
         answerMessageId: saved.answerMessageId,
         messageSeq: saved.messageSeq,
-        contentVersion: payload.contentVersion,
+        contentVersion: saved.contentVersion,
         textLength: invocation.text.length,
         visualizationSaved,
         visualizationDegraded: invocation.visualizationDegraded,
@@ -260,6 +296,7 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
   private async assertCurrentExecution(input: {
     readonly questionUuid: string;
     readonly workflowId: string;
+    readonly jobId: string | null;
     readonly message: string;
     readonly transactionContext?: import('@app-types/common/transaction.types').PersistenceTransactionContext;
   }): Promise<void> {
@@ -270,22 +307,37 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
   }
 
   /**
-   * 当前有效执行判定（F04）：该问题最近创建的工作流执行 ID 是否等于本执行。
+   * 当前有效执行判定（F04／S2.2-1）：该问题「当前活动执行」是否就是本执行。
    *
-   * 无法证明（无记录或读取失败）时按「不是当前执行」处理，避免旧执行写入。
+   * 判定同时核对三项身份，任一不匹配即视为不是当前执行：
+   * - 活动去重唯一键对应的未终态记录（workflowType＋业务归属＋适用状态由查询条件保证）；
+   * - `workflowId` 一致（同一问题的不同执行代次）；
+   * - `jobId` 一致（同一 workflow 被重新入队后，旧 job 的迟到结果不得写回）。
+   *   真实链路中 PROCESSING 执行必有 jobId（`markQueuedForAdmission` 同步写入），
+   *   因此 jobId 缺失属于无法证明身份，按不匹配失败关闭。
+   *
+   * 依据活动去重唯一键而不是 createdAt 推断代次；旧执行已终态或已被新执行替换时都不再是当前执行。
+   * 无法证明（无活动记录或读取失败）时按「不是当前执行」处理，避免旧执行写入。
    */
   private async isCurrentExecution(input: {
     readonly questionUuid: string;
     readonly workflowId: string;
+    readonly jobId: string | null;
     readonly transactionContext?: import('@app-types/common/transaction.types').PersistenceTransactionContext;
+    readonly forUpdate?: boolean;
   }): Promise<boolean> {
     try {
-      const latest = await this.executionLookup.findLatestWorkflowIdByBizTarget({
+      const active = await this.executionLookup.findActiveExecutionByBizTarget({
+        workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
         bizType: EXECUTION_BIZ_TYPE,
         bizSubKey: input.questionUuid,
         transactionContext: input.transactionContext,
+        forUpdate: input.forUpdate,
       });
-      return latest !== null && latest === input.workflowId;
+      if (active === null || active.workflowId !== input.workflowId) {
+        return false;
+      }
+      return input.jobId !== null && active.jobId !== null && active.jobId === input.jobId;
     } catch {
       return false;
     }
@@ -295,13 +347,15 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
     context: AiWorkflowContextView,
     payload: AiConversationReplyPayload,
     answerMessageId: number,
+    contentVersion: number,
   ): AiWorkflowHandlerProcessResult {
     return {
       outputPayload: {
         conversationId: payload.conversationId,
         questionUuid: payload.questionUuid,
         answerMessageId,
-        contentVersion: payload.contentVersion,
+        // 回放以已保存事实为准：回答所属版本可能高于本轮受理版本（F05）
+        contentVersion,
         reused: true,
         workflowType: context.workflowType,
       },

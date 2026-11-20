@@ -27,6 +27,8 @@ import { GenericTextGenerateWorkflowHandler } from './generic-text-generate-work
     AiProviderCallRecordModule,
     AiWorkflowContextModule,
     AiWorkflowQueueModule,
+    // F11：执行身份端口（AI_CONVERSATION_EXECUTION_LOOKUP）由 AiWorkflowContextModule 导出，
+    // Worker 侧只导入数据 owner 模块，不跨域导入 ai-workflow 用例模块
   ],
   providers: [
     ConsumeAiWorkflowJobUsecase,
