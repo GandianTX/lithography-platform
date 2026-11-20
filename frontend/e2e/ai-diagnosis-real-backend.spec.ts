@@ -53,7 +53,8 @@ async function readConversation(page: Page, conversationId: number): Promise<Con
   const response = await page.evaluate(
     async ({ id, key }) => {
       const stored = sessionStorage.getItem(key);
-      const token = stored === null ? '' : (JSON.parse(stored) as { accessToken?: string }).accessToken;
+      const token =
+        stored === null ? '' : (JSON.parse(stored) as { accessToken?: string }).accessToken;
       const result = await fetch('/graphql', {
         method: 'POST',
         headers: {
@@ -99,7 +100,9 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
 
     // 服务端受理后最终给出回答（生成中提示在夹具快速回复时可能一闪而过，不作硬断言）
-    await expect(page.getByRole('log')).toContainText(/排查|检查|掩模板|reticle/i, { timeout: 90000 });
+    await expect(page.getByRole('log')).toContainText(/排查|检查|掩模板|reticle/i, {
+      timeout: 90000,
+    });
 
     // 左侧流程示意可用，且无横向溢出
     await expect(page.getByLabel(/维修流程示意|Maintenance flow view/i)).toBeVisible();
@@ -170,7 +173,10 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(1);
     const firstUuid = submitUuids[0];
 
-    const firstTurn = page.getByRole('log').locator('article').filter({ hasText: resolution.failToken });
+    const firstTurn = page
+      .getByRole('log')
+      .locator('article')
+      .filter({ hasText: resolution.failToken });
     // 重试入口只在「正式 FAILED 且无回答」时出现，等价于等待正式失败落库
     await expect(firstTurn.getByRole('button')).toBeVisible({ timeout: 120_000 });
 
@@ -182,7 +188,10 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     const secondUuid = submitUuids[1];
     expect(secondUuid).not.toBe(firstUuid);
 
-    const secondTurn = page.getByRole('log').locator('article').filter({ hasText: resolution.okTag });
+    const secondTurn = page
+      .getByRole('log')
+      .locator('article')
+      .filter({ hasText: resolution.okTag });
     await expect(secondTurn).toContainText(FIXTURE_REPLY_MARK, { timeout: 120_000 });
 
     const beforeRetry = await readConversation(page, conversationId);

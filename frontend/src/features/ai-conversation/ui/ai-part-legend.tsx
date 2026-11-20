@@ -28,10 +28,7 @@ export function AiPartLegend({ displays, fromModel }: AiPartLegendProps) {
   }
 
   return (
-    <ul
-      aria-label={t('ai.legend.label')}
-      className="ai-part-legend m-0 list-none p-0"
-    >
+    <ul aria-label={t('ai.legend.label')} className="ai-part-legend m-0 list-none p-0">
       <li className="text-xs text-text-secondary">
         {fromModel ? t('ai.legend.aiHighlights') : t('ai.legend.relatedParts')}
       </li>
@@ -41,15 +38,11 @@ export function AiPartLegend({ displays, fromModel }: AiPartLegendProps) {
         return (
           <li
             className={
-              part.display === 'WARNING'
-                ? 'ai-part-chip ai-part-chip--warning'
-                : 'ai-part-chip'
+              part.display === 'WARNING' ? 'ai-part-chip ai-part-chip--warning' : 'ai-part-chip'
             }
             key={part.partId}
           >
-            {part.display === 'WARNING'
-              ? t('ai.legend.attention', { name: label })
-              : label}
+            {part.display === 'WARNING' ? t('ai.legend.attention', { name: label }) : label}
           </li>
         );
       })}

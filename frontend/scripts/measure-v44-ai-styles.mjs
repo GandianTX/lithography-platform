@@ -38,16 +38,51 @@ const VIEWPORTS = [
 /** 原型 selector ↔ 实现 selector ↔ 语义 */
 const TARGETS = [
   { key: 'shell', label: '工作区壳层', prototype: '.ai36-shell', implementation: '.ai-workspace' },
-  { key: 'workspace', label: '工作区网格', prototype: '.ai33-workspace', implementation: '.ai-workspace-grid' },
+  {
+    key: 'workspace',
+    label: '工作区网格',
+    prototype: '.ai33-workspace',
+    implementation: '.ai-workspace-grid',
+  },
   { key: 'scene', label: '左侧场景区', prototype: '.ai33-scene', implementation: '.ai-scene' },
-  { key: 'sceneHeader', label: '场景头部', prototype: '.ai36-model-header', implementation: '.ai-scene-header' },
-  { key: 'canvas', label: '场景画布', prototype: '.ai33-canvas', implementation: '.ai-scene-canvas' },
-  { key: 'sceneFooter', label: '场景底部', prototype: '.ai36-model-footer', implementation: '.ai-scene-footer' },
+  {
+    key: 'sceneHeader',
+    label: '场景头部',
+    prototype: '.ai36-model-header',
+    implementation: '.ai-scene-header',
+  },
+  {
+    key: 'canvas',
+    label: '场景画布',
+    prototype: '.ai33-canvas',
+    implementation: '.ai-scene-canvas',
+  },
+  {
+    key: 'sceneFooter',
+    label: '场景底部',
+    prototype: '.ai36-model-footer',
+    implementation: '.ai-scene-footer',
+  },
   { key: 'panel', label: '对话面板', prototype: '.ai33-panel', implementation: '.ai-panel' },
-  { key: 'panelHeader', label: '面板头部', prototype: '.ai33-panel-header', implementation: '.ai-panel-header' },
+  {
+    key: 'panelHeader',
+    label: '面板头部',
+    prototype: '.ai33-panel-header',
+    implementation: '.ai-panel-header',
+  },
   { key: 'thread', label: '对话线程', prototype: '.ai33-thread', implementation: '.ai-thread' },
-  { key: 'message', label: 'AI 消息气泡', prototype: '.ai33-message:not([data-mine="true"])', implementation: '.ai-message:not(.ai-message--mine)' },
-  { key: 'messageMine', label: '用户消息气泡', prototype: '.ai33-message[data-mine="true"]', implementation: '.ai-message--mine' },
+  {
+    key: 'message',
+    label: 'AI 消息气泡',
+    prototype: '.ai33-message:not([data-mine="true"])',
+    implementation: '.ai-message:not(.ai-message--mine)',
+  },
+  {
+    key: 'messageMine',
+    label: '用户消息气泡',
+    prototype: '.ai33-message[data-mine="true"]',
+    implementation: '.ai-message--mine',
+  },
   { key: 'compose', label: '输入区', prototype: '.ai33-compose', implementation: '.ai-compose' },
   {
     key: 'input',
@@ -62,7 +97,12 @@ const TARGETS = [
     prototype: 'textarea[aria-label="AI提问"]',
     implementation: '.ai-compose textarea',
   },
-  { key: 'send', label: '发送按钮', prototype: '.ai33-send', implementation: '.ai-compose .ant-btn-primary' },
+  {
+    key: 'send',
+    label: '发送按钮',
+    prototype: '.ai33-send',
+    implementation: '.ai-compose .ant-btn-primary',
+  },
 ];
 
 const STYLE_KEYS = [
@@ -168,78 +208,85 @@ async function ensureDevServer(baseUrl) {
 
 /** 采集：每个 selector 取第一个匹配元素的 rect + computed style */
 function collectMetrics(page, pairs, shellSelector) {
-  return page.evaluate((input) => {
-    const result = {};
-    for (const pair of input.pairs) {
-      const element = document.querySelector(pair.selector);
-      if (!element) {
-        result[pair.key] = null;
-        continue;
+  return page.evaluate(
+    (input) => {
+      const result = {};
+      for (const pair of input.pairs) {
+        const element = document.querySelector(pair.selector);
+        if (!element) {
+          result[pair.key] = null;
+          continue;
+        }
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const styles = {};
+        for (const key of input.styleKeys) {
+          styles[key] = style[key];
+        }
+        result[pair.key] = {
+          label: pair.label,
+          selector: pair.selector,
+          rect: {
+            x: Math.round(rect.x * 10) / 10,
+            y: Math.round(rect.y * 10) / 10,
+            width: Math.round(rect.width * 10) / 10,
+            height: Math.round(rect.height * 10) / 10,
+          },
+          styles,
+          inlineStyle: element.getAttribute('style') ?? '',
+          textSample: (element.textContent ?? '').trim().slice(0, 24),
+        };
       }
-      const rect = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      const styles = {};
-      for (const key of input.styleKeys) {
-        styles[key] = style[key];
+      const doc = document.documentElement;
+      const thread = document.querySelector(input.threadSelector);
+
+      // 壳层归因：记录工作区祖先链的 rect／padding／height，用于区分
+      // 「05 局部布局问题」与「共享壳层外边距造成的坐标差」（S4 允许差异第 3 条）。
+      let node = document.querySelector(input.shellSelector);
+      const ancestors = [];
+      for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        ancestors.push({
+          tag: node.tagName.toLowerCase(),
+          className: typeof node.className === 'string' ? node.className : '',
+          rect: {
+            x: Math.round(rect.x * 10) / 10,
+            y: Math.round(rect.y * 10) / 10,
+            width: Math.round(rect.width * 10) / 10,
+            height: Math.round(rect.height * 10) / 10,
+          },
+          padding: `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`,
+          margin: `${style.marginTop} ${style.marginRight} ${style.marginBottom} ${style.marginLeft}`,
+          display: style.display,
+          heightCss: style.height,
+          overflowY: style.overflowY,
+        });
       }
-      result[pair.key] = {
-        label: pair.label,
-        selector: pair.selector,
-        rect: {
-          x: Math.round(rect.x * 10) / 10,
-          y: Math.round(rect.y * 10) / 10,
-          width: Math.round(rect.width * 10) / 10,
-          height: Math.round(rect.height * 10) / 10,
-        },
-        styles,
-        inlineStyle: element.getAttribute('style') ?? '',
-        textSample: (element.textContent ?? '').trim().slice(0, 24),
+      result.__shell = {
+        ancestors,
+        viewportBottomGapPx:
+          window.innerHeight - (ancestors[0]?.rect.y + ancestors[0]?.rect.height),
       };
-    }
-    const doc = document.documentElement;
-    const thread = document.querySelector(input.threadSelector);
 
-    // 壳层归因：记录工作区祖先链的 rect／padding／height，用于区分
-    // 「05 局部布局问题」与「共享壳层外边距造成的坐标差」（S4 允许差异第 3 条）。
-    let node = document.querySelector(input.shellSelector);
-    const ancestors = [];
-    for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
-      const rect = node.getBoundingClientRect();
-      const style = window.getComputedStyle(node);
-      ancestors.push({
-        tag: node.tagName.toLowerCase(),
-        className: typeof node.className === 'string' ? node.className : '',
-        rect: {
-          x: Math.round(rect.x * 10) / 10,
-          y: Math.round(rect.y * 10) / 10,
-          width: Math.round(rect.width * 10) / 10,
-          height: Math.round(rect.height * 10) / 10,
-        },
-        padding: `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`,
-        margin: `${style.marginTop} ${style.marginRight} ${style.marginBottom} ${style.marginLeft}`,
-        display: style.display,
-        heightCss: style.height,
-        overflowY: style.overflowY,
-      });
-    }
-    result.__shell = { ancestors, viewportBottomGapPx: window.innerHeight - (ancestors[0]?.rect.y + ancestors[0]?.rect.height) };
-
-    result.__page = {
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      documentScrollWidth: doc.scrollWidth,
-      documentClientWidth: doc.clientWidth,
-      horizontalOverflowPx: doc.scrollWidth - doc.clientWidth,
-      scrollY: window.scrollY,
-      threadOverflowPx: thread ? thread.scrollWidth - thread.clientWidth : null,
-    };
-    return result;
-  }, {
-    pairs,
-    styleKeys: STYLE_KEYS,
-    threadSelector: '.ai33-thread, .ai-thread',
-    shellSelector,
-  });
+      result.__page = {
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        documentScrollWidth: doc.scrollWidth,
+        documentClientWidth: doc.clientWidth,
+        horizontalOverflowPx: doc.scrollWidth - doc.clientWidth,
+        scrollY: window.scrollY,
+        threadOverflowPx: thread ? thread.scrollWidth - thread.clientWidth : null,
+      };
+      return result;
+    },
+    {
+      pairs,
+      styleKeys: STYLE_KEYS,
+      threadSelector: '.ai33-thread, .ai-thread',
+      shellSelector,
+    },
+  );
 }
 
 async function waitForFonts(page) {
@@ -252,7 +299,9 @@ async function waitForFonts(page) {
 
 /** —— 原型：真实 V44 页面 #/engineer/ai/chat —— */
 async function measurePrototype(browser, viewport) {
-  const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const context = await browser.newContext({
+    viewport: { width: viewport.width, height: viewport.height },
+  });
   const page = await context.newPage();
   const url = `${pathToFileURL(PROTOTYPE_HTML).href}#/engineer/ai/chat`;
   await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
@@ -445,7 +494,9 @@ async function installGraphQLMock(page) {
 }
 
 async function measureImplementation(browser, viewport, baseUrl) {
-  const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const context = await browser.newContext({
+    viewport: { width: viewport.width, height: viewport.height },
+  });
   const page = await context.newPage();
   await installGraphQLMock(page);
 
@@ -510,8 +561,7 @@ async function main() {
     prototype: path.relative(REPO_ROOT, PROTOTYPE_HTML),
     prototypeRoute: '#/engineer/ai/chat',
     implementation: `${baseUrl}/engineer/ai`,
-    note:
-      '测量的是最终生效 computed style 与 bounding rect；不写截图。原型侧导航到 #/engineer/ai/chat（AI33Chat），实现侧走 mock-only 前端。',
+    note: '测量的是最终生效 computed style 与 bounding rect；不写截图。原型侧导航到 #/engineer/ai/chat（AI33Chat），实现侧走 mock-only 前端。',
     viewports: [],
   };
 

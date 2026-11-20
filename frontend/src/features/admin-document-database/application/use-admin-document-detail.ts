@@ -218,13 +218,10 @@ export function useAdminAiConversationMessages(conversationId: number | null, pa
  * 直传外公司 ID 时按「无权访问」提示，不回显外公司内容。
  */
 export function useAdminAiConversationDetail(conversationId: number | null) {
-  const [state, dispatch] = useReducer(
-    createAdminDetailReducer<AdminAiConversationDetail>(),
-    {
-      status: 'loading',
-      requestId: 0,
-    },
-  );
+  const [state, dispatch] = useReducer(createAdminDetailReducer<AdminAiConversationDetail>(), {
+    status: 'loading',
+    requestId: 0,
+  });
   const requestIdRef = useRef(0);
 
   const load = useCallback(async (target: number) => {

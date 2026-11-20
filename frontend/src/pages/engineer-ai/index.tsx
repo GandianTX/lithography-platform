@@ -60,14 +60,14 @@ export function EngineerAiPage() {
           {/* V44：场景头部承载流程标题与维修阶段选择（不是页面级工具条） */}
           <header className="ai-scene-header">
             <div>
-              <h2 className="m-0 text-sm font-semibold text-text-primary">
-                {t('ai.scene.label')}
-              </h2>
+              <h2 className="m-0 text-sm font-semibold text-text-primary">{t('ai.scene.label')}</h2>
             </div>
             <label className="ai-scene-stage">
               <span>{t('ai.page.stageLabel')}</span>
               <Select
-                onChange={(value: string) => workspace.setStage(value === '' ? null : Number(value))}
+                onChange={(value: string) =>
+                  workspace.setStage(value === '' ? null : Number(value))
+                }
                 options={stageOptions}
                 size="small"
                 value={workspace.stage === null ? '' : String(workspace.stage)}

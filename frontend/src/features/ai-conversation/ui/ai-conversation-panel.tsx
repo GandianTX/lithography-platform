@@ -98,10 +98,7 @@ export function AiConversationPanel({
   const busy = submitting || retrying;
 
   return (
-    <section
-      aria-label={t('ai.panel.label')}
-      className="ai-panel"
-    >
+    <section aria-label={t('ai.panel.label')} className="ai-panel">
       <header className="ai-panel-header">
         <div className="flex items-center gap-2">
           <h2 className="m-0 text-base font-semibold text-text-primary">{t('ai.panel.title')}</h2>
@@ -145,11 +142,7 @@ export function AiConversationPanel({
         <span className="text-xs text-text-tertiary">{t('ai.panel.workOrderHint')}</span>
       </label>
 
-      <div
-        aria-label={t('ai.panel.threadLabel')}
-        className="ai-thread"
-        role="log"
-      >
+      <div aria-label={t('ai.panel.threadLabel')} className="ai-thread" role="log">
         {conversation === null ? (
           <Empty description={t('ai.panel.emptyNoConversation')} />
         ) : turns.length === 0 ? (

@@ -246,18 +246,15 @@ export function useAiDiagnosisWorkspace() {
     }
   }, [state.conversationsPage, state.loading, state.loadingMore]);
 
-  const applyVisualization = useCallback(
-    (status: AiQuestionStatus) => {
-      const parsed = parseAiVisualization(status.visualization);
-      setState((current) => ({
-        ...current,
-        // 无有效图形 → 清除旧定位（回到流程参考图），正文照常
-        visualization: parsed.visualization,
-        visualizationDegraded: parsed.degraded,
-      }));
-    },
-    [],
-  );
+  const applyVisualization = useCallback((status: AiQuestionStatus) => {
+    const parsed = parseAiVisualization(status.visualization);
+    setState((current) => ({
+      ...current,
+      // 无有效图形 → 清除旧定位（回到流程参考图），正文照常
+      visualization: parsed.visualization,
+      visualizationDegraded: parsed.degraded,
+    }));
+  }, []);
 
   /**
    * F03：会话内仍有未终态轮次时的后续刷新。
@@ -304,10 +301,7 @@ export function useAiDiagnosisWorkspace() {
       const turnToken = turnEpoch.current;
       try {
         const status = await getAiQuestionStatus({ conversationId, questionUuid });
-        if (
-          sessionToken !== conversationEpoch.current ||
-          turnToken !== turnEpoch.current
-        ) {
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
           return;
         }
         if (!isTerminalStatus(status.status)) {
@@ -320,10 +314,7 @@ export function useAiDiagnosisWorkspace() {
         // 关注轮已终态：以本次读取为准更新图形（成功但无图 → 回流程参考图）
         applyVisualization(status);
         const detail = await getMyAiConversation(conversationId);
-        if (
-          sessionToken !== conversationEpoch.current ||
-          turnToken !== turnEpoch.current
-        ) {
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
           return;
         }
         // 关注轮以本次状态读取为准：详情若仍是旧快照，不得据此把已终态的轮次重新标成生成中
@@ -336,10 +327,7 @@ export function useAiDiagnosisWorkspace() {
           void refreshWhileTurnsActive(conversationId, sessionToken, turnToken);
         }
       } catch (error) {
-        if (
-          sessionToken !== conversationEpoch.current ||
-          turnToken !== turnEpoch.current
-        ) {
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
           return;
         }
         clearPollTimer();
@@ -535,10 +523,7 @@ export function useAiDiagnosisWorkspace() {
           draft: '',
           activeQuestionUuid: result.questionUuid,
           generating: result.status === 'PENDING' || result.status === 'RUNNING',
-          errorMessage:
-            result.dispatchStatus === 'FAILED'
-              ? '本轮派发失败，可重试本轮。'
-              : null,
+          errorMessage: result.dispatchStatus === 'FAILED' ? '本轮派发失败，可重试本轮。' : null,
         }));
         const detail = await getMyAiConversation(conversationId);
         if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
@@ -568,10 +553,7 @@ export function useAiDiagnosisWorkspace() {
             noticeMessage: '提交结果不明，已按原问题核对，服务端已受理。',
           }));
           const detail = await getMyAiConversation(conversationId);
-          if (
-            sessionToken === conversationEpoch.current &&
-            turnToken === turnEpoch.current
-          ) {
+          if (sessionToken === conversationEpoch.current && turnToken === turnEpoch.current) {
             setState((current) => ({ ...current, conversation: detail }));
           }
           void pollQuestionStatus(conversationId, confirmed.questionUuid);
@@ -641,8 +623,7 @@ export function useAiDiagnosisWorkspace() {
           retrying: false,
           retryingQuestionUuid: null,
           generating: result.status === 'PENDING' || result.status === 'RUNNING',
-          errorMessage:
-            result.dispatchStatus === 'FAILED' ? '本轮派发失败，可重试本轮。' : null,
+          errorMessage: result.dispatchStatus === 'FAILED' ? '本轮派发失败，可重试本轮。' : null,
         }));
         const detail = await getMyAiConversation(conversationId);
         if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {

@@ -72,7 +72,9 @@ function buildStatus(overrides: Partial<AiQuestionStatus> = {}): AiQuestionStatu
   };
 }
 
-function buildSubmitResult(overrides: Partial<SubmitAiQuestionResult> = {}): SubmitAiQuestionResult {
+function buildSubmitResult(
+  overrides: Partial<SubmitAiQuestionResult> = {},
+): SubmitAiQuestionResult {
   return {
     conversationId: CONVERSATION_ID,
     questionUuid: QUESTION_UUID,
@@ -151,9 +153,9 @@ describe('useAiDiagnosisWorkspace', () => {
 
     await waitFor(() => expect(result.current.generating).toBe(false), { timeout: 4000 });
     expect(statusSpy).toHaveBeenCalled();
-    expect(result.current.visualization?.parts.find((part) => part.partId === 'reticle_arm')?.display).toBe(
-      'WARNING',
-    );
+    expect(
+      result.current.visualization?.parts.find((part) => part.partId === 'reticle_arm')?.display,
+    ).toBe('WARNING');
   });
 
   it('提交失败时保留输入，并沿用同一问题 UUID', async () => {
@@ -283,9 +285,9 @@ describe('useAiDiagnosisWorkspace', () => {
   });
 
   it('F03：早轮失败、末轮成功时可以单独重试原失败轮（沿用原 UUID，不新增问题）', async () => {
-    const retrySpy = vi.spyOn(adapter, 'retryAiQuestion').mockResolvedValue(
-      buildSubmitResult({ status: 'PENDING' }),
-    );
+    const retrySpy = vi
+      .spyOn(adapter, 'retryAiQuestion')
+      .mockResolvedValue(buildSubmitResult({ status: 'PENDING' }));
     vi.mocked(adapter.getMyAiConversation).mockResolvedValue(
       buildDetail({
         turns: [
@@ -498,7 +500,6 @@ describe('useAiDiagnosisWorkspace', () => {
     expect(result.current.creating).toBe(false);
     expect(result.current.errorMessage).toBeNull();
   });
-
 });
 
 describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
@@ -617,7 +618,9 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
     );
     const statusSpy = vi
       .spyOn(adapter, 'getAiQuestionStatus')
-      .mockResolvedValue(buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('NORMAL') as never }));
+      .mockResolvedValue(
+        buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('NORMAL') as never }),
+      );
 
     const { result } = renderHook(() => useAiDiagnosisWorkspace());
     await act(async () => {
@@ -751,14 +754,25 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
   });
 
   it('C3：第二页后新建，首页 page/total 复位，下一次仍请求第 2 页', async () => {
-    const listSpy = vi.spyOn(adapter, 'listMyAiConversations').mockImplementation(
-      async ({ page }) => ({
-        items: [{ id: page * 10, requestId: null, status: 'ACTIVE', contentVersion: 1, createdAt: '2026-11-19T00:00:00.000Z', title: `c${page}`, turnCount: 0, lastMessageAt: null } as never],
+    const listSpy = vi
+      .spyOn(adapter, 'listMyAiConversations')
+      .mockImplementation(async ({ page }) => ({
+        items: [
+          {
+            id: page * 10,
+            requestId: null,
+            status: 'ACTIVE',
+            contentVersion: 1,
+            createdAt: '2026-11-19T00:00:00.000Z',
+            title: `c${page}`,
+            turnCount: 0,
+            lastMessageAt: null,
+          } as never,
+        ],
         total: 21,
         page,
         pageSize: 20,
-      }),
-    );
+      }));
     vi.spyOn(adapter, 'createAiConversation').mockResolvedValue({
       id: CONVERSATION_ID,
       requestId: null,
@@ -825,7 +839,9 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
   it('F10：新一轮提交立即清除上一轮图形定位', async () => {
     vi.mocked(adapter.getMyAiConversation).mockResolvedValue(buildDetail({ turns: [] }));
     vi.spyOn(adapter, 'getAiQuestionStatus')
-      .mockResolvedValueOnce(buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('WARNING') as never }))
+      .mockResolvedValueOnce(
+        buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('WARNING') as never }),
+      )
       .mockImplementation(() => new Promise<AiQuestionStatus>(() => undefined));
     vi.spyOn(adapter, 'submitAiQuestion').mockResolvedValue(buildSubmitResult());
 

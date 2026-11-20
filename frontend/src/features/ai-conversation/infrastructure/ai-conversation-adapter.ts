@@ -158,35 +158,37 @@ export async function listMyAiConversations(params: {
   page: number;
   pageSize: number;
 }): Promise<AiConversationListPage> {
-  const data = await executeGraphQL<{ myAiConversations: AiConversationListPage }, Record<string, unknown>>(
-    MY_AI_CONVERSATIONS_QUERY,
-    {
-      pagination: {
-        mode: 'OFFSET',
-        page: params.page,
-        pageSize: params.pageSize,
-        withTotal: true,
-      },
+  const data = await executeGraphQL<
+    { myAiConversations: AiConversationListPage },
+    Record<string, unknown>
+  >(MY_AI_CONVERSATIONS_QUERY, {
+    pagination: {
+      mode: 'OFFSET',
+      page: params.page,
+      pageSize: params.pageSize,
+      withTotal: true,
     },
-  );
+  });
 
   return data.myAiConversations;
 }
 
 export async function getMyAiConversation(conversationId: number): Promise<AiConversationDetail> {
-  const data = await executeGraphQL<{ myAiConversation: AiConversationDetail }, Record<string, unknown>>(
-    MY_AI_CONVERSATION_QUERY,
-    { input: { conversationId } },
-  );
+  const data = await executeGraphQL<
+    { myAiConversation: AiConversationDetail },
+    Record<string, unknown>
+  >(MY_AI_CONVERSATION_QUERY, { input: { conversationId } });
 
   return data.myAiConversation;
 }
 
-export async function createAiConversation(requestId: number | null): Promise<CreateAiConversationResult> {
-  const data = await executeGraphQL<{ createAiConversation: CreateAiConversationResult }, Record<string, unknown>>(
-    CREATE_AI_CONVERSATION_MUTATION,
-    { input: requestId === null ? {} : { requestId } },
-  );
+export async function createAiConversation(
+  requestId: number | null,
+): Promise<CreateAiConversationResult> {
+  const data = await executeGraphQL<
+    { createAiConversation: CreateAiConversationResult },
+    Record<string, unknown>
+  >(CREATE_AI_CONVERSATION_MUTATION, { input: requestId === null ? {} : { requestId } });
 
   return data.createAiConversation;
 }
@@ -197,17 +199,17 @@ export async function submitAiQuestion(params: {
   question: string;
   stage?: number | null;
 }): Promise<SubmitAiQuestionResult> {
-  const data = await executeGraphQL<{ submitAiQuestion: SubmitAiQuestionResult }, Record<string, unknown>>(
-    SUBMIT_AI_QUESTION_MUTATION,
-    {
-      input: {
-        conversationId: params.conversationId,
-        questionUuid: params.questionUuid,
-        question: params.question,
-        stage: params.stage ?? null,
-      },
+  const data = await executeGraphQL<
+    { submitAiQuestion: SubmitAiQuestionResult },
+    Record<string, unknown>
+  >(SUBMIT_AI_QUESTION_MUTATION, {
+    input: {
+      conversationId: params.conversationId,
+      questionUuid: params.questionUuid,
+      question: params.question,
+      stage: params.stage ?? null,
     },
-  );
+  });
 
   return data.submitAiQuestion;
 }
@@ -218,16 +220,16 @@ export async function retryAiQuestion(params: {
   questionUuid: string;
   stage?: number | null;
 }): Promise<SubmitAiQuestionResult> {
-  const data = await executeGraphQL<{ retryAiQuestion: SubmitAiQuestionResult }, Record<string, unknown>>(
-    RETRY_AI_QUESTION_MUTATION,
-    {
-      input: {
-        conversationId: params.conversationId,
-        questionUuid: params.questionUuid,
-        stage: params.stage ?? null,
-      },
+  const data = await executeGraphQL<
+    { retryAiQuestion: SubmitAiQuestionResult },
+    Record<string, unknown>
+  >(RETRY_AI_QUESTION_MUTATION, {
+    input: {
+      conversationId: params.conversationId,
+      questionUuid: params.questionUuid,
+      stage: params.stage ?? null,
     },
-  );
+  });
 
   return data.retryAiQuestion;
 }
@@ -236,10 +238,10 @@ export async function getAiQuestionStatus(params: {
   conversationId: number;
   questionUuid: string;
 }): Promise<AiQuestionStatus> {
-  const data = await executeGraphQL<{ aiQuestionStatus: AiQuestionStatus }, Record<string, unknown>>(
-    AI_QUESTION_STATUS_QUERY,
-    { input: params },
-  );
+  const data = await executeGraphQL<
+    { aiQuestionStatus: AiQuestionStatus },
+    Record<string, unknown>
+  >(AI_QUESTION_STATUS_QUERY, { input: params });
 
   return data.aiQuestionStatus;
 }

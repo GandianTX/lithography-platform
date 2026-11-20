@@ -130,7 +130,10 @@ export function resolveC2Target(options: C2ResolveOptions = {}): C2Resolution {
 
   const backendUrl = normalizeBaseUrl(readEnv(env, C2_ENV.backend));
   if (backendUrl === DEFAULT_DEV_BACKEND) {
-    return { kind: 'invalid', reason: 'C2 不得使用默认开发地址 127.0.0.1:3005，必须由隔离启动器给出本轮实例' };
+    return {
+      kind: 'invalid',
+      reason: 'C2 不得使用默认开发地址 127.0.0.1:3005，必须由隔离启动器给出本轮实例',
+    };
   }
 
   let backendOrigin: URL;
@@ -222,7 +225,8 @@ export function validateC2BrowserBinding(input: {
   if (!isLoopbackHost(parsed.hostname)) {
     return `C2 浏览器入口必须是 loopback：${baseURL}`;
   }
-  const port = parsed.port.length > 0 ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
+  const port =
+    parsed.port.length > 0 ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
   if (port !== input.resolution.target.frontendPort) {
     return (
       `目标摘要前端端口与本次浏览器入口不一致：` +
@@ -232,7 +236,9 @@ export function validateC2BrowserBinding(input: {
   return null;
 }
 
-export type C2Fetch = (url: string) => Promise<{ json: () => Promise<unknown>; ok: boolean; status: number }>;
+export type C2Fetch = (
+  url: string,
+) => Promise<{ json: () => Promise<unknown>; ok: boolean; status: number }>;
 
 export interface C2RuntimeCheck {
   readonly browserHealth: C2HealthPayload;

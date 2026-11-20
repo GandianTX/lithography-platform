@@ -142,9 +142,9 @@ describe('C2 浏览器绑定', () => {
       resolution,
       fetchImpl: fakeFetch({ [`${API_URL}/health`]: health, [`${baseURL}/health`]: health }),
     });
-    expect(() => assertC2GraphQLBinding(`${baseURL}/login`, 'http://127.0.0.1:43118/graphql')).toThrow(
-      '浏览器 GraphQL 地址与本轮同源 /graphql 不一致',
-    );
+    expect(() =>
+      assertC2GraphQLBinding(`${baseURL}/login`, 'http://127.0.0.1:43118/graphql'),
+    ).toThrow('浏览器 GraphQL 地址与本轮同源 /graphql 不一致');
     expect(() => assertC2GraphQLBinding(`${baseURL}/login`, '/other-graphql')).toThrow();
     expect(() => assertC2GraphQLBinding(`${baseURL}/login`, '/graphql')).not.toThrow();
   });
@@ -158,12 +158,17 @@ describe('C2 浏览器绑定', () => {
   })();
 
   it('摘要前端端口与真实 baseURL 不一致时拒绝', () => {
-    const reason = validateC2BrowserBinding({ baseURL: 'http://127.0.0.1:4288', resolution: enabled });
+    const reason = validateC2BrowserBinding({
+      baseURL: 'http://127.0.0.1:4288',
+      resolution: enabled,
+    });
     expect(reason).toContain('前端端口与本次浏览器入口不一致');
   });
 
   it('baseURL 缺失时拒绝', () => {
-    expect(validateC2BrowserBinding({ baseURL: '', resolution: enabled })).toContain('缺少本次运行的 baseURL');
+    expect(validateC2BrowserBinding({ baseURL: '', resolution: enabled })).toContain(
+      '缺少本次运行的 baseURL',
+    );
   });
 
   it('端口一致但同源代理命中另一实例时拒绝', async () => {
@@ -171,7 +176,12 @@ describe('C2 浏览器绑定', () => {
       assertC2Runtime({
         baseURL: 'http://127.0.0.1:4278',
         fetchImpl: fakeFetch({
-          [`${API_URL}/health`]: { status: 'ok', service: 'api', uptimeSeconds: 5, instanceTag: RUN_TAG },
+          [`${API_URL}/health`]: {
+            status: 'ok',
+            service: 'api',
+            uptimeSeconds: 5,
+            instanceTag: RUN_TAG,
+          },
           'http://127.0.0.1:4278/health': {
             status: 'ok',
             service: 'api',
@@ -189,7 +199,12 @@ describe('C2 浏览器绑定', () => {
       assertC2Runtime({
         baseURL: 'http://127.0.0.1:4278',
         fetchImpl: fakeFetch({
-          [`${API_URL}/health`]: { status: 'ok', service: 'api', uptimeSeconds: 600, instanceTag: RUN_TAG },
+          [`${API_URL}/health`]: {
+            status: 'ok',
+            service: 'api',
+            uptimeSeconds: 600,
+            instanceTag: RUN_TAG,
+          },
           'http://127.0.0.1:4278/health': { status: 'ok', service: 'api', instanceTag: RUN_TAG },
         }),
         resolution: enabled,
@@ -201,7 +216,12 @@ describe('C2 浏览器绑定', () => {
     const result = await assertC2Runtime({
       baseURL: 'http://127.0.0.1:4278',
       fetchImpl: fakeFetch({
-        [`${API_URL}/health`]: { status: 'ok', service: 'api', uptimeSeconds: 5, instanceTag: RUN_TAG },
+        [`${API_URL}/health`]: {
+          status: 'ok',
+          service: 'api',
+          uptimeSeconds: 5,
+          instanceTag: RUN_TAG,
+        },
         'http://127.0.0.1:4278/health': { status: 'ok', service: 'api', instanceTag: RUN_TAG },
       }),
       now: () => Date.now(),

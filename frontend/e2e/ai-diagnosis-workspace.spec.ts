@@ -6,7 +6,7 @@
 // 说明：后端交互以 GraphQL 拦截桩驱动（mock-only 入口），用于验证前端页面逻辑与渲染；
 // 真实后端链路由后端 S2 真实 GraphQL 验证覆盖。
 
-import { expect, type Route,test } from '@playwright/test';
+import { expect, type Route, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
@@ -248,7 +248,7 @@ async function installGraphQLMock(
         }),
         contentType: 'application/json',
         status: 200,
-    });
+      });
     }
 
     if (operation === 'AiQuestionStatus') {
@@ -420,7 +420,12 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
   test('失败重试：失败轮次可重试且沿用同一问题 UUID', async ({ page }) => {
     const state = createMockState();
     state.statusQueue = [
-      { turnNo: 1, status: 'FAILED', visualization: null, failureReason: 'reply_model_unavailable' },
+      {
+        turnNo: 1,
+        status: 'FAILED',
+        visualization: null,
+        failureReason: 'reply_model_unavailable',
+      },
     ];
     await installGraphQLMock(page, state);
 
@@ -432,17 +437,13 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(page.getByRole('button', { name: '重试本轮' })).toBeVisible({ timeout: 8000 });
     const uuidBefore = state.turns[0]?.questionUuid;
     await page.getByRole('button', { name: '重试本轮' }).click();
-    await expect
-      .poll(() => state.retryCount, { timeout: 8000 })
-      .toBeGreaterThan(0);
+    await expect.poll(() => state.retryCount, { timeout: 8000 }).toBeGreaterThan(0);
     expect(state.turns[0]?.questionUuid).toBe(uuidBefore);
   });
 
   test('两问题乱序响应：后发问题的回复先到时不覆盖当前轮', async ({ page }) => {
     const state = createMockState();
-    state.statusQueue = [
-      { turnNo: 1, sticky: true, status: 'PENDING', visualization: null },
-    ];
+    state.statusQueue = [{ turnNo: 1, sticky: true, status: 'PENDING', visualization: null }];
     await installGraphQLMock(page, state);
 
     await page.goto('/engineer/ai');
@@ -540,7 +541,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     });
   });
 
-  test('键盘可用：输入框可聚焦并 Ctrl+Enter 发送，几何画布可聚焦并用方向键旋转', async ({ page }) => {
+  test('键盘可用：输入框可聚焦并 Ctrl+Enter 发送，几何画布可聚焦并用方向键旋转', async ({
+    page,
+  }) => {
     const state = createMockState();
     await installGraphQLMock(page, state);
 
@@ -610,7 +613,10 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(page.getByText('问题已保存，正在生成回复…')).toBeVisible({ timeout: 8000 });
 
     // 切账号：登出离开工作区
-    await page.getByRole('button', { name: /退出登录|Logout/i }).first().click();
+    await page
+      .getByRole('button', { name: /退出登录|Logout/i })
+      .first()
+      .click();
     await expect(page).toHaveURL(/\/login/, { timeout: 8000 });
 
     // 在途响应此时才返回：不得再更新新画面
@@ -636,7 +642,11 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
           return null;
         }
         const box = element.getBoundingClientRect();
-        return { height: Math.round(box.height), width: Math.round(box.width), x: Math.round(box.x) };
+        return {
+          height: Math.round(box.height),
+          width: Math.round(box.width),
+          x: Math.round(box.x),
+        };
       };
       const grid = document.querySelector('.ai-workspace-grid');
       return {
@@ -711,7 +721,12 @@ test.describe('AI 会话导出与管理员只读（任务05 S4）', () => {
         questionUuid: '11111111-2222-4333-8444-555555555555',
         turnNo: 1,
         question: { id: 11, text: '手臂 1 无动作', role: 'USER', contentVersion: 1 },
-        answer: { id: 12, text: '建议先检查取板台真空吸附。', role: 'ASSISTANT', contentVersion: 1 },
+        answer: {
+          id: 12,
+          text: '建议先检查取板台真空吸附。',
+          role: 'ASSISTANT',
+          contentVersion: 1,
+        },
         analysisStatus: 'SUCCEEDED',
         failureReason: null,
         analysisContentVersion: 1,
@@ -777,10 +792,7 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
         fileName,
         filePath: `${EVIDENCE_DIR}/${fileName}.png`,
       });
-      writeFileSync(
-        `${EVIDENCE_DIR}/${fileName}.meta.json`,
-        JSON.stringify(capture, null, 2),
-      );
+      writeFileSync(`${EVIDENCE_DIR}/${fileName}.meta.json`, JSON.stringify(capture, null, 2));
     });
   }
 });

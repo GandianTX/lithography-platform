@@ -25,9 +25,7 @@ describe('litho-geometry', () => {
     expect(AI_STAGE_DEFINITIONS.map((stage) => stage.stage)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
-    const referenced = new Set(
-      AI_STAGE_DEFINITIONS.flatMap((stage) => [...stage.partIds]),
-    );
+    const referenced = new Set(AI_STAGE_DEFINITIONS.flatMap((stage) => [...stage.partIds]));
     for (const partId of referenced) {
       expect(AI_PART_IDS).toContain(partId);
     }

@@ -60,10 +60,7 @@ function readToken(token: string, fallback: string): string {
   if (typeof window === 'undefined') {
     return fallback;
   }
-  const value = window
-    .getComputedStyle(document.documentElement)
-    .getPropertyValue(token)
-    .trim();
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(token).trim();
   return value.length > 0 ? value : fallback;
 }
 
@@ -138,7 +135,10 @@ export function LithoWorkflowCanvas({
       const ratio = window.devicePixelRatio || 1;
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
-      if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+      if (
+        canvas.width !== Math.floor(width * ratio) ||
+        canvas.height !== Math.floor(height * ratio)
+      ) {
         canvas.width = Math.floor(width * ratio);
         canvas.height = Math.floor(height * ratio);
       }
@@ -274,10 +274,7 @@ export function LithoWorkflowCanvas({
         role="img"
         tabIndex={0}
       />
-      <p
-        className="absolute bottom-2 left-3 text-xs text-text-secondary"
-        id="ai-geo-gesture"
-      >
+      <p className="absolute bottom-2 left-3 text-xs text-text-secondary" id="ai-geo-gesture">
         {gestureHint}
       </p>
       {hoveredPartId !== null ? (
@@ -413,14 +410,7 @@ function drawFaultOverlay(
     context.strokeStyle = colors.outline.FAULT;
     context.beginPath();
     context.moveTo(anchor.x, anchor.y - 17);
-    context.bezierCurveTo(
-      anchor.x,
-      anchor.y - 83,
-      anchor.x - 47,
-      anchor.y,
-      anchor.x,
-      anchor.y,
-    );
+    context.bezierCurveTo(anchor.x, anchor.y - 83, anchor.x - 47, anchor.y, anchor.x, anchor.y);
     context.stroke();
     context.setLineDash([]);
   }

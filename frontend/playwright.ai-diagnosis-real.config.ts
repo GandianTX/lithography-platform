@@ -17,7 +17,9 @@ if (c2.kind === 'invalid') {
 
 const frontendPort = Number(process.env.AI_E2E_FRONTEND_PORT ?? 4176);
 const backendTarget =
-  c2.kind === 'enabled' ? c2.backendUrl : (process.env.AI_E2E_BACKEND_URL ?? 'http://127.0.0.1:3005');
+  c2.kind === 'enabled'
+    ? c2.backendUrl
+    : (process.env.AI_E2E_BACKEND_URL ?? 'http://127.0.0.1:3005');
 
 export default defineConfig({
   expect: {
