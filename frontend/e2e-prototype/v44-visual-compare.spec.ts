@@ -1,30 +1,95 @@
-// e2e/visual/v44-visual-compare.spec.ts
+// e2e-prototype/v44-visual-compare.spec.ts
 //
 // V44 原型 vs 实现的视觉对照采集（任务 05 · 视觉偏差根因修复 · S4）
+//
+// 本用例**不在默认 `npm run test:e2e` 收集范围**：它依赖本机外部原型 HTML
+// （gitignored 的个人资料），默认 mock 回归不得要求该文件存在。
+// 专用入口：npm run test:e2e:v44-visual
+//   必填环境变量：
+//     AI_V44_PROTOTYPE_HTML  原型 HTML 的绝对路径（file:// 目标）
+//     AI_V44_EVIDENCE_DIR    证据输出目录（必须不存在或为空，禁止覆盖既有证据）
+//   可选环境变量：
+//     AI_V44_PROTOTYPE_SHA256 原型 SHA-256（提供则强制核对，不符即失败）
 //
 // 同口径要求（计划 1.4.1）：同一浏览器、同一 DPR、同一语言、同一账号角色、
 // 同一视口、同一滚动位置下，分别打开原型固定 URL 与实现固定路由，采集：
 //   - 关键区块的 DOM rect / computed style / 选择器唯一性；
 //   - canvas 内模型投影像素的包围盒（同一算法，两边可比）；
 //   - 整页截图与并排叠图（用于目视核对）。
-//
-// 产物目录：docs/plan/task05/V44对齐复核-20261120/证据-S4-20261120/对照-原型vs实现-20261121/
 
 import { chromium, expect, test } from '@playwright/test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { buildParts, createMockState, installGraphQLMock } from '../helpers/ai-conversation-mocks';
-import { seedAuthSession } from '../helpers/auth-session-seed';
-import { prepareStableViewport } from '../helpers/visual-evidence';
+import {
+  buildParts,
+  createMockState,
+  installGraphQLMock,
+} from '../e2e/helpers/ai-conversation-mocks';
+import { seedAuthSession } from '../e2e/helpers/auth-session-seed';
+import { prepareStableViewport } from '../e2e/helpers/visual-evidence';
 
-const PROTOTYPE_HTML =
-  'file:///home/heilong_lyhy/lithography-platform-work-05/docs/plan/task05/V44对齐复核-20261120/01-光刻维护平台-DemoV44-中英文切换.html';
-const OUT_DIR = path.resolve(
-  process.cwd(),
-  '..',
-  'docs/plan/task05/V44对齐复核-20261120/证据-S4-20261120/对照-原型vs实现-20261121',
-);
+/** 预检：原型路径必填、可读；证据目录必填且不得覆盖既有证据 */
+function resolvePrototypeUrl(): string {
+  const raw = process.env.AI_V44_PROTOTYPE_HTML;
+  if (raw === undefined || raw.trim() === '') {
+    throw new Error(
+      '缺少 AI_V44_PROTOTYPE_HTML：请通过环境变量指定 V44 原型 HTML 的绝对路径。' +
+        '默认 npm run test:e2e 不收集本用例，请用 npm run test:e2e:v44-visual 运行。',
+    );
+  }
+  const absolute = path.resolve(raw.trim());
+  if (!existsSync(absolute)) {
+    throw new Error(`AI_V44_PROTOTYPE_HTML 指向的文件不存在：${absolute}`);
+  }
+  const expected = process.env.AI_V44_PROTOTYPE_SHA256;
+  if (expected !== undefined && expected.trim() !== '') {
+    const actual = createHash('sha256').update(readFileSync(absolute)).digest('hex');
+    if (actual !== expected.trim().toLowerCase()) {
+      throw new Error(
+        `原型 SHA-256 不符：期望 ${expected.trim()}，实际 ${actual}（文件：${absolute}）`,
+      );
+    }
+  }
+  const url = pathToFileURL(absolute);
+  url.hash = '/engineer/ai/chat';
+  return url.href;
+}
+
+/**
+ * 预检：证据目录必填。
+ *
+ * 目录可以已存在（同一采集会话内多个采集器共用一个输出根），但**本次要写的每个工件**
+ * 都必须不存在——避免覆盖历史证据（详见 assertTargetsAbsent）。
+ */
+function resolveEvidenceDir(): string {
+  const raw = process.env.AI_V44_EVIDENCE_DIR;
+  if (raw === undefined || raw.trim() === '') {
+    throw new Error(
+      '缺少 AI_V44_EVIDENCE_DIR：请通过环境变量指定本次证据输出目录（必须为空或不存在）。',
+    );
+  }
+  const absolute = path.resolve(raw.trim());
+  if (!existsSync(absolute)) {
+    mkdirSync(absolute, { recursive: true });
+  }
+  return absolute;
+}
+
+/** 预检：本次要写入的工件必须都不存在（拒绝覆盖既有证据） */
+function assertTargetsAbsent(dir: string, names: readonly string[]): void {
+  const existing = names.filter((name) => existsSync(path.join(dir, name)));
+  if (existing.length > 0) {
+    throw new Error(
+      `证据目录中已存在本次要写的工件，拒绝覆盖既有证据：${existing.join('、')}（目录：${dir}）`,
+    );
+  }
+}
+
+const PROTOTYPE_HTML = resolvePrototypeUrl();
+const OUT_DIR = resolveEvidenceDir();
 
 type Viewport = { name: string; width: number; height: number };
 
@@ -178,7 +243,7 @@ async function capturePrototype(browser: import('@playwright/test').Browser, vie
     reducedMotion: 'reduce',
   });
   const page = await context.newPage();
-  await page.goto(`${PROTOTYPE_HTML}#/engineer/ai/chat`);
+  await page.goto(PROTOTYPE_HTML);
   await page.waitForTimeout(1200);
   const layout = await measureLayout(page, PROTOTYPE_SELECTORS);
   const model = await measureModelBox(page, '.ai33-canvas');
@@ -257,6 +322,14 @@ test.describe('V44 原型 vs 实现 · 视觉对照采集', () => {
   test('四视口同口径采集：布局量测 + 模型投影包围盒 + 并排叠图', async () => {
     test.setTimeout(600_000);
     mkdirSync(OUT_DIR, { recursive: true });
+    assertTargetsAbsent(OUT_DIR, [
+      ...VIEWPORTS.flatMap((viewport) => [
+        `原型-${viewport.name}.png`,
+        `实现-${viewport.name}.png`,
+        `并排-${viewport.name}.png`,
+      ]),
+      'v44-visual-compare.json',
+    ]);
     const browser = await chromium.launch();
     const report: unknown[] = [];
 
