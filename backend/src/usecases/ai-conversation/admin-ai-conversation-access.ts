@@ -11,8 +11,9 @@
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
+  assembleAiAdminRawFacts,
   assertAiAdminIdentity,
-  assertAiAdminMembership,
+  requiresAiAdminMembership,
   resolveAiAdminConversationScopeFromFacts,
   resolveAiAdminIdentityFacts,
   type AiAdminConversationScope,
@@ -45,30 +46,22 @@ export async function loadAiAdminRawFacts(params: {
   const adminLevel = await params.deps.accountQueryService.findAdminLevelByAccountId(
     params.session.accountId,
   );
-  const membership =
-    adminLevel === 1 || adminLevel === 2
-      ? await params.deps.organizationContextService.tryResolveForAccount({
-          accountId: params.session.accountId,
-        })
-      : null;
-  // 成员关系前提（失败关闭：无成员关系 / 角色不符）
-  assertAiAdminMembership({
-    adminLevel,
-    membership:
-      membership === null
-        ? null
-        : { organizationId: membership.organizationId, memberRole: membership.memberRole },
-  });
-  return {
+  const membership = requiresAiAdminMembership(adminLevel)
+    ? await params.deps.organizationContextService.tryResolveForAccount({
+        accountId: params.session.accountId,
+      })
+    : null;
+  // 前置断言与字段投影由 core 统一装配（管理员文档库域复用同一份）
+  return assembleAiAdminRawFacts({
     accountId: params.session.accountId,
-    roles: [...params.session.roles],
+    roles: params.session.roles,
     activeRole: params.session.activeRole ?? null,
     adminLevel,
     membership:
       membership === null
         ? null
         : { organizationId: membership.organizationId, memberRole: membership.memberRole },
-  };
+  });
 }
 
 /** 解析管理员读侧范围（一级全公司 / 二级本公司；失败关闭） */

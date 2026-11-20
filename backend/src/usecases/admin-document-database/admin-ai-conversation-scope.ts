@@ -9,28 +9,29 @@
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
+  assembleAiAdminRawFacts,
   assertAiAdminIdentity,
-  assertAiAdminMembership,
+  requiresAiAdminMembership,
   resolveAiAdminConversationScopeFromFacts,
   resolveAiAdminIdentityFacts,
   type AiAdminConversationScope,
   type AiAdminIdentityFacts,
+  type AiAdminRawFacts,
 } from '@core/ai/ai-conversation-read-access.policy';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 
-/** 读取管理员原始事实（等级 + 唯一有效成员关系） */
+/**
+ * 读取管理员原始事实（等级 + 唯一有效成员关系）。
+ *
+ * 前置断言与字段投影复用 core 的 `assembleAiAdminRawFacts`（与任务 05 的只读
+ * 详情／导出同一份），本文件只负责从服务端取事实。
+ */
 async function loadAdminAiRawFacts(params: {
   session: UsecaseSession;
   accountQueryService: AccountQueryService;
   organizationContextService: TrustedOrganizationContextQueryService;
-}): Promise<{
-  accountId: number;
-  roles: string[];
-  activeRole: string | null;
-  adminLevel: number | null;
-  membership: { organizationId: number; memberRole: string } | null;
-}> {
+}): Promise<AiAdminRawFacts> {
   // 身份先行（非管理员不查库）
   assertAiAdminIdentity({
     roles: params.session.roles,
@@ -39,30 +40,22 @@ async function loadAdminAiRawFacts(params: {
   const adminLevel = await params.accountQueryService.findAdminLevelByAccountId(
     params.session.accountId,
   );
-  const membership =
-    adminLevel === 1 || adminLevel === 2
-      ? await params.organizationContextService.tryResolveForAccount({
-          accountId: params.session.accountId,
-        })
-      : null;
-  // 成员关系前提（失败关闭：无成员关系 / 角色不符）
-  assertAiAdminMembership({
-    adminLevel,
-    membership:
-      membership === null
-        ? null
-        : { organizationId: membership.organizationId, memberRole: membership.memberRole },
-  });
-  return {
+  const membership = requiresAiAdminMembership(adminLevel)
+    ? await params.organizationContextService.tryResolveForAccount({
+        accountId: params.session.accountId,
+      })
+    : null;
+  // 成员关系前提（失败关闭）与字段投影由 core 统一装配
+  return assembleAiAdminRawFacts({
     accountId: params.session.accountId,
-    roles: [...params.session.roles],
+    roles: params.session.roles,
     activeRole: params.session.activeRole ?? null,
     adminLevel,
     membership:
       membership === null
         ? null
         : { organizationId: membership.organizationId, memberRole: membership.memberRole },
-  };
+  });
 }
 
 /** 管理员 AI 会话读侧范围（一级全公司 / 二级本公司；失败关闭） */

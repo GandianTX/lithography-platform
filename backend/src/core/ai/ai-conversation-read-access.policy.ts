@@ -157,6 +157,52 @@ export function assertAiAdminMembership(facts: {
   return facts.membership.organizationId;
 }
 
+/**
+ * 管理员等级是否需要读取组织成员关系。
+ *
+ * 等级 1/2 才按公司收窄范围，需要唯一有效的组织管理员成员关系；
+ * 等级非法时交由策略按「等级不支持」拒绝，不必读成员关系。
+ */
+export function requiresAiAdminMembership(adminLevel: number | null): boolean {
+  return adminLevel === 1 || adminLevel === 2;
+}
+
+/**
+ * 装配管理员原始事实（单一真源）。
+ *
+ * 前置断言与字段投影集中在此：任务 05 的只读详情／导出与管理员文档库域的
+ * 会话列表、消息列表共用同一份装配，日后新增前置条件只需改这一处，
+ * 不会出现「只改了一个入口」的越权漂移。
+ *
+ * 调用方只负责从服务端取事实（账号等级、唯一有效成员关系）。
+ */
+export function assembleAiAdminRawFacts(params: {
+  readonly accountId: number;
+  readonly roles: readonly string[];
+  readonly activeRole: string | null;
+  readonly adminLevel: number | null;
+  readonly membership: { readonly organizationId: number; readonly memberRole: string } | null;
+}): AiAdminRawFacts {
+  // 成员关系前提（失败关闭：无成员关系 / 角色不符）
+  assertAiAdminMembership({
+    adminLevel: params.adminLevel,
+    membership: params.membership,
+  });
+  return {
+    accountId: params.accountId,
+    roles: [...params.roles],
+    activeRole: params.activeRole,
+    adminLevel: params.adminLevel,
+    membership:
+      params.membership === null
+        ? null
+        : {
+            organizationId: params.membership.organizationId,
+            memberRole: params.membership.memberRole,
+          },
+  };
+}
+
 /** 装配管理员身份事实（等级 + 可信公司；不产生副作用） */
 export function resolveAiAdminIdentityFacts(facts: AiAdminRawFacts): AiAdminIdentityFacts {
   const trustedOrganizationId = resolveAiAdminTrustedOrganizationId({
