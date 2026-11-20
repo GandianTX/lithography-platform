@@ -95,6 +95,7 @@ export function EngineerAiPage() {
         <AiConversationPanel
           activeQuestionUuid={workspace.activeQuestionUuid}
           conversation={workspace.conversation}
+          creating={workspace.creating}
           draft={workspace.draft}
           errorMessage={workspace.errorMessage}
           exporting={workspace.exporting}
@@ -104,8 +105,13 @@ export function EngineerAiPage() {
           onDraftChange={workspace.setDraft}
           onExportPdf={() => void workspace.exportConversationPdf()}
           onNewChat={() => {
-            const requestId = linkedRequestId;
-            setLinkedRequestId(null);
+            // U05：已绑定会话时「新建」表示另起一段，不继承上一段工单；
+            // 尚未创建成功时保留用户待选，失败后可直接重试
+            const keepSelection = workspace.conversation === null;
+            const requestId = keepSelection ? linkedRequestId : null;
+            if (!keepSelection) {
+              setLinkedRequestId(null);
+            }
             void workspace.createConversation(requestId);
           }}
           onOpenHistory={() => setHistoryOpen(true)}

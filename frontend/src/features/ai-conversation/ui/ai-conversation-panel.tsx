@@ -27,6 +27,8 @@ export type AiConversationPanelProps = {
   readonly conversation: AiConversationDetail | null;
   readonly activeQuestionUuid: string | null;
   readonly generating: boolean;
+  /** U05：会话创建中——锁定「新建对话」与工单输入，避免待选值与服务端事实不一致 */
+  readonly creating: boolean;
   readonly submitting: boolean;
   readonly retrying: boolean;
   readonly draft: string;
@@ -66,6 +68,7 @@ const STATUS_LABEL_KEYS: Record<AiMessageAnalysisStatus, MessageKey> = {
 export function AiConversationPanel({
   activeQuestionUuid,
   conversation,
+  creating,
   draft,
   errorMessage,
   generating,
@@ -87,6 +90,8 @@ export function AiConversationPanel({
 }: AiConversationPanelProps) {
   const { t } = useI18n();
   const turns = conversation?.turns ?? [];
+  // U05：已绑定会话时以服务端事实为准；未选中会话时才展示用户待选的工单
+  const workOrderValue = conversation?.requestId ?? linkedRequestId ?? null;
   const activeTurn = turns.find((turn) => turn.questionUuid === activeQuestionUuid) ?? null;
   const canRetry = activeTurn?.analysisStatus === 'FAILED' && activeTurn.answer === null;
   // 生成中仍允许继续提问（后端按轮次并行受理，迟到响应由前端隔离）
@@ -115,7 +120,13 @@ export function AiConversationPanel({
           >
             {t('ai.panel.exportPdf')}
           </Button>
-          <Button onClick={onNewChat} size="small" type="primary">
+          <Button
+            disabled={creating}
+            loading={creating}
+            onClick={onNewChat}
+            size="small"
+            type="primary"
+          >
             {t('ai.panel.newChat')}
           </Button>
         </div>
@@ -125,11 +136,11 @@ export function AiConversationPanel({
         <span>{t('ai.panel.workOrderLabel')}</span>
         <InputNumber
           controls={false}
-          disabled={conversation !== null}
+          disabled={conversation !== null || creating}
           min={1}
           onChange={(value) => onWorkOrderChange(typeof value === 'number' ? value : null)}
           placeholder={t('ai.panel.workOrderPlaceholder')}
-          value={linkedRequestId ?? undefined}
+          value={workOrderValue ?? undefined}
         />
         <span className="text-xs text-text-tertiary">{t('ai.panel.workOrderHint')}</span>
       </label>

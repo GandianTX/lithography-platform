@@ -82,7 +82,11 @@ function buildConversationDto(state: MockState) {
   };
 }
 
-async function installGraphQLMock(page: import('@playwright/test').Page, state: MockState) {
+async function installGraphQLMock(
+  page: import('@playwright/test').Page,
+  state: MockState,
+  options: { createDelayMs?: number } = {},
+) {
   await page.route('**/graphql', async (route: Route) => {
     const payload = route.request().postDataJSON() as {
       operationName?: string;
@@ -150,6 +154,10 @@ async function installGraphQLMock(page: import('@playwright/test').Page, state: 
 
     if (operation === 'CreateAiConversation') {
       const input = variables.input as { requestId?: number | null };
+      if (options.createDelayMs !== undefined) {
+        // U05：可控延迟创建，供「创建期间锁定」用例观察中间态
+        await new Promise((resolve) => setTimeout(resolve, options.createDelayMs));
+      }
       state.requestId = input.requestId ?? null;
       state.turns = [];
       return route.fulfill({
@@ -375,6 +383,36 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
       timeout: 8000,
     });
     expect(state.requestId).toBe(8801);
+  });
+
+  test('U05：创建期间锁定新建与工单输入，完成后展示服务端关联', async ({ page }) => {
+    const state = createMockState();
+    await installGraphQLMock(page, state, { createDelayMs: 1200 });
+    const createBodies: string[] = [];
+    page.on('request', (request) => {
+      const body = request.postData();
+      if (body !== null && body.includes('CreateAiConversation')) {
+        createBodies.push(body);
+      }
+    });
+
+    await page.goto('/engineer/ai');
+    const workOrder = page.getByLabel('关联维修申请（新建会话时生效）');
+    await workOrder.fill('8801');
+    await expect(workOrder).toHaveValue('8801');
+    await workOrder.blur();
+    await page.getByRole('button', { name: '新建对话' }).click();
+
+    // 创建在飞：新建入口与工单输入同时锁定，避免待选值与服务端事实不一致
+    await expect(page.getByRole('button', { name: '新建对话' })).toBeDisabled();
+    await expect(workOrder).toBeDisabled();
+
+    // 创建完成（新建入口恢复可用）后：工单显示服务端关联值，且会话绑定后仍不可改
+    await expect.poll(() => state.requestId, { timeout: 8000 }).toBe(8801);
+    await expect(page.getByRole('button', { name: '新建对话' })).toBeEnabled();
+    await expect(workOrder).toHaveValue('8801');
+    await expect(workOrder).toBeDisabled();
+    expect(createBodies.join('\n')).toContain('"requestId":8801');
   });
 
   test('失败重试：失败轮次可重试且沿用同一问题 UUID', async ({ page }) => {

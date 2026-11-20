@@ -79,6 +79,8 @@ export type AiDiagnosisWorkspaceState = {
   /** 输入框内容（提交失败保留） */
   draft: string;
   loading: boolean;
+  /** 正在创建会话（U05：创建期间锁定新建入口与工单输入） */
+  creating: boolean;
   submitting: boolean;
   retrying: boolean;
   /** 正在重试的具体轮次（F03：逐轮重试必须标明作用对象） */
@@ -104,6 +106,7 @@ const INITIAL_STATE: AiDiagnosisWorkspaceState = {
   activeQuestionUuid: null,
   draft: '',
   loading: false,
+  creating: false,
   submitting: false,
   retrying: false,
   retryingQuestionUuid: null,
@@ -154,6 +157,8 @@ export function useAiDiagnosisWorkspace() {
       activeQuestionUuid: null,
       draft: '',
       generating: false,
+      // 切换会话/新建即放弃当前创建态；在飞创建的 UI 态不得留到新页面
+      creating: false,
       submitting: false,
       retrying: false,
       errorMessage: null,
@@ -365,6 +370,8 @@ export function useAiDiagnosisWorkspace() {
         activeQuestionUuid: null,
         draft: '',
         generating: false,
+        // U05：切换历史即放弃当前创建态的展示；在飞创建仍会被 epoch 丢弃
+        creating: false,
         errorMessage: null,
         noticeMessage: null,
         loading: true,
@@ -415,7 +422,8 @@ export function useAiDiagnosisWorkspace() {
       resetSessionState();
       // F06：捕获本次创建的归属（resetSessionState 已推进会话代数）
       const sessionToken = conversationEpoch.current;
-      setState((current) => ({ ...current, loading: true, errorMessage: null }));
+      // U05：创建期间单独暴露 creating，供页面锁定新建入口与工单输入
+      setState((current) => ({ ...current, loading: true, creating: true, errorMessage: null }));
       try {
         const created = await createAiConversation(requestId);
         // 期间用户已选历史/切账号/卸载：不再刷新列表、不抢走当前选择
@@ -442,6 +450,10 @@ export function useAiDiagnosisWorkspace() {
         return null;
       } finally {
         creatingRef.current = false;
+        // U05：期间已切换历史/账号时，迟到的创建不得把新页面重新置为创建态
+        if (sessionToken === conversationEpoch.current) {
+          setState((current) => ({ ...current, creating: false }));
+        }
       }
     },
     [applyFirstPage, resetSessionState, selectConversation],

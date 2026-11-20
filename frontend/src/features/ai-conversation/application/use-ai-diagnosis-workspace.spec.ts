@@ -374,6 +374,131 @@ describe('useAiDiagnosisWorkspace', () => {
     expect(retrySpy).not.toHaveBeenCalled();
     expect(result.current.errorMessage).not.toBeNull();
   });
+  it('U05：创建期间单独暴露 creating，成功后关闭并以服务端会话为准', async () => {
+    let releaseCreate: ((value: unknown) => void) | null = null;
+    const createSpy = vi.spyOn(adapter, 'createAiConversation').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseCreate = resolve as (value: unknown) => void;
+        }) as never,
+    );
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, requestId: 42, turns: [] }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    let creating: Promise<unknown> | null = null;
+    await act(async () => {
+      creating = result.current.createConversation(42);
+    });
+
+    // 创建在飞：输入区应据此锁定工单选择，避免待选值与服务端事实不一致
+    expect(result.current.creating).toBe(true);
+    expect(createSpy).toHaveBeenCalledWith(42);
+
+    await act(async () => {
+      releaseCreate?.({
+        id: CONVERSATION_ID,
+        requestId: 42,
+        requestNo: 'R-42',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+      await creating;
+    });
+
+    expect(result.current.creating).toBe(false);
+    // 选中会话的工单关联来自服务端事实（创建时请求的 42）
+    expect(result.current.conversation?.requestId).toBe(42);
+  });
+
+  it('U05：创建失败后 creating 复位，保留同一工单选择可直接重试', async () => {
+    let rejectCreate: ((error: unknown) => void) | null = null;
+    const createSpy = vi
+      .spyOn(adapter, 'createAiConversation')
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectCreate = reject as (error: unknown) => void;
+          }) as never,
+      )
+      .mockResolvedValueOnce({
+        id: CONVERSATION_ID,
+        requestId: 42,
+        requestNo: 'R-42',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, requestId: 42, turns: [] }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    let creating: Promise<unknown> | null = null;
+    await act(async () => {
+      creating = result.current.createConversation(42);
+    });
+    await act(async () => {
+      rejectCreate?.(new Error('create failed'));
+      await creating;
+    });
+
+    expect(result.current.creating).toBe(false);
+    expect(result.current.errorMessage).not.toBeNull();
+
+    await act(async () => {
+      await result.current.createConversation(42);
+    });
+
+    // 失败后仍可用同一待选工单重试，且创建态不残留
+    expect(createSpy).toHaveBeenLastCalledWith(42);
+    expect(result.current.creating).toBe(false);
+    expect(result.current.conversation?.requestId).toBe(42);
+  });
+
+  it('U05：创建在飞时切换历史，迟到的 finally 不得把新页面置回创建态', async () => {
+    let releaseCreate: ((value: unknown) => void) | null = null;
+    vi.spyOn(adapter, 'createAiConversation').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseCreate = resolve as (value: unknown) => void;
+        }) as never,
+    );
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, turns: [] }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    let creating: Promise<unknown> | null = null;
+    await act(async () => {
+      creating = result.current.createConversation(42);
+    });
+    expect(result.current.creating).toBe(true);
+
+    await act(async () => {
+      await result.current.selectConversation(9);
+    });
+    expect(result.current.creating).toBe(false);
+
+    await act(async () => {
+      releaseCreate?.({
+        id: CONVERSATION_ID,
+        requestId: 42,
+        requestNo: 'R-42',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+      await creating;
+    });
+
+    expect(result.current.selectedId).toBe(9);
+    expect(result.current.creating).toBe(false);
+    expect(result.current.errorMessage).toBeNull();
+  });
+
 });
 
 describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
