@@ -83,6 +83,11 @@ export default defineConfig(({ mode }) => {
           target: devApiProxyTarget,
           changeOrigin: true,
         },
+        // 隔离验收：浏览器同源代理读取后端健康摘要，用于核对代理命中的实例
+        '/health': {
+          target: devApiProxyTarget,
+          changeOrigin: true,
+        },
       },
     },
     // vite preview（生产构建本地预览）与 dev server 同源转发，供生产配置下的
@@ -94,6 +99,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
         '/api': {
+          target: devApiProxyTarget,
+          changeOrigin: true,
+        },
+        // 隔离验收：浏览器同源代理读取后端健康摘要，用于核对代理命中的实例
+        '/health': {
           target: devApiProxyTarget,
           changeOrigin: true,
         },

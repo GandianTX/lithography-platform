@@ -12,11 +12,10 @@
 import { expect, type Page,test } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 
+import { assertC2Runtime, resolveC2Target } from './helpers/c2-target';
+
 const LOGIN_NAME = process.env.AI_E2E_LOGIN_NAME ?? '';
 const LOGIN_PASSWORD = process.env.AI_E2E_LOGIN_PASSWORD ?? '';
-const C2_FAIL_TOKEN = process.env.AI_E2E_C2_TOKEN ?? '';
-const C2_OK_TAG = process.env.AI_E2E_C2_OK_TAG ?? '';
-const C2_CONTROL_URL = process.env.AI_C2_CONTROL_URL ?? '';
 const AUTH_SESSION_KEY = 'lithography-platform.auth-session.v1';
 const FIXTURE_REPLY_MARK = 'C2 故障夹具回复';
 
@@ -110,10 +109,20 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
   });
 
   test('C2：早轮正式失败、末轮成功，重试沿用原 UUID 并成功', async ({ page }) => {
-    test.skip(
-      C2_FAIL_TOKEN.length === 0 || C2_CONTROL_URL.length === 0,
-      '缺少 C2 故障夹具（AI_E2E_C2_TOKEN / AI_C2_CONTROL_URL）',
-    );
+    const resolution = resolveC2Target();
+    if (resolution.kind === 'invalid') {
+      throw new Error(`[c2] ${resolution.reason}`);
+    }
+    test.skip(resolution.kind === 'disabled', '未启用 C2（未提供任何 C2 专有变量）');
+    if (resolution.kind !== 'enabled') {
+      return;
+    }
+
+    // 登录前核验：即使误用其他 Playwright 配置单独收集本 spec，也不能仅凭故障变量进入登录
+    await assertC2Runtime({
+      baseURL: String(test.info().project.use.baseURL ?? ''),
+      resolution,
+    });
 
     await loginAsEngineer(page);
     await page.goto('/engineer/ai');
@@ -143,25 +152,25 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await expect.poll(() => conversationId, { timeout: 30_000 }).toBeGreaterThan(0);
 
     // 第 1 问：故障 provider 对该问题稳定失败，Worker 走完正式重试后落 FAILED
-    const failQuestion = `${C2_FAIL_TOKEN} 第一问：取板台真空报警时如何排查？`;
+    const failQuestion = `${resolution.failToken} 第一问：取板台真空报警时如何排查？`;
     await page.getByLabel(/AI 提问|Ask AI/i).fill(failQuestion);
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
     await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(1);
     const firstUuid = submitUuids[0];
 
-    const firstTurn = page.getByRole('log').locator('article').filter({ hasText: C2_FAIL_TOKEN });
+    const firstTurn = page.getByRole('log').locator('article').filter({ hasText: resolution.failToken });
     // 重试入口只在「正式 FAILED 且无回答」时出现，等价于等待正式失败落库
     await expect(firstTurn.getByRole('button')).toBeVisible({ timeout: 120_000 });
 
     // 第 2 问：同一会话成功，用于验证末轮状态不被早轮重试破坏
-    const okQuestion = `${C2_OK_TAG} 第二问：定位激光异常时如何确认状态？`;
+    const okQuestion = `${resolution.okTag} 第二问：定位激光异常时如何确认状态？`;
     await page.getByLabel(/AI 提问|Ask AI/i).fill(okQuestion);
     await page.getByRole('button', { name: /发送问题|Send/i }).click();
     await expect.poll(() => submitUuids.length, { timeout: 30_000 }).toBe(2);
     const secondUuid = submitUuids[1];
     expect(secondUuid).not.toBe(firstUuid);
 
-    const secondTurn = page.getByRole('log').locator('article').filter({ hasText: C2_OK_TAG });
+    const secondTurn = page.getByRole('log').locator('article').filter({ hasText: resolution.okTag });
     await expect(secondTurn).toContainText(FIXTURE_REPLY_MARK, { timeout: 120_000 });
 
     const beforeRetry = await readConversation(page, conversationId);
@@ -183,7 +192,7 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     const selectedFirstTurn = page
       .getByRole('log')
       .locator('article')
-      .filter({ hasText: C2_FAIL_TOKEN });
+      .filter({ hasText: resolution.failToken });
     await expect(selectedFirstTurn.getByRole('button')).toBeVisible({ timeout: 30_000 });
 
     const beforeResume = await readConversation(page, conversationId);
@@ -198,10 +207,10 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     });
 
     // 放行该问题的故障后再触发正式重试：新执行走正式模型路径成功
-    const releaseResponse = await fetch(`${C2_CONTROL_URL}/__control/release`, {
+    const releaseResponse = await fetch(`${resolution.controlUrl}/__control/release`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: C2_FAIL_TOKEN }),
+      body: JSON.stringify({ token: resolution.failToken }),
     });
     expect(releaseResponse.ok).toBe(true);
 
