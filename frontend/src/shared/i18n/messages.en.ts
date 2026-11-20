@@ -891,7 +891,8 @@ export const EN_MESSAGES = {
   'ai.panel.recoverCreate': 'Check if it was created',
   'ai.panel.createRecovered': 'Found the conversation created earlier; you can continue sending.',
   'ai.panel.createNotFound': 'No created conversation found; you can send again directly.',
-  'ai.panel.createAbandoned': 'Abandoned this attempt; your question text is kept and you can send again.',
+  'ai.panel.createAbandoned':
+    'Abandoned this attempt; your question text is kept and you can send again.',
   'ai.panel.refreshTurn': 'Refresh turn',
   'ai.panel.retry': 'Retry turn',
   'ai.panel.retryTurnAria': 'Retry turn {turn}',

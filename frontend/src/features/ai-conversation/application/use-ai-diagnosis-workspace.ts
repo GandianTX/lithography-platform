@@ -94,8 +94,7 @@ export function findCreatedConversation(
       return Number.isFinite(createdAt) && createdAt >= attempt.at;
     })
     .sort(
-      (left, right) =>
-        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+      (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
     )[0];
 }
 
@@ -976,8 +975,7 @@ export function useAiDiagnosisWorkspace() {
         return null;
       }
       const attempt = createAttempt.current;
-      const candidate =
-        attempt === null ? undefined : findCreatedConversation(page.items, attempt);
+      const candidate = attempt === null ? undefined : findCreatedConversation(page.items, attempt);
       if (candidate !== undefined) {
         await adoptConversation(candidate.id);
         return candidate.id;

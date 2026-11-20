@@ -13,10 +13,7 @@ import type {
 } from '../infrastructure/ai-conversation.types';
 import * as adapter from '../infrastructure/ai-conversation-adapter';
 
-import {
-  findCreatedConversation,
-  useAiDiagnosisWorkspace,
-} from './use-ai-diagnosis-workspace';
+import { findCreatedConversation, useAiDiagnosisWorkspace } from './use-ai-diagnosis-workspace';
 
 const CONVERSATION_ID = 7;
 const QUESTION_UUID = '11111111-2222-4333-8444-555555555555';
