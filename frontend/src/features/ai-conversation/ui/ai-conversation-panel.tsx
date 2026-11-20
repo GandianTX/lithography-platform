@@ -1,15 +1,9 @@
 // src/features/ai-conversation/ui/ai-conversation-panel.tsx
-// 右侧「诊断对话」面板（任务 05 · S3）
-//
-// 行为要点：
-// - 生成中 / 失败 / 图形降级分别有独立提示（不与普通加载混同）；
-// - 失败轮次提供「重试本轮」入口（沿用同一问题 UUID，不新增用户问题）；
-// - 提交失败时保留输入；
-// - 工单来源：新建会话时可选关联本公司有权工单；会话绑定后不可改挂。
 
-import { Alert, Button, Empty, Input, InputNumber, Tag } from 'antd';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button, Input, Select, Space, Tag, Typography } from 'antd';
+import type { UIEvent } from 'react';
 
-import type { MessageKey } from '@/shared/i18n';
 import { useI18n } from '@/shared/i18n';
 
 import type {
@@ -18,255 +12,298 @@ import type {
   AiMessageAnalysisStatus,
 } from '../infrastructure/ai-conversation.types';
 
-export type AiWorkOrderOption = {
-  readonly id: number;
-  readonly label: string;
-};
+const { Text } = Typography;
+
+/** 工单候选（只做展示与选择，归属与绑定由后端最终校验） */
+export type AiWorkOrderOption = { readonly id: number; readonly label: string };
 
 export type AiConversationPanelProps = {
-  readonly conversation: AiConversationDetail | null;
-  readonly activeQuestionUuid: string | null;
-  readonly generating: boolean;
-  /** U05：会话创建中——锁定「新建对话」与工单输入，避免待选值与服务端事实不一致 */
-  readonly creating: boolean;
-  readonly submitting: boolean;
-  readonly retrying: boolean;
-  readonly draft: string;
-  readonly errorMessage: string | null;
-  readonly noticeMessage: string | null;
-  readonly linkedRequestId: number | null;
-  readonly onDraftChange: (value: string) => void;
-  readonly onSubmit: () => void;
-  readonly onRetry: () => void;
-  /** F03：逐轮重试入口，参数为该轮原问题 UUID */
-  readonly onRetryTurn: (questionUuid: string) => void;
-  /** 正在重试的具体轮次（用于逐轮 loading） */
-  readonly retryingQuestionUuid: string | null;
-  /** F03：状态查询失败后的显式重查入口 */
-  readonly onRefreshTurn: () => void;
-  readonly onNewChat: () => void;
-  readonly onOpenHistory: () => void;
-  readonly onExportPdf: () => void;
-  readonly exporting: boolean;
-  readonly onWorkOrderChange: (requestId: number | null) => void;
+  conversation: AiConversationDetail | null;
+  activeQuestionUuid: string | null;
+  generating: boolean;
+  creating: boolean;
+  submitting: boolean;
+  retrying: boolean;
+  draft: string;
+  errorMessage: string | null;
+  noticeMessage: string | null;
+  /** 草稿态下已选工单；会话已存在时以 conversation.requestId 为准 */
+  workOrderId: number | null;
+  workOrders: readonly AiWorkOrderOption[];
+  workOrderStatus: 'loading' | 'ready' | 'failed';
+  workOrderMessage: string | null;
+  canExportPdf: boolean;
+  exporting: boolean;
+  onDraftChange: (value: string) => void;
+  onWorkOrderChange: (requestId: number | null) => void;
+  onLoadMoreWorkOrders: () => void;
+  onReloadWorkOrders: () => void;
+  onNewChat: () => void;
+  onSubmit: () => void;
+  onRetryTurn: (questionUuid: string) => void;
+  onRefreshTurn: (questionUuid: string) => void;
+  onExportPdf: () => void;
 };
 
-const STATUS_COLORS: Record<AiMessageAnalysisStatus, string> = {
-  PENDING: 'gold',
-  RUNNING: 'blue',
-  SUCCEEDED: 'green',
-  FAILED: 'red',
+const TURN_STATUS_KEY: Record<AiMessageAnalysisStatus, string> = {
+  PENDING: 'ai.panel.turnStatus.pending',
+  RUNNING: 'ai.panel.turnStatus.running',
+  SUCCEEDED: 'ai.panel.turnStatus.succeeded',
+  FAILED: 'ai.panel.turnStatus.failed',
 };
 
-const STATUS_LABEL_KEYS: Record<AiMessageAnalysisStatus, MessageKey> = {
-  PENDING: 'ai.status.PENDING',
-  RUNNING: 'ai.status.RUNNING',
-  SUCCEEDED: 'ai.status.SUCCEEDED',
-  FAILED: 'ai.status.FAILED',
-};
-
-export function AiConversationPanel({
-  activeQuestionUuid,
-  conversation,
-  creating,
-  draft,
-  errorMessage,
-  generating,
-  linkedRequestId,
-  exporting,
-  noticeMessage,
-  onDraftChange,
-  onExportPdf,
-  onNewChat,
-  onOpenHistory,
-  onRefreshTurn,
-  onRetry,
-  onRetryTurn,
-  onSubmit,
-  onWorkOrderChange,
-  retrying,
-  retryingQuestionUuid,
-  submitting,
-}: AiConversationPanelProps) {
+/** 面板固定三段：头部（新建/工单）、会话、底部输入；会话区独立滚动 */
+export function AiConversationPanel(props: AiConversationPanelProps) {
   const { t } = useI18n();
-  const turns = conversation?.turns ?? [];
-  // U05：已绑定会话时以服务端事实为准；未选中会话时才展示用户待选的工单
-  const workOrderValue = conversation?.requestId ?? linkedRequestId ?? null;
-  const activeTurn = turns.find((turn) => turn.questionUuid === activeQuestionUuid) ?? null;
-  const canRetry = activeTurn?.analysisStatus === 'FAILED' && activeTurn.answer === null;
-  // 生成中仍允许继续提问（后端按轮次并行受理，迟到响应由前端隔离）
-  const busy = submitting || retrying;
+  const { conversation, draft, generating, creating, submitting } = props;
+
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const [pinned, setPinned] = useState(true);
+
+  // 跟随最新：用户没有主动上滚时才自动贴底，避免打断回看
+  useEffect(() => {
+    if (!pinned) {
+      return;
+    }
+    const element = threadRef.current;
+    if (element === null) {
+      return;
+    }
+    element.scrollTop = element.scrollHeight;
+  }, [conversation?.id, conversation?.turns.length, generating, pinned]);
+
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 32);
+  }, []);
+
+  const scrollToLatest = useCallback(() => {
+    const element = threadRef.current;
+    if (element !== null) {
+      element.scrollTop = element.scrollHeight;
+    }
+    setPinned(true);
+  }, []);
+
+  // 生成中允许继续提问（后端按轮次受理）；只锁提交与创建在飞
+  const busy = submitting || creating;
+  const workOrderLocked = conversation !== null || creating;
+  const selectedWorkOrder = conversation?.requestId ?? props.workOrderId;
+
+  const workOrderNotFound =
+    props.workOrderStatus === 'loading' ? (
+      <div className="ai-work-order-state">{t('common.loading')}</div>
+    ) : props.workOrderStatus === 'failed' ? (
+      <div className="ai-work-order-state">
+        <Text type="secondary">{props.workOrderMessage ?? t('ai.panel.workOrderLoadFailed')}</Text>
+        <Button onClick={props.onReloadWorkOrders} size="small" type="link">
+          {t('ai.panel.workOrderRetry')}
+        </Button>
+      </div>
+    ) : (
+      <div className="ai-work-order-state">{t('ai.panel.workOrderEmpty')}</div>
+    );
 
   return (
-    <section aria-label={t('ai.panel.label')} className="ai-panel">
-      <header className="ai-panel-header">
-        <div className="flex items-center gap-2">
-          <h2 className="m-0 text-base font-semibold text-text-primary">{t('ai.panel.title')}</h2>
-          {/* V44：卡头展示轮次计数，便于判断会话进度 */}
-          <Tag>{t('ai.panel.turnCount', { count: turns.length })}</Tag>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button onClick={onOpenHistory} size="small">
-            {t('ai.panel.history')}
-          </Button>
-          <Button
-            disabled={conversation === null}
-            loading={exporting}
-            onClick={onExportPdf}
-            size="small"
-          >
-            {t('ai.panel.exportPdf')}
-          </Button>
-          <Button
-            disabled={creating}
-            loading={creating}
-            onClick={onNewChat}
-            size="small"
-            type="primary"
-          >
-            {t('ai.panel.newChat')}
-          </Button>
-        </div>
-      </header>
+    <aside aria-label={t('ai.panel.regionLabel')} className="ai-panel">
+      <div className="ai-panel-header">
+        <Space align="center" size={8}>
+          <Text strong>{t('ai.panel.title')}</Text>
+          {conversation !== null && conversation.turns.length > 0 ? (
+            <Text className="ai-turn-count" type="secondary">
+              {t('ai.panel.turnCount', { count: conversation.turns.length })}
+            </Text>
+          ) : null}
+        </Space>
+        <Button disabled={creating} onClick={props.onNewChat} size="small">
+          {t('ai.panel.newChat')}
+        </Button>
+      </div>
 
-      <label className="flex flex-col gap-1 text-xs text-text-secondary">
-        <span>{t('ai.panel.workOrderLabel')}</span>
-        <InputNumber
-          controls={false}
-          disabled={conversation !== null || creating}
-          min={1}
-          onChange={(value) => onWorkOrderChange(typeof value === 'number' ? value : null)}
-          placeholder={t('ai.panel.workOrderPlaceholder')}
-          value={workOrderValue ?? undefined}
-        />
-        <span className="text-xs text-text-tertiary">{t('ai.panel.workOrderHint')}</span>
-      </label>
+      <div className="ai-panel-work-order">
+        <Text type="secondary">{t('ai.panel.workOrderLabel')}</Text>
+        <div className="ai-work-order-select">
+          <Select
+            allowClear
+            aria-label={t('ai.panel.workOrderLabel')}
+            disabled={workOrderLocked}
+            loading={props.workOrderStatus === 'loading'}
+            notFoundContent={workOrderNotFound}
+            onChange={(value: number | null | undefined) => props.onWorkOrderChange(value ?? null)}
+            onPopupScroll={(event) => {
+              const element = event.currentTarget;
+              if (element.scrollHeight - element.scrollTop - element.clientHeight < 24) {
+                props.onLoadMoreWorkOrders();
+              }
+            }}
+            options={props.workOrders.map((option) => ({ label: option.label, value: option.id }))}
+            placeholder={t('ai.panel.workOrderPlaceholder')}
+            popupMatchSelectWidth={320}
+            showSearch
+            size="small"
+            value={selectedWorkOrder ?? undefined}
+          />
+        </div>
+        <Text className="ai-work-order-hint" type="secondary">
+          {conversation !== null
+            ? t('ai.panel.workOrderLockedHint')
+            : t('ai.panel.workOrderStandaloneHint')}
+        </Text>
+      </div>
 
-      <div aria-label={t('ai.panel.threadLabel')} className="ai-thread" role="log">
-        {conversation === null ? (
-          <Empty description={t('ai.panel.emptyNoConversation')} />
-        ) : turns.length === 0 ? (
-          <Empty description={t('ai.panel.emptyNoTurn')} />
+      <div
+        aria-label={t('ai.panel.threadLabel')}
+        className="ai-thread"
+        onScroll={handleScroll}
+        ref={threadRef}
+        role="log"
+      >
+        {conversation === null || conversation.turns.length === 0 ? (
+          <div className="ai-thread-empty">{t('ai.panel.empty')}</div>
         ) : (
-          turns.map((turn) => (
+          conversation.turns.map((turn) => (
             <TurnBlock
+              activeQuestionUuid={props.activeQuestionUuid}
               key={turn.questionUuid}
-              onRetryTurn={onRetryTurn}
-              retryingQuestionUuid={retryingQuestionUuid}
+              onRefresh={props.onRefreshTurn}
+              onRetry={props.onRetryTurn}
+              retrying={props.retrying}
               turn={turn}
             />
           ))
         )}
       </div>
 
-      {errorMessage !== null ? (
-        <Alert
-          action={
-            activeQuestionUuid !== null ? (
-              <Button onClick={onRefreshTurn} size="small">
-                {t('ai.panel.refreshTurn')}
-              </Button>
-            ) : null
-          }
-          closable
-          message={errorMessage}
-          showIcon
-          type="error"
-        />
-      ) : null}
-      {noticeMessage !== null ? (
-        <Alert closable message={noticeMessage} showIcon type="info" />
-      ) : null}
-      {generating ? (
-        // V44：生成中在对话流内显示独立进度块（深色等宽），改由读屏播报
-        <div aria-live="polite" className="ai-progress" role="status">
-          {t('ai.panel.generating')}
-        </div>
+      {!pinned ? (
+        <button className="ai-thread-jump" onClick={scrollToLatest} type="button">
+          {t('ai.panel.toLatest')}
+        </button>
       ) : null}
 
       <div className="ai-compose">
+        {props.errorMessage !== null ? (
+          <div className="ai-compose-alert" role="alert">
+            {props.errorMessage}
+          </div>
+        ) : null}
+        {props.noticeMessage !== null ? (
+          <div className="ai-compose-notice" role="status">
+            {props.noticeMessage}
+          </div>
+        ) : null}
+        {generating ? <p className="ai-progress">{t('ai.panel.generating')}</p> : null}
+
         <Input.TextArea
-          aria-label={t('ai.panel.inputLabel')}
-          disabled={conversation === null}
-          maxLength={2000}
-          onChange={(event) => onDraftChange(event.target.value)}
-          onKeyDown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+          aria-label={t('ai.panel.composeLabel')}
+          autoSize={{ maxRows: 4, minRows: 2 }}
+          onChange={(event) => props.onDraftChange(event.target.value)}
+          onPressEnter={(event) => {
+            if (!event.shiftKey) {
               event.preventDefault();
-              if (!busy && draft.trim().length > 0) {
-                onSubmit();
-              }
+              props.onSubmit();
             }
           }}
-          placeholder={t('ai.panel.inputPlaceholder')}
-          rows={3}
+          placeholder={t('ai.panel.composePlaceholder')}
           showCount
           value={draft}
         />
-        <div className="ai-compose-actions flex items-center gap-2">
+
+        <div className="ai-compose-actions">
           <Button
-            disabled={busy || draft.trim().length === 0}
-            loading={submitting}
-            onClick={onSubmit}
-            type="primary"
+            disabled={!props.canExportPdf || props.exporting}
+            loading={props.exporting}
+            onClick={props.onExportPdf}
+            size="small"
           >
-            {t('ai.panel.send')}
+            {t('ai.panel.exportPdf')}
           </Button>
-          {canRetry ? (
-            <Button loading={retrying} onClick={onRetry}>
-              {t('ai.panel.retry')}
+          <span className="ai-send">
+            <Button
+              disabled={busy || draft.trim().length === 0}
+              loading={submitting}
+              onClick={props.onSubmit}
+              type="primary"
+            >
+              {t('ai.panel.send')}
             </Button>
-          ) : null}
+          </span>
         </div>
       </div>
-    </section>
+    </aside>
   );
 }
 
 type TurnBlockProps = {
-  readonly turn: AiConversationTurn;
-  readonly onRetryTurn: (questionUuid: string) => void;
-  readonly retryingQuestionUuid: string | null;
+  turn: AiConversationTurn;
+  activeQuestionUuid: string | null;
+  retrying: boolean;
+  onRetry: (questionUuid: string) => void;
+  onRefresh: (questionUuid: string) => void;
 };
 
-function TurnBlock({ turn, onRetryTurn, retryingQuestionUuid }: TurnBlockProps) {
+function TurnBlock({ turn, activeQuestionUuid, retrying, onRetry, onRefresh }: TurnBlockProps) {
   const { t } = useI18n();
   const status = turn.analysisStatus;
-  // F03：任一失败轮次都能单独重试，不依赖「当前关注轮」或「最后一轮」
-  const canRetryThisTurn = status === 'FAILED' && turn.answer === null;
+  const isFailed = status === 'FAILED';
+  const isPending = status === 'PENDING' || status === 'RUNNING';
+  const isActive = turn.questionUuid === activeQuestionUuid;
+
   return (
-    <article className="flex flex-col gap-2">
-      <div className="ai-message ai-message--mine">
-        <span className="text-xs font-semibold text-text-secondary">{t('ai.panel.roleUser')}</span>
-        <p className="m-0 whitespace-pre-wrap break-words text-sm">{turn.question?.text ?? ''}</p>
+    <section aria-label={t('ai.panel.turnRegionLabel')} className="ai-turn">
+      <div className="ai-turn-meta">
+        {turn.turnNo !== null ? (
+          <Text className="ai-turn-meta-no" type="secondary">
+            {t('ai.panel.turnNo', { count: turn.turnNo })}
+          </Text>
+        ) : null}
+        {status !== null ? <Tag color={tagColor(status)}>{t(TURN_STATUS_KEY[status])}</Tag> : null}
       </div>
-      {turn.answer !== null ? (
-        <div className="ai-message">
-          <span className="text-xs font-semibold text-text-secondary">
-            {t('ai.panel.roleAssistant')}
-          </span>
-          <p className="m-0 whitespace-pre-wrap break-words text-sm">{turn.answer.text}</p>
+
+      {turn.question !== null ? (
+        <div className="ai-message ai-message--mine">
+          <p>{turn.question.text}</p>
         </div>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-        <span>{t('ai.panel.turnLabel', { turn: turn.turnNo ?? '-' })}</span>
-        {status !== null ? (
-          <Tag color={STATUS_COLORS[status]}>{t(STATUS_LABEL_KEYS[status])}</Tag>
-        ) : null}
-        {turn.failureReason !== null ? (
-          <span className="text-status-critical">{turn.failureReason}</span>
-        ) : null}
-        {canRetryThisTurn ? (
-          <Button
-            aria-label={t('ai.panel.retryTurnAria', { turn: turn.turnNo ?? '-' })}
-            loading={retryingQuestionUuid === turn.questionUuid}
-            onClick={() => onRetryTurn(turn.questionUuid)}
-            size="small"
-          >
-            {t('ai.panel.retry')}
-          </Button>
-        ) : null}
-      </div>
-    </article>
+
+      {turn.answer !== null ? (
+        <div className="ai-message">
+          <p>{turn.answer.text}</p>
+        </div>
+      ) : isPending ? (
+        <div className="ai-message ai-message--pending">
+          <p>{t('ai.panel.answerPending')}</p>
+        </div>
+      ) : isFailed ? (
+        <div className="ai-turn-failure">
+          <Text type="danger">{turn.failureReason ?? t('ai.panel.answerFailed')}</Text>
+          <Space size={4}>
+            <Button
+              disabled={retrying}
+              loading={retrying && isActive}
+              onClick={() => onRetry(turn.questionUuid)}
+              size="small"
+            >
+              {t('ai.panel.retry')}
+            </Button>
+            <Button onClick={() => onRefresh(turn.questionUuid)} size="small">
+              {t('ai.panel.refresh')}
+            </Button>
+          </Space>
+        </div>
+      ) : null}
+    </section>
   );
+}
+
+function tagColor(status: AiMessageAnalysisStatus): string {
+  if (status === 'SUCCEEDED') {
+    return 'green';
+  }
+  if (status === 'FAILED') {
+    return 'red';
+  }
+  if (status === 'RUNNING') {
+    return 'blue';
+  }
+  return 'default';
 }

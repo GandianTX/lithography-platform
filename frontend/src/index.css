@@ -2578,12 +2578,63 @@ body {
   --ai-chip-text: #bfe8f6;
 }
 
-.ai-workspace {
+/* 任务05 S2：AI 诊断局部顶栏（AI 对话 / 问答记录），两页共用、各自呈现当前态 */
+.ai-shell {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   height: 100%;
   min-height: 0;
+}
+
+.ai-shell-header {
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 10px;
+}
+
+.ai-shell-title {
+  color: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.ai-shell-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.ai-shell-tab {
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  padding: 4px 10px;
+  text-decoration: none;
+}
+
+.ai-shell-tab:hover {
+  background: var(--ant-color-primary-bg);
+  color: var(--ant-color-primary);
+}
+
+.ai-shell-tab[aria-current='page'] {
+  background: var(--ant-color-primary-bg);
+  color: var(--ant-color-primary);
+  font-weight: 600;
+}
+
+.ai-workspace {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding-top: 12px;
 }
 
 .ai-workspace-header {
@@ -2751,6 +2802,161 @@ body {
   font-size: 12px;
   margin: 0;
   padding: 0 2px;
+}
+
+/* 任务05 S1：关联工单行（面板第二行，来源固定在头部下方） */
+.ai-panel-work-order {
+  align-items: center;
+  border-bottom: 1px solid var(--ai-panel-line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 20px;
+}
+
+.ai-panel-work-order > .ant-typography {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ai-work-order-select {
+  display: flex;
+  flex: 1;
+  min-width: 150px;
+}
+
+.ai-work-order-select .ant-select {
+  width: 100%;
+}
+
+.ai-work-order-hint {
+  flex-basis: 100%;
+  font-size: 11px;
+}
+
+.ai-work-order-state {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  padding: 6px 2px;
+}
+
+.ai-work-order-state .ant-btn {
+  padding-inline: 0;
+}
+
+/* 任务05 S2：轮次信息降级为轻量元信息行；失败轮保留可执行动作 */
+.ai-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-turn-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.ai-turn-meta-no,
+.ai-turn-meta-status {
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.ai-turn-meta-status {
+  margin-inline-end: 0;
+}
+
+.ai-turn-count {
+  font-size: 11px;
+}
+
+.ai-turn-failure {
+  background: rgb(255 77 79 / 8%);
+  border: 1px dashed rgb(255 77 79 / 45%);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.ai-message--pending {
+  color: var(--ai-workspace-muted);
+  font-style: italic;
+}
+
+.ai-thread-empty {
+  color: var(--ai-workspace-muted);
+  font-size: 13px;
+  margin: auto;
+  text-align: center;
+}
+
+.ai-thread-jump {
+  align-self: center;
+  background: var(--ai-chip-bg);
+  border: 1px solid var(--ai-panel-line);
+  border-radius: 999px;
+  color: var(--ai-chip-text);
+  cursor: pointer;
+  font-size: 12px;
+  margin: -14px 0 4px;
+  padding: 3px 12px;
+  z-index: 2;
+}
+
+.ai-compose-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.ai-compose-actions .ai-send {
+  display: inline-flex;
+  margin-left: auto;
+}
+
+/* 任务05 S2：本人问答记录（浅色表格页，与对话页共用局部顶栏） */
+.ai-record {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-top: 12px;
+}
+
+.ai-record-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.ai-record-subtitle {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  margin: 2px 0 0;
+}
+
+.ai-record-back {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ai-record-footer {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.ai-record-summary {
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 
 .ai-compose {

@@ -24,7 +24,7 @@ import {
   CustomerRepairRequestsPage,
 } from '@/pages/customer';
 import { EngineerPage } from '@/pages/engineer';
-import { EngineerAiPage } from '@/pages/engineer-ai';
+import { EngineerAiHistoryPage, EngineerAiPage } from '@/pages/engineer-ai';
 import { EngineerRepairRequestDetailPage } from '@/pages/engineer-repair-request-detail';
 import { EngineerRepairRequestsPage } from '@/pages/engineer-repair-requests';
 import { ErrorPreviewPage } from '@/pages/error-preview';
@@ -201,10 +201,16 @@ const router = createBrowserRouter([
         path: 'engineer',
       },
       {
-        // 任务05 S1：最小可操作页（路由先落地，导航与完整工作区在 S3 接入）
+        // 任务05：AI 对话工作区（草稿优先：首次发送才创建会话）
         element: <EngineerAiPage />,
         loader: protectedRouteLoader,
         path: 'engineer/ai',
+      },
+      {
+        // 任务05 S2：本人问答记录（只读列表，可回到对应会话）
+        element: <EngineerAiHistoryPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/ai/history',
       },
       {
         element: <EngineerRepairRequestsPage />,

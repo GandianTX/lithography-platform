@@ -6,7 +6,7 @@
 // 说明：后端交互以 GraphQL 拦截桩驱动（mock-only 入口），用于验证前端页面逻辑与渲染；
 // 真实后端链路由后端 S2 真实 GraphQL 验证覆盖。
 
-import { expect, type Route, test } from '@playwright/test';
+import { expect, type Page, type Route, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
@@ -180,6 +180,51 @@ async function installGraphQLMock(
       });
     }
 
+    if (operation === 'EngineerRepairRequests') {
+      // S1：关联工单候选来自「本人已接单」列表，选择器只展示业务编号 + 机型
+      return route.fulfill({
+        body: JSON.stringify({
+          data: {
+            engineerRepairRequests: {
+              items: [
+                {
+                  id: 8801,
+                  requestNo: 'MR-20261120-001',
+                  equipmentModel: { id: 31, modelCode: 'NSR-S635E', modelName: 'NIKON NSR-S635E' },
+                  errorCode: 'VACUUM_LOW',
+                  createdAt: '2026-11-19T02:00:00.000Z',
+                  isAccepted: true,
+                  acceptedAt: '2026-11-19T03:00:00.000Z',
+                  latestResolutionStatus: 'PROCESSING',
+                  customerNickname: '开发客户A1',
+                  operationText: '取板台真空报警',
+                  viewStatus: 'ACCEPTED',
+                },
+                {
+                  id: 8802,
+                  requestNo: 'MR-20261120-002',
+                  equipmentModel: { id: 32, modelCode: 'NXT:1980Di', modelName: 'ASML NXT:1980Di' },
+                  errorCode: 'ALIGN_FAIL',
+                  createdAt: '2026-11-18T02:00:00.000Z',
+                  isAccepted: true,
+                  acceptedAt: '2026-11-18T03:00:00.000Z',
+                  latestResolutionStatus: 'PROCESSING',
+                  customerNickname: '开发客户B1',
+                  operationText: '定位异常',
+                  viewStatus: 'ACCEPTED',
+                },
+              ],
+              page: 1,
+              pageSize: 50,
+              total: 2,
+            },
+          },
+        }),
+        contentType: 'application/json',
+        status: 200,
+      });
+    }
+
     if (operation === 'SubmitAiQuestion') {
       const input = variables.input as {
         questionUuid: string;
@@ -337,6 +382,17 @@ async function installGraphQLMock(
   });
 }
 
+/** S1：从本人已接工单候选里选择一项（下拉选项标题为「工单号 · 机型」） */
+async function pickWorkOrder(page: Page, label: string) {
+  await page.getByLabel('关联工单').click();
+  // AntD 虚拟列表里的 role=option 是无障碍占位，实际可点的是下拉项
+  await page
+    .locator('.ant-select-dropdown:visible .ant-select-item-option')
+    .filter({ hasText: label })
+    .first()
+    .click();
+}
+
 test.describe('AI 诊断工作区（任务05 S3）', () => {
   test.beforeEach(async ({ page }) => {
     await seedAuthSession(page, 'ENGINEER');
@@ -374,24 +430,25 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(page.getByLabel('维修流程示意')).toBeVisible();
   });
 
-  test('关联工单：新建会话时写入申请来源', async ({ page }) => {
+  test('关联工单：首次发送时创建会话并写入来源，绑定后锁定', async ({ page }) => {
     const state = createMockState();
     await installGraphQLMock(page, state);
 
     await page.goto('/engineer/ai');
-    await page.getByLabel('关联维修申请（新建会话时生效）').fill('8801');
-    await page.getByRole('button', { name: '新建对话' }).click();
-    await expect(page.getByRole('heading', { name: 'AI 诊断' })).toBeVisible();
-
+    await pickWorkOrder(page, 'MR-20261120-001 · NIKON NSR-S635E');
     await page.getByLabel('AI 提问').fill('曝光前校验失败');
     await page.getByRole('button', { name: '发送问题' }).click();
+
     await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
       timeout: 8000,
     });
     expect(state.requestId).toBe(8801);
+    // 会话已建立：来源固定，选择器不可改
+    await expect(page.getByLabel('关联工单')).toBeDisabled();
+    await expect(page.locator('.ai-panel-work-order')).toContainText('MR-20261120-001');
   });
 
-  test('U05：创建期间锁定新建与工单输入，完成后展示服务端关联', async ({ page }) => {
+  test('U05：首次发送才创建会话，创建在飞锁定工单选择', async ({ page }) => {
     const state = createMockState();
     await installGraphQLMock(page, state, { createDelayMs: 1200 });
     const createBodies: string[] = [];
@@ -403,21 +460,21 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     });
 
     await page.goto('/engineer/ai');
-    const workOrder = page.getByLabel('关联维修申请（新建会话时生效）');
-    await workOrder.fill('8801');
-    await expect(workOrder).toHaveValue('8801');
-    await workOrder.blur();
-    await page.getByRole('button', { name: '新建对话' }).click();
+    await pickWorkOrder(page, 'MR-20261120-001 · NIKON NSR-S635E');
+    // 草稿态：尚未创建会话，但输入与选择都可用
+    await expect(page.getByLabel('AI 提问')).toBeEnabled();
+    await expect(page.getByLabel('关联工单')).toBeEnabled();
 
-    // 创建在飞：新建入口与工单输入同时锁定，避免待选值与服务端事实不一致
+    await page.getByLabel('AI 提问').fill('手臂 1 无动作');
+    await page.getByRole('button', { name: '发送问题' }).click();
+
+    // 创建在飞：新建入口与工单选择同时锁定，避免待选值与服务端事实不一致
     await expect(page.getByRole('button', { name: '新建对话' })).toBeDisabled();
-    await expect(workOrder).toBeDisabled();
+    await expect(page.getByLabel('关联工单')).toBeDisabled();
 
-    // 创建完成（新建入口恢复可用）后：工单显示服务端关联值，且会话绑定后仍不可改
     await expect.poll(() => state.requestId, { timeout: 8000 }).toBe(8801);
-    await expect(page.getByRole('button', { name: '新建对话' })).toBeEnabled();
-    await expect(workOrder).toHaveValue('8801');
-    await expect(workOrder).toBeDisabled();
+    await expect(page.locator('.ai-panel-work-order')).toContainText('MR-20261120-001');
+    await expect(page.getByLabel('关联工单')).toBeDisabled();
     expect(createBodies.join('\n')).toContain('"requestId":8801');
   });
 
@@ -528,12 +585,11 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(page.getByLabel('部件标记')).not.toContainText('手臂1（掩模板）');
   });
 
-  test('刷新与历史：刷新后可从历史入口重新进入会话', async ({ page }) => {
+  test('刷新与问答记录：从局部导航进入列表并回到原会话', async ({ page }) => {
     const state = createMockState();
     await installGraphQLMock(page, state);
 
     await page.goto('/engineer/ai');
-    await page.getByRole('button', { name: '新建对话' }).click();
     await page.getByLabel('AI 提问').fill('手臂 1 无动作');
     await page.getByRole('button', { name: '发送问题' }).click();
     await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
@@ -541,10 +597,17 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     });
 
     await page.reload();
-    await page.getByRole('button', { name: '历史会话' }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await expect(page.getByText('历史会话').first()).toBeVisible();
-    await expect(page.getByText('#501')).toBeVisible();
+    // S2：历史不再用抽屉，改为页头局部导航直达问答记录页
+    await page.getByRole('link', { name: '问答记录' }).click();
+    await expect(page).toHaveURL(/\/engineer\/ai\/history$/);
+    await expect(page.getByRole('heading', { name: '问答记录' })).toBeVisible();
+    await expect(
+      page.getByLabel('AI 诊断导航').getByRole('link', { name: 'AI 对话' }),
+    ).toHaveAttribute('href', '/engineer/ai');
+
+    await page.getByRole('button', { name: '查看对话' }).first().click();
+    await expect(page).toHaveURL(/\/engineer\/ai\?conversation=\d+/);
+    await expect(page.getByText('手臂 1 无动作')).toBeVisible({ timeout: 8000 });
   });
 
   test('窄屏（390×844）：布局不横向溢出，问答与示意仍可用', async ({ page }) => {
@@ -729,8 +792,13 @@ test.describe('AI 会话导出与管理员只读（任务05 S4）', () => {
     await installGraphQLMock(page, state);
 
     await page.goto('/engineer/ai');
-    await page.getByRole('button', { name: '新建对话' }).click();
     await expect(page.getByLabel('维修流程示意')).toBeVisible();
+    // 草稿优先：先受理一问（创建会话），再导出
+    await page.getByLabel('AI 提问').fill('手臂 1 无动作');
+    await page.getByRole('button', { name: '发送问题' }).click();
+    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+      timeout: 8000,
+    });
 
     const downloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: '导出 PDF' }).click();
@@ -763,9 +831,8 @@ test.describe('AI 会话导出与管理员只读（任务05 S4）', () => {
     await installGraphQLMock(page, state);
 
     await page.goto('/engineer/ai');
-    await page.getByRole('button', { name: '历史会话' }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await page.getByText('#501').click();
+    await page.getByRole('link', { name: '问答记录' }).click();
+    await page.getByRole('button', { name: '查看对话' }).first().click();
     await expect(page.getByText('建议先检查取板台真空吸附。')).toBeVisible({ timeout: 8000 });
 
     const downloadPromise = page.waitForEvent('download');

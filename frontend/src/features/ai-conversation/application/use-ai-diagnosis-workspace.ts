@@ -79,6 +79,19 @@ export type AiDiagnosisWorkspaceState = {
   activeQuestionUuid: string | null;
   /** 输入框内容（提交失败保留） */
   draft: string;
+  /**
+   * 未建会话时的待选工单（草稿态）。
+   *
+   * S1：草稿优先——首次发送才创建会话，选择变化只改草稿；
+   * 会话已存在时以服务端 `conversation.requestId` 为准，本字段不再参与。
+   */
+  draftRequestId: number | null;
+  /**
+   * 上一次会话创建结果未知（请求已发出但失败）。
+   *
+   * 此时不得再次隐式创建，否则可能重复建会话；需用户显式「新建对话」后重试。
+   */
+  createUnknown: boolean;
   loading: boolean;
   /** 正在创建会话（U05：创建期间锁定新建入口与工单输入） */
   creating: boolean;
@@ -106,6 +119,8 @@ const INITIAL_STATE: AiDiagnosisWorkspaceState = {
   visualizationDegraded: false,
   activeQuestionUuid: null,
   draft: '',
+  draftRequestId: null,
+  createUnknown: false,
   loading: false,
   creating: false,
   submitting: false,
@@ -159,11 +174,14 @@ export function useAiDiagnosisWorkspace() {
     setState((current) => ({
       ...current,
       conversation: null,
+      selectedId: null,
       stage: null,
       visualization: null,
       visualizationDegraded: false,
       activeQuestionUuid: null,
       draft: '',
+      draftRequestId: null,
+      createUnknown: false,
       generating: false,
       // 切换会话/新建即放弃当前创建态；在飞创建的 UI 态不得留到新页面
       creating: false,
@@ -330,7 +348,13 @@ export function useAiDiagnosisWorkspace() {
           (turn) =>
             turn.questionUuid !== questionUuid && isActiveAnalysisStatus(turn.analysisStatus),
         );
-        setState((current) => ({ ...current, conversation: detail, generating: otherTurnsActive }));
+        setState((current) => ({
+          ...current,
+          conversation: detail,
+          generating: otherTurnsActive,
+          // 终态轮询说明提交阶段已结束，兜底复位提交态，避免按钮长期 loading
+          submitting: false,
+        }));
         if (otherTurnsActive) {
           void refreshWhileTurnsActive(conversationId, sessionToken, turnToken);
         }
@@ -474,11 +498,6 @@ export function useAiDiagnosisWorkspace() {
       if (submittingRef.current) {
         return null;
       }
-      const conversationId = state.selectedId;
-      if (conversationId === null) {
-        setState((current) => ({ ...current, errorMessage: '请先选择或新建一个会话' }));
-        return null;
-      }
       const trimmed = question.trim();
       if (trimmed.length === 0) {
         setState((current) => ({ ...current, errorMessage: '问题正文不能为空' }));
@@ -500,6 +519,9 @@ export function useAiDiagnosisWorkspace() {
       pendingQuestion.current = pending;
       // P2-1：提交前捕获草稿修订号，响应回写时据此判断草稿是否仍属于本次提交
       const draftRevisionAtSubmit = draftRevision.current;
+      // S1：草稿优先——未建会话时捕获此刻的工单选择，创建在飞期间目标锁定
+      const draftRequestId = state.draftRequestId;
+      const stageAtSubmit = state.stage;
 
       const sessionToken = conversationEpoch.current;
       const turnToken = turnEpoch.current + 1;
@@ -516,12 +538,67 @@ export function useAiDiagnosisWorkspace() {
         visualizationDegraded: false,
       }));
 
+      // S1：目标会话在首次发送时解析；已选中则直接复用，否则先创建
+      let conversationId: number | null = state.selectedId;
       try {
+        if (conversationId === null) {
+          // 创建结果未知时不再隐式重建：否则可能重复建会话，需用户显式「新建对话」确认
+          if (state.createUnknown) {
+            setState((current) => ({
+              ...current,
+              submitting: false,
+              errorMessage: '上一次会话创建结果未知：请先点「新建对话」再重新发送。',
+            }));
+            return null;
+          }
+          setState((current) => ({ ...current, creating: true }));
+          try {
+            const created = await createAiConversation(draftRequestId);
+            if (sessionToken !== conversationEpoch.current) {
+              return null;
+            }
+            conversationId = created.id;
+            setState((current) => ({
+              ...current,
+              selectedId: created.id,
+              creating: false,
+              createUnknown: false,
+              draftRequestId: null,
+            }));
+            // 列表刷新不阻塞首问受理；过期响应由列表代数丢弃
+            void listMyAiConversations({ page: 1, pageSize: PAGE_SIZE })
+              .then((page) => {
+                if (sessionToken === conversationEpoch.current) {
+                  applyFirstPage(page);
+                }
+              })
+              .catch(() => undefined);
+          } catch (error) {
+            if (sessionToken !== conversationEpoch.current) {
+              return null;
+            }
+            // 创建失败：保留草稿与工单选择，标记结果未知，禁止自动再建
+            setState((current) => ({
+              ...current,
+              creating: false,
+              submitting: false,
+              createUnknown: true,
+              errorMessage: describeAiConversationError(error),
+            }));
+            return null;
+          }
+        }
+
+        if (conversationId === null) {
+          setState((current) => ({ ...current, submitting: false }));
+          return null;
+        }
+
         const result = await submitAiQuestion({
           conversationId,
           questionUuid: pending.uuid,
           question: trimmed,
-          stage: state.stage,
+          stage: stageAtSubmit,
         });
         if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
           return null;
@@ -546,6 +623,11 @@ export function useAiDiagnosisWorkspace() {
         return result;
       } catch (error) {
         if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return null;
+        }
+        // 创建阶段就失败时没有会话可确认，保持草稿与错误提示
+        if (conversationId === null) {
+          setState((current) => ({ ...current, submitting: false }));
           return null;
         }
         // 受理结果不明：先查原问题；查到即按已受理处理
@@ -585,7 +667,15 @@ export function useAiDiagnosisWorkspace() {
         submittingRef.current = false;
       }
     },
-    [confirmAcceptedQuestion, pollQuestionStatus, state.selectedId, state.stage],
+    [
+      applyFirstPage,
+      confirmAcceptedQuestion,
+      pollQuestionStatus,
+      state.createUnknown,
+      state.draftRequestId,
+      state.selectedId,
+      state.stage,
+    ],
   );
 
   /**
@@ -740,6 +830,25 @@ export function useAiDiagnosisWorkspace() {
     setState((current) => ({ ...current, draft }));
   }, []);
 
+  /** S1：未建会话时选择「独立会话 / 关联工单」——只改草稿，不写服务端 */
+  const setDraftRequestId = useCallback((requestId: number | null) => {
+    setState((current) =>
+      current.conversation === null
+        ? { ...current, draftRequestId: requestId, createUnknown: false, errorMessage: null }
+        : current,
+    );
+  }, []);
+
+  /**
+   * S1：新建回到空草稿（不创建空会话、不产生写请求）。
+   *
+   * 会话与工单绑定都在首次发送时才落库；这里只清本地草稿态。
+   */
+  const startNewDraft = useCallback(() => {
+    resetSessionState();
+    setState((current) => ({ ...current, loading: false }));
+  }, [resetSessionState]);
+
   const dismissNotice = useCallback(() => {
     setState((current) => ({ ...current, noticeMessage: null }));
   }, []);
@@ -767,6 +876,7 @@ export function useAiDiagnosisWorkspace() {
     loadMoreConversations,
     selectConversation,
     createConversation,
+    startNewDraft,
     submitQuestion,
     retryCurrentTurn,
     retryTurn,
@@ -774,6 +884,7 @@ export function useAiDiagnosisWorkspace() {
     exportConversationPdf,
     setStage,
     setDraft,
+    setDraftRequestId,
     dismissNotice,
   };
 }

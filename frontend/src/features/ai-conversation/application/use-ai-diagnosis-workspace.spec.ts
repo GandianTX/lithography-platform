@@ -1096,4 +1096,104 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
 
     expect(result.current.visualization).toBeNull();
   });
+
+  describe('S1：草稿优先', () => {
+    it('首次发送才创建会话，并把所选工单写入创建请求', async () => {
+      const createSpy = vi.spyOn(adapter, 'createAiConversation').mockResolvedValue({
+        id: CONVERSATION_ID,
+        requestId: 88,
+        requestNo: 'MR-20261120-001',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+      vi.spyOn(adapter, 'submitAiQuestion').mockResolvedValue(buildSubmitResult());
+      const { result } = renderHook(() => useAiDiagnosisWorkspace());
+
+      await act(async () => {
+        result.current.setDraftRequestId(88);
+        result.current.setDraft('手臂 1 无动作');
+      });
+      expect(createSpy).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await result.current.submitQuestion('手臂 1 无动作');
+      });
+
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(createSpy.mock.calls[0][0]).toBe(88);
+      expect(result.current.selectedId).toBe(CONVERSATION_ID);
+      expect(result.current.draftRequestId).toBeNull();
+    });
+
+    it('新建只回空草稿，不产生会话写请求', async () => {
+      const createSpy = vi.spyOn(adapter, 'createAiConversation');
+      const { result } = renderHook(() => useAiDiagnosisWorkspace());
+      await act(async () => {
+        result.current.setDraft('未发送的草稿');
+        result.current.setDraftRequestId(9);
+      });
+
+      await act(async () => {
+        result.current.startNewDraft();
+      });
+
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(result.current.draft).toBe('');
+      expect(result.current.draftRequestId).toBeNull();
+      expect(result.current.selectedId).toBeNull();
+    });
+
+    it('创建结果未知时停止自动再建，保留草稿并要求显式新建', async () => {
+      const createSpy = vi
+        .spyOn(adapter, 'createAiConversation')
+        .mockRejectedValueOnce(new Error('timeout'));
+      const { result } = renderHook(() => useAiDiagnosisWorkspace());
+      await act(async () => {
+        result.current.setDraft('手臂 1 无动作');
+        result.current.setDraftRequestId(7);
+        await result.current.submitQuestion('手臂 1 无动作');
+      });
+
+      expect(result.current.createUnknown).toBe(true);
+      expect(result.current.draft).toBe('手臂 1 无动作');
+      expect(result.current.submitting).toBe(false);
+
+      await act(async () => {
+        await result.current.submitQuestion('手臂 1 无动作');
+      });
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(result.current.errorMessage).toContain('新建对话');
+    });
+
+    it('创建成功但提问失败：重试沿用同一会话与同一问题 UUID', async () => {
+      const createSpy = vi.spyOn(adapter, 'createAiConversation').mockResolvedValue({
+        id: CONVERSATION_ID,
+        requestId: null,
+        requestNo: '',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+      const submitSpy = vi
+        .spyOn(adapter, 'submitAiQuestion')
+        .mockRejectedValueOnce(new Error('network down'));
+      vi.spyOn(adapter, 'getAiQuestionStatus').mockRejectedValue(new Error('not found'));
+
+      const { result } = renderHook(() => useAiDiagnosisWorkspace());
+      await act(async () => {
+        await result.current.submitQuestion('手臂 1 无动作');
+      });
+      const firstUuid = submitSpy.mock.calls[0][0].questionUuid;
+
+      submitSpy.mockResolvedValueOnce(buildSubmitResult());
+      await act(async () => {
+        await result.current.submitQuestion('手臂 1 无动作');
+      });
+
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(submitSpy.mock.calls[1][0].conversationId).toBe(CONVERSATION_ID);
+      expect(submitSpy.mock.calls[1][0].questionUuid).toBe(firstUuid);
+    });
+  });
 });
