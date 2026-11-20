@@ -3112,6 +3112,35 @@ const collectV13OwnedGraph = async (
     'repairProcessEntry',
   );
 
+  // 第 49 条迁移新增的入边：maintenance_report_attachment.file_id → stored_file.file_id
+  // （FK RESTRICT）。报告附件本轮没有删除能力、也从不登记，属于「范围外子行」：
+  // 只要引用本轮待删原件，就在第一条 DELETE 之前拒绝整批清理，绝不自动认领、解绑或
+  // 删除报告附件，也不把该入边当作原件归属证明。历史行的 file_id 为 NULL，
+  // NULL 不是引用（IN 也不会命中 NULL）。
+  if (plan.storedFileIds.length > 0) {
+    const referencingAttachments: Array<{ id: number; file_id: string | null }> =
+      await manager.query(
+        `SELECT id, file_id
+           FROM maintenance_report_attachment
+          WHERE file_id IN (${inClause(plan.storedFileIds)})
+          FOR UPDATE`,
+        [...plan.storedFileIds],
+      );
+    for (const row of referencingAttachments) {
+      // 防御性跳过：查询已排除 NULL，此处只为不把空值当成引用。
+      if (row.file_id === null || row.file_id === undefined) {
+        continue;
+      }
+      conflict(
+        helper,
+        'maintenance_report_attachment',
+        String(row.id),
+        `附件经 file_id=${String(row.file_id)} 引用本轮待删原件，报告附件不在清理范围，` +
+          '拒绝整个清理（附件与原件均保留）',
+      );
+    }
+  }
+
   // V13 内部父行（char(36) 父键按字符串比较）。
   await collectByParent(
     'intake_analysis_attempt',
@@ -3977,7 +4006,8 @@ const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Pr
   // 只按本轮登记且事实核验通过的真实 ID 删除，绝不按报告整批接管。
   await deleteByIds(manager, 'maintenance_report_fault', plan.maintenanceReportFaultIds);
   // stored_file 被 repair_request_intake.file_id / repair_process_entry.file_id 引用，
-  // 必须在本轮 V13 删除序列的最后。
+  // 必须在本轮 V13 删除序列的最后；maintenance_report_attachment.file_id 的入边不在
+  // 清理范围内，闭包预检已保证此处不存在任何引用（有引用则整批清理已在首删前拒绝）。
   await deleteByColumnIds(manager, 'stored_file', 'file_id', plan.storedFileIds);
 
   // 维修链路先于账号/型号删除（FK RESTRICT：回复 → 申请 → 型号 → user_info → 账号）。
@@ -4290,6 +4320,280 @@ export const runGuardedSpecCleanup = async (
       await prepared.execute();
     }
   });
+};
+
+/**
+ * 一条带定位标签的收尾责任。
+ *
+ * `label` 必须包含可定位资源的事实（真实 ID、表名、原值/写入值等），
+ * 这样失败或未执行时都能在不回读数据库的情况下说清“还欠哪一笔”。
+ */
+export interface CaseCleanupStep {
+  readonly label: string;
+  readonly run: () => Promise<void>;
+}
+
+/** 顺序执行的收尾阶段；阶段内逐条执行，任一条失败即停止后续全部阶段。 */
+export interface CaseCleanupStage {
+  readonly name: string;
+  readonly steps: ReadonlyArray<CaseCleanupStep>;
+}
+
+/**
+ * 未兑现的清理责任。
+ *
+ * - 首个失败项带 `error`（原始错误，含资源 ID / affectedRows 事实）；
+ * - 其后的条目只带步骤与标签，表示“尚未执行”，绝不在失败后继续扩大删除范围。
+ */
+export interface CaseCleanupDebt {
+  readonly stage: string;
+  readonly step: number;
+  readonly totalSteps: number;
+  readonly label: string;
+  readonly error?: unknown;
+}
+
+/** 一个用例收尾计划的实际结果：诊断、未兑现责任、是否需要阻断后续写入。 */
+export interface CaseCleanupReport {
+  readonly diagnostics: Error[];
+  readonly debts: ReadonlyArray<CaseCleanupDebt>;
+  readonly blocked: boolean;
+}
+
+/** 完整错误链（含 AggregateError 子项与 `cause`）的文本形式，用于实际测试输出。 */
+export const describeErrorChain = (error: unknown): string => {
+  if (error instanceof AggregateError) {
+    return `${error.message}: ${error.errors.map(describeErrorChain).join(' | ')}`;
+  }
+  if (error instanceof Error) {
+    const cause = (error as Error & { cause?: unknown }).cause;
+    return cause === undefined ? error.message : `${error.message} <- ${describeErrorChain(cause)}`;
+  }
+  return String(error);
+};
+
+/** 未兑现责任的定位摘要：阶段 + 步骤 + 标签 + 实际错误。 */
+export const describeCleanupDebts = (debts: ReadonlyArray<CaseCleanupDebt>): string =>
+  debts
+    .map((debt) => {
+      const error = debt.error === undefined ? '' : `：${describeErrorChain(debt.error)}`;
+      return `${debt.stage}第 ${debt.step}/${debt.totalSteps} 条「${debt.label}」${error}`;
+    })
+    .join('；');
+
+/**
+ * 执行用例收尾计划，并保证失败时责任不被静默丢弃。
+ *
+ * 语义：
+ * - 逐阶段逐条执行；成功兑现的条目不会再被执行第二次；
+ * - 任一条失败即停止后续全部阶段（不扩大删除范围），失败项与其后所有未执行项
+ *   以 `debts` 形式返回，调用方必须保留而不是丢弃；
+ * - 诊断信息内联阶段、步骤、标签与原始错误链，避免实际输出只剩一行聚合标题。
+ *
+ * 本函数只管理责任队列的生命周期，不隐含任何数据库语义，便于纯替身回归。
+ */
+export const runCaseCleanupPlan = async (
+  helper: string,
+  stages: ReadonlyArray<CaseCleanupStage>,
+): Promise<CaseCleanupReport> => {
+  const diagnostics: Error[] = [];
+  const debts: CaseCleanupDebt[] = [];
+  let stopped = false;
+
+  for (const stage of stages) {
+    const totalSteps = stage.steps.length;
+    for (let index = 0; index < totalSteps; index += 1) {
+      const step = stage.steps[index];
+      if (stopped) {
+        debts.push({ stage: stage.name, step: index + 1, totalSteps, label: step.label });
+        continue;
+      }
+      try {
+        await step.run();
+      } catch (error) {
+        stopped = true;
+        debts.push({
+          stage: stage.name,
+          step: index + 1,
+          totalSteps,
+          label: step.label,
+          error,
+        });
+        diagnostics.push(
+          new Error(
+            `${helper} ${stage.name}第 ${index + 1}/${totalSteps} 条「${step.label}」回收失败：` +
+              `${describeErrorChain(error)}；已跳过后续通用清理` +
+              '（不扩大删除范围，未兑现责任保留）',
+            { cause: error },
+          ),
+        );
+      }
+    }
+  }
+
+  return { diagnostics, debts, blocked: stopped };
+};
+
+/**
+ * 成功路径上“立即兑现”已登记的精确回收责任（R10c）。
+ *
+ * 背景：`resetCase()` 会丢弃仍留在队列中的登记。若在成功路径上先重置、再依赖
+ * `runCase` 的 finally 回收，登记就会被静默清空（R10c 曾因此遗留
+ * `maintenance_report_attachment` 干扰行，进而阻断 afterAll 删除其父报告）。
+ *
+ * 语义：
+ * - 逐条执行，**全部成功后才清空登记**；
+ * - 任一条失败时只移除已成功兑现的条目，失败项与其后未执行项继续留在登记中，
+ *   由调用方的 finally（`cleanupCase`）继续兑现，责任不因中断丢失；
+ * - 错误信息带步骤序号（从 1 开始）与标签，`cause` 保留原始 ID / affectedRows 细节。
+ */
+export const executeRegisteredCleanups = async (
+  registrations: CaseCleanupStep[],
+  helper: string,
+): Promise<void> => {
+  let executed = 0;
+  const total = registrations.length;
+  try {
+    while (executed < registrations.length) {
+      await registrations[executed].run();
+      executed += 1;
+    }
+  } catch (error) {
+    const failed = registrations[executed];
+    // 已成功兑现的条目不再重复执行；失败项与未执行项保留登记。
+    registrations.splice(0, executed);
+    throw new Error(
+      `${helper} 第 ${executed + 1} 条登记回收失败` +
+        `（共 ${total} 条，定位=${failed?.label ?? '未知'}）：${describeErrorChain(error)}`,
+      { cause: error },
+    );
+  }
+  registrations.length = 0;
+};
+
+/** 套件级保留的未兑现责任：记录来自哪个用例/helper，避免被下一个用例认领。 */
+export interface PreservedCleanupDebt extends CaseCleanupDebt {
+  readonly helper: string;
+}
+
+/**
+ * 套件级清理责任登记薄。
+ *
+ * 用例复位的 finally 不能把未兑现责任连同内存队列一起丢掉；登记薄把它们留在
+ * 用例之外，下一个用例既不会重新执行（不认领前一个现场），也不能继续写入
+ * （由调用方用 `unresolved()` 显式阻断），直到责任被显式结清。
+ */
+export interface CleanupDebtRegistry {
+  preserve(helper: string, debts: ReadonlyArray<CaseCleanupDebt>): void;
+  /** 结清指定 helper 前缀的责任；返回结清描述（含原因），便于输出审计。 */
+  settle(helperPrefix: string, reason: string): string[];
+  unresolved(): ReadonlyArray<PreservedCleanupDebt>;
+  describe(): string;
+}
+
+export const createCleanupDebtRegistry = (): CleanupDebtRegistry => {
+  const preserved: PreservedCleanupDebt[] = [];
+  return {
+    preserve(helper: string, debts: ReadonlyArray<CaseCleanupDebt>): void {
+      for (const debt of debts) {
+        preserved.push({ helper, ...debt });
+      }
+    },
+    settle(helperPrefix: string, reason: string): string[] {
+      const settled: string[] = [];
+      for (let index = preserved.length - 1; index >= 0; index -= 1) {
+        const debt = preserved[index];
+        if (!debt.helper.startsWith(helperPrefix)) {
+          continue;
+        }
+        settled.push(
+          `${debt.helper} ${debt.stage}第 ${debt.step}/${debt.totalSteps} 条` +
+            `「${debt.label}」已结清：${reason}`,
+        );
+        preserved.splice(index, 1);
+      }
+      return settled.reverse();
+    },
+    unresolved(): ReadonlyArray<PreservedCleanupDebt> {
+      return [...preserved];
+    },
+    describe(): string {
+      if (preserved.length === 0) {
+        return '无未兑现清理责任';
+      }
+      return preserved.map((debt) => `${debt.helper}：${describeCleanupDebts([debt])}`).join('；');
+    },
+  };
+};
+
+/**
+ * 写入前检查：仍有未兑现清理责任时明确阻断，而不是让下一个用例认领前一个现场。
+ *
+ * 阻断即失败，并输出责任定位；不跳过用例、不代行删除、不扩大清理范围。
+ */
+export const assertCleanupDebtsSettled = (
+  registry: CleanupDebtRegistry,
+  context: string,
+  blockedReason: string | null = null,
+): void => {
+  const unresolved = registry.unresolved();
+  if (unresolved.length === 0) {
+    return;
+  }
+  throw new Error(
+    `拒绝在 ${context} 继续写入：存在 ${unresolved.length} 条未兑现清理责任` +
+      `（${blockedReason ?? '收尾未完成'}）；现场必须保留并显式处置；` +
+      registry.describe(),
+  );
+};
+
+/**
+ * 构造用例失败：主错误、收尾错误与未兑现责任全部内联到 message。
+ *
+ * Jest 默认只打印 AggregateError 的 title，因此不能只依赖 `.errors`；
+ * 这里把每条子错误的完整错误链写进 message，实际测试输出可直接定位。
+ */
+export const createCaseFailure = (
+  name: string,
+  parts: {
+    readonly primary?: unknown;
+    readonly diagnostics: ReadonlyArray<unknown>;
+    readonly debts: ReadonlyArray<CaseCleanupDebt>;
+  },
+): AggregateError => {
+  const errors: unknown[] = [];
+  const described: string[] = [];
+  if (parts.primary !== undefined) {
+    errors.push(parts.primary);
+    described.push(`主错误=${describeErrorChain(parts.primary)}`);
+  }
+  if (parts.diagnostics.length > 0) {
+    errors.push(...parts.diagnostics);
+    described.push(`收尾错误=${parts.diagnostics.map(describeErrorChain).join('；')}`);
+  }
+  if (parts.debts.length > 0) {
+    described.push(`未兑现清理责任=${describeCleanupDebts(parts.debts)}`);
+  }
+  return new AggregateError(errors, `${name} ${described.join('；')}`);
+};
+
+/**
+ * 台账摘要（只读）：保留各登记类别的非空 ID，供收尾标签与诊断定位。
+ * 不改变台账，也不按摘要推断可删除范围。
+ */
+export const summarizeOwnedResourceLedger = (ledger: OwnedResourceLedger): string => {
+  const parts: string[] = [];
+  for (const [category, value] of Object.entries(ledger)) {
+    if (category === 'facts' || !Array.isArray(value)) {
+      continue;
+    }
+    const ids = value as Array<number | string>;
+    if (ids.length === 0) {
+      continue;
+    }
+    parts.push(`${category}=[${ids.map((id) => String(id)).join(',')}]`);
+  }
+  return parts.length === 0 ? '空台账' : parts.join('; ');
 };
 
 const OBSERVATION_ENABLED_SQL = `SELECT @@performance_schema AS enabled`;
