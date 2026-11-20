@@ -7,8 +7,10 @@
 // 真实后端链路由后端 S2 真实 GraphQL 验证覆盖。
 
 import { expect, type Route,test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
+import { captureStableViewport } from './helpers/visual-evidence';
 
 const PART_IDS = [
   'controller',
@@ -740,4 +742,37 @@ test.describe('AI 会话导出与管理员只读（任务05 S4）', () => {
 
     await expect(page.getByRole('button', { name: '导出 PDF' })).toBeDisabled();
   });
+});
+
+// 提交级视觉证据：仅在干净 HEAD 下采集（helper 会对脏工作区失败关闭）
+test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', () => {
+  const EVIDENCE_DIR = process.env.AI_VISUAL_DIR ?? '';
+
+  for (const viewport of [
+    { name: 'desktop-1440x900', width: 1440, height: 900 },
+    { name: 'medium-1366x768', width: 1366, height: 768 },
+    { name: 'narrow-390x844', width: 390, height: 844 },
+  ]) {
+    test(`${viewport.name}：问答与流程示意全视口截图`, async ({ page }) => {
+      test.skip(EVIDENCE_DIR.length === 0, '缺少 AI_VISUAL_DIR（证据目录，不入库）');
+      mkdirSync(EVIDENCE_DIR, { recursive: true });
+
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      const state = createMockState();
+      await installGraphQLMock(page, state);
+      await page.goto('/engineer/ai');
+      await page.getByRole('button', { name: '新建对话' }).click();
+      await page.getByLabel('AI 提问').fill('晶圆台定位偏差持续偏大，如何排查？');
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+        timeout: 8000,
+      });
+
+      const fileName = `ai-conversation-${viewport.name}`;
+      await captureStableViewport(page, {
+        fileName,
+        filePath: `${EVIDENCE_DIR}/${fileName}.png`,
+      });
+    });
+  }
 });
