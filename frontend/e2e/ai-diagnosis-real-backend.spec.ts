@@ -276,7 +276,8 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
 
     const firstTurn = turnBlocks(page).filter({ hasText: resolution.failToken });
     // 重试入口只在「正式 FAILED 且无回答」时出现，等价于等待正式失败落库
-    await expect(firstTurn.getByRole('button')).toBeVisible({ timeout: 120_000 });
+    const retryButton = firstTurn.getByRole('button', { name: /重试本轮|Retry turn/i });
+    await expect(retryButton).toBeVisible({ timeout: 120_000 });
 
     // 第 2 问：同一会话成功，用于验证末轮状态不被早轮重试破坏
     const okQuestion = `${resolution.okTag} 第二问：定位激光异常时如何确认状态？`;
@@ -311,7 +312,9 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     await expect(turnBlocks(page)).toHaveCount(2, { timeout: 30_000 });
 
     const selectedFirstTurn = turnBlocks(page).filter({ hasText: resolution.failToken });
-    await expect(selectedFirstTurn.getByRole('button')).toBeVisible({ timeout: 30_000 });
+    await expect(
+      selectedFirstTurn.getByRole('button', { name: /重试本轮|Retry turn/i }),
+    ).toBeVisible({ timeout: 30_000 });
 
     const beforeResume = await readConversation(page, conversationId);
 
@@ -332,7 +335,7 @@ test.describe('AI 诊断工作区 · 真实后端（任务05 S3）', () => {
     });
     expect(releaseResponse.ok).toBe(true);
 
-    await selectedFirstTurn.getByRole('button').click();
+    await selectedFirstTurn.getByRole('button', { name: /重试本轮|Retry turn/i }).click();
     await expect.poll(() => retryBodies.join('\n'), { timeout: 30_000 }).toContain(firstUuid);
     expect(retryBodies.join('\n')).toContain(`"conversationId":${conversationId}`);
     expect(submitBodiesAfterRetry).toHaveLength(0);
