@@ -2,6 +2,14 @@
 
 import { defineConfig } from '@playwright/test';
 
+/**
+ * mock-only 入口的 dev server 端口。
+ * 默认 4173（与既有约定一致）；当该端口被本机其它进程或代理占用时，
+ * 可用 PLAYWRIGHT_PORT 改用其它空闲端口，避免「端口被占用 → 用例无法执行」。
+ */
+const DEV_PORT = Number(process.env.PLAYWRIGHT_PORT ?? 4173);
+const DEV_URL = `http://127.0.0.1:${DEV_PORT}`;
+
 export default defineConfig({
   expect: {
     timeout: 5_000,
@@ -31,13 +39,13 @@ export default defineConfig({
   ],
   timeout: 20_000,
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: DEV_URL,
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 4173 --strictPort',
+    command: `npm run dev -- --host 127.0.0.1 --port ${DEV_PORT} --strictPort`,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
-    url: 'http://127.0.0.1:4173',
+    url: DEV_URL,
   },
 });
