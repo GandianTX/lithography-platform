@@ -32,6 +32,7 @@ export function EngineerAiHistoryPage() {
       },
       {
         dataIndex: 'requestNo',
+        ellipsis: true,
         render: (value: string) => value || '—',
         title: t('ai.record.column.requestNo'),
         width: 200,
@@ -50,6 +51,12 @@ export function EngineerAiHistoryPage() {
         ),
         title: t('ai.record.column.status'),
         width: 110,
+      },
+      {
+        dataIndex: 'createdAt',
+        render: (value: string) => (value ? formatDateTime(value) : '—'),
+        title: t('ai.record.column.createdAt'),
+        width: 180,
       },
       {
         dataIndex: 'lastMessageAt',
@@ -109,6 +116,14 @@ export function EngineerAiHistoryPage() {
         {workspace.errorMessage !== null ? (
           <div className="ai-compose-alert" role="alert">
             {workspace.errorMessage}
+            <Button
+              disabled={loading}
+              onClick={() => void workspace.loadConversations()}
+              size="small"
+              type="link"
+            >
+              {t('ai.record.retry')}
+            </Button>
           </div>
         ) : null}
 
@@ -151,5 +166,6 @@ function formatDateTime(value: string): string {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleString('zh-CN', { hour12: false });
+  // 跟随浏览器/界面语言，避免英文界面出现中文日期格式
+  return date.toLocaleString(undefined, { hour12: false });
 }

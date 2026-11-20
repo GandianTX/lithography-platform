@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { base64ToBlob, saveBlobAsFile } from '@/shared/download';
+import { useI18n } from '@/shared/i18n';
 
 import { parseAiVisualization } from '../domain/ai-visualization';
 import type {
@@ -37,7 +38,8 @@ import { describeAiConversationError } from './ai-conversation-error';
 
 const PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 1500;
-const QUESTION_MAX_LENGTH = 2000;
+/** 问题正文上限（与后端校验一致，前端同步拦截，避免白跑一次提交） */
+export const AI_QUESTION_MAX_LENGTH = 2000;
 
 /** 终态：不再轮询 */
 function isTerminalStatus(status: AiQuestionStatus['status']): boolean {
@@ -136,6 +138,7 @@ const INITIAL_STATE: AiDiagnosisWorkspaceState = {
  * 工作区 hook：会话列表、会话详情、提问、轮询本轮状态、失败重试、图形应用。
  */
 export function useAiDiagnosisWorkspace() {
+  const { t } = useI18n();
   const [state, setState] = useState<AiDiagnosisWorkspaceState>(INITIAL_STATE);
 
   /** 会话代数：切换会话/新建时自增，用于丢弃旧会话的迟到响应 */
@@ -500,13 +503,18 @@ export function useAiDiagnosisWorkspace() {
       }
       const trimmed = question.trim();
       if (trimmed.length === 0) {
-        setState((current) => ({ ...current, errorMessage: '问题正文不能为空' }));
-        return null;
-      }
-      if (trimmed.length > QUESTION_MAX_LENGTH) {
         setState((current) => ({
           ...current,
-          errorMessage: `问题正文长度必须在 1–${QUESTION_MAX_LENGTH} 字之间`,
+          errorMessage: t('ai.panel.error.emptyQuestion'),
+        }));
+        return null;
+      }
+      if (trimmed.length > AI_QUESTION_MAX_LENGTH) {
+        setState((current) => ({
+          ...current,
+          errorMessage: t('ai.panel.error.questionTooLong', {
+            max: String(AI_QUESTION_MAX_LENGTH),
+          }),
         }));
         return null;
       }
@@ -547,7 +555,7 @@ export function useAiDiagnosisWorkspace() {
             setState((current) => ({
               ...current,
               submitting: false,
-              errorMessage: '上一次会话创建结果未知：请先点「新建对话」再重新发送。',
+              errorMessage: t('ai.panel.error.createUnknown'),
             }));
             return null;
           }
@@ -674,6 +682,7 @@ export function useAiDiagnosisWorkspace() {
       state.createUnknown,
       state.draftRequestId,
       state.selectedId,
+      t,
       state.stage,
     ],
   );

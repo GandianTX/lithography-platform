@@ -113,6 +113,8 @@ AI 对话工作区页面级色板（05，正式路由 `#/engineer/ai/chat`；V44
 | `--ai-scene-bg-end`      | `#dfe7ef` | `#101722` | 场景区径向渐变终点（V44 实测 100% 色标）                         |
 | `--ai-input-line`        | `#c9d7e6` | `#2f4462` | 输入框描边（V44 `.ai36-shell .ai33-compose textarea` 实测）      |
 | `--ai-input-bg`          | `#fbfdff` | `#141d2b` | 输入框底色（V44 实测）                                           |
+| `--ai-failure-bg`        | `#fff2f0` | `#3a1f22` | 失败轮提示块背景（AntD errorBg 同语义）                          |
+| `--ai-failure-line`      | `#ffccc7` | `#6b3237` | 失败轮提示块边框（AntD errorBorder 同语义）                      |
 
 同族新增色值必须先在本表登记，再登记到 `scripts/lint-colors.mjs` 的受控 token 集合；
 组件侧只允许 `var(--ai-*)`，不得直接写字面色值。

@@ -2519,6 +2519,8 @@ body {
   --ai-scene-bg-mid: #e8eff5;
   --ai-scene-bg-end: #dfe7ef;
   /* V44 输入框（.ai36-shell .ai33-compose textarea 实测边框/底色） */
+  --ai-failure-bg: #fff2f0;
+  --ai-failure-line: #ffccc7;
   --ai-input-line: #c9d7e6;
   --ai-input-bg: #fbfdff;
   /* V44 正式工作区实际运行值（#/engineer/ai/chat，1440×900 实测） */
@@ -2543,6 +2545,8 @@ body {
   --ai-geo-part-warning: #e0a04a;
   --ai-geo-part-hidden: #3c4757;
   --ai-geo-part-fault: #f07a80;
+  --ai-failure-bg: #3a1f22;
+  --ai-failure-line: #6b3237;
   --ai-geo-outline: #6f9bb0;
   --ai-geo-outline-highlight: #52c2ef;
   --ai-geo-outline-warning: #ffd68f;
@@ -2658,13 +2662,13 @@ body {
 @media (min-width: 981px) {
   .ai-workspace-grid {
     gap: 0;
-    /* V44 实测列宽 799.5 / 430.5（≈ 65% / 35%） */
-    grid-template-columns: minmax(0, 1fr) minmax(360px, 35%);
+    /* V44 实测列宽 799.5 / 430.5（≈ 65% / 35%）；宽屏封顶 530px，窄屏保底 350px */
+    grid-template-columns: minmax(0, 1fr) clamp(350px, 35%, 530px);
   }
 
   /* 05 局部避让：右下固定 AI 入口移出对话面板，避免压住输入框/发送/历史 */
   body:has(.ai-workspace) .entry-trigger-shell {
-    right: calc(35% + 24px);
+    right: calc(clamp(350px, 35%, 530px) + 24px);
   }
 }
 
@@ -2743,10 +2747,13 @@ body {
   min-width: 0;
 }
 
-.ai-panel-header {
-  align-items: center;
+.ai-panel-top {
   background: var(--ai-panel-header-bg);
   border-bottom: 1px solid var(--ai-panel-line);
+}
+
+.ai-panel-header {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -2807,7 +2814,7 @@ body {
 /* 任务05 S1：关联工单行（面板第二行，来源固定在头部下方） */
 .ai-panel-work-order {
   align-items: center;
-  border-bottom: 1px solid var(--ai-panel-line);
+  border-top: 1px solid var(--ai-panel-line);
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -2873,8 +2880,8 @@ body {
 }
 
 .ai-turn-failure {
-  background: rgb(255 77 79 / 8%);
-  border: 1px dashed rgb(255 77 79 / 45%);
+  background: var(--ai-failure-bg);
+  border: 1px dashed var(--ai-failure-line);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -2894,6 +2901,15 @@ body {
   text-align: center;
 }
 
+.ai-thread-shell {
+  --ai-thread-jump-z: 2;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
 .ai-thread-jump {
   align-self: center;
   background: var(--ai-chip-bg);
@@ -2904,7 +2920,7 @@ body {
   font-size: 12px;
   margin: -14px 0 4px;
   padding: 3px 12px;
-  z-index: 2;
+  z-index: var(--ai-thread-jump-z);
 }
 
 .ai-compose-actions {

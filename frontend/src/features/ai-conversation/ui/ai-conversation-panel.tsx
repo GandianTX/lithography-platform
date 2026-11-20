@@ -7,6 +7,7 @@ import type { UIEvent } from 'react';
 import type { MessageKey } from '@/shared/i18n';
 import { useI18n } from '@/shared/i18n';
 
+import { AI_QUESTION_MAX_LENGTH } from '../application/use-ai-diagnosis-workspace';
 import type {
   AiConversationDetail,
   AiConversationTurn,
@@ -58,34 +59,6 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
   const { t } = useI18n();
   const { conversation, draft, generating, creating, submitting } = props;
 
-  const threadRef = useRef<HTMLDivElement | null>(null);
-  const [pinned, setPinned] = useState(true);
-
-  // 跟随最新：用户没有主动上滚时才自动贴底，避免打断回看
-  useEffect(() => {
-    if (!pinned) {
-      return;
-    }
-    const element = threadRef.current;
-    if (element === null) {
-      return;
-    }
-    element.scrollTop = element.scrollHeight;
-  }, [conversation?.id, conversation?.turns.length, generating, pinned]);
-
-  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
-    const element = event.currentTarget;
-    setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 32);
-  }, []);
-
-  const scrollToLatest = useCallback(() => {
-    const element = threadRef.current;
-    if (element !== null) {
-      element.scrollTop = element.scrollHeight;
-    }
-    setPinned(true);
-  }, []);
-
   // 生成中允许继续提问（后端按轮次受理）；只锁提交与创建在飞
   const busy = submitting || creating;
   const workOrderLocked = conversation !== null || creating;
@@ -107,79 +80,67 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
 
   return (
     <aside aria-label={t('ai.panel.regionLabel')} className="ai-panel">
-      <div className="ai-panel-header">
-        <Space align="center" size={8}>
-          <Text strong>{t('ai.panel.title')}</Text>
-          {conversation !== null && conversation.turns.length > 0 ? (
-            <Text className="ai-turn-count" type="secondary">
-              {t('ai.panel.turnCount', { count: conversation.turns.length })}
-            </Text>
-          ) : null}
-        </Space>
-        <Button disabled={creating} onClick={props.onNewChat} size="small">
-          {t('ai.panel.newChat')}
-        </Button>
-      </div>
-
-      <div className="ai-panel-work-order">
-        <Text type="secondary">{t('ai.panel.workOrderLabel')}</Text>
-        <div className="ai-work-order-select">
-          <Select
-            allowClear
-            aria-label={t('ai.panel.workOrderLabel')}
-            disabled={workOrderLocked}
-            loading={props.workOrderStatus === 'loading'}
-            notFoundContent={workOrderNotFound}
-            onChange={(value: number | null | undefined) => props.onWorkOrderChange(value ?? null)}
-            onPopupScroll={(event) => {
-              const element = event.currentTarget;
-              if (element.scrollHeight - element.scrollTop - element.clientHeight < 24) {
-                props.onLoadMoreWorkOrders();
-              }
-            }}
-            options={props.workOrders.map((option) => ({ label: option.label, value: option.id }))}
-            placeholder={t('ai.panel.workOrderPlaceholder')}
-            popupMatchSelectWidth={320}
-            showSearch
-            size="small"
-            value={selectedWorkOrder ?? undefined}
-          />
+      <div className="ai-panel-top">
+        <div className="ai-panel-header">
+          <Space align="center" size={8}>
+            <Text strong>{t('ai.panel.title')}</Text>
+            {conversation !== null && conversation.turns.length > 0 ? (
+              <Text className="ai-turn-count" type="secondary">
+                {t('ai.panel.turnCount', { count: conversation.turns.length })}
+              </Text>
+            ) : null}
+          </Space>
+          <Button disabled={creating} onClick={props.onNewChat} size="small">
+            {t('ai.panel.newChat')}
+          </Button>
         </div>
-        <Text className="ai-work-order-hint" type="secondary">
-          {conversation !== null
-            ? t('ai.panel.workOrderLockedHint')
-            : t('ai.panel.workOrderStandaloneHint')}
-        </Text>
-      </div>
 
-      <div
-        aria-label={t('ai.panel.threadLabel')}
-        className="ai-thread"
-        onScroll={handleScroll}
-        ref={threadRef}
-        role="log"
-      >
-        {conversation === null || conversation.turns.length === 0 ? (
-          <div className="ai-thread-empty">{t('ai.panel.empty')}</div>
-        ) : (
-          conversation.turns.map((turn) => (
-            <TurnBlock
-              activeQuestionUuid={props.activeQuestionUuid}
-              key={turn.questionUuid}
-              onRefresh={props.onRefreshTurn}
-              onRetry={props.onRetryTurn}
-              retrying={props.retrying}
-              turn={turn}
+        <div className="ai-panel-work-order">
+          <Text type="secondary">{t('ai.panel.workOrderLabel')}</Text>
+          <div className="ai-work-order-select">
+            <Select
+              allowClear
+              aria-label={t('ai.panel.workOrderLabel')}
+              disabled={workOrderLocked}
+              loading={props.workOrderStatus === 'loading'}
+              notFoundContent={workOrderNotFound}
+              onChange={(value: number | null | undefined) =>
+                props.onWorkOrderChange(value ?? null)
+              }
+              onPopupScroll={(event) => {
+                const element = event.currentTarget;
+                if (element.scrollHeight - element.scrollTop - element.clientHeight < 24) {
+                  props.onLoadMoreWorkOrders();
+                }
+              }}
+              options={props.workOrders.map((option) => ({
+                label: option.label,
+                value: option.id,
+              }))}
+              placeholder={t('ai.panel.workOrderPlaceholder')}
+              popupMatchSelectWidth={320}
+              showSearch
+              size="small"
+              value={selectedWorkOrder ?? undefined}
             />
-          ))
-        )}
+          </div>
+          <Text className="ai-work-order-hint" type="secondary">
+            {conversation !== null
+              ? t('ai.panel.workOrderLockedHint')
+              : t('ai.panel.workOrderStandaloneHint')}
+          </Text>
+        </div>
       </div>
 
-      {!pinned ? (
-        <button className="ai-thread-jump" onClick={scrollToLatest} type="button">
-          {t('ai.panel.toLatest')}
-        </button>
-      ) : null}
+      <ConversationThread
+        activeQuestionUuid={props.activeQuestionUuid}
+        conversation={conversation}
+        generating={generating}
+        key={conversation?.id ?? 'draft'}
+        onRefresh={props.onRefreshTurn}
+        onRetry={props.onRetryTurn}
+        retrying={props.retrying}
+      />
 
       <div className="ai-compose">
         {props.errorMessage !== null ? (
@@ -198,11 +159,17 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
           aria-label={t('ai.panel.composeLabel')}
           autoSize={{ maxRows: 4, minRows: 2 }}
           onChange={(event) => props.onDraftChange(event.target.value)}
+          maxLength={AI_QUESTION_MAX_LENGTH}
           onPressEnter={(event) => {
-            if (!event.shiftKey) {
-              event.preventDefault();
-              props.onSubmit();
+            // 中文/日文输入法确认候选词时的回车不是「发送」
+            if (event.nativeEvent.isComposing) {
+              return;
             }
+            if (event.shiftKey) {
+              return;
+            }
+            event.preventDefault();
+            props.onSubmit();
           }}
           placeholder={t('ai.panel.composePlaceholder')}
           showCount
@@ -231,6 +198,85 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
         </div>
       </div>
     </aside>
+  );
+}
+
+type ConversationThreadProps = {
+  conversation: AiConversationDetail | null;
+  activeQuestionUuid: string | null;
+  generating: boolean;
+  retrying: boolean;
+  onRetry: (questionUuid: string) => void;
+  onRefresh: (questionUuid: string) => void;
+};
+
+/**
+ * 会话区：只有消息流滚动，输入区常驻可达。
+ *
+ * 按会话 key 挂载：切换会话即回到「跟随最新」，另一个会话的回看位置不会带进来；
+ * 同一会话内用户上滚回看时停止自动贴底，并给出「回到最新」。
+ */
+function ConversationThread(props: ConversationThreadProps) {
+  const { t } = useI18n();
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const [pinned, setPinned] = useState(true);
+  const turns = props.conversation?.turns ?? [];
+
+  useEffect(() => {
+    if (!pinned) {
+      return;
+    }
+    const element = threadRef.current;
+    if (element === null) {
+      return;
+    }
+    element.scrollTop = element.scrollHeight;
+  }, [pinned, props.generating, turns.length]);
+
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 32);
+  }, []);
+
+  const scrollToLatest = useCallback(() => {
+    const element = threadRef.current;
+    if (element !== null) {
+      element.scrollTop = element.scrollHeight;
+    }
+    setPinned(true);
+  }, []);
+
+  return (
+    <div className="ai-thread-shell">
+      <div
+        aria-label={t('ai.panel.threadLabel')}
+        className="ai-thread"
+        onScroll={handleScroll}
+        ref={threadRef}
+        role="log"
+      >
+        {turns.length === 0 ? (
+          <div className="ai-thread-empty">{t('ai.panel.empty')}</div>
+        ) : (
+          turns.map((turn) => (
+            <TurnBlock
+              activeQuestionUuid={props.activeQuestionUuid}
+              key={turn.questionUuid}
+              onRefresh={props.onRefresh}
+              onRetry={props.onRetry}
+              retrying={props.retrying}
+              turn={turn}
+            />
+          ))
+        )}
+      </div>
+
+      {pinned ? null : (
+        <button className="ai-thread-jump" onClick={scrollToLatest} type="button">
+          {t('ai.panel.toLatest')}
+        </button>
+      )}
+    </div>
   );
 }
 

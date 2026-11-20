@@ -882,6 +882,10 @@ export const EN_MESSAGES = {
   'ai.panel.inputLabel': 'Ask AI',
   'ai.panel.inputPlaceholder': 'Enter a question or retest results',
   'ai.panel.send': 'Send',
+  'ai.panel.error.emptyQuestion': 'Question text is required',
+  'ai.panel.error.questionTooLong': 'Question text must be 1-{max} characters',
+  'ai.panel.error.createUnknown':
+    'The previous conversation creation failed and its result is unknown. Click "New chat" and send again.',
   'ai.panel.refreshTurn': 'Refresh turn',
   'ai.panel.retry': 'Retry turn',
   'ai.panel.retryTurnAria': 'Retry turn {turn}',
@@ -911,6 +915,7 @@ export const EN_MESSAGES = {
   'ai.record.column.createdAt': 'Created',
   'ai.record.open': 'Open chat',
   'ai.record.loadMore': 'Load more',
+  'ai.record.retry': 'Reload',
   'ai.record.loadedSummary': 'Loaded {loaded} of {total}',
   'ai.record.empty': 'No Q&A records yet',
   'ai.record.loading': 'Loading Q&A records…',
