@@ -5,8 +5,10 @@
 
 import { Injectable } from '@nestjs/common';
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import type {
   AiWorkflowAdmissionPort,
+  AiWorkflowAdmissionPrepareResult,
   AiWorkflowAdmissionRequest,
   AiWorkflowAdmissionResult,
 } from '@src/usecases/common/ports/ai-workflow-admission.contract';
@@ -36,6 +38,34 @@ export class AiWorkflowAdmissionAdapter implements AiWorkflowAdmissionPort {
       provider: request.provider,
       model: request.model,
     });
+    return toAdmissionResult(result);
+  }
+
+  async prepareInTransaction(
+    request: AiWorkflowAdmissionRequest,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<AiWorkflowAdmissionPrepareResult> {
+    const result = await this.createAndAdmit.prepareInTransaction(
+      {
+        workflowType: request.workflowType,
+        workflowDedupKey: request.workflowDedupKey,
+        inputPayload: request.inputPayload as AiWorkflowJsonPayload,
+        bizType: request.bizType,
+        bizKey: request.bizKey,
+        bizSubKey: request.bizSubKey,
+        source: toContextSource(request.source),
+        actorAccountId: request.actorAccountId,
+        actorActiveRole: request.actorActiveRole,
+        provider: request.provider,
+        model: request.model,
+      },
+      transactionContext,
+    );
+    return result;
+  }
+
+  async admitExisting(input: { readonly workflowId: string }): Promise<AiWorkflowAdmissionResult> {
+    const result = await this.createAndAdmit.admitExisting({ workflowId: input.workflowId });
     return toAdmissionResult(result);
   }
 }

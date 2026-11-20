@@ -126,13 +126,17 @@ export class AiWorkflowContextService {
       actorActiveRole: normalizeNullableString(input.actorActiveRole, 'actorActiveRole'),
       provider: normalizeNullableString(input.provider, 'provider'),
       model: normalizeNullableString(input.model, 'model'),
-      status: 'CREATED',
+      // Q01：带准入计划创建时，落成现有恢复器真正扫描的待准入状态与调度时间，
+      // 而不是只写一条不会被 housekeeping 处理的 CREATED
+      status: input.admission ? 'ADMISSION_WAITING' : 'CREATED',
       inputPayloadJson,
       outputPayloadJson: null,
-      admissionAttemptCount: 0,
-      nextEnqueueAt: null,
-      admissionExpiresAt: null,
-      admissionReason: null,
+      admissionAttemptCount: input.admission ? 1 : 0,
+      nextEnqueueAt: input.admission ? new Date(input.admission.nextEnqueueAt) : null,
+      admissionExpiresAt: input.admission ? new Date(input.admission.admissionExpiresAt) : null,
+      admissionReason: input.admission
+        ? normalizeRequiredString(input.admission.admissionReason, 'admissionReason')
+        : null,
       errorCode: null,
       errorMessage: null,
     });
@@ -203,6 +207,107 @@ export class AiWorkflowContextService {
       dedupHash: hashWorkflowDedupKey(input.workflowDedupKey),
     });
     return entity ? this.toView(entity) : null;
+  }
+
+  /**
+   * 按业务目标读取「当前活动执行」（任务05 F04／B1）。
+   *
+   * 与 `findLatestWorkflowIdByBizTarget` 的时间排序不同：这里只认未终态执行。
+   * 活动去重唯一键保证同一（workflowType，去重键）最多一条活动记录，
+   * 因此不需要也不允许用 createdAt 推断代次。`forUpdate` 供写回事务内做当前读。
+   */
+  async findActiveByBizTarget(input: {
+    readonly workflowType: string;
+    readonly bizType: string;
+    readonly bizSubKey: string;
+    readonly transactionContext?: PersistenceTransactionContext;
+    readonly forUpdate?: boolean;
+  }): Promise<AiWorkflowContextView | null> {
+    const repository = this.resolveRepository(input.transactionContext);
+    try {
+      const entity = await repository.findOne({
+        where: {
+          workflowType: normalizeRequiredString(input.workflowType, 'workflowType'),
+          bizType: normalizeRequiredString(input.bizType, 'bizType'),
+          bizSubKey: normalizeRequiredString(input.bizSubKey, 'bizSubKey'),
+          status: In([...AI_WORKFLOW_CONTEXT_ACTIVE_STATUSES]),
+        },
+        ...(input.forUpdate && input.transactionContext
+          ? { lock: { mode: 'pessimistic_write' as const } }
+          : {}),
+      });
+      return entity ? this.toView(entity) : null;
+    } catch (error: unknown) {
+      throw new DomainError(
+        AI_WORKFLOW_CONTEXT_ERROR.READ_FAILED,
+        '读取业务目标当前活动执行失败',
+        { workflowType: input.workflowType, bizType: input.bizType },
+        error,
+      );
+    }
+  }
+
+  /**
+   * 按业务目标读取「最近一次执行」（含终态），用于执行失败但业务状态未收敛的判定。
+   *
+   * 与活动执行读取互补：活动执行为空时，用本方法区分「从未执行」与「执行已失败/取消」。
+   */
+  async findLatestByBizTarget(input: {
+    readonly workflowType: string;
+    readonly bizType: string;
+    readonly bizSubKey: string;
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<AiWorkflowContextView | null> {
+    const repository = this.resolveRepository(input.transactionContext);
+    const entity = await repository.findOne({
+      where: {
+        workflowType: normalizeRequiredString(input.workflowType, 'workflowType'),
+        bizType: normalizeRequiredString(input.bizType, 'bizType'),
+        bizSubKey: normalizeRequiredString(input.bizSubKey, 'bizSubKey'),
+      },
+      order: { createdAt: 'DESC', workflowId: 'DESC' },
+    });
+    return entity ? this.toView(entity) : null;
+  }
+
+  /**
+   * 读取「某工作流类型下、在给定时刻之后进入终态」的执行（按 updatedAt 升序）。
+   *
+   * 与 `listTerminalContextsForDrain` 的区别：后者服务于 async task 对账，要求
+   * queue／job 身份齐全且按最旧优先，会长期停留在历史记录上；本方法服务于
+   * 业务侧「执行终止但业务状态未收敛」的窗口扫描，带时间下界避免重复扫历史。
+   */
+  async listTerminalByTypeSince(input: {
+    readonly workflowType: string;
+    readonly updatedSince: Date;
+    readonly limit: number;
+  }): Promise<AiWorkflowContextHousekeepingCandidate[]> {
+    const repository = this.resolveRepository();
+    try {
+      const entities = await repository
+        .createQueryBuilder('context')
+        .select([...HOUSEKEEPING_SELECT_COLUMNS])
+        .where('context.status IN (:...statuses)', {
+          statuses: [...AI_WORKFLOW_CONTEXT_TERMINAL_STATUSES],
+        })
+        .andWhere('context.workflowType = :workflowType', {
+          workflowType: normalizeRequiredString(input.workflowType, 'workflowType'),
+        })
+        .andWhere('context.bizSubKey IS NOT NULL')
+        .andWhere('context.updatedAt >= :updatedSince', { updatedSince: input.updatedSince })
+        .orderBy('context.updatedAt', 'ASC')
+        .addOrderBy('context.workflowId', 'ASC')
+        .take(normalizeListLimit(input.limit))
+        .getMany();
+      return entities.map((entity) => this.toHousekeepingCandidate(entity));
+    } catch (error: unknown) {
+      throw new DomainError(
+        AI_WORKFLOW_CONTEXT_ERROR.READ_FAILED,
+        '读取窗口内终态 AI workflow context 失败',
+        {},
+        error,
+      );
+    }
   }
 
   async listDueAdmissionWaitingContexts(
