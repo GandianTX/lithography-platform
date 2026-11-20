@@ -415,7 +415,10 @@ export class AiConversationQueryService {
       .groupBy('message.conversationId')
       .getRawMany();
 
-    const stats = new Map<number, { count: number; lastMessageAt: Date | null; turnCount: number }>();
+    const stats = new Map<
+      number,
+      { count: number; lastMessageAt: Date | null; turnCount: number }
+    >();
     for (const row of rows) {
       const lastMessageAt =
         row.lastMessageAt === null
