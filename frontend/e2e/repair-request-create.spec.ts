@@ -11,7 +11,9 @@ const CUSTOMER_HOME_PATH = '/customer';
 
 type GraphQLOperationPayload = {
   query?: string;
-  variables?: { input?: { equipmentModelId?: number } };
+  variables?: {
+    input?: { equipmentModelId?: number; recordUuid?: string; serviceOrganizationId?: number };
+  };
 };
 
 function fulfillModelsSuccess(route: Route) {
@@ -22,6 +24,24 @@ function fulfillModelsSuccess(route: Route) {
           { id: 900301, modelCode: 'LS-100', modelName: '光刻机 A' },
           { id: 900302, modelCode: 'LS-200', modelName: '光刻机 B' },
         ],
+      },
+    }),
+    contentType: 'application/json',
+    status: 200,
+  });
+}
+
+/** 任务 03：厂家候选查询的合法应答（创建页新增必填厂家下拉） */
+function fulfillServiceOrgsSuccess(route: Route) {
+  return route.fulfill({
+    body: JSON.stringify({
+      data: {
+        repairServiceOrganizationSearch: {
+          items: [{ id: 900888, name: 'E2E 维修公司', shortName: 'E2E' }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        },
       },
     }),
     contentType: 'application/json',
@@ -75,6 +95,12 @@ async function routeGraphQL(page: Page, onCreate: (route: Route) => Promise<void
       return;
     }
 
+    // 任务 03：厂家候选查询（创建页必填下拉），与型号查询并行
+    if (payload.query?.includes('query RepairServiceOrganizationSearch')) {
+      await fulfillServiceOrgsSuccess(route);
+      return;
+    }
+
     // 2026-09-29 整合工作台：create 态左栏同时查询列表（不属本用例断言范围，返回空页）
     if (payload.query?.includes('query MyRepairRequests')) {
       await fulfillMyRepairRequests(route, []);
@@ -88,8 +114,12 @@ async function routeGraphQL(page: Page, onCreate: (route: Route) => Promise<void
 }
 
 async function fillAndSubmitForm(page: Page) {
+  // 故障信息段：机型下拉（表单第一个 combobox）
   await page.getByRole('combobox').click();
   await page.getByText('光刻机 A（LS-100）').click();
+  // 维修安排段：厂家下拉（只读公司展示不产生 combobox，第二个是厂家）
+  await page.getByLabel('维修厂家').click();
+  await page.getByText('E2E 维修公司（E2E）').click();
   await page.getByLabel('设备错误码').fill('E-2001');
   await page.getByLabel('故障描述').fill('曝光对准异常，需现场检修');
   await page.getByRole('button', { name: '提交申请' }).click();
@@ -226,10 +256,10 @@ test('expired token on page load clears the session and returns to login once', 
   await expect(page.getByText('登录状态已失效，请重新登录')).toBeVisible();
   // 不展示后端原始错误内容（mock 故意携带 internal auth detail）
   await expect(page.getByText('internal auth detail')).toHaveCount(0);
-  // 一次失效周期只允许一次清理与一次跳转：初始渲染并行至多两笔查询
-  //（左栏列表 + 表单型号），跳转登录页后不得再产生任何循环请求
+  // 一次失效周期只允许一次清理与一次跳转：初始渲染并行至多三笔查询
+  //（左栏列表 + 表单型号 + 任务 03 厂家候选），跳转登录页后不得再产生任何循环请求
   expect(expiredRequests).toBeGreaterThanOrEqual(1);
-  expect(expiredRequests).toBeLessThanOrEqual(2);
+  expect(expiredRequests).toBeLessThanOrEqual(3);
   expect(await readStoredAuthSession(page)).toBeNull();
 });
 
@@ -288,6 +318,11 @@ test('same-role re-login after expiry returns to the original business page', as
       }
 
       return fulfillModelsSuccess(route);
+    }
+
+    // 任务 03：厂家候选查询返回就绪态（不参与失效计数），否则厂家下拉保持禁用
+    if (payload.query?.includes('query RepairServiceOrganizationSearch')) {
+      return fulfillServiceOrgsSuccess(route);
     }
 
     // 2026-09-29 整合工作台：左栏列表查询返回空页（不参与失效计数）
@@ -351,6 +386,7 @@ test('client-side validation blocks empty submit without any request', async ({ 
   await seedAuthSession(page, 'CUSTOMER');
 
   let modelsRequests = 0;
+  let serviceOrgRequests = 0;
   let listRequests = 0;
   await page.route('**/graphql', async (route) => {
     const payload = route.request().postDataJSON() as GraphQLOperationPayload;
@@ -358,6 +394,12 @@ test('client-side validation blocks empty submit without any request', async ({ 
     if (payload.query?.includes('query EquipmentModels')) {
       modelsRequests += 1;
       await fulfillModelsSuccess(route);
+      return;
+    }
+
+    if (payload.query?.includes('query RepairServiceOrganizationSearch')) {
+      serviceOrgRequests += 1;
+      await fulfillServiceOrgsSuccess(route);
       return;
     }
 
@@ -377,10 +419,12 @@ test('client-side validation blocks empty submit without any request', async ({ 
   await expect(
     page.locator('.ant-form-item-explain-error', { hasText: '请选择设备型号' }),
   ).toBeVisible();
+  await expect(page.getByText('请选择维修厂家')).toBeVisible();
   await expect(page.getByText('请输入设备错误码')).toBeVisible();
   await expect(page.getByText('请输入故障描述')).toBeVisible();
-  // 初始仅并行两笔查询（左栏列表 + 表单型号），校验拦截不产生 Mutation
+  // 初始仅并行三笔查询（左栏列表 + 表单型号 + 任务 03 厂家候选），校验拦截不产生 Mutation
   expect(modelsRequests).toBe(1);
+  expect(serviceOrgRequests).toBe(1);
   expect(listRequests).toBe(1);
 });
 
@@ -416,6 +460,8 @@ test('double click sends exactly one mutation and shows the result', async ({ pa
   await page.goto(CREATE_PAGE_PATH);
   await page.getByRole('combobox').click();
   await page.getByText('光刻机 A（LS-100）').click();
+  await page.getByLabel('维修厂家').click();
+  await page.getByText('E2E 维修公司（E2E）').click();
   await page.getByLabel('设备错误码').fill('E-2001');
   await page.getByLabel('故障描述').fill('曝光对准异常，需现场检修');
 

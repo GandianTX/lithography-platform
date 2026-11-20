@@ -4,11 +4,14 @@ import { loadExplicitEnvConfig } from '@src/infrastructure/database/incremental-
 import { DataSource } from 'typeorm';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
+import { IntakeAnalysisAttemptEntity } from '../entities/intake-analysis-attempt.entity';
+import { OrganizationEntity } from '../entities/organization.entity';
 import { RepairProcessEntryEntity } from '../entities/repair-process-entry.entity';
 import { RepairRequestDiagnosticStepEntity } from '../entities/repair-request-diagnostic-step.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { RepairRequestFaultPanelEntity } from '../entities/repair-request-fault-panel.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
+import { StoredFileEntity } from '../entities/stored-file.entity';
 import { REPAIR_REQUEST_ORG_READ_FIXTURE_ENTITIES } from '../../../../test/utils/local-entity-sets';
 import {
   assertFixtureIdsAvailable,
@@ -318,6 +321,9 @@ describeIntegration('维修申请组织范围实库验收', () => {
       dataSource.getRepository(EngineerResponseEntity),
       dataSource.getRepository(EquipmentModelEntity),
       dataSource.getRepository(RepairRequestIntakeEntity),
+      dataSource.getRepository(IntakeAnalysisAttemptEntity),
+      dataSource.getRepository(StoredFileEntity),
+      dataSource.getRepository(OrganizationEntity),
       new RepairProcessEntryQueryService(dataSource.getRepository(RepairProcessEntryEntity)),
       new RepairRequestMaintenanceQueryService(
         dataSource.getRepository(RepairRequestEntity),

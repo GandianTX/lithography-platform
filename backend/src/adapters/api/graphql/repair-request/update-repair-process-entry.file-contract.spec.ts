@@ -31,6 +31,7 @@ import { CreateEngineerResponseUsecase } from '@src/usecases/repair-request/crea
 import { CreateRepairProcessEntryUsecase } from '@src/usecases/repair-request/create-repair-process-entry.usecase';
 import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
+import { RetryIntakeAnalysisUsecase } from '@src/usecases/repair-request/retry-intake-analysis.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
 import { GetEngineerRepairRequestRevisionDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-detail.usecase';
 import { GetEngineerRepairRequestRevisionHistoryUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-history.usecase';
@@ -205,6 +206,10 @@ describe('RepairRequest GraphQL 入口合同（旧过程只读 / 结单版本必
         },
         {
           provide: DeleteMyRepairRequestUsecase,
+          useValue: { execute: jest.fn() },
+        },
+        {
+          provide: RetryIntakeAnalysisUsecase,
           useValue: { execute: jest.fn() },
         },
         {

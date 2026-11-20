@@ -12,7 +12,6 @@ import {
   ACCOUNT_ERROR,
   DomainError,
   ORGANIZATION_ERROR,
-  PERMISSION_ERROR,
   STORED_FILE_ERROR,
 } from '@core/common/errors/domain-error';
 import { LocalReferenceDocumentStorage } from '@src/infrastructure/file-storage/local-reference-document-storage';
@@ -130,12 +129,17 @@ describe('DownloadStoredFileUsecase', () => {
     expect(storage.open).not.toHaveBeenCalled();
   });
 
-  it('客户角色拒绝，且不触达存储', async () => {
-    const { usecase, storage } = makeUsecase();
+  it('客户读链路：期望用途切换为 REPAIR_REQUEST，归属仍由查询服务裁决', async () => {
+    const queryService = makeQueryService();
+    queryService.findAuthorizedDownload.mockResolvedValueOnce(null);
+    const { usecase, storage } = makeUsecase({ queryService });
 
     await expect(
-      usecase.execute({ session: customer, fileId, uploadContextId }),
-    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      usecase.execute({ session: customer, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(queryService.findAuthorizedDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ fileId, expectedBusinessType: 'REPAIR_REQUEST' }),
+    );
     expect(storage.open).not.toHaveBeenCalled();
   });
 

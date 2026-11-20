@@ -95,11 +95,22 @@ describe('StoredFileRestController', () => {
     }
   });
 
-  it('上传仅工程师角色；元数据/下载为工程师与管理员读角色', () => {
+  it('三个端点均对客户准入（路由只做身份准入，用途/归属由 Usecase 与 QueryService 裁决）', () => {
     const prototype = StoredFileRestController.prototype as unknown as Record<string, unknown>;
-    expect(roleMetadata(prototype.upload as object)).toEqual(['ENGINEER']);
-    expect(roleMetadata(prototype.getMetadata as object)).toEqual(['ENGINEER', 'SUPER_ADMIN']);
-    expect(roleMetadata(prototype.download as object)).toEqual(['ENGINEER', 'SUPER_ADMIN']);
+    // 任务 03：客户需上传报修原件（REPAIR_REQUEST），并在本人报修详情读取/下载该原件。
+    // 路由层只做身份准入；「谁的哪份原件可读」由 Usecase/QueryService 的业务归属校验裁决，
+    // 同公司他人与外部账号仍按 ID 直查被拒（见 stored-file usecase / 权限策略用例）。
+    expect(roleMetadata(prototype.upload as object)).toEqual(['ENGINEER', 'CUSTOMER']);
+    expect(roleMetadata(prototype.getMetadata as object)).toEqual([
+      'ENGINEER',
+      'SUPER_ADMIN',
+      'CUSTOMER',
+    ]);
+    expect(roleMetadata(prototype.download as object)).toEqual([
+      'ENGINEER',
+      'SUPER_ADMIN',
+      'CUSTOMER',
+    ]);
   });
 
   it('缺少 multipart 文件时映射为 400 受控错误', async () => {
@@ -630,6 +641,8 @@ describe('StoredFileRestController 正式上传入口（真实 Nest multipart HT
       { insertStagedFile } as never,
       {} as never,
       { resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 1 }) } as never,
+      // 任务 03：客户报修原件的归属公司真源（本 spec 走工程师用途，不会调用）
+      { findCustomerOrganizationId: jest.fn().mockResolvedValue(1) } as never,
       {
         run: (callback: (context: never) => Promise<unknown>) => callback({} as never),
       } as never,

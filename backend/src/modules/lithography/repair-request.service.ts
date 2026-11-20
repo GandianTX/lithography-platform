@@ -74,6 +74,9 @@ export class RepairRequestService {
         faultDescription: data.faultDescription,
         contentMd: data.contentMd,
         ownerOrganizationId: data.ownerOrganizationId ?? null,
+        intakeId: data.intakeId ?? null,
+        customerOrganizationId: data.customerOrganizationId ?? null,
+        serviceOrganizationId: data.serviceOrganizationId ?? null,
         isAccepted: false,
         deprecated: false,
       });
@@ -668,6 +671,21 @@ export class RepairRequestService {
       : null;
   }
 
+  /**
+   * 按主键读取工单稳定快照（任务 03 同标识重放返回原工单）。
+   *
+   * 只读最小事实、不返回 ORM Entity；归属核权由调用方完成
+   * （同标识重放只在客户账号一致时才会走到这里）。
+   */
+  async findSnapshotById(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairRequestSnapshot | null> {
+    const repository = this.getRepository(transactionContext);
+    const entity = await repository.findOne({ where: { id: requestId } });
+    return entity ? this.toSnapshot(entity) : null;
+  }
+
   private toSnapshot(entity: RepairRequestEntity): RepairRequestSnapshot {
     return {
       id: entity.id,
@@ -678,6 +696,10 @@ export class RepairRequestService {
       faultDescription: entity.faultDescription,
       createdAt: entity.createdAt,
       isAccepted: entity.isAccepted,
+      deprecated: entity.deprecated,
+      intakeId: entity.intakeId,
+      customerOrganizationId: entity.customerOrganizationId,
+      serviceOrganizationId: entity.serviceOrganizationId,
     };
   }
 

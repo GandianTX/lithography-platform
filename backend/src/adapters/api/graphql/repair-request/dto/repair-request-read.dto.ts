@@ -55,6 +55,75 @@ export class RepairRequestListItemDTO {
 }
 
 /**
+ * 首析自助重试资格输出对象（服务端判定，前端不再自行组合 FAILED + generation）。
+ * reason 为稳定原因码，不含内部异常信息、堆栈、队列或任务标识。
+ */
+@ObjectType({ description: '首析自助重试资格' })
+export class IntakeAnalysisRetryEligibilityDTO {
+  @Field(() => Boolean, { description: '当前会话能否对本工单发起重新分析' })
+  eligible!: boolean;
+
+  @Field(() => String, {
+    description:
+      '稳定原因码（OWNER_RETRY_AVAILABLE / ANALYSIS_IN_PROGRESS / RETRY_ALREADY_USED / ANALYSIS_SUCCEEDED / FAILURE_NOT_CONFIRMED / LEDGER_INTENT_MISSING / OWNERSHIP_CONFLICT / NOT_CONVERTED / NO_INTAKE / INTAKE_DELETED / STATUS_UNKNOWN）',
+  })
+  reason!: string;
+}
+
+/** 客户可见首析状态与正文（仅 myRepairRequests / myRepairRequest 客户入口装配） */
+@ObjectType({ description: '客户可见首析状态与正文' })
+export class IntakeAnalysisCustomerViewDTO {
+  @Field(() => String, { description: '首析状态（WAITING / RUNNING / SUCCEEDED / FAILED）' })
+  status!: string;
+
+  @Field(() => Int, { description: '首析代次（0=初次；1=唯一重试）' })
+  generation!: number;
+
+  @Field(() => String, { nullable: true, description: '首析正文；仅成功态返回真实模型输出' })
+  outputText?: string | null;
+
+  @Field(() => Date, { nullable: true, description: '首析完成时间；未完成为空' })
+  finishedAt?: Date | null;
+
+  @Field(() => String, {
+    description:
+      '服务端判定的展示状态：QUEUED（已登记投递意图，等待执行）/ RUNNING / COMPLETED / FAILED_RETRYABLE / FAILED_NOT_RETRYABLE / UNAVAILABLE（缺少可信记录或状态矛盾）',
+  })
+  displayState!: string;
+
+  @Field(() => IntakeAnalysisRetryEligibilityDTO, {
+    description: '自助重试资格；仅第 0 代明确模型失败且记录可信时 eligible 为 true',
+  })
+  retryEligibility!: IntakeAnalysisRetryEligibilityDTO;
+}
+
+/** 客户报修原件安全字段（不暴露存储引用与校验和；下载走共用授权 REST） */
+@ObjectType({ description: '客户报修原件安全字段' })
+export class RepairRequestOriginalFileDTO {
+  @Field(() => String, { description: '原件编号' })
+  fileId!: string;
+
+  @Field(() => String, { description: '原始文件名' })
+  originalFilename!: string;
+
+  @Field(() => String, { description: 'MIME 类型' })
+  mimeType!: string;
+
+  @Field(() => Int, { description: '字节数' })
+  byteSize!: number;
+}
+
+/** 维修厂家展示字段（仅名称与主键，不含联系信息） */
+@ObjectType({ description: '维修厂家展示字段' })
+export class RepairRequestServiceOrganizationDTO {
+  @Field(() => Int, { description: '组织主键' })
+  id!: number;
+
+  @Field(() => String, { description: '组织全称' })
+  name!: string;
+}
+
+/**
  * 工程师回复输出对象（随详情返回，时间正序）
  * engineerNickname 为后端实时关联的安全昵称，缺失回落「工程师」；
  * 不返回工程师账号 ID（裁定 3）
@@ -175,6 +244,26 @@ export class RepairRequestDetailDTO {
   })
   intake?: RepairIntakeSourceDTO | null;
 
+  // ---- 客户入口装配字段（工程师入口为 null；首析状态与工单进度分开展示）----
+
+  @Field(() => IntakeAnalysisCustomerViewDTO, {
+    nullable: true,
+    description: '客户可见首析状态与正文；仅客户入口装配，无原稿关联的旧单为空',
+  })
+  intakeAnalysis?: IntakeAnalysisCustomerViewDTO | null;
+
+  @Field(() => RepairRequestOriginalFileDTO, {
+    nullable: true,
+    description: '客户报修原件安全字段；仅客户入口装配，未绑定或无效原件为空',
+  })
+  originalFile?: RepairRequestOriginalFileDTO | null;
+
+  @Field(() => RepairRequestServiceOrganizationDTO, {
+    nullable: true,
+    description: '维修厂家；仅客户入口装配，旧行无服务公司为空',
+  })
+  serviceOrganization?: RepairRequestServiceOrganizationDTO | null;
+
   @Field(() => Boolean, {
     description: '当前会话能否保存结构化维修记录（接单本人且工单未结束）',
   })
@@ -264,7 +353,33 @@ export class RepairRequestEngineerPaginatedDTO extends paginatedTypeFactory(
 ) {}
 
 /**
+ * 客户维修申请列表项：基础列表项 + 首析状态事实（仅客户列表装配；旧单为空）
+ */
+@ObjectType({ description: '客户维修申请列表项' })
+export class RepairRequestCustomerListItemDTO extends RepairRequestListItemDTO {
+  @Field(() => String, {
+    nullable: true,
+    description: '首析状态（WAITING/RUNNING/SUCCEEDED/FAILED）；无原稿关联的旧单为空',
+  })
+  analysisStatus?: string | null;
+
+  @Field(() => Int, {
+    nullable: true,
+    description: '首析代次（0=初次；1=唯一重试）；无原稿关联的旧单为空',
+  })
+  analysisGeneration?: number | null;
+}
+
+/**
  * 维修申请列表分页输出（OFFSET：items/total/page/pageSize）
  */
 @ObjectType({ description: '维修申请分页结果' })
 export class RepairRequestPaginatedDTO extends paginatedTypeFactory(RepairRequestListItemDTO) {}
+
+/**
+ * 客户维修申请列表分页输出（OFFSET；含首析状态事实）
+ */
+@ObjectType({ description: '客户维修申请分页结果' })
+export class RepairRequestCustomerPaginatedDTO extends paginatedTypeFactory(
+  RepairRequestCustomerListItemDTO,
+) {}

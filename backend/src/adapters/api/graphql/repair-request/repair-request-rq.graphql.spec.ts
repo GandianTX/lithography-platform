@@ -49,6 +49,7 @@ import { CreateEngineerResponseUsecase } from '@src/usecases/repair-request/crea
 import { CreateRepairProcessEntryUsecase } from '@src/usecases/repair-request/create-repair-process-entry.usecase';
 import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
+import { RetryIntakeAnalysisUsecase } from '@src/usecases/repair-request/retry-intake-analysis.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
 import { GetEngineerRepairRequestRevisionDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-detail.usecase';
 import { GetEngineerRepairRequestRevisionHistoryUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-history.usecase';
@@ -250,6 +251,7 @@ describe('PR#20 RQ 定向验收：GraphQL Resolver + 真实业务用例（仓储
         { provide: CreateEngineerResponseUsecase, useValue: { execute: jest.fn() } },
         { provide: InterruptRepairRequestUsecase, useValue: { execute: jest.fn() } },
         { provide: DeleteMyRepairRequestUsecase, useValue: { execute: jest.fn() } },
+        { provide: RetryIntakeAnalysisUsecase, useValue: { execute: jest.fn() } },
         { provide: ListMyRepairRequestsUsecase, useValue: { execute: jest.fn() } },
         { provide: ListEngineerRepairRequestsUsecase, useValue: { execute: jest.fn() } },
         { provide: GetMyRepairRequestDetailUsecase, useValue: { execute: jest.fn() } },

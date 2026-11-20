@@ -20,10 +20,13 @@ import type {
 
 import { formatDateTimeMinuteText } from '@/shared/ui/format-date-time';
 
+import type { IntakeAnalysisCustomerView } from '../infrastructure/repair-request-read.types';
+
 import { CustomerRepairRequestDetailPanel } from './customer-repair-request-detail-panel';
 
 const onBackToListMock = vi.fn();
 const onDeleteMock = vi.fn();
+const onRetryAnalysisMock = vi.fn();
 
 function makeDetail(overrides?: Partial<RepairRequestDetail>): RepairRequestDetail {
   return {
@@ -53,7 +56,8 @@ function makeDetail(overrides?: Partial<RepairRequestDetail>): RepairRequestDeta
 /**
  * 以给定 view state 渲染详情面板（deleting / onBackToList 可选）。
  *
- * 面板无会话与反馈端口依赖，纯 props 驱动；返回入口与删除命令均以回调断言，
+ * 面板无会话依赖，纯 props 驱动；反馈端口注入 no-op notify（原件下载反馈
+ * 由 widget 编排层承担），返回入口与删除/重试命令均以回调断言，
  * 导航与时序由调用方（工作台）负责。
  */
 function renderPanel(
@@ -63,8 +67,11 @@ function renderPanel(
   return render(
     <CustomerRepairRequestDetailPanel
       deleting={options.deleting ?? false}
+      notify={() => undefined}
       onBackToList={options.onBackToList}
       onDelete={onDeleteMock}
+      onRetryAnalysis={onRetryAnalysisMock}
+      retryPending={false}
       state={state}
     />,
   );
@@ -87,6 +94,7 @@ const deleteButton = () =>
 beforeEach(() => {
   onBackToListMock.mockReset();
   onDeleteMock.mockReset();
+  onRetryAnalysisMock.mockReset();
 });
 
 describe('CustomerRepairRequestDetailPanel', () => {
@@ -262,5 +270,116 @@ describe('CustomerRepairRequestDetailPanel', () => {
     expect(screen.getByText('维修申请详情')).toBeTruthy();
     expect(container.querySelector('.ant-skeleton')).not.toBeNull();
     expect(screen.queryByText('删除申请')).toBeNull();
+  });
+
+  // 展示状态与重试入口完全由服务端判定（前端不再自行组合 FAILED + generation）
+  describe('首析展示状态与重试资格（服务端判定）', () => {
+    const makeAnalysis = (
+      overrides?: Partial<IntakeAnalysisCustomerView>,
+    ): IntakeAnalysisCustomerView => ({
+      status: 'FAILED',
+      generation: 0,
+      outputText: null,
+      finishedAt: null,
+      displayState: 'FAILED_RETRYABLE',
+      retryEligibility: { eligible: true, reason: 'OWNER_RETRY_AVAILABLE' },
+      ...overrides,
+    });
+
+    it('服务端判定可重试时渲染「重新分析」并可回调', () => {
+      renderPanel({
+        status: 'ready',
+        detail: makeDetail({ intakeAnalysis: makeAnalysis() }),
+      });
+
+      expect(screen.getByText('分析失败（可重新分析）')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: '重新分析' }));
+      expect(onRetryAnalysisMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('FAILED + 代次 0 但服务端判定不可重试：不渲染入口（不再按前端规则推导）', () => {
+      renderPanel({
+        status: 'ready',
+        detail: makeDetail({
+          intakeAnalysis: makeAnalysis({
+            displayState: 'FAILED_NOT_RETRYABLE',
+            retryEligibility: { eligible: false, reason: 'RETRY_ALREADY_USED' },
+          }),
+        }),
+      });
+
+      expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+      expect(screen.getByText('首次分析的重试机会已使用。')).toBeTruthy();
+    });
+
+    it('缺少可信账本：展示不可用状态与说明，不渲染重试入口', () => {
+      renderPanel({
+        status: 'ready',
+        detail: makeDetail({
+          intakeAnalysis: makeAnalysis({
+            displayState: 'UNAVAILABLE',
+            retryEligibility: { eligible: false, reason: 'LEDGER_INTENT_MISSING' },
+          }),
+        }),
+      });
+
+      expect(screen.getByText('分析状态暂不可用')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+      expect(
+        screen.getByText('该报修缺少可信的分析记录，暂不支持自助重新分析。'),
+      ).toBeTruthy();
+    });
+
+    it('分析中：展示运行状态且不渲染重试入口', () => {
+      renderPanel({
+        status: 'ready',
+        detail: makeDetail({
+          intakeAnalysis: makeAnalysis({
+            status: 'RUNNING',
+            displayState: 'RUNNING',
+            retryEligibility: { eligible: false, reason: 'ANALYSIS_IN_PROGRESS' },
+          }),
+        }),
+      });
+
+      expect(screen.getByText('分析中')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+    });
+
+    it('Seed 样例（WAITING 且无账本）：中性展示「未发起分析」，不当排队、不入队', () => {
+      renderPanel({
+        status: 'ready',
+        detail: makeDetail({
+          intakeAnalysis: makeAnalysis({
+            status: 'WAITING',
+            displayState: 'NOT_STARTED',
+            retryEligibility: { eligible: false, reason: 'ANALYSIS_NOT_INITIATED' },
+          }),
+        }),
+      });
+
+      expect(screen.getByText('未发起分析')).toBeTruthy();
+      expect(screen.getByText('暂无分析记录。')).toBeTruthy();
+      expect(screen.queryByText('等待分析')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+    });
+
+    it('完成态：展示真实正文，不出现「暂无内容」占位与重试入口', () => {
+      renderPanel({
+        status: 'ready',
+        detail: makeDetail({
+          intakeAnalysis: makeAnalysis({
+            status: 'SUCCEEDED',
+            displayState: 'COMPLETED',
+            outputText: '建议检查光源功率。',
+            retryEligibility: { eligible: false, reason: 'ANALYSIS_SUCCEEDED' },
+          }),
+        }),
+      });
+
+      expect(screen.getByText('建议检查光源功率。')).toBeTruthy();
+      expect(screen.queryByText('暂无可展示的分析内容。')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+    });
   });
 });

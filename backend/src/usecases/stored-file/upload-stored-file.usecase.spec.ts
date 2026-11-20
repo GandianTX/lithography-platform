@@ -4,8 +4,14 @@
 import { createHash } from 'node:crypto';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
-import { DomainError, PERMISSION_ERROR, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
+import {
+  DomainError,
+  PERMISSION_ERROR,
+  REPAIR_REQUEST_ERROR,
+  STORED_FILE_ERROR,
+} from '@core/common/errors/domain-error';
 import { Logger } from '@nestjs/common';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { StoredFileService } from '@src/modules/lithography/stored-file.service';
@@ -83,6 +89,11 @@ const makeOrganizationContextService = () => ({
   }),
 });
 
+/** 客户公司真源（`base_user_info.customer_organization_id`）：任务 03 报修原件归属 */
+const makeAccountQueryService = () => ({
+  findCustomerOrganizationId: jest.fn().mockResolvedValue(organizationId),
+});
+
 const makeTransactionRunner = () =>
   ({
     run: jest.fn((cb: (ctx: unknown) => unknown) => cb(transactionContext)),
@@ -115,6 +126,7 @@ const makeUsecase = (
     storedFileService?: ReturnType<typeof makeStoredFileService>;
     queryService?: ReturnType<typeof makeQueryService>;
     organizationContextService?: ReturnType<typeof makeOrganizationContextService>;
+    accountQueryService?: ReturnType<typeof makeAccountQueryService>;
     transactionRunner?: ReturnType<typeof makeTransactionRunner>;
     storage?: ReturnType<typeof makeStorage>;
   } = {},
@@ -123,6 +135,7 @@ const makeUsecase = (
   const queryService = overrides.queryService ?? makeQueryService();
   const organizationContextService =
     overrides.organizationContextService ?? makeOrganizationContextService();
+  const accountQueryService = overrides.accountQueryService ?? makeAccountQueryService();
   const transactionRunner = overrides.transactionRunner ?? makeTransactionRunner();
   const storage = overrides.storage ?? makeStorage();
 
@@ -130,6 +143,7 @@ const makeUsecase = (
     storedFileService as unknown as StoredFileService,
     queryService as unknown as StoredFileQueryService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    accountQueryService as unknown as AccountQueryService,
     transactionRunner,
     storage,
     allowedMimeTypes,
@@ -140,6 +154,7 @@ const makeUsecase = (
     storedFileService,
     queryService,
     organizationContextService,
+    accountQueryService,
     transactionRunner,
     storage,
   };
@@ -391,12 +406,72 @@ describe('UploadStoredFileUsecase', () => {
     expect(storage.save).not.toHaveBeenCalled();
   });
 
-  it('客户角色拒绝（未登录之外的角色边界），不写存储', async () => {
+  it('客户上传维修过程原件（REPAIR_PROCESS）拒绝，不写存储', async () => {
     const { usecase, storage } = makeUsecase();
 
     await expect(usecase.execute(command({ session: customer }))).rejects.toMatchObject({
       code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
     });
+    expect(storage.save).not.toHaveBeenCalled();
+  });
+
+  it('任务 03：客户上传报修原件时归属公司来自账号事实（不查成员关系）', async () => {
+    const { usecase, storedFileService, organizationContextService, accountQueryService } =
+      makeUsecase();
+
+    await usecase.execute(
+      command({
+        session: customer,
+        businessType: 'REPAIR_REQUEST',
+        file: { buffer: pdfBytes, originalFilename: '报修原件.pdf' },
+      }),
+    );
+
+    expect(accountQueryService.findCustomerOrganizationId).toHaveBeenCalledWith({
+      accountId: 900001,
+    });
+    expect(organizationContextService.resolveForAccount).not.toHaveBeenCalled();
+    expect(storedFileService.insertStagedFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        businessType: 'REPAIR_REQUEST',
+        ownerOrganizationId: organizationId,
+        uploadedByAccountId: 900001,
+      }),
+      transactionContext,
+    );
+  });
+
+  it('任务 03：工程师不能上传报修原件（用途与身份交叉拒绝）', async () => {
+    const { usecase, storedFileService, storage } = makeUsecase();
+
+    await expect(
+      usecase.execute(
+        command({
+          session: engineer,
+          businessType: 'REPAIR_REQUEST',
+          file: { buffer: pdfBytes, originalFilename: '报修原件.pdf' },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+    expect(storedFileService.insertStagedFile).not.toHaveBeenCalled();
+    expect(storage.save).not.toHaveBeenCalled();
+  });
+
+  it('任务 03：客户缺公司归属时拒绝上传报修原件，且不写存储', async () => {
+    const accountQueryService = {
+      findCustomerOrganizationId: jest.fn().mockResolvedValue(null),
+    };
+    const { usecase, storage } = makeUsecase({ accountQueryService });
+
+    await expect(
+      usecase.execute(
+        command({
+          session: customer,
+          businessType: 'REPAIR_REQUEST',
+          file: { buffer: pdfBytes, originalFilename: '报修原件.pdf' },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_REQUIRED });
     expect(storage.save).not.toHaveBeenCalled();
   });
 

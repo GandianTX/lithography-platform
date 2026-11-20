@@ -66,7 +66,10 @@ type StoredFileAccessRow = {
  *   新路径仅限接单工程师本人（旧过程关联保持既有同公司工程师口径）；
  *   管理员分支复用管理员工单授权策略：一级全公司、二级仅本公司（见 adminOrganizationId）；
  *   已结单只限制写入，不阻止原本有权的工程师下载已绑定原件；
- * - 客户、外公司、同公司非工程师账号一律返回 null，不泄露原件存在性或内部过程。
+ * - 正式绑定（BOUND REPAIR_REQUEST，任务 03 第三段起）：仅报修本人可读，
+ *   原稿须未删除且 intake.file_id 实际引用该文件（见 canAccessBoundRepairRequestOriginal）；
+ * - 客户报修原件之外，客户、外公司、同公司非工程师账号一律返回 null，
+ *   不泄露原件存在性或内部过程。
  */
 @Injectable()
 export class StoredFileQueryService {
@@ -161,10 +164,55 @@ export class StoredFileQueryService {
     }
 
     if (bindingStatus === StoredFileBindingStatus.BOUND) {
+      // 客户报修原件（任务 03 第三段）：仅本人原稿真实绑定的 REPAIR_REQUEST 原件
+      if ((file.businessType as StoredFileBusinessType) === StoredFileBusinessType.REPAIR_REQUEST) {
+        return (await this.canAccessBoundRepairRequestOriginal(file, query)) ? file : null;
+      }
       return (await this.canAccessBoundRepairProcess(file, query)) ? file : null;
     }
 
     return null;
+  }
+
+  /**
+   * 客户报修原件访问（任务 03 第三段）：仅「真实绑定到本人原稿」的
+   * REPAIR_REQUEST 原件对客户开放。
+   *
+   * - 以真实业务关联为准：`repair_request_intake.file_id` 必须实际引用该文件，
+     不信任文件自身 business_id 单独放行；
+   * - 原稿已删除（deleted_at 非空）后原件对客户关闭（迟到读取不再复活删除单）；
+   * - 暂存（TEMPORARY）原件不开放客户读取；同公司其他客户与外公司账号一律拒绝，
+   *   统一返回 null（上层映射 NOT_FOUND），不泄露原件存在性。
+   */
+  private async canAccessBoundRepairRequestOriginal(
+    file: StoredFileAccessRow,
+    query: StoredFileAccessQuery,
+  ): Promise<boolean> {
+    if (
+      (file.businessType as StoredFileBusinessType) !== StoredFileBusinessType.REPAIR_REQUEST ||
+      file.businessId === null ||
+      (file.status as StoredFileStatus) !== StoredFileStatus.VALID ||
+      file.verifiedAt === null ||
+      !hasRole(query.session.roles, IdentityTypeEnum.CUSTOMER)
+    ) {
+      return false;
+    }
+
+    const intakeId = Number(file.businessId);
+    if (!Number.isSafeInteger(intakeId) || intakeId <= 0) {
+      return false;
+    }
+
+    const intake = await this.repairRequestIntakeRepository.findOne({
+      where: { id: intakeId },
+      select: { id: true, fileId: true, customerAccountId: true, deletedAt: true },
+    });
+    return (
+      intake !== null &&
+      intake.deletedAt === null &&
+      intake.fileId === file.fileId &&
+      intake.customerAccountId === query.session.accountId
+    );
   }
 
   /** 暂存访问：只允许原上传者在同一公司、同一用途、同一上传上下文内读取 */

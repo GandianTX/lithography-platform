@@ -54,7 +54,29 @@ describe('RepairRequestService', () => {
       faultDescription: '设备无法启动',
       createdAt,
       isAccepted: false,
+      deprecated: false,
+      // 旧调用方不传原稿/组织列时保持存量可空语义
+      intakeId: null,
+      customerOrganizationId: null,
+      serviceOrganizationId: null,
     });
+  });
+
+  it('任务 03 提交即出单：原稿与两个组织列随工单一起落库', async () => {
+    const snapshot = await service.insertRequest({
+      ...insertData,
+      intakeId: 21,
+      customerOrganizationId: 77,
+      serviceOrganizationId: 88,
+    });
+
+    const created = repository.create.mock.calls[0][0] as Record<string, unknown>;
+    expect(created.intakeId).toBe(21);
+    expect(created.customerOrganizationId).toBe(77);
+    expect(created.serviceOrganizationId).toBe(88);
+    expect(snapshot.intakeId).toBe(21);
+    expect(snapshot.customerOrganizationId).toBe(77);
+    expect(snapshot.serviceOrganizationId).toBe(88);
   });
 
   it('唯一索引冲突（ER_DUP_ENTRY）抛出可区分的编号冲突错误', async () => {

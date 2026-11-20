@@ -2,6 +2,7 @@
 
 import { Button, Pagination, Popconfirm } from 'antd';
 
+import type { MessageKey } from '@/shared/i18n';
 import { useI18n } from '@/shared/i18n';
 import { DataCard } from '@/shared/ui/data-card';
 import { EmptyState } from '@/shared/ui/empty-state';
@@ -11,7 +12,15 @@ import { LoadingState } from '@/shared/ui/loading-state';
 import { StatusPill } from '@/shared/ui/status-pill';
 
 import type { CustomerRepairRequestListView } from '../application/use-customer-repair-request-list';
-import type { RepairRequestListItem } from '../infrastructure/repair-request-read.types';
+import type { IntakeAnalysisStatus, RepairRequestListItem } from '../infrastructure/repair-request-read.types';
+
+/** 首析状态 → 列表胶囊展示（与工单接单状态并列但语义独立） */
+const ANALYSIS_STATUS_PILL: Record<IntakeAnalysisStatus, { labelKey: MessageKey; tone: 'critical' | 'neutral' | 'ok' | 'warn' }> = {
+  WAITING: { labelKey: 'customer.analysisStatus.WAITING', tone: 'neutral' },
+  RUNNING: { labelKey: 'customer.analysisStatus.RUNNING', tone: 'warn' },
+  SUCCEEDED: { labelKey: 'customer.analysisStatus.SUCCEEDED', tone: 'ok' },
+  FAILED: { labelKey: 'customer.analysisStatus.FAILED', tone: 'critical' },
+};
 
 /**
  * 客户工作台左栏「我的维修申请」活动列表面板（PR5 整合工作台）。
@@ -77,14 +86,23 @@ function RequestItemRow({
         </span>
       </button>
 
-      {/* 状态/操作栏（固定宽 rail）：顶部恒为状态胶囊；仅未接单渲染删除确认。
+      {/* 状态/操作栏（固定宽 rail）：顶部恒为接单状态胶囊，首析状态作为独立事实
+          紧随其下（无原稿关联的旧单不渲染）；仅未接单渲染删除确认。
           已接单不产生删除 DOM（无禁用占位、无假按钮、无可聚焦元素）；
           两态几何一致由 index.css `.customer-workspace-item` 的同一套两列网格保证 */}
       <div className="customer-workspace-item-rail">
         <span className="customer-workspace-item-status">
-          <StatusPill tone={item.isAccepted ? 'ok' : 'warn'}>
-            {item.isAccepted ? t('customer.statusAccepted') : t('customer.statusPending')}
-          </StatusPill>
+          <span className="flex flex-col items-start gap-1">
+            <StatusPill tone={item.isAccepted ? 'ok' : 'warn'}>
+              {item.isAccepted ? t('customer.statusAccepted') : t('customer.statusPending')}
+            </StatusPill>
+            {(() => {
+              const analysisPill = item.analysisStatus ? ANALYSIS_STATUS_PILL[item.analysisStatus] : null;
+              return analysisPill ? (
+                <StatusPill tone={analysisPill.tone}>{t(analysisPill.labelKey)}</StatusPill>
+              ) : null;
+            })()}
+          </span>
         </span>
         {item.isAccepted ? null : (
           <div className="customer-workspace-item-actions">

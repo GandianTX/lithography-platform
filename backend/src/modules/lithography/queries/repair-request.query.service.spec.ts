@@ -4,8 +4,11 @@ import { EngineerResolutionStatus } from '@app-types/models/repair-request.types
 import { In, type Repository } from 'typeorm';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
+import { IntakeAnalysisAttemptEntity } from '../entities/intake-analysis-attempt.entity';
+import { OrganizationEntity } from '../entities/organization.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
+import { StoredFileEntity } from '../entities/stored-file.entity';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
 import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
 import { RepairRequestQueryService } from './repair-request.query.service';
@@ -79,6 +82,9 @@ describe('RepairRequestQueryService', () => {
   let responseRepository: ReturnType<typeof createMockRepository>;
   let equipmentModelRepository: ReturnType<typeof createMockRepository>;
   let intakeRepository: ReturnType<typeof createMockRepository>;
+  let intakeAnalysisAttemptRepository: ReturnType<typeof createMockRepository>;
+  let storedFileRepository: ReturnType<typeof createMockRepository>;
+  let organizationRepository: ReturnType<typeof createMockRepository>;
   let service: RepairRequestQueryService;
 
   beforeEach(() => {
@@ -86,11 +92,17 @@ describe('RepairRequestQueryService', () => {
     responseRepository = createMockRepository();
     equipmentModelRepository = createMockRepository();
     intakeRepository = createMockRepository();
+    intakeAnalysisAttemptRepository = createMockRepository();
+    storedFileRepository = createMockRepository();
+    organizationRepository = createMockRepository();
     service = new RepairRequestQueryService(
       requestRepository as unknown as Repository<RepairRequestEntity>,
       responseRepository as unknown as Repository<EngineerResponseEntity>,
       equipmentModelRepository as unknown as Repository<EquipmentModelEntity>,
       intakeRepository as unknown as Repository<RepairRequestIntakeEntity>,
+      intakeAnalysisAttemptRepository as unknown as Repository<IntakeAnalysisAttemptEntity>,
+      storedFileRepository as unknown as Repository<StoredFileEntity>,
+      organizationRepository as unknown as Repository<OrganizationEntity>,
       {
         listByRequest: jest.fn().mockResolvedValue([]),
       } as unknown as RepairProcessEntryQueryService,
@@ -104,6 +116,10 @@ describe('RepairRequestQueryService', () => {
     // 列表装配默认空集合，单测内按需覆盖
     equipmentModelRepository.find.mockResolvedValue([]);
     responseRepository.find.mockResolvedValue([]);
+    // 客户详情装配默认无原稿上下文，单测内按需覆盖
+    intakeAnalysisAttemptRepository.findOne.mockResolvedValue(null);
+    storedFileRepository.findOne.mockResolvedValue(null);
+    organizationRepository.findOne.mockResolvedValue(null);
   });
 
   const makeIntake = (
@@ -802,6 +818,9 @@ describe('RepairRequestQueryService', () => {
         responseRepository as unknown as Repository<EngineerResponseEntity>,
         equipmentModelRepository as unknown as Repository<EquipmentModelEntity>,
         intakeRepository as unknown as Repository<RepairRequestIntakeEntity>,
+        intakeAnalysisAttemptRepository as unknown as Repository<IntakeAnalysisAttemptEntity>,
+        storedFileRepository as unknown as Repository<StoredFileEntity>,
+        organizationRepository as unknown as Repository<OrganizationEntity>,
         projection,
         {
           findRecord: jest.fn().mockResolvedValue(null),
@@ -966,6 +985,228 @@ describe('RepairRequestQueryService', () => {
 
       expect(result.latestResolutionStatus).toBeNull();
       expect(result.responses).toEqual([]);
+    });
+  });
+
+  describe('客户入口首析 / 原件 / 厂家装配（任务 03 第三段）', () => {
+    const makeIntakeFull = (
+      overrides: Partial<RepairRequestIntakeEntity> = {},
+    ): RepairRequestIntakeEntity =>
+      makeIntake({
+        id: 3,
+        analysisStatus: 'SUCCEEDED',
+        analysisGeneration: 0,
+        fileId: null,
+        deletedAt: null,
+        ...overrides,
+      });
+
+    beforeEach(() => {
+      equipmentModelRepository.findOne.mockResolvedValue(makeModel());
+      responseRepository.find.mockResolvedValue([]);
+    });
+
+    it('客户列表批量回填首析状态事实；已删除原稿与无原稿旧行为 null', async () => {
+      requestRepository.find.mockResolvedValue([
+        makeRequest({ id: 1, intakeId: 3 }),
+        makeRequest({ id: 2, intakeId: null, requestNo: '920_002' }),
+      ]);
+      equipmentModelRepository.find.mockResolvedValue([makeModel()]);
+      intakeRepository.find.mockResolvedValue([
+        makeIntakeFull({ id: 3, analysisStatus: 'FAILED', analysisGeneration: 1 }),
+        makeIntakeFull({ id: 4, deletedAt: new Date('2026-11-20T00:00:00.000Z') }),
+      ]);
+
+      const result = await service.listByCustomer({
+        customerAccountId: 10,
+        pagination: { page: 1, pageSize: 10, withTotal: false },
+      });
+
+      expect(intakeRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: In([3]) } }),
+      );
+      expect(result.items[0]).toMatchObject({
+        id: 1,
+        analysisStatus: 'FAILED',
+        analysisGeneration: 1,
+      });
+      expect(result.items[1]).toMatchObject({
+        id: 2,
+        analysisStatus: null,
+        analysisGeneration: null,
+      });
+    });
+
+    it('客户详情：成功态回填首析正文与完成时间、厂家名称；原件无效时不返回', async () => {
+      requestRepository.findOne.mockResolvedValue(
+        makeRequest({ intakeId: 3, serviceOrganizationId: 77 }),
+      );
+      intakeRepository.findOne.mockResolvedValue(
+        makeIntakeFull({ fileId: '11111111-1111-4111-8111-111111111111' }),
+      );
+      intakeAnalysisAttemptRepository.findOne.mockResolvedValue({
+        status: 'SUCCEEDED',
+        outputText: '建议检查光源',
+        finishedAt: new Date('2026-11-20T01:00:00.000Z'),
+      });
+      storedFileRepository.findOne.mockResolvedValue({
+        fileId: '11111111-1111-4111-8111-111111111111',
+        originalFilename: '故障照片.jpg',
+        mimeType: 'image/jpeg',
+        byteSize: '20',
+        status: 'VALID',
+        businessType: 'REPAIR_REQUEST',
+        businessId: '3',
+        bindingStatus: 'BOUND',
+        verifiedAt: new Date('2026-11-19T00:00:00.000Z'),
+      });
+      organizationRepository.findOne.mockResolvedValue({ id: 77, name: 'B 维修公司' });
+
+      const result = await service.findDetail({
+        requestId: 1,
+        session: customerSession,
+        scope: 'CUSTOMER',
+      });
+
+      expect(result.intakeAnalysis).toMatchObject({
+        status: 'SUCCEEDED',
+        generation: 0,
+        outputText: '建议检查光源',
+      });
+      expect(result.originalFile).toMatchObject({
+        fileId: '11111111-1111-4111-8111-111111111111',
+        originalFilename: '故障照片.jpg',
+        byteSize: 20,
+      });
+      expect(result.serviceOrganization).toMatchObject({ id: 77, name: 'B 维修公司' });
+      // 工程师 intake 视图对客户入口恒为 null
+      expect(result.intake).toBeNull();
+    });
+
+    it('客户详情：失败态只给状态与代次，不向客户暴露输出或受控原因', async () => {
+      requestRepository.findOne.mockResolvedValue(makeRequest({ intakeId: 3 }));
+      intakeRepository.findOne.mockResolvedValue(
+        makeIntakeFull({ analysisStatus: 'FAILED', analysisGeneration: 1 }),
+      );
+      intakeAnalysisAttemptRepository.findOne.mockResolvedValue({
+        status: 'FAILED',
+        outputText: null,
+        failureReason: 'RAG_TIMEOUT',
+        finishedAt: new Date('2026-11-20T01:00:00.000Z'),
+      });
+
+      const result = await service.findDetail({
+        requestId: 1,
+        session: customerSession,
+        scope: 'CUSTOMER',
+      });
+
+      expect(result.intakeAnalysis).toMatchObject({ status: 'FAILED', generation: 1 });
+      expect(result.intakeAnalysis?.outputText).toBeNull();
+      expect(result).not.toHaveProperty('failureReason');
+    });
+
+    it('客户详情：装配自助资格事实（归属/代次/尝试行/受控失败原因），读侧不下结论', async () => {
+      requestRepository.findOne.mockResolvedValue(
+        makeRequest({ id: 1, intakeId: 3, customerAccountId: 10 }),
+      );
+      intakeRepository.findOne.mockResolvedValue(
+        makeIntakeFull({
+          analysisStatus: 'FAILED',
+          analysisGeneration: 0,
+          customerAccountId: 10,
+          convertedRequestId: 1,
+        }),
+      );
+      intakeAnalysisAttemptRepository.findOne.mockResolvedValue({
+        generationNo: 0,
+        status: 'FAILED',
+        outputText: null,
+        failureReason: 'RAG_TIMEOUT',
+        finishedAt: new Date('2026-11-20T01:00:00.000Z'),
+      });
+
+      const result = await service.findDetail({
+        requestId: 1,
+        session: customerSession,
+        scope: 'CUSTOMER',
+      });
+
+      expect(result.intakeAnalysisRetryFacts).toEqual({
+        requestId: 1,
+        intakeId: 3,
+        requestCustomerAccountId: 10,
+        intakeExists: true,
+        intakeCustomerAccountId: 10,
+        intakeDeleted: false,
+        convertedRequestId: 1,
+        generation: 0,
+        status: 'FAILED',
+        attemptGenerationNo: 0,
+        attemptStatus: 'FAILED',
+        attemptFailureReasonRecorded: true,
+      });
+      // 读侧只装配事实：展示状态与重试资格由 usecase 补账本事实后判定
+      expect(result.intakeAnalysis).not.toHaveProperty('displayState');
+      expect(result.intakeAnalysis).not.toHaveProperty('retryEligibility');
+    });
+
+    it('客户详情：尝试行缺失或无失败原因时事实标记为不可确认（不伪造结果）', async () => {
+      requestRepository.findOne.mockResolvedValue(makeRequest({ id: 1, intakeId: 3 }));
+      intakeRepository.findOne.mockResolvedValue(
+        makeIntakeFull({
+          analysisStatus: 'FAILED',
+          analysisGeneration: 0,
+          customerAccountId: 10,
+          convertedRequestId: 1,
+        }),
+      );
+      intakeAnalysisAttemptRepository.findOne.mockResolvedValue(null);
+
+      const result = await service.findDetail({
+        requestId: 1,
+        session: customerSession,
+        scope: 'CUSTOMER',
+      });
+
+      expect(result.intakeAnalysisRetryFacts).toMatchObject({
+        attemptGenerationNo: null,
+        attemptStatus: null,
+        attemptFailureReasonRecorded: false,
+      });
+    });
+
+    it('客户详情：无原稿关联的旧行三字段均为 null', async () => {
+      requestRepository.findOne.mockResolvedValue(makeRequest({ intakeId: null }));
+
+      const result = await service.findDetail({
+        requestId: 1,
+        session: customerSession,
+        scope: 'CUSTOMER',
+      });
+
+      expect(result.intakeAnalysis).toBeNull();
+      expect(result.originalFile).toBeNull();
+      expect(result.serviceOrganization).toBeNull();
+    });
+
+    it('工程师详情入口不装配客户三字段（恒为 null）', async () => {
+      requestRepository.findOne.mockResolvedValue(
+        makeEngineerVisibleRequest({ isAccepted: true, acceptedByEngineerAccountId: 20 }),
+      );
+      equipmentModelRepository.findOne.mockResolvedValue(makeModel());
+      responseRepository.find.mockResolvedValue([]);
+
+      const result = await service.findDetail({
+        requestId: 1,
+        session: engineerSession,
+        scope: 'ENGINEER',
+        viewerOrganizationId: 77,
+      });
+
+      expect(result.intakeAnalysis).toBeNull();
+      expect(result.originalFile).toBeNull();
+      expect(result.serviceOrganization).toBeNull();
     });
   });
 });

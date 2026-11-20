@@ -94,7 +94,8 @@ function WorkspaceDetailPane({
   onNavigateToList: () => void;
 }) {
   const notify = useMessageFeedback();
-  const { state, deleting, deleteRequest } = useCustomerRepairRequestDetailFlow(detailId, notify);
+  const { state, deleting, deleteRequest, retryPending, retryAnalysis } =
+    useCustomerRepairRequestDetailFlow(detailId, notify);
 
   const handleDelete = () => {
     if (deleteViaDetailFlow) {
@@ -113,8 +114,11 @@ function WorkspaceDetailPane({
   return (
     <CustomerRepairRequestDetailPanel
       deleting={deleteViaDetailFlow ? deleting : deletingFromList}
+      notify={notify}
       onBackToList={onBackToList}
       onDelete={handleDelete}
+      onRetryAnalysis={() => void retryAnalysis()}
+      retryPending={retryPending}
       state={state}
     />
   );
@@ -174,12 +178,16 @@ function ListPlaceholderPane({
  */
 function InvalidDetailPane({ onBackToList }: { onBackToList: () => void }) {
   const { t } = useI18n();
+  const notify = useMessageFeedback();
 
   return (
     <CustomerRepairRequestDetailPanel
       deleting={false}
+      notify={notify}
       onBackToList={onBackToList}
       onDelete={() => undefined}
+      onRetryAnalysis={() => undefined}
+      retryPending={false}
       state={{ message: t('customer.detailNotFound'), notFound: true, status: 'failed' }}
     />
   );

@@ -9,6 +9,7 @@ import { translateNow } from '@/shared/i18n';
 import {
   deleteMyRepairRequest,
   fetchMyRepairRequest,
+  retryIntakeAnalysis,
 } from '../infrastructure/repair-request-adapter';
 import type { RepairRequestDetail } from '../infrastructure/repair-request-read.types';
 
@@ -79,6 +80,10 @@ export function useCustomerRepairRequestDetailFlow(requestId: number, notify: No
   // 在途删除锁按代次记录（而非布尔）：同代次重复发起才拦；跨目标不串锁，
   // finally 也只释放归属自身代次的锁，旧代次的收尾不会误释放新目标的锁。
   const deletingGenerationRef = useRef<number | null>(null);
+  // 首析重试在途锁与可见 pending（任务 03 第三段）：ref 锁拦截连点（交互辅助）；
+  // 代次切换与「唯一一次」资格核验由后端事务原子裁决，前端锁不承载业务正确性
+  const retryInFlightRef = useRef(false);
+  const [retryPending, setRetryPending] = useState(false);
 
   // 代次由 layout effect 在 commit 内同步推进：react-hooks/refs 禁止 render 期间读写 ref，
   // 且 render 可能被并发特性重放而自增不幂等（本仓同口径见
@@ -215,10 +220,65 @@ export function useCustomerRepairRequestDetailFlow(requestId: number, notify: No
   // （纯派生，无 render 期间 setState；旧目标的在途锁按代次记录，不命中新代次）
   const deleting = deletePending !== null && deletePending.requestId === requestId;
 
+  /**
+   * 发起首析重试（任务 03 第三段）。返回 true 表示重试请求已被服务端受理。
+   *
+   * - 前端防重复仅是交互辅助：在途 ref 锁拦截连点；代次 0→1 的原子切换、
+   *   失败态判定与「唯一一次」资格核验全部由后端事务裁决（并发重试只有一个命中）；
+   * - 结果按发起时的加载代次守卫：requestId 已切换或组件卸载时整体丢弃（不提示、不回刷）；
+   * - 成功（切到第 1 代 WAITING）与业务拒绝都回刷详情，呈现服务端真实状态，不做乐观更新。
+   */
+  const retryAnalysis = useCallback(async (): Promise<boolean> => {
+    if (retryInFlightRef.current) {
+      return false;
+    }
+
+    retryInFlightRef.current = true;
+    setRetryPending(true);
+
+    const generation = loadGenerationRef.current;
+
+    try {
+      const result = await retryIntakeAnalysis(requestId);
+
+      // 目标已切换或组件已卸载：结果整体丢弃（加载代次已被新目标的加载推进）
+      if (generation !== loadGenerationRef.current) {
+        return false;
+      }
+
+      if (result.ok) {
+        notify({ type: 'success', text: translateNow('customer.analysisRetryAccepted') });
+      } else {
+        notify({ type: 'error', text: result.message });
+      }
+
+      setMachine({ requestId, status: 'loading' });
+      void loadDetail(requestId);
+
+      return result.ok;
+    } catch (error) {
+      if (generation !== loadGenerationRef.current) {
+        return false;
+      }
+
+      notify({
+        type: 'error',
+        text: isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('customer.analysisRetryError.retryFailed'),
+      });
+
+      return false;
+    } finally {
+      retryInFlightRef.current = false;
+      setRetryPending(false);
+    }
+  }, [loadDetail, notify, requestId]);
+
   // 状态与当前 requestId 不匹配（切换申请）→ 立即按 loading 渲染：
   // 不在新数据到达前展示上一份申请的编号、故障内容、回复与删除按钮。
   const state: CustomerRepairRequestDetailState =
     machine.requestId === requestId ? toViewState(machine) : { status: 'loading' };
 
-  return { state, deleting, deleteRequest };
+  return { state, deleting, deleteRequest, retryPending, retryAnalysis };
 }

@@ -3,6 +3,7 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { useContainer } from 'class-validator';
+import { randomUUID } from 'node:crypto';
 import { DataSource, Repository } from 'typeorm';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
@@ -853,6 +854,9 @@ describe('一级管理员公司档案 adminOrganization* (e2e)', () => {
         token: customerToken,
         variables: {
           input: {
+            // 任务 03：提交标识逐次生成；厂家用本轮 ACTIVE + 具备维修服务资格的受管公司
+            recordUuid: randomUUID(),
+            serviceOrganizationId: managedOrgId,
             equipmentModelId: model.id,
             errorCode: REPAIR_ERROR_CODE,
             faultDescription: REPAIR_FAULT_DESCRIPTION,

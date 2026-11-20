@@ -2,6 +2,7 @@
 import { RepairRequestAcceptanceViewStatus } from '@app-types/models/repair-request.types';
 import { REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
+import type { AsyncTaskRecordQueryService } from '@src/modules/async-task-record/queries/async-task-record.query.service';
 import type { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { GetEngineerRepairRequestDetailUsecase } from './get-engineer-repair-request-detail.usecase';
@@ -494,10 +495,44 @@ describe('详情用例（客户 / 工程师入口）', () => {
     ],
     customerAccountId: 10,
     acceptedByEngineerAccountId: 20,
+    intakeAnalysis: null,
+    intakeAnalysisRetryFacts: null,
   };
 
   const makeDetailQueryService = () => ({
     findDetail: jest.fn().mockResolvedValue(detailQueryResult),
+  });
+
+  /** 投递账本只读核对替身（默认：当前代次账本行存在） */
+  const makeLedgerQueryService = (record: unknown = { id: 9, status: 'failed' }) => ({
+    findByQueueJob: jest.fn().mockResolvedValue(record),
+  });
+
+  /** 可重试事实：第 0 代明确模型失败 + 同代次尝试行 FAILED + 有受控失败原因 */
+  const eligibleFacts = {
+    requestId: 3,
+    intakeId: 31,
+    requestCustomerAccountId: 10,
+    intakeExists: true,
+    intakeCustomerAccountId: 10,
+    intakeDeleted: false,
+    convertedRequestId: 3,
+    generation: 0,
+    status: 'FAILED',
+    attemptGenerationNo: 0,
+    attemptStatus: 'FAILED',
+    attemptFailureReasonRecorded: true,
+  };
+
+  const makeAnalysisDetail = (facts: unknown, status = 'FAILED', generation = 0) => ({
+    ...detailQueryResult,
+    intakeAnalysis: {
+      status,
+      generation,
+      outputText: null,
+      finishedAt: null,
+    },
+    intakeAnalysisRetryFacts: facts,
   });
 
   const makeAccountQueryService = (
@@ -518,6 +553,7 @@ describe('详情用例（客户 / 工程师入口）', () => {
     const usecase = new GetMyRepairRequestDetailUsecase(
       queryService as unknown as RepairRequestQueryService,
       accountQueryService as unknown as AccountQueryService,
+      makeLedgerQueryService() as unknown as AsyncTaskRecordQueryService,
     );
 
     const result = await usecase.execute({ requestId: 3, session });
@@ -605,6 +641,7 @@ describe('详情用例（客户 / 工程师入口）', () => {
     const usecase = new GetMyRepairRequestDetailUsecase(
       queryService as unknown as RepairRequestQueryService,
       accountQueryService as unknown as AccountQueryService,
+      makeLedgerQueryService() as unknown as AsyncTaskRecordQueryService,
     );
 
     const result = await usecase.execute({ requestId: 3, session });
@@ -620,11 +657,150 @@ describe('详情用例（客户 / 工程师入口）', () => {
     const usecase = new GetMyRepairRequestDetailUsecase(
       queryService as unknown as RepairRequestQueryService,
       accountQueryService as unknown as AccountQueryService,
+      makeLedgerQueryService() as unknown as AsyncTaskRecordQueryService,
     );
 
     const result = await usecase.execute({ requestId: 3, session });
 
     expect(result.responses).toEqual([]);
     expect(accountQueryService.findNicknamesByAccountIds).toHaveBeenCalledWith([]);
+  });
+
+  // 展示状态与重试资格：服务端唯一判定源，前端不再自行组合 FAILED + generation
+  it('客户详情：第 0 代明确失败且账本存在 → FAILED_RETRYABLE 且可自助重试', async () => {
+    const queryService = {
+      findDetail: jest.fn().mockResolvedValue(makeAnalysisDetail(eligibleFacts)),
+    };
+    const ledgerQueryService = makeLedgerQueryService();
+    const usecase = new GetMyRepairRequestDetailUsecase(
+      queryService as unknown as RepairRequestQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
+      ledgerQueryService as unknown as AsyncTaskRecordQueryService,
+    );
+
+    const result = await usecase.execute({ requestId: 3, session });
+
+    expect(ledgerQueryService.findByQueueJob).toHaveBeenCalledWith({
+      where: { queueName: 'intake-analysis', jobId: 'intake-analysis:31:g0' },
+    });
+    expect(result.intakeAnalysis).toMatchObject({
+      status: 'FAILED',
+      generation: 0,
+      displayState: 'FAILED_RETRYABLE',
+      retryEligibility: { eligible: true, reason: 'OWNER_RETRY_AVAILABLE' },
+    });
+    // 内部判定事实不进入对外视图
+    expect(result).not.toHaveProperty('intakeAnalysisRetryFacts');
+    expect(result.intakeAnalysis).not.toHaveProperty('failureReason');
+  });
+
+  it('客户详情：缺少当前代次账本行 → FAILED_NOT_RETRYABLE（不开放自助重试）', async () => {
+    const queryService = {
+      findDetail: jest.fn().mockResolvedValue(makeAnalysisDetail(eligibleFacts)),
+    };
+    const usecase = new GetMyRepairRequestDetailUsecase(
+      queryService as unknown as RepairRequestQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
+      makeLedgerQueryService(null) as unknown as AsyncTaskRecordQueryService,
+    );
+
+    const result = await usecase.execute({ requestId: 3, session });
+
+    expect(result.intakeAnalysis).toMatchObject({
+      displayState: 'FAILED_NOT_RETRYABLE',
+      retryEligibility: { eligible: false, reason: 'LEDGER_INTENT_MISSING' },
+    });
+  });
+
+  it('客户详情：账本不可读时失败关闭，不把内部异常暴露为可重试', async () => {
+    const queryService = {
+      findDetail: jest.fn().mockResolvedValue(makeAnalysisDetail(eligibleFacts)),
+    };
+    const ledgerQueryService = {
+      findByQueueJob: jest
+        .fn()
+        .mockRejectedValue(new Error('capability runtime.async-task disabled')),
+    };
+    const usecase = new GetMyRepairRequestDetailUsecase(
+      queryService as unknown as RepairRequestQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
+      ledgerQueryService as unknown as AsyncTaskRecordQueryService,
+    );
+
+    const result = await usecase.execute({ requestId: 3, session });
+
+    expect(result.intakeAnalysis).toMatchObject({
+      displayState: 'FAILED_NOT_RETRYABLE',
+      retryEligibility: { eligible: false, reason: 'LEDGER_INTENT_MISSING' },
+    });
+    expect(JSON.stringify(result.intakeAnalysis)).not.toContain('capability');
+  });
+
+  it('客户详情：排队中 / 运行中 → 不开放客户恢复（QUEUED / RUNNING）', async () => {
+    for (const [status, displayState] of [
+      ['WAITING', 'QUEUED'],
+      ['RUNNING', 'RUNNING'],
+    ] as const) {
+      const queryService = {
+        findDetail: jest
+          .fn()
+          .mockResolvedValue(makeAnalysisDetail({ ...eligibleFacts, status }, status, 0)),
+      };
+      const usecase = new GetMyRepairRequestDetailUsecase(
+        queryService as unknown as RepairRequestQueryService,
+        makeAccountQueryService() as unknown as AccountQueryService,
+        makeLedgerQueryService() as unknown as AsyncTaskRecordQueryService,
+      );
+
+      const result = await usecase.execute({ requestId: 3, session });
+
+      expect(result.intakeAnalysis).toMatchObject({
+        displayState,
+        retryEligibility: { eligible: false, reason: 'ANALYSIS_IN_PROGRESS' },
+      });
+    }
+  });
+
+  it('客户详情：成功态 → COMPLETED，不提供重试入口', async () => {
+    const queryService = {
+      findDetail: jest.fn().mockResolvedValue(
+        makeAnalysisDetail(
+          {
+            ...eligibleFacts,
+            status: 'SUCCEEDED',
+            attemptStatus: 'SUCCEEDED',
+          },
+          'SUCCEEDED',
+          0,
+        ),
+      ),
+    };
+    const usecase = new GetMyRepairRequestDetailUsecase(
+      queryService as unknown as RepairRequestQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
+      makeLedgerQueryService() as unknown as AsyncTaskRecordQueryService,
+    );
+
+    const result = await usecase.execute({ requestId: 3, session });
+
+    expect(result.intakeAnalysis).toMatchObject({
+      displayState: 'COMPLETED',
+      retryEligibility: { eligible: false, reason: 'ANALYSIS_SUCCEEDED' },
+    });
+  });
+
+  it('客户详情：无原稿关联（无分析事实）时不读账本，分析视图为 null', async () => {
+    const queryService = makeDetailQueryService();
+    const ledgerQueryService = makeLedgerQueryService();
+    const usecase = new GetMyRepairRequestDetailUsecase(
+      queryService as unknown as RepairRequestQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
+      ledgerQueryService as unknown as AsyncTaskRecordQueryService,
+    );
+
+    const result = await usecase.execute({ requestId: 3, session });
+
+    expect(result.intakeAnalysis).toBeNull();
+    expect(ledgerQueryService.findByQueueJob).not.toHaveBeenCalled();
   });
 });

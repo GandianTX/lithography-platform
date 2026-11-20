@@ -79,11 +79,11 @@ import type {
   RepairRequestPaginatedDTO,
   RepairRequestPaginationVariables,
   SaveRepairRequestMaintenanceInput,
-  StagedRepairProcessFile,
   UpdateRepairProcessEntryInput,
   UploadRepairProcessFileFailureReason,
   UploadRepairProcessFileResult,
 } from './engineer-repair-request.types';
+import { uploadStagedStoredFile } from './stored-file-upload';
 
 const ENGINEER_REPAIR_REQUESTS_QUERY = `
   query EngineerRepairRequests($scope: String!, $pagination: PaginationArgs!, $filter: EngineerRepairRequestFilterInput) {
@@ -364,8 +364,6 @@ const INTERRUPT_REPAIR_REQUEST_MUTATION = `
     }
   }
 `;
-
-const STORED_FILE_UPLOAD_ENDPOINT = '/api/stored-files';
 
 function storedFileDownloadEndpoint(fileId: string): string {
   return `/api/stored-files/${encodeURIComponent(fileId)}/download`;
@@ -1211,72 +1209,34 @@ const DOWNLOAD_FALLBACK_MESSAGE_BY_REASON: Record<
 /**
  * 上传维修过程原件（REST，暂存态）。
  * 只允许 REPAIR_PROCESS 用途；成功返回正式 uploadContextId 与校验元数据。
+ * REST 装配与响应解析复用 feature 内共用的 stored-file-upload，避免与客户报修原件重复实现。
  */
 export async function uploadRepairProcessFile(file: File): Promise<UploadRepairProcessFileResult> {
-  const formData = new FormData();
-  formData.append('businessType', 'REPAIR_PROCESS');
-  formData.append('file', file, file.name);
+  const outcome = await uploadStagedStoredFile(file, 'REPAIR_PROCESS');
 
-  let response: Response;
-  try {
-    response = await fetchRestWithAuthRetry(STORED_FILE_UPLOAD_ENDPOINT, {
-      method: 'POST',
-      body: formData,
-    });
-  } catch {
+  if (outcome.status === 'uploaded') {
+    return { ok: true, file: outcome.file };
+  }
+
+  if (outcome.status === 'network') {
     return { ok: false, reason: 'upload-failed', message: '原件上传失败，请检查网络后重试' };
   }
 
-  if (response.ok) {
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      return { ok: false, reason: 'upload-failed', message: '原件上传失败，请稍后重试' };
-    }
-
-    const data = (payload as { data?: Partial<StagedRepairProcessFile> } | null)?.data;
-    if (
-      data &&
-      typeof data.fileId === 'string' &&
-      typeof data.uploadContextId === 'string' &&
-      typeof data.originalFilename === 'string' &&
-      typeof data.mimeType === 'string' &&
-      typeof data.byteSize === 'number' &&
-      typeof data.checksumSha256 === 'string'
-    ) {
-      return {
-        ok: true,
-        file: {
-          fileId: data.fileId,
-          uploadContextId: data.uploadContextId,
-          originalFilename: data.originalFilename,
-          mimeType: data.mimeType,
-          byteSize: data.byteSize,
-          checksumSha256: data.checksumSha256,
-        },
-      };
-    }
-
+  if (outcome.status === 'malformed') {
     return { ok: false, reason: 'upload-failed', message: '原件上传失败，请稍后重试' };
   }
 
-  let envelope: RestErrorEnvelope = {};
-  try {
-    envelope = toRestErrorEnvelope(await response.json());
-  } catch {
-    // 非 JSON 错误体，走兜底
-  }
-
-  const code = readRestErrorField(envelope, 'code');
-  const message = readRestErrorField(envelope, 'message');
-  const reason = code ? UPLOAD_FAILURE_REASON_BY_CODE[code] : undefined;
+  const reason = outcome.code ? UPLOAD_FAILURE_REASON_BY_CODE[outcome.code] : undefined;
 
   if (reason) {
-    return { ok: false, reason, message: message ?? UPLOAD_FALLBACK_MESSAGE_BY_REASON[reason] };
+    return {
+      ok: false,
+      reason,
+      message: outcome.message ?? UPLOAD_FALLBACK_MESSAGE_BY_REASON[reason],
+    };
   }
 
-  return { ok: false, reason: 'upload-failed', message: message ?? '原件上传失败，请稍后重试' };
+  return { ok: false, reason: 'upload-failed', message: outcome.message ?? '原件上传失败，请稍后重试' };
 }
 
 /** 下载已绑定原件（REST 授权下载；客户与无权账号不可借 ID 读取） */

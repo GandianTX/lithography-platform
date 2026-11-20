@@ -15,6 +15,7 @@ import {
   OrganizationRegistrationOption,
   OrganizationRegistrationOptionPage,
   OrganizationRegistrationOptionQuery,
+  OrganizationServiceProviderOption,
   OrganizationServiceProviderOptionPage,
   OrganizationServiceProviderOptionQuery,
 } from '../organization.types';
@@ -414,6 +415,33 @@ export class OrganizationQueryService {
       ...(params.transactionContext ? { lock: { mode: 'pessimistic_read' as const } } : {}),
     });
     return row ? { id: row.id, name: row.name } : null;
+  }
+
+  /**
+   * 按主键复核组织仍具备维修服务资格（任务 03 提交报修时的写前复核）。
+   *
+   * 资格口径与 `searchServiceProviderOptions` 完全一致：`status = ACTIVE` 且
+   * `is_service_provider = true`；两个资格字段互不参与对方判断，也不按名称猜测。
+   *
+   * 携带事务上下文时按当前读加共享行锁（`pessimistic_read`）：与「停用公司 /
+   * 撤销维修资格」的 UPDATE 串行，避免复核通过后仍用已失效厂家落库。
+   * 不存在、已停用或无维修资格统一返回 null，由调用方按输入类拒绝。
+   */
+  async findActiveServiceProviderForWrite(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<OrganizationServiceProviderOption | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({
+      where: {
+        id: params.organizationId,
+        status: 'ACTIVE',
+        isServiceProvider: true,
+      },
+      select: { id: true, name: true, shortName: true },
+      ...(params.transactionContext ? { lock: { mode: 'pessimistic_read' as const } } : {}),
+    });
+    return row ? { id: row.id, name: row.name, shortName: row.shortName } : null;
   }
 
   /**

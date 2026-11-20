@@ -73,6 +73,9 @@ describe('AcceptRepairRequestUsecase', () => {
     maintenanceSteps: [],
     maintenanceFaultPanels: [],
     intake: null,
+    intakeAnalysis: null,
+    originalFile: null,
+    serviceOrganization: null,
     canEditMaintenance: false,
   };
 

@@ -3,7 +3,7 @@ import type { RecordSource } from '@app-types/common/record-source.types';
 import { getQueueToken } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { type JobsOptions, Queue } from 'bullmq';
+import { type JobState, type JobsOptions, Queue } from 'bullmq';
 import { PinoLogger } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
 import { BULLMQ_QUEUE_JOBS, type BullMqQueueName } from './bullmq.constants';
@@ -15,6 +15,10 @@ import {
 import { BULLMQ_QUEUE_REGISTRY } from './queue-registry';
 
 export type BullMqEnqueueSource = RecordSource;
+
+/** BullMQ 运行时状态的窄化视图：waiting 含 prioritized / waiting-children */
+export type BullMqJobRuntimeState =
+  'waiting' | 'active' | 'delayed' | 'completed' | 'failed' | 'unknown';
 
 export interface BullMqEnqueueMeta {
   // 发起账号 ID、发起时承担的角色
@@ -153,6 +157,43 @@ export class BullMqProducerGateway {
     };
   }
 
+  /** 查询 job 的运行时状态：不存在（或不可辨识）返回 unknown */
+  async getJobState(input: {
+    readonly queueName: BullMqQueueName;
+    readonly jobId: string;
+  }): Promise<{
+    readonly queueName: BullMqQueueName;
+    readonly jobId: string;
+    readonly state: BullMqJobRuntimeState;
+  }> {
+    const jobId = input.jobId.trim();
+    if (!jobId) {
+      throw new Error(`bullmq_job_id_required:${input.queueName}`);
+    }
+    const queue = this.getQueue({ queueName: input.queueName });
+    const job = await queue.getJob(jobId);
+    if (!job) {
+      return { queueName: input.queueName, jobId, state: 'unknown' };
+    }
+    const rawState = await job.getState();
+    return { queueName: input.queueName, jobId, state: normalizeBullMqJobState(rawState) };
+  }
+
+  /** 移除一个 job：返回 1 表示移除成功，0 表示不存在或被锁定（不抛错） */
+  async removeJob(input: { readonly queueName: BullMqQueueName; readonly jobId: string }): Promise<{
+    readonly queueName: BullMqQueueName;
+    readonly jobId: string;
+    readonly removed: boolean;
+  }> {
+    const jobId = input.jobId.trim();
+    if (!jobId) {
+      throw new Error(`bullmq_job_id_required:${input.queueName}`);
+    }
+    const queue = this.getQueue({ queueName: input.queueName });
+    const code = await queue.remove(jobId);
+    return { queueName: input.queueName, jobId, removed: code === 1 };
+  }
+
   async checkQueueAvailable(input: { readonly queueName: BullMqQueueName }): Promise<{
     readonly queueName: BullMqQueueName;
     readonly available: true;
@@ -233,5 +274,24 @@ export class BullMqProducerGateway {
 
   private isObjectRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
+  }
+}
+
+function normalizeBullMqJobState(rawState: JobState | 'unknown'): BullMqJobRuntimeState {
+  switch (rawState) {
+    case 'waiting':
+    case 'prioritized':
+    case 'waiting-children':
+      return 'waiting';
+    case 'active':
+      return 'active';
+    case 'delayed':
+      return 'delayed';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'unknown';
   }
 }

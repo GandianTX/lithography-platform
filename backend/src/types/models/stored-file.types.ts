@@ -4,12 +4,16 @@
 /**
  * 业务引用类型。
  *
- * 任务 11 只落地当前唯一真实消费者（任务 04 内部维修过程）；
- * 任务 03 报修原件、任务 06 报告原件在各自任务中扩展本枚举，
- * 不提前放开无真实接入方的用途。
+ * 任务 11 落地内部维修过程（任务 04）；任务 03 追加客户报修原件。
+ * 任务 06 报告原件在各自任务中扩展本枚举，不提前放开无真实接入方的用途。
+ *
+ * 说明：`REPAIR_REQUEST` 的绑定业务标识是报修原始输入主键
+ * （`repair_request_intake.id`），不是维修工单主键；两类用途的
+ * business_id 语义互不复用。
  */
 export enum StoredFileBusinessType {
   REPAIR_PROCESS = 'REPAIR_PROCESS',
+  REPAIR_REQUEST = 'REPAIR_REQUEST',
 }
 
 /** 原件校验状态（数据库 chk_stored_file_status 真源：STAGING/VALID/FAILED） */
