@@ -87,7 +87,7 @@ function buildConversationDto(state: MockState) {
 async function installGraphQLMock(
   page: import('@playwright/test').Page,
   state: MockState,
-  options: { createDelayMs?: number } = {},
+  options: { createDelayMs?: number; submitHoldMs?: number } = {},
 ) {
   await page.route('**/graphql', async (route: Route) => {
     const payload = route.request().postDataJSON() as {
@@ -187,6 +187,10 @@ async function installGraphQLMock(
         stage?: number | null;
       };
       state.submitCount += 1;
+      // P2-1 反例：可控延迟提交响应，供「提交在飞时输入新草稿」观察中间态
+      if (options.submitHoldMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, options.submitHoldMs));
+      }
       const turnNo = state.turns.length + 1;
       state.turns.push({
         questionUuid: input.questionUuid,
@@ -461,6 +465,29 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     expect(firstTurn?.analysisStatus).not.toBe('SUCCEEDED');
     // 当前轮图形来自第二个问题（默认 SUCCEEDED 图形），不受第一轮影响
     await expect(page.getByLabel('维修流程示意')).toBeVisible();
+  });
+
+  test('P2-1 反例：提交在飞时输入的新草稿不被旧响应清空', async ({ page }) => {
+    const state = createMockState();
+    await installGraphQLMock(page, state, { submitHoldMs: 1500 });
+
+    await page.goto('/engineer/ai');
+    await page.getByRole('button', { name: '新建对话' }).click();
+
+    const input = page.getByLabel('AI 提问');
+    await input.fill('问题 A：取板台真空报警');
+    await page.getByRole('button', { name: '发送问题' }).click();
+
+    // 提交在飞：用户继续输入下一问（输入框保持可编辑）
+    await input.fill('问题 B：激光定位异常');
+    await expect(input).toHaveValue('问题 B：激光定位异常');
+
+    // A 的受理结果照常落库并回显，但不得清空 B
+    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole('log')).toContainText('问题 A：取板台真空报警');
+    await expect(input).toHaveValue('问题 B：激光定位异常');
   });
 
   test('重复 WARNING：重试后仍更新部件标记', async ({ page }) => {

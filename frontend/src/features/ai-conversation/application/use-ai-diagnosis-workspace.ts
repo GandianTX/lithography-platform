@@ -6,6 +6,7 @@
 // - 提交结果未知时先查原问题（用同一问题 UUID 查询），不另造 UUID、不重复提问；
 // - 重试沿用同一问题 UUID，不新增用户消息；
 // - 迟到响应不得覆盖新画面：切换会话/工单/账号后，旧请求的响应一律丢弃；
+// - 提交在飞期间的草稿编辑不得被旧响应清空或覆盖：清空只对「本次仍拥有」的草稿生效；
 // - 无有效图形时清除旧定位（回到流程参考图），正文照常保留；
 // - 图形只在内存渲染，不写浏览器持久存储。
 
@@ -130,6 +131,13 @@ export function useAiDiagnosisWorkspace() {
   const listEpoch = useRef(0);
   /** 同文本重试沿用同一 UUID：受理结果不明时再次提交不重复提问 */
   const pendingQuestion = useRef<{ text: string; uuid: string } | null>(null);
+  /**
+   * 草稿编辑修订号（P2-1）：只有用户编辑（setDraft）才推进。
+   *
+   * 提交在飞期间用户可能继续编辑（删空、粘贴、改回原文），旧响应不得清空或覆盖
+   * 新草稿；清空判定一律以「提交时捕获的修订号」为准。
+   */
+  const draftRevision = useRef(0);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** F06：创建/提交的同步防重入（按钮禁用不足以拦截连点与回车连发） */
   const creatingRef = useRef(false);
@@ -490,6 +498,8 @@ export function useAiDiagnosisWorkspace() {
           ? pendingQuestion.current
           : { text: trimmed, uuid: crypto.randomUUID() };
       pendingQuestion.current = pending;
+      // P2-1：提交前捕获草稿修订号，响应回写时据此判断草稿是否仍属于本次提交
+      const draftRevisionAtSubmit = draftRevision.current;
 
       const sessionToken = conversationEpoch.current;
       const turnToken = turnEpoch.current + 1;
@@ -517,10 +527,12 @@ export function useAiDiagnosisWorkspace() {
           return null;
         }
         pendingQuestion.current = null;
+        // P2-1：提交在飞期间用户已编辑草稿时保留编辑内容，只清本次仍拥有的草稿
+        const ownsDraft = draftRevision.current === draftRevisionAtSubmit;
         setState((current) => ({
           ...current,
           submitting: false,
-          draft: '',
+          ...(ownsDraft ? { draft: '' } : {}),
           activeQuestionUuid: result.questionUuid,
           generating: result.status === 'PENDING' || result.status === 'RUNNING',
           errorMessage: result.dispatchStatus === 'FAILED' ? '本轮派发失败，可重试本轮。' : null,
@@ -538,16 +550,18 @@ export function useAiDiagnosisWorkspace() {
         }
         // 受理结果不明：先查原问题；查到即按已受理处理
         const confirmed = await confirmAcceptedQuestion(conversationId, pending.uuid);
-        if (
-          confirmed !== null &&
-          sessionToken === conversationEpoch.current &&
-          turnToken === turnEpoch.current
-        ) {
+        // P2-1：确认返回后、写任何结果前复核会话与轮次，
+        // 覆盖「查不到」「确认请求失败（confirmed === null）」等返程
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return null;
+        }
+        if (confirmed !== null) {
           pendingQuestion.current = null;
+          const ownsDraft = draftRevision.current === draftRevisionAtSubmit;
           setState((current) => ({
             ...current,
             submitting: false,
-            draft: '',
+            ...(ownsDraft ? { draft: '' } : {}),
             activeQuestionUuid: confirmed.questionUuid,
             generating: !isTerminalStatus(confirmed.status),
             noticeMessage: '提交结果不明，已按原问题核对，服务端已受理。',
@@ -559,11 +573,11 @@ export function useAiDiagnosisWorkspace() {
           void pollQuestionStatus(conversationId, confirmed.questionUuid);
           return null;
         }
-        // 未受理：保留输入与错误，用户可原样重试（沿用同一 UUID）
+        // 未受理：保留当前输入与错误（不回填提交文本，避免覆盖用户在飞期间的编辑），
+        // 用户可原样重试（沿用同一 UUID）
         setState((current) => ({
           ...current,
           submitting: false,
-          draft: trimmed,
           errorMessage: describeAiConversationError(error),
         }));
         return null;
@@ -721,6 +735,8 @@ export function useAiDiagnosisWorkspace() {
   }, []);
 
   const setDraft = useCallback((draft: string) => {
+    // P2-1：用户编辑推进修订号（含删空、粘贴、改回原文），用于判定草稿归属
+    draftRevision.current += 1;
     setState((current) => ({ ...current, draft }));
   }, []);
 

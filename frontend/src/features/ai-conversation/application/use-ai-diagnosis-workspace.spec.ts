@@ -96,6 +96,21 @@ function buildVisualization(display: string) {
   };
 }
 
+/** 可控 promise：用于在提交/确认在飞期间插入用户编辑与切换会话 */
+function defer<T>() {
+  let resolve: ((value: T) => void) | null = null;
+  let reject: ((error: unknown) => void) | null = null;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return {
+    promise,
+    resolve: (value: T) => resolve?.(value),
+    reject: (error: unknown) => reject?.(error),
+  };
+}
+
 describe('useAiDiagnosisWorkspace', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -169,6 +184,10 @@ describe('useAiDiagnosisWorkspace', () => {
       await result.current.selectConversation(CONVERSATION_ID);
     });
 
+    // 与页面一致：输入框持有用户正文，提交的是同一份内容
+    await act(async () => {
+      result.current.setDraft('手臂 1 无动作');
+    });
     await act(async () => {
       await result.current.submitQuestion('手臂 1 无动作');
     });
@@ -499,6 +518,223 @@ describe('useAiDiagnosisWorkspace', () => {
     expect(result.current.selectedId).toBe(9);
     expect(result.current.creating).toBe(false);
     expect(result.current.errorMessage).toBeNull();
+  });
+});
+
+describe('P2-1：提交在飞期间的草稿编辑', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(adapter, 'listMyAiConversations').mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
+    vi.spyOn(adapter, 'getMyAiConversation').mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, turns: [] }),
+    );
+  });
+
+  /** 提交 A 后、响应回写前编辑草稿 B；返回在飞的提交承诺（不在此处等待） */
+  async function startSubmitThenEdit(
+    result: { current: ReturnType<typeof useAiDiagnosisWorkspace> },
+    nextDraft: string,
+  ): Promise<{ pending: Promise<unknown> }> {
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      result.current.setDraft('问题 A');
+    });
+    let pending: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      pending = result.current.submitQuestion('问题 A');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      result.current.setDraft(nextDraft);
+    });
+    return { pending };
+  }
+
+  it('直接成功：A 结果照常写入，编辑中的 B 不被清空', async () => {
+    const submit = defer<SubmitAiQuestionResult>();
+    vi.spyOn(adapter, 'submitAiQuestion').mockReturnValue(submit.promise);
+    vi.spyOn(adapter, 'getAiQuestionStatus').mockImplementation(
+      () => new Promise<AiQuestionStatus>(() => undefined),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    const { pending } = await startSubmitThenEdit(result, '问题 B');
+    await act(async () => {
+      submit.resolve(buildSubmitResult());
+      await pending;
+    });
+
+    expect(result.current.draft).toBe('问题 B');
+    expect(result.current.activeQuestionUuid).toBe(QUESTION_UUID);
+    expect(result.current.submitting).toBe(false);
+  });
+
+  it('失败且未受理：保留编辑后的草稿，不再回填提交文本', async () => {
+    const submit = defer<SubmitAiQuestionResult>();
+    vi.spyOn(adapter, 'submitAiQuestion').mockReturnValue(submit.promise);
+    vi.spyOn(adapter, 'getAiQuestionStatus').mockRejectedValue(new Error('not found'));
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    const { pending } = await startSubmitThenEdit(result, '问题 B');
+    await act(async () => {
+      submit.reject(new Error('network down'));
+      await pending;
+    });
+
+    expect(result.current.draft).toBe('问题 B');
+    expect(result.current.errorMessage).not.toBeNull();
+    expect(result.current.activeQuestionUuid).toBeNull();
+  });
+
+  it('结果未知但已受理：保留编辑后的草稿并按已受理提示', async () => {
+    const submit = defer<SubmitAiQuestionResult>();
+    const confirm = defer<AiQuestionStatus>();
+    vi.spyOn(adapter, 'submitAiQuestion').mockReturnValue(submit.promise);
+    vi.spyOn(adapter, 'getAiQuestionStatus')
+      .mockReturnValueOnce(confirm.promise)
+      .mockImplementation(() => new Promise<AiQuestionStatus>(() => undefined));
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    const { pending } = await startSubmitThenEdit(result, '问题 B');
+    await act(async () => {
+      submit.reject(new Error('timeout'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      confirm.resolve(buildStatus({ status: 'RUNNING' }));
+      await pending;
+    });
+
+    expect(result.current.draft).toBe('问题 B');
+    expect(result.current.activeQuestionUuid).toBe(QUESTION_UUID);
+    expect(result.current.noticeMessage).not.toBeNull();
+  });
+
+  it('无编辑时成功仍按原规则清空草稿', async () => {
+    vi.spyOn(adapter, 'submitAiQuestion').mockResolvedValue(buildSubmitResult());
+    vi.spyOn(adapter, 'getAiQuestionStatus').mockImplementation(
+      () => new Promise<AiQuestionStatus>(() => undefined),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      result.current.setDraft('问题 A');
+    });
+    await act(async () => {
+      await result.current.submitQuestion('问题 A');
+    });
+
+    expect(result.current.draft).toBe('');
+  });
+
+  it('在飞时删空输入，成功返回后保持空（不清空也不回填）', async () => {
+    const submit = defer<SubmitAiQuestionResult>();
+    vi.spyOn(adapter, 'submitAiQuestion').mockReturnValue(submit.promise);
+    vi.spyOn(adapter, 'getAiQuestionStatus').mockImplementation(
+      () => new Promise<AiQuestionStatus>(() => undefined),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    const { pending } = await startSubmitThenEdit(result, '');
+    await act(async () => {
+      submit.resolve(buildSubmitResult());
+      await pending;
+    });
+
+    expect(result.current.draft).toBe('');
+  });
+
+  it('在飞时改回与提交文本相同的内容，仍按用户编辑保留', async () => {
+    const submit = defer<SubmitAiQuestionResult>();
+    vi.spyOn(adapter, 'submitAiQuestion').mockReturnValue(submit.promise);
+    vi.spyOn(adapter, 'getAiQuestionStatus').mockImplementation(
+      () => new Promise<AiQuestionStatus>(() => undefined),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    const { pending } = await startSubmitThenEdit(result, '问题 B');
+    await act(async () => {
+      result.current.setDraft('问题 A');
+    });
+    await act(async () => {
+      submit.resolve(buildSubmitResult());
+      await pending;
+    });
+
+    expect(result.current.draft).toBe('问题 A');
+  });
+
+  it('确认期间切会话：迟到的确认结果不写入新会话', async () => {
+    const submit = defer<SubmitAiQuestionResult>();
+    const confirm = defer<AiQuestionStatus>();
+    vi.spyOn(adapter, 'submitAiQuestion').mockReturnValue(submit.promise);
+    vi.spyOn(adapter, 'getAiQuestionStatus')
+      .mockReturnValueOnce(confirm.promise)
+      .mockImplementation(() => new Promise<AiQuestionStatus>(() => undefined));
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    const { pending } = await startSubmitThenEdit(result, '问题 B');
+    await act(async () => {
+      submit.reject(new Error('timeout'));
+      await Promise.resolve();
+    });
+    // 确认在飞时切到另一个会话
+    await act(async () => {
+      await result.current.selectConversation(9);
+    });
+    await act(async () => {
+      confirm.resolve(buildStatus({ status: 'SUCCEEDED' }));
+      await pending;
+    });
+
+    expect(result.current.selectedId).toBe(9);
+    expect(result.current.conversation?.id).toBe(9);
+    expect(result.current.draft).toBe('');
+    expect(result.current.errorMessage).toBeNull();
+    expect(result.current.noticeMessage).toBeNull();
+    expect(result.current.activeQuestionUuid).toBeNull();
+  });
+
+  it('换文本重试使用新 UUID，不沿用上一条失败问题', async () => {
+    const submitSpy = vi
+      .spyOn(adapter, 'submitAiQuestion')
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(buildSubmitResult());
+    vi.spyOn(adapter, 'getAiQuestionStatus')
+      .mockRejectedValueOnce(new Error('not found'))
+      .mockImplementation(() => new Promise<AiQuestionStatus>(() => undefined));
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      result.current.setDraft('问题 A');
+    });
+    await act(async () => {
+      await result.current.submitQuestion('问题 A');
+    });
+    await act(async () => {
+      result.current.setDraft('问题 B');
+    });
+    await act(async () => {
+      await result.current.submitQuestion('问题 B');
+    });
+
+    expect(submitSpy.mock.calls[1][0].question).toBe('问题 B');
+    expect(submitSpy.mock.calls[1][0].questionUuid).not.toBe(
+      submitSpy.mock.calls[0][0].questionUuid,
+    );
   });
 });
 
