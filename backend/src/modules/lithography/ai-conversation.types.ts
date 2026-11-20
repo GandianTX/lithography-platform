@@ -205,6 +205,18 @@ export interface AiMessageAnalysisCompleteData {
   readonly completedAt: Date;
 }
 
+/**
+ * 待结算候选：分析仍为 PENDING 且尚未关联回答。
+ *
+ * 恢复扫描的候选来源。与「窗口内终态执行」相比，本形状不依赖时间窗口，
+ * 因此停机超过回看期后仍能重新发现未收敛的轮次。
+ */
+export interface AiPendingAnalysisCandidate {
+  readonly questionUuid: string;
+  readonly conversationId: number;
+  readonly questionMessageId: number;
+}
+
 /** 工作流上下文所需的会话事实（派发时一次性快照） */
 export interface AiConversationDispatchSnapshot {
   readonly conversationId: number;

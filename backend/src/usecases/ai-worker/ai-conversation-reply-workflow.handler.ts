@@ -141,18 +141,16 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
       });
     } catch (error) {
       const reason = this.resolveFailureReason(error);
-      // F04：旧执行的失败不得覆盖新执行的 PENDING 状态
+      // F04／S2：旧执行的失败不得覆盖新执行的 PENDING 状态（锁内核对当前执行后再写）
       if (
-        await this.isCurrentExecution({
+        await this.settleFailureWithinLock({
+          conversationId: payload.conversationId,
           questionUuid: payload.questionUuid,
           workflowId: input.context.workflowId,
           jobId: input.context.jobId,
+          reason,
         })
       ) {
-        await this.aiConversationService.markAnalysisFailed({
-          questionUuid: payload.questionUuid,
-          reason,
-        });
         throw new AiWorkflowNonRetryableError('模型调用或回复解析失败', reason);
       }
       throw new AiWorkflowNonRetryableError(
@@ -290,6 +288,45 @@ export class AiConversationReplyWorkflowHandler implements AiWorkflowHandler {
           }
         : {}),
     };
+  }
+
+  /**
+   * 模型失败后的业务收敛（F04／S2）：与成功写回、重试共用锁序（先会话行锁），
+   * 并在同一事务内以 workflowId＋jobId 核对当前执行后才写失败，
+   * 消除「事务外读身份 → 写失败」之间的竞态窗口。
+   *
+   * @returns 是否由本执行写入失败；false 表示已被更新的执行接管
+   */
+  private async settleFailureWithinLock(input: {
+    readonly conversationId: number;
+    readonly questionUuid: string;
+    readonly workflowId: string;
+    readonly jobId: string | null;
+    readonly reason: string;
+  }): Promise<boolean> {
+    return this.transactionRunner.run<boolean>(async (transactionContext) => {
+      const conversation = await this.aiConversationService.lockConversationForWrite(
+        input.conversationId,
+        transactionContext,
+      );
+      if (conversation === null) {
+        return false;
+      }
+      const current = await this.isCurrentExecution({
+        questionUuid: input.questionUuid,
+        workflowId: input.workflowId,
+        jobId: input.jobId,
+        transactionContext,
+        forUpdate: true,
+      });
+      if (!current) {
+        return false;
+      }
+      return this.aiConversationService.markAnalysisFailed(
+        { questionUuid: input.questionUuid, reason: input.reason },
+        transactionContext,
+      );
+    });
   }
 
   /** 当前执行断言：不成立即按不可重试失败终止（F04） */

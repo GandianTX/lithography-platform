@@ -246,10 +246,13 @@ describe('AiConversationReplyWorkflowHandler', () => {
     );
 
     await expect(run()).rejects.toMatchObject({ reason: 'reply_request_id_mismatch' });
-    expect(aiConversationService.markAnalysisFailed).toHaveBeenCalledWith({
-      questionUuid: QUESTION_UUID,
-      reason: 'reply_request_id_mismatch',
-    });
+    expect(aiConversationService.markAnalysisFailed).toHaveBeenCalledWith(
+      {
+        questionUuid: QUESTION_UUID,
+        reason: 'reply_request_id_mismatch',
+      },
+      expect.anything(),
+    );
   });
 
   it('模型调用失败（超时）：标记 reply_timeout 并终止工作流', async () => {
@@ -257,10 +260,13 @@ describe('AiConversationReplyWorkflowHandler', () => {
     modelInvoker.invoke.mockRejectedValue(new DomainError('ai_provider_timeout', '模型超时'));
 
     await expect(run()).rejects.toMatchObject({ reason: 'reply_timeout' });
-    expect(aiConversationService.markAnalysisFailed).toHaveBeenCalledWith({
-      questionUuid: QUESTION_UUID,
-      reason: 'reply_timeout',
-    });
+    expect(aiConversationService.markAnalysisFailed).toHaveBeenCalledWith(
+      {
+        questionUuid: QUESTION_UUID,
+        reason: 'reply_timeout',
+      },
+      expect.anything(),
+    );
   });
 
   it('公共 RAG 客户端失败：按可辨识短码写入 failure_reason', async () => {
@@ -270,10 +276,13 @@ describe('AiConversationReplyWorkflowHandler', () => {
     );
 
     await expect(run()).rejects.toMatchObject({ reason: 'reply_service_unavailable' });
-    expect(aiConversationService.markAnalysisFailed).toHaveBeenCalledWith({
-      questionUuid: QUESTION_UUID,
-      reason: 'reply_service_unavailable',
-    });
+    expect(aiConversationService.markAnalysisFailed).toHaveBeenCalledWith(
+      {
+        questionUuid: QUESTION_UUID,
+        reason: 'reply_service_unavailable',
+      },
+      expect.anything(),
+    );
   });
 
   it('分析记录缺失：不可重试失败且不调用模型', async () => {

@@ -28,9 +28,6 @@ import { AiWorkflowWorkerActivationUsecase } from '@src/usecases/ai-worker/ai-wo
 /** 恢复扫描间隔（毫秒）。准入过期判定与重投都以该节奏推进。 */
 export const AI_WORKFLOW_RECOVERY_INTERVAL_MS = 30_000;
 
-/** 结算回看窗口（毫秒）：覆盖「执行终态落库」到「下一轮扫描」之间的间隔抖动。 */
-export const AI_WORKFLOW_RECOVERY_LOOKBACK_MS = 10 * 60_000;
-
 /** 单轮批量上限 */
 export const AI_WORKFLOW_RECOVERY_BATCH_LIMIT = 50;
 
@@ -38,6 +35,14 @@ export const AI_WORKFLOW_RECOVERY_BATCH_LIMIT = 50;
 export class AiWorkflowRecoveryScheduler implements OnApplicationBootstrap, OnApplicationShutdown {
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
+  /**
+   * 结算扫描的键集游标（上一批末键）。
+   *
+   * 满批时保留末键、下一轮从该键之后继续；读到最后一批时置空，下一轮从头回绕，
+   * 从而重新覆盖此前被跳过（活动执行、非失败终态）与单条异常的候选。
+   * 只在内存中维护：进程重启即从头扫，保证停机期间历史遗漏能被重新发现。
+   */
+  private settlementCursor: string | null = null;
 
   constructor(
     private readonly activation: AiWorkflowWorkerActivationUsecase,
@@ -110,12 +115,15 @@ export class AiWorkflowRecoveryScheduler implements OnApplicationBootstrap, OnAp
         limit: AI_WORKFLOW_RECOVERY_BATCH_LIMIT,
       });
       const settlement = await this.settlement.sweep({
-        since: new Date(now.getTime() - AI_WORKFLOW_RECOVERY_LOOKBACK_MS),
+        afterQuestionUuid: this.settlementCursor,
         limit: AI_WORKFLOW_RECOVERY_BATCH_LIMIT,
       });
+      // 满批保留末键继续，到末尾置空并在下一轮从头回绕；读取失败时异常上抛，
+      // 游标保持原值，不会跳到未处理的区间。
+      this.settlementCursor = settlement.nextCursor;
       const admissionChanged =
         housekeeping.admission.succeeded > 0 || housekeeping.admission.failed > 0;
-      if (admissionChanged || settlement.settled > 0) {
+      if (admissionChanged || settlement.settled > 0 || settlement.failed > 0) {
         this.logger.info(
           {
             admission: housekeeping.admission,
@@ -125,12 +133,11 @@ export class AiWorkflowRecoveryScheduler implements OnApplicationBootstrap, OnAp
           'AI workflow 恢复扫描完成',
         );
       }
-      // 单轮命中上限说明窗口内还有未处理项：本轮不做游标推进（写入幂等、下一轮会再取），
-      // 但必须给出可观测信号，避免「看起来在跑、其实长期追不上」。
-      if (settlement.scanned >= AI_WORKFLOW_RECOVERY_BATCH_LIMIT) {
-        this.logger.warn(
-          { scanned: settlement.scanned, batchLimit: AI_WORKFLOW_RECOVERY_BATCH_LIMIT },
-          '恢复扫描达到批量上限，窗口内仍有未结算执行',
+      if (!settlement.reachedEnd) {
+        // 本批读满：候选还有后续，下一轮从末键之后继续。
+        this.logger.debug(
+          { scanned: settlement.scanned, nextCursor: settlement.nextCursor },
+          '恢复扫描本批已满，下一轮从末键继续',
         );
       }
     } catch (error: unknown) {

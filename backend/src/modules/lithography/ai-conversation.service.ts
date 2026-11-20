@@ -20,6 +20,7 @@ import type {
   AiMessageAnalysisCompleteData,
   AiMessageAnalysisInsertData,
   AiMessageAnalysisSnapshot,
+  AiPendingAnalysisCandidate,
   AiQuestionMessageInsertData,
   AiQuestionMessageSnapshot,
 } from './ai-conversation.types';
@@ -39,6 +40,9 @@ import { AiMessageEntity } from './entities/ai-message.entity';
  * - 权限判定、公司归属裁决、幂等语义裁决、轮次上限判定（归 usecase）
  * - 事务开启（事务边界由 usecase 通过 TransactionRunner 持有）
  */
+/** 候选批量读取上限：防御调用方传入过大值导致单次查询过重 */
+const AI_PENDING_CANDIDATE_MAX_LIMIT = 500;
+
 @Injectable()
 export class AiConversationService {
   constructor(
@@ -368,6 +372,50 @@ export class AiConversationService {
       return null;
     }
     return this.toAnalysisSnapshot(entity);
+  }
+
+  /**
+   * 读取待结算候选（键集分页，按分析主键 `question_uuid` 升序）。
+   *
+   * 只返回「分析仍为 PENDING 且尚未关联回答」的问题：
+   * - 已成功／已失败的轮次不再进入候选，避免历史成功记录反复占满扫描配额；
+   * - 不设终态时间窗口，停机超过回看期的未收敛轮次仍能在重启后被重新发现；
+   * - `afterQuestionUuid` 为上一批末键（keyset），null 表示从头开始；
+   * - 返回条数达到 `limit` 说明后面可能还有，调用方以末键推进游标。
+   *
+   * 该查询只读且不授权任何写入：结算前必须在事务内重新核对分析事实与执行身份。
+   */
+  async listPendingAnalysisCandidates(input: {
+    readonly afterQuestionUuid: string | null;
+    readonly limit: number;
+  }): Promise<ReadonlyArray<AiPendingAnalysisCandidate>> {
+    const limit = Math.max(1, Math.min(Math.trunc(input.limit), AI_PENDING_CANDIDATE_MAX_LIMIT));
+    try {
+      const repository = this.analysisRepository;
+      const query = repository
+        .createQueryBuilder('analysis')
+        .select(['analysis.questionUuid', 'analysis.conversationId', 'analysis.questionMessageId'])
+        .where('analysis.status = :status', { status: AiMessageAnalysisStatus.PENDING })
+        .andWhere('analysis.answerMessageId IS NULL');
+      if (input.afterQuestionUuid !== null) {
+        query.andWhere('analysis.questionUuid > :afterQuestionUuid', {
+          afterQuestionUuid: input.afterQuestionUuid,
+        });
+      }
+      const entities = await query.orderBy('analysis.questionUuid', 'ASC').take(limit).getMany();
+      return entities.map((entity) => ({
+        questionUuid: entity.questionUuid,
+        conversationId: entity.conversationId,
+        questionMessageId: entity.questionMessageId,
+      }));
+    } catch (error) {
+      throw new DomainError(
+        AI_CONVERSATION_ERROR.REPLY_UNAVAILABLE,
+        '读取待结算分析候选失败，请稍后重试',
+        { limit },
+        error,
+      );
+    }
   }
 
   /**

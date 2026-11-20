@@ -6,26 +6,31 @@
 // 恢复编排，可能重新投递任务并写 analysis 状态——读权限被隐式赋予了写入能力，
 // 与「状态查询只读、恢复由正式运行入口负责」的约定冲突。
 //
-// 现在职责拆分：
-// - 准入／投递重试与准入超时的 workflow 侧收敛：`RunAiWorkflowHousekeepingUsecase`
-//   （已有实现，由 Worker 生命周期定时触发）；
-// - 本服务只做「**最新**执行已是终态失败/取消，但 analysis 仍 PENDING」的补写。
+// 2026-11-20 复验 P2-1（漏扫）：原实现按「最近十分钟内的终态执行」取首批，
+// 成功执行与已结算失败会反复占满配额；51 条场景里前 50 条是更早的成功记录，
+// 第 51 条未结算失败永远取不到；停机超过回看期的遗漏也不会被重新发现。
+// 现改为以「分析仍 PENDING 且无回答」为唯一候选源，按主键键集分页推进，
+// 不设时间窗口，满批保留末键、到末尾回绕。
 //
-// 关键约束（2026-11-20 自查发现的竞态）：
-// 不能只看「窗口内存在失败执行」就写失败。用户在同一 questionUuid 上重试后，
-// 新执行可能在运行中、analysis 处于 PENDING；此时若把 analysis 写成 FAILED，
-// 新执行的回答写入（条件更新同样要求 PENDING）会被自己挡掉，答案丢失。
-// 因此逐个候选回读**最新**执行，只有最新执行确为 FAILED/CANCELLED 才收敛，
-// 并在写入前确认当前没有活动执行。写入本身仍受「仅 PENDING 生效」兜底，重复扫描幂等。
+// 2026-11-20 复验 P2-2（旧结算覆盖新执行）：原实现先事务外读身份、再按
+// UUID＋PENDING 写失败，两次扫描之间有重试插入新执行时，会把新一轮写成 FAILED，
+// 从而挡掉新执行的回答写入。现结算与重试共用同一锁序（先会话行锁），
+// 在同一事务内重新核对分析事实、活动执行与最新执行，再条件更新。
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
+import { AiMessageAnalysisStatus } from '@app-types/models/ai-conversation.types';
 import { AiConversationService } from '@src/modules/lithography/ai-conversation.service';
+import type { AiPendingAnalysisCandidate } from '@src/modules/lithography/ai-conversation.types';
 import { AI_CONVERSATION_REPLY_WORKFLOW_TYPE } from '@src/usecases/ai-conversation/ai-conversation-dispatch.types';
 import {
   AI_CONVERSATION_EXECUTION_LOOKUP,
   type AiConversationExecutionLookupPort,
 } from '@src/usecases/common/ports/ai-conversation-execution.contract';
+import {
+  TRANSACTION_RUNNER,
+  type TransactionRunner,
+} from '@src/usecases/common/ports/transaction-runner.contract';
 
 /** 05 会话在 workflow context 中的业务类型（与 dispatch 写入保持一致） */
 const AI_CONVERSATION_BIZ_TYPE = 'ai_conversation';
@@ -37,13 +42,24 @@ const TERMINAL_FAILED_STATUSES = new Set(['FAILED', 'CANCELLED']);
 export const AI_QUESTION_SETTLEMENT_DEFAULT_LIMIT = 50;
 
 export type AiQuestionSettlementSweepResult = {
-  /** 扫描到的终态执行条数 */
+  /** 本批读到的候选条数 */
   readonly scanned: number;
   /** 实际补写为失败的 analysis 条数 */
   readonly settled: number;
-  /** 因仍有活动执行／最新执行非失败而跳过的条数 */
+  /** 因已有活动执行／最新执行非失败／已有回答而跳过的条数 */
   readonly skipped: number;
+  /** 单条处理抛错（已被隔离，下一轮回绕时会重新覆盖）的条数 */
+  readonly failed: number;
+  /**
+   * 下一批起点（上一批末键）。`null` 表示本批已到候选末尾，
+   * 下一轮从头（回绕）开始，从而重新覆盖此前跳过与异常项。
+   */
+  readonly nextCursor: string | null;
+  /** 本批是否已到候选末尾（下一轮从头开始） */
+  readonly reachedEnd: boolean;
 };
+
+type SettlementOutcome = 'settled' | 'skipped';
 
 @Injectable()
 export class AiQuestionAnalysisSettlementService {
@@ -53,81 +69,134 @@ export class AiQuestionAnalysisSettlementService {
     @Inject(AI_CONVERSATION_EXECUTION_LOOKUP)
     private readonly executionLookup: AiConversationExecutionLookupPort,
     private readonly aiConversationService: AiConversationService,
+    @Inject(TRANSACTION_RUNNER)
+    private readonly transactionRunner: TransactionRunner,
   ) {}
 
   /**
-   * 扫描窗口内进入终态的执行，把仍未收敛的 analysis 补写为可重试失败。
+   * 扫描一批「分析仍 PENDING 且无回答」的候选，把执行已终止的轮次补写为可重试失败。
    *
-   * @param input.since 窗口下界（通常是「上次扫描时间 − 回看容差」）
-   * @param input.limit 单次处理上限
+   * @param input.afterQuestionUuid 上一批末键（keyset）；`null` 表示从头开始
+   * @param input.limit 单批处理上限
    */
   async sweep(input: {
-    readonly since: Date;
+    readonly afterQuestionUuid: string | null;
     readonly limit?: number;
   }): Promise<AiQuestionSettlementSweepResult> {
     const limit = input.limit ?? AI_QUESTION_SETTLEMENT_DEFAULT_LIMIT;
-    const terminated = await this.executionLookup.listTerminalExecutionsSince({
-      workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
-      updatedSince: input.since,
+    const candidates = await this.aiConversationService.listPendingAnalysisCandidates({
+      afterQuestionUuid: input.afterQuestionUuid,
       limit,
     });
 
-    // 同一 question 可能有多条历史失败执行：按业务子键去重，只回读一次最新执行
-    const questionUuids = [...new Set(terminated.map((execution) => execution.bizSubKey))];
-
     let settled = 0;
     let skipped = 0;
-    for (const questionUuid of questionUuids) {
+    let failed = 0;
+    for (const candidate of candidates) {
       try {
-        const active = await this.executionLookup.findActiveExecutionByBizTarget({
-          workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
-          bizType: AI_CONVERSATION_BIZ_TYPE,
-          bizSubKey: questionUuid,
-        });
-        if (active !== null) {
-          // 重试后的新执行仍在进行中：此时 analysis 的 PENDING 是「正在生成」，
-          // 不能写失败（否则会挡掉新执行的回答写入）
-          skipped += 1;
-          continue;
-        }
-
-        const latest = await this.executionLookup.findLatestExecutionByBizTarget({
-          workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
-          bizType: AI_CONVERSATION_BIZ_TYPE,
-          bizSubKey: questionUuid,
-        });
-        if (latest === null || !TERMINAL_FAILED_STATUSES.has(latest.status)) {
-          skipped += 1;
-          continue;
-        }
-
-        const changed = await this.aiConversationService.markAnalysisFailed({
-          questionUuid,
-          reason: `workflow_${latest.status.toLowerCase()}`,
-        });
-        if (changed) {
+        const outcome = await this.settleCandidate(candidate);
+        if (outcome === 'settled') {
           settled += 1;
-          this.logger.warn(
-            {
-              questionUuid,
-              workflowId: latest.workflowId,
-              workflowStatus: latest.status,
-            },
-            'AI 执行已终止但分析未收敛，已补写为可重试失败',
-          );
+        } else {
+          skipped += 1;
         }
       } catch (error: unknown) {
-        // 单条失败不影响其余候选；下一轮扫描会重试（写入条件幂等）
+        // 单条失败不影响其余候选；该条仍在本轮游标内推进，
+        // 回绕到头部时会被重新覆盖（写入条件幂等）。
+        failed += 1;
         this.logger.warn(
           {
-            questionUuid,
+            questionUuid: candidate.questionUuid,
             error: error instanceof Error ? error.message.slice(0, 200) : 'settle_error',
           },
-          'AI 执行终止后的分析收敛失败，等待下一轮扫描',
+          'AI 执行终止后的分析收敛失败，等待回绕重试',
         );
       }
     }
 
-    return { scanned: terminated.length, settled, skipped };
+    const reachedEnd = candidates.length < limit;
+    const nextCursor = reachedEnd
+      ? null
+      : (candidates[candidates.length - 1]?.questionUuid ?? null);
+    return { scanned: candidates.length, settled, skipped, failed, nextCursor, reachedEnd };
+  }
+
+  /**
+   * 单条候选结算：与重试共用锁序（先会话行锁），并在**同一事务**内重新核对：
+   * 1. 分析仍属于该会话、仍为 PENDING 且没有回答（候选只用于定位，不授权写入）；
+   * 2. 当前没有活动执行（重试后的新一轮仍在生成时不得写失败）；
+   * 3. 最新执行确为 FAILED／CANCELLED。
+   *
+   * 满足以上条件才做条件更新；任一不满足即跳过，不产生写入。
+   */
+  private async settleCandidate(candidate: AiPendingAnalysisCandidate): Promise<SettlementOutcome> {
+    return this.transactionRunner.run<SettlementOutcome>(async (transactionContext) => {
+      const conversation = await this.aiConversationService.lockConversationForWrite(
+        candidate.conversationId,
+        transactionContext,
+      );
+      if (conversation === null) {
+        return 'skipped';
+      }
+
+      const analysis = await this.aiConversationService.findAnalysisByQuestion(
+        candidate.questionUuid,
+        transactionContext,
+      );
+      if (analysis === null || analysis.conversationId !== candidate.conversationId) {
+        return 'skipped';
+      }
+      if (
+        analysis.status !== AiMessageAnalysisStatus.PENDING ||
+        analysis.answerMessageId !== null
+      ) {
+        return 'skipped';
+      }
+
+      const active = await this.executionLookup.findActiveExecutionByBizTarget({
+        workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
+        bizType: AI_CONVERSATION_BIZ_TYPE,
+        bizSubKey: candidate.questionUuid,
+        transactionContext,
+        // 事务内当前读：不能以 MVCC 旧快照宣称「没有活动执行」
+        forUpdate: true,
+      });
+      if (active !== null) {
+        // 重试后的新执行仍在进行中：此时 analysis 的 PENDING 是「正在生成」，
+        // 不能写失败（否则会挡掉新执行的回答写入）
+        return 'skipped';
+      }
+
+      const latest = await this.executionLookup.findLatestExecutionByBizTarget({
+        workflowType: AI_CONVERSATION_REPLY_WORKFLOW_TYPE,
+        bizType: AI_CONVERSATION_BIZ_TYPE,
+        bizSubKey: candidate.questionUuid,
+        transactionContext,
+      });
+      if (latest === null || !TERMINAL_FAILED_STATUSES.has(latest.status)) {
+        return 'skipped';
+      }
+
+      const changed = await this.aiConversationService.markAnalysisFailed(
+        {
+          questionUuid: candidate.questionUuid,
+          reason: `workflow_${latest.status.toLowerCase()}`,
+        },
+        transactionContext,
+      );
+      if (!changed) {
+        return 'skipped';
+      }
+      this.logger.warn(
+        {
+          questionUuid: candidate.questionUuid,
+          conversationId: candidate.conversationId,
+          workflowId: latest.workflowId,
+          workflowStatus: latest.status,
+        },
+        'AI 执行已终止但分析未收敛，已补写为可重试失败',
+      );
+      return 'settled';
+    });
   }
 }
