@@ -421,11 +421,13 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await page.getByRole('button', { name: '发送问题' }).click();
 
     await expect(page.getByText('问题已保存，正在生成回复…')).toBeVisible();
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
     // 左侧图例给出模型标记（关注 · 手臂1（掩模板））
-    await expect(page.getByLabel('部件标记')).toContainText('关注');
+    await expect(page.getByLabel('部件标记')).toContainText('警示');
     // 流程参考图中的部件（阶段 2）高亮
     await expect(page.getByLabel('维修流程示意')).toBeVisible();
   });
@@ -439,7 +441,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await page.getByLabel('AI 提问').fill('曝光前校验失败');
     await page.getByRole('button', { name: '发送问题' }).click();
 
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
     expect(state.requestId).toBe(8801);
@@ -514,7 +518,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await page.getByLabel('AI 提问').fill('问题二');
     await page.getByRole('button', { name: '发送问题' }).click();
 
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
     // 当前轮是第二个问题：第一轮仍未完成，不得被标成成功
@@ -540,7 +546,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(input).toHaveValue('问题 B：激光定位异常');
 
     // A 的受理结果照常落库并回显，但不得清空 B
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 15000,
     });
     await expect(page.getByRole('log')).toContainText('问题 A：取板台真空报警');
@@ -585,6 +593,65 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(page.getByLabel('部件标记')).not.toContainText('手臂1（掩模板）');
   });
 
+  test('S3：WARNING 落定后出现故障短卡，本轮阶段单独反馈', async ({ page }) => {
+    const state = createMockState();
+    state.statusQueue = [
+      {
+        status: 'SUCCEEDED',
+        visualization: {
+          sceneId: 'LITHO_WORKFLOW_V1',
+          stage: 2,
+          parts: buildParts('NORMAL', { reticle_arm: 'WARNING' }),
+        },
+      },
+    ];
+    await installGraphQLMock(page, state);
+
+    await page.goto('/engineer/ai');
+    await page.getByLabel('AI 提问').fill('手臂 1 无动作，怎么排查？');
+    await page.getByRole('button', { name: '发送问题' }).click();
+
+    // 故障短卡在锁定后出现：本地化部件名 + 故障锁定 + 可展示的简短描述
+    const card = page.locator('.ai-fault-card');
+    await expect(card).toHaveAttribute('data-locked', 'true', { timeout: 10000 });
+    await expect(card).toContainText('手臂1（掩模板）');
+    await expect(card).toContainText('故障锁定');
+    await expect(card).toContainText('建议先检查取板台真空吸附与激光定位组件。');
+
+    // 本轮结果阶段单独反馈，不改写用户选择的阶段
+    await expect(page.getByText('本轮阶段 2')).toBeVisible();
+  });
+
+  test.describe('减少动态效果：直接给出同样可读的终态', () => {
+    // reducedMotion 不是顶层 test 选项，需通过 contextOptions 下发
+    test.use({ contextOptions: { reducedMotion: 'reduce' } });
+
+    test('故障短卡立即可见且指向同一部件', async ({ page }) => {
+      const state = createMockState();
+      state.statusQueue = [
+        {
+          status: 'SUCCEEDED',
+          visualization: {
+            sceneId: 'LITHO_WORKFLOW_V1',
+            stage: 2,
+            parts: buildParts('NORMAL', { reticle_arm: 'WARNING' }),
+          },
+        },
+      ];
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await page.getByLabel('AI 提问').fill('手臂 1 无动作，怎么排查？');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      // 不等动效时间线（聚焦动画 2600ms / 锁定 2850ms）：终态卡片立即可读
+      const card = page.locator('.ai-fault-card');
+      await expect(card).toHaveAttribute('data-locked', 'true', { timeout: 2500 });
+      await expect(card).toContainText('手臂1（掩模板）');
+      await expect(page.getByLabel('部件标记')).toContainText('警示 · 手臂1（掩模板）');
+    });
+  });
+
   test('刷新与问答记录：从局部导航进入列表并回到原会话', async ({ page }) => {
     const state = createMockState();
     await installGraphQLMock(page, state);
@@ -592,7 +659,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await page.goto('/engineer/ai');
     await page.getByLabel('AI 提问').fill('手臂 1 无动作');
     await page.getByRole('button', { name: '发送问题' }).click();
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
 
@@ -626,7 +695,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
 
     await page.getByLabel('AI 提问').fill('窄屏下的提问');
     await page.getByRole('button', { name: '发送问题' }).click();
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
   });
@@ -645,7 +716,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     await expect(input).toBeFocused();
     await input.fill('键盘提交的问题');
     await input.press('Control+Enter');
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
 
@@ -712,7 +785,9 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
     // 在途响应此时才返回：不得再更新新画面
     releaseStatus.fn?.();
     await page.waitForTimeout(500);
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toHaveCount(0);
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toHaveCount(0);
   });
 
   test('中屏（1366×768）：左右分栏可用且无横向溢出，记录关键 rect', async ({ page }) => {
@@ -796,7 +871,9 @@ test.describe('AI 会话导出与管理员只读（任务05 S4）', () => {
     // 草稿优先：先受理一问（创建会话），再导出
     await page.getByLabel('AI 提问').fill('手臂 1 无动作');
     await page.getByRole('button', { name: '发送问题' }).click();
-    await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+    await expect(
+      page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+    ).toBeVisible({
       timeout: 8000,
     });
 
@@ -877,7 +954,9 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
       await page.getByRole('button', { name: '新建对话' }).click();
       await page.getByLabel('AI 提问').fill('晶圆台定位偏差持续偏大，如何排查？');
       await page.getByRole('button', { name: '发送问题' }).click();
-      await expect(page.getByText('建议先检查取板台真空吸附与激光定位组件。')).toBeVisible({
+      await expect(
+        page.getByRole('log').getByText('建议先检查取板台真空吸附与激光定位组件。'),
+      ).toBeVisible({
         timeout: 8000,
       });
 

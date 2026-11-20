@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseAiVisualization,
+  pickAiFaultFocusPart,
   pickAiHighlightedParts,
   resolveAiPartDisplays,
 } from './ai-visualization';
@@ -125,5 +126,29 @@ describe('ai-visualization', () => {
     const parts = pickAiHighlightedParts(displays);
     expect(parts.map((part) => part.partId)).toEqual(['reticle_arm', 'reticle_table']);
     expect(parts.every((part) => part.display === 'HIGHLIGHT')).toBe(true);
+  });
+
+  it('S3：主故障目标按服务端返回顺序取第一个 WARNING', () => {
+    const parts = PART_IDS.map((partId) => ({ partId, display: 'NORMAL' }));
+    parts[2] = { partId: 'reticle_arm', display: 'WARNING' };
+    parts[7] = { partId: 'wafer_arm', display: 'WARNING' };
+    const { visualization } = parseAiVisualization({
+      sceneId: 'LITHO_WORKFLOW_V1',
+      stage: 2,
+      parts,
+    });
+    // 返回顺序即稳定顺序：取第一个 WARNING，其余保留在图例
+    expect(pickAiFaultFocusPart(visualization)).toBe('reticle_arm');
+  });
+
+  it('S3：无 WARNING 或无有效图形时没有主故障目标（清除旧定位）', () => {
+    const parts = PART_IDS.map((partId) => ({ partId, display: 'NORMAL' }));
+    const { visualization } = parseAiVisualization({
+      sceneId: 'LITHO_WORKFLOW_V1',
+      stage: 2,
+      parts,
+    });
+    expect(pickAiFaultFocusPart(visualization)).toBeNull();
+    expect(pickAiFaultFocusPart(null)).toBeNull();
   });
 });

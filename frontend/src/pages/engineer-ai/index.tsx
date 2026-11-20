@@ -1,7 +1,7 @@
 // src/pages/engineer-ai/index.tsx
 
 import { useEffect, useMemo } from 'react';
-import { Alert, Select } from 'antd';
+import { Alert, Select, Tag } from 'antd';
 import { Link, useSearchParams } from 'react-router';
 
 import {
@@ -9,6 +9,7 @@ import {
   AiConversationPanel,
   AiPartLegend,
   LithoWorkflowCanvas,
+  pickAiFaultFocusPart,
   resolveAiPartDisplays,
   useAiDiagnosisWorkspace,
 } from '@/features/ai-conversation';
@@ -43,10 +44,32 @@ export function EngineerAiPage() {
     [workspace.stage, workspace.visualization],
   );
 
-  const focusPartId = useMemo(() => {
-    const warning = Object.entries(displays).find(([, display]) => display === 'WARNING');
-    return warning === undefined ? null : warning[0];
-  }, [displays]);
+  // S3：主故障目标按服务端返回顺序取第一个 WARNING（其余 WARNING 仍留在图例）
+  const focusPartId = useMemo(
+    () => pickAiFaultFocusPart(workspace.visualization),
+    [workspace.visualization],
+  );
+
+  // S3：故障短卡只放可展示的简短描述，详情仍在对话正文里
+  const faultDescription = useMemo(() => {
+    const turns = workspace.conversation?.turns ?? [];
+    const active =
+      turns.find((turn) => turn.questionUuid === workspace.activeQuestionUuid) ??
+      turns[turns.length - 1];
+    const text = active?.answer?.text ?? null;
+    if (text === null) {
+      return null;
+    }
+    // 短卡只放简短摘要（详情仍在对话正文里）
+    return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  }, [workspace.activeQuestionUuid, workspace.conversation]);
+
+  // S3：动效身份 = 轮次 + 部件；换轮或换部件必须重启动效
+  const faultIdentity = useMemo(
+    () =>
+      focusPartId === null ? null : `${workspace.activeQuestionUuid ?? 'none'}:${focusPartId}`,
+    [focusPartId, workspace.activeQuestionUuid],
+  );
 
   const stageOptions = useMemo(
     () => [
@@ -89,6 +112,13 @@ export function EngineerAiPage() {
                   {t('ai.scene.label')}
                 </h2>
               </div>
+              {workspace.visualization?.stage != null ? (
+                <span className="ai-scene-stage-tag">
+                  <Tag>
+                    {t('ai.scene.resultStage', { stage: String(workspace.visualization.stage) })}
+                  </Tag>
+                </span>
+              ) : null}
               <label className="ai-scene-stage">
                 <span>{t('ai.page.stageLabel')}</span>
                 <Select
@@ -105,6 +135,8 @@ export function EngineerAiPage() {
               <LithoWorkflowCanvas
                 ariaLabel={t('ai.scene.canvasLabel')}
                 displays={displays}
+                faultDescription={faultDescription}
+                faultIdentity={faultIdentity}
                 focusPartId={focusPartId}
                 gestureHint={t('ai.scene.gestureHint')}
               />

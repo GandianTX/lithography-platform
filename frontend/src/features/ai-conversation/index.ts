@@ -6,6 +6,7 @@ export { useAiConversationConsole } from './application/use-ai-conversation-cons
 export { useAiDiagnosisWorkspace } from './application/use-ai-diagnosis-workspace';
 export {
   parseAiVisualization,
+  pickAiFaultFocusPart,
   pickAiHighlightedParts,
   resolveAiPartDisplays,
 } from './domain/ai-visualization';

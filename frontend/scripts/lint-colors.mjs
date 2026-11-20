@@ -32,6 +32,8 @@ const ALLOWED_INDEX_CSS_COLOR_TOKENS = new Set([
   '--ai-compose-bg',
   '--ai-failure-bg',
   '--ai-failure-line',
+  '--ai-fault-card-bg',
+  '--ai-fault-card-text',
   '--ai-chip-bg',
   '--ai-chip-text',
   '--ai-geo-part-normal',

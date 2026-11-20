@@ -2521,6 +2521,8 @@ body {
   /* V44 输入框（.ai36-shell .ai33-compose textarea 实测边框/底色） */
   --ai-failure-bg: #fff2f0;
   --ai-failure-line: #ffccc7;
+  --ai-fault-card-bg: #252d3e;
+  --ai-fault-card-text: #f5f8ff;
   --ai-input-line: #c9d7e6;
   --ai-input-bg: #fbfdff;
   /* V44 正式工作区实际运行值（#/engineer/ai/chat，1440×900 实测） */
@@ -2547,6 +2549,8 @@ body {
   --ai-geo-part-fault: #f07a80;
   --ai-failure-bg: #3a1f22;
   --ai-failure-line: #6b3237;
+  --ai-fault-card-bg: #1b2434;
+  --ai-fault-card-text: #e6ecf8;
   --ai-geo-outline: #6f9bb0;
   --ai-geo-outline-highlight: #52c2ef;
   --ai-geo-outline-warning: #ffd68f;
@@ -3097,4 +3101,66 @@ body {
   .ai-thread {
     padding: 12px;
   }
+}
+
+/* S3 故障短卡：锁定后指向故障部件（原型 ai39-card），只放可解释的本地化信息 */
+.ai-fault-card {
+  --ai-fault-card-z: 2;
+  background: var(--ai-fault-card-bg);
+  border: 1px solid var(--ai-geo-outline-fault);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ai-geo-outline-fault) 27%, transparent);
+  color: var(--ai-fault-card-text);
+  font-size: 12px;
+  line-height: 1.55;
+  opacity: 0;
+  padding: 11px 13px;
+  pointer-events: none;
+  position: absolute;
+  right: 20px;
+  top: 10px;
+  transform: translateY(-7px);
+  transition:
+    opacity 0.24s ease,
+    transform 0.24s ease;
+  width: min(226px, calc(100% - 32px));
+  z-index: var(--ai-fault-card-z);
+}
+
+.ai-fault-card[data-locked='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+.ai-fault-card strong {
+  color: var(--ai-geo-outline-fault);
+  display: block;
+  font-size: 14px;
+}
+
+.ai-fault-card span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  margin-top: 4px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+@media (max-width: 650px) {
+  .ai-fault-card {
+    right: 9px;
+    width: min(186px, calc(100% - 18px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-fault-card {
+    transition: none;
+  }
+}
+
+.ai-scene-stage-tag {
+  display: inline-flex;
 }

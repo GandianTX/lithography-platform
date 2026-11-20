@@ -42,7 +42,9 @@ export function AiPartLegend({ displays, fromModel }: AiPartLegendProps) {
             }
             key={part.partId}
           >
-            {part.display === 'WARNING' ? t('ai.legend.attention', { name: label }) : label}
+            {part.display === 'WARNING'
+              ? t('ai.legend.warning', { name: label })
+              : t('ai.legend.related', { name: label })}
           </li>
         );
       })}

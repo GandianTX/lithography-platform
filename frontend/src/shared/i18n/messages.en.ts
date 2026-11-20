@@ -845,6 +845,8 @@ export const EN_MESSAGES = {
   'ai.scene.label': 'Maintenance flow view',
   'ai.scene.canvasLabel': 'Lithography maintenance flow 3D view',
   'ai.scene.gestureHint': 'Drag to rotate · Scroll to zoom · Arrow keys and +/- available',
+  'ai.scene.faultLocked': 'Fault locked',
+  'ai.scene.resultStage': 'Result stage {stage}',
   'ai.scene.degradedHint':
     'The visualization for this turn is unavailable. The reply is kept and the flow reference is shown.',
   'ai.panel.label': 'Diagnostic conversation',
@@ -926,7 +928,8 @@ export const EN_MESSAGES = {
   'ai.legend.label': 'Part markers',
   'ai.legend.aiHighlights': 'AI highlights',
   'ai.legend.relatedParts': 'Related parts',
-  'ai.legend.attention': 'Attention · {name}',
+  'ai.legend.warning': 'Warning · {name}',
+  'ai.legend.related': 'Related · {name}',
   'ai.stage.all': 'All stages',
   'ai.stage.upper': 'Upper',
   'ai.stage.lower': 'Lower',

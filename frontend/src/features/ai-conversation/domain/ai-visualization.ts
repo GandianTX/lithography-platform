@@ -115,3 +115,17 @@ export function pickAiHighlightedParts(
     (part) => displays[part.partId] === 'HIGHLIGHT' || displays[part.partId] === 'WARNING',
   ).map((part) => ({ partId: part.partId, display: displays[part.partId] }));
 }
+
+/**
+ * 主故障目标：按服务端返回顺序取第一个 WARNING。
+ *
+ * 多 WARNING 时其余部件仍留在图例（不重复定位）；服务端返回顺序即合法稳定顺序，
+ * 不用前端字典顺序推导，避免与实际结果不一致。
+ */
+export function pickAiFaultFocusPart(visualization: AiVisualization | null): string | null {
+  if (visualization === null) {
+    return null;
+  }
+  const warning = visualization.parts.find((part) => part.display === 'WARNING');
+  return warning?.partId ?? null;
+}
