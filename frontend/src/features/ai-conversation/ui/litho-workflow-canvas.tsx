@@ -332,8 +332,13 @@ export function LithoWorkflowCanvas({
       if (focusPartId !== null && focusGeometry !== null) {
         const anchor = resolveFaultAnchor(context, focusGeometry, options);
         const card = cardRef.current;
-        const cardAnchor = card === null ? null : { x: card.offsetLeft, y: card.offsetTop + 22 };
+        const cardAnchor = card === null ? null : resolveFaultCardAnchor(card, anchor);
+        // 可观测连线终点（画布坐标）：回归直接断言「连线确实从故障短卡发出」。
+        canvas.dataset.faultAnchorY = cardAnchor === null ? '' : String(cardAnchor.y);
         drawFaultOverlay(context, anchor, cardAnchor, colors, elapsed, reduced, height);
+      } else {
+        // 无聚焦目标时清除上一轮的连线终点，避免可观测属性残留旧值
+        canvas.dataset.faultAnchorY = '';
       }
 
       if (isLocked !== locked) {
@@ -715,6 +720,22 @@ function resolveFaultAnchor(
     options,
   );
   return { x: projected.x, y: projected.y };
+}
+
+/**
+ * 故障连线终点：取故障短卡**朝向故障部件**那条边上的点。
+ *
+ * 短卡停靠场景右上时从卡片左下出线（与 V44 原型 `.ai39-card` 一致），
+ * 停靠场景下部时从卡片左上出线；终点始终落在卡片矩形内，
+ * 避免引线从场景空白处凭空连出。
+ */
+function resolveFaultCardAnchor(
+  card: HTMLElement,
+  anchor: { x: number; y: number },
+): { x: number; y: number } {
+  const minY = card.offsetTop + 12;
+  const maxY = card.offsetTop + Math.max(12, card.offsetHeight - 12);
+  return { x: card.offsetLeft, y: Math.min(Math.max(anchor.y, minY), maxY) };
 }
 
 /**

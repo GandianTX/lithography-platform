@@ -3471,12 +3471,12 @@ body {
 }
 
 @media (max-width: 650px) {
-  /* 窄屏画布可用宽度有限：短卡改停靠左下角，避免遮住锁定中的故障部件 */
+  /* 窄屏画布可用宽度有限：短卡收窄并贴近场景右上，与 V44 原型 `.ai39-card` 同口径
+     （原型仅收窄 right/width，仍停靠右上）。
+     聚焦后故障部件位于画面中部，右上停靠不遮挡故障部件；
+     引线终点取卡片朝向故障部件的边，始终落在卡片矩形内。 */
   .ai-fault-card {
-    bottom: 34px;
-    left: 9px;
-    right: auto;
-    top: auto;
+    right: 9px;
     width: min(186px, calc(100% - 18px));
   }
 }
