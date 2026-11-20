@@ -42,6 +42,21 @@ export type MockState = {
   requestId: number | null;
   submitCount: number;
   retryCount: number;
+  /** CreateAiConversation 实际调用次数（区分「未重复创建」与「真正重试」） */
+  createCount: number;
+  /**
+   * 创建会话的失败序列：按创建调用顺序消费。
+   *
+   * - `rejected`：服务端明确拒绝（GraphQL 业务错误）→ 会话确定未创建；
+   * - `network`：网络中断 → 请求可能已到达服务端，结果未知。
+   */
+  createFailures: Array<'rejected' | 'network'>;
+  /** 本人会话列表的创建时间（默认固定旧时间；恢复核对用例需覆盖为当前时间） */
+  listCreatedAt?: string;
+  /** 列表创建时间按请求时刻生成（服务端在请求到达后才创建，创建时间不早于发起时刻） */
+  listCreatedAtNow?: boolean;
+  /** 本人会话列表是否返回空 */
+  listEmpty?: boolean;
   /** 状态查询返回序列：按轮次取用 */
   statusQueue: Array<{
     /** 绑定到指定轮次（turnNo）；缺省表示按查询顺序消费一次 */
@@ -61,6 +76,8 @@ export function createMockState(): MockState {
     requestId: null,
     submitCount: 0,
     retryCount: 0,
+    createCount: 0,
+    createFailures: [],
     statusQueue: [],
   };
 }
@@ -95,23 +112,31 @@ export async function installGraphQLMock(
     const variables = payload.variables ?? {};
 
     if (operation === 'MyAiConversations') {
+      const listCreatedAt =
+        state.listCreatedAtNow === true
+          ? new Date().toISOString()
+          : (state.listCreatedAt ?? '2026-11-19T08:00:00.000Z');
       return route.fulfill({
         body: JSON.stringify({
           data: {
             myAiConversations: {
-              items: [
-                {
-                  id: state.conversationId,
-                  requestId: state.requestId,
-                  requestNo: state.requestId === null ? '' : `RR20261119000000AC${state.requestId}`,
-                  status: 'ACTIVE',
-                  contentVersion: state.turns.length + 1,
-                  messageCount: state.turns.length * 2,
-                  turnCount: state.turns.length,
-                  createdAt: '2026-11-19T08:00:00.000Z',
-                },
-              ],
-              total: 1,
+              items:
+                state.listEmpty === true
+                  ? []
+                  : [
+                      {
+                        id: state.conversationId,
+                        requestId: state.requestId,
+                        requestNo:
+                          state.requestId === null ? '' : `RR20261119000000AC${state.requestId}`,
+                        status: 'ACTIVE',
+                        contentVersion: state.turns.length + 1,
+                        messageCount: state.turns.length * 2,
+                        turnCount: state.turns.length,
+                        createdAt: listCreatedAt,
+                      },
+                    ],
+              total: state.listEmpty === true ? 0 : 1,
               page: 1,
               pageSize: 20,
             },
@@ -154,9 +179,37 @@ export async function installGraphQLMock(
 
     if (operation === 'CreateAiConversation') {
       const input = variables.input as { requestId?: number | null };
+      state.createCount += 1;
       if (options.createDelayMs !== undefined) {
         // U05：可控延迟创建，供「创建期间锁定」用例观察中间态
         await new Promise((resolve) => setTimeout(resolve, options.createDelayMs));
+      }
+      const failure = state.createFailures.shift();
+      if (failure === 'rejected') {
+        // 服务端明确拒绝：会话确定未创建
+        return route.fulfill({
+          body: JSON.stringify({
+            errors: [
+              {
+                message: 'FORBIDDEN',
+                extensions: {
+                  code: 'FORBIDDEN',
+                  errorCode: 'AI_CONVERSATION_FORBIDDEN',
+                  errorMessage: '无权访问所选工单',
+                },
+              },
+            ],
+          }),
+          contentType: 'application/json',
+          status: 200,
+        });
+      }
+      if (failure === 'network') {
+        // 网络中断：请求可能已到达服务端（按「服务端已建出」模拟，供恢复核对接管）
+        state.requestId = input.requestId ?? null;
+        state.turns = [];
+        await route.abort('failed');
+        return;
       }
       state.requestId = input.requestId ?? null;
       state.turns = [];

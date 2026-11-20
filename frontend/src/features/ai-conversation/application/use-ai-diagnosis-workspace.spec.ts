@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as download from '@/shared/download';
+import { GraphQLIngressError } from '@/shared/graphql';
 
 import type {
   AiConversationDetail,
@@ -12,7 +13,10 @@ import type {
 } from '../infrastructure/ai-conversation.types';
 import * as adapter from '../infrastructure/ai-conversation-adapter';
 
-import { useAiDiagnosisWorkspace } from './use-ai-diagnosis-workspace';
+import {
+  findCreatedConversation,
+  useAiDiagnosisWorkspace,
+} from './use-ai-diagnosis-workspace';
 
 const CONVERSATION_ID = 7;
 const QUESTION_UUID = '11111111-2222-4333-8444-555555555555';
@@ -1164,6 +1168,277 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
       });
       expect(createSpy).toHaveBeenCalledTimes(1);
       expect(result.current.errorMessage).toContain('新建对话');
+    });
+
+    /**
+     * 明确拒绝（服务端已答复）与结果未知的恢复分支。
+     *
+     * 服务端明确拒绝时会话确定未创建，不得把用户挡在「新建对话」之外；
+     * 结果未知仍要阻止重复创建，但恢复与放弃都必须保留草稿。
+     */
+    describe('创建失败的性质区分与恢复', () => {
+      const rejectedError = () =>
+        new GraphQLIngressError({
+          type: 'graphql',
+          message: 'FORBIDDEN',
+          graphqlErrors: [
+            {
+              message: 'FORBIDDEN',
+              extensions: {
+                code: 'FORBIDDEN',
+                errorCode: 'AI_CONVERSATION_FORBIDDEN',
+                errorMessage: '无权访问所选工单',
+              },
+            },
+          ],
+        });
+
+      it('明确拒绝：不置未知态，保留草稿与工单选择，可直接重试', async () => {
+        const createSpy = vi
+          .spyOn(adapter, 'createAiConversation')
+          .mockRejectedValueOnce(rejectedError());
+        const { result } = renderHook(() => useAiDiagnosisWorkspace());
+
+        await act(async () => {
+          result.current.setDraft('需要保留的现场描述');
+          result.current.setDraftRequestId(7);
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.draftRequestId).toBe(7);
+        expect(result.current.errorMessage).toBe('无权访问所选工单');
+
+        // 明确拒绝未创建会话：再次发送必须真正重试，而不是要求先「新建对话」
+        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce({
+          id: CONVERSATION_ID,
+          requestId: 7,
+          requestNo: 'RR-1',
+          status: 'ACTIVE',
+          contentVersion: 1,
+          createdAt: '2026-11-20T08:00:00.000Z',
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+
+        expect(createSpy).toHaveBeenCalledTimes(2);
+        // 会话已创建，工单绑定以服务端事实为准：本地草稿工单清空
+        expect(result.current.draftRequestId).toBeNull();
+      });
+
+      it('明确拒绝后更换工单：仍可重试且保留草稿', async () => {
+        const createSpy = vi
+          .spyOn(adapter, 'createAiConversation')
+          .mockRejectedValueOnce(rejectedError());
+        const { result } = renderHook(() => useAiDiagnosisWorkspace());
+
+        await act(async () => {
+          result.current.setDraft('需要保留的现场描述');
+          result.current.setDraftRequestId(7);
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+        expect(result.current.createUnknown).toBe(false);
+
+        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce({
+          id: CONVERSATION_ID,
+          requestId: 8,
+          requestNo: 'RR-2',
+          status: 'ACTIVE',
+          contentVersion: 1,
+          createdAt: '2026-11-20T08:00:00.000Z',
+        });
+        await act(async () => {
+          result.current.setDraftRequestId(8);
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+
+        expect(createSpy).toHaveBeenCalledTimes(2);
+        expect(createSpy.mock.calls[1][0]).toBe(8);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+      });
+
+      it('结果未知：核对到服务端已建出会话时接管该会话并保留草稿', async () => {
+        vi.spyOn(adapter, 'createAiConversation').mockRejectedValueOnce(
+          new GraphQLIngressError({ type: 'network', message: '网络连接异常' }),
+        );
+        // 列表里出现本次尝试建出的空会话（恢复核对时接管它）
+        vi.spyOn(adapter, 'listMyAiConversations').mockResolvedValue({
+          items: [
+            {
+              id: 88,
+              requestId: 7,
+              requestNo: 'RR-1',
+              status: 'ACTIVE',
+              contentVersion: 1,
+              messageCount: 0,
+              turnCount: 0,
+              lastMessageAt: null,
+              createdAt: new Date(Date.now() + 1000).toISOString(),
+              completedAt: null,
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        });
+        vi.spyOn(adapter, 'getMyAiConversation').mockResolvedValue(
+          buildDetail({ id: 88, requestId: 7, turns: [] }),
+        );
+
+        const { result } = renderHook(() => useAiDiagnosisWorkspace());
+        await act(async () => {
+          result.current.setDraft('需要保留的现场描述');
+          result.current.setDraftRequestId(7);
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          await result.current.recoverUnknownCreate();
+        });
+
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.selectedId).toBe(88);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.noticeMessage).not.toBeNull();
+      });
+
+      it('结果未知：核对不到已建会话时解除阻断，可直接重新发送', async () => {
+        const createSpy = vi
+          .spyOn(adapter, 'createAiConversation')
+          .mockRejectedValueOnce(new GraphQLIngressError({ type: 'network', message: 'timeout' }));
+        vi.spyOn(adapter, 'listMyAiConversations').mockResolvedValue({
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: 20,
+        });
+
+        const { result } = renderHook(() => useAiDiagnosisWorkspace());
+        await act(async () => {
+          result.current.setDraft('需要保留的现场描述');
+          result.current.setDraftRequestId(7);
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          await result.current.recoverUnknownCreate();
+        });
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+
+        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce({
+          id: CONVERSATION_ID,
+          requestId: 7,
+          requestNo: 'RR-1',
+          status: 'ACTIVE',
+          contentVersion: 1,
+          createdAt: '2026-11-20T08:00:00.000Z',
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+        expect(createSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('结果未知：放弃本次创建时保留草稿与工单选择', async () => {
+        vi.spyOn(adapter, 'createAiConversation').mockRejectedValueOnce(
+          new GraphQLIngressError({ type: 'network', message: 'timeout' }),
+        );
+
+        const { result } = renderHook(() => useAiDiagnosisWorkspace());
+        await act(async () => {
+          result.current.setDraft('需要保留的现场描述');
+          result.current.setDraftRequestId(7);
+        });
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          result.current.startNewDraft();
+        });
+
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.draftRequestId).toBe(7);
+      });
+
+      it('恢复核对只认本次尝试之后创建、且尚无消息的会话', async () => {
+        const attempt = { at: Date.now(), requestId: 7 };
+        const created = new Date(Date.now() + 1000).toISOString();
+        const older = new Date(attempt.at - 60_000).toISOString();
+
+        const found = findCreatedConversation(
+          [
+            {
+              id: 1,
+              requestId: 7,
+              requestNo: '',
+              status: 'ACTIVE',
+              contentVersion: 1,
+              messageCount: 0,
+              turnCount: 0,
+              lastMessageAt: null,
+              createdAt: created,
+              completedAt: null,
+            },
+            {
+              id: 2,
+              requestId: 7,
+              requestNo: '',
+              status: 'ACTIVE',
+              contentVersion: 1,
+              messageCount: 3,
+              turnCount: 1,
+              lastMessageAt: created,
+              createdAt: created,
+              completedAt: null,
+            },
+            {
+              id: 3,
+              requestId: 7,
+              requestNo: '',
+              status: 'ACTIVE',
+              contentVersion: 1,
+              messageCount: 0,
+              turnCount: 0,
+              lastMessageAt: null,
+              createdAt: older,
+              completedAt: null,
+            },
+            {
+              id: 4,
+              requestId: 9,
+              requestNo: '',
+              status: 'ACTIVE',
+              contentVersion: 1,
+              messageCount: 0,
+              turnCount: 0,
+              lastMessageAt: null,
+              createdAt: created,
+              completedAt: null,
+            },
+          ],
+          attempt,
+        );
+
+        expect(found?.id).toBe(1);
+      });
     });
 
     it('创建成功但提问失败：重试沿用同一会话与同一问题 UUID', async () => {

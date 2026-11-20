@@ -597,4 +597,89 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
       writeFileSync(`${EVIDENCE_DIR}/${fileName}.meta.json`, JSON.stringify(capture, null, 2));
     });
   }
+
+  /**
+   * 首问创建失败后的可恢复性。
+   *
+   * 服务端明确拒绝（会话确定未创建）时必须保留草稿并允许直接重试；
+   * 结果未知（网络中断）时不得隐式重建，但恢复入口与放弃入口都要保留草稿。
+   */
+  test.describe('创建失败的可恢复性', () => {
+    test('明确拒绝：保留草稿与工单选择，可直接重试且不重复提示新建', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['rejected'];
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await pickWorkOrder(page, 'MR-20261120-001 · NIKON NSR-S635E');
+      await page.getByLabel('AI 提问').fill('曝光前校验失败');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      // 服务端已明确答复：会话确定未创建
+      await expect(page.getByRole('alert')).toContainText('无权访问所选工单');
+      // 草稿与工单选择都保留，用户可改选择后重试
+      await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
+      await expect(page.getByLabel('关联工单')).toBeEnabled();
+      // 不出现「结果未知」的核对入口
+      await expect(page.getByRole('button', { name: '核对是否已创建' })).toHaveCount(0);
+      expect(state.createCount).toBe(1);
+
+      // 直接重试：真的再发一次创建请求
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await expect.poll(() => state.createCount, { timeout: 8000 }).toBe(2);
+      await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
+    });
+
+    test('结果未知：阻止隐式重建，核对不到已建会话时解除阻断并保留草稿', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['network'];
+      state.listEmpty = true;
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await page.getByLabel('AI 提问').fill('手臂 1 无动作');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      // 结果未知：给出核对入口，草稿保留
+      await expect(page.getByRole('button', { name: '核对是否已创建' })).toBeVisible();
+      await expect(page.getByLabel('AI 提问')).toHaveValue('手臂 1 无动作');
+
+      // 再次发送仍被阻断：不得隐式重复创建
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await page.waitForTimeout(300);
+      expect(state.createCount).toBe(1);
+
+      // 核对：服务端没有已建会话 → 解除阻断
+      await page.getByRole('button', { name: '核对是否已创建' }).click();
+      await expect(page.getByRole('status')).toContainText('未发现已创建的会话');
+      await expect(page.getByLabel('AI 提问')).toHaveValue('手臂 1 无动作');
+
+      // 解除阻断后可重新发送
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await expect.poll(() => state.createCount, { timeout: 8000 }).toBe(2);
+    });
+
+    test('结果未知且服务端已建出：核对后接管该会话并保留草稿', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['network'];
+      // 服务端在中断前已建出会话：列表里出现本次尝试之后创建的空会话
+      state.listCreatedAtNow = true;
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await pickWorkOrder(page, 'MR-20261120-001 · NIKON NSR-S635E');
+      await page.getByLabel('AI 提问').fill('曝光前校验失败');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      await expect(page.getByRole('button', { name: '核对是否已创建' })).toBeVisible();
+      await page.getByRole('button', { name: '核对是否已创建' }).click();
+
+      // 接管已建会话：提示出现、工单锁定、草稿保留
+      await expect(page.getByRole('status')).toContainText('已找到此前创建的会话');
+      await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
+      await expect(page.getByLabel('关联工单')).toBeDisabled();
+      // 全程只有一次创建请求：没有重复建会话
+      expect(state.createCount).toBe(1);
+    });
+  });
 });
