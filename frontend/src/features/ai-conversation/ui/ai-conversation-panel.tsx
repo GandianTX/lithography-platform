@@ -1,7 +1,7 @@
 // src/features/ai-conversation/ui/ai-conversation-panel.tsx
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Input, Select, Space, Tag, Typography } from 'antd';
+import { Button, Input, Modal, Select, Space, Tag, Typography } from 'antd';
 import type { UIEvent } from 'react';
 
 import type { MessageKey } from '@/shared/i18n';
@@ -29,10 +29,8 @@ export type AiConversationPanelProps = {
   draft: string;
   errorMessage: string | null;
   noticeMessage: string | null;
-  /** 上一次会话创建结果未知（需显式核对或放弃，草稿已保留） */
+  /** 上一次会话创建结果未知（需显式确认继续或放弃，草稿已保留） */
   createUnknown: boolean;
-  /** 正在核对未知创建结果 */
-  recoveringCreate: boolean;
   /** 草稿态下已选工单；会话已存在时以 conversation.requestId 为准 */
   workOrderId: number | null;
   workOrders: readonly AiWorkOrderOption[];
@@ -45,7 +43,10 @@ export type AiConversationPanelProps = {
   onLoadMoreWorkOrders: () => void;
   onReloadWorkOrders: () => void;
   onNewChat: () => void;
-  onRecoverCreate: () => void;
+  /** 用户确认「继续发送」（承担可能产生重复空会话的风险） */
+  onContinueCreate: () => void;
+  /** 用户确认「放弃本次创建」（草稿与工单仍保留） */
+  onAbandonCreate: () => void;
   onSubmit: () => void;
   onRetryTurn: (questionUuid: string) => void;
   onRefreshTurn: (questionUuid: string) => void;
@@ -63,6 +64,25 @@ const TURN_STATUS_KEY: Record<AiMessageAnalysisStatus, MessageKey> = {
 export function AiConversationPanel(props: AiConversationPanelProps) {
   const { t } = useI18n();
   const { conversation, draft, generating, creating, submitting } = props;
+
+  /**
+   * 未知创建结果的确认对话框。
+   *
+   * 关闭或取消都不解除未知态、不丢草稿；只有用户明确确认才解除阻断，
+   * 且确认后仍需用户再次主动发送（不代替用户发送）。
+   */
+  const [confirmKind, setConfirmKind] = useState<'continue' | 'abandon' | null>(null);
+  const openContinueConfirm = useCallback(() => setConfirmKind('continue'), []);
+  const openAbandonConfirm = useCallback(() => setConfirmKind('abandon'), []);
+  const closeConfirm = useCallback(() => setConfirmKind(null), []);
+  const confirmProceed = useCallback(() => {
+    if (confirmKind === 'continue') {
+      props.onContinueCreate();
+    } else if (confirmKind === 'abandon') {
+      props.onAbandonCreate();
+    }
+    setConfirmKind(null);
+  }, [confirmKind, props]);
 
   // 生成中允许继续提问（后端按轮次受理）；只锁提交与创建在飞
   const busy = submitting || creating;
@@ -95,9 +115,13 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
               </Text>
             ) : null}
           </Space>
-          <Button disabled={creating} onClick={props.onNewChat} size="small">
-            {t('ai.panel.newChat')}
-          </Button>
+          {/* 未知创建结果时不显示「新建对话」：此时它不做新建，只会变成一次
+              带风险确认的「放弃本次」，统一在错误区提供明确的两个动作。 */}
+          {props.createUnknown ? null : (
+            <Button disabled={creating} onClick={props.onNewChat} size="small">
+              {t('ai.panel.newChat')}
+            </Button>
+          )}
         </div>
 
         <div className="ai-panel-work-order">
@@ -148,19 +172,25 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
       />
 
       <div className="ai-compose">
-        {props.errorMessage !== null ? (
+        {/* 未知态的解除入口不依赖错误文案：即便别的操作清空了提示，
+            「继续发送 / 放弃本次」也必须始终可见，否则用户会被困在无法解除的未知态。 */}
+        {props.errorMessage !== null || props.createUnknown ? (
           <div className="ai-compose-alert" role="alert">
             {props.errorMessage}
             {props.createUnknown ? (
-              // 结果未知：先核对服务端是否已建出会话（避免重复创建）；草稿始终保留
-              <Button
-                disabled={props.recoveringCreate}
-                loading={props.recoveringCreate}
-                onClick={props.onRecoverCreate}
-                size="small"
-              >
-                {t('ai.panel.recoverCreate')}
-              </Button>
+              // 结果未知：会话列表无法证明本次创建是否成功，服务端仍可能完成该请求。
+              // 只提供显式、可取消的确认操作，且都不代替用户发送；草稿始终保留。
+              <>
+                <Space size={8}>
+                  <Button onClick={openContinueConfirm} size="small">
+                    {t('ai.panel.continueCreate')}
+                  </Button>
+                  <Button onClick={openAbandonConfirm} size="small">
+                    {t('ai.panel.abandonCreate')}
+                  </Button>
+                </Space>
+                <Text type="secondary">{t('ai.panel.createUnknownHint')}</Text>
+              </>
             ) : null}
           </div>
         ) : null}
@@ -213,6 +243,31 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
           </span>
         </div>
       </div>
+
+      <Modal
+        cancelButtonProps={{ autoInsertSpace: false }}
+        cancelText={t('ai.panel.confirmCancel')}
+        okText={
+          confirmKind === 'abandon'
+            ? t('ai.panel.confirmAbandonOk')
+            : t('ai.panel.confirmContinueOk')
+        }
+        onCancel={closeConfirm}
+        onOk={confirmProceed}
+        okButtonProps={{ autoInsertSpace: false }}
+        open={confirmKind !== null}
+        title={
+          confirmKind === 'abandon'
+            ? t('ai.panel.confirmAbandonTitle')
+            : t('ai.panel.confirmContinueTitle')
+        }
+      >
+        <p>
+          {confirmKind === 'abandon'
+            ? t('ai.panel.confirmAbandonBody')
+            : t('ai.panel.confirmContinueBody')}
+        </p>
+      </Modal>
     </aside>
   );
 }

@@ -48,15 +48,24 @@ export type MockState = {
    * 创建会话的失败序列：按创建调用顺序消费。
    *
    * - `rejected`：服务端明确拒绝（GraphQL 业务错误）→ 会话确定未创建；
+   * - `server`：服务端内部错误（INTERNAL_SERVER_ERROR）→ 无法证明未写入；
    * - `network`：网络中断 → 请求可能已到达服务端，结果未知。
    */
-  createFailures: Array<'rejected' | 'network'>;
+  createFailures: Array<'rejected' | 'server' | 'network'>;
   /** 本人会话列表的创建时间（默认固定旧时间；恢复核对用例需覆盖为当前时间） */
   listCreatedAt?: string;
   /** 列表创建时间按请求时刻生成（服务端在请求到达后才创建，创建时间不早于发起时刻） */
   listCreatedAtNow?: boolean;
   /** 本人会话列表是否返回空 */
   listEmpty?: boolean;
+  /** 第二页的会话（验证「目标在第二页也不接管」） */
+  secondPageItems?: Array<{
+    id: number;
+    requestId: number | null;
+    messageCount: number;
+    turnCount: number;
+    createdAt: string;
+  }>;
   /** 状态查询返回序列：按轮次取用 */
   statusQueue: Array<{
     /** 绑定到指定轮次（turnNo）；缺省表示按查询顺序消费一次 */
@@ -116,28 +125,43 @@ export async function installGraphQLMock(
         state.listCreatedAtNow === true
           ? new Date().toISOString()
           : (state.listCreatedAt ?? '2026-11-19T08:00:00.000Z');
+      const page = Number((variables.input as { page?: number } | undefined)?.page ?? 1);
+      const firstPageItems =
+        state.listEmpty === true
+          ? []
+          : [
+              {
+                id: state.conversationId,
+                requestId: state.requestId,
+                requestNo: state.requestId === null ? '' : `RR20261119000000AC${state.requestId}`,
+                status: 'ACTIVE',
+                contentVersion: state.turns.length + 1,
+                messageCount: state.turns.length * 2,
+                turnCount: state.turns.length,
+                createdAt: listCreatedAt,
+              },
+            ];
+      // 第二页候选（验证「目标不在首页也不接管」）
+      const secondPageItems =
+        page >= 2 && state.secondPageItems !== undefined
+          ? state.secondPageItems.map((item) => ({
+              id: item.id,
+              requestId: item.requestId,
+              requestNo: item.requestId === null ? '' : `RR20261119000000AC${item.requestId}`,
+              status: 'ACTIVE',
+              contentVersion: 1,
+              messageCount: item.messageCount,
+              turnCount: item.turnCount,
+              createdAt: item.createdAt,
+            }))
+          : [];
       return route.fulfill({
         body: JSON.stringify({
           data: {
             myAiConversations: {
-              items:
-                state.listEmpty === true
-                  ? []
-                  : [
-                      {
-                        id: state.conversationId,
-                        requestId: state.requestId,
-                        requestNo:
-                          state.requestId === null ? '' : `RR20261119000000AC${state.requestId}`,
-                        status: 'ACTIVE',
-                        contentVersion: state.turns.length + 1,
-                        messageCount: state.turns.length * 2,
-                        turnCount: state.turns.length,
-                        createdAt: listCreatedAt,
-                      },
-                    ],
-              total: state.listEmpty === true ? 0 : 1,
-              page: 1,
+              items: page >= 2 ? secondPageItems : firstPageItems,
+              total: page >= 2 ? secondPageItems.length : firstPageItems.length,
+              page,
               pageSize: 20,
             },
           },
@@ -197,6 +221,21 @@ export async function installGraphQLMock(
                   errorCode: 'AI_CONVERSATION_FORBIDDEN',
                   errorMessage: '无权访问所选工单',
                 },
+              },
+            ],
+          }),
+          contentType: 'application/json',
+          status: 200,
+        });
+      }
+      if (failure === 'server') {
+        // 服务端内部错误：可能写失败回滚，也可能是 COMMIT 失败 → 前端无法证明未写入
+        return route.fulfill({
+          body: JSON.stringify({
+            errors: [
+              {
+                message: 'Internal Server Error',
+                extensions: { code: 'INTERNAL_SERVER_ERROR' },
               },
             ],
           }),

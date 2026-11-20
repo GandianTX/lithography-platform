@@ -601,11 +601,54 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
   /**
    * 首问创建失败后的可恢复性。
    *
-   * 服务端明确拒绝（会话确定未创建）时必须保留草稿并允许直接重试；
-   * 结果未知（网络中断）时不得隐式重建，但恢复入口与放弃入口都要保留草稿。
+   * 服务端明确拒绝（写入前被拒）时保留草稿并允许直接重试；
+   * 结果未知时不得自动接管、不得自动发送、不得宣称「未创建」，
+   * 只能由用户显式确认继续或放弃，且过程中不丢草稿。
    */
   test.describe('创建失败的可恢复性', () => {
-    test('明确拒绝：保留草稿与工单选择，可直接重试且不重复提示新建', async ({ page }) => {
+    test('未知结果时离开需确认，取消后草稿和防重保护仍在', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['network'];
+      await installGraphQLMock(page, state);
+      await page.goto('/engineer/ai');
+      await pickWorkOrder(page, 'MR-20261120-001 · NIKON NSR-S635E');
+      await page.getByLabel('AI 提问').fill('需要保留的现场描述');
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await expect(page.getByRole('button', { name: '继续发送' })).toBeVisible();
+
+      await page.getByRole('link', { name: '问答记录' }).click();
+      await expect(page.getByRole('dialog')).toContainText('重新发送可能产生重复会话');
+      await page.getByRole('button', { name: '留在此页' }).click();
+      await expect(page.getByLabel('AI 提问')).toHaveValue('需要保留的现场描述');
+      await expect(page.getByRole('button', { name: '继续发送' })).toBeVisible();
+      await page.getByRole('button', { name: '发送问题' }).click();
+      expect(state.createCount).toBe(1);
+      expect(
+        await page.evaluate(() =>
+          window.dispatchEvent(new Event('beforeunload', { cancelable: true })),
+        ),
+      ).toBe(false);
+
+      await page.getByRole('link', { name: '问答记录' }).click();
+      await page.getByRole('button', { name: '确认离开' }).click();
+      await expect(page).toHaveURL(/\/engineer\/ai\/history$/);
+    });
+
+    test('创建在飞时离开也需确认，成功后导航不受阻', async ({ page }) => {
+      const state = createMockState();
+      await installGraphQLMock(page, state, { createDelayMs: 1200 });
+      await page.goto('/engineer/ai');
+      await page.getByLabel('AI 提问').fill('创建期间测试');
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await page.getByRole('link', { name: '问答记录' }).click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.getByRole('button', { name: '留在此页' }).click();
+      await expect.poll(() => state.submitCount, { timeout: 8000 }).toBe(1);
+      await page.getByRole('link', { name: '问答记录' }).click();
+      await expect(page).toHaveURL(/\/engineer\/ai\/history$/);
+    });
+
+    test('明确拒绝：保留草稿与工单选择，可直接重试且不进入未知态', async ({ page }) => {
       const state = createMockState();
       state.createFailures = ['rejected'];
       await installGraphQLMock(page, state);
@@ -620,8 +663,9 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
       // 草稿与工单选择都保留，用户可改选择后重试
       await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
       await expect(page.getByLabel('关联工单')).toBeEnabled();
-      // 不出现「结果未知」的核对入口
-      await expect(page.getByRole('button', { name: '核对是否已创建' })).toHaveCount(0);
+      // 不进入未知态：不出现未知态的确认入口
+      await expect(page.getByRole('button', { name: '继续发送' })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '放弃本次' })).toHaveCount(0);
       expect(state.createCount).toBe(1);
 
       // 直接重试：真的再发一次创建请求
@@ -630,39 +674,9 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
       await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
     });
 
-    test('结果未知：阻止隐式重建，核对不到已建会话时解除阻断并保留草稿', async ({ page }) => {
+    test('结果未知：阻止隐式重建，列表里有同工单空会话也不接管、不宣称找到', async ({ page }) => {
       const state = createMockState();
       state.createFailures = ['network'];
-      state.listEmpty = true;
-      await installGraphQLMock(page, state);
-
-      await page.goto('/engineer/ai');
-      await page.getByLabel('AI 提问').fill('手臂 1 无动作');
-      await page.getByRole('button', { name: '发送问题' }).click();
-
-      // 结果未知：给出核对入口，草稿保留
-      await expect(page.getByRole('button', { name: '核对是否已创建' })).toBeVisible();
-      await expect(page.getByLabel('AI 提问')).toHaveValue('手臂 1 无动作');
-
-      // 再次发送仍被阻断：不得隐式重复创建
-      await page.getByRole('button', { name: '发送问题' }).click();
-      await page.waitForTimeout(300);
-      expect(state.createCount).toBe(1);
-
-      // 核对：服务端没有已建会话 → 解除阻断
-      await page.getByRole('button', { name: '核对是否已创建' }).click();
-      await expect(page.getByRole('status')).toContainText('未发现已创建的会话');
-      await expect(page.getByLabel('AI 提问')).toHaveValue('手臂 1 无动作');
-
-      // 解除阻断后可重新发送
-      await page.getByRole('button', { name: '发送问题' }).click();
-      await expect.poll(() => state.createCount, { timeout: 8000 }).toBe(2);
-    });
-
-    test('结果未知且服务端已建出：核对后接管该会话并保留草稿', async ({ page }) => {
-      const state = createMockState();
-      state.createFailures = ['network'];
-      // 服务端在中断前已建出会话：列表里出现本次尝试之后创建的空会话
       state.listCreatedAtNow = true;
       await installGraphQLMock(page, state);
 
@@ -671,15 +685,98 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
       await page.getByLabel('AI 提问').fill('曝光前校验失败');
       await page.getByRole('button', { name: '发送问题' }).click();
 
-      await expect(page.getByRole('button', { name: '核对是否已创建' })).toBeVisible();
-      await page.getByRole('button', { name: '核对是否已创建' }).click();
-
-      // 接管已建会话：提示出现、工单锁定、草稿保留
-      await expect(page.getByRole('status')).toContainText('已找到此前创建的会话');
+      // 结果未知：给出确认入口，草稿保留
+      await expect(page.getByRole('button', { name: '继续发送' })).toBeVisible();
+      await expect(page.getByRole('button', { name: '放弃本次' })).toBeVisible();
       await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
-      await expect(page.getByLabel('关联工单')).toBeDisabled();
-      // 全程只有一次创建请求：没有重复建会话
+      // 明示：列表不能证明本次创建是否成功
+      await expect(page.getByRole('alert')).toContainText('无法证明本次创建是否成功');
+
+      // 再次发送仍被阻断：不得隐式重复创建
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await page.waitForTimeout(300);
       expect(state.createCount).toBe(1);
+      // 不自动接管任何会话，也不自动发送
+      expect(state.submitCount).toBe(0);
+      await expect(page.getByLabel('关联工单')).toBeEnabled();
+    });
+
+    test('结果未知：取消确认后未知态与草稿都保持', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['network'];
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await page.getByLabel('AI 提问').fill('手臂 1 无动作');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      await page.getByRole('button', { name: '继续发送' }).click();
+      // 确认前看到重复风险
+      await expect(page.getByRole('dialog')).toContainText('可能产生重复的空会话');
+      await page.getByRole('button', { name: '取消' }).click();
+
+      // 取消不解除未知态、不丢草稿
+      await expect(page.getByRole('button', { name: '继续发送' })).toBeVisible();
+      await expect(page.getByLabel('AI 提问')).toHaveValue('手臂 1 无动作');
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await page.waitForTimeout(300);
+      expect(state.createCount).toBe(1);
+    });
+
+    test('结果未知：确认继续后解除阻断，但需再次主动发送才创建', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['network'];
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await page.getByLabel('AI 提问').fill('手臂 1 无动作');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      await page.getByRole('button', { name: '继续发送' }).click();
+      await expect(page.getByRole('dialog')).toContainText('可能产生重复的空会话');
+      await page.getByRole('button', { name: '继续', exact: true }).click();
+
+      // 解除阻断但不自动发送：草稿保留，创建调用没有增加
+      await expect(page.getByRole('button', { name: '继续发送' })).toHaveCount(0);
+      await expect(page.getByLabel('AI 提问')).toHaveValue('手臂 1 无动作');
+      expect(state.createCount).toBe(1);
+      expect(state.submitCount).toBe(0);
+
+      // 用户再次主动发送才真正创建
+      await page.getByRole('button', { name: '发送问题' }).click();
+      await expect.poll(() => state.createCount, { timeout: 8000 }).toBe(2);
+    });
+
+    test('结果未知：放弃本次后解除阻断并保留草稿与工单', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['network'];
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await pickWorkOrder(page, 'MR-20261120-001 · NIKON NSR-S635E');
+      await page.getByLabel('AI 提问').fill('曝光前校验失败');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      await page.getByRole('button', { name: '放弃本次' }).click();
+      await expect(page.getByRole('dialog')).toContainText('空会话');
+      await page.getByRole('button', { name: '放弃', exact: true }).click();
+
+      await expect(page.getByRole('button', { name: '继续发送' })).toHaveCount(0);
+      await expect(page.getByLabel('AI 提问')).toHaveValue('曝光前校验失败');
+      await expect(page.getByLabel('关联工单')).toBeEnabled();
+    });
+
+    test('结果未知：服务端内部错误同样按未知处理，不误判为未创建', async ({ page }) => {
+      const state = createMockState();
+      state.createFailures = ['server'];
+      await installGraphQLMock(page, state);
+
+      await page.goto('/engineer/ai');
+      await page.getByLabel('AI 提问').fill('手臂 1 无动作');
+      await page.getByRole('button', { name: '发送问题' }).click();
+
+      await expect(page.getByRole('button', { name: '继续发送' })).toBeVisible();
+      await expect(page.getByRole('alert')).toContainText('无法确认');
     });
   });
 });

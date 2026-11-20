@@ -13,7 +13,7 @@ import type {
 } from '../infrastructure/ai-conversation.types';
 import * as adapter from '../infrastructure/ai-conversation-adapter';
 
-import { findCreatedConversation, useAiDiagnosisWorkspace } from './use-ai-diagnosis-workspace';
+import { useAiDiagnosisWorkspace } from './use-ai-diagnosis-workspace';
 
 const CONVERSATION_ID = 7;
 const QUESTION_UUID = '11111111-2222-4333-8444-555555555555';
@@ -1164,7 +1164,7 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
         await result.current.submitQuestion('手臂 1 无动作');
       });
       expect(createSpy).toHaveBeenCalledTimes(1);
-      expect(result.current.errorMessage).toContain('新建对话');
+      expect(result.current.errorMessage).toContain('无法确认');
     });
 
     /**
@@ -1173,7 +1173,15 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
      * 服务端明确拒绝时会话确定未创建，不得把用户挡在「新建对话」之外；
      * 结果未知仍要阻止重复创建，但恢复与放弃都必须保留草稿。
      */
-    describe('创建失败的性质区分与恢复', () => {
+    /**
+     * 创建失败的性质区分与显式恢复。
+     *
+     * 只有能证明「写入前被拒绝」的响应才算明确拒绝（可改工单后重试）；其余一律按
+     * 结果未知处理：阻断隐式重建，不自动接管、不自动发送，也不按工单／时间／空
+     * 消息猜测本次会话是否已建出。
+     */
+    describe('创建失败的性质区分与显式恢复', () => {
+      /** 写入前被拒绝（工单权限不足）：能证明会话未创建 */
       const rejectedError = () =>
         new GraphQLIngressError({
           type: 'graphql',
@@ -1189,13 +1197,50 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
             },
           ],
         });
+      /** COMMIT 阶段失败：后端映射成 INTERNAL_SERVER_ERROR，无法证明未写入 */
+      const commitFailureError = () =>
+        new GraphQLIngressError({
+          type: 'graphql',
+          message: 'Internal Server Error',
+          graphqlErrors: [
+            { message: 'Internal Server Error', extensions: { code: 'INTERNAL_SERVER_ERROR' } },
+          ],
+        });
+      /** 混合错误：含认证错误时也可能有执行错误，不能只看第一条 */
+      const mixedError = () =>
+        new GraphQLIngressError({
+          type: 'graphql',
+          message: 'mixed',
+          graphqlErrors: [
+            { message: 'UNAUTHENTICATED', extensions: { code: 'UNAUTHENTICATED' } },
+            { message: 'Internal Server Error', extensions: { code: 'INTERNAL_SERVER_ERROR' } },
+          ],
+        });
+      /** 传输层中断：拿不到 GraphQL 错误体 */
+      const networkError = () =>
+        new GraphQLIngressError({ type: 'network', message: '网络连接异常' });
+      /** 认证层拒绝：共享层把含 UNAUTHENTICATED 的错误体归一为 type='auth' */
+      const authRejectedError = () =>
+        new GraphQLIngressError({
+          type: 'auth',
+          message: 'JWT 认证失败',
+          graphqlErrors: [{ message: 'UNAUTHENTICATED', extensions: { code: 'UNAUTHENTICATED' } }],
+        });
 
-      it('明确拒绝：不置未知态，保留草稿与工单选择，可直接重试', async () => {
+      const createdConversation = (requestId: number) => ({
+        id: CONVERSATION_ID,
+        requestId,
+        requestNo: `RR-${requestId}`,
+        status: 'ACTIVE' as const,
+        contentVersion: 1,
+        createdAt: '2026-11-20T08:00:00.000Z',
+      });
+
+      const setupUnknown = async (createError: () => unknown) => {
         const createSpy = vi
           .spyOn(adapter, 'createAiConversation')
-          .mockRejectedValueOnce(rejectedError());
+          .mockRejectedValueOnce(createError() as never);
         const { result } = renderHook(() => useAiDiagnosisWorkspace());
-
         await act(async () => {
           result.current.setDraft('需要保留的现场描述');
           result.current.setDraftRequestId(7);
@@ -1203,6 +1248,11 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
         await act(async () => {
           await result.current.submitQuestion('需要保留的现场描述');
         });
+        return { result, createSpy };
+      };
+
+      it('明确拒绝（FORBIDDEN）：不置未知态，保留草稿与工单选择，可直接重试', async () => {
+        const { result, createSpy } = await setupUnknown(rejectedError);
 
         expect(result.current.createUnknown).toBe(false);
         expect(result.current.draft).toBe('需要保留的现场描述');
@@ -1210,14 +1260,7 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
         expect(result.current.errorMessage).toBe('无权访问所选工单');
 
         // 明确拒绝未创建会话：再次发送必须真正重试，而不是要求先「新建对话」
-        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce({
-          id: CONVERSATION_ID,
-          requestId: 7,
-          requestNo: 'RR-1',
-          status: 'ACTIVE',
-          contentVersion: 1,
-          createdAt: '2026-11-20T08:00:00.000Z',
-        });
+        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce(createdConversation(7));
         await act(async () => {
           await result.current.submitQuestion('需要保留的现场描述');
         });
@@ -1228,28 +1271,10 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
       });
 
       it('明确拒绝后更换工单：仍可重试且保留草稿', async () => {
-        const createSpy = vi
-          .spyOn(adapter, 'createAiConversation')
-          .mockRejectedValueOnce(rejectedError());
-        const { result } = renderHook(() => useAiDiagnosisWorkspace());
-
-        await act(async () => {
-          result.current.setDraft('需要保留的现场描述');
-          result.current.setDraftRequestId(7);
-        });
-        await act(async () => {
-          await result.current.submitQuestion('需要保留的现场描述');
-        });
+        const { result, createSpy } = await setupUnknown(rejectedError);
         expect(result.current.createUnknown).toBe(false);
 
-        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce({
-          id: CONVERSATION_ID,
-          requestId: 8,
-          requestNo: 'RR-2',
-          status: 'ACTIVE',
-          contentVersion: 1,
-          createdAt: '2026-11-20T08:00:00.000Z',
-        });
+        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce(createdConversation(8));
         await act(async () => {
           result.current.setDraftRequestId(8);
         });
@@ -1262,12 +1287,87 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
         expect(result.current.draft).toBe('需要保留的现场描述');
       });
 
-      it('结果未知：核对到服务端已建出会话时接管该会话并保留草稿', async () => {
-        vi.spyOn(adapter, 'createAiConversation').mockRejectedValueOnce(
-          new GraphQLIngressError({ type: 'network', message: '网络连接异常' }),
-        );
-        // 列表里出现本次尝试建出的空会话（恢复核对时接管它）
-        vi.spyOn(adapter, 'listMyAiConversations').mockResolvedValue({
+      it('COMMIT 阶段失败（INTERNAL_SERVER_ERROR）：按结果未知阻断，不宣称未创建', async () => {
+        const { result } = await setupUnknown(commitFailureError);
+
+        expect(result.current.createUnknown).toBe(true);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.errorMessage).toContain('无法确认');
+      });
+
+      it('混合错误（含认证与执行错误）：按结果未知阻断', async () => {
+        const { result } = await setupUnknown(mixedError);
+
+        expect(result.current.createUnknown).toBe(true);
+      });
+
+      it('结果未知：再次发送被阻断，不产生新的创建调用', async () => {
+        const { result, createSpy } = await setupUnknown(networkError);
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+
+        expect(createSpy).toHaveBeenCalledTimes(1);
+        expect(result.current.createUnknown).toBe(true);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+      });
+
+      it('结果未知：改工单不产生创建调用，未知态保持，草稿保留', async () => {
+        const { result, createSpy } = await setupUnknown(networkError);
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          result.current.setDraftRequestId(8);
+        });
+
+        expect(createSpy).toHaveBeenCalledTimes(1);
+        expect(result.current.createUnknown).toBe(true);
+        expect(result.current.draftRequestId).toBe(8);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+      });
+
+      it('结果未知：显式确认继续后解除阻断，保留草稿与工单，且不自动发送', async () => {
+        const { result, createSpy } = await setupUnknown(networkError);
+        const submitSpy = vi.spyOn(adapter, 'submitAiQuestion');
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          result.current.continueAfterUnknownCreate();
+        });
+
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.draftRequestId).toBe(7);
+        // 确认只解除阻断，不代替用户发送
+        expect(submitSpy).not.toHaveBeenCalled();
+        expect(createSpy).toHaveBeenCalledTimes(1);
+
+        // 用户再次主动发送才会真正创建
+        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce(createdConversation(7));
+        await act(async () => {
+          await result.current.submitQuestion('需要保留的现场描述');
+        });
+        expect(createSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('结果未知：显式放弃后解除阻断，保留草稿与工单选择', async () => {
+        const { result } = await setupUnknown(networkError);
+        expect(result.current.createUnknown).toBe(true);
+
+        await act(async () => {
+          result.current.abandonUnknownCreate();
+        });
+
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.draftRequestId).toBe(7);
+      });
+
+      it('结果未知：列表里有同工单空会话也不自动接管，不宣称找到本次会话', async () => {
+        const { result } = await setupUnknown(networkError);
+        const listSpy = vi.spyOn(adapter, 'listMyAiConversations').mockResolvedValue({
           items: [
             {
               id: 88,
@@ -1286,34 +1386,19 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
           page: 1,
           pageSize: 20,
         });
-        vi.spyOn(adapter, 'getMyAiConversation').mockResolvedValue(
-          buildDetail({ id: 88, requestId: 7, turns: [] }),
-        );
+        const detailSpy = vi.spyOn(adapter, 'getMyAiConversation');
 
-        const { result } = renderHook(() => useAiDiagnosisWorkspace());
-        await act(async () => {
-          result.current.setDraft('需要保留的现场描述');
-          result.current.setDraftRequestId(7);
-        });
-        await act(async () => {
-          await result.current.submitQuestion('需要保留的现场描述');
-        });
         expect(result.current.createUnknown).toBe(true);
-
-        await act(async () => {
-          await result.current.recoverUnknownCreate();
-        });
-
-        expect(result.current.createUnknown).toBe(false);
-        expect(result.current.selectedId).toBe(88);
-        expect(result.current.draft).toBe('需要保留的现场描述');
-        expect(result.current.noticeMessage).not.toBeNull();
+        // 不自动选中任何会话，也不自动发送
+        expect(result.current.selectedId).toBeNull();
+        expect(result.current.conversation).toBeNull();
+        expect(detailSpy).not.toHaveBeenCalled();
+        // 不做「按工单／时间／空消息」的恢复查询：只有页面初始化那一次列表加载
+        expect(listSpy).toHaveBeenCalledTimes(1);
       });
 
-      it('结果未知：核对不到已建会话时解除阻断，可直接重新发送', async () => {
-        const createSpy = vi
-          .spyOn(adapter, 'createAiConversation')
-          .mockRejectedValueOnce(new GraphQLIngressError({ type: 'network', message: 'timeout' }));
+      it('结果未知：列表为空也不解除阻断', async () => {
+        const { result } = await setupUnknown(networkError);
         vi.spyOn(adapter, 'listMyAiConversations').mockResolvedValue({
           items: [],
           total: 0,
@@ -1321,120 +1406,64 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
           pageSize: 20,
         });
 
-        const { result } = renderHook(() => useAiDiagnosisWorkspace());
-        await act(async () => {
-          result.current.setDraft('需要保留的现场描述');
-          result.current.setDraftRequestId(7);
-        });
-        await act(async () => {
-          await result.current.submitQuestion('需要保留的现场描述');
-        });
+        expect(result.current.createUnknown).toBe(true);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+      });
+
+      it('结果未知：打开历史会话被阻断，草稿保留且未切换', async () => {
+        const { result } = await setupUnknown(networkError);
+        const detailSpy = vi.spyOn(adapter, 'getMyAiConversation');
         expect(result.current.createUnknown).toBe(true);
 
         await act(async () => {
-          await result.current.recoverUnknownCreate();
+          await result.current.selectConversation(88);
         });
-        expect(result.current.createUnknown).toBe(false);
-        expect(result.current.draft).toBe('需要保留的现场描述');
 
-        vi.spyOn(adapter, 'createAiConversation').mockResolvedValueOnce({
-          id: CONVERSATION_ID,
-          requestId: 7,
-          requestNo: 'RR-1',
-          status: 'ACTIVE',
-          contentVersion: 1,
-          createdAt: '2026-11-20T08:00:00.000Z',
-        });
-        await act(async () => {
-          await result.current.submitQuestion('需要保留的现场描述');
-        });
-        expect(createSpy).toHaveBeenCalledTimes(2);
+        expect(result.current.selectedId).toBeNull();
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.createUnknown).toBe(true);
+        expect(detailSpy).not.toHaveBeenCalled();
       });
 
-      it('结果未知：放弃本次创建时保留草稿与工单选择', async () => {
-        vi.spyOn(adapter, 'createAiConversation').mockRejectedValueOnce(
-          new GraphQLIngressError({ type: 'network', message: 'timeout' }),
-        );
-
-        const { result } = renderHook(() => useAiDiagnosisWorkspace());
-        await act(async () => {
-          result.current.setDraft('需要保留的现场描述');
-          result.current.setDraftRequestId(7);
-        });
-        await act(async () => {
-          await result.current.submitQuestion('需要保留的现场描述');
-        });
+      it('结果未知：新建对话不解除未知态（须先显式确认）', async () => {
+        const { result } = await setupUnknown(networkError);
         expect(result.current.createUnknown).toBe(true);
 
         await act(async () => {
           result.current.startNewDraft();
         });
 
-        expect(result.current.createUnknown).toBe(false);
+        // 无提示不得解除保护
+        expect(result.current.createUnknown).toBe(true);
         expect(result.current.draft).toBe('需要保留的现场描述');
         expect(result.current.draftRequestId).toBe(7);
       });
 
-      it('恢复核对只认本次尝试之后创建、且尚无消息的会话', async () => {
-        const attempt = { at: Date.now(), requestId: 7 };
-        const created = new Date(Date.now() + 1000).toISOString();
-        const older = new Date(attempt.at - 60_000).toISOString();
+      it('结果未知：显式建会话入口同样被阻断，不产生创建调用也不解除未知态', async () => {
+        const { result, createSpy } = await setupUnknown(networkError);
+        expect(result.current.createUnknown).toBe(true);
 
-        const found = findCreatedConversation(
-          [
-            {
-              id: 1,
-              requestId: 7,
-              requestNo: '',
-              status: 'ACTIVE',
-              contentVersion: 1,
-              messageCount: 0,
-              turnCount: 0,
-              lastMessageAt: null,
-              createdAt: created,
-              completedAt: null,
-            },
-            {
-              id: 2,
-              requestId: 7,
-              requestNo: '',
-              status: 'ACTIVE',
-              contentVersion: 1,
-              messageCount: 3,
-              turnCount: 1,
-              lastMessageAt: created,
-              createdAt: created,
-              completedAt: null,
-            },
-            {
-              id: 3,
-              requestId: 7,
-              requestNo: '',
-              status: 'ACTIVE',
-              contentVersion: 1,
-              messageCount: 0,
-              turnCount: 0,
-              lastMessageAt: null,
-              createdAt: older,
-              completedAt: null,
-            },
-            {
-              id: 4,
-              requestId: 9,
-              requestNo: '',
-              status: 'ACTIVE',
-              contentVersion: 1,
-              messageCount: 0,
-              turnCount: 0,
-              lastMessageAt: null,
-              createdAt: created,
-              completedAt: null,
-            },
-          ],
-          attempt,
-        );
+        await act(async () => {
+          await result.current.createConversation(7);
+        });
 
-        expect(found?.id).toBe(1);
+        // 不得绕过保护去建第二个会话，也不得顺带解除未知态
+        expect(createSpy).toHaveBeenCalledTimes(1);
+        expect(result.current.createUnknown).toBe(true);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.draftRequestId).toBe(7);
+        expect(result.current.errorMessage).toContain('无法确认');
+      });
+
+      it('认证层拒绝（UNAUTHENTICATED，生产形态 type=auth）：按明确拒绝处理，不置未知态', async () => {
+        const { result } = await setupUnknown(authRejectedError);
+
+        // 守卫阶段拒绝可证明未创建：不阻断重试，也不得宣称「结果无法确认」
+        expect(result.current.createUnknown).toBe(false);
+        expect(result.current.draft).toBe('需要保留的现场描述');
+        expect(result.current.draftRequestId).toBe(7);
+        expect(result.current.errorMessage).not.toBeNull();
+        expect(result.current.errorMessage).not.toContain('无法确认');
       });
     });
 

@@ -887,12 +887,31 @@ export const EN_MESSAGES = {
   'ai.panel.error.emptyQuestion': 'Question text is required',
   'ai.panel.error.questionTooLong': 'Question text must be 1-{max} characters',
   'ai.panel.error.createUnknown':
-    'The previous conversation creation failed and its result is unknown. Check whether it was created, or start a new chat to abandon it (your text is kept).',
-  'ai.panel.recoverCreate': 'Check if it was created',
-  'ai.panel.createRecovered': 'Found the conversation created earlier; you can continue sending.',
-  'ai.panel.createNotFound': 'No created conversation found; you can send again directly.',
+    'The result of the previous conversation creation cannot be confirmed: the server may still complete the request, or nothing may have been created. Nothing is adopted or sent automatically before you confirm.',
+  'ai.panel.createUnknownHint':
+    'The conversation list cannot prove whether this creation succeeded. No conversation is selected and nothing is sent automatically until you confirm.',
+  'ai.panel.continueCreate': 'Continue sending',
+  'ai.panel.abandonCreate': 'Abandon this attempt',
+  'ai.panel.confirmContinueTitle': 'Continue creating a conversation?',
+  'ai.panel.confirmContinueBody':
+    'The result of the previous creation request cannot be confirmed and the server may still complete it. Continuing may create a duplicate empty conversation; you still need to click send again afterwards.',
+  'ai.panel.confirmContinueOk': 'Continue',
+  'ai.panel.confirmAbandonTitle': 'Abandon this creation?',
+  'ai.panel.confirmAbandonBody':
+    'The server may still complete the previous creation request, so an empty conversation may appear in the list later. After abandoning you can keep editing and send again; your question text and work order selection are kept.',
+  'ai.panel.confirmAbandonOk': 'Abandon',
+  'ai.panel.confirmCancel': 'Cancel',
+  'ai.panel.navigationTitle': 'Leave this conversation?',
+  'ai.panel.navigationBody':
+    'Creation is still in progress or its result is unknown. Leaving will discard your draft and the warning. The server may still create the conversation, so sending again may create a duplicate.',
+  'ai.panel.navigationStay': 'Stay',
+  'ai.panel.navigationLeave': 'Leave',
+  'ai.panel.createContinued':
+    'Unblocked. Please click send again; your question text and work order selection are kept.',
   'ai.panel.createAbandoned':
     'Abandoned this attempt; your question text is kept and you can send again.',
+  'ai.panel.blockedByUnknown':
+    'Handle the unknown result of the previous creation (continue sending or abandon it) before opening another conversation.',
   'ai.panel.refreshTurn': 'Refresh turn',
   'ai.panel.retry': 'Retry turn',
   'ai.panel.retryTurnAria': 'Retry turn {turn}',

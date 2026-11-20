@@ -822,11 +822,29 @@ export const ZH_CN_MESSAGES = {
   'ai.panel.error.emptyQuestion': '问题正文不能为空',
   'ai.panel.error.questionTooLong': '问题正文长度必须在 1–{max} 字之间',
   'ai.panel.error.createUnknown':
-    '上一次会话创建失败且结果未知：请点「核对是否已创建」确认，或点「新建对话」放弃本次（问题内容会保留）。',
-  'ai.panel.recoverCreate': '核对是否已创建',
-  'ai.panel.createRecovered': '已找到此前创建的会话，可继续发送。',
-  'ai.panel.createNotFound': '未发现已创建的会话，可直接重新发送。',
+    '本次会话创建的结果无法确认：服务端仍可能完成该请求，也可能没有创建。确认前不会自动接管或发送。',
+  'ai.panel.createUnknownHint':
+    '会话列表无法证明本次创建是否成功；在你确认之前不会自动选中任何会话，也不会自动发送。',
+  'ai.panel.continueCreate': '继续发送',
+  'ai.panel.abandonCreate': '放弃本次',
+  'ai.panel.confirmContinueTitle': '继续创建会话？',
+  'ai.panel.confirmContinueBody':
+    '上一次创建请求的结果无法确认，服务端仍可能完成该请求。继续发送可能产生重复的空会话；确认后仍需你再次点击发送。',
+  'ai.panel.confirmContinueOk': '继续',
+  'ai.panel.confirmAbandonTitle': '放弃本次创建？',
+  'ai.panel.confirmAbandonBody':
+    '服务端仍可能完成上一次创建请求，之后列表里可能出现一个空会话。放弃后可以继续编辑并重新发送，问题内容与工单选择都会保留。',
+  'ai.panel.confirmAbandonOk': '放弃',
+  'ai.panel.confirmCancel': '取消',
+  'ai.panel.navigationTitle': '离开当前对话？',
+  'ai.panel.navigationBody':
+    '会话创建仍在处理或结果无法确认。离开将丢失当前草稿和保护提示，服务端仍可能创建会话，之后重新发送可能产生重复会话。',
+  'ai.panel.navigationStay': '留在此页',
+  'ai.panel.navigationLeave': '确认离开',
+  'ai.panel.createContinued': '已解除阻断，请再次点击发送。问题内容与工单选择已保留。',
   'ai.panel.createAbandoned': '已放弃本次创建，问题内容已保留，可重新发送。',
+  'ai.panel.blockedByUnknown':
+    '请先处理上一次创建的未知结果（继续发送或放弃本次），再打开其他会话。',
   'ai.panel.refreshTurn': '重新查询本轮',
   'ai.panel.retry': '重试本轮',
   'ai.panel.retryTurnAria': '重试第 {turn} 轮',

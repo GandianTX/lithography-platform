@@ -1,8 +1,8 @@
 // src/pages/engineer-ai/index.tsx
 
 import { useEffect, useMemo } from 'react';
-import { Alert, Select, Tag } from 'antd';
-import { Link, useSearchParams } from 'react-router';
+import { Alert, Modal, Select, Tag } from 'antd';
+import { Link, useBeforeUnload, useBlocker, useSearchParams } from 'react-router';
 
 import {
   AI_STAGE_DEFINITIONS,
@@ -20,6 +20,21 @@ import { useI18n } from '@/shared/i18n';
 export function EngineerAiPage() {
   const { t } = useI18n();
   const workspace = useAiDiagnosisWorkspace();
+  // 创建在途或结果未知时，卸载会丢失草稿和防重状态。所有站内导航共用此守卫。
+  const guardNavigation = workspace.creating || workspace.createUnknown;
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      guardNavigation &&
+      (currentLocation.pathname !== nextLocation.pathname ||
+        currentLocation.search !== nextLocation.search ||
+        currentLocation.hash !== nextLocation.hash),
+  );
+  useBeforeUnload((event) => {
+    if (guardNavigation) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
   const workOrders = useEngineerWorkOrderOptions();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -89,6 +104,16 @@ export function EngineerAiPage() {
 
   return (
     <div className="ai-shell ai-shell--workspace">
+      <Modal
+        cancelText={t('ai.panel.navigationStay')}
+        okText={t('ai.panel.navigationLeave')}
+        onCancel={() => blocker.reset?.()}
+        onOk={() => blocker.proceed?.()}
+        open={blocker.state === 'blocked'}
+        title={t('ai.panel.navigationTitle')}
+      >
+        <p>{t('ai.panel.navigationBody')}</p>
+      </Modal>
       {/* 任务局部顶栏：AI 对话 / 问答记录，两页都可直接访问、各自呈现当前态 */}
       <header className="ai-shell-header">
         <h1 className="ai-shell-title">{t('ai.shell.title')}</h1>
@@ -173,11 +198,12 @@ export function EngineerAiPage() {
               workspace.startNewDraft();
             }}
             onRefreshTurn={() => void workspace.refreshCurrentTurn()}
-            onRecoverCreate={() => void workspace.recoverUnknownCreate()}
+            // 未知创建结果：只提供显式确认（继续发送 / 放弃本次），确认前不解除阻断
+            onAbandonCreate={workspace.abandonUnknownCreate}
+            onContinueCreate={workspace.continueAfterUnknownCreate}
             onReloadWorkOrders={workOrders.reload}
             onRetryTurn={(questionUuid) => void workspace.retryTurn(questionUuid)}
             onSubmit={() => void workspace.submitQuestion(workspace.draft)}
-            recoveringCreate={workspace.recoveringCreate}
             onWorkOrderChange={workspace.setDraftRequestId}
             retrying={workspace.retrying}
             submitting={workspace.submitting}
