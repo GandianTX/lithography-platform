@@ -20,11 +20,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '@/shared/i18n';
 
 import {
-  AI_BOX_FACES,
+  AI_PART_MOUNTS,
+  AI_SCENE_BASE_GEOMETRY,
   type AiPartGeometry,
-  buildAiBoxVertices,
+  type AiPartRenderState,
+  type AiSceneBox,
+  type AiSceneSurface,
+  buildAiSceneSurfaces,
   findAiPartGeometry,
-  isPointInAiPolygon,
+  findAiSurfacePartId,
   projectAiVertex,
 } from '../domain/litho-geometry';
 import type { AiPartDisplay } from '../infrastructure/ai-conversation.types';
@@ -45,14 +49,7 @@ const FOCUS_ZOOM_COMPACT = 1.06;
 /** 窄屏判定（原型 clientWidth < 440） */
 const COMPACT_WIDTH_PX = 440;
 
-/** 可见面：不画底面（原型 faceIndices 同样只取 5 面） */
-const VISIBLE_AI_BOX_FACES: ReadonlyArray<readonly [number, number, number, number]> = [
-  [0, 1, 5, 4],
-  [1, 2, 6, 5],
-  [2, 3, 7, 6],
-  [3, 0, 4, 7],
-  [4, 5, 6, 7],
-];
+/** 可见面集合由 domain 层统一提供（原型 faceIndices：4 侧面 + 顶面，不含底面） */
 
 const INITIAL_ANGLE = -0.39;
 const MIN_ZOOM = 0.55;
@@ -76,12 +73,7 @@ export type LithoWorkflowCanvasProps = {
   readonly onHoverPart?: (partId: string | null) => void;
   /** 无障碍标签 */
   readonly ariaLabel: string;
-  /** 交互提示文案 */
-  readonly gestureHint: string;
 };
-
-/** 绘制展示态：协议四种 + 锁定终态的故障红（FAULT 只在画布内出现） */
-type CanvasDisplay = AiPartDisplay | 'FAULT';
 
 type ResolvedColors = {
   readonly fill: Record<string, string>;
@@ -92,6 +84,10 @@ type ResolvedColors = {
   readonly scan: string;
   /** 面片斜向网格线（原型技术线框质感） */
   readonly hatch: string;
+  /** 悬停高亮填充（V44 原型同值，见 --ai-geo-hover-fill 基准登记） */
+  readonly hoverFill: string;
+  /** 悬停高亮描边（V44 原型同值，见 --ai-geo-outline-hover 基准登记） */
+  readonly outlineHover: string;
 };
 
 function readToken(token: string, fallback: string): string {
@@ -124,6 +120,8 @@ function resolveColors(): ResolvedColors {
     grid: read('--ai-geo-grid'),
     scan: read('--ai-geo-scan'),
     hatch: read('--ai-geo-hatch'),
+    hoverFill: read('--ai-geo-hover-fill'),
+    outlineHover: read('--ai-geo-outline-hover'),
   };
 }
 
@@ -170,11 +168,13 @@ export function LithoWorkflowCanvas({
   faultDescription,
   faultIdentity,
   focusPartId,
-  gestureHint,
   onHoverPart,
 }: LithoWorkflowCanvasProps) {
   const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** tooltip 与容器引用（用于贴边翻转定位） */
+  const tipRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
   /** 最新绘制函数引用：动画循环内不直接捕获 draw，避免自引用与过期闭包 */
@@ -193,6 +193,9 @@ export function LithoWorkflowCanvas({
   const [angle, setAngle] = useState(INITIAL_ANGLE);
   const [zoom, setZoom] = useState(1);
   const [hoveredPartId, setHoveredPartId] = useState<string | null>(null);
+  /** 指针在画布内的位置（原型 tooltip 跟随指针） */
+  const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
+  const [tipPosition, setTipPosition] = useState({ x: 0, y: 0 });
   const [locked, setLocked] = useState(false);
   const dragRef = useRef<{ x: number; angle: number } | null>(null);
 
@@ -288,27 +291,13 @@ export function LithoWorkflowCanvas({
       const isLocked = elapsed >= LOCK_START_MS;
       const ghostOthers = focusPartId !== null && elapsed >= FOCUS_START_MS;
 
-      drawBase(context, options, colors);
-      for (const part of visibleParts) {
-        const isFocus = part.partId === focusPartId;
-        const display = isFocus
-          ? isLocked
-            ? 'FAULT'
-            : 'HIGHLIGHT'
-          : (displays[part.partId] ?? 'NORMAL');
-        drawPart(context, part, options, colors, display, {
-          ghost: ghostOthers && !isFocus,
-        });
-      }
-      // HIDDEN 部件只有在被锁定为故障目标时才绘制（原型同规则）
-      if (focusPartId !== null && !visibleParts.some((part) => part.partId === focusPartId)) {
-        const hidden = findAiPartGeometry(focusPartId);
-        if (hidden !== null) {
-          drawPart(context, hidden, options, colors, isLocked ? 'FAULT' : 'HIGHLIGHT', {
-            ghost: false,
-          });
-        }
-      }
+      // 统一面集合：底座 + 部件 + 支架，按原型口径全局深度排序。
+      // 绘制、拾取与遮挡判定共用同一套面，避免「点到的不是看到的」。
+      const sceneBoxes = buildAiSceneBoxes(visibleParts, displays, focusPartId, {
+        ghostOthers,
+        isLocked,
+      });
+      drawSurfaces(context, buildAiSceneSurfaces(sceneBoxes, options), colors, hoveredPartId);
 
       if (focusPartId !== null && focusGeometry !== null) {
         const anchor = resolveFaultAnchor(context, focusGeometry, options);
@@ -328,7 +317,17 @@ export function LithoWorkflowCanvas({
         frameRef.current = null;
       }
     },
-    [angle, displays, faultIdentity, focusGeometry, focusPartId, locked, visibleParts, zoom],
+    [
+      angle,
+      displays,
+      faultIdentity,
+      focusGeometry,
+      focusPartId,
+      hoveredPartId,
+      locked,
+      visibleParts,
+      zoom,
+    ],
   );
 
   useEffect(() => {
@@ -370,21 +369,16 @@ export function LithoWorkflowCanvas({
         angle: view.angle,
         zoom: view.zoom,
       };
-      for (const part of visibleParts) {
-        const vertices = buildAiBoxVertices(part);
-        const projected = vertices.map((vertex) => projectAiVertex(vertex, options));
-        for (const face of AI_BOX_FACES) {
-          const polygon = face.map((index) => projected[index]);
-          if (isPointInAiPolygon(point, polygon)) {
-            return part.partId;
-          }
-        }
-      }
-      return null;
+      // 与绘制共用同一套面集合：从最后绘制（最前）的面逆序查找，
+      // 命中的必然是屏幕上最靠前的部件。
+      const boxes = buildAiSceneBoxes(visibleParts, displays, focusPartId, {
+        ghostOthers: false,
+        isLocked: false,
+      });
+      return findAiSurfacePartId(buildAiSceneSurfaces(boxes, options), point);
     },
-    [visibleParts],
+    [displays, focusPartId, visibleParts],
   );
-
   /** 用户接管视角：不再叠加镜头聚焦偏移，但动效时间线继续走完 */
   const takeOverCamera = useCallback(() => {
     cameraTakenOverRef.current = true;
@@ -392,8 +386,33 @@ export function LithoWorkflowCanvas({
 
   const hoveredGeometry = hoveredPartId === null ? null : findAiPartGeometry(hoveredPartId);
 
+  // 原型：动画播放中不显示部件浮层，锁定后恢复
+  const showTip = hoveredGeometry !== null && (focusPartId === null || locked);
+
+  // 原型 tooltip 定位：优先放指针右下方，放不下则翻到左上方
+  useEffect(() => {
+    const tip = tipRef.current;
+    const container = containerRef.current;
+    if (tip === null || container === null || hoverPoint === null) {
+      return;
+    }
+    const tipWidth = tip.offsetWidth;
+    const tipHeight = tip.offsetHeight;
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    const x =
+      hoverPoint.x + 12 + tipWidth <= containerWidth - 4
+        ? hoverPoint.x + 12
+        : hoverPoint.x - 12 - tipWidth;
+    const y =
+      hoverPoint.y + 12 + tipHeight <= containerHeight - 4
+        ? hoverPoint.y + 12
+        : hoverPoint.y - 12 - tipHeight;
+    setTipPosition({ x, y });
+  }, [hoverPoint]);
+
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" ref={containerRef}>
       <canvas
         aria-describedby="ai-geo-gesture"
         aria-label={ariaLabel}
@@ -420,12 +439,16 @@ export function LithoWorkflowCanvas({
         }}
         onMouseDown={(event) => {
           takeOverCamera();
+          setHoveredPartId(null);
+          setHoverPoint(null);
+          onHoverPart?.(null);
           dragRef.current = { x: event.clientX, angle };
           event.currentTarget.focus();
         }}
         onMouseLeave={() => {
           dragRef.current = null;
           setHoveredPartId(null);
+          setHoverPoint(null);
           onHoverPart?.(null);
         }}
         onMouseMove={(event) => {
@@ -437,6 +460,10 @@ export function LithoWorkflowCanvas({
           }
           const partId = hitTest(event.clientX, event.clientY);
           setHoveredPartId(partId);
+          const rect = event.currentTarget.getBoundingClientRect();
+          setHoverPoint(
+            partId === null ? null : { x: event.clientX - rect.left, y: event.clientY - rect.top },
+          );
           onHoverPart?.(partId);
         }}
         onMouseUp={() => {
@@ -450,9 +477,6 @@ export function LithoWorkflowCanvas({
         role="img"
         tabIndex={0}
       />
-      <p className="absolute bottom-2 left-3 text-xs text-text-secondary" id="ai-geo-gesture">
-        {gestureHint}
-      </p>
       {focusTitle !== null ? (
         <div aria-hidden={!locked} className="ai-fault-card" data-locked={locked} ref={cardRef}>
           <strong>{focusTitle}</strong>
@@ -461,148 +485,133 @@ export function LithoWorkflowCanvas({
           ) : null}
         </div>
       ) : null}
-      {hoveredGeometry !== null ? (
-        <span className="pointer-events-none absolute right-3 top-3 rounded bg-fill-secondary px-2 py-1 text-xs text-text-primary shadow-card">
+      {showTip && hoveredGeometry !== null ? (
+        <div
+          className="ai-part-tip"
+          ref={tipRef}
+          role="tooltip"
+          style={{ left: tipPosition.x, top: tipPosition.y }}
+        >
           {t(hoveredGeometry.labelKey)}
-        </span>
+        </div>
       ) : null}
     </div>
   );
 }
 
-function drawBase(
-  context: CanvasRenderingContext2D,
-  options: { width: number; height: number; angle: number; zoom: number },
-  colors: ResolvedColors,
-): void {
-  const base: AiPartGeometry = {
-    partId: 'base',
-    labelKey: 'ai.part.controller',
-    x: 0,
-    y: -0.18,
-    z: 0,
-    width: 9.9,
-    height: 0.33,
-    depth: 5.45,
+/**
+ * 组装场景盒体集合：底座 + 部件 + 支架
+ *
+ * 支架沿用所属部件的展示态与拾取归属（原型 `box([partId,'',...mount], mode)`）；
+ * HIDDEN 部件只有在被锁定为故障目标时才参与绘制（原型同规则）。
+ */
+function buildAiSceneBoxes(
+  visibleParts: readonly AiPartGeometry[],
+  displays: Record<string, AiPartDisplay>,
+  focusPartId: string | null,
+  options: { readonly ghostOthers: boolean; readonly isLocked: boolean },
+): AiSceneBox[] {
+  const boxes: AiSceneBox[] = [
+    { geometry: AI_SCENE_BASE_GEOMETRY, renderState: 'NORMAL', ghost: false, isBase: true },
+  ];
+  const pushPart = (part: AiPartGeometry, renderState: AiPartRenderState, ghost: boolean): void => {
+    boxes.push({ geometry: part, renderState, ghost, isBase: false });
+    for (const mount of AI_PART_MOUNTS) {
+      if (mount.ownerPartId !== part.partId) {
+        continue;
+      }
+      boxes.push({ geometry: mount.geometry, renderState, ghost, isBase: false });
+    }
   };
-  const vertices = buildAiBoxVertices(base);
-  const projected = vertices.map((vertex) => projectAiVertex(vertex, options));
-  context.fillStyle = colors.base;
-  context.strokeStyle = colors.baseDark;
-  context.lineWidth = 1;
-  for (const [faceIndex, face] of VISIBLE_AI_BOX_FACES.entries()) {
-    const polygon = face.map((vertexIndex) => projected[vertexIndex]);
-    if (isBackFace(polygon)) {
-      continue;
-    }
-    context.globalAlpha = faceAlpha(faceIndex);
-    context.beginPath();
-    context.moveTo(polygon[0].x, polygon[0].y);
-    for (const point of polygon.slice(1)) {
-      context.lineTo(point.x, point.y);
-    }
-    context.closePath();
-    context.fill();
-    context.globalAlpha = 1;
-    context.stroke();
+  for (const part of visibleParts) {
+    const isFocus = part.partId === focusPartId;
+    const display: AiPartRenderState = isFocus
+      ? options.isLocked
+        ? 'FAULT'
+        : 'HIGHLIGHT'
+      : (displays[part.partId] ?? 'NORMAL');
+    pushPart(part, display, options.ghostOthers && !isFocus);
   }
-  context.globalAlpha = 1;
-  drawBaseGrid(context, projected, colors);
+  if (focusPartId !== null && !visibleParts.some((part) => part.partId === focusPartId)) {
+    const hidden = findAiPartGeometry(focusPartId);
+    if (hidden !== null) {
+      pushPart(hidden, options.isLocked ? 'FAULT' : 'HIGHLIGHT', false);
+    }
+  }
+  return boxes;
+}
+
+/** 绘制场景面集合（全局深度顺序：后画的盖住先画的） */
+function drawSurfaces(
+  context: CanvasRenderingContext2D,
+  surfaces: readonly AiSceneSurface[],
+  colors: ResolvedColors,
+  hoveredPartId: string | null,
+): void {
+  for (const surface of surfaces) {
+    drawSurface(context, surface, colors, hoveredPartId);
+  }
 }
 
 /**
- * 底座顶面网格：V44 构图里的底座网格（仅在顶面可见时绘制）。
- * 颜色取受控令牌 --ai-geo-grid。
+ * 绘制单个面片
+ *
+ * 底色 → 分面明暗 → 悬停高亮 → 描边 → 技术网格线，顺序与原型一致。
+ * 描边宽度取原型口径（普通 1、悬停 1.8），不再自造 1.6 档。
  */
-function drawBaseGrid(
+function drawSurface(
   context: CanvasRenderingContext2D,
-  projected: ReadonlyArray<{ x: number; y: number }>,
+  surface: AiSceneSurface,
   colors: ResolvedColors,
+  hoveredPartId: string | null,
 ): void {
-  const steps = 12;
-  context.save();
-  context.strokeStyle = colors.grid;
-  context.lineWidth = 0.5;
-  context.globalAlpha = 0.55;
-  for (let index = 1; index < steps; index += 1) {
-    const ratio = index / steps;
-    // 沿 X 方向的线：前左→后左 与 前右→后右 之间插值
-    const start = lerpPoint(projected[4], projected[7], ratio);
-    const end = lerpPoint(projected[5], projected[6], ratio);
-    context.beginPath();
-    context.moveTo(start.x, start.y);
-    context.lineTo(end.x, end.y);
-    context.stroke();
-    // 沿 Z 方向的线
-    const startZ = lerpPoint(projected[4], projected[5], ratio);
-    const endZ = lerpPoint(projected[7], projected[6], ratio);
-    context.beginPath();
-    context.moveTo(startZ.x, startZ.y);
-    context.lineTo(endZ.x, endZ.y);
-    context.stroke();
+  const polygon = surface.polygon;
+  if (isBackFace(polygon)) {
+    return;
   }
-  context.restore();
-  context.globalAlpha = 1;
-}
+  const display = surface.renderState ?? 'NORMAL';
+  const fill = surface.isBase ? colors.base : (colors.fill[display] ?? colors.fill.NORMAL);
+  const hovered = surface.partId !== null && surface.partId === hoveredPartId;
+  const outline = surface.isBase
+    ? colors.baseDark
+    : hovered && display !== 'FAULT'
+      ? colors.outlineHover
+      : (colors.outline[display] ?? colors.outline.NORMAL);
 
-function lerpPoint(
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-  ratio: number,
-): { x: number; y: number } {
-  return { x: from.x + (to.x - from.x) * ratio, y: from.y + (to.y - from.y) * ratio };
-}
+  context.beginPath();
+  context.moveTo(polygon[0].x, polygon[0].y);
+  for (const point of polygon.slice(1)) {
+    context.lineTo(point.x, point.y);
+  }
+  context.closePath();
 
-function drawPart(
-  context: CanvasRenderingContext2D,
-  part: AiPartGeometry,
-  options: { width: number; height: number; angle: number; zoom: number },
-  colors: ResolvedColors,
-  display: CanvasDisplay,
-  modifiers: { readonly ghost: boolean },
-): void {
-  const vertices = buildAiBoxVertices(part);
-  const projected = vertices.map((vertex) => projectAiVertex(vertex, options));
-  const faces = VISIBLE_AI_BOX_FACES.map((face, index) => {
-    const polygon = face.map((vertexIndex) => projected[vertexIndex]);
-    const depth =
-      polygon.reduce((sum, point) => sum + point.depth, 0) / Math.max(1, polygon.length);
-    return { index, polygon, depth };
-  }).sort((left, right) => left.depth - right.depth);
+  // 分面明暗形成透明层次（原型每种展示态三档面色）
+  const shade = faceAlpha(surface.faceIndex);
+  // 聚焦期间其他部件淡出（原型 ghost：填充 0.28 / 描边 0.52）
+  context.globalAlpha = (surface.ghost ? 0.28 : 1) * shade;
+  context.fillStyle = fill;
+  context.fill();
 
-  const fill = colors.fill[display] ?? colors.fill.NORMAL;
-  const outline = colors.outline[display] ?? colors.outline.NORMAL;
-  for (const face of faces) {
-    if (isBackFace(face.polygon)) {
-      continue;
-    }
-    context.beginPath();
-    context.moveTo(face.polygon[0].x, face.polygon[0].y);
-    for (const point of face.polygon.slice(1)) {
-      context.lineTo(point.x, point.y);
-    }
-    context.closePath();
-    // 分面明暗形成透明层次（原型每种展示态三档面色）
-    const shade = faceAlpha(face.index);
-    // 聚焦期间其他部件淡出（原型 ghost：填充 0.28 / 描边 0.52）
-    context.globalAlpha = (modifiers.ghost ? 0.28 : 1) * shade;
-    context.fillStyle = fill;
+  // 悬停高亮（原型：叠加半透明高亮填充）
+  if (hovered) {
+    context.globalAlpha = 1;
+    context.fillStyle = colors.hoverFill;
     context.fill();
-    context.globalAlpha = (modifiers.ghost ? 0.52 : 1) * shade;
-    context.strokeStyle = outline;
-    context.lineWidth = display === 'WARNING' || display === 'FAULT' ? 1.6 : 1;
-    context.stroke();
-    drawFaceHatch(context, face.polygon, {
-      color:
-        display === 'FAULT'
-          ? colors.outline.FAULT
-          : display === 'WARNING'
-            ? colors.outline.WARNING
-            : colors.hatch,
-      alpha:
-        (modifiers.ghost ? 0.52 : 1) * (display === 'WARNING' || display === 'FAULT' ? 0.5 : 1),
-    });
   }
+
+  context.globalAlpha = (surface.ghost ? 0.52 : 1) * shade;
+  context.strokeStyle = outline;
+  context.lineWidth = hovered ? 1.8 : 1;
+  context.stroke();
+  drawFaceHatch(context, polygon, {
+    color:
+      display === 'FAULT'
+        ? colors.outline.FAULT
+        : display === 'WARNING'
+          ? colors.outline.WARNING
+          : colors.hatch,
+    alpha: (surface.ghost ? 0.52 : 1) * (display === 'WARNING' || display === 'FAULT' ? 0.5 : 1),
+  });
   context.globalAlpha = 1;
 }
 
@@ -645,7 +654,7 @@ function lerpNumber(from: number, to: number, ratio: number): number {
   return from + (to - from) * ratio;
 }
 
-/** 故障部件的定位锚点：部件中心高度 72% 处（与原型一致） */
+/** 故障部件的定位锚点：底面以上 72% 高度处（原型 `project(px, py + h*.72, pz)`） */
 function resolveFaultAnchor(
   context: CanvasRenderingContext2D,
   part: AiPartGeometry,
@@ -653,7 +662,7 @@ function resolveFaultAnchor(
 ): { x: number; y: number } {
   void context;
   const projected = projectAiVertex(
-    { x: part.x, y: part.y - part.height / 2 + part.height * 0.72, z: part.z },
+    { x: part.x, y: part.y + part.height * 0.72, z: part.z },
     options,
   );
   return { x: projected.x, y: projected.y };

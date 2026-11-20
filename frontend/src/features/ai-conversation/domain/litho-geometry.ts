@@ -11,13 +11,13 @@ import type { MessageKey } from '@/shared/i18n';
 
 import type { AiPartDisplay } from '../infrastructure/ai-conversation.types';
 
-/** 部件三维盒体（中心点坐标 + 尺寸，单位与原型参考一致） */
+/** 部件三维盒体（底面高度 + 尺寸，单位与原型参考一致） */
 export type AiPartGeometry = {
   readonly partId: string;
   readonly labelKey: MessageKey;
   /** 中心点 X（左右） */
   readonly x: number;
-  /** 中心点 Y（高度） */
+  /** 底面高度 Y（向上为正；顶面 = y + height，与 V44 原型一致） */
   readonly y: number;
   /** 中心点 Z（前后） */
   readonly z: number;
@@ -313,7 +313,15 @@ export type AiProjectedVertex = {
 const MODEL_ORIGIN_Y_RATIO = 0.56;
 const MODEL_BASE_HEIGHT = 1.18;
 
-/** 正交投影：绕 Y 轴旋转后按俯仰角压扁，输出屏幕坐标 */
+/**
+ * 正交投影：绕竖轴旋转后按俯仰角压扁，输出屏幕坐标
+ *
+ * 公式与 V44 原型逐项对齐（原型 `project(x, y, z)`）：
+ * - 水平：`x*cos + z*sin`（早期实现误写成 `x*cos - z*sin`，旋转方向与原型相反）；
+ * - 深度：`depth = -x*sin + z*cos`（早期实现误写成 `x*sin + z*cos`）；
+ * - 垂直：`depth*sin(tilt) - (y - 1.18)*cos(tilt)`，并以 `depth*cos(tilt) + (y-1.18)*sin(tilt)`
+ *   作为深度排序量（早期实现把 `y` 直接乘进深度，导致前后关系错乱）。
+ */
 export function projectAiVertex(
   vertex: { x: number; y: number; z: number },
   options: AiProjectionOptions,
@@ -321,15 +329,15 @@ export function projectAiVertex(
   const tilt = options.tilt ?? 0.56;
   const cos = Math.cos(options.angle);
   const sin = Math.sin(options.angle);
-  const rotatedX = vertex.x * cos - vertex.z * sin;
-  const rotatedZ = vertex.x * sin + vertex.z * cos;
+  const depth = -vertex.x * sin + vertex.z * cos;
   const scale = resolveAiScale(options);
+  const vertical = vertex.y - MODEL_BASE_HEIGHT;
   return {
-    x: options.width / 2 + rotatedX * scale,
+    x: options.width / 2 + (vertex.x * cos + vertex.z * sin) * scale,
     y:
       options.height * MODEL_ORIGIN_Y_RATIO +
-      (rotatedZ * Math.sin(tilt) - (vertex.y - MODEL_BASE_HEIGHT) * Math.cos(tilt)) * scale,
-    depth: vertex.y * Math.sin(tilt) + rotatedZ * Math.cos(tilt),
+      (depth * Math.sin(tilt) - vertical * Math.cos(tilt)) * scale,
+    depth: depth * Math.cos(tilt) + vertical * Math.sin(tilt),
   };
 }
 
@@ -339,35 +347,43 @@ export function resolveAiScale(options: AiProjectionOptions): number {
   return base * options.zoom;
 }
 
-/** 盒体 8 个顶点（顺序固定：底面 4 点 + 顶面 4 点） */
+/**
+ * 盒体 8 个顶点（顺序固定：底面 4 点 + 顶面 4 点）
+ *
+ * 高度语义与 V44 原型一致：`part.y` 是**底面**高度，顶面为 `part.y + part.height`。
+ * 原型按 `project(x + dx*w/2, y + dy*h, z + dz*d/2)`（dy ∈ {0,1}）取顶点，
+ * 早期实现误把同一数值当中心点，导致所有柱体下沉、顶部明显偏低。
+ */
 export function buildAiBoxVertices(part: AiPartGeometry): Array<{
   x: number;
   y: number;
   z: number;
 }> {
   const halfWidth = part.width / 2;
-  const halfHeight = part.height / 2;
   const halfDepth = part.depth / 2;
   return [
-    { x: part.x - halfWidth, y: part.y - halfHeight, z: part.z - halfDepth },
-    { x: part.x + halfWidth, y: part.y - halfHeight, z: part.z - halfDepth },
-    { x: part.x + halfWidth, y: part.y - halfHeight, z: part.z + halfDepth },
-    { x: part.x - halfWidth, y: part.y - halfHeight, z: part.z + halfDepth },
-    { x: part.x - halfWidth, y: part.y + halfHeight, z: part.z - halfDepth },
-    { x: part.x + halfWidth, y: part.y + halfHeight, z: part.z - halfDepth },
-    { x: part.x + halfWidth, y: part.y + halfHeight, z: part.z + halfDepth },
-    { x: part.x - halfWidth, y: part.y + halfHeight, z: part.z + halfDepth },
+    { x: part.x - halfWidth, y: part.y, z: part.z - halfDepth },
+    { x: part.x + halfWidth, y: part.y, z: part.z - halfDepth },
+    { x: part.x + halfWidth, y: part.y, z: part.z + halfDepth },
+    { x: part.x - halfWidth, y: part.y, z: part.z + halfDepth },
+    { x: part.x - halfWidth, y: part.y + part.height, z: part.z - halfDepth },
+    { x: part.x + halfWidth, y: part.y + part.height, z: part.z - halfDepth },
+    { x: part.x + halfWidth, y: part.y + part.height, z: part.z + halfDepth },
+    { x: part.x - halfWidth, y: part.y + part.height, z: part.z + halfDepth },
   ];
 }
 
-/** 盒体的 5 个可见面（底面不画）及其顶点索引 */
+/**
+ * 盒体的 5 个可见面（4 侧面 + 顶面，不含底面）及其顶点索引
+ *
+ * 顺序与 V44 原型 `faceIndices` 完全一致：索引 4 是顶面，分面明暗档位依赖该顺序。
+ */
 export const AI_BOX_FACES: ReadonlyArray<readonly [number, number, number, number]> = [
-  [0, 1, 2, 3],
-  [4, 5, 6, 7],
   [0, 1, 5, 4],
   [1, 2, 6, 5],
   [2, 3, 7, 6],
   [3, 0, 4, 7],
+  [4, 5, 6, 7],
 ];
 
 /** 命中测试：屏幕点是否落在投影后的部件多边形内（射线法） */
@@ -390,4 +406,187 @@ export function isPointInAiPolygon(
     }
   }
   return inside;
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景面集合：绘制、拾取与遮挡判定共用同一套面（V44 原型 AI33Paint）
+ * ------------------------------------------------------------------ */
+
+/** 底座几何（原型 `box(['base','',0,-.18,0,9.9,.33,5.45],'BASE')`） */
+export const AI_SCENE_BASE_GEOMETRY: AiPartGeometry = {
+  partId: 'base',
+  labelKey: 'ai.part.controller',
+  x: 0,
+  y: -0.18,
+  z: 0,
+  width: 9.9,
+  height: 0.33,
+  depth: 5.45,
+};
+
+/** 支架几何（原型 `mounts`）：显示态与拾取归属都跟随所属部件 */
+export type AiMountGeometry = {
+  readonly ownerPartId: string;
+  readonly geometry: AiPartGeometry;
+};
+
+/**
+ * 四个支架（原型 `mounts` 表）
+ *
+ * 原型在绘制每个部件时先画其支架再画主体，且支架沿用所属部件的 partId，
+ * 因此悬停与拾取都归属到该部件。
+ */
+export const AI_PART_MOUNTS: readonly AiMountGeometry[] = [
+  {
+    ownerPartId: 'reticle_arm',
+    geometry: {
+      partId: 'reticle_arm',
+      labelKey: 'ai.part.reticle_arm',
+      x: -1.68,
+      y: 0.15,
+      z: -1.55,
+      width: 0.44,
+      height: 1.13,
+      depth: 0.55,
+    },
+  },
+  {
+    ownerPartId: 'wafer_arm',
+    geometry: {
+      partId: 'wafer_arm',
+      labelKey: 'ai.part.wafer_arm',
+      x: -1.83,
+      y: 0.15,
+      z: 1.72,
+      width: 0.42,
+      height: 0.88,
+      depth: 0.54,
+    },
+  },
+  {
+    ownerPartId: 'positioning_laser',
+    geometry: {
+      partId: 'positioning_laser',
+      labelKey: 'ai.part.positioning_laser',
+      x: 3.4,
+      y: 0.15,
+      z: -1.56,
+      width: 0.4,
+      height: 1.31,
+      depth: 0.44,
+    },
+  },
+  {
+    ownerPartId: 'projection_lens',
+    geometry: {
+      partId: 'projection_lens',
+      labelKey: 'ai.part.projection_lens',
+      x: 2.63,
+      y: 1.05,
+      z: 1.38,
+      width: 0.57,
+      height: 1.03,
+      depth: 0.63,
+    },
+  },
+];
+
+/** 参与场景绘制的盒体（部件、支架或底座） */
+export type AiSceneBox = {
+  readonly geometry: AiPartGeometry;
+  readonly renderState: AiPartRenderState;
+  /** 聚焦期间淡出（原型 ghost） */
+  readonly ghost: boolean;
+  readonly isBase: boolean;
+};
+
+/** 场景面片（盒体的一个可见面） */
+export type AiSceneSurface = {
+  /** 所属部件；底座为 null（原型 base 面没有 partId） */
+  readonly partId: string | null;
+  readonly renderState: AiPartRenderState | null;
+  readonly ghost: boolean;
+  readonly isBase: boolean;
+  /** 面序号（原型 faceIndices 顺序，索引 4 为顶面；分面明暗档位依赖它） */
+  readonly faceIndex: number;
+  /** 面深度（面内 4 点平均，原型同口径），用于全局遮挡排序 */
+  readonly depth: number;
+  readonly polygon: ReadonlyArray<{ x: number; y: number }>;
+};
+
+/**
+ * 构建场景面集合并做全局深度排序
+ *
+ * 与原型 `AI33Paint` 一致：底座最先绘制，其余面片按深度由远及近绘制，
+ * 保证「后画的盖住先画的」，遮挡关系与原型逐面一致。
+ */
+export function buildAiSceneSurfaces(
+  boxes: readonly AiSceneBox[],
+  options: AiProjectionOptions,
+): AiSceneSurface[] {
+  const surfaces: AiSceneSurface[] = [];
+  for (const box of boxes) {
+    const projected = buildAiBoxVertices(box.geometry).map((vertex) =>
+      projectAiVertex(vertex, options),
+    );
+    for (const [faceIndex, face] of AI_BOX_FACES.entries()) {
+      const polygon = face.map((index) => projected[index]);
+      surfaces.push({
+        partId: box.isBase ? null : box.geometry.partId,
+        renderState: box.isBase ? null : box.renderState,
+        ghost: box.ghost,
+        isBase: box.isBase,
+        faceIndex,
+        depth: polygon.reduce((sum, point) => sum + point.depth, 0) / Math.max(1, polygon.length),
+        polygon: polygon.map((point) => ({ x: point.x, y: point.y })),
+      });
+    }
+  }
+  return surfaces.sort(
+    (left, right) => (left.isBase ? 0 : 1) - (right.isBase ? 0 : 1) || left.depth - right.depth,
+  );
+}
+
+/**
+ * 命中测试：从最后绘制（最前）的面开始逆序查找
+ *
+ * 与原型 `AI36PartAt` 一致 —— 拾取与绘制共用同一套面集合，命中的一定是
+ * 屏幕上最靠前的部件，不会出现「点到的不是看到的」。
+ */
+export function findAiSurfacePartId(
+  surfaces: readonly AiSceneSurface[],
+  point: { x: number; y: number },
+): string | null {
+  for (let index = surfaces.length - 1; index >= 0; index -= 1) {
+    const surface = surfaces[index];
+    if (surface.partId === null) {
+      continue;
+    }
+    if (isPointInAiSurfacePolygon(point, surface.polygon)) {
+      return surface.partId;
+    }
+  }
+  return null;
+}
+
+/**
+ * 面内点判定（原型 `AI36PartAt` 绕向口径）
+ *
+ * 顶点绕向一致时为真；背面与侧面的绕向相反，天然被排除，
+ * 因此命中结果与绘制顺序一致。
+ */
+export function isPointInAiSurfacePolygon(
+  point: { x: number; y: number },
+  polygon: ReadonlyArray<{ x: number; y: number }>,
+): boolean {
+  if (polygon.length === 0) {
+    return false;
+  }
+  return polygon.every((current, index) => {
+    const next = polygon[(index + 1) % polygon.length];
+    return (
+      (next.x - current.x) * (point.y - current.y) - (next.y - current.y) * (point.x - current.x) >=
+      -0.01
+    );
+  });
 }

@@ -1,7 +1,7 @@
 // src/pages/engineer-ai/index.tsx
 
 import { useEffect, useMemo } from 'react';
-import { Alert, Modal, Select, Tag } from 'antd';
+import { Alert, Modal, Select } from 'antd';
 import { Link, useBeforeUnload, useBlocker, useSearchParams } from 'react-router';
 
 import {
@@ -102,6 +102,13 @@ export function EngineerAiPage() {
     [workOrders.options],
   );
 
+  // V44 原型：场景标题优先显示真实机型（取关联工单的机型），无关联工单时用通用机型标题
+  const sceneModelName = useMemo(() => {
+    const selectedId = workspace.conversation?.requestId ?? workspace.draftRequestId;
+    const matched = workOrders.options.find((option) => option.id === selectedId);
+    return matched?.modelName ?? '';
+  }, [workspace.conversation?.requestId, workspace.draftRequestId, workOrders.options]);
+
   return (
     <div className="ai-shell ai-shell--workspace">
       <Modal
@@ -133,17 +140,12 @@ export function EngineerAiPage() {
             {/* V44：场景头部承载流程标题与维修阶段选择（不是页面级工具条） */}
             <header className="ai-scene-header">
               <div>
-                <h2 className="m-0 text-sm font-semibold text-text-primary">
-                  {t('ai.scene.label')}
+                {/* V44 原型 .ai36-model-header：机型作大标题，流程示意作副标题 */}
+                <h2 className="ai-scene-title">
+                  {sceneModelName.length > 0 ? sceneModelName : t('ai.scene.modelFallback')}
                 </h2>
+                <p className="ai-scene-subtitle">{t('ai.scene.label')}</p>
               </div>
-              {workspace.visualization?.stage != null ? (
-                <span className="ai-scene-stage-tag">
-                  <Tag>
-                    {t('ai.scene.resultStage', { stage: String(workspace.visualization.stage) })}
-                  </Tag>
-                </span>
-              ) : null}
               <label className="ai-scene-stage">
                 <span>{t('ai.page.stageLabel')}</span>
                 <Select
@@ -163,16 +165,23 @@ export function EngineerAiPage() {
                 faultDescription={faultDescription}
                 faultIdentity={faultIdentity}
                 focusPartId={focusPartId}
-                gestureHint={t('ai.scene.gestureHint')}
               />
             </div>
             <div className="ai-scene-footer">
-              <AiPartLegend displays={displays} fromModel={workspace.visualization !== null} />
+              <AiPartLegend
+                displays={displays}
+                fromModel={workspace.visualization !== null}
+                resultStage={workspace.visualization?.stage ?? null}
+              />
               {workspace.visualizationDegraded ? (
-                <div className="mt-2">
+                <div className="ai-scene-degraded">
                   <Alert message={t('ai.scene.degradedHint')} showIcon type="warning" />
                 </div>
               ) : null}
+              {/* V44 原型：手势提示在场景底部右侧（#ai36-gesture） */}
+              <p className="ai-scene-gesture" id="ai-geo-gesture">
+                {t('ai.scene.gestureHint')}
+              </p>
             </div>
           </section>
 

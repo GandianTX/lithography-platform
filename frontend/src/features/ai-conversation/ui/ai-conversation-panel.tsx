@@ -108,7 +108,9 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
       <div className="ai-panel-top">
         <div className="ai-panel-header">
           <Space align="center" size={8}>
-            <Text strong>{t('ai.panel.title')}</Text>
+            <Text className="ai-panel-title" strong>
+              {t('ai.panel.title')}
+            </Text>
             {conversation !== null && conversation.turns.length > 0 ? (
               <Text className="ai-turn-count" type="secondary">
                 {t('ai.panel.turnCount', { count: conversation.turns.length })}
@@ -118,14 +120,16 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
           {/* 未知创建结果时不显示「新建对话」：此时它不做新建，只会变成一次
               带风险确认的「放弃本次」，统一在错误区提供明确的两个动作。 */}
           {props.createUnknown ? null : (
-            <Button disabled={creating} onClick={props.onNewChat} size="small">
+            <Button disabled={creating} onClick={props.onNewChat} type="primary">
               {t('ai.panel.newChat')}
             </Button>
           )}
         </div>
 
         <div className="ai-panel-work-order">
-          <Text type="secondary">{t('ai.panel.workOrderLabel')}</Text>
+          <Text className="ai-panel-work-order-label" type="secondary">
+            {t('ai.panel.workOrderLabel')}
+          </Text>
           <div className="ai-work-order-select">
             <Select
               allowClear
@@ -153,7 +157,15 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
               value={selectedWorkOrder ?? undefined}
             />
           </div>
-          <Text className="ai-work-order-hint" type="secondary">
+          <Text
+            className="ai-work-order-hint"
+            title={
+              conversation !== null
+                ? t('ai.panel.workOrderLockedHint')
+                : t('ai.panel.workOrderStandaloneHint')
+            }
+            type="secondary"
+          >
             {conversation !== null
               ? t('ai.panel.workOrderLockedHint')
               : t('ai.panel.workOrderStandaloneHint')}
@@ -203,7 +215,7 @@ export function AiConversationPanel(props: AiConversationPanelProps) {
 
         <Input.TextArea
           aria-label={t('ai.panel.composeLabel')}
-          autoSize={{ maxRows: 4, minRows: 2 }}
+          autoSize={{ maxRows: 4, minRows: 3 }}
           onChange={(event) => props.onDraftChange(event.target.value)}
           maxLength={AI_QUESTION_MAX_LENGTH}
           onPressEnter={(event) => {

@@ -14,16 +14,18 @@ export type AiPartLegendProps = {
   readonly displays: Record<string, AiPartDisplay>;
   /** 是否为模型标记结果（false 表示只是阶段参考图） */
   readonly fromModel: boolean;
+  /** 本轮结果阶段（V05-08：与「用户选择阶段」分开反馈） */
+  readonly resultStage?: number | null;
 };
 
 function findLabelKey(partId: string) {
   return AI_PART_GEOMETRIES.find((part) => part.partId === partId)?.labelKey ?? null;
 }
 
-export function AiPartLegend({ displays, fromModel }: AiPartLegendProps) {
+export function AiPartLegend({ displays, fromModel, resultStage }: AiPartLegendProps) {
   const { t } = useI18n();
   const parts = pickAiHighlightedParts(displays);
-  if (parts.length === 0) {
+  if (parts.length === 0 && resultStage === null) {
     return null;
   }
 
@@ -32,6 +34,12 @@ export function AiPartLegend({ displays, fromModel }: AiPartLegendProps) {
       <li className="text-xs text-text-secondary">
         {fromModel ? t('ai.legend.aiHighlights') : t('ai.legend.relatedParts')}
       </li>
+      {/* V05-08：本轮结果阶段与「用户选择阶段」分开反馈；按原型图例同族 chip 呈现 */}
+      {resultStage === null ? null : (
+        <li className="ai-part-chip">
+          {t('ai.scene.resultStage', { stage: String(resultStage) })}
+        </li>
+      )}
       {parts.map((part) => {
         const labelKey = findLabelKey(part.partId);
         const label = labelKey === null ? part.partId : t(labelKey);

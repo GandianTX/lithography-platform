@@ -779,6 +779,7 @@ export const ZH_CN_MESSAGES = {
   'ai.shell.navHistory': '问答记录',
   'ai.shell.backToChat': '返回对话',
   'ai.scene.label': '维修流程示意',
+  'ai.scene.modelFallback': '光刻机',
   'ai.scene.canvasLabel': '光刻机维修流程三维示意',
   'ai.scene.gestureHint': '拖动旋转 · 滚轮缩放 · 方向键与加减号可用',
   'ai.scene.faultLocked': '故障锁定',

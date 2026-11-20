@@ -843,6 +843,7 @@ export const EN_MESSAGES = {
   'ai.shell.navHistory': 'Q&A records',
   'ai.shell.backToChat': 'Back to chat',
   'ai.scene.label': 'Maintenance flow view',
+  'ai.scene.modelFallback': 'Lithography Tool',
   'ai.scene.canvasLabel': 'Lithography maintenance flow 3D view',
   'ai.scene.gestureHint': 'Drag to rotate · Scroll to zoom · Arrow keys and +/- available',
   'ai.scene.faultLocked': 'Fault locked',

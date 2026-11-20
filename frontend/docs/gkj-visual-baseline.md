@@ -100,24 +100,44 @@ M 档的含义：**保留原型字号层级**（导航 12px、胶囊 10px、页�
 
 AI 对话工作区页面级色板（05，正式路由 `#/engineer/ai/chat`；V44 实测，仅 05 局部消费）：
 
-| Token                    | Light       | Dark        | 用途                                                             |
-| ------------------------ | ----------- | ----------- | ---------------------------------------------------------------- |
-| `--ai-message-bg`        | `#ffffff`   | `#1e2b3e`   | AI 回答气泡背景                                                  |
-| `--ai-message-line`      | `#e0e8f2`   | `#33445f`   | AI 回答气泡边框                                                  |
-| `--ai-message-mine-bg`   | `#e6efff`   | `#223a5c`   | 用户提问气泡背景（V44 实测）                                     |
-| `--ai-message-mine-line` | `#dae7ff`   | `#33507a`   | 用户提问气泡边框（V44 实测）                                     |
-| `--ai-panel-header-bg`   | `#ffffff`   | `#1e2b3e`   | 对话面板页头背景（暗色复用回答气泡背景，不新造色值）             |
-| `--ai-compose-bg`        | `#ffffff`   | `#1a2536`   | 输入区背景                                                       |
-| `--ai-scene-bg-start`    | `#f4f8fb`   | `#22304a`   | 场景区径向渐变起点（V44 `.ai36-shell .ai33-scene` 实测 5% 色标） |
-| `--ai-scene-bg-mid`      | `#e8eff5`   | `#1a2536`   | 场景区径向渐变中点（V44 实测 65% 色标；暗色由起止色插值）        |
-| `--ai-scene-bg-end`      | `#dfe7ef`   | `#101722`   | 场景区径向渐变终点（V44 实测 100% 色标）                         |
-| `--ai-input-line`        | `#c9d7e6`   | `#2f4462`   | 输入框描边（V44 `.ai36-shell .ai33-compose textarea` 实测）      |
-| `--ai-input-bg`          | `#fbfdff`   | `#141d2b`   | 输入框底色（V44 实测）                                           |
-| `--ai-failure-bg`        | `#fff2f0`   | `#3a1f22`   | 失败轮提示块背景（AntD errorBg 同语义）                          |
-| `--ai-failure-line`      | `#ffccc7`   | `#6b3237`   | 失败轮提示块边框（AntD errorBorder 同语义）                      |
-| `--ai-fault-card-bg`     | `#252d3e`   | `#1b2434`   | 故障定位短卡底色（V44 `.ai39-card` 实测）                        |
-| `--ai-fault-card-text`   | `#f5f8ff`   | `#e6ecf8`   | 故障定位短卡正文色（V44 实测）                                   |
-| `--ai-geo-hatch`         | `#65c9e74d` | `#65c9e73d` | 几何面片斜向网格线（V44 原型 `#65c9e754` 同色低透明度）          |
+| Token                    | Light       | Dark        | 用途                                                                                |
+| ------------------------ | ----------- | ----------- | ----------------------------------------------------------------------------------- |
+| `--ai-message-bg`        | `#ffffff`   | `#1e2b3e`   | AI 回答气泡背景                                                                     |
+| `--ai-message-line`      | `#e0e8f2`   | `#33445f`   | AI 回答气泡边框                                                                     |
+| `--ai-message-mine-bg`   | `#e6efff`   | `#223a5c`   | 用户提问气泡背景（V44 实测）                                                        |
+| `--ai-message-mine-line` | `#dae7ff`   | `#33507a`   | 用户提问气泡边框（V44 实测）                                                        |
+| `--ai-panel-header-bg`   | `#ffffff`   | `#1e2b3e`   | 对话面板页头背景（暗色复用回答气泡背景，不新造色值）                                |
+| `--ai-compose-bg`        | `#ffffff`   | `#1a2536`   | 输入区背景                                                                          |
+| `--ai-scene-bg-start`    | `#f4f8fb`   | `#22304a`   | 场景区径向渐变起点（V44 `.ai36-shell .ai33-scene` 实测 5% 色标）                    |
+| `--ai-scene-bg-mid`      | `#e8eff5`   | `#1a2536`   | 场景区径向渐变中点（V44 实测 65% 色标；暗色由起止色插值）                           |
+| `--ai-scene-bg-end`      | `#dfe7ef`   | `#101722`   | 场景区径向渐变终点（V44 实测 100% 色标）                                            |
+| `--ai-input-line`        | `#c9d7e6`   | `#2f4462`   | 输入框描边（V44 `.ai36-shell .ai33-compose textarea` 实测）                         |
+| `--ai-input-bg`          | `#fbfdff`   | `#141d2b`   | 输入框底色（V44 实测）                                                              |
+| `--ai-failure-bg`        | `#fff2f0`   | `#3a1f22`   | 失败轮提示块背景（AntD errorBg 同语义）                                             |
+| `--ai-failure-line`      | `#ffccc7`   | `#6b3237`   | 失败轮提示块边框（AntD errorBorder 同语义）                                         |
+| `--ai-fault-card-bg`     | `#252d3e`   | `#1b2434`   | 故障定位短卡底色（V44 `.ai39-card` 实测）                                           |
+| `--ai-fault-card-text`   | `#f5f8ff`   | `#e6ecf8`   | 故障定位短卡正文色（V44 实测）                                                      |
+| `--ai-geo-hatch`         | `#65c9e74d` | `#65c9e73d` | 几何面片斜向网格线（V44 原型 `#65c9e754` 同色低透明度）                             |
+| `--ai-ink`               | `#19283e`   | `#e6ecf8`   | AI 工作区标题与正文墨色（V44 原型 `--ai-ink`）                                      |
+| `--ai-muted`             | `#5b6d84`   | `#9fb0c6`   | AI 工作区次要文字色（V44 原型 `--ai-muted`）                                        |
+| `--ai-blue`              | `#205bce`   | `#6fb6ef`   | AI 工作区强调蓝（V44 原型 `--ai-blue`）                                             |
+| `--ai-accent`            | `#245ed0`   | `#4f8ef0`   | AI 工作区主操作色（V44 原型 `--ai-accent`）                                         |
+| `--ai-hover`             | `#edf3fd`   | `#223a5c`   | AI 工作区选中/悬停底色（V44 原型 `--ai-hover`）                                     |
+| `--ai-white`             | `#ffffff`   | `#1a2536`   | AI 工作区面板白底（V44 原型 `--ai-white`）                                          |
+| `--ai-nav-hover-bg`      | `#e7effe`   | `#223a5c`   | AI 局部导航悬停底色（V44 原型 `.ai36-shell .ai34-nav a:hover`）                     |
+| `--ai-select-line`       | `#c9d7e6`   | `#2f4462`   | AI 场景/面板下拉描边（V44 原型 `.ai36-shell .ai33-workspace select`）               |
+| `--ai-select-arrow`      | `#536c89`   | `#9fb0c6`   | AI 下拉右侧双三角箭头色（V44 原型 `.ai36-shell .ai33-workspace select` 渐变端点色） |
+| `--ai-btn-line`          | `#d4e0ed`   | `#2f4462`   | AI 工作区次要按钮描边（V44 原型 `.ai36-shell .ai33-workspace button`）              |
+| `--ai-btn-ink`           | `#254264`   | `#c6d4e6`   | AI 工作区次要按钮文字色（V44 原型同上）                                             |
+| `--ai-btn-hover-bg`      | `#edf4ff`   | `#1b2739`   | AI 工作区次要按钮悬停底色（V44 原型同上）                                           |
+| `--ai-btn-hover-line`    | `#8dafeb`   | `#729be3`   | AI 工作区次要按钮悬停描边（V44 原型同上）                                           |
+| `--ai-btn-active-bg`     | `#dbe8fc`   | `#16202f`   | AI 工作区次要按钮按下底色（V44 原型同上）                                           |
+| `--ai-accent-hover`      | `#174fbf`   | `#3f7ae0`   | AI 主按钮悬停底色（V44 原型 `button.ai33-send:hover`）                              |
+| `--ai-accent-active`     | `#123d99`   | `#2f63b8`   | AI 主按钮按下底色（V44 原型 `button.ai33-send:active`）                             |
+| `--ai-btn-disabled-bg`   | `#e7edf5`   | `#1b2739`   | AI 主按钮禁用底色（V44 原型 `button.ai33-send:disabled`）                           |
+| `--ai-btn-disabled-ink`  | `#63738b`   | `#6b7f96`   | AI 主按钮禁用文字色（V44 原型同上）                                                 |
+| `--ai-geo-hover-fill`    | `#73caff38` | `#73caff38` | 几何部件悬停高亮填充（V44 原型同值）                                                |
+| `--ai-geo-outline-hover` | `#91e0ff`   | `#91e0ff`   | 几何部件悬停高亮描边（V44 原型同值）                                                |
 
 同族新增色值必须先在本表登记，再登记到 `scripts/lint-colors.mjs` 的受控 token 集合；
 组件侧只允许 `var(--ai-*)`，不得直接写字面色值。

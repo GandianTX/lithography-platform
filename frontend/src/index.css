@@ -250,6 +250,17 @@ body {
   width: 100%;
 }
 
+/* AI 对话页（V44 原型 .ai36-shell{padding:0;max-width:none}）：
+   只在 AI 页面取消工作区外边距与 1280px 宽度上限，不影响其他路由。 */
+.app-workspace:has(> .app-main > .ai-shell--workspace) {
+  padding: 0;
+}
+
+.app-main:has(> .ai-shell--workspace) {
+  height: 100%;
+  max-width: none;
+}
+
 /* 左固定导航（gkj 视觉语言：浅灰底、右描边、右投影；色值见 --nav-* Token） */
 .app-sidebar {
   background: var(--nav-bg);
@@ -2516,6 +2527,9 @@ body {
   --ai-geo-scan: #41ccef;
   /* 面片斜向网格线（V44 原型同色低透明度，取值见视觉基线登记） */
   --ai-geo-hatch: #65c9e74d;
+  /* 悬停高亮（V44 原型同值，取值见视觉基线登记） */
+  --ai-geo-hover-fill: #73caff38;
+  --ai-geo-outline-hover: #91e0ff;
   --ai-geo-legend-highlight-bg: #d7edf7;
   --ai-geo-legend-highlight-text: #175577;
   --ai-geo-legend-warning-bg: #f8e5be;
@@ -2524,6 +2538,29 @@ body {
   --ai-workspace-bg: #ecf4ff;
   --ai-workspace-ink: #23364f;
   --ai-workspace-muted: #526982;
+  /* V44 原型 ai36-shell 作用域的颜色变量（原型 --ai-ink/--ai-muted/--ai-blue/
+     --ai-line/--ai-white/--ai-hover/--ai-accent，值取自原型样式表） */
+  --ai-ink: #19283e;
+  --ai-muted: #5b6d84;
+  --ai-blue: #205bce;
+  --ai-accent: #245ed0;
+  --ai-hover: #edf3fd;
+  --ai-white: #ffffff;
+  /* V44 原型导航 hover 底色与输入框描边（原型 .ai34-nav a:hover / .ai33-workspace select） */
+  --ai-nav-hover-bg: #e7effe;
+  --ai-select-line: #c9d7e6;
+  /* V44 原型 select 右侧双三角箭头色（原型 .ai33-workspace select 的 linear-gradient 端点色） */
+  --ai-select-arrow: #536c89;
+  /* V44 原型 .ai36-shell .ai33-workspace button：次要按钮（白底描边）与主按钮交互态 */
+  --ai-btn-line: #d4e0ed;
+  --ai-btn-ink: #254264;
+  --ai-btn-hover-bg: #edf4ff;
+  --ai-btn-hover-line: #8dafeb;
+  --ai-btn-active-bg: #dbe8fc;
+  --ai-accent-hover: #174fbf;
+  --ai-accent-active: #123d99;
+  --ai-btn-disabled-bg: #e7edf5;
+  --ai-btn-disabled-ink: #63738b;
   /* V44 场景区最终生效渐变（.ai36-shell .ai33-scene 实测三分色标 5%/65%/100%） */
   --ai-scene-bg-start: #f4f8fb;
   --ai-scene-bg-mid: #e8eff5;
@@ -2547,8 +2584,8 @@ body {
   --ai-message-mine-line: #dae7ff;
   --ai-panel-header-bg: #ffffff;
   --ai-compose-bg: #ffffff;
-  --ai-chip-bg: #e5f5fe;
-  --ai-chip-text: #084d70;
+  --ai-chip-bg: #d7edf7;
+  --ai-chip-text: #175577;
 }
 
 .dark {
@@ -2582,6 +2619,17 @@ body {
   --ai-scene-bg-end: #101722;
   --ai-input-line: #2f4462;
   --ai-input-bg: #141d2b;
+  --ai-select-line: #2f4462;
+  --ai-select-arrow: #9fb0c6;
+  --ai-btn-line: #2f4462;
+  --ai-btn-ink: #c6d4e6;
+  --ai-btn-hover-bg: #1b2739;
+  --ai-btn-hover-line: #729be3;
+  --ai-btn-active-bg: #16202f;
+  --ai-accent-hover: #3f7ae0;
+  --ai-accent-active: #2f63b8;
+  --ai-btn-disabled-bg: #1b2739;
+  --ai-btn-disabled-ink: #6b7f96;
   --ai-panel-bg: #182233;
   --ai-panel-line: #2f4462;
   --ai-thread-bg-start: #1b2739;
@@ -2607,44 +2655,47 @@ body {
 
 .ai-shell-header {
   align-items: center;
-  border-bottom: 1px solid var(--color-border);
+  /* V44 原型 .ai36-shell .ai34-header：白底、62px 高、左右 20px、间距 30px */
+  background: var(--ai-white);
+  border-bottom: 1px solid var(--ai-panel-line);
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: space-between;
-  padding-bottom: 10px;
+  gap: 30px;
+  justify-content: flex-start;
+  min-height: 62px;
+  padding: 0 20px;
 }
 
 .ai-shell-title {
-  color: inherit;
-  font-size: 18px;
+  color: var(--ai-ink);
+  flex-shrink: 0;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1.4;
   margin: 0;
 }
 
 .ai-shell-nav {
+  align-items: center;
   display: flex;
   gap: 4px;
 }
 
 .ai-shell-tab {
-  border-radius: 6px;
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  padding: 4px 10px;
+  border-radius: 8px;
+  color: var(--ai-muted);
+  font-size: 14px;
+  padding: 8px 12px;
   text-decoration: none;
 }
 
 .ai-shell-tab:hover {
-  background: var(--ant-color-primary-bg);
-  color: var(--ant-color-primary);
+  background: var(--ai-nav-hover-bg);
+  color: var(--ai-blue);
 }
 
 .ai-shell-tab[aria-current='page'] {
-  background: var(--ant-color-primary-bg);
-  color: var(--ant-color-primary);
-  font-weight: 600;
+  background: var(--ai-hover);
+  color: var(--ai-blue);
 }
 
 .ai-workspace {
@@ -2653,7 +2704,7 @@ body {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
-  padding-top: 12px;
+  padding-top: 0;
 }
 
 .ai-workspace-header {
@@ -2666,7 +2717,8 @@ body {
 
 .ai-workspace-grid {
   display: grid;
-  gap: 16px;
+  /* V44 原型 .ai33-workspace 无 gap：窄屏堆叠时场景与面板直接相接（分隔由面板上边框承担） */
+  gap: 0;
   grid-template-columns: minmax(0, 1fr);
   /* V44：工作区铺满可用高度（由 .ai-workspace 的 flex 列分配，不再写死视口偏移） */
   flex: 1;
@@ -2678,7 +2730,9 @@ body {
   /* 桌面/中屏：工作区贴合可用视口高度，超长消息流在右栏内部滚动，
      不再把整页撑高（避免页面级纵向滚动与输入区落到首屏之外）。 */
   .ai-shell--workspace {
-    height: calc(100vh - var(--app-workspace-pad-top) - var(--app-workspace-pad-bottom));
+    /* V44 原型 .ai36-shell{height:100dvh}：顶栏 flex:none、工作区 flex:1 填满剩余高度 */
+    height: 100dvh;
+    max-height: 100dvh;
   }
 
   .ai-shell--workspace .ai-workspace-grid {
@@ -2689,7 +2743,6 @@ body {
 
 @media (min-width: 981px) {
   .ai-workspace-grid {
-    gap: 0;
     /* V44 实测列宽 799.5 / 430.5（≈ 65% / 35%）；宽屏封顶 530px，窄屏保底 350px */
     grid-template-columns: minmax(0, 1fr) clamp(350px, 35%, 530px);
   }
@@ -2720,7 +2773,8 @@ body {
   );
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  /* 原型 .ai33-scene 无 gap：场景头/画布/底部之间不留额外间距 */
+  gap: 0;
   min-height: 0;
   padding: 0;
 }
@@ -2735,21 +2789,122 @@ body {
   padding: 24px 24px 0;
 }
 
-.ai-scene-stage {
+/* V44 原型 .ai36-shell .ai33-scene h2：机型作大标题 */
+.ai-scene-title {
+  color: var(--ai-ink);
+  font-size: clamp(20px, 2vw, 29px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 0;
+}
+
+/* V44 原型 .ai36-shell .ai33-scene p：流程副标题 */
+.ai-scene-subtitle {
+  color: var(--ai-muted);
+  font-size: 12px;
+  margin: 7px 0 0;
+}
+
+/* V44 原型 .ai36-shell .ai33-workspace select：38px 高、8px 圆角、12px 字号、白底描边。
+   AntD v6 的下拉框外框就是 .ant-select 根节点（v5 的 .ant-select-selector 已不存在）。 */
+.ai-scene-stage .ant-select,
+.ai-work-order-select .ant-select {
+  align-items: center;
+  background: var(--ai-white) !important;
+  border: 1px solid var(--ai-select-line) !important;
+  border-radius: 8px !important;
+  color: var(--ai-ink) !important;
+  font-size: 12px;
+  gap: 6px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+/* AntD v6 选中值文本层（v5 的 .ant-select-selection-item / -placeholder 已不存在） */
+.ai-scene-stage .ant-select-content,
+.ai-work-order-select .ant-select-content {
+  color: var(--ai-ink) !important;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* V44 原型 select 右侧双三角箭头：用 CSS 渐变复刻，替换 AntD 默认 SVG 箭头 */
+.ai-scene-stage .ant-select-suffix,
+.ai-work-order-select .ant-select-suffix {
   align-items: center;
   display: flex;
-  gap: 8px;
+  height: 10px;
+  justify-content: center;
+  width: 10px;
+}
+
+.ai-scene-stage .ant-select-suffix .anticon,
+.ai-work-order-select .ant-select-suffix .anticon {
+  display: none;
+}
+
+.ai-scene-stage .ant-select-suffix::after,
+.ai-work-order-select .ant-select-suffix::after {
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ai-select-arrow) 50%),
+    linear-gradient(135deg, var(--ai-select-arrow) 50%, transparent 50%);
+  /* V44 原型 background-position:right 16px / right 11px：45° 半三角盒在左、
+     135° 半三角盒在右，两个半三角拼成实心向下箭头 */
+  background-position:
+    left center,
+    right center;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  content: '';
+  display: block;
+  height: 10px;
+  width: 10px;
+}
+
+/* V44 原型 .ai36-shell .ai33-compose textarea：76px 最小高度、9px 圆角、1.55 行高 */
+.ai-compose textarea {
+  border-color: var(--ai-select-line);
+  border-radius: 9px;
+  line-height: 1.55;
+  min-height: 76px;
+  padding: 10px 12px;
+}
+
+/* V44 原型 .ai36-part-tip：跟随指针的本地化部件名浮层 */
+.ai-part-tip {
+  --ai-part-tip-z: 3;
+  background: var(--ai-white);
+  border: 1px solid var(--ai-panel-line);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ai-ink) 18%, transparent);
+  color: var(--ai-ink);
+  font-size: 12px;
+  padding: 4px 8px;
+  pointer-events: none;
+  position: absolute;
+  white-space: nowrap;
+  z-index: var(--ai-part-tip-z);
+}
+
+.ai-scene-stage {
+  /* V44 原型 .ai36-stage-field：纵向 grid、宽度 min(44%,245px)、弱化文字色 */
+  color: var(--ai-muted);
+  display: grid;
+  font-size: 12px;
+  gap: 5px;
   min-width: 0;
+  width: min(44%, 245px);
 }
 
 .ai-scene-stage > span {
-  font-size: 12px;
   white-space: nowrap;
 }
 
 .ai-scene-stage .ant-select {
   min-width: 0;
-  width: 200px;
+  width: 100%;
 }
 
 .ai-scene-canvas {
@@ -2759,25 +2914,47 @@ body {
 }
 
 .ai-scene-footer {
+  /* V44 原型 .ai36-model-footer：图例在左、手势提示在右，同一行分布 */
+  align-items: center;
   display: flex;
-  flex-direction: column;
-  gap: 9px;
-  /* V44 实测 .ai36-model-footer：9px 24px 14px */
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  justify-content: space-between;
+  min-height: 58px;
   padding: 9px 24px 14px;
+}
+
+/* 场景区手势提示（原型 #ai36-gesture，靠右） */
+.ai-scene-gesture {
+  color: var(--ai-muted);
+  font-size: 12px;
+  margin: 0 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 场景底部的降级提示（原型无对应元素，保持不挤占手势提示位置） */
+.ai-scene-degraded {
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
 .ai-panel {
   background: var(--ai-panel-bg);
   border-left: 1px solid var(--ai-panel-line);
-  display: flex;
-  flex-direction: column;
+  /* V44 原型 .ai36-shell .ai33-panel：头部 / 线程 / 输入三段，线程独占剩余高度 */
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   min-width: 0;
 }
 
+/* V44 原型 .ai36-shell .ai33-panel-header：面板头部为单一内边距区块，
+   标题行与工单行同属一块（16px 20px 内边距、10px 间隙），下边框由线程区的 border-block 提供 */
 .ai-panel-top {
   background: var(--ai-panel-header-bg);
-  border-bottom: 1px solid var(--ai-panel-line);
+  display: grid;
+  gap: 10px;
+  padding: 16px 20px;
 }
 
 .ai-panel-header {
@@ -2786,12 +2963,18 @@ body {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: space-between;
-  padding: 16px 20px;
+}
+
+/* V44 原型 .ai36-conversation-title h2：17px 标题 */
+.ai-panel-title {
+  color: var(--ai-ink);
+  font-size: 17px;
 }
 
 .ai-thread {
   background: var(--ai-thread-bg-start);
-  border: 1px solid var(--ai-thread-line);
+  /* V44 原型 .ai36-shell .ai33-thread：上下描边、18px 20px 内边距、14px 间隙 */
+  border-block: 1px solid var(--ai-thread-line);
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -2821,7 +3004,8 @@ body {
   align-self: flex-end;
   background: var(--ai-message-mine-bg);
   border-color: var(--ai-message-mine-line);
-  border-radius: 12px 12px 4px;
+  /* V44 原型 .ai36-shell .ai33-message[data-mine=true]：左下角收 4px */
+  border-radius: 12px 12px 4px 12px;
 }
 
 .ai-message p {
@@ -2839,14 +3023,13 @@ body {
   padding: 0 2px;
 }
 
-/* 任务05 S1：关联工单行（面板第二行，来源固定在头部下方） */
+/* 任务05 S1：关联工单行（面板第二行，来源固定在头部下方）
+   V44 原型 .ai36-shell .ai33-panel-header label：标签在上、下拉整行在下（18px + 4px + 38px） */
 .ai-panel-work-order {
-  align-items: center;
-  border-top: 1px solid var(--ai-panel-line);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 20px;
+  align-items: baseline;
+  display: grid;
+  gap: 4px 8px;
+  grid-template-columns: auto minmax(0, 1fr);
 }
 
 .ai-panel-work-order > .ant-typography {
@@ -2854,9 +3037,15 @@ body {
   white-space: nowrap;
 }
 
+.ai-panel-work-order-label {
+  grid-column: 1;
+  grid-row: 1;
+}
+
 .ai-work-order-select {
   display: flex;
-  flex: 1;
+  grid-column: 1 / -1;
+  grid-row: 2;
   min-width: 150px;
 }
 
@@ -2864,9 +3053,14 @@ body {
   width: 100%;
 }
 
+/* 工单说明与标签同排（原型该行只放标签与下拉，说明以单行省略 + title 兜底） */
 .ai-work-order-hint {
-  flex-basis: 100%;
   font-size: 11px;
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-work-order-state {
@@ -2960,6 +3154,58 @@ body {
 .ai-compose-actions .ai-send {
   display: inline-flex;
   margin-left: auto;
+}
+
+/* V44 原型 .ai36-shell .ai33-workspace button：工作区按钮统一 13px 字号、7px 圆角；
+   次要按钮 32px 高、白底描边，主按钮（发送 / 新建对话）37px 高、主色底白字。 */
+.ai-panel .ant-btn:not(.ant-btn-primary):not(.ant-btn-link) {
+  background: var(--ai-white);
+  border-color: var(--ai-btn-line);
+  border-radius: 7px;
+  color: var(--ai-btn-ink);
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 32px;
+  padding: 5px 10px;
+}
+
+.ai-panel .ant-btn:not(.ant-btn-primary):not(.ant-btn-link):not(:disabled):hover {
+  background: var(--ai-btn-hover-bg);
+  border-color: var(--ai-btn-hover-line);
+  color: var(--ai-blue);
+}
+
+.ai-panel .ant-btn:not(.ant-btn-primary):not(.ant-btn-link):not(:disabled):active {
+  background: var(--ai-btn-active-bg);
+}
+
+.ai-panel .ant-btn:not(.ant-btn-primary):not(.ant-btn-link):disabled {
+  background: var(--ai-btn-disabled-bg);
+  border-color: var(--ai-btn-disabled-bg);
+  color: var(--ai-btn-disabled-ink);
+}
+
+/* V44 原型 .ai33-workspace button.ai33-send / .ai33-new-chat */
+.ai-panel .ant-btn-primary {
+  background: var(--ai-accent);
+  border-color: var(--ai-accent);
+  border-radius: 7px;
+  color: var(--ai-white);
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 37px;
+  padding: 6px 15px;
+}
+
+.ai-panel .ant-btn-primary:not(:disabled):hover {
+  background: var(--ai-accent-hover);
+  border-color: var(--ai-accent-hover);
+  color: var(--ai-white);
+}
+
+.ai-panel .ant-btn-primary:not(:disabled):active {
+  background: var(--ai-accent-active);
+  border-color: var(--ai-accent-active);
 }
 
 /* 任务05 S2：本人问答记录（浅色表格页，与对话页共用局部顶栏） */
@@ -3071,10 +3317,11 @@ body {
 
 .ai-part-chip {
   background: var(--ai-chip-bg);
-  border-radius: 5px;
+  /* V44 原型 .ai36-shell .ai33-part：药丸形、3px 8px 内边距 */
+  border-radius: 999px;
   color: var(--ai-chip-text);
   font-size: 12px;
-  padding: 2px 6px;
+  padding: 3px 8px;
 }
 
 .ai-part-chip--warning {
@@ -3096,19 +3343,39 @@ body {
   }
 
   .ai-scene {
-    /* V44 原型窄屏模型区实测 540.2（.ai33-scene）：模型区主导窄屏首屏，
-       画布随剩余空间伸展，模型按画布宽度等比缩放 */
-    min-height: 540px;
+    /* V44 原型窄屏 @media(max-width:980px)：.ai33-scene{min-height:clamp(410px,64dvh,580px)} */
+    min-height: clamp(410px, 64dvh, 580px);
   }
 
   .ai-panel {
     border-left: 0;
     border-top: 1px solid var(--ai-panel-line);
-    min-height: 430px;
+    /* V44 原型窄屏：.ai33-panel{height:clamp(410px,64dvh,580px)} */
+    height: clamp(410px, 64dvh, 580px);
+    min-height: 0;
   }
 
   .ai-thread {
     max-height: 380px;
+  }
+
+  /* V44 原型窄屏 .ai36-shell .ai34-header：标题与导航纵向堆叠 */
+  .ai-shell-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    justify-content: center;
+    min-height: 0;
+    padding: 13px 10px 8px;
+  }
+
+  .ai-shell-title {
+    line-height: 25px;
+  }
+
+  /* V44 原型窄屏 .ai36-stage-field{width:100%}：阶段控件整行铺开 */
+  .ai-scene-stage {
+    width: 100%;
   }
 }
 
@@ -3122,7 +3389,13 @@ body {
     padding: 6px 12px 10px;
   }
 
-  .ai-panel-header,
+  /* V44 原型窄屏 .ai36-shell .ai34-nav a：13px 字号、6px 8px 内边距 */
+  .ai-shell-tab {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+
+  .ai-panel-top,
   .ai-compose,
   .ai-thread {
     padding: 12px;
