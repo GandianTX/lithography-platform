@@ -7,7 +7,7 @@
 // 真实后端链路由后端 S2 真实 GraphQL 验证覆盖。
 
 import { expect, type Route,test } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
 import { captureStableViewport } from './helpers/visual-evidence';
@@ -773,10 +773,14 @@ test.describe('AI 诊断工作区 · 提交级视觉证据（任务05 S5）', ()
       });
 
       const fileName = `ai-conversation-${viewport.name}`;
-      await captureStableViewport(page, {
+      const capture = await captureStableViewport(page, {
         fileName,
         filePath: `${EVIDENCE_DIR}/${fileName}.png`,
       });
+      writeFileSync(
+        `${EVIDENCE_DIR}/${fileName}.meta.json`,
+        JSON.stringify(capture, null, 2),
+      );
     });
   }
 });
