@@ -282,25 +282,97 @@ describe('useAiDiagnosisWorkspace', () => {
     expect(result.current.visualizationDegraded).toBe(true);
   });
 
-  it('重试失败轮次沿用同一问题 UUID', async () => {
+  it('F03：早轮失败、末轮成功时可以单独重试原失败轮（沿用原 UUID，不新增问题）', async () => {
     const retrySpy = vi.spyOn(adapter, 'retryAiQuestion').mockResolvedValue(
       buildSubmitResult({ status: 'PENDING' }),
     );
-    vi.spyOn(adapter, 'submitAiQuestion').mockResolvedValue(buildSubmitResult());
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(
+      buildDetail({
+        turns: [
+          {
+            questionUuid: QUESTION_UUID,
+            turnNo: 1,
+            question: null,
+            answer: null,
+            analysisStatus: 'FAILED',
+            failureReason: 'reply_timeout',
+            analysisContentVersion: 2,
+            completedAt: null,
+          },
+          {
+            questionUuid: '99999999-2222-4333-8444-555555555555',
+            turnNo: 2,
+            question: null,
+            answer: {
+              messageId: 41,
+              messageSeq: 4,
+              turnNo: 2,
+              role: 'ASSISTANT',
+              questionUuid: null,
+              text: '已定位',
+              contentVersion: 3,
+              createdAt: '2026-11-19T00:00:00.000Z',
+            },
+            analysisStatus: 'SUCCEEDED',
+            failureReason: null,
+            analysisContentVersion: 3,
+            completedAt: null,
+          },
+        ],
+      }),
+    );
 
     const { result } = renderHook(() => useAiDiagnosisWorkspace());
     await act(async () => {
       await result.current.selectConversation(CONVERSATION_ID);
     });
     await act(async () => {
-      await result.current.submitQuestion('手臂 1 无动作');
-    });
-    await act(async () => {
-      await result.current.retryCurrentTurn();
+      await result.current.retryTurn(QUESTION_UUID);
     });
 
     expect(retrySpy.mock.calls[0][0].questionUuid).toBe(QUESTION_UUID);
     expect(retrySpy.mock.calls[0][0].conversationId).toBe(CONVERSATION_ID);
+    expect(result.current.activeQuestionUuid).toBe(QUESTION_UUID);
+  });
+
+  it('F03：非失败轮次不发起重试', async () => {
+    const retrySpy = vi.spyOn(adapter, 'retryAiQuestion');
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(
+      buildDetail({
+        turns: [
+          {
+            questionUuid: QUESTION_UUID,
+            turnNo: 1,
+            question: null,
+            answer: {
+              messageId: 41,
+              messageSeq: 4,
+              turnNo: 2,
+              role: 'ASSISTANT',
+              questionUuid: null,
+              text: '已定位',
+              contentVersion: 3,
+              createdAt: '2026-11-19T00:00:00.000Z',
+            },
+            analysisStatus: 'SUCCEEDED',
+            failureReason: null,
+            analysisContentVersion: 2,
+            completedAt: null,
+          },
+        ],
+      }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      await result.current.retryTurn(QUESTION_UUID);
+    });
+
+    expect(retrySpy).not.toHaveBeenCalled();
+    expect(result.current.errorMessage).not.toBeNull();
   });
 });
 
@@ -401,7 +473,7 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
     expect(result.current.visualization).not.toBeNull();
   });
 
-  it('F03：最后一轮已终态时只补一次图形，不启动背景轮询', async () => {
+  it('F03／F10：打开已成功的历史只恢复正文与状态，不回补旧图也不启动轮询', async () => {
     vi.mocked(adapter.getMyAiConversation).mockResolvedValue(
       buildDetail({
         turns: [
@@ -427,9 +499,11 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
       await result.current.selectConversation(CONVERSATION_ID);
     });
 
-    await waitFor(() => expect(result.current.visualization).not.toBeNull(), { timeout: 2000 });
+    // F10：成功历史画面回流程参考图，不再为「恢复旧图」发起一次迟到响应
     expect(result.current.generating).toBe(false);
-    expect(statusSpy).toHaveBeenCalledTimes(1);
+    expect(result.current.conversation?.id).toBe(CONVERSATION_ID);
+    expect(statusSpy).not.toHaveBeenCalled();
+    expect(result.current.visualization).toBeNull();
   });
 
   it('F06：创建请求在飞时重复触发不会创建第二个会话', async () => {
@@ -483,6 +557,144 @@ describe('会话 PDF 导出（任务 05 · S4.2 · R039-01）', () => {
     });
 
     expect(submitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('C1：创建等待中用户改选历史后，创建返回不得抢占该选择', async () => {
+    let releaseCreate: ((value: unknown) => void) | null = null;
+    vi.spyOn(adapter, 'createAiConversation').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseCreate = resolve as (value: unknown) => void;
+        }) as never,
+    );
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, turns: [] }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    let creating: Promise<unknown> | null = null;
+    await act(async () => {
+      creating = result.current.createConversation(null);
+    });
+    // 创建在飞时用户改选历史会话 9
+    await act(async () => {
+      await result.current.selectConversation(9);
+    });
+    await act(async () => {
+      releaseCreate?.({
+        id: CONVERSATION_ID,
+        requestId: null,
+        requestNo: '',
+        status: 'ACTIVE',
+        contentVersion: 1,
+        createdAt: '2026-11-19T00:00:00.000Z',
+      });
+      await creating;
+    });
+
+    expect(result.current.selectedId).toBe(9);
+    expect(result.current.conversation?.id).toBe(9);
+  });
+
+  it('C1：创建返回的迟到失败不得清掉用户新输入与提示', async () => {
+    let rejectCreate: ((error: unknown) => void) | null = null;
+    vi.spyOn(adapter, 'createAiConversation').mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectCreate = reject as (error: unknown) => void;
+        }) as never,
+    );
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, turns: [] }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    let creating: Promise<unknown> | null = null;
+    await act(async () => {
+      creating = result.current.createConversation(null);
+    });
+    await act(async () => {
+      await result.current.selectConversation(9);
+    });
+    await act(async () => {
+      rejectCreate?.(new Error('create failed late'));
+      await creating;
+    });
+
+    expect(result.current.selectedId).toBe(9);
+    expect(result.current.errorMessage).toBeNull();
+  });
+
+  it('C3：第二页后新建，首页 page/total 复位，下一次仍请求第 2 页', async () => {
+    const listSpy = vi.spyOn(adapter, 'listMyAiConversations').mockImplementation(
+      async ({ page }) => ({
+        items: [{ id: page * 10, requestId: null, status: 'ACTIVE', contentVersion: 1, createdAt: '2026-11-19T00:00:00.000Z', title: `c${page}`, turnCount: 0, lastMessageAt: null } as never],
+        total: 21,
+        page,
+        pageSize: 20,
+      }),
+    );
+    vi.spyOn(adapter, 'createAiConversation').mockResolvedValue({
+      id: CONVERSATION_ID,
+      requestId: null,
+      requestNo: '',
+      status: 'ACTIVE',
+      contentVersion: 1,
+      createdAt: '2026-11-19T00:00:00.000Z',
+    });
+    vi.mocked(adapter.getMyAiConversation).mockImplementation(async (conversationId: number) =>
+      buildDetail({ id: conversationId, turns: [] }),
+    );
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.loadConversations();
+    });
+    await act(async () => {
+      await result.current.loadMoreConversations();
+    });
+    expect(result.current.conversationsPage).toBe(2);
+
+    await act(async () => {
+      await result.current.createConversation(null);
+    });
+    // 新建后统一回首页：items／page／total 一起复位
+    expect(result.current.conversationsPage).toBe(1);
+    expect(result.current.conversationsTotal).toBe(21);
+    expect(result.current.conversations).toHaveLength(1);
+
+    await act(async () => {
+      await result.current.loadMoreConversations();
+    });
+    // 下一次实际请求第 2 页（而不是第 3 页）
+    expect(listSpy.mock.calls.at(-1)?.[0]).toMatchObject({ page: 2 });
+    expect(result.current.conversationsPage).toBe(2);
+  });
+
+  it('F03：状态查询失败后可用显式重查动作恢复（不必重开页面）', async () => {
+    const statusSpy = vi
+      .spyOn(adapter, 'getAiQuestionStatus')
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue(
+        buildStatus({ status: 'SUCCEEDED', visualization: buildVisualization('NORMAL') as never }),
+      );
+    vi.spyOn(adapter, 'submitAiQuestion').mockResolvedValue(buildSubmitResult());
+    vi.mocked(adapter.getMyAiConversation).mockResolvedValue(buildDetail({ turns: [] }));
+
+    const { result } = renderHook(() => useAiDiagnosisWorkspace());
+    await act(async () => {
+      await result.current.selectConversation(CONVERSATION_ID);
+    });
+    await act(async () => {
+      await result.current.submitQuestion('手臂 1 无动作');
+    });
+    await act(async () => {
+      await result.current.refreshCurrentTurn();
+    });
+
+    expect(statusSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(result.current.visualization).not.toBeNull();
+    expect(result.current.generating).toBe(false);
   });
 
   it('F10：新一轮提交立即清除上一轮图形定位', async () => {

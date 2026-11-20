@@ -2514,8 +2514,13 @@ body {
   --ai-workspace-bg: #ecf4ff;
   --ai-workspace-ink: #23364f;
   --ai-workspace-muted: #526982;
-  --ai-scene-bg-start: #f7f9fc;
-  --ai-scene-bg-end: #cbd2dc;
+  /* V44 场景区最终生效渐变（.ai36-shell .ai33-scene 实测三分色标 5%/65%/100%） */
+  --ai-scene-bg-start: #f4f8fb;
+  --ai-scene-bg-mid: #e8eff5;
+  --ai-scene-bg-end: #dfe7ef;
+  /* V44 输入框（.ai36-shell .ai33-compose textarea 实测边框/底色） */
+  --ai-input-line: #c9d7e6;
+  --ai-input-bg: #fbfdff;
   /* V44 正式工作区实际运行值（#/engineer/ai/chat，1440×900 实测） */
   --ai-panel-bg: #fafcfe;
   --ai-panel-line: #dce5ee;
@@ -2526,6 +2531,7 @@ body {
   --ai-message-line: #e0e8f2;
   --ai-message-mine-bg: #e6efff;
   --ai-message-mine-line: #dae7ff;
+  --ai-panel-header-bg: #ffffff;
   --ai-compose-bg: #ffffff;
   --ai-chip-bg: #e5f5fe;
   --ai-chip-text: #084d70;
@@ -2553,7 +2559,10 @@ body {
   --ai-workspace-ink: #e6edf6;
   --ai-workspace-muted: #9fb0c6;
   --ai-scene-bg-start: #22304a;
+  --ai-scene-bg-mid: #1a2536;
   --ai-scene-bg-end: #101722;
+  --ai-input-line: #2f4462;
+  --ai-input-bg: #141d2b;
   --ai-panel-bg: #182233;
   --ai-panel-line: #2f4462;
   --ai-thread-bg-start: #1b2739;
@@ -2563,6 +2572,7 @@ body {
   --ai-message-line: #33445f;
   --ai-message-mine-bg: #223a5c;
   --ai-message-mine-line: #33507a;
+  --ai-panel-header-bg: #1e2b3e;
   --ai-compose-bg: #1a2536;
   --ai-chip-bg: #17384a;
   --ai-chip-text: #bfe8f6;
@@ -2607,13 +2617,29 @@ body {
   }
 }
 
+@media (max-width: 980px) {
+  /* 05 局部（V44 三视口校准）：窄屏下面板与示意纵向堆叠，右下固定入口会压住
+     对话正文与失败轮的重试按钮；AI 页面本身就是该能力的入口，故在此隐藏，
+     其他页面的全局入口不受影响。 */
+  body:has(.ai-workspace) .entry-trigger-shell {
+    display: none;
+  }
+}
+
 .ai-scene {
-  background: radial-gradient(ellipse at 52% 43%, var(--ai-scene-bg-start), var(--ai-scene-bg-end));
+  /* V44：场景区不加内边距，画布通栏（原型实测 scene padding 0、canvas 与 scene 同宽）；
+     左右留白由场景头部/底部各自承担 */
+  background: radial-gradient(
+    ellipse at 53% 38%,
+    var(--ai-scene-bg-start) 5%,
+    var(--ai-scene-bg-mid) 65%,
+    var(--ai-scene-bg-end) 100%
+  );
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-height: 0;
-  padding: 20px 20px 15px;
+  padding: 0;
 }
 
 .ai-scene-header {
@@ -2622,7 +2648,8 @@ body {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: space-between;
-  padding: 16px 20px 8px;
+  /* V44 实测 .ai36-model-header：24px 24px 0 */
+  padding: 24px 24px 0;
 }
 
 .ai-scene-stage {
@@ -2652,6 +2679,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
+  /* V44 实测 .ai36-model-footer：9px 24px 14px */
+  padding: 9px 24px 14px;
 }
 
 .ai-panel {
@@ -2665,7 +2694,7 @@ body {
 
 .ai-panel-header {
   align-items: center;
-  background: #ffffff;
+  background: var(--ai-panel-header-bg);
   border-bottom: 1px solid var(--ai-panel-line);
   display: flex;
   flex-wrap: wrap;
@@ -2733,6 +2762,54 @@ body {
   padding: 16px 20px;
 }
 
+/* V44 实测 .ai36-shell .ai33-compose textarea：16px 字号、10×12 内边距、9px 圆角、
+   最小高 76px、1px 描边（可见框体总高约 96px）。
+   带 showCount 的 TextArea 会包一层 affix wrapper，AntD 把边框/底色画在包装层、
+   内部 textarea 透明无描边，因此基准值落在包装层；选择器需压过 AntD 运行时的
+   `...ant-input-affix-wrapper > textarea.ant-input`（3 类 + 1 元素）。 */
+.ai-compose .ant-input-textarea-affix-wrapper {
+  background: var(--ai-input-bg);
+  border: 1px solid var(--ai-input-line);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+.ai-compose .ant-input-textarea-affix-wrapper:hover,
+.ai-compose .ant-input-textarea-affix-wrapper:focus-within {
+  border-color: var(--ai-geo-outline-highlight);
+}
+
+.ai-compose .ant-input-textarea-affix-wrapper.ant-input-affix-wrapper > textarea.ant-input {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  /* AntD 在包装层与 textarea 之间存在一档 14px 容器，`inherit` 会取到 14px；
+     这里显式取根字号（16px），与 V44 基准一致 */
+  font-size: 1rem;
+  line-height: 1.55;
+  min-height: 74px;
+  padding: 0;
+  resize: vertical;
+}
+
+/* V44 实测：输入区操作行右对齐（.ai33-actions 内发送按钮 margin-left:auto） */
+.ai-compose-actions {
+  justify-content: flex-end;
+}
+
+/* 未加包装层时（无 showCount）的等价样式 */
+.ai-compose textarea.ant-input {
+  background: var(--ai-input-bg);
+  border: 1px solid var(--ai-input-line);
+  border-radius: 9px;
+  font-size: inherit;
+  line-height: 1.55;
+  min-height: 76px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
 .ai-part-legend {
   align-items: center;
   display: flex;
@@ -2756,9 +2833,10 @@ body {
 }
 
 @media (max-width: 980px) {
-  /* 右下固定 AI 入口（bottom 32 / 高 40）会压住输入区；预留底部安全区保证发送可达 */
+  /* 窄屏下右下固定 AI 入口已在 body:has(.ai-workspace) 内隐藏（见上方规则），
+     因此不再为它预留底部安全区；保留会让 05 出现无解释的底部空白。 */
   .ai-workspace {
-    padding-bottom: 72px;
+    padding-bottom: 0;
   }
 
   .ai-workspace-grid {
@@ -2769,7 +2847,6 @@ body {
 
   .ai-scene {
     min-height: 425px;
-    padding: 12px;
   }
 
   .ai-panel {
@@ -2780,5 +2857,22 @@ body {
 
   .ai-thread {
     max-height: 380px;
+  }
+}
+
+@media (max-width: 650px) {
+  /* V44 实测 650px 断点：场景头部/底部与面板三段统一收到 12px 左右内边距 */
+  .ai-scene-header {
+    padding: 16px 12px 0;
+  }
+
+  .ai-scene-footer {
+    padding: 6px 12px 10px;
+  }
+
+  .ai-panel-header,
+  .ai-compose,
+  .ai-thread {
+    padding: 12px;
   }
 }

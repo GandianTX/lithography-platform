@@ -36,6 +36,12 @@ export type AiConversationPanelProps = {
   readonly onDraftChange: (value: string) => void;
   readonly onSubmit: () => void;
   readonly onRetry: () => void;
+  /** F03：逐轮重试入口，参数为该轮原问题 UUID */
+  readonly onRetryTurn: (questionUuid: string) => void;
+  /** 正在重试的具体轮次（用于逐轮 loading） */
+  readonly retryingQuestionUuid: string | null;
+  /** F03：状态查询失败后的显式重查入口 */
+  readonly onRefreshTurn: () => void;
   readonly onNewChat: () => void;
   readonly onOpenHistory: () => void;
   readonly onExportPdf: () => void;
@@ -70,10 +76,13 @@ export function AiConversationPanel({
   onExportPdf,
   onNewChat,
   onOpenHistory,
+  onRefreshTurn,
   onRetry,
+  onRetryTurn,
   onSubmit,
   onWorkOrderChange,
   retrying,
+  retryingQuestionUuid,
   submitting,
 }: AiConversationPanelProps) {
   const { t } = useI18n();
@@ -136,13 +145,30 @@ export function AiConversationPanel({
           <Empty description={t('ai.panel.emptyNoTurn')} />
         ) : (
           turns.map((turn) => (
-            <TurnBlock key={turn.questionUuid} turn={turn} />
+            <TurnBlock
+              key={turn.questionUuid}
+              onRetryTurn={onRetryTurn}
+              retryingQuestionUuid={retryingQuestionUuid}
+              turn={turn}
+            />
           ))
         )}
       </div>
 
       {errorMessage !== null ? (
-        <Alert closable message={errorMessage} showIcon type="error" />
+        <Alert
+          action={
+            activeQuestionUuid !== null ? (
+              <Button onClick={onRefreshTurn} size="small">
+                {t('ai.panel.refreshTurn')}
+              </Button>
+            ) : null
+          }
+          closable
+          message={errorMessage}
+          showIcon
+          type="error"
+        />
       ) : null}
       {noticeMessage !== null ? (
         <Alert closable message={noticeMessage} showIcon type="info" />
@@ -173,7 +199,7 @@ export function AiConversationPanel({
           showCount
           value={draft}
         />
-        <div className="flex items-center gap-2">
+        <div className="ai-compose-actions flex items-center gap-2">
           <Button
             disabled={busy || draft.trim().length === 0}
             loading={submitting}
@@ -195,11 +221,15 @@ export function AiConversationPanel({
 
 type TurnBlockProps = {
   readonly turn: AiConversationTurn;
+  readonly onRetryTurn: (questionUuid: string) => void;
+  readonly retryingQuestionUuid: string | null;
 };
 
-function TurnBlock({ turn }: TurnBlockProps) {
+function TurnBlock({ turn, onRetryTurn, retryingQuestionUuid }: TurnBlockProps) {
   const { t } = useI18n();
   const status = turn.analysisStatus;
+  // F03：任一失败轮次都能单独重试，不依赖「当前关注轮」或「最后一轮」
+  const canRetryThisTurn = status === 'FAILED' && turn.answer === null;
   return (
     <article className="flex flex-col gap-2">
       <div className="ai-message ai-message--mine">
@@ -221,6 +251,16 @@ function TurnBlock({ turn }: TurnBlockProps) {
         ) : null}
         {turn.failureReason !== null ? (
           <span className="text-status-critical">{turn.failureReason}</span>
+        ) : null}
+        {canRetryThisTurn ? (
+          <Button
+            aria-label={t('ai.panel.retryTurnAria', { turn: turn.turnNo ?? '-' })}
+            loading={retryingQuestionUuid === turn.questionUuid}
+            onClick={() => onRetryTurn(turn.questionUuid)}
+            size="small"
+          >
+            {t('ai.panel.retry')}
+          </Button>
         ) : null}
       </div>
     </article>

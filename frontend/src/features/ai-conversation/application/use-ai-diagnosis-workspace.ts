@@ -17,6 +17,8 @@ import { parseAiVisualization } from '../domain/ai-visualization';
 import type {
   AiConversationDetail,
   AiConversationListItem,
+  AiConversationTurn,
+  AiMessageAnalysisStatus,
   AiQuestionStatus,
   AiVisualization,
 } from '../infrastructure/ai-conversation.types';
@@ -39,6 +41,21 @@ const QUESTION_MAX_LENGTH = 2000;
 /** 终态：不再轮询 */
 function isTerminalStatus(status: AiQuestionStatus['status']): boolean {
   return status === 'SUCCEEDED' || status === 'FAILED';
+}
+
+/** 未终态轮次：仍可能在服务端推进，必须继续按事实更新 */
+function isActiveAnalysisStatus(status: AiMessageAnalysisStatus | null): boolean {
+  return status === 'PENDING' || status === 'RUNNING';
+}
+
+/** 会话内是否还有未终态轮次（F03：不能因最后一轮成功就停止更早轮次的更新） */
+function hasActiveTurns(detail: AiConversationDetail | null): boolean {
+  return (detail?.turns ?? []).some((turn) => isActiveAnalysisStatus(turn.analysisStatus));
+}
+
+/** 关注轮次：默认取最新一轮（不改变「当前图形只看关注轮」的规则） */
+function pickFocusTurn(detail: AiConversationDetail): AiConversationTurn | undefined {
+  return [...detail.turns].sort((left, right) => (left.turnNo ?? 0) - (right.turnNo ?? 0)).at(-1);
 }
 
 export type AiDiagnosisWorkspaceState = {
@@ -64,6 +81,8 @@ export type AiDiagnosisWorkspaceState = {
   loading: boolean;
   submitting: boolean;
   retrying: boolean;
+  /** 正在重试的具体轮次（F03：逐轮重试必须标明作用对象） */
+  retryingQuestionUuid: string | null;
   /** 正在导出当前会话（PDF） */
   exporting: boolean;
   /** 正在等待服务端回复 */
@@ -87,6 +106,7 @@ const INITIAL_STATE: AiDiagnosisWorkspaceState = {
   loading: false,
   submitting: false,
   retrying: false,
+  retryingQuestionUuid: null,
   exporting: false,
   generating: false,
   errorMessage: null,
@@ -103,6 +123,8 @@ export function useAiDiagnosisWorkspace() {
   const conversationEpoch = useRef(0);
   /** 轮次代数：同会话内切换关注轮次时自增，用于丢弃旧轮的迟到响应 */
   const turnEpoch = useRef(0);
+  /** 列表请求代数（F08）：首页刷新推进代数，旧的第 N 页响应不得混入新列表 */
+  const listEpoch = useRef(0);
   /** 同文本重试沿用同一 UUID：受理结果不明时再次提交不重复提问 */
   const pendingQuestion = useRef<{ text: string; uuid: string } | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -139,25 +161,46 @@ export function useAiDiagnosisWorkspace() {
     }));
   }, [clearPollTimer]);
 
-  const loadConversations = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true, errorMessage: null }));
-    try {
-      const page = await listMyAiConversations({ page: 1, pageSize: PAGE_SIZE });
+  /**
+   * 首页结果统一应用（F08）：初次加载、新建后刷新、手动刷新都走这一条路径，
+   * 一次更新 items＋page=1＋total＋loading，并推进列表代数使在途的旧页响应失效。
+   */
+  const applyFirstPage = useCallback(
+    (page: { items: AiConversationListItem[]; total?: number | null }) => {
+      listEpoch.current += 1;
       setState((current) => ({
         ...current,
         conversations: page.items,
         conversationsTotal: page.total ?? page.items.length,
         conversationsPage: 1,
         loading: false,
+        loadingMore: false,
       }));
+    },
+    [],
+  );
+
+  const loadConversations = useCallback(async () => {
+    setState((current) => ({ ...current, loading: true, errorMessage: null }));
+    const token = listEpoch.current + 1;
+    listEpoch.current = token;
+    try {
+      const page = await listMyAiConversations({ page: 1, pageSize: PAGE_SIZE });
+      if (listEpoch.current !== token) {
+        return;
+      }
+      applyFirstPage(page);
     } catch (error) {
+      if (listEpoch.current !== token) {
+        return;
+      }
       setState((current) => ({
         ...current,
         loading: false,
         errorMessage: describeAiConversationError(error),
       }));
     }
-  }, []);
+  }, [applyFirstPage]);
 
   /** F08：加载下一页并追加（首页为空但 total>0 时可继续取） */
   const loadMoreConversations = useCallback(async () => {
@@ -165,9 +208,14 @@ export function useAiDiagnosisWorkspace() {
       return;
     }
     const nextPage = state.conversationsPage + 1;
+    const token = listEpoch.current;
     setState((current) => ({ ...current, loadingMore: true, errorMessage: null }));
     try {
       const page = await listMyAiConversations({ page: nextPage, pageSize: PAGE_SIZE });
+      // 首页刷新（新建/手动刷新）已推进代数：旧页响应不得混入新列表，也不改页码与 total
+      if (listEpoch.current !== token) {
+        return;
+      }
       setState((current) => {
         const seen = new Set(current.conversations.map((item) => item.id));
         return {
@@ -182,6 +230,9 @@ export function useAiDiagnosisWorkspace() {
         };
       });
     } catch (error) {
+      if (listEpoch.current !== token) {
+        return;
+      }
       setState((current) => ({
         ...current,
         loadingMore: false,
@@ -203,7 +254,45 @@ export function useAiDiagnosisWorkspace() {
     [],
   );
 
-  /** 轮询本轮状态：迟到响应（会话/轮次已切换）直接丢弃 */
+  /**
+   * F03：会话内仍有未终态轮次时的后续刷新。
+   *
+   * 只刷新一次会话详情即可更新全部轮次状态，不为每轮各建一个定时器；
+   * 图形仍只跟随「关注轮次」，这里不替未关注的轮次查询图形。
+   */
+  const refreshWhileTurnsActive = useCallback(
+    async (conversationId: number, sessionToken: number, turnToken: number) => {
+      if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+        return;
+      }
+      try {
+        const detail = await getMyAiConversation(conversationId);
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return;
+        }
+        const stillActive = hasActiveTurns(detail);
+        setState((current) => ({ ...current, conversation: detail, generating: stillActive }));
+        if (stillActive) {
+          pollTimer.current = setTimeout(() => {
+            void refreshWhileTurnsActive(conversationId, sessionToken, turnToken);
+          }, POLL_INTERVAL_MS);
+        }
+      } catch (error) {
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return;
+        }
+        clearPollTimer();
+        setState((current) => ({
+          ...current,
+          generating: false,
+          errorMessage: describeAiConversationError(error),
+        }));
+      }
+    },
+    [clearPollTimer],
+  );
+
+  /** 轮询关注轮次状态：迟到响应（会话/轮次已切换）直接丢弃 */
   const pollQuestionStatus = useCallback(
     async (conversationId: number, questionUuid: string) => {
       const sessionToken = conversationEpoch.current;
@@ -216,24 +305,31 @@ export function useAiDiagnosisWorkspace() {
         ) {
           return;
         }
-        if (isTerminalStatus(status.status)) {
-          clearPollTimer();
-          setState((current) => ({ ...current, generating: false }));
-          applyVisualization(status);
-          const detail = await getMyAiConversation(conversationId);
-          if (
-            sessionToken !== conversationEpoch.current ||
-            turnToken !== turnEpoch.current
-          ) {
-            return;
-          }
-          setState((current) => ({ ...current, conversation: detail }));
+        if (!isTerminalStatus(status.status)) {
+          setState((current) => ({ ...current, generating: true }));
+          pollTimer.current = setTimeout(() => {
+            void pollQuestionStatus(conversationId, questionUuid);
+          }, POLL_INTERVAL_MS);
           return;
         }
-        setState((current) => ({ ...current, generating: true }));
-        pollTimer.current = setTimeout(() => {
-          void pollQuestionStatus(conversationId, questionUuid);
-        }, POLL_INTERVAL_MS);
+        // 关注轮已终态：以本次读取为准更新图形（成功但无图 → 回流程参考图）
+        applyVisualization(status);
+        const detail = await getMyAiConversation(conversationId);
+        if (
+          sessionToken !== conversationEpoch.current ||
+          turnToken !== turnEpoch.current
+        ) {
+          return;
+        }
+        // 关注轮以本次状态读取为准：详情若仍是旧快照，不得据此把已终态的轮次重新标成生成中
+        const otherTurnsActive = (detail.turns ?? []).some(
+          (turn) =>
+            turn.questionUuid !== questionUuid && isActiveAnalysisStatus(turn.analysisStatus),
+        );
+        setState((current) => ({ ...current, conversation: detail, generating: otherTurnsActive }));
+        if (otherTurnsActive) {
+          void refreshWhileTurnsActive(conversationId, sessionToken, turnToken);
+        }
       } catch (error) {
         if (
           sessionToken !== conversationEpoch.current ||
@@ -249,7 +345,7 @@ export function useAiDiagnosisWorkspace() {
         }));
       }
     },
-    [applyVisualization, clearPollTimer],
+    [applyVisualization, clearPollTimer, refreshWhileTurnsActive],
   );
 
   const selectConversation = useCallback(
@@ -280,32 +376,19 @@ export function useAiDiagnosisWorkspace() {
         }
         setState((current) => ({ ...current, conversation: detail, loading: false }));
 
-        // F03：刷新/切换后恢复最后一轮的活跃问题与生成状态（不能只恢复列表与工具条）。
-        // 以服务端状态为准：终态拉一次图形，未终态继续轮询直到结束。
-        const latestTurn = [...detail.turns].sort((left, right) => (left.turnNo ?? 0) - (right.turnNo ?? 0)).at(-1);
-        if (latestTurn !== undefined && conversationEpoch.current === sessionToken) {
-          const stillRunning =
-            latestTurn.analysisStatus === 'PENDING' || latestTurn.analysisStatus === 'RUNNING';
+        // F03／F10：刷新/切换只恢复服务端正文与状态。
+        // 未终态轮次继续按服务端事实推进；已终态历史不再异步补旧图形（画面回流程参考），
+        // 避免「打开成功历史」这一步再引入一处迟到响应竞态。
+        const focusTurn = pickFocusTurn(detail);
+        if (focusTurn !== undefined && conversationEpoch.current === sessionToken) {
+          const stillRunning = isActiveAnalysisStatus(focusTurn.analysisStatus);
           setState((current) => ({
             ...current,
-            activeQuestionUuid: latestTurn.questionUuid,
-            generating: stillRunning,
+            activeQuestionUuid: focusTurn.questionUuid,
+            generating: stillRunning || hasActiveTurns(detail),
           }));
-          if (stillRunning) {
-            // 未终态：继续按服务端事实推进，直到结束
-            void pollQuestionStatus(detail.id, latestTurn.questionUuid);
-          } else {
-            // 已终态：只补一次本轮图形（图形不进库），不启动背景轮询
-            void getAiQuestionStatus({
-              conversationId: detail.id,
-              questionUuid: latestTurn.questionUuid,
-            })
-              .then((status) => {
-                if (conversationEpoch.current === sessionToken) {
-                  applyVisualization(status);
-                }
-              })
-              .catch(() => undefined);
+          if (stillRunning || hasActiveTurns(detail)) {
+            void pollQuestionStatus(detail.id, focusTurn.questionUuid);
           }
         }
       } catch (error) {
@@ -319,7 +402,7 @@ export function useAiDiagnosisWorkspace() {
         }));
       }
     },
-    [applyVisualization, clearPollTimer, pollQuestionStatus],
+    [clearPollTimer, pollQuestionStatus],
   );
 
   const createConversation = useCallback(
@@ -330,14 +413,27 @@ export function useAiDiagnosisWorkspace() {
       }
       creatingRef.current = true;
       resetSessionState();
+      // F06：捕获本次创建的归属（resetSessionState 已推进会话代数）
+      const sessionToken = conversationEpoch.current;
       setState((current) => ({ ...current, loading: true, errorMessage: null }));
       try {
         const created = await createAiConversation(requestId);
+        // 期间用户已选历史/切账号/卸载：不再刷新列表、不抢走当前选择
+        if (sessionToken !== conversationEpoch.current) {
+          return created;
+        }
         const page = await listMyAiConversations({ page: 1, pageSize: PAGE_SIZE });
-        setState((current) => ({ ...current, conversations: page.items }));
+        if (sessionToken !== conversationEpoch.current) {
+          return created;
+        }
+        // F08：新建后刷新同样一次更新 items＋page=1＋total（否则下次会请求第 3 页）
+        applyFirstPage(page);
         await selectConversation(created.id);
         return created;
       } catch (error) {
+        if (sessionToken !== conversationEpoch.current) {
+          return null;
+        }
         setState((current) => ({
           ...current,
           loading: false,
@@ -348,7 +444,7 @@ export function useAiDiagnosisWorkspace() {
         creatingRef.current = false;
       }
     },
-    [resetSessionState, selectConversation],
+    [applyFirstPage, resetSessionState, selectConversation],
   );
 
   /** 受理结果不明时先查原问题：查到即视为已受理（不重复提问） */
@@ -484,61 +580,111 @@ export function useAiDiagnosisWorkspace() {
     [confirmAcceptedQuestion, pollQuestionStatus, state.selectedId, state.stage],
   );
 
-  /** 重试失败轮次：沿用同一问题 UUID，不新增用户消息 */
+  /**
+   * F03：逐轮重试。必须显式指定要重试的失败轮次（沿用该轮问题 UUID，不新增用户消息），
+   * 不能只看「当前关注轮」，否则早轮失败、末轮成功时无法重试原失败轮。
+   */
+  const retryTurn = useCallback(
+    async (questionUuid: string) => {
+      const conversationId = state.selectedId;
+      if (conversationId === null) {
+        setState((current) => ({ ...current, errorMessage: '请先选择或新建一个会话' }));
+        return null;
+      }
+      const turn = state.conversation?.turns.find((item) => item.questionUuid === questionUuid);
+      if (turn === undefined || turn.analysisStatus !== 'FAILED' || turn.answer !== null) {
+        setState((current) => ({
+          ...current,
+          errorMessage: '只有失败且未保存回答的轮次可以重试',
+        }));
+        return null;
+      }
+
+      const sessionToken = conversationEpoch.current;
+      const turnToken = turnEpoch.current + 1;
+      turnEpoch.current = turnToken;
+      setState((current) => ({
+        ...current,
+        retrying: true,
+        retryingQuestionUuid: questionUuid,
+        // 关注轮切到被重试的轮次；旧图形与警示焦点一并清掉（F10）
+        activeQuestionUuid: questionUuid,
+        errorMessage: null,
+        noticeMessage: null,
+        visualization: null,
+        visualizationDegraded: false,
+      }));
+
+      try {
+        const result = await retryAiQuestion({
+          conversationId,
+          questionUuid,
+          stage: state.stage,
+        });
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return null;
+        }
+        setState((current) => ({
+          ...current,
+          retrying: false,
+          retryingQuestionUuid: null,
+          generating: result.status === 'PENDING' || result.status === 'RUNNING',
+          errorMessage:
+            result.dispatchStatus === 'FAILED' ? '本轮派发失败，可重试本轮。' : null,
+        }));
+        const detail = await getMyAiConversation(conversationId);
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return null;
+        }
+        setState((current) => ({
+          ...current,
+          conversation: detail,
+          generating: hasActiveTurns(detail),
+        }));
+        void pollQuestionStatus(conversationId, questionUuid);
+        return result;
+      } catch (error) {
+        if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
+          return null;
+        }
+        setState((current) => ({
+          ...current,
+          retrying: false,
+          retryingQuestionUuid: null,
+          errorMessage: describeAiConversationError(error),
+        }));
+        return null;
+      }
+    },
+    [pollQuestionStatus, state.conversation, state.selectedId, state.stage],
+  );
+
+  /** 兼容入口：重试当前关注的轮次 */
   const retryCurrentTurn = useCallback(async () => {
-    const conversationId = state.selectedId;
     const questionUuid = state.activeQuestionUuid;
-    if (conversationId === null || questionUuid === null) {
+    if (questionUuid === null) {
       setState((current) => ({ ...current, errorMessage: '没有可重试的轮次' }));
       return null;
     }
-    const sessionToken = conversationEpoch.current;
-    const turnToken = turnEpoch.current + 1;
-    turnEpoch.current = turnToken;
-    setState((current) => ({
-      ...current,
-      retrying: true,
-      errorMessage: null,
-      noticeMessage: null,
-      // F10：重试同样从干净图形状态开始
-      visualization: null,
-      visualizationDegraded: false,
-    }));
-    try {
-      const result = await retryAiQuestion({
-        conversationId,
-        questionUuid,
-        stage: state.stage,
-      });
-      if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
-        return null;
-      }
-      setState((current) => ({
-        ...current,
-        retrying: false,
-        generating: result.status === 'PENDING' || result.status === 'RUNNING',
-        errorMessage:
-          result.dispatchStatus === 'FAILED' ? '本轮派发失败，可重试本轮。' : null,
-      }));
-      const detail = await getMyAiConversation(conversationId);
-      if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
-        return null;
-      }
-      setState((current) => ({ ...current, conversation: detail }));
-      void pollQuestionStatus(conversationId, questionUuid);
-      return result;
-    } catch (error) {
-      if (sessionToken !== conversationEpoch.current || turnToken !== turnEpoch.current) {
-        return null;
-      }
-      setState((current) => ({
-        ...current,
-        retrying: false,
-        errorMessage: describeAiConversationError(error),
-      }));
-      return null;
+    return await retryTurn(questionUuid);
+  }, [retryTurn, state.activeQuestionUuid]);
+
+  /**
+   * F03：状态查询失败后的显式重试动作。
+   *
+   * 轮询失败会把错误抛给用户，但用户需要一个明确的「再查一次」入口，
+   * 而不是重开页面或盲目重试整轮；这里只重查关注轮的服务端事实。
+   */
+  const refreshCurrentTurn = useCallback(async () => {
+    const conversationId = state.selectedId;
+    const questionUuid = state.activeQuestionUuid;
+    if (conversationId === null || questionUuid === null) {
+      setState((current) => ({ ...current, errorMessage: '没有可查询的轮次' }));
+      return;
     }
-  }, [pollQuestionStatus, state.activeQuestionUuid, state.selectedId, state.stage]);
+    setState((current) => ({ ...current, errorMessage: null, noticeMessage: null }));
+    await pollQuestionStatus(conversationId, questionUuid);
+  }, [pollQuestionStatus, state.activeQuestionUuid, state.selectedId]);
 
   /**
    * 导出当前会话为 PDF（任务 05 · S4.2 · R039-01）。
@@ -614,6 +760,8 @@ export function useAiDiagnosisWorkspace() {
     createConversation,
     submitQuestion,
     retryCurrentTurn,
+    retryTurn,
+    refreshCurrentTurn,
     exportConversationPdf,
     setStage,
     setDraft,

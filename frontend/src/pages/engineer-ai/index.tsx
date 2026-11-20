@@ -109,10 +109,13 @@ export function EngineerAiPage() {
             void workspace.createConversation(requestId);
           }}
           onOpenHistory={() => setHistoryOpen(true)}
+          onRefreshTurn={() => void workspace.refreshCurrentTurn()}
           onRetry={() => void workspace.retryCurrentTurn()}
+          onRetryTurn={(questionUuid) => void workspace.retryTurn(questionUuid)}
           onSubmit={() => void workspace.submitQuestion(workspace.draft)}
           onWorkOrderChange={setLinkedRequestId}
           retrying={workspace.retrying}
+          retryingQuestionUuid={workspace.retryingQuestionUuid}
           submitting={workspace.submitting}
         />
       </div>
