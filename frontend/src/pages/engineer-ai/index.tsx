@@ -88,7 +88,7 @@ export function EngineerAiPage() {
   );
 
   return (
-    <div className="ai-shell">
+    <div className="ai-shell ai-shell--workspace">
       {/* 任务局部顶栏：AI 对话 / 问答记录，两页都可直接访问、各自呈现当前态 */}
       <header className="ai-shell-header">
         <h1 className="ai-shell-title">{t('ai.shell.title')}</h1>

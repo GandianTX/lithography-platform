@@ -21,6 +21,9 @@
 :root {
   --color-ai-accent: #cc6b46;
   --color-ai-accent-hover: #b35a37;
+  /* 工作区上下内边距：AI 工作区按视口高度计算时需要同源取值（见 .ai-shell--workspace） */
+  --app-workspace-pad-top: 22px;
+  --app-workspace-pad-bottom: 32px;
   --z-index-main-base: 0;
   /* 窄屏展开导航的覆盖层：高于工作区内容、低于 AI 侧栏抽屉 */
   --z-index-nav-overlay: 1000;
@@ -238,7 +241,7 @@ body {
   flex: 1;
   justify-content: center;
   min-width: 0;
-  padding: 22px 26px 32px;
+  padding: var(--app-workspace-pad-top) 26px var(--app-workspace-pad-bottom);
 }
 
 .app-main {
@@ -1856,8 +1859,13 @@ body {
 }
 
 @media (max-width: 760px) {
+  :root {
+    --app-workspace-pad-top: 30px;
+    --app-workspace-pad-bottom: 44px;
+  }
+
   .app-workspace {
-    padding: 30px 16px 44px;
+    padding: var(--app-workspace-pad-top) 16px var(--app-workspace-pad-bottom);
   }
 
   .page-header {
@@ -2661,6 +2669,27 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+@media (min-width: 981px) {
+  /* 桌面/中屏：工作区贴合可用视口高度，超长消息流在右栏内部滚动，
+     不再把整页撑高（避免页面级纵向滚动与输入区落到首屏之外）。 */
+  .ai-shell--workspace {
+    height: calc(100vh - var(--app-workspace-pad-top) - var(--app-workspace-pad-bottom));
+  }
+
+  .ai-shell--workspace .ai-workspace-grid {
+    /* 行高锁定为容器高度：消息流再长也只压缩线程，不撑高工作区 */
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  /* 窄屏：模型区高度对齐 V44 原型窄屏实测 540.2（原型 .ai33-scene），
+     画布随剩余空间伸展，保持原型「模型区主导」的层次。 */
+  .ai-scene {
+    min-height: 540px;
+  }
 }
 
 @media (min-width: 981px) {
