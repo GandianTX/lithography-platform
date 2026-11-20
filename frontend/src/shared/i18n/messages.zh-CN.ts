@@ -845,7 +845,7 @@ export const ZH_CN_MESSAGES = {
   'ai.record.source.standalone': '独立会话',
   'ai.record.column.source': '来源',
   'ai.record.column.requestNo': '工单号',
-  'ai.record.column.messages': '消息数',
+  'ai.record.column.turns': '真实轮次',
   'ai.record.column.status': '状态',
   'ai.record.column.lastMessageAt': '最近消息',
   'ai.record.column.createdAt': '创建时间',

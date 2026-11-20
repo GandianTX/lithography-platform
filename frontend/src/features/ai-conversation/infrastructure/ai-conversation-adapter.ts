@@ -28,6 +28,7 @@ const CONVERSATION_FIELDS = `
   status
   contentVersion
   messageCount
+  turnCount
   lastMessageAt
   createdAt
   completedAt

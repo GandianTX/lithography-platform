@@ -299,6 +299,10 @@ test.describe('AI 诊断工作区（任务05 S3）', () => {
       page.getByLabel('AI 诊断导航').getByRole('link', { name: 'AI 对话' }),
     ).toHaveAttribute('href', '/engineer/ai');
 
+    // 记录页展示服务端给出的真实轮次（不再用消息条数折算）
+    await expect(page.getByRole('columnheader', { name: '真实轮次' })).toBeVisible();
+    await expect(page.getByRole('cell').nth(2)).toHaveText('1');
+
     await page.getByRole('button', { name: '查看对话' }).first().click();
     await expect(page).toHaveURL(/\/engineer\/ai\?conversation=\d+/);
     await expect(page.getByText('手臂 1 无动作')).toBeVisible({ timeout: 8000 });

@@ -30,6 +30,9 @@ export class AiConversationListItemDTO {
   @Field(() => Int, { description: '已保存消息条数' })
   messageCount!: number;
 
+  @Field(() => Int, { description: '真实轮次（按 turn_no 去重计数，含失败轮）' })
+  turnCount!: number;
+
   @Field(() => Date, { nullable: true, description: '最后一条消息时间' })
   lastMessageAt?: Date | null;
 

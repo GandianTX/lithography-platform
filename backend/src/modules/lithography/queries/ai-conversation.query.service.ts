@@ -385,6 +385,7 @@ export class AiConversationQueryService {
         status: entity.status,
         contentVersion: entity.contentVersion,
         messageCount: stats?.count ?? 0,
+        turnCount: stats?.turnCount ?? 0,
         lastMessageAt: stats?.lastMessageAt ?? null,
         createdAt: entity.createdAt,
         completedAt: entity.completedAt,
@@ -394,7 +395,7 @@ export class AiConversationQueryService {
 
   private async aggregateMessageStats(
     conversationIds: number[],
-  ): Promise<Map<number, { count: number; lastMessageAt: Date | null }>> {
+  ): Promise<Map<number, { count: number; lastMessageAt: Date | null; turnCount: number }>> {
     if (conversationIds.length === 0) {
       return new Map();
     }
@@ -402,16 +403,19 @@ export class AiConversationQueryService {
       conversationId: string | number;
       count: string | number;
       lastMessageAt: Date | string | null;
+      turnCount: string | number;
     }> = await this.messageRepository
       .createQueryBuilder('message')
       .select('message.conversationId', 'conversationId')
       .addSelect('COUNT(*)', 'count')
       .addSelect('MAX(message.createdAt)', 'lastMessageAt')
+      // 真实轮次：turn_no 为空的系统/工具消息不计入；失败轮只有用户消息，同样计为一轮
+      .addSelect('COUNT(DISTINCT message.turnNo)', 'turnCount')
       .where('message.conversationId IN (:...conversationIds)', { conversationIds })
       .groupBy('message.conversationId')
       .getRawMany();
 
-    const stats = new Map<number, { count: number; lastMessageAt: Date | null }>();
+    const stats = new Map<number, { count: number; lastMessageAt: Date | null; turnCount: number }>();
     for (const row of rows) {
       const lastMessageAt =
         row.lastMessageAt === null
@@ -422,6 +426,7 @@ export class AiConversationQueryService {
       stats.set(Number(row.conversationId), {
         count: Number(row.count),
         lastMessageAt,
+        turnCount: Number(row.turnCount ?? 0),
       });
     }
     return stats;

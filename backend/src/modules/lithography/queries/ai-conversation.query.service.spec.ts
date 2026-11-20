@@ -23,17 +23,24 @@ describe('AiConversationQueryService 工程师可见性（F01）', () => {
       orWhere: jest.fn().mockReturnThis(),
       setParameters: jest.fn().mockReturnThis(),
       clone: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
     };
     qb.getMany = jest.fn().mockResolvedValue([]);
     qb.getCount = jest.fn().mockResolvedValue(0);
     qb.getOne = jest.fn().mockResolvedValue(null);
+    qb.getRawMany = jest.fn().mockResolvedValue([]);
     return qb;
   };
 
-  const makeService = (qb: Record<string, jest.Mock>) =>
+  const makeService = (
+    qb: Record<string, jest.Mock>,
+    messageRepository?: Record<string, jest.Mock>,
+  ) =>
     new AiConversationQueryService(
       { createQueryBuilder: jest.fn().mockReturnValue(qb) } as never,
-      { find: jest.fn().mockResolvedValue([]) } as never,
+      (messageRepository ?? { find: jest.fn().mockResolvedValue([]) }) as never,
       { find: jest.fn().mockResolvedValue([]) } as never,
       { findOne: jest.fn().mockResolvedValue(null), find: jest.fn() } as never,
       { findOne: jest.fn().mockResolvedValue(null) } as never,
@@ -89,6 +96,52 @@ describe('AiConversationQueryService 工程师可见性（F01）', () => {
       );
       expect(detailQb.setParameters.mock.calls).toEqual(headerQb.setParameters.mock.calls);
       expect(detailQb.andWhere).toHaveBeenCalledTimes(headerQb.andWhere.mock.calls.length);
+    });
+  });
+
+  describe('列表装配：真实轮次（turnCount）', () => {
+    const conversationEntity = {
+      id: 7,
+      requestId: null,
+      status: 'COMPLETED',
+      contentVersion: 1,
+      createdAt: new Date('2026-11-20T08:00:00.000Z'),
+      completedAt: null,
+    };
+
+    it('按 turn_no 去重计数，而不是消息条数', async () => {
+      const conversationQb = makeQbStub();
+      conversationQb.getMany.mockResolvedValue([conversationEntity]);
+      const messageQb = makeQbStub();
+      messageQb.getRawMany.mockResolvedValue([
+        { conversationId: 7, count: '5', lastMessageAt: new Date(), turnCount: '3' },
+      ]);
+
+      const page = await makeService(conversationQb, {
+        createQueryBuilder: jest.fn().mockReturnValue(messageQb),
+      }).listVisible({ viewer, pagination });
+
+      expect(page.items[0].turnCount).toBe(3);
+      expect(page.items[0].messageCount).toBe(5);
+      // 聚合口径：真实轮次按 turn_no 去重（失败轮只有用户消息也计为一轮）
+      expect(messageQb.addSelect).toHaveBeenCalledWith(
+        'COUNT(DISTINCT message.turnNo)',
+        'turnCount',
+      );
+    });
+
+    it('会话没有任何消息时轮次为 0', async () => {
+      const conversationQb = makeQbStub();
+      conversationQb.getMany.mockResolvedValue([conversationEntity]);
+      const messageQb = makeQbStub();
+      messageQb.getRawMany.mockResolvedValue([]);
+
+      const page = await makeService(conversationQb, {
+        createQueryBuilder: jest.fn().mockReturnValue(messageQb),
+      }).listVisible({ viewer, pagination });
+
+      expect(page.items[0].turnCount).toBe(0);
+      expect(page.items[0].messageCount).toBe(0);
     });
   });
 });

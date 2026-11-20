@@ -107,6 +107,7 @@ export async function installGraphQLMock(
                   status: 'ACTIVE',
                   contentVersion: state.turns.length + 1,
                   messageCount: state.turns.length * 2,
+                  turnCount: state.turns.length,
                   createdAt: '2026-11-19T08:00:00.000Z',
                 },
               ],

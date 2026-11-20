@@ -77,7 +77,7 @@ export function AiHistoryDrawer({
                   <div className="min-w-0">
                     <div className="truncate text-sm text-text-primary">#{item.id}</div>
                     <div className="truncate text-xs text-text-secondary">
-                      {`${item.requestNo || t('ai.history.standalone')} · ${item.messageCount} · v${item.contentVersion}`}
+                      {`${item.requestNo || t('ai.history.standalone')} · ${t('ai.panel.turnCount', { count: String(item.turnCount) })} · v${item.contentVersion}`}
                     </div>
                   </div>
                   <Tag color={item.status === 'ACTIVE' ? 'blue' : 'default'}>{item.status}</Tag>

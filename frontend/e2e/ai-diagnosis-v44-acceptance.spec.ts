@@ -135,11 +135,18 @@ function assertLayout(metrics: PageMetrics, stacked: boolean, label: string): vo
   if (stacked) {
     expect(columns.length, `${label}：窄屏应纵向堆叠为单列`).toBe(1);
     expect(panel.y, `${label}：窄屏对话面板应排在场景区下方`).toBeGreaterThan(scene.y);
+    // 偏差2 回归防护：窄屏模型区高度对齐 V44 原型实测 540.2
+    expect(scene.height, `${label}：窄屏模型区高度应对齐原型 540px`).toBeGreaterThanOrEqual(540);
   } else {
     expect(columns.length, `${label}：桌面应为左右两列`).toBe(2);
     expect(panel.x, `${label}：桌面对话面板应在场景区右侧`).toBeGreaterThan(scene.x);
     expect(panel.width, `${label}：桌面右栏宽度应在 350–530px`).toBeGreaterThanOrEqual(350);
     expect(panel.width, `${label}：桌面右栏宽度应在 350–530px`).toBeLessThanOrEqual(530);
+    // 偏差1 回归防护：工作区贴合视口高度，整页不出现纵向滚动
+    expect(
+      metrics.document.scrollHeight,
+      `${label}：桌面/中屏整页不应出现纵向滚动`,
+    ).toBeLessThanOrEqual(metrics.viewport.height + 1);
   }
 
   expect(metrics.canvas, `${label}：应存在画布容器`).not.toBeNull();
@@ -246,6 +253,13 @@ test.describe('V44 展示层验收（任务05 S4）', () => {
       await expect(page.getByRole('button', { name: '重试本轮' })).toBeVisible({ timeout: 8000 });
       metrics.failed = await measure(page);
       assertLayout(metrics.failed, viewport.stacked, `${viewport.name}/错误`);
+      if (!viewport.stacked) {
+        // 偏差1 回归防护：失败轮次的长文案不得把工作区撑高（改为右栏内部滚动）
+        expect(
+          metrics.failed.grid?.height,
+          `${viewport.name}/错误：失败态工作区高度应与空态一致`,
+        ).toBe(metrics.empty.grid?.height);
+      }
       await capture(page, `ai-diagnosis-${viewport.name}-failed`);
 
       // 6) 问答记录页：独立入口直达，列表可读

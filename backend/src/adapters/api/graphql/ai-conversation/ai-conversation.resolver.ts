@@ -87,6 +87,7 @@ export class AiConversationResolver {
         status: item.status,
         contentVersion: item.contentVersion,
         messageCount: item.messageCount,
+        turnCount: item.turnCount,
         lastMessageAt: item.lastMessageAt,
         createdAt: item.createdAt,
         completedAt: item.completedAt,

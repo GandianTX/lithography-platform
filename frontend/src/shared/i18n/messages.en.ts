@@ -911,7 +911,7 @@ export const EN_MESSAGES = {
   'ai.record.source.standalone': 'Standalone chat',
   'ai.record.column.source': 'Source',
   'ai.record.column.requestNo': 'Work order no.',
-  'ai.record.column.messages': 'Messages',
+  'ai.record.column.turns': 'Turns',
   'ai.record.column.status': 'Status',
   'ai.record.column.lastMessageAt': 'Last message',
   'ai.record.column.createdAt': 'Created',

@@ -15,6 +15,8 @@ export type AiConversationListItem = {
   status: AiConversationStatus;
   contentVersion: number;
   messageCount: number;
+  /** 真实轮次：用户发起过的轮次（按 turn_no 去重，含失败轮） */
+  turnCount: number;
   lastMessageAt: string | null;
   createdAt: string;
   completedAt: string | null;

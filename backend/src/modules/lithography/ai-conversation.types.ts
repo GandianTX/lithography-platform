@@ -119,6 +119,8 @@ export interface AiConversationListItemQueryResult {
   readonly status: AiConversationStatus;
   readonly contentVersion: number;
   readonly messageCount: number;
+  /** 真实轮次：按 turn_no 去重计数（用户发起过的轮次，含失败轮） */
+  readonly turnCount: number;
   readonly lastMessageAt: Date | null;
   readonly createdAt: Date;
   readonly completedAt: Date | null;

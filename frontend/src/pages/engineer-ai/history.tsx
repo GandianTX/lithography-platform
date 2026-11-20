@@ -38,8 +38,8 @@ export function EngineerAiHistoryPage() {
         width: 200,
       },
       {
-        dataIndex: 'messageCount',
-        title: t('ai.record.column.messages'),
+        dataIndex: 'turnCount',
+        title: t('ai.record.column.turns'),
         width: 96,
       },
       {
