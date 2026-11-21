@@ -6,7 +6,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { In, Repository } from 'typeorm';
 import { SyncConflictEntity } from '../entities/sync-conflict.entity';
-import { type SyncConflictListFilters, type SyncConflictSnapshot } from '../sync.types';
+import {
+  type SyncConflictListFilters,
+  type SyncConflictSnapshot,
+  type SyncConflictSummary,
+} from '../sync.types';
 
 /** 冲突行 → 只读快照；不做字段级解释，快照 JSON 原样搬运 */
 export function toSyncConflictSnapshot(entity: SyncConflictEntity): SyncConflictSnapshot {
@@ -23,6 +27,26 @@ export function toSyncConflictSnapshot(entity: SyncConflictEntity): SyncConflict
     status: entity.status as SyncConflictSnapshot['status'],
     localSnapshot: entity.localSnapshot,
     cloudSnapshot: entity.cloudSnapshot,
+    conflictReason: entity.conflictReason,
+    confirmedByAccountId: entity.confirmedByAccountId,
+    confirmedAt: entity.confirmedAt,
+    createdAt: entity.createdAt,
+  };
+}
+
+/** 冲突行 → 摘要（刻意不含正文快照）：裁决结果返回体用 */
+export function toSyncConflictSummary(entity: SyncConflictEntity): SyncConflictSummary {
+  return {
+    conflictId: entity.conflictId,
+    recordUuid: entity.recordUuid,
+    organizationId: entity.organizationId,
+    resourceType: entity.resourceType,
+    versionNo: entity.versionNo,
+    localVersion: entity.localVersion,
+    cloudVersion: entity.cloudVersion,
+    displayedCloudVersion: entity.displayedCloudVersion,
+    decision: (entity.decision ?? null) as SyncConflictSummary['decision'],
+    status: entity.status as SyncConflictSummary['status'],
     conflictReason: entity.conflictReason,
     confirmedByAccountId: entity.confirmedByAccountId,
     confirmedAt: entity.confirmedAt,

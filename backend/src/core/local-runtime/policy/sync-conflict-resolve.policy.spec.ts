@@ -39,11 +39,12 @@ describe('sync conflict resolve policy', () => {
     expect(resolveSyncConflictOutcome(pendingTouched, 'LATER')).toEqual({ kind: 'later' });
   });
 
-  it('待处理冲突：保留本地在受控写入入口（X04）接入前显式失败', () => {
-    expectPolicyError(
-      () => resolveSyncConflictOutcome(pending, 'LOCAL'),
-      SYNC_ERROR.LOCAL_RESOLUTION_NOT_AVAILABLE,
-    );
+  it('待处理冲突：保留本地 → 需要写入 LOCAL（走来源业务受控写入入口）', () => {
+    expect(resolveSyncConflictOutcome(pending, 'LOCAL')).toEqual({
+      kind: 'write',
+      action: 'LOCAL',
+      decision: 'LOCAL',
+    });
   });
 
   it('已按云端裁决：重复使用云端返回既有事实，不重复写', () => {

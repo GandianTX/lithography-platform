@@ -8,8 +8,15 @@ import { In, Repository } from 'typeorm';
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import { SyncConflictEntity } from './entities/sync-conflict.entity';
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
-import { toSyncConflictSnapshot } from './queries/sync-conflict.query.service';
-import type { SyncConflictResolveCommand, SyncConflictSnapshot } from './sync.types';
+import {
+  toSyncConflictSnapshot,
+  toSyncConflictSummary,
+} from './queries/sync-conflict.query.service';
+import type {
+  SyncConflictResolveCommand,
+  SyncConflictSnapshot,
+  SyncConflictSummary,
+} from './sync.types';
 import {
   type LocalAuthorizationRenewalInput,
   type LocalAuthorizationRenewalScope,
@@ -100,6 +107,46 @@ export class SyncConflictService {
       })
       .execute();
     return result.affected ?? 0;
+  }
+
+  /**
+   * 「保留本地」裁决写回：与 CLOUD 同构，只把 decision 落成 LOCAL。
+   *
+   * 条件更新（`WHERE status='PENDING'`）与 CHECK（PENDING ⇒ 确认人为空）一致：
+   * 0 行表示并发期间已被其他会话裁决，调用方据以回读既有事实，不覆盖。
+   */
+  async applyLocalResolution(
+    command: SyncConflictResolveCommand,
+    confirmedAt: Date,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number> {
+    const repository = this.pickConflictRepository(transactionContext);
+    const result = await repository
+      .createQueryBuilder()
+      .update(SyncConflictEntity)
+      .set({
+        decision: 'LOCAL',
+        status: 'RESOLVED',
+        confirmedByAccountId: command.confirmedByAccountId,
+        confirmedAt,
+      })
+      .where('conflictId = :conflictId AND status = :status', {
+        conflictId: command.conflictId,
+        status: 'PENDING',
+      })
+      .execute();
+    return result.affected ?? 0;
+  }
+
+  /** 冲突摘要读取（不含正文快照）：裁决结果返回体不携带两份正文 */
+  async readConflictSummaryById(
+    conflictId: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<SyncConflictSummary | null> {
+    const entity = await this.pickConflictRepository(transactionContext).findOne({
+      where: { conflictId },
+    });
+    return entity ? toSyncConflictSummary(entity) : null;
   }
 
   /**

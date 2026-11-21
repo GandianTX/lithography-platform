@@ -36,6 +36,14 @@ export type SyncConflictSnapshot = {
   createdAt: Date;
 };
 
+/**
+ * 冲突摘要（**不含正文快照**）。
+ *
+ * 用途：裁决结果的返回体。裁决是一次写动作，返回体没有必要再带两份正文快照
+ * （本地快照与云端快照都含正文与原件引用）；摘要只给冲突元数据与裁决事实。
+ */
+export type SyncConflictSummary = Omit<SyncConflictSnapshot, 'localSnapshot' | 'cloudSnapshot'>;
+
 export type SyncConflictListPagination = {
   page: number;
   pageSize: number;

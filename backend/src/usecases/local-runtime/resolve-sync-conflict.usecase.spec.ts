@@ -2,13 +2,16 @@
 import { SYNC_ERROR } from '@core/common/errors/domain-error';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { SyncConflictService } from '@src/modules/lithography/sync-conflict.service';
-import type { SyncConflictSnapshot } from '@src/modules/lithography/sync.types';
+import type {
+  SyncConflictSnapshot,
+  SyncConflictSummary,
+} from '@src/modules/lithography/sync.types';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import type { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 import { ResolveSyncConflictUsecase } from './resolve-sync-conflict.usecase';
 
 /**
- * 冲突裁决用例：范围收敛与"重复请求返回既有事实"。
+ * 冲突裁决用例：范围收敛、"重复请求返回既有事实"与「保留本地」的受控写入编排。
  * 裁决规则本身在 core 策略 spec 中覆盖，这里覆盖范围与写入编排。
  */
 describe('ResolveSyncConflictUsecase', () => {
@@ -26,12 +29,29 @@ describe('ResolveSyncConflictUsecase', () => {
     displayedCloudVersion: 5,
     decision: null,
     status: 'PENDING',
-    localSnapshot: '{}',
+    localSnapshot: JSON.stringify({ schema_version: 1, content_md: '# 本地正文' }),
     cloudSnapshot: '{}',
     conflictReason: 'both sides changed',
     confirmedByAccountId: null,
     confirmedAt: null,
     createdAt: new Date('2026-11-19T00:00:00.000Z'),
+  };
+
+  const summary: SyncConflictSummary = {
+    conflictId: conflict.conflictId,
+    recordUuid: conflict.recordUuid,
+    organizationId: conflict.organizationId,
+    resourceType: conflict.resourceType,
+    versionNo: conflict.versionNo,
+    localVersion: conflict.localVersion,
+    cloudVersion: conflict.cloudVersion,
+    displayedCloudVersion: conflict.displayedCloudVersion,
+    decision: conflict.decision,
+    status: conflict.status,
+    conflictReason: conflict.conflictReason,
+    confirmedByAccountId: conflict.confirmedByAccountId,
+    confirmedAt: conflict.confirmedAt,
+    createdAt: conflict.createdAt,
   };
 
   const makeUsecase = (params: {
@@ -47,14 +67,18 @@ describe('ResolveSyncConflictUsecase', () => {
           params.locked
             ? {
                 conflictId: params.locked.conflictId,
+                recordUuid: params.locked.recordUuid,
                 organizationId: params.locked.organizationId,
+                resourceType: params.locked.resourceType,
                 status: params.locked.status,
                 decision: params.locked.decision,
+                localVersion: params.locked.localVersion,
+                localSnapshot: params.locked.localSnapshot,
               }
             : null,
         ),
       ),
-      readConflictById: jest.fn(() => Promise.resolve(params.locked)),
+      readConflictSummaryById: jest.fn(() => Promise.resolve(summary)),
       applyCloudResolution: jest.fn(() => Promise.resolve(1)),
     };
     const transactionRunner = {
@@ -136,5 +160,17 @@ describe('ResolveSyncConflictUsecase', () => {
     await expect(
       usecase.execute({ session, conflictId: 'missing', action: 'CLOUD' }),
     ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_NOT_FOUND });
+  });
+
+  it('保留本地：本地运行域不代做管理员动作，明确要求走管理员受控修订入口', async () => {
+    const { usecase, service } = makeUsecase({
+      scope: { role: 'ADMIN_LEVEL_1', organizationId: null, adminLevel: 1 },
+      locked: conflict,
+    });
+
+    await expect(
+      usecase.execute({ session, conflictId: 'c-1', action: 'LOCAL' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY });
+    expect(service.applyCloudResolution).not.toHaveBeenCalled();
   });
 });

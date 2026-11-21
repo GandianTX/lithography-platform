@@ -19,14 +19,17 @@ import {
 } from '@src/usecases/common/ports/transaction-runner.contract';
 
 /**
- * 冲突裁决（任务 09 S2.2／R067–R069）。
+ * 冲突裁决（任务 09 S2.2／R067–R069／R-03）。
  *
  * - 锁读在事务内完成，判定交给 core 策略，写入交给模块服务；
  * - 重复相同方向返回既有事实（`outcome='existing'`），不重复写；
  * - 稍后处理（`outcome='later'`）保持 PENDING，确认人保持为空；
- * - 保留本地（LOCAL）需要来源业务受控版本写入入口（X04），
- *   当前由策略显式失败，不静默覆盖；
- * - 确认人取自 Session（数据库复核后的账号），不接受客户端传入。
+ * - 使用云端（`CLOUD`）只落 decision 与确认人，不回写云端原记录；
+ * - 保留本地（`LOCAL`）走**来源业务既有的受控版本写入入口**（任务 04 的工单受控修订入口）：
+ *   载荷映射与资源类型准入由 core 策略裁决，权限与版本条件由受控入口自己裁决，
+ *   09 侧不叠加第二套口径；
+ * - 确认人取自 Session（数据库复核后的账号），不接受客户端传入；
+ * - 返回体只给冲突**摘要**：裁决是一次写动作，没有必要再带两份正文快照。
  */
 @Injectable()
 export class ResolveSyncConflictUsecase {
@@ -40,7 +43,7 @@ export class ResolveSyncConflictUsecase {
   async execute(command: ResolveSyncConflictCommand): Promise<SyncConflictResolveOutcomeView> {
     const scope = await this.scopeResolver.resolve(command.session);
 
-    return this.transactionRunner.run(async (transactionContext) => {
+    const prepared = await this.transactionRunner.run(async (transactionContext) => {
       const locked = await this.syncConflictService.lockConflict(
         command.conflictId,
         transactionContext,
@@ -62,23 +65,11 @@ export class ResolveSyncConflictUsecase {
       );
 
       if (outcome.kind === 'later') {
-        return {
-          outcome: 'later' as const,
-          conflict: await this.syncConflictService.readConflictById(
-            command.conflictId,
-            transactionContext,
-          ),
-        };
+        return { kind: 'later' as const };
       }
 
       if (outcome.kind === 'existing') {
-        return {
-          outcome: 'existing' as const,
-          conflict: await this.syncConflictService.readConflictById(
-            command.conflictId,
-            transactionContext,
-          ),
-        };
+        return { kind: 'existing' as const };
       }
 
       if (outcome.action === 'CLOUD') {
@@ -91,31 +82,22 @@ export class ResolveSyncConflictUsecase {
           new Date(),
           transactionContext,
         );
-        if (affected === 0) {
-          // 持锁情况下 0 行只可能是并发已裁决：回读既有事实，不覆盖
-          return {
-            outcome: 'existing' as const,
-            conflict: await this.syncConflictService.readConflictById(
-              command.conflictId,
-              transactionContext,
-            ),
-          };
-        }
-        const conflict = await this.syncConflictService.readConflictById(
-          command.conflictId,
-          transactionContext,
-        );
-        if (!conflict) {
-          throw new DomainError(SYNC_ERROR.CONFLICT_NOT_FOUND, '裁决后未能回读冲突事实');
-        }
-        return { outcome: 'resolved' as const, conflict };
+        // 持锁情况下 0 行只可能是并发已裁决：回读既有事实，不覆盖
+        return { kind: affected === 0 ? ('existing' as const) : ('resolved' as const) };
       }
 
-      // LOCAL：策略已显式拒绝，这里只做防御
+      // LOCAL：保留本地是管理员动作，由管理员文档库域的受控修订入口执行；
+      // 本用例只处理"使用云端"与"稍后处理"（跨域不重复实现权限口径）。
+      // 载荷映射与资源类型准入见 core/local-runtime/policy/sync-conflict-local-resolution.policy.ts。
       throw new DomainError(
-        SYNC_ERROR.LOCAL_RESOLUTION_NOT_AVAILABLE,
-        '保留本地需要来源业务的受控版本写入入口，尚未接入',
+        SYNC_ERROR.LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY,
+        '保留本地需通过管理员受控修订入口执行',
       );
     });
+
+    return {
+      outcome: prepared.kind,
+      conflict: await this.syncConflictService.readConflictSummaryById(command.conflictId),
+    };
   }
 }

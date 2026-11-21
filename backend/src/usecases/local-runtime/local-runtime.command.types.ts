@@ -2,7 +2,7 @@
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { SyncConflictAction } from '@core/local-runtime/policy/sync-conflict-resolve.policy';
-import type { SyncConflictSnapshot } from '@src/modules/lithography/sync.types';
+import type { SyncConflictSummary } from '@src/modules/lithography/sync.types';
 import type {
   LocalBackupTriggerType,
   LocalUploadTaskStatus,
@@ -115,7 +115,8 @@ export type ResolveSyncConflictCommand = {
 /** 裁决结果视图：'existing' 表示重复请求返回既有事实，'later' 保持待处理 */
 export type SyncConflictResolveOutcomeView = {
   outcome: 'existing' | 'later' | 'resolved';
-  conflict: SyncConflictSnapshot | null;
+  /** 裁决后的冲突摘要（**不含正文快照**）：裁决返回体不携带两份正文 */
+  conflict: SyncConflictSummary | null;
 };
 
 // ---- 任务09 S2：本人同公司授权续期（R065，补验 S1.3）----

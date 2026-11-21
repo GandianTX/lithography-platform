@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { AppendRepairRequestRevisionUsecase } from './append-repair-request-revision.usecase';
+import { ApplyLocalSyncConflictResolutionUsecase } from './apply-local-sync-conflict-resolution.usecase';
 import { GetAdminAiReportDetailUsecase } from './get-admin-ai-report-detail.usecase';
 import { GetAdminDocumentDatabaseStatsUsecase } from './get-admin-document-database-stats.usecase';
 import { GetAdminRepairRequestRevisionDetailUsecase } from './get-admin-repair-request-revision-detail.usecase';
@@ -25,6 +26,7 @@ import { ListAdminRepairRequestsUsecase } from './list-admin-repair-requests.use
     GetAdminRepairRequestSummaryUsecase,
     GetAdminRepairRequestRevisionDetailUsecase,
     AppendRepairRequestRevisionUsecase,
+    ApplyLocalSyncConflictResolutionUsecase,
     ListAdminAiConversationsUsecase,
     ListAdminAiMessagesUsecase,
     ListAdminAiReportsUsecase,
@@ -36,6 +38,7 @@ import { ListAdminRepairRequestsUsecase } from './list-admin-repair-requests.use
     GetAdminRepairRequestSummaryUsecase,
     GetAdminRepairRequestRevisionDetailUsecase,
     AppendRepairRequestRevisionUsecase,
+    ApplyLocalSyncConflictResolutionUsecase,
     ListAdminAiConversationsUsecase,
     ListAdminAiMessagesUsecase,
     ListAdminAiReportsUsecase,

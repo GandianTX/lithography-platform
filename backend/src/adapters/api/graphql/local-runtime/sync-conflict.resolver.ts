@@ -24,6 +24,7 @@ import {
 import { GetSyncConflictUsecase } from '@src/usecases/local-runtime/get-sync-conflict.usecase';
 import { ListSyncConflictsUsecase } from '@src/usecases/local-runtime/list-sync-conflicts.usecase';
 import { ResolveSyncConflictUsecase } from '@src/usecases/local-runtime/resolve-sync-conflict.usecase';
+import { ApplyLocalSyncConflictResolutionUsecase } from '@src/usecases/admin-document-database/apply-local-sync-conflict-resolution.usecase';
 
 /**
  * 同步冲突解析器（任务 09 S2.1／S2.2，R066–R069）。
@@ -32,8 +33,9 @@ import { ResolveSyncConflictUsecase } from '@src/usecases/local-runtime/resolve-
  * - 公司范围（一级全局／二级与工程师本公司）由 usecase 依据 Session 裁决，
  *   不接受客户端公司参数；
  * - 确认人取自 Session，客户端无传入口；
- * - "保留本地"裁决在来源业务受控写入入口（X04）接入前显式失败，
- *   不做静默覆盖；"稍后处理"保持待处理且不写确认人。
+ * - "保留本地"走来源业务受控写入入口（任务 04 的工单受控修订入口，管理员动作），
+ *   不做静默覆盖；"稍后处理"保持待处理且不写确认人；
+ * - 裁决结果只返回冲突摘要，不返回本地/云端两份正文快照。
  */
 @Resolver()
 export class SyncConflictResolver {
@@ -41,6 +43,7 @@ export class SyncConflictResolver {
     private readonly listSyncConflictsUsecase: ListSyncConflictsUsecase,
     private readonly getSyncConflictUsecase: GetSyncConflictUsecase,
     private readonly resolveSyncConflictUsecase: ResolveSyncConflictUsecase,
+    private readonly applyLocalSyncConflictResolutionUsecase: ApplyLocalSyncConflictResolutionUsecase,
   ) {}
 
   private toSession(user: AuthenticatedSessionUser): UsecaseSession {
@@ -99,8 +102,18 @@ export class SyncConflictResolver {
     @Args('conflictId', { type: () => String }) conflictId: string,
     @Args('action', { type: () => syncConflictActionEnum }) action: SyncConflictAction,
   ): Promise<SyncConflictResolveResultDTO> {
+    const session = this.toSession(user);
+    // 保留本地是管理员动作：由管理员文档库域的受控修订入口执行（任务 09 R-03）；
+    // 使用云端／稍后处理留在本地运行域（那里有冲突读侧的授权与范围口径）。
+    if (action === 'LOCAL') {
+      const localResult = await this.applyLocalSyncConflictResolutionUsecase.execute({
+        session,
+        conflictId,
+      });
+      return toSyncConflictResolveResultDTO(localResult);
+    }
     const result = await this.resolveSyncConflictUsecase.execute({
-      session: this.toSession(user),
+      session,
       conflictId,
       action,
     });

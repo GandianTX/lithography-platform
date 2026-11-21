@@ -60,8 +60,9 @@ export type SyncConflictResolveOutcome =
  * 2. 待处理冲突：
  *    - 稍后处理 → 保持 PENDING；
  *    - 使用云端 → 只写 decision/确认人，不回写云端原记录；
- *    - 保留本地 → 需要生成一次新修订，属受控写入。
- * 3. `LOCAL` 在受控版本写入入口（X04）接入前一律显式失败，不做静默覆盖。
+ *    - 保留本地 → 生成一次新修订，属受控写入（走来源业务既有受控入口）。
+ * 3. `LOCAL` 的载荷映射、资源类型准入与版本取数由
+ *    `sync-conflict-local-resolution.policy.ts` 裁决；入口未就绪时由受控写入端口失败关闭。
  */
 export function resolveSyncConflictOutcome(
   facts: SyncConflictDecisionFacts,
@@ -90,9 +91,7 @@ export function resolveSyncConflictOutcome(
   if (action === 'CLOUD') {
     return { kind: 'write', action: 'CLOUD', decision: 'CLOUD' };
   }
-  // LOCAL：需要来源业务受控写入入口（X04），未接入前显式失败
-  throw new DomainError(
-    SYNC_ERROR.LOCAL_RESOLUTION_NOT_AVAILABLE,
-    '保留本地需要来源业务的受控版本写入入口，尚未接入',
-  );
+  // LOCAL：保留本地 → 走来源业务的受控版本写入入口（任务 04 的工单受控修订入口）。
+  // 本层只判断"该不该允许"；载荷映射与写入由 core 策略 + 受控写入端口完成。
+  return { kind: 'write', action: 'LOCAL', decision: 'LOCAL' };
 }
