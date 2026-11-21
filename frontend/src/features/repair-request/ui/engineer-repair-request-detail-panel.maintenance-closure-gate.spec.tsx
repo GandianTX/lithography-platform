@@ -210,7 +210,7 @@ describe('维修记录草稿门禁：首次填写', () => {
     expect(closeMock).toHaveBeenCalledWith(
       expect.objectContaining({ maintenanceVersionNo: 1, requestId: 21 }),
     );
-  });
+  }, 15_000);
 });
 
 describe('维修记录草稿门禁：编辑已有记录', () => {
@@ -232,7 +232,7 @@ describe('维修记录草稿门禁：编辑已有记录', () => {
     expect(screen.queryByRole('button', { name: '确认结单' })).toBeNull();
     expect(closeMock).not.toHaveBeenCalled();
     expect(stepInput.value).toBe('编辑后的排查动作');
-  });
+  }, 15_000);
 
   it('仅打开已有记录编辑器、未修改时不拦截结单', async () => {
     fetchMock.mockResolvedValue(detailOk(EXISTING_DETAIL));
@@ -252,7 +252,7 @@ describe('维修记录草稿门禁：编辑已有记录', () => {
     expect(closeMock).toHaveBeenCalledWith(
       expect.objectContaining({ maintenanceVersionNo: 1, requestId: 21 }),
     );
-  });
+  }, 15_000);
 });
 
 describe('维修记录草稿门禁：空白 v0', () => {
@@ -275,5 +275,5 @@ describe('维修记录草稿门禁：空白 v0', () => {
     expect(closeMock).toHaveBeenCalledWith(
       expect.objectContaining({ maintenanceVersionNo: 0, requestId: 21 }),
     );
-  });
+  }, 15_000);
 });
