@@ -26,6 +26,7 @@ const V13_TIMESTAMPS = [
   1775501000000, 1775501100000, 1775501200000, 1775501300000, 1775501400000, 1775501500000,
   1775501600000, 1775501700000, 1775501800000, 1775501900000, 1775502000000, 1775502100000,
   1775502200000, 1775502300000, 1775502400000, 1775502500000, 1775502600000, 1775502700000,
+  1775502800000,
 ];
 
 const V13_TABLES = [
@@ -239,6 +240,74 @@ describe('V13 结构契约（不连接实库）', () => {
     expect(foreignKey.referenceColumns).toEqual(['file_id']);
     expect(foreignKey.onDelete).toBe('RESTRICT');
     expect(foreignKey.onUpdate).toBe('RESTRICT');
+  });
+
+  it('第 50 条三张业务源表稳定身份列只从终态前缀生效，且登记为可空唯一列', () => {
+    const previous = collectPrefixStructureRequirements(
+      new Set(V13_TIMESTAMPS.filter((timestamp) => timestamp < 1775502800000)),
+    );
+    for (const table of ['repair_request', 'reference_document', 'maintenance_report']) {
+      expect(
+        previous.some(
+          (item) => item.kind === 'column' && item.table === table && item.name === 'record_uuid',
+        ),
+      ).toBe(false);
+    }
+
+    const terminal = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
+    const cases = [
+      { table: 'repair_request', index: 'uk_repair_request_record_uuid' },
+      { table: 'reference_document', index: 'uk_reference_document_record_uuid' },
+      { table: 'maintenance_report', index: 'uk_maintenance_report_record_uuid' },
+    ] as const;
+
+    for (const item of cases) {
+      const column = terminal.find(
+        (entry) =>
+          entry.kind === 'column' && entry.table === item.table && entry.name === 'record_uuid',
+      );
+      expect(column?.since).toBe(1775502800000);
+      if (column?.kind !== 'column') {
+        throw new Error(`未生成 ${item.table}.record_uuid 结构要求`);
+      }
+      expect(column.notNull).toBeUndefined();
+      expect(column.definition).toEqual({
+        since: 1775502800000,
+        columnType: 'char(36)',
+        nullable: true,
+        defaultValue: null,
+      });
+
+      const index = terminal.find(
+        (entry) =>
+          entry.kind === 'index' && entry.table === item.table && entry.name === item.index,
+      );
+      expect(index?.since).toBe(1775502800000);
+      expect(index?.kind === 'index' ? index.unique : undefined).toBe(true);
+      expect(index?.kind === 'index' ? index.columns : undefined).toEqual(['record_uuid']);
+    }
+  });
+
+  it('三张业务源表的稳定身份列在 Entity 元数据中保持可空且登记唯一索引', async () => {
+    const source = await loadEntityMetadata();
+    const cases = [
+      { table: 'repair_request', index: 'uk_repair_request_record_uuid' },
+      { table: 'reference_document', index: 'uk_reference_document_record_uuid' },
+      { table: 'maintenance_report', index: 'uk_maintenance_report_record_uuid' },
+    ] as const;
+
+    for (const item of cases) {
+      const metadata = source.getMetadata(item.table);
+      const column = metadata.findColumnWithDatabaseName('record_uuid');
+      expect(column).toBeDefined();
+      expect(column?.type).toBe('char');
+      expect(column?.length).toBe('36');
+      expect(column?.isNullable).toBe(true);
+      const index = metadata.indices.find((candidate) => candidate.name === item.index);
+      expect(index).toBeDefined();
+      expect(index?.isUnique).toBe(true);
+      expect(index?.columns.map((column) => column.databaseName)).toEqual(['record_uuid']);
+    }
   });
 
   it('记录包检查/导入状态列由第 39 条迁移登记，导入结果允许未执行', () => {

@@ -3,7 +3,7 @@
 import { deriveRecordUuid } from '@core/local-runtime/policy/record-package-export.policy';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 
 import { MaintenanceReportEntity } from '../entities/maintenance-report.entity';
 import { ReferenceDocumentEntity } from '../entities/reference-document.entity';
@@ -17,14 +17,17 @@ import { RepairRequestEntity } from '../entities/repair-request.entity';
  * 2. 它当前的业务版本是多少（版本不能信客户端）；
  * 3. 它是否适用本机业务同步、是否已删除下架（适用性不能由"缺任务"推断）。
  *
- * 身份口径：`recordUuid` 目前由 `deriveRecordUuid(resourceType, 本地自增 ID)` 派生，
- * 它是**本机设备内**的稳定键（本服务据此把稳定键还原到本地记录），**不是**跨设备
- * 全局身份——不同设备的同号自增 ID 会派生出相同 UUID。因此本服务只提供设备内事实，
- * 跨端身份方案另行设计（见证据 S0-基线与06对齐记录 §5）。
+ * 身份口径（任务 09 后续S1.4）：
+ * - **优先定向定位**：源表已持久化稳定编号 `record_uuid`（创建入口一次性生成，
+ *   跨端一致），可按列直接定位记录，不再依赖派生值反解；
+ * - **历史行回退**：未持久化稳定编号的历史行仍用 `deriveRecordUuid(resourceType,
+ *   本地自增 ID)` 派生值定位。派生值只在**本机内**唯一（不同设备的同号自增 ID
+ *   会派生出相同 UUID），因此这类命中标记为 `identityPersisted=false`，
+ *   由上层如实表达"跨端稳定身份尚未持久化"，不得对外宣称跨端唯一。
  *
- * 扫描完整性：派生键不可反解，只能按（公司、类型）扫描候选记录再比对派生值。
- * 候选集超过上限时返回 `scanComplete=false`，调用方据此把无法还原的稳定键判为
- * **未知**（而不是"记录不存在"），避免把扫描截断误报成事实。
+ * 扫描完整性：派生键不可反解，回退定位只能按（公司、类型）扫描候选记录再比对
+ * 派生值。候选集超过上限时返回 `scanComplete=false`，调用方据此把无法还原的
+ * 稳定键判为**未知**（而不是"记录不存在"），避免把扫描截断误报成事实。
  */
 export const SYNC_SOURCE_RESOURCE_TYPES = [
   'REFERENCE_DOCUMENT',
@@ -39,7 +42,7 @@ export const SYNC_SOURCE_SCAN_LIMIT = 2000;
 
 export type SyncSourceRecordFact = {
   resourceType: SyncSourceResourceType;
-  /** 本机稳定键（设备内派生；跨设备不保证唯一） */
+  /** 本机稳定键（持久化稳定编号优先，历史行为派生值） */
   recordUuid: string;
   recordId: number;
   /** 归属公司；null 表示归属未知（存量无证据，不猜测） */
@@ -51,7 +54,7 @@ export type SyncSourceRecordFact = {
   /**
    * **材料级**适用性：true=材料本身适用、false=材料已下架／删除等不适用、
    * null=材料级无法判定（归属待确认等）。
-   * 公司级运行模式事实源尚未落地，公司级适用性由上层另行裁决。
+   * 公司级运行模式由上层另行裁决（见 `sync-status.policy.ts`）。
    */
   materialApplicable: boolean | null;
   /** 与该记录关联的账号（本人判定的事实来源，不参与授权有效性判定） */
@@ -63,6 +66,12 @@ export type SyncSourceRecordFact = {
   authorizationSubjectAccountId: number | null;
   /** 是否已删除下架／软删除 */
   withdrawn: boolean;
+  /**
+   * 身份是否为源表**持久化**的稳定编号：
+   * - true：跨端稳定身份已持久化（可随记录包搬运到其他设备）；
+   * - false：历史行仅由本机自增 ID 派生，跨端唯一性不成立。
+   */
+  identityPersisted: boolean;
 };
 
 export type SyncSourceRecordFacts = {
@@ -86,6 +95,10 @@ export class SyncSourceRecordQueryService {
   /**
    * 列出某公司某类型的来源记录事实（只返回请求的稳定键对应的记录）。
    *
+   * 两段定位：
+   * 1. 定向定位：按源表持久化的 `record_uuid` 精确命中（跨端稳定身份）；
+   * 2. 回退定位：仍未命中的键按派生值扫描比对（历史行兼容）。
+   *
    * 归属未知的存量行也会被读出（ownerOrganizationId=null）：稳定键还原需要覆盖它们，
    * 但授权环节会因归属未知而拒绝它们（有公司范围的调用者看不到它们）。
    */
@@ -94,7 +107,95 @@ export class SyncSourceRecordQueryService {
     resourceType: SyncSourceResourceType;
     recordUuids: readonly string[];
   }): Promise<SyncSourceRecordFacts> {
-    const wanted = new Set(params.recordUuids);
+    const facts = new Map<string, SyncSourceRecordFact>();
+
+    // 第一段：按持久化稳定编号定向定位
+    const persisted = await this.findPersistedFacts(params);
+    for (const [uuid, fact] of persisted) {
+      facts.set(uuid, fact);
+    }
+
+    // 第二段：未命中的键按派生值回退扫描（历史行未持久化稳定编号）
+    const missing = params.recordUuids.filter((uuid) => !facts.has(uuid));
+    let scanComplete = true;
+    if (missing.length > 0) {
+      const scanned = await this.scanDerivedFacts(params, missing);
+      scanComplete = scanned.scanComplete;
+      for (const [uuid, fact] of scanned.facts) {
+        facts.set(uuid, fact);
+      }
+    }
+
+    return { facts, scanComplete };
+  }
+
+  /** 按源表持久化稳定编号定向定位（不扫描全表） */
+  private async findPersistedFacts(params: {
+    organizationId: number;
+    resourceType: SyncSourceResourceType;
+    recordUuids: readonly string[];
+  }): Promise<Map<string, SyncSourceRecordFact>> {
+    const facts = new Map<string, SyncSourceRecordFact>();
+    if (params.recordUuids.length === 0) {
+      return facts;
+    }
+
+    if (params.resourceType === 'MAINTENANCE_REPORT') {
+      const rows = await this.reportRepository.find({
+        where: {
+          ownerOrganizationId: params.organizationId,
+          recordUuid: In([...params.recordUuids]),
+        },
+      });
+      for (const row of rows) {
+        if (row.recordUuid === null) {
+          continue;
+        }
+        facts.set(row.recordUuid, this.toReportFact(row));
+      }
+      return facts;
+    }
+
+    if (params.resourceType === 'REFERENCE_DOCUMENT') {
+      const rows = await this.documentRepository.find({
+        where: [
+          { ownerOrganizationId: params.organizationId, recordUuid: In([...params.recordUuids]) },
+          { ownerOrganizationId: IsNull(), recordUuid: In([...params.recordUuids]) },
+        ],
+      });
+      for (const row of rows) {
+        if (row.recordUuid === null) {
+          continue;
+        }
+        facts.set(row.recordUuid, this.toDocumentFact(row));
+      }
+      return facts;
+    }
+
+    const rows = await this.repairRequestRepository.find({
+      where: [
+        { ownerOrganizationId: params.organizationId, recordUuid: In([...params.recordUuids]) },
+        { ownerOrganizationId: IsNull(), recordUuid: In([...params.recordUuids]) },
+      ],
+    });
+    for (const row of rows) {
+      if (row.recordUuid === null) {
+        continue;
+      }
+      facts.set(row.recordUuid, this.toRepairRequestFact(row));
+    }
+    return facts;
+  }
+
+  /** 回退扫描：按（公司、类型）取候选记录并比对派生值（历史行兼容） */
+  private async scanDerivedFacts(
+    params: {
+      organizationId: number;
+      resourceType: SyncSourceResourceType;
+    },
+    missing: readonly string[],
+  ): Promise<SyncSourceRecordFacts> {
+    const wanted = new Set(missing);
     const all =
       params.resourceType === 'MAINTENANCE_REPORT'
         ? await this.listReportFacts(params.organizationId)
@@ -118,27 +219,12 @@ export class SyncSourceRecordQueryService {
       take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
-    return rows.map((row) => {
-      // 报告的草稿版本恒为 0：无法区分两次草稿编辑，版本不可核验
-      const versionTrusted = row.currentVersionNo > 0;
-      return {
-        resourceType: 'MAINTENANCE_REPORT' as const,
-        recordUuid: deriveRecordUuid('MAINTENANCE_REPORT', row.id),
-        recordId: row.id,
-        ownerOrganizationId: row.ownerOrganizationId,
-        currentVersion: versionTrusted ? row.currentVersionNo : null,
-        versionTrusted,
-        materialApplicable: true,
-        relatedAccountIds: [
-          row.createdByAccountId,
-          row.maintenanceEngineerAccountId,
-          row.updatedByAccountId,
-        ].filter((value): value is number => typeof value === 'number'),
-        authorizationSubjectAccountId: row.createdByAccountId,
-        // 报告没有软删除列：下架由业务状态表达，本层不推断
-        withdrawn: false,
-      };
-    });
+    return rows.map((row) => ({
+      ...this.toReportFact(row),
+      // 历史行未持久化稳定编号：身份按派生值表达（跨端唯一性不成立）
+      recordUuid: deriveRecordUuid('MAINTENANCE_REPORT', row.id),
+      identityPersisted: false,
+    }));
   }
 
   private async listDocumentFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
@@ -147,32 +233,11 @@ export class SyncSourceRecordQueryService {
       take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
-    return rows.map((row) => {
-      const versionTrusted = row.currentRevisionNo > 0;
-      const softDeleted = row.deprecated === true || row.deletedAt !== null;
-      const offline = row.publicationStatus === 'OFFLINE';
-      // 归属待确认（PENDING）时材料级适用性无法判定
-      const materialApplicable =
-        softDeleted || offline
-          ? false
-          : row.ownershipStatus === 'CONFIRMED' && row.publicationStatus === 'ONLINE'
-            ? true
-            : null;
-      return {
-        resourceType: 'REFERENCE_DOCUMENT' as const,
-        recordUuid: deriveRecordUuid('REFERENCE_DOCUMENT', row.id),
-        recordId: row.id,
-        ownerOrganizationId: row.ownerOrganizationId,
-        currentVersion: versionTrusted ? row.currentRevisionNo : null,
-        versionTrusted,
-        materialApplicable,
-        relatedAccountIds: [row.createdByAccountId, row.updatedByAccountId].filter(
-          (value): value is number => typeof value === 'number',
-        ),
-        authorizationSubjectAccountId: row.createdByAccountId,
-        withdrawn: softDeleted || offline,
-      };
-    });
+    return rows.map((row) => ({
+      ...this.toDocumentFact(row),
+      recordUuid: deriveRecordUuid('REFERENCE_DOCUMENT', row.id),
+      identityPersisted: false,
+    }));
   }
 
   private async listRepairRequestFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
@@ -181,27 +246,85 @@ export class SyncSourceRecordQueryService {
       take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
-    return rows.map((row) => {
-      const versionTrusted = row.currentRevisionNo > 0;
-      const softDeleted = row.deprecated === true || row.deletedAt !== null;
-      return {
-        resourceType: 'REPAIR_REQUEST' as const,
-        recordUuid: deriveRecordUuid('REPAIR_REQUEST', row.id),
-        recordId: row.id,
-        ownerOrganizationId: row.ownerOrganizationId,
-        currentVersion: versionTrusted ? row.currentRevisionNo : null,
-        versionTrusted,
-        materialApplicable: softDeleted ? false : true,
-        relatedAccountIds: [
-          row.customerAccountId,
-          row.acceptedByEngineerAccountId,
-          row.handlingRecordedByAccountId,
-        ].filter((value): value is number => typeof value === 'number'),
-        // 工单的授权主体是受理工程师；未受理时以客户账号兜底
-        authorizationSubjectAccountId:
-          row.acceptedByEngineerAccountId ?? row.customerAccountId ?? null,
-        withdrawn: softDeleted,
-      };
-    });
+    return rows.map((row) => ({
+      ...this.toRepairRequestFact(row),
+      recordUuid: deriveRecordUuid('REPAIR_REQUEST', row.id),
+      identityPersisted: false,
+    }));
+  }
+
+  private toReportFact(row: MaintenanceReportEntity): SyncSourceRecordFact {
+    // 报告的草稿版本恒为 0：无法区分两次草稿编辑，版本不可核验
+    const versionTrusted = row.currentVersionNo > 0;
+    return {
+      resourceType: 'MAINTENANCE_REPORT',
+      recordUuid: row.recordUuid ?? deriveRecordUuid('MAINTENANCE_REPORT', row.id),
+      recordId: row.id,
+      ownerOrganizationId: row.ownerOrganizationId,
+      currentVersion: versionTrusted ? row.currentVersionNo : null,
+      versionTrusted,
+      materialApplicable: true,
+      relatedAccountIds: [
+        row.createdByAccountId,
+        row.maintenanceEngineerAccountId,
+        row.updatedByAccountId,
+      ].filter((value): value is number => typeof value === 'number'),
+      authorizationSubjectAccountId: row.createdByAccountId,
+      // 报告没有软删除列：下架由业务状态表达，本层不推断
+      withdrawn: false,
+      identityPersisted: row.recordUuid !== null,
+    };
+  }
+
+  private toDocumentFact(row: ReferenceDocumentEntity): SyncSourceRecordFact {
+    const versionTrusted = row.currentRevisionNo > 0;
+    const softDeleted = row.deprecated === true || row.deletedAt !== null;
+    const offline = row.publicationStatus === 'OFFLINE';
+    // 归属待确认（PENDING）时材料级适用性无法判定
+    const materialApplicable =
+      softDeleted || offline
+        ? false
+        : row.ownershipStatus === 'CONFIRMED' && row.publicationStatus === 'ONLINE'
+          ? true
+          : null;
+    return {
+      resourceType: 'REFERENCE_DOCUMENT',
+      recordUuid: row.recordUuid ?? deriveRecordUuid('REFERENCE_DOCUMENT', row.id),
+      recordId: row.id,
+      ownerOrganizationId: row.ownerOrganizationId,
+      currentVersion: versionTrusted ? row.currentRevisionNo : null,
+      versionTrusted,
+      materialApplicable,
+      relatedAccountIds: [row.createdByAccountId, row.updatedByAccountId].filter(
+        (value): value is number => typeof value === 'number',
+      ),
+      authorizationSubjectAccountId: row.createdByAccountId,
+      withdrawn: softDeleted || offline,
+      identityPersisted: row.recordUuid !== null,
+    };
+  }
+
+  private toRepairRequestFact(row: RepairRequestEntity): SyncSourceRecordFact {
+    const versionTrusted = row.currentRevisionNo > 0;
+    const softDeleted = row.deprecated === true || row.deletedAt !== null;
+    return {
+      resourceType: 'REPAIR_REQUEST',
+      recordUuid: row.recordUuid ?? deriveRecordUuid('REPAIR_REQUEST', row.id),
+      recordId: row.id,
+      ownerOrganizationId: row.ownerOrganizationId,
+      currentVersion: versionTrusted ? row.currentRevisionNo : null,
+      versionTrusted,
+      materialApplicable: softDeleted ? false : true,
+      relatedAccountIds: [
+        row.customerAccountId,
+        row.acceptedByEngineerAccountId,
+        row.handlingRecordedByAccountId,
+      ].filter((value): value is number => typeof value === 'number'),
+      // 工单的授权主体是受理工程师；未受理时以客户账号兜底
+      authorizationSubjectAccountId:
+        row.acceptedByEngineerAccountId ?? row.customerAccountId ?? null,
+      withdrawn: softDeleted,
+      identityPersisted: row.recordUuid !== null,
+    };
   }
 }

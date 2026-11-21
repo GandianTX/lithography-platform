@@ -41,6 +41,13 @@ export type SyncStatusQueryItem = {
   recordUuid: string;
   /** 服务端认定的当前版本；不可核验时为 null */
   sourceVersion: number | null;
+  /**
+   * 该稳定键是否为源表**持久化**的跨端稳定编号。
+   *
+   * - true：身份已持久化，可随记录包搬运到其他设备，跨端唯一；
+   * - false：历史行仅由本机自增 ID 派生，**仅设备内唯一**，跨端唯一性不成立。
+   */
+  identityPersisted: boolean;
   /** 调用方传入的版本（原样回显，便于调用方发现版本不一致） */
   requestedVersion: number | null;
   /** 调用方版本与服务端版本是否一致；调用方未提供版本时为 null */
@@ -50,7 +57,19 @@ export type SyncStatusQueryItem = {
   reasonCode: SyncStatusReasonCode | null;
   /** 当前版本的待处理冲突标识；不可读时为 null */
   conflictId: string | null;
-  /** 是否具备处理该冲突的权限 */
+  /**
+   * 是否具备处理该冲突的权限。
+   *
+   * 成立条件（三条同时满足，缺一不给入口）：
+   * 1. 记录级授权通过（可读）；
+   * 2. 写权成立——与 `resolve-sync-conflict.usecase.ts` 的实际准入一致
+   *    （一级管理员全局授权范围；工程师／二级管理员限本公司数据区）；
+   * 3. **当前展示版本二次校验**——调用方传入的版本与服务端认定的当前版本一致，
+   *    且该版本落在冲突固化的版本集合内。
+   *
+   * 入口只表示"可以进入冲突处理"；具体处理方向（采用云端／稍后处理）由裁决
+   * 入口决定，"保留本地"方向当前由裁决入口显式拒绝（尚未接入受控版本写入）。
+   */
   canResolveConflict: boolean;
 };
 

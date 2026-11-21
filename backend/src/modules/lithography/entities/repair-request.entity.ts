@@ -25,6 +25,7 @@ import {
 @Index('uk_repair_request_maintenance_attachment', ['maintenanceAttachmentFileId'], {
   unique: true,
 })
+@Index('uk_repair_request_record_uuid', ['recordUuid'], { unique: true })
 @ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
   name: 'fk_repair_request_owner_organization',
   onDelete: 'RESTRICT',
@@ -121,6 +122,19 @@ import {
 export class RepairRequestEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '维修申请主键ID' })
   id!: number;
+
+  /**
+   * 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化。
+   * 历史行保持 NULL（不回填派生值冒充可信跨端身份）。
+   */
+  @Column({
+    name: 'record_uuid',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '跨端稳定业务编号；历史行保持 NULL',
+  })
+  recordUuid!: string | null;
 
   @Column({ name: 'request_no', type: 'varchar', length: 50, comment: '维修申请编号' })
   requestNo!: string;

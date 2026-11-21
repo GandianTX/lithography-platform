@@ -9,6 +9,7 @@ import {
 import type { LocalRuntimeViewerScope } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 import {
   resolveSyncStatus,
+  resolveSyncApplicability,
   SYNC_TASK_STATUSES,
   type SyncStatusConflictFact,
   type SyncStatusFacts,
@@ -16,6 +17,7 @@ import {
   type SyncStatusTaskFact,
   type SyncTaskStatus,
 } from '@core/local-runtime/policy/sync-status.policy';
+import { resolveSyncConflictEntry } from '@core/local-runtime/policy/sync-conflict-entry.policy';
 import { Injectable } from '@nestjs/common';
 
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
@@ -27,6 +29,7 @@ import {
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import {
   SyncStatusQueryService,
+  type SyncCompanyAuthorizationSummary,
   type SyncStatusConflictRow,
   type SyncStatusReceiptRow,
   type SyncStatusTaskRow,
@@ -89,6 +92,12 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     const requests = this.normalizeRequests(params.requests);
     const grouped = this.groupRequests(requests);
 
+    // 公司级「正式运行模式」事实：本机 × 本机映射公司的账号授权登记（每次查询读一次）
+    const companyAuthorization = await this.syncStatusQueryService.readCompanyAuthorizationSummary(
+      installation.installationId,
+      installationOrganizationId,
+    );
+
     const items: SyncStatusQueryItem[] = [];
     for (const group of grouped.values()) {
       items.push(
@@ -98,6 +107,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
           scope,
           installationId: installation.installationId,
           installationOrganizationId,
+          companyAuthorization,
         })),
       );
     }
@@ -115,6 +125,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     scope: LocalRuntimeViewerScope;
     installationId: string;
     installationOrganizationId: number;
+    companyAuthorization: SyncCompanyAuthorizationSummary;
   }): Promise<SyncStatusQueryItem[]> {
     const { group } = input;
     const groupRequests = group.requests;
@@ -198,6 +209,8 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
         conflicts,
         authorizations,
         installationId: input.installationId,
+        scope: input.scope,
+        companyAuthorization: input.companyAuthorization,
       });
       items.push(item);
     }
@@ -214,6 +227,8 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     conflicts: readonly SyncStatusConflictRow[];
     authorizations: ReadonlyMap<number, 'ACTIVE' | 'REVOKED'>;
     installationId: string;
+    scope: LocalRuntimeViewerScope;
+    companyAuthorization: SyncCompanyAuthorizationSummary;
   }): SyncStatusQueryItem {
     const { request, fact } = input;
     const currentVersion = fact.currentVersion;
@@ -242,16 +257,21 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
             localVersion: conflictRow.localVersion,
             cloudVersion: conflictRow.cloudVersion,
             // 可读性由记录级授权保证（越权记录已在上一层被排除）；
-            // 处理入口需要写权与当前展示版本一致，本轮未实现写权校验，恒不提供
+            // 处理入口还要求写权成立且当前展示版本与冲突版本一致
             readable: true,
-            resolvable: false,
+            resolvable: this.resolveConflictResolvable({
+              scope: input.scope,
+              conflictRow,
+              displayedVersion: request.sourceVersion,
+              serverCurrentVersion: currentVersion,
+            }),
           };
 
     const facts: SyncStatusFacts = {
       connected: true,
       identityTrusted: true,
       versionTrusted: fact.versionTrusted,
-      applicable: this.resolveApplicability(fact),
+      applicable: this.resolveApplicability(fact, input.companyAuthorization),
       authorizationValid: this.resolveAuthorization(fact, input.authorizations),
       task,
       legacyTaskExists: input.legacyTaskUuids.includes(request.recordUuid),
@@ -269,6 +289,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
       organizationId: fact.ownerOrganizationId ?? request.organizationId,
       resourceType: fact.resourceType,
       sourceVersion: currentVersion,
+      identityPersisted: fact.identityPersisted,
     });
   }
 
@@ -276,11 +297,46 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
    * 适用性裁决（事实驱动，不做硬编码断言）：
    * - 材料级明确不适用（已下架／软删除）→ 不适用；
    * - 材料级无法判定（归属待确认等）→ 未知；
-   * - 其余按材料级事实表达；公司级"正式运行模式"事实源尚未落地，
-   *   因此不把适用性硬编码为真。
+   * - 材料级适用 → 取公司级「正式运行模式」判定（有 ACTIVE 授权 → 适用；
+   *   授权全部撤销 → 不适用；未取得授权事实 → 未知，不硬编码为真）。
    */
-  private resolveApplicability(fact: SyncSourceRecordFact): boolean | null {
-    return fact.materialApplicable;
+  private resolveApplicability(
+    fact: SyncSourceRecordFact,
+    company: SyncCompanyAuthorizationSummary,
+  ): boolean | null {
+    return resolveSyncApplicability(fact.materialApplicable, {
+      authorizationCount: company.authorizationCount,
+      activeAuthorizationCount: company.activeAuthorizationCount,
+    });
+  }
+
+  /**
+   * 冲突处理入口判定：写权成立 **且** 当前展示版本与冲突版本一致。
+   *
+   * 写权口径与 `resolve-sync-conflict.usecase.ts` 对齐（一级管理员全局；
+   * 工程师／二级管理员限本公司数据区），避免出现"有入口但裁决被拒"。
+   */
+  private resolveConflictResolvable(input: {
+    scope: LocalRuntimeViewerScope;
+    conflictRow: SyncStatusConflictRow;
+    displayedVersion: number | null;
+    serverCurrentVersion: number | null;
+  }): boolean {
+    const entry = resolveSyncConflictEntry({
+      scopeOrganizationId: input.scope.organizationId,
+      conflictOrganizationId: input.conflictRow.organizationId,
+      recordReadable: true,
+      conflictStatus: input.conflictRow.status,
+      displayedVersion: input.displayedVersion,
+      serverCurrentVersion: input.serverCurrentVersion,
+      conflictVersions: [
+        input.conflictRow.localVersion,
+        input.conflictRow.cloudVersion,
+        input.conflictRow.versionNo,
+        input.conflictRow.displayedCloudVersion,
+      ],
+    });
+    return entry.allowed;
   }
 
   /**
@@ -402,6 +458,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     organizationId: number;
     resourceType: string;
     sourceVersion?: number | null;
+    identityPersisted?: boolean;
   }): SyncStatusQueryItem {
     const sourceVersion = input.sourceVersion ?? null;
     const requestedVersion = input.request.sourceVersion;
@@ -410,6 +467,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
       resourceType: input.resourceType,
       recordUuid: input.request.recordUuid,
       sourceVersion,
+      identityPersisted: input.identityPersisted ?? false,
       requestedVersion,
       versionAligned:
         requestedVersion === null || sourceVersion === null

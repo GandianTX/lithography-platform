@@ -512,11 +512,12 @@ describe('collectDefinitionCoverageIssues', () => {
     expect(collectDefinitionCoverageIssues()).toEqual([]);
 
     // 沿用计数含第 49 条（1775502700000，V13 交付窗口之后的增量）新增的
-    // maintenance_report_attachment 原件列、索引与外键：它们不在本期交付清单内。
+    // maintenance_report_attachment 原件列、索引与外键，以及第 50 条
+    // （1775502800000）新增的三张业务源表稳定身份列与唯一索引：它们不在本期交付清单内。
     expect(collectDefinitionCoverageStatistics()).toEqual([
-      { kind: 'column', expected: 321, covered: 321, missing: 0, inherited: 82 },
+      { kind: 'column', expected: 321, covered: 321, missing: 0, inherited: 85 },
       { kind: 'check', expected: 124, covered: 124, missing: 0, inherited: 89 },
-      { kind: 'index', expected: 52, covered: 52, missing: 0, inherited: 71 },
+      { kind: 'index', expected: 52, covered: 52, missing: 0, inherited: 74 },
       { kind: 'foreignKey', expected: 58, covered: 58, missing: 0, inherited: 60 },
       { kind: 'generatedColumn', expected: 2, covered: 2, missing: 0, inherited: 4 },
     ]);

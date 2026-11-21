@@ -231,6 +231,65 @@ function resolveUntrusted(facts: SyncStatusFacts): SyncStatusOutcome | null {
   return null;
 }
 
+/**
+ * 公司级「正式运行模式」事实。
+ *
+ * 事实源：本机账号授权登记（`local_account_authorization`，本机 × 公司）。
+ * 该表是"本机是否取得了该公司的有效云端授权"的权威登记，也是同机多公司配置
+ * 初始化时判断"哪些公司属于本机"的依据（见 `backup-schedule.service.ts`）。
+ *
+ * 注意：`local_company_setting.setting_source` **不能**用作公司模式判据——
+ * 同机多公司配置表里的 `LOCAL_MANUAL` 行是备份计划初始化时为"有 ACTIVE 授权的
+ * 公司"自动补建的（`initializeMissingPlans`），用它判定模式会把已授权公司
+ * 误判为未接入。
+ */
+export type SyncCompanyApplicabilityFacts = {
+  /** 该公司在本机的授权行总数 */
+  authorizationCount: number;
+  /** 其中处于 ACTIVE 的授权行数 */
+  activeAuthorizationCount: number;
+};
+
+/**
+ * 公司级适用性裁决（纯函数）。
+ *
+ * - 存在 ACTIVE 授权行 → 公司在本机取得了有效云端授权，处于正式运行模式 → 适用；
+ * - 有授权行但全部 REVOKED → 授权已撤销 → 不适用；
+ * - 没有任何授权行 → **未取得该事实**（云端授权下发尚未接通）→ 未知，
+ *   既不硬编码为真，也不据此断言不适用。
+ */
+export function resolveSyncCompanyApplicability(
+  facts: SyncCompanyApplicabilityFacts,
+): boolean | null {
+  if (facts.activeAuthorizationCount > 0) {
+    return true;
+  }
+  if (facts.authorizationCount > 0) {
+    return false;
+  }
+  return null;
+}
+
+/**
+ * 材料级 + 公司级适用性的合成（材料级优先）。
+ *
+ * - 材料级明确不适用（已下架／软删除）→ 不适用；
+ * - 材料级无法判定（归属待确认等）→ 未知；
+ * - 材料级适用 → 取公司级判定（适用／不适用／未知）。
+ */
+export function resolveSyncApplicability(
+  materialApplicable: boolean | null,
+  company: SyncCompanyApplicabilityFacts,
+): boolean | null {
+  if (materialApplicable === false) {
+    return false;
+  }
+  if (materialApplicable === null) {
+    return null;
+  }
+  return resolveSyncCompanyApplicability(company);
+}
+
 /** 适用性判定：无法判定 → 未知；明确不适用 → 不适用 */
 function resolveApplicability(facts: SyncStatusFacts): SyncStatusOutcome | null {
   if (facts.applicable === null) {

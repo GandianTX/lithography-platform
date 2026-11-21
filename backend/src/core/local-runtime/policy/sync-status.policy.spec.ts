@@ -1,6 +1,8 @@
 /// <reference types="jest" />
 import {
   resolveSyncStatus,
+  resolveSyncApplicability,
+  resolveSyncCompanyApplicability,
   syncStatusEnum,
   SHARED_SYNC_STATUSES,
   type SyncStatusFacts,
@@ -316,5 +318,49 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
     );
 
     expect(result.status).toBe('CONFLICT');
+  });
+});
+
+describe('公司级「正式运行模式」适用性（任务 09 后续S1.5）', () => {
+  const activeCompany = { authorizationCount: 2, activeAuthorizationCount: 1 };
+
+  it('存在 ACTIVE 授权行时公司处于正式运行模式', () => {
+    expect(resolveSyncCompanyApplicability(activeCompany)).toBe(true);
+  });
+
+  it('有授权行但全部撤销时公司不处于正式运行模式', () => {
+    expect(
+      resolveSyncCompanyApplicability({ authorizationCount: 2, activeAuthorizationCount: 0 }),
+    ).toBe(false);
+  });
+
+  it('没有任何授权行时属未取得事实，不得硬编码为真或假', () => {
+    expect(
+      resolveSyncCompanyApplicability({ authorizationCount: 0, activeAuthorizationCount: 0 }),
+    ).toBe(null);
+  });
+
+  it('材料级明确不适用时直接判不适用', () => {
+    expect(resolveSyncApplicability(false, activeCompany)).toBe(false);
+  });
+
+  it('材料级无法判定时判未知（不因公司级事实而断言）', () => {
+    expect(resolveSyncApplicability(null, activeCompany)).toBe(null);
+  });
+
+  it('材料级适用且公司处于正式运行模式时判适用', () => {
+    expect(resolveSyncApplicability(true, activeCompany)).toBe(true);
+  });
+
+  it('材料级适用但公司授权全部撤销时判不适用', () => {
+    expect(
+      resolveSyncApplicability(true, { authorizationCount: 1, activeAuthorizationCount: 0 }),
+    ).toBe(false);
+  });
+
+  it('材料级适用但未取得公司授权事实时判未知', () => {
+    expect(
+      resolveSyncApplicability(true, { authorizationCount: 0, activeAuthorizationCount: 0 }),
+    ).toBe(null);
   });
 });

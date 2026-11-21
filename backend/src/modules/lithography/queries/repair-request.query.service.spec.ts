@@ -17,6 +17,7 @@ type PartialRequest = Partial<RepairRequestEntity>;
 
 const makeRequest = (overrides: PartialRequest = {}): RepairRequestEntity => ({
   id: 1,
+  recordUuid: null,
   requestNo: '920_001',
   intakeId: null,
   customerOrganizationId: null,

@@ -89,6 +89,8 @@ export class MaintenanceReportService {
     try {
       const entity = repository.create({
         ownerOrganizationId: data.ownerOrganizationId,
+        // 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化
+        recordUuid: randomUUID(),
         sourceType: data.sourceType,
         repairRequestId: data.repairRequestId,
         title: data.title,

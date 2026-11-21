@@ -234,6 +234,9 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
     table: 'engineer_registration_application',
     index: 'idx_engineer_registration_application_account_submitted',
   },
+  { table: 'repair_request', index: 'uk_repair_request_record_uuid' },
+  { table: 'reference_document', index: 'uk_reference_document_record_uuid' },
+  { table: 'maintenance_report', index: 'uk_maintenance_report_record_uuid' },
 ];
 
 export const REQUIRED_COLUMNS: ReadonlyArray<{
@@ -655,6 +658,9 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'repair_request_fault_panel', column: 'updated_at', notNull: true },
   { table: 'repair_request_fault_panel', column: 'initial_request_id' },
   { table: 'repair_request_fault_panel', column: 'reset_request_id' },
+  { table: 'repair_request', column: 'record_uuid' },
+  { table: 'reference_document', column: 'record_uuid' },
+  { table: 'maintenance_report', column: 'record_uuid' },
 ];
 
 export const FORBIDDEN_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
@@ -2543,6 +2549,9 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'engineer_registration_application.uk_engineer_registration_application_pending_account': 1775401500000,
   'engineer_registration_application.idx_engineer_registration_application_org_status_submitted': 1775401500000,
   'engineer_registration_application.idx_engineer_registration_application_account_submitted': 1775401500000,
+  'repair_request.uk_repair_request_record_uuid': 1775502800000,
+  'reference_document.uk_reference_document_record_uuid': 1775502800000,
+  'maintenance_report.uk_maintenance_report_record_uuid': 1775502800000,
 };
 
 export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
@@ -2952,6 +2961,9 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'admin_organization_provisioning_request.admin_account_id': 1775502300000,
   'admin_organization_provisioning_request.created_at': 1775502300000,
   'admin_organization_provisioning_request.updated_at': 1775502300000,
+  'repair_request.record_uuid': 1775502800000,
+  'reference_document.record_uuid': 1775502800000,
+  'maintenance_report.record_uuid': 1775502800000,
 };
 
 export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
@@ -3791,6 +3803,18 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'engineer_registration_application.idx_engineer_registration_application_account_submitted': {
     unique: false,
     columns: ['account_id', 'submitted_at', 'id'],
+  },
+  'repair_request.uk_repair_request_record_uuid': {
+    unique: true,
+    columns: ['record_uuid'],
+  },
+  'reference_document.uk_reference_document_record_uuid': {
+    unique: true,
+    columns: ['record_uuid'],
+  },
+  'maintenance_report.uk_maintenance_report_record_uuid': {
+    unique: true,
+    columns: ['record_uuid'],
   },
 };
 
@@ -6483,6 +6507,24 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     since: 1775501400000,
     columnType: 'int unsigned',
     nullable: false,
+    defaultValue: null,
+  },
+  'repair_request.record_uuid': {
+    since: 1775502800000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'reference_document.record_uuid': {
+    since: 1775502800000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'maintenance_report.record_uuid': {
+    since: 1775502800000,
+    columnType: 'char(36)',
+    nullable: true,
     defaultValue: null,
   },
 };

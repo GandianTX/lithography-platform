@@ -13,6 +13,7 @@ import * as nodePath from 'node:path';
 
 import { RecordPackageExportService } from './record-package-export.service';
 import type { RecordPackageExportCommand } from './record-package-export.types';
+import { deriveRecordUuid } from '@core/local-runtime/policy/record-package-export.policy';
 import { DomainError } from '@core/common/errors/domain-error';
 
 /** 断言导出失败并返回 DomainError（避免 union 类型干扰逐条结论断言） */
@@ -236,6 +237,73 @@ describe('record package export service', () => {
     );
     expect(manifest.items).toHaveLength(1); // 拒绝条目不进清单
     expect(manifest.items[0].content_snapshot.title).toBe('资料B2');
+  });
+
+  it('条目身份优先取源表持久化的稳定编号，历史行回退派生值', async () => {
+    const buildWithRow = (recordUuid: string | null) => {
+      const rows = new Map<number, Record<string, unknown>>([
+        [
+          2,
+          {
+            id: 2,
+            recordUuid,
+            ownerOrganizationId: 4,
+            deprecated: false,
+            currentRevisionNo: 3,
+            schemaVersion: 1,
+            title: '资料B2',
+            documentType: 'MANUAL',
+            description: null,
+            contentText: '正文B2',
+            originalFilename: null,
+            mimeType: null,
+            extensionJson: null,
+            updatedAt: new Date(),
+            storageBackend: null,
+            storageReference: null,
+          },
+        ],
+      ]);
+      const repo = {
+        findOne: jest
+          .fn()
+          .mockImplementation(({ where }: { where: { id: number } }) =>
+            Promise.resolve(rows.get(where.id) ?? null),
+          ),
+      };
+      return new RecordPackageExportService(
+        repo as never,
+        { findOne: jest.fn().mockResolvedValue(null) } as never,
+        { findOne: jest.fn().mockResolvedValue(null) } as never,
+        { findOne: jest.fn().mockResolvedValue(null) } as never,
+        { find: jest.fn().mockResolvedValue([]) } as never,
+        { findOne: jest.fn().mockResolvedValue(null) } as never,
+        {
+          open: () =>
+            Promise.resolve(createReadStream(nodePath.join(storageRoot, 'refs/aaa.doc.txt'))),
+        } as never,
+        { readInstallation: () => Promise.resolve({ installationId: 'inst-uuid-1' }) } as never,
+      );
+    };
+
+    const persistedUuid = '11111111-2222-4333-8444-555555555555';
+    const persisted = await buildWithRow(persistedUuid).exportPackage(
+      command({ recordIds: [2], targetPath: nodePath.join(targetRoot, 'pkg-persisted') }),
+      16,
+    );
+    const persistedManifest = JSON.parse(
+      readFileSync(nodePath.join(persisted.packagePath, 'manifest.json'), 'utf8'),
+    );
+    expect(persistedManifest.items[0].record_uuid).toBe(persistedUuid);
+
+    const legacy = await buildWithRow(null).exportPackage(
+      command({ recordIds: [2], targetPath: nodePath.join(targetRoot, 'pkg-legacy') }),
+      16,
+    );
+    const legacyManifest = JSON.parse(
+      readFileSync(nodePath.join(legacy.packagePath, 'manifest.json'), 'utf8'),
+    );
+    expect(legacyManifest.items[0].record_uuid).toBe(deriveRecordUuid('REFERENCE_DOCUMENT', 2));
   });
 
   it('全部拒绝：整包不产生，逐条拒绝原因随错误扩展返回', async () => {

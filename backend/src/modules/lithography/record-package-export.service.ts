@@ -42,7 +42,8 @@ import type {
  * 记录包导出执行层（任务 09 R070，S2.3）。
  *
  * 从已授权数据组装目录形态记录包（manifest.json + 清单相对路径原件）：
- * - 条目身份（record_uuid）由 (resourceType, recordId) 确定性派生；
+ * - 条目身份（record_uuid）优先取源表持久化的稳定编号（跨端一致），
+ *   历史行未持久化时回退到 (resourceType, recordId) 确定性派生值；
  * - 原件经存储契约只读流复制进包，复制时流式重算 SHA-256 写入清单，
  *   有登记校验值的来源先核对登记值，不一致视为源件损坏、条目拒绝；
  * - 逐条结果语义：单条失败不拖垮整包；全部失败则整包不产生；
@@ -198,7 +199,7 @@ export class RecordPackageExportService {
         outcome: 'REJECTED',
         detail: {
           recordId,
-          recordUuid: deriveRecordUuid(command.resourceType, recordId),
+          recordUuid: await this.resolveRecordUuidSafely(command.resourceType, recordId),
           resourceType: command.resourceType,
           versionNo: null,
           outcome: 'REJECTED',
@@ -229,7 +230,7 @@ export class RecordPackageExportService {
     recordId: number,
     organizationId: number,
   ): Promise<RecordPackageExportEntry> {
-    const recordUuid = deriveRecordUuid(resourceType, recordId);
+    const recordUuid = await this.resolveRecordUuid(resourceType, recordId);
     switch (resourceType) {
       case 'REFERENCE_DOCUMENT':
         return this.collectReferenceDocument(recordId, organizationId, recordUuid);
@@ -240,6 +241,62 @@ export class RecordPackageExportService {
       default:
         throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, '资源类型不在允许清单内');
     }
+  }
+
+  /**
+   * 解析条目的稳定身份。
+   *
+   * 优先取源表**持久化**的稳定编号（跨端一致，可随包搬运到其他设备）；
+   * 历史行未持久化时回退到派生值（仅设备内有效，跨端不唯一），
+   * 以保持既有派生 UUID 的历史事实不被改写。
+   */
+  private async resolveRecordUuid(
+    resourceType: RecordPackageResourceType,
+    recordId: number,
+  ): Promise<string> {
+    const persisted = await this.readPersistedRecordUuid(resourceType, recordId);
+    return persisted ?? deriveRecordUuid(resourceType, recordId);
+  }
+
+  /**
+   * 拒绝分支的身份解析：读取失败时回退派生值。
+   *
+   * 拒绝分支本身已处于异常处理路径，此处不得再抛出（否则单条失败会拖垮整包）。
+   */
+  private async resolveRecordUuidSafely(
+    resourceType: RecordPackageResourceType,
+    recordId: number,
+  ): Promise<string> {
+    try {
+      return await this.resolveRecordUuid(resourceType, recordId);
+    } catch {
+      return deriveRecordUuid(resourceType, recordId);
+    }
+  }
+
+  private async readPersistedRecordUuid(
+    resourceType: RecordPackageResourceType,
+    recordId: number,
+  ): Promise<string | null> {
+    if (resourceType === 'REFERENCE_DOCUMENT') {
+      const row = await this.referenceDocumentRepository.findOne({
+        where: { id: recordId },
+        select: { recordUuid: true },
+      });
+      return row?.recordUuid ?? null;
+    }
+    if (resourceType === 'REPAIR_REQUEST') {
+      const row = await this.repairRequestRepository.findOne({
+        where: { id: recordId },
+        select: { recordUuid: true },
+      });
+      return row?.recordUuid ?? null;
+    }
+    const row = await this.maintenanceReportRepository.findOne({
+      where: { id: recordId },
+      select: { recordUuid: true },
+    });
+    return row?.recordUuid ?? null;
   }
 
   /**

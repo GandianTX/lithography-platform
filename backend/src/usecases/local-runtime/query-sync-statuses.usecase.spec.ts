@@ -8,6 +8,7 @@ import type {
   SyncSourceRecordQueryService,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type {
+  SyncCompanyAuthorizationSummary,
   SyncStatusConflictRow,
   SyncStatusQueryService,
   SyncStatusReceiptRow,
@@ -44,6 +45,7 @@ describe('QuerySyncStatusesUsecase', () => {
     relatedAccountIds: [900101],
     authorizationSubjectAccountId: 900101,
     withdrawn: false,
+    identityPersisted: true,
     ...overrides,
   });
 
@@ -56,6 +58,7 @@ describe('QuerySyncStatusesUsecase', () => {
       receipts?: SyncStatusReceiptRow[];
       conflicts?: SyncStatusConflictRow[];
       authorizations?: Map<number, 'ACTIVE' | 'REVOKED'>;
+      companyAuthorization?: SyncCompanyAuthorizationSummary;
       installationOrganizationId?: number | null;
     } = {},
   ) {
@@ -91,6 +94,11 @@ describe('QuerySyncStatusesUsecase', () => {
       readPendingConflicts: jest.fn(() => Promise.resolve(options.conflicts ?? [])),
       readAuthorizations: jest.fn(() =>
         Promise.resolve(options.authorizations ?? new Map<number, 'ACTIVE' | 'REVOKED'>()),
+      ),
+      readCompanyAuthorizationSummary: jest.fn(() =>
+        Promise.resolve(
+          options.companyAuthorization ?? { authorizationCount: 1, activeAuthorizationCount: 1 },
+        ),
       ),
     };
 
@@ -288,10 +296,12 @@ describe('QuerySyncStatusesUsecase', () => {
         {
           conflictId: 'conflict-old',
           recordUuid,
+          organizationId: 4,
           status: 'PENDING',
           localVersion: 1,
           cloudVersion: 2,
           versionNo: 1,
+          displayedCloudVersion: 2,
         },
       ],
     });
@@ -302,16 +312,18 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items[0].conflictId).toBeNull();
   });
 
-  it('当前版本存在待处理冲突时返回冲突', async () => {
+  it('当前版本存在待处理冲突时返回冲突，且写权与展示版本一致时给出处理入口', async () => {
     const { usecase } = buildUsecase({
       conflicts: [
         {
           conflictId: 'conflict-1',
           recordUuid,
+          organizationId: 4,
           status: 'PENDING',
           localVersion: 3,
           cloudVersion: 4,
           versionNo: 3,
+          displayedCloudVersion: 4,
         },
       ],
     });
@@ -320,7 +332,127 @@ describe('QuerySyncStatusesUsecase', () => {
 
     expect(items[0].status).toBe('CONFLICT');
     expect(items[0].conflictId).toBe('conflict-1');
+    expect(items[0].canResolveConflict).toBe(true);
+  });
+
+  it('调用方展示版本与服务端当前版本不一致时不给出处理入口', async () => {
+    const { usecase } = buildUsecase({
+      conflicts: [
+        {
+          conflictId: 'conflict-1',
+          recordUuid,
+          organizationId: 4,
+          status: 'PENDING',
+          localVersion: 3,
+          cloudVersion: 4,
+          versionNo: 3,
+          displayedCloudVersion: 4,
+        },
+      ],
+    });
+
+    const items = await usecase.queryStatuses({
+      session,
+      requests: [{ ...request, sourceVersion: 2 }],
+    });
+
+    expect(items[0].status).toBe('CONFLICT');
     expect(items[0].canResolveConflict).toBe(false);
+    expect(items[0].versionAligned).toBe(false);
+  });
+
+  it('调用方未提供展示版本时不给出处理入口', async () => {
+    const { usecase } = buildUsecase({
+      conflicts: [
+        {
+          conflictId: 'conflict-1',
+          recordUuid,
+          organizationId: 4,
+          status: 'PENDING',
+          localVersion: 3,
+          cloudVersion: 4,
+          versionNo: 3,
+          displayedCloudVersion: 4,
+        },
+      ],
+    });
+
+    const items = await usecase.queryStatuses({
+      session,
+      requests: [{ ...request, sourceVersion: null }],
+    });
+
+    expect(items[0].canResolveConflict).toBe(false);
+  });
+
+  it('冲突不属于本公司数据区时不给出处理入口', async () => {
+    const { usecase } = buildUsecase({
+      conflicts: [
+        {
+          conflictId: 'conflict-1',
+          recordUuid,
+          organizationId: 9,
+          status: 'PENDING',
+          localVersion: 3,
+          cloudVersion: 4,
+          versionNo: 3,
+          displayedCloudVersion: 4,
+        },
+      ],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].canResolveConflict).toBe(false);
+  });
+
+  it('公司存在 ACTIVE 授权时材料级适用即判定为适用', async () => {
+    const { usecase } = buildUsecase({
+      companyAuthorization: { authorizationCount: 2, activeAuthorizationCount: 1 },
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('SYNCED');
+  });
+
+  it('公司授权全部撤销时判定为不适用', async () => {
+    const { usecase } = buildUsecase({
+      companyAuthorization: { authorizationCount: 2, activeAuthorizationCount: 0 },
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('NOT_APPLICABLE');
+    expect(items[0].reasonCode).toBeNull();
+  });
+
+  it('未取得公司授权事实时不得把适用性硬编码为真', async () => {
+    const { usecase } = buildUsecase({
+      companyAuthorization: { authorizationCount: 0, activeAuthorizationCount: 0 },
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('UNKNOWN');
+    expect(items[0].reasonCode).toBe('APPLICABILITY_UNKNOWN');
+  });
+
+  it('材料级明确不适用时不再受公司级事实影响', async () => {
+    const { usecase } = buildUsecase({
+      facts: [sourceFact({ materialApplicable: false })],
+      companyAuthorization: { authorizationCount: 1, activeAuthorizationCount: 1 },
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('NOT_APPLICABLE');
   });
 
   it('存在用途无法确认的历史任务时不得断言没有任务', async () => {
