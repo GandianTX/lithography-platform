@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await -- 测试替身必须返回 Promise 以满足宿主接口类型 */
 import {
   existsSync,
   mkdirSync,
