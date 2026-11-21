@@ -24,6 +24,8 @@
 
 import { Inject, Injectable } from '@nestjs/common';
 
+import { normalizeOptionalText } from '@core/common/normalize/normalize.helper';
+
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   MaintenanceReportExportFormat,
@@ -334,7 +336,8 @@ export class ExportMaintenanceReportUsecase {
     // （equipmentModelName），机型库改名不影响旧版本导出内容；仅旧快照缺键
     // （历史数据）时按 ID 回落解析机型库——无法还原提交当时的名称，如实回退。
     const frozenEquipmentModelName =
-      payload.equipmentModelName !== null && payload.equipmentModelName.trim().length > 0
+      payload.equipmentModelName !== null &&
+      normalizeOptionalText(payload.equipmentModelName) !== null
         ? payload.equipmentModelName
         : null;
     const equipmentModelLabel =

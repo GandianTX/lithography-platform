@@ -29,6 +29,7 @@ import type {
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domain-error';
 import type { MaintenanceReportDraftInput } from './maintenance-report-command.types';
+import { collectProvidedFieldNames } from './maintenance-report.input.normalize';
 
 /** 来源工单原件的引用元数据（不暴露存储引用，不冒称已被冻结） */
 export type WorkOrderSummarySourceAttachment = {
@@ -475,9 +476,7 @@ const WORK_ORDER_SUMMARY_CONTENT_FIELDS = [
  */
 export function assertNoWorkOrderSummaryClientContent(draft: MaintenanceReportDraftInput): void {
   const draftRecord = draft as unknown as Record<string, unknown>;
-  const provided = WORK_ORDER_SUMMARY_CONTENT_FIELDS.filter(
-    (field) => draftRecord[field] !== undefined,
-  );
+  const provided = collectProvidedFieldNames(draftRecord, WORK_ORDER_SUMMARY_CONTENT_FIELDS);
   if (provided.length > 0) {
     throw new DomainError(
       MAINTENANCE_REPORT_ERROR.INVALID_PARAMS,

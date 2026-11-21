@@ -1,3 +1,4 @@
+import { normalizeOptionalText } from '@core/common/normalize/normalize.helper';
 // src/usecases/maintenance-report/maintenance-report-ai-evaluation.helpers.ts
 //
 // 任务 06 AI 评价与任务 05 真实会话读侧的适配（不改变任务 05 的任何行为）：
@@ -257,8 +258,10 @@ function resolveEvaluationScope(
 
 /** 解析稳定标识/版本号（字符串形态保存的整数）；非正整数返回 null */
 function parsePositiveInt(value: string | null | undefined): number | null {
-  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return null;
-  const parsed = Number(value.trim());
+  // 统一走文本归一化助手，避免用例层直接裁剪原始输入
+  const normalized = normalizeOptionalText(value);
+  if (normalized === null || !/^\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 

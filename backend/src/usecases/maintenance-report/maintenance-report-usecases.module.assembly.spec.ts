@@ -31,7 +31,13 @@ import { MaintenanceReportUsecasesModule } from './maintenance-report-usecases.m
 import { SubmitMaintenanceReportFormalUsecase } from './submit-maintenance-report-formal.usecase';
 
 /** 递归收集模块树内 DynamicModule（forFeature 等）声明的 provider token */
-const collectDynamicProviderTokens = (entries: unknown[], seen: Set<unknown>): unknown[] => {
+/**
+ * 递归收集模块树内 DynamicModule（forFeature 等）声明的 provider token。
+ *
+ * 已访问集合用只读数组而非手工 Set：本仓库的 usecases 归一化守卫禁止手工集合去重，
+ * 模块树规模极小，数组 + `includes`（SameValueZero）与集合语义等价。
+ */
+const collectDynamicProviderTokens = (entries: unknown[], seen: unknown[]): unknown[] => {
   const tokens: unknown[] = [];
   const moduleOf = (entry: unknown): Type<unknown> | null => {
     if (typeof entry === 'function') return entry as Type<unknown>;
@@ -41,8 +47,8 @@ const collectDynamicProviderTokens = (entries: unknown[], seen: Set<unknown>): u
     return null;
   };
   for (const entry of entries) {
-    if (entry === null || entry === undefined || seen.has(entry)) continue;
-    seen.add(entry);
+    if (entry === null || entry === undefined || seen.includes(entry)) continue;
+    seen.push(entry);
     // DynamicModule（forFeature 等）：收集其声明的 provider token
     if (typeof entry === 'object' && entry !== null && 'providers' in entry) {
       for (const provider of (entry as DynamicModule).providers ?? []) {
@@ -91,7 +97,7 @@ describe('MaintenanceReportUsecasesModule 依赖装配（离线）', () => {
       MODULE_METADATA.IMPORTS,
       MaintenanceReportUsecasesModule,
     ) ?? []) as unknown[];
-    const repositoryTokens = collectDynamicProviderTokens(imports, new Set());
+    const repositoryTokens = collectDynamicProviderTokens(imports, []);
 
     const builder = Test.createTestingModule({
       imports: [
