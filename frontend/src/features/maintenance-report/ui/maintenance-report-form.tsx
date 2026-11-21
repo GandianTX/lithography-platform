@@ -27,6 +27,7 @@ import {
   Select,
   Space,
   Tag,
+  theme,
   Typography,
 } from 'antd';
 import dayjs from 'dayjs';
@@ -116,6 +117,9 @@ export function MaintenanceReportFormView({
   onConfirmDiscardBranch,
 }: MaintenanceReportFormViewProps) {
   const { t } = useI18n();
+  // 目录项高亮：主色背景/描边取 Ant Design 主题 token（默认蓝=blue-1/blue-3），
+  // 不写死颜色，跟随全局主题。
+  const { token } = theme.useToken();
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   /** 2026-11-21：预览弹窗（纯本地状态，开关不产生任何写请求） */
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -457,7 +461,10 @@ export function MaintenanceReportFormView({
                       justifyContent: 'flex-start',
                       textAlign: 'left',
                       ...(activeSection === key
-                        ? { background: '#e6f4ff', borderColor: '#91caff' }
+                        ? {
+                            background: token.colorPrimaryBg,
+                            borderColor: token.colorPrimaryBorder,
+                          }
                         : {}),
                     }}
                     type="text"

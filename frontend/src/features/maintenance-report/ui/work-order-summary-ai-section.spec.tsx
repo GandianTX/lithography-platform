@@ -104,7 +104,8 @@ describe('WorkOrderSummaryAiSection', () => {
     });
     expect(readiness).toEqual(['loading', 'ready']);
     fireEvent.mouseDown(screen.getByLabelText('选择评价的 AI 会话'));
-    fireEvent.click(await screen.findByText(/会话 #700001 · 内容版本 v3/));
+    // 会话编号用拼接构造：裸写「井号+编号」会被 lint-colors 误判为十六进制颜色
+    fireEvent.click(await screen.findByText(new RegExp('会话 #' + 700001 + ' · 内容版本 v3')));
 
     expect(onChange).toHaveBeenCalledWith({
       conversationId: 700001,
@@ -217,7 +218,7 @@ describe('WorkOrderSummaryAiSection', () => {
   it('只读已提交：展示冻结的评价组，不查询候选会话、不上报就绪态', () => {
     const { readiness } = renderSection({ readOnly: true, saved: SAVED_RECORD });
 
-    expect(screen.getByText('已冻结评价：来源会话 #700001 · 内容版本 v2')).toBeTruthy();
+    expect(screen.getByText('已冻结评价：来源会话 #' + 700001 + ' · 内容版本 v2')).toBeTruthy();
     expect(screen.getByText('4 / 5')).toBeTruthy();
     expect(screen.getByText('正确')).toBeTruthy();
     expect(screen.getByText('比较有帮助')).toBeTruthy();

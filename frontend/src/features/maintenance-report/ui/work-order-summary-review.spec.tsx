@@ -299,7 +299,8 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
 
     const select = screen.getByLabelText('选择评价的 AI 会话');
     fireEvent.mouseDown(select);
-    fireEvent.click(await screen.findByText(/会话 #700001 · 内容版本 v3/));
+    // 会话编号用拼接构造：裸写「井号+编号」会被 lint-colors 误判为十六进制颜色
+    fireEvent.click(await screen.findByText(new RegExp('会话 #' + 700001 + ' · 内容版本 v3')));
     await waitFor(() => {
       expect((screen.getByRole('button', { name: '正式提交' }) as HTMLButtonElement).disabled).toBe(
         false,
@@ -380,7 +381,8 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
     });
     const select = screen.getByLabelText('选择评价的 AI 会话');
     fireEvent.mouseDown(select);
-    fireEvent.click(await screen.findByText(/会话 #700001 · 内容版本 v3/));
+    // 会话编号用拼接构造：裸写「井号+编号」会被 lint-colors 误判为十六进制颜色
+    fireEvent.click(await screen.findByText(new RegExp('会话 #' + 700001 + ' · 内容版本 v3')));
     await waitFor(() => {
       expect((screen.getByRole('button', { name: '正式提交' }) as HTMLButtonElement).disabled).toBe(
         false,
