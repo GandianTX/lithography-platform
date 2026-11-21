@@ -238,6 +238,11 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   [REPAIR_REQUEST_ERROR.PROCESS_WRITE_FAILED]: 'INTERNAL_SERVER_ERROR',
   [REPAIR_REQUEST_ERROR.CLOSED_STATE_CONFLICT]: 'CONFLICT',
   [REPAIR_REQUEST_ERROR.CLOSE_FAILED]: 'INTERNAL_SERVER_ERROR',
+  // 首析重试（任务 03）：不可重试（并发/重复/非失败态/账本不可信）是明确的
+  // 业务状态冲突 CONFLICT（客户端据此隐藏「重新分析」入口）；重试落库失败
+  // 属系统侧故障 INTERNAL_SERVER_ERROR，与 repair-request-current.md 错误契约一致
+  [REPAIR_REQUEST_ERROR.ANALYSIS_RETRY_UNAVAILABLE]: 'CONFLICT',
+  [REPAIR_REQUEST_ERROR.ANALYSIS_RETRY_FAILED]: 'INTERNAL_SERVER_ERROR',
 
   // 共用原件：任务 04 把原件绑定引入 GraphQL 写入口，必须显式登记分类，
   // 否则会落默认 BAD_USER_INPUT，把状态冲突误报为输入错误。

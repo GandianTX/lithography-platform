@@ -78,8 +78,11 @@ export class DownloadStoredFileUsecase {
       session: query.session,
       viewerOrganizationId,
       uploadContextId: normalizeUploadContextId(query.uploadContextId),
-      // 任务 03 第三段起客户读链路开通：客户仅读本人报修原件（REPAIR_REQUEST），
-      // 工程师/管理员链路（REPAIR_PROCESS）口径不变；用途级归属仍由 QueryService 裁决
+      // 任务 03 第三段起客户读链路开通：客户仅读本人报修原件（REPAIR_REQUEST）。
+      // expectedBusinessType 只约束暂存（TEMPORARY）读取用途；正式绑定（BOUND）
+      // 原件的归属由 QueryService 按真实业务关联裁决：BOUND REPAIR_REQUEST 原件
+      // 对报修本人与对工单有权限的指定厂家工程师开放（任务 03/04 交叉链路），
+      // BOUND REPAIR_PROCESS 原件维持工程师/管理员口径不变。
       expectedBusinessType: hasRole(query.session.roles, IdentityTypeEnum.ENGINEER)
         ? StoredFileBusinessType.REPAIR_PROCESS
         : StoredFileBusinessType.REPAIR_REQUEST,

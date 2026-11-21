@@ -57,6 +57,10 @@ describe(GqlAllExceptionsFilter.name, () => {
     [REPAIR_REQUEST_ERROR.RESPONSE_FAILED, 'INTERNAL_SERVER_ERROR'],
     // 编辑补传原件：已有原件时不允许替换/移除，属明确的当前状态冲突
     [REPAIR_REQUEST_ERROR.PROCESS_ORIGINAL_IMMUTABLE, 'CONFLICT'],
+    // 首析重试（任务 03）：不可重试（并发/重复/非失败态）属业务状态冲突
+    // CONFLICT（客户端据此隐藏「重新分析」入口）；重试落库失败属系统侧故障
+    [REPAIR_REQUEST_ERROR.ANALYSIS_RETRY_UNAVAILABLE, 'CONFLICT'],
+    [REPAIR_REQUEST_ERROR.ANALYSIS_RETRY_FAILED, 'INTERNAL_SERVER_ERROR'],
   ])('maps repair request error %s to GraphQL code %s', (errorCode, gqlCode) => {
     const configService = {
       get: jest.fn().mockReturnValue('production'),

@@ -66,9 +66,11 @@ type StoredFileAccessRow = {
  *   新路径仅限接单工程师本人（旧过程关联保持既有同公司工程师口径）；
  *   管理员分支复用管理员工单授权策略：一级全公司、二级仅本公司（见 adminOrganizationId）；
  *   已结单只限制写入，不阻止原本有权的工程师下载已绑定原件；
- * - 正式绑定（BOUND REPAIR_REQUEST，任务 03 第三段起）：仅报修本人可读，
- *   原稿须未删除且 intake.file_id 实际引用该文件（见 canAccessBoundRepairRequestOriginal）；
- * - 客户报修原件之外，客户、外公司、同公司非工程师账号一律返回 null，
+ * - 正式绑定（BOUND REPAIR_REQUEST，任务 03 第三段起）：报修本人可读；
+ *   任务 03/04 交叉链路起，对工单有权限的指定厂家工程师亦可读（复用工单详情
+ *   可信服务公司口径，须存在真实关联该原稿的未删除工单，见
+ *   canAccessBoundRepairRequestOriginal）；
+ * - 客户报修原件之外，其他客户、外公司、同公司非工程师账号一律返回 null，
  *   不泄露原件存在性或内部过程。
  */
 @Injectable()
@@ -175,12 +177,17 @@ export class StoredFileQueryService {
   }
 
   /**
-   * 客户报修原件访问（任务 03 第三段）：仅「真实绑定到本人原稿」的
-   * REPAIR_REQUEST 原件对客户开放。
+   * 客户报修原件访问（任务 03 第三段；任务 03/04 交叉链路补齐工程师口径）：
+   * 「真实绑定到本人原稿」的 REPAIR_REQUEST 原件对两类读取者开放——
+   * ① 报修本人（客户，含按角色继承展开的客户身份）；
+   * ② 对该原稿对应工单有读取权限的指定厂家工程师（复用工单详情可信服务公司
+   *    口径：工单真实关联该原稿、未删除，且工单与原稿的服务公司一致并等于
+   *    读取者可信组织；是否已接单不参与读取判定，与工单详情读规则一致）。
    *
    * - 以真实业务关联为准：`repair_request_intake.file_id` 必须实际引用该文件，
-     不信任文件自身 business_id 单独放行；
-   * - 原稿已删除（deleted_at 非空）后原件对客户关闭（迟到读取不再复活删除单）；
+       且必须存在 `repair_request.intake_id` 指向该原稿的未删除工单；
+   * - 原稿已删除（deleted_at 非空）后原件对客户与工程师均关闭；
+   * - 管理员会话（adminOrganizationId 已解析）不因本分支放行，管理员口径不变；
    * - 暂存（TEMPORARY）原件不开放客户读取；同公司其他客户与外公司账号一律拒绝，
    *   统一返回 null（上层映射 NOT_FOUND），不泄露原件存在性。
    */
@@ -192,8 +199,7 @@ export class StoredFileQueryService {
       (file.businessType as StoredFileBusinessType) !== StoredFileBusinessType.REPAIR_REQUEST ||
       file.businessId === null ||
       (file.status as StoredFileStatus) !== StoredFileStatus.VALID ||
-      file.verifiedAt === null ||
-      !hasRole(query.session.roles, IdentityTypeEnum.CUSTOMER)
+      file.verifiedAt === null
     ) {
       return false;
     }
@@ -205,13 +211,59 @@ export class StoredFileQueryService {
 
     const intake = await this.repairRequestIntakeRepository.findOne({
       where: { id: intakeId },
-      select: { id: true, fileId: true, customerAccountId: true, deletedAt: true },
+      select: {
+        id: true,
+        fileId: true,
+        customerAccountId: true,
+        serviceOrganizationId: true,
+        deletedAt: true,
+      },
+    });
+    if (intake === null || intake.deletedAt !== null || intake.fileId !== file.fileId) {
+      return false;
+    }
+
+    // 客户本人：仅报修原稿归属本人时可读（不改变既有客户口径）
+    if (hasRole(query.session.roles, IdentityTypeEnum.CUSTOMER)) {
+      return intake.customerAccountId === query.session.accountId;
+    }
+
+    // 指定厂家工程师：须为真实工单读取身份（管理员会话不进入本分支，口径不变）
+    if (
+      query.adminOrganizationId === undefined &&
+      hasRole(query.session.roles, IdentityTypeEnum.ENGINEER)
+    ) {
+      return this.canAccessBoundRequestOriginalAsEngineer(intake, query);
+    }
+
+    return false;
+  }
+
+  /**
+   * 工程师读取客户报修原件：复用工单详情可信服务公司口径
+   * （见 RepairRequestQueryService.assertEngineerTrustedScope）——
+   * 必须存在真实关联该原稿（repair_request.intake_id）的未删除工单，且工单
+   * `service_organization_id` 与原稿一致并等于读取者可信组织；不信任文件
+   * business_id 或前端传入的厂家单独放行。是否已接单不参与读取判定，
+   * 与工单详情「同公司工程师均可读客户原始报修」规则一致。
+   */
+  private async canAccessBoundRequestOriginalAsEngineer(
+    intake: Pick<RepairRequestIntakeEntity, 'id' | 'serviceOrganizationId'>,
+    query: StoredFileAccessQuery,
+  ): Promise<boolean> {
+    if (query.viewerOrganizationId === null) {
+      return false;
+    }
+    const request = await this.repairRequestRepository.findOne({
+      where: { intakeId: intake.id },
+      select: { id: true, serviceOrganizationId: true, deprecated: true },
     });
     return (
-      intake !== null &&
-      intake.deletedAt === null &&
-      intake.fileId === file.fileId &&
-      intake.customerAccountId === query.session.accountId
+      request !== null &&
+      !request.deprecated &&
+      request.serviceOrganizationId !== null &&
+      request.serviceOrganizationId === query.viewerOrganizationId &&
+      intake.serviceOrganizationId === request.serviceOrganizationId
     );
   }
 
