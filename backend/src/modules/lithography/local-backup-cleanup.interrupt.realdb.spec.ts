@@ -12,7 +12,10 @@
 //   ② 下一轮把残留**识别为中断**（落"清理被进程中断"原因）并**继续清理**；
 //   ③ 最终落 CLEANED、包目录消失——即中断不误标为已清理；
 //   ④ 反例：残留**未超过中断可辨认时限**时下一轮**不得**把它登记为中断
-//     （证明"识别为中断"由超时判定驱动，而不是无条件落库）。
+//     （证明"识别为中断"由超时判定驱动，而不是无条件落库）；
+//   ⑤ **重启恢复**：上一进程留下的残留（进程死在删除完成之后、落 CLEANED 之前），
+//     在**服务重启后**（新起的真实子进程 = 重启后的服务实例）仍必须**可辨认**
+//     （被登记为中断）并**收敛**为已清理；同批的"时限内残留"不得被登记为中断。
 //
 // 作用域隔离（重要）：
 // - 真实清理的批次作用域是「本机公司 ＋ 本机安装标识」下的**全部**资产。
@@ -167,6 +170,8 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
   const fillers: SyntheticPackage[] = [];
   /** 反例批次：慢清理包（制造观测窗口）＋ 时限内残留（不得被登记为中断） */
   const withinThresholdBatch: SyntheticPackage[] = [];
+  /** 重启恢复批次：上一进程遗留的残留（目录已删、状态未落）＋ 时限内对照 ＋ 补位包 */
+  const restartBatch: SyntheticPackage[] = [];
   /**
    * 哨兵（中断场景下的"不该被动"事实）：
    * - 外公司包目录（备份根下的另一个公司目录）：中断清理不得越界删除；
@@ -509,7 +514,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
   });
 
   afterAll(async () => {
-    const registered = [residual, ...fillers, ...withinThresholdBatch];
+    const registered = [residual, ...fillers, ...withinThresholdBatch, ...restartBatch];
     if (dataSource?.isInitialized === true) {
       for (const item of registered) {
         await dataSource.query('DELETE FROM backup_asset WHERE backup_id = ?', [item.backupId]);
@@ -672,5 +677,125 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     expect(state?.local_status).toBe('CLEANED');
     expect(state?.local_cleanup_error).toBeNull();
     expect(existsSync(freshResidual.packagePath)).toBe(false);
+  });
+
+  it('重启恢复：上一进程遗留的残留，重启后仍可辨认并收敛为已清理', async () => {
+    const base = new Date();
+
+    // 夹具 1：模拟"进程死在**删除完成之后、落 CLEANED 之前**"的残留现场
+    //   ——包目录已不存在、状态仍为 CLEANING。该窗口只有一次 UPDATE 往返，无法稳定命中，
+    //   因此按**残留状态事实**构造；识别与收敛由**新起的子进程**（= 重启后的服务实例）
+    //   执行真实清理完成：子进程只认数据库里持久化下来的残留事实。
+    const restartResidual: SyntheticPackage = {
+      backupId: randomUUID(),
+      packagePath: nodePath.join(backupRoot, String(organizationId), 'restart-residual'),
+    };
+    // 夹具 2：时限内的残留（上一进程刚死不久）：重启后不得被登记为中断
+    const withinThresholdControl: SyntheticPackage = {
+      backupId: randomUUID(),
+      packagePath: nodePath.join(backupRoot, String(organizationId), 'restart-within-threshold'),
+    };
+    restartBatch.push(restartResidual, withinThresholdControl);
+
+    const staleUpdatedAt = new Date(base.getTime() - (INTERRUPT_MINUTES + 1) * 60_000);
+
+    await insertAsset(
+      restartResidual.backupId,
+      restartResidual.packagePath,
+      new Date(base.getTime() - 7_200_000),
+      { localStatus: 'CLEANING', updatedAt: staleUpdatedAt },
+    );
+    // 包目录已不存在：删除时应走 ENOENT 分支并收敛为已清理（不得永久卡在 CLEANING）
+    createPackageFiles(restartResidual.packagePath);
+    removeTree(restartResidual.packagePath);
+
+    await insertAsset(
+      withinThresholdControl.backupId,
+      withinThresholdControl.packagePath,
+      new Date(base.getTime() - 3_600_000),
+      { localStatus: 'CLEANING', updatedAt: base },
+    );
+    createPackageFiles(withinThresholdControl.packagePath);
+
+    // 补位包：创建时间早于残留，使残留落在批次末尾，提供"被登记为中断"的确定性观测窗口
+    for (let index = 0; index < FILLER_PACKAGE_COUNT; index += 1) {
+      const filler: SyntheticPackage = {
+        backupId: randomUUID(),
+        packagePath: nodePath.join(backupRoot, String(organizationId), `restart-filler-${index}`),
+      };
+      restartBatch.push(filler);
+      await insertAsset(filler.backupId, filler.packagePath, new Date(base.getTime() - 10_800_000));
+      createPackageFiles(filler.packagePath);
+    }
+
+    await assertScopeIsolated([
+      residual.backupId,
+      ...fillers.map((item) => item.backupId),
+      ...withinThresholdBatch.map((item) => item.backupId),
+      ...restartBatch.map((item) => item.backupId),
+    ]);
+
+    // 重启 = 新起一个真实子进程（新的服务实例）
+    const restartNow = new Date(base.getTime() + 60_000);
+    const child = spawnCleanupChild(restartNow.toISOString());
+
+    // 全程盯住两行：超时残留必须被登记为中断；时限内残留不得被登记为中断
+    let markedResidual = false;
+    let wronglyMarkedControl = false;
+    let pollCount = 0;
+    while (child.exitCode === null && child.signalCode === null) {
+      pollCount += 1;
+      const residualState = await readAssetState(restartResidual.backupId);
+      if ((residualState?.local_cleanup_error ?? '').includes('清理被进程中断')) {
+        markedResidual = true;
+      }
+      const controlState = await readAssetState(withinThresholdControl.backupId);
+      if ((controlState?.local_cleanup_error ?? '').includes('清理被进程中断')) {
+        wronglyMarkedControl = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    const exitCode = await waitForChildExit(child);
+
+    // 观测必须真的覆盖了重启后那一轮的清理阶段，否则"没看到标记"没有意义
+    expect(pollCount).toBeGreaterThan(20);
+    expect(wronglyMarkedControl).toBe(false);
+    expect(exitCode).toBe(0);
+    // 重启后仍可辨认：上一进程遗留的残留被登记为中断（而不是被当成正常待清理包直接删掉）
+    expect(markedResidual).toBe(true);
+
+    const result = readChildResult(child);
+    expect(result?.['cleaned']).toBe(FILLER_PACKAGE_COUNT + 2);
+    expect(result?.['retained']).toBe(0);
+
+    // 超时残留：收敛为已清理（不再卡在 CLEANING）
+    const residualState = await readAssetState(restartResidual.backupId);
+    expect(residualState?.local_status).toBe('CLEANED');
+    expect(residualState?.local_reference).toBeNull();
+    expect(residualState?.deleted_at).not.toBeNull();
+
+    // 时限内残留：未被登记为中断，也正常收敛
+    const controlState = await readAssetState(withinThresholdControl.backupId);
+    expect(controlState?.local_status).toBe('CLEANED');
+    expect(controlState?.local_cleanup_error).toBeNull();
+    expect(controlState?.deleted_at).not.toBeNull();
+    expect(existsSync(withinThresholdControl.packagePath)).toBe(false);
+
+    // 补位包同样被清掉：重启恢复不阻断本轮其余包的清理
+    for (const filler of restartBatch) {
+      if (
+        filler.backupId === restartResidual.backupId ||
+        filler.backupId === withinThresholdControl.backupId
+      ) {
+        continue;
+      }
+      const fillerState = await readAssetState(filler.backupId);
+      expect(fillerState?.local_status).toBe('CLEANED');
+      expect(existsSync(filler.packagePath)).toBe(false);
+    }
+
+    // 重启恢复同样不得越界：三个哨兵仍在且内容未变
+    expectSentinelsIntact();
   });
 });
