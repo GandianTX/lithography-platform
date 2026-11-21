@@ -26,6 +26,7 @@ import { GetLocalBackupSettingsUsecase } from './get-local-backup-settings.useca
 import { ListLocalBackupRecordsUsecase } from './list-local-backup-records.usecase';
 import { StartManualLocalBackupUsecase } from './start-manual-local-backup.usecase';
 import { PrecheckLocalRestoreUsecase } from './precheck-local-restore.usecase';
+import { CleanupLocalBackupPackagesUsecase } from './cleanup-local-backup-packages.usecase';
 import { ResolveSyncConflictUsecase } from './resolve-sync-conflict.usecase';
 import { StartLocalBackupUsecase } from './start-local-backup.usecase';
 import { StartLocalUploadAttemptUsecase } from './start-local-upload-attempt.usecase';
@@ -65,6 +66,7 @@ import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settin
     GetLocalBackupSettingsUsecase,
     StartManualLocalBackupUsecase,
     PrecheckLocalRestoreUsecase,
+    CleanupLocalBackupPackagesUsecase,
   ],
   exports: [
     LocalRuntimeScopeResolver,
@@ -91,6 +93,7 @@ import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settin
     GetLocalBackupSettingsUsecase,
     StartManualLocalBackupUsecase,
     PrecheckLocalRestoreUsecase,
+    CleanupLocalBackupPackagesUsecase,
   ],
 })
 export class LocalRuntimeUsecasesModule {}

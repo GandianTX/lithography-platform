@@ -350,3 +350,52 @@ export class LocalRestoreCapabilityDTO {
   @Field(() => String, { description: '不可用原因或启用说明' })
   reason!: string;
 }
+
+/** 清理方式：MANUAL 手动清理（须有完整云端回执）/ RETENTION 过期清理（约 30 天保留窗口） */
+export enum LocalBackupCleanupMode {
+  MANUAL = 'MANUAL',
+  RETENTION = 'RETENTION',
+}
+
+/** 单个备份包的清理结果（逐项可追踪） */
+@ObjectType('LocalBackupCleanupItem')
+export class LocalBackupCleanupItemDTO {
+  @Field(() => String, { description: '备份资产 ID' })
+  backupId!: string;
+
+  @Field(() => String, { description: '清理结果：CLEANED 已清理 / RETAINED 仍保留' })
+  outcome!: string;
+
+  @Field(() => String, { nullable: true, description: '仍保留的原因（已清理时为空）' })
+  reason?: string | null;
+}
+
+/** 一轮清理的汇总结果 */
+@ObjectType('LocalBackupCleanupResult')
+export class LocalBackupCleanupResultDTO {
+  @Field(() => String, { description: '清理方式：MANUAL / RETENTION' })
+  mode!: string;
+
+  @Field(() => Int, { description: '目标公司数据区' })
+  organizationId!: number;
+
+  @Field(() => Boolean, {
+    description: '是否具备清理授权；不可用时已清理数必为 0（零清理）',
+  })
+  available!: boolean;
+
+  @Field(() => String, { nullable: true, description: '不可用原因' })
+  reason?: string | null;
+
+  @Field(() => Int, { description: '固定后的清理目标数' })
+  targetCount!: number;
+
+  @Field(() => Int, { description: '已清理数量' })
+  cleaned!: number;
+
+  @Field(() => Int, { description: '仍保留数量' })
+  retained!: number;
+
+  @Field(() => [LocalBackupCleanupItemDTO], { description: '逐项清理结果' })
+  items!: LocalBackupCleanupItemDTO[];
+}

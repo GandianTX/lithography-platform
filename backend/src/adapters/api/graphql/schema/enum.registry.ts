@@ -50,6 +50,7 @@ import {
   organizationStatusValues,
 } from '@src/modules/lithography/organization.types';
 import { AiConversationExportFormat } from '@src/adapters/api/graphql/ai-conversation/dto/ai-conversation-export.dto';
+import { LocalBackupCleanupMode } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
 import { localRuntimeViewerRoleValues } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 import { syncConflictActionEnum } from '@core/local-runtime/policy/sync-conflict-resolve.policy';
 import { recordPackageResourceTypeEnum } from '@core/local-runtime/policy/record-package-export.policy';
@@ -106,4 +107,5 @@ export function registerEnums(): void {
   registerEnumType(localRuntimeViewerRoleValues, { name: 'LocalRuntimeViewerRole' });
   registerEnumType(syncConflictActionEnum, { name: 'SyncConflictAction' });
   registerEnumType(recordPackageResourceTypeEnum, { name: 'RecordPackageResourceType' });
+  registerEnumType(LocalBackupCleanupMode, { name: 'LocalBackupCleanupMode' });
 }

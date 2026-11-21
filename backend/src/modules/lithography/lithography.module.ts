@@ -54,6 +54,7 @@ import { RecordPackageImportService } from './record-package-import.service';
 import { RecordPackageImportQueryService } from './queries/record-package-import.query.service';
 import { RecordPackageExportService } from './record-package-export.service';
 import { ProtectedBackupService } from './protected-backup.service';
+import { LocalBackupCleanupService } from './local-backup-cleanup.service';
 import { BackupRestorePrecheckService } from './backup-restore-precheck.service';
 import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 import { AdminAiConversationQueryService } from './queries/admin-ai-conversation.query.service';
@@ -171,6 +172,7 @@ export const LITHOGRAPHY_ENTITIES = [
     RecordPackageExportService,
     ProtectedBackupService,
     BackupRestorePrecheckService,
+    LocalBackupCleanupService,
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
     RepairProcessEntryQueryService,
@@ -212,6 +214,7 @@ export const LITHOGRAPHY_ENTITIES = [
     TypeOrmModule,
     ProtectedBackupService,
     BackupRestorePrecheckService,
+    LocalBackupCleanupService,
     AiConversationService,
     AiConversationQueryService,
     EquipmentModelService,

@@ -6,15 +6,20 @@ import {
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import { assertLocalRuntimeAdministrator } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 import {
   BackupRestorePrecheckService,
   type RestorePrecheckResult,
 } from '@src/modules/lithography/backup-restore-precheck.service';
+import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import { LocalBackupAssetQueryService } from '@src/modules/lithography/queries/local-backup-asset.query.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
+import {
+  TRANSACTION_RUNNER,
+  type TransactionRunner,
+} from '@src/usecases/common/ports/transaction-runner.contract';
 
 import type { PrecheckLocalRestoreCommand } from './local-runtime.command.types';
 import { normalizeBackupId } from './local-runtime.input.normalize';
@@ -43,6 +48,9 @@ export class PrecheckLocalRestoreUsecase {
     private readonly precheckService: BackupRestorePrecheckService,
     private readonly protectedBackupService: ProtectedBackupService,
     private readonly scopeResolver: LocalRuntimeScopeResolver,
+    private readonly localRuntimeService: LocalRuntimeService,
+    @Inject(TRANSACTION_RUNNER)
+    private readonly transactionRunner: TransactionRunner,
   ) {}
 
   async execute(command: PrecheckLocalRestoreCommand): Promise<RestorePrecheckResult> {
@@ -80,12 +88,69 @@ export class PrecheckLocalRestoreUsecase {
       allowedOrganizationId: scope.organizationId,
       startedByAccountId: command.session.accountId,
       createProtectionCopy: async (organizationId: number) => {
-        const result = await this.protectedBackupService.generateProtectedBackup({
-          organizationId,
-          runId: null,
-          targetPath: protectionPath,
-        });
-        return { backupId: result.backupId, packagePath: result.packagePath };
+        // 保护副本是真实的一份受保护备份包：必须归属真实的本地备份运行
+        // （backup_asset.run_id 是 NOT NULL 外键，不能悬空）。
+        const protectionRun = await this.transactionRunner.run(async (transactionContext) =>
+          this.localRuntimeService.insertBackupRun(
+            {
+              installationId: installation.installationId,
+              organizationId,
+              triggerType: 'MANUAL',
+              startedAt: now,
+              manifestPath: null,
+              manualUploadStatus: 'PENDING',
+              manualCleanupStatus: 'PENDING',
+            },
+            transactionContext,
+          ),
+        );
+
+        try {
+          const result = await this.protectedBackupService.generateProtectedBackup({
+            organizationId,
+            runId: protectionRun.id,
+            targetPath: protectionPath,
+          });
+
+          await this.transactionRunner.run(async (transactionContext) => {
+            await this.localRuntimeService.finishBackupRun(
+              protectionRun.id,
+              {
+                status: 'SUCCEEDED',
+                finishedAt: new Date(),
+                manifestPath: result.packagePath,
+                manifestChecksum: result.manifestChecksum,
+                byteSize: result.byteSize,
+                attachmentCount: null,
+                schemaVersion: null,
+                errorCode: null,
+                errorMessage: null,
+              },
+              transactionContext,
+            );
+          });
+
+          return { backupId: result.backupId, packagePath: result.packagePath };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '保护副本生成失败';
+          await this.transactionRunner.run(async (transactionContext) => {
+            await this.localRuntimeService.finishBackupRun(
+              protectionRun.id,
+              {
+                status: 'FAILED',
+                finishedAt: new Date(),
+                manifestChecksum: null,
+                byteSize: null,
+                attachmentCount: null,
+                schemaVersion: null,
+                errorCode: 'BACKUP_GENERATION_FAILED',
+                errorMessage: message.slice(0, 1000),
+              },
+              transactionContext,
+            );
+          });
+          throw error;
+        }
       },
       now,
     });

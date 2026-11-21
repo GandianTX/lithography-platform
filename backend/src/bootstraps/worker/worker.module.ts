@@ -26,6 +26,7 @@ import { LocalRuntimeStorageModule } from '@src/infrastructure/file-storage/loca
 import { BackupScheduleService } from '@src/modules/lithography/backup-schedule.service';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 import { LocalBackupUploadService } from '@src/modules/lithography/local-backup-upload.service';
+import { LocalBackupCleanupService } from '@src/modules/lithography/local-backup-cleanup.service';
 import { LocalBackupScheduleRuntime } from './local-backup-schedule.runtime';
 
 // Worker 全量实体闭包：业务模块全量实体＋跨模块外键依赖（account 等），
@@ -61,6 +62,7 @@ const WORKER_ENTITIES = [
   providers: [
     BullMqWorkerRuntime,
     ProtectedBackupService,
+    LocalBackupCleanupService,
     BackupScheduleService,
     LocalBackupUploadService,
     LocalBackupScheduleRuntime,

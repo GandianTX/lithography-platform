@@ -9,6 +9,7 @@ import {
   type BackupManifestOriginal,
   type BackupScopeEntry,
 } from '@core/local-runtime/policy/protected-backup.policy';
+import { BACKUP_RETENTION_DAYS } from '@core/local-runtime/policy/local-backup-cleanup.policy';
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -199,6 +200,8 @@ export class ProtectedBackupService {
         localReference: input.storageReference,
         encryptionKeyId: input.protectionKeyId,
         verifiedAt: new Date(),
+        // 保留窗口（需求固定口径约 30 天）：到期后由过期清理按包逐项处理
+        retentionUntil: new Date(Date.now() + BACKUP_RETENTION_DAYS * 86_400_000),
       }),
     );
   }

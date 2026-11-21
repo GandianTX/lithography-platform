@@ -11,6 +11,8 @@ import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import {
+  LocalBackupCleanupMode,
+  LocalBackupCleanupResultDTO,
   LocalBackupRecordDetailDTO,
   LocalBackupRecordPageDTO,
   LocalBackupSettingDTO,
@@ -23,6 +25,7 @@ import {
   toLocalBackupSettingDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
 import { RESTORE_EXECUTION_UNAVAILABLE_REASON } from '@core/local-runtime/policy/restore-precheck.policy';
+import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
 import { ListLocalBackupRecordsUsecase } from '@src/usecases/local-runtime/list-local-backup-records.usecase';
@@ -45,6 +48,7 @@ export class LocalBackupResolver {
     private readonly getLocalBackupSettingsUsecase: GetLocalBackupSettingsUsecase,
     private readonly startManualLocalBackupUsecase: StartManualLocalBackupUsecase,
     private readonly precheckLocalRestoreUsecase: PrecheckLocalRestoreUsecase,
+    private readonly cleanupLocalBackupPackagesUsecase: CleanupLocalBackupPackagesUsecase,
   ) {}
 
   /** 备份记录列表：本公司范围（一级管理员为全局范围） */
@@ -173,6 +177,45 @@ export class LocalBackupResolver {
       findings: snapshot.findings.map((finding) => ({
         code: finding.code,
         message: finding.message,
+      })),
+    };
+  }
+
+  /**
+   * 清理本机本公司的本地备份包。
+   *
+   * - MANUAL：授权来源是服务端已落库的完整云端回执；没有完整回执即零清理并如实不可用；
+   * - RETENTION：按约 30 天保留窗口清理过期包，且不开放工程师（R083）。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalBackupCleanupResultDTO, {
+    name: 'cleanupLocalBackupPackages',
+    description:
+      '清理本机本公司的本地备份包（手动清理须有完整云端回执，否则零清理并如实不可用；过期清理按约 30 天保留窗口，仅管理员可执行）',
+  })
+  async cleanupLocalBackupPackages(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('mode', { type: () => LocalBackupCleanupMode }) mode: LocalBackupCleanupMode,
+    @Args('organizationId', { type: () => Int, nullable: true }) organizationId?: number,
+  ): Promise<LocalBackupCleanupResultDTO> {
+    const result = await this.cleanupLocalBackupPackagesUsecase.execute({
+      session: this.toSession(user),
+      mode: mode === LocalBackupCleanupMode.RETENTION ? 'RETENTION' : 'MANUAL',
+      organizationId: organizationId ?? null,
+    });
+    return {
+      mode: result.mode,
+      organizationId: result.organizationId,
+      available: result.available,
+      reason: result.reason,
+      targetCount: result.targetCount,
+      cleaned: result.cleaned,
+      retained: result.retained,
+      items: result.items.map((item) => ({
+        backupId: item.backupId,
+        outcome: item.outcome,
+        reason: item.reason,
       })),
     };
   }
