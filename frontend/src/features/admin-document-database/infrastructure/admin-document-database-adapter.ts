@@ -5,6 +5,7 @@ import { fetchRestWithAuthRetry, parseAttachmentFilename } from '@/shared/http';
 import { translateNow } from '@/shared/i18n';
 
 import type {
+  AdminAiConversationDetail,
   AdminAiConversationFilter,
   AdminAiConversationListItem,
   AdminAiMessageListItem,
@@ -262,6 +263,7 @@ const ADMIN_AI_CONVERSATIONS_QUERY = `
         requestId
         status
         engineerNickname
+        contentVersion
         messageCount
         reportCount
         createdAt
@@ -285,11 +287,69 @@ const ADMIN_AI_MESSAGES_QUERY = `
         turnNo
         role
         contentText
+        contentVersion
+        analysisStatus
+        failureReason
         createdAt
       }
       total
       page
       pageSize
+    }
+  }
+`;
+
+const EXPORT_AI_CONVERSATION_MUTATION = `
+  mutation ExportAiConversation($input: ExportAiConversationInput!) {
+    exportAiConversation(input: $input) {
+      byteSize
+      contentBase64
+      contentVersion
+      filename
+      format
+      lastMessageSeq
+      mimeType
+    }
+  }
+`;
+
+const AI_ADMIN_CONVERSATION_DETAIL_QUERY = `
+  query AiAdminConversationDetail($input: AiAdminConversationIdInput!) {
+    aiAdminConversationDetail(input: $input) {
+      conversationId
+      requestId
+      requestNo
+      status
+      contentVersion
+      engineerNickname
+      createdAt
+      turns {
+        questionUuid
+        turnNo
+        analysisStatus
+        failureReason
+        analysisContentVersion
+        question {
+          messageId
+          messageSeq
+          turnNo
+          role
+          questionUuid
+          text
+          contentVersion
+          createdAt
+        }
+        answer {
+          messageId
+          messageSeq
+          turnNo
+          role
+          questionUuid
+          text
+          contentVersion
+          createdAt
+        }
+      }
     }
   }
 `;
@@ -461,6 +521,75 @@ export async function fetchAdminAiMessages(
   });
 
   return toListPage(data.adminAiMessages, { page, pageSize });
+}
+
+/** 管理员导出 PDF 的返回（固定内容版本与消息截止点） */
+export type AdminAiConversationExportResult = {
+  contentBase64: string;
+  contentVersion: number;
+  filename: string;
+  lastMessageSeq: number;
+  mimeType: string;
+};
+
+/**
+ * 管理员导出会话 PDF（任务 05 · S4.2 · R039-01）。
+ *
+ * 服务端选定并固定内容版本，导出期间追加的消息不混入；
+ * 仅支持 PDF —— 受控原始 JSON 不提供普通页面入口，需技术授权流程另行调用。
+ */
+export async function exportAdminAiConversationPdf(params: {
+  conversationId: number;
+  contentVersion: number;
+}): Promise<AdminAiConversationExportResult> {
+  const data = await executeGraphQL<
+    {
+      exportAiConversation: {
+        byteSize: number;
+        contentBase64: string;
+        contentVersion: number;
+        filename: string;
+        format: string;
+        lastMessageSeq: number;
+        mimeType: string;
+      };
+    },
+    Record<string, unknown>
+  >(EXPORT_AI_CONVERSATION_MUTATION, {
+    input: {
+      contentVersion: params.contentVersion,
+      conversationId: params.conversationId,
+      format: 'PDF',
+    },
+  });
+
+  const payload = data.exportAiConversation;
+
+  return {
+    contentBase64: payload.contentBase64,
+    contentVersion: payload.contentVersion,
+    filename: payload.filename,
+    lastMessageSeq: payload.lastMessageSeq,
+    mimeType: payload.mimeType,
+  };
+}
+
+/**
+ * 管理员只读会话详情（任务 05 · S4.1 · R038-01）。
+ *
+ * 只读：无提问入口；一级跨公司、二级仅本公司由服务端裁决，直传外公司 ID 拒绝。
+ */
+export async function fetchAdminAiConversationDetail(
+  conversationId: number,
+): Promise<AdminAiConversationDetail> {
+  const data = await executeGraphQL<
+    { aiAdminConversationDetail: AdminAiConversationDetail },
+    Record<string, unknown>
+  >(AI_ADMIN_CONVERSATION_DETAIL_QUERY, {
+    input: { conversationId },
+  });
+
+  return data.aiAdminConversationDetail;
 }
 
 export async function fetchAdminAiReports(

@@ -30,7 +30,8 @@
     "security:check": "npm run security:audit && npm run security:signatures",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e:v44-visual": "playwright test --config=playwright.v44-visual.config.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^6.2.5",

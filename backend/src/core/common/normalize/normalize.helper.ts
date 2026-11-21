@@ -43,6 +43,19 @@ export function normalize(value: string, type: 'email' | 'phone'): string {
 }
 
 /**
+ * 可选文本归一：非字符串或纯空白 → null，其余去首尾空白。
+ *
+ * 供用例层统一复用，避免在 usecases 内直接调用 `trim()`（见 normalize 守卫）。
+ */
+export function normalizeOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
  * 布尔解析：支持 'false' | '0' | 'off' | 'no' | 'disabled' → false；
  * 支持 'true' | '1' | 'on' | 'yes' | 'enabled' → true
  * @param value 待解析值（可能为 string / number / boolean / undefined）

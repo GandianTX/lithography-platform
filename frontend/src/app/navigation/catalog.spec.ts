@@ -19,12 +19,13 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('ENGINEER 仅见首页、维修申请、参考资料（AI 故障诊断无正式路由不入菜单）', () => {
+  it('ENGINEER 见首页、维修申请、AI 对话、参考资料（任务05 S3 路由落地后入菜单）', () => {
     const paths = getNavigationItems('prod', 'ENGINEER').map((item) => item.path);
 
     expect(paths).toEqual([
       '/',
       '/engineer/repair-requests',
+      '/engineer/ai',
       '/reference-documents',
       '/account/settings',
     ]);
@@ -35,10 +36,12 @@ describe('navigation catalog（S1 菜单表对账）', () => {
 
     expect(paths).toEqual([
       '/',
+      '/engineer/ai',
       '/reference-documents',
       '/admin/users',
       '/admin/companies',
       '/admin/engineer-registrations',
+      '/admin/ai-conversations',
       '/admin/document-database',
       '/admin/orders',
       '/account/settings',
@@ -49,10 +52,12 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     for (const scope of ['PLATFORM', 'ORGANIZATION'] as const) {
       expect(getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path)).toEqual([
         '/',
+        '/engineer/ai',
         '/reference-documents',
         '/admin/users',
         '/admin/companies',
         '/admin/engineer-registrations',
+        '/admin/ai-conversations',
         '/admin/orders',
         '/account/settings',
       ]);
@@ -60,6 +65,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
 
     expect(getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path)).toEqual([
       '/',
+      '/engineer/ai',
       '/reference-documents',
       '/account/settings',
     ]);

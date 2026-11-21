@@ -101,6 +101,21 @@ export interface AiWorkflowContextHousekeepingCandidate {
   readonly updatedAt: Date;
 }
 
+/**
+ * 受理事务内的待准入事实（任务05 Q01／B2）。
+ *
+ * 传了就表示「本次创建即为已受理、等待投递」，由 housekeeping 按 `nextEnqueueAt` 真正处理；
+ * 只创建 `CREATED` 不会被现有恢复器扫描，因此受理侧必须用这一项落下可恢复事实。
+ */
+export interface AiWorkflowContextAdmissionPlan {
+  /** 到期投递时间；等于受理时刻表示「提交后立即可投递」 */
+  readonly nextEnqueueAt: Date;
+  /** 准入截止时间；过期后不再自动投递 */
+  readonly admissionExpiresAt: Date;
+  /** 受控原因码（如 `ACCEPTED_IN_TRANSACTION`、`QUEUE_UNAVAILABLE`） */
+  readonly admissionReason: string;
+}
+
 export interface CreateAiWorkflowContextInput {
   readonly workflowType: string;
   readonly workflowDedupKey?: string | null;
@@ -115,6 +130,7 @@ export interface CreateAiWorkflowContextInput {
   readonly provider?: string | null;
   readonly model?: string | null;
   readonly transactionContext?: PersistenceTransactionContext;
+  readonly admission?: AiWorkflowContextAdmissionPlan | null;
 }
 
 export type CreateAiWorkflowContextResult =

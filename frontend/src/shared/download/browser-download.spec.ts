@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { saveBlobAsFile } from './browser-file-download-adapter';
+import { base64ToBlob, saveBlobAsFile } from './browser-download';
 
 const createObjectURL = vi.fn(() => 'blob:mock-url');
 const revokeObjectURL = vi.fn();
@@ -67,5 +67,20 @@ describe('saveBlobAsFile', () => {
 
     expect(document.querySelectorAll('a[download]')).toHaveLength(0);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+  });
+});
+
+describe('base64ToBlob', () => {
+  it('把 Base64 文本还原为字节并带上 MIME 类型', () => {
+    const blob = base64ToBlob(btoa('PDF-CONTENT'), 'application/pdf');
+
+    expect(blob.type).toBe('application/pdf');
+    expect(blob.size).toBe('PDF-CONTENT'.length);
+  });
+
+  it('空内容返回空 Blob（不抛错）', () => {
+    const blob = base64ToBlob('', 'application/pdf');
+
+    expect(blob.size).toBe(0);
   });
 });

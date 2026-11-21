@@ -183,6 +183,8 @@ describe('protected route guard wiring', () => {
     );
     expect(load('/admin/users')).toBeNull();
     expect(load('/admin/document-database')).toBeNull();
+    // 任务 05 S4.1：AI 会话只读页对一级管理员开放（范围由服务端裁决）
+    expect(load('/admin/ai-conversations')).toBeNull();
 
     mockedGetCurrentAuthSession.mockReturnValue(
       createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1 }),
@@ -197,10 +199,14 @@ describe('protected route guard wiring', () => {
     expect(load('/admin/companies')).toBeNull();
     expect(load('/admin/engineer-registrations')).toBeNull();
     expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+    // 二级管理员也可进入 AI 会话只读页（本公司范围），但文档数据库整体页仍为一级专属
+    expect(load('/admin/ai-conversations')).toBeNull();
 
     mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('SUPER_ADMIN'));
     expect(redirectLocation(load('/admin/users'))).toBe('/admin');
     expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+    // 无等级事实的管理员不能进入 AI 会话只读页
+    expect(redirectLocation(load('/admin/ai-conversations'))).toBe('/admin');
   });
 
   it('never renders another role content and sends cross-role visitors back home', () => {

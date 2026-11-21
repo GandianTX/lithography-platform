@@ -73,6 +73,7 @@ export const ADMIN_DOCUMENT_KB_FIXTURES = {
   aiConversations: {
     items: [
       {
+        contentVersion: 3,
         id: 701,
         requestNo: 'RR20260901090001A1B2C3',
         requestId: 901,
@@ -90,6 +91,7 @@ export const ADMIN_DOCUMENT_KB_FIXTURES = {
   aiReports: {
     items: [
       {
+        contentVersion: 2,
         id: 801,
         conversationId: 701,
         requestId: 901,

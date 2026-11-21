@@ -13,8 +13,8 @@ import type { NavigationItem, ResolvedNavigationItem } from './types';
 
 // PR1 S3 角色菜单：落点与 auth-session 角色路径表逐项对账
 //（docs/plan/薛-PR1-S1现状与设计映射-20260914.md 第 2 节菜单—路由表）。
-// 「AI 故障诊断」尚无正式路由，按负责人红线（不得保留无效菜单/死链接）
-// 暂不进入目录：AI 诊断待路由 owner 落定后加入。
+// 「AI 故障诊断」入口在任务05 S3 随 /engineer/ai 工作区落地后加入目录（此前无正式路由，
+// 按负责人红线不保留无效菜单/死链接）。
 // 文案只存词条键（S5）：渲染时按当前语言解析，tags 仍保留中文关键词供 AI 检索匹配。
 const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
   {
@@ -51,6 +51,17 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     path: '/engineer/repair-requests',
     roles: ['ENGINEER'],
     tags: ['engineer', 'repair', 'list', '维修申请', '接单'],
+  },
+  {
+    descriptionKey: 'nav.engineer-ai.description',
+    id: 'engineer-ai',
+    kind: 'stable',
+    labelKey: 'nav.engineer-ai.label',
+    // 任务05 S3：/engineer/ai 路由与工作区已落地，方可进入目录（不留死链接）。
+    // 角色可见性与后端一致：获批工程师与管理员可读；客户由路由层拒绝。
+    path: '/engineer/ai',
+    roles: ['ENGINEER', 'SUPER_ADMIN'],
+    tags: ['engineer', 'ai', 'chat', 'diagnosis', 'AI', '诊断', '对话', '问答'],
   },
   {
     descriptionKey: 'nav.reference-documents.description',
@@ -95,6 +106,17 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     path: '/admin/engineer-registrations',
     roles: ['SUPER_ADMIN'],
     tags: ['admin', 'registration', 'engineer', 'approval', '管理员', '注册审批', '工程师'],
+  },
+  {
+    descriptionKey: 'nav.admin-ai-conversations.description',
+    id: 'admin-ai-conversations',
+    kind: 'stable',
+    labelKey: 'nav.admin-ai-conversations.label',
+    // 任务 05 S4.1：AI 会话只读入口。一级跨公司、二级本公司（服务端裁决范围），
+    // 因此对两级管理员均展示；文档数据库整体页仍为一级专属。
+    path: '/admin/ai-conversations',
+    roles: ['SUPER_ADMIN'],
+    tags: ['admin', 'ai', 'conversation', 'readonly', 'AI 会话', '问答记录'],
   },
   {
     descriptionKey: 'nav.admin-document-database.description',
