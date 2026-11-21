@@ -23,6 +23,9 @@ const buildService = (repositories: {
   report: FakeRepository;
   alarm: FakeRepository;
   step: FakeRepository;
+  fault: FakeRepository;
+  repairRequest: FakeRepository;
+  equipmentModel: FakeRepository;
   attachment: FakeRepository;
   version: FakeRepository;
   versionAttachment: FakeRepository;
@@ -32,6 +35,9 @@ const buildService = (repositories: {
     repositories.report as unknown as Repository<never>,
     repositories.alarm as unknown as Repository<never>,
     repositories.step as unknown as Repository<never>,
+    repositories.fault as unknown as Repository<never>,
+    repositories.repairRequest as unknown as Repository<never>,
+    repositories.equipmentModel as unknown as Repository<never>,
     repositories.attachment as unknown as Repository<never>,
     repositories.version as unknown as Repository<never>,
     repositories.versionAttachment as unknown as Repository<never>,
@@ -42,6 +48,9 @@ const buildRepositories = (reportFindOne: unknown = null) => ({
   report: createFakeRepository(reportFindOne),
   alarm: createFakeRepository(),
   step: createFakeRepository(),
+  fault: createFakeRepository(),
+  repairRequest: createFakeRepository(),
+  equipmentModel: createFakeRepository(),
   attachment: createFakeRepository(),
   version: createFakeRepository(),
   versionAttachment: createFakeRepository(),

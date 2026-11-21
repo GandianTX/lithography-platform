@@ -24,7 +24,10 @@ import { GetAdminDocumentDatabaseStatsUsecase } from './get-admin-document-datab
  *
  * 统计口径与各标签默认列表过滤一致（计划表 S3.3）：维修申请/参考资料不含
  * 软删除，AI 会话/报告计全量；参考资料总数取真实 total（pageSize=1 查询）。
- * A-PR0 §4.3：参考资料统计与资料列表使用相同组织范围（可信组织上下文解析）。
+ * 2026-11-21 需求调整：资料列表读侧一级管理员为 GLOBAL（功能 V5.6 R055、
+ * reference-document-read-scope.ts），统计与列表必须同一口径——一级管理员
+ * 资料统计覆盖全部公司正式资料（organizationId: null，不按组织过滤）；
+ * 二级管理员仍被全域门槛失败关闭（不触发统计读取）。
  *
  * F1：全域入口先完成「角色 + 当前等级必须 1 + 可信成员事实」，任一项不满足时
  * 四类统计读取与组织解析之外的业务读取一律不发生，不降级为全库统计。
@@ -80,7 +83,7 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
     return { access, repair, conversation, report, reference, organizationContext, usecase };
   };
 
-  it('四类统计并行聚合：口径与默认列表过滤一致，参考资料统计带本组织范围', async () => {
+  it('四类统计并行聚合：口径与默认列表过滤一致，参考资料统计覆盖一级管理员全范围', async () => {
     const h = makeHarness();
 
     const stats = await h.usecase.execute({ session: createSuperAdminSession() });
@@ -92,11 +95,12 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       referenceDocumentTotal: 5,
     });
     // 参考资料：以 pageSize=1 的 withTotal 查询取真实总数，不取当页条数冒充；
-    // 组织范围来自可信组织上下文（与资料列表同一口径）
+    // organizationId: null = 资料列表读侧同口径的一级管理员 GLOBAL（全公司），
+    // 统计不再按本人组织收窄（组织解析仅用于全域授权门槛）
     expect(h.reference.listDocuments).toHaveBeenCalledWith({
       filter: {},
       pagination: { page: 1, pageSize: 1, withTotal: true },
-      organizationId: 910001,
+      organizationId: null,
     });
     expect(h.organizationContext.resolveForAccount).toHaveBeenCalledWith({
       accountId: createSuperAdminSession().accountId,

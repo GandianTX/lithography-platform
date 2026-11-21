@@ -1,20 +1,26 @@
 // src/usecases/maintenance-report/maintenance-report-usecases.module.ts
 
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
+import { DocumentExportModule } from '@src/infrastructure/document-export/document-export.module';
 import { UnavailableAnalysisOutputReader } from '@src/infrastructure/ai/unavailable-analysis-output-reader';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { Module } from '@nestjs/common';
 import { AddMaintenanceReportAttachmentUsecase } from './add-maintenance-report-attachment.usecase';
 import { ApproveMaintenanceReportUsecase } from './approve-maintenance-report.usecase';
 import { CreateMaintenanceReportDraftUsecase } from './create-maintenance-report-draft.usecase';
+import { ExportMaintenanceReportUsecase } from './export-maintenance-report.usecase';
 import { GetMaintenanceReportReviewDetailUsecase } from './get-maintenance-report-review-detail.usecase';
 import { GetMyMaintenanceReportUsecase } from './get-my-maintenance-report.usecase';
+import { GetMyWorkOrderSummaryUsecase } from './get-my-work-order-summary.usecase';
 import { ListMaintenanceReportReviewQueueUsecase } from './list-maintenance-report-review-queue.usecase';
 import { ListMyMaintenanceReportsUsecase } from './list-my-maintenance-reports.usecase';
+import { ListMyWorkOrderSummaryCandidatesUsecase } from './list-my-work-order-summary-candidates.usecase';
+import { ListWorkOrderSummaryAiConversationsUsecase } from './list-work-order-summary-ai-conversations.usecase';
 import { RecordRepairRequestHandlingResultUsecase } from './record-repair-request-handling-result.usecase';
 import { RemoveMaintenanceReportAttachmentUsecase } from './remove-maintenance-report-attachment.usecase';
 import { ReorderMaintenanceReportAttachmentsUsecase } from './reorder-maintenance-report-attachments.usecase';
 import { ReturnMaintenanceReportUsecase } from './return-maintenance-report.usecase';
+import { SubmitMaintenanceReportFormalUsecase } from './submit-maintenance-report-formal.usecase';
 import { SubmitMaintenanceReportUsecase } from './submit-maintenance-report.usecase';
 import { UpdateMaintenanceReportDraftUsecase } from './update-maintenance-report-draft.usecase';
 import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract';
@@ -29,16 +35,21 @@ import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract'
  *   不增加公开模拟接口、生产开关或模拟专用表。
  */
 @Module({
-  imports: [LithographyModule, AccountInstallerModule],
+  imports: [LithographyModule, AccountInstallerModule, DocumentExportModule],
   providers: [
     CreateMaintenanceReportDraftUsecase,
     UpdateMaintenanceReportDraftUsecase,
     SubmitMaintenanceReportUsecase,
+    SubmitMaintenanceReportFormalUsecase,
+    ExportMaintenanceReportUsecase,
     ReturnMaintenanceReportUsecase,
     ApproveMaintenanceReportUsecase,
     GetMyMaintenanceReportUsecase,
+    GetMyWorkOrderSummaryUsecase,
     GetMaintenanceReportReviewDetailUsecase,
     ListMyMaintenanceReportsUsecase,
+    ListMyWorkOrderSummaryCandidatesUsecase,
+    ListWorkOrderSummaryAiConversationsUsecase,
     ListMaintenanceReportReviewQueueUsecase,
     AddMaintenanceReportAttachmentUsecase,
     RemoveMaintenanceReportAttachmentUsecase,
@@ -50,11 +61,16 @@ import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract'
     CreateMaintenanceReportDraftUsecase,
     UpdateMaintenanceReportDraftUsecase,
     SubmitMaintenanceReportUsecase,
+    SubmitMaintenanceReportFormalUsecase,
+    ExportMaintenanceReportUsecase,
     ReturnMaintenanceReportUsecase,
     ApproveMaintenanceReportUsecase,
     GetMyMaintenanceReportUsecase,
+    GetMyWorkOrderSummaryUsecase,
     GetMaintenanceReportReviewDetailUsecase,
     ListMyMaintenanceReportsUsecase,
+    ListMyWorkOrderSummaryCandidatesUsecase,
+    ListWorkOrderSummaryAiConversationsUsecase,
     ListMaintenanceReportReviewQueueUsecase,
     AddMaintenanceReportAttachmentUsecase,
     RemoveMaintenanceReportAttachmentUsecase,

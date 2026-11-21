@@ -20,7 +20,11 @@ import { assertAdminDocumentDatabaseGlobalAccess } from './admin-document-databa
  * - 参考资料：复用既有参考资料读链路的默认过滤（deprecated = false），
  *   以 pageSize=1 的 withTotal 查询取真实总数，不伪造演示数字。
  *
- * A-PR0 §4.3：参考资料统计与资料列表使用相同组织范围（经可信组织上下文解析）；
+ * 2026-11-21 需求调整：资料列表读侧一级管理员为 GLOBAL（功能 V5.6 R055、
+ * reference-document-read-scope.ts：一级不按组织过滤、不依赖本人成员关系）；
+ * 统计与列表必须同一口径，否则页面统计数字与列表条数不一致。
+ * 因此参考资料统计传 organizationId: null（全公司正式资料，仍不含软删）；
+ * 组织解析仅保留在全域授权门槛内（L1 仍须唯一有效 SUPER_ADMIN 成员关系）。
  * 不改造维修申请、AI 会话/报告等其他业务的组织设计。
  */
 @Injectable()
@@ -35,8 +39,9 @@ export class GetAdminDocumentDatabaseStatsUsecase {
   ) {}
 
   async execute(params: { session: UsecaseSession }): Promise<AdminDocumentDatabaseStatsView> {
-    // 等级与成员事实先于任何统计读取完成（F1：二级/缺级/缺成员一律失败关闭）
-    const membership = await assertAdminDocumentDatabaseGlobalAccess({
+    // 等级与成员事实先于任何统计读取完成（F1：二级/缺级/缺成员一律失败关闭）；
+    // 成员关系仅用于全域授权门槛，不参与统计范围（统计范围为一级管理员全公司）
+    await assertAdminDocumentDatabaseGlobalAccess({
       session: params.session,
       accountQueryService: this.accountQueryService,
       organizationContextService: this.organizationContextService,
@@ -51,7 +56,9 @@ export class GetAdminDocumentDatabaseStatsUsecase {
         this.referenceDocumentQueryService.listDocuments({
           filter: {},
           pagination: { page: 1, pageSize: 1, withTotal: true },
-          organizationId: membership.organizationId,
+          // 与资料列表读侧（resolveReferenceDocumentReadScope）同一口径：
+          // 一级管理员 GLOBAL（全公司），null = 不按组织过滤
+          organizationId: null,
         }),
       ]);
 

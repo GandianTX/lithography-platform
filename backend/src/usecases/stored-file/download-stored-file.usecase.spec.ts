@@ -551,6 +551,8 @@ describe('DownloadStoredFileUsecase 真实 QueryService 归属判断', () => {
       processEntry as never,
       request as never,
       intake as never,
+      { findOne: jest.fn().mockResolvedValue(null) } as never,
+      { findOne: jest.fn().mockResolvedValue({ id: 1 }) } as never,
     );
     const accountQueryService = makeAccountQueryService();
     accountQueryService.findAdminLevelByAccountId.mockResolvedValue(2);
@@ -665,6 +667,8 @@ describe('DownloadStoredFileUsecase 工程师读取客户报修原件', () => {
       processEntry as never,
       request as never,
       intake as never,
+      { findOne: jest.fn().mockResolvedValue(null) } as never,
+      { findOne: jest.fn().mockResolvedValue({ id: 1 }) } as never,
     );
     const organizationContextService = makeOrganizationContextService();
     organizationContextService.tryResolveForAccount.mockResolvedValue({

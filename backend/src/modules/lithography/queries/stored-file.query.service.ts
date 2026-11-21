@@ -4,6 +4,10 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import {
+  MaintenanceAttachmentStatus,
+  MaintenanceReportStatus,
+} from '@app-types/models/maintenance-report.types';
+import {
   StoredFileBindingStatus,
   StoredFileBusinessType,
   StoredFileStatus,
@@ -13,6 +17,8 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository } from 'typeorm';
+import { MaintenanceReportAttachmentEntity } from '../entities/maintenance-report-attachment.entity';
+import { MaintenanceReportEntity } from '../entities/maintenance-report.entity';
 import { RepairProcessEntryEntity } from '../entities/repair-process-entry.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
@@ -72,6 +78,8 @@ type StoredFileAccessRow = {
  *   canAccessBoundRepairRequestOriginal）；
  * - 客户报修原件之外，其他客户、外公司、同公司非工程师账号一律返回 null，
  *   不泄露原件存在性或内部过程。
+ * - 正式绑定（BOUND MAINTENANCE_REPORT）：报告附件存在且 CURRENT；作者本人任何状态可读；
+ *   管理员仅可读 SUBMITTED 冻结报告（一级全公司、二级归属公司），草稿不可读；
  */
 @Injectable()
 export class StoredFileQueryService {
@@ -84,6 +92,10 @@ export class StoredFileQueryService {
     private readonly repairRequestRepository: Repository<RepairRequestEntity>,
     @InjectRepository(RepairRequestIntakeEntity)
     private readonly repairRequestIntakeRepository: Repository<RepairRequestIntakeEntity>,
+    @InjectRepository(MaintenanceReportEntity)
+    private readonly maintenanceReportRepository: Repository<MaintenanceReportEntity>,
+    @InjectRepository(MaintenanceReportAttachmentEntity)
+    private readonly maintenanceReportAttachmentRepository: Repository<MaintenanceReportAttachmentEntity>,
   ) {}
 
   /** 授权元数据；不可访问返回 null（usecase 统一映射 NOT_FOUND） */
@@ -169,6 +181,12 @@ export class StoredFileQueryService {
       // 客户报修原件（任务 03 第三段）：仅本人原稿真实绑定的 REPAIR_REQUEST 原件
       if ((file.businessType as StoredFileBusinessType) === StoredFileBusinessType.REPAIR_REQUEST) {
         return (await this.canAccessBoundRepairRequestOriginal(file, query)) ? file : null;
+      }
+      // 维修报告原件（任务 06）：作者本人 / 管理员按报告状态口径
+      if (
+        (file.businessType as StoredFileBusinessType) === StoredFileBusinessType.MAINTENANCE_REPORT
+      ) {
+        return (await this.canAccessBoundMaintenanceReport(file, query)) ? file : null;
       }
       return (await this.canAccessBoundRepairProcess(file, query)) ? file : null;
     }
@@ -436,6 +454,74 @@ export class StoredFileQueryService {
       select: { id: true, serviceOrganizationId: true },
     });
     return intake !== null && intake.serviceOrganizationId === request.serviceOrganizationId;
+  }
+
+  /**
+   * 报告附件分支（R062-03）：BOUND MAINTENANCE_REPORT 的 business_id 为报告根 ID。
+   *
+   * - 附件行必须真实存在且为 CURRENT（已移除/退役的附件不授予下载权）；
+   * - 作者本人任何报告状态可读（草稿仅作者，R062-03「管理员不能读取他人草稿」）；
+   * - 管理员按报告查看权限读取附件（与 export-maintenance-report 管理员状态门一致，
+   *   功能 V5.6 R055/R062-03「管理员有权管理资源」）：仅拒绝工作态 DRAFT/RETURNED，
+   *   SUBMITTED/PENDING_REVIEW/APPROVED 冻结态均可读；一级全公司、二级报告归属公司。
+   *   （2026-11-21 修复：旧审核流 APPROVED 为正式冻结态——
+   *   chk_maintenance_report_status_consistency 要求已提交且已审核——
+   *   原先仅放行 SUBMITTED 与导出权限不一致）；
+   * - 客户、外公司、同公司非作者工程师一律拒绝，不泄露存在性。
+   */
+  private async canAccessBoundMaintenanceReport(
+    file: StoredFileAccessRow,
+    query: StoredFileAccessQuery,
+  ): Promise<boolean> {
+    if (
+      (file.businessType as StoredFileBusinessType) !== StoredFileBusinessType.MAINTENANCE_REPORT ||
+      file.businessId === null ||
+      (file.status as StoredFileStatus) !== StoredFileStatus.VALID ||
+      file.verifiedAt === null
+    ) {
+      return false;
+    }
+    const reportId = Number(file.businessId);
+    if (!Number.isSafeInteger(reportId) || reportId <= 0) {
+      return false;
+    }
+
+    const [report, attachment] = await Promise.all([
+      this.maintenanceReportRepository.findOne({
+        where: { id: reportId },
+        select: {
+          id: true,
+          ownerOrganizationId: true,
+          maintenanceEngineerAccountId: true,
+          status: true,
+        },
+      }),
+      this.maintenanceReportAttachmentRepository.findOne({
+        where: { fileId: file.fileId, reportId, status: MaintenanceAttachmentStatus.CURRENT },
+        select: { id: true },
+      }),
+    ]);
+    if (report === null || attachment === null) {
+      return false;
+    }
+
+    if (query.adminOrganizationId !== undefined) {
+      // 管理员状态门与导出管理员口径一致：仅工作态 DRAFT/RETURNED 关闭，
+      // SUBMITTED/PENDING_REVIEW/APPROVED 冻结态可读
+      const status = report.status as MaintenanceReportStatus;
+      if (status === MaintenanceReportStatus.DRAFT || status === MaintenanceReportStatus.RETURNED) {
+        return false;
+      }
+      if (query.adminOrganizationId === null) {
+        return true;
+      }
+      return report.ownerOrganizationId === query.adminOrganizationId;
+    }
+    // 工程师分支纵深防御：即使上游角色守卫缺失，也不授予非工程师作者身份
+    if (!hasRole(query.session.roles, IdentityTypeEnum.ENGINEER)) {
+      return false;
+    }
+    return report.maintenanceEngineerAccountId === query.session.accountId;
   }
 
   private toMetadataView(file: StoredFileAccessRow): StoredFileMetadataView {

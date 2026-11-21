@@ -69,22 +69,27 @@ export class ReferenceDocumentQueryService {
   ) {}
 
   /**
-   * 本组织未软删资料列表：默认过滤已软删（deprecated = 0）与组织范围（owner_organization_id），
+   * 读侧资料列表：默认过滤已软删（deprecated = 0）与组织范围（owner_organization_id），
    * 固定排序，OFFSET 分页。列表项为昵称富集前装配结果，由 usecase 富集创建人昵称后对外输出。
    *
    * 组织范围必须由 usecase 经可信组织上下文解析后传入（A-PR0 §2.1），本层不信任客户端自报。
+   * `organizationId: null` 仅表示读侧范围决议已判定的「一级管理员全范围」
+   * （功能 V5.6 R055；见 reference-document-read-scope.ts），不按组织过滤；
+   * 写路径与工程师/二级管理员读取始终传入具体组织 ID。
    */
   async listDocuments(params: {
     filter: ReferenceDocumentListFilter;
     pagination: ReferenceDocumentListPagination;
-    organizationId: number;
+    organizationId: number | null;
   }): Promise<
     Omit<ReferenceDocumentListPage, 'items'> & { items: ReferenceDocumentListItemQueryResult[] }
   > {
     const where: FindOptionsWhere<ReferenceDocumentEntity> = {
       deprecated: false,
-      ownerOrganizationId: params.organizationId,
     };
+    if (params.organizationId !== null) {
+      where.ownerOrganizationId = params.organizationId;
+    }
     if (params.filter.title) {
       where.title = Raw((alias) => `${alias} LIKE :pattern`, {
         pattern: `%${escapeLikePattern(params.filter.title)}%`,
@@ -128,9 +133,12 @@ export class ReferenceDocumentQueryService {
   }
 
   /**
-   * 本组织未软删资料详情：完整元数据 + 文本内容 + 案例明细
+   * 读侧资料详情：完整元数据 + 文本内容 + 案例明细
    *
-   * 不存在、已软删与跨组织统一拒绝（统一 NOT_FOUND，不泄露删除状态与存在性）。
+   * 不存在、已软删与跨范围统一拒绝（统一 NOT_FOUND，不泄露删除状态与存在性）。
+   * `organizationId: null` 仅表示读侧范围决议已判定的「一级管理员全范围」
+   * （功能 V5.6 R055-02；见 reference-document-read-scope.ts），不按组织过滤；
+   * 写路径锁定读始终传入具体组织 ID，归属收窄语义不变。
    * 携带 transactionContext 时改用事务内 EntityManager 的 Repository。
    *
    * 锁定读（G2/F01）：`forUpdate: true` 时对主资料行与案例明细行依次执行
@@ -145,12 +153,15 @@ export class ReferenceDocumentQueryService {
    */
   async findDetail(params: {
     documentId: number;
-    organizationId: number;
+    organizationId: number | null;
     transactionContext?: PersistenceTransactionContext;
     forUpdate?: boolean;
   }): Promise<ReferenceDocumentDetailQueryResult> {
     const documentRepository = this.getDocumentRepository(params.transactionContext);
-    const documentWhere = { id: params.documentId, ownerOrganizationId: params.organizationId };
+    const documentWhere: FindOptionsWhere<ReferenceDocumentEntity> = { id: params.documentId };
+    if (params.organizationId !== null) {
+      documentWhere.ownerOrganizationId = params.organizationId;
+    }
     // 锁定读的 where 不含 deprecated：已软删行同样被锁定（与并发软删除写互斥），
     // 软删状态由下方判定统一拒绝——避免「拿到锁却仍按旧快照看到未软删」的穿透
     const entity =

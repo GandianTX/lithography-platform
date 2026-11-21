@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import { randomUUID } from 'node:crypto';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { MAINTENANCE_REPORT_ERROR, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
 import { ConfigModule } from '@nestjs/config';
@@ -605,7 +606,7 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
         content: '# S5 版本附件夹具',
       },
     ]) {
-      // 处理结果位列显式写入 NULL，使“未处理”成为创建契约的一部分而非回读推断
+      // 处理结果位列显式写入 NULL，使"未处理"成为创建契约的一部分而非回读推断
       await query(
         `INSERT INTO repair_request
            (id, request_no, customer_account_id, equipment_model_id, error_code,
@@ -1079,6 +1080,10 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
   });
 
   it('版本附件登记：无附件零关联，已知附件按复合主键登记，账本外关联拒绝整批清理且零删除', async () => {
+    // stored_file 主键为字符串 UUID，不在数值型账本受控表内：
+    // 测试末尾按已知标识显式清理；失败路径由 global-setup 的白名单全库清理兜底
+    const stagedFileId = randomUUID();
+    const stagedUploadContextId = randomUUID();
     // 独立账本一开始即创建，此后全部插入与断言都在 try 内执行
     const { ledger: externalLedger, failure } = await runExternalRecordCase(
       async ({ createAttachment, createVersionAttachment }) => {
@@ -1095,21 +1100,25 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
         );
         expect(Number(missing[0]?.total ?? 0)).toBe(0);
 
-        // 已知附件：上传结果返回的新附件按实际 ID 核验上传人、存储引用与轮次输入后登记，
-        // 登记先于后续业务断言
+        // 已知附件：先按任务 11 暂存语义落 stored_file 行（VALID+TEMPORARY、
+        // MAINTENANCE_REPORT 用途、报告归属公司），再经挂接用例核验并绑定；
+        // 附件行元数据全部来自 stored_file 事实，登记先于后续业务断言
+        await query(
+          `INSERT INTO stored_file
+             (file_id, uploaded_by_account_id, owner_organization_id, storage_reference,
+              original_filename, mime_type, byte_size, checksum_sha256, status,
+              business_type, business_id, upload_context_id, binding_status, verified_at)
+           VALUES (?, ?, ?, 's5mr/known.txt', 's5mr-known.txt', 'text/plain', 7,
+                   REPEAT('a', 64), 'VALID', 'MAINTENANCE_REPORT', NULL, ?, 'TEMPORARY', NOW(3))`,
+          [stagedFileId, FIXTURE.engineer, FIXTURE.org.id, stagedUploadContextId],
+        );
         const uploaded = await addAttachmentUsecase.execute({
           session: engineerSession,
           reportId: FIXTURE.reportAttachment,
-          file: {
-            originalFilename: 's5mr-known.txt',
-            mimeType: 'text/plain',
-            byteSize: 7,
-            checksumSha256: null,
-            storageBackend: 'LOCAL',
-            storageReference: 's5mr/known.txt',
-            description: 'S5MR 已知附件',
-            sortOrder: 1,
-          },
+          fileId: stagedFileId,
+          uploadContextId: stagedUploadContextId,
+          description: 'S5MR 已知附件',
+          sortOrder: 1,
         });
         expect(uploaded.attachmentIds).toHaveLength(1);
         const knownAttachmentId = uploaded.attachmentIds[0];
@@ -1235,6 +1244,8 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
       [FIXTURE.reportAttachment],
     );
     expect(Number(knownVersionAttachmentCount[0]?.total ?? 0)).toBe(1);
+    // 挂接用例已绑定暂存原件（business_id=报告）：测试末尾显式清理
+    await query('DELETE FROM stored_file WHERE file_id = ?', [stagedFileId]);
   });
 
   it('账本外模拟记录：第二条 INSERT 失败时已创建附件被精确清理，原始错误完整可见', async () => {
@@ -1308,7 +1319,7 @@ describeIntegration('维修报告生命周期与并发实库验收', () => {
           sortOrder: 2,
           description: 'S5MR 清理失败',
         });
-        // 由临时独立账本经受保护入口删除该行，再由原账本验证“记录缺失”的清理失败
+        // 由临时独立账本经受保护入口删除该行，再由原账本验证"记录缺失"的清理失败
         const removalLedger = new OwnedFixtureLedger(`${ROUND_TAG}-EXT-REMOVE`);
         // 该行由本轮 createAttachment 按已知输入创建，独立账本直接登记同一事实，不回读认领
         removalLedger.registerCreated('maintenance_report_attachment', attachmentId, {

@@ -64,6 +64,26 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['engineer', 'ai', 'chat', 'diagnosis', 'AI', '诊断', '对话', '问答'],
   },
   {
+    // 2026-11-21 需求调整：导航与首页入口直达「新建记录」页（列表由新建页
+    // 的「我的历史记录」入口与 /engineer/maintenance-records 列表路由承接）
+    descriptionKey: 'nav.engineer-maintenance-records.description',
+    id: 'engineer-maintenance-records',
+    kind: 'stable',
+    labelKey: 'nav.engineer-maintenance-records.label',
+    path: '/engineer/maintenance-records/new',
+    roles: ['ENGINEER'],
+    tags: ['engineer', 'maintenance', 'record', '历史维修记录', '独立报告'],
+  },
+  {
+    descriptionKey: 'nav.engineer-work-order-summaries.description',
+    id: 'engineer-work-order-summaries',
+    kind: 'stable',
+    labelKey: 'nav.engineer-work-order-summaries.label',
+    path: '/engineer/work-order-summaries',
+    roles: ['ENGINEER'],
+    tags: ['engineer', 'work', 'order', 'summary', '工单维修总结', '只读核对'],
+  },
+  {
     descriptionKey: 'nav.reference-documents.description',
     id: 'reference-documents',
     kind: 'stable',

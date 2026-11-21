@@ -60,6 +60,8 @@ const makeRepositories = () => ({
   intake: {
     findOne: jest.fn().mockResolvedValue({ id: 7001, serviceOrganizationId: 910001 }),
   },
+  maintenanceReport: { findOne: jest.fn().mockResolvedValue(null) },
+  maintenanceReportAttachment: { findOne: jest.fn().mockResolvedValue(null) },
 });
 
 const makeService = () => {
@@ -69,6 +71,8 @@ const makeService = () => {
     repositories.processEntry as unknown as Repository<RepairProcessEntryEntity>,
     repositories.request as unknown as Repository<RepairRequestEntity>,
     repositories.intake as unknown as Repository<RepairRequestIntakeEntity>,
+    repositories.maintenanceReport as unknown as Repository<never>,
+    repositories.maintenanceReportAttachment as unknown as Repository<never>,
   );
   return { service, repositories };
 };
@@ -1113,5 +1117,197 @@ describe('StoredFileQueryService 读授权', () => {
 
     repositories.storedFile.count.mockResolvedValueOnce(0);
     await expect(service.isStorageReferenceReferenced('private/ref.pdf')).resolves.toBe(false);
+  });
+});
+
+describe('报告附件授权（BOUND MAINTENANCE_REPORT，R062-03）', () => {
+  const REPORT_ID = 960101;
+  const OWNER_ORG = 910101;
+  const AUTHOR_ID = 900001;
+  const boundReportFile = (overrides: Record<string, unknown> = {}) =>
+    fileRow({
+      businessType: 'MAINTENANCE_REPORT',
+      businessId: String(REPORT_ID),
+      bindingStatus: 'BOUND',
+      uploadContextId: null,
+      ...overrides,
+    });
+  const boundQuery = (overrides: Partial<StoredFileAccessQuery> = {}): StoredFileAccessQuery => ({
+    fileId: '11111111-1111-4111-8111-111111111111',
+    session: engineer,
+    viewerOrganizationId: OWNER_ORG,
+    uploadContextId: null,
+    expectedBusinessType: 'MAINTENANCE_REPORT',
+    ...overrides,
+  });
+  const reportRow = (overrides: Record<string, unknown> = {}) => ({
+    id: REPORT_ID,
+    ownerOrganizationId: OWNER_ORG,
+    maintenanceEngineerAccountId: AUTHOR_ID,
+    status: 'DRAFT',
+    ...overrides,
+  });
+
+  const setupBoundReport = (
+    repositories: ReturnType<typeof makeRepositories>,
+    report: Record<string, unknown> | null,
+    hasCurrentAttachment = true,
+  ): void => {
+    repositories.maintenanceReport.findOne.mockResolvedValue(report);
+    repositories.maintenanceReportAttachment.findOne.mockResolvedValue(
+      hasCurrentAttachment ? { id: 1 } : null,
+    );
+  };
+
+  it('作者本人：草稿状态报告附件可读元数据并定位下载', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValue(boundReportFile());
+    setupBoundReport(repositories, reportRow());
+
+    const metadata = await service.findAuthorizedMetadata(boundQuery());
+    expect(metadata).not.toBeNull();
+    expect(metadata?.businessId).toBe(String(REPORT_ID));
+
+    const facts = await service.findAuthorizedDownload(boundQuery());
+    expect(facts).toMatchObject({
+      fileId: '11111111-1111-4111-8111-111111111111',
+      originalFilename: '维修记录.pdf',
+    });
+    // 元数据视图不暴露存储引用（下载事实仅服务端内部使用）
+    expect(metadata).not.toHaveProperty('storageReference');
+  });
+
+  it('附件行缺失或已移除（无 CURRENT 行）：拒绝下载', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'SUBMITTED' }), false);
+
+    await expect(service.findAuthorizedDownload(boundQuery())).resolves.toBeNull();
+  });
+
+  it('同公司非作者工程师：拒绝（不借同公司身份读报告附件）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'SUBMITTED' }));
+
+    await expect(
+      service.findAuthorizedDownload(boundQuery({ session: otherEngineer })),
+    ).resolves.toBeNull();
+  });
+
+  it('客户角色会话：拒绝（usecase 角色守卫之外的纵深防御）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow());
+
+    await expect(
+      service.findAuthorizedDownload(boundQuery({ session: customer })),
+    ).resolves.toBeNull();
+  });
+
+  it('一级管理员（adminOrganizationId=null）：可读 SUBMITTED 冻结报告附件', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'SUBMITTED' }));
+
+    await expect(
+      service.findAuthorizedDownload(boundQuery({ session: admin, adminOrganizationId: null })),
+    ).resolves.not.toBeNull();
+  });
+
+  it('二级管理员（本公司）：可读 SUBMITTED 报告附件；跨公司拒绝', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'SUBMITTED' }));
+    await expect(
+      service.findAuthorizedDownload(
+        boundQuery({ session: admin, adminOrganizationId: OWNER_ORG }),
+      ),
+    ).resolves.not.toBeNull();
+
+    const cross = makeService();
+    cross.repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(cross.repositories, reportRow({ status: 'SUBMITTED' }));
+    await expect(
+      cross.service.findAuthorizedDownload(
+        boundQuery({ session: admin, adminOrganizationId: 919999 }),
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('管理员不可读他人 DRAFT 草稿附件（即使本公司）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'DRAFT' }));
+
+    await expect(
+      service.findAuthorizedDownload(
+        boundQuery({ session: admin, adminOrganizationId: OWNER_ORG }),
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('一级管理员跨公司：可读 APPROVED 正式报告附件（旧审核流冻结态，与管理员报告查看权限对齐）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'APPROVED' }));
+
+    await expect(
+      service.findAuthorizedDownload(boundQuery({ session: admin, adminOrganizationId: null })),
+    ).resolves.not.toBeNull();
+  });
+
+  it('二级管理员（本公司）：可读 APPROVED 报告附件；跨公司 APPROVED 拒绝', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'APPROVED' }));
+    await expect(
+      service.findAuthorizedDownload(
+        boundQuery({ session: admin, adminOrganizationId: OWNER_ORG }),
+      ),
+    ).resolves.not.toBeNull();
+
+    const cross = makeService();
+    cross.repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(cross.repositories, reportRow({ status: 'APPROVED' }));
+    await expect(
+      cross.service.findAuthorizedDownload(
+        boundQuery({ session: admin, adminOrganizationId: 919999 }),
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('一级管理员：可读 PENDING_REVIEW 报告附件（与管理员报告查看口径一致）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'PENDING_REVIEW' }));
+
+    await expect(
+      service.findAuthorizedDownload(boundQuery({ session: admin, adminOrganizationId: null })),
+    ).resolves.not.toBeNull();
+  });
+
+  it('RETURNED 工作态报告附件：管理员拒绝（与导出管理员状态门一致）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(repositories, reportRow({ status: 'RETURNED' }));
+
+    await expect(
+      service.findAuthorizedDownload(boundQuery({ session: admin, adminOrganizationId: null })),
+    ).resolves.toBeNull();
+  });
+
+  it('businessId 不是合法报告 ID 或报告不存在：拒绝', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(
+      boundReportFile({ businessId: 'not-a-number' }),
+    );
+    setupBoundReport(repositories, reportRow({ status: 'SUBMITTED' }));
+    await expect(service.findAuthorizedDownload(boundQuery())).resolves.toBeNull();
+
+    const missing = makeService();
+    missing.repositories.storedFile.findOne.mockResolvedValueOnce(boundReportFile());
+    setupBoundReport(missing.repositories, null);
+    await expect(missing.service.findAuthorizedDownload(boundQuery())).resolves.toBeNull();
   });
 });

@@ -6,17 +6,25 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { In, ObjectLiteral, Repository, type FindOptionsWhere } from 'typeorm';
-import { MaintenanceReportStatus } from '@app-types/models/maintenance-report.types';
+import {
+  MaintenanceReportSourceType,
+  MaintenanceReportStatus,
+} from '@app-types/models/maintenance-report.types';
+import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { MaintenanceReportAlarmEntity } from '../entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from '../entities/maintenance-report-attachment.entity';
+import { MaintenanceReportFaultEntity } from '../entities/maintenance-report-fault.entity';
 import { MaintenanceReportReviewEntity } from '../entities/maintenance-report-review.entity';
 import { MaintenanceReportStepEntity } from '../entities/maintenance-report-step.entity';
 import { MaintenanceReportVersionAttachmentEntity } from '../entities/maintenance-report-version-attachment.entity';
 import { MaintenanceReportVersionEntity } from '../entities/maintenance-report-version.entity';
 import { MaintenanceReportEntity } from '../entities/maintenance-report.entity';
+import { RepairRequestEntity } from '../entities/repair-request.entity';
+import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
 import {
   toMaintenanceReportAlarmSnapshot,
   toMaintenanceReportAttachmentSnapshot,
+  toMaintenanceReportFaultSnapshot,
   toMaintenanceReportReviewSnapshot,
   toMaintenanceReportSnapshot,
   toMaintenanceReportStepSnapshot,
@@ -36,6 +44,7 @@ import {
   MaintenanceReportSummaryView,
   MaintenanceReportVersionAttachmentSnapshot,
   MaintenanceReportVersionSnapshot,
+  WorkOrderSummaryCandidateView,
 } from '../maintenance-report.types';
 
 /** 本人列表/审核队列分页参数（默认与上限由调用方按契约传入） */
@@ -72,6 +81,12 @@ export class MaintenanceReportQueryService {
     private readonly alarmRepository: Repository<MaintenanceReportAlarmEntity>,
     @InjectRepository(MaintenanceReportStepEntity)
     private readonly stepRepository: Repository<MaintenanceReportStepEntity>,
+    @InjectRepository(MaintenanceReportFaultEntity)
+    private readonly faultRepository: Repository<MaintenanceReportFaultEntity>,
+    @InjectRepository(RepairRequestEntity)
+    private readonly repairRequestRepository: Repository<RepairRequestEntity>,
+    @InjectRepository(EquipmentModelEntity)
+    private readonly equipmentModelRepository: Repository<EquipmentModelEntity>,
     @InjectRepository(MaintenanceReportAttachmentEntity)
     private readonly attachmentRepository: Repository<MaintenanceReportAttachmentEntity>,
     @InjectRepository(MaintenanceReportVersionEntity)
@@ -131,7 +146,7 @@ export class MaintenanceReportQueryService {
   ): Promise<MaintenanceReportDraftDetailView | null> {
     const report = await this.readReport(reportId, transactionContext, scope);
     if (!report) return null;
-    const [alarms, steps, attachments, latestReturn] = await Promise.all([
+    const [alarms, steps, faults, attachments, latestReturn] = await Promise.all([
       this.getAlarmRepository(transactionContext).find({
         where: { reportId },
         order: { alarmIndex: 'ASC' },
@@ -139,6 +154,10 @@ export class MaintenanceReportQueryService {
       this.getStepRepository(transactionContext).find({
         where: { reportId },
         order: { stepNo: 'ASC' },
+      }),
+      this.getFaultRepository(transactionContext).find({
+        where: { reportId },
+        order: { id: 'ASC' },
       }),
       this.getAttachmentRepository(transactionContext).find({
         where: { reportId, status: 'CURRENT' },
@@ -153,6 +172,7 @@ export class MaintenanceReportQueryService {
       report,
       alarms: alarms.map(toMaintenanceReportAlarmSnapshot),
       steps: steps.map(toMaintenanceReportStepSnapshot),
+      faults: faults.map(toMaintenanceReportFaultSnapshot),
       attachments: attachments.map(toMaintenanceReportAttachmentSnapshot),
       latestReturnComment: latestReturn?.comment ?? null,
     };
@@ -315,6 +335,7 @@ export class MaintenanceReportQueryService {
       report,
       alarms: draft.alarms,
       steps: draft.steps,
+      faults: draft.faults,
       currentAttachments: draft.attachments,
       latestReturnComment: draft.latestReturnComment,
       currentVersion,
@@ -328,13 +349,24 @@ export class MaintenanceReportQueryService {
   }
 
   async listMine(
-    engineerAccountId: number,
-    ownerOrganizationId: number,
-    pagination: MaintenanceReportListPagination,
+    params: {
+      engineerAccountId: number;
+      ownerOrganizationId: number;
+      pagination: MaintenanceReportListPagination;
+      /** 可选来源过滤：独立历史报告与工单总结分别列表 */
+      sourceType?: MaintenanceReportSourceType;
+    },
     transactionContext?: PersistenceTransactionContext,
   ): Promise<MaintenanceReportListPage<MaintenanceReportSummaryView>> {
     const reportRepository = this.getReportRepository(transactionContext);
-    const where = { maintenanceEngineerAccountId: engineerAccountId, ownerOrganizationId };
+    const pagination = params.pagination;
+    const where: FindOptionsWhere<MaintenanceReportEntity> = {
+      maintenanceEngineerAccountId: params.engineerAccountId,
+      ownerOrganizationId: params.ownerOrganizationId,
+    };
+    if (params.sourceType !== undefined) {
+      where.sourceType = params.sourceType;
+    }
     const [rows, total] = await Promise.all([
       reportRepository.find({
         where,
@@ -346,6 +378,163 @@ export class MaintenanceReportQueryService {
     ]);
     return {
       items: rows.map(toMaintenanceReportSummary),
+      total,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+    };
+  }
+
+  /** 型号库只读引用：工单总结入口带出设备型号用 */
+  async findEquipmentModelRef(
+    equipmentModelId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<{ id: number; modelCode: string; modelName: string } | null> {
+    const entity = await this.pickRepository(
+      this.equipmentModelRepository,
+      transactionContext,
+    ).findOne({
+      where: { id: equipmentModelId },
+      select: { id: true, modelCode: true, modelName: true },
+    });
+    return entity === null
+      ? null
+      : { id: entity.id, modelCode: entity.modelCode, modelName: entity.modelName };
+  }
+
+  /** 按工单定位报告归属事实（一工单至多一份总结根，唯一键兜底） */
+  async findOwnershipByRepairRequestId(
+    repairRequestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<MaintenanceReportOwnershipFacts | null> {
+    const entity = await this.getReportRepository(transactionContext).findOne({
+      where: { repairRequestId },
+      select: { id: true, maintenanceEngineerAccountId: true, ownerOrganizationId: true },
+    });
+    if (!entity) return null;
+    return {
+      reportId: entity.id,
+      maintenanceEngineerAccountId: entity.maintenanceEngineerAccountId,
+      ownerOrganizationId: entity.ownerOrganizationId,
+    };
+  }
+
+  /**
+   * R051-01 幂等定位：按「操作者 + 公司 + 提交标识」定位已有提交结果。
+   * 与 uk_maintenance_report_submission 同口径；直接提交路径在并发竞争下
+   * 由本读侧 + 唯一键共同保证只返回同一份报告。
+   */
+  async findBySubmissionKey(
+    params: {
+      createdByAccountId: number;
+      ownerOrganizationId: number;
+      submissionRequestId: string;
+    },
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<MaintenanceReportSnapshot | null> {
+    const entity = await this.getReportRepository(transactionContext).findOne({
+      where: {
+        createdByAccountId: params.createdByAccountId,
+        ownerOrganizationId: params.ownerOrganizationId,
+        submissionRequestId: params.submissionRequestId,
+      },
+    });
+    return entity ? toMaintenanceReportSnapshot(entity) : null;
+  }
+
+  /** 幂等重试读侧：按报告与版本号定位冻结版本 ID（用于回链正式资料） */
+  async findVersionIdByReportAndVersionNo(
+    reportId: number,
+    versionNo: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number | null> {
+    const entity = await this.getVersionRepository(transactionContext).findOne({
+      where: { reportId, versionNo },
+      select: { id: true },
+    });
+    return entity?.id ?? null;
+  }
+
+  /**
+   * 工单维修总结待填写候选：本人已接单、已结单、同组织且尚未正式提交的工单。
+   *
+   * 报告存在性在同一查询内左连接判定，避免先分页后过滤；
+   * 仅 DRAFT/RETURNED（可续填）进入候选，正式提交或进入旧审核流后被移出。
+   */
+  async listWorkOrderSummaryCandidates(
+    params: {
+      engineerAccountId: number;
+      ownerOrganizationId: number;
+      pagination: MaintenanceReportListPagination;
+    },
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<MaintenanceReportListPage<WorkOrderSummaryCandidateView>> {
+    const requestRepository = this.pickRepository(this.repairRequestRepository, transactionContext);
+    const pagination = params.pagination;
+    const query = requestRepository
+      .createQueryBuilder('request')
+      .leftJoin(MaintenanceReportEntity, 'report', 'report.repair_request_id = request.id')
+      // 故障现象取客户原始报修（intake 唯一有效行；2026-11-21 列表对齐 Demo 增列）
+      .leftJoin(
+        RepairRequestIntakeEntity,
+        'intake',
+        'intake.converted_request_id = request.id AND intake.deleted_at IS NULL',
+      )
+      .where('request.accepted_by_engineer_account_id = :engineerAccountId', {
+        engineerAccountId: params.engineerAccountId,
+      })
+      .andWhere('request.owner_organization_id = :ownerOrganizationId', {
+        ownerOrganizationId: params.ownerOrganizationId,
+      })
+      .andWhere('request.deprecated = :deprecated', { deprecated: false })
+      .andWhere('request.closure_status = :closureStatus', { closureStatus: 'CLOSED' })
+      .andWhere("(report.id IS NULL OR report.status IN ('DRAFT', 'RETURNED'))");
+
+    const totalPromise = pagination.withTotal
+      ? query.clone().getCount()
+      : Promise.resolve(undefined);
+    const rows = await query
+      .select('request.id', 'repairRequestId')
+      .addSelect('request.request_no', 'requestNo')
+      .addSelect('request.closed_at', 'closedAt')
+      .addSelect('request.handling_result', 'handlingResult')
+      .addSelect('request.equipment_model_id', 'equipmentModelId')
+      .addSelect('intake.fault_description', 'intakeFaultDescription')
+      .addSelect('report.id', 'reportId')
+      .addSelect('report.status', 'reportStatus')
+      .addSelect('report.updated_at', 'reportUpdatedAt')
+      .orderBy('request.closed_at', 'DESC')
+      .addOrderBy('request.id', 'DESC')
+      .offset((pagination.page - 1) * pagination.pageSize)
+      .limit(pagination.pageSize)
+      .getRawMany<WorkOrderSummaryCandidateRawRow>();
+    const total = await totalPromise;
+
+    const modelIds = [...new Set(rows.map((row) => Number(row.equipmentModelId)))];
+    const models =
+      modelIds.length === 0
+        ? []
+        : await this.pickRepository(this.equipmentModelRepository, transactionContext).find({
+            where: { id: In(modelIds) },
+            select: { id: true, modelCode: true, modelName: true },
+          });
+    const modelById = new Map(models.map((model) => [model.id, model]));
+
+    return {
+      items: rows.map((row) => {
+        const model = modelById.get(Number(row.equipmentModelId));
+        return {
+          repairRequestId: Number(row.repairRequestId),
+          requestNo: row.requestNo,
+          equipmentModelCode: model?.modelCode ?? null,
+          equipmentModelName: model?.modelName ?? null,
+          intakeFaultDescription: row.intakeFaultDescription ?? null,
+          closedAt: row.closedAt === null ? null : new Date(row.closedAt),
+          handlingResult: row.handlingResult ?? null,
+          reportId: row.reportId === null ? null : Number(row.reportId),
+          reportStatus: (row.reportStatus ?? null) as WorkOrderSummaryCandidateView['reportStatus'],
+          reportUpdatedAt: row.reportUpdatedAt === null ? null : new Date(row.reportUpdatedAt),
+        };
+      }),
       total,
       page: pagination.page,
       pageSize: pagination.pageSize,
@@ -417,6 +606,12 @@ export class MaintenanceReportQueryService {
     return this.pickRepository(this.stepRepository, transactionContext);
   }
 
+  private getFaultRepository(
+    transactionContext?: PersistenceTransactionContext,
+  ): Repository<MaintenanceReportFaultEntity> {
+    return this.pickRepository(this.faultRepository, transactionContext);
+  }
+
   private getAttachmentRepository(
     transactionContext?: PersistenceTransactionContext,
   ): Repository<MaintenanceReportAttachmentEntity> {
@@ -448,6 +643,19 @@ export class MaintenanceReportQueryService {
     const manager = transactionContext ? getTypeOrmEntityManager(transactionContext) : undefined;
     return manager ? manager.getRepository(repository.target) : repository;
   }
+}
+
+/** 工单总结候选的原始行形状（QueryBuilder 显式列别名，避免隐式命名漂移） */
+interface WorkOrderSummaryCandidateRawRow {
+  repairRequestId: string | number;
+  requestNo: string;
+  closedAt: Date | string | null;
+  handlingResult: string | null;
+  equipmentModelId: string | number;
+  intakeFaultDescription: string | null;
+  reportId: string | number | null;
+  reportStatus: string | null;
+  reportUpdatedAt: Date | string | null;
 }
 
 function toMaintenanceReportSummary(entity: MaintenanceReportEntity): MaintenanceReportSummaryView {

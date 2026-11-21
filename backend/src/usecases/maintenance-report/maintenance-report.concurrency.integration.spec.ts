@@ -1,5 +1,6 @@
 /// <reference types="jest" />
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { randomUUID } from 'node:crypto';
 import { MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domain-error';
 import { ConfigModule } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -1042,6 +1043,20 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
   });
 
   it('提交与附件修改竞争：提交快照完整，冻结后附件新增被拒绝且无部分写入', async () => {
+    // 竞争前先按任务 11 暂存语义落 stored_file 行（VALID+TEMPORARY、报告归属公司）。
+    // stored_file 主键为字符串 UUID，不在数值型账本受控表内：测试末尾显式清理；
+    // 失败路径由 global-setup 的白名单全库清理兜底
+    const raceStagedFileId = randomUUID();
+    const raceStagedUploadContextId = randomUUID();
+    await query(
+      `INSERT INTO stored_file
+         (file_id, uploaded_by_account_id, owner_organization_id, storage_reference,
+          original_filename, mime_type, byte_size, checksum_sha256, status,
+          business_type, business_id, upload_context_id, binding_status, verified_at)
+       VALUES (?, ?, ?, 's5c/late.txt', 's5c-late.txt', 'text/plain', 8,
+               REPEAT('b', 64), 'VALID', 'MAINTENANCE_REPORT', NULL, ?, 'TEMPORARY', NOW(3))`,
+      [raceStagedFileId, FIXTURE.engineerA, FIXTURE.orgA.id, raceStagedUploadContextId],
+    );
     const outcome = await runWithBarrier(
       `SELECT id FROM maintenance_report WHERE id = ${FIXTURE.reportAttachmentRace} FOR UPDATE`,
       2,
@@ -1062,16 +1077,10 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
         const attachment = addAttachmentUsecase.execute({
           session: engineerASession,
           reportId: FIXTURE.reportAttachmentRace,
-          file: {
-            originalFilename: 's5c-late.txt',
-            mimeType: 'text/plain',
-            byteSize: 8,
-            checksumSha256: null,
-            storageBackend: 'LOCAL',
-            storageReference: 's5c/late.txt',
-            description: 'S5C 冻结后新增',
-            sortOrder: 2,
-          },
+          fileId: raceStagedFileId,
+          uploadContextId: raceStagedUploadContextId,
+          description: 'S5C 冻结后新增',
+          sortOrder: 2,
         });
         await waitForLockWaiters(2);
         await release();
@@ -1110,6 +1119,8 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       attachment_id: FIXTURE.attachment,
       publish_flag: 0,
     });
+    // 竞争用例的暂存原件保持 TEMPORARY（事务回滚未占用）：测试末尾显式清理
+    await query('DELETE FROM stored_file WHERE file_id = ?', [raceStagedFileId]);
   });
 
   it('跨组织写入口拒绝：建稿、编辑、提交、附件与审核均不产生部分写入', async () => {
@@ -1164,16 +1175,10 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       addAttachmentUsecase.execute({
         session: engineerBSession,
         reportId,
-        file: {
-          originalFilename: 's5c-cross-org.txt',
-          mimeType: 'text/plain',
-          byteSize: 6,
-          checksumSha256: null,
-          storageBackend: 'LOCAL',
-          storageReference: 's5c/cross-org.txt',
-          description: '跨组织不应写入',
-          sortOrder: 1,
-        },
+        fileId: randomUUID(),
+        uploadContextId: randomUUID(),
+        description: '跨组织不应写入',
+        sortOrder: 1,
       }),
     ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.NOT_FOUND });
 
@@ -1212,6 +1217,10 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
     const externalLedger = new OwnedFixtureLedger(`${ROUND_TAG}-EXTERNAL`);
     const closureDraft = DRAFT('S5C 引用闭包报告');
     let completed = false;
+    // 任务 11 暂存语义：stored_file 主键为字符串 UUID，不在数值型账本受控表内，
+    // 测试末尾按已知标识显式清理；失败路径由 finally 与全库清理兜底
+    const closureStagedFileId = randomUUID();
+    const closureStagedUploadContextId = randomUUID();
     const created = await createUsecase.execute({
       session: engineerASession,
       sourceType: 'WORK_ORDER_SUMMARY',
@@ -1225,20 +1234,24 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       registerCreatedDraftReport(created, FIXTURE.workOrderClosure, closureDraft, closureLedger);
       await registerCreatedReportContent(reportId, closureDraft, closureLedger);
 
+      // 暂存原件落库（VALID+TEMPORARY、MAINTENANCE_REPORT 用途、报告归属公司）后挂接绑定
+      await query(
+        `INSERT INTO stored_file
+           (file_id, uploaded_by_account_id, owner_organization_id, storage_reference,
+            original_filename, mime_type, byte_size, checksum_sha256, status,
+            business_type, business_id, upload_context_id, binding_status, verified_at)
+         VALUES (?, ?, ?, 's5c/closure-own.txt', 's5c-closure-own.txt', 'text/plain', 7,
+                 REPEAT('c', 64), 'VALID', 'MAINTENANCE_REPORT', NULL, ?, 'TEMPORARY', NOW(3))`,
+        [closureStagedFileId, FIXTURE.engineerA, FIXTURE.orgA.id, closureStagedUploadContextId],
+      );
       // 本轮上传结果：按返回的新附件 ID 登记，并核对上传人、存储引用与本轮标识
       const uploaded = await addAttachmentUsecase.execute({
         session: engineerASession,
         reportId,
-        file: {
-          originalFilename: 's5c-closure-own.txt',
-          mimeType: 'text/plain',
-          byteSize: 7,
-          checksumSha256: null,
-          storageBackend: 'LOCAL',
-          storageReference: 's5c/closure-own.txt',
-          description: 'S5C 本轮附件',
-          sortOrder: 1,
-        },
+        fileId: closureStagedFileId,
+        uploadContextId: closureStagedUploadContextId,
+        description: 'S5C 本轮附件',
+        sortOrder: 1,
       });
       const ownAttachmentId = uploaded.attachmentIds
         .filter((id) => !closureLedger.has('maintenance_report_attachment', id))
@@ -1251,7 +1264,8 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
         report_id: reportId,
         original_filename: 's5c-closure-own.txt',
         mime_type: 'text/plain',
-        checksum_sha256: null,
+        // 元数据来自 stored_file 事实：校验和为暂存行登记值，非空
+        checksum_sha256: 'c'.repeat(64),
         storage_backend: 'LOCAL',
         storage_reference: 's5c/closure-own.txt',
         sort_order: 1,
@@ -1446,6 +1460,8 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
       expect(closureCleanup.deletedRows).toBeGreaterThan(0);
       expect(await assertRegisteredRowsAbsent(dataSource, closureLedger.list())).toHaveLength(0);
       expect(await assertRegisteredRowsAbsent(dataSource, externalLedger.list())).toHaveLength(0);
+      // 账本外的暂存原件行（字符串主键）由本测试显式清理
+      await query('DELETE FROM stored_file WHERE file_id = ?', [closureStagedFileId]);
       completed = true;
     } finally {
       if (!completed) {
@@ -1460,6 +1476,9 @@ describeIntegration('维修报告真实并发与跨组织拒绝验收', () => {
           expectedDatabase: actualDatabase,
           rows: closureLedger.list(),
         }).catch(() => undefined);
+        await query('DELETE FROM stored_file WHERE file_id = ?', [closureStagedFileId]).catch(
+          () => undefined,
+        );
       }
     }
   });

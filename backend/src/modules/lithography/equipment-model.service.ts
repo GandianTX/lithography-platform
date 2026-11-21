@@ -10,6 +10,14 @@ import { isDuplicateKeyError } from '../common/utils/database-error.util';
 import { EquipmentModelEntity } from './entities/equipment-model.entity';
 import { EquipmentModelDetailSnapshot, EquipmentModelInsertData } from './lithography.types';
 
+/** 任务 06 维修报告登记所需的机型最小引用视图（形状与 EquipmentModelDetailSnapshot 一致） */
+export type EquipmentModelRef = {
+  id: number;
+  modelCode: string;
+  modelName: string;
+  enabled: boolean;
+};
+
 /**
  * 设备型号写服务（任务 03 手填机型登记）。
  *
@@ -92,6 +100,73 @@ export class EquipmentModelService {
         undefined,
         error,
       );
+    }
+  }
+
+  /**
+   * 任务 06：按名称查重（不筛启用状态）。
+   * 同名多启用项/仅停用项的裁决归 usecase（R051-01）。
+   */
+  async findModelsByName(
+    modelName: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<EquipmentModelRef[]> {
+    const repository = this.getRepository(transactionContext);
+    const entities = await repository.find({
+      where: { modelName },
+      select: { id: true, modelCode: true, modelName: true, enabled: true },
+      order: { id: 'ASC' },
+    });
+    return entities.map((entity) => ({
+      id: entity.id,
+      modelCode: entity.modelCode,
+      modelName: entity.modelName,
+      enabled: entity.enabled,
+    }));
+  }
+
+  /**
+   * 任务 06：插入新机型（启用 + 排序值 0）。model_code 冲突（并发同名登记）时
+   * 按编码读回，核对为同一机型名称才复用，否则按冲突上抛由事务回滚。
+   * 与任务 03 的 insertModel 并存：主线登记冲突语义（上抛可区分错误码）不变。
+   */
+  async insertModelOrReuseSameName(
+    data: { modelName: string; modelCode: string },
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<EquipmentModelRef> {
+    const repository = this.getRepository(transactionContext);
+    try {
+      const entity = repository.create({
+        modelName: data.modelName,
+        modelCode: data.modelCode,
+        enabled: true,
+        sortOrder: 0,
+      });
+      const saved = await repository.save(entity);
+      return {
+        id: saved.id,
+        modelCode: saved.modelCode,
+        modelName: saved.modelName,
+        enabled: saved.enabled,
+      };
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+      // 并发同名登记：唯一索引兜底，读回并核对同一机型才复用
+      const existing = await repository.findOne({
+        where: { modelCode: data.modelCode },
+        select: { id: true, modelCode: true, modelName: true, enabled: true },
+      });
+      if (existing === null || existing.modelName !== data.modelName) {
+        throw error;
+      }
+      return {
+        id: existing.id,
+        modelCode: existing.modelCode,
+        modelName: existing.modelName,
+        enabled: existing.enabled,
+      };
     }
   }
 

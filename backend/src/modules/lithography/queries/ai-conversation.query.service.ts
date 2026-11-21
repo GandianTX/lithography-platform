@@ -60,10 +60,16 @@ export class AiConversationQueryService {
     private readonly equipmentModelRepository: Repository<EquipmentModelEntity>,
   ) {}
 
-  /** 可见会话列表：固定排序（创建时间倒序、主键倒序）+ OFFSET 分页 */
+  /**
+   * 可见会话列表：固定排序（创建时间倒序、主键倒序）+ OFFSET 分页。
+   *
+   * `requestId` 为任务 06 评价候选用例的加法式过滤（未提供时列表行为与任务 05 完全一致）；
+   * 可见性条件本身不变，仍由 `applyVisibility` 唯一决定。
+   */
   async listVisible(params: {
     viewer: AiConversationViewerScope;
     pagination: AiConversationListPagination;
+    requestId?: number | null;
   }): Promise<AiConversationListPage> {
     const page = Math.max(params.pagination.page, 1);
     const pageSize = Math.max(params.pagination.pageSize, 1);
@@ -73,6 +79,9 @@ export class AiConversationQueryService {
       .leftJoin(RepairRequestEntity, 'request', 'request.id = conversation.requestId')
       .leftJoin(RepairRequestIntakeEntity, 'intake', 'intake.id = request.intakeId');
     this.applyVisibility(base, params.viewer);
+    if (params.requestId !== undefined && params.requestId !== null) {
+      base.andWhere('conversation.requestId = :requestId', { requestId: params.requestId });
+    }
 
     const [entities, total] = await Promise.all([
       base

@@ -23,6 +23,15 @@ import {
   VerificationRecordStatus,
   VerificationRecordType,
 } from '@app-types/models/verification-record.types';
+import {
+  MaintenancePhaseCode,
+  MaintenanceReportExportFormat,
+  MaintenanceReportFaultBranchKind,
+  MaintenanceReportResetResult,
+  MaintenanceReportSourceType,
+  MaintenanceReportStatus,
+  MaintenanceReportStepResult,
+} from '@app-types/models/maintenance-report.types';
 import { RegisterTypeEnum } from '@app-types/services/register.types';
 import {
   EngineerRegistrationApplicationStatus,
@@ -79,6 +88,13 @@ export function registerEnums(): void {
   });
   registerEnumType(RepairRequestHandlingResult, { name: 'RepairRequestHandlingResult' });
   registerEnumType(RepairRequestHandlingStatus, { name: 'RepairRequestHandlingStatus' });
+  registerEnumType(MaintenanceReportStatus, { name: 'MaintenanceReportStatus' });
+  registerEnumType(MaintenanceReportSourceType, { name: 'MaintenanceReportSourceType' });
+  registerEnumType(MaintenancePhaseCode, { name: 'MaintenancePhaseCode' });
+  registerEnumType(MaintenanceReportStepResult, { name: 'MaintenanceReportStepResult' });
+  registerEnumType(MaintenanceReportFaultBranchKind, { name: 'MaintenanceReportFaultBranchKind' });
+  registerEnumType(MaintenanceReportResetResult, { name: 'MaintenanceReportResetResult' });
+  registerEnumType(MaintenanceReportExportFormat, { name: 'MaintenanceReportExportFormat' });
   registerEnumType(OrderDirection, { name: 'OrderDirection' });
   registerEnumType(GqlPaginationMode, { name: 'PaginationMode' });
   registerEnumType(GqlSortDirection, { name: 'SortDirection' });

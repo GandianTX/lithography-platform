@@ -127,6 +127,44 @@ export class StoredFileService {
     }
   }
 
+  /**
+   * 解除绑定（仅替换原件同事务使用）：仅当原件当前 BOUND 到指定业务时恢复 TEMPORARY。
+   * 返回命中行数；0 表示绑定状态已变化（如已被并发改写），由调用方裁决是否容错。
+   */
+  async unbindIfBoundTo(
+    params: {
+      fileId: string;
+      businessType: string;
+      businessId: string;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<number> {
+    const repository = this.getRepository(transactionContext);
+    try {
+      const result = await repository.update(
+        {
+          fileId: params.fileId,
+          status: StoredFileStatus.VALID,
+          bindingStatus: StoredFileBindingStatus.BOUND,
+          businessType: params.businessType,
+          businessId: params.businessId,
+        },
+        {
+          bindingStatus: StoredFileBindingStatus.TEMPORARY,
+          businessId: null,
+        },
+      );
+      return result.affected ?? 0;
+    } catch (error) {
+      throw new DomainError(
+        STORED_FILE_ERROR.BIND_FAILED,
+        '原件解除绑定失败，请稍后重试',
+        { fileId: params.fileId },
+        error,
+      );
+    }
+  }
+
   private toSnapshot(entity: StoredFileEntity): StoredFileSnapshot {
     return {
       fileId: entity.fileId,

@@ -11,6 +11,7 @@ import { TrustedOrganizationContextQueryService } from '@src/modules/lithography
 import { enrichReferenceDocumentListCreators } from './enrich-reference-document-creator';
 import { normalizeOptionalFilterText } from './reference-document-fields.normalize';
 import { assertReferenceDocumentReadRole } from './reference-document-roles';
+import { resolveReferenceDocumentReadScope } from './reference-document-read-scope';
 import {
   ListReferenceDocumentsCommand,
   ListReferenceDocumentsResult,
@@ -20,11 +21,13 @@ import {
 const MAX_PAGE_SIZE = 100;
 
 /**
- * 查询参考资料列表用例（工程师/管理员维度，本组织范围）
+ * 查询参考资料列表用例（工程师/管理员维度，读侧范围决议）
  *
- * - 组织范围经可信组织上下文解析（A-PR0 §2.1）：不取客户端自报，无有效成员关系/
- *   多关系歧义时由 TrustedOrganizationContextQueryService 拒绝；
- * - 默认仅返回本组织未软删资料；排序由契约固定（创建时间倒序 + 主键倒序），
+ * - 范围经 resolveReferenceDocumentReadScope 决议（A-PR0 §2.1 + 功能 V5.6 R055/R056）：
+ *   工程师与二级管理员仅本公司，一级管理员全部公司正式资料；
+ *   无有效成员关系/多关系歧义时由 TrustedOrganizationContextQueryService 拒绝
+ *   （一级管理员 GLOBAL 范围不依赖本人成员关系）；
+ * - 默认仅返回未软删资料；排序由契约固定（创建时间倒序 + 主键倒序），
  *   不采纳客户端排序入参；页大小上限在传输无关的用例层强制，不依赖入口校验
  * - 创建人展示经 creatorNickname 实时富集，不返回账号 ID
  * - 角色准入由 adapter 层守卫决策（ENGINEER/SUPER_ADMIN），本用例兜底
@@ -52,9 +55,11 @@ export class ListReferenceDocumentsUsecase {
       MAX_PAGE_SIZE,
     ) as OffsetParams;
 
-    // 组织范围先解析：无有效成员关系/多关系歧义在此拒绝，不进入任何资料查询
-    const membership = await this.organizationContextService.resolveForAccount({
-      accountId: command.session.accountId,
+    // 读侧范围先决议：一级 GLOBAL / 其余本公司（工程师与二级管理员仍失败关闭）
+    const scope = await resolveReferenceDocumentReadScope({
+      session: command.session,
+      accountQueryService: this.accountQueryService,
+      organizationContextService: this.organizationContextService,
     });
 
     const listPage = await this.referenceDocumentQueryService.listDocuments({
@@ -66,7 +71,7 @@ export class ListReferenceDocumentsUsecase {
         caseHandlingStatus: normalizeOptionalFilterText(command.filter?.caseHandlingStatus),
       },
       pagination: { page, pageSize, withTotal: withTotal ?? false },
-      organizationId: membership.organizationId,
+      organizationId: scope.kind === 'GLOBAL' ? null : scope.organizationId,
     });
     const items = await enrichReferenceDocumentListCreators(
       this.accountQueryService,

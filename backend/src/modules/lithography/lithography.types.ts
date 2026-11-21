@@ -762,6 +762,19 @@ export type ReferenceDocumentListPage = {
 };
 
 /**
+ * 参考资料库读侧范围（列表 / 详情 / 原件下载共用同一口径）。
+ *
+ * - `ORGANIZATION`：工程师与二级管理员仅本公司正式资料；
+ * - `GLOBAL`：一级管理员全部公司正式资料（功能 V5.6 R055、页面 V6.5 §9.1）。
+ *
+ * 范围只决定「哪些公司的正式资料可读」；软删谓词由 QueryService 统一叠加，
+ * 他人未提交草稿不在本表，不因本范围可见。范围由服务端从可信会话与账号
+ * 当前等级事实决议（见 reference-document-read-scope.ts），不接受客户端自报。
+ */
+export type ReferenceDocumentReadScope =
+  { kind: 'ORGANIZATION'; organizationId: number } | { kind: 'GLOBAL' };
+
+/**
  * 资料创建写入数据（由 usecase 完成全部业务判定后传入）。
  * createdByAccountId 仅来自可信 Session，不得由客户端传入；
  * ownerOrganizationId 由可信组织上下文解析（A-PR0 §2.1），不得由客户端传入；
@@ -787,6 +800,15 @@ export type ReferenceDocumentInsertData = {
   // （同空或同有与「正式资料与来源投稿同组织」由 CHECK/外键与用例事务内核验保证）
   sourceSubmissionId?: number | null;
   sourceRevisionId?: number | null;
+  /**
+   * R051-01 报告来源回链（方案二）：正式提交时写入报告来源与冻结版本；
+   * sourceKind 覆盖默认 MATERIAL，INDEPENDENT_REPORT/WORK_ORDER_SUMMARY
+   * 必须同时提供 sourceReportId 与 sourceReportVersionId（实体 CHECK 兜底）。
+   * uk_reference_document_source_report_version 保证一份冻结版本至多一份正式资料。
+   */
+  sourceKind?: string;
+  sourceReportId?: number | null;
+  sourceReportVersionId?: number | null;
   extensionJson?: Record<string, unknown> | null;
   schemaVersion?: number;
 };

@@ -19,10 +19,12 @@ import {
   findInitialPanel,
   findResetPanel,
   findStepPanel,
+  hasMaintenancePanelContent,
   MAINTENANCE_PHASE_CODES,
   MAINTENANCE_RESET_RESULTS,
   MAINTENANCE_STEP_RESULTS,
   type MaintenanceAttachmentValue,
+  type MaintenanceEditorSection,
   type MaintenanceEditorValue,
   type MaintenancePanelValue,
   type MaintenancePhaseCode,
@@ -34,6 +36,7 @@ import {
   MAX_PANEL_TEXT_LENGTH,
   MAX_STEP_TEXT_LENGTH,
   nextLocalKey,
+  nextStepCode,
   PHASE_LABEL_KEYS,
   RESET_RESULT_LABEL_KEYS,
   STEP_RESULT_LABEL_KEYS,
@@ -292,8 +295,10 @@ export function MaintenanceRecordEditor({
   disabled = false,
   engineerNameReadOnly = false,
   onChange,
+  onBeforeDiscardBranch,
   readOnly = false,
   value,
+  visibleSections,
 }: {
   value: MaintenanceEditorValue;
   onChange: (value: MaintenanceEditorValue) => void;
@@ -302,10 +307,20 @@ export function MaintenanceRecordEditor({
   /** 工单场景：姓名由后端按接单账号写入，编辑器只读展示快照 */
   engineerNameReadOnly?: boolean;
   attachment?: MaintenanceEditorAttachmentProps;
+  /** 只渲染指定分区（分步表单复用同一套字段组件）；缺省全部渲染 */
+  visibleSections?: readonly MaintenanceEditorSection[];
+  /** 切走已填写故障分支前的确认：返回 false 时保持原分支不变 */
+  onBeforeDiscardBranch?: (panelLabel: string) => boolean;
 }) {
   const { t } = useI18n();
   const locked = readOnly || disabled;
   const engineerNameLocked = locked || engineerNameReadOnly;
+  const isSectionVisible = (section: MaintenanceEditorSection): boolean =>
+    visibleSections === undefined || visibleSections.includes(section);
+  const confirmDiscardBranch = (panelLabel: string): boolean => {
+    if (onBeforeDiscardBranch === undefined) return true;
+    return onBeforeDiscardBranch(panelLabel);
+  };
 
   const updateStep = (key: string, patch: Partial<MaintenanceStepValue>) => {
     onChange({
@@ -321,14 +336,30 @@ export function MaintenanceRecordEditor({
     });
   };
 
+  /**
+   * 步骤结果切换：切走已填写的新故障分支先确认；确认后仍保留面板内容
+   * 供切回时恢复，正式内容只取当前有效分支（见 collectEffectivePanels）。
+   */
   const changeStepResult = (step: MaintenanceStepValue, resultCode: string) => {
     const nextResult = toStepResult(resultCode);
     const existingPanel = findStepPanel(value, step.key);
-    const panels = value.panels.filter(
-      (panel) => !(panel.panelType === 'STEP_NEW_FAULT' && panel.stepKey === step.key),
-    );
-    if (nextResult === 'NEW_FAULT') {
-      panels.push(existingPanel ?? createEmptyPanel('STEP_NEW_FAULT', step.key));
+    if (
+      existingPanel !== undefined &&
+      existingPanel.panelType === 'STEP_NEW_FAULT' &&
+      step.resultCode === 'NEW_FAULT' &&
+      nextResult !== 'NEW_FAULT' &&
+      hasMaintenancePanelContent(existingPanel) &&
+      !confirmDiscardBranch(
+        t('maintenance.stepNewFault', {
+          index: value.steps.findIndex((item) => item.key === step.key) + 1,
+        }),
+      )
+    ) {
+      return;
+    }
+    const panels = [...value.panels];
+    if (nextResult === 'NEW_FAULT' && existingPanel === undefined) {
+      panels.push(createEmptyPanel('STEP_NEW_FAULT', step.key));
     }
     onChange({
       ...value,
@@ -341,10 +372,19 @@ export function MaintenanceRecordEditor({
 
   const changeResetResult = (next: MaintenanceResetResult | undefined) => {
     const resetResult = next ?? '';
-    const panels = value.panels.filter((panel) => panel.panelType !== 'RESET_NEW_FAULT');
-    if (resetResult === 'NEW_FAULT') {
-      const existing = findResetPanel(value);
-      panels.push(existing ?? createEmptyPanel('RESET_NEW_FAULT'));
+    const existing = findResetPanel(value);
+    if (
+      existing !== undefined &&
+      value.resetResult === 'NEW_FAULT' &&
+      resetResult !== 'NEW_FAULT' &&
+      hasMaintenancePanelContent(existing) &&
+      !confirmDiscardBranch(t('maintenance.resetNewFault'))
+    ) {
+      return;
+    }
+    const panels = [...value.panels];
+    if (resetResult === 'NEW_FAULT' && existing === undefined) {
+      panels.push(createEmptyPanel('RESET_NEW_FAULT'));
     }
     onChange({ ...value, resetResult, panels });
   };
@@ -374,220 +414,235 @@ export function MaintenanceRecordEditor({
 
   return (
     <div className="flex flex-col gap-5">
-      <section className="flex flex-col gap-3">
-        <h5 className="m-0 font-medium text-sm">{t('maintenance.basicInfo')}</h5>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t('maintenance.maintenanceDate')}>
-            <Input
-              disabled={locked}
-              onChange={(event) => onChange({ ...value, maintenanceDate: event.target.value })}
-              type="date"
-              value={value.maintenanceDate}
-            />
-          </Field>
-          <Field label={t('maintenance.engineerName')}>
-            <Input
-              disabled={engineerNameLocked}
-              maxLength={MAX_ENGINEER_NAME_LENGTH}
-              onChange={(event) => onChange({ ...value, engineerName: event.target.value })}
-              placeholder={
-                engineerNameReadOnly
-                  ? t('maintenance.engineerNameReadOnlyHint')
-                  : t('maintenance.engineerNamePlaceholder')
-              }
-              value={value.engineerName}
-            />
-            {engineerNameReadOnly ? (
-              <span className="text-text-secondary text-xs">
-                {t('maintenance.engineerNameReadOnlyHint')}
-              </span>
-            ) : null}
-          </Field>
-        </div>
-      </section>
+      {isSectionVisible('basicInfo') ? (
+        <section className="flex flex-col gap-3">
+          <h5 className="m-0 font-medium text-sm">{t('maintenance.basicInfo')}</h5>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t('maintenance.maintenanceDate')}>
+              <Input
+                disabled={locked}
+                onChange={(event) => onChange({ ...value, maintenanceDate: event.target.value })}
+                type="date"
+                value={value.maintenanceDate}
+              />
+            </Field>
+            <Field label={t('maintenance.engineerName')}>
+              <Input
+                disabled={engineerNameLocked}
+                maxLength={MAX_ENGINEER_NAME_LENGTH}
+                onChange={(event) => onChange({ ...value, engineerName: event.target.value })}
+                placeholder={
+                  engineerNameReadOnly
+                    ? t('maintenance.engineerNameReadOnlyHint')
+                    : t('maintenance.engineerNamePlaceholder')
+                }
+                value={value.engineerName}
+              />
+              {engineerNameReadOnly ? (
+                <span className="text-text-secondary text-xs">
+                  {t('maintenance.engineerNameReadOnlyHint')}
+                </span>
+              ) : null}
+            </Field>
+          </div>
+        </section>
+      ) : null}
 
-      <section className="flex flex-col gap-3">
-        <h5 className="m-0 font-medium text-sm">{t('maintenance.initialFault')}</h5>
-        <PanelFields
-          disabled={locked}
-          label={t('maintenance.initialFault')}
-          onChange={(panel) => {
-            const exists = findInitialPanel(value);
-            onChange({
-              ...value,
-              panels: exists
-                ? value.panels.map((item) => (item.key === panel.key ? panel : item))
-                : [...value.panels, panel],
-            });
-          }}
-          panel={initialPanel}
-        />
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <h5 className="m-0 font-medium text-sm">{t('maintenance.resetResult')}</h5>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t('maintenance.resetResult')}>
-            <Select
-              allowClear
-              disabled={locked}
-              onChange={(next: MaintenanceResetResult | undefined) => changeResetResult(next)}
-              options={MAINTENANCE_RESET_RESULTS.map((result) => ({
-                label: t(RESET_RESULT_LABEL_KEYS[result]),
-                value: result,
-              }))}
-              placeholder={t('maintenance.resetResultPlaceholder')}
-              style={{ width: '100%' }}
-              value={value.resetResult === '' ? undefined : value.resetResult}
-            />
-          </Field>
-        </div>
-        {value.resetResult === 'NEW_FAULT' && resetPanel ? (
+      {isSectionVisible('initialFault') ? (
+        <section className="flex flex-col gap-3">
+          <h5 className="m-0 font-medium text-sm">{t('maintenance.initialFault')}</h5>
           <PanelFields
             disabled={locked}
-            label={t('maintenance.resetNewFault')}
-            onChange={(panel) => updatePanel(panel.key, panel)}
-            panel={resetPanel}
+            label={t('maintenance.initialFault')}
+            onChange={(panel) => {
+              const exists = findInitialPanel(value);
+              onChange({
+                ...value,
+                panels: exists
+                  ? value.panels.map((item) => (item.key === panel.key ? panel : item))
+                  : [...value.panels, panel],
+              });
+            }}
+            panel={initialPanel}
           />
-        ) : null}
-      </section>
+        </section>
+      ) : null}
 
-      <section className="flex flex-col gap-3">
-        <h5 className="m-0 font-medium text-sm">{t('maintenance.steps')}</h5>
-        {value.steps.length === 0 ? (
-          <div className="text-sm text-text-secondary">{t('maintenance.stepsEmpty')}</div>
-        ) : null}
-        {value.steps.map((step, index) => {
-          const stepPanel = findStepPanel(value, step.key);
-          return (
-            <div className="flex flex-col gap-3" key={step.key}>
-              <div className="rounded-lg border border-[var(--panel-border)] p-3">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-medium text-sm">
-                    {t('maintenance.stepTitle', { index: index + 1 })}
-                  </span>
-                  {!locked ? (
-                    <div className="flex flex-wrap gap-1">
-                      <Button
-                        disabled={index === 0}
-                        onClick={() => moveStep(index, -1)}
-                        size="small"
-                      >
-                        {t('maintenance.moveUp')}
-                      </Button>
-                      <Button
-                        disabled={index === value.steps.length - 1}
-                        onClick={() => moveStep(index, 1)}
-                        size="small"
-                      >
-                        {t('maintenance.moveDown')}
-                      </Button>
-                      <Popconfirm
-                        cancelText={t('common.cancel')}
-                        description={t('maintenance.removeStepConfirmDescription')}
-                        okText={t('common.delete')}
-                        onConfirm={() => removeStep(step)}
-                        title={t('maintenance.removeStepConfirmTitle')}
-                      >
-                        <Button danger size="small">
-                          {t('maintenance.removeStep')}
-                        </Button>
-                      </Popconfirm>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <Field label={t('maintenance.stepErrorCode')}>
-                    <Input
-                      disabled={locked}
-                      maxLength={MAX_STEP_TEXT_LENGTH}
-                      onChange={(event) => updateStep(step.key, { errorCode: event.target.value })}
-                      value={step.errorCode}
-                    />
-                  </Field>
-                  <Field label={t('maintenance.stepPartName')}>
-                    <Input
-                      disabled={locked}
-                      maxLength={MAX_STEP_TEXT_LENGTH}
-                      onChange={(event) => updateStep(step.key, { partName: event.target.value })}
-                      value={step.partName}
-                    />
-                  </Field>
-                  <Field label={`${t('maintenance.stepAction')} *`} wide>
-                    <Input.TextArea
-                      disabled={locked}
-                      onChange={(event) => updateStep(step.key, { actionText: event.target.value })}
-                      placeholder={t('maintenance.stepActionPlaceholder')}
-                      rows={3}
-                      value={step.actionText}
-                    />
-                  </Field>
-                  <Field label={`${t('maintenance.stepResult')} *`}>
-                    <Select
-                      allowClear
-                      disabled={locked}
-                      onChange={(next: MaintenanceStepResult | undefined) =>
-                        changeStepResult(step, next ?? '')
-                      }
-                      options={MAINTENANCE_STEP_RESULTS.map((result) => ({
-                        label: t(STEP_RESULT_LABEL_KEYS[result]),
-                        value: result,
-                      }))}
-                      placeholder={t('maintenance.stepResultPlaceholder')}
-                      style={{ width: '100%' }}
-                      value={step.resultCode === '' ? undefined : step.resultCode}
-                    />
-                  </Field>
-                </div>
-              </div>
-              {step.resultCode === 'NEW_FAULT' && stepPanel ? (
-                <PanelFields
-                  disabled={locked}
-                  label={t('maintenance.stepNewFault', { index: index + 1 })}
-                  onChange={(panel) => updatePanel(panel.key, panel)}
-                  panel={stepPanel}
-                />
-              ) : null}
-            </div>
-          );
-        })}
-        {!locked ? (
-          <div className="flex flex-wrap gap-2">
-            <Button
-              onClick={() =>
-                onChange({
-                  ...value,
-                  steps: [
-                    ...value.steps,
-                    {
-                      key: nextLocalKey('step'),
-                      id: null,
-                      errorCode: '',
-                      partName: '',
-                      actionText: '',
-                      resultCode: '',
-                    },
-                  ],
-                })
-              }
-            >
-              {t('maintenance.addStep')}
-            </Button>
+      {isSectionVisible('reset') ? (
+        <section className="flex flex-col gap-3">
+          <h5 className="m-0 font-medium text-sm">{t('maintenance.resetResult')}</h5>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t('maintenance.resetResult')}>
+              <Select
+                allowClear
+                disabled={locked}
+                onChange={(next: MaintenanceResetResult | undefined) => changeResetResult(next)}
+                options={MAINTENANCE_RESET_RESULTS.map((result) => ({
+                  label: t(RESET_RESULT_LABEL_KEYS[result]),
+                  value: result,
+                }))}
+                placeholder={t('maintenance.resetResultPlaceholder')}
+                style={{ width: '100%' }}
+                value={value.resetResult === '' ? undefined : value.resetResult}
+              />
+            </Field>
           </div>
-        ) : null}
-      </section>
+          {value.resetResult === 'NEW_FAULT' && resetPanel ? (
+            <PanelFields
+              disabled={locked}
+              label={t('maintenance.resetNewFault')}
+              onChange={(panel) => updatePanel(panel.key, panel)}
+              panel={resetPanel}
+            />
+          ) : null}
+        </section>
+      ) : null}
 
-      <section className="flex flex-col gap-3">
-        <h5 className="m-0 font-medium text-sm">{t('maintenance.supplementaryNote')}</h5>
-        <Input.TextArea
-          disabled={locked}
-          maxLength={MAX_NOTE_LENGTH}
-          onChange={(event) => onChange({ ...value, supplementaryNote: event.target.value })}
-          placeholder={t('maintenance.supplementaryNotePlaceholder')}
-          rows={3}
-          value={value.supplementaryNote}
-        />
-      </section>
+      {isSectionVisible('steps') ? (
+        <section className="flex flex-col gap-3">
+          <h5 className="m-0 font-medium text-sm">{t('maintenance.steps')}</h5>
+          {value.steps.length === 0 ? (
+            <div className="text-sm text-text-secondary">{t('maintenance.stepsEmpty')}</div>
+          ) : null}
+          {value.steps.map((step, index) => {
+            const stepPanel = findStepPanel(value, step.key);
+            return (
+              <div className="flex flex-col gap-3" key={step.key}>
+                <div className="rounded-lg border border-[var(--panel-border)] p-3">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium text-sm">
+                      {t('maintenance.stepTitle', { index: index + 1 })}
+                    </span>
+                    {!locked ? (
+                      <div className="flex flex-wrap gap-1">
+                        <Button
+                          disabled={index === 0}
+                          onClick={() => moveStep(index, -1)}
+                          size="small"
+                        >
+                          {t('maintenance.moveUp')}
+                        </Button>
+                        <Button
+                          disabled={index === value.steps.length - 1}
+                          onClick={() => moveStep(index, 1)}
+                          size="small"
+                        >
+                          {t('maintenance.moveDown')}
+                        </Button>
+                        <Popconfirm
+                          cancelText={t('common.cancel')}
+                          description={t('maintenance.removeStepConfirmDescription')}
+                          okText={t('common.delete')}
+                          onConfirm={() => removeStep(step)}
+                          title={t('maintenance.removeStepConfirmTitle')}
+                        >
+                          <Button danger size="small">
+                            {t('maintenance.removeStep')}
+                          </Button>
+                        </Popconfirm>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <Field label={t('maintenance.stepErrorCode')}>
+                      <Input
+                        disabled={locked}
+                        maxLength={MAX_STEP_TEXT_LENGTH}
+                        onChange={(event) =>
+                          updateStep(step.key, { errorCode: event.target.value })
+                        }
+                        value={step.errorCode}
+                      />
+                    </Field>
+                    <Field label={t('maintenance.stepPartName')}>
+                      <Input
+                        disabled={locked}
+                        maxLength={MAX_STEP_TEXT_LENGTH}
+                        onChange={(event) => updateStep(step.key, { partName: event.target.value })}
+                        value={step.partName}
+                      />
+                    </Field>
+                    <Field label={`${t('maintenance.stepAction')} *`} wide>
+                      <Input.TextArea
+                        disabled={locked}
+                        onChange={(event) =>
+                          updateStep(step.key, { actionText: event.target.value })
+                        }
+                        placeholder={t('maintenance.stepActionPlaceholder')}
+                        rows={3}
+                        value={step.actionText}
+                      />
+                    </Field>
+                    <Field label={`${t('maintenance.stepResult')} *`}>
+                      <Select
+                        allowClear
+                        disabled={locked}
+                        onChange={(next: MaintenanceStepResult | undefined) =>
+                          changeStepResult(step, next ?? '')
+                        }
+                        options={MAINTENANCE_STEP_RESULTS.map((result) => ({
+                          label: t(STEP_RESULT_LABEL_KEYS[result]),
+                          value: result,
+                        }))}
+                        placeholder={t('maintenance.stepResultPlaceholder')}
+                        style={{ width: '100%' }}
+                        value={step.resultCode === '' ? undefined : step.resultCode}
+                      />
+                    </Field>
+                  </div>
+                </div>
+                {step.resultCode === 'NEW_FAULT' && stepPanel ? (
+                  <PanelFields
+                    disabled={locked}
+                    label={t('maintenance.stepNewFault', { index: index + 1 })}
+                    onChange={(panel) => updatePanel(panel.key, panel)}
+                    panel={stepPanel}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
+          {!locked ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() =>
+                  onChange({
+                    ...value,
+                    steps: [
+                      ...value.steps,
+                      {
+                        key: nextLocalKey('step'),
+                        id: null,
+                        stepCode: nextStepCode(),
+                        errorCode: '',
+                        partName: '',
+                        actionText: '',
+                        resultCode: '',
+                      },
+                    ],
+                  })
+                }
+              >
+                {t('maintenance.addStep')}
+              </Button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {isSectionVisible('supplementaryNote') ? (
+        <section className="flex flex-col gap-3">
+          <h5 className="m-0 font-medium text-sm">{t('maintenance.supplementaryNote')}</h5>
+          <Input.TextArea
+            disabled={locked}
+            maxLength={MAX_NOTE_LENGTH}
+            onChange={(event) => onChange({ ...value, supplementaryNote: event.target.value })}
+            placeholder={t('maintenance.supplementaryNotePlaceholder')}
+            rows={3}
+            value={value.supplementaryNote}
+          />
+        </section>
+      ) : null}
 
       {attachment ? (
         <section className="flex flex-col gap-3">

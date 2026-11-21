@@ -400,13 +400,32 @@ describe('UploadStoredFileUsecase', () => {
     const { usecase, organizationContextService, storage } = makeUsecase();
 
     await expect(
-      usecase.execute(command({ businessType: 'MAINTENANCE_REPORT' })),
+      usecase.execute(command({ businessType: 'UNKNOWN_PURPOSE' })),
     ).rejects.toMatchObject({ code: STORED_FILE_ERROR.PURPOSE_NOT_SUPPORTED });
     expect(organizationContextService.resolveForAccount).not.toHaveBeenCalled();
     expect(storage.save).not.toHaveBeenCalled();
   });
 
   it('客户上传维修过程原件（REPAIR_PROCESS）拒绝，不写存储', async () => {
+    const { usecase, storage } = makeUsecase();
+
+    await expect(usecase.execute(command({ session: customer }))).rejects.toMatchObject({
+      code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+    });
+    expect(storage.save).not.toHaveBeenCalled();
+  });
+
+  it('MAINTENANCE_REPORT 用途（任务 06）已接入白名单：工程师可上传暂存', async () => {
+    const { usecase, organizationContextService, storage } = makeUsecase();
+
+    await expect(
+      usecase.execute(command({ businessType: 'MAINTENANCE_REPORT' })),
+    ).resolves.toBeDefined();
+    expect(organizationContextService.resolveForAccount).toHaveBeenCalled();
+    expect(storage.save).toHaveBeenCalled();
+  });
+
+  it('客户角色拒绝（未登录之外的角色边界），不写存储', async () => {
     const { usecase, storage } = makeUsecase();
 
     await expect(usecase.execute(command({ session: customer }))).rejects.toMatchObject({

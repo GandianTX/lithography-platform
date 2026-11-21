@@ -56,6 +56,7 @@ import { AdminRepairRequestQueryService } from './queries/admin-repair-request.q
 import { EngineerRegistrationQueryService } from './queries/engineer-registration.query.service';
 import { EngineerRepairRevisionQueryService } from './queries/engineer-repair-revision.query.service';
 import { EquipmentModelQueryService } from './queries/equipment-model.query.service';
+import { EquipmentModelService } from './equipment-model.service';
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
 import { MaintenanceReportQueryService } from './queries/maintenance-report.query.service';
 import { OrganizationMembershipQueryService } from './queries/organization-membership.query.service';
@@ -71,7 +72,6 @@ import { ContentSubmissionService } from './content-submission.service';
 import { AdminOrganizationProvisioningService } from './admin-organization-provisioning.service';
 import { EngineerRegistrationService } from './engineer-registration.service';
 import { EngineerResponseService } from './engineer-response.service';
-import { EquipmentModelService } from './equipment-model.service';
 import { LocalRuntimeService } from './local-runtime.service';
 import { MaintenanceReportService } from './maintenance-report.service';
 import { ManagementAuditService } from './management-audit.service';

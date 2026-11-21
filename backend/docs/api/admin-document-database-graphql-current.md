@@ -13,7 +13,7 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 - **读为主、单角色**：本解析器默认只提供 `Query`；唯一写入口是任务 04 的 `appendRepairRequestRevision`（管理员工单修订），其余标签保持只读。全部操作精确限定 `SUPER_ADMIN`；工单列表、详情与修订按一级全公司、二级本公司核权；聚合统计与 AI 查询要求一级且具有唯一有效的管理员组织成员关系。不写 AI 数据、不改训练/生成链路、不暴露表结构编辑或数据库管理能力。
 - **不复建参考资料链路**：参考资料标签复用既有 `referenceDocuments` / `referenceDocument` 查询（工程师/管理员既有读契约，默认排除软删除），本契约不新增平行查询。
 - **排序由契约固定**：列表不采纳客户端 `sorts` 字段，排序白名单在服务端写死（见「分页与排序契约」），杜绝把客户端字段名直传 QueryBuilder。
-- **真实总数**：列表显式返回 `total`；统计四类总数取自真实 count/查询，口径与各标签默认列表过滤一致，空库返回 0 与正式空态，不硬编码演示数字。
+- **真实总数**：列表显式返回 `total`；统计四类总数取自真实 count/查询，口径与各标签默认列表过滤一致，空库返回 0 与正式空态，不硬编码演示数字。2026-11-21 起参考资料统计与资料列表读侧（`resolveReferenceDocumentReadScope`）同一口径：一级管理员 GLOBAL（`organizationId: null`，全公司正式资料，不含软删），统计数字与列表条数一致。
 
 ## 权限矩阵
 

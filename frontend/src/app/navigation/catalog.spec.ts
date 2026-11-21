@@ -19,13 +19,16 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('ENGINEER 见首页、维修申请、AI 对话、参考资料（任务05 S3 路由落地后入菜单）', () => {
+  it('ENGINEER 见首页、维修申请、AI 对话、历史维修记录（直达新建页）、工单维修总结、参考资料（任务05 S3 路由落地后入菜单；任务06 常驻入口）', () => {
     const paths = getNavigationItems('prod', 'ENGINEER').map((item) => item.path);
 
     expect(paths).toEqual([
       '/',
       '/engineer/repair-requests',
       '/engineer/ai',
+      // 2026-11-21 需求调整：入口直达新建记录页
+      '/engineer/maintenance-records/new',
+      '/engineer/work-order-summaries',
       '/reference-documents',
       '/account/settings',
     ]);

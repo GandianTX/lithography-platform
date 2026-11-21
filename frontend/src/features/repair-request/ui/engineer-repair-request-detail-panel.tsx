@@ -542,6 +542,20 @@ export function EngineerRepairRequestDetailPanel({
         <EngineerRepairIntakeSection intake={detail.intake ?? null} />
         <EngineerRepairAiAnalysisSection analysis={detail.intake?.analysis ?? null} />
 
+        {/*
+         * AI 辅助排查入口（任务 06 调整）：放在工单编辑／内部维修记录区域操作位，
+         * 明确属于当前工单（跳转带工单 ID 预选），不属于发给客户的回复。
+         * 可见性按任务 05 真实关联资格：工单详情读侧已按「服务公司=本人公司」
+         * 授权（不要求本人已接单；已结单工单同样可关联），创建会话时后端再复核。
+         */}
+        {canHandleAsEngineer ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button href={`/engineer/ai?requestId=${detail.id}`}>
+              {t('engineerDetail.aiTroubleshooting')}
+            </Button>
+          </div>
+        ) : null}
+
         {showInternalProcess ? (
           <EngineerRepairMaintenanceSection
             canWrite={canReply && !writeBlocked && (detail.canEditMaintenance ?? false)}

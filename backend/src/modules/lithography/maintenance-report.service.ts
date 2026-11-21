@@ -1,6 +1,7 @@
 // src/modules/lithography/maintenance-report.service.ts
 
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { randomUUID } from 'node:crypto';
 import {
   MAINTENANCE_REPORT_ERROR,
   DomainError,
@@ -12,6 +13,7 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { In, ObjectLiteral, Repository } from 'typeorm';
 import { MaintenanceReportAlarmEntity } from './entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';
+import { MaintenanceReportFaultEntity } from './entities/maintenance-report-fault.entity';
 import { MaintenanceReportReviewEntity } from './entities/maintenance-report-review.entity';
 import { MaintenanceReportStepEntity } from './entities/maintenance-report-step.entity';
 import { MaintenanceReportVersionAttachmentEntity } from './entities/maintenance-report-version-attachment.entity';
@@ -22,6 +24,7 @@ import {
   MaintenanceReportAttachmentInsertData,
   MaintenanceReportAttachmentSnapshot,
   MaintenanceReportDraftWriteData,
+  MaintenanceReportFaultWriteData,
   MaintenanceReportInsertData,
   MaintenanceReportReviewInsertData,
   MaintenanceReportReviewSnapshot,
@@ -33,6 +36,7 @@ import {
   RepairRequestWriteContext,
 } from './maintenance-report.types';
 import {
+  faultBranchKindToDb,
   toMaintenanceReportAttachmentSnapshot,
   toMaintenanceReportReviewSnapshot,
   toMaintenanceReportSnapshot,
@@ -63,6 +67,8 @@ export class MaintenanceReportService {
     private readonly alarmRepository: Repository<MaintenanceReportAlarmEntity>,
     @InjectRepository(MaintenanceReportStepEntity)
     private readonly stepRepository: Repository<MaintenanceReportStepEntity>,
+    @InjectRepository(MaintenanceReportFaultEntity)
+    private readonly faultRepository: Repository<MaintenanceReportFaultEntity>,
     @InjectRepository(MaintenanceReportAttachmentEntity)
     private readonly attachmentRepository: Repository<MaintenanceReportAttachmentEntity>,
     @InjectRepository(MaintenanceReportVersionEntity)
@@ -107,6 +113,11 @@ export class MaintenanceReportService {
         aiNote: null,
         createdByAccountId: data.createdByAccountId,
         updatedByAccountId: data.updatedByAccountId,
+        // R051-01 直接提交路径：报告根创建即携带提交标识与摘要，
+        // 由 (created_by, owner_org, submission_request_id) 唯一键处理并发竞争；
+        // 普通建稿为 NULL，提交标识在 markSubmitted 时统一写入。
+        submissionRequestId: data.submissionRequestId ?? null,
+        submissionPayloadHash: data.submissionPayloadHash ?? null,
       });
       const saved = await repository.save(entity);
       return toMaintenanceReportSnapshot(saved);
@@ -155,6 +166,13 @@ export class MaintenanceReportService {
         equipmentModelId: data.equipmentModelId,
         equipmentModelText: data.equipmentModelText,
         maintenanceDate: data.maintenanceDate,
+        handlingResult: data.handlingResult,
+        closureReason: data.closureReason,
+        resetResult: data.resetResult,
+        actualCause: data.actualCause,
+        repairActions: data.repairActions,
+        verificationResult: data.verificationResult,
+        supplementaryNote: data.supplementaryNote,
         aiUsage: data.aiUsage,
         aiSourceType: data.aiSourceType,
         aiSourceId: data.aiSourceId,
@@ -191,11 +209,18 @@ export class MaintenanceReportService {
     );
   }
 
+  /**
+   * 全量替换排查步骤。
+   *
+   * 故障分支对步骤有 (report_id, step_code) 复合外键（ON DELETE RESTRICT），
+   * 因此删除步骤前必须先删除本报告的故障行；调用方需在步骤写入后重新写入有效故障分支。
+   */
   async replaceSteps(
     reportId: number,
     steps: MaintenanceReportStepWriteData[],
     transactionContext: PersistenceTransactionContext,
   ): Promise<void> {
+    await this.getRepository(this.faultRepository, transactionContext).delete({ reportId });
     const repository = this.getRepository(this.stepRepository, transactionContext);
     await repository.delete({ reportId });
     if (steps.length === 0) return;
@@ -207,9 +232,50 @@ export class MaintenanceReportService {
         phaseCode: step.phaseCode,
         partName: step.partName,
         actionText: step.actionText,
+        resultCode: step.resultCode,
+        errorCode: step.errorCode,
         resultText: step.resultText,
         newAlarmCode: step.newAlarmCode,
         isValidNewBranch: step.isValidNewBranch,
+      })),
+    );
+  }
+
+  /**
+   * 全量替换报告故障分支。
+   *
+   * 故障行必须晚于步骤写入：STEP_NEW_FAULT 通过 (report_id, step_code)
+   * 复合外键指向本次已落库的步骤，删除顺序则为先故障后步骤（由调用方保证步骤
+   * 替换发生在故障替换之前）。
+   */
+  async replaceFaults(
+    reportId: number,
+    faults: MaintenanceReportFaultWriteData[],
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
+    const repository = this.getRepository(this.faultRepository, transactionContext);
+    await repository.delete({ reportId });
+    if (faults.length === 0) return;
+    await repository.insert(
+      faults.map((fault) => ({
+        reportId,
+        faultUuid: randomUUID(),
+        branchKind: faultBranchKindToDb(fault.branchKind),
+        stepCode: fault.stepCode,
+        panelSnapshot: null,
+        faultDescription: fault.description,
+        faultCause: null,
+        handlingAction: fault.action,
+        mainError: fault.mainError,
+        unitError: fault.unitError,
+        errorType: fault.errorType,
+        gpibStatus: fault.gpibStatus,
+        status: fault.faultStatus,
+        source: fault.source,
+        phaseCode: fault.phaseCode,
+        isActive: true,
+        lifecycleStatus: 'IN_PROGRESS',
+        lifecycleSource: 'USER',
       })),
     );
   }
@@ -323,6 +389,48 @@ export class MaintenanceReportService {
     });
   }
 
+  /**
+   * R051-01 正式提交：条件更新 DRAFT/RETURNED → SUBMITTED 并写入提交标识与摘要。
+   *
+   * 条件更新保证「同一份报告只完成一次 DRAFT→SUBMITTED」：
+   * 已 SUBMITTED 的报告（含并发第二次到达）affected = 0，由调用方裁决为幂等返回或冲突。
+   * 提交标识重复命中 uk_maintenance_report_submission 时抛出重复键错误，
+   * 由调用方按「定位既有结果 / 拒绝同标识异内容」处理。
+   */
+  async markSubmitted(
+    reportId: number,
+    versionNo: number,
+    submittedAt: Date,
+    updatedByAccountId: number,
+    submissionRequestId: string,
+    submissionPayloadHash: string,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
+    const repository = this.getRepository(this.reportRepository, transactionContext);
+    const result = await repository.update(
+      {
+        id: reportId,
+        status: In(['DRAFT', 'RETURNED'] as const),
+      },
+      {
+        status: 'SUBMITTED',
+        currentVersionNo: versionNo,
+        lastSubmittedAt: submittedAt,
+        lastReviewedAt: null,
+        submissionRequestId,
+        submissionPayloadHash,
+        updatedByAccountId,
+      },
+    );
+    if (!result.affected) {
+      throw new DomainError(
+        MAINTENANCE_REPORT_ERROR.STATE_NOT_EDITABLE,
+        '当前状态下的维修报告不可正式提交',
+        { reportId },
+      );
+    }
+  }
+
   async markReturned(
     reportId: number,
     reviewedAt: Date,
@@ -408,17 +516,22 @@ export class MaintenanceReportService {
       where: { id: repairRequestId },
       lock: { mode: 'pessimistic_write' },
     });
-    if (!entity) return null;
-    return {
-      id: entity.id,
-      customerAccountId: entity.customerAccountId,
-      acceptedEngineerAccountId: entity.acceptedByEngineerAccountId,
-      isAccepted: entity.isAccepted,
-      deprecated: entity.deprecated,
-      ownerOrganizationId: entity.ownerOrganizationId ?? null,
-      handlingResult: entity.handlingResult ?? null,
-      handlingStatus: entity.handlingStatus ?? null,
-    };
+    return entity ? toRepairRequestWriteContext(entity) : null;
+  }
+
+  /**
+   * 只读工单最小事实（入口资格判定用，不取行锁）。
+   *
+   * 写路径必须继续使用 `readRepairRequestWriteContext` 的锁定读；
+   * 本方法只服务「打开总结入口」这类不改变状态的读取。
+   */
+  async findRepairRequestWriteContext(
+    repairRequestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairRequestWriteContext | null> {
+    const repository = this.getRepository(this.repairRequestRepository, transactionContext);
+    const entity = await repository.findOne({ where: { id: repairRequestId } });
+    return entity ? toRepairRequestWriteContext(entity) : null;
   }
 
   /**
@@ -498,4 +611,24 @@ export class MaintenanceReportService {
 function hasUnknownAttachmentId(requested: number[], allowed: number[]): boolean {
   const allowedSet = new Set(allowed);
   return requested.some((id) => !allowedSet.has(id));
+}
+
+function toRepairRequestWriteContext(entity: RepairRequestEntity): RepairRequestWriteContext {
+  return {
+    id: entity.id,
+    requestNo: entity.requestNo,
+    customerAccountId: entity.customerAccountId,
+    equipmentModelId: entity.equipmentModelId,
+    acceptedEngineerAccountId: entity.acceptedByEngineerAccountId,
+    isAccepted: entity.isAccepted,
+    deprecated: entity.deprecated,
+    ownerOrganizationId: entity.ownerOrganizationId ?? null,
+    closureStatus: entity.closureStatus ?? null,
+    closedAt: entity.closedAt ?? null,
+    handlingResult: entity.handlingResult ?? null,
+    handlingStatus: entity.handlingStatus ?? null,
+    closureReason: entity.closureReason ?? null,
+    customerOrganizationId: entity.customerOrganizationId ?? null,
+    currentRevisionNo: entity.currentRevisionNo,
+  };
 }
