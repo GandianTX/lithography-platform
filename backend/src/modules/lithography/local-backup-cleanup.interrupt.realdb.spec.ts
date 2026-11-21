@@ -10,7 +10,16 @@
 //   父进程观察到 CLEANING 已落库后发 SIGKILL，随后核对：
 //   ① 残留是 CLEANING（不是 CLEANED、deleted_at 为空、local_reference 未被清空）；
 //   ② 下一轮把残留**识别为中断**（落"清理被进程中断"原因）并**继续清理**；
-//   ③ 最终落 CLEANED、包目录消失——即中断不误标为已清理。
+//   ③ 最终落 CLEANED、包目录消失——即中断不误标为已清理；
+//   ④ 反例：残留**未超过中断可辨认时限**时下一轮**不得**把它登记为中断
+//     （证明"识别为中断"由超时判定驱动，而不是无条件落库）。
+//
+// 作用域隔离（重要）：
+// - 真实清理的批次作用域是「本机公司 ＋ 本机安装标识」下的**全部**资产。
+//   `local_installation` 是单例表（`id = 1`），无法再插一条合成安装行，
+//   因此本规格复用本机真实安装标识，并**在执行前断言该作用域内只有本轮合成资产**；
+//   一旦发现他人资产，直接失败关闭——否则子进程会把他人资产行改写（状态／清理原因），
+//   属于对开发库的越权污染。
 //
 // 观测窗口的处理（关键设计）：
 // - "识别为中断"落库（写 local_cleanup_error）到"再次落 CLEANING"之间只有一次 UPDATE 往返，
@@ -53,6 +62,7 @@ import { DataSource } from 'typeorm';
 import {
   assertAllowedE2eDatabase,
   assertPhysicalCleanupConsent,
+  resolveAllowedE2eDatabases,
 } from '../../../test/utils/e2e-db-guard';
 import { loadExplicitEnvConfig } from '../../infrastructure/database/incremental-migration';
 import { BackupAssetEntity } from './entities/backup-asset.entity';
@@ -61,16 +71,36 @@ import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 const REQUESTED = process.env.E2E_REAL_DB_SPECS === '1';
 const CLEANUP_ALLOWED = process.env.E2E_ALLOW_PHYSICAL_CLEANUP === '1';
 const EXPECTED_DB = (process.env.E2E_REAL_DB_NAME ?? '').trim().toLowerCase();
+const ALLOWED_DBS = resolveAllowedE2eDatabases();
 const CONFIG_FILE = (process.env.E2E_REAL_DB_CONFIG_FILE ?? '').trim();
 
-if (REQUESTED && !CLEANUP_ALLOWED) {
+// 许可逐项核对：任一缺失都算许可不全
+const MISSING_PERMISSIONS: string[] = [];
+if (!CLEANUP_ALLOWED) {
+  MISSING_PERMISSIONS.push('E2E_ALLOW_PHYSICAL_CLEANUP=1');
+}
+if (EXPECTED_DB === '') {
+  MISSING_PERMISSIONS.push('E2E_REAL_DB_NAME');
+}
+if (CONFIG_FILE === '') {
+  MISSING_PERMISSIONS.push('E2E_REAL_DB_CONFIG_FILE');
+}
+if (EXPECTED_DB !== '' && !ALLOWED_DBS.includes(EXPECTED_DB)) {
+  MISSING_PERMISSIONS.push('E2E_ALLOWED_DB_NAMES（白名单必须且只能包含目标库）');
+}
+
+const ENABLED = REQUESTED && MISSING_PERMISSIONS.length === 0;
+
+// 显式要求执行却许可不全 → 模块加载即失败关闭，绝不静默跳过
+// （否则执行者会误判"已经跑过"，把未执行的规格当成已验证）
+if (REQUESTED && !ENABLED) {
   throw new Error(
-    '拒绝执行 R-08 实库规格：缺少显式清理许可 E2E_ALLOW_PHYSICAL_CLEANUP=1。' +
-      '该规格会写入合成资产行并物理删除包目录，必须由执行者显式授权。',
+    'R-08 实库规格被显式要求执行（E2E_REAL_DB_SPECS=1），但许可不全：缺少 ' +
+      `${MISSING_PERMISSIONS.join('、')}。明确拒绝，不静默跳过。` +
+      '该规格会写入合成资产行并物理删除包目录，清理许可与库名白名单是两道相互独立的门。',
   );
 }
 
-const ENABLED = REQUESTED && CLEANUP_ALLOWED && EXPECTED_DB !== '' && CONFIG_FILE !== '';
 const describeRealDb = ENABLED ? describe : describe.skip;
 
 // 真实进程 + 真实 MySQL + ts-node 子进程启动，耗时远超默认 10s：显式放宽时限
@@ -95,6 +125,8 @@ const FILLER_PACKAGE_COUNT = 2;
 const INTERRUPT_MINUTES = 10;
 /** 下一轮判定时刻相对残留更新时间的推进量（分钟）：越过中断可辨认时限 */
 const NEXT_ROUND_ADVANCE_MINUTES = INTERRUPT_MINUTES + 1;
+/** 反例用推进量（分钟）：仍在中断可辨认时限之内，不得登记为中断 */
+const WITHIN_THRESHOLD_ADVANCE_MINUTES = 1;
 
 type AssetState = {
   local_status: string;
@@ -125,11 +157,13 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
   };
   /** 补位包：创建时间早于残留，用于把残留排到下一轮批次末尾 */
   const fillers: SyntheticPackage[] = [];
+  /** 反例批次：慢清理包（制造观测窗口）＋ 时限内残留（不得被登记为中断） */
+  const withinThresholdBatch: SyntheticPackage[] = [];
 
   let dataSource: DataSource;
   let runId = 0;
-  /** 子进程输出（早退时用于快速失败定位） */
-  const childOutput = new Map<ChildProcess, string>();
+  /** 子进程输出（早退时用于快速失败定位）：stdout 与 stderr 分开留存 */
+  const childOutput = new Map<ChildProcess, { stdout: string; stderr: string }>();
 
   const readAssetState = async (backupId: string): Promise<AssetState | null> => {
     const rows = await dataSource.query(
@@ -139,6 +173,30 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     );
     const row = rows[0] as AssetState | undefined;
     return row ?? null;
+  };
+
+  /**
+   * 清理作用域护栏：真实清理批次覆盖「本机公司 ＋ 本机安装标识」下的**全部**资产。
+   *
+   * `local_installation` 是单例表（`id = 1`），无法再插一条合成安装行，因此本规格复用
+   * 本机真实安装标识——代价是批次作用域不可完全隔离。若作用域内存在他人资产，
+   * 子进程会把它们改写（状态与清理原因），属于对开发库的越权污染，故失败关闭。
+   */
+  const assertScopeIsolated = async (allowedBackupIds: string[]): Promise<void> => {
+    const rows = await dataSource.query(
+      'SELECT backup_id FROM backup_asset WHERE organization_id = ? AND installation_id = ?',
+      [organizationId, installationId],
+    );
+    const foreign = (rows as { backup_id: string }[])
+      .map((row) => row.backup_id)
+      .filter((backupId) => !allowedBackupIds.includes(backupId));
+    if (foreign.length > 0) {
+      throw new Error(
+        '拒绝执行 R-08 实库规格：清理作用域（本机公司 ＋ 本机安装标识）内存在非本轮合成资产 ' +
+          `${foreign.join('、')}；继续执行会改写他人资产行的状态与清理原因。` +
+          '请先清理该作用域，或改用可丢弃库执行。',
+      );
+    }
   };
 
   /** 逐个删除登记的合成文件与目录（不做整树批量删除）；已被删掉的条目直接跳过 */
@@ -210,12 +268,14 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       ],
       { cwd: backendRoot, stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    childOutput.set(child, '');
+    childOutput.set(child, { stdout: '', stderr: '' });
     child.stderr?.on('data', (chunk: Buffer) => {
-      childOutput.set(child, `${childOutput.get(child) ?? ''}${chunk.toString()}`);
+      const current = childOutput.get(child) ?? { stdout: '', stderr: '' };
+      childOutput.set(child, { ...current, stderr: current.stderr + chunk.toString() });
     });
     child.stdout?.on('data', (chunk: Buffer) => {
-      childOutput.set(child, `${childOutput.get(child) ?? ''}${chunk.toString()}`);
+      const current = childOutput.get(child) ?? { stdout: '', stderr: '' };
+      childOutput.set(child, { ...current, stdout: current.stdout + chunk.toString() });
     });
     return child;
   };
@@ -230,9 +290,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     });
   };
 
-  /** 取子进程 stdout 最后一行（清理结果 JSON） */
+  /** 取子进程 stdout 最后一行（清理结果 JSON）；只认 stdout，避免与 stderr 混淆 */
   const readChildResult = (child: ChildProcess): Record<string, unknown> | null => {
-    const lines = (childOutput.get(child) ?? '')
+    const lines = (childOutput.get(child)?.stdout ?? '')
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.startsWith('{') && line.endsWith('}'));
@@ -246,6 +306,12 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       return null;
     }
   };
+
+  /** 子进程输出（stdout＋stderr）拼接，用于失败定位 */
+  const readChildOutput = (child: ChildProcess): string =>
+    `${childOutput.get(child)?.stdout ?? ''}${childOutput.get(child)?.stderr ?? ''}`
+      .trim()
+      .slice(0, 2000);
 
   /** 把残留行复位到"待清理"（仅用于删除窗口没命中的重试） */
   const resetResidualRow = async (): Promise<void> => {
@@ -261,6 +327,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     backupId: string,
     packagePath: string,
     createdAt: Date,
+    overrides: { localStatus?: string; updatedAt?: Date } = {},
   ): Promise<void> => {
     const assetRepository = dataSource.getRepository(BackupAssetEntity);
     await assetRepository.save(
@@ -272,12 +339,13 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
         fileSha256: 'a'.repeat(64),
         byteSize: '100',
         cloudStatus: 'SUCCEEDED',
-        localStatus: 'PENDING',
+        localStatus: overrides.localStatus ?? 'PENDING',
         cloudReceipt: '{"received":true}',
         installationId,
         localReference: packagePath,
         verifiedAt: new Date(),
         createdAt,
+        updatedAt: overrides.updatedAt,
       }),
     );
   };
@@ -338,6 +406,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     residual.packagePath = nodePath.join(backupRoot, String(organizationId), residual.backupId);
     await insertAsset(residual.backupId, residual.packagePath, new Date());
 
+    // 作用域护栏：本轮执行不得改写他人资产行
+    await assertScopeIsolated([residual.backupId]);
+
     // 第一轮：真实子进程执行真实清理，父进程在 CLEANING 落库后 SIGKILL
     let injected = false;
     for (let attempt = 1; attempt <= INJECT_ATTEMPTS && !injected; attempt += 1) {
@@ -374,8 +445,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       await waitForChildExit(child);
       if (observed?.local_status !== 'CLEANED') {
         throw new Error(
-          '子进程未落 CLEANING 也未落 CLEANED（可能启动失败）：' +
-            (childOutput.get(child) ?? '(无输出)').trim().slice(0, 800),
+          '子进程未落 CLEANING 也未落 CLEANED（可能启动失败）：' + readChildOutput(child),
         );
       }
       // 走到这里说明删除已完成、窗口没命中：复位后重来，不靠碰运气
@@ -390,8 +460,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
   });
 
   afterAll(async () => {
+    const registered = [residual, ...fillers, ...withinThresholdBatch];
     if (dataSource?.isInitialized === true) {
-      for (const item of [residual, ...fillers]) {
+      for (const item of registered) {
         await dataSource.query('DELETE FROM backup_asset WHERE backup_id = ?', [item.backupId]);
       }
       if (runId > 0) {
@@ -399,7 +470,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       }
       await dataSource.destroy();
     }
-    for (const item of [residual, ...fillers]) {
+    for (const item of registered) {
       removeTree(item.packagePath);
     }
     // 整个临时工作区（含空壳目录）一并回收，不留残留在系统临时目录
@@ -432,6 +503,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       createPackageFiles(filler.packagePath);
     }
 
+    // 第二轮执行前再查一次作用域：不得出现他人资产
+    await assertScopeIsolated([residual.backupId, ...fillers.map((item) => item.backupId)]);
+
     // 可控时钟：把判定时刻推进到"超过中断可辨认时限"之后（与任务书 S5.2 的可控时钟口径一致）
     const nextRoundNow = new Date(
       residualBefore!.updated_at.getTime() + NEXT_ROUND_ADVANCE_MINUTES * 60_000,
@@ -446,7 +520,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     if (!marked) {
       throw new Error(
         '下一轮没有把残留登记为中断（未观测到"清理被进程中断"），子进程输出：\n' +
-          (childOutput.get(child) ?? '(无输出)').trim().slice(0, 2000),
+          readChildOutput(child),
       );
     }
 
@@ -457,7 +531,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       throw new Error(
         `下一轮清理结果不符合预期：exitCode=${exitCode}，cleaned=${String(result?.['cleaned'])}，` +
           `retained=${String(result?.['retained'])}，子进程输出：\n` +
-          (childOutput.get(child) ?? '(无输出)').trim().slice(0, 2000),
+          readChildOutput(child),
       );
     }
     expect(result?.['retained']).toBe(0);
@@ -474,5 +548,74 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       expect(fillerState?.local_status).toBe('CLEANED');
       expect(existsSync(filler.packagePath)).toBe(false);
     }
+  });
+
+  it('反例：残留未超过中断可辨认时限时，下一轮不得把它登记为中断', async () => {
+    // 慢清理包排在前面：制造观测窗口，让"若被误登记为中断"的状态持续可见
+    const slowPackage: SyntheticPackage = {
+      backupId: randomUUID(),
+      packagePath: nodePath.join(backupRoot, String(organizationId), 'within-threshold-slow'),
+    };
+    // 时限内残留：CLEANING 且更新时间很新（未超过 10 分钟可辨认时限）
+    const freshResidual: SyntheticPackage = {
+      backupId: randomUUID(),
+      packagePath: nodePath.join(backupRoot, String(organizationId), 'within-threshold-residual'),
+    };
+    withinThresholdBatch.push(slowPackage, freshResidual);
+
+    const now = new Date();
+    await insertAsset(
+      slowPackage.backupId,
+      slowPackage.packagePath,
+      new Date(now.getTime() - 7_200_000),
+    );
+    createPackageFiles(slowPackage.packagePath);
+    await insertAsset(
+      freshResidual.backupId,
+      freshResidual.packagePath,
+      new Date(now.getTime() - 3_600_000),
+      { localStatus: 'CLEANING', updatedAt: now },
+    );
+    createPackageFiles(freshResidual.packagePath);
+
+    await assertScopeIsolated([
+      residual.backupId,
+      ...fillers.map((item) => item.backupId),
+      slowPackage.backupId,
+      freshResidual.backupId,
+    ]);
+
+    // 可控时钟：判定时刻仍在中断可辨认时限之内 → 不得登记为中断
+    const withinThresholdNow = new Date(now.getTime() + WITHIN_THRESHOLD_ADVANCE_MINUTES * 60_000);
+    const child = spawnCleanupChild(withinThresholdNow.toISOString());
+
+    // 全程盯住该残留：只要出现"清理被进程中断"即判定失败
+    let wronglyMarked = false;
+    let pollCount = 0;
+    while (child.exitCode === null && child.signalCode === null) {
+      pollCount += 1;
+      const state = await readAssetState(freshResidual.backupId);
+      if ((state?.local_cleanup_error ?? '').includes('清理被进程中断')) {
+        wronglyMarked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    const exitCode = await waitForChildExit(child);
+
+    expect(wronglyMarked).toBe(false);
+    // 观测必须真的覆盖了子进程的清理阶段，否则"没看到标记"没有意义
+    expect(pollCount).toBeGreaterThan(20);
+    expect(exitCode).toBe(0);
+
+    const result = readChildResult(child);
+    expect(result?.['cleaned']).toBe(2);
+    expect(result?.['retained']).toBe(0);
+
+    // 时限内的残留仍会被正常清理（不误判为中断，也不因此被跳过）
+    const state = await readAssetState(freshResidual.backupId);
+    expect(state?.local_status).toBe('CLEANED');
+    expect(state?.local_cleanup_error).toBeNull();
+    expect(existsSync(freshResidual.packagePath)).toBe(false);
   });
 });
