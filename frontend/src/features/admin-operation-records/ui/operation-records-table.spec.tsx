@@ -145,6 +145,13 @@ describe('OperationRecordsTable', () => {
     expect(screen.getByText('SOME_NEW_TYPE')).toBeInTheDocument();
   });
 
+  it('操作者昵称缺失时按当前语言渲染占位，不回落中文硬编码', () => {
+    renderTable([renderItem({ actorNickname: null })]);
+
+    expect(screen.getByText('未知管理员')).toBeInTheDocument();
+    expect(screen.queryByText('管理员甲')).not.toBeInTheDocument();
+  });
+
   it('只读边界：整表不出现任何按钮或链接，也无操作列', () => {
     renderTable([baseItem]);
 

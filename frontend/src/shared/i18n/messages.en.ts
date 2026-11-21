@@ -956,6 +956,7 @@ export const EN_MESSAGES = {
   'operationRecords.targetType.backupRestoreRun': 'Restore run',
   'operationRecords.actorLevel.level1': 'Level-1 admin',
   'operationRecords.actorLevel.level2': 'Level-2 admin',
+  'operationRecords.actor.unknown': 'Unknown administrator',
   'operationRecords.summary.stage': 'Stage: {stage}',
   'operationRecords.summary.changedFields': 'Changed fields: {fields}',
   'operationRecords.summary.attempt': 'Attempt {attemptNo}',

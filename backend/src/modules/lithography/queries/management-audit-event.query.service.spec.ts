@@ -8,6 +8,10 @@ import {
   type ManagementAuditListPagination,
 } from '../management-audit.types';
 import { ManagementAuditEventQueryService } from './management-audit-event.query.service';
+import {
+  ManagementAuditBusinessOperation,
+  ManagementAuditResult,
+} from '@app-types/models/management-audit.types';
 
 type FindArgs = {
   where: FindOptionsWhere<ManagementAuditEventEntity>;
@@ -27,10 +31,10 @@ const makeEntity = (
   actorAccountId: 1,
   actorAdminLevel: 1,
   organizationId: 2,
-  operation: 'ADMIN_DELETE_DOCUMENT',
+  operation: ManagementAuditBusinessOperation.ADMIN_DELETE_DOCUMENT,
   targetType: 'REFERENCE_DOCUMENT',
   targetId: 'doc-1001',
-  result: 'SUCCEEDED',
+  result: ManagementAuditResult.SUCCEEDED,
   detail: JSON.stringify({ reason: '重复上传', contentMd: '# 正文' }),
   createdAt: new Date('2026-11-18T10:00:00.000Z'),
   ...overrides,

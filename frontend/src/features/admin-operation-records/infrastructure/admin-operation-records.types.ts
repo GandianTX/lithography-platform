@@ -33,7 +33,8 @@ export type OperationRecordItem = {
   eventId: string;
   occurredAt: string;
   actorAdminLevel: number;
-  actorNickname: string;
+  /** 操作者昵称；服务端查不到时为 null，占位文案由前端按当前语言渲染。 */
+  actorNickname: string | null;
   organizationId: number | null;
   organizationName: string | null;
   operation: OperationRecordOperation;

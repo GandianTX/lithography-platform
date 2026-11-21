@@ -6,6 +6,10 @@ import {
   serializeManagementAuditDetail,
   type ManagementAuditDetailView,
 } from '@core/management-audit/policy/management-audit-detail.policy';
+import {
+  ManagementAuditBusinessOperation,
+  ManagementAuditResult,
+} from '@app-types/models/management-audit.types';
 import { createTypeOrmPersistenceTransactionContext } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import type { EntityManager } from 'typeorm';
 import type { PinoLogger } from 'nestjs-pino';
@@ -52,10 +56,10 @@ describe('ManagementAuditService.appendBusinessOperation', () => {
     actorAccountId: 1,
     actorAdminLevel: 1,
     organizationId: 2,
-    operation: 'ADMIN_DELETE_DOCUMENT',
+    operation: ManagementAuditBusinessOperation.ADMIN_DELETE_DOCUMENT,
     targetType: 'REFERENCE_DOCUMENT',
     targetId: 'doc-1001',
-    result: 'SUCCEEDED',
+    result: ManagementAuditResult.SUCCEEDED,
     transactionContext,
     ...overrides,
   });
@@ -73,10 +77,10 @@ describe('ManagementAuditService.appendBusinessOperation', () => {
       actorAccountId: 1,
       actorAdminLevel: 1,
       organizationId: 2,
-      operation: 'ADMIN_DELETE_DOCUMENT',
+      operation: ManagementAuditBusinessOperation.ADMIN_DELETE_DOCUMENT,
       targetType: 'REFERENCE_DOCUMENT',
       targetId: 'doc-1001',
-      result: 'SUCCEEDED',
+      result: ManagementAuditResult.SUCCEEDED,
       detail: null,
     });
     expect(row.eventId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
@@ -86,10 +90,16 @@ describe('ManagementAuditService.appendBusinessOperation', () => {
     const { service, repository, transactionContext } = createHarness();
 
     await service.appendBusinessOperation(
-      baseParams(transactionContext, { result: 'FAILED', operation: 'RESTORE_LOCAL_BUSINESS' }),
+      baseParams(transactionContext, {
+        result: ManagementAuditResult.FAILED,
+        operation: ManagementAuditBusinessOperation.RESTORE_LOCAL_BUSINESS,
+      }),
     );
     await service.appendBusinessOperation(
-      baseParams(transactionContext, { result: 'DENIED', operation: 'CORRECT_DOCUMENT_OWNERSHIP' }),
+      baseParams(transactionContext, {
+        result: ManagementAuditResult.DENIED,
+        operation: ManagementAuditBusinessOperation.CORRECT_DOCUMENT_OWNERSHIP,
+      }),
     );
 
     expect(repository.insert.mock.calls[0][0].result).toBe('FAILED');

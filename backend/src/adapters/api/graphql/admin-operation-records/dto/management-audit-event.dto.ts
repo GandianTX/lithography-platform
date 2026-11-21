@@ -1,14 +1,16 @@
 // src/adapters/api/graphql/admin-operation-records/dto/management-audit-event.dto.ts
 
 import type { ManagementAuditDetailView } from '@core/management-audit/policy/management-audit-detail.policy';
+import {
+  ManagementAuditBusinessOperation,
+  ManagementAuditResult,
+} from '@app-types/models/management-audit.types';
 import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 import { paginatedTypeFactory } from '@src/adapters/api/graphql/pagination.type-factory';
-import {
-  managementAuditOperationValues,
-  managementAuditResultValues,
-  type ManagementAuditEventView,
-  type ManagementAuditQueryOperation,
-  type ManagementAuditResultValue,
+import type {
+  ManagementAuditEventView,
+  ManagementAuditQueryOperation,
+  ManagementAuditResultValue,
 } from '@src/modules/lithography/management-audit.types';
 
 /**
@@ -55,8 +57,11 @@ export class ManagementAuditEventItemDTO {
   @Field(() => Int, { description: '操作时的实际管理员等级（1 或 2）' })
   actorAdminLevel!: number;
 
-  @Field(() => String, { description: '操作者昵称（读时关联，缺失回落占位）' })
-  actorNickname!: string;
+  @Field(() => String, {
+    nullable: true,
+    description: '操作者昵称（读时关联；查不到时为空，由前端按当前语言渲染占位）',
+  })
+  actorNickname!: string | null;
 
   @Field(() => Int, { nullable: true, description: '作用公司 ID；无法判定归属时为空' })
   organizationId!: number | null;
@@ -64,7 +69,7 @@ export class ManagementAuditEventItemDTO {
   @Field(() => String, { nullable: true, description: '作用公司名称；公司为空或已不存在时为空' })
   organizationName!: string | null;
 
-  @Field(() => managementAuditOperationValues, {
+  @Field(() => ManagementAuditBusinessOperation, {
     description: '操作类型（固定三类，凭据类不在此契约内）',
   })
   operation!: ManagementAuditQueryOperation;
@@ -75,7 +80,7 @@ export class ManagementAuditEventItemDTO {
   @Field(() => String, { description: '目标真实 ID' })
   targetId!: string;
 
-  @Field(() => managementAuditResultValues, { description: '实际操作结果' })
+  @Field(() => ManagementAuditResult, { description: '实际操作结果' })
   result!: ManagementAuditResultValue;
 
   @Field(() => ManagementAuditEventDetailDTO, {
@@ -98,7 +103,7 @@ export function toManagementAuditEventItemDTO(
     eventId: view.eventId,
     occurredAt: view.occurredAt,
     actorAdminLevel: view.actorAdminLevel,
-    actorNickname: view.actorNickname,
+    actorNickname: view.actorNickname ?? null,
     organizationId: view.organizationId,
     organizationName: view.organizationName,
     operation: view.operation,

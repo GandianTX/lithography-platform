@@ -1,5 +1,10 @@
 // src/modules/lithography/management-audit.types.ts
 
+import {
+  ManagementAuditBusinessOperation,
+  ManagementAuditResult,
+} from '@app-types/models/management-audit.types';
+
 import type { ManagementAuditDetailView } from '@core/management-audit/policy/management-audit-detail.policy';
 
 /**
@@ -8,40 +13,31 @@ import type { ManagementAuditDetailView } from '@core/management-audit/policy/ma
  * 与存储的关系：`management_audit_event.operation` 的 CHECK 允许五类值
  * （三类业务事实 + 两类凭据补发/重置），本契约**只暴露三类**，凭据类即使入库也
  * 不会出现在本读链路；`result` 三值全保留。
+ *
+ * 枚举运行时值的真源在共享类型层 `@app-types/models/management-audit.types`：
+ * GraphQL adapter 需要它注册正式枚举，不得运行时依赖 module 根 `*.types.ts`。
  */
 
-/** 查询白名单：R089 规定的三类管理事实。 */
-export const managementAuditOperationValues = {
-  ADMIN_DELETE_DOCUMENT: 'ADMIN_DELETE_DOCUMENT',
-  CORRECT_DOCUMENT_OWNERSHIP: 'CORRECT_DOCUMENT_OWNERSHIP',
-  RESTORE_LOCAL_BUSINESS: 'RESTORE_LOCAL_BUSINESS',
-} as const;
-
-export type ManagementAuditQueryOperation = keyof typeof managementAuditOperationValues;
+/** 查询白名单：R089 规定的三类管理事实（真源见共享类型层枚举）。 */
+export type ManagementAuditQueryOperation = ManagementAuditBusinessOperation;
 
 /** 供仓储层 `IN (...)` 使用的固定集合（顺序即枚举声明顺序）。 */
 export const MANAGEMENT_AUDIT_QUERY_OPERATIONS: ReadonlyArray<ManagementAuditQueryOperation> =
-  Object.freeze(Object.keys(managementAuditOperationValues) as ManagementAuditQueryOperation[]);
+  Object.freeze(Object.values(ManagementAuditBusinessOperation));
 
 /** 结果三值：与 `chk_management_audit_result` 一致。 */
-export const managementAuditResultValues = {
-  SUCCEEDED: 'SUCCEEDED',
-  FAILED: 'FAILED',
-  DENIED: 'DENIED',
-} as const;
-
-export type ManagementAuditResultValue = keyof typeof managementAuditResultValues;
+export type ManagementAuditResultValue = ManagementAuditResult;
 
 /** operation 字符串是否属于查询白名单（防御式校验，不信任仓储返回类型）。 */
 export function isManagementAuditQueryOperation(
   value: string,
 ): value is ManagementAuditQueryOperation {
-  return Object.prototype.hasOwnProperty.call(managementAuditOperationValues, value);
+  return Object.prototype.hasOwnProperty.call(ManagementAuditBusinessOperation, value);
 }
 
 /** result 字符串是否为合法三值。 */
 export function isManagementAuditResultValue(value: string): value is ManagementAuditResultValue {
-  return Object.prototype.hasOwnProperty.call(managementAuditResultValues, value);
+  return Object.prototype.hasOwnProperty.call(ManagementAuditResult, value);
 }
 
 /** 列表分页：仅 OFFSET，排序由契约固定，不提供客户端排序。 */
@@ -81,7 +77,13 @@ export type ManagementAuditEventView = Omit<
   'actorAccountId' | 'createdAt'
 > & {
   readonly occurredAt: Date;
-  readonly actorNickname: string;
+  /**
+   * 操作者昵称；查不到（账号已注销等）为 null。
+   *
+   * 刻意不在服务端放中文回落文案：展示文案由前端按当前语言渲染，
+   * 否则英文界面会出现中文占位（与 detail 投影「服务端不持有 UI 文案」的口径一致）。
+   */
+  readonly actorNickname: string | null;
   readonly organizationName: string | null;
 };
 

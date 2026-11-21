@@ -17,8 +17,9 @@ import {
   type ManagementAuditResultValue,
 } from './management-audit.types';
 
-/** 本补丁新增的两类凭据管理操作（与 `chk_management_audit_operation` 同步）。 */
-export type ManagementAuditOperation = 'REISSUE_LEVEL2_CREDENTIAL' | 'RESET_LEVEL2_CREDENTIAL';
+/** 两类凭据管理操作（与 `chk_management_audit_operation` 同步）；不进入 GraphQL 枚举。 */
+export type ManagementAuditCredentialOperation =
+  'REISSUE_LEVEL2_CREDENTIAL' | 'RESET_LEVEL2_CREDENTIAL';
 
 /** targetType 只接受大写标识，长度与 `varchar(32)` 对齐。 */
 const TARGET_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{0,31}$/;
@@ -84,7 +85,7 @@ export class ManagementAuditService {
     readonly actorAdminLevel: number;
     readonly organizationId: number;
     readonly targetAccountId: number;
-    readonly operation: ManagementAuditOperation;
+    readonly operation: ManagementAuditCredentialOperation;
     readonly transactionContext: PersistenceTransactionContext;
     /** 重置原因（补发不写） */
     readonly reason?: string;

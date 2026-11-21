@@ -12,6 +12,10 @@ import {
   createUnauthorizedSessions,
 } from '../../../test/support/account/admin-user.fixture';
 import { ListManagementAuditEventsUsecase } from './list-management-audit-events.usecase';
+import {
+  ManagementAuditBusinessOperation,
+  ManagementAuditResult,
+} from '@app-types/models/management-audit.types';
 
 const offsetPagination = (overrides: Partial<PaginationParams> = {}): PaginationParams =>
   ({
@@ -29,10 +33,10 @@ const makeReadModel = (
   actorAccountId: 42,
   actorAdminLevel: 2,
   organizationId: 700002,
-  operation: 'RESTORE_LOCAL_BUSINESS',
+  operation: ManagementAuditBusinessOperation.RESTORE_LOCAL_BUSINESS,
   targetType: 'BACKUP_RESTORE_RUN',
   targetId: 'restore-0001',
-  result: 'FAILED',
+  result: ManagementAuditResult.FAILED,
   detail: { reason: '保护副本校验失败', stage: 'PRECHECK' },
   createdAt: new Date('2026-11-18T10:00:00.000Z'),
   ...overrides,
@@ -193,13 +197,13 @@ describe('ListManagementAuditEventsUsecase', () => {
       actorNickname: '薛工',
       organizationId: 700002,
       organizationName: '开发联调公司 B',
-      operation: 'RESTORE_LOCAL_BUSINESS',
-      result: 'FAILED',
+      operation: ManagementAuditBusinessOperation.RESTORE_LOCAL_BUSINESS,
+      result: ManagementAuditResult.FAILED,
     });
     expect(Object.keys(page.items[0])).not.toContain('actorAccountId');
   });
 
-  it('公司为空与昵称缺失分别回落：公司名为 null、昵称为占位文案', async () => {
+  it('公司为空与昵称缺失分别回落：公司名为 null、昵称为 null（占位文案由前端按语言渲染）', async () => {
     const { usecase, queryService, accountQueryService } = createHarness();
     queryService.listEvents.mockResolvedValue({
       items: [
@@ -216,7 +220,7 @@ describe('ListManagementAuditEventsUsecase', () => {
     });
 
     expect(page.items[0].organizationName).toBeNull();
-    expect(page.items[0].actorNickname).toBe('未知管理员');
+    expect(page.items[0].actorNickname).toBeNull();
     expect(page.items[1].organizationName).toBeNull();
   });
 

@@ -112,9 +112,11 @@ export function OperationRecordsTable({ items }: { items: OperationRecordItem[] 
     {
       dataIndex: 'actorNickname',
       key: 'actorNickname',
-      render: (value: string, record) => (
+      render: (value: string | null, record) => (
         <div className="flex min-w-0 flex-col gap-1 text-xs">
-          <span className="truncate font-medium">{value}</span>
+          <span className="truncate font-medium">
+            {value ?? t('operationRecords.actor.unknown')}
+          </span>
           <span className="text-text-secondary">
             {t(
               record.actorAdminLevel === 1

@@ -15,11 +15,10 @@ import type { ManagementAuditEventListPage } from '@src/modules/lithography/mana
 import { ManagementAuditEventQueryService } from '@src/modules/lithography/queries/management-audit-event.query.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 
+import { collectDistinctOrganizationIds } from './list-management-audit-events.organization-ids.normalize';
+
 /** 页大小上限：与 GraphQL 边界 `PaginationArgs` 的 @Max(100) 对齐。 */
 const MAX_PAGE_SIZE = 100;
-
-/** 操作者昵称缺失时的安全回落（展示字段，不参与授权）。 */
-const ACTOR_NICKNAME_FALLBACK = '未知管理员';
 
 /**
  * 关键操作记录只读列表用例（任务 10，R089／R092）。
@@ -79,13 +78,7 @@ export class ListManagementAuditEventsUsecase {
     const nicknames = await this.accountQueryService.findNicknamesByAccountIds(
       items.map((item) => item.actorAccountId),
     );
-    const organizationIds = [
-      ...new Set(
-        items
-          .map((item) => item.organizationId)
-          .filter((id): id is number => id !== null && Number.isInteger(id) && id > 0),
-      ),
-    ];
+    const organizationIds = collectDistinctOrganizationIds(items);
     const organizationNames =
       organizationIds.length === 0
         ? new Map<number, string>()
@@ -96,7 +89,7 @@ export class ListManagementAuditEventsUsecase {
         eventId: item.eventId,
         occurredAt: item.createdAt,
         actorAdminLevel: item.actorAdminLevel,
-        actorNickname: nicknames.get(item.actorAccountId) ?? ACTOR_NICKNAME_FALLBACK,
+        actorNickname: nicknames.get(item.actorAccountId) ?? null,
         organizationId: item.organizationId,
         organizationName:
           item.organizationId === null

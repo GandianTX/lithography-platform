@@ -174,6 +174,33 @@ describe('AdminOperationRecordsPage（V44 页面细则）', () => {
     expect(fetchOperationRecordsMock).not.toHaveBeenCalled();
   });
 
+  it('无管理范围时不显示一级/二级范围副标题（避免误导无权账号）', async () => {
+    useAuthSessionMock.mockReturnValue(adminSession(null, null));
+    fetchOperationRecordsMock.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 10 });
+
+    renderPage();
+
+    expect(screen.queryByText('查看全部公司的关键操作。')).not.toBeInTheDocument();
+    expect(screen.queryByText('查看本公司的关键操作。')).not.toBeInTheDocument();
+  });
+
+  it('同一账号的管理员等级变化（范围变化）触发回第 1 页重新取数', async () => {
+    // 二级：公司 A；随后同一账号升为一级且公司不变——数据范围由「本公司」变为「全公司」，
+    // 必须重新取数，否则页面会停留在旧范围的记录上。
+    useAuthSessionMock.mockReturnValue(adminSession(2, 910004));
+    fetchOperationRecordsMock.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 10 });
+
+    const { rerender } = renderPage();
+    await waitFor(() => expect(fetchOperationRecordsMock).toHaveBeenCalledTimes(1));
+
+    useAuthSessionMock.mockReturnValue(adminSession(1, 910004));
+    rerender(<AdminOperationRecordsPage />);
+
+    await waitFor(() => expect(fetchOperationRecordsMock).toHaveBeenCalledTimes(2));
+    expect(fetchOperationRecordsMock).toHaveBeenLastCalledWith(1, 10);
+    expect(screen.getByText('查看全部公司的关键操作。')).toBeInTheDocument();
+  });
+
   it('会话尚未就绪时不显示数据（权限未确认）', () => {
     useAuthSessionMock.mockReturnValue({ session: null, status: 'anonymous' });
     fetchOperationRecordsMock.mockResolvedValue({

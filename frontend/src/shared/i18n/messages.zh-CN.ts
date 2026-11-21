@@ -876,6 +876,7 @@ export const ZH_CN_MESSAGES = {
   'operationRecords.targetType.backupRestoreRun': '恢复运行',
   'operationRecords.actorLevel.level1': '一级管理员',
   'operationRecords.actorLevel.level2': '二级管理员',
+  'operationRecords.actor.unknown': '未知管理员',
   'operationRecords.summary.stage': '阶段：{stage}',
   'operationRecords.summary.changedFields': '变更字段：{fields}',
   'operationRecords.summary.attempt': '第 {attemptNo} 次尝试',

@@ -37,7 +37,14 @@ export function AdminOperationRecordsPage() {
   // 会话尚未就绪时属于「权限尚未确认」：不显示任何既有账号的数据。
   const permissionConfirmed = session !== null;
 
-  const reloadKey = `${session?.accountId ?? 'anon'}:${session?.adminOrganizationId ?? 'global'}`;
+  // 身份键必须覆盖「账号 + 等级 + 可信公司」三项：
+  // 等级变化会改变服务端数据范围（同一公司下二级只看本公司、一级看全公司），
+  // 只用账号+公司会让等级变化后的旧范围数据继续留在页面上。
+  const reloadKey = [
+    session?.accountId ?? 'anon',
+    session?.adminLevel ?? 'na',
+    session?.adminOrganizationId ?? 'global',
+  ].join(':');
 
   const fetcher = useCallback(
     (page: number, pageSize: number) => fetchOperationRecords(page, pageSize),
@@ -60,11 +67,17 @@ export function AdminOperationRecordsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        description={t(
-          isLevelOne
-            ? 'operationRecords.page.description.level1'
-            : 'operationRecords.page.description.level2',
-        )}
+        description={
+          // 无管理范围（未就绪或已失权）时不显示等级副标题：
+          // 等级文案只描述一级/二级的可见范围，对无权账号会误导。
+          !permissionConfirmed || !enabled
+            ? undefined
+            : t(
+                isLevelOne
+                  ? 'operationRecords.page.description.level1'
+                  : 'operationRecords.page.description.level2',
+              )
+        }
         eyebrow="ADMIN AUDIT"
         title={t('admin.operationRecords.title')}
       />
