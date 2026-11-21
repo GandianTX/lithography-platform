@@ -127,27 +127,36 @@ export class RepairRequestMaintenanceQueryService {
    * - 分析原文读取当前 analysis_generation 对应的尝试记录；无尝试记录时 analysis 为 null；
    * - AI 未完成或失败不影响本方法返回，仅如实反映尝试状态。
    */
-  async findIntakeSource(requestId: number): Promise<RepairIntakeSourceView | null> {
-    const request = await this.requestRepository.findOne({
+  async findIntakeSource(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairIntakeSourceView | null> {
+    const manager = transactionContext
+      ? getTypeOrmEntityManager(transactionContext)
+      : this.requestRepository.manager;
+    const request = await (
+      transactionContext ? manager.getRepository(RepairRequestEntity) : this.requestRepository
+    ).findOne({
       where: { id: requestId },
       select: { id: true, intakeId: true },
     });
     if (!request || request.intakeId === null) {
       return null;
     }
-    const intake = await this.requestRepository.manager
+    const intake = await manager
       .getRepository(RepairRequestIntakeEntity)
       .findOne({ where: { id: request.intakeId } });
     if (!intake) {
       return null;
     }
-    const attempt = await this.requestRepository.manager
+    const attempt = await manager
       .getRepository(IntakeAnalysisAttemptEntity)
       .findOne({ where: { intakeId: intake.id, generationNo: intake.analysisGeneration } });
     return {
       intakeId: intake.id,
       faultDescription: intake.faultDescription,
-      customerFile: intake.fileId === null ? null : await this.resolveIntakeFile(intake),
+      customerFile:
+        intake.fileId === null ? null : await this.resolveIntakeFile(intake, transactionContext),
       analysis: attempt
         ? {
             status: attempt.status,
@@ -180,11 +189,15 @@ export class RepairRequestMaintenanceQueryService {
 
   private async resolveIntakeFile(
     intake: RepairRequestIntakeEntity,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<RepairMaintenanceAttachmentView | null> {
     if (intake.fileId === null) {
       return null;
     }
-    const file = await this.requestRepository.manager
+    const manager = transactionContext
+      ? getTypeOrmEntityManager(transactionContext)
+      : this.requestRepository.manager;
+    const file = await manager
       .getRepository(StoredFileEntity)
       .findOne({ where: { fileId: intake.fileId } });
     // 报修原件的 business_type 由任务 03 定义；此处只按 file_id 绑定关系与校验状态投影

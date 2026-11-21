@@ -26,6 +26,9 @@ import { PageHeader } from '@/shared/ui/page-header';
 const MY_REPAIR_REQUESTS_PATH = `${ENGINEER_REPAIR_REQUEST_LIST_PATH}?scope=MINE`;
 const REFERENCE_DOCUMENTS_PATH = '/reference-documents';
 const ACCOUNT_SETTINGS_PATH = '/account/settings';
+// 任务 06 两个入口已注册真实路由：历史维修记录（2026-11-21 起直达新建页）/ 工单维修总结
+const MAINTENANCE_RECORDS_PATH = '/engineer/maintenance-records/new';
+const WORK_ORDER_SUMMARIES_PATH = '/engineer/work-order-summaries';
 
 const QUICK_ENTRIES: ReadonlyArray<{
   descriptionKey: MessageKey;
@@ -41,6 +44,16 @@ const QUICK_ENTRIES: ReadonlyArray<{
     descriptionKey: 'engineer.quick.mineDescription',
     labelKey: 'engineer.quick.mine',
     path: MY_REPAIR_REQUESTS_PATH,
+  },
+  {
+    descriptionKey: 'engineer.quick.recordsDescription',
+    labelKey: 'engineer.quick.records',
+    path: MAINTENANCE_RECORDS_PATH,
+  },
+  {
+    descriptionKey: 'engineer.quick.summaryDescription',
+    labelKey: 'engineer.quick.summary',
+    path: WORK_ORDER_SUMMARIES_PATH,
   },
   {
     descriptionKey: 'engineer.quick.referenceDescription',

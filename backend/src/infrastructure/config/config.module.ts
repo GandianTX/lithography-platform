@@ -161,6 +161,10 @@ const collectDbAndCorsRuleErrors = (): string[] => {
   if (corsEnabled === true && !getOptionalEnv('APP_CORS_ORIGINS')) {
     errors.push('APP_CORS_ORIGINS is required when APP_CORS_ENABLED=true in production');
   }
+  const bodyLimit = getOptionalEnv('APP_BODY_LIMIT');
+  if (bodyLimit && !/^\d+(\.\d+)?(kb|mb|gb)$/i.test(bodyLimit)) {
+    errors.push('APP_BODY_LIMIT must match a bounded byte size like "1kb", "2mb" or "1gb"');
+  }
   return errors;
 };
 
@@ -294,6 +298,8 @@ const serverConfig: ConfigFactory = () => ({
   server: {
     host: process.env.APP_HOST || '127.0.0.1',
     port: getIntEnvWithDefault('APP_PORT', 3000),
+    /** JSON/表单请求体上限（默认 2mb）：任务 06 合法长文/多步骤表单所需；超限 413 */
+    bodyLimit: process.env.APP_BODY_LIMIT || '2mb',
     cors: {
       enabled: getBooleanEnvWithDefault('APP_CORS_ENABLED', true),
       origins: process.env.APP_CORS_ORIGINS || '',
@@ -546,6 +552,33 @@ const emailDeliveryConfig: ConfigFactory = () => ({
   },
 });
 
+/** 维修报告导出 PDF 的默认 CJK 字体候选（路径 + TTC 内 face 名；可用环境变量覆盖） */
+const DOCUMENT_EXPORT_DEFAULT_PDF_FONT_CANDIDATES: ReadonlyArray<{
+  path: string;
+  face?: string;
+}> = [
+  {
+    path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    face: 'NotoSansCJKsc-Regular',
+  },
+  { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc' },
+  { path: '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf' },
+];
+
+/**
+ * 维修报告导出配置（必须注册到 ConfigModule.load，否则渲染器读不到字体配置）。
+ * 导出本工厂仅用于注册与读取路径的定向测试。
+ */
+export const documentExportConfig: ConfigFactory = () => ({
+  documentExport: {
+    // 显式指定的 PDF CJK 字体文件路径；留空时按候选顺序自动探测
+    pdfFontPath: getOptionalEnv('DOCUMENT_EXPORT_PDF_FONT_PATH') ?? '',
+    // TTC 字体集内的 face 名（仅字体文件为集合时需要）
+    pdfFontFace: getOptionalEnv('DOCUMENT_EXPORT_PDF_FONT_FACE') ?? '',
+    pdfFontCandidates: DOCUMENT_EXPORT_DEFAULT_PDF_FONT_CANDIDATES,
+  },
+});
+
 /** 参考资料文件存储默认 MIME 白名单（扩展名同源，见 file-storage 契约） */
 const REFERENCE_DOCUMENT_DEFAULT_MIME_TYPES: readonly string[] = [
   'application/pdf',
@@ -622,6 +655,31 @@ const paginationConfig = () => ({
   },
 });
 
+/**
+ * ConfigModule 注册的配置工厂清单。
+ * 导出该清单用于「配置确实注册、渲染器确实能读到」的定向测试；
+ * 新增配置必须加在此处，否则运行时读不到（不要只定义不注册）。
+ */
+export const APP_CONFIG_FACTORIES: readonly ConfigFactory[] = [
+  graphqlConfig,
+  serverConfig,
+  loggerConfig,
+  databaseConfig,
+  redisConfig,
+  bullmqConfig,
+  qmWorkerEntryConfig,
+  capabilityRuntimeConfig,
+  aiWorkerConfig,
+  ragDiagnosisConfig,
+  aiConversationConfig,
+  emailDeliveryConfig,
+  referenceDocumentStorageConfig,
+  adminAccountResetConfig,
+  documentExportConfig,
+  jwtConfig,
+  paginationConfig,
+];
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -629,24 +687,7 @@ const paginationConfig = () => ({
       envFilePath: isProductionEnv()
         ? ['env/.env.production']
         : [`env/.env.${process.env.NODE_ENV || 'development'}`, 'env/.env.development'],
-      load: [
-        graphqlConfig,
-        serverConfig,
-        loggerConfig,
-        databaseConfig,
-        redisConfig,
-        bullmqConfig,
-        qmWorkerEntryConfig,
-        capabilityRuntimeConfig,
-        aiWorkerConfig,
-        ragDiagnosisConfig,
-        aiConversationConfig,
-        emailDeliveryConfig,
-        referenceDocumentStorageConfig,
-        adminAccountResetConfig,
-        jwtConfig,
-        paginationConfig,
-      ],
+      load: [...APP_CONFIG_FACTORIES],
     }),
   ],
 })

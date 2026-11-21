@@ -105,6 +105,9 @@ describe('EngineerPage', () => {
   it.each([
     ['全部维修申请', ENGINEER_REPAIR_REQUEST_LIST_PATH],
     ['我的接单', `${ENGINEER_REPAIR_REQUEST_LIST_PATH}?scope=MINE`],
+    // 任务 06 两个入口：历史维修记录（2026-11-21 起直达新建页）/ 工单维修总结
+    ['历史维修记录', '/engineer/maintenance-records/new'],
+    ['工单维修总结', '/engineer/work-order-summaries'],
     ['参考资料库', '/reference-documents'],
     ['账号设置', '/account/settings'],
   ])('点击快捷入口「%s」前往真实路由', (label, path) => {
@@ -120,9 +123,9 @@ describe('EngineerPage', () => {
 
     expect(screen.queryByText(/AI 故障诊断/i)).toBeNull();
     expect(screen.queryByText(/AI/i)).toBeNull();
-    // 快捷入口卡片恰好四项，无额外占位入口（信息条的账号设置入口不在该卡片内）
+    // 快捷入口卡片恰好六项（任务 06 新增两个真实入口），无额外占位入口
     const quickEntryCard = screen.getByText('快捷入口').closest('section.data-card');
-    expect(within(quickEntryCard as HTMLElement).getAllByRole('button')).toHaveLength(4);
+    expect(within(quickEntryCard as HTMLElement).getAllByRole('button')).toHaveLength(6);
   });
 
   it('会话缺失时资料条优雅降级，不展示角色与账号 ID', () => {

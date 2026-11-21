@@ -51,7 +51,7 @@ REST controller 只做 multipart 协议解析与命令组装；文件保存 → 
 
 权限：SUPER_ADMIN / ENGINEER（`hasRole` 层级；负责人 0910 裁定收窄——CUSTOMER 无页面访问权限，下载不对其开放，请求返回 HTTP 403 `INSUFFICIENT_PERMISSIONS`，与 GraphQL 读口径一致）。成功 HTTP 200。
 
-- 组织范围经可信组织上下文解析（A-PR0 §4.3：下载加同组织事实核验；`GetReferenceDocumentFileUsecase` 在角色校验后、任何资料查询前完成解析）：无有效成员关系 / 多关系歧义 → `ORGANIZATION_NO_ACTIVE_MEMBERSHIP` / `ORGANIZATION_AMBIGUOUS_MEMBERSHIP`（HTTP 403，与 GraphQL `FORBIDDEN` 同语义）；跨组织目标与不存在 / 已软删统一 `NOT_FOUND`，不泄露存在性。
+- 读侧范围决议（2026-11-21 任务 06 权限修复，功能 V5.6 R057-01「工程师及2级限本公司，1级可跨公司」；与 GraphQL 列表/详情同一口径 `resolveReferenceDocumentReadScope`）：一级管理员（账号事实 `admin_level=1`）跨公司可下载，不按组织过滤且不依赖本人组织成员关系；工程师与二级管理员仍经可信组织上下文解析本公司（无有效成员关系 / 多关系歧义 → `ORGANIZATION_NO_ACTIVE_MEMBERSHIP` / `ORGANIZATION_AMBIGUOUS_MEMBERSHIP`，HTTP 403，与 GraphQL `FORBIDDEN` 同语义）；跨范围目标与不存在 / 已软删统一 `NOT_FOUND`，不泄露存在性。
 - 复用统一 NOT_FOUND 口径：不存在 / 已软删 → `NOT_FOUND`（HTTP 404，防探测，不泄露删除状态）。
 - 无 `storageReference`（纯文本资料）或存储对象缺失 → `FILE_NOT_AVAILABLE`（HTTP 404，受控错误，不泄露服务器路径）。
 - 响应头：`Content-Type` 取 DB `mimeType`；`Content-Disposition: attachment; filename="..."; filename*=UTF-8''...`（RFC 5987 编码 `originalFilename`，中文不乱码）。

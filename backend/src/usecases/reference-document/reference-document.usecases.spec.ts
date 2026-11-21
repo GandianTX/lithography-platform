@@ -48,6 +48,8 @@ const makeModelQueryService = () => ({
 
 const makeAccountQueryService = () => ({
   findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map([[900001, '管理员甲']])),
+  // 缺省：账号无管理员等级（读侧范围决议回落本公司口径，保持工程师/降级管理员原行为）
+  findAdminLevelByAccountId: jest.fn().mockResolvedValue(null),
 });
 
 /** 可信组织上下文替身：缺省解析到甲方默认组织（与 Seed 口径一致） */
@@ -266,6 +268,57 @@ describe('ListReferenceDocumentsUsecase', () => {
     ).rejects.toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
     expect(queryService.listDocuments).not.toHaveBeenCalled();
   });
+
+  it('一级管理员（admin_level=1）跨公司列表：GLOBAL 范围不按组织过滤，不依赖本人成员关系', async () => {
+    const queryService = makeQueryService();
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(1);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockRejectedValue(
+      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
+    );
+    const usecase = new ListReferenceDocumentsUsecase(
+      queryService as unknown as ReferenceDocumentQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    );
+
+    await expect(
+      usecase.execute({
+        session: session(['SUPER_ADMIN']),
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 10 },
+        filter: {},
+      }),
+    ).resolves.toBeTruthy();
+    // 一级全公司（功能 V5.6 R055-01）：organizationId 为 null，不按组织收窄
+    expect(queryService.listDocuments).toHaveBeenCalledWith({
+      filter: {},
+      pagination: { page: 1, pageSize: 10, withTotal: false },
+      organizationId: null,
+    });
+  });
+
+  it('二级管理员（admin_level=2）列表：仅本公司 ORGANIZATION 范围，不扩大', async () => {
+    const queryService = makeQueryService();
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(2);
+    const usecase = new ListReferenceDocumentsUsecase(
+      queryService as unknown as ReferenceDocumentQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
+    );
+
+    await usecase.execute({
+      session: session(['SUPER_ADMIN']),
+      pagination: { mode: 'OFFSET', page: 1, pageSize: 10 },
+      filter: {},
+    });
+
+    // 二级本公司（功能 V5.6 R056-01）：仍按可信组织上下文收窄
+    expect(queryService.listDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: 910001 }),
+    );
+  });
 });
 
 describe('GetReferenceDocumentDetailUsecase', () => {
@@ -349,6 +402,65 @@ describe('GetReferenceDocumentDetailUsecase', () => {
       usecase.execute({ session: session(['ENGINEER']), documentId: 970001 }),
     ).rejects.toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
     expect(queryService.findDetail).not.toHaveBeenCalled();
+  });
+
+  it('一级管理员（admin_level=1）跨公司详情：GLOBAL 范围不按组织过滤，无本人成员关系仍可读', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockResolvedValue(detailQueryResult());
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(1);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockRejectedValue(
+      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
+    );
+    const usecase = new GetReferenceDocumentDetailUsecase(
+      queryService as unknown as ReferenceDocumentQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    );
+
+    await expect(
+      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
+    ).resolves.toBeTruthy();
+    // 一级全公司（功能 V5.6 R055-02）：organizationId 为 null，不按组织收窄
+    expect(queryService.findDetail).toHaveBeenCalledWith({
+      documentId: 970001,
+      organizationId: null,
+    });
+  });
+
+  it('二级管理员（admin_level=2）跨公司详情被拒：仅本公司范围由 QueryService 谓词拒绝', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockRejectedValue(
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+        id: 970001,
+      }),
+    );
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(2);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockResolvedValue({
+      membershipId: 950002,
+      organizationId: 910002,
+      organizationCode: 'ORG-DEV-B',
+      organizationName: '乙方公司',
+      organizationKind: 'CLIENT',
+      memberRole: 'ADMIN',
+    });
+    const usecase = new GetReferenceDocumentDetailUsecase(
+      queryService as unknown as ReferenceDocumentQueryService,
+      accountQueryService as unknown as AccountQueryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    );
+
+    // 二级管理员的可信公司为 910002：谓词按该公司过滤，他司条目统一 NOT_FOUND
+    await expect(
+      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
+    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
+    expect(queryService.findDetail).toHaveBeenCalledWith({
+      documentId: 970001,
+      organizationId: 910002,
+    });
   });
 });
 
@@ -940,17 +1052,23 @@ describe('GetReferenceDocumentFileUsecase', () => {
     overrides: {
       queryService?: ReturnType<typeof makeQueryService>;
       storage?: ReturnType<typeof makeStorage>;
+      accountQueryService?: ReturnType<typeof makeAccountQueryService>;
+      organizationContextService?: ReturnType<typeof makeOrganizationContextService>;
     } = {},
   ) => {
     const queryService = overrides.queryService ?? makeQueryService();
     const storage = overrides.storage ?? makeStorage();
-    const organizationContextService = makeOrganizationContextService();
+    const accountQueryService = overrides.accountQueryService ?? makeAccountQueryService();
+    const organizationContextService =
+      overrides.organizationContextService ?? makeOrganizationContextService();
     return {
       queryService,
       storage,
+      accountQueryService,
       organizationContextService,
       usecase: new GetReferenceDocumentFileUsecase(
         queryService as unknown as ReferenceDocumentQueryService,
+        accountQueryService as unknown as AccountQueryService,
         organizationContextService as unknown as TrustedOrganizationContextQueryService,
         storage,
       ),
@@ -981,10 +1099,38 @@ describe('GetReferenceDocumentFileUsecase', () => {
       });
     }
     expect(storage.open).toHaveBeenCalledWith(fileDetail.storageReference);
-    // 下载前的同组织事实核验（A-PR0 §4.3）：查询必带本组织范围
+    // 缺等级管理员回落本公司口径（A-PR0 §2.1 + 读侧范围决议）：查询必带本组织范围
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
       organizationId: 910001,
+    });
+  });
+
+  it('一级管理员（admin_level=1）跨公司下载：GLOBAL 范围不按组织过滤，无本人成员关系仍可读', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockResolvedValue(fileDetail);
+    const storage = makeStorage();
+    storage.open.mockResolvedValue(Readable.from([Buffer.from('pdf-bytes')]));
+    const accountQueryService = makeAccountQueryService();
+    accountQueryService.findAdminLevelByAccountId.mockResolvedValue(1);
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.resolveForAccount.mockRejectedValue(
+      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
+    );
+    const { usecase } = makeUsecase({
+      queryService,
+      storage,
+      accountQueryService,
+      organizationContextService,
+    });
+
+    await expect(
+      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
+    ).resolves.toMatchObject({ documentId: 970001, originalFilename: '说明书.pdf' });
+    // 一级全公司（R057-01）：organizationId 为 null，不按组织收窄
+    expect(queryService.findDetail).toHaveBeenCalledWith({
+      documentId: 970001,
+      organizationId: null,
     });
   });
 

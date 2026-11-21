@@ -14,6 +14,8 @@
 export enum StoredFileBusinessType {
   REPAIR_PROCESS = 'REPAIR_PROCESS',
   REPAIR_REQUEST = 'REPAIR_REQUEST',
+  /** 任务 06 维修报告原件（独立历史记录与工单总结共用一份报告附件集合） */
+  MAINTENANCE_REPORT = 'MAINTENANCE_REPORT',
 }
 
 /** 原件校验状态（数据库 chk_stored_file_status 真源：STAGING/VALID/FAILED） */

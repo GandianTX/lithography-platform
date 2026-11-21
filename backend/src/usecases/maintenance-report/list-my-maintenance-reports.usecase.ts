@@ -8,6 +8,7 @@ import {
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { MaintenanceReportSummaryView } from '@src/modules/lithography/maintenance-report.types';
 import type { ListMyMaintenanceReportsCommand } from './maintenance-report-command.types';
+import { normalizeSourceType } from './maintenance-report.input.normalize';
 import { normalizePagination } from './maintenance-report-pagination';
 import { assertMaintenanceReportAuthorRole } from './maintenance-report-roles';
 
@@ -27,10 +28,18 @@ export class ListMyMaintenanceReportsUsecase {
     const membership = await this.organizationContextService.resolveForAccount({
       accountId: command.session.accountId,
     });
+    const sourceType =
+      command.sourceType === undefined || command.sourceType === null
+        ? undefined
+        : normalizeSourceType(command.sourceType);
     return this.maintenanceReportQueryService.listMine(
-      command.session.accountId,
-      membership.organizationId,
-      pagination,
+      {
+        engineerAccountId: command.session.accountId,
+        ownerOrganizationId: membership.organizationId,
+        pagination,
+        sourceType,
+      },
+      undefined,
     );
   }
 }

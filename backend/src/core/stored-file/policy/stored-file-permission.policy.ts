@@ -100,6 +100,8 @@ export function isRepairRequestBusinessType(businessType: string): boolean {
 const SUPPORTED_BUSINESS_TYPES: readonly string[] = [
   StoredFileBusinessType.REPAIR_PROCESS,
   StoredFileBusinessType.REPAIR_REQUEST,
+  // 任务 06 维修报告原件：上传暂存后由报告附件挂接用例在同一事务内核验并绑定
+  StoredFileBusinessType.MAINTENANCE_REPORT,
 ];
 
 export function assertStoredFileBusinessTypeSupported(businessType: string): void {

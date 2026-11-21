@@ -25,8 +25,17 @@ import {
 } from '@/pages/customer';
 import { EngineerPage } from '@/pages/engineer';
 import { EngineerAiHistoryPage, EngineerAiPage } from '@/pages/engineer-ai';
+import {
+  EngineerMaintenanceRecordEditorPage,
+  EngineerMaintenanceRecordNewPage,
+  EngineerMaintenanceRecordsPage,
+} from '@/pages/engineer-maintenance-records';
 import { EngineerRepairRequestDetailPage } from '@/pages/engineer-repair-request-detail';
 import { EngineerRepairRequestsPage } from '@/pages/engineer-repair-requests';
+import {
+  EngineerWorkOrderSummariesPage,
+  EngineerWorkOrderSummaryEditorPage,
+} from '@/pages/engineer-work-order-summaries';
 import { ErrorPreviewPage } from '@/pages/error-preview';
 import { ProjectStructurePage } from '@/pages/project-structure';
 import { ReferenceDocumentDetailPage } from '@/pages/reference-document-detail';
@@ -221,6 +230,34 @@ const router = createBrowserRouter([
         element: <EngineerRepairRequestDetailPage />,
         loader: protectedRouteLoader,
         path: 'engineer/repair-requests/:requestId',
+      },
+      {
+        // 历史维修记录（任务 06）：独立入口，与工单维修总结共用同一套报告编辑界面。
+        // 路由治理复用 protectedRouteLoader，角色判定仍由服务端 usecase 复核。
+        element: <EngineerMaintenanceRecordsPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/maintenance-records',
+      },
+      {
+        element: <EngineerMaintenanceRecordNewPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/maintenance-records/new',
+      },
+      {
+        element: <EngineerMaintenanceRecordEditorPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/maintenance-records/:reportId',
+      },
+      {
+        // 工单维修总结待填写列表：服务端只返回本人已接且已结单的工单。
+        element: <EngineerWorkOrderSummariesPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/work-order-summaries',
+      },
+      {
+        element: <EngineerWorkOrderSummaryEditorPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/work-order-summaries/:repairRequestId',
       },
       {
         element: <CustomerPage />,

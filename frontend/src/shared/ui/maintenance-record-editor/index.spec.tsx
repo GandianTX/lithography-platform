@@ -62,3 +62,32 @@ describe('MaintenanceRecordEditor 姓名输入', () => {
     expect(onChange).toHaveBeenCalled();
   });
 });
+
+describe('MaintenanceRecordEditor 分步表单复用（任务 06）', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('visibleSections 只渲染指定分区，其余分区不参与交互', () => {
+    render(
+      <MaintenanceRecordEditor
+        onChange={vi.fn()}
+        value={editorValue()}
+        visibleSections={['steps']}
+      />,
+    );
+
+    expect(screen.getByText('排查步骤')).toBeTruthy();
+    expect(screen.queryByText('基本信息')).toBeNull();
+    expect(screen.queryByText('初始故障')).toBeNull();
+    expect(screen.queryByText('复位结果')).toBeNull();
+    expect(screen.queryByText('补充说明')).toBeNull();
+  });
+
+  it('不传 visibleSections 时保持原有全部分区（任务 04 行为不变）', () => {
+    render(<MaintenanceRecordEditor onChange={vi.fn()} value={editorValue()} />);
+
+    expect(screen.getByText('基本信息')).toBeTruthy();
+    expect(screen.getByText('补充说明')).toBeTruthy();
+  });
+});

@@ -18,6 +18,7 @@
 import { useParams } from 'react-router';
 
 import { sampleCurrentAuthSessionIdentity, useAuthSession } from '@/features/auth-session';
+import { WorkOrderSummaryEntryCard } from '@/features/maintenance-report';
 import { EngineerRepairRequestDetailPanel } from '@/features/repair-request';
 
 import { useI18n } from '@/shared/i18n';
@@ -61,6 +62,14 @@ export function EngineerRepairRequestDetailPage() {
         requestId={parsedRequestId}
         scopeKey={sessionScopeKey}
       />
+      {parsedRequestId !== null && canHandleAsEngineer ? (
+        // §3.2 入口：结单详情进入同一工单的同一份总结（资格由服务端复核，
+        // 未结单/非本人接单时卡片自我隐藏）。key 隔离路由参数变化。
+        <WorkOrderSummaryEntryCard
+          key={`summary:${parsedRequestId}`}
+          repairRequestId={parsedRequestId}
+        />
+      ) : null}
     </div>
   );
 }

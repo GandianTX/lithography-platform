@@ -1,6 +1,6 @@
 // src/pages/engineer-ai/index.tsx
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Modal, Select } from 'antd';
 import { Link, useBeforeUnload, useBlocker, useSearchParams } from 'react-router';
 
@@ -13,11 +13,20 @@ import {
   resolveAiPartDisplays,
   useAiDiagnosisWorkspace,
 } from '@/features/ai-conversation';
-import { useEngineerWorkOrderOptions } from '@/features/repair-request';
+import {
+  fetchEngineerRepairRequestDetail,
+  useEngineerWorkOrderOptions,
+} from '@/features/repair-request';
 
 import { useI18n } from '@/shared/i18n';
 
 export function EngineerAiPage() {
+  const [params] = useSearchParams();
+  const linkedRequest = params.has('conversation') ? null : params.get('requestId');
+  return <EngineerAiWorkspace key={linkedRequest ?? 'ordinary'} linkedRequest={linkedRequest} />;
+}
+
+function EngineerAiWorkspace({ linkedRequest }: { linkedRequest: string | null }) {
   const { t } = useI18n();
   const workspace = useAiDiagnosisWorkspace();
   // 创建在途或结果未知时，卸载会丢失草稿和防重状态。所有站内导航共用此守卫。
@@ -37,6 +46,51 @@ export function EngineerAiPage() {
   });
   const workOrders = useEngineerWorkOrderOptions();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [linkedStatus, setLinkedStatus] = useState<'loading' | 'ready' | 'failed'>(
+    linkedRequest === null ? 'ready' : 'loading',
+  );
+  const [linkedOption, setLinkedOption] = useState<{
+    id: number;
+    label: string;
+    modelName: string;
+  } | null>(null);
+  const { setDraftRequestId } = workspace;
+  useEffect(() => {
+    if (linkedRequest === null) return;
+    let cancelled = false;
+    const id = Number(linkedRequest);
+    async function resolveLink() {
+      if (!Number.isSafeInteger(id) || id < 1 || String(id) !== linkedRequest) return null;
+      // 任务 05 关联资格与后端创建口径一致：工单详情读侧按「服务公司=本人公司、
+      // 未删除」授权即视为可关联（不要求本人已接单，也不套用已结单限制）；
+      // 详情读取失败/无权一律不预选，创建会话时后端再最终复核。
+      const result = await fetchEngineerRepairRequestDetail(id);
+      if (!result.ok || result.detail.id !== id) return null;
+      const modelName = result.detail.equipmentModel?.modelName ?? '';
+      return {
+        id,
+        label: modelName ? `${result.detail.requestNo} · ${modelName}` : result.detail.requestNo,
+        modelName,
+      };
+    }
+    void resolveLink()
+      .then((option) => {
+        if (cancelled) return;
+        if (option === null) {
+          setLinkedStatus('failed');
+          return;
+        }
+        setLinkedOption(option);
+        setDraftRequestId(option.id);
+        setLinkedStatus('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedStatus('failed');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [linkedRequest, setDraftRequestId]);
 
   // 问答记录 →「查看对话」以 ?conversation=<id> 进入；同一页面内可变
   const requestedConversationId = Number(searchParams.get('conversation') ?? '');
@@ -98,16 +152,27 @@ export function EngineerAiPage() {
   );
 
   const workOrderOptions = useMemo(
-    () => workOrders.options.map((option) => ({ id: option.id, label: option.label })),
-    [workOrders.options],
+    () =>
+      [
+        ...(linkedOption === null ? [] : [linkedOption]),
+        ...workOrders.options.filter((option) => option.id !== linkedOption?.id),
+      ].map((option) => ({ id: option.id, label: option.label })),
+    [linkedOption, workOrders.options],
   );
 
   // V44 原型：场景标题优先显示真实机型（取关联工单的机型），无关联工单时用通用机型标题
   const sceneModelName = useMemo(() => {
     const selectedId = workspace.conversation?.requestId ?? workspace.draftRequestId;
     const matched = workOrders.options.find((option) => option.id === selectedId);
-    return matched?.modelName ?? '';
-  }, [workspace.conversation?.requestId, workspace.draftRequestId, workOrders.options]);
+    return (
+      matched?.modelName ?? (selectedId === linkedOption?.id ? (linkedOption?.modelName ?? '') : '')
+    );
+  }, [
+    workspace.conversation?.requestId,
+    workspace.draftRequestId,
+    workOrders.options,
+    linkedOption,
+  ]);
 
   return (
     <div className="ai-shell ai-shell--workspace">
@@ -192,7 +257,9 @@ export function EngineerAiPage() {
             creating={workspace.creating}
             createUnknown={workspace.createUnknown}
             draft={workspace.draft}
-            errorMessage={workspace.errorMessage}
+            errorMessage={
+              linkedStatus === 'failed' ? t('ai.workOrderLinkUnavailable') : workspace.errorMessage
+            }
             exporting={workspace.exporting}
             generating={workspace.generating}
             noticeMessage={workspace.noticeMessage}
@@ -201,7 +268,7 @@ export function EngineerAiPage() {
             onLoadMoreWorkOrders={workOrders.loadMore}
             onNewChat={() => {
               // S1：新建只回空草稿，不创建空会话、不继承上一段工单
-              if (searchParams.has('conversation')) {
+              if (searchParams.has('conversation') || searchParams.has('requestId')) {
                 setSearchParams({}, { replace: true });
               }
               workspace.startNewDraft();
@@ -212,13 +279,15 @@ export function EngineerAiPage() {
             onContinueCreate={workspace.continueAfterUnknownCreate}
             onReloadWorkOrders={workOrders.reload}
             onRetryTurn={(questionUuid) => void workspace.retryTurn(questionUuid)}
-            onSubmit={() => void workspace.submitQuestion(workspace.draft)}
+            onSubmit={() => {
+              if (linkedStatus === 'ready') void workspace.submitQuestion(workspace.draft);
+            }}
             onWorkOrderChange={workspace.setDraftRequestId}
             retrying={workspace.retrying}
             submitting={workspace.submitting}
             workOrderId={workspace.draftRequestId}
             workOrderMessage={workOrders.message}
-            workOrderStatus={workOrders.status}
+            workOrderStatus={linkedStatus === 'loading' ? 'loading' : workOrders.status}
             workOrders={workOrderOptions}
           />
         </div>

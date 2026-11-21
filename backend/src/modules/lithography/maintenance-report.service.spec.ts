@@ -52,6 +52,7 @@ describe('MaintenanceReportService.insertReport 唯一键冲突映射', () => {
       repository as unknown as never,
       repository as unknown as never,
       repository as unknown as never,
+      repository as unknown as never,
     );
     return { service, transactionContext };
   };

@@ -63,6 +63,12 @@ export const EN_MESSAGES = {
   'nav.engineer-repair-requests.label': 'Repair requests',
   'nav.engineer-repair-requests.description':
     'Engineer repair request list: pending, accepted by me, and accepted by others.',
+  'nav.engineer-maintenance-records.label': 'Maintenance records',
+  'nav.engineer-maintenance-records.description':
+    'Record historical maintenance experience independently: one scrolling page with drafts and formal submission.',
+  'nav.engineer-work-order-summaries.label': 'Work order summaries',
+  'nav.engineer-work-order-summaries.description':
+    'Read-only verification of real maintenance content on your closed work orders, then formal submission.',
   'nav.reference-documents.label': 'Reference',
   'nav.reference-documents.description':
     'Browse the lithography maintenance knowledge base: error code manuals, guides, safety rules, and checklists.',
@@ -1080,4 +1086,201 @@ export const EN_MESSAGES = {
   'ai.part.alignment_table': 'Alignment stage',
   'ai.part.wafer_stage': 'Work stage',
   'ai.part.projection_lens': 'Projection lens',
+
+  // Maintenance report (task 06)
+  'engineerDetail.aiTroubleshooting': 'AI troubleshooting',
+  'ai.workOrderLinkUnavailable':
+    'Unable to link this work order. Check your access or return to regular troubleshooting.',
+  'engineer.quick.records': 'Maintenance records',
+  'engineer.quick.recordsDescription': 'Record past faults and fixes independently',
+  'engineer.quick.summary': 'Work order summaries',
+  'engineer.quick.summaryDescription': 'Write summaries for your closed work orders',
+  'maintenanceReport.historical.title': 'Maintenance records',
+  'maintenanceReport.historical.subtitle':
+    'Independent fault-experience records: not linked to work orders, drafts can be saved at any time.',
+  'maintenanceReport.historical.new': 'New record',
+  'maintenanceReport.historical.empty': 'No maintenance records yet',
+  'maintenanceReport.summary.title': 'Work order summaries',
+  'maintenanceReport.summary.subtitle':
+    'Only work orders you accepted, closed and have not formally submitted. Both entries resume the same summary.',
+  'maintenanceReport.summary.empty': 'No work orders to verify',
+  'maintenanceReport.summary.resume': 'Verify',
+  // 2026-11-21: list action renamed and per-row source work order link added
+  'maintenanceReport.summary.start': 'Verify work order & evaluation',
+  'maintenanceReport.summary.sourceWorkOrder': 'Source work order',
+  'maintenanceReport.myHistory': 'My history records',
+  'maintenanceReport.preview.view': 'View preview',
+  'maintenanceReport.step.basic': 'Basic info',
+  'maintenanceReport.step.fault': 'Initial fault & reset',
+  'maintenanceReport.step.troubleshoot': 'Troubleshooting',
+  'maintenanceReport.step.result': 'Result & notes',
+  'maintenanceReport.field.customerFactory': 'Customer factory',
+  'maintenanceReport.field.equipmentModel': 'Equipment model',
+  'maintenanceReport.field.equipmentModelLibrary': 'Select from model library',
+  'maintenanceReport.field.equipmentModelManual': 'Manual model',
+  'maintenanceReport.field.equipmentModelManualHint':
+    'Manual text takes precedence and is never written back to the shared model library.',
+  'maintenanceReport.field.maintenanceDate': 'Maintenance date',
+  'maintenanceReport.field.engineer': 'Engineer',
+  'maintenanceReport.field.handlingResult': 'Result',
+  'maintenanceReport.field.closureReason': 'Interruption / unrepairable reason',
+  'maintenanceReport.field.actualCause': 'Confirmed cause',
+  'maintenanceReport.field.repairActions': 'Repair actions',
+  'maintenanceReport.field.verification': 'Verification method & result',
+  'maintenanceReport.factoryPlaceholder': 'e.g. an assembly plant',
+  'maintenanceReport.dateHint': 'Today is never pre-filled; pick the actual maintenance date.',
+  'maintenanceReport.saveDraft': 'Save draft',
+  'maintenanceReport.saving': 'Saving…',
+  'maintenanceReport.saveSuccess': 'Draft saved.',
+  'maintenanceReport.saveFailed': 'Failed to save the draft. Please try again.',
+  'maintenanceReport.currentStepHint':
+    'All sections are on one scrolling page; you can edit freely across sections and save a draft at any time. Saving does not submit, evaluate or export the report.',
+  'maintenanceReport.previewHint':
+    'Preview only reads the current input; it never creates, saves or submits.',
+  'maintenanceReport.readOnly': 'This report is read-only',
+  'maintenanceReport.readOnlyHint': 'Only drafts or returned reports can be edited.',
+  'maintenanceReport.issues.title': 'Resolve these issues before saving',
+  'maintenanceReport.issues.closureReasonRequired':
+    'A reason is required for interrupted or unrepairable results.',
+  'maintenanceReport.issues.closureReasonNotAllowed':
+    'A reason is only allowed for interrupted or unrepairable results.',
+  'maintenanceReport.issues.tooLong': '{field} must not exceed {limit} characters.',
+  'maintenanceReport.loading': 'Loading maintenance report…',
+  'maintenanceReport.loadFailed': 'Failed to load the maintenance report. Please try again.',
+  'maintenanceReport.retry': 'Retry',
+  'maintenanceReport.workOrder': 'Work order: {requestNo}',
+  'maintenanceReport.backToList': 'Back to list',
+  'maintenanceReport.toc.title': 'On this page',
+  'maintenanceReport.leaveConfirmTitle': 'Leave this report?',
+  'maintenanceReport.leaveConfirmBody': 'The current changes are not saved and will be lost.',
+  'maintenanceReport.continueEdit': 'Keep editing',
+  'maintenanceReport.confirmLeave': 'Discard and leave',
+  'maintenanceReport.discardBranchBody':
+    '{label} has content. After switching it is excluded from this report; switching back restores it. Continue?',
+  'maintenanceReport.previewTitle': 'Preview (not saved, not submitted)',
+  'maintenanceReport.preview.faults': 'Faults & reset',
+  'maintenanceReport.preview.faultEmpty': 'No fault entered',
+  'maintenanceReport.preview.steps': 'Troubleshooting steps',
+  'maintenanceReport.preview.stepResult': 'Result',
+  'maintenanceReport.noSteps': 'No troubleshooting steps yet',
+  'maintenanceReport.section.note': 'Supplementary notes',
+  'maintenanceReport.column.title': 'Title',
+  'maintenanceReport.column.status': 'Status',
+  'maintenanceReport.column.updatedAt': 'Updated',
+  'maintenanceReport.column.actions': 'Actions',
+  'maintenanceReport.column.requestNo': 'Work order',
+  // 2026-11-21 列表对齐 Demo：工单维修总结列表增列「故障现象」（客户原始报修）
+  'maintenanceReport.column.faultDescription': 'Fault description',
+  'maintenanceReport.column.closedAt': 'Closed at',
+  'maintenanceReport.column.draft': 'Draft',
+  'maintenanceReport.source.HISTORICAL_CASE': 'Maintenance record',
+  'maintenanceReport.status.DRAFT': 'Draft',
+  'maintenanceReport.status.SUBMITTED': 'Submitted',
+  'maintenanceReport.status.PENDING_REVIEW': 'Pending review',
+  'maintenanceReport.status.RETURNED': 'Returned',
+  'maintenanceReport.status.APPROVED': 'Approved',
+  'maintenanceReport.draft.notStarted': 'Not started',
+  'maintenanceReport.open': 'View',
+  'maintenanceReport.modelsUnavailable':
+    'The model library is unavailable; you can type the equipment model manually.',
+  'maintenanceReport.invalidReportId': 'Invalid report id. Return to the list and try again.',
+  'maintenanceReport.invalidWorkOrderId':
+    'Invalid work order id. Return to the list and try again.',
+  'maintenanceReport.submitFormal': 'Submit formally',
+  'maintenanceReport.submitting': 'Submitting…',
+  'maintenanceReport.submitConfirmTitle': 'Submit formally?',
+  'maintenanceReport.submitConfirmBody':
+    'After submitting the content is frozen and a formal document is created; it cannot be edited again. Submission does not enter the legacy review queue.',
+  'maintenanceReport.submitSuccess':
+    'Formally submitted: content frozen and formal document created.',
+  'maintenanceReport.submitFailed':
+    'Formal submission failed. Retry with the same submission id or check the network.',
+  'maintenanceReport.cancel': 'Cancel',
+  'maintenanceReport.export.word': 'Export Word',
+  'maintenanceReport.export.pdf': 'Export PDF',
+  'maintenanceReport.export.currentFormHint':
+    'Export the current form (works before the first save); preview and export never write data or register models.',
+  'maintenanceReport.export.frozenHint': 'Export the saved current version (frozen, read-only).',
+  'maintenanceReport.export.failed': 'Export failed. Try again later or check the network.',
+  'maintenanceReport.attachments.title': 'Attachments',
+  'maintenanceReport.attachments.add': 'Add attachment',
+  'maintenanceReport.attachments.remove': 'Remove',
+  'maintenanceReport.attachments.empty': 'No attachments yet.',
+  'maintenanceReport.attachments.hint':
+    'Optional; each report keeps at most 1 valid original. Common types such as images/PDF/Office are supported (max 20MB each).',
+  'maintenanceReport.attachments.pendingHint':
+    'The attachment is bound together with the first draft save or formal submission; a failed binding rolls back with the save.',
+  'maintenanceReport.attachments.pendingDiscard': 'Discard',
+  'maintenanceReport.attachments.pendingReplaced':
+    'Pending attachment replaced; the previous staged file stays traceable and will not be bound twice.',
+  'maintenanceReport.attachments.pendingReplaceTag': 'Replace original',
+  'maintenanceReport.attachments.replaceHint':
+    'Each report keeps at most 1 original; saving/submitting replaces the current one in a single server transaction (a failure never loses the existing binding).',
+  'maintenanceReport.attachments.download': 'Download',
+  'maintenanceReport.attachments.downloadFailed': 'Attachment download failed. Try again later.',
+  'maintenanceReport.attachments.uploadFailed': 'Upload failed. Check the network and try again.',
+  'maintenanceReport.attachments.removeFailed': 'Failed to remove the attachment. Try again later.',
+  // 2026-11-20 redesign: work order summary is a read-only verification page
+  'maintenanceReport.summaryReview.title': 'Work order summary (read-only verification)',
+  'maintenanceReport.summaryReview.readOnlyNote':
+    'This page shows the real content of the source work order for verification. No maintenance content is re-entered here; saving and submission use server-verified work order facts.',
+  'maintenanceReport.summaryReview.basic': 'Work order basic info',
+  'maintenanceReport.summaryReview.intakeFault': 'Customer-reported fault',
+  'maintenanceReport.summaryReview.intake': 'Original customer report',
+  'maintenanceReport.summaryReview.maintenance': 'Maintenance record (from the work order)',
+  'maintenanceReport.summaryReview.result': 'Handling result & closure',
+  'maintenanceReport.summaryReview.closedAt': 'Closed at',
+  'maintenanceReport.summaryReview.closureReason': 'Closure reason',
+  'maintenanceReport.summaryReview.handlingResult': 'Final handling result',
+  'maintenanceReport.summaryReview.sourceAttachment': 'Source work order original',
+  'maintenanceReport.summaryReview.noAttachment':
+    'The source work order has no registered original.',
+  'maintenanceReport.summaryReview.download': 'Download original',
+  'maintenanceReport.summaryReview.sourceChanged':
+    'The source work order was revised after the draft was saved. Re-verify the content and save the summary again before submitting.',
+  'maintenanceReport.summaryReview.aiTitle': 'AI troubleshooting assistance evaluation',
+  'maintenanceReport.summaryReview.aiLoading':
+    'Loading AI troubleshooting sessions for this work order…',
+  'maintenanceReport.summaryReview.aiLoadFailed': 'Unable to read AI troubleshooting sessions.',
+  'maintenanceReport.summaryReview.aiLoadFailedHint':
+    'It cannot be confirmed whether an eligible session exists, so an absent evaluation is not treated as “confirmed no session”. Retry before saving or submitting.',
+  'maintenanceReport.summaryReview.aiEmpty':
+    'The server confirms there is no eligible AI troubleshooting session for this work order.',
+  'maintenanceReport.summaryReview.aiEmptyHint':
+    'A confirmed absence of sessions never forces scoring; you may save or submit without an evaluation.',
+  'maintenanceReport.summaryReview.aiIntro':
+    'These sessions belong to this work order and your organization, and already contain a valid reply within the selected version. The evaluation is bound to that version range only.',
+  'maintenanceReport.summaryReview.aiSelectLabel': 'Select the AI session to evaluate',
+  'maintenanceReport.summaryReview.aiSelectPlaceholder': 'Select a session to evaluate',
+  'maintenanceReport.summaryReview.aiOption':
+    'Session #{conversationId} · content v{version} · {replies} valid replies · {createdAt}',
+  'maintenanceReport.summaryReview.aiRequired':
+    'This work order has applicable AI troubleshooting sessions. Select one and complete the evaluation before submitting.',
+  'maintenanceReport.summaryReview.aiRange':
+    'Evaluation range: content v{version} up to message #{lastMessageSeq}; later messages are excluded from this evaluation.',
+  'maintenanceReport.summaryReview.aiScore': 'Overall rating',
+  'maintenanceReport.summaryReview.aiCorrectness': 'Answer correctness',
+  'maintenanceReport.summaryReview.aiCorrectness.CORRECT': 'Correct',
+  'maintenanceReport.summaryReview.aiCorrectness.PARTIAL': 'Partially correct',
+  'maintenanceReport.summaryReview.aiCorrectness.INCORRECT': 'Incorrect',
+  'maintenanceReport.summaryReview.aiHelpfulness': 'Helpfulness',
+  'maintenanceReport.summaryReview.aiHelpfulness.1': 'Not helpful',
+  'maintenanceReport.summaryReview.aiHelpfulness.2': 'Slightly helpful',
+  'maintenanceReport.summaryReview.aiHelpfulness.3': 'Fairly helpful',
+  'maintenanceReport.summaryReview.aiHelpfulness.4': 'Very helpful',
+  'maintenanceReport.summaryReview.aiNotPreselected': 'Not preselected',
+  'maintenanceReport.summaryReview.aiNote': 'Evaluation note (optional)',
+  'maintenanceReport.summaryReview.aiNotePlaceholder':
+    'Optionally note which suggestions were adopted or rejected',
+  'maintenanceReport.summaryReview.aiScopeHint':
+    'The evaluation is saved together with the immutable content version and frozen on submission; later messages never change it.',
+  'maintenanceReport.summaryReview.aiSavedNotUsed':
+    'This report does not use an AI troubleshooting evaluation.',
+  'maintenanceReport.summaryReview.aiSavedRange':
+    'Frozen evaluation: source session #{sourceId} · content v{version}',
+  'maintenanceReport.summaryReview.submitNote':
+    'On submission the server-verified work order content and applicable evaluation are frozen into the formal report and Word/PDF.',
+  'maintenanceReport.summaryReview.reconfirm': 'Refresh and reconfirm',
+  'maintenanceReport.summaryReview.loadFailed':
+    'Failed to load the work order summary. Try again later.',
 } satisfies Record<MessageKey, string>;

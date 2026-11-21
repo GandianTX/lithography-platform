@@ -66,6 +66,11 @@ export type MaintenanceStepValue = {
   key: string;
   /** 服务端步骤 ID；新建为 null */
   id: string | null;
+  /**
+   * 步骤稳定编码（独立于顺序号）：新建时生成，调序/删除其他步骤不改变；
+   * 任务 06 报告落库用它关联步骤新故障，任务 04 工单保存不使用该字段。
+   */
+  stepCode: string;
   errorCode: string;
   partName: string;
   actionText: string;
@@ -107,15 +112,35 @@ export type MaintenancePanelPayload = {
   action: string | null;
 };
 
+/** 编辑器可见分区：任务 06 分步表单按步骤只渲染当前分区，字段与交互不变 */
+export const MAINTENANCE_EDITOR_SECTIONS = [
+  'basicInfo',
+  'initialFault',
+  'reset',
+  'steps',
+  'supplementaryNote',
+] as const;
+
+export type MaintenanceEditorSection = (typeof MAINTENANCE_EDITOR_SECTIONS)[number];
+
 export type MaintenanceEditorSource = {
   maintenanceDate?: string | null;
   engineerName?: string | null;
   resetResult?: string | null;
   supplementaryNote?: string | null;
-  attachment?: MaintenanceAttachmentValue | null;
+  /**
+   * 任务 06 只读核对页复用：来源工单/冻结版本的附件引用只有
+   * 文件名、大小与 file_id（授权下载按 file_id 走服务端读侧），
+   * mimeType/校验和并非展示所需，这里放宽为可选，编辑器只读展示不伪造。
+   */
+  attachment?:
+    | (Pick<MaintenanceAttachmentValue, 'fileId' | 'originalFilename' | 'byteSize'> &
+        Partial<Pick<MaintenanceAttachmentValue, 'mimeType' | 'checksumSha256'>>)
+    | null;
   steps?: ReadonlyArray<{
     id: string;
     stepNo: number;
+    stepCode?: string | null;
     errorCode?: string | null;
     partName?: string | null;
     actionText: string;
@@ -157,6 +182,19 @@ let localKeySequence = 0;
 export function nextLocalKey(prefix: string): string {
   localKeySequence += 1;
   return `${prefix}:local:${Date.now().toString(36)}:${localKeySequence}`;
+}
+
+/**
+ * 步骤稳定编码：只要求报告内唯一且不改写顺序语义，
+ * 由本地生成后随草稿保存，调序不改变该值（页面需求 V6.5 §8.3）。
+ */
+export function nextStepCode(): string {
+  return nextLocalKey('step-code');
+}
+
+/** 面板是否已填写内容（用于分支切走提示与有效分支判定） */
+export function hasMaintenancePanelContent(panel: MaintenancePanelValue): boolean {
+  return hasPanelContent(panel);
 }
 
 export const RESET_RESULT_LABEL_KEYS: Record<MaintenanceResetResult, MessageKey> = {
@@ -272,6 +310,7 @@ export function createMaintenanceEditorValue(
     .map((step) => ({
       key: `step:${step.id}`,
       id: step.id,
+      stepCode: step.stepCode ?? nextStepCode(),
       errorCode: normalizeText(step.errorCode),
       partName: normalizeText(step.partName),
       actionText: step.actionText,
@@ -348,7 +387,18 @@ export function createMaintenanceEditorValue(
     supplementaryNote: normalizeText(source.supplementaryNote),
     steps,
     panels,
-    attachment: source.attachment ?? null,
+    // 只读展示只消费文件名/大小/file_id；引用形态缺 mimeType/校验和时补空值，
+    // 不伪造展示内容，也不把占位值写回服务端
+    attachment:
+      source.attachment === null || source.attachment === undefined
+        ? null
+        : {
+            fileId: source.attachment.fileId,
+            originalFilename: source.attachment.originalFilename,
+            byteSize: source.attachment.byteSize,
+            mimeType: source.attachment.mimeType ?? '',
+            checksumSha256: source.attachment.checksumSha256 ?? '',
+          },
   };
 }
 

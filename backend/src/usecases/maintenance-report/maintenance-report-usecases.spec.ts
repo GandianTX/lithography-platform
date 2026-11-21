@@ -713,7 +713,7 @@ describe('维修报告草稿输入归一化', () => {
     ...overrides,
   });
 
-  it('步骤动作超过 2000 字符被拒绝（避免冻结快照无界膨胀）', () => {
+  it('步骤动作超过 10000 字符被拒绝（V6.5 §8.3 上限）', () => {
     let error: unknown;
     try {
       normalizeMaintenanceReportDraft(
@@ -722,7 +722,7 @@ describe('维修报告草稿输入归一化', () => {
             {
               stepCode: 'STEP-001',
               phaseCode: MaintenancePhaseCode.PHASE_02,
-              actionText: '动'.repeat(2001),
+              actionText: '动'.repeat(10001),
             },
           ],
         }),
@@ -741,14 +741,14 @@ describe('维修报告草稿输入归一化', () => {
           {
             stepCode: 'STEP-001',
             phaseCode: MaintenancePhaseCode.PHASE_02,
-            actionText: '动'.repeat(2000),
+            actionText: '动'.repeat(10000),
           },
         ],
       }),
       900001,
     );
 
-    expect(result.steps[0].actionText).toHaveLength(2000);
+    expect(result.steps[0].actionText).toHaveLength(10000);
   });
 
   const makeUsedAiDraft = (overrides: Record<string, unknown> = {}) =>
@@ -1020,19 +1020,38 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
     expect(service.updateRepairRequestHandling).not.toHaveBeenCalled();
   });
 
-  it('完成类结果携带原因时拒绝，不静默丢弃输入', async () => {
+  // 2026-11-21 口径统一：与结单侧（任务 04）同一规则——非终结结果原因可选，
+  // 已填写的原因原样保留（此前与 CloseRepairRequestUsecase 行为漂移）
+  it('完成类结果携带原因时按结单侧规则原样保留，不静默丢弃输入', async () => {
     const { usecase, service } = makeUsecase();
 
-    await expect(
-      usecase.execute({
-        session: engineerSession,
-        repairRequestId: REQUEST_ID,
-        handlingResult: RepairRequestHandlingResult.FIXED,
-        closureReason: '不应出现的原因',
-      }),
-    ).rejects.toMatchObject({ code: MAINTENANCE_REPORT_ERROR.INVALID_PARAMS });
+    const result = await usecase.execute({
+      session: engineerSession,
+      repairRequestId: REQUEST_ID,
+      handlingResult: RepairRequestHandlingResult.FIXED,
+      closureReason: '设备已恢复正常生产',
+    });
 
-    expect(service.updateRepairRequestHandling).not.toHaveBeenCalled();
+    expect(result.closureReason).toBe('设备已恢复正常生产');
+    expect(service.updateRepairRequestHandling).toHaveBeenCalledWith(
+      REQUEST_ID,
+      expect.objectContaining({ closureReason: '设备已恢复正常生产' }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('完成类结果空白原因收敛为 null，不落空白文本', async () => {
+    const { usecase } = makeUsecase();
+
+    const result = await usecase.execute({
+      session: engineerSession,
+      repairRequestId: REQUEST_ID,
+      handlingResult: RepairRequestHandlingResult.FIXED,
+      closureReason: '   ',
+    });
+
+    expect(result.closureReason).toBeNull();
   });
 
   it('非工程师角色被拒绝', async () => {

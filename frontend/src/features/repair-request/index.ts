@@ -25,6 +25,13 @@ export {
   useEngineerWorkOrderOptions,
 } from './application/use-engineer-work-order-options';
 export type { EngineerRepairListScope } from './infrastructure/engineer-repair-request.types';
+// 任务 06（2026-11-20 需求调整）：工单维修总结只读核对页复用任务 04 读侧
+// query 与来源工单原件授权下载；经公共 API 导出，不做深层导入。
+export type { RepairProcessEntryFileDTO } from './infrastructure/engineer-repair-request.types';
+export {
+  downloadRepairProcessFile,
+  fetchEngineerRepairRequestDetail,
+} from './infrastructure/engineer-repair-request-adapter';
 export type {
   CreateRepairRequestFailureReason,
   CreateRepairRequestInput,
@@ -37,6 +44,9 @@ export { CustomerRepairRequestListPanel } from './ui/customer-repair-request-lis
 export { EngineerRepairRequestDetailPanel } from './ui/engineer-repair-request-detail-panel';
 export { EngineerRepairRequestList } from './ui/engineer-repair-request-list';
 export { ENGINEER_REPAIR_REQUEST_LIST_PATH } from './ui/engineer-repair-request-paths';
+// 2026-11-21：任务 06 工单总结列表的「来源工单」跳转需要拼详情路径；
+// 仍走同一条真源常量（/engineer/repair-requests/，与 :requestId 拼接）。
+export { ENGINEER_REPAIR_REQUEST_DETAIL_PATH } from './ui/engineer-repair-request-paths';
 export {
   EngineerRepairWorkbench,
   EngineerRepairWorkbenchProvider,

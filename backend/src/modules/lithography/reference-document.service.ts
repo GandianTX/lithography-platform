@@ -73,11 +73,14 @@ export class ReferenceDocumentService {
         // V13 必填状态按本入口既有事实显式落值（migration 已收紧为 NOT NULL 且无默认）：
         // - 新行未软删且创建即可见，落 ONLINE（下架/删除语义仍由后续操作另记）；
         // - ownerOrganizationId 由可信组织上下文解析、类型非空，落 CONFIRMED；
-        // - 本入口写入正文/文件资料，尚无报告来源回链，落 MATERIAL
-        //   （报告来源发布由独立链路实现，本方法不预造）。
+        // - 本入口写入正文/文件资料，尚无报告来源回链时落 MATERIAL（默认值）；
+        //   R051-01 正式提交由 usecase 显式传入报告来源 sourceKind 与回链，
+        //   报告来源与冻结版本的配对事实由实体 CHECK/外键与唯一键兜底。
         publicationStatus: 'ONLINE',
         ownershipStatus: 'CONFIRMED',
-        sourceKind: 'MATERIAL',
+        sourceKind: data.sourceKind ?? 'MATERIAL',
+        sourceReportId: data.sourceReportId ?? null,
+        sourceReportVersionId: data.sourceReportVersionId ?? null,
         sourceSubmissionId: data.sourceSubmissionId ?? null,
         sourceRevisionId: data.sourceRevisionId ?? null,
         extensionJson: data.extensionJson ?? null,
@@ -97,6 +100,22 @@ export class ReferenceDocumentService {
         error,
       );
     }
+  }
+
+  /**
+   * R051-01 幂等重试读侧：按冻结版本定位正式资料 ID。
+   * uk_reference_document_source_report_version 保证一份冻结版本至多一份资料。
+   */
+  async findDocumentIdBySourceReportVersion(
+    sourceReportVersionId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number | null> {
+    const repository = this.getRepository(transactionContext);
+    const entity = await repository.findOne({
+      where: { sourceReportVersionId },
+      select: { id: true },
+    });
+    return entity?.id ?? null;
   }
 
   /**

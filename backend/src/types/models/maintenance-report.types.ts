@@ -11,14 +11,46 @@ export enum MaintenanceReportSourceType {
 
 export enum MaintenanceReportStatus {
   DRAFT = 'DRAFT',
+  /** R051 新入口正式提交后的冻结态（旧审核流仍保留 PENDING_REVIEW/RETURNED/APPROVED） */
+  SUBMITTED = 'SUBMITTED',
   PENDING_REVIEW = 'PENDING_REVIEW',
   RETURNED = 'RETURNED',
   APPROVED = 'APPROVED',
 }
 
+/** 报告根复位结果（与任务 04 工单复位口径一致） */
+export enum MaintenanceReportResetResult {
+  NORMAL = 'NORMAL',
+  SAME_FAULT = 'SAME_FAULT',
+  NEW_FAULT = 'NEW_FAULT',
+}
+
+/**
+ * 报告故障分支：初始故障、复位后新故障、步骤新故障各自独立，
+ * 与前端编辑器面板类型、任务 04 工单面板类型字符串保持一致。
+ */
+export enum MaintenanceReportFaultBranchKind {
+  INITIAL = 'INITIAL',
+  RESET_NEW_FAULT = 'RESET_NEW_FAULT',
+  STEP_NEW_FAULT = 'STEP_NEW_FAULT',
+}
+
+/** 排查步骤结果（与前端步骤结果、工单步骤结果口径一致） */
+export enum MaintenanceReportStepResult {
+  RESOLVED = 'RESOLVED',
+  UNRESOLVED = 'UNRESOLVED',
+  NEW_FAULT = 'NEW_FAULT',
+}
+
 export enum MaintenanceReportChangeKind {
   SUBMIT = 'SUBMIT',
   FORMAL_CORRECTION = 'FORMAL_CORRECTION',
+}
+
+/** R051 导出格式：Word 可编辑（DOCX）/ 中文多页 PDF */
+export enum MaintenanceReportExportFormat {
+  DOCX = 'DOCX',
+  PDF = 'PDF',
 }
 
 export enum MaintenanceReportReviewDecision {
@@ -72,14 +104,17 @@ export enum MaintenanceAttachmentStorageBackend {
 /** 报告冻结快照 schema 版本；v1 为 PR0 投稿空扩展，不在此扩键 */
 export const MAINTENANCE_REPORT_SNAPSHOT_SCHEMA_VERSION = 2;
 
-/** 单个附件上限 20 MiB；应用配置、服务端字节统计与接口同口径 */
-export const MAINTENANCE_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+/** 单个附件上限 20,000,000 字节；与 stored_file 上传/DB CHECK（byte_size <= 20000000）同口径 */
+export const MAINTENANCE_ATTACHMENT_MAX_BYTES = 20_000_000;
 
-/** 当前有效附件数量上限 */
-export const MAINTENANCE_ATTACHMENT_MAX_COUNT = 10;
+/**
+ * 当前有效附件数量上限（2026-11-20 产品裁决：功能 V5.6 R062-01 统一口径，
+ * 单份报告最多保留 1 份有效原件；历史多附件行只读保留，不迁移不隐藏）。
+ */
+export const MAINTENANCE_ATTACHMENT_MAX_COUNT = 1;
 
-/** 当前有效附件总字节上限 100 MiB（只能应用层校验） */
-export const MAINTENANCE_ATTACHMENT_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
+/** 当前有效附件总字节上限；数量上限为 1 后与单文件上限同口径 20,000,000 字节（只能应用层校验） */
+export const MAINTENANCE_ATTACHMENT_MAX_TOTAL_BYTES = 20_000_000;
 
 /**
  * 分析结果生成状态（最小读取抽象的一部分）。

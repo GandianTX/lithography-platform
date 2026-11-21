@@ -94,7 +94,7 @@ export function resolveAttachmentSortOrder(
   }
   throw new DomainError(
     MAINTENANCE_REPORT_ERROR.ATTACHMENT_LIMIT_EXCEEDED,
-    `当前附件最多 ${MAINTENANCE_ATTACHMENT_MAX_COUNT} 个`,
+    `单份报告最多保留 ${MAINTENANCE_ATTACHMENT_MAX_COUNT} 份有效原件`,
   );
 }
 

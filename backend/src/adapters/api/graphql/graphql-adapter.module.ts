@@ -33,6 +33,7 @@ import { AuthResolver } from './auth/auth.resolver';
 import { ContentSubmissionResolver } from './content-submission/content-submission.resolver';
 import { EmailResolver } from './email/email.resolver';
 import { EquipmentModelResolver } from './equipment-model/equipment-model.resolver';
+import { MaintenanceReportResolver } from './maintenance-report/maintenance-report.resolver';
 import { ReferenceDocumentResolver } from './reference-document/reference-document.resolver';
 import { OrganizationAdminResolver } from './organization/organization-admin.resolver';
 import { RegistrationResolver } from './registration/registration.resolver';
@@ -124,6 +125,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     ThirdPartyAuthResolver,
     EmailResolver,
     EquipmentModelResolver,
+    MaintenanceReportResolver,
     ReferenceDocumentResolver,
     OrganizationAdminResolver,
     RegistrationResolver,
@@ -151,6 +153,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     ThirdPartyAuthResolver,
     EmailResolver,
     EquipmentModelResolver,
+    MaintenanceReportResolver,
     ReferenceDocumentResolver,
     OrganizationAdminResolver,
     RegistrationResolver,
