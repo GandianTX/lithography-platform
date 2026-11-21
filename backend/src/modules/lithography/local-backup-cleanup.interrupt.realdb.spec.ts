@@ -52,7 +52,15 @@
 //   npx jest src/modules/lithography/local-backup-cleanup.interrupt.realdb.spec.ts --runInBand
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -159,6 +167,13 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
   const fillers: SyntheticPackage[] = [];
   /** 反例批次：慢清理包（制造观测窗口）＋ 时限内残留（不得被登记为中断） */
   const withinThresholdBatch: SyntheticPackage[] = [];
+  /**
+   * 哨兵（中断场景下的"不该被动"事实）：
+   * - 外公司包目录（备份根下的另一个公司目录）：中断清理不得越界删除；
+   * - 备份根内的非包文件：清理只针对登记的包目录；
+   * - 业务原件哨兵（备份根之外）：受控清理不得触碰业务原件目录。
+   */
+  const sentinels: { path: string; content: string }[] = [];
 
   let dataSource: DataSource;
   let runId = 0;
@@ -232,6 +247,37 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       for (let fileIndex = 0; fileIndex < PACKAGE_FILE_PER_SUBDIR; fileIndex += 1) {
         writeFileSync(nodePath.join(dirPath, `part-${fileIndex}`), 'x');
       }
+    }
+  };
+
+  /** 建立哨兵：三个位置各放一个带内容的文件 */
+  const createSentinels = (): void => {
+    const cases: { path: string; content: string }[] = [
+      {
+        path: nodePath.join(backupRoot, '999', 'foreign-package', 'keep.txt'),
+        content: 'foreign-company-package',
+      },
+      {
+        path: nodePath.join(backupRoot, 'shared-root-file.txt'),
+        content: 'backup-root-non-package',
+      },
+      {
+        path: nodePath.join(workspace, 'business-originals', 'original.bin'),
+        content: 'business-original',
+      },
+    ];
+    for (const item of cases) {
+      mkdirSync(nodePath.dirname(item.path), { recursive: true });
+      writeFileSync(item.path, item.content);
+      sentinels.push(item);
+    }
+  };
+
+  /** 核对哨兵：文件仍在且内容未变 */
+  const expectSentinelsIntact = (): void => {
+    for (const item of sentinels) {
+      expect(existsSync(item.path)).toBe(true);
+      expect(readFileSync(item.path, 'utf8')).toBe(item.content);
     }
   };
 
@@ -409,6 +455,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     // 作用域护栏：本轮执行不得改写他人资产行
     await assertScopeIsolated([residual.backupId]);
 
+    // 哨兵先行建立：外公司包、备份根内非包文件、业务原件
+    createSentinels();
+
     // 第一轮：真实子进程执行真实清理，父进程在 CLEANING 落库后 SIGKILL
     let injected = false;
     for (let attempt = 1; attempt <= INJECT_ATTEMPTS && !injected; attempt += 1) {
@@ -473,7 +522,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     for (const item of registered) {
       removeTree(item.packagePath);
     }
-    // 整个临时工作区（含空壳目录）一并回收，不留残留在系统临时目录
+    // 整个临时工作区（含空壳目录与哨兵）一并回收，不留残留在系统临时目录
     removeTree(workspace);
   });
 
@@ -484,6 +533,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     expect(state?.local_status).toBe('CLEANING');
     expect(state?.deleted_at).toBeNull();
     expect(state?.local_reference).toBe(residual.packagePath);
+
+    // 中断不得越界：外公司包、备份根内非包文件、业务原件都不受影响
+    expectSentinelsIntact();
   });
 
   it('下一轮把残留识别为中断并继续清理，最终落 CLEANED 且包目录消失', async () => {
@@ -548,6 +600,9 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
       expect(fillerState?.local_status).toBe('CLEANED');
       expect(existsSync(filler.packagePath)).toBe(false);
     }
+
+    // 中断后的续清同样不得越界：三个哨兵仍在且内容未变
+    expectSentinelsIntact();
   });
 
   it('反例：残留未超过中断可辨认时限时，下一轮不得把它登记为中断', async () => {
