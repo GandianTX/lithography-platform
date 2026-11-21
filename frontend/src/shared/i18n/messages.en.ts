@@ -89,6 +89,9 @@ export const EN_MESSAGES = {
   'nav.admin-reference-ownership.label': 'Ownership review',
   'nav.admin-reference-ownership.description':
     'Level-1 admin only: verify and correct documents with unconfirmed uploader or owning company.',
+  'nav.admin-operation-records.label': 'Operation records',
+  'nav.admin-operation-records.description':
+    'Read-only view of the three classes of admin facts: document deletion, ownership correction, and local business restore.',
   'nav.account-settings.label': 'Account settings',
   'nav.account-settings.description':
     'View account information and manage your profile and password. Re-sign-in is required after changing the password.',
@@ -664,6 +667,10 @@ export const EN_MESSAGES = {
   'admin.documents.description':
     'SUPER_ADMIN data aggregation view: reference documents, repair requests, AI sessions, and AI reports.',
   'admin.documents.action': 'Open document database',
+  'admin.operationRecords.title': 'Operation records',
+  'admin.operationRecords.description':
+    'Read-only view of the three classes of admin facts: document deletion, ownership correction, and local business restore. Scope follows admin level and trusted organization.',
+  'admin.operationRecords.action': 'Open operation records',
   'admin.noneNotice':
     'This account lacks a trusted admin level or organization. No management entries are available.',
 
@@ -925,6 +932,42 @@ export const EN_MESSAGES = {
   'adminRepairRequest.revisionModal.maintenance': 'Structured repair record',
   'adminRepairRequest.revisionModal.maintenanceHint':
     'You can correct maintenance fields, diagnostic steps, and fault panels; bound attachments are read-only.',
+  // Operation records page (task 10)
+  'operationRecords.page.description.level1': 'View key operations across all companies.',
+  'operationRecords.page.description.level2': 'View key operations for your own company.',
+  'operationRecords.card.title': 'Operation records',
+  'operationRecords.forbidden': 'Operation records are available to administrators only.',
+  'operationRecords.column.time': 'Time',
+  'operationRecords.column.actor': 'Actor',
+  'operationRecords.column.organization': 'Organization',
+  'operationRecords.column.operation': 'Operation',
+  'operationRecords.column.target': 'Target',
+  'operationRecords.column.result': 'Result',
+  'operationRecords.column.summary': 'Notes',
+  'operationRecords.operation.ADMIN_DELETE_DOCUMENT': 'Administrator deleted a published document',
+  'operationRecords.operation.CORRECT_DOCUMENT_OWNERSHIP':
+    'Changed document uploader and company ownership',
+  'operationRecords.operation.RESTORE_LOCAL_BUSINESS':
+    'Restored local business with a backup package',
+  'operationRecords.result.SUCCEEDED': 'Succeeded',
+  'operationRecords.result.FAILED': 'Failed',
+  'operationRecords.result.DENIED': 'Denied',
+  'operationRecords.targetType.referenceDocument': 'Reference document',
+  'operationRecords.targetType.backupRestoreRun': 'Restore run',
+  'operationRecords.actorLevel.level1': 'Level-1 admin',
+  'operationRecords.actorLevel.level2': 'Level-2 admin',
+  'operationRecords.summary.stage': 'Stage: {stage}',
+  'operationRecords.summary.changedFields': 'Changed fields: {fields}',
+  'operationRecords.summary.attempt': 'Attempt {attemptNo}',
+  'operationRecords.summary.organizationChange': '{before} → {after}',
+  'operationRecords.summary.organizationBefore': 'From: {name}',
+  'operationRecords.summary.organizationAfter': 'To: {name}',
+  'operationRecords.empty': 'No operation records',
+  'operationRecords.loadFailed': 'Failed to load operation records. Please try again later.',
+  'operationRecords.pageOutOfRangeTitle': 'No data on this page',
+  'operationRecords.pageOutOfRange':
+    'Page {page} has no data ({total} records in total). The data may have changed or the page is out of range; use the pagination below to go back.',
+  'operationRecords.totalCount': '{total} records in total',
 
   // My records (Task 07)
   'nav.my-records.label': 'My records',

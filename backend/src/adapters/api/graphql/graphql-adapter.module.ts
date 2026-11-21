@@ -5,6 +5,7 @@ import { AiQueueUsecasesModule } from '@src/usecases/ai-queue/ai-queue-usecases.
 import { AuthUsecasesModule } from '@src/usecases/auth/auth-usecases.module';
 import { AsyncTaskRecordUsecasesModule } from '@src/usecases/async-task-record/async-task-record-usecases.module';
 import { AdminDocumentDatabaseUsecasesModule } from '@src/usecases/admin-document-database/admin-document-database-usecases.module';
+import { ManagementAuditUsecasesModule } from '@src/usecases/management-audit/management-audit-usecases.module';
 import { ContentSubmissionUsecasesModule } from '@src/usecases/content-submission/content-submission-usecases.module';
 import { EmailQueueUsecasesModule } from '@src/usecases/email-queue/email-queue-usecases.module';
 import { LocalRuntimeUsecasesModule } from '@src/usecases/local-runtime/local-runtime-usecases.module';
@@ -27,6 +28,7 @@ import { AccountResolver } from './account/account.resolver';
 import { AdminUserResolver } from './account/admin-user.resolver';
 import { MyAccountSettingsResolver } from './account/my-account-settings.resolver';
 import { AdminDocumentDatabaseResolver } from './admin-document-database/admin-document-database.resolver';
+import { AdminOperationRecordsResolver } from './admin-operation-records/admin-operation-records.resolver';
 import { AiResolver } from './ai/ai.resolver';
 import { UserInfoResolver } from './account/user-info.resolver';
 import { AuthResolver } from './auth/auth.resolver';
@@ -64,6 +66,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     // 导入业务模块以获取服务
     AccountUsecasesModule,
     AdminDocumentDatabaseUsecasesModule,
+    ManagementAuditUsecasesModule,
     AiQueueUsecasesModule,
     AsyncTaskRecordUsecasesModule,
     AuthUsecasesModule,
@@ -119,6 +122,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     AdminUserResolver,
     MyAccountSettingsResolver,
     AdminDocumentDatabaseResolver,
+    AdminOperationRecordsResolver,
     AiResolver,
     AuthResolver,
     ContentSubmissionResolver,
@@ -147,6 +151,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     AdminUserResolver,
     MyAccountSettingsResolver,
     AdminDocumentDatabaseResolver,
+    AdminOperationRecordsResolver,
     AiResolver,
     AuthResolver,
     ContentSubmissionResolver,

@@ -57,22 +57,24 @@ describe('AdminPage（S1 管理范围）', () => {
     useAuthSessionMock.mockReset();
   });
 
-  it('1 级管理员显示用户、工单与文档库入口卡', () => {
+  it('1 级管理员显示用户、工单、文档库与关键操作记录入口卡', () => {
     useAuthSessionMock.mockReturnValue(adminSession(1, 910003));
     renderPage();
 
     expect(screen.getByRole('button', { name: '进入用户管理' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '进入工单管理' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '进入文档数据库' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '进入关键操作记录' })).toBeInTheDocument();
     expect(screen.getByTestId('auth-session-panel')).toBeInTheDocument();
   });
 
-  it('2 级管理员看到本公司用户管理入口，文档数据库不开放', () => {
+  it('2 级管理员看到本公司用户管理与关键操作记录入口，文档数据库不开放', () => {
     useAuthSessionMock.mockReturnValue(adminSession(2, 910004));
     renderPage();
 
     expect(screen.getByRole('button', { name: '进入用户管理' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '进入工单管理' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '进入关键操作记录' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '进入文档数据库' })).not.toBeInTheDocument();
   });
 

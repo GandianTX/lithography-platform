@@ -50,6 +50,10 @@ import {
   organizationStatusValues,
 } from '@src/modules/lithography/organization.types';
 import { AiConversationExportFormat } from '@src/adapters/api/graphql/ai-conversation/dto/ai-conversation-export.dto';
+import {
+  managementAuditOperationValues,
+  managementAuditResultValues,
+} from '@src/modules/lithography/management-audit.types';
 import { registerEnumType } from '@nestjs/graphql';
 import { GqlPaginationMode, GqlSortDirection } from '@src/adapters/api/graphql/pagination.enums';
 import { OrderDirection } from '@app-types/common/sort.types';
@@ -100,4 +104,8 @@ export function registerEnums(): void {
   registerEnumType(GqlSortDirection, { name: 'SortDirection' });
   registerEnumType(organizationStatusValues, { name: 'OrganizationStatus' });
   registerEnumType(organizationKindValues, { name: 'OrganizationKind' });
+  // 关键操作记录（任务 10）：只登记三类业务事实与三值结果，
+  // 两类凭据 operation 刻意不进入 GraphQL 枚举，协议层即无法表达。
+  registerEnumType(managementAuditOperationValues, { name: 'ManagementAuditOperation' });
+  registerEnumType(managementAuditResultValues, { name: 'ManagementAuditResult' });
 }
