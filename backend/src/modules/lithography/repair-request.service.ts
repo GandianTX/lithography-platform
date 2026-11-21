@@ -25,6 +25,7 @@ import {
   RepairRequestAcceptWriteResult,
   RepairRequestDeleteOutcome,
   RepairRequestInsertData,
+  RepairRequestReplayRequestState,
   RepairRequestSnapshot,
 } from './lithography.types';
 
@@ -74,6 +75,9 @@ export class RepairRequestService {
         faultDescription: data.faultDescription,
         contentMd: data.contentMd,
         ownerOrganizationId: data.ownerOrganizationId ?? null,
+        intakeId: data.intakeId ?? null,
+        customerOrganizationId: data.customerOrganizationId ?? null,
+        serviceOrganizationId: data.serviceOrganizationId ?? null,
         isAccepted: false,
         deprecated: false,
       });
@@ -668,6 +672,49 @@ export class RepairRequestService {
       : null;
   }
 
+  /**
+   * 按主键读取工单稳定快照（任务 03 同标识重放返回原工单）。
+   *
+   * 只读最小事实、不返回 ORM Entity；归属核权由调用方完成
+   * （同标识重放只在客户账号一致时才会走到这里）。
+   */
+  async findSnapshotById(
+    requestId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<RepairRequestSnapshot | null> {
+    const repository = this.getRepository(transactionContext);
+    const entity = await repository.findOne({ where: { id: requestId } });
+    return entity ? this.toSnapshot(entity) : null;
+  }
+
+  /**
+   * 同标识重放核验的工单侧锁读（PR #27 复审）。
+   *
+   * 必须在 usecase 事务内调用：排他行锁（pessimistic_write）与删除链路的条件软删
+   * `UPDATE` 串行——本读先拿到行锁时，删除等待本事务提交后才生效，核验结论在
+   * 单一提交点成立；删除先提交时本读必然看到 `deprecated = true`，重放失败关闭。
+   * 只读最小状态列，不返回 ORM Entity；决策（归属/关联/删除分类）归 usecase。
+   */
+  async findReplayRequestStateForUpdate(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairRequestReplayRequestState | null> {
+    const repository = this.getRepository(transactionContext);
+    const entity = await repository.findOne({
+      where: { id: requestId },
+      select: { id: true, customerAccountId: true, intakeId: true, deprecated: true },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return entity
+      ? {
+          id: entity.id,
+          customerAccountId: entity.customerAccountId,
+          intakeId: entity.intakeId,
+          deprecated: entity.deprecated,
+        }
+      : null;
+  }
+
   private toSnapshot(entity: RepairRequestEntity): RepairRequestSnapshot {
     return {
       id: entity.id,
@@ -678,6 +725,10 @@ export class RepairRequestService {
       faultDescription: entity.faultDescription,
       createdAt: entity.createdAt,
       isAccepted: entity.isAccepted,
+      deprecated: entity.deprecated,
+      intakeId: entity.intakeId,
+      customerOrganizationId: entity.customerOrganizationId,
+      serviceOrganizationId: entity.serviceOrganizationId,
     };
   }
 

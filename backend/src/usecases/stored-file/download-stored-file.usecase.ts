@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 
 import { StoredFileBusinessType } from '@app-types/models/stored-file.types';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
+import { hasRole } from '@core/account/policy/role-access.policy';
 import { DomainError, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
 import {
   normalizeStoredFileId,
@@ -76,7 +78,14 @@ export class DownloadStoredFileUsecase {
       session: query.session,
       viewerOrganizationId,
       uploadContextId: normalizeUploadContextId(query.uploadContextId),
-      expectedBusinessType: StoredFileBusinessType.REPAIR_PROCESS,
+      // 任务 03 第三段起客户读链路开通：客户仅读本人报修原件（REPAIR_REQUEST）。
+      // expectedBusinessType 只约束暂存（TEMPORARY）读取用途；正式绑定（BOUND）
+      // 原件的归属由 QueryService 按真实业务关联裁决：BOUND REPAIR_REQUEST 原件
+      // 对报修本人与对工单有权限的指定厂家工程师开放（任务 03/04 交叉链路），
+      // BOUND REPAIR_PROCESS 原件维持工程师/管理员口径不变。
+      expectedBusinessType: hasRole(query.session.roles, IdentityTypeEnum.ENGINEER)
+        ? StoredFileBusinessType.REPAIR_PROCESS
+        : StoredFileBusinessType.REPAIR_REQUEST,
       ...(adminScope ? { adminOrganizationId: adminScope.organizationId } : {}),
     });
     if (!facts) {

@@ -6,6 +6,7 @@ import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipmen
 import { RepairRequestEntity } from '@src/modules/lithography/entities/repair-request.entity';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import { App } from 'supertest/types';
+import { randomUUID } from 'node:crypto';
 import { DataSource, Repository } from 'typeorm';
 import { getAccountIdByLoginName, login, postGql, sleep } from '../utils/e2e-graphql-utils';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
@@ -22,6 +23,7 @@ import {
   seedTestAccounts,
   testAccountsConfig,
 } from '../utils/test-accounts';
+import { seedTestOrganizations } from '../utils/test-organizations';
 
 const EQUIPMENT_MODELS_QUERY = 'query { equipmentModels { id modelCode modelName } }';
 
@@ -66,6 +68,10 @@ const OFFSET_PAGINATION = { mode: 'OFFSET', page: 1, pageSize: 10, withTotal: tr
 
 const FLOW_CUSTOMER_COMPANY_NAME = 'E2E 报修流程客户公司';
 
+/** 任务 03：报修厂家夹具（ACTIVE + 具备维修服务资格），编码固定配合残留指纹回收 */
+const FLOW_SERVICE_PROVIDER_ORGANIZATION_CODE = 'E2E_FLOW_SERVICE_PROVIDER';
+const FLOW_SERVICE_PROVIDER_ORGANIZATION_NAME = 'E2E 报修流程维修公司';
+
 /**
  * 维修申请业务流程回归（core 组）
  *
@@ -80,6 +86,8 @@ describe('维修申请业务流程 (e2e)', () => {
   let requestRepository: Repository<RepairRequestEntity>;
   let customerToken: string;
   let customerAccountId: number;
+  /** 任务 03：本轮报修厂家（ACTIVE + is_service_provider），每个用例重建 */
+  let serviceProviderOrganizationId: number;
   let ownership = createOwnedResourceLedger();
 
   const residueAccounts = buildTestAccountResidue(['guestPrimary']);
@@ -91,13 +99,48 @@ describe('维修申请业务流程 (e2e)', () => {
     { modelCode: 'E2E-DISABLED', modelName: '停用型号', enabled: false, sortOrder: 0 },
   ];
 
+  /**
+   * 任务 03 起创建报修必须携带提交标识与合法维修厂家：
+   * - `recordUuid` 逐次生成（本规格不回归幂等语义，重放路径由 usecase 单测覆盖）；
+   * - `serviceOrganizationId` 来自 beforeEach 造出的厂家夹具。
+   */
   const createMutation = (input: Record<string, unknown>) =>
     postGql({
       app,
       query: CREATE_REPAIR_REQUEST_MUTATION,
-      variables: { input },
+      variables: {
+        input: {
+          recordUuid: randomUUID(),
+          serviceOrganizationId: serviceProviderOrganizationId,
+          ...input,
+        },
+      },
       token: customerToken,
     });
+
+  /**
+   * 造报修厂家：`seedTestOrganizations` 走受控入口（ACTIVE + is_service_provider），
+   * 并登记台账供 afterEach/afterAll 精确回收。
+   */
+  const seedServiceProviderOrganization = async (): Promise<void> => {
+    const idByCode = await seedTestOrganizations({
+      dataSource,
+      organizations: [
+        {
+          organizationCode: FLOW_SERVICE_PROVIDER_ORGANIZATION_CODE,
+          name: FLOW_SERVICE_PROVIDER_ORGANIZATION_NAME,
+          kind: 'CLIENT',
+          isServiceProvider: true,
+        },
+      ],
+      ownership,
+    });
+    const id = idByCode.get(FLOW_SERVICE_PROVIDER_ORGANIZATION_CODE);
+    if (!id) {
+      throw new Error('报修流程夹具未返回维修厂家组织 ID');
+    }
+    serviceProviderOrganizationId = id;
+  };
 
   /**
    * 补齐客户公司归属：走本人补录 Mutation 手填公司名，随后按事务写入的真实行补登记
@@ -229,6 +272,7 @@ describe('维修申请业务流程 (e2e)', () => {
       dataSource,
       testAccountsConfig.guestPrimary.loginName,
     );
+    await seedServiceProviderOrganization();
     await bindCustomerCompanyForRepair();
   });
 

@@ -33,6 +33,12 @@ export interface TestOrganizationSpec {
    * 需要走注册资格的规格显式传 `true`，其余规格保持默认 `false`。
    */
   readonly isManagedCompany?: boolean;
+  /**
+   * 是否具备维修服务资格（`is_service_provider`，任务 03）。
+   * 报修提交要求所选厂家 `ACTIVE + 具备维修服务资格`；需要作为报修厂家的
+   * 规格显式传 `true`，其余规格保持默认 `false`。
+   */
+  readonly isServiceProvider?: boolean;
 }
 
 export interface TestMembershipSpec {
@@ -184,6 +190,15 @@ export const seedTestOrganizations = async (params: {
             `（existing.isManagedCompany=${existing.isManagedCompany}, expected=${spec.isManagedCompany}），拒绝接管`,
         );
       }
+      if (
+        spec.isServiceProvider !== undefined &&
+        existing.isServiceProvider !== spec.isServiceProvider
+      ) {
+        throw new Error(
+          `测试组织复用失败：编码 ${spec.organizationCode} 已存在但维修服务资格不符` +
+            `（existing.isServiceProvider=${existing.isServiceProvider}, expected=${spec.isServiceProvider}），拒绝接管`,
+        );
+      }
       if (ownership) {
         // 指纹完全一致也不行：库内现值不是本轮创建证据，不能据此取得删除授权。
         throw new Error(
@@ -203,6 +218,7 @@ export const seedTestOrganizations = async (params: {
         kind: spec.kind,
         status: 'ACTIVE',
         isManagedCompany: spec.isManagedCompany ?? false,
+        isServiceProvider: spec.isServiceProvider ?? false,
       }),
     );
     idByCode.set(spec.organizationCode, saved.id);
@@ -213,6 +229,7 @@ export const seedTestOrganizations = async (params: {
         kind: spec.kind,
         status: 'ACTIVE',
         isManagedCompany: spec.isManagedCompany ?? false,
+        isServiceProvider: spec.isServiceProvider ?? false,
       });
     }
   }

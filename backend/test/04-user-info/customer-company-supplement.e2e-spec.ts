@@ -2,6 +2,7 @@
 import { AccountStatus, IdentityTypeEnum } from '@app-types/models/account.types';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { ApiModule } from '../../src/bootstraps/api/api.module';
@@ -220,6 +221,15 @@ const UNMANAGED_COMPANY: TestOrganizationSpec = {
   isManagedCompany: false,
 };
 
+/** 维修厂家：ACTIVE + 具备维修服务资格；任务 03 起新增报修必须指定合法厂家 */
+const SERVICE_PROVIDER_COMPANY: TestOrganizationSpec = {
+  organizationCode: 'E2E_S4_COMPANY_SERVICE',
+  name: 'S4 维修服务公司',
+  kind: 'CLIENT',
+  isManagedCompany: false,
+  isServiceProvider: true,
+};
+
 const SELF_FILLED_COMPANY_NAME = 'S4 手填客户公司';
 
 const REPAIR_ERROR_CODE = 'E-4A01';
@@ -234,6 +244,7 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
   let managedCompanyAId: number;
   let managedCompanyBId: number;
   let unmanagedCompanyId: number;
+  let serviceProviderCompanyId: number;
   let disabledCompanyId: number;
   let equipmentModelId: number;
 
@@ -281,7 +292,7 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
           ...CUSTOMER_CONFIGS.map(toResidueAccountFingerprint),
           toResidueAccountFingerprint(testAccountsConfig.staff),
         ],
-        organizations: [...MANAGED_COMPANIES, UNMANAGED_COMPANY],
+        organizations: [...MANAGED_COMPANIES, UNMANAGED_COMPANY, SERVICE_PROVIDER_COMPANY],
       },
       helper: 'customer-company-supplement.e2e-spec beforeAll 预清理',
     });
@@ -300,12 +311,16 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
 
     const organizationIdsByCode = await seedTestOrganizations({
       dataSource,
-      organizations: [...MANAGED_COMPANIES, UNMANAGED_COMPANY],
+      organizations: [...MANAGED_COMPANIES, UNMANAGED_COMPANY, SERVICE_PROVIDER_COMPANY],
       ownership,
     });
     managedCompanyAId = requireId(organizationIdsByCode, MANAGED_COMPANIES[0].organizationCode);
     managedCompanyBId = requireId(organizationIdsByCode, MANAGED_COMPANIES[1].organizationCode);
     unmanagedCompanyId = requireId(organizationIdsByCode, UNMANAGED_COMPANY.organizationCode);
+    serviceProviderCompanyId = requireId(
+      organizationIdsByCode,
+      SERVICE_PROVIDER_COMPANY.organizationCode,
+    );
 
     disabledCompanyId = await seedDisabledCompany();
     equipmentModelId = await seedEquipmentModel();
@@ -386,7 +401,7 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
             ...CUSTOMER_CONFIGS.map(toResidueAccountFingerprint),
             toResidueAccountFingerprint(testAccountsConfig.staff),
           ],
-          organizations: [...MANAGED_COMPANIES, UNMANAGED_COMPANY],
+          organizations: [...MANAGED_COMPANIES, UNMANAGED_COMPANY, SERVICE_PROVIDER_COMPANY],
         },
         helper: 'customer-company-supplement.e2e-spec afterAll 收尾',
       });
@@ -731,6 +746,9 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
 
     it('补录成功后新增报修成功，工单归属新公司', async () => {
       const body = await createRepairRequest(alphaToken, {
+        // 任务 03：提交标识逐次生成；厂家必须是 ACTIVE + 具备维修服务资格的组织
+        recordUuid: randomUUID(),
+        serviceOrganizationId: serviceProviderCompanyId,
         equipmentModelId,
         errorCode: REPAIR_ERROR_CODE,
         faultDescription: REPAIR_FAULT_DESCRIPTION,
@@ -1010,6 +1028,10 @@ describe('缺归属旧客户补录公司归属 supplementMyCustomerCompany (e2e)
       const requestsBefore = await countCustomerRepairRequests(repairAccountId);
 
       const body = await createRepairRequest(repairToken, {
+        // 该用例在客户归属门禁处被拒（usecase 先复核客户公司，再看厂家），
+        // 因此厂家只须通过 GraphQL 变量变形：给未启用维修资格的未受管公司即可。
+        recordUuid: randomUUID(),
+        serviceOrganizationId: unmanagedCompanyId,
         equipmentModelId,
         errorCode: REPAIR_ERROR_CODE,
         faultDescription: '缺归属时提交的维修申请',

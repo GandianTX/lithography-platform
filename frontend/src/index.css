@@ -899,6 +899,16 @@ body {
   margin-left: auto;
 }
 
+/* 任务 03：表单按「故障信息 / 维修安排 / 附加原件」分段，段标题为低强调小标题，
+   不引入卡片或分割线，保持与既有表单一致的紧凑节奏。 */
+.repair-request-section-title {
+  color: var(--ant-color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
 /* 窄屏「查看我的维修申请」入口：仅单面板模式显示 */
 .customer-workspace-narrow-entry {
   display: none;

@@ -216,6 +216,27 @@ export const REPAIR_REQUEST_ERROR = {
   CUSTOMER_COMPANY_REQUIRED: 'REPAIR_REQUEST_CUSTOMER_COMPANY_REQUIRED',
   // 客户创建申请（任务 02.4）：归属组织已停用或不存在，同样按资格类拒绝，对外 FORBIDDEN
   CUSTOMER_COMPANY_UNAVAILABLE: 'REPAIR_REQUEST_CUSTOMER_COMPANY_UNAVAILABLE',
+  // 客户创建申请（任务 03）：提交标识缺失或不是 UUID，属客户端可修正的输入问题（对外 BAD_USER_INPUT）
+  SUBMISSION_KEY_INVALID: 'REPAIR_REQUEST_SUBMISSION_KEY_INVALID',
+  // 客户创建申请（任务 03）：同一提交标识的内容/归属与已落库原稿不一致，
+  // 或该标识已被其他账号占用。对外 CONFLICT 且不返回原记录内容（不泄露存在性细节）
+  SUBMISSION_CONFLICT: 'REPAIR_REQUEST_SUBMISSION_CONFLICT',
+  // 客户创建申请（任务 03）：并发重放时原稿唯一键先提交。仅用于事务内部分类与事务外重放，
+  // 不得作为正常对外结果；外泄时按 CONFLICT 处理（客户端可安全重试同一标识）
+  SUBMISSION_DUPLICATE: 'REPAIR_REQUEST_SUBMISSION_DUPLICATE',
+  // 客户创建申请（任务 03 / PR #27 复审）：同标识重放核验发现原申请已被本人删除
+  // （原稿或工单任一侧带删除标记）。明确的当前状态冲突 CONFLICT：重放不能返回创建成功，
+  // 也不能恢复旧工单；客户端据此引导用户明确重新发起（换新提交标识），不自动重建
+  SUBMISSION_ORIGINAL_DELETED: 'REPAIR_REQUEST_SUBMISSION_ORIGINAL_DELETED',
+  // 客户创建申请（任务 03）：所选维修厂家不存在、已停用或不具备维修服务资格。
+  // 客户端可改选，属输入类拒绝（对外 BAD_USER_INPUT）
+  SERVICE_ORGANIZATION_NOT_AVAILABLE: 'REPAIR_REQUEST_SERVICE_ORGANIZATION_NOT_AVAILABLE',
+  // 客户创建申请（任务 03）：同事务登记手填机型时命中机型编码唯一索引。
+  // 仅用于事务内部分类与重读，外泄时按 CONFLICT 处理
+  EQUIPMENT_MODEL_REGISTRATION_CONFLICT: 'REPAIR_REQUEST_EQUIPMENT_MODEL_REGISTRATION_CONFLICT',
+  // 客户创建申请（任务 03）：手填机型文本归一后超长或与「已有/手填二选一」约定冲突，
+  // 属客户端可修正的输入问题（对外 BAD_USER_INPUT）
+  EQUIPMENT_MODEL_INPUT_INVALID: 'REPAIR_REQUEST_EQUIPMENT_MODEL_INPUT_INVALID',
   // 处理结果：工单已作废或不可记录（业务状态冲突）
   HANDLING_NOT_AVAILABLE: 'REPAIR_REQUEST_HANDLING_NOT_AVAILABLE',
   // 处理结果：已终结（COMPLETED / UNRESOLVED）事实不可改写（对外大类 CONFLICT）
@@ -238,6 +259,11 @@ export const REPAIR_REQUEST_ERROR = {
   CLOSED_STATE_CONFLICT: 'REPAIR_REQUEST_CLOSED_STATE_CONFLICT',
   // 结单：系统侧写入失败，不向客户端泄漏数据库细节（对外大类 INTERNAL_SERVER_ERROR）
   CLOSE_FAILED: 'REPAIR_REQUEST_CLOSE_FAILED',
+  // 首析重试（任务 03）：当前代次不是「第 0 代已失败」或已用掉唯一重试机会，
+  // 属业务状态冲突（对外大类 CONFLICT，客户端据此隐藏「重新分析」入口）
+  ANALYSIS_RETRY_UNAVAILABLE: 'REPAIR_REQUEST_ANALYSIS_RETRY_UNAVAILABLE',
+  // 首析重试（任务 03）：重试代次切换或投递登记落库失败（系统侧故障）
+  ANALYSIS_RETRY_FAILED: 'REPAIR_REQUEST_ANALYSIS_RETRY_FAILED',
 } as const;
 Object.freeze(REPAIR_REQUEST_ERROR);
 

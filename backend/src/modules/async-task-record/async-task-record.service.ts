@@ -10,6 +10,7 @@ import {
 } from '@src/modules/common/capability-state-reader.contract';
 import { AsyncTaskRecordEntity } from './async-task-record.entity';
 import type {
+  AsyncTaskRecordStatus,
   AsyncTaskRecordView,
   CreateAsyncTaskRecordInput,
   FindAsyncTaskRecordByQueueJobInput,
@@ -19,6 +20,12 @@ import type {
   RecordAsyncTaskStartedInput,
   UpdateAsyncTaskRecordStatusInput,
 } from './async-task-record.types';
+
+/** 允许被条件取消的非终态 */
+const CANCELLABLE_ASYNC_TASK_STATUSES: ReadonlyArray<AsyncTaskRecordStatus> = [
+  'queued',
+  'processing',
+];
 
 @Injectable()
 export class AsyncTaskRecordService {
@@ -365,6 +372,86 @@ export class AsyncTaskRecordService {
       },
       transactionContext: input.transactionContext,
     });
+  }
+
+  /**
+   * 条件取消：仅把仍处于 queued/processing 的账本行置为 cancelled。
+   *
+   * 与 updateStatusByQueueJob 的覆盖式 patch 不同，本方法带状态前置条件，
+   * 不会把已终态（succeeded/failed/cancelled）行改写为 cancelled；
+   * 用于业务删除（如客户删除报修）时在同一事务内撤销尚未执行的投递意图。
+   */
+  async cancelActiveByQueueJobIds(input: {
+    readonly queueName: string;
+    readonly jobIds: ReadonlyArray<string>;
+    readonly reason: string;
+    readonly finishedAt?: Date;
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<number> {
+    if (input.jobIds.length === 0) {
+      return 0;
+    }
+    const repository = this.getRepository(input.transactionContext);
+    const result = await repository
+      .createQueryBuilder()
+      .update(AsyncTaskRecordEntity)
+      .set({
+        status: 'cancelled',
+        reason: input.reason,
+        finishedAt: input.finishedAt ?? new Date(),
+      })
+      .where('queue_name = :queueName', { queueName: input.queueName })
+      .andWhere('job_id IN (:...jobIds)', { jobIds: [...input.jobIds] })
+      .andWhere('status IN (:...statuses)', { statuses: [...CANCELLABLE_ASYNC_TASK_STATUSES] })
+      .execute();
+    return result.affected ?? 0;
+  }
+
+  /**
+   * 带状态前置条件的账本收敛（崩溃恢复 / 受控终结用）。
+   *
+   * 与 updateStatusByQueueJob 的覆盖式写入不同：
+   * - 只更新调用方「实际观察到的那一行状态」（fromStatuses 由扫描结果传入），
+   *   并发收尾时后到者命中 0 行，不会把已落地的终态改写成另一种终态；
+   * - 永不重写 succeeded 行（成功结果只能由真实执行产生，不能被补投/收敛改写）；
+   * - 单条 UPDATE 自带原子性，不额外开事务，也不触碰 intake / attempt 业务状态。
+   *
+   * 返回受影响行数：0 表示已被并发收尾或状态已变化，调用方按跳过处理。
+   */
+  async settleByQueueJob(input: {
+    readonly queueName: string;
+    readonly jobId: string;
+    readonly fromStatuses: ReadonlyArray<AsyncTaskRecordStatus>;
+    readonly status: AsyncTaskRecordStatus;
+    readonly reason?: string | null;
+    readonly finishedAt?: Date;
+    readonly occurredAt?: Date;
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<number> {
+    if (input.fromStatuses.length === 0) {
+      return 0;
+    }
+    if (input.fromStatuses.includes('succeeded')) {
+      // 编程错误：成功账本行不得作为收敛来源
+      throw new Error('async_task_settle_from_succeeded_rejected');
+    }
+    const occurredAt = input.occurredAt ?? input.finishedAt ?? new Date();
+    const patch: UpdateAsyncTaskRecordStatusInput = {
+      status: input.status,
+      occurredAt,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.finishedAt !== undefined ? { finishedAt: input.finishedAt } : {}),
+    };
+    const repository = this.getRepository(input.transactionContext);
+    const result = await repository
+      .createQueryBuilder()
+      .update(AsyncTaskRecordEntity)
+      .set(patch)
+      .where('queue_name = :queueName', { queueName: input.queueName })
+      .andWhere('job_id = :jobId', { jobId: input.jobId })
+      .andWhere('status IN (:...fromStatuses)', { fromStatuses: [...input.fromStatuses] })
+      .execute();
+    return result.affected ?? 0;
   }
 
   async updateStatusByQueueJob(input: {

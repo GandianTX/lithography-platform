@@ -152,10 +152,13 @@ export class StoredFileRestController {
    * 上传暂存（R062-01）：multipart/form-data，字段 `businessType` + `file`。
    * 成功返回 VALID + TEMPORARY、businessId 为空的元数据与服务端 uploadContextId；
    * 仅表示校验通过，不表示已绑定业务。
+   *
+   * 入口角色只做粗粒度准入（工程师 / 客户），用途级写身份由 usecase 精确裁决：
+   * `REPAIR_PROCESS` 仅工程师，`REPAIR_REQUEST` 仅客户；交叉用途一律拒绝。
    */
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(IdentityTypeEnum.ENGINEER)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.CUSTOMER)
   @UseInterceptors(StoredFileUploadInterceptor)
   @HttpCode(HttpStatus.CREATED)
   async upload(
@@ -184,10 +187,11 @@ export class StoredFileRestController {
   /**
    * 元数据（R062-02）：暂存读取必须带 uploadContextId；
    * 正式绑定读取按真实业务关联与工单访问权校验。
+   * 任务 03 第三段起 CUSTOMER 准入：客户仅可读取本人报修原件（用途级归属由 usecase/QueryService 裁决）。
    */
   @Get(':fileId')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.CUSTOMER)
   async getMetadata(
     @Param('fileId') fileId: string,
     @Req() request: Request,
@@ -209,6 +213,7 @@ export class StoredFileRestController {
 
   /**
    * 授权下载（R062-03）：不暴露存储引用；客户与无权同公司账号不可借 ID 读取。
+   * 任务 03 第三段起 CUSTOMER 准入：客户仅可下载本人报修原件（用途级归属由 usecase/QueryService 裁决）。
    *
    * 响应头已写出后才发生的读流故障不能再改写状态码：
    * - 未发送响应头：清除下载专用头，返回固定受控错误体（不回显底层异常/路径/引用）；
@@ -216,7 +221,7 @@ export class StoredFileRestController {
    */
   @Get(':fileId/download')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.CUSTOMER)
   async download(
     @Param('fileId') fileId: string,
     @Req() request: Request,

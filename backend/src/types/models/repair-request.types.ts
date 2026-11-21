@@ -39,6 +39,25 @@ export enum RepairRequestHandlingResult {
 }
 
 /**
+ * 报修原始输入（`repair_request_intake`）的首次分析状态。
+ *
+ * 数据库 chk_repair_request_intake_analysis_status 的真源值域；
+ * 提交成功时在同一事务内落 `WAITING` + 代次 0，作为首析的可持久化执行意图。
+ * 真正的执行态推进（RUNNING/SUCCEEDED/FAILED）属任务 03 第二段编排，
+ * 本枚举只承载稳定值域，不在此处表达投递或认领语义。
+ */
+export enum IntakeAnalysisStatus {
+  WAITING = 'WAITING',
+  RUNNING = 'RUNNING',
+  SUCCEEDED = 'SUCCEEDED',
+  FAILED = 'FAILED',
+}
+
+/** 首析代次：0 = 初次；1 = 本人唯一一次主动重试（chk_repair_request_intake_generation） */
+export const INTAKE_ANALYSIS_FIRST_GENERATION = 0;
+export const INTAKE_ANALYSIS_RETRY_GENERATION = 1;
+
+/**
  * 工单实际处理状态（三态，由固定映射维护）。
  * 五类结果 → 三态的映射与终结态判定属领域策略，见
  * `@core/repair-request/policy/repair-request-handling.policy`；

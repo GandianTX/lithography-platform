@@ -131,6 +131,12 @@ export interface OwnedOrganizationFacts {
    * - 布尔：必须与该值一致，防止「固定编码重登旧行并覆盖资格标记」。
    */
   readonly isManagedCompany?: boolean;
+  /**
+   * 维修服务资格标记（`is_service_provider`）的可选预期（任务 03）。
+   * 报修提交要求所选厂家 `ACTIVE + is_service_provider`，夹具须锁住该事实，
+   * 防止资格标记被外部改写后旧 ID 继续流入用例。
+   */
+  readonly isServiceProvider?: boolean;
 }
 
 export interface OwnedAccountFacts {
@@ -907,6 +913,7 @@ interface OrganizationRow {
   kind: string;
   status: string;
   is_managed_company: boolean | number;
+  is_service_provider: boolean | number;
 }
 
 interface EngineerRegistrationApplicationRow {
@@ -1802,7 +1809,7 @@ const verifyOwnedExpectations = async (
   if (owned.facts.organization.size > 0) {
     const ids = [...owned.facts.organization.keys()];
     const rows: OrganizationRow[] = await manager.query(
-      `SELECT id, organization_code, name, kind, status, is_managed_company
+      `SELECT id, organization_code, name, kind, status, is_managed_company, is_service_provider
          FROM organization
         WHERE id IN (${inClause(ids)})
         FOR UPDATE`,
@@ -1824,6 +1831,12 @@ const verifyOwnedExpectations = async (
         Boolean(Number(row.is_managed_company)) !== expected.isManagedCompany
       ) {
         mismatches.push('is_managed_company');
+      }
+      if (
+        expected.isServiceProvider !== undefined &&
+        Boolean(Number(row.is_service_provider)) !== expected.isServiceProvider
+      ) {
+        mismatches.push('is_service_provider');
       }
       if (mismatches.length > 0) drift('organization', id, mismatches);
     }

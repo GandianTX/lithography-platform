@@ -75,6 +75,21 @@ export const BULLMQ_QUEUE_REGISTRY: Readonly<Record<BullMqQueueName, BullMqQueue
       shutdownGraceMs: 12000,
     },
   },
+  [BULLMQ_QUEUES.INTAKE_ANALYSIS]: {
+    queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS,
+    defaultJobOptions: {
+      // BullMQ 层的基建补投（瞬时故障 / 进程崩溃）：与用户主动重试（代次 0→1）完全独立，
+      // 任何一次 BullMQ 重试都不会推进首析代次
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1500 },
+      removeOnComplete: 200,
+      removeOnFail: 1000,
+    },
+    runtime: {
+      concurrency: 2,
+      shutdownGraceMs: 12000,
+    },
+  },
 };
 
 export const BULLMQ_QUEUE_NAMES: ReadonlyArray<BullMqQueueName> = Object.values(BULLMQ_QUEUES);

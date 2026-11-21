@@ -11,6 +11,8 @@ import {
   fetchEquipmentModels,
   fetchMyRepairRequest,
   fetchMyRepairRequests,
+  fetchRepairServiceOrganizations,
+  fetchTrustedCompanyName,
 } from './infrastructure/repair-request-adapter';
 
 vi.mock('@/shared/graphql', async (importOriginal) => {
@@ -78,8 +80,60 @@ describe('fetchEquipmentModels', () => {
   });
 });
 
+describe('fetchRepairServiceOrganizations', () => {
+  it('按关键字检索厂家候选，分页变量内部补齐 OFFSET 模式', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      repairServiceOrganizationSearch: {
+        items: [{ id: 88, name: '乙方维修公司', shortName: '乙方' }],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      },
+    });
+
+    await expect(
+      fetchRepairServiceOrganizations({ keyword: '  乙方  ', pageSize: 20 }),
+    ).resolves.toEqual([{ id: 88, name: '乙方维修公司', shortName: '乙方' }]);
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('repairServiceOrganizationSearch'),
+      {
+        pagination: { mode: 'OFFSET', page: 1, pageSize: 20, withTotal: true },
+        keyword: '乙方',
+      },
+    );
+  });
+
+  it('空白关键字按未填处理（不传过滤条件）', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      repairServiceOrganizationSearch: { items: [], total: 0, page: 1, pageSize: 20 },
+    });
+
+    await fetchRepairServiceOrganizations({ keyword: '   ' });
+
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('repairServiceOrganizationSearch'),
+      expect.objectContaining({ keyword: null }),
+    );
+  });
+
+  it('transport 失败上抛 GraphQLIngressError（由 application 转用户文案）', async () => {
+    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
+    executeGraphQLMock.mockRejectedValue(networkError);
+
+    await expect(fetchRepairServiceOrganizations({})).rejects.toBe(networkError);
+  });
+});
+
 describe('createRepairRequest', () => {
-  const input = { equipmentModelId: 21, errorCode: 'E-2001', faultDescription: '报错描述' };
+  const input = {
+    recordUuid: '6f0d1c62-2c66-4b1e-9f1e-2f1f0d1c6a11',
+    serviceOrganizationId: 88,
+    equipmentModelId: 21,
+    equipmentModelText: null,
+    errorCode: 'E-2001',
+    faultDescription: '报错描述',
+    attachment: null,
+  };
 
   it('创建成功返回完整申请记录', async () => {
     executeGraphQLMock.mockResolvedValue({ createRepairRequest: REPAIR_REQUEST_RECORD });
@@ -141,8 +195,9 @@ describe('createRepairRequest', () => {
   );
 
   it.each([
-    ['NOT_FOUND', 'model-not-found', '所选设备型号不存在，请重新选择。'],
+    ['NOT_FOUND', 'attachment-not-found', '报修原件不存在或已失效，请重新上传。'],
     ['BAD_USER_INPUT', 'invalid-input', '输入不符合要求，请检查后重新提交。'],
+    ['CONFLICT', 'submission-conflict', '同一份报修已提交过，请重新打开报修页提交新的申请。'],
     ['INTERNAL_SERVER_ERROR', 'creation-failed', '维修申请创建失败，请稍后重试。'],
   ])(
     '生产环境省略 errorCode 时，仅凭大类码 %s 仍能映射并走兜底文案',
@@ -152,6 +207,46 @@ describe('createRepairRequest', () => {
       await expect(createRepairRequest(input)).resolves.toEqual({ ok: false, reason, message });
     },
   );
+
+  it.each([
+    [
+      'BAD_USER_INPUT',
+      'REPAIR_REQUEST_SERVICE_ORGANIZATION_NOT_AVAILABLE',
+      'service-org-unavailable',
+      '所选维修厂家不可用。',
+    ],
+    [
+      'BAD_USER_INPUT',
+      'REPAIR_REQUEST_EQUIPMENT_MODEL_INPUT_INVALID',
+      'invalid-input',
+      '请选择已有设备型号或填写新机型。',
+    ],
+    [
+      'CONFLICT',
+      'REPAIR_REQUEST_SUBMISSION_CONFLICT',
+      'submission-conflict',
+      '同一提交标识的内容不一致。',
+    ],
+    // PR #27 复审：同标识原申请已删除——与普通内容冲突区分，引导重新发起
+    [
+      'CONFLICT',
+      'REPAIR_REQUEST_SUBMISSION_ORIGINAL_DELETED',
+      'submission-deleted',
+      '原申请已删除，请重新发起维修申请',
+    ],
+    ['CONFLICT', 'STORED_FILE_ALREADY_BOUND', 'attachment-conflict', '原件已被绑定。'],
+    ['NOT_FOUND', 'STORED_FILE_NOT_FOUND', 'attachment-not-found', '原件不存在或无权绑定。'],
+  ])('任务 03 细化码 %s / %s → reason=%s', async (code, errorCode, reason, errorMessage) => {
+    executeGraphQLMock.mockRejectedValue(
+      buildDomainIngressError({ code, errorCode, errorMessage }),
+    );
+
+    await expect(createRepairRequest(input)).resolves.toEqual({
+      ok: false,
+      reason,
+      message: errorMessage,
+    });
+  });
 
   it('后端未提供业务消息时使用前端兜底文案', async () => {
     executeGraphQLMock.mockRejectedValue(
@@ -377,6 +472,10 @@ describe('fetchMyRepairRequest', () => {
     expect(executeGraphQLMock).toHaveBeenCalledWith(expect.stringContaining('myRepairRequest'), {
       id: 920001,
     });
+    // 首析展示状态与重试资格由服务端判定，前端必须取回这两个字段
+    const query = executeGraphQLMock.mock.calls[0][0];
+    expect(query).toContain('displayState');
+    expect(query).toContain('retryEligibility');
   });
 
   it('NOT_FOUND 统一归并为 not-found 防探测拒绝，透传后端 errorMessage', async () => {
@@ -514,5 +613,37 @@ describe('deleteMyRepairRequest', () => {
     executeGraphQLMock.mockRejectedValue(authError);
 
     await expect(deleteMyRepairRequest(920001)).rejects.toBe(authError);
+  });
+});
+
+// PR #27 复审：可信公司名称只读展示的窄查询（复用 myAccountSettings.trustedCompanyName）
+describe('fetchTrustedCompanyName', () => {
+  it('只查询 trustedCompanyName 单字段，并原样返回可信公司名称', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      myAccountSettings: { trustedCompanyName: '甲公司' },
+    });
+
+    await expect(fetchTrustedCompanyName()).resolves.toBe('甲公司');
+
+    const document = executeGraphQLMock.mock.calls[0][0] as string;
+    expect(document).toContain('myAccountSettings');
+    expect(document).toContain('trustedCompanyName');
+    // 窄视图：不请求普通资料 companyName（两者来源不同，不回退）
+    expect(document).not.toMatch(/\bcompanyName\b/);
+  });
+
+  it('未绑定公司时返回 null，不回退普通资料 companyName', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      myAccountSettings: { trustedCompanyName: null },
+    });
+
+    await expect(fetchTrustedCompanyName()).resolves.toBeNull();
+  });
+
+  it('transport / auth 类失败上抛 GraphQLIngressError，由 application 状态机收敛', async () => {
+    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
+    executeGraphQLMock.mockRejectedValue(networkError);
+
+    await expect(fetchTrustedCompanyName()).rejects.toBe(networkError);
   });
 });

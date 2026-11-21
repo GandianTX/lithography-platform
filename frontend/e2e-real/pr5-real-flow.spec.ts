@@ -19,7 +19,7 @@
 // S5-8 专用库与前置数据（S5-9 视频与拒绝回执在证据采集阶段落地）。
 
 import { expect, type Page, test } from '@playwright/test';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { assertApiSqlSameDatabase } from '../e2e/helpers/dedicated-account-cleanup';
@@ -167,6 +167,26 @@ function readFirstEnabledModelId(): number {
   return value;
 }
 
+/**
+ * 首个可用维修厂家 ID（任务 03 起创建报修必填 `serviceOrganizationId`；
+ * 只读，取自与 API 同一库，要求 `ACTIVE + is_service_provider`）。
+ */
+function readFirstServiceProviderOrganizationId(): number {
+  const value = Number(
+    mysqlQuery(
+      "SELECT id FROM organization WHERE status = 'ACTIVE' AND is_service_provider = 1 ORDER BY id LIMIT 1",
+    ),
+  );
+
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      `可用维修厂家读取异常：${JSON.stringify(value)}；PR5 真实链路需要库内存在 ACTIVE 且具备维修服务资格的组织`,
+    );
+  }
+
+  return value;
+}
+
 /** 真实 UI 登录并断言落到角色主页（与既有真实链路 spec 同一交互口径） */
 async function loginViaUi(
   page: Page,
@@ -195,6 +215,9 @@ async function createPr5RepairRequestViaApi(
     CREATE_REPAIR_REQUEST_MUTATION,
     {
       input: {
+        // 任务 03：提交标识逐次生成（真实链路无重放场景）；厂家取库内首个可用维修厂家
+        recordUuid: randomUUID(),
+        serviceOrganizationId: readFirstServiceProviderOrganizationId(),
         equipmentModelId: readFirstEnabledModelId(),
         errorCode: 'E2E-PR5',
         faultDescription,

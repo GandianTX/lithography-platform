@@ -10,11 +10,13 @@ interface TestJob {
   readonly id?: string | number;
   readonly name: string;
   readonly data: unknown;
+  readonly getState?: jest.Mock<Promise<string>>;
 }
 
 interface TestQueue {
   readonly add: jest.Mock<Promise<TestJob>, [string, unknown, JobsOptions]>;
   readonly getJob: jest.Mock<Promise<TestJob | null>, [string]>;
+  readonly remove: jest.Mock<Promise<number>, [string]>;
 }
 
 describe('BullMqProducerGateway', () => {
@@ -28,6 +30,7 @@ describe('BullMqProducerGateway', () => {
         }),
       ),
       getJob: jest.fn((_jobId: string) => Promise.resolve(null)),
+      remove: jest.fn((_jobId: string) => Promise.resolve(1)),
     };
     const moduleRef = {
       get: jest.fn(() => queue),
@@ -180,5 +183,91 @@ describe('BullMqProducerGateway', () => {
 
     expect(queue.getJob).toHaveBeenCalledWith('queue-health-probe');
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  describe('getJobState', () => {
+    it('job 不存在 → unknown', async () => {
+      const { gateway, queue } = createHarness();
+      queue.getJob.mockResolvedValueOnce(null);
+
+      await expect(
+        gateway.getJobState({ queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS, jobId: 'job-1' }),
+      ).resolves.toEqual({
+        queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS,
+        jobId: 'job-1',
+        state: 'unknown',
+      });
+    });
+
+    it.each([
+      ['waiting', 'waiting'],
+      ['prioritized', 'waiting'],
+      ['waiting-children', 'waiting'],
+      ['active', 'active'],
+      ['delayed', 'delayed'],
+      ['completed', 'completed'],
+      ['failed', 'failed'],
+      ['unknown', 'unknown'],
+    ] as const)('BullMQ 状态 %s → 归一化为 %s', async (rawState, normalized) => {
+      const { gateway, queue } = createHarness();
+      queue.getJob.mockResolvedValueOnce({
+        id: 'job-1',
+        name: 'analyze',
+        data: {},
+        getState: jest.fn().mockResolvedValue(rawState),
+      });
+
+      await expect(
+        gateway.getJobState({ queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS, jobId: 'job-1' }),
+      ).resolves.toEqual({
+        queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS,
+        jobId: 'job-1',
+        state: normalized,
+      });
+    });
+
+    it('空 jobId 拒绝', async () => {
+      const { gateway } = createHarness();
+
+      await expect(
+        gateway.getJobState({ queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS, jobId: ' ' }),
+      ).rejects.toThrow(`bullmq_job_id_required:${BULLMQ_QUEUES.INTAKE_ANALYSIS}`);
+    });
+  });
+
+  describe('removeJob', () => {
+    it('移除成功（remove 返回 1）→ removed: true', async () => {
+      const { gateway, queue } = createHarness();
+
+      await expect(
+        gateway.removeJob({ queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS, jobId: 'job-1' }),
+      ).resolves.toEqual({
+        queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS,
+        jobId: 'job-1',
+        removed: true,
+      });
+      expect(queue.remove).toHaveBeenCalledWith('job-1');
+    });
+
+    it('job 不存在或被锁定（remove 返回 0）→ removed: false 且不抛错', async () => {
+      const { gateway, queue } = createHarness();
+      queue.remove.mockResolvedValueOnce(0);
+
+      await expect(
+        gateway.removeJob({ queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS, jobId: 'job-1' }),
+      ).resolves.toEqual({
+        queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS,
+        jobId: 'job-1',
+        removed: false,
+      });
+    });
+
+    it('空 jobId 拒绝', async () => {
+      const { gateway } = createHarness();
+
+      await expect(
+        gateway.removeJob({ queueName: BULLMQ_QUEUES.INTAKE_ANALYSIS, jobId: ' ' }),
+      ).rejects.toThrow(`bullmq_job_id_required:${BULLMQ_QUEUES.INTAKE_ANALYSIS}`);
+    });
   });
 });

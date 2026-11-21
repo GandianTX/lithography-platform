@@ -99,6 +99,51 @@ export class AsyncTaskRecordQueryService {
     });
   }
 
+  /**
+   * 列出某队列中仍处非终态、且最后更新时间早于 staleBefore 的账本行（按 id 升序限量）。
+   *
+   * 扫描范围由队列名 + 状态前置条件限定：只看到本队列自己的持久任务标识，
+   * 其他队列与其他 AI 任务的账本行不会进入结果。
+   * 供 housekeeping 类用例做崩溃恢复补投（queued）与租约过期恢复（processing）。
+   *
+   * excludeReasonPrefixes：排除已受控终结（永久错误 / 已按事实收敛）的账本行。
+   * 这些行不会再有补投价值，若继续占住限量批次会让后续可恢复行永远扫不到。
+   * 用 LEFT() 精确前缀比较，避免 LIKE 把 reason 中的 `_` 当作通配符。
+   */
+  async listStaleActiveByQueue(input: {
+    readonly queueName: string;
+    readonly statuses: ReadonlyArray<Exclude<AsyncTaskRecordStatus, 'cancelled'>>;
+    readonly staleBefore: Date;
+    readonly limit: number;
+    readonly excludeReasonPrefixes?: ReadonlyArray<string>;
+  }): Promise<AsyncTaskRecordView[]> {
+    this.capabilityStateReader.requireEnabled('runtime.async-task');
+    if (input.statuses.length === 0 || input.limit <= 0) {
+      return [];
+    }
+    const excludedPrefixes = (input.excludeReasonPrefixes ?? []).filter(
+      (prefix) => prefix.length > 0,
+    );
+    const excludedParams: Record<string, string | number> = {};
+    const excludedClauses = excludedPrefixes.map((prefix, index) => {
+      excludedParams[`excludedReasonPrefix${index}`] = prefix;
+      excludedParams[`excludedReasonLength${index}`] = prefix.length;
+      return `LEFT(record.reason, :excludedReasonLength${index}) <> :excludedReasonPrefix${index}`;
+    });
+    const queryBuilder = this.asyncTaskRecordRepository
+      .createQueryBuilder('record')
+      .where('record.queue_name = :queueName', { queueName: input.queueName })
+      .andWhere('record.status IN (:...statuses)', { statuses: [...input.statuses] })
+      .andWhere('record.updated_at <= :staleBefore', { staleBefore: input.staleBefore });
+    if (excludedClauses.length > 0) {
+      queryBuilder.andWhere(`(record.reason IS NULL OR (${excludedClauses.join(' AND ')}))`, {
+        ...excludedParams,
+      });
+    }
+    const entities = await queryBuilder.orderBy('record.id', 'ASC').take(input.limit).getMany();
+    return entities.map((entity) => this.toView(entity));
+  }
+
   async hasActiveTaskByBizTarget(input: {
     readonly bizType: string;
     readonly bizKey: string;

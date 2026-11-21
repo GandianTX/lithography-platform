@@ -1,7 +1,7 @@
 // src/features/repair-request/ui/repair-request-form.tsx
 
-import { useCallback } from 'react';
-import { Alert, Button, Form, Input, Result, Select } from 'antd';
+import { useCallback, useState } from 'react';
+import { Alert, Button, Checkbox, Form, Input, Result, Select, Upload } from 'antd';
 import { useNavigate } from 'react-router';
 
 import { useI18n } from '@/shared/i18n';
@@ -19,9 +19,12 @@ const ACCOUNT_SETTINGS_PATH = '/account/settings';
 // 修改需同步后端，避免单边漂移导致前端误拦或漏校验。
 const ERROR_CODE_MAX_LENGTH = 100;
 const FAULT_DESCRIPTION_MAX_LENGTH = 5000;
+const MANUAL_MODEL_TEXT_MAX_LENGTH = 50;
 
 type RepairRequestFormValues = {
-  equipmentModelId: number;
+  serviceOrganizationId: number;
+  equipmentModelId?: number;
+  equipmentModelText?: string;
   errorCode: string;
   faultDescription: string;
 };
@@ -47,34 +50,45 @@ export type RepairRequestFormProps = {
 };
 
 /**
- * 创建维修申请表单。
+ * 创建维修申请表单（任务 03「提交即出单」）。
  *
- * - 型号 query 三态、重试编排、create command、在途锁与错误归一均由
+ * - 客户公司只读：归属来自可信登录身份的账号设置，不接受在表单内修改；
+ * - 维修厂家来自后端候选（启用 + 具备维修服务资格），支持关键字检索，不支持手工输入；
+ * - 机型可「选已有」或「手填新机型」二选一：手填只在提交事务内查重/登记，
+ *   搜索与输入都不写库；
+ * - 原件可选：先上传为暂存态，提交成功时在同一事务内绑定，提交失败保留以便重试；
+ * - 型号/厂家 query 三态、幂等提交标识、在途锁与错误归一由
  *   application 的 useRepairRequestCreateFlow 承担，本组件只负责渲染与把编排结果
- *   转成提示、重置与导航；
- * - 设备型号列表来自后端（仅启用型号），含加载中 / 失败重试 / 无可用型号三种状态；
- * - 业务拒绝展示后端消息并保留表单内容；transport 失败展示共享错误模型的用户文案；
- * - 提交中禁用按钮并以进行中标志防连点；成功展示申请编号（后端生成，不从输入取），
- *   并重置表单，避免“继续创建”时残留旧值一键重复提交；
- * - 协作端口：onCreated 在创建成功时上报记录（工作台据此刷新左栏列表）；
- *   onViewCreated 覆盖「查看维修申请」的默认跳转目标（工作台进入新申请详情路由）。
+ *   转成提示、重置与导航。
  */
 export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFormProps) {
   const navigate = useNavigate();
   const { t } = useI18n();
   const [form] = Form.useForm<RepairRequestFormValues>();
+  const [manualModel, setManualModel] = useState(false);
   const {
+    attachment,
+    clearAttachment,
+    companyState,
     continueCreating,
     createdRequest,
     modelsState,
+    restartSubmission,
+    retryLoadCompany,
     retryLoadModels,
+    retryLoadServiceOrganizations,
+    searchServiceOrganizations,
+    serviceOrgsState,
     submit,
     submitting,
     submitError,
     submitFailureReason,
+    uploadAttachment,
   } = useRepairRequestCreateFlow();
 
   const modelsReady = modelsState.status === 'ready' && modelsState.models.length > 0;
+  const serviceOrgsReady = serviceOrgsState.status === 'ready';
+  const canSubmit = modelsReady && serviceOrgsReady && attachment.status !== 'uploading';
 
   const handleSubmit = useCallback(
     async (values: RepairRequestFormValues) => {
@@ -83,16 +97,42 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
       if (record) {
         // 重置表单，避免“继续创建”时残留旧值导致一键重复提交；随后上报创建成功
         form.resetFields();
+        setManualModel(false);
+        clearAttachment();
         onCreated?.(record);
       }
     },
-    [form, onCreated, submit],
+    [clearAttachment, form, onCreated, submit],
   );
 
   // 「取消」即放弃当前填写内容：仅重置表单字段，不清除型号等页面级状态
   const handleCancel = useCallback(() => {
     form.resetFields();
-  }, [form]);
+    setManualModel(false);
+    clearAttachment();
+  }, [clearAttachment, form]);
+
+  // 切换机型录入方式：清空另一侧的旧值，保证「二选一」不会同时携带两份输入
+  const handleToggleManualModel = useCallback(
+    (checked: boolean) => {
+      setManualModel(checked);
+      if (checked) {
+        form.setFieldValue('equipmentModelId', undefined);
+      } else {
+        form.setFieldValue('equipmentModelText', undefined);
+      }
+    },
+    [form],
+  );
+
+  const handleUpload = useCallback(
+    (file: File) => {
+      void uploadAttachment(file);
+
+      return false;
+    },
+    [uploadAttachment],
+  );
 
   if (createdRequest) {
     return (
@@ -145,6 +185,21 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
           type="warning"
         />
       ) : null}
+      {serviceOrgsState.status === 'failed' ? (
+        <Alert
+          action={
+            <Button onClick={retryLoadServiceOrganizations} size="small">
+              {t('common.retry')}
+            </Button>
+          }
+          title={serviceOrgsState.message}
+          showIcon
+          type="error"
+        />
+      ) : null}
+      {serviceOrgsState.status === 'ready' && serviceOrgsState.organizations.length === 0 ? (
+        <Alert title={t('repairForm.noServiceOrgs')} showIcon type="warning" />
+      ) : null}
       {submitError ? (
         <Alert
           action={
@@ -152,13 +207,21 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
               <Button onClick={() => navigate(ACCOUNT_SETTINGS_PATH)} size="small" type="primary">
                 {t('common.goAccountSettings')}
               </Button>
+            ) : submitFailureReason === 'submission-deleted' ? (
+              // PR #27 复审：原申请已删除——明确引导重新发起，且只在用户点击本按钮
+              // 时换新提交标识（不自动创建新工单）
+              <Button onClick={restartSubmission} size="small" type="primary">
+                {t('repairForm.restartSubmission')}
+              </Button>
             ) : undefined
           }
           title={submitError}
           description={
             submitFailureReason === 'company-required'
               ? t('repairForm.companyRequiredHint')
-              : undefined
+              : submitFailureReason === 'submission-deleted'
+                ? t('repairForm.submissionDeletedHint')
+                : undefined
           }
           showIcon
           type="error"
@@ -166,24 +229,61 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
       ) : null}
 
       <Form form={form} layout="vertical" onFinish={(values) => void handleSubmit(values)}>
-        <Form.Item
-          label={<FieldLabel hint={t('repairForm.modelHint')} title={t('repairForm.modelLabel')} />}
-          name="equipmentModelId"
-          rules={[{ message: t('repairForm.modelRequired'), required: true }]}
-        >
-          <Select
-            disabled={!modelsReady}
-            loading={modelsState.status === 'loading'}
-            options={
-              modelsState.status === 'ready'
-                ? modelsState.models.map((model) => ({
-                    label: `${model.modelName}（${model.modelCode}）`,
-                    value: model.id,
-                  }))
-                : []
+        {/* 分段一：故障信息（机型二选一 + 错误码 + 故障现象） */}
+        <h3 className="repair-request-section-title">{t('repairForm.section.faultInfo')}</h3>
+        {manualModel ? (
+          <Form.Item
+            label={
+              <FieldLabel
+                hint={t('repairForm.modelManualHint', { max: MANUAL_MODEL_TEXT_MAX_LENGTH })}
+                title={t('repairForm.modelManualLabel')}
+              />
             }
-            placeholder={t('repairForm.modelPlaceholder')}
-          />
+            name="equipmentModelText"
+            rules={[
+              { message: t('repairForm.modelManualRequired'), required: true },
+              {
+                max: MANUAL_MODEL_TEXT_MAX_LENGTH,
+                message: t('repairForm.modelManualMax', { max: MANUAL_MODEL_TEXT_MAX_LENGTH }),
+              },
+            ]}
+          >
+            <Input
+              disabled={!modelsReady}
+              maxLength={MANUAL_MODEL_TEXT_MAX_LENGTH}
+              placeholder={t('repairForm.modelManualPlaceholder')}
+            />
+          </Form.Item>
+        ) : (
+          <Form.Item
+            label={
+              <FieldLabel hint={t('repairForm.modelHint')} title={t('repairForm.modelLabel')} />
+            }
+            name="equipmentModelId"
+            rules={[{ message: t('repairForm.modelRequired'), required: true }]}
+          >
+            <Select
+              disabled={!modelsReady}
+              loading={modelsState.status === 'loading'}
+              options={
+                modelsState.status === 'ready'
+                  ? modelsState.models.map((model) => ({
+                      label: `${model.modelName}（${model.modelCode}）`,
+                      value: model.id,
+                    }))
+                  : []
+              }
+              placeholder={t('repairForm.modelPlaceholder')}
+            />
+          </Form.Item>
+        )}
+        <Form.Item>
+          <Checkbox
+            checked={manualModel}
+            onChange={(event) => handleToggleManualModel(event.target.checked)}
+          >
+            {t('repairForm.modelManualToggle')}
+          </Checkbox>
         </Form.Item>
         <Form.Item
           label={
@@ -231,6 +331,107 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             style={{ minHeight: 150 }}
           />
         </Form.Item>
+        {/* 分段二：维修安排（客户公司只读 + 维修厂家） */}
+        <h3 className="repair-request-section-title">
+          {t('repairForm.section.serviceArrangement')}
+        </h3>
+        {/* 客户公司：只读展示实际可信公司名称（trustedCompanyName，服务端按可信身份
+            解析，PR #27 复审）；加载中 / 未绑定 / 加载失败分别给出明确状态，
+            不展示虚构公司，也不把查询失败当作已绑定。归属授权仍由服务端决定。 */}
+        <Form.Item
+          label={
+            <FieldLabel hint={t('repairForm.companyHint')} title={t('repairForm.companyLabel')} />
+          }
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              disabled
+              readOnly
+              value={
+                companyState.status === 'loading'
+                  ? t('repairForm.companyLoading')
+                  : companyState.status === 'failed'
+                    ? companyState.message
+                    : (companyState.trustedCompanyName ?? t('repairForm.companyNotBound'))
+              }
+            />
+            {companyState.status === 'failed' ? (
+              <Button onClick={retryLoadCompany} size="small">
+                {t('common.retry')}
+              </Button>
+            ) : null}
+          </div>
+        </Form.Item>
+        <Form.Item
+          label={
+            <FieldLabel
+              hint={t('repairForm.serviceOrgHint')}
+              title={t('repairForm.serviceOrgLabel')}
+            />
+          }
+          name="serviceOrganizationId"
+          rules={[{ message: t('repairForm.serviceOrgRequired'), required: true }]}
+        >
+          <Select
+            disabled={!serviceOrgsReady}
+            filterOption={false}
+            loading={serviceOrgsState.status === 'loading'}
+            notFoundContent={
+              serviceOrgsState.status === 'loading'
+                ? t('repairForm.serviceOrgSearching')
+                : undefined
+            }
+            onSearch={searchServiceOrganizations}
+            options={
+              serviceOrgsState.status === 'ready'
+                ? serviceOrgsState.organizations.map((organization) => ({
+                    label: organization.shortName
+                      ? `${organization.name}（${organization.shortName}）`
+                      : organization.name,
+                    value: organization.id,
+                  }))
+                : []
+            }
+            placeholder={t('repairForm.serviceOrgPlaceholder')}
+            showSearch
+          />
+        </Form.Item>
+        {/* 分段三：可选原件（先上传为暂存态，提交时在同一事务内绑定） */}
+        <h3 className="repair-request-section-title">{t('repairForm.section.attachment')}</h3>
+        <Form.Item
+          label={
+            <FieldLabel
+              hint={t('repairForm.attachmentHint')}
+              title={t('repairForm.attachmentLabel')}
+            />
+          }
+        >
+          <div className="flex flex-col gap-2">
+            {attachment.status === 'ready' ? (
+              <div className="flex items-center gap-2">
+                <span>{attachment.file.originalFilename}</span>
+                <Button disabled={submitting} onClick={clearAttachment} size="small" type="link">
+                  {t('repairForm.attachmentRemove')}
+                </Button>
+                <span className="repair-request-field-hint">{t('repairForm.attachmentReady')}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Upload beforeUpload={handleUpload} fileList={[]} showUploadList={false}>
+                  <Button disabled={attachment.status === 'uploading'}>
+                    {attachment.status === 'uploading'
+                      ? t('repairForm.attachmentUploading')
+                      : t('repairForm.attachmentUpload')}
+                  </Button>
+                </Upload>
+                {attachment.status === 'uploading' ? <span>{attachment.filename}</span> : null}
+              </div>
+            )}
+            {attachment.status === 'failed' ? (
+              <span className="repair-request-field-hint">{attachment.message}</span>
+            ) : null}
+          </div>
+        </Form.Item>
         {/* 操作行（2026-09-30 复审）：整体业务规则在左、按钮在右；窄屏自动换行后
             规则在上、按钮仍右对齐（.repair-request-form-*，见 index.css） */}
         <Form.Item>
@@ -238,7 +439,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             <p className="repair-request-form-rule">{t('repairForm.rule')}</p>
             <div className="repair-request-form-buttons">
               <Button onClick={handleCancel}>{t('common.cancel')}</Button>
-              <Button disabled={!modelsReady} htmlType="submit" loading={submitting} type="primary">
+              <Button disabled={!canSubmit} htmlType="submit" loading={submitting} type="primary">
                 {t('repairForm.submit')}
               </Button>
             </div>

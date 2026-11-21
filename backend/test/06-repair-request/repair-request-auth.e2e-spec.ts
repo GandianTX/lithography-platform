@@ -30,8 +30,20 @@ const CREATE_REPAIR_REQUEST_MUTATION = `
  */
 const NON_EXISTENT_EQUIPMENT_MODEL_ID = 999999;
 
+/**
+ * 任务 03 起该 mutation 要求 `recordUuid` 与 `serviceOrganizationId` 必填。
+ * 本文件所有用例都在守卫层（UNAUTHENTICATED / FORBIDDEN）被拒，不进入业务校验；
+ * 但 GraphQL 变量变形先于字段守卫执行，缺必填字段会先得到 BAD_USER_INPUT。
+ * 因此这里只提供「能通过变量变形」的占位值：不存在的厂家 ID + 固定提交标识，
+ * 原有权限断言保持不变。
+ */
+const PLACEHOLDER_SERVICE_ORGANIZATION_ID = 999999;
+const PLACEHOLDER_RECORD_UUID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+
 const CREATE_REPAIR_REQUEST_VARIABLES = {
   input: {
+    recordUuid: PLACEHOLDER_RECORD_UUID,
+    serviceOrganizationId: PLACEHOLDER_SERVICE_ORGANIZATION_ID,
     equipmentModelId: NON_EXISTENT_EQUIPMENT_MODEL_ID,
     errorCode: 'E-2001',
     faultDescription: '端点鉴权 e2e',

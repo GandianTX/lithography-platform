@@ -3,6 +3,11 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
+import {
+  StoredFileBindingStatus,
+  StoredFileBusinessType,
+  StoredFileStatus,
+} from '@app-types/models/stored-file.types';
 import { hasRole } from '@core/account/policy/role-access.policy';
 import { DomainError, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import {
@@ -17,26 +22,48 @@ import { FindOptionsWhere, In, Repository } from 'typeorm';
 import type { RepairRequestAssociationTarget } from '../ai-conversation.types';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
+import { IntakeAnalysisAttemptEntity } from '../entities/intake-analysis-attempt.entity';
+import { OrganizationEntity } from '../entities/organization.entity';
 import { RepairRequestEntity } from '../entities/repair-request.entity';
 import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.entity';
+import { StoredFileEntity } from '../entities/stored-file.entity';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
 import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
 import {
   EngineerResponseQueryResult,
   EquipmentModelView,
+  RepairIntakeSourceView,
+  RepairMaintenanceFaultPanelView,
+  RepairMaintenanceRecordView,
+  RepairMaintenanceStepView,
+  RepairProcessEntryView,
+  RepairRequestCustomerListItemView,
   RepairRequestDetailQueryResult,
   RepairRequestDetailReadScope,
   RepairRequestEngineerListFilterInternal,
   RepairRequestEngineerListItemQueryResult,
   RepairRequestEngineerListQueryPage,
   RepairRequestEngineerListScope,
+  RepairRequestIntakeAnalysisCustomerBaseView,
+  RepairRequestIntakeAnalysisRetryFacts,
   RepairRequestListItemView,
   RepairRequestListPage,
   RepairRequestListPagination,
+  RepairRequestOriginalFileView,
+  RepairRequestServiceOrganizationView,
 } from '../lithography.types';
 
 /** 列表固定排序：创建时间倒序，次级主键倒序（对接方案第二节） */
 const LIST_ORDER = { createdAt: 'DESC', id: 'DESC' } as const;
+
+/** 客户详情的原稿上下文装配结果（QueryService 内部；仅客户入口消费，不进对外契约文档外泄） */
+type CustomerIntakeContext = {
+  analysis: RepairRequestIntakeAnalysisCustomerBaseView;
+  /** 自助资格判定事实（账本事实由 usecase 补齐后判定） */
+  retryFacts: RepairRequestIntakeAnalysisRetryFacts;
+  originalFile: RepairRequestOriginalFileView | null;
+  serviceOrganization: RepairRequestServiceOrganizationView | null;
+};
 
 /** 列表装配批量读取上下文：机型映射 + 申请维度最新处理状态（一次批量读取） */
 type ListItemAssembleContext = {
@@ -70,6 +97,12 @@ export class RepairRequestQueryService {
     private readonly equipmentModelRepository: Repository<EquipmentModelEntity>,
     @InjectRepository(RepairRequestIntakeEntity)
     private readonly intakeRepository: Repository<RepairRequestIntakeEntity>,
+    @InjectRepository(IntakeAnalysisAttemptEntity)
+    private readonly intakeAnalysisAttemptRepository: Repository<IntakeAnalysisAttemptEntity>,
+    @InjectRepository(StoredFileEntity)
+    private readonly storedFileRepository: Repository<StoredFileEntity>,
+    @InjectRepository(OrganizationEntity)
+    private readonly organizationRepository: Repository<OrganizationEntity>,
     private readonly repairProcessEntryQueryService: RepairProcessEntryQueryService,
     private readonly maintenanceQueryService: RepairRequestMaintenanceQueryService,
   ) {}
@@ -80,9 +113,13 @@ export class RepairRequestQueryService {
   async listByCustomer(params: {
     customerAccountId: number;
     pagination: RepairRequestListPagination;
-  }): Promise<RepairRequestListPage> {
+  }): Promise<
+    Omit<RepairRequestListPage, 'items'> & { items: RepairRequestCustomerListItemView[] }
+  > {
     const where = { customerAccountId: params.customerAccountId, deprecated: false };
-    return this.listPage(where, params.pagination, (entities) => this.toListItemViews(entities));
+    return this.listPage(where, params.pagination, (entities) =>
+      this.toCustomerListItemViews(entities),
+    );
   }
 
   /**
@@ -216,25 +253,17 @@ export class RepairRequestQueryService {
       });
     }
     if (params.scope === 'ENGINEER') {
-      // 可信服务公司 = 工单服务公司 与 原始报修 intake 服务公司 一致时的该值；
-      // 缺失或冲突时直接拒绝，不回退旧 owner、客户公司、客户端组织或历史接单人
-      const trustedServiceOrganizationId = await this.resolveTrustedServiceOrganizationId(entity);
-      if (
-        trustedServiceOrganizationId === null ||
-        trustedServiceOrganizationId !== (params.viewerOrganizationId ?? null)
-      ) {
-        throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '维修申请不存在或不可查看', {
-          id: params.requestId,
-        });
-      }
+      await this.assertEngineerTrustedScope(entity, params.requestId, params.viewerOrganizationId);
     }
 
-    const [model, responses] = await Promise.all([
+    const [model, responses, customerIntakeContext] = await Promise.all([
       this.equipmentModelRepository.findOne({ where: { id: entity.equipmentModelId } }),
       this.responseRepository.find({
         where: { requestId: entity.id },
         order: { createdAt: 'ASC', id: 'ASC' },
       }),
+      // 客户入口装配：首析状态/正文、本人报修原件与维修厂家（越权由 canReadRequest 已核）
+      params.scope === 'CUSTOMER' ? this.findCustomerIntakeContext(entity) : Promise.resolve(null),
     ]);
     // 内部维修过程与结构化维修记录仅对接单工程师本人开放；客户入口及其他工程师恒为空
     const isAcceptingEngineer =
@@ -243,24 +272,7 @@ export class RepairRequestQueryService {
       entity.acceptedByEngineerAccountId === params.session.accountId;
 
     const [processEntries, maintenance, maintenanceSteps, maintenanceFaultPanels, intake] =
-      await Promise.all([
-        isAcceptingEngineer
-          ? this.repairProcessEntryQueryService.listByRequest(entity.id)
-          : Promise.resolve([]),
-        isAcceptingEngineer
-          ? this.maintenanceQueryService.findRecord(entity.id)
-          : Promise.resolve(null),
-        isAcceptingEngineer
-          ? this.maintenanceQueryService.listSteps(entity.id)
-          : Promise.resolve([]),
-        isAcceptingEngineer
-          ? this.maintenanceQueryService.listFaultPanels(entity.id)
-          : Promise.resolve([]),
-        // 客户原始报修与首次 AI 分析：仅工程师入口（同公司工程师均可读）；客户入口不返回
-        params.scope === 'ENGINEER'
-          ? this.maintenanceQueryService.findIntakeSource(entity.id)
-          : Promise.resolve(null),
-      ]);
+      await this.loadEngineerScopeAttachments(entity, isAcceptingEngineer, params.scope);
 
     return {
       id: entity.id,
@@ -285,6 +297,10 @@ export class RepairRequestQueryService {
       maintenanceSteps,
       maintenanceFaultPanels,
       intake,
+      intakeAnalysis: customerIntakeContext?.analysis ?? null,
+      intakeAnalysisRetryFacts: customerIntakeContext?.retryFacts ?? null,
+      originalFile: customerIntakeContext?.originalFile ?? null,
+      serviceOrganization: customerIntakeContext?.serviceOrganization ?? null,
       canEditMaintenance:
         isAcceptingEngineer &&
         !isRepairRequestEnded({
@@ -295,6 +311,61 @@ export class RepairRequestQueryService {
       customerAccountId: entity.customerAccountId,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
     };
+  }
+
+  /**
+   * 工程师入口可信服务公司门禁：可信服务公司 = 工单服务公司 与 原始报修 intake
+   * 服务公司一致时的该值；缺失或冲突时直接拒绝，不回退旧 owner、客户公司、
+   * 客户端组织或历史接单人。
+   */
+  private async assertEngineerTrustedScope(
+    entity: RepairRequestEntity,
+    requestId: number,
+    viewerOrganizationId: number | null | undefined,
+  ): Promise<void> {
+    const trustedServiceOrganizationId = await this.resolveTrustedServiceOrganizationId(entity);
+    if (
+      trustedServiceOrganizationId === null ||
+      trustedServiceOrganizationId !== (viewerOrganizationId ?? null)
+    ) {
+      throw new DomainError(PERMISSION_ERROR.ACCESS_DENIED, '维修申请不存在或不可查看', {
+        id: requestId,
+      });
+    }
+  }
+
+  /**
+   * 工程师入口附件装配：内部维修过程与结构化维修记录仅对接单工程师本人开放；
+   * 客户原始报修与首次 AI 分析仅工程师入口（同公司工程师均可读）；客户入口不返回。
+   */
+  private async loadEngineerScopeAttachments(
+    entity: RepairRequestEntity,
+    isAcceptingEngineer: boolean,
+    scope: RepairRequestDetailReadScope,
+  ): Promise<
+    [
+      RepairProcessEntryView[],
+      RepairMaintenanceRecordView | null,
+      RepairMaintenanceStepView[],
+      RepairMaintenanceFaultPanelView[],
+      RepairIntakeSourceView | null,
+    ]
+  > {
+    return Promise.all([
+      isAcceptingEngineer
+        ? this.repairProcessEntryQueryService.listByRequest(entity.id)
+        : Promise.resolve([]),
+      isAcceptingEngineer
+        ? this.maintenanceQueryService.findRecord(entity.id)
+        : Promise.resolve(null),
+      isAcceptingEngineer ? this.maintenanceQueryService.listSteps(entity.id) : Promise.resolve([]),
+      isAcceptingEngineer
+        ? this.maintenanceQueryService.listFaultPanels(entity.id)
+        : Promise.resolve([]),
+      scope === 'ENGINEER'
+        ? this.maintenanceQueryService.findIntakeSource(entity.id)
+        : Promise.resolve(null),
+    ]);
   }
 
   /**
@@ -342,6 +413,177 @@ export class RepairRequestQueryService {
     return intake !== null && intake.serviceOrganizationId === entity.serviceOrganizationId
       ? entity.serviceOrganizationId
       : null;
+  }
+
+  /**
+   * 客户详情上下文装配：首析状态/正文、本人报修原件与维修厂家。
+   *
+   * - 首析状态/代次取原稿意图行（WAITING 在认领前也可见）；
+   *   正文仅当前代次尝试行 SUCCEEDED 时返回真实输出，失败不向客户暴露受控原因细节；
+   * - 原件只认「真实绑定到本原稿」的 BOUND + REPAIR_REQUEST + VALID 登记行，
+   *   绑定无效或缺失一律不返回（不伪造），下载走共用授权链路二次核权；
+   * - 厂家只取名称与主键；旧行无服务公司时为 null。
+   */
+  private async findCustomerIntakeContext(
+    entity: RepairRequestEntity,
+  ): Promise<CustomerIntakeContext | null> {
+    if (entity.intakeId === null) {
+      return null;
+    }
+    const intake = await this.intakeRepository.findOne({ where: { id: entity.intakeId } });
+    if (!intake || intake.deletedAt !== null) {
+      return null;
+    }
+
+    const [attempt, storedFile, organization] = await Promise.all([
+      this.intakeAnalysisAttemptRepository.findOne({
+        where: { intakeId: intake.id, generationNo: intake.analysisGeneration },
+      }),
+      intake.fileId === null
+        ? Promise.resolve(null)
+        : this.storedFileRepository.findOne({
+            where: { fileId: intake.fileId },
+            select: {
+              fileId: true,
+              originalFilename: true,
+              mimeType: true,
+              byteSize: true,
+              status: true,
+              businessType: true,
+              businessId: true,
+              bindingStatus: true,
+              verifiedAt: true,
+            },
+          }),
+      entity.serviceOrganizationId === null
+        ? Promise.resolve(null)
+        : this.organizationRepository.findOne({
+            where: { id: entity.serviceOrganizationId },
+            select: { id: true, name: true },
+          }),
+    ]);
+
+    const analysis: RepairRequestIntakeAnalysisCustomerBaseView = {
+      status: intake.analysisStatus,
+      generation: intake.analysisGeneration,
+      outputText: attempt !== null && attempt.status === 'SUCCEEDED' ? attempt.outputText : null,
+      finishedAt: attempt?.finishedAt ?? null,
+    };
+
+    const retryFacts = this.toRetryFacts(entity, intake, attempt);
+    const originalFile = this.toCustomerOriginalFileView(storedFile, intake.id);
+
+    return {
+      analysis,
+      retryFacts,
+      originalFile,
+      serviceOrganization:
+        organization === null ? null : { id: organization.id, name: organization.name },
+    };
+  }
+
+  /**
+   * 首析自助资格事实装配：只输出可持久化事实形状，不下结论。
+   * 投递账本属另一模块，由 usecase 补齐后经 core 策略统一判定。
+   */
+  private toRetryFacts(
+    entity: RepairRequestEntity,
+    intake: RepairRequestIntakeEntity,
+    attempt: IntakeAnalysisAttemptEntity | null,
+  ): RepairRequestIntakeAnalysisRetryFacts {
+    return {
+      requestId: entity.id,
+      intakeId: intake.id,
+      requestCustomerAccountId: entity.customerAccountId,
+      intakeExists: true,
+      intakeCustomerAccountId: intake.customerAccountId,
+      intakeDeleted: false,
+      convertedRequestId: intake.convertedRequestId,
+      generation: intake.analysisGeneration,
+      status: intake.analysisStatus,
+      attemptGenerationNo: attempt?.generationNo ?? null,
+      attemptStatus: attempt?.status ?? null,
+      attemptFailureReasonRecorded: (attempt?.failureReason ?? '').trim().length > 0,
+    };
+  }
+
+  /**
+   * 客户报修原件安全视图：仅接受真实绑定到本原稿的有效登记行
+   * （BOUND + REPAIR_REQUEST + VALID + 已核验 + businessId 指向本原稿），
+   * 其余登记事实一律按无原件处理，不返回不可下载的文件引用。
+   */
+  private toCustomerOriginalFileView(
+    storedFile: StoredFileEntity | null,
+    intakeId: number,
+  ): RepairRequestOriginalFileView | null {
+    if (
+      storedFile === null ||
+      (storedFile.businessType as StoredFileBusinessType) !==
+        StoredFileBusinessType.REPAIR_REQUEST ||
+      (storedFile.bindingStatus as StoredFileBindingStatus) !== StoredFileBindingStatus.BOUND ||
+      (storedFile.status as StoredFileStatus) !== StoredFileStatus.VALID ||
+      storedFile.verifiedAt === null ||
+      storedFile.businessId !== String(intakeId)
+    ) {
+      return null;
+    }
+
+    return {
+      fileId: storedFile.fileId,
+      originalFilename: storedFile.originalFilename,
+      mimeType: storedFile.mimeType,
+      byteSize: Number(storedFile.byteSize),
+    };
+  }
+
+  /**
+   * 客户列表装配：基础列表项 + 批量首析状态事实（一次批量读取，禁止逐行 N+1）。
+   * 无原稿关联或原稿已删除的旧行分析字段为 null。
+   */
+  private async toCustomerListItemViews(
+    entities: RepairRequestEntity[],
+  ): Promise<RepairRequestCustomerListItemView[]> {
+    if (entities.length === 0) {
+      return [];
+    }
+    const intakeIds = entities
+      .map((entity) => entity.intakeId)
+      .filter((intakeId): intakeId is number => intakeId !== null);
+    const [context, intakeFactsById] = await Promise.all([
+      this.loadListItemAssembleContext(entities),
+      intakeIds.length === 0
+        ? Promise.resolve(new Map<number, { status: string; generation: number }>())
+        : this.findIntakeAnalysisFactsByIds(intakeIds),
+    ]);
+
+    return entities.map((entity) => {
+      const facts = entity.intakeId === null ? undefined : intakeFactsById.get(entity.intakeId);
+      return {
+        ...this.toListItemView(entity, context),
+        analysisStatus: facts?.status ?? null,
+        analysisGeneration: facts?.generation ?? null,
+      };
+    });
+  }
+
+  /** 按原稿主键批量取首析状态事实（仅未删除原稿；客户端列表本体已排除删除单） */
+  private async findIntakeAnalysisFactsByIds(
+    intakeIds: number[],
+  ): Promise<Map<number, { status: string; generation: number }>> {
+    const intakes = await this.intakeRepository.find({
+      where: { id: In(intakeIds) },
+      select: { id: true, analysisStatus: true, analysisGeneration: true, deletedAt: true },
+    });
+    const factsById = new Map<number, { status: string; generation: number }>();
+    for (const intake of intakes) {
+      if (intake.deletedAt === null) {
+        factsById.set(intake.id, {
+          status: intake.analysisStatus,
+          generation: intake.analysisGeneration,
+        });
+      }
+    }
+    return factsById;
   }
 
   /**

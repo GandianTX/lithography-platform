@@ -6,6 +6,8 @@ import {
   REPAIR_REQUEST_ERROR,
 } from '@src/core/common/errors/domain-error';
 import type { RepairRequestDeleteOutcome } from '@src/modules/lithography/lithography.types';
+import type { AsyncTaskRecordService } from '@src/modules/async-task-record/async-task-record.service';
+import type { RepairRequestIntakeService } from '@src/modules/lithography/repair-request-intake.service';
 import type { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import { DeleteMyRepairRequestUsecase } from './delete-my-repair-request.usecase';
@@ -13,6 +15,15 @@ import type { DeleteMyRepairRequestCommand } from './delete-my-repair-request.ty
 
 type RepairRequestServiceMock = {
   readonly softDeleteRequest: jest.Mock<Promise<RepairRequestDeleteOutcome>>;
+  readonly findSnapshotById: jest.Mock<Promise<Record<string, unknown> | null>>;
+};
+
+type RepairRequestIntakeServiceMock = {
+  readonly markDeletedByRequestId: jest.Mock<Promise<number>>;
+};
+
+type AsyncTaskRecordServiceMock = {
+  readonly cancelActiveByQueueJobIds: jest.Mock<Promise<number>>;
 };
 
 describe('DeleteMyRepairRequestUsecase', () => {
@@ -21,6 +32,8 @@ describe('DeleteMyRepairRequestUsecase', () => {
   ) as unknown as PersistenceTransactionContext;
 
   let repairRequestService: RepairRequestServiceMock;
+  let intakeService: RepairRequestIntakeServiceMock;
+  let asyncTaskRecordService: AsyncTaskRecordServiceMock;
   let transactionRunner: TransactionRunner;
   let usecase: DeleteMyRepairRequestUsecase;
 
@@ -37,12 +50,28 @@ describe('DeleteMyRepairRequestUsecase', () => {
       softDeleteRequest: jest
         .fn()
         .mockResolvedValue({ kind: 'DELETED', id: 11, requestNo: 'RR20260901' } as const),
+      findSnapshotById: jest.fn().mockResolvedValue({
+        id: 11,
+        requestNo: 'RR20260901',
+        customerAccountId: 7,
+        isAccepted: false,
+        deprecated: false,
+        intakeId: 21,
+      }),
+    };
+    intakeService = {
+      markDeletedByRequestId: jest.fn().mockResolvedValue(1),
+    };
+    asyncTaskRecordService = {
+      cancelActiveByQueueJobIds: jest.fn().mockResolvedValue(1),
     };
     transactionRunner = {
       run: jest.fn(async (callback) => await callback(transactionContext)),
     };
     usecase = new DeleteMyRepairRequestUsecase(
       repairRequestService as unknown as RepairRequestService,
+      intakeService as unknown as RepairRequestIntakeService,
+      asyncTaskRecordService as unknown as AsyncTaskRecordService,
       transactionRunner,
     );
   });
@@ -59,6 +88,31 @@ describe('DeleteMyRepairRequestUsecase', () => {
       expect(result).toEqual({ id: 11, requestNo: 'RR20260901' });
     });
 
+    it('删除事务内同步软删原稿并取消首析投递账本行（两个代次）', async () => {
+      await usecase.execute(buildCommand());
+
+      expect(intakeService.markDeletedByRequestId).toHaveBeenCalledWith(
+        { requestId: 11 },
+        transactionContext,
+      );
+      expect(asyncTaskRecordService.cancelActiveByQueueJobIds).toHaveBeenCalledWith({
+        queueName: 'intake-analysis',
+        jobIds: ['intake-analysis:21:g0', 'intake-analysis:21:g1'],
+        reason: 'intake_cancelled_by_request_deletion',
+        transactionContext,
+      });
+    });
+
+    it('旧工单无原稿关联（intakeId=null）时跳过首析取消', async () => {
+      repairRequestService.findSnapshotById.mockResolvedValueOnce({
+        id: 11,
+        intakeId: null,
+      });
+      await usecase.execute(buildCommand());
+
+      expect(asyncTaskRecordService.cancelActiveByQueueJobIds).not.toHaveBeenCalled();
+    });
+
     it('本人重复删除（ALREADY_DELETED）幂等成功，返回与首次删除一致的结果', async () => {
       repairRequestService.softDeleteRequest.mockResolvedValueOnce({
         kind: 'ALREADY_DELETED',
@@ -70,6 +124,8 @@ describe('DeleteMyRepairRequestUsecase', () => {
         id: 11,
         requestNo: 'RR20260901',
       });
+      // 幂等路径同样补齐原稿删除态与投递取消（条件更新天然幂等）
+      expect(intakeService.markDeletedByRequestId).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -120,6 +176,9 @@ describe('DeleteMyRepairRequestUsecase', () => {
       expect(domainError).toBeInstanceOf(DomainError);
       expect(domainError.code).toBe(REPAIR_REQUEST_ERROR.NOT_FOUND);
       expect(domainError.details).toEqual({ id: 11 });
+      // 拒绝分支不做原稿/账本收尾
+      expect(intakeService.markDeletedByRequestId).not.toHaveBeenCalled();
+      expect(asyncTaskRecordService.cancelActiveByQueueJobIds).not.toHaveBeenCalled();
     });
 
     it('已接单拒绝映射为 REPAIR_REQUEST_ALREADY_ACCEPTED（接单/删除互斥）', async () => {
@@ -132,6 +191,7 @@ describe('DeleteMyRepairRequestUsecase', () => {
       await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
         code: REPAIR_REQUEST_ERROR.ALREADY_ACCEPTED,
       });
+      expect(intakeService.markDeletedByRequestId).not.toHaveBeenCalled();
     });
   });
 });

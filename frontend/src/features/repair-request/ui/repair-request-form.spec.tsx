@@ -10,6 +10,9 @@ import { GraphQLIngressError } from '@/shared/graphql';
 import {
   createRepairRequest,
   fetchEquipmentModels,
+  fetchRepairServiceOrganizations,
+  fetchTrustedCompanyName,
+  uploadRepairRequestFile,
 } from '../infrastructure/repair-request-adapter';
 
 import { RepairRequestForm, type RepairRequestFormProps } from './repair-request-form';
@@ -17,7 +20,13 @@ import { RepairRequestForm, type RepairRequestFormProps } from './repair-request
 vi.mock('../infrastructure/repair-request-adapter', () => ({
   createRepairRequest: vi.fn(),
   fetchEquipmentModels: vi.fn(),
+  fetchRepairServiceOrganizations: vi.fn(),
+  fetchTrustedCompanyName: vi.fn(),
+  uploadRepairRequestFile: vi.fn(),
 }));
+
+// 本文件部分用例需要多次填表与上传交互，在并行满负载下默认 5s 会误判超时
+vi.setConfig({ testTimeout: 15000 });
 
 const { navigateMock } = vi.hoisted(() => ({ navigateMock: vi.fn() }));
 
@@ -28,12 +37,17 @@ vi.mock('react-router', async (importOriginal) => {
 });
 
 const fetchEquipmentModelsMock = vi.mocked(fetchEquipmentModels);
+const fetchServiceOrganizationsMock = vi.mocked(fetchRepairServiceOrganizations);
+const fetchTrustedCompanyNameMock = vi.mocked(fetchTrustedCompanyName);
+const uploadRepairRequestFileMock = vi.mocked(uploadRepairRequestFile);
 const createRepairRequestMock = vi.mocked(createRepairRequest);
 
 const MODEL_OPTIONS = [
   { id: 11, modelCode: 'LITHO-A', modelName: '型号A' },
   { id: 12, modelCode: 'LITHO-B', modelName: '型号B' },
 ];
+
+const SERVICE_ORG_OPTIONS = [{ id: 88, name: '乙方维修公司', shortName: '乙方' }];
 
 const CREATED_RECORD = {
   id: 1,
@@ -44,6 +58,8 @@ const CREATED_RECORD = {
   createdAt: '2026-08-26T00:00:00.000Z',
   isAccepted: false,
 };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function stubBrowserApis() {
   // matchMedia 与 ResizeObserver 桩均由全局测试 setup（src/test/setup.ts）提供，
@@ -65,12 +81,37 @@ function renderForm(props: RepairRequestFormProps = {}) {
   );
 }
 
+/** 按字段小标题定位下拉框（机型录入方式切换时 combobox 数量会变化，不能靠下标） */
+function comboboxByLabel(label: string): HTMLInputElement {
+  const items = Array.from(document.querySelectorAll('.ant-form-item'));
+  const item = items.find((element) =>
+    element.querySelector('label')?.textContent?.includes(label),
+  );
+  const input = item?.querySelector('[role="combobox"]');
+  if (!input) {
+    throw new Error(`未找到「${label}」的下拉框`);
+  }
+
+  return input as HTMLInputElement;
+}
+
+const modelCombobox = () => comboboxByLabel('设备型号');
+const serviceOrgCombobox = () => comboboxByLabel('维修厂家');
+
+async function selectServiceOrg() {
+  fireEvent.mouseDown(serviceOrgCombobox());
+  const options = await screen.findAllByText('乙方维修公司（乙方）');
+  fireEvent.click(options[options.length - 1]);
+}
+
 async function selectFirstModel() {
-  fireEvent.mouseDown(screen.getByRole('combobox'));
-  fireEvent.click(await screen.findByText('型号A（LITHO-A）'));
+  fireEvent.mouseDown(modelCombobox());
+  const options = await screen.findAllByText('型号A（LITHO-A）');
+  fireEvent.click(options[options.length - 1]);
 }
 
 async function fillForm() {
+  await selectServiceOrg();
   await selectFirstModel();
   fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), {
     target: { value: 'E-2001' },
@@ -89,9 +130,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** 默认让两个下拉都在就绪态，各用例按需覆盖 */
+function stubReadyQueries() {
+  fetchEquipmentModelsMock.mockResolvedValue(MODEL_OPTIONS);
+  fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
+  fetchTrustedCompanyNameMock.mockResolvedValue('甲公司');
+}
+
 beforeEach(() => {
   stubBrowserApis();
   fetchEquipmentModelsMock.mockReset();
+  fetchServiceOrganizationsMock.mockReset();
+  fetchTrustedCompanyNameMock.mockReset();
+  uploadRepairRequestFileMock.mockReset();
   createRepairRequestMock.mockReset();
   navigateMock.mockReset();
 });
@@ -100,13 +151,15 @@ afterEach(() => {
   cleanup();
 });
 
-describe('设备型号加载状态', () => {
+describe('设备型号与维修厂家加载状态', () => {
   it('加载中时型号选择与提交不可用', () => {
     fetchEquipmentModelsMock.mockReturnValue(new Promise(() => {}));
+    fetchServiceOrganizationsMock.mockReturnValue(new Promise(() => {}));
 
     renderForm();
 
-    expect(isDisabled(screen.getByRole('combobox'))).toBe(true);
+    expect(isDisabled(modelCombobox())).toBe(true);
+    expect(isDisabled(serviceOrgCombobox())).toBe(true);
     expect(isDisabled(screen.getByRole('button', { name: '提交申请' }))).toBe(true);
   });
 
@@ -114,6 +167,7 @@ describe('设备型号加载状态', () => {
     fetchEquipmentModelsMock
       .mockRejectedValueOnce(new GraphQLIngressError({ message: 'down', type: 'network' }))
       .mockResolvedValueOnce(MODEL_OPTIONS);
+    fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
 
     renderForm();
 
@@ -121,13 +175,14 @@ describe('设备型号加载状态', () => {
     // antd 会给两字按钮文本插入空格（“重 试”），用正则匹配可访问名
     fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
 
-    const combobox = await screen.findByRole('combobox');
+    const combobox = modelCombobox();
     await expect.poll(() => isDisabled(combobox), { timeout: 3000 }).toBe(false);
     expect(fetchEquipmentModelsMock).toHaveBeenCalledTimes(2);
   });
 
   it('无可用型号时展示提示且提交不可用', async () => {
     fetchEquipmentModelsMock.mockResolvedValue([]);
+    fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
 
     renderForm();
 
@@ -138,53 +193,109 @@ describe('设备型号加载状态', () => {
   // S2-2：空态可恢复，不必刷新整页
   it('无可用型号时可重试拉取，型号就绪后即可提交', async () => {
     fetchEquipmentModelsMock.mockResolvedValueOnce([]).mockResolvedValueOnce(MODEL_OPTIONS);
+    fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
 
     renderForm();
     expect(await screen.findByText('暂无可用的设备型号，请稍后再试。')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
 
-    // 「重试」先同步置 loading，再在微任务回写就绪态。此处用 act 包裹的 `waitFor` 而非
-    // `expect.poll`：poll 不进入 act 边界，回写 setState 会落在边界外并输出 act(...) 告警
-    // （本用例为 S2 新增，故一并收口；同组另一条用例本就使用 act 包裹的 `findBy*` 等待）。
-    await waitFor(() => expect(isDisabled(screen.getByRole('combobox'))).toBe(false));
+    await waitFor(() => expect(isDisabled(modelCombobox())).toBe(false));
 
     expect(screen.queryByText('暂无可用的设备型号，请稍后再试。')).toBeNull();
     expect(isDisabled(screen.getByRole('button', { name: '提交申请' }))).toBe(false);
+  });
+
+  it('维修厂家加载失败时可重试，恢复后即可选择', async () => {
+    fetchEquipmentModelsMock.mockResolvedValue(MODEL_OPTIONS);
+    fetchServiceOrganizationsMock
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(SERVICE_ORG_OPTIONS);
+
+    renderForm();
+
+    expect(await screen.findByText('维修厂家列表加载失败，请重试。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+
+    await waitFor(() => expect(isDisabled(serviceOrgCombobox())).toBe(false));
+    await selectServiceOrg();
+    expect(screen.getAllByText('乙方维修公司（乙方）').length).toBeGreaterThan(0);
+  });
+
+  it('无可选维修厂家时展示提示（不提供手工输入厂家）', async () => {
+    fetchEquipmentModelsMock.mockResolvedValue(MODEL_OPTIONS);
+    fetchServiceOrganizationsMock.mockResolvedValue([]);
+
+    renderForm();
+
+    expect(await screen.findByText('暂无可选的维修厂家，请稍后再试。')).toBeTruthy();
   });
 });
 
 describe('提交校验与反馈', () => {
   beforeEach(() => {
-    fetchEquipmentModelsMock.mockResolvedValue(MODEL_OPTIONS);
+    stubReadyQueries();
   });
 
-  it('必填项缺失时拦截提交并提示', async () => {
+  it('必填项缺失时拦截提交并提示（含维修厂家）', async () => {
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
 
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
-    expect(await screen.findByText('请选择设备型号')).toBeTruthy();
+    expect(await screen.findByText('请选择维修厂家')).toBeTruthy();
+    // 「请选择设备型号」同时是 Select 占位文案与校验提示，按存在性断言
+    expect((await screen.findAllByText('请选择设备型号')).length).toBeGreaterThan(0);
     expect(await screen.findByText('请输入设备错误码')).toBeTruthy();
     expect(await screen.findByText('请输入故障描述')).toBeTruthy();
     expect(createRepairRequestMock).not.toHaveBeenCalled();
   });
 
-  it('创建成功展示后端生成的申请编号', async () => {
+  it('创建成功展示后端生成的申请编号，并以稳定提交标识提交', async () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
     expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
     expect(screen.getByText('申请编号：RR20260826000000ABC123')).toBeTruthy();
-    expect(createRepairRequestMock).toHaveBeenCalledWith({
+
+    const payload = createRepairRequestMock.mock.calls[0][0];
+    expect(payload.recordUuid).toMatch(UUID_PATTERN);
+    expect(payload).toMatchObject({
+      serviceOrganizationId: 88,
       equipmentModelId: 11,
+      equipmentModelText: null,
       errorCode: 'E-2001',
       faultDescription: '双工件台干涉仪报错',
+      attachment: null,
+    });
+  });
+
+  it('手填新机型时只发送 equipmentModelText，机型 ID 为 null', async () => {
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    fireEvent.click(screen.getByRole('checkbox'));
+    await selectServiceOrg();
+    fireEvent.change(screen.getByPlaceholderText('例如：NSR-S622D'), {
+      target: { value: '  NSR-S622D  ' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), {
+      target: { value: 'E-2001' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('请描述设备故障现象与发生场景'), {
+      target: { value: '双工件台干涉仪报错' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    expect(createRepairRequestMock.mock.calls[0][0]).toMatchObject({
+      equipmentModelId: null,
+      equipmentModelText: 'NSR-S622D',
     });
   });
 
@@ -192,14 +303,13 @@ describe('提交校验与反馈', () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
     expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '继续创建' }));
 
-    // 型号下拉回到占位文案，文本输入均为空，不会一键重复提交
     expect(await screen.findByText('请选择设备型号')).toBeTruthy();
     expect((screen.getByPlaceholderText('例如：E-2001') as HTMLInputElement).value).toBe('');
     expect(
@@ -211,7 +321,7 @@ describe('提交校验与反馈', () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -227,7 +337,7 @@ describe('提交校验与反馈', () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm({ onCreated: onCreatedMock });
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -241,7 +351,7 @@ describe('提交校验与反馈', () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm({ onViewCreated: onViewCreatedMock });
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -255,7 +365,7 @@ describe('提交校验与反馈', () => {
   // PR5 整合工作台：取消仅重置已填内容，不清除型号等页面级状态
   it('取消按钮清空已填字段，表单回到可重新填写状态', async () => {
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
 
     fireEvent.click(screen.getByRole('button', { name: /取\s*消/ }));
@@ -264,17 +374,17 @@ describe('提交校验与反馈', () => {
     expect(
       (screen.getByPlaceholderText('请描述设备故障现象与发生场景') as HTMLTextAreaElement).value,
     ).toBe('');
-    // 型号下拉回到占位文案，型号列表仍可用（页面级状态不被清除）
     expect(screen.getByText('请选择设备型号')).toBeTruthy();
     expect(isDisabled(screen.getByRole('button', { name: '提交申请' }))).toBe(false);
     expect(createRepairRequestMock).not.toHaveBeenCalled();
   });
 
-  it('提交时对错误码与故障描述去首尾空格', async () => {
+  it('提交时对错误码、故障描述与手填机型去首尾空格', async () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
+    await selectServiceOrg();
     await selectFirstModel();
     fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), {
       target: { value: '  E-2001  ' },
@@ -285,8 +395,7 @@ describe('提交校验与反馈', () => {
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
     expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
-    expect(createRepairRequestMock).toHaveBeenCalledWith({
-      equipmentModelId: 11,
+    expect(createRepairRequestMock.mock.calls[0][0]).toMatchObject({
       errorCode: 'E-2001',
       faultDescription: '双工件台干涉仪报错',
     });
@@ -302,7 +411,7 @@ describe('提交校验与反馈', () => {
       .mockResolvedValueOnce({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
 
     const submitButton = screen.getByRole('button', { name: '提交申请' });
@@ -323,7 +432,7 @@ describe('提交校验与反馈', () => {
     });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -337,7 +446,7 @@ describe('提交校验与反馈', () => {
     );
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -353,7 +462,7 @@ describe('提交校验与反馈', () => {
     });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -363,7 +472,6 @@ describe('提交校验与反馈', () => {
     fireEvent.click(screen.getByRole('button', { name: /前往账号设置/ }));
 
     expect(navigateMock).toHaveBeenCalledWith('/account/settings');
-    // 引导不改变「保留表单内容」的既有口径
     expect((screen.getByPlaceholderText('例如：E-2001') as HTMLInputElement).value).toBe('E-2001');
   });
 
@@ -375,7 +483,7 @@ describe('提交校验与反馈', () => {
     });
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
@@ -390,18 +498,16 @@ describe('提交校验与反馈', () => {
     createRepairRequestMock.mockReturnValue(pending.promise);
 
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
     await fillForm();
 
     const submitButton = screen.getByRole('button', { name: '提交申请' });
     fireEvent.click(submitButton);
     fireEvent.click(submitButton);
 
-    // antd Form 校验是异步的，等提交真正发出后再断言只发了一次
     await waitFor(() => {
       expect(createRepairRequestMock).toHaveBeenCalledTimes(1);
     });
-    // S2-1：提交中主按钮进入 loading 态（防连点的可视反馈）
     expect(submitButton.classList.contains('ant-btn-loading')).toBe(true);
 
     pending.resolve({ ok: true, repairRequest: CREATED_RECORD });
@@ -409,16 +515,259 @@ describe('提交校验与反馈', () => {
   });
 });
 
-describe('字段提示与整体规则（2026-09-30 复审：去掉集中式提示栏）', () => {
+describe('提交即出单的幂等与附件', () => {
   beforeEach(() => {
-    fetchEquipmentModelsMock.mockResolvedValue(MODEL_OPTIONS);
+    stubReadyQueries();
   });
 
-  it('三个字段小标题旁各挂一条与字段一一对应的短提示，长度口径与 100 / 5000 契约一致', async () => {
+  it('失败重发复用同一提交标识（同一份报修只形成一套数据）', async () => {
+    createRepairRequestMock
+      .mockResolvedValueOnce({ ok: false, message: '网络抖动', reason: 'creation-failed' })
+      .mockResolvedValueOnce({ ok: true, repairRequest: CREATED_RECORD });
+
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    const submitButton = screen.getByRole('button', { name: '提交申请' });
+    fireEvent.click(submitButton);
+    expect(await screen.findByText('网络抖动')).toBeTruthy();
+    fireEvent.click(submitButton);
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+
+    const first = createRepairRequestMock.mock.calls[0][0].recordUuid;
+    const second = createRepairRequestMock.mock.calls[1][0].recordUuid;
+    expect(first).toMatch(UUID_PATTERN);
+    expect(second).toBe(first);
+  });
+
+  it('提交成功后换新提交标识，继续创建不会被当成重放', async () => {
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '继续创建' }));
+    await fillForm();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+    await waitFor(() => expect(createRepairRequestMock).toHaveBeenCalledTimes(2));
+
+    const first = createRepairRequestMock.mock.calls[0][0].recordUuid;
+    const second = createRepairRequestMock.mock.calls[1][0].recordUuid;
+    expect(second).toMatch(UUID_PATTERN);
+    expect(second).not.toBe(first);
+  });
+
+  it('上传原件成功后提交携带 fileId 与 uploadContextId', async () => {
+    uploadRepairRequestFileMock.mockResolvedValue({
+      ok: true,
+      file: {
+        fileId: '9b1f4f9e-9a1e-4b6e-8a10-3f1a2b3c4d5e',
+        uploadContextId: '0c9f6c2e-1f1a-4b0d-9a2f-d0e1c2b3a4f5',
+        originalFilename: '报修原件.pdf',
+        mimeType: 'application/pdf',
+        byteSize: 1024,
+        checksumSha256: 'a'.repeat(64),
+      },
+    });
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['pdf'], '报修原件.pdf', { type: 'application/pdf' });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    expect(await screen.findByText('报修原件.pdf')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    expect(createRepairRequestMock.mock.calls[0][0].attachment).toEqual({
+      fileId: '9b1f4f9e-9a1e-4b6e-8a10-3f1a2b3c4d5e',
+      uploadContextId: '0c9f6c2e-1f1a-4b0d-9a2f-d0e1c2b3a4f5',
+    });
+  });
+
+  it('原件上传失败只提示，不阻断提交（按无附件提交）', async () => {
+    uploadRepairRequestFileMock.mockResolvedValue({
+      ok: false,
+      reason: 'file-too-large',
+      message: '原件超过 20MB 限制。',
+    });
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(['pdf'], '大文件.pdf', { type: 'application/pdf' })] },
+    });
+
+    expect(await screen.findByText('原件超过 20MB 限制。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    expect(createRepairRequestMock.mock.calls[0][0].attachment).toBeNull();
+  });
+
+  it('提交标识冲突时展示重新提交引导，保留表单内容', async () => {
+    createRepairRequestMock.mockResolvedValue({
+      ok: false,
+      message: '同一提交标识的内容与已提交记录不一致，请重新提交',
+      reason: 'submission-conflict',
+    });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(
+      await screen.findByText('同一提交标识的内容与已提交记录不一致，请重新提交'),
+    ).toBeTruthy();
+    expect((screen.getByPlaceholderText('例如：E-2001') as HTMLInputElement).value).toBe('E-2001');
+    expect(screen.queryByRole('button', { name: /前往账号设置/ })).toBeNull();
+  });
+
+  // PR #27 复审：原申请已删除——明确提示并引导重新发起；只在用户点击「重新发起申请」
+  // 时换新提交标识，不自动创建新工单
+  it('原申请已删除时展示提示与「重新发起申请」入口，明确重新发起后换新提交标识', async () => {
+    createRepairRequestMock.mockResolvedValue({
+      ok: false,
+      message: '原申请已删除，请重新发起维修申请',
+      reason: 'submission-deleted',
+    });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('原申请已删除，请重新发起维修申请')).toBeTruthy();
+    expect(screen.getByText('原申请已删除，请确认后重新发起维修申请。')).toBeTruthy();
+    const first = createRepairRequestMock.mock.calls[0][0].recordUuid;
+
+    fireEvent.click(screen.getByRole('button', { name: /重新\s*发起\s*申请/ }));
+    expect(screen.queryByText('原申请已删除，请重新发起维修申请')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+    await waitFor(() => expect(createRepairRequestMock).toHaveBeenCalledTimes(2));
+
+    const second = createRepairRequestMock.mock.calls[1][0].recordUuid;
+    expect(second).toMatch(UUID_PATTERN);
+    expect(second).not.toBe(first);
+  });
+
+  // PR #27 复审：提交中禁止移除附件，保证提交载荷与页面当前展示的有效附件一致
+  it('提交进行中时附件移除按钮禁用', async () => {
+    uploadRepairRequestFileMock.mockResolvedValue({
+      ok: true,
+      file: {
+        fileId: '9b1f4f9e-9a1e-4b6e-8a10-3f1a2b3c4d5e',
+        uploadContextId: '0c9f6c2e-1f1a-4b0d-9a2f-d0e1c2b3a4f5',
+        originalFilename: '报修原件.pdf',
+        mimeType: 'application/pdf',
+        byteSize: 1024,
+        checksumSha256: 'a'.repeat(64),
+      },
+    });
+    createRepairRequestMock.mockReturnValue(new Promise(() => {}));
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(['pdf'], '报修原件.pdf', { type: 'application/pdf' })] },
+    });
+    expect(await screen.findByText('报修原件.pdf')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    await waitFor(() =>
+      expect(isDisabled(screen.getByRole('button', { name: /移\s*除/ }))).toBe(true),
+    );
+  });
+});
+
+describe('字段提示与整体规则（2026-09-30 复审：去掉集中式提示栏）', () => {
+  beforeEach(() => {
+    stubReadyQueries();
+  });
+
+  // PR #27 复审：客户公司只读展示实际可信公司名称，不展示虚构公司
+  it('客户公司只读展示实际可信公司名称，不提供编辑入口', async () => {
+    renderForm();
+    await screen.findAllByRole('combobox');
+
+    const companyInput = screen.getByDisplayValue('甲公司') as HTMLInputElement;
+    expect(companyInput.disabled).toBe(true);
+    expect(screen.getByText('取自账号设置的可信公司信息，不能在此修改')).toBeTruthy();
+  });
+
+  it('可信公司名称加载中展示明确状态，不预填任何公司', async () => {
+    fetchTrustedCompanyNameMock.mockReturnValue(new Promise(() => {}));
+
+    renderForm();
+
+    const companyInput = screen.getByDisplayValue('正在加载公司信息…') as HTMLInputElement;
+    expect(companyInput.disabled).toBe(true);
+  });
+
+  it('账号未绑定公司时展示未绑定提示，不当作已绑定', async () => {
+    fetchTrustedCompanyNameMock.mockResolvedValue(null);
+
+    renderForm();
+
+    const companyInput = (await screen.findByDisplayValue(
+      '账号尚未绑定公司，请先在账号设置中补录',
+    )) as HTMLInputElement;
+    expect(companyInput.disabled).toBe(true);
+    expect(screen.queryByDisplayValue('甲公司')).toBeNull();
+  });
+
+  it('可信公司名称加载失败时展示失败状态并可重试', async () => {
+    fetchTrustedCompanyNameMock
+      .mockRejectedValueOnce(new GraphQLIngressError({ type: 'network', message: 'down' }))
+      .mockResolvedValueOnce('甲公司');
+
+    renderForm();
+
+    expect(await screen.findByDisplayValue('网络连接异常，请稍后重试。')).toBeTruthy();
+    expect(screen.queryByDisplayValue('甲公司')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+
+    expect(await screen.findByDisplayValue('甲公司')).toBeTruthy();
+  });
+
+  it('两个不同公司账号分别展示各自的可信名称', async () => {
+    fetchTrustedCompanyNameMock.mockResolvedValueOnce('甲公司');
+    const first = renderForm();
+    expect(await screen.findByDisplayValue('甲公司')).toBeTruthy();
+    first.unmount();
+
+    // 第二个账号（服务端按会话身份返回另一家可信公司）
+    fetchTrustedCompanyNameMock.mockResolvedValueOnce('乙公司');
+    renderForm();
+    expect(await screen.findByDisplayValue('乙公司')).toBeTruthy();
+  });
+
+  it('字段小标题旁各挂一条与字段一一对应的短提示，长度口径与 100 / 5000 契约一致', async () => {
+    renderForm();
+    await screen.findAllByRole('combobox');
 
     const pairs = [
+      { hint: '仅可选择启用且具备维修服务资格的厂家', title: '维修厂家' },
       { hint: '仅可选择已启用型号', title: '设备型号' },
       { hint: '必填，最多 100 个字符', title: '设备错误码' },
       { hint: '必填，最多 5000 个字符', title: '故障描述' },
@@ -434,13 +783,13 @@ describe('字段提示与整体规则（2026-09-30 复审：去掉集中式提�
       return item;
     });
 
-    // 提示不得集中塞进某一个字段：三个提示分属三个不同 Form.Item
-    expect(new Set(items).size).toBe(3);
+    // 提示不得集中塞进某一个字段：每条提示分属不同 Form.Item
+    expect(new Set(items).size).toBe(pairs.length);
   });
 
   it('整体业务规则位于提交按钮附近的操作行，且不再渲染「填写提示」', async () => {
     renderForm();
-    await screen.findByRole('combobox');
+    await screen.findAllByRole('combobox');
 
     const rule = screen.getByText('提交后不可修改；未接单可删除');
     const actions = rule.closest('.repair-request-form-actions');

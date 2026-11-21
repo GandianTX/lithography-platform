@@ -68,6 +68,9 @@ const MODELS = [
   { id: 48, modelCode: 'LITHO-300', modelName: '光刻机 300 型' },
 ];
 
+/** 任务 03：报修厂家候选（ACTIVE + 具备维修服务资格），与后端 `repairServiceOrganizationSearch` 契约对齐 */
+const SERVICE_ORGS = [{ id: 900777, name: 'E2E 维修服务公司', shortName: 'E2E 维修' }];
+
 type ListItem = {
   id: number;
   requestNo: string;
@@ -231,6 +234,8 @@ type GraphQLRequestBody = {
 /** 各 operation 的可控状态；未指定则使用就绪态。 */
 export type CustomerRepairRequestMockOptions = {
   models?: 'ready' | 'empty' | 'failed' | 'pending';
+  /** 任务 03：厂家候选三态（创建页新增查询），默认就绪 */
+  serviceOrgs?: 'ready' | 'empty' | 'failed' | 'pending';
   list?: 'ready' | 'empty' | 'failed' | 'pending' | 'long-text' | 'many';
   detail?: 'with-responses' | 'no-responses' | 'not-found' | 'failed' | 'pending' | 'long-text';
   create?: 'success' | 'pending' | 'rejected';
@@ -278,6 +283,29 @@ function resolveResponse(
       if (state === 'pending') return null;
       return ok({
         equipmentModels: state === 'empty' ? [] : MODELS.map((model) => ({ ...model })),
+      });
+    }
+    case 'RepairServiceOrganizationSearch': {
+      const state = options.serviceOrgs ?? 'ready';
+      if (state === 'failed') return { abort: true };
+      if (state === 'pending') return null;
+      if (state === 'empty') {
+        return ok({
+          repairServiceOrganizationSearch: {
+            items: [],
+            page: variables?.pagination?.page ?? 1,
+            pageSize: variables?.pagination?.pageSize ?? 10,
+            total: 0,
+          },
+        });
+      }
+      return ok({
+        repairServiceOrganizationSearch: {
+          items: SERVICE_ORGS.map((org) => ({ ...org })),
+          page: variables?.pagination?.page ?? 1,
+          pageSize: variables?.pagination?.pageSize ?? 10,
+          total: SERVICE_ORGS.length,
+        },
       });
     }
     case 'MyRepairRequests': {

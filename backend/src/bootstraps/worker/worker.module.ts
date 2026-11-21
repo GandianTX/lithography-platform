@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AiWorkerAdapterModule } from '@src/adapters/worker/ai/ai-worker-adapter.module';
 import { AiWorkflowWorkerAdapterModule } from '@src/adapters/worker/ai-workflow/ai-workflow-worker-adapter.module';
 import { EmailWorkerAdapterModule } from '@src/adapters/worker/email/email-worker-adapter.module';
+import { IntakeAnalysisWorkerAdapterModule } from '@src/adapters/worker/intake-analysis/intake-analysis-worker-adapter.module';
 import { BullMqModule } from '@src/infrastructure/bullmq/bullmq.module';
 import { CapabilityModule } from '@src/infrastructure/capability/capability.module';
 import { BullMqWorkerRuntime } from '@src/infrastructure/bullmq/worker.runtime';
@@ -24,6 +25,7 @@ import { RedisModule } from '@src/infrastructure/redis/redis.module';
     AiWorkerAdapterModule,
     AiWorkflowWorkerAdapterModule,
     EmailWorkerAdapterModule,
+    IntakeAnalysisWorkerAdapterModule,
   ],
   providers: [BullMqWorkerRuntime],
 })

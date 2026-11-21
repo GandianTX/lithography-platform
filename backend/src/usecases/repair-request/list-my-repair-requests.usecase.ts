@@ -5,7 +5,10 @@ import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-er
 import { applyDefaults, enforceMaxPageSize } from '@core/pagination/pagination.policy';
 import { OffsetParams, PaginationParams } from '@core/pagination/pagination.types';
 import { Injectable } from '@nestjs/common';
-import { RepairRequestListPage } from '@src/modules/lithography/lithography.types';
+import {
+  RepairRequestCustomerListItemView,
+  RepairRequestListPage,
+} from '@src/modules/lithography/lithography.types';
 import { RepairRequestQueryService } from '@src/modules/lithography/queries/repair-request.query.service';
 
 /** 页大小上限：与 GraphQL 边界 PaginationArgs @Max(100) 对齐（统一分页策略） */
@@ -26,7 +29,9 @@ export class ListMyRepairRequestsUsecase {
   async execute(params: {
     session: UsecaseSession;
     pagination: PaginationParams;
-  }): Promise<RepairRequestListPage> {
+  }): Promise<
+    Omit<RepairRequestListPage, 'items'> & { items: RepairRequestCustomerListItemView[] }
+  > {
     if (params.pagination.mode !== 'OFFSET') {
       throw new DomainError(
         REPAIR_REQUEST_ERROR.INVALID_PARAMS,

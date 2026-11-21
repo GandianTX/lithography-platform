@@ -2,9 +2,18 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
-import { DomainError, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
-import { assertStoredFileUploadQualification } from '@core/stored-file/policy/stored-file-permission.policy';
+import type { UsecaseSession } from '@app-types/auth/session.types';
+import {
+  DomainError,
+  REPAIR_REQUEST_ERROR,
+  STORED_FILE_ERROR,
+} from '@core/common/errors/domain-error';
+import {
+  assertStoredFileUploadQualification,
+  isRepairRequestBusinessType,
+} from '@core/stored-file/policy/stored-file-permission.policy';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { StoredFileService } from '@src/modules/lithography/stored-file.service';
 import { StoredFileQueryService } from '@src/modules/lithography/queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
@@ -35,8 +44,8 @@ import type { UploadStoredFileCommand, UploadedStoredFileView } from './stored-f
  * 共用业务原件上传暂存用例（R062-01）。
  *
  * 执行顺序（失败关闭）：
- * 1. 可信会话 + 精确工程师写身份 + 用途白名单 —— 先于任何文件 I/O；
- * 2. 可信公司归属（organization membership）—— 先于任何文件 I/O；
+ * 1. 可信会话 + 用途级写身份 + 用途白名单 —— 先于任何文件 I/O；
+ * 2. 可信公司归属（工程师按成员关系、客户按账号的公司信息）—— 先于任何文件 I/O；
  * 3. 实际内容类型、1..20,000,000 字节、SHA-256 校验（内存中完成）；
  * 4. 私有存储写入（服务端生成引用）；
  * 5. 单事务登记 VALID + TEMPORARY、business_id 为空的暂存记录；
@@ -54,6 +63,7 @@ export class UploadStoredFileUsecase {
     private readonly storedFileService: StoredFileService,
     private readonly storedFileQueryService: StoredFileQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly accountQueryService: AccountQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
     @Inject(STORED_FILE_STORAGE)
@@ -71,10 +81,11 @@ export class UploadStoredFileUsecase {
     // 权限与用途先于文件 I/O：未授权请求不会在存储中留下任何字节
     assertStoredFileUploadQualification(command.session, businessType);
 
-    // 可信公司来自服务端成员事实，不接受前端传入组织
-    const membership = await this.trustedOrganizationContext.resolveForAccount({
-      accountId: command.session.accountId,
-    });
+    // 可信公司来自服务端事实，不接受前端传入组织
+    const ownerOrganizationId = await this.resolveOwnerOrganizationId(
+      command.session,
+      businessType,
+    );
 
     const originalFilename = normalizeStoredFileOriginalFilename(command.file?.originalFilename);
     if (!originalFilename) {
@@ -133,7 +144,7 @@ export class UploadStoredFileUsecase {
           {
             fileId,
             uploadedByAccountId: command.session.accountId,
-            ownerOrganizationId: membership.organizationId,
+            ownerOrganizationId,
             storageReference: savedStorageReference,
             originalFilename,
             mimeType,
@@ -186,6 +197,39 @@ export class UploadStoredFileUsecase {
       }
       throw error;
     }
+  }
+
+  /**
+   * 原件归属公司解析（服务端事实，失败关闭）。
+   *
+   * - `REPAIR_PROCESS`（工程师）：沿用组织成员关系解析，保持任务 11 原口径；
+   * - `REPAIR_REQUEST`（客户）：客户公司只认同账号在 `base_user_info` 上的
+   *   `customer_organization_id`（与客户创建报修同一真源）；缺失即拒绝上传，
+   *   避免落出「有原件但没有任何组织可核权」的孤儿暂存记录。
+   *
+   * 归属解析先于任何文件 I/O：未通过归属校验的请求不会在存储中留下字节。
+   */
+  private async resolveOwnerOrganizationId(
+    session: UsecaseSession,
+    businessType: string,
+  ): Promise<number> {
+    if (isRepairRequestBusinessType(businessType)) {
+      const customerOrganizationId = await this.accountQueryService.findCustomerOrganizationId({
+        accountId: session.accountId,
+      });
+      if (customerOrganizationId === null) {
+        throw new DomainError(
+          REPAIR_REQUEST_ERROR.CUSTOMER_COMPANY_REQUIRED,
+          '请先在账号设置中补充公司信息后再上传报修原件',
+        );
+      }
+      return customerOrganizationId;
+    }
+
+    const membership = await this.trustedOrganizationContext.resolveForAccount({
+      accountId: session.accountId,
+    });
+    return membership.organizationId;
   }
 
   private reportStorageWriteFailure(params: {

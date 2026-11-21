@@ -3,11 +3,17 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import {
+  buildIntakeAnalysisJobId,
+  INTAKE_ANALYSIS_QUEUE_NAME,
+} from '@core/common/async-task/intake-analysis-job-id.policy';
+import {
   DomainError,
   PERMISSION_ERROR,
   REPAIR_REQUEST_ERROR,
 } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
+import { AsyncTaskRecordService } from '@src/modules/async-task-record/async-task-record.service';
+import { RepairRequestIntakeService } from '@src/modules/lithography/repair-request-intake.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -36,6 +42,8 @@ import {
 export class DeleteMyRepairRequestUsecase {
   constructor(
     private readonly repairRequestService: RepairRequestService,
+    private readonly repairRequestIntakeService: RepairRequestIntakeService,
+    private readonly asyncTaskRecordService: AsyncTaskRecordService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -75,6 +83,10 @@ export class DeleteMyRepairRequestUsecase {
     switch (outcome.kind) {
       case 'DELETED':
       case 'ALREADY_DELETED':
+        // 同一事务内收尾原稿与首析投递：原稿一起进入删除态；尚未执行的
+        // intake-analysis 账本行（两个代次）条件取消。迟到分析被写回侧的
+        // deleted_at / REJECTED 核验拒绝，不会让已删除报修复活。
+        await this.cancelIntakeDelivery(command.requestId, transactionContext);
         // 幂等成功（裁定 5）：本人重复删除返回与首次删除一致的结果
         return { id: outcome.id, requestNo: outcome.requestNo };
       case 'NOT_FOUND_OR_NOT_OWNER':
@@ -89,6 +101,31 @@ export class DeleteMyRepairRequestUsecase {
           requestNo: outcome.requestNo,
         });
     }
+  }
+
+  /**
+   * 删除事务内同步处理首析关联：
+   * - 原稿软删（条件更新，幂等）；
+   * - 取消该原稿两个代次的未执行投递账本行（仅 queued/processing 可取消）。
+   * 不物理删除附件，也不改首析尝试行历史。
+   */
+  private async cancelIntakeDelivery(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
+    await this.repairRequestIntakeService.markDeletedByRequestId({ requestId }, transactionContext);
+    const request = await this.repairRequestService.findSnapshotById(requestId, transactionContext);
+    const intakeId = request?.intakeId ?? null;
+    if (intakeId === null) {
+      // 旧工单没有原稿关联：没有首析投递需要取消
+      return;
+    }
+    await this.asyncTaskRecordService.cancelActiveByQueueJobIds({
+      queueName: INTAKE_ANALYSIS_QUEUE_NAME,
+      jobIds: [0, 1].map((generationNo) => buildIntakeAnalysisJobId({ intakeId, generationNo })),
+      reason: 'intake_cancelled_by_request_deletion',
+      transactionContext,
+    });
   }
 
   /**

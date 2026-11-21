@@ -5,6 +5,10 @@ import type {
   RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
 import { StoredFileBindingStatus, StoredFileStatus } from '@app-types/models/stored-file.types';
+import type {
+  IntakeAnalysisDisplayState,
+  IntakeAnalysisRetryReason,
+} from '@core/repair-request/policy/intake-analysis-retry.policy';
 
 /**
  * AI 会话共享枚举兼容出口。
@@ -44,6 +48,12 @@ export type RepairRequestInsertData = {
   contentMd: string;
   /** 可信组织归属；无有效成员关系的自注册客户为 null（存量兼容语义） */
   ownerOrganizationId?: number | null;
+  /** 报修原始输入主键（任务 03 提交即出单；旧调用方不传则为 null，保持存量语义） */
+  intakeId?: number | null;
+  /** 客户可信公司（必须是真实落库的 ID；仅 intakeId 非空时必填，实体 CHECK 兜底） */
+  customerOrganizationId?: number | null;
+  /** 选定维修厂家（必须是真实落库的 ID；仅 intakeId 非空时必填，实体 CHECK 兜底） */
+  serviceOrganizationId?: number | null;
 };
 
 /**
@@ -58,6 +68,157 @@ export type RepairRequestSnapshot = {
   faultDescription: string;
   createdAt: Date;
   isAccepted: boolean;
+  /** 逻辑删除事实；首析重试与删除并发裁决使用 */
+  deprecated: boolean;
+  /** 报修原始输入主键；旧工单为 null */
+  intakeId: number | null;
+  /** 客户公司 / 服务公司反规范化列；旧工单可空 */
+  customerOrganizationId: number | null;
+  serviceOrganizationId: number | null;
+};
+
+/**
+ * 报修原始输入写入数据（任务 03「提交即出单」）。
+ *
+ * 全部字段都是服务端事实：客户账号来自会话、客户公司来自 `base_user_info`、
+ * 服务公司与机型来自事务内复核/登记后的真实 ID；客户端只提供 recordUuid 与业务输入。
+ * 分析状态由服务统一落 `WAITING` + 代次 0，不接受调用方指定。
+ */
+export type RepairRequestIntakeInsertData = {
+  recordUuid: string;
+  customerAccountId: number;
+  customerOrganizationId: number;
+  serviceOrganizationId: number;
+  equipmentModelId: number;
+  errorCode: string;
+  faultDescription: string;
+  /** 客户私有报修原件；未上传为 null（绑定事实由同一事务内的原件绑定写入） */
+  fileId: string | null;
+};
+
+/**
+ * 报修原始输入稳定快照。
+ *
+ * 用途：
+ * - 同标识重放核对（以落库事实逐字段比对，不依赖内容哈希列）；
+ * - 第二段首析编排读取的可持久化执行意图（analysisStatus / analysisGeneration）。
+ */
+export type RepairRequestIntakeSnapshot = RepairRequestIntakeInsertData & {
+  id: number;
+  analysisStatus: string;
+  analysisGeneration: number;
+  convertedRequestId: number | null;
+  createdAt: Date;
+};
+
+/**
+ * 同标识重放核验的工单侧最小状态事实（任务 03 / PR #27 复审）。
+ *
+ * 重放返回原工单前，usecase 在事务内以此核验「工单仍有效 + 双向关联成立」；
+ * 只携带裁决所需的状态列，不外发报修内容字段。
+ */
+export type RepairRequestReplayRequestState = {
+  readonly id: number;
+  readonly customerAccountId: number;
+  /** 报修原始输入主键；双向关联核验要求与本原稿 id 一致 */
+  readonly intakeId: number | null;
+  /** 逻辑删除事实（deprecated 列）；已删除的重放不得返回成功 */
+  readonly deprecated: boolean;
+};
+
+/**
+ * 同标识重放核验的原稿侧最小状态事实（任务 03 / PR #27 复审）。
+ *
+ * 删除链路对原稿与工单同事务软删；本事实用于核验原稿未删除且
+ * `converted_request_id` 与工单侧读到的关联一致（双向关联异常失败关闭）。
+ */
+export type RepairRequestReplayIntakeState = {
+  readonly id: number;
+  readonly customerAccountId: number;
+  readonly convertedRequestId: number | null;
+  /** 原稿逻辑删除事实（deleted_at 列非空即已删除） */
+  readonly deleted: boolean;
+};
+
+/**
+ * 首析认领结果（任务 03 第二段）。
+ *
+ * CLAIMED 携带 `attemptId` 作为本次执行的唯一归属凭据：
+ * 认领事务在 intake 行锁内推进状态并插入 RUNNING 尝试行；
+ * 租约过期接管会删除旧尝试行并插入新行，旧执行持有的 attemptId 随之失效，
+ * 写回按「attempt 行存在且仍 RUNNING」仲裁，旧执行无法抢先或覆盖新执行的结果。
+ */
+export type IntakeAnalysisClaimResult =
+  | {
+      kind: 'CLAIMED';
+      intakeId: number;
+      generationNo: number;
+      attemptId: number;
+      startedAt: Date;
+    }
+  | { kind: 'ALREADY_SUCCEEDED'; intakeId: number; generationNo: number }
+  | { kind: 'ALREADY_FAILED'; intakeId: number; generationNo: number }
+  | { kind: 'LEASE_ACTIVE'; intakeId: number; generationNo: number }
+  | {
+      kind: 'NOT_EXECUTABLE';
+      intakeId: number;
+      reason: 'NOT_FOUND' | 'DELETED' | 'NOT_CONVERTED' | 'GENERATION_MISMATCH';
+    }
+  | { kind: 'ATTEMPT_STATE_INCONSISTENT'; intakeId: number; generationNo: number };
+
+/** 首析写回输入：成功必须携带非空有效正文；失败携带受控稳定原因码 */
+export type IntakeAnalysisFinishInput = {
+  intakeId: number;
+  generationNo: number;
+  attemptId: number;
+  outcome:
+    | { kind: 'SUCCEEDED'; outputText: string; providerCallId: number | null }
+    | { kind: 'FAILED'; failureReason: string; providerCallId: number | null };
+};
+
+/**
+ * 首析写回结果：
+ * - WRITTEN：归属核验通过且终态已落库；
+ * - OWNERSHIP_LOST：执行凭据失效（租约被接管 / 代次已切换 / 迟到旧执行），
+ *   不改变任何状态；
+ * - REJECTED：目标不满足可写回前提（已删除 / 无工单 / 代次不匹配），
+ *   不改变任何状态（已删除报修不得被迟到分析复活）。
+ */
+export type IntakeAnalysisFinishResult =
+  | { kind: 'WRITTEN'; intakeId: number; generationNo: number }
+  | { kind: 'OWNERSHIP_LOST'; intakeId: number; generationNo: number }
+  | {
+      kind: 'REJECTED';
+      intakeId: number;
+      reason: 'NOT_FOUND' | 'DELETED' | 'NOT_CONVERTED' | 'GENERATION_MISMATCH' | 'NOT_RUNNING';
+    };
+
+/** 首析主动重试的代次切换写入结果（affected = 1 才算切换成功） */
+export type IntakeAnalysisGenerationBumpResult = {
+  affected: number;
+};
+
+/**
+ * 首析自助资格的写侧事实（事务内按 intake 行锁读取）。
+ * 账本事实由 usecase 跨模块核对；本类型不包含任何运行期计数或缓存状态。
+ */
+export type IntakeAnalysisRetryWriteFacts = {
+  intakeCustomerAccountId: number;
+  intakeDeleted: boolean;
+  convertedRequestId: number | null;
+  generation: number;
+  status: string;
+  attemptGenerationNo: number | null;
+  attemptStatus: string | null;
+  attemptFailureReasonRecorded: boolean;
+};
+
+/**
+ * 设备型号登记写入数据（手填机型在提交事务内按编码查重后再登记）。
+ */
+export type EquipmentModelInsertData = {
+  modelCode: string;
+  modelName: string;
 };
 
 /**
@@ -185,6 +346,14 @@ export type RepairRequestListItemView = {
   acceptedAt: Date | null;
   /** 最新回复处理状态；尚无回复时为 null */
   latestResolutionStatus: EngineerResolutionStatus | null;
+};
+
+/** 客户列表项：在基础列表项上补充首析状态事实（仅本人列表装配；旧行无原稿时为 null） */
+export type RepairRequestCustomerListItemView = RepairRequestListItemView & {
+  /** 首析状态（WAITING/RUNNING/SUCCEEDED/FAILED）；无原稿关联的旧单为 null */
+  analysisStatus: string | null;
+  /** 首析代次（0=初次；1=唯一重试）；无原稿关联的旧单为 null */
+  analysisGeneration: number | null;
 };
 
 /**
@@ -330,6 +499,69 @@ export type RepairProcessEntryView = Omit<RepairProcessEntrySnapshot, 'authorAcc
 };
 
 /**
+ * 客户可见首析视图（仅客户入口装配；工程师入口走 `intake` 原始报修视图）。
+ * 正文仅成功态返回真实模型输出；失败只给状态与代次，不向客户暴露受控失败原因细节。
+ * displayState / retryEligibility 由服务端按可持久化事实判定（见
+ * `@core/repair-request/policy/intake-analysis-retry.policy`），前端不自行组合。
+ */
+export type RepairRequestIntakeAnalysisCustomerView =
+  RepairRequestIntakeAnalysisCustomerBaseView & {
+    /** 服务端判定的展示状态（排队/运行/完成/失败可重试/失败不可自助/不可用） */
+    displayState: IntakeAnalysisDisplayState;
+    /** 自助重试资格：eligible 与稳定原因码（不含内部异常或任务标识） */
+    retryEligibility: {
+      eligible: boolean;
+      reason: IntakeAnalysisRetryReason;
+    };
+  };
+
+/**
+ * 客户可见首析的持久化事实部分（QueryService 只读装配）。
+ * 展示状态与重试资格需要跨模块读取投递账本，由 usecase 补账本事实后判定，
+ * 因此读侧不直接产出最终视图，避免 QueryService 越层读其他模块。
+ */
+export type RepairRequestIntakeAnalysisCustomerBaseView = {
+  status: string;
+  generation: number;
+  /** 首析正文；仅 SUCCEEDED 非空 */
+  outputText: string | null;
+  finishedAt: Date | null;
+};
+
+/**
+ * 首析自助资格判定事实（QueryService 装配、usecase 补账本事实后判定的内部输入）。
+ * 只承载可持久化事实，不进入对外视图，也不得由适配器消费。
+ */
+export type RepairRequestIntakeAnalysisRetryFacts = {
+  requestId: number;
+  intakeId: number;
+  requestCustomerAccountId: number;
+  intakeExists: boolean;
+  intakeCustomerAccountId: number | null;
+  intakeDeleted: boolean;
+  convertedRequestId: number | null;
+  generation: number;
+  status: string;
+  attemptGenerationNo: number | null;
+  attemptStatus: string | null;
+  attemptFailureReasonRecorded: boolean;
+};
+
+/** 客户报修原件安全展示字段（不暴露存储引用与校验和） */
+export type RepairRequestOriginalFileView = {
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+};
+
+/** 客户详情的维修厂家展示字段（仅名称与主键，不含联系信息） */
+export type RepairRequestServiceOrganizationView = {
+  id: number;
+  name: string;
+};
+
+/**
  * 维修申请详情稳定读视图（客户与工程师入口共用结构，读权限由 QueryService 按身份判定）。
  * responses 按 createdAt ASC + id ASC 排序；不暴露归属类账号 ID。
  */
@@ -362,6 +594,12 @@ export type RepairRequestDetailView = {
   maintenanceFaultPanels: RepairMaintenanceFaultPanelView[];
   /** 客户原始报修与首次 AI 分析；仅工程师入口返回，客户入口为 null */
   intake: RepairIntakeSourceView | null;
+  /** 客户可见首析状态与正文；仅客户入口装配，工程师入口为 null（走 intake） */
+  intakeAnalysis: RepairRequestIntakeAnalysisCustomerView | null;
+  /** 客户报修原件安全字段；仅客户入口装配（下载走共用授权链路），工程师入口为 null */
+  originalFile: RepairRequestOriginalFileView | null;
+  /** 维修厂家（选定维修服务公司）；仅客户入口装配，工程师入口为 null */
+  serviceOrganization: RepairRequestServiceOrganizationView | null;
   /** 当前会话是否可保存结构化维修记录（接单本人 + 未结束） */
   canEditMaintenance: boolean;
 };
@@ -371,10 +609,20 @@ export type RepairRequestDetailView = {
  * 另含归属类账号 ID，均由 usecase 跨域富集为安全展示字段后才对外输出，
  * 不得直接流入 Adapter。
  */
-export type RepairRequestDetailQueryResult = Omit<RepairRequestDetailView, 'responses'> & {
+export type RepairRequestDetailQueryResult = Omit<
+  RepairRequestDetailView,
+  'responses' | 'intakeAnalysis'
+> & {
   responses: EngineerResponseQueryResult[];
   customerAccountId: number;
   acceptedByEngineerAccountId: number | null;
+  /** 首析持久化事实（未含展示状态与重试资格；由 usecase 判定后装配） */
+  intakeAnalysis: RepairRequestIntakeAnalysisCustomerBaseView | null;
+  /**
+   * 客户入口首析自助资格判定事实（补账本事实后由 usecase 判定）；
+   * 内部输入，不进入对外视图（客户入口无原稿关联或工程师入口为 null）。
+   */
+  intakeAnalysisRetryFacts: RepairRequestIntakeAnalysisRetryFacts | null;
 };
 
 /**

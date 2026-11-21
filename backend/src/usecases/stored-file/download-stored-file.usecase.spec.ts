@@ -12,7 +12,6 @@ import {
   ACCOUNT_ERROR,
   DomainError,
   ORGANIZATION_ERROR,
-  PERMISSION_ERROR,
   STORED_FILE_ERROR,
 } from '@core/common/errors/domain-error';
 import { LocalReferenceDocumentStorage } from '@src/infrastructure/file-storage/local-reference-document-storage';
@@ -130,12 +129,17 @@ describe('DownloadStoredFileUsecase', () => {
     expect(storage.open).not.toHaveBeenCalled();
   });
 
-  it('客户角色拒绝，且不触达存储', async () => {
-    const { usecase, storage } = makeUsecase();
+  it('客户读链路：期望用途切换为 REPAIR_REQUEST，归属仍由查询服务裁决', async () => {
+    const queryService = makeQueryService();
+    queryService.findAuthorizedDownload.mockResolvedValueOnce(null);
+    const { usecase, storage } = makeUsecase({ queryService });
 
     await expect(
-      usecase.execute({ session: customer, fileId, uploadContextId }),
-    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+      usecase.execute({ session: customer, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(queryService.findAuthorizedDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ fileId, expectedBusinessType: 'REPAIR_REQUEST' }),
+    );
     expect(storage.open).not.toHaveBeenCalled();
   });
 
@@ -605,6 +609,107 @@ describe('DownloadStoredFileUsecase 真实 QueryService 归属判断', () => {
 
     await expect(
       usecase.execute({ session: admin, fileId, uploadContextId: null }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 客户报修原件（BOUND REPAIR_REQUEST）× 指定厂家工程师（任务 03/04 交叉链路）。
+ * 归属判断使用真实 StoredFileQueryService；数据库替身范围仅限 Repository
+ * `findOne` 返回值（内存 jest 替身），不连接 MySQL。
+ */
+describe('DownloadStoredFileUsecase 工程师读取客户报修原件', () => {
+  const boundRequestFileRow = () => ({
+    fileId,
+    uploadedByAccountId: 900001,
+    ownerOrganizationId: 910001,
+    storageReference: 'private/ref.pdf',
+    originalFilename: '报修原件.pdf',
+    mimeType: 'application/pdf',
+    byteSize: String(payload.byteLength),
+    checksumSha256: sha256(payload),
+    status: 'VALID',
+    businessType: 'REPAIR_REQUEST',
+    businessId: '7001',
+    uploadContextId: 'ctx',
+    bindingStatus: 'BOUND',
+    createdAt: new Date('2026-11-14T00:00:00.000Z'),
+    verifiedAt: new Date('2026-11-14T00:00:00.000Z'),
+  });
+
+  const makeEngineerUsecase = (viewerOrganizationId = 910001) => {
+    const storedFile = {
+      findOne: jest.fn().mockResolvedValue(boundRequestFileRow()),
+      count: jest.fn(),
+    };
+    const processEntry = { findOne: jest.fn().mockResolvedValue(null) };
+    const request = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 42,
+        serviceOrganizationId: 910001,
+        deprecated: false,
+      }),
+    };
+    const intake = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 7001,
+        fileId,
+        customerAccountId: 900001,
+        serviceOrganizationId: 910001,
+        deletedAt: null,
+      }),
+    };
+    const queryService = new StoredFileQueryService(
+      storedFile as never,
+      processEntry as never,
+      request as never,
+      intake as never,
+    );
+    const organizationContextService = makeOrganizationContextService();
+    organizationContextService.tryResolveForAccount.mockResolvedValue({
+      organizationId: viewerOrganizationId,
+    });
+    const storage = makeStorage();
+    const usecase = new DownloadStoredFileUsecase(
+      queryService,
+      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      makeAccountQueryService() as unknown as AccountQueryService,
+      storage,
+    );
+    return { usecase, storage, request, intake };
+  };
+
+  it('指定厂家工程师下载真实关联工单的客户原件：内容与登记一致', async () => {
+    const { usecase, storage } = makeEngineerUsecase();
+
+    const result = await usecase.execute({ session: engineer, fileId, uploadContextId: null });
+
+    expect(storage.open).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ fileId, originalFilename: '报修原件.pdf' });
+    expect(result).not.toHaveProperty('storageReference');
+    await expect(readAll(result.content)).resolves.toEqual(payload);
+  });
+
+  it('外公司工程师下载客户原件：NOT_FOUND 且不打开存储', async () => {
+    const { usecase, storage } = makeEngineerUsecase(700002);
+
+    await expect(
+      usecase.execute({
+        session: session(['ENGINEER'], 900002),
+        fileId,
+        uploadContextId: null,
+      }),
+    ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
+    expect(storage.open).not.toHaveBeenCalled();
+  });
+
+  it('工单未关联该原稿：NOT_FOUND 且不打开存储', async () => {
+    const { usecase, storage, request } = makeEngineerUsecase();
+    request.findOne.mockResolvedValue(null);
+
+    await expect(
+      usecase.execute({ session: engineer, fileId, uploadContextId: null }),
     ).rejects.toMatchObject({ code: STORED_FILE_ERROR.NOT_FOUND });
     expect(storage.open).not.toHaveBeenCalled();
   });

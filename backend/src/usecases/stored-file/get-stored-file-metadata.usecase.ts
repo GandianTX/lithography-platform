@@ -1,6 +1,8 @@
 // src/usecases/stored-file/get-stored-file-metadata.usecase.ts
 
 import { StoredFileBusinessType } from '@app-types/models/stored-file.types';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
+import { hasRole } from '@core/account/policy/role-access.policy';
 import { DomainError, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
 import {
   normalizeStoredFileId,
@@ -59,7 +61,11 @@ export class GetStoredFileMetadataUsecase {
       session: query.session,
       viewerOrganizationId,
       uploadContextId: normalizeUploadContextId(query.uploadContextId),
-      expectedBusinessType: StoredFileBusinessType.REPAIR_PROCESS,
+      // 任务 03 第三段起客户读链路开通：客户仅读本人报修原件（REPAIR_REQUEST），
+      // 工程师/管理员链路（REPAIR_PROCESS）口径不变；用途级归属仍由 QueryService 裁决
+      expectedBusinessType: hasRole(query.session.roles, IdentityTypeEnum.ENGINEER)
+        ? StoredFileBusinessType.REPAIR_PROCESS
+        : StoredFileBusinessType.REPAIR_REQUEST,
       ...(adminScope ? { adminOrganizationId: adminScope.organizationId } : {}),
     });
     if (!view) {

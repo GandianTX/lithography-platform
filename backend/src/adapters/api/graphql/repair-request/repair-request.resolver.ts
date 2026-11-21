@@ -25,6 +25,7 @@ import { CreateEngineerResponseUsecase } from '@src/usecases/repair-request/crea
 import { CreateRepairProcessEntryUsecase } from '@src/usecases/repair-request/create-repair-process-entry.usecase';
 import { CreateRepairRequestUsecase } from '@src/usecases/repair-request/create-repair-request.usecase';
 import { DeleteMyRepairRequestUsecase } from '@src/usecases/repair-request/delete-my-repair-request.usecase';
+import { RetryIntakeAnalysisUsecase } from '@src/usecases/repair-request/retry-intake-analysis.usecase';
 import { GetEngineerRepairRequestDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-detail.usecase';
 import { GetEngineerRepairRequestRevisionDetailUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-detail.usecase';
 import { GetEngineerRepairRequestRevisionHistoryUsecase } from '@src/usecases/repair-request/get-engineer-repair-request-revision-history.usecase';
@@ -51,6 +52,7 @@ import { RepairRequestInterruptionDTO } from './dto/repair-request-interruption.
 import { InterruptRepairRequestInput } from './dto/interrupt-repair-request.input';
 import { RepairProcessEntryDTO } from './dto/repair-process-entry.dto';
 import { DeleteMyRepairRequestResultDTO } from './dto/delete-my-repair-request-result.dto';
+import { RetryIntakeAnalysisResultDTO } from './dto/retry-intake-analysis-result.dto';
 import {
   RepairServiceOrganizationPageDTO,
   toRepairServiceOrganizationPageDTO,
@@ -72,11 +74,14 @@ import {
 } from './dto/engineer-repair-revision.dto';
 import {
   EngineerResponseDTO,
+  IntakeAnalysisCustomerViewDTO,
+  RepairRequestCustomerPaginatedDTO,
   RepairRequestDetailDTO,
   RepairRequestEngineerListItemDTO,
   RepairRequestEngineerPaginatedDTO,
   RepairRequestListItemDTO,
-  RepairRequestPaginatedDTO,
+  RepairRequestOriginalFileDTO,
+  RepairRequestServiceOrganizationDTO,
 } from './dto/repair-request-read.dto';
 
 /**
@@ -96,6 +101,7 @@ export class RepairRequestResolver {
     private readonly closeRepairRequestUsecase: CloseRepairRequestUsecase,
     private readonly interruptRepairRequestUsecase: InterruptRepairRequestUsecase,
     private readonly deleteMyRepairRequestUsecase: DeleteMyRepairRequestUsecase,
+    private readonly retryIntakeAnalysisUsecase: RetryIntakeAnalysisUsecase,
     private readonly listMyRepairRequestsUsecase: ListMyRepairRequestsUsecase,
     private readonly listEngineerRepairRequestsUsecase: ListEngineerRepairRequestsUsecase,
     private readonly getMyRepairRequestDetailUsecase: GetMyRepairRequestDetailUsecase,
@@ -138,34 +144,40 @@ export class RepairRequestResolver {
   }
 
   /**
-   * 客户创建维修申请
-   * 仅 CUSTOMER 可提交；customerAccountId 取自会话，客户端不可传入
+   * 客户创建维修申请（任务 03「提交即出单」）
+   *
+   * 仅 CUSTOMER 可提交；customerAccountId / 客户公司取自可信身份与数据库事实，
+   * 客户端不可传入。`recordUuid` 为稳定提交标识：同一标识重发只返回原报修与工单，
+   * 相同标识携带不同内容或异主附件由 usecase 按 CONFLICT 拒绝。
+   * 提交成功即出单，本入口不做任何模型调用，首析执行意图由事务内落库的
+   * `WAITING` + 代次 0 承载。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.CUSTOMER)
-  @Mutation(() => RepairRequestDTO, { description: '客户创建维修申请' })
+  @Mutation(() => RepairRequestDTO, { description: '客户创建维修申请（提交即出单）' })
   @ValidateInput()
   async createRepairRequest(
     @Args('input') input: CreateRepairRequestInput,
     @currentUser() user: JwtPayload,
   ): Promise<RepairRequestDTO> {
-    const snapshot = await this.createRepairRequestUsecase.execute({
-      session: {
-        accountId: user.sub,
-        accessGroup: user.accessGroup,
-      },
-      equipmentModelId: input.equipmentModelId,
+    const result = await this.createRepairRequestUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      recordUuid: input.recordUuid,
+      serviceOrganizationId: input.serviceOrganizationId,
+      equipmentModelId: input.equipmentModelId ?? null,
+      equipmentModelText: input.equipmentModelText ?? null,
       errorCode: input.errorCode,
       faultDescription: input.faultDescription,
+      attachment: input.attachment ?? null,
     });
     return {
-      id: snapshot.id,
-      requestNo: snapshot.requestNo,
-      equipmentModelId: snapshot.equipmentModelId,
-      errorCode: snapshot.errorCode,
-      faultDescription: snapshot.faultDescription,
-      createdAt: snapshot.createdAt,
-      isAccepted: snapshot.isAccepted,
+      id: result.request.id,
+      requestNo: result.request.requestNo,
+      equipmentModelId: result.request.equipmentModelId,
+      errorCode: result.request.errorCode,
+      faultDescription: result.request.faultDescription,
+      createdAt: result.request.createdAt,
+      isAccepted: result.request.isAccepted,
     };
   }
 
@@ -390,24 +402,57 @@ export class RepairRequestResolver {
   }
 
   /**
+   * 客户对失败的首析发起唯一一次重新分析（任务 03）
+   * 入口仅按 @Roles(CUSTOMER) 做粗粒度准入；本人核权、第 0 代失败判定、
+   * 代次 0→1 原子切换与投递登记全部由 usecase 事务内裁决；
+   * 不新建工单、不重绑附件；重复重试按 CONFLICT 拒绝
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.CUSTOMER)
+  @Mutation(() => RetryIntakeAnalysisResultDTO, {
+    description: '客户重新分析失败的首次分析（仅第 0 代失败后一次机会）',
+  })
+  async retryIntakeAnalysis(
+    @Args({ name: 'id', type: () => Int, description: '维修申请 ID' }) id: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<RetryIntakeAnalysisResultDTO> {
+    const result = await this.retryIntakeAnalysisUsecase.execute({
+      requestId: id,
+      session: mapJwtToUsecaseSession(user),
+    });
+    return {
+      id: result.requestId,
+      intakeId: result.intakeId,
+      analysisGeneration: result.analysisGeneration,
+      analysisStatus: result.analysisStatus,
+      delivered: result.delivered,
+    };
+  }
+
+  /**
    * 客户查询自己的维修申请列表（仅本人、未删除）
    * 排序由契约固定：创建时间倒序 + 主键倒序；仅支持 OFFSET 分页（usecase 强制）
+   * 列表项附首析状态事实（与工单进度分开展示）；无原稿关联的旧单为空
    * SUPER_ADMIN 按角色继承规则准入（负责人 20260901 裁定 2）
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.CUSTOMER, IdentityTypeEnum.SUPER_ADMIN)
-  @Query(() => RepairRequestPaginatedDTO, { description: '客户查询自己的维修申请列表' })
+  @Query(() => RepairRequestCustomerPaginatedDTO, { description: '客户查询自己的维修申请列表' })
   @ValidateInput()
   async myRepairRequests(
     @Args('pagination') pagination: PaginationArgs,
     @currentUser() user: JwtPayload,
-  ): Promise<RepairRequestPaginatedDTO> {
+  ): Promise<RepairRequestCustomerPaginatedDTO> {
     const page = await this.listMyRepairRequestsUsecase.execute({
       session: mapJwtToUsecaseSession(user),
       pagination: mapGqlToCoreParams(pagination),
     });
     return {
-      items: page.items.map((item) => this.toListItemDTO(item)),
+      items: page.items.map((item) => ({
+        ...this.toListItemDTO(item),
+        analysisStatus: item.analysisStatus,
+        analysisGeneration: item.analysisGeneration,
+      })),
       total: page.total,
       page: page.page,
       pageSize: page.pageSize,
@@ -651,6 +696,9 @@ export class RepairRequestResolver {
     maintenanceSteps?: RepairMaintenanceStepView[];
     maintenanceFaultPanels?: RepairMaintenanceFaultPanelView[];
     intake?: RepairIntakeSourceView | null;
+    intakeAnalysis?: IntakeAnalysisCustomerViewDTO | null;
+    originalFile?: RepairRequestOriginalFileDTO | null;
+    serviceOrganization?: RepairRequestServiceOrganizationDTO | null;
     canEditMaintenance?: boolean;
   }): RepairRequestDetailDTO {
     return {
@@ -677,6 +725,9 @@ export class RepairRequestResolver {
         toRepairMaintenanceFaultPanelDTO,
       ),
       intake: toRepairIntakeSourceDTO(detail.intake ?? null),
+      intakeAnalysis: detail.intakeAnalysis ?? null,
+      originalFile: detail.originalFile ?? null,
+      serviceOrganization: detail.serviceOrganization ?? null,
       canEditMaintenance: detail.canEditMaintenance ?? false,
     };
   }

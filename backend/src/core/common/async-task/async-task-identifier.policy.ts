@@ -1,4 +1,5 @@
-export type AsyncTaskBizDomain = 'ai_generation' | 'ai_embedding' | 'ai_workflow' | 'email';
+export type AsyncTaskBizDomain =
+  'ai_generation' | 'ai_embedding' | 'ai_workflow' | 'intake_analysis' | 'email';
 
 type BizKeyPolicy = 'trace_id' | 'job_id';
 
@@ -6,6 +7,8 @@ const BIZ_KEY_POLICY_BY_DOMAIN: Record<AsyncTaskBizDomain, BizKeyPolicy> = {
   ai_generation: 'trace_id',
   ai_embedding: 'trace_id',
   ai_workflow: 'trace_id',
+  // 首析属 AI 链路：bizKey 统一用 traceId（queue-identifiers 规则）
+  intake_analysis: 'trace_id',
   email: 'job_id',
 };
 

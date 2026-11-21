@@ -13,6 +13,7 @@ import {
   RepairRequestEngineerDetailView,
   RepairRequestEngineerListItemQueryResult,
   RepairRequestEngineerListItemView,
+  RepairRequestIntakeAnalysisCustomerView,
 } from '@src/modules/lithography/lithography.types';
 
 /** 昵称缺失时的安全回落展示（负责人 20260901 裁定 3） */
@@ -73,10 +74,13 @@ export function toEngineerResponseView(
  * - 跨域读取经账号域 QueryService 契约（usecase 编排，不直接跨域读表）
  * - 一次批量查询，避免逐条回复 N+1
  * - 昵称缺失/空白回落「工程师」；工程师账号 ID 不进入对外视图
+ * - 首析展示状态与自助资格需要账本事实，由调用方（usecase）判定后传入，
+ *   本函数只做逐字段装配，不再推导业务结论
  */
 export async function enrichRepairRequestDetailNicknames(
   accountQueryService: AccountQueryService,
   result: RepairRequestDetailQueryResult,
+  intakeAnalysis: RepairRequestIntakeAnalysisCustomerView | null,
 ): Promise<RepairRequestDetailView> {
   const engineerAccountIds = result.responses.map((response) => response.engineerAccountId);
   const nicknames = await accountQueryService.findNicknamesByAccountIds(engineerAccountIds);
@@ -104,13 +108,17 @@ export async function enrichRepairRequestDetailNicknames(
     closureReason: result.closureReason,
     handlingResult: result.handlingResult,
     handlingStatus: result.handlingStatus,
-    // 客户视图不包含任何内部维修过程、结构化维修记录、原件或 AI 分析
-    // （即使未来读服务装配口径变化也不外泄）
+    // 客户视图不包含任何内部维修过程、结构化维修记录或工程师 intake 视图
+    // （即使未来读服务装配口径变化也不外泄）；
+    // 首析状态/正文、本人报修原件与维修厂家由 QueryService 客户入口装配后透传
     processEntries: [],
     maintenance: null,
     maintenanceSteps: [],
     maintenanceFaultPanels: [],
     intake: null,
+    intakeAnalysis,
+    originalFile: result.originalFile,
+    serviceOrganization: result.serviceOrganization,
     canEditMaintenance: false,
   };
 }
@@ -228,6 +236,10 @@ export async function enrichEngineerRepairRequestDetail(
     maintenanceSteps: result.maintenanceSteps,
     maintenanceFaultPanels: result.maintenanceFaultPanels,
     intake: result.intake,
+    // 客户入口装配字段对工程师入口恒为 null（走 intake 原始报修视图）
+    intakeAnalysis: null,
+    originalFile: null,
+    serviceOrganization: null,
     canEditMaintenance: result.canEditMaintenance,
     customerNickname: customerProfile?.nickname ?? CUSTOMER_NICKNAME_FALLBACK,
     customerCompanyName: customerProfile?.companyName ?? null,

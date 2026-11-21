@@ -54,7 +54,29 @@ describe('RepairRequestService', () => {
       faultDescription: '设备无法启动',
       createdAt,
       isAccepted: false,
+      deprecated: false,
+      // 旧调用方不传原稿/组织列时保持存量可空语义
+      intakeId: null,
+      customerOrganizationId: null,
+      serviceOrganizationId: null,
     });
+  });
+
+  it('任务 03 提交即出单：原稿与两个组织列随工单一起落库', async () => {
+    const snapshot = await service.insertRequest({
+      ...insertData,
+      intakeId: 21,
+      customerOrganizationId: 77,
+      serviceOrganizationId: 88,
+    });
+
+    const created = repository.create.mock.calls[0][0] as Record<string, unknown>;
+    expect(created.intakeId).toBe(21);
+    expect(created.customerOrganizationId).toBe(77);
+    expect(created.serviceOrganizationId).toBe(88);
+    expect(snapshot.intakeId).toBe(21);
+    expect(snapshot.customerOrganizationId).toBe(77);
+    expect(snapshot.serviceOrganizationId).toBe(88);
   });
 
   it('唯一索引冲突（ER_DUP_ENTRY）抛出可区分的编号冲突错误', async () => {
@@ -748,6 +770,58 @@ describe('RepairRequestService', () => {
       // 默认仓库不得被使用：事务内操作必须全部经由事务上下文
       expect(repository.update).not.toHaveBeenCalled();
       expect(repository.findOne).not.toHaveBeenCalled();
+    });
+  });
+
+  // PR #27 复审：同标识重放状态核验的工单侧锁读（删除与重放并发时取单一提交点事实）
+  describe('findReplayRequestStateForUpdate（重放核验锁读）', () => {
+    it('排他锁 + 最小状态列，返回重放核验所需状态事实', async () => {
+      repository.findOne.mockResolvedValueOnce({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: false,
+      });
+      const transactionContext = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repository,
+      } as unknown as EntityManager);
+
+      await expect(
+        service.findReplayRequestStateForUpdate(11, transactionContext),
+      ).resolves.toEqual({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: false,
+      });
+      // 钉住排他锁与最小投影：防止扩大投影泄露报修内容字段
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: 11 },
+        select: { id: true, customerAccountId: true, intakeId: true, deprecated: true },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
+    it('已删除工单（deprecated=true）照实返回删除事实，行缺失返回 null', async () => {
+      const transactionContext = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repository,
+      } as unknown as EntityManager);
+      repository.findOne.mockResolvedValueOnce({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: true,
+      });
+      await expect(
+        service.findReplayRequestStateForUpdate(11, transactionContext),
+      ).resolves.toMatchObject({
+        deprecated: true,
+      });
+
+      repository.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.findReplayRequestStateForUpdate(11, transactionContext),
+      ).resolves.toBeNull();
     });
   });
 });

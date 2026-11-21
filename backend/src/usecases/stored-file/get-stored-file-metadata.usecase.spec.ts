@@ -6,7 +6,6 @@ import {
   ACCOUNT_ERROR,
   DomainError,
   ORGANIZATION_ERROR,
-  PERMISSION_ERROR,
   STORED_FILE_ERROR,
 } from '@core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
@@ -95,13 +94,14 @@ describe('GetStoredFileMetadataUsecase', () => {
     expect(queryService.findAuthorizedMetadata).not.toHaveBeenCalled();
   });
 
-  it('客户角色拒绝，且不访问查询服务', async () => {
+  it('客户读链路：期望用途切换为 REPAIR_REQUEST，仍交查询服务裁决归属', async () => {
     const { usecase, queryService } = makeUsecase();
 
-    await expect(
-      usecase.execute({ session: customer, fileId, uploadContextId }),
-    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
-    expect(queryService.findAuthorizedMetadata).not.toHaveBeenCalled();
+    await usecase.execute({ session: customer, fileId, uploadContextId });
+
+    expect(queryService.findAuthorizedMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ fileId, expectedBusinessType: 'REPAIR_REQUEST' }),
+    );
   });
 
   it('查询服务判定不可访问时统一 NOT_FOUND', async () => {

@@ -489,6 +489,290 @@ describe('StoredFileQueryService 读授权', () => {
     });
   });
 
+  describe('客户报修原件（BOUND REPAIR_REQUEST，任务 03 第三段）', () => {
+    const boundRequestFile = (overrides: Record<string, unknown> = {}) =>
+      fileRow({
+        businessType: 'REPAIR_REQUEST',
+        bindingStatus: 'BOUND',
+        businessId: '7001',
+        uploadContextId: null,
+        ...overrides,
+      });
+
+    const customerQuery = (overrides: Partial<StoredFileAccessQuery> = {}) =>
+      accessQuery({
+        session: customer,
+        expectedBusinessType: 'REPAIR_REQUEST',
+        uploadContextId: null,
+        viewerOrganizationId: null,
+        ...overrides,
+      });
+
+    it('报修本人可读取真实绑定到本人原稿的原件（元数据与下载）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundRequestFile());
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        fileId: '11111111-1111-4111-8111-111111111111',
+        customerAccountId: 900001,
+        deletedAt: null,
+      });
+
+      const metadata = await service.findAuthorizedMetadata(customerQuery());
+      expect(metadata).toMatchObject({
+        fileId: '11111111-1111-4111-8111-111111111111',
+        byteSize: 10,
+      });
+      expect(metadata).not.toHaveProperty('storageReference');
+      await expect(service.findAuthorizedDownload(customerQuery())).resolves.toMatchObject({
+        storageReference: 'private/ref.pdf',
+      });
+    });
+
+    it('同公司其他客户 / 外公司账号不可借 ID 读取（不泄露存在性）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundRequestFile());
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        fileId: '11111111-1111-4111-8111-111111111111',
+        customerAccountId: 900999,
+        deletedAt: null,
+      });
+
+      await expect(service.findAuthorizedMetadata(customerQuery())).resolves.toBeNull();
+      await expect(
+        service.findAuthorizedDownload(customerQuery({ session: session(['CUSTOMER'], 900888) })),
+      ).resolves.toBeNull();
+    });
+
+    it('原稿已删除后原件对客户关闭；intake.file_id 不实际引用该文件时拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundRequestFile());
+
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        fileId: '11111111-1111-4111-8111-111111111111',
+        customerAccountId: 900001,
+        deletedAt: new Date('2026-11-20T00:00:00.000Z'),
+      });
+      await expect(service.findAuthorizedDownload(customerQuery())).resolves.toBeNull();
+
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        fileId: '99999999-9999-4999-8999-999999999999',
+        customerAccountId: 900001,
+        deletedAt: null,
+      });
+      await expect(service.findAuthorizedDownload(customerQuery())).resolves.toBeNull();
+    });
+
+    it('工程师无真实关联工单时拒绝（不进入工单口径，不泄露存在性）', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundRequestFile());
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        fileId: '11111111-1111-4111-8111-111111111111',
+        customerAccountId: 900001,
+        deletedAt: null,
+      });
+
+      // 无 repair_request 关联该原稿（原稿尚未转为工单）
+      await expect(
+        service.findAuthorizedMetadata(accessQuery({ uploadContextId: null })),
+      ).resolves.toBeNull();
+    });
+
+    it('暂存（TEMPORARY）REPAIR_REQUEST 原件不对客户开放', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(
+        fileRow({ businessType: 'REPAIR_REQUEST', businessId: null }),
+      );
+      repositories.intake.findOne.mockResolvedValue({
+        id: 7001,
+        fileId: '11111111-1111-4111-8111-111111111111',
+        customerAccountId: 900001,
+        deletedAt: null,
+      });
+
+      await expect(service.findAuthorizedMetadata(customerQuery())).resolves.toBeNull();
+    });
+  });
+
+  describe('指定厂家工程师读取客户报修原件（BOUND REPAIR_REQUEST，任务 03/04 交叉链路）', () => {
+    const boundRequestFile = (overrides: Record<string, unknown> = {}) =>
+      fileRow({
+        businessType: 'REPAIR_REQUEST',
+        bindingStatus: 'BOUND',
+        businessId: '7001',
+        uploadContextId: null,
+        ...overrides,
+      });
+
+    const engineerIntake = (overrides: Record<string, unknown> = {}) => ({
+      id: 7001,
+      fileId: '11111111-1111-4111-8111-111111111111',
+      customerAccountId: 900001,
+      serviceOrganizationId: 910001,
+      deletedAt: null,
+      ...overrides,
+    });
+
+    const workOrder = (overrides: Record<string, unknown> = {}) => ({
+      id: 42,
+      serviceOrganizationId: 910001,
+      deprecated: false,
+      ...overrides,
+    });
+
+    const engineerQuery = (overrides: Partial<StoredFileAccessQuery> = {}) =>
+      accessQuery({
+        uploadContextId: null,
+        viewerOrganizationId: 910001,
+        ...overrides,
+      });
+
+    const arrangeLinked = (repositories: ReturnType<typeof makeRepositories>): void => {
+      repositories.storedFile.findOne.mockResolvedValue(boundRequestFile());
+      repositories.intake.findOne.mockResolvedValue(engineerIntake());
+      repositories.request.findOne.mockResolvedValue(workOrder());
+    };
+
+    it('指定厂家工程师可下载真实关联工单的客户原件（元数据与下载事实）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+
+      const metadata = await service.findAuthorizedMetadata(engineerQuery());
+      expect(metadata).toMatchObject({
+        fileId: '11111111-1111-4111-8111-111111111111',
+        businessType: 'REPAIR_REQUEST',
+        byteSize: 10,
+      });
+      expect(metadata).not.toHaveProperty('storageReference');
+
+      await expect(service.findAuthorizedDownload(engineerQuery())).resolves.toMatchObject({
+        fileId: '11111111-1111-4111-8111-111111111111',
+        storageReference: 'private/ref.pdf',
+        byteSize: 10,
+      });
+    });
+
+    it('同厂家未接单工单同样可读（与工单详情可见规则一致，不以接单为前提）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+      repositories.request.findOne.mockResolvedValue(
+        workOrder({ isAccepted: false, acceptedByEngineerAccountId: null }),
+      );
+
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toMatchObject({
+        businessType: 'REPAIR_REQUEST',
+      });
+    });
+
+    it('工单查询以 intake_id 真实关联为依据（不信任文件 business_id 或前端厂家参数）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+
+      await service.findAuthorizedMetadata(engineerQuery());
+
+      expect(repositories.intake.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 7001 } }),
+      );
+      expect(repositories.request.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { intakeId: 7001 } }),
+      );
+    });
+
+    it('工单未关联该原稿（无 repair_request 行）拒绝', async () => {
+      const { service, repositories } = makeService();
+      repositories.storedFile.findOne.mockResolvedValue(boundRequestFile());
+      repositories.intake.findOne.mockResolvedValue(engineerIntake());
+      repositories.request.findOne.mockResolvedValue(null);
+
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toBeNull();
+    });
+
+    it('外公司工程师拒绝（工单服务公司不属于可信组织）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+
+      await expect(
+        service.findAuthorizedDownload(engineerQuery({ viewerOrganizationId: 700002 })),
+      ).resolves.toBeNull();
+    });
+
+    it('工单已删除时拒绝', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+      repositories.request.findOne.mockResolvedValue(workOrder({ deprecated: true }));
+
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toBeNull();
+    });
+
+    it('工单与原稿服务公司冲突时拒绝（不使用 owner 或历史接单人兜底）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+      repositories.request.findOne.mockResolvedValue(workOrder({ serviceOrganizationId: 700002 }));
+
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toBeNull();
+
+      repositories.request.findOne.mockResolvedValue(workOrder({ serviceOrganizationId: null }));
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toBeNull();
+    });
+
+    it('原稿已删除后工程师同样拒绝', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+      repositories.intake.findOne.mockResolvedValue(
+        engineerIntake({ deletedAt: new Date('2026-11-20T00:00:00.000Z') }),
+      );
+
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toBeNull();
+    });
+
+    it('intake.file_id 不实际引用该文件时工程师拒绝', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+      repositories.intake.findOne.mockResolvedValue(
+        engineerIntake({ fileId: '99999999-9999-4999-8999-999999999999' }),
+      );
+
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toBeNull();
+    });
+
+    it('管理员会话不因本分支放行（管理员口径不变）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+
+      await expect(
+        service.findAuthorizedMetadata(
+          engineerQuery({
+            session: admin,
+            adminOrganizationId: null,
+            viewerOrganizationId: null,
+          }),
+        ),
+      ).resolves.toBeNull();
+
+      await expect(
+        service.findAuthorizedMetadata(
+          engineerQuery({
+            session: admin,
+            adminOrganizationId: 910001,
+          }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('无可信组织归属的工程师拒绝（viewerOrganizationId 为空）', async () => {
+      const { service, repositories } = makeService();
+      arrangeLinked(repositories);
+
+      await expect(
+        service.findAuthorizedMetadata(engineerQuery({ viewerOrganizationId: null })),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe('管理员读取（BOUND REPAIR_PROCESS）', () => {
     const boundFile = () =>
       fileRow({ bindingStatus: 'BOUND', businessId: '42', uploadContextId: 'ctx' });
