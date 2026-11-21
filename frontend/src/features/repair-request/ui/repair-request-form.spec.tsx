@@ -11,6 +11,7 @@ import {
   createRepairRequest,
   fetchEquipmentModels,
   fetchRepairServiceOrganizations,
+  fetchTrustedCompanyName,
   uploadRepairRequestFile,
 } from '../infrastructure/repair-request-adapter';
 
@@ -20,6 +21,7 @@ vi.mock('../infrastructure/repair-request-adapter', () => ({
   createRepairRequest: vi.fn(),
   fetchEquipmentModels: vi.fn(),
   fetchRepairServiceOrganizations: vi.fn(),
+  fetchTrustedCompanyName: vi.fn(),
   uploadRepairRequestFile: vi.fn(),
 }));
 
@@ -36,6 +38,7 @@ vi.mock('react-router', async (importOriginal) => {
 
 const fetchEquipmentModelsMock = vi.mocked(fetchEquipmentModels);
 const fetchServiceOrganizationsMock = vi.mocked(fetchRepairServiceOrganizations);
+const fetchTrustedCompanyNameMock = vi.mocked(fetchTrustedCompanyName);
 const uploadRepairRequestFileMock = vi.mocked(uploadRepairRequestFile);
 const createRepairRequestMock = vi.mocked(createRepairRequest);
 
@@ -131,12 +134,14 @@ function deferred<T>() {
 function stubReadyQueries() {
   fetchEquipmentModelsMock.mockResolvedValue(MODEL_OPTIONS);
   fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
+  fetchTrustedCompanyNameMock.mockResolvedValue('甲公司');
 }
 
 beforeEach(() => {
   stubBrowserApis();
   fetchEquipmentModelsMock.mockReset();
   fetchServiceOrganizationsMock.mockReset();
+  fetchTrustedCompanyNameMock.mockReset();
   uploadRepairRequestFileMock.mockReset();
   createRepairRequestMock.mockReset();
   navigateMock.mockReset();
@@ -630,6 +635,68 @@ describe('提交即出单的幂等与附件', () => {
     expect((screen.getByPlaceholderText('例如：E-2001') as HTMLInputElement).value).toBe('E-2001');
     expect(screen.queryByRole('button', { name: /前往账号设置/ })).toBeNull();
   });
+
+  // PR #27 复审：原申请已删除——明确提示并引导重新发起；只在用户点击「重新发起申请」
+  // 时换新提交标识，不自动创建新工单
+  it('原申请已删除时展示提示与「重新发起申请」入口，明确重新发起后换新提交标识', async () => {
+    createRepairRequestMock.mockResolvedValue({
+      ok: false,
+      message: '原申请已删除，请重新发起维修申请',
+      reason: 'submission-deleted',
+    });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('原申请已删除，请重新发起维修申请')).toBeTruthy();
+    expect(screen.getByText('原申请已删除，请确认后重新发起维修申请。')).toBeTruthy();
+    const first = createRepairRequestMock.mock.calls[0][0].recordUuid;
+
+    fireEvent.click(screen.getByRole('button', { name: /重新\s*发起\s*申请/ }));
+    expect(screen.queryByText('原申请已删除，请重新发起维修申请')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+    await waitFor(() => expect(createRepairRequestMock).toHaveBeenCalledTimes(2));
+
+    const second = createRepairRequestMock.mock.calls[1][0].recordUuid;
+    expect(second).toMatch(UUID_PATTERN);
+    expect(second).not.toBe(first);
+  });
+
+  // PR #27 复审：提交中禁止移除附件，保证提交载荷与页面当前展示的有效附件一致
+  it('提交进行中时附件移除按钮禁用', async () => {
+    uploadRepairRequestFileMock.mockResolvedValue({
+      ok: true,
+      file: {
+        fileId: '9b1f4f9e-9a1e-4b6e-8a10-3f1a2b3c4d5e',
+        uploadContextId: '0c9f6c2e-1f1a-4b0d-9a2f-d0e1c2b3a4f5',
+        originalFilename: '报修原件.pdf',
+        mimeType: 'application/pdf',
+        byteSize: 1024,
+        checksumSha256: 'a'.repeat(64),
+      },
+    });
+    createRepairRequestMock.mockReturnValue(new Promise(() => {}));
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(['pdf'], '报修原件.pdf', { type: 'application/pdf' })] },
+    });
+    expect(await screen.findByText('报修原件.pdf')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    await waitFor(() =>
+      expect(isDisabled(screen.getByRole('button', { name: /移\s*除/ }))).toBe(true),
+    );
+  });
 });
 
 describe('字段提示与整体规则（2026-09-30 复审：去掉集中式提示栏）', () => {
@@ -637,13 +704,62 @@ describe('字段提示与整体规则（2026-09-30 复审：去掉集中式提�
     stubReadyQueries();
   });
 
-  it('客户公司只读展示，不提供编辑入口', async () => {
+  // PR #27 复审：客户公司只读展示实际可信公司名称，不展示虚构公司
+  it('客户公司只读展示实际可信公司名称，不提供编辑入口', async () => {
     renderForm();
     await screen.findAllByRole('combobox');
 
-    const companyInput = screen.getByDisplayValue('已绑定账号公司') as HTMLInputElement;
+    const companyInput = screen.getByDisplayValue('甲公司') as HTMLInputElement;
     expect(companyInput.disabled).toBe(true);
-    expect(screen.getByText('取自账号设置，不能在此修改')).toBeTruthy();
+    expect(screen.getByText('取自账号设置的可信公司信息，不能在此修改')).toBeTruthy();
+  });
+
+  it('可信公司名称加载中展示明确状态，不预填任何公司', async () => {
+    fetchTrustedCompanyNameMock.mockReturnValue(new Promise(() => {}));
+
+    renderForm();
+
+    const companyInput = screen.getByDisplayValue('正在加载公司信息…') as HTMLInputElement;
+    expect(companyInput.disabled).toBe(true);
+  });
+
+  it('账号未绑定公司时展示未绑定提示，不当作已绑定', async () => {
+    fetchTrustedCompanyNameMock.mockResolvedValue(null);
+
+    renderForm();
+
+    const companyInput = (await screen.findByDisplayValue(
+      '账号尚未绑定公司，请先在账号设置中补录',
+    )) as HTMLInputElement;
+    expect(companyInput.disabled).toBe(true);
+    expect(screen.queryByDisplayValue('甲公司')).toBeNull();
+  });
+
+  it('可信公司名称加载失败时展示失败状态并可重试', async () => {
+    fetchTrustedCompanyNameMock
+      .mockRejectedValueOnce(new GraphQLIngressError({ type: 'network', message: 'down' }))
+      .mockResolvedValueOnce('甲公司');
+
+    renderForm();
+
+    expect(await screen.findByDisplayValue('网络连接异常，请稍后重试。')).toBeTruthy();
+    expect(screen.queryByDisplayValue('甲公司')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+
+    expect(await screen.findByDisplayValue('甲公司')).toBeTruthy();
+  });
+
+  it('两个不同公司账号分别展示各自的可信名称', async () => {
+    fetchTrustedCompanyNameMock.mockResolvedValueOnce('甲公司');
+    const first = renderForm();
+    expect(await screen.findByDisplayValue('甲公司')).toBeTruthy();
+    first.unmount();
+
+    // 第二个账号（服务端按会话身份返回另一家可信公司）
+    fetchTrustedCompanyNameMock.mockResolvedValueOnce('乙公司');
+    renderForm();
+    expect(await screen.findByDisplayValue('乙公司')).toBeTruthy();
   });
 
   it('字段小标题旁各挂一条与字段一一对应的短提示，长度口径与 100 / 5000 契约一致', async () => {

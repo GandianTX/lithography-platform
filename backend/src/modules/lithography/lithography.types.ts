@@ -112,6 +112,35 @@ export type RepairRequestIntakeSnapshot = RepairRequestIntakeInsertData & {
 };
 
 /**
+ * 同标识重放核验的工单侧最小状态事实（任务 03 / PR #27 复审）。
+ *
+ * 重放返回原工单前，usecase 在事务内以此核验「工单仍有效 + 双向关联成立」；
+ * 只携带裁决所需的状态列，不外发报修内容字段。
+ */
+export type RepairRequestReplayRequestState = {
+  readonly id: number;
+  readonly customerAccountId: number;
+  /** 报修原始输入主键；双向关联核验要求与本原稿 id 一致 */
+  readonly intakeId: number | null;
+  /** 逻辑删除事实（deprecated 列）；已删除的重放不得返回成功 */
+  readonly deprecated: boolean;
+};
+
+/**
+ * 同标识重放核验的原稿侧最小状态事实（任务 03 / PR #27 复审）。
+ *
+ * 删除链路对原稿与工单同事务软删；本事实用于核验原稿未删除且
+ * `converted_request_id` 与工单侧读到的关联一致（双向关联异常失败关闭）。
+ */
+export type RepairRequestReplayIntakeState = {
+  readonly id: number;
+  readonly customerAccountId: number;
+  readonly convertedRequestId: number | null;
+  /** 原稿逻辑删除事实（deleted_at 列非空即已删除） */
+  readonly deleted: boolean;
+};
+
+/**
  * 首析认领结果（任务 03 第二段）。
  *
  * CLAIMED 携带 `attemptId` 作为本次执行的唯一归属凭据：

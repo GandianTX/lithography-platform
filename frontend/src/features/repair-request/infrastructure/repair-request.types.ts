@@ -63,6 +63,8 @@ export type RepairRequestRecord = {
  * `service-org-unavailable`：所选维修厂家已停用/失去维修服务资格，客户端可改选。
  * `submission-conflict`：同一提交标识的内容与已提交记录不一致（含异主附件），
  * 需重新打开报修页提交；不返回原记录任何字段。
+ * `submission-deleted`：同标识对应的原申请已被本人删除（PR #27 复审）——重放失败关闭，
+ * 不恢复旧工单、不自动重建；用户明确重新发起时由 application 层换新提交标识。
  * `attachment-*`：原件不可绑定（已被占用/用途不符/不存在），需重新上传或移除附件。
  */
 export type CreateRepairRequestFailureReason =
@@ -73,6 +75,7 @@ export type CreateRepairRequestFailureReason =
   | 'company-unavailable'
   | 'service-org-unavailable'
   | 'submission-conflict'
+  | 'submission-deleted'
   | 'attachment-not-found'
   | 'attachment-conflict'
   | 'creation-failed';

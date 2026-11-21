@@ -69,9 +69,12 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
   const {
     attachment,
     clearAttachment,
+    companyState,
     continueCreating,
     createdRequest,
     modelsState,
+    restartSubmission,
+    retryLoadCompany,
     retryLoadModels,
     retryLoadServiceOrganizations,
     searchServiceOrganizations,
@@ -204,13 +207,21 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
               <Button onClick={() => navigate(ACCOUNT_SETTINGS_PATH)} size="small" type="primary">
                 {t('common.goAccountSettings')}
               </Button>
+            ) : submitFailureReason === 'submission-deleted' ? (
+              // PR #27 复审：原申请已删除——明确引导重新发起，且只在用户点击本按钮
+              // 时换新提交标识（不自动创建新工单）
+              <Button onClick={restartSubmission} size="small" type="primary">
+                {t('repairForm.restartSubmission')}
+              </Button>
             ) : undefined
           }
           title={submitError}
           description={
             submitFailureReason === 'company-required'
               ? t('repairForm.companyRequiredHint')
-              : undefined
+              : submitFailureReason === 'submission-deleted'
+                ? t('repairForm.submissionDeletedHint')
+                : undefined
           }
           showIcon
           type="error"
@@ -324,13 +335,32 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
         <h3 className="repair-request-section-title">
           {t('repairForm.section.serviceArrangement')}
         </h3>
-        {/* 客户公司：只读展示，归属真源在账号设置（服务端从可信身份取得） */}
+        {/* 客户公司：只读展示实际可信公司名称（trustedCompanyName，服务端按可信身份
+            解析，PR #27 复审）；加载中 / 未绑定 / 加载失败分别给出明确状态，
+            不展示虚构公司，也不把查询失败当作已绑定。归属授权仍由服务端决定。 */}
         <Form.Item
           label={
             <FieldLabel hint={t('repairForm.companyHint')} title={t('repairForm.companyLabel')} />
           }
         >
-          <Input disabled readOnly value={t('repairForm.companyValue')} />
+          <div className="flex items-center gap-2">
+            <Input
+              disabled
+              readOnly
+              value={
+                companyState.status === 'loading'
+                  ? t('repairForm.companyLoading')
+                  : companyState.status === 'failed'
+                    ? companyState.message
+                    : (companyState.trustedCompanyName ?? t('repairForm.companyNotBound'))
+              }
+            />
+            {companyState.status === 'failed' ? (
+              <Button onClick={retryLoadCompany} size="small">
+                {t('common.retry')}
+              </Button>
+            ) : null}
+          </div>
         </Form.Item>
         <Form.Item
           label={
@@ -380,7 +410,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             {attachment.status === 'ready' ? (
               <div className="flex items-center gap-2">
                 <span>{attachment.file.originalFilename}</span>
-                <Button onClick={clearAttachment} size="small" type="link">
+                <Button disabled={submitting} onClick={clearAttachment} size="small" type="link">
                   {t('repairForm.attachmentRemove')}
                 </Button>
                 <span className="repair-request-field-hint">{t('repairForm.attachmentReady')}</span>

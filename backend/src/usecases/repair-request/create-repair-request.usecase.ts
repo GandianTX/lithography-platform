@@ -325,6 +325,11 @@ export class CreateRepairRequestUsecase {
    * 核对项：归属账号、客户公司（由当前会话事实重读）、维修厂家、机型、错误码、
    * 故障描述、附件。任何一项不一致都按 CONFLICT 拒绝，且不返回原记录字段，
    * 避免借提交标识探测他人报修内容。
+   *
+   * 状态核验（PR #27 复审）：内容一致仍不直接返回原工单——在只读事务内按
+   * 「工单行 → 原稿行」排他锁读核验两侧仍未删除且双向关联一致。删除与重放并发时，
+   * 行锁使核验结论取自单一提交点：删除先提交则本读看到删除态（ORIGINAL_DELETED），
+   * 本核验先提交则删除等待其结束，不靠非原子一致性读得出虚假成功。
    */
   private async replaySubmission(
     session: UsecaseSession,
@@ -364,7 +369,13 @@ export class CreateRepairRequestUsecase {
         { recordUuid: existing.recordUuid },
       );
     }
-    const request = await this.repairRequestService.findSnapshotById(existing.convertedRequestId);
+    const convertedRequestId = existing.convertedRequestId;
+
+    await this.transactionRunner.run((transactionContext) =>
+      this.assertReplayStateValid(session, existing, convertedRequestId, transactionContext),
+    );
+
+    const request = await this.repairRequestService.findSnapshotById(convertedRequestId);
     if (!request || request.customerAccountId !== session.accountId) {
       throw new DomainError(
         REPAIR_REQUEST_ERROR.CREATION_FAILED,
@@ -385,6 +396,69 @@ export class CreateRepairRequestUsecase {
       analysisTraceId: null,
       analysisDelivery: null,
     };
+  }
+
+  /**
+   * 重放状态核验（只读事务，无任何写入）。
+   *
+   * 锁顺序「工单行 → 原稿行」与删除链路（软删工单 → 软删原稿）一致，避免反向锁等待。
+   * 任一核验失败都整体抛错结束重放：
+   * - 工单或原稿已删除 → SUBMISSION_ORIGINAL_DELETED（客户端引导重新发起，不恢复旧工单、
+   *   不重新登记机型、不重复投递首析）；
+   * - 双向关联不一致（工单未指向本原稿 / 原稿转换列与工单侧不一致）或归属异常 →
+   *   失败关闭 CREATION_FAILED，不返回任何原记录字段。
+   */
+  private async assertReplayStateValid(
+    session: UsecaseSession,
+    existing: RepairRequestIntakeSnapshot,
+    convertedRequestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
+    const requestState = await this.repairRequestService.findReplayRequestStateForUpdate(
+      convertedRequestId,
+      transactionContext,
+    );
+    if (
+      !requestState ||
+      requestState.customerAccountId !== session.accountId ||
+      requestState.intakeId !== existing.id
+    ) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.CREATION_FAILED,
+        '报修记录状态异常，请联系管理员处理',
+        { recordUuid: existing.recordUuid },
+      );
+    }
+    if (requestState.deprecated) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.SUBMISSION_ORIGINAL_DELETED,
+        '原申请已删除，请重新发起维修申请',
+        { recordUuid: existing.recordUuid },
+      );
+    }
+
+    const intakeState = await this.repairRequestIntakeService.findReplayIntakeStateForUpdate(
+      existing.recordUuid,
+      transactionContext,
+    );
+    if (
+      !intakeState ||
+      intakeState.customerAccountId !== session.accountId ||
+      intakeState.convertedRequestId !== existing.convertedRequestId
+    ) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.CREATION_FAILED,
+        '报修记录状态异常，请联系管理员处理',
+        { recordUuid: existing.recordUuid },
+      );
+    }
+    if (intakeState.deleted) {
+      throw new DomainError(
+        REPAIR_REQUEST_ERROR.SUBMISSION_ORIGINAL_DELETED,
+        '原申请已删除，请重新发起维修申请',
+        { recordUuid: existing.recordUuid },
+      );
+    }
   }
 
   /** 重放核对：机型选择是否与落库机型一致（手填文本按编码只读比对，不登记） */

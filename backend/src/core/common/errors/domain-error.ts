@@ -224,6 +224,10 @@ export const REPAIR_REQUEST_ERROR = {
   // 客户创建申请（任务 03）：并发重放时原稿唯一键先提交。仅用于事务内部分类与事务外重放，
   // 不得作为正常对外结果；外泄时按 CONFLICT 处理（客户端可安全重试同一标识）
   SUBMISSION_DUPLICATE: 'REPAIR_REQUEST_SUBMISSION_DUPLICATE',
+  // 客户创建申请（任务 03 / PR #27 复审）：同标识重放核验发现原申请已被本人删除
+  // （原稿或工单任一侧带删除标记）。明确的当前状态冲突 CONFLICT：重放不能返回创建成功，
+  // 也不能恢复旧工单；客户端据此引导用户明确重新发起（换新提交标识），不自动重建
+  SUBMISSION_ORIGINAL_DELETED: 'REPAIR_REQUEST_SUBMISSION_ORIGINAL_DELETED',
   // 客户创建申请（任务 03）：所选维修厂家不存在、已停用或不具备维修服务资格。
   // 客户端可改选，属输入类拒绝（对外 BAD_USER_INPUT）
   SERVICE_ORGANIZATION_NOT_AVAILABLE: 'REPAIR_REQUEST_SERVICE_ORGANIZATION_NOT_AVAILABLE',

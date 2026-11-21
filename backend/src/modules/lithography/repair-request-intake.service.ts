@@ -9,7 +9,11 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { Repository } from 'typeorm';
 import { isDuplicateKeyError } from '../common/utils/database-error.util';
 import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
-import { RepairRequestIntakeInsertData, RepairRequestIntakeSnapshot } from './lithography.types';
+import {
+  RepairRequestIntakeInsertData,
+  RepairRequestIntakeSnapshot,
+  RepairRequestReplayIntakeState,
+} from './lithography.types';
 
 /**
  * 报修原始输入写服务（任务 03「提交即出单」）。
@@ -155,6 +159,34 @@ export class RepairRequestIntakeService {
         error,
       );
     }
+  }
+
+  /**
+   * 同标识重放核验的原稿侧锁读（PR #27 复审）。
+   *
+   * 必须在 usecase 事务内调用：排他行锁与删除链路「软删原稿」的条件更新串行，
+   * 保证删除与重放并发时核验结论取自单一提交点，不靠非原子一致性读得出虚假成功。
+   * 锁顺序由 usecase 统一为「工单行 → 原稿行」，与删除链路的更新顺序一致，避免反向锁等待。
+   * 只读最小状态列；归属/关联/删除的判定归 usecase。
+   */
+  async findReplayIntakeStateForUpdate(
+    recordUuid: string,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<RepairRequestReplayIntakeState | null> {
+    const repository = this.getRepository(transactionContext);
+    const entity = await repository.findOne({
+      where: { recordUuid },
+      select: { id: true, customerAccountId: true, convertedRequestId: true, deletedAt: true },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return entity
+      ? {
+          id: entity.id,
+          customerAccountId: entity.customerAccountId,
+          convertedRequestId: entity.convertedRequestId,
+          deleted: entity.deletedAt !== null,
+        }
+      : null;
   }
 
   private toSnapshot(entity: RepairRequestIntakeEntity): RepairRequestIntakeSnapshot {

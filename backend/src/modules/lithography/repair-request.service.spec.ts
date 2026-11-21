@@ -772,4 +772,56 @@ describe('RepairRequestService', () => {
       expect(repository.findOne).not.toHaveBeenCalled();
     });
   });
+
+  // PR #27 复审：同标识重放状态核验的工单侧锁读（删除与重放并发时取单一提交点事实）
+  describe('findReplayRequestStateForUpdate（重放核验锁读）', () => {
+    it('排他锁 + 最小状态列，返回重放核验所需状态事实', async () => {
+      repository.findOne.mockResolvedValueOnce({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: false,
+      });
+      const transactionContext = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repository,
+      } as unknown as EntityManager);
+
+      await expect(
+        service.findReplayRequestStateForUpdate(11, transactionContext),
+      ).resolves.toEqual({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: false,
+      });
+      // 钉住排他锁与最小投影：防止扩大投影泄露报修内容字段
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: 11 },
+        select: { id: true, customerAccountId: true, intakeId: true, deprecated: true },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
+    it('已删除工单（deprecated=true）照实返回删除事实，行缺失返回 null', async () => {
+      const transactionContext = createTypeOrmPersistenceTransactionContext({
+        getRepository: () => repository,
+      } as unknown as EntityManager);
+      repository.findOne.mockResolvedValueOnce({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: true,
+      });
+      await expect(
+        service.findReplayRequestStateForUpdate(11, transactionContext),
+      ).resolves.toMatchObject({
+        deprecated: true,
+      });
+
+      repository.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.findReplayRequestStateForUpdate(11, transactionContext),
+      ).resolves.toBeNull();
+    });
+  });
 });

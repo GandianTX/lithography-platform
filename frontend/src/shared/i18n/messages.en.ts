@@ -455,8 +455,15 @@ export const EN_MESSAGES = {
     'Your company is currently unavailable. Contact an administrator before submitting a repair request.',
   'repairForm.error.creationFailed': 'Failed to create the repair request. Please try again later.',
   'repairForm.companyLabel': 'Customer company',
-  'repairForm.companyHint': 'Taken from account settings and not editable here',
-  'repairForm.companyValue': 'Bound to your account company',
+  'repairForm.companyHint':
+    'Taken from your trusted company info in account settings and not editable here',
+  // PR #27 review: read-only display of the real trusted company name; no fabricated value
+  'repairForm.companyLoading': 'Loading company information…',
+  'repairForm.companyNotBound': 'No company bound to your account yet; add it in account settings',
+  'repairForm.companyLoadFailed': 'Failed to load company information. Please retry.',
+  'repairForm.restartSubmission': 'Start a new request',
+  'repairForm.submissionDeletedHint':
+    'The original request has been deleted. Please start a new repair request.',
   'repairForm.serviceOrgLabel': 'Service provider',
   'repairForm.serviceOrgHint': 'Only active providers qualified for repair service can be selected',
   'repairForm.serviceOrgRequired': 'Select a service provider',
@@ -479,6 +486,9 @@ export const EN_MESSAGES = {
     'The selected service provider is unavailable. Please select again.',
   'repairForm.error.submissionConflict':
     'This repair request was already submitted. Reopen the form to submit a new request.',
+  // PR #27 review: same-key retry on a deleted request fails closed; guide explicit re-initiation
+  'repairForm.error.submissionDeleted':
+    'The original request has been deleted. Please start a new repair request.',
   'repairForm.error.attachmentNotFound':
     'The original file does not exist or has expired. Please upload it again.',
   'repairForm.error.attachmentConflict':

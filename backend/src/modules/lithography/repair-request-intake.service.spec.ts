@@ -110,6 +110,52 @@ describe('RepairRequestIntakeService', () => {
       service.markConverted({ intakeId: 21, requestId: 11 }, transactionContext),
     ).rejects.toMatchObject({ code: REPAIR_REQUEST_ERROR.CREATION_FAILED });
   });
+
+  // PR #27 复审：重放状态核验的原稿侧锁读（删除与重放并发时取单一提交点事实）
+  it('重放核验锁读：排他锁 + 最小状态列，删除事实按 deleted_at 判定', async () => {
+    repository.findOne.mockResolvedValue({
+      id: 21,
+      customerAccountId: 7,
+      convertedRequestId: 11,
+      deletedAt: createdAt,
+    });
+
+    await expect(
+      service.findReplayIntakeStateForUpdate(RECORD_UUID, transactionContext),
+    ).resolves.toEqual({
+      id: 21,
+      customerAccountId: 7,
+      convertedRequestId: 11,
+      deleted: true,
+    });
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { recordUuid: RECORD_UUID },
+      select: { id: true, customerAccountId: true, convertedRequestId: true, deletedAt: true },
+      lock: { mode: 'pessimistic_write' },
+    });
+  });
+
+  it('重放核验锁读：未删除时 deleted 为 false，行缺失返回 null', async () => {
+    repository.findOne.mockResolvedValueOnce({
+      id: 21,
+      customerAccountId: 7,
+      convertedRequestId: 11,
+      deletedAt: null,
+    });
+    await expect(
+      service.findReplayIntakeStateForUpdate(RECORD_UUID, transactionContext),
+    ).resolves.toEqual({
+      id: 21,
+      customerAccountId: 7,
+      convertedRequestId: 11,
+      deleted: false,
+    });
+
+    repository.findOne.mockResolvedValueOnce(null);
+    await expect(
+      service.findReplayIntakeStateForUpdate(RECORD_UUID, transactionContext),
+    ).resolves.toBeNull();
+  });
 });
 
 /**

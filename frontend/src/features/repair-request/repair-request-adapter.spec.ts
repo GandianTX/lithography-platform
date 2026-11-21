@@ -12,6 +12,7 @@ import {
   fetchMyRepairRequest,
   fetchMyRepairRequests,
   fetchRepairServiceOrganizations,
+  fetchTrustedCompanyName,
 } from './infrastructure/repair-request-adapter';
 
 vi.mock('@/shared/graphql', async (importOriginal) => {
@@ -225,6 +226,13 @@ describe('createRepairRequest', () => {
       'REPAIR_REQUEST_SUBMISSION_CONFLICT',
       'submission-conflict',
       '同一提交标识的内容不一致。',
+    ],
+    // PR #27 复审：同标识原申请已删除——与普通内容冲突区分，引导重新发起
+    [
+      'CONFLICT',
+      'REPAIR_REQUEST_SUBMISSION_ORIGINAL_DELETED',
+      'submission-deleted',
+      '原申请已删除，请重新发起维修申请',
     ],
     ['CONFLICT', 'STORED_FILE_ALREADY_BOUND', 'attachment-conflict', '原件已被绑定。'],
     ['NOT_FOUND', 'STORED_FILE_NOT_FOUND', 'attachment-not-found', '原件不存在或无权绑定。'],
@@ -605,5 +613,37 @@ describe('deleteMyRepairRequest', () => {
     executeGraphQLMock.mockRejectedValue(authError);
 
     await expect(deleteMyRepairRequest(920001)).rejects.toBe(authError);
+  });
+});
+
+// PR #27 复审：可信公司名称只读展示的窄查询（复用 myAccountSettings.trustedCompanyName）
+describe('fetchTrustedCompanyName', () => {
+  it('只查询 trustedCompanyName 单字段，并原样返回可信公司名称', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      myAccountSettings: { trustedCompanyName: '甲公司' },
+    });
+
+    await expect(fetchTrustedCompanyName()).resolves.toBe('甲公司');
+
+    const document = executeGraphQLMock.mock.calls[0][0] as string;
+    expect(document).toContain('myAccountSettings');
+    expect(document).toContain('trustedCompanyName');
+    // 窄视图：不请求普通资料 companyName（两者来源不同，不回退）
+    expect(document).not.toMatch(/\bcompanyName\b/);
+  });
+
+  it('未绑定公司时返回 null，不回退普通资料 companyName', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      myAccountSettings: { trustedCompanyName: null },
+    });
+
+    await expect(fetchTrustedCompanyName()).resolves.toBeNull();
+  });
+
+  it('transport / auth 类失败上抛 GraphQLIngressError，由 application 状态机收敛', async () => {
+    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
+    executeGraphQLMock.mockRejectedValue(networkError);
+
+    await expect(fetchTrustedCompanyName()).rejects.toBe(networkError);
   });
 });

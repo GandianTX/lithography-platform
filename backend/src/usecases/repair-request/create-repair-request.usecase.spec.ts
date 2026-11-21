@@ -11,6 +11,8 @@ import {
 import type {
   EquipmentModelDetailSnapshot,
   RepairRequestIntakeSnapshot,
+  RepairRequestReplayIntakeState,
+  RepairRequestReplayRequestState,
   RepairRequestSnapshot,
 } from '@src/modules/lithography/lithography.types';
 import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
@@ -34,12 +36,18 @@ type RepairRequestServiceMock = {
   readonly insertRequest: jest.Mock<Promise<RepairRequestSnapshot>>;
   readonly requestNoExists: jest.Mock<Promise<boolean>>;
   readonly findSnapshotById: jest.Mock<Promise<RepairRequestSnapshot | null>>;
+  readonly findReplayRequestStateForUpdate: jest.Mock<
+    Promise<RepairRequestReplayRequestState | null>
+  >;
 };
 
 type RepairRequestIntakeServiceMock = {
   readonly findByRecordUuid: jest.Mock<Promise<RepairRequestIntakeSnapshot | null>>;
   readonly insertIntake: jest.Mock<Promise<RepairRequestIntakeSnapshot>>;
   readonly markConverted: jest.Mock<Promise<void>>;
+  readonly findReplayIntakeStateForUpdate: jest.Mock<
+    Promise<RepairRequestReplayIntakeState | null>
+  >;
 };
 
 type AccountQueryServiceMock = {
@@ -155,11 +163,25 @@ describe('CreateRepairRequestUsecase', () => {
       insertRequest: jest.fn((data) => Promise.resolve(buildSnapshot(data.requestNo))),
       requestNoExists: jest.fn().mockResolvedValue(false),
       findSnapshotById: jest.fn().mockResolvedValue(buildSnapshot('RR20260826100000ABCDEF')),
+      // 默认：重放核验读到有效工单（本人、双向关联成立、未删除）
+      findReplayRequestStateForUpdate: jest.fn().mockResolvedValue({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: false,
+      }),
     };
     intakeService = {
       findByRecordUuid: jest.fn().mockResolvedValue(null),
       insertIntake: jest.fn((data) => Promise.resolve(buildIntake(data))),
       markConverted: jest.fn().mockResolvedValue(undefined),
+      // 默认：重放核验读到有效原稿（本人、转换列一致、未删除）
+      findReplayIntakeStateForUpdate: jest.fn().mockResolvedValue({
+        id: 21,
+        customerAccountId: 7,
+        convertedRequestId: 11,
+        deleted: false,
+      }),
     };
     equipmentModelQueryService = {
       findModelById: jest.fn().mockResolvedValue(enabledModel),
@@ -468,14 +490,23 @@ describe('CreateRepairRequestUsecase', () => {
   });
 
   describe('同标识幂等', () => {
-    it('已存在同标识且内容一致：返回原工单，零写入', async () => {
+    it('已存在同标识且内容一致：返回原工单，零写入（仅只读核验事务）', async () => {
       intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
 
       const result = await usecase.execute(buildCommand());
 
       expect(result.replayed).toBe(true);
       expect(result.request.id).toBe(11);
-      expect(transactionRunner.run).not.toHaveBeenCalled();
+      // PR #27 复审：重放核验在只读事务内完成（锁读工单 → 原稿），无任何写入
+      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+      expect(repairRequestService.findReplayRequestStateForUpdate).toHaveBeenCalledWith(
+        11,
+        transactionContext,
+      );
+      expect(intakeService.findReplayIntakeStateForUpdate).toHaveBeenCalledWith(
+        RECORD_UUID,
+        transactionContext,
+      );
       expect(repairRequestService.insertRequest).not.toHaveBeenCalled();
       expect(intakeService.insertIntake).not.toHaveBeenCalled();
       expect(equipmentModelService.insertModel).not.toHaveBeenCalled();
@@ -542,7 +573,8 @@ describe('CreateRepairRequestUsecase', () => {
       const result = await usecase.execute(buildCommand());
 
       expect(result.replayed).toBe(true);
-      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+      // 创建事务（撞唯一键回滚）+ 重放只读核验事务
+      expect(transactionRunner.run).toHaveBeenCalledTimes(2);
       expect(repairRequestService.insertRequest).not.toHaveBeenCalled();
     });
 
@@ -559,6 +591,131 @@ describe('CreateRepairRequestUsecase', () => {
 
     it('原稿存在但工单缺失（异常半态）：失败关闭，不返回拼接工单', async () => {
       intakeService.findByRecordUuid.mockResolvedValue(buildIntake({ convertedRequestId: null }));
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.CREATION_FAILED,
+      });
+      expect(repairRequestService.findSnapshotById).not.toHaveBeenCalled();
+    });
+  });
+
+  // PR #27 复审：同标识重试在返回成功前必须核验原稿与工单仍有效；
+  // 已删除原稿 / 已删除工单 / 双向关联异常一律失败关闭，不恢复旧工单、
+  // 不重新登记机型、不重复投递首析。
+  describe('已删除原申请的同标识重试（PR #27 复审）', () => {
+    it('工单已软删（deprecated）：SUBMISSION_ORIGINAL_DELETED，不返回创建成功', async () => {
+      intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
+      repairRequestService.findReplayRequestStateForUpdate.mockResolvedValue({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: true,
+      });
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.SUBMISSION_ORIGINAL_DELETED,
+        message: expect.stringContaining('原申请已删除'),
+      });
+      // 不读取工单快照返回成功，也不产生任何写入
+      expect(repairRequestService.findSnapshotById).not.toHaveBeenCalled();
+      expect(repairRequestService.insertRequest).not.toHaveBeenCalled();
+      expect(intakeService.insertIntake).not.toHaveBeenCalled();
+    });
+
+    it('原稿已软删（工单未删）：SUBMISSION_ORIGINAL_DELETED（双向核验任一侧删除即拒绝）', async () => {
+      intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
+      intakeService.findReplayIntakeStateForUpdate.mockResolvedValue({
+        id: 21,
+        customerAccountId: 7,
+        convertedRequestId: 11,
+        deleted: true,
+      });
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.SUBMISSION_ORIGINAL_DELETED,
+      });
+      expect(repairRequestService.findSnapshotById).not.toHaveBeenCalled();
+    });
+
+    it('双向关联异常（工单未指向本原稿）：失败关闭 CREATION_FAILED，不返回原记录', async () => {
+      intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
+      repairRequestService.findReplayRequestStateForUpdate.mockResolvedValue({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 999,
+        deprecated: false,
+      });
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.CREATION_FAILED,
+      });
+      expect(repairRequestService.findSnapshotById).not.toHaveBeenCalled();
+    });
+
+    it('双向关联异常（原稿转换列与工单侧不一致）：失败关闭 CREATION_FAILED', async () => {
+      intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
+      intakeService.findReplayIntakeStateForUpdate.mockResolvedValue({
+        id: 21,
+        customerAccountId: 7,
+        convertedRequestId: 12,
+        deleted: false,
+      });
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.CREATION_FAILED,
+      });
+      expect(repairRequestService.findSnapshotById).not.toHaveBeenCalled();
+    });
+
+    it('核验锁读按「工单行 → 原稿行」顺序在事务内执行（与删除链路锁序一致）', async () => {
+      intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
+
+      await usecase.execute(buildCommand());
+
+      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+      expect(repairRequestService.findReplayRequestStateForUpdate).toHaveBeenCalledWith(
+        11,
+        transactionContext,
+      );
+      expect(intakeService.findReplayIntakeStateForUpdate).toHaveBeenCalledWith(
+        RECORD_UUID,
+        transactionContext,
+      );
+      // 锁序：工单行先于原稿行，避免与删除链路（软删工单 → 软删原稿）反向锁等待
+      expect(
+        repairRequestService.findReplayRequestStateForUpdate.mock.invocationCallOrder[0],
+      ).toBeLessThan(intakeService.findReplayIntakeStateForUpdate.mock.invocationCallOrder[0]);
+    });
+
+    it('并发撞键后重读胜出方已删除：同样按 ORIGINAL_DELETED 失败关闭（并发冲突后重放入口）', async () => {
+      // 入口二：并发同标识唯一键冲突 → 事务外重读胜出方 → 胜出方已被删除
+      intakeService.findByRecordUuid
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(buildIntake());
+      intakeService.insertIntake.mockRejectedValueOnce(
+        new DomainError(REPAIR_REQUEST_ERROR.SUBMISSION_DUPLICATE, '同一提交标识已被占用'),
+      );
+      repairRequestService.findReplayRequestStateForUpdate.mockResolvedValue({
+        id: 11,
+        customerAccountId: 7,
+        intakeId: 21,
+        deprecated: true,
+      });
+
+      await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
+        code: REPAIR_REQUEST_ERROR.SUBMISSION_ORIGINAL_DELETED,
+      });
+      expect(repairRequestService.findSnapshotById).not.toHaveBeenCalled();
+    });
+
+    it('核验读到归属异常（他人工单/他人原稿）：失败关闭，不返回原记录字段', async () => {
+      intakeService.findByRecordUuid.mockResolvedValue(buildIntake());
+      repairRequestService.findReplayRequestStateForUpdate.mockResolvedValue({
+        id: 11,
+        customerAccountId: 8,
+        intakeId: 21,
+        deprecated: false,
+      });
 
       await expect(usecase.execute(buildCommand())).rejects.toMatchObject({
         code: REPAIR_REQUEST_ERROR.CREATION_FAILED,

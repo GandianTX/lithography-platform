@@ -421,8 +421,13 @@ export const ZH_CN_MESSAGES = {
   'repairForm.error.creationFailed': '维修申请创建失败，请稍后重试。',
   // 任务 03：厂家 / 机型二选一 / 幂等冲突 / 原件
   'repairForm.companyLabel': '客户公司',
-  'repairForm.companyHint': '取自账号设置，不能在此修改',
-  'repairForm.companyValue': '已绑定账号公司',
+  'repairForm.companyHint': '取自账号设置的可信公司信息，不能在此修改',
+  // PR #27 复审：只读展示实际可信公司名称，三态不含虚构名称
+  'repairForm.companyLoading': '正在加载公司信息…',
+  'repairForm.companyNotBound': '账号尚未绑定公司，请先在账号设置中补录',
+  'repairForm.companyLoadFailed': '公司信息加载失败，请稍后重试。',
+  'repairForm.restartSubmission': '重新发起申请',
+  'repairForm.submissionDeletedHint': '原申请已删除，请确认后重新发起维修申请。',
   'repairForm.serviceOrgLabel': '维修厂家',
   'repairForm.serviceOrgHint': '仅可选择启用且具备维修服务资格的厂家',
   'repairForm.serviceOrgRequired': '请选择维修厂家',
@@ -443,6 +448,8 @@ export const ZH_CN_MESSAGES = {
   'repairForm.attachmentReady': '已上传，提交后绑定到本次报修',
   'repairForm.error.serviceOrgUnavailable': '所选维修厂家当前不可用，请重新选择。',
   'repairForm.error.submissionConflict': '同一份报修已提交过，请重新打开报修页提交新的申请。',
+  // PR #27 复审：同标识原申请已删除——重放失败关闭，引导用户明确重新发起
+  'repairForm.error.submissionDeleted': '原申请已删除，请重新发起维修申请。',
   'repairForm.error.attachmentNotFound': '报修原件不存在或已失效，请重新上传。',
   'repairForm.error.attachmentConflict': '报修原件已被占用，请重新上传或移除附件。',
   'repairForm.error.uploadFailed': '原件上传失败，请稍后重试。',

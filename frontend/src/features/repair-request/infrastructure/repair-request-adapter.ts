@@ -103,6 +103,9 @@ const REFINED_REASON_BY_ERROR_CODE: Partial<Record<string, CreateRepairRequestFa
   REPAIR_REQUEST_INVALID_PARAMS: 'invalid-input',
   REPAIR_REQUEST_SUBMISSION_KEY_INVALID: 'invalid-input',
   REPAIR_REQUEST_SUBMISSION_CONFLICT: 'submission-conflict',
+  // PR #27 复审：同标识原申请已删除（重放失败关闭）——与普通内容冲突区分开，
+  // 前端据此引导用户明确重新发起（换新提交标识），不自动重建工单
+  REPAIR_REQUEST_SUBMISSION_ORIGINAL_DELETED: 'submission-deleted',
   REPAIR_REQUEST_SERVICE_ORGANIZATION_NOT_AVAILABLE: 'service-org-unavailable',
   REPAIR_REQUEST_CUSTOMER_COMPANY_REQUIRED: 'company-required',
   REPAIR_REQUEST_CUSTOMER_COMPANY_UNAVAILABLE: 'company-unavailable',
@@ -121,6 +124,7 @@ const FALLBACK_MESSAGE_BY_REASON: Record<CreateRepairRequestFailureReason, Messa
   'company-unavailable': 'repairForm.error.companyUnavailable',
   'service-org-unavailable': 'repairForm.error.serviceOrgUnavailable',
   'submission-conflict': 'repairForm.error.submissionConflict',
+  'submission-deleted': 'repairForm.error.submissionDeleted',
   'attachment-not-found': 'repairForm.error.attachmentNotFound',
   'attachment-conflict': 'repairForm.error.attachmentConflict',
   'creation-failed': 'repairForm.error.creationFailed',
@@ -142,6 +146,32 @@ export async function fetchEquipmentModels(): Promise<EquipmentModelOption[]> {
   );
 
   return data.equipmentModels;
+}
+
+/**
+ * 查询当前客户账号的可信公司名称（PR #27 复审：报修表单只读展示真实所属公司）。
+ *
+ * 复用 `myAccountSettings` 的 `trustedCompanyName`（后端按当前角色从可信组织事实解析，
+ * 无归属或名称缺失为 null，不回退 `base_user_info.company_name` 自填值）。
+ * 本 feature 只取这一个字段：不做窄视图以外的读取，不缓存资格结论；
+ * 公司归属授权仍由服务端按登录身份决定，本查询结果仅用于展示核对。
+ * 失败（transport / auth / 网络类）原样上抛 GraphQLIngressError，由 application 状态机收敛。
+ */
+const TRUSTED_COMPANY_NAME_QUERY = `
+  query TrustedCompanyName {
+    myAccountSettings {
+      trustedCompanyName
+    }
+  }
+`;
+
+export async function fetchTrustedCompanyName(): Promise<string | null> {
+  const data = await executeGraphQL<
+    { myAccountSettings: { trustedCompanyName: string | null } },
+    Record<string, never>
+  >(TRUSTED_COMPANY_NAME_QUERY, {});
+
+  return data.myAccountSettings.trustedCompanyName;
 }
 
 /**
