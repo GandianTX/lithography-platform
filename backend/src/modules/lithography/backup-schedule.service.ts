@@ -181,6 +181,7 @@ export class BackupScheduleService {
         organizationId: plan.organizationId,
         runId: run.id,
         targetPath,
+        now,
       });
       await this.backupRunRepository.update(
         { id: run.id },

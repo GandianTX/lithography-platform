@@ -372,4 +372,33 @@ describe('local backup cleanup service', () => {
 
     expect(found).toBeNull();
   });
+
+  it('30 天保留窗口边界：恰好到期即清理，早 1ms 不清理（到期判定用 <=now）', async () => {
+    const exactly = await createPackage('4/manual-exact', ['exact.txt']);
+    const almost = await createPackage('4/manual-almost', ['almost.txt']);
+
+    const { service } = buildService([
+      asset({
+        backupId: 'backup-exact',
+        localReference: exactly,
+        retentionUntil: new Date(base.getTime()),
+      }),
+      asset({
+        backupId: 'backup-almost',
+        localReference: almost,
+        retentionUntil: new Date(base.getTime() + 1),
+      }),
+    ]);
+
+    const result = await service.cleanupExpiredPackages({
+      organizationId: 4,
+      installationId: 'inst-1',
+      now: base,
+    });
+
+    expect(result.targetCount).toBe(1);
+    expect(result.cleaned).toBe(1);
+    expect(await exists(exactly)).toBe(false);
+    expect(await exists(almost)).toBe(true);
+  });
 });

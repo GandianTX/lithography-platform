@@ -100,6 +100,11 @@ export class ProtectedBackupService {
     organizationId: number;
     runId: number | null;
     targetPath: string;
+    /**
+     * 本次封包时刻（可选）：保留窗口以此为锚点计算。
+     * 显式传入才能让"约 30 天保留窗口"的边界在可控时钟下可核对。
+     */
+    now?: Date;
   }): Promise<{
     backupId: string;
     packagePath: string;
@@ -162,6 +167,7 @@ export class ProtectedBackupService {
       manifestChecksum,
       byteSize,
       protectionKeyId,
+      now: input.now ?? new Date(),
     });
 
     return {
@@ -180,6 +186,8 @@ export class ProtectedBackupService {
     manifestChecksum: string;
     byteSize: number;
     protectionKeyId: string;
+    /** 封包时刻：保留窗口的锚点 */
+    now: Date;
   }): Promise<void> {
     const repository = this.backupAssetRepository;
     if (!repository) {
@@ -200,8 +208,9 @@ export class ProtectedBackupService {
         localReference: input.storageReference,
         encryptionKeyId: input.protectionKeyId,
         verifiedAt: new Date(),
-        // 保留窗口（需求固定口径约 30 天）：到期后由过期清理按包逐项处理
-        retentionUntil: new Date(Date.now() + BACKUP_RETENTION_DAYS * 86_400_000),
+        // 保留窗口（需求固定口径约 30 天）：到期后由过期清理按包逐项处理。
+        // 锚点是**封包时刻**（不是随后的墙上时钟），边界才可核对。
+        retentionUntil: new Date(input.now.getTime() + BACKUP_RETENTION_DAYS * 86_400_000),
       }),
     );
   }

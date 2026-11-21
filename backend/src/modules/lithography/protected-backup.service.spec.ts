@@ -29,6 +29,8 @@ describe('protected backup service', () => {
       documents?: Record<string, unknown>[];
       storedFiles?: Record<string, unknown>[];
       missingOriginal?: boolean;
+      /** 落库的备份资产行（用于核对保留窗口写入） */
+      assets?: Record<string, unknown>[];
     } = {},
   ) => {
     const repoOf = (rows: Record<string, unknown>[]) => ({
@@ -55,6 +57,14 @@ describe('protected backup service', () => {
       fileStorage as never,
       { keyHex: KEY_HEX, keyId: 'primary' },
       { baseDir: nodePath.join(__dirname, '.tmp-protected-backup-storage') },
+      {
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockImplementation((row: Record<string, unknown>) => {
+          (overrides.assets ?? []).push(row);
+          return Promise.resolve(row);
+        }),
+        create: jest.fn().mockImplementation((row: Record<string, unknown>) => ({ ...row })),
+      } as never,
     );
     return service;
   };
@@ -179,5 +189,22 @@ describe('protected backup service', () => {
         targetPath: occupied,
       }),
     ).rejects.toThrow('备份目标目录已存在且非空，拒绝覆盖');
+  });
+
+  it('保留窗口写入：retention_until 恰好是封包时刻 + 30 天（锚点是封包时刻，不是随后的墙上时钟）', async () => {
+    const assets: Record<string, unknown>[] = [];
+    const service = buildService({ assets });
+    const now = new Date('2026-11-19T08:00:00.000Z');
+
+    await service.generateProtectedBackup({
+      organizationId: 4,
+      runId: 3,
+      targetPath: nodePath.join(targetRoot, 'pkg-retention'),
+      now,
+    });
+
+    expect(assets).toHaveLength(1);
+    const retentionUntil = assets[0]?.['retentionUntil'] as Date | undefined;
+    expect(retentionUntil?.getTime()).toBe(now.getTime() + 30 * 86_400_000);
   });
 });

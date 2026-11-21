@@ -31,12 +31,20 @@ describe('backup schedule service', () => {
       });
     const settings = overrides.settings ?? [];
     const runs = overrides.runs ?? [];
+    /** 计划行更新载荷（用于核对 next_backup_at 的精确推进） */
+    const settingUpdates: { patch: Record<string, unknown> }[] = [];
     const generated: { organizationId: number; runId: number | null }[] = [];
     const service = new BackupScheduleService(
       {
         find: findOf(settings),
         save: jest.fn().mockImplementation((row) => Promise.resolve({ id: 'plan-new', ...row })),
-        update: jest.fn().mockImplementation(() => Promise.resolve()),
+        // 服务层按 (条件, 载荷) 两参调用 update：载荷取第二参
+        update: jest
+          .fn()
+          .mockImplementation((_criteria: unknown, patch: Record<string, unknown>) => {
+            settingUpdates.push({ patch });
+            return Promise.resolve();
+          }),
         create: jest.fn().mockImplementation((row) => ({ ...row })),
       } as never,
       {
@@ -91,7 +99,7 @@ describe('backup schedule service', () => {
           ),
       } as unknown as ProtectedBackupService,
     );
-    return { service, generated, runs };
+    return { service, generated, runs, settingUpdates };
   };
 
   const duePlan = (overrides: Record<string, unknown> = {}) => ({
@@ -191,5 +199,31 @@ describe('backup schedule service', () => {
 
     expect(result.triggered).toBe(0);
     expect(generated).toHaveLength(0);
+  });
+
+  it('72 小时计划边界：next_backup_at 恰好等于判定时刻即触发，差 1ms 不触发', async () => {
+    const onTime = buildService({ settings: [duePlan({ nextBackupAt: new Date(now.getTime()) })] });
+    const onTimeResult = await onTime.service.runOnce(now);
+    expect(onTimeResult.triggered).toBe(1);
+    expect(onTime.generated).toHaveLength(1);
+
+    const almost = buildService({
+      settings: [duePlan({ nextBackupAt: new Date(now.getTime() + 1) })],
+    });
+    const almostResult = await almost.service.runOnce(now);
+    expect(almostResult.triggered).toBe(0);
+    expect(almost.generated).toHaveLength(0);
+  });
+
+  it('72 小时计划：触发后 next_backup_at 恰好推进一个间隔，且间隔取计划行真实值', async () => {
+    const { service, settingUpdates } = buildService({ settings: [duePlan()] });
+    await service.runOnce(now);
+    const pushed = settingUpdates[0]?.patch['nextBackupAt'] as Date | undefined;
+    expect(pushed?.getTime()).toBe(now.getTime() + 72 * 3_600_000);
+
+    const custom = buildService({ settings: [duePlan({ backupIntervalHours: 24 })] });
+    await custom.service.runOnce(now);
+    const customPushed = custom.settingUpdates[0]?.patch['nextBackupAt'] as Date | undefined;
+    expect(customPushed?.getTime()).toBe(now.getTime() + 24 * 3_600_000);
   });
 });
