@@ -128,8 +128,19 @@ const AUTH_SESSION_ROLE_ALLOWED_ROOT_PATHS: Record<AuthSessionRole, readonly str
   CUSTOMER: ['/account', '/customer'],
   // /reference-documents：AI 参考资料库（0907 任务二）；读模型向 ENGINEER/SUPER_ADMIN
   // 开放，CUSTOMER 完全禁入（访问时安全跳转回个人主页，与后端读守卫口径一致）
-  ENGINEER: ['/account', '/engineer', '/reference-documents'],
-  SUPER_ADMIN: ['/account', '/admin', '/customer', '/engineer', '/reference-documents'],
+  ENGINEER: ['/account', '/engineer', '/reference-documents', '/local-settings', '/local-backup'],
+  // /local-settings：本地设置（任务 09 R064）为导航末项只读页；工程师、1 级与 2 级
+  // 管理员可见，CUSTOMER 完全禁入。具体可见公司范围仍由服务端按 Session 裁决，
+  // 前端只决定"是否允许进入该路由"，不复制范围逻辑
+  SUPER_ADMIN: [
+    '/account',
+    '/admin',
+    '/customer',
+    '/engineer',
+    '/reference-documents',
+    '/local-settings',
+    '/local-backup',
+  ],
 };
 
 // 角色路由拒绝清单：优先于根路径表生效，匹配语义与根路径表一致（精确或带边界子路径）。
@@ -220,7 +231,30 @@ const AUTH_SESSION_ADMIN_MANAGEMENT_PATHS: readonly string[] = [
 export function isAuthSessionAdminPathAllowedAt(
   scope: AuthSessionAdminScope,
   pathname: string,
+  role: AuthSessionRole | null = null,
 ): boolean {
+  // 本地设置（任务 09 R064）：工程师按本公司恒可；管理员必须有已确认等级
+  // （1 级或 2 级），等级缺失的管理员不放行——后端同样失败关闭，
+  // 避免出现"能进页面但查询必被拒"的残缺中间态
+  if (isAuthSessionRolePathAllowed(pathname, '/local-settings')) {
+    if (role === 'ENGINEER') {
+      return true;
+    }
+
+    return role === 'SUPER_ADMIN' && scope !== 'NONE';
+  }
+
+  // 备份与恢复（任务 09 S3/S4）：与本地设置同口径——工程师按本公司恒可；
+  // 管理员必须有已确认等级（1 级或 2 级），等级缺失的管理员不放行，
+  // 与后端范围裁决失败关闭保持一致。
+  if (isAuthSessionRolePathAllowed(pathname, '/local-backup')) {
+    if (role === 'ENGINEER') {
+      return true;
+    }
+
+    return role === 'SUPER_ADMIN' && scope !== 'NONE';
+  }
+
   if (isAuthSessionRolePathAllowed(pathname, '/admin/document-database')) {
     return scope === 'GLOBAL';
   }
@@ -256,7 +290,7 @@ export function isAuthSessionAdminPathAllowedAt(
 function isAuthSessionPathAllowed(session: AuthSessionRoleCarrier, pathname: string): boolean {
   return (
     isAuthSessionRoleAllowedAt(session.role, pathname) &&
-    isAuthSessionAdminPathAllowedAt(resolveAuthSessionAdminScope(session), pathname)
+    isAuthSessionAdminPathAllowedAt(resolveAuthSessionAdminScope(session), pathname, session.role)
   );
 }
 

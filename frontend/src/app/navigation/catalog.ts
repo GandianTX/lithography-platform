@@ -193,6 +193,28 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     roles: ['CUSTOMER', 'ENGINEER', 'SUPER_ADMIN'],
     tags: ['account', 'settings', 'profile', 'password', '账号设置', '资料', '密码'],
   },
+  {
+    descriptionKey: 'nav.local-backup.description',
+    id: 'local-backup',
+    kind: 'stable',
+    labelKey: 'nav.local-backup.label',
+    // 任务 09 S3/S4：备份与恢复页（自动备份设置、手动备份、备份记录、恢复预检）。
+    // 放在本地设置之前，保持「本地设置」为导航末项的既定口径。
+    path: '/local-backup',
+    roles: ['ENGINEER', 'SUPER_ADMIN'],
+    tags: ['local', 'backup', 'restore', 'data-center', '本地', '备份', '恢复', '数据'],
+  },
+  {
+    descriptionKey: 'nav.local-settings.description',
+    id: 'local-settings',
+    kind: 'stable',
+    labelKey: 'nav.local-settings.label',
+    // 任务 09 R064：导航最后一项、只读；工程师与管理员的"本机本公司"入口。
+    // 客户禁入（角色路径表同口径拒绝），可见公司范围由服务端按 Session 裁决。
+    path: '/local-settings',
+    roles: ['ENGINEER', 'SUPER_ADMIN'],
+    tags: ['local', 'settings', 'device', 'backup', '本地设置', '本机', '存储位置', '备份'],
+  },
 ];
 
 // 开发/试验入口：仅 dev/test 环境暴露。负责人 0914 裁定：error-preview 属生产的
@@ -260,7 +282,7 @@ export function getNavigationItems(
       return false;
     }
 
-    return isAuthSessionAdminPathAllowedAt(adminScope, item.path);
+    return isAuthSessionAdminPathAllowedAt(adminScope, item.path, activeRole);
   });
 }
 

@@ -560,3 +560,33 @@ describe('auth session policy', () => {
     ).toThrow('Cannot establish an invalid auth session.');
   });
 });
+
+// 任务 09 R064：本地设置为导航末项只读页，工程师与已确认等级的管理员可进入。
+describe('本地设置路由准入', () => {
+  it('工程师可进入本公司本地设置', () => {
+    expect(resolveProtectedRouteRedirect({ role: 'ENGINEER' }, '/local-settings')).toBeNull();
+  });
+
+  it('二级管理员可进入', () => {
+    expect(
+      resolveProtectedRouteRedirect(
+        { adminLevel: 2, adminOrganizationId: 5, role: 'SUPER_ADMIN' },
+        '/local-settings',
+      ),
+    ).toBeNull();
+  });
+
+  it('等级缺失的管理员被收回角色主页（与后端失败关闭一致，不留残缺页）', () => {
+    expect(
+      resolveProtectedRouteRedirect({ adminLevel: null, role: 'SUPER_ADMIN' }, '/local-settings'),
+    ).toBe('/admin');
+  });
+
+  it('客户禁入本地设置', () => {
+    expect(resolveProtectedRouteRedirect({ role: 'CUSTOMER' }, '/local-settings')).toBe('/customer');
+  });
+
+  it('匿名访问跳登录并带回跳目标', () => {
+    expect(resolveProtectedRouteRedirect(null, '/local-settings')).toContain('/login');
+  });
+});
