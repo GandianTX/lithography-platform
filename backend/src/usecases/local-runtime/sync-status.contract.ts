@@ -1,0 +1,61 @@
+// src/usecases/local-runtime/sync-status.contract.ts
+
+import type { UsecaseSession } from '@app-types/auth/session.types';
+import type {
+  SyncStatus,
+  SyncStatusReasonCode,
+} from '@core/local-runtime/policy/sync-status.policy';
+
+/**
+ * 业务同步状态查询的内部契约（任务 09 后续S1；任务 07 装配方调用）。
+ *
+ * 定位：这是**任务 09 与任务 07 之间的窄边界**，不是浏览器 API。
+ * - 任务 07 在装配前用默认适配器返回 `NOT_CONNECTED`（不查同步表、不触发上传）；
+ * - 任务 09 提供本接口的真实实现（读本机事实，不产生副作用）；
+ * - 列表页与详情页**共用同一份实现**，因此两处展示语义必然一致。
+ *
+ * 授权口径：调用方传会话与请求键；公司、类型、稳定键与当前版本都以**服务端事实**为准，
+ * 客户端传入的公司与版本不参与裁决（客户端版本仅用于回显核对）。
+ */
+export const SYNC_STATUS_QUERY = Symbol('SYNC_STATUS_QUERY');
+
+export type SyncStatusQueryRequest = {
+  /** 调用方认定的公司；仅用于定位，服务端会以来源记录事实复核 */
+  organizationId: number;
+  /** 来源资源类型：REFERENCE_DOCUMENT／REPAIR_REQUEST／MAINTENANCE_REPORT */
+  resourceType: string;
+  /** 业务稳定键 */
+  recordUuid: string;
+  /** 调用方看到的版本；本实现不信任，仅回显服务端认定的版本 */
+  sourceVersion: number | null;
+};
+
+export type SyncStatusQueryItem = {
+  organizationId: number;
+  resourceType: string;
+  recordUuid: string;
+  /** 服务端认定的当前版本；不可核验时为 null */
+  sourceVersion: number | null;
+  status: SyncStatus;
+  /** 安全原因码（可本地化，不含正文与快照） */
+  reasonCode: SyncStatusReasonCode | null;
+  /** 当前版本的待处理冲突标识；不可读时为 null */
+  conflictId: string | null;
+  /** 是否具备处理该冲突的权限 */
+  canResolveConflict: boolean;
+};
+
+export interface SyncStatusQueryPort {
+  /**
+   * 批量查询同步状态。
+   *
+   * - 只返回**通过记录级授权**的记录；越权或无法核对归属的记录不返回任何条目，
+   *   调用方据此不展示该条的同步列（不泄露该记录是否存在）；
+   * - 同一稳定键重复出现时按完整键去重；
+   * - 本实现不产生任何副作用（不触发上传、不写回执、不改状态）。
+   */
+  queryStatuses(params: {
+    session: UsecaseSession;
+    requests: readonly SyncStatusQueryRequest[];
+  }): Promise<readonly SyncStatusQueryItem[]>;
+}

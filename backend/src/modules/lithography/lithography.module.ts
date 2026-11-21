@@ -49,6 +49,8 @@ import { RepairRequestRevisionEntity } from './entities/repair-request-revision.
 import { StoredFileEntity } from './entities/stored-file.entity';
 import { SyncConflictEntity } from './entities/sync-conflict.entity';
 import { SyncConflictQueryService } from './queries/sync-conflict.query.service';
+import { SyncSourceRecordQueryService } from './queries/sync-source-record.query.service';
+import { SyncStatusQueryService } from './queries/sync-status.query.service';
 import { SyncConflictService } from './sync-conflict.service';
 import { RecordPackageImportService } from './record-package-import.service';
 import { RecordPackageImportQueryService } from './queries/record-package-import.query.service';
@@ -167,6 +169,10 @@ export const LITHOGRAPHY_ENTITIES = [
     EquipmentModelQueryService,
     SyncConflictQueryService,
     SyncConflictService,
+    SyncSourceRecordQueryService,
+    SyncStatusQueryService,
+    SyncSourceRecordQueryService,
+    SyncStatusQueryService,
     RecordPackageImportService,
     RecordPackageImportQueryService,
     RecordPackageExportService,

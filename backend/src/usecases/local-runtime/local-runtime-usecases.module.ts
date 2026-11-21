@@ -31,6 +31,8 @@ import { ResolveSyncConflictUsecase } from './resolve-sync-conflict.usecase';
 import { StartLocalBackupUsecase } from './start-local-backup.usecase';
 import { StartLocalUploadAttemptUsecase } from './start-local-upload-attempt.usecase';
 import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settings.usecase';
+import { QuerySyncStatusesUsecase } from './query-sync-statuses.usecase';
+import { SYNC_STATUS_QUERY } from './sync-status.contract';
 
 /**
  * 本地运行数据用例装配（任务 09 S1 起）。
@@ -67,6 +69,9 @@ import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settin
     StartManualLocalBackupUsecase,
     PrecheckLocalRestoreUsecase,
     CleanupLocalBackupPackagesUsecase,
+    QuerySyncStatusesUsecase,
+    // 任务 07 装配方消费的窄边界：本机真实实现（未装配任务 09 时由 07 侧默认适配器返回 NOT_CONNECTED）
+    { provide: SYNC_STATUS_QUERY, useExisting: QuerySyncStatusesUsecase },
   ],
   exports: [
     LocalRuntimeScopeResolver,
@@ -94,6 +99,8 @@ import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settin
     StartManualLocalBackupUsecase,
     PrecheckLocalRestoreUsecase,
     CleanupLocalBackupPackagesUsecase,
+    QuerySyncStatusesUsecase,
+    SYNC_STATUS_QUERY,
   ],
 })
 export class LocalRuntimeUsecasesModule {}
