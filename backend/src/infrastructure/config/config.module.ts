@@ -610,6 +610,25 @@ const referenceDocumentStorageConfig: ConfigFactory = () => ({
 });
 
 /**
+ * 生成本地运行数据配置（任务 09）。
+ *
+ * - `backupStorageDir`：备份包目录，必须与业务原件目录（`referenceDocumentStorage.dir`）
+ *   物理分离，避免 R074-03 的受保护清理误伤业务原件；
+ * - 保护密钥只记录"是否已配置"与密钥标识，**不在任何日志/接口中回显密钥本身**；
+ * - 缺失保护密钥不阻断服务启动：S3 的封包用例按失败关闭处理（不产出可用包），
+ *   而不是把硬编码密钥变成可用凭据。
+ */
+const localRuntimeConfig: ConfigFactory = () => ({
+  localRuntime: {
+    backupStorageDir: getOptionalEnv('LOCAL_BACKUP_STORAGE_DIR') ?? 'var/local-backups',
+    protectionKeyConfigured: Boolean(getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY')),
+    protectionKeyId: getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY_ID') ?? null,
+    // S3.1 受保护封包实际消费密钥值（D-7）；不进日志、不经 API 返回、不落包
+    protectionKey: getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY') ?? null,
+  },
+});
+
+/**
  * 生成 JWT 配置
  */
 const jwtConfig = registerAs('jwt', () => ({
@@ -674,6 +693,7 @@ export const APP_CONFIG_FACTORIES: readonly ConfigFactory[] = [
   aiConversationConfig,
   emailDeliveryConfig,
   referenceDocumentStorageConfig,
+  localRuntimeConfig,
   adminAccountResetConfig,
   documentExportConfig,
   jwtConfig,

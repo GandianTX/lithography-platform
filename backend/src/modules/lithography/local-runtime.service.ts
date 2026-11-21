@@ -20,6 +20,7 @@ import {
   toLocalUploadTaskSnapshot,
 } from './local-runtime.mapper';
 import {
+  LocalBackupManualPhaseStatus,
   LocalBackupRunFinishData,
   LocalBackupRunSnapshot,
   LocalBackupRunStartData,
@@ -282,6 +283,7 @@ export class LocalRuntimeService {
       const saved = await repository.save(
         repository.create({
           installationId: data.installationId,
+          organizationId: data.organizationId ?? null,
           triggerType: data.triggerType,
           status: 'RUNNING',
           startedAt: data.startedAt,
@@ -293,6 +295,8 @@ export class LocalRuntimeService {
           schemaVersion: null,
           errorCode: null,
           errorMessage: null,
+          manualUploadStatus: data.manualUploadStatus ?? null,
+          manualCleanupStatus: data.manualCleanupStatus ?? null,
         }),
       );
       return toLocalBackupRunSnapshot(saved);
@@ -360,6 +364,53 @@ export class LocalRuntimeService {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.BACKUP_FAILED,
         '备份运行结束写入失败',
+        undefined,
+        error,
+      );
+    }
+    return toLocalBackupRunSnapshot(await this.reloadBackupRun(repository, runId));
+  }
+
+  /**
+   * 更新手动三阶段（生成→上云→清理）的阶段状态。
+   *
+   * 仅允许在运行行仍存在时写入；阶段取值由数据库 CHECK 约束兜底。
+   * 未提供的阶段保持原值，不覆盖既有事实。
+   */
+  async updateManualPhaseStatuses(
+    runId: number,
+    data: {
+      manualUploadStatus?: LocalBackupManualPhaseStatus | null;
+      manualCleanupStatus?: LocalBackupManualPhaseStatus | null;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<LocalBackupRunSnapshot> {
+    const repository = this.getRepository(this.backupRunRepository, transactionContext);
+    const run = await repository.findOne({
+      where: { id: runId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!run) {
+      throw new DomainError(LOCAL_RUNTIME_ERROR.BACKUP_RUN_NOT_FOUND, '备份运行不存在', {
+        runId,
+      });
+    }
+    try {
+      await repository.update(
+        { id: runId },
+        {
+          ...(data.manualUploadStatus === undefined
+            ? {}
+            : { manualUploadStatus: data.manualUploadStatus }),
+          ...(data.manualCleanupStatus === undefined
+            ? {}
+            : { manualCleanupStatus: data.manualCleanupStatus }),
+        },
+      );
+    } catch (error) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.BACKUP_FAILED,
+        '备份阶段状态写入失败',
         undefined,
         error,
       );

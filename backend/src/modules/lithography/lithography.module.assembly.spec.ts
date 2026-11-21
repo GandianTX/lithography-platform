@@ -3,6 +3,7 @@ import type { Provider } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
 import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
@@ -42,7 +43,13 @@ describe('LithographyModule 依赖装配（离线）', () => {
     expect(repositoryTokens).toContain(getRepositoryToken(RepairProcessEntryEntity));
 
     const builder = Test.createTestingModule({
-      imports: [LoggerModule.forRoot({ pinoHttp: { level: 'silent' } }), LithographyModule],
+      imports: [
+        LoggerModule.forRoot({ pinoHttp: { level: 'silent' } }),
+        // 记录包导出（R070）引入 LocalReferenceDocumentStorageModule（ConfigService 依赖），
+        // 离线装配需提供全局配置模块
+        ConfigModule.forRoot({ isGlobal: true }),
+        LithographyModule,
+      ],
     });
     for (const token of repositoryTokens) {
       builder.overrideProvider(token).useValue({});

@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { LocalReferenceDocumentStorageModule } from '@src/infrastructure/file-storage/local-reference-document-storage.module';
+import { LocalRuntimeStorageModule } from '@src/infrastructure/file-storage/local-runtime-storage.module';
 import { AiConversationEntity } from './entities/ai-conversation.entity';
 import { AiMessageEntity } from './entities/ai-message.entity';
 import { AiMessageAnalysisEntity } from './entities/ai-message-analysis.entity';
@@ -46,6 +48,13 @@ import { RepairRequestIntakeEntity } from './entities/repair-request-intake.enti
 import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
 import { StoredFileEntity } from './entities/stored-file.entity';
 import { SyncConflictEntity } from './entities/sync-conflict.entity';
+import { SyncConflictQueryService } from './queries/sync-conflict.query.service';
+import { SyncConflictService } from './sync-conflict.service';
+import { RecordPackageImportService } from './record-package-import.service';
+import { RecordPackageImportQueryService } from './queries/record-package-import.query.service';
+import { RecordPackageExportService } from './record-package-export.service';
+import { ProtectedBackupService } from './protected-backup.service';
+import { BackupRestorePrecheckService } from './backup-restore-precheck.service';
 import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 import { AdminAiConversationQueryService } from './queries/admin-ai-conversation.query.service';
 import { AiConversationQueryService } from './queries/ai-conversation.query.service';
@@ -57,6 +66,8 @@ import { EngineerRegistrationQueryService } from './queries/engineer-registratio
 import { EngineerRepairRevisionQueryService } from './queries/engineer-repair-revision.query.service';
 import { EquipmentModelQueryService } from './queries/equipment-model.query.service';
 import { EquipmentModelService } from './equipment-model.service';
+import { LocalCompanySettingQueryService } from './queries/local-company-setting.query.service';
+import { LocalBackupAssetQueryService } from './queries/local-backup-asset.query.service';
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
 import { MaintenanceReportQueryService } from './queries/maintenance-report.query.service';
 import { OrganizationMembershipQueryService } from './queries/organization-membership.query.service';
@@ -88,7 +99,8 @@ import { RepairRequestRevisionService } from './repair-request-revision.service'
 import { RepairRequestService } from './repair-request.service';
 import { StoredFileService } from './stored-file.service';
 
-const LITHOGRAPHY_ENTITIES = [
+/** 全量光刻业务实体集合（Worker 备份执行链等跨模块装配复用） */
+export const LITHOGRAPHY_ENTITIES = [
   EquipmentModelEntity,
   RepairRequestEntity,
   AiConversationEntity,
@@ -139,7 +151,12 @@ const LITHOGRAPHY_ENTITIES = [
 ] as const;
 
 @Module({
-  imports: [TypeOrmModule.forFeature([...LITHOGRAPHY_ENTITIES])],
+  imports: [
+    TypeOrmModule.forFeature([...LITHOGRAPHY_ENTITIES]),
+    // 记录包导出（R070）与受保护备份（S3.1）经存储契约读写；显式引入保证离线装配可解析
+    LocalReferenceDocumentStorageModule,
+    LocalRuntimeStorageModule,
+  ],
   providers: [
     AiConversationService,
     AiConversationQueryService,
@@ -147,6 +164,13 @@ const LITHOGRAPHY_ENTITIES = [
     RepairRequestIntakeService,
     IntakeAnalysisService,
     EquipmentModelQueryService,
+    SyncConflictQueryService,
+    SyncConflictService,
+    RecordPackageImportService,
+    RecordPackageImportQueryService,
+    RecordPackageExportService,
+    ProtectedBackupService,
+    BackupRestorePrecheckService,
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
     RepairProcessEntryQueryService,
@@ -180,15 +204,24 @@ const LITHOGRAPHY_ENTITIES = [
     MaintenanceReportQueryService,
     LocalRuntimeService,
     LocalRuntimeQueryService,
+    LocalCompanySettingQueryService,
+    LocalBackupAssetQueryService,
     ManagementAuditService,
   ],
   exports: [
     TypeOrmModule,
+    ProtectedBackupService,
+    BackupRestorePrecheckService,
     AiConversationService,
     AiConversationQueryService,
     EquipmentModelService,
     RepairRequestIntakeService,
     IntakeAnalysisService,
+    SyncConflictQueryService,
+    SyncConflictService,
+    RecordPackageImportService,
+    RecordPackageImportQueryService,
+    RecordPackageExportService,
     EquipmentModelQueryService,
     ReferenceDocumentQueryService,
     RepairRequestQueryService,
@@ -223,6 +256,8 @@ const LITHOGRAPHY_ENTITIES = [
     MaintenanceReportQueryService,
     LocalRuntimeService,
     LocalRuntimeQueryService,
+    LocalCompanySettingQueryService,
+    LocalBackupAssetQueryService,
     ManagementAuditService,
   ],
 })

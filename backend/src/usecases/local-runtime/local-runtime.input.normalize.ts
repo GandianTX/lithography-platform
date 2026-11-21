@@ -1,7 +1,11 @@
 // src/usecases/local-runtime/local-runtime.input.normalize.ts
 // 本地运行数据输入归一化：设置、上传意图/回执/失败、备份触发与结束清单。
 
-import { DomainError, LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-error';
+import {
+  DomainError,
+  LOCAL_RUNTIME_ERROR,
+  RECORD_PACKAGE_ERROR,
+} from '@core/common/errors/domain-error';
 import type {
   LocalBackupRunFinishData,
   LocalBackupRunStatus,
@@ -40,6 +44,7 @@ const REMOTE_RECEIPT_MAX = 512;
 const ERROR_CODE_MAX = 64;
 const ERROR_MESSAGE_MAX = 1000;
 const MANIFEST_PATH_MAX = 512;
+const BACKUP_ID_MAX = 36;
 const SMALLINT_UNSIGNED_MAX = 65535;
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -114,6 +119,15 @@ export function normalizeRunId(runId: number): number {
     throw invalid('备份运行 ID 无效', { runId });
   }
   return runId;
+}
+
+/**
+ * 归一化备份资产 ID：去空白后按上限校验，非空返回。
+ *
+ * 备份资产 ID 是 36 位 UUID 文本，用例层不自行 trim，统一在此归一。
+ */
+export function normalizeBackupId(value: string): string {
+  return requireText(value, BACKUP_ID_MAX, '备份 ID');
 }
 
 export function normalizeUploadReceipt(remoteId: string | null): string | null {
@@ -232,6 +246,36 @@ export function normalizePagination(
     throw invalid(`每页条数必须在 1-${MAX_PAGE_SIZE} 之间`, { pageSize });
   }
   return { page, pageSize, withTotal: pagination?.withTotal ?? true };
+}
+
+/**
+ * 记录包检查路径归一：必须为非空本机绝对路径（U盘挂载点或包目录）。
+ * 只做形态归一，路径安全（穿越/逃逸）由记录包清单策略在解析层兜底。
+ */
+export function normalizePackagePath(value: string | undefined): string {
+  const packagePath = (value ?? '').trim();
+  if (packagePath.length === 0 || !packagePath.startsWith('/')) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_PARAMS,
+      '包路径必须为本机绝对路径（U盘挂载点或包目录）',
+    );
+  }
+  return packagePath;
+}
+
+/**
+ * 记录包导出目标归一：必须为非空本机绝对路径（U盘挂载点或目录）。
+ * 目录覆盖防护（不存在或为空）由导出服务在写盘前断言。
+ */
+export function normalizePackageExportTarget(value: string | undefined): string {
+  const targetPath = (value ?? '').trim();
+  if (targetPath.length === 0 || !targetPath.startsWith('/')) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_PARAMS,
+      '导出目标必须是本机绝对路径（U盘挂载点或目录）',
+    );
+  }
+  return targetPath;
 }
 
 function normalizeChecksum(value: string | null): string | null {

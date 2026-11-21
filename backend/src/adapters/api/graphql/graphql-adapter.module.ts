@@ -34,6 +34,10 @@ import { ContentSubmissionResolver } from './content-submission/content-submissi
 import { EmailResolver } from './email/email.resolver';
 import { EquipmentModelResolver } from './equipment-model/equipment-model.resolver';
 import { MaintenanceReportResolver } from './maintenance-report/maintenance-report.resolver';
+import { LocalRuntimeResolver } from './local-runtime/local-runtime.resolver';
+import { SyncConflictResolver } from './local-runtime/sync-conflict.resolver';
+import { RecordPackageResolver } from './local-runtime/record-package.resolver';
+import { LocalBackupResolver } from './local-runtime/local-backup.resolver';
 import { ReferenceDocumentResolver } from './reference-document/reference-document.resolver';
 import { OrganizationAdminResolver } from './organization/organization-admin.resolver';
 import { RegistrationResolver } from './registration/registration.resolver';
@@ -70,8 +74,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     ContentSubmissionUsecasesModule,
     EmailQueueUsecasesModule,
     MaintenanceReportUsecasesModule,
-    // 本地运行数据：上传/备份为本机代理与调度器的内部用例，
-    // 真实接收端接入前不暴露 GraphQL 字段（当前无 resolver 消费）
+    // 本地运行数据：S1 起只读状态查询经 LocalRuntimeResolver 暴露；
+    // 上传/备份/恢复等写入口仍为本机代理与调度器的内部用例，
+    // 按 S2–S4 分别接入，不直接映射为公开字段。
     LocalRuntimeUsecasesModule,
     RegistrationUsecasesModule,
     ReferenceDocumentUsecasesModule,
@@ -126,6 +131,10 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     EmailResolver,
     EquipmentModelResolver,
     MaintenanceReportResolver,
+    LocalRuntimeResolver,
+    SyncConflictResolver,
+    RecordPackageResolver,
+    LocalBackupResolver,
     ReferenceDocumentResolver,
     OrganizationAdminResolver,
     RegistrationResolver,
@@ -154,6 +163,10 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     EmailResolver,
     EquipmentModelResolver,
     MaintenanceReportResolver,
+    LocalRuntimeResolver,
+    SyncConflictResolver,
+    RecordPackageResolver,
+    LocalBackupResolver,
     ReferenceDocumentResolver,
     OrganizationAdminResolver,
     RegistrationResolver,
