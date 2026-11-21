@@ -15,6 +15,7 @@ import { ListLocalUploadTasksUsecase } from './list-local-upload-tasks.usecase';
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 import { GetSyncConflictUsecase } from './get-sync-conflict.usecase';
 import { ListSyncConflictsUsecase } from './list-sync-conflicts.usecase';
+import { SyncConflictAccessResolver } from './sync-conflict-access.resolver';
 import { RenewMyLocalAuthorizationUsecase } from './renew-my-local-authorization.usecase';
 import {
   CheckRecordPackageUsecase,
@@ -58,6 +59,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     ListLocalBackupRunsUsecase,
     GetSyncConflictUsecase,
     ListSyncConflictsUsecase,
+    SyncConflictAccessResolver,
     ResolveSyncConflictUsecase,
     RenewMyLocalAuthorizationUsecase,
     CheckRecordPackageUsecase,
@@ -88,6 +90,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     ListLocalBackupRunsUsecase,
     GetSyncConflictUsecase,
     ListSyncConflictsUsecase,
+    SyncConflictAccessResolver,
     ResolveSyncConflictUsecase,
     RenewMyLocalAuthorizationUsecase,
     CheckRecordPackageUsecase,

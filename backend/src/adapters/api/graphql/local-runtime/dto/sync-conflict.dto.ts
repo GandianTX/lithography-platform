@@ -76,6 +76,12 @@ export class SyncConflictPageDTO {
 
   @Field(() => Int, { description: '页大小' })
   pageSize!: number;
+
+  @Field(() => Boolean, {
+    nullable: true,
+    description: '候选超过扫描上限：可见集合是下界（不静默丢条目）',
+  })
+  truncated?: boolean | null;
 }
 
 /** 冲突裁决结果：existing 表示重复请求返回既有事实 */
@@ -118,6 +124,7 @@ export function toSyncConflictPageDTO(page: SyncConflictListPage): SyncConflictP
     total: page.total ?? null,
     page: page.page,
     pageSize: page.pageSize,
+    truncated: page.truncated ?? null,
   };
 }
 

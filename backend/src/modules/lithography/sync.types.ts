@@ -47,6 +47,8 @@ export type SyncConflictListPage = {
   total?: number;
   page: number;
   pageSize: number;
+  /** 候选超过扫描上限：可见集合是下界，如实标记，不静默丢条目 */
+  truncated?: boolean;
 };
 
 export type SyncConflictListFilters = {
