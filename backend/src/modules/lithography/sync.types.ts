@@ -44,6 +44,22 @@ export type SyncConflictSnapshot = {
  */
 export type SyncConflictSummary = Omit<SyncConflictSnapshot, 'localSnapshot' | 'cloudSnapshot'>;
 
+/**
+ * 裁决用的冲突视图（**不含正文快照**）：裁决路径只需要元数据与本地快照。
+ * 由服务层返回，usecase 层不消费 ORM 实体。
+ */
+export type SyncConflictResolutionView = {
+  conflictId: string;
+  recordUuid: string;
+  organizationId: number;
+  resourceType: string;
+  status: string;
+  decision: string | null;
+  localVersion: number | null;
+  /** 本地快照 JSON 原文（保留本地裁决要映射的载荷来源） */
+  localSnapshot: string;
+};
+
 export type SyncConflictListPagination = {
   page: number;
   pageSize: number;
@@ -68,11 +84,4 @@ export type SyncConflictResolveCommand = {
   conflictId: string;
   action: SyncConflictAction;
   confirmedByAccountId: number;
-};
-
-export type SyncConflictResolveResult = {
-  /** 冲突快照（裁决后的最新事实） */
-  conflict: SyncConflictSnapshot;
-  /** 'existing'：重复请求返回既有事实，不重复写 */
-  outcome: 'existing' | 'later' | 'resolved';
 };

@@ -59,6 +59,19 @@ describe('sync conflict resolve policy', () => {
     });
   });
 
+  it('待处理行上已登记方向：同向返回既有事实，不重复写', () => {
+    expect(resolveSyncConflictOutcome({ status: 'PENDING', decision: 'LOCAL' }, 'LOCAL')).toEqual({
+      kind: 'existing',
+    });
+  });
+
+  it('待处理行上已登记方向：换方向显式拒绝，不覆盖既有确认', () => {
+    expectPolicyError(
+      () => resolveSyncConflictOutcome({ status: 'PENDING', decision: 'CLOUD' }, 'LOCAL'),
+      SYNC_ERROR.CONFLICT_ALREADY_RESOLVED,
+    );
+  });
+
   it('已裁决冲突：换方向显式拒绝，不覆盖既有确认', () => {
     expectPolicyError(
       () => resolveSyncConflictOutcome({ status: 'RESOLVED', decision: 'CLOUD' }, 'LOCAL'),

@@ -13,6 +13,7 @@ import {
   toSyncConflictSummary,
 } from './queries/sync-conflict.query.service';
 import type {
+  SyncConflictResolutionView,
   SyncConflictResolveCommand,
   SyncConflictSnapshot,
   SyncConflictSummary,
@@ -58,6 +59,36 @@ export class SyncConflictService {
     return transactionContext
       ? getTypeOrmEntityManager(transactionContext).getRepository(LocalAccountAuthorizationEntity)
       : this.authorizationRepository;
+  }
+
+  /**
+   * 锁读并返回**裁决用的冲突视图**（不含正文快照）。
+   *
+   * 用视图而不是实体：usecase 层不消费 ORM 实体（架构约定），
+   * 且裁决路径不需要把两份正文快照读进进程内存。
+   */
+  async lockConflictView(
+    conflictId: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<SyncConflictResolutionView | null> {
+    const entity = await this.pickConflictRepository(transactionContext)
+      .createQueryBuilder('conflict')
+      .setLock('pessimistic_write')
+      .where('conflict.conflictId = :conflictId', { conflictId })
+      .getOne();
+    if (!entity) {
+      return null;
+    }
+    return {
+      conflictId: entity.conflictId,
+      recordUuid: entity.recordUuid,
+      organizationId: entity.organizationId,
+      resourceType: entity.resourceType,
+      status: entity.status,
+      decision: entity.decision,
+      localVersion: entity.localVersion,
+      localSnapshot: entity.localSnapshot,
+    };
   }
 
   /** 锁读：裁决与续期都要求先锁定行，避免并发裁决互相覆盖确认人 */

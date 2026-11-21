@@ -84,6 +84,18 @@ export function resolveSyncConflictOutcome(
     );
   }
 
+  // 待处理行上若 `decision` 已是某个方向（PENDING ⇒ 确认人为空，方向只能记在 decision 上），
+  // 说明方向已被登记过：同向返回既有事实，换向显式拒绝，绝不静默覆盖（R068）
+  if (facts.decision === 'LOCAL' || facts.decision === 'CLOUD') {
+    if (action === facts.decision) {
+      return { kind: 'existing' };
+    }
+    throw new DomainError(
+      SYNC_ERROR.CONFLICT_ALREADY_RESOLVED,
+      '该冲突已被处理为另一个方向，不能覆盖既有确认',
+    );
+  }
+
   if (action === 'LATER') {
     // 稍后处理：保留待处理状态；已存在 decision 的事实不动
     return { kind: 'later' };

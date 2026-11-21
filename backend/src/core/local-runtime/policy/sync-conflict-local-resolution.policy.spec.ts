@@ -97,6 +97,28 @@ describe('planLocalConflictResolution（保留本地载荷映射纯规则）', (
     });
   });
 
+  it('已知字段类型非法时显式拒绝（不能按"没有该字段"处理，否则会丢正文）', () => {
+    for (const snapshot of [
+      { schema_version: 1, content_md: 123 },
+      { schema_version: 1, handling_result: 7 },
+      { schema_version: 1, closure_reason: { text: 'x' } },
+    ]) {
+      expect(
+        planLocalConflictResolution({
+          ...baseInput,
+          localSnapshot: JSON.stringify(snapshot),
+        }),
+      ).toMatchObject({ kind: 'reject', code: SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID });
+    }
+  });
+
+  it('快照不是 JSON 对象（数组）时显式拒绝', () => {
+    expect(planLocalConflictResolution({ ...baseInput, localSnapshot: '[]' })).toMatchObject({
+      kind: 'reject',
+      code: SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+    });
+  });
+
   it('快照里的未知键被忽略，不被当成载荷', () => {
     const plan = planLocalConflictResolution({
       ...baseInput,

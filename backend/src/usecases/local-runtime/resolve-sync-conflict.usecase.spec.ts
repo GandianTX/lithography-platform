@@ -62,7 +62,7 @@ describe('ResolveSyncConflictUsecase', () => {
       resolve: jest.fn(() => Promise.resolve(params.scope)),
     };
     const service = {
-      lockConflict: jest.fn(() =>
+      lockConflictView: jest.fn(() =>
         Promise.resolve(
           params.locked
             ? {

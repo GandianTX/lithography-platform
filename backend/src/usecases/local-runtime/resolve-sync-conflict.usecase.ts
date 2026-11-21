@@ -25,9 +25,9 @@ import {
  * - 重复相同方向返回既有事实（`outcome='existing'`），不重复写；
  * - 稍后处理（`outcome='later'`）保持 PENDING，确认人保持为空；
  * - 使用云端（`CLOUD`）只落 decision 与确认人，不回写云端原记录；
- * - 保留本地（`LOCAL`）走**来源业务既有的受控版本写入入口**（任务 04 的工单受控修订入口）：
- *   载荷映射与资源类型准入由 core 策略裁决，权限与版本条件由受控入口自己裁决，
- *   09 侧不叠加第二套口径；
+ * - 保留本地（`LOCAL`）**不在本用例处理**：它是管理员动作，由管理员文档库域的
+ *   受控修订入口执行（任务 04 的工单受控修订入口），GraphQL 层按动作分派；
+ *   本用例收到 LOCAL 时显式失败，避免跨域再实现一套权限口径；
  * - 确认人取自 Session（数据库复核后的账号），不接受客户端传入；
  * - 返回体只给冲突**摘要**：裁决是一次写动作，没有必要再带两份正文快照。
  */
@@ -44,7 +44,7 @@ export class ResolveSyncConflictUsecase {
     const scope = await this.scopeResolver.resolve(command.session);
 
     const prepared = await this.transactionRunner.run(async (transactionContext) => {
-      const locked = await this.syncConflictService.lockConflict(
+      const locked = await this.syncConflictService.lockConflictView(
         command.conflictId,
         transactionContext,
       );

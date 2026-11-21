@@ -1,7 +1,9 @@
 // src/usecases/admin-document-database/apply-local-sync-conflict-resolution.usecase.ts
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { RepairRequestHandlingResult } from '@app-types/models/repair-request.types';
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
+import type { MaintenanceRecordRawInput } from '@core/repair-request/policy/repair-request-maintenance.policy';
 import { planLocalConflictResolution } from '@core/local-runtime/policy/sync-conflict-local-resolution.policy';
 import {
   resolveSyncConflictOutcome,
@@ -17,7 +19,7 @@ import {
   SyncSourceRecordQueryService,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import { SyncConflictService } from '@src/modules/lithography/sync-conflict.service';
-import type { LocalConflictResolutionOutcome } from '@src/usecases/common/ports/local-conflict-resolution.contract';
+import type { SyncConflictSummary } from '@src/modules/lithography/sync.types';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -50,10 +52,10 @@ export class ApplyLocalSyncConflictResolutionUsecase {
     private readonly transactionRunner: TransactionRunner,
   ) {}
 
-  async execute(input: {
-    session: UsecaseSession;
-    conflictId: string;
-  }): Promise<LocalConflictResolutionOutcome> {
+  async execute(input: { session: UsecaseSession; conflictId: string }): Promise<{
+    outcome: 'resolved' | 'existing';
+    conflict: SyncConflictSummary | null;
+  }> {
     // 保留本地是管理员动作：权限不足直接失败关闭，不降级
     assertAdminDocumentDatabasePermission(input.session, '裁决保留本地冲突');
     const organizationScope = await resolveAdminOrganizationScope({
@@ -63,7 +65,7 @@ export class ApplyLocalSyncConflictResolutionUsecase {
     });
 
     const prepared = await this.transactionRunner.run(async (transactionContext) => {
-      const locked = await this.syncConflictService.lockConflict(
+      const locked = await this.syncConflictService.lockConflictView(
         input.conflictId,
         transactionContext,
       );
@@ -120,6 +122,14 @@ export class ApplyLocalSyncConflictResolutionUsecase {
           '同步冲突的来源记录不可用或已下架，不能执行保留本地裁决',
         );
       }
+      // 展示版本二次校验（与读侧入口策略对称）：冲突登记的本地版本必须仍是来源记录的
+      // 当前版本；记录已被别处推进过时，本地版本已不是"仍新的展示版本"，不得据此写入。
+      if (locked.localVersion === null || fact.currentVersion !== locked.localVersion) {
+        throw new DomainError(
+          SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE,
+          '冲突登记的本地版本已不是来源记录的当前版本，不能执行保留本地裁决',
+        );
+      }
 
       return { kind: 'apply' as const, payload: plan.payload, recordId: fact.recordId };
     });
@@ -136,15 +146,15 @@ export class ApplyLocalSyncConflictResolutionUsecase {
       session: input.session,
       requestId: prepared.recordId,
       expectedVersion: prepared.payload.expectedVersion,
-      reason: prepared.payload.reason,
+      reason: `${prepared.payload.reason}（冲突 ${input.conflictId}）`,
       contentMd: prepared.payload.contentMd ?? undefined,
-      handlingResult:
-        prepared.payload.handlingResult === null
-          ? undefined
-          : (prepared.payload.handlingResult as never),
+      handlingResult: this.parseHandlingResult(prepared.payload.handlingResult),
       closureReason: prepared.payload.closureReason ?? undefined,
       expectedMaintenanceVersion: prepared.payload.expectedMaintenanceVersion ?? undefined,
-      maintenance: (prepared.payload.maintenance ?? undefined) as never,
+      // 结构化维修记录：形状由受控入口归一化校验（normalizeMaintenanceRecord），
+      // 这里只做类型收窄，不改内容
+      maintenance: (prepared.payload.maintenance ?? undefined) as
+        MaintenanceRecordRawInput | undefined,
     });
 
     // 写回冲突事实：条件更新只从 PENDING 落 RESOLVED；0 行表示并发已裁决
@@ -160,9 +170,41 @@ export class ApplyLocalSyncConflictResolutionUsecase {
       ),
     );
 
+    if (affected === 0) {
+      // 并发期间该冲突已被其他会话裁决：受控修订**已经写入**（版本条件由受控入口裁决），
+      // 但冲突事实不能被覆盖。此时不能报"既有事实"——那会让调用方以为什么都没发生。
+      throw new DomainError(
+        SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED,
+        '冲突已被并发裁决为其他方向：本次保留本地的受控修订已写入，但冲突事实未被改写，请人工核对',
+        { conflictId: input.conflictId },
+      );
+    }
+
     return {
-      outcome: affected === 0 ? 'existing' : 'resolved',
+      outcome: 'resolved',
       conflict: await this.syncConflictService.readConflictSummaryById(input.conflictId),
     };
+  }
+
+  /**
+   * 处理结果必须是来源业务的真实枚举值：快照里的未知取值不猜语义，直接拒绝。
+   * （受控入口自身也会校验，这里先拦一层是为了给出可定位的错误码。）
+   */
+  private parseHandlingResult(
+    value: string | null | undefined,
+  ): RepairRequestHandlingResult | undefined {
+    if (value === null || value === undefined) {
+      return undefined;
+    }
+    const matched = (Object.values(RepairRequestHandlingResult) as string[]).find(
+      (candidate) => candidate === value,
+    );
+    if (matched === undefined) {
+      throw new DomainError(
+        SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+        '本地快照里的处理结果不是受控入口认可的真实取值',
+      );
+    }
+    return matched as RepairRequestHandlingResult;
   }
 }

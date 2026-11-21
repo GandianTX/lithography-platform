@@ -56,13 +56,13 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     session?: UsecaseSession;
     organizationId?: number | null;
     locked?: typeof lockedConflict | null;
-    fact?: { recordId: number; withdrawn?: boolean } | null;
+    fact?: { recordId: number; withdrawn?: boolean; currentVersion?: number | null } | null;
     localAffected?: number;
     adminLevel?: number | null;
     trustedOrganizationId?: number;
   }) => {
     const conflictService = {
-      lockConflict: jest.fn(() =>
+      lockConflictView: jest.fn(() =>
         Promise.resolve(params.locked === undefined ? lockedConflict : params.locked),
       ),
       readConflictSummaryById: jest.fn(() =>
@@ -90,7 +90,7 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
         Promise.resolve({
           facts: new Map(
             params.fact === undefined
-              ? [['record-uuid-1', { recordId: 880001, withdrawn: false }]]
+              ? [['record-uuid-1', { recordId: 880001, withdrawn: false, currentVersion: 4 }]]
               : params.fact === null
                 ? []
                 : [['record-uuid-1', params.fact]],
@@ -226,15 +226,80 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
   });
 
-  it('保留本地：并发已裁决（写回 0 行）返回既有事实，不覆盖别人的确认', async () => {
+  it('保留本地：并发已裁决（写回 0 行）时显式报出，不伪装成"既有事实"', async () => {
     const { usecase, appendRevisionUsecase } = makeUsecase({
       session: superAdminSession,
       localAffected: 0,
     });
 
-    const result = await usecase.execute({ session: superAdminSession, conflictId: 'c-1' });
-
-    expect(result.outcome).toBe('existing');
+    // 受控修订已经写入，冲突事实未被改写：必须让调用方知道真实发生了什么
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED });
     expect(appendRevisionUsecase.execute).toHaveBeenCalled();
+  });
+
+  it('保留本地：冲突登记的本地版本已不是来源记录当前版本时不写入', async () => {
+    const { usecase, appendRevisionUsecase } = makeUsecase({
+      session: superAdminSession,
+      fact: { recordId: 880001, withdrawn: false, currentVersion: 9 },
+    });
+
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE });
+    expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
+  });
+
+  it('保留本地：换方向（已裁决为云端）显式拒绝，不覆盖既有确认', async () => {
+    const { usecase, appendRevisionUsecase } = makeUsecase({
+      session: superAdminSession,
+      locked: { ...lockedConflict, status: 'RESOLVED', decision: 'CLOUD' },
+    });
+
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_ALREADY_RESOLVED });
+    expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
+  });
+
+  it('保留本地：待处理行上已登记方向（decision 已定）时不静默覆盖', async () => {
+    const { usecase, appendRevisionUsecase } = makeUsecase({
+      session: superAdminSession,
+      locked: { ...lockedConflict, status: 'PENDING', decision: 'CLOUD' },
+    });
+
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_ALREADY_RESOLVED });
+    expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
+  });
+
+  it('保留本地：二级管理员只在本company数据区裁决，跨公司同码失败', async () => {
+    const { usecase, appendRevisionUsecase } = makeUsecase({
+      session: superAdminSession,
+      adminLevel: 2,
+      trustedOrganizationId: 9,
+    });
+
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_NOT_FOUND });
+    expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
+  });
+
+  it('保留本地：快照里的处理结果不是真实枚举时不写入', async () => {
+    const { usecase, appendRevisionUsecase } = makeUsecase({
+      session: superAdminSession,
+      locked: {
+        ...lockedConflict,
+        localSnapshot: JSON.stringify({ schema_version: 1, handling_result: 'NOT_A_REAL_RESULT' }),
+      },
+    });
+
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID });
+    expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
   });
 });
