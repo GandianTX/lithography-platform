@@ -2,7 +2,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 
 import { LocalAccountAuthorizationEntity } from '../entities/local-account-authorization.entity';
 import { LocalUploadTaskEntity } from '../entities/local-upload-task.entity';
@@ -15,16 +15,20 @@ import { SyncReceiptEntity } from '../entities/sync-receipt.entity';
  * 只负责"取事实"，不做任何展示判定；展示语义由
  * `core/local-runtime/policy/sync-status.policy.ts` 裁决。
  *
- * 两条硬性过滤：
+ * 三条硬性过滤：
  * - **只合并 `BUSINESS_SYNC` 任务**：`BACKUP_UPLOAD`（备份上云）与历史遗留的
  *   `task_kind IS NULL` 行都不代表业务同步，必须隔离，否则会把"备份已上传"
- *   误显示为"业务记录已同步"；
- * - **回执按（公司、类型、稳定键、版本）精确匹配**：旧版本回执不代表当前正文已同步。
+ *   误显示为"业务记录已同步"；遗留行单独读出，用于表达"存在用途无法确认的任务"；
+ * - **回执按（公司、类型、稳定键、安装标识）匹配**：旧版本回执不代表当前正文已同步；
+ *   来源安装标识为空或不是本机的回执**不得**作为本机已同步的证据（派生键跨设备会撞号）；
+ * - **任务取最新一条**：同一版本可能先后登记多条（失败后重试），取最新才不失真。
  */
 export type SyncStatusTaskRow = {
   recordUuid: string;
   sourceVersion: number | null;
   status: string;
+  manifestChecksum: string | null;
+  entityType: string;
 };
 
 export type SyncStatusReceiptRow = {
@@ -32,6 +36,7 @@ export type SyncStatusReceiptRow = {
   versionNo: number;
   receiptStatus: string;
   manifestChecksum: string | null;
+  sourceInstallationId: string | null;
 };
 
 export type SyncStatusConflictRow = {
@@ -40,6 +45,7 @@ export type SyncStatusConflictRow = {
   status: string;
   localVersion: number | null;
   cloudVersion: number | null;
+  versionNo: number | null;
 };
 
 @Injectable()
@@ -55,7 +61,7 @@ export class SyncStatusQueryService {
     private readonly authorizationRepository: Repository<LocalAccountAuthorizationEntity>,
   ) {}
 
-  /** 读取业务同步任务事实（仅 BUSINESS_SYNC，按稳定键过滤） */
+  /** 读取业务同步任务事实（仅 BUSINESS_SYNC，按稳定键过滤，取最新一条优先） */
   async readBusinessSyncTasks(
     installationId: string,
     recordUuids: readonly string[],
@@ -69,15 +75,49 @@ export class SyncStatusQueryService {
         recordUuid: In([...recordUuids]),
         taskKind: 'BUSINESS_SYNC',
       },
+      order: { id: 'DESC' },
     });
     return rows.map((row) => ({
       recordUuid: row.recordUuid ?? '',
       sourceVersion: row.sourceVersion,
       status: row.status,
+      manifestChecksum: row.manifestChecksum,
+      entityType: row.entityType,
     }));
   }
 
-  /** 读取回执事实（按公司、类型、稳定键精确匹配） */
+  /**
+   * 读取历史遗留任务（`task_kind IS NULL`）的存在性。
+   *
+   * 这类行无法确认为业务同步（也可能是备份上云的历史写法），因此**不参与**状态裁决，
+   * 只用于避免把"存在一条用途不明的任务"误报成"没有任务"。
+   */
+  async readLegacyTaskUuids(
+    installationId: string,
+    recordUuids: readonly string[],
+  ): Promise<string[]> {
+    if (recordUuids.length === 0) {
+      return [];
+    }
+    const rows = await this.taskRepository.find({
+      where: {
+        installationId,
+        recordUuid: In([...recordUuids]),
+        taskKind: IsNull(),
+      },
+      select: { recordUuid: true },
+    });
+    const uuids: string[] = [];
+    for (const row of rows) {
+      const uuid = row.recordUuid;
+      if (uuid !== null && !uuids.includes(uuid)) {
+        uuids.push(uuid);
+      }
+    }
+    return uuids;
+  }
+
+  /** 读取回执事实（按公司、类型、稳定键匹配） */
   async readReceipts(
     organizationId: number,
     resourceType: string,
@@ -101,6 +141,7 @@ export class SyncStatusQueryService {
         typeof row.manifestChecksum === 'string' && row.manifestChecksum.length > 0
           ? row.manifestChecksum
           : null,
+      sourceInstallationId: row.sourceInstallationId,
     }));
   }
 
@@ -127,6 +168,7 @@ export class SyncStatusQueryService {
       status: row.status,
       localVersion: row.localVersion,
       cloudVersion: row.cloudVersion,
+      versionNo: row.versionNo,
     }));
   }
 

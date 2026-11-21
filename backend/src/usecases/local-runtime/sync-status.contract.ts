@@ -19,23 +19,32 @@ import type {
  */
 export const SYNC_STATUS_QUERY = Symbol('SYNC_STATUS_QUERY');
 
+/** 单次批量查询的条数上限（对齐记录包导出的批量上限口径） */
+export const SYNC_STATUS_QUERY_MAX_BATCH = 50;
+
 export type SyncStatusQueryRequest = {
-  /** 调用方认定的公司；仅用于定位，服务端会以来源记录事实复核 */
+  /** 调用方认定的公司；仅用于与来源事实核对，不参与裁决 */
   organizationId: number;
   /** 来源资源类型：REFERENCE_DOCUMENT／REPAIR_REQUEST／MAINTENANCE_REPORT */
   resourceType: string;
   /** 业务稳定键 */
   recordUuid: string;
-  /** 调用方看到的版本；本实现不信任，仅回显服务端认定的版本 */
+  /** 调用方看到的版本；本实现不信任，仅回显核对 */
   sourceVersion: number | null;
 };
 
 export type SyncStatusQueryItem = {
+  /** 服务端事实：公司取来源记录归属，取不到归属时不返回条目 */
   organizationId: number;
+  /** 服务端事实：资源类型取来源记录类型 */
   resourceType: string;
   recordUuid: string;
   /** 服务端认定的当前版本；不可核验时为 null */
   sourceVersion: number | null;
+  /** 调用方传入的版本（原样回显，便于调用方发现版本不一致） */
+  requestedVersion: number | null;
+  /** 调用方版本与服务端版本是否一致；调用方未提供版本时为 null */
+  versionAligned: boolean | null;
   status: SyncStatus;
   /** 安全原因码（可本地化，不含正文与快照） */
   reasonCode: SyncStatusReasonCode | null;

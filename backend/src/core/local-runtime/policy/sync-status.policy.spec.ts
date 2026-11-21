@@ -4,6 +4,8 @@ import {
   syncStatusEnum,
   SHARED_SYNC_STATUSES,
   type SyncStatusFacts,
+  type SyncStatusReceiptFact,
+  type SyncStatusTaskFact,
 } from './sync-status.policy';
 
 describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
@@ -14,15 +16,27 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
     applicable: true,
     authorizationValid: true,
     task: null,
+    legacyTaskExists: false,
     receipt: null,
     conflict: null,
     ...overrides,
   });
 
-  const successfulReceipt = (overrides: Partial<SyncStatusFacts['receipt']> = {}) => ({
-    status: 'SUCCEEDED' as const,
+  const successfulTask = (overrides: Partial<SyncStatusTaskFact> = {}): SyncStatusTaskFact => ({
+    status: 'SUCCEEDED',
+    sourceVersion: 3,
+    manifestChecksum: 'a'.repeat(64),
+    entityType: 'REPORT_VERSION',
+    ...overrides,
+  });
+
+  const successfulReceipt = (
+    overrides: Partial<SyncStatusReceiptFact> = {},
+  ): SyncStatusReceiptFact => ({
+    status: 'SUCCEEDED',
     versionNo: 3,
     manifestChecksum: 'a'.repeat(64),
+    sourceInstallationConfirmed: true,
     bodyComplete: true,
     originalsComplete: true,
     ...overrides,
@@ -96,30 +110,44 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
     expect(result.status).toBe('NO_TASK');
   });
 
+  it('存在用途无法确认的历史任务时不得断言"没有任务"', () => {
+    const result = resolveSyncStatus(baseFacts({ task: null, legacyTaskExists: true }));
+
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reasonCode).toBe('TASK_KIND_UNKNOWN');
+  });
+
+  it('任务状态取值非法时按未知处理（脏数据不当作成功）', () => {
+    const result = resolveSyncStatus(
+      baseFacts({ task: successfulTask({ status: 'UNKNOWN' }), receipt: successfulReceipt() }),
+    );
+
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reasonCode).toBe('TASK_STATUS_UNKNOWN');
+  });
+
   it('任务进行中时按真实状态返回 PENDING／UPLOADING', () => {
     expect(
-      resolveSyncStatus(baseFacts({ task: { status: 'PENDING', sourceVersion: 3 } })).status,
+      resolveSyncStatus(baseFacts({ task: successfulTask({ status: 'PENDING' }) })).status,
     ).toBe('PENDING');
     expect(
-      resolveSyncStatus(baseFacts({ task: { status: 'UPLOADING', sourceVersion: 3 } })).status,
+      resolveSyncStatus(baseFacts({ task: successfulTask({ status: 'UPLOADING' }) })).status,
     ).toBe('UPLOADING');
   });
 
   it('任务失败时返回 FAILED；仅剩取消任务时返回 FAILED 而不是已同步', () => {
     expect(
-      resolveSyncStatus(baseFacts({ task: { status: 'FAILED', sourceVersion: 3 } })).status,
+      resolveSyncStatus(baseFacts({ task: successfulTask({ status: 'FAILED' }) })).status,
     ).toBe('FAILED');
     const cancelled = resolveSyncStatus(
-      baseFacts({ task: { status: 'CANCELLED', sourceVersion: 3 } }),
+      baseFacts({ task: successfulTask({ status: 'CANCELLED' }) }),
     );
     expect(cancelled.status).toBe('FAILED');
     expect(cancelled.reasonCode).toBe('TASK_CANCELLED');
   });
 
   it('仅任务成功但缺少回执时不得判已同步', () => {
-    const result = resolveSyncStatus(
-      baseFacts({ task: { status: 'SUCCEEDED', sourceVersion: 3 }, receipt: null }),
-    );
+    const result = resolveSyncStatus(baseFacts({ task: successfulTask(), receipt: null }));
 
     expect(result.status).toBe('UNKNOWN');
     expect(result.reasonCode).toBe('RECEIPT_MISSING');
@@ -128,7 +156,7 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
   it('回执版本与当前版本不一致时不得判已同步（旧回执不对应新正文）', () => {
     const result = resolveSyncStatus(
       baseFacts({
-        task: { status: 'SUCCEEDED', sourceVersion: 4 },
+        task: successfulTask({ sourceVersion: 4 }),
         receipt: successfulReceipt({ versionNo: 3 }),
       }),
     );
@@ -137,27 +165,58 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
     expect(result.reasonCode).toBe('RECEIPT_VERSION_MISMATCH');
   });
 
-  it('回执缺少摘要或正文／原件不完整时不得判已同步', () => {
+  it('回执缺摘要、正文或原件不完整时不得判已同步', () => {
     const cases = [
       successfulReceipt({ manifestChecksum: null }),
       successfulReceipt({ bodyComplete: false }),
       successfulReceipt({ originalsComplete: false }),
     ];
     for (const receipt of cases) {
-      const result = resolveSyncStatus(
-        baseFacts({ task: { status: 'SUCCEEDED', sourceVersion: 3 }, receipt }),
-      );
+      const result = resolveSyncStatus(baseFacts({ task: successfulTask(), receipt }));
       expect(result.status).toBe('UNKNOWN');
       expect(result.reasonCode).toBe('RECEIPT_INCOMPLETE');
     }
   });
 
-  it('当前版本有匹配的完整成功回执时才判已同步', () => {
+  it('任务与回执摘要不一致时不得判已同步', () => {
     const result = resolveSyncStatus(
       baseFacts({
-        task: { status: 'SUCCEEDED', sourceVersion: 3 },
+        task: successfulTask({ manifestChecksum: 'b'.repeat(64) }),
+        receipt: successfulReceipt({ manifestChecksum: 'a'.repeat(64) }),
+      }),
+    );
+
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reasonCode).toBe('RECEIPT_INCOMPLETE');
+  });
+
+  it('回执来源无法确认是本机时不得判已同步', () => {
+    const result = resolveSyncStatus(
+      baseFacts({
+        task: successfulTask(),
+        receipt: successfulReceipt({ sourceInstallationConfirmed: false }),
+      }),
+    );
+
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reasonCode).toBe('RECEIPT_SOURCE_UNCONFIRMED');
+  });
+
+  it('任务用途不是正文时不得判已同步', () => {
+    const result = resolveSyncStatus(
+      baseFacts({
+        task: successfulTask({ entityType: 'ATTACHMENT' }),
         receipt: successfulReceipt(),
       }),
+    );
+
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reasonCode).toBe('TASK_NOT_BODY');
+  });
+
+  it('当前版本有匹配的完整成功回执时才判已同步', () => {
+    const result = resolveSyncStatus(
+      baseFacts({ task: successfulTask(), receipt: successfulReceipt() }),
     );
 
     expect(result.status).toBe('SYNCED');
@@ -165,31 +224,32 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
     expect(result.conflictId).toBeNull();
   });
 
-  it('任务与回执互相矛盾时按未知处理，不显示成功', () => {
+  it('任务与同版本回执互相矛盾时按未知处理，不显示成功', () => {
     const pendingWithReceipt = resolveSyncStatus(
       baseFacts({
-        task: { status: 'PENDING', sourceVersion: 3 },
+        task: successfulTask({ status: 'PENDING' }),
         receipt: successfulReceipt(),
       }),
     );
     expect(pendingWithReceipt.status).toBe('UNKNOWN');
     expect(pendingWithReceipt.reasonCode).toBe('TASK_RECEIPT_INCONSISTENT');
+  });
 
-    const succeededWithFailedReceipt = resolveSyncStatus(
+  it('旧版本成功回执不构成与当前任务的矛盾（按当前任务状态表达）', () => {
+    const result = resolveSyncStatus(
       baseFacts({
-        task: { status: 'SUCCEEDED', sourceVersion: 3 },
-        receipt: successfulReceipt({ status: 'FAILED' }),
+        task: successfulTask({ status: 'PENDING', sourceVersion: 3 }),
+        receipt: successfulReceipt({ versionNo: 2 }),
       }),
     );
-    expect(succeededWithFailedReceipt.status).toBe('FAILED');
+
+    expect(result.status).toBe('PENDING');
+    expect(result.reasonCode).toBeNull();
   });
 
   it('回执仍在进行时按 PENDING 处理', () => {
     const result = resolveSyncStatus(
-      baseFacts({
-        task: { status: 'SUCCEEDED', sourceVersion: 3 },
-        receipt: successfulReceipt({ status: 'PENDING' }),
-      }),
+      baseFacts({ task: successfulTask(), receipt: successfulReceipt({ status: 'PENDING' }) }),
     );
 
     expect(result.status).toBe('PENDING');
@@ -198,7 +258,7 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
   it('当前版本存在待处理冲突时优先返回 CONFLICT', () => {
     const result = resolveSyncStatus(
       baseFacts({
-        task: { status: 'UPLOADING', sourceVersion: 3 },
+        task: successfulTask({ status: 'UPLOADING' }),
         conflict: {
           conflictId: 'conflict-1',
           localVersion: 3,
@@ -252,10 +312,7 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
 
   it('回执状态为冲突时按 CONFLICT 处理', () => {
     const result = resolveSyncStatus(
-      baseFacts({
-        task: { status: 'SUCCEEDED', sourceVersion: 3 },
-        receipt: successfulReceipt({ status: 'CONFLICT' }),
-      }),
+      baseFacts({ task: successfulTask(), receipt: successfulReceipt({ status: 'CONFLICT' }) }),
     );
 
     expect(result.status).toBe('CONFLICT');

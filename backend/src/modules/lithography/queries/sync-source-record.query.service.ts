@@ -21,6 +21,10 @@ import { RepairRequestEntity } from '../entities/repair-request.entity';
  * 它是**本机设备内**的稳定键（本服务据此把稳定键还原到本地记录），**不是**跨设备
  * 全局身份——不同设备的同号自增 ID 会派生出相同 UUID。因此本服务只提供设备内事实，
  * 跨端身份方案另行设计（见证据 S0-基线与06对齐记录 §5）。
+ *
+ * 扫描完整性：派生键不可反解，只能按（公司、类型）扫描候选记录再比对派生值。
+ * 候选集超过上限时返回 `scanComplete=false`，调用方据此把无法还原的稳定键判为
+ * **未知**（而不是"记录不存在"），避免把扫描截断误报成事实。
  */
 export const SYNC_SOURCE_RESOURCE_TYPES = [
   'REFERENCE_DOCUMENT',
@@ -29,6 +33,9 @@ export const SYNC_SOURCE_RESOURCE_TYPES = [
 ] as const;
 
 export type SyncSourceResourceType = (typeof SYNC_SOURCE_RESOURCE_TYPES)[number];
+
+/** 单次扫描的候选记录上限；超过即视为扫描不完整 */
+export const SYNC_SOURCE_SCAN_LIMIT = 2000;
 
 export type SyncSourceRecordFact = {
   resourceType: SyncSourceResourceType;
@@ -41,12 +48,28 @@ export type SyncSourceRecordFact = {
   currentVersion: number | null;
   /** 当前版本是否可核验（草稿版本 0 之类不可核验的版本不算） */
   versionTrusted: boolean;
-  /** 是否适用本机业务同步：true=适用、false=不适用、null=无法判定 */
-  applicable: boolean | null;
-  /** 与该记录关联的账号（本人判定的事实来源） */
+  /**
+   * **材料级**适用性：true=材料本身适用、false=材料已下架／删除等不适用、
+   * null=材料级无法判定（归属待确认等）。
+   * 公司级运行模式事实源尚未落地，公司级适用性由上层另行裁决。
+   */
+  materialApplicable: boolean | null;
+  /** 与该记录关联的账号（本人判定的事实来源，不参与授权有效性判定） */
   relatedAccountIds: number[];
-  /** 是否已删除下架 */
+  /**
+   * **授权主体账号**：原归属账号（报告＝创建人，资料＝创建人，工单＝受理工程师）。
+   * R090 的"授权失效"只以该账号的授权状态为准，其他关联账号的授权不影响本记录。
+   */
+  authorizationSubjectAccountId: number | null;
+  /** 是否已删除下架／软删除 */
   withdrawn: boolean;
+};
+
+export type SyncSourceRecordFacts = {
+  /** 按稳定键索引的事实 */
+  facts: Map<string, SyncSourceRecordFact>;
+  /** 候选扫描是否完整；false 表示可能有记录未被还原 */
+  scanComplete: boolean;
 };
 
 @Injectable()
@@ -61,32 +84,38 @@ export class SyncSourceRecordQueryService {
   ) {}
 
   /**
-   * 列出某公司某类型的来源记录事实。
+   * 列出某公司某类型的来源记录事实（只返回请求的稳定键对应的记录）。
    *
    * 归属未知的存量行也会被读出（ownerOrganizationId=null）：稳定键还原需要覆盖它们，
    * 但授权环节会因归属未知而拒绝它们（有公司范围的调用者看不到它们）。
    */
-  async listFacts(
-    organizationId: number,
-    resourceType: SyncSourceResourceType,
-  ): Promise<SyncSourceRecordFact[]> {
-    switch (resourceType) {
-      case 'MAINTENANCE_REPORT':
-        return this.listReportFacts(organizationId);
-      case 'REFERENCE_DOCUMENT':
-        return this.listDocumentFacts(organizationId);
-      case 'REPAIR_REQUEST':
-        return this.listRepairRequestFacts(organizationId);
-      default: {
-        const exhaustive: never = resourceType;
-        throw new Error(`未知来源资源类型：${String(exhaustive)}`);
+  async listFacts(params: {
+    organizationId: number;
+    resourceType: SyncSourceResourceType;
+    recordUuids: readonly string[];
+  }): Promise<SyncSourceRecordFacts> {
+    const wanted = new Set(params.recordUuids);
+    const all =
+      params.resourceType === 'MAINTENANCE_REPORT'
+        ? await this.listReportFacts(params.organizationId)
+        : params.resourceType === 'REFERENCE_DOCUMENT'
+          ? await this.listDocumentFacts(params.organizationId)
+          : await this.listRepairRequestFacts(params.organizationId);
+
+    const scanComplete = all.length <= SYNC_SOURCE_SCAN_LIMIT;
+    const facts = new Map<string, SyncSourceRecordFact>();
+    for (const fact of all) {
+      if (wanted.has(fact.recordUuid)) {
+        facts.set(fact.recordUuid, fact);
       }
     }
+    return { facts, scanComplete };
   }
 
   private async listReportFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
     const rows = await this.reportRepository.find({
       where: { ownerOrganizationId: organizationId },
+      take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
     return rows.map((row) => {
@@ -99,13 +128,14 @@ export class SyncSourceRecordQueryService {
         ownerOrganizationId: row.ownerOrganizationId,
         currentVersion: versionTrusted ? row.currentVersionNo : null,
         versionTrusted,
-        // 报告是本机可同步来源；已提交的正式版本才具备可信版本
-        applicable: true,
+        materialApplicable: true,
         relatedAccountIds: [
           row.createdByAccountId,
           row.maintenanceEngineerAccountId,
           row.updatedByAccountId,
-        ],
+        ].filter((value): value is number => typeof value === 'number'),
+        authorizationSubjectAccountId: row.createdByAccountId,
+        // 报告没有软删除列：下架由业务状态表达，本层不推断
         withdrawn: false,
       };
     });
@@ -114,13 +144,16 @@ export class SyncSourceRecordQueryService {
   private async listDocumentFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
     const rows = await this.documentRepository.find({
       where: [{ ownerOrganizationId: organizationId }, { ownerOrganizationId: IsNull() }],
+      take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
     return rows.map((row) => {
       const versionTrusted = row.currentRevisionNo > 0;
-      // 下架（OFFLINE）不适用本机同步；归属待确认（PENDING）无法判定适用性
-      const applicable =
-        row.publicationStatus === 'OFFLINE'
+      const softDeleted = row.deprecated === true || row.deletedAt !== null;
+      const offline = row.publicationStatus === 'OFFLINE';
+      // 归属待确认（PENDING）时材料级适用性无法判定
+      const materialApplicable =
+        softDeleted || offline
           ? false
           : row.ownershipStatus === 'CONFIRMED' && row.publicationStatus === 'ONLINE'
             ? true
@@ -132,11 +165,12 @@ export class SyncSourceRecordQueryService {
         ownerOrganizationId: row.ownerOrganizationId,
         currentVersion: versionTrusted ? row.currentRevisionNo : null,
         versionTrusted,
-        applicable,
+        materialApplicable,
         relatedAccountIds: [row.createdByAccountId, row.updatedByAccountId].filter(
           (value): value is number => typeof value === 'number',
         ),
-        withdrawn: row.publicationStatus === 'OFFLINE',
+        authorizationSubjectAccountId: row.createdByAccountId,
+        withdrawn: softDeleted || offline,
       };
     });
   }
@@ -144,10 +178,12 @@ export class SyncSourceRecordQueryService {
   private async listRepairRequestFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
     const rows = await this.repairRequestRepository.find({
       where: [{ ownerOrganizationId: organizationId }, { ownerOrganizationId: IsNull() }],
+      take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
     return rows.map((row) => {
       const versionTrusted = row.currentRevisionNo > 0;
+      const softDeleted = row.deprecated === true || row.deletedAt !== null;
       return {
         resourceType: 'REPAIR_REQUEST' as const,
         recordUuid: deriveRecordUuid('REPAIR_REQUEST', row.id),
@@ -155,13 +191,16 @@ export class SyncSourceRecordQueryService {
         ownerOrganizationId: row.ownerOrganizationId,
         currentVersion: versionTrusted ? row.currentRevisionNo : null,
         versionTrusted,
-        applicable: true,
+        materialApplicable: softDeleted ? false : true,
         relatedAccountIds: [
           row.customerAccountId,
           row.acceptedByEngineerAccountId,
           row.handlingRecordedByAccountId,
         ].filter((value): value is number => typeof value === 'number'),
-        withdrawn: false,
+        // 工单的授权主体是受理工程师；未受理时以客户账号兜底
+        authorizationSubjectAccountId:
+          row.acceptedByEngineerAccountId ?? row.customerAccountId ?? null,
+        withdrawn: softDeleted,
       };
     });
   }

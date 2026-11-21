@@ -1,21 +1,26 @@
 // src/usecases/local-runtime/query-sync-statuses.usecase.ts
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { DomainError, LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-error';
 import {
   resolveSyncStatusAccess,
   type SyncStatusAccessFacts,
 } from '@core/local-runtime/policy/sync-status-access.policy';
+import type { LocalRuntimeViewerScope } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 import {
   resolveSyncStatus,
+  SYNC_TASK_STATUSES,
   type SyncStatusConflictFact,
   type SyncStatusFacts,
   type SyncStatusReceiptFact,
   type SyncStatusTaskFact,
+  type SyncTaskStatus,
 } from '@core/local-runtime/policy/sync-status.policy';
 import { Injectable } from '@nestjs/common';
 
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
 import {
+  SYNC_SOURCE_RESOURCE_TYPES,
   SyncSourceRecordQueryService,
   type SyncSourceRecordFact,
   type SyncSourceResourceType,
@@ -27,13 +32,15 @@ import {
   type SyncStatusTaskRow,
 } from '@src/modules/lithography/queries/sync-status.query.service';
 
-import type { LocalRuntimeViewerScope } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
-import type {
-  SyncStatusQueryItem,
-  SyncStatusQueryPort,
-  SyncStatusQueryRequest,
+import {
+  SYNC_STATUS_QUERY_MAX_BATCH,
+  type SyncStatusQueryItem,
+  type SyncStatusQueryPort,
+  type SyncStatusQueryRequest,
 } from './sync-status.contract';
+
+const KNOWN_TASK_STATUSES = new Set<string>(SYNC_TASK_STATUSES);
 
 /**
  * 业务同步状态批量查询用例（任务 09 后续S1／S2）。
@@ -41,7 +48,8 @@ import type {
  * 职责边界：
  * - 取事实（来源记录、任务、回执、冲突、授权）→ 交给纯策略裁决 → 组装对外条目；
  * - **不产生任何副作用**：不触发上传、不写回执、不改任务状态；
- * - 公司、类型、稳定键与当前版本一律以服务端事实为准，客户端传入的公司与版本不参与裁决。
+ * - 公司、类型、稳定键与当前版本一律以服务端事实为准：
+ *   客户端传入的公司只用于与来源事实核对，客户端传入的版本只用于回显。
  */
 @Injectable()
 export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
@@ -59,6 +67,12 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     if (params.requests.length === 0) {
       return [];
     }
+    if (params.requests.length > SYNC_STATUS_QUERY_MAX_BATCH) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.INVALID_PARAMS,
+        `同步状态批量查询不能超过 ${SYNC_STATUS_QUERY_MAX_BATCH} 条`,
+      );
+    }
 
     const scope = await this.scopeResolver.resolve(params.session);
     const installation = await this.localRuntimeQueryService.readInstallation();
@@ -66,8 +80,13 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
       // 本机未安装：没有可信的本机事实来源，不能给出任何同步结论
       return [];
     }
+    const installationOrganizationId = installation.organizationId;
+    if (installationOrganizationId === null) {
+      // 本机未映射云端组织：无法确定本机负责的数据区，不能给出同步结论
+      return [];
+    }
 
-    const requests = this.dedupeRequests(params.requests);
+    const requests = this.normalizeRequests(params.requests);
     const grouped = this.groupRequests(requests);
 
     const items: SyncStatusQueryItem[] = [];
@@ -78,6 +97,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
           sessionAccountId: params.session.accountId,
           scope,
           installationId: installation.installationId,
+          installationOrganizationId,
         })),
       );
     }
@@ -85,34 +105,37 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     return items;
   }
 
-  /** 处理一个（公司、来源类型）分组：取事实 → 逐条授权 → 逐条裁决 */
+  /** 处理一个来源类型分组：取事实 → 逐条核对 → 逐条裁决 */
   private async processGroup(input: {
     group: {
-      organizationId: number;
       resourceType: SyncSourceResourceType;
       requests: SyncStatusQueryRequest[];
     };
     sessionAccountId: number;
     scope: LocalRuntimeViewerScope;
     installationId: string;
+    installationOrganizationId: number;
   }): Promise<SyncStatusQueryItem[]> {
     const { group } = input;
     const groupRequests = group.requests;
-    const facts = await this.loadSourceFacts(group.organizationId, group.resourceType);
-    if (facts.size === 0) {
-      return [];
-    }
-
     const recordUuids = groupRequests.map((request) => request.recordUuid);
-    const [tasks, receipts, conflicts] = await Promise.all([
+
+    const { facts, scanComplete } = await this.sourceRecordQueryService.listFacts({
+      organizationId: input.installationOrganizationId,
+      resourceType: group.resourceType,
+      recordUuids,
+    });
+
+    const [tasks, legacyTaskUuids, receipts, conflicts] = await Promise.all([
       this.syncStatusQueryService.readBusinessSyncTasks(input.installationId, recordUuids),
+      this.syncStatusQueryService.readLegacyTaskUuids(input.installationId, recordUuids),
       this.syncStatusQueryService.readReceipts(
-        group.organizationId,
+        input.installationOrganizationId,
         group.resourceType,
         recordUuids,
       ),
       this.syncStatusQueryService.readPendingConflicts(
-        group.organizationId,
+        input.installationOrganizationId,
         group.resourceType,
         recordUuids,
       ),
@@ -120,38 +143,39 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
 
     const authorizations = await this.syncStatusQueryService.readAuthorizations(
       input.installationId,
-      group.organizationId,
-      this.collectRelatedAccountIds(groupRequests, facts),
+      input.installationOrganizationId,
+      this.collectSubjectAccountIds(groupRequests, facts),
     );
 
-    return this.resolveGroupItems({
-      groupRequests,
-      facts,
-      tasks,
-      receipts,
-      conflicts,
-      authorizations,
-      sessionAccountId: input.sessionAccountId,
-      scope: input.scope,
-    });
-  }
-
-  /** 逐条授权并裁决，输出可展示条目 */
-  private resolveGroupItems(input: {
-    groupRequests: readonly SyncStatusQueryRequest[];
-    facts: ReadonlyMap<string, SyncSourceRecordFact>;
-    tasks: readonly SyncStatusTaskRow[];
-    receipts: readonly SyncStatusReceiptRow[];
-    conflicts: readonly SyncStatusConflictRow[];
-    authorizations: ReadonlyMap<number, 'ACTIVE' | 'REVOKED'>;
-    sessionAccountId: number;
-    scope: LocalRuntimeViewerScope;
-  }): SyncStatusQueryItem[] {
     const items: SyncStatusQueryItem[] = [];
-    for (const request of input.groupRequests) {
-      const fact = input.facts.get(request.recordUuid);
+    for (const request of groupRequests) {
+      const fact = facts.get(request.recordUuid);
       if (fact === undefined) {
-        // 稳定键在本机找不到来源记录：无法核对归属与版本，不返回条目
+        // 扫描不完整时无法断言"记录不存在"，只能如实判为未知
+        if (!scanComplete) {
+          items.push(
+            this.buildItem({
+              request,
+              status: 'UNKNOWN',
+              reasonCode: 'IDENTITY_UNTRUSTED',
+              organizationId: input.installationOrganizationId,
+              resourceType: group.resourceType,
+            }),
+          );
+        }
+        // 记录确实不存在（或不可见）时直接省略，不泄露该记录是否存在
+        continue;
+      }
+
+      // 公司以服务端事实为准：来源记录归属必须与本机映射公司一致
+      if (
+        fact.ownerOrganizationId !== null &&
+        fact.ownerOrganizationId !== input.installationOrganizationId
+      ) {
+        continue;
+      }
+      // 调用方传入的公司与来源事实不一致时按不一致处理（客户端公司不参与裁决）
+      if (request.organizationId !== fact.ownerOrganizationId) {
         continue;
       }
 
@@ -168,80 +192,48 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
       const item = this.resolveItem({
         request,
         fact,
-        tasks: input.tasks,
-        receipts: input.receipts,
-        conflicts: input.conflicts,
-        authorizations: input.authorizations,
+        tasks,
+        legacyTaskUuids,
+        receipts,
+        conflicts,
+        authorizations,
+        installationId: input.installationId,
       });
-      if (item !== null) {
-        items.push(item);
-      }
+      items.push(item);
     }
     return items;
   }
 
-  /** 收集分组内记录关联账号（按仓库约定用只读数组 + includes 去重，不用手工 Set） */
-  private collectRelatedAccountIds(
-    groupRequests: readonly SyncStatusQueryRequest[],
-    facts: ReadonlyMap<string, SyncSourceRecordFact>,
-  ): number[] {
-    const accountIds: number[] = [];
-    for (const request of groupRequests) {
-      const fact = facts.get(request.recordUuid);
-      if (fact === undefined) {
-        continue;
-      }
-      for (const accountId of fact.relatedAccountIds) {
-        if (!accountIds.includes(accountId)) {
-          accountIds.push(accountId);
-        }
-      }
-    }
-    return accountIds;
-  }
-
+  /** 逐条裁决：组装事实 → 纯策略 → 对外条目 */
   private resolveItem(input: {
     request: SyncStatusQueryRequest;
     fact: SyncSourceRecordFact;
     tasks: readonly SyncStatusTaskRow[];
+    legacyTaskUuids: readonly string[];
     receipts: readonly SyncStatusReceiptRow[];
     conflicts: readonly SyncStatusConflictRow[];
     authorizations: ReadonlyMap<number, 'ACTIVE' | 'REVOKED'>;
-  }): SyncStatusQueryItem | null {
+    installationId: string;
+  }): SyncStatusQueryItem {
     const { request, fact } = input;
-
-    const taskRows = input.tasks.filter((row) => row.recordUuid === request.recordUuid);
-    const receiptRows = input.receipts.filter((row) => row.recordUuid === request.recordUuid);
-    const conflictRows = input.conflicts.filter((row) => row.recordUuid === request.recordUuid);
-
     const currentVersion = fact.currentVersion;
 
-    // 任务：只认当前版本；同一版本有多条时取未取消的最新一条
-    const currentTasks = taskRows.filter(
+    // 任务：只认当前版本；同版本多条时取最新（查询已按 id 倒序）
+    const currentTasks = input.tasks.filter(
       (row) => currentVersion !== null && row.sourceVersion === currentVersion,
     );
-    const task: SyncStatusTaskFact | null = this.pickTask(currentTasks);
+    const task = this.pickTask(currentTasks);
 
-    // 回执：优先取与当前版本任务一致的回执；没有匹配时取版本最高的一条，
-    // 由状态策略如实表达"回执版本与当前版本不一致"（而不是笼统报缺回执）
+    // 回执：优先取与当前版本任务一致的回执，否则取版本号最高的一条
+    const receiptRows = input.receipts.filter((row) => row.recordUuid === request.recordUuid);
     const receiptRow = this.pickReceipt(receiptRows, task);
-    const receipt: SyncStatusReceiptFact | null =
-      receiptRow === null
-        ? null
-        : {
-            status: receiptRow.receiptStatus as SyncStatusReceiptFact['status'],
-            versionNo: receiptRow.versionNo,
-            manifestChecksum: receiptRow.manifestChecksum,
-            // 正文与原件完整性以回执确认的事实为准：当前结构只落摘要与状态，
-            // 未落完整性确认时按"不完整"处理（不得据此显示已同步）
-            bodyComplete:
-              receiptRow.receiptStatus === 'SUCCEEDED' && receiptRow.manifestChecksum !== null,
-            originalsComplete:
-              receiptRow.receiptStatus === 'SUCCEEDED' && receiptRow.manifestChecksum !== null,
-          };
+    const receipt = this.buildReceipt(receiptRow, task, input.installationId);
 
-    // 冲突：当前版本存在待处理冲突即如实呈现（不因版本不可核验而隐藏）
-    const conflictRow = conflictRows[0] ?? null;
+    // 冲突：只认与当前版本相关的待处理冲突（旧版本遗留冲突不误报当前版本）
+    const conflictRow = this.pickConflict(
+      input.conflicts.filter((row) => row.recordUuid === request.recordUuid),
+      currentVersion,
+    );
     const conflict: SyncStatusConflictFact | null =
       conflictRow === null
         ? null
@@ -249,54 +241,66 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
             conflictId: conflictRow.conflictId,
             localVersion: conflictRow.localVersion,
             cloudVersion: conflictRow.cloudVersion,
+            // 可读性由记录级授权保证（越权记录已在上一层被排除）；
+            // 处理入口需要写权与当前展示版本一致，本轮未实现写权校验，恒不提供
             readable: true,
-            // 处理冲突需要写权与当前展示版本一致，二者由冲突裁决入口再校验；
-            // 此处只表达"当前查看者可进入处理入口"，避免在状态查询里越权放行
             resolvable: false,
           };
-
-    // 授权：原记录账号授权失效时如实呈现，不允许他人接管
-    const authorizationValid = this.resolveAuthorization(input);
 
     const facts: SyncStatusFacts = {
       connected: true,
       identityTrusted: true,
       versionTrusted: fact.versionTrusted,
-      applicable: fact.applicable,
-      authorizationValid,
+      applicable: this.resolveApplicability(fact),
+      authorizationValid: this.resolveAuthorization(fact, input.authorizations),
       task,
+      legacyTaskExists: input.legacyTaskUuids.includes(request.recordUuid),
       receipt,
       conflict,
     };
 
     const outcome = resolveSyncStatus(facts);
-    return {
-      organizationId: fact.ownerOrganizationId ?? request.organizationId,
-      resourceType: request.resourceType,
-      recordUuid: request.recordUuid,
-      sourceVersion: currentVersion,
+    return this.buildItem({
+      request,
       status: outcome.status,
       reasonCode: outcome.reasonCode,
       conflictId: outcome.conflictId,
       canResolveConflict: outcome.canResolveConflict,
-    };
+      organizationId: fact.ownerOrganizationId ?? request.organizationId,
+      resourceType: fact.resourceType,
+      sourceVersion: currentVersion,
+    });
   }
 
-  private resolveAuthorization(input: {
-    fact: SyncSourceRecordFact;
-    authorizations: ReadonlyMap<number, 'ACTIVE' | 'REVOKED'>;
-  }): boolean | null {
-    const revoked = input.fact.relatedAccountIds.some(
-      (accountId) => input.authorizations.get(accountId) === 'REVOKED',
-    );
-    if (revoked) {
-      return false;
+  /**
+   * 适用性裁决（事实驱动，不做硬编码断言）：
+   * - 材料级明确不适用（已下架／软删除）→ 不适用；
+   * - 材料级无法判定（归属待确认等）→ 未知；
+   * - 其余按材料级事实表达；公司级"正式运行模式"事实源尚未落地，
+   *   因此不把适用性硬编码为真。
+   */
+  private resolveApplicability(fact: SyncSourceRecordFact): boolean | null {
+    return fact.materialApplicable;
+  }
+
+  /**
+   * 授权有效性裁决：**只看授权主体账号**（原归属账号）的授权状态。
+   * 其他关联账号（客户、受理人、修改人）的授权不影响本记录。
+   */
+  private resolveAuthorization(
+    fact: SyncSourceRecordFact,
+    authorizations: ReadonlyMap<number, 'ACTIVE' | 'REVOKED'>,
+  ): boolean | null {
+    const subject = fact.authorizationSubjectAccountId;
+    if (subject === null) {
+      return null;
     }
-    const hasAny = input.fact.relatedAccountIds.some((accountId) =>
-      input.authorizations.has(accountId),
-    );
-    // 未取得授权事实时保持 null（未知），不推断为有效
-    return hasAny ? true : null;
+    const status = authorizations.get(subject);
+    if (status === undefined) {
+      // 未取得授权事实时保持 null（未知），不推断为有效
+      return null;
+    }
+    return status === 'ACTIVE';
   }
 
   private pickTask(rows: readonly SyncStatusTaskRow[]): SyncStatusTaskFact | null {
@@ -306,9 +310,16 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     const alive = rows.filter((row) => row.status !== 'CANCELLED');
     const picked = alive[0] ?? rows[0];
     return {
-      status: picked.status as SyncStatusTaskFact['status'],
+      status: this.mapTaskStatus(picked.status),
       sourceVersion: picked.sourceVersion,
+      manifestChecksum: picked.manifestChecksum,
+      entityType: picked.entityType,
     };
+  }
+
+  /** 把数据库字符串收敛为受控任务状态；未知取值按 UNKNOWN 处理（不做 `as` 断言） */
+  private mapTaskStatus(value: string): SyncTaskStatus | 'UNKNOWN' {
+    return KNOWN_TASK_STATUSES.has(value) ? (value as SyncTaskStatus) : 'UNKNOWN';
   }
 
   /**
@@ -331,9 +342,112 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     return rows.reduce((latest, row) => (row.versionNo > latest.versionNo ? row : latest));
   }
 
-  private dedupeRequests(requests: readonly SyncStatusQueryRequest[]): SyncStatusQueryRequest[] {
+  /**
+   * 组装回执事实：**完整性由摘要一致性推导**，不接受"状态成功即完整"的推断；
+   * 来源安装标识为空或不是本机的回执，不得作为本机已同步的证据。
+   */
+  private buildReceipt(
+    row: SyncStatusReceiptRow | null,
+    task: SyncStatusTaskFact | null,
+    installationId: string,
+  ): SyncStatusReceiptFact | null {
+    if (row === null) {
+      return null;
+    }
+    const sourceInstallationConfirmed =
+      row.sourceInstallationId !== null && row.sourceInstallationId === installationId;
+    const manifestMatched =
+      task !== null &&
+      task.manifestChecksum !== null &&
+      row.manifestChecksum !== null &&
+      row.manifestChecksum === task.manifestChecksum;
+    return {
+      status: row.receiptStatus as SyncStatusReceiptFact['status'],
+      versionNo: row.versionNo,
+      manifestChecksum: row.manifestChecksum,
+      sourceInstallationConfirmed,
+      bodyComplete: manifestMatched,
+      originalsComplete: manifestMatched,
+    };
+  }
+
+  /** 选取与当前版本相关的待处理冲突；旧版本遗留冲突不作为当前版本冲突 */
+  private pickConflict(
+    rows: readonly SyncStatusConflictRow[],
+    currentVersion: number | null,
+  ): SyncStatusConflictRow | null {
+    if (rows.length === 0) {
+      return null;
+    }
+    if (currentVersion === null) {
+      // 当前版本不可核验时不做版本匹配，取第一条并如实保留其版本事实
+      return rows[0] ?? null;
+    }
+    const matched = rows.find(
+      (row) =>
+        row.localVersion === currentVersion ||
+        row.cloudVersion === currentVersion ||
+        row.versionNo === currentVersion,
+    );
+    return matched ?? null;
+  }
+
+  /** 组装对外条目（含调用方版本回显与一致性标记） */
+  private buildItem(input: {
+    request: SyncStatusQueryRequest;
+    status: SyncStatusQueryItem['status'];
+    reasonCode: SyncStatusQueryItem['reasonCode'];
+    conflictId?: string | null;
+    canResolveConflict?: boolean;
+    organizationId: number;
+    resourceType: string;
+    sourceVersion?: number | null;
+  }): SyncStatusQueryItem {
+    const sourceVersion = input.sourceVersion ?? null;
+    const requestedVersion = input.request.sourceVersion;
+    return {
+      organizationId: input.organizationId,
+      resourceType: input.resourceType,
+      recordUuid: input.request.recordUuid,
+      sourceVersion,
+      requestedVersion,
+      versionAligned:
+        requestedVersion === null || sourceVersion === null
+          ? null
+          : requestedVersion === sourceVersion,
+      status: input.status,
+      reasonCode: input.reasonCode,
+      conflictId: input.conflictId ?? null,
+      canResolveConflict: input.canResolveConflict ?? false,
+    };
+  }
+
+  /** 收集授权主体账号（按仓库约定用只读数组 + includes 去重，不用手工 Set） */
+  private collectSubjectAccountIds(
+    groupRequests: readonly SyncStatusQueryRequest[],
+    facts: ReadonlyMap<string, SyncSourceRecordFact>,
+  ): number[] {
+    const accountIds: number[] = [];
+    for (const request of groupRequests) {
+      const fact = facts.get(request.recordUuid);
+      if (fact === undefined || fact.authorizationSubjectAccountId === null) {
+        continue;
+      }
+      if (!accountIds.includes(fact.authorizationSubjectAccountId)) {
+        accountIds.push(fact.authorizationSubjectAccountId);
+      }
+    }
+    return accountIds;
+  }
+
+  /** 归一化请求：去重、剔除非法资源类型（非法项跳过，不影响同批其他记录） */
+  private normalizeRequests(requests: readonly SyncStatusQueryRequest[]): SyncStatusQueryRequest[] {
     const seen = new Map<string, SyncStatusQueryRequest>();
     for (const request of requests) {
+      if (!SYNC_SOURCE_RESOURCE_TYPES.includes(request.resourceType as SyncSourceResourceType)) {
+        // 未知资源类型：跳过该条，不让整批失败
+        continue;
+      }
       const key = `${request.organizationId}|${request.resourceType}|${request.recordUuid}`;
       if (!seen.has(key)) {
         seen.set(key, request);
@@ -342,48 +456,23 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     return Array.from(seen.values());
   }
 
-  private groupRequests(requests: readonly SyncStatusQueryRequest[]): Map<
-    string,
-    {
-      organizationId: number;
-      resourceType: SyncSourceResourceType;
-      requests: SyncStatusQueryRequest[];
-    }
-  > {
+  private groupRequests(
+    requests: readonly SyncStatusQueryRequest[],
+  ): Map<string, { resourceType: SyncSourceResourceType; requests: SyncStatusQueryRequest[] }> {
     const grouped = new Map<
       string,
-      {
-        organizationId: number;
-        resourceType: SyncSourceResourceType;
-        requests: SyncStatusQueryRequest[];
-      }
+      { resourceType: SyncSourceResourceType; requests: SyncStatusQueryRequest[] }
     >();
     for (const request of requests) {
       const resourceType = request.resourceType as SyncSourceResourceType;
-      const key = `${request.organizationId}|${request.resourceType}`;
+      const key = request.resourceType;
       const existing = grouped.get(key);
       if (existing === undefined) {
-        grouped.set(key, {
-          organizationId: request.organizationId,
-          resourceType,
-          requests: [request],
-        });
+        grouped.set(key, { resourceType, requests: [request] });
       } else {
         existing.requests.push(request);
       }
     }
     return grouped;
-  }
-
-  private async loadSourceFacts(
-    organizationId: number,
-    resourceType: SyncSourceResourceType,
-  ): Promise<Map<string, SyncSourceRecordFact>> {
-    const rows = await this.sourceRecordQueryService.listFacts(organizationId, resourceType);
-    const result = new Map<string, SyncSourceRecordFact>();
-    for (const row of rows) {
-      result.set(row.recordUuid, row);
-    }
-    return result;
   }
 }

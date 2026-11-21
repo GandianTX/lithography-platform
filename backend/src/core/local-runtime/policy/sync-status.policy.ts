@@ -16,10 +16,11 @@
  * - `SYNCED`：当前版本存在匹配的 `SUCCEEDED` 回执，且正文与有效原件清单完整；
  * - `CONFLICT`：当前版本存在未解决的冲突。
  *
- * 三条硬约束（不可协商）：
+ * 四条硬约束（不可协商）：
  * 1. **仅任务成功不等于已同步**：任务 `SUCCEEDED` 但缺少匹配的完整回执时不得判 SYNCED；
  * 2. **旧回执不对应新正文**：回执版本与当前业务版本不一致时不得判 SYNCED；
- * 3. **缺任务不推出不适用**：适用性必须来自可信的运行模式与记录事实。
+ * 3. **缺任务不推出不适用**：适用性必须来自可信的运行模式与记录事实；
+ * 4. **摘要必须一致**：回执摘要必须与任务登记的正文＋原件清单摘要一致，才算完整。
  *
  * 授权失效单列 `AUTHORIZATION_INVALID`：原记录账号授权失效后任务不得由他人接管
  * （R090）。该值不在 07 草案 v0.1 的枚举内，属任务 09 的显式表达；若双方最终冻结的
@@ -61,41 +62,51 @@ export const SHARED_SYNC_STATUSES = [
  * 凭据或他人草稿；面向用户展示时按码本地化。
  */
 export const syncStatusReasonCodeEnum = {
-  /** 未装配本机同步实现 */
   NOT_CONNECTED: 'NOT_CONNECTED',
-  /** 身份不可信：记录与稳定键的绑定无法确认 */
   IDENTITY_UNTRUSTED: 'IDENTITY_UNTRUSTED',
-  /** 版本不可信：当前业务版本无法核验（如草稿版本恒为 0 且无可信修订映射） */
   VERSION_UNTRUSTED: 'VERSION_UNTRUSTED',
-  /** 适用性无法判定（既不能确认适用，也不能确认不适用） */
   APPLICABILITY_UNKNOWN: 'APPLICABILITY_UNKNOWN',
-  /** 原记录账号授权失效 */
   AUTHORIZATION_INVALID: 'AUTHORIZATION_INVALID',
-  /** 任务成功但缺少匹配的完整回执 */
   RECEIPT_MISSING: 'RECEIPT_MISSING',
-  /** 回执版本与当前业务版本不一致（旧回执不对应新正文） */
   RECEIPT_VERSION_MISMATCH: 'RECEIPT_VERSION_MISMATCH',
-  /** 回执存在但正文／原件清单／摘要不完整 */
   RECEIPT_INCOMPLETE: 'RECEIPT_INCOMPLETE',
-  /** 任务状态与回执状态互相矛盾 */
+  RECEIPT_SOURCE_UNCONFIRMED: 'RECEIPT_SOURCE_UNCONFIRMED',
   TASK_RECEIPT_INCONSISTENT: 'TASK_RECEIPT_INCONSISTENT',
-  /** 当前版本存在待处理冲突 */
   CONFLICT_PENDING: 'CONFLICT_PENDING',
-  /** 上传任务失败 */
   TASK_FAILED: 'TASK_FAILED',
-  /** 上传任务被取消且没有成功回执 */
   TASK_CANCELLED: 'TASK_CANCELLED',
+  TASK_KIND_UNKNOWN: 'TASK_KIND_UNKNOWN',
+  TASK_STATUS_UNKNOWN: 'TASK_STATUS_UNKNOWN',
+  TASK_NOT_BODY: 'TASK_NOT_BODY',
 } as const;
 
 export type SyncStatusReasonCode =
   (typeof syncStatusReasonCodeEnum)[keyof typeof syncStatusReasonCodeEnum];
 
+/** 本机已知任务状态（与 `local_upload_task.status` 的取值一致） */
+export const SYNC_TASK_STATUSES = [
+  'PENDING',
+  'UPLOADING',
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELLED',
+] as const;
+
+export type SyncTaskStatus = (typeof SYNC_TASK_STATUSES)[number];
+
+/** 正文类任务用途：只有这类任务成功才可能说明正文已同步 */
+export const SYNC_BODY_ENTITY_TYPES = ['REPORT_VERSION'] as const;
+
 /** 当前版本的业务同步任务事实（已由查询层过滤为 BUSINESS_SYNC） */
 export type SyncStatusTaskFact = {
-  /** local_upload_task.status */
-  status: 'PENDING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  /** local_upload_task.status；不在已知集合内时按未知处理 */
+  status: SyncTaskStatus | 'UNKNOWN';
   /** 任务登记的业务版本；null 表示旧行缺关键字段 */
   sourceVersion: number | null;
+  /** local_upload_task.manifest_checksum：正文与原件清单的 SHA-256 */
+  manifestChecksum: string | null;
+  /** local_upload_task.entity_type：正文／附件／备份清单 */
+  entityType: string;
 };
 
 /** 当前版本的回执事实 */
@@ -104,9 +115,11 @@ export type SyncStatusReceiptFact = {
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CONFLICT';
   /** sync_receipt.version_no */
   versionNo: number;
-  /** sync_receipt.manifest_checksum：与应同步清单的摘要一致才算完整 */
+  /** sync_receipt.manifest_checksum：与任务登记摘要一致才算完整 */
   manifestChecksum: string | null;
-  /** 正文是否完整同步 */
+  /** 回执来源安装标识是否可确认是本机产生的（历史回执为空 → 不可确认） */
+  sourceInstallationConfirmed: boolean;
+  /** 正文是否完整同步（由摘要一致性推导，不接受"状态成功即完整"的推断） */
   bodyComplete: boolean;
   /** 有效原件清单是否完整同步 */
   originalsComplete: boolean;
@@ -115,9 +128,7 @@ export type SyncStatusReceiptFact = {
 /** 当前版本的冲突事实 */
 export type SyncStatusConflictFact = {
   conflictId: string;
-  /** 冲突的本地版本；null 表示历史未知 */
   localVersion: number | null;
-  /** 冲突的云端版本；null 表示历史未知 */
   cloudVersion: number | null;
   /** 当前查看者是否可读取该冲突（可读 ≠ 可处理） */
   readable: boolean;
@@ -127,46 +138,26 @@ export type SyncStatusConflictFact = {
 
 /** 聚合输入：全部为**已核对的事实**，本层不做任何查询或授权判定 */
 export type SyncStatusFacts = {
-  /** 本机是否已装配同步状态实现（07 未装配时为 false） */
   connected: boolean;
-  /** 稳定身份是否可信绑定到该记录 */
   identityTrusted: boolean;
-  /** 当前业务版本是否可核验 */
   versionTrusted: boolean;
-  /** 该记录是否适用本机业务同步：true=适用、false=不适用、null=无法判定 */
+  /** true=适用、false=不适用、null=无法判定 */
   applicable: boolean | null;
   /** 原记录账号授权是否有效；null 表示未取得该事实 */
   authorizationValid: boolean | null;
-  /** 当前版本的业务同步任务；null 表示当前版本没有任务 */
   task: SyncStatusTaskFact | null;
-  /** 当前版本的回执；null 表示没有回执 */
+  /** 是否存在用途无法确认的历史任务（旧的 NULL task_kind） */
+  legacyTaskExists: boolean;
   receipt: SyncStatusReceiptFact | null;
-  /** 当前版本的待处理冲突；null 表示没有冲突 */
   conflict: SyncStatusConflictFact | null;
 };
 
 export type SyncStatusOutcome = {
   status: SyncStatus;
   reasonCode: SyncStatusReasonCode | null;
-  /** 冲突标识：仅在确实存在当前版本的待处理冲突时给出 */
   conflictId: string | null;
-  /** 是否具备处理该冲突的权限（可读且可处理） */
   canResolveConflict: boolean;
 };
-
-/** 状态优先级（数值越大越优先，用于冲突时的显式裁决与文档化） */
-export const SYNC_STATUS_PRIORITY: readonly SyncStatus[] = [
-  'NOT_CONNECTED',
-  'UNKNOWN',
-  'NOT_APPLICABLE',
-  'NO_TASK',
-  'PENDING',
-  'UPLOADING',
-  'FAILED',
-  'SYNCED',
-  'CONFLICT',
-  'AUTHORIZATION_INVALID',
-];
 
 function outcome(
   status: SyncStatus,
@@ -184,16 +175,16 @@ function outcome(
  * 同步状态裁决（纯函数）。
  *
  * 裁决顺序（先排除"不能下结论"的情形，再看当前版本事实）：
- * 1. 未装配实现 → `NOT_CONNECTED`（这是"未接入"事实，不是同步结果）；
- * 2. 身份或版本不可信 → `UNKNOWN`（**不得**用派生键、旧版本或 0 冒充可信事实）；
+ * 1. 未装配实现 → `NOT_CONNECTED`；
+ * 2. 身份或版本不可信 → `UNKNOWN`（不得用派生键、旧版本或 0 冒充可信事实）；
  * 3. 授权失效 → `AUTHORIZATION_INVALID`（原身份失效不得由他人接管）；
  * 4. 适用性无法判定 → `UNKNOWN`；明确不适用 → `NOT_APPLICABLE`；
- * 5. 当前版本存在待处理冲突 → `CONFLICT`（冲突优先于任务状态：它是最需要人处理的事实）；
- * 6. 当前版本无任务 → `NO_TASK`（已准确查询且适用）；
- * 7. 有任务：PENDING／UPLOADING 按任务真实状态；FAILED／CANCELLED → `FAILED`；
- * 8. 任务 `SUCCEEDED`：必须同时存在**当前版本**的 `SUCCEEDED` 回执，且摘要一致、
- *    正文与有效原件清单完整，才判 `SYNCED`；否则按缺回执／版本不符／内容不完整
- *    分别落到 `UNKNOWN`，任务与回执互相矛盾时同样落到 `UNKNOWN`。
+ * 5. 当前版本存在待处理冲突 → `CONFLICT`；
+ * 6. 当前版本无任务，但存在用途无法确认的历史任务 → `UNKNOWN`（不能断言"没有任务"）；
+ * 7. 当前版本无任务 → `NO_TASK`；
+ * 8. 有任务：PENDING／UPLOADING 按任务真实状态；FAILED／CANCELLED → `FAILED`；
+ * 9. 任务 `SUCCEEDED`：必须同时存在**当前版本**的 `SUCCEEDED` 回执，且回执摘要与任务
+ *    登记的正文＋原件清单摘要一致、回执来源可确认是本机，才判 `SYNCED`。
  */
 export function resolveSyncStatus(facts: SyncStatusFacts): SyncStatusOutcome {
   if (!facts.connected) {
@@ -219,6 +210,10 @@ export function resolveSyncStatus(facts: SyncStatusFacts): SyncStatusOutcome {
   }
 
   if (facts.task === null) {
+    // 存在用途无法确认的历史任务时不能断言"没有任务"
+    if (facts.legacyTaskExists) {
+      return outcome('UNKNOWN', syncStatusReasonCodeEnum.TASK_KIND_UNKNOWN);
+    }
     return outcome('NO_TASK');
   }
 
@@ -254,9 +249,17 @@ function resolveTaskOutcome(facts: SyncStatusFacts): SyncStatusOutcome {
     return outcome('NO_TASK');
   }
 
+  if (task.status === 'UNKNOWN') {
+    return outcome('UNKNOWN', syncStatusReasonCodeEnum.TASK_STATUS_UNKNOWN);
+  }
+
   if (task.status === 'PENDING' || task.status === 'UPLOADING') {
-    // 任务仍在进行：若同时存在当前版本的成功回执，属事实矛盾，不显示成功。
-    if (facts.receipt !== null && facts.receipt.status === 'SUCCEEDED') {
+    // 任务仍在进行：若同时存在**当前版本**的成功回执，属事实矛盾，不显示成功。
+    if (
+      facts.receipt !== null &&
+      facts.receipt.status === 'SUCCEEDED' &&
+      facts.receipt.versionNo === task.sourceVersion
+    ) {
       return outcome('UNKNOWN', syncStatusReasonCodeEnum.TASK_RECEIPT_INCONSISTENT);
     }
     return outcome(task.status);
@@ -293,7 +296,22 @@ function resolveReceiptOutcome(facts: SyncStatusFacts): SyncStatusOutcome {
   if (receipt.status === 'CONFLICT') {
     return outcome('CONFLICT', syncStatusReasonCodeEnum.CONFLICT_PENDING);
   }
-  if (receipt.manifestChecksum === null || !receipt.bodyComplete || !receipt.originalsComplete) {
+  // 任务用途不是正文（仅附件等）时，不能证明正文已同步
+  if (
+    !SYNC_BODY_ENTITY_TYPES.includes(task.entityType as (typeof SYNC_BODY_ENTITY_TYPES)[number])
+  ) {
+    return outcome('UNKNOWN', syncStatusReasonCodeEnum.TASK_NOT_BODY);
+  }
+  // 回执来源无法确认是本机产生的（历史回执缺安装标识）时，不能作为本机已同步的证据
+  if (!receipt.sourceInstallationConfirmed) {
+    return outcome('UNKNOWN', syncStatusReasonCodeEnum.RECEIPT_SOURCE_UNCONFIRMED);
+  }
+  // 摘要必须与任务登记的正文＋原件清单摘要一致；缺摘要或不一致都不算完整
+  const manifestMatched =
+    receipt.manifestChecksum !== null &&
+    task.manifestChecksum !== null &&
+    receipt.manifestChecksum === task.manifestChecksum;
+  if (!manifestMatched || !receipt.bodyComplete || !receipt.originalsComplete) {
     return outcome('UNKNOWN', syncStatusReasonCodeEnum.RECEIPT_INCOMPLETE);
   }
   return outcome('SYNCED');

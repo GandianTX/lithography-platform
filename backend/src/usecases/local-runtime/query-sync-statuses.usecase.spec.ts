@@ -6,7 +6,6 @@ import type { LocalRuntimeQueryService } from '@src/modules/lithography/queries/
 import type {
   SyncSourceRecordFact,
   SyncSourceRecordQueryService,
-  SyncSourceResourceType,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type {
   SyncStatusConflictRow,
@@ -15,12 +14,14 @@ import type {
   SyncStatusTaskRow,
 } from '@src/modules/lithography/queries/sync-status.query.service';
 import { QuerySyncStatusesUsecase } from './query-sync-statuses.usecase';
+import { SYNC_STATUS_QUERY_MAX_BATCH } from './sync-status.contract';
 
 /**
  * 同步状态批量查询用例（任务 09 后续S1）。
  *
- * 覆盖口径：只返回授权通过的记录；仅任务成功不得判已同步；旧版本回执不得判已同步；
- * 授权失效不得由他人接管；草稿版本不可信时返回未知。
+ * 覆盖口径：只返回授权通过的记录；仅任务成功不得判已同步；摘要必须一致；
+ * 旧版本回执／旧版本冲突不得误报当前版本；授权失效只认授权主体账号；
+ * 非法资源类型逐条跳过而不是整批失败。
  */
 describe('QuerySyncStatusesUsecase', () => {
   const session = {
@@ -30,6 +31,7 @@ describe('QuerySyncStatusesUsecase', () => {
   } as unknown as UsecaseSession;
 
   const recordUuid = 'aaaaaaaa-1111-5111-8111-aaaaaaaaaaaa';
+  const manifestChecksum = 'a'.repeat(64);
 
   const sourceFact = (overrides: Partial<SyncSourceRecordFact> = {}): SyncSourceRecordFact => ({
     resourceType: 'MAINTENANCE_REPORT',
@@ -38,8 +40,9 @@ describe('QuerySyncStatusesUsecase', () => {
     ownerOrganizationId: 4,
     currentVersion: 3,
     versionTrusted: true,
-    applicable: true,
+    materialApplicable: true,
     relatedAccountIds: [900101],
+    authorizationSubjectAccountId: 900101,
     withdrawn: false,
     ...overrides,
   });
@@ -47,11 +50,13 @@ describe('QuerySyncStatusesUsecase', () => {
   function buildUsecase(
     options: {
       facts?: SyncSourceRecordFact[];
+      scanComplete?: boolean;
       tasks?: SyncStatusTaskRow[];
+      legacyTaskUuids?: string[];
       receipts?: SyncStatusReceiptRow[];
       conflicts?: SyncStatusConflictRow[];
       authorizations?: Map<number, 'ACTIVE' | 'REVOKED'>;
-      installationId?: string | null;
+      installationOrganizationId?: number | null;
     } = {},
   ) {
     const scopeResolver = {
@@ -61,20 +66,27 @@ describe('QuerySyncStatusesUsecase', () => {
     };
     const localRuntimeQueryService = {
       readInstallation: jest.fn(() =>
-        Promise.resolve(
-          options.installationId === null
-            ? null
-            : { installationId: options.installationId ?? 'inst-1', organizationId: 4 },
-        ),
+        Promise.resolve({
+          installationId: 'inst-1',
+          organizationId:
+            options.installationOrganizationId === undefined
+              ? 4
+              : options.installationOrganizationId,
+        }),
       ),
     };
     const sourceRecordQueryService = {
-      listFacts: jest.fn((_organizationId: number, _resourceType: SyncSourceResourceType) =>
-        Promise.resolve(options.facts ?? [sourceFact()]),
-      ),
+      listFacts: jest.fn(() => {
+        const facts = new Map<string, SyncSourceRecordFact>();
+        for (const fact of options.facts ?? [sourceFact()]) {
+          facts.set(fact.recordUuid, fact);
+        }
+        return Promise.resolve({ facts, scanComplete: options.scanComplete ?? true });
+      }),
     };
     const syncStatusQueryService = {
       readBusinessSyncTasks: jest.fn(() => Promise.resolve(options.tasks ?? [])),
+      readLegacyTaskUuids: jest.fn(() => Promise.resolve(options.legacyTaskUuids ?? [])),
       readReceipts: jest.fn(() => Promise.resolve(options.receipts ?? [])),
       readPendingConflicts: jest.fn(() => Promise.resolve(options.conflicts ?? [])),
       readAuthorizations: jest.fn(() =>
@@ -89,7 +101,7 @@ describe('QuerySyncStatusesUsecase', () => {
       syncStatusQueryService as unknown as SyncStatusQueryService,
     );
 
-    return { usecase, syncStatusQueryService };
+    return { usecase, syncStatusQueryService, sourceRecordQueryService };
   }
 
   const request = {
@@ -99,17 +111,26 @@ describe('QuerySyncStatusesUsecase', () => {
     sourceVersion: 3,
   };
 
+  const succeededTask: SyncStatusTaskRow = {
+    recordUuid,
+    sourceVersion: 3,
+    status: 'SUCCEEDED',
+    manifestChecksum,
+    entityType: 'REPORT_VERSION',
+  };
+
+  const succeededReceipt: SyncStatusReceiptRow = {
+    recordUuid,
+    versionNo: 3,
+    receiptStatus: 'SUCCEEDED',
+    manifestChecksum,
+    sourceInstallationId: 'inst-1',
+  };
+
   it('当前版本有完整成功回执时返回已同步，并回显服务端认定的版本', async () => {
     const { usecase } = buildUsecase({
-      tasks: [{ recordUuid, sourceVersion: 3, status: 'SUCCEEDED' }],
-      receipts: [
-        {
-          recordUuid,
-          versionNo: 3,
-          receiptStatus: 'SUCCEEDED',
-          manifestChecksum: 'a'.repeat(64),
-        },
-      ],
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
     });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });
@@ -117,13 +138,13 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items).toHaveLength(1);
     expect(items[0].status).toBe('SYNCED');
     expect(items[0].sourceVersion).toBe(3);
+    expect(items[0].requestedVersion).toBe(3);
+    expect(items[0].versionAligned).toBe(true);
     expect(items[0].reasonCode).toBeNull();
   });
 
   it('仅任务成功但没有回执时不得判已同步', async () => {
-    const { usecase } = buildUsecase({
-      tasks: [{ recordUuid, sourceVersion: 3, status: 'SUCCEEDED' }],
-    });
+    const { usecase } = buildUsecase({ tasks: [succeededTask] });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });
 
@@ -133,16 +154,8 @@ describe('QuerySyncStatusesUsecase', () => {
 
   it('回执版本与当前版本不一致时不得判已同步', async () => {
     const { usecase } = buildUsecase({
-      // 当前版本（3）的任务已成功，但回执落在旧版本（2）上
-      tasks: [{ recordUuid, sourceVersion: 3, status: 'SUCCEEDED' }],
-      receipts: [
-        {
-          recordUuid,
-          versionNo: 2,
-          receiptStatus: 'SUCCEEDED',
-          manifestChecksum: 'a'.repeat(64),
-        },
-      ],
+      tasks: [succeededTask],
+      receipts: [{ ...succeededReceipt, versionNo: 2 }],
     });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });
@@ -151,10 +164,34 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items[0].reasonCode).toBe('RECEIPT_VERSION_MISMATCH');
   });
 
+  it('回执摘要与任务登记摘要不一致时不得判已同步', async () => {
+    const { usecase } = buildUsecase({
+      tasks: [succeededTask],
+      receipts: [{ ...succeededReceipt, manifestChecksum: 'b'.repeat(64) }],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('UNKNOWN');
+    expect(items[0].reasonCode).toBe('RECEIPT_INCOMPLETE');
+  });
+
+  it('回执来源安装不是本机时不得判已同步', async () => {
+    const { usecase } = buildUsecase({
+      tasks: [succeededTask],
+      receipts: [{ ...succeededReceipt, sourceInstallationId: 'inst-other' }],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('UNKNOWN');
+    expect(items[0].reasonCode).toBe('RECEIPT_SOURCE_UNCONFIRMED');
+  });
+
   it('草稿报告版本不可信时返回未知', async () => {
     const { usecase } = buildUsecase({
       facts: [sourceFact({ currentVersion: null, versionTrusted: false })],
-      tasks: [{ recordUuid, sourceVersion: 0, status: 'PENDING' }],
+      tasks: [{ ...succeededTask, sourceVersion: 0, status: 'PENDING' }],
     });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });
@@ -162,6 +199,7 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items[0].status).toBe('UNKNOWN');
     expect(items[0].reasonCode).toBe('VERSION_UNTRUSTED');
     expect(items[0].sourceVersion).toBeNull();
+    expect(items[0].versionAligned).toBeNull();
   });
 
   it('跨公司记录不返回条目（不泄露记录是否存在）', async () => {
@@ -174,6 +212,17 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items).toHaveLength(0);
   });
 
+  it('调用方传入的公司与来源事实不一致时不返回条目', async () => {
+    const { usecase } = buildUsecase();
+
+    const items = await usecase.queryStatuses({
+      session,
+      requests: [{ ...request, organizationId: 5 }],
+    });
+
+    expect(items).toHaveLength(0);
+  });
+
   it('本机找不到来源记录时不返回条目', async () => {
     const { usecase } = buildUsecase({ facts: [] });
 
@@ -182,33 +231,74 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items).toHaveLength(0);
   });
 
-  it('本机未安装时返回空条目（没有可信的本机事实来源）', async () => {
-    const { usecase } = buildUsecase({ installationId: null });
+  it('来源扫描不完整时把无法还原的记录判为未知，而不是断言不存在', async () => {
+    const { usecase } = buildUsecase({ facts: [], scanComplete: false });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe('UNKNOWN');
+    expect(items[0].reasonCode).toBe('IDENTITY_UNTRUSTED');
+  });
+
+  it('本机未映射云端组织时返回空条目（无法确定本机数据区）', async () => {
+    const { usecase } = buildUsecase({ installationOrganizationId: null });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });
 
     expect(items).toHaveLength(0);
   });
 
-  it('原记录账号授权失效时返回授权失效，且不给出冲突处理入口', async () => {
+  it('授权主体账号授权失效时返回授权失效', async () => {
     const { usecase } = buildUsecase({
-      facts: [sourceFact({ relatedAccountIds: [900102] })],
+      facts: [sourceFact({ relatedAccountIds: [900102], authorizationSubjectAccountId: 900102 })],
       authorizations: new Map<number, 'ACTIVE' | 'REVOKED'>([[900102, 'REVOKED']]),
-      conflicts: [
-        {
-          conflictId: 'conflict-1',
-          recordUuid,
-          status: 'PENDING',
-          localVersion: 3,
-          cloudVersion: 4,
-        },
-      ],
     });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });
 
     expect(items[0].status).toBe('AUTHORIZATION_INVALID');
     expect(items[0].canResolveConflict).toBe(false);
+  });
+
+  it('无关关联账号的授权失效不影响本记录', async () => {
+    const { usecase } = buildUsecase({
+      facts: [
+        sourceFact({
+          relatedAccountIds: [900101, 900999],
+          authorizationSubjectAccountId: 900101,
+        }),
+      ],
+      authorizations: new Map<number, 'ACTIVE' | 'REVOKED'>([
+        [900101, 'ACTIVE'],
+        [900999, 'REVOKED'],
+      ]),
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('SYNCED');
+  });
+
+  it('旧版本的待处理冲突不误报当前版本', async () => {
+    const { usecase } = buildUsecase({
+      conflicts: [
+        {
+          conflictId: 'conflict-old',
+          recordUuid,
+          status: 'PENDING',
+          localVersion: 1,
+          cloudVersion: 2,
+          versionNo: 1,
+        },
+      ],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).not.toBe('CONFLICT');
     expect(items[0].conflictId).toBeNull();
   });
 
@@ -221,6 +311,7 @@ describe('QuerySyncStatusesUsecase', () => {
           status: 'PENDING',
           localVersion: 3,
           cloudVersion: 4,
+          versionNo: 3,
         },
       ],
     });
@@ -232,29 +323,45 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items[0].canResolveConflict).toBe(false);
   });
 
-  it('只读取业务同步任务：备份上云任务由查询层隔离', async () => {
-    const { usecase, syncStatusQueryService } = buildUsecase({
-      tasks: [{ recordUuid, sourceVersion: 3, status: 'UPLOADING' }],
+  it('存在用途无法确认的历史任务时不得断言没有任务', async () => {
+    const { usecase } = buildUsecase({ legacyTaskUuids: [recordUuid] });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('UNKNOWN');
+    expect(items[0].reasonCode).toBe('TASK_KIND_UNKNOWN');
+  });
+
+  it('非法资源类型逐条跳过，不让同批合法记录失败', async () => {
+    const { usecase } = buildUsecase({
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
     });
 
-    await usecase.queryStatuses({ session, requests: [request] });
+    const items = await usecase.queryStatuses({
+      session,
+      requests: [{ ...request, resourceType: 'REPORT' }, request],
+    });
 
-    expect(syncStatusQueryService.readBusinessSyncTasks).toHaveBeenCalledWith('inst-1', [
-      recordUuid,
-    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe('SYNCED');
+  });
+
+  it('批量超过上限时明确拒绝', async () => {
+    const { usecase } = buildUsecase();
+
+    const requests = Array.from({ length: SYNC_STATUS_QUERY_MAX_BATCH + 1 }, (_unused, index) => ({
+      ...request,
+      recordUuid: `${index}`,
+    }));
+
+    await expect(usecase.queryStatuses({ session, requests })).rejects.toThrow('不能超过');
   });
 
   it('相同完整键重复出现时只返回一条', async () => {
     const { usecase } = buildUsecase({
-      tasks: [{ recordUuid, sourceVersion: 3, status: 'SUCCEEDED' }],
-      receipts: [
-        {
-          recordUuid,
-          versionNo: 3,
-          receiptStatus: 'SUCCEEDED',
-          manifestChecksum: 'a'.repeat(64),
-        },
-      ],
+      tasks: [succeededTask],
+      receipts: [succeededReceipt],
     });
 
     const items = await usecase.queryStatuses({ session, requests: [request, request] });
