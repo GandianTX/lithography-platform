@@ -325,9 +325,7 @@ describe('CustomerRepairRequestDetailPanel', () => {
 
       expect(screen.getByText('分析状态暂不可用')).toBeTruthy();
       expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
-      expect(
-        screen.getByText('该报修缺少可信的分析记录，暂不支持自助重新分析。'),
-      ).toBeTruthy();
+      expect(screen.getByText('该报修缺少可信的分析记录，暂不支持自助重新分析。')).toBeTruthy();
     });
 
     it('分析中：展示运行状态且不渲染重试入口', () => {

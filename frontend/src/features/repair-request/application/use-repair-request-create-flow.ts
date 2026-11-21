@@ -79,7 +79,9 @@ async function loadEquipmentModelsState(): Promise<RepairRequestModelsState> {
   }
 }
 
-async function loadServiceOrganizationsState(keyword: string): Promise<RepairRequestServiceOrgsState> {
+async function loadServiceOrganizationsState(
+  keyword: string,
+): Promise<RepairRequestServiceOrgsState> {
   try {
     const organizations = await fetchRepairServiceOrganizations({ keyword });
 
@@ -101,7 +103,10 @@ function createSubmissionKey(): string {
   if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
     return cryptoApi.randomUUID();
   }
-  const random = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+  const random = () =>
+    Math.floor(Math.random() * 0x10000)
+      .toString(16)
+      .padStart(4, '0');
   return `${random()}${random()}-${random()}-4${random().slice(1)}-a${random().slice(1)}-${random()}${random()}${random()}`;
 }
 

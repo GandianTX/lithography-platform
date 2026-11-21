@@ -12,10 +12,16 @@ import { LoadingState } from '@/shared/ui/loading-state';
 import { StatusPill } from '@/shared/ui/status-pill';
 
 import type { CustomerRepairRequestListView } from '../application/use-customer-repair-request-list';
-import type { IntakeAnalysisStatus, RepairRequestListItem } from '../infrastructure/repair-request-read.types';
+import type {
+  IntakeAnalysisStatus,
+  RepairRequestListItem,
+} from '../infrastructure/repair-request-read.types';
 
 /** 首析状态 → 列表胶囊展示（与工单接单状态并列但语义独立） */
-const ANALYSIS_STATUS_PILL: Record<IntakeAnalysisStatus, { labelKey: MessageKey; tone: 'critical' | 'neutral' | 'ok' | 'warn' }> = {
+const ANALYSIS_STATUS_PILL: Record<
+  IntakeAnalysisStatus,
+  { labelKey: MessageKey; tone: 'critical' | 'neutral' | 'ok' | 'warn' }
+> = {
   WAITING: { labelKey: 'customer.analysisStatus.WAITING', tone: 'neutral' },
   RUNNING: { labelKey: 'customer.analysisStatus.RUNNING', tone: 'warn' },
   SUCCEEDED: { labelKey: 'customer.analysisStatus.SUCCEEDED', tone: 'ok' },
@@ -97,7 +103,9 @@ function RequestItemRow({
               {item.isAccepted ? t('customer.statusAccepted') : t('customer.statusPending')}
             </StatusPill>
             {(() => {
-              const analysisPill = item.analysisStatus ? ANALYSIS_STATUS_PILL[item.analysisStatus] : null;
+              const analysisPill = item.analysisStatus
+                ? ANALYSIS_STATUS_PILL[item.analysisStatus]
+                : null;
               return analysisPill ? (
                 <StatusPill tone={analysisPill.tone}>{t(analysisPill.labelKey)}</StatusPill>
               ) : null;

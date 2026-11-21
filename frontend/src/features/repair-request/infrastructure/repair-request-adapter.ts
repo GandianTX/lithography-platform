@@ -188,11 +188,19 @@ export async function uploadRepairRequestFile(file: File): Promise<UploadRepairR
   }
 
   if (outcome.status === 'network') {
-    return { ok: false, reason: 'upload-failed', message: translateNow('repairForm.error.uploadFailed') };
+    return {
+      ok: false,
+      reason: 'upload-failed',
+      message: translateNow('repairForm.error.uploadFailed'),
+    };
   }
 
   if (outcome.status === 'malformed') {
-    return { ok: false, reason: 'upload-failed', message: translateNow('repairForm.error.uploadFailed') };
+    return {
+      ok: false,
+      reason: 'upload-failed',
+      message: translateNow('repairForm.error.uploadFailed'),
+    };
   }
 
   const reason = outcome.code ? UPLOAD_FAILURE_REASON_BY_CODE[outcome.code] : undefined;
@@ -222,17 +230,15 @@ const UPLOAD_FAILURE_REASON_BY_CODE: Record<string, UploadRepairRequestFileFailu
   FORBIDDEN: 'insufficient-permission',
 };
 
-const UPLOAD_FALLBACK_MESSAGE_BY_REASON: Record<
-  UploadRepairRequestFileFailureReason,
-  MessageKey
-> = {
-  'invalid-input': 'repairForm.error.uploadInvalidInput',
-  'file-too-large': 'repairForm.error.uploadTooLarge',
-  'file-type-not-allowed': 'repairForm.error.uploadTypeNotAllowed',
-  'company-required': 'repairForm.error.companyRequired',
-  'insufficient-permission': 'repairForm.error.uploadForbidden',
-  'upload-failed': 'repairForm.error.uploadFailed',
-};
+const UPLOAD_FALLBACK_MESSAGE_BY_REASON: Record<UploadRepairRequestFileFailureReason, MessageKey> =
+  {
+    'invalid-input': 'repairForm.error.uploadInvalidInput',
+    'file-too-large': 'repairForm.error.uploadTooLarge',
+    'file-type-not-allowed': 'repairForm.error.uploadTypeNotAllowed',
+    'company-required': 'repairForm.error.companyRequired',
+    'insufficient-permission': 'repairForm.error.uploadForbidden',
+    'upload-failed': 'repairForm.error.uploadFailed',
+  };
 
 /**
  * 创建维修申请。
@@ -560,9 +566,7 @@ export async function retryIntakeAnalysis(id: number): Promise<RetryIntakeAnalys
     };
   } catch (error) {
     const detail = readGraphQLErrorDetail(error);
-    const reason = detail?.code
-      ? RETRY_FAILURE_REASON_BY_CATEGORY_CODE[detail.code]
-      : undefined;
+    const reason = detail?.code ? RETRY_FAILURE_REASON_BY_CATEGORY_CODE[detail.code] : undefined;
 
     if (!detail || !reason) {
       throw error;

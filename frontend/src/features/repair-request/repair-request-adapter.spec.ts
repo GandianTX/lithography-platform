@@ -226,32 +226,19 @@ describe('createRepairRequest', () => {
       'submission-conflict',
       '同一提交标识的内容不一致。',
     ],
-    [
-      'CONFLICT',
-      'STORED_FILE_ALREADY_BOUND',
-      'attachment-conflict',
-      '原件已被绑定。',
-    ],
-    [
-      'NOT_FOUND',
-      'STORED_FILE_NOT_FOUND',
-      'attachment-not-found',
-      '原件不存在或无权绑定。',
-    ],
-  ])(
-    '任务 03 细化码 %s / %s → reason=%s',
-    async (code, errorCode, reason, errorMessage) => {
-      executeGraphQLMock.mockRejectedValue(
-        buildDomainIngressError({ code, errorCode, errorMessage }),
-      );
+    ['CONFLICT', 'STORED_FILE_ALREADY_BOUND', 'attachment-conflict', '原件已被绑定。'],
+    ['NOT_FOUND', 'STORED_FILE_NOT_FOUND', 'attachment-not-found', '原件不存在或无权绑定。'],
+  ])('任务 03 细化码 %s / %s → reason=%s', async (code, errorCode, reason, errorMessage) => {
+    executeGraphQLMock.mockRejectedValue(
+      buildDomainIngressError({ code, errorCode, errorMessage }),
+    );
 
-      await expect(createRepairRequest(input)).resolves.toEqual({
-        ok: false,
-        reason,
-        message: errorMessage,
-      });
-    },
-  );
+    await expect(createRepairRequest(input)).resolves.toEqual({
+      ok: false,
+      reason,
+      message: errorMessage,
+    });
+  });
 
   it('后端未提供业务消息时使用前端兜底文案', async () => {
     executeGraphQLMock.mockRejectedValue(

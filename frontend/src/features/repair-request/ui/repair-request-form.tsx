@@ -245,7 +245,9 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
           </Form.Item>
         ) : (
           <Form.Item
-            label={<FieldLabel hint={t('repairForm.modelHint')} title={t('repairForm.modelLabel')} />}
+            label={
+              <FieldLabel hint={t('repairForm.modelHint')} title={t('repairForm.modelLabel')} />
+            }
             name="equipmentModelId"
             rules={[{ message: t('repairForm.modelRequired'), required: true }]}
           >
@@ -324,7 +326,9 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
         </h3>
         {/* 客户公司：只读展示，归属真源在账号设置（服务端从可信身份取得） */}
         <Form.Item
-          label={<FieldLabel hint={t('repairForm.companyHint')} title={t('repairForm.companyLabel')} />}
+          label={
+            <FieldLabel hint={t('repairForm.companyHint')} title={t('repairForm.companyLabel')} />
+          }
         >
           <Input disabled readOnly value={t('repairForm.companyValue')} />
         </Form.Item>
@@ -343,7 +347,9 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             filterOption={false}
             loading={serviceOrgsState.status === 'loading'}
             notFoundContent={
-              serviceOrgsState.status === 'loading' ? t('repairForm.serviceOrgSearching') : undefined
+              serviceOrgsState.status === 'loading'
+                ? t('repairForm.serviceOrgSearching')
+                : undefined
             }
             onSearch={searchServiceOrganizations}
             options={
@@ -377,9 +383,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
                 <Button onClick={clearAttachment} size="small" type="link">
                   {t('repairForm.attachmentRemove')}
                 </Button>
-                <span className="repair-request-field-hint">
-                  {t('repairForm.attachmentReady')}
-                </span>
+                <span className="repair-request-field-hint">{t('repairForm.attachmentReady')}</span>
               </div>
             ) : (
               <div className="flex items-center gap-2">

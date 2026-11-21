@@ -372,9 +372,11 @@ export const EN_MESSAGES = {
   'customer.section.originalFile': 'Original attachment',
   'customer.originalFileDownload': 'Download',
   'customer.downloadError.notFound': 'The attachment does not exist or you cannot download it.',
-  'customer.downloadError.fileNotAvailable': 'The attachment is temporarily unavailable. Please try again later.',
+  'customer.downloadError.fileNotAvailable':
+    'The attachment is temporarily unavailable. Please try again later.',
   'customer.downloadError.insufficientPermission': 'This account cannot download the attachment.',
-  'customer.downloadError.downloadFailed': 'Attachment download failed. Please check your network and try again.',
+  'customer.downloadError.downloadFailed':
+    'Attachment download failed. Please check your network and try again.',
   'customer.section.workOrderProgress': 'Work order progress',
   'customer.progress.handlingStatus': 'Handling status',
   'customer.progress.handlingResult': 'Handling result',
@@ -402,8 +404,7 @@ export const EN_MESSAGES = {
     'AI analysis has not been started for this repair request.',
   'customer.analysisRetryReason.failureNotConfirmed':
     'The analysis result is not confirmed yet, so self-service re-analysis is unavailable.',
-  'customer.analysisRetryReason.unavailable':
-    'This record cannot be re-analyzed by self-service.',
+  'customer.analysisRetryReason.unavailable': 'This record cannot be re-analyzed by self-service.',
   'customer.analysis.generation': 'Attempt {generation}',
   'customer.analysis.finishedAt': 'Finished at',
   'customer.analysis.pendingOutput': 'No analysis content to show yet.',
@@ -411,11 +412,14 @@ export const EN_MESSAGES = {
   'customer.analysis.retryButton': 'Analyze again',
   'customer.analysis.retryHint': 'You can retry the first analysis only once after a failure.',
   'customer.analysisRetryAccepted': 'Re-analysis submitted. Refresh later to see the progress.',
-  'customer.analysisRetryError.notFound': 'The repair request does not exist or cannot be re-analyzed.',
+  'customer.analysisRetryError.notFound':
+    'The repair request does not exist or cannot be re-analyzed.',
   'customer.analysisRetryError.retryUnavailable': 'The current status does not allow re-analysis.',
   'customer.analysisRetryError.forbidden': 'Only customer accounts can retry the analysis.',
-  'customer.analysisRetryError.invalidInput': 'The repair request parameters are invalid. Please refresh and try again.',
-  'customer.analysisRetryError.retryFailed': 'Failed to submit re-analysis. Please try again later.',
+  'customer.analysisRetryError.invalidInput':
+    'The repair request parameters are invalid. Please refresh and try again.',
+  'customer.analysisRetryError.retryFailed':
+    'Failed to submit re-analysis. Please try again later.',
 
   'repairForm.successTitle': 'Repair request created',
   'repairForm.requestNo': 'Request number: {requestNo}',
@@ -482,7 +486,8 @@ export const EN_MESSAGES = {
   'repairForm.error.uploadFailed': 'Failed to upload the file. Please try again later.',
   'repairForm.error.uploadTooLarge': 'The file exceeds the 20MB limit.',
   'repairForm.error.uploadTypeNotAllowed': 'This file type is not supported.',
-  'repairForm.error.uploadInvalidInput': 'The file content is not acceptable. Please choose another file.',
+  'repairForm.error.uploadInvalidInput':
+    'The file content is not acceptable. Please choose another file.',
   'repairForm.error.uploadForbidden': 'Your account cannot upload repair originals.',
   'repairForm.serviceOrgsLoadFailed': 'Failed to load service providers. Please retry.',
   'repairForm.section.faultInfo': 'Fault information',

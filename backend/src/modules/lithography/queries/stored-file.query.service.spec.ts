@@ -663,9 +663,9 @@ describe('StoredFileQueryService 读授权', () => {
         workOrder({ isAccepted: false, acceptedByEngineerAccountId: null }),
       );
 
-      await expect(
-        service.findAuthorizedMetadata(engineerQuery()),
-      ).resolves.toMatchObject({ businessType: 'REPAIR_REQUEST' });
+      await expect(service.findAuthorizedMetadata(engineerQuery())).resolves.toMatchObject({
+        businessType: 'REPAIR_REQUEST',
+      });
     });
 
     it('工单查询以 intake_id 真实关联为依据（不信任文件 business_id 或前端厂家参数）', async () => {

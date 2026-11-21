@@ -81,7 +81,9 @@ function renderForm(props: RepairRequestFormProps = {}) {
 /** 按字段小标题定位下拉框（机型录入方式切换时 combobox 数量会变化，不能靠下标） */
 function comboboxByLabel(label: string): HTMLInputElement {
   const items = Array.from(document.querySelectorAll('.ant-form-item'));
-  const item = items.find((element) => element.querySelector('label')?.textContent?.includes(label));
+  const item = items.find((element) =>
+    element.querySelector('label')?.textContent?.includes(label),
+  );
   const input = item?.querySelector('[role="combobox"]');
   if (!input) {
     throw new Error(`未找到「${label}」的下拉框`);

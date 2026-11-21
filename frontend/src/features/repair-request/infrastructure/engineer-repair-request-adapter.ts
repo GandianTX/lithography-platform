@@ -1236,7 +1236,11 @@ export async function uploadRepairProcessFile(file: File): Promise<UploadRepairP
     };
   }
 
-  return { ok: false, reason: 'upload-failed', message: outcome.message ?? '原件上传失败，请稍后重试' };
+  return {
+    ok: false,
+    reason: 'upload-failed',
+    message: outcome.message ?? '原件上传失败，请稍后重试',
+  };
 }
 
 /** 下载已绑定原件（REST 授权下载；客户与无权账号不可借 ID 读取） */

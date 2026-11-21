@@ -371,7 +371,8 @@ export const ZH_CN_MESSAGES = {
   'customer.analysisDisplay.NOT_STARTED': '未发起分析',
   'customer.analysisDisplay.UNAVAILABLE': '分析状态暂不可用',
   'customer.analysisRetryReason.retryAlreadyUsed': '首次分析的重试机会已使用。',
-  'customer.analysisRetryReason.ledgerIntentMissing': '该报修缺少可信的分析记录，暂不支持自助重新分析。',
+  'customer.analysisRetryReason.ledgerIntentMissing':
+    '该报修缺少可信的分析记录，暂不支持自助重新分析。',
   'customer.analysisRetryReason.analysisNotInitiated': '该报修尚未发起 AI 分析。',
   'customer.analysisRetryReason.failureNotConfirmed': '分析结果尚未确认，暂不支持自助重新分析。',
   'customer.analysisRetryReason.unavailable': '当前记录不可自助重新分析。',

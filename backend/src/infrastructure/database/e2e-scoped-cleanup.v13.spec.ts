@@ -201,7 +201,15 @@ const asRecord = (ledger: OwnedResourceLedger): Record<string, unknown> =>
 /** 清理器查询面涉及的全部表及其合法列（与迁移/实体一致）。 */
 const CLEANER_SCHEMA: Record<string, readonly string[]> = {
   // is_service_provider：任务 03 首析写前资格复核（findActiveServiceProviderForWrite）新增读取列
-  organization: ['id', 'organization_code', 'name', 'kind', 'status', 'is_managed_company', 'is_service_provider'],
+  organization: [
+    'id',
+    'organization_code',
+    'name',
+    'kind',
+    'status',
+    'is_managed_company',
+    'is_service_provider',
+  ],
   // I4：组织删除边上的客户资料归属预检（独立 SELECT，不经上面的预合并 JOIN）。
   base_user_info: ['account_id', 'customer_organization_id'],
   // base_user_account 与 base_user_info 的 LEFT JOIN 在替身侧预合并为一行。
