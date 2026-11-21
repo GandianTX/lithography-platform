@@ -3,7 +3,11 @@
 // 不返回任何归属类账号 ID；昵称/公司名为服务端富集展示字段
 
 import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
-import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
+import {
+  AiConversationStatus,
+  AiMessageAnalysisStatus,
+  AiMessageRole,
+} from '@app-types/models/ai-conversation.types';
 import {
   EngineerResolutionStatus,
   RepairRequestHandlingResult,
@@ -422,6 +426,9 @@ export class AdminAiConversationListItemDTO {
   @Field(() => String, { nullable: true, description: 'AI 反馈（未填写为空）' })
   aiFeedback?: string | null;
 
+  @Field(() => Int, { description: '会话内容版本（导出按此固定消息范围与截止点）' })
+  contentVersion!: number;
+
   @Field(() => Date, { description: '创建时间' })
   createdAt!: Date;
 
@@ -461,6 +468,21 @@ export class AdminAiMessageListItemDTO {
 
   @Field(() => String, { description: '消息正文' })
   contentText!: string;
+
+  @Field(() => Int, { description: '消息内容版本（与同轮分析、会话版本一致）' })
+  contentVersion!: number;
+
+  @Field(() => AiMessageAnalysisStatus, {
+    nullable: true,
+    description: '所属轮次的分析状态（无分析记录时为空）',
+  })
+  analysisStatus?: AiMessageAnalysisStatus | null;
+
+  @Field(() => String, {
+    nullable: true,
+    description: '所属轮次的失败原因（仅失败轮次）',
+  })
+  failureReason?: string | null;
 
   @Field(() => Date, { description: '创建时间' })
   createdAt!: Date;

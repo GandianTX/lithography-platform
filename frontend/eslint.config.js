@@ -472,4 +472,14 @@ export default defineConfig([
       'no-restricted-syntax': 'off',
     },
   },
+  {
+    // 已登记原型对照截图例外（frontend/docs/testing.md 例外登记表）：任务 05 · S4 的
+    // V44 原型 vs 实现同口径对照，需同时截取原型 `file://` 页面、实现路由页面与并排合成图；
+    // 工作区未提交，captureStableViewport 的干净工作区门禁不成立；截图前统一调用
+    // prepareStableViewport()，仅作对照证据，不作为提交级最终证据。
+    files: ['e2e-prototype/v44-visual-compare.spec.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
 ]);

@@ -1,6 +1,6 @@
 // src/features/admin-document-database/ui/admin-ai-conversations-tab.tsx
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { TableColumnsType } from 'antd';
 import {
   Alert,
@@ -15,19 +15,28 @@ import {
   Tag,
 } from 'antd';
 
+import { base64ToBlob, saveBlobAsFile } from '@/shared/download';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { KbSearchField, KbToolbarButton } from '@/shared/ui/knowledge-base';
 import { StatusPill } from '@/shared/ui/status-pill';
 
-import { useAdminAiConversationMessages } from '../application/use-admin-document-detail';
+import {
+  useAdminAiConversationDetail,
+  useAdminAiConversationMessages,
+} from '../application/use-admin-document-detail';
 import { useAdminDocumentList } from '../application/use-admin-document-list';
 import { useDebouncedValue } from '../application/use-debounced-value';
 import type {
+  AdminAiConversationDetail,
   AdminAiConversationFilter,
   AdminAiConversationListItem,
+  AdminAiMessageAnalysisStatus,
   AdminAiMessageListItem,
 } from '../infrastructure/admin-document-database.types';
-import { fetchAdminAiConversations } from '../infrastructure/admin-document-database-adapter';
+import {
+  exportAdminAiConversationPdf,
+  fetchAdminAiConversations,
+} from '../infrastructure/admin-document-database-adapter';
 
 import { AdminCreatedAtFilter } from './admin-created-at-filter';
 import { type AdminCreatedAtRangeState, toAdminCreatedAtRange } from './admin-created-at-range';
@@ -53,6 +62,20 @@ const MESSAGE_ROLE_TAG_COLORS: Record<AdminAiMessageListItem['role'], string> = 
   TOOL: 'orange',
 };
 
+const ANALYSIS_STATUS_LABELS: Record<AdminAiMessageAnalysisStatus, string> = {
+  PENDING: '待执行',
+  RUNNING: '生成中',
+  SUCCEEDED: '已完成',
+  FAILED: '失败',
+};
+
+const ANALYSIS_STATUS_TAG_COLORS: Record<AdminAiMessageAnalysisStatus, string> = {
+  PENDING: 'gold',
+  RUNNING: 'blue',
+  SUCCEEDED: 'green',
+  FAILED: 'red',
+};
+
 /** AI 会话标签：全局会话列表 + 消息详情 Drawer（服务端按 messageSeq ASC + id ASC 稳定排序）
  *
  * PR3 R7 S5：迁入单张知识库卡（卡内工具区 + 主搜索 + 筛选展开区 + 紧凑表格 +
@@ -67,6 +90,10 @@ export function AdminAiConversationsTab() {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [messagesConversationId, setMessagesConversationId] = useState<number | null>(null);
   const [messagesPage, setMessagesPage] = useState(1);
+  const [qaConversationId, setQaConversationId] = useState<number | null>(null);
+  const [exportingId, setExportingId] = useState<number | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
 
   const debouncedRequestNo = useDebouncedValue(requestNoKeyword.trim());
   const debouncedEngineer = useDebouncedValue(engineerKeyword.trim());
@@ -87,6 +114,33 @@ export function AdminAiConversationsTab() {
   const reloadKey = JSON.stringify(effectiveFilter);
   const hasActiveFilter = Object.keys(effectiveFilter).length > 0;
 
+  /**
+   * 导出会话 PDF（任务 05 · S4.2 · R039-01）。
+   *
+   * 管理员只有读取与授权导出的能力；导出按服务端固定的内容版本生成，
+   * 导出期间追加的消息不混入。受控原始 JSON 不在此提供入口。
+   */
+  const handleExportPdf = useCallback(async (record: AdminAiConversationListItem) => {
+    setExportingId(record.id);
+    setExportError(null);
+    setExportNotice(null);
+
+    try {
+      const result = await exportAdminAiConversationPdf({
+        contentVersion: record.contentVersion,
+        conversationId: record.id,
+      });
+      saveBlobAsFile(base64ToBlob(result.contentBase64, result.mimeType), result.filename);
+      setExportNotice(
+        `已导出 ${result.filename}（内容版本 v${result.contentVersion}，消息截止 #${result.lastMessageSeq}）`,
+      );
+    } catch {
+      setExportError('导出失败，请稍后重试。');
+    } finally {
+      setExportingId(null);
+    }
+  }, []);
+
   const resetFilters = () => {
     setRequestNoKeyword('');
     setEngineerKeyword('');
@@ -106,6 +160,7 @@ export function AdminAiConversationsTab() {
     { failureMessage: 'AI 会话列表加载失败，请稍后重试。' },
   );
   const messages = useAdminAiConversationMessages(messagesConversationId, messagesPage);
+  const qaDetail = useAdminAiConversationDetail(qaConversationId);
 
   // 紧凑列宽：scroll.x 由 1180 收紧到 856，两个验收视口下无需表格内部横滚（视觉报告 3.5）
   const columns = useMemo<TableColumnsType<AdminAiConversationListItem>>(
@@ -142,26 +197,66 @@ export function AdminAiConversationsTab() {
       {
         key: 'actions',
         render: (_value, record) => (
-          <Button
-            onClick={() => {
-              setMessagesPage(1);
-              setMessagesConversationId(record.id);
-            }}
-            size="small"
-            type="link"
-          >
-            消息详情
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              onClick={() => {
+                setMessagesPage(1);
+                setMessagesConversationId(record.id);
+              }}
+              size="small"
+              type="link"
+            >
+              消息详情
+            </Button>
+            <Button
+              onClick={() => {
+                setQaConversationId(record.id);
+              }}
+              size="small"
+              type="link"
+            >
+              查看问答
+            </Button>
+            <Button
+              disabled={exportingId !== null}
+              loading={exportingId === record.id}
+              onClick={() => {
+                void handleExportPdf(record);
+              }}
+              size="small"
+              type="link"
+            >
+              导出 PDF
+            </Button>
+          </div>
         ),
         title: '操作',
-        width: 96,
+        width: 236,
       },
     ],
-    [],
+    [exportingId, handleExportPdf],
   );
 
   return (
     <div className="kb-card">
+      {exportError !== null ? (
+        <Alert
+          closable
+          onClose={() => setExportError(null)}
+          showIcon
+          title={exportError}
+          type="error"
+        />
+      ) : null}
+      {exportNotice !== null ? (
+        <Alert
+          closable
+          onClose={() => setExportNotice(null)}
+          showIcon
+          title={exportNotice}
+          type="success"
+        />
+      ) : null}
       {/* 卡内工具区（PR3 R7 S5）：主搜索 + 筛选入口；会话状态/工程师/时间收进展开区 */}
       <div className="kb-toolbar">
         <KbSearchField
@@ -296,6 +391,83 @@ export function AdminAiConversationsTab() {
           </div>
         ) : null}
       </Drawer>
+
+      <Drawer
+        destroyOnHidden
+        onClose={() => setQaConversationId(null)}
+        open={qaConversationId !== null}
+        title="会话问答（只读）"
+        size="large"
+      >
+        {qaDetail.state.status === 'loading' ? <Skeleton active /> : null}
+        {qaDetail.state.status === 'failed' ? (
+          <Alert
+            action={
+              <Button onClick={qaDetail.retry} size="small">
+                重试
+              </Button>
+            }
+            message={qaDetail.state.message}
+            showIcon
+            type="error"
+          />
+        ) : null}
+        {qaDetail.state.status === 'ready' ? (
+          <AdminAiQaDetail detail={qaDetail.state.detail} />
+        ) : null}
+      </Drawer>
+    </div>
+  );
+}
+
+/**
+ * 管理员只读问答视图（任务 05 · S4.1 · R038-01）。
+ *
+ * 只读展示：问题、回答、轮次状态与失败原因；不提供提问、重试或编辑入口。
+ */
+function AdminAiQaDetail({ detail }: { detail: AdminAiConversationDetail }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+        <span>关联申请：{detail.requestNo}</span>
+        <span>工程师：{detail.engineerNickname}</span>
+        <span>内容版本：v{detail.contentVersion}</span>
+        <span>创建时间：{formatDateTimeText(detail.createdAt)}</span>
+      </div>
+      {detail.turns.length === 0 ? (
+        <Empty description="该会话暂无问答轮次。" />
+      ) : (
+        <ol className="m-0 flex list-none flex-col gap-3 p-0">
+          {detail.turns.map((turn) => (
+            <li
+              className="rounded border border-[var(--panel-border)] bg-[var(--filter-bar-bg)] p-3"
+              key={turn.questionUuid}
+            >
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-[var(--text-muted)]">
+                  第 {turn.turnNo ?? '-'} 轮
+                </span>
+                {turn.analysisStatus !== null ? (
+                  <Tag color={ANALYSIS_STATUS_TAG_COLORS[turn.analysisStatus]}>
+                    {ANALYSIS_STATUS_LABELS[turn.analysisStatus]}
+                  </Tag>
+                ) : null}
+                {turn.failureReason !== null ? (
+                  <span className="text-xs text-[var(--text-muted)]">{turn.failureReason}</span>
+                ) : null}
+              </div>
+              <p className="m-0 mb-2 text-sm whitespace-pre-wrap">
+                <span className="mr-2 text-xs text-[var(--text-muted)]">提问</span>
+                {turn.question?.text ?? '—'}
+              </p>
+              <p className="m-0 text-sm whitespace-pre-wrap">
+                <span className="mr-2 text-xs text-[var(--text-muted)]">回答</span>
+                {turn.answer?.text ?? '（未保存回答）'}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

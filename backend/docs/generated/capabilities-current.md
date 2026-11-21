@@ -8,7 +8,7 @@ This shallow projection is derived from the Nest API and Worker module graphs. E
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | ai | switchable | enabled | enabled | unknown | - | AiCapabilityModule | api, worker | - | [docs/capabilities/current.md](../capabilities/current.md) |
 | ai.execution | switchable | enabled | enabled | unknown | - | AiCapabilityModule | api, worker | api:queue:ai-execution/generate;api:queue:ai-execution/embed;worker:queue:ai-execution/generate;worker:queue:ai-execution/embed | [docs/capabilities/ai-execution.md](../capabilities/ai-execution.md) |
-| ai.workflow | switchable | enabled | enabled | unknown | - | AiWorkflowContextModule | worker | worker:queue:ai-workflow/workflow | [docs/capabilities/ai-workflow.md](../capabilities/ai-workflow.md) |
+| ai.workflow | switchable | enabled | enabled | unknown | - | AiWorkflowContextModule | api, worker | api:queue:ai-workflow/workflow;worker:queue:ai-workflow/workflow | [docs/capabilities/ai-workflow.md](../capabilities/ai-workflow.md) |
 | identity.account | always-on | enabled | enabled | unknown | - | AccountModule | api, worker | - | [docs/capabilities/current.md](../capabilities/current.md) |
 | identity.authentication | always-on | enabled | enabled | unknown | - | AuthModule | api | - | [docs/capabilities/current.md](../capabilities/current.md) |
 | identity.external-account | switchable | enabled | enabled | unknown | - | ThirdPartyAuthModule | api | - | [docs/capabilities/current.md](../capabilities/current.md) |

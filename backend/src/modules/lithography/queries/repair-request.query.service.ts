@@ -1,5 +1,6 @@
 // src/modules/lithography/queries/repair-request.query.service.ts
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import {
@@ -16,7 +17,9 @@ import {
 import { isRepairRequestEnded } from '@core/repair-request/policy/repair-process-write.policy';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { FindOptionsWhere, In, Repository } from 'typeorm';
+import type { RepairRequestAssociationTarget } from '../ai-conversation.types';
 import { EngineerResponseEntity } from '../entities/engineer-response.entity';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { IntakeAnalysisAttemptEntity } from '../entities/intake-analysis-attempt.entity';
@@ -395,11 +398,15 @@ export class RepairRequestQueryService {
    */
   private async resolveTrustedServiceOrganizationId(
     entity: RepairRequestEntity,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<number | null> {
     if (entity.intakeId === null || entity.serviceOrganizationId === null) {
       return null;
     }
-    const intake = await this.intakeRepository.findOne({
+    const intakeRepository = transactionContext
+      ? getTypeOrmEntityManager(transactionContext).getRepository(RepairRequestIntakeEntity)
+      : this.intakeRepository;
+    const intake = await intakeRepository.findOne({
       where: { id: entity.intakeId },
       select: { id: true, serviceOrganizationId: true },
     });
@@ -577,6 +584,39 @@ export class RepairRequestQueryService {
       }
     }
     return factsById;
+  }
+
+  /**
+   * AI 会话关联工单的可关联性读取（任务 05 专用最小事实）。
+   *
+   * 与 `findDetail('ENGINEER')` 共用同一「可信服务公司」口径，避免两处规则漂移；
+   * 只返回裁决所需最小字段，不装配机型/回复/过程记录。
+   *
+   * 不包含：是否等于当前可信公司的业务裁决（归 usecase）。
+   *
+   * @returns 工单不存在时返回 null
+   */
+  async findAssociationTarget(params: {
+    requestId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<RepairRequestAssociationTarget | null> {
+    const requestRepository = params.transactionContext
+      ? getTypeOrmEntityManager(params.transactionContext).getRepository(RepairRequestEntity)
+      : this.requestRepository;
+    const entity = await requestRepository.findOne({ where: { id: params.requestId } });
+    if (!entity) {
+      return null;
+    }
+    return {
+      id: entity.id,
+      requestNo: entity.requestNo,
+      trustedServiceOrganizationId: await this.resolveTrustedServiceOrganizationId(
+        entity,
+        params.transactionContext,
+      ),
+      deletedAt: entity.deletedAt,
+      isHistorical: entity.isHistorical,
+    };
   }
 
   private async listPage<T>(

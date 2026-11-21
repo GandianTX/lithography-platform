@@ -48,6 +48,7 @@ import { StoredFileEntity } from './entities/stored-file.entity';
 import { SyncConflictEntity } from './entities/sync-conflict.entity';
 import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 import { AdminAiConversationQueryService } from './queries/admin-ai-conversation.query.service';
+import { AiConversationQueryService } from './queries/ai-conversation.query.service';
 import { ContentSubmissionQueryService } from './queries/content-submission.query.service';
 import { AdminAiMessageQueryService } from './queries/admin-ai-message.query.service';
 import { AdminAiReportQueryService } from './queries/admin-ai-report.query.service';
@@ -65,6 +66,7 @@ import { RepairRequestMaintenanceQueryService } from './queries/repair-request-m
 import { RepairRequestQueryService } from './queries/repair-request.query.service';
 import { StoredFileQueryService } from './queries/stored-file.query.service';
 import { TrustedOrganizationContextQueryService } from './queries/trusted-organization-context.query.service';
+import { AiConversationService } from './ai-conversation.service';
 import { ContentSubmissionService } from './content-submission.service';
 import { AdminOrganizationProvisioningService } from './admin-organization-provisioning.service';
 import { EngineerRegistrationService } from './engineer-registration.service';
@@ -138,6 +140,8 @@ const LITHOGRAPHY_ENTITIES = [
 @Module({
   imports: [TypeOrmModule.forFeature([...LITHOGRAPHY_ENTITIES])],
   providers: [
+    AiConversationService,
+    AiConversationQueryService,
     EquipmentModelService,
     RepairRequestIntakeService,
     IntakeAnalysisService,
@@ -178,6 +182,8 @@ const LITHOGRAPHY_ENTITIES = [
   ],
   exports: [
     TypeOrmModule,
+    AiConversationService,
+    AiConversationQueryService,
     EquipmentModelService,
     RepairRequestIntakeService,
     IntakeAnalysisService,

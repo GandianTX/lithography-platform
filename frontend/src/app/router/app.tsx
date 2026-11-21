@@ -12,6 +12,7 @@ import { AppLayout } from '@/app/layout';
 
 import { AccountSettingsPage } from '@/pages/account-settings';
 import { AdminPage } from '@/pages/admin';
+import { AdminAiConversationsPage } from '@/pages/admin-ai-conversations';
 import { AdminCompaniesPage } from '@/pages/admin-companies';
 import { AdminDocumentDatabasePage } from '@/pages/admin-document-database';
 import { AdminEngineerApprovalsPage } from '@/pages/admin-engineer-approvals';
@@ -23,6 +24,7 @@ import {
   CustomerRepairRequestsPage,
 } from '@/pages/customer';
 import { EngineerPage } from '@/pages/engineer';
+import { EngineerAiHistoryPage, EngineerAiPage } from '@/pages/engineer-ai';
 import { EngineerRepairRequestDetailPage } from '@/pages/engineer-repair-request-detail';
 import { EngineerRepairRequestsPage } from '@/pages/engineer-repair-requests';
 import { ErrorPreviewPage } from '@/pages/error-preview';
@@ -144,6 +146,14 @@ const router = createBrowserRouter([
         path: 'admin/document-database',
       },
       {
+        // AI 会话记录页（任务 05 · S4.1 · R038）：管理员只读入口。
+        // 与文档数据库页不同，本页对一级与二级管理员同时开放（文档数据库整体页为一级专属）；
+        // 数据范围由服务端按级别裁决（一级跨公司、二级本公司），前端不做公司过滤。
+        element: <AdminAiConversationsPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/ai-conversations',
+      },
+      {
         // 工单管理直达页（任务 04）：复用 admin-document-database 的维修申请列表/
         // 详情/修订能力；路由治理沿用 protectedRouteLoader 与 /admin/** 角色策略。
         element: <AdminOrdersPage />,
@@ -189,6 +199,18 @@ const router = createBrowserRouter([
         element: <EngineerPage />,
         loader: protectedRouteLoader,
         path: 'engineer',
+      },
+      {
+        // 任务05：AI 对话工作区（草稿优先：首次发送才创建会话）
+        element: <EngineerAiPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/ai',
+      },
+      {
+        // 任务05 S2：本人问答记录（只读列表，可回到对应会话）
+        element: <EngineerAiHistoryPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/ai/history',
       },
       {
         element: <EngineerRepairRequestsPage />,

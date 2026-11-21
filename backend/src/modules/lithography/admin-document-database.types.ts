@@ -5,7 +5,11 @@ import type {
   RepairRequestHandlingResult,
   RepairRequestHandlingStatus,
 } from '@app-types/models/repair-request.types';
-import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
+import {
+  AiConversationStatus,
+  AiMessageAnalysisStatus,
+  AiMessageRole,
+} from '@app-types/models/ai-conversation.types';
 import type { RepairProcessEntryView } from './lithography.types';
 
 // ============================================================================
@@ -293,6 +297,8 @@ export type AdminAiConversationListItemQueryResult = {
   engineerAccountId: number;
   status: AiConversationStatus;
   aiFeedback: string | null;
+  /** 会话内容版本（导出按此固定消息范围与截止点） */
+  contentVersion: number;
   createdAt: Date;
   completedAt: Date | null;
   messageCount: number;
@@ -323,6 +329,12 @@ export type AdminAiMessageListItemView = {
   turnNo: number | null;
   role: AiMessageRole;
   contentText: string;
+  /** 消息内容版本（与同轮分析、会话版本一致） */
+  contentVersion: number;
+  /** 所属轮次的分析状态（无分析记录时为空） */
+  analysisStatus: AiMessageAnalysisStatus | null;
+  /** 所属轮次的失败原因（仅失败轮次） */
+  failureReason: string | null;
   createdAt: Date;
 };
 

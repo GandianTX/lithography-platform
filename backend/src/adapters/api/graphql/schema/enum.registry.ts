@@ -29,12 +29,18 @@ import {
   EngineerRegistrationReviewAction,
   RegistrationOutcomeStatus,
 } from '@app-types/models/registration.types';
-import { AiConversationStatus, AiMessageRole } from '@app-types/models/ai-conversation.types';
+import {
+  AiConversationStatus,
+  AiConversationDispatchStatus,
+  AiMessageAnalysisStatus,
+  AiMessageRole,
+} from '@app-types/models/ai-conversation.types';
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
 import {
   organizationKindValues,
   organizationStatusValues,
 } from '@src/modules/lithography/organization.types';
+import { AiConversationExportFormat } from '@src/adapters/api/graphql/ai-conversation/dto/ai-conversation-export.dto';
 import { registerEnumType } from '@nestjs/graphql';
 import { GqlPaginationMode, GqlSortDirection } from '@src/adapters/api/graphql/pagination.enums';
 import { OrderDirection } from '@app-types/common/sort.types';
@@ -63,6 +69,11 @@ export function registerEnums(): void {
   registerEnumType(EngineerResolutionStatus, { name: 'EngineerResolutionStatus' });
   registerEnumType(AiConversationStatus, { name: 'AiConversationStatus' });
   registerEnumType(AiMessageRole, { name: 'AiMessageRole' });
+  registerEnumType(AiMessageAnalysisStatus, { name: 'AiMessageAnalysisStatus' });
+  registerEnumType(AiConversationDispatchStatus, {
+    name: 'AiConversationDispatchStatus',
+  });
+  registerEnumType(AiConversationExportFormat, { name: 'AiConversationExportFormat' });
   registerEnumType(RepairRequestAcceptanceViewStatus, {
     name: 'RepairRequestAcceptanceViewStatus',
   });

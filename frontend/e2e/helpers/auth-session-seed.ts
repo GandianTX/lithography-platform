@@ -11,20 +11,32 @@ export const AUTH_SESSION_STORAGE_KEY = 'lithography-platform.auth-session.v1';
 
 export type SeededAuthSessionRole = 'CUSTOMER' | 'ENGINEER' | 'SUPER_ADMIN';
 
-export async function seedAuthSession(page: Page, role: SeededAuthSessionRole) {
+/** 预置会话可选的管理员侧事实（路由守卫按 adminLevel 与可信公司判定管理员页面准入） */
+export type SeededAuthSessionAdminFacts = {
+  /** 管理员等级：1=一级（全公司）；2=二级（本公司） */
+  adminLevel?: number | null;
+  /** 请求期复核得到的可信管理员公司 */
+  adminOrganizationId?: number | null;
+};
+
+export async function seedAuthSession(
+  page: Page,
+  role: SeededAuthSessionRole,
+  adminFacts: SeededAuthSessionAdminFacts = {},
+) {
   // sessionStorage 按源隔离：必须先落在应用源上再写入，否则预置会话无效。
   await page.goto('/');
   await page.evaluate(
-    ({ key, role: seededRole }) => {
+    ({ key, role: seededRole, adminLevel, adminOrganizationId }) => {
       sessionStorage.setItem(
         key,
         JSON.stringify({
           accessToken: 'test-only-access-token',
           accountId: 900201,
-          adminLevel: null,
+          adminLevel: adminLevel ?? null,
           customerOrganizationId: null,
           engineerOrganizationId: null,
-          adminOrganizationId: null,
+          adminOrganizationId: adminOrganizationId ?? null,
           registrationOrganizationId: null,
           restriction: 'NONE',
           role: seededRole,
@@ -36,7 +48,12 @@ export async function seedAuthSession(page: Page, role: SeededAuthSessionRole) {
         }),
       );
     },
-    { key: AUTH_SESSION_STORAGE_KEY, role },
+    {
+      key: AUTH_SESSION_STORAGE_KEY,
+      role,
+      adminLevel: adminFacts.adminLevel ?? null,
+      adminOrganizationId: adminFacts.adminOrganizationId ?? null,
+    },
   );
 }
 

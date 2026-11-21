@@ -515,6 +515,30 @@ const ragDiagnosisConfig: ConfigFactory = () => {
   };
 };
 
+/**
+ * 任务05 对话链路配置：
+ * - `model` / `provider`：派发时写入工作流上下文的模型快照（未配置则由 provider 注册表决定）；
+ * - `visualizationTtlSeconds`：图形临时通道有效期（默认 30 分钟，属建议值，待 03/负责人确认）。
+ */
+const aiConversationConfig: ConfigFactory = () => ({
+  aiConversation: {
+    model: getOptionalEnv('AI_CONVERSATION_MODEL') ?? 'qwen-plus',
+    provider: getOptionalEnv('AI_CONVERSATION_PROVIDER') ?? null,
+    visualizationTtlSeconds: getIntEnvWithDefault(
+      'AI_CONVERSATION_VISUALIZATION_TTL_SECONDS',
+      1800,
+    ),
+    export: {
+      /** PDF 中文字体文件路径（CJK 字体为运行时资源，不入库；缺失时导出按设计失败关闭） */
+      pdfFontPath:
+        getOptionalEnv('AI_CONVERSATION_EXPORT_PDF_FONT_PATH') ??
+        'var/fonts/NotoSansSC-Regular.otf',
+      /** 受控原始 JSON 的技术授权凭据；未配置时受控 JSON 一律拒绝（安全默认） */
+      rawJsonAuthorization: getOptionalEnv('AI_CONVERSATION_EXPORT_RAW_JSON_AUTHORIZATION') ?? '',
+    },
+  },
+});
+
 const emailDeliveryConfig: ConfigFactory = () => ({
   emailDelivery: {
     sendAsUser: getOptionalEnv('EMAIL_SEND_AS_USER'),
@@ -616,6 +640,7 @@ const paginationConfig = () => ({
         capabilityRuntimeConfig,
         aiWorkerConfig,
         ragDiagnosisConfig,
+        aiConversationConfig,
         emailDeliveryConfig,
         referenceDocumentStorageConfig,
         adminAccountResetConfig,

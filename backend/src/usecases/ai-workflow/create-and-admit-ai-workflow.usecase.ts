@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { Inject, Injectable } from '@nestjs/common';
 import { resolveAsyncTaskBizKey } from '@src/core/common/async-task/async-task-identifier.policy';
 import { normalizeOptionalText } from '@src/core/common/input-normalize/input-normalize.policy';
@@ -16,6 +17,7 @@ import {
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import { PinoLogger } from 'nestjs-pino';
 import {
+  AI_WORKFLOW_ADMISSION_REASON_ACCEPTED,
   AI_WORKFLOW_ADMISSION_RETRY_DELAY_MS,
   AI_WORKFLOW_ADMISSION_TIMEOUT_MS,
   AI_WORKFLOW_ASYNC_TASK_BIZ_TYPE,
@@ -60,6 +62,33 @@ export class CreateAndAdmitAiWorkflowUsecase {
       context: createResult.context,
       now,
     });
+  }
+
+  /**
+   * 在调用方事务内准备「已受理、待投递」的上下文（任务05 Q01／B2）。
+   *
+   * 不调用队列、不写 Redis：只落一条现有 housekeeping 会扫描的
+   * `ADMISSION_WAITING` ＋ 到期时间，因此受理事务回滚时不会残留执行事实，
+   * 事务提交后即使进程退出也能被正式调度恢复。
+   */
+  async prepareInTransaction(
+    input: CreateAndAdmitAiWorkflowInput,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<{ readonly status: 'PREPARED' | 'EXISTING_ACTIVE'; readonly workflowId: string }> {
+    const now = new Date();
+    const createResult = await this.aiWorkflowContextService.createContext({
+      ...input,
+      transactionContext,
+      admission: {
+        nextEnqueueAt: now,
+        admissionExpiresAt: new Date(now.getTime() + AI_WORKFLOW_ADMISSION_TIMEOUT_MS),
+        admissionReason: AI_WORKFLOW_ADMISSION_REASON_ACCEPTED,
+      },
+    });
+    return {
+      status: createResult.status === 'EXISTING_ACTIVE' ? 'EXISTING_ACTIVE' : 'PREPARED',
+      workflowId: createResult.context.workflowId,
+    };
   }
 
   async admitExisting(input: {

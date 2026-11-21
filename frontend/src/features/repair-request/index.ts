@@ -20,6 +20,10 @@ export {
   type CustomerRepairRequestListView,
   useCustomerRepairRequestList,
 } from './application/use-customer-repair-request-list';
+export {
+  type EngineerWorkOrderOption,
+  useEngineerWorkOrderOptions,
+} from './application/use-engineer-work-order-options';
 export type { EngineerRepairListScope } from './infrastructure/engineer-repair-request.types';
 export type {
   CreateRepairRequestFailureReason,
