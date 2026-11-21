@@ -101,6 +101,39 @@ describe('SyncSourceRecordQueryService', () => {
     expect(result.facts.get(derived)?.identityPersisted).toBe(false);
   });
 
+  it('定向定位只取判定所需列，不把正文全文拉进内存', async () => {
+    const { service, reportRepository } = buildService([
+      [reportRow({ recordUuid: 'persisted-uuid-1' })],
+    ]);
+
+    await service.listFacts({
+      organizationId,
+      resourceType,
+      recordUuids: ['persisted-uuid-1'],
+    });
+
+    const options = reportRepository.find.mock.calls[0][0] as {
+      select?: Record<string, boolean>;
+    };
+    expect(options.select).toBeDefined();
+    expect(options.select?.recordUuid).toBe(true);
+    expect(options.select?.ownerOrganizationId).toBe(true);
+    expect(Object.keys(options.select ?? {})).not.toContain('contentText');
+  });
+
+  it('回退扫描按主键固定排序并限制候选上限（避免 LIMIT 取到不确定子集）', async () => {
+    const { service, reportRepository } = buildService([[], []]);
+
+    await service.listFacts({ organizationId, resourceType, recordUuids: ['missing-uuid'] });
+
+    const options = reportRepository.find.mock.calls[1][0] as {
+      order?: Record<string, string>;
+      take?: number;
+    };
+    expect(options.order).toEqual({ id: 'ASC' });
+    expect(options.take).toBe(SYNC_SOURCE_SCAN_LIMIT + 1);
+  });
+
   it('回退扫描超过上限时如实报告扫描不完整', async () => {
     const rows = Array.from({ length: SYNC_SOURCE_SCAN_LIMIT + 1 }, (_unused, index) =>
       reportRow({ id: index + 1 }),

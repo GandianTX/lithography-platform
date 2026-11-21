@@ -42,7 +42,22 @@ describe('record package export service', () => {
     storedFile?: Record<string, unknown> | null;
   }) => {
     const oneOf = (value: unknown) => ({
-      findOne: jest.fn().mockResolvedValue(value ?? null),
+      findOne: jest
+        .fn()
+        .mockImplementation(({ where }: { where?: { ownerOrganizationId?: number } }) => {
+          if (value === null || value === undefined) {
+            return Promise.resolve(null);
+          }
+          const row = value as Record<string, unknown>;
+          // 与真实仓储一致：按公司过滤，越权记录读不到
+          if (
+            where?.ownerOrganizationId !== undefined &&
+            row.ownerOrganizationId !== where.ownerOrganizationId
+          ) {
+            return Promise.resolve(null);
+          }
+          return Promise.resolve(row);
+        }),
       find: jest.fn().mockResolvedValue([]),
     });
     const fileStorage = {
@@ -336,6 +351,7 @@ describe('record package export service', () => {
     const service = buildService({
       referenceDocument: {
         id: 1,
+        recordUuid: '22222222-3333-4444-8555-666666666666',
         ownerOrganizationId: 5,
         deprecated: false,
         currentRevisionNo: 2,
@@ -353,8 +369,38 @@ describe('record package export service', () => {
       },
     });
     const error = await catchExportError(service.exportPackage(command(), 16));
-    const details = error.details as { items?: { rejection: string | null }[] };
+    const details = error.details as { items?: { rejection: string | null; recordUuid: string }[] };
     expect(details.items?.[0]?.rejection).toBe('FOREIGN_COMPANY');
+    // 越权记录的真实持久化身份不得出现在拒绝明细里（否则构成存在性泄露）
+    expect(details.items?.[0]?.recordUuid).toBe(deriveRecordUuid('REFERENCE_DOCUMENT', 1));
+  });
+
+  it('本公司记录被拒绝时，拒绝明细带出其真实持久化身份（与导出条目口径一致）', async () => {
+    const persistedUuid = '33333333-4444-4555-8666-777777777777';
+    const service = buildService({
+      referenceDocument: {
+        id: 1,
+        recordUuid: persistedUuid,
+        ownerOrganizationId: 4,
+        deprecated: false,
+        currentRevisionNo: 0, // 版本未生效 → 拒绝
+        schemaVersion: 1,
+        title: '资料B',
+        documentType: 'MANUAL',
+        description: null,
+        contentText: null,
+        originalFilename: null,
+        mimeType: null,
+        extensionJson: null,
+        updatedAt: new Date(),
+        storageBackend: null,
+        storageReference: null,
+      },
+    });
+    const error = await catchExportError(service.exportPackage(command(), 16));
+    const details = error.details as { items?: { rejection: string | null; recordUuid: string }[] };
+    expect(details.items?.[0]?.rejection).toBe('STRUCTURE_INVALID');
+    expect(details.items?.[0]?.recordUuid).toBe(persistedUuid);
   });
 
   it('附件字节数与登记不符 → 条目拒绝（不落清单）', async () => {

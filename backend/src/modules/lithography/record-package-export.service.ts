@@ -199,7 +199,11 @@ export class RecordPackageExportService {
         outcome: 'REJECTED',
         detail: {
           recordId,
-          recordUuid: await this.resolveRecordUuidSafely(command.resourceType, recordId),
+          recordUuid: await this.resolveRecordUuidSafely(
+            command.resourceType,
+            recordId,
+            command.organizationId,
+          ),
           resourceType: command.resourceType,
           versionNo: null,
           outcome: 'REJECTED',
@@ -230,7 +234,7 @@ export class RecordPackageExportService {
     recordId: number,
     organizationId: number,
   ): Promise<RecordPackageExportEntry> {
-    const recordUuid = await this.resolveRecordUuid(resourceType, recordId);
+    const recordUuid = await this.resolveRecordUuid(resourceType, recordId, organizationId);
     switch (resourceType) {
       case 'REFERENCE_DOCUMENT':
         return this.collectReferenceDocument(recordId, organizationId, recordUuid);
@@ -249,12 +253,16 @@ export class RecordPackageExportService {
    * 优先取源表**持久化**的稳定编号（跨端一致，可随包搬运到其他设备）；
    * 历史行未持久化时回退到派生值（仅设备内有效，跨端不唯一），
    * 以保持既有派生 UUID 的历史事实不被改写。
+   *
+   * 身份解析**按公司过滤**：越权记录与归属未知记录一律回退派生值。
+   * 否则拒绝明细会带出他公司记录的真实持久化身份，构成存在性泄露。
    */
   private async resolveRecordUuid(
     resourceType: RecordPackageResourceType,
     recordId: number,
+    organizationId: number,
   ): Promise<string> {
-    const persisted = await this.readPersistedRecordUuid(resourceType, recordId);
+    const persisted = await this.readPersistedRecordUuid(resourceType, recordId, organizationId);
     return persisted ?? deriveRecordUuid(resourceType, recordId);
   }
 
@@ -266,9 +274,10 @@ export class RecordPackageExportService {
   private async resolveRecordUuidSafely(
     resourceType: RecordPackageResourceType,
     recordId: number,
+    organizationId: number,
   ): Promise<string> {
     try {
-      return await this.resolveRecordUuid(resourceType, recordId);
+      return await this.resolveRecordUuid(resourceType, recordId, organizationId);
     } catch {
       return deriveRecordUuid(resourceType, recordId);
     }
@@ -277,23 +286,24 @@ export class RecordPackageExportService {
   private async readPersistedRecordUuid(
     resourceType: RecordPackageResourceType,
     recordId: number,
+    organizationId: number,
   ): Promise<string | null> {
     if (resourceType === 'REFERENCE_DOCUMENT') {
       const row = await this.referenceDocumentRepository.findOne({
-        where: { id: recordId },
+        where: { id: recordId, ownerOrganizationId: organizationId },
         select: { recordUuid: true },
       });
       return row?.recordUuid ?? null;
     }
     if (resourceType === 'REPAIR_REQUEST') {
       const row = await this.repairRequestRepository.findOne({
-        where: { id: recordId },
+        where: { id: recordId, ownerOrganizationId: organizationId },
         select: { recordUuid: true },
       });
       return row?.recordUuid ?? null;
     }
     const row = await this.maintenanceReportRepository.findOne({
-      where: { id: recordId },
+      where: { id: recordId, ownerOrganizationId: organizationId },
       select: { recordUuid: true },
     });
     return row?.recordUuid ?? null;

@@ -40,6 +40,47 @@ export type SyncSourceResourceType = (typeof SYNC_SOURCE_RESOURCE_TYPES)[number]
 /** 单次扫描的候选记录上限；超过即视为扫描不完整 */
 export const SYNC_SOURCE_SCAN_LIMIT = 2000;
 
+/**
+ * 列投影：状态判定只需要身份、归属、版本、授权主体与下架标记。
+ *
+ * 不投影正文列（`reference_document.content_text`、`repair_request.content_md` 等），
+ * 避免一次状态查询把上千行正文拉进内存。
+ */
+const REPORT_FACT_COLUMNS = {
+  id: true,
+  recordUuid: true,
+  ownerOrganizationId: true,
+  currentVersionNo: true,
+  createdByAccountId: true,
+  maintenanceEngineerAccountId: true,
+  updatedByAccountId: true,
+} as const;
+
+const DOCUMENT_FACT_COLUMNS = {
+  id: true,
+  recordUuid: true,
+  ownerOrganizationId: true,
+  currentRevisionNo: true,
+  createdByAccountId: true,
+  updatedByAccountId: true,
+  deprecated: true,
+  deletedAt: true,
+  publicationStatus: true,
+  ownershipStatus: true,
+} as const;
+
+const REPAIR_REQUEST_FACT_COLUMNS = {
+  id: true,
+  recordUuid: true,
+  ownerOrganizationId: true,
+  currentRevisionNo: true,
+  customerAccountId: true,
+  acceptedByEngineerAccountId: true,
+  handlingRecordedByAccountId: true,
+  deprecated: true,
+  deletedAt: true,
+} as const;
+
 export type SyncSourceRecordFact = {
   resourceType: SyncSourceResourceType;
   /** 本机稳定键（持久化稳定编号优先，历史行为派生值） */
@@ -146,6 +187,7 @@ export class SyncSourceRecordQueryService {
           ownerOrganizationId: params.organizationId,
           recordUuid: In([...params.recordUuids]),
         },
+        select: { ...REPORT_FACT_COLUMNS },
       });
       for (const row of rows) {
         if (row.recordUuid === null) {
@@ -162,6 +204,7 @@ export class SyncSourceRecordQueryService {
           { ownerOrganizationId: params.organizationId, recordUuid: In([...params.recordUuids]) },
           { ownerOrganizationId: IsNull(), recordUuid: In([...params.recordUuids]) },
         ],
+        select: { ...DOCUMENT_FACT_COLUMNS },
       });
       for (const row of rows) {
         if (row.recordUuid === null) {
@@ -177,6 +220,7 @@ export class SyncSourceRecordQueryService {
         { ownerOrganizationId: params.organizationId, recordUuid: In([...params.recordUuids]) },
         { ownerOrganizationId: IsNull(), recordUuid: In([...params.recordUuids]) },
       ],
+      select: { ...REPAIR_REQUEST_FACT_COLUMNS },
     });
     for (const row of rows) {
       if (row.recordUuid === null) {
@@ -216,6 +260,9 @@ export class SyncSourceRecordQueryService {
   private async listReportFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
     const rows = await this.reportRepository.find({
       where: { ownerOrganizationId: organizationId },
+      select: { ...REPORT_FACT_COLUMNS },
+      // 固定排序：没有 ORDER BY 时 LIMIT 取到的是不确定子集，会把"漏行"误报成"记录不存在"
+      order: { id: 'ASC' },
       take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
@@ -230,6 +277,8 @@ export class SyncSourceRecordQueryService {
   private async listDocumentFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
     const rows = await this.documentRepository.find({
       where: [{ ownerOrganizationId: organizationId }, { ownerOrganizationId: IsNull() }],
+      select: { ...DOCUMENT_FACT_COLUMNS },
+      order: { id: 'ASC' },
       take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 
@@ -243,6 +292,8 @@ export class SyncSourceRecordQueryService {
   private async listRepairRequestFacts(organizationId: number): Promise<SyncSourceRecordFact[]> {
     const rows = await this.repairRequestRepository.find({
       where: [{ ownerOrganizationId: organizationId }, { ownerOrganizationId: IsNull() }],
+      select: { ...REPAIR_REQUEST_FACT_COLUMNS },
+      order: { id: 'ASC' },
       take: SYNC_SOURCE_SCAN_LIMIT + 1,
     });
 

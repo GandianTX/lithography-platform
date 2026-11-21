@@ -88,6 +88,13 @@ describe('resolveSyncConflictEntry（冲突处理入口纯规则）', () => {
     expect(result.reason).toBe('VERSION_NOT_ALIGNED');
   });
 
+  it('冲突版本集合含"历史未知"空位时，仍按已知版本位匹配', () => {
+    const result = resolveSyncConflictEntry(baseFacts({ conflictVersions: [null, 3, null, null] }));
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe('ALLOWED');
+  });
+
   it('历史冲突的版本位全部未知时不给出处理入口', () => {
     const result = resolveSyncConflictEntry(
       baseFacts({

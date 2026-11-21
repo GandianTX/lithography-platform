@@ -8,7 +8,6 @@ import type {
   SyncSourceRecordQueryService,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type {
-  SyncCompanyAuthorizationSummary,
   SyncStatusConflictRow,
   SyncStatusQueryService,
   SyncStatusReceiptRow,
@@ -58,7 +57,8 @@ describe('QuerySyncStatusesUsecase', () => {
       receipts?: SyncStatusReceiptRow[];
       conflicts?: SyncStatusConflictRow[];
       authorizations?: Map<number, 'ACTIVE' | 'REVOKED'>;
-      companyAuthorization?: SyncCompanyAuthorizationSummary;
+      /** 公司级授权事实（ACTIVE／REVOKED 行数；未列出＝该公司无任何授权行） */
+      companyAuthorization?: { activeCount: number; revokedCount: number };
       installationOrganizationId?: number | null;
     } = {},
   ) {
@@ -77,6 +77,21 @@ describe('QuerySyncStatusesUsecase', () => {
               : options.installationOrganizationId,
         }),
       ),
+      // 公司级「正式运行模式」事实：复用既有本地授权汇总读模型
+      readAuthorizationSummary: jest.fn(() => {
+        const summary = options.companyAuthorization ?? { activeCount: 1, revokedCount: 0 };
+        return Promise.resolve([
+          {
+            organizationId:
+              options.installationOrganizationId === undefined
+                ? 4
+                : options.installationOrganizationId,
+            activeCount: summary.activeCount,
+            revokedCount: summary.revokedCount,
+            lastVerifiedAt: null,
+          },
+        ]);
+      }),
     };
     const sourceRecordQueryService = {
       listFacts: jest.fn(() => {
@@ -94,11 +109,6 @@ describe('QuerySyncStatusesUsecase', () => {
       readPendingConflicts: jest.fn(() => Promise.resolve(options.conflicts ?? [])),
       readAuthorizations: jest.fn(() =>
         Promise.resolve(options.authorizations ?? new Map<number, 'ACTIVE' | 'REVOKED'>()),
-      ),
-      readCompanyAuthorizationSummary: jest.fn(() =>
-        Promise.resolve(
-          options.companyAuthorization ?? { authorizationCount: 1, activeAuthorizationCount: 1 },
-        ),
       ),
     };
 
@@ -335,6 +345,30 @@ describe('QuerySyncStatusesUsecase', () => {
     expect(items[0].canResolveConflict).toBe(true);
   });
 
+  it('冲突仅以「登记时已展示的云端版本」命中当前版本时，同样识别为当前版本冲突', async () => {
+    const { usecase } = buildUsecase({
+      conflicts: [
+        {
+          conflictId: 'conflict-displayed',
+          recordUuid,
+          organizationId: 4,
+          status: 'PENDING',
+          localVersion: null,
+          cloudVersion: null,
+          versionNo: null,
+          // 版本位只登记在"已展示的云端版本"上
+          displayedCloudVersion: 3,
+        },
+      ],
+    });
+
+    const items = await usecase.queryStatuses({ session, requests: [request] });
+
+    expect(items[0].status).toBe('CONFLICT');
+    expect(items[0].conflictId).toBe('conflict-displayed');
+    expect(items[0].canResolveConflict).toBe(true);
+  });
+
   it('调用方展示版本与服务端当前版本不一致时不给出处理入口', async () => {
     const { usecase } = buildUsecase({
       conflicts: [
@@ -408,7 +442,7 @@ describe('QuerySyncStatusesUsecase', () => {
 
   it('公司存在 ACTIVE 授权时材料级适用即判定为适用', async () => {
     const { usecase } = buildUsecase({
-      companyAuthorization: { authorizationCount: 2, activeAuthorizationCount: 1 },
+      companyAuthorization: { activeCount: 1, revokedCount: 1 },
       tasks: [succeededTask],
       receipts: [succeededReceipt],
     });
@@ -420,7 +454,7 @@ describe('QuerySyncStatusesUsecase', () => {
 
   it('公司授权全部撤销时判定为不适用', async () => {
     const { usecase } = buildUsecase({
-      companyAuthorization: { authorizationCount: 2, activeAuthorizationCount: 0 },
+      companyAuthorization: { activeCount: 0, revokedCount: 2 },
       tasks: [succeededTask],
       receipts: [succeededReceipt],
     });
@@ -433,7 +467,7 @@ describe('QuerySyncStatusesUsecase', () => {
 
   it('未取得公司授权事实时不得把适用性硬编码为真', async () => {
     const { usecase } = buildUsecase({
-      companyAuthorization: { authorizationCount: 0, activeAuthorizationCount: 0 },
+      companyAuthorization: { activeCount: 0, revokedCount: 0 },
       tasks: [succeededTask],
       receipts: [succeededReceipt],
     });
@@ -447,7 +481,7 @@ describe('QuerySyncStatusesUsecase', () => {
   it('材料级明确不适用时不再受公司级事实影响', async () => {
     const { usecase } = buildUsecase({
       facts: [sourceFact({ materialApplicable: false })],
-      companyAuthorization: { authorizationCount: 1, activeAuthorizationCount: 1 },
+      companyAuthorization: { activeCount: 1, revokedCount: 0 },
     });
 
     const items = await usecase.queryStatuses({ session, requests: [request] });

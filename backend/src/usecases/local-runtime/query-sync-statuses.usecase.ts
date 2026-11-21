@@ -11,6 +11,7 @@ import {
   resolveSyncStatus,
   resolveSyncApplicability,
   SYNC_TASK_STATUSES,
+  type SyncCompanyApplicabilityFacts,
   type SyncStatusConflictFact,
   type SyncStatusFacts,
   type SyncStatusReceiptFact,
@@ -29,7 +30,6 @@ import {
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import {
   SyncStatusQueryService,
-  type SyncCompanyAuthorizationSummary,
   type SyncStatusConflictRow,
   type SyncStatusReceiptRow,
   type SyncStatusTaskRow,
@@ -93,7 +93,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     const grouped = this.groupRequests(requests);
 
     // 公司级「正式运行模式」事实：本机 × 本机映射公司的账号授权登记（每次查询读一次）
-    const companyAuthorization = await this.syncStatusQueryService.readCompanyAuthorizationSummary(
+    const companyAuthorization = await this.resolveCompanyAuthorization(
       installation.installationId,
       installationOrganizationId,
     );
@@ -125,7 +125,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     scope: LocalRuntimeViewerScope;
     installationId: string;
     installationOrganizationId: number;
-    companyAuthorization: SyncCompanyAuthorizationSummary;
+    companyAuthorization: SyncCompanyApplicabilityFacts;
   }): Promise<SyncStatusQueryItem[]> {
     const { group } = input;
     const groupRequests = group.requests;
@@ -228,7 +228,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
     authorizations: ReadonlyMap<number, 'ACTIVE' | 'REVOKED'>;
     installationId: string;
     scope: LocalRuntimeViewerScope;
-    companyAuthorization: SyncCompanyAuthorizationSummary;
+    companyAuthorization: SyncCompanyApplicabilityFacts;
   }): SyncStatusQueryItem {
     const { request, fact } = input;
     const currentVersion = fact.currentVersion;
@@ -294,6 +294,36 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
   }
 
   /**
+   * 公司级「正式运行模式」事实：本机账号授权登记（本机 × 公司）。
+   *
+   * 复用既有的本地授权汇总读模型（`LocalRuntimeQueryService.readAuthorizationSummary`），
+   * 不另起一套同表同口径的实现，避免两处口径漂移。
+   *
+   * 口径：
+   * - 有 ACTIVE 授权行 → 公司在本机取得有效云端授权，处于正式运行模式；
+   * - 有授权行但全部 REVOKED → 授权已撤销；
+   * - 没有任何授权行 → 未取得该事实（按"未知"处理，不硬编码为真或假）。
+   */
+  private async resolveCompanyAuthorization(
+    installationId: string,
+    organizationId: number,
+  ): Promise<SyncCompanyApplicabilityFacts> {
+    const summaries = await this.localRuntimeQueryService.readAuthorizationSummary(
+      installationId,
+      organizationId,
+    );
+    const summary = summaries.find((item) => item.organizationId === organizationId);
+    if (summary === undefined) {
+      // 该公司没有任何授权行：未取得公司级事实
+      return { authorizationCount: 0, activeAuthorizationCount: 0 };
+    }
+    return {
+      authorizationCount: summary.activeCount + summary.revokedCount,
+      activeAuthorizationCount: summary.activeCount,
+    };
+  }
+
+  /**
    * 适用性裁决（事实驱动，不做硬编码断言）：
    * - 材料级明确不适用（已下架／软删除）→ 不适用；
    * - 材料级无法判定（归属待确认等）→ 未知；
@@ -302,7 +332,7 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
    */
   private resolveApplicability(
     fact: SyncSourceRecordFact,
-    company: SyncCompanyAuthorizationSummary,
+    company: SyncCompanyApplicabilityFacts,
   ): boolean | null {
     return resolveSyncApplicability(fact.materialApplicable, {
       authorizationCount: company.authorizationCount,
@@ -443,7 +473,9 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
       (row) =>
         row.localVersion === currentVersion ||
         row.cloudVersion === currentVersion ||
-        row.versionNo === currentVersion,
+        row.versionNo === currentVersion ||
+        // 冲突登记时已展示的云端版本同样属于"当前看到的那个版本"
+        row.displayedCloudVersion === currentVersion,
     );
     return matched ?? null;
   }

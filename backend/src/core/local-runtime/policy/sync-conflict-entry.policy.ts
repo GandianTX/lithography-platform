@@ -95,5 +95,6 @@ function isDisplayedVersionAligned(facts: SyncConflictEntryFacts): boolean {
   if (displayed !== current) {
     return false;
   }
-  return facts.conflictVersions.includes(displayed);
+  // 版本位为 null 表示"历史未知"，不能与任何展示版本匹配
+  return facts.conflictVersions.some((version) => version !== null && version === displayed);
 }

@@ -51,14 +51,6 @@ export type SyncStatusConflictRow = {
   displayedCloudVersion: number | null;
 };
 
-/** 公司级「正式运行模式」事实（本机账号授权登记） */
-export type SyncCompanyAuthorizationSummary = {
-  /** 该公司在本机的授权行总数 */
-  authorizationCount: number;
-  /** 其中处于 ACTIVE 的授权行数 */
-  activeAuthorizationCount: number;
-};
-
 @Injectable()
 export class SyncStatusQueryService {
   constructor(
@@ -183,31 +175,6 @@ export class SyncStatusQueryService {
       versionNo: row.versionNo,
       displayedCloudVersion: row.displayedCloudVersion,
     }));
-  }
-
-  /**
-   * 读取公司级「正式运行模式」事实：本机 × 公司的账号授权登记分布。
-   *
-   * 口径：
-   * - 有 ACTIVE 授权行 → 公司在本机取得有效云端授权，处于正式运行模式；
-   * - 有授权行但全部 REVOKED → 授权已撤销；
-   * - 没有任何授权行 → 未取得该事实（由上层按"未知"处理，不硬编码为真或假）。
-   */
-  async readCompanyAuthorizationSummary(
-    installationId: string,
-    organizationId: number,
-  ): Promise<SyncCompanyAuthorizationSummary> {
-    const rows = await this.authorizationRepository.find({
-      where: { installationId, organizationId },
-      select: { authorizationStatus: true },
-    });
-    let activeAuthorizationCount = 0;
-    for (const row of rows) {
-      if (row.authorizationStatus === 'ACTIVE') {
-        activeAuthorizationCount += 1;
-      }
-    }
-    return { authorizationCount: rows.length, activeAuthorizationCount };
   }
 
   /**
