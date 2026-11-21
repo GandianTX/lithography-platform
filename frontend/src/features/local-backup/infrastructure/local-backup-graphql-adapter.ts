@@ -3,6 +3,8 @@
 import { executeGraphQL } from '@/shared/graphql';
 
 import type {
+  LocalBackupCleanupMode,
+  LocalBackupCleanupResult,
   LocalBackupRecordDetail,
   LocalBackupRecordPage,
   LocalBackupSetting,
@@ -15,7 +17,7 @@ import type {
  * 备份与恢复 GraphQL 数据访问层（任务 09 S3／S4）。
  *
  * - 公司范围由服务端按 Session 裁决，前端查询不传公司参数；
- * - 写操作只有两个：手动备份触发（本人范围）与恢复预检（管理员专属）；
+ * - 写操作只有三个：手动备份触发（本人范围）、恢复预检（管理员专属）与本地包清理（管理员过期清理）；
  * - 失败一律以异常上抛，由 application 层归一为可展示消息，本层不做乐观降级。
  */
 
@@ -141,6 +143,25 @@ const PRECHECK_LOCAL_RESTORE_MUTATION = `
   }
 `;
 
+const CLEANUP_LOCAL_BACKUP_PACKAGES_MUTATION = `
+  mutation CleanupLocalBackupPackages($mode: LocalBackupCleanupMode!, $organizationId: Int) {
+    cleanupLocalBackupPackages(mode: $mode, organizationId: $organizationId) {
+      mode
+      organizationId
+      available
+      reason
+      targetCount
+      cleaned
+      retained
+      items {
+        backupId
+        outcome
+        reason
+      }
+    }
+  }
+`;
+
 const LOCAL_RESTORE_CAPABILITY_QUERY = `
   query LocalRestoreCapability {
     localRestoreCapability {
@@ -211,6 +232,22 @@ export async function precheckLocalRestore(backupId: string): Promise<LocalResto
   >(PRECHECK_LOCAL_RESTORE_MUTATION, { backupId }, { fetchPolicy: 'no-cache' });
 
   return payload.precheckLocalRestore;
+}
+
+export async function cleanupLocalBackupPackages(
+  mode: LocalBackupCleanupMode,
+  organizationId?: number,
+): Promise<LocalBackupCleanupResult> {
+  const payload = await executeGraphQL<
+    { cleanupLocalBackupPackages: LocalBackupCleanupResult },
+    { mode: LocalBackupCleanupMode; organizationId: number | null }
+  >(
+    CLEANUP_LOCAL_BACKUP_PACKAGES_MUTATION,
+    { mode, organizationId: organizationId ?? null },
+    { fetchPolicy: 'no-cache' },
+  );
+
+  return payload.cleanupLocalBackupPackages;
 }
 
 export async function fetchLocalRestoreCapability(): Promise<LocalRestoreCapability> {

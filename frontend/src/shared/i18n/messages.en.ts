@@ -195,9 +195,20 @@ export const EN_MESSAGES = {
   'local-backup.auto.retention': 'Retention Window (read-only)',
   'local-backup.auto.failureReason': 'Failure Reason',
   'local-backup.manual.title': 'Manual Backup',
-  'local-backup.manual.trigger': 'Back Up Now',
+  'local-backup.manual.trigger': 'Back Up and Clean Local Backup Packages',
   'local-backup.manual.notice':
-    'A manual backup really generates a protected backup package. The upload and cleanup stages show their actual states: the local package is not cleaned up without a complete cloud receipt.',
+    'Only backup packages of this device and company are cleaned up; business data, business originals and cloud copies are never deleted. Cleanup runs only after a complete cloud receipt is obtained. The generation, upload and cleanup stages show their actual states.',
+  'local-backup.manual.cleanupRunning': 'Cleaning local backup packages…',
+  'local-backup.manual.cleanupFailed': 'Failed to clean local backup packages',
+  'local-backup.manual.cleanupUnavailable':
+    'No complete cloud receipt was obtained, so the local backup packages were not cleaned up.',
+  'local-backup.manual.cleanupDone':
+    '{cleaned} local backup package(s) cleaned up, {retained} still retained.',
+  'local-backup.manual.cleanupOutcome': 'Cleanup Result',
+  'local-backup.manual.cleaned': 'Cleaned',
+  'local-backup.manual.retained': 'Retained',
+  'local-backup.manual.retainedReason': 'Retention Reason',
+  'local-backup.manual.cleanupEmpty': 'No local backup package needs cleanup.',
   'local-backup.manual.failed': 'Manual backup failed',
   'local-backup.manual.generation': 'Generation Stage',
   'local-backup.manual.upload': 'Upload Stage',

@@ -5,6 +5,8 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { isGraphQLIngressError } from '@/shared/graphql';
 
 import type {
+  LocalBackupCleanupMode,
+  LocalBackupCleanupResult,
   LocalBackupRecordPage,
   LocalBackupSetting,
   LocalRestoreCapability,
@@ -12,6 +14,7 @@ import type {
   StartManualLocalBackupResult,
 } from '../infrastructure/local-backup.types';
 import {
+  cleanupLocalBackupPackages,
   fetchLocalBackupRecords,
   fetchLocalBackupSettings,
   fetchLocalRestoreCapability,
@@ -131,11 +134,38 @@ export function useManualLocalBackup() {
     try {
       const data = await startManualLocalBackup(organizationId);
       setState({ status: 'succeeded', data });
+      return data;
     } catch (error) {
       setState({
         status: 'failed',
         message: isGraphQLIngressError(error) ? error.userMessage : '手动备份失败，请稍后重试。',
       });
+      return null;
+    }
+  }, []);
+
+  return { state, trigger, reset: () => setState({ status: 'idle' }) };
+}
+
+/** 清理本机本公司的本地备份包 */
+export function useCleanupLocalBackupPackages() {
+  const [state, setState] = useState<ActionState<LocalBackupCleanupResult>>({
+    status: 'idle',
+  });
+
+  const trigger = useCallback(async (mode: LocalBackupCleanupMode) => {
+    setState({ status: 'running' });
+
+    try {
+      const data = await cleanupLocalBackupPackages(mode);
+      setState({ status: 'succeeded', data });
+      return data;
+    } catch (error) {
+      setState({
+        status: 'failed',
+        message: isGraphQLIngressError(error) ? error.userMessage : '本地备份包清理失败，请稍后重试。',
+      });
+      return null;
     }
   }, []);
 

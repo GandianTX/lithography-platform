@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  cleanupLocalBackupPackages,
   fetchLocalBackupRecords,
   fetchLocalBackupSettings,
   precheckLocalRestore,
@@ -89,6 +90,29 @@ describe('备份与恢复 GraphQL 适配层', () => {
     const [query, variables] = executeGraphQL.mock.calls[0] as [string, unknown];
     expect(query).toContain('precheckLocalRestore');
     expect(variables).toEqual({ backupId: 'backup-1' });
+  });
+
+  it('清理按模式发起，且不传公司参数（范围由服务端按会话裁决）', async () => {
+    executeGraphQL.mockResolvedValue({
+      cleanupLocalBackupPackages: {
+        mode: 'MANUAL',
+        organizationId: 4,
+        available: false,
+        reason: 'CLOUD_RECEIPT_MISSING',
+        targetCount: 0,
+        cleaned: 0,
+        retained: 0,
+        items: [],
+      },
+    });
+
+    const result = await cleanupLocalBackupPackages('MANUAL');
+
+    expect(result.available).toBe(false);
+    expect(result.cleaned).toBe(0);
+    const [query, variables] = executeGraphQL.mock.calls[0] as [string, unknown];
+    expect(query).toContain('cleanupLocalBackupPackages');
+    expect(variables).toEqual({ mode: 'MANUAL', organizationId: null });
   });
 
   it('请求失败向上抛错，不做乐观降级', async () => {

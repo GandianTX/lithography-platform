@@ -15,6 +15,7 @@ import { StatusPill, type StatusPillTone } from '@/shared/ui/status-pill';
 
 import {
   type ActionState,
+  useCleanupLocalBackupPackages,
   useLocalBackupRecords,
   useLocalBackupSettings,
   useLocalRestoreCapability,
@@ -22,6 +23,8 @@ import {
   useRestorePrecheck,
 } from '../application/use-local-backup';
 import type {
+  LocalBackupCleanupItem,
+  LocalBackupCleanupResult,
   LocalBackupRecord,
   LocalBackupSetting,
   LocalRestorePrecheckResult,
@@ -47,13 +50,18 @@ export function LocalBackupPanel() {
   const settings = useLocalBackupSettings();
   const capability = useLocalRestoreCapability();
   const manual = useManualLocalBackup();
+  const cleanup = useCleanupLocalBackupPackages();
   const precheck = useRestorePrecheck();
 
   return (
     <div className="page-stack">
       <AutoBackupSection state={settings.state} />
 
-      <ManualBackupSection actionState={manual.state} onTrigger={() => void manual.trigger()} />
+      <ManualBackupSection
+        actionState={manual.state}
+        cleanupState={cleanup.state}
+        onTrigger={() => void runManualBackupAndCleanup(manual, cleanup)}
+      />
 
       <BackupRecordsSection
         state={records.state}
@@ -77,6 +85,18 @@ export function LocalBackupPanel() {
       ) : null}
     </div>
   );
+}
+
+/** 手动备份并清理：先生成，再进入清理阶段（无完整云端回执时如实不可用） */
+async function runManualBackupAndCleanup(
+  manual: ReturnType<typeof useManualLocalBackup>,
+  cleanup: ReturnType<typeof useCleanupLocalBackupPackages>,
+): Promise<void> {
+  const result = await manual.trigger();
+  if (!result || result.status !== 'SUCCEEDED') {
+    return;
+  }
+  await cleanup.trigger('MANUAL');
 }
 
 function AutoBackupSection({
@@ -204,13 +224,15 @@ function AutoBackupSettingCard({ setting }: { setting: LocalBackupSetting }) {
 
 function ManualBackupSection({
   actionState,
+  cleanupState,
   onTrigger,
 }: {
   actionState: ActionState<StartManualLocalBackupResult>;
+  cleanupState: ActionState<LocalBackupCleanupResult>;
   onTrigger: () => void;
 }) {
   const { t } = useI18n();
-  const running = actionState.status === 'running';
+  const running = actionState.status === 'running' || cleanupState.status === 'running';
 
   return (
     <DataCard
@@ -232,8 +254,81 @@ function ManualBackupSection({
             title={t('local-backup.manual.failed')}
           />
         ) : null}
+        {cleanupState.status === 'running' ? (
+          <LoadingState label={t('local-backup.manual.cleanupRunning')} />
+        ) : null}
+        {cleanupState.status === 'succeeded' ? (
+          <CleanupResultCard result={cleanupState.data} />
+        ) : null}
+        {cleanupState.status === 'failed' ? (
+          <ErrorState
+            description={cleanupState.message}
+            title={t('local-backup.manual.cleanupFailed')}
+          />
+        ) : null}
       </div>
     </DataCard>
+  );
+}
+
+/** 清理结果：已清理与仍保留分别呈现，不合并成一个结论 */
+function CleanupResultCard({ result }: { result: LocalBackupCleanupResult }) {
+  const { t } = useI18n();
+  const unavailable = !result.available;
+  const partiallyFailed = result.retained > 0;
+
+  const columns: ColumnsType<LocalBackupCleanupItem> = [
+    {
+      key: 'backupId',
+      title: t('local-backup.field.backupId'),
+      render: (_, item) => <code>{item.backupId}</code>,
+    },
+    {
+      key: 'outcome',
+      title: t('local-backup.manual.cleanupOutcome'),
+      render: (_, item) => (
+        <StatusPill tone={item.outcome === 'CLEANED' ? 'ok' : 'warn'}>
+          {item.outcome === 'CLEANED'
+            ? t('local-backup.manual.cleaned')
+            : t('local-backup.manual.retained')}
+        </StatusPill>
+      ),
+    },
+    {
+      key: 'reason',
+      title: t('local-backup.manual.retainedReason'),
+      render: (_, item) => item.reason ?? t('local-backup.value.dash'),
+    },
+  ];
+
+  return (
+    <div className="page-stack">
+      <Alert
+        banner
+        showIcon
+        type={unavailable || partiallyFailed ? 'warning' : 'success'}
+        title={
+          unavailable
+            ? t('local-backup.manual.cleanupUnavailable')
+            : t('local-backup.manual.cleanupDone', {
+                cleaned: result.cleaned,
+                retained: result.retained,
+              })
+        }
+        description={unavailable ? (result.reason ?? undefined) : undefined}
+      />
+      {result.items.length > 0 ? (
+        <Table<LocalBackupCleanupItem>
+          columns={columns}
+          dataSource={result.items}
+          locale={{ emptyText: t('local-backup.manual.cleanupEmpty') }}
+          pagination={false}
+          rowKey="backupId"
+          scroll={{ x: 560 }}
+          size="small"
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -414,6 +509,7 @@ function BackupRecordsSection({
             total,
           }}
           rowKey="backupId"
+          scroll={{ x: 900 }}
           size="small"
         />
       </div>

@@ -23,6 +23,7 @@ const adapters = vi.hoisted(() => ({
   fetchLocalBackupRecord: vi.fn(),
   fetchLocalBackupSettings: vi.fn(),
   startManualLocalBackup: vi.fn(),
+  cleanupLocalBackupPackages: vi.fn(),
   precheckLocalRestore: vi.fn(),
   fetchLocalRestoreCapability: vi.fn(),
 }));
@@ -101,6 +102,16 @@ beforeEach(() => {
     uploadStatus: 'PENDING',
     cleanupStatus: 'PENDING',
   });
+  adapters.cleanupLocalBackupPackages.mockResolvedValue({
+    mode: 'MANUAL',
+    organizationId: 4,
+    available: false,
+    reason: 'CLOUD_RECEIPT_MISSING',
+    targetCount: 0,
+    cleaned: 0,
+    retained: 0,
+    items: [],
+  });
   adapters.precheckLocalRestore.mockResolvedValue({
     restoreId: 'restore-1',
     outcome: 'FAILED',
@@ -140,7 +151,7 @@ describe('备份与恢复面板', () => {
   it('手动备份展示真实阶段结果：上云与清理未被伪造为已完成', async () => {
     render(<LocalBackupPanel />);
 
-    const trigger = await screen.findByRole('button', { name: '立即备份' });
+    const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
     fireEvent.click(trigger);
 
     await waitFor(() => {
@@ -151,6 +162,51 @@ describe('备份与恢复面板', () => {
     });
     // 上云与清理两个阶段按实际结果显示 PENDING，不显示为已成功。
     expect(screen.getAllByText('PENDING').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('没有完整云端回执时清理如实不可用，不谎报已清理', async () => {
+    render(<LocalBackupPanel />);
+
+    const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
+    fireEvent.click(trigger);
+
+    await waitFor(() => {
+      expect(adapters.cleanupLocalBackupPackages).toHaveBeenCalledWith('MANUAL');
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/未取得完整云端回执/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/已清理 \d+ 个本地备份包/)).toBeNull();
+  });
+
+  it('部分清理失败时分别显示已清理与仍保留项', async () => {
+    adapters.cleanupLocalBackupPackages.mockResolvedValue({
+      mode: 'MANUAL',
+      organizationId: 4,
+      available: true,
+      reason: null,
+      targetCount: 2,
+      cleaned: 1,
+      retained: 1,
+      items: [
+        { backupId: 'backup-a', outcome: 'CLEANED', reason: null },
+        { backupId: 'backup-b', outcome: 'RETAINED', reason: '本地包删除失败：EACCES' },
+      ],
+    });
+
+    render(<LocalBackupPanel />);
+
+    const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
+    fireEvent.click(trigger);
+
+    await waitFor(() => {
+      expect(screen.getByText(/已清理 1 个本地备份包，仍保留 1 个/)).toBeTruthy();
+    });
+    expect(screen.getByText('backup-a')).toBeTruthy();
+    expect(screen.getByText('backup-b')).toBeTruthy();
+    expect(screen.getByText('已清理')).toBeTruthy();
+    expect(screen.getByText('仍保留')).toBeTruthy();
+    expect(screen.getByText('本地包删除失败：EACCES')).toBeTruthy();
   });
 
   it('恢复预检展示结论与发现项', async () => {

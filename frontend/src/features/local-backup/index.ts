@@ -1,6 +1,7 @@
 // src/features/local-backup/index.ts
 
 export {
+  useCleanupLocalBackupPackages,
   useLocalBackupRecords,
   useLocalBackupSettings,
   useLocalRestoreCapability,
@@ -8,6 +9,9 @@ export {
   useRestorePrecheck,
 } from './application/use-local-backup';
 export type {
+  LocalBackupCleanupItem,
+  LocalBackupCleanupMode,
+  LocalBackupCleanupResult,
   LocalBackupCloudStatus,
   LocalBackupLocalStatus,
   LocalBackupRecord,

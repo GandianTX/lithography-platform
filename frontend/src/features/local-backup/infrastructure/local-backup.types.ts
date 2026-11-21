@@ -127,3 +127,26 @@ export type LocalRestoreCapability = {
   executionAvailable: boolean;
   reason: string;
 };
+
+/** 清理方式：MANUAL 手动清理 / RETENTION 过期清理 */
+export type LocalBackupCleanupMode = 'MANUAL' | 'RETENTION';
+
+/** 单个备份包的清理结果 */
+export type LocalBackupCleanupItem = {
+  backupId: string;
+  outcome: 'CLEANED' | 'RETAINED';
+  reason: string | null;
+};
+
+/** 一轮清理的汇总结果 */
+export type LocalBackupCleanupResult = {
+  mode: LocalBackupCleanupMode;
+  organizationId: number;
+  /** 是否具备清理授权；不可用时已清理数必为 0 */
+  available: boolean;
+  reason: string | null;
+  targetCount: number;
+  cleaned: number;
+  retained: number;
+  items: LocalBackupCleanupItem[];
+};
