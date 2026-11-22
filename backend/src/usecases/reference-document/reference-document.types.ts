@@ -135,7 +135,7 @@ export type CreateReferenceDocumentWithFileCommand = {
 };
 
 /**
- * 存储契约接口 re-export（接口定义在相邻 reference-document-storage.contract.ts；
+ * 存储契约接口 re-export（接口定义在 usecases/common/ports/reference-document-storage.contract.ts；
  * adapter 层架构规则：流程类型从 *.types.ts type-only 导入）。
  */
 export type { ReferenceDocumentStorage } from '@src/usecases/common/ports/reference-document-storage.contract';

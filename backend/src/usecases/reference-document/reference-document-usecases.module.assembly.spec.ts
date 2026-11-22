@@ -25,12 +25,12 @@ import { LoggerModule } from 'nestjs-pino';
 
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
+import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/common/ports/reference-document-storage.contract';
 import { STORED_FILE_STORAGE } from '@src/usecases/common/ports/stored-file-storage.contract';
 import { TRANSACTION_RUNNER } from '@src/usecases/common/ports/transaction-runner.contract';
 import { DownloadReferenceDocumentSourceAttachmentUsecase } from './download-reference-document-source-attachment.usecase';
 import { GetReferenceDocumentEditableContentUsecase } from './get-reference-document-editable-content.usecase';
 import { GetReferenceDocumentFileUsecase } from './get-reference-document-file.usecase';
-import { REFERENCE_DOCUMENT_STORAGE } from './reference-document-storage.contract';
 import { ReferenceDocumentUsecasesModule } from './reference-document-usecases.module';
 import { ReviseReferenceDocumentStructuredUsecase } from './revise-reference-document-structured.usecase';
 import { ReviseReferenceDocumentUsecase } from './revise-reference-document.usecase';
