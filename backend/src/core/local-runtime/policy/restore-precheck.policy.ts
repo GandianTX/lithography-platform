@@ -9,6 +9,8 @@
 
 import { DomainError, LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-error';
 
+import { LOCAL_BACKUP_FAILURE_REASON } from './local-backup-failure-reason';
+
 /** 恢复预检快照结构版本（与数据库 CHECK `chk_backup_restore_run_schema` 的 $.schema_version 同源） */
 export const RESTORE_CHECK_SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -160,7 +162,7 @@ export function evaluateRestoreTarget(input: {
   ) {
     findings.push({
       code: restoreCheckFindingCodeValues.TARGET_INSTALLATION_MISMATCH,
-      message: '备份包不是本机产生的，不能在本机恢复',
+      message: LOCAL_BACKUP_FAILURE_REASON.RESTORE_TARGET_INSTALLATION_MISMATCH,
     });
   }
 
@@ -170,14 +172,14 @@ export function evaluateRestoreTarget(input: {
   ) {
     findings.push({
       code: restoreCheckFindingCodeValues.TARGET_ORGANIZATION_MISMATCH,
-      message: '备份包不属于当前有权公司',
+      message: LOCAL_BACKUP_FAILURE_REASON.RESTORE_TARGET_ORGANIZATION_MISMATCH,
     });
   }
 
   if (!input.localPackageRetained) {
     findings.push({
       code: restoreCheckFindingCodeValues.LOCAL_PACKAGE_MISSING,
-      message: '本机已无该备份包，需要先从云端取得可用副本',
+      message: LOCAL_BACKUP_FAILURE_REASON.RESTORE_LOCAL_PACKAGE_MISSING,
     });
   }
 
