@@ -70,6 +70,7 @@ export const syncStatusReasonCodeEnum = {
   RECEIPT_MISSING: 'RECEIPT_MISSING',
   RECEIPT_VERSION_MISMATCH: 'RECEIPT_VERSION_MISMATCH',
   RECEIPT_INCOMPLETE: 'RECEIPT_INCOMPLETE',
+  RECEIPT_STATUS_UNKNOWN: 'RECEIPT_STATUS_UNKNOWN',
   RECEIPT_SOURCE_UNCONFIRMED: 'RECEIPT_SOURCE_UNCONFIRMED',
   TASK_RECEIPT_INCONSISTENT: 'TASK_RECEIPT_INCONSISTENT',
   CONFLICT_PENDING: 'CONFLICT_PENDING',
@@ -94,6 +95,11 @@ export const SYNC_TASK_STATUSES = [
 
 export type SyncTaskStatus = (typeof SYNC_TASK_STATUSES)[number];
 
+/** 本机已知回执状态（与 `sync_receipt.receipt_status` 的取值一致） */
+export const SYNC_RECEIPT_STATUSES = ['PENDING', 'SUCCEEDED', 'FAILED', 'CONFLICT'] as const;
+
+export type SyncReceiptStatus = (typeof SYNC_RECEIPT_STATUSES)[number];
+
 /** 正文类任务用途：只有这类任务成功才可能说明正文已同步 */
 export const SYNC_BODY_ENTITY_TYPES = ['REPORT_VERSION'] as const;
 
@@ -111,8 +117,8 @@ export type SyncStatusTaskFact = {
 
 /** 当前版本的回执事实 */
 export type SyncStatusReceiptFact = {
-  /** sync_receipt.receipt_status */
-  status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CONFLICT';
+  /** sync_receipt.receipt_status；不在已知集合内时按 UNKNOWN 处理 */
+  status: SyncReceiptStatus | 'UNKNOWN';
   /** sync_receipt.version_no */
   versionNo: number;
   /** sync_receipt.manifest_checksum：与任务登记摘要一致才算完整 */
@@ -354,6 +360,11 @@ function resolveReceiptOutcome(facts: SyncStatusFacts): SyncStatusOutcome {
   }
   if (receipt.status === 'CONFLICT') {
     return outcome('CONFLICT', syncStatusReasonCodeEnum.CONFLICT_PENDING);
+  }
+  // 只有明确的 SUCCEEDED 才能继续走向 SYNCED。
+  // 未知回执状态（DB CHECK 兜底之外的历史行／外部写入）不得落到 SYNCED 分支。
+  if (receipt.status !== 'SUCCEEDED') {
+    return outcome('UNKNOWN', syncStatusReasonCodeEnum.RECEIPT_STATUS_UNKNOWN);
   }
   // 任务用途不是正文（仅附件等）时，不能证明正文已同步
   if (

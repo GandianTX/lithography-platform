@@ -226,6 +226,19 @@ describe('resolveSyncStatus（同步状态聚合纯规则）', () => {
     expect(result.conflictId).toBeNull();
   });
 
+  // review M10：未知回执状态不得落到 SYNCED 分支
+  it('未知回执状态按未知处理，不判已同步', () => {
+    const result = resolveSyncStatus(
+      baseFacts({
+        task: successfulTask(),
+        receipt: successfulReceipt({ status: 'UNKNOWN' }),
+      }),
+    );
+
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reasonCode).toBe('RECEIPT_STATUS_UNKNOWN');
+  });
+
   it('任务与同版本回执互相矛盾时按未知处理，不显示成功', () => {
     const pendingWithReceipt = resolveSyncStatus(
       baseFacts({

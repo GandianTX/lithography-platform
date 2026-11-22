@@ -2,6 +2,7 @@
 
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
 import {
+  MAX_CLAIM_KEY_DEPTH,
   collectClaimKeys,
   isForbiddenClaimKey,
   isRenewalAllowed,
@@ -114,5 +115,74 @@ describe('local authorization renewal policy', () => {
     expect(collectClaimKeys({ a: [{ d: 1 }] })).toEqual(['a', 'd']);
     expect(isForbiddenClaimKey(' RefreshToken ')).toBe(true);
     expect(isForbiddenClaimKey('scope')).toBe(false);
+  });
+
+  // review M9：授权材料改白名单，并去掉「深度 >8 即停止扫描」的绕过口
+  describe('白名单口径', () => {
+    it('白名单内的键通过', () => {
+      expect(() =>
+        validateAuthorizationRenewalInput({
+          ...validInput,
+          signedClaims: {
+            sub: 'account-16',
+            iss: 'https://cloud.example',
+            aud: 'local-runtime',
+            exp: 1_800_000_000,
+            iat: 1_700_000_000,
+            scopes: ['repair:read'],
+            permissionVersion: 3,
+            organizationId: 4,
+            role: 'ENGINEER',
+            adminLevel: null,
+          },
+        }),
+      ).not.toThrow();
+    });
+
+    it('敏感键变体被拒：api_key／jwt／passwd／token', () => {
+      for (const key of ['api_key', 'apikey', 'jwt', 'passwd', 'token', 'credential']) {
+        expectPolicyError(
+          () =>
+            validateAuthorizationRenewalInput({
+              ...validInput,
+              signedClaims: { sub: 'account-16', [key]: 'x' },
+            }),
+          SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
+        );
+      }
+    });
+
+    it('不在白名单内的键被拒（默认拒绝，不靠黑名单兜底）', () => {
+      expectPolicyError(
+        () =>
+          validateAuthorizationRenewalInput({
+            ...validInput,
+            signedClaims: { sub: 'account-16', nickname: '张三' },
+          }),
+        SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
+      );
+    });
+
+    it('嵌套深处的敏感键同样被拒（不再靠深度截断放过）', () => {
+      expectPolicyError(
+        () =>
+          validateAuthorizationRenewalInput({
+            ...validInput,
+            signedClaims: { meta: { list: [{ deeper: { deepest: { api_key: 'x' } } }] } },
+          }),
+        SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
+      );
+    });
+
+    it('嵌套层级过深直接拒绝（fail closed，不再静默停止扫描）', () => {
+      let nested: Record<string, unknown> = { api_key: 'x' };
+      for (let level = 0; level < MAX_CLAIM_KEY_DEPTH + 2; level += 1) {
+        nested = { level: nested };
+      }
+      expectPolicyError(
+        () => validateAuthorizationRenewalInput({ ...validInput, signedClaims: nested }),
+        SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
+      );
+    });
   });
 });

@@ -11,11 +11,13 @@ import {
   resolveSyncStatus,
   resolveSyncApplicability,
   SYNC_TASK_STATUSES,
+  SYNC_RECEIPT_STATUSES,
   type SyncCompanyApplicabilityFacts,
   type SyncStatusConflictFact,
   type SyncStatusFacts,
   type SyncStatusReceiptFact,
   type SyncStatusTaskFact,
+  type SyncReceiptStatus,
   type SyncTaskStatus,
 } from '@core/local-runtime/policy/sync-status.policy';
 import { resolveSyncConflictEntry } from '@core/local-runtime/policy/sync-conflict-entry.policy';
@@ -44,6 +46,7 @@ import {
 } from './sync-status.contract';
 
 const KNOWN_TASK_STATUSES = new Set<string>(SYNC_TASK_STATUSES);
+const KNOWN_RECEIPT_STATUSES = new Set<string>(SYNC_RECEIPT_STATUSES);
 
 /**
  * 业务同步状态批量查询用例（任务 09 后续S1／S2）。
@@ -448,7 +451,10 @@ export class QuerySyncStatusesUsecase implements SyncStatusQueryPort {
       row.manifestChecksum !== null &&
       row.manifestChecksum === task.manifestChecksum;
     return {
-      status: row.receiptStatus as SyncStatusReceiptFact['status'],
+      // 入口归一：未知回执状态按 UNKNOWN 处理，不做 `as` 断言
+      status: KNOWN_RECEIPT_STATUSES.has(row.receiptStatus)
+        ? (row.receiptStatus as SyncReceiptStatus)
+        : 'UNKNOWN',
       versionNo: row.versionNo,
       manifestChecksum: row.manifestChecksum,
       sourceInstallationConfirmed,

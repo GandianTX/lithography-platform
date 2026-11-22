@@ -35,6 +35,8 @@ const FORBIDDEN_CLAIM_KEYS = [
   'password',
   'passwordhash',
   'password_hash',
+  'passwd',
+  'pass',
   'loginpassword',
   'login_password',
   'secret',
@@ -46,6 +48,18 @@ const FORBIDDEN_CLAIM_KEYS = [
   'encryption_key',
   'protectionkey',
   'protection_key',
+  'signingkey',
+  'signing_key',
+  'apikey',
+  'api_key',
+  'jwt',
+  'token',
+  'bearer',
+  'credential',
+  'credentials',
+  'authorization',
+  'sessionkey',
+  'session_key',
   'accesstoken',
   'access_token',
   'refreshtoken',
@@ -54,14 +68,64 @@ const FORBIDDEN_CLAIM_KEYS = [
   'id_token',
 ] as const;
 
+/**
+ * 签名凭据**允许**出现的键（白名单）。
+ *
+ * 口径（R067／review M9）：授权材料只写本地确实需要的身份与权限事实。
+ * 黑名单是"漏一个就放过"的写法——`api_key`、`jwt`、`passwd` 之类变体可以绕过；
+ * 白名单则默认拒绝，未明确允许的一律不接受。
+ *
+ * 真实接收端（X07／云）接入后若 claim 契约变化，按实际契约**收敛**本表，
+ * 不放宽成"黑名单＋例外"。
+ */
+const ALLOWED_CLAIM_KEYS = new Set([
+  // 标准注册声明
+  'sub',
+  'iss',
+  'aud',
+  'exp',
+  'iat',
+  'nbf',
+  'jti',
+  // 本地需要的权限事实
+  'scopes',
+  'scope',
+  'permissions',
+  'permissionversion',
+  'organizationid',
+  'accountid',
+  'installationid',
+  'role',
+  'adminlevel',
+]);
+
 export function isForbiddenClaimKey(key: string): boolean {
   return (FORBIDDEN_CLAIM_KEYS as readonly string[]).includes(key.trim().toLowerCase());
 }
 
-/** 深度收集对象键名（数组与嵌套对象都查），用于拒绝敏感材料进入本地事实 */
+/** 键是否在签名凭据白名单内（大小写与首尾空白不敏感） */
+export function isAllowedClaimKey(key: string): boolean {
+  return ALLOWED_CLAIM_KEYS.has(key.trim().toLowerCase());
+}
+
+/** 收集键名时允许的最大嵌套深度 */
+export const MAX_CLAIM_KEY_DEPTH = 8;
+
+/**
+ * 深度收集对象键名（数组与嵌套对象都查），用于拒绝敏感材料进入本地事实。
+ *
+ * 深度超限时**拒绝**（fail closed），不做静默截断：
+ * 此前"深度 >8 即停止扫描"等于给绕过留了后门——把敏感键放到第 9 层即可躲开检查。
+ */
 export function collectClaimKeys(value: unknown, depth = 0): string[] {
-  if (depth > 8 || value === null || typeof value !== 'object') {
+  if (value === null || typeof value !== 'object') {
     return [];
+  }
+  if (depth > MAX_CLAIM_KEY_DEPTH) {
+    throw new DomainError(
+      SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
+      '凭据材料嵌套层级过深，无法确认不含敏感材料',
+    );
   }
   if (Array.isArray(value)) {
     return value.flatMap((item) => collectClaimKeys(item, depth + 1));
@@ -77,6 +141,7 @@ export function collectClaimKeys(value: unknown, depth = 0): string[] {
  * 校验续期载荷：
  * - 必须是普通对象（不含原型链怪键）；
  * - 任一键命中禁止清单即拒绝（R067：不得把密码／密钥写入凭据、日志或冲突页）；
+ * - **只允许白名单内的键**（review M9：黑名单可被变体绕过，白名单默认拒绝）；
  * - `permissionVersion` 必须为 >=1 的整数（对齐 DB CHECK）。
  */
 export function validateAuthorizationRenewalInput(input: LocalAuthorizationRenewalInput): void {
@@ -85,11 +150,18 @@ export function validateAuthorizationRenewalInput(input: LocalAuthorizationRenew
     throw new DomainError(SYNC_ERROR.CLAIMS_INVALID, '签名凭据必须是对象');
   }
   const keys = collectClaimKeys(claims);
-  const hit = keys.find((key) => isForbiddenClaimKey(key));
-  if (hit !== undefined) {
+  const forbidden = keys.find((key) => isForbiddenClaimKey(key));
+  if (forbidden !== undefined) {
     throw new DomainError(
       SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
-      `签名凭据包含禁止写入本地事实的敏感材料：${hit}`,
+      `签名凭据包含禁止写入本地事实的敏感材料：${forbidden}`,
+    );
+  }
+  const notAllowed = keys.find((key) => !isAllowedClaimKey(key));
+  if (notAllowed !== undefined) {
+    throw new DomainError(
+      SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL,
+      `签名凭据包含不在白名单内的键：${notAllowed}`,
     );
   }
   if (!Number.isInteger(input.permissionVersion) || input.permissionVersion < 1) {
