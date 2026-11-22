@@ -278,7 +278,8 @@ export class LocalBackupCleanupService {
   /**
    * 过期清理：按约 30 天保留窗口清理本机本公司的本地包。
    *
-   * 云端副本不可证的包不动（本地包是唯一副本，不能删）；不强制留最近一份。
+   * 云副本**不作前置**（清理按"成功本地包 ＋ 期限"判断，不看云端是否可证）；
+   * 不强制保留最近一份。
    */
   async cleanupExpiredPackages(input: {
     organizationId: number;

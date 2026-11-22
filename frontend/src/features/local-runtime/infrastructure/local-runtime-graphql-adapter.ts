@@ -128,3 +128,43 @@ export async function fetchLocalRuntimeStatus(): Promise<LocalRuntimeStatus> {
 
   return mapLocalRuntimeStatus(payload);
 }
+
+const UPDATE_LOCAL_BACKUP_PLAN_MUTATION = `
+  mutation UpdateLocalBackupPlan(
+    $organizationId: Int!
+    $backupEnabled: Boolean
+    $autoUploadEnabled: Boolean
+  ) {
+    updateLocalBackupPlan(
+      organizationId: $organizationId
+      backupEnabled: $backupEnabled
+      autoUploadEnabled: $autoUploadEnabled
+    ) {
+      organizationId
+      backupEnabled
+      backupIntervalHours
+      nextBackupAt
+      autoUploadEnabled
+      initializedAt
+    }
+  }
+`;
+
+/**
+ * 修改公司维度的本地备份计划开关（任务 09 S4）。
+ *
+ * 本地自动备份与云自动上云**分开控制**；改开关不重置周期、不触发备份动作。
+ * 准入由服务端裁决（工程师拒绝；一级管理员全局；二级管理员仅本公司）。
+ */
+export async function updateLocalBackupPlan(input: {
+  organizationId: number;
+  backupEnabled?: boolean;
+  autoUploadEnabled?: boolean;
+}): Promise<LocalRuntimeCompanySetting> {
+  const data = await executeGraphQL<
+    { updateLocalBackupPlan: LocalRuntimeCompanySetting },
+    { organizationId: number; backupEnabled?: boolean; autoUploadEnabled?: boolean }
+  >(UPDATE_LOCAL_BACKUP_PLAN_MUTATION, input);
+
+  return data.updateLocalBackupPlan;
+}

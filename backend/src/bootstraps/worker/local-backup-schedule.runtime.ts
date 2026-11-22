@@ -2,6 +2,7 @@
 
 import { Injectable, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
+import { BACKUP_UPLOAD_DETECT_INTERVAL_MINUTES } from '@core/local-runtime/policy/local-backup-upload.policy';
 import { BackupScheduleService } from '@src/modules/lithography/backup-schedule.service';
 import { LocalBackupCleanupService } from '@src/modules/lithography/local-backup-cleanup.service';
 import { LocalBackupUploadService } from '@src/modules/lithography/local-backup-upload.service';
@@ -32,7 +33,11 @@ export class LocalBackupScheduleRuntime implements OnApplicationBootstrap, OnApp
 
   onApplicationBootstrap(): void {
     void this.runCycle();
-    this.timer = setInterval(() => void this.runCycle(), 5 * 60_000);
+    // 检测周期取**策略层常量**（不再另写一份 5 分钟，避免口径漂移）
+    this.timer = setInterval(
+      () => void this.runCycle(),
+      BACKUP_UPLOAD_DETECT_INTERVAL_MINUTES * 60_000,
+    );
     this.logger.log('local backup schedule runtime started (interval=5min)');
   }
 

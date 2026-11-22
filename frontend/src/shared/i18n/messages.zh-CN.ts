@@ -141,6 +141,7 @@ export const ZH_CN_MESSAGES = {
   'local-settings.field.runningBackupCount': '运行中备份',
   'local-settings.field.lastBackupStartedAt': '最近备份开始',
   'local-settings.field.lastBackupFinishedAt': '最近备份结束',
+  'local-settings.companies.toggleFailed': '备份计划开关修改失败，请稍后重试。',
   'local-settings.companies.empty': '本公司尚未建立备份计划（首次备份页保存或后台初始化后出现）。',
   'local-settings.companies.organization': '公司',
   'local-settings.companies.backupEnabled': '自动备份',

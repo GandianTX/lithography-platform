@@ -168,7 +168,7 @@ describe('local backup upload service', () => {
     return { service, updates };
   }
 
-  it('云接收端未接入时如实跳过：不伪造尝试、不增长尝试次数、不改资产状态', async () => {
+  it('云接收端未接入时如实跳过：不伪造尝试、不增长尝试次数、不改上云状态（但落受控原因码）', async () => {
     const { service, updates } = buildService({
       assets: [asset()],
       settings: [setting()],
@@ -181,7 +181,12 @@ describe('local backup upload service', () => {
     expect(result.attempted).toBe(0);
     expect(result.succeeded).toBe(0);
     expect(result.failed).toBe(0);
-    expect(updates).toHaveLength(0);
+    // 只落受控原因码（页面可见"为什么没上传"），**不改上云状态**、不伪造尝试
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch).toEqual({
+      failureReason: 'LOCAL_UPLOAD_RECEIVER_MISSING',
+    });
+    expect(updates[0].patch).not.toHaveProperty('cloudStatus');
   });
 
   it('可选依赖未注册时（Nest 注入 undefined）同样按未接入处理', async () => {
@@ -199,7 +204,12 @@ describe('local backup upload service', () => {
     expect(result.attempted).toBe(0);
     expect(result.succeeded).toBe(0);
     expect(result.failed).toBe(0);
-    expect(updates).toHaveLength(0);
+    // 只落受控原因码（页面可见"为什么没上传"），**不改上云状态**、不伪造尝试
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch).toEqual({
+      failureReason: 'LOCAL_UPLOAD_RECEIVER_MISSING',
+    });
+    expect(updates[0].patch).not.toHaveProperty('cloudStatus');
   });
 
   it('上传失败后按退避重试同一备份包，不生成新的资产或包', async () => {

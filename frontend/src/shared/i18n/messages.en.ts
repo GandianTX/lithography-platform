@@ -146,6 +146,8 @@ export const EN_MESSAGES = {
   'local-settings.field.runningBackupCount': 'Running backups',
   'local-settings.field.lastBackupStartedAt': 'Last backup started',
   'local-settings.field.lastBackupFinishedAt': 'Last backup finished',
+  'local-settings.companies.toggleFailed':
+    'Failed to update the backup plan switches. Please retry later.',
   'local-settings.companies.empty':
     'No backup plan for this company yet (created on first save from the backup page or by background initialisation).',
   'local-settings.companies.organization': 'Company',

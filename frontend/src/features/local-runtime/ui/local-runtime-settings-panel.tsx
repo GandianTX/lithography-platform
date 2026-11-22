@@ -1,7 +1,11 @@
 // src/features/local-runtime/ui/local-runtime-settings-panel.tsx
 
-import { Alert, Descriptions } from 'antd';
+import { useState } from 'react';
+import { Alert, Descriptions, Switch } from 'antd';
 
+import { useAuthSession } from '@/features/auth-session';
+
+import { isGraphQLIngressError } from '@/shared/graphql';
 import { type MessageKey, useI18n } from '@/shared/i18n';
 import { PrimaryButton } from '@/shared/ui/buttons';
 import { DataCard } from '@/shared/ui/data-card';
@@ -20,6 +24,7 @@ import type {
   LocalRuntimeTaskStatus,
   LocalRuntimeViewerRole,
 } from '../infrastructure/local-runtime.types';
+import { updateLocalBackupPlan } from '../infrastructure/local-runtime-graphql-adapter';
 
 const ROLE_LABEL_KEY: Record<LocalRuntimeViewerRole, MessageKey> = {
   ADMIN_LEVEL_1: 'local-settings.role.adminLevel1',
@@ -38,6 +43,36 @@ const ROLE_LABEL_KEY: Record<LocalRuntimeViewerRole, MessageKey> = {
 export function LocalRuntimeSettingsPanel() {
   const { t } = useI18n();
   const { state, reload } = useLocalRuntimeStatus();
+  // 备份计划开关可写性：一级管理员（全局）与二级管理员（本公司）可写，工程师只读。
+  // 服务端仍会复核（前端判断只是少画一个不该画的开关，不作为权限依据）。
+  const auth = useAuthSession();
+  const adminLevel = auth.status === 'authenticated' ? auth.session.adminLevel : null;
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+
+  const handleToggle = async (
+    company: LocalRuntimeCompanySetting,
+    next: { backupEnabled?: boolean; autoUploadEnabled?: boolean },
+  ) => {
+    const key = `${company.organizationId}:${next.backupEnabled === undefined ? 'cloud' : 'local'}`;
+    setSavingKey(key);
+    setToggleError(null);
+    try {
+      await updateLocalBackupPlan({
+        organizationId: company.organizationId,
+        ...next,
+      });
+      await reload();
+    } catch (error) {
+      setToggleError(
+        isGraphQLIngressError(error)
+          ? error.userMessage
+          : t('local-settings.companies.toggleFailed'),
+      );
+    } finally {
+      setSavingKey(null);
+    }
+  };
 
   if (state.status === 'loading') {
     return <LoadingState label={t('local-settings.loading')} />;
@@ -67,10 +102,33 @@ export function LocalRuntimeSettingsPanel() {
     );
   }
 
-  return <LocalRuntimeSettingsView data={state.data} />;
+  return (
+    <LocalRuntimeSettingsView
+      data={state.data}
+      onToggle={(company, next) => void handleToggle(company, next)}
+      savingKey={savingKey}
+      toggleError={toggleError}
+      writable={adminLevel !== null}
+    />
+  );
 }
 
-function LocalRuntimeSettingsView({ data }: { data: LocalRuntimeStatus }) {
+function LocalRuntimeSettingsView({
+  data,
+  onToggle,
+  savingKey,
+  toggleError,
+  writable,
+}: {
+  data: LocalRuntimeStatus;
+  onToggle: (
+    company: LocalRuntimeCompanySetting,
+    next: { backupEnabled?: boolean; autoUploadEnabled?: boolean },
+  ) => void;
+  savingKey: string | null;
+  toggleError: string | null;
+  writable: boolean;
+}) {
   const { t } = useI18n();
   const scopeText =
     data.scopeOrganizationId === null
@@ -211,12 +269,21 @@ function LocalRuntimeSettingsView({ data }: { data: LocalRuntimeStatus }) {
       </DataCard>
 
       <DataCard title={t('local-settings.section.companies')}>
+        {toggleError === null ? null : (
+          <Alert description={toggleError} message={toggleError} showIcon type="error" />
+        )}
         {data.companies.length === 0 ? (
           <EmptyState title={t('local-settings.companies.empty')} />
         ) : (
           <div className="page-stack">
             {data.companies.map((company) => (
-              <CompanySettingBlock company={company} key={company.organizationId} />
+              <CompanySettingBlock
+                company={company}
+                key={company.organizationId}
+                onToggle={(next) => onToggle(company, next)}
+                savingKey={savingKey}
+                writable={writable}
+              />
             ))}
           </div>
         )}
@@ -336,7 +403,17 @@ function AuthorizationBlock({
   );
 }
 
-function CompanySettingBlock({ company }: { company: LocalRuntimeCompanySetting }) {
+function CompanySettingBlock({
+  company,
+  onToggle,
+  savingKey,
+  writable,
+}: {
+  company: LocalRuntimeCompanySetting;
+  onToggle: (next: { backupEnabled?: boolean; autoUploadEnabled?: boolean }) => void;
+  savingKey: string | null;
+  writable: boolean;
+}) {
   const { t } = useI18n();
 
   return (
@@ -352,7 +429,13 @@ function CompanySettingBlock({ company }: { company: LocalRuntimeCompanySetting 
         {
           key: 'backupEnabled',
           label: t('local-settings.companies.backupEnabled'),
-          children: (
+          children: writable ? (
+            <Switch
+              checked={company.backupEnabled}
+              loading={savingKey === `${company.organizationId}:local`}
+              onChange={(checked) => onToggle({ backupEnabled: checked })}
+            />
+          ) : (
             <StatusPill tone={company.backupEnabled ? 'ok' : 'neutral'}>
               {company.backupEnabled
                 ? t('local-settings.value.enabled')
@@ -368,7 +451,13 @@ function CompanySettingBlock({ company }: { company: LocalRuntimeCompanySetting 
         {
           key: 'autoUploadEnabled',
           label: t('local-settings.companies.autoUpload'),
-          children: (
+          children: writable ? (
+            <Switch
+              checked={company.autoUploadEnabled}
+              loading={savingKey === `${company.organizationId}:cloud`}
+              onChange={(checked) => onToggle({ autoUploadEnabled: checked })}
+            />
+          ) : (
             <StatusPill tone={company.autoUploadEnabled ? 'ok' : 'neutral'}>
               {company.autoUploadEnabled
                 ? t('local-settings.value.enabled')

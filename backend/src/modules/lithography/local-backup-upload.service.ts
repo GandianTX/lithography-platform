@@ -86,8 +86,15 @@ export class LocalBackupUploadService {
 
     const candidates = await this.listRetryableAssets();
     if (this.uploader === null) {
-      // 云接收端未接入：如实跳过，不伪造尝试。
+      // 云接收端未接入：如实跳过，**不伪造尝试**（不改上云状态、不增长尝试次数）；
+      // 同时把受控原因码落到资产行，否则页面只能看到"待上传"而看不到"为什么没上传"。
       result.receiverMissing = candidates.length;
+      for (const asset of candidates) {
+        await this.backupAssetRepository.update(
+          { backupId: asset.backupId },
+          { failureReason: LOCAL_BACKUP_FAILURE_REASON.UPLOAD_RECEIVER_MISSING },
+        );
+      }
       return result;
     }
 

@@ -87,6 +87,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// 面板按会话判定开关可写性（工程师只读）；这里以匿名会话渲染只读形态
+vi.mock('@/features/auth-session', () => ({
+  useAuthSession: () => ({ session: null, status: 'anonymous' }),
+}));
+
 describe('本地设置只读面板', () => {
   it('加载态展示读取提示，不伪造任何运行事实', () => {
     adapters.fetchLocalRuntimeStatus.mockReturnValue(new Promise(() => undefined));
