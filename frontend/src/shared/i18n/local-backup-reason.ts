@@ -38,13 +38,9 @@ const REASON_MESSAGE_KEYS: Readonly<Record<string, MessageKey>> = {
   LOCAL_RESTORE_TARGET_ORGANIZATION_MISMATCH:
     'local-backup.reason.restoreTargetOrganizationMismatch',
   LOCAL_RESTORE_LOCAL_PACKAGE_MISSING: 'local-backup.reason.restoreLocalPackageMissing',
-  // 云副本与保留窗口
-  LOCAL_CLOUD_RECEIPT_MISSING: 'local-backup.reason.cloudReceiptMissing',
-  LOCAL_CLOUD_RECEIPT_UNPARSEABLE: 'local-backup.reason.cloudReceiptUnparsable',
-  LOCAL_CLOUD_RECEIPT_NOT_SUCCESS: 'local-backup.reason.cloudReceiptNotSuccess',
-  LOCAL_CLOUD_COPY_UNVERIFIED: 'local-backup.reason.cloudCopyUnverified',
+  // 保留窗口
   LOCAL_RETENTION_NOT_EXPIRED: 'local-backup.reason.retentionNotExpired',
-  // 清理授权层原因码（公司级回执不完整）
+  // 清理授权层原因码（本次手动备份未取得完整回执）
   CLOUD_RECEIPT_MISSING: 'local-backup.reason.cloudReceiptMissing',
   CLOUD_RECEIPT_UNPARSEABLE: 'local-backup.reason.cloudReceiptUnparsable',
   CLOUD_RECEIPT_NOT_SUCCESS: 'local-backup.reason.cloudReceiptNotSuccess',

@@ -223,8 +223,6 @@ export const EN_MESSAGES = {
   'local-backup.reason.cloudReceiptMissing': 'Complete cloud receipt missing',
   'local-backup.reason.cloudReceiptUnparsable': 'Cloud receipt cannot be parsed',
   'local-backup.reason.cloudReceiptNotSuccess': 'Cloud receipt is not in a success state',
-  'local-backup.reason.cloudCopyUnverified':
-    'Cloud copy unverified; the local package is the only copy and was kept',
   'local-backup.reason.retentionNotExpired': 'Retention window has not expired',
   'local-backup.auto.title': 'Auto Backup Settings',
   'local-backup.auto.loadFailed': 'Failed to load auto-backup settings',
@@ -243,11 +241,11 @@ export const EN_MESSAGES = {
   'local-backup.manual.title': 'Manual Backup',
   'local-backup.manual.trigger': 'Back Up and Clean Local Backup Packages',
   'local-backup.manual.notice':
-    'Only backup packages of this device and company are cleaned up; business data, business originals and cloud copies are never deleted. Cleanup runs only after a complete cloud receipt is obtained. The generation, upload and cleanup stages show their actual states.',
+    'Only backup packages of this device and company are cleaned up; business data, business originals and cloud copies are never deleted. Cleanup runs only after this manual backup obtains a complete cloud receipt. The generation, upload and cleanup stages show their actual states.',
   'local-backup.manual.cleanupRunning': 'Cleaning local backup packages…',
   'local-backup.manual.cleanupFailed': 'Failed to clean local backup packages',
   'local-backup.manual.cleanupUnavailable':
-    'No complete cloud receipt was obtained, so the local backup packages were not cleaned up.',
+    'This manual backup did not obtain a complete cloud receipt, so the local backup packages were not cleaned up.',
   'local-backup.manual.cleanupDone':
     '{cleaned} local backup package(s) cleaned up, {retained} still retained.',
   'local-backup.manual.cleanupOutcome': 'Cleanup Result',
