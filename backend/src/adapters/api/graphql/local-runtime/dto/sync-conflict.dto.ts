@@ -88,6 +88,23 @@ export class SyncConflictDTO {
   })
   diff?: SyncConflictDiffDTO | null;
 
+  @Field(() => Int, {
+    nullable: true,
+    description: '来源记录的本机 ID（来源页入口用；取不到时为 null）',
+  })
+  sourceRecordId?: number | null;
+
+  @Field(() => Boolean, {
+    description: '来源内容是否只读（已删除／下架／冻结／结单）：只读内容不得恢复或覆盖',
+  })
+  sourceReadOnly?: boolean;
+
+  @Field(() => String, {
+    nullable: true,
+    description: '只读受控原因码（SOURCE_WITHDRAWN／SOURCE_FROZEN／SOURCE_CLOSED）',
+  })
+  sourceReadOnlyReason?: string | null;
+
   @Field(() => Int, { nullable: true, description: '确认处理人账号；待处理时为 null' })
   confirmedByAccountId?: number | null;
 
@@ -205,6 +222,9 @@ export function toSyncConflictDTO(view: SyncConflictSnapshot): SyncConflictDTO {
     cloudSnapshot: view.cloudSnapshot,
     conflictReason: view.conflictReason,
     diff: view.diff === undefined || view.diff === null ? null : toSyncConflictDiffDTO(view.diff),
+    sourceRecordId: view.sourceRecordId ?? null,
+    sourceReadOnly: view.sourceReadOnly ?? false,
+    sourceReadOnlyReason: view.sourceReadOnlyReason ?? null,
     confirmedByAccountId: view.confirmedByAccountId,
     confirmedAt: view.confirmedAt,
     createdAt: view.createdAt,

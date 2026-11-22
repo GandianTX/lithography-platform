@@ -52,6 +52,7 @@ import { RegisterEngineerPage } from '@/pages/register-engineer';
 import { RepairRequestCreatePage } from '@/pages/repair-request-create';
 import { RestrictedPage } from '@/pages/restricted';
 import { canAccessSharedUiGallery, SharedUiGalleryPage } from '@/pages/shared-ui-gallery';
+import { SyncConflictsPage } from '@/pages/sync-conflicts';
 import { Error403, Error404, Error500, ErrorRouteCrash } from '@/features/error-feedback';
 
 import { getAppEnv } from '@/shared/env';
@@ -233,6 +234,14 @@ const router = createBrowserRouter([
         element: <AccountSettingsPage />,
         loader: protectedRouteLoader,
         path: 'account/settings',
+      },
+      {
+        // 同步冲突页（任务 09 S2.3）：工程师与管理员的冲突处理入口（差异对照 + 裁决）。
+        // 角色放行由 auth-session 的 /engineer 根路径表覆盖；可读范围与是否可裁决
+        // 由服务端按 Session 裁决，前端不传公司参数。
+        element: <SyncConflictsPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/sync-conflicts',
       },
       {
         // 备份与恢复（任务 09 S3/S4）：自动备份设置、手动备份、备份记录与恢复预检。

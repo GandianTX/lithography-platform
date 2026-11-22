@@ -30,6 +30,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       '/engineer/maintenance-records/new',
       '/engineer/work-order-summaries',
       // 任务 07 我的资料记录入口
+      '/engineer/sync-conflicts',
       '/engineer/records',
       '/reference-documents',
       '/account/settings',
@@ -50,6 +51,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     expect(paths).toEqual([
       '/',
       '/engineer/ai',
+      '/engineer/sync-conflicts',
       '/engineer/records',
       '/reference-documents',
       '/admin/users',
@@ -70,6 +72,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       expect(getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path)).toEqual([
         '/',
         '/engineer/ai',
+        '/engineer/sync-conflicts',
         '/engineer/records',
         '/reference-documents',
         '/admin/users',
@@ -86,6 +89,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     expect(getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path)).toEqual([
       '/',
       '/engineer/ai',
+      '/engineer/sync-conflicts',
       '/engineer/records',
       '/reference-documents',
       '/account/settings',

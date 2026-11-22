@@ -84,6 +84,18 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['engineer', 'work', 'order', 'summary', '工单维修总结', '只读核对'],
   },
   {
+    descriptionKey: 'nav.engineer-sync-conflicts.description',
+    id: 'engineer-sync-conflicts',
+    kind: 'stable',
+    labelKey: 'nav.engineer-sync-conflicts.label',
+    // 任务 09 S2.3：同步冲突处理页（差异对照 + 裁决）。工程师与管理员可见；
+    // 可读范围、是否可裁决、只读内容是否可恢复全部由服务端按 Session 裁决，
+    // 前端只决定"是否允许进入该路由"。
+    path: '/engineer/sync-conflicts',
+    roles: ['ENGINEER', 'SUPER_ADMIN'],
+    tags: ['sync', 'conflict', 'diff', '同步', '冲突', '差异', '裁决'],
+  },
+  {
     descriptionKey: 'nav.my-records.description',
     id: 'my-records',
     kind: 'stable',

@@ -37,6 +37,15 @@ export type SyncConflictSnapshot = {
    * 摘要视图不含差异（无快照可比），故为可选。
    */
   diff?: SyncConflictDiffResult | null;
+  /**
+   * 来源记录的**本机** ID（任务 09 S2.3）：页面据此跳回来源页入口。
+   * 取不到时为 null（页面据此不提供来源页跳转，不猜路径）。
+   */
+  sourceRecordId?: number | null;
+  /** 来源内容是否只读（已删除／下架／冻结／结单）：只读内容不得恢复或覆盖 */
+  sourceReadOnly?: boolean;
+  /** 只读受控原因码 */
+  sourceReadOnlyReason?: string | null;
   confirmedByAccountId: number | null;
   confirmedAt: Date | null;
   createdAt: Date;

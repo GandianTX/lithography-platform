@@ -2,11 +2,17 @@
 
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { computeSyncConflictDiff } from '@core/local-runtime/policy/sync-conflict-diff.policy';
+import { resolveSyncConflictReadOnly } from '@core/local-runtime/policy/sync-conflict-readonly.policy';
 import { Injectable } from '@nestjs/common';
 import type { GetSyncConflictCommand } from './local-runtime.command.types';
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 import { SyncConflictAccessResolver } from './sync-conflict-access.resolver';
 import { SyncConflictQueryService } from '@src/modules/lithography/queries/sync-conflict.query.service';
+import {
+  SYNC_SOURCE_RESOURCE_TYPES,
+  SyncSourceRecordQueryService,
+  type SyncSourceResourceType,
+} from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type { SyncConflictSnapshot } from '@src/modules/lithography/sync.types';
 
 /**
@@ -25,6 +31,7 @@ export class GetSyncConflictUsecase {
     private readonly scopeResolver: LocalRuntimeScopeResolver,
     private readonly syncConflictQueryService: SyncConflictQueryService,
     private readonly syncConflictAccessResolver: SyncConflictAccessResolver,
+    private readonly sourceRecordQueryService: SyncSourceRecordQueryService,
   ) {}
 
   async execute(command: GetSyncConflictCommand): Promise<SyncConflictSnapshot> {
@@ -52,6 +59,9 @@ export class GetSyncConflictUsecase {
       throw new DomainError(SYNC_ERROR.CONFLICT_NOT_FOUND, '同步冲突不存在或不在授权范围内');
     }
 
+    // 来源事实：给出"来源页入口"所需的本机 ID 与只读标记；取不到即如实为空
+    const source = await this.readSourceFacts(metadata);
+
     return {
       conflictId: metadata.conflictId,
       recordUuid: metadata.recordUuid,
@@ -66,6 +76,9 @@ export class GetSyncConflictUsecase {
       localSnapshot: payload.localSnapshot,
       cloudSnapshot: payload.cloudSnapshot,
       conflictReason: metadata.conflictReason,
+      sourceRecordId: source.recordId,
+      sourceReadOnly: source.readOnly,
+      sourceReadOnlyReason: source.readOnlyReason,
       // 字段级差异：页面据此展示"哪里不一样"，比较口径统一在后端
       diff: computeSyncConflictDiff({
         localSnapshot: payload.localSnapshot,
@@ -74,6 +87,40 @@ export class GetSyncConflictUsecase {
       confirmedByAccountId: metadata.confirmedByAccountId,
       confirmedAt: metadata.confirmedAt,
       createdAt: metadata.createdAt,
+    };
+  }
+
+  /**
+   * 读取来源事实：只取本机 ID 与只读标记。
+   *
+   * 取不到（资源类型不在白名单／记录已删除／归属已变更）时如实返回空值：
+   * 页面据此不提供来源页跳转，而不是猜一个可能指错的路径。
+   */
+  private async readSourceFacts(metadata: {
+    recordUuid: string;
+    organizationId: number;
+    resourceType: string;
+  }): Promise<{ recordId: number | null; readOnly: boolean; readOnlyReason: string | null }> {
+    const resourceType = SYNC_SOURCE_RESOURCE_TYPES.find(
+      (candidate) => candidate === metadata.resourceType,
+    );
+    if (resourceType === undefined) {
+      return { recordId: null, readOnly: false, readOnlyReason: null };
+    }
+    const facts = await this.sourceRecordQueryService.listFacts({
+      organizationId: metadata.organizationId,
+      resourceType: resourceType as SyncSourceResourceType,
+      recordUuids: [metadata.recordUuid],
+    });
+    const fact = facts.facts.get(metadata.recordUuid);
+    if (fact === undefined) {
+      return { recordId: null, readOnly: false, readOnlyReason: null };
+    }
+    const readOnly = resolveSyncConflictReadOnly(fact.contentState);
+    return {
+      recordId: fact.recordId,
+      readOnly: readOnly.readOnly,
+      readOnlyReason: readOnly.reason,
     };
   }
 }
