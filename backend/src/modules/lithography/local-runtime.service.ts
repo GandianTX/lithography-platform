@@ -116,6 +116,15 @@ export class LocalRuntimeService {
           entityLocalId: data.entityLocalId,
           entityVersion: data.entityVersion,
           idempotencyKey: data.idempotencyKey,
+          // 业务同步身份事实：稳定键、业务版本、正文/原件清单摘要、任务种类
+          // （历史行为 NULL，读侧据此判"不可核验"，不回填派生值）
+          recordUuid: data.recordUuid ?? null,
+          sourceVersion: data.sourceVersion ?? null,
+          manifestChecksum: data.manifestChecksum ?? null,
+          taskKind: data.taskKind ?? null,
+          // 原账号授权绑定：公司数据区 + 授权主体账号（派发时只认该账号的有效授权）
+          organizationId: data.organizationId ?? null,
+          accountId: data.accountId ?? null,
           status: 'PENDING',
           attemptCount: 0,
           lastAttemptAt: null,
@@ -211,6 +220,47 @@ export class LocalRuntimeService {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_FAILED,
         '上传任务回执写入失败',
+        undefined,
+        error,
+      );
+    }
+    return toLocalUploadTaskSnapshot(await this.reloadUploadTask(repository, taskId));
+  }
+
+  /**
+   * 取消上传任务：仅 PENDING/FAILED 可取消。
+   *
+   * 取消用于"这条任务不应再派发"的事实：来源记录已删除／下架、原账号授权失效，
+   * 或来源版本已被更新取代。取消不同于失败——失败表示"尝试过但没成功"，
+   * 取消表示"不再尝试"，两者在读侧都表现为非同步成功，但原因码不同。
+   */
+  async cancelUploadTask(
+    taskId: number,
+    data: LocalUploadFailureData,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<LocalUploadTaskSnapshot> {
+    const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
+    const task = await this.lockUploadTask(repository, taskId);
+    if (task.status !== 'PENDING' && task.status !== 'FAILED') {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
+        '当前状态的上传任务不可取消',
+        { taskId, status: task.status },
+      );
+    }
+    try {
+      await repository.update(
+        { id: taskId },
+        {
+          status: 'CANCELLED',
+          errorCode: data.errorCode,
+          errorMessage: data.errorMessage,
+        },
+      );
+    } catch (error) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_FAILED,
+        '上传任务取消状态写入失败',
         undefined,
         error,
       );

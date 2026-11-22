@@ -5,6 +5,7 @@ import type { SyncConflictAction } from '@core/local-runtime/policy/sync-conflic
 import type { SyncConflictSummary } from '@src/modules/lithography/sync.types';
 import type {
   LocalBackupTriggerType,
+  LocalUploadTaskKind,
   LocalUploadTaskStatus,
 } from '@src/modules/lithography/local-runtime.types';
 
@@ -38,12 +39,78 @@ export type EnqueueLocalUploadCommand = {
   entityLocalId: number;
   entityVersion: string;
   idempotencyKey: string;
+  /**
+   * 业务同步身份事实（S2 第 1 条）：
+   * - recordUuid：跨端稳定业务编号（业务同步任务必填；备份类任务可空）；
+   * - sourceVersion：业务版本（与来源事实核对）；
+   * - manifestChecksum：正文与原件清单 SHA-256（回执完整性核对依据）；
+   * - taskKind：任务种类；缺省按调用方用途登记，**不得**把备份包上云
+   *   记为业务同步（读侧据此排除备份任务）。
+   */
+  recordUuid?: string | null;
+  sourceVersion?: number | null;
+  manifestChecksum?: string | null;
+  taskKind?: LocalUploadTaskKind | null;
+  /**
+   * 公司数据区：任务归属的公司（派发与授权核对按公司范围执行）。
+   * 业务同步任务必填；历史任务与备份类任务可空。
+   */
+  organizationId?: number | null;
+  /**
+   * 原账号（授权主体）账号ID：任务只能由该账号的有效授权派发，
+   * 换账号／换公司不得接管原任务（R090）。
+   */
+  accountId?: number | null;
 };
 
 export type EnqueueLocalUploadResult = {
   taskId: number;
   status: LocalUploadTaskStatus;
   created: boolean;
+};
+
+// ---- 任务09 S2：来源记录 → 业务同步待传任务 ----
+
+export type EnqueueSourceRecordSyncCommand = {
+  /** 来源资源类型：REFERENCE_DOCUMENT／REPAIR_REQUEST／MAINTENANCE_REPORT */
+  resourceType: string;
+  /** 业务稳定编号（已持久化的跨端身份） */
+  recordUuid: string;
+};
+
+export type EnqueueSourceRecordSyncResult = {
+  taskId: number;
+  status: LocalUploadTaskStatus;
+  /** false 表示命中既有任务（重复提交未新建） */
+  created: boolean;
+  recordUuid: string;
+  resourceType: string;
+  /** 登记的业务版本 */
+  sourceVersion: number;
+  /** 正文与原件清单摘要 */
+  manifestChecksum: string;
+};
+
+// ---- 任务09 S2：业务同步待办对账 ----
+
+export type ReconcileBusinessSyncTasksCommand = {
+  /** 每个来源类型单轮扫描上限（缺省按服务层默认） */
+  limit?: number;
+};
+
+export type ReconcileBusinessSyncTasksResult = {
+  /** 本轮扫描到的来源记录条数 */
+  scanned: number;
+  /** 本轮新建的待传任务数 */
+  created: number;
+  /** 命中既有任务（重复对账未新建）的条数 */
+  existing: number;
+  /** 准入拒绝的条数 */
+  rejected: number;
+  /** 因下架／撤回而取消的待办数 */
+  cancelled: number;
+  /** 拒绝原因码 → 次数 */
+  rejections: Record<string, number>;
 };
 
 export type LocalUploadTaskCommand = {

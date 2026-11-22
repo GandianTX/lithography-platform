@@ -20,8 +20,19 @@ import {
 )
 @Index('idx_local_upload_task_status_created', ['status', 'createdAt'])
 @Index('idx_local_upload_task_record_uuid', ['recordUuid'])
+@Index('idx_local_upload_task_binding', ['installationId', 'organizationId', 'accountId'])
 @ForeignKey('LocalInstallationEntity', ['installationId'], ['installationId'], {
   name: 'fk_local_upload_task_installation',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('OrganizationEntity', ['organizationId'], ['id'], {
+  name: 'fk_local_upload_task_organization',
+  onDelete: 'RESTRICT',
+  onUpdate: 'RESTRICT',
+})
+@ForeignKey('AccountEntity', ['accountId'], ['id'], {
+  name: 'fk_local_upload_task_account',
   onDelete: 'RESTRICT',
   onUpdate: 'RESTRICT',
 })
@@ -87,6 +98,22 @@ export class LocalUploadTaskEntity {
     comment: '正文与原件清单 SHA-256',
   })
   manifestChecksum!: string | null;
+
+  @Column({
+    name: 'organization_id',
+    type: 'int',
+    nullable: true,
+    comment: '公司数据区；历史行为 NULL（无法归属公司）',
+  })
+  organizationId!: number | null;
+
+  @Column({
+    name: 'account_id',
+    type: 'int',
+    nullable: true,
+    comment: '原账号（授权主体）账号ID；历史行为 NULL',
+  })
+  accountId!: number | null;
 
   @Column({ name: 'installation_id', type: 'char', length: 36, comment: '本地安装标识' })
   installationId!: string;

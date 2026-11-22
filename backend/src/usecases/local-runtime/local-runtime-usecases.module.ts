@@ -7,6 +7,8 @@ import { Module } from '@nestjs/common';
 import { LoggerModule } from '@src/infrastructure/logger/logger.module';
 import { CompleteLocalUploadUsecase } from './complete-local-upload.usecase';
 import { EnqueueLocalUploadUsecase } from './enqueue-local-upload.usecase';
+import { EnqueueSourceRecordSyncUsecase } from './enqueue-source-record-sync.usecase';
+import { ReconcileBusinessSyncTasksUsecase } from './reconcile-business-sync-tasks.usecase';
 import { FailLocalUploadUsecase } from './fail-local-upload.usecase';
 import { FinishLocalBackupUsecase } from './finish-local-backup.usecase';
 import { GetLocalRuntimeSettingsUsecase } from './get-local-runtime-settings.usecase';
@@ -60,6 +62,8 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     GetLocalRuntimeSettingsUsecase,
     UpdateLocalRuntimeSettingsUsecase,
     EnqueueLocalUploadUsecase,
+    EnqueueSourceRecordSyncUsecase,
+    ReconcileBusinessSyncTasksUsecase,
     StartLocalUploadAttemptUsecase,
     CompleteLocalUploadUsecase,
     FailLocalUploadUsecase,
@@ -98,6 +102,8 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     GetLocalRuntimeSettingsUsecase,
     UpdateLocalRuntimeSettingsUsecase,
     EnqueueLocalUploadUsecase,
+    EnqueueSourceRecordSyncUsecase,
+    ReconcileBusinessSyncTasksUsecase,
     StartLocalUploadAttemptUsecase,
     CompleteLocalUploadUsecase,
     FailLocalUploadUsecase,

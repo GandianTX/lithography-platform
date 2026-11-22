@@ -3,6 +3,13 @@
 // 只承载部署身份、上传意图/回执与备份清单，不复制云端业务主键。
 
 export type LocalEntityType = 'REPORT_VERSION' | 'ATTACHMENT' | 'BACKUP_MANIFEST';
+
+/**
+ * 上传任务种类（`local_upload_task.task_kind`）：
+ * - BUSINESS_SYNC：业务记录同步（读侧按正文类任务 + 完整回执判定同步成功）；
+ * - BACKUP_UPLOAD：本地备份包上云（**不得**计入业务同步判定）。
+ */
+export type LocalUploadTaskKind = 'BUSINESS_SYNC' | 'BACKUP_UPLOAD';
 export type LocalUploadTaskStatus = 'PENDING' | 'UPLOADING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export type LocalBackupTriggerType = 'SCHEDULED' | 'MANUAL' | 'AUTO' | 'RETRY' | 'USB_EXPORT';
 export type LocalBackupRunStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'INTERRUPTED';
@@ -33,6 +40,18 @@ export type LocalUploadTaskSnapshot = {
   entityLocalId: number;
   entityVersion: string;
   idempotencyKey: string;
+  /** 跨端稳定业务编号；备份类任务为 null */
+  recordUuid: string | null;
+  /** 业务版本；不可核验时为 null */
+  sourceVersion: number | null;
+  /** 正文与原件清单 SHA-256；缺失时为 null */
+  manifestChecksum: string | null;
+  /** 任务种类；历史行为 null */
+  taskKind: LocalUploadTaskKind | null;
+  /** 公司数据区；历史行为 null（无法归属公司） */
+  organizationId: number | null;
+  /** 原账号（授权主体）账号ID；历史行为 null */
+  accountId: number | null;
   status: LocalUploadTaskStatus;
   attemptCount: number;
   lastAttemptAt: Date | null;
@@ -50,6 +69,27 @@ export type LocalUploadTaskInsertData = {
   entityLocalId: number;
   entityVersion: string;
   idempotencyKey: string;
+  /**
+   * 跨端稳定业务编号（`record_uuid`）：业务同步任务的记录键。
+   * 备份类任务无业务稳定键 → null（读侧据此判"无稳定键"，不回填派生值）。
+   */
+  recordUuid?: string | null;
+  /** 业务版本（`source_version`）：读侧按"任务登记版本"与来源事实核对 */
+  sourceVersion?: number | null;
+  /** 正文与原件清单 SHA-256（`manifest_checksum`）：回执完整性核对依据 */
+  manifestChecksum?: string | null;
+  /** 任务种类（`task_kind`）：BUSINESS_SYNC／BACKUP_UPLOAD */
+  taskKind?: LocalUploadTaskKind | null;
+  /**
+   * 公司数据区（`organization_id`）：任务归属的公司。
+   * 派发与授权核对按公司范围执行；历史行为 null（无法归属公司）。
+   */
+  organizationId?: number | null;
+  /**
+   * 原账号（`account_id`）：来源记录的授权主体账号。
+   * 任务只能由该账号的有效授权派发；换账号／换公司不得接管原任务。
+   */
+  accountId?: number | null;
 };
 
 export type LocalUploadSuccessData = {

@@ -4,7 +4,7 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { ObjectLiteral, Repository } from 'typeorm';
+import { In, ObjectLiteral, Repository } from 'typeorm';
 import { LocalAccountAuthorizationEntity } from '../entities/local-account-authorization.entity';
 import { LocalBackupRunEntity } from '../entities/local-backup-run.entity';
 import { LocalInstallationEntity } from '../entities/local-installation.entity';
@@ -94,6 +94,41 @@ export class LocalRuntimeQueryService {
       page: pagination.page,
       pageSize: pagination.pageSize,
     };
+  }
+
+  /**
+   * 列出业务同步任务（按状态过滤，按创建顺序取前若干条）。
+   *
+   * 只列 `task_kind = 'BUSINESS_SYNC'`：备份上云任务（BACKUP_UPLOAD）与历史遗留
+   * 用途不明的行（NULL）都不参与业务同步派发。
+   */
+  async listBusinessSyncTasks(
+    installationId: string,
+    statuses: readonly LocalUploadTaskStatus[],
+    limit: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<LocalUploadTaskSnapshot[]> {
+    const repository = this.pickRepository(this.uploadTaskRepository, transactionContext);
+    const rows = await repository.find({
+      where: { installationId, taskKind: 'BUSINESS_SYNC', status: In([...statuses]) },
+      order: { createdAt: 'ASC', id: 'ASC' },
+      take: limit,
+    });
+    return rows.map(toLocalUploadTaskSnapshot);
+  }
+
+  /** 按稳定键列出业务同步任务（用于核对某条来源记录的待办与历史） */
+  async listBusinessSyncTasksByRecordUuid(
+    installationId: string,
+    recordUuid: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<LocalUploadTaskSnapshot[]> {
+    const repository = this.pickRepository(this.uploadTaskRepository, transactionContext);
+    const rows = await repository.find({
+      where: { installationId, recordUuid, taskKind: 'BUSINESS_SYNC' },
+      order: { id: 'DESC' },
+    });
+    return rows.map(toLocalUploadTaskSnapshot);
   }
 
   async readActiveBackupRun(

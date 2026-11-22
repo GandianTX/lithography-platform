@@ -28,6 +28,8 @@ import { ProtectedBackupService } from '@src/modules/lithography/protected-backu
 import { LocalBackupUploadService } from '@src/modules/lithography/local-backup-upload.service';
 import { LocalBackupCleanupService } from '@src/modules/lithography/local-backup-cleanup.service';
 import { LocalBackupScheduleRuntime } from './local-backup-schedule.runtime';
+import { LocalBusinessSyncRuntime } from './local-business-sync.runtime';
+import { LocalRuntimeUsecasesModule } from '@src/usecases/local-runtime/local-runtime-usecases.module';
 
 // Worker 全量实体闭包：业务模块全量实体＋跨模块外键依赖（account 等），
 // 保证字符串外键与关系装饰器的元数据构建完整（离线元数据规格同口径）
@@ -58,6 +60,7 @@ const WORKER_ENTITIES = [
     TypeOrmModule.forFeature([...WORKER_ENTITIES]),
     LocalReferenceDocumentStorageModule,
     LocalRuntimeStorageModule,
+    LocalRuntimeUsecasesModule,
   ],
   providers: [
     BullMqWorkerRuntime,
@@ -66,6 +69,7 @@ const WORKER_ENTITIES = [
     BackupScheduleService,
     LocalBackupUploadService,
     LocalBackupScheduleRuntime,
+    LocalBusinessSyncRuntime,
   ],
 })
 export class WorkerModule {}

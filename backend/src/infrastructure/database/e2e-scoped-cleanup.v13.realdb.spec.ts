@@ -206,11 +206,11 @@ const EXPECTED_SERVER_UUID = TARGET?.serverUuid ?? '';
 /**
  * 本分支终态迁移条数（冻结值）。
  *
- * 第 51 条 `add-sync-conflict-local-resolution-state`（1775502900000）是本分支最后一条，
- * 因此仓库清单长度与实库历史长度都必须等于 51。两处断言共用本常量，避免再次出现
+ * 第 52 条 `add-upload-task-account-binding-for-v13`（1775503000000）是本分支最后一条，
+ * 因此仓库清单长度与实库历史长度都必须等于 52。两处断言共用本常量，避免再次出现
  * “beforeAll=44、R09=49” 的双写不一致；新增迁移时必须只改这一个常量。
  */
-export const EXPECTED_REPOSITORY_MIGRATION_COUNT = 51;
+export const EXPECTED_REPOSITORY_MIGRATION_COUNT = 52;
 
 const describeRealDb = ENABLED ? describe : describe.skip;
 
@@ -4549,7 +4549,7 @@ const readRepositoryMigrationsFromDisk = (): RepositoryMigrationEntry[] => {
 };
 
 describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
-  it('仓库迁移条数等于终态常量，名称/时间戳唯一且递增，末条为第 51 条', () => {
+  it('仓库迁移条数等于终态常量，名称/时间戳唯一且递增，末条为第 52 条', () => {
     const entries = readRepositoryMigrationsFromDisk();
     expect(entries).toHaveLength(EXPECTED_REPOSITORY_MIGRATION_COUNT);
     expect(new Set(entries.map((entry) => entry.name)).size).toBe(entries.length);
@@ -4557,8 +4557,8 @@ describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
     const timestamps = entries.map((entry) => entry.timestamp);
     expect(timestamps).toEqual([...timestamps].sort((left, right) => left - right));
     expect(entries[entries.length - 1]).toEqual({
-      name: 'AddSyncConflictLocalResolutionStateForV131775502900000',
-      timestamp: 1775502900000,
+      name: 'AddUploadTaskAccountBindingForV131775503000000',
+      timestamp: 1775503000000,
     });
   });
 
@@ -4569,7 +4569,7 @@ describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
     expect(legacyHistory).not.toEqual(entries);
     expect(legacyHistory).toHaveLength(44);
     expect(legacyHistory.length).not.toBe(EXPECTED_REPOSITORY_MIGRATION_COUNT);
-    // 旧态缺的正是第 45~51 条：逐条比对会精确指出这 7 条，而不是只报“长度不符”。
+    // 旧态缺的正是第 45~52 条：逐条比对会精确指出这 8 条，而不是只报“长度不符”。
     expect(entries.slice(44).map((entry) => entry.name)).toEqual([
       'CreateAdminOrganizationProvisioningRequestForV131775502300000',
       'AddCredentialVersionForV131775502400000',
@@ -4578,6 +4578,7 @@ describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
       'AddMaintenanceReportAttachmentFileForV131775502700000',
       'AddRecordUuidToSourceTablesForV131775502800000',
       'AddSyncConflictLocalResolutionStateForV131775502900000',
+      'AddUploadTaskAccountBindingForV131775503000000',
     ]);
   });
 
