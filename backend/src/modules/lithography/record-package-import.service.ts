@@ -258,6 +258,30 @@ export class RecordPackageImportService {
     };
   }
 
+  /**
+   * 查找同键回执（导入登记与云端回执共用同一张表、同一把键）。
+   *
+   * 用于导入前的去重复核：同键已存在（云端回执或先前的导入登记）即跳过，
+   * 不重复导入，也不与同步链路各算各的。
+   */
+  async findReceipt(key: {
+    organizationId: number;
+    resourceType: string;
+    recordUuid: string;
+    versionNo: number;
+  }): Promise<{ receiptId: string } | null> {
+    const repository = this.pickReceiptRepository();
+    const receipt = await repository.findOne({
+      where: {
+        organizationId: key.organizationId,
+        resourceType: key.resourceType,
+        recordUuid: key.recordUuid,
+        versionNo: key.versionNo,
+      },
+    });
+    return receipt === null ? null : { receiptId: receipt.receiptId };
+  }
+
   /** 标记批次进入执行中（幂等：已是 RUNNING 不重复推进） */
   async markImportRunning(
     packageId: string,

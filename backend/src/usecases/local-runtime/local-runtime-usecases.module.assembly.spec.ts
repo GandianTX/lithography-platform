@@ -19,6 +19,7 @@ import { AccountInstallerModule } from '@src/modules/account/account-installer.m
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 
 import { LocalRuntimeUsecasesModule } from './local-runtime-usecases.module';
+import { ModuleRef } from '@nestjs/core';
 
 type ClassLike = new (...args: never[]) => unknown;
 
@@ -102,6 +103,10 @@ describe('LocalRuntimeUsecasesModule 装配可解析性', () => {
       for (const dependency of dependencies) {
         if (dependency === undefined || dependency === null || dependency === Object) {
           // `@Inject(token)` 形态的类型元数据被擦除为 Object，无法静态判定
+          continue;
+        }
+        if (dependency === ModuleRef) {
+          // Nest 内建依赖：ModuleRef 由框架在任意模块内注入，无需在 providers/exports 登记
           continue;
         }
         if (

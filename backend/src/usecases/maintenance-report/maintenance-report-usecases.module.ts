@@ -31,6 +31,9 @@ import {
   MAINTENANCE_REPORT_SYNC_STATUS_READER,
   type MaintenanceReportSyncStatusReader,
 } from './ports/maintenance-report-sync-status-reader.contract';
+import { RECORD_PACKAGE_ITEM_WRITER } from '@usecases/common/ports/record-package-item-writer.contract';
+
+import { MaintenanceReportRecordPackageItemWriter } from './record-package-item-writer';
 
 /**
  * 维修报告与工单处理结果用例装配（S3）。
@@ -73,6 +76,13 @@ import {
     // 2. 查找发生在请求期，全部模块已实例化，避开初始化顺序问题；
     // 3. 未注册或查找异常一律回落不可用实现（失败关闭，展示 NOT_CONNECTED，
     //    绝不据"保存成功"推断已同步）。
+    // 记录包导入的受控写入实现（任务 09 S3.2）：
+    // 由**来源域**提供实现并注册中立令牌，任务 09 在调用期按令牌查找，
+    // 不产生跨域编译期依赖；未注册时任务 09 逐条失败关闭。
+    {
+      provide: RECORD_PACKAGE_ITEM_WRITER,
+      useClass: MaintenanceReportRecordPackageItemWriter,
+    },
     {
       provide: MAINTENANCE_REPORT_SYNC_STATUS_READER,
       useFactory: (moduleRef: ModuleRef): MaintenanceReportSyncStatusReader => {

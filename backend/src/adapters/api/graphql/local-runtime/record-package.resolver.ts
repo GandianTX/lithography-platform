@@ -19,6 +19,7 @@ import {
   CheckRecordPackageUsecase,
   GetRecordPackageResultUsecase,
 } from '@src/usecases/local-runtime/check-record-package.usecase';
+import { ImportRecordPackageUsecase } from '@src/usecases/local-runtime/import-record-package.usecase';
 import { ExportRecordPackageUsecase } from '@src/usecases/local-runtime/export-record-package.usecase';
 import {
   RecordPackageExportResultDTO,
@@ -44,6 +45,7 @@ export class RecordPackageResolver {
     private readonly checkRecordPackageUsecase: CheckRecordPackageUsecase,
     private readonly getRecordPackageResultUsecase: GetRecordPackageResultUsecase,
     private readonly exportRecordPackageUsecase: ExportRecordPackageUsecase,
+    private readonly importRecordPackageUsecase: ImportRecordPackageUsecase,
   ) {}
 
   /** 导出记录包：逐条结果语义，单条失败不影响其他条目 */
@@ -92,6 +94,37 @@ export class RecordPackageResolver {
     });
     return {
       outcome: result.outcome,
+      import: toRecordPackageImportDTO(result.import),
+      items: result.items.map(toRecordPackageItemDTO),
+    };
+  }
+
+  /**
+   * 导入记录包：明确确认 → 受控逐项导入 → 逐项结果。
+   *
+   * 确认必须带上检查结论的清单摘要；包内容变了旧确认作废（需重新检查与确认）。
+   * 每条记录经来源业务受控写入入口落地；没有受控入口的类型逐条失败关闭。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => RecordPackageProcessResultDTO, {
+    name: 'importRecordPackage',
+    description:
+      '导入记录包（需先通过安全预检并明确确认）；逐条结果语义，受控写入，批次终态由逐条结果汇总',
+  })
+  async importRecordPackage(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('packageId', { type: () => String }) packageId: string,
+    @Args('packagePath', { type: () => String }) packagePath: string,
+    @Args('manifestChecksum', { type: () => String }) manifestChecksum: string,
+  ): Promise<RecordPackageProcessResultDTO> {
+    const result = await this.importRecordPackageUsecase.execute({
+      session: this.toSession(user),
+      packageId,
+      packagePath,
+      manifestChecksum,
+    });
+    return {
       import: toRecordPackageImportDTO(result.import),
       items: result.items.map(toRecordPackageItemDTO),
     };

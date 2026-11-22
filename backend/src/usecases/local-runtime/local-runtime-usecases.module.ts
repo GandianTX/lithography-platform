@@ -26,6 +26,7 @@ import {
   CheckRecordPackageUsecase,
   GetRecordPackageResultUsecase,
 } from './check-record-package.usecase';
+import { ImportRecordPackageUsecase } from './import-record-package.usecase';
 import { ExportRecordPackageUsecase } from './export-record-package.usecase';
 import { GetLocalBackupRecordUsecase } from './get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from './get-local-backup-settings.usecase';
@@ -80,6 +81,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     RenewMyLocalAuthorizationUsecase,
     CheckRecordPackageUsecase,
     GetRecordPackageResultUsecase,
+    ImportRecordPackageUsecase,
     ExportRecordPackageUsecase,
     ListLocalBackupRecordsUsecase,
     GetLocalBackupRecordUsecase,
@@ -121,6 +123,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     RenewMyLocalAuthorizationUsecase,
     CheckRecordPackageUsecase,
     GetRecordPackageResultUsecase,
+    ImportRecordPackageUsecase,
     ExportRecordPackageUsecase,
     ListLocalBackupRecordsUsecase,
     GetLocalBackupRecordUsecase,
