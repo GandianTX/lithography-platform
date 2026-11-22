@@ -26,6 +26,10 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 
 import { RecordPackageImportService } from '@src/modules/lithography/record-package-import.service';
 import { RecordPackageOriginalStagingService } from './record-package-original-staging.service';
+import {
+  SYNC_SOURCE_RESOURCE_TYPES,
+  SyncSourceRecordQueryService,
+} from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type {
   RecordPackageImportSnapshot,
   RecordPackageItemSnapshot,
@@ -67,6 +71,7 @@ export class ImportRecordPackageUsecase {
     private readonly recordPackageImportService: RecordPackageImportService,
     private readonly receiptService: BusinessSyncReceiptService,
     private readonly originalStagingService: RecordPackageOriginalStagingService,
+    private readonly sourceRecordQueryService: SyncSourceRecordQueryService,
     private readonly moduleRef: ModuleRef,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -178,15 +183,40 @@ export class ImportRecordPackageUsecase {
   }): Promise<{ result: string }> {
     const { item } = input;
 
-    // 1. 与同步共用去重：同键回执已存在即跳过（不重复导入）
-    const duplicate = await this.hasImportedOrSyncedVersion(item, input.organizationId);
-    if (duplicate) {
+    // 1. 与同步共用去重：同键回执已存在即按"同一事实"跳过；**摘要不同**判冲突
+    const existing = await this.findExistingVersion(item, input.organizationId);
+    if (existing !== null) {
+      const sameContent =
+        existing.manifestChecksum === null || existing.manifestChecksum === input.manifestChecksum;
       await this.writeItemResult(item.itemId, {
-        result: 'SKIPPED',
-        errorMessage: '本机已存在同一记录版本（与同步去重口径一致），本次不重复导入',
+        result: sameContent ? 'SKIPPED' : 'CONFLICT',
+        errorMessage: sameContent
+          ? '本机已存在同一记录版本（与同步去重口径一致），本次不重复导入'
+          : '同键记录版本已存在但内容摘要不同，需人工裁决（不覆盖既有事实）',
         receiptId: null,
       });
-      return { result: 'SKIPPED' };
+      return { result: sameContent ? 'SKIPPED' : 'CONFLICT' };
+    }
+
+    // 1a. 本机来源事实复核：已删除／下架的内容不得被导入"复活"；本机已有更高版本则判冲突
+    const localFact = await this.readLocalSourceFact(item, input.organizationId);
+    if (localFact !== null) {
+      if (localFact.withdrawn) {
+        await this.writeItemResult(item.itemId, {
+          result: 'FAILED',
+          errorMessage: '本机同编号记录已删除或下架，不导入（导入不得复活已删除下架内容）',
+          receiptId: null,
+        });
+        return { result: 'FAILED' };
+      }
+      if (localFact.currentVersion !== null && localFact.currentVersion > item.versionNo) {
+        await this.writeItemResult(item.itemId, {
+          result: 'CONFLICT',
+          errorMessage: `本机同编号记录已有更高版本（v${localFact.currentVersion}），不覆盖`,
+          receiptId: null,
+        });
+        return { result: 'CONFLICT' };
+      }
     }
 
     // 1b. 归属公司复核：包内登记的归属公司必须与目标公司一致（数据为准）
@@ -319,17 +349,46 @@ export class ImportRecordPackageUsecase {
   }
 
   /** 查找同键回执（导入登记与云端回执共用同一张表、同一把键） */
-  private async hasImportedOrSyncedVersion(
+  private async findExistingVersion(
     item: RecordPackageItemSnapshot,
     organizationId: number,
-  ): Promise<boolean> {
-    const receipt = await this.recordPackageImportService.findReceipt({
+  ): Promise<{ receiptId: string; manifestChecksum: string | null } | null> {
+    return this.recordPackageImportService.findReceipt({
       organizationId,
       resourceType: item.resourceType,
       recordUuid: item.recordUuid,
       versionNo: item.versionNo,
     });
-    return receipt !== null;
+  }
+
+  /**
+   * 读取本机同编号记录的来源事实（用于"不复活已删除下架内容"与"不覆盖更高版本"）。
+   *
+   * 查不到（本机尚无该编号的记录）＝正常新增，按 null 处理。
+   */
+  private async readLocalSourceFact(
+    item: RecordPackageItemSnapshot,
+    organizationId: number,
+  ): Promise<{ withdrawn: boolean; currentVersion: number | null } | null> {
+    const resourceType = SYNC_SOURCE_RESOURCE_TYPES.find(
+      (candidate) => candidate === item.resourceType,
+    );
+    if (resourceType === undefined) {
+      return null;
+    }
+    const facts = await this.sourceRecordQueryService.listFacts({
+      organizationId,
+      resourceType,
+      recordUuids: [item.recordUuid],
+    });
+    const fact = facts.facts.get(item.recordUuid);
+    if (fact === undefined) {
+      return null;
+    }
+    return {
+      withdrawn: fact.withdrawn === true,
+      currentVersion: fact.currentVersion,
+    };
   }
 
   /** 写逐条结果（独立短事务，避免长事务持锁） */

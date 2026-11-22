@@ -49,6 +49,8 @@ function buildUsecase(
     evaluationChecksum?: string;
     writer?: unknown;
     receiptExists?: boolean;
+    /** 已存在回执登记的摘要（缺省＝与当前包一致＝同一事实） */
+    receiptChecksum?: string;
     /** 清单条目登记的归属公司（缺省＝与目标公司一致） */
     manifestOwnerOrganizationId?: number;
   } = {},
@@ -96,9 +98,14 @@ function buildUsecase(
   const markImportRunning = jest.fn().mockResolvedValue(undefined);
   const finalizeImport = jest.fn().mockResolvedValue(undefined);
   const writeItemResult = jest.fn().mockResolvedValue(undefined);
-  const findReceipt = jest
-    .fn()
-    .mockResolvedValue(options.receiptExists === true ? { receiptId: 'receipt-1' } : null);
+  const findReceipt = jest.fn().mockResolvedValue(
+    options.receiptExists === true
+      ? {
+          receiptId: 'receipt-1',
+          manifestChecksum: options.receiptChecksum ?? CHECKSUM,
+        }
+      : null,
+  );
   const recordImportedVersion = jest.fn().mockResolvedValue('receipt-new');
 
   const usecase = new ImportRecordPackageUsecase(
@@ -113,6 +120,9 @@ function buildUsecase(
     } as never,
     { recordImportedVersion } as never,
     { stage: jest.fn().mockResolvedValue([]) } as never,
+    {
+      listFacts: jest.fn().mockResolvedValue({ facts: new Map(), scanComplete: true }),
+    } as never,
     {
       get: jest.fn(() => {
         if (options.writer === undefined) {

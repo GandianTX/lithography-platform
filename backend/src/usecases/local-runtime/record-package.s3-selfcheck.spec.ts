@@ -57,6 +57,12 @@ function buildUsecase(
     evaluationChecksum?: string;
     writer?: unknown;
     receiptExists?: boolean;
+    /** 已存在回执登记的摘要（缺省＝与当前包一致＝同一事实） */
+    receiptChecksum?: string;
+    /** 清单条目登记的归属公司（缺省＝与目标公司一致） */
+    manifestOwnerOrganizationId?: number;
+    /** 本机同编号记录的来源事实（缺省＝本机无该记录） */
+    localFact?: { withdrawn: boolean; currentVersion: number | null };
   } = {},
 ) {
   const items = options.items ?? [makeItem()];
@@ -101,9 +107,14 @@ function buildUsecase(
   const markImportRunning = jest.fn().mockResolvedValue(undefined);
   const finalizeImport = jest.fn().mockResolvedValue(undefined);
   const writeItemResult = jest.fn().mockResolvedValue(undefined);
-  const findReceipt = jest
-    .fn()
-    .mockResolvedValue(options.receiptExists === true ? { receiptId: 'receipt-1' } : null);
+  const findReceipt = jest.fn().mockResolvedValue(
+    options.receiptExists === true
+      ? {
+          receiptId: 'receipt-1',
+          manifestChecksum: options.receiptChecksum ?? CHECKSUM,
+        }
+      : null,
+  );
 
   const usecase = new ImportRecordPackageUsecase(
     // 范围解析按会话公司派生（与真实 scope resolver 同口径）
@@ -125,6 +136,37 @@ function buildUsecase(
     } as never,
     { recordImportedVersion: jest.fn().mockResolvedValue('receipt-new') } as never,
     { stage: jest.fn().mockResolvedValue([]) } as never,
+    {
+      listFacts: jest.fn().mockResolvedValue({
+        facts:
+          options.localFact === undefined
+            ? new Map()
+            : new Map([
+                [
+                  RECORD_UUID,
+                  {
+                    resourceType: 'MAINTENANCE_REPORT',
+                    recordUuid: RECORD_UUID,
+                    recordId: 12,
+                    ownerOrganizationId: 9,
+                    currentVersion: options.localFact.currentVersion,
+                    versionTrusted: true,
+                    materialApplicable: !options.localFact.withdrawn,
+                    relatedAccountIds: [5],
+                    authorizationSubjectAccountId: 5,
+                    withdrawn: options.localFact.withdrawn,
+                    identityPersisted: true,
+                    contentState: {
+                      withdrawn: options.localFact.withdrawn,
+                      frozen: false,
+                      closed: false,
+                    },
+                  },
+                ],
+              ]),
+        scanComplete: true,
+      }),
+    } as never,
     {
       get: jest.fn(() => {
         if (options.writer === undefined) {
@@ -291,6 +333,82 @@ describe('S3 自检 · 记录包链路', () => {
       }),
     ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_NOT_PASSED });
     expect(markImportRunning).not.toHaveBeenCalled();
+  });
+
+  it('P5｜同键不同摘要：判冲突，不覆盖既有事实', async () => {
+    const writer = {
+      supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
+    };
+    const { usecase, writeItemResult } = buildUsecase({
+      writer,
+      receiptExists: true,
+      receiptChecksum: 'd'.repeat(64),
+    });
+
+    await usecase.execute({
+      session: SESSION,
+      packageId: PACKAGE_ID,
+      packagePath: '/mnt/usb/pkg',
+      manifestChecksum: CHECKSUM,
+    });
+
+    expect(writeItemResult).toHaveBeenCalledWith(
+      'item-1',
+      expect.objectContaining({ result: 'CONFLICT' }),
+      expect.anything(),
+    );
+    expect(writer.write).not.toHaveBeenCalled();
+  });
+
+  it('P5｜本机同编号记录已删除／下架：拒绝导入（不复活已删除下架内容）', async () => {
+    const writer = {
+      supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
+    };
+    const { usecase, writeItemResult } = buildUsecase({
+      writer,
+      localFact: { withdrawn: true, currentVersion: 2 },
+    });
+
+    await usecase.execute({
+      session: SESSION,
+      packageId: PACKAGE_ID,
+      packagePath: '/mnt/usb/pkg',
+      manifestChecksum: CHECKSUM,
+    });
+
+    expect(writeItemResult).toHaveBeenCalledWith(
+      'item-1',
+      expect.objectContaining({ result: 'FAILED' }),
+      expect.anything(),
+    );
+    expect(writer.write).not.toHaveBeenCalled();
+  });
+
+  it('P5｜本机已有更高版本：判冲突，不覆盖更高版本', async () => {
+    const writer = {
+      supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
+    };
+    const { usecase, writeItemResult } = buildUsecase({
+      writer,
+      localFact: { withdrawn: false, currentVersion: 9 },
+    });
+
+    await usecase.execute({
+      session: SESSION,
+      packageId: PACKAGE_ID,
+      packagePath: '/mnt/usb/pkg',
+      manifestChecksum: CHECKSUM,
+    });
+
+    expect(writeItemResult).toHaveBeenCalledWith(
+      'item-1',
+      expect.objectContaining({ result: 'CONFLICT' }),
+      expect.anything(),
+    );
+    expect(writer.write).not.toHaveBeenCalled();
   });
 
   it('非本轮数据不变：导入只写本批次条目，不触碰其他条目', async () => {

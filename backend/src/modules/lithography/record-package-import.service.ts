@@ -269,7 +269,7 @@ export class RecordPackageImportService {
     resourceType: string;
     recordUuid: string;
     versionNo: number;
-  }): Promise<{ receiptId: string } | null> {
+  }): Promise<{ receiptId: string; manifestChecksum: string | null } | null> {
     const repository = this.pickReceiptRepository();
     const receipt = await repository.findOne({
       where: {
@@ -279,7 +279,9 @@ export class RecordPackageImportService {
         versionNo: key.versionNo,
       },
     });
-    return receipt === null ? null : { receiptId: receipt.receiptId };
+    return receipt === null
+      ? null
+      : { receiptId: receipt.receiptId, manifestChecksum: receipt.manifestChecksum ?? null };
   }
 
   /** 标记批次进入执行中（幂等：已是 RUNNING 不重复推进） */
