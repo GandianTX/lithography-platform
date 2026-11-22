@@ -114,7 +114,8 @@ export const ZH_CN_MESSAGES = {
   'local-settings.section.tasks': '后台任务',
   'local-settings.section.companies': '本设备公司备份计划',
   'local-settings.section.authorizations': '本设备公司同步授权',
-  'local-settings.authorizations.empty': '本公司在本机尚无同步授权记录（授权后仅显示计数与校验时间，不显示任何凭据）。',
+  'local-settings.authorizations.empty':
+    '本公司在本机尚无同步授权记录（授权后仅显示计数与校验时间，不显示任何凭据）。',
   'local-settings.authorizations.active': '有效授权',
   'local-settings.authorizations.revoked': '已撤销',
   'local-settings.authorizations.lastVerifiedAt': '最近校验',

@@ -249,10 +249,7 @@ function ManualBackupSection({
           <ManualBackupResult result={actionState.data} />
         ) : null}
         {actionState.status === 'failed' ? (
-          <ErrorState
-            description={actionState.message}
-            title={t('local-backup.manual.failed')}
-          />
+          <ErrorState description={actionState.message} title={t('local-backup.manual.failed')} />
         ) : null}
         {cleanupState.status === 'running' ? (
           <LoadingState label={t('local-backup.manual.cleanupRunning')} />
@@ -637,7 +634,9 @@ function PrecheckResultCard({ result }: { result: LocalRestorePrecheckResult }) 
             {
               key: 'packageReadable',
               label: t('local-backup.field.packageReadable'),
-              children: result.packageReadable ? t('local-backup.value.yes') : t('local-backup.value.no'),
+              children: result.packageReadable
+                ? t('local-backup.value.yes')
+                : t('local-backup.value.no'),
             },
             {
               key: 'fileCount',

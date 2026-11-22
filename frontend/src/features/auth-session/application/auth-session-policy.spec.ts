@@ -583,7 +583,9 @@ describe('本地设置路由准入', () => {
   });
 
   it('客户禁入本地设置', () => {
-    expect(resolveProtectedRouteRedirect({ role: 'CUSTOMER' }, '/local-settings')).toBe('/customer');
+    expect(resolveProtectedRouteRedirect({ role: 'CUSTOMER' }, '/local-settings')).toBe(
+      '/customer',
+    );
   });
 
   it('匿名访问跳登录并带回跳目标', () => {

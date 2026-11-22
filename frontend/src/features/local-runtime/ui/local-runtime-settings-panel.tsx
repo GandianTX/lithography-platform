@@ -2,7 +2,7 @@
 
 import { Alert, Descriptions } from 'antd';
 
-import { type MessageKey,useI18n } from '@/shared/i18n';
+import { type MessageKey, useI18n } from '@/shared/i18n';
 import { PrimaryButton } from '@/shared/ui/buttons';
 import { DataCard } from '@/shared/ui/data-card';
 import { EmptyState } from '@/shared/ui/empty-state';
@@ -70,12 +70,7 @@ function LocalRuntimeSettingsView({ data }: { data: LocalRuntimeStatus }) {
 
   return (
     <div className="page-stack">
-      <Alert
-        banner
-        showIcon
-        message={t('local-settings.notice.readonly')}
-        type="info"
-      />
+      <Alert banner showIcon message={t('local-settings.notice.readonly')} type="info" />
 
       <DataCard title={t('local-settings.section.identity')}>
         <Descriptions

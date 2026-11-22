@@ -201,11 +201,10 @@ export async function fetchLocalBackupRecord(backupId: string): Promise<LocalBac
 }
 
 export async function fetchLocalBackupSettings(): Promise<LocalBackupSetting[]> {
-  const payload = await executeGraphQL<{ localBackupSettings: LocalBackupSetting[] }, Record<string, never>>(
-    LOCAL_BACKUP_SETTINGS_QUERY,
-    {},
-    { fetchPolicy: 'no-cache' },
-  );
+  const payload = await executeGraphQL<
+    { localBackupSettings: LocalBackupSetting[] },
+    Record<string, never>
+  >(LOCAL_BACKUP_SETTINGS_QUERY, {}, { fetchPolicy: 'no-cache' });
 
   return payload.localBackupSettings ?? [];
 }

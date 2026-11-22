@@ -221,13 +221,15 @@ export const EN_MESSAGES = {
   'local-backup.restore.title': 'Restore',
   'local-backup.restore.capabilityFailed': 'Failed to load restore capability',
   'local-backup.restore.executionAvailable': 'Restore execution is available in this environment',
-  'local-backup.restore.executionUnavailable': 'Restore execution is not available in this environment',
+  'local-backup.restore.executionUnavailable':
+    'Restore execution is not available in this environment',
   'local-backup.restore.prechecking': 'Running restore precheck…',
   'local-backup.restore.precheckTitle': 'Restore Precheck Result',
   'local-backup.restore.precheckFailed': 'Restore precheck failed',
   'local-backup.restore.precheckPassed':
     'Precheck passed: target, package integrity and protection copy are all confirmed.',
-  'local-backup.restore.precheckRejected': 'Precheck did not pass: resolve the findings below first.',
+  'local-backup.restore.precheckRejected':
+    'Precheck did not pass: resolve the findings below first.',
   'local-backup.restore.precheckAction': 'Restore Precheck',
   'local-backup.restore.findings': 'Precheck Findings',
   'local-backup.field.backupId': 'Backup ID',

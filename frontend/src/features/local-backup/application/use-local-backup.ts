@@ -91,15 +91,9 @@ function useAsyncResource<T>(load: () => Promise<T>, fallbackMessage: string) {
 
 /** 备份记录列表（分页） */
 export function useLocalBackupRecords(page: number, pageSize: number) {
-  const load = useCallback(
-    () => fetchLocalBackupRecords(page, pageSize),
-    [page, pageSize],
-  );
+  const load = useCallback(() => fetchLocalBackupRecords(page, pageSize), [page, pageSize]);
 
-  return useAsyncResource<LocalBackupRecordPage>(
-    load,
-    '备份记录读取失败，请稍后重试。',
-  );
+  return useAsyncResource<LocalBackupRecordPage>(load, '备份记录读取失败，请稍后重试。');
 }
 
 /** 自动备份设置 */
@@ -163,7 +157,9 @@ export function useCleanupLocalBackupPackages() {
     } catch (error) {
       setState({
         status: 'failed',
-        message: isGraphQLIngressError(error) ? error.userMessage : '本地备份包清理失败，请稍后重试。',
+        message: isGraphQLIngressError(error)
+          ? error.userMessage
+          : '本地备份包清理失败，请稍后重试。',
       });
       return null;
     }
