@@ -6,6 +6,7 @@ import { AccountInstallerModule } from '@src/modules/account/account-installer.m
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { AdminDeleteReferenceDocumentUsecase } from './admin-delete-reference-document.usecase';
 import { CorrectReferenceDocumentOwnershipUsecase } from './correct-reference-document-ownership.usecase';
+import { DownloadReferenceDocumentSourceAttachmentUsecase } from './download-reference-document-source-attachment.usecase';
 import { GetReferenceDocumentDetailUsecase } from './get-reference-document-detail.usecase';
 import { GetReferenceDocumentEditableContentUsecase } from './get-reference-document-editable-content.usecase';
 import { GetReferenceDocumentFileUsecase } from './get-reference-document-file.usecase';
@@ -36,6 +37,7 @@ import { UpdateReferenceDocumentCaseUsecase } from './update-reference-document-
   providers: [
     AdminDeleteReferenceDocumentUsecase,
     CorrectReferenceDocumentOwnershipUsecase,
+    DownloadReferenceDocumentSourceAttachmentUsecase,
     GetReferenceDocumentDetailUsecase,
     GetReferenceDocumentEditableContentUsecase,
     GetPendingOwnershipReferenceDocumentDetailUsecase,
@@ -52,6 +54,7 @@ import { UpdateReferenceDocumentCaseUsecase } from './update-reference-document-
   exports: [
     AdminDeleteReferenceDocumentUsecase,
     CorrectReferenceDocumentOwnershipUsecase,
+    DownloadReferenceDocumentSourceAttachmentUsecase,
     GetReferenceDocumentDetailUsecase,
     GetReferenceDocumentEditableContentUsecase,
     GetPendingOwnershipReferenceDocumentDetailUsecase,

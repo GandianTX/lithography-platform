@@ -132,6 +132,71 @@ export class StoredFileQueryService {
     return count > 0;
   }
 
+  /**
+   * 来源资料报告原件定位（任务 07 P2：报告来源正式资料的原件授权下载）。
+   *
+   * 仅做原件登记形态纵深校验（MAINTENANCE_REPORT + VALID + 已核验），不承载
+   * 访问者授权——谁能经资料详情下载由调用方 usecase 按正式资料读取范围与
+   * 冻结版本附件绑定裁决；本方法不改变既有 findAuthorizedDownload /
+   * canAccessBoundMaintenanceReport 的任何口径。
+   *
+   * 退役形态放行（任务 07 P2 生命周期核对结论）：报告被审核驳回（RETURNED）
+   * 后作者更换/移除原件会把旧附件行合法退役，stored_file 随之解除绑定
+   * （bindingStatus=TEMPORARY、businessId=null，status/verifiedAt 保留），
+   * 而冻结版本的版本-附件复合外键绑定仍指向该行——历史读取权保留。
+   * 附件行与登记行的一致性（storageReference 归属同一绑定事务的登记副本）
+   * 由调用方核对；businessId 非空（仍 BOUND）时必须与报告一致。
+   */
+  async findReportAttachmentDownloadFacts(
+    fileId: string,
+    reportId: number,
+  ): Promise<StoredFileDownloadFacts | null> {
+    const file = await this.storedFileRepository.findOne({
+      where: { fileId },
+      select: {
+        fileId: true,
+        uploadedByAccountId: true,
+        ownerOrganizationId: true,
+        storageReference: true,
+        originalFilename: true,
+        mimeType: true,
+        byteSize: true,
+        checksumSha256: true,
+        status: true,
+        businessType: true,
+        businessId: true,
+        uploadContextId: true,
+        bindingStatus: true,
+        createdAt: true,
+        verifiedAt: true,
+      },
+    });
+    if (
+      file === null ||
+      (file.businessType as StoredFileBusinessType) !== StoredFileBusinessType.MAINTENANCE_REPORT ||
+      (file.status as StoredFileStatus) !== StoredFileStatus.VALID ||
+      file.verifiedAt === null
+    ) {
+      return null;
+    }
+
+    if (file.businessId !== null) {
+      const boundReportId = Number(file.businessId);
+      if (!Number.isSafeInteger(boundReportId) || boundReportId !== reportId) {
+        return null;
+      }
+    }
+
+    return {
+      fileId: file.fileId,
+      storageReference: file.storageReference,
+      originalFilename: file.originalFilename,
+      mimeType: file.mimeType,
+      byteSize: Number(file.byteSize),
+      checksumSha256: file.checksumSha256,
+    };
+  }
+
   /** 绑定占用判定：该原件是否已被任何内部维修过程引用（在同一事务内读取） */
   async isReferencedByRepairProcess(
     fileId: string,

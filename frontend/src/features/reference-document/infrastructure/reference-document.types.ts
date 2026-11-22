@@ -202,11 +202,25 @@ export type ReferenceDocumentDetail = Omit<ReferenceDocumentListItem, 'caseHandl
   frozenReport: ReferenceDocumentFrozenReport | null;
   /** 生效管理修订的结构化内容（任务 07；生效修订快照携带 structuredReport 键时返回） */
   structuredContent: ReferenceDocumentStructuredContent | null;
+  /** 来源报告冻结版本的原件附件（任务 07 P2；有权读者可经 REST 下载，无冻结原件为 null） */
+  sourceReportAttachment: ReferenceDocumentSourceAttachment | null;
   /** 案例明细；普通资料为空（前端需兼容可空 caseDetail） */
   caseDetail: ReferenceDocumentCaseDetail | null;
   /** 当前会话账号是否为本条资料的原作者（任务 07 R053：作者删除入口唯一依据；不返回账号 ID） */
   viewerIsOriginalAuthor: boolean;
   updatedAt: string;
+};
+
+/**
+ * 来源报告冻结版本的原件附件（任务 07 P2）。
+ * 只含展示与下载所需公开标识；下载经服务端授权后回写流，前端不感知存储位置。
+ */
+export type ReferenceDocumentSourceAttachment = {
+  attachmentId: number;
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
 };
 
 /** 历史版本条目（管理修订摘要 + 该版本生效正文，供授权追溯旧版本内容） */

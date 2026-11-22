@@ -20,6 +20,7 @@ import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { DomainError } from '@core/common/errors/domain-error';
+import { DownloadReferenceDocumentSourceAttachmentUsecase } from '@src/usecases/reference-document/download-reference-document-source-attachment.usecase';
 import { GetReferenceDocumentFileUsecase } from '@src/usecases/reference-document/get-reference-document-file.usecase';
 import type { ReferenceDocumentFilePayload } from '@src/usecases/reference-document/reference-document.types';
 
@@ -34,11 +35,16 @@ import { applyDownloadHeaders, toRestError } from '../shared/upload-boundary.uti
  * - 本类只做 Session 映射、调用 Usecase 与 HTTP 响应封装，不承载业务规则、事务
  *   或 I/O 编排：下载经 GetReferenceDocumentFileUsecase 返回内容流，
  *   本类不感知存储实现（adapters.rules.md 边界）；
+ * - 来源报告原件下载（任务 07 P2）经 DownloadReferenceDocumentSourceAttachmentUsecase
+ *   扩展同一资料下载入口：按正式资料读取范围授权后再核验冻结版本附件绑定；
  * - 错误统一为 HTTP 状态码 + { statusCode, code, message } JSON 体，不携带服务器路径。
  */
 @Controller('api/reference-documents')
 export class ReferenceDocumentRestController {
-  constructor(private readonly getReferenceDocumentFileUsecase: GetReferenceDocumentFileUsecase) {}
+  constructor(
+    private readonly getReferenceDocumentFileUsecase: GetReferenceDocumentFileUsecase,
+    private readonly downloadSourceAttachmentUsecase: DownloadReferenceDocumentSourceAttachmentUsecase,
+  ) {}
 
   /** 文件下载（ENGINEER + SUPER_ADMIN，与 GraphQL 读口径一致——客户无页面访问权限不开放下载；软删/不存在/文件缺失统一受控错误，不泄露路径） */
   @Get(':id/download')
@@ -65,6 +71,44 @@ export class ReferenceDocumentRestController {
     }
 
     // MIME 取自 DB（上传时由扩展名映射写入），文件名按 RFC 5987 编码防乱码与头注入
+    applyDownloadHeaders(response, {
+      mimeType: payload.mimeType,
+      originalFilename: payload.originalFilename,
+    });
+
+    return new StreamableFile(payload.content);
+  }
+
+  /**
+   * 来源报告原件下载（任务 07 P2；ENGINEER + SUPER_ADMIN，与资料详情读口径一致）：
+   * 先按正式资料现有状态与可信读取范围授权，再核验冻结版本附件绑定后读取文件；
+   * 客户无页面访问权限不开放下载，不泄露路径与存储引用。
+   */
+  @Get(':id/source-attachments/:attachmentId/download')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN, IdentityTypeEnum.ENGINEER)
+  async downloadSourceAttachment(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('attachmentId', ParseIntPipe) attachmentId: number,
+    @currentUser() user: JwtPayload,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<StreamableFile> {
+    let payload: ReferenceDocumentFilePayload;
+
+    try {
+      payload = await this.downloadSourceAttachmentUsecase.execute({
+        session: mapJwtToUsecaseSession(user),
+        documentId: id,
+        attachmentId,
+      });
+    } catch (error) {
+      if (error instanceof DomainError) {
+        toRestError(error);
+      }
+
+      throw error;
+    }
+
     applyDownloadHeaders(response, {
       mimeType: payload.mimeType,
       originalFilename: payload.originalFilename,

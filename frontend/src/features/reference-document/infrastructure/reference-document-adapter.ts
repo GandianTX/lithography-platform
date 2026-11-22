@@ -163,6 +163,13 @@ const REFERENCE_DOCUMENT_DETAIL_FIELDS = `
           note
         }
       }
+      sourceReportAttachment {
+        attachmentId
+        fileId
+        originalFilename
+        mimeType
+        byteSize
+      }
       structuredContent {
         schemaVersion
         maintenanceDate

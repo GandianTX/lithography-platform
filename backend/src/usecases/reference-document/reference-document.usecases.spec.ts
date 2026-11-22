@@ -37,6 +37,9 @@ const makeQueryService = () => ({
 /** 同域维修报告读侧替身：默认无冻结版本（MATERIAL 详情不触发） */
 const makeMaintenanceReportQueryService = () => ({
   readVersionById: jest.fn().mockResolvedValue(null),
+  // 任务 07 P2：报告来源详情装配会读冻结版本附件绑定（无绑定如实为 null）
+  readVersionAttachments: jest.fn().mockResolvedValue([]),
+  readAttachmentsByIds: jest.fn().mockResolvedValue([]),
 });
 
 const makeWriteService = () => ({

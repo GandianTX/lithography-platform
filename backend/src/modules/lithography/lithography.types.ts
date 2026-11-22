@@ -939,6 +939,18 @@ export type ReferenceDocumentRevisionSummaryView = {
 };
 
 /**
+ * 来源报告冻结版本的原件附件视图（任务 07 P2：有权读者可经资料详情下载入口授权下载）。
+ * 只含展示与下载所需的公开标识（R062-02 口径：fileId 允许返回，不暴露存储引用与路径）。
+ */
+export type ReferenceDocumentSourceAttachmentView = {
+  attachmentId: number;
+  fileId: string;
+  originalFilename: string;
+  mimeType: string;
+  byteSize: number;
+};
+
+/**
  * 参考资料库详情稳定读视图：基础详情 + 来源/状态/生效版本与生效正文。
  *
  * - contentText 为「生效正文」：存在管理修订时取修订后正文，否则取原始正文；
@@ -958,6 +970,11 @@ export type ReferenceDocumentLibraryDetailView = ReferenceDocumentDetailView & {
   frozenReport: ReferenceDocumentFrozenReportView | null;
   /** 任务 07 管理修订：生效修订携带结构化内容键时返回（旧扁平修订为 null） */
   structuredContent: ReferenceDocumentStructuredContentView | null;
+  /**
+   * 来源报告冻结版本的原件附件（任务 07 P2；按冻结版本附件绑定装配，
+   * 不回退当前报告附件列表；无冻结原件或引用失效为 null）
+   */
+  sourceReportAttachment: ReferenceDocumentSourceAttachmentView | null;
 };
 
 /**

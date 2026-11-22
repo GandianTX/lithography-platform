@@ -1,7 +1,11 @@
 // src/usecases/reference-document/resolve-reference-document-effective-detail.ts
 
+import { MaintenanceAttachmentStatus } from '@app-types/models/maintenance-report.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
-import type { ReferenceDocumentDetailQueryResult } from '@src/modules/lithography/lithography.types';
+import type {
+  ReferenceDocumentDetailQueryResult,
+  ReferenceDocumentSourceAttachmentView,
+} from '@src/modules/lithography/lithography.types';
 import type { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import type { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import {
@@ -25,6 +29,8 @@ export type ResolvedReferenceDocumentEffectiveContent = {
   contentSource: 'ORIGINAL' | 'FROZEN_REPORT' | 'CURRENT_REVISION';
   frozenReport: ReturnType<typeof parseFrozenReportVersion> | null;
   structuredContent: ReferenceDocumentStructuredContent | null;
+  /** 来源报告冻结版本的原件附件（任务 07 P2；无冻结原件或引用失效为 null） */
+  sourceReportAttachment: ReferenceDocumentSourceAttachmentView | null;
 };
 
 /**
@@ -69,7 +75,10 @@ const isStructurallyEmptyFrozenReport = (
  */
 export async function resolveReferenceDocumentEffectiveContent(params: {
   referenceDocumentQueryService: Pick<ReferenceDocumentQueryService, 'findRevision'>;
-  maintenanceReportQueryService: Pick<MaintenanceReportQueryService, 'readVersionById'>;
+  maintenanceReportQueryService: Pick<
+    MaintenanceReportQueryService,
+    'readVersionById' | 'readVersionAttachments' | 'readAttachmentsByIds'
+  >;
   detail: ReferenceDocumentEffectiveContentInput;
 }): Promise<ResolvedReferenceDocumentEffectiveContent> {
   const { detail } = params;
@@ -83,6 +92,8 @@ export async function resolveReferenceDocumentEffectiveContent(params: {
   let contentText = detail.contentText;
   let frozenReport: ResolvedReferenceDocumentEffectiveContent['frozenReport'] = null;
   let structuredContent: ResolvedReferenceDocumentEffectiveContent['structuredContent'] = null;
+  let sourceReportAttachment: ResolvedReferenceDocumentEffectiveContent['sourceReportAttachment'] =
+    null;
 
   if (contentSource === 'CURRENT_REVISION') {
     const revision = await params.referenceDocumentQueryService.findRevision(
@@ -128,7 +139,65 @@ export async function resolveReferenceDocumentEffectiveContent(params: {
     if (contentSource === 'FROZEN_REPORT') {
       contentText = composeFrozenReportText(frozenReport);
     }
+    // 任务 07 P2：按冻结版本的附件绑定装配原件元数据（不回退当前报告附件列表），
+    // 供详情页展示与 REST 授权下载；绑定失效或文件引用无效时如实为 null
+    sourceReportAttachment = await resolveFrozenReportSourceAttachment(
+      params.maintenanceReportQueryService,
+      detail.sourceReportId,
+      detail.sourceReportVersionId,
+    );
   }
 
-  return { contentText, contentSource, frozenReport, structuredContent };
+  return { contentText, contentSource, frozenReport, structuredContent, sourceReportAttachment };
+}
+
+/**
+ * 来源报告冻结版本原件装配（任务 07 P2）。
+ *
+ * - 仅信任 `maintenance_report_version_attachment`（版本-附件绑定表）里
+ *   属于该冻结版本（versionId + reportId 双键）的条目，绝不回退报告当前
+ *   附件列表，也不接受单一文件 ID 直取；
+ * - 附件行必须存在且 fileId 非空。RETIRED 不在此拒绝：报告被审核驳回
+ *   （RETURNED）后作者更换/移除原件会把旧附件行合法退役，而该行的
+ *   版本-附件复合外键绑定仍在——退役正是为了「冻结版本可回溯历史附件」
+ *   （remove-maintenance-report-attachment.usecase 设计注释），历史读取权
+ *   保留；文件失效（stored_file 非 VALID / 已清理）由下载链路如实拒绝；
+ * - 多条绑定时优先 CURRENT，否则取第一条可绑定行（历史单附件上限 R062-01
+ *   下每版本通常只绑定一份）。
+ */
+async function resolveFrozenReportSourceAttachment(
+  maintenanceReportQueryService: Pick<
+    MaintenanceReportQueryService,
+    'readVersionAttachments' | 'readAttachmentsByIds'
+  >,
+  sourceReportId: number,
+  sourceReportVersionId: number,
+): Promise<ReferenceDocumentSourceAttachmentView | null> {
+  const bindings = await maintenanceReportQueryService.readVersionAttachments(
+    sourceReportVersionId,
+    sourceReportId,
+  );
+  if (bindings.length === 0) {
+    return null;
+  }
+
+  const snapshots = await maintenanceReportQueryService.readAttachmentsByIds(
+    sourceReportId,
+    bindings.map((binding) => binding.attachmentId),
+  );
+  const withFile = snapshots.filter((snapshot) => snapshot.fileId !== null);
+  const usable =
+    withFile.find((snapshot) => snapshot.status === MaintenanceAttachmentStatus.CURRENT) ??
+    withFile[0];
+  if (!usable || usable.fileId === null) {
+    return null;
+  }
+
+  return {
+    attachmentId: usable.id,
+    fileId: usable.fileId,
+    originalFilename: usable.originalFilename,
+    mimeType: usable.mimeType,
+    byteSize: usable.byteSize,
+  };
 }

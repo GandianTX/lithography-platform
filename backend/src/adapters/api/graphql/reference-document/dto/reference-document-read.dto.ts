@@ -459,6 +459,29 @@ export class ReferenceDocumentFrozenReportDTO {
 }
 
 /**
+ * 来源报告冻结版本的原件附件（任务 07 P2）。
+ * 只含展示与下载所需的公开标识（fileId 允许返回，R062-02 口径），
+ * 不返回存储引用、磁盘路径与上传者账号等内部事实。
+ */
+@ObjectType({ description: '来源报告冻结版本的原件附件' })
+export class ReferenceDocumentSourceAttachmentDTO {
+  @Field(() => Int, { description: '报告附件 ID（下载端点路径参数）' })
+  attachmentId!: number;
+
+  @Field(() => String, { description: '关联原件 ID（公开标识；下载经服务端授权后回写流）' })
+  fileId!: string;
+
+  @Field(() => String, { description: '原始文件名' })
+  originalFilename!: string;
+
+  @Field(() => String, { description: 'MIME 类型' })
+  mimeType!: string;
+
+  @Field(() => Int, { description: '文件字节数' })
+  byteSize!: number;
+}
+
+/**
  * 参考资料详情输出对象（元数据 + 生效正文 + 案例明细）
  * 不返回存储引用与服务器本地路径（0907.docx：不能把服务器本地路径返回给浏览器）
  * 任务 07：contentText 为生效正文，并附来源类型 / 生效版本 / 冻结报告内容。
@@ -555,6 +578,13 @@ export class ReferenceDocumentDetailDTO {
       '生效管理修订的结构化内容（任务 07；生效修订快照携带 structuredReport 键时返回，旧扁平修订为空）',
   })
   structuredContent?: ReferenceDocumentStructuredContentDTO | null;
+
+  @Field(() => ReferenceDocumentSourceAttachmentDTO, {
+    nullable: true,
+    description:
+      '来源报告冻结版本的原件附件（任务 07 P2；按冻结版本附件绑定装配，有权读者可经 REST 下载，普通资料与无冻结原件为空）',
+  })
+  sourceReportAttachment?: ReferenceDocumentSourceAttachmentDTO | null;
 
   @Field(() => ReferenceDocumentCaseDetailDTO, {
     nullable: true,

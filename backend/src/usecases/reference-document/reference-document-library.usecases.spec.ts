@@ -87,6 +87,9 @@ const makeQueryService = () => ({
 
 const makeMaintenanceReportQueryService = () => ({
   readVersionById: jest.fn().mockResolvedValue(null),
+  // 任务 07 P2：生效正文装配会按冻结版本附件绑定装配来源原件（无绑定如实为 null）
+  readVersionAttachments: jest.fn().mockResolvedValue([]),
+  readAttachmentsByIds: jest.fn().mockResolvedValue([]),
 });
 
 const makeAccountQueryService = (adminLevel: number | null = null) => ({
@@ -230,6 +233,90 @@ describe('GetReferenceDocumentDetailUsecase（生效版本与可见范围）', (
     expect(result.frozenReport?.steps[0]?.partName).toBe('Z 轴电机');
     expect(result.contentText).toContain('光刻机 Z 轴异常');
     expect(result.contentText).toContain('Z 轴电机');
+  });
+
+  it('来源原件装配（任务 07 P2 生命周期）：冻结版本绑定的旧附件已 RETIRED 仍返回其元数据，不回退报告当前附件', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockResolvedValue(
+      makeDetail({
+        sourceKind: 'INDEPENDENT_REPORT',
+        sourceReportId: REPORT_ID,
+        sourceReportVersionId: VERSION_ID,
+      }),
+    );
+    const maintenanceReportQueryService = makeMaintenanceReportQueryService();
+    maintenanceReportQueryService.readVersionById.mockResolvedValue({
+      id: VERSION_ID,
+      reportId: REPORT_ID,
+      versionNo: 1,
+      schemaVersion: 1,
+      submittedAt: new Date('2026-10-01T00:00:00.000Z'),
+      payloadSnapshot: {
+        sourceType: 'HISTORICAL_CASE',
+        repairRequestId: null,
+        title: '光刻机 Z 轴异常',
+        customerFactoryName: '某晶圆厂',
+        equipmentModelId: 94,
+        equipmentModelText: null,
+        maintenanceDate: '2026-09-30',
+        maintenanceEngineerName: '工程师甲',
+        alarms: [
+          {
+            alarmIndex: 1,
+            alarmCode: '0123',
+            alarmDescription: 'Z 轴超限',
+            phaseCode: 'OCCURRENCE',
+            resetResult: 'RESET_SUCCESS',
+          },
+        ],
+        steps: [
+          {
+            stepNo: 1,
+            stepCode: 'S1',
+            phaseCode: 'ANALYSIS',
+            partName: 'Z 轴电机',
+            actionText: '检查电机接线',
+            resultText: '接线松动',
+            newAlarmCode: null,
+            isValidNewBranch: false,
+          },
+        ],
+        ai: { usage: 'NOT_USED' },
+      },
+    });
+    // 冻结版本 1 只绑定旧附件 880001；审核驳回后作者更换原件：旧附件行已 RETIRED，
+    // 报告当前附件 880002 属版本 2、不在该冻结版本绑定内
+    maintenanceReportQueryService.readVersionAttachments.mockResolvedValue([
+      { versionId: VERSION_ID, attachmentId: 880001, reportId: REPORT_ID },
+    ]);
+    maintenanceReportQueryService.readAttachmentsByIds.mockResolvedValue([
+      {
+        id: 880001,
+        reportId: REPORT_ID,
+        fileId: 'aaaa1111-1111-4111-8111-111111111111',
+        originalFilename: '旧原件.txt',
+        mimeType: 'text/plain',
+        byteSize: 27,
+        status: 'RETIRED',
+        storageReference: 'stored-files/mock/old.txt',
+      },
+    ]);
+
+    const { usecase } = makeDetailUsecase({
+      queryService,
+      maintenanceReportQueryService,
+    });
+    const result = await usecase.execute({
+      session: engineerSession,
+      documentId: DOCUMENT_ID,
+    });
+
+    // 退役不撤历史读取权：详情仍展示冻结版本绑定的旧原件（供授权下载）
+    expect(result.sourceReportAttachment).toMatchObject({
+      attachmentId: 880001,
+      fileId: 'aaaa1111-1111-4111-8111-111111111111',
+      originalFilename: '旧原件.txt',
+    });
   });
 
   it('工单总结来源且无管理修订：读取冻结版本，来源与工单标识随快照透出，AI 空值不落 0', async () => {

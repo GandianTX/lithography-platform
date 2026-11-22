@@ -14,7 +14,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getGraphQLRuntimeConfig } from '@/shared/graphql';
 
-import { downloadReferenceDocumentFile } from './reference-document-http-adapter';
+import {
+  downloadReferenceDocumentFile,
+  downloadReferenceDocumentSourceAttachment,
+} from './reference-document-http-adapter';
 
 vi.mock('@/shared/graphql', () => ({
   getGraphQLRuntimeConfig: vi.fn(),
@@ -142,5 +145,55 @@ describe('downloadReferenceDocumentFile', () => {
     const result = await downloadReferenceDocumentFile(970002);
 
     expect(result).toMatchObject({ ok: false, reason: 'download-failed' });
+  });
+});
+
+describe('downloadReferenceDocumentSourceAttachment（任务 07 P2 来源报告原件下载）', () => {
+  it('请求来源报告原件端点并成功返回 Blob 与文件名', async () => {
+    runtimeConfig({});
+    fetchMock.mockResolvedValue(
+      new Response('source-bytes', {
+        headers: {
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent('报告原件.txt')}`,
+        },
+      }),
+    );
+
+    const result = await downloadReferenceDocumentSourceAttachment(970010, 880123);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/reference-documents/970010/source-attachments/880123/download',
+      expect.objectContaining({ headers: expect.anything() }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.filename).toBe('报告原件.txt');
+      expect(result.blob.size).toBeGreaterThan(0);
+    }
+  });
+
+  it('绑定不符 / 不可见（NOT_FOUND）映射 not-found 显式失败', async () => {
+    runtimeConfig({});
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          success: false,
+          data: {
+            statusCode: 404,
+            code: 'REFERENCE_DOCUMENT_NOT_FOUND',
+            message: '参考资料不存在或不可访问',
+          },
+        },
+        { status: 404 },
+      ),
+    );
+
+    const result = await downloadReferenceDocumentSourceAttachment(970010, 880123);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'not-found',
+      message: '参考资料不存在或不可访问',
+    });
   });
 });

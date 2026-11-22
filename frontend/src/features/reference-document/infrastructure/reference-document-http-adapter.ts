@@ -38,7 +38,9 @@ const DOWNLOAD_REASON_BY_CODE: Record<
   string,
   Extract<ReferenceDocumentFileDownloadResult, { ok: false }>['reason']
 > = {
+  // 任务 07 P2：来源报告原件下载统一 NOT_FOUND 大类为完整错误码串（REST 信封 code = DomainError.code）
   NOT_FOUND: 'not-found',
+  REFERENCE_DOCUMENT_NOT_FOUND: 'not-found',
   REFERENCE_DOCUMENT_FILE_NOT_AVAILABLE: 'file-not-available',
   FORBIDDEN: 'forbidden',
 };
@@ -57,6 +59,11 @@ function downloadEndpoint(id: number): string {
   return `${DOWNLOAD_ENDPOINT_BASE}/${id}/download`;
 }
 
+/** 来源报告原件下载端点（任务 07 P2：扩展现有资料下载入口） */
+function sourceAttachmentDownloadEndpoint(id: number, attachmentId: number): string {
+  return `${DOWNLOAD_ENDPOINT_BASE}/${id}/source-attachments/${attachmentId}/download`;
+}
+
 /**
  * REST 流式下载（所有已登录角色）：fetch blob 后交由调用方触发浏览器保存。
  * 资料不存在 / 已软删统一 not-found；纯文本资料与存储对象缺失统一 file-not-available。
@@ -64,10 +71,33 @@ function downloadEndpoint(id: number): string {
 export async function downloadReferenceDocumentFile(
   id: number,
 ): Promise<ReferenceDocumentFileDownloadResult> {
+  return fetchDownloadBlob(downloadEndpoint(id), `reference-document-${id}`);
+}
+
+/**
+ * 来源报告冻结版本原件下载（任务 07 P2）：报告来源资料的授权下载入口。
+ * 服务端先按正式资料读取范围授权，再核验冻结版本附件绑定后回写文件流；
+ * 资料不可见 / 原件未绑定该冻结版本统一 not-found，存储失效统一 file-not-available。
+ */
+export async function downloadReferenceDocumentSourceAttachment(
+  id: number,
+  attachmentId: number,
+): Promise<ReferenceDocumentFileDownloadResult> {
+  return fetchDownloadBlob(
+    sourceAttachmentDownloadEndpoint(id, attachmentId),
+    `reference-document-${id}-attachment-${attachmentId}`,
+  );
+}
+
+/** 共用下载流程：fetch（带鉴权重试）→ blob → 解析 Content-Disposition 文件名 → 统一错误信封归并 */
+async function fetchDownloadBlob(
+  endpoint: string,
+  fallbackFilename: string,
+): Promise<ReferenceDocumentFileDownloadResult> {
   let response: Response;
 
   try {
-    response = await fetchRestWithAuthRetry(downloadEndpoint(id), {});
+    response = await fetchRestWithAuthRetry(endpoint, {});
   } catch {
     return {
       ok: false,
@@ -86,8 +116,7 @@ export async function downloadReferenceDocumentFile(
     }
 
     const filename =
-      parseAttachmentFilename(response.headers.get('Content-Disposition')) ??
-      `reference-document-${id}`;
+      parseAttachmentFilename(response.headers.get('Content-Disposition')) ?? fallbackFilename;
 
     return { ok: true, blob, filename };
   }

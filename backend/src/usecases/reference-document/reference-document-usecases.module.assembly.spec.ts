@@ -25,7 +25,9 @@ import { LoggerModule } from 'nestjs-pino';
 
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
+import { STORED_FILE_STORAGE } from '@src/usecases/common/ports/stored-file-storage.contract';
 import { TRANSACTION_RUNNER } from '@src/usecases/common/ports/transaction-runner.contract';
+import { DownloadReferenceDocumentSourceAttachmentUsecase } from './download-reference-document-source-attachment.usecase';
 import { GetReferenceDocumentEditableContentUsecase } from './get-reference-document-editable-content.usecase';
 import { GetReferenceDocumentFileUsecase } from './get-reference-document-file.usecase';
 import { REFERENCE_DOCUMENT_STORAGE } from './reference-document-storage.contract';
@@ -76,15 +78,17 @@ process.env.FIELD_ENCRYPTION_IV = process.env.FIELD_ENCRYPTION_IV ?? '0'.repeat(
 
 /**
  * 离线端口绑定：正式装配中 TRANSACTION_RUNNER 由全局 TypeOrmTransactionModule、
- * REFERENCE_DOCUMENT_STORAGE 由存储模块提供；离线装配用全局模块显式提供替身。
+ * REFERENCE_DOCUMENT_STORAGE / STORED_FILE_STORAGE 由存储模块提供；离线装配用
+ * 全局模块显式提供替身（STORED_FILE_STORAGE 为任务 07 P2 来源报告原件下载用例新增依赖）。
  */
 @Global()
 @Module({
   providers: [
     { provide: TRANSACTION_RUNNER, useValue: { run: jest.fn() } },
     { provide: REFERENCE_DOCUMENT_STORAGE, useValue: {} },
+    { provide: STORED_FILE_STORAGE, useValue: {} },
   ],
-  exports: [TRANSACTION_RUNNER, REFERENCE_DOCUMENT_STORAGE],
+  exports: [TRANSACTION_RUNNER, REFERENCE_DOCUMENT_STORAGE, STORED_FILE_STORAGE],
 })
 class OfflinePortsModule {}
 
@@ -119,6 +123,13 @@ describe('ReferenceDocumentUsecasesModule 依赖装配（离线）', () => {
       expect(reviseUsecase).toBeInstanceOf(ReviseReferenceDocumentUsecase);
       const fileUsecase = moduleRef.get(GetReferenceDocumentFileUsecase);
       expect(fileUsecase).toBeInstanceOf(GetReferenceDocumentFileUsecase);
+      // 任务 07 P2：来源报告冻结版本原件下载用例依赖链（含 STORED_FILE_STORAGE）可解析
+      const sourceAttachmentDownloadUsecase = moduleRef.get(
+        DownloadReferenceDocumentSourceAttachmentUsecase,
+      );
+      expect(sourceAttachmentDownloadUsecase).toBeInstanceOf(
+        DownloadReferenceDocumentSourceAttachmentUsecase,
+      );
     } finally {
       await moduleRef.close();
     }

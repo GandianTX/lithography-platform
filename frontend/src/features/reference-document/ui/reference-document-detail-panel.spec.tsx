@@ -48,6 +48,7 @@ vi.mock('../infrastructure/reference-document-adapter', async (importOriginal) =
   return {
     ...actual,
     fetchReferenceDocument: vi.fn(),
+    fetchPendingOwnershipReferenceDocument: vi.fn(),
     fetchReferenceDocumentRevisions: vi.fn(),
     deleteReferenceDocument: vi.fn(),
     reviseReferenceDocument: vi.fn(),
@@ -63,6 +64,7 @@ vi.mock('../infrastructure/reference-document-http-adapter', async (importOrigin
   return {
     ...actual,
     downloadReferenceDocumentFile: vi.fn(),
+    downloadReferenceDocumentSourceAttachment: vi.fn(),
   };
 });
 
@@ -77,8 +79,14 @@ vi.mock('react-router', async (importOriginal) => {
 
 const navigateMock = vi.fn();
 const fetchDetailMock = vi.mocked(referenceDocumentAdapter.fetchReferenceDocument);
+const fetchPendingDetailMock = vi.mocked(
+  referenceDocumentAdapter.fetchPendingOwnershipReferenceDocument,
+);
 const fetchRevisionsMock = vi.mocked(referenceDocumentAdapter.fetchReferenceDocumentRevisions);
 const downloadFileMock = vi.mocked(referenceDocumentHttpAdapter.downloadReferenceDocumentFile);
+const downloadSourceAttachmentMock = vi.mocked(
+  referenceDocumentHttpAdapter.downloadReferenceDocumentSourceAttachment,
+);
 
 function buildDetail(overrides: Partial<ReferenceDocumentDetail> = {}): ReferenceDocumentDetail {
   return {
@@ -100,6 +108,7 @@ function buildDetail(overrides: Partial<ReferenceDocumentDetail> = {}): Referenc
     sourceReportVersionId: null,
     frozenReport: null,
     structuredContent: null,
+    sourceReportAttachment: null,
     organizationName: '甲方默认组织',
     ingestMethod: 'ADMIN_DIRECT',
     caseDetail: null,
@@ -143,8 +152,10 @@ const frozenExtensionEmpty = {
 
 beforeEach(() => {
   fetchDetailMock.mockReset();
+  fetchPendingDetailMock.mockReset();
   fetchRevisionsMock.mockReset();
   downloadFileMock.mockReset();
+  downloadSourceAttachmentMock.mockReset();
   navigateMock.mockReset();
   fetchRevisionsMock.mockResolvedValue(revisionsFixture);
 
@@ -627,6 +638,104 @@ describe('ReferenceDocumentDetailPanel（只读）', () => {
       expect(screen.getByText('该资料没有可下载的文件。')).toBeTruthy();
     });
     expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReferenceDocumentDetailPanel（来源报告原件下载，任务 07 P2）', () => {
+  const sourceAttachmentFixture = {
+    attachmentId: 880123,
+    fileId: '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0',
+    originalFilename: 'Z轴报警原件.txt',
+    mimeType: 'text/plain',
+    byteSize: 27,
+  };
+
+  it('报告来源资料带冻结原件：渲染「下载报告原件」入口并触发授权下载', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({ sourceReportAttachment: sourceAttachmentFixture }),
+    });
+    downloadSourceAttachmentMock.mockResolvedValue({
+      ok: true,
+      blob: new Blob(['report-bytes']),
+      filename: 'Z轴报警原件.txt',
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: '下载报告原件' }));
+
+    await waitFor(() => {
+      expect(URL.createObjectURL).toHaveBeenCalled();
+    });
+    expect(downloadSourceAttachmentMock).toHaveBeenCalledWith(970002, 880123);
+    // 触发浏览器保存后即时移除锚点：以 revokeObjectURL 收尾为成功凭证
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+  });
+
+  it('无可下载冻结原件（sourceReportAttachment 为空）：不渲染下载入口', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
+
+    renderPanel();
+
+    expect(await screen.findByRole('button', { name: '下载原件' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '下载报告原件' })).toBeNull();
+  });
+
+  it('归属待核实详情（pending-ownership 变体）：不渲染冻结原件下载入口（该状态不可授权下载）', async () => {
+    fetchPendingDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({ sourceReportAttachment: sourceAttachmentFixture }),
+    });
+
+    render(
+      <ReferenceDocumentDetailPanel
+        documentId={970002}
+        viewer={{ role: 'SUPER_ADMIN', adminLevel: 1 }}
+        variant="pending-ownership"
+      />,
+    );
+
+    expect(await screen.findByText('NXE:3400C 光源维护指南')).toBeTruthy();
+    // PENDING 归属未确认：正式资料下载入口未放行，冻结原件入口同样不显示
+    expect(screen.queryByRole('button', { name: '下载报告原件' })).toBeNull();
+  });
+
+  it('来源原件下载失败：提示后端消息，不伪造成功', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({ sourceReportAttachment: sourceAttachmentFixture }),
+    });
+    downloadSourceAttachmentMock.mockResolvedValue({
+      ok: false,
+      reason: 'not-found',
+      message: '参考资料不存在或不可查看。',
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: '下载报告原件' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('参考资料不存在或不可查看。')).toBeTruthy();
+    });
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('普通资料不回归：原有「下载原件」入口与流程不受影响', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
+    downloadFileMock.mockResolvedValue({
+      ok: true,
+      blob: new Blob(['pdf-bytes']),
+      filename: 'nxe-3400c-source-guide.pdf',
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: '下载原件' }));
+
+    await waitFor(() => {
+      expect(URL.createObjectURL).toHaveBeenCalled();
+    });
+    expect(downloadFileMock).toHaveBeenCalledWith(970002);
+    expect(downloadSourceAttachmentMock).not.toHaveBeenCalled();
   });
 });
 

@@ -155,6 +155,8 @@ function toDetail(record: MockReferenceDocumentRecord) {
     sourceReportVersionId: null,
     frozenReport: null,
     structuredContent: record.structuredContent,
+    // Mock 种子均为普通资料：无来源报告冻结原件（与后端装配语义一致）
+    sourceReportAttachment: record.sourceReportAttachment,
     organizationName: record.organizationName,
     ingestMethod: record.ingestMethod,
     caseDetail: record.caseDetail,

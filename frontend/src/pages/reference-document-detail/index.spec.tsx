@@ -58,6 +58,7 @@ function buildDetail(id: number): ReferenceDocumentDetail {
     equipmentModelName: 'ASML TWINSCAN NXE:3400C',
     equipmentModelText: null,
     structuredContent: null,
+    sourceReportAttachment: null,
     description: '光源模块周期性维护要点。',
     originalFilename: 'nxe-3400c-source-guide-mock.pdf',
     mimeType: 'application/pdf',

@@ -9,8 +9,12 @@
  * 扩展名 → MIME 映射单一真源在 usecases/common/file-upload.contract.ts。
  */
 
-/** 数据库 CHECK 允许的精确上限（字节） */
-export const STORED_FILE_UPLOAD_MAX_BYTES = 20_000_000;
+/**
+ * 数据库 CHECK 允许的精确上限（字节）。
+ * 单一真源已上移至 usecases/common/stored-file-size.contract.ts（任务 07 P2
+ * 来源报告原件下载链路跨域复用同一上限）；本文件原样 re-export 保持既有导入。
+ */
+export { STORED_FILE_UPLOAD_MAX_BYTES } from '../common/stored-file-size.contract';
 
 /** 上传 MIME 白名单（与参考资料上传读同一配置 key） */
 export const STORED_FILE_ALLOWED_MIME_TYPES = Symbol('STORED_FILE_ALLOWED_MIME_TYPES');

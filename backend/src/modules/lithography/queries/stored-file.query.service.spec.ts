@@ -1311,3 +1311,77 @@ describe('报告附件授权（BOUND MAINTENANCE_REPORT，R062-03）', () => {
     await expect(missing.service.findAuthorizedDownload(boundQuery())).resolves.toBeNull();
   });
 });
+
+describe('来源报告原件定位（findReportAttachmentDownloadFacts，任务 07 P2）', () => {
+  const REPORT_ID = 960201;
+  const reportBoundFile = (overrides: Record<string, unknown> = {}) =>
+    fileRow({
+      businessType: 'MAINTENANCE_REPORT',
+      businessId: String(REPORT_ID),
+      bindingStatus: 'BOUND',
+      uploadContextId: null,
+      ...overrides,
+    });
+
+  it('MAINTENANCE_REPORT + VALID + 已核验 + 归属报告一致：返回下载事实（含存储引用）', async () => {
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(reportBoundFile());
+
+    const facts = await service.findReportAttachmentDownloadFacts(
+      '11111111-1111-4111-8111-111111111111',
+      REPORT_ID,
+    );
+
+    expect(facts).toMatchObject({
+      fileId: '11111111-1111-4111-8111-111111111111',
+      storageReference: 'private/ref.pdf',
+      originalFilename: '维修记录.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 10,
+      checksumSha256: 'checksum',
+    });
+  });
+
+  it('退役解绑形态（TEMPORARY + businessId=null，VALID 已核验）放行：历史冻结版本读取权保留', async () => {
+    // 生命周期：审核驳回后作者更换原件 → 旧附件行 RETIRED、stored_file 解绑
+    // 回 TEMPORARY（businessId 置 null，status/verifiedAt 保留）——任务 07 P2
+    // 裁决为放行，附件行↔登记行一致性由调用方核对
+    const { service, repositories } = makeService();
+    repositories.storedFile.findOne.mockResolvedValueOnce(
+      reportBoundFile({ bindingStatus: 'TEMPORARY', businessId: null }),
+    );
+
+    await expect(
+      service.findReportAttachmentDownloadFacts('11111111-1111-4111-8111-111111111111', REPORT_ID),
+    ).resolves.toMatchObject({ fileId: '11111111-1111-4111-8111-111111111111' });
+  });
+
+  it('形态不符（非报告类型 / 未核验 / 登记行不存在）或仍 BOUND 但归属报告不一致：返回 null（访问者授权由调用方裁决）', async () => {
+    const { service, repositories } = makeService();
+    const findOne = repositories.storedFile.findOne;
+
+    // 客户报修原件类型不放行
+    findOne.mockResolvedValueOnce(reportBoundFile({ businessType: 'REPAIR_REQUEST' }));
+    await expect(
+      service.findReportAttachmentDownloadFacts('11111111-1111-4111-8111-111111111111', REPORT_ID),
+    ).resolves.toBeNull();
+
+    // 登记未核验不放行
+    findOne.mockResolvedValueOnce(reportBoundFile({ verifiedAt: null }));
+    await expect(
+      service.findReportAttachmentDownloadFacts('11111111-1111-4111-8111-111111111111', REPORT_ID),
+    ).resolves.toBeNull();
+
+    // 仍 BOUND 但归属报告不一致不放行
+    findOne.mockResolvedValueOnce(reportBoundFile());
+    await expect(
+      service.findReportAttachmentDownloadFacts('11111111-1111-4111-8111-111111111111', 960202),
+    ).resolves.toBeNull();
+
+    // 登记行不存在返回 null
+    findOne.mockResolvedValueOnce(null);
+    await expect(
+      service.findReportAttachmentDownloadFacts('11111111-1111-4111-8111-111111111111', REPORT_ID),
+    ).resolves.toBeNull();
+  });
+});

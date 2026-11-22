@@ -68,6 +68,7 @@ const DETAIL_FIXTURE = {
   sourceReportId: 970002,
   sourceReportVersionId: 970003,
   frozenReport: null,
+  sourceReportAttachment: null,
   structuredContent: {
     schemaVersion: 1,
     maintenanceDate: '2026-11-22',

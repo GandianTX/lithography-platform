@@ -54,7 +54,15 @@ const makeReferenceDocumentQueryService = () =>
 const makeMaintenanceReportQueryService = () =>
   ({
     readVersionById: jest.fn().mockResolvedValue(null),
-  }) as unknown as jest.Mocked<Pick<MaintenanceReportQueryService, 'readVersionById'>> &
+    // 任务 07 P2：报告来源详情装配会读冻结版本附件绑定（无绑定如实为 null）
+    readVersionAttachments: jest.fn().mockResolvedValue([]),
+    readAttachmentsByIds: jest.fn().mockResolvedValue([]),
+  }) as unknown as jest.Mocked<
+    Pick<
+      MaintenanceReportQueryService,
+      'readVersionById' | 'readVersionAttachments' | 'readAttachmentsByIds'
+    >
+  > &
     MaintenanceReportQueryService;
 
 const session = (roles: string[]): UsecaseSession =>

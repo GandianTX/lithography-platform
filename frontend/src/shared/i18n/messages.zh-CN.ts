@@ -1342,6 +1342,7 @@ export const ZH_CN_MESSAGES = {
   // 参考资料详情面板（任务 07）
   'refDocDetail.action.backToList': '返回列表',
   'refDocDetail.action.downloadFile': '下载原件',
+  'refDocDetail.action.downloadSourceReportFile': '下载报告原件',
   'refDocDetail.action.revise': '管理修订',
   'refDocDetail.action.offline': '下架资料',
   'refDocDetail.action.delete': '删除资料',

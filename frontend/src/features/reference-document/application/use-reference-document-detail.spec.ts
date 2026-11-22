@@ -37,6 +37,7 @@ function buildDetail(id: number): ReferenceDocumentDetail {
     equipmentModelName: null,
     equipmentModelText: null,
     structuredContent: null,
+    sourceReportAttachment: null,
     description: null,
     originalFilename: null,
     mimeType: null,

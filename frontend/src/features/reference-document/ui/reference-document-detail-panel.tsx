@@ -29,7 +29,10 @@ import {
   deleteReferenceDocument,
   offlineReferenceDocument,
 } from '../infrastructure/reference-document-adapter';
-import { downloadReferenceDocumentFile } from '../infrastructure/reference-document-http-adapter';
+import {
+  downloadReferenceDocumentFile,
+  downloadReferenceDocumentSourceAttachment,
+} from '../infrastructure/reference-document-http-adapter';
 
 import {
   ADMIN_PENDING_OWNERSHIP_LIST_PATH,
@@ -113,6 +116,7 @@ export function ReferenceDocumentDetailPanel({
     variant === 'pending-ownership' ? null : documentId,
   );
   const [downloading, setDownloading] = useState(false);
+  const [downloadingSource, setDownloadingSource] = useState(false);
   const backPath =
     variant === 'pending-ownership'
       ? ADMIN_PENDING_OWNERSHIP_LIST_PATH
@@ -162,16 +166,33 @@ export function ReferenceDocumentDetailPanel({
         notify({ text: result.message, type: 'error' });
         return;
       }
-      const url = URL.createObjectURL(result.blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = result.filename;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      triggerBrowserSave(result.blob, result.filename);
     } finally {
       setDownloading(false);
+    }
+  };
+
+  // 任务 07 P2：报告来源资料展示并可下载其来源报告冻结版本的原件；
+  // 无可下载原件（sourceReportAttachment 为空）时不显示入口
+  const sourceAttachment = variant === 'library' ? (detail.sourceReportAttachment ?? null) : null;
+
+  const handleDownloadSourceAttachment = async () => {
+    if (sourceAttachment === null) {
+      return;
+    }
+    setDownloadingSource(true);
+    try {
+      const result = await downloadReferenceDocumentSourceAttachment(
+        detail.id,
+        sourceAttachment.attachmentId,
+      );
+      if (!result.ok) {
+        notify({ text: result.message, type: 'error' });
+        return;
+      }
+      triggerBrowserSave(result.blob, result.filename);
+    } finally {
+      setDownloadingSource(false);
     }
   };
 
@@ -193,6 +214,17 @@ export function ReferenceDocumentDetailPanel({
                 type="primary"
               >
                 {t('refDocDetail.action.downloadFile')}
+              </Button>
+            ) : null}
+            {sourceAttachment !== null ? (
+              <Button
+                loading={downloadingSource}
+                onClick={() => void handleDownloadSourceAttachment()}
+                size="small"
+                title={sourceAttachment.originalFilename}
+                type="primary"
+              >
+                {t('refDocDetail.action.downloadSourceReportFile')}
               </Button>
             ) : null}
           </div>
@@ -900,6 +932,18 @@ function makeStructuredStepColumns(
       width: 120,
     },
   ];
+}
+
+/** blob 触发浏览器保存（下载共用动作） */
+function triggerBrowserSave(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 /** 冻结报告只读块：结构来自任务 06 的不可变快照，不在前端二次推断 */

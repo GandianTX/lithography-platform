@@ -1444,6 +1444,7 @@ export const EN_MESSAGES = {
   // Reference document detail panel (task 07)
   'refDocDetail.action.backToList': 'Back to list',
   'refDocDetail.action.downloadFile': 'Download original',
+  'refDocDetail.action.downloadSourceReportFile': 'Download report original',
   'refDocDetail.action.revise': 'Manage revision',
   'refDocDetail.action.offline': 'Take offline',
   'refDocDetail.action.delete': 'Delete document',

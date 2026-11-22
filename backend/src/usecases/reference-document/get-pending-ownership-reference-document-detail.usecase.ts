@@ -58,7 +58,7 @@ export class GetPendingOwnershipReferenceDocumentDetailUsecase {
     }
 
     const enriched = await enrichReferenceDocumentCreator(this.accountQueryService, detail);
-    const { contentText, contentSource, frozenReport, structuredContent } =
+    const { contentText, contentSource, frozenReport, structuredContent, sourceReportAttachment } =
       await resolveReferenceDocumentEffectiveContent({
         referenceDocumentQueryService: this.referenceDocumentQueryService,
         maintenanceReportQueryService: this.maintenanceReportQueryService,
@@ -71,6 +71,7 @@ export class GetPendingOwnershipReferenceDocumentDetailUsecase {
       contentSource,
       frozenReport,
       structuredContent,
+      sourceReportAttachment,
       viewerIsOriginalAuthor: detail.createdByAccountId === command.session.accountId,
     };
   }

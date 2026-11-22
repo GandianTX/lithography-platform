@@ -54,7 +54,7 @@ export class GetReferenceDocumentDetailUsecase {
     });
     const enriched = await enrichReferenceDocumentCreator(this.accountQueryService, detail);
 
-    const { contentText, contentSource, frozenReport, structuredContent } =
+    const { contentText, contentSource, frozenReport, structuredContent, sourceReportAttachment } =
       await resolveReferenceDocumentEffectiveContent({
         referenceDocumentQueryService: this.referenceDocumentQueryService,
         maintenanceReportQueryService: this.maintenanceReportQueryService,
@@ -67,6 +67,7 @@ export class GetReferenceDocumentDetailUsecase {
       contentSource,
       frozenReport,
       structuredContent,
+      sourceReportAttachment,
       // R053 作者删除入口依据：只给布尔事实，不返回创建人账号 ID
       viewerIsOriginalAuthor: detail.createdByAccountId === command.session.accountId,
     };
