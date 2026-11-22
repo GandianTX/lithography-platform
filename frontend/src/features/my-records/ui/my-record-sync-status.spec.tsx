@@ -60,7 +60,36 @@ describe('MyRecordSyncStatusBadge', () => {
     expect(screen.getByText('已同步')).toBeTruthy();
   });
 
-  it('冲突：展示「存在冲突」，message 作为标签提示', () => {
+  it('冲突：展示「存在冲突」，受控原因码映射为本地化提示', () => {
+    renderBadge(
+      makeView({
+        status: 'CONFLICT',
+        message: 'CONFLICT_PENDING',
+        conflictId: 'b096c692-7556-4564-a4f8-2e2fb78b3880',
+        canResolveConflict: true,
+      }),
+    );
+
+    const tag = screen.getByText('存在冲突');
+    expect(tag.getAttribute('title')).toBe('存在待处理的版本冲突');
+  });
+
+  it('未知原因码不原样透出：不给 title，也不显示机器码原文', () => {
+    renderBadge(
+      makeView({
+        status: 'FAILED',
+        message: 'LOCAL_UNKNOWN_REASON_CODE',
+        conflictId: null,
+        canResolveConflict: false,
+      }),
+    );
+
+    const tag = screen.getByText('上传失败');
+    expect(tag.getAttribute('title')).toBeNull();
+    expect(screen.queryByText('LOCAL_UNKNOWN_REASON_CODE')).toBeNull();
+  });
+
+  it('自由文本原因码不再作为提示展示（后端只给受控码）', () => {
     renderBadge(
       makeView({
         status: 'CONFLICT',
@@ -71,7 +100,8 @@ describe('MyRecordSyncStatusBadge', () => {
     );
 
     const tag = screen.getByText('存在冲突');
-    expect(tag.getAttribute('title')).toBe('本机与云端版本不一致');
+    expect(tag.getAttribute('title')).toBeNull();
+    expect(screen.queryByText('本机与云端版本不一致')).toBeNull();
   });
 
   it('冲突且已接入路由：渲染调用方传入的处理动作', () => {
