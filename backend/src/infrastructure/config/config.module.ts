@@ -175,13 +175,22 @@ const collectAiProviderRuleErrors = (): string[] => {
     errors.push('AI_PROVIDER_MODE must be either mock or remote');
   }
   if (providerMode === 'remote') {
+    // 远程来源三选一：完整启用的 RAG、完整 Qwen、完整 OpenAI 任一即可满足远程来源检查。
+    // RAG 模式解析与 ragDiagnosisConfig 工厂一致：未设置或空白默认 remote；
+    // 显式 disabled 不计入，即使残留 URL／Key。URL 与 Key 须为去首尾空白后的非空值
+    //（getOptionalEnv 已做 trim）。RAG 自身的完整性（显式 remote 缺 URL／Key 等）
+    // 仍由 collectRagDiagnosisRuleErrors 独立校验，不因存在其他供应商而放行。
+    const ragMode = getOptionalEnv('LITHO_RAG_MODE')?.toLowerCase() || 'remote';
+    const ragReady =
+      ragMode === 'remote' &&
+      Boolean(getOptionalEnv('LITHO_RAG_BASE_URL') && getOptionalEnv('LITHO_RAG_API_KEY'));
     const qwenReady = Boolean(getOptionalEnv('QWEN_BASE_URL') && getOptionalEnv('QWEN_API_KEY'));
     const openAiReady = Boolean(
       getOptionalEnv('OPENAI_BASE_URL') && getOptionalEnv('OPENAI_API_KEY'),
     );
-    if (!qwenReady && !openAiReady) {
+    if (!ragReady && !qwenReady && !openAiReady) {
       errors.push(
-        'AI_PROVIDER_MODE=remote requires at least one provider config: QWEN_* or OPENAI_*',
+        'AI_PROVIDER_MODE=remote requires at least one remote provider config: LITHO_RAG_*, QWEN_* or OPENAI_*',
       );
     }
   }
