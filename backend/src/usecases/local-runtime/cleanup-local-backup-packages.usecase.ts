@@ -39,9 +39,10 @@ export type CleanupLocalBackupPackagesResult = {
 /**
  * 清理本机本公司的本地备份包（任务 09 S3.3）。
  *
- * 口径（R074-01～03；验收 A09-05／A09-08）：
- * - **手动清理**的授权来源是服务端已落库的完整云端回执，客户端不能传入回执；
+ * 口径（R074-01～03、R083-01；验收 A09-05／A09-08）：
+ * - **手动清理**的授权来源是服务端已落库的「本次手动备份」的完整云端回执，客户端不能传入回执；
  *   没有完整回执即零清理（不动任何本机包、不改任何资产状态），入口如实不可用；
+ *   授权成立后清理本设备本公司范围内**全部**本地备份包，不额外要求每个旧包各自有云副本；
  * - **过期清理**按约 30 天保留窗口执行，且不开放工程师（R083：管理员过期清理）；
  * - 两种方式都只清理本机本公司的包：业务、原件、云副本与外公司哨兵不受影响；
  * - 逐项结果如实返回：已清理与仍保留分别可追踪。
@@ -84,8 +85,8 @@ export class CleanupLocalBackupPackagesUsecase {
       return this.toResult('RETENTION', organizationId, result);
     }
 
-    // 手动清理：回执只取自服务端已落库的资产事实
-    const receiptSource = await this.cleanupService.findLatestCompleteCloudReceipt({
+    // 手动清理：授权只认「本次手动备份」取得的完整云回执（服务端已落库的资产事实）
+    const receiptSource = await this.cleanupService.findManualRunCloudReceipt({
       organizationId,
       installationId: installation.installationId,
     });

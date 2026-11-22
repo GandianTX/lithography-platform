@@ -3,6 +3,9 @@
 //
 // 只证明本任务能证明的边界：完整回执判定、零清理、清单固定、过期裁决、
 // 路径安全与中断可辨认。真实云接收端与真实文件删除属执行层，不在本文件范围。
+//
+// 口径依据任务书 R074-03（手动清理不额外要求每个旧包有云副本）与
+// R083-01（过期清理只清过期成功本地包，云副本不是清理门槛）。
 
 import * as nodePath from 'node:path';
 
@@ -25,8 +28,6 @@ describe('local backup cleanup policy', () => {
       backupId: 'backup-1',
       localStatus: 'PENDING',
       localReference: '/var/local-backups/4/manual-1',
-      cloudStatus: 'SUCCEEDED',
-      cloudReceipt: '{"received":true}',
       retentionUntil: null,
       createdAt: base,
       updatedAt: base,
@@ -108,6 +109,26 @@ describe('local backup cleanup policy', () => {
       expect(hasLocalPackage(candidate({ localReference: null }))).toBe(false);
       expect(hasLocalPackage(candidate())).toBe(true);
     });
+
+    // 任务书 R074-03：「不是逐个旧包均须有云副本的新前提」
+    it('授权成立后固定范围内的全部本地包都进入清单，不逐项复核云副本', () => {
+      const decision = decideManualCleanupTargets(
+        [
+          candidate({ backupId: 'backup-1' }),
+          candidate({ backupId: 'backup-2' }),
+          candidate({ backupId: 'backup-3' }),
+        ],
+        '{"received":true}',
+      );
+
+      expect(decision.available).toBe(true);
+      expect(decision.targets.map((target) => target.backupId)).toEqual([
+        'backup-1',
+        'backup-2',
+        'backup-3',
+      ]);
+      expect(decision.skipped).toHaveLength(0);
+    });
   });
 
   describe('过期清理裁决', () => {
@@ -124,7 +145,7 @@ describe('local backup cleanup policy', () => {
       });
     });
 
-    it('到期且云端副本可证进入清理清单，不强制留最近一份', () => {
+    it('到期即进入清理清单：云副本不是清理门槛，不强制留最近一份', () => {
       const decision = decideRetentionCleanupTargets(
         [
           candidate({ backupId: 'backup-1', retentionUntil: base }),
@@ -138,27 +159,6 @@ describe('local backup cleanup policy', () => {
         'backup-2',
       ]);
       expect(decision.skipped).toHaveLength(0);
-    });
-
-    it('云端副本不可证时保留本地包（唯一副本不删）', () => {
-      const decision = decideRetentionCleanupTargets(
-        [
-          candidate({
-            backupId: 'backup-1',
-            retentionUntil: base,
-            cloudStatus: 'PENDING',
-            cloudReceipt: null,
-          }),
-          candidate({ backupId: 'backup-2', retentionUntil: base, cloudReceipt: null }),
-        ],
-        base,
-      );
-
-      expect(decision.targets).toHaveLength(0);
-      expect(decision.skipped.map((entry) => entry.reason)).toEqual([
-        'CLOUD_COPY_UNVERIFIED',
-        'CLOUD_COPY_UNVERIFIED',
-      ]);
     });
 
     it('已清理与无本地引用的资产记为跳过，不重复清理', () => {

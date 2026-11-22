@@ -49,7 +49,7 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
       ),
     };
     const cleanupService = {
-      findLatestCompleteCloudReceipt: jest.fn(() => Promise.resolve(params.receiptSource ?? null)),
+      findManualRunCloudReceipt: jest.fn(() => Promise.resolve(params.receiptSource ?? null)),
       cleanupManualPackages: jest.fn(() =>
         Promise.resolve(
           params.manualResult ?? {
@@ -86,7 +86,7 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
     };
   };
 
-  it('手动清理的授权来源取自服务端已落库的完整回执', async () => {
+  it('手动清理的授权来源取自「本次手动备份」已落库的完整回执', async () => {
     const { usecase, cleanupService } = makeUsecase({
       scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
       receiptSource: { backupId: 'backup-1', receipt: '{"received":true}' },
@@ -94,7 +94,7 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
 
     const result = await usecase.execute({ session, mode: 'MANUAL' });
 
-    expect(cleanupService.findLatestCompleteCloudReceipt).toHaveBeenCalledWith({
+    expect(cleanupService.findManualRunCloudReceipt).toHaveBeenCalledWith({
       organizationId: 4,
       installationId: 'inst-1',
     });

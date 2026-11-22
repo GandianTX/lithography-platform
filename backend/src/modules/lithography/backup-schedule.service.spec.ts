@@ -12,6 +12,8 @@ describe('backup schedule service', () => {
       authorizations?: Record<string, unknown>[];
       installation?: Record<string, unknown> | null;
       generate?: (input: { organizationId: number }) => unknown;
+      /** 计划行保存失败（用于覆盖并发初始化的唯一键冲突） */
+      saveError?: Error;
     } = {},
   ) => {
     const findOf = (rows: Record<string, unknown>[]) =>
@@ -34,11 +36,19 @@ describe('backup schedule service', () => {
     const runs = overrides.runs ?? [];
     /** 计划行更新载荷（用于核对 next_backup_at 的精确推进） */
     const settingUpdates: { patch: Record<string, unknown> }[] = [];
+    /** 计划行新建载荷（用于核对初始化写入的启停与首次到期时间） */
+    const savedSettings: Record<string, unknown>[] = [];
     const generated: { organizationId: number; runId: number | null }[] = [];
     const service = new BackupScheduleService(
       {
         find: findOf(settings),
-        save: jest.fn().mockImplementation((row) => Promise.resolve({ id: 'plan-new', ...row })),
+        save: jest.fn().mockImplementation((row: Record<string, unknown>) => {
+          if (overrides.saveError) {
+            return Promise.reject(overrides.saveError);
+          }
+          savedSettings.push(row);
+          return Promise.resolve({ id: 'plan-new', ...row });
+        }),
         // 服务层按 (条件, 载荷) 两参调用 update：载荷取第二参
         update: jest
           .fn()
@@ -101,7 +111,7 @@ describe('backup schedule service', () => {
       } as unknown as ProtectedBackupService,
       asPinoLogger(createTestPinoLogger()),
     );
-    return { service, generated, runs, settingUpdates };
+    return { service, generated, runs, settingUpdates, savedSettings };
   };
 
   const duePlan = (overrides: Record<string, unknown> = {}) => ({
@@ -128,8 +138,8 @@ describe('backup schedule service', () => {
     expect(generated[0].runId).toBeGreaterThan(0);
   });
 
-  it('生成失败：运行 FAILED、failure_reason 落计划行、next_backup_at 仍推进（下轮补一次）', async () => {
-    const { service } = buildService({
+  it('生成失败：运行 FAILED、failure_reason 落计划行、下次时间不推进（仅成功后推进）', async () => {
+    const { service, settingUpdates } = buildService({
       settings: [duePlan()],
       generate: () => Promise.reject(new Error('disk full')),
     });
@@ -138,6 +148,12 @@ describe('backup schedule service', () => {
     expect(result.triggered).toBe(1);
     expect(result.failed).toBe(1);
     expect(result.succeeded).toBe(0);
+    // R076-01：仅成功后 UPDATE 最近自动成功及下次时间——失败不推进下次时间
+    const pushed = settingUpdates[0]?.patch['nextBackupAt'];
+    expect(pushed).toBeUndefined();
+    // 失败事实照实落库
+    expect(settingUpdates[0]?.patch['lastAutoFailureAt']).toBeInstanceOf(Date);
+    expect(settingUpdates[0]?.patch['failureReason']).toBe('LOCAL_BACKUP_GENERATION_FAILED');
   });
 
   it('同公司已有 RUNNING：本轮跳过触发（互斥），不改计划', async () => {
@@ -182,8 +198,9 @@ describe('backup schedule service', () => {
     expect(result.compensated).toBe(1);
   });
 
-  it('计划初始化：活跃授权公司补 72h 计划（backup_enabled 默认关闭）', async () => {
-    const { service } = buildService({
+  // R075-01：首次建立**启用**计划；首次从初始化起约 72 小时；云自动上云默认关闭且单独控制。
+  it('计划初始化：首次建立启用的 72h 计划，首次到期＝初始化＋72h', async () => {
+    const { service, savedSettings } = buildService({
       settings: [],
       authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
       installation: { installationId: 'inst-1' },
@@ -191,6 +208,51 @@ describe('backup schedule service', () => {
     const result = await service.runOnce(now);
 
     expect(result.initialized).toBe(1);
+    expect(savedSettings).toHaveLength(1);
+    const plan = savedSettings[0];
+    expect(plan['backupEnabled']).toBe(true);
+    expect(plan['backupIntervalHours']).toBe(72);
+    expect((plan['nextBackupAt'] as Date).getTime()).toBe(now.getTime() + 72 * 3_600_000);
+    // 云自动上云默认关闭，单独控制
+    expect(plan['autoUploadEnabled']).toBe(false);
+  });
+
+  it('旧行兼容：已有计划行的公司不重复初始化，也不回填旧行', async () => {
+    const { service, savedSettings } = buildService({
+      settings: [
+        {
+          id: 'plan-existing',
+          installationId: 'inst-1',
+          organizationId: 4,
+          isCurrent: true,
+          backupIntervalHours: 72,
+          backupEnabled: false,
+          nextBackupAt: null,
+        },
+      ],
+      authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
+      installation: { installationId: 'inst-1' },
+    });
+    const result = await service.runOnce(now);
+
+    expect(result.initialized).toBe(0);
+    expect(savedSettings).toHaveLength(0);
+  });
+
+  it('并发初始化：唯一键冲突按「已建」处理，不中断整轮扫描', async () => {
+    const conflict = Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY' });
+    const { service, savedSettings } = buildService({
+      settings: [],
+      authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
+      installation: { installationId: 'inst-1' },
+      saveError: conflict,
+    });
+
+    const result = await service.runOnce(now);
+
+    // 冲突被吞掉：扫描不抛错，只是本轮没有新建成功
+    expect(result.initialized).toBe(0);
+    expect(savedSettings).toHaveLength(0);
   });
 
   it('未到期计划不触发', async () => {

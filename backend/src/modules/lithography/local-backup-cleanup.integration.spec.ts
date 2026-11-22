@@ -226,7 +226,7 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
     expect(rows[0].deletedAt).not.toBeNull();
   });
 
-  it('过期 30 天清理：到期且云副本可证才清理，失败分支保留包并落原因', async () => {
+  it('过期 30 天清理：到期即清理，失败分支保留包并落原因', async () => {
     const generated = await buildProtectedBackup();
     const rows = [
       asset({
@@ -257,7 +257,7 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
     );
   });
 
-  it('过期清理未到期或云副本不可证时不动本机包', async () => {
+  it('过期清理未到期时不动本机包；到期即清理（云副本不是门槛）', async () => {
     const generated = await buildProtectedBackup('manual-2');
     const freshRows = [
       asset({
@@ -275,7 +275,8 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
     expect(freshResult.targetCount).toBe(0);
     expect(existsSync(generated.packagePath)).toBe(true);
 
-    const noCloudRows = [
+    // 到期即清理：任务书 R083-01「只清过期成功本地包」，云副本不是清理门槛
+    const expiredRows = [
       asset({
         backupId: 'backup-nocloud',
         localReference: generated.packagePath,
@@ -284,13 +285,17 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
         cloudReceipt: null,
       }),
     ];
-    const noCloud = buildCleanupService(noCloudRows);
-    const noCloudResult = await noCloud.service.cleanupExpiredPackages({
+    const expired = buildCleanupService(expiredRows);
+    const expiredResult = await expired.service.cleanupExpiredPackages({
       organizationId: 4,
       installationId: 'inst-1',
       now,
     });
-    expect(noCloudResult.targetCount).toBe(0);
-    expect(existsSync(generated.packagePath)).toBe(true);
+    expect(expiredResult.targetCount).toBe(1);
+    expect(expiredResult.cleaned).toBe(1);
+    expect(existsSync(generated.packagePath)).toBe(false);
+    // 云副本事实不被本地清理改写
+    expect(expiredRows[0].cloudReceipt).toBeNull();
+    expect(expiredRows[0].localStatus).toBe('CLEANED');
   });
 });

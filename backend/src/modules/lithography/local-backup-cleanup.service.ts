@@ -60,14 +60,17 @@ export type PackageDeletionOutcome =
 /**
  * 本地备份包清理执行层（任务 09 S3.3）。
  *
- * 口径（R074-01～03；验收 A09-05／A09-08）：
- * - **手动清理**：完整云回执是唯一授权来源；回执不完整即零清理（不动任何本机包、不改任何资产状态）；
+ * 口径（R074-01～03、R083-01；验收 A09-05／A09-08）：
+ * - **手动清理**：授权来源是**本次手动备份**取得的完整云端回执；回执不完整即零清理
+ *   （不动任何本机包、不改任何资产状态）；授权成立后清理本设备本公司范围内
+ *   **全部**本地备份包，**不额外要求每个旧包各自有云副本**；
  * - **固定清单**：清理前先把「本机本公司」的包清单固定下来，再逐项删除，
  *   清理过程中新产生的包不会被误删；
  * - **逐项记结果**：已清理／仍保留（附原因）逐项落库；清理失败的包保留，不误标为已清理；
  * - **中断可辨认**：删除前先落 CLEANING，进程被中断时状态可辨认（下一轮可重试）；
  * - **只删本机备份目录内的包**：路径越界一律拒绝，业务原件与外公司哨兵不受影响；
- * - **过期清理**：约 30 天保留窗口（不强制留最近一份），只清理云端副本可证的包。
+ * - **过期清理**：约 30 天保留窗口（不强制留最近一份），只清过期且本地生成成功的包；
+ *   云端副本不是清理门槛（云副本保留不删）。
  */
 @Injectable()
 export class LocalBackupCleanupService {
@@ -220,25 +223,43 @@ export class LocalBackupCleanupService {
   }
 
   /**
-   * 取本机本公司最新一份完整云回执（手动清理的授权来源）。
+   * 取**本次手动备份**取得的完整云回执（手动清理的授权来源）。
    *
-   * 回执来自服务端已落库的资产事实，不接受客户端传入。
+   * 口径（R074-02／R074-03）：
+   * - 清理的授权来自「本次手动流程」的成功回执：断网、上传失败或回执未确认时零清理；
+   * - 因此只认**最近一条手动运行**对应的那份包的回执，不用历史上任意一份完整回执授权——
+   *   否则上一次成功的旧包会被当成本次授权，与「仅本次手动流程成功云回执后清理」不符；
+   * - 回执只取自服务端已落库的资产事实，不接受客户端传入。
    */
-  async findLatestCompleteCloudReceipt(input: {
+  async findManualRunCloudReceipt(input: {
     organizationId: number;
     installationId: string;
   }): Promise<{ backupId: string; receipt: string } | null> {
-    const assets = await this.listAssets(input.organizationId, input.installationId, 'DESC');
-    for (const asset of assets) {
-      const receipt = asset.cloudReceipt;
-      if (receipt === null) {
-        continue;
-      }
-      if (isCompleteCloudReceipt(receipt).complete) {
-        return { backupId: asset.backupId, receipt };
-      }
+    const repository = this.backupRunRepository;
+    if (!repository) {
+      return null;
     }
-    return null;
+    const runs = await repository.find({
+      where: {
+        organizationId: input.organizationId,
+        installationId: input.installationId,
+        triggerType: 'MANUAL',
+      },
+      order: { id: 'DESC' },
+    });
+    const latestRun = runs[0];
+    if (!latestRun) {
+      return null;
+    }
+    const assets = await this.listAssets(input.organizationId, input.installationId, 'DESC');
+    const asset = assets.find((item) => item.runId === latestRun.id);
+    if (!asset || asset.cloudStatus !== 'SUCCEEDED' || asset.cloudReceipt === null) {
+      return null;
+    }
+    if (!isCompleteCloudReceipt(asset.cloudReceipt).complete) {
+      return null;
+    }
+    return { backupId: asset.backupId, receipt: asset.cloudReceipt };
   }
 
   /** 本机本公司的资产清单（按创建时间排序） */
@@ -400,8 +421,6 @@ function toCandidates(assets: BackupAssetEntity[]): BackupCleanupCandidate[] {
     backupId: asset.backupId,
     localStatus: asset.localStatus,
     localReference: asset.localReference,
-    cloudStatus: asset.cloudStatus,
-    cloudReceipt: asset.cloudReceipt,
     retentionUntil: asset.retentionUntil,
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,

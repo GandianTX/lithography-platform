@@ -3,11 +3,12 @@
 //
 // 用真实文件系统构造受保护包目录与哨兵文件，验证：
 // - 无完整云回执时零清理（不删目录、不改资产状态）；
-// - 有完整云回执时固定清单逐项删除，结果逐项落库；
+// - 有完整云回执时按固定范围逐项删除，结果逐项落库；
+// - 手动清理的授权只认「本次手动备份」的回执，不回落用旧包回执；
 // - 路径越界一律拒绝删除（业务原件与外公司哨兵不变）；
 // - 删除失败时保留包并落失败原因；
 // - 清理中断可辨认并可重试；
-// - 过期清理的到期／未到期与云副本可证分支。
+// - 过期清理的到期／未到期分支（云副本不是清理门槛）。
 
 import { mkdtemp, mkdir, rm, writeFile, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -78,9 +79,19 @@ describe('local backup cleanup service', () => {
     };
   }
 
+  /** 手动运行事实（授权来源按「本次手动备份」定位） */
+  type ManualRunFact = {
+    id: number;
+    organizationId: number;
+    installationId: string;
+    triggerType: string;
+    manualUploadStatus: string | null;
+  };
+
   function buildService(
     rows: BackupAssetEntity[],
     serviceClass: typeof LocalBackupCleanupService = LocalBackupCleanupService,
+    manualRuns: ManualRunFact[] = [],
   ) {
     const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
     const runUpdates: { id: number; patch: Record<string, unknown> }[] = [];
@@ -113,6 +124,13 @@ describe('local backup cleanup service', () => {
     };
 
     const backupRunRepository = {
+      find: jest.fn().mockImplementation((input: { where: Record<string, unknown> }) => {
+        const where = input.where ?? {};
+        const matched = manualRuns.filter((row) =>
+          Object.entries(where).every(([key, value]) => row[key as keyof ManualRunFact] === value),
+        );
+        return Promise.resolve([...matched].sort((left, right) => right.id - left.id));
+      }),
       update: jest
         .fn()
         .mockImplementation((where: { id: number }, patch: Record<string, unknown>) => {
@@ -204,9 +222,9 @@ describe('local backup cleanup service', () => {
     expect(runUpdates[0].patch).toMatchObject({ manualCleanupStatus: 'SUCCEEDED' });
   });
 
-  // 逐项复核：公司级的一份完整回执只授权"进入清理流程"，
-  // 删不删某一份由该资产自身的云回执决定——否则未上云的唯一副本会被删掉。
-  it('手动清理逐项复核云副本：未上云的唯一副本不删除，并逐项给出受控原因码', async () => {
+  // 任务书 R074-03：取得完整云回执后清理**本设备本公司固定范围内的全部**本地备份包，
+  // **不额外要求每个旧包都单独有云副本**。
+  it('手动清理按固定范围清理全部本地包：未单独上云的旧包也一并清理', async () => {
     const uploaded = await createPackage('4/manual-1', ['a.txt']);
     const notUploaded = await createPackage('4/manual-2', ['b.txt']);
     const { service, updates } = buildService([
@@ -222,22 +240,19 @@ describe('local backup cleanup service', () => {
     const result = await service.cleanupManualPackages({
       organizationId: 4,
       installationId: 'inst-1',
-      // 授权层：公司级存在一份完整回执
+      // 授权层：本次手动备份已取得完整回执
       cloudReceipt: '{"received":true}',
       now: base,
     });
 
     expect(result.available).toBe(true);
-    expect(result.targetCount).toBe(1);
-    expect(result.cleaned).toBe(1);
-    expect(result.retained).toBe(1);
-    expect(result.items.find((item) => item.backupId === 'backup-2')).toMatchObject({
-      outcome: 'RETAINED',
-      reason: 'LOCAL_CLOUD_RECEIPT_MISSING',
-    });
-    // 未上云的唯一副本仍在，且其状态未被改动
-    expect(await exists(notUploaded)).toBe(true);
-    expect(updates.some((entry) => entry.backupId === 'backup-2')).toBe(false);
+    expect(result.targetCount).toBe(2);
+    expect(result.cleaned).toBe(2);
+    expect(result.retained).toBe(0);
+    expect(await exists(uploaded)).toBe(false);
+    expect(await exists(notUploaded)).toBe(false);
+    // 两项都落了 CLEANED 事实
+    expect(updates.filter((entry) => entry.patch['localStatus'] === 'CLEANED')).toHaveLength(2);
   });
 
   it('路径越界的资产一律保留，且不触碰越界目录中的文件', async () => {
@@ -350,7 +365,7 @@ describe('local backup cleanup service', () => {
     expect(await exists(packagePath)).toBe(false);
   });
 
-  it('过期清理：到期且云副本可证才清理，未到期与无云副本都不动', async () => {
+  it('过期清理：到期即清理（云副本不是门槛），未到期不动', async () => {
     const expired = await createPackage('4/manual-old', ['old.txt']);
     const fresh = await createPackage('4/manual-fresh', ['fresh.txt']);
     const noCloud = await createPackage('4/manual-nocloud', ['nocloud.txt']);
@@ -381,20 +396,34 @@ describe('local backup cleanup service', () => {
       now: base,
     });
 
-    expect(result.targetCount).toBe(1);
-    expect(result.cleaned).toBe(1);
+    // 到期的两份都清理（其中一份没有云副本：云副本不是清理门槛）
+    expect(result.targetCount).toBe(2);
+    expect(result.cleaned).toBe(2);
     expect(await exists(expired)).toBe(false);
+    expect(await exists(noCloud)).toBe(false);
+    // 未到期不动
     expect(await exists(fresh)).toBe(true);
-    expect(await exists(noCloud)).toBe(true);
   });
 
-  it('手动清理的授权来源取自服务端已落库的完整回执，不接受客户端传入', async () => {
-    const { service } = buildService([
-      asset({ backupId: 'backup-1', cloudStatus: 'PENDING', cloudReceipt: null }),
-      asset({ backupId: 'backup-2', cloudReceipt: '{"received":true}' }),
-    ]);
+  it('手动清理的授权来源只认「本次手动备份」的完整回执，不接受客户端传入', async () => {
+    const { service } = buildService(
+      [
+        asset({ backupId: 'backup-1', runId: 10, cloudStatus: 'PENDING', cloudReceipt: null }),
+        asset({ backupId: 'backup-2', runId: 11, cloudReceipt: '{"received":true}' }),
+      ],
+      LocalBackupCleanupService,
+      [
+        {
+          id: 11,
+          organizationId: 4,
+          installationId: 'inst-1',
+          triggerType: 'MANUAL',
+          manualUploadStatus: 'SUCCEEDED',
+        },
+      ],
+    );
 
-    const found = await service.findLatestCompleteCloudReceipt({
+    const found = await service.findManualRunCloudReceipt({
       organizationId: 4,
       installationId: 'inst-1',
     });
@@ -402,10 +431,41 @@ describe('local backup cleanup service', () => {
     expect(found?.backupId).toBe('backup-2');
   });
 
-  it('没有任何完整回执时授权来源为空', async () => {
-    const { service } = buildService([asset({ cloudReceipt: null })]);
+  it('本次手动备份未取得完整回执时授权来源为空：不回落用旧包回执', async () => {
+    const { service } = buildService(
+      [
+        asset({ backupId: 'backup-old', runId: 9, cloudReceipt: '{"received":true}' }),
+        asset({
+          backupId: 'backup-latest',
+          runId: 10,
+          cloudStatus: 'PENDING',
+          cloudReceipt: null,
+        }),
+      ],
+      LocalBackupCleanupService,
+      [
+        {
+          id: 10,
+          organizationId: 4,
+          installationId: 'inst-1',
+          triggerType: 'MANUAL',
+          manualUploadStatus: 'PENDING',
+        },
+      ],
+    );
 
-    const found = await service.findLatestCompleteCloudReceipt({
+    const found = await service.findManualRunCloudReceipt({
+      organizationId: 4,
+      installationId: 'inst-1',
+    });
+
+    expect(found).toBeNull();
+  });
+
+  it('没有手动运行时授权来源为空', async () => {
+    const { service } = buildService([asset({ cloudReceipt: '{"received":true}' })]);
+
+    const found = await service.findManualRunCloudReceipt({
       organizationId: 4,
       installationId: 'inst-1',
     });

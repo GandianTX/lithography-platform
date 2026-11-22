@@ -12,7 +12,8 @@ import { LocalBackupUploadService } from '@src/modules/lithography/local-backup-
  * - 启动时先执行一轮（重启补偿：RUNNING 残留改判 INTERRUPTED 并补一次）；
  * - 同一轮内接着执行自动上云重试扫描（S3.2）：退避判定在 core 策略，
  *   重试锚点是既有备份资产，不会重新生成备份包；
- * - 过期清理（S3.3）按每日一次节奏检查：约 30 天保留窗口到期且云端副本可证的包逐项清理；
+ * - 过期清理（S3.3）按每日一次节奏检查：约 30 天保留窗口到期的本地包逐项清理
+ *   （云端副本不是清理门槛，云副本保留不删）；
  * - 扫描异常只记日志不中断进程（下一轮重试）。
  */
 @Injectable()
@@ -73,10 +74,10 @@ export class LocalBackupScheduleRuntime implements OnApplicationBootstrap, OnApp
   /**
    * 过期清理检查：每日一次（需求口径「每日及恢复运行检查」）。
    *
-   * 只清理保留窗口到期且云端副本可证的包；失败项保留在本机并记录原因。
+   * 只清理保留窗口已到期的本地包；失败项保留在本机并记录原因。
    */
   private async runRetentionCheck(): Promise<void> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateKey(new Date());
     if (this.retentionCheckDay === today) {
       return;
     }
@@ -89,4 +90,17 @@ export class LocalBackupScheduleRuntime implements OnApplicationBootstrap, OnApp
       );
     }
   }
+}
+
+/**
+ * 本地日期键（YYYY-MM-DD）。
+ *
+ * 「每日一次」判定必须按**本地日期**：用 UTC 日期会在本地时区跨日的时段把
+ * 两次清理挤到同一天、或在同一天里跳过一轮（UTC 与本地相差 8 小时时尤其明显）。
+ */
+export function localDateKey(at: Date): string {
+  const year = at.getFullYear();
+  const month = `${at.getMonth() + 1}`.padStart(2, '0');
+  const day = `${at.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }

@@ -1,11 +1,15 @@
 // src/core/local-runtime/policy/local-backup-cleanup.policy.ts
 // 本地备份包清理裁决（任务 09 S3.3）。
 //
-// 事实口径（R074-01～03；验收 A09-05 手动清理、A09-08 过期清理）：
-// - 手动清理的前置是**完整云回执**：回执不完整即零清理——不动任何本机包、不改任何资产状态；
+// 事实口径（R074-01～03、R083-01；验收 A09-05 手动清理、A09-08 过期清理）：
+// - 手动清理的前置是**本次手动备份取得的完整云回执**：回执不完整即零清理——不动任何本机包、
+//   不改任何资产状态；
+// - 取得完整回执后清理**本设备本公司固定范围内的全部本地备份包**：
+//   **不额外要求每个旧包各自有云副本**（任务书 R074-03 明确「不是逐个旧包均须有云副本的新前提」）；
 // - 清理前先固定「本机本公司」包清单，再逐项删除：清理过程中新产生的包不被误删；
 // - 逐项记结果：已清理／仍保留（附原因）；清理失败的包保留，不误标为已清理；
-// - 过期清理按约 30 天保留窗口（不强制留最近一份），只清理云端副本可证的包；
+// - 过期清理按约 30 天保留窗口（不强制留最近一份），**只清过期且本地生成成功的包**：
+//   云副本不是清理门槛（任务书 R083-01「只清过期成功本地包」，云副本保留）；
 // - 只允许删除备份根目录内的包目录：路径越界一律拒绝（业务原件与外公司哨兵不受影响）。
 
 import * as nodePath from 'node:path';
@@ -73,23 +77,15 @@ export type BackupCleanupCandidate = {
   localStatus: string;
   /** 本地包引用；已清理后为空 */
   localReference: string | null;
-  cloudStatus: string;
-  cloudReceipt: string | null;
   /** 保留截止时间；历史行为空 */
   retentionUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
-/** 跳过清理的原因 */
+/** 跳过清理的原因（逐项可追踪） */
 export type BackupCleanupSkipReason =
-  | 'CLOUD_RECEIPT_MISSING'
-  | 'CLOUD_RECEIPT_UNPARSEABLE'
-  | 'CLOUD_RECEIPT_NOT_SUCCESS'
-  | 'CLOUD_COPY_UNVERIFIED'
-  | 'PACKAGE_ALREADY_CLEANED'
-  | 'PACKAGE_REFERENCE_MISSING'
-  | 'RETENTION_NOT_EXPIRED';
+  'PACKAGE_ALREADY_CLEANED' | 'PACKAGE_REFERENCE_MISSING' | 'RETENTION_NOT_EXPIRED';
 
 /** 资产是否仍有本地包需要处理 */
 export function hasLocalPackage(candidate: BackupCleanupCandidate): boolean {
@@ -112,12 +108,15 @@ export type ManualCleanupDecision = {
  * 手动清理裁决。
  *
  * 两层判定，口径不同：
- * - **授权层**：`cloudReceipt` 是公司级的一份完整云回执，回答"能不能进入清理流程"；
+ * - **授权层**：`cloudReceipt` 是**本次手动备份**取得的完整云回执，回答"能不能进入清理流程"；
  *   不完整即零清理（清单为空，调用方不得触碰任何本机包）。
- * - **逐项层**：删不删**这一份**由该资产自身的云回执决定。只有该资产自身
- *   也有完整回执时才允许删除它的本地包——否则本地包是唯一副本，删了不可恢复。
- *   （此前只用公司级一份回执授权后清空全部本地包，接入真实接收端后会删掉
- *   从未上云的唯一副本。）
+ * - **逐项层**：授权成立后，本设备本公司范围内**所有仍有本地包的资产**都进入清理清单。
+ *
+ * 为什么逐项不再复核"该资产自己有没有云副本"（任务书 R074-03）：
+ * 需求明确「仅本次手动流程成功云回执后清理；**不是逐个旧包均须有云副本的新前提**」，
+ * 且清理范围是「仅当前有权公司在本设备的**全部**本地备份包」。
+ * 逐项再要求各自云副本会把"本次已取得完整回执"的授权降级为"每个旧包都要单独上云"，
+ * 与需求相反；云副本的安全网由**授权层的完整回执**与「云端副本保留不删」共同承担。
  */
 export function decideManualCleanupTargets(
   candidates: readonly BackupCleanupCandidate[],
@@ -134,11 +133,6 @@ export function decideManualCleanupTargets(
   for (const candidate of candidates) {
     if (!hasLocalPackage(candidate)) {
       // 已清理 / 无本地包：不在清理范围内，无需逐项报告
-      continue;
-    }
-    const itemVerdict = isCompleteCloudReceipt(candidate.cloudReceipt);
-    if (!itemVerdict.complete) {
-      skipped.push({ backupId: candidate.backupId, reason: itemVerdict.reason });
       continue;
     }
     targets.push(candidate);
@@ -159,8 +153,16 @@ export type RetentionCleanupDecision = {
  * 过期清理裁决（保留窗口约 30 天）。
  *
  * - 保留窗口未到：不动；
- * - 云端副本不可证（未成功上传或无回执）：不动——本地包是唯一副本，不能删；
+ * - 已清理／无本地包引用：不动（无可清理对象）；
  * - 其余到期包进入清理清单：不强制留最近一份。
+ *
+ * 「本地备份成功」的判据：**存在 backup_asset 行**（资产行只在封包成功后登记，
+ * 生成失败的包根本没有资产行，天然不在清单里）＋ 本地包引用仍在 ＋ 未被清理。
+ *
+ * 为什么**不再要求云端副本可证**（任务书 R083-01）：
+ * 需求口径是「管理员按 30 天清成功本地包」「**不额外要求保留最近一份本地包**」，
+ * 并明确「云副本、业务、报告和原件保留」——即云副本是**被保留的对象**，不是清理门槛。
+ * 把云副本可证当作前置，会让"未上云的本地包"永久滞留，偏离需求。
  */
 export function decideRetentionCleanupTargets(
   candidates: readonly BackupCleanupCandidate[],
@@ -185,11 +187,6 @@ export function decideRetentionCleanupTargets(
       new Date(candidate.createdAt.getTime() + retentionDays * 86_400_000);
     if (retentionUntil.getTime() > now.getTime()) {
       skipped.push({ backupId: candidate.backupId, reason: 'RETENTION_NOT_EXPIRED' });
-      continue;
-    }
-
-    if (candidate.cloudStatus !== 'SUCCEEDED' || candidate.cloudReceipt === null) {
-      skipped.push({ backupId: candidate.backupId, reason: 'CLOUD_COPY_UNVERIFIED' });
       continue;
     }
 

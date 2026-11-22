@@ -13,17 +13,20 @@ import { LocalBackupRunEntity } from '@src/modules/lithography/entities/local-ba
 import { LocalInstallationEntity } from '@src/modules/lithography/entities/local-installation.entity';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 
+/** 自动备份计划默认周期（小时）：需求固定口径约 72 小时 */
+export const DEFAULT_BACKUP_INTERVAL_HOURS = 72;
+
 /**
  * 72h 持久计划执行器（任务 09 S3.1，D-8：Worker 引导内定时扫描，不依赖页面登录）。
  *
  * 单次扫描（runOnce）三步，全部幂等、可重复执行：
  * 1. 恢复运行补偿：进程重启后残留的 RUNNING（超过补偿时限未结束）改判 INTERRUPTED，
  *    计划随后按"补一次"语义重新触发；
- * 2. 计划初始化（D-11 属 S3 落地）：对无当前计划的公司按默认 72h 建行，
- *    backup_enabled 默认关闭（R078 云与计划不因迁移自动开启）；
+ * 2. 计划初始化（D-11 属 S3 落地）：对无当前计划的公司按默认 72h **建立启用计划**，
+ *    首次到期＝初始化时刻＋72h；本地自动计划默认启用，云自动上云默认关闭且单独控制；
  * 3. 到期触发：backup_enabled=1 且 next_backup_at 到期的计划逐个执行：
  *    建 RUNNING（同公司互斥，冲突本轮跳过）→ 生成受保护包 → 结束运行并推进 next_backup_at；
- *    失败也推进 next_backup_at（下轮补一次），失败原因落计划行。
+ *    **仅成功后推进下次时间**（R076-01），失败只更新失败事实、不更新成功时间。
  */
 @Injectable()
 export class BackupScheduleService {
@@ -53,7 +56,7 @@ export class BackupScheduleService {
     skipped: number;
   }> {
     const compensated = await this.compensateInterruptedRuns(now);
-    const initialized = await this.initializeMissingPlans();
+    const initialized = await this.initializeMissingPlans(now);
     let succeeded = 0;
     let failed = 0;
     let skipped = 0;
@@ -101,10 +104,21 @@ export class BackupScheduleService {
 
   /**
    * 计划初始化（D-11 属 S3 落地）：对"有活跃同步授权或已有计划行"的公司补齐当前计划行。
-   * 计划默认 72h、backup_enabled 默认关闭（R078：不因初始化自动开启）；
-   * 公司来源取授权/映射事实，不凭空造公司。
+   *
+   * 口径（R075-01／R076-01）：
+   * - **首次建立启用计划**：本设备对应公司数据区首次初始化即建立**启用**的自动备份计划，
+   *   周期约 72 小时，首次到期时间＝初始化时刻＋约 72 小时；
+   * - **无关闭固定自动备份入口**：需求明确「备份页显示周期及下次计划，无关闭固定自动备份入口」，
+   *   因此本地自动计划默认启用（此前默认关闭，导致计划永不触发）；
+   * - **云开关单独控制**：`autoUploadEnabled` 默认关闭，只控制"新的自动上云"，
+   *   与本地自动备份计划的启停互不影响；
+   * - **旧行兼容**：只给"没有当前计划行"的公司建行。已存在的行（含历史迁移留下的
+   *   `backup_enabled=false` 行）**不强行回填**——没有证据证明旧行应当被改写，
+   *   保持已接受的历史迁移事实；
+   * - **并发初始化**：唯一键 `uk_local_company_setting_scope(installation_id, organization_id)`
+   *   冲突时按"已建"处理，不中断整轮扫描。
    */
-  private async initializeMissingPlans(): Promise<number> {
+  private async initializeMissingPlans(now: Date): Promise<number> {
     const installation = await this.installationRepository.findOne({ where: { id: 1 } });
     if (!installation) {
       return 0;
@@ -129,20 +143,42 @@ export class BackupScheduleService {
     }
     let initialized = 0;
     for (const organizationId of organizationIds) {
-      await this.settingRepository.save(
-        this.settingRepository.create({
-          installationId: installation.installationId,
-          organizationId,
-          settingSource: 'LOCAL_MANUAL',
-          isCurrent: true,
-          backupIntervalHours: 72,
-          backupEnabled: false,
-          autoUploadEnabled: false,
-        }),
-      );
-      initialized += 1;
+      try {
+        await this.settingRepository.save(
+          this.settingRepository.create({
+            installationId: installation.installationId,
+            organizationId,
+            settingSource: 'LOCAL_MANUAL',
+            isCurrent: true,
+            backupIntervalHours: DEFAULT_BACKUP_INTERVAL_HOURS,
+            // 首次建立启用计划：约 72 小时后首次触发
+            backupEnabled: true,
+            nextBackupAt: new Date(now.getTime() + DEFAULT_BACKUP_INTERVAL_HOURS * 3_600_000),
+            // 云自动上云默认关闭，单独控制（只影响新自动上云）
+            autoUploadEnabled: false,
+          }),
+        );
+        initialized += 1;
+      } catch (error) {
+        // 并发初始化：唯一键冲突说明另一轮已建行，按"已建"处理，不中断整轮
+        if (this.isUniqueConstraintViolation(error)) {
+          this.logger.info({ organizationId }, '本地备份计划已由并发轮次建立，跳过重复初始化');
+          continue;
+        }
+        this.logger.error({ organizationId, err: error }, '本地备份计划初始化失败');
+      }
     }
     return initialized;
+  }
+
+  /** 是否是数据库唯一键冲突（并发初始化） */
+  private isUniqueConstraintViolation(error: unknown): boolean {
+    const code = (error as { code?: string } | null)?.code;
+    if (code === 'ER_DUP_ENTRY' || code === 'SQLITE_CONSTRAINT' || code === '23505') {
+      return true;
+    }
+    const driverCode = (error as { driverError?: { code?: string } } | null)?.driverError?.code;
+    return driverCode === 'ER_DUP_ENTRY' || driverCode === '23505';
   }
 
   /** 执行一个到期计划：建运行→生成包→结束推进；skipped 表示同公司互斥跳过 */
@@ -228,7 +264,8 @@ export class BackupScheduleService {
       await this.settingRepository.update(
         { id: plan.id },
         {
-          nextBackupAt: this.nextBackupAt(plan, now),
+          // 失败不推进下次时间（R076-01「仅成功后 UPDATE 最近自动成功及下次时间」）：
+          // 计划仍处于到期态，下一轮扫描（约 5 分钟）自动补一次。
           lastAutoFailureAt: new Date(),
           failureReason: reason,
         },
@@ -237,7 +274,7 @@ export class BackupScheduleService {
     }
   }
 
-  /** 计划推进：当前时间＋间隔小时（失败同样推进，下轮补一次） */
+  /** 计划推进：当前时间＋间隔小时（间隔取计划行真实值） */
   private nextBackupAt(plan: LocalCompanySettingEntity, now: Date): Date {
     const intervalHours = Number(plan.backupIntervalHours) || 72;
     return new Date(now.getTime() + intervalHours * 3_600_000);
