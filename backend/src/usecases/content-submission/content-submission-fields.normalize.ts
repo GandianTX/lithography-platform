@@ -30,8 +30,6 @@ export const CONTENT_SUBMISSION_REPRODUCTION_MAX_LENGTH = 10_000;
 export const CONTENT_SUBMISSION_DIAGNOSIS_MAX_LENGTH = 10_000;
 export const CONTENT_SUBMISSION_ACTION_TAKEN_MAX_LENGTH = 10_000;
 export const CONTENT_SUBMISSION_RESOLUTION_MAX_LENGTH = 2000;
-/** 审核意见长度上限（A-PR0 §2.3「审核」行：退回理由必填；通过的意见可选） */
-export const CONTENT_SUBMISSION_REVIEW_COMMENT_MAX_LENGTH = 2000;
 
 /**
  * 正式案例保留资料类型（A-PR0 §2.3）：普通资料的资料类型不得为 FAULT_CASE
@@ -592,54 +590,6 @@ export function assertFaultCaseSubmittable(
       field: '处理状态',
     });
   }
-}
-
-/**
- * 审核意见规范化（A-PR0 §2.3「审核」行）：退回理由必填，空白拒绝（仅在非空值上
- * 校验长度）；通过时可选（可选语义归 S5 调用方，本函数只做必填口径）。
- */
-export function normalizeReviewComment(value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new DomainError(CONTENT_SUBMISSION_ERROR.INVALID_PARAMS, '退回时必须填写理由');
-  }
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    throw new DomainError(CONTENT_SUBMISSION_ERROR.INVALID_PARAMS, '退回时必须填写理由');
-  }
-  if (normalized.length > CONTENT_SUBMISSION_REVIEW_COMMENT_MAX_LENGTH) {
-    throw new DomainError(
-      CONTENT_SUBMISSION_ERROR.INVALID_PARAMS,
-      `审核意见不能超过 ${CONTENT_SUBMISSION_REVIEW_COMMENT_MAX_LENGTH} 个字符`,
-      { field: '审核意见', length: normalized.length },
-    );
-  }
-  return normalized;
-}
-
-/**
- * 通过意见规范化（A-PR0 §2.3「审核」行：通过时意见可选）：
- * null/undefined/空白 → null（不落库空字符串）；非空值 trim 后校验长度上限；
- * 非字符串类型拒绝（与退回的必填口径分开，避免可选语义被滥用）。
- */
-export function normalizeOptionalReviewComment(value: unknown): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value !== 'string') {
-    throw new DomainError(CONTENT_SUBMISSION_ERROR.INVALID_PARAMS, '审核意见格式无效');
-  }
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-  if (normalized.length > CONTENT_SUBMISSION_REVIEW_COMMENT_MAX_LENGTH) {
-    throw new DomainError(
-      CONTENT_SUBMISSION_ERROR.INVALID_PARAMS,
-      `审核意见不能超过 ${CONTENT_SUBMISSION_REVIEW_COMMENT_MAX_LENGTH} 个字符`,
-      { field: '审核意见', length: normalized.length },
-    );
-  }
-  return normalized;
 }
 
 /**

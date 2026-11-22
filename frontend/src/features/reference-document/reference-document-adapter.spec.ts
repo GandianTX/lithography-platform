@@ -14,15 +14,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as sharedGraphql from '@/shared/graphql';
 import { GraphQLIngressError } from '@/shared/graphql';
 
-// adapter 单测直接面向 concrete adapter 模块：创建写 adapter 已按 review P2-3 从 barrel 收敛
-// （改由 useReferenceDocumentCreate 在 feature 内装配），经公共出口取会被公开面裁剪挡住。
+// adapter 单测直接面向 concrete adapter 模块：创建/通用编辑写 adapter 已随任务 07
+// 关闭的旧普通写入口一并移除，现存入口（读 + 管理动作 + 案例更正）与 barrel 公开面一致。
 import {
-  createReferenceDocument,
+  adminDeleteReferenceDocument,
+  correctReferenceDocumentOwnership,
   deleteReferenceDocument,
   fetchReferenceDocument,
   fetchReferenceDocuments,
   fetchReferenceEquipmentModels,
-  updateReferenceDocument,
+  offlineReferenceDocument,
+  reviseReferenceDocument,
   updateReferenceDocumentCase,
 } from './infrastructure/reference-document-adapter';
 
@@ -260,136 +262,92 @@ describe('fetchReferenceDocument', () => {
   });
 });
 
-describe('createReferenceDocument', () => {
-  const input = {
-    title: '新资料',
-    documentType: 'CHECKLIST',
-    equipmentModelId: null,
-    description: null,
-    contentText: '正文',
-  };
+describe('reviseReferenceDocument（任务 07 R058 管理修订）', () => {
+  it('修订成功返回资料 ID 与新生效版本号', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      reviseReferenceDocument: { id: 970002, revisionNo: 3 },
+    });
 
-  it('创建成功返回新资料 ID', async () => {
-    executeGraphQLMock.mockResolvedValue({ createReferenceDocument: { id: 970031 } });
-
-    await expect(createReferenceDocument(input)).resolves.toEqual({ ok: true, id: 970031 });
+    await expect(reviseReferenceDocument(970002, 2, { title: '新标题' }, '勘误')).resolves.toEqual({
+      ok: true,
+      id: 970002,
+      revisionNo: 3,
+    });
     expect(executeGraphQLMock).toHaveBeenCalledWith(
-      expect.stringContaining('createReferenceDocument'),
-      { input },
+      expect.stringContaining('reviseReferenceDocument'),
+      { id: 970002, input: { expectedVersion: 2, reason: '勘误', title: '新标题' } },
     );
   });
 
-  it.each([
-    [
-      'NOT_FOUND + 型号不存在',
-      { code: 'NOT_FOUND', errorCode: 'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND' },
-      'model-not-found',
-      '所选设备型号不存在，请重新选择。',
-    ],
-    [
-      'BAD_USER_INPUT + 非法参数',
-      { code: 'BAD_USER_INPUT', errorCode: 'REFERENCE_DOCUMENT_INVALID_PARAMS' },
-      'invalid-input',
-      '输入不符合要求，请检查后重新提交。',
-    ],
-    [
-      '生产隐藏 errorCode 的大类码退化',
-      { code: 'BAD_USER_INPUT' },
-      'invalid-input',
-      '输入不符合要求，请检查后重新提交。',
-    ],
-    [
-      '落库失败（系统侧）',
-      { code: 'INTERNAL_SERVER_ERROR', errorCode: 'REFERENCE_DOCUMENT_CREATION_FAILED' },
-      'creation-failed',
-      '参考资料创建失败，请稍后重试。',
-    ],
-  ])('%s → %s', async (_name, extensions, reason, fallback) => {
-    const withMessage = buildDomainIngressError({ ...extensions, errorMessage: '后端业务消息' });
-    executeGraphQLMock.mockRejectedValueOnce(withMessage);
+  it('expected_version 过期（CONFLICT）归并 version-conflict', async () => {
+    executeGraphQLMock.mockRejectedValue(buildDomainIngressError({ code: 'CONFLICT' }));
 
-    // errorMessage 存在时优先展示后端业务消息
-    await expect(createReferenceDocument(input)).resolves.toEqual({
+    await expect(reviseReferenceDocument(970002, 2, { title: 'x' }, 'r')).resolves.toMatchObject({
       ok: false,
-      reason,
-      message: '后端业务消息',
+      reason: 'version-conflict',
     });
-
-    const withoutMessage = buildDomainIngressError(extensions);
-    executeGraphQLMock.mockRejectedValueOnce(withoutMessage);
-
-    // errorMessage 缺失时落前端兜底文案
-    await expect(createReferenceDocument(input)).resolves.toEqual({
-      ok: false,
-      reason,
-      message: fallback,
-    });
-  });
-
-  it('未映射的大类码（如守卫 FORBIDDEN）不吞为业务拒绝，仍上抛', async () => {
-    const forbidden = buildDomainIngressError({ code: 'FORBIDDEN', errorCode: 'ACCESS_DENIED' });
-    executeGraphQLMock.mockRejectedValue(forbidden);
-
-    await expect(createReferenceDocument(input)).rejects.toBe(forbidden);
-  });
-
-  it('transport 失败时上抛 GraphQLIngressError', async () => {
-    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
-    executeGraphQLMock.mockRejectedValue(networkError);
-
-    await expect(createReferenceDocument(input)).rejects.toBe(networkError);
   });
 });
 
-describe('updateReferenceDocument', () => {
-  const patch = { title: '改名后的标题' };
+describe('offlineReferenceDocument（任务 07 R059 下架）', () => {
+  it('下架成功返回新生效版本号', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      offlineReferenceDocument: { id: 970002, revisionNo: 2 },
+    });
 
-  it('编辑成功返回资料 ID', async () => {
-    executeGraphQLMock.mockResolvedValue({ updateReferenceDocument: { id: 970002 } });
-
-    await expect(updateReferenceDocument(970002, patch)).resolves.toEqual({ ok: true, id: 970002 });
+    await expect(offlineReferenceDocument(970002, 1, '重复条目')).resolves.toEqual({
+      ok: true,
+      id: 970002,
+      revisionNo: 2,
+    });
     expect(executeGraphQLMock).toHaveBeenCalledWith(
-      expect.stringContaining('updateReferenceDocument'),
-      { id: 970002, input: patch },
+      expect.stringContaining('offlineReferenceDocument'),
+      { id: 970002, input: { expectedVersion: 1, reason: '重复条目' } },
     );
   });
+});
 
-  it.each([
-    [
-      'NOT_FOUND（资料不存在/已软删）',
-      { code: 'NOT_FOUND', errorCode: 'REFERENCE_DOCUMENT_NOT_FOUND' },
-      'not-found',
-    ],
-    [
-      'NOT_FOUND 细化为型号不存在',
-      { code: 'NOT_FOUND', errorCode: 'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND' },
-      'model-not-found',
-    ],
-    ['生产隐藏 errorCode 时大类码退化为 not-found（不误判）', { code: 'NOT_FOUND' }, 'not-found'],
-    [
-      'BAD_USER_INPUT（必填显式 null / 超长）',
-      { code: 'BAD_USER_INPUT', errorCode: 'REFERENCE_DOCUMENT_INVALID_PARAMS' },
-      'invalid-input',
-    ],
-    [
-      '落库失败（系统侧）',
-      { code: 'INTERNAL_SERVER_ERROR', errorCode: 'REFERENCE_DOCUMENT_UPDATE_FAILED' },
-      'update-failed',
-    ],
-  ])('%s → %s', async (_name, extensions, reason) => {
-    executeGraphQLMock.mockRejectedValue(buildDomainIngressError(extensions));
-
-    await expect(updateReferenceDocument(970002, patch)).resolves.toMatchObject({
-      ok: false,
-      reason,
+describe('adminDeleteReferenceDocument（任务 07 R060 管理删除）', () => {
+  it('管理删除成功返回新生效版本号', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      adminDeleteReferenceDocument: { id: 970002, revisionNo: 2 },
     });
+
+    await expect(adminDeleteReferenceDocument(970002, 1, '违规内容')).resolves.toEqual({
+      ok: true,
+      id: 970002,
+      revisionNo: 2,
+    });
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('adminDeleteReferenceDocument'),
+      { id: 970002, input: { expectedVersion: 1, reason: '违规内容' } },
+    );
   });
+});
 
-  it('transport 失败时上抛 GraphQLIngressError', async () => {
-    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
-    executeGraphQLMock.mockRejectedValue(networkError);
+describe('correctReferenceDocumentOwnership（任务 07 R061-02 归属更正）', () => {
+  it('归属更正成功返回新生效版本号；仅提交显式字段', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      correctReferenceDocumentOwnership: { id: 970002, revisionNo: 2 },
+    });
 
-    await expect(updateReferenceDocument(970002, patch)).rejects.toBe(networkError);
+    await expect(
+      correctReferenceDocumentOwnership(970002, 1, {
+        verificationReason: '核实为原公司同事上传',
+        ownerOrganizationId: 910001,
+      }),
+    ).resolves.toEqual({ ok: true, id: 970002, revisionNo: 2 });
+    expect(executeGraphQLMock).toHaveBeenCalledWith(
+      expect.stringContaining('correctReferenceDocumentOwnership'),
+      {
+        id: 970002,
+        input: {
+          expectedVersion: 1,
+          verificationReason: '核实为原公司同事上传',
+          ownerOrganizationId: 910001,
+        },
+      },
+    );
   });
 });
 
@@ -397,10 +355,10 @@ describe('deleteReferenceDocument', () => {
   it('软删成功返回 ok（本模块软删不幂等，重复删走 NOT_FOUND 拒绝）', async () => {
     executeGraphQLMock.mockResolvedValue({ softDeleteReferenceDocument: { id: 970002 } });
 
-    await expect(deleteReferenceDocument(970002)).resolves.toEqual({ ok: true });
+    await expect(deleteReferenceDocument(970002, 1)).resolves.toEqual({ ok: true });
     expect(executeGraphQLMock).toHaveBeenCalledWith(
       expect.stringContaining('softDeleteReferenceDocument'),
-      { id: 970002 },
+      { id: 970002, expectedVersion: 1 },
     );
   });
 
@@ -414,7 +372,7 @@ describe('deleteReferenceDocument', () => {
   ])('%s → %s', async (_name, extensions, reason) => {
     executeGraphQLMock.mockRejectedValue(buildDomainIngressError(extensions));
 
-    await expect(deleteReferenceDocument(970002)).resolves.toMatchObject({
+    await expect(deleteReferenceDocument(970002, 1)).resolves.toMatchObject({
       ok: false,
       reason,
     });
@@ -424,7 +382,7 @@ describe('deleteReferenceDocument', () => {
     const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
     executeGraphQLMock.mockRejectedValue(networkError);
 
-    await expect(deleteReferenceDocument(970002)).rejects.toBe(networkError);
+    await expect(deleteReferenceDocument(970002, 1)).rejects.toBe(networkError);
   });
 });
 

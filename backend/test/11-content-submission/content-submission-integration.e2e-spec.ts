@@ -1,10 +1,18 @@
 // test/11-content-submission/content-submission-integration.e2e-spec.ts
 //
-// 投稿内容链路用例集成测试（PR0-S0-S5 修复计划 R6：V6/V7/V8/V9；R1 真实排序补充）
+// 投稿内容链路用例集成测试（PR0-S0-S5 修复计划 R6：V7/V8/V9 历史用例已按收口调整；
+// R1 真实排序补充；W01-W07 行锁与冻结口径）
+//
+// 任务 07 收口（2026-11-20）：确认需求已关闭资料审核决定写路径
+// （ReturnContentSubmissionUsecase / ApproveContentSubmissionUsecase 与
+// reviewContentSubmissionDecision mutation 已移除）。以下用例因验证对象不存在而删除，
+// 不是跳过：V6（退回重提）、V7-3/V7-4（并发审核通过）、V8（发布失败路径）、
+// V9（发布与软删）、N03-A/B/C（发布副本竞争）。保留的 V7-1/V7-2 与 W 系列只覆盖
+// 仍在产品内的草稿/附件/送审/行锁行为；R1 保留排序与分页，去掉「退回重提重排」子场景。
 //
 // 边界声明：本规格直接调用真实 usecase + 真实 TypeOrmTransactionRunner + 真实
 // MySQL + 真实本地文件存储，验证用例层内部行为，不经协议层。投稿链路（草稿/
-// 送审/版本/审核/附件）的 GraphQL/REST 协议层真实请求验收见
+// 送审/版本/附件）的 GraphQL/REST 协议层真实请求验收见
 // content-submission-graphql.e2e-spec.ts（S7 已接入协议入口）。
 //
 // 存储隔离：本规格使用运行级临时上传目录（mkdtemp，先于应用初始化设置 env），
@@ -28,24 +36,14 @@ import { AccountEntity } from '@src/modules/account/base/entities/account.entity
 import { ContentSubmissionService } from '@src/modules/lithography/content-submission.service';
 import { ContentSubmissionAttachmentEntity } from '@src/modules/lithography/entities/content-submission-attachment.entity';
 import { ContentSubmissionEntity } from '@src/modules/lithography/entities/content-submission.entity';
-import { ContentSubmissionReviewEntity } from '@src/modules/lithography/entities/content-submission-review.entity';
 import { ContentSubmissionRevisionEntity } from '@src/modules/lithography/entities/content-submission-revision.entity';
-import { ReferenceDocumentCaseDetailEntity } from '@src/modules/lithography/entities/reference-document-case-detail.entity';
-import { ReferenceDocumentEntity } from '@src/modules/lithography/entities/reference-document.entity';
-import { LocalReferenceDocumentStorage } from '@src/infrastructure/file-storage/local-reference-document-storage';
-import { ApproveContentSubmissionUsecase } from '@src/usecases/content-submission/approve-content-submission.usecase';
-import { CONTENT_SUBMISSION_ATTACHMENT_STORAGE } from '@src/usecases/content-submission/content-submission-attachment-storage.contract';
 import { CreateContentSubmissionDraftUsecase } from '@src/usecases/content-submission/create-content-submission-draft.usecase';
-import { GetContentSubmissionRevisionUsecase } from '@src/usecases/content-submission/get-content-submission-revision.usecase';
 import { ListReviewQueueUsecase } from '@src/usecases/content-submission/list-review-queue.usecase';
-import { ReturnContentSubmissionUsecase } from '@src/usecases/content-submission/return-content-submission.usecase';
 import { SubmitContentSubmissionUsecase } from '@src/usecases/content-submission/submit-content-submission.usecase';
 import { UpdateContentSubmissionDraftUsecase } from '@src/usecases/content-submission/update-content-submission-draft.usecase';
 import { UploadContentSubmissionAttachmentUsecase } from '@src/usecases/content-submission/upload-content-submission-attachment.usecase';
-import { SoftDeleteReferenceDocumentUsecase } from '@src/usecases/reference-document/soft-delete-reference-document.usecase';
 
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
-import { BarrierAttachmentStorage, sha256Hex } from './attachment-storage-barrier';
 import {
   createOwnedResourceLedger,
   runGuardedSpecCleanup,
@@ -55,7 +53,6 @@ import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-t
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
-  requireOrganizationId,
   seedTestMemberships,
   seedTestOrganizations,
 } from '../utils/test-organizations';
@@ -81,26 +78,16 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
   let submissionRepository: Repository<ContentSubmissionEntity>;
   let attachmentRepository: Repository<ContentSubmissionAttachmentEntity>;
   let revisionRepository: Repository<ContentSubmissionRevisionEntity>;
-  let reviewRepository: Repository<ContentSubmissionReviewEntity>;
-  let documentRepository: Repository<ReferenceDocumentEntity>;
-  let caseDetailRepository: Repository<ReferenceDocumentCaseDetailEntity>;
 
   let createDraft: CreateContentSubmissionDraftUsecase;
   let updateDraft: UpdateContentSubmissionDraftUsecase;
   let uploadAttachment: UploadContentSubmissionAttachmentUsecase;
   let submit: SubmitContentSubmissionUsecase;
-  let getRevision: GetContentSubmissionRevisionUsecase;
   let listReviewQueue: ListReviewQueueUsecase;
-  let returnSubmission: ReturnContentSubmissionUsecase;
-  let approve: ApproveContentSubmissionUsecase;
-  let softDeleteDocument: SoftDeleteReferenceDocumentUsecase;
   let contentSubmissionService: ContentSubmissionService;
-  /** 测试专用存储委托：真实 open/save/delete + 可控屏障（默认 off，仅 N03 场景启用） */
-  let storageBarrier: BarrierAttachmentStorage;
 
   // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('CONTSUB');
-  let primaryOrganizationId = 0;
   const ownership = createOwnedResourceLedger();
 
   let engineerSession: UsecaseSession;
@@ -355,17 +342,7 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [ApiModule],
-    })
-      // N03：仅在本规格替换附件存储 token 为「真实本地存储 + 可控屏障」的测试委托。
-      // 委托内部转发真实 LocalReferenceDocumentStorage（同一存储根、真实写入），
-      // 默认 off；生产装配与其他规格不受影响
-      .overrideProvider(CONTENT_SUBMISSION_ATTACHMENT_STORAGE)
-      .useFactory({
-        inject: [LocalReferenceDocumentStorage],
-        factory: (realStorage: LocalReferenceDocumentStorage) =>
-          (storageBarrier = new BarrierAttachmentStorage(realStorage)),
-      })
-      .compile();
+    }).compile();
 
     app = moduleFixture.createNestApplication();
     dataSource = app.get(DataSource);
@@ -374,19 +351,12 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
     submissionRepository = dataSource.getRepository(ContentSubmissionEntity);
     attachmentRepository = dataSource.getRepository(ContentSubmissionAttachmentEntity);
     revisionRepository = dataSource.getRepository(ContentSubmissionRevisionEntity);
-    reviewRepository = dataSource.getRepository(ContentSubmissionReviewEntity);
-    documentRepository = dataSource.getRepository(ReferenceDocumentEntity);
-    caseDetailRepository = dataSource.getRepository(ReferenceDocumentCaseDetailEntity);
 
     createDraft = app.get(CreateContentSubmissionDraftUsecase);
     updateDraft = app.get(UpdateContentSubmissionDraftUsecase);
     uploadAttachment = app.get(UploadContentSubmissionAttachmentUsecase);
     submit = app.get(SubmitContentSubmissionUsecase);
-    getRevision = app.get(GetContentSubmissionRevisionUsecase);
     listReviewQueue = app.get(ListReviewQueueUsecase);
-    returnSubmission = app.get(ReturnContentSubmissionUsecase);
-    approve = app.get(ApproveContentSubmissionUsecase);
-    softDeleteDocument = app.get(SoftDeleteReferenceDocumentUsecase);
 
     await app.init();
 
@@ -426,7 +396,6 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
       ],
       ownership,
     });
-    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
     await seedTestMemberships({
       dataSource,
       memberships: [
@@ -487,116 +456,6 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
     });
   });
 
-  it('V6 退回重提：版本1→退回→改正文/换附件→版本2；旧快照、原件与审核事实保持不变', async () => {
-    const submissionId = await createMaterialDraft('V6 退回重提样本', '版本1正文：初始内容。');
-
-    // 版本 1：附件 A + 送审
-    const attachmentA = await uploadTextAttachment(
-      submissionId,
-      'v6-a.txt',
-      'v6-attachment-a-bytes',
-    );
-    const submitted1 = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-    expect(submitted1).toMatchObject({ revisionNo: 1, status: 'PENDING_REVIEW' });
-
-    const snapshot1Before = await getRevision.execute({
-      session: engineerSession,
-      submissionId,
-      revisionNo: 1,
-    });
-    expect(snapshot1Before.payloadSnapshot).toMatchObject({ contentText: '版本1正文：初始内容。' });
-    expect(snapshot1Before.attachment?.id).toBe(attachmentA.attachmentId);
-
-    // 附件 A 的冻结存储引用（退回后不得变化）
-    const rowABefore = await attachmentRepository.findOneByOrFail({
-      id: attachmentA.attachmentId,
-    });
-
-    // 管理员退回：审核事实落库（RETURN 必填理由、不发布附件）
-    const returned = await returnSubmission.execute({
-      session: adminSession,
-      submissionId,
-      revisionId: submitted1.revisionId,
-      comment: '请修改正文并更换附件后重新送审。',
-    });
-    expect(returned).toMatchObject({ status: 'RETURNED', documentId: null });
-
-    // 退回后编辑正文 + 替换附件 B
-    await updateDraft.execute({
-      session: engineerSession,
-      submissionId,
-      patch: { contentText: '版本2正文：按审核意见修改。' },
-    });
-    const attachmentB = await uploadTextAttachment(
-      submissionId,
-      'v6-b.txt',
-      'v6-attachment-b-bytes',
-    );
-    expect(attachmentB.attachmentId).not.toBe(attachmentA.attachmentId);
-
-    // 重提：版本 2
-    const submitted2 = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-    expect(submitted2).toMatchObject({ revisionNo: 2, status: 'PENDING_REVIEW' });
-
-    // —— 断言：版本 1 快照冻结不变（正文与附件引用均为送审当次事实）——
-    const snapshot1After = await getRevision.execute({
-      session: engineerSession,
-      submissionId,
-      revisionNo: 1,
-    });
-    expect(snapshot1After.payloadSnapshot).toEqual(snapshot1Before.payloadSnapshot);
-    expect(snapshot1After.attachment?.id).toBe(attachmentA.attachmentId);
-
-    // —— 断言：版本 2 快照为修改后内容 + 新附件 ——
-    const snapshot2 = await getRevision.execute({
-      session: engineerSession,
-      submissionId,
-      revisionNo: 2,
-    });
-    expect(snapshot2.payloadSnapshot).toMatchObject({
-      contentText: '版本2正文：按审核意见修改。',
-    });
-    expect(snapshot2.attachment?.id).toBe(attachmentB.attachmentId);
-
-    // —— 断言：审核事实保持（仍绑定版本 1；理由未变）——
-    const reviews = await reviewRepository.find({ where: { submissionId }, order: { id: 'ASC' } });
-    expect(reviews).toHaveLength(1);
-    expect(reviews[0]).toMatchObject({
-      decision: 'RETURN',
-      revisionId: submitted1.revisionId,
-      publishAttachment: false,
-      comment: '请修改正文并更换附件后重新送审。',
-    });
-
-    // —— 断言：原件 A 只退役不删除（DB 行保留、引用未变、物理文件字节一致）——
-    const rowAAfter = await attachmentRepository.findOneByOrFail({ id: attachmentA.attachmentId });
-    expect(rowAAfter).toMatchObject({
-      status: 'RETIRED',
-      storageReference: rowABefore.storageReference,
-    });
-    expect(rowAAfter.retiredAt).not.toBeNull();
-    expect(readStoredBytes(rowABefore.storageReference).toString()).toBe('v6-attachment-a-bytes');
-
-    // —— 断言：附件 B 为当前有效，物理文件存在 ——
-    const rowB = await attachmentRepository.findOneByOrFail({ id: attachmentB.attachmentId });
-    expect(rowB.status).toBe('CURRENT');
-    expect(readStoredBytes(rowB.storageReference).toString()).toBe('v6-attachment-b-bytes');
-
-    // —— 断言：至多一个 CURRENT ——
-    const currentRows = await attachmentRepository.find({
-      where: { submissionId, status: 'CURRENT' },
-    });
-    expect(currentRows).toHaveLength(1);
-  });
-
   it('V7-1 并发附件替换：真实独立连接同时上传，最终恰一个 CURRENT 且两副本均不丢失', async () => {
     const submissionId = await createMaterialDraft('V7-1 并发上传样本', '并发上传正文。');
 
@@ -651,625 +510,10 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
     expect(row).toMatchObject({ status: 'PENDING_REVIEW', currentRevisionNo: 1 });
   });
 
-  it('V7-3 并发审核通过：真实独立连接同时审批，恰好一次发布成功且正式资料仅一份', async () => {
-    const submissionId = await createMaterialDraft('V7-3 并发审核样本', '并发审核正文。');
-    const submitted = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    const settled = await Promise.allSettled([
-      approve.execute({
-        session: adminSession,
-        submissionId,
-        revisionId: submitted.revisionId,
-        publishAttachment: false,
-        comment: null,
-      }),
-      approve.execute({
-        session: adminSession,
-        submissionId,
-        revisionId: submitted.revisionId,
-        publishAttachment: false,
-        comment: null,
-      }),
-    ]);
-    const successes = settled.filter(isFulfilled);
-    const failures = settled.filter(isRejected);
-    expect(successes).toHaveLength(1);
-    expect(failures).toHaveLength(1);
-    expect(successes[0].value).toMatchObject({ status: 'PUBLISHED' });
-    expect(successes[0].value.documentId).not.toBeNull();
-    expect(failures[0].reason).toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE,
-    });
-
-    // 唯一来源约束 + 单次发布：正式资料仅一份、APPROVE 审核记录仅一条
-    const documents = await documentRepository.find({
-      where: { sourceSubmissionId: submissionId },
-    });
-    expect(documents).toHaveLength(1);
-    const approveReviews = await reviewRepository.find({
-      where: { submissionId, decision: 'APPROVE' },
-    });
-    expect(approveReviews).toHaveLength(1);
-    const row = await submissionRepository.findOneByOrFail({ id: submissionId });
-    expect(row.status).toBe('PUBLISHED');
-    expect(row.publishedAt).not.toBeNull();
-  });
-
-  it('V7-4 并发审核均发布附件：真实独立连接同时审批，一份发布、失败副本精确清理、冻结原件保留', async () => {
-    const submissionId = await createMaterialDraft('V7-4 并发发布附件样本', '并发发布附件正文。');
-    const attachment = await uploadTextAttachment(submissionId, 'v7-4.txt', 'v7-4-original-bytes');
-    const originalRow = await attachmentRepository.findOneByOrFail({
-      id: attachment.attachmentId,
-    });
-    const submitted = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    // 两个审批请求同选 publishAttachment=true（各自复制获准原件为正式副本），
-    // 经 Promise.all 以真实独立连接同时发起（见头部 SCI-1 说明）；
-    // 「两请求已各复制文件」的确定性交错由受控替身单测覆盖，本用例走真实
-    // MySQL/文件存储路径验证补偿结果，不冒充精确时序注入。
-    const filesBefore = storageFiles();
-    const settled = await Promise.allSettled([
-      approve.execute({
-        session: adminSession,
-        submissionId,
-        revisionId: submitted.revisionId,
-        publishAttachment: true,
-        comment: null,
-      }),
-      approve.execute({
-        session: adminSession,
-        submissionId,
-        revisionId: submitted.revisionId,
-        publishAttachment: true,
-        comment: null,
-      }),
-    ]);
-    const successes = settled.filter(isFulfilled);
-    const failures = settled.filter(isRejected);
-    // 行锁重核：恰一次发布成功，另一次在事务内重核状态已流转被拒
-    expect(successes).toHaveLength(1);
-    expect(failures).toHaveLength(1);
-    expect(successes[0].value).toMatchObject({ status: 'PUBLISHED' });
-    expect(failures[0].reason).toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE,
-    });
-
-    // 唯一来源约束 + 单次发布：正式资料仅一份、APPROVE 审核记录仅一条
-    const documents = await documentRepository.find({
-      where: { sourceSubmissionId: submissionId },
-    });
-    expect(documents).toHaveLength(1);
-    expect(
-      await reviewRepository.find({ where: { submissionId, decision: 'APPROVE' } }),
-    ).toHaveLength(1);
-    const publishedDoc = documents[0];
-    if (publishedDoc.storageReference === null) {
-      throw new Error('发布未生成正式存储引用，后续断言无法继续');
-    }
-
-    // 成功副本可读且与冻结原件同字节；冻结原件保留不删除、不覆盖
-    expect(publishedDoc.storageReference).not.toBe(originalRow.storageReference);
-    expect(readStoredBytes(publishedDoc.storageReference).toString()).toBe('v7-4-original-bytes');
-    expect(readStoredBytes(originalRow.storageReference).toString()).toBe('v7-4-original-bytes');
-
-    // 失败方若已复制其副本，必须被精确清理：目录只新增「成功正式副本」一个文件，
-    // 且不删除任何既有文件（失败副本零残留）
-    const filesAfter = storageFiles();
-    const added = filesAfter.filter((name) => !filesBefore.includes(name));
-    const removed = filesBefore.filter((name) => !filesAfter.includes(name));
-    expect(added).toEqual([publishedDoc.storageReference]);
-    expect(removed).toEqual([]);
-  });
-
-  it('V8 真实故障路径：不可编辑状态拒绝不触盘；获准原件缺失受控失败且无残留副本', async () => {
-    // —— A) 待审状态上传：授权先于文件 I/O，请求被拒绝且存储目录不产生任何新文件 ——
-    const pendingSubmissionId = await createMaterialDraft('V8-A 状态拒绝样本', '状态拒绝正文。');
-    await submit.execute({
-      session: engineerSession,
-      submissionId: pendingSubmissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    const filesBeforeReject = storageFiles();
-    await expect(
-      uploadTextAttachment(pendingSubmissionId, 'v8-a.txt', 'v8-a-should-not-persist'),
-    ).rejects.toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE,
-    });
-    expect(storageFiles()).toEqual(filesBeforeReject);
-
-    // —— B) 审核发布阶段获准原件不可用：受控失败、投稿仍待审、无正式资料、无新副本 ——
-    const missingFileSubmissionId = await createMaterialDraft(
-      'V8-B 原件缺失样本',
-      '原件缺失正文。',
-    );
-    const missingAttachment = await uploadTextAttachment(
-      missingFileSubmissionId,
-      'v8-b.txt',
-      'v8-b-original-bytes',
-    );
-    const submittedB = await submit.execute({
-      session: engineerSession,
-      submissionId: missingFileSubmissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    // 模拟存储侧原件丢失：按精确引用删除本测试拥有目录中的该文件（不批量扫描）
-    const missingRow = await attachmentRepository.findOneByOrFail({
-      id: missingAttachment.attachmentId,
-    });
-    fs.rmSync(path.join(e2eStorageRoot, missingRow.storageReference));
-
-    const filesBeforeApprove = storageFiles();
-    await expect(
-      approve.execute({
-        session: adminSession,
-        submissionId: missingFileSubmissionId,
-        revisionId: submittedB.revisionId,
-        publishAttachment: true,
-        comment: null,
-      }),
-    ).rejects.toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.FILE_NOT_AVAILABLE,
-    });
-
-    expect(storageFiles()).toEqual(filesBeforeApprove);
-    expect(
-      await documentRepository.find({ where: { sourceSubmissionId: missingFileSubmissionId } }),
-    ).toHaveLength(0);
-    expect(
-      await reviewRepository.find({ where: { submissionId: missingFileSubmissionId } }),
-    ).toHaveLength(0);
-    const rowB = await submissionRepository.findOneByOrFail({ id: missingFileSubmissionId });
-    expect(rowB.status).toBe('PENDING_REVIEW');
-
-    // —— 与受控替身的区别（V8 要求标明）——
-    // 本用例验证真实数据库/真实文件存储上的确定性故障路径（状态拒绝、来源缺失）。
-    // 「回调已完成但 COMMIT 确认丢失」「提交终局不明」等不确定路径无法在真实
-    // MySQL 上精确注入（需要控制连接在 COMMIT 瞬间断连），由受控替身单测覆盖：
-    // - content-submission-attachments.usecases.spec.ts：COMMIT_ACK_LOST 控制流复现、
-    //   落库失败补偿删除、终局不明保留、核查失败 fail-safe；
-    // - content-submission-approve-review.usecases.spec.ts：发布补偿系列（含并发
-    //   成功方引用其他副本时失败方精确清理）。
-    // 两者区别：受控替身以代码控制 runner 在 COMMIT 阶段抛错，属模拟时序；
-    // 真实 COMMIT 故障未在本集成测试注入，不得据此宣称已完成真实 COMMIT 故障测试。
-  });
-
-  it('V9 发布与软删：正式内容来自获准快照、案例明细一致；软删不改源投稿状态且不可再发布', async () => {
-    // FAULT_CASE 草稿（必填字段齐全，已解决必须有结果）
-    const draft = await createDraft.execute({
-      session: engineerSession,
-      kind: 'FAULT_CASE',
-      fields: {
-        title: 'V9 案例：光源同步异常',
-        equipmentModelText: '投稿集成测试机型',
-        errorCode: 'V9-ERR-100',
-        phenomenon: '曝光期间同步误差超限。',
-        conditionText: '连续曝光超过 20 分钟。',
-        reproductionSteps: '1. 复现同步误差；2. 记录趋势。',
-        diagnosis: '编码器信号噪声。',
-        actionTaken: '更换编码器线缆。',
-        handlingStatus: 'RESOLVED',
-        resolution: '更换线缆后连续 5 批无异常。',
-      },
-    });
-    const submissionId = draft.id;
-
-    // 附件 + 送审（冻结快照）
-    const attachmentUpload = await uploadTextAttachment(
-      submissionId,
-      'v9-report.txt',
-      'v9-original-bytes',
-    );
-    const originalRow = await attachmentRepository.findOneByOrFail({
-      id: attachmentUpload.attachmentId,
-    });
-    const submitted = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-    const snapshot = await getRevision.execute({
-      session: engineerSession,
-      submissionId,
-      revisionNo: submitted.revisionNo,
-    });
-
-    // 审核通过并发布附件（正式内容来自获准快照）
-    const approved = await approve.execute({
-      session: adminSession,
-      submissionId,
-      revisionId: submitted.revisionId,
-      publishAttachment: true,
-      comment: null,
-    });
-    expect(approved).toMatchObject({ status: 'PUBLISHED' });
-    const documentId = approved.documentId;
-    expect(documentId).not.toBeNull();
-    if (documentId === null) {
-      throw new Error('approve 结果 documentId 为 null，发布断言无法继续');
-    }
-
-    // —— 正式资料事实：标题来自快照、来源回链、组织归属、四列文件组 ——
-    const document = await documentRepository.findOneByOrFail({ id: documentId });
-    expect(document).toMatchObject({
-      title: snapshot.titleSnapshot,
-      ingestMethod: 'REVIEWED_SUBMISSION',
-      sourceSubmissionId: submissionId,
-      sourceRevisionId: submitted.revisionId,
-      ownerOrganizationId: primaryOrganizationId,
-      originalFilename: 'v9-report.txt',
-      mimeType: 'text/plain',
-      storageBackend: 'local',
-    });
-
-    // —— 案例可读正文由同一份冻结字段生成（与明细同源）——
-    expect(document.contentText).toContain('错误码：V9-ERR-100');
-    expect(document.contentText).toContain('故障现象：\n曝光期间同步误差超限。');
-    expect(document.contentText).toContain('复现步骤：\n1. 复现同步误差；2. 记录趋势。');
-    expect(document.contentText).toContain('处理状态：已解决');
-    expect(document.contentText).toContain('处理结果：\n更换线缆后连续 5 批无异常。');
-
-    // —— 结构化案例明细与送审快照一致 ——
-    const caseDetail = await caseDetailRepository.findOneByOrFail({ documentId });
-    expect(caseDetail).toMatchObject({
-      errorCode: 'V9-ERR-100',
-      handlingStatus: 'RESOLVED',
-      phenomenon: '曝光期间同步误差超限。',
-      reproductionSteps: '1. 复现同步误差；2. 记录趋势。',
-      resolution: '更换线缆后连续 5 批无异常。',
-    });
-    expect(snapshot.payloadSnapshot).toMatchObject({
-      errorCode: caseDetail.errorCode,
-      handlingStatus: caseDetail.handlingStatus,
-      phenomenon: caseDetail.phenomenon,
-      reproductionSteps: caseDetail.reproductionSteps,
-      resolution: caseDetail.resolution,
-    });
-
-    // —— 正式文件为发布时新副本：引用与冻结原件不同、字节一致；原件保留 ——
-    expect(document.storageReference).not.toBe(originalRow.storageReference);
-    expect(document.storageReference).not.toBeNull();
-    expect(readStoredBytes(document.storageReference as string).toString()).toBe(
-      'v9-original-bytes',
-    );
-    expect(readStoredBytes(originalRow.storageReference).toString()).toBe('v9-original-bytes');
-
-    // —— 发布事实：投稿 PUBLISHED 且发布时间非空 ——
-    const publishedRow = await submissionRepository.findOneByOrFail({ id: submissionId });
-    expect(publishedRow.status).toBe('PUBLISHED');
-    const publishedAtBefore = publishedRow.publishedAt;
-    expect(publishedAtBefore).not.toBeNull();
-
-    // —— 软删正式资料：不物理删除文件、不改源投稿发布状态 ——
-    await softDeleteDocument.execute({ session: adminSession, documentId });
-    const softDeleted = await documentRepository.findOneByOrFail({ id: documentId });
-    expect(softDeleted.deprecated).toBe(true);
-    expect(softDeleted.deletedAt).not.toBeNull();
-    const rowAfterSoftDelete = await submissionRepository.findOneByOrFail({ id: submissionId });
-    expect(rowAfterSoftDelete.status).toBe('PUBLISHED');
-    expect(rowAfterSoftDelete.publishedAt?.getTime()).toBe(publishedAtBefore?.getTime());
-    expect(readStoredBytes(document.storageReference as string).toString()).toBe(
-      'v9-original-bytes',
-    );
-
-    // —— 不可再发布：已发布投稿再次审核被拒（状态不为待审），正式资料仍仅一份 ——
-    await expect(
-      approve.execute({
-        session: adminSession,
-        submissionId,
-        revisionId: submitted.revisionId,
-        publishAttachment: true,
-        comment: null,
-      }),
-    ).rejects.toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE,
-    });
-    expect(
-      await documentRepository.find({ where: { sourceSubmissionId: submissionId } }),
-    ).toHaveLength(1);
-  });
-
-  it('N03-A 两请求先各自生成真实副本再竞争：恰一次发布、败者副本精确清理、原件保留', async () => {
-    // 与 V7-4 的区别：V7-4 走随机并发（可能一方在另一方形副本前就失败），
-    // 本用例用测试层存储委托把「两份真实副本都已落盘、尚未进入审批事务」
-    // 变成确定性前置条件，再放行真实行锁竞争。
-    const submissionId = await createMaterialDraft(
-      'N03-A 确定性并发发布附件样本',
-      'N03-A 并发发布正文。',
-    );
-    const attachment = await uploadTextAttachment(
-      submissionId,
-      'n03-a.txt',
-      'n03-a-original-bytes',
-    );
-    const originalRow = await attachmentRepository.findOneByOrFail({ id: attachment.attachmentId });
-    const submitted = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    const filesBefore = storageFiles();
-    storageBarrier.activate('dual');
-    const requests: Array<Promise<unknown>> = [];
-    let settled: PromiseSettledResult<unknown>[] | null = null;
-    let barrierReferences: string[];
-
-    try {
-      requests.push(
-        approve.execute({
-          session: adminSession,
-          submissionId,
-          revisionId: submitted.revisionId,
-          publishAttachment: true,
-          comment: null,
-        }),
-        approve.execute({
-          session: adminSession,
-          submissionId,
-          revisionId: submitted.revisionId,
-          publishAttachment: true,
-          comment: null,
-        }),
-      );
-
-      // —— 硬门槛：两份真实副本都必须先落盘且可读，才允许进入竞争 ——
-      await storageBarrier.waitForSaved(2);
-      barrierReferences = [...storageBarrier.saved];
-      expect(barrierReferences).toHaveLength(2);
-      expect(new Set(barrierReferences).size).toBe(2);
-      for (const reference of barrierReferences) {
-        expect(reference).not.toBe(originalRow.storageReference);
-        expect(readStoredBytes(reference).toString()).toBe('n03-a-original-bytes');
-      }
-      // 副本已落盘但事务尚未开始：此时不应存在正式资料（证明是「先复制后竞争」）
-      expect(
-        await documentRepository.find({ where: { sourceSubmissionId: submissionId } }),
-      ).toHaveLength(0);
-
-      // —— 统一放行：两请求使用真实 TransactionRunner 与真实行锁竞争 ——
-      storageBarrier.releaseAll();
-      settled = await Promise.allSettled(requests);
-    } finally {
-      storageBarrier.releaseAll();
-      if (settled === null) {
-        await Promise.allSettled(requests);
-      }
-    }
-
-    if (settled === null) {
-      throw new Error('N03-A 并发请求未能收敛，无法断言');
-    }
-    const successes = settled.filter(isFulfilled);
-    const failures = settled.filter(isRejected);
-    expect(successes).toHaveLength(1);
-    expect(failures).toHaveLength(1);
-    expect(failures[0].reason).toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE,
-    });
-
-    // 按正式资料引用识别胜者/败者（不假设先发请求一定获胜）
-    const documents = await documentRepository.find({
-      where: { sourceSubmissionId: submissionId },
-    });
-    expect(documents).toHaveLength(1);
-    const publishedDocument = documents[0];
-    if (publishedDocument.storageReference === null) {
-      throw new Error('N03-A 发布未生成正式存储引用，断言无法继续');
-    }
-    const winnerReference = publishedDocument.storageReference;
-    expect(barrierReferences).toContain(winnerReference);
-    const loserReference = barrierReferences.find((reference) => reference !== winnerReference);
-    if (loserReference === undefined) {
-      throw new Error('N03-A 未找到败者副本引用，无法验证精确清理');
-    }
-
-    // 胜者副本可读且字节正确
-    expect(readStoredBytes(winnerReference).toString()).toBe('n03-a-original-bytes');
-    // 败者副本已删除（禁用删除时本断言必然失败）
-    expect(fs.existsSync(path.join(e2eStorageRoot, loserReference))).toBe(false);
-    // 冻结原件保留、字节不变
-    expect(readStoredBytes(originalRow.storageReference).toString()).toBe('n03-a-original-bytes');
-
-    // 发布事实唯一：一份正式资料、一条 APPROVE、投稿 PUBLISHED
-    expect(
-      await reviewRepository.find({ where: { submissionId, decision: 'APPROVE' } }),
-    ).toHaveLength(1);
-    const submissionRow = await submissionRepository.findOneByOrFail({ id: submissionId });
-    expect(submissionRow.status).toBe('PUBLISHED');
-
-    // 其他既有文件不删除：目录只新增胜者正式副本
-    const filesAfter = storageFiles();
-    expect(filesAfter.filter((name) => !filesBefore.includes(name))).toEqual([winnerReference]);
-    expect(filesBefore.filter((name) => !filesAfter.includes(name))).toEqual([]);
-  });
-
-  it('N03-B 不发布文件的请求先成功：已复制副本的败者事务内重核后精确清理', async () => {
-    const submissionId = await createMaterialDraft(
-      'N03-B 不发布优先样本',
-      'N03-B 不发布优先正文。',
-    );
-    const attachment = await uploadTextAttachment(
-      submissionId,
-      'n03-b.txt',
-      'n03-b-original-bytes',
-    );
-    const originalRow = await attachmentRepository.findOneByOrFail({ id: attachment.attachmentId });
-    const submitted = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    const filesBefore = storageFiles();
-    // 单请求屏障：成功方（不发布附件）本来不会复制文件，不能等两个 save 到齐
-    storageBarrier.activate('single');
-    const requests: Array<Promise<unknown>> = [];
-    let settled: PromiseSettledResult<unknown>[] | null = null;
-    let loserReference: string | null;
-
-    try {
-      // B：发布附件，真实保存副本后停在屏障（尚未进入审批事务）
-      requests.push(
-        approve.execute({
-          session: adminSession,
-          submissionId,
-          revisionId: submitted.revisionId,
-          publishAttachment: true,
-          comment: null,
-        }),
-      );
-      await storageBarrier.waitForSaved(1);
-      loserReference = storageBarrier.saved[0];
-      expect(readStoredBytes(loserReference).toString()).toBe('n03-b-original-bytes');
-      expect(
-        await documentRepository.find({ where: { sourceSubmissionId: submissionId } }),
-      ).toHaveLength(0);
-
-      // A：不发布附件，先完成真实事务并提交成功
-      const winner = await approve.execute({
-        session: adminSession,
-        submissionId,
-        revisionId: submitted.revisionId,
-        publishAttachment: false,
-        comment: null,
-      });
-      expect(winner).toMatchObject({ status: 'PUBLISHED' });
-      expect(winner.documentId).not.toBeNull();
-
-      // 放行 B：其事务重核发现已处理，进入失败补偿
-      storageBarrier.releaseAll();
-      settled = await Promise.allSettled(requests);
-    } finally {
-      storageBarrier.releaseAll();
-      if (settled === null) {
-        await Promise.allSettled(requests);
-      }
-    }
-
-    if (settled === null) {
-      throw new Error('N03-B 并发请求未能收敛，无法断言');
-    }
-    expect(settled).toHaveLength(1);
-    expect(isRejected(settled[0])).toBe(true);
-    if (!isRejected(settled[0])) {
-      throw new Error('N03-B 发布附件请求本应失败但成功了');
-    }
-    expect(settled[0].reason).toMatchObject({
-      name: 'DomainError',
-      code: CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE,
-    });
-
-    // 正式资料无文件引用（成功方未发布附件），仅一份资料/一条 APPROVE
-    const documents = await documentRepository.find({
-      where: { sourceSubmissionId: submissionId },
-    });
-    expect(documents).toHaveLength(1);
-    expect(documents[0].storageReference).toBeNull();
-    expect(
-      await reviewRepository.find({ where: { submissionId, decision: 'APPROVE' } }),
-    ).toHaveLength(1);
-
-    // 败者副本删除、冻结原件保留、其他既有文件不变
-    if (loserReference === null) {
-      throw new Error('N03-B 未记录败者副本引用，无法验证精确清理');
-    }
-    expect(fs.existsSync(path.join(e2eStorageRoot, loserReference))).toBe(false);
-    expect(readStoredBytes(originalRow.storageReference).toString()).toBe('n03-b-original-bytes');
-    const filesAfter = storageFiles();
-    expect(filesAfter.filter((name) => !filesBefore.includes(name))).toEqual([]);
-    expect(filesBefore.filter((name) => !filesAfter.includes(name))).toEqual([]);
-  });
-
-  it('N03-C 正式副本已落盘后真实事务回滚：无成功残留、副本精确清理、原错误保留', async () => {
-    const submissionId = await createMaterialDraft('N03-C 事务回滚样本', 'N03-C 事务回滚正文。');
-    const attachment = await uploadTextAttachment(
-      submissionId,
-      'n03-c.txt',
-      'n03-c-original-bytes',
-    );
-    const originalRow = await attachmentRepository.findOneByOrFail({ id: attachment.attachmentId });
-    const submitted = await submit.execute({
-      session: engineerSession,
-      submissionId,
-      libraryNoticeConfirmed: true,
-    });
-
-    // 定向失败注入：对现有写服务方法包装「真实写入后、返回成功前」抛错。
-    // 不替换整个 TransactionRunner，也不使用假 repository 模拟回滚；
-    // 该故障属「回调内失败、可确认回滚」，不是 COMMIT 确认丢失。
-    const injectedError = new Error('N03-C 注入：事务内写入完成后失败');
-    const originalMarkPublished = contentSubmissionService.markSubmissionPublished;
-    let failureTriggered = false;
-
-    storageBarrier.activate('record');
-    const filesBefore = storageFiles();
-    try {
-      contentSubmissionService.markSubmissionPublished = async (params) => {
-        await originalMarkPublished.call(contentSubmissionService, params);
-        if (!failureTriggered) {
-          failureTriggered = true;
-          throw injectedError;
-        }
-      };
-
-      await expect(
-        approve.execute({
-          session: adminSession,
-          submissionId,
-          revisionId: submitted.revisionId,
-          publishAttachment: true,
-          comment: null,
-        }),
-      ).rejects.toBe(injectedError);
-    } finally {
-      contentSubmissionService.markSubmissionPublished = originalMarkPublished;
-      storageBarrier.releaseAll();
-    }
-
-    // 注入确实触发（未触发则本用例不能证明该路径）
-    expect(failureTriggered).toBe(true);
-    const formalReferences = [...storageBarrier.saved];
-    expect(formalReferences).toHaveLength(1);
-    const formalReference = formalReferences[0];
-    // 正式副本内容来自冻结原件的真实字节（写入成功时记录指纹，不依赖事后文件仍在）
-    expect(storageBarrier.fingerprints).toEqual([sha256Hex(Buffer.from('n03-c-original-bytes'))]);
-
-    // 事务已回滚：无正式资料、无审核记录、投稿仍待审
-    expect(
-      await documentRepository.find({ where: { sourceSubmissionId: submissionId } }),
-    ).toHaveLength(0);
-    expect(await reviewRepository.find({ where: { submissionId } })).toHaveLength(0);
-    const submissionRow = await submissionRepository.findOneByOrFail({ id: submissionId });
-    expect(submissionRow.status).toBe('PENDING_REVIEW');
-
-    // 本次正式副本已精确清理；冻结原件与其他既有文件不变
-    expect(fs.existsSync(path.join(e2eStorageRoot, formalReference))).toBe(false);
-    expect(readStoredBytes(originalRow.storageReference).toString()).toBe('n03-c-original-bytes');
-    const filesAfter = storageFiles();
-    expect(filesAfter.filter((name) => !filesBefore.includes(name))).toEqual([]);
-    expect(filesBefore.filter((name) => !filesAfter.includes(name))).toEqual([]);
-  });
-
-  it('R1 审核队列真实排序：空队列、时间倒序、同一时间按ID倒序、退回重提后按最近送审时间排序', async () => {
+  it('R1 审核队列真实排序：空队列、时间倒序、同一时间按ID倒序与 OFFSET 分页', async () => {
     // 补齐 R1 验收遗漏的「真实数据库排序验证」：单测已覆盖排序常量，
     // 本用例在真实 MySQL 上验证空队列、时间倒序、同一时间按 ID 倒序、
-    // 退回重提后按最近送审时间重排，以及 OFFSET 分页与总数口径。
+    // 以及 OFFSET 分页与总数口径。审核决定写入口已下线，「退回重提」重排不再可验。
 
     // —— 空队列：无匹配数据时 items 为空且 total=0（withTotal 需显式请求，缺省不返回）——
     const emptyQueue = await listReviewQueue.execute({
@@ -1284,7 +528,7 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
     const alphaId = await createMaterialDraft('R1 排序样本 Alpha', 'R1 Alpha 正文。');
     const betaId = await createMaterialDraft('R1 排序样本 Beta', 'R1 Beta 正文。');
     const gammaId = await createMaterialDraft('R1 排序样本 Gamma', 'R1 Gamma 正文。');
-    const alphaSubmitted = await submit.execute({
+    await submit.execute({
       session: engineerSession,
       submissionId: alphaId,
       libraryNoticeConfirmed: true,
@@ -1328,27 +572,11 @@ describe('投稿内容链路用例集成 (V6-V9)', () => {
     ]);
     expect(ordered.total).toBe(3);
 
-    // —— 退回后重提：last_submitted_at 更新为最近送审时间，重排至最前 ——
-    await returnSubmission.execute({
-      session: adminSession,
-      submissionId: alphaId,
-      revisionId: alphaSubmitted.revisionId,
-      comment: 'R1 排序验证：退回后重提。',
-    });
-    await submit.execute({
-      session: engineerSession,
-      submissionId: alphaId,
-      libraryNoticeConfirmed: true,
-    });
-
-    const reordered = await queryQueue(1, 20);
-    expect(reordered.items.map((item) => item.id)).toEqual([alphaId, gammaId, betaId]);
-
-    // —— OFFSET 分页：pageSize=2 时 page1=[Alpha, Gamma]、page2=[Beta]，total 恒为 3 ——
+    // —— OFFSET 分页：pageSize=2 时 page1=[Gamma, Beta]、page2=[Alpha]，total 恒为 3 ——
     const page1 = await queryQueue(1, 2);
     const page2 = await queryQueue(2, 2);
-    expect(page1.items.map((item) => item.id)).toEqual([alphaId, gammaId]);
-    expect(page2.items.map((item) => item.id)).toEqual([betaId]);
+    expect(page1.items.map((item) => item.id)).toEqual([gammaId, betaId]);
+    expect(page2.items.map((item) => item.id)).toEqual([alphaId]);
     expect(page1.total).toBe(3);
     expect(page2.total).toBe(3);
 

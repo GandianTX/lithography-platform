@@ -34,7 +34,16 @@ export const MOCK_REFERENCE_ORGANIZATION_NAME = '甲方默认组织';
  * Mock 仓库条目 = 详情形状 + 列表独有案例状态 + 数据源内部软删标志（与后端 DTO 分层同构：
  * 详情不返回 caseHandlingStatus，仅列表返回；案例状态经 caseDetail.handlingStatus 表达）
  */
-export type MockReferenceDocumentRecord = ReferenceDocumentDetail & {
+export type MockReferenceDocumentRecord = Omit<
+  ReferenceDocumentDetail,
+  | 'sourceKind'
+  | 'effectiveRevisionNo'
+  | 'contentSource'
+  | 'sourceReportId'
+  | 'sourceReportVersionId'
+  | 'frozenReport'
+  | 'viewerIsOriginalAuthor'
+> & {
   caseHandlingStatus: ReferenceDocumentCaseHandlingStatus | null;
   deprecated: boolean;
 };
@@ -57,6 +66,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
     ingestMethod: 'ADMIN_DIRECT',
     equipmentModelText: null,
+    structuredContent: null,
     caseHandlingStatus: null,
     caseDetail: null,
     createdAt: '2026-08-01T08:00:00.000Z',
@@ -79,6 +89,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
     ingestMethod: 'ADMIN_DIRECT',
     equipmentModelText: null,
+    structuredContent: null,
     caseHandlingStatus: null,
     caseDetail: null,
     createdAt: '2026-08-02T09:30:00.000Z',
@@ -101,6 +112,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
     ingestMethod: 'ADMIN_DIRECT',
     equipmentModelText: null,
+    structuredContent: null,
     caseHandlingStatus: null,
     caseDetail: null,
     createdAt: '2026-08-03T10:00:00.000Z',
@@ -122,6 +134,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
     ingestMethod: 'ADMIN_DIRECT',
     equipmentModelText: null,
+    structuredContent: null,
     caseHandlingStatus: null,
     caseDetail: null,
     createdAt: '2026-08-04T11:00:00.000Z',
@@ -145,6 +158,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
     ingestMethod: 'ADMIN_DIRECT',
     equipmentModelText: null,
+    structuredContent: null,
     caseHandlingStatus: null,
     caseDetail: null,
     createdAt: '2026-08-06T09:00:00.000Z',
@@ -167,6 +181,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
     ingestMethod: 'ADMIN_DIRECT',
     equipmentModelText: null,
+    structuredContent: null,
     caseHandlingStatus: null,
     caseDetail: null,
     createdAt: '2026-08-07T15:20:00.000Z',
@@ -180,6 +195,7 @@ const MOCK_REFERENCE_DOCUMENT_SEEDS: MockReferenceDocumentRecord[] = [
     equipmentModelId: 49,
     equipmentModelName: 'ASML TWINSCAN NXT:1980Di',
     equipmentModelText: null,
+    structuredContent: null,
     description: '由工程师投稿经审核发布的正式案例（Mock），用于案例明细展示与处理状态筛选。',
     originalFilename: null,
     mimeType: null,
@@ -238,6 +254,7 @@ function buildGeneratedRecords(): MockReferenceDocumentRecord[] {
       organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
       ingestMethod: 'ADMIN_DIRECT',
       equipmentModelText: null,
+      structuredContent: null,
       caseHandlingStatus: null,
       caseDetail: null,
       createdAt: `2026-08-${day}T08:30:00.000Z`,

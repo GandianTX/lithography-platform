@@ -1,10 +1,6 @@
 // src/features/reference-document/infrastructure/reference-document-mock-adapter.ts
 
 import type {
-  CreateReferenceDocumentInput,
-  CreateReferenceDocumentResult,
-  CreateReferenceDocumentWithFileInput,
-  CreateReferenceDocumentWithFileResult,
   DeleteReferenceDocumentResult,
   ReferenceDocumentCaseDetail,
   ReferenceDocumentCaseHandlingStatus,
@@ -14,42 +10,30 @@ import type {
   ReferenceDocumentListFilter,
   ReferenceDocumentListPage,
   ReferenceDocumentListPagination,
+  ReferenceDocumentManagedMutationResult,
+  ReviseReferenceDocumentPatch,
   UpdateReferenceDocumentCasePatch,
   UpdateReferenceDocumentCaseResult,
-  UpdateReferenceDocumentPatch,
-  UpdateReferenceDocumentResult,
 } from './reference-document.types';
-import {
-  REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH,
-  REFERENCE_DOCUMENT_TITLE_MAX_LENGTH,
-  REFERENCE_DOCUMENT_UPLOAD_EXTENSION_MIME,
-} from './reference-document.types';
+import { REFERENCE_DOCUMENT_TITLE_MAX_LENGTH } from './reference-document.types';
 import type { MockReferenceDocumentRecord } from './reference-document-mock-data';
 import {
   buildMockReferenceDocumentRecords,
   MOCK_REFERENCE_EQUIPMENT_MODELS,
-  MOCK_REFERENCE_ORGANIZATION_NAME,
 } from './reference-document-mock-data';
 
 /**
- * 阶段二 Mock 数据访问层：签名与阶段三的真实 adapter 完全一致，
- * 页面经 barrel（@/features/reference-document）消费统一导出名，替换真实实现时页面零改动。
+ * Mock 数据访问层：签名与真实 adapter 完全一致，页面经 barrel 消费统一导出名。
  *
- * 行为对齐后端契约（B-01~B-06 定案；错误大类映射见各函数注释）：
- * - 列表：仅未软删、createdAt DESC + id DESC、OFFSET 分页、标题模糊/类型等值/型号等值筛选；
- * - 详情：不存在 / 已软删统一 not-found（防探测，不区分原因）；
- * - 创建：必填空白 / 超长 → invalid-input；型号不存在 → model-not-found；成功返回新 ID；
- * - 编辑：PATCH 语义（undefined 保持原值）；必填字段显式 null 直接拒绝；
- *   contentText 不允许清空；已软删 / 不存在统一 not-found；
- * - 案例保护：FAULT_CASE 的类型 / 正文与案例明细强耦合，通用编辑拒绝改造
- *   （invalid-input），必须走案例更正接口；普通资料转 FAULT_CASE 同样拒绝；
- * - 案例更正：仅 FAULT_CASE 可走（非案例资料 invalid-input，非 not-found）；
- *   必填 / 机型互斥 / 已解决必填结果与后端校验同口径，正文由明细重新生成；
- * - 软删：不存在 / 已软删统一 not-found（注意：本模块不幂等，区别于维修申请）。
+ * 任务 07 确认需求收口：旧普通新增（纯文本 / REST multipart）与通用编辑已随服务端
+ * 写入口一并关闭，Mock 同步移除对应模拟；管理动作按新规则拆分并对齐后端口径：
+ * - 管理修订（R058）：仅修订标题/说明/正文，FAULT_CASE 正文拒绝（须走案例更正）；
+ * - 下架（R059）：OFFLINE 后列表/详情统一不可见（防探测口径），保留修订历史；
+ * - 管理删除（R060）：软删 + 版本推进，与下架分别确认；
+ * - 归属更正（R061-02）：Mock 无组织事实，仅做输入与版本校验；
+ * - 原作者删除（R053）：expected_version 过期归并 version-conflict。
+ * 所有管理操作共享 expected_version（Mock 从 1 起计数），过期一律 version-conflict。
  */
-
-/** Mock 创建人昵称：阶段三由后端按 Session 实时富集，Mock 固定为管理员语义 */
-const MOCK_CREATOR_NICKNAME = '系统管理员';
 
 /** 案例处理状态中文标签（与后端可读正文格式化真源同口径） */
 const FAULT_CASE_HANDLING_STATUS_LABELS: Record<ReferenceDocumentCaseHandlingStatus, string> = {
@@ -64,36 +48,24 @@ function isFaultCaseDocumentType(documentType: string): boolean {
 }
 
 let repository: MockReferenceDocumentRecord[] = buildMockReferenceDocumentRecords();
-let nextId = 970007 + 1000;
+/** 生效版本计数（对齐后端 current_revision_no：种子资料从 1 起） */
+let revisionCounters: Map<number, number> = new Map();
+/** Mock 下架集合（OFFLINE 后列表/详情统一不可见，对齐后端防探测口径） */
+let offlineIds: Set<number> = new Set();
 
-/** 测试隔离：重建数据源（种子 + 批量数据），并重置自增主键 */
+/** 测试隔离：重建数据源（种子 + 批量数据），并重置自增主键与版本/下架状态 */
 export function resetReferenceDocumentMockState(): void {
   repository = buildMockReferenceDocumentRecords();
-  nextId = 970007 + 1000;
+  revisionCounters = new Map();
+  offlineIds = new Set();
 }
 
-function isNormalizedBlank(value: string): boolean {
-  return value.trim().length === 0;
+function currentRevisionNo(id: number): number {
+  return revisionCounters.get(id) ?? 1;
 }
 
-function requireNormalizedText(value: string, maxLength: number): string | null {
-  if (isNormalizedBlank(value)) {
-    return null;
-  }
-
-  return value.trim().length > maxLength ? null : value.trim();
-}
-
-/** 更正补丁业务文本合并：undefined 保持现值；null / 空白清空；非空 trim */
-function mergePatchedText(
-  value: string | null | undefined,
-  currentValue: string | null,
-): string | null {
-  if (value === undefined) {
-    return currentValue;
-  }
-
-  return value !== null && !isNormalizedBlank(value) ? value.trim() : null;
+function isNormalizedBlank(value: string | null | undefined): boolean {
+  return value === undefined || value === null || value.trim().length === 0;
 }
 
 /**
@@ -132,10 +104,12 @@ function formatFaultCaseContentText(detail: ReferenceDocumentCaseDetail): string
   return blocks.join('\n\n');
 }
 
-function findVisibleById(id: number): MockReferenceDocumentRecord | undefined {
-  const record = repository.find((item) => item.id === id);
+function findRecordById(id: number): MockReferenceDocumentRecord | undefined {
+  return repository.find((item) => item.id === id);
+}
 
-  return record && !record.deprecated ? record : undefined;
+function isAccessible(record: MockReferenceDocumentRecord): boolean {
+  return !record.deprecated && !offlineIds.has(record.id);
 }
 
 /** 列表项视图：剔除文本内容与数据源内部标志，保持与后端 ListItem DTO 同形 */
@@ -151,6 +125,9 @@ function toListItem(record: MockReferenceDocumentRecord) {
     originalFilename: record.originalFilename,
     organizationName: record.organizationName,
     ingestMethod: record.ingestMethod,
+    // Mock 数据源只承载普通资料（任务 07 的报告来源数据来自后端真实快照）
+    sourceKind: 'MATERIAL' as const,
+    effectiveRevisionNo: currentRevisionNo(record.id),
     caseHandlingStatus: record.caseHandlingStatus,
     creatorNickname: record.creatorNickname,
     createdAt: record.createdAt,
@@ -171,10 +148,19 @@ function toDetail(record: MockReferenceDocumentRecord) {
     mimeType: record.mimeType,
     hasFile: record.hasFile,
     contentText: record.contentText,
+    contentSource: 'ORIGINAL' as const,
+    sourceKind: 'MATERIAL' as const,
+    effectiveRevisionNo: currentRevisionNo(record.id),
+    sourceReportId: null,
+    sourceReportVersionId: null,
+    frozenReport: null,
+    structuredContent: record.structuredContent,
     organizationName: record.organizationName,
     ingestMethod: record.ingestMethod,
     caseDetail: record.caseDetail,
     creatorNickname: record.creatorNickname,
+    // Mock 视角固定为创建人本人（单管理员语义），供作者删除入口联调
+    viewerIsOriginalAuthor: true,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -196,7 +182,7 @@ export async function fetchReferenceDocuments(
   const caseHandlingStatus = filter?.caseHandlingStatus;
 
   const visible = repository
-    .filter((record) => !record.deprecated)
+    .filter((record) => isAccessible(record))
     .filter((record) => (titleKeyword ? record.title.includes(titleKeyword) : true))
     .filter((record) => (documentType ? record.documentType === documentType : true))
     .filter((record) =>
@@ -226,10 +212,10 @@ export async function fetchReferenceDocuments(
 }
 
 export async function fetchReferenceDocument(id: number): Promise<ReferenceDocumentDetailResult> {
-  const record = findVisibleById(id);
+  const record = findRecordById(id);
 
-  if (!record) {
-    // 后端统一 NOT_FOUND（防探测）：不存在与已软删同文案，不区分原因
+  if (!record || !isAccessible(record)) {
+    // 后端统一 NOT_FOUND（防探测）：不存在 / 已下架 / 已软删同文案，不区分原因
     return {
       ok: false,
       reason: 'not-found',
@@ -240,127 +226,61 @@ export async function fetchReferenceDocument(id: number): Promise<ReferenceDocum
   return { ok: true, detail: toDetail(record) };
 }
 
-export async function createReferenceDocument(
-  input: CreateReferenceDocumentInput,
-): Promise<CreateReferenceDocumentResult> {
-  const title = requireNormalizedText(input.title, REFERENCE_DOCUMENT_TITLE_MAX_LENGTH);
-  const documentType = requireNormalizedText(
-    input.documentType,
-    REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH,
-  );
-
-  if (title === null || documentType === null) {
-    return {
-      ok: false,
-      reason: 'invalid-input',
-      message:
-        title === null
-          ? `标题为必填项，且不能超过 ${REFERENCE_DOCUMENT_TITLE_MAX_LENGTH} 个字符。`
-          : `文档类型为必填项，且不能超过 ${REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH} 个字符。`,
-    };
-  }
-
-  if (isNormalizedBlank(input.contentText)) {
-    return {
-      ok: false,
-      reason: 'invalid-input',
-      message: '文本内容为必填项（本周仅支持文本来源）。',
-    };
-  }
-
-  if (input.equipmentModelId !== null) {
-    const modelExists = MOCK_REFERENCE_EQUIPMENT_MODELS.some(
-      (model) => model.id === input.equipmentModelId,
-    );
-
-    if (!modelExists) {
-      return {
-        ok: false,
-        reason: 'model-not-found',
-        message: '所选设备型号不存在，请重新选择。',
-      };
-    }
-  }
-
-  const model = MOCK_REFERENCE_EQUIPMENT_MODELS.find(
-    (option) => option.id === input.equipmentModelId,
-  );
-  const now = new Date().toISOString();
-
-  const record: MockReferenceDocumentRecord = {
-    id: nextId,
-    title,
-    documentType,
-    equipmentModelId: model?.id ?? null,
-    equipmentModelName: model?.modelName ?? null,
-    equipmentModelText: null,
-    description: input.description?.trim() ? input.description.trim() : null,
-    originalFilename: null,
-    mimeType: null,
-    hasFile: false,
-    contentText: input.contentText.trim(),
-    organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
-    ingestMethod: 'ADMIN_DIRECT',
-    caseHandlingStatus: null,
-    caseDetail: null,
-    creatorNickname: MOCK_CREATOR_NICKNAME,
-    createdAt: now,
-    updatedAt: now,
-    deprecated: false,
-  };
-
-  repository = [record, ...repository];
-  nextId += 1;
-
-  return { ok: true, id: record.id };
+/** 管理操作公共前置：版本核对（expected_version 过期拒绝，对齐后端 CONFLICT） */
+function checkExpectedVersion(id: number, expectedVersion: number): boolean {
+  return currentRevisionNo(id) === expectedVersion;
 }
 
-export async function updateReferenceDocument(
-  id: number,
-  patch: UpdateReferenceDocumentPatch,
-): Promise<UpdateReferenceDocumentResult> {
-  const record = findVisibleById(id);
+/** 管理操作公共收尾：推进生效版本 */
+function bumpRevision(id: number, record: MockReferenceDocumentRecord): number {
+  const next = currentRevisionNo(id) + 1;
+  revisionCounters.set(id, next);
+  record.updatedAt = new Date().toISOString();
+  return next;
+}
 
-  if (!record) {
+/** 管理修订正式资料（任务 07 R058，Mock 对齐后端口径） */
+export async function reviseReferenceDocument(
+  id: number,
+  expectedVersion: number,
+  patch: ReviseReferenceDocumentPatch,
+  reason: string,
+): Promise<ReferenceDocumentManagedMutationResult> {
+  if (reason.trim().length === 0 || reason.trim().length > 500) {
+    return { ok: false, reason: 'invalid-input', message: '操作原因必填且不超过 500 字。' };
+  }
+
+  const hasPatchField =
+    patch.title !== undefined || patch.description !== undefined || patch.contentText !== undefined;
+
+  if (!hasPatchField) {
+    return { ok: false, reason: 'invalid-input', message: '管理修订至少需要一个可编辑字段。' };
+  }
+
+  const record = findRecordById(id);
+
+  if (!record || !isAccessible(record)) {
+    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+  }
+
+  if (!checkExpectedVersion(id, expectedVersion)) {
     return {
       ok: false,
-      reason: 'not-found',
-      message: '参考资料不存在或不可编辑。',
+      reason: 'version-conflict',
+      message: '资料版本已更新，请重新读取当前版本后重试。',
     };
   }
 
-  // 案例保护（对齐后端 usecase）：FAULT_CASE 的类型 / 正文与案例明细强耦合，
-  // 通用编辑不得单独改造，必须走案例更正接口
-  if (isFaultCaseDocumentType(record.documentType)) {
-    if (patch.documentType !== undefined) {
-      return {
-        ok: false,
-        reason: 'invalid-input',
-        message: '案例资料类型不可通过通用编辑修改，请使用案例更正接口。',
-      };
-    }
-
-    if (patch.contentText !== undefined) {
-      return {
-        ok: false,
-        reason: 'invalid-input',
-        message: '案例资料正文不可通过通用编辑修改，请使用案例更正接口。',
-      };
-    }
-  }
-
-  // PATCH 语义：undefined 保持原值；必填字段显式 null 后端直接拒绝（INVALID_PARAMS），
-  // 前端在 adapter 层同口径归并 invalid-input，表单不产生 null，仅测试钉住契约。
-  if (patch.title === null || patch.documentType === null) {
+  // 案例保护（对齐后端）：FAULT_CASE 正文与案例明细强耦合，必须走案例更正接口
+  if (isFaultCaseDocumentType(record.documentType) && patch.contentText !== undefined) {
     return {
       ok: false,
       reason: 'invalid-input',
-      message: '标题与文档类型为必填字段，不允许置空。',
+      message: '案例资料正文不可通过管理修订修改，请使用案例更正接口。',
     };
   }
 
-  // 内容来源双空防御与后端同口径：仅已有存储引用的资料（hasFile）允许清空正文，
-  // 不从 originalFilename 推断——有文件名但无存储引用的行（如 seed/legacy）不放行
+  // 双空防御：正文清空仅允许已有文件（hasFile）的资料
   if (patch.contentText !== undefined && isNormalizedBlank(patch.contentText) && !record.hasFile) {
     return {
       ok: false,
@@ -370,82 +290,152 @@ export async function updateReferenceDocument(
   }
 
   if (patch.title !== undefined) {
-    const title = requireNormalizedText(patch.title, REFERENCE_DOCUMENT_TITLE_MAX_LENGTH);
+    const title = patch.title.trim();
 
-    if (title === null) {
-      return {
-        ok: false,
-        reason: 'invalid-input',
-        message: `标题为必填项，且不能超过 ${REFERENCE_DOCUMENT_TITLE_MAX_LENGTH} 个字符。`,
-      };
+    if (title.length === 0 || title.length > REFERENCE_DOCUMENT_TITLE_MAX_LENGTH) {
+      return { ok: false, reason: 'invalid-input', message: '标题不允许置空或超长。' };
     }
 
     record.title = title;
   }
 
-  if (patch.documentType !== undefined) {
-    const documentType = requireNormalizedText(
-      patch.documentType,
-      REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH,
-    );
-
-    if (documentType === null) {
-      return {
-        ok: false,
-        reason: 'invalid-input',
-        message: `文档类型为必填项，且不能超过 ${REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH} 个字符。`,
-      };
-    }
-
-    // 普通资料不能借此转为 FAULT_CASE（类型保留值只能来自投稿发布，对齐后端 §4.3）
-    if (isFaultCaseDocumentType(documentType) && !isFaultCaseDocumentType(record.documentType)) {
-      return {
-        ok: false,
-        reason: 'invalid-input',
-        message: '不能通过通用编辑把普通资料改为案例资料，请通过投稿审核流程发布。',
-      };
-    }
-
-    record.documentType = documentType;
-  }
-
-  if (patch.equipmentModelId !== undefined && patch.equipmentModelId !== null) {
-    const model = MOCK_REFERENCE_EQUIPMENT_MODELS.find(
-      (option) => option.id === patch.equipmentModelId,
-    );
-
-    if (!model) {
-      return {
-        ok: false,
-        reason: 'model-not-found',
-        message: '所选设备型号不存在，请重新选择。',
-      };
-    }
-
-    record.equipmentModelId = model.id;
-    record.equipmentModelName = model.modelName;
-  } else if (patch.equipmentModelId === null) {
-    record.equipmentModelId = null;
-    record.equipmentModelName = null;
-  }
-
   if (patch.description !== undefined) {
-    record.description = patch.description?.trim() ? patch.description.trim() : null;
+    record.description = isNormalizedBlank(patch.description)
+      ? null
+      : (patch.description as string).trim();
   }
 
   if (patch.contentText !== undefined) {
-    record.contentText = isNormalizedBlank(patch.contentText) ? null : patch.contentText.trim();
+    record.contentText = isNormalizedBlank(patch.contentText)
+      ? null
+      : (patch.contentText as string).trim();
   }
 
-  record.updatedAt = new Date().toISOString();
+  const revisionNo = bumpRevision(id, record);
 
-  return { ok: true, id: record.id };
+  return { ok: true, id, revisionNo };
 }
 
-export async function deleteReferenceDocument(id: number): Promise<DeleteReferenceDocumentResult> {
-  const record = repository.find((item) => item.id === id);
+/** 下架正式资料（任务 07 R059，Mock 对齐后端口径：OFFLINE 后统一不可见） */
+export async function offlineReferenceDocument(
+  id: number,
+  expectedVersion: number,
+  reason: string,
+): Promise<ReferenceDocumentManagedMutationResult> {
+  if (reason.trim().length === 0 || reason.trim().length > 500) {
+    return { ok: false, reason: 'invalid-input', message: '操作原因必填且不超过 500 字。' };
+  }
 
-  // 后端口径：不存在与已软删统一 NOT_FOUND（重复软删不幂等，backend e2e 已钉住）
+  const record = findRecordById(id);
+
+  if (!record || !isAccessible(record)) {
+    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+  }
+
+  if (!checkExpectedVersion(id, expectedVersion)) {
+    return {
+      ok: false,
+      reason: 'version-conflict',
+      message: '资料版本已更新，请重新读取当前版本后重试。',
+    };
+  }
+
+  offlineIds.add(id);
+  const revisionNo = bumpRevision(id, record);
+
+  return { ok: true, id, revisionNo };
+}
+
+/** 管理删除正式资料（任务 07 R060，Mock 对齐后端口径：软删 + 版本推进） */
+export async function adminDeleteReferenceDocument(
+  id: number,
+  expectedVersion: number,
+  reason: string,
+): Promise<ReferenceDocumentManagedMutationResult> {
+  if (reason.trim().length === 0 || reason.trim().length > 500) {
+    return { ok: false, reason: 'invalid-input', message: '操作原因必填且不超过 500 字。' };
+  }
+
+  const record = findRecordById(id);
+
+  if (!record || !isAccessible(record)) {
+    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+  }
+
+  if (!checkExpectedVersion(id, expectedVersion)) {
+    return {
+      ok: false,
+      reason: 'version-conflict',
+      message: '资料版本已更新，请重新读取当前版本后重试。',
+    };
+  }
+
+  record.deprecated = true;
+  const revisionNo = bumpRevision(id, record);
+
+  return { ok: true, id, revisionNo };
+}
+
+/**
+ * 保存资料归属更正（任务 07 R061-02，Mock 对齐后端口径）：
+ * Mock 无组织/账号事实，仅校验输入形态、目标 ID 为正整数与版本；两项均提交视为核实完成。
+ */
+export async function correctReferenceDocumentOwnership(
+  id: number,
+  expectedVersion: number,
+  input: {
+    verificationReason: string;
+    createdByAccountId?: number;
+    ownerOrganizationId?: number;
+  },
+): Promise<ReferenceDocumentManagedMutationResult> {
+  if (
+    input.verificationReason.trim().length === 0 ||
+    input.verificationReason.trim().length > 500
+  ) {
+    return { ok: false, reason: 'invalid-input', message: '操作原因必填且不超过 500 字。' };
+  }
+
+  const hasField =
+    input.createdByAccountId !== undefined || input.ownerOrganizationId !== undefined;
+
+  if (!hasField) {
+    return {
+      ok: false,
+      reason: 'invalid-input',
+      message: '归属更正至少需要更正上传者或上传时公司其中一项。',
+    };
+  }
+
+  const record = findRecordById(id);
+
+  if (!record || !isAccessible(record)) {
+    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+  }
+
+  if (!checkExpectedVersion(id, expectedVersion)) {
+    return {
+      ok: false,
+      reason: 'version-conflict',
+      message: '资料版本已更新，请重新读取当前版本后重试。',
+    };
+  }
+
+  const revisionNo = bumpRevision(id, record);
+
+  return { ok: true, id, revisionNo };
+}
+
+/**
+ * 原作者删除本人正式资料（任务 07 R053，Mock 对齐后端口径）：
+ * expected_version 过期归并 version-conflict；重复删除不幂等（统一 not-found）。
+ */
+export async function deleteReferenceDocument(
+  id: number,
+  expectedVersion: number,
+): Promise<DeleteReferenceDocumentResult> {
+  const record = findRecordById(id);
+
   if (!record || record.deprecated) {
     return {
       ok: false,
@@ -454,8 +444,16 @@ export async function deleteReferenceDocument(id: number): Promise<DeleteReferen
     };
   }
 
+  if (!checkExpectedVersion(id, expectedVersion)) {
+    return {
+      ok: false,
+      reason: 'version-conflict',
+      message: '资料版本已更新，请重新读取当前版本后重试。',
+    };
+  }
+
   record.deprecated = true;
-  record.updatedAt = new Date().toISOString();
+  bumpRevision(id, record);
 
   return { ok: true };
 }
@@ -482,9 +480,9 @@ export async function updateReferenceDocumentCase(
     };
   }
 
-  const record = findVisibleById(id);
+  const record = findRecordById(id);
 
-  if (!record) {
+  if (!record || !isAccessible(record)) {
     return {
       ok: false,
       reason: 'not-found',
@@ -533,7 +531,12 @@ export async function updateReferenceDocumentCase(
     title = patch.title.trim();
   }
 
-  const description = mergePatchedText(patch.description, record.description);
+  const description =
+    patch.description === undefined
+      ? record.description
+      : isNormalizedBlank(patch.description)
+        ? null
+        : (patch.description as string).trim();
 
   // 机型 ID 合并：undefined 保持现值；显式 null 清空；仅在变更时校验型号存在
   let equipmentModelId = record.equipmentModelId;
@@ -561,7 +564,12 @@ export async function updateReferenceDocumentCase(
     }
   }
 
-  const equipmentModelText = mergePatchedText(patch.equipmentModelText, record.equipmentModelText);
+  const equipmentModelText =
+    patch.equipmentModelText === undefined
+      ? record.equipmentModelText
+      : isNormalizedBlank(patch.equipmentModelText)
+        ? null
+        : (patch.equipmentModelText as string).trim();
 
   // 机型互斥（chk_reference_document_model_exclusive 同口径，合并后最终态判定）
   if (equipmentModelId !== null && equipmentModelText !== null) {
@@ -573,18 +581,50 @@ export async function updateReferenceDocumentCase(
   }
 
   // 案例明细合并（undefined 保持现值；null / 空白清空），必填存在性在合并后判定
-  const errorCode = mergePatchedText(patch.errorCode, currentDetail.errorCode);
+  const errorCode =
+    patch.errorCode === undefined
+      ? currentDetail.errorCode
+      : isNormalizedBlank(patch.errorCode)
+        ? null
+        : (patch.errorCode as string).trim();
   const handlingStatus =
     patch.handlingStatus !== undefined ? patch.handlingStatus : currentDetail.handlingStatus;
-  const phenomenon = mergePatchedText(patch.phenomenon, currentDetail.phenomenon);
-  const conditionText = mergePatchedText(patch.conditionText, currentDetail.conditionText);
-  const reproductionSteps = mergePatchedText(
-    patch.reproductionSteps,
-    currentDetail.reproductionSteps,
-  );
-  const diagnosis = mergePatchedText(patch.diagnosis, currentDetail.diagnosis);
-  const actionTaken = mergePatchedText(patch.actionTaken, currentDetail.actionTaken);
-  const resolution = mergePatchedText(patch.resolution, currentDetail.resolution);
+  const phenomenon =
+    patch.phenomenon === undefined
+      ? currentDetail.phenomenon
+      : isNormalizedBlank(patch.phenomenon)
+        ? null
+        : (patch.phenomenon as string).trim();
+  const conditionText =
+    patch.conditionText === undefined
+      ? currentDetail.conditionText
+      : isNormalizedBlank(patch.conditionText)
+        ? null
+        : (patch.conditionText as string).trim();
+  const reproductionSteps =
+    patch.reproductionSteps === undefined
+      ? currentDetail.reproductionSteps
+      : isNormalizedBlank(patch.reproductionSteps)
+        ? null
+        : (patch.reproductionSteps as string).trim();
+  const diagnosis =
+    patch.diagnosis === undefined
+      ? currentDetail.diagnosis
+      : isNormalizedBlank(patch.diagnosis)
+        ? null
+        : (patch.diagnosis as string).trim();
+  const actionTaken =
+    patch.actionTaken === undefined
+      ? currentDetail.actionTaken
+      : isNormalizedBlank(patch.actionTaken)
+        ? null
+        : (patch.actionTaken as string).trim();
+  const resolution =
+    patch.resolution === undefined
+      ? currentDetail.resolution
+      : isNormalizedBlank(patch.resolution)
+        ? null
+        : (patch.resolution as string).trim();
 
   if (phenomenon === null) {
     return {
@@ -629,7 +669,6 @@ export async function updateReferenceDocumentCase(
     actionTaken,
     resolution,
   };
-  const now = new Date().toISOString();
 
   record.title = title;
   record.description = description;
@@ -640,100 +679,9 @@ export async function updateReferenceDocumentCase(
   record.caseHandlingStatus = caseDetail.handlingStatus;
   // 可读正文由明细重新生成（单一真源，禁止与明细脱节直改）
   record.contentText = formatFaultCaseContentText(caseDetail);
-  record.updatedAt = now;
+  record.updatedAt = new Date().toISOString();
 
-  return { ok: true, id: record.id, updatedAt: now };
-}
-
-/** 从文件名提取小写扩展名（无扩展名返回空串） */
-function extractFileExtension(fileName: string): string {
-  const lastDot = fileName.lastIndexOf('.');
-
-  return lastDot === -1 ? '' : fileName.slice(lastDot + 1).toLowerCase();
-}
-
-/**
- * REST multipart 上传创建（Mock 同签名模拟，行为对齐后端 REST 边界）：
- * - 必填校验与纯文本创建一致；contentText 可空（仅文件创建），与文件双空才拒绝；
- * - 扩展名白名单外拒绝（file-type-not-allowed，与后端以扩展名为主判定同口径）；
- * - 成功记录 originalFilename / mimeType 存储元数据（无物理文件，下载时合成字节）。
- */
-export async function createReferenceDocumentWithFile(
-  input: CreateReferenceDocumentWithFileInput,
-): Promise<CreateReferenceDocumentWithFileResult> {
-  const title = requireNormalizedText(input.title, REFERENCE_DOCUMENT_TITLE_MAX_LENGTH);
-  const documentType = requireNormalizedText(
-    input.documentType,
-    REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH,
-  );
-
-  if (title === null || documentType === null) {
-    return {
-      ok: false,
-      reason: 'invalid-input',
-      message:
-        title === null
-          ? `标题为必填项，且不能超过 ${REFERENCE_DOCUMENT_TITLE_MAX_LENGTH} 个字符。`
-          : `文档类型为必填项，且不能超过 ${REFERENCE_DOCUMENT_DOCUMENT_TYPE_MAX_LENGTH} 个字符。`,
-    };
-  }
-
-  const extension = extractFileExtension(input.file.name);
-  const mimeType = REFERENCE_DOCUMENT_UPLOAD_EXTENSION_MIME[extension];
-
-  if (mimeType === undefined) {
-    return {
-      ok: false,
-      reason: 'file-type-not-allowed',
-      message: '不允许上传该类型的文件。',
-    };
-  }
-
-  if (input.equipmentModelId !== null) {
-    const modelExists = MOCK_REFERENCE_EQUIPMENT_MODELS.some(
-      (model) => model.id === input.equipmentModelId,
-    );
-
-    if (!modelExists) {
-      return {
-        ok: false,
-        reason: 'model-not-found',
-        message: '所选设备型号不存在，请重新选择。',
-      };
-    }
-  }
-
-  const model = MOCK_REFERENCE_EQUIPMENT_MODELS.find(
-    (option) => option.id === input.equipmentModelId,
-  );
-  const now = new Date().toISOString();
-
-  const record: MockReferenceDocumentRecord = {
-    id: nextId,
-    title,
-    documentType,
-    equipmentModelId: model?.id ?? null,
-    equipmentModelName: model?.modelName ?? null,
-    equipmentModelText: null,
-    description: input.description?.trim() ? input.description.trim() : null,
-    originalFilename: input.file.name,
-    mimeType,
-    hasFile: true,
-    contentText: input.contentText?.trim() ? input.contentText.trim() : null,
-    organizationName: MOCK_REFERENCE_ORGANIZATION_NAME,
-    ingestMethod: 'ADMIN_DIRECT',
-    caseHandlingStatus: null,
-    caseDetail: null,
-    creatorNickname: MOCK_CREATOR_NICKNAME,
-    createdAt: now,
-    updatedAt: now,
-    deprecated: false,
-  };
-
-  repository = [record, ...repository];
-  nextId += 1;
-
-  return { ok: true, id: record.id };
+  return { ok: true, id: record.id, updatedAt: record.updatedAt };
 }
 
 /**
@@ -745,9 +693,9 @@ export async function createReferenceDocumentWithFile(
 export async function downloadReferenceDocumentFile(
   id: number,
 ): Promise<ReferenceDocumentFileDownloadResult> {
-  const record = findVisibleById(id);
+  const record = findRecordById(id);
 
-  if (!record) {
+  if (!record || !isAccessible(record)) {
     return {
       ok: false,
       reason: 'not-found',

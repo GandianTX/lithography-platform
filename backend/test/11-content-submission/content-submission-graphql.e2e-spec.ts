@@ -2,6 +2,12 @@
 //
 // 投稿域 GraphQL/REST 端点级验收（A-PR0 S7：协议装配后的真实请求验收）
 //
+// 任务 07 收口（2026-11-20）：资料审核决定写路径（reviewContentSubmissionDecision）
+// 已按确认需求移除。原「退回→重提→发布→下载」链路断言改为：
+// - 待审读取、附件下载、待审拒改/拒重复送审继续按真实行为验收；
+// - 决定入口改为「schema 不再接受」负例（内联字面量，不引用已移除的输入类型）；
+// - 发布产物（正式资料）不再由审核产生，改由 12/09 规格的受控夹具覆盖。
+//
 // 边界声明：本规格只通过真实 HTTP 请求验证协议装配后的行为——GraphQL POST /graphql
 // 与 REST multipart（/api/content-submissions/:id/attachment 等），请求链路含真实
 // 守卫（JwtAuthGuard/RolesGuard）、真实错误过滤器（extensions.code/errorCode 契约）、
@@ -21,8 +27,6 @@ import { DataSource, Repository } from 'typeorm';
 
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { ContentSubmissionAttachmentEntity } from '@src/modules/lithography/entities/content-submission-attachment.entity';
-import { ContentSubmissionEntity } from '@src/modules/lithography/entities/content-submission.entity';
-import { ReferenceDocumentEntity } from '@src/modules/lithography/entities/reference-document.entity';
 
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
@@ -35,7 +39,6 @@ import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-t
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
-  requireOrganizationId,
   seedTestMemberships,
   seedTestOrganizations,
 } from '../utils/test-organizations';
@@ -83,9 +86,13 @@ const SUBMIT_MUTATION = `
   }
 `;
 
-const DECISION_MUTATION = `
-  mutation ReviewContentSubmissionDecision($input: ReviewContentSubmissionDecisionInput!) {
-    reviewContentSubmissionDecision(input: $input) {
+// 已下线入口：只用内联字面量断言「schema 不再接受」，不引用已移除的输入类型
+// （引用 ReviewContentSubmissionDecisionInput 会先触发未知类型错误，掩盖字段移除信号）
+const REMOVED_DECISION_QUERY = `
+  mutation {
+    reviewContentSubmissionDecision(
+      input: { submissionId: 1, revisionId: 1, decision: APPROVE, publishAttachment: true }
+    ) {
       submissionId
       status
       documentId
@@ -269,13 +276,10 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
 
-  let submissionRepository: Repository<ContentSubmissionEntity>;
   let attachmentRepository: Repository<ContentSubmissionAttachmentEntity>;
-  let documentRepository: Repository<ReferenceDocumentEntity>;
 
   // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('CONTSUBGM');
-  let primaryOrganizationId = 0;
   const ownership = createOwnedResourceLedger();
 
   let engineerToken: string;
@@ -436,21 +440,6 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
     };
   };
 
-  const decide = async (token: string, input: unknown) => {
-    const response = await postGql({
-      app,
-      query: DECISION_MUTATION,
-      variables: { input },
-      token,
-    }).expect(200);
-    expect(response.body.errors).toBeUndefined();
-    return response.body.data.reviewContentSubmissionDecision as {
-      submissionId: number;
-      status: string;
-      documentId: number | null;
-    };
-  };
-
   beforeAll(async () => {
     initGraphQLSchema();
 
@@ -461,9 +450,7 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
     app = moduleFixture.createNestApplication();
     dataSource = app.get(DataSource);
 
-    submissionRepository = dataSource.getRepository(ContentSubmissionEntity);
     attachmentRepository = dataSource.getRepository(ContentSubmissionAttachmentEntity);
-    documentRepository = dataSource.getRepository(ReferenceDocumentEntity);
 
     await app.init();
 
@@ -516,7 +503,6 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       ],
       ownership,
     });
-    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
     await seedTestMemberships({
       dataSource,
       memberships: [
@@ -606,15 +592,13 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
     let submissionId = 0;
     let attachmentId = 0;
     let v1RevisionId = 0;
-    let v2RevisionId = 0;
-    let publishedDocumentId = 0;
 
     const ATTACHMENT_NAME = 'v-s7-1-report.txt';
     const ATTACHMENT_CONTENT = 'v-s7-1-attachment-bytes';
 
     // F01：整条资料链合并在同一 it 内，内部按 a/b/c/d 命名步骤划分。
     // 定向执行 V-S7-1 即可独立完成全部前置状态准备，不依赖兄弟 it 的数据接力。
-    it('V-S7-1 普通资料全链：草稿 → 附件送审 → 退回重提 → 发布下载（单测独立）', async () => {
+    it('V-S7-1 普通资料链路：草稿 → 附件送审 → 待审读取（单测独立）', async () => {
       // —— V-S7-1a 草稿链路：匿名拒 → 建稿 → 改稿 → 本人列表/详情（真实 GraphQL） ——
       // 匿名建稿：鉴权失败不进入业务层
       const anonymous = await postGql({
@@ -793,9 +777,7 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
         token: engineerToken,
       }).expect(200);
       expectStateConflict(resubmitPending.body.errors[0]);
-      // —— V-S7-1c 审核链路：队列/详情 → 退回 → 改后重提 v2（历史版本仍是事实） ——
-
-      // 审核队列（缺省待审）：本组织管理员可见
+      // —— V-S7-1c 待审读取：队列/详情（只读路径保留） ——
       const queue = await listReviewQueue(adminToken, { title: 'V-S7-1' });
       expect(queue.total).toBe(1);
       expect(queue.items[0]).toMatchObject({
@@ -823,118 +805,38 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       expect(reviewDetail.currentRevision.revisionNo).toBe(1);
       expect(reviewDetail.reviewHistory).toHaveLength(0);
 
-      // 退回：理由必填；不产生正式资料
-      const returned = await decide(adminToken, {
-        submissionId,
-        revisionId: v1RevisionId,
-        decision: 'RETURN',
-        comment: '请补充机型适配说明。',
-      });
-      expect(returned).toMatchObject({ submissionId, status: 'RETURNED', documentId: null });
-
-      // 本人详情：最近审核事实 + 可继续编辑
-      const mineReturned = await fetchMyDetail(engineerToken, submissionId);
-      expect(mineReturned.status).toBe('RETURNED');
-      expect(mineReturned.latestReview).toMatchObject({
-        decision: 'RETURN',
-        comment: '请补充机型适配说明。',
-        publishAttachment: false,
-      });
-
-      // 退回后改稿 → 重提 v2
-      const updatedAfterReturn = await postGql({
+      // —— V-S7-1d 审核决定入口已下线：协议层拒绝，投稿保持待审且不生成正式资料 ——
+      const removedDecision = await postGql({
         app,
-        query: UPDATE_DRAFT_MUTATION,
-        variables: {
-          id: submissionId,
-          input: { patch: { equipmentModelText: 'V-S7-1 机型（v2 修正）' } },
-        },
-        token: engineerToken,
-      }).expect(200);
-      expect(updatedAfterReturn.body.errors).toBeUndefined();
-      expect(updatedAfterReturn.body.data.updateContentSubmissionDraft.status).toBe('RETURNED');
-
-      const resubmitted = await submitSubmission(engineerToken, submissionId);
-      expect(resubmitted).toMatchObject({ submissionId, revisionNo: 2, status: 'PENDING_REVIEW' });
-      v2RevisionId = resubmitted.revisionId;
-
-      // v2 快照含修正值；v1 快照仍为历史事实
-      const revisionV2 = await fetchRevision(engineerToken, submissionId, 2);
-      expect(revisionV2.payloadSnapshot).toMatchObject({
-        equipmentModelText: 'V-S7-1 机型（v2 修正）',
-      });
-      const revisionV1Again = await fetchRevision(engineerToken, submissionId, 1);
-      expect(revisionV1Again.payloadSnapshot).toMatchObject({
-        equipmentModelText: 'V-S7-1 机型（初稿）',
-      });
-
-      // 队列再次可见（当前版本号已推进）
-      const queueV2 = await listReviewQueue(adminToken, {
-        title: 'V-S7-1',
-        status: 'PENDING_REVIEW',
-      });
-      expect(queueV2.total).toBe(1);
-      expect(queueV2.items[0].currentRevisionNo).toBe(2);
-      // —— V-S7-1d 通过发布与下载：APPROVE → 正式资料关联 → REST 下载 → 终态拒再操作 ——
-
-      // 通过并发布获准附件
-      const approved = await decide(adminToken, {
-        submissionId,
-        revisionId: v2RevisionId,
-        decision: 'APPROVE',
-        publishAttachment: true,
-      });
-      expect(approved).toMatchObject({ submissionId, status: 'PUBLISHED' });
-      expect(approved.documentId).toEqual(expect.any(Number));
-      publishedDocumentId = approved.documentId as number;
-
-      // 库事实：正式参考资料由审核发布生成（资料类型沿用投稿值 + 来源回链 + 本组织归属）
-      const documentRow = await documentRepository.findOneByOrFail({ id: publishedDocumentId });
-      expect(documentRow).toMatchObject({
-        documentType: 'MAINTENANCE_GUIDE',
-        ingestMethod: 'REVIEWED_SUBMISSION',
-        sourceSubmissionId: submissionId,
-        sourceRevisionId: v2RevisionId,
-        ownerOrganizationId: primaryOrganizationId,
-        deprecated: false,
-      });
-      const submissionRow = await submissionRepository.findOneByOrFail({ id: submissionId });
-      expect(submissionRow).toMatchObject({ status: 'PUBLISHED', currentRevisionNo: 2 });
-      expect(submissionRow.publishedAt).not.toBeNull();
-
-      // 审核详情：历史审核两条（新在前）
-      const reviewDetailResponsePublished = await postGql({
-        app,
-        query: REVIEW_DETAIL_QUERY,
-        variables: { id: submissionId },
+        query: REMOVED_DECISION_QUERY,
         token: adminToken,
-      }).expect(200);
-      const reviewDetailPublished = reviewDetailResponsePublished.body.data.reviewContentSubmission;
-      expect(reviewDetailPublished.reviewHistory).toHaveLength(2);
-      expect(reviewDetailPublished.reviewHistory[0]).toMatchObject({
-        revisionNo: 2,
-        decision: 'APPROVE',
-        publishAttachment: true,
       });
-      expect(reviewDetailPublished.reviewHistory[1]).toMatchObject({
-        revisionNo: 1,
-        decision: 'RETURN',
-      });
+      expect(removedDecision.body.data).toBeUndefined();
+      expect(
+        (removedDecision.body.errors as Array<{ message: string }>).some((item) =>
+          item.message.includes('Cannot query field "reviewContentSubmissionDecision"'),
+        ),
+      ).toBe(true);
 
-      // 本人详情：发布关联可用
-      const minePublished = await fetchMyDetail(engineerToken, submissionId);
-      expect(minePublished).toMatchObject({
-        status: 'PUBLISHED',
-        currentRevisionNo: 2,
-        publishedDocument: { documentId: publishedDocumentId, available: true },
+      const mineAfterRemoved = await fetchMyDetail(engineerToken, submissionId);
+      expect(mineAfterRemoved).toMatchObject({
+        status: 'PENDING_REVIEW',
+        currentRevisionNo: 1,
+        latestReview: null,
+        publishedDocument: null,
+        publishedAt: null,
       });
-      expect(minePublished.publishedAt).toEqual(expect.any(String));
-      expect(minePublished.latestReview).toMatchObject({
-        decision: 'APPROVE',
-        publishAttachment: true,
-      });
+      expect(mineAfterRemoved.lastSubmittedAt).toEqual(expect.any(String));
 
-      // REST 下载：本人与同组织管理员均成功，字节一致
+      // 投稿未产生任何正式资料（旧发布链路的唯一产物）
+      const publishedRows = await dataSource.query<Array<{ total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM reference_document
+          WHERE source_submission_id = ? OR source_revision_id = ?`,
+        [submissionId, String(v1RevisionId)],
+      );
+      expect(Number(publishedRows[0]?.total)).toBe(0);
+
+      // 待审仍可下载原件：本人与同组织管理员均成功，字节一致
       const downloadedByEngineer = await restDownload(
         engineerToken,
         submissionId,
@@ -947,7 +849,7 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       expect(downloadedByEngineer.text).toBe(ATTACHMENT_CONTENT);
       await restDownload(adminToken, submissionId, attachmentId).expect(200);
 
-      // 终态拒再操作：送审 / 改稿 / 重复通过均状态冲突
+      // 待审拒再操作：重复送审与改稿均状态冲突
       const resubmit = await postGql({
         app,
         query: SUBMIT_MUTATION,
@@ -959,31 +861,15 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       const reEdit = await postGql({
         app,
         query: UPDATE_DRAFT_MUTATION,
-        variables: { id: submissionId, input: { patch: { title: 'V-S7-1 通过后改稿' } } },
+        variables: { id: submissionId, input: { patch: { title: 'V-S7-1 待审改稿' } } },
         token: engineerToken,
       }).expect(200);
       expectStateConflict(reEdit.body.errors[0]);
-
-      const reApprove = await postGql({
-        app,
-        query: DECISION_MUTATION,
-        variables: {
-          input: {
-            submissionId,
-            revisionId: v2RevisionId,
-            decision: 'APPROVE',
-            publishAttachment: true,
-          },
-        },
-        token: adminToken,
-      }).expect(200);
-      expectStateConflict(reApprove.body.errors[0]);
     });
   });
 
   describe('V-S7-2 故障案例链路与输入契约（真实 GraphQL）', () => {
     let faultCaseSubmissionId = 0;
-    let faultCaseDocumentId = 0;
 
     it('V-S7-2a 输入契约：跨类别字段拒 / 空草稿拒 / 送审完整性拒 / RESOLVED 结果必填', async () => {
       // 普通资料传案例字段：非空即拒
@@ -1066,7 +952,7 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       });
     });
 
-    it('V-S7-2b 案例全链：建稿 → 送审 v1 → 无附件通过（publishAttachment=false）→ 队列出队', async () => {
+    it('V-S7-2b 案例链路：建稿 → 送审 v1 → 待审读取（审核入口已下线）', async () => {
       const created = await createDraft(engineerToken, {
         kind: 'FAULT_CASE',
         fields: {
@@ -1094,16 +980,18 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       expect(queue.total).toBe(1);
       expect(queue.items[0]).toMatchObject({ id: faultCaseSubmissionId, status: 'PENDING_REVIEW' });
 
-      // 无附件通过：publishAttachment 只能为 false
-      const approved = await decide(adminToken, {
-        submissionId: faultCaseSubmissionId,
-        revisionId: submitted.revisionId,
-        decision: 'APPROVE',
-        publishAttachment: false,
+      // 审核决定入口已下线：案例同样不能经此发布（不重新开放）
+      const removedDecision = await postGql({
+        app,
+        query: REMOVED_DECISION_QUERY,
+        token: adminToken,
       });
-      expect(approved).toMatchObject({ submissionId: faultCaseSubmissionId, status: 'PUBLISHED' });
-      expect(approved.documentId).toEqual(expect.any(Number));
-      faultCaseDocumentId = approved.documentId as number;
+      expect(removedDecision.body.data).toBeUndefined();
+      expect(
+        (removedDecision.body.errors as Array<{ message: string }>).some((item) =>
+          item.message.includes('Cannot query field "reviewContentSubmissionDecision"'),
+        ),
+      ).toBe(true);
 
       // 冻结版本：11 字段完整快照（显式列举）
       const revision = await fetchRevision(engineerToken, faultCaseSubmissionId, 1);
@@ -1127,40 +1015,42 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
         resolution: null,
       });
 
-      // 发布生成的正式资料（案例正文由合并字段生成）
-      const documentRow = await documentRepository.findOneByOrFail({ id: faultCaseDocumentId });
-      expect(documentRow).toMatchObject({
-        documentType: 'FAULT_CASE',
-        ingestMethod: 'REVIEWED_SUBMISSION',
-        sourceSubmissionId: faultCaseSubmissionId,
-        ownerOrganizationId: primaryOrganizationId,
+      // 仍待审：队列标题筛选继续命中（未被任何审核决定改变）
+      const queueAfter = await listReviewQueue(adminToken, { title: 'V-S7-2 案例' });
+      expect(queueAfter.total).toBe(1);
+      expect(queueAfter.items[0]).toMatchObject({
+        id: faultCaseSubmissionId,
+        status: 'PENDING_REVIEW',
       });
-      expect(documentRow.contentText).toEqual(expect.any(String));
 
-      // 本人列表：类别 + 状态筛选命中
+      // 本人列表：类别 + 状态（待审）筛选命中
       const listResponse = await postGql({
         app,
         query: MY_LIST_QUERY,
         variables: {
           pagination: PAGINATION,
-          filter: { title: 'V-S7-2 案例', submissionKind: 'FAULT_CASE', status: 'PUBLISHED' },
+          filter: { title: 'V-S7-2 案例', submissionKind: 'FAULT_CASE', status: 'PENDING_REVIEW' },
         },
         token: engineerToken,
       }).expect(200);
       const list = listResponse.body.data.myContentSubmissions;
       expect(list.total).toBe(1);
-      expect(list.items[0]).toMatchObject({ id: faultCaseSubmissionId, status: 'PUBLISHED' });
+      expect(list.items[0]).toMatchObject({ id: faultCaseSubmissionId, status: 'PENDING_REVIEW' });
 
-      // 已通过不再待审：队列标题筛选零结果
-      const queueAfter = await listReviewQueue(adminToken, { title: 'V-S7-2 案例' });
-      expect(queueAfter.total).toBe(0);
+      // 未生成正式资料
+      const publishedRows = await dataSource.query<Array<{ total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM reference_document
+          WHERE source_submission_id = ? OR source_revision_id = ?`,
+        [faultCaseSubmissionId, String(submitted.revisionId)],
+      );
+      expect(Number(publishedRows[0]?.total)).toBe(0);
     });
   });
 
   describe('V-S7-3 权限边界与 REST 附件错误契约', () => {
     let boundaryDraftId = 0;
 
-    it('V-S7-3a GraphQL 权限边界：客户拒 / 匿名拒 / 工程师调审核拒 / 他人与跨组织统一 NOT_FOUND', async () => {
+    it('V-S7-3a GraphQL 权限边界：客户拒 / 匿名拒 / 决定入口已移除 / 他人与跨组织统一 NOT_FOUND', async () => {
       // 客户（非投稿角色）：守卫拒绝
       const guestList = await postGql({
         app,
@@ -1187,15 +1077,18 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       }).expect(200);
       expectForbidden(engineerQueue.body.errors[0], ['SUPER_ADMIN'], ['ENGINEER']);
 
+      // 工程师调审核决定：入口已从 schema 移除（连角色校验都不再进入）
       const engineerDecide = await postGql({
         app,
-        query: DECISION_MUTATION,
-        variables: {
-          input: { submissionId: 1, revisionId: 1, decision: 'RETURN', comment: 'x' },
-        },
+        query: REMOVED_DECISION_QUERY,
         token: engineerToken,
-      }).expect(200);
-      expectForbidden(engineerDecide.body.errors[0], ['SUPER_ADMIN'], ['ENGINEER']);
+      });
+      expect(engineerDecide.body.data).toBeUndefined();
+      expect(
+        (engineerDecide.body.errors as Array<{ message: string }>).some((item) =>
+          item.message.includes('Cannot query field "reviewContentSubmissionDecision"'),
+        ),
+      ).toBe(true);
 
       // F01：本用例自行准备「真实存在」的目标投稿及版本，不消费兄弟 it 的发布结果。
       const boundaryTarget = await createDraft(engineerToken, {
@@ -1240,7 +1133,7 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       expectNotFound(peerRevision.body.errors[0]);
     });
 
-    it('V-S7-3b REST 附件边界：客户 403 / 匿名 401 / 非本人 404 / 白名单外 415 不触盘 / 无附件移除幂等 / 终态移除 409', async () => {
+    it('V-S7-3b REST 附件边界：客户 403 / 匿名 401 / 非本人 404 / 白名单外 415 不触盘 / 无附件移除幂等 / 待审移除 409', async () => {
       // 建一个待编辑草稿作为上传目标
       const draft = await createDraft(engineerToken, {
         kind: 'MATERIAL',
@@ -1299,26 +1192,21 @@ describe('投稿域 GraphQL/REST 端点验收 (S7)', () => {
       // 无当前附件时移除：幂等成功
       await restRemove(engineerToken, boundaryDraftId).expect(204);
 
-      // F01：自行创建并发布一个真实投稿作为终态目标，不依赖兄弟 it 的发布结果。
+      // F01：自行创建一个已送审投稿作为「不可再编辑」目标，不依赖兄弟 it 的结果。
+      // 发布链路已下线，故以 PENDING_REVIEW 作为只读终态验证附件移除拒绝。
       const terminalTarget = await createDraft(engineerToken, {
         kind: 'MATERIAL',
         fields: {
-          title: 'V-S7-3 终态附件稿',
+          title: 'V-S7-3 只读态附件稿',
           documentType: 'MAINTENANCE_GUIDE',
-          contentText: '终态附件正文。',
+          contentText: '只读态附件正文。',
         },
       });
-      const terminalSubmitted = await submitSubmission(engineerToken, terminalTarget.id);
-      await decide(adminToken, {
-        submissionId: terminalTarget.id,
-        revisionId: terminalSubmitted.revisionId,
-        decision: 'APPROVE',
-        publishAttachment: false,
-      });
+      await submitSubmission(engineerToken, terminalTarget.id);
 
-      // 已发布投稿移除附件：状态冲突
-      const publishedRemove = await restRemove(engineerToken, terminalTarget.id).expect(409);
-      expect(publishedRemove.body.data).toMatchObject({
+      // 待审投稿移除附件：状态冲突
+      const pendingRemove = await restRemove(engineerToken, terminalTarget.id).expect(409);
+      expect(pendingRemove.body.data).toMatchObject({
         statusCode: 409,
         code: 'CONTENT_SUBMISSION_STATE_NOT_EDITABLE',
       });

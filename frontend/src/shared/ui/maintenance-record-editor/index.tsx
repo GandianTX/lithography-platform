@@ -614,6 +614,7 @@ export function MaintenanceRecordEditor({
                         key: nextLocalKey('step'),
                         id: null,
                         stepCode: nextStepCode(),
+                        phaseCode: '',
                         errorCode: '',
                         partName: '',
                         actionText: '',

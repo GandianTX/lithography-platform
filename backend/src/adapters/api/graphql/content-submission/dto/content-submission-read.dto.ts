@@ -355,22 +355,3 @@ export class ContentSubmissionSubmitResultDTO {
   @Field(() => String, { description: '投稿状态（PENDING_REVIEW）' })
   status!: string;
 }
-
-/**
- * 审核决定结果（退回/通过共用；退回不产生正式资料，documentId 恒为空）。
- * 通过返回新正式资料 ID；重复/并发决定最多一次成功，失败方返回冲突/未找到。
- */
-@ObjectType({ description: '审核决定结果' })
-export class ContentSubmissionReviewDecisionResultDTO {
-  @Field(() => Int, { description: '投稿 ID' })
-  submissionId!: number;
-
-  @Field(() => String, { description: '投稿状态' })
-  status!: string;
-
-  @Field(() => Int, {
-    nullable: true,
-    description: '通过的正式资料 ID；退回为空',
-  })
-  documentId?: number | null;
-}

@@ -87,22 +87,29 @@ describe('auth session policy', () => {
     expect(isAuthSessionRoleAllowedAt('CUSTOMER', '/customer/repair-requests/new')).toBe(true);
   });
 
-  it('gates the reference-document routes by role (0907 任务二)', () => {
+  it('gates the reference-document routes by role（任务 07：只读 + 客户禁入）', () => {
     // 读：ENGINEER/SUPER_ADMIN 放行（根路径表带边界前缀，详情子路径同规则）；
-    // 写页：ENGINEER 拒绝清单优先于根路径表，避免「能进页但提交必被拒」的残缺态；
-    // CUSTOMER 不在允许表，全部子路径（含详情）均拒，与后端读守卫口径一致。
+    // 任务 07 关闭旧「普通新增」入口后，/reference-documents/new 不再由角色表放行，
+    // 路由本身已显式下线为 404；CUSTOMER 全部子路径（含详情）均拒。
     expect(isAuthSessionRoleAllowedAt('SUPER_ADMIN', '/reference-documents')).toBe(true);
-    expect(isAuthSessionRoleAllowedAt('SUPER_ADMIN', '/reference-documents/new')).toBe(true);
     expect(isAuthSessionRoleAllowedAt('SUPER_ADMIN', '/reference-documents/970001')).toBe(true);
     expect(isAuthSessionRoleAllowedAt('ENGINEER', '/reference-documents')).toBe(true);
     expect(isAuthSessionRoleAllowedAt('ENGINEER', '/reference-documents/970001')).toBe(true);
-    expect(isAuthSessionRoleAllowedAt('ENGINEER', '/reference-documents/new')).toBe(false);
-    expect(isAuthSessionRoleAllowedAt('ENGINEER', '/reference-documents/new/')).toBe(false);
     expect(isAuthSessionRoleAllowedAt('CUSTOMER', '/reference-documents')).toBe(false);
     expect(isAuthSessionRoleAllowedAt('CUSTOMER', '/reference-documents/970001')).toBe(false);
     expect(isAuthSessionRoleAllowedAt('CUSTOMER', '/reference-documents/new')).toBe(false);
     // 相似前缀不落入本功能规则（带边界匹配边界依旧成立）。
     expect(isAuthSessionRoleAllowedAt('SUPER_ADMIN', '/reference-documents-library')).toBe(false);
+  });
+
+  it('my-records routes allow engineer and admin entry（任务 07 R052）', () => {
+    expect(isAuthSessionRoleAllowedAt('ENGINEER', '/engineer/records')).toBe(true);
+    expect(isAuthSessionRoleAllowedAt('ENGINEER', '/engineer/records/960001')).toBe(true);
+    // R052：管理员保留有权正式及历史查询（无新建入口），可进入本人记录页；
+    // 「管理员不能看他人草稿」由后端归属谓词实现，不在路由层误伤入口。
+    expect(isAuthSessionRoleAllowedAt('SUPER_ADMIN', '/engineer/records')).toBe(true);
+    expect(isAuthSessionRoleAllowedAt('SUPER_ADMIN', '/engineer/records/960001')).toBe(true);
+    expect(isAuthSessionRoleAllowedAt('CUSTOMER', '/engineer/records')).toBe(false);
   });
 
   it('guards role sub-pages through the shared role path policy', () => {
@@ -239,6 +246,22 @@ describe('auth session policy', () => {
     ]) {
       expect(resolveProtectedRouteRedirect(session, '/admin/document-database')).toBe('/admin');
     }
+
+    // 归属待核实（任务 07 R061-01）：同为全域能力，仅一级管理员（含可信组织）放行；
+    // 二级、无可信组织一级与等级不明一律回管理员主页。
+    expect(resolveProtectedRouteRedirect(globalAdmin, '/admin/reference-ownership')).toBeNull();
+    expect(
+      resolveProtectedRouteRedirect(globalAdmin, '/admin/reference-ownership/970101'),
+    ).toBeNull();
+    for (const session of [
+      level1WithoutOrg,
+      level2Admin,
+      level2AdminWithoutOrg,
+      unknownLevelAdmin,
+    ]) {
+      expect(resolveProtectedRouteRedirect(session, '/admin/reference-ownership')).toBe('/admin');
+    }
+    expect(resolveAuthSessionEntryPath(level2Admin, '/admin/reference-ownership')).toBe('/admin');
 
     // 非全域范围不影响管理员主页与既有继承路由
     expect(resolveProtectedRouteRedirect(level2Admin, '/admin')).toBeNull();

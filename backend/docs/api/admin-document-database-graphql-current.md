@@ -10,46 +10,47 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 
 ## 定位
 
-- **读为主、单角色**：本解析器默认只提供 `Query`；唯一写入口是任务 04 的 `appendRepairRequestRevision`（管理员工单修订），其余标签保持只读。全部操作精确限定 `SUPER_ADMIN`；工单列表、详情与修订按一级全公司、二级本公司核权；聚合统计与 AI 查询要求一级且具有唯一有效的管理员组织成员关系。不写 AI 数据、不改训练/生成链路、不暴露表结构编辑或数据库管理能力。
-- **不复建参考资料链路**：参考资料标签复用既有 `referenceDocuments` / `referenceDocument` 查询（工程师/管理员既有读契约，默认排除软删除），本契约不新增平行查询。
+- **读为主、单角色**：本解析器默认只提供 `Query`；唯一写入口是任务 04 的 `appendRepairRequestRevision`（管理员工单修订），其余标签保持只读。全部操作精确限定 `SUPER_ADMIN`；工单列表、详情与修订按一级全公司、二级本公司核权；`adminAiConversations` / `adminAiMessages` 自任务 05 合入起复用其 core 授权策略（一级全公司、二级本公司，范围由服务端事实显式传入、失败关闭）；聚合统计与 AI 报告查询仍要求一级且具有唯一有效的管理员组织成员关系。不写 AI 数据、不改训练/生成链路、不暴露表结构编辑或数据库管理能力。
+- **不复建参考资料链路**：参考资料标签复用 `referenceDocuments` / `referenceDocument` 查询（任务 07 起只读：未软删 + 已上架 + 归属已确认才可见，一级管理员按全域范围读取；页面不再提供「新增资料」入口，旧新增/编辑/上传写入口已下线），本契约不新增平行查询。
 - **排序由契约固定**：列表不采纳客户端 `sorts` 字段，排序白名单在服务端写死（见「分页与排序契约」），杜绝把客户端字段名直传 QueryBuilder。
 - **真实总数**：列表显式返回 `total`；统计四类总数取自真实 count/查询，口径与各标签默认列表过滤一致，空库返回 0 与正式空态，不硬编码演示数字。2026-11-21 起参考资料统计与资料列表读侧（`resolveReferenceDocumentReadScope`）同一口径：一级管理员 GLOBAL（`organizationId: null`，全公司正式资料，不含软删），统计数字与列表条数一致。
 
 ## 权限矩阵
 
-| 通道 | SUPER_ADMIN | ADMIN | ENGINEER | CUSTOMER | 匿名 |
-| --- | --- | --- | --- | --- | --- |
-| `adminRepairRequests` / `adminRepairRequestSummary` | 一级全公司、二级本公司，只读 | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
-| 聚合统计与 4 个 AI Query | 一级且具有唯一有效的 SUPER_ADMIN 组织成员关系，只读 | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
-| `appendRepairRequestRevision` | 允许（一级全公司 / 二级本公司） | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
+| 通道                                                           | SUPER_ADMIN                                                   | ADMIN       | ENGINEER    | CUSTOMER    | 匿名              |
+| -------------------------------------------------------------- | ------------------------------------------------------------- | ----------- | ----------- | ----------- | ----------------- |
+| `adminRepairRequests` / `adminRepairRequestSummary`            | 一级全公司、二级本公司，只读                                  | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
+| `adminAiConversations` / `adminAiMessages`（任务 05 口径）     | 一级全公司、二级本公司（core 策略显式 scope，失败关闭），只读 | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
+| 聚合统计与 AI 报告 Query（`adminAiReports` / `adminAiReport`） | 一级且具有唯一有效的 SUPER_ADMIN 组织成员关系，只读           | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
+| `appendRepairRequestRevision`                                  | 允许（一级全公司 / 二级本公司）                               | `FORBIDDEN` | `FORBIDDEN` | `FORBIDDEN` | `UNAUTHENTICATED` |
 
 授权双层：守卫层 `@Roles(SUPER_ADMIN)` 粗准入；精确授权（`roles` 含且 `activeRole === SUPER_ADMIN`，失败关闭）由每个 usecase 首行 `assertAdminDocumentDatabasePermission` 断言；停用/降级账号旧 Token 由每请求复核兜底。异常不泄露数据库信息。
 
 ## Operations
 
-| Query | 入参 | 返回 | 说明 |
-| --- | --- | --- | --- |
-| `adminRepairRequests` | `pagination!`, `filter?` | `AdminRepairRequestPaginatedDTO` | 按管理员组织范围分页查询工单（默认不含软删除） |
-| `adminRepairRequestSummary` | `id: Int!` | `AdminRepairRequestSummaryDTO` | 单条工单只读详情（含已提交过程、客户回复、结单事实、修订历史） |
-| `appendRepairRequestRevision` | `input: AppendRepairRequestRevisionInput!` | `AdminRepairRevisionResultDTO` | 管理员工单修订（版本条件 + 字段白名单 + 必填原因） |
-| `adminAiConversations` | `pagination!`, `filter?` | `AdminAiConversationPaginatedDTO` | 全局 AI 会话分页列表（含真实消息数/报告数） |
-| `adminAiMessages` | `conversationId: Int!`, `pagination!` | `AdminAiMessagePaginatedDTO` | 按会话读取消息（稳定顺序，支持 100 轮） |
-| `adminAiReports` | `pagination!`, `filter?` | `AdminAiReportPaginatedDTO` | 全局 AI 报告分页列表（不投影正文） |
-| `adminAiReport` | `id: Int!` | `AdminAiReportDetailDTO` | 报告只读详情（含正文）；无生成/修改/删除 |
-| `adminDocumentDatabaseStats` | — | `AdminDocumentDatabaseStatsDTO` | 四类总数统计 |
+| Query                         | 入参                                       | 返回                              | 说明                                                           |
+| ----------------------------- | ------------------------------------------ | --------------------------------- | -------------------------------------------------------------- |
+| `adminRepairRequests`         | `pagination!`, `filter?`                   | `AdminRepairRequestPaginatedDTO`  | 按管理员组织范围分页查询工单（默认不含软删除）                 |
+| `adminRepairRequestSummary`   | `id: Int!`                                 | `AdminRepairRequestSummaryDTO`    | 单条工单只读详情（含已提交过程、客户回复、结单事实、修订历史） |
+| `appendRepairRequestRevision` | `input: AppendRepairRequestRevisionInput!` | `AdminRepairRevisionResultDTO`    | 管理员工单修订（版本条件 + 字段白名单 + 必填原因）             |
+| `adminAiConversations`        | `pagination!`, `filter?`                   | `AdminAiConversationPaginatedDTO` | 全局 AI 会话分页列表（含真实消息数/报告数）                    |
+| `adminAiMessages`             | `conversationId: Int!`, `pagination!`      | `AdminAiMessagePaginatedDTO`      | 按会话读取消息（稳定顺序，支持 100 轮）                        |
+| `adminAiReports`              | `pagination!`, `filter?`                   | `AdminAiReportPaginatedDTO`       | 全局 AI 报告分页列表（不投影正文）                             |
+| `adminAiReport`               | `id: Int!`                                 | `AdminAiReportDetailDTO`          | 报告只读详情（含正文）；无生成/修改/删除                       |
+| `adminDocumentDatabaseStats`  | —                                          | `AdminDocumentDatabaseStatsDTO`   | 四类总数统计                                                   |
 
 ## 筛选入参（全部可选；空白字符串视为未提供该筛选）
 
 `AdminRepairRequestFilterInput`
 
-| 字段 | 类型 | 匹配语义 |
-| --- | --- | --- |
-| `requestNo` | String(≤64) | 申请编号 **LIKE 模糊**（转义 `%_\`） |
-| `customerKeyword` | String(≤100) | 客户昵称/公司名模糊 → 服务端解析为账号 ID 集合（见规整规则） |
-| `equipmentModelId` | Int(≥1) | 设备型号 **等值** |
-| `errorCode` | String(≤100) | 故障码 **等值精确匹配**（非模糊） |
-| `isAccepted` | Boolean | 接单状态 **等值** |
-| `createdAtFrom` / `createdAtTo` | Date | 创建时间区间（含端点） |
+| 字段                            | 类型         | 匹配语义                                                     |
+| ------------------------------- | ------------ | ------------------------------------------------------------ |
+| `requestNo`                     | String(≤64)  | 申请编号 **LIKE 模糊**（转义 `%_\`）                         |
+| `customerKeyword`               | String(≤100) | 客户昵称/公司名模糊 → 服务端解析为账号 ID 集合（见规整规则） |
+| `equipmentModelId`              | Int(≥1)      | 设备型号 **等值**                                            |
+| `errorCode`                     | String(≤100) | 故障码 **等值精确匹配**（非模糊）                            |
+| `isAccepted`                    | Boolean      | 接单状态 **等值**                                            |
+| `createdAtFrom` / `createdAtTo` | Date         | 创建时间区间（含端点）                                       |
 
 `AdminAiConversationFilterInput`：`requestNo`(模糊)、`engineerKeyword`(模糊→账号集)、`status`(`AiConversationStatus` 枚举等值)、`createdAtFrom/To`。
 `AdminAiReportFilterInput`：`requestNo`(模糊)、`engineerKeyword`(模糊→账号集)、`reportType`(等值≤100)、`createdAtFrom/To`。
@@ -81,7 +82,7 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 - AI 消息项：`id, conversationId, messageSeq, turnNo, role, contentText, createdAt`。
 - AI 报告项：`id, requestId, requestNo, requestMismatch, conversationId, engineerNickname, reportTitle, reportType, createdAt`；详情额外含 `contentMd`。
   - **报告↔申请关联口径（M-04）**：以**会话归属申请为权威**，报告自身 `requestId` 降级为审计字段；两者不一致属异常历史数据，输出 `requestMismatch=true` 审计标记并记结构化警告日志，不静默改写、不改 Entity/Migration/唯一约束。
-- 统计 `AdminDocumentDatabaseStatsDTO`：`repairRequestTotal`（不含软删）、`aiConversationTotal`、`aiReportTotal`、`referenceDocumentTotal`（不含软删，取真实 total）。
+- 统计 `AdminDocumentDatabaseStatsDTO`：`repairRequestTotal`（不含软删）、`aiConversationTotal`、`aiReportTotal`、`referenceDocumentTotal`（与普通资料库同源的全域口径：仅计未软删 + 已上架 + 归属已确认，下架与未知归属不计入，取真实 total）。
 
 ## 枚举归属（M-01）
 
@@ -106,15 +107,15 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 
 入参：
 
-| 字段 | 类型 | 规则 |
-| --- | --- | --- |
-| `requestId` | `Int!` | 安全正整数 |
-| `expectedVersion` | `Int!` | 必须等于工单当前 `current_revision_no` |
-| `reason` | `String!` | 去空白后必填，≤1000 字符，写入修订历史 |
-| `contentMd` | `String` | 可选，订正后的申请正文 |
-| `handlingResult` | `RepairRequestHandlingResult` | 可选，订正后的处理结果 |
-| `closureReason` | `String` | 可选，订正后的结单原因；无处理结果时不能单独修订 |
-| `processEntries` | `[RepairProcessEntryRevisionInput!]` | 可选，只订正已存在过程文本；每项需 `entryId + expectedVersion + operationText + testResult?` |
+| 字段              | 类型                                 | 规则                                                                                         |
+| ----------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `requestId`       | `Int!`                               | 安全正整数                                                                                   |
+| `expectedVersion` | `Int!`                               | 必须等于工单当前 `current_revision_no`                                                       |
+| `reason`          | `String!`                            | 去空白后必填，≤1000 字符，写入修订历史                                                       |
+| `contentMd`       | `String`                             | 可选，订正后的申请正文                                                                       |
+| `handlingResult`  | `RepairRequestHandlingResult`        | 可选，订正后的处理结果                                                                       |
+| `closureReason`   | `String`                             | 可选，订正后的结单原因；无处理结果时不能单独修订                                             |
+| `processEntries`  | `[RepairProcessEntryRevisionInput!]` | 可选，只订正已存在过程文本；每项需 `entryId + expectedVersion + operationText + testResult?` |
 
 字段白名单（唯一允许修订）：`contentMd`、`handlingResult`、`closureReason`、已有 `processEntries` 的文本。至少一个字段发生实际变化，否则 `BAD_USER_INPUT`。
 
@@ -132,14 +133,14 @@ Global error contract: 遵循 `docs/api/graphql-error-contract-current.md`；本
 
 ## 错误契约（本文相关）
 
-| 场景 | code | GraphQL extension code | HTTP |
-| --- | --- | --- | --- |
-| DTO 长度/范围校验（`requestNo`≤64、关键字≤100、`errorCode`/`reportType`≤100、设备 ID≥1、`page`/`pageSize` 范围）/ 非法分页模式 / 关键字超限 / 账号命中超 1000 / 非法 ID / 非法时间范围 | `ADMIN_DOCUMENT_DATABASE_INVALID_PARAMS` | `BAD_USER_INPUT` | 400 |
-| 目标（申请摘要 / 报告详情 / 二级管理员跨公司工单）不存在、已软删或越权（统一，防探测不泄露删除状态） | `ADMIN_DOCUMENT_DATABASE_NOT_FOUND` / `REPAIR_REQUEST_NOT_FOUND` | `NOT_FOUND` | 404 |
-| 工单修订字段为空、原因缺失或超长、无处理结果却单独改结单原因、中断/无法修复未填原因 | `REPAIR_REQUEST_INVALID_PARAMS` | `BAD_USER_INPUT` | 400 |
-| 工单修订版本过期、过程版本过期、未接单却改处理结果 | `REPAIR_REQUEST_PROCESS_VERSION_CONFLICT` / `REPAIR_REQUEST_HANDLING_NOT_AVAILABLE` | `CONFLICT` | 409 |
-| 非 SUPER_ADMIN 直调 / 二级管理员无可信公司 | 既有权限契约 | `FORBIDDEN` | 403 |
-| 未认证 | 既有认证契约 | `UNAUTHENTICATED` | 401 |
+| 场景                                                                                                                                                                                   | code                                                                                | GraphQL extension code | HTTP |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------- | ---- |
+| DTO 长度/范围校验（`requestNo`≤64、关键字≤100、`errorCode`/`reportType`≤100、设备 ID≥1、`page`/`pageSize` 范围）/ 非法分页模式 / 关键字超限 / 账号命中超 1000 / 非法 ID / 非法时间范围 | `ADMIN_DOCUMENT_DATABASE_INVALID_PARAMS`                                            | `BAD_USER_INPUT`       | 400  |
+| 目标（申请摘要 / 报告详情 / 二级管理员跨公司工单）不存在、已软删或越权（统一，防探测不泄露删除状态）                                                                                   | `ADMIN_DOCUMENT_DATABASE_NOT_FOUND` / `REPAIR_REQUEST_NOT_FOUND`                    | `NOT_FOUND`            | 404  |
+| 工单修订字段为空、原因缺失或超长、无处理结果却单独改结单原因、中断/无法修复未填原因                                                                                                    | `REPAIR_REQUEST_INVALID_PARAMS`                                                     | `BAD_USER_INPUT`       | 400  |
+| 工单修订版本过期、过程版本过期、未接单却改处理结果                                                                                                                                     | `REPAIR_REQUEST_PROCESS_VERSION_CONFLICT` / `REPAIR_REQUEST_HANDLING_NOT_AVAILABLE` | `CONFLICT`             | 409  |
+| 非 SUPER_ADMIN 直调 / 二级管理员无可信公司                                                                                                                                             | 既有权限契约                                                                        | `FORBIDDEN`            | 403  |
+| 未认证                                                                                                                                                                                 | 既有认证契约                                                                        | `UNAUTHENTICATED`      | 401  |
 
 > 注：表中 HTTP 列为「语义上的 REST 等价状态」，**不可作为 GraphQL 断言依据**：GraphQL over HTTP 通常对业务/认证/授权失败仍返回 **HTTP 200** 并在 body 携带 `errors`。调用方判定成功/失败必须以 `errors[0].extensions.code`（如 `BAD_USER_INPUT` / `NOT_FOUND` / `FORBIDDEN` / `UNAUTHENTICATED`）为准，不能仅凭 HTTP 状态码。
 

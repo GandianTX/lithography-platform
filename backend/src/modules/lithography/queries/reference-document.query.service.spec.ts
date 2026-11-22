@@ -34,6 +34,11 @@ const makeCaseDetailRepo = () => ({
   findOne: jest.fn().mockResolvedValue(null),
 });
 
+const makeRevisionRepo = () => ({
+  find: jest.fn().mockResolvedValue([]),
+  findOne: jest.fn().mockResolvedValue(null),
+});
+
 const documentEntity = (overrides: Partial<ReferenceDocumentEntity> = {}) => ({
   id: 970001,
   title: '错误码手册',
@@ -51,6 +56,12 @@ const documentEntity = (overrides: Partial<ReferenceDocumentEntity> = {}) => ({
   ingestMethod: 'ADMIN_DIRECT',
   sourceSubmissionId: null,
   sourceRevisionId: null,
+  sourceKind: 'MATERIAL',
+  sourceReportId: null,
+  sourceReportVersionId: null,
+  publicationStatus: 'ONLINE',
+  ownershipStatus: 'CONFIRMED',
+  currentRevisionNo: 0,
   updatedByAccountId: null,
   extensionJson: null,
   schemaVersion: 1,
@@ -108,23 +119,34 @@ describe('ReferenceDocumentQueryService', () => {
     const modelRepo = makeModelRepo();
     const organizationRepo = makeOrganizationRepo();
     const caseDetailRepo = makeCaseDetailRepo();
+    const revisionRepo = makeRevisionRepo();
     const service = new ReferenceDocumentQueryService(
       documentRepo as never,
       modelRepo as never,
       organizationRepo as never,
       caseDetailRepo as never,
+      revisionRepo as never,
     );
-    return { documentRepo, modelRepo, organizationRepo, caseDetailRepo, service };
+    return { documentRepo, modelRepo, organizationRepo, caseDetailRepo, revisionRepo, service };
   };
 
   it('列表默认仅本组织未软删（deprecated = 0 且 owner_organization_id 命中），固定排序与 OFFSET 分页透传', async () => {
     const { documentRepo, service } = makeService();
 
-    await service.listDocuments({ filter: {}, pagination, organizationId: ORG_ID });
+    await service.listDocuments({
+      filter: {},
+      pagination,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+    });
 
     expect(documentRepo.find).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { deprecated: false, ownerOrganizationId: ORG_ID },
+        where: {
+          deprecated: false,
+          publicationStatus: 'ONLINE',
+          ownershipStatus: 'CONFIRMED',
+          ownerOrganizationId: ORG_ID,
+        },
         order: { createdAt: 'DESC', id: 'DESC' },
         skip: 0,
         take: 10,
@@ -132,7 +154,12 @@ describe('ReferenceDocumentQueryService', () => {
     );
     // count 与 find 必须使用同一 where（组织范围 + 未软删一致），防总数绕过组织范围
     expect(documentRepo.count).toHaveBeenCalledWith({
-      where: { deprecated: false, ownerOrganizationId: ORG_ID },
+      where: {
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+        ownerOrganizationId: ORG_ID,
+      },
     });
   });
 
@@ -142,7 +169,7 @@ describe('ReferenceDocumentQueryService', () => {
     await service.listDocuments({
       filter: {},
       pagination: { page: 2, pageSize: 5, withTotal: false },
-      organizationId: ORG_ID,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
     });
 
     expect(documentRepo.count).not.toHaveBeenCalled();
@@ -155,7 +182,7 @@ describe('ReferenceDocumentQueryService', () => {
     await service.listDocuments({
       filter: {},
       pagination: { page: 0, pageSize: -5, withTotal: true },
-      organizationId: ORG_ID,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
     });
 
     expect(documentRepo.find).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, take: 1 }));
@@ -167,7 +194,7 @@ describe('ReferenceDocumentQueryService', () => {
     await service.listDocuments({
       filter: { title: '手册', documentType: 'ERROR_CODE_MANUAL', equipmentModelId: 930001 },
       pagination,
-      organizationId: ORG_ID,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
     });
 
     const call = documentRepo.find.mock.calls[0][0];
@@ -186,7 +213,7 @@ describe('ReferenceDocumentQueryService', () => {
     await service.listDocuments({
       filter: { caseHandlingStatus: 'RESOLVED' },
       pagination,
-      organizationId: ORG_ID,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
     });
 
     const call = documentRepo.find.mock.calls[0][0];
@@ -206,7 +233,7 @@ describe('ReferenceDocumentQueryService', () => {
     await service.listDocuments({
       filter: { title: '100%_a\\b' },
       pagination,
-      organizationId: ORG_ID,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
     });
 
     const call = documentRepo.find.mock.calls[0][0];
@@ -226,7 +253,11 @@ describe('ReferenceDocumentQueryService', () => {
     organizationRepo.find.mockResolvedValue([organizationEntity()]);
     caseDetailRepo.find.mockResolvedValue([caseDetailEntity()]);
 
-    const page = await service.listDocuments({ filter: {}, pagination, organizationId: ORG_ID });
+    const page = await service.listDocuments({
+      filter: {},
+      pagination,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+    });
 
     // 批量型号查询用 In(...) FindOperator，内部值集合持有去重后的型号 ID
     const inValue = findOperatorField(
@@ -270,7 +301,11 @@ describe('ReferenceDocumentQueryService', () => {
   it('空列表不触发型号/组织/案例明细批量查询', async () => {
     const { modelRepo, organizationRepo, caseDetailRepo, service } = makeService();
 
-    await service.listDocuments({ filter: {}, pagination, organizationId: ORG_ID });
+    await service.listDocuments({
+      filter: {},
+      pagination,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+    });
 
     expect(modelRepo.find).not.toHaveBeenCalled();
     expect(organizationRepo.find).not.toHaveBeenCalled();
@@ -286,11 +321,20 @@ describe('ReferenceDocumentQueryService', () => {
     organizationRepo.findOne.mockResolvedValue(organizationEntity());
     caseDetailRepo.findOne.mockResolvedValue(caseDetailEntity());
 
-    const detail = await service.findDetail({ documentId: 970001, organizationId: ORG_ID });
+    const detail = await service.findDetail({
+      documentId: 970001,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+    });
 
     // 详情读取以「主键 + 组织范围」为条件，跨组织行不可能被读出
     expect(documentRepo.findOne).toHaveBeenCalledWith({
-      where: { id: 970001, ownerOrganizationId: ORG_ID },
+      where: {
+        id: 970001,
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+        ownerOrganizationId: ORG_ID,
+      },
     });
     expect(detail).toMatchObject({
       id: 970001,
@@ -322,7 +366,10 @@ describe('ReferenceDocumentQueryService', () => {
     const { documentRepo, service } = makeService();
     documentRepo.findOne.mockResolvedValue(documentEntity());
 
-    const detail = await service.findDetail({ documentId: 970001, organizationId: ORG_ID });
+    const detail = await service.findDetail({
+      documentId: 970001,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+    });
 
     expect(detail.caseDetail).toBeNull();
   });
@@ -333,7 +380,10 @@ describe('ReferenceDocumentQueryService', () => {
       documentEntity({ originalFilename: 'legacy.pdf', mimeType: 'application/pdf' }),
     );
 
-    const detail = await service.findDetail({ documentId: 970001, organizationId: ORG_ID });
+    const detail = await service.findDetail({
+      documentId: 970001,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+    });
 
     expect(detail).toMatchObject({ originalFilename: 'legacy.pdf', hasFile: false });
   });
@@ -342,7 +392,10 @@ describe('ReferenceDocumentQueryService', () => {
     const { documentRepo, service } = makeService();
 
     await expect(
-      service.findDetail({ documentId: 999999, organizationId: ORG_ID }),
+      service.findDetail({
+        documentId: 999999,
+        scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+      }),
     ).rejects.toMatchObject({
       code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND,
       details: { id: 999999 },
@@ -350,7 +403,10 @@ describe('ReferenceDocumentQueryService', () => {
 
     documentRepo.findOne.mockResolvedValue(documentEntity({ deprecated: true }));
     await expect(
-      service.findDetail({ documentId: 970004, organizationId: ORG_ID }),
+      service.findDetail({
+        documentId: 970004,
+        scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+      }),
     ).rejects.toMatchObject({
       code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND,
     });
@@ -358,10 +414,19 @@ describe('ReferenceDocumentQueryService', () => {
     // 跨组织：where 恒含 ownerOrganizationId，别的组织行读出必为 null → 同码 NOT_FOUND
     documentRepo.findOne.mockResolvedValue(null);
     await expect(
-      service.findDetail({ documentId: 970001, organizationId: 910099 }),
+      service.findDetail({
+        documentId: 970001,
+        scope: { kind: 'ORGANIZATION', organizationId: 910099 },
+      }),
     ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
     expect(documentRepo.findOne).toHaveBeenLastCalledWith({
-      where: { id: 970001, ownerOrganizationId: 910099 },
+      where: {
+        id: 970001,
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+        ownerOrganizationId: 910099,
+      },
     });
   });
 
@@ -382,7 +447,11 @@ describe('ReferenceDocumentQueryService', () => {
       },
     } as unknown as EntityManager);
 
-    await service.findDetail({ documentId: 970001, organizationId: ORG_ID, transactionContext });
+    await service.findDetail({
+      documentId: 970001,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+      transactionContext,
+    });
 
     expect(transactionDocumentRepo.findOne).toHaveBeenCalledTimes(1);
     expect(transactionOrganizationRepo.findOne).toHaveBeenCalledTimes(1);
@@ -391,5 +460,176 @@ describe('ReferenceDocumentQueryService', () => {
     expect(documentRepo.findOne).not.toHaveBeenCalled();
     expect(organizationRepo.findOne).not.toHaveBeenCalled();
     expect(caseDetailRepo.findOne).not.toHaveBeenCalled();
+  });
+
+  it('一级管理员 GLOBAL 范围：不附加组织谓词，仍强制未软删 + 已上架 + 归属已确认', async () => {
+    const { documentRepo, service } = makeService();
+
+    await service.listDocuments({ filter: {}, pagination, scope: { kind: 'GLOBAL' } });
+
+    expect(documentRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          deprecated: false,
+          publicationStatus: 'ONLINE',
+          ownershipStatus: 'CONFIRMED',
+        },
+      }),
+    );
+    expect(documentRepo.count).toHaveBeenCalledWith({
+      where: {
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+      },
+    });
+  });
+
+  it('详情读路径强制上架 + 归属确认：下架或未知归属行不会命中（旧地址统一 NOT_FOUND）', async () => {
+    const { documentRepo, service } = makeService();
+    documentRepo.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.findDetail({ documentId: 970001, scope: { kind: 'GLOBAL' } }),
+    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
+    expect(documentRepo.findOne).toHaveBeenCalledWith({
+      where: {
+        id: 970001,
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ownershipStatus: 'CONFIRMED',
+      },
+    });
+  });
+
+  it('写路径（includeUnpublished）仅放宽上架/归属谓词，组织范围与未软删仍强制', async () => {
+    const { documentRepo, service } = makeService();
+    documentRepo.findOne.mockResolvedValue(documentEntity());
+
+    await service.findDetail({
+      documentId: 970001,
+      scope: { kind: 'ORGANIZATION', organizationId: ORG_ID },
+      includeUnpublished: true,
+    });
+
+    expect(documentRepo.findOne).toHaveBeenCalledWith({
+      where: { id: 970001, deprecated: false, ownerOrganizationId: ORG_ID },
+    });
+  });
+
+  it('历史版本读取：按修订号升序返回摘要与该版本生效正文，不外发完整 before/after 快照 JSON', async () => {
+    const { revisionRepo, service } = makeService();
+    revisionRepo.find.mockResolvedValue([
+      {
+        documentId: 970001,
+        revisionNo: 1,
+        reason: '补充安全注意事项',
+        actorAccountId: 900001,
+        createdAt: new Date('2026-01-03T00:00:00.000Z'),
+        beforeSnapshot: '{"contentText":"旧"}',
+        afterSnapshot: '{"contentText":"新","title":"新标题"}',
+      },
+      {
+        documentId: 970001,
+        revisionNo: 2,
+        reason: '更正归属公司',
+        actorAccountId: 900001,
+        createdAt: new Date('2026-01-04T00:00:00.000Z'),
+        beforeSnapshot: '{"contentText":"新","title":"新标题"}',
+        afterSnapshot: '{"title":"仅改标题无内容键"}',
+      },
+    ]);
+
+    const result = await service.listRevisions(970001);
+
+    expect(revisionRepo.find).toHaveBeenCalledWith({
+      where: { documentId: 970001 },
+      order: { revisionNo: 'ASC' },
+    });
+    expect(result).toEqual([
+      {
+        revisionNo: 1,
+        reason: '补充安全注意事项',
+        actorAccountId: 900001,
+        createdAt: new Date('2026-01-03T00:00:00.000Z'),
+        contentText: '新',
+      },
+      {
+        revisionNo: 2,
+        reason: '更正归属公司',
+        actorAccountId: 900001,
+        createdAt: new Date('2026-01-04T00:00:00.000Z'),
+        contentText: null,
+      },
+    ]);
+    // 读取仅取内容键，before/after 快照其余字段（标题、归属、状态等）不外发
+    expect(result[0]).not.toHaveProperty('title');
+  });
+
+  it('生效修订读取：只解析 afterSnapshot 白名单键，损坏 JSON 回落空对象', async () => {
+    const { revisionRepo, service } = makeService();
+    revisionRepo.findOne.mockResolvedValueOnce({
+      revisionNo: 2,
+      afterSnapshot: '{"contentText":"补充说明","internalSecret":"x"}',
+    });
+    await expect(service.findRevision(970001, 2)).resolves.toEqual({
+      revisionNo: 2,
+      afterSnapshot: { contentText: '补充说明', internalSecret: 'x' },
+    });
+
+    revisionRepo.findOne.mockResolvedValueOnce({ revisionNo: 3, afterSnapshot: 'not-json' });
+    await expect(service.findRevision(970001, 3)).resolves.toEqual({
+      revisionNo: 3,
+      afterSnapshot: {},
+    });
+  });
+
+  it('已发布正式资料标识：批量一次读取，仅返回未软删且已上架的资料', async () => {
+    const { documentRepo, service } = makeService();
+    documentRepo.find.mockResolvedValue([
+      { id: 970001, sourceReportId: 960001 },
+      { id: 970002, sourceReportId: 960002 },
+    ]);
+
+    const result = await service.listPublishedDocumentIdsByReportIds([960001, 960002, 960001]);
+
+    expect(documentRepo.find).toHaveBeenCalledWith({
+      where: {
+        sourceReportId: expect.anything(),
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+      },
+      select: { id: true, sourceReportId: true },
+    });
+    expect(result).toEqual(
+      new Map([
+        [960001, 970001],
+        [960002, 970002],
+      ]),
+    );
+  });
+
+  it('已发布标识：空输入不产生查询', async () => {
+    const { documentRepo, service } = makeService();
+    await expect(service.listPublishedDocumentIdsByReportIds([])).resolves.toEqual(new Map());
+    expect(documentRepo.find).not.toHaveBeenCalled();
+  });
+
+  it('已发布标识：传组织谓词时与普通资料库同一公司口径收敛', async () => {
+    const { documentRepo, service } = makeService();
+    documentRepo.find.mockResolvedValue([{ id: 970001, sourceReportId: 960001 }]);
+
+    const result = await service.listPublishedDocumentIdsByReportIds([960001, 960002], 880001);
+
+    expect(documentRepo.find).toHaveBeenCalledWith({
+      where: {
+        sourceReportId: expect.anything(),
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ownerOrganizationId: 880001,
+      },
+      select: { id: true, sourceReportId: true },
+    });
+    expect(result).toEqual(new Map([[960001, 970001]]));
   });
 });

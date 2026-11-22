@@ -138,9 +138,12 @@ const AUTH_SESSION_ROLE_ALLOWED_ROOT_PATHS: Record<AuthSessionRole, readonly str
 // 故在此显式拒绝创建页，与 ENGINEER 一致跳回各自个人主页；后端约束保持不变。
 const AUTH_SESSION_ROLE_DENIED_PATHS: Record<AuthSessionRole, readonly string[]> = {
   CUSTOMER: [],
-  // /reference-documents/new：新增资料仅 SUPER_ADMIN（后端写接口精确角色），
-  // 与维修申请创建页的裁定同理：拒绝清单避免「能进页面但提交必被拒」的残缺中间态
-  ENGINEER: ['/reference-documents/new'],
+  // /engineer/records（我的资料记录，任务 07 R052）：管理员保留本人记录查询，
+  // 无工程师报告新建入口（页面 V6.5 §9.2；2026-11-21 口径确认管理员与工程师同入口）。
+  // 「不显示他人创建的记录」由后端归属谓词实现（作者本人 + 本组织资源授权），
+  // 不在路由层收紧。
+  // 继续填写（任务 06 报告续填）入口仍为工程师专属：任务 06 未合入前保持未接通状态。
+  ENGINEER: [],
   SUPER_ADMIN: ['/customer/repair-requests/new'],
 };
 
@@ -226,6 +229,18 @@ export function isAuthSessionAdminPathAllowedAt(
   // 故两级管理员均可进入；文档数据库整体页仍保持一级专属。
   if (isAuthSessionRolePathAllowed(pathname, '/admin/ai-conversations')) {
     return scope !== 'NONE';
+  }
+
+  // 归属待核实（任务 07 R061-01）：与文档数据库同为全域能力，仅一级管理员可进；
+  // 二级 / 工程师 / 客户直达按既有角色路径表 + 本条 GLOBAL 收口拒绝。
+  if (isAuthSessionRolePathAllowed(pathname, '/admin/reference-ownership')) {
+    return scope === 'GLOBAL';
+  }
+
+  // 独立管理修订页（任务 07）：一级管理员专用入口，仅 GLOBAL 放行；
+  // 结构化修订写权限由服务端守卫 + 等级事实复核最终裁决。
+  if (isAuthSessionRolePathAllowed(pathname, '/admin/reference-revise')) {
+    return scope === 'GLOBAL';
   }
 
   if (

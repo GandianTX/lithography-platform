@@ -3,7 +3,6 @@
 import { executeGraphQL, readGraphQLErrorDetail } from '@/shared/graphql';
 
 import type {
-  ContentSubmissionDecisionResult,
   ContentSubmissionDraftSaveResult,
   ContentSubmissionEditablePatch,
   ContentSubmissionKind,
@@ -12,7 +11,6 @@ import type {
   ContentSubmissionListPagination,
   ContentSubmissionMineDetail,
   ContentSubmissionMineDetailResult,
-  ContentSubmissionReviewDecisionInput,
   ContentSubmissionReviewDetail,
   ContentSubmissionReviewDetailResult,
   ContentSubmissionRevision,
@@ -240,16 +238,6 @@ const SUBMIT_MUTATION = `
   }
 `;
 
-const DECISION_MUTATION = `
-  mutation ReviewContentSubmissionDecision($input: ReviewContentSubmissionDecisionInput!) {
-    reviewContentSubmissionDecision(input: $input) {
-      submissionId
-      status
-      documentId
-    }
-  }
-`;
-
 // ---- 错误映射（唯一真源：backend/src/core/common/errors/domain-error.ts 的 CONTENT_SUBMISSION_ERROR /
 //      PERMISSION_ERROR 码组与 backend/src/infrastructure/graphql/filters/graphql-exception.filter.ts 的大类映射） ----
 
@@ -298,18 +286,6 @@ const SUBMIT_FAILURE_REASON_BY_CATEGORY_CODE: Record<string, ContentSubmissionWr
     INTERNAL_SERVER_ERROR: 'operation-failed',
   };
 
-/** 审核决定拒绝原因主映射（版本不符 / 退回意见缺失等均落既有大类） */
-const DECISION_FAILURE_REASON_BY_CATEGORY_CODE: Record<
-  string,
-  ContentSubmissionWriteFailureReason
-> = {
-  NOT_FOUND: 'not-found',
-  BAD_USER_INPUT: 'invalid-input',
-  CONFLICT: 'state-conflict',
-  FORBIDDEN: 'forbidden',
-  INTERNAL_SERVER_ERROR: 'operation-failed',
-};
-
 /** 写操作兜底文案（四类写操作共用；后端消息优先，为空时回落） */
 const WRITE_FALLBACK_MESSAGE_BY_REASON: Record<ContentSubmissionWriteFailureReason, string> = {
   'not-found': '投稿不存在或不可操作。',
@@ -356,14 +332,6 @@ type SubmitData = {
     revisionId: number;
     revisionNo: number;
     status: ContentSubmissionStatus;
-  };
-};
-
-type DecisionData = {
-  reviewContentSubmissionDecision: {
-    submissionId: number;
-    status: ContentSubmissionStatus;
-    documentId?: number | null;
   };
 };
 
@@ -631,30 +599,5 @@ export async function submitContentSubmission(
     };
   } catch (error) {
     return { ok: false, ...toWriteFailure(error, SUBMIT_FAILURE_REASON_BY_CATEGORY_CODE) };
-  }
-}
-
-/**
- * 审核决定（仅本组织管理员）：RETURN 退回 / APPROVE 通过；
- * 仅接受当前待审 revisionId；通过时按 publishAttachment 决定是否发布附件。
- */
-export async function reviewContentSubmissionDecision(
-  input: ContentSubmissionReviewDecisionInput,
-): Promise<ContentSubmissionDecisionResult> {
-  try {
-    const data = await executeGraphQL<
-      DecisionData,
-      { input: ContentSubmissionReviewDecisionInput }
-    >(DECISION_MUTATION, { input });
-    const result = data.reviewContentSubmissionDecision;
-
-    return {
-      ok: true,
-      submissionId: result.submissionId,
-      status: result.status,
-      documentId: result.documentId ?? null,
-    };
-  } catch (error) {
-    return { ok: false, ...toWriteFailure(error, DECISION_FAILURE_REASON_BY_CATEGORY_CODE) };
   }
 }

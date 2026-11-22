@@ -1389,6 +1389,13 @@ body {
     margin-inline-start: 0;
     width: 100%;
   }
+
+  /* 文档数据库与参考资料库汇总条窄屏降列：四列/三列在 ≤639px 收为两列，
+     单元排版（.kb-summary-*）不变，仅折行避免数值与口径小字互相挤压 */
+  .kb-summary,
+  .reference-library-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* 汇总数值后的口径小字（业务口径提示，不破坏 67.5px 行高）：

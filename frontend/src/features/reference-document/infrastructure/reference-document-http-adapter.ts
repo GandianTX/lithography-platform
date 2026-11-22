@@ -8,14 +8,10 @@ import {
   toRestErrorEnvelope,
 } from '@/shared/http';
 
-import type {
-  CreateReferenceDocumentWithFileInput,
-  CreateReferenceDocumentWithFileResult,
-  ReferenceDocumentFileDownloadResult,
-} from './reference-document.types';
+import type { ReferenceDocumentFileDownloadResult } from './reference-document.types';
 
 /**
- * AI 参考资料库文件上传 / 下载 REST 数据访问层（0909 第二轮阻塞项 1）。
+ * AI 参考资料库文件下载 REST 数据访问层。
  *
  * 与 GraphQL adapter 的差异（有意为之，非违反「adapter 不读写 Session」约定）：
  * - 带鉴权 REST 请求与统一响应信封解析复用 shared/http（Token 读取沿用
@@ -25,144 +21,40 @@ import type {
  *   重试仍 401 时宣布会话失效 onAuthFailure，由 app 装配统一清理与跳转）；
  * - REST 边界无 GraphQL extensions 错误契约，响应为统一信封
  *   { success, data: { statusCode, code, message } }，本层把所有失败
- *   （transport / auth / 业务拒绝）统一归并为显式失败结果，表单与详情层
+ *   （transport / auth / 业务拒绝）统一归并为显式失败结果，详情层
  *   只消费 reason / message，不感知 HTTP 细节。
  *
  * 契约依据：backend/src/adapters/api/rest/reference-document/reference-document-rest.controller.ts
  * （错误码唯一真源 backend/src/core/common/errors/domain-error.ts）。
+ *
+ * 任务 07 确认需求收口：旧 REST multipart 上传创建（POST /api/reference-documents/upload）
+ * 已随服务端生产写入口一并关闭——本期普通资料新增取消，前端不再持有对应调用；
+ * 合法的历史原件授权下载能力保留于 downloadReferenceDocumentFile。
  */
 
-const UPLOAD_ENDPOINT = '/api/reference-documents/upload';
+const DOWNLOAD_ENDPOINT_BASE = '/api/reference-documents';
 
-function downloadEndpoint(id: number): string {
-  return `/api/reference-documents/${id}/download`;
-}
-
-/** 上传失败原因映射（唯一真源：后端 REFERENCE_DOCUMENT_ERROR 码组） */
-const UPLOAD_REASON_BY_CODE: Record<
-  string,
-  Exclude<
-    Extract<CreateReferenceDocumentWithFileResult, { ok: false }>['reason'],
-    'creation-failed'
-  >
-> = {
-  REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND: 'model-not-found',
-  REFERENCE_DOCUMENT_UPLOAD_FILE_TOO_LARGE: 'file-too-large',
-  REFERENCE_DOCUMENT_UPLOAD_FILE_TYPE_NOT_ALLOWED: 'file-type-not-allowed',
-  REFERENCE_DOCUMENT_INVALID_PARAMS: 'invalid-input',
-  REFERENCE_DOCUMENT_CONTENT_SOURCE_EMPTY: 'invalid-input',
-  REFERENCE_DOCUMENT_UPLOAD_FILE_MISSING: 'invalid-input',
-};
-
-const UPLOAD_FALLBACK_MESSAGE_BY_REASON: Record<
-  Exclude<
-    Extract<CreateReferenceDocumentWithFileResult, { ok: false }>['reason'],
-    'creation-failed'
-  >,
-  string
-> = {
-  'model-not-found': '所选设备型号不存在，请重新选择。',
-  'invalid-input': '输入不符合要求，请检查后重新提交。',
-  'file-too-large': '上传文件超过大小限制。',
-  'file-type-not-allowed': '不允许上传该类型的文件。',
-};
-
-/** 下载失败原因映射 */
 const DOWNLOAD_REASON_BY_CODE: Record<
   string,
-  Exclude<Extract<ReferenceDocumentFileDownloadResult, { ok: false }>['reason'], 'download-failed'>
+  Extract<ReferenceDocumentFileDownloadResult, { ok: false }>['reason']
 > = {
-  REFERENCE_DOCUMENT_NOT_FOUND: 'not-found',
+  NOT_FOUND: 'not-found',
   REFERENCE_DOCUMENT_FILE_NOT_AVAILABLE: 'file-not-available',
+  FORBIDDEN: 'forbidden',
 };
 
 const DOWNLOAD_FALLBACK_MESSAGE_BY_REASON: Record<
-  Exclude<Extract<ReferenceDocumentFileDownloadResult, { ok: false }>['reason'], 'download-failed'>,
+  Extract<ReferenceDocumentFileDownloadResult, { ok: false }>['reason'],
   string
 > = {
   'not-found': '参考资料不存在或不可查看。',
   'file-not-available': '该资料没有可下载的文件。',
+  forbidden: '您没有下载该资料原件的权限。',
+  'download-failed': '下载失败，请稍后重试。',
 };
 
-/**
- * REST multipart 上传创建（仅 SUPER_ADMIN；contentText 可空，仅文件创建合法）。
- * 所有失败（transport / auth / 业务拒绝）统一归并为显式失败结果（见文件头注释）。
- */
-export async function createReferenceDocumentWithFile(
-  input: CreateReferenceDocumentWithFileInput,
-): Promise<CreateReferenceDocumentWithFileResult> {
-  const formData = new FormData();
-  formData.append('file', input.file, input.file.name);
-  formData.append('title', input.title);
-  formData.append('documentType', input.documentType);
-
-  if (input.equipmentModelId !== null) {
-    formData.append('equipmentModelId', String(input.equipmentModelId));
-  }
-  if (input.description !== null) {
-    formData.append('description', input.description);
-  }
-  if (input.contentText !== null) {
-    formData.append('contentText', input.contentText);
-  }
-
-  let response: Response;
-
-  try {
-    response = await fetchRestWithAuthRetry(UPLOAD_ENDPOINT, {
-      method: 'POST',
-      body: formData,
-    });
-  } catch {
-    return {
-      ok: false,
-      reason: 'creation-failed',
-      message: '文件上传失败，请检查网络后重试。',
-    };
-  }
-
-  if (response.ok) {
-    let payload: unknown;
-
-    try {
-      payload = await response.json();
-    } catch {
-      return { ok: false, reason: 'creation-failed', message: '文件上传失败，请稍后重试。' };
-    }
-
-    // 成功信封 { success: true, data: { id } }；错误信封 data 内无 id，自动落失败兜底
-    const id = (payload as { data?: { id?: unknown } } | null)?.data?.id;
-
-    if (typeof id === 'number') {
-      return { ok: true, id };
-    }
-
-    return { ok: false, reason: 'creation-failed', message: '文件上传失败，请稍后重试。' };
-  }
-
-  // 错误响应：信封 { success, data: { statusCode, code, message } }；解析失败给通用兜底
-  let envelope: RestErrorEnvelope = {};
-
-  try {
-    envelope = toRestErrorEnvelope(await response.json());
-  } catch {
-    // 非 JSON 错误体（网关/代理错误页），走下方兜底
-  }
-
-  const code = readRestErrorField(envelope, 'code');
-  const message = readRestErrorField(envelope, 'message');
-
-  if (code && UPLOAD_REASON_BY_CODE[code]) {
-    const reason = UPLOAD_REASON_BY_CODE[code];
-
-    return { ok: false, reason, message: message ?? UPLOAD_FALLBACK_MESSAGE_BY_REASON[reason] };
-  }
-
-  return {
-    ok: false,
-    reason: 'creation-failed',
-    message: message ?? '文件上传失败，请稍后重试。',
-  };
+function downloadEndpoint(id: number): string {
+  return `${DOWNLOAD_ENDPOINT_BASE}/${id}/download`;
 }
 
 /**

@@ -2,6 +2,7 @@
 
 /// <reference types="jest" />
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import {
   AnalysisOutputGenerationStatus,
   MaintenanceAiUsage,
@@ -20,7 +21,9 @@ import {
 } from '@core/common/errors/domain-error';
 import type { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
 import { UnavailableAnalysisOutputReader } from '@src/infrastructure/ai/unavailable-analysis-output-reader';
+import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
 import type { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
+import type { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
 import { ApproveMaintenanceReportUsecase } from './approve-maintenance-report.usecase';
@@ -32,6 +35,14 @@ import { RecordRepairRequestHandlingResultUsecase } from './record-repair-reques
 import { normalizeMaintenanceReportDraft } from './maintenance-report.input.normalize';
 import type { AnalysisOutputReader } from './ports/analysis-output-reader.contract';
 import { InMemoryAnalysisOutputReader } from './testing/in-memory-analysis-output-reader';
+
+const makeReferenceDocumentQueryService = () => ({
+  listPublishedDocumentIdsByReportIds: jest.fn().mockResolvedValue(new Map()),
+});
+
+const makeEquipmentModelQueryService = () => ({
+  findModelById: jest.fn().mockResolvedValue(null),
+});
 
 const transactionContext = { transaction: 'mock' };
 const REPORT_ID = 960001;
@@ -1089,6 +1100,9 @@ describe('维修报告详情：先授权，再读取完整内容', () => {
     reportId: REPORT_ID,
     maintenanceEngineerAccountId: 900001,
     ownerOrganizationId: ORGANIZATION_ID,
+    // 默认草稿态：未完成按作者本人收敛（正式记录按组织放行的分支已在
+    // get-my-maintenance-report.usecase.spec.ts 定向覆盖）
+    status: 'DRAFT',
     ...overrides,
   });
 
@@ -1113,9 +1127,23 @@ describe('维修报告详情：先授权，再读取完整内容', () => {
   ) => ({
     queryService,
     organizationContextService,
+    // 账号等级事实替身：缺省 null（未映射等级按本公司口径）；一级场景由具体用例覆写
+    accountQueryService: { findAdminLevelByAccountId: jest.fn().mockResolvedValue(null) },
+    // 同步状态替身（任务 07 预留）：默认适配 connected=false，不触发任何 I/O
+    syncStatusReader: {
+      fetchStatuses: jest.fn().mockResolvedValue({ connected: false, entries: [] }),
+    },
     myUsecase: new GetMyMaintenanceReportUsecase(
       queryService as unknown as MaintenanceReportQueryService,
+      makeReferenceDocumentQueryService() as unknown as ReferenceDocumentQueryService,
+      makeEquipmentModelQueryService() as unknown as EquipmentModelQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      {
+        findAdminLevelByAccountId: jest.fn().mockResolvedValue(null),
+      } as unknown as AccountQueryService,
+      {
+        fetchStatuses: jest.fn().mockResolvedValue({ connected: false, entries: [] }),
+      },
     ),
     reviewUsecase: new GetMaintenanceReportReviewDetailUsecase(
       queryService as unknown as MaintenanceReportQueryService,
@@ -1179,7 +1207,11 @@ describe('维修报告详情：先授权，再读取完整内容', () => {
 
       await expect(
         myUsecase.execute({ session: engineerSession, reportId: REPORT_ID }),
-      ).resolves.toBe(detail);
+      ).resolves.toMatchObject({
+        ...detail,
+        equipmentModelName: null,
+        publishedDocumentId: null,
+      });
       expect(queryService.readReportDetail).toHaveBeenCalledWith(REPORT_ID, undefined, {
         ownerOrganizationId: ORGANIZATION_ID,
         maintenanceEngineerAccountId: 900001,

@@ -14,6 +14,129 @@ export type ReferenceDocumentCaseHandlingStatus = 'UNRESOLVED' | 'IN_PROGRESS' |
 /** 入库方式来源（受控字符串）：ADMIN_DIRECT=管理员直建；REVIEWED_SUBMISSION=投稿审核发布 */
 export type ReferenceDocumentIngestMethod = 'ADMIN_DIRECT' | 'REVIEWED_SUBMISSION';
 
+/** 来源类型：独立历史报告 / 工单总结 / 普通资料 */
+export type ReferenceDocumentSourceKind = 'INDEPENDENT_REPORT' | 'WORK_ORDER_SUMMARY' | 'MATERIAL';
+
+/** 生效正文来源：原始正文 / 原始冻结报告 / 管理修订后正文 */
+export type ReferenceDocumentContentSource = 'ORIGINAL' | 'FROZEN_REPORT' | 'CURRENT_REVISION';
+
+/** 冻结报告初始报警（只读） */
+export type ReferenceDocumentFrozenAlarm = {
+  alarmIndex: number;
+  alarmCode: string;
+  alarmDescription: string | null;
+  phaseCode: string;
+  resetResult: string;
+};
+
+/** 冻结报告排查步骤（只读） */
+export type ReferenceDocumentFrozenStep = {
+  stepNo: number;
+  stepCode: string;
+  phaseCode: string;
+  partName: string | null;
+  actionText: string;
+  resultText: string | null;
+  newAlarmCode: string | null;
+  isValidNewBranch: boolean;
+};
+
+/** 冻结报告故障面板（任务 07 加法扩展：任务 06 快照扩展键；任务 04 旧快照为空数组） */
+export type ReferenceDocumentFrozenFault = {
+  branchKind: string;
+  stepCode: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 冻结报告内容（报告来源且无管理修订时的生效内容） */
+export type ReferenceDocumentFrozenReport = {
+  versionId: number;
+  versionNo: number;
+  schemaVersion: number;
+  submittedAt: string;
+  sourceType: string;
+  repairRequestId: number | null;
+  title: string;
+  customerFactoryName: string;
+  equipmentModelId: number | null;
+  equipmentModelText: string | null;
+  maintenanceDate: string;
+  maintenanceEngineerName: string;
+  alarms: ReferenceDocumentFrozenAlarm[];
+  steps: ReferenceDocumentFrozenStep[];
+  /** 任务 07 加法扩展：任务 06 快照扩展键展示视图；任务 04 旧快照为空值 */
+  faults: ReferenceDocumentFrozenFault[];
+  handlingResult: string | null;
+  closureReason: string | null;
+  resetResult: string | null;
+  actualCause: string | null;
+  repairActions: string | null;
+  verificationResult: string | null;
+  supplementaryNote: string | null;
+  ai: {
+    usage: string;
+    sourceType: string | null;
+    sourceId: string | null;
+    sourceVersion: string | null;
+    score: number | null;
+    correctness: string | null;
+    helpfulness: number | null;
+    note: string | null;
+  };
+};
+
+/** 资料结构化故障面板（管理修订读/写契约；分支枚举与任务 06 冻结快照一致） */
+export type ReferenceDocumentStructuredFault = {
+  branchKind: 'INITIAL' | 'RESET_NEW_FAULT' | 'STEP_NEW_FAULT';
+  stepCode: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 资料结构化排查步骤（管理修订读/写契约；stepCode 为稳定关联键） */
+export type ReferenceDocumentStructuredStep = {
+  stepCode: string;
+  stepNo: number;
+  phaseCode: string | null;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: 'RESOLVED' | 'UNRESOLVED' | 'NEW_FAULT';
+};
+
+/** 资料生效结构化内容（任务 07 管理修订；机型文字由服务端从字典取名称写入快照） */
+export type ReferenceDocumentStructuredContent = {
+  schemaVersion: number;
+  maintenanceDate: string;
+  maintenanceEngineerName: string;
+  customerFactoryName: string;
+  equipmentModelText: string | null;
+  resetResult: 'NORMAL' | 'SAME_FAULT' | 'NEW_FAULT';
+  faults: ReferenceDocumentStructuredFault[];
+  steps: ReferenceDocumentStructuredStep[];
+  handlingResult: string | null;
+  closureReason: string | null;
+  actualCause: string | null;
+  repairActions: string | null;
+  verificationResult: string | null;
+  supplementaryNote: string | null;
+};
+
 /** 列表项（列表查询输出；无文本内容，无账号 ID / 存储引用） */
 export type ReferenceDocumentListItem = {
   id: number;
@@ -32,6 +155,10 @@ export type ReferenceDocumentListItem = {
   organizationName: string;
   /** 入库方式来源：管理员直建 / 投稿审核发布 */
   ingestMethod: ReferenceDocumentIngestMethod;
+  /** 来源类型：独立报告 / 工单总结 / 普通资料 */
+  sourceKind: ReferenceDocumentSourceKind;
+  /** 生效管理修订号；0 表示原始冻结内容或原始正文 */
+  effectiveRevisionNo: number;
   /** 案例处理状态；普通资料为空 */
   caseHandlingStatus: ReferenceDocumentCaseHandlingStatus | null;
   /** 创建人当前昵称（缺失时后端回落「未知用户」） */
@@ -63,10 +190,42 @@ export type ReferenceDocumentDetail = Omit<ReferenceDocumentListItem, 'caseHandl
   /** 是否带可下载文件（权威判定 = 后端存储引用非空；下载按钮与编辑放行均以本字段为准，
    *  不从 originalFilename 推断——有文件名但无存储引用的行不承诺可下载） */
   hasFile: boolean;
+  /** 生效正文：管理修订后正文 > 原始冻结报告拼装文本 > 资料自身正文 */
   contentText: string | null;
+  /** 生效正文来源 */
+  contentSource: ReferenceDocumentContentSource;
+  /** 来源报告 ID（报告来源资料返回） */
+  sourceReportId: number | null;
+  /** 原始冻结报告版本 ID（永久保留，供历史版本说明） */
+  sourceReportVersionId: number | null;
+  /** 冻结报告内容；仅报告来源且无管理修订时返回 */
+  frozenReport: ReferenceDocumentFrozenReport | null;
+  /** 生效管理修订的结构化内容（任务 07；生效修订快照携带 structuredReport 键时返回） */
+  structuredContent: ReferenceDocumentStructuredContent | null;
   /** 案例明细；普通资料为空（前端需兼容可空 caseDetail） */
   caseDetail: ReferenceDocumentCaseDetail | null;
+  /** 当前会话账号是否为本条资料的原作者（任务 07 R053：作者删除入口唯一依据；不返回账号 ID） */
+  viewerIsOriginalAuthor: boolean;
   updatedAt: string;
+};
+
+/** 历史版本条目（管理修订摘要 + 该版本生效正文，供授权追溯旧版本内容） */
+export type ReferenceDocumentRevision = {
+  revisionNo: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: string;
+  /** 该修订版本的生效正文（快照缺内容键时为 null） */
+  contentText: string | null;
+};
+
+/** 历史版本读取结果 */
+export type ReferenceDocumentRevisions = {
+  documentId: number;
+  currentRevisionNo: number;
+  sourceKind: ReferenceDocumentSourceKind;
+  sourceReportVersionId: number | null;
+  revisions: ReferenceDocumentRevision[];
 };
 
 /** OFFSET 分页请求参数（真实 adapter 内部补齐 mode/withTotal，调用方不感知） */
@@ -159,29 +318,69 @@ export const REFERENCE_DOCUMENT_UPLOAD_EXTENSION_MIME: Record<string, string> = 
   csv: 'text/csv',
 };
 
-/** 创建输入（contentText 本周必填：仅文本来源；双来源约束由后端兜底） */
-export type CreateReferenceDocumentInput = {
-  title: string;
-  documentType: string;
-  equipmentModelId: number | null;
-  description: string | null;
-  contentText: string;
+/**
+ * 管理修订补丁（任务 07 R058，仅一级管理员）：编辑当前生效内容，原因必填。
+ * PATCH 语义：undefined 保持原值；FAULT_CASE 正文须走案例更正接口（后端拒绝）；
+ * 结构化正式资料的正文改写被拒绝，须走结构化管理修订入口；
+ * expected_version 过期返回 version-conflict（CONFLICT），须重新读取当前版本后重试。
+ */
+export type ReviseReferenceDocumentPatch = {
+  title?: string;
+  description?: string | null;
+  contentText?: string | null;
 };
 
 /**
- * 编辑补丁（PATCH 语义）：undefined 保持原值。
- * 形状与后端 UpdateReferenceDocumentInput 对齐：title/documentType 在 GraphQL 层可传
- * null，但语义上属必填字段，显式 null 会被后端直接拒绝（前端 adapter 同口径）。
- * - equipmentModelId / description 允许显式 null 清空；
- * - contentText 空白视为清空：后端编辑防御已放宽，仅当资料已有文件时放行
- *   （双空拦截由表单预检承担，adapter 不做二次判定）。
+ * 管理修订提交的排查步骤（与后端 input ReferenceDocumentStructuredStepInput
+ * 字段一一对应；stepNo 不提交——服务端按数组序生成，保持提交顺序语义）。
  */
-export type UpdateReferenceDocumentPatch = {
-  title?: string | null;
-  documentType?: string | null;
-  equipmentModelId?: number | null;
-  description?: string | null;
-  contentText?: string;
+export type ReferenceDocumentStructuredStepSubmit = {
+  stepCode: string;
+  phaseCode: string | null;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: 'RESOLVED' | 'UNRESOLVED' | 'NEW_FAULT';
+};
+
+/** 结构化管理修订内容（任务 07；全量值语义；厂家文本可修订，机型按 ID 单独提交） */
+export type ReferenceDocumentStructuredRevisionPayload = {
+  schemaVersion: number;
+  maintenanceDate: string;
+  maintenanceEngineerName: string;
+  /** 客户厂家文本（本轮确认需求：一级管理员可修订） */
+  customerFactoryName: string;
+  resetResult: string;
+  faults: ReferenceDocumentStructuredFault[];
+  steps: ReferenceDocumentStructuredStepSubmit[];
+  handlingResult: string | null;
+  closureReason: string | null;
+  actualCause: string | null;
+  repairActions: string | null;
+  verificationResult: string | null;
+  supplementaryNote: string | null;
+};
+
+/** 管理修订编辑初值（独立管理修订页专用，仅一级管理员） */
+export type ReferenceDocumentEditableContent = {
+  documentId: number;
+  title: string;
+  description: string | null;
+  documentType: string;
+  /** 编辑提交的乐观令牌初始值（current_revision_no） */
+  expectedVersion: number;
+  sourceKind: ReferenceDocumentSourceKind;
+  mode: 'STRUCTURED' | 'FLAT';
+  /** 结构化模式初值；扁平模式为 null */
+  structured: ReferenceDocumentStructuredContent | null;
+  /** 扁平模式初值（当前生效正文） */
+  contentText: string | null;
+  /** 资料自身机型关联初值（改选 Select 当前值；null 表示通用资料） */
+  equipmentModelId: number | null;
+  /** 机型名称（按关联 ID 实时取字典名，用于当前值展示） */
+  equipmentModelName: string | null;
+  /** 案例资料正文保护提示（FAULT_CASE 正文须走案例更正接口） */
+  faultCaseProtected: boolean;
 };
 
 /**
@@ -194,46 +393,17 @@ export type ReferenceDocumentDetailResult =
   | { ok: false; reason: 'not-found'; message: string };
 
 /**
- * 创建结果（domain failure 显式结果）：
- * - model-not-found：所选设备型号不存在
- * - invalid-input：字段非法（必填空白 / 超长 / 型号 ID 非法）
- * - creation-failed：其余业务失败
+ * 管理操作结果（R058/R059/R060/R061-02，domain failure 显式结果）：
+ * - version-conflict：expected_version 过期（资料已被并发管理操作推进）；
+ * - invalid-input：原因缺失 / 补丁为空 / 目标账号或公司不存在等输入拒绝；
+ * - not-found：资料不存在 / 已下架 / 跨范围（统一防探测口径）；
+ * - management-failed：修订历史或推进写入失败（事务回滚）。
  */
-export type CreateReferenceDocumentResult =
-  | { ok: true; id: number }
+export type ReferenceDocumentManagedMutationResult =
+  | { ok: true; id: number; revisionNo: number }
   | {
       ok: false;
-      reason: 'model-not-found' | 'invalid-input' | 'creation-failed';
-      message: string;
-    };
-
-/**
- * REST multipart 创建输入（文件来源路径；0909 第二轮阻塞项 1）。
- * contentText 可空（仅文件创建），但与文件双空时后端拒绝（CONTENT_SOURCE_EMPTY）。
- */
-export type CreateReferenceDocumentWithFileInput = {
-  title: string;
-  documentType: string;
-  equipmentModelId: number | null;
-  description: string | null;
-  contentText: string | null;
-  file: File;
-};
-
-/**
- * REST multipart 创建结果（domain failure 显式结果）。
- * 文件边界专属失败：file-too-large（超大小上限）、file-type-not-allowed（白名单外类型）。
- */
-export type CreateReferenceDocumentWithFileResult =
-  | { ok: true; id: number }
-  | {
-      ok: false;
-      reason:
-        | 'model-not-found'
-        | 'invalid-input'
-        | 'file-too-large'
-        | 'file-type-not-allowed'
-        | 'creation-failed';
+      reason: 'version-conflict' | 'not-found' | 'invalid-input' | 'management-failed';
       message: string;
     };
 
@@ -241,24 +411,14 @@ export type CreateReferenceDocumentWithFileResult =
  * REST 下载结果（domain failure 显式结果）。
  * - not-found：资料不存在 / 已软删（统一防探测口径）
  * - file-not-available：纯文本资料无文件，或存储对象缺失（受控错误）
+ * - forbidden：授权拒绝（REST 守卫 403，如客户身份直调下载）
  * - download-failed：其余失败（transport / auth / 服务器错误）
  */
 export type ReferenceDocumentFileDownloadResult =
   | { ok: true; blob: Blob; filename: string }
   | {
       ok: false;
-      reason: 'not-found' | 'file-not-available' | 'download-failed';
-      message: string;
-    };
-
-/**
- * 编辑结果（domain failure 显式结果；已软删 / 不存在统一 not-found）
- */
-export type UpdateReferenceDocumentResult =
-  | { ok: true; id: number }
-  | {
-      ok: false;
-      reason: 'not-found' | 'model-not-found' | 'invalid-input' | 'update-failed';
+      reason: 'not-found' | 'file-not-available' | 'forbidden' | 'download-failed';
       message: string;
     };
 
@@ -305,4 +465,8 @@ export type UpdateReferenceDocumentCaseResult =
  */
 export type DeleteReferenceDocumentResult =
   | { ok: true }
-  | { ok: false; reason: 'not-found' | 'delete-failed'; message: string };
+  | {
+      ok: false;
+      reason: 'not-found' | 'version-conflict' | 'delete-failed';
+      message: string;
+    };

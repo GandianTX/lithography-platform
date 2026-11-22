@@ -52,6 +52,10 @@ import {
 
 export const MAINTENANCE_RECORDS_PATH = '/engineer/maintenance-records';
 export const WORK_ORDER_SUMMARIES_PATH = '/engineer/work-order-summaries';
+// 任务 07「我的资料记录」列表（2026-11-22 入口整合）：历史记录的新建/编辑页头部
+// 入口统一指向该列表；草稿续填仍回到本编辑器 /engineer/maintenance-records/:reportId
+// （单一报告、单一编辑器，不复制报告）。
+export const MY_RECORDS_LIST_PATH = '/engineer/records';
 
 export type MaintenanceReportEditorMode = 'HISTORICAL_CASE' | 'WORK_ORDER_SUMMARY';
 
@@ -604,13 +608,15 @@ function EditorBody({
             <Button
               onClick={() =>
                 void navigate(
-                  mode === 'HISTORICAL_CASE' ? MAINTENANCE_RECORDS_PATH : WORK_ORDER_SUMMARIES_PATH,
+                  mode === 'HISTORICAL_CASE' ? MY_RECORDS_LIST_PATH : WORK_ORDER_SUMMARIES_PATH,
                 )
               }
             >
-              {/* 2026-11-21 需求调整：新建页（未保存草稿）的入口按钮即「我的历史记录」，
-                  首存 replace 到详情后恢复「返回列表」；列表页保留「新建历史记录」按钮，
-                  不形成循环跳转 */}
+              {/* 2026-11-22 入口整合：新建页（未保存草稿）与既有报告编辑页的头部入口
+                  均进入任务 07「我的资料记录」列表（/engineer/records）——由该列表承接
+                  「我的历史记录」，草稿续填从列表回到本编辑器；首存 replace 到详情后
+                  标签为「返回列表」，同样回到任务 07 列表；工单总结仍回任务 06 待填写
+                  列表，不受本次整合影响 */}
               {mode === 'HISTORICAL_CASE' && loaded.reportId === null
                 ? t('maintenanceReport.myHistory')
                 : t('maintenanceReport.backToList')}

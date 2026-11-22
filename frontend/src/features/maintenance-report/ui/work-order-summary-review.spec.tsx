@@ -258,6 +258,10 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
     renderPage({ report: editableReport() });
 
     const submitButton = await screen.findByRole('button', { name: '正式提交' });
+    // 等待提交按钮可用（AI 查询 loading 态同样禁用，直接点击会被吞掉）
+    await waitFor(() => {
+      expect((submitButton as HTMLButtonElement).disabled).toBe(false);
+    });
     fireEvent.click(submitButton);
     await waitFor(() => {
       expect(submitReportMock).toHaveBeenCalledTimes(1);
@@ -340,6 +344,10 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
     renderPage();
 
     const submitButton = await screen.findByRole('button', { name: '正式提交' });
+    // 等待提交按钮可用（AI 查询 loading 态同样禁用，直接点击会被吞掉）
+    await waitFor(() => {
+      expect((submitButton as HTMLButtonElement).disabled).toBe(false);
+    });
     fireEvent.click(submitButton);
     // 非 GraphQL 入口错误走通用失败文案；普通失败不提供重新核对入口
     expect(await screen.findByText('正式提交失败，请使用原提交重试或检查网络。')).toBeTruthy();
@@ -379,6 +387,11 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
         true,
       );
     });
+    // 锁定 AI 区已就绪（提交按钮在查询 loading 态同样禁用，仅凭 disabled 无法区分），
+    // 与「存在适用会话未选择」用例同模式，避免全量并发下在 loading 态提前取 Select
+    expect(
+      await screen.findByText('该工单存在可评价的 AI 辅助排查会话，请选择会话并填写评价后再提交。'),
+    ).toBeTruthy();
     const select = screen.getByLabelText('选择评价的 AI 会话');
     fireEvent.mouseDown(select);
     // 会话编号用拼接构造：裸写「井号+编号」会被 lint-colors 误判为十六进制颜色
@@ -431,7 +444,12 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
     );
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '正式提交' }));
+    const submitButton = await screen.findByRole('button', { name: '正式提交' });
+    // 等待提交按钮可用（AI 查询 loading 态同样禁用，直接点击会被吞掉）
+    await waitFor(() => {
+      expect((submitButton as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(submitButton);
     expect(await screen.findByText('展示版本已变化，请刷新后重新核对')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '刷新并重新核对' }));
@@ -475,6 +493,10 @@ describe('WorkOrderSummaryReviewPage（只读核对，一次正式提交）', ()
     renderPage();
 
     const submitButton = await screen.findByRole('button', { name: '正式提交' });
+    // 等待提交按钮可用（AI 查询 loading 态同样禁用，直接点击会被吞掉）
+    await waitFor(() => {
+      expect((submitButton as HTMLButtonElement).disabled).toBe(false);
+    });
     fireEvent.click(submitButton);
     await waitFor(() => {
       expect(submitReportMock).toHaveBeenCalledTimes(1);

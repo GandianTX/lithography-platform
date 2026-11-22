@@ -819,6 +819,81 @@ const conflict = (helper: string, category: string, ref: string, reason: string)
   throw new Error(`[${helper}] 阶段=归属预检 拒绝删除：${category} ${ref} ${reason}`);
 };
 
+export type ReferenceDocumentClaimDecision = {
+  readonly allowed: boolean;
+  readonly reason: string | null;
+};
+
+/**
+ * 单条 reference_document 行的认领裁决（任务 07 收口，纯函数供离线单测）。
+ *
+ * 归属证明分层：
+ * - 归属组织明确：必须落在本轮组织范围内；
+ * - 创建人 / 更新人 / 来源投稿 / 来源版本：命中即必须属于本轮事实，不做「顺便认领」；
+ * - 归属未知（owner_organization_id 为 NULL，V13 归属待核实行）：
+ *   仅凭「创建人账号相同」不足以证明确属本轮夹具（同一工程师账号完全可能
+ *   在更早轮次或手工遗留归属待核实资料，存在身份碰撞）。此时必须有
+ *   正向归属证据——本轮 owned 台账已按真实 ID 登记最小事实，或来源投稿 /
+ *   来源版本落在本轮——否则失败关闭，保留现场。
+ */
+export const decideReferenceDocumentCleanupClaim = (params: {
+  readonly ownerOrganizationId: number | null;
+  readonly createdByAccountId: number;
+  readonly updatedByAccountId: number | null;
+  readonly sourceSubmissionId: number | null;
+  readonly sourceRevisionId: number | null;
+  readonly roundOrganizationIds: readonly number[];
+  readonly roundAccountIds: readonly number[];
+  readonly roundSubmissionIds: readonly number[];
+  readonly roundRevisionIds: readonly number[];
+  /** 该资料 ID 已按最小事实登记进本轮 owned 台账（登记事实由 verifyOwnedExpectations 另行核对） */
+  readonly registeredInOwnedLedger: boolean;
+}): ReferenceDocumentClaimDecision => {
+  if (
+    params.ownerOrganizationId !== null &&
+    !params.roundOrganizationIds.includes(params.ownerOrganizationId)
+  ) {
+    return {
+      allowed: false,
+      reason: '归属组织不在本轮范围（含来源投稿跨组织），拒绝删除',
+    };
+  }
+  if (!params.roundAccountIds.includes(params.createdByAccountId)) {
+    return { allowed: false, reason: '创建人账号不在本轮范围，拒绝删除' };
+  }
+  if (
+    params.updatedByAccountId !== null &&
+    !params.roundAccountIds.includes(params.updatedByAccountId)
+  ) {
+    return { allowed: false, reason: '更新人账号不在本轮范围，拒绝删除' };
+  }
+  if (
+    params.sourceSubmissionId !== null &&
+    !params.roundSubmissionIds.includes(params.sourceSubmissionId)
+  ) {
+    return { allowed: false, reason: '来源投稿不在本轮范围，拒绝删除' };
+  }
+  if (
+    params.sourceRevisionId !== null &&
+    !params.roundRevisionIds.includes(params.sourceRevisionId)
+  ) {
+    return { allowed: false, reason: '来源版本不在本轮范围，拒绝删除' };
+  }
+  if (
+    params.ownerOrganizationId === null &&
+    !params.registeredInOwnedLedger &&
+    params.sourceSubmissionId === null &&
+    params.sourceRevisionId === null
+  ) {
+    return {
+      allowed: false,
+      reason:
+        '归属未知且无登记归属证据、无本轮来源投稿/版本事实，仅凭创建人相同不足以认领，拒绝删除',
+    };
+  }
+  return { allowed: true, reason: null };
+};
+
 interface CleanupPlan {
   organizationIds: number[];
   accountIds: number[];
@@ -986,7 +1061,7 @@ interface DetailRow {
 
 interface DocumentRow {
   id: number;
-  owner_organization_id: number;
+  owner_organization_id: number | null;
   created_by_account_id: number;
   updated_by_account_id: number | null;
   source_submission_id: number | null;
@@ -3461,34 +3536,23 @@ const collectOwnedGraph = async (
 
     for (const row of documents as DocumentRow[]) {
       const documentId = asNumber(row.id);
-      if (!orgIds.includes(asNumber(row.owner_organization_id))) {
-        conflict(
-          helper,
-          'document',
-          String(documentId),
-          '归属组织不在本轮范围（含来源投稿跨组织），拒绝删除',
-        );
-      }
-      if (!accountIds.includes(asNumber(row.created_by_account_id))) {
-        conflict(helper, 'document', String(documentId), '创建人账号不在本轮范围，拒绝删除');
-      }
-      if (
-        row.updated_by_account_id !== null &&
-        !accountIds.includes(asNumber(row.updated_by_account_id))
-      ) {
-        conflict(helper, 'document', String(documentId), '更新人账号不在本轮范围，拒绝删除');
-      }
-      if (
-        row.source_submission_id !== null &&
-        !plan.submissionIds.includes(asNumber(row.source_submission_id))
-      ) {
-        conflict(helper, 'document', String(documentId), '来源投稿不在本轮范围，拒绝删除');
-      }
-      if (
-        row.source_revision_id !== null &&
-        !plan.revisionIds.includes(asNumber(row.source_revision_id))
-      ) {
-        conflict(helper, 'document', String(documentId), '来源版本不在本轮范围，拒绝删除');
+      const decision = decideReferenceDocumentCleanupClaim({
+        ownerOrganizationId:
+          row.owner_organization_id === null ? null : asNumber(row.owner_organization_id),
+        createdByAccountId: asNumber(row.created_by_account_id),
+        updatedByAccountId:
+          row.updated_by_account_id === null ? null : asNumber(row.updated_by_account_id),
+        sourceSubmissionId:
+          row.source_submission_id === null ? null : asNumber(row.source_submission_id),
+        sourceRevisionId: row.source_revision_id === null ? null : asNumber(row.source_revision_id),
+        roundOrganizationIds: orgIds,
+        roundAccountIds: accountIds,
+        roundSubmissionIds: plan.submissionIds,
+        roundRevisionIds: plan.revisionIds,
+        registeredInOwnedLedger: owned !== undefined && owned.facts.document.has(documentId),
+      });
+      if (!decision.allowed) {
+        conflict(helper, 'document', String(documentId), decision.reason as string);
       }
       addIds(plan.documentIds, [documentId]);
     }

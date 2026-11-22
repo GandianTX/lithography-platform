@@ -1,10 +1,11 @@
 // src/usecases/reference-document/reference-document.types.ts
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
+import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import type { PaginationParams } from '@core/pagination/pagination.types';
 import type { Readable } from 'node:stream';
 import type {
-  ReferenceDocumentDetailView,
+  ReferenceDocumentLibraryDetailView,
   ReferenceDocumentListPage,
 } from '@src/modules/lithography/lithography.types';
 
@@ -61,6 +62,24 @@ export type ListReferenceDocumentsCommand = {
 };
 
 export type GetReferenceDocumentDetailCommand = {
+  session: UsecaseSession;
+  documentId: number;
+};
+
+/**
+ * 归属待核实清单命令（任务 07 R061-01）：仅一级管理员可调用；
+ * 输入仅分页（无筛选维度），范围恒为 GLOBAL（全公司 PENDING 条目）。
+ */
+export type ListPendingOwnershipReferenceDocumentsCommand = {
+  session: UsecaseSession;
+  pagination: PaginationParams;
+};
+
+/**
+ * 归属待核实详情命令（任务 07 R061-01）：仅一级管理员；
+ * 仅 ownership_status = PENDING 条目可读，普通正式资料走普通资料库详情。
+ */
+export type GetPendingOwnershipReferenceDocumentDetailCommand = {
   session: UsecaseSession;
   documentId: number;
 };
@@ -153,10 +172,132 @@ export type UpdateReferenceDocumentCaseCommand = {
 export type SoftDeleteReferenceDocumentCommand = {
   session: UsecaseSession;
   documentId: number;
+  /**
+   * 任务 07 R053：expected_version = 资料 current_revision_no。
+   * 过期即拒绝（VERSION_CONFLICT），防止并发管理操作被旧版本覆盖。
+   */
+  expectedVersion: number;
 };
 
 export type ReferenceDocumentMutationResult = {
   id: number;
+};
+
+/** 管理操作结果：资料 ID 与本次生成的新生效版本号（R053/R058–R061） */
+export type ReferenceDocumentManagedMutationResult = {
+  id: number;
+  revisionNo: number;
+};
+
+/**
+ * 管理操作 expected_version 输入校验：必须为非负整数。
+ *
+ * 版本语义（任务 07 R053/R058–R061）：expected_version 是
+ * reference_document.current_revision_no 的乐观并发令牌，而该列默认 0
+ * （= 仅原始冻结报告/原始正文，尚无管理修订）。因此存量资料与新建资料的
+ * 首次管理操作合法令牌就是 0，只有负数（以及非整数）属于非法输入。
+ */
+export function assertExpectedVersionInput(expectedVersion: number): void {
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+    throw new DomainError(
+      REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS,
+      'expected_version 必须为非负整数',
+      { expectedVersion },
+    );
+  }
+}
+
+/**
+ * 管理修订命令（任务 07 R058）：仅一级管理员可修订有权正式资料的当前生效内容。
+ * 补丁为全量值语义（提交的字段即为新值）；正文清空仅允许已有存储引用的资料；
+ * 结构化正式资料（报告来源或已结构化修订）的正文改写被拒绝，须走结构化入口。
+ */
+export type ReviseReferenceDocumentCommand = {
+  session: UsecaseSession;
+  documentId: number;
+  expectedVersion: number;
+  reason: string;
+  patch: {
+    title?: string;
+    description?: string | null;
+    contentText?: string | null;
+  };
+};
+
+/** 管理修订编辑初值读侧命令（独立管理修订页，仅一级管理员） */
+export type ReferenceDocumentEditableContentCommand = {
+  session: UsecaseSession;
+  documentId: number;
+};
+
+/**
+ * 结构化管理修订输入载荷（任务 07，报告来源正式资料）：与 GraphQL InputDTO
+ * 结构对齐；规范化与分支一致性由 usecase 层严格裁决（normalizeStructuredRevisionContent）。
+ * 机型字段不在载荷内：改选目标按 patch.equipmentModelId 单独提交，
+ * 服务端按 ID 校验存在且启用并从字典取名称，不信任客户端自报名称。
+ */
+export type ReferenceDocumentStructuredRevisionPayload = {
+  schemaVersion: number;
+  maintenanceDate: string;
+  maintenanceEngineerName: string;
+  /** 客户厂家文本（本轮确认需求：一级管理员可修订；按报告字段规则校验） */
+  customerFactoryName: string;
+  resetResult: string;
+  faults: Array<Record<string, unknown>>;
+  steps: Array<Record<string, unknown>>;
+  handlingResult?: string | null;
+  closureReason?: string | null;
+  actualCause?: string | null;
+  repairActions?: string | null;
+  verificationResult?: string | null;
+  supplementaryNote?: string | null;
+};
+
+/**
+ * 结构化管理修订命令（任务 07，仅一级管理员）：结构化内容为全量值语义；
+ * 厂家文本可修订；equipmentModelId 未提交＝保持原值，显式 null＝拒绝（不允许清空）。
+ */
+export type ReviseReferenceDocumentStructuredCommand = {
+  session: UsecaseSession;
+  documentId: number;
+  expectedVersion: number;
+  reason: string;
+  patch: {
+    title?: string;
+    description?: string | null;
+    structured?: ReferenceDocumentStructuredRevisionPayload;
+    /** 机型改选：undefined=保持原关联；null=显式清空（拒绝）；数字=改选目标 */
+    equipmentModelId?: number | null;
+  };
+};
+
+/** 下架命令（任务 07 R059）：发布状态置 OFFLINE，保留业务历史，不写关键审计 */
+export type OfflineReferenceDocumentCommand = {
+  session: UsecaseSession;
+  documentId: number;
+  expectedVersion: number;
+  reason: string;
+};
+
+/** 管理删除命令（任务 07 R060）：软删除 + 生效版本 + 历史 + 关键审计，同事务 */
+export type AdminDeleteReferenceDocumentCommand = {
+  session: UsecaseSession;
+  documentId: number;
+  expectedVersion: number;
+  reason: string;
+};
+
+/**
+ * 归属更正命令（任务 07 R061-02）：仅提交需要更正的字段，未提交字段保留原值；
+ * 更换上传者不自动采用其当前公司；ownership_status 只依据核实证据更新。
+ */
+export type CorrectReferenceDocumentOwnershipCommand = {
+  session: UsecaseSession;
+  documentId: number;
+  expectedVersion: number;
+  verificationReason: string;
+  createdByAccountId?: number;
+  ownerOrganizationId?: number;
 };
 
 /** 案例更正结果：正式资料 ID 与更新时间（A-PR0 §4.1「返回正式资料 ID/更新时间」） */
@@ -165,5 +306,33 @@ export type ReferenceDocumentCaseMutationResult = {
   updatedAt: Date;
 };
 
-export type GetReferenceDocumentDetailResult = ReferenceDocumentDetailView;
+export type GetReferenceDocumentDetailResult = ReferenceDocumentLibraryDetailView;
 export type ListReferenceDocumentsResult = ReferenceDocumentListPage;
+
+/** 历史版本读取命令（与详情共用同一可见性判定） */
+export type ListReferenceDocumentRevisionsCommand = {
+  session: UsecaseSession;
+  documentId: number;
+};
+
+/** 历史版本条目：不返回 before/after 大快照，只给可展示摘要 */
+export type ReferenceDocumentRevisionView = {
+  revisionNo: number;
+  reason: string;
+  actorNickname: string;
+  createdAt: Date;
+  /** 该修订版本的生效正文（after_snapshot.contentText；授权追溯旧版本内容） */
+  contentText: string | null;
+};
+
+/**
+ * 历史版本读取结果：原始冻结版本以 sourceReportVersionId 表达（版本号由任务 06
+ * 冻结版本自身维护），管理修订以 revisions 表达。
+ */
+export type ListReferenceDocumentRevisionsResult = {
+  documentId: number;
+  currentRevisionNo: number;
+  sourceKind: string;
+  sourceReportVersionId: number | null;
+  revisions: ReferenceDocumentRevisionView[];
+};

@@ -5,11 +5,8 @@ import { DomainError, MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domai
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { In, ObjectLiteral, Repository, type FindOptionsWhere } from 'typeorm';
-import {
-  MaintenanceReportSourceType,
-  MaintenanceReportStatus,
-} from '@app-types/models/maintenance-report.types';
+import { In, Not, ObjectLiteral, Raw, Repository, type FindOptionsWhere } from 'typeorm';
+import { MaintenanceReportStatus } from '@app-types/models/maintenance-report.types';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { MaintenanceReportAlarmEntity } from '../entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from '../entities/maintenance-report-attachment.entity';
@@ -36,6 +33,7 @@ import {
   MaintenanceReportAttachmentSnapshot,
   MaintenanceReportDetailView,
   MaintenanceReportDraftDetailView,
+  MaintenanceReportListFilter,
   MaintenanceReportOwnershipFacts,
   MaintenanceReportReadScope,
   MaintenanceReportReviewSnapshot,
@@ -60,6 +58,11 @@ export type MaintenanceReportListPage<T> = {
   page: number;
   pageSize: number;
 };
+
+/** LIKE 通配符转义（与其他 QueryService 同惯例：本服务私有，防用户输入 %/_ 展开通配） */
+function escapeLikePattern(input: string): string {
+  return input.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
 
 /**
  * 维修报告读取服务。
@@ -98,7 +101,7 @@ export class MaintenanceReportQueryService {
   ) {}
 
   /**
-   * 最小归属事实读取（只读授权前置）：只取报告 id / 负责人 / 所属组织，
+   * 最小归属事实读取（只读授权前置）：只取报告 id / 负责人 / 所属组织 / 状态，
    * 不加载报警、步骤、附件、版本与审核历史。
    */
   async readReportOwnership(
@@ -107,13 +110,20 @@ export class MaintenanceReportQueryService {
   ): Promise<MaintenanceReportOwnershipFacts | null> {
     const entity = await this.getReportRepository(transactionContext).findOne({
       where: { id: reportId },
-      select: { id: true, maintenanceEngineerAccountId: true, ownerOrganizationId: true },
+      select: {
+        id: true,
+        maintenanceEngineerAccountId: true,
+        ownerOrganizationId: true,
+        status: true,
+      },
     });
     if (!entity) return null;
     return {
       reportId: entity.id,
       maintenanceEngineerAccountId: entity.maintenanceEngineerAccountId,
       ownerOrganizationId: entity.ownerOrganizationId,
+      // 实体列以 string 承载（CHECK 约束限定状态域）；授权分支按领域状态枚举裁决
+      status: entity.status as MaintenanceReportStatus,
     };
   }
 
@@ -124,7 +134,11 @@ export class MaintenanceReportQueryService {
   ): Promise<MaintenanceReportSnapshot | null> {
     const where: FindOptionsWhere<MaintenanceReportEntity> = { id: reportId };
     if (scope) {
-      where.ownerOrganizationId = scope.ownerOrganizationId;
+      // 一级管理员（平台级角色）只携带作者谓词，不携带公司谓词；
+      // 工程师/二级管理员的公司谓词仅在调用方提供时生效。
+      if (scope.ownerOrganizationId !== undefined) {
+        where.ownerOrganizationId = scope.ownerOrganizationId;
+      }
       if (scope.maintenanceEngineerAccountId !== undefined) {
         where.maintenanceEngineerAccountId = scope.maintenanceEngineerAccountId;
       }
@@ -349,23 +363,55 @@ export class MaintenanceReportQueryService {
   }
 
   async listMine(
-    params: {
-      engineerAccountId: number;
-      ownerOrganizationId: number;
-      pagination: MaintenanceReportListPagination;
-      /** 可选来源过滤：独立历史报告与工单总结分别列表 */
-      sourceType?: MaintenanceReportSourceType;
-    },
+    engineerAccountId: number,
+    ownerOrganizationId: number | undefined,
+    pagination: MaintenanceReportListPagination,
+    filter: MaintenanceReportListFilter = {},
     transactionContext?: PersistenceTransactionContext,
   ): Promise<MaintenanceReportListPage<MaintenanceReportSummaryView>> {
     const reportRepository = this.getReportRepository(transactionContext);
-    const pagination = params.pagination;
-    const where: FindOptionsWhere<MaintenanceReportEntity> = {
-      maintenanceEngineerAccountId: params.engineerAccountId,
-      ownerOrganizationId: params.ownerOrganizationId,
+    // R052 / 页面 V6.5 §9.2（2026-11-21 页面设计确认）：页面只展示「本人创建且本人有权
+    // 访问」的记录——所有分支必带作者谓词；他人草稿、他人待审与他人正式记录一律
+    // 不出现在本页面（一级/二级管理员查看他人正式资料走参考资料库与管理员文档
+    // 数据库，按 R055/R056 资源权限裁决）。
+    // - 本人分支覆盖本人全部非草稿状态（含历史 PENDING_REVIEW，保持既有口径）；
+    //   不枚举具体正式状态，兼容任务 06 新增的 SUBMITTED。
+    // - 公司谓词由调用方按角色提供：工程师/二级管理员传可信本公司（作者换公司后
+    //   旧公司记录不再可见，不自动转移归属）；一级管理员为平台级角色、无业务所属
+    //   公司，不传公司谓词（undefined），只按作者本人读取，无记录时正常空态。
+    const organizationPredicate: { ownerOrganizationId?: number } =
+      ownerOrganizationId !== undefined ? { ownerOrganizationId } : {};
+    const draftPhaseStatuses = [MaintenanceReportStatus.DRAFT, MaintenanceReportStatus.RETURNED];
+    const ownNonDraftWhere: FindOptionsWhere<MaintenanceReportEntity> = {
+      maintenanceEngineerAccountId: engineerAccountId,
+      ...organizationPredicate,
+      status: Not(In(draftPhaseStatuses)),
     };
-    if (params.sourceType !== undefined) {
-      where.sourceType = params.sourceType;
+    const ownDraftWhere: FindOptionsWhere<MaintenanceReportEntity> = {
+      maintenanceEngineerAccountId: engineerAccountId,
+      ...organizationPredicate,
+      status: In(draftPhaseStatuses),
+    };
+    if (filter.sourceType) {
+      ownDraftWhere.sourceType = filter.sourceType;
+      ownNonDraftWhere.sourceType = filter.sourceType;
+    }
+    if (filter.titleKeyword) {
+      // 标题关键词（任务 07 页面搜索）：恒在归属谓词内全量匹配，值经转义后参数注入
+      const titleCondition = Raw((alias) => `${alias} LIKE :pattern`, {
+        pattern: `%${escapeLikePattern(filter.titleKeyword)}%`,
+      });
+      ownDraftWhere.title = titleCondition;
+      ownNonDraftWhere.title = titleCondition;
+    }
+    let where:
+      FindOptionsWhere<MaintenanceReportEntity> | FindOptionsWhere<MaintenanceReportEntity>[];
+    if (filter.recordKind === 'DRAFT') {
+      where = ownDraftWhere;
+    } else if (filter.recordKind === 'FORMAL') {
+      where = ownNonDraftWhere;
+    } else {
+      where = [ownDraftWhere, ownNonDraftWhere];
     }
     const [rows, total] = await Promise.all([
       reportRepository.find({
@@ -408,13 +454,19 @@ export class MaintenanceReportQueryService {
   ): Promise<MaintenanceReportOwnershipFacts | null> {
     const entity = await this.getReportRepository(transactionContext).findOne({
       where: { repairRequestId },
-      select: { id: true, maintenanceEngineerAccountId: true, ownerOrganizationId: true },
+      select: {
+        id: true,
+        maintenanceEngineerAccountId: true,
+        ownerOrganizationId: true,
+        status: true,
+      },
     });
     if (!entity) return null;
     return {
       reportId: entity.id,
       maintenanceEngineerAccountId: entity.maintenanceEngineerAccountId,
       ownerOrganizationId: entity.ownerOrganizationId,
+      status: entity.status as MaintenanceReportStatus,
     };
   }
 
@@ -661,6 +713,8 @@ interface WorkOrderSummaryCandidateRawRow {
 function toMaintenanceReportSummary(entity: MaintenanceReportEntity): MaintenanceReportSummaryView {
   return {
     id: entity.id,
+    // 归属公司来自资源行本身：同步状态匹配键的公司来源（不进入公开 DTO）
+    ownerOrganizationId: entity.ownerOrganizationId,
     sourceType: entity.sourceType as MaintenanceReportSummaryView['sourceType'],
     repairRequestId: entity.repairRequestId,
     title: entity.title,

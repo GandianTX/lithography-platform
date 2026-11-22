@@ -1,13 +1,19 @@
 // src/adapters/api/graphql/content-submission/content-submission.resolver.ts
-// 投稿域 GraphQL 解析器（A-PR0 §4.1：草稿、本人查询、冻结版本、送审、审核队列/详情、审核决定）
+// 投稿域 GraphQL 解析器（A-PR0 §4.1：草稿、本人查询、冻结版本、送审、审核队列/详情）
 // 仅做协议映射：结构校验 → 调用 usecase → 输出 DTO
 // 业务异常不在此捕获，交由全局过滤器映射为 GraphQL 错误契约
+//
+// 任务 07 确认需求收口：旧「投稿审核决定」（reviewContentSubmissionDecision，
+// RETURN 退回 / APPROVE 通过并发布资料）写入口已移除——本期资料审核取消，
+// 服务端同步关闭审核写路径（APPROVE 曾经由 approve-content-submission 发布
+// REVIEWED_SUBMISSION 资料），不为 E2E 造数保留；审核队列/详情读取保留为
+// 合法历史读取（R091：旧审核仅历史，不批量发布旧待审）。
 //
 // 权限口径（A-PR0 §2.1/§4.1）：
 // - 本人链路（草稿创建/修改、本人列表/详情、送审）：ENGINEER（usecase 内再以精确
 //   activeRole 与本人归属裁决）；
 // - 冻结版本读取：ENGINEER + SUPER_ADMIN（usecase 内裁决本人或本组织当前管理员）；
-// - 审核链路（队列/详情/决定）：SUPER_ADMIN（usecase 内再以精确 activeRole 裁决）。
+// - 审核队列/详情读取：SUPER_ADMIN（usecase 内再以精确 activeRole 裁决）。
 // 客户端不传入创建人 / 组织 / 审核状态；组织与归属一律由 usecase 从可信事实裁定。
 
 import { UseGuards } from '@nestjs/common';
@@ -23,14 +29,12 @@ import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { mapGqlToCoreParams } from '@src/adapters/api/graphql/pagination.mapper';
 import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
-import { ApproveContentSubmissionUsecase } from '@src/usecases/content-submission/approve-content-submission.usecase';
 import { CreateContentSubmissionDraftUsecase } from '@src/usecases/content-submission/create-content-submission-draft.usecase';
 import { GetContentSubmissionRevisionUsecase } from '@src/usecases/content-submission/get-content-submission-revision.usecase';
 import { GetMyContentSubmissionUsecase } from '@src/usecases/content-submission/get-my-content-submission.usecase';
 import { GetReviewDetailUsecase } from '@src/usecases/content-submission/get-review-detail.usecase';
 import { ListMyContentSubmissionsUsecase } from '@src/usecases/content-submission/list-my-content-submissions.usecase';
 import { ListReviewQueueUsecase } from '@src/usecases/content-submission/list-review-queue.usecase';
-import { ReturnContentSubmissionUsecase } from '@src/usecases/content-submission/return-content-submission.usecase';
 import { SubmitContentSubmissionUsecase } from '@src/usecases/content-submission/submit-content-submission.usecase';
 import { UpdateContentSubmissionDraftUsecase } from '@src/usecases/content-submission/update-content-submission-draft.usecase';
 
@@ -39,14 +43,12 @@ import {
   ContentSubmissionDraftMutationResultDTO,
   ContentSubmissionMineDetailDTO,
   ContentSubmissionPaginatedDTO,
-  ContentSubmissionReviewDecisionResultDTO,
   ContentSubmissionReviewDetailDTO,
   ContentSubmissionRevisionDTO,
   ContentSubmissionSubmitResultDTO,
 } from './dto/content-submission-read.dto';
 import {
   CreateContentSubmissionDraftInput,
-  ReviewContentSubmissionDecisionInput,
   SubmitContentSubmissionInput,
   UpdateContentSubmissionDraftInput,
 } from './dto/content-submission-write.input';
@@ -62,8 +64,6 @@ export class ContentSubmissionResolver {
     private readonly getContentSubmissionRevisionUsecase: GetContentSubmissionRevisionUsecase,
     private readonly listReviewQueueUsecase: ListReviewQueueUsecase,
     private readonly getReviewDetailUsecase: GetReviewDetailUsecase,
-    private readonly returnContentSubmissionUsecase: ReturnContentSubmissionUsecase,
-    private readonly approveContentSubmissionUsecase: ApproveContentSubmissionUsecase,
   ) {}
 
   /**
@@ -245,41 +245,6 @@ export class ContentSubmissionResolver {
       session: mapJwtToUsecaseSession(user),
       submissionId: id,
       libraryNoticeConfirmed: input.libraryNoticeConfirmed,
-    });
-  }
-
-  /**
-   * 审核决定（仅本组织管理员）：RETURN 退回 / APPROVE 通过。
-   * 仅接受当前待审 revisionId（行锁内核对）；通过时按 publishAttachment 决定是否发布附件。
-   * 协议层仅按 decision 分派到既有用例，不在 resolver 内重建业务判断。
-   */
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(IdentityTypeEnum.SUPER_ADMIN)
-  @Mutation(() => ContentSubmissionReviewDecisionResultDTO, {
-    description: '投稿审核决定：退回/通过（管理员）',
-  })
-  @ValidateInput()
-  async reviewContentSubmissionDecision(
-    @Args('input') input: ReviewContentSubmissionDecisionInput,
-    @currentUser() user: JwtPayload,
-  ): Promise<ContentSubmissionReviewDecisionResultDTO> {
-    const session = mapJwtToUsecaseSession(user);
-
-    if (input.decision === 'RETURN') {
-      return this.returnContentSubmissionUsecase.execute({
-        session,
-        submissionId: input.submissionId,
-        revisionId: input.revisionId,
-        comment: input.comment ?? null,
-      });
-    }
-
-    return this.approveContentSubmissionUsecase.execute({
-      session,
-      submissionId: input.submissionId,
-      revisionId: input.revisionId,
-      comment: input.comment ?? null,
-      publishAttachment: input.publishAttachment ?? false,
     });
   }
 }

@@ -172,17 +172,6 @@ export type GetContentSubmissionRevisionCommand = {
 };
 
 /**
- * 退回命令（A-PR0 §4.1 `reviewContentSubmissionDecision` 的 RETURN 分支）：
- * revisionId 必须属于该投稿且等于当前待审版本（行锁内核对，不符拒绝）。
- */
-export type ReturnContentSubmissionCommand = {
-  session: UsecaseSession;
-  submissionId: number;
-  revisionId: number;
-  comment?: string | null;
-};
-
-/**
  * 送审结果：新版本 ID/版本号 + 真实落库状态（PENDING_REVIEW）。
  * 状态与版本号均来自同一事务回读/冻结结果，不回显请求入参。
  */
@@ -191,16 +180,6 @@ export type ContentSubmissionSubmitResult = {
   revisionId: number;
   revisionNo: number;
   status: ContentSubmissionStatus;
-};
-
-/**
- * 审核决定结果（退回/通过共用形状，A-PR0 §4.1「返回状态及可能的
- * documentId」）：退回不产生正式资料，documentId 恒为 null。
- */
-export type ContentSubmissionReviewDecisionResult = {
-  submissionId: number;
-  status: ContentSubmissionStatus;
-  documentId: number | null;
 };
 
 export type GetContentSubmissionRevisionResult = ContentSubmissionRevisionView;
@@ -223,19 +202,6 @@ export type ListReviewQueueCommand = {
 export type GetReviewDetailCommand = {
   session: UsecaseSession;
   submissionId: number;
-};
-
-/**
- * 审核通过命令（A-PR0 §4.1 `reviewContentSubmissionDecision` 的 APPROVE 分支；S5）：
- * 仅当前待审 revisionId；publishAttachment 为当次获准原件发布决定
- * （无文件版本只能为 false）；comment 通过时可选。
- */
-export type ApproveContentSubmissionCommand = {
-  session: UsecaseSession;
-  submissionId: number;
-  revisionId: number;
-  comment?: string | null;
-  publishAttachment: boolean;
 };
 
 /** 审核队列结果（与本人列表同形状：items/total/page/pageSize） */

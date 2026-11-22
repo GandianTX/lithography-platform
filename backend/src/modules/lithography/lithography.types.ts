@@ -705,6 +705,10 @@ export type ReferenceDocumentListItemView = {
   originalFilename: string | null;
   organizationName: string;
   ingestMethod: string;
+  /** 来源类型：INDEPENDENT_REPORT / WORK_ORDER_SUMMARY / MATERIAL（任务 07 列表展示） */
+  sourceKind: string;
+  /** 生效管理修订号；0 表示原始冻结内容或原始正文 */
+  effectiveRevisionNo: number;
   caseHandlingStatus: string | null;
   creatorNickname: string;
   createdAt: Date;
@@ -751,7 +755,21 @@ export type ReferenceDocumentDetailView = {
 export type ReferenceDocumentDetailQueryResult = Omit<
   ReferenceDocumentDetailView,
   'creatorNickname'
-> & { createdByAccountId: number; storageReference: string | null };
+> & {
+  createdByAccountId: number;
+  /** 归属公司 ID（内部装配字段；owner_organization_id 可为 null，未知历史归属） */
+  ownerOrganizationId: number | null;
+  storageReference: string | null;
+  /** 来源与状态事实：仅供 usecase 组装生效正文与可见性判断，不直接对外输出该结构 */
+  sourceKind: string;
+  sourceReportId: number | null;
+  sourceReportVersionId: number | null;
+  publicationStatus: string;
+  ownershipStatus: string;
+  effectiveRevisionNo: number;
+  /** 内容快照 schema 版本（管理修订快照 JSON 的 schema_version 单一口径，不进入对外 DTO） */
+  schemaVersion: number;
+};
 
 /** 资料列表分页结果 */
 export type ReferenceDocumentListPage = {
@@ -762,17 +780,185 @@ export type ReferenceDocumentListPage = {
 };
 
 /**
- * 参考资料库读侧范围（列表 / 详情 / 原件下载共用同一口径）。
+ * 参考资料库读侧范围（列表 / 详情 / 历史版本 / 原件下载共用同一口径）。
  *
- * - `ORGANIZATION`：工程师与二级管理员仅本公司正式资料；
- * - `GLOBAL`：一级管理员全部公司正式资料（功能 V5.6 R055、页面 V6.5 §9.1）。
+ * - ORGANIZATION：工程师与二级管理员，仅本公司已确认归属的正式资料；
+ * - GLOBAL：一级管理员，全部公司已确认归属的正式资料（功能 V5.6 R055、页面 V6.5 §9.1）；
+ * - 客户不产生任何范围（在 usecase 角色断言处拒绝）。
  *
- * 范围只决定「哪些公司的正式资料可读」；软删谓词由 QueryService 统一叠加，
+ * 范围只决定「哪些公司的正式资料可读」；未知归属（ownership_status = PENDING）、
+ * 下架（OFFLINE）、软删的行不在任何范围可见，谓词由 QueryService 统一叠加，
  * 他人未提交草稿不在本表，不因本范围可见。范围由服务端从可信会话与账号
  * 当前等级事实决议（见 reference-document-read-scope.ts），不接受客户端自报。
  */
 export type ReferenceDocumentReadScope =
-  { kind: 'ORGANIZATION'; organizationId: number } | { kind: 'GLOBAL' };
+  | { kind: 'ORGANIZATION'; organizationId: number }
+  | { kind: 'GLOBAL' }
+  /**
+   * 原作者删除本人正式资料（任务 07 R053）专用写路径范围：
+   * 仅按 createdByAccountId = 会话账号收敛，不按组织收敛——归属更正可能把
+   * 条目迁到其他公司，作者身份仍是删除资格的唯一依据（本人条目）。
+   * 读路径不得使用本范围，避免绕过组织可见谓词。
+   */
+  | { kind: 'AUTHOR'; accountId: number };
+
+/**
+ * 生效正文来源：
+ * - ORIGINAL：资料自身正文（无修订、无冻结报告来源）；
+ * - FROZEN_REPORT：由任务 06 冻结报告版本发布，读取原始冻结快照；
+ * - CURRENT_REVISION：存在生效的管理修订，读取修订后正文。
+ */
+export type ReferenceDocumentContentSource = 'ORIGINAL' | 'FROZEN_REPORT' | 'CURRENT_REVISION';
+
+/** 冻结报告快照中对普通读者可见的内容事实（不包含账号内部标识与存储引用） */
+export type ReferenceDocumentFrozenReportView = {
+  versionId: number;
+  versionNo: number;
+  schemaVersion: number;
+  submittedAt: Date;
+  sourceType: string;
+  repairRequestId: number | null;
+  title: string;
+  customerFactoryName: string;
+  equipmentModelId: number | null;
+  equipmentModelText: string | null;
+  maintenanceDate: string;
+  maintenanceEngineerName: string;
+  alarms: Array<{
+    alarmIndex: number;
+    alarmCode: string;
+    alarmDescription: string | null;
+    phaseCode: string;
+    resetResult: string;
+  }>;
+  steps: Array<{
+    stepNo: number;
+    stepCode: string;
+    phaseCode: string;
+    partName: string | null;
+    actionText: string;
+    resultText: string | null;
+    newAlarmCode: string | null;
+    isValidNewBranch: boolean;
+  }>;
+  ai: {
+    usage: string;
+    sourceType: string | null;
+    sourceId: string | null;
+    sourceVersion: string | null;
+    score: number | null;
+    correctness: string | null;
+    helpfulness: number | null;
+    note: string | null;
+  };
+  /**
+   * 任务 07 管理修订（加法式扩展）：冻结快照任务 06 扩展键的结构化展示视图
+   * （故障面板与维修结果字段）。任务 04 旧快照缺键按空值降级，不阻断既有展示。
+   */
+  faults: Array<{
+    branchKind: string;
+    stepCode: string | null;
+    phaseCode: string | null;
+    mainError: string | null;
+    unitError: string | null;
+    source: string | null;
+    errorType: string | null;
+    gpibStatus: string | null;
+    faultStatus: string | null;
+    description: string;
+    action: string | null;
+  }>;
+  handlingResult: string | null;
+  closureReason: string | null;
+  resetResult: string | null;
+  actualCause: string | null;
+  repairActions: string | null;
+  verificationResult: string | null;
+  supplementaryNote: string | null;
+};
+
+/** 资料结构化故障面板视图（任务 07 管理修订；分支枚举与任务 06 冻结快照一致） */
+export type ReferenceDocumentStructuredFaultView = {
+  branchKind: 'INITIAL' | 'RESET_NEW_FAULT' | 'STEP_NEW_FAULT';
+  stepCode: string | null;
+  phaseCode: string | null;
+  mainError: string | null;
+  unitError: string | null;
+  source: string | null;
+  errorType: string | null;
+  gpibStatus: string | null;
+  faultStatus: string | null;
+  description: string;
+  action: string | null;
+};
+
+/** 资料结构化排查步骤视图（任务 07 管理修订；stepCode 为稳定关联键） */
+export type ReferenceDocumentStructuredStepView = {
+  stepCode: string;
+  stepNo: number;
+  phaseCode: string | null;
+  errorCode: string | null;
+  partName: string | null;
+  actionText: string;
+  resultCode: 'RESOLVED' | 'UNRESOLVED' | 'NEW_FAULT';
+};
+
+/**
+ * 资料结构化内容视图（任务 07 管理修订；修订快照 structuredReport 键的读视图，
+ * 形状与任务 06 冻结快照报告内容子集同构）。客户厂家/机型文字为继承事实。
+ */
+export type ReferenceDocumentStructuredContentView = {
+  schemaVersion: number;
+  maintenanceDate: string;
+  maintenanceEngineerName: string;
+  customerFactoryName: string;
+  equipmentModelText: string | null;
+  resetResult: 'NORMAL' | 'SAME_FAULT' | 'NEW_FAULT';
+  faults: ReferenceDocumentStructuredFaultView[];
+  steps: ReferenceDocumentStructuredStepView[];
+  handlingResult: string | null;
+  closureReason: string | null;
+  actualCause: string | null;
+  repairActions: string | null;
+  verificationResult: string | null;
+  supplementaryNote: string | null;
+};
+
+/**
+ * 资料生效修订摘要（历史版本读取）。
+ * contentText 取自该修订 after_snapshot 的内容键：授权追溯可查看旧管理修订
+ * 版本的具体生效内容（V5.6 版本追溯要求），而非仅版本号与摘要。
+ */
+export type ReferenceDocumentRevisionSummaryView = {
+  revisionNo: number;
+  reason: string;
+  actorAccountId: number;
+  createdAt: Date;
+  /** 该修订版本的生效正文（after_snapshot.contentText；快照缺内容键时为 null） */
+  contentText: string | null;
+};
+
+/**
+ * 参考资料库详情稳定读视图：基础详情 + 来源/状态/生效版本与生效正文。
+ *
+ * - contentText 为「生效正文」：存在管理修订时取修订后正文，否则取原始正文；
+ * - frozenReport 仅在 sourceKind 为报告来源且尚无管理修订时非空；
+ * - 仅 ONLINE + CONFIRMED + 未软删的行可读取（不可见行统一 NOT_FOUND）。
+ */
+export type ReferenceDocumentLibraryDetailView = ReferenceDocumentDetailView & {
+  sourceKind: string;
+  publicationStatus: string;
+  ownershipStatus: string;
+  effectiveRevisionNo: number;
+  sourceReportId: number | null;
+  sourceReportVersionId: number | null;
+  /** 当前会话账号是否为本条资料的原作者（R053 作者删除入口依据；不返回账号 ID） */
+  viewerIsOriginalAuthor: boolean;
+  contentSource: ReferenceDocumentContentSource;
+  frozenReport: ReferenceDocumentFrozenReportView | null;
+  /** 任务 07 管理修订：生效修订携带结构化内容键时返回（旧扁平修订为 null） */
+  structuredContent: ReferenceDocumentStructuredContentView | null;
+};
 
 /**
  * 资料创建写入数据（由 usecase 完成全部业务判定后传入）。

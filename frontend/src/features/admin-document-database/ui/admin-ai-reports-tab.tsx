@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import type { TableColumnsType } from 'antd';
 import { Alert, Button, Drawer, Input, Pagination, Skeleton, Table, Tooltip } from 'antd';
 
+import { useI18n } from '@/shared/i18n';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { KbSearchField, KbToolbarButton } from '@/shared/ui/knowledge-base';
 
@@ -28,8 +29,13 @@ import { AdminListStates } from './admin-list-states';
  *
  * PR3 R7 S5：迁入单张知识库卡（卡内工具区 + 主搜索 + 筛选展开区 + 紧凑表格 +
  * 卡底分页）；报告类型等精确条件收进「筛选」展开区，能力不减。
+ *
+ * 任务 07 i18n 化：文案全部走共享 messages；列表/详情仍复用 PR3 既有历史读侧
+ * （R037/R038 适用读侧），任务 05 合入后 AI 会话标签由其真实读侧承载，
+ * 本报告标签数据面不变。
  */
 export function AdminAiReportsTab() {
+  const { t } = useI18n();
   const [requestNoKeyword, setRequestNoKeyword] = useState('');
   const [engineerKeyword, setEngineerKeyword] = useState('');
   const [reportType, setReportType] = useState('');
@@ -73,7 +79,7 @@ export function AdminAiReportsTab() {
     fetcher,
     reloadKey,
     {
-      failureMessage: 'AI 报告列表加载失败，请稍后重试。',
+      failureMessage: t('adminDocDb.aiReports.failure'),
     },
   );
   const detail = useAdminAiReportDetail(detailReportId);
@@ -90,44 +96,54 @@ export function AdminAiReportsTab() {
             <span>{value}</span>
           </Tooltip>
         ),
-        title: '报告标题',
+        title: t('adminDocDb.aiReports.col.title'),
         width: 220,
       },
-      { dataIndex: 'reportType', key: 'reportType', title: '报告类型', width: 108 },
+      {
+        dataIndex: 'reportType',
+        key: 'reportType',
+        title: t('adminDocDb.aiReports.col.type'),
+        width: 108,
+      },
       {
         dataIndex: 'requestNo',
         key: 'requestNo',
         render: (value: string, record) =>
           record.requestMismatch ? (
-            <Tooltip title="数据审计：报告记录自身携带的申请与会话归属申请不一致，展示以会话归属为准。">
+            <Tooltip title={t('adminDocDb.aiReports.requestMismatch')}>
               <span className="text-[var(--ant-color-warning)]">{value} ⚠</span>
             </Tooltip>
           ) : (
             value
           ),
-        title: '关联申请',
+        title: t('adminDocDb.column.requestNo'),
         width: 150,
       },
-      { dataIndex: 'engineerNickname', key: 'engineerNickname', title: '工程师', width: 92 },
+      {
+        dataIndex: 'engineerNickname',
+        key: 'engineerNickname',
+        title: t('adminDocDb.column.engineer'),
+        width: 92,
+      },
       {
         dataIndex: 'createdAt',
         key: 'createdAt',
         render: (value: string) => formatDateTimeText(value),
-        title: '创建时间',
+        title: t('adminDocDb.column.createdAt'),
         width: 140,
       },
       {
         key: 'actions',
         render: (_value, record) => (
           <Button onClick={() => setDetailReportId(record.id)} size="small" type="link">
-            正文
+            {t('adminDocDb.aiReports.action.content')}
           </Button>
         ),
-        title: '操作',
+        title: t('adminDocDb.column.actions'),
         width: 76,
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -135,9 +151,9 @@ export function AdminAiReportsTab() {
       {/* 卡内工具区（PR3 R7 S5）：主搜索 + 筛选入口；工程师/报告类型/时间收进展开区 */}
       <div className="kb-toolbar">
         <KbSearchField
-          clearLabel="清除关联申请编号搜索"
+          clearLabel={t('adminDocDb.aiConversations.searchClear')}
           onChange={setRequestNoKeyword}
-          placeholder="按关联申请编号搜索"
+          placeholder={t('adminDocDb.aiConversations.searchPlaceholder')}
           value={requestNoKeyword}
         />
         <KbToolbarButton
@@ -145,7 +161,7 @@ export function AdminAiReportsTab() {
           aria-expanded={filterPanelOpen}
           onClick={() => setFilterPanelOpen((previous) => !previous)}
         >
-          筛选
+          {t('adminDocDb.filter.toggle')}
         </KbToolbarButton>
       </div>
 
@@ -154,7 +170,7 @@ export function AdminAiReportsTab() {
           <Input
             allowClear
             maxLength={100}
-            placeholder="按工程师昵称/公司搜索"
+            placeholder={t('adminDocDb.aiReports.engineerPlaceholder')}
             style={{ width: 200 }}
             value={engineerKeyword}
             onChange={(event) => setEngineerKeyword(event.target.value)}
@@ -162,19 +178,19 @@ export function AdminAiReportsTab() {
           <Input
             allowClear
             maxLength={100}
-            placeholder="按报告类型筛选"
+            placeholder={t('adminDocDb.aiReports.typePlaceholder')}
             style={{ width: 160 }}
             value={reportType}
             onChange={(event) => setReportType(event.target.value)}
           />
           <AdminCreatedAtFilter onChange={setCreatedAtRange} value={createdAtRange} />
-          <KbToolbarButton onClick={resetFilters}>重置</KbToolbarButton>
+          <KbToolbarButton onClick={resetFilters}>{t('adminDocDb.filter.reset')}</KbToolbarButton>
         </div>
       ) : null}
 
       <AdminListStates
-        emptyLabel="暂无 AI 报告。"
-        filteredEmptyLabel="没有符合筛选条件的 AI 报告。"
+        emptyLabel={t('adminDocDb.aiReports.empty')}
+        filteredEmptyLabel={t('adminDocDb.aiReports.filteredEmpty')}
         hasActiveFilter={hasActiveFilter}
         onRetry={reload}
         state={state}
@@ -192,7 +208,7 @@ export function AdminAiReportsTab() {
               />
             </div>
             <div className="kb-card-footer">
-              <span>共 {state.total} 条</span>
+              <span>{t('adminDocDb.list.total', { total: state.total })}</span>
               <Pagination
                 current={state.page}
                 onChange={goToPage}
@@ -210,7 +226,11 @@ export function AdminAiReportsTab() {
         destroyOnHidden
         onClose={() => setDetailReportId(null)}
         open={detailReportId !== null}
-        title={detail.state.status === 'ready' ? detail.state.detail.reportTitle : 'AI 报告正文'}
+        title={
+          detail.state.status === 'ready'
+            ? detail.state.detail.reportTitle
+            : t('adminDocDb.aiReports.drawer.fallbackTitle')
+        }
         size="large"
       >
         {detail.state.status === 'loading' ? <Skeleton active /> : null}
@@ -218,7 +238,7 @@ export function AdminAiReportsTab() {
           <Alert
             action={
               <Button onClick={detail.retry} size="small">
-                重试
+                {t('common.retry')}
               </Button>
             }
             title={detail.state.message}
@@ -229,11 +249,15 @@ export function AdminAiReportsTab() {
         {detail.state.status === 'ready' ? (
           <div className="flex flex-col gap-4">
             <p className="m-0 text-sm text-[var(--text-muted)]">
-              类型 {detail.state.detail.reportType} · 关联申请 {detail.state.detail.requestNo}
-              {detail.state.detail.requestMismatch
-                ? '（审计标记：与会话归属申请不一致）'
-                : ''} · {detail.state.detail.engineerNickname} ·{' '}
-              {formatDateTimeText(detail.state.detail.createdAt)}
+              {t('adminDocDb.aiReports.detail.meta', {
+                reportType: detail.state.detail.reportType,
+                requestNo: detail.state.detail.requestNo,
+                mismatch: detail.state.detail.requestMismatch
+                  ? t('adminDocDb.aiReports.detail.mismatchSuffix')
+                  : '',
+                engineerNickname: detail.state.detail.engineerNickname,
+                createdAt: formatDateTimeText(detail.state.detail.createdAt),
+              })}
             </p>
             <pre className="max-h-[560px] overflow-auto rounded border border-[var(--panel-border)] bg-[var(--filter-bar-bg)] p-3 text-xs whitespace-pre-wrap">
               {detail.state.detail.contentMd}

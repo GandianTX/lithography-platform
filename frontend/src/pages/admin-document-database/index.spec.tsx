@@ -174,14 +174,15 @@ describe('AdminDocumentDatabasePage（PR3 S3）', () => {
     expect(await screen.findByPlaceholderText('按文档标题搜索')).toBeInTheDocument();
   });
 
-  it('右上新增资料主操作仅默认参考资料标签可见（PR3 R7 S4）', async () => {
+  it('任务 07 起页面不再渲染任何新增/写入主操作（旧新增入口已下线）', async () => {
     render(<AdminDocumentDatabasePage />);
 
-    const addButton = await screen.findByRole('button', { name: /新增资料/ });
-    fireEvent.click(addButton);
-    expect(navigateMock).toHaveBeenCalledWith('/reference-documents/new');
+    await screen.findByText('维修申请');
 
-    // 只读标签不出现新增/上传操作
+    expect(screen.queryByRole('button', { name: /新增资料/ })).not.toBeInTheDocument();
+    expect(navigateMock).not.toHaveBeenCalledWith('/reference-documents/new');
+
+    // 只读标签同样不出现新增/上传操作
     await act(async () => {
       fireEvent.click(await screen.findByRole('tab', { name: 'AI 报告' }));
     });

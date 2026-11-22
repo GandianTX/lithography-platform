@@ -2,16 +2,22 @@
 // @vitest-environment jsdom
 
 /**
- * 参考资料详情面板 UI 单测。
+ * 参考资料详情面板单测（任务 07：读取 + 管理入口显隐）。
  *
- * 走真实面板 + 真实详情 query 状态机，只 mock 外部 adapter 与路由跳转；
- * 统一 NOT_FOUND 态、编辑/软删入口的角色可见性、软删防重与不乐观口径均由
- * 生产组件决定，测试不复制规则。
+ * 覆盖：
+ * - 普通资料：元数据 + 生效正文 + 授权下载入口；
+ * - 合法无附件资料：不渲染下载按钮，仍展示正文；
+ * - 报告来源：读取原始冻结报告内容（不再依赖资料正文）；
+ * - 历史版本：修订摘要与原始冻结版本说明；
+ * - 不可见资料：统一 not-found，不渲染任何数据；
+ * - 下载失败：提示后端消息，不伪造成功。
+ *
+ * 管理动作入口按会话视角显隐：一级管理员四项 + 原作者删除（R053/R058–R061）；
+ * 授权由服务端最终裁决，页面仅做入口装配。
  */
 
-import { type ReactElement, StrictMode } from 'react';
+import { type ReactElement } from 'react';
 import {
-  act,
   fireEvent,
   render as rtlRender,
   type RenderOptions,
@@ -22,17 +28,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MessageFeedbackProvider } from '@/shared/ui/message-feedback';
 
-import type { ReferenceDocumentDetail } from '../infrastructure/reference-document.types';
+import type {
+  ReferenceDocumentDetail,
+  ReferenceDocumentFrozenReport,
+  ReferenceDocumentRevisions,
+} from '../infrastructure/reference-document.types';
 import * as referenceDocumentAdapter from '../infrastructure/reference-document-adapter';
 import * as referenceDocumentHttpAdapter from '../infrastructure/reference-document-http-adapter';
 
 import { ReferenceDocumentDetailPanel } from './reference-document-detail-panel';
 
-/**
- * 面板的反馈呈现由 MessageFeedbackProvider（src/shared/ui/message-feedback）提供：
- * 走 `message.useMessage()` 的 context api，不再用静态 `message`。
- * RTL 的 rerender 会复用同一个 wrapper，故这里包一次即可覆盖全文件的 render / rerender。
- */
 function render(ui: ReactElement, options?: Omit<RenderOptions, 'wrapper'>) {
   return rtlRender(ui, { wrapper: MessageFeedbackProvider, ...options });
 }
@@ -43,8 +48,12 @@ vi.mock('../infrastructure/reference-document-adapter', async (importOriginal) =
   return {
     ...actual,
     fetchReferenceDocument: vi.fn(),
-    updateReferenceDocument: vi.fn(),
+    fetchReferenceDocumentRevisions: vi.fn(),
     deleteReferenceDocument: vi.fn(),
+    reviseReferenceDocument: vi.fn(),
+    offlineReferenceDocument: vi.fn(),
+    adminDeleteReferenceDocument: vi.fn(),
+    correctReferenceDocumentOwnership: vi.fn(),
   };
 });
 
@@ -67,901 +76,791 @@ vi.mock('react-router', async (importOriginal) => {
 });
 
 const navigateMock = vi.fn();
-
 const fetchDetailMock = vi.mocked(referenceDocumentAdapter.fetchReferenceDocument);
-const updateMock = vi.mocked(referenceDocumentAdapter.updateReferenceDocument);
-const deleteMock = vi.mocked(referenceDocumentAdapter.deleteReferenceDocument);
+const fetchRevisionsMock = vi.mocked(referenceDocumentAdapter.fetchReferenceDocumentRevisions);
 const downloadFileMock = vi.mocked(referenceDocumentHttpAdapter.downloadReferenceDocumentFile);
 
-function buildDetail(id: number): ReferenceDocumentDetail {
+function buildDetail(overrides: Partial<ReferenceDocumentDetail> = {}): ReferenceDocumentDetail {
   return {
-    id,
-    title: 'NXE:3400C 光源维护指南（Mock）',
+    id: 970002,
+    title: 'NXE:3400C 光源维护指南',
     documentType: 'MAINTENANCE_GUIDE',
     equipmentModelId: 51,
     equipmentModelName: 'ASML TWINSCAN NXE:3400C',
     equipmentModelText: null,
     description: '光源模块周期性维护要点。',
-    originalFilename: 'nxe-3400c-source-guide-mock.pdf',
+    originalFilename: 'nxe-3400c-source-guide.pdf',
     mimeType: 'application/pdf',
     hasFile: true,
     contentText: '# 光源维护指南\n\n每周记录能量衰减。',
+    contentSource: 'ORIGINAL',
+    sourceKind: 'MATERIAL',
+    effectiveRevisionNo: 0,
+    sourceReportId: null,
+    sourceReportVersionId: null,
+    frozenReport: null,
+    structuredContent: null,
     organizationName: '甲方默认组织',
     ingestMethod: 'ADMIN_DIRECT',
     caseDetail: null,
     creatorNickname: '陈工',
+    viewerIsOriginalAuthor: false,
     createdAt: '2026-08-02T09:30:00.000Z',
     updatedAt: '2026-08-05T14:00:00.000Z',
+    ...overrides,
   };
 }
 
+const revisionsFixture: ReferenceDocumentRevisions = {
+  documentId: 970002,
+  currentRevisionNo: 0,
+  sourceKind: 'MATERIAL',
+  sourceReportVersionId: null,
+  revisions: [],
+};
+
+/** 任务 07 加法扩展键的空值形态（旧快照 / 未携带场景） */
+const frozenExtensionEmpty = {
+  faults: [],
+  handlingResult: null,
+  closureReason: null,
+  resetResult: null,
+  actualCause: null,
+  repairActions: null,
+  verificationResult: null,
+  supplementaryNote: null,
+} satisfies Pick<
+  ReferenceDocumentFrozenReport,
+  | 'faults'
+  | 'handlingResult'
+  | 'closureReason'
+  | 'resetResult'
+  | 'actualCause'
+  | 'repairActions'
+  | 'verificationResult'
+  | 'supplementaryNote'
+>;
+
 beforeEach(() => {
   fetchDetailMock.mockReset();
-  updateMock.mockReset();
-  deleteMock.mockReset();
+  fetchRevisionsMock.mockReset();
   downloadFileMock.mockReset();
   navigateMock.mockReset();
+  fetchRevisionsMock.mockResolvedValue(revisionsFixture);
 
-  // jsdom 无 blob URL 体系，浏览器保存链路用 spy 钉住调用形态
   URL.createObjectURL = vi.fn(() => 'blob:mock-url');
   URL.revokeObjectURL = vi.fn();
 });
 
-/**
- * AntD message 的通知容器挂在 document.body 上（context api 与静态调用同样如此），
- * 不随 RTL cleanup 移除，因此「不得提示成功」不能按文本查（会命中前序用例残留的同文通知），
- * 改为按节点身份快照判定「结算旧结果后有无新增通知」。
- */
-const snapshotNotices = () => new Set(document.querySelectorAll('.ant-message-notice'));
+const renderPanel = (
+  viewer: { role: 'SUPER_ADMIN' | 'ENGINEER' | 'CUSTOMER' | null; adminLevel: number | null } = {
+    role: 'ENGINEER',
+    adminLevel: null,
+  },
+) => render(<ReferenceDocumentDetailPanel documentId={970002} viewer={viewer} />);
 
-const addedNotices = (before: Set<Element>) =>
-  Array.from(document.querySelectorAll('.ant-message-notice')).filter(
-    (notice) => !before.has(notice),
-  );
+describe('ReferenceDocumentDetailPanel（只读）', () => {
+  it('普通资料：展示元数据、生效正文与下载入口，不渲染任何写操作', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
 
-/**
- * 当前可见 Popconfirm 的确认按钮集合。
- *
- * RTL cleanup 只卸载组件树，AntD 挂在 document.body 的 popover 容器会跨用例残留
- * （关闭后带 `.ant-popover-hidden`）。按文本查「确认删除」会命中这些残留节点，
- * 取「最后一个」于是依赖容器插入顺序 —— 全文件跑与单用例跑结果不一致。
- * 这里只认「可见容器内的确认按钮」，与执行顺序和残留无关。
- */
-const visibleConfirmButtons = () =>
-  Array.from(document.querySelectorAll('.ant-popover:not(.ant-popover-hidden)')).flatMap(
-    (popover) => Array.from(popover.querySelectorAll('.ant-popconfirm-buttons .ant-btn-primary')),
-  );
+    renderPanel();
 
-/** 点「删除」并点击当前可见 Popconfirm 的确认按钮（不经文本查残留节点） */
-async function confirmVisibleDelete() {
-  fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-  await waitFor(() => expect(visibleConfirmButtons()).toHaveLength(1));
-  fireEvent.click(visibleConfirmButtons()[0]);
-}
-
-describe('ReferenceDocumentDetailPanel', () => {
-  it('详情展示完整元数据与文本内容；ENGINEER（canManage=false）只见只读态', async () => {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
-
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970002} />);
-
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-
-    expect(screen.getByText('维护指南')).toBeTruthy();
-    expect(screen.getByText('ASML TWINSCAN NXE:3400C')).toBeTruthy();
-    expect(screen.getByText('陈工')).toBeTruthy();
-    expect(screen.getByText(/每周记录能量衰减/)).toBeTruthy();
-    // 只读态：无编辑 / 删除入口
-    expect(screen.queryByRole('button', { name: /编辑/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /删除/ })).toBeNull();
+    expect(await screen.findByText('NXE:3400C 光源维护指南')).toBeTruthy();
+    expect(screen.getByText('光源模块周期性维护要点。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '下载原件' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编 辑' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '删 除' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新增资料' })).toBeNull();
   });
 
-  it('canManage=true 时可见编辑与删除入口', async () => {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
-
-    render(<ReferenceDocumentDetailPanel canManage={true} documentId={970002} />);
-
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-
-    expect(screen.getByRole('button', { name: /编\s*辑/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /删\s*除/ })).toBeTruthy();
-  });
-
-  it('下载入口：canManage=false（ENGINEER）也可见；点击后经 blob URL 触发浏览器保存', async () => {
-    const blob = new Blob(['pdf-bytes'], { type: 'application/pdf' });
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
-    downloadFileMock.mockResolvedValue({
-      ok: true,
-      blob,
-      filename: 'nxe-3400c-source-guide-mock.pdf',
-    });
-
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-
-    // 只读角色（ENGINEER）可见：canManage=false 仍显示下载入口
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
-
-    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
-    expect(downloadFileMock).toHaveBeenCalledWith(970002);
-    expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
-
-    // 排空下载 promise 链的收尾 setState（finally 内 downloading 复位）：
-    // 否则 jsdom teardown 后 React 仍在调度并访问 window，产生未处理
-    // ReferenceError（验收报告 20260916，不能仅靠断言通过计数）。
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    // a[download] 带服务端文件名，保存后回收 URL
-    const anchor = clickSpy.mock.contexts[0] as HTMLAnchorElement;
-
-    expect(anchor.download).toBe('nxe-3400c-source-guide-mock.pdf');
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
-
-    clickSpy.mockRestore();
-  });
-
-  it('纯文本资料不显示下载入口', async () => {
+  it('合法无附件资料：不渲染下载按钮，仍展示正文', async () => {
     fetchDetailMock.mockResolvedValue({
       ok: true,
-      detail: { ...buildDetail(970005), originalFilename: null, mimeType: null, hasFile: false },
+      detail: buildDetail({
+        hasFile: false,
+        originalFilename: null,
+        mimeType: null,
+        contentText: '仅正文的无附件资料。',
+      }),
     });
 
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970005} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel();
 
-    expect(screen.queryByRole('button', { name: /下载文件/ })).toBeNull();
+    expect(await screen.findByText('仅正文的无附件资料。')).toBeTruthy();
+    expect(screen.getByText('无附件资料')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '下载原件' })).toBeNull();
   });
 
-  it('有文件名但无存储引用（hasFile=false）不显示下载入口：不从 originalFilename 推断', async () => {
+  it('报告来源：读取原始冻结报告内容与报警/步骤', async () => {
     fetchDetailMock.mockResolvedValue({
       ok: true,
-      detail: { ...buildDetail(970001), hasFile: false },
+      detail: buildDetail({
+        id: 970010,
+        title: '光刻机 Z 轴异常处理',
+        sourceKind: 'INDEPENDENT_REPORT',
+        effectiveRevisionNo: 0,
+        contentSource: 'FROZEN_REPORT',
+        sourceReportId: 960001,
+        sourceReportVersionId: 990001,
+        contentText: '冻结报告拼装文本',
+        frozenReport: {
+          versionId: 990001,
+          versionNo: 2,
+          schemaVersion: 1,
+          submittedAt: '2026-10-01T00:00:00.000Z',
+          sourceType: 'HISTORICAL_CASE',
+          repairRequestId: null,
+          title: '光刻机 Z 轴异常处理',
+          customerFactoryName: '某晶圆厂',
+          equipmentModelId: 94,
+          equipmentModelText: null,
+          maintenanceDate: '2026-09-30',
+          maintenanceEngineerName: '工程师甲',
+          alarms: [
+            {
+              alarmIndex: 1,
+              alarmCode: '0123',
+              alarmDescription: 'Z 轴超限',
+              phaseCode: 'OCCURRENCE',
+              resetResult: 'RESET_SUCCESS',
+            },
+          ],
+          steps: [
+            {
+              stepNo: 1,
+              stepCode: 'S1',
+              phaseCode: 'ANALYSIS',
+              partName: 'Z 轴电机',
+              actionText: '检查电机接线',
+              resultText: '接线松动',
+              newAlarmCode: null,
+              isValidNewBranch: false,
+            },
+          ],
+          // 任务 07 加法扩展键（旧快照/未携带场景为空值）
+          ...frozenExtensionEmpty,
+          ai: {
+            usage: 'NOT_USED',
+            sourceType: null,
+            sourceId: null,
+            sourceVersion: null,
+            score: null,
+            correctness: null,
+            helpfulness: null,
+            note: null,
+          },
+        },
+      }),
     });
 
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970001} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel();
 
-    // 原始文件名仍如实展示，但不承诺可下载
-    expect(screen.getByText('nxe-3400c-source-guide-mock.pdf')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /下载文件/ })).toBeNull();
+    expect(await screen.findByText('原始冻结报告内容')).toBeTruthy();
+    expect(screen.getByText('0123')).toBeTruthy();
+    expect(screen.getByText('Z 轴电机')).toBeTruthy();
+    expect(screen.getByText(/原始冻结版本 ID 990001/)).toBeTruthy();
+    // AI 空值：无评分/说明时不渲染，不得误显示成评分 0
+    expect(screen.queryByText(/评分 0/)).toBeNull();
+    expect(screen.queryByText('AI 说明')).toBeNull();
+    // 冻结报告已提供结构化内容，不再重复渲染拼装正文
+    expect(screen.queryByText('冻结报告拼装文本')).toBeNull();
   });
 
-  it('下载失败展示受控错误文案', async () => {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
-    downloadFileMock.mockResolvedValue({
-      ok: false,
-      reason: 'file-not-available',
-      message: '该资料没有可下载的文件。',
+  it('工单总结来源：冻结块展示来源工单标识与 AI 评价实际提供的字段', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({
+        id: 970011,
+        sourceKind: 'WORK_ORDER_SUMMARY',
+        contentSource: 'FROZEN_REPORT',
+        sourceReportId: 960002,
+        sourceReportVersionId: 990002,
+        frozenReport: {
+          versionId: 990002,
+          versionNo: 1,
+          schemaVersion: 2,
+          submittedAt: '2026-11-10T00:00:00.000Z',
+          sourceType: 'WORK_ORDER_SUMMARY',
+          repairRequestId: 950001,
+          title: '工单维修总结：光源能量衰减',
+          customerFactoryName: '某晶圆厂',
+          equipmentModelId: 94,
+          equipmentModelText: null,
+          maintenanceDate: '2026-11-09',
+          maintenanceEngineerName: '工程师乙',
+          alarms: [],
+          steps: [
+            {
+              stepNo: 1,
+              stepCode: 'S1',
+              phaseCode: 'REPAIR',
+              partName: null,
+              actionText: '更换光源模块',
+              resultText: '能量恢复正常',
+              newAlarmCode: null,
+              isValidNewBranch: false,
+            },
+          ],
+          // 任务 07 加法扩展键（旧快照/未携带场景为空值）
+          ...frozenExtensionEmpty,
+          ai: {
+            usage: 'USED',
+            sourceType: null,
+            sourceId: null,
+            sourceVersion: null,
+            score: 4,
+            correctness: 'CORRECT',
+            helpfulness: 5,
+            note: 'AI 提示检查光源模块',
+          },
+        },
+      }),
     });
 
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel();
 
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
-
-    expect(await screen.findByText('该资料没有可下载的文件。')).toBeTruthy();
+    // 来源行文本与「原始冻结版本 ID」拼接在同一单元格，用正则匹配来源标签
+    expect(await screen.findByText(/工单总结/)).toBeTruthy();
+    expect(screen.getByText('工单 #' + 950001)).toBeTruthy();
+    expect(screen.getByText('更换光源模块')).toBeTruthy();
+    expect(screen.getByText(/评分 4/)).toBeTruthy();
+    expect(screen.getByText(/准确性 CORRECT/)).toBeTruthy();
+    expect(screen.getByText(/帮助性 5/)).toBeTruthy();
+    expect(screen.getByText('AI 提示检查光源模块')).toBeTruthy();
   });
 
-  it('下载链路抛异常时兜底：不外泄原始错误，给出统一重试文案并复位按钮', async () => {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
-    // adapter 抛异常（网络中断 / blob 读取失败等未包装路径）：走面板 catch 兜底，
-    // 不得把底层异常原样抛给用户，也不得让按钮永久停留在 loading。
-    downloadFileMock.mockRejectedValue(new Error('boom: raw fetch failure'));
+  it('无报警的工单总结冻结块：报警区展示空状态，不回退到实时工单内容', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({
+        id: 970012,
+        sourceKind: 'WORK_ORDER_SUMMARY',
+        contentSource: 'FROZEN_REPORT',
+        sourceReportId: 960002,
+        sourceReportVersionId: 990003,
+        contentText: '冻结拼装文本占位',
+        frozenReport: {
+          versionId: 990003,
+          versionNo: 1,
+          schemaVersion: 2,
+          submittedAt: '2026-11-10T00:00:00.000Z',
+          sourceType: 'WORK_ORDER_SUMMARY',
+          repairRequestId: 950002,
+          title: '工单维修总结：无报警场景',
+          customerFactoryName: '某晶圆厂',
+          equipmentModelId: null,
+          equipmentModelText: null,
+          maintenanceDate: '2026-11-09',
+          maintenanceEngineerName: '工程师乙',
+          alarms: [],
+          steps: [
+            {
+              stepNo: 1,
+              stepCode: 'S1',
+              phaseCode: 'REPAIR',
+              partName: null,
+              actionText: '预防性更换密封圈',
+              resultText: null,
+              newAlarmCode: null,
+              isValidNewBranch: false,
+            },
+          ],
+          // 任务 07 加法扩展键（旧快照/未携带场景为空值）
+          ...frozenExtensionEmpty,
+          ai: {
+            usage: 'NOT_USED',
+            sourceType: null,
+            sourceId: null,
+            sourceVersion: null,
+            score: null,
+            correctness: null,
+            helpfulness: null,
+            note: null,
+          },
+        },
+      }),
+    });
 
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel();
 
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
-
-    expect(await screen.findByText('下载失败，请稍后重试。')).toBeTruthy();
-    // 底层异常细节不得透出界面
-    expect(screen.queryByText(/boom/)).toBeNull();
-    // 兜底后必须复位：按钮不再 loading，用户可重试
-    await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: /下载文件/ }).classList.contains('ant-btn-loading'),
-      ).toBe(false),
-    );
-    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(await screen.findByText('无报警记录。')).toBeTruthy();
+    expect(screen.queryByText('冻结拼装文本占位')).toBeNull();
   });
 
-  it('统一 NOT_FOUND：不存在与已软删呈现 warning 态而非数据', async () => {
+  it('历史版本：展示当前生效与修订摘要，可展开查看该修订版本的具体内容', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({ effectiveRevisionNo: 2, contentSource: 'CURRENT_REVISION' }),
+    });
+    fetchRevisionsMock.mockResolvedValue({
+      documentId: 970002,
+      currentRevisionNo: 2,
+      sourceKind: 'MATERIAL',
+      sourceReportVersionId: null,
+      revisions: [
+        {
+          revisionNo: 1,
+          reason: '补充安全注意事项',
+          actorNickname: '管理员甲',
+          createdAt: '2026-11-05T00:00:00.000Z',
+          contentText: 'v1 生效正文内容',
+        },
+        {
+          revisionNo: 2,
+          reason: '更新适用机型',
+          actorNickname: '管理员乙',
+          createdAt: '2026-11-06T00:00:00.000Z',
+          contentText: null,
+        },
+      ],
+    });
+
+    const { container } = renderPanel();
+
+    expect(await screen.findByText('历史版本')).toBeTruthy();
+    expect(screen.getByText('v1')).toBeTruthy();
+    expect(screen.getByText('v2')).toBeTruthy();
+    expect(screen.getByText('补充安全注意事项')).toBeTruthy();
+    expect(screen.getByText('管理员乙')).toBeTruthy();
+
+    // 授权追溯（V5.6）：展开 v1 行可见该修订版本的具体生效内容，而非仅版本号
+    const expandIcons = container.querySelectorAll('.ant-table-row-expand-icon');
+    expect(expandIcons.length).toBe(2);
+    fireEvent.click(expandIcons[0]!);
+    expect(await screen.findByText('v1 生效正文内容')).toBeTruthy();
+    // v2 未展开：其内容不在文档中
+    expect(screen.queryByText('v1 生效正文内容')).toBeTruthy();
+  });
+
+  it('修订后详情：生效正文为修订内容，同时提供原始冻结报告追溯视图', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({
+        sourceKind: 'WORK_ORDER_SUMMARY',
+        sourceReportId: 960002,
+        sourceReportVersionId: 990002,
+        effectiveRevisionNo: 1,
+        contentSource: 'CURRENT_REVISION',
+        contentText: '管理修订后的补充说明正文。',
+        frozenReport: {
+          versionId: 990002,
+          versionNo: 1,
+          schemaVersion: 2,
+          submittedAt: '2026-11-10T00:00:00.000Z',
+          sourceType: 'WORK_ORDER_SUMMARY',
+          repairRequestId: 950001,
+          title: '工单维修总结：光源能量衰减',
+          customerFactoryName: '某晶圆厂',
+          equipmentModelId: 94,
+          equipmentModelText: null,
+          maintenanceDate: '2026-11-09',
+          maintenanceEngineerName: '工程师乙',
+          alarms: [],
+          steps: [
+            {
+              stepNo: 1,
+              stepCode: 'S1',
+              phaseCode: 'REPAIR',
+              partName: null,
+              actionText: '更换光源模块',
+              resultText: '能量恢复正常',
+              newAlarmCode: null,
+              isValidNewBranch: false,
+            },
+          ],
+          // 任务 07 加法扩展键（旧快照/未携带场景为空值）
+          ...frozenExtensionEmpty,
+          ai: {
+            usage: 'NOT_USED',
+            sourceType: null,
+            sourceId: null,
+            sourceVersion: null,
+            score: null,
+            correctness: null,
+            helpfulness: null,
+            note: null,
+          },
+        },
+      }),
+    });
+
+    renderPanel();
+
+    // 修订后正文仍为生效内容
+    expect(await screen.findByText('管理修订后的补充说明正文。')).toBeTruthy();
+    // 原始冻结报告作为追溯视图并存（授权追溯，不随管理修订替换）
+    expect(screen.getByText('原始冻结报告内容')).toBeTruthy();
+    expect(screen.getByText('更换光源模块')).toBeTruthy();
+    expect(screen.getByText(/原始冻结版本 ID 990002/)).toBeTruthy();
+  });
+
+  it('生效管理修订携带结构化内容：结构化展示生效版本 + 冻结报告追溯并存', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({
+        id: 970013,
+        sourceKind: 'INDEPENDENT_REPORT',
+        contentSource: 'CURRENT_REVISION',
+        effectiveRevisionNo: 1,
+        contentText: '结构化组合文本',
+        structuredContent: {
+          schemaVersion: 1,
+          maintenanceDate: '2026-09-30',
+          maintenanceEngineerName: '工程师甲',
+          customerFactoryName: '某晶圆厂',
+          equipmentModelText: 'DEV-LITHO-A',
+          resetResult: 'SAME_FAULT',
+          faults: [
+            {
+              branchKind: 'INITIAL',
+              stepCode: null,
+              phaseCode: 'PHASE_02',
+              mainError: 'Z AXIS OVER LIMIT（更正）',
+              unitError: 'Z1',
+              source: 'MOTION',
+              errorType: 'SERVO',
+              gpibStatus: 'IDLE',
+              faultStatus: 'ACTIVE',
+              description: 'Z 轴超限报警（描述更正）',
+              action: '停机检查',
+            },
+          ],
+          steps: [
+            {
+              stepCode: 'step-a',
+              stepNo: 1,
+              phaseCode: 'PHASE_03',
+              errorCode: 'E-100',
+              partName: 'Z 轴电机',
+              actionText: '检查电机接线（更正）',
+              resultCode: 'RESOLVED',
+            },
+          ],
+          handlingResult: 'INTERRUPTED',
+          closureReason: '备件未到货（更正）',
+          actualCause: '接线松动',
+          repairActions: null,
+          verificationResult: '上电验证通过',
+          supplementaryNote: '后续跟进',
+        },
+        frozenReport: {
+          versionId: 990001,
+          versionNo: 2,
+          schemaVersion: 1,
+          submittedAt: '2026-10-01T00:00:00.000Z',
+          sourceType: 'HISTORICAL_CASE',
+          repairRequestId: null,
+          title: '光刻机 Z 轴异常处理',
+          customerFactoryName: '某晶圆厂',
+          equipmentModelId: null,
+          equipmentModelText: 'DEV-LITHO-A',
+          maintenanceDate: '2026-09-30',
+          maintenanceEngineerName: '工程师甲',
+          alarms: [],
+          steps: [],
+          ...frozenExtensionEmpty,
+          ai: {
+            usage: 'NOT_USED',
+            sourceType: null,
+            sourceId: null,
+            sourceVersion: null,
+            score: null,
+            correctness: null,
+            helpfulness: null,
+            note: null,
+          },
+        },
+      }),
+    });
+
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
+
+    // 结构化生效内容：故障字段/复位/步骤/维修结果全展示
+    expect(await screen.findByText('管理修订后报告内容')).toBeTruthy();
+    expect(screen.getByText('Z 轴超限报警（描述更正）')).toBeTruthy();
+    expect(screen.getByText(/Main Error：Z AXIS OVER LIMIT（更正）/)).toBeTruthy();
+    expect(screen.getByText('相同故障')).toBeTruthy();
+    expect(screen.getByText('检查电机接线（更正）')).toBeTruthy();
+    expect(screen.getByText('备件未到货（更正）')).toBeTruthy();
+    expect(screen.getByText('上电验证通过')).toBeTruthy();
+    // 原始冻结报告追溯块并存
+    expect(screen.getByText('原始冻结报告内容')).toBeTruthy();
+  });
+
+  it('下架/软删/跨公司：统一 not-found，不渲染任何资料字段', async () => {
     fetchDetailMock.mockResolvedValue({
       ok: false,
       reason: 'not-found',
       message: '参考资料不存在或不可查看。',
     });
 
-    render(<ReferenceDocumentDetailPanel canManage={true} documentId={999999} />);
+    renderPanel();
 
-    await screen.findByText('参考资料不存在或不可查看。');
-
-    expect(screen.queryByText('删除')).toBeNull();
-    expect(screen.getByRole('button', { name: /返回列表/ })).toBeTruthy();
+    expect(await screen.findByText('参考资料不存在或不可查看。')).toBeTruthy();
+    expect(screen.queryByText('光源模块周期性维护要点。')).toBeNull();
   });
 
-  it('加载失败展示共享错误文案与重试入口', async () => {
-    fetchDetailMock.mockRejectedValue(
-      new (await import('@/shared/graphql')).GraphQLIngressError({
-        type: 'network',
-        message: 'fetch failed',
-      }),
+  it('非法 documentId：不发起详情请求，直接 not-found', async () => {
+    render(
+      <ReferenceDocumentDetailPanel
+        documentId={null}
+        viewer={{ role: 'ENGINEER', adminLevel: null }}
+      />,
     );
 
-    render(<ReferenceDocumentDetailPanel canManage={false} documentId={970002} />);
-
-    await screen.findByText('网络连接异常，请稍后重试。');
-    expect(screen.getByRole('button', { name: /重\s*试/ })).toBeTruthy();
+    expect(await screen.findByText('参考资料不存在或不可查看。')).toBeTruthy();
+    expect(fetchDetailMock).not.toHaveBeenCalled();
   });
 
-  it('编辑：提交成功后刷新详情并退出编辑态；取消丢弃修改', async () => {
-    const detail = buildDetail(970002);
+  it('下载失败：提示后端消息，不触发浏览器保存', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
+    downloadFileMock.mockResolvedValue({
+      ok: false,
+      reason: 'file-not-available',
+      message: '该资料没有可下载的文件。',
+    });
 
-    fetchDetailMock.mockResolvedValueOnce({ ok: true, detail }).mockResolvedValueOnce({
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: '下载原件' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('该资料没有可下载的文件。')).toBeTruthy();
+    });
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReferenceDocumentManagementSection（任务 07 R053/R058–R061 入口显隐）', () => {
+  const onlineDetail = () => buildDetail();
+
+  it('一级管理员：渲染四项管理入口；工程师看不到', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: onlineDetail() });
+
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
+
+    expect(await screen.findByRole('button', { name: '管理修订' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '下架资料' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除资料' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '上传归属管理' })).toBeTruthy();
+  });
+
+  it('一级管理员点「管理修订」：进入独立管理修订页（不发出任何 mutation）', async () => {
+    fetchDetailMock.mockResolvedValue({
       ok: true,
-      detail: { ...detail, title: '改名后的维护指南' },
+      detail: buildDetail({ effectiveRevisionNo: 0 }),
     });
-    updateMock.mockResolvedValue({ ok: true, id: 970002 });
 
-    render(<ReferenceDocumentDetailPanel canManage={true} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
 
-    // 进入编辑态
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
+    fireEvent.click(await screen.findByRole('button', { name: '管理修订' }));
 
-    // 取消路径：丢弃修改回详情
-    fireEvent.click(screen.getByRole('button', { name: /取消编辑/ }));
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-    expect(updateMock).not.toHaveBeenCalled();
-
-    // 提交路径：成功后刷新并回到详情展示
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
-    fireEvent.change(screen.getByPlaceholderText('请输入文档标题'), {
-      target: { value: '改名后的维护指南' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }));
-
-    await screen.findByText('改名后的维护指南');
-    expect(updateMock).toHaveBeenCalledWith(
-      970002,
-      expect.objectContaining({
-        title: '改名后的维护指南',
-      }),
-    );
-    expect(fetchDetailMock).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText('编辑参考资料')).toBeNull();
+    // 独立管理修订页（任务 07）：详情页只做入口导航，修订表单在独立页
+    expect(navigateMock).toHaveBeenCalledWith('/admin/reference-revise/970002');
+    expect(vi.mocked(referenceDocumentAdapter.reviseReferenceDocument)).not.toHaveBeenCalled();
   });
 
-  it('ID 变化时同步退出旧资料的编辑态（负责人 0909 阻塞项 2 验收）', async () => {
-    fetchDetailMock.mockImplementation(
-      (id) => Promise.resolve({ ok: true, detail: buildDetail(id) }) as never,
-    );
+  it('工程师（非作者）：不渲染任何管理入口', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: onlineDetail() });
 
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={970002} />,
-    );
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel();
 
-    // 在资料 970002 上进入编辑态
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
-
-    // 切换到另一份资料：编辑态必须被清除，不得沿用旧资料开启的编辑界面
-    rerender(<ReferenceDocumentDetailPanel canManage={true} documentId={970003} />);
-
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-    expect(screen.queryByText('编辑参考资料')).toBeNull();
-    // 且详情展示操作目标与新 ID 一致（保存/删除发送的 documentId 与界面显示一致）
-    expect(screen.getByRole('button', { name: /编\s*辑/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '下载原件' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '管理修订' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '下架资料' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '删除资料' })).toBeNull();
   });
 
-  it('软删：二次确认后删除并回列表，未确认前不发请求；成功路径不回刷详情', async () => {
-    const detail = buildDetail(970002);
-
-    fetchDetailMock.mockResolvedValue({ ok: true, detail });
+  it('原作者（工程师）：仅渲染作者删除入口；Modal 确认后携带 expected_version 并提示成功', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({ viewerIsOriginalAuthor: true }),
+    });
+    const deleteMock = vi.mocked(referenceDocumentAdapter.deleteReferenceDocument);
     deleteMock.mockResolvedValue({ ok: true });
 
-    render(<ReferenceDocumentDetailPanel canManage={true} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-    expect(fetchDetailMock).toHaveBeenCalledTimes(1);
+    renderPanel();
 
-    // 未确认前不调用删除（精确匹配主按钮，避免命中 Popconfirm 的「确认删除」）
-    fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-    expect(deleteMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '删除资料' }));
+    // Modal 独立确认（R053）：确认后才发出 mutation
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
 
-    // Popconfirm 确认
-    fireEvent.click(await screen.findByText('确认删除'));
-
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/reference-documents'));
-    // 成功即离页，不产生多余详情查询
-    expect(fetchDetailMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(deleteMock).toHaveBeenCalledWith(970002, 0);
+    });
+    expect(await screen.findByText('资料已删除。')).toBeTruthy();
+    deleteMock.mockReset();
   });
 
-  it('软删业务失败：给原因并精确回刷一次详情，不乐观跳转（去掉生产 reload 本用例必红）', async () => {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
+  it('作者删除版本过期：显式提示重读，不伪造成功', async () => {
+    fetchDetailMock.mockResolvedValue({
+      ok: true,
+      detail: buildDetail({ viewerIsOriginalAuthor: true }),
+    });
+    const deleteMock = vi.mocked(referenceDocumentAdapter.deleteReferenceDocument);
     deleteMock.mockResolvedValue({
       ok: false,
-      reason: 'not-found',
-      message: '参考资料不存在或不可删除。',
+      reason: 'version-conflict',
+      message: '资料版本已更新，请重新读取当前版本后重试。',
     });
 
-    render(<ReferenceDocumentDetailPanel canManage={true} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
+    renderPanel();
 
-    // 基线查询次数：断言「失败后精确 +1」，避免只证「曾调用过」的恒真断言
-    const baselineFetchCount = fetchDetailMock.mock.calls.length;
+    fireEvent.click(await screen.findByRole('button', { name: '删除资料' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
 
-    expect(baselineFetchCount).toBe(1);
-
-    fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-    fireEvent.click(await screen.findByText('确认删除'));
-
-    await screen.findByText('参考资料不存在或不可删除。');
-    await waitFor(() => expect(fetchDetailMock).toHaveBeenCalledTimes(baselineFetchCount + 1));
-    expect(navigateMock).not.toHaveBeenCalled();
-  });
-
-  it('软删抛异常：兜底文案并精确回刷一次详情，不乐观跳转且不外泄原始错误', async () => {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
-    deleteMock.mockRejectedValue(new Error('boom: delete transport failure'));
-
-    render(<ReferenceDocumentDetailPanel canManage={true} documentId={970002} />);
-    await screen.findByText('NXE:3400C 光源维护指南（Mock）');
-
-    const baselineFetchCount = fetchDetailMock.mock.calls.length;
-
-    fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-    fireEvent.click(await screen.findByText('确认删除'));
-
-    await screen.findByText('参考资料删除失败，请稍后重试。');
-    expect(screen.queryByText(/boom/)).toBeNull();
-    await waitFor(() => expect(fetchDetailMock).toHaveBeenCalledTimes(baselineFetchCount + 1));
-    expect(navigateMock).not.toHaveBeenCalled();
+    expect(await screen.findByText('资料版本已更新，请重新读取当前版本后重试。')).toBeTruthy();
+    deleteMock.mockReset();
   });
 });
 
-/**
- * 操作目标守卫矩阵（PR5 S4 评审 Codex P1-1）：
- * 在资料 A 上发起 update / delete / download 并保持 pending，切换到资料 B 且 B 先就绪，
- * 再结算 A 的旧结果。旧目标的任何结果都不得提示、不得导航、不得把 A reload 进 B 的路由
- * （否则「界面显示 B、内容却是 A」，用户随后保存会把 A 的字段写入 B），
- * 也不得让旧目标的 pending 状态继续锁住 B 的操作入口。
- */
-describe('ReferenceDocumentDetailPanel 操作目标守卫（A pending → 切 B → A settle）', () => {
-  const DETAIL_A = { ...buildDetail(970002), title: '甲资料标题' };
-  const DETAIL_B = { ...buildDetail(970003), title: '乙资料标题' };
-
-  /** A / B 详情按 id 区分返回，用于识别「旧资料被 reload 回新路由」 */
-  function mockDetailByTarget() {
-    fetchDetailMock.mockImplementation(
-      (id) =>
-        Promise.resolve({
-          ok: true,
-          detail: id === DETAIL_B.id ? DETAIL_B : DETAIL_A,
-        }) as never,
-    );
-  }
-
-  const fetchCountFor = (id: number) =>
-    fetchDetailMock.mock.calls.filter(([calledId]) => calledId === id).length;
-
-  async function switchToB(rerender: ReturnType<typeof render>['rerender'], canManage: boolean) {
-    rerender(<ReferenceDocumentDetailPanel canManage={canManage} documentId={DETAIL_B.id} />);
-    await screen.findByText(DETAIL_B.title);
-  }
-
-  it('编辑成功结果跨目标：不提示成功、不 reload 回新路由，后续编辑只写 B', async () => {
-    mockDetailByTarget();
-    let resolveUpdate: ((value: { ok: true; id: number }) => void) | undefined;
-
-    updateMock.mockImplementation(
-      () =>
-        new Promise<{ ok: true; id: number }>((resolve) => {
-          resolveUpdate = resolve;
-        }) as never,
-    );
-
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
-    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }));
-    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(1));
-    expect(updateMock).toHaveBeenCalledWith(DETAIL_A.id, expect.anything());
-
-    await switchToB(rerender, true);
-    expect(fetchCountFor(DETAIL_A.id)).toBe(1);
-
-    const noticesBefore = snapshotNotices();
-
-    await act(async () => {
-      resolveUpdate?.({ ok: true, id: DETAIL_A.id });
-    });
-
-    // 旧目标结果被丢弃：不新增任何提示、不把 A reload 回 B 的路由
-    expect(addedNotices(noticesBefore)).toHaveLength(0);
-    expect(screen.queryByText(DETAIL_A.title)).toBeNull();
-    expect(screen.getByText(DETAIL_B.title)).toBeTruthy();
-    expect(fetchCountFor(DETAIL_A.id)).toBe(1);
-
-    // 后续编辑必须只作用于 B（界面显示与写入目标一致）
-    updateMock.mockResolvedValue({ ok: true, id: DETAIL_B.id });
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
-    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }));
-    await waitFor(() =>
-      expect(updateMock).toHaveBeenLastCalledWith(DETAIL_B.id, expect.anything()),
-    );
-  });
-
-  it('编辑业务失败结果跨目标：不改写新目标状态、不 reload A', async () => {
-    mockDetailByTarget();
-    let resolveUpdate: ((value: { ok: false; message: string }) => void) | undefined;
-
-    updateMock.mockImplementation(
-      () =>
-        new Promise<{ ok: false; message: string }>((resolve) => {
-          resolveUpdate = resolve;
-        }) as never,
-    );
-
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
-    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }));
-    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(1));
-
-    await switchToB(rerender, true);
-
-    const noticesBefore = snapshotNotices();
-
-    await act(async () => {
-      resolveUpdate?.({ ok: false, message: '甲资料更新被拒绝。' });
-    });
-
-    // 说明：编辑失败结果只回传给表单，而表单已随目标切换卸载，因此本用例对
-    // 「守卫本身」不具鉴别力（有无守卫都看不到差别）；它钉住的是「不泄漏」这一独立要求：
-    // 旧目标的失败既不得渲染进新目标界面，也不得升级为全局提示或回刷 A。
-    expect(screen.queryByText('甲资料更新被拒绝。')).toBeNull();
-    expect(addedNotices(noticesBefore)).toHaveLength(0);
-    expect(screen.getByText(DETAIL_B.title)).toBeTruthy();
-    expect(fetchCountFor(DETAIL_A.id)).toBe(1);
-    // 旧目标的挂起/失败不得锁住新目标的编辑入口
-    expect(screen.getByRole('button', { name: /编\s*辑/ })).toBeTruthy();
-  });
-
-  it('软删成功结果跨目标：不跳转列表、不提示成功、不改写 B', async () => {
-    mockDetailByTarget();
-    let resolveDelete: ((value: { ok: true }) => void) | undefined;
-
-    deleteMock.mockImplementation(
-      () =>
-        new Promise<{ ok: true }>((resolve) => {
-          resolveDelete = resolve;
-        }) as never,
-    );
-
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-    fireEvent.click(await screen.findByText('确认删除'));
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1));
-    expect(deleteMock).toHaveBeenCalledWith(DETAIL_A.id);
-
-    await switchToB(rerender, true);
-    // 旧目标 pending 期间的操作锁已随目标切换放开，B 的删除入口可用
-    expect((screen.getByRole('button', { name: '删 除' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
-
-    const noticesBefore = snapshotNotices();
-
-    await act(async () => {
-      resolveDelete?.({ ok: true });
-    });
-
-    expect(navigateMock).not.toHaveBeenCalled();
-    expect(addedNotices(noticesBefore)).toHaveLength(0);
-    expect(screen.getByText(DETAIL_B.title)).toBeTruthy();
-    // 且 B 的删除入口未被旧目标的收尾逻辑重新锁死
-    expect((screen.getByRole('button', { name: '删 除' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
-
-    // 且 B 能立即发起自己的删除：目标切换后旧目标不得再持有 B 的操作锁，
-    // 否则按钮看似可用、点击却静默失效（在途锁仍被旧目标占着）
-    deleteMock.mockResolvedValue({ ok: true });
-    fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-
-    await waitFor(() => expect(visibleConfirmButtons()).toHaveLength(1));
-
-    fireEvent.click(visibleConfirmButtons()[0]);
-
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(2));
-    expect(deleteMock).toHaveBeenLastCalledWith(DETAIL_B.id);
-    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/reference-documents'));
-  });
-
-  it('软删业务失败结果跨目标：不提示、不 reload A、不跳转', async () => {
-    mockDetailByTarget();
-    let resolveDelete: ((value: { ok: false; message: string }) => void) | undefined;
-
-    deleteMock.mockImplementation(
-      () =>
-        new Promise<{ ok: false; message: string }>((resolve) => {
-          resolveDelete = resolve;
-        }) as never,
-    );
-
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-    fireEvent.click(await screen.findByText('确认删除'));
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1));
-
-    await switchToB(rerender, true);
-
-    await act(async () => {
-      resolveDelete?.({ ok: false, message: '甲资料删除被拒绝。' });
-    });
-
-    expect(screen.queryByText('甲资料删除被拒绝。')).toBeNull();
-    expect(navigateMock).not.toHaveBeenCalled();
-    expect(fetchCountFor(DETAIL_A.id)).toBe(1);
-    expect(screen.getByText(DETAIL_B.title)).toBeTruthy();
-  });
-
-  it('下载成功结果跨目标：不提示、不触发浏览器保存、B 的下载入口不残留 loading', async () => {
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-    let resolveDownload: ((value: { ok: true; blob: Blob; filename: string }) => void) | undefined;
-
-    mockDetailByTarget();
-    downloadFileMock.mockImplementation(
-      () =>
-        new Promise<{ ok: true; blob: Blob; filename: string }>((resolve) => {
-          resolveDownload = resolve;
-        }) as never,
-    );
-
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={false} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
-    await waitFor(() => expect(downloadFileMock).toHaveBeenCalledTimes(1));
-    expect(downloadFileMock).toHaveBeenCalledWith(DETAIL_A.id);
-
-    await switchToB(rerender, false);
-
-    // 旧目标 pending 期间不得让 B 的下载按钮停留在 loading：
-    // 若 A 的请求挂死，B 将永远无法下载（在途按钮态须随目标切换放开）
-    expect(
-      screen.getByRole('button', { name: /下载文件/ }).classList.contains('ant-btn-loading'),
-    ).toBe(false);
-
-    await act(async () => {
-      resolveDownload?.({
-        ok: true,
-        blob: new Blob(['pdf-bytes'], { type: 'application/pdf' }),
-        filename: 'a-document.pdf',
-      });
-    });
-
-    // 不得在 B 的界面下触发 A 的文件保存
-    expect(URL.createObjectURL).not.toHaveBeenCalled();
-    expect(clickSpy).not.toHaveBeenCalled();
-    // 旧目标 pending 不得让 B 的下载按钮永久 loading
-    await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: /下载文件/ }).classList.contains('ant-btn-loading'),
-      ).toBe(false),
-    );
-    expect(screen.getByText(DETAIL_B.title)).toBeTruthy();
-
-    // 且 B 能立即发起自己的下载：目标切换必须同时释放 downloadingRef，
-    // 否则按钮看似可用、点击却静默失效（防连点 ref 仍被旧目标占着）
-    downloadFileMock.mockResolvedValue({
+describe('ReferenceDocumentManagementSection（危险操作 Modal 独立确认）', () => {
+  it('下架资料：Modal 确认后携带原因与 expected_version；取消不发出 mutation', async () => {
+    fetchDetailMock.mockResolvedValue({
       ok: true,
-      blob: new Blob(['b-bytes'], { type: 'application/pdf' }),
-      filename: 'b-document.pdf',
+      detail: buildDetail({ effectiveRevisionNo: 2 }),
     });
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
+    const offlineMock = vi.mocked(referenceDocumentAdapter.offlineReferenceDocument);
+    offlineMock.mockResolvedValue({ ok: true, id: 970002, revisionNo: 3 });
 
-    await waitFor(() => expect(downloadFileMock).toHaveBeenCalledTimes(2));
-    expect(downloadFileMock).toHaveBeenLastCalledWith(DETAIL_B.id);
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
 
-    clickSpy.mockRestore();
+    fireEvent.click(await screen.findByRole('button', { name: '下架资料' }));
+    expect(await screen.findByText('确认下架该正式资料？')).toBeTruthy();
+
+    // 取消确认：不发 mutation，不改变页面状态（资料详情仍在）
+    fireEvent.click(screen.getByRole('button', { name: '取 消' }));
+    expect(offlineMock).not.toHaveBeenCalled();
+    expect(screen.queryByText('确认下架该正式资料？')).toBeNull();
+    expect(screen.getByText('NXE:3400C 光源维护指南')).toBeTruthy();
+
+    // 再次打开并确认：携带 expected_version 2 与原因
+    fireEvent.click(screen.getByRole('button', { name: '下架资料' }));
+    fireEvent.change(screen.getByPlaceholderText('操作原因（必填，不超过 500 字）'), {
+      target: { value: '内容过期，需下架' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '确认下架' }));
+
+    await waitFor(() => {
+      expect(offlineMock).toHaveBeenCalledWith(970002, 2, '内容过期，需下架');
+    });
+    expect(await screen.findByText('资料已下架。')).toBeTruthy();
+    offlineMock.mockReset();
   });
 
-  it('下载失败结果跨目标：不提示旧目标错误、不残留 loading', async () => {
-    let resolveDownload:
-      | ((value: { ok: false; reason: 'file-not-available'; message: string }) => void)
-      | undefined;
+  it('下架原因必填：空白原因不发 mutation，错误提示后可补填重试', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
+    const offlineMock = vi.mocked(referenceDocumentAdapter.offlineReferenceDocument);
+    offlineMock.mockResolvedValue({ ok: true, id: 970002, revisionNo: 1 });
 
-    mockDetailByTarget();
-    downloadFileMock.mockImplementation(
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
+
+    fireEvent.click(await screen.findByRole('button', { name: '下架资料' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认下架' }));
+
+    expect(await screen.findByText('操作原因必填，请填写后再提交。')).toBeTruthy();
+    expect(offlineMock).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText('操作原因（必填，不超过 500 字）'), {
+      target: { value: '重复上架来源' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '确认下架' }));
+
+    await waitFor(() => {
+      expect(offlineMock).toHaveBeenCalledWith(970002, 0, '重复上架来源');
+    });
+    offlineMock.mockReset();
+  });
+
+  it('下架与管理删除分别确认：各自 Modal 只触发对应 mutation，不能串用', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
+    const offlineMock = vi.mocked(referenceDocumentAdapter.offlineReferenceDocument);
+    const adminDeleteMock = vi.mocked(referenceDocumentAdapter.adminDeleteReferenceDocument);
+    offlineMock.mockResolvedValue({ ok: true, id: 970002, revisionNo: 1 });
+    adminDeleteMock.mockResolvedValue({ ok: true, id: 970002, revisionNo: 1 });
+
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
+
+    // 下架确认流只发 offline
+    fireEvent.click(await screen.findByRole('button', { name: '下架资料' }));
+    fireEvent.change(screen.getByPlaceholderText('操作原因（必填，不超过 500 字）'), {
+      target: { value: '下架' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '确认下架' }));
+    await waitFor(() => {
+      expect(offlineMock).toHaveBeenCalledTimes(1);
+    });
+    expect(adminDeleteMock).not.toHaveBeenCalled();
+
+    // 等下架成功提示出现（Modal 随成功关闭），再进入管理删除确认流
+    await screen.findByText('资料已下架。');
+    fireEvent.click(await screen.findByRole('button', { name: '删除资料' }));
+    fireEvent.change(screen.getByPlaceholderText('操作原因（必填，不超过 500 字）'), {
+      target: { value: '违规内容' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    await waitFor(() => {
+      expect(adminDeleteMock).toHaveBeenCalledTimes(1);
+    });
+    // 下架 mutation 未被串用（仍只有一次）
+    expect(offlineMock).toHaveBeenCalledTimes(1);
+    offlineMock.mockReset();
+    adminDeleteMock.mockReset();
+  });
+
+  it('请求失败：错误提示但不关闭 Modal，可取消退出；重复 onOk 在 busy 期间被忽略', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
+    const offlineMock = vi.mocked(referenceDocumentAdapter.offlineReferenceDocument);
+    type OfflineOutcome = Awaited<
+      ReturnType<typeof referenceDocumentAdapter.offlineReferenceDocument>
+    >;
+    let resolveOffline!: (value: OfflineOutcome) => void;
+    offlineMock.mockImplementation(
       () =>
-        new Promise<{ ok: false; reason: 'file-not-available'; message: string }>((resolve) => {
-          resolveDownload = resolve;
-        }) as never,
+        new Promise<OfflineOutcome>((resolve) => {
+          resolveOffline = resolve;
+        }),
     );
 
-    const { rerender } = render(
-      <ReferenceDocumentDetailPanel canManage={false} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
-    await waitFor(() => expect(downloadFileMock).toHaveBeenCalledTimes(1));
-
-    await switchToB(rerender, false);
-
-    // 同「下载成功结果跨目标」：在途按钮态须随目标切换放开，不依赖旧目标 settle
-    expect(
-      screen.getByRole('button', { name: /下载文件/ }).classList.contains('ant-btn-loading'),
-    ).toBe(false);
-
-    await act(async () => {
-      resolveDownload?.({ ok: false, reason: 'file-not-available', message: '甲资料无文件。' });
+    fireEvent.click(await screen.findByRole('button', { name: '下架资料' }));
+    fireEvent.change(screen.getByPlaceholderText('操作原因（必填，不超过 500 字）'), {
+      target: { value: '下架' },
     });
+    const okButton = await screen.findByRole('button', { name: '确认下架' });
+    fireEvent.click(okButton);
 
-    expect(screen.queryByText('甲资料无文件。')).toBeNull();
-    await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: /下载文件/ }).classList.contains('ant-btn-loading'),
-      ).toBe(false),
-    );
-    expect(screen.getByText(DETAIL_B.title)).toBeTruthy();
-  });
-});
-
-/**
- * 调度一次宏任务并等待其执行。
- * Node 下优先用 `setImmediate`：React 调度器的回调就排在同一个 check 队列里，
- * FIFO 保证「先入队的调度回调先跑完」；浏览器语义下回退到 setTimeout。
- * （`setImmediate` 是 Node 全局，前端 tsconfig 未引入 node 类型，故在此显式取值。）
- */
-function waitMacrotask(): Promise<void> {
-  const setImmediateFn = (
-    globalThis as typeof globalThis & {
-      setImmediate?: (callback: () => void) => void;
-    }
-  ).setImmediate;
-
-  return new Promise((resolve) => {
-    if (setImmediateFn === undefined) {
-      setTimeout(resolve, 0);
-
-      return;
-    }
-
-    setImmediateFn(resolve);
-  });
-}
-
-/**
- * 排空 React 调度器（P2-4 根因处置，实测复现后修复）：
- * react-dom 的 `commitRootImpl` 只要提交里带 passive effect 标记，就会用
- * `scheduleCallback(NormalPriority, …)` 把 passive effects 的 flush 排进 React 调度器，
- * 该回调在 Node 下经 `setImmediate` 执行，回调体第一行即读取 `window.event`。
- * 若这个已入队的回调一直留到 vitest 拆除 jsdom 之后才执行，就会抛出
- * `ReferenceError: window is not defined`（实测在 6 轮全量单测中复现 1 次，
- * 属与本文件最后一个提交绑定的竞态）。这里在 act 内等待若干次宏任务，
- * 让已入队回调在 window 仍存在时按 FIFO 跑完。
- */
-async function drainReactScheduler(): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
-    await act(async () => {
-      await waitMacrotask();
+    // busy 期间的第二次 onOk 直接忽略（防重复提交）：复用同一按钮引用再点一次
+    fireEvent.click(okButton);
+    await waitFor(() => {
+      expect(offlineMock).toHaveBeenCalledTimes(1);
     });
-  }
-}
+    expect(offlineMock).not.toHaveBeenCalledTimes(2);
 
-/**
- * 卸载失效矩阵（PR5 S4 双报告修复复检 Codex P2-1）：
- * 用户经侧栏离开详情页使面板卸载后，代次必须失效——在途的 update / delete / download
- * 只能静默收尾：不提示全局消息、不 navigate、不 reload、不触发浏览器保存。
- * 否则旧删除成功会把已进入其他页面的用户强制带回资料列表，旧下载也会在错误上下文触发保存。
- * 三个用例都在 act 内推进 promise 与卸载，排空收尾调度，避免 jsdom 拆除后残留调度
- * （回执 §6 的未处理异常归因）；每个用例收尾再显式 drainReactScheduler，避免已入队的
- * React 调度回调跨过本文件的 jsdom 拆除（P2-4）。
- */
-describe('ReferenceDocumentDetailPanel 卸载后旧操作失效（pending → unmount → settle）', () => {
-  const DETAIL_A = { ...buildDetail(970002), title: '甲资料标题' };
-
-  function mockDetail() {
-    fetchDetailMock.mockResolvedValue({ ok: true, detail: DETAIL_A });
-  }
-
-  it('编辑 pending 期间卸载：旧更新结果不提示成功、不 reload', async () => {
-    mockDetail();
-    let resolveUpdate: ((value: { ok: true; id: number }) => void) | undefined;
-
-    updateMock.mockImplementation(
-      () =>
-        new Promise<{ ok: true; id: number }>((resolve) => {
-          resolveUpdate = resolve;
-        }) as never,
-    );
-
-    const { unmount } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }));
-    await screen.findByText('编辑参考资料');
-    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }));
-    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(1));
-
-    const baselineFetchCount = fetchDetailMock.mock.calls.length;
-    const noticesBefore = snapshotNotices();
-
-    // 请求 pending 期间离开详情页
-    act(() => {
-      unmount();
+    resolveOffline({
+      ok: false,
+      reason: 'management-failed',
+      message: '资料管理操作失败，请稍后重试。',
     });
-
-    await act(async () => {
-      resolveUpdate?.({ ok: true, id: DETAIL_A.id });
-    });
-
-    expect(addedNotices(noticesBefore)).toHaveLength(0);
-    expect(navigateMock).not.toHaveBeenCalled();
-    // 卸载后的旧结果不得再触发详情回刷
-    expect(fetchDetailMock).toHaveBeenCalledTimes(baselineFetchCount);
-
-    await drainReactScheduler();
+    expect(await screen.findByText('资料管理操作失败，请稍后重试。')).toBeTruthy();
+    // 失败后 Modal 仍打开，可取消退出
+    expect(screen.getByText('确认下架该正式资料？')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: '取 消' }));
+    expect(screen.queryByText('确认下架该正式资料？')).toBeNull();
+    offlineMock.mockReset();
   });
 
-  it('软删 pending 期间卸载：旧删除结果不提示成功、不跳转列表、不 reload', async () => {
-    mockDetail();
-    let resolveDelete: ((value: { ok: true }) => void) | undefined;
+  it('权限入口显隐：工程师看不到危险操作入口；一级管理员看到三项独立确认入口', async () => {
+    fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail() });
 
-    deleteMock.mockImplementation(
-      () =>
-        new Promise<{ ok: true }>((resolve) => {
-          resolveDelete = resolve;
-        }) as never,
-    );
+    renderPanel();
 
-    const { unmount } = render(
-      <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
+    expect(await screen.findByRole('button', { name: '下载原件' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '下架资料' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '删除资料' })).toBeNull();
 
-    await confirmVisibleDelete();
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1));
-    expect(deleteMock).toHaveBeenCalledWith(DETAIL_A.id);
-
-    const baselineFetchCount = fetchDetailMock.mock.calls.length;
-    const noticesBefore = snapshotNotices();
-
-    act(() => {
-      unmount();
-    });
-
-    await act(async () => {
-      resolveDelete?.({ ok: true });
-    });
-
-    // 关键：不得把已离开详情页的用户强制导航回资料列表
-    expect(navigateMock).not.toHaveBeenCalled();
-    expect(addedNotices(noticesBefore)).toHaveLength(0);
-    expect(fetchDetailMock).toHaveBeenCalledTimes(baselineFetchCount);
-
-    await drainReactScheduler();
-  });
-
-  it('下载 pending 期间卸载：旧下载成功不提示、不触发浏览器保存', async () => {
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-    let resolveDownload: ((value: { ok: true; blob: Blob; filename: string }) => void) | undefined;
-
-    mockDetail();
-    downloadFileMock.mockImplementation(
-      () =>
-        new Promise<{ ok: true; blob: Blob; filename: string }>((resolve) => {
-          resolveDownload = resolve;
-        }) as never,
-    );
-
-    const { unmount } = render(
-      <ReferenceDocumentDetailPanel canManage={false} documentId={DETAIL_A.id} />,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    fireEvent.click(screen.getByRole('button', { name: /下载文件/ }));
-    await waitFor(() => expect(downloadFileMock).toHaveBeenCalledTimes(1));
-
-    const noticesBefore = snapshotNotices();
-
-    act(() => {
-      unmount();
-    });
-
-    await act(async () => {
-      resolveDownload?.({
-        ok: true,
-        blob: new Blob(['pdf-bytes'], { type: 'application/pdf' }),
-        filename: 'a-document.pdf',
-      });
-    });
-
-    expect(URL.createObjectURL).not.toHaveBeenCalled();
-    expect(clickSpy).not.toHaveBeenCalled();
-    expect(addedNotices(noticesBefore)).toHaveLength(0);
-    expect(navigateMock).not.toHaveBeenCalled();
-
-    clickSpy.mockRestore();
-
-    await drainReactScheduler();
-  });
-
-  it('StrictMode 的 effect setup → cleanup → setup 重放不误判失效：首次可交互操作仍正常完成', async () => {
-    // 应用入口启用 StrictMode（src/main.tsx），effect 会被 setup → cleanup → setup 重放。
-    // 若 cleanup 无条件作废代次，首次挂载后的正常操作也会被当成「旧代次」而静默失效，
-    // 本用例钉住这一反向约束（与上面三个卸载失效用例互为对照）。
-    mockDetail();
-    deleteMock.mockResolvedValue({ ok: true });
-
-    const { unmount } = render(
-      <StrictMode>
-        <ReferenceDocumentDetailPanel canManage={true} documentId={DETAIL_A.id} />
-      </StrictMode>,
-    );
-    await screen.findByText(DETAIL_A.title);
-
-    // AntD Popconfirm 的开启与删除结果回调由 React 调度器分多跳推进（rc-motion 动画帧 +
-    // NormalPriority → setImmediate 的 passive effect flush）。StrictMode 的 effect
-    // setup → cleanup → setup 重放会再多一跳，使其中一次 setState 落在 fireEvent / waitFor
-    // 各自的 act 边界之外，输出「An update to ForwardRef / ReferenceDocumentDetailPanel
-    // was not wrapped in act(...)」（实测仅本用例复现 3 条）。故把整段交互与调度排空收进
-    // 同一个异步 act：act 在其整个 await 窗口内保持收集状态，多跳更新都会落在边界内。
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '删 除' }));
-      for (let round = 0; round < 3; round += 1) {
-        await waitMacrotask();
-      }
-
-      expect(visibleConfirmButtons()).toHaveLength(1);
-
-      fireEvent.click(visibleConfirmButtons()[0]);
-      for (let round = 0; round < 3; round += 1) {
-        await waitMacrotask();
-      }
-    });
-
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1));
-    expect(deleteMock).toHaveBeenCalledWith(DETAIL_A.id);
-    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/reference-documents'));
-
-    // P2-4：本用例是文件内最后一个提交来源，显式卸载（免去 RTL afterEach cleanup 再产生一次
-    // 卸载提交）后立即排空调度器，确保文件结束时 React 调度队列为空。
-    await act(async () => {
-      unmount();
-    });
-    await drainReactScheduler();
+    renderPanel({ role: 'SUPER_ADMIN', adminLevel: 1 });
+    expect(await screen.findByRole('button', { name: '下架资料' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除资料' })).toBeTruthy();
   });
 });

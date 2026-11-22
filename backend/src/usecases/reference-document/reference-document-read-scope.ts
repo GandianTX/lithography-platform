@@ -17,7 +17,7 @@ export interface ReferenceDocumentOrganizationReader {
 }
 
 /**
- * 参考资料库读侧范围决议（列表 / 详情 / 原件下载共用同一口径）。
+ * 参考资料库读侧范围决议（列表 / 详情 / 历史版本 / 原件下载共用同一口径）。
  *
  * - CUSTOMER 一律拒绝（`assertReferenceDocumentReadRole` 兜底，守卫层已拦截）；
  * - SUPER_ADMIN 且 `admin_level = 1`：GLOBAL（全部公司正式资料，功能 V5.6 R055、
@@ -28,6 +28,8 @@ export interface ReferenceDocumentOrganizationReader {
  * 等级来自账号当前事实（不信任 JWT 静态等级），组织来自可信成员关系（不接受客户端
  * 自报）。一级管理员不再要求本人组织成员关系：跨公司读取是需求明确授权，
  * 无成员关系不构成拒绝理由；二级管理员与工程师仍失败关闭。
+ * 范围只决定「哪些公司的正式资料可读」，上架/归属确认/软删谓词由 QueryService
+ * 统一叠加，避免各入口各写一套过滤条件。
  */
 export async function resolveReferenceDocumentReadScope(params: {
   session: UsecaseSession;

@@ -78,6 +78,7 @@ import { ManagementAuditService } from './management-audit.service';
 import { OrganizationMembershipService } from './organization-membership.service';
 import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
+import { ReferenceDocumentRevisionService } from './reference-document-revision.service';
 import { ReferenceDocumentService } from './reference-document.service';
 import { RepairProcessEntryService } from './repair-process-entry.service';
 import { IntakeAnalysisService } from './intake-analysis.service';
@@ -161,6 +162,7 @@ const LITHOGRAPHY_ENTITIES = [
     RepairProcessEntryService,
     StoredFileService,
     StoredFileQueryService,
+    ReferenceDocumentRevisionService,
     ReferenceDocumentService,
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,
@@ -203,6 +205,7 @@ const LITHOGRAPHY_ENTITIES = [
     RepairProcessEntryService,
     StoredFileService,
     StoredFileQueryService,
+    ReferenceDocumentRevisionService,
     ReferenceDocumentService,
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,

@@ -20,6 +20,28 @@ export function assertMaintenanceReportAuthorRole(session: UsecaseSession): void
   }
 }
 
+/**
+ * 「我的资料记录」读入口（任务 07 R052，页面 V6.5 §9.2）：工程师或管理员均可进入。
+ *
+ * - 管理员（SUPER_ADMIN）保留本人记录查询，无工程师报告新建入口；
+ * - 「不显示他人创建的记录」不在角色层实现：列表/详情的归属谓词
+ *   （作者本人 + 本组织资源授权，2026-11-21 页面设计确认）在 usecase 内统一收敛——
+ *   他人草稿/待审/正式记录对本页面统一 NOT_FOUND 或空列表；
+ * - 新建/提交/续填等写入口仍走 assertMaintenanceReportAuthorRole（仅工程师），
+ *   不要把本断言扩大到写路径。
+ */
+export function assertMyMaintenanceReportReadEntryRole(session: UsecaseSession): void {
+  const allowed =
+    session.activeRole === IdentityTypeEnum.ENGINEER ||
+    session.activeRole === IdentityTypeEnum.SUPER_ADMIN;
+  if (!allowed) {
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      '当前账号无权访问本人资料记录',
+    );
+  }
+}
+
 /** 总结审核：仅 roles 含 SUPER_ADMIN 且可信 activeRole 精确为 SUPER_ADMIN */
 export function assertMaintenanceReportReviewRole(session: UsecaseSession): void {
   const hasSuperAdminRole = session.roles.includes(IdentityTypeEnum.SUPER_ADMIN);

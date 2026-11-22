@@ -25,7 +25,7 @@
  * 深层 import feature 内部 adapter）；列表状态机与展示结构仍由生产组件决定，测试不复制规则。
  */
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ReferenceDocumentsPage } from './index';
@@ -190,31 +190,19 @@ describe('独立资料列表页的整页骨架与知识库视觉边界（PR5 整
   });
 });
 
-describe('S3-2 角色矩阵：新增入口只在页面页头主操作区，且仅 SUPER_ADMIN 渲染', () => {
-  it('ENGINEER 不渲染新增入口，页头动作区为空', async () => {
-    sessionMock.role = 'ENGINEER';
+describe('任务 07：页头不再渲染任何写入入口', () => {
+  it.each(['ENGINEER', 'SUPER_ADMIN'] as const)(
+    '%s 角色均无新增入口，页头动作区为空',
+    async (role) => {
+      sessionMock.role = role;
 
-    const { container } = render(<ReferenceDocumentsPage />);
-    await screen.findByText('参考资料 970001');
+      const { container } = render(<ReferenceDocumentsPage />);
+      await screen.findByText('参考资料 970001');
 
-    // AntD 图标按钮的可访问名为「plus 新增资料」（图标 aria-label 参与命名），故按子串匹配
-    expect(screen.queryByRole('button', { name: /新增资料/ })).toBeNull();
-    expect(container.querySelector('.page-header-extra')).toBeNull();
-    expect(navigateMock).not.toHaveBeenCalled();
-  });
-
-  it('SUPER_ADMIN 在页头动作区渲染新增入口，点击进入新增路由', async () => {
-    sessionMock.role = 'SUPER_ADMIN';
-
-    const { container } = render(<ReferenceDocumentsPage />);
-    await screen.findByText('参考资料 970001');
-
-    const entry = screen.getByRole('button', { name: /新增资料/ });
-    // 位置契约：入口必须落在页头动作区（页面主操作），不在列表卡内
-    expect(container.querySelector('.page-header-extra')?.contains(entry)).toBe(true);
-    expect(container.querySelector('.ant-card-extra')).toBeNull();
-
-    fireEvent.click(entry);
-    expect(navigateMock).toHaveBeenCalledWith('/reference-documents/new');
-  });
+      expect(screen.queryByRole('button', { name: /新增资料/ })).toBeNull();
+      expect(container.querySelector('.page-header-extra')).toBeNull();
+      expect(container.querySelector('.ant-card-extra')).toBeNull();
+      expect(navigateMock).not.toHaveBeenCalled();
+    },
+  );
 });
