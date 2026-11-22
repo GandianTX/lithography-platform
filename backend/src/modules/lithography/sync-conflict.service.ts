@@ -4,18 +4,14 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { In, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import { SyncConflictEntity } from './entities/sync-conflict.entity';
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
-import {
-  toSyncConflictSnapshot,
-  toSyncConflictSummary,
-} from './queries/sync-conflict.query.service';
+import { toSyncConflictSummary } from './queries/sync-conflict.query.service';
 import type {
   SyncConflictResolutionView,
   SyncConflictResolveCommand,
-  SyncConflictSnapshot,
   SyncConflictSummary,
 } from './sync.types';
 import {
@@ -87,8 +83,33 @@ export class SyncConflictService {
       status: entity.status,
       decision: entity.decision,
       localVersion: entity.localVersion,
+      localResolutionState: entity.localResolutionState,
       localSnapshot: entity.localSnapshot,
     };
+  }
+
+  /**
+   * 标记「保留本地」裁决的正文写入已经开始（review M7 幂等键）。
+   *
+   * 业务键就是冲突主键 `conflict_id`：本方法在**正文写入之前**先把该行标成
+   * `WRITING`，因此 tx3 失败后的重放能据此判断"正文是否已经写过"，
+   * 不会重复写正文。0 行表示该冲突已不是 PENDING（并发已裁决），调用方据此拒绝。
+   */
+  async markLocalResolutionWriting(
+    conflictId: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number> {
+    const repository = this.pickConflictRepository(transactionContext);
+    const result = await repository
+      .createQueryBuilder()
+      .update(SyncConflictEntity)
+      .set({ localResolutionState: 'WRITING' })
+      .where('conflictId = :conflictId AND status = :status', {
+        conflictId,
+        status: 'PENDING',
+      })
+      .execute();
+    return result.affected ?? 0;
   }
 
   /** 锁读：裁决与续期都要求先锁定行，避免并发裁决互相覆盖确认人 */
@@ -101,16 +122,6 @@ export class SyncConflictService {
       .setLock('pessimistic_write')
       .where('conflict.conflictId = :conflictId', { conflictId })
       .getOne();
-  }
-
-  async readConflictById(
-    conflictId: string,
-    transactionContext?: PersistenceTransactionContext,
-  ): Promise<SyncConflictSnapshot | null> {
-    const entity = await this.pickConflictRepository(transactionContext).findOne({
-      where: { conflictId },
-    });
-    return entity ? toSyncConflictSnapshot(entity) : null;
   }
 
   /**
@@ -141,7 +152,8 @@ export class SyncConflictService {
   }
 
   /**
-   * 「保留本地」裁决写回：与 CLOUD 同构，只把 decision 落成 LOCAL。
+   * 「保留本地」裁决写回：与 CLOUD 同构，只把 decision 落成 LOCAL，
+   * 并把幂等状态推进到 `WRITTEN`（review M7：正文与事实都写回后才算完成）。
    *
    * 条件更新（`WHERE status='PENDING'`）与 CHECK（PENDING ⇒ 确认人为空）一致：
    * 0 行表示并发期间已被其他会话裁决，调用方据以回读既有事实，不覆盖。
@@ -160,6 +172,7 @@ export class SyncConflictService {
         status: 'RESOLVED',
         confirmedByAccountId: command.confirmedByAccountId,
         confirmedAt,
+        localResolutionState: 'WRITTEN',
       })
       .where('conflictId = :conflictId AND status = :status', {
         conflictId: command.conflictId,
@@ -220,19 +233,5 @@ export class SyncConflictService {
     await repository.save(row);
 
     return { renewedAuthorizationId: String(row.id) };
-  }
-
-  /** 批量按主键读取（供 usecase 校验裁决后事实），仅限同一次调用内部使用 */
-  async readConflictsByIds(
-    conflictIds: readonly string[],
-    transactionContext?: PersistenceTransactionContext,
-  ): Promise<SyncConflictSnapshot[]> {
-    if (conflictIds.length === 0) {
-      return [];
-    }
-    const rows = await this.pickConflictRepository(transactionContext).find({
-      where: { conflictId: In([...conflictIds]) },
-    });
-    return rows.map(toSyncConflictSnapshot);
   }
 }

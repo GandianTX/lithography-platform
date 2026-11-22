@@ -56,6 +56,12 @@ export type SyncConflictResolutionView = {
   status: string;
   decision: string | null;
   localVersion: number | null;
+  /**
+   * 保留本地裁决幂等状态（review M7）：
+   * `WRITING`=正文写入已开始但冲突事实未改写；`WRITTEN`=正文与事实都已写回；
+   * `null`=从未走过本地裁决（历史行保持 NULL，不回填）。
+   */
+  localResolutionState: string | null;
   /** 本地快照 JSON 原文（保留本地裁决要映射的载荷来源） */
   localSnapshot: string;
 };

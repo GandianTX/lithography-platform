@@ -4,7 +4,10 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 import { RepairRequestHandlingResult } from '@app-types/models/repair-request.types';
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
 import type { MaintenanceRecordRawInput } from '@core/repair-request/policy/repair-request-maintenance.policy';
-import { planLocalConflictResolution } from '@core/local-runtime/policy/sync-conflict-local-resolution.policy';
+import {
+  planLocalConflictResolution,
+  resolveLocalResolutionReplay,
+} from '@core/local-runtime/policy/sync-conflict-local-resolution.policy';
 import {
   resolveSyncConflictOutcome,
   type SyncConflictDecision,
@@ -124,14 +127,23 @@ export class ApplyLocalSyncConflictResolutionUsecase {
       }
       // 展示版本二次校验（与读侧入口策略对称）：冲突登记的本地版本必须仍是来源记录的
       // 当前版本；记录已被别处推进过时，本地版本已不是"仍新的展示版本"，不得据此写入。
-      if (locked.localVersion === null || fact.currentVersion !== locked.localVersion) {
-        throw new DomainError(
-          SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE,
-          '冲突登记的本地版本已不是来源记录的当前版本，不能执行保留本地裁决',
-        );
+      // 幂等口径（review M7）：冲突行上的幂等状态决定"这一次要不要再写正文"——
+      // tx3 失败留下的 WRITING 状态 ＋ 来源版本已推进 ＝ 正文已写，重放只补冲突事实。
+      const replay = resolveLocalResolutionReplay({
+        resolutionState: locked.localResolutionState,
+        localVersion: locked.localVersion,
+        sourceCurrentVersion: fact.currentVersion,
+      });
+      if (replay.kind === 'reject') {
+        throw new DomainError(replay.code, replay.message);
       }
 
-      return { kind: 'apply' as const, payload: plan.payload, recordId: fact.recordId };
+      return {
+        kind: 'apply' as const,
+        payload: plan.payload,
+        recordId: fact.recordId,
+        bodyAlreadyWritten: replay.kind === 'body-already-written',
+      };
     });
 
     if (prepared.kind === 'existing') {
@@ -141,21 +153,36 @@ export class ApplyLocalSyncConflictResolutionUsecase {
       };
     }
 
-    // 受控写入：由来源业务既有受控入口执行（自持事务，失败即失败关闭）
-    await this.appendRevisionUsecase.execute({
-      session: input.session,
-      requestId: prepared.recordId,
-      expectedVersion: prepared.payload.expectedVersion,
-      reason: `${prepared.payload.reason}（冲突 ${input.conflictId}）`,
-      contentMd: prepared.payload.contentMd ?? undefined,
-      handlingResult: this.parseHandlingResult(prepared.payload.handlingResult),
-      closureReason: prepared.payload.closureReason ?? undefined,
-      expectedMaintenanceVersion: prepared.payload.expectedMaintenanceVersion ?? undefined,
-      // 结构化维修记录：形状由受控入口归一化校验（normalizeMaintenanceRecord），
-      // 这里只做类型收窄，不改内容
-      maintenance: (prepared.payload.maintenance ?? undefined) as
-        MaintenanceRecordRawInput | undefined,
-    });
+    if (!prepared.bodyAlreadyWritten) {
+      // 幂等标记先落（业务键＝conflict_id）：正文写入前把该行标成 WRITING。
+      // 这样 tx3 失败后的重放能识别"正文已写"，不会重复写正文。
+      const marked = await this.transactionRunner.run((transactionContext) =>
+        this.syncConflictService.markLocalResolutionWriting(input.conflictId, transactionContext),
+      );
+      if (marked === 0) {
+        throw new DomainError(
+          SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED,
+          '冲突已被并发裁决为其他方向：本次保留本地未写入正文，请重新读取冲突事实后再决定',
+          { conflictId: input.conflictId },
+        );
+      }
+
+      // 受控写入：由来源业务既有受控入口执行（自持事务，失败即失败关闭）
+      await this.appendRevisionUsecase.execute({
+        session: input.session,
+        requestId: prepared.recordId,
+        expectedVersion: prepared.payload.expectedVersion,
+        reason: `${prepared.payload.reason}（冲突 ${input.conflictId}）`,
+        contentMd: prepared.payload.contentMd ?? undefined,
+        handlingResult: this.parseHandlingResult(prepared.payload.handlingResult),
+        closureReason: prepared.payload.closureReason ?? undefined,
+        expectedMaintenanceVersion: prepared.payload.expectedMaintenanceVersion ?? undefined,
+        // 结构化维修记录：形状由受控入口归一化校验（normalizeMaintenanceRecord），
+        // 这里只做类型收窄，不改内容
+        maintenance: (prepared.payload.maintenance ?? undefined) as
+          MaintenanceRecordRawInput | undefined,
+      });
+    }
 
     // 写回冲突事实：条件更新只从 PENDING 落 RESOLVED；0 行表示并发已裁决
     const affected = await this.transactionRunner.run((transactionContext) =>

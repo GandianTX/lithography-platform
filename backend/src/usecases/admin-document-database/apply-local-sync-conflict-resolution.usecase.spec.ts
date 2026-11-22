@@ -40,6 +40,8 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     status: string;
     decision: string | null;
     localVersion: number | null;
+    /** 保留本地裁决幂等状态（review M7）：null=从未走过本地裁决 */
+    localResolutionState: string | null;
     localSnapshot: string;
   } = {
     conflictId: 'c-1',
@@ -49,6 +51,7 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     status: 'PENDING',
     decision: null,
     localVersion: 4,
+    localResolutionState: null,
     localSnapshot: JSON.stringify({ schema_version: 1, content_md: '# 本地正文' }),
   };
 
@@ -58,6 +61,7 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     locked?: typeof lockedConflict | null;
     fact?: { recordId: number; withdrawn?: boolean; currentVersion?: number | null } | null;
     localAffected?: number;
+    markedAffected?: number;
     adminLevel?: number | null;
     trustedOrganizationId?: number;
   }) => {
@@ -84,6 +88,7 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
         }),
       ),
       applyLocalResolution: jest.fn(() => Promise.resolve(params.localAffected ?? 1)),
+      markLocalResolutionWriting: jest.fn(() => Promise.resolve(params.markedAffected ?? 1)),
     };
     const sourceRecordQueryService = {
       listFacts: jest.fn(() =>
@@ -237,6 +242,46 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
       usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
     ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED });
     expect(appendRevisionUsecase.execute).toHaveBeenCalled();
+  });
+
+  it('保留本地：tx3 写回失败后的幂等重放不重复写正文（review M7）', async () => {
+    // 第一次：正文写入成功，冲突事实写回失败（0 行）——状态是"正文已写、事实未改写"
+    const first = makeUsecase({ session: superAdminSession, localAffected: 0 });
+    await expect(
+      first.usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED });
+    expect(first.appendRevisionUsecase.execute).toHaveBeenCalledTimes(1);
+    // 幂等标记在正文写入前已落（业务键＝conflict_id）
+    expect(first.conflictService.markLocalResolutionWriting).toHaveBeenCalledWith(
+      'c-1',
+      transactionContext,
+    );
+
+    // 第二次（重放）：冲突行仍是 PENDING 且标记为 WRITING，来源版本已被正文写入推进
+    const second = makeUsecase({
+      session: superAdminSession,
+      locked: { ...lockedConflict, localResolutionState: 'WRITING' },
+      fact: { recordId: 880001, withdrawn: false, currentVersion: 5 },
+    });
+    const result = await second.usecase.execute({ session: superAdminSession, conflictId: 'c-1' });
+
+    expect(result.outcome).toBe('resolved');
+    // 幂等重放：不重复写正文
+    expect(second.appendRevisionUsecase.execute).not.toHaveBeenCalled();
+    // 但仍要补写冲突事实
+    expect(second.conflictService.applyLocalResolution).toHaveBeenCalled();
+  });
+
+  it('保留本地：幂等标记写不进（并发已裁决）时不写正文', async () => {
+    const { usecase, appendRevisionUsecase } = makeUsecase({
+      session: superAdminSession,
+      markedAffected: 0,
+    });
+
+    await expect(
+      usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED });
+    expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
   });
 
   it('保留本地：冲突登记的本地版本已不是来源记录当前版本时不写入', async () => {

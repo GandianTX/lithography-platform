@@ -267,3 +267,98 @@ export function planLocalConflictResolution(input: LocalResolutionPlanInput): Lo
     },
   };
 }
+
+/**
+ * 「保留本地」裁决的幂等状态（review M7）。
+ *
+ * 背景：裁决跨三段写入——tx1 锁读规划、tx2 由来源业务受控入口写正文（自持事务）、
+ * tx3 写回冲突事实。tx3 失败时**正文已写、冲突事实未改写**，此时重放同一裁决
+ * 若没有幂等依据就会再写一份正文。
+ *
+ * 幂等键就是冲突主键 `conflict_id`（不另立键）；状态落在
+ * `sync_conflict.local_resolution_state` 上：
+ * - `WRITING`：正文写入已开始（尚未写回冲突事实）；
+ * - `WRITTEN`：正文与冲突事实都已写回。
+ */
+export const localResolutionStateValues = {
+  WRITING: 'WRITING',
+  WRITTEN: 'WRITTEN',
+} as const;
+
+export type LocalResolutionState =
+  (typeof localResolutionStateValues)[keyof typeof localResolutionStateValues];
+
+/** 幂等裁决所需的事实 */
+export type LocalResolutionReplayInput = {
+  /** 冲突行记录的幂等状态；null 表示从未走过本地裁决 */
+  resolutionState: string | null;
+  /** 冲突登记的本地版本；null 表示历史未知 */
+  localVersion: number | null;
+  /** 来源记录的当前版本；null 表示取不到 */
+  sourceCurrentVersion: number | null;
+};
+
+export type LocalResolutionReplayOutcome =
+  /** 正常路径：需要写正文 */
+  | { kind: 'write-body' }
+  /** 幂等重放：正文已写，只需补写冲突事实 */
+  | { kind: 'body-already-written' }
+  | { kind: 'reject'; code: string; message: string };
+
+/**
+ * 裁决"这一次该不该再写正文"。
+ *
+ * - 幂等状态 `WRITING` 且来源版本已推进 → 正文**已经写了**（tx3 失败留下的状态）：
+ *   跳过正文写入，只补写冲突事实——重放不会产生第二份正文；
+ * - 幂等状态 `WRITING` 但来源版本没动 → 正文没写成（tx2 失败）：允许重试；
+ * - 没有幂等状态 → 首次执行：版本条件成立才允许写；
+ * - 版本条件不成立且没有幂等依据 → 拒绝（不能把"别人推进的版本"当成"我们写的"）。
+ */
+export function resolveLocalResolutionReplay(
+  input: LocalResolutionReplayInput,
+): LocalResolutionReplayOutcome {
+  const state = input.resolutionState;
+  const localVersion = input.localVersion;
+  const currentVersion = input.sourceCurrentVersion;
+
+  if (localVersion === null || !Number.isInteger(localVersion) || localVersion < 1) {
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE,
+      '冲突没有登记可用的本地版本，无法按版本条件执行保留本地裁决',
+    );
+  }
+  if (currentVersion === null) {
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE,
+      '取不到来源记录的当前版本，不能判断保留本地裁决是否已写入正文',
+    );
+  }
+
+  if (state === localResolutionStateValues.WRITTEN) {
+    // 正文与冲突事实都已写回：不需要再写正文
+    return { kind: 'body-already-written' };
+  }
+
+  if (state === localResolutionStateValues.WRITING) {
+    if (currentVersion > localVersion) {
+      // tx3 失败留下的状态：正文已写、事实未改写——只补事实
+      return { kind: 'body-already-written' };
+    }
+    if (currentVersion === localVersion) {
+      // tx2 失败：正文没写成，允许重试
+      return { kind: 'write-body' };
+    }
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE,
+      '来源记录的当前版本早于冲突登记的本地版本，不能执行保留本地裁决',
+    );
+  }
+
+  if (currentVersion === localVersion) {
+    return { kind: 'write-body' };
+  }
+  return reject(
+    SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE,
+    '冲突登记的本地版本已不是来源记录的当前版本，且没有本次裁决的写入记录，不能执行保留本地裁决',
+  );
+}

@@ -463,6 +463,8 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'sync_conflict', column: 'cloud_version' },
   { table: 'sync_conflict', column: 'displayed_cloud_version' },
   { table: 'sync_conflict', column: 'decision' },
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态（历史行保持 NULL）
+  { table: 'sync_conflict', column: 'local_resolution_state' },
   // V13 本期交付（1775501000000—1775502600000）：新增/调整字段全量登记
   { table: 'ai_conversation', column: 'request_id' },
   { table: 'ai_message_analysis', column: 'answer_message_id' },
@@ -1015,6 +1017,7 @@ export const DELIVERY_NEW_TABLE_COLUMNS: Readonly<Record<string, ReadonlyArray<s
     'created_at',
     'decision',
     'displayed_cloud_version',
+    'local_resolution_state',
     'local_snapshot',
     'local_version',
     'organization_id',
@@ -1235,6 +1238,7 @@ export const DELIVERY_CHECKS: ReadonlyArray<string> = [
   'stored_file.chk_stored_file_verified',
   'sync_conflict.chk_sync_conflict_confirmed',
   'sync_conflict.chk_sync_conflict_decision',
+  'sync_conflict.chk_sync_conflict_local_resolution_state',
   'sync_conflict.chk_sync_conflict_schema',
   'sync_conflict.chk_sync_conflict_status',
   'sync_conflict.chk_sync_conflict_versions',
@@ -1708,6 +1712,7 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
   { table: 'sync_conflict', constraint: 'chk_sync_conflict_schema' },
   { table: 'sync_conflict', constraint: 'chk_sync_conflict_versions' },
   { table: 'sync_conflict', constraint: 'chk_sync_conflict_decision' },
+  { table: 'sync_conflict', constraint: 'chk_sync_conflict_local_resolution_state' },
   { table: 'record_package_import', constraint: 'chk_record_package_import_status' },
   { table: 'record_package_import', constraint: 'chk_record_package_import_check_status' },
   { table: 'record_package_import', constraint: 'chk_record_package_import_check_stage' },
@@ -2798,6 +2803,8 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'sync_conflict.cloud_version': 1775502000000,
   'sync_conflict.displayed_cloud_version': 1775502000000,
   'sync_conflict.decision': 1775502000000,
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态
+  'sync_conflict.local_resolution_state': 1775502900000,
   // V13 本期交付（1775501000000—1775502600000）
   'ai_conversation.request_id': 1775501100000,
   'ai_message_analysis.answer_message_id': 1775501200000,
@@ -3184,6 +3191,8 @@ export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   // D3（1775502000000）
   'sync_conflict.chk_sync_conflict_versions': 1775502000000,
   'sync_conflict.chk_sync_conflict_decision': 1775502000000,
+  // 第 51 条（1775502900000）
+  'sync_conflict.chk_sync_conflict_local_resolution_state': 1775502900000,
 };
 
 const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
@@ -4899,6 +4908,13 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     columnType: 'varchar(24)',
     nullable: true,
     defaultValue: 'PENDING',
+  },
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态；历史行 NULL 表示从未走过本地裁决
+  'sync_conflict.local_resolution_state': {
+    since: 1775502900000,
+    columnType: 'varchar(16)',
+    nullable: true,
+    defaultValue: null,
   },
   // V13 本期交付（1775501000000—1775502600000）：字段精确定义
   'ai_conversation.content_version': {
@@ -6759,6 +6775,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'sync_conflict.chk_sync_conflict_decision': {
     since: 1775502000000,
     clause: "(`decision` IS NULL OR `decision` IN ('PENDING', 'LOCAL', 'CLOUD'))",
+  },
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态取值受控
+  'sync_conflict.chk_sync_conflict_local_resolution_state': {
+    since: 1775502900000,
+    clause:
+      "(`local_resolution_state` IS NULL OR `local_resolution_state` IN ('WRITING', 'WRITTEN'))",
   },
   // V13 本期交付（1775501000000—1775502600000）：CHECK 精确表达式
   'ai_conversation.chk_ai_conversation_completion': {
