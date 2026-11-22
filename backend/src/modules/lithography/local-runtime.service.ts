@@ -268,6 +268,46 @@ export class LocalRuntimeService {
     return toLocalUploadTaskSnapshot(await this.reloadUploadTask(repository, taskId));
   }
 
+  /**
+   * 退回待传（可重试）：网络中断、响应丢失或生产接收端缺失时，任务不应被终结。
+   *
+   * 仅 UPLOADING／PENDING／FAILED 可退回；`attempt_count` 保留（供退避与排障），
+   * 错误码与说明只作最近一次失败的留痕，不影响"仍在待传"的事实。
+   */
+  async requeueUploadTask(
+    taskId: number,
+    data: LocalUploadFailureData,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<LocalUploadTaskSnapshot> {
+    const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
+    const task = await this.lockUploadTask(repository, taskId);
+    if (task.status === 'SUCCEEDED' || task.status === 'CANCELLED') {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
+        '当前状态的上传任务不可退回待传',
+        { taskId, status: task.status },
+      );
+    }
+    try {
+      await repository.update(
+        { id: taskId },
+        {
+          status: 'PENDING',
+          errorCode: data.errorCode,
+          errorMessage: data.errorMessage,
+        },
+      );
+    } catch (error) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_FAILED,
+        '上传任务退回待传状态写入失败',
+        undefined,
+        error,
+      );
+    }
+    return toLocalUploadTaskSnapshot(await this.reloadUploadTask(repository, taskId));
+  }
+
   /** 标记上传失败：仅 UPLOADING/PENDING 可失败；错误码与说明必填且不得含凭据 */
   async failUploadTask(
     taskId: number,

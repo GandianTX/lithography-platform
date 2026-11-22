@@ -91,6 +91,34 @@ export type EnqueueSourceRecordSyncResult = {
   manifestChecksum: string;
 };
 
+// ---- 任务09 S2：业务同步派发 ----
+
+export type DispatchBusinessSyncTasksCommand = {
+  /** 单轮派发任务上限 */
+  limit?: number;
+};
+
+/** 单条派发的归类计数键 */
+export type DispatchBusinessSyncTasksOutcome =
+  'succeeded' | 'conflicted' | 'rejected' | 'retryable' | 'skipped' | 'receiverMissing';
+
+export type DispatchBusinessSyncTasksResult = {
+  /** 本轮扫描到的待传任务数 */
+  scanned: number;
+  /** 核对通过并落回执的任务数 */
+  succeeded: number;
+  /** 判定为冲突的任务数 */
+  conflicted: number;
+  /** 被云端或本机拒绝的任务数 */
+  rejected: number;
+  /** 调用异常、退回待传可续传的任务数 */
+  retryable: number;
+  /** 因绑定／授权／来源事实不成立而跳过的任务数 */
+  skipped: number;
+  /** 生产接收端缺失、任务留在待传的任务数 */
+  receiverMissing: number;
+};
+
 // ---- 任务09 S2：业务同步待办对账 ----
 
 export type ReconcileBusinessSyncTasksCommand = {

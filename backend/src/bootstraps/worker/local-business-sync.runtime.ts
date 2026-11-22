@@ -2,6 +2,7 @@
 import { Injectable, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 
+import { DispatchBusinessSyncTasksUsecase } from '@src/usecases/local-runtime/dispatch-business-sync-tasks.usecase';
 import { ReconcileBusinessSyncTasksUsecase } from '@src/usecases/local-runtime/reconcile-business-sync-tasks.usecase';
 
 /**
@@ -19,6 +20,7 @@ export class LocalBusinessSyncRuntime implements OnApplicationBootstrap, OnAppli
 
   constructor(
     private readonly reconcileBusinessSyncTasksUsecase: ReconcileBusinessSyncTasksUsecase,
+    private readonly dispatchBusinessSyncTasksUsecase: DispatchBusinessSyncTasksUsecase,
     private readonly logger: Logger,
   ) {}
 
@@ -44,7 +46,13 @@ export class LocalBusinessSyncRuntime implements OnApplicationBootstrap, OnAppli
       const result = await this.reconcileBusinessSyncTasksUsecase.execute();
       if (result.created > 0 || result.cancelled > 0 || result.rejected > 0) {
         this.logger.log(
-          `local business sync cycle: scanned=${result.scanned} created=${result.created} existing=${result.existing} cancelled=${result.cancelled} rejected=${result.rejected}`,
+          `local business sync reconcile: scanned=${result.scanned} created=${result.created} existing=${result.existing} cancelled=${result.cancelled} rejected=${result.rejected}`,
+        );
+      }
+      const dispatched = await this.dispatchBusinessSyncTasksUsecase.execute();
+      if (dispatched.succeeded > 0 || dispatched.conflicted > 0 || dispatched.rejected > 0) {
+        this.logger.log(
+          `local business sync dispatch: scanned=${dispatched.scanned} succeeded=${dispatched.succeeded} conflicted=${dispatched.conflicted} rejected=${dispatched.rejected} retryable=${dispatched.retryable} skipped=${dispatched.skipped} receiverMissing=${dispatched.receiverMissing}`,
         );
       }
     } catch (error) {

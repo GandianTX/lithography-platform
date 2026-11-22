@@ -87,6 +87,7 @@ import { AdminOrganizationProvisioningService } from './admin-organization-provi
 import { EngineerRegistrationService } from './engineer-registration.service';
 import { EngineerResponseService } from './engineer-response.service';
 import { LocalRuntimeService } from './local-runtime.service';
+import { BusinessSyncReceiptService } from './business-sync-receipt.service';
 import { BusinessSyncSourceService } from './business-sync-source.service';
 import { MaintenanceReportService } from './maintenance-report.service';
 import { ManagementAuditService } from './management-audit.service';
@@ -214,6 +215,7 @@ export const LITHOGRAPHY_ENTITIES = [
     LocalCompanySettingQueryService,
     LocalBackupAssetQueryService,
     BusinessSyncSourceService,
+    BusinessSyncReceiptService,
     ManagementAuditService,
   ],
   exports: [
@@ -270,6 +272,7 @@ export const LITHOGRAPHY_ENTITIES = [
     LocalCompanySettingQueryService,
     LocalBackupAssetQueryService,
     BusinessSyncSourceService,
+    BusinessSyncReceiptService,
     ManagementAuditService,
   ],
 })
