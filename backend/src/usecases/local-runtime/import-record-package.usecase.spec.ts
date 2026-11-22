@@ -49,6 +49,8 @@ function buildUsecase(
     evaluationChecksum?: string;
     writer?: unknown;
     receiptExists?: boolean;
+    /** 清单条目登记的归属公司（缺省＝与目标公司一致） */
+    manifestOwnerOrganizationId?: number;
   } = {},
 ) {
   const items = options.items ?? [makeItem()];
@@ -70,6 +72,7 @@ function buildUsecase(
             version_no: 2,
             content_snapshot: { schema_version: 1, payload: { title: 'x' } },
             files: [],
+            owner_organization_id: options.manifestOwnerOrganizationId ?? 9,
           },
         ],
       }),
@@ -224,6 +227,32 @@ describe('记录包导入编排（S3.2）', () => {
       { status: 'SUCCEEDED', succeeded: 1, failed: 0 },
       expect.anything(),
     );
+  });
+
+  it('P4｜异公司：包内归属公司与目标公司不一致时该条拒绝', async () => {
+    // 本地 mock：避免与共享 mock 的调用计数互相干扰
+    const writer = {
+      supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
+    };
+    const { usecase, writeItemResult } = buildUsecase({
+      writer,
+      manifestOwnerOrganizationId: 10,
+    });
+
+    await usecase.execute({
+      session: SESSION,
+      packageId: PACKAGE_ID,
+      packagePath: '/mnt/usb/pkg',
+      manifestChecksum: CHECKSUM,
+    });
+
+    expect(writeItemResult).toHaveBeenCalledWith(
+      'item-1',
+      expect.objectContaining({ result: 'FAILED' }),
+      expect.anything(),
+    );
+    expect(writer.write).not.toHaveBeenCalled();
   });
 
   it('同键回执已存在（与同步去重）时跳过该条', async () => {

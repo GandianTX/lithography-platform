@@ -218,6 +218,44 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
     expect(insertReport).not.toHaveBeenCalled();
   });
 
+  it('P4｜原账号恰为当前导入账号：导入前后作者事实相同（都写来源账号）', async () => {
+    const { writer, insertReport } = buildWriter();
+
+    await writer.write(REQUEST, { ...(SESSION as object), accountId: 900101 } as never);
+
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    // 导入会话账号恰好就是包内来源账号 → 写入的作者与来源账号一致
+    expect(insertData.createdByAccountId).toBe(900101);
+    expect(insertData.updatedByAccountId).toBe(900101);
+  });
+
+  it('P4｜伪造包内账号：库层拒绝即该条失败，不静默改成导入人', async () => {
+    const { writer, insertReport } = buildWriter({ insertError: new Error('外键约束失败') });
+
+    const outcome = await writer.write({ ...REQUEST, sourceAccountId: 999999999 }, {
+      ...(SESSION as object),
+      accountId: 900101,
+    } as never);
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('受控写入被拒绝');
+    // 关键：失败路径不得回退成"用导入人当作者"——写入参数里作者恒为包内来源账号
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertData.createdByAccountId).toBe(999999999);
+  });
+
+  it('P4｜同公司他人：作者恒为包内来源账号，导入者不被写入业务行', async () => {
+    const { writer, insertReport } = buildWriter();
+
+    await writer.write({ ...REQUEST, sourceAccountId: 900202 }, SESSION);
+
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertData.createdByAccountId).toBe(900202);
+    expect(insertData.updatedByAccountId).toBe(900202);
+    // 导入会话账号（900101）不得出现在作者字段
+    expect(insertData.createdByAccountId).not.toBe(900101);
+  });
+
   it('受控写入被库层拒绝时如实带回失败原因', async () => {
     const { writer } = buildWriter({ insertError: new Error('外键约束失败') });
 
