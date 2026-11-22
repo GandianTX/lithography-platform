@@ -334,8 +334,82 @@ describe('ListMyMaintenanceReportsUsecase（我的资料记录）', () => {
       });
     }
     expect(syncStatusReader.fetchStatuses).toHaveBeenCalledTimes(1);
-    // 跨端 UUID 待任务 09 对齐：映射缺失，不发真实查询键（空批量用于区分装配状态）
-    expect(syncStatusReader.fetchStatuses).toHaveBeenCalledWith([]);
+    // 桩记录没有跨端 UUID（历史行 NULL）→ 映射缺失，不发真实查询键（空批量用于区分装配状态）；
+    // 可信会话单独传递（记录级授权由提供方据此裁决），载荷不含身份
+    expect(syncStatusReader.fetchStatuses).toHaveBeenCalledWith(engineerSession, []);
+  });
+
+  it('来源记录带跨端稳定键时：发出完整四字段查询键（公司 + 类型 + UUID + 当前版本），且一页只批量调用一次', async () => {
+    const reader = {
+      fetchStatuses: jest.fn().mockResolvedValue({ connected: true, entries: [] }),
+    };
+    const { usecase } = makeUsecase({
+      page: {
+        items: [
+          makeSummary({
+            id: 960001,
+            status: 'APPROVED',
+            currentVersionNo: 2,
+            recordUuid: '6fd663eb-6d92-47be-9fbf-c591f7eb8e67',
+          }),
+          makeSummary({
+            id: 960002,
+            status: 'APPROVED',
+            currentVersionNo: 4,
+            recordUuid: '613d90f1-d8b7-472f-9c42-f6021232ffa2',
+          }),
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 10,
+      },
+      syncStatusReader: reader,
+    });
+
+    await usecase.execute({ session: engineerSession });
+
+    expect(reader.fetchStatuses).toHaveBeenCalledTimes(1);
+    expect(reader.fetchStatuses).toHaveBeenCalledWith(engineerSession, [
+      {
+        organizationId: ORG_ID,
+        resourceType: 'MAINTENANCE_REPORT',
+        recordUuid: '6fd663eb-6d92-47be-9fbf-c591f7eb8e67',
+        sourceVersion: 2,
+      },
+      {
+        organizationId: ORG_ID,
+        resourceType: 'MAINTENANCE_REPORT',
+        recordUuid: '613d90f1-d8b7-472f-9c42-f6021232ffa2',
+        sourceVersion: 4,
+      },
+    ]);
+  });
+
+  it('草稿（当前版本 0）不发真实查询键：草稿版本不是同步版本', async () => {
+    const reader = {
+      fetchStatuses: jest.fn().mockResolvedValue({ connected: true, entries: [] }),
+    };
+    const { usecase } = makeUsecase({
+      page: {
+        items: [
+          makeSummary({
+            id: 960001,
+            status: 'DRAFT',
+            currentVersionNo: 0,
+            recordUuid: '6fd663eb-6d92-47be-9fbf-c591f7eb8e67',
+          }),
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 10,
+      },
+      syncStatusReader: reader,
+    });
+
+    await usecase.execute({ session: engineerSession });
+
+    expect(reader.fetchStatuses).toHaveBeenCalledTimes(1);
+    expect(reader.fetchStatuses).toHaveBeenCalledWith(engineerSession, []);
   });
 
   it('同步状态预留：已装配但映射缺失展示 UNKNOWN，不显示已同步', async () => {

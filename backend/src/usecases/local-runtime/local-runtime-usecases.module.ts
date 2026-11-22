@@ -11,6 +11,7 @@ import { FailLocalUploadUsecase } from './fail-local-upload.usecase';
 import { FinishLocalBackupUsecase } from './finish-local-backup.usecase';
 import { GetLocalRuntimeSettingsUsecase } from './get-local-runtime-settings.usecase';
 import { GetLocalRuntimeStatusUsecase } from './get-local-runtime-status.usecase';
+import { MaintenanceReportSyncStatusReaderAdapter } from '@src/infrastructure/sync/task09-maintenance-report-sync-status-reader';
 import { ListLocalBackupRunsUsecase } from './list-local-backup-runs.usecase';
 import { ListLocalUploadTasksUsecase } from './list-local-upload-tasks.usecase';
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
@@ -35,6 +36,7 @@ import { StartLocalBackupUsecase } from './start-local-backup.usecase';
 import { StartLocalUploadAttemptUsecase } from './start-local-upload-attempt.usecase';
 import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settings.usecase';
 import { QuerySyncStatusesUsecase } from './query-sync-statuses.usecase';
+import { LOCAL_SYNC_STATUS_READER } from '@src/usecases/common/ports/local-sync-status-reader.contract';
 import { SYNC_STATUS_QUERY } from './sync-status.contract';
 
 /**
@@ -83,6 +85,12 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     QuerySyncStatusesUsecase,
     // 任务 07 装配方消费的窄边界：本机真实实现（未装配任务 09 时由 07 侧默认适配器返回 NOT_CONNECTED）
     { provide: SYNC_STATUS_QUERY, useExisting: QuerySyncStatusesUsecase },
+    // 任务 09 → 任务 07 的同步状态真实实现：以中性令牌暴露，供任务 07 侧调用期查找
+    MaintenanceReportSyncStatusReaderAdapter,
+    {
+      provide: LOCAL_SYNC_STATUS_READER,
+      useExisting: MaintenanceReportSyncStatusReaderAdapter,
+    },
   ],
   exports: [
     LocalRuntimeScopeResolver,

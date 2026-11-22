@@ -315,6 +315,12 @@ export type MaintenanceReportOwnershipFacts = {
   maintenanceEngineerAccountId: number;
   ownerOrganizationId: number;
   status: MaintenanceReportStatus;
+  /**
+   * 跨端稳定业务编号（`maintenance_report.record_uuid`）：同步状态查询的记录键。
+   * 历史行保持 NULL（不回填派生值冒充可信跨端身份）；为 NULL 时按"无稳定键"处理，
+   * 不发真实同步查询（handoff §2）。
+   */
+  recordUuid: string | null;
 };
 
 /**
@@ -427,6 +433,11 @@ export type MaintenanceReportSummaryView = {
   id: number;
   /** 归属公司（资源行 owner_organization_id）：同步匹配键的公司来源，不进入公开 DTO */
   ownerOrganizationId: number;
+  /**
+   * 跨端稳定业务编号（`maintenance_report.record_uuid`）：同步状态查询的记录键。
+   * 历史行保持 NULL；为 NULL 时按"无稳定键"处理，不发真实同步查询（handoff §2）。
+   */
+  recordUuid: string | null;
   sourceType: MaintenanceReportSourceType;
   repairRequestId: number | null;
   title: string | null;

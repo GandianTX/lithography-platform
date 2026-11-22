@@ -405,8 +405,9 @@ describe('GetMyMaintenanceReportUsecase（我的资料记录详情 · 管理员�
       canResolveConflict: false,
     });
     expect(syncStatusReader.fetchStatuses).toHaveBeenCalledTimes(1);
-    // 跨端 UUID 待任务 09 对齐：映射缺失不发真实查询键（空批量用于区分装配状态）
-    expect(syncStatusReader.fetchStatuses).toHaveBeenCalledWith([]);
+    // 桩记录没有跨端 UUID（历史行 NULL）→ 映射缺失不发真实查询键（空批量用于区分装配状态）；
+    // 可信会话单独传递（记录级授权由提供方据此裁决），载荷不含身份
+    expect(syncStatusReader.fetchStatuses).toHaveBeenCalledWith(expect.anything(), []);
   });
 
   it('同步状态预留：授权失败时适配层不被调用（无权记录不进入同步查询）', async () => {

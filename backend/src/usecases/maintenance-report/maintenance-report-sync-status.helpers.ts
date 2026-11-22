@@ -15,6 +15,7 @@
 // - 原有授权错误发生在进入本装配之前，不会被这里的降级逻辑吞掉。
 
 import type { MaintenanceReportSyncStatusDisplay } from '@src/modules/lithography/maintenance-report.types';
+import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   MAINTENANCE_REPORT_SYNC_RESOURCE_TYPE,
   type MaintenanceReportSyncStatusBatch,
@@ -26,7 +27,10 @@ import {
 /** 单条记录可用于构造同步查询键的可信事实（公司来自服务端核实过的资源归属） */
 export type MaintenanceReportSyncKeyFacts = {
   ownerOrganizationId: number;
-  /** 跨端 UUID 持久来源待任务 09 对齐（草案 §2 断点）：对齐前恒为 null */
+  /**
+   * 跨端 UUID 的持久来源（`maintenance_report.record_uuid`，草案 §2 断点已消解）：
+   * 历史行保持 NULL；为 NULL 时按"无稳定键"处理，不发真实查询。
+   */
   recordUuid: string | null;
   /** 草稿 current_version_no=0 不是同步版本 */
   currentVersionNo: number;
@@ -70,7 +74,8 @@ const MAX_PROVIDER_MESSAGE_LENGTH = 200;
 export function buildMaintenanceReportSyncStatusQuery(
   facts: MaintenanceReportSyncKeyFacts,
 ): MaintenanceReportSyncStatusQuery | null {
-  if (facts.recordUuid === null) {
+  // 无稳定键（NULL／undefined／空串）一律不发真实查询：不得用本地 ID 或派生值硬凑查询键
+  if (!facts.recordUuid) {
     return null;
   }
   if (facts.currentVersionNo <= 0) {
@@ -132,6 +137,8 @@ function matchEntryByFullKey(
  */
 export async function attachMaintenanceReportSyncStatuses(params: {
   reader: MaintenanceReportSyncStatusReader;
+  /** 服务端可信会话：单独传递供提供方做记录级授权（草案 §2） */
+  session: UsecaseSession;
   records: ReadonlyArray<{ id: number; facts: MaintenanceReportSyncKeyFacts }>;
 }): Promise<Map<number, MaintenanceReportSyncStatusDisplay>> {
   const result = new Map<number, MaintenanceReportSyncStatusDisplay>();
@@ -150,7 +157,7 @@ export async function attachMaintenanceReportSyncStatuses(params: {
 
   let batch: MaintenanceReportSyncStatusBatch | null;
   try {
-    batch = await params.reader.fetchStatuses(queries);
+    batch = await params.reader.fetchStatuses(params.session, queries);
   } catch {
     // 查询失败统一降级为 UNKNOWN；不重试、不阻塞原记录读取
     batch = null;

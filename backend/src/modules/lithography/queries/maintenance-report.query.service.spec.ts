@@ -60,12 +60,13 @@ const buildRepositories = (reportFindOne: unknown = null) => ({
 });
 
 describe('MaintenanceReportQueryService 授权范围读取', () => {
-  it('最小归属事实只读取 id / 负责人 / 所属组织 / 状态', async () => {
+  it('最小归属事实只读取 id / 负责人 / 所属组织 / 状态与跨端稳定键', async () => {
     const repositories = buildRepositories({
       id: REPORT_ID,
       maintenanceEngineerAccountId: ENGINEER_ACCOUNT_ID,
       ownerOrganizationId: ORGANIZATION_ID,
       status: 'APPROVED',
+      recordUuid: 'b1f0c9d2-0000-4000-8000-000000000001',
     });
     const service = buildService(repositories);
 
@@ -74,6 +75,7 @@ describe('MaintenanceReportQueryService 授权范围读取', () => {
       maintenanceEngineerAccountId: ENGINEER_ACCOUNT_ID,
       ownerOrganizationId: ORGANIZATION_ID,
       status: 'APPROVED',
+      recordUuid: 'b1f0c9d2-0000-4000-8000-000000000001',
     });
     expect(repositories.report.findOne).toHaveBeenCalledWith({
       where: { id: REPORT_ID },
@@ -81,6 +83,7 @@ describe('MaintenanceReportQueryService 授权范围读取', () => {
         id: true,
         maintenanceEngineerAccountId: true,
         ownerOrganizationId: true,
+        recordUuid: true,
         status: true,
       },
     });

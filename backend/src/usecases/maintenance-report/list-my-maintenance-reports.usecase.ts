@@ -91,15 +91,17 @@ export class ListMyMaintenanceReportsUsecase {
       );
     // 同步状态（任务 07 预留）：当前页批量读取最多一次。公司取自列表返回的资源
     // 归属 owner_organization_id（服务端事实，查询谓词已保证与读者范围一致）；
-    // 跨端 UUID 的持久来源待任务 09 对齐（handoff §2 断点），对齐前恒为 null——
+    // 跨端 UUID 的持久来源已对齐（handoff §2 断点已消解）：取 `maintenance_report.record_uuid`
+    // （历史行为 NULL；NULL 或版本 0 时 helper 不发真实查询，按"无稳定键"处理）——
     // 不用本地 reportId、提交请求 ID、资料修订号或草稿 0 版本硬凑查询键。
     const syncStatuses = await attachMaintenanceReportSyncStatuses({
       reader: this.syncStatusReader,
+      session: command.session,
       records: page.items.map((item) => ({
         id: item.id,
         facts: {
           ownerOrganizationId: item.ownerOrganizationId,
-          recordUuid: null,
+          recordUuid: item.recordUuid,
           currentVersionNo: item.currentVersionNo,
         },
       })),
