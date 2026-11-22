@@ -173,3 +173,92 @@ describe('ManagementAuditEventQueryService', () => {
     ).rejects.toMatchObject({ code: MANAGEMENT_AUDIT_ERROR.READ_FAILED });
   });
 });
+
+/**
+ * 恢复类事实的读侧语义（任务 10 S3）。
+ *
+ * 任务 09 当前**尚无真实恢复执行入口**，因此本组只锁定读侧表达力与失败关闭口径：
+ * - 三种终态（SUCCEEDED／FAILED／DENIED）都能被如实读出，不做归并；
+ * - 阶段与尝试序号按白名单投影，恶意/未知 detail 键被丢弃；
+ * - 同一 `restore_id` 的多次尝试各自成行（读侧不去重，不擅自判定「只记一次」）；
+ * - 超出三值的结果（如 09 表里的 INTERRUPTED）失败关闭，不静默展示为成功。
+ */
+describe('ManagementAuditEventQueryService · 恢复类事实读侧语义', () => {
+  const createService = () => {
+    const repository = { find: jest.fn(), count: jest.fn() };
+    const service = new ManagementAuditEventQueryService(
+      repository as unknown as Repository<ManagementAuditEventEntity>,
+    );
+    return { service, repository };
+  };
+
+  const restoreEntity = (overrides: Partial<ManagementAuditEventEntity> = {}) =>
+    makeEntity({
+      operation: ManagementAuditBusinessOperation.RESTORE_LOCAL_BUSINESS,
+      targetType: 'BACKUP_RESTORE_RUN',
+      targetId: 'restore-0001',
+      ...overrides,
+    });
+
+  it.each(['SUCCEEDED', 'FAILED', 'DENIED'] as const)('恢复终态 %s 如实读出', async (result) => {
+    const { service, repository } = createService();
+    repository.find.mockResolvedValue([restoreEntity({ result })]);
+    repository.count.mockResolvedValue(1);
+
+    const page = await service.listEvents({ organizationId: null, pagination: pagination() });
+
+    expect(page.items[0].result).toBe(result);
+    expect(page.items[0].operation).toBe('RESTORE_LOCAL_BUSINESS');
+  });
+
+  it('阶段与尝试序号按白名单投影，未知 detail 键被丢弃', async () => {
+    const { service, repository } = createService();
+    repository.find.mockResolvedValue([
+      restoreEntity({
+        detail: JSON.stringify({
+          reason: '保护副本校验失败',
+          stage: 'PROTECTION_COPY',
+          attemptNo: 2,
+          filePath: '/srv/backup/secret.zip',
+          password: 'p@ssw0rd',
+        }),
+      }),
+    ]);
+    repository.count.mockResolvedValue(1);
+
+    const page = await service.listEvents({ organizationId: null, pagination: pagination() });
+
+    expect(page.items[0].detail).toEqual({
+      reason: '保护副本校验失败',
+      stage: 'PROTECTION_COPY',
+      attemptNo: 2,
+    });
+    expect(JSON.stringify(page.items[0])).not.toContain('secret');
+    expect(JSON.stringify(page.items[0])).not.toContain('p@ssw0rd');
+  });
+
+  it('同一 restore_id 的多次尝试各自成行，读侧不去重', async () => {
+    const { service, repository } = createService();
+    repository.find.mockResolvedValue([
+      restoreEntity({ eventId: 'event-a', detail: JSON.stringify({ attemptNo: 1 }) }),
+      restoreEntity({ eventId: 'event-b', detail: JSON.stringify({ attemptNo: 2 }) }),
+    ]);
+    repository.count.mockResolvedValue(2);
+
+    const page = await service.listEvents({ organizationId: null, pagination: pagination() });
+
+    expect(page.items).toHaveLength(2);
+    expect(page.items.map((item) => item.eventId)).toEqual(['event-a', 'event-b']);
+    expect(page.items.map((item) => item.detail?.attemptNo)).toEqual([1, 2]);
+  });
+
+  it('结果超出三值（如 INTERRUPTED）失败关闭，不静默展示', async () => {
+    const { service, repository } = createService();
+    repository.find.mockResolvedValue([restoreEntity({ result: 'INTERRUPTED' })]);
+    repository.count.mockResolvedValue(1);
+
+    await expect(
+      service.listEvents({ organizationId: null, pagination: pagination() }),
+    ).rejects.toMatchObject({ code: MANAGEMENT_AUDIT_ERROR.READ_FAILED });
+  });
+});

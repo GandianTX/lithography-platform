@@ -112,9 +112,27 @@ describe('OperationRecordsTable', () => {
     expect(screen.getByText('失败')).toBeInTheDocument();
     expect(screen.getByText('二级管理员')).toBeInTheDocument();
     expect(screen.getByText('阶段：VERIFY')).toBeInTheDocument();
-    expect(screen.getByText('变更字段：ownerOrganizationId')).toBeInTheDocument();
+    expect(screen.getByText('变更字段：所属公司')).toBeInTheDocument();
     expect(screen.getByText('第 2 次尝试')).toBeInTheDocument();
     expect(screen.getByText('开发联调公司 A → 开发联调公司 B')).toBeInTheDocument();
+  });
+
+  it('变更字段名按当前语言显示可读名称，未登记字段原样展示', () => {
+    renderTable([
+      renderItem({
+        eventId: 'event-4',
+        detail: {
+          reason: '上传者与上传时公司核实',
+          stage: null,
+          changedFields: ['createdByAccountId', 'ownerOrganizationId', 'someNewField'],
+          attemptNo: null,
+          beforeOrganizationName: null,
+          afterOrganizationName: null,
+        },
+      }),
+    ]);
+
+    expect(screen.getByText('变更字段：上传者, 所属公司, someNewField')).toBeInTheDocument();
   });
 
   it('DENIED 显示已拒绝；空摘要与空公司显示占位符', () => {

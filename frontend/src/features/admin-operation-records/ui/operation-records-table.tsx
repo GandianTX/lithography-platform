@@ -36,6 +36,18 @@ const TARGET_TYPE_LABEL_KEYS: Record<string, MessageKey> = {
   REFERENCE_DOCUMENT: 'operationRecords.targetType.referenceDocument',
 };
 
+/**
+ * 变更字段名的展示名。
+ *
+ * 服务端只投影字段名（保持语言无关），页面按当前语言给出可读名称；
+ * 未登记的字段名原样展示，避免新增字段被静默隐藏。
+ */
+const CHANGED_FIELD_LABEL_KEYS: Record<string, MessageKey> = {
+  createdByAccountId: 'operationRecords.changedField.createdByAccountId',
+  ownerOrganizationId: 'operationRecords.changedField.ownerOrganizationId',
+  ownershipStatus: 'operationRecords.changedField.ownershipStatus',
+};
+
 type SummaryPart = { key: string; text: string };
 
 function buildSummaryParts(
@@ -60,7 +72,12 @@ function buildSummaryParts(
     parts.push({
       key: 'changedFields',
       text: t('operationRecords.summary.changedFields', {
-        fields: detail.changedFields.join(', '),
+        fields: detail.changedFields
+          .map((field) => {
+            const labelKey = CHANGED_FIELD_LABEL_KEYS[field];
+            return labelKey === undefined ? field : t(labelKey);
+          })
+          .join(', '),
       }),
     });
   }

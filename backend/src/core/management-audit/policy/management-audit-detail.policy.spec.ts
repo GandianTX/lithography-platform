@@ -121,4 +121,65 @@ describe('projectManagementAuditDetail', () => {
     expect(projectManagementAuditDetail(JSON.stringify({ unknownKey: 'value' }))).toBeNull();
     expect(projectManagementAuditDetail(JSON.stringify({ reason: '   ' }))).toBeNull();
   });
+
+  // 任务 07 现有写入形状（2026-11-22 S2 实测）：detail = { reason, changes: {字段:{from,to}} }。
+  it('提供方的 changes 形状只投影字段名，前后值一律丢弃', () => {
+    const detail = projectManagementAuditDetail(
+      JSON.stringify({
+        reason: '上传者与上传时公司核实',
+        changes: {
+          createdByAccountId: { from: 10, to: 1 },
+          ownerOrganizationId: { from: 2, to: 3 },
+          ownershipStatus: { from: 'CONFIRMED', to: 'CONFIRMED' },
+        },
+      }),
+    );
+
+    expect(detail).toEqual({
+      reason: '上传者与上传时公司核实',
+      changedFields: ['createdByAccountId', 'ownerOrganizationId', 'ownershipStatus'],
+    });
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain('CONFIRMED');
+    expect(serialized).not.toContain('"10"');
+    expect(serialized).not.toContain('"2"');
+  });
+
+  it('changes 非对象、非法字段名与超量输入被安全丢弃', () => {
+    expect(
+      projectManagementAuditDetail(JSON.stringify({ changes: 'ownerOrganizationId' })),
+    ).toBeNull();
+    expect(
+      projectManagementAuditDetail(JSON.stringify({ changes: ['ownerOrganizationId'] })),
+    ).toBeNull();
+    expect(
+      projectManagementAuditDetail(
+        JSON.stringify({ changes: JSON.parse('{"bad field":{"from":1,"to":2}}') }),
+      ),
+    ).toBeNull();
+
+    const many = Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [`field${index}`, { from: 1, to: 2 }]),
+    );
+    const detail = projectManagementAuditDetail(JSON.stringify({ changes: many }));
+    expect(detail?.changedFields).toHaveLength(20);
+  });
+
+  it('changes 字段名与 changedFields 数组合并去重', () => {
+    const detail = projectManagementAuditDetail(
+      JSON.stringify({
+        changedFields: ['ownerOrganizationId', 'reviewStatus'],
+        changes: {
+          ownerOrganizationId: { from: 2, to: 3 },
+          ownershipStatus: { from: 'A', to: 'B' },
+        },
+      }),
+    );
+
+    expect(detail?.changedFields).toEqual([
+      'ownerOrganizationId',
+      'reviewStatus',
+      'ownershipStatus',
+    ]);
+  });
 });

@@ -14,6 +14,12 @@
  *   避免自由文本夹带业务正文；
  * - 不读取 I/O、配置或框架，可被单测穷举。
  *
+ * 提供方兼容（2026-11-22 S2 实测）：任务 07 现有写入形状是
+ * `{ reason, changes: { 字段: { from, to } } }`，`changes` 不在白名单键内。
+ * 读侧额外兼容该形状——**只投影字段名**并入 `changedFields`，`from`／`to` 的值
+ * 一律丢弃（账号 ID、公司 ID、状态文本都不属于只读页要展示的安全摘要）。
+ * 写入侧仍只接受声明的六个键，两侧各自独立，不会互相放宽。
+ *
  * 输出刻意保持语言无关（不带「原因：」等中文标签）：中英文页面由前端按字段渲染，
  * 服务端不持有 UI 文案。
  */
@@ -65,7 +71,17 @@ export function projectManagementAuditDetail(raw: string | null): ManagementAudi
   if (record === null) {
     return null;
   }
-  return readAllowedDetailFields(record);
+  const projected = readAllowedDetailFields(record);
+  const providerFields = readProviderChangedFields(record.changes);
+  if (providerFields.length === 0) {
+    return projected;
+  }
+  // 提供方既有形状（07 的 `changes: {字段: {from,to}}`）只投影字段名，
+  // 前后值一律丢弃——ID 与状态值不需要在只读页展示，也避免自由文本混入。
+  return {
+    ...(projected ?? {}),
+    changedFields: mergeChangedFields(projected?.changedFields ?? [], providerFields),
+  };
 }
 
 /**
@@ -216,4 +232,50 @@ function readAttemptNo(value: unknown): number | null {
     return null;
   }
   return value > MAX_ATTEMPT_NO ? null : value;
+}
+
+/**
+ * 读取提供方的字段级变更摘要（任务 07 现有形状 `changes: {字段: {from, to}}`）。
+ *
+ * 只取字段名，不取 `from`／`to` 的值：字段名是受控标识符，值可能是账号 ID、
+ * 公司 ID 或状态文本，不属于只读页需要展示的安全摘要。
+ */
+function readProviderChangedFields(value: unknown): string[] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return [];
+  }
+
+  const fields: string[] = [];
+  for (const key of Object.keys(value)) {
+    const trimmed = key.trim();
+    if (
+      trimmed.length === 0 ||
+      trimmed.length > MAX_FIELD_NAME_LENGTH ||
+      !FIELD_NAME_PATTERN.test(trimmed)
+    ) {
+      continue;
+    }
+    fields.push(trimmed);
+    if (fields.length >= MAX_CHANGED_FIELDS) {
+      break;
+    }
+  }
+  return fields;
+}
+
+/** 合并两处来源的变更字段名：去重并保持上限。 */
+function mergeChangedFields(primary: readonly string[], extra: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const field of [...primary, ...extra]) {
+    if (seen.has(field)) {
+      continue;
+    }
+    seen.add(field);
+    merged.push(field);
+    if (merged.length >= MAX_CHANGED_FIELDS) {
+      break;
+    }
+  }
+  return merged;
 }
