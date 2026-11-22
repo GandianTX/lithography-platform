@@ -80,7 +80,8 @@ describe('local backup upload service', () => {
       organizationId: 4,
       authorizationStatus: 'ACTIVE',
       authorizedAt: base,
-      signedClaims: null,
+      // 用途维度（S4）：上云只认**云备份用途**的凭据，业务同步授权不得充数
+      signedClaims: JSON.stringify({ purpose: ['CLOUD_BACKUP'] }),
       permissionVersion: null,
       lastVerifiedAt: null,
       ...overrides,

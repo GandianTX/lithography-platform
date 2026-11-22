@@ -3,6 +3,7 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { resolveCredentialPurposes } from '@core/local-runtime/policy/local-credential-purpose.policy';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { In, ObjectLiteral, Repository } from 'typeorm';
 import { LocalAccountAuthorizationEntity } from '../entities/local-account-authorization.entity';
@@ -189,7 +190,12 @@ export class LocalRuntimeQueryService {
   ): Promise<LocalAuthorizationSummary[]> {
     const rows = await this.pickRepository(this.authorizationRepository, transactionContext).find({
       where: organizationId === null ? { installationId } : { installationId, organizationId },
-      select: { organizationId: true, authorizationStatus: true, lastVerifiedAt: true },
+      select: {
+        organizationId: true,
+        authorizationStatus: true,
+        lastVerifiedAt: true,
+        signedClaims: true,
+      },
       order: { organizationId: 'ASC' },
     });
 
@@ -200,9 +206,19 @@ export class LocalRuntimeQueryService {
         activeCount: 0,
         revokedCount: 0,
         lastVerifiedAt: null,
+        // 用途维度（S4）：按**实际授权声明**汇总，不再对外谎报单一用途
+        credentialPurposes: [] as string[],
       };
       if (row.authorizationStatus === 'ACTIVE') {
         summary.activeCount += 1;
+        const verdict = resolveCredentialPurposes(
+          typeof row.signedClaims === 'string' ? row.signedClaims : null,
+        );
+        for (const purpose of verdict.purposes) {
+          if (!summary.credentialPurposes.includes(purpose)) {
+            summary.credentialPurposes.push(purpose);
+          }
+        }
       } else if (row.authorizationStatus === 'REVOKED') {
         summary.revokedCount += 1;
       }

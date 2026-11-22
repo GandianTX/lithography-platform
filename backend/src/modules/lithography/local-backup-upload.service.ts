@@ -10,6 +10,10 @@ import {
   isControlledFailureReason,
   LOCAL_BACKUP_FAILURE_REASON,
 } from '@core/local-runtime/policy/local-backup-failure-reason';
+import {
+  LOCAL_CREDENTIAL_PURPOSE,
+  hasCredentialPurpose,
+} from '@core/local-runtime/policy/local-credential-purpose.policy';
 
 import {
   LOCAL_BACKUP_UPLOADER,
@@ -112,7 +116,16 @@ export class LocalBackupUploadService {
       where: { authorizationStatus: 'ACTIVE' },
     });
     for (const authorization of authorizations) {
-      authorizedOrganizations.add(authorization.organizationId);
+      // 用途维度（S4）：上云只认**云备份用途**的凭据；业务同步授权不得充数。
+      // 用途不可核验（声明缺失/不可解析）→ 同样不算数（失败关闭，不静默复用）。
+      if (
+        hasCredentialPurpose(
+          typeof authorization.signedClaims === 'string' ? authorization.signedClaims : null,
+          LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP,
+        )
+      ) {
+        authorizedOrganizations.add(authorization.organizationId);
+      }
     }
 
     for (const asset of candidates) {

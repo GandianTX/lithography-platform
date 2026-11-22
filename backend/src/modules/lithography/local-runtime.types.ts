@@ -210,6 +210,11 @@ export type LocalAuthorizationSummary = {
   revokedCount: number;
   /** 当前范围内最近一次签名校验成功时间 */
   lastVerifiedAt: Date | null;
+  /**
+   * 该组织**实际持有**的凭据用途（取自云端签名声明；空＝用途不可核验）。
+   * 对外不再硬编码单一用途（S4）。
+   */
+  credentialPurposes: string[];
 };
 
 /**

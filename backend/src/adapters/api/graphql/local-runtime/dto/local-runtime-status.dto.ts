@@ -226,7 +226,11 @@ export function toLocalRuntimeStatusDTO(view: LocalRuntimeStatusView): LocalRunt
       activeCount: authorization.activeCount,
       revokedCount: authorization.revokedCount,
       lastVerifiedAt: authorization.lastVerifiedAt,
-      credentialPurpose: 'BUSINESS_SYNC',
+      // 用途如实反映（S4）：按授权声明汇总；无声明＝不可核验
+      credentialPurpose:
+        authorization.credentialPurposes.length > 0
+          ? authorization.credentialPurposes.join(',')
+          : 'UNKNOWN',
     })),
     generatedAt: view.generatedAt,
   };
