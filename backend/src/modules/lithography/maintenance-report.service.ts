@@ -90,7 +90,8 @@ export class MaintenanceReportService {
       const entity = repository.create({
         ownerOrganizationId: data.ownerOrganizationId,
         // 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化
-        recordUuid: randomUUID(),
+        // （导入路径传入包内持久化编号，保持跨端一致）
+        recordUuid: data.recordUuid ?? randomUUID(),
         sourceType: data.sourceType,
         repairRequestId: data.repairRequestId,
         title: data.title,
@@ -101,9 +102,9 @@ export class MaintenanceReportService {
         maintenanceEngineerAccountId: data.maintenanceEngineerAccountId,
         maintenanceEngineerNameSnapshot: data.maintenanceEngineerNameSnapshot,
         phaseFlowVersion: data.phaseFlowVersion,
-        status: 'DRAFT',
-        currentVersionNo: 0,
-        lastSubmittedAt: null,
+        status: data.status ?? 'DRAFT',
+        currentVersionNo: data.currentVersionNo ?? 0,
+        lastSubmittedAt: data.lastSubmittedAt ?? null,
         lastReviewedAt: null,
         aiUsage: 'NOT_USED',
         aiSourceType: null,

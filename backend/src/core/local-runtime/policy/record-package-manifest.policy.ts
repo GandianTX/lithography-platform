@@ -51,6 +51,23 @@ export type RecordPackageManifestItem = {
   /** 该条目的结构化快照（原样入包，检查不解释字段） */
   content_snapshot: unknown;
   files: RecordPackageManifestFile[];
+  /**
+   * 来源账号（原记录作者/责任工程师）——**加法式可选字段**（S3 补丁 P0/P4）。
+   *
+   * 为什么可选而不升 schema：旧包已在外部设备上流通，升 `schema_version` 会让
+   * 旧包全部无法解析，与"旧包兼容"目标相反。缺失时导入侧按
+   * "**来源身份不可核验**"拒绝该条（不得把导入人写成原作者）。
+   */
+  source_account_id?: number | null;
+  /** 来源归属公司（数据为准，导入侧逐条复核） */
+  owner_organization_id?: number | null;
+  /**
+   * 来源业务状态（如报告的 DRAFT/PENDING_REVIEW/APPROVED）。
+   *
+   * 导入正式事实必须知道来源状态，否则会把"已通过结单"的内容悄悄降级成待审草稿。
+   * 缺失时导入侧按"状态不可核验"拒绝该条（不猜状态）。
+   */
+  source_status?: string | null;
 };
 
 export type RecordPackageManifestFile = {
@@ -164,7 +181,46 @@ function validateManifestItem(item: unknown, index: number): RecordPackageManife
     version_no: record.version_no as number,
     content_snapshot: record.content_snapshot ?? null,
     files,
+    source_account_id: readOptionalPositiveInteger(
+      record.source_account_id,
+      'source_account_id',
+      index,
+    ),
+    owner_organization_id: readOptionalPositiveInteger(
+      record.owner_organization_id,
+      'owner_organization_id',
+      index,
+    ),
+    source_status: readOptionalStatus(record.source_status, index),
   };
+}
+
+/** 读取可选状态字符串（缺失／为 null 视为"未携带"；过长即清单非法） */
+function readOptionalStatus(value: unknown, index: number): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string' || value.length === 0 || value.length > 32) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_MANIFEST,
+      `第 ${index + 1} 条 source_status 必须为 1~32 字的字符串`,
+    );
+  }
+  return value;
+}
+
+/** 读取可选正整数字段（缺失／为 null 视为"未携带"；类型非法即清单非法） */
+function readOptionalPositiveInteger(value: unknown, field: string, index: number): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!Number.isInteger(value) || (value as number) <= 0) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_MANIFEST,
+      `第 ${index + 1} 条 ${field} 必须为正整数`,
+    );
+  }
+  return value as number;
 }
 
 function validateManifestFile(file: unknown, index: number): RecordPackageManifestFile {

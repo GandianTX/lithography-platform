@@ -137,6 +137,12 @@ export type RecordPackageExportItemDraft = {
   versionNo: number;
   contentSnapshot: unknown;
   files: RecordPackageManifestFile[];
+  /** 来源账号（原作者／责任工程师）：随条目入包，导入侧据此保持原作者 */
+  sourceAccountId: number | null;
+  /** 来源归属公司 */
+  ownerOrganizationId: number;
+  /** 来源业务状态（导入正式事实需要知道来源状态） */
+  sourceStatus: string | null;
 };
 
 /**
@@ -165,6 +171,10 @@ export function buildExportManifest(input: {
       version_no: item.versionNo,
       content_snapshot: item.contentSnapshot,
       files: item.files,
+      // 来源账号与归属公司随条目入包：导入侧据此核验并保持原作者（缺失即"不可核验"）
+      source_account_id: item.sourceAccountId,
+      owner_organization_id: item.ownerOrganizationId,
+      source_status: item.sourceStatus,
     })),
   };
   // 自校验：任何结构问题在落盘前暴露（与检查器共用同一校验规则）

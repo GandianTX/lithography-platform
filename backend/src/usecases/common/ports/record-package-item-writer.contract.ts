@@ -40,6 +40,20 @@ export type RecordPackageItemWriteRequest = {
   originals: { relativePath: string; sha256: string; byteSize: number }[];
   /** 正文与原件清单摘要（包清单登记值，来源域可复核） */
   manifestChecksum: string;
+  /**
+   * 来源账号（原记录作者／责任工程师，S3 补丁 P0-2／P4）。
+   *
+   * 为 `null` 表示**包内未携带来源身份**（旧包或来源记录本就无持久化作者）：
+   * 受控写入方必须**失败关闭**——不得把导入人写成原作者。
+   */
+  sourceAccountId: number | null;
+  /** 来源归属公司（数据为准；与目标公司不一致时受控写入方必须拒绝） */
+  ownerOrganizationId: number | null;
+  /**
+   * 来源业务状态（如报告的 SUBMITTED／APPROVED）：导入正式事实必须知道来源状态，
+   * 否则会把已通过结单的内容悄悄降级成待审草稿。缺失时受控写入方必须拒绝。
+   */
+  sourceStatus: string | null;
 };
 
 /** 单条导入的写入结论 */

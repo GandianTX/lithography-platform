@@ -102,6 +102,10 @@ describe('record package export policy', () => {
       versionNo: 2,
       contentSnapshot: { schema_version: 1, title: '资料A' },
       files: [{ relative_path: 'files/e1000000/doc.txt', sha256: 'a'.repeat(64), byte_size: 3 }],
+      // 来源事实（S3 补丁 P0/P4）：原作者、归属公司与业务状态随条目入包
+      sourceAccountId: 900101,
+      ownerOrganizationId: 4,
+      sourceStatus: 'SUBMITTED',
     };
 
     it('产出通过导入侧同一结构校验的清单', () => {

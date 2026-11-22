@@ -157,7 +157,15 @@ export class ImportRecordPackageUsecase {
   /** 逐条导入：复核去重事实 → 受控写入 → 落逐条结果 */
   private async importOne(input: {
     item: RecordPackageItemSnapshot;
-    manifestItem: { content_snapshot: unknown; files: { sha256: string }[] } | undefined;
+    manifestItem:
+      | {
+          content_snapshot: unknown;
+          files: { sha256: string }[];
+          source_account_id?: number | null;
+          owner_organization_id?: number | null;
+          source_status?: string | null;
+        }
+      | undefined;
     organizationId: number;
     manifestChecksum: string;
     sourceInstallationId: string;
@@ -175,6 +183,17 @@ export class ImportRecordPackageUsecase {
         receiptId: null,
       });
       return { result: 'SKIPPED' };
+    }
+
+    // 1b. 归属公司复核：包内登记的归属公司必须与目标公司一致（数据为准）
+    const ownerOrganizationId = input.manifestItem?.owner_organization_id ?? null;
+    if (ownerOrganizationId !== null && ownerOrganizationId !== input.organizationId) {
+      await this.writeItemResult(item.itemId, {
+        result: 'FAILED',
+        errorMessage: '包内归属公司与目标公司不一致，该条未导入',
+        receiptId: null,
+      });
+      return { result: 'FAILED' };
     }
 
     // 2. 没有受控写入入口 = 该条失败关闭
@@ -210,6 +229,9 @@ export class ImportRecordPackageUsecase {
         body,
         originals: [],
         manifestChecksum: input.manifestChecksum,
+        sourceAccountId: input.manifestItem?.source_account_id ?? null,
+        ownerOrganizationId,
+        sourceStatus: input.manifestItem?.source_status ?? null,
       },
       input.session,
     );

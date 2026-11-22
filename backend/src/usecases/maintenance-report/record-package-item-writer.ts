@@ -1,19 +1,23 @@
 // src/usecases/maintenance-report/record-package-item-writer.ts
 
 /**
- * 维修报告域的**记录包受控写入实现**（任务 09 S3.2）。
+ * 维修报告域的**记录包受控写入实现**（任务 09 S3 补丁 P2／P4）。
  *
- * 定位：记录包导入的"受控写入"必须走来源业务既有的受控入口（这里＝
- * `CreateMaintenanceReportDraftUsecase`），不另立第二套权限口径——
- * 身份由服务端会话派生、公司范围由入口自己裁决。
+ * 与首版的差别（补丁要求的核心）：
+ * - 首版走 `CreateMaintenanceReportDraftUsecase` → 生成**新 UUID、导入人当作者、
+ *   版本 0 的草稿**，等于把"正式事实"悄悄改成"无关新草稿"；
+ * - 本版按包内事实落库：**保持 `record_uuid`、原作者、公司、版本与业务状态**，
+ *   并写入同版本的冻结版本行（正文快照原样保留）。
  *
- * 已知边界（失败关闭，不静默降级）：
- * - 包内**原件**尚未接入受控写入入口：带原件的条目直接判失败，不丢原件；
- * - `WORK_ORDER_SUMMARY` 来源的报告内容由工单事实派生，不能由记录包导入；
- * - 资料与工单域**没有**可用的受控新建入口，由任务 09 侧按"无受控写入入口"判失败。
+ * 失败关闭（不静默降级、不冒用账号）：
+ * - 包内缺来源账号 → 拒绝（不得把导入人写成原作者）；
+ * - 包内缺来源状态 → 拒绝（不得把已通过结单降级成待审草稿）；
+ * - 包内归属公司与目标公司不一致 → 由导入编排拒绝；
+ * - 原件未接入受控写入（任务 11 暂存/绑定）→ 带原件条目拒绝，不丢原件；
+ * - `WORK_ORDER_SUMMARY` 来源 → 关联工单事实与接单人规则未确认前拒绝。
  */
 
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import type {
   RecordPackageItemWriteOutcome,
@@ -21,17 +25,21 @@ import type {
   RecordPackageItemWriter,
 } from '@usecases/common/ports/record-package-item-writer.contract';
 
+import {
+  TRANSACTION_RUNNER,
+  type TransactionRunner,
+} from '@usecases/common/ports/transaction-runner.contract';
+
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
-import { CreateMaintenanceReportDraftUsecase } from './create-maintenance-report-draft.usecase';
-import type {
-  MaintenanceReportAlarmInput,
-  MaintenanceReportDraftInput,
-  MaintenanceReportFaultInput,
-  MaintenanceReportStepInput,
-} from './maintenance-report-command.types';
+import {
+  MaintenanceReportChangeKind,
+  MaintenanceReportSourceType,
+  MaintenanceReportStatus,
+} from '@app-types/models/maintenance-report.types';
 
-/** 快照载荷里可映射为草稿输入的字段 */
+import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+
 type SnapshotPayload = {
   sourceType?: unknown;
   repairRequestId?: unknown;
@@ -40,122 +48,51 @@ type SnapshotPayload = {
   equipmentModelId?: unknown;
   equipmentModelText?: unknown;
   maintenanceDate?: unknown;
-  handlingResult?: unknown;
-  closureReason?: unknown;
-  resetResult?: unknown;
-  actualCause?: unknown;
-  repairActions?: unknown;
-  verificationResult?: unknown;
-  supplementaryNote?: unknown;
+  maintenanceEngineerAccountId?: unknown;
+  maintenanceEngineerName?: unknown;
+  phaseFlowVersion?: unknown;
+  ai?: Record<string, unknown>;
   alarms?: unknown;
   steps?: unknown;
   faults?: unknown;
 };
 
-/** 读取文本字段（缺省或非文本一律视为缺省，不猜值） */
 function readText(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** 读取正整数（缺省或非法一律视为缺省） */
 function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) ? value : null;
 }
 
-function readSteps(value: unknown): MaintenanceReportStepInput[] {
-  if (!Array.isArray(value)) {
-    return [];
+/**
+ * 来源业务状态 → 本机报告状态（正式事实不降级）。
+ *
+ * 逐值对应 06 的报告状态枚举：SUBMITTED＝R051 正式提交后的冻结态；
+ * APPROVED＝已通过结单（只读）；PENDING_REVIEW／RETURNED 按原值保留。
+ * DRAFT（草稿）没有冻结版本，本就不会被导出，因此不映射（按"状态不可核验"拒绝）。
+ */
+function mapSourceStatus(sourceStatus: string): MaintenanceReportStatus | null {
+  const known = Object.values(MaintenanceReportStatus) as readonly string[];
+  if (!known.includes(sourceStatus)) {
+    return null;
   }
-  return value.flatMap((item) => {
-    if (typeof item !== 'object' || item === null) {
-      return [];
-    }
-    const step = item as Record<string, unknown>;
-    const stepCode = readText(step.stepCode);
-    if (stepCode === null) {
-      return [];
-    }
-    return [
-      {
-        actionText: readText(step.actionText) ?? '',
-        isValidNewBranch: step.isValidNewBranch === true,
-        newAlarmCode: readText(step.newAlarmCode),
-        partName: readText(step.partName),
-        phaseCode: readText(step.phaseCode),
-        resultCode: readText(step.resultCode),
-        resultText: readText(step.resultText),
-        stepCode,
-      },
-    ];
-  });
-}
-
-function readFaults(value: unknown): MaintenanceReportFaultInput[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((item) => {
-    if (typeof item !== 'object' || item === null) {
-      return [];
-    }
-    const fault = item as Record<string, unknown>;
-    const branchKind = readText(fault.branchKind);
-    const description = readText(fault.description);
-    if (branchKind === null || description === null) {
-      return [];
-    }
-    return [
-      {
-        action: readText(fault.action),
-        branchKind,
-        description,
-        errorType: readText(fault.errorType),
-        faultStatus: readText(fault.faultStatus),
-        gpibStatus: readText(fault.gpibStatus),
-        mainError: readText(fault.mainError),
-        phaseCode: readText(fault.phaseCode),
-        source: readText(fault.source),
-        unitError: readText(fault.unitError),
-      },
-    ];
-  });
-}
-
-function readAlarms(value: unknown): MaintenanceReportAlarmInput[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((item) => {
-    if (typeof item !== 'object' || item === null) {
-      return [];
-    }
-    const alarm = item as Record<string, unknown>;
-    const alarmIndex = readNumber(alarm.alarmIndex);
-    const alarmCode = readText(alarm.alarmCode);
-    if (alarmIndex === null || alarmCode === null) {
-      return [];
-    }
-    return [
-      {
-        alarmCode,
-        alarmDescription: readText(alarm.alarmDescription),
-        alarmIndex,
-        phaseCode: readText(alarm.phaseCode) ?? '',
-        resetResult: readText(alarm.resetResult) ?? '',
-      },
-    ];
-  });
+  return sourceStatus as MaintenanceReportStatus;
 }
 
 @Injectable()
 export class MaintenanceReportRecordPackageItemWriter implements RecordPackageItemWriter {
   readonly supportedResourceTypes = ['MAINTENANCE_REPORT'] as const;
 
-  constructor(private readonly createDraftUsecase: CreateMaintenanceReportDraftUsecase) {}
+  constructor(
+    private readonly maintenanceReportService: MaintenanceReportService,
+    @Inject(TRANSACTION_RUNNER)
+    private readonly transactionRunner: TransactionRunner,
+  ) {}
 
   async write(
     request: RecordPackageItemWriteRequest,
-    session: UsecaseSession,
+    _session: UsecaseSession,
   ): Promise<RecordPackageItemWriteOutcome> {
     if (request.resourceType !== 'MAINTENANCE_REPORT') {
       return {
@@ -171,54 +108,108 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
         reason: '记录包原件尚未接入受控写入入口，本次不导入（不静默丢弃原件）',
       };
     }
-
-    const payload = request.body.payload as SnapshotPayload | undefined;
-    if (typeof payload !== 'object' || payload === null) {
-      return { status: 'FAILED', localRecordId: null, reason: '包内报告载荷缺失或形状不受控' };
-    }
-    const sourceType = readText(payload.sourceType);
-    if (sourceType === null) {
-      return { status: 'FAILED', localRecordId: null, reason: '包内报告缺少来源类型' };
-    }
-    if (sourceType === 'WORK_ORDER_SUMMARY') {
+    if (request.sourceAccountId === null) {
       return {
         status: 'FAILED',
         localRecordId: null,
-        reason: '工单总结来源的报告内容由工单事实派生，不能由记录包导入',
+        reason: '包内未携带来源账号，原作者不可核验（不以导入人冒充原作者）',
       };
     }
 
-    const draft: MaintenanceReportDraftInput = {
-      actualCause: readText(payload.actualCause),
-      alarms: readAlarms(payload.alarms),
-      closureReason: readText(payload.closureReason),
-      customerFactoryName: readText(payload.customerFactoryName),
-      equipmentModelId: readNumber(payload.equipmentModelId),
-      equipmentModelText: readText(payload.equipmentModelText),
-      faults: readFaults(payload.faults),
-      handlingResult: readText(payload.handlingResult),
-      maintenanceDate: readText(payload.maintenanceDate),
-      repairActions: readText(payload.repairActions),
-      resetResult: readText(payload.resetResult),
-      steps: readSteps(payload.steps),
-      supplementaryNote: readText(payload.supplementaryNote),
-      title: readText(payload.title),
-      verificationResult: readText(payload.verificationResult),
-    };
+    // body 即包内条目的 content_snapshot（{schema_version, payload, submitted_at, change_kind…}）
+    const payload =
+      typeof request.body === 'object' && request.body !== null
+        ? (request.body.payload as SnapshotPayload | undefined)
+        : undefined;
+    if (typeof payload !== 'object' || payload === null) {
+      return { status: 'FAILED', localRecordId: null, reason: '包内报告载荷缺失或形状不受控' };
+    }
+
+    const sourceTypeText = readText(payload.sourceType);
+    if (
+      sourceTypeText !== MaintenanceReportSourceType.HISTORICAL_CASE &&
+      sourceTypeText !== MaintenanceReportSourceType.WORK_ORDER_SUMMARY
+    ) {
+      return { status: 'FAILED', localRecordId: null, reason: '包内报告缺少来源类型' };
+    }
+    const sourceType = sourceTypeText;
+    if (sourceType === MaintenanceReportSourceType.WORK_ORDER_SUMMARY) {
+      return {
+        status: 'FAILED',
+        localRecordId: null,
+        reason: '工单总结来源的报告需核对关联工单事实与接单人规则，当前不导入',
+      };
+    }
+
+    const sourceStatus = readText(request.sourceStatus);
+    const status = sourceStatus === null ? null : mapSourceStatus(sourceStatus);
+    if (status === null) {
+      return {
+        status: 'FAILED',
+        localRecordId: null,
+        reason: '包内未携带可核验的业务状态，不能把正式事实降级成草稿或待审',
+      };
+    }
+
+    const submittedAtText = readText(request.body.submitted_at);
+    const submittedAt = submittedAtText === null ? null : new Date(submittedAtText);
+    // 变更种类按 06 的冻结口径取值：导入的是**正式冻结版本**，按正式修订登记
+    const changeKind = MaintenanceReportChangeKind.FORMAL_CORRECTION;
 
     try {
-      const created = await this.createDraftUsecase.execute({
-        session,
-        sourceType,
-        repairRequestId: readNumber(payload.repairRequestId),
-        draft,
+      return await this.transactionRunner.run(async (transactionContext) => {
+        const report = await this.maintenanceReportService.insertReport(
+          {
+            ownerOrganizationId: request.organizationId,
+            sourceType,
+            repairRequestId: readNumber(payload.repairRequestId),
+            title: readText(payload.title),
+            customerFactoryName: readText(payload.customerFactoryName),
+            equipmentModelId: readNumber(payload.equipmentModelId),
+            equipmentModelText: readText(payload.equipmentModelText),
+            maintenanceDate: readText(payload.maintenanceDate),
+            // 责任工程师账号是**本机账号 id**，跨机不可移植：以来源账号为准，
+            // 工程师姓名快照仍取包内事实（不丢业务事实）
+            maintenanceEngineerAccountId: request.sourceAccountId as number,
+            maintenanceEngineerNameSnapshot: readText(payload.maintenanceEngineerName) ?? '',
+            phaseFlowVersion: readNumber(payload.phaseFlowVersion) ?? 1,
+            createdByAccountId: request.sourceAccountId as number,
+            updatedByAccountId: request.sourceAccountId as number,
+            // 导入事实：保持包内的稳定身份、状态与版本
+            recordUuid: request.recordUuid,
+            status,
+            currentVersionNo: request.versionNo,
+            lastSubmittedAt: submittedAt,
+          },
+          transactionContext,
+        );
+        const reportId =
+          (report as { id?: number }).id ?? (report as { reportId?: number }).reportId;
+        if (typeof reportId !== 'number') {
+          throw new Error('受控写入未返回报告主键');
+        }
+        await this.maintenanceReportService.insertVersion(
+          {
+            reportId,
+            versionNo: request.versionNo,
+            changeKind,
+            changeReason: '记录包导入',
+            payloadSnapshot: payload,
+            submittedByAccountId: request.sourceAccountId as number,
+            submittedAt: submittedAt ?? new Date(),
+          },
+          transactionContext,
+        );
+        return { status: 'CREATED', localRecordId: reportId, reason: null };
       });
-      return { status: 'CREATED', localRecordId: created.reportId, reason: null };
     } catch (error) {
       return {
         status: 'FAILED',
         localRecordId: null,
-        reason: error instanceof Error ? error.message : '受控写入入口拒绝了该条导入',
+        reason:
+          error instanceof Error
+            ? `受控写入被拒绝：${error.message}`
+            : '受控写入被拒绝，该条未导入',
       };
     }
   }

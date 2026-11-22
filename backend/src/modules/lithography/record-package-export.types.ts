@@ -29,6 +29,15 @@ export type RecordPackageExportEntry = {
   versionNo: number;
   contentSnapshot: unknown;
   files: RecordPackageExportFileEntry[];
+  /**
+   * 来源账号（原记录作者／责任工程师）：随包入清单，导入侧据此核验并保持原作者
+   * （S3 补丁 P0-2／P4）。**不得**用导入人冒充原作者。
+   */
+  sourceAccountId: number | null;
+  /** 来源归属公司（数据为准） */
+  ownerOrganizationId: number;
+  /** 来源业务状态（导入正式事实需要知道来源状态；不适用时为 null） */
+  sourceStatus: string | null;
 };
 
 /** 包内文件与来源的对应关系（复制时流式核对） */

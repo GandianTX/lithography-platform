@@ -106,6 +106,10 @@ export class RecordPackageExportService {
           versionNo: entry.entry.versionNo,
           contentSnapshot: entry.entry.contentSnapshot,
           files: entry.measuredFiles,
+          // 来源账号与归属公司随条目入包（导入侧据此核验并保持原作者）
+          sourceAccountId: entry.entry.sourceAccountId,
+          ownerOrganizationId: entry.entry.ownerOrganizationId,
+          sourceStatus: entry.entry.sourceStatus,
         })),
       });
 
@@ -382,6 +386,9 @@ export class RecordPackageExportService {
       versionNo: entity.currentRevisionNo,
       contentSnapshot,
       files,
+      sourceAccountId: entity.createdByAccountId ?? null,
+      ownerOrganizationId: organizationId,
+      sourceStatus: null,
     };
   }
 
@@ -439,6 +446,9 @@ export class RecordPackageExportService {
       versionNo: entity.currentRevisionNo,
       contentSnapshot,
       files,
+      sourceAccountId: entity.customerAccountId ?? null,
+      ownerOrganizationId: organizationId,
+      sourceStatus: null,
     };
   }
 
@@ -496,6 +506,11 @@ export class RecordPackageExportService {
       versionNo: versionRow.versionNo,
       contentSnapshot,
       files,
+      // 原作者＝报告创建人；责任工程师在冻结载荷内（maintenanceEngineerAccountId）
+      sourceAccountId: entity.createdByAccountId ?? null,
+      ownerOrganizationId: organizationId,
+      // 来源业务状态：导入正式事实需要知道它是待审还是已通过结单
+      sourceStatus: entity.status,
     };
   }
 

@@ -77,6 +77,14 @@ export type MaintenanceReportInsertData = {
    */
   submissionRequestId?: string | null;
   submissionPayloadHash?: string | null;
+  /**
+   * 导入事实（S3 补丁 P2）：按包内记录保持稳定身份、状态与版本。
+   * 缺省＝普通建稿（随机 UUID、DRAFT、版本 0），既有调用方行为不变。
+   */
+  recordUuid?: string | null;
+  status?: MaintenanceReportStatus | null;
+  currentVersionNo?: number | null;
+  lastSubmittedAt?: Date | null;
 };
 
 export type MaintenanceReportDraftWriteData = {
