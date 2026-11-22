@@ -334,8 +334,8 @@ describe('备份与恢复面板', () => {
 
       // 不允许 div 伪按钮：必须可 Tab 聚焦
       expect(['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA']).toContain(node.tagName);
-      // 框架自带的图标按钮（antd 分页/表格排序）不计名；自有控件必须有可访问名称
-      if (node.closest('.ant-pagination, .ant-table')) {
+      // 只跳过框架自带的图标按钮（分页、表格排序）；表格内的自有按钮仍必须有可访问名称
+      if (node.closest('.ant-pagination, .ant-table-column-sorter')) {
         continue;
       }
       const accessibleName = node.getAttribute('aria-label') ?? node.textContent?.trim() ?? '';

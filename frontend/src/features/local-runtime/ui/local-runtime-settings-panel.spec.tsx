@@ -187,17 +187,27 @@ describe('本地设置只读面板', () => {
     expect(adapters.fetchLocalRuntimeStatus).toHaveBeenCalledTimes(2);
   });
 
-  it('键盘可达：交互元素均为原生可聚焦控件且有可访问名称', async () => {
+  it('键盘可达：失败态的重试入口是原生可聚焦按钮且有可访问名称', async () => {
+    adapters.fetchLocalRuntimeStatus.mockRejectedValue(new Error('boom'));
+
     render(<LocalRuntimeSettingsPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText('本机身份')).toBeTruthy();
+      expect(screen.getByText('本机状态读取失败')).toBeTruthy();
     });
+
+    // 只读页唯一的交互入口是失败态的重试按钮：必须是原生 button（可 Tab 聚焦）且有可访问名称
+    const retry = screen.getByRole('button', { name: '重新读取' }) as HTMLButtonElement;
+
+    expect(retry.tagName).toBe('BUTTON');
+    expect(retry.disabled).toBe(false);
 
     const interactive = Array.from(
       document.querySelectorAll('button, a[href], input, select, textarea, [role="button"]'),
     );
 
+    // 有交互元素才谈得上可达（避免空跑通过）
+    expect(interactive.length).toBeGreaterThan(0);
     for (const element of interactive) {
       const node = element as HTMLElement;
 

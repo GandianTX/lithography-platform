@@ -11,6 +11,9 @@
  * 2. **生成契约**：用 Nest code-first 在进程内生成 schema（与运行时
  *    `autoSchemaFile` 产物同源），断言任务 09 本地运行域的入口名、参数可空性与
  *    返回字段与契约一致——契约漂移（改名、改可空性、删字段）会直接让本用例失败。
+ *    之所以不读 `src/schema.graphql`：它是 `autoSchemaFile` 的**运行时产物且被
+ *    `.gitignore` 忽略**（不入版本库），CI 环境没有该产物可比对，
+ *    以进程内生成 schema 作为唯一 CI 稳定的契约基准。
  *
  * 明确替身：本地运行域的 usecase（只提供本层关心的返回值）。
  * 不连接 MySQL / Redis / 真实鉴权服务。
@@ -32,15 +35,26 @@ import { registerEnums } from '@src/adapters/api/graphql/schema/enum.registry';
 // eslint-disable-next-line local-architecture/no-adapter-to-infrastructure-imports -- 测试中注册真实运行时的全局异常过滤器以验证 GraphQL 大类码；生产 adapter 不依赖它
 import { GqlAllExceptionsFilter } from '@src/infrastructure/graphql/filters/graphql-exception.filter';
 import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
+import {
+  CheckRecordPackageUsecase,
+  GetRecordPackageResultUsecase,
+} from '@src/usecases/local-runtime/check-record-package.usecase';
+import { ExportRecordPackageUsecase } from '@src/usecases/local-runtime/export-record-package.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
 import { GetLocalRestoreCapabilityUsecase } from '@src/usecases/local-runtime/get-local-restore-capability.usecase';
 import { GetLocalRuntimeStatusUsecase } from '@src/usecases/local-runtime/get-local-runtime-status.usecase';
+import { GetSyncConflictUsecase } from '@src/usecases/local-runtime/get-sync-conflict.usecase';
 import { ListLocalBackupRecordsUsecase } from '@src/usecases/local-runtime/list-local-backup-records.usecase';
+import { ListSyncConflictsUsecase } from '@src/usecases/local-runtime/list-sync-conflicts.usecase';
 import { PrecheckLocalRestoreUsecase } from '@src/usecases/local-runtime/precheck-local-restore.usecase';
+import { ResolveSyncConflictUsecase } from '@src/usecases/local-runtime/resolve-sync-conflict.usecase';
 import { StartManualLocalBackupUsecase } from '@src/usecases/local-runtime/start-manual-local-backup.usecase';
+import { ApplyLocalSyncConflictResolutionUsecase } from '@src/usecases/admin-document-database/apply-local-sync-conflict-resolution.usecase';
 import { LocalBackupResolver } from './local-backup.resolver';
 import { LocalRuntimeResolver } from './local-runtime.resolver';
+import { RecordPackageResolver } from './record-package.resolver';
+import { SyncConflictResolver } from './sync-conflict.resolver';
 
 const ADMIN_USER = {
   sub: 900101,
@@ -147,6 +161,8 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
       providers: [
         LocalRuntimeResolver,
         LocalBackupResolver,
+        RecordPackageResolver,
+        SyncConflictResolver,
         { provide: GetLocalRuntimeStatusUsecase, useValue: getLocalRuntimeStatusUsecase },
         { provide: ListLocalBackupRecordsUsecase, useValue: listLocalBackupRecordsUsecase },
         { provide: GetLocalBackupRecordUsecase, useValue: getLocalBackupRecordUsecase },
@@ -155,6 +171,13 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
         { provide: PrecheckLocalRestoreUsecase, useValue: precheckLocalRestoreUsecase },
         { provide: CleanupLocalBackupPackagesUsecase, useValue: cleanupLocalBackupPackagesUsecase },
         { provide: GetLocalRestoreCapabilityUsecase, useValue: getLocalRestoreCapabilityUsecase },
+        { provide: CheckRecordPackageUsecase, useValue: { execute: jest.fn() } },
+        { provide: GetRecordPackageResultUsecase, useValue: { execute: jest.fn() } },
+        { provide: ExportRecordPackageUsecase, useValue: { execute: jest.fn() } },
+        { provide: ListSyncConflictsUsecase, useValue: { execute: jest.fn() } },
+        { provide: GetSyncConflictUsecase, useValue: { execute: jest.fn() } },
+        { provide: ResolveSyncConflictUsecase, useValue: { execute: jest.fn() } },
+        { provide: ApplyLocalSyncConflictResolutionUsecase, useValue: { execute: jest.fn() } },
         {
           provide: GqlAllExceptionsFilter,
           useFactory: () =>
@@ -434,6 +457,70 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
       expect(
         objectField('LocalRuntimeAuthorizationSummary', 'credentialPurpose').type.toString(),
       ).toBe('String!');
+    });
+
+    // 冲突与记录包两个入口的前端**零调用**（尚未接线）：其契约漂移不会被前端发现，
+    // 因此在此单独守卫入口名与参数可空性。
+    it('同步冲突入口的契约（前端尚未接线，靠本守卫兜住漂移）', () => {
+      expect(queryField('syncConflicts')?.type.toString()).toBe('SyncConflictPage!');
+      // 分页与过滤参数均可空（缺省由服务端取默认口径）
+      expect(argType(queryField('syncConflicts'), 'statusOnlyPending')).toBe('Boolean');
+      expect(argType(queryField('syncConflicts'), 'page')).toBe('Int');
+      expect(argType(queryField('syncConflicts'), 'pageSize')).toBe('Int');
+      expect(queryField('syncConflict')?.type.toString()).toBe('SyncConflict!');
+      expect(argType(queryField('syncConflict'), 'conflictId')).toBe('String!');
+      expect(mutationField('resolveSyncConflict')?.type.toString()).toBe(
+        'SyncConflictResolveResult!',
+      );
+      expect(argType(mutationField('resolveSyncConflict'), 'conflictId')).toBe('String!');
+      expect(argType(mutationField('resolveSyncConflict'), 'action')).toBe('SyncConflictAction!');
+    });
+
+    it('记录包入口的契约（前端尚未接线，靠本守卫兜住漂移）', () => {
+      expect(mutationField('exportRecordPackage')?.type.toString()).toBe(
+        'RecordPackageExportResult!',
+      );
+      // 目标目录、公司与资源类型必须显式给出（不得让服务端猜目标）
+      expect(argType(mutationField('exportRecordPackage'), 'targetPath')).toBe('String!');
+      expect(argType(mutationField('exportRecordPackage'), 'organizationId')).toBe('Int!');
+      expect(argType(mutationField('exportRecordPackage'), 'resourceType')).toBe(
+        'RecordPackageResourceType!',
+      );
+      expect(argType(mutationField('exportRecordPackage'), 'recordIds')).toBe('[Int!]!');
+      expect(mutationField('checkRecordPackage')?.type.toString()).toBe(
+        'RecordPackageCheckResult!',
+      );
+      expect(argType(mutationField('checkRecordPackage'), 'packagePath')).toBe('String!');
+      expect(queryField('recordPackageResult')?.type.toString()).toBe(
+        'RecordPackageProcessResult!',
+      );
+      expect(argType(queryField('recordPackageResult'), 'packageId')).toBe('String!');
+    });
+
+    it('本地运行域的入口名全量登记：新增入口必须同时登记进契约守卫', () => {
+      // 覆盖三个 resolver 的全部公开入口：入口改名/删除会在此失败，
+      // 避免新入口在守卫之外悄悄漂移。
+      const queryNames = Object.keys(schema().getQueryType()?.getFields() ?? {}).sort();
+      const mutationNames = Object.keys(schema().getMutationType()?.getFields() ?? {}).sort();
+
+      expect(queryNames).toEqual([
+        'localBackupRecord',
+        'localBackupRecords',
+        'localBackupSettings',
+        'localRestoreCapability',
+        'localRuntimeStatus',
+        'recordPackageResult',
+        'syncConflict',
+        'syncConflicts',
+      ]);
+      expect(mutationNames).toEqual([
+        'checkRecordPackage',
+        'cleanupLocalBackupPackages',
+        'exportRecordPackage',
+        'precheckLocalRestore',
+        'resolveSyncConflict',
+        'startManualLocalBackup',
+      ]);
     });
   });
 });
