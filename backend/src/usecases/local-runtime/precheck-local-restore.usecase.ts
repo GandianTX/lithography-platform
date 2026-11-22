@@ -6,7 +6,9 @@ import {
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import { assertLocalRuntimeAdministrator } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 import { Inject, Injectable } from '@nestjs/common';
+import { PinoLogger } from 'nestjs-pino';
 
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 import {
@@ -51,6 +53,7 @@ export class PrecheckLocalRestoreUsecase {
     private readonly localRuntimeService: LocalRuntimeService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
+    private readonly logger: PinoLogger,
   ) {}
 
   async execute(command: PrecheckLocalRestoreCommand): Promise<RestorePrecheckResult> {
@@ -132,7 +135,12 @@ export class PrecheckLocalRestoreUsecase {
 
           return { backupId: result.backupId, packagePath: result.packagePath };
         } catch (error) {
-          const message = error instanceof Error ? error.message : '保护副本生成失败';
+          // 原始异常只进服务端日志；落库只给受控原因码
+          this.logger.error(
+            { backupRunId: protectionRun.id, err: error },
+            '恢复预检的保护副本生成失败',
+          );
+          const reason = LOCAL_BACKUP_FAILURE_REASON.PROTECTION_COPY_FAILED;
           await this.transactionRunner.run(async (transactionContext) => {
             await this.localRuntimeService.finishBackupRun(
               protectionRun.id,
@@ -144,7 +152,7 @@ export class PrecheckLocalRestoreUsecase {
                 attachmentCount: null,
                 schemaVersion: null,
                 errorCode: 'BACKUP_GENERATION_FAILED',
-                errorMessage: message.slice(0, 1000),
+                errorMessage: reason,
               },
               transactionContext,
             );

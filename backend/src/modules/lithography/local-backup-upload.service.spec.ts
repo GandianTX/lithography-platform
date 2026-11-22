@@ -8,6 +8,11 @@ import type {
   LocalBackupUploadResult,
   LocalBackupUploader,
 } from '@src/usecases/local-runtime/local-backup-upload.contract';
+import {
+  asPinoLogger,
+  createTestPinoLogger,
+  type TestPinoLogger,
+} from '../../../test/utils/test-pino-logger';
 
 /**
  * 自动上云重试执行器单测（任务 09 S3.2）。
@@ -69,6 +74,8 @@ describe('local backup upload service', () => {
     settings: LocalCompanySettingEntity[];
     /** 显式传 undefined 模拟 Nest 对未提供的 @Optional() 依赖注入 undefined 的情形 */
     uploader: LocalBackupUploader | null | undefined;
+    /** 可选：注入日志替身，便于断言"原始异常只进日志" */
+    logger?: TestPinoLogger;
   }) {
     const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
     const backupAssetRepository = {
@@ -120,6 +127,7 @@ describe('local backup upload service', () => {
     const service = new LocalBackupUploadService(
       backupAssetRepository as never,
       settingRepository as never,
+      asPinoLogger(options.logger ?? createTestPinoLogger()),
       options.uploader,
     );
 
@@ -191,8 +199,38 @@ describe('local backup upload service', () => {
     });
     expect(updates[1].patch).toMatchObject({
       cloudStatus: 'FAILED',
-      failureReason: '云端拒绝接收',
+      failureReason: 'LOCAL_UPLOAD_FAILED',
     });
+  });
+
+  // 接收端返回**自由文本**原因时不得原样落库（可能含本机路径或凭据片段）：
+  // 一律降级为通用受控码，原始文本只进服务端日志。
+  it('接收端返回非受控原因文本时降级为通用受控码，原始文本只进日志', async () => {
+    const logger = createTestPinoLogger();
+    const uploader: LocalBackupUploader = {
+      upload: () =>
+        Promise.resolve({
+          status: 'FAILED',
+          code: 'RECEIVER_REJECTED',
+          reason: '拒绝接收：/var/local-backups/4/manual-1',
+        } satisfies LocalBackupUploadResult),
+    };
+    const { service, updates } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader,
+      logger,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.failed).toBe(1);
+    expect(updates[1].patch).toMatchObject({
+      cloudStatus: 'FAILED',
+      failureReason: 'LOCAL_UPLOAD_FAILED',
+    });
+    // 原始文本进了日志（不进落库列与对外字段）
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('上传成功记录完整回执，且不触发本地包清理', async () => {

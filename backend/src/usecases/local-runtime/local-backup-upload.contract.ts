@@ -32,7 +32,11 @@ export type LocalBackupUploadSuccess = {
 
 export type LocalBackupUploadFailure = {
   status: 'FAILED';
-  /** 失败原因（可展示，不含凭据） */
+  /**
+   * 失败原因（**受控原因码**）：形如 `CLOUD_TIMEOUT` 的大写下划线标识。
+   * 不得回显自由文本、本机绝对路径或凭据片段——执行层会校验形态，
+   * 不合形态的一律降级为通用受控码，原始文本只进服务端日志。
+   */
   reason: string;
   /** 失败错误码（可展示，不含凭据） */
   code: string;

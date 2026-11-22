@@ -7,6 +7,7 @@ import * as nodePath from 'node:path';
 
 import { BackupRestorePrecheckService } from './backup-restore-precheck.service';
 import { BACKUP_SCOPE_TABLES } from '@core/local-runtime/policy/protected-backup.policy';
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 /**
  * 恢复预检执行层单测（任务 09 S4，R085-01／02）。
@@ -75,7 +76,10 @@ describe('backup restore precheck service', () => {
         return Promise.resolve({ identifiers: [] });
       }),
     };
-    const service = new BackupRestorePrecheckService(restoreRunRepository as never);
+    const service = new BackupRestorePrecheckService(
+      restoreRunRepository as never,
+      asPinoLogger(createTestPinoLogger()),
+    );
 
     return { service, inserted };
   }

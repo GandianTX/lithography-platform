@@ -7,6 +7,7 @@ import type { ProtectedBackupService } from '@src/modules/lithography/protected-
 import type { BackupRestorePrecheckService } from '@src/modules/lithography/backup-restore-precheck.service';
 import type { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 import { PrecheckLocalRestoreUsecase } from './precheck-local-restore.usecase';
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 /**
  * 恢复预检用例：保护副本必须归属真实的本地备份运行。
@@ -94,6 +95,7 @@ describe('PrecheckLocalRestoreUsecase', () => {
       scopeResolver as unknown as LocalRuntimeScopeResolver,
       localRuntimeService as unknown as LocalRuntimeService,
       transactionRunner as never,
+      asPinoLogger(createTestPinoLogger()),
     );
 
     return { usecase, generateCalls, generatedRuns, finishedRuns };

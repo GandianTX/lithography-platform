@@ -27,6 +27,7 @@ import {
 import { LocalBackupCleanupService } from './local-backup-cleanup.service';
 import { ProtectedBackupService } from './protected-backup.service';
 import type { BackupAssetEntity } from './entities/backup-asset.entity';
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 class FailingDeleteService extends LocalBackupCleanupService {
   protected override removePackageDirectory(): Promise<void> {
@@ -131,6 +132,7 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
     const service = new serviceClass(
       backupAssetRepository as never,
       { baseDir: backupRoot },
+      asPinoLogger(createTestPinoLogger()),
       undefined,
     );
     return { service, updates, rows };
@@ -244,10 +246,10 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
     // 失败分支：包保留、事实可辨认、不误标为已清理
     expect(result.cleaned).toBe(0);
     expect(result.retained).toBe(1);
-    expect(result.items[0].reason).toContain('本地包删除失败');
+    expect(result.items[0].reason).toContain('LOCAL_PACKAGE_DELETE_FAILED');
     expect(existsSync(generated.packagePath)).toBe(true);
     expect(rows[0].localStatus).toBe('FAILED');
-    expect(rows[0].localCleanupError).toContain('本地包删除失败');
+    expect(rows[0].localCleanupError).toContain('LOCAL_PACKAGE_DELETE_FAILED');
     expect(updates.some((entry) => entry.patch['localStatus'] === 'CLEANED')).toBe(false);
     // 业务原件哨兵仍不变
     expect(readFileSync(nodePath.join(originalRoot, 'docs', 'doc-1.txt'), 'utf8')).toBe(

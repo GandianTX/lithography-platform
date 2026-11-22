@@ -1,8 +1,11 @@
 // src/modules/lithography/backup-schedule.service.ts
 
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThanOrEqual, Repository } from 'typeorm';
+import { PinoLogger } from 'nestjs-pino';
+
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 
 import { LocalAccountAuthorizationEntity } from '@src/modules/lithography/entities/local-account-authorization.entity';
 import { LocalCompanySettingEntity } from '@src/modules/lithography/entities/local-company-setting.entity';
@@ -37,7 +40,7 @@ export class BackupScheduleService {
     @InjectRepository(LocalInstallationEntity)
     private readonly installationRepository: Repository<LocalInstallationEntity>,
     private readonly protectedBackupService: ProtectedBackupService,
-    @Optional() private readonly onCycleLog?: (message: string) => void,
+    private readonly logger: PinoLogger,
   ) {}
 
   /** 执行一轮调度扫描（Worker 定时调用；亦可由内部入口手动触发） */
@@ -201,19 +204,25 @@ export class BackupScheduleService {
           failureReason: null,
         },
       );
-      this.onCycleLog?.(
-        `backup succeeded: organization=${plan.organizationId} backupId=${result.backupId}`,
+      this.logger.info(
+        { organizationId: plan.organizationId, backupId: result.backupId },
+        '本地备份计划执行成功',
       );
       return 'succeeded';
     } catch (error) {
-      const message = error instanceof Error ? error.message : '备份生成失败';
+      // 原始异常（含本机绝对路径）只进服务端日志；落库只给受控原因码
+      this.logger.error(
+        { organizationId: plan.organizationId, err: error },
+        '本地备份计划执行失败',
+      );
+      const reason = LOCAL_BACKUP_FAILURE_REASON.BACKUP_GENERATION_FAILED;
       await this.backupRunRepository.update(
         { id: run.id },
         {
           status: 'FAILED',
           finishedAt: new Date(),
           errorCode: 'BACKUP_GENERATION_FAILED',
-          errorMessage: message,
+          errorMessage: reason,
         },
       );
       await this.settingRepository.update(
@@ -221,10 +230,9 @@ export class BackupScheduleService {
         {
           nextBackupAt: this.nextBackupAt(plan, now),
           lastAutoFailureAt: new Date(),
-          failureReason: message,
+          failureReason: reason,
         },
       );
-      this.onCycleLog?.(`backup failed: organization=${plan.organizationId} reason=${message}`);
       return 'failed';
     }
   }

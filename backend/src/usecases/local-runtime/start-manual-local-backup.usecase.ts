@@ -6,6 +6,9 @@ import {
   PERMISSION_ERROR,
 } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
+import { PinoLogger } from 'nestjs-pino';
+
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
@@ -42,6 +45,7 @@ export class StartManualLocalBackupUsecase {
     private readonly scopeResolver: LocalRuntimeScopeResolver,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
+    private readonly logger: PinoLogger,
   ) {}
 
   async execute(command: StartManualLocalBackupCommand): Promise<StartManualLocalBackupResult> {
@@ -117,7 +121,9 @@ export class StartManualLocalBackupUsecase {
         cleanupStatus: 'PENDING',
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : '手动备份失败';
+      // 原始异常（含本机绝对路径）只进服务端日志；对外与落库只给受控原因码
+      this.logger.error({ runId: run.id, err: error }, '手动本地备份失败');
+      const reason = LOCAL_BACKUP_FAILURE_REASON.BACKUP_GENERATION_FAILED;
       await this.transactionRunner.run(async (transactionContext) => {
         await this.localRuntimeService.finishBackupRun(
           run.id,
@@ -129,7 +135,7 @@ export class StartManualLocalBackupUsecase {
             attachmentCount: null,
             schemaVersion: null,
             errorCode: 'BACKUP_GENERATION_FAILED',
-            errorMessage: message.slice(0, 1000),
+            errorMessage: reason,
           },
           transactionContext,
         );
@@ -143,7 +149,7 @@ export class StartManualLocalBackupUsecase {
         manifestChecksum: null,
         byteSize: null,
         errorCode: 'BACKUP_GENERATION_FAILED',
-        errorMessage: message.slice(0, 1000),
+        errorMessage: reason,
         uploadStatus: 'NOT_REQUIRED',
         cleanupStatus: 'NOT_REQUIRED',
       };

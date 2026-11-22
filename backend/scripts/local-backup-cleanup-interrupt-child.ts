@@ -25,6 +25,7 @@
 import * as nodePath from 'node:path';
 
 import { DataSource } from 'typeorm';
+import { PinoLogger } from 'nestjs-pino';
 
 import { loadExplicitEnvConfig } from '../src/infrastructure/database/incremental-migration';
 import { BackupAssetEntity } from '../src/modules/lithography/entities/backup-asset.entity';
@@ -71,6 +72,8 @@ const main = async (): Promise<void> => {
     const service = new LocalBackupCleanupService(
       dataSource.getRepository(BackupAssetEntity),
       { baseDir: backupRoot },
+      // 子进程内自建日志出口：原始异常只进这里（不进任何对外字段）
+      new PinoLogger({}),
       dataSource.getRepository(LocalBackupRunEntity),
       dataSource.getRepository(LocalInstallationEntity),
     );

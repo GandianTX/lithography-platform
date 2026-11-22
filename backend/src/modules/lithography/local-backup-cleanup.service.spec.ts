@@ -15,6 +15,7 @@ import * as nodePath from 'node:path';
 
 import { LocalBackupCleanupService } from './local-backup-cleanup.service';
 import type { BackupAssetEntity } from './entities/backup-asset.entity';
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 /** 删除动作失败的受控替身：覆盖底层删除，验证失败分支的落库事实 */
 class FailingDeleteService extends LocalBackupCleanupService {
@@ -123,6 +124,7 @@ describe('local backup cleanup service', () => {
     const service = new serviceClass(
       backupAssetRepository as never,
       { baseDir: backupRoot },
+      asPinoLogger(createTestPinoLogger()),
       backupRunRepository as never,
     );
 
@@ -262,7 +264,7 @@ describe('local backup cleanup service', () => {
     expect(result.cleaned).toBe(0);
     expect(result.retained).toBe(1);
     expect(result.items[0].outcome).toBe('RETAINED');
-    expect(result.items[0].reason).toContain('本地包删除失败');
+    expect(result.items[0].reason).toContain('LOCAL_PACKAGE_DELETE_FAILED');
     expect(updates.some((entry) => entry.patch['localStatus'] === 'FAILED')).toBe(true);
     expect(updates.some((entry) => entry.patch['localStatus'] === 'CLEANED')).toBe(false);
     // 包被保留，未被误删
@@ -303,7 +305,9 @@ describe('local backup cleanup service', () => {
     });
 
     const interrupted = updates.find((entry) =>
-      (entry.patch['localCleanupError'] as string | undefined)?.includes('中断'),
+      (entry.patch['localCleanupError'] as string | undefined)?.includes(
+        'LOCAL_CLEANUP_INTERRUPTED',
+      ),
     );
     expect(interrupted).toBeDefined();
     expect(result.cleaned).toBe(1);

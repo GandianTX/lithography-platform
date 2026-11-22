@@ -3,8 +3,13 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, LessThan, Repository } from 'typeorm';
+import { PinoLogger } from 'nestjs-pino';
 
 import { decideBackupUploadAttempt } from '@core/local-runtime/policy/local-backup-upload.policy';
+import {
+  isControlledFailureReason,
+  LOCAL_BACKUP_FAILURE_REASON,
+} from '@core/local-runtime/policy/local-backup-failure-reason';
 
 import {
   LOCAL_BACKUP_UPLOADER,
@@ -52,6 +57,7 @@ export class LocalBackupUploadService {
     private readonly backupAssetRepository: Repository<BackupAssetEntity>,
     @InjectRepository(LocalCompanySettingEntity)
     private readonly settingRepository: Repository<LocalCompanySettingEntity>,
+    private readonly logger: PinoLogger,
     @Optional()
     @Inject(LOCAL_BACKUP_UPLOADER)
     uploader?: LocalBackupUploader | null,
@@ -198,21 +204,35 @@ export class LocalBackupUploadService {
         return 'succeeded';
       }
 
+      // 接收端返回的原因必须先过形态校验：不合受控形态的一律降级为通用码，
+      // 原始文本只进服务端日志（避免接收端实现回显自由文本导致外泄）
+      const failureReason = isControlledFailureReason(result.reason)
+        ? result.reason
+        : LOCAL_BACKUP_FAILURE_REASON.UPLOAD_FAILED;
+      if (!isControlledFailureReason(result.reason)) {
+        this.logger.error(
+          { backupId: asset.backupId, reason: result.reason },
+          '云接收端返回了非受控失败原因，已降级为通用原因码',
+        );
+      }
+
       await this.backupAssetRepository.update(
         { backupId: asset.backupId },
         {
           cloudStatus: 'FAILED',
-          failureReason: result.reason,
+          failureReason,
         },
       );
       return 'failed';
     } catch (error) {
-      const message = error instanceof Error ? error.message : '云端上传失败';
+      // 原始异常（含本机绝对路径与可能的接收端细节）只进服务端日志；
+      // 对外与落库只给受控原因码
+      this.logger.error({ backupId: asset.backupId, err: error }, '本地备份包上云失败');
       await this.backupAssetRepository.update(
         { backupId: asset.backupId },
         {
           cloudStatus: 'FAILED',
-          failureReason: message,
+          failureReason: LOCAL_BACKUP_FAILURE_REASON.UPLOAD_FAILED,
         },
       );
       return 'failed';

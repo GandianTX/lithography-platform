@@ -2,6 +2,7 @@
 
 import { BackupScheduleService } from '@src/modules/lithography/backup-schedule.service';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 describe('backup schedule service', () => {
   const buildService = (
@@ -98,6 +99,7 @@ describe('backup schedule service', () => {
               `/var/local-backups/${organizationId}/${trigger.toLowerCase()}-${at.toISOString()}`,
           ),
       } as unknown as ProtectedBackupService,
+      asPinoLogger(createTestPinoLogger()),
     );
     return { service, generated, runs, settingUpdates };
   };

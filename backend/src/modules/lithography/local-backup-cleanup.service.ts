@@ -9,9 +9,11 @@ import {
   isCompleteCloudReceipt,
   type BackupCleanupCandidate,
 } from '@core/local-runtime/policy/local-backup-cleanup.policy';
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { rm } from 'node:fs/promises';
+import { PinoLogger } from 'nestjs-pino';
 import { Repository } from 'typeorm';
 
 import {
@@ -71,6 +73,7 @@ export class LocalBackupCleanupService {
     private readonly backupAssetRepository: Repository<BackupAssetEntity>,
     @Inject(LOCAL_BACKUP_STORAGE)
     private readonly backupStorage: LocalBackupStorageConfig,
+    private readonly logger: PinoLogger,
     @Optional()
     @InjectRepository(LocalBackupRunEntity)
     private readonly backupRunRepository?: Repository<LocalBackupRunEntity>,
@@ -234,7 +237,7 @@ export class LocalBackupCleanupService {
       }
       await this.backupAssetRepository.update(
         { backupId: target.backupId },
-        { localCleanupError: '清理被进程中断，将在本轮重试' },
+        { localCleanupError: LOCAL_BACKUP_FAILURE_REASON.CLEANUP_INTERRUPTED },
       );
     }
 
@@ -275,12 +278,12 @@ export class LocalBackupCleanupService {
       return {
         backupId: asset.backupId,
         outcome: 'RETAINED',
-        reason: '本地包引用缺失，无需清理',
+        reason: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_REFERENCE_MISSING,
       };
     }
 
     if (!isBackupPackagePathInside(this.backupStorage.baseDir, reference)) {
-      const reason = '本地包路径不在本机备份目录内，拒绝删除';
+      const reason = LOCAL_BACKUP_FAILURE_REASON.PACKAGE_PATH_OUTSIDE_ROOT;
       await this.markRetained(asset, reason);
       return { backupId: asset.backupId, outcome: 'RETAINED', reason };
     }
@@ -320,8 +323,12 @@ export class LocalBackupCleanupService {
         // 包目录已不存在：本地包事实上已不在，清理目标成立
         return { deleted: true, reason: null };
       }
-      const message = error instanceof Error ? error.message : String(error);
-      return { deleted: false, reason: `本地包删除失败：${message}` };
+      // 原始异常（含本机绝对路径）只进服务端日志；对外只给受控原因码
+      this.logger.error({ err: error }, '本地备份包删除失败');
+      return {
+        deleted: false,
+        reason: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_DELETE_FAILED,
+      };
     }
   }
 

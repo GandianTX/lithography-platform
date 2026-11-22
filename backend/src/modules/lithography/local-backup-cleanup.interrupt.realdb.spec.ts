@@ -572,7 +572,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     // 残留先被登记为中断（本轮重试），随后继续清理
     const marked = await waitFor(async () => {
       const state = await readAssetState(residual.backupId);
-      return (state?.local_cleanup_error ?? '').includes('清理被进程中断');
+      return (state?.local_cleanup_error ?? '').includes('LOCAL_CLEANUP_INTERRUPTED');
     });
     if (!marked) {
       throw new Error(
@@ -655,7 +655,7 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     while (child.exitCode === null && child.signalCode === null) {
       pollCount += 1;
       const state = await readAssetState(freshResidual.backupId);
-      if ((state?.local_cleanup_error ?? '').includes('清理被进程中断')) {
+      if ((state?.local_cleanup_error ?? '').includes('LOCAL_CLEANUP_INTERRUPTED')) {
         wronglyMarked = true;
         break;
       }
@@ -746,11 +746,11 @@ describeRealDb('R-08 删除中断的真实进程中断注入', () => {
     while (child.exitCode === null && child.signalCode === null) {
       pollCount += 1;
       const residualState = await readAssetState(restartResidual.backupId);
-      if ((residualState?.local_cleanup_error ?? '').includes('清理被进程中断')) {
+      if ((residualState?.local_cleanup_error ?? '').includes('LOCAL_CLEANUP_INTERRUPTED')) {
         markedResidual = true;
       }
       const controlState = await readAssetState(withinThresholdControl.backupId);
-      if ((controlState?.local_cleanup_error ?? '').includes('清理被进程中断')) {
+      if ((controlState?.local_cleanup_error ?? '').includes('LOCAL_CLEANUP_INTERRUPTED')) {
         wronglyMarkedControl = true;
         break;
       }

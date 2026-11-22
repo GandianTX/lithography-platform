@@ -147,7 +147,7 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
         retained: 1,
         items: [
           { backupId: 'backup-1', outcome: 'CLEANED', reason: null },
-          { backupId: 'backup-2', outcome: 'RETAINED', reason: '本地包删除失败：EACCES' },
+          { backupId: 'backup-2', outcome: 'RETAINED', reason: 'LOCAL_PACKAGE_DELETE_FAILED' },
         ],
       },
     });
@@ -160,7 +160,7 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
     });
     expect(result.cleaned).toBe(1);
     expect(result.retained).toBe(1);
-    expect(result.items[1].reason).toBe('本地包删除失败：EACCES');
+    expect(result.items[1].reason).toBe('LOCAL_PACKAGE_DELETE_FAILED');
   });
 
   it('工程师只能清理本机所属公司，指定其他公司被拒绝', async () => {

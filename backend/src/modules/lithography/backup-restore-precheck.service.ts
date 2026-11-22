@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 import { parseBackupManifest } from '@core/local-runtime/policy/protected-backup.policy';
 import {
   buildRestoreCheckSnapshot,
@@ -19,6 +20,7 @@ import {
 } from '@core/local-runtime/policy/restore-precheck.policy';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { PinoLogger } from 'nestjs-pino';
 import { Repository, type QueryDeepPartialEntity } from 'typeorm';
 
 import { BackupRestoreRunEntity } from './entities/backup-restore-run.entity';
@@ -85,6 +87,7 @@ export class BackupRestorePrecheckService {
   constructor(
     @InjectRepository(BackupRestoreRunEntity)
     private readonly restoreRunRepository: Repository<BackupRestoreRunEntity>,
+    private readonly logger: PinoLogger,
   ) {}
 
   async execute(input: RestorePrecheckInput): Promise<RestorePrecheckResult> {
@@ -160,7 +163,7 @@ export class BackupRestorePrecheckService {
     if (!existsSync(manifestPath)) {
       findings.push({
         code: restoreCheckFindingCodeValues.PACKAGE_UNREADABLE,
-        message: '本机备份包缺少清单文件，无法核对完整性',
+        message: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_MANIFEST_MISSING,
       });
       return empty;
     }
@@ -171,7 +174,7 @@ export class BackupRestorePrecheckService {
     } catch {
       findings.push({
         code: restoreCheckFindingCodeValues.MANIFEST_INVALID,
-        message: '本机备份包的清单无法解析，无法核对完整性',
+        message: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_MANIFEST_UNPARSABLE,
       });
       return empty;
     }
@@ -182,14 +185,14 @@ export class BackupRestorePrecheckService {
       if (!existsSync(absolutePath)) {
         findings.push({
           code: restoreCheckFindingCodeValues.FILE_MISSING,
-          message: `备份包缺少文件：${file.relative_path}`,
+          message: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_FILE_MISSING,
         });
         continue;
       }
       if (statSync(absolutePath).size !== file.byte_size) {
         findings.push({
           code: restoreCheckFindingCodeValues.FILE_CHECKSUM_MISMATCH,
-          message: `备份包文件大小不符：${file.relative_path}`,
+          message: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_FILE_SIZE_MISMATCH,
         });
         continue;
       }
@@ -197,7 +200,7 @@ export class BackupRestorePrecheckService {
       if (digest !== file.sha256.toLowerCase()) {
         findings.push({
           code: restoreCheckFindingCodeValues.FILE_CHECKSUM_MISMATCH,
-          message: `备份包文件校验值不符：${file.relative_path}`,
+          message: LOCAL_BACKUP_FAILURE_REASON.PACKAGE_FILE_CHECKSUM_MISMATCH,
         });
         continue;
       }
@@ -221,9 +224,14 @@ export class BackupRestorePrecheckService {
       const result = await input.createProtectionCopy(input.asset.organizationId);
       return { backupId: result.backupId, created: true };
     } catch (error) {
+      // 原始异常（含本机绝对路径）只进服务端日志；发现项只给受控原因码
+      this.logger.error(
+        { backupId: input.asset.backupId, err: error },
+        '恢复预检的保护副本生成失败',
+      );
       findings.push({
         code: restoreCheckFindingCodeValues.PROTECTION_COPY_FAILED,
-        message: error instanceof Error ? error.message : '保护副本生成失败',
+        message: LOCAL_BACKUP_FAILURE_REASON.PROTECTION_COPY_FAILED,
       });
       return { backupId: null, created: false };
     }
