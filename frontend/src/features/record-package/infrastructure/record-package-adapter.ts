@@ -19,7 +19,7 @@ import type {
 const EXPORT_RECORD_PACKAGE = `
   mutation ExportRecordPackage(
     $targetPath: String!
-    $organizationId: Int!
+    $organizationId: Int
     $resourceType: RecordPackageResourceType!
     $recordIds: [Int!]!
   ) {
@@ -126,7 +126,8 @@ const IMPORT_RECORD_PACKAGE = `
 /** 导出记录包到本机目录（U盘挂载点） */
 export async function exportRecordPackage(input: {
   targetPath: string;
-  organizationId: number;
+  /** 可省略：省略时由服务端按可信 session 范围取本公司（来源页导出入口） */
+  organizationId?: number;
   resourceType: RecordPackageResourceType;
   recordIds: number[];
 }): Promise<RecordPackageExportResult> {
@@ -134,7 +135,7 @@ export async function exportRecordPackage(input: {
     { exportRecordPackage: RecordPackageExportResult },
     {
       targetPath: string;
-      organizationId: number;
+      organizationId?: number;
       resourceType: RecordPackageResourceType;
       recordIds: number[];
     }

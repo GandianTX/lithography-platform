@@ -4,9 +4,10 @@ import type { AuthenticatedSessionUser } from '@app-types/auth/session-restricti
 import { mapJwtToUsecaseSession, type UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { UseGuards } from '@nestjs/common';
-import { Query, Resolver } from '@nestjs/graphql';
+import { Args, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import {
+  LocalRuntimeCompanySettingDTO,
   LocalRuntimeStatusDTO,
   toLocalRuntimeStatusDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/local-runtime-status.dto';
@@ -14,6 +15,7 @@ import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
 import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { GetLocalRuntimeStatusUsecase } from '@src/usecases/local-runtime/get-local-runtime-status.usecase';
+import { UpdateLocalBackupPlanUsecase } from '@src/usecases/local-runtime/update-local-backup-plan.usecase';
 
 /**
  * 本地运行数据解析器（任务 09 S1）。
@@ -29,7 +31,10 @@ import { GetLocalRuntimeStatusUsecase } from '@src/usecases/local-runtime/get-lo
  */
 @Resolver()
 export class LocalRuntimeResolver {
-  constructor(private readonly getLocalRuntimeStatusUsecase: GetLocalRuntimeStatusUsecase) {}
+  constructor(
+    private readonly getLocalRuntimeStatusUsecase: GetLocalRuntimeStatusUsecase,
+    private readonly updateLocalBackupPlanUsecase: UpdateLocalBackupPlanUsecase,
+  ) {}
 
   /**
    * 读取本机运行状态（本地设置页，R064）。
@@ -49,5 +54,43 @@ export class LocalRuntimeResolver {
     const session: UsecaseSession = mapJwtToUsecaseSession(user);
     const view = await this.getLocalRuntimeStatusUsecase.execute({ session });
     return toLocalRuntimeStatusDTO(view);
+  }
+
+  /**
+   * 修改公司维度的本地备份计划开关（任务 09 S4）。
+   *
+   * - 本地自动备份与云自动上云**两个开关分开控制**，互不影响；
+   * - 改开关不重置周期，也不触发任何备份动作（计划仍只由后台扫描的"自动成功"推进）；
+   * - 准入由 usecase 裁决（工程师拒绝；一级管理员可改任意公司；二级管理员仅本公司）。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRuntimeCompanySettingDTO, {
+    name: 'updateLocalBackupPlan',
+    description:
+      '修改公司维度的本地备份计划开关（本地自动备份 / 云自动上云分开控制；不重置周期、不触发备份）',
+  })
+  async updateLocalBackupPlan(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('organizationId', { type: () => Int }) organizationId: number,
+    @Args('backupEnabled', { type: () => Boolean, nullable: true }) backupEnabled?: boolean | null,
+    @Args('autoUploadEnabled', { type: () => Boolean, nullable: true })
+    autoUploadEnabled?: boolean | null,
+  ): Promise<LocalRuntimeCompanySettingDTO> {
+    const session: UsecaseSession = mapJwtToUsecaseSession(user);
+    const plan = await this.updateLocalBackupPlanUsecase.execute({
+      session,
+      organizationId,
+      backupEnabled: backupEnabled ?? undefined,
+      autoUploadEnabled: autoUploadEnabled ?? undefined,
+    });
+    return {
+      organizationId: plan.organizationId,
+      backupEnabled: plan.backupEnabled,
+      backupIntervalHours: plan.backupIntervalHours,
+      nextBackupAt: plan.nextBackupAt,
+      autoUploadEnabled: plan.autoUploadEnabled,
+      initializedAt: plan.initializedAt,
+    };
   }
 }

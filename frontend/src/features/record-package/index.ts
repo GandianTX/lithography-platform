@@ -11,5 +11,6 @@ export type {
   RecordPackageProcessResult,
   RecordPackageResourceType,
 } from './infrastructure/record-package.types';
+export { RecordPackageExportDialog } from './ui/record-package-export-dialog';
 export { RecordPackageExportPanel } from './ui/record-package-export-panel';
 export { RecordPackageImportPanel } from './ui/record-package-import-panel';

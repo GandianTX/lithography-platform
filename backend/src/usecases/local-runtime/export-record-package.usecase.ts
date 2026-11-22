@@ -34,7 +34,11 @@ export class ExportRecordPackageUsecase {
     const scope = await this.scopeResolver.resolve(command.session);
 
     const targetPath = normalizePackageExportTarget(command.targetPath);
-    const organizationId = normalizeExportOrganization(command.organizationId);
+    // 来源页导出入口省略公司时，按可信 session 范围取本公司（不接受客户端自报公司）
+    const organizationId =
+      command.organizationId === undefined
+        ? normalizeExportOrganization(scope.organizationId)
+        : normalizeExportOrganization(command.organizationId);
     assertExportOrganizationAllowed(scope.organizationId, organizationId);
     const recordIds = normalizeExportRecordIds(command.recordIds);
     const resourceType = normalizeExportResourceType(command.resourceType);
@@ -51,11 +55,14 @@ export class ExportRecordPackageUsecase {
   }
 }
 
-function normalizeExportOrganization(value: number): number {
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, '导出公司 ID 必须为正整数');
+function normalizeExportOrganization(value: number | null | undefined): number {
+  if (!Number.isInteger(value) || (value ?? 0) <= 0) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_PARAMS,
+      '导出公司必须由服务端按可信会话范围确定（或显式给出正整数公司 ID）',
+    );
   }
-  return value;
+  return value as number;
 }
 
 function normalizeExportResourceType(value: string): RecordPackageResourceType {

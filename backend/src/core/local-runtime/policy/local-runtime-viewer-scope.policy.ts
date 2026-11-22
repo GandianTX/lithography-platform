@@ -122,6 +122,28 @@ export function assertInstallationSettingsWritable(scope: LocalRuntimeViewerScop
   }
 }
 
+/**
+ * 公司维度备份计划开关的写入准入（任务 09 S4）。
+ *
+ * - 工程师一律拒绝：备份开关决定数据是否离开本机，交给管理员；
+ * - 一级管理员（全局授权范围）可改任意公司；
+ * - 二级管理员只能改**本公司**。
+ */
+export function assertBackupPlanWritable(
+  scope: LocalRuntimeViewerScope,
+  organizationId: number,
+): void {
+  if (scope.role === 'ENGINEER') {
+    throw new DomainError(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS, '备份计划开关仅管理员可修改');
+  }
+  if (scope.adminLevel === 1) {
+    return;
+  }
+  if (scope.organizationId !== organizationId) {
+    throw new DomainError(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS, '只能修改本公司的备份计划');
+  }
+}
+
 /** 管理员专属动作（过期清理、恢复）的准入；工程师一律拒绝。 */
 export function assertLocalRuntimeAdministrator(scope: LocalRuntimeViewerScope): void {
   if (scope.role === 'ENGINEER') {

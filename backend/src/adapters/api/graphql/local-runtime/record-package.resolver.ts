@@ -58,7 +58,7 @@ export class RecordPackageResolver {
   async exportRecordPackage(
     @currentUser() user: AuthenticatedSessionUser,
     @Args('targetPath', { type: () => String }) targetPath: string,
-    @Args('organizationId', { type: () => Int }) organizationId: number,
+    @Args('organizationId', { type: () => Int, nullable: true }) organizationId: number | null,
     @Args('resourceType', { type: () => recordPackageResourceTypeEnum })
     resourceType: RecordPackageResourceType,
     @Args('recordIds', { type: () => [Int] }) recordIds: number[],
@@ -66,7 +66,7 @@ export class RecordPackageResolver {
     const result = await this.exportRecordPackageUsecase.execute({
       session: this.toSession(user),
       targetPath,
-      organizationId,
+      organizationId: organizationId ?? undefined,
       resourceType,
       recordIds,
     });

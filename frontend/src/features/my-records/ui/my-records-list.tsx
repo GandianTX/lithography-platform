@@ -1,6 +1,6 @@
 // src/features/my-records/ui/my-records-list.tsx
 
-import { useMemo, useState } from 'react';
+import { type ReactNode,useMemo, useState } from 'react';
 import type { TableColumnsType } from 'antd';
 import { Tag } from 'antd';
 import {
@@ -67,7 +67,20 @@ const STATUS_TAG_COLORS: Record<string, string> = {
  *   管理员查看他人正式资料走参考资料库/文档数据库），不读取管理身份；
  *   删除等作者专属操作仍只对本人名下记录可用。
  */
-export function MyRecordsList({ activeRole }: { activeRole?: string }) {
+export function MyRecordsList({
+  activeRole,
+  renderExportAction,
+}: {
+  activeRole?: string;
+  /**
+   * 来源页导出入口（任务 09 S3 补丁 P1）。
+   *
+   * 由**页面层**注入（页面负责组合记录包能力，本特性不依赖记录包特性）：
+   * 记录标识随行携带，用户不需要手抄记录 ID；真正的授权由后端按可信 session
+   * 逐条复核，前端入口不作为授权依据。
+   */
+  renderExportAction?: (record: MyRecordSummary) => ReactNode;
+}) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [recordKind, setRecordKind] = useState<MyRecordRecordKind>('ALL');
@@ -191,6 +204,7 @@ export function MyRecordsList({ activeRole }: { activeRole?: string }) {
                 {resumeLabel}
               </Button>
             ) : null}
+            {renderExportAction === undefined ? null : renderExportAction(record)}
             <Button
               onClick={() => void navigate(buildMyRecordDetailPath(record.id))}
               size="small"

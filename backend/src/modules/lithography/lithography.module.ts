@@ -19,6 +19,7 @@ import { AdminOrganizationProvisioningRequestEntity } from './entities/admin-org
 import { FaultCaseSubmissionDetailEntity } from './entities/fault-case-submission-detail.entity';
 import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.entity';
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
+import { LocalBackupPlanService } from './local-backup-plan.service';
 import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
 import { ManagementAuditEventEntity } from './entities/management-audit-event.entity';
 import { MaintenanceReportFaultEntity } from './entities/maintenance-report-fault.entity';
@@ -176,6 +177,7 @@ export const LITHOGRAPHY_ENTITIES = [
     RecordPackageImportService,
     RecordPackageImportQueryService,
     RecordPackageExportService,
+    LocalBackupPlanService,
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,
@@ -220,6 +222,7 @@ export const LITHOGRAPHY_ENTITIES = [
   ],
   exports: [
     TypeOrmModule,
+    LocalBackupPlanService,
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,

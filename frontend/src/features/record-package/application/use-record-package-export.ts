@@ -28,7 +28,8 @@ export function useRecordPackageExport() {
   const run = useCallback(
     async (input: {
       targetPath: string;
-      organizationId: number;
+      /** 可省略：省略时由服务端按可信 session 范围取本公司（来源页导出入口） */
+      organizationId?: number;
       resourceType: RecordPackageResourceType;
       recordIds: number[];
     }) => {

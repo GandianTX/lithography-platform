@@ -245,8 +245,14 @@ export type ExportRecordPackageCommand = {
   session: UsecaseSession;
   /** 导出目标目录（本机绝对路径；必须不存在或为空目录） */
   targetPath: string;
-  /** 导出的公司数据区（一级管理员可指定任意公司，其余必须为本公司） */
-  organizationId: number;
+  /**
+   * 导出的公司数据区（一级管理员可指定任意公司，其余必须为本公司）。
+   *
+   * **可省略**：来源页导出入口（如「我的资料记录」的导出按钮）由服务端按**可信
+   * session 范围**取本公司，不让用户手抄公司 ID；省略时若会话本身没有公司范围
+   * （一级管理员全局范围）则必须显式指定。
+   */
+  organizationId?: number;
   resourceType: string;
   recordIds: number[];
 };
