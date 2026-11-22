@@ -204,6 +204,42 @@ describe('local backup cleanup service', () => {
     expect(runUpdates[0].patch).toMatchObject({ manualCleanupStatus: 'SUCCEEDED' });
   });
 
+  // 逐项复核：公司级的一份完整回执只授权"进入清理流程"，
+  // 删不删某一份由该资产自身的云回执决定——否则未上云的唯一副本会被删掉。
+  it('手动清理逐项复核云副本：未上云的唯一副本不删除，并逐项给出受控原因码', async () => {
+    const uploaded = await createPackage('4/manual-1', ['a.txt']);
+    const notUploaded = await createPackage('4/manual-2', ['b.txt']);
+    const { service, updates } = buildService([
+      asset({ backupId: 'backup-1', localReference: uploaded }),
+      asset({
+        backupId: 'backup-2',
+        localReference: notUploaded,
+        cloudReceipt: null,
+        cloudStatus: 'PENDING',
+      }),
+    ]);
+
+    const result = await service.cleanupManualPackages({
+      organizationId: 4,
+      installationId: 'inst-1',
+      // 授权层：公司级存在一份完整回执
+      cloudReceipt: '{"received":true}',
+      now: base,
+    });
+
+    expect(result.available).toBe(true);
+    expect(result.targetCount).toBe(1);
+    expect(result.cleaned).toBe(1);
+    expect(result.retained).toBe(1);
+    expect(result.items.find((item) => item.backupId === 'backup-2')).toMatchObject({
+      outcome: 'RETAINED',
+      reason: 'LOCAL_CLOUD_RECEIPT_MISSING',
+    });
+    // 未上云的唯一副本仍在，且其状态未被改动
+    expect(await exists(notUploaded)).toBe(true);
+    expect(updates.some((entry) => entry.backupId === 'backup-2')).toBe(false);
+  });
+
   it('路径越界的资产一律保留，且不触碰越界目录中的文件', async () => {
     const sentinel = nodePath.join(originalRoot, 'business-original.bin');
     await writeFile(sentinel, '原件不可删除', 'utf8');

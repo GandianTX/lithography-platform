@@ -102,10 +102,23 @@ export type ManualCleanupDecision = {
   available: boolean;
   /** 不可用原因（可清理时为 null） */
   reason: CloudReceiptIncompleteReason | null;
-  /** 固定后的清理清单 */
+  /** 固定后的清理清单（**逐项**已核验云端副本） */
   targets: BackupCleanupCandidate[];
+  /** 未进入清理清单的原因（逐项可追踪） */
+  skipped: Array<{ backupId: string; reason: BackupCleanupSkipReason }>;
 };
 
+/**
+ * 手动清理裁决。
+ *
+ * 两层判定，口径不同：
+ * - **授权层**：`cloudReceipt` 是公司级的一份完整云回执，回答"能不能进入清理流程"；
+ *   不完整即零清理（清单为空，调用方不得触碰任何本机包）。
+ * - **逐项层**：删不删**这一份**由该资产自身的云回执决定。只有该资产自身
+ *   也有完整回执时才允许删除它的本地包——否则本地包是唯一副本，删了不可恢复。
+ *   （此前只用公司级一份回执授权后清空全部本地包，接入真实接收端后会删掉
+ *   从未上云的唯一副本。）
+ */
 export function decideManualCleanupTargets(
   candidates: readonly BackupCleanupCandidate[],
   cloudReceipt: string | null,
@@ -113,13 +126,25 @@ export function decideManualCleanupTargets(
   const verdict = isCompleteCloudReceipt(cloudReceipt);
   if (!verdict.complete) {
     // 零清理：清单为空，调用方不得触碰任何本机包
-    return { available: false, reason: verdict.reason, targets: [] };
+    return { available: false, reason: verdict.reason, targets: [], skipped: [] };
   }
-  return {
-    available: true,
-    reason: null,
-    targets: candidates.filter((candidate) => hasLocalPackage(candidate)),
-  };
+
+  const targets: BackupCleanupCandidate[] = [];
+  const skipped: Array<{ backupId: string; reason: BackupCleanupSkipReason }> = [];
+  for (const candidate of candidates) {
+    if (!hasLocalPackage(candidate)) {
+      // 已清理 / 无本地包：不在清理范围内，无需逐项报告
+      continue;
+    }
+    const itemVerdict = isCompleteCloudReceipt(candidate.cloudReceipt);
+    if (!itemVerdict.complete) {
+      skipped.push({ backupId: candidate.backupId, reason: itemVerdict.reason });
+      continue;
+    }
+    targets.push(candidate);
+  }
+
+  return { available: true, reason: null, targets, skipped };
 }
 
 /** 过期清理裁决 */

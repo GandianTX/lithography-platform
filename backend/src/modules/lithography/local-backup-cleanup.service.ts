@@ -9,7 +9,10 @@ import {
   isCompleteCloudReceipt,
   type BackupCleanupCandidate,
 } from '@core/local-runtime/policy/local-backup-cleanup.policy';
-import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
+import {
+  LOCAL_BACKUP_FAILURE_REASON,
+  toLocalCleanupSkipReasonCode,
+} from '@core/local-runtime/policy/local-backup-failure-reason';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { rm } from 'node:fs/promises';
@@ -108,7 +111,33 @@ export class LocalBackupCleanupService {
       };
     }
 
-    return this.executeCleanup(decision.targets, assets, now);
+    const result = await this.executeCleanup(decision.targets, assets, now);
+    // 逐项复核后被保留的资产也要可见（"因为是唯一副本所以没删"），
+    // 否则调用方只看到一个总数，无法解释"为什么没清干净"
+    return this.mergeRetainedItems(result, decision.skipped);
+  }
+
+  /** 把"未进入清理清单"的逐项原因并入结果（RETAINED + 受控原因码） */
+  private mergeRetainedItems(
+    result: BackupCleanupResult,
+    skipped: ReadonlyArray<{ backupId: string; reason: string }>,
+  ): BackupCleanupResult {
+    if (skipped.length === 0) {
+      return result;
+    }
+    const items = [
+      ...result.items,
+      ...skipped.map((item) => ({
+        backupId: item.backupId,
+        outcome: 'RETAINED' as const,
+        reason: toLocalCleanupSkipReasonCode(item.reason),
+      })),
+    ].sort((left, right) => left.backupId.localeCompare(right.backupId));
+    return {
+      ...result,
+      items,
+      retained: items.filter((item) => item.outcome === 'RETAINED').length,
+    };
   }
 
   /**
@@ -181,11 +210,13 @@ export class LocalBackupCleanupService {
       now,
       input.retentionDays ?? BACKUP_RETENTION_DAYS,
     );
-    return this.executeCleanup(
+    const result = await this.executeCleanup(
       decision.targets.map((target) => target.candidate),
       assets,
       now,
     );
+    // 过期清理同理：未到期 / 云端副本不可证而保留的项也要逐项可见
+    return this.mergeRetainedItems(result, decision.skipped);
   }
 
   /**

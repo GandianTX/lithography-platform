@@ -40,6 +40,20 @@ export const LOCAL_BACKUP_FAILURE_REASON = {
   PACKAGE_FILE_SIZE_MISMATCH: 'LOCAL_PACKAGE_FILE_SIZE_MISMATCH',
   /** 备份包文件校验值不符，无法核对完整性 */
   PACKAGE_FILE_CHECKSUM_MISMATCH: 'LOCAL_PACKAGE_FILE_CHECKSUM_MISMATCH',
+  /** 本地包已被清理，无需再处理 */
+  PACKAGE_ALREADY_CLEANED: 'LOCAL_PACKAGE_ALREADY_CLEANED',
+  /** 云回执缺失，云端副本不可证 */
+  CLOUD_RECEIPT_MISSING: 'LOCAL_CLOUD_RECEIPT_MISSING',
+  /** 云回执无法解析，云端副本不可证 */
+  CLOUD_RECEIPT_UNPARSEABLE: 'LOCAL_CLOUD_RECEIPT_UNPARSEABLE',
+  /** 云回执不是成功状态，云端副本不可证 */
+  CLOUD_RECEIPT_NOT_SUCCESS: 'LOCAL_CLOUD_RECEIPT_NOT_SUCCESS',
+  /** 云端副本未核验：本地包是唯一副本，保留不删 */
+  CLOUD_COPY_UNVERIFIED: 'LOCAL_CLOUD_COPY_UNVERIFIED',
+  /** 保留窗口未到 */
+  RETENTION_NOT_EXPIRED: 'LOCAL_RETENTION_NOT_EXPIRED',
+  /** 清理未执行（兜底原因） */
+  CLEANUP_RETAINED: 'LOCAL_CLEANUP_RETAINED',
 } as const;
 
 export type LocalBackupFailureReason =
@@ -57,4 +71,31 @@ const CONTROLLED_REASON_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** 是否为受控原因码形态 */
 export function isControlledFailureReason(value: unknown): value is string {
   return typeof value === 'string' && CONTROLLED_REASON_PATTERN.test(value);
+}
+
+/**
+ * 清理跳过原因（内部枚举）→ 对外受控原因码。
+ *
+ * 用途：把"为什么这一项没有被清理"逐项暴露给调用方，
+ * 而不是只给一个总数——否则用户看不到"本地包因为是唯一副本而保留"。
+ */
+export function toLocalCleanupSkipReasonCode(reason: string): LocalBackupFailureReason {
+  switch (reason) {
+    case 'CLOUD_RECEIPT_MISSING':
+      return LOCAL_BACKUP_FAILURE_REASON.CLOUD_RECEIPT_MISSING;
+    case 'CLOUD_RECEIPT_UNPARSEABLE':
+      return LOCAL_BACKUP_FAILURE_REASON.CLOUD_RECEIPT_UNPARSEABLE;
+    case 'CLOUD_RECEIPT_NOT_SUCCESS':
+      return LOCAL_BACKUP_FAILURE_REASON.CLOUD_RECEIPT_NOT_SUCCESS;
+    case 'CLOUD_COPY_UNVERIFIED':
+      return LOCAL_BACKUP_FAILURE_REASON.CLOUD_COPY_UNVERIFIED;
+    case 'PACKAGE_ALREADY_CLEANED':
+      return LOCAL_BACKUP_FAILURE_REASON.PACKAGE_ALREADY_CLEANED;
+    case 'PACKAGE_REFERENCE_MISSING':
+      return LOCAL_BACKUP_FAILURE_REASON.PACKAGE_REFERENCE_MISSING;
+    case 'RETENTION_NOT_EXPIRED':
+      return LOCAL_BACKUP_FAILURE_REASON.RETENTION_NOT_EXPIRED;
+    default:
+      return LOCAL_BACKUP_FAILURE_REASON.CLEANUP_RETAINED;
+  }
 }
