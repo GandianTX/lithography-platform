@@ -51,6 +51,7 @@ const REPORT_FACT_COLUMNS = {
   recordUuid: true,
   ownerOrganizationId: true,
   currentVersionNo: true,
+  status: true,
   createdByAccountId: true,
   maintenanceEngineerAccountId: true,
   updatedByAccountId: true,
@@ -74,6 +75,8 @@ const REPAIR_REQUEST_FACT_COLUMNS = {
   recordUuid: true,
   ownerOrganizationId: true,
   currentRevisionNo: true,
+  handlingStatus: true,
+  closureStatus: true,
   customerAccountId: true,
   acceptedByEngineerAccountId: true,
   handlingRecordedByAccountId: true,
@@ -107,6 +110,18 @@ export type SyncSourceRecordFact = {
   authorizationSubjectAccountId: number | null;
   /** 是否已删除下架／软删除 */
   withdrawn: boolean;
+  /**
+   * 内容只读事实（任务 09 S2.3）：删除／下架、冻结、结单三类。
+   * 只读内容不得被冲突裁决恢复或覆盖。
+   */
+  contentState: {
+    /** 已删除／已下架 */
+    withdrawn: boolean;
+    /** 冻结：内容正在被别处推进（处理中／待审核／归属待确认） */
+    frozen: boolean;
+    /** 结单：业务已完成，内容只读 */
+    closed: boolean;
+  };
   /**
    * 身份是否为源表**持久化**的稳定编号：
    * - true：跨端稳定身份已持久化（可随记录包搬运到其他设备）；
@@ -315,6 +330,12 @@ export class SyncSourceRecordQueryService {
       currentVersion: versionTrusted ? row.currentVersionNo : null,
       versionTrusted,
       materialApplicable: true,
+      contentState: {
+        withdrawn: false,
+        // 报告没有软删除列：下架由业务状态表达，本层不推断
+        frozen: row.status === 'PENDING_REVIEW',
+        closed: row.status === 'APPROVED',
+      },
       relatedAccountIds: [
         row.createdByAccountId,
         row.maintenanceEngineerAccountId,
@@ -346,6 +367,11 @@ export class SyncSourceRecordQueryService {
       currentVersion: versionTrusted ? row.currentRevisionNo : null,
       versionTrusted,
       materialApplicable,
+      contentState: {
+        withdrawn: softDeleted || offline,
+        frozen: row.ownershipStatus === 'PENDING',
+        closed: false,
+      },
       relatedAccountIds: [row.createdByAccountId, row.updatedByAccountId].filter(
         (value): value is number => typeof value === 'number',
       ),
@@ -366,6 +392,11 @@ export class SyncSourceRecordQueryService {
       currentVersion: versionTrusted ? row.currentRevisionNo : null,
       versionTrusted,
       materialApplicable: softDeleted ? false : true,
+      contentState: {
+        withdrawn: softDeleted,
+        frozen: row.handlingStatus === 'IN_PROGRESS',
+        closed: row.closureStatus === 'CLOSED',
+      },
       relatedAccountIds: [
         row.customerAccountId,
         row.acceptedByEngineerAccountId,

@@ -1,11 +1,41 @@
 // src/adapters/api/graphql/local-runtime/dto/sync-conflict.dto.ts
 
+import type { SyncConflictDiffResult } from '@core/local-runtime/policy/sync-conflict-diff.policy';
 import { Field, GraphQLISODateTime, Int, ObjectType } from '@nestjs/graphql';
 import type {
   SyncConflictListPage,
   SyncConflictSnapshot,
   SyncConflictSummary,
 } from '@src/modules/lithography/sync.types';
+
+/** 冲突差异条目（字段路径与两侧展示值） */
+@ObjectType('SyncConflictDiffEntry')
+export class SyncConflictDiffEntryDTO {
+  @Field(() => String, { description: '字段路径（点分隔；数组按下标）' })
+  path!: string;
+
+  @Field(() => String, { description: 'ONLY_LOCAL / ONLY_CLOUD / DIFFERENT' })
+  kind!: string;
+
+  @Field(() => String, { nullable: true, description: '本地值（展示文本）' })
+  localValue?: string | null;
+
+  @Field(() => String, { nullable: true, description: '云端值（展示文本）' })
+  cloudValue?: string | null;
+}
+
+/** 冲突差异（字段级对比结果） */
+@ObjectType('SyncConflictDiff')
+export class SyncConflictDiffDTO {
+  @Field(() => [SyncConflictDiffEntryDTO], { description: '差异条目' })
+  entries!: SyncConflictDiffEntryDTO[];
+
+  @Field(() => Boolean, { description: '是否因条目上限被截断' })
+  truncated!: boolean;
+
+  @Field(() => Boolean, { description: '快照无法解析时为 true（无法比较）' })
+  invalid!: boolean;
+}
 
 /** 同步冲突（三方版本与本地/云端快照，R066） */
 @ObjectType('SyncConflict')
@@ -51,6 +81,12 @@ export class SyncConflictDTO {
 
   @Field(() => String, { description: '可展示的冲突原因' })
   conflictReason!: string;
+
+  @Field(() => SyncConflictDiffDTO, {
+    nullable: true,
+    description: '字段级差异（本地快照与云端快照摊平比较）',
+  })
+  diff?: SyncConflictDiffDTO | null;
 
   @Field(() => Int, { nullable: true, description: '确认处理人账号；待处理时为 null' })
   confirmedByAccountId?: number | null;
@@ -168,9 +204,24 @@ export function toSyncConflictDTO(view: SyncConflictSnapshot): SyncConflictDTO {
     localSnapshot: view.localSnapshot,
     cloudSnapshot: view.cloudSnapshot,
     conflictReason: view.conflictReason,
+    diff: view.diff === undefined || view.diff === null ? null : toSyncConflictDiffDTO(view.diff),
     confirmedByAccountId: view.confirmedByAccountId,
     confirmedAt: view.confirmedAt,
     createdAt: view.createdAt,
+  };
+}
+
+/** 差异结果 → DTO */
+export function toSyncConflictDiffDTO(diff: SyncConflictDiffResult): SyncConflictDiffDTO {
+  return {
+    entries: diff.entries.map((entry) => ({
+      path: entry.path,
+      kind: entry.kind,
+      localValue: entry.localValue,
+      cloudValue: entry.cloudValue,
+    })),
+    truncated: diff.truncated,
+    invalid: diff.invalid,
   };
 }
 

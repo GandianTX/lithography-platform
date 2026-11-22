@@ -1,6 +1,7 @@
 // src/usecases/local-runtime/get-sync-conflict.usecase.ts
 
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
+import { computeSyncConflictDiff } from '@core/local-runtime/policy/sync-conflict-diff.policy';
 import { Injectable } from '@nestjs/common';
 import type { GetSyncConflictCommand } from './local-runtime.command.types';
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
@@ -65,6 +66,11 @@ export class GetSyncConflictUsecase {
       localSnapshot: payload.localSnapshot,
       cloudSnapshot: payload.cloudSnapshot,
       conflictReason: metadata.conflictReason,
+      // 字段级差异：页面据此展示"哪里不一样"，比较口径统一在后端
+      diff: computeSyncConflictDiff({
+        localSnapshot: payload.localSnapshot,
+        cloudSnapshot: payload.cloudSnapshot,
+      }),
       confirmedByAccountId: metadata.confirmedByAccountId,
       confirmedAt: metadata.confirmedAt,
       createdAt: metadata.createdAt,

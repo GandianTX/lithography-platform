@@ -63,6 +63,8 @@ describe('ResolveSyncConflictUsecase', () => {
     accessAllowed?: boolean;
     /** 来源记录当前版本与可信标记（默认与冲突登记版本一致且可信） */
     recordVersion?: { currentVersion: number | null; versionTrusted: boolean };
+    /** 来源内容只读事实（默认可写） */
+    contentState?: { withdrawn: boolean; frozen: boolean; closed: boolean };
   }) => {
     const scopeResolver = {
       resolve: jest.fn(() => Promise.resolve(params.scope)),
@@ -106,6 +108,12 @@ describe('ResolveSyncConflictUsecase', () => {
                 currentVersion:
                   params.recordVersion?.currentVersion ?? params.locked?.localVersion ?? null,
                 versionTrusted: params.recordVersion?.versionTrusted ?? true,
+                // 只读事实：默认可写（未删除／未冻结／未结单）
+                contentState: params.contentState ?? {
+                  withdrawn: false,
+                  frozen: false,
+                  closed: false,
+                },
               },
             ],
           ]),
@@ -174,6 +182,38 @@ describe('ResolveSyncConflictUsecase', () => {
     await expect(
       usecase.execute({ session, conflictId: 'c-1', action: 'CLOUD' }),
     ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_VERSION_STALE });
+    expect(service.applyCloudResolution).not.toHaveBeenCalled();
+  });
+
+  it('来源已是只读内容（删除／下架／冻结／结单）时拒绝用云端恢复内容', async () => {
+    const { usecase, service } = makeUsecase({
+      scope: { role: 'engineer', organizationId: 4, adminLevel: null },
+      locked: {
+        conflictId: 'conflict-1',
+        recordUuid: 'record-uuid-1',
+        organizationId: 4,
+        resourceType: 'REPAIR_REQUEST',
+        versionNo: 2,
+        localVersion: 2,
+        cloudVersion: 3,
+        displayedCloudVersion: 3,
+        decision: null,
+        status: 'PENDING',
+        localSnapshot: '{}',
+        cloudSnapshot: '{}',
+        conflictReason: '云端版本更新',
+        confirmedByAccountId: null,
+        confirmedAt: null,
+        createdAt: new Date(),
+      },
+      contentState: { withdrawn: false, frozen: true, closed: false },
+    });
+
+    await expect(
+      usecase.execute({ session, conflictId: 'conflict-1', action: 'CLOUD' }),
+    ).rejects.toMatchObject({
+      code: SYNC_ERROR.CONFLICT_SOURCE_READ_ONLY,
+    });
     expect(service.applyCloudResolution).not.toHaveBeenCalled();
   });
 

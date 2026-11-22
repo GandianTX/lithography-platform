@@ -1,5 +1,6 @@
 // src/modules/lithography/sync.types.ts
 
+import type { SyncConflictDiffResult } from '@core/local-runtime/policy/sync-conflict-diff.policy';
 import type {
   SyncConflictAction,
   SyncConflictDecision,
@@ -31,6 +32,11 @@ export type SyncConflictSnapshot = {
   cloudSnapshot: string;
   /** 可展示的冲突原因 */
   conflictReason: string;
+  /**
+   * 字段级差异（任务 09 S2.3）：由本地快照与云端快照摊平比较得出。
+   * 摘要视图不含差异（无快照可比），故为可选。
+   */
+  diff?: SyncConflictDiffResult | null;
   confirmedByAccountId: number | null;
   confirmedAt: Date | null;
   createdAt: Date;
@@ -42,7 +48,10 @@ export type SyncConflictSnapshot = {
  * 用途：裁决结果的返回体。裁决是一次写动作，返回体没有必要再带两份正文快照
  * （本地快照与云端快照都含正文与原件引用）；摘要只给冲突元数据与裁决事实。
  */
-export type SyncConflictSummary = Omit<SyncConflictSnapshot, 'localSnapshot' | 'cloudSnapshot'>;
+export type SyncConflictSummary = Omit<
+  SyncConflictSnapshot,
+  'localSnapshot' | 'cloudSnapshot' | 'diff'
+>;
 
 /**
  * 裁决用的冲突视图（**不含正文快照**）：裁决路径只需要元数据与本地快照。

@@ -59,7 +59,12 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     session?: UsecaseSession;
     organizationId?: number | null;
     locked?: typeof lockedConflict | null;
-    fact?: { recordId: number; withdrawn?: boolean; currentVersion?: number | null } | null;
+    fact?: {
+      recordId: number;
+      withdrawn?: boolean;
+      currentVersion?: number | null;
+      contentState?: { withdrawn: boolean; frozen: boolean; closed: boolean };
+    } | null;
     localAffected?: number;
     markedAffected?: number;
     adminLevel?: number | null;
@@ -93,9 +98,20 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     const sourceRecordQueryService = {
       listFacts: jest.fn(() =>
         Promise.resolve({
-          facts: new Map(
+          facts: new Map<string, Record<string, unknown>>(
             params.fact === undefined
-              ? [['record-uuid-1', { recordId: 880001, withdrawn: false, currentVersion: 4 }]]
+              ? [
+                  [
+                    'record-uuid-1',
+                    {
+                      recordId: 880001,
+                      withdrawn: false,
+                      currentVersion: 4,
+                      // 只读事实：默认可写（未删除／未冻结／未结单）
+                      contentState: { withdrawn: false, frozen: false, closed: false },
+                    },
+                  ],
+                ]
               : params.fact === null
                 ? []
                 : [['record-uuid-1', params.fact]],
@@ -261,7 +277,13 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     const second = makeUsecase({
       session: superAdminSession,
       locked: { ...lockedConflict, localResolutionState: 'WRITING' },
-      fact: { recordId: 880001, withdrawn: false, currentVersion: 5 },
+      fact: {
+        recordId: 880001,
+        withdrawn: false,
+        currentVersion: 5,
+        // 只读事实：默认可写（未删除／未冻结／未结单）
+        contentState: { withdrawn: false, frozen: false, closed: false },
+      },
     });
     const result = await second.usecase.execute({ session: superAdminSession, conflictId: 'c-1' });
 
@@ -287,7 +309,13 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
   it('保留本地：冲突登记的本地版本已不是来源记录当前版本时不写入', async () => {
     const { usecase, appendRevisionUsecase } = makeUsecase({
       session: superAdminSession,
-      fact: { recordId: 880001, withdrawn: false, currentVersion: 9 },
+      fact: {
+        recordId: 880001,
+        withdrawn: false,
+        currentVersion: 9,
+        // 只读事实：默认可写（未删除／未冻结／未结单）
+        contentState: { withdrawn: false, frozen: false, closed: false },
+      },
     });
 
     await expect(

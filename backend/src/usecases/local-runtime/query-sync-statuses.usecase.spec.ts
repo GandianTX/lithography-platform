@@ -45,6 +45,8 @@ describe('QuerySyncStatusesUsecase', () => {
     authorizationSubjectAccountId: 900101,
     withdrawn: false,
     identityPersisted: true,
+    // 只读事实：默认可写（未删除／未冻结／未结单）
+    contentState: { withdrawn: false, frozen: false, closed: false },
     ...overrides,
   });
 

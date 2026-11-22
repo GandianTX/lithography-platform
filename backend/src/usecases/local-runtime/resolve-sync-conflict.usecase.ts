@@ -7,6 +7,7 @@ import {
   type SyncConflictDecision,
   type SyncConflictStatus,
 } from '@core/local-runtime/policy/sync-conflict-resolve.policy';
+import { resolveSyncConflictReadOnly } from '@core/local-runtime/policy/sync-conflict-readonly.policy';
 import { resolveSyncConflictVersionFreshness } from '@core/local-runtime/policy/sync-conflict-version.policy';
 import { SyncConflictService } from '@src/modules/lithography/sync-conflict.service';
 import {
@@ -158,6 +159,19 @@ export class ResolveSyncConflictUsecase {
       recordUuids: [locked.recordUuid],
     });
     const fact = facts.facts.get(locked.recordUuid);
+    // 只读守卫：已删除／下架／冻结／结单的来源不得用云端版本恢复内容。
+    // contentState 缺失（事实不完整）同样失败关闭——读不到只读事实不等于可以写。
+    if (fact !== undefined) {
+      const readOnly = resolveSyncConflictReadOnly(
+        fact.contentState ?? { withdrawn: false, frozen: true, closed: false },
+      );
+      if (readOnly.readOnly) {
+        throw new DomainError(
+          SYNC_ERROR.CONFLICT_SOURCE_READ_ONLY,
+          '来源记录已是只读内容（已删除／下架／冻结／结单），不得用云端版本恢复内容',
+        );
+      }
+    }
     const freshness = resolveSyncConflictVersionFreshness({
       conflictLocalVersion: locked.localVersion,
       recordCurrentVersion: fact?.currentVersion ?? null,

@@ -8,6 +8,7 @@ import {
   planLocalConflictResolution,
   resolveLocalResolutionReplay,
 } from '@core/local-runtime/policy/sync-conflict-local-resolution.policy';
+import { resolveSyncConflictReadOnly } from '@core/local-runtime/policy/sync-conflict-readonly.policy';
 import {
   resolveSyncConflictOutcome,
   type SyncConflictDecision,
@@ -124,6 +125,19 @@ export class ApplyLocalSyncConflictResolutionUsecase {
           SYNC_ERROR.CONFLICT_NOT_FOUND,
           '同步冲突的来源记录不可用或已下架，不能执行保留本地裁决',
         );
+      }
+      // 只读守卫：已删除／下架／冻结／结单的来源不得写回内容。
+      // contentState 缺失（事实不完整）同样失败关闭——读不到只读事实不等于可以写。
+      if (fact !== undefined) {
+        const readOnly = resolveSyncConflictReadOnly(
+          fact.contentState ?? { withdrawn: false, frozen: true, closed: false },
+        );
+        if (readOnly.readOnly) {
+          throw new DomainError(
+            SYNC_ERROR.CONFLICT_SOURCE_READ_ONLY,
+            '来源记录已是只读内容（已删除／下架／冻结／结单），不得写回内容',
+          );
+        }
       }
       // 展示版本二次校验（与读侧入口策略对称）：冲突登记的本地版本必须仍是来源记录的
       // 当前版本；记录已被别处推进过时，本地版本已不是"仍新的展示版本"，不得据此写入。
