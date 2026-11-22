@@ -1,4 +1,4 @@
-// src/usecases/local-runtime/local-backup-upload.contract.ts
+// src/usecases/common/ports/local-backup-upload.contract.ts
 // 自动上云接收端契约（任务 09 S3.2）。
 //
 // 边界归属：是否把本机备份包上云属本任务业务决策，故契约由 usecases 层声明，

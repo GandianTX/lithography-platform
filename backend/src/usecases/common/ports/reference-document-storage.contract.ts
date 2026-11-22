@@ -1,4 +1,4 @@
-// src/usecases/reference-document/reference-document-storage.contract.ts
+// src/usecases/common/ports/reference-document-storage.contract.ts
 
 import type { Readable } from 'node:stream';
 

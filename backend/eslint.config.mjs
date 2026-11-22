@@ -1557,6 +1557,85 @@ const localArchitecturePlugin = {
         };
       },
     },
+    'no-modules-to-usecases-imports': {
+      meta: {
+        type: /** @type {const} */ ('problem'),
+        docs: {
+          description:
+            'disallow modules importing usecase-owned files; only shared runtime capability contracts under usecases/common are allowed',
+        },
+        schema: [],
+      },
+      /** @param {import('eslint').Rule.RuleContext} context */
+      create(context) {
+        const fromScope = getModuleScope(context.filename);
+        if (!fromScope) {
+          return {};
+        }
+
+        /**
+         * @param {import('estree').Node & { source?: { value?: unknown } }} node
+         * @returns {void}
+         */
+        function reportIfNeeded(node) {
+          checkStaticImportLikeNode(context, node, (specifier, targetPath) => {
+            if (!isPathInside(targetPath, USECASES_ROOT)) {
+              return;
+            }
+            // 共享运行时能力契约（usecases/common/**.contract.ts）允许被 modules 消费
+            if (isCommonUsecaseBoundaryContractFilePath(targetPath)) {
+              return;
+            }
+            context.report({
+              node,
+              message:
+                'Modules 层不得依赖 usecase 层文件；只允许依赖共享运行时能力契约（usecases/common/**.contract.ts）。当前从 "{{fromScope}}" 导入 "{{specifier}}"',
+              data: { fromScope, specifier },
+            });
+          });
+        }
+
+        return {
+          ImportDeclaration: reportIfNeeded,
+          ExportAllDeclaration: reportIfNeeded,
+          ExportNamedDeclaration: reportIfNeeded,
+          /** @param {import('estree').CallExpression} node */
+          CallExpression(node) {
+            checkRequireCallNode(context, node, (specifier, targetPath) => {
+              if (!isPathInside(targetPath, USECASES_ROOT)) {
+                return;
+              }
+              if (isCommonUsecaseBoundaryContractFilePath(targetPath)) {
+                return;
+              }
+              context.report({
+                node,
+                message:
+                  'Modules 层不得依赖 usecase 层文件；只允许依赖共享运行时能力契约（usecases/common/**.contract.ts）。当前从 "{{fromScope}}" 导入 "{{specifier}}"',
+                data: { fromScope, specifier },
+              });
+            });
+          },
+          /** @param {import('estree').ImportExpression} node */
+          ImportExpression(node) {
+            checkImportExpressionNode(context, node, (specifier, targetPath) => {
+              if (!isPathInside(targetPath, USECASES_ROOT)) {
+                return;
+              }
+              if (isCommonUsecaseBoundaryContractFilePath(targetPath)) {
+                return;
+              }
+              context.report({
+                node,
+                message:
+                  'Modules 层不得依赖 usecase 层文件；只允许依赖共享运行时能力契约（usecases/common/**.contract.ts）。当前从 "{{fromScope}}" 导入 "{{specifier}}"',
+                data: { fromScope, specifier },
+              });
+            });
+          },
+        };
+      },
+    },
     'no-types-to-core-imports': {
       meta: {
         type: /** @type {const} */ ('problem'),
@@ -2105,6 +2184,7 @@ export default defineConfig(
       'local-architecture/no-adapter-to-queryservice-imports': 'error',
       'local-architecture/no-adapter-types-from-usecase-implementations': 'error',
       'local-architecture/no-cross-domain-usecases-imports': 'error',
+      'local-architecture/no-modules-to-usecases-imports': 'error',
       'local-architecture/no-types-to-core-imports': 'error',
       'local-architecture/no-cross-domain-modules-imports': 'error',
       'local-architecture/no-adapter-decorators-on-entities': 'error',

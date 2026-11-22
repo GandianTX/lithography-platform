@@ -9,7 +9,7 @@ import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 import {
   LOCAL_RUNTIME_STORAGE_PROBE,
   type LocalRuntimeStorageProbe,
-} from './local-runtime-storage-probe.contract';
+} from '@src/usecases/common/ports/local-runtime-storage-probe.contract';
 import type { LocalRuntimeStatusView } from './local-runtime-status.types';
 
 /**

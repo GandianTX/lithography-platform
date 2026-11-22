@@ -1,4 +1,4 @@
-// src/usecases/local-runtime/protected-backup.contract.ts
+// src/usecases/common/ports/protected-backup.contract.ts
 
 /**
  * 受保护备份执行契约（任务 09 S3.1，D-7）。

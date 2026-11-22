@@ -10,7 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import type {
   LocalRuntimeStorageProbe,
   LocalRuntimeStorageProbeResult,
-} from '@src/usecases/local-runtime/local-runtime-storage-probe.contract';
+} from '@src/usecases/common/ports/local-runtime-storage-probe.contract';
 
 const DEFAULT_BUSINESS_DIR = 'var/reference-documents';
 const DEFAULT_BACKUP_DIR = 'var/local-backups';

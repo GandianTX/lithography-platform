@@ -3,13 +3,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { LOCAL_RUNTIME_STORAGE_PROBE } from '@src/usecases/local-runtime/local-runtime-storage-probe.contract';
+import { LOCAL_RUNTIME_STORAGE_PROBE } from '@src/usecases/common/ports/local-runtime-storage-probe.contract';
 import {
   LOCAL_BACKUP_PROTECTION,
   LOCAL_BACKUP_STORAGE,
   type LocalBackupStorageConfig,
   type ProtectedBackupMaterial,
-} from '@src/usecases/local-runtime/protected-backup.contract';
+} from '@src/usecases/common/ports/protected-backup.contract';
 
 import { LocalFileStorageProbe } from './local-runtime-storage-probe';
 

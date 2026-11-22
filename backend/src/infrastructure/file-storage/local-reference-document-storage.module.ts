@@ -11,8 +11,8 @@ import {
 import {
   REFERENCE_DOCUMENT_ALLOWED_MIME_TYPES,
   REFERENCE_DOCUMENT_UPLOAD_MAX_BYTES,
-} from '@src/usecases/reference-document/reference-document-upload.contract';
-import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/reference-document/reference-document-storage.contract';
+} from '@src/usecases/common/ports/reference-document-upload.contract';
+import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/common/ports/reference-document-storage.contract';
 import { STORED_FILE_STORAGE } from '@src/usecases/common/ports/stored-file-storage.contract';
 import { STORED_FILE_ALLOWED_MIME_TYPES } from '@src/usecases/stored-file/stored-file-upload.contract';
 

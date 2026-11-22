@@ -8,7 +8,7 @@ import type {
   LocalBackupUploadRequest,
   LocalBackupUploadResult,
   LocalBackupUploader,
-} from '@src/usecases/local-runtime/local-backup-upload.contract';
+} from '@src/usecases/common/ports/local-backup-upload.contract';
 import {
   asPinoLogger,
   createTestPinoLogger,

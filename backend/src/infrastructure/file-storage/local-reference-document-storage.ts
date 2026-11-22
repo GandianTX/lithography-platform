@@ -9,7 +9,7 @@ import type { Readable } from 'node:stream';
 import { ConfigService } from '@nestjs/config';
 import { Injectable } from '@nestjs/common';
 
-import { ReferenceDocumentStorage } from '@src/usecases/reference-document/reference-document-storage.contract';
+import { ReferenceDocumentStorage } from '@src/usecases/common/ports/reference-document-storage.contract';
 
 /** 存储引用格式白名单：32 位随机 hex + 1~8 位小写字母数字扩展名（不含路径分隔符，天然无路径语义） */
 const STORAGE_REFERENCE_PATTERN = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;

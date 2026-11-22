@@ -21,7 +21,7 @@ import { Repository } from 'typeorm';
 import {
   REFERENCE_DOCUMENT_STORAGE,
   type ReferenceDocumentStorage,
-} from '@src/usecases/reference-document/reference-document-storage.contract';
+} from '@src/usecases/common/ports/reference-document-storage.contract';
 
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
 import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';

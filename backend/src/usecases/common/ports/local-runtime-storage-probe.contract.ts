@@ -1,4 +1,4 @@
-// src/usecases/local-runtime/local-runtime-storage-probe.contract.ts
+// src/usecases/common/ports/local-runtime-storage-probe.contract.ts
 
 /**
  * 本机存储位置探测 boundary contract（usecase 层拥有，infrastructure 实现）。

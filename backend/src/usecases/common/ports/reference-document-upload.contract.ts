@@ -1,4 +1,4 @@
-// src/usecases/reference-document/reference-document-upload.contract.ts
+// src/usecases/common/ports/reference-document-upload.contract.ts
 
 /**
  * 带文件创建的上传策略单一真源（负责人 0910 要求：文件类型、大小等业务规则

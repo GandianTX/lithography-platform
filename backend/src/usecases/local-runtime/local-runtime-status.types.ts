@@ -6,7 +6,7 @@ import type {
   LocalCompanySettingSnapshot,
   LocalTaskStatusSummary,
 } from '@src/modules/lithography/local-runtime.types';
-import type { LocalRuntimeStorageProbeResult } from './local-runtime-storage-probe.contract';
+import type { LocalRuntimeStorageProbeResult } from '@src/usecases/common/ports/local-runtime-storage-probe.contract';
 
 /**
  * 本机运行状态视图（本地设置只读页）。

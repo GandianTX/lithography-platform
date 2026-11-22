@@ -14,7 +14,7 @@ import {
 import {
   LOCAL_BACKUP_UPLOADER,
   type LocalBackupUploader,
-} from '@src/usecases/local-runtime/local-backup-upload.contract';
+} from '@src/usecases/common/ports/local-backup-upload.contract';
 
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';

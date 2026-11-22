@@ -5,6 +5,7 @@ const RULES = {
   adapterTypesFromUsecase: 'local-architecture/no-adapter-types-from-usecase-implementations',
   adapterToQueryService: 'local-architecture/no-adapter-to-queryservice-imports',
   infrastructureToUsecases: 'local-architecture/no-infrastructure-to-usecases-imports',
+  modulesToUsecases: 'local-architecture/no-modules-to-usecases-imports',
 };
 
 const cases = [
@@ -133,6 +134,26 @@ const cases = [
       void (null as unknown as Probe);
     `,
     ruleId: RULES.infrastructureToUsecases,
+    expectViolation: false,
+  },
+  {
+    name: 'reject modules importing a domain-owned usecase contract',
+    filePath: 'src/modules/lithography/protected-backup.service.ts',
+    code: `
+      import { LOCAL_BACKUP_STORAGE } from '@src/usecases/local-runtime/protected-backup.contract';
+      void LOCAL_BACKUP_STORAGE;
+    `,
+    ruleId: RULES.modulesToUsecases,
+    expectViolation: true,
+  },
+  {
+    name: 'allow modules importing a shared runtime capability contract',
+    filePath: 'src/modules/lithography/protected-backup.service.ts',
+    code: `
+      import { LOCAL_BACKUP_STORAGE } from '@src/usecases/common/ports/protected-backup.contract';
+      void LOCAL_BACKUP_STORAGE;
+    `,
+    ruleId: RULES.modulesToUsecases,
     expectViolation: false,
   },
 ];
