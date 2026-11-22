@@ -101,7 +101,7 @@ export class DispatchBusinessSyncTasksUsecase {
 
     for (const task of tasks) {
       result.scanned += 1;
-      const outcome = await this.dispatchOne(task, installation.installationId);
+      const outcome = await this.dispatchOne(task, installation);
       countOutcome(result, outcome);
     }
 
@@ -111,8 +111,9 @@ export class DispatchBusinessSyncTasksUsecase {
   /** 单条任务派发；返回本条的归类计数键 */
   private async dispatchOne(
     task: Awaited<ReturnType<LocalRuntimeQueryService['listBusinessSyncTasks']>>[number],
-    installationId: string,
+    installation: { installationId: string; organizationId: number | null },
   ): Promise<DispatchBusinessSyncTasksOutcome> {
+    const installationId = installation.installationId;
     // 1. 绑定复核：绑定缺失的历史任务不据空值放行
     if (
       task.organizationId === null ||
@@ -129,10 +130,24 @@ export class DispatchBusinessSyncTasksUsecase {
       return 'skipped';
     }
 
+    // 1b. 公司一致性复核：任务绑定的公司必须是**本机公司**。
+    // 换公司不得接管原任务——绑定到别的公司的任务在本机没有派发依据。
+    if (
+      installation.organizationId === null ||
+      task.organizationId !== installation.organizationId
+    ) {
+      await this.cancelTask(
+        task.id,
+        BUSINESS_SYNC_ERROR.INVALID_PARAMS,
+        '任务绑定的公司与本机公司不一致，不派发',
+      );
+      return 'skipped';
+    }
+
     // 2. 授权复核：只认原账号在本机本公司的有效授权
     const authorizationStatus = await this.resolveAuthorizationStatus(
       installationId,
-      task.organizationId,
+      installation.organizationId,
       task.accountId,
     );
     if (authorizationStatus !== 'ACTIVE') {
@@ -220,6 +235,13 @@ export class DispatchBusinessSyncTasksUsecase {
     let response: BusinessSyncReceiverResponse;
     try {
       await this.startAttempt(task.id);
+    } catch {
+      // 任务已被另一个派发者领走（并发）或状态写入失败：既不发，也不回退状态。
+      // 回退会把另一个派发者的在途状态覆盖成 PENDING，制造"两个派发者同时发同一
+      // 版本"；任务保持现状——UPLOADING 由对方收尾，PENDING／FAILED 由下一轮重试。
+      return 'skipped';
+    }
+    try {
       response = await this.receiver.send(request);
     } catch {
       // 网络中断／响应丢失：退回待传，下一轮凭同一幂等键续传

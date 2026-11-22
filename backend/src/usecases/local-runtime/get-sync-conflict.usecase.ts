@@ -11,7 +11,6 @@ import { SyncConflictQueryService } from '@src/modules/lithography/queries/sync-
 import {
   SYNC_SOURCE_RESOURCE_TYPES,
   SyncSourceRecordQueryService,
-  type SyncSourceResourceType,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type { SyncConflictSnapshot } from '@src/modules/lithography/sync.types';
 
@@ -109,7 +108,7 @@ export class GetSyncConflictUsecase {
     }
     const facts = await this.sourceRecordQueryService.listFacts({
       organizationId: metadata.organizationId,
-      resourceType: resourceType as SyncSourceResourceType,
+      resourceType: resourceType,
       recordUuids: [metadata.recordUuid],
     });
     const fact = facts.facts.get(metadata.recordUuid);
