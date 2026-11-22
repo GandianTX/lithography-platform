@@ -345,6 +345,12 @@ const assertNoSecretLeak = (result: ChildRunResult, secrets: readonly string[]):
 
 const SYNTHETIC_URL = 'https://rag.synthetic.invalid';
 const SYNTHETIC_KEY = 'synthetic-rag-key';
+const SYNTHETIC_QWEN_URL = 'https://qwen.synthetic.invalid';
+const SYNTHETIC_QWEN_KEY = 'synthetic-qwen-key';
+const SYNTHETIC_OPENAI_URL = 'https://openai.synthetic.invalid';
+const SYNTHETIC_OPENAI_KEY = 'synthetic-openai-key';
+const REMOTE_PROVIDER_REJECT_MESSAGE =
+  'AI_PROVIDER_MODE=remote requires at least one remote provider config: LITHO_RAG_*, QWEN_* or OPENAI_*';
 
 const DISABLED_EXPECTED: RagConfigExpectation = {
   mode: 'disabled',
@@ -455,6 +461,143 @@ describe('AppConfigModule 的 RAG 生产配置入口', () => {
     const result = runConfigChild(extra, { expectPrecheck: message });
     expectPrecheckRejected(result);
     assertNoSecretLeak(result, [SYNTHETIC_URL, SYNTHETIC_KEY]);
+  });
+
+  // AI_PROVIDER_MODE=remote 的远程来源三选一回归：
+  // 完整启用的 RAG、完整 Qwen、完整 OpenAI 任一即可满足远程来源检查。
+  // 子进程环境只由 PATH/HOME/BASE_ENV/extra 合成，天然不含宿主 QWEN_*/OPENAI_*；
+  // RAG-only 用例再显式置空这四个键，保证隔离与语义双重明确。
+  const EMPTY_LEGACY_PROVIDER_ENV: NodeJS.ProcessEnv = {
+    QWEN_BASE_URL: '',
+    QWEN_API_KEY: '',
+    OPENAI_BASE_URL: '',
+    OPENAI_API_KEY: '',
+  };
+  const REMOTE_MODE: NodeJS.ProcessEnv = { AI_PROVIDER_MODE: 'remote' };
+  const RAG_ONLY_EXPECTED: RagConfigExpectation = {
+    mode: 'remote',
+    baseUrl: SYNTHETIC_URL,
+    apiKey: SYNTHETIC_KEY,
+    allowInsecureHttp: false,
+    timeoutMs: 30000,
+  };
+
+  describe('AI_PROVIDER_MODE=remote 的远程来源判定', () => {
+    it.each<[string, NodeJS.ProcessEnv, RagConfigExpectation]>([
+      [
+        '生产仅配置完整 RAG（显式排除 Qwen／OpenAI）',
+        {
+          ...REMOTE_MODE,
+          ...EMPTY_LEGACY_PROVIDER_ENV,
+          LITHO_RAG_MODE: 'remote',
+          LITHO_RAG_BASE_URL: SYNTHETIC_URL,
+          LITHO_RAG_API_KEY: SYNTHETIC_KEY,
+        },
+        RAG_ONLY_EXPECTED,
+      ],
+      [
+        '未设置 RAG 模式时按 remote 默认视为合格来源',
+        {
+          ...REMOTE_MODE,
+          ...EMPTY_LEGACY_PROVIDER_ENV,
+          LITHO_RAG_BASE_URL: SYNTHETIC_URL,
+          LITHO_RAG_API_KEY: SYNTHETIC_KEY,
+        },
+        RAG_ONLY_EXPECTED,
+      ],
+      [
+        'RAG 与 Qwen 同时配置',
+        {
+          ...REMOTE_MODE,
+          QWEN_BASE_URL: SYNTHETIC_QWEN_URL,
+          QWEN_API_KEY: SYNTHETIC_QWEN_KEY,
+          LITHO_RAG_BASE_URL: SYNTHETIC_URL,
+          LITHO_RAG_API_KEY: SYNTHETIC_KEY,
+        },
+        RAG_ONLY_EXPECTED,
+      ],
+      [
+        '仅完整 Qwen',
+        { ...REMOTE_MODE, QWEN_BASE_URL: SYNTHETIC_QWEN_URL, QWEN_API_KEY: SYNTHETIC_QWEN_KEY },
+        { ...RAG_ONLY_EXPECTED, baseUrl: '', apiKey: '' },
+      ],
+      [
+        '仅完整 OpenAI',
+        {
+          ...REMOTE_MODE,
+          OPENAI_BASE_URL: SYNTHETIC_OPENAI_URL,
+          OPENAI_API_KEY: SYNTHETIC_OPENAI_KEY,
+        },
+        { ...RAG_ONLY_EXPECTED, baseUrl: '', apiKey: '' },
+      ],
+    ])('%s 时生产进程可启动', (_title, extra, expected) => {
+      const result = runConfigChild(extra, { expected });
+      expectStarted(result);
+      assertNoSecretLeak(result, [SYNTHETIC_URL, SYNTHETIC_KEY]);
+    });
+
+    it('AI_PROVIDER_MODE=mock 时无任何远程来源仍可启动（mock 路由不变）', () => {
+      // mock 路由下 RAG 配置按默认 remote 解析且 URL／Key 均为空，不应阻断启动。
+      const result = runConfigChild(EMPTY_LEGACY_PROVIDER_ENV, {
+        expected: { ...RAG_ONLY_EXPECTED, baseUrl: '', apiKey: '' },
+      });
+      expectStarted(result);
+    });
+
+    it.each<[string, NodeJS.ProcessEnv]>([
+      [
+        'RAG 显式 disabled 但残留 URL／Key 且无 Qwen／OpenAI',
+        {
+          ...REMOTE_MODE,
+          LITHO_RAG_MODE: 'disabled',
+          LITHO_RAG_BASE_URL: SYNTHETIC_URL,
+          LITHO_RAG_API_KEY: SYNTHETIC_KEY,
+        },
+      ],
+      ['RAG 与旧供应商均未配置', { ...REMOTE_MODE, ...EMPTY_LEGACY_PROVIDER_ENV }],
+      [
+        'RAG URL 与密钥均为纯空白（按未配置处理）',
+        {
+          ...REMOTE_MODE,
+          ...EMPTY_LEGACY_PROVIDER_ENV,
+          LITHO_RAG_BASE_URL: '   ',
+          LITHO_RAG_API_KEY: '   ',
+        },
+      ],
+    ])('%s 时按生产预检拒绝启动', (_title, extra) => {
+      const result = runConfigChild(extra, { expectPrecheck: REMOTE_PROVIDER_REJECT_MESSAGE });
+      expectPrecheckRejected(result);
+      assertNoSecretLeak(result, [SYNTHETIC_URL, SYNTHETIC_KEY]);
+    });
+
+    it.each<[string, NodeJS.ProcessEnv]>([
+      [
+        '显式 remote RAG 缺密钥但 Qwen 完整',
+        {
+          ...REMOTE_MODE,
+          QWEN_BASE_URL: SYNTHETIC_QWEN_URL,
+          QWEN_API_KEY: SYNTHETIC_QWEN_KEY,
+          LITHO_RAG_MODE: 'remote',
+          LITHO_RAG_BASE_URL: SYNTHETIC_URL,
+        },
+      ],
+      [
+        '显式 remote RAG 缺地址但 OpenAI 完整',
+        {
+          ...REMOTE_MODE,
+          OPENAI_BASE_URL: SYNTHETIC_OPENAI_URL,
+          OPENAI_API_KEY: SYNTHETIC_OPENAI_KEY,
+          LITHO_RAG_MODE: 'remote',
+          LITHO_RAG_API_KEY: SYNTHETIC_KEY,
+        },
+      ],
+    ])('%s 时仍被 RAG 独立校验拒绝', (_title, extra) => {
+      const result = runConfigChild(extra, {
+        expectPrecheck: 'LITHO_RAG_MODE=remote requires LITHO_RAG_BASE_URL and LITHO_RAG_API_KEY',
+      });
+      expectPrecheckRejected(result);
+      assertNoSecretLeak(result, [SYNTHETIC_URL, SYNTHETIC_KEY]);
+    });
   });
 
   it('生产路径使用空隔离目录，不读取后端根目录的 env 文件', () => {

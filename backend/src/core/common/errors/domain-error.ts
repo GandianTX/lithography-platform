@@ -530,6 +530,19 @@ export const ADMIN_DOCUMENT_DATABASE_ERROR = {
 } as const;
 Object.freeze(ADMIN_DOCUMENT_DATABASE_ERROR);
 
+// 关键操作记录读侧（任务 10）：独立命名空间。
+// 刻意不复用 ADMIN_DOCUMENT_DATABASE_ERROR：那是「文档数据库聚合读」的语义，
+// 与「三类管理事实只读查询」不是同一读链路，混用会让前端按错误码分流时误判。
+export const MANAGEMENT_AUDIT_ERROR = {
+  // 分页模式非 OFFSET、页码/页大小非法等可修复的入参问题
+  INVALID_PARAMS: 'MANAGEMENT_AUDIT_INVALID_PARAMS',
+  // 库中出现白名单外的 operation/result 等存储事实异常，失败关闭为系统侧错误
+  READ_FAILED: 'MANAGEMENT_AUDIT_READ_FAILED',
+  // 07／09 调用共享写入方法时参数违反契约（提供方编程错误，不是终端用户输入）
+  INVALID_WRITE_PARAMS: 'MANAGEMENT_AUDIT_INVALID_WRITE_PARAMS',
+} as const;
+Object.freeze(MANAGEMENT_AUDIT_ERROR);
+
 export const INPUT_NORMALIZE_ERROR = {
   INVALID_TEXT: 'INPUT_NORMALIZE_INVALID_TEXT',
   REQUIRED_TEXT_EMPTY: 'INPUT_NORMALIZE_REQUIRED_TEXT_EMPTY',
@@ -736,6 +749,8 @@ export type EngineerRegistrationErrorCode =
 export type MyAccountErrorCode = (typeof MY_ACCOUNT_ERROR)[keyof typeof MY_ACCOUNT_ERROR];
 export type AdminDocumentDatabaseErrorCode =
   (typeof ADMIN_DOCUMENT_DATABASE_ERROR)[keyof typeof ADMIN_DOCUMENT_DATABASE_ERROR];
+export type ManagementAuditErrorCode =
+  (typeof MANAGEMENT_AUDIT_ERROR)[keyof typeof MANAGEMENT_AUDIT_ERROR];
 export type InputNormalizeErrorCode =
   (typeof INPUT_NORMALIZE_ERROR)[keyof typeof INPUT_NORMALIZE_ERROR];
 export type OrganizationErrorCode = (typeof ORGANIZATION_ERROR)[keyof typeof ORGANIZATION_ERROR];

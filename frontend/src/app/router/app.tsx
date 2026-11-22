@@ -16,6 +16,7 @@ import { AdminAiConversationsPage } from '@/pages/admin-ai-conversations';
 import { AdminCompaniesPage } from '@/pages/admin-companies';
 import { AdminDocumentDatabasePage } from '@/pages/admin-document-database';
 import { AdminEngineerApprovalsPage } from '@/pages/admin-engineer-approvals';
+import { AdminOperationRecordsPage } from '@/pages/admin-operation-records';
 import { AdminOrderDetailPage, AdminOrdersPage } from '@/pages/admin-orders';
 import { AdminReferenceOwnershipPage } from '@/pages/admin-reference-ownership';
 import { AdminReferenceOwnershipDetailPage } from '@/pages/admin-reference-ownership-detail';
@@ -169,6 +170,13 @@ const router = createBrowserRouter([
         element: <AdminAiConversationsPage />,
         loader: protectedRouteLoader,
         path: 'admin/ai-conversations',
+      },
+      {
+        // 关键操作记录页（任务10）：只读列表；路由治理复用 protectedRouteLoader 与
+        // /admin/** 角色策略（SUPER_ADMIN 放行），会话范围由页面与后端共同裁决。
+        element: <AdminOperationRecordsPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/operation-records',
       },
       {
         // 工单管理直达页（任务 04）：复用 admin-document-database 的维修申请列表/

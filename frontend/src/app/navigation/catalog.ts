@@ -197,6 +197,17 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['admin', 'ownership', 'pending', 'reference', '归属待核实', '归属核实', '资料'],
   },
   {
+    descriptionKey: 'nav.admin-operation-records.description',
+    id: 'admin-operation-records',
+    kind: 'stable',
+    labelKey: 'nav.admin-operation-records.label',
+    // 任务10：三类管理事实只读页；一级（全公司）与二级（本公司）均可见，
+    // 数据范围由后端按会话可信公司裁决，未授权直达由 /admin/** 路由层拒绝。
+    path: '/admin/operation-records',
+    roles: ['SUPER_ADMIN'],
+    tags: ['admin', 'audit', 'operation-records', '关键操作记录', '审计'],
+  },
+  {
     descriptionKey: 'nav.admin-orders.description',
     id: 'admin-orders',
     kind: 'stable',

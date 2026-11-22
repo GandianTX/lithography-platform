@@ -46,7 +46,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     expect(paths).toContain('/engineer/records');
   });
 
-  it('一级管理员见任务 08 管理入口、全域文档数据库与归属待核实（任务 07 R061-01）', () => {
+  it('一级管理员见任务 08 管理入口、全域文档数据库、归属待核实（任务 07 R061-01）与任务 10 关键操作记录', () => {
     const paths = getNavigationItems('prod', 'SUPER_ADMIN', 'GLOBAL').map((item) => item.path);
 
     expect(paths).toEqual([
@@ -62,6 +62,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       '/admin/ai-conversations',
       '/admin/document-database',
       '/admin/reference-ownership',
+      '/admin/operation-records',
       '/admin/orders',
       '/account/settings',
       '/local-backup',
@@ -69,7 +70,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('任务 08 管理入口对一级平台与可信公司二级管理员可见，文档聚合仍为全域', () => {
+  it('任务 08 管理入口对一级平台与可信公司二级管理员可见；文档聚合仍为全域，任务 10 两级均可见', () => {
     for (const scope of ['PLATFORM', 'ORGANIZATION'] as const) {
       expect(getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path)).toEqual([
         '/',
@@ -82,6 +83,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
         '/admin/companies',
         '/admin/engineer-registrations',
         '/admin/ai-conversations',
+        '/admin/operation-records',
         '/admin/orders',
         '/account/settings',
         '/local-backup',

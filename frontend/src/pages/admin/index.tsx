@@ -1,6 +1,11 @@
 // src/pages/admin/index.tsx
 
-import { FileTextOutlined, UnorderedListOutlined, UserOutlined } from '@ant-design/icons';
+import {
+  AuditOutlined,
+  FileTextOutlined,
+  UnorderedListOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
 import { Button } from 'antd';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router';
@@ -55,6 +60,14 @@ const ADMIN_ENTRIES: AdminEntry[] = [
     id: 'admin-document-database',
     path: '/admin/document-database',
     titleKey: 'admin.documents.title',
+  },
+  {
+    actionKey: 'admin.operationRecords.action',
+    descriptionKey: 'admin.operationRecords.description',
+    icon: <AuditOutlined />,
+    id: 'admin-operation-records',
+    path: '/admin/operation-records',
+    titleKey: 'admin.operationRecords.title',
   },
 ];
 
