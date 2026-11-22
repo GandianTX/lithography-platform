@@ -186,4 +186,26 @@ describe('本地设置只读面板', () => {
     });
     expect(adapters.fetchLocalRuntimeStatus).toHaveBeenCalledTimes(2);
   });
+
+  it('键盘可达：交互元素均为原生可聚焦控件且有可访问名称', async () => {
+    render(<LocalRuntimeSettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('本机身份')).toBeTruthy();
+    });
+
+    const interactive = Array.from(
+      document.querySelectorAll('button, a[href], input, select, textarea, [role="button"]'),
+    );
+
+    for (const element of interactive) {
+      const node = element as HTMLElement;
+
+      // 不允许 div 伪按钮：必须可 Tab 聚焦
+      expect(['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA']).toContain(node.tagName);
+      const accessibleName = node.getAttribute('aria-label') ?? node.textContent?.trim() ?? '';
+
+      expect(accessibleName.length).toBeGreaterThan(0);
+    }
+  });
 });

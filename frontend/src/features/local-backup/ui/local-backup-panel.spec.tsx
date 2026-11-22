@@ -302,4 +302,45 @@ describe('备份与恢复面板', () => {
     // 未知码不回显为原始文本
     expect(screen.queryByText('LOCAL_UNKNOWN_REASON_CODE')).toBeNull();
   });
+
+  it('窄屏不撑破页面：备份记录表放在横向滚动容器内', async () => {
+    render(<LocalBackupPanel canPrecheck={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(RECORD.backupId)).toBeTruthy();
+    });
+
+    // antd 在 scroll.x 下把宽表放进自带横向滚动的内容容器，页面本身不被撑开
+    const tableContent = document.querySelector('.ant-table-content') as HTMLElement | null;
+
+    expect(tableContent).toBeTruthy();
+    expect(tableContent?.style.overflowX).toBe('auto');
+  });
+
+  it('键盘可达：交互元素均为原生可聚焦控件且有可访问名称', async () => {
+    render(<LocalBackupPanel canPrecheck={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(RECORD.backupId)).toBeTruthy();
+    });
+
+    const interactive = Array.from(
+      document.querySelectorAll('button, a[href], input, select, textarea, [role="button"]'),
+    );
+
+    expect(interactive.length).toBeGreaterThan(0);
+    for (const element of interactive) {
+      const node = element as HTMLElement;
+
+      // 不允许 div 伪按钮：必须可 Tab 聚焦
+      expect(['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA']).toContain(node.tagName);
+      // 框架自带的图标按钮（antd 分页/表格排序）不计名；自有控件必须有可访问名称
+      if (node.closest('.ant-pagination, .ant-table')) {
+        continue;
+      }
+      const accessibleName = node.getAttribute('aria-label') ?? node.textContent?.trim() ?? '';
+
+      expect(accessibleName.length).toBeGreaterThan(0);
+    }
+  });
 });
