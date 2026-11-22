@@ -39,6 +39,10 @@ import {
 } from '@app-types/models/maintenance-report.types';
 
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
+import { StoredFileService } from '@src/modules/lithography/stored-file.service';
+
+import { bindStagedAttachmentToReport } from './maintenance-report-attachment-binding.helpers';
 
 type SnapshotPayload = {
   sourceType?: unknown;
@@ -86,6 +90,8 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
 
   constructor(
     private readonly maintenanceReportService: MaintenanceReportService,
+    private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
+    private readonly storedFileService: StoredFileService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -101,11 +107,12 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
         reason: '该资源类型在维修报告域没有受控写入入口',
       };
     }
-    if (request.originals.length > 0) {
+    if (request.originals.length > 1) {
+      // 06 的报告附件业务上限为 1 份；超出即逐条拒绝，不静默丢弃原件
       return {
         status: 'FAILED',
         localRecordId: null,
-        reason: '记录包原件尚未接入受控写入入口，本次不导入（不静默丢弃原件）',
+        reason: '报告附件业务上限为 1 份，包内原件超出上限，该条未导入',
       };
     }
     if (request.sourceAccountId === null) {
@@ -188,7 +195,7 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
         if (typeof reportId !== 'number') {
           throw new Error('受控写入未返回报告主键');
         }
-        await this.maintenanceReportService.insertVersion(
+        const version = await this.maintenanceReportService.insertVersion(
           {
             reportId,
             versionNo: request.versionNo,
@@ -200,6 +207,48 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
           },
           transactionContext,
         );
+        const versionId =
+          (version as { versionId?: number }).versionId ?? (version as { id?: number }).id;
+        if (typeof versionId !== 'number') {
+          throw new Error('受控写入未返回版本主键');
+        }
+
+        // 原件绑定：暂存文件在**本事务内**绑定到报告根，并登记版本附件行
+        // （绑定要求"暂存上传者＝绑定账号"、"归属公司＝报告归属公司"，故用来源账号）
+        const versionAttachments: {
+          attachmentId: number;
+          sortOrder: number;
+          descriptionSnapshot: string | null;
+        }[] = [];
+        for (const original of request.originals) {
+          const attachment = await bindStagedAttachmentToReport({
+            storedFileService: this.storedFileService,
+            maintenanceReportService: this.maintenanceReportService,
+            maintenanceReportQueryService: this.maintenanceReportQueryService,
+            reportId,
+            ownerOrganizationId: request.organizationId,
+            accountId: request.sourceAccountId as number,
+            attachment: {
+              fileId: original.fileId,
+              uploadContextId: original.uploadContextId,
+              description: null,
+            },
+            transactionContext,
+          });
+          versionAttachments.push({
+            attachmentId: attachment.id,
+            sortOrder: attachment.sortOrder,
+            descriptionSnapshot: attachment.description,
+          });
+        }
+        if (versionAttachments.length > 0) {
+          await this.maintenanceReportService.insertVersionAttachments(
+            versionId,
+            reportId,
+            versionAttachments,
+            transactionContext,
+          );
+        }
         return { status: 'CREATED', localRecordId: reportId, reason: null };
       });
     } catch (error) {

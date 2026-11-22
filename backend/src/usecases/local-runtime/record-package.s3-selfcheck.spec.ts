@@ -124,6 +124,7 @@ function buildUsecase(
       findReceipt,
     } as never,
     { recordImportedVersion: jest.fn().mockResolvedValue('receipt-new') } as never,
+    { stage: jest.fn().mockResolvedValue([]) } as never,
     {
       get: jest.fn(() => {
         if (options.writer === undefined) {

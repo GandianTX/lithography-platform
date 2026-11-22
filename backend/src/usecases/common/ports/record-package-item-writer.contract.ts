@@ -36,8 +36,21 @@ export type RecordPackageItemWriteRequest = {
   organizationId: number;
   /** 包内容快照（受控载荷，由来源域做形状校验） */
   body: Record<string, unknown>;
-  /** 包内原件清单（相对路径＋摘要）；原件写入未接入时来源域必须失败关闭 */
-  originals: { relativePath: string; sha256: string; byteSize: number }[];
+  /**
+   * 已暂存的原件事实（S3 补丁 P3）。
+   *
+   * **不是包内路径**：编排侧按包根安全解析、复核字节数与 SHA-256 后，先登记为
+   * 任务 11 的临时文件（VALID+TEMPORARY），再把登记事实交给写入方；
+   * 写入方只拿到 `fileId`/`uploadContextId`，**不信任任何路径**。
+   */
+  originals: {
+    fileId: string;
+    uploadContextId: string;
+    originalFilename: string;
+    mimeType: string;
+    byteSize: number;
+    checksumSha256: string;
+  }[];
   /** 正文与原件清单摘要（包清单登记值，来源域可复核） */
   manifestChecksum: string;
   /**

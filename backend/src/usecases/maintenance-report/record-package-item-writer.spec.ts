@@ -12,6 +12,14 @@
 
 import { MaintenanceReportRecordPackageItemWriter } from './record-package-item-writer';
 
+const bindStagedAttachmentToReport = jest.fn((_params?: unknown) =>
+  Promise.resolve({ id: 5, sortOrder: 1, description: null }),
+);
+
+jest.mock('./maintenance-report-attachment-binding.helpers', () => ({
+  bindStagedAttachmentToReport: (params?: unknown) => bindStagedAttachmentToReport(params),
+}));
+
 const SESSION = {
   accountId: 900101,
   organizationId: 9,
@@ -65,11 +73,20 @@ function buildWriter(options: { insertError?: Error } = {}) {
   const insertVersion = jest.fn((_data?: Record<string, unknown>) =>
     Promise.resolve({ versionId: 7 }),
   );
+  const insertVersionAttachments = jest.fn(
+    (_versionId?: unknown, _reportId?: unknown, _rows?: unknown) => Promise.resolve(undefined),
+  );
   const writer = new MaintenanceReportRecordPackageItemWriter(
-    { insertReport, insertVersion } as never,
+    {
+      insertReport,
+      insertVersion,
+      insertVersionAttachments,
+    } as never,
+    {} as never,
+    {} as never,
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
   );
-  return { writer, insertReport, insertVersion };
+  return { writer, insertReport, insertVersion, insertVersionAttachments };
 }
 
 describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
@@ -120,20 +137,66 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
     expect((insertReport.mock.calls[0][0] as Record<string, unknown>).status).toBe('APPROVED');
   });
 
-  it('带原件的条目失败关闭（不静默丢弃原件）', async () => {
+  it('原件超出报告附件上限（1 份）时失败关闭（不静默丢弃原件）', async () => {
     const { writer, insertReport } = buildWriter();
 
     const outcome = await writer.write(
       {
         ...REQUEST,
-        originals: [{ relativePath: 'originals/a.pdf', sha256: 'b'.repeat(64), byteSize: 1 }],
+        originals: [
+          {
+            fileId: 'f1',
+            uploadContextId: 'u1',
+            originalFilename: 'a.pdf',
+            mimeType: 'application/pdf',
+            byteSize: 1,
+            checksumSha256: 'b'.repeat(64),
+          },
+          {
+            fileId: 'f2',
+            uploadContextId: 'u2',
+            originalFilename: 'b.pdf',
+            mimeType: 'application/pdf',
+            byteSize: 1,
+            checksumSha256: 'c'.repeat(64),
+          },
+        ],
       },
       SESSION,
     );
 
     expect(outcome.status).toBe('FAILED');
-    expect(outcome.reason).toContain('原件');
+    expect(outcome.reason).toContain('上限');
     expect(insertReport).not.toHaveBeenCalled();
+  });
+
+  it('已暂存原件：在同一事务内绑定到报告根并登记版本附件行', async () => {
+    const { writer, insertVersionAttachments } = buildWriter();
+
+    const outcome = await writer.write(
+      {
+        ...REQUEST,
+        originals: [
+          {
+            fileId: 'f1',
+            uploadContextId: 'u1',
+            originalFilename: 'a.pdf',
+            mimeType: 'application/pdf',
+            byteSize: 1,
+            checksumSha256: 'b'.repeat(64),
+          },
+        ],
+      },
+      SESSION,
+    );
+
+    expect(outcome.status).toBe('CREATED');
+    expect(bindStagedAttachmentToReport).toHaveBeenCalledTimes(1);
+    expect(insertVersionAttachments).toHaveBeenCalledTimes(1);
+    const versionRows = insertVersionAttachments.mock.calls[0][2] as {
+      attachmentId: number;
+    }[];
+    expect(versionRows[0].attachmentId).toBe(5);
   });
 
   it('工单总结来源：关联工单事实规则未确认前拒绝', async () => {

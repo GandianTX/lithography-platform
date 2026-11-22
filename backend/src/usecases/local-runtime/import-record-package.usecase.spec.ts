@@ -109,6 +109,7 @@ function buildUsecase(
       findReceipt,
     } as never,
     { recordImportedVersion } as never,
+    { stage: jest.fn().mockResolvedValue([]) } as never,
     {
       get: jest.fn(() => {
         if (options.writer === undefined) {

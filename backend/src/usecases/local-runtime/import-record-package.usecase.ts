@@ -25,6 +25,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
 import { RecordPackageImportService } from '@src/modules/lithography/record-package-import.service';
+import { RecordPackageOriginalStagingService } from './record-package-original-staging.service';
 import type {
   RecordPackageImportSnapshot,
   RecordPackageItemSnapshot,
@@ -65,6 +66,7 @@ export class ImportRecordPackageUsecase {
     private readonly scopeResolver: LocalRuntimeScopeResolver,
     private readonly recordPackageImportService: RecordPackageImportService,
     private readonly receiptService: BusinessSyncReceiptService,
+    private readonly originalStagingService: RecordPackageOriginalStagingService,
     private readonly moduleRef: ModuleRef,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -126,6 +128,7 @@ export class ImportRecordPackageUsecase {
         manifestItem: manifest.items.find((candidate) => candidate.record_uuid === item.recordUuid),
         organizationId: facts.import.organizationId,
         manifestChecksum: facts.import.manifestChecksum,
+        packagePath: command.packagePath,
         sourceInstallationId: manifest.installation_id,
         session: command.session,
         writer,
@@ -160,12 +163,13 @@ export class ImportRecordPackageUsecase {
     manifestItem:
       | {
           content_snapshot: unknown;
-          files: { sha256: string }[];
+          files: { relative_path: string; sha256: string; byte_size: number }[];
           source_account_id?: number | null;
           owner_organization_id?: number | null;
           source_status?: string | null;
         }
       | undefined;
+    packagePath: string;
     organizationId: number;
     manifestChecksum: string;
     sourceInstallationId: string;
@@ -214,7 +218,46 @@ export class ImportRecordPackageUsecase {
       return { result: 'FAILED' };
     }
 
-    // 3. 受控写入
+    // 3. 原件暂存（服务端读包、复核字节与摘要、登记 11 临时文件）
+    let stagedOriginals: {
+      fileId: string;
+      uploadContextId: string;
+      originalFilename: string;
+      mimeType: string;
+      byteSize: number;
+      checksumSha256: string;
+    }[] = [];
+    const packageFiles = input.manifestItem?.files ?? [];
+    if (packageFiles.length > 0) {
+      const sourceAccountId = input.manifestItem?.source_account_id ?? null;
+      if (sourceAccountId === null) {
+        await this.writeItemResult(item.itemId, {
+          result: 'FAILED',
+          errorMessage: '包内缺来源账号，原件无法登记为该来源的暂存文件，该条未导入',
+          receiptId: null,
+        });
+        return { result: 'FAILED' };
+      }
+      try {
+        stagedOriginals = await this.originalStagingService.stage({
+          packagePath: input.packagePath,
+          files: packageFiles,
+          businessType: 'MAINTENANCE_REPORT',
+          uploadedByAccountId: sourceAccountId,
+          ownerOrganizationId: input.organizationId,
+        });
+      } catch (error) {
+        await this.writeItemResult(item.itemId, {
+          result: 'FAILED',
+          errorMessage:
+            error instanceof Error ? `包内原件暂存失败：${error.message}` : '包内原件暂存失败',
+          receiptId: null,
+        });
+        return { result: 'FAILED' };
+      }
+    }
+
+    // 4. 受控写入
     const snapshot = input.manifestItem?.content_snapshot;
     const body =
       typeof snapshot === 'object' && snapshot !== null
@@ -227,7 +270,7 @@ export class ImportRecordPackageUsecase {
         versionNo: item.versionNo,
         organizationId: input.organizationId,
         body,
-        originals: [],
+        originals: stagedOriginals,
         manifestChecksum: input.manifestChecksum,
         sourceAccountId: input.manifestItem?.source_account_id ?? null,
         ownerOrganizationId,
