@@ -64,7 +64,17 @@ export class BackupScheduleService {
       where: { backupEnabled: true, nextBackupAt: LessThanOrEqual(now) },
     });
     for (const plan of due) {
-      const result = await this.runDuePlan(plan, now);
+      // 单个计划的异常不中断整轮扫描：其余公司计划照常推进
+      let result: 'succeeded' | 'failed' | 'skipped';
+      try {
+        result = await this.runDuePlan(plan, now);
+      } catch (error) {
+        this.logger.error(
+          { organizationId: plan.organizationId, err: error },
+          '本地备份计划执行异常，本轮跳过该计划',
+        );
+        result = 'failed';
+      }
       if (result === 'succeeded') {
         succeeded += 1;
       } else if (result === 'failed') {
@@ -193,23 +203,28 @@ export class BackupScheduleService {
       // 同公司已有 RUNNING（上一轮遗留未到补偿时限）：本轮跳过，不改计划
       return 'skipped';
     }
-    const run = await this.backupRunRepository.save(
-      this.backupRunRepository.create({
-        installationId: plan.installationId,
-        organizationId: plan.organizationId,
-        triggerType: 'SCHEDULED',
-        status: 'RUNNING',
-        startedAt: now,
-        finishedAt: null,
-        manifestPath: null,
-        manifestChecksum: null,
-        byteSize: null,
-        attachmentCount: null,
-        schemaVersion: null,
-        errorCode: null,
-        errorMessage: null,
-      }),
-    );
+    let run: LocalBackupRunEntity;
+    try {
+      run = await this.backupRunRepository.save(
+        this.backupRunRepository.create({
+          installationId: plan.installationId,
+          organizationId: plan.organizationId,
+          triggerType: 'SCHEDULED',
+          status: 'RUNNING',
+          startedAt: now,
+          finishedAt: null,
+          manifestPath: null,
+          manifestChecksum: null,
+          byteSize: null,
+          attachmentCount: null,
+          schemaVersion: null,
+          errorCode: null,
+          errorMessage: null,
+        }),
+      );
+    } catch (error) {
+      return this.onRunRegistrationFailed(plan, error);
+    }
     const targetPath = this.protectedBackupService.resolvePackageTargetPath(
       plan.organizationId,
       'SCHEDULED',
@@ -272,6 +287,28 @@ export class BackupScheduleService {
       );
       return 'failed';
     }
+  }
+
+  /**
+   * 运行登记失败的处理（review M6）。
+   *
+   * - 唯一键冲突：唯一键 `uk_local_backup_run_active_company` 保证同公司同时只有一条
+   *   RUNNING，说明另一轮已经接手该公司的备份 → 本轮跳过，不改计划、不记失败；
+   * - 其它错误：登记失败不是"备份失败"→ 如实记为失败，不改计划行的成功时间。
+   */
+  private onRunRegistrationFailed(
+    plan: LocalCompanySettingEntity,
+    error: unknown,
+  ): 'skipped' | 'failed' {
+    if (this.isUniqueConstraintViolation(error)) {
+      this.logger.info(
+        { organizationId: plan.organizationId },
+        '本地备份运行登记冲突（并发已接手），本轮跳过',
+      );
+      return 'skipped';
+    }
+    this.logger.error({ organizationId: plan.organizationId, err: error }, '本地备份运行登记失败');
+    return 'failed';
   }
 
   /** 计划推进：当前时间＋间隔小时（间隔取计划行真实值） */

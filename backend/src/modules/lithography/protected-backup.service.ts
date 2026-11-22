@@ -9,26 +9,29 @@ import {
   type BackupManifestOriginal,
   type BackupScopeEntry,
 } from '@core/local-runtime/policy/protected-backup.policy';
-import { BACKUP_RETENTION_DAYS } from '@core/local-runtime/policy/local-backup-cleanup.policy';
+import {
+  BACKUP_RETENTION_DAYS,
+  isBackupPackagePathInside,
+} from '@core/local-runtime/policy/local-backup-cleanup.policy';
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import { type ObjectLiteral, Repository } from 'typeorm';
 
 import {
   REFERENCE_DOCUMENT_STORAGE,
   type ReferenceDocumentStorage,
-} from '@src/usecases/reference-document/reference-document-storage.contract';
+} from '@src/usecases/common/ports/reference-document-storage.contract';
 import {
   LOCAL_BACKUP_PROTECTION,
   LOCAL_BACKUP_STORAGE,
   type LocalBackupStorageConfig,
   type ProtectedBackupMaterial,
-} from '@src/usecases/local-runtime/protected-backup.contract';
+} from '@src/usecases/common/ports/protected-backup.contract';
 
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
@@ -81,6 +84,10 @@ export class ProtectedBackupService {
    * 备份包落点：`<备份目录>/<公司ID>/<触发方式>-<ISO时间戳>`。
    *
    * 与业务原件目录物理分离（D-7）；每次调用产生独立目录，避免互相覆盖。
+   *
+   * 一律返回**绝对路径**（review L5）：备份根目录允许配置成相对路径，但落库的包引用
+   * 必须按写入时的 cwd 归一，否则后续按不同 cwd（Worker 与 API 进程、重启后的工作目录）
+   * 解析相对引用会指向别的目录——清理时要么删错位置，要么因越界被拒。
    */
   resolvePackageTargetPath(
     organizationId: number,
@@ -88,11 +95,54 @@ export class ProtectedBackupService {
     now: Date,
   ): string {
     const stamp = now.toISOString().replace(/[:.]/g, '-');
-    return nodePath.join(
+    return nodePath.resolve(
       this.backupStorage.baseDir,
       String(organizationId),
       `${trigger.toLowerCase()}-${stamp}`,
     );
+  }
+
+  /**
+   * 丢弃失败生成留下的半成品（review M8 补偿）。
+   *
+   * 一次失败的封包会留下两样孤儿：
+   * - 磁盘上的半成品包目录（可能只写了一部分文件）；
+   * - 已经登记、但内容不完整的 `backup_asset` 行。
+   *
+   * 补偿口径：
+   * - 只删**本机备份根目录内**的目标目录，路径越界一律拒绝（不动业务原件与外公司哨兵）；
+   * - 目录不存在视为已清理（幂等）；
+   * - 同时删除该运行登记的资产行，不留孤儿资产；
+   * - 删除失败不掩盖原始异常：调用方按"补偿未完全成功"如实记录。
+   */
+  async discardIncompletePackage(input: {
+    targetPath: string;
+    runId?: number | null;
+  }): Promise<{ packageRemoved: boolean; assetRemoved: boolean }> {
+    const packageRemoved = await this.removePackageDirectory(input.targetPath);
+    let assetRemoved = false;
+    if (
+      input.runId !== undefined &&
+      input.runId !== null &&
+      this.backupAssetRepository !== undefined
+    ) {
+      const result = await this.backupAssetRepository.delete({ runId: input.runId });
+      assetRemoved = (result.affected ?? 0) > 0;
+    }
+    return { packageRemoved, assetRemoved };
+  }
+
+  /** 删除本机备份根目录内的包目录；越界拒绝、目录不存在视为已清理 */
+  private async removePackageDirectory(targetPath: string): Promise<boolean> {
+    if (!isBackupPackagePathInside(this.backupStorage.baseDir, targetPath)) {
+      return false;
+    }
+    try {
+      await rm(targetPath, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** 执行一次公司备份：组包→自校验→登记 backup_asset */
@@ -194,18 +244,20 @@ export class ProtectedBackupService {
       // 最小离线装配（单测）允许无 asset 仓储：只验证组包本身
       return;
     }
+    // 落库的包引用一律归一为绝对路径（review L5）：相对引用会随读取时的 cwd 漂移
+    const storageReference = nodePath.resolve(input.storageReference);
     await repository.save(
       repository.create({
         backupId: input.backupId,
         runId: input.runId ?? 0,
         organizationId: input.organizationId,
-        storageReference: input.storageReference,
+        storageReference,
         fileSha256: input.manifestChecksum,
         byteSize: String(input.byteSize),
         cloudStatus: 'PENDING',
         localStatus: 'PENDING',
         manifestChecksum: input.manifestChecksum,
-        localReference: input.storageReference,
+        localReference: storageReference,
         encryptionKeyId: input.protectionKeyId,
         verifiedAt: new Date(),
         // 保留窗口（需求固定口径约 30 天）：到期后由过期清理按包逐项处理。

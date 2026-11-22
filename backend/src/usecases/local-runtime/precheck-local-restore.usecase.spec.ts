@@ -23,6 +23,7 @@ describe('PrecheckLocalRestoreUsecase', () => {
     const generatedRuns: number[] = [];
     const finishedRuns: { id: number; status: string }[] = [];
     const generateCalls: { organizationId: number; runId: number | null }[] = [];
+    const discardedCalls: { targetPath: string; runId?: number | null }[] = [];
 
     const scopeResolver = {
       resolve: jest.fn(() =>
@@ -73,14 +74,22 @@ describe('PrecheckLocalRestoreUsecase', () => {
           });
         },
       ),
+      discardIncompletePackage: jest.fn((input: { targetPath: string; runId?: number | null }) => {
+        discardedCalls.push(input);
+        return Promise.resolve({ packageRemoved: true, assetRemoved: true });
+      }),
     };
     const precheckService = {
-      execute: jest.fn((input: { createProtectionCopy: (org: number) => Promise<unknown> }) =>
-        input.createProtectionCopy(4).then((protection) => ({
-          restoreId: 'restore-1',
-          outcome: 'PASSED',
-          snapshot: { protection },
-        })),
+      execute: jest.fn(
+        (input: {
+          createProtectionCopy: (org: number) => Promise<unknown>;
+          discardProtectionCopy?: () => Promise<void>;
+        }) =>
+          input.createProtectionCopy(4).then((protection) => ({
+            restoreId: 'restore-1',
+            outcome: 'PASSED',
+            snapshot: { protection },
+          })),
       ),
     };
     const transactionRunner = {
@@ -98,7 +107,7 @@ describe('PrecheckLocalRestoreUsecase', () => {
       asPinoLogger(createTestPinoLogger()),
     );
 
-    return { usecase, generateCalls, generatedRuns, finishedRuns };
+    return { usecase, generateCalls, generatedRuns, finishedRuns, discardedCalls };
   }
 
   it('保护副本归属真实的本地备份运行（不再写 run_id=0）', async () => {
@@ -121,5 +130,20 @@ describe('PrecheckLocalRestoreUsecase', () => {
       '磁盘空间不足',
     );
     expect(finishedRuns).toEqual([{ id: generatedRuns[0], status: 'FAILED' }]);
+  });
+
+  // review M8：副本生成失败 → 不留孤儿资产／孤儿包
+  it('保护副本生成失败时当场回收半成品包与孤儿资产', async () => {
+    const { usecase, generatedRuns, discardedCalls } = buildUsecase({
+      generateError: new Error('磁盘空间不足'),
+    });
+
+    await expect(usecase.execute({ session, backupId: 'backup-1' })).rejects.toThrow(
+      '磁盘空间不足',
+    );
+    // 补偿：删半成品包目录 + 删该运行的资产行
+    expect(discardedCalls).toEqual([
+      { targetPath: '/var/local-backups/4/manual-protect', runId: generatedRuns[0] },
+    ]);
   });
 });

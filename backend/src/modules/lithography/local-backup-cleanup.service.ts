@@ -14,19 +14,23 @@ import {
   toLocalCleanupSkipReasonCode,
 } from '@core/local-runtime/policy/local-backup-failure-reason';
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import * as nodePath from 'node:path';
 import { InjectRepository } from '@nestjs/typeorm';
-import { rm } from 'node:fs/promises';
+import { readdir, rm, stat } from 'node:fs/promises';
 import { PinoLogger } from 'nestjs-pino';
 import { Repository } from 'typeorm';
 
 import {
   LOCAL_BACKUP_STORAGE,
   type LocalBackupStorageConfig,
-} from '@src/usecases/local-runtime/protected-backup.contract';
+} from '@src/usecases/common/ports/protected-backup.contract';
 
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
+
+/** 孤儿包巡检的最小存活时长（毫秒）：默认 24 小时，避免与进行中的封包竞争 */
+export const ORPHAN_PACKAGE_MIN_AGE_MS = 24 * 3_600_000;
 
 /** 单个备份包的清理结果 */
 export type BackupCleanupItemResult = {
@@ -87,6 +91,134 @@ export class LocalBackupCleanupService {
     @InjectRepository(LocalInstallationEntity)
     private readonly installationRepository?: Repository<LocalInstallationEntity>,
   ) {}
+
+  /**
+   * 孤儿包巡检（review M8 重启补偿）。
+   *
+   * 进程在封包中途被杀（重启）时，磁盘上会留下**没有资产行引用**的半成品包目录：
+   * 资产行是在封包成功后才登记的，中途失败或被杀都留目录不留引用。
+   *
+   * 回收条件（全部满足才删，缺一即留）：
+   * - 目录在本机备份根目录内（越界一律跳过）；
+   * - 目录 mtime 早于 `now - minAgeMs`（默认 24 小时）——避免与**进行中**的封包竞争；
+   * - 目录路径没有被任何 `backup_asset.local_reference` 引用；
+   * - 目录路径没有被任何 `local_backup_run.manifest_path` 引用。
+   *
+   * 只回收目录，不改资产与运行事实：没有引用就没有事实需要改。
+   */
+  async sweepOrphanPackages(input: { now?: Date; minAgeMs?: number } = {}): Promise<{
+    scanned: number;
+    removed: number;
+  }> {
+    const now = input.now ?? new Date();
+    const minAgeMs = input.minAgeMs ?? ORPHAN_PACKAGE_MIN_AGE_MS;
+    const runRepository = this.backupRunRepository;
+    if (!runRepository) {
+      // 没有运行事实可比对时不动磁盘：宁留孤儿，不可误删
+      return { scanned: 0, removed: 0 };
+    }
+
+    const referenced = await this.collectReferencedPackagePaths(runRepository);
+    const root = nodePath.resolve(this.backupStorage.baseDir);
+    let scanned = 0;
+    let removed = 0;
+    for (const organizationDir of await this.listPackageDirectories(root)) {
+      for (const packageDir of organizationDir.packageDirs) {
+        scanned += 1;
+        if (await this.removeOrphanPackage(root, packageDir, referenced, now, minAgeMs)) {
+          removed += 1;
+        }
+      }
+    }
+    return { scanned, removed };
+  }
+
+  /** 收集被资产或运行事实引用的包路径（绝对路径） */
+  private async collectReferencedPackagePaths(
+    runRepository: Repository<LocalBackupRunEntity>,
+  ): Promise<Set<string>> {
+    const referenced = new Set<string>();
+    const assets = await this.backupAssetRepository.find({});
+    for (const asset of assets) {
+      if (asset.localReference !== null) {
+        referenced.add(nodePath.resolve(asset.localReference));
+      }
+    }
+    const runs = await runRepository.find({});
+    for (const run of runs) {
+      if (run.manifestPath !== null && run.manifestPath !== undefined) {
+        referenced.add(nodePath.resolve(run.manifestPath));
+      }
+    }
+    return referenced;
+  }
+
+  /** 回收一个孤儿包目录；返回是否已删除 */
+  private async removeOrphanPackage(
+    root: string,
+    packageDir: string,
+    referenced: Set<string>,
+    now: Date,
+    minAgeMs: number,
+  ): Promise<boolean> {
+    const absolute = nodePath.resolve(packageDir);
+    if (referenced.has(absolute)) {
+      return false;
+    }
+    if (!isBackupPackagePathInside(root, absolute)) {
+      return false;
+    }
+    const modifiedAt = await this.readDirectoryModifiedAt(absolute);
+    if (modifiedAt === null) {
+      return false;
+    }
+    if (now.getTime() - modifiedAt.getTime() < minAgeMs) {
+      // 可能仍在生成中：不碰
+      return false;
+    }
+    try {
+      await rm(absolute, { recursive: true, force: true });
+      return true;
+    } catch (error) {
+      this.logger.error({ packageDir: absolute, err: error }, '孤儿备份包目录回收失败');
+      return false;
+    }
+  }
+
+  /** 列出备份根目录下各公司目录里的包目录 */
+  private async listPackageDirectories(root: string): Promise<{ packageDirs: string[] }[]> {
+    const result: { packageDirs: string[] }[] = [];
+    let organizationDirs: string[];
+    try {
+      organizationDirs = (await readdir(root, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => nodePath.join(root, entry.name));
+    } catch {
+      return result;
+    }
+    for (const organizationDir of organizationDirs) {
+      let packageDirs: string[];
+      try {
+        packageDirs = (await readdir(organizationDir, { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => nodePath.join(organizationDir, entry.name));
+      } catch {
+        continue;
+      }
+      result.push({ packageDirs });
+    }
+    return result;
+  }
+
+  /** 目录的最后修改时间；取不到时返回 null（不据此删除） */
+  private async readDirectoryModifiedAt(directory: string): Promise<Date | null> {
+    try {
+      const stats = await stat(directory);
+      return stats.mtime;
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * 手动清理：完整云回执 → 固定清单 → 逐项删除 → 逐项记结果。

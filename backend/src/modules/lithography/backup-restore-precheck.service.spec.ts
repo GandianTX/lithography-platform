@@ -119,12 +119,38 @@ describe('backup restore precheck service', () => {
     expect(inserted).toHaveLength(1);
     expect(inserted[0]).toMatchObject({
       backupId: '11111111-2222-4333-8444-555555555555',
-      protectionBackupId: null,
+      // review M8：与快照里的保护副本一致
+      protectionBackupId: 'protection-1',
       checkStatus: 'PASSED',
       status: 'PENDING',
       startedAt: null,
       finishedAt: null,
     });
+  });
+
+  // review M8：预检事实写失败 → 回收保护副本，不留孤儿包与孤儿资产
+  it('预检事实写入失败时回收保护副本并抛出原始异常', async () => {
+    const pkg = writePackage();
+    const discarded: string[] = [];
+    const { service } = buildService();
+    const failing = service['restoreRunRepository'];
+    jest.spyOn(failing, 'insert').mockRejectedValue(new Error('写库失败：磁盘配额超限'));
+
+    await expect(
+      service.execute({
+        asset: asset({ localReference: pkg.path }),
+        currentInstallationId: 'inst-1',
+        allowedOrganizationId: 4,
+        startedByAccountId: 7,
+        createProtectionCopy: protection,
+        discardProtectionCopy: () => {
+          discarded.push('discarded');
+          return Promise.resolve();
+        },
+        now,
+      }),
+    ).rejects.toThrow('写库失败');
+    expect(discarded).toEqual(['discarded']);
   });
 
   it('异设备恢复被拒绝', async () => {

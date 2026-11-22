@@ -14,6 +14,10 @@ describe('backup schedule service', () => {
       generate?: (input: { organizationId: number }) => unknown;
       /** 计划行保存失败（用于覆盖并发初始化的唯一键冲突） */
       saveError?: Error;
+      /** 运行登记失败（用于覆盖同公司并发的唯一键冲突） */
+      runSaveError?: (row: Record<string, unknown>) => Error | undefined;
+      /** 目标路径解析抛错（用于覆盖单计划异常不中断整轮） */
+      resolveTargetPathError?: (organizationId: number) => Error | undefined;
     } = {},
   ) => {
     const findOf = (rows: Record<string, unknown>[]) =>
@@ -76,9 +80,13 @@ describe('backup schedule service', () => {
             }
             return Promise.resolve(result);
           }),
-        save: jest
-          .fn()
-          .mockImplementation((row) => Promise.resolve({ id: runs.length + 1, ...row })),
+        save: jest.fn().mockImplementation((row) => {
+          const error = overrides.runSaveError?.(row as Record<string, unknown>);
+          if (error) {
+            return Promise.reject(error);
+          }
+          return Promise.resolve({ id: runs.length + 1, ...row });
+        }),
         update: jest.fn().mockImplementation(() => Promise.resolve()),
         create: jest.fn().mockImplementation((row) => ({ ...row })),
       } as never,
@@ -104,10 +112,13 @@ describe('backup schedule service', () => {
           }),
         resolvePackageTargetPath: jest
           .fn()
-          .mockImplementation(
-            (organizationId: number, trigger: string, at: Date) =>
-              `/var/local-backups/${organizationId}/${trigger.toLowerCase()}-${at.toISOString()}`,
-          ),
+          .mockImplementation((organizationId: number, trigger: string, at: Date) => {
+            const error = overrides.resolveTargetPathError?.(organizationId);
+            if (error) {
+              throw error;
+            }
+            return `/var/local-backups/${organizationId}/${trigger.toLowerCase()}-${at.toISOString()}`;
+          }),
       } as unknown as ProtectedBackupService,
       asPinoLogger(createTestPinoLogger()),
     );
@@ -262,6 +273,53 @@ describe('backup schedule service', () => {
     const result = await service.runOnce(now);
 
     expect(result.triggered).toBe(0);
+    expect(generated).toHaveLength(0);
+  });
+
+  // M6：单计划失败不中断整轮扫描；并发推进按跳过处理
+  it('同公司并发推进：运行登记唯一键冲突按「已推进」跳过，整轮不抛错', async () => {
+    const conflict = Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY' });
+    const { service, generated } = buildService({
+      settings: [duePlan({ organizationId: 4 })],
+      runSaveError: (row) => (row['organizationId'] === 4 ? conflict : undefined),
+    });
+
+    const result = await service.runOnce(now);
+
+    expect(result.skipped).toBe(1);
+    expect(result.triggered).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(generated).toHaveLength(0);
+  });
+
+  it('单个计划执行异常不中断整轮：其余公司计划照常推进', async () => {
+    const { service, generated } = buildService({
+      settings: [
+        duePlan({ id: 'plan-4', organizationId: 4 }),
+        duePlan({ id: 'plan-5', organizationId: 5 }),
+      ],
+      resolveTargetPathError: (organizationId) =>
+        organizationId === 4 ? new Error('path resolver exploded') : undefined,
+    });
+
+    const result = await service.runOnce(now);
+
+    // 4 号计划失败不影响 5 号计划
+    expect(result.failed).toBe(1);
+    expect(result.succeeded).toBe(1);
+    expect(generated.map((item) => item.organizationId)).toEqual([5]);
+  });
+
+  it('运行登记非唯一键失败：如实记为失败，不误报并发推进', async () => {
+    const { service, generated } = buildService({
+      settings: [duePlan()],
+      runSaveError: () => new Error('disk io error'),
+    });
+
+    const result = await service.runOnce(now);
+
+    expect(result.failed).toBe(1);
+    expect(result.skipped).toBe(0);
     expect(generated).toHaveLength(0);
   });
 

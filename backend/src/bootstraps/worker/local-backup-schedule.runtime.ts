@@ -89,6 +89,14 @@ export class LocalBackupScheduleRuntime implements OnApplicationBootstrap, OnApp
         `local backup retention cycle: targets=${result.targetCount} cleaned=${result.cleaned} retained=${result.retained}`,
       );
     }
+
+    // 孤儿包巡检（review M8 重启补偿）：回收进程被杀留下的半成品包目录
+    const orphan = await this.backupCleanupService.sweepOrphanPackages();
+    if (orphan.removed > 0) {
+      this.logger.log(
+        `local backup orphan sweep: scanned=${orphan.scanned} removed=${orphan.removed}`,
+      );
+    }
   }
 }
 

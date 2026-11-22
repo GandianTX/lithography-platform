@@ -85,6 +85,10 @@ export class PrecheckLocalRestoreUsecase {
       now,
     );
 
+    // 补偿用事实（review M8）：预检事实写失败时据此回收保护副本，不留孤儿包与孤儿资产
+    let protectionRunId: number | null = null;
+    let protectionPackagePath: string | null = null;
+
     return this.precheckService.execute({
       asset,
       currentInstallationId: installation.installationId,
@@ -107,6 +111,7 @@ export class PrecheckLocalRestoreUsecase {
             transactionContext,
           ),
         );
+        protectionRunId = protectionRun.id;
 
         try {
           const result = await this.protectedBackupService.generateProtectedBackup({
@@ -114,6 +119,7 @@ export class PrecheckLocalRestoreUsecase {
             runId: protectionRun.id,
             targetPath: protectionPath,
           });
+          protectionPackagePath = result.packagePath;
 
           await this.transactionRunner.run(async (transactionContext) => {
             await this.localRuntimeService.finishBackupRun(
@@ -157,7 +163,52 @@ export class PrecheckLocalRestoreUsecase {
               transactionContext,
             );
           });
+          // 补偿（review M8）：失败封包会留下半成品包目录与孤儿资产行，
+          // 这里当场回收——不留孤儿资产、不留孤儿包。
+          const discarded = await this.protectedBackupService.discardIncompletePackage({
+            targetPath: protectionPath,
+            runId: protectionRun.id,
+          });
+          if (!discarded.packageRemoved || !discarded.assetRemoved) {
+            this.logger.error(
+              { backupRunId: protectionRun.id, ...discarded },
+              '恢复预检的保护副本补偿未完全成功：可能有孤儿包或孤儿资产残留',
+            );
+          }
           throw error;
+        }
+      },
+      discardProtectionCopy: async () => {
+        // 预检事实没写成 → 刚生成的保护副本是孤儿：把运行判失败并回收包与资产
+        if (protectionRunId === null || protectionPackagePath === null) {
+          return;
+        }
+        const runId = protectionRunId;
+        await this.transactionRunner.run(async (transactionContext) => {
+          await this.localRuntimeService.finishBackupRun(
+            runId,
+            {
+              status: 'FAILED',
+              finishedAt: new Date(),
+              manifestChecksum: null,
+              byteSize: null,
+              attachmentCount: null,
+              schemaVersion: null,
+              errorCode: 'BACKUP_GENERATION_FAILED',
+              errorMessage: LOCAL_BACKUP_FAILURE_REASON.PROTECTION_COPY_FAILED,
+            },
+            transactionContext,
+          );
+        });
+        const discarded = await this.protectedBackupService.discardIncompletePackage({
+          targetPath: protectionPackagePath,
+          runId: runId,
+        });
+        if (!discarded.packageRemoved || !discarded.assetRemoved) {
+          this.logger.error(
+            { backupRunId: runId, ...discarded },
+            '恢复预检事实写入失败后的保护副本回收未完全成功：可能有孤儿包或孤儿资产残留',
+          );
         }
       },
       now,

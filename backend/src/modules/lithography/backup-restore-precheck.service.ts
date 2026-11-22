@@ -61,6 +61,11 @@ export type RestorePrecheckInput = {
     backupId: string;
     packagePath: string;
   }>;
+  /**
+   * 预检事实写入失败时的补偿回调（review M8）：回收刚生成的保护副本，
+   * 不留孤儿包与孤儿资产。缺省表示不补偿（调用方没有可回收对象）。
+   */
+  discardProtectionCopy?: () => Promise<void>;
   now?: Date;
 };
 
@@ -125,22 +130,39 @@ export class BackupRestorePrecheckService {
 
     const outcome = resolveRestoreCheckOutcome(findings);
     const restoreId = randomUUID();
-    await this.restoreRunRepository.insert({
-      restoreId,
-      backupId: input.asset.backupId,
-      protectionBackupId: null,
-      targetInstallationId: input.currentInstallationId,
-      checkStatus: outcome,
-      confirmation: null,
-      organizationId: input.asset.organizationId,
-      startedByAccountId: input.startedByAccountId,
-      status: 'PENDING',
-      checkSnapshot: JSON.stringify(snapshot),
-      restoredScope: null,
-      resultSummary: null,
-      startedAt: null,
-      finishedAt: null,
-    } as unknown as QueryDeepPartialEntity<BackupRestoreRunEntity>);
+    try {
+      await this.restoreRunRepository.insert({
+        restoreId,
+        backupId: input.asset.backupId,
+        // 与快照里的保护副本一致（review M8）：不再固定写 null
+        protectionBackupId: protection.backupId,
+        targetInstallationId: input.currentInstallationId,
+        checkStatus: outcome,
+        confirmation: null,
+        organizationId: input.asset.organizationId,
+        startedByAccountId: input.startedByAccountId,
+        status: 'PENDING',
+        checkSnapshot: JSON.stringify(snapshot),
+        restoredScope: null,
+        resultSummary: null,
+        startedAt: null,
+        finishedAt: null,
+      } as unknown as QueryDeepPartialEntity<BackupRestoreRunEntity>);
+    } catch (error) {
+      // 补偿（review M8）：预检事实没写成时，刚生成的保护副本就成了孤儿——
+      // 当场回收，不留孤儿包与孤儿资产。
+      if (input.discardProtectionCopy) {
+        try {
+          await input.discardProtectionCopy();
+        } catch (discardError) {
+          this.logger.error(
+            { backupId: input.asset.backupId, err: discardError },
+            '恢复预检事实写入失败后的保护副本回收未成功',
+          );
+        }
+      }
+      throw error;
+    }
 
     return { restoreId, outcome, snapshot };
   }

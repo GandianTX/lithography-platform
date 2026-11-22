@@ -10,7 +10,7 @@
 // - 清理中断可辨认并可重试；
 // - 过期清理的到期／未到期分支（云副本不是清理门槛）。
 
-import { mkdtemp, mkdir, rm, writeFile, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
 
@@ -92,6 +92,7 @@ describe('local backup cleanup service', () => {
     rows: BackupAssetEntity[],
     serviceClass: typeof LocalBackupCleanupService = LocalBackupCleanupService,
     manualRuns: ManualRunFact[] = [],
+    options: { withoutRunRepository?: boolean } = {},
   ) {
     const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
     const runUpdates: { id: number; patch: Record<string, unknown> }[] = [];
@@ -100,14 +101,14 @@ describe('local backup cleanup service', () => {
       find: jest
         .fn()
         .mockImplementation(
-          (input: { where: Record<string, unknown>; order?: Record<string, unknown> }) => {
-            const where = input.where ?? {};
+          (input?: { where?: Record<string, unknown>; order?: Record<string, unknown> }) => {
+            const where = input?.where ?? {};
             const matched = rows.filter((row) =>
               Object.entries(where).every(
                 ([key, value]) => row[key as keyof BackupAssetEntity] === value,
               ),
             );
-            const direction = (input.order?.['createdAt'] as 'ASC' | 'DESC' | undefined) ?? 'ASC';
+            const direction = (input?.order?.['createdAt'] as 'ASC' | 'DESC' | undefined) ?? 'ASC';
             return Promise.resolve(direction === 'DESC' ? [...matched].reverse() : matched);
           },
         ),
@@ -143,7 +144,7 @@ describe('local backup cleanup service', () => {
       backupAssetRepository as never,
       { baseDir: backupRoot },
       asPinoLogger(createTestPinoLogger()),
-      backupRunRepository as never,
+      options.withoutRunRepository ? undefined : (backupRunRepository as never),
     );
 
     return { service, updates, runUpdates, rows };
@@ -363,6 +364,51 @@ describe('local backup cleanup service', () => {
     expect(interrupted).toBeDefined();
     expect(result.cleaned).toBe(1);
     expect(await exists(packagePath)).toBe(false);
+  });
+
+  // review M8 重启补偿：孤儿包巡检
+  it('孤儿包巡检：回收没有资产引用的旧半成品包，保留被引用的包', async () => {
+    const orphanDir = nodePath.join(backupRoot, '4', 'manual-orphan');
+    const referencedDir = nodePath.join(backupRoot, '4', 'manual-referenced');
+    const freshOrphanDir = nodePath.join(backupRoot, '4', 'manual-fresh-orphan');
+    for (const dir of [orphanDir, referencedDir, freshOrphanDir]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(nodePath.join(dir, 'manifest.json'), '{}', 'utf8');
+    }
+    // 旧到足以判定为孤儿（默认阈值 24 小时）
+    const old = new Date(Date.now() - 48 * 3_600_000);
+    await utimes(orphanDir, old, old);
+    await utimes(referencedDir, old, old);
+
+    const { service } = buildService([
+      asset({ backupId: 'backup-kept', localReference: referencedDir }),
+    ]);
+
+    const result = await service.sweepOrphanPackages();
+
+    expect(result.removed).toBe(1);
+    expect(await exists(orphanDir)).toBe(false);
+    // 被资产引用的包不动
+    expect(await exists(referencedDir)).toBe(true);
+    // 新鲜目录可能仍在生成中：不碰
+    expect(await exists(freshOrphanDir)).toBe(true);
+  });
+
+  it('孤儿包巡检：没有运行事实可比对时不动磁盘', async () => {
+    const orphanDir = nodePath.join(backupRoot, '4', 'manual-orphan');
+    await mkdir(orphanDir, { recursive: true });
+    const old = new Date(Date.now() - 48 * 3_600_000);
+    await utimes(orphanDir, old, old);
+
+    // 去掉运行仓储：无法比对运行事实时宁留孤儿
+    const { service } = buildService([], LocalBackupCleanupService, [], {
+      withoutRunRepository: true,
+    });
+
+    const result = await service.sweepOrphanPackages();
+
+    expect(result).toEqual({ scanned: 0, removed: 0 });
+    expect(await exists(orphanDir)).toBe(true);
   });
 
   it('过期清理：到期即清理（云副本不是门槛），未到期不动', async () => {
