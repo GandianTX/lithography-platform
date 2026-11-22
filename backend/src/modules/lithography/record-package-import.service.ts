@@ -6,14 +6,15 @@ import {
   assertManifestSnapshotHasNoSecretMaterial,
   assertPackageCompanyAllowed,
   parseRecordPackageManifest,
+  recordPackageManifestChecksum,
   resolvePackageFilePath,
   type RecordPackageItemRejection,
   type RecordPackageManifest,
 } from '@core/local-runtime/policy/record-package-manifest.policy';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+
 import * as nodePath from 'node:path';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository } from 'typeorm';
@@ -23,6 +24,7 @@ import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 import {
   type RecordPackageCheckCommand,
   type RecordPackageCheckResult,
+  type RecordPackageImportSnapshot,
   type RecordPackageItemCheckOutcome,
   type RecordPackageItemSnapshot,
 } from './record-package-import.types';
@@ -30,17 +32,7 @@ import {
   toRecordPackageImportSnapshot,
   toRecordPackageItemSnapshot,
 } from './queries/record-package-import.query.service';
-
-/** streaming sha256：包内原件按字节流核对，不整读内存 */
-async function sha256File(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = createHash('sha256');
-    const stream = createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('hex')));
-  });
-}
+import { sha256FileDigest } from '@core/common/digest/file-digest';
 
 export type RecordPackageEvaluation = {
   manifest: RecordPackageManifest;
@@ -145,7 +137,7 @@ export class RecordPackageImportService {
           message: `字节数不符：${file.relative_path}（清单 ${file.byte_size}，实际 ${size}）`,
         };
       }
-      const digest = await sha256File(absolutePath);
+      const digest = await sha256FileDigest(absolutePath);
       if (digest !== file.sha256.toLowerCase()) {
         return {
           rejection: 'FILE_CHECKSUM_MISMATCH',
@@ -164,7 +156,7 @@ export class RecordPackageImportService {
     // 错公司先拒绝：不进入数据库，也不给其他公司包留任何处理事实
     assertPackageCompanyAllowed(command.organizationId, manifest.organization_id);
 
-    const manifestChecksum = createHash('sha256').update(raw, 'utf8').digest('hex');
+    const manifestChecksum = recordPackageManifestChecksum(raw);
     const seenKeys = new Set<string>();
     const outcomes: RecordPackageItemCheckOutcome[] = [];
 
@@ -241,6 +233,83 @@ export class RecordPackageImportService {
   }
 
   /** 第二段：事务内落检查事实。并发同包检查 → 主键冲突后回读既有批次。 */
+  /**
+   * 读取导入批次事实（确认与执行共用）。
+   *
+   * 返回 null 表示该 package_id 没有本机的检查事实（未检查过或不是本机包的批次）。
+   */
+  async readImportFacts(
+    packageId: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<{
+    import: RecordPackageImportSnapshot;
+    items: RecordPackageItemSnapshot[];
+  } | null> {
+    const importRepository = this.pickImportRepository(transactionContext);
+    const itemRepository = this.pickItemRepository(transactionContext);
+    const batch = await importRepository.findOne({ where: { packageId } });
+    if (batch === null) {
+      return null;
+    }
+    const items = await itemRepository.find({ where: { packageId } });
+    return {
+      import: toRecordPackageImportSnapshot(batch),
+      items: items.map((item) => toRecordPackageItemSnapshot(item)),
+    };
+  }
+
+  /** 标记批次进入执行中（幂等：已是 RUNNING 不重复推进） */
+  async markImportRunning(
+    packageId: string,
+    importedByAccountId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<void> {
+    const repository = this.pickImportRepository(transactionContext);
+    await repository.update(
+      { packageId },
+      { status: 'RUNNING', importedByAccountId, completedAt: null },
+    );
+  }
+
+  /** 写单条导入结果 */
+  async writeItemResult(
+    itemId: string,
+    result: {
+      result: 'SUCCEEDED' | 'FAILED' | 'SKIPPED' | 'CONFLICT';
+      errorMessage: string | null;
+      receiptId: string | null;
+    },
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<void> {
+    const repository = this.pickItemRepository(transactionContext);
+    await repository.update(
+      { id: itemId },
+      {
+        result: result.result,
+        errorMessage: result.errorMessage,
+        receiptId: result.receiptId,
+      },
+    );
+  }
+
+  /** 收敛批次终态并写成功／失败计数 */
+  async finalizeImport(
+    packageId: string,
+    summary: { status: 'SUCCEEDED' | 'PARTIAL' | 'FAILED'; succeeded: number; failed: number },
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<void> {
+    const repository = this.pickImportRepository(transactionContext);
+    await repository.update(
+      { packageId },
+      {
+        status: summary.status,
+        itemSucceeded: summary.succeeded,
+        itemFailed: summary.failed,
+        completedAt: new Date(),
+      },
+    );
+  }
+
   async persistCheckOutcome(
     evaluation: RecordPackageEvaluation,
     importedByAccountId: number,

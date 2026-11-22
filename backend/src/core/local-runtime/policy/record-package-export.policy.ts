@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as nodePath from 'node:path';
 
 import {
+  assertOrganizationScopeAllowed,
   RECORD_PACKAGE_SCHEMA_VERSION,
   RECORD_PACKAGE_RESOURCE_TYPES,
   parseRecordPackageManifest,
@@ -99,9 +100,12 @@ export function assertExportOrganizationAllowed(
   viewerOrganizationId: number | null,
   targetOrganizationId: number,
 ): void {
-  if (viewerOrganizationId !== null && viewerOrganizationId !== targetOrganizationId) {
-    throw new DomainError(RECORD_PACKAGE_ERROR.FOREIGN_COMPANY, '只能导出本公司数据区的记录');
-  }
+  // 与导入侧共用同一个公司归属断言（口径只有一份，文案各自表述）
+  assertOrganizationScopeAllowed(
+    viewerOrganizationId,
+    targetOrganizationId,
+    '只能导出本公司数据区的记录',
+  );
 }
 
 /**

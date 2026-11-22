@@ -20,6 +20,9 @@ import { Repository } from 'typeorm';
 import { SyncConflictEntity } from './entities/sync-conflict.entity';
 import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 
+/** 导入登记回执的来源标记（本机导入自其他安装，不是云端回执） */
+export const IMPORT_RECEIPT_SOURCE_SYSTEM = 'LOCAL_IMPORT';
+
 /** 成功回执写入入参 */
 export type BusinessSyncSuccessReceiptInput = {
   organizationId: number;
@@ -70,7 +73,7 @@ export class BusinessSyncReceiptService {
   async recordSuccess(
     input: BusinessSyncSuccessReceiptInput,
     transactionContext: PersistenceTransactionContext,
-  ): Promise<void> {
+  ): Promise<string> {
     const repository = getTypeOrmEntityManager(transactionContext).getRepository(
       this.receiptRepository.target,
     );
@@ -92,11 +95,12 @@ export class BusinessSyncReceiptService {
     };
     if (existing !== null) {
       await repository.update({ receiptId: existing.receiptId }, patch);
-      return;
+      return existing.receiptId;
     }
+    const receiptId = randomUUID();
     await repository.insert(
       repository.create({
-        receiptId: randomUUID(),
+        receiptId,
         organizationId: input.organizationId,
         resourceType: input.resourceType,
         recordUuid: input.recordUuid,
@@ -104,6 +108,61 @@ export class BusinessSyncReceiptService {
         ...patch,
       }),
     );
+    return receiptId;
+  }
+
+  /**
+   * 登记一次**导入**（U 盘记录包入本机）并返回回执 ID。
+   *
+   * 语义：这条记录@版本已由**来源安装**（包的 `installation_id`）交付到本机。
+   * 因此 `source_installation_id` 记来源安装（不是本机），本机读侧据此不会把
+   * 导入记录误判成"已同步到云端"。
+   *
+   * 幂等：同键已存在则复用该行（不新增、不覆盖来源安装标识）。
+   */
+  async recordImportedVersion(
+    input: {
+      organizationId: number;
+      resourceType: string;
+      recordUuid: string;
+      versionNo: number;
+      manifestChecksum: string;
+      /** 来源安装标识（包的 installation_id） */
+      sourceInstallationId: string;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<string> {
+    const repository = getTypeOrmEntityManager(transactionContext).getRepository(
+      this.receiptRepository.target,
+    );
+    const existing = await repository.findOne({
+      where: {
+        organizationId: input.organizationId,
+        resourceType: input.resourceType,
+        recordUuid: input.recordUuid,
+        versionNo: input.versionNo,
+      },
+    });
+    if (existing !== null) {
+      return existing.receiptId;
+    }
+    const receiptId = randomUUID();
+    await repository.insert(
+      repository.create({
+        receiptId,
+        organizationId: input.organizationId,
+        resourceType: input.resourceType,
+        recordUuid: input.recordUuid,
+        versionNo: input.versionNo,
+        sourceSystem: IMPORT_RECEIPT_SOURCE_SYSTEM,
+        sourceInstallationId: input.sourceInstallationId,
+        remoteResourceId: null,
+        receivedAt: null,
+        receiptStatus: 'SUCCEEDED',
+        manifestChecksum: input.manifestChecksum,
+      }),
+    );
+    return receiptId;
   }
 
   /**

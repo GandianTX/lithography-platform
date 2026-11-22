@@ -1,5 +1,6 @@
 // src/shared/i18n/local-backup-reason.ts
 
+import { resolveControlledCodeKeyOrNull } from './controlled-code';
 import type { MessageKey } from './types';
 
 /**
@@ -58,8 +59,5 @@ const REASON_MESSAGE_KEYS: Readonly<Record<string, MessageKey>> = {
  * 未知码返回 null（调用方用通用兜底文案），不把未知文本当文案直接渲染。
  */
 export function resolveLocalBackupReasonKey(reason: string | null | undefined): MessageKey | null {
-  if (typeof reason !== 'string' || reason.length === 0) {
-    return null;
-  }
-  return REASON_MESSAGE_KEYS[reason] ?? null;
+  return resolveControlledCodeKeyOrNull(REASON_MESSAGE_KEYS, reason);
 }

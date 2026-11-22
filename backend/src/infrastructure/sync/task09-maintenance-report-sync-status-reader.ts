@@ -22,6 +22,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
+  MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES,
   MAINTENANCE_REPORT_SYNC_STATUS_READER,
   type MaintenanceReportSyncStatusBatch,
   type MaintenanceReportSyncStatusEntry,
@@ -36,19 +37,14 @@ import {
 } from '@src/usecases/local-runtime/sync-status.contract';
 
 /**
- * 任务 07 侧允许回报的状态集合（复用任务 07 的 `MaintenanceReportSyncProviderStatus`
- * 类型，与 helpers 的 PROVIDER_STATUSES 同口径）：
+ * 任务 07 侧允许回报的状态集合。
+ *
+ * 唯一来源：端口层再导出的 `MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES`
+ * （与任务 07 helpers 用的是同一份常量，不再各手写一遍，避免状态集合漂移）。
  * NOT_CONNECTED／UNKNOWN 由调用方自身判定，不接受回报。
  */
-const PROVIDER_STATUSES: readonly MaintenanceReportSyncProviderStatus[] = [
-  'NOT_APPLICABLE',
-  'NO_TASK',
-  'PENDING',
-  'UPLOADING',
-  'FAILED',
-  'SYNCED',
-  'CONFLICT',
-];
+const PROVIDER_STATUSES: readonly MaintenanceReportSyncProviderStatus[] =
+  MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES;
 
 /** 状态白名单守卫：越界状态（如 AUTHORIZATION_INVALID）一律不产出条目 */
 function isProviderStatus(value: string): value is MaintenanceReportSyncProviderStatus {

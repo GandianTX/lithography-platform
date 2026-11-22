@@ -1,7 +1,5 @@
 // src/modules/lithography/backup-restore-precheck.service.ts
 
-import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
 import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
@@ -18,23 +16,17 @@ import {
   type RestoreCheckSnapshot,
   type RestoreCheckTarget,
 } from '@core/local-runtime/policy/restore-precheck.policy';
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PinoLogger } from 'nestjs-pino';
 import { Repository, type QueryDeepPartialEntity } from 'typeorm';
 
 import { BackupRestoreRunEntity } from './entities/backup-restore-run.entity';
+import { sha256FileDigest } from '@core/common/digest/file-digest';
 
 /** 逐文件流式 SHA-256 核对，不整读进内存 */
-async function sha256File(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = createHash('sha256');
-    const stream = createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('hex')));
-  });
-}
 
 /** 被恢复的备份资产事实（只读快照，不跨层暴露 ORM 实体） */
 export type RestorePrecheckAsset = {
@@ -218,7 +210,7 @@ export class BackupRestorePrecheckService {
         });
         continue;
       }
-      const digest = await sha256File(absolutePath);
+      const digest = await sha256FileDigest(absolutePath);
       if (digest !== file.sha256.toLowerCase()) {
         findings.push({
           code: restoreCheckFindingCodeValues.FILE_CHECKSUM_MISMATCH,

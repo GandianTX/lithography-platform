@@ -1,6 +1,7 @@
 // src/core/local-runtime/policy/record-package-manifest.policy.ts
 
 import { RECORD_PACKAGE_ERROR, SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
+import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 
 import { collectClaimKeys, isForbiddenClaimKey } from './local-authorization-renewal.policy';
@@ -238,9 +239,37 @@ export function assertPackageCompanyAllowed(
   viewerOrganizationId: number | null,
   manifestOrganizationId: number,
 ): void {
-  if (viewerOrganizationId !== null && viewerOrganizationId !== manifestOrganizationId) {
-    throw new DomainError(RECORD_PACKAGE_ERROR.FOREIGN_COMPANY, '记录包属于其他公司，拒绝检查');
+  assertOrganizationScopeAllowed(
+    viewerOrganizationId,
+    manifestOrganizationId,
+    '记录包属于其他公司，拒绝检查',
+  );
+}
+
+/**
+ * 公司归属断言（**唯一实现**）：查看方公司非空时，必须与目标公司一致。
+ *
+ * 此前导出侧（`assertExportOrganizationAllowed`）与导入侧（`assertPackageCompanyAllowed`）
+ * 各写了一份逐字相同的判断；这里给出唯一一份，两侧只传各自的文案。
+ */
+export function assertOrganizationScopeAllowed(
+  viewerOrganizationId: number | null,
+  targetOrganizationId: number,
+  message: string,
+): void {
+  if (viewerOrganizationId !== null && viewerOrganizationId !== targetOrganizationId) {
+    throw new DomainError(RECORD_PACKAGE_ERROR.FOREIGN_COMPANY, message);
   }
+}
+
+/**
+ * 清单校验值（SHA-256 of 清单原文）——**唯一实现**。
+ *
+ * 此前导出服务与导入服务各写了一遍 `createHash('sha256').update(raw, 'utf8')`；
+ * 与备份包侧的 `backupManifestChecksum` 口径对称：算的都是"清单原文的摘要"。
+ */
+export function recordPackageManifestChecksum(manifestRaw: string): string {
+  return createHash('sha256').update(manifestRaw, 'utf8').digest('hex');
 }
 
 /**

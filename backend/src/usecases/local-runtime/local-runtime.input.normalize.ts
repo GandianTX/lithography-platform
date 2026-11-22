@@ -363,14 +363,7 @@ export function normalizePagination(
  * 只做形态归一，路径安全（穿越/逃逸）由记录包清单策略在解析层兜底。
  */
 export function normalizePackagePath(value: string | undefined): string {
-  const packagePath = (value ?? '').trim();
-  if (packagePath.length === 0 || !packagePath.startsWith('/')) {
-    throw new DomainError(
-      RECORD_PACKAGE_ERROR.INVALID_PARAMS,
-      '包路径必须为本机绝对路径（U盘挂载点或包目录）',
-    );
-  }
-  return packagePath;
+  return normalizePackageRootPath(value, '包路径必须为本机绝对路径（U盘挂载点或包目录）');
 }
 
 /**
@@ -378,14 +371,21 @@ export function normalizePackagePath(value: string | undefined): string {
  * 目录覆盖防护（不存在或为空）由导出服务在写盘前断言。
  */
 export function normalizePackageExportTarget(value: string | undefined): string {
-  const targetPath = (value ?? '').trim();
-  if (targetPath.length === 0 || !targetPath.startsWith('/')) {
-    throw new DomainError(
-      RECORD_PACKAGE_ERROR.INVALID_PARAMS,
-      '导出目标必须是本机绝对路径（U盘挂载点或目录）',
-    );
+  return normalizePackageRootPath(value, '导出目标必须是本机绝对路径（U盘挂载点或目录）');
+}
+
+/**
+ * 记录包路径归一（**唯一实现**）：必须为非空本机绝对路径。
+ *
+ * 检查入口与导出入口此前各写了一遍同样的判空＋绝对路径判断；这里给出唯一一份，
+ * 两侧只传各自的文案。路径安全（穿越/逃逸）不在本层，由清单策略在解析层兜底。
+ */
+export function normalizePackageRootPath(value: string | undefined, message: string): string {
+  const rootPath = (value ?? '').trim();
+  if (rootPath.length === 0 || !rootPath.startsWith('/')) {
+    throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, message);
   }
-  return targetPath;
+  return rootPath;
 }
 
 function normalizeChecksum(value: string | null): string | null {

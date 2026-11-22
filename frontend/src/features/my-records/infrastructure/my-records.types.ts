@@ -57,7 +57,9 @@ export type MyRecordSyncStatus =
   | 'UPLOADING'
   | 'FAILED'
   | 'SYNCED'
-  | 'CONFLICT';
+  | 'CONFLICT'
+  /** 后端任务 09 提案值：原记录账号授权失效（任务 07 枚举冻结前可能不出现） */
+  | 'AUTHORIZATION_INVALID';
 
 /** 附着到记录上的同步状态展示；与「草稿／已入库」独立，网页版当前默认隐藏同步列 */
 export type MyRecordSyncStatusView = {

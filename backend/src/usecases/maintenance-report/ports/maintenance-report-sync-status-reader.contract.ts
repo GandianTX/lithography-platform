@@ -10,9 +10,10 @@
 //   测试通过 DI 注入替身，不提供公开模拟接口或生产开关；
 // - 本接口的任何失败由调用方统一降级为 UNKNOWN，不得影响原记录列表、total 与详情。
 
-import type {
-  MaintenanceReportSyncProviderStatus,
-  MaintenanceReportSyncStatusDisplay,
+import {
+  MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES,
+  type MaintenanceReportSyncProviderStatus,
+  type MaintenanceReportSyncStatusDisplay,
 } from '@src/modules/lithography/maintenance-report.types';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
@@ -32,6 +33,9 @@ export const MAINTENANCE_REPORT_SYNC_RESOURCE_TYPE = 'MAINTENANCE_REPORT';
  * 在本端口层重新导出，使实现方（infrastructure 层）无需依赖 modules 层类型。
  */
 export type { MaintenanceReportSyncProviderStatus };
+
+/** 提供方可回报状态的运行时白名单（唯一来源，见端口层再导出说明） */
+export { MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES };
 
 /** 同步状态查询键：四字段完整匹配（含 sourceVersion），提供方漏项/重复/旧版本均不判成功 */
 export type MaintenanceReportSyncStatusQuery = {

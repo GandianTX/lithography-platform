@@ -409,6 +409,27 @@ export type MaintenanceReportSyncProviderStatus = Exclude<
   'NOT_CONNECTED' | 'UNKNOWN'
 >;
 
+/**
+ * 提供方可回报状态的**运行时白名单**（与上方类型同源）。
+ *
+ * 为什么要有这一份常量：此前任务 07 的 helpers 与任务 09 的提供方适配器各手写了一份
+ * 7 元数组，两份一旦漂移就会出现"状态被静默丢成 UNKNOWN"。这里给出唯一一份，
+ * 两侧都从它派生。
+ *
+ * 已知边界：任务 09 提出的 `AUTHORIZATION_INVALID`（原记录账号授权失效）**不在**本集合内
+ * ——它尚未进入任务 07 的冻结枚举，提供方无法回报，任务 07 侧会显示为 UNKNOWN。
+ * 该项属跨任务枚举冻结范围（见任务 09 计划 S1 记录），不在本层擅自扩枚举。
+ */
+export const MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES = [
+  'NOT_APPLICABLE',
+  'NO_TASK',
+  'PENDING',
+  'UPLOADING',
+  'FAILED',
+  'SYNCED',
+  'CONFLICT',
+] as const satisfies readonly MaintenanceReportSyncProviderStatus[];
+
 /** 附着到记录上的同步状态展示；与「草稿／已入库」独立，网页版当前默认隐藏同步列 */
 export type MaintenanceReportSyncStatusDisplay = {
   status: MaintenanceReportSyncStatus;

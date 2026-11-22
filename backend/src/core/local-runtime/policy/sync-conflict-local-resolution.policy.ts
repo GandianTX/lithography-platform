@@ -1,6 +1,7 @@
 // src/core/local-runtime/policy/sync-conflict-local-resolution.policy.ts
 
 import { SYNC_ERROR } from '@core/common/errors/domain-error';
+import { compareConflictVersionToRecord } from './sync-conflict-version.policy';
 
 /**
  * 「保留本地」裁决的载荷映射与准入纯规则（任务 09 R-03，09 侧可独立部分）。
@@ -333,6 +334,13 @@ export function resolveLocalResolutionReplay(
       '取不到来源记录的当前版本，不能判断保留本地裁决是否已写入正文',
     );
   }
+  // 版本比较统一走 `compareConflictVersionToRecord`（与「使用云端」路径同一比较点）；
+  // 这里只多承担一层写入编排：来源当前版本比冲突登记版本更早时同样不可写。
+  const versionComparison = compareConflictVersionToRecord({
+    conflictLocalVersion: localVersion,
+    recordCurrentVersion: currentVersion,
+    versionTrusted: true,
+  });
 
   if (state === localResolutionStateValues.WRITTEN) {
     // 正文与冲突事实都已写回：不需要再写正文
@@ -354,7 +362,7 @@ export function resolveLocalResolutionReplay(
     );
   }
 
-  if (currentVersion === localVersion) {
+  if (versionComparison === 'MATCH') {
     return { kind: 'write-body' };
   }
   return reject(

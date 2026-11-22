@@ -1152,6 +1152,7 @@ export const ZH_CN_MESSAGES = {
   'myRecords.detail.review.empty': '暂无审核记录。',
   // 同步状态（任务 07 预留；网页版当前默认隐藏同步列，词条供开启时使用）
   'myRecords.sync.column': '同步状态',
+  'myRecords.sync.authorizationInvalid': '原记录账号授权失效',
   'myRecords.sync.notConnected': '未接入同步',
   'myRecords.sync.unknown': '同步状态未知',
   'myRecords.sync.notApplicable': '不走本地同步',

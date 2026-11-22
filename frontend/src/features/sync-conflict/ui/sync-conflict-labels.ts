@@ -1,6 +1,7 @@
 // src/features/sync-conflict/ui/sync-conflict-labels.ts
 
 import type { MessageKey } from '@/shared/i18n';
+import { resolveControlledCodeKey } from '@/shared/i18n/controlled-code';
 
 /**
  * 冲突相关受控码 → 文案键映射（任务 09 S2.3）。
@@ -42,25 +43,25 @@ const READ_ONLY_KEYS: Record<string, MessageKey> = {
 
 /** 资源类型文案键 */
 export function resolveSyncConflictResourceTypeKey(value: string): MessageKey {
-  return RESOURCE_TYPE_KEYS[value] ?? 'syncConflict.resourceType.OTHER';
+  return resolveControlledCodeKey(RESOURCE_TYPE_KEYS, value, 'syncConflict.resourceType.OTHER');
 }
 
 /** 处理状态文案键 */
 export function resolveSyncConflictStatusKey(value: string): MessageKey {
-  return STATUS_KEYS[value] ?? 'syncConflict.status.OTHER';
+  return resolveControlledCodeKey(STATUS_KEYS, value, 'syncConflict.status.OTHER');
 }
 
 /** 裁决方向文案键 */
 export function resolveSyncConflictDecisionKey(value: string): MessageKey {
-  return DECISION_KEYS[value] ?? 'syncConflict.decision.OTHER';
+  return resolveControlledCodeKey(DECISION_KEYS, value, 'syncConflict.decision.OTHER');
 }
 
 /** 差异类型文案键 */
 export function resolveSyncConflictDiffKindKey(value: string): MessageKey {
-  return DIFF_KIND_KEYS[value] ?? 'syncConflict.detail.diff.kind.different';
+  return resolveControlledCodeKey(DIFF_KIND_KEYS, value, 'syncConflict.detail.diff.kind.different');
 }
 
 /** 只读原因文案键 */
 export function resolveSyncConflictReadOnlyKey(value: string): MessageKey {
-  return READ_ONLY_KEYS[value] ?? 'syncConflict.action.readOnlyNotice';
+  return resolveControlledCodeKey(READ_ONLY_KEYS, value, 'syncConflict.action.readOnlyNotice');
 }

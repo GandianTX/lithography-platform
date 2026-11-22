@@ -1256,6 +1256,8 @@ export const EN_MESSAGES = {
   'myRecords.detail.review.empty': 'No review records yet.',
   // Sync status (task 07 reservation; the web UI hides the sync column for now)
   'myRecords.sync.column': 'Sync status',
+  'myRecords.sync.authorizationInvalid':
+    'The original record owner\u2019s authorization is invalid',
   'myRecords.sync.notConnected': 'Sync not connected',
   'myRecords.sync.unknown': 'Sync status unknown',
   'myRecords.sync.notApplicable': 'Local sync not applicable',

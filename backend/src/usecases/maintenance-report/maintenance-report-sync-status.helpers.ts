@@ -17,6 +17,7 @@
 import type { MaintenanceReportSyncStatusDisplay } from '@src/modules/lithography/maintenance-report.types';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
+  MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES,
   MAINTENANCE_REPORT_SYNC_RESOURCE_TYPE,
   type MaintenanceReportSyncStatusBatch,
   type MaintenanceReportSyncStatusEntry,
@@ -52,16 +53,13 @@ export const UNKNOWN_MAINTENANCE_REPORT_SYNC_STATUS: MaintenanceReportSyncStatus
   canResolveConflict: false,
 };
 
-/** 提供方允许回报的状态集合（NOT_CONNECTED/UNKNOWN 由任务 07 侧判定，不接受回报） */
-const PROVIDER_STATUSES: readonly string[] = [
-  'NOT_APPLICABLE',
-  'NO_TASK',
-  'PENDING',
-  'UPLOADING',
-  'FAILED',
-  'SYNCED',
-  'CONFLICT',
-];
+/**
+ * 提供方允许回报的状态集合。
+ *
+ * 唯一来源：`MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES`（端口层再导出）——
+ * 任务 09 侧提供方适配器用的是同一份，不再各手写一遍。
+ */
+const PROVIDER_STATUSES: readonly string[] = MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES;
 
 /** message 仅限面向用户的安全提示，硬性截断防止透传大段正文、内部错误或文件路径 */
 const MAX_PROVIDER_MESSAGE_LENGTH = 200;
