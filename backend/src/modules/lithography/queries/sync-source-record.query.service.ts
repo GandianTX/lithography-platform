@@ -333,7 +333,12 @@ export class SyncSourceRecordQueryService {
       contentState: {
         withdrawn: false,
         // 报告没有软删除列：下架由业务状态表达，本层不推断
-        frozen: row.status === 'PENDING_REVIEW',
+        //
+        // 冻结口径与 06 的写守卫（`EDITABLE_STATUSES = [DRAFT, RETURNED]`）对齐：
+        // `SUBMITTED` 是正式提交后的**冻结态**（R051），不可反写；
+        // 此前只认 `PENDING_REVIEW`，会让已正式提交的记录在 09 侧被判成"可写"，
+        // 与 06 的只读口径不一致（冲突页会给出"保留本地"动作、写入时才被拒）。
+        frozen: row.status === 'PENDING_REVIEW' || row.status === 'SUBMITTED',
         closed: row.status === 'APPROVED',
       },
       relatedAccountIds: [

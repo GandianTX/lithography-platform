@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  acceptLocalRestore,
   cleanupLocalBackupPackages,
   fetchLocalBackupRecords,
   fetchLocalBackupSettings,
@@ -119,5 +120,32 @@ describe('备份与恢复 GraphQL 适配层', () => {
     executeGraphQL.mockRejectedValue(new Error('network down'));
 
     await expect(fetchLocalBackupRecords(1, 20)).rejects.toThrow('network down');
+  });
+
+  it('恢复受理把 restoreId 原样传给服务端，并如实带回受理事实', async () => {
+    executeGraphQL.mockResolvedValue({
+      acceptLocalRestore: {
+        restoreId: 'r-1',
+        accepted: true,
+        backupId: 'backup-1',
+        protectionBackupId: 'protection-1',
+        organizationId: 4,
+        acceptedAt: '2026-11-23T00:00:00.000Z',
+      },
+    });
+
+    const acceptance = await acceptLocalRestore('r-1');
+
+    expect(acceptance.accepted).toBe(true);
+    expect(acceptance.protectionBackupId).toBe('protection-1');
+    const [query, variables] = executeGraphQL.mock.calls[0] as [string, unknown];
+    expect(query).toContain('acceptLocalRestore');
+    expect(variables).toEqual({ restoreId: 'r-1' });
+  });
+
+  it('恢复受理失败时如实上抛（不乐观降级为已受理）', async () => {
+    executeGraphQL.mockRejectedValue(new Error('受理被拒'));
+
+    await expect(acceptLocalRestore('r-1')).rejects.toThrow('受理被拒');
   });
 });

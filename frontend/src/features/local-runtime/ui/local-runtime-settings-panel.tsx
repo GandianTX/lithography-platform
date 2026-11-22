@@ -3,8 +3,6 @@
 import { useState } from 'react';
 import { Alert, Descriptions, Switch } from 'antd';
 
-import { useAuthSession } from '@/features/auth-session';
-
 import { isGraphQLIngressError } from '@/shared/graphql';
 import { type MessageKey, useI18n } from '@/shared/i18n';
 import { PrimaryButton } from '@/shared/ui/buttons';
@@ -39,14 +37,14 @@ const ROLE_LABEL_KEY: Record<LocalRuntimeViewerRole, MessageKey> = {
  * 配置值与可写状态、按查看者范围过滤后的公司备份计划。
  * 不提供任何编辑、切换公司、切换设备或"立即备份"入口——这些属 S3 的备份页与
  * 管理端配置，放在只读页会形成越权面。
+ *
+ * 开关可写性由**页面层**传入（`writable`）：会话事实属于 `auth-session` 特性，
+ * 本特性不直接依赖其他特性（`features -> entities, shared`）；服务端仍会复核，
+ * 前端判断只是少画一个不该画的开关，不作为权限依据。
  */
-export function LocalRuntimeSettingsPanel() {
+export function LocalRuntimeSettingsPanel({ writable }: { writable: boolean }) {
   const { t } = useI18n();
   const { state, reload } = useLocalRuntimeStatus();
-  // 备份计划开关可写性：一级管理员（全局）与二级管理员（本公司）可写，工程师只读。
-  // 服务端仍会复核（前端判断只是少画一个不该画的开关，不作为权限依据）。
-  const auth = useAuthSession();
-  const adminLevel = auth.status === 'authenticated' ? auth.session.adminLevel : null;
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
@@ -108,7 +106,7 @@ export function LocalRuntimeSettingsPanel() {
       onToggle={(company, next) => void handleToggle(company, next)}
       savingKey={savingKey}
       toggleError={toggleError}
-      writable={adminLevel !== null}
+      writable={writable}
     />
   );
 }

@@ -75,7 +75,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
         '/',
         '/engineer/ai',
         '/engineer/record-packages',
-      '/engineer/sync-conflicts',
+        '/engineer/sync-conflicts',
         '/engineer/records',
         '/reference-documents',
         '/admin/users',

@@ -517,8 +517,9 @@ describe('collectDefinitionCoverageIssues', () => {
     expect(collectDefinitionCoverageStatistics()).toEqual([
       { kind: 'column', expected: 324, covered: 324, missing: 0, inherited: 85 },
       { kind: 'check', expected: 125, covered: 125, missing: 0, inherited: 89 },
-      { kind: 'index', expected: 53, covered: 53, missing: 0, inherited: 74 },
-      { kind: 'foreignKey', expected: 60, covered: 60, missing: 0, inherited: 60 },
+      // 第 53 条（1775503200000）新增写传冻结表的范围索引与两条外键
+      { kind: 'index', expected: 54, covered: 54, missing: 0, inherited: 74 },
+      { kind: 'foreignKey', expected: 62, covered: 62, missing: 0, inherited: 60 },
       { kind: 'generatedColumn', expected: 2, covered: 2, missing: 0, inherited: 4 },
     ]);
   });

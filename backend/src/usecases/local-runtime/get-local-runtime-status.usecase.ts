@@ -46,18 +46,22 @@ export class GetLocalRuntimeStatusUsecase {
         installation.installationId,
         scope.organizationId,
       ),
-      this.localRuntimeQueryService.readTaskStatusSummary(installation.installationId),
+      this.localRuntimeQueryService.readTaskStatusSummary(installation.installationId, {
+        organizationId: scope.organizationId,
+      }),
       this.storageProbe.probe(),
     ]);
 
     /**
-     * 任务计数是**全设备口径**：`local_upload_task` 没有公司列（结构缺口 G-8），
-     * 因此无法按公司归属过滤。把它返回给二级管理员或工程师，等于把其他公司的
-     * 待传/失败数量暴露给非授权范围，违背 R065 的授权边界。故仅全局范围返回，
-     * 其余范围返回 null，由页面显式说明"无法按公司归属统计"。
-     * 该限制在 P1（枚举/归属列迁移）落地后可放开。
+     * 任务计数口径：一级管理员（全局范围）＝**全设备**；二级管理员／工程师＝**本公司**。
+     *
+     * 归属列已由增量迁移 `1775503000000` 落到 `local_upload_task` 与 `local_backup_run`
+     * （历史行保持 NULL ⇒ 归属未知的行**不计入任何公司**，不猜归属）。
+     * 在此之前这里对二级／工程师返回 null（"无法按公司归属统计"），
+     * 迁移落地后已可安全放开为**本公司口径**——既不泄露别家公司数字，
+     * 也不再让工程师看到"数量不可见"的空面板。
      */
-    const tasks = scope.organizationId === null ? installationWideTasks : null;
+    const tasks = installationWideTasks;
 
     /**
      * 设备映射公司只在"查看者就是该公司或全局范围"时可见：二级管理员/工程师

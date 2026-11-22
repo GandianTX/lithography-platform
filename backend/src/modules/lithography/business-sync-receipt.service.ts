@@ -14,6 +14,7 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
+import { isDuplicateKeyError } from '@src/modules/common/utils/database-error.util';
 import { randomUUID } from 'node:crypto';
 import { Repository } from 'typeorm';
 
@@ -21,7 +22,18 @@ import { SyncConflictEntity } from './entities/sync-conflict.entity';
 import { SyncReceiptEntity } from './entities/sync-receipt.entity';
 
 /** 导入登记回执的来源标记（本机导入自其他安装，不是云端回执） */
-export const IMPORT_RECEIPT_SOURCE_SYSTEM = 'LOCAL_IMPORT';
+/**
+ * 导入回执的 `source_system`。
+ *
+ * 取值必须落在 DB CHECK 约束 `chk_sync_receipt_source` 内（`'LOCAL'` / `'CLOUD'`）：
+ * 记录包是**本机之间**的交付（U盘／离线拷贝），属"本地"来源；
+ * "是哪一台本地安装交付的"由 `source_installation_id` 区分（记**来源安装**，不是本机），
+ * 读侧据此不会把导入记录误判成"已同步到云端"。
+ *
+ * 早期版本写 `'LOCAL_IMPORT'`，落在 CHECK 白名单外 ⇒ **真实数据库**上的导入回执登记
+ * 必然失败（单测用替身掩盖了它）。
+ */
+export const IMPORT_RECEIPT_SOURCE_SYSTEM = 'LOCAL';
 
 /** 成功回执写入入参 */
 export type BusinessSyncSuccessReceiptInput = {
@@ -97,18 +109,24 @@ export class BusinessSyncReceiptService {
       await repository.update({ receiptId: existing.receiptId }, patch);
       return existing.receiptId;
     }
-    const receiptId = randomUUID();
-    await repository.insert(
-      repository.create({
-        receiptId,
+    return this.insertReceiptIdempotently(
+      repository,
+      {
         organizationId: input.organizationId,
         resourceType: input.resourceType,
         recordUuid: input.recordUuid,
         versionNo: input.versionNo,
-        ...patch,
-      }),
+      },
+      (receiptId) =>
+        repository.create({
+          receiptId,
+          organizationId: input.organizationId,
+          resourceType: input.resourceType,
+          recordUuid: input.recordUuid,
+          versionNo: input.versionNo,
+          ...patch,
+        }),
     );
-    return receiptId;
   }
 
   /**
@@ -146,23 +164,35 @@ export class BusinessSyncReceiptService {
     if (existing !== null) {
       return existing.receiptId;
     }
-    const receiptId = randomUUID();
-    await repository.insert(
-      repository.create({
-        receiptId,
+    return this.insertReceiptIdempotently(
+      repository,
+      {
         organizationId: input.organizationId,
         resourceType: input.resourceType,
         recordUuid: input.recordUuid,
         versionNo: input.versionNo,
-        sourceSystem: IMPORT_RECEIPT_SOURCE_SYSTEM,
-        sourceInstallationId: input.sourceInstallationId,
-        remoteResourceId: null,
-        receivedAt: null,
-        receiptStatus: 'SUCCEEDED',
-        manifestChecksum: input.manifestChecksum,
-      }),
+      },
+      (receiptId) =>
+        repository.create({
+          receiptId,
+          organizationId: input.organizationId,
+          resourceType: input.resourceType,
+          recordUuid: input.recordUuid,
+          versionNo: input.versionNo,
+          sourceSystem: IMPORT_RECEIPT_SOURCE_SYSTEM,
+          sourceInstallationId: input.sourceInstallationId,
+          remoteResourceId: null,
+          // 「对端实际接收时间」：导入场景即**本机收到该记录@版本的时刻**
+          // （来源安装已把该版本交付到本机）。
+          // 必须写：`chk_sync_receipt_confirm_time` 要求
+          // 非 PENDING/CONFLICT 的回执必须有 received_at 或 confirmed_at 可证明确认事件；
+          // 此前留空会让**真实数据库**上的导入回执登记必然失败（单测用替身掩盖了它）。
+          // 不写 confirmed_at：那是旧版确认事件字段，实体注释明确"不双写新 received_at"。
+          receivedAt: new Date(),
+          receiptStatus: 'SUCCEEDED',
+          manifestChecksum: input.manifestChecksum,
+        }),
     );
-    return receiptId;
   }
 
   /**
@@ -170,6 +200,45 @@ export class BusinessSyncReceiptService {
    *
    * 已存在同键冲突时只补齐事实，不覆盖既有裁决（decision／local_resolution_state）。
    */
+  /**
+   * 插入回执行并处理**唯一键竞争**（需求口径：**并发重复只一修订**）。
+   *
+   * 背景：`sync_receipt` 上有唯一键 `uk_sync_receipt_scope_v13`
+   * （`organization_id` ＋ `resource_type` ＋ `record_uuid` ＋ `version_no`）。
+   * 「先查后插」在并发下会**双双查不到**、然后双双插入 ⇒ 其中一方被唯一键拒绝（`ER_DUP_ENTRY`）。
+   *
+   * 语义要求：败方应**幂等复用**胜方的行（返回同一个 `receiptId`），
+   * 而不是把原始 DB 错误抛给上层——否则同一条记录会被误判成"同步/导入失败"。
+   *
+   * 典型场景：**业务同步派发**与**记录包导入**写同一把键（同一公司、同一资源、同一记录、同一版本）。
+   */
+  private async insertReceiptIdempotently(
+    repository: Repository<SyncReceiptEntity>,
+    key: {
+      organizationId: number;
+      resourceType: string;
+      recordUuid: string;
+      versionNo: number;
+    },
+    build: (receiptId: string) => SyncReceiptEntity,
+  ): Promise<string> {
+    const receiptId = randomUUID();
+    try {
+      await repository.insert(build(receiptId));
+      return receiptId;
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+      const winner = await repository.findOne({ where: key });
+      if (winner === null) {
+        // 竞态方已消失（异常状态）：如实抛出原错误，由上层登记失败，不伪造成功
+        throw error;
+      }
+      return winner.receiptId;
+    }
+  }
+
   async recordConflict(
     input: BusinessSyncConflictInput,
     transactionContext: PersistenceTransactionContext,

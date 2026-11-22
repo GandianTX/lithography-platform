@@ -122,6 +122,20 @@ export type LocalRestorePrecheckResult = {
   findings: LocalRestoreCheckFinding[];
 };
 
+/**
+ * 恢复受理结果（管理员专属）。
+ *
+ * **受理 ≠ 恢复**：受理只表示"已被授权确认"，不恢复数据、不冻结写入、不代表恢复成功。
+ */
+export type LocalRestoreAcceptance = {
+  restoreId: string;
+  accepted: boolean;
+  backupId: string | null;
+  protectionBackupId: string | null;
+  organizationId: number | null;
+  acceptedAt: string | null;
+};
+
 /** 恢复执行能力状态 */
 export type LocalRestoreCapability = {
   executionAvailable: boolean;

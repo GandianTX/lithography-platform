@@ -34,6 +34,7 @@ import {
 import { RECORD_PACKAGE_ITEM_WRITER } from '@usecases/common/ports/record-package-item-writer.contract';
 
 import { MaintenanceReportRecordPackageItemWriter } from './record-package-item-writer';
+import { RecordPackageSourceIdentityVerifier } from './record-package-source-identity.verifier';
 
 /**
  * 维修报告与工单处理结果用例装配（S3）。
@@ -79,6 +80,11 @@ import { MaintenanceReportRecordPackageItemWriter } from './record-package-item-
     // 记录包导入的受控写入实现（任务 09 S3.2）：
     // 由**来源域**提供实现并注册中立令牌，任务 09 在调用期按令牌查找，
     // 不产生跨域编译期依赖；未注册时任务 09 逐条失败关闭。
+    //
+    // 来源身份核验器（S3 补丁 P4）：把「包内来源账号在本机是否可信可写」的
+    // 裁决留在来源域——账号状态、资料状态、组织成员关系都由来源域读取，
+    // 任务 09 只向受控写入端口请求结论。
+    RecordPackageSourceIdentityVerifier,
     {
       provide: RECORD_PACKAGE_ITEM_WRITER,
       useClass: MaintenanceReportRecordPackageItemWriter,

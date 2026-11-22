@@ -23,6 +23,16 @@ const NEW_COLUMNS = ['organization_id', 'account_id'] as const;
 const NEW_INDEX = 'idx_local_upload_task_binding';
 const NEW_ORGANIZATION_FOREIGN_KEY = 'fk_local_upload_task_organization';
 const NEW_ACCOUNT_FOREIGN_KEY = 'fk_local_upload_task_account';
+/**
+ * 账号表的**真实表名**（实体 `@Entity('base_user_account')`）。
+ *
+ * 早期版本误写为 `account`，导致本迁移在任何既有库上都无法执行
+ * （外键目标表不存在 ⇒ 前置校验失败关闭）。该迁移从未在任何库生效过
+ * （dev 库无 `organization_id`/`account_id` 列、迁移历史也无此条），
+ * 故按"未生效的迁移可就地订正"处理：**不改已接受基线**，
+ * 只把外键目标与前置表名校正为真实表名。
+ */
+const ACCOUNT_TABLE = 'base_user_account';
 
 export class AddUploadTaskAccountBindingForV131775503000000 implements MigrationInterface {
   name = 'AddUploadTaskAccountBindingForV131775503000000';
@@ -38,7 +48,7 @@ export class AddUploadTaskAccountBindingForV131775503000000 implements Migration
           ADD COLUMN \`account_id\` int DEFAULT NULL COMMENT '原账号（授权主体）账号ID；历史行保持 NULL',
           ADD KEY \`${NEW_INDEX}\` (\`installation_id\`, \`organization_id\`, \`account_id\`),
           ADD CONSTRAINT \`${NEW_ORGANIZATION_FOREIGN_KEY}\` FOREIGN KEY (\`organization_id\`) REFERENCES \`organization\` (\`id\`) ON DELETE RESTRICT ON UPDATE RESTRICT,
-          ADD CONSTRAINT \`${NEW_ACCOUNT_FOREIGN_KEY}\` FOREIGN KEY (\`account_id\`) REFERENCES \`account\` (\`id\`) ON DELETE RESTRICT ON UPDATE RESTRICT
+          ADD CONSTRAINT \`${NEW_ACCOUNT_FOREIGN_KEY}\` FOREIGN KEY (\`account_id\`) REFERENCES \`${ACCOUNT_TABLE}\` (\`id\`) ON DELETE RESTRICT ON UPDATE RESTRICT
       `,
       );
     } catch (error) {
@@ -67,7 +77,7 @@ export class AddUploadTaskAccountBindingForV131775503000000 implements Migration
    * 半迁移保护：前置表缺失或目标列已存在即失败关闭，禁止盲目重跑。
    */
   private async assertPreparation(queryRunner: QueryRunner): Promise<void> {
-    for (const table of [TABLE, 'organization', 'account']) {
+    for (const table of [TABLE, 'organization', ACCOUNT_TABLE]) {
       if (!(await queryRunner.hasTable(table))) {
         throw new Error(`迁移前置表缺失：${table}`);
       }

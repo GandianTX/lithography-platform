@@ -122,6 +122,12 @@ export class BackupRestoreAcceptanceService {
     await this.restoreRunRepository.update(
       { restoreId: input.restoreId },
       {
+        // 受理即进入 RUNNING：状态机约束要求 PENDING 行的 `confirmation` 必须为空，
+        // 且 RUNNING 行必须带 `started_at` ＋ `protection_backup_id`。
+        // （此前只写 `confirmation` ⇒ **真实数据库**上的受理必然违反 CHECK 约束。）
+        status: 'RUNNING',
+        startedAt: input.now,
+        protectionBackupId: run.protectionBackupId,
         confirmation: JSON.stringify({
           accepted_at: acceptedAt,
           accepted_by_account_id: input.acceptedByAccountId,

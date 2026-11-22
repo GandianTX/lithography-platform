@@ -46,6 +46,7 @@ function buildUsecase(scope: {
         adminLevel: scope.adminLevel,
       }),
     } as never,
+    { assertCompanyWritable: jest.fn().mockResolvedValue(undefined) } as never,
     { updateCompanyBackupPlan } as never,
   );
   return { usecase, updateCompanyBackupPlan };

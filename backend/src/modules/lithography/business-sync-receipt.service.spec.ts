@@ -138,4 +138,69 @@ describe('业务同步回执与冲突写入的幂等（S2 自检）', () => {
     expect(conflicts.store[0].conflictReason).toBe('云端再次变化');
     expect(conflicts.store[0].status).toBe('PENDING');
   });
+
+  it('导入回执：必须写 received_at（真实库 CHECK 约束要求可证明确认事件）', async () => {
+    const { service, receipts, transactionContext } = buildService();
+
+    await service.recordImportedVersion(
+      {
+        organizationId: 9,
+        resourceType: 'MAINTENANCE_REPORT',
+        recordUuid: 'uuid-1',
+        versionNo: 2,
+        manifestChecksum: 'a'.repeat(64),
+        sourceInstallationId: 'source-installation-1',
+      },
+      transactionContext,
+    );
+
+    const inserted = receipts.insert.mock.calls[0]?.[0] as unknown as {
+      receivedAt: Date | null;
+      receiptStatus: string;
+      sourceSystem: string;
+      confirmedAt?: Date | null;
+    };
+    expect(inserted.receiptStatus).toBe('SUCCEEDED');
+    // `chk_sync_receipt_source`：source_system 只能是 'LOCAL' / 'CLOUD'
+    expect(inserted.sourceSystem).toBe('LOCAL');
+    // `chk_sync_receipt_confirm_time`：非 PENDING/CONFLICT 必须有 received_at 或 confirmed_at
+    expect(inserted.receivedAt).toBeInstanceOf(Date);
+    // 旧版确认事件字段不双写
+    expect(inserted.confirmedAt ?? null).toBeNull();
+  });
+
+  it('并发唯一键竞争：败方幂等复用胜方的回执行（不抛原始 DB 错误）', async () => {
+    const { service, receipts, transactionContext } = buildService();
+    const key = {
+      organizationId: 9,
+      resourceType: 'MAINTENANCE_REPORT',
+      recordUuid: 'uuid-race',
+      versionNo: 2,
+    };
+    // 模拟并发：第一次插入成功；第二次插入被唯一键拒绝（ER_DUP_ENTRY）
+    receipts.insert.mockImplementationOnce((entity: Row) => {
+      receipts.store.push({ ...entity });
+      return Promise.resolve(undefined);
+    });
+    receipts.insert.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(new Error('duplicate'), { driverError: { code: 'ER_DUP_ENTRY' } }),
+      ),
+    );
+
+    const [winner, loser] = await Promise.all([
+      service.recordImportedVersion(
+        { ...key, manifestChecksum: 'a'.repeat(64), sourceInstallationId: 'inst-x' },
+        transactionContext,
+      ),
+      service.recordImportedVersion(
+        { ...key, manifestChecksum: 'a'.repeat(64), sourceInstallationId: 'inst-x' },
+        transactionContext,
+      ),
+    ]);
+
+    // 双方拿到同一个回执 ID（"并发重复只一修订"）
+    expect(loser).toBe(winner);
+    expect(receipts.store).toHaveLength(1);
+  });
 });

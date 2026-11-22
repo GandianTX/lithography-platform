@@ -18,6 +18,8 @@
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
+import type { RecordPackageSourceIdentityDecision } from '@core/local-runtime/policy/record-package-source-identity.policy';
+
 /** 端口令牌（DI 注入用） */
 export const RECORD_PACKAGE_ITEM_WRITER = 'RECORD_PACKAGE_ITEM_WRITER';
 
@@ -84,6 +86,31 @@ export type RecordPackageItemWriteOutcome =
 export interface RecordPackageItemWriter {
   /** 本实现支持的资源类型；不支持的类型必须由调用方判为失败关闭 */
   readonly supportedResourceTypes: readonly RecordPackageImportResourceType[];
+  /**
+   * 核验包内来源身份在本机是否可信可写（S3 补丁 P4）。
+   *
+   * 用途：编排侧在**暂存原件之前**先核验，避免以不可信账号 id 登记暂存文件
+   * （原件暂存的「上传者」必须等于包内来源账号，账号不可信时暂存本身就不该发生）。
+   *
+   * 裁决权在**来源域**：身份、公司范围、版本条件都由来源域判定，任务 09 不另立
+   * 第二套权限口径（与「保留本地」同一条纪律）。因此本方法不是让编排侧自己
+   * 判断账号状态，而是向来源域请求一次受控裁决。
+   *
+   * 实现方必须：
+   * - 只依据**本机数据库当前事实**（账号行、账号状态、资料状态、组织成员关系）
+   *   裁决，不信任包内自报身份；
+   * - 拒绝时给出可读的受控原因，不静默改归属、不冒用导入人。
+   */
+  verifySourceIdentity(params: {
+    /** 包内登记的来源账号；`null` = 包内未携带来源身份 */
+    sourceAccountId: number | null;
+    /** 包内登记的来源归属公司；`null` = 包内未登记 */
+    ownerOrganizationId: number | null;
+    /** 导入目标公司 */
+    targetOrganizationId: number;
+    /** 执行导入的账号（可信会话账号） */
+    importerAccountId: number;
+  }): Promise<RecordPackageSourceIdentityDecision>;
   /**
    * 写入一条记录。
    *

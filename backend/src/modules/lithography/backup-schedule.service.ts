@@ -7,6 +7,11 @@ import { PinoLogger } from 'nestjs-pino';
 
 import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 
+import {
+  hasCredentialPurpose,
+  LOCAL_CREDENTIAL_PURPOSE,
+} from '@core/local-runtime/policy/local-credential-purpose.policy';
+
 import { LocalAccountAuthorizationEntity } from '@src/modules/lithography/entities/local-account-authorization.entity';
 import { LocalCompanySettingEntity } from '@src/modules/lithography/entities/local-company-setting.entity';
 import { LocalBackupRunEntity } from '@src/modules/lithography/entities/local-backup-run.entity';
@@ -142,6 +147,17 @@ export class BackupScheduleService {
     });
     const organizationIds: number[] = [];
     for (const authorization of authorized) {
+      // 用途维度（S4）：云备份只认**云备份用途**的凭据；
+      // 业务同步授权**不得**被拿来决定备份范围（"不复用业务同步授权"）。
+      // 用途不可核验（声明缺失／不可解析）→ 同样不算数（失败关闭，不静默复用）。
+      if (
+        !hasCredentialPurpose(
+          typeof authorization.signedClaims === 'string' ? authorization.signedClaims : null,
+          LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP,
+        )
+      ) {
+        continue;
+      }
       const organizationId = authorization.organizationId;
       if (
         organizationId !== null &&

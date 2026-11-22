@@ -21,6 +21,8 @@ import { LocalBackupPlanService } from '@src/modules/lithography/local-backup-pl
 
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
+
 export type UpdateLocalBackupPlanCommand = {
   session: UsecaseSession;
   /** 目标公司数据区 */
@@ -44,12 +46,17 @@ export type UpdateLocalBackupPlanResult = {
 export class UpdateLocalBackupPlanUsecase {
   constructor(
     private readonly scopeResolver: LocalRuntimeScopeResolver,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly backupPlanService: LocalBackupPlanService,
   ) {}
 
   async execute(command: UpdateLocalBackupPlanCommand): Promise<UpdateLocalBackupPlanResult> {
     const scope = await this.scopeResolver.resolve(command.session);
     assertBackupPlanWritable(scope, command.organizationId);
+    // 写入冻结闸门（任务 09 S5-2）：恢复期冻结的目标公司**不改备份开关**
+    await this.localWriteHoldService.assertCompanyWritable({
+      organizationId: command.organizationId,
+    });
 
     const plan = await this.backupPlanService.updateCompanyBackupPlan({
       organizationId: command.organizationId,

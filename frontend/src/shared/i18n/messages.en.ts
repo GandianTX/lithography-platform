@@ -126,7 +126,7 @@ export const EN_MESSAGES = {
   'local-settings.authorizations.lastVerifiedAt': 'Last verified',
   'local-settings.authorizations.purpose': 'Credential purpose',
   'local-settings.tasks.notVisible':
-    'Device tasks are not registered per company. Whole-device counts are shown to Level 1 administrators only; Level 2 administrators and engineers see no counts.',
+    'Device task counts are registered per company; no task counts are visible for this company scope (for example, no company task has been registered on this device yet).',
   'local-settings.value.businessSync': 'Business sync',
   'local-settings.field.installationId': 'Installation ID',
   'local-settings.field.localSiteName': 'Site name',
@@ -195,6 +195,17 @@ export const EN_MESSAGES = {
   'local-backup.error.cleanupFailed':
     'Failed to clean up local backup packages. Please retry later.',
   'local-backup.error.precheckFailed': 'Restore precheck failed. Please retry later.',
+  'local-backup.error.acceptFailed': 'Restore acceptance failed. Please retry later.',
+  'local-backup.restore.acceptAction': 'Accept this restore',
+  'local-backup.restore.acceptTitle': 'Restore acceptance result',
+  'local-backup.restore.acceptSucceeded': 'Accepted: this restore has been authorized.',
+  'local-backup.restore.acceptedNotice':
+    'Acceptance is not a successful restore: this action only records the "authorized and confirmed" fact; it restores no data and does not freeze writes. Actual restore capability is shown below.',
+  'local-backup.restore.acceptRejected':
+    'This restore was not accepted. Follow the precheck findings.',
+  'local-backup.restore.acceptedAt': 'Accepted at',
+  'local-backup.restore.protectionBackupId': 'Protection copy id',
+
   'local-backup.error.unknownReason': 'Reason not registered',
   'local-runtime.error.statusLoadFailed':
     'Failed to load local runtime status. Please retry later.',

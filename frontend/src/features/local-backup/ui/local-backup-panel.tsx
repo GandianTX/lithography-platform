@@ -21,6 +21,7 @@ import {
   useLocalBackupSettings,
   useLocalRestoreCapability,
   useManualLocalBackup,
+  useRestoreAcceptance,
   useRestorePrecheck,
 } from '../application/use-local-backup';
 import type {
@@ -53,6 +54,7 @@ export function LocalBackupPanel({ canPrecheck }: { canPrecheck: boolean }) {
   const manual = useManualLocalBackup();
   const cleanup = useCleanupLocalBackupPackages();
   const precheck = useRestorePrecheck();
+  const accept = useRestoreAcceptance();
   // 恢复预检是服务端的一级管理员动作：前端只做**展示性**收敛，
   // 不作为授权依据（最终裁决仍在服务端）。角色由页面层从会话解析后传入
   // ——feature 之间不互相依赖（前端依赖规则）。
@@ -78,7 +80,11 @@ export function LocalBackupPanel({ canPrecheck }: { canPrecheck: boolean }) {
       <RestoreSection capabilityState={capability.state} precheckState={precheck.state} />
 
       {precheck.state.status === 'succeeded' ? (
-        <PrecheckResultCard result={precheck.state.data} />
+        <PrecheckResultCard
+          acceptState={accept.state}
+          onAccept={(restoreId) => void accept.trigger(restoreId)}
+          result={precheck.state.data}
+        />
       ) : null}
       {precheck.state.status === 'forbidden' ? (
         <DataCard title={t('local-backup.restore.precheckTitle')}>
@@ -636,7 +642,15 @@ function RestoreSection({
   );
 }
 
-function PrecheckResultCard({ result }: { result: LocalRestorePrecheckResult }) {
+function PrecheckResultCard({
+  result,
+  acceptState,
+  onAccept,
+}: {
+  result: LocalRestorePrecheckResult;
+  acceptState: ReturnType<typeof useRestoreAcceptance>['state'];
+  onAccept: (restoreId: string) => void;
+}) {
   const { t } = useI18n();
   const passed = result.outcome === 'PASSED';
 
@@ -720,6 +734,36 @@ function PrecheckResultCard({ result }: { result: LocalRestorePrecheckResult }) 
                 </li>
               ))}
             </ul>
+          </div>
+        ) : null}
+
+        {/*
+          受理确认（管理员专属）。
+          纪律：**受理 ≠ 恢复**——只记录「已被授权确认」的事实，不恢复数据、不冻结写入，
+          不把受理显示成恢复成功；预检未通过时不提供受理入口。
+        */}
+        {passed ? (
+          <div className="page-stack">
+            <SecondaryButton
+              loading={acceptState.status === 'running'}
+              onClick={() => onAccept(result.restoreId)}
+            >
+              {t('local-backup.restore.acceptAction')}
+            </SecondaryButton>
+            {acceptState.status === 'succeeded' ? (
+              <Alert
+                description={t('local-backup.restore.acceptedNotice')}
+                showIcon
+                title={t('local-backup.restore.acceptSucceeded')}
+                type="success"
+              />
+            ) : null}
+            {acceptState.status === 'forbidden' ? (
+              <Alert showIcon title={acceptState.message} type="error" />
+            ) : null}
+            {acceptState.status === 'failed' ? (
+              <Alert showIcon title={acceptState.message} type="error" />
+            ) : null}
           </div>
         ) : null}
       </div>

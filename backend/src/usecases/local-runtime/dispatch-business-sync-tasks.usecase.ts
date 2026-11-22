@@ -12,6 +12,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { BusinessSyncReceiptService } from '@src/modules/lithography/business-sync-receipt.service';
 import { BusinessSyncSourceService } from '@src/modules/lithography/business-sync-source.service';
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
 import {
   SYNC_SOURCE_RESOURCE_TYPES,
@@ -60,6 +61,7 @@ export class DispatchBusinessSyncTasksUsecase {
 
   constructor(
     private readonly localRuntimeService: LocalRuntimeService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
     private readonly sourceRecordQueryService: SyncSourceRecordQueryService,
     private readonly syncStatusQueryService: SyncStatusQueryService,
@@ -91,6 +93,13 @@ export class DispatchBusinessSyncTasksUsecase {
     const installation = await this.localRuntimeQueryService.readInstallation();
     if (!installation) {
       throw new DomainError(BUSINESS_SYNC_ERROR.INVALID_PARAMS, '本地安装身份未初始化');
+    }
+
+    // 写入/同步冻结闸门（任务 09 S5-2）：恢复期冻结的目标公司**不派发**同步任务
+    if (installation.organizationId !== null) {
+      await this.localWriteHoldService.assertCompanyWritable({
+        organizationId: installation.organizationId,
+      });
     }
 
     const tasks = await this.localRuntimeQueryService.listBusinessSyncTasks(

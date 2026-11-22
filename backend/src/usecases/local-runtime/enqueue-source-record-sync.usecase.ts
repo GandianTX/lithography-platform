@@ -11,6 +11,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { BusinessSyncSourceService } from '@src/modules/lithography/business-sync-source.service';
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
 import {
   SYNC_SOURCE_RESOURCE_TYPES,
@@ -48,6 +49,7 @@ import type {
 export class EnqueueSourceRecordSyncUsecase {
   constructor(
     private readonly localRuntimeService: LocalRuntimeService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
     private readonly sourceRecordQueryService: SyncSourceRecordQueryService,
     private readonly syncStatusQueryService: SyncStatusQueryService,
@@ -71,6 +73,9 @@ export class EnqueueSourceRecordSyncUsecase {
         '本机未映射云端组织，无法确定数据区归属',
       );
     }
+
+    // 写入/同步冻结闸门（任务 09 S5-2）：恢复期冻结的目标公司**不派发**同步任务
+    await this.localWriteHoldService.assertCompanyWritable({ organizationId });
 
     const { facts } = await this.sourceRecordQueryService.listFacts({
       organizationId,

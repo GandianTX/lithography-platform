@@ -87,16 +87,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// 面板按会话判定开关可写性（工程师只读）；这里以匿名会话渲染只读形态
-vi.mock('@/features/auth-session', () => ({
-  useAuthSession: () => ({ session: null, status: 'anonymous' }),
-}));
+// 开关可写性由页面层按可信会话判定后下传（工程师只读）；
+// 本面板用例以 `writable={false}` 渲染只读形态，以 `writable` 覆盖可写形态。
 
 describe('本地设置只读面板', () => {
   it('加载态展示读取提示，不伪造任何运行事实', () => {
     adapters.fetchLocalRuntimeStatus.mockReturnValue(new Promise(() => undefined));
 
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     expect(screen.getByRole('status')).toBeTruthy();
     expect(screen.getByText('正在读取本机状态…')).toBeTruthy();
@@ -104,7 +102,7 @@ describe('本地设置只读面板', () => {
   });
 
   it('就绪态展示身份、服务、保存位置、任务、授权与公司备份计划事实', async () => {
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('本机身份')).toBeTruthy();
@@ -134,7 +132,7 @@ describe('本地设置只读面板', () => {
   });
 
   it('只读页不提供写入口：没有编辑、切换公司或立即备份按钮', async () => {
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('本机身份')).toBeTruthy();
@@ -144,13 +142,24 @@ describe('本地设置只读面板', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
+  it('管理员可写形态：渲染本地自动备份与云备份两个开关（可写性由页面层判定）', async () => {
+    render(<LocalRuntimeSettingsPanel writable />);
+
+    await waitFor(() => {
+      expect(screen.getByText('本机身份')).toBeTruthy();
+    });
+
+    // 两个受控开关：本地自动备份开关与云备份开关
+    expect(screen.getAllByRole('switch').length).toBe(2);
+  });
+
   it('任务计数不可见时如实说明，不展示跨公司数量', async () => {
     adapters.fetchLocalRuntimeStatus.mockResolvedValue({ ...STATUS, tasks: null });
 
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/全设备计数仅对一级管理员展示/)).toBeTruthy();
+      expect(screen.getByText(/任务计数按公司归属登记/)).toBeTruthy();
     });
     expect(screen.queryByText('待上传')).toBeNull();
   });
@@ -164,7 +173,7 @@ describe('本地设置只读面板', () => {
       }),
     );
 
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('本机状态读取失败')).toBeTruthy();
@@ -176,7 +185,7 @@ describe('本地设置只读面板', () => {
   it('读取失败时给出可重试的失败态，点击后重新拉取', async () => {
     adapters.fetchLocalRuntimeStatus.mockRejectedValue(new Error('boom'));
 
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('本机状态读取失败')).toBeTruthy();
@@ -195,7 +204,7 @@ describe('本地设置只读面板', () => {
   it('键盘可达：失败态的重试入口是原生可聚焦按钮且有可访问名称', async () => {
     adapters.fetchLocalRuntimeStatus.mockRejectedValue(new Error('boom'));
 
-    render(<LocalRuntimeSettingsPanel />);
+    render(<LocalRuntimeSettingsPanel writable={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('本机状态读取失败')).toBeTruthy();

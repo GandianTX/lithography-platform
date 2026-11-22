@@ -24,6 +24,7 @@ describe('SyncSourceRecordQueryService', () => {
     createdByAccountId: 900101,
     maintenanceEngineerAccountId: null,
     updatedByAccountId: null,
+    status: 'SUBMITTED' as string,
     ...overrides,
   });
 
@@ -148,5 +149,49 @@ describe('SyncSourceRecordQueryService', () => {
 
     expect(result.scanComplete).toBe(false);
     expect(result.facts.size).toBe(0);
+  });
+
+  it('报告已正式提交（SUBMITTED）时按冻结态处理（与 06 写守卫口径一致，不可反写）', async () => {
+    const { service } = buildService([
+      [reportRow({ recordUuid: 'persisted-uuid-1', status: 'SUBMITTED' })],
+    ]);
+
+    const result = await service.listFacts({
+      organizationId,
+      resourceType,
+      recordUuids: ['persisted-uuid-1'],
+    });
+
+    const fact = result.facts.get('persisted-uuid-1');
+    expect(fact?.contentState?.frozen).toBe(true);
+    expect(fact?.contentState?.closed).toBe(false);
+  });
+
+  it('报告已结单（APPROVED）时按结单态处理；草稿／退回（DRAFT／RETURNED）时可写', async () => {
+    const approved = buildService([
+      [reportRow({ recordUuid: 'uuid-approved', status: 'APPROVED' })],
+    ]);
+    const approvedFact = (
+      await approved.service.listFacts({
+        organizationId,
+        resourceType,
+        recordUuids: ['uuid-approved'],
+      })
+    ).facts.get('uuid-approved');
+    expect(approvedFact?.contentState?.closed).toBe(true);
+    expect(approvedFact?.contentState?.frozen).toBe(false);
+
+    for (const status of ['DRAFT', 'RETURNED']) {
+      const editable = buildService([[reportRow({ recordUuid: `uuid-${status}`, status })]]);
+      const fact = (
+        await editable.service.listFacts({
+          organizationId,
+          resourceType,
+          recordUuids: [`uuid-${status}`],
+        })
+      ).facts.get(`uuid-${status}`);
+      expect(fact?.contentState?.frozen).toBe(false);
+      expect(fact?.contentState?.closed).toBe(false);
+    }
   });
 });

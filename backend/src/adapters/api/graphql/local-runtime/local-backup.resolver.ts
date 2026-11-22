@@ -19,6 +19,7 @@ import {
   LocalBackupSettingDTO,
   LocalBackupRecordPaginationInput,
   LocalRestoreAcceptanceDTO,
+  LocalRestoreExecutionDTO,
   LocalRestoreCapabilityDTO,
   LocalRestorePrecheckResultDTO,
   StartManualLocalBackupResultDTO,
@@ -27,6 +28,7 @@ import {
   toLocalBackupSettingDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
 import { AcceptLocalRestoreUsecase } from '@src/usecases/local-runtime/accept-local-restore.usecase';
+import { ExecuteLocalRestoreUsecase } from '@src/usecases/local-runtime/execute-local-restore.usecase';
 import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
 import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
@@ -55,6 +57,7 @@ export class LocalBackupResolver {
     private readonly cleanupLocalBackupPackagesUsecase: CleanupLocalBackupPackagesUsecase,
     private readonly getLocalRestoreCapabilityUsecase: GetLocalRestoreCapabilityUsecase,
     private readonly acceptLocalRestoreUsecase: AcceptLocalRestoreUsecase,
+    private readonly executeLocalRestoreUsecase: ExecuteLocalRestoreUsecase,
     private readonly listLocalBackupCloudPackagesUsecase: ListLocalBackupCloudPackagesUsecase,
   ) {}
 
@@ -178,6 +181,40 @@ export class LocalBackupResolver {
       protectionBackupId: result.protectionBackupId,
       organizationId: result.organizationId,
       acceptedAt: result.acceptedAt === null ? null : new Date(result.acceptedAt),
+    };
+  }
+
+  /**
+   * 恢复**执行**（管理员专属；受理之后才可执行）。
+   *
+   * 执行链：写传冻结 → 按清单恢复 → 核验 → 解除冻结；
+   * 失败时**保持冻结**（设备继续停写停传）、保留保护副本与任务，并如实给出受控原因码。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestoreExecutionDTO, {
+    name: 'executeLocalRestore',
+    description:
+      '恢复执行（管理员专属）：冻结写入与同步 → 按清单恢复 → 核验 → 解除冻结；失败保持冻结并给出原因码',
+  })
+  async executeLocalRestore(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('restoreId', { type: () => String }) restoreId: string,
+  ): Promise<LocalRestoreExecutionDTO> {
+    const result = await this.executeLocalRestoreUsecase.execute({
+      session: this.toSession(user),
+      restoreId,
+    });
+    return {
+      restoreId: result.restoreId,
+      status: result.status,
+      reasonCode: result.reasonCode,
+      reason: result.reason,
+      restoredRecords: result.restored?.records ?? null,
+      restoredOriginals: result.restored?.originals ?? null,
+      restoredQueue: result.restored?.queue ?? null,
+      released: result.released,
+      holdRetained: result.holdRetained,
     };
   }
 

@@ -20,6 +20,8 @@ import { FaultCaseSubmissionDetailEntity } from './entities/fault-case-submissio
 import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.entity';
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import { BackupRestoreAcceptanceService } from './backup-restore-acceptance.service';
+import { LocalRestoreExecutionService } from './local-restore-execution.service';
+import { LocalWriteHoldService } from './local-write-hold.service';
 import { LocalBackupPlanService } from './local-backup-plan.service';
 import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
 import { ManagementAuditEventEntity } from './entities/management-audit-event.entity';
@@ -27,6 +29,7 @@ import { MaintenanceReportFaultEntity } from './entities/maintenance-report-faul
 import { MaterialSubmissionDetailEntity } from './entities/material-submission-detail.entity';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
+import { LocalWriteHoldEntity } from './entities/local-write-hold.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
 import { MaintenanceReportAlarmEntity } from './entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';
@@ -133,6 +136,7 @@ export const LITHOGRAPHY_ENTITIES = [
   MaintenanceReportVersionAttachmentEntity,
   MaintenanceReportReviewEntity,
   LocalInstallationEntity,
+  LocalWriteHoldEntity,
   LocalUploadTaskEntity,
   LocalBackupRunEntity,
   StoredFileEntity,
@@ -180,6 +184,10 @@ export const LITHOGRAPHY_ENTITIES = [
     RecordPackageExportService,
     LocalBackupPlanService,
     BackupRestoreAcceptanceService,
+    // 写入/同步冻结闸门（任务 09 S5-2／S5-3）：恢复期冻结目标公司数据区的写入与同步
+    LocalWriteHoldService,
+    // 恢复执行编排（任务 09 S5-2／S5-3）：冻结 → 按清单恢复 → 核验 → 解除冻结
+    LocalRestoreExecutionService,
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,
@@ -226,6 +234,8 @@ export const LITHOGRAPHY_ENTITIES = [
     TypeOrmModule,
     LocalBackupPlanService,
     BackupRestoreAcceptanceService,
+    LocalWriteHoldService,
+    LocalRestoreExecutionService,
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,

@@ -432,6 +432,37 @@ export class LocalBackupCloudPackageListDTO {
   packages!: LocalBackupCloudPackageDTO[];
 }
 
+/** 恢复执行结果（受理之后才有；失败时给出受控原因码与是否保持冻结） */
+@ObjectType('LocalRestoreExecution')
+export class LocalRestoreExecutionDTO {
+  @Field(() => String, { description: '稳定恢复 ID' })
+  restoreId!: string;
+
+  @Field(() => String, { description: 'SUCCEEDED/FAILED（受理不等于恢复成功）' })
+  status!: string;
+
+  @Field(() => String, { nullable: true, description: '受控原因码（失败时必有）' })
+  reasonCode?: string | null;
+
+  @Field(() => String, { nullable: true, description: '受控原因说明（失败时必有）' })
+  reason?: string | null;
+
+  @Field(() => Int, { nullable: true, description: '恢复的业务数据行数' })
+  restoredRecords?: number | null;
+
+  @Field(() => Int, { nullable: true, description: '恢复的原件数' })
+  restoredOriginals?: number | null;
+
+  @Field(() => Int, { nullable: true, description: '恢复的队列任务数' })
+  restoredQueue?: number | null;
+
+  @Field(() => Boolean, { description: '冻结是否已解除（失败时为 false）' })
+  released!: boolean;
+
+  @Field(() => Boolean, { description: '失败时是否保持冻结（设备继续停写停传）' })
+  holdRetained!: boolean;
+}
+
 /** 恢复受理结论（受理 ≠ 恢复：只确认"可以受理"，不代表已恢复） */
 @ObjectType('LocalRestoreAcceptance')
 export class LocalRestoreAcceptanceDTO {

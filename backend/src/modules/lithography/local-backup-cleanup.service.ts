@@ -27,6 +27,7 @@ import {
 
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
+import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
 
 /** 孤儿包巡检的最小存活时长（毫秒）：默认 24 小时，避免与进行中的封包竞争 */
@@ -90,6 +91,9 @@ export class LocalBackupCleanupService {
     @Optional()
     @InjectRepository(LocalInstallationEntity)
     private readonly installationRepository?: Repository<LocalInstallationEntity>,
+    @Optional()
+    @InjectRepository(LocalCompanySettingEntity)
+    private readonly companySettingRepository?: Repository<LocalCompanySettingEntity>,
   ) {}
 
   /**
@@ -326,10 +330,23 @@ export class LocalBackupCleanupService {
       };
     }
 
+    // 清理范围＝**本机安装标识 × 本机正在备份的公司**。
+    //
+    // 此前只按 installationId 扫描 ⇒ **外公司**的备份包也会被本机的过期清理删掉
+    // （实库哨兵本应拦住的口径缺口）。公司范围取"本机当前计划里启用了本地备份"的公司集合：
+    // - 本机没有启用备份计划的公司 → 不清理（外公司哨兵成立）；
+    // - 读不到计划行（仓储未注入）→ 失败关闭（零清理，不猜范围）。
+    const scopedOrganizationIds = await this.listBackupEnabledOrganizationIds(
+      installation.installationId,
+    );
     const assets = await this.backupAssetRepository.find({
       where: { installationId: installation.installationId },
       order: { createdAt: 'ASC', backupId: 'ASC' },
     });
+    const scopedAssets =
+      scopedOrganizationIds === null
+        ? []
+        : assets.filter((asset) => scopedOrganizationIds.has(asset.organizationId));
     if (assets.length === 0) {
       return {
         available: true,
@@ -342,17 +359,41 @@ export class LocalBackupCleanupService {
     }
 
     const decision = decideRetentionCleanupTargets(
-      toCandidates(assets),
+      toCandidates(scopedAssets),
       now,
       input.retentionDays ?? BACKUP_RETENTION_DAYS,
     );
     const result = await this.executeCleanup(
       decision.targets.map((target) => target.candidate),
-      assets,
+      scopedAssets,
       now,
     );
     // 过期清理同理：未到期 / 云端副本不可证而保留的项也要逐项可见
     return this.mergeRetainedItems(result, decision.skipped);
+  }
+
+  /**
+   * 本机**正在备份的公司**集合（过期清理的公司范围）。
+   *
+   * 口径：只清理"本机当前计划里启用了本地备份"的公司；读不到计划行时返回 `null`
+   * ⇒ 调用方**零清理**（失败关闭，不猜范围、不跨公司清理）。
+   */
+  private async listBackupEnabledOrganizationIds(
+    installationId: string,
+  ): Promise<Set<number> | null> {
+    if (this.companySettingRepository === undefined) {
+      return null;
+    }
+    const settings = await this.companySettingRepository.find({
+      where: { installationId, isCurrent: true },
+    });
+    const organizationIds = new Set<number>();
+    for (const setting of settings) {
+      if (setting.backupEnabled === true) {
+        organizationIds.add(setting.organizationId);
+      }
+    }
+    return organizationIds;
   }
 
   /**

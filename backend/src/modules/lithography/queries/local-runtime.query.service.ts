@@ -242,14 +242,34 @@ export class LocalRuntimeQueryService {
    * 只做同安装标识的计数与最近一次备份时间读取，不触碰任何公司业务正文；
    * 供本地设置页展示"业务与队列已落库"的真实事实（S1.3 重启恢复的同一读数口径）。
    */
+  /**
+   * 任务计数摘要。
+   *
+   * `organizationId` 缺省＝**全设备口径**（一级管理员全局范围）；
+   * 给定公司时＝**本公司口径**：上传任务与备份运行都按 `organization_id` 过滤。
+   *
+   * 归属列已由增量迁移 `1775503000000` 落到 `local_upload_task` 与 `local_backup_run`
+   * （历史行保持 NULL）——历史行**不计入任何公司**（归属未知不猜），
+   * 因此公司口径的计数只会偏少，不会把别家公司的数字暴露出去。
+   */
   async readTaskStatusSummary(
     installationId: string,
+    options: { organizationId?: number | null } = {},
     transactionContext?: PersistenceTransactionContext,
   ): Promise<LocalTaskStatusSummary> {
     const uploadRepository = this.pickRepository(this.uploadTaskRepository, transactionContext);
     const backupRepository = this.pickRepository(this.backupRunRepository, transactionContext);
+    const scopedOrganizationId = options.organizationId ?? null;
+    const uploadWhere = (status: LocalUploadTaskStatus): Record<string, unknown> =>
+      scopedOrganizationId === null
+        ? { installationId, status }
+        : { installationId, status, organizationId: scopedOrganizationId };
+    const backupWhere =
+      scopedOrganizationId === null
+        ? { installationId }
+        : { installationId, organizationId: scopedOrganizationId };
     const countUpload = (status: LocalUploadTaskStatus): Promise<number> =>
-      uploadRepository.count({ where: { installationId, status } });
+      uploadRepository.count({ where: uploadWhere(status) });
 
     const [pending, uploading, failed, succeeded, runningBackupCount, latestBackup] =
       await Promise.all([
@@ -257,9 +277,9 @@ export class LocalRuntimeQueryService {
         countUpload('UPLOADING'),
         countUpload('FAILED'),
         countUpload('SUCCEEDED'),
-        backupRepository.count({ where: { installationId, status: 'RUNNING' } }),
+        backupRepository.count({ where: { ...backupWhere, status: 'RUNNING' } }),
         backupRepository.findOne({
-          where: { installationId },
+          where: backupWhere,
           order: { startedAt: 'DESC', id: 'DESC' },
         }),
       ]);

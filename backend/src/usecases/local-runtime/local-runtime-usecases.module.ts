@@ -29,6 +29,7 @@ import {
 import { ImportRecordPackageUsecase } from './import-record-package.usecase';
 import { UpdateLocalBackupPlanUsecase } from './update-local-backup-plan.usecase';
 import { AcceptLocalRestoreUsecase } from './accept-local-restore.usecase';
+import { ExecuteLocalRestoreUsecase } from './execute-local-restore.usecase';
 import {
   DownloadLocalBackupCloudPackageUsecase,
   ListLocalBackupCloudPackagesUsecase,
@@ -91,6 +92,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     ImportRecordPackageUsecase,
     UpdateLocalBackupPlanUsecase,
     AcceptLocalRestoreUsecase,
+    ExecuteLocalRestoreUsecase,
     ListLocalBackupCloudPackagesUsecase,
     DownloadLocalBackupCloudPackageUsecase,
     RecordPackageOriginalStagingService,
@@ -138,6 +140,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     ImportRecordPackageUsecase,
     UpdateLocalBackupPlanUsecase,
     AcceptLocalRestoreUsecase,
+    ExecuteLocalRestoreUsecase,
     ListLocalBackupCloudPackagesUsecase,
     DownloadLocalBackupCloudPackageUsecase,
     RecordPackageOriginalStagingService,

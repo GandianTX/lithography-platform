@@ -10,11 +10,13 @@ import type {
   LocalBackupCleanupResult,
   LocalBackupRecordPage,
   LocalBackupSetting,
+  LocalRestoreAcceptance,
   LocalRestoreCapability,
   LocalRestorePrecheckResult,
   StartManualLocalBackupResult,
 } from '../infrastructure/local-backup.types';
 import {
+  acceptLocalRestore,
   cleanupLocalBackupPackages,
   fetchLocalBackupRecords,
   fetchLocalBackupSettings,
@@ -203,6 +205,40 @@ export function useCleanupLocalBackupPackages() {
           : translateNow('local-backup.error.cleanupFailed'),
       });
       return null;
+    }
+  }, []);
+
+  return { state, trigger, reset: () => setState({ status: 'idle' }) };
+}
+
+/**
+ * 恢复受理（管理员专属）。
+ *
+ * **受理 ≠ 恢复**：受理只写入"已被授权确认"的事实；
+ * 服务端在受理前会再次检查权限、目标设备与保护副本，失败如实上抛（不乐观降级）。
+ */
+export function useRestoreAcceptance() {
+  const [state, setState] = useState<ActionState<LocalRestoreAcceptance>>({
+    status: 'idle',
+  });
+
+  const trigger = useCallback(async (restoreId: string) => {
+    setState({ status: 'running' });
+
+    try {
+      const data = await acceptLocalRestore(restoreId);
+      setState({ status: 'succeeded', data });
+    } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        setState({ status: 'forbidden', message: forbiddenMessage() });
+        return;
+      }
+      setState({
+        status: 'failed',
+        message: isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('local-backup.error.acceptFailed'),
+      });
     }
   }, []);
 

@@ -27,6 +27,7 @@ const adapters = vi.hoisted(() => ({
   startManualLocalBackup: vi.fn(),
   cleanupLocalBackupPackages: vi.fn(),
   precheckLocalRestore: vi.fn(),
+  acceptLocalRestore: vi.fn(),
   fetchLocalRestoreCapability: vi.fn(),
 }));
 
@@ -114,6 +115,14 @@ beforeEach(() => {
     cleaned: 0,
     retained: 0,
     items: [],
+  });
+  adapters.acceptLocalRestore.mockResolvedValue({
+    restoreId: 'restore-1',
+    accepted: true,
+    backupId: RECORD.backupId,
+    protectionBackupId: 'protection-1',
+    organizationId: 4,
+    acceptedAt: '2026-11-23T00:00:00.000Z',
   });
   adapters.precheckLocalRestore.mockResolvedValue({
     restoreId: 'restore-1',
@@ -342,5 +351,53 @@ describe('备份与恢复面板', () => {
 
       expect(accessibleName.length).toBeGreaterThan(0);
     }
+  });
+
+  it('预检未通过时不提供受理入口', async () => {
+    render(<LocalBackupPanel canPrecheck={true} />);
+
+    const action = await screen.findByRole('button', { name: '恢复预检' });
+    fireEvent.click(action);
+
+    await waitFor(() => {
+      expect(screen.getByText(/预检未通过/)).toBeTruthy();
+    });
+    expect(screen.queryByRole('button', { name: '确认受理本次恢复' })).toBeNull();
+  });
+
+  it('预检通过后给出受理入口；受理如实展示且不冒充恢复成功', async () => {
+    adapters.precheckLocalRestore.mockResolvedValue({
+      restoreId: 'restore-1',
+      outcome: 'PASSED',
+      checkedAt: '2026-11-23T00:00:00.000Z',
+      targetBackupId: RECORD.backupId,
+      targetOrganizationId: 4,
+      targetInstallationId: 'inst-1',
+      manifestChecksum: null,
+      packageReadable: true,
+      fileCount: 1,
+      originalCount: 0,
+      verifiedFileCount: 1,
+      protectionBackupId: 'protection-1',
+      protectionCreated: true,
+      findings: [],
+    });
+
+    render(<LocalBackupPanel canPrecheck={true} />);
+
+    const action = await screen.findByRole('button', { name: '恢复预检' });
+    fireEvent.click(action);
+
+    const acceptButton = await screen.findByRole('button', { name: '确认受理本次恢复' });
+    fireEvent.click(acceptButton);
+
+    await waitFor(() => {
+      expect(adapters.acceptLocalRestore).toHaveBeenCalledWith('restore-1');
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/已受理/)).toBeTruthy();
+    });
+    // 受理 ≠ 恢复：页面必须明说，不把受理显示成恢复成功
+    expect(screen.getByText(/受理不等于恢复成功/)).toBeTruthy();
   });
 });

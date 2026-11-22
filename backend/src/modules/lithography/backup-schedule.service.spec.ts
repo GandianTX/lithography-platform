@@ -5,6 +5,11 @@ import { ProtectedBackupService } from '@src/modules/lithography/protected-backu
 import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 describe('backup schedule service', () => {
+  /** 云备份用途的签名声明（用途维度 S4：备份只认云备份用途的凭据） */
+  const CLOUD_BACKUP_CLAIMS = JSON.stringify({ purpose: 'CLOUD_BACKUP' });
+  /** 业务同步用途的签名声明（**不得**被拿来决定备份范围） */
+  const BUSINESS_SYNC_CLAIMS = JSON.stringify({ purpose: 'BUSINESS_SYNC' });
+
   const buildService = (
     overrides: {
       settings?: Record<string, unknown>[];
@@ -213,7 +218,9 @@ describe('backup schedule service', () => {
   it('计划初始化：首次建立启用的 72h 计划，首次到期＝初始化＋72h', async () => {
     const { service, savedSettings } = buildService({
       settings: [],
-      authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
+      authorizations: [
+        { organizationId: 4, authorizationStatus: 'ACTIVE', signedClaims: CLOUD_BACKUP_CLAIMS },
+      ],
       installation: { installationId: 'inst-1' },
     });
     const result = await service.runOnce(now);
@@ -226,6 +233,32 @@ describe('backup schedule service', () => {
     expect((plan['nextBackupAt'] as Date).getTime()).toBe(now.getTime() + 72 * 3_600_000);
     // 云自动上云默认关闭，单独控制
     expect(plan['autoUploadEnabled']).toBe(false);
+  });
+
+  it('用途维度（S4）：只有业务同步授权时不初始化备份计划（不复用业务同步授权）', async () => {
+    const { service, savedSettings } = buildService({
+      settings: [],
+      authorizations: [
+        { organizationId: 4, authorizationStatus: 'ACTIVE', signedClaims: BUSINESS_SYNC_CLAIMS },
+      ],
+      installation: { installationId: 'inst-1' },
+    });
+    const result = await service.runOnce(now);
+
+    expect(result.initialized).toBe(0);
+    expect(savedSettings).toHaveLength(0);
+  });
+
+  it('用途维度（S4）：声明缺失（用途不可核验）时不初始化备份计划（失败关闭）', async () => {
+    const { service, savedSettings } = buildService({
+      settings: [],
+      authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
+      installation: { installationId: 'inst-1' },
+    });
+    const result = await service.runOnce(now);
+
+    expect(result.initialized).toBe(0);
+    expect(savedSettings).toHaveLength(0);
   });
 
   it('旧行兼容：已有计划行的公司不重复初始化，也不回填旧行', async () => {
@@ -241,7 +274,9 @@ describe('backup schedule service', () => {
           nextBackupAt: null,
         },
       ],
-      authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
+      authorizations: [
+        { organizationId: 4, authorizationStatus: 'ACTIVE', signedClaims: CLOUD_BACKUP_CLAIMS },
+      ],
       installation: { installationId: 'inst-1' },
     });
     const result = await service.runOnce(now);
@@ -254,7 +289,9 @@ describe('backup schedule service', () => {
     const conflict = Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY' });
     const { service, savedSettings } = buildService({
       settings: [],
-      authorizations: [{ organizationId: 4, authorizationStatus: 'ACTIVE' }],
+      authorizations: [
+        { organizationId: 4, authorizationStatus: 'ACTIVE', signedClaims: CLOUD_BACKUP_CLAIMS },
+      ],
       installation: { installationId: 'inst-1' },
       saveError: conflict,
     });

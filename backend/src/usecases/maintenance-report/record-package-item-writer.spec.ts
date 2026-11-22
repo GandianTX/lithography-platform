@@ -7,7 +7,9 @@
  * 守住补丁要求的关键行为：
  * - 按包内事实落库：**保持 record_uuid、原作者、公司、版本与业务状态**，
  *   并写入同版本冻结版本行（不是"新建一个无关草稿"）；
- * - 缺来源账号／缺来源状态／带原件／工单总结来源 → 失败关闭，不静默降级、不冒用账号。
+ * - 缺来源账号／缺来源状态／带原件／工单总结来源 → 失败关闭，不静默降级、不冒用账号；
+ * - **来源身份不可信时（P4）→ 写业务之前就拒绝**：包内自报的来源账号不是授权真源，
+ *   账号不存在／已停用／归属已变更／导入者对它没有当前权限都必须拒绝该条。
  */
 
 import { MaintenanceReportRecordPackageItemWriter } from './record-package-item-writer';
@@ -63,7 +65,40 @@ const REQUEST = {
   sourceStatus: 'SUBMITTED',
 };
 
-function buildWriter(options: { insertError?: Error } = {}) {
+/**
+ * 默认核验替身：按端口契约的口径拒绝"缺来源账号"，其余放行并带回来源账号。
+ * 具体裁决逻辑（账号状态／归属公司／导入者权限）由 core 策略与其单测负责。
+ */
+function buildVerifier(override?: {
+  verify: (params: {
+    sourceAccountId: number | null;
+    ownerOrganizationId: number | null;
+    targetOrganizationId: number;
+    importerAccountId: number;
+  }) => Promise<{ allowed: true; sourceAccountId: number } | { allowed: false; reason: string }>;
+}) {
+  return {
+    verify: jest.fn(
+      override?.verify ??
+        ((params: { sourceAccountId: number | null }) =>
+          Promise.resolve(
+            params.sourceAccountId === null
+              ? {
+                  allowed: false as const,
+                  reason: '包内未携带来源账号，原作者不可核验（不以导入人冒充原作者），该条未导入',
+                }
+              : { allowed: true as const, sourceAccountId: params.sourceAccountId },
+          )),
+    ),
+  };
+}
+
+function buildWriter(
+  options: {
+    insertError?: Error;
+    verifier?: ReturnType<typeof buildVerifier>;
+  } = {},
+) {
   const insertReport = jest.fn((_data?: Record<string, unknown>) => {
     if (options.insertError !== undefined) {
       return Promise.reject(options.insertError);
@@ -76,6 +111,7 @@ function buildWriter(options: { insertError?: Error } = {}) {
   const insertVersionAttachments = jest.fn(
     (_versionId?: unknown, _reportId?: unknown, _rows?: unknown) => Promise.resolve(undefined),
   );
+  const verifier = options.verifier ?? buildVerifier();
   const writer = new MaintenanceReportRecordPackageItemWriter(
     {
       insertReport,
@@ -84,9 +120,10 @@ function buildWriter(options: { insertError?: Error } = {}) {
     } as never,
     {} as never,
     {} as never,
+    verifier as never,
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
   );
-  return { writer, insertReport, insertVersion, insertVersionAttachments };
+  return { writer, insertReport, insertVersion, insertVersionAttachments, verifier };
 }
 
 describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
@@ -229,8 +266,15 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
     expect(insertData.updatedByAccountId).toBe(900101);
   });
 
-  it('P4｜伪造包内账号：库层拒绝即该条失败，不静默改成导入人', async () => {
-    const { writer, insertReport } = buildWriter({ insertError: new Error('外键约束失败') });
+  it('P4｜伪造包内账号（本机不存在该账号）：写业务之前即拒绝该条', async () => {
+    const verifier = buildVerifier({
+      verify: () =>
+        Promise.resolve({
+          allowed: false as const,
+          reason: '包内来源账号在本机不存在，原作者不可核验，该条未导入',
+        }),
+    });
+    const { writer, insertReport } = buildWriter({ verifier });
 
     const outcome = await writer.write({ ...REQUEST, sourceAccountId: 999999999 }, {
       ...(SESSION as object),
@@ -238,30 +282,86 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
     } as never);
 
     expect(outcome.status).toBe('FAILED');
-    expect(outcome.reason).toContain('受控写入被拒绝');
-    // 关键：失败路径不得回退成"用导入人当作者"——写入参数里作者恒为包内来源账号
-    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
-    expect(insertData.createdByAccountId).toBe(999999999);
+    expect(outcome.reason).toContain('不存在');
+    // 关键：不可信来源账号不得落到业务行（不写、更不回退成导入人）
+    expect(insertReport).not.toHaveBeenCalled();
   });
 
-  it('P4｜同公司他人：作者恒为包内来源账号，导入者不被写入业务行', async () => {
-    const { writer, insertReport } = buildWriter();
+  it('P4｜来源账号已停用：写业务之前即拒绝该条', async () => {
+    const verifier = buildVerifier({
+      verify: () =>
+        Promise.resolve({
+          allowed: false as const,
+          reason: '包内来源账号已停用（INACTIVE），该条未导入',
+        }),
+    });
+    const { writer, insertReport } = buildWriter({ verifier });
 
-    await writer.write({ ...REQUEST, sourceAccountId: 900202 }, SESSION);
+    const outcome = await writer.write(REQUEST, SESSION);
 
-    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
-    expect(insertData.createdByAccountId).toBe(900202);
-    expect(insertData.updatedByAccountId).toBe(900202);
-    // 导入会话账号（900101）不得出现在作者字段
-    expect(insertData.createdByAccountId).not.toBe(900101);
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('已停用');
+    expect(insertReport).not.toHaveBeenCalled();
   });
 
-  it('受控写入被库层拒绝时如实带回失败原因', async () => {
-    const { writer } = buildWriter({ insertError: new Error('外键约束失败') });
+  it('P4｜归属变化（来源账号已离开本公司）：写业务之前即拒绝该条', async () => {
+    const verifier = buildVerifier({
+      verify: () =>
+        Promise.resolve({
+          allowed: false as const,
+          reason: '包内来源账号已离开本公司，该条未导入',
+        }),
+    });
+    const { writer, insertReport } = buildWriter({ verifier });
+
+    const outcome = await writer.write(REQUEST, SESSION);
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('已离开本公司');
+    expect(insertReport).not.toHaveBeenCalled();
+  });
+
+  it('P4｜同公司他人（工程师无当前权限）：拒绝该条，且导入者不被写入业务行', async () => {
+    const verifier = buildVerifier({
+      verify: () =>
+        Promise.resolve({
+          allowed: false as const,
+          reason: '工程师只能导入本公司当前有权记录（包内来源账号为同公司他人），该条未导入',
+        }),
+    });
+    const { writer, insertReport } = buildWriter({ verifier });
+
+    const outcome = await writer.write({ ...REQUEST, sourceAccountId: 900202 }, SESSION);
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('当前有权');
+    expect(insertReport).not.toHaveBeenCalled();
+  });
+
+  it('P4｜核验通过时使用**已核验**的来源账号写入作者，不使用包内原值', async () => {
+    const verifier = buildVerifier({
+      verify: () => Promise.resolve({ allowed: true as const, sourceAccountId: 900303 }),
+    });
+    const { writer, insertReport } = buildWriter({ verifier });
+
+    const outcome = await writer.write({ ...REQUEST, sourceAccountId: 900303 }, SESSION);
+
+    expect(outcome.status).toBe('CREATED');
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertData.createdByAccountId).toBe(900303);
+    expect(insertData.updatedByAccountId).toBe(900303);
+  });
+
+  it('受控写入被库层拒绝时如实带回失败原因，且不回退成导入人', async () => {
+    const { writer, insertReport } = buildWriter({ insertError: new Error('外键约束失败') });
 
     const outcome = await writer.write(REQUEST, SESSION);
 
     expect(outcome.status).toBe('FAILED');
     expect(outcome.reason).toContain('外键约束失败');
+    // 失败路径不得把作者改成导入人
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertData.createdByAccountId).toBe(REQUEST.sourceAccountId);
+    expect(insertData.createdByAccountId).not.toBe(900202);
   });
 });

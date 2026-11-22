@@ -57,6 +57,10 @@ describe('包内原件暂存（S3 补丁 P3）', () => {
 
     expect(staged).toHaveLength(1);
     expect(staged[0].checksumSha256).toBe(sha256);
+    // 回归：扩展名必须**不带点**传给存储层
+    // （存储层 `FILE_EXTENSION_PATTERN` 只接受 `^[a-z0-9]{1,8}$`；
+    //  带点会让任何带原件的记录包在暂存阶段失败关闭——跨安装真实验证时发现）
+    expect(save).toHaveBeenCalledWith(content, 'pdf');
     expect(staged[0].byteSize).toBe(content.length);
     expect(save).toHaveBeenCalledTimes(1);
     expect(insertStagedFile).toHaveBeenCalledTimes(1);

@@ -167,6 +167,7 @@ function buildUsecase(
         scanComplete: true,
       }),
     } as never,
+    { assertCompanyWritable: jest.fn().mockResolvedValue(undefined) } as never,
     {
       get: jest.fn(() => {
         if (options.writer === undefined) {
@@ -183,6 +184,7 @@ function buildUsecase(
 
 const WRITER_OK = {
   supportedResourceTypes: ['MAINTENANCE_REPORT'],
+  verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
   write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
 };
 
@@ -230,6 +232,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('重复导入：同键回执已存在即跳过，不重复写入', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
     };
     const { usecase, writeItemResult } = buildUsecase({ writer, receiptExists: true });
@@ -270,6 +273,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('部分写入失败：逐条如实记失败与原因，批次记失败', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest
         .fn()
         .mockResolvedValue({ status: 'FAILED', localRecordId: null, reason: '机型不存在' }),
@@ -298,6 +302,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('中断重试：已成功的条目不重做，未完成的条目继续', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
     };
     const { usecase, writeItemResult } = buildUsecase({
@@ -338,6 +343,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('P5｜同键不同摘要：判冲突，不覆盖既有事实', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
     };
     const { usecase, writeItemResult } = buildUsecase({
@@ -364,6 +370,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('P5｜本机同编号记录已删除／下架：拒绝导入（不复活已删除下架内容）', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
     };
     const { usecase, writeItemResult } = buildUsecase({
@@ -389,6 +396,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('P5｜本机已有更高版本：判冲突，不覆盖更高版本', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
     };
     const { usecase, writeItemResult } = buildUsecase({
@@ -414,6 +422,7 @@ describe('S3 自检 · 记录包链路', () => {
   it('非本轮数据不变：导入只写本批次条目，不触碰其他条目', async () => {
     const writer = {
       supportedResourceTypes: ['MAINTENANCE_REPORT'],
+      verifySourceIdentity: jest.fn().mockResolvedValue({ allowed: true, sourceAccountId: 900101 }),
       write: jest.fn().mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null }),
     };
     const { usecase, writeItemResult } = buildUsecase({

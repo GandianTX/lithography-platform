@@ -1,6 +1,6 @@
 // frontend/e2e/task09-local-pages-visual.spec.ts
 
-import { expect, type Page, type Route,test } from '@playwright/test';
+import { expect, type Page, type Route, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';

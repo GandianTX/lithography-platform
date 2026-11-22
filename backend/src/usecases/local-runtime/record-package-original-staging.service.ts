@@ -11,10 +11,12 @@
  *   把登记事实交给来源域写入方在**自身事务内**绑定；
  * - 写入方因此**永远拿不到路径**，只有 `fileId`/`uploadContextId`。
  *
- * 失败补偿口径（与任务 11 既有契约一致）：**不删除**已落盘的字节，暂存行停在
- * `TEMPORARY`（可追踪、无业务绑定）；导入逐条结果如实登记失败原因。
- * 任务 11 目前**没有**过期暂存清理任务（无 delete 接口），因此"孤儿暂存自动清理"
- * 是明确缺口，不在此伪装成已实现。
+ * 失败补偿口径（与任务 11 既有契约一致）：**不删除**已落盘的字节；
+ * 暂存成功但后续绑定／业务写失败时，按 fileId **精确释放**（标记 FAILED、行保留可追踪，
+ * 见 `release`），不批量扫、不动已绑定原件与他人对象；
+ * 导入逐条结果如实登记失败原因。
+ * 过期暂存的**自动清理**（保留窗口到期后回收字节）由独立的清理任务承担
+ * （`stored-file-retention` 链），不在导入热路径上删字节。
  */
 
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
@@ -121,12 +123,16 @@ export class RecordPackageOriginalStagingService {
     }
 
     const content = readFileSync(absolutePath);
-    const extension = nodePath.extname(file.relative_path).toLowerCase();
+    // 扩展名：路径取到的形如 ".pdf"，而存储层只接受**不带点**的小写扩展名
+    // （`local-reference-document-storage.ts` 的 `FILE_EXTENSION_PATTERN`）——
+    // 直接把带点的值传下去会让**任何带原件的记录包**在暂存阶段失败关闭。
+    const extensionWithDot = nodePath.extname(file.relative_path).toLowerCase();
+    const extension = extensionWithDot.replace(/^\./, '');
     const storageReference = await this.storage.save(content, extension);
     const fileId = randomUUID();
     const uploadContextId = randomUUID();
     const originalFilename = nodePath.basename(file.relative_path);
-    const mimeType = MIME_BY_EXTENSION.get(extension) ?? 'application/octet-stream';
+    const mimeType = MIME_BY_EXTENSION.get(extensionWithDot) ?? 'application/octet-stream';
 
     await this.storedFileService.insertStagedFile({
       fileId,
@@ -149,5 +155,30 @@ export class RecordPackageOriginalStagingService {
       byteSize: file.byte_size,
       checksumSha256: file.sha256,
     };
+  }
+
+  /**
+   * **精确补偿**：释放本次尝试自己登记、且尚未被任何业务绑定的暂存原件。
+   *
+   * 场景：暂存成功 → 来源域写入方失败（绑定失败／业务写失败／写入抛错）。
+   * 此时写入方的事务已回滚，绑定随之回滚，这些暂存行会变成"永远不会被绑定"的孤儿行。
+   *
+   * 口径：
+   * - **只释放调用方指名的这些 fileId**，不按条件批量扫 → 不动他人／他公司的对象；
+   * - **只释放未被业务绑定的行**（VALID + TEMPORARY + business_id 为空）→
+   *   不动既有原件，也不与并发绑定抢同一行；
+   * - **行保留、标记为 FAILED**（可追踪：fileId／上传者／归属公司／摘要仍在），
+   *   **不物理删行、不删字节**；字节的过期回收由过期暂存清理任务统一处理
+   *   （见 `stored-file-retention` 清理链），避免在导入热路径上删字节。
+   *
+   * 补偿本身失败**不掩盖**主失败：调用方按"补偿未完成"如实登记，业务失败原因优先。
+   */
+  async release(staged: readonly StagedPackageOriginal[]): Promise<number> {
+    if (staged.length === 0) {
+      return 0;
+    }
+    return this.storedFileService.releaseTemporaryFiles({
+      fileIds: staged.map((file) => file.fileId),
+    });
   }
 }

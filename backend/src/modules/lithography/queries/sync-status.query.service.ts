@@ -4,6 +4,11 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
 
+import {
+  hasCredentialPurpose,
+  LOCAL_CREDENTIAL_PURPOSE,
+} from '@core/local-runtime/policy/local-credential-purpose.policy';
+
 import { LocalAccountAuthorizationEntity } from '../entities/local-account-authorization.entity';
 import { LocalUploadTaskEntity } from '../entities/local-upload-task.entity';
 import { SyncConflictEntity } from '../entities/sync-conflict.entity';
@@ -199,6 +204,17 @@ export class SyncStatusQueryService {
       },
     });
     for (const row of rows) {
+      // 用途维度（S4）：业务同步只认**业务同步用途**的凭据；
+      // 云备份凭据不得充数（否则"已授权同步"会被一份备份凭据点亮）。
+      // 用途不可核验 → 不计入（"未取得该事实"，由上层按"未知"处理，不判定为失效）。
+      if (
+        !hasCredentialPurpose(
+          typeof row.signedClaims === 'string' ? row.signedClaims : null,
+          LOCAL_CREDENTIAL_PURPOSE.BUSINESS_SYNC,
+        )
+      ) {
+        continue;
+      }
       const status = row.authorizationStatus === 'REVOKED' ? 'REVOKED' : 'ACTIVE';
       result.set(row.accountId, status);
     }

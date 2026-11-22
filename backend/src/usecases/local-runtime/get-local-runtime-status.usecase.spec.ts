@@ -65,16 +65,18 @@ describe('GetLocalRuntimeStatusUsecase 范围收敛', () => {
       ),
     };
 
-    return new GetLocalRuntimeStatusUsecase(
+    const usecase = new GetLocalRuntimeStatusUsecase(
       localRuntimeQueryService as unknown as LocalRuntimeQueryService,
       localCompanySettingQueryService as unknown as LocalCompanySettingQueryService,
       scopeResolver as unknown as LocalRuntimeScopeResolver,
       storageProbe,
     );
+
+    return { usecase, readTaskStatusSummary: localRuntimeQueryService.readTaskStatusSummary };
   };
 
   it('一级管理员（全局范围）可见全设备任务计数与设备映射公司', async () => {
-    const usecase = makeUsecase({ adminLevel: 1, organizationId: null, role: 'ADMIN_LEVEL_1' });
+    const { usecase } = makeUsecase({ adminLevel: 1, organizationId: null, role: 'ADMIN_LEVEL_1' });
 
     const view = await usecase.execute({ session });
 
@@ -83,28 +85,45 @@ describe('GetLocalRuntimeStatusUsecase 范围收敛', () => {
     expect(view.mappedOrganizationCode).toBe('COMPANY_A');
   });
 
-  it('二级管理员不属于设备映射公司时，任务计数与映射公司都为 null', async () => {
-    const usecase = makeUsecase({ adminLevel: 2, organizationId: 5, role: 'ADMIN_LEVEL_2' });
+  it('二级管理员不属于设备映射公司时：映射公司为 null，任务计数按本公司口径给出', async () => {
+    const { usecase } = makeUsecase({ adminLevel: 2, organizationId: 5, role: 'ADMIN_LEVEL_2' });
 
     const view = await usecase.execute({ session });
 
-    expect(view.tasks).toBeNull();
+    // 归属列已由增量迁移 1775503000000 落地 → 公司范围可安全给出**本公司**计数
+    expect(view.tasks).toEqual(taskSummary);
     expect(view.mappedOrganizationId).toBeNull();
     expect(view.mappedOrganizationCode).toBeNull();
     expect(view.scopeOrganizationId).toBe(5);
   });
 
-  it('工程师属于设备映射公司时可看到映射公司，但任务计数仍为 null（非全局范围）', async () => {
-    const usecase = makeUsecase({ adminLevel: null, organizationId: 4, role: 'ENGINEER' });
+  it('工程师属于设备映射公司时：可见映射公司与本公司任务计数', async () => {
+    const { usecase } = makeUsecase({ adminLevel: null, organizationId: 4, role: 'ENGINEER' });
 
     const view = await usecase.execute({ session });
 
     expect(view.mappedOrganizationId).toBe(4);
-    expect(view.tasks).toBeNull();
+    expect(view.tasks).toEqual(taskSummary);
+  });
+
+  it('任务计数按查看者范围取数：一级管理员＝全设备，其余＝本公司', async () => {
+    const global = makeUsecase({ adminLevel: 1, organizationId: null, role: 'ADMIN_LEVEL_1' });
+    await global.usecase.execute({ session });
+    expect(global.readTaskStatusSummary).toHaveBeenCalledWith(
+      '6f1c2a3e-0a11-4b22-9c33-112233445566',
+      { organizationId: null },
+    );
+
+    const scoped = makeUsecase({ adminLevel: 2, organizationId: 5, role: 'ADMIN_LEVEL_2' });
+    await scoped.usecase.execute({ session });
+    expect(scoped.readTaskStatusSummary).toHaveBeenCalledWith(
+      '6f1c2a3e-0a11-4b22-9c33-112233445566',
+      { organizationId: 5 },
+    );
   });
 
   it('安装身份缺失时失败关闭，不返回空壳状态', async () => {
-    const usecase = makeUsecase(
+    const { usecase } = makeUsecase(
       { adminLevel: 1, organizationId: null, role: 'ADMIN_LEVEL_1' },
       null,
     );

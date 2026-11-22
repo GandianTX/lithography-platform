@@ -1,6 +1,6 @@
 // src/features/my-records/ui/my-records-list.tsx
 
-import { type ReactNode,useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import type { TableColumnsType } from 'antd';
 import { Tag } from 'antd';
 import {

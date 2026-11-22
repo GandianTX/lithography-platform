@@ -121,7 +121,7 @@ export const ZH_CN_MESSAGES = {
   'local-settings.authorizations.lastVerifiedAt': '最近校验',
   'local-settings.authorizations.purpose': '凭据用途',
   'local-settings.tasks.notVisible':
-    '本机任务未按公司归属登记，全设备计数仅对一级管理员展示；二级管理员与工程师不显示数量。',
+    '本机任务计数按公司归属登记；当前范围看不到本公司的任务计数（如本机尚未登记本公司任务）。',
   'local-settings.value.businessSync': '业务同步',
   'local-settings.field.installationId': '安装标识',
   'local-settings.field.localSiteName': '现场名称',
@@ -184,6 +184,16 @@ export const ZH_CN_MESSAGES = {
   'local-backup.error.manualFailed': '手动备份失败，请稍后重试。',
   'local-backup.error.cleanupFailed': '本地备份包清理失败，请稍后重试。',
   'local-backup.error.precheckFailed': '恢复预检失败，请稍后重试。',
+  'local-backup.error.acceptFailed': '恢复受理失败，请稍后重试。',
+  'local-backup.restore.acceptAction': '确认受理本次恢复',
+  'local-backup.restore.acceptTitle': '恢复受理结果',
+  'local-backup.restore.acceptSucceeded': '已受理：本次恢复已被授权确认。',
+  'local-backup.restore.acceptedNotice':
+    '受理不等于恢复成功：本次操作只记录「已被授权确认」的事实，不恢复数据、不冻结写入；实际恢复能力以下方提示为准。',
+  'local-backup.restore.acceptRejected': '本次恢复未受理，请按预检结论处理。',
+  'local-backup.restore.acceptedAt': '受理时间',
+  'local-backup.restore.protectionBackupId': '保护副本标识',
+
   'local-backup.error.unknownReason': '原因未登记',
   'local-runtime.error.statusLoadFailed': '本机状态读取失败，请稍后重试。',
   // 受控原因码文案（后端只给受控码，未知码走 unknownReason 兜底）

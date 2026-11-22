@@ -8,6 +8,7 @@ import type {
   LocalBackupRecordDetail,
   LocalBackupRecordPage,
   LocalBackupSetting,
+  LocalRestoreAcceptance,
   LocalRestoreCapability,
   LocalRestorePrecheckResult,
   StartManualLocalBackupResult,
@@ -119,6 +120,19 @@ const START_MANUAL_LOCAL_BACKUP_MUTATION = `
   }
 `;
 
+const ACCEPT_LOCAL_RESTORE_MUTATION = `
+  mutation AcceptLocalRestore($restoreId: String!) {
+    acceptLocalRestore(restoreId: $restoreId) {
+      restoreId
+      accepted
+      backupId
+      protectionBackupId
+      organizationId
+      acceptedAt
+    }
+  }
+`;
+
 const PRECHECK_LOCAL_RESTORE_MUTATION = `
   mutation PrecheckLocalRestore($backupId: String!) {
     precheckLocalRestore(backupId: $backupId) {
@@ -222,6 +236,21 @@ export async function startManualLocalBackup(
   );
 
   return payload.startManualLocalBackup;
+}
+
+/**
+ * 恢复受理（管理员专属）。
+ *
+ * **受理 ≠ 恢复**：只写入"已被授权确认"的事实，不恢复数据、不冻结写入、不产生成功结论；
+ * 服务端在受理前会再次检查权限、目标设备与保护副本。
+ */
+export async function acceptLocalRestore(restoreId: string): Promise<LocalRestoreAcceptance> {
+  const payload = await executeGraphQL<
+    { acceptLocalRestore: LocalRestoreAcceptance },
+    { restoreId: string }
+  >(ACCEPT_LOCAL_RESTORE_MUTATION, { restoreId }, { fetchPolicy: 'no-cache' });
+
+  return payload.acceptLocalRestore;
 }
 
 export async function precheckLocalRestore(backupId: string): Promise<LocalRestorePrecheckResult> {

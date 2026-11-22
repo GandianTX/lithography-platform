@@ -39,6 +39,7 @@ export const REQUIRED_TABLES = [
   'local_installation',
   'local_upload_task',
   'local_backup_run',
+  'local_write_hold',
   'engineer_registration_application',
   'stored_file',
   'repair_request_intake',
@@ -168,6 +169,7 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
   { table: 'local_upload_task', index: 'idx_local_upload_task_status_created' },
   { table: 'local_upload_task', index: 'idx_local_upload_task_record_uuid' },
   { table: 'local_upload_task', index: 'idx_local_upload_task_binding' },
+  { table: 'local_write_hold', index: 'idx_local_write_hold_scope' },
   { table: 'local_backup_run', index: 'uk_local_backup_run_active_company' },
   { table: 'local_backup_run', index: 'idx_local_backup_run_started' },
   { table: 'local_backup_run', index: 'idx_local_backup_run_organization' },
@@ -1274,6 +1276,7 @@ export const DELIVERY_INDEXES: ReadonlyArray<string> = [
   'local_company_setting.uk_local_company_setting_scope',
   'local_upload_task.idx_local_upload_task_record_uuid',
   'local_upload_task.idx_local_upload_task_binding',
+  'local_write_hold.idx_local_write_hold_scope',
   'maintenance_report_fault.idx_maintenance_report_fault_report',
   'maintenance_report_fault.uk_maintenance_report_fault_uuid',
   'maintenance_report.uk_maintenance_report_submission',
@@ -1333,6 +1336,8 @@ export const DELIVERY_FOREIGN_KEYS: ReadonlyArray<string> = [
   'local_account_authorization.fk_local_account_authorization_account',
   'local_upload_task.fk_local_upload_task_account',
   'local_upload_task.fk_local_upload_task_organization',
+  'local_write_hold.fk_local_write_hold_installation',
+  'local_write_hold.fk_local_write_hold_organization',
   'local_account_authorization.fk_local_account_authorization_installation',
   'local_account_authorization.fk_local_account_authorization_organization',
   'local_backup_run.fk_local_backup_run_organization',
@@ -1785,6 +1790,16 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
   constraint: string;
   referencedTable: string;
 }> = [
+  {
+    table: 'local_write_hold',
+    constraint: 'fk_local_write_hold_installation',
+    referencedTable: 'local_installation',
+  },
+  {
+    table: 'local_write_hold',
+    constraint: 'fk_local_write_hold_organization',
+    referencedTable: 'organization',
+  },
   {
     table: 'base_user_info',
     constraint: 'base_user_info_ibfk_1',
@@ -2424,6 +2439,7 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
   maintenance_report_review: 1775401300000,
   local_installation: 1775401400000,
   local_upload_task: 1775401400000,
+  local_write_hold: 1775503200000,
   local_backup_run: 1775401400000,
   engineer_registration_application: 1775401500000,
   stored_file: 1775501200000,
@@ -2518,6 +2534,7 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'local_upload_task.idx_local_upload_task_status_created': 1775401400000,
   'local_upload_task.idx_local_upload_task_record_uuid': 1775501100000,
   'local_upload_task.idx_local_upload_task_binding': 1775503000000,
+  'local_write_hold.idx_local_write_hold_scope': 1775503200000,
   'local_backup_run.uk_local_backup_run_active_company': 1775501100000,
   'local_backup_run.idx_local_backup_run_started': 1775401400000,
   'local_backup_run.idx_local_backup_run_organization': 1775501100000,
@@ -3274,6 +3291,8 @@ const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
   'local_installation.fk_local_installation_organization': 1775401400000,
   'local_upload_task.fk_local_upload_task_installation': 1775401400000,
   'local_upload_task.fk_local_upload_task_organization': 1775503000000,
+  'local_write_hold.fk_local_write_hold_installation': 1775503200000,
+  'local_write_hold.fk_local_write_hold_organization': 1775503200000,
   'local_upload_task.fk_local_upload_task_account': 1775503000000,
   'local_backup_run.fk_local_backup_run_installation': 1775401400000,
   'engineer_registration_application.fk_engineer_registration_application_account': 1775401500000,
@@ -3619,6 +3638,10 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'local_upload_task.idx_local_upload_task_binding': {
     unique: false,
     columns: ['installation_id', 'organization_id', 'account_id'],
+  },
+  'local_write_hold.idx_local_write_hold_scope': {
+    unique: false,
+    columns: ['installation_id', 'organization_id', 'status'],
   },
   'local_backup_run.uk_local_backup_run_active_company': {
     unique: true,
@@ -4140,6 +4163,20 @@ export const FOREIGN_KEY_DEFINITIONS: Readonly<Record<string, ForeignKeyDefiniti
     referenceTable: 'local_installation',
     localColumns: ['installation_id'],
     referenceColumns: ['installation_id'],
+  },
+  'local_write_hold.fk_local_write_hold_installation': {
+    referenceTable: 'local_installation',
+    localColumns: ['installation_id'],
+    referenceColumns: ['installation_id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'local_write_hold.fk_local_write_hold_organization': {
+    referenceTable: 'organization',
+    localColumns: ['organization_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
   },
   'local_upload_task.fk_local_upload_task_organization': {
     referenceTable: 'organization',

@@ -139,6 +139,7 @@ function buildUsecase(
       cancelUploadTask,
       requeueUploadTask,
     } as never,
+    { assertCompanyWritable: jest.fn().mockResolvedValue(undefined) } as never,
     localRuntimeQueryService as never,
     sourceRecordQueryService as never,
     syncStatusQueryService as never,
