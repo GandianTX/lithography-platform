@@ -24,6 +24,8 @@ export const LOCAL_BACKUP_FAILURE_REASON = {
   CLEANUP_INTERRUPTED: 'LOCAL_CLEANUP_INTERRUPTED',
   /** 云接收端未接入，自动上云不可用 */
   UPLOAD_RECEIVER_MISSING: 'LOCAL_UPLOAD_RECEIVER_MISSING',
+  /** 云端备份包服务未接入（R-02）：元数据与下载一律失败关闭，不伪造可用云包 */
+  CLOUD_PACKAGES_UNAVAILABLE: 'LOCAL_CLOUD_PACKAGES_UNAVAILABLE',
   /** 云端上传失败（底层原因只进服务端日志） */
   UPLOAD_FAILED: 'LOCAL_UPLOAD_FAILED',
   /** 备份包生成失败（底层原因只进服务端日志） */

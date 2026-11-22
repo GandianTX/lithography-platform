@@ -42,6 +42,7 @@ import {
 import { ExportRecordPackageUsecase } from '@src/usecases/local-runtime/export-record-package.usecase';
 import { ImportRecordPackageUsecase } from '@src/usecases/local-runtime/import-record-package.usecase';
 import { UpdateLocalBackupPlanUsecase } from '@src/usecases/local-runtime/update-local-backup-plan.usecase';
+import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
 import { GetLocalRestoreCapabilityUsecase } from '@src/usecases/local-runtime/get-local-restore-capability.usecase';
@@ -178,6 +179,7 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
         { provide: ExportRecordPackageUsecase, useValue: { execute: jest.fn() } },
         { provide: ImportRecordPackageUsecase, useValue: { execute: jest.fn() } },
         { provide: UpdateLocalBackupPlanUsecase, useValue: { execute: jest.fn() } },
+        { provide: ListLocalBackupCloudPackagesUsecase, useValue: { execute: jest.fn() } },
         { provide: ListSyncConflictsUsecase, useValue: { execute: jest.fn() } },
         { provide: GetSyncConflictUsecase, useValue: { execute: jest.fn() } },
         { provide: ResolveSyncConflictUsecase, useValue: { execute: jest.fn() } },
@@ -509,6 +511,7 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
       const mutationNames = Object.keys(schema().getMutationType()?.getFields() ?? {}).sort();
 
       expect(queryNames).toEqual([
+        'localBackupCloudPackages',
         'localBackupRecord',
         'localBackupRecords',
         'localBackupSettings',

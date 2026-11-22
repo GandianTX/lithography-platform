@@ -13,6 +13,7 @@ import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
 import {
   LocalBackupCleanupMode,
   LocalBackupCleanupResultDTO,
+  LocalBackupCloudPackageListDTO,
   LocalBackupRecordDetailDTO,
   LocalBackupRecordPageDTO,
   LocalBackupSettingDTO,
@@ -25,6 +26,7 @@ import {
   toLocalBackupSettingDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
 import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
+import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
 import { GetLocalRestoreCapabilityUsecase } from '@src/usecases/local-runtime/get-local-restore-capability.usecase';
@@ -50,6 +52,7 @@ export class LocalBackupResolver {
     private readonly precheckLocalRestoreUsecase: PrecheckLocalRestoreUsecase,
     private readonly cleanupLocalBackupPackagesUsecase: CleanupLocalBackupPackagesUsecase,
     private readonly getLocalRestoreCapabilityUsecase: GetLocalRestoreCapabilityUsecase,
+    private readonly listLocalBackupCloudPackagesUsecase: ListLocalBackupCloudPackagesUsecase,
   ) {}
 
   /** 备份记录列表：本公司范围（一级管理员为全局范围） */
@@ -238,5 +241,40 @@ export class LocalBackupResolver {
   }
   private toSession(user: AuthenticatedSessionUser): UsecaseSession {
     return mapJwtToUsecaseSession(user);
+  }
+
+  /**
+   * 受授权的云端备份包清单（任务 09 S4 第 3 条）。
+   *
+   * - 本地包已清理时**仍可查找**云端副本（此链路不依赖本机包目录）；
+   * - 范围＝可信 session 的公司数据区；他人草稿与密钥都不出本入口；
+   * - **下载权限 ≠ 恢复权限**：本入口只给元数据，恢复仍需预检与保护副本；
+   * - 生产云服务未接入（R-02）时按受控原因码失败关闭，不伪造可用云包。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => LocalBackupCloudPackageListDTO, {
+    name: 'localBackupCloudPackages',
+    description: '受授权的云端备份包清单（本地包已清理时仍可查找；不含密钥与他人草稿）',
+  })
+  async localBackupCloudPackages(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('organizationId', { type: () => Int, nullable: true }) organizationId?: number | null,
+  ): Promise<LocalBackupCloudPackageListDTO> {
+    const result = await this.listLocalBackupCloudPackagesUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      organizationId: organizationId ?? null,
+    });
+    return {
+      organizationId: result.organizationId,
+      packages: result.packages.map((item) => ({
+        packageId: item.packageId,
+        organizationId: item.organizationId,
+        backupId: item.backupId,
+        createdAt: item.createdAt === null ? null : new Date(item.createdAt),
+        byteSize: item.byteSize,
+        checksumSha256: item.checksumSha256,
+      })),
+    };
   }
 }

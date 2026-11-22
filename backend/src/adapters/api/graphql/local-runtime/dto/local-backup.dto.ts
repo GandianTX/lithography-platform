@@ -399,3 +399,35 @@ export class LocalBackupCleanupResultDTO {
   @Field(() => [LocalBackupCleanupItemDTO], { description: '逐项清理结果' })
   items!: LocalBackupCleanupItemDTO[];
 }
+
+/** 云端备份包元数据（受控；不含密钥与存储引用） */
+@ObjectType('LocalBackupCloudPackage')
+export class LocalBackupCloudPackageDTO {
+  @Field(() => String, { description: '云端包标识（下载用）' })
+  packageId!: string;
+
+  @Field(() => Int, { description: '归属公司数据区' })
+  organizationId!: number;
+
+  @Field(() => String, { nullable: true, description: '本机备份标识' })
+  backupId?: string | null;
+
+  @Field(() => GraphQLISODateTime, { nullable: true, description: '生成时间' })
+  createdAt?: Date | null;
+
+  @Field(() => Int, { nullable: true, description: '包字节数' })
+  byteSize?: number | null;
+
+  @Field(() => String, { nullable: true, description: '内容摘要' })
+  checksumSha256?: string | null;
+}
+
+/** 受授权的云端备份包清单 */
+@ObjectType('LocalBackupCloudPackageList')
+export class LocalBackupCloudPackageListDTO {
+  @Field(() => Int, { description: '本次查询的公司数据区' })
+  organizationId!: number;
+
+  @Field(() => [LocalBackupCloudPackageDTO], { description: '云端包元数据' })
+  packages!: LocalBackupCloudPackageDTO[];
+}
