@@ -625,7 +625,7 @@ function RestoreSection({
                 ? t('local-backup.restore.executionAvailable')
                 : t('local-backup.restore.executionUnavailable')
             }
-            description={capabilityState.data.reason}
+            description={<ReasonText reason={capabilityState.data.reason} />}
           />
         ) : null}
         {precheckState.status === 'running' ? (

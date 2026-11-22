@@ -204,6 +204,13 @@ export const ZH_CN_MESSAGES = {
   'local-backup.reason.restoreTargetInstallationMismatch': '备份包不是本机产生的，不能在本机恢复',
   'local-backup.reason.restoreTargetOrganizationMismatch': '备份包不属于当前有权公司',
   'local-backup.reason.restoreLocalPackageMissing': '本机已无该备份包，需要先从云端取得可用副本',
+  'local-backup.reason.restoreExecutionAvailable': '当前环境已具备恢复执行的前置条件。',
+  'local-backup.reason.restoreWriteGateUnavailable':
+    '当前环境未落地恢复期的写入/同步闸门，恢复执行入口保持不可用；可先完成预检与保护副本。',
+  'local-backup.reason.restoreFailureCompensationUnavailable':
+    '当前环境未落地恢复失败回滚补偿，恢复执行入口保持不可用；可先完成预检与保护副本。',
+  'local-backup.reason.restoreProtectionKeyUnavailable':
+    '当前环境取不到受保护包的解密材料，恢复执行入口保持不可用。',
   'local-backup.reason.cloudReceiptMissing': '缺少完整云回执',
   'local-backup.reason.cloudReceiptUnparsable': '云回执无法解析',
   'local-backup.reason.cloudReceiptNotSuccess': '云回执不是成功状态',

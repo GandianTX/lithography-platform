@@ -220,6 +220,14 @@ export const EN_MESSAGES = {
     'The package does not belong to the company you are authorized for',
   'local-backup.reason.restoreLocalPackageMissing':
     'This device no longer holds the package; obtain a usable copy from the cloud first',
+  'local-backup.reason.restoreExecutionAvailable':
+    'This environment meets the prerequisites for restore execution.',
+  'local-backup.reason.restoreWriteGateUnavailable':
+    'This environment has no write/sync hold for the restore window, so restore execution stays unavailable. Precheck and protection copy are still available.',
+  'local-backup.reason.restoreFailureCompensationUnavailable':
+    'This environment has no failure rollback compensation for restore, so restore execution stays unavailable. Precheck and protection copy are still available.',
+  'local-backup.reason.restoreProtectionKeyUnavailable':
+    'The decryption material for the protected package is not available in this environment, so restore execution stays unavailable.',
   'local-backup.reason.cloudReceiptMissing': 'Complete cloud receipt missing',
   'local-backup.reason.cloudReceiptUnparsable': 'Cloud receipt cannot be parsed',
   'local-backup.reason.cloudReceiptNotSuccess': 'Cloud receipt is not in a success state',

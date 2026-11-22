@@ -38,6 +38,12 @@ const REASON_MESSAGE_KEYS: Readonly<Record<string, MessageKey>> = {
   LOCAL_RESTORE_TARGET_ORGANIZATION_MISMATCH:
     'local-backup.reason.restoreTargetOrganizationMismatch',
   LOCAL_RESTORE_LOCAL_PACKAGE_MISSING: 'local-backup.reason.restoreLocalPackageMissing',
+  // 恢复执行能力（裁决在 core，adapter 只回受控码）
+  RESTORE_EXECUTION_AVAILABLE: 'local-backup.reason.restoreExecutionAvailable',
+  RESTORE_WRITE_GATE_UNAVAILABLE: 'local-backup.reason.restoreWriteGateUnavailable',
+  RESTORE_FAILURE_COMPENSATION_UNAVAILABLE:
+    'local-backup.reason.restoreFailureCompensationUnavailable',
+  RESTORE_PROTECTION_KEY_UNAVAILABLE: 'local-backup.reason.restoreProtectionKeyUnavailable',
   // 保留窗口
   LOCAL_RETENTION_NOT_EXPIRED: 'local-backup.reason.retentionNotExpired',
   // 清理授权层原因码（本次手动备份未取得完整回执）

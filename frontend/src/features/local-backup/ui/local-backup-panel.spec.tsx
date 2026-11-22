@@ -80,7 +80,8 @@ const SETTING: LocalBackupSetting = {
 
 const CAPABILITY: LocalRestoreCapability = {
   executionAvailable: false,
-  reason: '当前环境未落地恢复期的写入/同步闸门与失败回滚补偿，恢复执行入口保持不可用。',
+  // 后端只回受控原因码，前端按码映射文案
+  reason: 'RESTORE_WRITE_GATE_UNAVAILABLE',
 };
 
 beforeEach(() => {
@@ -151,8 +152,9 @@ describe('备份与恢复面板', () => {
     });
     expect(screen.getByText('备份记录')).toBeTruthy();
     expect(screen.getByText('11111111-2222-4333-8444-555555555555')).toBeTruthy();
-    expect(screen.getByText(/当前环境暂不具备恢复执行能力/)).toBeTruthy();
-    expect(screen.getByText(/写入\/同步闸门与失败回滚补偿/)).toBeTruthy();
+    // 后端只回受控原因码：前端按码映射文案，不回显后端自由文本
+    expect(screen.getByText(/未落地恢复期的写入\/同步闸门/)).toBeTruthy();
+    expect(screen.getByText('当前环境暂不具备恢复执行能力')).toBeTruthy();
   });
 
   it('手动备份展示真实阶段结果：上云与清理未被伪造为已完成', async () => {

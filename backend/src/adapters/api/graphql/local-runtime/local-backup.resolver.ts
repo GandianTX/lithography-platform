@@ -24,10 +24,10 @@ import {
   toLocalBackupRecordDTO,
   toLocalBackupSettingDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
-import { RESTORE_EXECUTION_UNAVAILABLE_REASON } from '@core/local-runtime/policy/restore-precheck.policy';
 import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
+import { GetLocalRestoreCapabilityUsecase } from '@src/usecases/local-runtime/get-local-restore-capability.usecase';
 import { ListLocalBackupRecordsUsecase } from '@src/usecases/local-runtime/list-local-backup-records.usecase';
 import { PrecheckLocalRestoreUsecase } from '@src/usecases/local-runtime/precheck-local-restore.usecase';
 import { StartManualLocalBackupUsecase } from '@src/usecases/local-runtime/start-manual-local-backup.usecase';
@@ -49,6 +49,7 @@ export class LocalBackupResolver {
     private readonly startManualLocalBackupUsecase: StartManualLocalBackupUsecase,
     private readonly precheckLocalRestoreUsecase: PrecheckLocalRestoreUsecase,
     private readonly cleanupLocalBackupPackagesUsecase: CleanupLocalBackupPackagesUsecase,
+    private readonly getLocalRestoreCapabilityUsecase: GetLocalRestoreCapabilityUsecase,
   ) {}
 
   /** 备份记录列表：本公司范围（一级管理员为全局范围） */
@@ -227,10 +228,12 @@ export class LocalBackupResolver {
     name: 'localRestoreCapability',
     description: '恢复执行能力状态（当前环境缺少写入/同步闸门与失败回滚补偿时如实不可用）',
   })
-  localRestoreCapability(): LocalRestoreCapabilityDTO {
+  async localRestoreCapability(): Promise<LocalRestoreCapabilityDTO> {
+    // 裁决在 core 策略，事实由用例编排取；adapter 只做协议映射
+    const result = await this.getLocalRestoreCapabilityUsecase.execute();
     return {
-      executionAvailable: false,
-      reason: RESTORE_EXECUTION_UNAVAILABLE_REASON,
+      executionAvailable: result.executionAvailable,
+      reason: result.reasonCode,
     };
   }
   private toSession(user: AuthenticatedSessionUser): UsecaseSession {

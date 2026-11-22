@@ -29,6 +29,7 @@ import { ListLocalBackupRecordsUsecase } from './list-local-backup-records.useca
 import { StartManualLocalBackupUsecase } from './start-manual-local-backup.usecase';
 import { PrecheckLocalRestoreUsecase } from './precheck-local-restore.usecase';
 import { CleanupLocalBackupPackagesUsecase } from './cleanup-local-backup-packages.usecase';
+import { GetLocalRestoreCapabilityUsecase } from './get-local-restore-capability.usecase';
 import { ResolveSyncConflictUsecase } from './resolve-sync-conflict.usecase';
 import { StartLocalBackupUsecase } from './start-local-backup.usecase';
 import { StartLocalUploadAttemptUsecase } from './start-local-upload-attempt.usecase';
@@ -78,6 +79,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     StartManualLocalBackupUsecase,
     PrecheckLocalRestoreUsecase,
     CleanupLocalBackupPackagesUsecase,
+    GetLocalRestoreCapabilityUsecase,
     QuerySyncStatusesUsecase,
     // 任务 07 装配方消费的窄边界：本机真实实现（未装配任务 09 时由 07 侧默认适配器返回 NOT_CONNECTED）
     { provide: SYNC_STATUS_QUERY, useExisting: QuerySyncStatusesUsecase },
@@ -109,6 +111,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     StartManualLocalBackupUsecase,
     PrecheckLocalRestoreUsecase,
     CleanupLocalBackupPackagesUsecase,
+    GetLocalRestoreCapabilityUsecase,
     QuerySyncStatusesUsecase,
     SYNC_STATUS_QUERY,
   ],
