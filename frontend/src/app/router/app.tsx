@@ -45,6 +45,7 @@ import { LocalSettingsPage } from '@/pages/local-settings';
 import { MyRecordDetailPage } from '@/pages/my-record-detail';
 import { MyRecordsPage } from '@/pages/my-records';
 import { ProjectStructurePage } from '@/pages/project-structure';
+import { RecordPackagesPage } from '@/pages/record-packages';
 import { ReferenceDocumentDetailPage } from '@/pages/reference-document-detail';
 import { ReferenceDocumentsPage } from '@/pages/reference-documents';
 import { RegisterCustomerPage } from '@/pages/register-customer';
@@ -234,6 +235,13 @@ const router = createBrowserRouter([
         element: <AccountSettingsPage />,
         loader: protectedRouteLoader,
         path: 'account/settings',
+      },
+      {
+        // 记录包页（任务 09 S3.1）：导出与导入 U 盘记录包。
+        // 路由治理复用 protectedRouteLoader；公司范围与是否可导入由服务端按 Session 裁决。
+        element: <RecordPackagesPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/record-packages',
       },
       {
         // 同步冲突页（任务 09 S2.3）：工程师与管理员的冲突处理入口（差异对照 + 裁决）。

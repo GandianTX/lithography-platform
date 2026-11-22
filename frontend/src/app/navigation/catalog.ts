@@ -84,6 +84,17 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['engineer', 'work', 'order', 'summary', '工单维修总结', '只读核对'],
   },
   {
+    descriptionKey: 'nav.record-packages.description',
+    id: 'record-packages',
+    kind: 'stable',
+    labelKey: 'nav.record-packages.label',
+    // 任务 09 S3.1：U 盘记录包导出与导入入口。工程师与管理员可见；
+    // 导出范围、检查与导入权限由服务端按 Session 裁决。
+    path: '/engineer/record-packages',
+    roles: ['ENGINEER', 'SUPER_ADMIN'],
+    tags: ['record-package', 'usb', 'export', 'import', '记录包', 'U盘', '导出', '导入'],
+  },
+  {
     descriptionKey: 'nav.engineer-sync-conflicts.description',
     id: 'engineer-sync-conflicts',
     kind: 'stable',
