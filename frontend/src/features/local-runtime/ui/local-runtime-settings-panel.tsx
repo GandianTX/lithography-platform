@@ -9,6 +9,7 @@ import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { LoadingState } from '@/shared/ui/loading-state';
+import { LocalBackupReasonText } from '@/shared/ui/local-backup-reason-text';
 import { StatusPill } from '@/shared/ui/status-pill';
 
 import { useLocalRuntimeStatus } from '../application/use-local-runtime-status';
@@ -42,6 +43,18 @@ export function LocalRuntimeSettingsPanel() {
     return <LoadingState label={t('local-settings.loading')} />;
   }
 
+  if (state.status === 'forbidden') {
+    return (
+      <ErrorState
+        title={t('local-settings.loadFailed')}
+        description={state.message}
+        action={
+          <PrimaryButton onClick={() => void reload()}>{t('local-settings.reload')}</PrimaryButton>
+        }
+      />
+    );
+  }
+
   if (state.status === 'failed') {
     return (
       <ErrorState
@@ -66,11 +79,11 @@ function LocalRuntimeSettingsView({ data }: { data: LocalRuntimeStatus }) {
   const mappedOrganizationText =
     data.mappedOrganizationId === null
       ? t('local-settings.value.unmapped')
-      : `${data.mappedOrganizationCode ?? '—'} · ${data.mappedOrganizationId}`;
+      : `${data.mappedOrganizationCode ?? t('local-settings.value.dash')} · ${data.mappedOrganizationId}`;
 
   return (
     <div className="page-stack">
-      <Alert banner showIcon message={t('local-settings.notice.readonly')} type="info" />
+      <Alert banner showIcon title={t('local-settings.notice.readonly')} type="info" />
 
       <DataCard title={t('local-settings.section.identity')}>
         <Descriptions
@@ -387,7 +400,11 @@ function CompanySettingBlock({ company }: { company: LocalRuntimeCompanySetting 
         {
           key: 'failureReason',
           label: t('local-settings.companies.failureReason'),
-          children: company.failureReason ?? t('local-settings.value.dash'),
+          children: company.failureReason ? (
+            <LocalBackupReasonText reason={company.failureReason} />
+          ) : (
+            t('local-settings.value.dash')
+          ),
         },
         {
           key: 'initializedAt',

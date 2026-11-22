@@ -180,6 +180,52 @@ export const EN_MESSAGES = {
     'This page shows the real state of local backups: auto-backup plan, manual backup outcome, backup records and restore precheck results. The company scope is decided server-side by the current session.',
   'local-backup.loading': 'Loading backup information…',
   'local-backup.reload': 'Reload',
+  // Application-layer failure fallbacks (the application layer cannot call useI18n)
+  'local-backup.error.forbidden':
+    'The current account lacks permission for this action. Please contact an administrator.',
+  'local-backup.error.forbiddenTitle': 'Permission denied',
+  'local-backup.error.recordsLoadFailed': 'Failed to load backup records. Please retry later.',
+  'local-backup.error.settingsLoadFailed':
+    'Failed to load auto-backup settings. Please retry later.',
+  'local-backup.error.capabilityLoadFailed':
+    'Failed to load restore capability. Please retry later.',
+  'local-backup.error.manualFailed': 'Manual backup failed. Please retry later.',
+  'local-backup.error.cleanupFailed':
+    'Failed to clean up local backup packages. Please retry later.',
+  'local-backup.error.precheckFailed': 'Restore precheck failed. Please retry later.',
+  'local-backup.error.unknownReason': 'Reason not registered',
+  'local-runtime.error.statusLoadFailed':
+    'Failed to load local runtime status. Please retry later.',
+  // Controlled reason codes (the backend only sends controlled codes; unknown codes fall back)
+  'local-backup.reason.packageReferenceMissing':
+    'Local package reference missing; nothing to clean',
+  'local-backup.reason.packagePathOutsideRoot':
+    'Local package path is outside the backup root; kept and not deleted',
+  'local-backup.reason.packageDeleteFailed': 'Failed to delete the local package; kept',
+  'local-backup.reason.cleanupInterrupted': 'Cleanup was interrupted; retried next round',
+  'local-backup.reason.packageAlreadyCleaned': 'Local package already cleaned',
+  'local-backup.reason.cleanupRetained': 'Cleanup not performed; kept',
+  'local-backup.reason.uploadReceiverMissing': 'Cloud receiver not connected; upload unavailable',
+  'local-backup.reason.uploadFailed': 'Cloud upload failed',
+  'local-backup.reason.backupGenerationFailed': 'Failed to generate the backup package',
+  'local-backup.reason.protectionCopyFailed': 'Failed to generate the protection copy',
+  'local-backup.reason.packageManifestMissing': 'Backup package is missing its manifest file',
+  'local-backup.reason.packageManifestUnparsable': 'Backup package manifest cannot be parsed',
+  'local-backup.reason.packageFileMissing': 'Backup package is missing files',
+  'local-backup.reason.packageFileSizeMismatch': 'Backup package file size mismatch',
+  'local-backup.reason.packageFileChecksumMismatch': 'Backup package file checksum mismatch',
+  'local-backup.reason.restoreTargetInstallationMismatch':
+    'The package was not produced by this device and cannot be restored here',
+  'local-backup.reason.restoreTargetOrganizationMismatch':
+    'The package does not belong to the company you are authorized for',
+  'local-backup.reason.restoreLocalPackageMissing':
+    'This device no longer holds the package; obtain a usable copy from the cloud first',
+  'local-backup.reason.cloudReceiptMissing': 'Complete cloud receipt missing',
+  'local-backup.reason.cloudReceiptUnparsable': 'Cloud receipt cannot be parsed',
+  'local-backup.reason.cloudReceiptNotSuccess': 'Cloud receipt is not in a success state',
+  'local-backup.reason.cloudCopyUnverified':
+    'Cloud copy unverified; the local package is the only copy and was kept',
+  'local-backup.reason.retentionNotExpired': 'Retention window has not expired',
   'local-backup.auto.title': 'Auto Backup Settings',
   'local-backup.auto.loadFailed': 'Failed to load auto-backup settings',
   'local-backup.auto.empty':

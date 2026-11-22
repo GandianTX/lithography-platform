@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
-import { isGraphQLIngressError } from '@/shared/graphql';
+import { isForbiddenIngressError, isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n/runtime-translator';
 
 import type {
   LocalBackupCleanupMode,
@@ -29,16 +30,23 @@ import {
  * 晚到的旧响应一律丢弃，避免"上一账号的数据覆盖当前账号"。
  *
  * 失败不做乐观降级：不展示缓存值、不伪造"备份成功"，只给可重试的失败态。
+ *
+ * 失败分三类（不混为一谈）：
+ * - `forbidden`：权限不足——重试无用，提示联系管理员；
+ * - `failed`：其它失败，可重试；
+ * - 兜底文案按当前语言即时翻译（application 层不能调用 useI18n）。
  */
 
 export type AsyncState<T> =
   | { status: 'loading'; requestId: number }
   | { status: 'ready'; requestId: number; data: T }
+  | { status: 'forbidden'; requestId: number; message: string }
   | { status: 'failed'; requestId: number; message: string };
 
 type Action<T> =
   | { type: 'load-start'; requestId: number }
   | { type: 'load-ready'; requestId: number; data: T }
+  | { type: 'load-forbidden'; requestId: number; message: string }
   | { type: 'load-failed'; requestId: number; message: string };
 
 function reducer<T>(state: AsyncState<T>, action: Action<T>): AsyncState<T> {
@@ -49,6 +57,10 @@ function reducer<T>(state: AsyncState<T>, action: Action<T>): AsyncState<T> {
       return action.requestId === state.requestId
         ? { status: 'ready', requestId: action.requestId, data: action.data }
         : state;
+    case 'load-forbidden':
+      return action.requestId === state.requestId
+        ? { status: 'forbidden', requestId: action.requestId, message: action.message }
+        : state;
     case 'load-failed':
       return action.requestId === state.requestId
         ? { status: 'failed', requestId: action.requestId, message: action.message }
@@ -56,6 +68,11 @@ function reducer<T>(state: AsyncState<T>, action: Action<T>): AsyncState<T> {
     default:
       return state;
   }
+}
+
+/** 权限不足提示（当前语言即时翻译） */
+function forbiddenMessage(): string {
+  return translateNow('local-backup.error.forbidden');
 }
 
 function useAsyncResource<T>(load: () => Promise<T>, fallbackMessage: string) {
@@ -74,6 +91,10 @@ function useAsyncResource<T>(load: () => Promise<T>, fallbackMessage: string) {
       const data = await load();
       dispatch({ type: 'load-ready', requestId, data });
     } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        dispatch({ type: 'load-forbidden', requestId, message: forbiddenMessage() });
+        return;
+      }
       dispatch({
         type: 'load-failed',
         requestId,
@@ -93,27 +114,37 @@ function useAsyncResource<T>(load: () => Promise<T>, fallbackMessage: string) {
 export function useLocalBackupRecords(page: number, pageSize: number) {
   const load = useCallback(() => fetchLocalBackupRecords(page, pageSize), [page, pageSize]);
 
-  return useAsyncResource<LocalBackupRecordPage>(load, '备份记录读取失败，请稍后重试。');
+  return useAsyncResource<LocalBackupRecordPage>(
+    load,
+    translateNow('local-backup.error.recordsLoadFailed'),
+  );
 }
 
 /** 自动备份设置 */
 export function useLocalBackupSettings() {
   const load = useCallback(() => fetchLocalBackupSettings(), []);
 
-  return useAsyncResource<LocalBackupSetting[]>(load, '自动备份设置读取失败，请稍后重试。');
+  return useAsyncResource<LocalBackupSetting[]>(
+    load,
+    translateNow('local-backup.error.settingsLoadFailed'),
+  );
 }
 
 /** 恢复执行能力状态 */
 export function useLocalRestoreCapability() {
   const load = useCallback(() => fetchLocalRestoreCapability(), []);
 
-  return useAsyncResource<LocalRestoreCapability>(load, '恢复能力读取失败，请稍后重试。');
+  return useAsyncResource<LocalRestoreCapability>(
+    load,
+    translateNow('local-backup.error.capabilityLoadFailed'),
+  );
 }
 
 export type ActionState<T> =
   | { status: 'idle' }
   | { status: 'running' }
   | { status: 'succeeded'; data: T }
+  | { status: 'forbidden'; message: string }
   | { status: 'failed'; message: string };
 
 /** 手动备份触发 */
@@ -130,9 +161,15 @@ export function useManualLocalBackup() {
       setState({ status: 'succeeded', data });
       return data;
     } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        setState({ status: 'forbidden', message: forbiddenMessage() });
+        return null;
+      }
       setState({
         status: 'failed',
-        message: isGraphQLIngressError(error) ? error.userMessage : '手动备份失败，请稍后重试。',
+        message: isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('local-backup.error.manualFailed'),
       });
       return null;
     }
@@ -155,11 +192,15 @@ export function useCleanupLocalBackupPackages() {
       setState({ status: 'succeeded', data });
       return data;
     } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        setState({ status: 'forbidden', message: forbiddenMessage() });
+        return null;
+      }
       setState({
         status: 'failed',
         message: isGraphQLIngressError(error)
           ? error.userMessage
-          : '本地备份包清理失败，请稍后重试。',
+          : translateNow('local-backup.error.cleanupFailed'),
       });
       return null;
     }
@@ -181,9 +222,15 @@ export function useRestorePrecheck() {
       const data = await precheckLocalRestore(backupId);
       setState({ status: 'succeeded', data });
     } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        setState({ status: 'forbidden', message: forbiddenMessage() });
+        return;
+      }
       setState({
         status: 'failed',
-        message: isGraphQLIngressError(error) ? error.userMessage : '恢复预检失败，请稍后重试。',
+        message: isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('local-backup.error.precheckFailed'),
       });
     }
   }, []);

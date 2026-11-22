@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
-import { isGraphQLIngressError } from '@/shared/graphql';
+import { isForbiddenIngressError, isGraphQLIngressError } from '@/shared/graphql';
+import { translateNow } from '@/shared/i18n/runtime-translator';
 
 import type { LocalRuntimeStatus } from '../infrastructure/local-runtime.types';
 import { fetchLocalRuntimeStatus } from '../infrastructure/local-runtime-graphql-adapter';
@@ -19,11 +20,13 @@ import { fetchLocalRuntimeStatus } from '../infrastructure/local-runtime-graphql
 export type LocalRuntimeStatusState =
   | { status: 'loading'; requestId: number }
   | { status: 'ready'; requestId: number; data: LocalRuntimeStatus }
+  | { status: 'forbidden'; requestId: number; message: string }
   | { status: 'failed'; requestId: number; message: string };
 
 type LocalRuntimeStatusAction =
   | { type: 'load-start'; requestId: number }
   | { type: 'load-ready'; requestId: number; data: LocalRuntimeStatus }
+  | { type: 'load-forbidden'; requestId: number; message: string }
   | { type: 'load-failed'; requestId: number; message: string };
 
 function localRuntimeStatusReducer(
@@ -39,6 +42,12 @@ function localRuntimeStatusReducer(
       }
 
       return { status: 'ready', requestId: action.requestId, data: action.data };
+    case 'load-forbidden':
+      if (action.requestId !== state.requestId) {
+        return state;
+      }
+
+      return { status: 'forbidden', requestId: action.requestId, message: action.message };
     case 'load-failed':
       if (action.requestId !== state.requestId) {
         return state;
@@ -65,12 +74,20 @@ export function useLocalRuntimeStatus() {
       const data = await fetchLocalRuntimeStatus();
       dispatch({ type: 'load-ready', requestId, data });
     } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        dispatch({
+          type: 'load-forbidden',
+          requestId,
+          message: translateNow('local-backup.error.forbidden'),
+        });
+        return;
+      }
       dispatch({
         type: 'load-failed',
         requestId,
         message: isGraphQLIngressError(error)
           ? error.userMessage
-          : '本机状态读取失败，请稍后重试。',
+          : translateNow('local-runtime.error.statusLoadFailed'),
       });
     }
   }, []);

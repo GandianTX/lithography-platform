@@ -9,6 +9,7 @@ export {
 export type { GraphQLErrorDetail, GraphQLIngressErrorType } from './errors';
 export {
   GraphQLIngressError,
+  isForbiddenIngressError,
   isGraphQLIngressError,
   readGraphQLErrorDetail,
   toGraphQLIngressError,

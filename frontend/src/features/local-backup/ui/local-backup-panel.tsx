@@ -11,6 +11,7 @@ import { EmptyState } from '@/shared/ui/empty-state';
 import { ErrorState } from '@/shared/ui/error-state';
 import { formatDateTimeText } from '@/shared/ui/format-date-time';
 import { LoadingState } from '@/shared/ui/loading-state';
+import { LocalBackupReasonText } from '@/shared/ui/local-backup-reason-text';
 import { StatusPill, type StatusPillTone } from '@/shared/ui/status-pill';
 
 import {
@@ -43,7 +44,7 @@ import type {
 
 const PAGE_SIZE = 20;
 
-export function LocalBackupPanel() {
+export function LocalBackupPanel({ canPrecheck }: { canPrecheck: boolean }) {
   const { t } = useI18n();
   const [page, setPage] = useState(1);
   const records = useLocalBackupRecords(page, PAGE_SIZE);
@@ -52,6 +53,9 @@ export function LocalBackupPanel() {
   const manual = useManualLocalBackup();
   const cleanup = useCleanupLocalBackupPackages();
   const precheck = useRestorePrecheck();
+  // 恢复预检是服务端的一级管理员动作：前端只做**展示性**收敛，
+  // 不作为授权依据（最终裁决仍在服务端）。角色由页面层从会话解析后传入
+  // ——feature 之间不互相依赖（前端依赖规则）。
 
   return (
     <div className="page-stack">
@@ -64,6 +68,7 @@ export function LocalBackupPanel() {
       />
 
       <BackupRecordsSection
+        canPrecheck={canPrecheck}
         state={records.state}
         onPrecheck={(backupId) => void precheck.trigger(backupId)}
         onReload={() => void records.reload()}
@@ -75,6 +80,14 @@ export function LocalBackupPanel() {
       {precheck.state.status === 'succeeded' ? (
         <PrecheckResultCard result={precheck.state.data} />
       ) : null}
+      {precheck.state.status === 'forbidden' ? (
+        <DataCard title={t('local-backup.restore.precheckTitle')}>
+          <ErrorState
+            description={precheck.state.message}
+            title={t('local-backup.restore.precheckFailed')}
+          />
+        </DataCard>
+      ) : null}
       {precheck.state.status === 'failed' ? (
         <DataCard title={t('local-backup.restore.precheckTitle')}>
           <ErrorState
@@ -85,6 +98,12 @@ export function LocalBackupPanel() {
       ) : null}
     </div>
   );
+}
+
+/**
+ * 受控原因码文案：未知码走通用兜底，不把后端自由文本原样渲染 */
+function ReasonText({ reason }: { reason: string | null | undefined }) {
+  return <LocalBackupReasonText reason={reason} />;
 }
 
 /** 手动备份并清理：先生成，再进入清理阶段（无完整云端回执时如实不可用） */
@@ -110,6 +129,14 @@ function AutoBackupSection({
     return (
       <DataCard title={t('local-backup.auto.title')}>
         <LoadingState label={t('local-backup.loading')} />
+      </DataCard>
+    );
+  }
+
+  if (state.status === 'forbidden') {
+    return (
+      <DataCard title={t('local-backup.auto.title')}>
+        <ErrorState description={state.message} title={t('local-backup.auto.loadFailed')} />
       </DataCard>
     );
   }
@@ -248,6 +275,9 @@ function ManualBackupSection({
         {actionState.status === 'succeeded' ? (
           <ManualBackupResult result={actionState.data} />
         ) : null}
+        {actionState.status === 'forbidden' ? (
+          <ErrorState description={actionState.message} title={t('local-backup.manual.failed')} />
+        ) : null}
         {actionState.status === 'failed' ? (
           <ErrorState description={actionState.message} title={t('local-backup.manual.failed')} />
         ) : null}
@@ -256,6 +286,12 @@ function ManualBackupSection({
         ) : null}
         {cleanupState.status === 'succeeded' ? (
           <CleanupResultCard result={cleanupState.data} />
+        ) : null}
+        {cleanupState.status === 'forbidden' ? (
+          <ErrorState
+            description={cleanupState.message}
+            title={t('local-backup.manual.cleanupFailed')}
+          />
         ) : null}
         {cleanupState.status === 'failed' ? (
           <ErrorState
@@ -294,7 +330,7 @@ function CleanupResultCard({ result }: { result: LocalBackupCleanupResult }) {
     {
       key: 'reason',
       title: t('local-backup.manual.retainedReason'),
-      render: (_, item) => item.reason ?? t('local-backup.value.dash'),
+      render: (_, item) => <ReasonText reason={item.reason} />,
     },
   ];
 
@@ -312,7 +348,7 @@ function CleanupResultCard({ result }: { result: LocalBackupCleanupResult }) {
                 retained: result.retained,
               })
         }
-        description={unavailable ? (result.reason ?? undefined) : undefined}
+        description={unavailable ? <ReasonText reason={result.reason} /> : undefined}
       />
       {result.items.length > 0 ? (
         <Table<LocalBackupCleanupItem>
@@ -372,7 +408,11 @@ function ManualBackupResult({ result }: { result: StartManualLocalBackupResult }
         {
           key: 'errorMessage',
           label: t('local-backup.field.errorMessage'),
-          children: result.errorMessage ?? t('local-backup.value.dash'),
+          children: result.errorMessage ? (
+            <ReasonText reason={result.errorMessage} />
+          ) : (
+            t('local-backup.value.dash')
+          ),
         },
       ]}
     />
@@ -380,11 +420,13 @@ function ManualBackupResult({ result }: { result: StartManualLocalBackupResult }
 }
 
 function BackupRecordsSection({
+  canPrecheck,
   state,
   onPrecheck,
   onReload,
   setPage,
 }: {
+  canPrecheck: boolean;
   state: ReturnType<typeof useLocalBackupRecords>['state'];
   onPrecheck: (backupId: string) => void;
   onReload: () => void;
@@ -396,6 +438,15 @@ function BackupRecordsSection({
     return (
       <DataCard title={t('local-backup.records.title')}>
         <LoadingState label={t('local-backup.loading')} />
+      </DataCard>
+    );
+  }
+
+  if (state.status === 'forbidden') {
+    // 权限不足：重试无用，不给重试入口，只如实说明原因
+    return (
+      <DataCard title={t('local-backup.records.title')}>
+        <ErrorState description={state.message} title={t('local-backup.error.forbiddenTitle')} />
       </DataCard>
     );
   }
@@ -480,11 +531,14 @@ function BackupRecordsSection({
     {
       key: 'actions',
       title: t('local-backup.field.actions'),
-      render: (_, record) => (
-        <SecondaryButton onClick={() => onPrecheck(record.backupId)}>
-          {t('local-backup.restore.precheckAction')}
-        </SecondaryButton>
-      ),
+      render: (_, record) =>
+        canPrecheck ? (
+          <SecondaryButton onClick={() => onPrecheck(record.backupId)}>
+            {t('local-backup.restore.precheckAction')}
+          </SecondaryButton>
+        ) : (
+          <span>{t('local-backup.value.dash')}</span>
+        ),
     },
   ];
 
@@ -548,6 +602,12 @@ function RestoreSection({
       <div className="page-stack">
         {capabilityState.status === 'loading' ? (
           <LoadingState label={t('local-backup.loading')} />
+        ) : null}
+        {capabilityState.status === 'forbidden' ? (
+          <ErrorState
+            description={capabilityState.message}
+            title={t('local-backup.restore.capabilityFailed')}
+          />
         ) : null}
         {capabilityState.status === 'failed' ? (
           <ErrorState
@@ -656,7 +716,7 @@ function PrecheckResultCard({ result }: { result: LocalRestorePrecheckResult }) 
             <ul>
               {result.findings.map((finding) => (
                 <li key={`${finding.code}-${finding.message}`}>
-                  <strong>{finding.code}</strong> {finding.message}
+                  <strong>{finding.code}</strong> <ReasonText reason={finding.message} />
                 </li>
               ))}
             </ul>

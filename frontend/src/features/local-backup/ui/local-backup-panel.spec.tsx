@@ -12,6 +12,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { GraphQLIngressError } from '@/shared/graphql';
+
 import type {
   LocalBackupRecord,
   LocalBackupSetting,
@@ -126,7 +128,12 @@ beforeEach(() => {
     verifiedFileCount: 1,
     protectionBackupId: 'protection-1',
     protectionCreated: true,
-    findings: [{ code: 'LOCAL_PACKAGE_MISSING', message: '本机已无该备份包' }],
+    findings: [
+      {
+        code: 'LOCAL_PACKAGE_MISSING',
+        message: 'LOCAL_RESTORE_LOCAL_PACKAGE_MISSING',
+      },
+    ],
   });
 });
 
@@ -137,7 +144,7 @@ afterEach(() => {
 
 describe('备份与恢复面板', () => {
   it('就绪后呈现自动备份设置、备份记录与恢复能力状态', async () => {
-    render(<LocalBackupPanel />);
+    render(<LocalBackupPanel canPrecheck={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('自动备份设置')).toBeTruthy();
@@ -149,7 +156,7 @@ describe('备份与恢复面板', () => {
   });
 
   it('手动备份展示真实阶段结果：上云与清理未被伪造为已完成', async () => {
-    render(<LocalBackupPanel />);
+    render(<LocalBackupPanel canPrecheck={false} />);
 
     const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
     fireEvent.click(trigger);
@@ -165,7 +172,7 @@ describe('备份与恢复面板', () => {
   });
 
   it('没有完整云端回执时清理如实不可用，不谎报已清理', async () => {
-    render(<LocalBackupPanel />);
+    render(<LocalBackupPanel canPrecheck={false} />);
 
     const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
     fireEvent.click(trigger);
@@ -190,11 +197,12 @@ describe('备份与恢复面板', () => {
       retained: 1,
       items: [
         { backupId: 'backup-a', outcome: 'CLEANED', reason: null },
-        { backupId: 'backup-b', outcome: 'RETAINED', reason: '本地包删除失败：EACCES' },
+        // 后端对外只给受控原因码：原始异常只进服务端日志
+        { backupId: 'backup-b', outcome: 'RETAINED', reason: 'LOCAL_PACKAGE_DELETE_FAILED' },
       ],
     });
 
-    render(<LocalBackupPanel />);
+    render(<LocalBackupPanel canPrecheck={false} />);
 
     const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
     fireEvent.click(trigger);
@@ -206,11 +214,13 @@ describe('备份与恢复面板', () => {
     expect(screen.getByText('backup-b')).toBeTruthy();
     expect(screen.getByText('已清理')).toBeTruthy();
     expect(screen.getByText('仍保留')).toBeTruthy();
-    expect(screen.getByText('本地包删除失败：EACCES')).toBeTruthy();
+    // 受控原因码按码映射文案，不回显原始异常文本
+    expect(screen.getByText('本地包删除失败，已保留')).toBeTruthy();
+    expect(screen.queryByText(/EACCES/)).toBeNull();
   });
 
   it('恢复预检展示结论与发现项', async () => {
-    render(<LocalBackupPanel />);
+    render(<LocalBackupPanel canPrecheck={true} />);
 
     const action = await screen.findByRole('button', { name: '恢复预检' });
     fireEvent.click(action);
@@ -221,17 +231,45 @@ describe('备份与恢复面板', () => {
     await waitFor(() => {
       expect(screen.getByText(/预检未通过/)).toBeTruthy();
     });
-    expect(screen.getByText(/本机已无该备份包/)).toBeTruthy();
+    // 发现项的 message 是受控原因码：按码映射文案
+    expect(screen.getByText('本机已无该备份包，需要先从云端取得可用副本')).toBeTruthy();
     expect(screen.getByText('restore-1')).toBeTruthy();
+  });
+
+  it('恢复预检入口按角色可见：非一级管理员不展示该入口', async () => {
+    render(<LocalBackupPanel canPrecheck={false} />);
+
+    await screen.findByText('备份记录');
+    expect(screen.queryByRole('button', { name: '恢复预检' })).toBeNull();
   });
 
   it('读取失败时给出可重试的失败态，不伪造空数据', async () => {
     adapters.fetchLocalBackupRecords.mockRejectedValue(new Error('boom'));
 
-    render(<LocalBackupPanel />);
+    render(<LocalBackupPanel canPrecheck={false} />);
 
     await waitFor(() => {
       expect(screen.getByText('备份记录读取失败')).toBeTruthy();
     });
+    // 失败态可重试
+    expect(screen.getByRole('button', { name: '重新读取' })).toBeTruthy();
+  });
+
+  it('权限不足是独立第四态：提示联系管理员且不提供重试入口', async () => {
+    adapters.fetchLocalBackupRecords.mockRejectedValue(
+      new GraphQLIngressError({
+        type: 'graphql',
+        message: 'FORBIDDEN',
+        graphqlErrors: [{ message: 'FORBIDDEN', extensions: { code: 'FORBIDDEN' } }],
+      }),
+    );
+
+    render(<LocalBackupPanel canPrecheck={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('当前账号没有该操作的权限，请联系管理员。')).toBeTruthy();
+    });
+    // 权限不足重试无用：不提供重读入口
+    expect(screen.queryByRole('button', { name: '重新读取' })).toBeNull();
   });
 });

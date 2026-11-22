@@ -52,6 +52,24 @@ export function isGraphQLIngressError(error: unknown): error is GraphQLIngressEr
   return error instanceof GraphQLIngressError;
 }
 
+/**
+ * 是否是"权限不足"（FORBIDDEN）。
+ *
+ * 为什么需要单独判定：权限不足与"请求处理失败"对用户是两件事——
+ * 前者不该让用户反复重试，也不该显示成系统故障。后端把越权统一收敛为
+ * 不泄露存在性的错误码，前端据此给出独立的"权限不足"提示。
+ */
+export function isForbiddenIngressError(error: unknown): boolean {
+  if (!isGraphQLIngressError(error)) {
+    return false;
+  }
+  const graphqlErrors = error.graphqlErrors ?? [];
+  return graphqlErrors.some((graphqlError) => {
+    const extensions = graphqlError.extensions as Record<string, unknown> | undefined;
+    return extensions?.['code'] === 'FORBIDDEN' || graphqlError.message === 'FORBIDDEN';
+  });
+}
+
 function resolveIsRetryable(type: GraphQLIngressErrorType, statusCode?: number): boolean {
   if (type === 'network') {
     return true;
