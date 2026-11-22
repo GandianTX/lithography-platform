@@ -431,3 +431,25 @@ export class LocalBackupCloudPackageListDTO {
   @Field(() => [LocalBackupCloudPackageDTO], { description: '云端包元数据' })
   packages!: LocalBackupCloudPackageDTO[];
 }
+
+/** 恢复受理结论（受理 ≠ 恢复：只确认"可以受理"，不代表已恢复） */
+@ObjectType('LocalRestoreAcceptance')
+export class LocalRestoreAcceptanceDTO {
+  @Field(() => String, { description: '稳定恢复 ID' })
+  restoreId!: string;
+
+  @Field(() => Boolean, { description: '是否已受理（受理不等于恢复成功）' })
+  accepted!: boolean;
+
+  @Field(() => String, { nullable: true, description: '被恢复的备份资产 ID' })
+  backupId?: string | null;
+
+  @Field(() => String, { nullable: true, description: '保护副本备份资产 ID' })
+  protectionBackupId?: string | null;
+
+  @Field(() => Int, { nullable: true, description: '恢复目标公司数据区' })
+  organizationId?: number | null;
+
+  @Field(() => GraphQLISODateTime, { nullable: true, description: '受理时间' })
+  acceptedAt?: Date | null;
+}

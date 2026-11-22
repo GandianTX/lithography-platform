@@ -18,6 +18,7 @@ import {
   LocalBackupRecordPageDTO,
   LocalBackupSettingDTO,
   LocalBackupRecordPaginationInput,
+  LocalRestoreAcceptanceDTO,
   LocalRestoreCapabilityDTO,
   LocalRestorePrecheckResultDTO,
   StartManualLocalBackupResultDTO,
@@ -25,6 +26,7 @@ import {
   toLocalBackupRecordDTO,
   toLocalBackupSettingDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
+import { AcceptLocalRestoreUsecase } from '@src/usecases/local-runtime/accept-local-restore.usecase';
 import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
 import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
@@ -52,6 +54,7 @@ export class LocalBackupResolver {
     private readonly precheckLocalRestoreUsecase: PrecheckLocalRestoreUsecase,
     private readonly cleanupLocalBackupPackagesUsecase: CleanupLocalBackupPackagesUsecase,
     private readonly getLocalRestoreCapabilityUsecase: GetLocalRestoreCapabilityUsecase,
+    private readonly acceptLocalRestoreUsecase: AcceptLocalRestoreUsecase,
     private readonly listLocalBackupCloudPackagesUsecase: ListLocalBackupCloudPackagesUsecase,
   ) {}
 
@@ -147,6 +150,42 @@ export class LocalBackupResolver {
     };
   }
 
+  /**
+   * 恢复**受理**（管理员专属；受理 ≠ 恢复）。
+   *
+   * 确认前再次检查权限、目标与保护副本：预检结论仍通过、**未被受理过**、
+   * **目标设备仍是本机**、授权公司一致、**被恢复资产仍在**、**保护副本仍在**。
+   * 受理只写受理事实，**不冻结写入、不恢复数据、不产生成功结论**。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestoreAcceptanceDTO, {
+    name: 'acceptLocalRestore',
+    description: '恢复受理（管理员专属）：确认前再次检查权限、目标与保护副本；受理不等于恢复成功',
+  })
+  async acceptLocalRestore(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('restoreId', { type: () => String }) restoreId: string,
+  ): Promise<LocalRestoreAcceptanceDTO> {
+    const result = await this.acceptLocalRestoreUsecase.execute({
+      session: this.toSession(user),
+      restoreId,
+    });
+    return {
+      restoreId: result.restoreId,
+      accepted: result.accepted,
+      backupId: result.backupId,
+      protectionBackupId: result.protectionBackupId,
+      organizationId: result.organizationId,
+      acceptedAt: result.acceptedAt === null ? null : new Date(result.acceptedAt),
+    };
+  }
+
+  @Mutation(() => LocalRestorePrecheckResultDTO, {
+    name: 'precheckLocalRestore',
+    description:
+      '恢复预检（管理员专属）：核对目标设备与公司、逐文件校验备份包，并生成当前范围的保护副本',
+  })
   /** 恢复预检：目标核对＋包完整性＋保护副本；恢复执行入口保持如实不可用 */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)
