@@ -4,6 +4,7 @@ import { AccountInstallerModule } from '@src/modules/account/account-installer.m
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { LocalRuntimeStorageModule } from '@src/infrastructure/file-storage/local-runtime-storage.module';
 import { Module } from '@nestjs/common';
+import { LoggerModule } from '@src/infrastructure/logger/logger.module';
 import { CompleteLocalUploadUsecase } from './complete-local-upload.usecase';
 import { EnqueueLocalUploadUsecase } from './enqueue-local-upload.usecase';
 import { FailLocalUploadUsecase } from './fail-local-upload.usecase';
@@ -43,7 +44,13 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
  * 真实接收端接入前不暴露 GraphQL（S2/S3 另建显式内部通道）。
  */
 @Module({
-  imports: [LithographyModule, AccountInstallerModule, LocalRuntimeStorageModule],
+  imports: [
+    LithographyModule,
+    AccountInstallerModule,
+    LocalRuntimeStorageModule,
+    // 原始异常只进服务端日志（对外只给受控原因码）→ 用例需要 PinoLogger
+    LoggerModule,
+  ],
   providers: [
     LocalRuntimeScopeResolver,
     GetLocalRuntimeStatusUsecase,

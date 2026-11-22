@@ -1,7 +1,7 @@
 // src/infrastructure/logger/logger.module.ts
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
+import { LoggerModule as PinoLoggerModule, PinoLogger } from 'nestjs-pino';
 
 @Module({
   imports: [
@@ -21,5 +21,8 @@ import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
       },
     }),
   ],
+  // 显式导出 PinoLogger：导入本模块的模块即可解析日志依赖，
+  // 不必各自再引一次 nestjs-pino 的模块（也让装配可解析性可静态核对）
+  exports: [PinoLogger],
 })
 export class LoggerModule {}

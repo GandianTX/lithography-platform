@@ -17,6 +17,7 @@ import {
 } from '@src/usecases/local-runtime/local-backup-upload.contract';
 
 import { BackupAssetEntity } from './entities/backup-asset.entity';
+import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
 
 /** 上传在途超过该时长（分钟）视为进程中断残留，改判失败并按退避重试 */
@@ -57,6 +58,8 @@ export class LocalBackupUploadService {
     private readonly backupAssetRepository: Repository<BackupAssetEntity>,
     @InjectRepository(LocalCompanySettingEntity)
     private readonly settingRepository: Repository<LocalCompanySettingEntity>,
+    @InjectRepository(LocalAccountAuthorizationEntity)
+    private readonly authorizationRepository: Repository<LocalAccountAuthorizationEntity>,
     private readonly logger: PinoLogger,
     @Optional()
     @Inject(LOCAL_BACKUP_UPLOADER)
@@ -94,6 +97,17 @@ export class LocalBackupUploadService {
       settingByOrganization.set(setting.organizationId, setting);
     }
 
+    // 授权有效性按**真实授权事实**判定：该组织在本机存在 ACTIVE 授权才算有效。
+    // （此前用"是否存在公司设置行"代替授权判定：设置行存在但授权已被撤销时，
+    //   仍会把公司数据继续上传云端，策略层的 AUTHORIZATION_INVALID 分支永不可达。）
+    const authorizedOrganizations = new Set<number>();
+    const authorizations = await this.authorizationRepository.find({
+      where: { authorizationStatus: 'ACTIVE' },
+    });
+    for (const authorization of authorizations) {
+      authorizedOrganizations.add(authorization.organizationId);
+    }
+
     for (const asset of candidates) {
       const setting = settingByOrganization.get(asset.organizationId) ?? null;
       const decision = decideBackupUploadAttempt({
@@ -101,7 +115,7 @@ export class LocalBackupUploadService {
         attemptCount: asset.attemptCount,
         lastAttemptAt: asset.lastAttemptAt,
         autoUploadEnabled: setting?.autoUploadEnabled ?? false,
-        authorizationValid: setting !== null,
+        authorizationValid: authorizedOrganizations.has(asset.organizationId),
         now,
       });
 

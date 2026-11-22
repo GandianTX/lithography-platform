@@ -2,6 +2,7 @@
 
 import { LocalBackupUploadService } from './local-backup-upload.service';
 import type { BackupAssetEntity } from './entities/backup-asset.entity';
+import type { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import type { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
 import type {
   LocalBackupUploadRequest,
@@ -69,6 +70,23 @@ describe('local backup upload service', () => {
     } as LocalCompanySettingEntity;
   }
 
+  function authorization(
+    overrides: Partial<LocalAccountAuthorizationEntity> = {},
+  ): LocalAccountAuthorizationEntity {
+    return {
+      id: '1',
+      installationId: 'inst-1',
+      accountId: 10,
+      organizationId: 4,
+      authorizationStatus: 'ACTIVE',
+      authorizedAt: base,
+      signedClaims: null,
+      permissionVersion: null,
+      lastVerifiedAt: null,
+      ...overrides,
+    } as LocalAccountAuthorizationEntity;
+  }
+
   function buildService(options: {
     assets: BackupAssetEntity[];
     settings: LocalCompanySettingEntity[];
@@ -76,6 +94,8 @@ describe('local backup upload service', () => {
     uploader: LocalBackupUploader | null | undefined;
     /** 可选：注入日志替身，便于断言"原始异常只进日志" */
     logger?: TestPinoLogger;
+    /** 可选：本机授权事实（默认一条 ACTIVE 授权） */
+    authorizations?: LocalAccountAuthorizationEntity[];
   }) {
     const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
     const backupAssetRepository = {
@@ -124,9 +144,24 @@ describe('local backup upload service', () => {
     const settingRepository = {
       find: jest.fn().mockResolvedValue(options.settings),
     };
+    const authorizationRepository = {
+      find: jest
+        .fn()
+        .mockImplementation((input: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            (options.authorizations ?? [authorization()]).filter((row) =>
+              Object.entries(input.where ?? {}).every(
+                ([key, value]) =>
+                  row[key as keyof LocalAccountAuthorizationEntity] === value,
+              ),
+            ),
+          ),
+        ),
+    };
     const service = new LocalBackupUploadService(
       backupAssetRepository as never,
       settingRepository as never,
+      authorizationRepository as never,
       asPinoLogger(options.logger ?? createTestPinoLogger()),
       options.uploader,
     );
@@ -302,6 +337,23 @@ describe('local backup upload service', () => {
     const result = await service.runOnce(base);
 
     expect(result.skipped).toBe(1);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  // 授权有效性必须看**真实授权事实**：设置行存在但授权已撤销时不得继续上云。
+  it('授权被撤销时即使云开关是开的也不尝试上传', async () => {
+    const upload = jest.fn();
+    const { service } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader: { upload },
+      authorizations: [authorization({ authorizationStatus: 'REVOKED' })],
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.skipped).toBe(1);
+    expect(result.attempted).toBe(0);
     expect(upload).not.toHaveBeenCalled();
   });
 

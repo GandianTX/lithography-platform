@@ -7,7 +7,9 @@ import type {
   SyncConflictSummary,
 } from '@src/modules/lithography/sync.types';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
+import type { SyncSourceRecordQueryService } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
+import type { SyncConflictAccessResolver } from './sync-conflict-access.resolver';
 import { ResolveSyncConflictUsecase } from './resolve-sync-conflict.usecase';
 
 /**
@@ -57,6 +59,10 @@ describe('ResolveSyncConflictUsecase', () => {
   const makeUsecase = (params: {
     scope: { role: string; organizationId: number | null; adminLevel: number | null };
     locked: SyncConflictSnapshot | null;
+    /** 记录级写权是否放行（默认放行） */
+    accessAllowed?: boolean;
+    /** 来源记录当前版本与可信标记（默认与冲突登记版本一致且可信） */
+    recordVersion?: { currentVersion: number | null; versionTrusted: boolean };
   }) => {
     const scopeResolver = {
       resolve: jest.fn(() => Promise.resolve(params.scope)),
@@ -81,6 +87,32 @@ describe('ResolveSyncConflictUsecase', () => {
       readConflictSummaryById: jest.fn(() => Promise.resolve(summary)),
       applyCloudResolution: jest.fn(() => Promise.resolve(1)),
     };
+    const accessResolver = {
+      resolveRowAccess: jest.fn(() =>
+        Promise.resolve({
+          allowed: params.accessAllowed ?? true,
+          reason: params.accessAllowed ?? true ? 'ALLOWED' : 'DENIED_RECORD_UNRESOLVED',
+        }),
+      ),
+    };
+    const sourceRecordQueryService = {
+      listFacts: jest.fn(() =>
+        Promise.resolve({
+          facts: new Map([
+            [
+              params.locked?.recordUuid ?? 'record-uuid-1',
+              {
+                recordUuid: params.locked?.recordUuid ?? 'record-uuid-1',
+                currentVersion:
+                  params.recordVersion?.currentVersion ?? params.locked?.localVersion ?? null,
+                versionTrusted: params.recordVersion?.versionTrusted ?? true,
+              },
+            ],
+          ]),
+          scanComplete: true,
+        }),
+      ),
+    };
     const transactionRunner = {
       run: jest.fn((callback: (ctx: unknown) => unknown) => callback(transactionContext)),
     } as unknown as TransactionRunner;
@@ -89,6 +121,8 @@ describe('ResolveSyncConflictUsecase', () => {
       usecase: new ResolveSyncConflictUsecase(
         scopeResolver as unknown as LocalRuntimeScopeResolver,
         service as unknown as SyncConflictService,
+        accessResolver as unknown as SyncConflictAccessResolver,
+        sourceRecordQueryService as unknown as SyncSourceRecordQueryService,
         transactionRunner,
       ),
       service,
@@ -115,8 +149,35 @@ describe('ResolveSyncConflictUsecase', () => {
     );
   });
 
-  it('稍后处理：不写任何字段，保持待处理', async () => {
+  // 写权宽于读权会让"看不见却能改"成立：写侧必须与读侧同一口径（按来源记录归属）。
+  it('记录级写权不放行时不得裁决：与不存在同码同文案，不泄露冲突存在性', async () => {
     const { usecase, service } = makeUsecase({
+      scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
+      locked: conflict,
+      accessAllowed: false,
+    });
+
+    await expect(
+      usecase.execute({ session, conflictId: 'c-1', action: 'CLOUD' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_NOT_FOUND });
+    expect(service.applyCloudResolution).not.toHaveBeenCalled();
+  });
+
+  // 展示版本复核：冲突登记之后来源记录被别处推进时，用户裁决的是过期内容。
+  it('来源记录已被推进（展示版本过期）时拒绝裁决，不写冲突事实', async () => {
+    const { usecase, service } = makeUsecase({
+      scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
+      locked: conflict,
+      recordVersion: { currentVersion: 99, versionTrusted: true },
+    });
+
+    await expect(
+      usecase.execute({ session, conflictId: 'c-1', action: 'CLOUD' }),
+    ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_VERSION_STALE });
+    expect(service.applyCloudResolution).not.toHaveBeenCalled();
+  });
+
+  it('稍后处理：不写任何字段，保持待处理', async () => {    const { usecase, service } = makeUsecase({
       scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
       locked: conflict,
     });

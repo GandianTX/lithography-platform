@@ -1,7 +1,10 @@
 // src/usecases/local-runtime/sync-conflict-access.resolver.ts
 
 import type { LocalRuntimeViewerScope } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
-import { resolveSyncConflictAccess } from '@core/local-runtime/policy/sync-conflict-access.policy';
+import {
+  resolveSyncConflictAccess,
+  type SyncConflictAccessOutcome,
+} from '@core/local-runtime/policy/sync-conflict-access.policy';
 import { Injectable } from '@nestjs/common';
 
 import type { SyncConflictMetadataRow } from '@src/modules/lithography/queries/sync-conflict.query.service';
@@ -72,9 +75,36 @@ export class SyncConflictAccessResolver {
     return access.allowed;
   }
 
+  /**
+   * 单条授权判定（**写侧**用；裁决前必须复核）。
+   *
+   * 为什么写侧也要走这里：此前裁决只按"冲突登记公司"命中范围就放行，
+   * 而读侧口径是"按**来源记录归属**判定"（登记公司不参与放行）。
+   * 写权宽于读权时，同公司内不可读的冲突也能被裁决并留下账号痕迹。
+   * 口径统一到读侧同一策略，避免出现"看不见却能改"。
+   *
+   * 取不到来源事实时按不可读处理（读不到授权依据不等于有权写）。
+   */
+  async resolveRowAccess(params: {
+    row: Pick<SyncConflictMetadataRow, 'recordUuid' | 'organizationId' | 'resourceType'>;
+    sessionAccountId: number;
+    scope: LocalRuntimeViewerScope;
+  }): Promise<SyncConflictAccessOutcome> {
+    const facts = await this.resolveRecordFacts([params.row]);
+    const fact = facts.get(this.factKey(params.row.resourceType, params.row.recordUuid));
+    return resolveSyncConflictAccess({
+      sessionAccountId: params.sessionAccountId,
+      scope: params.scope,
+      conflictOrganizationId: params.row.organizationId,
+      recordResolved: fact !== undefined,
+      ownerOrganizationId: fact?.ownerOrganizationId ?? null,
+      relatedAccountIds: fact?.relatedAccountIds ?? [],
+    });
+  }
+
   /** 批量取来源记录事实：按（资源类型，登记公司）分组取，避免跨公司串读 */
   private async resolveRecordFacts(
-    rows: readonly SyncConflictMetadataRow[],
+    rows: readonly Pick<SyncConflictMetadataRow, 'recordUuid' | 'organizationId' | 'resourceType'>[],
   ): Promise<Map<string, SyncSourceRecordFact>> {
     const facts = new Map<string, SyncSourceRecordFact>();
     const groups = new Map<
