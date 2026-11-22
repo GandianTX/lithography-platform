@@ -592,3 +592,55 @@ describe('本地设置路由准入', () => {
     expect(resolveProtectedRouteRedirect(null, '/local-settings')).toContain('/login');
   });
 });
+
+// 任务 09 S3/S4：备份与恢复页与本地设置同口径——工程师按本公司恒可；
+// 管理员必须有已确认等级（1 级或 2 级），等级缺失者失败关闭回角色主页，
+// 与后端范围裁决口径一致（不留「能进页面但查询必被拒」的残缺中间态）。
+describe('备份与恢复路由准入', () => {
+  it('工程师可进入备份与恢复页', () => {
+    expect(isAuthSessionRoleAllowedAt('ENGINEER', '/local-backup')).toBe(true);
+    expect(resolveProtectedRouteRedirect({ role: 'ENGINEER' }, '/local-backup')).toBeNull();
+  });
+
+  it('客户禁入备份与恢复页', () => {
+    expect(isAuthSessionRoleAllowedAt('CUSTOMER', '/local-backup')).toBe(false);
+    expect(resolveProtectedRouteRedirect({ role: 'CUSTOMER' }, '/local-backup')).toBe('/customer');
+  });
+
+  it('一级管理员可进入', () => {
+    expect(
+      resolveProtectedRouteRedirect(
+        { adminLevel: 1, adminOrganizationId: 5, role: 'SUPER_ADMIN' },
+        '/local-backup',
+      ),
+    ).toBeNull();
+  });
+
+  it('二级管理员具备可信公司归属时可进入', () => {
+    expect(
+      resolveProtectedRouteRedirect(
+        { adminLevel: 2, adminOrganizationId: 5, role: 'SUPER_ADMIN' },
+        '/local-backup',
+      ),
+    ).toBeNull();
+  });
+
+  it('等级缺失的管理员被收回角色主页（与后端失败关闭一致）', () => {
+    expect(
+      resolveProtectedRouteRedirect({ adminLevel: null, role: 'SUPER_ADMIN' }, '/local-backup'),
+    ).toBe('/admin');
+  });
+
+  it('二级管理员缺少可信公司归属时失败关闭', () => {
+    expect(
+      resolveProtectedRouteRedirect(
+        { adminLevel: 2, adminOrganizationId: null, role: 'SUPER_ADMIN' },
+        '/local-backup',
+      ),
+    ).toBe('/admin');
+  });
+
+  it('匿名访问跳登录并带回跳目标', () => {
+    expect(resolveProtectedRouteRedirect(null, '/local-backup')).toContain('/login');
+  });
+});

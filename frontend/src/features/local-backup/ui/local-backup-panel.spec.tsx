@@ -274,4 +274,32 @@ describe('备份与恢复面板', () => {
     // 权限不足重试无用：不提供重读入口
     expect(screen.queryByRole('button', { name: '重新读取' })).toBeNull();
   });
+
+  it('未知原因码走通用兜底文案，不把后端自由文本当契约渲染', async () => {
+    adapters.fetchLocalRestoreCapability.mockResolvedValue({
+      executionAvailable: false,
+      reason: 'LOCAL_UNKNOWN_REASON_CODE',
+    });
+    adapters.cleanupLocalBackupPackages.mockResolvedValue({
+      mode: 'MANUAL',
+      organizationId: 4,
+      available: true,
+      reason: null,
+      targetCount: 1,
+      cleaned: 0,
+      retained: 1,
+      items: [{ backupId: 'backup-x', outcome: 'RETAINED', reason: 'LOCAL_UNKNOWN_REASON_CODE' }],
+    });
+
+    render(<LocalBackupPanel canPrecheck={false} />);
+
+    const trigger = await screen.findByRole('button', { name: '手动备份并清理本地备份包' });
+    fireEvent.click(trigger);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('原因未登记').length).toBeGreaterThanOrEqual(1);
+    });
+    // 未知码不回显为原始文本
+    expect(screen.queryByText('LOCAL_UNKNOWN_REASON_CODE')).toBeNull();
+  });
 });
