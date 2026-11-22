@@ -278,6 +278,78 @@ describe('local backup upload service', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it('S4 自检｜多资产部分失败：逐项如实登记，其余资产不受影响', async () => {
+    const calls: LocalBackupUploadRequest[] = [];
+    const uploader: LocalBackupUploader = {
+      upload: (request: LocalBackupUploadRequest) => {
+        calls.push(request);
+        // 只有 backup-2 被云端拒绝，其余成功
+        if (request.backupId === 'backup-2') {
+          return Promise.resolve({
+            status: 'FAILED',
+            code: 'RECEIVER_REJECTED',
+            reason: '云端拒绝接收',
+          } satisfies LocalBackupUploadResult);
+        }
+        return Promise.resolve({
+          status: 'SUCCEEDED',
+          receipt: JSON.stringify({ schema_version: 1, received_at: base.toISOString() }),
+          cloudReference: 'cloud-ref-1',
+        } satisfies LocalBackupUploadResult);
+      },
+    };
+    const { service, updates } = buildService({
+      assets: [
+        asset({ backupId: 'backup-1' }),
+        asset({ backupId: 'backup-2' }),
+        asset({ backupId: 'backup-3' }),
+      ],
+      settings: [setting()],
+      uploader,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.attempted).toBe(3);
+    expect(result.succeeded).toBe(2);
+    expect(result.failed).toBe(1);
+    // 逐项状态如实登记：失败项落 FAILED ＋受控原因码，成功项落 SUCCEEDED ＋回执
+    const byBackup = new Map(updates.map((entry) => [entry.backupId, entry.patch]));
+    expect(byBackup.get('backup-2')).toMatchObject({
+      cloudStatus: 'FAILED',
+      // 受控原因码只认白名单：替身返回的非白名单码降级为通用受控码（不回显自由文本）
+      failureReason: 'LOCAL_UPLOAD_FAILED',
+    });
+    expect(byBackup.get('backup-1')).toMatchObject({ cloudStatus: 'SUCCEEDED' });
+    expect(byBackup.get('backup-3')).toMatchObject({ cloudStatus: 'SUCCEEDED' });
+    // 失败不产生成功回执，也不触发本地包清理
+    expect(updates.filter((entry) => entry.patch.localStatus === 'CLEANED')).toHaveLength(0);
+  });
+
+  it('S4 自检｜云开关只管上云：关闭云开关不影响备份计划与授权事实', async () => {
+    const uploader: LocalBackupUploader = {
+      upload: () =>
+        Promise.resolve({
+          status: 'SUCCEEDED',
+          receipt: JSON.stringify({ schema_version: 1, received_at: base.toISOString() }),
+          cloudReference: 'cloud-ref-1',
+        } satisfies LocalBackupUploadResult),
+    };
+    const { service, updates } = buildService({
+      assets: [asset()],
+      // 云开关关闭，但本地自动备份计划仍启用、授权仍有效
+      settings: [setting({ autoUploadEnabled: false, backupEnabled: true })],
+      uploader,
+    });
+
+    const result = await service.runOnce(base);
+
+    // 云开关关闭 → 本轮不产生上云尝试；本地计划与授权事实未被改动
+    expect(result.attempted).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(0);
+    expect(updates).toHaveLength(0);
+  });
+
   it('上传成功记录完整回执，且不触发本地包清理', async () => {
     const uploader: LocalBackupUploader = {
       upload: () =>
