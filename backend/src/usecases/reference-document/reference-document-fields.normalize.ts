@@ -153,3 +153,17 @@ export function assertPatchHasEditableField(patch: ReferenceDocumentEditablePatc
     throw new DomainError(REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS, '编辑内容不能为空');
   }
 }
+
+/**
+ * 管理操作原因输入校验（单一口径；页面 §9.3/§9.4 原因必填）。
+ * 原 reference-document.types.ts 实现迁入本 normalize 文件（raw-trim-in-usecases 门禁口径）。
+ */
+export function assertManagementReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (trimmed.length === 0 || trimmed.length > 500) {
+    throw new DomainError(REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS, '操作原因必填且不超过 500 字', {
+      reasonLength: reason.length,
+    });
+  }
+  return trimmed;
+}

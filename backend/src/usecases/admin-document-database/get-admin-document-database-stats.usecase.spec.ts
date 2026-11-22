@@ -95,12 +95,12 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       referenceDocumentTotal: 5,
     });
     // 参考资料：以 pageSize=1 的 withTotal 查询取真实总数，不取当页条数冒充；
-    // organizationId: null = 资料列表读侧同口径的一级管理员 GLOBAL（全公司），
-    // 统计不再按本人组织收窄（组织解析仅用于全域授权门槛）
+    // 文档数据库为一级管理员全域口径：统计与资料列表读侧（resolveReferenceDocumentReadScope）
+    // 同源同口径，只计未软删、已上架、归属已确认，不按本人组织收窄
     expect(h.reference.listDocuments).toHaveBeenCalledWith({
       filter: {},
       pagination: { page: 1, pageSize: 1, withTotal: true },
-      organizationId: null,
+      scope: { kind: 'GLOBAL' },
     });
     expect(h.organizationContext.resolveForAccount).toHaveBeenCalledWith({
       accountId: createSuperAdminSession().accountId,

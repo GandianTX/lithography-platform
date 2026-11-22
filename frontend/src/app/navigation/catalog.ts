@@ -84,6 +84,18 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     tags: ['engineer', 'work', 'order', 'summary', '工单维修总结', '只读核对'],
   },
   {
+    descriptionKey: 'nav.my-records.description',
+    id: 'my-records',
+    kind: 'stable',
+    labelKey: 'nav.my-records.label',
+    // 任务 07（2026-11-21 页面口径确认）：工程师与管理员均保留入口；页面只展示
+    // 本人创建记录（后端按作者 + 本组织谓词收敛，管理员无本人记录时展示暂无记录），
+    // 管理员查看他人正式资料走参考资料库/文档数据库，不经过本页面
+    path: '/engineer/records',
+    roles: ['ENGINEER', 'SUPER_ADMIN'],
+    tags: ['records', 'reports', 'drafts', '我的资料记录', '草稿', '历史报告'],
+  },
+  {
     descriptionKey: 'nav.reference-documents.description',
     id: 'reference-documents',
     kind: 'stable',
@@ -148,6 +160,18 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     path: '/admin/document-database',
     roles: ['SUPER_ADMIN'],
     tags: ['admin', 'database', 'documents', 'aggregation', '文档数据库', '数据聚合'],
+  },
+  {
+    descriptionKey: 'nav.admin-reference-ownership.description',
+    id: 'admin-reference-ownership',
+    kind: 'stable',
+    labelKey: 'nav.admin-reference-ownership.label',
+    // 归属待核实（任务 07 R061-01）：与普通资料库分开的一级管理员专用清单入口；
+    // 展示过滤不替代路由守卫：/admin/reference-ownership 直达由管理路径策略按
+    // GLOBAL 范围拒绝二级，服务端按一级身份与 PENDING 谓词独立裁决。
+    path: '/admin/reference-ownership',
+    roles: ['SUPER_ADMIN'],
+    tags: ['admin', 'ownership', 'pending', 'reference', '归属待核实', '归属核实', '资料'],
   },
   {
     descriptionKey: 'nav.admin-orders.description',

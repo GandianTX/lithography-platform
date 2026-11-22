@@ -1,7 +1,11 @@
 // src/features/content-submission/infrastructure/content-submission-adapter.spec.ts
 
 /**
- * 内容投稿真实 GraphQL adapter 单测（A-PR0 §4.1 九操作）。
+ * 内容投稿真实 GraphQL adapter 单测（A-PR0 §4.1 现役八操作）。
+ *
+ * 任务 07 收口（2026-11-20）：投稿审核决定写入口已按确认需求关闭
+ * （页面 V6.5 §9「不设资料审核页」；功能 V5.6 §3「旧审核仅历史，不批量发布旧待审」），
+ * adapter 的 reviewContentSubmissionDecision 与对应用例随之移除；审核队列/详情读取保留。
  *
  * vi.mock 保留真实错误类，只替换 executeGraphQL；断言错误映射走
  * extensions.code 大类码主信号 + extensions.errorCode 可选细化（仅型号不存在），
@@ -21,7 +25,6 @@ import {
   fetchMyContentSubmissions,
   fetchReviewContentSubmission,
   fetchReviewContentSubmissions,
-  reviewContentSubmissionDecision,
   submitContentSubmission,
   updateContentSubmissionDraft,
 } from './content-submission-adapter';
@@ -555,89 +558,5 @@ describe('submitContentSubmission', () => {
     executeGraphQLMock.mockRejectedValue(networkError);
 
     await expect(submitContentSubmission(501, input)).rejects.toBe(networkError);
-  });
-});
-
-describe('reviewContentSubmissionDecision', () => {
-  it('通过成功时携带发布资料 ID', async () => {
-    executeGraphQLMock.mockResolvedValue({
-      reviewContentSubmissionDecision: {
-        submissionId: 501,
-        status: 'PUBLISHED',
-        documentId: 970088,
-      },
-    });
-
-    await expect(
-      reviewContentSubmissionDecision({
-        submissionId: 501,
-        revisionId: 9002,
-        decision: 'APPROVE',
-        publishAttachment: true,
-      }),
-    ).resolves.toEqual({ ok: true, submissionId: 501, status: 'PUBLISHED', documentId: 970088 });
-  });
-
-  it('退回成功时 documentId 缺失兜底为 null', async () => {
-    executeGraphQLMock.mockResolvedValue({
-      reviewContentSubmissionDecision: { submissionId: 501, status: 'RETURNED', documentId: null },
-    });
-
-    await expect(
-      reviewContentSubmissionDecision({
-        submissionId: 501,
-        revisionId: 9002,
-        decision: 'RETURN',
-        comment: '请补充复现步骤',
-      }),
-    ).resolves.toEqual({ ok: true, submissionId: 501, status: 'RETURNED', documentId: null });
-
-    expect(executeGraphQLMock).toHaveBeenCalledWith(
-      expect.stringContaining('reviewContentSubmissionDecision'),
-      {
-        input: {
-          submissionId: 501,
-          revisionId: 9002,
-          decision: 'RETURN',
-          comment: '请补充复现步骤',
-        },
-      },
-    );
-  });
-
-  it.each([
-    ['CONFLICT（版本不符 / 已被审核）', { code: 'CONFLICT' }, 'state-conflict'],
-    [
-      'BAD_USER_INPUT（退回意见缺失等）',
-      { code: 'BAD_USER_INPUT', errorCode: 'CONTENT_SUBMISSION_INVALID_PARAMS' },
-      'invalid-input',
-    ],
-    ['NOT_FOUND（非本组织 / 不存在）', { code: 'NOT_FOUND' }, 'not-found'],
-    ['FORBIDDEN（守卫拒绝）', { code: 'FORBIDDEN' }, 'forbidden'],
-  ])('%s → %s', async (_name, extensions, reason) => {
-    executeGraphQLMock.mockRejectedValue(buildDomainIngressError(extensions));
-
-    await expect(
-      reviewContentSubmissionDecision({
-        submissionId: 501,
-        revisionId: 9002,
-        decision: 'APPROVE',
-        publishAttachment: false,
-      }),
-    ).resolves.toMatchObject({ ok: false, reason });
-  });
-
-  it('transport 失败时上抛 GraphQLIngressError', async () => {
-    const networkError = new GraphQLIngressError({ type: 'network', message: 'fetch failed' });
-    executeGraphQLMock.mockRejectedValue(networkError);
-
-    await expect(
-      reviewContentSubmissionDecision({
-        submissionId: 501,
-        revisionId: 9002,
-        decision: 'APPROVE',
-        publishAttachment: false,
-      }),
-    ).rejects.toBe(networkError);
   });
 });

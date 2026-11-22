@@ -1,9 +1,14 @@
 // src/adapters/api/graphql/maintenance-report/maintenance-report.resolver.ts
 //
-// 维修报告（任务 06）GraphQL 入口：只做协议映射 → 调用 usecase → 输出 DTO。
+// 维修报告（任务 06）GraphQL 入口：只做协议映射 → 调用用例 → 输出 DTO。
 // 作者与公司一律来自可信会话；本入口不接收客户端自报 author/company。
 // 本切片提供草稿创建/续填、R051-01 正式提交、本人读取与 R051 导出；
 // AI 评价真实读侧待任务 05 联调。
+//
+// 任务 07「我的资料记录」读侧（R052）以独立查询名并行提供：
+// myMaintenanceRecordList / myMaintenanceRecordDetail，复用同一组 usecase
+// （读入口放开到管理员：页面只展示本人创建记录，他人正式资料走资料库/文档数据库）；
+// 任务 06 既有查询契约保持不变。
 
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import { MaintenanceReportStatus } from '@app-types/models/maintenance-report.types';
@@ -12,6 +17,8 @@ import { JwtPayload } from '@app-types/jwt.types';
 import { UseGuards } from '@nestjs/common';
 import { Args, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { ValidateInput } from '@adapters/api/graphql/common/validate-input.decorator';
+import { mapGqlToCoreParams } from '@src/adapters/api/graphql/pagination.mapper';
+import { PaginationArgs } from '@src/adapters/api/graphql/pagination.args';
 import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
 import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
 import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
@@ -58,6 +65,8 @@ import {
   toWorkOrderSummaryAiConversationDTO,
   toWorkOrderSummarySourcePreviewDTO,
 } from './dto/maintenance-report.dto';
+import { MaintenanceReportFilterInput } from './dto/maintenance-report-filter.input';
+import { MyRecordDetailDTO, MyRecordPaginatedDTO } from './dto/maintenance-report-read.dto';
 
 function toStagedAttachmentUsecaseInput(
   attachment: MaintenanceReportStagedAttachmentInputDTO | null | undefined,
@@ -335,6 +344,82 @@ export class MaintenanceReportResolver {
       total: page.total,
       page: page.page,
       pageSize: page.pageSize,
+    };
+  }
+
+  /**
+   * 本人记录列表（任务 07 R052，页面 V6.5 §9.2）：可按来源类型与未完成/已提交筛选，
+   * OFFSET 分页；`withTotal` 缺省 true（本人记录页需要总数），total 与同一归属谓词一致。
+   * 页面只展示本人创建记录（后端 usecase 按作者 [+ 本组织] 谓词收敛）；管理员查看
+   * 他人正式资料走参考资料库/文档数据库，不经过本查询。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => MyRecordPaginatedDTO, {
+    description: '查询本人资料记录列表（本人草稿及有权正式记录）',
+  })
+  @ValidateInput()
+  async myMaintenanceRecordList(
+    @Args('pagination') pagination: PaginationArgs,
+    @currentUser() user: JwtPayload,
+    @Args('filter', { nullable: true, description: '筛选条件（均可选）' })
+    filter?: MaintenanceReportFilterInput,
+  ): Promise<MyRecordPaginatedDTO> {
+    const mapped = mapGqlToCoreParams(pagination);
+    const page = await this.listMyMaintenanceReportsUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      pagination:
+        mapped.mode === 'OFFSET'
+          ? {
+              mode: 'OFFSET',
+              page: mapped.page,
+              pageSize: mapped.pageSize,
+              withTotal: mapped.withTotal ?? true,
+            }
+          : {
+              mode: 'CURSOR',
+              page: 1,
+              pageSize: mapped.limit,
+              withTotal: false,
+            },
+      filter: {
+        sourceType: filter?.sourceType,
+        recordKind: filter?.recordKind,
+        titleKeyword: filter?.titleKeyword,
+      },
+    });
+    return {
+      items: page.items,
+      total: page.total,
+      page: page.page,
+      pageSize: page.pageSize,
+    };
+  }
+
+  /**
+   * 本人记录详情（任务 07，只读）：他人/跨公司报告统一 NOT_FOUND。
+   * 草稿续填入口由前端按 `canEdit` 决定是否展示任务 06 编辑器入口。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => MyRecordDetailDTO, {
+    description: '查询本人资料记录详情（本人草稿及有权正式记录）',
+  })
+  async myMaintenanceRecordDetail(
+    @Args({ name: 'id', type: () => Int, description: '维修报告 ID' }) id: number,
+    @currentUser() user: JwtPayload,
+  ): Promise<MyRecordDetailDTO> {
+    const detail = await this.getMyMaintenanceReportUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      reportId: id,
+    });
+    return {
+      ...detail,
+      // 快照字段名到 DTO 字段名的薄映射：冻结时的姓名快照是唯一权威展示来源
+      report: {
+        ...detail.report,
+        maintenanceEngineerName: detail.report.maintenanceEngineerNameSnapshot,
+      },
     };
   }
 

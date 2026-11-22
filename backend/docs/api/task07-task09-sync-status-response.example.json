@@ -1,0 +1,24 @@
+{
+  "records": [
+    {
+      "organizationId": 101,
+      "resourceType": "MAINTENANCE_REPORT",
+      "recordUuid": "6fd663eb-6d92-47be-9fbf-c591f7eb8e67",
+      "sourceVersion": 1,
+      "status": "SYNCED",
+      "message": null,
+      "conflictId": null,
+      "canResolveConflict": false
+    },
+    {
+      "organizationId": 101,
+      "resourceType": "MAINTENANCE_REPORT",
+      "recordUuid": "613d90f1-d8b7-472f-9c42-f6021232ffa2",
+      "sourceVersion": 2,
+      "status": "CONFLICT",
+      "message": "本机与云端版本不一致",
+      "conflictId": "b096c692-7556-4564-a4f8-2e2fb78b3880",
+      "canResolveConflict": true
+    }
+  ]
+}

@@ -17,6 +17,9 @@ import { AdminCompaniesPage } from '@/pages/admin-companies';
 import { AdminDocumentDatabasePage } from '@/pages/admin-document-database';
 import { AdminEngineerApprovalsPage } from '@/pages/admin-engineer-approvals';
 import { AdminOrderDetailPage, AdminOrdersPage } from '@/pages/admin-orders';
+import { AdminReferenceOwnershipPage } from '@/pages/admin-reference-ownership';
+import { AdminReferenceOwnershipDetailPage } from '@/pages/admin-reference-ownership-detail';
+import { AdminReferenceRevisePage } from '@/pages/admin-reference-revise';
 import { AdminUsersPage } from '@/pages/admin-users';
 import {
   CustomerPage,
@@ -37,9 +40,10 @@ import {
   EngineerWorkOrderSummaryEditorPage,
 } from '@/pages/engineer-work-order-summaries';
 import { ErrorPreviewPage } from '@/pages/error-preview';
+import { MyRecordDetailPage } from '@/pages/my-record-detail';
+import { MyRecordsPage } from '@/pages/my-records';
 import { ProjectStructurePage } from '@/pages/project-structure';
 import { ReferenceDocumentDetailPage } from '@/pages/reference-document-detail';
-import { ReferenceDocumentNewPage } from '@/pages/reference-document-new';
 import { ReferenceDocumentsPage } from '@/pages/reference-documents';
 import { RegisterCustomerPage } from '@/pages/register-customer';
 import { RegisterEngineerPage } from '@/pages/register-engineer';
@@ -170,6 +174,30 @@ const router = createBrowserRouter([
         path: 'admin/orders',
       },
       {
+        // 归属待核实清单页（任务 07 R061-01）：与普通资料库分开的一级管理员专用入口；
+        // 路由治理复用 protectedRouteLoader，/admin/reference-ownership 在
+        // auth-session 管理路径策略中按 GLOBAL 范围守卫（仅一级放行），
+        // 服务端按一级身份与 PENDING 谓词独立裁决数据。
+        element: <AdminReferenceOwnershipPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/reference-ownership',
+      },
+      {
+        // 归属待核实详情页（任务 07 R061-01）：从待核实清单进入，详情内走已实现的
+        // 归属更正（R061-02）；非 PENDING 条目由服务端统一 NOT_FOUND。
+        element: <AdminReferenceOwnershipDetailPage />,
+        loader: protectedRouteLoader,
+        path: 'admin/reference-ownership/:documentId',
+      },
+      {
+        // 独立管理修订页（任务 07）：从资料详情「管理修订」进入；结构化报告修订
+        // 复用任务 04 编辑器。/admin/reference-revise 在 auth-session 管理路径策略
+        // 中按 GLOBAL 范围守卫（仅一级放行）；写权限由服务端最终裁决。
+        element: <AdminReferenceRevisePage />,
+        loader: protectedRouteLoader,
+        path: 'admin/reference-revise/:documentId',
+      },
+      {
         // 工单管理独立详情页（任务 04）：从列表进入，return 时恢复筛选与分页。
         element: <AdminOrderDetailPage />,
         loader: protectedRouteLoader,
@@ -260,6 +288,18 @@ const router = createBrowserRouter([
         path: 'engineer/work-order-summaries/:repairRequestId',
       },
       {
+        // 我的资料记录（任务 07）：ENGINEER 与 SUPER_ADMIN 可进入（导航目录对管理员同入口）；
+        // 页面只展示本人创建记录（后端 usecase 独立复核 activeRole 与作者 + 本组织谓词）
+        element: <MyRecordsPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/records',
+      },
+      {
+        element: <MyRecordDetailPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/records/:recordId',
+      },
+      {
         element: <CustomerPage />,
         loader: protectedRouteLoader,
         path: 'customer',
@@ -282,15 +322,18 @@ const router = createBrowserRouter([
         path: 'customer/repair-requests/new',
       },
       {
-        // AI 参考资料库（0907 任务二）：角色治理复用 protectedRouteLoader +
-        // auth-session 角色路径表（ENGINEER/SUPER_ADMIN 放行，CUSTOMER 安全跳转）；
-        // 新增页对 ENGINEER 由角色路径拒绝清单拦截（与后端写接口精确口径一致）
+        // 参考资料库（任务 07 改造读侧）：角色治理复用 protectedRouteLoader +
+        // auth-session 角色路径表（ENGINEER/SUPER_ADMIN 放行，CUSTOMER 安全跳转）。
+        // 旧「普通新增」路由 /reference-documents/new 已下线（任务 07 关闭旧入口），
+        // 直达地址落 404，而不是仅隐藏按钮。
         element: <ReferenceDocumentsPage />,
         loader: protectedRouteLoader,
         path: 'reference-documents',
       },
       {
-        element: <ReferenceDocumentNewPage />,
+        // 旧「新增资料」直达地址显式下线（任务 07）：不渲染表单、不再转发到别处，
+        // 直接返回 404；写作能力由后续受控修订入口重新引入。
+        element: <Error404 />,
         loader: protectedRouteLoader,
         path: 'reference-documents/new',
       },

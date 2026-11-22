@@ -212,16 +212,6 @@ export type ContentSubmissionListPage = {
   pageSize: number;
 };
 
-/** 审核决定输入（RETURN 必带意见；APPROVE 的 publishAttachment 仅对文件版本生效） */
-export type ContentSubmissionReviewDecisionInput = {
-  submissionId: number;
-  /** 目标版本 ID（必须等于当前待审版本） */
-  revisionId: number;
-  decision: ContentSubmissionReviewDecision;
-  comment?: string | null;
-  publishAttachment?: boolean;
-};
-
 // ---- 结果（domain failure 显式结果；transport / auth 类失败上抛 GraphQLIngressError） ----
 
 /**
@@ -260,16 +250,6 @@ export type ContentSubmissionSubmitResult =
       revisionId: number;
       revisionNo: number;
       status: ContentSubmissionStatus;
-    }
-  | { ok: false; reason: ContentSubmissionWriteFailureReason; message: string };
-
-/** 审核决定结果（退回不产生正式资料，documentId 恒为空） */
-export type ContentSubmissionDecisionResult =
-  | {
-      ok: true;
-      submissionId: number;
-      status: ContentSubmissionStatus;
-      documentId: number | null;
     }
   | { ok: false; reason: ContentSubmissionWriteFailureReason; message: string };
 

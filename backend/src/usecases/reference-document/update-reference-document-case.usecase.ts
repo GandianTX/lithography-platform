@@ -93,9 +93,10 @@ export class UpdateReferenceDocumentCaseUsecase {
     // 与通用编辑共享同一资源互斥，避免并发更正「快照交错 + 全量覆盖」丢失不同字段的补丁
     const current = await this.referenceDocumentQueryService.findDetail({
       documentId: command.documentId,
-      organizationId: membership.organizationId,
+      scope: { kind: 'ORGANIZATION', organizationId: membership.organizationId },
       transactionContext,
       forUpdate: true,
+      includeUnpublished: true,
     });
 
     // 类型门禁（A-PR0 §4.1）：仅 FAULT_CASE 可走专属更正；判定复用保留类型
@@ -186,8 +187,9 @@ export class UpdateReferenceDocumentCaseUsecase {
     // 不重复加锁（锁已在合并读建立，保持到本事务结束）
     const updated = await this.referenceDocumentQueryService.findDetail({
       documentId: command.documentId,
-      organizationId: membership.organizationId,
+      scope: { kind: 'ORGANIZATION', organizationId: membership.organizationId },
       transactionContext,
+      includeUnpublished: true,
     });
     return { id: updated.id, updatedAt: updated.updatedAt };
   }

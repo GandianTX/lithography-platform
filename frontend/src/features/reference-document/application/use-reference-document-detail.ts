@@ -5,7 +5,10 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { isGraphQLIngressError } from '@/shared/graphql';
 
 import type { ReferenceDocumentDetail } from '../infrastructure/reference-document.types';
-import { fetchReferenceDocument } from '../infrastructure/reference-document-adapter';
+import {
+  fetchPendingOwnershipReferenceDocument,
+  fetchReferenceDocument,
+} from '../infrastructure/reference-document-adapter';
 
 /**
  * 参考资料详情流程（query 状态机，收束在 feature application）。
@@ -79,7 +82,17 @@ function referenceDocumentDetailReducer(
   }
 }
 
-export function useReferenceDocumentDetail(id: number | null) {
+/**
+ * 详情读取流程入口。
+ *
+ * - `variant = 'library'`（默认）：普通资料库详情（ONLINE + CONFIRMED 可见范围）；
+ * - `variant = 'pending-ownership'`：归属待核实详情（任务 07 R061-01，一级管理员专用
+ *   管理入口查询），走服务端专用查询；两者共用同一状态机与竞态保护。
+ */
+export function useReferenceDocumentDetail(
+  id: number | null,
+  variant: 'library' | 'pending-ownership' = 'library',
+) {
   const [state, dispatch] = useReducer(referenceDocumentDetailReducer, {
     status: 'loading',
     requestSeq: 0,
@@ -88,21 +101,27 @@ export function useReferenceDocumentDetail(id: number | null) {
   // 旧结果回到 reducer 后因序号不匹配被丢弃；与列表 requestIdRef 同一模式
   const requestSeqRef = useRef(0);
 
-  const loadDetail = useCallback(async (targetId: number, requestSeq: number) => {
-    dispatch({ type: 'load-start', requestSeq });
+  const loadDetail = useCallback(
+    async (targetId: number, requestSeq: number) => {
+      dispatch({ type: 'load-start', requestSeq });
 
-    try {
-      const result = await fetchReferenceDocument(targetId);
+      try {
+        const result =
+          variant === 'pending-ownership'
+            ? await fetchPendingOwnershipReferenceDocument(targetId)
+            : await fetchReferenceDocument(targetId);
 
-      if (result.ok) {
-        dispatch({ type: 'load-ready', requestSeq, detail: result.detail });
-      } else {
-        dispatch({ type: 'load-not-found', requestSeq, message: result.message });
+        if (result.ok) {
+          dispatch({ type: 'load-ready', requestSeq, detail: result.detail });
+        } else {
+          dispatch({ type: 'load-not-found', requestSeq, message: result.message });
+        }
+      } catch (error) {
+        dispatch({ type: 'load-failed', requestSeq, message: toDetailUserMessage(error) });
       }
-    } catch (error) {
-      dispatch({ type: 'load-failed', requestSeq, message: toDetailUserMessage(error) });
-    }
-  }, []);
+    },
+    [variant],
+  );
 
   useEffect(() => {
     if (id === null) {

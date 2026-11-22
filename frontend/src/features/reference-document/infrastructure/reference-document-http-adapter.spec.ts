@@ -15,8 +15,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getGraphQLRuntimeConfig } from '@/shared/graphql';
 
 import {
-  createReferenceDocumentWithFile,
   downloadReferenceDocumentFile,
+  downloadReferenceDocumentSourceAttachment,
 } from './reference-document-http-adapter';
 
 vi.mock('@/shared/graphql', () => ({
@@ -48,141 +48,10 @@ function runtimeConfig(
   });
 }
 
-function fileInput(): File {
-  return new File(['file-bytes'], 'manual.pdf', { type: 'application/pdf' });
-}
-
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
   runtimeConfigMock.mockReset();
-});
-
-describe('createReferenceDocumentWithFile', () => {
-  it('成功信封返回 id；Authorization 头注入当前 Token', async () => {
-    runtimeConfig({});
-    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { id: 808 } }));
-
-    const result = await createReferenceDocumentWithFile({
-      title: '新资料',
-      documentType: 'CHECKLIST',
-      equipmentModelId: null,
-      description: null,
-      contentText: null,
-      file: fileInput(),
-    });
-
-    expect(result).toEqual({ ok: true, id: 808 });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-
-    expect(url).toBe('/api/reference-documents/upload');
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer token-a');
-  });
-
-  it('业务错误码映射为显式失败结果（后端码 → reason，message 透传）', async () => {
-    runtimeConfig({});
-    fetchMock.mockResolvedValue(
-      jsonResponse(
-        {
-          success: false,
-          data: {
-            statusCode: 400,
-            code: 'REFERENCE_DOCUMENT_UPLOAD_FILE_TOO_LARGE',
-            message: '文件超出大小上限。',
-          },
-        },
-        { status: 400 },
-      ),
-    );
-
-    const result = await createReferenceDocumentWithFile({
-      title: '新资料',
-      documentType: 'CHECKLIST',
-      equipmentModelId: null,
-      description: null,
-      contentText: null,
-      file: fileInput(),
-    });
-
-    expect(result).toEqual({ ok: false, reason: 'file-too-large', message: '文件超出大小上限。' });
-  });
-
-  it('401 且无 refreshSession：宣布会话失效并返回失败结果', async () => {
-    const onAuthFailure = vi.fn();
-
-    runtimeConfig({ onAuthFailure });
-    fetchMock.mockResolvedValue(jsonResponse({ success: false }, { status: 401 }));
-
-    const result = await createReferenceDocumentWithFile({
-      title: '新资料',
-      documentType: 'CHECKLIST',
-      equipmentModelId: null,
-      description: null,
-      contentText: null,
-      file: fileInput(),
-    });
-
-    expect(result.ok).toBe(false);
-    expect(onAuthFailure).toHaveBeenCalledTimes(1);
-    // 不重试：只发一次请求
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('401 且刷新成功：用新 Token 重试一次并成功，不宣布会话失效', async () => {
-    const refreshSession = vi.fn().mockResolvedValue(undefined);
-    const onAuthFailure = vi.fn();
-    const getAccessToken = vi
-      .fn<() => string>()
-      .mockReturnValueOnce('expired-token')
-      .mockReturnValueOnce('fresh-token');
-
-    runtimeConfig({ getAccessToken, refreshSession, onAuthFailure });
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ success: false }, { status: 401 }))
-      .mockResolvedValueOnce(jsonResponse({ success: true, data: { id: 809 } }));
-
-    const result = await createReferenceDocumentWithFile({
-      title: '新资料',
-      documentType: 'CHECKLIST',
-      equipmentModelId: null,
-      description: null,
-      contentText: null,
-      file: fileInput(),
-    });
-
-    expect(result).toEqual({ ok: true, id: 809 });
-    expect(refreshSession).toHaveBeenCalledTimes(1);
-    expect(onAuthFailure).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    // 重试请求携带刷新后的 Token
-    const [, retryInit] = fetchMock.mock.calls[1] as [string, RequestInit];
-
-    expect((retryInit.headers as Record<string, string>).Authorization).toBe('Bearer fresh-token');
-  });
-
-  it('401 且刷新失败：宣布会话失效并返回失败结果', async () => {
-    const refreshSession = vi.fn().mockRejectedValue(new Error('refresh failed'));
-    const onAuthFailure = vi.fn();
-
-    runtimeConfig({ refreshSession, onAuthFailure });
-    fetchMock.mockResolvedValue(jsonResponse({ success: false }, { status: 401 }));
-
-    const result = await createReferenceDocumentWithFile({
-      title: '新资料',
-      documentType: 'CHECKLIST',
-      equipmentModelId: null,
-      description: null,
-      contentText: null,
-      file: fileInput(),
-    });
-
-    expect(result.ok).toBe(false);
-    expect(refreshSession).toHaveBeenCalledTimes(1);
-    expect(onAuthFailure).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe('downloadReferenceDocumentFile', () => {
@@ -229,6 +98,31 @@ describe('downloadReferenceDocumentFile', () => {
     });
   });
 
+  it('403 授权拒绝映射 forbidden，展示无权提示', async () => {
+    runtimeConfig({});
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          success: false,
+          data: {
+            statusCode: 403,
+            code: 'FORBIDDEN',
+            message: '无权访问该资源',
+          },
+        },
+        { status: 403 },
+      ),
+    );
+
+    const result = await downloadReferenceDocumentFile(970002);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'forbidden',
+      message: '无权访问该资源',
+    });
+  });
+
   it('401 且刷新成功但重试仍 401：宣布会话失效并返回失败结果', async () => {
     const refreshSession = vi.fn().mockResolvedValue(undefined);
     const onAuthFailure = vi.fn();
@@ -251,5 +145,55 @@ describe('downloadReferenceDocumentFile', () => {
     const result = await downloadReferenceDocumentFile(970002);
 
     expect(result).toMatchObject({ ok: false, reason: 'download-failed' });
+  });
+});
+
+describe('downloadReferenceDocumentSourceAttachment（任务 07 P2 来源报告原件下载）', () => {
+  it('请求来源报告原件端点并成功返回 Blob 与文件名', async () => {
+    runtimeConfig({});
+    fetchMock.mockResolvedValue(
+      new Response('source-bytes', {
+        headers: {
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent('报告原件.txt')}`,
+        },
+      }),
+    );
+
+    const result = await downloadReferenceDocumentSourceAttachment(970010, 880123);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/reference-documents/970010/source-attachments/880123/download',
+      expect.objectContaining({ headers: expect.anything() }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.filename).toBe('报告原件.txt');
+      expect(result.blob.size).toBeGreaterThan(0);
+    }
+  });
+
+  it('绑定不符 / 不可见（NOT_FOUND）映射 not-found 显式失败', async () => {
+    runtimeConfig({});
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          success: false,
+          data: {
+            statusCode: 404,
+            code: 'REFERENCE_DOCUMENT_NOT_FOUND',
+            message: '参考资料不存在或不可访问',
+          },
+        },
+        { status: 404 },
+      ),
+    );
+
+    const result = await downloadReferenceDocumentSourceAttachment(970010, 880123);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'not-found',
+      message: '参考资料不存在或不可访问',
+    });
   });
 });

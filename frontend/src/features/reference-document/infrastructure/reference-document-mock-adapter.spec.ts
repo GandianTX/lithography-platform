@@ -2,16 +2,16 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { REFERENCE_DOCUMENT_UPLOAD_EXTENSION_MIME } from './reference-document.types';
 import { resetReferenceDocumentMockState } from './reference-document-mock-adapter';
 import {
-  createReferenceDocument,
-  createReferenceDocumentWithFile,
+  adminDeleteReferenceDocument,
+  correctReferenceDocumentOwnership,
   deleteReferenceDocument,
   downloadReferenceDocumentFile,
   fetchReferenceDocument,
   fetchReferenceDocuments,
-  updateReferenceDocument,
+  offlineReferenceDocument,
+  reviseReferenceDocument,
   updateReferenceDocumentCase,
 } from './reference-document-mock-adapter';
 
@@ -19,14 +19,6 @@ import {
  * Mock 数据访问层契约测试：钉住与后端一致的业务口径
  * （排序 / 筛选 / 分页 / 统一 NOT_FOUND 防探测 / PATCH 语义 / 软删不幂等）。
  */
-
-const VALID_INPUT = {
-  title: '新资料',
-  documentType: 'CHECKLIST',
-  equipmentModelId: null,
-  description: null,
-  contentText: '正文内容',
-};
 
 beforeEach(() => {
   resetReferenceDocumentMockState();
@@ -174,148 +166,6 @@ describe('fetchReferenceDocument', () => {
   });
 });
 
-describe('createReferenceDocument', () => {
-  it('创建成功返回新 ID，列表可见且昵称由「后端」富集', async () => {
-    const result = await createReferenceDocument(VALID_INPUT);
-
-    expect(result.ok).toBe(true);
-
-    if (result.ok) {
-      const detail = await fetchReferenceDocument(result.id);
-
-      expect(detail.ok).toBe(true);
-
-      const page = await fetchReferenceDocuments({ page: 1, pageSize: 1 });
-
-      // 新创建时间最新，排在第一
-      expect(page.items[0].id).toBe(result.id);
-      expect(page.items[0].creatorNickname).toBe('系统管理员');
-    }
-  });
-
-  it.each([
-    ['标题空白', { ...VALID_INPUT, title: '   ' }],
-    ['标题超长', { ...VALID_INPUT, title: '长'.repeat(256) }],
-    ['类型空白', { ...VALID_INPUT, documentType: '' }],
-    ['类型超长', { ...VALID_INPUT, documentType: 'A'.repeat(101) }],
-    ['文本内容空白', { ...VALID_INPUT, contentText: ' \n ' }],
-  ])('%s 拒绝为 invalid-input', async (_name, input) => {
-    const result = await createReferenceDocument(input);
-
-    expect(result).toMatchObject({ ok: false, reason: 'invalid-input' });
-  });
-
-  it('型号不存在拒绝为 model-not-found', async () => {
-    const result = await createReferenceDocument({ ...VALID_INPUT, equipmentModelId: 123456 });
-
-    expect(result).toMatchObject({ ok: false, reason: 'model-not-found' });
-  });
-});
-
-describe('updateReferenceDocument', () => {
-  it('PATCH 语义：undefined 保持原值，null 清空型号与说明', async () => {
-    const result = await updateReferenceDocument(970002, {
-      title: '改名后的维护指南',
-      equipmentModelId: null,
-      description: null,
-    });
-
-    expect(result).toMatchObject({ ok: true, id: 970002 });
-
-    const detail = await fetchReferenceDocument(970002);
-
-    expect(detail.ok).toBe(true);
-
-    if (detail.ok) {
-      // undefined 字段保持原值
-      expect(detail.detail.documentType).toBe('MAINTENANCE_GUIDE');
-      expect(detail.detail.contentText).toContain('光源维护指南');
-      // 显式 null 清空
-      expect(detail.detail.equipmentModelId).toBeNull();
-      expect(detail.detail.equipmentModelName).toBeNull();
-      expect(detail.detail.description).toBeNull();
-      expect(detail.detail.title).toBe('改名后的维护指南');
-    }
-  });
-
-  it('必填字段显式 null / 型号不存在拒绝；无存储引用资料清空正文拒绝', async () => {
-    await expect(updateReferenceDocument(970001, { title: null })).resolves.toMatchObject({
-      ok: false,
-      reason: 'invalid-input',
-    });
-    await expect(updateReferenceDocument(970001, { documentType: null })).resolves.toMatchObject({
-      ok: false,
-      reason: 'invalid-input',
-    });
-    // 纯文本资料（无存储元数据）清空正文仍拒绝，与后端双空防御同口径
-    await expect(updateReferenceDocument(970005, { contentText: '  ' })).resolves.toMatchObject({
-      ok: false,
-      reason: 'invalid-input',
-    });
-    // 有文件名但无存储引用（970001）：后端按存储引用判定，清空正文同样拒绝
-    await expect(updateReferenceDocument(970001, { contentText: '  ' })).resolves.toMatchObject({
-      ok: false,
-      reason: 'invalid-input',
-    });
-    await expect(
-      updateReferenceDocument(970001, { equipmentModelId: 999999 }),
-    ).resolves.toMatchObject({ ok: false, reason: 'model-not-found' });
-  });
-
-  it('已有文件的资料允许清空正文（编辑防御放宽，与后端同口径）', async () => {
-    await expect(updateReferenceDocument(970002, { contentText: '  ' })).resolves.toMatchObject({
-      ok: true,
-      id: 970002,
-    });
-
-    const detail = await fetchReferenceDocument(970002);
-
-    expect(detail.ok).toBe(true);
-
-    if (detail.ok) {
-      expect(detail.detail.contentText).toBeNull();
-      expect(detail.detail.originalFilename).not.toBeNull();
-      expect(detail.detail.hasFile).toBe(true);
-    }
-  });
-
-  it('不存在 / 已软删统一 not-found', async () => {
-    await expect(updateReferenceDocument(999999, { title: 'x' })).resolves.toMatchObject({
-      ok: false,
-      reason: 'not-found',
-    });
-    await expect(updateReferenceDocument(970004, { title: 'x' })).resolves.toMatchObject({
-      ok: false,
-      reason: 'not-found',
-    });
-  });
-
-  it('案例保护：FAULT_CASE 通用编辑不得改类型 / 正文，普通资料转案例拒绝', async () => {
-    await expect(
-      updateReferenceDocument(970031, { documentType: 'ERROR_CODE_MANUAL' }),
-    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
-
-    await expect(
-      updateReferenceDocument(970031, { contentText: '改写正文' }),
-    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
-
-    // 普通资料不能借此转为 FAULT_CASE（类型保留值只能来自投稿发布）
-    await expect(
-      updateReferenceDocument(970002, { documentType: 'FAULT_CASE' }),
-    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
-
-    // 拒绝为终态：案例资料未被改动
-    const detail = await fetchReferenceDocument(970031);
-
-    expect(detail.ok).toBe(true);
-
-    if (detail.ok) {
-      expect(detail.detail.documentType).toBe('FAULT_CASE');
-      expect(detail.detail.contentText).toContain('处理状态：已解决');
-    }
-  });
-});
-
 describe('updateReferenceDocumentCase（案例专属更正）', () => {
   it('成功更正：明细合并、正文重新生成、处理状态同步', async () => {
     const result = await updateReferenceDocumentCase(970031, {
@@ -417,7 +267,7 @@ describe('updateReferenceDocumentCase（案例专属更正）', () => {
 
 describe('deleteReferenceDocument', () => {
   it('软删后列表与详情不可见', async () => {
-    const result = await deleteReferenceDocument(970003);
+    const result = await deleteReferenceDocument(970003, 1);
 
     expect(result).toMatchObject({ ok: true });
     await expect(fetchReferenceDocument(970003)).resolves.toMatchObject({
@@ -431,137 +281,17 @@ describe('deleteReferenceDocument', () => {
   });
 
   it('重复软删不幂等：统一 not-found（区别于维修申请的后端口径）', async () => {
-    await deleteReferenceDocument(970003);
+    await deleteReferenceDocument(970003, 1);
 
-    await expect(deleteReferenceDocument(970003)).resolves.toMatchObject({
+    await expect(deleteReferenceDocument(970003, 1)).resolves.toMatchObject({
       ok: false,
       reason: 'not-found',
     });
-    await expect(deleteReferenceDocument(999999)).resolves.toMatchObject({
+    await expect(deleteReferenceDocument(999999, 1)).resolves.toMatchObject({
       ok: false,
       reason: 'not-found',
     });
   });
-});
-
-describe('createReferenceDocumentWithFile（REST 同签名模拟）', () => {
-  const VALID_FILE_INPUT = {
-    title: '文件资料',
-    documentType: 'MAINTENANCE_GUIDE',
-    equipmentModelId: null,
-    description: null,
-    contentText: null,
-    file: new File(['bytes'], 'machine-manual.pdf', { type: 'application/pdf' }),
-  };
-
-  it('仅文件创建成功：落库存储元数据，正文为空；contentText 并存时同时保留', async () => {
-    const fileOnly = await createReferenceDocumentWithFile(VALID_FILE_INPUT);
-
-    expect(fileOnly).toMatchObject({ ok: true });
-
-    if (fileOnly.ok) {
-      const detail = await fetchReferenceDocument(fileOnly.id);
-
-      expect(detail.ok).toBe(true);
-
-      if (detail.ok) {
-        expect(detail.detail.originalFilename).toBe('machine-manual.pdf');
-        expect(detail.detail.mimeType).toBe('application/pdf');
-        expect(detail.detail.contentText).toBeNull();
-      }
-    }
-
-    const withText = await createReferenceDocumentWithFile({
-      ...VALID_FILE_INPUT,
-      title: '图文并存资料',
-      contentText: '补充正文',
-    });
-
-    expect(withText).toMatchObject({ ok: true });
-
-    if (withText.ok) {
-      const detail = await fetchReferenceDocument(withText.id);
-
-      if (detail.ok) {
-        expect(detail.detail.contentText).toBe('补充正文');
-      }
-    }
-  });
-
-  it.each([
-    ['标题空白', { ...VALID_FILE_INPUT, title: ' ' }],
-    ['白名单外扩展名', { ...VALID_FILE_INPUT, file: new File(['x'], 'virus.exe') }],
-    ['无扩展名', { ...VALID_FILE_INPUT, file: new File(['x'], 'no-extension') }],
-    ['型号不存在', { ...VALID_FILE_INPUT, equipmentModelId: 999999 }],
-  ])('%s 拒绝', async (_name, input) => {
-    const result = await createReferenceDocumentWithFile(input);
-
-    expect(result.ok).toBe(false);
-
-    if (!result.ok) {
-      expect(['invalid-input', 'file-type-not-allowed', 'model-not-found']).toContain(
-        result.reason,
-      );
-    }
-  });
-});
-
-/**
- * 上传策略同源契约：扩展名白名单的唯一定义在 reference-document.types
- * （表单由此派生即时提示，Mock 由此取 MIME）。
- *
- * 断言「表内全量被接受 + 表外一律拒绝」，使「允许类型变化」只需改一处常量：
- * 若有人在任一消费方另写一份白名单，本组用例会因表内/表外集合不一致而失败，
- * 而不是靠默认环境下的等值断言自证。
- */
-describe('上传扩展名策略与 Mock 文件通道同源', () => {
-  it.each(Object.entries(REFERENCE_DOCUMENT_UPLOAD_EXTENSION_MIME))(
-    '策略表内的 .%s 被接受，并按表回填 MIME %s',
-    async (extension, mimeType) => {
-      const result = await createReferenceDocumentWithFile({
-        title: `扩展名契约 ${extension}`,
-        documentType: 'MAINTENANCE_GUIDE',
-        equipmentModelId: null,
-        description: null,
-        contentText: null,
-        file: new File(['bytes'], `sample.${extension}`, { type: 'application/octet-stream' }),
-      });
-
-      expect(result.ok).toBe(true);
-
-      if (result.ok) {
-        const detail = await fetchReferenceDocument(result.id);
-
-        expect(detail.ok).toBe(true);
-
-        if (detail.ok) {
-          expect(detail.detail.mimeType).toBe(mimeType);
-        }
-      }
-    },
-  );
-
-  it.each(['exe', 'sh', 'zip', ''])(
-    '策略表外的 .%s 一律拒绝为 file-type-not-allowed',
-    async (extension) => {
-      const result = await createReferenceDocumentWithFile({
-        title: '表外扩展名',
-        documentType: 'MAINTENANCE_GUIDE',
-        equipmentModelId: null,
-        description: null,
-        contentText: null,
-        file: new File(['bytes'], extension ? `sample.${extension}` : 'sample', {
-          type: 'application/octet-stream',
-        }),
-      });
-
-      expect(result).toEqual({
-        ok: false,
-        reason: 'file-type-not-allowed',
-        message: '不允许上传该类型的文件。',
-      });
-    },
-  );
 });
 
 describe('downloadReferenceDocumentFile（REST 同签名模拟）', () => {
@@ -594,5 +324,80 @@ describe('downloadReferenceDocumentFile（REST 同签名模拟）', () => {
       ok: false,
       reason: 'not-found',
     });
+  });
+});
+
+describe('reviseReferenceDocument（任务 07 R058 管理修订 · Mock）', () => {
+  it('修订标题成功并推进生效版本；expected_version 过期拒绝', async () => {
+    await expect(
+      reviseReferenceDocument(970002, 1, { title: '改名后的维护指南' }, '勘误'),
+    ).resolves.toEqual({ ok: true, id: 970002, revisionNo: 2 });
+
+    await expect(
+      reviseReferenceDocument(970002, 1, { title: '旧版本覆盖' }, 'r'),
+    ).resolves.toMatchObject({ ok: false, reason: 'version-conflict' });
+  });
+
+  it('FAULT_CASE 正文修订拒绝（须走案例更正）；正文清空无文件拒绝；原因缺失拒绝', async () => {
+    await expect(
+      reviseReferenceDocument(970031, 1, { contentText: 'x' }, 'r'),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+    await expect(
+      reviseReferenceDocument(970001, 1, { contentText: null }, 'r'),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+    await expect(reviseReferenceDocument(970002, 1, { title: 'x' }, '   ')).resolves.toMatchObject({
+      ok: false,
+      reason: 'invalid-input',
+    });
+  });
+});
+
+describe('offlineReferenceDocument（任务 07 R059 下架 · Mock）', () => {
+  it('下架后列表与详情统一不可见（防探测口径），版本推进', async () => {
+    await expect(offlineReferenceDocument(970002, 1, '重复条目')).resolves.toEqual({
+      ok: true,
+      id: 970002,
+      revisionNo: 2,
+    });
+
+    await expect(fetchReferenceDocument(970002)).resolves.toMatchObject({
+      ok: false,
+      reason: 'not-found',
+    });
+    const page = await fetchReferenceDocuments({ page: 1, pageSize: 50 });
+
+    expect(page.items.some((item) => item.id === 970002)).toBe(false);
+  });
+});
+
+describe('adminDeleteReferenceDocument（任务 07 R060 管理删除 · Mock）', () => {
+  it('管理删除软删后统一不可见', async () => {
+    await expect(adminDeleteReferenceDocument(970003, 1, '违规内容')).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(fetchReferenceDocument(970003)).resolves.toMatchObject({
+      ok: false,
+      reason: 'not-found',
+    });
+  });
+});
+
+describe('correctReferenceDocumentOwnership（任务 07 R061-02 归属更正 · Mock）', () => {
+  it('更正成功推进版本；未提交字段拒绝；版本过期拒绝', async () => {
+    await expect(
+      correctReferenceDocumentOwnership(970002, 1, {
+        verificationReason: '核实为原公司同事上传',
+        ownerOrganizationId: 910001,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      correctReferenceDocumentOwnership(970001, 1, { verificationReason: 'r' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid-input' });
+    await expect(
+      correctReferenceDocumentOwnership(970001, 99, {
+        verificationReason: 'r',
+        ownerOrganizationId: 910001,
+      }),
+    ).resolves.toMatchObject({ ok: false, reason: 'version-conflict' });
   });
 });

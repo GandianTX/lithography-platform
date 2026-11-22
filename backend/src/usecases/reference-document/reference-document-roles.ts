@@ -1,5 +1,6 @@
 // src/usecases/reference-document/reference-document-roles.ts
 
+import type { UsecaseSession } from '@app-types/auth/session.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import {
   DomainError,
@@ -37,6 +38,67 @@ export function assertReferenceDocumentWriteRole(roles: readonly string[]): void
       { roles: [...roles] },
     );
   }
+}
+
+/** 管理修订/下架/管理删除/归属更正（R058–R061）的账号等级读取契约 */
+export interface ReferenceDocumentAdminLevelReader {
+  findAdminLevelByAccountId(accountId: number): Promise<number | null>;
+}
+
+/**
+ * 一级管理员决策（任务 07 R058–R061，页面 §9.3「2级及工程师不能下架」）：
+ *
+ * - 仅可信 activeRole 为 SUPER_ADMIN 且账号当前事实 admin_level = 1 放行；
+ * - 等级取自账号当前事实（不信任 JWT 静态等级），与读侧范围决议同口径；
+ * - 二级管理员（level=2）、缺等级与工程师一律 INSUFFICIENT_PERMISSIONS——
+ *   这是权限拒绝而非资源不可见，必须与 NOT_FOUND 区分，防止越权探测被掩盖。
+ */
+export async function assertReferenceDocumentFirstLevelAdmin(params: {
+  session: UsecaseSession;
+  accountQueryService: ReferenceDocumentAdminLevelReader;
+}): Promise<void> {
+  assertReferenceDocumentWriteRole(params.session.roles);
+  if (params.session.activeRole !== IdentityTypeEnum.SUPER_ADMIN) {
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      '仅一级管理员可以执行资料管理操作',
+    );
+  }
+  const adminLevel = await params.accountQueryService.findAdminLevelByAccountId(
+    params.session.accountId,
+  );
+  if (adminLevel !== 1) {
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      '仅一级管理员可以执行资料管理操作',
+      { adminLevel },
+    );
+  }
+}
+
+/**
+ * 原作者删除本人正式资料（任务 07 R053）读入决策：
+ * 工程师与管理员（作为原作者）都可删除本人条目；CUSTOMER 拒绝。
+ * 「仅本人条目」的归属裁决在 usecase 内按 AUTHOR 范围（createdByAccountId）执行。
+ */
+export function assertReferenceDocumentAuthorDeleteRole(
+  roles: readonly string[],
+  activeRole: string,
+): void {
+  if (activeRole === String(IdentityTypeEnum.SUPER_ADMIN)) {
+    return;
+  }
+  if (
+    activeRole === String(IdentityTypeEnum.ENGINEER) &&
+    roles.includes(String(IdentityTypeEnum.ENGINEER))
+  ) {
+    return;
+  }
+  throw new DomainError(
+    PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+    '仅原作者本人可以删除其正式资料',
+    { roles: [...roles] },
+  );
 }
 
 /**

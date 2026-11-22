@@ -3,29 +3,34 @@
 /// <reference types="jest" />
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
+import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
+import type { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
+import type { ManagementAuditService } from '@src/modules/lithography/management-audit.service';
 import type { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { ReferenceDocumentCaseDetailService } from '@src/modules/lithography/reference-document-case-detail.service';
 import type { ReferenceDocumentService } from '@src/modules/lithography/reference-document.service';
+import type { ReferenceDocumentRevisionService } from '@src/modules/lithography/reference-document-revision.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
+import { ReviseReferenceDocumentUsecase } from './revise-reference-document.usecase';
 import { SoftDeleteReferenceDocumentUsecase } from './soft-delete-reference-document.usecase';
 import { UpdateReferenceDocumentCaseUsecase } from './update-reference-document-case.usecase';
-import { UpdateReferenceDocumentUsecase } from './update-reference-document.usecase';
 
 /**
- * 写竞争受控交错实验台（G2/F01）：以内存替身模拟 InnoDB 的三个关键语义，
- * 仅覆盖更正/通用编辑/软删除三个写入口所需的最小事实面：
+ * 写竞争受控交错实验台（G2/F01，任务 07 版本化改造）：以内存替身模拟 InnoDB 的
+ * 三个关键语义，仅覆盖案例更正 / 管理修订 / 原作者删除三个写入口所需的最小事实面：
  *
  * 1. REPEATABLE READ 事务快照：事务开始时捕获状态快照，非锁定读（普通 SELECT）
  *    永远返回本事务快照（不看到并发事务的提交）；
  * 2. 锁定读（SELECT ... FOR UPDATE，即 findDetail({ forUpdate: true })）是当前读
  *    并持有行锁：依次排队、读到最新已提交状态，锁保持到事务结束（run 返回/抛错）；
- * 3. 行写（UPDATE）同样需要行锁：主资料条件更新（deprecated=false）未命中时
- *    返回 NOT_FOUND 状态事实。
+ * 3. 行写（UPDATE）同样需要行锁：管理修订的 advanceCurrentRevision 以
+ *    current_revision_no = expected 作为条件，未命中返回 VERSION_CONFLICT 状态事实。
  *
  * 这不是真实数据库并发测试（真实连接与同步屏障在 e2e 补验）；它的价值是以
- * 确定性调度构造「快照交错」与「锁串行化」两种执行，证明合并必须走锁定读。
+ * 确定性调度构造「快照交错」「锁串行化」与「版本过期」三种执行，证明管理修订
+ * 必须走锁定读 + expected_version 条件推进，任何入口都不产生半写。
  */
 
 const writeSession = (): UsecaseSession =>
@@ -39,6 +44,10 @@ type DocumentRowState = {
   description: string | null;
   contentText: string | null;
   storageReference: string | null;
+  publicationStatus: 'ONLINE' | 'OFFLINE';
+  ownershipStatus: 'CONFIRMED' | 'PENDING';
+  createdByAccountId: number;
+  currentRevisionNo: number;
   deprecated: boolean;
 };
 
@@ -94,6 +103,10 @@ const makeWriteRaceBench = () => {
       description: null,
       contentText: '正文（旧）',
       storageReference: null,
+      publicationStatus: 'ONLINE',
+      ownershipStatus: 'CONFIRMED',
+      createdByAccountId: 900001,
+      currentRevisionNo: 1,
       deprecated: false,
     },
     detail: {
@@ -148,6 +161,15 @@ const makeWriteRaceBench = () => {
     findModelById: jest.fn().mockResolvedValue({ id: 930001, modelCode: 'M', modelName: '型号' }),
   };
 
+  const accountQueryService = {
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(1),
+    findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map()),
+  };
+
+  const maintenanceReportQueryService = {
+    readVersionById: jest.fn().mockResolvedValue(null),
+  };
+
   const toDetailView = (source: DbState) => {
     if (source.document.deprecated) {
       throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问');
@@ -167,8 +189,13 @@ const makeWriteRaceBench = () => {
       organizationName: '甲方默认组织',
       ingestMethod: 'REVIEWED_SUBMISSION',
       caseDetail: cloneState(source.detail),
-      createdByAccountId: 900001,
+      createdByAccountId: source.document.createdByAccountId,
+      ownerOrganizationId: 910001,
       storageReference: source.document.storageReference,
+      publicationStatus: source.document.publicationStatus,
+      ownershipStatus: source.document.ownershipStatus,
+      effectiveRevisionNo: source.document.currentRevisionNo,
+      schemaVersion: 1,
       createdAt: new Date('2026-01-02T10:00:00.000Z'),
       updatedAt: new Date('2026-01-02T10:00:00.000Z'),
     };
@@ -188,49 +215,57 @@ const makeWriteRaceBench = () => {
         return toDetailView(transactionContext.snapshot);
       },
     ),
+    // 生效修订读替身：返回当前状态的正文快照（修订刚推进时与行内正文一致）
+    findRevision: jest.fn().mockImplementation((documentId: number, revisionNo: number) =>
+      Promise.resolve({
+        revisionNo,
+        afterSnapshot: { schema_version: 1, contentText: state.document.contentText },
+      }),
+    ),
   };
 
-  // —— 写侧替身：行写同样通过行锁串行化；条件更新未命中返回状态事实 ——
-  const referenceDocumentService = {
-    updateDocument: jest.fn(
+  // —— 修订写替身：条件推进同样通过行锁串行化；expected 不匹配返回 VERSION_CONFLICT ——
+  const referenceDocumentRevisionService = {
+    insertRevision: jest.fn().mockResolvedValue(undefined),
+    advanceCurrentRevision: jest.fn(
       async (
-        data: {
-          title: string;
-          documentType: string;
-          equipmentModelId: number | null;
-          equipmentModelText?: string | null;
-          description: string | null;
-          contentText: string | null;
+        params: {
+          documentId: number;
+          expectedRevisionNo: number;
+          apply: Record<string, unknown> & { markDeleted?: boolean };
         },
         transactionContext?: unknown,
       ) => {
         const context = transactionContext as MockTransactionContext;
         await context.acquireRowLock();
         if (state.document.deprecated) {
-          throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可编辑');
+          return 'VERSION_CONFLICT';
         }
-        state.document.title = data.title;
-        state.document.documentType = data.documentType;
-        state.document.equipmentModelId = data.equipmentModelId;
-        if (data.equipmentModelText !== undefined) {
-          state.document.equipmentModelText = data.equipmentModelText;
+        if (state.document.currentRevisionNo !== params.expectedRevisionNo) {
+          return 'VERSION_CONFLICT';
         }
-        state.document.description = data.description;
-        state.document.contentText = data.contentText;
-        return { id: 970001 };
+        const { apply } = params;
+        for (const [key, value] of Object.entries(apply)) {
+          if (key === 'markDeleted') continue;
+          (state.document as unknown as Record<string, unknown>)[key] = value;
+        }
+        if (apply.markDeleted === true) {
+          state.document.deprecated = true;
+          state.document.publicationStatus = 'OFFLINE';
+        }
+        state.document.currentRevisionNo = params.expectedRevisionNo + 1;
+        return 'ADVANCED';
       },
     ),
-    softDeleteDocument: jest.fn(
-      async (params: { documentId: number }, transactionContext?: unknown) => {
-        const context = transactionContext as MockTransactionContext;
-        await context.acquireRowLock();
-        if (state.document.deprecated) {
-          return { kind: 'NOT_FOUND', id: params.documentId };
-        }
-        state.document.deprecated = true;
-        return { kind: 'DELETED', id: params.documentId };
-      },
-    ),
+  };
+
+  const managementAuditService = {
+    appendDocumentEvent: jest.fn().mockResolvedValue(undefined),
+  };
+
+  // —— 案例写侧替身：行写同样通过行锁串行化 ——
+  const referenceDocumentService = {
+    updateDocument: jest.fn().mockResolvedValue({ id: 970001 }),
   };
 
   const referenceDocumentCaseDetailService = {
@@ -274,17 +309,19 @@ const makeWriteRaceBench = () => {
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       transactionRunner,
     ),
-    update: new UpdateReferenceDocumentUsecase(
-      referenceDocumentService as unknown as ReferenceDocumentService,
+    revise: new ReviseReferenceDocumentUsecase(
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
-      equipmentModelQueryService as unknown as EquipmentModelQueryService,
-      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      maintenanceReportQueryService as unknown as MaintenanceReportQueryService,
+      referenceDocumentRevisionService as unknown as ReferenceDocumentRevisionService,
+      accountQueryService as unknown as AccountQueryService,
       transactionRunner,
     ),
     softDelete: new SoftDeleteReferenceDocumentUsecase(
-      referenceDocumentService as unknown as ReferenceDocumentService,
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
-      organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      maintenanceReportQueryService as unknown as MaintenanceReportQueryService,
+      referenceDocumentRevisionService as unknown as ReferenceDocumentRevisionService,
+      managementAuditService as unknown as ManagementAuditService,
+      accountQueryService as unknown as AccountQueryService,
       transactionRunner,
     ),
   });
@@ -293,46 +330,62 @@ const makeWriteRaceBench = () => {
     state,
     transactionRunner,
     organizationContextService,
+    accountQueryService,
     referenceDocumentQueryService,
-    referenceDocumentService,
+    referenceDocumentRevisionService,
     referenceDocumentCaseDetailService,
     makeUsecases,
   };
 };
 
-describe('正式资料写竞争受控交错（G2/F01）', () => {
-  it('两个管理员并发更正不同字段：锁串行化 + 锁读最新事实后，两个补丁均保留', async () => {
+describe('正式资料写竞争受控交错（G2/F01，任务 07 版本化口径）', () => {
+  it('两个一级管理员以同一 expected_version 并发修订：锁串行化 + 条件推进——先提交者成功，后者 VERSION_CONFLICT，无字段丢失', async () => {
     const bench = makeWriteRaceBench();
-    const { correction } = bench.makeUsecases();
+    const { revise } = bench.makeUsecases();
 
-    const [resultA, resultB] = await Promise.all([
-      correction.execute({
+    const [resultA, errorB] = await Promise.allSettled([
+      revise.execute({
         session: writeSession(),
         documentId: 970001,
-        patch: { errorCode: 'A-NEW' },
+        expectedVersion: 1,
+        reason: '修订 A',
+        patch: { description: 'A-NEW' },
       }),
-      correction.execute({
+      revise.execute({
         session: writeSession(),
         documentId: 970001,
-        patch: { conditionText: 'B-NEW' },
+        expectedVersion: 1,
+        reason: '修订 B',
+        patch: { title: 'B-NEW' },
       }),
     ]);
 
-    expect(resultA).toEqual({ id: 970001, updatedAt: expect.any(Date) });
-    expect(resultB).toEqual({ id: 970001, updatedAt: expect.any(Date) });
-    // 修复前（快照交错 + 全量覆盖）：后写者会用自身快照回退先写者字段，必有一项丢失
-    expect(bench.state.detail.errorCode).toBe('A-NEW');
-    expect(bench.state.detail.conditionText).toBe('B-NEW');
+    // 恰好一个成功、一个版本冲突：旧版本不得覆盖新版本
+    const fulfilled = [resultA, errorB].filter(
+      (r) => r.status === 'fulfilled',
+    ) as PromiseFulfilledResult<{ id: number; revisionNo: number }>[];
+    const rejected = [resultA, errorB].filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toMatchObject({
+      code: REFERENCE_DOCUMENT_ERROR.VERSION_CONFLICT,
+    });
+    expect(fulfilled[0].value.revisionNo).toBe(2);
+    expect(bench.state.document.currentRevisionNo).toBe(2);
+    // 失败者在锁定读阶段即版本核对失败：不产生第二个修订行与第二次推进
+    expect(bench.referenceDocumentRevisionService.advanceCurrentRevision).toHaveBeenCalledTimes(1);
   });
 
-  it('通用编辑（标题）与专属更正（明细）并发：两个入口共享同一资源锁，均不丢补丁', async () => {
+  it('管理修订（标题）与专属案例更正（明细）并发：两个入口共享同一资源锁，均不丢补丁', async () => {
     const bench = makeWriteRaceBench();
-    const { correction, update } = bench.makeUsecases();
+    const { correction, revise } = bench.makeUsecases();
 
     await Promise.all([
-      update.execute({
+      revise.execute({
         session: writeSession(),
         documentId: 970001,
+        expectedVersion: 1,
+        reason: '标题修订',
         patch: { title: '新标题' },
       }),
       correction.execute({
@@ -342,36 +395,40 @@ describe('正式资料写竞争受控交错（G2/F01）', () => {
       }),
     ]);
 
-    // 修复前：更正用旧快照的标题写回主资料（标题回退），通用编辑的修改丢失
     expect(bench.state.document.title).toBe('新标题');
     expect(bench.state.detail.conditionText).toBe('B-NEW');
+    expect(bench.state.document.currentRevisionNo).toBe(2);
   });
 
-  it('更正/通用编辑的合并读必须走锁定读入口（findDetail({ forUpdate: true })）', async () => {
+  it('管理修订与作者删除的合并读必须走锁定读入口（findDetail({ forUpdate: true })）', async () => {
     const bench = makeWriteRaceBench();
-    const { correction, update } = bench.makeUsecases();
+    const { revise, softDelete } = bench.makeUsecases();
 
-    await correction.execute({
+    await revise.execute({
       session: writeSession(),
       documentId: 970001,
-      patch: { errorCode: 'X-NEW' },
-    });
-    await update.execute({
-      session: writeSession(),
-      documentId: 970001,
+      expectedVersion: 1,
+      reason: '修订',
       patch: { description: '说明' },
+    });
+    await softDelete.execute({
+      session: writeSession(),
+      documentId: 970001,
+      expectedVersion: 2,
     });
 
     expect(bench.referenceDocumentQueryService.findDetail).toHaveBeenCalledWith(
       expect.objectContaining({ forUpdate: true }),
     );
+    expect(bench.state.document.deprecated).toBe(true);
+    expect(bench.state.document.currentRevisionNo).toBe(3);
   });
 
-  it('软删除先提交、更正随后（更正事务快照早于软删提交）：更正拒绝，不产生下架后成功更正的假结果', async () => {
+  it('作者删除先提交、修订随后（修订事务快照早于删除提交）：修订拒绝，不产生软删后成功修订的假结果', async () => {
     const bench = makeWriteRaceBench();
-    const { correction, softDelete } = bench.makeUsecases();
+    const { revise, softDelete } = bench.makeUsecases();
 
-    // 受控交错：让更正事务先开始（捕获快照）并停在合并读之前，软删完整提交后再放行
+    // 受控交错：让修订事务先开始（捕获快照）并停在合并读之前，删除完整提交后再放行
     const originalFindDetail =
       bench.referenceDocumentQueryService.findDetail.getMockImplementation()!;
     let releaseGate!: () => void;
@@ -387,24 +444,30 @@ describe('正式资料写竞争受控交错（G2/F01）', () => {
       return originalFindDetail(params);
     });
 
-    const correctionPromise = correction.execute({
+    const revisePromise = revise.execute({
       session: writeSession(),
       documentId: 970001,
-      patch: { conditionText: 'B-NEW' },
+      expectedVersion: 1,
+      reason: '修订',
+      patch: { title: '后到修订' },
     });
-    // 等待更正事务推进到合并读的 gate 前（快照已建立）
+    // 等待修订事务推进到合并读的 gate 前（快照已建立）
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    await softDelete.execute({ session: writeSession(), documentId: 970001 });
+    await softDelete.execute({
+      session: writeSession(),
+      documentId: 970001,
+      expectedVersion: 1,
+    });
     expect(bench.state.document.deprecated).toBe(true);
 
     releaseGate();
 
-    await expect(correctionPromise).rejects.toMatchObject({
+    await expect(revisePromise).rejects.toMatchObject({
       code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND,
     });
-    // 明细未被更正写入（同事务回滚语义由运行器替身模拟）
-    expect(bench.state.detail.conditionText).toBe('OLD-COND');
-    expect(bench.state.detail.errorCode).toBe('OLD-CODE');
+    // 修订未被写入（同事务回滚语义由运行器替身模拟）
+    expect(bench.state.document.title).toBe('案例标题');
+    expect(bench.state.document.currentRevisionNo).toBe(2);
   });
 });

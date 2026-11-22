@@ -303,19 +303,29 @@ export type RepairRequestWriteContext = {
   currentRevisionNo: number;
 };
 
-/** 维修报告最小归属事实（只读授权用，不含任何内容字段） */
+/**
+ * 维修报告最小归属事实（只读授权用，不含任何内容字段）。
+ *
+ * `status` 用于「本人资料记录」（R052）的分支裁决：草稿/退回/待审仍按
+ * 作者本人收敛；正式记录（APPROVED 及任务 06 起的正式状态）按本组织
+ * 有权读取（页面 V6.5 §9.2「本来允许读取的正式记录」）。
+ */
 export type MaintenanceReportOwnershipFacts = {
   reportId: number;
   maintenanceEngineerAccountId: number;
   ownerOrganizationId: number;
+  status: MaintenanceReportStatus;
 };
 
 /**
  * 详情读取范围限制：授权通过后仍作为查询谓词传给详情读取，
- * 避免只依赖调用方第一次检查。
+ * 避免只依赖调用方第一次检查。两个维度均可选：
+ * - `ownerOrganizationId`：本公司资源授权（工程师/二级管理员）；
+ * - `maintenanceEngineerAccountId`：作者本人谓词（本页面所有角色）。
+ * 一级管理员为平台级角色、无业务所属公司，只携带作者谓词，不携带公司谓词。
  */
 export type MaintenanceReportReadScope = {
-  ownerOrganizationId: number;
+  ownerOrganizationId?: number;
   maintenanceEngineerAccountId?: number;
 };
 
@@ -355,8 +365,68 @@ export type MaintenanceReportDetailView = {
   canEdit: boolean;
 };
 
+/**
+ * 本人记录列表筛选（任务 07）：
+ * - sourceType：独立历史报告 / 工单总结等值；
+ * - recordKind：DRAFT=未完成（DRAFT/RETURNED），FORMAL=已提交（其余状态，含任务 06
+ *   将新增的 SUBMITTED），ALL=全部。按状态集合判定，不硬编码单一正式状态。
+ */
+export type MaintenanceReportListFilter = {
+  sourceType?: string;
+  recordKind?: 'ALL' | 'DRAFT' | 'FORMAL';
+  /** 标题关键词（任务 07 页面搜索）：服务端在归属谓词内做全量 LIKE，不做客户端当页过滤 */
+  titleKeyword?: string;
+};
+
+/**
+ * 同步状态展示值（任务 07 预留；判定口径见
+ * backend/docs/api/task07-task09-sync-status-handoff.md §4）。
+ * 这是展示状态，不是同步表枚举透传：
+ * - NOT_CONNECTED：任务 07 尚未装配任务 09 的实现（任务 07 侧判定）；
+ * - UNKNOWN：映射缺失、提供方漏项/重复/旧版本/越界状态或查询失败（任务 07 侧判定）；
+ * - 其余状态由任务 09 提供方裁决后透传。
+ */
+export type MaintenanceReportSyncStatus =
+  | 'NOT_CONNECTED'
+  | 'UNKNOWN'
+  | 'NOT_APPLICABLE'
+  | 'NO_TASK'
+  | 'PENDING'
+  | 'UPLOADING'
+  | 'FAILED'
+  | 'SYNCED'
+  | 'CONFLICT';
+
+/** 提供方（任务 09）允许回报的状态集合：NOT_CONNECTED/UNKNOWN 由任务 07 侧判定，不接受回报 */
+export type MaintenanceReportSyncProviderStatus = Exclude<
+  MaintenanceReportSyncStatus,
+  'NOT_CONNECTED' | 'UNKNOWN'
+>;
+
+/** 附着到记录上的同步状态展示；与「草稿／已入库」独立，网页版当前默认隐藏同步列 */
+export type MaintenanceReportSyncStatusDisplay = {
+  status: MaintenanceReportSyncStatus;
+  /** 仅限面向用户的安全提示；不透传快照、回执正文、内部错误或文件路径 */
+  message: string | null;
+  /** 仅当前版本存在未解决冲突时由提供方给出；处理路由本轮不接入（不放占位跳转） */
+  conflictId: string | null;
+  /** 仅据此决定是否提供处理入口；任务 09 打开/确认处理时仍须重新核权 */
+  canResolveConflict: boolean;
+};
+
+/**
+ * 本人记录列表视图：报告摘要 + 已发布正式资料标识 + 同步状态展示（任务 07 预留）。
+ * publishedDocumentId 为 null 表示尚未生成/已下架的正式资料，前端不渲染成品入口。
+ */
+export type MaintenanceReportRecordSummaryView = MaintenanceReportSummaryView & {
+  publishedDocumentId: number | null;
+  syncStatus: MaintenanceReportSyncStatusDisplay;
+};
+
 export type MaintenanceReportSummaryView = {
   id: number;
+  /** 归属公司（资源行 owner_organization_id）：同步匹配键的公司来源，不进入公开 DTO */
+  ownerOrganizationId: number;
   sourceType: MaintenanceReportSourceType;
   repairRequestId: number | null;
   title: string | null;

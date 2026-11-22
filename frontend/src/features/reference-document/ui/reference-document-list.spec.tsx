@@ -60,6 +60,8 @@ function buildItem(
     originalFilename: null,
     organizationName: '甲方默认组织',
     ingestMethod: 'ADMIN_DIRECT',
+    sourceKind: 'MATERIAL',
+    effectiveRevisionNo: 0,
     caseHandlingStatus: null,
     creatorNickname: '系统管理员',
     createdAt: '2026-08-10T08:00:00.000Z',
@@ -321,6 +323,8 @@ describe('ReferenceDocumentList', () => {
     expect(headerTexts).toEqual([
       '文档标题',
       '文档类型',
+      '来源',
+      '生效版本',
       '适用设备型号',
       '文档说明',
       '原始文件名',

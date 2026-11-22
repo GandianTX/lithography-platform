@@ -1,13 +1,14 @@
 // src/adapters/api/graphql/content-submission/dto/content-submission-write.input.ts
 // 投稿域写侧输入（A-PR0 §4.1：createContentSubmissionDraft / updateContentSubmissionDraft /
-// submitContentSubmission / reviewContentSubmissionDecision）
+// submitContentSubmission）
+// 任务 07 收口（2026-11-20）：投稿审核决定写入口按确认需求关闭，本文件不再声明
+// reviewContentSubmissionDecision 的输入类型（旧待审记录只读保留）。
 // 仅做结构校验（拦脏数据）：空白语义、值域、必填完备性、跨类别字段拒收由 usecase 判定；
 // 提交人 / 组织 / 审核状态一律不在输入中（仅取自会话与服务端事实）
 
 import { Field, InputType, Int } from '@nestjs/graphql';
 import {
   IsBoolean,
-  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -33,8 +34,6 @@ const ACTION_TAKEN_MAX_LENGTH = 10_000;
 const RESOLUTION_MAX_LENGTH = 2000;
 /** 处理状态 / 投稿类别 / 审核决定为受控字符串，长度防御即可 */
 const ENUM_VALUE_MAX_LENGTH = 32;
-/** 审核意见长度上限（A-PR0 §2.3「审核」行：退回理由必填；通过的意见可选） */
-const REVIEW_COMMENT_MAX_LENGTH = 2000;
 
 /**
  * 草稿可编辑字段补丁（与 usecase ContentSubmissionEditablePatch 逐字段对齐）：
@@ -214,48 +213,4 @@ export class SubmitContentSubmissionInput {
   })
   @IsBoolean({ message: '入库告知确认必须是布尔值' })
   libraryNoticeConfirmed!: boolean;
-}
-
-/**
- * 审核决定输入（A-PR0 §4.1 reviewContentSubmissionDecision）：
- * revisionId 必须属于该投稿且等于当前待审版本（行锁内核对，不符拒绝）。
- * RETURN 不产生正式资料；APPROVE 时 publishAttachment 为当次获准原件发布决定
- * （缺省 false=不发布附件；仅文件版本选择 false 会被 usecase 拒绝）。
- */
-@InputType({ description: '投稿审核决定输入（退回 / 通过）' })
-export class ReviewContentSubmissionDecisionInput {
-  @Field(() => Int, { description: '投稿 ID' })
-  @IsInt({ message: '投稿 ID 必须是整数' })
-  @Min(1, { message: '投稿 ID 必须大于 0' })
-  submissionId!: number;
-
-  @Field(() => Int, { description: '目标版本 ID（必须等于当前待审版本）' })
-  @IsInt({ message: '版本 ID 必须是整数' })
-  @Min(1, { message: '版本 ID 必须大于 0' })
-  revisionId!: number;
-
-  @Field(() => String, { description: '审核决定：RETURN（退回）/ APPROVE（通过）' })
-  @IsString({ message: '审核决定必须是字符串' })
-  @IsIn(['RETURN', 'APPROVE'], { message: '审核决定取值非法' })
-  decision!: string;
-
-  @Field(() => String, {
-    nullable: true,
-    description: '审核意见：退回时必填；通过时可选',
-  })
-  @IsOptional()
-  @IsString({ message: '审核意见必须是字符串' })
-  @MaxLength(REVIEW_COMMENT_MAX_LENGTH, {
-    message: `审核意见不能超过 ${REVIEW_COMMENT_MAX_LENGTH} 个字符`,
-  })
-  comment?: string | null;
-
-  @Field(() => Boolean, {
-    nullable: true,
-    description:
-      '附件发布决定（仅 APPROVE 生效；缺省 false=不发布附件；无文件版本只能为 false，仅文件版本必须为 true）',
-  })
-  @IsOptional()
-  @IsBoolean({ message: '附件发布决定必须是布尔值' })
-  publishAttachment?: boolean | null;
 }

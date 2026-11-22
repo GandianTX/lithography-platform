@@ -13,22 +13,33 @@ import {
 } from '@core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
+import type { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import type { ReferenceDocumentCaseDetailService } from '@src/modules/lithography/reference-document-case-detail.service';
 import type { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/reference-document.query.service';
 import type { ReferenceDocumentService } from '@src/modules/lithography/reference-document.service';
 import type { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
-import { CreateReferenceDocumentUsecase } from './create-reference-document.usecase';
 import { GetReferenceDocumentDetailUsecase } from './get-reference-document-detail.usecase';
 import { GetReferenceDocumentFileUsecase } from './get-reference-document-file.usecase';
 import { ListReferenceDocumentsUsecase } from './list-reference-documents.usecase';
 import { SoftDeleteReferenceDocumentUsecase } from './soft-delete-reference-document.usecase';
 import { UpdateReferenceDocumentCaseUsecase } from './update-reference-document-case.usecase';
-import { UpdateReferenceDocumentUsecase } from './update-reference-document.usecase';
+import type { ReferenceDocumentRevisionService } from '@src/modules/lithography/reference-document-revision.service';
+import type { ManagementAuditService } from '@src/modules/lithography/management-audit.service';
 
 const makeQueryService = () => ({
   listDocuments: jest.fn().mockResolvedValue({ items: [], page: 1, pageSize: 10 }),
   findDetail: jest.fn(),
+  findRevision: jest.fn().mockResolvedValue(null),
+  listPublishedDocumentIdsByReportIds: jest.fn().mockResolvedValue(new Map()),
+});
+
+/** 同域维修报告读侧替身：默认无冻结版本（MATERIAL 详情不触发） */
+const makeMaintenanceReportQueryService = () => ({
+  readVersionById: jest.fn().mockResolvedValue(null),
+  // 任务 07 P2：报告来源详情装配会读冻结版本附件绑定（无绑定如实为 null）
+  readVersionAttachments: jest.fn().mockResolvedValue([]),
+  readAttachmentsByIds: jest.fn().mockResolvedValue([]),
 });
 
 const makeWriteService = () => ({
@@ -48,7 +59,8 @@ const makeModelQueryService = () => ({
 
 const makeAccountQueryService = () => ({
   findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map([[900001, '管理员甲']])),
-  // 缺省：账号无管理员等级（读侧范围决议回落本公司口径，保持工程师/降级管理员原行为）
+  // 管理员等级读侧：缺省 null（读侧范围决议回落本公司口径，保持工程师/降级管理员原行为），
+  // 一级管理员在专门用例中覆写
   findAdminLevelByAccountId: jest.fn().mockResolvedValue(null),
 });
 
@@ -85,6 +97,14 @@ const detailQueryResult = (overrides: Record<string, unknown> = {}) => ({
   contentText: '内容',
   organizationName: '甲方默认组织',
   ingestMethod: 'ADMIN_DIRECT',
+  sourceKind: 'MATERIAL',
+  sourceReportId: null,
+  sourceReportVersionId: null,
+  publicationStatus: 'ONLINE',
+  ownershipStatus: 'CONFIRMED',
+  effectiveRevisionNo: 0,
+  schemaVersion: 1,
+  ownerOrganizationId: 910001,
   caseDetail: null,
   // 内部装配字段（QueryService 返回、DTO 视图剥离）：供下载/编辑防御判定使用
   storageReference: null,
@@ -112,7 +132,7 @@ describe('ListReferenceDocumentsUsecase', () => {
     expect(queryService.listDocuments).toHaveBeenCalledWith({
       filter: { title: '手册', documentType: 'MANUAL', equipmentModelId: 930001 },
       pagination: { page: 2, pageSize: 5, withTotal: false },
-      organizationId: 910001,
+      scope: { kind: 'ORGANIZATION', organizationId: 910001 },
     });
   });
 
@@ -133,7 +153,7 @@ describe('ListReferenceDocumentsUsecase', () => {
     expect(queryService.listDocuments).toHaveBeenCalledWith({
       filter: { title: undefined, documentType: undefined, equipmentModelId: 930001 },
       pagination: { page: 1, pageSize: 10, withTotal: false },
-      organizationId: 910001,
+      scope: { kind: 'ORGANIZATION', organizationId: 910001 },
     });
   });
 
@@ -242,7 +262,7 @@ describe('ListReferenceDocumentsUsecase', () => {
     expect(queryService.listDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
         filter: expect.objectContaining({ caseHandlingStatus: 'RESOLVED' }),
-        organizationId: 910001,
+        scope: { kind: 'ORGANIZATION', organizationId: 910001 },
       }),
     );
   });
@@ -290,11 +310,16 @@ describe('ListReferenceDocumentsUsecase', () => {
         filter: {},
       }),
     ).resolves.toBeTruthy();
-    // 一级全公司（功能 V5.6 R055-01）：organizationId 为 null，不按组织收窄
+    // 一级全公司（功能 V5.6 R055-01）：GLOBAL 范围，不按组织收窄
     expect(queryService.listDocuments).toHaveBeenCalledWith({
-      filter: {},
+      filter: {
+        title: undefined,
+        documentType: undefined,
+        equipmentModelId: undefined,
+        caseHandlingStatus: undefined,
+      },
       pagination: { page: 1, pageSize: 10, withTotal: false },
-      organizationId: null,
+      scope: { kind: 'GLOBAL' },
     });
   });
 
@@ -316,7 +341,7 @@ describe('ListReferenceDocumentsUsecase', () => {
 
     // 二级本公司（功能 V5.6 R056-01）：仍按可信组织上下文收窄
     expect(queryService.listDocuments).toHaveBeenCalledWith(
-      expect.objectContaining({ organizationId: 910001 }),
+      expect.objectContaining({ scope: { kind: 'ORGANIZATION', organizationId: 910001 } }),
     );
   });
 });
@@ -327,6 +352,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     queryService.findDetail.mockResolvedValue(detailQueryResult());
     const usecase = new GetReferenceDocumentDetailUsecase(
       queryService as unknown as ReferenceDocumentQueryService,
+      makeMaintenanceReportQueryService() as unknown as MaintenanceReportQueryService,
       makeAccountQueryService() as unknown as AccountQueryService,
       makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
     );
@@ -339,7 +365,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     // 详情读取带可信组织范围（A-PR0 §2.1：不取客户端自报）
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
-      organizationId: 910001,
+      scope: { kind: 'ORGANIZATION', organizationId: 910001 },
     });
     expect(result).toMatchObject({
       id: 970001,
@@ -355,6 +381,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     const queryService = makeQueryService();
     const usecase = new GetReferenceDocumentDetailUsecase(
       queryService as unknown as ReferenceDocumentQueryService,
+      makeMaintenanceReportQueryService() as unknown as MaintenanceReportQueryService,
       makeAccountQueryService() as unknown as AccountQueryService,
       makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
     );
@@ -377,6 +404,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     );
     const usecase = new GetReferenceDocumentDetailUsecase(
       queryService as unknown as ReferenceDocumentQueryService,
+      makeMaintenanceReportQueryService() as unknown as MaintenanceReportQueryService,
       makeAccountQueryService() as unknown as AccountQueryService,
       makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
     );
@@ -394,6 +422,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     );
     const usecase = new GetReferenceDocumentDetailUsecase(
       queryService as unknown as ReferenceDocumentQueryService,
+      makeMaintenanceReportQueryService() as unknown as MaintenanceReportQueryService,
       makeAccountQueryService() as unknown as AccountQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
     );
@@ -415,6 +444,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     );
     const usecase = new GetReferenceDocumentDetailUsecase(
       queryService as unknown as ReferenceDocumentQueryService,
+      makeMaintenanceReportQueryService() as unknown as MaintenanceReportQueryService,
       accountQueryService as unknown as AccountQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
     );
@@ -422,10 +452,10 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     await expect(
       usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
     ).resolves.toBeTruthy();
-    // 一级全公司（功能 V5.6 R055-02）：organizationId 为 null，不按组织收窄
+    // 一级全公司（功能 V5.6 R055-02）：GLOBAL 范围，不按组织收窄
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
-      organizationId: null,
+      scope: { kind: 'GLOBAL' },
     });
   });
 
@@ -449,6 +479,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     });
     const usecase = new GetReferenceDocumentDetailUsecase(
       queryService as unknown as ReferenceDocumentQueryService,
+      makeMaintenanceReportQueryService() as unknown as MaintenanceReportQueryService,
       accountQueryService as unknown as AccountQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
     );
@@ -459,586 +490,217 @@ describe('GetReferenceDocumentDetailUsecase', () => {
     ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
-      organizationId: 910002,
+      scope: { kind: 'ORGANIZATION', organizationId: 910002 },
     });
   });
 });
 
-describe('CreateReferenceDocumentUsecase', () => {
+describe('SoftDeleteReferenceDocumentUsecase（任务 07 R053 原作者删除本人正式资料）', () => {
+  const makeRevisionService = () => ({
+    insertRevision: jest.fn().mockResolvedValue(undefined),
+    advanceCurrentRevision: jest.fn().mockResolvedValue('ADVANCED'),
+  });
+  const makeAuditService = () => ({
+    appendDocumentEvent: jest.fn().mockResolvedValue(undefined),
+  });
+  const makeAccountQuery = (adminLevel: number | null = null) => ({
+    findAdminLevelByAccountId: jest.fn().mockResolvedValue(adminLevel),
+    findNicknamesByAccountIds: jest.fn().mockResolvedValue(new Map()),
+  });
+  const makeMaintenanceReports = () => ({ readVersionById: jest.fn().mockResolvedValue(null) });
+
   const makeUsecase = (
     overrides: {
-      writeService?: ReturnType<typeof makeWriteService>;
-      modelQueryService?: ReturnType<typeof makeModelQueryService>;
+      revisionService?: ReturnType<typeof makeRevisionService>;
+      queryService?: ReturnType<typeof makeQueryService>;
+      accountQuery?: ReturnType<typeof makeAccountQuery>;
     } = {},
   ) => {
-    const writeService = overrides.writeService ?? makeWriteService();
-    const modelQueryService = overrides.modelQueryService ?? makeModelQueryService();
-    const organizationContextService = makeOrganizationContextService();
+    const revisionService = overrides.revisionService ?? makeRevisionService();
+    const queryService = overrides.queryService ?? makeQueryService();
+    if (!overrides.queryService) {
+      queryService.findDetail.mockResolvedValue(detailQueryResult({ effectiveRevisionNo: 2 }));
+      // 生效修订读替身：删除快照需要读取当时生效正文（CURRENT_REVISION 来源）
+      queryService.findRevision.mockResolvedValue({
+        revisionNo: 2,
+        afterSnapshot: { schema_version: 1, contentText: '内容' },
+      });
+    }
+    const accountQuery = overrides.accountQuery ?? makeAccountQuery();
+    const auditService = makeAuditService();
     return {
-      writeService,
-      modelQueryService,
-      organizationContextService,
-      usecase: new CreateReferenceDocumentUsecase(
-        writeService as unknown as ReferenceDocumentService,
-        modelQueryService as unknown as EquipmentModelQueryService,
-        organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      revisionService,
+      queryService,
+      accountQuery,
+      auditService,
+      usecase: new SoftDeleteReferenceDocumentUsecase(
+        queryService as unknown as ReferenceDocumentQueryService,
+        makeMaintenanceReports() as unknown as MaintenanceReportQueryService,
+        revisionService as unknown as ReferenceDocumentRevisionService,
+        auditService as unknown as ManagementAuditService,
+        accountQuery as unknown as AccountQueryService,
         makeTransactionRunner(),
       ),
     };
   };
 
-  const baseCommand = {
-    title: '新资料',
-    documentType: 'MANUAL',
-    equipmentModelId: 930001,
-    description: null,
-    contentText: '内容',
-  };
-
-  it('SUPER_ADMIN 可创建：创建人取自 Session，组织归属与入库方式落库，事务内预检型号', async () => {
-    const { usecase, writeService, modelQueryService, organizationContextService } = makeUsecase();
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), ...baseCommand }),
-    ).resolves.toEqual({ id: 970101 });
-    // 组织范围在事务内解析（与落库同快照的成员事实）
-    expect(organizationContextService.resolveForAccount).toHaveBeenCalledWith({
-      accountId: 900001,
-      transactionContext: { transaction: 'mock' },
-    });
-    expect(modelQueryService.findModelById).toHaveBeenCalledWith({
-      id: 930001,
-      transactionContext: { transaction: 'mock' },
-    });
-    expect(writeService.insertDocument).toHaveBeenCalledWith(
-      expect.objectContaining({
-        createdByAccountId: 900001,
-        // A-PR0 §4.3：自动落本组织及 ADMIN_DIRECT（归属绝不取客户端自报）
-        ownerOrganizationId: 910001,
-        ingestMethod: 'ADMIN_DIRECT',
-      }),
-      { transaction: 'mock' },
-    );
-  });
-
-  it('ENGINEER 写被拒（精确角色匹配，不层级展开——docx 第一版工程师不负责增删资料）', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    await expect(
-      usecase.execute({ session: session(['ENGINEER']), ...baseCommand }),
-    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
-    expect(writeService.insertDocument).not.toHaveBeenCalled();
-  });
-
-  it('contentText 空白拒绝（提供了正文但空白才在此拒绝，双空判定归 usecase 层）', async () => {
-    const { usecase, writeService } = makeUsecase();
+  it('原作者（工程师）删除本人条目：AUTHOR 范围锁定读 + 修订行 + 条件推进，无关键审计', async () => {
+    const { usecase, revisionService, queryService, auditService } = makeUsecase();
 
     await expect(
       usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        ...baseCommand,
-        contentText: '   ',
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    expect(writeService.insertDocument).not.toHaveBeenCalled();
-  });
-
-  it('仅文件创建成功：contentText null 合法，四列存储元数据与 local 后端标识透传落库', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        ...baseCommand,
-        contentText: null,
-        file: {
-          originalFilename: '说明书.pdf',
-          mimeType: 'application/pdf',
-          storageReference: 'a1b2c3d4e5f60718293a4b5c6d7e8f90.pdf',
-        },
-      }),
-    ).resolves.toEqual({ id: 970101 });
-    expect(writeService.insertDocument).toHaveBeenCalledWith(
-      expect.objectContaining({
-        contentText: null,
-        originalFilename: '说明书.pdf',
-        mimeType: 'application/pdf',
-        storageBackend: 'local',
-        storageReference: 'a1b2c3d4e5f60718293a4b5c6d7e8f90.pdf',
-      }),
-      expect.anything(),
-    );
-  });
-
-  it('双空拒绝（CONTENT_SOURCE_EMPTY）：正文与文件同时缺失不进入写路径', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        ...baseCommand,
-        contentText: null,
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.CONTENT_SOURCE_EMPTY });
-    expect(writeService.insertDocument).not.toHaveBeenCalled();
-  });
-
-  it('正文与文件并存创建：两者同时透传（存储引用仍由服务端契约生成）', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    await usecase.execute({
-      session: session(['SUPER_ADMIN']),
-      ...baseCommand,
-      file: {
-        originalFilename: 'a.txt',
-        mimeType: 'text/plain',
-        storageReference: 'b1b2c3d4e5f60718293a4b5c6d7e8f90.txt',
-      },
-    });
-    expect(writeService.insertDocument).toHaveBeenCalledWith(
-      expect.objectContaining({
-        contentText: '内容',
-        originalFilename: 'a.txt',
-        storageReference: 'b1b2c3d4e5f60718293a4b5c6d7e8f90.txt',
-      }),
-      expect.anything(),
-    );
-  });
-
-  it('标题/类型空白与超长拒绝（标题 255、类型 100）', async () => {
-    const { usecase } = makeUsecase();
-    const admin = session(['SUPER_ADMIN']);
-
-    await expect(
-      usecase.execute({ session: admin, ...baseCommand, title: ' ' }),
-    ).rejects.toMatchObject({ code: INPUT_NORMALIZE_ERROR.REQUIRED_TEXT_EMPTY });
-    await expect(
-      usecase.execute({ session: admin, ...baseCommand, title: 'a'.repeat(256) }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    await expect(
-      usecase.execute({ session: admin, ...baseCommand, documentType: 'a'.repeat(101) }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-  });
-
-  it('非法设备型号拒绝（EQUIPMENT_MODEL_NOT_FOUND）；通用资料不查型号', async () => {
-    const modelQueryService = makeModelQueryService();
-    modelQueryService.findModelById.mockResolvedValue(null);
-    const { usecase, writeService } = makeUsecase({ modelQueryService });
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), ...baseCommand }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.EQUIPMENT_MODEL_NOT_FOUND });
-
-    // 数值型非法 ID（0/负数/非整数）在存在性预检之前就被拒绝，不触达型号查询
-    for (const invalidId of [0, -1, 1.5]) {
-      await expect(
-        usecase.execute({
-          session: session(['SUPER_ADMIN']),
-          ...baseCommand,
-          equipmentModelId: invalidId,
-        }),
-      ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    }
-    expect(modelQueryService.findModelById).toHaveBeenCalledTimes(1);
-
-    await usecase.execute({
-      session: session(['SUPER_ADMIN']),
-      ...baseCommand,
-      equipmentModelId: null,
-    });
-    expect(modelQueryService.findModelById).toHaveBeenCalledTimes(1);
-    expect(writeService.insertDocument).toHaveBeenLastCalledWith(
-      expect.objectContaining({ equipmentModelId: null }),
-      expect.anything(),
-    );
-  });
-
-  it('拒绝伪造 FAULT_CASE（A-PR0 §4.3：案例只能由投稿审核发布进入正式库），不进入任何查询与写路径', async () => {
-    const { usecase, writeService, organizationContextService } = makeUsecase();
-
-    // 大小写不敏感穷举：'fault_case' 等变体与数据库列排序规则（utf8mb4_0900_ai_ci）同口径，一律拒绝
-    for (const documentType of ['FAULT_CASE', 'fault_case', 'Fault_Case']) {
-      await expect(
-        usecase.execute({
-          session: session(['SUPER_ADMIN']),
-          ...baseCommand,
-          documentType,
-        }),
-      ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    }
-    expect(writeService.insertDocument).not.toHaveBeenCalled();
-    expect(organizationContextService.resolveForAccount).not.toHaveBeenCalled();
-  });
-
-  it('无有效组织成员关系拒绝（事务内解析）：成员校验失败不落库', async () => {
-    const { usecase, writeService, organizationContextService } = makeUsecase();
-    organizationContextService.resolveForAccount.mockRejectedValue(
-      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
-    );
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), ...baseCommand }),
-    ).rejects.toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
-    expect(writeService.insertDocument).not.toHaveBeenCalled();
-  });
-});
-
-describe('UpdateReferenceDocumentUsecase', () => {
-  const makeUsecase = (
-    overrides: {
-      writeService?: ReturnType<typeof makeWriteService>;
-      queryService?: ReturnType<typeof makeQueryService>;
-    } = {},
-  ) => {
-    const writeService = overrides.writeService ?? makeWriteService();
-    const queryService = overrides.queryService ?? makeQueryService();
-    if (!overrides.queryService) {
-      queryService.findDetail.mockResolvedValue(detailQueryResult());
-    }
-    const modelQueryService = makeModelQueryService();
-    const organizationContextService = makeOrganizationContextService();
-    const usecase = new UpdateReferenceDocumentUsecase(
-      writeService as unknown as ReferenceDocumentService,
-      queryService as unknown as ReferenceDocumentQueryService,
-      modelQueryService as unknown as EquipmentModelQueryService,
-      organizationContextService as unknown as TrustedOrganizationContextQueryService,
-      makeTransactionRunner(),
-    );
-    return { writeService, modelQueryService, queryService, organizationContextService, usecase };
-  };
-
-  it('SUPER_ADMIN 编辑：事务内解析本组织并在范围内读取当前值，未提供字段保持原值（部分提交合并语义）', async () => {
-    const { usecase, writeService, queryService, organizationContextService } = makeUsecase();
-
-    await usecase.execute({
-      session: session(['SUPER_ADMIN']),
-      documentId: 970001,
-      patch: { title: '新标题' },
-    });
-
-    // 组织范围在事务内解析（与读-改-写同快照的成员事实）
-    expect(organizationContextService.resolveForAccount).toHaveBeenCalledWith({
-      accountId: 900001,
-      transactionContext: { transaction: 'mock' },
-    });
-    // G2/F01：合并读走锁定读（forUpdate），与专属更正共享同一行锁互斥
-    expect(queryService.findDetail).toHaveBeenCalledWith({
-      documentId: 970001,
-      organizationId: 910001,
-      transactionContext: { transaction: 'mock' },
-      forUpdate: true,
-    });
-    expect(writeService.updateDocument).toHaveBeenCalledWith(
-      expect.objectContaining({
+        session: session(['ENGINEER']),
         documentId: 970001,
-        title: '新标题',
-        documentType: 'ERROR_CODE_MANUAL',
-        equipmentModelId: null,
-        contentText: '内容',
-      }),
-      { transaction: 'mock' },
-    );
-  });
-
-  it('equipmentModelId 显式 null 清空为通用资料；非法型号拒绝', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    await usecase.execute({
-      session: session(['SUPER_ADMIN']),
-      documentId: 970001,
-      patch: { equipmentModelId: null },
-    });
-    expect(writeService.updateDocument).toHaveBeenLastCalledWith(
-      expect.objectContaining({ equipmentModelId: null }),
-      expect.anything(),
-    );
-
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { equipmentModelId: 0 },
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-  });
-
-  it('contentText 显式 null 清空：纯文本资料拒绝（CONTENT_SOURCE_EMPTY）；文件资料放行；必填字段显式 null 给本模块业务码；空补丁拒绝；ENGINEER 写被拒', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    // 纯文本资料（无存储引用）：清空正文 → 双空拒绝
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { contentText: null },
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.CONTENT_SOURCE_EMPTY });
-    // 文件资料（已有存储引用）：清空正文合法（仅文件来源）
-    const fileBacked = makeQueryService();
-    fileBacked.findDetail.mockResolvedValue(
-      detailQueryResult({
-        contentText: null,
-        storageReference: 'a1b2c3d4e5f60718293a4b5c6d7e8f90.pdf',
-      }),
-    );
-    const fileBackedUsecase = new UpdateReferenceDocumentUsecase(
-      makeWriteService() as unknown as ReferenceDocumentService,
-      fileBacked as unknown as ReferenceDocumentQueryService,
-      makeModelQueryService() as unknown as EquipmentModelQueryService,
-      makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
-      makeTransactionRunner(),
-    );
-    await expect(
-      fileBackedUsecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { title: '改标题' },
+        expectedVersion: 2,
       }),
     ).resolves.toEqual({ id: 970001 });
-    // 补丁语义：null 仅允许出现在可清空字段，必填字段置空直接拒绝且不进入读/写路径
+    expect(queryService.findDetail).toHaveBeenCalledWith({
+      documentId: 970001,
+      scope: { kind: 'AUTHOR', accountId: 900001 },
+      transactionContext: { transaction: 'mock' },
+      forUpdate: true,
+      includeUnpublished: true,
+    });
+    expect(revisionService.insertRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: 970001, revisionNo: 3, actorAccountId: 900001 }),
+      { transaction: 'mock' },
+    );
+    expect(revisionService.advanceCurrentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRevisionNo: 2,
+        apply: expect.objectContaining({ markDeleted: true }),
+      }),
+      { transaction: 'mock' },
+    );
+    expect(auditService.appendDocumentEvent).not.toHaveBeenCalled();
+  });
+
+  it('管理员作为原作者删除：同事务补写 ADMIN_DELETE_DOCUMENT 关键记录（等级取账号当前事实）', async () => {
+    const accountQuery = makeAccountQuery(1);
+    const { usecase, auditService } = makeUsecase({ accountQuery });
+
     await expect(
       usecase.execute({
         session: session(['SUPER_ADMIN']),
         documentId: 970001,
-        patch: { title: null },
+        expectedVersion: 2,
       }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
+    ).resolves.toEqual({ id: 970001 });
+    expect(auditService.appendDocumentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'ADMIN_DELETE_DOCUMENT',
+        actorAdminLevel: 1,
+        targetDocumentId: 970001,
+        organizationId: 910001,
+        transactionContext: { transaction: 'mock' },
+      }),
+    );
+  });
+
+  it('expected_version 过期拒绝（VERSION_CONFLICT）：不写修订行、不推进、不写审计', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockResolvedValue(detailQueryResult({ effectiveRevisionNo: 5 }));
+    const { usecase, revisionService, auditService } = makeUsecase({ queryService });
+
     await expect(
       usecase.execute({
-        session: session(['SUPER_ADMIN']),
+        session: session(['ENGINEER']),
         documentId: 970001,
-        patch: { documentType: null },
+        expectedVersion: 2,
       }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
+    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.VERSION_CONFLICT });
+    expect(revisionService.insertRevision).not.toHaveBeenCalled();
+    expect(revisionService.advanceCurrentRevision).not.toHaveBeenCalled();
+    expect(auditService.appendDocumentEvent).not.toHaveBeenCalled();
+  });
+
+  it('他人条目/不存在/已软删（AUTHOR 范围核验统一 NOT_FOUND）不触达写路径', async () => {
+    const queryService = makeQueryService();
+    queryService.findDetail.mockRejectedValue(
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+    );
+    const { usecase, revisionService } = makeUsecase({ queryService });
+
     await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001, patch: {} }),
+      usecase.execute({
+        session: session(['ENGINEER']),
+        documentId: 970004,
+        expectedVersion: 1,
+      }),
+    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
+    expect(revisionService.advanceCurrentRevision).not.toHaveBeenCalled();
+  });
+
+  it('条件推进未命中（并发竞态）：统一 NOT_FOUND，无半写', async () => {
+    const revisionService = makeRevisionService();
+    revisionService.advanceCurrentRevision.mockResolvedValue('VERSION_CONFLICT');
+    const { usecase, auditService } = makeUsecase({ revisionService });
+
+    await expect(
+      usecase.execute({
+        session: session(['ENGINEER']),
+        documentId: 970001,
+        expectedVersion: 2,
+      }),
+    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
+    expect(auditService.appendDocumentEvent).not.toHaveBeenCalled();
+  });
+
+  it('CUSTOMER 拒绝；expected_version 负数/非整数拒绝，事务不开启', async () => {
+    const { usecase, queryService, revisionService } = makeUsecase();
+
+    await expect(
+      usecase.execute({
+        session: session(['CUSTOMER']),
+        documentId: 970001,
+        expectedVersion: 1,
+      }),
+    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
+    await expect(
+      usecase.execute({
+        session: session(['ENGINEER']),
+        documentId: 970001,
+        expectedVersion: -1,
+      }),
     ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
     await expect(
       usecase.execute({
         session: session(['ENGINEER']),
         documentId: 970001,
-        patch: { title: 'x' },
-      }),
-    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
-    expect(writeService.updateDocument).not.toHaveBeenCalled();
-  });
-
-  it('目标不存在/已软删/跨组织（QueryService 统一 NOT_FOUND）不进入写路径', async () => {
-    const queryService = makeQueryService();
-    queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
-        id: 970004,
-      }),
-    );
-    const { usecase, writeService } = makeUsecase({ queryService });
-
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970004,
-        patch: { title: 'x' },
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
-    expect(writeService.updateDocument).not.toHaveBeenCalled();
-  });
-
-  it('案例保护（A-PR0 §4.3 / §S6）：FAULT_CASE 目标拒绝通用正文与类型修改，必须走专属案例更正', async () => {
-    const queryService = makeQueryService();
-    queryService.findDetail.mockResolvedValue(detailQueryResult({ documentType: 'FAULT_CASE' }));
-    const { usecase, writeService } = makeUsecase({ queryService });
-
-    // 案例正文与案例明细强耦合：通用编辑不得单独改造后与明细脱节
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { contentText: '改造后的案例正文' },
+        expectedVersion: 2.5,
       }),
     ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { documentType: 'ERROR_CODE_MANUAL' },
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    // 非正文/类型字段（如标题）仍可编辑：通用编辑能力不被过度收窄
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { title: '更正后的标题' },
-      }),
-    ).resolves.toEqual({ id: 970001 });
-    expect(writeService.updateDocument).toHaveBeenCalledTimes(1);
+    expect(queryService.findDetail).not.toHaveBeenCalled();
+    expect(revisionService.insertRevision).not.toHaveBeenCalled();
   });
 
-  it('案例保护（A-PR0 §4.3）：普通资料不能经通用编辑转为 FAULT_CASE（类型只能由投稿审核发布）', async () => {
-    const { usecase, writeService } = makeUsecase();
-
-    // 大小写不敏感穷举：'fault_case' 等变体同样拒绝（与数据库列排序规则口径一致）
-    for (const documentType of ['FAULT_CASE', 'fault_case', 'Fault_Case']) {
-      await expect(
-        usecase.execute({
-          session: session(['SUPER_ADMIN']),
-          documentId: 970001,
-          patch: { documentType },
-        }),
-      ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    }
-    expect(writeService.updateDocument).not.toHaveBeenCalled();
-  });
-
-  it('案例保护（A-PR0 §4.3 / §S6）：大小写变体目标（如 fault_case）同样受保护（数据库列排序规则口径）', async () => {
-    const queryService = makeQueryService();
-    queryService.findDetail.mockResolvedValue(detailQueryResult({ documentType: 'fault_case' }));
-    const { usecase, writeService } = makeUsecase({ queryService });
-
-    // 变体案例的正文与类型同样不可经通用编辑改造（变体不构成绕过保护的缝隙）
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { contentText: '改造后的案例正文' },
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { documentType: 'ERROR_CODE_MANUAL' },
-      }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    expect(writeService.updateDocument).not.toHaveBeenCalled();
-  });
-
-  it('机型互斥防御：已有机型文字的资料直接设置机型 ID 拒绝（chk_reference_document_model_exclusive 预检）', async () => {
+  it('首次删除（current_revision_no = 0）：expected_version 0 合法，审核推进到 v1', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockResolvedValue(
-      detailQueryResult({ equipmentModelText: '手填机型 XYZ' }),
+      detailQueryResult({ effectiveRevisionNo: 0, contentText: '原始正文' }),
     );
-    const { usecase, writeService } = makeUsecase({ queryService });
+    const { usecase, revisionService } = makeUsecase({ queryService });
 
     await expect(
       usecase.execute({
-        session: session(['SUPER_ADMIN']),
+        session: session(['ENGINEER']),
         documentId: 970001,
-        patch: { equipmentModelId: 930001 },
+        expectedVersion: 0,
       }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
-    expect(writeService.updateDocument).not.toHaveBeenCalled();
-  });
-
-  it('无有效组织成员关系拒绝（事务内解析）：不进入当前值读取与写路径', async () => {
-    const { usecase, writeService, queryService, organizationContextService } = makeUsecase();
-    organizationContextService.resolveForAccount.mockRejectedValue(
-      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
-    );
-
-    await expect(
-      usecase.execute({
-        session: session(['SUPER_ADMIN']),
-        documentId: 970001,
-        patch: { title: '新标题' },
-      }),
-    ).rejects.toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
-    expect(queryService.findDetail).not.toHaveBeenCalled();
-    expect(writeService.updateDocument).not.toHaveBeenCalled();
-  });
-});
-
-describe('SoftDeleteReferenceDocumentUsecase', () => {
-  const makeUsecase = (
-    overrides: {
-      writeService?: ReturnType<typeof makeWriteService>;
-      queryService?: ReturnType<typeof makeQueryService>;
-    } = {},
-  ) => {
-    const writeService = overrides.writeService ?? makeWriteService();
-    const queryService = overrides.queryService ?? makeQueryService();
-    if (!overrides.queryService) {
-      queryService.findDetail.mockResolvedValue(detailQueryResult());
-    }
-    const organizationContextService = makeOrganizationContextService();
-    return {
-      writeService,
-      queryService,
-      organizationContextService,
-      usecase: new SoftDeleteReferenceDocumentUsecase(
-        writeService as unknown as ReferenceDocumentService,
-        queryService as unknown as ReferenceDocumentQueryService,
-        organizationContextService as unknown as TrustedOrganizationContextQueryService,
-        makeTransactionRunner(),
-      ),
-    };
-  };
-
-  it('SUPER_ADMIN 软删除成功返回 ID：事务内先按本组织核验再原子条件软删除', async () => {
-    const { usecase, writeService, queryService, organizationContextService } = makeUsecase();
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
     ).resolves.toEqual({ id: 970001 });
-    expect(organizationContextService.resolveForAccount).toHaveBeenCalledWith({
-      accountId: 900001,
-      transactionContext: { transaction: 'mock' },
-    });
-    expect(queryService.findDetail).toHaveBeenCalledWith({
-      documentId: 970001,
-      organizationId: 910001,
-      transactionContext: { transaction: 'mock' },
-    });
-    expect(writeService.softDeleteDocument).toHaveBeenCalledWith(
-      { documentId: 970001 },
+    expect(revisionService.insertRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ revisionNo: 1 }),
       { transaction: 'mock' },
     );
-  });
-
-  it('跨组织/不存在/已软删（组织核验读统一 NOT_FOUND）不触达写路径（不泄露存在性）', async () => {
-    const queryService = makeQueryService();
-    queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+    expect(revisionService.advanceCurrentRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRevisionNo: 0,
+        apply: expect.objectContaining({ markDeleted: true }),
+      }),
+      { transaction: 'mock' },
     );
-    const { usecase, writeService } = makeUsecase({ queryService });
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
-    expect(writeService.softDeleteDocument).not.toHaveBeenCalled();
-  });
-
-  it('核验通过但条件删除未命中（并发竞态）：统一 NOT_FOUND（docx 口径，不沿用维修申请幂等成功裁定）', async () => {
-    const writeService = makeWriteService();
-    writeService.softDeleteDocument.mockResolvedValue({ kind: 'NOT_FOUND', id: 970004 });
-    const { usecase } = makeUsecase({ writeService });
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970004 }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.NOT_FOUND });
-  });
-
-  it('无有效组织成员关系拒绝（事务内解析）：不进入组织核验读与写路径', async () => {
-    const { usecase, writeService, queryService, organizationContextService } = makeUsecase();
-    organizationContextService.resolveForAccount.mockRejectedValue(
-      new DomainError(ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP, '当前账号没有有效组织成员关系'),
-    );
-
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
-    ).rejects.toMatchObject({ code: ORGANIZATION_ERROR.NO_ACTIVE_MEMBERSHIP });
-    expect(queryService.findDetail).not.toHaveBeenCalled();
-    expect(writeService.softDeleteDocument).not.toHaveBeenCalled();
-  });
-
-  it('ENGINEER 删除被拒；资料 ID 非法拒绝', async () => {
-    const { usecase } = makeUsecase();
-
-    await expect(
-      usecase.execute({ session: session(['ENGINEER']), documentId: 970001 }),
-    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
-    await expect(
-      usecase.execute({ session: session(['SUPER_ADMIN']), documentId: -1 }),
-    ).rejects.toMatchObject({ code: REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS });
+    // effectiveRevisionNo = 0：不读修订行，删除前正文取自资料自身正文
+    expect(queryService.findRevision).not.toHaveBeenCalled();
   });
 });
 
@@ -1102,7 +764,7 @@ describe('GetReferenceDocumentFileUsecase', () => {
     // 缺等级管理员回落本公司口径（A-PR0 §2.1 + 读侧范围决议）：查询必带本组织范围
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
-      organizationId: 910001,
+      scope: { kind: 'ORGANIZATION', organizationId: 910001 },
     });
   });
 
@@ -1127,10 +789,10 @@ describe('GetReferenceDocumentFileUsecase', () => {
     await expect(
       usecase.execute({ session: session(['SUPER_ADMIN']), documentId: 970001 }),
     ).resolves.toMatchObject({ documentId: 970001, originalFilename: '说明书.pdf' });
-    // 一级全公司（R057-01）：organizationId 为 null，不按组织收窄
+    // 一级全公司（R057-01）：GLOBAL 范围，不按组织收窄
     expect(queryService.findDetail).toHaveBeenCalledWith({
       documentId: 970001,
-      organizationId: null,
+      scope: { kind: 'GLOBAL' },
     });
   });
 
@@ -1281,15 +943,17 @@ describe('UpdateReferenceDocumentCaseUsecase', () => {
     // 第 1 个调用（合并读）走锁定读（G2/F01）：与通用编辑共享同一行锁互斥
     expect(queryService.findDetail).toHaveBeenNthCalledWith(1, {
       documentId: 970001,
-      organizationId: 910001,
+      scope: { kind: 'ORGANIZATION', organizationId: 910001 },
       transactionContext: { transaction: 'mock' },
       forUpdate: true,
+      includeUnpublished: true,
     });
     // 第 2 个调用为事务内回读（锁已保持，不重复加锁）
     expect(queryService.findDetail).toHaveBeenNthCalledWith(2, {
       documentId: 970001,
-      organizationId: 910001,
+      scope: { kind: 'ORGANIZATION', organizationId: 910001 },
       transactionContext: { transaction: 'mock' },
+      includeUnpublished: true,
     });
 
     // 主资料：类型/标题/机型/说明保持，修改人落库；正文由合并后明细重新生成（禁止与明细脱节直改）

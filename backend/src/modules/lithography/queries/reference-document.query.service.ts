@@ -9,6 +9,7 @@ import { FindOptionsWhere, In, Raw, Repository } from 'typeorm';
 import { EquipmentModelEntity } from '../entities/equipment-model.entity';
 import { OrganizationEntity } from '../entities/organization.entity';
 import { ReferenceDocumentCaseDetailEntity } from '../entities/reference-document-case-detail.entity';
+import { ReferenceDocumentRevisionEntity } from '../entities/reference-document-revision.entity';
 import { ReferenceDocumentEntity } from '../entities/reference-document.entity';
 import {
   ReferenceDocumentCaseDetailView,
@@ -17,6 +18,8 @@ import {
   ReferenceDocumentListPage,
   ReferenceDocumentListPagination,
   ReferenceDocumentListItemQueryResult,
+  ReferenceDocumentReadScope,
+  ReferenceDocumentRevisionSummaryView,
 } from '../lithography.types';
 
 /** 列表固定排序：创建时间倒序，次级主键倒序（与维修申请读模型同口径） */
@@ -28,6 +31,21 @@ const UNKNOWN_ORGANIZATION_NAME = '未知组织';
 /** 标题模糊搜索：转义 LIKE 通配符，避免用户输入 % / _ 意外扩大匹配范围 */
 function escapeLikePattern(input: string): string {
   return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * 修订快照 JSON 解析：列类型为 longtext，解析失败按空对象处理。
+ * 调用方只读取白名单键（正文等），不把原始 JSON 透传给客户端。
+ */
+function parseSnapshotJson(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -66,30 +84,67 @@ export class ReferenceDocumentQueryService {
     private readonly organizationRepository: Repository<OrganizationEntity>,
     @InjectRepository(ReferenceDocumentCaseDetailEntity)
     private readonly caseDetailRepository: Repository<ReferenceDocumentCaseDetailEntity>,
+    @InjectRepository(ReferenceDocumentRevisionEntity)
+    private readonly revisionRepository: Repository<ReferenceDocumentRevisionEntity>,
   ) {}
 
   /**
-   * 读侧资料列表：默认过滤已软删（deprecated = 0）与组织范围（owner_organization_id），
-   * 固定排序，OFFSET 分页。列表项为昵称富集前装配结果，由 usecase 富集创建人昵称后对外输出。
+   * 普通资料库可见谓词（列表 / 详情 / 下载 / 历史版本共用，服务端唯一真源）：
+   * 未软删 + 已上架（ONLINE）+ 归属已确认（CONFIRMED），组织范围由调用方按可信会话传入。
    *
-   * 组织范围必须由 usecase 经可信组织上下文解析后传入（A-PR0 §2.1），本层不信任客户端自报。
-   * `organizationId: null` 仅表示读侧范围决议已判定的「一级管理员全范围」
-   * （功能 V5.6 R055；见 reference-document-read-scope.ts），不按组织过滤；
+   * 未知归属（PENDING，owner_organization_id 可为空）不得出现在普通列表；
+   * 下架与软删同样从列表、详情和旧下载地址统一不可见（统一 NOT_FOUND 防探测）；
+   * 他人未提交草稿不在本表，不因本范围可见。
+   */
+  private buildLibraryVisibilityWhere(
+    scope: ReferenceDocumentReadScope,
+  ): FindOptionsWhere<ReferenceDocumentEntity> {
+    const where: FindOptionsWhere<ReferenceDocumentEntity> = {
+      deprecated: false,
+      publicationStatus: 'ONLINE',
+      ownershipStatus: 'CONFIRMED',
+    };
+    if (scope.kind === 'ORGANIZATION') {
+      where.ownerOrganizationId = scope.organizationId;
+    }
+    return where;
+  }
+
+  /**
+   * 写路径谓词：仅未软删 + 范围收敛（不按上架/归属确认收紧）。
+   * 下架资料仍允许管理员或原作者执行删除等管理动作，但跨公司一律不可见；
    * 写路径与工程师/二级管理员读取始终传入具体组织 ID。
+   * AUTHOR 范围（任务 07 R053）：仅原作者本人条目，不按组织收敛。
+   */
+  private buildWritePathWhere(
+    scope: ReferenceDocumentReadScope,
+  ): FindOptionsWhere<ReferenceDocumentEntity> {
+    const where: FindOptionsWhere<ReferenceDocumentEntity> = { deprecated: false };
+    if (scope.kind === 'ORGANIZATION') {
+      where.ownerOrganizationId = scope.organizationId;
+    } else if (scope.kind === 'AUTHOR') {
+      where.createdByAccountId = scope.accountId;
+    }
+    return where;
+  }
+
+  /**
+   * 普通资料库列表：未软删 + 已上架 + 归属已确认，组织范围由 scope 决定
+   * （ORGANIZATION = 本公司；GLOBAL = 一级管理员全范围），固定排序，OFFSET 分页。
+   * 列表项为昵称富集前装配结果，由 usecase 富集创建人昵称后对外输出。
+   *
+   * 范围必须由 usecase 按可信会话与管理员等级解析后传入（A-PR0 §2.1），本层不信任客户端自报。
    */
   async listDocuments(params: {
     filter: ReferenceDocumentListFilter;
     pagination: ReferenceDocumentListPagination;
-    organizationId: number | null;
+    scope: ReferenceDocumentReadScope;
   }): Promise<
     Omit<ReferenceDocumentListPage, 'items'> & { items: ReferenceDocumentListItemQueryResult[] }
   > {
-    const where: FindOptionsWhere<ReferenceDocumentEntity> = {
-      deprecated: false,
-    };
-    if (params.organizationId !== null) {
-      where.ownerOrganizationId = params.organizationId;
-    }
+    const where: FindOptionsWhere<ReferenceDocumentEntity> = this.buildLibraryVisibilityWhere(
+      params.scope,
+    );
     if (params.filter.title) {
       where.title = Raw((alias) => `${alias} LIKE :pattern`, {
         pattern: `%${escapeLikePattern(params.filter.title)}%`,
@@ -133,12 +188,52 @@ export class ReferenceDocumentQueryService {
   }
 
   /**
-   * 读侧资料详情：完整元数据 + 文本内容 + 案例明细
+   * 归属待核实清单（任务 07 R061-01，一级管理员专用入口）：
+   * ownership_status = PENDING 且未软删，不按组织收敛、不筛选发布状态——
+   * PENDING 是本清单唯一业务筛选维度（下架条目仍可经归属更正写路径读取）；
+   * 软删行统一排除。范围恒为全公司，准入由调用 usecase 的一级管理员事实复核保证，
+   * 本层不信任客户端自报；普通资料库列表（listDocuments）不读取本方法。
+   *
+   * 固定排序与分页口径同 listDocuments；列表项为昵称富集前装配结果。
+   */
+  async listPendingOwnershipDocuments(params: {
+    pagination: ReferenceDocumentListPagination;
+  }): Promise<
+    Omit<ReferenceDocumentListPage, 'items'> & { items: ReferenceDocumentListItemQueryResult[] }
+  > {
+    const where: FindOptionsWhere<ReferenceDocumentEntity> = {
+      deprecated: false,
+      ownershipStatus: 'PENDING',
+    };
+
+    const page = Math.max(params.pagination.page, 1);
+    const pageSize = Math.max(params.pagination.pageSize, 1);
+    const [entities, total] = await Promise.all([
+      this.documentRepository.find({
+        where,
+        order: LIST_ORDER,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      params.pagination.withTotal
+        ? this.documentRepository.count({ where })
+        : Promise.resolve(undefined),
+    ]);
+    return {
+      items: await this.toListItemQueryResults(entities),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * 本组织未软删资料详情：完整元数据 + 文本内容 + 案例明细
    *
    * 不存在、已软删与跨范围统一拒绝（统一 NOT_FOUND，不泄露删除状态与存在性）。
-   * `organizationId: null` 仅表示读侧范围决议已判定的「一级管理员全范围」
+   * GLOBAL 仅表示读侧范围决议已判定的「一级管理员全范围」
    * （功能 V5.6 R055-02；见 reference-document-read-scope.ts），不按组织过滤；
-   * 写路径锁定读始终传入具体组织 ID，归属收窄语义不变。
+   * 写路径锁定读始终传入具体范围，归属收窄语义不变。
    * 携带 transactionContext 时改用事务内 EntityManager 的 Repository。
    *
    * 锁定读（G2/F01）：`forUpdate: true` 时对主资料行与案例明细行依次执行
@@ -153,15 +248,21 @@ export class ReferenceDocumentQueryService {
    */
   async findDetail(params: {
     documentId: number;
-    organizationId: number | null;
+    scope: ReferenceDocumentReadScope;
     transactionContext?: PersistenceTransactionContext;
     forUpdate?: boolean;
+    /**
+     * 写路径（编辑 / 下架 / 删除）复用本入口时置 true：仅放宽「上架 + 归属已确认」
+     * 两个可见性谓词，组织范围仍由 scope 强制，已软删行仍统一 NOT_FOUND。
+     * 读路径不得开启，避免下架资料经旧地址泄露。
+     */
+    includeUnpublished?: boolean;
   }): Promise<ReferenceDocumentDetailQueryResult> {
     const documentRepository = this.getDocumentRepository(params.transactionContext);
-    const documentWhere: FindOptionsWhere<ReferenceDocumentEntity> = { id: params.documentId };
-    if (params.organizationId !== null) {
-      documentWhere.ownerOrganizationId = params.organizationId;
-    }
+    const documentWhere: FindOptionsWhere<ReferenceDocumentEntity> = params.includeUnpublished
+      ? this.buildWritePathWhere(params.scope)
+      : this.buildLibraryVisibilityWhere(params.scope);
+    documentWhere.id = params.documentId;
     // 锁定读的 where 不含 deprecated：已软删行同样被锁定（与并发软删除写互斥），
     // 软删状态由下方判定统一拒绝——避免「拿到锁却仍按旧快照看到未软删」的穿透
     const entity =
@@ -212,8 +313,16 @@ export class ReferenceDocumentQueryService {
       contentText: entity.contentText,
       organizationName: organization?.name ?? UNKNOWN_ORGANIZATION_NAME,
       ingestMethod: entity.ingestMethod,
+      sourceKind: entity.sourceKind,
+      sourceReportId: entity.sourceReportId,
+      sourceReportVersionId: entity.sourceReportVersionId,
+      publicationStatus: entity.publicationStatus,
+      ownershipStatus: entity.ownershipStatus,
+      effectiveRevisionNo: entity.currentRevisionNo,
+      schemaVersion: entity.schemaVersion,
       caseDetail: caseDetail ? this.toCaseDetailView(caseDetail) : null,
       createdByAccountId: entity.createdByAccountId,
+      ownerOrganizationId: entity.ownerOrganizationId,
       // 内部装配字段：仅供下载用例定位存储对象，不进入对外 DTO
       storageReference: entity.storageReference,
       createdAt: entity.createdAt,
@@ -233,6 +342,81 @@ export class ReferenceDocumentQueryService {
   async isStorageReferenceReferenced(storageReference: string): Promise<boolean> {
     const count = await this.documentRepository.count({ where: { storageReference } });
     return count > 0;
+  }
+
+  /**
+   * 资料生效修订历史（升序）：摘要字段 + 该版本生效正文（after_snapshot 内容键）。
+   *
+   * 快照 JSON 整体（before/after）不对外输出；contentText 为授权追溯旧版本
+   * 内容所需的最小读取（V5.6 版本追溯）。可见性由调用方先经 findDetail 校验
+   * （不存在 / 下架 / 软删 / 跨公司统一 NOT_FOUND），本方法不再单独判断范围，
+   * 避免两套口径。
+   */
+  async listRevisions(documentId: number): Promise<ReferenceDocumentRevisionSummaryView[]> {
+    const rows = await this.revisionRepository.find({
+      where: { documentId },
+      order: { revisionNo: 'ASC' },
+    });
+    return rows.map((row) => {
+      const afterSnapshot = parseSnapshotJson(row.afterSnapshot);
+      const contentText = afterSnapshot.contentText;
+      return {
+        revisionNo: row.revisionNo,
+        reason: row.reason,
+        actorAccountId: row.actorAccountId,
+        createdAt: row.createdAt,
+        contentText: typeof contentText === 'string' ? contentText : null,
+      };
+    });
+  }
+
+  /** 指定生效修订号的管理修订快照（生效正文来源为 CURRENT_REVISION 时使用） */
+  async findRevision(
+    documentId: number,
+    revisionNo: number,
+  ): Promise<{ revisionNo: number; afterSnapshot: Record<string, unknown> } | null> {
+    const row = await this.revisionRepository.findOne({ where: { documentId, revisionNo } });
+    if (!row) return null;
+    return { revisionNo: row.revisionNo, afterSnapshot: parseSnapshotJson(row.afterSnapshot) };
+  }
+
+  /**
+   * 报告来源资料已发布的正式资料标识（批量；本人记录列表据此提供「查看成品」入口）。
+   *
+   * 只返回普通资料库可见的行（未软删 + ONLINE），避免下架/删除资料成为可点击入口；
+   * 传入 ownerOrganizationId 时按普通资料库同一组织谓词收敛，与详情读侧口径一致
+   * （归属更正迁出后旧公司不再出现可点击入口，点击后的详情授权同样拒绝）。
+   */
+  async listPublishedDocumentIdsByReportIds(
+    reportIds: readonly number[],
+    ownerOrganizationId?: number,
+  ): Promise<Map<number, number>> {
+    const uniqueReportIds = [...new Set(reportIds)].filter(
+      (reportId) => Number.isInteger(reportId) && reportId > 0,
+    );
+    if (uniqueReportIds.length === 0) return new Map();
+    const organizationPredicate =
+      ownerOrganizationId !== undefined &&
+      Number.isInteger(ownerOrganizationId) &&
+      ownerOrganizationId > 0
+        ? { ownerOrganizationId }
+        : {};
+    const rows = await this.documentRepository.find({
+      where: {
+        sourceReportId: In(uniqueReportIds),
+        deprecated: false,
+        publicationStatus: 'ONLINE',
+        ...organizationPredicate,
+      },
+      select: { id: true, sourceReportId: true },
+    });
+    const documentIdByReportId = new Map<number, number>();
+    for (const row of rows) {
+      if (row.sourceReportId !== null) {
+        documentIdByReportId.set(row.sourceReportId, row.id);
+      }
+    }
+    return documentIdByReportId;
   }
 
   /** 事务上下文存在时改用事务内 EntityManager 的 Repository（与 EquipmentModelQueryService 同模式） */
@@ -325,6 +509,8 @@ export class ReferenceDocumentQueryService {
           ? UNKNOWN_ORGANIZATION_NAME
           : (nameByOrganizationId.get(entity.ownerOrganizationId) ?? UNKNOWN_ORGANIZATION_NAME),
       ingestMethod: entity.ingestMethod,
+      sourceKind: entity.sourceKind,
+      effectiveRevisionNo: entity.currentRevisionNo,
       // 案例处理状态来自案例明细（普通资料无明细，恒为 null）；列表不携带案例大段正文
       caseHandlingStatus: handlingStatusByDocumentId.get(entity.id) ?? null,
       createdByAccountId: entity.createdByAccountId,

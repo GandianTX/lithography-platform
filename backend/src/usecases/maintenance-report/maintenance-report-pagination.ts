@@ -10,7 +10,13 @@ const MAX_PAGE_SIZE = 100;
 
 export function normalizePagination(
   pagination: MaintenanceReportPagination | undefined,
-): Required<MaintenanceReportPagination> {
+): Required<Omit<MaintenanceReportPagination, 'mode'>> {
+  if (pagination?.mode === 'CURSOR') {
+    throw new DomainError(
+      MAINTENANCE_REPORT_ERROR.INVALID_PARAMS,
+      '维修记录列表第一版仅支持 OFFSET 分页',
+    );
+  }
   const page = pagination?.page ?? DEFAULT_PAGE;
   const pageSize = pagination?.pageSize ?? DEFAULT_PAGE_SIZE;
   if (!Number.isInteger(page) || page < 1) {

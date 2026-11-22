@@ -1,0 +1,16 @@
+{
+  "records": [
+    {
+      "organizationId": 101,
+      "resourceType": "MAINTENANCE_REPORT",
+      "recordUuid": "6fd663eb-6d92-47be-9fbf-c591f7eb8e67",
+      "sourceVersion": 1
+    },
+    {
+      "organizationId": 101,
+      "resourceType": "MAINTENANCE_REPORT",
+      "recordUuid": "613d90f1-d8b7-472f-9c42-f6021232ffa2",
+      "sourceVersion": 2
+    }
+  ]
+}

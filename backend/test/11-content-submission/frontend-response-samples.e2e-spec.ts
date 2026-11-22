@@ -1,20 +1,30 @@
 // test/11-content-submission/frontend-response-samples.e2e-spec.ts
-//
-// S7 前端适配真实响应样例与 shape 校验（A-PR0 §S7-1 / §4.4）
-//
-// 边界声明：
-// - 本规格验证「前端 adapter 的操作文本与消费 shape」在真实后端上可调且形状一致。
-//   以下 GraphQL 操作文本与 frontend/src/features/content-submission/infrastructure/
-//   content-submission-adapter.ts、frontend/src/features/reference-document/infrastructure/
-//   reference-document-adapter.ts 逐字一致——前端操作文本变更时必须同步本文件，
-//   否则本规格将在真实后端上失败（前端文本与后端契约漂移的告警信号）；
-// - 只走真实 HTTP：GraphQL POST /graphql + REST multipart（真实守卫 / 错误过滤器 /
-//   事务 / 本地文件存储）；不直接调用 usecase；
-// - 每步以 [S7-SAMPLE] 单行 JSON 打印「请求变量 + 完整线上响应」，供交接材料抄录真实样例；
-//   设置 S7_SAMPLES_OUT=<path> 时另将全部样例数组落盘（JSON）；
-// - 失败样例只取代表路径（未确认告知 / 待审上传 / 白名单外类型 / 终态移除 / 案例接口误用），
-//   完整错误矩阵由 content-submission-graphql.e2e-spec.ts 覆盖；
-// - 存储隔离：运行级临时上传目录（mkdtemp，先于应用初始化设置 env），结束后按精确路径删除。
+
+/**
+ * S7 前端适配真实响应样例与 shape 校验（A-PR0 §S7-1 / §4.4，任务 07 收口口径）
+ *
+ * 口径变更（2026-11-20）：确认需求已关闭普通资料新增/通用编辑/REST 上传与资料审核
+ * 决定（reviewContentSubmissionDecision）写路径。本规格随之调整：
+ * - 造数改走受控隔离夹具（直接写 reference_document + 案例明细，
+ *   withReferenceDocumentFixtureState 补齐 V13 必填状态），不依赖任何生产写入口；
+ * - 旧写入口改为「协议层已移除」负例（不重新开放，也不为造数保留）；
+ * - 保留前端仍消费的读路径与投稿自身写路径（建稿/附件/送审）形状断言；
+ * - 案例更正 R061-01 与正式资料读取形状改由夹具前置已发布事实后验证。
+ *
+ * 边界声明：
+ * - 本规格验证「前端 adapter 的操作文本与消费 shape」在真实后端上可调且形状一致。
+ *   以下 GraphQL 操作文本与 frontend/src/features/content-submission/infrastructure/
+ *   content-submission-adapter.ts、frontend/src/features/reference-document/infrastructure/
+ *   reference-document-adapter.ts 逐字一致——前端操作文本变更时必须同步本文件，
+ *   否则本规格将在真实后端上失败（前端文本与后端契约漂移的告警信号）；
+ * - 只走真实 HTTP：GraphQL POST /graphql + REST multipart（真实守卫 / 错误过滤器 /
+ *   事务 / 本地文件存储）；不直接调用 usecase；
+ * - 每步以 [S7-SAMPLE] 单行 JSON 打印「请求变量 + 完整线上响应」，供交接材料抄录真实样例；
+ *   设置 S7_SAMPLES_OUT=<path> 时另将全部样例数组落盘（JSON）；
+ * - 失败样例只取代表路径（未确认告知 / 待审上传 / 待审改稿 / 已下线运营决定），
+ *   完整错误矩阵由 content-submission-graphql.e2e-spec.ts 覆盖；
+ * - 存储隔离：运行级临时上传目录（mkdtemp，先于应用初始化设置 env），结束后按精确路径删除。
+ */
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as fs from 'node:fs';
@@ -25,6 +35,7 @@ import { DataSource, Repository } from 'typeorm';
 
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
+import { formatFaultCaseReferenceContent } from '@src/usecases/common/fault-case-fields.contract';
 
 import { initGraphQLSchema } from '../../src/adapters/api/graphql/schema/schema.init';
 import { getAccountIdByLoginName, login, postGql } from '../utils/e2e-graphql-utils';
@@ -35,9 +46,14 @@ import {
   toResidueAccountFingerprint,
 } from '../utils/e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-teardown';
+import {
+  seedReferenceDocumentCaseFixture,
+  seedReferenceDocumentFixture,
+} from '../utils/reference-document-fixtures';
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
+  requireOrganizationId,
   seedTestMemberships,
   seedTestOrganizations,
 } from '../utils/test-organizations';
@@ -260,9 +276,13 @@ const SUBMIT_MUTATION = `
   }
 `;
 
-const DECISION_MUTATION = `
-  mutation ReviewContentSubmissionDecision($input: ReviewContentSubmissionDecisionInput!) {
-    reviewContentSubmissionDecision(input: $input) {
+// 已下线入口：只用内联字面量断言「schema 不再接受」，不引用已移除的输入类型
+// （引用 ReviewContentSubmissionDecisionInput 会先触发未知类型错误，掩盖字段移除信号）
+const REMOVED_DECISION_QUERY = `
+  mutation {
+    reviewContentSubmissionDecision(
+      input: { submissionId: 1, revisionId: 1, decision: APPROVE, publishAttachment: true }
+    ) {
       submissionId
       status
       documentId
@@ -363,36 +383,7 @@ const MATERIAL_DETAIL_KEYS = [
   'description',
   'contentText',
 ];
-const FAULT_CASE_DETAIL_KEYS = [
-  'title',
-  'equipmentModelId',
-  'equipmentModelName',
-  'equipmentModelText',
-  'errorCode',
-  'phenomenon',
-  'conditionText',
-  'reproductionSteps',
-  'diagnosis',
-  'actionTaken',
-  'handlingStatus',
-  'resolution',
-];
-const FAULT_CASE_PAYLOAD_KEYS = [
-  'title',
-  'equipmentModelId',
-  'equipmentModelText',
-  'errorCode',
-  'phenomenon',
-  'conditionText',
-  'reproductionSteps',
-  'diagnosis',
-  'actionTaken',
-  'handlingStatus',
-  'resolution',
-];
 const ATTACHMENT_META_KEYS = ['id', 'originalFilename', 'mimeType', 'byteSize', 'uploadedAt'];
-const LATEST_REVIEW_KEYS = ['decision', 'comment', 'publishAttachment', 'reviewedAt'];
-const PUBLISHED_DOCUMENT_KEYS = ['documentId', 'available'];
 const REVISION_KEYS = [
   'revisionId',
   'submissionId',
@@ -406,14 +397,6 @@ const REVISION_KEYS = [
   'confirmedAt',
   'submittedAt',
   'review',
-];
-const REVIEW_HISTORY_ITEM_KEYS = [
-  'revisionId',
-  'revisionNo',
-  'decision',
-  'comment',
-  'publishAttachment',
-  'reviewedAt',
 ];
 const REVIEW_DETAIL_KEYS = [
   'submissionId',
@@ -495,6 +478,7 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
   let engineerToken: string;
   let adminToken: string;
   let engineerAccountId = 0;
+  let primaryOrganizationId = 0;
 
   // 样例数组（S7_SAMPLES_OUT 时落盘）
   const samples: Array<{ step: string; request: unknown; response: unknown }> = [];
@@ -623,6 +607,7 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
       ],
       organizationIdsByCode: organizationIds,
     });
+    primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
 
     const savedModel = await modelRepository.save(
       modelRepository.create({
@@ -687,18 +672,17 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
     });
   });
 
-  describe('S7-A 普通资料全链（建稿 → 附件 → 送审 → 退回 → 重提 → 发布 → 下载）', () => {
+  describe('S7-A 普通资料链路（建稿 → 附件 → 送审 → 待审读取；审核决定入口已下线）', () => {
     let materialSubmissionId = 0;
     let attachmentId = 0;
     let v1RevisionId = 0;
-    let v2RevisionId = 0;
 
     const ATTACHMENT_NAME = 's7-sample-attachment.txt';
     const ATTACHMENT_CONTENT = 's7-sample-attachment-bytes-v1';
 
     // F01：A 链合并在同一 it 内，内部保留 A1–A4 命名步骤；
     // 定向执行 A 链即可独立准备全部前置状态，不依赖兄弟 it 的数据接力。
-    it('A 普通资料全链：建稿 → 附件 → 送审 → 退回 → 重提 → 发布 → 下载（单测独立）', async () => {
+    it('A 普通资料链路：建稿 → 附件 → 送审 → 待审读取（单测独立）', async () => {
       // —— A1 建稿/改稿/回读：MATERIAL 形状（可空字段与机型互斥） ——
       const createInput = {
         kind: 'MATERIAL',
@@ -757,53 +741,52 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
         'status',
         'updatedAt',
       ]);
-
-      const detailData = await gqlSuccess(engineerToken, MY_DETAIL_QUERY, {
-        id: materialSubmissionId,
-      });
-      recordSample(
-        'A1.3 myContentSubmission（改稿后回读）',
-        { operation: 'myContentSubmission', variables: { id: materialSubmissionId } },
-        detailData,
-      );
-      const mine = detailData.myContentSubmission;
-      expectExactKeys(mine, MY_DETAIL_KEYS);
-      expectExactKeys(mine.material, MATERIAL_DETAIL_KEYS);
-      expect(mine).toMatchObject({
+      expect(updated.updateContentSubmissionDraft).toMatchObject({
         id: materialSubmissionId,
         submissionKind: 'MATERIAL',
         status: 'DRAFT',
-        currentRevisionNo: 0,
-        lastSubmittedAt: null,
-        publishedAt: null,
-        faultCase: null,
-        currentAttachment: null,
-        latestReview: null,
-        publishedDocument: null,
-        material: {
-          title: 'S7 样例：光源能量校准作业手册',
-          documentType: 'MAINTENANCE_GUIDE',
-          equipmentModelId: s7ModelId,
-          equipmentModelName: S7_MODEL_NAME,
-          equipmentModelText: null,
-          description: 'S7 样例说明（已更新）：覆盖年度与季度校准场景。',
-          contentText: 'S7 样例如正文 v1：1. 读取能量曲线；2. 执行校准；3. 记录结果。',
-        },
       });
 
-      const listData = await gqlSuccess(engineerToken, MY_LIST_QUERY, {
-        pagination: PAGINATION,
-        filter: { title: '光源能量校准' },
+      // 我的投稿详情：前端消费面 13 个键完整
+      const mine = await gqlSuccess(engineerToken, MY_DETAIL_QUERY, {
+        id: materialSubmissionId,
       });
       recordSample(
-        'A1.4 myContentSubmissions（标题筛选）',
-        {
-          operation: 'myContentSubmissions',
-          variables: { pagination: PAGINATION, filter: { title: '光源能量校准' } },
-        },
-        listData,
+        'A1.3 myContentSubmission（建稿后）',
+        { operation: 'myContentSubmission', variables: { id: materialSubmissionId } },
+        mine,
       );
-      const page = listData.myContentSubmissions;
+      expectExactKeys(mine.myContentSubmission, MY_DETAIL_KEYS);
+      expectExactKeys(mine.myContentSubmission.material, MATERIAL_DETAIL_KEYS);
+      expect(mine.myContentSubmission.material).toMatchObject({
+        title: 'S7 样例：光源能量校准作业手册',
+        documentType: 'MAINTENANCE_GUIDE',
+        equipmentModelId: s7ModelId,
+        equipmentModelText: null,
+        description: 'S7 样例说明（已更新）：覆盖年度与季度校准场景。',
+      });
+      expect(mine.myContentSubmission.faultCase).toBeNull();
+      expect(mine.myContentSubmission.currentAttachment).toBeNull();
+      expect(mine.myContentSubmission.latestReview).toBeNull();
+      expect(mine.myContentSubmission.publishedDocument).toBeNull();
+      expect(mine.myContentSubmission.publishedAt).toBeNull();
+      expect(mine.myContentSubmission).toMatchObject({
+        status: 'DRAFT',
+        currentRevisionNo: 0,
+        lastSubmittedAt: null,
+      });
+
+      // 我的投稿列表：DRAFT 阶段形状
+      const myList = await gqlSuccess(engineerToken, MY_LIST_QUERY, {
+        pagination: PAGINATION,
+        filter: { title: 'S7 样例' },
+      });
+      recordSample(
+        'A1.4 myContentSubmissions（建稿后）',
+        { operation: 'myContentSubmissions', variables: { pagination: PAGINATION } },
+        myList,
+      );
+      const page = myList.myContentSubmissions;
       expectExactKeys(page, CS_LIST_PAGE_KEYS);
       expectExactKeys(page.items[0], CS_LIST_ITEM_KEYS);
       expect(page.total).toBe(1);
@@ -814,8 +797,8 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
         currentRevisionNo: 0,
         lastSubmittedAt: null,
       });
-      // —— A2 上传/送审：REST 附件元数据、未确认拒、待审冲突与版本冻结 ——
 
+      // —— A2 上传/送审：REST 附件元数据、未确认拒、待审冲突与版本冻结 ——
       const uploaded = await restUpload(
         engineerToken,
         materialSubmissionId,
@@ -908,6 +891,7 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
         status: 'PENDING_REVIEW',
       });
       v1RevisionId = submitted.submitContentSubmission.revisionId;
+      expect(v1RevisionId).toEqual(expect.any(Number));
 
       // 待审中上传附件：状态冲突（REST 409 代表失败样例）
       const pendingUpload = await restUpload(
@@ -966,14 +950,14 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
       expect((revision.noticeVersion as string).length).toBeGreaterThan(0);
       expectIsoDateString(revision.confirmedAt);
       expectIsoDateString(revision.submittedAt);
-      // —— A3 审核链路：队列/详情 → 退回缺意见拒 → 退回 → 版本审核事实 ——
 
+      // —— A3 待审读取：队列/详情（只读路径仍保留，审核决定写入口已下线） ——
       const queueData = await gqlSuccess(adminToken, REVIEW_LIST_QUERY, {
         pagination: PAGINATION,
         filter: { title: 'S7 样例' },
       });
       recordSample(
-        'A3.1 reviewContentSubmissions（审核队列·缺省待审）',
+        'A3.1 reviewContentSubmissions（待审队列·缺省待审）',
         {
           operation: 'reviewContentSubmissions',
           variables: { pagination: PAGINATION, filter: { title: 'S7 样例' } },
@@ -1012,266 +996,46 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
       expect(reviewDetail.currentRevision.revisionNo).toBe(1);
       expect(reviewDetail.reviewHistory).toEqual([]);
 
-      // 退回缺意见：拒绝（前端映射 invalid-input 的代表失败样例）
-      const noComment = await postGql({
+      // —— A4 审核决定入口已下线：协议层拒绝，投稿停在待审且不产生正式资料 ——
+      const removedDecision = await postGql({
         app,
-        query: DECISION_MUTATION,
-        variables: {
-          input: {
-            submissionId: materialSubmissionId,
-            revisionId: v1RevisionId,
-            decision: 'RETURN',
-          },
-        },
+        query: REMOVED_DECISION_QUERY,
         token: adminToken,
-      }).expect(200);
+      });
       recordSample(
-        'A3.3 reviewContentSubmissionDecision 退回缺意见（失败样例）',
+        'A4.1 reviewContentSubmissionDecision 已下线（负例）',
         {
           operation: 'reviewContentSubmissionDecision',
-          variables: {
-            input: {
-              submissionId: materialSubmissionId,
-              revisionId: v1RevisionId,
-              decision: 'RETURN',
-            },
-          },
+          variables: { submissionId: materialSubmissionId, revisionId: v1RevisionId },
         },
-        { errors: noComment.body.errors },
+        { errors: removedDecision.body.errors },
       );
-      expect(noComment.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
-      expect(noComment.body.errors[0].extensions.errorCode).toBe(
-        'CONTENT_SUBMISSION_INVALID_PARAMS',
-      );
-      expect(noComment.body.errors[0].message).toContain('退回时必须填写理由');
+      expect(removedDecision.body.data).toBeUndefined();
+      expect(
+        (removedDecision.body.errors as Array<{ message: string }>).some((item) =>
+          item.message.includes('Cannot query field "reviewContentSubmissionDecision"'),
+        ),
+      ).toBe(true);
 
-      // 退回：理由落审核事实，不产生正式资料
-      const returnComment = '请补充机型适配说明与校准判据。';
-      const returned = await gqlSuccess(adminToken, DECISION_MUTATION, {
-        input: {
-          submissionId: materialSubmissionId,
-          revisionId: v1RevisionId,
-          decision: 'RETURN',
-          comment: returnComment,
-        },
-      });
-      recordSample(
-        'A3.4 reviewContentSubmissionDecision（RETURN）',
-        {
-          operation: 'reviewContentSubmissionDecision',
-          variables: {
-            input: {
-              submissionId: materialSubmissionId,
-              revisionId: v1RevisionId,
-              decision: 'RETURN',
-              comment: returnComment,
-            },
-          },
-        },
-        returned,
-      );
-      expectExactKeys(returned.reviewContentSubmissionDecision, [
-        'submissionId',
-        'status',
-        'documentId',
-      ]);
-      expect(returned.reviewContentSubmissionDecision).toMatchObject({
-        submissionId: materialSubmissionId,
-        status: 'RETURNED',
-        documentId: null,
-      });
-
-      const returnedMineData = await gqlSuccess(engineerToken, MY_DETAIL_QUERY, {
+      const afterRemoved = await gqlSuccess(engineerToken, MY_DETAIL_QUERY, {
         id: materialSubmissionId,
       });
-      recordSample(
-        'A3.5 myContentSubmission（退回后·最近审核事实）',
-        { operation: 'myContentSubmission', variables: { id: materialSubmissionId } },
-        returnedMineData,
-      );
-      expect(returnedMineData.myContentSubmission.status).toBe('RETURNED');
-      expectExactKeys(returnedMineData.myContentSubmission.latestReview, LATEST_REVIEW_KEYS);
-      expect(returnedMineData.myContentSubmission.latestReview).toMatchObject({
-        decision: 'RETURN',
-        comment: returnComment,
-        publishAttachment: false,
-      });
-
-      const v1ReturnedData = await gqlSuccess(engineerToken, REVISION_QUERY, {
-        submissionId: materialSubmissionId,
-        revisionNo: 1,
-      });
-      recordSample(
-        'A3.6 contentSubmissionRevision v1（退回事实·历史版本不可变）',
-        {
-          operation: 'contentSubmissionRevision',
-          variables: { submissionId: materialSubmissionId, revisionNo: 1 },
-        },
-        v1ReturnedData,
-      );
-      expectExactKeys(v1ReturnedData.contentSubmissionRevision.review, LATEST_REVIEW_KEYS);
-      expect(v1ReturnedData.contentSubmissionRevision.review).toMatchObject({
-        decision: 'RETURN',
-        comment: returnComment,
-      });
-
-      // 退回后改稿 → 重提 v2（旧版保留）
-      const resubmitPatch = {
-        contentText: 'S7 样例正文 v2：1. 读取能量曲线并比对基线；2. 校准后复测；3. 归档记录。',
-      };
-      const reUpdated = await gqlSuccess(engineerToken, UPDATE_DRAFT_MUTATION, {
-        id: materialSubmissionId,
-        input: { patch: resubmitPatch },
-      });
-      recordSample(
-        'A3.7 updateContentSubmissionDraft（退回改稿）',
-        {
-          operation: 'updateContentSubmissionDraft',
-          variables: { id: materialSubmissionId, input: { patch: resubmitPatch } },
-        },
-        reUpdated,
-      );
-      expect(reUpdated.updateContentSubmissionDraft).toMatchObject({
-        id: materialSubmissionId,
-        status: 'RETURNED',
-      });
-
-      const resubmitted = await gqlSuccess(engineerToken, SUBMIT_MUTATION, {
-        id: materialSubmissionId,
-        input: { libraryNoticeConfirmed: true },
-      });
-      recordSample(
-        'A3.8 submitContentSubmission（重提冻结 v2）',
-        {
-          operation: 'submitContentSubmission',
-          variables: { id: materialSubmissionId, input: { libraryNoticeConfirmed: true } },
-        },
-        resubmitted,
-      );
-      expect(resubmitted.submitContentSubmission).toMatchObject({
-        submissionId: materialSubmissionId,
-        revisionNo: 2,
+      expect(afterRemoved.myContentSubmission).toMatchObject({
         status: 'PENDING_REVIEW',
-      });
-      v2RevisionId = resubmitted.submitContentSubmission.revisionId;
-
-      const reviewAfterResubmitData = await gqlSuccess(adminToken, REVIEW_DETAIL_QUERY, {
-        id: materialSubmissionId,
-      });
-      recordSample(
-        'A3.9 reviewContentSubmission（重提后·审核历史一条）',
-        { operation: 'reviewContentSubmission', variables: { id: materialSubmissionId } },
-        reviewAfterResubmitData,
-      );
-      const reviewAfterResubmit = reviewAfterResubmitData.reviewContentSubmission;
-      expect(reviewAfterResubmit.currentRevision.revisionNo).toBe(2);
-      expect(reviewAfterResubmit.reviewHistory).toHaveLength(1);
-      expectExactKeys(reviewAfterResubmit.reviewHistory[0], REVIEW_HISTORY_ITEM_KEYS);
-      expect(reviewAfterResubmit.reviewHistory[0]).toMatchObject({
-        revisionNo: 1,
-        decision: 'RETURN',
-      });
-      // —— A4 通过发布与下载：APPROVE → 发布关联 → REST 下载 → 终态拒再操作 ——
-
-      const approved = await gqlSuccess(adminToken, DECISION_MUTATION, {
-        input: {
-          submissionId: materialSubmissionId,
-          revisionId: v2RevisionId,
-          decision: 'APPROVE',
-          publishAttachment: true,
-        },
-      });
-      recordSample(
-        'A4.1 reviewContentSubmissionDecision（APPROVE·发布附件）',
-        {
-          operation: 'reviewContentSubmissionDecision',
-          variables: {
-            input: {
-              submissionId: materialSubmissionId,
-              revisionId: v2RevisionId,
-              decision: 'APPROVE',
-              publishAttachment: true,
-            },
-          },
-        },
-        approved,
-      );
-      expect(approved.reviewContentSubmissionDecision).toMatchObject({
-        submissionId: materialSubmissionId,
-        status: 'PUBLISHED',
-      });
-      expect(approved.reviewContentSubmissionDecision.documentId).toEqual(expect.any(Number));
-      const materialPublishedDocumentId = approved.reviewContentSubmissionDecision
-        .documentId as number;
-
-      const publishedMineData = await gqlSuccess(engineerToken, MY_DETAIL_QUERY, {
-        id: materialSubmissionId,
-      });
-      recordSample(
-        'A4.2 myContentSubmission（发布后·正式资料关联可用）',
-        { operation: 'myContentSubmission', variables: { id: materialSubmissionId } },
-        publishedMineData,
-      );
-      const publishedMine = publishedMineData.myContentSubmission;
-      expect(publishedMine.status).toBe('PUBLISHED');
-      expectIsoDateString(publishedMine.publishedAt);
-      expectExactKeys(publishedMine.publishedDocument, PUBLISHED_DOCUMENT_KEYS);
-      expect(publishedMine.publishedDocument).toMatchObject({
-        documentId: materialPublishedDocumentId,
-        available: true,
-      });
-      expect(publishedMine.latestReview).toMatchObject({ decision: 'APPROVE' });
-
-      const v2Data = await gqlSuccess(engineerToken, REVISION_QUERY, {
-        submissionId: materialSubmissionId,
-        revisionNo: 2,
-      });
-      recordSample(
-        'A4.3 contentSubmissionRevision v2（获准快照事实）',
-        {
-          operation: 'contentSubmissionRevision',
-          variables: { submissionId: materialSubmissionId, revisionNo: 2 },
-        },
-        v2Data,
-      );
-      expect(v2Data.contentSubmissionRevision).toMatchObject({
-        revisionId: v2RevisionId,
-        revisionNo: 2,
-        titleSnapshot: 'S7 样例：光源能量校准作业手册',
-      });
-      expect(v2Data.contentSubmissionRevision.payloadSnapshot).toMatchObject({
-        contentText: 'S7 样例正文 v2：1. 读取能量曲线并比对基线；2. 校准后复测；3. 归档记录。',
-      });
-      expect(v2Data.contentSubmissionRevision.review).toMatchObject({
-        decision: 'APPROVE',
-        publishAttachment: true,
+        currentRevisionNo: 1,
+        latestReview: null,
+        publishedDocument: null,
+        publishedAt: null,
       });
 
-      const historyData = await gqlSuccess(adminToken, REVIEW_DETAIL_QUERY, {
-        id: materialSubmissionId,
-      });
-      recordSample(
-        'A4.4 reviewContentSubmission（审核历史两条·新在前）',
-        { operation: 'reviewContentSubmission', variables: { id: materialSubmissionId } },
-        historyData,
-      );
-      const history = historyData.reviewContentSubmission.reviewHistory;
-      expect(history).toHaveLength(2);
-      expectExactKeys(history[0], REVIEW_HISTORY_ITEM_KEYS);
-      expect(history[0]).toMatchObject({
-        revisionNo: 2,
-        decision: 'APPROVE',
-        publishAttachment: true,
-      });
-      expect(history[1]).toMatchObject({ revisionNo: 1, decision: 'RETURN' });
-
+      // 待审仍可下载原件（授权与发布状态无关）；文件名 RFC 5987 编码
       const downloaded = await restDownload(
         engineerToken,
         materialSubmissionId,
         attachmentId,
       ).expect(200);
       recordSample(
-        'A4.5 REST GET …/download（发布附件原文）',
+        'A4.2 REST GET …/download（待审原件原文）',
         { method: 'GET', path: downloadPath(materialSubmissionId, attachmentId) },
         {
           contentType: downloaded.headers['content-type'],
@@ -1283,368 +1047,196 @@ describe('S7 前端适配真实响应样例与 shape 校验', () => {
       );
       expect(downloaded.text).toBe(ATTACHMENT_CONTENT);
 
-      // 终态：移除附件被拒（REST 409 代表失败样例）
-      const removeAfterPublished = await restRemove(engineerToken, materialSubmissionId).expect(
-        409,
-      );
-      recordSample(
-        'A4.6 REST DELETE …/attachment 终态拒绝（失败样例）',
-        { method: 'DELETE', path: attachmentPath(materialSubmissionId) },
-        removeAfterPublished.body,
-      );
-      expect(removeAfterPublished.body.data).toMatchObject({
-        statusCode: 409,
-        code: 'CONTENT_SUBMISSION_STATE_NOT_EDITABLE',
-      });
-
-      // 终态：改稿被拒（GraphQL CONFLICT 代表失败样例）
-      const editAfterPublished = await postGql({
+      // 待审改稿被拒（GraphQL CONFLICT 代表失败样例）
+      const editWhilePending = await postGql({
         app,
         query: UPDATE_DRAFT_MUTATION,
-        variables: { id: materialSubmissionId, input: { patch: { title: 'S7 终态改稿' } } },
+        variables: { id: materialSubmissionId, input: { patch: { title: 'S7 待审改稿' } } },
         token: engineerToken,
       }).expect(200);
       recordSample(
-        'A4.7 updateContentSubmissionDraft 终态拒绝（失败样例）',
+        'A4.3 updateContentSubmissionDraft 待审拒绝（失败样例）',
         {
           operation: 'updateContentSubmissionDraft',
-          variables: { id: materialSubmissionId, input: { patch: { title: 'S7 终态改稿' } } },
+          variables: { id: materialSubmissionId, input: { patch: { title: 'S7 待审改稿' } } },
         },
-        { errors: editAfterPublished.body.errors },
+        { errors: editWhilePending.body.errors },
       );
-      expect(editAfterPublished.body.errors[0].extensions.code).toBe('CONFLICT');
-      expect(editAfterPublished.body.errors[0].extensions.errorCode).toBe(
+      expect(editWhilePending.body.errors[0].extensions.code).toBe('CONFLICT');
+      expect(editWhilePending.body.errors[0].extensions.errorCode).toBe(
         'CONTENT_SUBMISSION_STATE_NOT_EDITABLE',
       );
+
+      // 待审移除附件同样被拒（REST 409 代表失败样例，前端映射 state-conflict）
+      const removeWhilePending = await restRemove(engineerToken, materialSubmissionId).expect(409);
+      recordSample(
+        'A4.4 REST DELETE …/attachment 待审拒绝（失败样例）',
+        { method: 'DELETE', path: attachmentPath(materialSubmissionId) },
+        removeWhilePending.body,
+      );
+      expect(removeWhilePending.body.data).toMatchObject({
+        statusCode: 409,
+        code: 'CONTENT_SUBMISSION_STATE_NOT_EDITABLE',
+      });
     });
   });
 
-  describe('S7-B 案例链路：案例送审发布 → 正式资料读取 → 案例更正（前端消费面）', () => {
-    let caseSubmissionId = 0;
-    let caseRevisionId = 0;
-    let casePublishedDocumentId = 0;
+  describe('S7-B 案例链路：正式案例读取 → 专属更正（前端消费面）', () => {
+    // 发布入口（reviewContentSubmissionDecision APPROVE）已下线：正式案例用受控夹具
+    // 直接落库（refdoc 表 + 案例明细），可读正文由生产同源格式化函数生成。
+    it('B 案例：正式资料读形状与专属更正形状一致（单测独立）', async () => {
+      const storageReference = `${'b'.repeat(32)}.txt`;
+      const attachmentContent = 's7-b-original-bytes';
+      fs.writeFileSync(path.join(e2eStorageRoot, storageReference), Buffer.from(attachmentContent));
 
-    // F01：B 链合并在同一 it 内，内部保留 B1–B3 命名步骤；
-    // 案例更正误用目标由本链自行准备，不消费 A 链的发布结果。
-    it('B 案例全链：案例送审发布 → 正式资料读取 → 案例更正（单测独立）', async () => {
-      // —— B1 案例建稿/送审/通过：FAULT_CASE 形状与无附件发布 ——
+      const caseTitle = 'S7-B 案例：涂胶厚度漂移';
       const caseFields = {
-        title: 'S7 样例案例：送料机构周期性偏移',
-        equipmentModelId: s7ModelId,
-        errorCode: 'E-S7-401',
-        phenomenon: '送料机构在连续运行后出现 0.05mm 周期性偏移。',
-        conditionText: '连续运行超过 2 小时。',
-        reproductionSteps: '1. 空载运行 2 小时；\n2. 测量送料定位偏差。',
-        handlingStatus: 'UNRESOLVED',
+        errorCode: 'S7-B-ERR-900',
+        phenomenon: '涂胶厚度呈周期性漂移。',
+        conditionText: '连续生产 4 小时后出现。',
+        reproductionSteps: '1. 连续涂胶 4 小时；\n2. 每 30 分钟记录厚度。',
+        diagnosis: null,
+        actionTaken: null,
+        handlingStatus: 'UNRESOLVED' as const,
+        resolution: null,
       };
-      const created = await gqlSuccess(engineerToken, CREATE_DRAFT_MUTATION, {
-        input: { kind: 'FAULT_CASE', fields: caseFields },
-      });
-      recordSample(
-        'B1.1 createContentSubmissionDraft（FAULT_CASE）',
-        {
-          operation: 'createContentSubmissionDraft',
-          variables: { input: { kind: 'FAULT_CASE', fields: caseFields } },
-        },
-        created,
-      );
-      expect(created.createContentSubmissionDraft).toMatchObject({
-        submissionKind: 'FAULT_CASE',
-        status: 'DRAFT',
-      });
-      caseSubmissionId = created.createContentSubmissionDraft.id;
 
-      const submitted = await gqlSuccess(engineerToken, SUBMIT_MUTATION, {
-        id: caseSubmissionId,
-        input: { libraryNoticeConfirmed: true },
-      });
-      recordSample(
-        'B1.2 submitContentSubmission（案例 v1）',
-        {
-          operation: 'submitContentSubmission',
-          variables: { id: caseSubmissionId, input: { libraryNoticeConfirmed: true } },
-        },
-        submitted,
-      );
-      expect(submitted.submitContentSubmission).toMatchObject({
-        submissionId: caseSubmissionId,
-        revisionNo: 1,
-        status: 'PENDING_REVIEW',
-      });
-      caseRevisionId = submitted.submitContentSubmission.revisionId;
-
-      const approved = await gqlSuccess(adminToken, DECISION_MUTATION, {
-        input: {
-          submissionId: caseSubmissionId,
-          revisionId: caseRevisionId,
-          decision: 'APPROVE',
-          publishAttachment: false,
-        },
-      });
-      recordSample(
-        'B1.3 reviewContentSubmissionDecision（案例无附件通过）',
-        {
-          operation: 'reviewContentSubmissionDecision',
-          variables: {
-            input: {
-              submissionId: caseSubmissionId,
-              revisionId: caseRevisionId,
-              decision: 'APPROVE',
-              publishAttachment: false,
-            },
-          },
-        },
-        approved,
-      );
-      expect(approved.reviewContentSubmissionDecision).toMatchObject({
-        submissionId: caseSubmissionId,
-        status: 'PUBLISHED',
-      });
-      expect(approved.reviewContentSubmissionDecision.documentId).toEqual(expect.any(Number));
-      casePublishedDocumentId = approved.reviewContentSubmissionDecision.documentId as number;
-
-      const mineData = await gqlSuccess(engineerToken, MY_DETAIL_QUERY, { id: caseSubmissionId });
-      recordSample(
-        'B1.4 myContentSubmission（案例发布后）',
-        { operation: 'myContentSubmission', variables: { id: caseSubmissionId } },
-        mineData,
-      );
-      const mine = mineData.myContentSubmission;
-      expectExactKeys(mine.faultCase, FAULT_CASE_DETAIL_KEYS);
-      expect(mine).toMatchObject({
-        submissionKind: 'FAULT_CASE',
-        status: 'PUBLISHED',
-        material: null,
-        faultCase: {
-          title: 'S7 样例案例：送料机构周期性偏移',
+      const document = await seedReferenceDocumentFixture({
+        dataSource,
+        ownership,
+        fixture: {
+          title: caseTitle,
+          documentType: 'FAULT_CASE',
+          createdByAccountId: engineerAccountId,
+          ownerOrganizationId: primaryOrganizationId,
+          contentText: formatFaultCaseReferenceContent(caseFields),
           equipmentModelId: s7ModelId,
-          equipmentModelName: S7_MODEL_NAME,
-          equipmentModelText: null,
-          errorCode: 'E-S7-401',
-          handlingStatus: 'UNRESOLVED',
+          originalFilename: 's7-b-sample.txt',
+          mimeType: 'text/plain',
+          storageBackend: 'LOCAL',
+          storageReference,
+          ingestMethod: 'REVIEWED_SUBMISSION',
         },
-        publishedDocument: { documentId: casePublishedDocumentId, available: true },
+      });
+      await seedReferenceDocumentCaseFixture({
+        dataSource,
+        ownership,
+        fixture: {
+          documentId: document.id,
+          errorCode: caseFields.errorCode,
+          handlingStatus: caseFields.handlingStatus,
+          phenomenon: caseFields.phenomenon,
+          conditionText: caseFields.conditionText,
+          reproductionSteps: caseFields.reproductionSteps,
+          resolution: caseFields.resolution,
+        },
       });
 
-      const revisionData = await gqlSuccess(engineerToken, REVISION_QUERY, {
-        submissionId: caseSubmissionId,
-        revisionNo: 1,
-      });
-      recordSample(
-        'B1.5 contentSubmissionRevision（案例获准快照）',
-        {
-          operation: 'contentSubmissionRevision',
-          variables: { submissionId: caseSubmissionId, revisionNo: 1 },
-        },
-        revisionData,
-      );
-      const caseRevision = revisionData.contentSubmissionRevision;
-      expectExactKeys(caseRevision.payloadSnapshot, FAULT_CASE_PAYLOAD_KEYS);
-      expect(caseRevision.attachment).toBeNull();
-      expect(caseRevision.review).toMatchObject({ decision: 'APPROVE', publishAttachment: false });
-      // —— B2 正式资料读取：列表筛选/案例状态筛选/详情（案例明细与可读正文） ——
-
+      // —— B1 正式资料列表形状（工程师本公司范围可见） ——
       const listData = await gqlSuccess(engineerToken, REFERENCE_DOCUMENTS_QUERY, {
         pagination: PAGINATION,
-        filter: { title: '送料机构' },
+        filter: { title: 'S7-B 案例' },
       });
       recordSample(
-        'B2.1 referenceDocuments（标题筛选）',
-        {
-          operation: 'referenceDocuments',
-          variables: { pagination: PAGINATION, filter: { title: '送料机构' } },
-        },
+        'B1.1 referenceDocuments（正式案例列表）',
+        { operation: 'referenceDocuments', variables: { pagination: PAGINATION } },
         listData,
       );
-      const list = listData.referenceDocuments;
-      expectExactKeys(list, CS_LIST_PAGE_KEYS);
-      expect(list.total).toBe(1);
-      expectExactKeys(list.items[0], RD_LIST_ITEM_KEYS);
-      expect(list.items[0]).toMatchObject({
-        id: casePublishedDocumentId,
-        title: 'S7 样例案例：送料机构周期性偏移',
+      const page = listData.referenceDocuments;
+      expectExactKeys(page, CS_LIST_PAGE_KEYS);
+      expectExactKeys(page.items[0], RD_LIST_ITEM_KEYS);
+      expect(page.total).toBe(1);
+      expect(page.items[0]).toMatchObject({
+        id: document.id,
+        title: caseTitle,
         documentType: 'FAULT_CASE',
         equipmentModelId: s7ModelId,
-        equipmentModelName: S7_MODEL_NAME,
         equipmentModelText: null,
-        description: null,
-        originalFilename: null,
         organizationName: S7_ORG_NAME,
+        originalFilename: 's7-b-sample.txt',
         ingestMethod: 'REVIEWED_SUBMISSION',
         caseHandlingStatus: 'UNRESOLVED',
       });
-      expect(typeof list.items[0].creatorNickname).toBe('string');
+      expectIsoDateString(page.items[0].createdAt);
 
-      const unresolvedListData = await gqlSuccess(engineerToken, REFERENCE_DOCUMENTS_QUERY, {
-        pagination: PAGINATION,
-        filter: { caseHandlingStatus: 'UNRESOLVED' },
-      });
-      recordSample(
-        'B2.2 referenceDocuments（案例处理状态筛选·未解决）',
-        {
-          operation: 'referenceDocuments',
-          variables: { pagination: PAGINATION, filter: { caseHandlingStatus: 'UNRESOLVED' } },
-        },
-        unresolvedListData,
-      );
-      expect(unresolvedListData.referenceDocuments.total).toBe(1);
-
-      const resolvedBeforeListData = await gqlSuccess(engineerToken, REFERENCE_DOCUMENTS_QUERY, {
-        pagination: PAGINATION,
-        filter: { caseHandlingStatus: 'RESOLVED' },
-      });
-      recordSample(
-        'B2.3 referenceDocuments（案例处理状态筛选·已解决·更正前）',
-        {
-          operation: 'referenceDocuments',
-          variables: { pagination: PAGINATION, filter: { caseHandlingStatus: 'RESOLVED' } },
-        },
-        resolvedBeforeListData,
-      );
-      expect(resolvedBeforeListData.referenceDocuments.total).toBe(0);
-
+      // —— B2 正式资料详情形状（含案例明细与正文） ——
       const detailData = await gqlSuccess(engineerToken, REFERENCE_DOCUMENT_DETAIL_QUERY, {
-        id: casePublishedDocumentId,
+        id: document.id,
       });
       recordSample(
-        'B2.4 referenceDocument（案例详情）',
-        { operation: 'referenceDocument', variables: { id: casePublishedDocumentId } },
+        'B2.1 referenceDocument（正式案例详情）',
+        { operation: 'referenceDocument', variables: { id: document.id } },
         detailData,
       );
       const detail = detailData.referenceDocument;
       expectExactKeys(detail, RD_DETAIL_KEYS);
       expectExactKeys(detail.caseDetail, RD_CASE_DETAIL_KEYS);
       expect(detail).toMatchObject({
-        id: casePublishedDocumentId,
+        id: document.id,
         documentType: 'FAULT_CASE',
-        ingestMethod: 'REVIEWED_SUBMISSION',
-        hasFile: false,
-        mimeType: null,
+        hasFile: true,
+        mimeType: 'text/plain',
         organizationName: S7_ORG_NAME,
-        caseDetail: {
-          errorCode: 'E-S7-401',
-          handlingStatus: 'UNRESOLVED',
-          phenomenon: '送料机构在连续运行后出现 0.05mm 周期性偏移。',
-          conditionText: '连续运行超过 2 小时。',
-          reproductionSteps: '1. 空载运行 2 小时；\n2. 测量送料定位偏差。',
-          diagnosis: null,
-          actionTaken: null,
-          resolution: null,
-        },
+        ingestMethod: 'REVIEWED_SUBMISSION',
       });
-      expect(detail.contentText).toContain('故障现象：');
+      expect(detail.caseDetail).toMatchObject({
+        errorCode: 'S7-B-ERR-900',
+        handlingStatus: 'UNRESOLVED',
+        phenomenon: '涂胶厚度呈周期性漂移。',
+        conditionText: '连续生产 4 小时后出现。',
+        resolution: null,
+      });
       expect(detail.contentText).toContain('处理状态：未解决');
-      // —— B3 案例更正：patch 生效 → 正文再生成 → 已解决筛选 → 非案例误用拒绝 ——
+      expect(detail.contentText).not.toContain('处理结果：');
 
-      const patch = {
-        handlingStatus: 'RESOLVED',
-        diagnosis: '检查发现送料滚轮磨损导致周期性偏移。',
-        actionTaken: '更换送料滚轮并重新标定。',
-        resolution: '更换送料滚轮并重新标定后偏移消除。',
-      };
-      const updatedData = await gqlSuccess(adminToken, UPDATE_REFERENCE_DOCUMENT_CASE_MUTATION, {
-        id: casePublishedDocumentId,
-        input: patch,
+      // —— B3 案例专属更正：前端 adapter 消费的最小形状 ——
+      const fixed = await gqlSuccess(adminToken, UPDATE_REFERENCE_DOCUMENT_CASE_MUTATION, {
+        id: document.id,
+        input: { handlingStatus: 'RESOLVED', resolution: '更换涂胶泵后恢复。' },
       });
       recordSample(
-        'B3.1 updateReferenceDocumentCase（更正·转已解决）',
+        'B3.1 updateReferenceDocumentCase（案例更正）',
         {
           operation: 'updateReferenceDocumentCase',
-          variables: { id: casePublishedDocumentId, input: patch },
+          variables: { id: document.id, input: { handlingStatus: 'RESOLVED' } },
         },
-        updatedData,
+        fixed,
       );
-      expectExactKeys(updatedData.updateReferenceDocumentCase, ['id', 'updatedAt']);
-      expect(updatedData.updateReferenceDocumentCase).toMatchObject({
-        id: casePublishedDocumentId,
-      });
-      expectIsoDateString(updatedData.updateReferenceDocumentCase.updatedAt);
+      expectExactKeys(fixed.updateReferenceDocumentCase, ['id', 'updatedAt']);
+      expect(fixed.updateReferenceDocumentCase.id).toBe(document.id);
+      expectIsoDateString(fixed.updateReferenceDocumentCase.updatedAt);
 
-      const afterData = await gqlSuccess(adminToken, REFERENCE_DOCUMENT_DETAIL_QUERY, {
-        id: casePublishedDocumentId,
+      // —— B4 更正后回读：明细与正文同步，原件不被重写 ——
+      const after = await gqlSuccess(engineerToken, REFERENCE_DOCUMENT_DETAIL_QUERY, {
+        id: document.id,
       });
       recordSample(
-        'B3.2 referenceDocument（更正后·明细与正文再生成）',
-        { operation: 'referenceDocument', variables: { id: casePublishedDocumentId } },
-        afterData,
+        'B4.1 referenceDocument（更正后回读）',
+        { operation: 'referenceDocument', variables: { id: document.id } },
+        after,
       );
-      const after = afterData.referenceDocument;
-      expect(after.caseDetail).toMatchObject({
+      expect(after.referenceDocument.caseDetail).toMatchObject({
         handlingStatus: 'RESOLVED',
-        diagnosis: '检查发现送料滚轮磨损导致周期性偏移。',
-        actionTaken: '更换送料滚轮并重新标定。',
-        resolution: '更换送料滚轮并重新标定后偏移消除。',
+        resolution: '更换涂胶泵后恢复。',
       });
-      expect(after.contentText).toContain('处理状态：已解决');
-      expect(after.contentText).toContain('处理结果：');
-      expect(after.contentText).toContain('排查过程：');
-      expect(after.contentText).toContain('处理措施：');
-
-      const resolvedListData = await gqlSuccess(adminToken, REFERENCE_DOCUMENTS_QUERY, {
-        pagination: PAGINATION,
-        filter: { caseHandlingStatus: 'RESOLVED' },
-      });
-      recordSample(
-        'B3.3 referenceDocuments（案例处理状态筛选·已解决·更正后）',
-        {
-          operation: 'referenceDocuments',
-          variables: { pagination: PAGINATION, filter: { caseHandlingStatus: 'RESOLVED' } },
-        },
-        resolvedListData,
+      expect(after.referenceDocument.contentText).toContain('处理状态：已解决');
+      expect(after.referenceDocument.contentText).toContain('处理结果：\n更换涂胶泵后恢复。');
+      expect(fs.readFileSync(path.join(e2eStorageRoot, storageReference)).toString()).toBe(
+        attachmentContent,
       );
-      expect(resolvedListData.referenceDocuments.total).toBe(1);
 
-      // F01：非案例目标由本链自行创建并发布，不消费 A 链的 materialPublishedDocumentId。
-      const misuseDraft = await gqlSuccess(engineerToken, CREATE_DRAFT_MUTATION, {
-        input: {
-          kind: 'MATERIAL',
-          fields: {
-            title: 'S7 样例：非案例误用准备稿',
-            documentType: 'MAINTENANCE_GUIDE',
-            contentText: '用于案例接口误用拒绝的普通资料。',
-          },
-        },
-      });
-      const misuseSubmissionId = misuseDraft.createContentSubmissionDraft.id as number;
-      const misuseSubmitted = await gqlSuccess(engineerToken, SUBMIT_MUTATION, {
-        id: misuseSubmissionId,
-        input: { libraryNoticeConfirmed: true },
-      });
-      const misuseApproved = await gqlSuccess(adminToken, DECISION_MUTATION, {
-        input: {
-          submissionId: misuseSubmissionId,
-          revisionId: misuseSubmitted.submitContentSubmission.revisionId,
-          decision: 'APPROVE',
-          publishAttachment: false,
-        },
-      });
-      const materialPublishedDocumentId = misuseApproved.reviewContentSubmissionDecision
-        .documentId as number;
-
-      // 非案例资料误用案例更正：拒绝（前端映射 invalid-input 的代表失败样例）
-      const misuse = await postGql({
+      // —— B5 案例也不再经审核发布入口（已下线，不重新开放） ——
+      const removedDecision = await postGql({
         app,
-        query: UPDATE_REFERENCE_DOCUMENT_CASE_MUTATION,
-        variables: {
-          id: materialPublishedDocumentId,
-          input: { handlingStatus: 'RESOLVED', resolution: '误用样例' },
-        },
+        query: REMOVED_DECISION_QUERY,
         token: adminToken,
-      }).expect(200);
-      recordSample(
-        'B3.4 updateReferenceDocumentCase 非案例误用（失败样例）',
-        {
-          operation: 'updateReferenceDocumentCase',
-          variables: {
-            id: materialPublishedDocumentId,
-            input: { handlingStatus: 'RESOLVED', resolution: '误用样例' },
-          },
-        },
-        { errors: misuse.body.errors },
-      );
-      expect(misuse.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
-      expect(misuse.body.errors[0].extensions.errorCode).toBe('REFERENCE_DOCUMENT_INVALID_PARAMS');
-      expect(misuse.body.errors[0].message).toContain('仅故障案例资料可以使用案例更正接口');
+      });
+      expect(removedDecision.body.data).toBeUndefined();
+      expect(
+        (removedDecision.body.errors as Array<{ message: string }>).some((item) =>
+          item.message.includes('Cannot query field "reviewContentSubmissionDecision"'),
+        ),
+      ).toBe(true);
     });
   });
 });

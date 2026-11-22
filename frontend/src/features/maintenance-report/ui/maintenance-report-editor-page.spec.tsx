@@ -290,7 +290,7 @@ describe('MaintenanceReportEditorPage 返回入口（2026-11-21）', () => {
     cleanup();
   });
 
-  it('新建历史记录页头部入口为「我的历史记录」，点击进入既有列表路由', async () => {
+  it('新建历史记录页头部入口为「我的历史记录」，点击进入任务 07「我的资料记录」列表', async () => {
     render(<MaintenanceReportEditorPage mode="HISTORICAL_CASE" engineerName="李工" />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '我的历史记录' })).toBeTruthy();
@@ -298,11 +298,13 @@ describe('MaintenanceReportEditorPage 返回入口（2026-11-21）', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '我的历史记录' }));
 
-    expect(navigateMock).toHaveBeenCalledWith('/engineer/maintenance-records');
+    // 2026-11-22 入口整合：进入任务 07「我的资料记录」列表，不再进入旧任务 06 列表
+    expect(navigateMock).toHaveBeenCalledWith('/engineer/records');
+    expect(navigateMock).not.toHaveBeenCalledWith('/engineer/maintenance-records');
     expect(navigateMock).not.toHaveBeenCalledWith('/engineer/maintenance-records/new');
   });
 
-  it('已有报告详情页头部入口仍为「返回列表」，进入列表路由', async () => {
+  it('已有报告详情页头部入口仍为「返回列表」，进入任务 07「我的资料记录」列表', async () => {
     render(
       <MaintenanceReportEditorPage mode="HISTORICAL_CASE" engineerName="李工" reportId={960001} />,
     );
@@ -312,7 +314,7 @@ describe('MaintenanceReportEditorPage 返回入口（2026-11-21）', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
 
-    expect(navigateMock).toHaveBeenCalledWith('/engineer/maintenance-records');
+    expect(navigateMock).toHaveBeenCalledWith('/engineer/records');
   });
 });
 

@@ -345,6 +345,7 @@ export const REFERENCE_DOCUMENT_ERROR = {
   INVALID_PARAMS: 'REFERENCE_DOCUMENT_INVALID_PARAMS',
   // 指定设备型号不存在（应用层预检给出友好错误，不依赖 RESTRICT 外键裸报错）
   EQUIPMENT_MODEL_NOT_FOUND: 'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND',
+  EQUIPMENT_MODEL_DISABLED: 'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_DISABLED',
   // 读取/编辑/软删除：目标不可访问时统一使用 NOT_FOUND，避免泄露删除状态
   // （负责人 docx 验收标准：不存在或已软删除的资料返回统一的 NOT_FOUND）
   NOT_FOUND: 'REFERENCE_DOCUMENT_NOT_FOUND',
@@ -360,6 +361,9 @@ export const REFERENCE_DOCUMENT_ERROR = {
   CONTENT_SOURCE_EMPTY: 'REFERENCE_DOCUMENT_CONTENT_SOURCE_EMPTY',
   // 下载：存储对象缺失/不可读等存储侧失败，不泄漏服务器路径与存储引用
   FILE_NOT_AVAILABLE: 'REFERENCE_DOCUMENT_FILE_NOT_AVAILABLE',
+  // 任务 07 R053/R058–R061：expected_version（current_revision_no）过期，
+  // 资料已被并发管理操作推进；客户端须重新读取当前版本后重试（对外大类 CONFLICT）
+  VERSION_CONFLICT: 'REFERENCE_DOCUMENT_VERSION_CONFLICT',
 } as const;
 Object.freeze(REFERENCE_DOCUMENT_ERROR);
 // 管理员用户管理相关错误码（管理员列表读取、管理员创建普通用户等）

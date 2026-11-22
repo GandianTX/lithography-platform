@@ -3,6 +3,7 @@
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { DocumentExportModule } from '@src/infrastructure/document-export/document-export.module';
 import { UnavailableAnalysisOutputReader } from '@src/infrastructure/ai/unavailable-analysis-output-reader';
+import { UnavailableMaintenanceReportSyncStatusReader } from '@src/infrastructure/sync/unavailable-maintenance-report-sync-status-reader';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { Module } from '@nestjs/common';
 import { AddMaintenanceReportAttachmentUsecase } from './add-maintenance-report-attachment.usecase';
@@ -24,6 +25,7 @@ import { SubmitMaintenanceReportFormalUsecase } from './submit-maintenance-repor
 import { SubmitMaintenanceReportUsecase } from './submit-maintenance-report.usecase';
 import { UpdateMaintenanceReportDraftUsecase } from './update-maintenance-report-draft.usecase';
 import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract';
+import { MAINTENANCE_REPORT_SYNC_STATUS_READER } from './ports/maintenance-report-sync-status-reader.contract';
 
 /**
  * 维修报告与工单处理结果用例装配（S3）。
@@ -56,6 +58,12 @@ import { ANALYSIS_OUTPUT_READER } from './ports/analysis-output-reader.contract'
     ReorderMaintenanceReportAttachmentsUsecase,
     RecordRepairRequestHandlingResultUsecase,
     { provide: ANALYSIS_OUTPUT_READER, useClass: UnavailableAnalysisOutputReader },
+    // 任务 07 预留：任务 09 同步状态提供方未接入，默认绑定零 I/O 的不可用实现，
+    // 调用方把同步状态展示为 NOT_CONNECTED；接入时替换为真实提供方装配
+    {
+      provide: MAINTENANCE_REPORT_SYNC_STATUS_READER,
+      useClass: UnavailableMaintenanceReportSyncStatusReader,
+    },
   ],
   exports: [
     CreateMaintenanceReportDraftUsecase,

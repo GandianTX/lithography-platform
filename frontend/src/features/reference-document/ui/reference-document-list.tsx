@@ -22,6 +22,13 @@ import { buildReferenceDocumentDetailPath } from './reference-document-paths';
 /** 标题搜索防抖间隔（ms） */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/** 来源类型展示（任务 07）：服务端只返回 ONLINE + CONFIRMED 的正式资料 */
+const SOURCE_KIND_LABELS: Record<string, string> = {
+  INDEPENDENT_REPORT: '独立报告',
+  WORK_ORDER_SUMMARY: '工单总结',
+  MATERIAL: '普通资料',
+};
+
 /**
  * 列定义即「只展示后端真实字段」的唯一真源（PR5 S3-4）：七列一一对应后端
  * ReferenceDocumentItem 的字段，不引入向量化、分块数、参与检索等派生/伪造列。
@@ -36,6 +43,19 @@ const columns: TableColumnsType<ReferenceDocumentListItem> = [
     render: (value: string) => REFERENCE_DOCUMENT_TYPE_LABELS[value] ?? value,
     title: '文档类型',
     width: 130,
+  },
+  {
+    key: 'sourceKind',
+    render: (_value, record) => SOURCE_KIND_LABELS[record.sourceKind] ?? record.sourceKind,
+    title: '来源',
+    width: 130,
+  },
+  {
+    key: 'effectiveRevisionNo',
+    render: (_value, record) =>
+      record.effectiveRevisionNo > 0 ? `v${record.effectiveRevisionNo}` : '原始版本',
+    title: '生效版本',
+    width: 110,
   },
   {
     key: 'equipmentModel',
@@ -288,7 +308,7 @@ export function ReferenceDocumentList({ variant = 'default' }: ReferenceDocument
                 })}
                 pagination={false}
                 rowKey="id"
-                scroll={{ x: 1100 }}
+                scroll={{ x: 1400 }}
               />
             </div>
           ) : (

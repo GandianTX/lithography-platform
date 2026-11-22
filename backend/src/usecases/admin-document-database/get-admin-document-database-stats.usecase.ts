@@ -53,12 +53,14 @@ export class GetAdminDocumentDatabaseStatsUsecase {
         this.adminRepairRequestQueryService.countAll(null),
         this.adminAiConversationQueryService.countAll(),
         this.adminAiReportQueryService.countAll(),
+        // 一级管理员文档数据库为全域口径：参考资料统计与普通资料库同源，
+        // 只计未软删、已上架、归属已确认的正式资料（下架/未知归属不计入）
         this.referenceDocumentQueryService.listDocuments({
           filter: {},
           pagination: { page: 1, pageSize: 1, withTotal: true },
           // 与资料列表读侧（resolveReferenceDocumentReadScope）同一口径：
           // 一级管理员 GLOBAL（全公司），null = 不按组织过滤
-          organizationId: null,
+          scope: { kind: 'GLOBAL' },
         }),
       ]);
 

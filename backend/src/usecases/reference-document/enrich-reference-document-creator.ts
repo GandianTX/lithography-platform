@@ -3,7 +3,6 @@
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import {
   ReferenceDocumentDetailQueryResult,
-  ReferenceDocumentDetailView,
   ReferenceDocumentListItemQueryResult,
   ReferenceDocumentListItemView,
 } from '@src/modules/lithography/lithography.types';
@@ -48,11 +47,22 @@ export async function enrichReferenceDocumentListCreators(
   }));
 }
 
-/** 创建人昵称富集（单条详情） */
+/** 详情富集结果：保留来源/状态事实，剥离内部字段，附创建人昵称 */
+export type ReferenceDocumentEnrichedDetail = Omit<
+  ReferenceDocumentDetailQueryResult,
+  'createdByAccountId' | 'storageReference'
+> & { creatorNickname: string };
+
+/**
+ * 创建人昵称富集（单条详情）。
+ *
+ * 返回保留来源/状态事实的详情装配结果（createdByAccountId 与 storageReference 剥离），
+ * 供详情用例继续组装生效正文，不在这里定型为对外 DTO。
+ */
 export async function enrichReferenceDocumentCreator(
   accountQueryService: AccountQueryService,
   result: ReferenceDocumentDetailQueryResult,
-): Promise<ReferenceDocumentDetailView> {
+): Promise<ReferenceDocumentEnrichedDetail> {
   const nicknames = await accountQueryService.findNicknamesByAccountIds([
     result.createdByAccountId,
   ]);

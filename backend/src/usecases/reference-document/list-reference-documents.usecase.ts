@@ -10,7 +10,6 @@ import { ReferenceDocumentQueryService } from '@src/modules/lithography/queries/
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { enrichReferenceDocumentListCreators } from './enrich-reference-document-creator';
 import { normalizeOptionalFilterText } from './reference-document-fields.normalize';
-import { assertReferenceDocumentReadRole } from './reference-document-roles';
 import { resolveReferenceDocumentReadScope } from './reference-document-read-scope';
 import {
   ListReferenceDocumentsCommand,
@@ -21,15 +20,17 @@ import {
 const MAX_PAGE_SIZE = 100;
 
 /**
- * 查询参考资料列表用例（工程师/管理员维度，读侧范围决议）
+ * 查询参考资料列表用例（普通资料库，服务端统一可见范围）
  *
  * - 范围经 resolveReferenceDocumentReadScope 决议（A-PR0 §2.1 + 功能 V5.6 R055/R056）：
  *   工程师与二级管理员仅本公司，一级管理员全部公司正式资料；
  *   无有效成员关系/多关系歧义时由 TrustedOrganizationContextQueryService 拒绝
  *   （一级管理员 GLOBAL 范围不依赖本人成员关系）；
- * - 默认仅返回未软删资料；排序由契约固定（创建时间倒序 + 主键倒序），
- *   不采纳客户端排序入参；页大小上限在传输无关的用例层强制，不依赖入口校验
- * - 创建人展示经 creatorNickname 实时富集，不返回账号 ID
+ * - 默认仅返回未软删、已上架、归属已确认的正式资料；下架、软删与未知归属不进列表；
+ * - 排序由契约固定（创建时间倒序 + 主键倒序），不采纳客户端排序入参；
+ *   页大小上限在传输无关的用例层强制，不依赖入口校验；
+ * - `withTotal` 缺省 false，客户端显式请求时返回与同一可见谓词一致的 total；
+ * - 创建人展示经 creatorNickname 实时富集，不返回账号 ID；
  * - 角色准入由 adapter 层守卫决策（ENGINEER/SUPER_ADMIN），本用例兜底
  */
 @Injectable()
@@ -41,8 +42,6 @@ export class ListReferenceDocumentsUsecase {
   ) {}
 
   async execute(command: ListReferenceDocumentsCommand): Promise<ListReferenceDocumentsResult> {
-    assertReferenceDocumentReadRole(command.session.roles);
-
     if (command.pagination.mode !== 'OFFSET') {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS,
@@ -55,7 +54,7 @@ export class ListReferenceDocumentsUsecase {
       MAX_PAGE_SIZE,
     ) as OffsetParams;
 
-    // 读侧范围先决议：一级 GLOBAL / 其余本公司（工程师与二级管理员仍失败关闭）
+    // 角色与范围先决议：客户、无有效成员关系/多关系歧义在此拒绝，不进入任何资料查询
     const scope = await resolveReferenceDocumentReadScope({
       session: command.session,
       accountQueryService: this.accountQueryService,
@@ -71,7 +70,7 @@ export class ListReferenceDocumentsUsecase {
         caseHandlingStatus: normalizeOptionalFilterText(command.filter?.caseHandlingStatus),
       },
       pagination: { page, pageSize, withTotal: withTotal ?? false },
-      organizationId: scope.kind === 'GLOBAL' ? null : scope.organizationId,
+      scope,
     });
     const items = await enrichReferenceDocumentListCreators(
       this.accountQueryService,

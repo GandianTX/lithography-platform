@@ -2,7 +2,11 @@
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { MaintenanceReportExportFormat } from '@app-types/models/maintenance-report.types';
-import type { MaintenanceReportDraftWriteData } from '@src/modules/lithography/maintenance-report.types';
+import type {
+  MaintenanceReportDetailView,
+  MaintenanceReportDraftWriteData,
+  MaintenanceReportSyncStatusDisplay,
+} from '@src/modules/lithography/maintenance-report.types';
 import type { MaintenanceReportStagedAttachmentInput } from './maintenance-report-attachment-binding.helpers';
 
 export type MaintenanceReportAlarmInput = {
@@ -154,6 +158,8 @@ export type MaintenanceReportDraftWriteResult = {
 };
 
 export type MaintenanceReportPagination = {
+  /** 分页模式：本人记录列表第一版仅支持 OFFSET（CURSOR 明确拒绝，不静默降级） */
+  mode?: 'OFFSET' | 'CURSOR';
   page?: number;
   pageSize?: number;
   withTotal?: boolean;
@@ -167,8 +173,14 @@ export type GetMaintenanceReportCommand = {
 export type ListMyMaintenanceReportsCommand = {
   session: UsecaseSession;
   pagination?: MaintenanceReportPagination;
-  /** 可选来源过滤：HISTORICAL_CASE / WORK_ORDER_SUMMARY */
+  /** 可选来源过滤（任务 06 兼容形态）：HISTORICAL_CASE / WORK_ORDER_SUMMARY */
   sourceType?: string;
+  /** 任务 07 本人记录筛选：来源类型 + 未完成/已提交 + 标题关键词（服务端全量 LIKE） */
+  filter?: {
+    sourceType?: string;
+    recordKind?: 'ALL' | 'DRAFT' | 'FORMAL';
+    titleKeyword?: string;
+  };
 };
 
 export type GetMyWorkOrderSummaryCommand = {
@@ -274,6 +286,17 @@ export type ReorderMaintenanceReportAttachmentsCommand = {
   session: UsecaseSession;
   reportId: number;
   orderedAttachmentIds: number[];
+};
+
+/**
+ * 本人记录详情结果（任务 07）：完整报告详情 + 机型展示名 + 已发布正式资料标识
+ * + 同步状态展示（任务 07 预留，详情复用列表同一批量接口）。
+ * 仅本人可见；他人/跨公司统一 NOT_FOUND。
+ */
+export type MyMaintenanceReportDetailResult = MaintenanceReportDetailView & {
+  equipmentModelName: string | null;
+  publishedDocumentId: number | null;
+  syncStatus: MaintenanceReportSyncStatusDisplay;
 };
 
 export type MaintenanceReportAttachmentMutationResult = {

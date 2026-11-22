@@ -1,10 +1,28 @@
 // test/09-reference-document/reference-document.e2e-spec.ts
+
+/**
+ * AI 参考资料库端点级回归（core 组，任务 07 口径）
+ *
+ * 造数纪律：确认需求已关闭普通资料新增（createReferenceDocument）、通用编辑
+ * （updateReferenceDocument）与 REST multipart 上传，本规格不再用这些生产入口造数，
+ * 全部夹具直接写 reference_document（`withReferenceDocumentFixtureState` 补齐 V13 必填
+ * 状态），并按真实 ID 与创建即定事实登记本轮台账；清理只回收本轮登记的行。
+ *
+ * 覆盖范围：
+ * - 读侧统一可见谓词（未软删 + ONLINE + CONFIRMED + 服务端可信范围）在列表 / 详情 /
+ *   历史版本 / 下载四个入口一致：软删、下架、归属待核实、跨公司一律 NOT_FOUND；
+ * - 旧写入口已从 schema 移除（协议层校验失败，不进入守卫与用例）；
+ * - 一级管理员管理动作 R058 修订 / R059 下架 / R060 管理删除 / R061-02 归属更正，
+ *   含 expected_version 过期拒绝、二级管理员与工程师/客户被拒、关键审计落库；
+ * - 原作者删除 R053：仅本人条目、版本核对、管理员作为原作者补写关键审计；
+ * - REST 只保留授权下载（上传端点已下线）。
+ *
+ * 存储隔离：运行级临时目录，先于应用初始化设置 env，收尾按精确路径清理并恢复原值。
+ */
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ApiModule } from '@src/bootstraps/api/api.module';
 import { EquipmentModelEntity } from '@src/modules/lithography/entities/equipment-model.entity';
-import { ReferenceDocumentEntity } from '@src/modules/lithography/entities/reference-document.entity';
-import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/reference-document/reference-document-storage.contract';
 import { CreateAccountUsecase } from '@src/usecases/account/create-account.usecase';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -22,7 +40,12 @@ import {
   updateOwnedExpectation,
 } from '../utils/e2e-scoped-cleanup';
 import { captureEnvValue, restoreEnvValue, runE2eTeardown } from '../utils/e2e-teardown';
-import { withReferenceDocumentFixtureState } from '../utils/reference-document-fixture-state';
+import {
+  readReferenceDocumentFacts,
+  registerReferenceDocumentAuditEvents,
+  registerReferenceDocumentRevisions,
+  seedReferenceDocumentFixture,
+} from '../utils/reference-document-fixtures';
 import { seedTestAccounts, testAccountsConfig } from '../utils/test-accounts';
 import {
   buildSuiteOrganizationCodes,
@@ -32,95 +55,114 @@ import {
 } from '../utils/test-organizations';
 
 const LIST_QUERY = `
-  query ReferenceDocuments($pagination: PaginationArgs!) {
-    referenceDocuments(pagination: $pagination) {
-      items { id title equipmentModelName creatorNickname }
+  query ReferenceDocuments($pagination: PaginationArgs!, $filter: ReferenceDocumentFilterInput) {
+    referenceDocuments(pagination: $pagination, filter: $filter) {
+      items { id title equipmentModelId organizationName effectiveRevisionNo creatorNickname }
       total
+      page
+      pageSize
     }
   }
 `;
 
 const DETAIL_QUERY = `
   query ReferenceDocument($id: Int!) {
-    referenceDocument(id: $id) { id title contentText mimeType originalFilename hasFile creatorNickname }
-  }
-`;
-
-const CREATE_MUTATION = `
-  mutation CreateReferenceDocument($input: CreateReferenceDocumentInput!) {
-    createReferenceDocument(input: $input) { id }
-  }
-`;
-
-const UPDATE_MUTATION = `
-  mutation UpdateReferenceDocument($id: Int!, $input: UpdateReferenceDocumentInput!) {
-    updateReferenceDocument(id: $id, input: $input) { id }
-  }
-`;
-
-const SOFT_DELETE_MUTATION = `
-  mutation SoftDeleteReferenceDocument($id: Int!) {
-    softDeleteReferenceDocument(id: $id) { id }
-  }
-`;
-
-const LIST_SEARCH_QUERY = `
-  query ReferenceDocuments($pagination: PaginationArgs!, $filter: ReferenceDocumentFilterInput) {
-    referenceDocuments(pagination: $pagination, filter: $filter) {
-      items { id title }
-      total
+    referenceDocument(id: $id) {
+      id title contentText contentSource effectiveRevisionNo hasFile mimeType originalFilename
+      organizationName viewerIsOriginalAuthor
     }
   }
 `;
 
-// REST 上传/下载用运行级临时存储目录：先于 beforeAll 设置 env，使 config 加载时读到
-// 本规格专属目录（不污染默认 var/）；finally 按精确路径清理（呼应 0909 阻塞 1 边界纪律）。
-// 原环境变量值先捕获，收尾时恢复原值（不假定原值不存在）。
+const REVISIONS_QUERY = `
+  query ReferenceDocumentRevisions($id: Int!) {
+    referenceDocumentRevisions(id: $id) {
+      documentId currentRevisionNo sourceKind revisions { revisionNo reason actorNickname createdAt }
+    }
+  }
+`;
+
+const REVISE_MUTATION = `
+  mutation ReviseReferenceDocument($id: Int!, $input: ReviseReferenceDocumentInput!) {
+    reviseReferenceDocument(id: $id, input: $input) { id revisionNo }
+  }
+`;
+
+const OFFLINE_MUTATION = `
+  mutation OfflineReferenceDocument($id: Int!, $input: OfflineReferenceDocumentInput!) {
+    offlineReferenceDocument(id: $id, input: $input) { id revisionNo }
+  }
+`;
+
+const ADMIN_DELETE_MUTATION = `
+  mutation AdminDeleteReferenceDocument($id: Int!, $input: AdminDeleteReferenceDocumentInput!) {
+    adminDeleteReferenceDocument(id: $id, input: $input) { id revisionNo }
+  }
+`;
+
+const CORRECT_OWNERSHIP_MUTATION = `
+  mutation CorrectReferenceDocumentOwnership($id: Int!, $input: CorrectReferenceDocumentOwnershipInput!) {
+    correctReferenceDocumentOwnership(id: $id, input: $input) { id revisionNo }
+  }
+`;
+
+const SOFT_DELETE_MUTATION = `
+  mutation SoftDeleteReferenceDocument($id: Int!, $expectedVersion: Int!) {
+    softDeleteReferenceDocument(id: $id, expectedVersion: $expectedVersion) { id }
+  }
+`;
+
+// 已下线入口：只用内联字面量断言 schema 不再接受（不引用已移除的输入类型，
+// 否则会先触发「未知类型」错误，掩盖字段移除这一真实信号）
+const REMOVED_CREATE_MUTATION = `
+  mutation {
+    createReferenceDocument(input: { title: "E2E 复活检查", documentType: MANUAL }) { id }
+  }
+`;
+
+const REMOVED_UPDATE_MUTATION = `
+  mutation {
+    updateReferenceDocument(id: 1, input: { title: "E2E 复活编辑" }) { id }
+  }
+`;
+
+// 运行级临时存储目录：先于 beforeAll 设置 env，使 config 加载时读到本规格专属目录
 const originalStorageDir = captureEnvValue('REFERENCE_DOCUMENT_STORAGE_DIR');
 const e2eStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'refdoc-e2e-storage-'));
 process.env.REFERENCE_DOCUMENT_STORAGE_DIR = e2eStorageRoot;
 
-/**
- * AI 参考资料库端点级回归（core 组）
- *
- * 鉴权只回归守卫挂载（未登录 / CUSTOMER 读也禁 / ENGINEER 只读 / SUPER_ADMIN 全通），
- * 权限口径为 0907.docx 任务二：读=ENGINEER+SUPER_ADMIN，写=仅 SUPER_ADMIN。
- * 业务侧钉住：已软删与不存在详情统一 NOT_FOUND（防删除状态探测）、
- * contentText 空白创建拒绝（本周仅文本内容来源）、非法型号友好错误，
- * 以及创建/编辑/软删的落库事实与列表可见性联动。
- * 分支语义由单测钉住的部分（部分提交合并、超长拒绝等）此处不重复。
- *
- * 造数使用数据库生成的主键（机型自增、资料 971~974 登记到本轮台账）；预清理按
- * 组织/账号/机型完整指纹回收已知残留，收尾只删除本轮登记的真实 ID，
- * 不以固定 id=43 或组织编码子查询作为归属证明。
- * 创建路径使用自增 ID 的返回值回查，不与固定主键冲突。
- */
 describe('AI 参考资料库 (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
   let modelRepository: Repository<EquipmentModelEntity>;
-  let documentRepository: Repository<ReferenceDocumentEntity>;
   let adminToken: string;
   let engineerToken: string;
+  let staffPrimaryToken: string;
   let customerToken: string;
+  let peerEngineerToken: string;
+  let peerAdminToken: string;
+  let noOrgEngineerToken: string;
   let adminAccountId: number;
+  let engineerAccountId: number;
+  let peerAdminAccountId: number;
 
-  // 规格专属测试组织（不借用开发库默认组织；编码带 E2E 前缀，清理以编码为界）
   const suiteOrganizationCodes = buildSuiteOrganizationCodes('REFDOC');
   let primaryOrganizationId = 0;
   let peerOrganizationId = 0;
   let referenceModelId = 0;
-  let peerAdminAccountId = 0;
   const ownership = createOwnedResourceLedger();
 
-  // 组织范围用例会话：甲方第二工程师 / 第二组织工程师 / 第二组织管理员 /
-  // 无成员账号 / 单有效组织负例账号（仅一条 ACTIVE 成员，第二条 ACTIVE 由库唯一键拒绝）
-  let staffPrimaryToken: string;
-  let peerEngineerToken: string;
-  let peerAdminToken: string;
-  let noOrgEngineerToken: string;
-
   const PAGE = { mode: 'OFFSET', page: 1, pageSize: 20 };
+
+  // —— 读侧夹具（只读用例共享，行状态不在用例中改变） ——
+  let primaryTextDocumentId = 0;
+  let genericDocumentId = 0;
+  let offlineDocumentId = 0;
+  let deletedDocumentId = 0;
+  let peerDocumentId = 0;
+  let percentTitleDocumentId = 0;
+  let fileDocumentId = 0;
+  const fixtureFileName = `${'a'.repeat(32)}.pdf`;
 
   const expectUnauthenticated = (error: unknown): void => {
     const err = error as { message: string; extensions: Record<string, unknown> };
@@ -136,6 +178,106 @@ describe('AI 参考资料库 (e2e)', () => {
     expect(err.extensions.details).toMatchObject({ requiredRoles, userRoles });
   };
 
+  const createDocument = async (
+    overrides: {
+      title?: string;
+      documentType?: string;
+      contentText?: string | null;
+      createdByAccountId?: number;
+      ownerOrganizationId?: number | null;
+      equipmentModelId?: number | null;
+      publicationStatus?: 'ONLINE' | 'OFFLINE';
+      storageReference?: string | null;
+      originalFilename?: string | null;
+      mimeType?: string | null;
+    } = {},
+  ): Promise<number> => {
+    const saved = await seedReferenceDocumentFixture({
+      dataSource,
+      ownership,
+      fixture: {
+        title: overrides.title ?? 'E2E 夹具资料',
+        documentType: overrides.documentType ?? 'MANUAL',
+        createdByAccountId: overrides.createdByAccountId ?? adminAccountId,
+        ownerOrganizationId:
+          overrides.ownerOrganizationId === undefined
+            ? primaryOrganizationId
+            : overrides.ownerOrganizationId,
+        contentText: overrides.contentText === undefined ? '夹具正文' : overrides.contentText,
+        equipmentModelId: overrides.equipmentModelId ?? null,
+        publicationStatus: overrides.publicationStatus,
+        storageBackend: overrides.storageReference === undefined ? null : 'LOCAL',
+        storageReference: overrides.storageReference ?? null,
+        originalFilename: overrides.originalFilename ?? null,
+        mimeType: overrides.mimeType ?? null,
+      },
+    });
+    return saved.id;
+  };
+
+  const listIds = async (
+    token: string,
+    filter?: unknown,
+  ): Promise<{ ids: number[]; total: number }> => {
+    const response = await postGql({
+      app,
+      query: LIST_QUERY,
+      variables: { pagination: { ...PAGE, pageSize: 100, withTotal: true }, filter },
+      token,
+    }).expect(200);
+    expect(response.body.errors).toBeUndefined();
+    const page = response.body.data.referenceDocuments as {
+      items: Array<{ id: number }>;
+      total: number;
+    };
+    return { ids: page.items.map((item) => item.id), total: page.total };
+  };
+
+  /**
+   * 期望顺序直接取自同一读模型排序（创建时间倒序 + 主键倒序），不硬编码种子顺序。
+   * 以本规格标题前缀圈定范围，避免把库内其他来源的残留行算进期望（清理仍按台账执行）。
+   */
+  const expectedVisibleOrder = async (organizationId: number | null): Promise<number[]> => {
+    const rows = await dataSource.query<Array<{ id: number | string }>>(
+      organizationId === null
+        ? `SELECT id FROM reference_document
+            WHERE deprecated = 0 AND publication_status = 'ONLINE' AND ownership_status = 'CONFIRMED'
+              AND title LIKE '%E2E%'
+            ORDER BY created_at DESC, id DESC`
+        : `SELECT id FROM reference_document
+            WHERE deprecated = 0 AND publication_status = 'ONLINE' AND ownership_status = 'CONFIRMED'
+              AND owner_organization_id = ? AND title LIKE '%E2E%'
+            ORDER BY created_at DESC, id DESC`,
+      organizationId === null ? [] : [organizationId],
+    );
+    return rows.map((row) => Number(row.id));
+  };
+
+  /**
+   * 旧写入口已从 GraphQL schema 移除：请求在协议校验阶段失败，
+   * 不进入守卫与用例，也不产生任何写入。
+   */
+  const expectOperationRemoved = async (params: {
+    query: string;
+    field: string;
+    token?: string;
+  }): Promise<void> => {
+    const response = await postGql({
+      app,
+      query: params.query,
+      token: params.token,
+    });
+    expect(response.body.data).toBeUndefined();
+    const messages = (response.body.errors as Array<{ message: string }>).map(
+      (item) => item.message,
+    );
+    expect(
+      messages.some((message) => message.includes(`Cannot query field "${params.field}"`)),
+    ).toBe(true);
+    // 内联字面量不应引入「未知类型」噪声：失败原因必须是字段已移除
+    expect(messages.join('\n')).not.toContain('Unknown type');
+  };
+
   beforeAll(async () => {
     initGraphQLSchema();
 
@@ -146,11 +288,9 @@ describe('AI 参考资料库 (e2e)', () => {
     app = moduleFixture.createNestApplication();
     dataSource = app.get(DataSource);
     modelRepository = dataSource.getRepository(EquipmentModelEntity);
-    documentRepository = dataSource.getRepository(ReferenceDocumentEntity);
 
     await app.init();
 
-    // 预清理（窄范围）：组织/账号/机型均按完整指纹回收已知残留，不接管异主行
     await runGuardedSpecCleanup({
       dataSource,
       residue: {
@@ -204,10 +344,6 @@ describe('AI 参考资料库 (e2e)', () => {
       ownership,
     });
 
-    // 组织与成员：甲方组织（admin 管理员 + staff/staffPrimary 工程师）、
-    // 第二组织（peerAdmin 管理员 + staffSecondary 工程师）、
-    // ambiguousEngineer 仅在甲方组织建一条 ACTIVE（单有效组织约束；第二条 ACTIVE 负例另行断言）；
-    // noOrgEngineer 不建成员关系（解析拒绝用例）
     const organizationIds = await seedTestOrganizations({
       dataSource,
       organizations: [
@@ -226,6 +362,7 @@ describe('AI 参考资料库 (e2e)', () => {
     });
     primaryOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.primary);
     peerOrganizationId = requireOrganizationId(organizationIds, suiteOrganizationCodes.peer);
+
     await seedTestMemberships({
       dataSource,
       organizationIdsByCode: organizationIds,
@@ -264,6 +401,25 @@ describe('AI 参考资料库 (e2e)', () => {
       ],
     });
 
+    adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
+    engineerAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.staff.loginName,
+    );
+    peerAdminAccountId = await getAccountIdByLoginName(
+      dataSource,
+      testAccountsConfig.peerAdmin.loginName,
+    );
+
+    // 等级事实取请求期查库（`base_user_account.admin_level`），不信任 JWT 静态等级：
+    // 一级管理员放行全范围与管理动作；二级管理员只读本公司、管理动作一律拒绝。
+    await dataSource.query('UPDATE base_user_account SET admin_level = 1 WHERE id = ?', [
+      adminAccountId,
+    ]);
+    await dataSource.query('UPDATE base_user_account SET admin_level = 2 WHERE id = ?', [
+      peerAdminAccountId,
+    ]);
+
     adminToken = await login({
       app,
       loginName: testAccountsConfig.admin.loginName,
@@ -274,15 +430,15 @@ describe('AI 参考资料库 (e2e)', () => {
       loginName: testAccountsConfig.staff.loginName,
       loginPassword: testAccountsConfig.staff.loginPassword,
     });
-    customerToken = await login({
-      app,
-      loginName: testAccountsConfig.guestPrimary.loginName,
-      loginPassword: testAccountsConfig.guestPrimary.loginPassword,
-    });
     staffPrimaryToken = await login({
       app,
       loginName: testAccountsConfig.staffPrimary.loginName,
       loginPassword: testAccountsConfig.staffPrimary.loginPassword,
+    });
+    customerToken = await login({
+      app,
+      loginName: testAccountsConfig.guestPrimary.loginName,
+      loginPassword: testAccountsConfig.guestPrimary.loginPassword,
     });
     peerEngineerToken = await login({
       app,
@@ -299,7 +455,6 @@ describe('AI 参考资料库 (e2e)', () => {
       loginName: testAccountsConfig.noOrgEngineer.loginName,
       loginPassword: testAccountsConfig.noOrgEngineer.loginPassword,
     });
-    adminAccountId = await getAccountIdByLoginName(dataSource, testAccountsConfig.admin.loginName);
 
     const savedModel = await modelRepository.save(
       modelRepository.create({
@@ -316,95 +471,63 @@ describe('AI 参考资料库 (e2e)', () => {
       enabled: true,
       sortOrder: 1,
     });
-    // 971 指定型号 + storage 元数据（详情展示「后续版本提供」提示的数据形状）；
-    // 972 通用资料无型号；973 已软删（列表不可见 + 详情统一 NOT_FOUND）；
-    // 974 第二组织资料（第二组织可见性样本 + 甲方跨组织详情拒绝样本）
-    peerAdminAccountId = await getAccountIdByLoginName(
+
+    // 读侧夹具：指定型号文本资料 / 通用资料 / 已下架 / 已软删 / 第二组织 /
+    // 含 LIKE 通配符标题 / 带物理原件（本规格临时存储目录内真实字节）
+    primaryTextDocumentId = await createDocument({
+      title: 'E2E 错误码手册',
+      documentType: 'ERROR_CODE_MANUAL',
+      contentText: 'E-CHUCK-101',
+      equipmentModelId: referenceModelId,
+    });
+    genericDocumentId = await createDocument({
+      title: 'E2E 通用安全规范',
+      documentType: 'SAFETY_SPEC',
+      contentText: '通用内容',
+    });
+    offlineDocumentId = await createDocument({
+      title: 'E2E 已下架检查表',
+      documentType: 'CHECKLIST',
+      contentText: '下架前正文',
+      publicationStatus: 'OFFLINE',
+    });
+    const deleted = await seedReferenceDocumentFixture({
       dataSource,
-      testAccountsConfig.peerAdmin.loginName,
-    );
-    const seededDocuments = await documentRepository.save(
-      documentRepository.create([
-        withReferenceDocumentFixtureState({
-          id: 971,
-          title: 'E2E 错误码手册',
-          documentType: 'ERROR_CODE_MANUAL',
-          equipmentModelId: referenceModelId,
-          description: '端到端用',
-          originalFilename: 'e2e-manual.pdf',
-          mimeType: 'application/pdf',
-          contentText: 'E-CHUCK-101',
-          storageBackend: 'LOCAL',
-          storageReference: 'e2e/reference-971.pdf',
-          createdByAccountId: adminAccountId,
-          ownerOrganizationId: primaryOrganizationId,
-          ingestMethod: 'ADMIN_DIRECT',
-          deprecated: false,
-          deletedAt: null,
-        }),
-        withReferenceDocumentFixtureState({
-          id: 972,
-          title: 'E2E 通用安全规范',
-          documentType: 'SAFETY_SPEC',
-          equipmentModelId: null,
-          description: null,
-          originalFilename: null,
-          mimeType: null,
-          contentText: '通用内容',
-          storageBackend: null,
-          storageReference: null,
-          createdByAccountId: adminAccountId,
-          ownerOrganizationId: primaryOrganizationId,
-          ingestMethod: 'ADMIN_DIRECT',
-          deprecated: false,
-          deletedAt: null,
-        }),
-        withReferenceDocumentFixtureState({
-          id: 973,
-          title: 'E2E 已停用检查表',
-          documentType: 'CHECKLIST',
-          equipmentModelId: null,
-          description: null,
-          originalFilename: null,
-          mimeType: null,
-          contentText: '旧版内容',
-          storageBackend: null,
-          storageReference: null,
-          createdByAccountId: adminAccountId,
-          ownerOrganizationId: primaryOrganizationId,
-          ingestMethod: 'ADMIN_DIRECT',
-          deprecated: true,
-          deletedAt: new Date('2026-09-01T00:00:00.000Z'),
-        }),
-        withReferenceDocumentFixtureState({
-          id: 974,
-          title: 'E2E 同行组织资料',
-          documentType: 'MANUAL',
-          equipmentModelId: null,
-          description: '第二组织专属',
-          originalFilename: null,
-          mimeType: null,
-          contentText: 'PEER-ONLY',
-          storageBackend: null,
-          storageReference: null,
-          createdByAccountId: peerAdminAccountId,
-          ownerOrganizationId: peerOrganizationId,
-          ingestMethod: 'ADMIN_DIRECT',
-          deprecated: false,
-          deletedAt: null,
-        }),
-      ]),
-    );
-    for (const document of seededDocuments) {
-      recordOwnedResource(ownership, 'document', document.id, {
-        ownerOrganizationId: document.ownerOrganizationId,
-        createdByAccountId: document.createdByAccountId,
-        // 本规格种子均未建立来源回链，登记为 null 以拒绝事后被改写的归属。
-        sourceSubmissionId: null,
-        sourceRevisionId: null,
-        equipmentModelId: document.equipmentModelId ?? null,
-      });
-    }
+      ownership,
+      fixture: {
+        title: 'E2E 已软删资料',
+        documentType: 'CHECKLIST',
+        createdByAccountId: adminAccountId,
+        ownerOrganizationId: primaryOrganizationId,
+        contentText: '旧版内容',
+        deprecated: true,
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      },
+    });
+    deletedDocumentId = deleted.id;
+    peerDocumentId = await createDocument({
+      title: 'E2E 同行组织资料',
+      documentType: 'MANUAL',
+      contentText: 'PEER-ONLY',
+      createdByAccountId: peerAdminAccountId,
+      ownerOrganizationId: peerOrganizationId,
+    });
+    percentTitleDocumentId = await createDocument({
+      title: 'E2E 搜索 100% 命中_行',
+      documentType: 'CHECKLIST',
+      contentText: '通配符转义链路验证',
+    });
+    // 带原件资料：存储四列在插入时即给出（V13 CHECK 要求 MATERIAL 正文或存储引用非空）
+    fileDocumentId = await createDocument({
+      title: 'E2E 带原件资料',
+      documentType: 'MANUAL',
+      contentText: 'E-CHUCK-101',
+      equipmentModelId: referenceModelId,
+      storageReference: fixtureFileName,
+      originalFilename: 'E2E 手册.pdf',
+      mimeType: 'application/pdf',
+    });
+    fs.writeFileSync(path.join(e2eStorageRoot, fixtureFileName), Buffer.from('e2e-pdf-content'));
   }, 30000);
 
   afterAll(async () => {
@@ -419,7 +542,6 @@ describe('AI 参考资料库 (e2e)', () => {
         }
       },
       finalize: () => {
-        // 临时存储目录按精确路径清理，并恢复捕获时的原环境变量值
         fs.rmSync(e2eStorageRoot, { recursive: true, force: true });
         restoreEnvValue('REFERENCE_DOCUMENT_STORAGE_DIR', originalStorageDir);
       },
@@ -432,22 +554,75 @@ describe('AI 参考资料库 (e2e)', () => {
     });
   });
 
+  describe('旧写入口已下线（不重新开放、不为造数保留）', () => {
+    it('createReferenceDocument / updateReferenceDocument 已从 schema 移除', async () => {
+      await expectOperationRemoved({
+        query: REMOVED_CREATE_MUTATION,
+        field: 'createReferenceDocument',
+        token: adminToken,
+      });
+      await expectOperationRemoved({
+        query: REMOVED_UPDATE_MUTATION,
+        field: 'updateReferenceDocument',
+        token: adminToken,
+      });
+
+      // 未产生任何写入：标题与正文保持夹具值
+      const facts = await readReferenceDocumentFacts({
+        dataSource,
+        documentId: primaryTextDocumentId,
+      });
+      expect(facts?.title).toBe('E2E 错误码手册');
+      expect(facts?.content_text).toBe('E-CHUCK-101');
+    });
+
+    it('REST multipart 上传端点已下线（404，无路由可直调）', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/reference-documents/upload')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .attach('file', Buffer.from('x'), 'e2e-reopen.pdf')
+        .field('title', 'E2E 复活上传')
+        .field('documentType', 'MANUAL');
+      expect(response.status).toBe(404);
+      const rows = await dataSource.query<Array<{ total: number }>>(
+        `SELECT COUNT(*) AS total FROM reference_document WHERE title = ?`,
+        ['E2E 复活上传'],
+      );
+      expect(Number(rows[0]?.total)).toBe(0);
+    });
+  });
+
   describe('未登录（无 Token）', () => {
-    it('五个端点全部返回 UNAUTHENTICATED', async () => {
-      const queries = [
+    it('读侧与新写侧全部 UNAUTHENTICATED', async () => {
+      const cases = [
         { query: LIST_QUERY, variables: { pagination: PAGE } },
-        { query: DETAIL_QUERY, variables: { id: 971 } },
+        { query: DETAIL_QUERY, variables: { id: primaryTextDocumentId } },
+        { query: REVISIONS_QUERY, variables: { id: primaryTextDocumentId } },
         {
-          query: CREATE_MUTATION,
-          variables: { input: { title: 'x', documentType: 'MANUAL', contentText: 'y' } },
+          query: REVISE_MUTATION,
+          variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
         },
         {
-          query: UPDATE_MUTATION,
-          variables: { id: 971, input: { title: 'x' } },
+          query: OFFLINE_MUTATION,
+          variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
         },
-        { query: SOFT_DELETE_MUTATION, variables: { id: 971 } },
+        {
+          query: ADMIN_DELETE_MUTATION,
+          variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
+        },
+        {
+          query: CORRECT_OWNERSHIP_MUTATION,
+          variables: {
+            id: primaryTextDocumentId,
+            input: { expectedVersion: 0, verificationReason: 'x', ownerOrganizationId: 1 },
+          },
+        },
+        {
+          query: SOFT_DELETE_MUTATION,
+          variables: { id: primaryTextDocumentId, expectedVersion: 0 },
+        },
       ];
-      for (const item of queries) {
+      for (const item of cases) {
         const response = await postGql({ app, ...item }).expect(200);
         expect(response.body.errors).toHaveLength(1);
         expectUnauthenticated(response.body.errors[0]);
@@ -455,175 +630,163 @@ describe('AI 参考资料库 (e2e)', () => {
     });
   });
 
-  describe('CUSTOMER 读也禁（资料无归属概念，客户整体不参与）', () => {
-    it('列表与详情 FORBIDDEN（requiredRoles 含 ENGINEER 与 SUPER_ADMIN）', async () => {
+  describe('CUSTOMER 不参与资料库', () => {
+    it('列表 / 详情 FORBIDDEN，管理动作同样被守卫拒绝', async () => {
       const listResponse = await postGql({
         app,
         query: LIST_QUERY,
         variables: { pagination: PAGE },
         token: customerToken,
       }).expect(200);
-      expect(listResponse.body.errors).toHaveLength(1);
       expectForbidden(listResponse.body.errors[0], ['ENGINEER', 'SUPER_ADMIN'], ['CUSTOMER']);
 
       const detailResponse = await postGql({
         app,
         query: DETAIL_QUERY,
-        variables: { id: 971 },
+        variables: { id: primaryTextDocumentId },
         token: customerToken,
       }).expect(200);
-      expect(detailResponse.body.errors).toHaveLength(1);
       expectForbidden(detailResponse.body.errors[0], ['ENGINEER', 'SUPER_ADMIN'], ['CUSTOMER']);
-    });
 
-    it('直调三个写 Mutation FORBIDDEN（requiredRoles 仅 SUPER_ADMIN）', async () => {
-      const cases = [
-        {
-          query: CREATE_MUTATION,
-          variables: { input: { title: 'x', documentType: 'MANUAL', contentText: 'y' } },
-        },
-        { query: UPDATE_MUTATION, variables: { id: 971, input: { title: 'x' } } },
-        { query: SOFT_DELETE_MUTATION, variables: { id: 971 } },
-      ];
-      for (const item of cases) {
-        const response = await postGql({ app, ...item, token: customerToken }).expect(200);
-        expect(response.body.errors).toHaveLength(1);
-        expectForbidden(response.body.errors[0], ['SUPER_ADMIN'], ['CUSTOMER']);
-      }
+      const deleteResponse = await postGql({
+        app,
+        query: ADMIN_DELETE_MUTATION,
+        variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
+        token: customerToken,
+      }).expect(200);
+      expectForbidden(deleteResponse.body.errors[0], ['SUPER_ADMIN'], ['CUSTOMER']);
     });
   });
 
-  describe('ENGINEER 只读（docx 第一版工程师不负责增删资料）', () => {
-    it('列表与详情通过：含昵称富集与元数据，不出现已软删行', async () => {
-      const listResponse = await postGql({
-        app,
-        query: LIST_QUERY,
-        variables: { pagination: PAGE },
-        token: engineerToken,
-      }).expect(200);
-      expect(listResponse.body.errors).toBeUndefined();
-      const items = listResponse.body.data.referenceDocuments.items as Array<{
-        id: number;
-        creatorNickname: string;
-      }>;
-      expect(items.map((item) => item.id)).toEqual([972, 971]);
-      expect(items[0].creatorNickname).toBe('testadmin_nickname');
-      expect(items).toHaveLength(2);
-
-      const detailResponse = await postGql({
-        app,
-        query: DETAIL_QUERY,
-        variables: { id: 971 },
-        token: engineerToken,
-      }).expect(200);
-      expect(detailResponse.body.errors).toBeUndefined();
-      expect(detailResponse.body.data.referenceDocument).toMatchObject({
-        id: 971,
-        contentText: 'E-CHUCK-101',
-        mimeType: 'application/pdf',
-        originalFilename: 'e2e-manual.pdf',
-        hasFile: true,
-      });
+  describe('ENGINEER 读侧（本公司范围）', () => {
+    it('列表只含本公司可见资料：软删/下架/归属待核实/跨公司均不出现', async () => {
+      const expected = await expectedVisibleOrder(primaryOrganizationId);
+      const result = await listIds(engineerToken, { title: 'E2E' });
+      expect(result.ids).toEqual(expected);
+      expect(result.total).toBe(expected.length);
+      expect(result.ids).toEqual(
+        expect.arrayContaining([primaryTextDocumentId, genericDocumentId]),
+      );
+      expect(result.ids).not.toContain(deletedDocumentId);
+      expect(result.ids).not.toContain(offlineDocumentId);
+      expect(result.ids).not.toContain(peerDocumentId);
     });
 
-    it('三个写 Mutation FORBIDDEN', async () => {
-      const cases = [
+    it('同组织两工程师列表一致', async () => {
+      const first = await listIds(engineerToken, { title: 'E2E' });
+      const second = await listIds(staffPrimaryToken, { title: 'E2E' });
+      expect(second.ids).toEqual(first.ids);
+      expect(second.total).toBe(first.total);
+    });
+
+    it('详情：正文与元数据可读；作者标识只对本人为真', async () => {
+      const response = await postGql({
+        app,
+        query: DETAIL_QUERY,
+        variables: { id: primaryTextDocumentId },
+        token: engineerToken,
+      }).expect(200);
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.referenceDocument).toMatchObject({
+        id: primaryTextDocumentId,
+        title: 'E2E 错误码手册',
+        contentText: 'E-CHUCK-101',
+        contentSource: 'ORIGINAL',
+        effectiveRevisionNo: 0,
+        // 同组织资料以原组织展示名返回
+        organizationName: 'E2E 甲方组织（参考资料）',
+        viewerIsOriginalAuthor: false,
+      });
+
+      const ownDocumentId = await createDocument({
+        title: 'E2E 工程师本人资料',
+        contentText: '本人正文',
+        createdByAccountId: engineerAccountId,
+      });
+      const ownResponse = await postGql({
+        app,
+        query: DETAIL_QUERY,
+        variables: { id: ownDocumentId },
+        token: engineerToken,
+      }).expect(200);
+      expect(ownResponse.body.data.referenceDocument.viewerIsOriginalAuthor).toBe(true);
+    });
+
+    it('已软删 / 已下架 / 跨公司详情统一 NOT_FOUND（不泄露状态与存在性）', async () => {
+      for (const id of [deletedDocumentId, offlineDocumentId, peerDocumentId, 999999]) {
+        const response = await postGql({
+          app,
+          query: DETAIL_QUERY,
+          variables: { id },
+          token: engineerToken,
+        }).expect(200);
+        const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+        expect(err.extensions.code).toBe('NOT_FOUND');
+        expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+      }
+    });
+
+    it('历史版本：与详情共用可见范围；无修订时返回空列表', async () => {
+      const response = await postGql({
+        app,
+        query: REVISIONS_QUERY,
+        variables: { id: primaryTextDocumentId },
+        token: engineerToken,
+      }).expect(200);
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.referenceDocumentRevisions).toMatchObject({
+        documentId: primaryTextDocumentId,
+        currentRevisionNo: 0,
+        sourceKind: 'MATERIAL',
+        revisions: [],
+      });
+
+      const offlineResponse = await postGql({
+        app,
+        query: REVISIONS_QUERY,
+        variables: { id: offlineDocumentId },
+        token: engineerToken,
+      }).expect(200);
+      expect(offlineResponse.body.errors[0].extensions.errorCode).toBe(
+        'REFERENCE_DOCUMENT_NOT_FOUND',
+      );
+    });
+
+    it('管理动作与作者删除：工程师无管理权限（守卫拒绝）', async () => {
+      for (const item of [
         {
-          query: CREATE_MUTATION,
-          variables: { input: { title: 'x', documentType: 'MANUAL', contentText: 'y' } },
+          query: REVISE_MUTATION,
+          variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
         },
-        { query: UPDATE_MUTATION, variables: { id: 971, input: { title: 'x' } } },
-        { query: SOFT_DELETE_MUTATION, variables: { id: 971 } },
-      ];
-      for (const item of cases) {
+        {
+          query: OFFLINE_MUTATION,
+          variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
+        },
+        {
+          query: ADMIN_DELETE_MUTATION,
+          variables: { id: primaryTextDocumentId, input: { expectedVersion: 0, reason: 'x' } },
+        },
+        {
+          query: CORRECT_OWNERSHIP_MUTATION,
+          variables: {
+            id: primaryTextDocumentId,
+            input: { expectedVersion: 0, verificationReason: 'x', ownerOrganizationId: 1 },
+          },
+        },
+      ]) {
         const response = await postGql({ app, ...item, token: engineerToken }).expect(200);
-        expect(response.body.errors).toHaveLength(1);
         expectForbidden(response.body.errors[0], ['SUPER_ADMIN'], ['ENGINEER']);
       }
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // 组织范围与可信成员解析（A-PR0 §2.1；F4 组织适配）
-  // ---------------------------------------------------------------------------
-
-  describe('组织范围与可信成员解析', () => {
-    it('甲方两工程师同组织：列表一致，均看不到第二组织资料', async () => {
-      for (const token of [engineerToken, staffPrimaryToken]) {
-        const response = await postGql({
-          app,
-          query: LIST_QUERY,
-          variables: { pagination: PAGE },
-          token,
-        }).expect(200);
-        expect(response.body.errors).toBeUndefined();
-        const items = response.body.data.referenceDocuments.items as Array<{ id: number }>;
-        expect(items.map((item) => item.id)).toEqual([972, 971]);
-      }
-    });
-
-    it('第二组织工程师只见本组织列表；跨组织详情统一 NOT_FOUND（不泄露存在性）', async () => {
-      const listResponse = await postGql({
-        app,
-        query: LIST_QUERY,
-        variables: { pagination: PAGE },
-        token: peerEngineerToken,
-      }).expect(200);
-      expect(listResponse.body.errors).toBeUndefined();
-      const items = listResponse.body.data.referenceDocuments.items as Array<{ id: number }>;
-      expect(items.map((item) => item.id)).toEqual([974]);
-
-      const detailResponse = await postGql({
-        app,
-        query: DETAIL_QUERY,
-        variables: { id: 971 },
-        token: peerEngineerToken,
-      }).expect(200);
-      const err = detailResponse.body.errors[0] as { extensions: Record<string, unknown> };
-      expect(err.extensions.code).toBe('NOT_FOUND');
-      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
-    });
-
-    it('第二组织管理员创建落本组织；甲方管理员跨组织详情拒绝', async () => {
-      const createResponse = await postGql({
-        app,
-        query: CREATE_MUTATION,
-        variables: {
-          input: {
-            title: 'E2E 第二组织新增资料',
-            documentType: 'MANUAL',
-            contentText: 'PEER 新内容',
-          },
-        },
-        token: peerAdminToken,
-      }).expect(200);
-      expect(createResponse.body.errors).toBeUndefined();
-      const createdId = createResponse.body.data.createReferenceDocument.id as number;
-
-      const saved = await documentRepository.findOne({ where: { id: createdId } });
-      expect(saved).toMatchObject({
-        ownerOrganizationId: peerOrganizationId,
-        ingestMethod: 'ADMIN_DIRECT',
-      });
-      // R02：新建成功即登记真实 ID 与最小预期事实，引用闭包不按创建人自动扩图
-      recordOwnedResource(ownership, 'document', createdId, {
-        ownerOrganizationId: peerOrganizationId,
-        createdByAccountId: peerAdminAccountId,
-        sourceSubmissionId: null,
-        sourceRevisionId: null,
-        equipmentModelId: null,
-      });
-
-      // 甲方管理员对第二组织资料详情的跨组织读：统一 NOT_FOUND
-      const crossDetail = await postGql({
-        app,
-        query: DETAIL_QUERY,
-        variables: { id: 974 },
-        token: adminToken,
-      }).expect(200);
-      const err = crossDetail.body.errors[0] as { extensions: Record<string, unknown> };
-      expect(err.extensions.code).toBe('NOT_FOUND');
-      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+  describe('组织范围解析与库级约束', () => {
+    it('第二组织工程师只见本组织资料；跨组织详情 NOT_FOUND', async () => {
+      const expected = await expectedVisibleOrder(peerOrganizationId);
+      const result = await listIds(peerEngineerToken, { title: 'E2E' });
+      expect(result.ids).toEqual(expected);
+      expect(result.ids).toContain(peerDocumentId);
+      expect(result.ids).not.toContain(primaryTextDocumentId);
     });
 
     it('无有效成员关系：列表 FORBIDDEN + ORGANIZATION_NO_ACTIVE_MEMBERSHIP（不泄露成员数量）', async () => {
@@ -640,9 +803,6 @@ describe('AI 参考资料库 (e2e)', () => {
       expect(err.extensions.details).toBeUndefined();
     });
 
-    // 单有效组织约束取代了原先「同一账号在两个组织都 ACTIVE」的歧义夹具：
-    // 该数据形状在库级已不可写入，ORGANIZATION_AMBIGUOUS_MEMBERSHIP 在正常写入路径下不可达；
-    // 这里改为直接断言唯一键拒绝，并在事务中回滚，避免留下第二条 ACTIVE 归属。
     it('同账号重复 ACTIVE 组织归属：库唯一键拒绝（事务回滚，无残留）', async () => {
       const ambiguousAccountId = await getAccountIdByLoginName(
         dataSource,
@@ -676,375 +836,657 @@ describe('AI 参考资料库 (e2e)', () => {
     });
   });
 
-  describe('SUPER_ADMIN 全通与业务分支', () => {
-    it('列表通过且已软删 973 不出现（withTotal 只计未软删）', async () => {
-      const response = await postGql({
-        app,
-        query: LIST_QUERY,
-        variables: { pagination: { ...PAGE, withTotal: true } },
-        token: adminToken,
-      }).expect(200);
-      expect(response.body.errors).toBeUndefined();
-      expect(response.body.data.referenceDocuments.total).toBe(2);
-      const items = response.body.data.referenceDocuments.items as Array<{ id: number }>;
-      expect(items.map((item) => item.id)).toEqual([972, 971]);
+  describe('二级管理员：只读本公司，管理动作被拒（非资源不可见）', () => {
+    it('列表为第二组织范围', async () => {
+      const expected = await expectedVisibleOrder(peerOrganizationId);
+      const result = await listIds(peerAdminToken, { title: 'E2E' });
+      expect(result.ids).toEqual(expected);
     });
 
-    it('已软删与不存在详情统一 NOT_FOUND（防删除状态探测）', async () => {
-      for (const id of [973, 999999]) {
-        const response = await postGql({
-          app,
-          query: DETAIL_QUERY,
-          variables: { id },
-          token: adminToken,
-        }).expect(200);
-        const err = response.body.errors[0] as {
-          extensions: Record<string, unknown>;
-        };
+    it('二级管理员直接读取他司详情/历史版本：统一 NOT_FOUND（不泄露状态与存在性）', async () => {
+      for (const item of [
+        { query: DETAIL_QUERY, variables: { id: primaryTextDocumentId } },
+        { query: REVISIONS_QUERY, variables: { id: primaryTextDocumentId } },
+      ]) {
+        const response = await postGql({ app, ...item, token: peerAdminToken }).expect(200);
+        const err = response.body.errors[0] as { extensions: Record<string, unknown> };
         expect(err.extensions.code).toBe('NOT_FOUND');
         expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
       }
     });
 
-    it('contentText 空白创建拒绝（本周仅文本内容来源，双空必须失败）', async () => {
-      const response = await postGql({
-        app,
-        query: CREATE_MUTATION,
-        variables: {
-          input: { title: 'E2E 空白', documentType: 'MANUAL', contentText: '   ' },
+    it('四个管理动作 INSUFFICIENT_PERMISSIONS（等级 2 失败关闭）', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 二级管理员目标',
+        createdByAccountId: peerAdminAccountId,
+        ownerOrganizationId: peerOrganizationId,
+        contentText: '二级目标正文',
+      });
+      for (const item of [
+        {
+          query: REVISE_MUTATION,
+          variables: { id: documentId, input: { expectedVersion: 0, reason: '越级尝试' } },
         },
-        token: adminToken,
-      }).expect(200);
-      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
-      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_INVALID_PARAMS');
-    });
-
-    it('非法设备型号创建拒绝（EQUIPMENT_MODEL_NOT_FOUND）', async () => {
-      const response = await postGql({
-        app,
-        query: CREATE_MUTATION,
-        variables: {
-          input: {
-            title: 'E2E 非法型号',
-            documentType: 'MANUAL',
-            equipmentModelId: 999999,
-            contentText: '内容',
+        {
+          query: OFFLINE_MUTATION,
+          variables: { id: documentId, input: { expectedVersion: 0, reason: '越级尝试' } },
+        },
+        {
+          query: ADMIN_DELETE_MUTATION,
+          variables: { id: documentId, input: { expectedVersion: 0, reason: '越级尝试' } },
+        },
+        {
+          query: CORRECT_OWNERSHIP_MUTATION,
+          variables: {
+            id: documentId,
+            input: {
+              expectedVersion: 0,
+              verificationReason: '越级尝试',
+              ownerOrganizationId: peerOrganizationId,
+            },
           },
         },
-        token: adminToken,
-      }).expect(200);
-      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
-      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND');
+      ]) {
+        const response = await postGql({ app, ...item, token: peerAdminToken }).expect(200);
+        const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+        expect(err.extensions.code).toBe('FORBIDDEN');
+        expect(err.extensions.errorCode).toBe('INSUFFICIENT_PERMISSIONS');
+      }
     });
+  });
 
-    it('创建成功：返回 ID 且落库事实正确（创建人取自 Session、初始未软删），列表可见', async () => {
+  describe('一级管理员：列表全范围（已确认归属的正式资料）', () => {
+    it('列表含甲乙两公司资料，仍排除软删/下架/归属待核实', async () => {
+      const expected = await expectedVisibleOrder(null);
+      const result = await listIds(adminToken, { title: 'E2E' });
+      expect(result.ids).toEqual(expected);
+      expect(result.ids).toContain(primaryTextDocumentId);
+      expect(result.ids).toContain(peerDocumentId);
+      expect(result.ids).not.toContain(offlineDocumentId);
+      expect(result.ids).not.toContain(deletedDocumentId);
+    });
+  });
+
+  describe('R058 管理修订（版本 + 正文生效 + 历史）', () => {
+    it('令牌 0 修订成功：新版本 1、标题与正文生效、历史可追溯', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 待修订资料',
+        contentText: '原始正文',
+      });
+
       const response = await postGql({
         app,
-        query: CREATE_MUTATION,
+        query: REVISE_MUTATION,
         variables: {
+          id: documentId,
           input: {
-            title: 'E2E 新增资料',
-            documentType: 'MANUAL',
-            equipmentModelId: referenceModelId,
-            contentText: '新增内容',
+            expectedVersion: 0,
+            reason: '补充校准判据',
+            title: 'E2E 待修订资料（已修订）',
+            contentText: '修订后正文',
           },
         },
         token: adminToken,
       }).expect(200);
       expect(response.body.errors).toBeUndefined();
-      const createdId = response.body.data.createReferenceDocument.id as number;
-
-      const saved = await documentRepository.findOne({ where: { id: createdId } });
-      expect(saved).toMatchObject({
-        title: 'E2E 新增资料',
-        equipmentModelId: referenceModelId,
-        createdByAccountId: adminAccountId,
-        deprecated: false,
-        deletedAt: null,
-      });
-      // R02：新建成功即登记真实 ID 与最小预期事实
-      recordOwnedResource(ownership, 'document', createdId, {
-        ownerOrganizationId: primaryOrganizationId,
-        createdByAccountId: adminAccountId,
-        sourceSubmissionId: null,
-        sourceRevisionId: null,
-        equipmentModelId: referenceModelId,
+      expect(response.body.data.reviseReferenceDocument).toEqual({
+        id: documentId,
+        revisionNo: 1,
       });
 
-      const listResponse = await postGql({
-        app,
-        query: LIST_QUERY,
-        variables: { pagination: PAGE },
-        token: adminToken,
-      }).expect(200);
-      const items = listResponse.body.data.referenceDocuments.items as Array<{ id: number }>;
-      expect(items.map((item) => item.id)).toContain(createdId);
-    });
-
-    it('编辑部分提交：title 更新而 contentText 保持原值（落库断言）', async () => {
-      const updateResponse = await postGql({
-        app,
-        query: UPDATE_MUTATION,
-        variables: { id: 971, input: { title: 'E2E 错误码手册（已修订）' } },
-        token: adminToken,
-      }).expect(200);
-      expect(updateResponse.body.errors).toBeUndefined();
-
-      const saved = await documentRepository.findOne({ where: { id: 971 } });
-      expect(saved).toMatchObject({
-        title: 'E2E 错误码手册（已修订）',
-        contentText: 'E-CHUCK-101',
-        deprecated: false,
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts).toMatchObject({
+        title: 'E2E 待修订资料（已修订）',
+        content_text: '修订后正文',
+        current_revision_no: 1,
+        publication_status: 'ONLINE',
       });
-    });
-
-    it('编辑显式 null 清空型号与说明（PATCH 语义落库断言）；必填 title null 拒绝且不落库', async () => {
-      const clearResponse = await postGql({
-        app,
-        query: UPDATE_MUTATION,
-        variables: { id: 971, input: { equipmentModelId: null, description: null } },
-        token: adminToken,
-      }).expect(200);
-      expect(clearResponse.body.errors).toBeUndefined();
-
-      const cleared = await documentRepository.findOne({ where: { id: 971 } });
-      expect(cleared).toMatchObject({
-        equipmentModelId: null,
-        description: null,
-        title: 'E2E 错误码手册（已修订）',
-        contentText: 'E-CHUCK-101',
-      });
-      // 受控变更成功后才更新台账预期，不得在写入前预置期望值
-      updateOwnedExpectation(ownership, 'document', 971, { equipmentModelId: null });
-
-      const nullTitleResponse = await postGql({
-        app,
-        query: UPDATE_MUTATION,
-        variables: { id: 971, input: { title: null } },
-        token: adminToken,
-      }).expect(200);
-      expect(nullTitleResponse.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
-      expect(nullTitleResponse.body.errors[0].extensions.errorCode).toBe(
-        'REFERENCE_DOCUMENT_INVALID_PARAMS',
+      expect(await registerReferenceDocumentRevisions({ dataSource, ownership, documentId })).toBe(
+        1,
       );
-      // 拒绝后落库不变：title 未被置空
-      const afterReject = await documentRepository.findOne({ where: { id: 971 } });
-      expect(afterReject?.title).toBe('E2E 错误码手册（已修订）');
-    });
-
-    it('编辑指定不存在型号统一 NOT_FOUND + errorCode 细化（前端 model-not-found 映射的契约来源）；落库不受影响', async () => {
-      const updateResponse = await postGql({
-        app,
-        query: UPDATE_MUTATION,
-        variables: { id: 971, input: { equipmentModelId: 999999 } },
-        token: adminToken,
-      }).expect(200);
-      expect(updateResponse.body.errors[0].extensions.code).toBe('NOT_FOUND');
-      expect(updateResponse.body.errors[0].extensions.errorCode).toBe(
-        'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND',
-      );
-
-      const saved = await documentRepository.findOne({ where: { id: 971 } });
-      expect(saved?.equipmentModelId).toBeNull();
-    });
-
-    it('软删除：deprecated、deleted_at 与 OFFLINE 同步落库，列表不再可见', async () => {
-      const deleteResponse = await postGql({
-        app,
-        query: SOFT_DELETE_MUTATION,
-        variables: { id: 971 },
-        token: adminToken,
-      }).expect(200);
-      expect(deleteResponse.body.errors).toBeUndefined();
-
-      const saved = await documentRepository.findOne({ where: { id: 971 } });
-      expect(saved).toMatchObject({ deprecated: true, publicationStatus: 'OFFLINE' });
-      expect(saved?.deletedAt).not.toBeNull();
 
       const detailResponse = await postGql({
         app,
         query: DETAIL_QUERY,
-        variables: { id: 971 },
-        token: adminToken,
+        variables: { id: documentId },
+        token: engineerToken,
       }).expect(200);
-      expect(detailResponse.body.errors[0].extensions.errorCode).toBe(
-        'REFERENCE_DOCUMENT_NOT_FOUND',
-      );
+      expect(detailResponse.body.data.referenceDocument).toMatchObject({
+        contentSource: 'CURRENT_REVISION',
+        effectiveRevisionNo: 1,
+        contentText: '修订后正文',
+        title: 'E2E 待修订资料（已修订）',
+      });
+
+      const revisionsResponse = await postGql({
+        app,
+        query: REVISIONS_QUERY,
+        variables: { id: documentId },
+        token: engineerToken,
+      }).expect(200);
+      const revisions = revisionsResponse.body.data.referenceDocumentRevisions as {
+        currentRevisionNo: number;
+        revisions: Array<{ revisionNo: number; reason: string; actorNickname: string }>;
+      };
+      expect(revisions.currentRevisionNo).toBe(1);
+      expect(revisions.revisions).toEqual([
+        expect.objectContaining({
+          revisionNo: 1,
+          reason: '补充校准判据',
+          actorNickname: 'testadmin_nickname',
+        }),
+      ]);
     });
 
-    it('标题模糊搜索：子串命中、无关键词零结果、通配符按字面匹配不扩大范围', async () => {
-      // 创建含 LIKE 通配符字面量的行（自增 ID，与固定主键不冲突；afterAll 全表清理）
-      const createResponse = await postGql({
+    it('过期 expected_version 拒绝（CONFLICT），库内版本与正文不变', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 版本竞争资料',
+        contentText: '初始正文',
+      });
+
+      const first = await postGql({
         app,
-        query: CREATE_MUTATION,
+        query: REVISE_MUTATION,
         variables: {
+          id: documentId,
+          input: { expectedVersion: 0, reason: '第一次修订', contentText: '第一次正文' },
+        },
+        token: adminToken,
+      }).expect(200);
+      expect(first.body.data.reviseReferenceDocument.revisionNo).toBe(1);
+      await registerReferenceDocumentRevisions({ dataSource, ownership, documentId });
+
+      const stale = await postGql({
+        app,
+        query: REVISE_MUTATION,
+        variables: {
+          id: documentId,
+          input: { expectedVersion: 0, reason: '过期修订', contentText: '覆盖尝试' },
+        },
+        token: adminToken,
+      }).expect(200);
+      const err = stale.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('CONFLICT');
+      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_VERSION_CONFLICT');
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts?.current_revision_no).toBe(1);
+      expect(facts?.content_text).toBe('第一次正文');
+    });
+
+    it('负数 expected_version 在协议层拒绝（BAD_USER_INPUT），不进入用例', async () => {
+      const documentId = await createDocument({ title: 'E2E 负数版本资料' });
+      const response = await postGql({
+        app,
+        query: REVISE_MUTATION,
+        variables: { id: documentId, input: { expectedVersion: -1, reason: '负数令牌' } },
+        token: adminToken,
+      }).expect(200);
+      const err = response.body.errors[0] as {
+        message: string;
+        extensions: Record<string, unknown>;
+      };
+      expect(err.extensions.code).toBe('BAD_USER_INPUT');
+      expect(err.message).toContain('不能为负数');
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts?.current_revision_no).toBe(0);
+    });
+
+    it('下架 / 归属待核实目标不可经修订入口访问（NOT_FOUND）', async () => {
+      const offlineTarget = await createDocument({
+        title: 'E2E 修订下架目标',
+        publicationStatus: 'OFFLINE',
+      });
+      const pendingTarget = await createDocument({
+        title: 'E2E 修订待核实目标',
+        ownerOrganizationId: null,
+      });
+      for (const id of [offlineTarget, pendingTarget]) {
+        const response = await postGql({
+          app,
+          query: REVISE_MUTATION,
+          // 补丁需含至少一个可编辑字段（入口校验先于可见性检查），
+          // 让请求穿过用例入参校验、命中统一 NOT_FOUND 可见谓词
+          variables: {
+            id,
+            input: { expectedVersion: 0, reason: '不可见目标', title: '不可见目标' },
+          },
+          token: adminToken,
+        }).expect(200);
+        expect(response.body.errors[0].extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+      }
+    });
+  });
+
+  describe('R059 下架 → R060 管理删除（状态与审计）', () => {
+    it('下架写业务历史但不下架正文：列表与详情立即不可见，不写关键审计', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 待下架资料',
+        contentText: '下架前正文',
+      });
+
+      const response = await postGql({
+        app,
+        query: OFFLINE_MUTATION,
+        variables: { id: documentId, input: { expectedVersion: 0, reason: '内容待复核' } },
+        token: adminToken,
+      }).expect(200);
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.offlineReferenceDocument).toEqual({
+        id: documentId,
+        revisionNo: 1,
+      });
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts).toMatchObject({ publication_status: 'OFFLINE', current_revision_no: 1 });
+      expect(facts?.deleted_at).toBeNull();
+      expect(await registerReferenceDocumentRevisions({ dataSource, ownership, documentId })).toBe(
+        1,
+      );
+
+      const list = await listIds(adminToken);
+      expect(list.ids).not.toContain(documentId);
+
+      const detail = await postGql({
+        app,
+        query: DETAIL_QUERY,
+        variables: { id: documentId },
+        token: adminToken,
+      }).expect(200);
+      expect(detail.body.errors[0].extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+
+      // R059 不写三类关键操作记录：审计表里没有该资料行
+      const auditRows = await dataSource.query<Array<{ total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM management_audit_event
+          WHERE target_type = 'REFERENCE_DOCUMENT' AND target_id = ?`,
+        [String(documentId)],
+      );
+      expect(Number(auditRows[0]?.total)).toBe(0);
+    });
+
+    it('管理删除：软删 + 关键审计同事务；下架资料仍可删', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 待管理删除资料',
+        contentText: '删除前正文',
+      });
+
+      // 先下架（版本 0 → 1），再以版本 1 管理删除
+      await postGql({
+        app,
+        query: OFFLINE_MUTATION,
+        variables: { id: documentId, input: { expectedVersion: 0, reason: '先下架' } },
+        token: adminToken,
+      }).expect(200);
+      await registerReferenceDocumentRevisions({ dataSource, ownership, documentId });
+
+      const response = await postGql({
+        app,
+        query: ADMIN_DELETE_MUTATION,
+        variables: { id: documentId, input: { expectedVersion: 1, reason: '来源已确认作废' } },
+        token: adminToken,
+      }).expect(200);
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.adminDeleteReferenceDocument).toEqual({
+        id: documentId,
+        revisionNo: 2,
+      });
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts).toMatchObject({
+        deprecated: 1,
+        publication_status: 'OFFLINE',
+        current_revision_no: 2,
+      });
+      expect(facts?.deleted_at).not.toBeNull();
+      expect(await registerReferenceDocumentRevisions({ dataSource, ownership, documentId })).toBe(
+        2,
+      );
+      expect(
+        await registerReferenceDocumentAuditEvents({ dataSource, ownership, documentId }),
+      ).toBe(1);
+
+      const auditRows = await dataSource.query<
+        Array<{ operation: string; actor_admin_level: number; result: string; detail: string }>
+      >(
+        `SELECT operation, actor_admin_level, result, detail FROM management_audit_event
+          WHERE target_type = 'REFERENCE_DOCUMENT' AND target_id = ?`,
+        [String(documentId)],
+      );
+      expect(auditRows[0]).toMatchObject({
+        operation: 'ADMIN_DELETE_DOCUMENT',
+        actor_admin_level: 1,
+        result: 'SUCCEEDED',
+      });
+      expect(auditRows[0]?.detail).toContain('来源已确认作废');
+    });
+
+    it('管理删除的过期版本拒绝（CONFLICT），删除事实不落库', async () => {
+      const documentId = await createDocument({ title: 'E2E 删除版本竞争资料' });
+      const response = await postGql({
+        app,
+        query: ADMIN_DELETE_MUTATION,
+        variables: { id: documentId, input: { expectedVersion: 5, reason: '过期删除' } },
+        token: adminToken,
+      }).expect(200);
+      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_VERSION_CONFLICT');
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts?.deprecated).toBe(0);
+      expect(facts?.deleted_at).toBeNull();
+    });
+  });
+
+  describe('R061-02 归属更正（只改显式字段 + 核实状态 + 审计）', () => {
+    it('同时更正上传者与上传时公司：置 CONFIRMED 并写字段级审计', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 归属待核实资料',
+        ownerOrganizationId: null,
+        contentText: '待核实正文',
+      });
+      const pendingFacts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(pendingFacts).toMatchObject({
+        ownership_status: 'PENDING',
+        owner_organization_id: null,
+      });
+
+      const response = await postGql({
+        app,
+        query: CORRECT_OWNERSHIP_MUTATION,
+        variables: {
+          id: documentId,
           input: {
-            title: 'E2E 搜索 100% 命中_行',
-            documentType: 'CHECKLIST',
-            equipmentModelId: null,
-            description: null,
-            contentText: '通配符转义链路验证',
+            expectedVersion: 0,
+            verificationReason: '核对原始工单后确认',
+            createdByAccountId: engineerAccountId,
+            ownerOrganizationId: primaryOrganizationId,
           },
         },
         token: adminToken,
       }).expect(200);
-      expect(createResponse.body.errors).toBeUndefined();
-      const createdId = createResponse.body.data.createReferenceDocument.id as number;
-
-      // R02：新建成功即登记真实 ID 与最小预期事实
-      recordOwnedResource(ownership, 'document', createdId, {
-        ownerOrganizationId: primaryOrganizationId,
-        createdByAccountId: adminAccountId,
-        sourceSubmissionId: null,
-        sourceRevisionId: null,
-        equipmentModelId: null,
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.correctReferenceDocumentOwnership).toEqual({
+        id: documentId,
+        revisionNo: 1,
       });
 
-      const searchByCreated = async (
-        keyword: string | null,
-      ): Promise<{
-        ids: number[];
-        total: number;
-      }> => {
-        const response = await postGql({
-          app,
-          query: LIST_SEARCH_QUERY,
-          variables: {
-            pagination: { ...PAGE, withTotal: true },
-            filter: keyword === null ? undefined : { title: keyword },
+      // 受控变更成功后才更新台账预期（不在写入前预置期望值）
+      updateOwnedExpectation(ownership, 'document', documentId, {
+        ownerOrganizationId: primaryOrganizationId,
+        createdByAccountId: engineerAccountId,
+      });
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts).toMatchObject({
+        ownership_status: 'CONFIRMED',
+        owner_organization_id: primaryOrganizationId,
+        created_by_account_id: engineerAccountId,
+        content_text: '待核实正文',
+        current_revision_no: 1,
+      });
+      expect(await registerReferenceDocumentRevisions({ dataSource, ownership, documentId })).toBe(
+        1,
+      );
+      expect(
+        await registerReferenceDocumentAuditEvents({ dataSource, ownership, documentId }),
+      ).toBe(1);
+
+      const auditRows = await dataSource.query<
+        Array<{ operation: string; detail: string; organization_id: number }>
+      >(
+        `SELECT operation, detail, organization_id FROM management_audit_event
+          WHERE target_type = 'REFERENCE_DOCUMENT' AND target_id = ?`,
+        [String(documentId)],
+      );
+      expect(auditRows[0]?.operation).toBe('CORRECT_DOCUMENT_OWNERSHIP');
+      expect(auditRows[0]?.organization_id).toBe(primaryOrganizationId);
+      expect(auditRows[0]?.detail).toContain('createdByAccountId');
+
+      // 归属确认后进入普通列表（本公司）
+      const list = await listIds(engineerToken);
+      expect(list.ids).toContain(documentId);
+    });
+
+    it('单项更正保留待核实状态（不因未核实项自动确认）', async () => {
+      const uploaderOnly = await createDocument({
+        title: 'E2E 只更正上传者',
+        ownerOrganizationId: null,
+      });
+      const uploaderResponse = await postGql({
+        app,
+        query: CORRECT_OWNERSHIP_MUTATION,
+        variables: {
+          id: uploaderOnly,
+          input: {
+            expectedVersion: 0,
+            verificationReason: '仅确认上传者',
+            createdByAccountId: engineerAccountId,
           },
-          token: adminToken,
-        }).expect(200);
-        expect(response.body.errors).toBeUndefined();
-        const payload = response.body.data.referenceDocuments as {
-          items: Array<{ id: number }>;
-          total: number;
-        };
-        return { ids: payload.items.map((item) => item.id), total: payload.total };
-      };
+        },
+        token: adminToken,
+      }).expect(200);
+      expect(uploaderResponse.body.errors).toBeUndefined();
+      updateOwnedExpectation(ownership, 'document', uploaderOnly, {
+        createdByAccountId: engineerAccountId,
+      });
+      const uploaderFacts = await readReferenceDocumentFacts({
+        dataSource,
+        documentId: uploaderOnly,
+      });
+      expect(uploaderFacts).toMatchObject({
+        ownership_status: 'PENDING',
+        owner_organization_id: null,
+        created_by_account_id: engineerAccountId,
+      });
+      await registerReferenceDocumentRevisions({
+        dataSource,
+        ownership,
+        documentId: uploaderOnly,
+      });
+      await registerReferenceDocumentAuditEvents({
+        dataSource,
+        ownership,
+        documentId: uploaderOnly,
+      });
 
-      // 正向：既有种子标题按子串命中（971 已在前序用例软删，取未软删的 972）
-      const seedHit = await searchByCreated('安全规范');
-      expect(seedHit.ids).toContain(972);
+      const organizationOnly = await createDocument({
+        title: 'E2E 只更正公司',
+        ownerOrganizationId: null,
+      });
+      const organizationResponse = await postGql({
+        app,
+        query: CORRECT_OWNERSHIP_MUTATION,
+        variables: {
+          id: organizationOnly,
+          input: {
+            expectedVersion: 0,
+            verificationReason: '仅确认公司',
+            ownerOrganizationId: primaryOrganizationId,
+          },
+        },
+        token: adminToken,
+      }).expect(200);
+      expect(organizationResponse.body.errors).toBeUndefined();
+      updateOwnedExpectation(ownership, 'document', organizationOnly, {
+        ownerOrganizationId: primaryOrganizationId,
+      });
+      const organizationFacts = await readReferenceDocumentFacts({
+        dataSource,
+        documentId: organizationOnly,
+      });
+      expect(organizationFacts).toMatchObject({
+        ownership_status: 'PENDING',
+        owner_organization_id: primaryOrganizationId,
+      });
+      await registerReferenceDocumentRevisions({
+        dataSource,
+        ownership,
+        documentId: organizationOnly,
+      });
+      await registerReferenceDocumentAuditEvents({
+        dataSource,
+        ownership,
+        documentId: organizationOnly,
+      });
+    });
 
-      // 正向：新建行按含 % 的子串字面命中
-      const wildcardHit = await searchByCreated('100%');
-      expect(wildcardHit.ids).toEqual([createdId]);
+    it('未提交任何更正字段 → REFERENCE_DOCUMENT_INVALID_PARAMS', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 空更正资料',
+        ownerOrganizationId: null,
+      });
+      const response = await postGql({
+        app,
+        query: CORRECT_OWNERSHIP_MUTATION,
+        variables: {
+          id: documentId,
+          input: { expectedVersion: 0, verificationReason: '未提交字段' },
+        },
+        token: adminToken,
+      }).expect(200);
+      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('BAD_USER_INPUT');
+      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_INVALID_PARAMS');
+    });
+  });
 
-      // 通配符不扩大范围：搜「%」按字面匹配，只命中标题本身含 % 的行
-      const percentOnly = await searchByCreated('%');
-      expect(percentOnly.ids).toEqual([createdId]);
+  describe('R053 原作者删除（仅本人条目 + 版本核对 + 管理员补审计）', () => {
+    it('工程师删除本人条目：软删 + OFFLOINE 事实落库，列表不再可见', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 工程师本人待删资料',
+        createdByAccountId: engineerAccountId,
+      });
 
-      // 反向：无命中关键词零结果
-      const noHit = await searchByCreated('ZZZ_无此行_');
+      const response = await postGql({
+        app,
+        query: SOFT_DELETE_MUTATION,
+        variables: { id: documentId, expectedVersion: 0 },
+        token: engineerToken,
+      }).expect(200);
+      expect(response.body.errors).toBeUndefined();
+      expect(response.body.data.softDeleteReferenceDocument).toEqual({ id: documentId });
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts).toMatchObject({
+        deprecated: 1,
+        publication_status: 'OFFLINE',
+        current_revision_no: 1,
+      });
+      expect(facts?.deleted_at).not.toBeNull();
+      expect(await registerReferenceDocumentRevisions({ dataSource, ownership, documentId })).toBe(
+        1,
+      );
+
+      const list = await listIds(engineerToken);
+      expect(list.ids).not.toContain(documentId);
+
+      // 普通工程师作者删除不写关键审计
+      const auditRows = await dataSource.query<Array<{ total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM management_audit_event
+          WHERE target_type = 'REFERENCE_DOCUMENT' AND target_id = ?`,
+        [String(documentId)],
+      );
+      expect(Number(auditRows[0]?.total)).toBe(0);
+    });
+
+    it('删除他人条目统一 NOT_FOUND（不泄露存在性），库不变', async () => {
+      const response = await postGql({
+        app,
+        query: SOFT_DELETE_MUTATION,
+        variables: { id: primaryTextDocumentId, expectedVersion: 0 },
+        token: engineerToken,
+      }).expect(200);
+      const err = response.body.errors[0] as { extensions: Record<string, unknown> };
+      expect(err.extensions.code).toBe('NOT_FOUND');
+      expect(err.extensions.errorCode).toBe('REFERENCE_DOCUMENT_NOT_FOUND');
+
+      const facts = await readReferenceDocumentFacts({
+        dataSource,
+        documentId: primaryTextDocumentId,
+      });
+      expect(facts?.deprecated).toBe(0);
+    });
+
+    it('过期 expected_version 拒绝（CONFLICT）', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 作者删除版本竞争资料',
+        createdByAccountId: engineerAccountId,
+      });
+      const response = await postGql({
+        app,
+        query: SOFT_DELETE_MUTATION,
+        variables: { id: documentId, expectedVersion: 3 },
+        token: engineerToken,
+      }).expect(200);
+      expect(response.body.errors[0].extensions.errorCode).toBe(
+        'REFERENCE_DOCUMENT_VERSION_CONFLICT',
+      );
+
+      const facts = await readReferenceDocumentFacts({ dataSource, documentId });
+      expect(facts?.deprecated).toBe(0);
+    });
+
+    it('管理员以原作者身份删除本人条目：补写 ADMIN_DELETE_DOCUMENT 关键审计', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 管理员本人待删资料',
+        createdByAccountId: adminAccountId,
+      });
+
+      const response = await postGql({
+        app,
+        query: SOFT_DELETE_MUTATION,
+        variables: { id: documentId, expectedVersion: 0 },
+        token: adminToken,
+      }).expect(200);
+      expect(response.body.errors).toBeUndefined();
+      await registerReferenceDocumentRevisions({ dataSource, ownership, documentId });
+      expect(
+        await registerReferenceDocumentAuditEvents({ dataSource, ownership, documentId }),
+      ).toBe(1);
+
+      const auditRows = await dataSource.query<
+        Array<{ operation: string; actor_admin_level: number }>
+      >(
+        `SELECT operation, actor_admin_level FROM management_audit_event
+          WHERE target_type = 'REFERENCE_DOCUMENT' AND target_id = ?`,
+        [String(documentId)],
+      );
+      expect(auditRows[0]).toMatchObject({
+        operation: 'ADMIN_DELETE_DOCUMENT',
+        actor_admin_level: 1,
+      });
+    });
+  });
+
+  describe('筛选：标题模糊（LIKE 通配符按字面）与型号等值', () => {
+    it('子串命中、无关键词零结果、通配符不扩大范围', async () => {
+      const seedHit = await listIds(engineerToken, { title: '安全规范' });
+      expect(seedHit.ids).toEqual([genericDocumentId]);
+
+      const percentHit = await listIds(engineerToken, { title: '100%' });
+      expect(percentHit.ids).toEqual([percentTitleDocumentId]);
+
+      const percentOnly = await listIds(engineerToken, { title: '%' });
+      expect(percentOnly.ids).toEqual([percentTitleDocumentId]);
+
+      const noHit = await listIds(engineerToken, { title: 'ZZZ_无此行_' });
       expect(noHit.ids).toEqual([]);
       expect(noHit.total).toBe(0);
     });
 
-    it('设备型号筛选：指定型号命中，通用资料与未匹配型号被排除', async () => {
-      // 自建指定型号行（自增 ID 回查；971 已在前序用例软删，不依赖固定种子行）
-      const createResponse = await postGql({
-        app,
-        query: CREATE_MUTATION,
-        variables: {
-          input: {
-            title: 'E2E 型号筛选行',
-            documentType: 'CHECKLIST',
-            equipmentModelId: referenceModelId,
-            description: null,
-            contentText: '型号筛选链路验证',
-          },
-        },
-        token: adminToken,
-      }).expect(200);
-      expect(createResponse.body.errors).toBeUndefined();
-      const createdId = createResponse.body.data.createReferenceDocument.id as number;
+    it('型号筛选：指定型号命中带型号资料，通用资料被排除', async () => {
+      const byModel = await listIds(engineerToken, { equipmentModelId: referenceModelId });
+      expect(byModel.ids).toEqual(expect.arrayContaining([primaryTextDocumentId, fileDocumentId]));
+      expect(byModel.ids).not.toContain(genericDocumentId);
 
-      // R02：新建成功即登记真实 ID 与最小预期事实
-      recordOwnedResource(ownership, 'document', createdId, {
-        ownerOrganizationId: primaryOrganizationId,
-        createdByAccountId: adminAccountId,
-        sourceSubmissionId: null,
-        sourceRevisionId: null,
-        equipmentModelId: referenceModelId,
-      });
-
-      const listByModel = async (
-        equipmentModelId: number,
-      ): Promise<{ ids: number[]; total: number }> => {
-        const response = await postGql({
-          app,
-          query: LIST_SEARCH_QUERY,
-          variables: {
-            pagination: { ...PAGE, withTotal: true },
-            filter: { equipmentModelId },
-          },
-          token: adminToken,
-        }).expect(200);
-        expect(response.body.errors).toBeUndefined();
-        const payload = response.body.data.referenceDocuments as {
-          items: Array<{ id: number }>;
-          total: number;
-        };
-        return { ids: payload.items.map((item) => item.id), total: payload.total };
-      };
-
-      // 正向：本轮自增机型 ID 命中自建行
-      const modelHit = await listByModel(referenceModelId);
-      expect(modelHit.ids).toContain(createdId);
-      // 通用资料（无型号，972）不被型号筛选命中
-      expect(modelHit.ids).not.toContain(972);
-      // 反向：未匹配型号零结果
-      const noModel = await listByModel(44);
+      const noModel = await listIds(engineerToken, { equipmentModelId: 999999 });
       expect(noModel.ids).toEqual([]);
       expect(noModel.total).toBe(0);
     });
-
-    it('数据库删除一致性约束：绕过应用层的非法软删状态被 DB 两个方向拒绝', async () => {
-      // 方向一：已软删行（971，deprecated=1）不允许把 deleted_at 抹回 NULL
-      await expect(
-        dataSource.query('UPDATE reference_document SET deleted_at = NULL WHERE id = 971'),
-      ).rejects.toThrow(/chk_reference_document_deletion_consistency/);
-
-      // 方向二：未删行（972，deprecated=0）不允许只置 deprecated=1 而不写 deleted_at
-      await expect(
-        dataSource.query('UPDATE reference_document SET deprecated = 1 WHERE id = 972'),
-      ).rejects.toThrow(/chk_reference_document_deletion_consistency/);
-
-      // 约束拒绝为语句级回滚，972 数据不变
-      const saved = await documentRepository.findOne({ where: { id: 972 } });
-      expect(saved).toMatchObject({ deprecated: false });
-      expect(saved?.deletedAt).toBeNull();
-    });
   });
 
-  /**
-   * REST 文件上传/下载（0909 第二轮阻塞项 1）
-   *
-   * 用例顺序依赖：上传成功用例产生的行供后续下载/软删用例复用（
-   * jest 默认按声明顺序串行执行）；存储目录为本规格专属临时目录，
-   * finally 按精确路径清理。
-   */
-  describe('REST 文件上传/下载', () => {
-    let uploadedDocumentId: number;
-    let fileOnlyDocumentId: number;
-
-    const upload = (
-      token: string | null,
-      fileName: string,
-      buffer: Buffer,
-      fields: Record<string, string> = {},
-    ) => {
-      const req = request(app.getHttpServer()).post('/api/reference-documents/upload');
-      if (token) {
-        req.set('Authorization', `Bearer ${token}`);
-      }
-      for (const [key, value] of Object.entries(fields)) {
-        req.field(key, value);
-      }
-      return req.attach('file', buffer, fileName);
-    };
-
+  describe('REST 授权下载（上传入口已下线，仅保留读取）', () => {
     const download = (token: string | null, id: number) => {
       const req = request(app.getHttpServer()).get(`/api/reference-documents/${id}/download`);
       if (token) {
@@ -1053,221 +1495,64 @@ describe('AI 参考资料库 (e2e)', () => {
       return req;
     };
 
-    const storageFiles = (): string[] => fs.readdirSync(e2eStorageRoot).sort();
-
-    it('SUPER_ADMIN 上传成功：引用格式/四列落库/物理文件字节一致', async () => {
-      const response = await upload(adminToken, 'e2e-upload.pdf', Buffer.from('e2e-pdf-content'), {
-        title: 'E2E REST 上传行',
-        documentType: 'MANUAL',
-        equipmentModelId: String(referenceModelId),
-        description: 'REST 上传',
-        contentText: '附带正文',
-      }).expect(201);
-      uploadedDocumentId = response.body.data.id as number;
-
-      const row = await documentRepository.findOne({ where: { id: uploadedDocumentId } });
-      expect(row).toMatchObject({
-        title: 'E2E REST 上传行',
-        originalFilename: 'e2e-upload.pdf',
-        mimeType: 'application/pdf',
-        storageBackend: 'local',
-        contentText: '附带正文',
-      });
-      expect(row?.storageReference).toMatch(/^[0-9a-f]{32}\.pdf$/);
-      expect(
-        fs.readFileSync(path.join(e2eStorageRoot, row?.storageReference ?? '')).toString(),
-      ).toBe('e2e-pdf-content');
-    });
-
-    it('仅文件创建（contentText 缺省）：落库 contentText 为 NULL，双空判定不误拦', async () => {
-      const response = await upload(
-        adminToken,
-        'e2e-file-only.txt',
-        Buffer.from('file-only-bytes'),
-        { title: 'E2E 仅文件行', documentType: 'MANUAL' },
-      ).expect(201);
-      fileOnlyDocumentId = response.body.data.id as number;
-
-      const row = await documentRepository.findOne({ where: { id: fileOnlyDocumentId } });
-      expect(row).toMatchObject({
-        contentText: null,
-        originalFilename: 'e2e-file-only.txt',
-        mimeType: 'text/plain',
-        storageBackend: 'local',
-      });
-    });
-
-    it('中文文件名上传：latin1 误码还原落库，下载文件名按 RFC 5987 正确编码', async () => {
-      // supertest 以 UTF-8 字节写入 multipart filename，multer 按 latin1 解码——与浏览器行为一致；
-      // 修复前此处落库即乱码，本用例端到端钉住还原链路
-      const response = await upload(adminToken, 'E2E 中文报告.md', Buffer.from('中文内容'), {
-        title: 'E2E 中文文件名行',
-        documentType: 'MANUAL',
-      }).expect(201);
-      const chineseFilenameDocumentId = response.body.data.id as number;
-
-      const row = await documentRepository.findOne({ where: { id: chineseFilenameDocumentId } });
-      expect(row?.originalFilename).toBe('E2E 中文报告.md');
-      expect(row?.mimeType).toBe('text/markdown');
-
-      const downloaded = await download(adminToken, chineseFilenameDocumentId).expect(200);
-      expect(downloaded.headers['content-disposition']).toContain(
-        `filename*=UTF-8''${encodeURIComponent('E2E 中文报告.md')}`,
-      );
-      expect(downloaded.text).toBe('中文内容');
-    });
-
-    it('工程师/客户上传 403；匿名 401（REST 统一错误体）', async () => {
-      const engineerRes = await upload(engineerToken, 'a.pdf', Buffer.from('x')).expect(403);
-      expect(engineerRes.body.data).toMatchObject({
-        statusCode: 403,
-        code: 'INSUFFICIENT_PERMISSIONS',
-      });
-      const customerRes = await upload(customerToken, 'a.pdf', Buffer.from('x')).expect(403);
-      expect(customerRes.body.data).toMatchObject({
-        statusCode: 403,
-        code: 'INSUFFICIENT_PERMISSIONS',
-      });
-      const anonRes = await upload(null, 'a.pdf', Buffer.from('x')).expect(401);
-      expect(anonRes.body.data).toMatchObject({
-        statusCode: 401,
-        code: 'JWT_AUTHENTICATION_FAILED',
-      });
-    });
-
-    it('白名单外扩展名 415（以扩展名为主判定，不信任客户端 MIME）', async () => {
-      const response = await upload(adminToken, 'e2e-evil.exe', Buffer.from('MZ'), {
-        title: 'E2E 非法类型行',
-        documentType: 'MANUAL',
-      }).expect(415);
-      expect(response.body.data).toMatchObject({
-        statusCode: 415,
-        code: 'REFERENCE_DOCUMENT_UPLOAD_FILE_TYPE_NOT_ALLOWED',
-      });
-      // 不留 DB 记录
-      const rows = await documentRepository.find({ where: { title: 'E2E 非法类型行' } });
-      expect(rows).toHaveLength(0);
-    });
-
-    it('超过业务大小上限 413（multer 硬上限以下仍被业务校验拦截）', async () => {
-      const oversized = Buffer.alloc(21 * 1024 * 1024);
-      const response = await upload(adminToken, 'e2e-big.pdf', oversized, {
-        title: 'E2E 超限行',
-        documentType: 'MANUAL',
-      }).expect(413);
-      expect(response.body.data).toMatchObject({
-        statusCode: 413,
-        code: 'REFERENCE_DOCUMENT_UPLOAD_FILE_TOO_LARGE',
-      });
-      const rows = await documentRepository.find({ where: { title: 'E2E 超限行' } });
-      expect(rows).toHaveLength(0);
-    }, 60000);
-
-    it('原子性（落库失败）：不存在型号 → 400，补偿删除不留孤儿文件、不留 DB 记录', async () => {
-      const before = storageFiles();
-      const response = await upload(adminToken, 'e2e-orphan.pdf', Buffer.from('orphan'), {
-        title: 'E2E 原子性落库失败行',
-        documentType: 'MANUAL',
-        equipmentModelId: '999999',
-      }).expect(400);
-      expect(response.body.data).toMatchObject({
-        statusCode: 400,
-        code: 'REFERENCE_DOCUMENT_EQUIPMENT_MODEL_NOT_FOUND',
-      });
-      expect(storageFiles()).toEqual(before);
-      const rows = await documentRepository.find({ where: { title: 'E2E 原子性落库失败行' } });
-      expect(rows).toHaveLength(0);
-    });
-
-    it('原子性（存储失败）：save 抛错 → 500 CREATION_FAILED，不留 DB 记录', async () => {
-      const storage = app.get(REFERENCE_DOCUMENT_STORAGE);
-      const saveSpy = jest.spyOn(storage, 'save').mockRejectedValueOnce(new Error('disk failure'));
-
-      try {
-        const response = await upload(adminToken, 'e2e-disk-fail.pdf', Buffer.from('x'), {
-          title: 'E2E 存储失败行',
-          documentType: 'MANUAL',
-        }).expect(500);
-        expect(response.body.data).toMatchObject({
-          statusCode: 500,
-          code: 'REFERENCE_DOCUMENT_CREATION_FAILED',
+    // 非 text/* MIME（如 application/pdf）不进 superagent 文本解析器，
+    // response.text 为 undefined；成功用例显式缓冲后断言原始字节。
+    // 错误响应（401/403/404 JSON）仍走默认解析，保留 body.data 断言。
+    const downloadRaw = (token: string, id: number) =>
+      download(token, id)
+        .buffer(true)
+        .parse((response, callback) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer | string) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          });
+          response.on('end', () => callback(null, Buffer.concat(chunks)));
         });
-      } finally {
-        saveSpy.mockRestore();
-      }
-      const rows = await documentRepository.find({ where: { title: 'E2E 存储失败行' } });
-      expect(rows).toHaveLength(0);
-    });
 
-    it('SUPER_ADMIN 与 ENGINEER 下载成功：Content-Type 取 DB MIME、RFC 5987 文件名、字节一致', async () => {
-      // 落库名为 ASCII；改写为中文名以钉住含空格与 CJK 的 ext-value 编码链路
-      await documentRepository.update(fileOnlyDocumentId, { originalFilename: 'E2E 报告.txt' });
-
+    it('工程师与管理员下载成功：DB MIME、RFC 5987 文件名、字节一致', async () => {
       for (const token of [adminToken, engineerToken]) {
-        const response = await download(token, fileOnlyDocumentId).expect(200);
-        expect(response.headers['content-type']).toContain('text/plain');
+        const response = await downloadRaw(token, fileDocumentId).expect(200);
+        expect(response.headers['content-type']).toContain('application/pdf');
         expect(response.headers['content-disposition']).toContain(
-          `filename*=UTF-8''${encodeURIComponent('E2E 报告.txt')}`,
+          `filename*=UTF-8''${encodeURIComponent('E2E 手册.pdf')}`,
         );
-        expect(response.text).toBe('file-only-bytes');
+        expect((response.body as Buffer).toString('utf8')).toBe('e2e-pdf-content');
       }
     });
 
-    it('客户下载 403（负责人 0910 裁定：CUSTOMER 无页面访问权限，不开放下载）', async () => {
-      const response = await download(customerToken, fileOnlyDocumentId).expect(403);
-      expect(response.body.data).toMatchObject({
+    it('客户 403（无资料库页面权限）；匿名 401', async () => {
+      const customerResponse = await download(customerToken, fileDocumentId).expect(403);
+      expect(customerResponse.body.data).toMatchObject({
         statusCode: 403,
         code: 'INSUFFICIENT_PERMISSIONS',
       });
-    });
-
-    it('匿名下载 401', async () => {
-      const response = await download(null, fileOnlyDocumentId).expect(401);
-      expect(response.body.data).toMatchObject({
+      const anonymousResponse = await download(null, fileDocumentId).expect(401);
+      expect(anonymousResponse.body.data).toMatchObject({
         statusCode: 401,
         code: 'JWT_AUTHENTICATION_FAILED',
       });
     });
 
-    it('已软删统一 404 NOT_FOUND（防删除状态探测，不物理删文件但拒绝下载）', async () => {
-      await postGql({
-        app,
-        query: SOFT_DELETE_MUTATION,
-        variables: { id: uploadedDocumentId },
-        token: adminToken,
-      }).expect(200);
-
-      const response = await download(engineerToken, uploadedDocumentId).expect(404);
-      expect(response.body.data).toMatchObject({
-        statusCode: 404,
-        code: 'REFERENCE_DOCUMENT_NOT_FOUND',
-      });
+    it('软删 / 下架 / 跨公司统一 404 NOT_FOUND（不泄露状态）', async () => {
+      for (const id of [deletedDocumentId, offlineDocumentId, peerDocumentId]) {
+        const response = await download(engineerToken, id).expect(404);
+        expect(response.body.data).toMatchObject({
+          statusCode: 404,
+          code: 'REFERENCE_DOCUMENT_NOT_FOUND',
+        });
+      }
     });
 
-    it('伪格式/越界引用行不能读任意文件（404 FILE_NOT_AVAILABLE，不泄漏路径）', async () => {
-      // 绕过应用层直接插入非法引用行（DB 层无引用格式约束，防线在存储实现 resolve）
-      await documentRepository.save(
-        documentRepository.create(
-          withReferenceDocumentFixtureState({
-            title: 'E2E 伪引用行',
-            documentType: 'MANUAL',
-            contentText: null,
-            originalFilename: 'evil.pdf',
-            mimeType: 'application/pdf',
-            storageBackend: 'LOCAL',
-            storageReference: '../evil.pdf',
-            createdByAccountId: adminAccountId,
-            ownerOrganizationId: primaryOrganizationId,
-            ingestMethod: 'ADMIN_DIRECT',
-            deprecated: false,
-            deletedAt: null,
-          }),
-        ),
-      );
-      const row = await documentRepository.findOne({ where: { title: 'E2E 伪引用行' } });
-      expect(row).toBeTruthy();
+    it('伪格式引用行不能读任意文件（404 FILE_NOT_AVAILABLE，不泄露路径）', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 伪引用行',
+        contentText: null,
+        storageReference: '../evil.pdf',
+        originalFilename: 'evil.pdf',
+        mimeType: 'application/pdf',
+      });
 
-      const response = await download(engineerToken, row!.id).expect(404);
+      const response = await download(engineerToken, documentId).expect(404);
       expect(response.body.data).toMatchObject({
         statusCode: 404,
         code: 'REFERENCE_DOCUMENT_FILE_NOT_AVAILABLE',
@@ -1276,50 +1561,42 @@ describe('AI 参考资料库 (e2e)', () => {
       expect(JSON.stringify(response.body)).not.toContain('evil');
     });
 
-    it('有效格式引用但存储对象缺失 → 404 FILE_NOT_AVAILABLE', async () => {
-      await documentRepository.save(
-        documentRepository.create(
-          withReferenceDocumentFixtureState({
-            title: 'E2E 缺失文件行',
-            documentType: 'MANUAL',
-            contentText: null,
-            originalFilename: 'missing.pdf',
-            mimeType: 'application/pdf',
-            storageBackend: 'LOCAL',
-            storageReference: `${'0'.repeat(32)}.pdf`,
-            createdByAccountId: adminAccountId,
-            ownerOrganizationId: primaryOrganizationId,
-            ingestMethod: 'ADMIN_DIRECT',
-            deprecated: false,
-            deletedAt: null,
-          }),
-        ),
-      );
-      const row = await documentRepository.findOne({ where: { title: 'E2E 缺失文件行' } });
+    it('有效引用但存储对象缺失 → 404 FILE_NOT_AVAILABLE', async () => {
+      const documentId = await createDocument({
+        title: 'E2E 缺失文件行',
+        contentText: null,
+        storageReference: `${'0'.repeat(32)}.pdf`,
+        originalFilename: 'missing.pdf',
+        mimeType: 'application/pdf',
+      });
 
-      const response = await download(engineerToken, row!.id).expect(404);
+      const response = await download(engineerToken, documentId).expect(404);
       expect(response.body.data).toMatchObject({
         statusCode: 404,
         code: 'REFERENCE_DOCUMENT_FILE_NOT_AVAILABLE',
       });
     });
+  });
 
-    it('存储文件被删后下载返回受控错误（404 FILE_NOT_AVAILABLE）', async () => {
-      const response = await upload(adminToken, 'e2e-vanish.txt', Buffer.from('vanish-bytes'), {
-        title: 'E2E 文件被删行',
-        documentType: 'MANUAL',
-      }).expect(201);
-      const row = await documentRepository.findOne({
-        where: { id: response.body.data.id as number },
-      });
-      // 按精确路径删除物理文件（模拟存储侧丢失，不批量扫描）
-      fs.unlinkSync(path.join(e2eStorageRoot, row?.storageReference ?? ''));
+  describe('数据库删除一致性约束（绕过应用层同样拒绝）', () => {
+    it('已软删行不允许抹回 deleted_at；未删行不允许只置 deprecated', async () => {
+      await expect(
+        dataSource.query('UPDATE reference_document SET deleted_at = NULL WHERE id = ?', [
+          deletedDocumentId,
+        ]),
+      ).rejects.toThrow(/chk_reference_document_deletion_consistency/);
 
-      const gone = await download(engineerToken, row!.id).expect(404);
-      expect(gone.body.data).toMatchObject({
-        statusCode: 404,
-        code: 'REFERENCE_DOCUMENT_FILE_NOT_AVAILABLE',
+      await expect(
+        dataSource.query('UPDATE reference_document SET deprecated = 1 WHERE id = ?', [
+          genericDocumentId,
+        ]),
+      ).rejects.toThrow(/chk_reference_document_deletion_consistency/);
+
+      const facts = await readReferenceDocumentFacts({
+        dataSource,
+        documentId: genericDocumentId,
       });
+      expect(facts).toMatchObject({ deprecated: 0, deleted_at: null });
     });
   });
 });

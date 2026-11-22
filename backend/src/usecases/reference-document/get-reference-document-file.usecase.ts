@@ -45,17 +45,18 @@ export class GetReferenceDocumentFileUsecase {
     assertReferenceDocumentDownloadRole(command.session.roles);
     assertDocumentIdValid(command.documentId);
 
-    // 读侧范围先决议：一级 GLOBAL / 其余本公司（工程师与二级管理员仍失败关闭）
+    // 读侧范围先决议：一级 GLOBAL / 其余本公司（工程师与二级管理员仍失败关闭）；
+    // 客户/无有效成员关系/多关系歧义在此拒绝，不进入任何资料查询
     const scope = await resolveReferenceDocumentReadScope({
       session: command.session,
       accountQueryService: this.accountQueryService,
       organizationContextService: this.organizationContextService,
     });
 
-    // 不存在/已软删/跨范围由 QueryService 统一 NOT_FOUND，不区分原因
+    // 不存在/下架/归属未确认/已软删/跨范围由 QueryService 统一 NOT_FOUND，不区分原因
     const detail = await this.referenceDocumentQueryService.findDetail({
       documentId: command.documentId,
-      organizationId: scope.kind === 'GLOBAL' ? null : scope.organizationId,
+      scope,
     });
 
     if (

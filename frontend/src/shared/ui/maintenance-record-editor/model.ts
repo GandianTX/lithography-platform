@@ -71,6 +71,12 @@ export type MaintenanceStepValue = {
    * 任务 06 报告落库用它关联步骤新故障，任务 04 工单保存不使用该字段。
    */
   stepCode: string;
+  /**
+   * 排查步骤所属阶段（任务 07 结构化修订契约：后端修订快照与冻结初值
+   * 均保留步骤 phaseCode，编辑器值承载它以保证修订往返不丢失；
+   * 任务 04/06 工单与报告步骤无该语义，保持空值即可，提交载荷不含此字段）。
+   */
+  phaseCode: MaintenancePhaseCode | '';
   errorCode: string;
   partName: string;
   actionText: string;
@@ -141,6 +147,8 @@ export type MaintenanceEditorSource = {
     id: string;
     stepNo: number;
     stepCode?: string | null;
+    /** 任务 07 结构化修订初值携带；工单/报告步骤来源无该字段，缺省为空 */
+    phaseCode?: string | null;
     errorCode?: string | null;
     partName?: string | null;
     actionText: string;
@@ -311,6 +319,7 @@ export function createMaintenanceEditorValue(
       key: `step:${step.id}`,
       id: step.id,
       stepCode: step.stepCode ?? nextStepCode(),
+      phaseCode: toPhaseCode(step.phaseCode),
       errorCode: normalizeText(step.errorCode),
       partName: normalizeText(step.partName),
       actionText: step.actionText,
