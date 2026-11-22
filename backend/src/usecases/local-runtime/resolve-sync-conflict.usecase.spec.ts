@@ -91,7 +91,7 @@ describe('ResolveSyncConflictUsecase', () => {
       resolveRowAccess: jest.fn(() =>
         Promise.resolve({
           allowed: params.accessAllowed ?? true,
-          reason: params.accessAllowed ?? true ? 'ALLOWED' : 'DENIED_RECORD_UNRESOLVED',
+          reason: (params.accessAllowed ?? true) ? 'ALLOWED' : 'DENIED_RECORD_UNRESOLVED',
         }),
       ),
     };
@@ -177,7 +177,8 @@ describe('ResolveSyncConflictUsecase', () => {
     expect(service.applyCloudResolution).not.toHaveBeenCalled();
   });
 
-  it('稍后处理：不写任何字段，保持待处理', async () => {    const { usecase, service } = makeUsecase({
+  it('稍后处理：不写任何字段，保持待处理', async () => {
+    const { usecase, service } = makeUsecase({
       scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
       locked: conflict,
     });

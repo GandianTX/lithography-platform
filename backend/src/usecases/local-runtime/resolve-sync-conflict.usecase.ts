@@ -12,7 +12,6 @@ import { SyncConflictService } from '@src/modules/lithography/sync-conflict.serv
 import {
   SYNC_SOURCE_RESOURCE_TYPES,
   SyncSourceRecordQueryService,
-  type SyncSourceResourceType,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type {
   ResolveSyncConflictCommand,
@@ -98,10 +97,7 @@ export class ResolveSyncConflictUsecase {
         });
         if (!access.allowed) {
           // 与读侧一致：不通过存在性泄露（与"不存在"同码同文案）
-          throw new DomainError(
-            SYNC_ERROR.CONFLICT_NOT_FOUND,
-            '同步冲突不存在或不在授权范围内',
-          );
+          throw new DomainError(SYNC_ERROR.CONFLICT_NOT_FOUND, '同步冲突不存在或不在授权范围内');
         }
 
         // 展示版本复核：冲突登记的本地版本必须仍是来源记录的当前版本
@@ -149,7 +145,7 @@ export class ResolveSyncConflictUsecase {
   }): Promise<void> {
     const resourceType = SYNC_SOURCE_RESOURCE_TYPES.find(
       (candidate) => candidate === locked.resourceType,
-    ) as SyncSourceResourceType | undefined;
+    );
     if (resourceType === undefined) {
       throw new DomainError(
         SYNC_ERROR.CONFLICT_VERSION_STALE,

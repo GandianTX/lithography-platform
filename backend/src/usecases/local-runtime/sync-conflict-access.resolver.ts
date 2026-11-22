@@ -104,7 +104,10 @@ export class SyncConflictAccessResolver {
 
   /** 批量取来源记录事实：按（资源类型，登记公司）分组取，避免跨公司串读 */
   private async resolveRecordFacts(
-    rows: readonly Pick<SyncConflictMetadataRow, 'recordUuid' | 'organizationId' | 'resourceType'>[],
+    rows: readonly Pick<
+      SyncConflictMetadataRow,
+      'recordUuid' | 'organizationId' | 'resourceType'
+    >[],
   ): Promise<Map<string, SyncSourceRecordFact>> {
     const facts = new Map<string, SyncSourceRecordFact>();
     const groups = new Map<

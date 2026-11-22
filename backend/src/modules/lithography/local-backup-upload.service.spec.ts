@@ -151,8 +151,7 @@ describe('local backup upload service', () => {
           Promise.resolve(
             (options.authorizations ?? [authorization()]).filter((row) =>
               Object.entries(input.where ?? {}).every(
-                ([key, value]) =>
-                  row[key as keyof LocalAccountAuthorizationEntity] === value,
+                ([key, value]) => row[key as keyof LocalAccountAuthorizationEntity] === value,
               ),
             ),
           ),
