@@ -3,9 +3,11 @@ import {
   DomainError,
   INPUT_NORMALIZE_ERROR,
   ORGANIZATION_ERROR,
+  RECORD_PACKAGE_ERROR,
   REFERENCE_DOCUMENT_ERROR,
   REPAIR_REQUEST_ERROR,
   STORED_FILE_ERROR,
+  SYNC_ERROR,
 } from '@core/common/errors';
 import {
   BadRequestException,
@@ -315,5 +317,73 @@ describe(GqlAllExceptionsFilter.name, () => {
       errorMessage: '细节',
     });
     expect(error.message).toBe('细节');
+  });
+
+  // 任务 09 的错误码此前没有登记到映射表，一律回落 BAD_USER_INPUT：
+  // 「冲突不存在 / 不在授权范围内」会被当成"载荷非法"，且与"越权"无法同码。
+  it.each([
+    [SYNC_ERROR.INVALID_PARAMS, 'BAD_USER_INPUT'],
+    [SYNC_ERROR.CONFLICT_NOT_FOUND, 'NOT_FOUND'],
+    [SYNC_ERROR.CONFLICT_ALREADY_RESOLVED, 'CONFLICT'],
+    [SYNC_ERROR.LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY, 'FORBIDDEN'],
+    [SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED, 'CONFLICT'],
+    [SYNC_ERROR.LOCAL_RESOLUTION_NOT_AVAILABLE, 'INTERNAL_SERVER_ERROR'],
+    [SYNC_ERROR.AUTHORIZATION_NOT_FOUND, 'NOT_FOUND'],
+    [SYNC_ERROR.AUTHORIZATION_RENEWAL_NOT_ALLOWED, 'FORBIDDEN'],
+    [SYNC_ERROR.CLAIMS_INVALID, 'BAD_USER_INPUT'],
+    [SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL, 'BAD_USER_INPUT'],
+    [RECORD_PACKAGE_ERROR.INVALID_PARAMS, 'BAD_USER_INPUT'],
+    [RECORD_PACKAGE_ERROR.PACKAGE_NOT_FOUND, 'NOT_FOUND'],
+    [RECORD_PACKAGE_ERROR.FOREIGN_COMPANY, 'FORBIDDEN'],
+    [RECORD_PACKAGE_ERROR.DUPLICATE_RECORD, 'CONFLICT'],
+    [RECORD_PACKAGE_ERROR.IMPORT_NOT_AVAILABLE, 'INTERNAL_SERVER_ERROR'],
+    [RECORD_PACKAGE_ERROR.IMPORT_NOT_PASSED, 'CONFLICT'],
+  ])('maps domain error %s to the declared GraphQL category %s', (errorCode, gqlCode) => {
+    const configService = {
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService;
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'testField' }],
+    } as unknown as ArgumentsHost;
+    const filter = new GqlAllExceptionsFilter(configService);
+
+    const error = filter.catch(new DomainError(errorCode, '受控文案'), host) as GraphQLError;
+
+    expect(error.extensions).toMatchObject({ code: gqlCode, errorCode });
+  });
+
+  // 生产环境口径与 HttpException 路径一致：details 属结构化细节，生产不外发；
+  // 错误大类与受控业务码不受环境差异影响。
+  it('hides DomainError details in production but keeps them outside production', () => {
+    const host = {
+      getType: () => 'graphql',
+      getArgs: () => [undefined, {}, {}, { fieldName: 'testField' }],
+    } as unknown as ArgumentsHost;
+    const details = { path: 'chunk-0/part-1', table: 'maintenance_report' };
+
+    const prodFilter = new GqlAllExceptionsFilter({
+      get: jest.fn().mockReturnValue('production'),
+    } as unknown as ConfigService);
+    const prodError = prodFilter.catch(
+      new DomainError(SYNC_ERROR.CLAIMS_INVALID, '受控文案', details),
+      host,
+    ) as GraphQLError;
+
+    expect(prodError.extensions).toMatchObject({
+      code: 'BAD_USER_INPUT',
+      errorCode: SYNC_ERROR.CLAIMS_INVALID,
+    });
+    expect(prodError.extensions).not.toHaveProperty('details');
+
+    const devFilter = new GqlAllExceptionsFilter({
+      get: jest.fn().mockReturnValue('development'),
+    } as unknown as ConfigService);
+    const devError = devFilter.catch(
+      new DomainError(SYNC_ERROR.CLAIMS_INVALID, '受控文案', details),
+      host,
+    ) as GraphQLError;
+
+    expect(devError.extensions).toHaveProperty('details', details);
   });
 });
