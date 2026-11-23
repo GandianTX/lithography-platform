@@ -1,10 +1,11 @@
 // frontend/e2e/task09-visual-metrics.spec.ts
 
-import { expect, type Page, test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
 import {
+  classifyTableOverflow,
   installLocalRuntimeMocks,
   TASK09_VISUAL_PAGES,
   TASK09_VISUAL_VIEWPORTS,
@@ -99,50 +100,55 @@ test.describe('任务 09 四类页面的三视口度量', () => {
         await page.waitForSelector('h1, h2', { timeout: 10_000 }).catch(() => undefined);
         await page.waitForTimeout(200);
 
-        const metrics = await page.evaluate<Metric>(() => {
-          const root = document.documentElement;
-          const tables = Array.from(document.querySelectorAll('table'));
-          const title = document.querySelector('h1, h2');
-          const titleStyle = title === null ? null : window.getComputedStyle(title);
-          const cards = Array.from(document.querySelectorAll('.data-card'));
-          const card = cards[0] ?? null;
-          const cardStyle = card === null ? null : window.getComputedStyle(card);
-          return {
-            documentClientWidth: root.clientWidth,
-            documentScrollWidth: root.scrollWidth,
-            // 表格只允许在**自身可横向滚动的容器内**超宽（窄屏按 V44 要求：
-            // 表格在自身容器横向滚动，页面不横溢）⇒ 记录"是否找到可滚动祖先"。
-            tableOverflows: tables.map((table) => {
-              const parent = table.parentElement;
-              if (parent === null) {
-                return 0;
-              }
-              const overflow = Math.max(0, table.scrollWidth - parent.clientWidth);
-              if (overflow === 0) {
-                return 0;
-              }
-              let node: HTMLElement | null = parent;
-              while (node !== null) {
-                const overflowX = window.getComputedStyle(node).overflowX;
-                if (overflowX === 'auto' || overflowX === 'scroll') {
+        const metrics = await page.evaluate<Metric, typeof classifyTableOverflow>(
+          (classify) => {
+            const root = document.documentElement;
+            const tables = Array.from(document.querySelectorAll('table'));
+            const title = document.querySelector('h1, h2');
+            const titleStyle = title === null ? null : window.getComputedStyle(title);
+            const cards = Array.from(document.querySelectorAll('.data-card'));
+            const card = cards[0] ?? null;
+            const cardStyle = card === null ? null : window.getComputedStyle(card);
+            return {
+              documentClientWidth: root.clientWidth,
+              documentScrollWidth: root.scrollWidth,
+              // 表格只允许在**自身可横向滚动的容器内**超宽（窄屏按 V44 要求：
+              // 表格在自身容器横向滚动，页面不横溢）⇒ 记录"是否找到可滚动祖先"。
+              tableOverflows: tables.map((table) => {
+                const parent = table.parentElement;
+                if (parent === null) {
                   return 0;
                 }
-                node = node.parentElement;
-              }
-              // 超宽且**没有**可横向滚动的祖先 ⇒ 真实溢出（页面会被撑开）
-              return overflow;
-            }),
-            headings: Array.from(document.querySelectorAll('h1, h2, h3'))
-              .map((node) => (node.textContent ?? '').trim())
-              .filter((text) => text.length > 0),
-            titleFontSize: titleStyle?.fontSize ?? '',
-            titleLineHeight: titleStyle?.lineHeight ?? '',
-            cardCount: cards.length,
-            cardPadding: cardStyle?.padding ?? '',
-            cardRadius: cardStyle?.borderRadius ?? '',
-            antdCardBodyCount: document.querySelectorAll('.ant-card-body').length,
-          };
-        });
+                const overflow = Math.max(0, table.scrollWidth - parent.clientWidth);
+                if (overflow === 0) {
+                  return 0;
+                }
+                let node: HTMLElement | null = parent;
+                let hasScrollableAncestor = false;
+                while (node !== null) {
+                  const overflowX = window.getComputedStyle(node).overflowX;
+                  if (overflowX === 'auto' || overflowX === 'scroll') {
+                    hasScrollableAncestor = true;
+                    break;
+                  }
+                  node = node.parentElement;
+                }
+                // 判定口径由共享 helper 提供（度量与截图两侧同源）
+                return classify(overflow, hasScrollableAncestor);
+              }),
+              headings: Array.from(document.querySelectorAll('h1, h2, h3'))
+                .map((node) => (node.textContent ?? '').trim())
+                .filter((text) => text.length > 0),
+              titleFontSize: titleStyle?.fontSize ?? '',
+              titleLineHeight: titleStyle?.lineHeight ?? '',
+              cardCount: cards.length,
+              cardPadding: cardStyle?.padding ?? '',
+              cardRadius: cardStyle?.borderRadius ?? '',
+              antdCardBodyCount: document.querySelectorAll('.ant-card-body').length,
+            };
+          },
+          classifyTableOverflow,
+        );
 
         // 页面不得整页横溢（窄屏尤其）
         expect(

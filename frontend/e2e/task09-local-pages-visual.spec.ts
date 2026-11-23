@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
 import {
+  classifyTableOverflow,
   installLocalRuntimeMocks,
   TASK09_VISUAL_PAGES,
   TASK09_VISUAL_VIEWPORTS,
@@ -33,6 +34,15 @@ import { buildEvidenceFileName, captureStableViewport } from './helpers/visual-e
  */
 
 const EVIDENCE_DIR = process.env.TASK09_EVIDENCE_DIR ?? '/tmp/task09-evidence';
+
+/** 截图规格采集到的页面度量（与度量规格字段同源，判定口径共用共享 helper） */
+type MetricsShape = {
+  documentClientWidth: number;
+  documentScrollWidth: number;
+  tableOverflows: number[];
+  headings: string[];
+  dataCardCount: number;
+};
 
 mkdirSync(EVIDENCE_DIR, { recursive: true });
 
@@ -73,25 +83,44 @@ test.describe('任务 09 候选页面的提交级截图', () => {
           filePath: `${EVIDENCE_DIR}/${fileName}`,
         });
 
-        const metrics = await page.evaluate(() => {
-          const root = document.documentElement;
-          const tables = Array.from(document.querySelectorAll('table'));
-          return {
-            documentClientWidth: root.clientWidth,
-            documentScrollWidth: root.scrollWidth,
-            tableOverflows: tables.map((table) => {
-              const parent = table.parentElement;
-              if (parent === null) {
-                return 0;
-              }
-              return Math.max(0, table.scrollWidth - parent.clientWidth);
-            }),
-            headings: Array.from(document.querySelectorAll('h1, h2, h3'))
-              .map((node) => (node.textContent ?? '').trim())
-              .filter((text) => text.length > 0),
-            dataCardCount: document.querySelectorAll('.data-card').length,
-          };
-        });
+        const metrics = await page.evaluate<MetricsShape, typeof classifyTableOverflow>(
+          (classify) => {
+            const root = document.documentElement;
+            const tables = Array.from(document.querySelectorAll('table'));
+            return {
+              documentClientWidth: root.clientWidth,
+              documentScrollWidth: root.scrollWidth,
+              // 判定口径与度量规格**同源**（共享 helper）：
+              // 表格只允许在自身可横向滚动的容器内超宽；超宽且找不到可滚动祖先才算真实溢出。
+              tableOverflows: tables.map((table) => {
+                const parent = table.parentElement;
+                if (parent === null) {
+                  return 0;
+                }
+                const overflow = Math.max(0, table.scrollWidth - parent.clientWidth);
+                if (overflow === 0) {
+                  return 0;
+                }
+                let node: HTMLElement | null = parent;
+                let hasScrollableAncestor = false;
+                while (node !== null) {
+                  const overflowX = window.getComputedStyle(node).overflowX;
+                  if (overflowX === 'auto' || overflowX === 'scroll') {
+                    hasScrollableAncestor = true;
+                    break;
+                  }
+                  node = node.parentElement;
+                }
+                return classify(overflow, hasScrollableAncestor);
+              }),
+              headings: Array.from(document.querySelectorAll('h1, h2, h3'))
+                .map((node) => (node.textContent ?? '').trim())
+                .filter((text) => text.length > 0),
+              dataCardCount: document.querySelectorAll('.data-card').length,
+            };
+          },
+          classifyTableOverflow,
+        );
 
         expect(
           metrics.documentScrollWidth - metrics.documentClientWidth,

@@ -72,6 +72,28 @@ export const TASK09_VISUAL_PAGES: readonly Task09VisualPage[] = [
   },
 ];
 
+/**
+ * 表格溢出的**判定口径**（度量规格与提交级截图规格共用的单一真源）。
+ *
+ * 口径：表格只允许在**自身可横向滚动的容器内**超宽
+ * （窄屏按 V44 要求：表格在自身容器横向滚动，**页面不横溢**）；
+ * 超宽且**找不到**可横向滚动的祖先 ⇒ 才是真实溢出（页面会被撑开）。
+ *
+ * 两个规格曾各写一份判定：度量规格识别了可滚动祖先，截图规格仍是
+ * "table.scrollWidth - parent.clientWidth" 的旧口径 ⇒ 同一页面在两个规格里
+ * 得出相反结论（截图侧假失败）。口径必须单一。
+ *
+ * @param overflow 表格相对其直接父容器的超宽像素
+ * @param hasScrollableAncestor 是否存在 overflowX 为 auto/scroll 的祖先
+ * @returns 0 表示可接受；正数表示真实溢出的像素数
+ */
+export function classifyTableOverflow(overflow: number, hasScrollableAncestor: boolean): number {
+  if (overflow <= 0) {
+    return 0;
+  }
+  return hasScrollableAncestor ? 0 : overflow;
+}
+
 /** 记录包页的 GraphQL 载荷（导出/预检/导入均为 mutation，页面加载时不自动触发 ⇒ 留空即可）。 */
 const RECORD_PACKAGE_IMPORT_PREVIEW = {
   checkId: 'chk-1',
