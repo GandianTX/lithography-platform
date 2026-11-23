@@ -215,4 +215,60 @@ export class SyncConflictQueryService {
     }
     return payloads;
   }
+
+  /**
+   * 按业务稳定编号读取**最新一条**冲突（含正文快照）。
+   *
+   * 来源页的只读云端投影用它回答："这条记录当前有没有已裁决为使用云端的冲突？"
+   *
+   * 只取**最新一条**（`versionNo` 降序、`createdAt` 降序）：
+   * 旧裁决不得盖过更新的冲突现状（例如用户对更新的冲突改选了方向）。
+   * 公司口径**不在这里过滤**：调用方按工单的公司归属复核，
+   * 避免"冲突登记公司口径与工单归属口径不同"导致投影被静默关掉。
+   */
+  async readLatestByRecordUuid(input: {
+    resourceType: string;
+    recordUuid: string;
+  }): Promise<SyncConflictLatestSnapshotRow | null> {
+    const repository = this.pickRepository(this.conflictRepository);
+    const entity = await repository.findOne({
+      where: {
+        resourceType: input.resourceType,
+        recordUuid: input.recordUuid,
+      },
+      order: { versionNo: 'DESC', createdAt: 'DESC' },
+      select: {
+        conflictId: true,
+        organizationId: true,
+        resourceType: true,
+        decision: true,
+        status: true,
+        localSnapshot: true,
+        cloudSnapshot: true,
+      },
+    });
+    if (entity === null) {
+      return null;
+    }
+    return {
+      conflictId: entity.conflictId,
+      organizationId: entity.organizationId,
+      resourceType: entity.resourceType,
+      decision: entity.decision,
+      status: entity.status,
+      localSnapshot: entity.localSnapshot,
+      cloudSnapshot: entity.cloudSnapshot,
+    };
+  }
 }
+
+/** 最新冲突行（含正文快照；只读投影用） */
+export type SyncConflictLatestSnapshotRow = {
+  conflictId: string;
+  organizationId: number;
+  resourceType: string;
+  decision: string | null;
+  status: string;
+  localSnapshot: string;
+  cloudSnapshot: string;
+};

@@ -15,7 +15,11 @@ import {
   parseRepairRequestHandlingStatus,
 } from '@core/repair-request/policy/repair-request-handling.policy';
 import { isRepairRequestEnded } from '@core/repair-request/policy/repair-process-write.policy';
-import { Injectable } from '@nestjs/common';
+import {
+  planReadOnlyCloudAdoptedView,
+  type SyncConflictRepairRequestControlledFields,
+} from '@core/local-runtime/policy/sync-conflict-readonly-view.policy';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { FindOptionsWhere, In, Repository } from 'typeorm';
@@ -29,6 +33,7 @@ import { RepairRequestIntakeEntity } from '../entities/repair-request-intake.ent
 import { StoredFileEntity } from '../entities/stored-file.entity';
 import { RepairProcessEntryQueryService } from './repair-process-entry.query.service';
 import { RepairRequestMaintenanceQueryService } from './repair-request-maintenance.query.service';
+import { SyncConflictQueryService } from './sync-conflict.query.service';
 import {
   EngineerResponseQueryResult,
   EquipmentModelView,
@@ -105,6 +110,11 @@ export class RepairRequestQueryService {
     private readonly organizationRepository: Repository<OrganizationEntity>,
     private readonly repairProcessEntryQueryService: RepairProcessEntryQueryService,
     private readonly maintenanceQueryService: RepairRequestMaintenanceQueryService,
+    // 已结单冲突「使用云端」的**只读投影**数据源（任务 09 P1-4）：
+    // 来源页要把用户选定的云端内容读回来，就得能按业务稳定编号找到那条已裁决的冲突。
+    // 可选注入：离线装配下没有冲突域 ⇒ 不投影（保持本地内容），不报错。
+    @Optional()
+    private readonly syncConflictQueryService?: SyncConflictQueryService,
   ) {}
 
   /**
@@ -274,13 +284,19 @@ export class RepairRequestQueryService {
     const [processEntries, maintenance, maintenanceSteps, maintenanceFaultPanels, intake] =
       await this.loadEngineerScopeAttachments(entity, isAcceptingEngineer, params.scope);
 
+    // 已结单冲突「使用云端」的**只读投影**（任务 09 P1-4）：
+    // 用户在冲突页选过"使用云端"后，来源页必须读回**云端内容**，
+    // 而不是仍然显示本地旧内容。投影只改"读到的内容"：
+    // 业务行、历史、云端原记录都不动，也不改变任何写权限。
+    const cloudView = await this.resolveReadOnlyCloudView(entity);
+
     return {
       id: entity.id,
       requestNo: entity.requestNo,
       equipmentModel: this.toModelView(model),
       errorCode: entity.errorCode,
       faultDescription: entity.faultDescription,
-      contentMd: entity.contentMd,
+      contentMd: cloudView === null ? entity.contentMd : (cloudView.contentMd ?? entity.contentMd),
       createdAt: entity.createdAt,
       isAccepted: entity.isAccepted,
       acceptedAt: entity.acceptedAt,
@@ -290,8 +306,14 @@ export class RepairRequestQueryService {
       closureStatus: entity.closureStatus,
       closedAt: entity.closedAt,
       closureReason: entity.closureReason,
-      handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
-      handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
+      handlingResult:
+        cloudView === null
+          ? parseRepairRequestHandlingResult(entity.handlingResult)
+          : cloudView.handlingResult,
+      handlingStatus:
+        cloudView === null
+          ? parseRepairRequestHandlingStatus(entity.handlingStatus)
+          : cloudView.handlingStatus,
       processEntries,
       maintenance,
       maintenanceSteps,
@@ -311,6 +333,65 @@ export class RepairRequestQueryService {
       customerAccountId: entity.customerAccountId,
       acceptedByEngineerAccountId: entity.acceptedByEngineerAccountId,
     };
+  }
+
+  /**
+   * 已结单冲突「使用云端」的**只读投影**（任务 09 P1-4）。
+   *
+   * 返回 `null` 表示"不投影"（来源页照常显示本地内容）。投影成立需要同时满足：
+   * - 该记录存在一条**已裁决为使用云端**的冲突；
+   * - 来源记录**已结单**（未结单走的是业务对齐口径）；
+   * - 冲突登记的**公司**与工单的公司归属一致（跨公司不投影）；
+   * - 业务行当前内容与冲突登记的**本地快照一致**
+   *   ⇒ 证明这次裁决没有改写业务行（只读采用），而不是用户后来又编辑过。
+   *
+   * 任何不确定情形都返回 `null`（不投影），不做"看起来能用"的半截投影。
+   */
+  private async resolveReadOnlyCloudView(
+    entity: RepairRequestEntity,
+  ): Promise<SyncConflictRepairRequestControlledFields | null> {
+    const provider = this.syncConflictQueryService;
+    if (provider === undefined) {
+      return null;
+    }
+    const recordUuid = entity.recordUuid;
+    if (recordUuid === null || recordUuid === undefined || recordUuid === '') {
+      return null;
+    }
+    const row = await provider.readLatestByRecordUuid({
+      resourceType: 'REPAIR_REQUEST',
+      recordUuid,
+    });
+    if (row === null) {
+      return null;
+    }
+    // 公司口径复核：冲突登记的公司必须落在工单的公司归属集合内
+    // （归属公司或服务公司）⇒ 跨公司冲突不会投影到本机来源页。
+    const ownerOrganizationId = entity.ownerOrganizationId ?? null;
+    const serviceOrganizationId = entity.serviceOrganizationId ?? null;
+    const sameCompany =
+      (ownerOrganizationId !== null && row.organizationId === ownerOrganizationId) ||
+      (serviceOrganizationId !== null && row.organizationId === serviceOrganizationId);
+    if (!sameCompany) {
+      return null;
+    }
+    const plan = planReadOnlyCloudAdoptedView({
+      resourceType: row.resourceType,
+      decision: row.decision,
+      status: row.status,
+      localSnapshot: row.localSnapshot,
+      cloudSnapshot: row.cloudSnapshot,
+      sourceFields: {
+        contentMd: entity.contentMd,
+        handlingResult: parseRepairRequestHandlingResult(entity.handlingResult),
+        handlingStatus: parseRepairRequestHandlingStatus(entity.handlingStatus),
+      },
+      sourceClosed: isRepairRequestEnded({
+        handlingStatus: entity.handlingStatus,
+        closureStatus: entity.closureStatus,
+      }),
+    });
+    return plan.kind === 'project' ? plan.fields : null;
   }
 
   /**
