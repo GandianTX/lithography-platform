@@ -58,7 +58,7 @@
 import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
@@ -955,10 +955,20 @@ async function main(): Promise<void> {
     cleanupErrors.length === 0 ? '来源库与目标库夹具已按精确清单删除' : cleanupErrors.join(' | '),
   );
 
-  for (const root of [exportRoot, mediaRoot]) {
-    if (existsSync(root)) {
-      rmSync(root, { force: true, recursive: true });
+  for (const [root, fileRoot] of [
+    [exportRoot, sourceAuth.fileRoot],
+    [mediaRoot, targetAuth.fileRoot],
+  ] as const) {
+    if (!existsSync(root)) {
+      continue;
     }
+    // 目录级递归删除前先校验真实路径：只允许删受控文件根内的本轮子目录
+    const resolvedRoot = resolve(root);
+    const resolvedFileRoot = resolve(fileRoot);
+    if (!resolvedRoot.startsWith(resolvedFileRoot + sep)) {
+      throw new Error(`待删目录越出受控文件根，拒绝删除：${root}（受控根 ${resolvedFileRoot}）`);
+    }
+    rmSync(root, { force: true, recursive: true });
   }
 
   // ── 5. 汇总 ────────────────────────────────────────────────────────────────

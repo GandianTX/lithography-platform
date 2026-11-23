@@ -40,7 +40,7 @@ import { Test } from '@nestjs/testing';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
@@ -75,24 +75,32 @@ import {
 import {
   assertAuthorizationNotOverwritable,
   assertControlledFileRoot,
+  assertDatabaseCleanupAllowed,
   assertDisposableMarker,
+  assertHoldReleaseAllowed,
   assertNoExternalReference,
   assertNoForeignActiveHold,
+  assertOwnedFieldsMatch,
   assertPathWithinRoot,
   assertSentinelsUnchanged,
   assertServerIdentity,
   buildCleanupError,
+  createCleanupGate,
   deleteFilesByList,
+  describeCleanupGate,
   listFilesUnder,
-  planDatabaseDeletion,
+  planOwnedDeletion,
   pruneEmptyDirs,
   readSelfcheckAuthorization,
+  requireCompleteBaseline,
+  selectCreatedSentinelIds,
   selectReleasableHolds,
   SelfcheckSafetyError,
-  type DatabaseDeletionTarget,
+  type CleanupGate,
   type DisposableMarkerRow,
   type ExistingAuthorizationFact,
   type ExistingHoldFact,
+  type OwnedObjectRecord,
   type SentinelSnapshot,
 } from './task09-restore-selfcheck.safety';
 
@@ -145,12 +153,31 @@ type RunScope = {
   organizationId: number;
   superAdminAccountId: number;
   engineerAccountId: number;
+  /** 本轮**实际创建**（生产操作返回的真实主键）的对象 */
   readonly ownedBackupIds: Set<string>;
   readonly ownedRestoreIds: Set<string>;
   readonly ownedHoldIds: Set<string>;
+  readonly ownedBackupRunIds: Set<string>;
+  readonly ownedAuditEventIds: Set<string>;
+  readonly ownedAuthorizationIds: Set<string>;
+  readonly ownedSettingIds: Set<string>;
   readonly ownedFilePaths: Set<string>;
+  /**
+   * 本轮**造数**时改写过的安装标识（键＝备份资产 ID，值＝改写后的安装标识）。
+   *
+   * "异机拒绝"场景刻意把资产的安装标识改成外来值来验证预检拒绝；
+   * 删除前核对必须认这个**本轮登记过的真实值**，否则会把合法行当成串号而拒绝删除。
+   */
+  readonly ownedBackupInstallationOverrides: Map<string, string>;
   createdSettingId: string | null;
   createdAuthorizationId: string | null;
+  /** 本轮创建的哨兵（复用到的既有哨兵**不属于**本轮，不得回收） */
+  createdSentinelAuthorizationId: string | null;
+  createdSentinelHoldId: string | null;
+  /** 本轮创建的哨兵冻结所属公司（外公司范围，删除前按此核对） */
+  sentinelHoldOrganizationId: number | null;
+  /** 运行前的主键基线（全部受控表，缺失即失败关闭） */
+  readonly baseline: Map<string, Set<string>>;
 };
 
 /**
@@ -449,6 +476,7 @@ async function ensureFixtures(ctx: ChainContext, scope: RunScope): Promise<void>
     }),
   );
   scope.createdSettingId = String(setting.id);
+  scope.ownedSettingIds.add(String(setting.id));
 
   const authorizationRepository = ctx.dataSource.getRepository(LocalAccountAuthorizationEntity);
   const signedClaims = {
@@ -470,6 +498,7 @@ async function ensureFixtures(ctx: ChainContext, scope: RunScope): Promise<void>
     }),
   );
   scope.createdAuthorizationId = String(authorization.id);
+  scope.ownedAuthorizationIds.add(String(authorization.id));
 }
 
 /** 外公司哨兵：本公司之外的业务行指纹（行数 ＋ 内容摘要） */
@@ -687,6 +716,10 @@ async function runInterruptScenario(
       );
     });
   });
+
+  // 子进程的恢复运行同样属于**本轮**：登记它的恢复 ID，
+  // 其备份资产与备份运行行由父子推导在收尾时精确回收（不留未归属残留）。
+  scope.ownedRestoreIds.add(restoreId);
 
   // 给写入留出"阻塞在行锁上"的时间：子进程此时正卡在恢复写入里，
   // SIGKILL 落在**写入途中** ⇒ 事务回滚（不留半截数据）。
@@ -910,6 +943,57 @@ async function restoreRequestDeletedFlag(dataSource: DataSource, requestId: numb
   );
 }
 
+/**
+ * 把数据库返回的主键值规范成文本（NULL／空串 ⇒ null）。
+ *
+ * MySQL 驱动对 BIGINT 主键可能返回 number 或 string，两种都必须能登记，
+ * 否则父行（例如备份运行行）会因"取不到主键"而漏登记，最终变成未归属残留。
+ */
+function toIdText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value.length > 0 ? value : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+}
+
+/**
+ * 登记一个备份资产及其所属的备份运行行（**本轮实际创建**才登记）。
+ *
+ * 备份运行行（`local_backup_run`）是备份的**父行**：备份资产里带 `run_id` 与
+ * `local_cleanup_run_id`。只登记资产而不登记父行，收尾时父行会成为"未归属残留"。
+ */
+async function registerOwnedBackup(
+  ctx: ChainContext,
+  scope: RunScope,
+  backupId: string,
+): Promise<void> {
+  scope.ownedBackupIds.add(backupId);
+  const rows: unknown = await ctx.dataSource.query(
+    'SELECT backup_id, run_id, local_cleanup_run_id, local_reference, installation_id, organization_id ' +
+      'FROM backup_asset WHERE backup_id = ?',
+    [backupId],
+  );
+  const asset = (rows as Array<Record<string, unknown>>)[0];
+  if (asset === undefined) {
+    return;
+  }
+  const runId = toIdText(asset['run_id']);
+  if (runId !== null) {
+    scope.ownedBackupRunIds.add(runId);
+  }
+  const cleanupRunId = toIdText(asset['local_cleanup_run_id']);
+  if (cleanupRunId !== null) {
+    scope.ownedBackupRunIds.add(cleanupRunId);
+  }
+  const localReference = toIdText(asset['local_reference']);
+  if (localReference !== null) {
+    scope.ownedFilePaths.add(localReference);
+  }
+}
+
 /** 造一份可恢复的本机备份（真实生成受保护包），并登记为本轮对象 */
 async function createBackup(
   ctx: ChainContext,
@@ -920,116 +1004,222 @@ async function createBackup(
   if (backup.status !== 'SUCCEEDED' || backup.backupId === null) {
     throw new Error(`准备恢复用的备份失败：status=${backup.status}`);
   }
-  scope.ownedBackupIds.add(backup.backupId);
-  const asset = await ctx.dataSource
-    .getRepository(BackupAssetEntity)
-    .findOne({ where: { backupId: backup.backupId } });
-  if (asset?.localReference !== null && asset?.localReference !== undefined) {
-    scope.ownedFilePaths.add(asset.localReference);
-  }
+  await registerOwnedBackup(ctx, scope, backup.backupId);
   return backup.backupId;
 }
 
 /**
- * 收尾：按**先子后父**删除本轮创建的数据库对象，并按精确清单删除本轮文件。
+ * 从恢复预检快照里读出保护副本标识。
  *
- * 数据库删除在**同一事务**内完成；文件删除不可回滚，因此逐条留痕。
+ * 库级 CHECK `chk_backup_restore_run_execution_guard` 规定 PENDING 行的
+ * `protection_backup_id` 必须为空 ⇒ 预检生成的保护副本标识**随快照落库**
+ * （`snapshot.protection.backupId`）。只看列会漏掉预检被拒场景生成的保护副本。
  */
-async function cleanupRunArtifacts(
+function readProtectionBackupIdFromSnapshot(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { protection?: { backupId?: unknown } };
+    const backupId = parsed.protection?.backupId;
+    if (typeof backupId !== 'string' || backupId.length === 0) {
+      return null;
+    }
+    return backupId;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 汇总**本轮所有权**：生产操作返回的真实主键 + 由其推导的父子行。
+ *
+ * 所有权只来自两类可核对的事实：
+ * 1. 本轮登记的主键（备份／恢复／冻结／设置／授权／审计事件）；
+ * 2. 由本轮恢复 ID 反查到的父子行（恢复用到的备份与保护副本、备份的运行行、
+ *    带 `restore_id` 的冻结行、`target_id` 指向本轮恢复的审计事件）。
+ *
+ * **不使用全表差集**：并发期间由别人写入的行不属于本轮，必须保留。
+ */
+async function collectOwnedObjects(
   ctx: ChainContext,
   scope: RunScope,
-  beforeIds: ReadonlyMap<string, Set<string>>,
-): Promise<{ deleted: string[]; failed: string[]; errors: string[] }> {
+): Promise<OwnedObjectRecord[]> {
+  requireCompleteBaseline(
+    scope.baseline,
+    MANAGED_TABLES.map((item) => item.table),
+  );
+
+  const restoreIds = [...scope.ownedRestoreIds];
+
+  // ── 1) 由本轮恢复 ID 推导备份资产与备份运行行（父子闭包）──
+  if (restoreIds.length > 0) {
+    const restoreRows: unknown = await ctx.dataSource.query(
+      'SELECT restore_id, backup_id, protection_backup_id, check_snapshot ' +
+        'FROM backup_restore_run WHERE restore_id IN (?)',
+      [restoreIds],
+    );
+    for (const row of restoreRows as Array<Record<string, unknown>>) {
+      for (const column of ['backup_id', 'protection_backup_id']) {
+        const value = toIdText(row[column]);
+        if (value !== null) {
+          await registerOwnedBackup(ctx, scope, value);
+        }
+      }
+      // 保护副本标识随快照落库（PENDING 行本列为空）⇒ 必须一并推导
+      const snapshotBackupId = readProtectionBackupIdFromSnapshot(row['check_snapshot']);
+      if (snapshotBackupId !== null) {
+        await registerOwnedBackup(ctx, scope, snapshotBackupId);
+      }
+    }
+  }
+
+  // ── 2) 冻结行：带本轮 `restore_id` 的冻结属于本轮 ──
+  if (restoreIds.length > 0) {
+    const holdRows: unknown = await ctx.dataSource.query(
+      'SELECT hold_id FROM local_write_hold WHERE restore_id IN (?)',
+      [restoreIds],
+    );
+    for (const row of holdRows as Array<Record<string, unknown>>) {
+      scope.ownedHoldIds.add(String(row['hold_id']));
+    }
+  }
+
+  // ── 3) 审计事件：`target_id` 指向本轮恢复的终态事件属于本轮 ──
+  //    生产写入口径：operation=RESTORE_LOCAL_BUSINESS、target_type=LOCAL_RESTORE、
+  //    target_id=恢复运行 ID（见 `management-audit.service.ts`）。
+  const auditRestoreIdByEvent = new Map<string, string>();
+  if (restoreIds.length > 0) {
+    const eventRows: unknown = await ctx.dataSource.query(
+      'SELECT event_id, target_id FROM management_audit_event ' +
+        "WHERE operation = 'RESTORE_LOCAL_BUSINESS' AND target_type = 'LOCAL_RESTORE' " +
+        'AND target_id IN (?)',
+      [restoreIds],
+    );
+    for (const row of eventRows as Array<Record<string, unknown>>) {
+      const eventId = String(row['event_id']);
+      auditRestoreIdByEvent.set(eventId, String(row['target_id']));
+      scope.ownedAuditEventIds.add(eventId);
+    }
+  }
+
+  const owned: OwnedObjectRecord[] = [];
+
+  for (const [eventId, restoreId] of auditRestoreIdByEvent) {
+    owned.push({
+      table: 'management_audit_event',
+      idColumn: 'event_id',
+      id: eventId,
+      ownership: `本轮恢复 ${restoreId} 的终态审计事件`,
+      expectedFields: {
+        operation: 'RESTORE_LOCAL_BUSINESS',
+        target_type: 'LOCAL_RESTORE',
+        target_id: restoreId,
+      },
+    });
+  }
+
+  for (const holdId of scope.ownedHoldIds) {
+    const isSentinel = holdId === scope.createdSentinelHoldId;
+    owned.push({
+      table: 'local_write_hold',
+      idColumn: 'hold_id',
+      id: holdId,
+      ownership: isSentinel ? '本轮创建的哨兵冻结' : '本轮恢复建立的冻结',
+      expectedFields: {
+        installation_id: scope.installationId,
+        organization_id: isSentinel
+          ? (scope.sentinelHoldOrganizationId ?? scope.organizationId)
+          : scope.organizationId,
+      },
+    });
+  }
+
+  for (const restoreId of scope.ownedRestoreIds) {
+    owned.push({
+      table: 'backup_restore_run',
+      idColumn: 'restore_id',
+      id: restoreId,
+      ownership: '本轮登记的恢复运行',
+      expectedFields: {
+        organization_id: scope.organizationId,
+        target_installation_id: scope.installationId,
+      },
+    });
+  }
+
+  for (const backupId of scope.ownedBackupIds) {
+    owned.push({
+      table: 'backup_asset',
+      idColumn: 'backup_id',
+      id: backupId,
+      ownership: '本轮生成的备份资产（含保护副本）',
+      expectedFields: {
+        installation_id:
+          scope.ownedBackupInstallationOverrides.get(backupId) ?? scope.installationId,
+        organization_id: scope.organizationId,
+      },
+    });
+  }
+
+  for (const runId of scope.ownedBackupRunIds) {
+    owned.push({
+      table: 'local_backup_run',
+      idColumn: 'id',
+      id: runId,
+      ownership: '本轮备份的运行行（备份资产父行）',
+      expectedFields: {
+        installation_id: scope.installationId,
+        organization_id: scope.organizationId,
+      },
+    });
+  }
+
+  for (const settingId of scope.ownedSettingIds) {
+    owned.push({
+      table: 'local_company_setting',
+      idColumn: 'id',
+      id: settingId,
+      ownership: '本轮新建的公司设置',
+      expectedFields: {
+        installation_id: scope.installationId,
+        organization_id: scope.organizationId,
+      },
+    });
+  }
+
+  for (const authorizationId of scope.ownedAuthorizationIds) {
+    owned.push({
+      table: 'local_account_authorization',
+      idColumn: 'id',
+      id: authorizationId,
+      ownership: '本轮新建的授权行',
+      expectedFields: {
+        installation_id: scope.installationId,
+        organization_id: scope.organizationId,
+      },
+    });
+  }
+
+  return owned;
+}
+
+/**
+ * 收尾的文件清理：本轮运行目录 + 本轮明确创建的其它受控文件。
+ *
+ * 只按**精确清单**删除（不按目录递归删除）；失败逐条留痕。
+ */
+function cleanupRunFiles(scope: RunScope): {
+  deleted: string[];
+  failed: string[];
+  errors: string[];
+} {
   const deleted: string[] = [];
   const failed: string[] = [];
   const errors: string[] = [];
 
-  // 1) 计算本轮新建的对象（after \ before）
-  const targets: DatabaseDeletionTarget[] = [];
-  for (const managed of MANAGED_TABLES) {
-    const before = beforeIds.get(managed.table) ?? new Set<string>();
-    const after = await snapshotIds(ctx.dataSource, managed.table, managed.idColumn);
-    for (const id of after) {
-      if (before.has(id)) {
-        continue;
-      }
-      targets.push({
-        table: managed.table,
-        idColumn: managed.idColumn,
-        id,
-        ownership: `${managed.table}.${managed.idColumn}=${id}`,
-      });
-    }
-  }
-
-  // 2) 外部引用预检（本轮之外的引用一律拦下，不靠外键最后报错）
-  const ownedRestoreIds = new Set(
-    targets.filter((item) => item.table === 'backup_restore_run').map((item) => item.id),
-  );
-  const ownedBackupIds = new Set(
-    targets.filter((item) => item.table === 'backup_asset').map((item) => item.id),
-  );
-  const restoreRefs: unknown = await ctx.dataSource.query(
-    'SELECT restore_id, backup_id, protection_backup_id FROM backup_restore_run',
-  );
-  const runRefs: unknown = await ctx.dataSource.query(
-    'SELECT backup_id, run_id, local_cleanup_run_id FROM backup_asset',
-  );
-  for (const target of targets) {
-    if (target.table === 'backup_asset') {
-      const references = (restoreRefs as Array<Record<string, unknown>>)
-        .filter(
-          (row) =>
-            String(row['backup_id']) === target.id ||
-            text(row['protection_backup_id']) === target.id,
-        )
-        .map((row) => ({
-          ownerTable: 'backup_restore_run',
-          ownerId: String(row['restore_id']),
-          referencedTable: 'backup_asset',
-          referencedId: target.id,
-        }));
-      assertNoExternalReference(
-        references,
-        'backup_asset',
-        target.id,
-        [...ownedRestoreIds].map((id) => `backup_restore_run::${id}`),
-      );
-    }
-    if (target.table === 'local_backup_run') {
-      const references = (runRefs as Array<Record<string, unknown>>)
-        .filter(
-          (row) =>
-            text(row['run_id']) === target.id || text(row['local_cleanup_run_id']) === target.id,
-        )
-        .map((row) => ({
-          ownerTable: 'backup_asset',
-          ownerId: String(row['backup_id']),
-          referencedTable: 'local_backup_run',
-          referencedId: target.id,
-        }));
-      assertNoExternalReference(
-        references,
-        'local_backup_run',
-        target.id,
-        [...ownedBackupIds].map((id) => `backup_asset::${id}`),
-      );
-    }
-  }
-
-  // 3) 数据库删除：同一事务内，先子后父
-  const plan = planDatabaseDeletion(targets);
-  await ctx.dataSource.transaction(async (manager: EntityManager) => {
-    for (const target of plan) {
-      await manager.query(`DELETE FROM \`${target.table}\` WHERE \`${target.idColumn}\` = ?`, [
-        target.id,
-      ]);
-      deleted.push(`${target.table}#${target.id}`);
-    }
-  });
-
-  // 4) 文件删除：受控根内**精确清单**
-  const files = listFilesUnder(scope.runRoot);
+  // (a) 本轮运行目录下的全部文件（本轮生成的包、清单与原件副本）
+  const files = existsSync(scope.runRoot) ? listFilesUnder(scope.runRoot) : [];
   const deletion = deleteFilesByList(files, scope.runRoot);
   for (const item of deletion.deleted) {
     deleted.push(`file:${item}`);
@@ -1041,7 +1231,196 @@ async function cleanupRunArtifacts(
   if (existsSync(scope.runRoot)) {
     errors.push(`本轮运行目录未清空：${scope.runRoot}`);
   }
+
+  // (b) 本轮明确创建、但不在运行目录下的受控文件（如哨兵文件）
+  const extraPaths = [...scope.ownedFilePaths].filter(
+    (path) => !path.startsWith(scope.runRoot + sep),
+  );
+  if (extraPaths.length > 0) {
+    const extra = deleteFilesByList(extraPaths, scope.fileRoot);
+    for (const item of extra.deleted) {
+      deleted.push(`file:${item}`);
+    }
+    for (const item of extra.failed) {
+      failed.push(`file:${item.path}:${item.reason}`);
+    }
+  }
+  pruneEmptyDirs(join(scope.fileRoot, 'sentinels'), scope.fileRoot);
+
   return { deleted, failed, errors };
+}
+
+/**
+ * 收尾：按**本轮所有权登记**删除数据库对象，并按精确清单删除本轮文件。
+ *
+ * 与旧实现的根本差别：
+ * - 删除集合来自所有权登记，**不再**用"全表 after \ before"推断归属
+ *   （并发期间别人写入的行不再被误删，而是作为"未归属新增行"报告并保留）；
+ * - 基线缺失 ⇒ 失败关闭，绝不用空集合回落；
+ * - 删除前在**同一事务**内逐条读回真实行、核对关键字段（安装／公司／父子）、
+ *   预检本轮之外的外部引用，任一不符即整体回滚；
+ * - 运行前已存在却被登记成"本轮创建"的主键 ⇒ 拒绝删除（登记错误的显式暴露）。
+ */
+async function cleanupRunArtifacts(
+  ctx: ChainContext,
+  scope: RunScope,
+  gate: CleanupGate,
+): Promise<{
+  deleted: string[];
+  failed: string[];
+  errors: string[];
+  owned: string[];
+  unexplained: string[];
+}> {
+  const deleted: string[] = [];
+  const failed: string[] = [];
+  const errors: string[] = [];
+
+  // 0) 门禁：身份／范围／基线未全部通过 ⇒ 禁止任何数据库写删
+  assertDatabaseCleanupAllowed(gate);
+
+  // 1) 汇总本轮所有权并生成删除计划（基线不完整 ⇒ 失败关闭）
+  const owned = await collectOwnedObjects(ctx, scope);
+  const plan = planOwnedDeletion(owned, scope.baseline);
+  const ownedByKey = new Map(owned.map((item) => [`${item.table}::${item.id}`, item]));
+
+  // 2) 非本轮新增行的审计清单（并发写入等场景：保留并报告，绝不删除）
+  const unexplained: string[] = [];
+  for (const managed of MANAGED_TABLES) {
+    const current = await snapshotIds(ctx.dataSource, managed.table, managed.idColumn);
+    const before = scope.baseline.get(managed.table);
+    if (before === undefined) {
+      continue;
+    }
+    const ownedIds = new Set(
+      owned.filter((item) => item.table === managed.table).map((item) => item.id),
+    );
+    for (const id of current) {
+      if (!before.has(id) && !ownedIds.has(id)) {
+        unexplained.push(`${managed.table}#${id}`);
+      }
+    }
+  }
+  if (unexplained.length > 0) {
+    errors.push(`存在非本轮创建的新增行（已保留不删，需人工核对）：${unexplained.join(', ')}`);
+  }
+
+  // 3) 数据库删除：同一事务内，先子后父
+  await ctx.dataSource.transaction(async (manager: EntityManager) => {
+    // 3.1 逐条读回真实行并核对登记的关键字段
+    for (const target of plan) {
+      const rows: unknown = await manager.query(
+        `SELECT * FROM \`${target.table}\` WHERE \`${target.idColumn}\` = ?`,
+        [target.id],
+      );
+      const actual = (rows as Array<Record<string, unknown>>)[0];
+      if (actual === undefined) {
+        continue;
+      }
+      const record = ownedByKey.get(`${target.table}::${target.id}`);
+      if (record !== undefined) {
+        assertOwnedFieldsMatch(record, actual);
+      }
+    }
+
+    // 3.2 外部引用预检（本轮之外的引用一律拦下，不靠外键最后报错）
+    const ownedRestoreIds = plan
+      .filter((item) => item.table === 'backup_restore_run')
+      .map((item) => item.id);
+    const ownedBackupIds = plan
+      .filter((item) => item.table === 'backup_asset')
+      .map((item) => item.id);
+    const restoreRefs: unknown = await manager.query(
+      'SELECT restore_id, backup_id, protection_backup_id FROM backup_restore_run',
+    );
+    const runRefs: unknown = await manager.query(
+      'SELECT backup_id, run_id, local_cleanup_run_id FROM backup_asset',
+    );
+    for (const target of plan) {
+      if (target.table === 'backup_asset') {
+        const references = (restoreRefs as Array<Record<string, unknown>>)
+          .filter(
+            (row) =>
+              String(row['backup_id']) === target.id ||
+              text(row['protection_backup_id']) === target.id,
+          )
+          .map((row) => ({
+            ownerTable: 'backup_restore_run',
+            ownerId: String(row['restore_id']),
+            referencedTable: 'backup_asset',
+            referencedId: target.id,
+          }));
+        assertNoExternalReference(
+          references,
+          'backup_asset',
+          target.id,
+          ownedRestoreIds.map((id) => `backup_restore_run::${id}`),
+        );
+      }
+      if (target.table === 'local_backup_run') {
+        const references = (runRefs as Array<Record<string, unknown>>)
+          .filter(
+            (row) =>
+              text(row['run_id']) === target.id || text(row['local_cleanup_run_id']) === target.id,
+          )
+          .map((row) => ({
+            ownerTable: 'backup_asset',
+            ownerId: String(row['backup_id']),
+            referencedTable: 'local_backup_run',
+            referencedId: target.id,
+          }));
+        assertNoExternalReference(
+          references,
+          'local_backup_run',
+          target.id,
+          ownedBackupIds.map((id) => `backup_asset::${id}`),
+        );
+      }
+    }
+
+    // 3.3 先子后父删除
+    for (const target of plan) {
+      await manager.query(`DELETE FROM \`${target.table}\` WHERE \`${target.idColumn}\` = ?`, [
+        target.id,
+      ]);
+      deleted.push(`${target.table}#${target.id}`);
+    }
+  });
+
+  // 4) 删除后核对：本轮对象已清空、运行前已有对象仍在
+  for (const managed of MANAGED_TABLES) {
+    const current = await snapshotIds(ctx.dataSource, managed.table, managed.idColumn);
+    const before = scope.baseline.get(managed.table);
+    if (before === undefined) {
+      continue;
+    }
+    const ownedIds = new Set(
+      owned.filter((item) => item.table === managed.table).map((item) => item.id),
+    );
+    for (const id of current) {
+      if (ownedIds.has(id)) {
+        errors.push(`本轮对象未清除：${managed.table}#${id}`);
+      }
+    }
+    for (const id of before) {
+      if (!current.has(id)) {
+        errors.push(`运行前已存在对象被删除：${managed.table}#${id}`);
+      }
+    }
+  }
+
+  // 5) 文件删除：受控根内**精确清单**（运行目录 + 本轮明确创建的其它受控文件）
+  const fileOutcome = cleanupRunFiles(scope);
+  deleted.push(...fileOutcome.deleted);
+  failed.push(...fileOutcome.failed);
+  errors.push(...fileOutcome.errors);
+  return {
+    deleted,
+    failed,
+    errors,
+    owned: owned.map((item) => `${item.table}#${item.id}`),
+    unexplained,
+  };
 }
 
 async function main(): Promise<void> {
@@ -1076,9 +1455,18 @@ async function main(): Promise<void> {
     ownedBackupIds: new Set<string>(),
     ownedRestoreIds: new Set<string>(),
     ownedHoldIds: new Set<string>(),
+    ownedBackupRunIds: new Set<string>(),
+    ownedAuditEventIds: new Set<string>(),
+    ownedAuthorizationIds: new Set<string>(),
+    ownedSettingIds: new Set<string>(),
     ownedFilePaths: new Set<string>(),
+    ownedBackupInstallationOverrides: new Map<string, string>(),
     createdSettingId: null,
     createdAuthorizationId: null,
+    createdSentinelAuthorizationId: null,
+    createdSentinelHoldId: null,
+    sentinelHoldOrganizationId: null,
+    baseline: new Map<string, Set<string>>(),
   };
 
   let ctx: ChainContext | null = null;
@@ -1087,7 +1475,12 @@ async function main(): Promise<void> {
   const cleanupErrors: string[] = [];
   const deletedArtifacts: string[] = [];
   const failedArtifacts: string[] = [];
-  const beforeIds = new Map<string, Set<string>>();
+  /** 本轮登记的所有权对象（本轮真实创建的主键清单） */
+  const ownedArtifacts: string[] = [];
+  /** 非本轮创建的新增行（保留不删，需人工核对） */
+  const unexplainedArtifacts: string[] = [];
+  /** 收尾门禁：只有真实通过的阶段才允许对应的写删动作 */
+  const gate = createCleanupGate();
 
   try {
     ctx = await bootstrap(scope);
@@ -1137,6 +1530,8 @@ async function main(): Promise<void> {
     const actors = await resolveScopeActors(ctx.dataSource, authorization.organizationId);
     scope.superAdminAccountId = actors.superAdminAccountId;
     scope.engineerAccountId = actors.engineerAccountId;
+    // 身份核对通过（实例身份／一次性库标识／安装与公司／账号成员关系）
+    gate.identityVerified = true;
 
     // ── 2. 运行前预检：预存冻结 / 既有授权 / 既有设置一律拦下 ──
     const existingHolds = await readExistingHolds(
@@ -1160,14 +1555,34 @@ async function main(): Promise<void> {
       authorization.organizationId,
       actors.superAdminAccountId,
     );
+    // 范围预检通过（无他人活动冻结、既有授权未被覆盖）
+    gate.scopeVerified = true;
 
-    // ── 3. 合成哨兵（非目标账号授权 / 非目标范围冻结 / 其他公司数据与文件）──
-    //    哨兵必须在**快照之前**建立：它是"本轮之前就存在的非目标对象"，
-    //    收尾时按 after \ before 计算 ⇒ 哨兵天然不会被本轮清理删除。
+    // ── 3. 运行前主键基线（**必须在建哨兵之前**）──
+    //    基线缺失即失败关闭：没有基线就无法判断某个主键是不是本轮创建的，
+    //    绝不允许按"看起来像新增"删除（也不允许用空集合回落）。
+    //    哨兵在基线**之后**建立：本轮创建的哨兵会被登记为所有权对象并在收尾
+    //    精确回收；复用到的既有哨兵不属于本轮，保持原样。
+    for (const managed of MANAGED_TABLES) {
+      scope.baseline.set(
+        managed.table,
+        await snapshotIds(ctx.dataSource, managed.table, managed.idColumn),
+      );
+    }
+    requireCompleteBaseline(
+      scope.baseline,
+      MANAGED_TABLES.map((managed) => managed.table),
+    );
+    gate.baselineComplete = true;
+
+    // ── 4. 合成哨兵（非目标账号授权 / 非目标范围冻结 / 其他公司数据与文件）──
     const sentinelDir = join(fileRoot, 'sentinels');
     mkdirSync(sentinelDir, { recursive: true });
     const sentinelFile = join(sentinelDir, `${runId}.sentinel`);
     writeFileSync(sentinelFile, `task09 sentinel ${runId}\n`, 'utf8');
+    // 哨兵文件是**本轮创建**的：登记为精确回收对象（否则"本轮零残留"不成立），
+    // 但回收发生在哨兵核对之后，不会影响"哨兵未被改动"的判定。
+    scope.ownedFilePaths.add(sentinelFile);
     const sentinelAuthorizationRepository = ctx.dataSource.getRepository(
       LocalAccountAuthorizationEntity,
     );
@@ -1199,12 +1614,23 @@ async function main(): Promise<void> {
       ctx.dataSource,
       authorization.organizationId,
     );
+    scope.sentinelHoldOrganizationId = sentinelHoldOrganizationId;
     const sentinelHold = await ctx.writeHold.hold({
       installationId: authorization.installationId,
       organizationId: sentinelHoldOrganizationId,
       restoreId: null,
       reason: '任务09 哨兵冻结（非目标范围）',
     });
+    // 哨兵的**创建事实**：只有本轮真正新建的哨兵才属于本轮（可回收）；
+    // 复用到的既有哨兵不属于本轮，既不删除也不声称是"本轮零残留"的一部分。
+    if (sentinelAuthorizationExisting === null) {
+      scope.createdSentinelAuthorizationId = String(sentinelAuthorization.id);
+      scope.ownedAuthorizationIds.add(String(sentinelAuthorization.id));
+    }
+    if (sentinelHold.created) {
+      scope.createdSentinelHoldId = sentinelHold.holdId;
+      scope.ownedHoldIds.add(sentinelHold.holdId);
+    }
     const sentinelsBefore: SentinelSnapshot[] = [
       {
         label: 'foreign-company',
@@ -1214,14 +1640,6 @@ async function main(): Promise<void> {
       { label: 'sentinel-hold', fingerprint: `${sentinelHold.holdId}:ACTIVE` },
       { label: 'sentinel-file', fingerprint: existsSync(sentinelFile) ? 'present' : 'missing' },
     ];
-
-    // ── 4. 快照本轮之前的主键（收尾时只删 after \ before）──
-    for (const managed of MANAGED_TABLES) {
-      beforeIds.set(
-        managed.table,
-        await snapshotIds(ctx.dataSource, managed.table, managed.idColumn),
-      );
-    }
 
     // ── 5. 夹具（本轮新建，不覆盖既有）──
     await ensureFixtures(ctx, scope);
@@ -1238,6 +1656,11 @@ async function main(): Promise<void> {
     const backupId = await createBackup(ctx, scope, admin);
     const precheck = await ctx.precheck.execute({ session: admin, backupId });
     scope.ownedRestoreIds.add(precheck.restoreId);
+    // 保护副本是**本轮预检生成**的新备份资产：必须登记为所有权对象，
+    // 否则收尾后它会成为"未归属残留"（同时也证明它确实属于本轮）。
+    if (precheck.snapshot.protection.backupId !== null) {
+      await registerOwnedBackup(ctx, scope, precheck.snapshot.protection.backupId);
+    }
     check(
       '原机成功恢复：预检通过并生成保护副本',
       precheck.outcome === 'PASSED' && precheck.snapshot.protection.backupId !== null,
@@ -1328,7 +1751,14 @@ async function main(): Promise<void> {
         { backupId: otherBackupId },
         { installationId: '00000000-0000-4000-8000-000000000000' },
       );
+    // 登记本轮造数事实：删除前核对必须认这个**本轮写入的真实安装标识**
+    scope.ownedBackupInstallationOverrides.set(
+      otherBackupId,
+      '00000000-0000-4000-8000-000000000000',
+    );
     const otherPrecheck = await ctx.precheck.execute({ session: admin, backupId: otherBackupId });
+    // 预检即使被拒绝也留下了预检事实行：登记为本轮对象（否则会成为未归属残留）
+    scope.ownedRestoreIds.add(otherPrecheck.restoreId);
     check(
       '异机拒绝：预检不通过',
       otherPrecheck.outcome === 'FAILED',
@@ -1540,26 +1970,55 @@ async function main(): Promise<void> {
     mainError = error;
     mainFailed = true;
   } finally {
-    // ── 收尾：只删本轮对象；失败不吞异常 ──
+    // ── 收尾：**门禁驱动**，失败关闭；失败不吞异常 ──
+    //    独立验收 P1-3 的根因：旧实现无条件调用清理，即使身份／标识／安装公司
+    //    核对失败或基线只采到一半，也会按"全表差集"删除非本轮数据。
+    //    现在每一类写删动作都要求对应的门禁阶段**真实通过**。
     if (ctx !== null) {
+      // (1) 释放**本轮**冻结：必须已完成身份核对与范围预检
       try {
-        // 释放**本轮**冻结（不碰他人的）
+        assertHoldReleaseAllowed(gate);
         await releaseRunHolds(ctx, scope);
       } catch (error: unknown) {
-        cleanupErrors.push(
-          `释放本轮冻结失败：${error instanceof Error ? error.message : String(error)}`,
-        );
+        cleanupErrors.push(`未释放冻结：${error instanceof Error ? error.message : String(error)}`);
       }
+
+      // (2) 数据库删除：必须身份、范围与基线全部通过
+      let databaseCleanupRan = false;
       try {
-        const outcome = await cleanupRunArtifacts(ctx, scope, beforeIds);
+        assertDatabaseCleanupAllowed(gate);
+        const outcome = await cleanupRunArtifacts(ctx, scope, gate);
         deletedArtifacts.push(...outcome.deleted);
         failedArtifacts.push(...outcome.failed);
         cleanupErrors.push(...outcome.errors);
+        ownedArtifacts.push(...outcome.owned);
+        unexplainedArtifacts.push(...outcome.unexplained);
+        databaseCleanupRan = true;
       } catch (error: unknown) {
         cleanupErrors.push(
-          `清理本轮对象失败：${error instanceof Error ? error.message : String(error)}`,
+          `未执行数据库删除：${error instanceof Error ? error.message : String(error)}`,
         );
       }
+
+      // (3) 文件清理：本轮临时文件始终可清（入口授权即可），
+      //     但数据库对象未清理时必须显式记录，避免"文件已删、库中仍有引用"
+      //     被误读成收尾成功。
+      try {
+        const outcome = cleanupRunFiles(scope);
+        deletedArtifacts.push(...outcome.deleted);
+        failedArtifacts.push(...outcome.failed);
+        cleanupErrors.push(...outcome.errors);
+        if (!databaseCleanupRan) {
+          cleanupErrors.push(
+            '本轮运行目录已清理，但数据库对象未清理（门禁未通过）：库中可能仍有本轮对象残留，需人工核对',
+          );
+        }
+      } catch (error: unknown) {
+        cleanupErrors.push(
+          `清理本轮运行目录失败：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
       try {
         await ctx.dataSource.destroy();
       } catch (error: unknown) {
@@ -1570,11 +2029,10 @@ async function main(): Promise<void> {
     } else {
       // 仅建立数据源前失败：也不得遗留不明临时文件
       try {
-        const files = existsSync(scope.runRoot) ? listFilesUnder(scope.runRoot) : [];
-        const outcome = deleteFilesByList(files, scope.runRoot);
+        const outcome = cleanupRunFiles(scope);
         deletedArtifacts.push(...outcome.deleted);
-        failedArtifacts.push(...outcome.failed.map((item) => `file:${item.path}:${item.reason}`));
-        pruneEmptyDirs(scope.runRoot, scope.fileRoot);
+        failedArtifacts.push(...outcome.failed);
+        cleanupErrors.push(...outcome.errors);
       } catch (error: unknown) {
         cleanupErrors.push(
           `清理本轮运行目录失败：${error instanceof Error ? error.message : String(error)}`,
@@ -1612,6 +2070,17 @@ async function main(): Promise<void> {
         deletedCount: deletedArtifacts.length,
         failed: failedArtifacts,
         errors: cleanupErrors,
+        /** 收尾门禁快照：说明本轮到底允许了哪些写删动作 */
+        gate: describeCleanupGate(gate),
+        /** 本轮登记的所有权对象（本轮真实创建的主键清单） */
+        owned: ownedArtifacts,
+        /** 非本轮创建的新增行（保留不删，需人工核对） */
+        unexplained: unexplainedArtifacts,
+        /** 本轮创建的哨兵（只有这些被精确回收；复用到的既有哨兵保持原样） */
+        createdSentinels: selectCreatedSentinelIds({
+          authorizationId: scope.createdSentinelAuthorizationId,
+          holdId: scope.createdSentinelHoldId,
+        }),
       },
     })}\n`,
   );

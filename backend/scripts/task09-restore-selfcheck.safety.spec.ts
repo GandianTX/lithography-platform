@@ -18,19 +18,27 @@ import { join } from 'node:path';
 import {
   assertAuthorizationNotOverwritable,
   assertControlledFileRoot,
+  assertDatabaseCleanupAllowed,
   assertDisposableMarker,
+  assertHoldReleaseAllowed,
   assertNoExternalReference,
   assertNoForeignActiveHold,
+  assertOwnedFieldsMatch,
   assertPathWithinRoot,
   assertSentinelsUnchanged,
   assertServerIdentity,
   buildCleanupError,
+  createCleanupGate,
   planDatabaseDeletion,
   planFileDeletion,
+  planOwnedDeletion,
   readSelfcheckAuthorization,
+  requireCompleteBaseline,
+  selectCreatedSentinelIds,
   selectReleasableHolds,
   SELFCHECK_TEST_AUTHORIZATION,
   SelfcheckSafetyError,
+  type OwnedObjectRecord,
   type SelfcheckAuthorization,
 } from './task09-restore-selfcheck.safety';
 
@@ -543,5 +551,270 @@ describe('恢复自检入口 · 哨兵与收尾异常', () => {
     expect((result as Error & { cleanupErrors?: string[] }).cleanupErrors).toEqual([
       '删除失败: backup_asset#b2',
     ]);
+  });
+});
+
+/* ────────────────────── 收尾门禁：没通过校验就不许写删 ────────────────────── */
+
+describe('恢复自检入口 · 收尾门禁（失败关闭）', () => {
+  it('入口授权后：只允许清理本轮临时文件，数据库删除与冻结释放仍被拒绝', () => {
+    const gate = createCleanupGate();
+    expect(gate.authorized).toBe(true);
+    expect(gate.identityVerified).toBe(false);
+    expect(gate.scopeVerified).toBe(false);
+    expect(gate.baselineComplete).toBe(false);
+    expect(() => assertDatabaseCleanupAllowed(gate)).toThrow(/禁止删除任何数据库对象/u);
+    expect(() => assertHoldReleaseAllowed(gate)).toThrow(/禁止释放冻结/u);
+  });
+
+  it('身份核对失败：数据库删除与冻结释放都被拒绝（安全拒绝路径零写删）', () => {
+    const gate = createCleanupGate();
+    gate.identityVerified = false;
+    try {
+      assertDatabaseCleanupAllowed(gate);
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('DATABASE_CLEANUP_NOT_ALLOWED');
+    }
+    try {
+      assertHoldReleaseAllowed(gate);
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('HOLD_RELEASE_NOT_ALLOWED');
+    }
+  });
+
+  it('范围预检失败：数据库删除与冻结释放都被拒绝', () => {
+    const gate = createCleanupGate();
+    gate.identityVerified = true;
+    gate.scopeVerified = false;
+    expect(() => assertDatabaseCleanupAllowed(gate)).toThrow(/禁止删除任何数据库对象/u);
+    expect(() => assertHoldReleaseAllowed(gate)).toThrow(/禁止释放冻结/u);
+  });
+
+  it('基线未完成：允许释放本轮冻结，但**禁止**删除任何数据库对象', () => {
+    const gate = createCleanupGate();
+    gate.identityVerified = true;
+    gate.scopeVerified = true;
+    gate.baselineComplete = false;
+    expect(() => assertHoldReleaseAllowed(gate)).not.toThrow();
+    try {
+      assertDatabaseCleanupAllowed(gate);
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('DATABASE_CLEANUP_NOT_ALLOWED');
+    }
+  });
+
+  it('身份、范围、基线全部通过：允许删除本轮数据库对象', () => {
+    const gate = createCleanupGate();
+    gate.identityVerified = true;
+    gate.scopeVerified = true;
+    gate.baselineComplete = true;
+    expect(() => assertDatabaseCleanupAllowed(gate)).not.toThrow();
+    expect(() => assertHoldReleaseAllowed(gate)).not.toThrow();
+  });
+});
+
+/* ────────────────────── 所有权登记与删除计划 ────────────────────── */
+
+describe('恢复自检入口 · 所有权登记（不再用全表差集推断归属）', () => {
+  const ownedBackup: OwnedObjectRecord = {
+    table: 'backup_asset',
+    idColumn: 'backup_id',
+    id: 'backup-mine',
+    ownership: '本轮生成的备份资产',
+    expectedFields: { installation_id: 'inst-1', organization_id: 1 },
+  };
+
+  const baseline = new Map<string, ReadonlySet<string>>([
+    ['backup_asset', new Set<string>(['backup-old'])],
+    ['local_write_hold', new Set<string>()],
+  ]);
+
+  it('基线缺表：失败关闭（不允许用空集合回落成"全部都是新增"）', () => {
+    try {
+      requireCompleteBaseline(baseline, ['backup_asset', 'local_backup_run']);
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('BASELINE_INCOMPLETE');
+      expect((error as Error).message).toContain('local_backup_run');
+    }
+  });
+
+  it('删除计划：基线缺表时直接拒绝，不会按空基线推导删除集合', () => {
+    try {
+      planOwnedDeletion(
+        [{ ...ownedBackup, table: 'local_backup_run', idColumn: 'id', id: '9' }],
+        baseline,
+      );
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('BASELINE_INCOMPLETE');
+    }
+  });
+
+  it('删除计划：只包含登记过的本轮主键，未登记的行一律不进计划', () => {
+    const plan = planOwnedDeletion([ownedBackup], baseline);
+    expect(plan.map((item) => `${item.table}#${item.id}`)).toEqual(['backup_asset#backup-mine']);
+  });
+
+  it('并发期间由别人写入的新行（非本轮、未登记）：不进入删除计划', () => {
+    const plan = planOwnedDeletion([ownedBackup], baseline);
+    const planKeys = plan.map((item) => `${item.table}#${item.id}`);
+    expect(planKeys).not.toContain('backup_asset#backup-foreign');
+    expect(planKeys).not.toContain('backup_asset#backup-old');
+  });
+
+  it('登记错误（把运行前已存在的主键登记为本轮创建）：拒绝删除并显式报错', () => {
+    try {
+      planOwnedDeletion([{ ...ownedBackup, id: 'backup-old' }], baseline);
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('OWNED_OBJECT_PREEXISTED');
+      expect((error as Error).message).toContain('backup-old');
+    }
+  });
+
+  it('删除计划：先子后父，且同表按主键排序', () => {
+    const plan = planOwnedDeletion(
+      [
+        { table: 'backup_asset', idColumn: 'backup_id', id: 'b2', ownership: '本轮' },
+        { table: 'backup_restore_run', idColumn: 'restore_id', id: 'r1', ownership: '本轮' },
+        { table: 'local_write_hold', idColumn: 'hold_id', id: 'h1', ownership: '本轮' },
+        { table: 'backup_asset', idColumn: 'backup_id', id: 'b1', ownership: '本轮' },
+      ],
+      new Map<string, ReadonlySet<string>>([
+        ['backup_asset', new Set<string>()],
+        ['backup_restore_run', new Set<string>()],
+        ['local_write_hold', new Set<string>()],
+      ]),
+    );
+    expect(plan.map((item) => `${item.table}#${item.id}`)).toEqual([
+      'local_write_hold#h1',
+      'backup_restore_run#r1',
+      'backup_asset#b1',
+      'backup_asset#b2',
+    ]);
+  });
+
+  it('删除计划：受控顺序表之外的表仍然被拒绝', () => {
+    expect(() =>
+      planOwnedDeletion(
+        [{ table: 'repair_request', idColumn: 'id', id: '1', ownership: '本轮' }],
+        new Map<string, ReadonlySet<string>>([['repair_request', new Set<string>()]]),
+      ),
+    ).toThrow(/不在受控顺序表内/u);
+  });
+});
+
+/* ────────────────────── 删除前的关键字段核对 ────────────────────── */
+
+describe('恢复自检入口 · 删除前逐条核对关键字段', () => {
+  const record: OwnedObjectRecord = {
+    table: 'backup_asset',
+    idColumn: 'backup_id',
+    id: 'backup-mine',
+    ownership: '本轮生成的备份资产',
+    expectedFields: { installation_id: 'inst-1', organization_id: 1 },
+  };
+
+  it('实际行与登记一致：通过', () => {
+    expect(() =>
+      assertOwnedFieldsMatch(record, { installation_id: 'inst-1', organization_id: 1 }),
+    ).not.toThrow();
+  });
+
+  it('公司不一致：拒绝删除（不靠外键最后报错兜底）', () => {
+    try {
+      assertOwnedFieldsMatch(record, { installation_id: 'inst-1', organization_id: 2 });
+      throw new Error('应当拒绝');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('OWNED_OBJECT_MISMATCH');
+      expect((error as Error).message).toContain('organization_id');
+    }
+  });
+
+  it('安装标识不一致：拒绝删除', () => {
+    expect(() =>
+      assertOwnedFieldsMatch(record, { installation_id: 'inst-other', organization_id: 1 }),
+    ).toThrow(/OWNED|一致/u);
+  });
+
+  it('空值与 null 的判定一致（数据库返回 null 时不误判为不一致）', () => {
+    const nullableRecord: OwnedObjectRecord = {
+      table: 'management_audit_event',
+      idColumn: 'event_id',
+      id: 'e1',
+      ownership: '本轮恢复的终态审计事件',
+      expectedFields: { target_type: 'BACKUP_RESTORE_RUN', target_id: 'r1', detail: null },
+    };
+    expect(() =>
+      assertOwnedFieldsMatch(nullableRecord, {
+        target_type: 'BACKUP_RESTORE_RUN',
+        target_id: 'r1',
+        detail: null,
+      }),
+    ).not.toThrow();
+  });
+});
+
+/* ────────────────────── 哨兵回收：只回收本轮创建的 ────────────────────── */
+
+describe('恢复自检入口 · 哨兵回收范围', () => {
+  it('本轮创建的哨兵：可精确回收', () => {
+    expect(selectCreatedSentinelIds({ authorizationId: 'auth-1', holdId: 'hold-1' })).toEqual({
+      authorizationIds: ['auth-1'],
+      holdIds: ['hold-1'],
+    });
+  });
+
+  it('复用到的既有哨兵：不回收（不属于本轮创建）', () => {
+    expect(selectCreatedSentinelIds({ authorizationId: null, holdId: null })).toEqual({
+      authorizationIds: [],
+      holdIds: [],
+    });
+  });
+});
+
+/* ────────────────────── 敏感性验证：绕过预检时目标断言必须失败 ────────────────────── */
+
+describe('恢复自检入口 · 敏感性验证（预检本身必须能拦住）', () => {
+  it('若绕过所有权登记、直接按"全表差集"删除非本轮行：关键字段核对必须拦下', () => {
+    // 模拟旧实现：并发期间别人写入的行被当成"本轮新建"进入删除集合
+    const foreignRow: OwnedObjectRecord = {
+      table: 'backup_asset',
+      idColumn: 'backup_id',
+      id: 'backup-foreign',
+      ownership: '（绕过所有权登记）',
+      expectedFields: { installation_id: 'inst-foreign', organization_id: 2 },
+    };
+    try {
+      assertOwnedFieldsMatch(foreignRow, {
+        installation_id: 'inst-1',
+        organization_id: 1,
+      });
+      throw new Error('应当被关键字段核对拦下');
+    } catch (error) {
+      expect((error as SelfcheckSafetyError).code).toBe('OWNED_OBJECT_MISMATCH');
+    }
+  });
+
+  it('若绕过外部引用预检：外部引用检查本身必须报出引用方', () => {
+    expect(() =>
+      assertNoExternalReference(
+        [
+          {
+            ownerTable: 'backup_restore_run',
+            ownerId: 'restore-foreign',
+            referencedTable: 'backup_asset',
+            referencedId: 'backup-mine',
+          },
+        ],
+        'backup_asset',
+        'backup-mine',
+        [],
+      ),
+    ).toThrow(/存在本轮之外的引用/u);
   });
 });

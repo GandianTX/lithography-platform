@@ -598,6 +598,225 @@ export function assertNoExternalReference(
   }
 }
 
+/* ────────────────────────────── 收尾门禁 ────────────────────────────── */
+
+/**
+ * 收尾门禁：记录各阶段是否已经**真实通过**。
+ *
+ * 独立验收 P1-3 的核心问题不是"删得准不准"，而是"**没通过校验也照样删**"：
+ * 身份／标识／安装公司核对失败，或基线快照只完成一半时，收尾仍会进入删除路径。
+ * 这里把门禁做成**只前进、不回退**的显式状态：每个阶段通过后由调用方推进，
+ * 收尾按门禁决定"允许删什么"，不再靠 `finally` 里无条件调用删除函数。
+ *
+ * - `authorized`：入口显式授权与受控文件根已确认 ⇒ 只允许清理本轮临时文件；
+ * - `identityVerified`：实例身份／一次性库标识／安装与公司核对通过；
+ * - `scopeVerified`：范围预检通过（无他人活动冻结、既有授权未被覆盖）；
+ * - `baselineComplete`：**全部**受控表的主键基线快照成功。
+ */
+export interface CleanupGate {
+  authorized: boolean;
+  identityVerified: boolean;
+  scopeVerified: boolean;
+  baselineComplete: boolean;
+}
+
+/** 新建门禁：只有入口授权是天然成立的，其余都必须真实通过才能推进 */
+export function createCleanupGate(): CleanupGate {
+  return {
+    authorized: true,
+    identityVerified: false,
+    scopeVerified: false,
+    baselineComplete: false,
+  };
+}
+
+/** 门禁快照（用于结果回执，说明收尾时到底允许了什么） */
+export function describeCleanupGate(gate: CleanupGate): Readonly<Record<string, boolean>> {
+  return {
+    authorized: gate.authorized,
+    identityVerified: gate.identityVerified,
+    scopeVerified: gate.scopeVerified,
+    baselineComplete: gate.baselineComplete,
+  };
+}
+
+/**
+ * 允许清理本轮临时文件：只需要入口授权。
+ *
+ * 文件清理只作用于**本轮明确创建**的运行目录，与数据库对象无关，
+ * 因此在身份核对失败时也允许（避免留下不明临时文件）。
+ */
+export function assertFileCleanupAllowed(gate: CleanupGate): void {
+  if (!gate.authorized) {
+    throw new SelfcheckSafetyError(
+      'FILE_CLEANUP_NOT_ALLOWED',
+      '入口授权未通过，禁止执行任何文件清理。',
+    );
+  }
+}
+
+/**
+ * 允许释放冻结：必须已完成身份核对与范围预检。
+ *
+ * 冻结是"别人的现场"（失败保持冻结正是被验证的语义）：目标库身份都没核对过，
+ * 就按范围释放会误伤他人冻结。
+ */
+export function assertHoldReleaseAllowed(gate: CleanupGate): void {
+  if (!gate.authorized || !gate.identityVerified || !gate.scopeVerified) {
+    throw new SelfcheckSafetyError(
+      'HOLD_RELEASE_NOT_ALLOWED',
+      '身份核对或范围预检未通过，禁止释放冻结（保留现场，不做任何数据库写入）。',
+    );
+  }
+}
+
+/**
+ * 允许删除数据库对象：必须身份、范围与**基线**全部通过。
+ *
+ * 基线是"运行前已存在什么"的唯一凭据；基线不完整时无法判断某个主键是不是本轮
+ * 创建的 ⇒ 失败关闭（绝不按"看起来像新增"删除）。
+ */
+export function assertDatabaseCleanupAllowed(gate: CleanupGate): void {
+  if (!gate.authorized || !gate.identityVerified || !gate.scopeVerified || !gate.baselineComplete) {
+    throw new SelfcheckSafetyError(
+      'DATABASE_CLEANUP_NOT_ALLOWED',
+      '身份核对、范围预检或主键基线快照未全部通过，禁止删除任何数据库对象。',
+    );
+  }
+}
+
+/* ────────────────────────────── 所有权登记与删除计划 ────────────────────────────── */
+
+/**
+ * 本轮创建对象的登记记录。
+ *
+ * `expectedFields` 是删除前必须**逐条核对**的关键字段（安装／公司／父子关系）：
+ * 删之前在同一事务里读回真实行比对，不一致就整体回滚。
+ */
+export interface OwnedObjectRecord {
+  readonly table: string;
+  readonly idColumn: string;
+  readonly id: string;
+  /** 归属说明（写入收尾回执，便于人工复核） */
+  readonly ownership: string;
+  readonly expectedFields?: Readonly<Record<string, string | number | null>>;
+}
+
+/**
+ * 基线完整性检查：受控表必须**全部**有运行前主键快照。
+ *
+ * 缺任何一张表都失败关闭：没有基线的表无法区分"本轮新建"与"原有数据"，
+ * 绝不允许用空集合回落（原实现正是 `beforeIds.get(table) ?? new Set()`）。
+ */
+export function requireCompleteBaseline(
+  baseline: ReadonlyMap<string, ReadonlySet<string>>,
+  requiredTables: ReadonlyArray<string>,
+): void {
+  const missing = requiredTables.filter((table) => !baseline.has(table));
+  if (missing.length > 0) {
+    throw new SelfcheckSafetyError(
+      'BASELINE_INCOMPLETE',
+      `受控表的主键基线快照不完整，禁止按所有权删除：${[...new Set(missing)].join(', ')}`,
+    );
+  }
+}
+
+/**
+ * 按**所有权登记**生成删除计划（不再用全表差集推断归属）。
+ *
+ * 判定规则：
+ * 1. 基线必须覆盖全部涉及表，否则失败关闭；
+ * 2. 登记为"本轮创建"但**运行前已存在**的主键是登记错误 ⇒ 拒绝删除；
+ * 3. 只删登记过的主键，其余行一律不动（并发新增的非本轮行由审计清单报告）。
+ */
+export function planOwnedDeletion(
+  owned: ReadonlyArray<OwnedObjectRecord>,
+  baseline: ReadonlyMap<string, ReadonlySet<string>>,
+): ReadonlyArray<DatabaseDeletionTarget> {
+  requireCompleteBaseline(baseline, [...new Set(owned.map((item) => item.table))]);
+  const preexisting: string[] = [];
+  for (const item of owned) {
+    const before = baseline.get(item.table);
+    if (before === undefined) {
+      continue;
+    }
+    if (before.has(item.id)) {
+      preexisting.push(`${item.table}#${item.id}`);
+    }
+  }
+  if (preexisting.length > 0) {
+    throw new SelfcheckSafetyError(
+      'OWNED_OBJECT_PREEXISTED',
+      `登记为本轮创建的对象在运行前已存在，拒绝删除：${preexisting.join(', ')}`,
+    );
+  }
+  return planDatabaseDeletion(
+    owned.map((item) => ({
+      table: item.table,
+      idColumn: item.idColumn,
+      id: item.id,
+      ownership: item.ownership,
+    })),
+  );
+}
+
+/** 规范化数据库行字段值（统一成字符串或 null，便于逐字段比对） */
+export function normalizeOwnedFieldValue(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return value.toString();
+  }
+  // 对象／数组：按 JSON 文本比较（正常数据库标量不会走到这里）
+  return JSON.stringify(value) ?? null;
+}
+
+/**
+ * 删除前核对登记的关键字段：实际行必须与登记完全一致。
+ *
+ * 不一致说明"登记的主键已被别人改写／串号"⇒ 拒绝删除（而不是"尽量删掉"）。
+ */
+export function assertOwnedFieldsMatch(
+  record: OwnedObjectRecord,
+  actual: Readonly<Record<string, unknown>>,
+): void {
+  const expected = record.expectedFields ?? {};
+  for (const [column, wanted] of Object.entries(expected)) {
+    const current = normalizeOwnedFieldValue(actual[column]);
+    const wantedValue = normalizeOwnedFieldValue(wanted);
+    if (current !== wantedValue) {
+      throw new SelfcheckSafetyError(
+        'OWNED_OBJECT_MISMATCH',
+        `对象 ${record.table}#${record.id} 的 ${column} 与本轮登记不一致：` +
+          `实际 ${current ?? 'null'}，登记 ${wantedValue ?? 'null'}；拒绝删除。`,
+      );
+    }
+  }
+}
+
+/**
+ * 哨兵回收：只回收**本轮确实创建**的哨兵。
+ *
+ * 复用到的既有哨兵（早已存在）不属于本轮 ⇒ 不得删除；
+ * 本轮创建的哨兵必须在核对"哨兵未被改动"之后精确回收，否则"本轮零残留"不成立。
+ */
+export function selectCreatedSentinelIds(created: {
+  readonly authorizationId: string | null;
+  readonly holdId: string | null;
+}): { readonly authorizationIds: string[]; readonly holdIds: string[] } {
+  return {
+    authorizationIds: created.authorizationId === null ? [] : [created.authorizationId],
+    holdIds: created.holdId === null ? [] : [created.holdId],
+  };
+}
+
 /* ────────────────────────────── 文件清理 ────────────────────────────── */
 
 /** 文件删除结果（文件系统不可回滚，因此失败必须逐条留痕） */
