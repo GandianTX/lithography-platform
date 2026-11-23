@@ -14,6 +14,7 @@
  *   （恢复编排**不**直接写业务表，与记录包导入同一条纪律）；
  * - **受理 ≠ 恢复成功**：终态如实写回恢复运行（状态 ＋ 原因 ＋ 范围）。
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -157,16 +158,37 @@ export class LocalRestoreExecutionService {
       );
     }
 
-    // ① 冻结（先于任何写入）：恢复期间目标公司数据区停写停传
-    await this.localWriteHoldService.hold({
-      installationId: installation.installationId,
-      organizationId: run.organizationId,
-      restoreId: run.restoreId,
-      reason: `恢复执行中（${run.restoreId}）`,
-      now,
-    });
+    // ⓪ 执行权（数据库级互斥，G30–G33）：同一次恢复**不得并发执行**。
+    //    浏览器重复点击、Worker 重投都会并发打到这里 ⇒ 必须由数据库裁决，
+    //    不能靠"先查后写"。进程崩溃时锁由数据库自动释放 ⇒ 中断后仍可重新执行收口。
+    const executionLock = await this.tryAcquireExecutionLock(run.restoreId);
+    if (executionLock === null) {
+      // 本次恢复**一个字都没写** ⇒ 不走回滚路径（没有可回滚的东西），
+      // 也不改恢复运行行（另一个执行者还在用它）⇒ 只如实受控拒绝。
+      return this.failed(
+        input.restoreId,
+        'RESTORE_EXECUTION_ALREADY_RUNNING',
+        '该恢复正在执行中，不接受并发执行',
+        true,
+      );
+    }
 
     try {
+      // ① 冻结（先于任何写入）：恢复期间目标公司数据区停写停传
+      try {
+        await this.localWriteHoldService.hold({
+          installationId: installation.installationId,
+          organizationId: run.organizationId,
+          restoreId: run.restoreId,
+          reason: `恢复执行中（${run.restoreId}）`,
+          now,
+        });
+      } catch (error) {
+        // 范围被**其它恢复**占用 ⇒ 本次同样一个字都没写 ⇒ 不走回滚路径。
+        const reason = error instanceof Error ? error.message : '恢复范围已被其它恢复占用';
+        return this.failed(input.restoreId, 'RESTORE_SCOPE_OCCUPIED', reason, true);
+      }
+
       const restored = await this.restoreScope({
         run,
         source,
@@ -206,10 +228,11 @@ export class LocalRestoreExecutionService {
         counts: restored.counts,
       });
 
-      // ④ 解除冻结
+      // ④ 解除冻结（**带所有权**：只能解冻自己持有的那一条）
       await this.localWriteHoldService.release({
         installationId: installation.installationId,
         organizationId: run.organizationId,
+        restoreId: run.restoreId,
         now,
       });
       await this.restoreRunRepository.update(
@@ -238,7 +261,88 @@ export class LocalRestoreExecutionService {
         reason,
         input.actorAccountId,
       );
+    } finally {
+      // 执行权必须释放（否则同一次恢复再也执行不了）；
+      // 进程崩溃时锁由数据库自动释放 ⇒ 中断后仍可重新执行收口。
+      await executionLock?.release();
     }
+  }
+
+  /**
+   * 取得一次恢复运行的**执行权**（数据库级互斥，G30–G33）。
+   *
+   * 用 MySQL 命名锁（`GET_LOCK`）：
+   * - 由**数据库**持有 ⇒ 跨进程、跨连接互斥（浏览器重复点击／Worker 重投都拦得住）；
+   * - **进程崩溃或连接断开时自动释放** ⇒ 中断的恢复不会留下"永远占着执行权"的死锁，
+   *   运维可以重新执行收口（这是"崩溃恢复"要求的硬条件）；
+   * - `GET_LOCK(name, 0)` 不等待：抢不到**立即**受控拒绝，不静默排队。
+   *
+   * 锁名按 `restoreId` 归一 ⇒ 与 `LocalWriteHoldService` 的**范围锁**名字不同，
+   * 两把锁不会互相等待（否则同进程内先取范围锁再取执行锁会自死锁）。
+   */
+  private async tryAcquireExecutionLock(
+    restoreId: string,
+  ): Promise<{ release(): Promise<void> } | null> {
+    try {
+      return await this.acquireExecutionLock(restoreId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, restoreId },
+        '恢复执行权未取得（并发执行或锁不可得），本次恢复受控拒绝',
+      );
+      return null;
+    }
+  }
+
+  private async acquireExecutionLock(restoreId: string): Promise<{ release(): Promise<void> }> {
+    const lockName = `task09:exec:${createHash('sha1').update(restoreId).digest('hex')}`;
+    // 用**仓储的 manager**取独占连接：本模块没有 DataSource provider
+    // （`DataSource` 只在应用根模块可用）⇒ 从 `Repository.manager.connection` 取等价能力。
+    const queryRunner = this.restoreRunRepository.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    const acquired = await this.tryGetLock(queryRunner, lockName);
+    if (!acquired) {
+      await queryRunner.release().catch(() => undefined);
+      throw new Error(`该恢复正在执行中（${restoreId}），不接受并发执行`);
+    }
+    return {
+      release: async () => {
+        try {
+          const released: unknown = await queryRunner.query(
+            'SELECT RELEASE_LOCK(?) AS `released`',
+            [lockName],
+          );
+          const releasedValue = Number(
+            (released as Array<{ released: number | null }>)[0]?.released ?? 0,
+          );
+          if (releasedValue !== 1) {
+            this.logger.error(
+              { lockName, released: releasedValue, restoreId },
+              '恢复执行锁未能显式释放（连接断开时由数据库自动释放）',
+            );
+          }
+        } catch (error) {
+          // 连接已断 ⇒ 数据库已自动释放锁；连接仍活但释放失败 ⇒ 记录并保留（失败关闭）
+          this.logger.error(
+            { err: error, lockName, restoreId },
+            '恢复执行锁释放异常（连接断开时由数据库自动释放）',
+          );
+        } finally {
+          await queryRunner.release().catch(() => undefined);
+        }
+      },
+    };
+  }
+
+  /** 尝试取得数据库命名锁（不等待；抢不到立即返回 false） */
+  private async tryGetLock(
+    queryRunner: { query(sql: string, parameters?: unknown[]): Promise<unknown> },
+    lockName: string,
+  ): Promise<boolean> {
+    const rows = (await queryRunner.query('SELECT GET_LOCK(?, 0) AS `locked`', [
+      lockName,
+    ])) as Array<{ locked: number | null }>;
+    return Number(rows[0]?.locked ?? 0) === 1;
   }
 
   /**
@@ -277,6 +381,7 @@ export class LocalRestoreExecutionService {
       await this.localWriteHoldService.release({
         installationId: installation.installationId,
         organizationId: run.organizationId,
+        restoreId: run.restoreId,
         now,
       });
     } catch {

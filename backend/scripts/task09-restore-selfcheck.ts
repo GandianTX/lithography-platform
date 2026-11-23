@@ -611,11 +611,17 @@ async function releaseRunHolds(ctx: ChainContext, scope: RunScope): Promise<void
   if (releasable.length === 0) {
     return;
   }
-  await ctx.writeHold.release({
-    installationId: scope.installationId,
-    organizationId: scope.organizationId,
-    now: new Date(),
-  });
+  // 逐条**按归属**释放（G30–G33）：冻结释放必须声明持有者，
+  // "按范围一刀切"的释放会连别人的冻结一起解掉 ⇒ 本轮只解冻自己的那几条。
+  for (const hold of releasable) {
+    await ctx.writeHold.release({
+      installationId: scope.installationId,
+      organizationId: scope.organizationId,
+      restoreId: hold.restoreId,
+      holdId: hold.holdId,
+      now: new Date(),
+    });
+  }
   // 释放动作是"按范围释放"，因此必须核对本轮之外的冻结没有被一起释放
   const after: unknown = await ctx.dataSource.query(
     'SELECT hold_id, restore_id FROM local_write_hold WHERE installation_id = ? AND organization_id = ? AND status = ?',

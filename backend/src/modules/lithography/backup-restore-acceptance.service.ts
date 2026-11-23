@@ -14,7 +14,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { BackupRestoreRunEntity } from './entities/backup-restore-run.entity';
@@ -121,8 +121,18 @@ export class BackupRestoreAcceptanceService {
     }
 
     const acceptedAt = input.now.toISOString();
-    await this.restoreRunRepository.update(
-      { restoreId: input.restoreId },
+    // 受理用**条件更新**（CAS）：只有仍处于 PENDING 且未受理的行才能被受理。
+    //
+    // 为什么不能"先查后写"：并发受理（浏览器重复点击／两个管理员同时确认）时，
+    // 两个请求都可能通过前面的检查 ⇒ 都执行 update ⇒ 受理事实被后写覆盖
+    // （`accepted_by_account_id` 漂移），且调用方都以为自己受理成功。
+    // CAS 让**只有一个**请求能把 PENDING 推进到 RUNNING，另一个如实看到"已被受理"。
+    const accepted = await this.restoreRunRepository.update(
+      {
+        restoreId: input.restoreId,
+        status: 'PENDING',
+        confirmation: IsNull(),
+      },
       {
         // 受理即进入 RUNNING：状态机约束要求 PENDING 行的 `confirmation` 必须为空，
         // 且 RUNNING 行必须带 `started_at` ＋ `protection_backup_id`。
@@ -140,6 +150,14 @@ export class BackupRestoreAcceptanceService {
         }),
       },
     );
+    if ((accepted.affected ?? 0) === 0) {
+      // 并发受理：另一条请求已完成受理 ⇒ 本次如实拒绝（不重复受理、不覆盖受理人）
+      return {
+        accepted: false,
+        restoreId: input.restoreId,
+        reason: '该恢复预检已被受理，请重新预检后再确认',
+      };
+    }
 
     return {
       accepted: true,

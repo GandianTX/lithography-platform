@@ -159,7 +159,19 @@ async function main(): Promise<void> {
   // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
   const auth = readSelfcheckAuthorization(process.env);
   const device = await bootstrapDevice(auth.envFile, auth.database);
+  // 进程退出前必须关闭连接池：否则事件循环被连接句柄挂住 ⇒ 脚本不退出、
+  // 退出码不可信（验收证据里"退出码"是硬指标）。
+  try {
+    await run(device, auth);
+  } finally {
+    await device.dataSource.destroy();
+  }
+}
 
+async function run(
+  device: DeviceContext,
+  auth: ReturnType<typeof readSelfcheckAuthorization>,
+): Promise<void> {
   const serverUuidRows: unknown = await device.dataSource.query(
     'SELECT @@server_uuid AS serverUuid',
   );
@@ -213,7 +225,9 @@ async function main(): Promise<void> {
     ownedHoldIds.push(sentinel.holdId);
 
     // ── S1：同一范围并发建立冻结 ───────────────────────────────────────────
-    const holdResults = await Promise.all(
+    // 新语义（G30–G33）：同范围**只允许一个恢复占用** ⇒ 并发建立时只有一个成功，
+    // 其余**受控拒绝**（不覆盖归属、不产生第二条 ACTIVE）。
+    const holdResults = await Promise.allSettled(
       Array.from({ length: CONCURRENCY }, (_unused, index) =>
         device.writeHold.hold({
           installationId,
@@ -223,28 +237,79 @@ async function main(): Promise<void> {
         }),
       ),
     );
-    ownedHoldIds.push(...holdResults.map((item) => item.holdId));
-    const activeAfterRace = await listHoldRows(device, installationId, organizationId);
-    const distinctHoldIds = new Set(holdResults.map((item) => item.holdId));
+    const succeededHolds = holdResults
+      .filter((item) => item.status === 'fulfilled')
+      .map((item) => (item as PromiseFulfilledResult<{ holdId: string; created: boolean }>).value);
+    const rejectedReasons = holdResults
+      .filter((item) => item.status === 'rejected')
+      .map((item) => {
+        const reason: unknown = item.reason;
+        return reason instanceof Error ? reason.message : String(reason);
+      });
+    ownedHoldIds.push(...succeededHolds.map((item) => item.holdId));
+    const rowsAfterRace = await listHoldRows(device, installationId, organizationId);
+    const activeAfterRace = rowsAfterRace.filter((row) => row.status === 'ACTIVE');
+    const distinctHoldIds = new Set(succeededHolds.map((item) => item.holdId));
     detail.s1 = {
       concurrency: CONCURRENCY,
-      returnedHoldIds: holdResults.map((item) => ({ created: item.created, holdId: item.holdId })),
+      succeeded: succeededHolds.length,
+      rejected: rejectedReasons.length,
+      rejectedReasons,
+      returnedHoldIds: succeededHolds.map((item) => ({
+        created: item.created,
+        holdId: item.holdId,
+      })),
       distinctHoldIdCount: distinctHoldIds.size,
       activeRows: activeAfterRace,
     };
     check(
-      'S1 同一范围并发建立冻结：只应存在一条 ACTIVE 冻结',
-      activeAfterRace.length === 1,
-      `并发 ${CONCURRENCY} 路后 ACTIVE 冻结 ${activeAfterRace.length} 条（返回的 hold_id 去重 ${distinctHoldIds.size} 个）`,
+      'S1 同一范围并发建立冻结：只有一个成功，其余受控拒绝',
+      succeededHolds.length === 1 && rejectedReasons.length === CONCURRENCY - 1,
+      `并发 ${CONCURRENCY} 路：成功 ${succeededHolds.length}，受控拒绝 ${rejectedReasons.length}` +
+        `（拒绝原因样例：${rejectedReasons[0] ?? '无'}）`,
     );
     check(
-      'S1 同一范围并发建立冻结：应复用同一行（hold_id 唯一）',
-      distinctHoldIds.size === 1,
-      `返回的 hold_id 去重数 ${distinctHoldIds.size}`,
+      'S1 同一范围并发建立冻结：范围内存活 ACTIVE 冻结只有一条',
+      activeAfterRace.length === 1,
+      `并发后 ACTIVE 冻结 ${activeAfterRace.length} 条`,
     );
 
-    // ── S2：同范围"他人恢复的冻结"哨兵 —— 本轮释放不得带走别人的 ────────────
-    // 哨兵与本轮恢复**同范围**（同安装×公司×类型），代表并发恢复中另一条恢复的现场。
+    // ── S1b：同一恢复的并发建立 ⇒ 幂等续用同一条（不产生第二条） ───────────
+    const ownerRestoreId = activeAfterRace[0]?.restoreId ?? null;
+    const sameRestoreResults = await Promise.allSettled(
+      Array.from({ length: CONCURRENCY }, (_unused, index) =>
+        device.writeHold.hold({
+          installationId,
+          organizationId,
+          reason: `任务09 并发竞态取证：同一恢复并发续用 ${index}`,
+          restoreId: ownerRestoreId,
+        }),
+      ),
+    );
+    const sameSucceeded = sameRestoreResults.filter((item) => item.status === 'fulfilled').length;
+    const sameRejected = sameRestoreResults.filter((item) => item.status === 'rejected').length;
+    const activeAfterSame = (await listHoldRows(device, installationId, organizationId)).filter(
+      (row) => row.status === 'ACTIVE',
+    );
+    detail.s1b = {
+      ownerRestoreId,
+      succeeded: sameSucceeded,
+      rejected: sameRejected,
+      activeRows: activeAfterSame,
+    };
+    check(
+      'S1b 同一恢复并发建立：全部幂等续用，且范围仍只有一条 ACTIVE',
+      sameSucceeded === CONCURRENCY && sameRejected === 0 && activeAfterSame.length === 1,
+      `同一恢复并发 ${CONCURRENCY} 路：成功 ${sameSucceeded}，拒绝 ${sameRejected}，ACTIVE ${activeAfterSame.length} 条`,
+    );
+
+    // ── S2：同范围"他人恢复的冻结"哨兵 —— 所有权不可伪造 ──────────────────
+    // 新语义下同范围**至多一条** ACTIVE ⇒ 先按归属释放本轮那条，再建"他人恢复"哨兵。
+    await device.writeHold.release({
+      installationId,
+      organizationId,
+      restoreId: ownerRestoreId,
+    });
     const foreign = await device.writeHold.hold({
       installationId,
       organizationId,
@@ -252,23 +317,58 @@ async function main(): Promise<void> {
       restoreId: 'task09-race-foreign-restore',
     });
     ownedHoldIds.push(foreign.holdId);
-    const released = await device.writeHold.release({ installationId, organizationId });
+    // 新语义：释放**必须**声明归属。不声明 ⇒ 受控拒绝（不再可能"顺手"带走别人的）。
+    let blindReleaseRejected = false;
+    let blindReleaseReason = '';
+    try {
+      await device.writeHold.release({ installationId, organizationId });
+    } catch (error) {
+      blindReleaseRejected = true;
+      blindReleaseReason = error instanceof Error ? error.message : text(error);
+    }
+    check(
+      'S2 未声明归属的释放 ⇒ 受控拒绝（不得按范围一刀切）',
+      blindReleaseRejected,
+      blindReleaseRejected
+        ? `受控拒绝：${blindReleaseReason}`
+        : '未声明归属的按范围释放竟然成功（会把别人的冻结一起解掉）',
+    );
+    // 按**错误归属**释放 ⇒ 不得解掉他人的冻结
+    const wrongOwnerReleased = await device.writeHold.release({
+      installationId,
+      organizationId,
+      restoreId: 'task09-race-not-owner',
+    });
+    const afterWrongOwner = await listHoldRows(device, installationId, organizationId, 'ACTIVE');
+    const foreignRow = afterWrongOwner.find((row) => row.holdId === foreign.holdId);
+    check(
+      'S2 按错误归属释放 ⇒ 不得解掉他人的冻结（所有权不可伪造）',
+      wrongOwnerReleased === 0 && foreignRow !== undefined,
+      `错误归属释放 ${wrongOwnerReleased} 条；哨兵仍 ACTIVE=${text(foreignRow !== undefined)}` +
+        `（同范围 ACTIVE ${afterWrongOwner.length} 条）`,
+    );
+    // 按**正确归属**释放 ⇒ 持有者才能解冻
+    const released = await device.writeHold.release({
+      installationId,
+      organizationId,
+      restoreId: 'task09-race-foreign-restore',
+    });
     const activeAfterRelease = await listHoldRows(device, installationId, organizationId, 'ACTIVE');
-    const foreignRow = activeAfterRelease.find((row) => row.holdId === foreign.holdId);
     detail.s2 = {
+      blindReleaseRejected,
+      blindReleaseReason,
+      wrongOwnerReleased,
       releasedRows: released,
       foreignHoldId: foreign.holdId,
       activeRowsAfterRelease: activeAfterRelease.map((row) => ({
         holdId: row.holdId,
         restoreId: row.restoreId,
       })),
-      foreignStillActive: foreignRow !== undefined,
     };
     check(
-      'S2 释放冻结：不得把同范围其它恢复的冻结一起释放',
-      foreignRow !== undefined,
-      `本轮释放 ${released} 条后，他人恢复的冻结哨兵仍 ACTIVE=${text(foreignRow !== undefined)}` +
-        `（同范围剩余 ACTIVE ${activeAfterRelease.length} 条）`,
+      'S2 持有者释放 ⇒ 成功且同范围不再有 ACTIVE',
+      released === 1 && activeAfterRelease.length === 0,
+      `持有者释放 ${released} 条；同范围剩余 ACTIVE ${activeAfterRelease.length} 条`,
     );
 
     // 外公司哨兵不受影响（按范围释放不应越界）
@@ -309,22 +409,30 @@ async function main(): Promise<void> {
       guardRejected ? `守卫拒绝：${guardMessage}` : '守卫未拒绝（冻结对写入不可见）',
     );
 
-    // ── S5：再次建立冻结不得改写既有冻结的归属 restore_id ──────────────────
+    // ── S5：再次建立（不同恢复）⇒ 受控拒绝，且归属不得被改写 ────────────────
     const beforeOwnership = await listHoldRows(device, installationId, organizationId);
     const ownerBefore = beforeOwnership.find((row) => row.status === 'ACTIVE')?.restoreId ?? null;
-    await device.writeHold.hold({
-      installationId,
-      organizationId,
-      reason: '任务09 并发竞态取证：再次建立冻结',
-      restoreId: 'task09-race-second',
-    });
+    let secondRejected = false;
+    let secondReason = '';
+    try {
+      await device.writeHold.hold({
+        installationId,
+        organizationId,
+        reason: '任务09 并发竞态取证：再次建立冻结',
+        restoreId: 'task09-race-second',
+      });
+    } catch (error) {
+      secondRejected = true;
+      secondReason = error instanceof Error ? error.message : text(error);
+    }
     const afterOwnership = await listHoldRows(device, installationId, organizationId);
     const ownerAfter = afterOwnership.find((row) => row.status === 'ACTIVE')?.restoreId ?? null;
-    detail.s5 = { ownerBefore, ownerAfter };
+    detail.s5 = { ownerBefore, ownerAfter, secondRejected, secondReason };
     check(
-      'S5 再次建立冻结不得改写既有冻结的归属 restore_id',
-      ownerBefore === null || ownerAfter === ownerBefore,
-      `建立前 restore_id=${text(ownerBefore)}，建立后 restore_id=${text(ownerAfter)}`,
+      'S5 再次建立（不同恢复）⇒ 受控拒绝且归属不被改写',
+      secondRejected && ownerBefore === ownerAfter,
+      `再次建立：${secondRejected ? `受控拒绝（${secondReason}）` : '竟然成功'}` +
+        `；建立前 restore_id=${text(ownerBefore)}，建立后 restore_id=${text(ownerAfter)}`,
     );
   } finally {
     // ── 收尾：按 hold_id 精确删除本轮冻结行 ─────────────────────────────────

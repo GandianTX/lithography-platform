@@ -68,6 +68,8 @@ function buildService(options: {
   releaseError?: boolean;
   /** 保护副本可读（回滚能成功 ⇒ 走到"冻结解除失败"那条路径） */
   protectionPackageReady?: boolean;
+  /** 恢复执行权（数据库命名锁）是否取得：0＝已被同一次恢复的并发执行占用 */
+  executionLockAcquired?: number;
 }) {
   const root = '/tmp/task09-restore-spec';
   rmSync(root, { force: true, recursive: true });
@@ -89,6 +91,25 @@ function buildService(options: {
       confirmation: { accepted_at: '2026-11-23T00:00:00.000Z' },
     }),
     update: jest.fn().mockResolvedValue({ affected: 1 }),
+    // 恢复执行权互斥（G30–G33）用的数据库命名锁替身：
+    // `manager.connection.createQueryRunner()` 取独占连接（GET_LOCK / RELEASE_LOCK）。
+    manager: {
+      connection: {
+        createQueryRunner: jest.fn(() => ({
+          connect: jest.fn().mockResolvedValue(undefined),
+          query: jest.fn((sql: string) => {
+            if (sql.includes('GET_LOCK')) {
+              return Promise.resolve([{ locked: options.executionLockAcquired ?? 1 }]);
+            }
+            if (sql.includes('RELEASE_LOCK')) {
+              return Promise.resolve([{ released: 1 }]);
+            }
+            return Promise.resolve([]);
+          }),
+          release: jest.fn().mockResolvedValue(undefined),
+        })),
+      },
+    },
   };
   const backupAssetRepository = {
     findOne: jest.fn().mockImplementation(({ where }: { where: { backupId: string } }) =>
@@ -278,5 +299,29 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
     }
     expect(result.reasonCode).toBe('RESTORE_VERIFY_FAILED');
     expect(release).not.toHaveBeenCalled();
+  });
+});
+
+describe('恢复受理与执行的互斥（G30–G33）', () => {
+  it('同一次恢复的并发执行 ⇒ 受控拒绝，且**一个字都没写**（不走回滚路径）', async () => {
+    const { service, hold, writer, restoreRunRepository } = buildService({
+      executionLockAcquired: 0,
+    });
+
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('FAILED');
+    if (result.status !== 'FAILED') {
+      throw new Error('应失败');
+    }
+    expect(result.reasonCode).toBe('RESTORE_EXECUTION_ALREADY_RUNNING');
+    // 没建立冻结、没写任何业务数据、没改恢复运行行
+    expect(hold).not.toHaveBeenCalled();
+    expect((writer as { write: jest.Mock }).write).not.toHaveBeenCalled();
+    expect(restoreRunRepository.update).not.toHaveBeenCalled();
   });
 });
