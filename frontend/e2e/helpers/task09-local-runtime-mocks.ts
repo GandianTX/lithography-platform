@@ -83,6 +83,19 @@ export const TASK09_VISUAL_PAGES: readonly Task09VisualPage[] = [
  * "table.scrollWidth - parent.clientWidth" 的旧口径 ⇒ 同一页面在两个规格里
  * 得出相反结论（截图侧假失败）。口径必须单一。
  *
+ * 说明：Playwright 的 `page.evaluate` **不能序列化函数参数**
+ * （实测报 `Attempting to serialize unexpected value: function`），
+ * 因此浏览器侧改为读取下面的**策略常量**后内联判定；
+ * Node 侧（本文件导出）保留等价纯函数，供单测与非浏览器场景使用。
+ */
+export const TASK09_TABLE_OVERFLOW_POLICY = {
+  /** 允许"表格在自身可横向滚动容器内超宽"（V44 窄屏口径） */
+  allowScrollableAncestor: true,
+} as const;
+
+/**
+ * 表格溢出的判定（Node 侧纯函数；浏览器侧按同一策略内联实现）。
+ *
  * @param overflow 表格相对其直接父容器的超宽像素
  * @param hasScrollableAncestor 是否存在 overflowX 为 auto/scroll 的祖先
  * @returns 0 表示可接受；正数表示真实溢出的像素数
@@ -91,7 +104,10 @@ export function classifyTableOverflow(overflow: number, hasScrollableAncestor: b
   if (overflow <= 0) {
     return 0;
   }
-  return hasScrollableAncestor ? 0 : overflow;
+  if (TASK09_TABLE_OVERFLOW_POLICY.allowScrollableAncestor && hasScrollableAncestor) {
+    return 0;
+  }
+  return overflow;
 }
 
 /** 记录包页的 GraphQL 载荷（导出/预检/导入均为 mutation，页面加载时不自动触发 ⇒ 留空即可）。 */

@@ -5,8 +5,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
 import {
-  classifyTableOverflow,
   installLocalRuntimeMocks,
+  TASK09_TABLE_OVERFLOW_POLICY,
   TASK09_VISUAL_PAGES,
   TASK09_VISUAL_VIEWPORTS,
 } from './helpers/task09-local-runtime-mocks';
@@ -83,8 +83,8 @@ test.describe('任务 09 候选页面的提交级截图', () => {
           filePath: `${EVIDENCE_DIR}/${fileName}`,
         });
 
-        const metrics = await page.evaluate<MetricsShape, typeof classifyTableOverflow>(
-          (classify) => {
+        const metrics = await page.evaluate<MetricsShape, typeof TASK09_TABLE_OVERFLOW_POLICY>(
+          (policy) => {
             const root = document.documentElement;
             const tables = Array.from(document.querySelectorAll('table'));
             return {
@@ -111,7 +111,12 @@ test.describe('任务 09 候选页面的提交级截图', () => {
                   }
                   node = node.parentElement;
                 }
-                return classify(overflow, hasScrollableAncestor);
+                // 判定口径同源于共享 helper 的策略常量
+                // （Playwright 不能序列化函数参数 ⇒ 浏览器侧内联实现同一口径）
+                if (policy.allowScrollableAncestor && hasScrollableAncestor) {
+                  return 0;
+                }
+                return overflow;
               }),
               headings: Array.from(document.querySelectorAll('h1, h2, h3'))
                 .map((node) => (node.textContent ?? '').trim())
@@ -119,7 +124,7 @@ test.describe('任务 09 候选页面的提交级截图', () => {
               dataCardCount: document.querySelectorAll('.data-card').length,
             };
           },
-          classifyTableOverflow,
+          TASK09_TABLE_OVERFLOW_POLICY,
         );
 
         expect(

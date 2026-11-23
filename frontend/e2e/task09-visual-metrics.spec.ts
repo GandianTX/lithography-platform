@@ -5,8 +5,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
 import {
-  classifyTableOverflow,
   installLocalRuntimeMocks,
+  TASK09_TABLE_OVERFLOW_POLICY,
   TASK09_VISUAL_PAGES,
   TASK09_VISUAL_VIEWPORTS,
 } from './helpers/task09-local-runtime-mocks';
@@ -100,8 +100,8 @@ test.describe('任务 09 四类页面的三视口度量', () => {
         await page.waitForSelector('h1, h2', { timeout: 10_000 }).catch(() => undefined);
         await page.waitForTimeout(200);
 
-        const metrics = await page.evaluate<Metric, typeof classifyTableOverflow>(
-          (classify) => {
+        const metrics = await page.evaluate<Metric, typeof TASK09_TABLE_OVERFLOW_POLICY>(
+          (policy) => {
             const root = document.documentElement;
             const tables = Array.from(document.querySelectorAll('table'));
             const title = document.querySelector('h1, h2');
@@ -133,8 +133,12 @@ test.describe('任务 09 四类页面的三视口度量', () => {
                   }
                   node = node.parentElement;
                 }
-                // 判定口径由共享 helper 提供（度量与截图两侧同源）
-                return classify(overflow, hasScrollableAncestor);
+                // 判定口径同源于共享 helper 的策略常量
+                // （Playwright 不能序列化函数参数 ⇒ 浏览器侧内联实现同一口径）
+                if (policy.allowScrollableAncestor && hasScrollableAncestor) {
+                  return 0;
+                }
+                return overflow;
               }),
               headings: Array.from(document.querySelectorAll('h1, h2, h3'))
                 .map((node) => (node.textContent ?? '').trim())
@@ -147,7 +151,7 @@ test.describe('任务 09 四类页面的三视口度量', () => {
               antdCardBodyCount: document.querySelectorAll('.ant-card-body').length,
             };
           },
-          classifyTableOverflow,
+          TASK09_TABLE_OVERFLOW_POLICY,
         );
 
         // 页面不得整页横溢（窄屏尤其）
