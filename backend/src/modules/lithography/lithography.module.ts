@@ -59,6 +59,7 @@ import { EquipmentModelQueryService } from './queries/equipment-model.query.serv
 import { EquipmentModelService } from './equipment-model.service';
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
 import { MaintenanceReportQueryService } from './queries/maintenance-report.query.service';
+import { ManagementAuditEventQueryService } from './queries/management-audit-event.query.service';
 import { OrganizationMembershipQueryService } from './queries/organization-membership.query.service';
 import { OrganizationQueryService } from './queries/organization.query.service';
 import { ReferenceDocumentQueryService } from './queries/reference-document.query.service';
@@ -180,6 +181,7 @@ const LITHOGRAPHY_ENTITIES = [
     MaintenanceReportQueryService,
     LocalRuntimeService,
     LocalRuntimeQueryService,
+    ManagementAuditEventQueryService,
     ManagementAuditService,
   ],
   exports: [
@@ -223,6 +225,7 @@ const LITHOGRAPHY_ENTITIES = [
     MaintenanceReportQueryService,
     LocalRuntimeService,
     LocalRuntimeQueryService,
+    ManagementAuditEventQueryService,
     ManagementAuditService,
   ],
 })
