@@ -55,7 +55,8 @@ export type RepairRequestFormProps = {
  * - 客户公司只读：归属来自可信登录身份的账号设置，不接受在表单内修改；
  * - 维修厂家来自后端候选（启用 + 具备维修服务资格），支持关键字检索，不支持手工输入；
  * - 机型可「选已有」或「手填新机型」二选一：手填只在提交事务内查重/登记，
- *   搜索与输入都不写库；
+ *   搜索与输入都不写库；机型目录查询成功但无启用型号（空目录）时直接进入
+ *   手填模式，仍可正常提交第一张报修；查询加载中/失败不得当作空目录；
  * - 原件可选：先上传为暂存态，提交成功时在同一事务内绑定，提交失败保留以便重试；
  * - 型号/厂家 query 三态、幂等提交标识、在途锁与错误归一由
  *   application 的 useRepairRequestCreateFlow 承担，本组件只负责渲染与把编排结果
@@ -86,13 +87,32 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
     uploadAttachment,
   } = useRepairRequestCreateFlow();
 
-  const modelsReady = modelsState.status === 'ready' && modelsState.models.length > 0;
+  const modelsLoaded = modelsState.status === 'ready';
+  const hasSelectableModels = modelsLoaded && modelsState.models.length > 0;
   const serviceOrgsReady = serviceOrgsState.status === 'ready';
-  const canSubmit = modelsReady && serviceOrgsReady && attachment.status !== 'uploading';
+  const canSubmit = modelsLoaded && serviceOrgsReady && attachment.status !== 'uploading';
+
+  /**
+   * 机型录入模式：用户显式手填（含空目录下手填后已锁定意图），或机型目录查询
+   * 成功但为空（空目录只能手填，不渲染没有选项的下拉框）。
+   * 查询加载中/失败不是空目录，不得进入手填成功态。
+   */
+  const modelsEmpty = modelsLoaded && modelsState.models.length === 0;
+  const manualMode = manualModel || modelsEmpty;
+
+  /**
+   * 手填意图锁定（事件驱动，不在 effect/render 写状态）：空目录下用户一旦开始
+   * 手填机型，即使此后重新加载出已有机型，manualModel 保持 true——不自动切回
+   * 下拉、不清空已填的机型/故障内容；用户仍可经复选框自行切换（仅目录非空时提供）。
+   */
+  const handleManualModelInput = useCallback(() => {
+    setManualModel(true);
+  }, []);
 
   const handleSubmit = useCallback(
     async (values: RepairRequestFormValues) => {
-      const record = await submit(values);
+      // 模式与查询状态守卫同时由 application 的 submit 兜底（不依赖按钮置灰）
+      const record = await submit(values, { manualModel: manualMode });
 
       if (record) {
         // 重置表单，避免“继续创建”时残留旧值导致一键重复提交；随后上报创建成功
@@ -102,7 +122,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
         onCreated?.(record);
       }
     },
-    [clearAttachment, form, onCreated, submit],
+    [clearAttachment, form, manualMode, onCreated, submit],
   );
 
   // 「取消」即放弃当前填写内容：仅重置表单字段，不清除型号等页面级状态
@@ -173,7 +193,8 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
         />
       ) : null}
       {modelsState.status === 'ready' && modelsState.models.length === 0 ? (
-        // 空态同样可恢复：型号由管理员维护，用户无需刷新整页即可再次拉取（S2-2）
+        // 空目录（查询成功但无启用型号）：提示手填并保留重新拉取入口（S2-2）；
+        // 查询失败不在此列（错误按失败态展示，不当作空目录）
         <Alert
           action={
             <Button onClick={retryLoadModels} size="small">
@@ -231,7 +252,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
       <Form form={form} layout="vertical" onFinish={(values) => void handleSubmit(values)}>
         {/* 分段一：故障信息（机型二选一 + 错误码 + 故障现象） */}
         <h3 className="repair-request-section-title">{t('repairForm.section.faultInfo')}</h3>
-        {manualModel ? (
+        {manualMode ? (
           <Form.Item
             label={
               <FieldLabel
@@ -241,7 +262,8 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             }
             name="equipmentModelText"
             rules={[
-              { message: t('repairForm.modelManualRequired'), required: true },
+              // whitespace: 纯空白机型视为未填，不得提交（与 application 层守卫同口径）
+              { message: t('repairForm.modelManualRequired'), required: true, whitespace: true },
               {
                 max: MANUAL_MODEL_TEXT_MAX_LENGTH,
                 message: t('repairForm.modelManualMax', { max: MANUAL_MODEL_TEXT_MAX_LENGTH }),
@@ -249,8 +271,9 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             ]}
           >
             <Input
-              disabled={!modelsReady}
+              disabled={!modelsLoaded}
               maxLength={MANUAL_MODEL_TEXT_MAX_LENGTH}
+              onChange={handleManualModelInput}
               placeholder={t('repairForm.modelManualPlaceholder')}
             />
           </Form.Item>
@@ -263,7 +286,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             rules={[{ message: t('repairForm.modelRequired'), required: true }]}
           >
             <Select
-              disabled={!modelsReady}
+              disabled={!modelsLoaded}
               loading={modelsState.status === 'loading'}
               options={
                 modelsState.status === 'ready'
@@ -277,14 +300,18 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
             />
           </Form.Item>
         )}
-        <Form.Item>
-          <Checkbox
-            checked={manualModel}
-            onChange={(event) => handleToggleManualModel(event.target.checked)}
-          >
-            {t('repairForm.modelManualToggle')}
-          </Checkbox>
-        </Form.Item>
+        {/* 手填切换仅在目录里确实存在可选机型时提供；空目录下手填是唯一模式，
+            不渲染「切回没有选项的下拉框」的入口 */}
+        {hasSelectableModels ? (
+          <Form.Item>
+            <Checkbox
+              checked={manualMode}
+              onChange={(event) => handleToggleManualModel(event.target.checked)}
+            >
+              {t('repairForm.modelManualToggle')}
+            </Checkbox>
+          </Form.Item>
+        ) : null}
         <Form.Item
           label={
             <FieldLabel
@@ -302,7 +329,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
           ]}
         >
           <Input
-            disabled={!modelsReady}
+            disabled={!modelsLoaded}
             maxLength={ERROR_CODE_MAX_LENGTH}
             placeholder={t('repairForm.errorCodePlaceholder')}
           />
@@ -324,7 +351,7 @@ export function RepairRequestForm({ onCreated, onViewCreated }: RepairRequestFor
           ]}
         >
           <Input.TextArea
-            disabled={!modelsReady}
+            disabled={!modelsLoaded}
             maxLength={FAULT_DESCRIPTION_MAX_LENGTH}
             placeholder={t('repairForm.descriptionPlaceholder')}
             rows={6}
