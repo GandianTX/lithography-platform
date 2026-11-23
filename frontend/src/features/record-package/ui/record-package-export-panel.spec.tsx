@@ -7,14 +7,17 @@ import { RecordPackageExportPanel } from './record-package-export-panel';
 
 const exportRecordPackage = vi.fn();
 
-vi.mock('@/features/record-package/infrastructure/record-package-adapter', async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import('@/features/record-package/infrastructure/record-package-adapter')
-  >()),
-  exportRecordPackage: (...args: unknown[]) => exportRecordPackage(...args),
-  checkRecordPackage: vi.fn(),
-  importRecordPackage: vi.fn(),
-}));
+vi.mock(
+  '@/features/record-package/infrastructure/record-package-adapter',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('@/features/record-package/infrastructure/record-package-adapter')
+    >()),
+    exportRecordPackage: (...args: unknown[]) => exportRecordPackage(...args),
+    checkRecordPackage: vi.fn(),
+    importRecordPackage: vi.fn(),
+  }),
+);
 
 const EXPORT_RESULT = {
   packageId: 'pkg-1',
