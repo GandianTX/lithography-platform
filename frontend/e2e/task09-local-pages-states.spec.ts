@@ -39,7 +39,7 @@ async function setUiLanguage(page: Page, language: 'zh-CN' | 'en'): Promise<void
 async function readMainHeading(page: Page): Promise<string> {
   return page.evaluate(() => {
     const node = document.querySelector('h1, h2');
-    return (node.textContent ?? '').trim();
+    return (node?.textContent ?? '').trim();
   });
 }
 
