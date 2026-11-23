@@ -697,6 +697,8 @@ async function runInterruptScenario(
   circularKeysIntact: boolean;
   scopeRowsUnchanged: boolean;
   changedTables: readonly string[];
+  /** 被观测的工单行数：原子性判据的**前提**（为 0 时判据空转，必须显式失败） */
+  observedRows: number;
   detail: string;
   holdRetained: boolean;
   holdDetail: string;
@@ -846,6 +848,7 @@ async function runInterruptScenario(
     circularKeysIntact,
     scopeRowsUnchanged: changedTables.length === 0,
     changedTables,
+    observedRows: descriptions.length,
     detail:
       `mutated=${mutated} restored=${restored} total=${descriptions.length}` +
       `（不得两者并存；被杀后必须全部回滚）`,
@@ -2008,6 +2011,13 @@ async function main(): Promise<void> {
       '进程中断：写入事务整体回滚（业务行仍是恢复前的值，无整批提交）',
       interrupted.writeRolledBack,
       interrupted.detail,
+    );
+    check(
+      '进程中断：原子性判据有观测对象（工单行数 > 0，避免判据空转）',
+      interrupted.observedRows > 0,
+      interrupted.observedRows > 0
+        ? `被观测工单 ${interrupted.observedRows} 行`
+        : '被观测工单为 0 行：原子性判据无观测对象，本次结论不可用',
     );
     check(
       '进程中断：逐表行数与写入前一致（清空与写回都未留下痕迹）',

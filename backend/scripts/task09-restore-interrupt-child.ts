@@ -216,9 +216,14 @@ async function main(): Promise<void> {
     // 把**本公司全部**工单都改成标记值（不只一条）：
     // 这样"未提交"＝全部仍是标记值、"整批提交"＝全部不是标记值、
     // "半截"＝有的改有的没改 ⇒ 原子性可判定。
+    //
+    // `NULL <> '标记'` 在 MySQL 里求值为 NULL（**不匹配**）⇒ 必须显式覆盖 NULL，
+    // 否则"备份时刻值为 NULL"的工单不会被标记，"已提交"与"已回滚"将无法区分
+    // （判据会把"已回滚"误判为"已提交"）。
     await dataSource.query(
       "UPDATE repair_request SET fault_description = 'MUTATED-AFTER-BACKUP' " +
-        "WHERE owner_organization_id = ? AND fault_description <> 'MUTATED-AFTER-BACKUP'",
+        'WHERE owner_organization_id = ?' +
+        " AND (fault_description IS NULL OR fault_description <> 'MUTATED-AFTER-BACKUP')",
       [organizationId],
     );
 

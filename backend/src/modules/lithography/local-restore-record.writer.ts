@@ -128,6 +128,9 @@ function isSuppressed(row: Record<string, unknown>, suppression: BackupTableSupp
 export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter {
   readonly supportedTables: readonly LocalRestoreRecordTable[] = RESTORE_TABLES;
 
+  /** 表名 → 注入仓储（构造期建立；缺失的表一律失败关闭，不静默跳过） */
+  private readonly repositoryByTable: Record<string, Repository<ObjectLiteral>>;
+
   constructor(
     @InjectRepository(RepairRequestEntity)
     private readonly repairRequestRepository: Repository<RepairRequestEntity>,
@@ -187,7 +190,40 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner | null,
     private readonly logger: PinoLogger,
-  ) {}
+  ) {
+    // 表 → 注入仓储的映射：**构造期一次建立**（不用 switch 逐表分派）。
+    //
+    // 为什么不用 switch：switch 会让"表名 → 仓储"这份清单与上面的注入清单
+    // 成为两处需要同步维护的地方，漏一处就会静默拿到错误仓储；
+    // 这里由注入参数直接生成映射，新增表时只要补上注入即可。
+    this.repositoryByTable = {
+      repair_request: this.repairRequestRepository,
+      repair_request_revision: this.repairRequestRevisionRepository,
+      repair_request_intake: this.repairRequestIntakeRepository,
+      intake_analysis_attempt: this.intakeAnalysisAttemptRepository,
+      maintenance_report: this.maintenanceReportRepository,
+      maintenance_report_version: this.reportVersionRepository,
+      maintenance_report_attachment: this.reportAttachmentRepository,
+      maintenance_report_version_attachment: this.reportVersionAttachmentRepository,
+      maintenance_report_alarm: this.reportAlarmRepository,
+      maintenance_report_step: this.reportStepRepository,
+      maintenance_report_fault: this.reportFaultRepository,
+      maintenance_report_review: this.maintenanceReportReviewRepository,
+      reference_document: this.referenceDocumentRepository,
+      reference_document_revision: this.documentRevisionRepository,
+      reference_document_case_detail: this.referenceDocumentCaseDetailRepository,
+      ai_conversation: this.aiConversationRepository,
+      ai_message: this.aiMessageRepository,
+      ai_message_analysis: this.aiMessageAnalysisRepository,
+      ai_report: this.aiReportRepository,
+      engineer_response: this.engineerResponseRepository,
+      repair_process_entry: this.repairProcessEntryRepository,
+      repair_request_diagnostic_step: this.repairRequestDiagnosticStepRepository,
+      repair_request_fault_panel: this.repairRequestFaultPanelRepository,
+      stored_file: this.storedFileRepository,
+      local_upload_task: this.uploadTaskRepository,
+    };
+  }
 
   /**
    * 还原原件字节（任务 09 S2-3）。
@@ -196,6 +232,12 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
    * - 逐个核对字节数与 SHA-256，不符即该原件失败（不写入半截字节）；
    * - 本机已有同引用且可读、字节一致时不重复写入；
    * - 写回后把业务行上的存储引用指向新字节（登记事实与字节保持一致）。
+   *
+   * **两段式**（文件与数据库非同事务）：
+   * ① 逐份核对并把字节**暂存**到本机存储（文件写入不可回滚）；
+   * ② 在**单个事务**内批量绑定行引用（全成或全败）。
+   * ②失败 ⇒ 事务整体回滚（没有任何一份引用生效）＋ 回收本次**新建**的字节，
+   * 不留下"存储里有字节、却没有行引用它"的孤儿状态。
    */
   async restoreOriginals(input: {
     organizationId: number;
@@ -209,14 +251,101 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     files: readonly { relative_path: string; sha256: string; byte_size: number }[];
   }): Promise<{ restored: number; failed: number; reason: string | null }> {
     const fileFacts = new Map(input.files.map((file) => [file.relative_path, file]));
-    let failed = 0;
     // 第一步：逐份核对并**暂存字节**（文件写入不可回滚）；
     //         行引用**先不落库**，避免出现"部分行指向新字节、部分行仍是旧引用"。
+    const staged = await this.stageOriginalBytes(input, fileFacts);
+    const failed = staged.failed;
+    const bindings = staged.bindings;
+    // 行绑定失败（事务回滚）的份数：与"包内字节/清单核对失败"**分开计数**，
+    // 因为两者对运维的含义完全不同（前者是包的问题，后者是绑定事务的问题）。
+    let bindingFailed = 0;
+
+    // 第二步：行绑定在**单个事务**内完成（全成或全败）：
+    //         字节已经落盘，引用一旦半途失败会出现"部分行指向新字节"的错配。
+    if (bindings.length > 0) {
+      if (this.transactionRunner === null) {
+        bindingFailed = bindings.length;
+        await this.discardUnboundBytes(bindings);
+        return {
+          restored: 0,
+          failed: failed + bindingFailed,
+          reason: '原件字节已按包内清单还原，但事务边界不可用，不能在无事务条件下绑定原件引用',
+        };
+      }
+      try {
+        await this.transactionRunner.run(async (transactionContext) => {
+          for (const binding of bindings) {
+            const updated = await this.bindOriginalToRow(
+              binding.source,
+              binding.storageReference,
+              binding.sha256,
+              binding.byteSize,
+              transactionContext,
+            );
+            if (!updated) {
+              throw new Error(`原件引用绑定失败：${binding.source}`);
+            }
+          }
+        });
+      } catch {
+        // 事务已整体回滚 ⇒ **没有任何一份引用生效**；
+        // 已新建的字节随即回收，不留下"存储里有字节、却没有行引用它"的孤儿状态。
+        bindingFailed = bindings.length;
+        await this.discardUnboundBytes(bindings);
+      }
+    }
+
+    // 绑定事务失败 ⇒ 没有任何一份原件还原成功（restored 必须是 0，不能是"部分成功"）
+    const restored = bindingFailed === 0 ? bindings.length : 0;
+    if (bindingFailed > 0) {
+      return {
+        restored,
+        failed: failed + bindingFailed,
+        reason:
+          '原件字节已按包内清单还原，但原件行引用的绑定事务失败并已整体回滚' + '（原件引用未生效）',
+      };
+    }
+    return {
+      restored,
+      failed,
+      reason: failed === 0 ? null : `有 ${failed} 份原件未能按包内清单还原`,
+    };
+  }
+
+  /**
+   * 第一阶段：逐份核对包内原件并把字节**暂存**到本机存储。
+   *
+   * 核对不通过（清单未登记／路径逃逸／字节数或摘要不符／写入失败）的原件
+   * **不写半截字节**，只计入失败数；核对通过的暂存结果进入第二阶段绑定。
+   */
+  private async stageOriginalBytes(
+    input: {
+      packageRoot: string;
+      originals: readonly {
+        source: string;
+        storage_reference: string;
+        sha256: string | null;
+      }[];
+    },
+    fileFacts: ReadonlyMap<string, { sha256: string; byte_size: number }>,
+  ): Promise<{
+    failed: number;
+    bindings: {
+      source: string;
+      storageReference: string;
+      sha256: string;
+      byteSize: number;
+      /** 本次是否**新建**了字节文件：只有新建的才允许在绑定失败时回收 */
+      created: boolean;
+    }[];
+  }> {
+    let failed = 0;
     const bindings: {
       source: string;
       storageReference: string;
       sha256: string;
       byteSize: number;
+      created: boolean;
     }[] = [];
     for (const original of input.originals) {
       try {
@@ -238,65 +367,23 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
           failed += 1;
           continue;
         }
-        const storageReference = await this.writeOriginalBytes(
-          original.storage_reference,
-          bytes,
-          digest,
-        );
-        if (storageReference === null) {
+        const written = await this.writeOriginalBytes(original.storage_reference, bytes, digest);
+        if (written === null) {
           failed += 1;
           continue;
         }
         bindings.push({
           source: original.source,
-          storageReference,
+          storageReference: written.storageReference,
           sha256: digest,
           byteSize: bytes.byteLength,
+          created: written.created,
         });
       } catch {
         failed += 1;
       }
     }
-
-    // 第二步：行绑定在**同一事务**内完成（全成或全败）：
-    //         字节已经落盘，引用一旦半途失败会出现"部分行指向新字节"的错配。
-    if (bindings.length > 0) {
-      if (this.transactionRunner === null) {
-        failed += bindings.length;
-        bindings.length = 0;
-        return {
-          restored: 0,
-          failed,
-          reason: '事务边界不可用，不能在无事务条件下绑定原件引用',
-        };
-      }
-      try {
-        await this.transactionRunner.run(async (transactionContext) => {
-          for (const binding of bindings) {
-            const updated = await this.bindOriginalToRow(
-              binding.source,
-              binding.storageReference,
-              binding.sha256,
-              binding.byteSize,
-              transactionContext,
-            );
-            if (!updated) {
-              throw new Error(`原件引用绑定失败：${binding.source}`);
-            }
-          }
-        });
-      } catch {
-        failed += bindings.length;
-        bindings.length = 0;
-      }
-    }
-
-    const restored = bindings.length;
-    return {
-      restored,
-      failed,
-      reason: failed === 0 ? null : `有 ${failed} 份原件未能按包内清单还原`,
-    };
+    return { failed, bindings };
   }
 
   /**
@@ -306,12 +393,15 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
    * 本机同引用但字节**不一致**（备份后被替换／截断）时**必须按包内字节重写**——
    * 否则会把"登记摘要＝备份摘要、实际字节＝本机旧字节"的错配写进业务行，
    * 后续完整性核对必然失败。
+   *
+   * 返回值带 `created`：只有**本次新建**的字节才允许在绑定失败时被回收，
+   * 复用既有引用的字节属于恢复前的原有数据，删除它会造成数据丢失。
    */
   private async writeOriginalBytes(
     originalReference: string,
     bytes: Buffer,
     expectedSha256: string,
-  ): Promise<string | null> {
+  ): Promise<{ storageReference: string; created: boolean } | null> {
     try {
       const identical = await this.fileStorage.verifyIntegrity(
         originalReference,
@@ -319,16 +409,43 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
         bytes.byteLength,
       );
       if (identical) {
-        return originalReference;
+        return { storageReference: originalReference, created: false };
       }
     } catch {
       // 本机已无该引用（或不可读）：按包内字节重新写入
     }
     const extension = nodePath.extname(originalReference).slice(0, 20);
     try {
-      return await this.fileStorage.save(bytes, extension);
+      const storageReference = await this.fileStorage.save(bytes, extension);
+      return { storageReference, created: true };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * 回收**本次新建**但未绑定成功的原件字节（补偿清理）。
+   *
+   * 只回收 `created = true` 的引用：**复用**本机既有引用的字节属于原有数据，
+   * 删除它会把恢复前的原件一并弄丢。
+   *
+   * 清理是**尽力而为**：失败只记日志，不掩盖主失败原因（原件未还原才是主因）。
+   */
+  private async discardUnboundBytes(
+    bindings: readonly { storageReference: string; created: boolean }[],
+  ): Promise<void> {
+    for (const binding of bindings) {
+      if (!binding.created) {
+        continue;
+      }
+      try {
+        await this.fileStorage.delete(binding.storageReference);
+      } catch (error) {
+        this.logger.warn(
+          { err: error, storageReference: binding.storageReference },
+          '原件行绑定失败后的孤儿字节回收失败',
+        );
+      }
     }
   }
 
@@ -524,7 +641,9 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
   ): Promise<void> {
     const repository = this.repositoryForTable(table, transactionContext);
     if (repository === null) {
-      return;
+      // 失败关闭：清空被静默跳过 ⇒ 该表旧数据残留 ⇒ 出现"部分表已替换、
+      // 部分表还是旧值"的自相矛盾状态（正是本文件头注释明令要避免的）。
+      throw new Error(`恢复写入缺少仓储：${table}`);
     }
     const queryBuilder = repository.createQueryBuilder('t');
     // DELETE 语句没有表别名 ⇒ 范围过滤必须用**不带别名**的列名
@@ -557,7 +676,9 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
       }
       const repository = this.repositoryForTable(table, transactionContext);
       if (repository === null) {
-        continue;
+        // 失败关闭：采集被静默跳过 ⇒ 备份之后才被删除／下架的记录**采集不到**
+        // 抑制事实 ⇒ 会被旧包复活（违反 R086「不复活删除下架」）。
+        throw new Error(`恢复写入缺少仓储：${table}`);
       }
       const queryBuilder = repository.createQueryBuilder('t');
       this.applyScopeFilter(queryBuilder, table, organizationId, installationId);
@@ -585,7 +706,8 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     for (const fact of facts) {
       const repository = this.repositoryForTable(fact.table, transactionContext);
       if (repository === null) {
-        continue;
+        // 失败关闭：回填被静默跳过 ⇒ 抑制事实丢失 ⇒ 删除／下架的记录被旧包复活。
+        throw new Error(`恢复写入缺少仓储：${fact.table}`);
       }
       await repository.save(fact.entity as never);
     }
@@ -724,59 +846,6 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
   }
 
   private injectedRepositoryForTable(table: string): Repository<ObjectLiteral> | null {
-    switch (table) {
-      case 'repair_request':
-        return this.repairRequestRepository;
-      case 'repair_request_revision':
-        return this.repairRequestRevisionRepository;
-      case 'repair_request_intake':
-        return this.repairRequestIntakeRepository;
-      case 'intake_analysis_attempt':
-        return this.intakeAnalysisAttemptRepository;
-      case 'maintenance_report':
-        return this.maintenanceReportRepository;
-      case 'maintenance_report_version':
-        return this.reportVersionRepository;
-      case 'maintenance_report_attachment':
-        return this.reportAttachmentRepository;
-      case 'maintenance_report_version_attachment':
-        return this.reportVersionAttachmentRepository;
-      case 'maintenance_report_alarm':
-        return this.reportAlarmRepository;
-      case 'maintenance_report_step':
-        return this.reportStepRepository;
-      case 'maintenance_report_fault':
-        return this.reportFaultRepository;
-      case 'maintenance_report_review':
-        return this.maintenanceReportReviewRepository;
-      case 'reference_document':
-        return this.referenceDocumentRepository;
-      case 'reference_document_revision':
-        return this.documentRevisionRepository;
-      case 'reference_document_case_detail':
-        return this.referenceDocumentCaseDetailRepository;
-      case 'ai_conversation':
-        return this.aiConversationRepository;
-      case 'ai_message':
-        return this.aiMessageRepository;
-      case 'ai_message_analysis':
-        return this.aiMessageAnalysisRepository;
-      case 'ai_report':
-        return this.aiReportRepository;
-      case 'engineer_response':
-        return this.engineerResponseRepository;
-      case 'repair_process_entry':
-        return this.repairProcessEntryRepository;
-      case 'repair_request_diagnostic_step':
-        return this.repairRequestDiagnosticStepRepository;
-      case 'repair_request_fault_panel':
-        return this.repairRequestFaultPanelRepository;
-      case 'stored_file':
-        return this.storedFileRepository;
-      case 'local_upload_task':
-        return this.uploadTaskRepository;
-      default:
-        return null;
-    }
+    return this.repositoryByTable[table] ?? null;
   }
 }

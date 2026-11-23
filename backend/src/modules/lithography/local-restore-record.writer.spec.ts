@@ -799,5 +799,122 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
       expect(result.failed).toBe(1);
       expect(repositories.stored_file.update).not.toHaveBeenCalled();
     });
+
+    it('多份原件中任一绑定失败 ⇒ 整体回滚（不出现"部分行指向新字节"）并回收新建字节', async () => {
+      const bytesB = Buffer.from('second-original', 'utf8');
+      const sha256B = createHash('sha256').update(bytesB).digest('hex');
+      const bytesC = Buffer.from('third-original', 'utf8');
+      const sha256C = createHash('sha256').update(bytesC).digest('hex');
+      writeFileSync(join(packageRoot, 'files/ref/b.bin'), bytesB);
+      writeFileSync(join(packageRoot, 'files/ref/c.bin'), bytesC);
+
+      const save = jest
+        .fn()
+        .mockResolvedValueOnce('new-a.bin')
+        .mockResolvedValueOnce('new-b.bin')
+        .mockResolvedValueOnce('new-c.bin');
+      const remove = jest.fn().mockResolvedValue(undefined);
+      const { service, repositories } = buildWriter({
+        fileStorage: {
+          save,
+          open: jest.fn(() => {
+            throw new Error('unused');
+          }),
+          delete: remove,
+          verifyIntegrity: jest.fn().mockResolvedValue(false),
+        },
+      });
+      // 第二份绑定失败（目标行不存在）⇒ 事务必须整体回滚，第三份不得再被尝试
+      repositories.stored_file.update.mockImplementation((criteria: unknown) => {
+        const fileId = (criteria as { fileId: string }).fileId;
+        return Promise.resolve({ affected: fileId === 'f-2' ? 0 : 1 });
+      });
+
+      const result = await service.restoreOriginals({
+        organizationId: 4,
+        restoreId: 'restore-1',
+        packageRoot,
+        originals: [
+          { source: 'stored_file:f-1', storage_reference: 'ref/a.bin', sha256 },
+          { source: 'stored_file:f-2', storage_reference: 'ref/b.bin', sha256: sha256B },
+          { source: 'stored_file:f-3', storage_reference: 'ref/c.bin', sha256: sha256C },
+        ],
+        files: [
+          { relative_path: 'files/ref/a.bin', sha256, byte_size: bytes.byteLength },
+          { relative_path: 'files/ref/b.bin', sha256: sha256B, byte_size: bytesB.byteLength },
+          { relative_path: 'files/ref/c.bin', sha256: sha256C, byte_size: bytesC.byteLength },
+        ],
+      });
+
+      // 绑定失败 ⇒ 没有任何一份引用生效（restored 必须是 0，不能是"部分成功"）
+      expect(result.restored).toBe(0);
+      expect(result.failed).toBe(3);
+      expect(result.reason).toContain('绑定事务失败');
+      // 第三份**不得**被尝试（行绑定是全成或全败）
+      const boundIds = repositories.stored_file.update.mock.calls.map(
+        (call) => (call[0] as { fileId: string }).fileId,
+      );
+      expect(boundIds).toEqual(['f-1', 'f-2']);
+      // 没有任何引用生效 ⇒ 本次新建的字节全部回收（不留孤儿字节）
+      expect(remove).toHaveBeenCalledTimes(3);
+    });
+
+    it('事务端口缺席 ⇒ 原件还原失败关闭（不绑定任何行）并回收新建字节', async () => {
+      const remove = jest.fn().mockResolvedValue(undefined);
+      const { service, repositories } = buildWriter({
+        transactionRunner: null as never,
+        fileStorage: {
+          save: jest.fn().mockResolvedValue('new-a.bin'),
+          open: jest.fn(() => {
+            throw new Error('unused');
+          }),
+          delete: remove,
+          verifyIntegrity: jest.fn().mockResolvedValue(false),
+        },
+      });
+
+      const result = await service.restoreOriginals({
+        organizationId: 4,
+        restoreId: 'restore-1',
+        packageRoot,
+        originals: [{ source: 'stored_file:f-1', storage_reference: 'ref/a.bin', sha256 }],
+        files: [{ relative_path: 'files/ref/a.bin', sha256, byte_size: bytes.byteLength }],
+      });
+
+      expect(result.restored).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.reason).toContain('事务边界不可用');
+      expect(repositories.stored_file.update).not.toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+
+    it('复用本机既有引用的字节 ⇒ 绑定失败也**不得**删除它（不能弄丢恢复前的原件）', async () => {
+      const remove = jest.fn().mockResolvedValue(undefined);
+      const { service, repositories } = buildWriter({
+        fileStorage: {
+          save: jest.fn().mockResolvedValue('should-not-be-used'),
+          open: jest.fn(() => {
+            throw new Error('unused');
+          }),
+          delete: remove,
+          verifyIntegrity: jest.fn().mockResolvedValue(true),
+        },
+      });
+      repositories.stored_file.update.mockResolvedValue({ affected: 0 });
+
+      const result = await service.restoreOriginals({
+        organizationId: 4,
+        restoreId: 'restore-1',
+        packageRoot,
+        originals: [{ source: 'stored_file:f-1', storage_reference: 'ref/a.bin', sha256 }],
+        files: [{ relative_path: 'files/ref/a.bin', sha256, byte_size: bytes.byteLength }],
+      });
+
+      expect(result.restored).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(repositories.stored_file.update).toHaveBeenCalledTimes(1);
+      // 复用的字节属于恢复前的原有数据 ⇒ 任何情况下都不许删
+      expect(remove).not.toHaveBeenCalled();
+    });
   });
 });
