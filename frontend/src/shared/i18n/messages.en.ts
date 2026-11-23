@@ -437,7 +437,9 @@ export const EN_MESSAGES = {
   'repairForm.requestNo': 'Request number: {requestNo}',
   'repairForm.continue': 'Create another',
   'repairForm.view': 'View repair request',
-  'repairForm.noModels': 'No equipment models are available. Please try again later.',
+  'repairForm.noModels':
+    'No registered equipment models yet. Please enter the equipment model for this repair manually.',
+  'repairForm.modelsNotReady': 'The equipment model catalog is not ready. Please try again later.',
   'repairForm.modelLabel': 'Equipment model',
   'repairForm.modelHint': 'Only enabled models can be selected',
   'repairForm.modelRequired': 'Select an equipment model',
@@ -482,6 +484,8 @@ export const EN_MESSAGES = {
   'repairForm.serviceOrgPlaceholder': 'Search or select a service provider',
   'repairForm.serviceOrgSearching': 'Searching…',
   'repairForm.noServiceOrgs': 'No service provider is available. Please try again later.',
+  'repairForm.serviceOrgsNotReady':
+    'The service provider list is not ready. Please try again later.',
   'repairForm.modelManualToggle': 'Model not listed? Enter a new model',
   'repairForm.modelManualLabel': 'New model',
   'repairForm.modelManualHint': 'Use the manufacturer model code, up to {max} characters',

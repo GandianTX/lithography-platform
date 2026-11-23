@@ -152,7 +152,7 @@ afterEach(() => {
 });
 
 describe('设备型号与维修厂家加载状态', () => {
-  it('加载中时型号选择与提交不可用', () => {
+  it('加载中时型号选择与提交不可用（直接触发提交也不发送请求）', () => {
     fetchEquipmentModelsMock.mockReturnValue(new Promise(() => {}));
     fetchServiceOrganizationsMock.mockReturnValue(new Promise(() => {}));
 
@@ -161,9 +161,13 @@ describe('设备型号与维修厂家加载状态', () => {
     expect(isDisabled(modelCombobox())).toBe(true);
     expect(isDisabled(serviceOrgCombobox())).toBe(true);
     expect(isDisabled(screen.getByRole('button', { name: '提交申请' }))).toBe(true);
+
+    // 不只检查按钮置灰：直接触发 form 提交同样不得发起创建请求
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
   });
 
-  it('加载失败时展示错误并支持重试', async () => {
+  it('加载失败时展示错误并支持重试，不提供手填成功态', async () => {
     fetchEquipmentModelsMock
       .mockRejectedValueOnce(new GraphQLIngressError({ message: 'down', type: 'network' }))
       .mockResolvedValueOnce(MODEL_OPTIONS);
@@ -172,6 +176,9 @@ describe('设备型号与维修厂家加载状态', () => {
     renderForm();
 
     expect(await screen.findByText('网络连接异常，请稍后重试。')).toBeTruthy();
+    // 查询失败不得当作空目录：不出现手填切换入口，也不出现空目录提示
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByText('暂无已登记的设备型号，请手填本次报修的设备型号。')).toBeNull();
     // antd 会给两字按钮文本插入空格（“重 试”），用正则匹配可访问名
     fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
 
@@ -180,30 +187,126 @@ describe('设备型号与维修厂家加载状态', () => {
     expect(fetchEquipmentModelsMock).toHaveBeenCalledTimes(2);
   });
 
-  it('无可用型号时展示提示且提交不可用', async () => {
+  // 空目录（查询成功但无启用型号）：直接进入手填模式，仍可提交第一张报修
+  it('机型目录为空时直接进入手填模式，提交只携带机型文本', async () => {
     fetchEquipmentModelsMock.mockResolvedValue([]);
     fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
 
-    expect(await screen.findByText('暂无可用的设备型号，请稍后再试。')).toBeTruthy();
-    expect(isDisabled(screen.getByRole('button', { name: '提交申请' }))).toBe(true);
+    expect(
+      await screen.findByText('暂无已登记的设备型号，请手填本次报修的设备型号。'),
+    ).toBeTruthy();
+    // 不渲染「切回没有选项的下拉框」的入口，也没有机型下拉
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(document.querySelectorAll('[role="combobox"]').length).toBe(1); // 仅维修厂家
+
+    const manualInput = screen.getByPlaceholderText('例如：NSR-S622D') as HTMLInputElement;
+    expect(manualInput.disabled).toBe(false);
+
+    await selectServiceOrg();
+    fireEvent.change(manualInput, { target: { value: '  NSR-S622D  ' } });
+    fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), {
+      target: { value: 'E-2001' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('请描述设备故障现象与发生场景'), {
+      target: { value: '双工件台干涉仪报错' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    const payload = createRepairRequestMock.mock.calls[0][0];
+    expect(payload.equipmentModelText).toBe('NSR-S622D');
+    expect(payload.equipmentModelId).toBeUndefined();
+    expect('equipmentModelId' in payload).toBe(false);
   });
 
-  // S2-2：空态可恢复，不必刷新整页
-  it('无可用型号时可重试拉取，型号就绪后即可提交', async () => {
-    fetchEquipmentModelsMock.mockResolvedValueOnce([]).mockResolvedValueOnce(MODEL_OPTIONS);
+  it('机型查询失败禁止提交（直接触发也不发送），重试返回空列表后允许手填', async () => {
+    fetchEquipmentModelsMock
+      .mockResolvedValueOnce([]) // 初始：空目录 → 手填填写
+      .mockRejectedValueOnce(new GraphQLIngressError({ message: 'down', type: 'network' })) // 重试失败
+      .mockResolvedValueOnce([]); // 再次重试：仍空 → 恢复手填
     fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
-    expect(await screen.findByText('暂无可用的设备型号，请稍后再试。')).toBeTruthy();
+    await screen.findByText('暂无已登记的设备型号，请手填本次报修的设备型号。');
 
+    await selectServiceOrg();
+    fireEvent.change(screen.getByPlaceholderText('例如：NSR-S622D'), {
+      target: { value: 'NSR-S622D' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), { target: { value: 'E-2001' } });
+    fireEvent.change(screen.getByPlaceholderText('请描述设备故障现象与发生场景'), {
+      target: { value: '双工件台干涉仪报错' },
+    });
+
+    // 重试失败：错误与重试入口出现，查询失败不得当作空目录成功态
+    fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+    expect(await screen.findByText('网络连接异常，请稍后重试。')).toBeTruthy();
+
+    // 直接触发 form 提交（不经按钮）：运行时守卫拦截，不发起创建请求
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+    expect(await screen.findByText('设备型号目录暂不可用，请稍后重试。')).toBeTruthy();
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+
+    // 重试成功返回空列表：仍是手填模式，已填内容保留，可正常提交
+    fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText('例如：NSR-S622D') as HTMLInputElement).disabled).toBe(
+        false,
+      ),
+    );
+    expect((screen.getByPlaceholderText('例如：NSR-S622D') as HTMLInputElement).value).toBe(
+      'NSR-S622D',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    const payload = createRepairRequestMock.mock.calls[0][0];
+    expect(payload.equipmentModelText).toBe('NSR-S622D');
+    expect('equipmentModelId' in payload).toBe(false);
+  });
+
+  it('手填过程中重新加载机型列表：出现已有机型也不自动切换模式或清空已填内容', async () => {
+    fetchEquipmentModelsMock.mockResolvedValueOnce([]).mockResolvedValueOnce(MODEL_OPTIONS);
+    fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+
+    renderForm();
+    await screen.findByText('暂无已登记的设备型号，请手填本次报修的设备型号。');
+
+    fireEvent.change(screen.getByPlaceholderText('例如：NSR-S622D'), {
+      target: { value: '手填机型X' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), { target: { value: 'E-2001' } });
+    fireEvent.change(screen.getByPlaceholderText('请描述设备故障现象与发生场景'), {
+      target: { value: '双工件台干涉仪报错' },
+    });
+
+    // 重新加载：列表恢复且出现已有机型
     fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
 
-    await waitFor(() => expect(isDisabled(modelCombobox())).toBe(false));
+    // 模式不自动切换：仍是手填输入框（非下拉），切换入口恢复出现，已填内容保留
+    await waitFor(() => expect(screen.getByRole('checkbox')).toBeTruthy());
+    expect((screen.getByPlaceholderText('例如：NSR-S622D') as HTMLInputElement).value).toBe(
+      '手填机型X',
+    );
+    expect(document.querySelectorAll('[role="combobox"]').length).toBe(1); // 仅维修厂家
 
-    expect(screen.queryByText('暂无可用的设备型号，请稍后再试。')).toBeNull();
-    expect(isDisabled(screen.getByRole('button', { name: '提交申请' }))).toBe(false);
+    await selectServiceOrg();
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    const payload = createRepairRequestMock.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      equipmentModelText: '手填机型X',
+      errorCode: 'E-2001',
+      faultDescription: '双工件台干涉仪报错',
+    });
+    expect('equipmentModelId' in payload).toBe(false);
   });
 
   it('维修厂家加载失败时可重试，恢复后即可选择', async () => {
@@ -267,14 +370,46 @@ describe('提交校验与反馈', () => {
     expect(payload).toMatchObject({
       serviceOrganizationId: 88,
       equipmentModelId: 11,
-      equipmentModelText: null,
       errorCode: 'E-2001',
       faultDescription: '双工件台干涉仪报错',
       attachment: null,
     });
+    // 选择已有机型：只提交 equipmentModelId，不携带 equipmentModelText
+    expect('equipmentModelText' in payload).toBe(false);
   });
 
-  it('手填新机型时只发送 equipmentModelText，机型 ID 为 null', async () => {
+  it('选择与手填来回切换后只提交当前模式对应的值', async () => {
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+
+    // 先切到手填，再切回下拉（另一侧字段被清空，保证二选一不串值）
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByPlaceholderText('例如：NSR-S622D'), {
+      target: { value: 'NSR-X' },
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    // 切回后机型恢复为下拉选择（两个 combobox：机型 + 维修厂家）
+    await waitFor(() => expect(document.querySelectorAll('[role="combobox"]').length).toBe(2));
+
+    await selectServiceOrg();
+    await selectFirstModel();
+    fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), {
+      target: { value: 'E-2001' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('请描述设备故障现象与发生场景'), {
+      target: { value: '双工件台干涉仪报错' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
+    const payload = createRepairRequestMock.mock.calls[0][0];
+    expect(payload.equipmentModelId).toBe(11);
+    expect('equipmentModelText' in payload).toBe(false);
+  });
+
+  it('手填新机型时只发送去空白的 equipmentModelText，不携带 equipmentModelId', async () => {
     createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
 
     renderForm();
@@ -293,10 +428,53 @@ describe('提交校验与反馈', () => {
     fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
 
     expect(await screen.findByText('维修申请创建成功')).toBeTruthy();
-    expect(createRepairRequestMock.mock.calls[0][0]).toMatchObject({
-      equipmentModelId: null,
-      equipmentModelText: 'NSR-S622D',
+    const payload = createRepairRequestMock.mock.calls[0][0];
+    expect(payload.equipmentModelId).toBeUndefined();
+    expect(payload.equipmentModelText).toBe('NSR-S622D');
+    expect('equipmentModelId' in payload).toBe(false);
+  });
+
+  it('纯空白机型不得提交：表单校验与应用层守卫双拦截', async () => {
+    fetchEquipmentModelsMock.mockResolvedValue([]); // 空目录手填
+    fetchServiceOrganizationsMock.mockResolvedValue(SERVICE_ORG_OPTIONS);
+
+    renderForm();
+    await screen.findByText('暂无已登记的设备型号，请手填本次报修的设备型号。');
+
+    await selectServiceOrg();
+    fireEvent.change(screen.getByPlaceholderText('例如：NSR-S622D'), {
+      target: { value: '   ' },
     });
+    fireEvent.change(screen.getByPlaceholderText('例如：E-2001'), { target: { value: 'E-2001' } });
+    fireEvent.change(screen.getByPlaceholderText('请描述设备故障现象与发生场景'), {
+      target: { value: '双工件台干涉仪报错' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '提交申请' }));
+
+    expect(await screen.findByText('请填写新机型')).toBeTruthy();
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+  });
+
+  it('附件上传中不得提交：直接触发提交被运行时守卫拦截', async () => {
+    uploadRepairRequestFileMock.mockReturnValue(new Promise(() => {})); // 上传一直在途
+
+    renderForm();
+    await screen.findAllByRole('combobox');
+    await fillForm();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(['pdf'], '报修原件.pdf', { type: 'application/pdf' })] },
+    });
+    expect(await screen.findByText('报修原件.pdf')).toBeTruthy();
+
+    // 不只检查按钮置灰：直接触发 form 提交同样不得发起创建请求
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+
+    // 「上传中…」同时出现在上传按钮与守卫错误提示里，用 findAllByText 断言
+    expect((await screen.findAllByText('上传中…')).length).toBeGreaterThan(0);
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
   });
 
   it('成功后继续创建时表单已重置，不会残留旧值', async () => {
