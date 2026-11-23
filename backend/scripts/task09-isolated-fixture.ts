@@ -37,20 +37,7 @@ import {
   readSelfcheckAuthorization,
   type DisposableMarkerRow,
 } from './task09-restore-selfcheck.safety';
-
-/** 数据库行取值统一转文本（不用 String(unknown)：那会退化成默认字符串化） */
-function text(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
-    return String(value);
-  }
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return JSON.stringify(value) ?? '';
-}
+import { text } from './task09-script-utils';
 
 /** 确定性夹具编码（保证幂等与可重复核对） */
 const TARGET_REPORT_UUIDS = [

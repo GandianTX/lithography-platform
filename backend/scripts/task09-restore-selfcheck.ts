@@ -46,6 +46,8 @@ import type { UsecaseSession } from '@app-types/auth/session.types';
 
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { parse as parseDotenv } from 'dotenv';
+
+import { createAssertionCollector, text } from './task09-script-utils';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
@@ -94,31 +96,8 @@ import {
   type SentinelSnapshot,
 } from './task09-restore-selfcheck.safety';
 
-type Assertion = { name: string; passed: boolean; detail: string };
-
-const assertions: Assertion[] = [];
-
-function check(name: string, passed: boolean, detail: string): void {
-  assertions.push({ name, passed, detail });
-}
-
-/**
- * 数据库行取值统一转文本（行类型是 `Record<string, unknown>`）。
- *
- * 不用 `String(unknown)`：那会退化成默认字符串化（`[object Object]`）而看不出类型问题。
- */
-function asText(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
-    return String(value);
-  }
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return JSON.stringify(value) ?? '';
-}
+/** 断言收集器与文本转换共用共享工具（避免各脚本各存一份） */
+const { assertions, check } = createAssertionCollector();
 
 /** 受控范围内的对象表（删除顺序＝先子后父） */
 const MANAGED_TABLES: ReadonlyArray<{ readonly table: string; readonly idColumn: string }> = [
@@ -415,7 +394,7 @@ async function readExistingHolds(
     installationId: String(row['installation_id']),
     organizationId: Number(row['organization_id']),
     status: String(row['status']),
-    restoreId: row['restore_id'] === null ? null : asText(row['restore_id']),
+    restoreId: row['restore_id'] === null ? null : text(row['restore_id']),
   }));
 }
 
@@ -594,7 +573,7 @@ async function releaseRunHolds(ctx: ChainContext, scope: RunScope): Promise<void
     installationId: String(row['installation_id']),
     organizationId: Number(row['organization_id']),
     status: String(row['status']),
-    restoreId: row['restore_id'] === null ? null : asText(row['restore_id']),
+    restoreId: row['restore_id'] === null ? null : text(row['restore_id']),
   }));
   if (detail.length === 0) {
     return;
@@ -1002,7 +981,7 @@ async function cleanupRunArtifacts(
         .filter(
           (row) =>
             String(row['backup_id']) === target.id ||
-            asText(row['protection_backup_id']) === target.id,
+            text(row['protection_backup_id']) === target.id,
         )
         .map((row) => ({
           ownerTable: 'backup_restore_run',
@@ -1021,8 +1000,7 @@ async function cleanupRunArtifacts(
       const references = (runRefs as Array<Record<string, unknown>>)
         .filter(
           (row) =>
-            asText(row['run_id']) === target.id ||
-            asText(row['local_cleanup_run_id']) === target.id,
+            text(row['run_id']) === target.id || text(row['local_cleanup_run_id']) === target.id,
         )
         .map((row) => ({
           ownerTable: 'backup_asset',
@@ -1122,8 +1100,8 @@ async function main(): Promise<void> {
     const options = ctx.dataSource.options as { host?: string; port?: number };
     assertServerIdentity(
       {
-        database: asText(actual['current_database']),
-        serverUuid: asText(actual['server_uuid']),
+        database: text(actual['current_database']),
+        serverUuid: text(actual['server_uuid']),
         host: String(options.host ?? ''),
         port: Number(options.port ?? 0),
       },
@@ -1638,7 +1616,7 @@ async function main(): Promise<void> {
     })}\n`,
   );
   if (finalError !== null) {
-    throw finalError instanceof Error ? finalError : new Error(asText(finalError));
+    throw finalError instanceof Error ? finalError : new Error(text(finalError));
   }
   if (failed.length > 0) {
     process.exitCode = 1;

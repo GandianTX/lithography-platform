@@ -4,7 +4,10 @@ import { expect, type Page, test } from '@playwright/test';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
 import {
+  classifyTableOverflow,
   installLocalRuntimeMocks,
+  installTask09TableOverflowJudge,
+  TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL,
   type Task09MockOverrides,
 } from './helpers/task09-local-runtime-mocks';
 
@@ -231,6 +234,38 @@ test.describe('任务 09 候选页面的逐态对照', () => {
       expect(pageErrors, '错误态不应触发渲染期异常').toEqual([]);
     });
   }
+
+  test('表格溢出判定：浏览器侧注入实现与 Node 侧口径一致', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await seedAuthSession(page, 'ENGINEER');
+    await installTask09TableOverflowJudge(page);
+    await installLocalRuntimeMocks(page);
+    await page.goto('/local-backup');
+    await page.waitForSelector('h1, h2', { timeout: 10_000 });
+
+    // 同一组输入喂给两侧：Playwright 不能序列化函数 ⇒ 两侧是两份实现，
+    // 这里用等价性断言把"两份实现漂移"变成失败而不是假通过。
+    const samples = [
+      { overflow: 0, hasScrollableAncestor: false },
+      { overflow: -5, hasScrollableAncestor: true },
+      { overflow: 640, hasScrollableAncestor: true },
+      { overflow: 640, hasScrollableAncestor: false },
+      { overflow: 1, hasScrollableAncestor: false },
+    ];
+    const browserResults = await page.evaluate((input) => {
+      const judge = (window as unknown as Record<string, (o: number, s: boolean) => number>)[
+        TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL
+      ];
+      if (typeof judge !== 'function') {
+        throw new Error('缺少注入的表格溢出判定函数');
+      }
+      return input.map((item) => judge(item.overflow, item.hasScrollableAncestor));
+    }, samples);
+    const nodeResults = samples.map((sample) =>
+      classifyTableOverflow(sample.overflow, sample.hasScrollableAncestor),
+    );
+    expect(browserResults, '浏览器侧注入实现与 Node 侧口径必须一致').toEqual(nodeResults);
+  });
 
   test('旧响应晚到：备份页应丢弃晚到的旧响应（展示最后一次请求的数据）', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });

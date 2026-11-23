@@ -62,15 +62,10 @@ import {
   assertServerIdentity,
   readSelfcheckAuthorization,
 } from './task09-restore-selfcheck.safety';
+import { createAssertionCollector, text } from './task09-script-utils';
 
-/** 断言条目 */
-type Assertion = { name: string; passed: boolean; detail: string };
-
-const assertions: Assertion[] = [];
-
-function check(name: string, passed: boolean, detail: string): void {
-  assertions.push({ name, passed, detail });
-}
+/** 断言收集器与文本转换共用共享工具（避免四个脚本各存一份） */
+const { assertions, check } = createAssertionCollector();
 
 /** 本轮夹具的确定性标识（便于幂等与精确清理） */
 const FIXTURE_REQUEST_ID = 979_201;
@@ -98,20 +93,6 @@ function superAdminSession(accountId: number): UsecaseSession {
     adminLevel: 1,
     customerOrganizationId: null,
   } as unknown as UsecaseSession;
-}
-
-/** 数据库行取值统一转文本（不用 String(unknown)：那会退化成默认字符串化） */
-function text(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
-    return String(value);
-  }
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return JSON.stringify(value) ?? '';
 }
 
 type RequestRow = {

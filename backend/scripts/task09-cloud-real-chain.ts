@@ -34,6 +34,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { parse as parseDotenv } from 'dotenv';
 
+import { createAssertionCollector } from './task09-script-utils';
+
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
 import { loadExplicitEnvConfig } from '@src/infrastructure/database/incremental-migration';
 import { LocalRuntimeStorageModule } from '@src/infrastructure/file-storage/local-runtime-storage.module';
@@ -546,13 +548,8 @@ async function ensureFixtures(dataSource: import('typeorm').DataSource): Promise
   };
 }
 
-type Assertion = { name: string; passed: boolean; detail: string };
-
-const assertions: Assertion[] = [];
-
-function check(name: string, passed: boolean, detail: string): void {
-  assertions.push({ name, passed, detail });
-}
+/** 断言收集器与文本转换共用共享工具（避免各脚本各存一份） */
+const { assertions, check } = createAssertionCollector();
 
 /** 取某次备份对应的资产行（按 backupId 精确定位） */
 async function readAsset(

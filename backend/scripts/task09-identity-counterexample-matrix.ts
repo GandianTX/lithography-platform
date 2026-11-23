@@ -63,7 +63,6 @@ import { join, resolve } from 'node:path';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { parse as parseDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
@@ -98,29 +97,16 @@ import {
   readSelfcheckAuthorization,
   type SelfcheckAuthorization,
 } from './task09-restore-selfcheck.safety';
+import {
+  createAssertionCollector,
+  loadEnvFile,
+  readInstallationId,
+  readServerUuid,
+  text,
+} from './task09-script-utils';
 
-/** 断言条目 */
-type Assertion = { name: string; passed: boolean; detail: string };
-
-const assertions: Assertion[] = [];
-
-function check(name: string, passed: boolean, detail: string): void {
-  assertions.push({ name, passed, detail });
-}
-
-/** 数据库行取值统一转文本（不用 String(unknown)：那会退化成默认字符串化） */
-function text(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
-    return String(value);
-  }
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return JSON.stringify(value) ?? '';
-}
+/** 断言收集器与文本转换共用共享工具（避免四个脚本各存一份） */
+const { assertions, check } = createAssertionCollector();
 
 /** 目标公司（seed 的确定性组织编码）与同行组织（"换公司"反例用） */
 const TARGET_ORGANIZATION_CODE = 'CLIENT_DEFAULT';
@@ -141,15 +127,6 @@ type DeviceContext = {
   maintenanceReportService: MaintenanceReportService;
   transactionRunner: TransactionRunner;
 };
-
-/** 读取环境文件到 process.env（受控 wiring） */
-function loadEnvFile(envFile: string): void {
-  const parsed: Record<string, string> = parseDotenv(readFileSync(envFile, 'utf8'));
-  for (const [key, value] of Object.entries(parsed)) {
-    // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
-    process.env[key] = value;
-  }
-}
 
 /** 装配一台"设备"（独立库、独立文件根） */
 async function bootstrapDevice(envFile: string, database: string): Promise<DeviceContext> {
@@ -633,22 +610,6 @@ async function readDisposableMarker(
   return rows as ReadonlyArray<{ markerKey: string; markerValue: string }>;
 }
 
-/** 读取实例 UUID（`@@server_uuid`） */
-async function readServerUuid(device: DeviceContext): Promise<string | null> {
-  const rows: unknown = await device.dataSource.query('SELECT @@server_uuid AS serverUuid');
-  const list = rows as ReadonlyArray<{ serverUuid: string }>;
-  return list[0]?.serverUuid ?? null;
-}
-
-/** 读取库内安装标识 */
-async function readInstallationId(device: DeviceContext): Promise<string | null> {
-  const rows: unknown = await device.dataSource.query(
-    'SELECT installation_id AS installationId FROM local_installation LIMIT 1',
-  );
-  const list = rows as ReadonlyArray<{ installationId: string }>;
-  return list[0]?.installationId ?? null;
-}
-
 async function main(): Promise<void> {
   // ── 1. 授权（默认拒绝）：来源库与目标库各自独立授权 ────────────────────────
   // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
@@ -678,8 +639,8 @@ async function main(): Promise<void> {
   const source = await bootstrapDevice(sourceAuth.envFile, sourceAuth.database);
   const target = await bootstrapDevice(targetAuth.envFile, targetAuth.database);
 
-  const sourceServerUuid = await readServerUuid(source);
-  const targetServerUuid = await readServerUuid(target);
+  const sourceServerUuid = await readServerUuid(source.dataSource);
+  const targetServerUuid = await readServerUuid(target.dataSource);
   if (sourceServerUuid === null || targetServerUuid === null) {
     throw new Error('无法读取实例 UUID，拒绝在未确认身份的实例上运行');
   }
@@ -704,8 +665,8 @@ async function main(): Promise<void> {
   assertDisposableMarker(await readDisposableMarker(source), sourceAuth.disposableMarker);
   assertDisposableMarker(await readDisposableMarker(target), targetAuth.disposableMarker);
 
-  const sourceInstallationId = await readInstallationId(source);
-  const targetInstallationId = await readInstallationId(target);
+  const sourceInstallationId = await readInstallationId(source.dataSource);
+  const targetInstallationId = await readInstallationId(target.dataSource);
   check(
     '来源库安装标识与声明一致',
     sourceInstallationId === sourceAuth.installationId,

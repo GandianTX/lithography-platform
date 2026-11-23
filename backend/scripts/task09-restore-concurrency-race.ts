@@ -37,11 +37,10 @@
 // 脚本属**受控 wiring**（同 scripts/task09-restore-selfcheck.ts）：运行时配置只在这里读取一次。
 
 import { Test } from '@nestjs/testing';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { parse as parseDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
@@ -58,29 +57,15 @@ import {
   DISPOSABLE_MARKER_TABLE,
   readSelfcheckAuthorization,
 } from './task09-restore-selfcheck.safety';
+import {
+  createAssertionCollector,
+  loadEnvFile,
+  readInstallationId,
+  text,
+} from './task09-script-utils';
 
-/** 断言条目 */
-type Assertion = { name: string; passed: boolean; detail: string };
-
-const assertions: Assertion[] = [];
-
-function check(name: string, passed: boolean, detail: string): void {
-  assertions.push({ name, passed, detail });
-}
-
-/** 数据库行取值统一转文本（不用 String(unknown)：那会退化成默认字符串化） */
-function text(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
-    return String(value);
-  }
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return JSON.stringify(value) ?? '';
-}
+/** 断言收集器与文本转换共用共享工具（避免四个脚本各存一份） */
+const { assertions, check } = createAssertionCollector();
 
 /** 并发建立冻结的并发度（够大才能命中"先查后插"的窗口） */
 const CONCURRENCY = 8;
@@ -94,11 +79,7 @@ type DeviceContext = {
 };
 
 async function bootstrapDevice(envFile: string, database: string): Promise<DeviceContext> {
-  const parsed: Record<string, string> = parseDotenv(readFileSync(envFile, 'utf8'));
-  for (const [key, value] of Object.entries(parsed)) {
-    // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
-    process.env[key] = value;
-  }
+  loadEnvFile(envFile);
   const config = loadExplicitEnvConfig(envFile, database);
 
   const moduleRef = await Test.createTestingModule({
@@ -164,14 +145,6 @@ async function readMarkerRows(
   return rows as ReadonlyArray<{ markerKey: string; markerValue: string }>;
 }
 
-async function readInstallationId(device: DeviceContext): Promise<string | null> {
-  const rows: unknown = await device.dataSource.query(
-    'SELECT installation_id AS installationId FROM local_installation LIMIT 1',
-  );
-  const list = rows as ReadonlyArray<{ installationId: string }>;
-  return list[0]?.installationId ?? null;
-}
-
 async function readOrganizationId(device: DeviceContext, code: string): Promise<number | null> {
   const rows: unknown = await device.dataSource.query(
     'SELECT id FROM organization WHERE organization_code = ? LIMIT 1',
@@ -205,7 +178,7 @@ async function main(): Promise<void> {
   );
   assertDisposableMarker(await readMarkerRows(device), auth.disposableMarker);
 
-  const installationId = await readInstallationId(device);
+  const installationId = await readInstallationId(device.dataSource);
   check(
     '库内安装标识与声明一致',
     installationId === auth.installationId,

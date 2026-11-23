@@ -94,7 +94,48 @@ export const TASK09_TABLE_OVERFLOW_POLICY = {
 } as const;
 
 /**
- * 表格溢出的判定（Node 侧纯函数；浏览器侧按同一策略内联实现）。
+ * 浏览器侧判定函数的全局名（注入脚本使用）。
+ *
+ * 为什么要有这个注入脚本：Playwright 的 `page.evaluate` **不能序列化函数参数**
+ * （实测 `Attempting to serialize unexpected value: function`），
+ * 所以浏览器侧无法直接调用本文件的 Node 侧纯函数。
+ * 以前的做法是"每个规格各内联一份判定"⇒ 同一口径在多个规格里各写一遍，
+ * 曾经因此出现"度量规格通过、截图规格失败"的假失败。
+ * 现在把浏览器侧实现收敛到**这一个注入脚本**，三个规格共用。
+ */
+export const TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL = '__task09ClassifyTableOverflow';
+
+/**
+ * 安装浏览器侧表格溢出判定（**单一真源**）。
+ *
+ * 必须在页面导航之前调用（`addInitScript` 对后续导航生效）。
+ */
+export async function installTask09TableOverflowJudge(page: Page): Promise<void> {
+  await page.addInitScript(
+    (input: { policy: typeof TASK09_TABLE_OVERFLOW_POLICY; globalName: string }): void => {
+      const target = window as unknown as Record<string, unknown>;
+      target[input.globalName] = (overflow: number, hasScrollableAncestor: boolean): number => {
+        if (overflow <= 0) {
+          return 0;
+        }
+        if (input.policy.allowScrollableAncestor && hasScrollableAncestor) {
+          return 0;
+        }
+        return overflow;
+      };
+    },
+    {
+      policy: TASK09_TABLE_OVERFLOW_POLICY,
+      globalName: TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL,
+    },
+  );
+}
+
+/**
+ * 表格溢出的判定（Node 侧纯函数；浏览器侧由 `installTask09TableOverflowJudge` 注入）。
+ *
+ * 两侧是**两份实现**（跨执行环境无法共享同一个函数对象），
+ * 因此由 e2e 用例"同一组输入 ⇒ 两侧结果一致"锁定等价性。
  *
  * @param overflow 表格相对其直接父容器的超宽像素
  * @param hasScrollableAncestor 是否存在 overflowX 为 auto/scroll 的祖先

@@ -6,7 +6,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { seedAuthSession } from './helpers/auth-session-seed';
 import {
   installLocalRuntimeMocks,
-  TASK09_TABLE_OVERFLOW_POLICY,
+  installTask09TableOverflowJudge,
+  TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL,
   TASK09_VISUAL_PAGES,
   TASK09_VISUAL_VIEWPORTS,
 } from './helpers/task09-local-runtime-mocks';
@@ -62,6 +63,7 @@ test.describe('任务 09 候选页面的提交级截图', () => {
           consoleErrors.push(`pageerror: ${error.message.slice(0, 300)}`);
         });
         await installLocalRuntimeMocks(page);
+        await installTask09TableOverflowJudge(page);
 
         await page.goto(target.path);
         await page.waitForLoadState('domcontentloaded');
@@ -83,49 +85,48 @@ test.describe('任务 09 候选页面的提交级截图', () => {
           filePath: `${EVIDENCE_DIR}/${fileName}`,
         });
 
-        const metrics = await page.evaluate<MetricsShape, typeof TASK09_TABLE_OVERFLOW_POLICY>(
-          (policy) => {
-            const root = document.documentElement;
-            const tables = Array.from(document.querySelectorAll('table'));
-            return {
-              documentClientWidth: root.clientWidth,
-              documentScrollWidth: root.scrollWidth,
-              // 判定口径与度量规格**同源**（共享 helper）：
-              // 表格只允许在自身可横向滚动的容器内超宽；超宽且找不到可滚动祖先才算真实溢出。
-              tableOverflows: tables.map((table) => {
-                const parent = table.parentElement;
-                if (parent === null) {
-                  return 0;
+        const metrics = await page.evaluate<MetricsShape>(() => {
+          const root = document.documentElement;
+          const tables = Array.from(document.querySelectorAll('table'));
+          return {
+            documentClientWidth: root.clientWidth,
+            documentScrollWidth: root.scrollWidth,
+            // 判定口径与度量规格**同源**（共享 helper）：
+            // 表格只允许在自身可横向滚动的容器内超宽；超宽且找不到可滚动祖先才算真实溢出。
+            tableOverflows: tables.map((table) => {
+              const parent = table.parentElement;
+              if (parent === null) {
+                return 0;
+              }
+              const overflow = Math.max(0, table.scrollWidth - parent.clientWidth);
+              if (overflow === 0) {
+                return 0;
+              }
+              let node: HTMLElement | null = parent;
+              let hasScrollableAncestor = false;
+              while (node !== null) {
+                const overflowX = window.getComputedStyle(node).overflowX;
+                if (overflowX === 'auto' || overflowX === 'scroll') {
+                  hasScrollableAncestor = true;
+                  break;
                 }
-                const overflow = Math.max(0, table.scrollWidth - parent.clientWidth);
-                if (overflow === 0) {
-                  return 0;
-                }
-                let node: HTMLElement | null = parent;
-                let hasScrollableAncestor = false;
-                while (node !== null) {
-                  const overflowX = window.getComputedStyle(node).overflowX;
-                  if (overflowX === 'auto' || overflowX === 'scroll') {
-                    hasScrollableAncestor = true;
-                    break;
-                  }
-                  node = node.parentElement;
-                }
-                // 判定口径同源于共享 helper 的策略常量
-                // （Playwright 不能序列化函数参数 ⇒ 浏览器侧内联实现同一口径）
-                if (policy.allowScrollableAncestor && hasScrollableAncestor) {
-                  return 0;
-                }
-                return overflow;
-              }),
-              headings: Array.from(document.querySelectorAll('h1, h2, h3'))
-                .map((node) => (node.textContent ?? '').trim())
-                .filter((text) => text.length > 0),
-              dataCardCount: document.querySelectorAll('.data-card').length,
-            };
-          },
-          TASK09_TABLE_OVERFLOW_POLICY,
-        );
+                node = node.parentElement;
+              }
+              // 判定口径来自共享 helper 注入的浏览器侧实现（单一真源）
+              const judge = (
+                window as unknown as Record<string, (o: number, s: boolean) => number>
+              )[TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL];
+              if (typeof judge !== 'function') {
+                throw new Error('缺少注入的表格溢出判定函数');
+              }
+              return judge(overflow, hasScrollableAncestor);
+            }),
+            headings: Array.from(document.querySelectorAll('h1, h2, h3'))
+              .map((node) => (node.textContent ?? '').trim())
+              .filter((text) => text.length > 0),
+            dataCardCount: document.querySelectorAll('.data-card').length,
+          };
+        });
 
         expect(
           metrics.documentScrollWidth - metrics.documentClientWidth,
