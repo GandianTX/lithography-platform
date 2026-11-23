@@ -1,5 +1,6 @@
 // src/modules/lithography/local-backup-upload.service.ts
 
+import { LocalWriteHoldService } from './local-write-hold.service';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, LessThan, Repository } from 'typeorm';
@@ -65,6 +66,7 @@ export class LocalBackupUploadService {
     @InjectRepository(LocalAccountAuthorizationEntity)
     private readonly authorizationRepository: Repository<LocalAccountAuthorizationEntity>,
     private readonly logger: PinoLogger,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Optional()
     @Inject(LOCAL_BACKUP_UPLOADER)
     uploader?: LocalBackupUploader | null,
@@ -118,12 +120,7 @@ export class LocalBackupUploadService {
     for (const authorization of authorizations) {
       // 用途维度（S4）：上云只认**云备份用途**的凭据；业务同步授权不得充数。
       // 用途不可核验（声明缺失/不可解析）→ 同样不算数（失败关闭，不静默复用）。
-      if (
-        hasCredentialPurpose(
-          typeof authorization.signedClaims === 'string' ? authorization.signedClaims : null,
-          LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP,
-        )
-      ) {
+      if (hasCredentialPurpose(authorization.signedClaims, LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP)) {
         authorizedOrganizations.add(authorization.organizationId);
       }
     }
@@ -155,6 +152,10 @@ export class LocalBackupUploadService {
       const outcome = await this.attemptUpload(asset, now);
       if (outcome === 'succeeded') {
         result.succeeded += 1;
+      } else if (outcome === 'held') {
+        // 恢复期冻结：该资产本轮不外传，也不改资产状态（下一轮再试）
+        result.attempted -= 1;
+        result.skipped += 1;
       } else {
         result.failed += 1;
       }
@@ -194,11 +195,30 @@ export class LocalBackupUploadService {
     return stale.length;
   }
 
+  /**
+   * 写入冻结闸门：该公司数据区是否可写（恢复期冻结 ⇒ 不可写）。
+   *
+   * 判定失败**按"不可写"处理**（失败关闭）：拿不到冻结事实时不冒险外传备份包。
+   */
+  private async isCompanyWritable(organizationId: number): Promise<boolean> {
+    try {
+      await this.localWriteHoldService.assertCompanyWritable({ organizationId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** 单次上传尝试：先置 UPLOADING 并累加尝试次数，再调用接收端，最后落终态 */
   private async attemptUpload(
     asset: BackupAssetEntity,
     now: Date,
-  ): Promise<'succeeded' | 'failed'> {
+  ): Promise<'succeeded' | 'failed' | 'held'> {
+    // 恢复期写入冻结：该公司数据区正在恢复时不得把备份包外传（停传）
+    if (!(await this.isCompanyWritable(asset.organizationId))) {
+      return 'held';
+    }
+
     await this.backupAssetRepository.update(
       { backupId: asset.backupId },
       {

@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { LocalBackupCleanupService } from '@src/modules/lithography/local-backup-cleanup.service';
@@ -81,6 +82,11 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
         scopeResolver as unknown as LocalRuntimeScopeResolver,
         queryService as unknown as LocalRuntimeQueryService,
         cleanupService as unknown as LocalBackupCleanupService,
+        {
+          assertBusinessWritable: () => Promise.resolve(),
+          assertCompanyWritable: () => Promise.resolve(),
+          assertWritable: () => Promise.resolve(),
+        } as unknown as LocalWriteHoldService,
       ),
       cleanupService,
     };

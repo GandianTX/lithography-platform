@@ -630,6 +630,14 @@ const referenceDocumentStorageConfig: ConfigFactory = () => ({
 const localRuntimeConfig: ConfigFactory = () => ({
   localRuntime: {
     backupStorageDir: getOptionalEnv('LOCAL_BACKUP_STORAGE_DIR') ?? 'var/local-backups',
+    // S3.1 云备份服务接入（地址 + 凭据 + 超时）：缺失即"云服务未接入"，不伪造成功
+    cloudBackupBaseUrl: getOptionalEnv('LOCAL_BACKUP_CLOUD_BASE_URL') ?? null,
+    cloudBackupCredential: getOptionalEnv('LOCAL_BACKUP_CLOUD_CREDENTIAL') ?? null,
+    cloudBackupTimeoutMs: getIntEnvWithDefault('LOCAL_BACKUP_CLOUD_TIMEOUT_MS', 30_000),
+    // 云端**业务同步**入口（与云备份分开的地址与凭据：两种用途互不充数）
+    businessSyncBaseUrl: getOptionalEnv('BUSINESS_SYNC_CLOUD_BASE_URL') ?? null,
+    businessSyncCredential: getOptionalEnv('BUSINESS_SYNC_CLOUD_CREDENTIAL') ?? null,
+    businessSyncTimeoutMs: getIntEnvWithDefault('BUSINESS_SYNC_CLOUD_TIMEOUT_MS', 30_000),
     protectionKeyConfigured: Boolean(getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY')),
     protectionKeyId: getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY_ID') ?? null,
     // S3.1 受保护封包实际消费密钥值（D-7）；不进日志、不经 API 返回、不落包

@@ -3,6 +3,7 @@
 import { DomainError, MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
@@ -31,6 +32,7 @@ export class RemoveMaintenanceReportAttachmentUsecase {
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -46,12 +48,16 @@ export class RemoveMaintenanceReportAttachmentUsecase {
       });
     }
     return this.transactionRunner.run(async (transactionContext) => {
-      await lockEditableReportForAuthor({
+      const lock = await lockEditableReportForAuthor({
         maintenanceReportService: this.maintenanceReportService,
         organizationContextService: this.organizationContextService,
         accountId: command.session.accountId,
         reportId: command.reportId,
         transactionContext,
+      });
+      // 恢复期写入冻结：报告归属公司数据区正在恢复时不得挂接附件
+      await this.localWriteHoldService.assertBusinessWritable({
+        organizationId: lock.report.ownerOrganizationId,
       });
       const retired = await this.maintenanceReportService.retireAttachment(
         command.reportId,

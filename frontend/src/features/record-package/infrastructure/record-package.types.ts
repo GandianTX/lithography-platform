@@ -6,6 +6,17 @@ export type RecordPackageResourceType =
   | 'REPAIR_REQUEST'
   | 'MAINTENANCE_REPORT';
 
+/**
+ * 导出条目（**混合导出**）：逐条自带资源类型。
+ *
+ * 一次导出可以同时包含工单、报告与资料；服务端逐条复核归属、版本与权限，
+ * 单条失败不拖垮整包。
+ */
+export type RecordPackageExportEntry = {
+  resourceType: RecordPackageResourceType;
+  recordId: number;
+};
+
 /** 逐条导出结论 */
 export type RecordPackageExportItem = {
   recordId: number;

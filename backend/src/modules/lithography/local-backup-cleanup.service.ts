@@ -1,5 +1,6 @@
 // src/modules/lithography/local-backup-cleanup.service.ts
 
+import { LocalWriteHoldService } from './local-write-hold.service';
 import {
   BACKUP_RETENTION_DAYS,
   decideManualCleanupTargets,
@@ -85,6 +86,7 @@ export class LocalBackupCleanupService {
     @Inject(LOCAL_BACKUP_STORAGE)
     private readonly backupStorage: LocalBackupStorageConfig,
     private readonly logger: PinoLogger,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Optional()
     @InjectRepository(LocalBackupRunEntity)
     private readonly backupRunRepository?: Repository<LocalBackupRunEntity>,
@@ -127,6 +129,13 @@ export class LocalBackupCleanupService {
     let scanned = 0;
     let removed = 0;
     for (const organizationDir of await this.listPackageDirectories(root)) {
+      // 恢复期冻结：该公司的包目录**不动**（保护副本与待恢复包不能被孤儿清理删掉）
+      if (
+        organizationDir.organizationId !== null &&
+        (await this.isCompanyFrozen(organizationDir.organizationId))
+      ) {
+        continue;
+      }
       for (const packageDir of organizationDir.packageDirs) {
         scanned += 1;
         if (await this.removeOrphanPackage(root, packageDir, referenced, now, minAgeMs)) {
@@ -190,8 +199,10 @@ export class LocalBackupCleanupService {
   }
 
   /** 列出备份根目录下各公司目录里的包目录 */
-  private async listPackageDirectories(root: string): Promise<{ packageDirs: string[] }[]> {
-    const result: { packageDirs: string[] }[] = [];
+  private async listPackageDirectories(
+    root: string,
+  ): Promise<{ organizationId: number | null; packageDirs: string[] }[]> {
+    const result: { organizationId: number | null; packageDirs: string[] }[] = [];
     let organizationDirs: string[];
     try {
       organizationDirs = (await readdir(root, { withFileTypes: true }))
@@ -209,9 +220,28 @@ export class LocalBackupCleanupService {
       } catch {
         continue;
       }
-      result.push({ packageDirs });
+      const organizationId = Number.parseInt(nodePath.basename(organizationDir), 10);
+      result.push({
+        organizationId: Number.isInteger(organizationId) ? organizationId : null,
+        packageDirs,
+      });
     }
     return result;
+  }
+
+  /**
+   * 写入冻结闸门：该公司数据区是否处于恢复期冻结。
+   *
+   * 判定失败**按"冻结"处理**（保守口径）：拿不到冻结事实时不删任何包目录
+   * （孤儿包宁可留着，也不可误删恢复的保护副本）。
+   */
+  private async isCompanyFrozen(organizationId: number): Promise<boolean> {
+    try {
+      await this.localWriteHoldService.assertCompanyWritable({ organizationId });
+      return false;
+    } catch {
+      return true;
+    }
   }
 
   /** 目录的最后修改时间；取不到时返回 null（不据此删除） */
@@ -343,10 +373,23 @@ export class LocalBackupCleanupService {
       where: { installationId: installation.installationId },
       order: { createdAt: 'ASC', backupId: 'ASC' },
     });
+    // 恢复期写入冻结：处于恢复期冻结的公司，其备份包本轮不清理（保护副本与待恢复包不能被删）
+    const heldOrganizationIds = new Set<number>();
+    for (const organizationId of scopedOrganizationIds ?? []) {
+      try {
+        await this.localWriteHoldService.assertCompanyWritable({ organizationId });
+      } catch {
+        heldOrganizationIds.add(organizationId);
+      }
+    }
     const scopedAssets =
       scopedOrganizationIds === null
         ? []
-        : assets.filter((asset) => scopedOrganizationIds.has(asset.organizationId));
+        : assets.filter(
+            (asset) =>
+              scopedOrganizationIds.has(asset.organizationId) &&
+              !heldOrganizationIds.has(asset.organizationId),
+          );
     if (assets.length === 0) {
       return {
         available: true,

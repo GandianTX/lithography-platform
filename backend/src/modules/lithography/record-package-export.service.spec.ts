@@ -146,6 +146,83 @@ describe('record package export service', () => {
     expect(copied).toBe(fileContent);
   });
 
+  it('混合导出：一次导出可跨资源类型（逐条各自授权、逐条各自入清单）', async () => {
+    const service = buildService({
+      referenceDocument: {
+        id: 1,
+        ownerOrganizationId: 4,
+        currentRevisionNo: 1,
+        title: '资料一',
+        description: '资料描述',
+        storageBackend: 'local',
+        storageReference: 'refs/aaa.doc.txt',
+        checksumSha256: fileSha,
+        byteSize: fileContent.length,
+      },
+      repairRequest: {
+        id: 9,
+        ownerOrganizationId: 4,
+        currentRevisionNo: 1,
+        requestNo: 'REQ-9',
+        title: '工单一',
+        faultDescription: '故障描述',
+        contentMd: '工单正文',
+        maintenanceAttachmentFileId: null,
+        deprecated: false,
+      },
+    });
+
+    const result = await service.exportPackage(
+      command({
+        targetPath: nodePath.join(targetRoot, 'pkg-mixed'),
+        entries: [
+          { resourceType: 'REFERENCE_DOCUMENT', recordId: 1 },
+          { resourceType: 'REPAIR_REQUEST', recordId: 9 },
+        ],
+      }),
+    );
+
+    expect(result.itemExported).toBe(2);
+    expect(result.itemFailed).toBe(0);
+    // 逐条结论各自带自己的资源类型
+    expect(result.items.map((item) => item.resourceType).sort()).toEqual([
+      'REFERENCE_DOCUMENT',
+      'REPAIR_REQUEST',
+    ]);
+    // 清单里两条记录的 resource_type 各自独立（导入侧本就按条目类型逐条处理）
+    const manifestRaw = readFileSync(nodePath.join(result.packagePath, 'manifest.json'), 'utf8');
+    const manifest = JSON.parse(manifestRaw) as {
+      items: { resource_type: string; record_uuid: string }[];
+    };
+    expect(manifest.items).toHaveLength(2);
+    expect(manifest.items.map((item) => item.resource_type).sort()).toEqual([
+      'REFERENCE_DOCUMENT',
+      'REPAIR_REQUEST',
+    ]);
+    expect(new Set(manifest.items.map((item) => item.record_uuid)).size).toBe(2);
+  });
+
+  it('混合导出：旧接口形态不受影响（单一类型 ＋ 记录 id 列表）', async () => {
+    const service = buildService({
+      referenceDocument: {
+        id: 1,
+        ownerOrganizationId: 4,
+        currentRevisionNo: 1,
+        title: '资料一',
+        description: '资料描述',
+        storageBackend: 'local',
+        storageReference: 'refs/aaa.doc.txt',
+        checksumSha256: fileSha,
+        byteSize: fileContent.length,
+      },
+    });
+
+    const result = await service.exportPackage(command());
+
+    expect(result.itemExported).toBe(1);
+    expect(result.items[0]?.resourceType).toBe('REFERENCE_DOCUMENT');
+  });
+
   it('条目身份确定性：同记录两次导出的 record_uuid 一致、package_id 不同', async () => {
     const row = {
       id: 1,
@@ -495,5 +572,109 @@ describe('record package export service', () => {
     await expect(service.exportPackage(command({ targetPath: occupied }))).rejects.toThrow(
       '导出目标目录已存在且非空，拒绝覆盖',
     );
+  });
+
+  it('混合导出：逐类授权在同一包内逐条生效（工程师：本公司工单放行、他人资料拒绝）', async () => {
+    // 资料：同公司，但**作者是他人**（工程师对资料/报告要求"作者本人"）
+    const referenceRows = new Map<number, Record<string, unknown>>([
+      [
+        1,
+        {
+          id: 1,
+          ownerOrganizationId: 4,
+          createdByAccountId: 99,
+          deprecated: false,
+          currentRevisionNo: 2,
+          schemaVersion: 1,
+          title: '他人资料',
+          documentType: 'MANUAL',
+          description: null,
+          contentText: '他人正文',
+          originalFilename: null,
+          mimeType: null,
+          extensionJson: null,
+          updatedAt: new Date('2026-11-19T00:00:00.000Z'),
+          storageBackend: null,
+          storageReference: null,
+        },
+      ],
+    ]);
+    // 工单：同公司但受理人/客户都不是导出人（工程师对工单按**公司范围**放行）
+    const repairRows = new Map<number, Record<string, unknown>>([
+      [
+        9,
+        {
+          id: 9,
+          ownerOrganizationId: 4,
+          customerAccountId: 77,
+          acceptedByEngineerAccountId: 88,
+          deprecated: false,
+          currentRevisionNo: 1,
+          requestNo: 'REQ-9',
+          title: '工单一',
+          faultDescription: '故障描述',
+          contentMd: '工单正文',
+          maintenanceVersionNo: 0,
+          handlingResult: null,
+          handlingStatus: 'IN_PROGRESS',
+          createdAt: new Date('2026-11-19T00:00:00.000Z'),
+          maintenanceAttachmentFileId: null,
+        },
+      ],
+    ]);
+    const byId = (rows: Map<number, Record<string, unknown>>) => ({
+      findOne: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { id: number } }) =>
+          Promise.resolve(rows.get(where.id) ?? null),
+        ),
+    });
+    const service = new RecordPackageExportService(
+      byId(referenceRows) as never,
+      byId(repairRows) as never,
+      { findOne: jest.fn().mockResolvedValue(null) } as never,
+      { findOne: jest.fn().mockResolvedValue(null) } as never,
+      { find: jest.fn().mockResolvedValue([]) } as never,
+      { findOne: jest.fn().mockResolvedValue(null) } as never,
+      {
+        open: () =>
+          Promise.resolve(createReadStream(nodePath.join(storageRoot, 'refs/aaa.doc.txt'))),
+      } as never,
+      { readInstallation: () => Promise.resolve({ installationId: 'inst-uuid-1' }) } as never,
+      {
+        findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-4' }),
+      } as never,
+      { findModelById: () => Promise.resolve(null) } as never,
+    );
+
+    const result = await service.exportPackage(
+      command({
+        targetPath: nodePath.join(targetRoot, 'pkg-mixed-auth'),
+        entries: [
+          { resourceType: 'REFERENCE_DOCUMENT', recordId: 1 },
+          { resourceType: 'REPAIR_REQUEST', recordId: 9 },
+        ],
+        exporterAccountId: 16,
+        exporterScope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
+      }),
+    );
+
+    expect(result.itemTotal).toBe(2);
+    // 工单按公司范围放行；资料因"非作者本人"被逐条拒绝（单条失败不拖垮整包）
+    expect(result.itemExported).toBe(1);
+    expect(result.itemFailed).toBe(1);
+    expect(result.items[0]?.resourceType).toBe('REFERENCE_DOCUMENT');
+    expect(result.items[0]?.outcome).toBe('REJECTED');
+    expect(result.items[0]?.rejection).toBe('NOT_AUTHORIZED');
+    expect(result.items[0]?.message).toContain('本人创建');
+    expect(result.items[1]?.resourceType).toBe('REPAIR_REQUEST');
+    expect(result.items[1]?.outcome).toBe('EXPORTED');
+
+    // 只有放行条目进清单
+    const manifest = JSON.parse(
+      readFileSync(nodePath.join(result.packagePath, 'manifest.json'), 'utf8'),
+    ) as { items: { resource_type: string }[] };
+    expect(manifest.items).toHaveLength(1);
+    expect(manifest.items[0]?.resource_type).toBe('REPAIR_REQUEST');
   });
 });

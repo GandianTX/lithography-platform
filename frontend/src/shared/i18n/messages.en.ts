@@ -199,6 +199,11 @@ export const EN_MESSAGES = {
     'Failed to clean up local backup packages. Please retry later.',
   'local-backup.error.precheckFailed': 'Restore precheck failed. Please retry later.',
   'local-backup.error.acceptFailed': 'Restore acceptance failed. Please retry later.',
+  'local-backup.error.cloudPackagesLoadFailed':
+    'Failed to load cloud backup packages. Please retry later.',
+  'local-backup.error.executeFailed': 'Restore execution failed. Please retry later.',
+  'local-backup.error.cloudDownloadFailed':
+    'Failed to download the cloud backup package. Please retry later.',
   'local-backup.restore.acceptAction': 'Accept this restore',
   'local-backup.restore.acceptTitle': 'Restore acceptance result',
   'local-backup.restore.acceptSucceeded': 'Accepted: this restore has been authorized.',
@@ -208,6 +213,31 @@ export const EN_MESSAGES = {
     'This restore was not accepted. Follow the precheck findings.',
   'local-backup.restore.acceptedAt': 'Accepted at',
   'local-backup.restore.protectionBackupId': 'Protection copy id',
+  'local-backup.restore.executeAction': 'Execute this restore',
+  'local-backup.restore.reasonTitle': 'Failure detail',
+  'local-backup.restore.executeTitle': 'Restore execution result',
+  'local-backup.restore.executing': 'Restoring in progress, please keep this page open...',
+  'local-backup.restore.executeSucceeded':
+    'Restore completed: business data, originals and queue tasks were restored from the backup package.',
+  'local-backup.restore.executeFailedTitle': 'Restore did not complete',
+  'local-backup.restore.holdRetained':
+    'This device is still write/transmit frozen (protection copy retained). Handle the reason before retrying.',
+  'local-backup.restore.released':
+    'Freeze released: this organization data area accepts writes again.',
+  'local-backup.cloud.title': 'Cloud backup packages',
+  'local-backup.cloud.empty': 'No cloud backup package yet.',
+  'local-backup.cloud.loadFailed': 'Failed to load the cloud backup package list.',
+  'local-backup.cloud.unavailable':
+    'The cloud backup service is not connected, so cloud packages cannot be listed or downloaded.',
+  'local-backup.cloud.downloadAction': 'Download',
+  'local-backup.cloud.downloading': 'Downloading...',
+  'local-backup.cloud.downloaded': 'Cloud backup package downloaded (download does not restore).',
+  'local-backup.cloud.downloadFailed': 'Failed to download the cloud backup package.',
+  'local-backup.field.packageId': 'Cloud package ID',
+  'local-backup.field.createdAt': 'Created at',
+  'local-backup.field.restoredRecords': 'Restored business rows',
+  'local-backup.field.restoredOriginals': 'Restored originals',
+  'local-backup.field.restoredQueue': 'Restored queue tasks',
 
   'local-backup.error.unknownReason': 'Reason not registered',
   'local-runtime.error.statusLoadFailed':
@@ -232,6 +262,24 @@ export const EN_MESSAGES = {
   'local-backup.reason.packageFileChecksumMismatch': 'Backup package file checksum mismatch',
   'local-backup.reason.restoreTargetInstallationMismatch':
     'The package was not produced by this device and cannot be restored here',
+  'local-backup.reason.restoreRunNotFound':
+    'The restore record does not exist or is no longer valid',
+  'local-backup.reason.restoreNotAccepted':
+    'This restore has not been accepted or is no longer valid; run the precheck again',
+  'local-backup.reason.restoreCheckNotPassed':
+    'The restore precheck did not pass, so it cannot be executed',
+  'local-backup.reason.restoreInstallationMissing':
+    'This device has no installation identity, so the restore cannot run',
+  'local-backup.reason.restoreVerifyFailed':
+    'Post-restore verification did not pass; writing and syncing remain suspended',
+  'local-backup.reason.restoreExecutionFailed':
+    'The restore failed; writing and syncing remain suspended',
+  'local-backup.reason.restoreWriteFailed':
+    'Writing the restored data failed; writing and syncing remain suspended',
+  'local-backup.reason.restoreRollbackFailed':
+    'Rolling back to the protection copy failed; writing and syncing remain suspended, manual handling required',
+  'local-backup.reason.restoreProtectionUnreadable':
+    'The protection copy is unreadable, so no rollback guarantee is available',
   'local-backup.reason.restoreTargetOrganizationMismatch':
     'The package does not belong to the company you are authorized for',
   'local-backup.reason.restoreLocalPackageMissing':
@@ -1953,6 +2001,8 @@ export const EN_MESSAGES = {
   'syncConflict.action.sourceUnavailable': 'The source record is unavailable and cannot be opened.',
   'syncConflict.action.readOnlyNotice':
     'The source record is read-only (deleted, offline, frozen or closed); its content cannot be restored or overwritten.',
+  'syncConflict.action.readOnlyAdoptNotice':
+    'The source record is closed (read-only). The cloud version can still be adopted: only the local view is aligned, the closed history is not modified, and no write permission is granted.',
   'syncConflict.detail.title': 'Conflict detail',
   'syncConflict.detail.localSnapshot': 'Local snapshot',
   'syncConflict.detail.cloudSnapshot': 'Cloud snapshot',
@@ -1990,6 +2040,13 @@ export const EN_MESSAGES = {
   'recordPackage.tab.export': 'Export',
   'recordPackage.tab.import': 'Import',
   'recordPackage.export.resourceType': 'Record type',
+  'recordPackage.export.mode': 'Export mode',
+  'recordPackage.export.mode.single': 'Single type (multiple records)',
+  'recordPackage.export.mode.mixed': 'Mixed export (type per entry)',
+  'recordPackage.export.entry.resourceType': 'Record type',
+  'recordPackage.export.entry.recordId': 'Record ID',
+  'recordPackage.export.entry.add': 'Add entry',
+  'recordPackage.export.entry.remove': 'Remove entry',
   'recordPackage.export.organizationId': 'Target company scope',
   'recordPackage.export.recordIds': 'Record IDs',
   'recordPackage.export.targetPath': 'Target directory (absolute local path)',

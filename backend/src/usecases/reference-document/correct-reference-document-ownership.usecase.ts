@@ -1,5 +1,6 @@
 // src/usecases/reference-document/correct-reference-document-ownership.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
@@ -54,6 +55,7 @@ import { assertManagementReason } from './reference-document-fields.normalize';
 export class CorrectReferenceDocumentOwnershipUsecase {
   constructor(
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly revisionService: ReferenceDocumentRevisionService,
     private readonly managementAuditService: ManagementAuditService,
@@ -93,6 +95,13 @@ export class CorrectReferenceDocumentOwnershipUsecase {
       includeUnpublished: true,
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
+    // 恢复期写入冻结：归属公司数据区正在恢复时不得变更归属（迁出与迁入两侧都要判定）
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: current.ownerOrganizationId,
+    });
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: command.ownerOrganizationId ?? null,
+    });
 
     const correctUploader = command.createdByAccountId !== undefined;
     const correctOrganization = command.ownerOrganizationId !== undefined;

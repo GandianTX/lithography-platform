@@ -16,6 +16,7 @@ import {
   type BackupCleanupResult,
 } from '@src/modules/lithography/local-backup-cleanup.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 
@@ -53,6 +54,7 @@ export class CleanupLocalBackupPackagesUsecase {
     private readonly scopeResolver: LocalRuntimeScopeResolver,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
     private readonly cleanupService: LocalBackupCleanupService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
   ) {}
 
   async execute(command: {
@@ -76,6 +78,9 @@ export class CleanupLocalBackupPackagesUsecase {
       command.organizationId ?? null,
       installation,
     );
+
+    // 恢复期冻结：该公司数据区正在恢复时不得清理本地包（保护副本与待恢复包不能被删）
+    await this.localWriteHoldService.assertCompanyWritable({ organizationId });
 
     if (command.mode === 'RETENTION') {
       const result = await this.cleanupService.cleanupExpiredPackages({

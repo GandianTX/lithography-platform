@@ -213,6 +213,7 @@ export class RepairRequestService {
           id: true,
           intakeId: true,
           serviceOrganizationId: true,
+          ownerOrganizationId: true,
           isAccepted: true,
           deprecated: true,
         },
@@ -225,6 +226,7 @@ export class RepairRequestService {
         id: entity.id,
         isAccepted: entity.isAccepted,
         deprecated: entity.deprecated,
+        ownerOrganizationId: entity.ownerOrganizationId,
         serviceOrganizationId: await this.resolveTrustedServiceOrganizationId(
           entity.intakeId,
           entity.serviceOrganizationId,
@@ -732,6 +734,7 @@ export class RepairRequestService {
       intakeId: entity.intakeId,
       customerOrganizationId: entity.customerOrganizationId,
       serviceOrganizationId: entity.serviceOrganizationId,
+      ownerOrganizationId: entity.ownerOrganizationId,
     };
   }
 

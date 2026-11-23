@@ -79,15 +79,13 @@ export class PrecheckLocalRestoreUsecase {
     }
 
     const now = new Date();
-    const protectionPath = this.protectedBackupService.resolvePackageTargetPath(
-      asset.organizationId,
-      'MANUAL',
-      now,
-    );
 
     // 补偿用事实（review M8）：预检事实写失败时据此回收保护副本，不留孤儿包与孤儿资产
     let protectionRunId: number | null = null;
     let protectionPackagePath: string | null = null;
+    // 保护副本落点必须在**保护运行登记之后**才计算：落点要并入运行号才能保证唯一，
+    // 否则与"手动备份"落在同一毫秒时会算出同一个目录 ⇒ 保护副本覆盖待恢复包。
+    let protectionPath: string | null = null;
 
     return this.precheckService.execute({
       asset,
@@ -112,6 +110,12 @@ export class PrecheckLocalRestoreUsecase {
           ),
         );
         protectionRunId = protectionRun.id;
+        protectionPath = this.protectedBackupService.resolvePackageTargetPath(
+          organizationId,
+          'MANUAL',
+          now,
+          protectionRun.id,
+        );
 
         try {
           const result = await this.protectedBackupService.generateProtectedBackup({

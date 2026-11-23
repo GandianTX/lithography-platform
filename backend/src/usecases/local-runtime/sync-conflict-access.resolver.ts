@@ -5,6 +5,10 @@ import {
   resolveSyncConflictAccess,
   type SyncConflictAccessOutcome,
 } from '@core/local-runtime/policy/sync-conflict-access.policy';
+import {
+  resolveSyncConflictCloudAdoption,
+  resolveSyncConflictReadOnly,
+} from '@core/local-runtime/policy/sync-conflict-readonly.policy';
 import { Injectable } from '@nestjs/common';
 
 import type { SyncConflictMetadataRow } from '@src/modules/lithography/queries/sync-conflict.query.service';
@@ -14,6 +18,24 @@ import {
   type SyncSourceRecordFact,
   type SyncSourceResourceType,
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
+
+/**
+ * 来源记录的**只读／采用准入**事实（清单与详情共用）。
+ *
+ * 取不到来源事实时如实返回"不可采用"：读不到依据不等于可以采用。
+ */
+export type SyncConflictSourceState = {
+  /** 来源记录的本机 ID；取不到时为 null（页面据此不提供来源页跳转） */
+  recordId: number | null;
+  /** 来源内容是否只读（已删除／下架／冻结／结单） */
+  readOnly: boolean;
+  /** 只读受控原因码 */
+  readOnlyReason: string | null;
+  /** 是否允许采用云端视图（R066） */
+  canAdoptCloud: boolean;
+  /** 是否为只读采用（来源已结单：只呈现视图，不写业务记录） */
+  adoptionReadOnly: boolean;
+};
 
 /**
  * 冲突读取的记录级授权解析（任务 09 后续S2·S2.2）。
@@ -43,8 +65,26 @@ export class SyncConflictAccessResolver {
     scope: LocalRuntimeViewerScope;
     rows: readonly SyncConflictMetadataRow[];
   }): Promise<SyncConflictMetadataRow[]> {
+    const { readable } = await this.filterReadableWithFacts(params);
+    return readable;
+  }
+
+  /**
+   * 过滤出可读的冲突条目，并**同时**返回本次取到的来源事实。
+   *
+   * 清单与详情都需要来源事实（只读标记与采用准入）；
+   * 一次解析两处复用，避免同一页重复回表。
+   */
+  async filterReadableWithFacts(params: {
+    sessionAccountId: number;
+    scope: LocalRuntimeViewerScope;
+    rows: readonly SyncConflictMetadataRow[];
+  }): Promise<{
+    readable: SyncConflictMetadataRow[];
+    facts: Map<string, SyncSourceRecordFact>;
+  }> {
     if (params.rows.length === 0) {
-      return [];
+      return { readable: [], facts: new Map() };
     }
     const facts = await this.resolveRecordFacts(params.rows);
     const readable: SyncConflictMetadataRow[] = [];
@@ -53,7 +93,40 @@ export class SyncConflictAccessResolver {
         readable.push(row);
       }
     }
-    return readable;
+    return { readable, facts };
+  }
+
+  /**
+   * 来源记录的只读标记与采用准入（纯装配；事实已由 resolveRecordFacts 取回）。
+   *
+   * 口径与裁决侧一致（R066）：
+   * - 已删除／下架、冻结 ⇒ 不可采用云端；
+   * - 已结单 ⇒ 允许**只读采用**（不写业务记录、不获得写入权）；
+   * - 事实取不到 ⇒ 不可采用（读不到依据不等于可以采用）。
+   */
+  resolveSourceState(
+    row: Pick<SyncConflictMetadataRow, 'resourceType' | 'recordUuid'>,
+    facts: ReadonlyMap<string, SyncSourceRecordFact>,
+  ): SyncConflictSourceState {
+    const fact = facts.get(this.factKey(row.resourceType, row.recordUuid));
+    if (fact === undefined) {
+      return {
+        recordId: null,
+        readOnly: false,
+        readOnlyReason: null,
+        canAdoptCloud: false,
+        adoptionReadOnly: false,
+      };
+    }
+    const readOnly = resolveSyncConflictReadOnly(fact.contentState);
+    const adoption = resolveSyncConflictCloudAdoption(fact.contentState);
+    return {
+      recordId: fact.recordId,
+      readOnly: readOnly.readOnly,
+      readOnlyReason: readOnly.reason,
+      canAdoptCloud: adoption.adoptable,
+      adoptionReadOnly: adoption.readOnlyAdoption,
+    };
   }
 
   /** 单条判定（详情读取用） */
@@ -103,7 +176,7 @@ export class SyncConflictAccessResolver {
   }
 
   /** 批量取来源记录事实：按（资源类型，登记公司）分组取，避免跨公司串读 */
-  private async resolveRecordFacts(
+  async resolveRecordFacts(
     rows: readonly Pick<
       SyncConflictMetadataRow,
       'recordUuid' | 'organizationId' | 'resourceType'

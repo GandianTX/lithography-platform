@@ -1,5 +1,6 @@
 // src/usecases/reference-document/revise-reference-document.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
@@ -59,6 +60,7 @@ import {
 export class ReviseReferenceDocumentUsecase {
   constructor(
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly revisionService: ReferenceDocumentRevisionService,
     private readonly accountQueryService: AccountQueryService,
@@ -95,6 +97,10 @@ export class ReviseReferenceDocumentUsecase {
       forUpdate: true,
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
+    // 恢复期写入冻结：资料归属公司数据区正在恢复时不得修订
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: current.ownerOrganizationId,
+    });
     this.assertCaseEditProtection(current, command.patch);
 
     // 当前生效结构化内容（任务 07 管理修订）：报告来源正式资料或已结构化修订的

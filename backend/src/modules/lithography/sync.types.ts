@@ -46,6 +46,16 @@ export type SyncConflictSnapshot = {
   sourceReadOnly?: boolean;
   /** 只读受控原因码 */
   sourceReadOnlyReason?: string | null;
+  /**
+   * 是否允许采用云端视图（R066）。
+   *
+   * 已结单（结单后只读）允许**只读采用**；已删除／下架／冻结一律不允许。
+   */
+  canAdoptCloud?: boolean;
+  /**
+   * 是否为**只读采用**（来源已结单）：只呈现云端视图，不写业务记录、不获得写入权。
+   */
+  adoptionReadOnly?: boolean;
   confirmedByAccountId: number | null;
   confirmedAt: Date | null;
   createdAt: Date;
@@ -75,6 +85,11 @@ export type SyncConflictResolutionView = {
   decision: string | null;
   localVersion: number | null;
   /**
+   * 云端数据版本；null 表示没有可信版本（历史行）。
+   * 裁决时用它复核客户端**实际看到**的云端版本（R067）。
+   */
+  cloudVersion: number | null;
+  /**
    * 保留本地裁决幂等状态（review M7）：
    * `WRITING`=正文写入已开始但冲突事实未改写；`WRITTEN`=正文与事实都已写回；
    * `null`=从未走过本地裁决（历史行保持 NULL，不回填）。
@@ -82,6 +97,14 @@ export type SyncConflictResolutionView = {
   localResolutionState: string | null;
   /** 本地快照 JSON 原文（保留本地裁决要映射的载荷来源） */
   localSnapshot: string;
+  /**
+   * 云端快照 JSON 原文（**使用云端**裁决要映射的载荷来源）。
+   *
+   * 为什么裁决视图要带它：R068 要求"对齐本地当前有权视图"，
+   * 而对齐用的受控字段来自云端快照；不读它就只能在冲突事实上打勾，
+   * 本地视图仍旧是旧内容。
+   */
+  cloudSnapshot: string;
 };
 
 export type SyncConflictListPagination = {
@@ -108,4 +131,14 @@ export type SyncConflictResolveCommand = {
   conflictId: string;
   action: SyncConflictAction;
   confirmedByAccountId: number;
+  /**
+   * 客户端**实际看到**的云端版本（R067：服务端必须复核，不能信前端快照）。
+   * 与冲突登记的 `cloud_version` 不一致 ⇒ 云端已变化，返回刷新重确认。
+   */
+  displayedCloudVersion?: number | null;
+  /**
+   * 采用云端后本地视图对齐到的版本（=云端版本）。
+   * 用于把 `local_version` 推进到云端版本，表达"本地视图已对齐"。
+   */
+  alignedLocalVersion?: number | null;
 };

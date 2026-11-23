@@ -1,6 +1,7 @@
 // src/adapters/api/rest/stored-file/stored-file-rest.controller.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import http, { type ServerResponse } from 'node:http';
@@ -641,6 +642,11 @@ describe('StoredFileRestController 正式上传入口（真实 Nest multipart HT
       { insertStagedFile } as never,
       {} as never,
       { resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 1 }) } as never,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       // 任务 03：客户报修原件的归属公司真源（本 spec 走工程师用途，不会调用）
       { findCustomerOrganizationId: jest.fn().mockResolvedValue(1) } as never,
       {

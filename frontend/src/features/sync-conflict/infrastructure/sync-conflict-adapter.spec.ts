@@ -66,12 +66,32 @@ describe('同步冲突 adapter', () => {
       resolveSyncConflict: { outcome: 'later', conflict: { conflictId: 'c-1' } },
     } as never);
 
-    const result = await resolveSyncConflict('c-1', 'LATER');
+    const result = await resolveSyncConflict('c-1', 'LATER', null);
 
     expect(result.outcome).toBe('later');
     const [query, variables] = executeGraphQLMock.mock.calls[0];
     expect(query).toContain('resolveSyncConflict(');
-    expect(variables).toEqual({ conflictId: 'c-1', action: 'LATER' });
+    expect(variables).toEqual({
+      conflictId: 'c-1',
+      action: 'LATER',
+      displayedCloudVersion: null,
+    });
+  });
+
+  // R067：客户端必须提交**实际看到**的云端版本，服务端据此复核"云端是否已变化"。
+  it('裁决：提交用户实际看到的云端版本', async () => {
+    executeGraphQLMock.mockResolvedValue({
+      resolveSyncConflict: { outcome: 'resolved', conflict: { conflictId: 'c-1' } },
+    } as never);
+
+    await resolveSyncConflict('c-1', 'CLOUD', 5);
+
+    const [, variables] = executeGraphQLMock.mock.calls[0];
+    expect(variables).toEqual({
+      conflictId: 'c-1',
+      action: 'CLOUD',
+      displayedCloudVersion: 5,
+    });
   });
 
   it('失败不吞：原样上抛', async () => {

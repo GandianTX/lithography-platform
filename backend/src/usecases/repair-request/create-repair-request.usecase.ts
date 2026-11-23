@@ -37,6 +37,7 @@ import { AsyncTaskRecordService } from '@src/modules/async-task-record/async-tas
 import { EquipmentModelService } from '@src/modules/lithography/equipment-model.service';
 import { RepairRequestIntakeService } from '@src/modules/lithography/repair-request-intake.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { DeliverIntakeAnalysisUsecase } from './deliver-intake-analysis.usecase';
 import {
   TRANSACTION_RUNNER,
@@ -102,6 +103,7 @@ export class CreateRepairRequestUsecase {
     private readonly equipmentModelService: EquipmentModelService,
     private readonly accountQueryService: AccountQueryService,
     private readonly organizationQueryService: OrganizationQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly bindRepairRequestOriginalUsecase: BindRepairRequestOriginalUsecase,
     private readonly asyncTaskRecordService: AsyncTaskRecordService,
     private readonly deliverIntakeAnalysisUsecase: DeliverIntakeAnalysisUsecase,
@@ -193,6 +195,11 @@ export class CreateRepairRequestUsecase {
         { accountId: session.accountId, organizationId: customerOrganizationId },
       );
     }
+
+    // 恢复期写入冻结：该公司数据区正在恢复时不得新建报修（写入会被整体替换掉）
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: customerOrganizationId,
+    });
 
     // 选定维修厂家：写前复核「启用 + 具备维修服务资格」，与停用/撤销资格写入串行
     const serviceOrganization =

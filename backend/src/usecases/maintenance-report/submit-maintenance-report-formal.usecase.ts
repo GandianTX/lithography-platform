@@ -30,6 +30,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import { EquipmentModelService } from '@src/modules/lithography/equipment-model.service';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type {
   MaintenanceReportDraftDetailView,
   MaintenanceReportSnapshot,
@@ -108,6 +109,7 @@ export class SubmitMaintenanceReportFormalUsecase {
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
     private readonly equipmentModelService: EquipmentModelService,
     private readonly referenceDocumentService: ReferenceDocumentService,
@@ -1059,6 +1061,10 @@ export class SubmitMaintenanceReportFormalUsecase {
     const membership = await this.organizationContextService.resolveForAccount({
       accountId,
       transactionContext,
+    });
+    // 恢复期写入冻结：该公司数据区正在恢复时不得正式提交（报告会写入并生成正式资料）
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: membership.organizationId,
     });
     return membership.organizationId;
   }

@@ -72,6 +72,8 @@ const SYNC_CONFLICT_DETAIL_QUERY = `
       sourceRecordId
       sourceReadOnly
       sourceReadOnlyReason
+      canAdoptCloud
+      adoptionReadOnly
       confirmedByAccountId
       confirmedAt
       createdAt
@@ -80,8 +82,16 @@ const SYNC_CONFLICT_DETAIL_QUERY = `
 `;
 
 const RESOLVE_SYNC_CONFLICT_MUTATION = `
-  mutation ResolveSyncConflict($conflictId: String!, $action: SyncConflictAction!) {
-    resolveSyncConflict(conflictId: $conflictId, action: $action) {
+  mutation ResolveSyncConflict(
+    $conflictId: String!
+    $action: SyncConflictAction!
+    $displayedCloudVersion: Int
+  ) {
+    resolveSyncConflict(
+      conflictId: $conflictId
+      action: $action
+      displayedCloudVersion: $displayedCloudVersion
+    ) {
       outcome
       conflict {
         conflictId
@@ -163,15 +173,22 @@ export async function fetchSyncConflictDetail(conflictId: string): Promise<SyncC
   return data.syncConflict;
 }
 
-/** 裁决冲突：使用云端（CLOUD）／保留本地（LOCAL）／稍后处理（LATER） */
+/**
+ * 裁决冲突：使用云端（CLOUD）／保留本地（LOCAL）／稍后处理（LATER）。
+ *
+ * `displayedCloudVersion`：**用户实际看到**的云端版本。服务端据此复核
+ * "云端是否已变化"（R067）——提交与登记不一致时返回刷新重确认，
+ * 前端不自行判断云端是否变化。
+ */
 export async function resolveSyncConflict(
   conflictId: string,
   action: SyncConflictAction,
+  displayedCloudVersion: number | null,
 ): Promise<{ outcome: 'resolved' | 'existing' | 'later'; conflict: SyncConflictSummary }> {
   const data = await executeGraphQL<
     ResolveSyncConflictMutationResult,
-    { conflictId: string; action: SyncConflictAction }
-  >(RESOLVE_SYNC_CONFLICT_MUTATION, { conflictId, action });
+    { conflictId: string; action: SyncConflictAction; displayedCloudVersion: number | null }
+  >(RESOLVE_SYNC_CONFLICT_MUTATION, { conflictId, action, displayedCloudVersion });
 
   return data.resolveSyncConflict;
 }

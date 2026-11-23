@@ -40,8 +40,23 @@ export type RecordPackageExportCommand = {
   organizationId: number;
   /** 导出目标目录（本机绝对路径；必须不存在或为空目录，防覆盖） */
   targetPath: string;
+  /**
+   * 单一资源类型（**旧接口**，保留兼容）。
+   *
+   * 与 `recordIds` 一起构成"一次导出一种资源类型"的调用形态；
+   * 新形态请用 `entries`（可跨资源类型）。
+   */
   resourceType: RecordPackageResourceType;
   recordIds: number[];
+  /**
+   * 导出条目清单（**新形态**：可**混合多种资源类型**）。
+   *
+   * 提供时以它为准（`resourceType`／`recordIds` 被忽略）；不提供时按旧形态处理。
+   *
+   * 清单本身**逐条**携带资源类型 ⇒ 一个包可以同时含工单、报告与资料；
+   * 导入侧本就支持混合类型包（按条目各自的 `resource_type` 逐条处理）。
+   */
+  entries?: readonly RecordPackageExportEntryRequest[];
   /**
    * 导出人账号（会话账号）：逐条记录级授权的"本人"判定事实。
    * 此前该参数被命名为 `_exportedByAccountId` 且**完全未使用**，
@@ -52,6 +67,12 @@ export type RecordPackageExportCommand = {
   exporterScope: LocalRuntimeViewerScope;
   /** 来源账号可移植身份的解析契约（由 usecase 层注入账号域读取能力） */
   resolveSourceIdentity: RecordPackageSourceIdentityResolver;
+};
+
+/** 导出条目请求（可跨资源类型） */
+export type RecordPackageExportEntryRequest = {
+  resourceType: RecordPackageResourceType;
+  recordId: number;
 };
 
 /** 已完成读取与文件登记的导出条目（进入清单） */

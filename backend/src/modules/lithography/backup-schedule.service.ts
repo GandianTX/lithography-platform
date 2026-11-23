@@ -1,5 +1,6 @@
 // src/modules/lithography/backup-schedule.service.ts
 
+import { LocalWriteHoldService } from './local-write-hold.service';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThanOrEqual, Repository } from 'typeorm';
@@ -48,6 +49,7 @@ export class BackupScheduleService {
     @InjectRepository(LocalInstallationEntity)
     private readonly installationRepository: Repository<LocalInstallationEntity>,
     private readonly protectedBackupService: ProtectedBackupService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly logger: PinoLogger,
   ) {}
 
@@ -151,10 +153,7 @@ export class BackupScheduleService {
       // 业务同步授权**不得**被拿来决定备份范围（"不复用业务同步授权"）。
       // 用途不可核验（声明缺失／不可解析）→ 同样不算数（失败关闭，不静默复用）。
       if (
-        !hasCredentialPurpose(
-          typeof authorization.signedClaims === 'string' ? authorization.signedClaims : null,
-          LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP,
-        )
+        !hasCredentialPurpose(authorization.signedClaims, LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP)
       ) {
         continue;
       }
@@ -207,6 +206,20 @@ export class BackupScheduleService {
     return driverCode === 'ER_DUP_ENTRY' || driverCode === '23505';
   }
 
+  /**
+   * 写入冻结闸门：该公司数据区是否可写（恢复期冻结 ⇒ 不可写）。
+   *
+   * 判定失败**按"不可写"处理**（失败关闭）：拿不到冻结事实时不冒险生成备份包。
+   */
+  private async isCompanyWritable(organizationId: number): Promise<boolean> {
+    try {
+      await this.localWriteHoldService.assertCompanyWritable({ organizationId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** 执行一个到期计划：建运行→生成包→结束推进；skipped 表示同公司互斥跳过 */
   private async runDuePlan(
     plan: LocalCompanySettingEntity,
@@ -217,6 +230,12 @@ export class BackupScheduleService {
     });
     if (existing) {
       // 同公司已有 RUNNING（上一轮遗留未到补偿时限）：本轮跳过，不改计划
+      return 'skipped';
+    }
+    // 恢复期写入冻结：该公司数据区正在恢复时**不生成备份包**（数据出盘）。
+    // 判定放在**建运行之前**：否则会留下一条假的 RUNNING 运行行
+    // （互斥会让该公司备份停滞到补偿时限，且该脏行会被打进下一个包）。
+    if (!(await this.isCompanyWritable(plan.organizationId))) {
       return 'skipped';
     }
     let run: LocalBackupRunEntity;
@@ -245,6 +264,7 @@ export class BackupScheduleService {
       plan.organizationId,
       'SCHEDULED',
       now,
+      run.id,
     );
     try {
       const result = await this.protectedBackupService.generateProtectedBackup({

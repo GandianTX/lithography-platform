@@ -6,6 +6,16 @@ import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.serv
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { normalizeBackupFinish } from './local-runtime.input.normalize';
 
+/** 恢复期写入冻结守卫替身：本 spec 只验证本服务行为，冻结判定另由守卫自身规格覆盖 */
+const restoreScopeWriteGuardStub = {
+  assertRequestScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertIntakeScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertConversationScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertAnalysisScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertDocumentScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertOrganizationScopeWritable: jest.fn().mockResolvedValue(undefined),
+};
+
 type Row = Record<string, unknown>;
 
 let mockManager: { getRepository: (target: unknown) => unknown } | null = null;
@@ -129,6 +139,7 @@ const makeHarness = () => {
     installationRepository as never,
     uploadTaskRepository as never,
     backupRunRepository as never,
+    restoreScopeWriteGuardStub as never,
   );
   const transactionContext = {} as PersistenceTransactionContext;
   return {

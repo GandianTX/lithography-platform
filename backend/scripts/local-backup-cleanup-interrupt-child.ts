@@ -32,6 +32,7 @@ import { BackupAssetEntity } from '../src/modules/lithography/entities/backup-as
 import { LocalBackupRunEntity } from '../src/modules/lithography/entities/local-backup-run.entity';
 import { LocalInstallationEntity } from '../src/modules/lithography/entities/local-installation.entity';
 import { LocalBackupCleanupService } from '../src/modules/lithography/local-backup-cleanup.service';
+import type { LocalWriteHoldService } from '../src/modules/lithography/local-write-hold.service';
 
 const readArg = (index: number, name: string): string => {
   const value = process.argv[index + 2];
@@ -74,6 +75,11 @@ const main = async (): Promise<void> => {
       { baseDir: backupRoot },
       // 子进程内自建日志出口：原始异常只进这里（不进任何对外字段）
       new PinoLogger({}),
+      // 写入冻结闸门：本子进程只做清理演练，不受恢复期冻结影响（无冻结事实）
+      {
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       dataSource.getRepository(LocalBackupRunEntity),
       dataSource.getRepository(LocalInstallationEntity),
     );

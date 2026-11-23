@@ -13,6 +13,16 @@ import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.
 import type { RepairRequestIntakeEntity } from '@src/modules/lithography/entities/repair-request-intake.entity';
 import { IntakeAnalysisService } from './intake-analysis.service';
 
+/** 恢复期写入冻结守卫替身：本 spec 只验证本服务行为，冻结判定另由守卫自身规格覆盖 */
+const restoreScopeWriteGuardStub = {
+  assertRequestScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertIntakeScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertConversationScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertAnalysisScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertDocumentScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertOrganizationScopeWritable: jest.fn().mockResolvedValue(undefined),
+};
+
 jest.mock(
   '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context',
   () => ({
@@ -121,6 +131,7 @@ describe('IntakeAnalysisService', () => {
       intakeRepository as never,
       attemptRepository as never,
       equipmentModelRepository as never,
+      restoreScopeWriteGuardStub as never,
     );
   });
 

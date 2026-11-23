@@ -48,7 +48,9 @@ export class ListSyncConflictsUsecase {
     );
 
     // 记录级授权：越权与事实不可得的条目整条剔除后再分页
-    const readable = await this.syncConflictAccessResolver.filterReadable({
+    // 同时取回来源事实：清单条目要如实给出"来源是否只读 / 能否采用云端"
+    // （与详情页同一口径，不能清单恒显示"可采用"）
+    const { readable, facts } = await this.syncConflictAccessResolver.filterReadableWithFacts({
       sessionAccountId: command.session.accountId,
       scope,
       rows,
@@ -69,7 +71,8 @@ export class ListSyncConflictsUsecase {
       if (payload === undefined) {
         continue;
       }
-      items.push(this.toSnapshot(row, payload));
+      const source = this.syncConflictAccessResolver.resolveSourceState(row, facts);
+      items.push(this.toSnapshot(row, payload, source));
     }
 
     return {
@@ -81,10 +84,17 @@ export class ListSyncConflictsUsecase {
     };
   }
 
-  /** 元数据 + 快照 → 对外快照 */
+  /** 元数据 + 快照 + 来源事实 → 对外快照 */
   private toSnapshot(
     row: SyncConflictMetadataRow,
     payload: { localSnapshot: string; cloudSnapshot: string },
+    source: {
+      recordId: number | null;
+      readOnly: boolean;
+      readOnlyReason: string | null;
+      canAdoptCloud: boolean;
+      adoptionReadOnly: boolean;
+    },
   ): SyncConflictSnapshot {
     return {
       conflictId: row.conflictId,
@@ -100,6 +110,11 @@ export class ListSyncConflictsUsecase {
       localSnapshot: payload.localSnapshot,
       cloudSnapshot: payload.cloudSnapshot,
       conflictReason: row.conflictReason,
+      sourceRecordId: source.recordId,
+      sourceReadOnly: source.readOnly,
+      sourceReadOnlyReason: source.readOnlyReason,
+      canAdoptCloud: source.canAdoptCloud,
+      adoptionReadOnly: source.adoptionReadOnly,
       confirmedByAccountId: row.confirmedByAccountId,
       confirmedAt: row.confirmedAt,
       createdAt: row.createdAt,

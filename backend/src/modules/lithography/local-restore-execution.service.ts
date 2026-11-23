@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
+import { PinoLogger } from 'nestjs-pino';
 import { Repository } from 'typeorm';
 
 import {
@@ -28,7 +29,12 @@ import {
   parseBackupManifest,
   parseProtectionKey,
 } from '@core/local-runtime/policy/protected-backup.policy';
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 import { resolveRestoreExecutionCapability } from '@core/local-runtime/policy/restore-execution-capability.policy';
+import {
+  LOCAL_RESTORE_AUDIT_STAGES,
+  type LocalRestoreAuditStage,
+} from '@core/local-runtime/policy/local-restore-audit.policy';
 
 import { ManagementAuditService } from './management-audit.service';
 import { BackupAssetEntity } from './entities/backup-asset.entity';
@@ -78,6 +84,7 @@ export class LocalRestoreExecutionService {
     private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly managementAuditService: ManagementAuditService,
     private readonly moduleRef: ModuleRef,
+    private readonly logger: PinoLogger,
     @Optional()
     @Inject(LOCAL_BACKUP_PROTECTION)
     private readonly backupProtection?: ProtectedBackupMaterial,
@@ -160,10 +167,18 @@ export class LocalRestoreExecutionService {
     });
 
     try {
-      const restored = await this.restoreScope({ run, source });
+      const restored = await this.restoreScope({
+        run,
+        source,
+        installationId: installation.installationId,
+      });
 
       // ② 核验：逐表行数必须与清单一致（由来源域按真实事实给出）
-      const verified = await this.verifyScope(run, restored.expectedRows);
+      const verified = await this.verifyScope(
+        run,
+        restored.expectedRows,
+        installation.installationId,
+      );
       if (!verified.ok) {
         return await this.failAfterWrite(
           input.restoreId,
@@ -187,6 +202,7 @@ export class LocalRestoreExecutionService {
         backupId: run.backupId,
         protectionBackupId: run.protectionBackupId ?? null,
         result: 'SUCCEEDED',
+        stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_SUCCEEDED,
         counts: restored.counts,
       });
 
@@ -242,12 +258,19 @@ export class LocalRestoreExecutionService {
     reason: string,
     actorAccountId: number,
   ): Promise<LocalRestoreExecutionOutcome> {
-    const rollback = await this.rollbackToProtection(run, protection);
+    const rollback = await this.rollbackToProtection(run, protection, installation.installationId);
     if (!rollback.ok) {
       return await this.failAndKeepHold(
         restoreId,
         reasonCode,
         `${reason}（按保护副本回滚失败：${rollback.reason ?? '原因不可用'}）`,
+        {
+          actorAccountId,
+          organizationId: run.organizationId,
+          backupId: run.backupId,
+          protectionBackupId: run.protectionBackupId ?? null,
+          stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_ROLLBACK_FAILED,
+        },
       );
     }
     try {
@@ -258,13 +281,31 @@ export class LocalRestoreExecutionService {
       });
     } catch {
       // 冻结解除失败不影响"数据已回滚"的结论，但设备仍停写停传（保守口径）
+      // 这条路径是**必须留痕的终态**：设备仍在冻结、需人工处置，
+      // 不能因为"事件尽力而为"就整条丢掉（否则任务 10 页看不到这次恢复尝试）。
       return await this.failAndKeepHold(
         restoreId,
         reasonCode,
         `${reason}（业务数据已按保护副本回滚，但冻结解除失败，设备继续停写停传）`,
+        {
+          actorAccountId,
+          organizationId: run.organizationId,
+          backupId: run.backupId,
+          protectionBackupId: run.protectionBackupId ?? null,
+          stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_HOLD_RETAINED,
+        },
       );
     }
-    await this.restoreRunRepository.update({ restoreId }, { status: 'FAILED', finishedAt: now });
+    await this.restoreRunRepository.update(
+      { restoreId },
+      {
+        status: 'FAILED',
+        finishedAt: now,
+        // 库级 CHECK `chk_backup_restore_run_check_outcome`：
+        // 终态 FAILED／INTERRUPTED 的行不得带核对结论
+        checkStatus: null,
+      },
+    );
     // 失败终态事件是**尽力而为**：写不进去不能再反过来打断失败处置
     // （此时数据已回滚、冻结已解除，事件缺失只影响任务 10 的可读性）。
     await this.appendRestoreEvent({
@@ -274,6 +315,7 @@ export class LocalRestoreExecutionService {
       backupId: run.backupId,
       protectionBackupId: run.protectionBackupId ?? null,
       result: 'FAILED',
+      stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_ROLLED_BACK,
       reasonCode,
     }).catch(() => undefined);
     return {
@@ -297,6 +339,7 @@ export class LocalRestoreExecutionService {
     backupId: string;
     protectionBackupId: string | null;
     result: 'SUCCEEDED' | 'FAILED';
+    stage: LocalRestoreAuditStage;
     reasonCode?: string | null;
     counts?: { records: number; originals: number; queue: number };
   }): Promise<void> {
@@ -309,6 +352,7 @@ export class LocalRestoreExecutionService {
       backupId: input.backupId,
       protectionBackupId: input.protectionBackupId,
       result: input.result,
+      stage: input.stage,
       reasonCode: input.reasonCode ?? null,
       counts: input.counts,
     });
@@ -323,19 +367,22 @@ export class LocalRestoreExecutionService {
   private async rollbackToProtection(
     run: BackupRestoreRunEntity,
     protection: BackupAssetEntity | null,
+    installationId: string,
   ): Promise<{ ok: boolean; reason: string | null }> {
     if (
       protection === null ||
       protection.localReference === null ||
       protection.localReference === ''
     ) {
-      return { ok: false, reason: '保护副本不可读' };
+      return { ok: false, reason: LOCAL_BACKUP_FAILURE_REASON.RESTORE_PROTECTION_UNREADABLE };
     }
     try {
-      await this.restoreScope({ run, source: protection });
+      await this.restoreScope({ run, source: protection, installationId });
       return { ok: true, reason: null };
     } catch (error) {
-      return { ok: false, reason: error instanceof Error ? error.message : '回滚失败' };
+      // 原始异常（绝对路径／SQL 片段）**只进服务端日志**，对外只给受控原因码
+      this.logger.error({ err: error, restoreId: run.restoreId }, '按保护副本回滚失败');
+      return { ok: false, reason: LOCAL_BACKUP_FAILURE_REASON.RESTORE_ROLLBACK_FAILED };
     }
   }
 
@@ -358,6 +405,8 @@ export class LocalRestoreExecutionService {
   private async restoreScope(input: {
     run: BackupRestoreRunEntity;
     source: BackupAssetEntity | null;
+    /** 本机安装标识（本机运行数据按安装 × 公司圈定范围时需要） */
+    installationId: string;
   }): Promise<{
     counts: { records: number; originals: number; queue: number };
     expectedRows: Record<string, number>;
@@ -402,6 +451,7 @@ export class LocalRestoreExecutionService {
     }));
     const outcome = await writer.write({
       organizationId: run.organizationId,
+      installationId: input.installationId,
       restoreId: run.restoreId,
       tables,
     });
@@ -448,14 +498,17 @@ export class LocalRestoreExecutionService {
   private async verifyScope(
     run: BackupRestoreRunEntity,
     expectedRows: Record<string, number>,
+    installationId: string,
   ): Promise<{ ok: boolean; reason: string }> {
     const writer = this.resolveRecordWriter();
     for (const [table, expected] of Object.entries(expectedRows)) {
-      if (table === 'local_upload_task' || table === 'local_backup_run') {
+      if (table === 'local_backup_run') {
+        // 本机运行事实表不进恢复载荷，也不参与写回核验。
         continue;
       }
       const actual = await writer.count({
         organizationId: run.organizationId,
+        installationId,
         table: table as LocalRestoreRecordTable,
       });
       if (actual !== expected) {
@@ -468,16 +521,50 @@ export class LocalRestoreExecutionService {
     return { ok: true, reason: '' };
   }
 
-  /** 失败且**保持冻结**：写终态、保留保护副本与任务 */
+  /**
+   * 失败且**保持冻结**：写终态、保留保护副本与任务。
+   *
+   * 这条路径＝"写入失败 **且** 回滚也失败" ⇒ 设备继续停写停传，
+   * 是**必须留痕**的终态（任务 09 新计划第 06 项）：终态事件照写，
+   * 阶段标成"回滚失败"，供任务 10 页读出真实原因。
+   */
   private async failAndKeepHold(
     restoreId: string,
     reasonCode: string,
     reason: string,
+    audit?: {
+      readonly actorAccountId: number;
+      readonly organizationId: number;
+      readonly backupId: string;
+      readonly protectionBackupId: string | null;
+      readonly stage: LocalRestoreAuditStage;
+    },
   ): Promise<LocalRestoreExecutionOutcome> {
     await this.restoreRunRepository.update(
       { restoreId },
-      { status: 'FAILED', finishedAt: new Date() },
+      {
+        status: 'FAILED',
+        finishedAt: new Date(),
+        // 库级 CHECK `chk_backup_restore_run_check_outcome` 规定：
+        // 终态 FAILED／INTERRUPTED 的行**不得**带核对结论（`check_status` 必须为空）。
+        // （此前只写 status/finished_at ⇒ 失败路径在真实库上必然违反 CHECK，
+        //   "失败保持冻结"这条语义根本落不了库。）
+        checkStatus: null,
+      },
     );
+    if (audit !== undefined) {
+      // 终态事件**尽力而为**：写不进去不改变"保持冻结"的结论（设备仍停写停传）。
+      await this.appendRestoreEvent({
+        restoreId,
+        actorAccountId: audit.actorAccountId,
+        organizationId: audit.organizationId,
+        backupId: audit.backupId,
+        protectionBackupId: audit.protectionBackupId,
+        result: 'FAILED',
+        stage: audit.stage,
+        reasonCode,
+      }).catch(() => undefined);
+    }
     return this.failed(restoreId, reasonCode, reason, true);
   }
 

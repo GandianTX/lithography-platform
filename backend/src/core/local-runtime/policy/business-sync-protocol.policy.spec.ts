@@ -1,11 +1,18 @@
 /// <reference types="jest" />
+import { createHash } from 'node:crypto';
+
 import {
   BUSINESS_SYNC_VERDICT_REASON,
   compareOriginals,
   resolveBusinessSyncVerdict,
+  verifyBusinessSyncOriginalPayloads,
   type BusinessSyncDispatchRequest,
   type BusinessSyncReceiverResponse,
 } from './business-sync-protocol.policy';
+
+/** 原件真实字节与其实测校验值（清单必须与字节一致） */
+const ORIGINAL_BYTES = new Uint8Array(Buffer.from('原件真实字节', 'utf8'));
+const ORIGINAL_SHA256 = createHash('sha256').update(Buffer.from(ORIGINAL_BYTES)).digest('hex');
 
 const REQUEST: BusinessSyncDispatchRequest = {
   organizationId: 9,
@@ -16,7 +23,14 @@ const REQUEST: BusinessSyncDispatchRequest = {
   versionNo: 3,
   manifestChecksum: 'a'.repeat(64),
   body: { schema_version: 2 },
-  originals: [{ relativePath: 'originals/a.pdf', sha256: 'b'.repeat(64), byteSize: 1024 }],
+  originals: [
+    {
+      relativePath: 'originals/a.pdf',
+      sha256: ORIGINAL_SHA256,
+      byteSize: ORIGINAL_BYTES.byteLength,
+    },
+  ],
+  originalPayloads: [{ relativePath: 'originals/a.pdf', bytes: ORIGINAL_BYTES }],
   idempotencyKey: 'business-sync:11111111-2222-4333-8444-555555555555:3',
 };
 
@@ -31,7 +45,11 @@ function response(
     versionNo: 3,
     manifestChecksum: 'a'.repeat(64),
     receivedOriginals: [
-      { relativePath: 'originals/a.pdf', sha256: 'b'.repeat(64), byteSize: 1024 },
+      {
+        relativePath: 'originals/a.pdf',
+        sha256: ORIGINAL_SHA256,
+        byteSize: ORIGINAL_BYTES.byteLength,
+      },
     ],
     remoteResourceId: 'remote-1',
     snapshot: { schema_version: 2 },
@@ -110,7 +128,11 @@ describe('业务同步派发裁决（S2.2）', () => {
       REQUEST,
       response({
         receivedOriginals: [
-          { relativePath: 'originals/a.pdf', sha256: 'd'.repeat(64), byteSize: 1024 },
+          {
+            relativePath: 'originals/a.pdf',
+            sha256: 'd'.repeat(64),
+            byteSize: ORIGINAL_BYTES.byteLength,
+          },
         ],
       }),
     );
@@ -149,5 +171,54 @@ describe('全部原件核对', () => {
         [{ relativePath: 'originals/x.pdf', sha256: 'a'.repeat(64), byteSize: 1 }],
       ),
     ).toBe(BUSINESS_SYNC_VERDICT_REASON.ORIGINALS_INCOMPLETE);
+  });
+});
+
+/**
+ * 原件字节与清单的逐项核对（P1-2）。
+ *
+ * 只报清单不送字节＝"只报账不交货"：本机必须在送出前逐项复核，
+ * 对不上就不派发（失败关闭），而不是让云端以 ORIGINALS_INCOMPLETE 收场。
+ */
+describe('原件字节与清单核对', () => {
+  it('字节与清单逐项对上时通过', () => {
+    expect(
+      verifyBusinessSyncOriginalPayloads(REQUEST.originals, REQUEST.originalPayloads),
+    ).toBeNull();
+  });
+
+  it('少件 → ORIGINALS_INCOMPLETE', () => {
+    expect(verifyBusinessSyncOriginalPayloads(REQUEST.originals, [])).toBe(
+      BUSINESS_SYNC_VERDICT_REASON.ORIGINALS_INCOMPLETE,
+    );
+  });
+
+  it('相对路径对不上 → ORIGINALS_INCOMPLETE', () => {
+    expect(
+      verifyBusinessSyncOriginalPayloads(REQUEST.originals, [
+        { relativePath: 'originals/other.pdf', bytes: ORIGINAL_BYTES },
+      ]),
+    ).toBe(BUSINESS_SYNC_VERDICT_REASON.ORIGINALS_INCOMPLETE);
+  });
+
+  it('字节数与清单不一致 → ORIGINAL_DIGEST_MISMATCH', () => {
+    expect(
+      verifyBusinessSyncOriginalPayloads(REQUEST.originals, [
+        {
+          relativePath: 'originals/a.pdf',
+          bytes: new Uint8Array([1, 2, 3]),
+        },
+      ]),
+    ).toBe(BUSINESS_SYNC_VERDICT_REASON.ORIGINAL_DIGEST_MISMATCH);
+  });
+
+  it('字节内容与清单校验值不一致 → ORIGINAL_DIGEST_MISMATCH', () => {
+    const tampered = new Uint8Array(ORIGINAL_BYTES.byteLength);
+    tampered.fill(0x41);
+    expect(
+      verifyBusinessSyncOriginalPayloads(REQUEST.originals, [
+        { relativePath: 'originals/a.pdf', bytes: tampered },
+      ]),
+    ).toBe(BUSINESS_SYNC_VERDICT_REASON.ORIGINAL_DIGEST_MISMATCH);
   });
 });

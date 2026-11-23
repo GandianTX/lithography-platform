@@ -126,8 +126,12 @@ export class BackupRestorePrecheckService {
       await this.restoreRunRepository.insert({
         restoreId,
         backupId: input.asset.backupId,
-        // 与快照里的保护副本一致（review M8）：不再固定写 null
-        protectionBackupId: protection.backupId,
+        // PENDING 行**不能**带保护副本：库级 CHECK `chk_backup_restore_run_execution_guard`
+        // 规定 `status='PENDING'` ⇒ `protection_backup_id IS NULL AND confirmation IS NULL`
+        // （此前在此写保护副本 ⇒ **真实数据库**上的预检必然违反 CHECK，恢复链完全不可用。）
+        // 保护副本标识随快照落库（`snapshot.protection.backupId`），
+        // 受理阶段再从快照取回并随 PENDING → RUNNING 一起写进本列。
+        protectionBackupId: null,
         targetInstallationId: input.currentInstallationId,
         checkStatus: outcome,
         confirmation: null,
@@ -219,6 +223,20 @@ export class BackupRestorePrecheckService {
         continue;
       }
       verified += 1;
+    }
+
+    // 原件清单与包内文件清单必须一致：清单登记了原件却没有对应字节文件 ⇒
+    // 恢复执行阶段按清单还原必然失败（"有 N 份原件未能按包内清单还原"）。
+    // 这里提前说清楚，避免预检通过、执行到一半才失败。
+    const packagedReferences = new Set(manifest.files.map((file) => file.relative_path));
+    const missingOriginals = manifest.originals.filter(
+      (original) => !packagedReferences.has(`files/${original.storage_reference}`),
+    );
+    if (missingOriginals.length > 0) {
+      findings.push({
+        code: restoreCheckFindingCodeValues.ORIGINAL_BYTES_MISSING,
+        message: LOCAL_BACKUP_FAILURE_REASON.RESTORE_ORIGINAL_BYTES_MISSING,
+      });
     }
 
     return {

@@ -27,10 +27,11 @@ const DIFF_KIND_COLOR: Record<string, string> = {
 /**
  * 冲突详情面板：版本、差异、来源页入口与三个裁决动作。
  *
- * 动作可用性口径：
- * - 只读内容（已删除／下架／冻结／结单）**不提供**"使用云端／保留本地"，
- *   并给出受控原因说明——服务端同样会拒绝，前端只是提前把话说清楚；
- * - "稍后处理"任何时候都可用（它不写业务内容）。
+ * 动作可用性口径（**服务端给出**，前端只提前把话说清楚）：
+ * - 「使用云端」由 `canAdoptCloud` 决定：已删除／下架、冻结不允许；
+ *   **已结单允许只读采用**（只呈现云端视图，不写业务历史）；
+ * - 「保留本地」要求来源可写（`sourceReadOnly` 为真即禁用）：不改只读业务历史；
+ * - 「稍后处理」任何时候都可用（它不写业务内容）。
  */
 export function SyncConflictDetailPanel({ conflictId }: { conflictId: string }) {
   const { t } = useI18n();
@@ -56,6 +57,10 @@ export function SyncConflictDetailPanel({ conflictId }: { conflictId: string }) 
     sourceRecordId: detail.sourceRecordId,
   });
   const readOnly = detail.sourceReadOnly;
+  // 采用云端是否可用由服务端给出（R066）：已结单允许**只读采用**，
+  // 已删除／下架／冻结不允许。保留本地仍要求来源可写（不改只读业务历史）。
+  const canAdoptCloud = detail.canAdoptCloud;
+  const adoptionReadOnly = detail.adoptionReadOnly;
   const diffColumns: ColumnsType<SyncConflictDiffEntry> = [
     { dataIndex: 'path', key: 'path', title: t('syncConflict.detail.diff.column.path') },
     {
@@ -126,9 +131,11 @@ export function SyncConflictDetailPanel({ conflictId }: { conflictId: string }) 
       {readOnly ? (
         <Alert
           description={
-            detail.sourceReadOnlyReason === null
-              ? t('syncConflict.action.readOnlyNotice')
-              : t(resolveSyncConflictReadOnlyKey(detail.sourceReadOnlyReason))
+            canAdoptCloud && adoptionReadOnly
+              ? t('syncConflict.action.readOnlyAdoptNotice')
+              : detail.sourceReadOnlyReason === null
+                ? t('syncConflict.action.readOnlyNotice')
+                : t(resolveSyncConflictReadOnlyKey(detail.sourceReadOnlyReason))
           }
           showIcon
           title={t('syncConflict.action.readOnlyNotice')}
@@ -200,7 +207,7 @@ export function SyncConflictDetailPanel({ conflictId }: { conflictId: string }) 
           onConfirm={() => void resolve('CLOUD')}
           title={t('syncConflict.action.cloud')}
         >
-          <Button disabled={readOnly} loading={resolving} size="small" type="primary">
+          <Button disabled={!canAdoptCloud} loading={resolving} size="small" type="primary">
             {t('syncConflict.action.cloud')}
           </Button>
         </Popconfirm>

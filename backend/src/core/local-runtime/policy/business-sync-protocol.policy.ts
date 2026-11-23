@@ -17,6 +17,8 @@
  * - `CLOUD_REJECTED`：接收端明确拒绝。
  */
 
+import { createHash } from 'node:crypto';
+
 import type { BusinessSyncManifestOriginal } from './business-sync-source.policy';
 
 /** 受控裁决原因码 */
@@ -35,7 +37,7 @@ export const BUSINESS_SYNC_VERDICT_REASON = {
 export type BusinessSyncVerdictReason =
   (typeof BUSINESS_SYNC_VERDICT_REASON)[keyof typeof BUSINESS_SYNC_VERDICT_REASON];
 
-/** 派发请求（本机 → 云端）：只含跨端稳定事实与待传正文、原件清单 */
+/** 派发请求（本机 → 云端）：只含跨端稳定事实与待传正文、原件清单与原件字节 */
 export type BusinessSyncDispatchRequest = {
   /** 公司数据区（必须与任务绑定公司一致） */
   organizationId: number;
@@ -53,10 +55,25 @@ export type BusinessSyncDispatchRequest = {
   manifestChecksum: string;
   /** 正文快照 */
   body: Record<string, unknown>;
-  /** 原件清单 */
+  /** 原件清单（摘要事实：相对路径 ＋ 校验值 ＋ 字节数） */
   originals: readonly BusinessSyncManifestOriginal[];
+  /**
+   * 原件**字节**（本机实测读取）。
+   *
+   * 清单只是"打算传什么"，字节才是"真的传了什么"：
+   * 两者必须逐项对上（数量、字节数、SHA-256），否则本机不派发。
+   */
+  originalPayloads: readonly BusinessSyncOriginalPayload[];
   /** 幂等键（同一稳定键与版本恒定，重复提交不产生新记录） */
   idempotencyKey: string;
+};
+
+/** 原件字节（相对路径与清单一致） */
+export type BusinessSyncOriginalPayload = {
+  /** 稳定相对路径（与清单条目一一对应） */
+  relativePath: string;
+  /** 原件字节 */
+  bytes: Uint8Array;
 };
 
 /** 接收端回包（云端 → 本机） */
@@ -143,6 +160,55 @@ export function resolveBusinessSyncVerdict(
     return { ...base, status: 'REJECTED', reason: originalsIssue };
   }
   return { ...base, status: 'ACCEPTED', reason: BUSINESS_SYNC_VERDICT_REASON.ACCEPTED };
+}
+
+/**
+ * 原件字节与清单的逐项核对（纯函数）。
+ *
+ * 清单说"要传 N 件、每件多大、校验值是什么"，字节说"真的传了什么"。
+ * 两者必须逐项对上：少件、多件、字节数不符、校验值不符 ⇒ 都不能派发。
+ *
+ * **同名附件的歧义处理**：清单里出现两条相同相对路径时，逐项核对**没有唯一答案**
+ * （`find()` 只会命中第一条，第二条的字节永远不会被校验）⇒ 直接判为
+ * `ORIGINAL_DIGEST_MISMATCH`（不猜哪一条对应哪一件）。
+ * 派发端必须保证相对路径唯一（见 `business-sync-source.service.ts` 的同名去重）。
+ *
+ * 返回受控原因码（不携带路径、字节与凭据）：
+ * - `ORIGINALS_INCOMPLETE`：字节条目少于清单；
+ * - `ORIGINAL_DIGEST_MISMATCH`：字节数或校验值对不上，或清单路径重复（无法逐项核对）。
+ */
+export function verifyBusinessSyncOriginalPayloads(
+  declared: readonly BusinessSyncManifestOriginal[],
+  payloads: readonly BusinessSyncOriginalPayload[],
+): BusinessSyncVerdictReason | null {
+  if (payloads.length !== declared.length) {
+    return BUSINESS_SYNC_VERDICT_REASON.ORIGINALS_INCOMPLETE;
+  }
+  const declaredPaths = new Set<string>();
+  for (const item of declared) {
+    if (declaredPaths.has(item.relativePath)) {
+      // 同名附件导致相对路径重复：逐项核对不唯一 ⇒ 失败关闭
+      return BUSINESS_SYNC_VERDICT_REASON.ORIGINAL_DIGEST_MISMATCH;
+    }
+    declaredPaths.add(item.relativePath);
+  }
+  for (const item of declared) {
+    const matched = payloads.find((candidate) => candidate.relativePath === item.relativePath);
+    if (matched === undefined) {
+      return BUSINESS_SYNC_VERDICT_REASON.ORIGINALS_INCOMPLETE;
+    }
+    const bytes = matched.bytes;
+    if (bytes.byteLength !== item.byteSize) {
+      return BUSINESS_SYNC_VERDICT_REASON.ORIGINAL_DIGEST_MISMATCH;
+    }
+    const digest = createHash('sha256')
+      .update(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+      .digest('hex');
+    if (digest.toLowerCase() !== item.sha256.toLowerCase()) {
+      return BUSINESS_SYNC_VERDICT_REASON.ORIGINAL_DIGEST_MISMATCH;
+    }
+  }
+  return null;
 }
 
 /**

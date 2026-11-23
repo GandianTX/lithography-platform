@@ -21,15 +21,19 @@
 
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { PinoLogger } from 'nestjs-pino';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { Repository, type ObjectLiteral } from 'typeorm';
 
+import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
 import {
   BACKUP_RESTORE_TABLE_ORDER,
   BACKUP_TABLE_DESCRIPTORS,
+  buildOrganizationScopePredicate,
   type BackupScopeTable,
+  type BackupTableSuppression,
 } from '@core/local-runtime/policy/protected-backup.policy';
 
 import {
@@ -47,24 +51,76 @@ import type {
   LocalRestoreRecordWriter,
 } from '@usecases/common/ports/local-restore-record-writer.contract';
 
+import { AiConversationEntity } from './entities/ai-conversation.entity';
+import { AiMessageAnalysisEntity } from './entities/ai-message-analysis.entity';
+import { AiMessageEntity } from './entities/ai-message.entity';
+import { AiReportEntity } from './entities/ai-report.entity';
+import { EngineerResponseEntity } from './entities/engineer-response.entity';
+import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
 import { MaintenanceReportAlarmEntity } from './entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';
 import { MaintenanceReportEntity } from './entities/maintenance-report.entity';
 import { MaintenanceReportFaultEntity } from './entities/maintenance-report-fault.entity';
+import { MaintenanceReportReviewEntity } from './entities/maintenance-report-review.entity';
 import { MaintenanceReportStepEntity } from './entities/maintenance-report-step.entity';
 import { MaintenanceReportVersionAttachmentEntity } from './entities/maintenance-report-version-attachment.entity';
 import { MaintenanceReportVersionEntity } from './entities/maintenance-report-version.entity';
+import { ReferenceDocumentCaseDetailEntity } from './entities/reference-document-case-detail.entity';
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
 import { ReferenceDocumentRevisionEntity } from './entities/reference-document-revision.entity';
+import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
+import { RepairRequestDiagnosticStepEntity } from './entities/repair-request-diagnostic-step.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestFaultPanelEntity } from './entities/repair-request-fault-panel.entity';
+import { RepairRequestIntakeEntity } from './entities/repair-request-intake.entity';
 import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
 import { StoredFileEntity } from './entities/stored-file.entity';
 
-/** 可恢复表（按外键顺序；运行事实表不进恢复范围） */
-const RESTORE_TABLES: readonly LocalRestoreRecordTable[] = BACKUP_RESTORE_TABLE_ORDER.filter(
-  (table): table is LocalRestoreRecordTable => table !== 'local_backup_run',
-);
+/** 可恢复表（按外键顺序；本机运行事实表 `local_backup_run` 不进恢复范围） */
+const RESTORE_TABLES: readonly LocalRestoreRecordTable[] = BACKUP_RESTORE_TABLE_ORDER;
+
+/**
+ * 需要**延后回填**外键的表（任务 09 新计划第 03 项）。
+ *
+ * `repair_request.intake_id → repair_request_intake.id` 与
+ * `repair_request_intake.converted_request_id → repair_request.id` 构成**双向**外键，
+ * 单趟插入无法同时满足 ⇒ 先写 intake（`convertedRequestId` 置空），
+ * 再写工单，最后按 intake 主键回填 `convertedRequestId`。
+ *
+ * 注意：载荷里的行是**实体实例**（备份侧由 `getMany()` 产出），
+ * 属性名是**驼峰**（`convertedRequestId`），不是数据库列名。
+ */
+const DEFERRED_FOREIGN_KEY_TABLE = 'repair_request_intake';
+const DEFERRED_FOREIGN_KEY_COLUMN = 'convertedRequestId';
+
+/**
+ * 抑制事实（删除／下架）的一行快照。
+ *
+ * 存**整行实体**（不是几个列）：删除事实是复合事实，
+ * 只还原部分列会撞库级 CHECK（见 core 的 `BackupTableSuppression` 注释）。
+ */
+type SuppressionFact = {
+  table: LocalRestoreRecordTable;
+  entity: Record<string, unknown>;
+};
+
+/** 该行当前是否"已被抑制"（删除／下架） */
+function isSuppressed(row: Record<string, unknown>, suppression: BackupTableSuppression): boolean {
+  return suppression.indicators.some((indicator) => {
+    const value = row[indicator.column];
+    if (indicator.notNull === true) {
+      return value !== null && value !== undefined;
+    }
+    if (indicator.notZero === true) {
+      return value !== null && value !== undefined && Number(value) !== 0;
+    }
+    if (indicator.equals !== undefined) {
+      return value === indicator.equals;
+    }
+    return false;
+  });
+}
 
 @Injectable()
 export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter {
@@ -97,6 +153,30 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     private readonly storedFileRepository: Repository<StoredFileEntity>,
     @InjectRepository(LocalUploadTaskEntity)
     private readonly uploadTaskRepository: Repository<LocalUploadTaskEntity>,
+    @InjectRepository(RepairRequestIntakeEntity)
+    private readonly repairRequestIntakeRepository: Repository<RepairRequestIntakeEntity>,
+    @InjectRepository(IntakeAnalysisAttemptEntity)
+    private readonly intakeAnalysisAttemptRepository: Repository<IntakeAnalysisAttemptEntity>,
+    @InjectRepository(RepairProcessEntryEntity)
+    private readonly repairProcessEntryRepository: Repository<RepairProcessEntryEntity>,
+    @InjectRepository(RepairRequestDiagnosticStepEntity)
+    private readonly repairRequestDiagnosticStepRepository: Repository<RepairRequestDiagnosticStepEntity>,
+    @InjectRepository(RepairRequestFaultPanelEntity)
+    private readonly repairRequestFaultPanelRepository: Repository<RepairRequestFaultPanelEntity>,
+    @InjectRepository(MaintenanceReportReviewEntity)
+    private readonly maintenanceReportReviewRepository: Repository<MaintenanceReportReviewEntity>,
+    @InjectRepository(ReferenceDocumentCaseDetailEntity)
+    private readonly referenceDocumentCaseDetailRepository: Repository<ReferenceDocumentCaseDetailEntity>,
+    @InjectRepository(AiConversationEntity)
+    private readonly aiConversationRepository: Repository<AiConversationEntity>,
+    @InjectRepository(AiMessageEntity)
+    private readonly aiMessageRepository: Repository<AiMessageEntity>,
+    @InjectRepository(AiMessageAnalysisEntity)
+    private readonly aiMessageAnalysisRepository: Repository<AiMessageAnalysisEntity>,
+    @InjectRepository(AiReportEntity)
+    private readonly aiReportRepository: Repository<AiReportEntity>,
+    @InjectRepository(EngineerResponseEntity)
+    private readonly engineerResponseRepository: Repository<EngineerResponseEntity>,
     @Inject(STORED_FILE_STORAGE)
     private readonly fileStorage: StoredFileStorage,
     // 事务边界端口是**全局**提供的；离线装配（无全局根模块）下可能缺席，
@@ -104,6 +184,7 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     @Optional()
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner | null,
+    private readonly logger: PinoLogger,
   ) {}
 
   /**
@@ -267,42 +348,75 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
         const counts: Record<string, number> = {};
         // ① 清空：逆外键顺序（先子后父），只清载荷里出现的表
         const payloadTables = request.tables.map((entry) => entry.table);
+        // ①-0 采集**抑制事实**（删除／下架／历史标记）：
+        //      备份之后才被删除的记录，恢复后不得复活（R086「不复活删除下架」）。
+        //
+        //      **必须先于打断循环外键采集**（顺序敏感）：
+        //      `repair_request_intake` 的范围口径是 `SERVICE_OR_PARENT_ORGANIZATION`
+        //      （自身服务公司 ∪ 引用了本公司工单的行），打断循环外键会把
+        //      `converted_request_id` 置空 ⇒ 那些"服务公司为空、只靠父行归属"的原稿
+        //      会**掉出范围** ⇒ 采集不到其删除事实（删除的报修原稿会被旧包复活）；
+        //      且采集到的行会带着 `converted_request_id = null`，
+        //      后面回填抑制事实时会把**已还原的"原稿 → 工单"关联覆盖回空**（事实丢失）。
+        const suppressionFacts = await this.captureSuppressionFacts(
+          request.organizationId,
+          request.installationId,
+        );
+        // ①-1 打断循环外键：`repair_request_intake.converted_request_id → repair_request.id`
+        //      与 `repair_request.intake_id → repair_request_intake.id` 互指，
+        //      任何删除顺序都会被其中一侧挡住（真实库 `ER_ROW_IS_REFERENCED_2`）。
+        //      先把"指向本次将被清空的工单"的引用置空——被置空的行都在恢复范围内，
+        //      随写回按原值还原（延后外键回填），业务事实不丢。
+        await this.breakCircularForeignKeys(request.organizationId, request.installationId);
         for (const table of [...RESTORE_TABLES].reverse()) {
           if (!payloadTables.includes(table)) {
             continue;
           }
-          await this.clearCompanyScope(table, request.organizationId);
+          await this.clearCompanyScope(table, request.organizationId, request.installationId);
         }
         // ② 写回：正外键顺序（先父后子）
         let written = 0;
+        const deferred: { id: number; value: number | null }[] = [];
         for (const table of RESTORE_TABLES) {
           const entry = request.tables.find((candidate) => candidate.table === table);
           if (entry === undefined) {
             continue;
           }
-          const count = await this.insertRows(table, entry.rows);
+          const count = await this.insertRows(table, entry.rows, deferred);
           counts[table] = count;
           written += count;
         }
+        // ③ 回填延后外键（`repair_request_intake.converted_request_id`）：
+        //    双向外键无法单趟插入 ⇒ 写完工单后再按 intake 主键回填。
+        await this.applyDeferredForeignKeys(deferred);
+        // ④ 回填抑制事实：当前事实优先 ⇒ 已删除／已下架的内容不会被旧包复活。
+        await this.applySuppressionFacts(suppressionFacts);
         return { status: 'WRITTEN', written, counts, reason: null };
       });
     } catch (error) {
+      // 原始异常（约束名／SQL 片段／绝对路径）**只进服务端日志**；
+      // 对外只给受控原因码，避免把数据库内部结构暴露到 API 响应。
+      this.logger.error({ err: error }, '恢复写入失败');
       return {
         status: 'FAILED',
         written: 0,
         counts: {},
-        reason: error instanceof Error ? error.message : '业务数据恢复写入失败',
+        reason: LOCAL_BACKUP_FAILURE_REASON.RESTORE_WRITE_FAILED,
       };
     }
   }
 
-  async count(input: { organizationId: number; table: LocalRestoreRecordTable }): Promise<number> {
+  async count(input: {
+    organizationId: number;
+    installationId: string;
+    table: LocalRestoreRecordTable;
+  }): Promise<number> {
     const repository = this.repositoryForTable(input.table);
     if (repository === null) {
       return 0;
     }
     const queryBuilder = repository.createQueryBuilder('t');
-    this.applyScopeFilter(queryBuilder, input.table, input.organizationId);
+    this.applyScopeFilter(queryBuilder, input.table, input.organizationId, input.installationId);
     return queryBuilder.getCount();
   }
 
@@ -342,20 +456,109 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
   private async clearCompanyScope(
     table: LocalRestoreRecordTable,
     organizationId: number,
+    installationId: string,
   ): Promise<void> {
     const repository = this.repositoryForTable(table);
     if (repository === null) {
       return;
     }
     const queryBuilder = repository.createQueryBuilder('t');
-    this.applyScopeFilter(queryBuilder, table, organizationId);
+    // DELETE 语句没有表别名 ⇒ 范围过滤必须用**不带别名**的列名
+    this.applyScopeFilter(queryBuilder, table, organizationId, installationId, null);
     await queryBuilder.delete().execute();
   }
 
-  /** 写回一表的全行（主键按备份原值保留，恢复后业务身份不漂移） */
+  /**
+   * 采集**抑制事实**（删除／下架）。
+   *
+   * 为什么要采集：恢复把公司数据区**整体替换**成备份时刻的内容，
+   * 若不额外处理，**备份之后才被删除的记录会被旧包复活**（R086 明令"不复活删除下架"）。
+   *
+   * 口径＝"**当前事实优先**"：命中抑制的行，**整行**按恢复当下的事实还原
+   * （删除事实是复合事实：工单还要求 `deprecated = 1` ⇒ `is_accepted = 0` ＋ 接单人与接单时间为空，
+   * 只还原部分列会撞库级 CHECK）；未命中抑制的行**完全按备份载荷写回**。
+   *
+   * 采集范围＝本次将被清空的表范围（与清库口径完全一致，不多不少）。
+   */
+  private async captureSuppressionFacts(
+    organizationId: number,
+    installationId: string,
+  ): Promise<SuppressionFact[]> {
+    const facts: SuppressionFact[] = [];
+    for (const table of RESTORE_TABLES) {
+      const suppression = BACKUP_TABLE_DESCRIPTORS[table].suppression;
+      if (suppression === undefined) {
+        continue;
+      }
+      const repository = this.repositoryForTable(table);
+      if (repository === null) {
+        continue;
+      }
+      const queryBuilder = repository.createQueryBuilder('t');
+      this.applyScopeFilter(queryBuilder, table, organizationId, installationId);
+      const rows = await queryBuilder.getMany();
+      for (const row of rows) {
+        if (!isSuppressed(row, suppression)) {
+          continue;
+        }
+        facts.push({ table, entity: row });
+      }
+    }
+    return facts;
+  }
+
+  /**
+   * 回填抑制事实：把恢复当下的**整行事实**写回（已删除／已下架的内容不被旧包复活）。
+   *
+   * 只处理**载荷里也存在的行**：备份之后才新建又删除的行不在载荷内，
+   * 随恢复一起消失（恢复＝回到备份时刻），不会以"未删除"形态复活。
+   */
+  private async applySuppressionFacts(facts: readonly SuppressionFact[]): Promise<void> {
+    for (const fact of facts) {
+      const repository = this.repositoryForTable(fact.table);
+      if (repository === null) {
+        continue;
+      }
+      await repository.save(fact.entity as never);
+    }
+  }
+
+  /**
+   * 打断循环外键（`repair_request_intake` ⇄ `repair_request`）。
+   *
+   * 双向外键无法靠删除顺序解决：清空工单行时，
+   * 引用它的 intake 行会挡住删除（真实库 `ER_ROW_IS_REFERENCED_2`）。
+   *
+   * 口径：只把"引用了**本次将被清空的工单**"的 `converted_request_id` 置空——
+   * 正好是那些阻塞者；它们都在恢复范围内，会随写回按原值还原，
+   * 因此**业务事实不丢**（还原值来自备份载荷，见延后外键回填）。
+   */
+  private async breakCircularForeignKeys(
+    organizationId: number,
+    installationId: string,
+  ): Promise<void> {
+    const parentPredicate = buildOrganizationScopePredicate('repair_request', 'p');
+    await this.repairRequestIntakeRepository
+      .createQueryBuilder()
+      .update()
+      .set({ convertedRequestId: null })
+      .where(
+        `converted_request_id IN (SELECT p.id FROM repair_request p WHERE ${parentPredicate})`,
+        { organizationId, installationId },
+      )
+      .execute();
+  }
+
+  /**
+   * 写回一表的全行（主键按备份原值保留，恢复后业务身份不漂移）。
+   *
+   * `repair_request_intake` 的 `converted_request_id` 与工单互为外键（双向），
+   * 插入时先置空、登记到 `deferred`，待工单写入完成后回填。
+   */
   private async insertRows(
     table: LocalRestoreRecordTable,
     rows: readonly Record<string, unknown>[],
+    deferred: { id: number; value: number | null }[],
   ): Promise<number> {
     if (rows.length === 0) {
       return 0;
@@ -364,34 +567,60 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     if (repository === null) {
       throw new Error(`恢复写入缺少仓储：${table}`);
     }
-    const entities = rows.map((row) => repository.create(row as ObjectLiteral));
+    const prepared = rows.map((row) => ({ ...row }));
+    if (table === DEFERRED_FOREIGN_KEY_TABLE) {
+      for (const row of prepared) {
+        const value = row[DEFERRED_FOREIGN_KEY_COLUMN];
+        if (value === null || value === undefined) {
+          continue;
+        }
+        deferred.push({ id: row.id as number, value: value as number | null });
+        delete row[DEFERRED_FOREIGN_KEY_COLUMN];
+      }
+    }
+    const entities = prepared.map((row) => repository.create(row));
     await repository.insert(entities);
     return entities.length;
   }
 
-  /** 按逐表口径圈定本公司数据区（根表按公司列，子表按父表公司归属） */
+  /** 回填延后外键（双向外键的另一半） */
+  private async applyDeferredForeignKeys(
+    deferred: readonly { id: number; value: number | null }[],
+  ): Promise<void> {
+    if (deferred.length === 0) {
+      return;
+    }
+    const repository = this.repairRequestIntakeRepository;
+    for (const item of deferred) {
+      if (typeof item.id !== 'number') {
+        throw new Error('延后外键回填缺少 intake 主键');
+      }
+      await repository.update({ id: item.id }, { convertedRequestId: item.value });
+    }
+  }
+
+  /**
+   * 按**逐表口径**圈定本公司数据区。
+   *
+   * 谓词由 core 的 `buildOrganizationScopePredicate` 统一生成（备份侧同源）：
+   * 根表按公司列、子表按父表公司归属（递归）、本机运行数据按安装 × 公司。
+   */
   private applyScopeFilter(
     queryBuilder: ReturnType<Repository<ObjectLiteral>['createQueryBuilder']>,
     table: BackupScopeTable,
     organizationId: number,
+    installationId: string,
+    /**
+     * 表别名：**DELETE 语句没有别名**（`DELETE FROM t WHERE ...` 里的 `t.` 不是表别名）。
+     * 之前清库路径复用 SELECT 的别名写法 ⇒ 真实库上
+     * `Unknown column 't.document_id' in 'IN/ALL/ANY subquery'` ⇒ 恢复写入必然失败。
+     */
+    alias: string | null = 't',
   ): void {
-    const descriptor = BACKUP_TABLE_DESCRIPTORS[table];
-    if (descriptor.scope === 'ALL_DEVICE') {
-      return;
-    }
-    if (descriptor.scope === 'OWNER_ORGANIZATION') {
-      queryBuilder.where('t.owner_organization_id = :organizationId', { organizationId });
-      return;
-    }
-    const parentTable = descriptor.parentTable;
-    const parentColumn = descriptor.parentColumn;
-    if (parentTable === undefined || parentColumn === undefined) {
-      throw new Error(`恢复范围口径缺少父表定义：${table}`);
-    }
-    queryBuilder.where(
-      `t.${parentColumn} IN (SELECT p.id FROM ${parentTable} p WHERE p.owner_organization_id = :organizationId)`,
-      { organizationId },
-    );
+    queryBuilder.where(buildOrganizationScopePredicate(table, alias), {
+      organizationId,
+      installationId,
+    });
   }
 
   private repositoryForTable(table: string): Repository<ObjectLiteral> | null {
@@ -400,6 +629,10 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
         return this.repairRequestRepository;
       case 'repair_request_revision':
         return this.repairRequestRevisionRepository;
+      case 'repair_request_intake':
+        return this.repairRequestIntakeRepository;
+      case 'intake_analysis_attempt':
+        return this.intakeAnalysisAttemptRepository;
       case 'maintenance_report':
         return this.maintenanceReportRepository;
       case 'maintenance_report_version':
@@ -414,10 +647,30 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
         return this.reportStepRepository;
       case 'maintenance_report_fault':
         return this.reportFaultRepository;
+      case 'maintenance_report_review':
+        return this.maintenanceReportReviewRepository;
       case 'reference_document':
         return this.referenceDocumentRepository;
       case 'reference_document_revision':
         return this.documentRevisionRepository;
+      case 'reference_document_case_detail':
+        return this.referenceDocumentCaseDetailRepository;
+      case 'ai_conversation':
+        return this.aiConversationRepository;
+      case 'ai_message':
+        return this.aiMessageRepository;
+      case 'ai_message_analysis':
+        return this.aiMessageAnalysisRepository;
+      case 'ai_report':
+        return this.aiReportRepository;
+      case 'engineer_response':
+        return this.engineerResponseRepository;
+      case 'repair_process_entry':
+        return this.repairProcessEntryRepository;
+      case 'repair_request_diagnostic_step':
+        return this.repairRequestDiagnosticStepRepository;
+      case 'repair_request_fault_panel':
+        return this.repairRequestFaultPanelRepository;
       case 'stored_file':
         return this.storedFileRepository;
       case 'local_upload_task':

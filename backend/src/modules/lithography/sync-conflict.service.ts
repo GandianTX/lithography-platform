@@ -58,10 +58,12 @@ export class SyncConflictService {
   }
 
   /**
-   * 锁读并返回**裁决用的冲突视图**（不含正文快照）。
+   * 锁读并返回**裁决用的冲突视图**（含两份正文快照的原文）。
    *
-   * 用视图而不是实体：usecase 层不消费 ORM 实体（架构约定），
-   * 且裁决路径不需要把两份正文快照读进进程内存。
+   * 用视图而不是实体：usecase 层不消费 ORM 实体（架构约定）。
+   * 快照原文必须在这里读出来：保留本地要映射**本地**快照，
+   * 使用云端要映射**云端**快照（R068 的本地视图对齐）；
+   * 都在事务内随行锁一起读，避免"读了版本、读了另一份快照"的不一致。
    */
   async lockConflictView(
     conflictId: string,
@@ -83,8 +85,10 @@ export class SyncConflictService {
       status: entity.status,
       decision: entity.decision,
       localVersion: entity.localVersion,
+      cloudVersion: entity.cloudVersion,
       localResolutionState: entity.localResolutionState,
       localSnapshot: entity.localSnapshot,
+      cloudSnapshot: entity.cloudSnapshot,
     };
   }
 
@@ -127,6 +131,10 @@ export class SyncConflictService {
   /**
    * 条件更新：只允许从 PENDING 落到 RESOLVED。
    * 返回受影响行数——0 表示并发期间已被其他会话裁决，调用方据以回读既有事实。
+   *
+   * 采用云端同时**对齐本地视图**：`local_version` 推进到云端版本、
+   * `displayed_cloud_version` 记录本次采用的版本 ⇒ 读侧据此呈现"本地视图已对齐"。
+   * 原本地冲突副本（`local_snapshot`）**原样保留**，不改写、不覆盖。
    */
   async applyCloudResolution(
     command: SyncConflictResolveCommand,
@@ -134,6 +142,10 @@ export class SyncConflictService {
     transactionContext?: PersistenceTransactionContext,
   ): Promise<number> {
     const repository = this.pickConflictRepository(transactionContext);
+    const alignedLocalVersion =
+      command.alignedLocalVersion === undefined || command.alignedLocalVersion === null
+        ? null
+        : command.alignedLocalVersion;
     const result = await repository
       .createQueryBuilder()
       .update(SyncConflictEntity)
@@ -142,6 +154,10 @@ export class SyncConflictService {
         status: 'RESOLVED',
         confirmedByAccountId: command.confirmedByAccountId,
         confirmedAt,
+        ...(alignedLocalVersion === null ? {} : { localVersion: alignedLocalVersion }),
+        ...(command.displayedCloudVersion === undefined || command.displayedCloudVersion === null
+          ? {}
+          : { displayedCloudVersion: command.displayedCloudVersion }),
       })
       .where('conflictId = :conflictId AND status = :status', {
         conflictId: command.conflictId,

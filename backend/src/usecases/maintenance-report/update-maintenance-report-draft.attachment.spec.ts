@@ -8,6 +8,7 @@
 // - 历史多附件行：拒绝，不为执行新规则静默删除或隐藏历史数据。
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { MaintenanceAiUsage } from '@app-types/models/maintenance-report.types';
 import { StoredFileBusinessType } from '@app-types/models/stored-file.types';
@@ -140,6 +141,11 @@ const makeUsecase = (
     writeService as unknown as MaintenanceReportService,
     queryService as unknown as MaintenanceReportQueryService,
     makeOrganizationContextService() as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     makeEquipmentModelService() as unknown as EquipmentModelQueryService,
     storedFileService as unknown as StoredFileService,
     {

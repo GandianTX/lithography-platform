@@ -1,5 +1,6 @@
 // src/usecases/reference-document/soft-delete-reference-document.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
@@ -53,6 +54,7 @@ import {
 export class SoftDeleteReferenceDocumentUsecase {
   constructor(
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly revisionService: ReferenceDocumentRevisionService,
     private readonly managementAuditService: ManagementAuditService,
@@ -89,6 +91,10 @@ export class SoftDeleteReferenceDocumentUsecase {
       includeUnpublished: true,
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
+    // 恢复期写入冻结：资料归属公司数据区正在恢复时不得删除
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: current.ownerOrganizationId,
+    });
 
     // 删除前生效正文进入快照：授权的历史追溯仍可读回删除前内容
     const effectiveText = await resolveEffectiveContentText(current, {

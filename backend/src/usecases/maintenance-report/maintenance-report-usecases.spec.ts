@@ -1,6 +1,7 @@
 // src/usecases/maintenance-report/maintenance-report-usecases.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import {
@@ -223,6 +224,11 @@ const makeSubmitUsecase = (params: {
     writeService as unknown as MaintenanceReportService,
     queryService as unknown as MaintenanceReportQueryService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     reader,
     transactionRunner,
   );
@@ -246,12 +252,22 @@ const makeReviewUsecase = (params: {
       writeService as unknown as MaintenanceReportService,
       queryService as unknown as MaintenanceReportQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       transactionRunner,
     ),
     approveUsecase: new ApproveMaintenanceReportUsecase(
       writeService as unknown as MaintenanceReportService,
       queryService as unknown as MaintenanceReportQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       transactionRunner,
     ),
   };
@@ -840,6 +856,11 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
       usecase: new RecordRepairRequestHandlingResultUsecase(
         service as unknown as MaintenanceReportService,
         organizationContextService as unknown as TrustedOrganizationContextQueryService,
+        {
+          assertBusinessWritable: () => Promise.resolve(),
+          assertCompanyWritable: () => Promise.resolve(),
+          assertWritable: () => Promise.resolve(),
+        } as unknown as LocalWriteHoldService,
         transactionRunner,
       ),
     };
@@ -982,6 +1003,11 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
     const usecase = new RecordRepairRequestHandlingResultUsecase(
       service as unknown as MaintenanceReportService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       makeTransactionRunner(),
     );
 

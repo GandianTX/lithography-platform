@@ -26,6 +26,7 @@ import { ThirdPartyAuthEntity } from '@src/modules/third-party-auth/third-party-
 import { VerificationRecordEntity } from '@src/modules/verification-record/verification-record.entity';
 import { LocalReferenceDocumentStorageModule } from '@src/infrastructure/file-storage/local-reference-document-storage.module';
 import { LocalRuntimeStorageModule } from '@src/infrastructure/file-storage/local-runtime-storage.module';
+import { LocalBackupCloudModule } from '@src/infrastructure/cloud/local-backup-cloud.module';
 import { BackupScheduleService } from '@src/modules/lithography/backup-schedule.service';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 import { LocalBackupUploadService } from '@src/modules/lithography/local-backup-upload.service';
@@ -66,6 +67,8 @@ const WORKER_ENTITIES = [
     TypeOrmModule.forFeature([...WORKER_ENTITIES]),
     LocalReferenceDocumentStorageModule,
     LocalRuntimeStorageModule,
+    // 云备份上云端口：Worker 进程需要自动上云通道（未配置时如实跳过）
+    LocalBackupCloudModule,
     LocalRuntimeUsecasesModule,
     // 过期暂存原件清理链需要任务 11 的受控写入服务（StoredFileService）：
     // 直接导入业务模块，避免在清理链里另写一份"释放暂存行"的条件更新（真重复）。

@@ -34,7 +34,9 @@ import { applyDownloadHeaders, toRestError } from '../shared/upload-boundary.uti
 /** 云端包标识的保守形态（只允许字母数字与少量分隔符，长度受限） */
 const CLOUD_PACKAGE_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
-@Controller('local-runtime/backup/cloud-packages')
+// 路由前缀含 `api/`：与仓库既有 REST 控制器一致（后端**没有**全局前缀），
+// 前端也只代理 `/api`——漏掉它会让前端下载请求直接 404。
+@Controller('api/local-runtime/backup/cloud-packages')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
 export class LocalBackupCloudPackageRestController {

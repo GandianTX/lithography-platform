@@ -1,15 +1,19 @@
 // src/features/local-backup/infrastructure/local-backup-graphql-adapter.ts
 
 import { executeGraphQL } from '@/shared/graphql';
+import { fetchRestWithAuthRetry } from '@/shared/http/rest-request';
 
 import type {
   LocalBackupCleanupMode,
   LocalBackupCleanupResult,
+  LocalBackupCloudPackageDownload,
+  LocalBackupCloudPackageList,
   LocalBackupRecordDetail,
   LocalBackupRecordPage,
   LocalBackupSetting,
   LocalRestoreAcceptance,
   LocalRestoreCapability,
+  LocalRestoreExecution,
   LocalRestorePrecheckResult,
   StartManualLocalBackupResult,
 } from './local-backup.types';
@@ -185,6 +189,38 @@ const LOCAL_RESTORE_CAPABILITY_QUERY = `
   }
 `;
 
+const LOCAL_BACKUP_CLOUD_PACKAGES_QUERY = `
+  query LocalBackupCloudPackages($organizationId: Int) {
+    localBackupCloudPackages(organizationId: $organizationId) {
+      organizationId
+      packages {
+        packageId
+        organizationId
+        backupId
+        createdAt
+        byteSize
+        checksumSha256
+      }
+    }
+  }
+`;
+
+const EXECUTE_LOCAL_RESTORE_MUTATION = `
+  mutation ExecuteLocalRestore($restoreId: String!) {
+    executeLocalRestore(restoreId: $restoreId) {
+      restoreId
+      status
+      released
+      holdRetained
+      restoredRecords
+      restoredOriginals
+      restoredQueue
+      reasonCode
+      reason
+    }
+  }
+`;
+
 type LocalBackupRecordPaginationVariables = {
   pagination: {
     page: number;
@@ -285,4 +321,114 @@ export async function fetchLocalRestoreCapability(): Promise<LocalRestoreCapabil
   >(LOCAL_RESTORE_CAPABILITY_QUERY, {}, { fetchPolicy: 'no-cache' });
 
   return payload.localRestoreCapability;
+}
+
+/**
+ * 云端备份包清单（任务 09 S3／A09-07）。
+ *
+ * 范围由服务端按 Session 裁决：前端不传公司参数（一级管理员可显式指定）。
+ * 云服务未接入时服务端按受控原因码失败关闭——前端**不伪造可用包**。
+ */
+export async function fetchLocalBackupCloudPackages(
+  organizationId?: number,
+): Promise<LocalBackupCloudPackageList> {
+  const payload = await executeGraphQL<
+    { localBackupCloudPackages: LocalBackupCloudPackageList },
+    { organizationId: number | null }
+  >(
+    LOCAL_BACKUP_CLOUD_PACKAGES_QUERY,
+    { organizationId: organizationId ?? null },
+    { fetchPolicy: 'no-cache' },
+  );
+
+  return payload.localBackupCloudPackages;
+}
+
+/**
+ * 执行恢复（管理员专属）。
+ *
+ * **受理 ≠ 恢复**：本 mutation 才真正写入数据；失败时服务端保持停写停传并保留保护副本，
+ * 返回的 `released=false` 必须如实呈现，不得显示为"已恢复"。
+ */
+export async function executeLocalRestore(restoreId: string): Promise<LocalRestoreExecution> {
+  const payload = await executeGraphQL<
+    { executeLocalRestore: LocalRestoreExecution },
+    { restoreId: string }
+  >(EXECUTE_LOCAL_RESTORE_MUTATION, { restoreId }, { fetchPolicy: 'no-cache' });
+
+  return payload.executeLocalRestore;
+}
+
+/**
+ * 云端备份包授权下载（REST 字节流）。
+ *
+ * - 只给字节，**不触发恢复**（下载权限 ≠ 恢复权限）；
+ * - 云服务未接入时服务端返回受控错误，前端按"不可用"如实提示，不给假成功。
+ */
+export async function downloadLocalBackupCloudPackage(params: {
+  packageId: string;
+  organizationId?: number;
+}): Promise<LocalBackupCloudPackageDownload> {
+  const query = new URLSearchParams();
+  if (params.organizationId !== undefined) {
+    query.set('organizationId', String(params.organizationId));
+  }
+  const suffix = query.toString().length > 0 ? `?${query.toString()}` : '';
+  const url = `/api/local-runtime/backup/cloud-packages/${encodeURIComponent(params.packageId)}/download${suffix}`;
+
+  let response: Response;
+  try {
+    response = await fetchRestWithAuthRetry(url, {});
+  } catch {
+    return { ok: false, blob: null, filename: null, reason: 'download-failed' };
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      blob: null,
+      filename: null,
+      reason: response.status === 404 ? 'not-found' : 'not-available',
+    };
+  }
+
+  try {
+    const blob = await response.blob();
+    return {
+      ok: true,
+      blob,
+      filename: resolveDownloadFilename(
+        response.headers.get('Content-Disposition'),
+        params.packageId,
+      ),
+      reason: null,
+    };
+  } catch {
+    return { ok: false, blob: null, filename: null, reason: 'download-failed' };
+  }
+}
+
+/**
+ * 解析服务端给的文件名：`Content-Disposition: attachment; filename*=UTF-8''<编码名>`。
+ *
+ * 取不到就退回按包 id 生成的名字（**只用包 id**，不引入外部输入），
+ * 避免把服务端自由文本直接当文件名。
+ */
+function resolveDownloadFilename(contentDisposition: string | null, packageId: string): string {
+  const fallback = `backup-${packageId}.bin`;
+  if (contentDisposition === null) {
+    return fallback;
+  }
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition);
+  if (encoded?.[1] !== undefined) {
+    try {
+      const decoded = decodeURIComponent(encoded[1]);
+      return decoded.length > 0 ? decoded : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(contentDisposition);
+  const value = plain?.[1]?.trim();
+  return value !== undefined && value.length > 0 ? value : fallback;
 }

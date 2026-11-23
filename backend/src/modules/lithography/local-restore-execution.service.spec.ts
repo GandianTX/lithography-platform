@@ -18,13 +18,15 @@ import {
   parseProtectionKey,
 } from '@core/local-runtime/policy/protected-backup.policy';
 
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
+
 import { LocalRestoreExecutionService } from './local-restore-execution.service';
 
 const KEY_HEX = 'a'.repeat(64);
 const INSTALLATION_ID = 'inst-1';
 
-function buildPackage(root: string, payload: Record<string, unknown>): string {
-  const packageDir = join(root, 'package');
+function buildPackage(root: string, payload: Record<string, unknown>, dirName = 'package'): string {
+  const packageDir = join(root, dirName);
   mkdirSync(packageDir, { recursive: true });
   const key = parseProtectionKey(KEY_HEX);
   const encrypted = encryptBackupPayload(key, Buffer.from(JSON.stringify(payload), 'utf8'));
@@ -62,11 +64,19 @@ function buildService(options: {
   checkStatus?: string;
   protectionStatus?: string;
   writer?: unknown;
+  /** 冻结解除失败（模拟"数据已回滚但停写停传没解除"） */
+  releaseError?: boolean;
+  /** 保护副本可读（回滚能成功 ⇒ 走到"冻结解除失败"那条路径） */
+  protectionPackageReady?: boolean;
 }) {
   const root = '/tmp/task09-restore-spec';
   rmSync(root, { force: true, recursive: true });
   mkdirSync(root, { recursive: true });
   const packageDir = buildPackage(root, { maintenance_report: [{ id: 1 }] });
+  if (options.protectionPackageReady === true) {
+    // 保护副本可读 ⇒ 按保护副本回滚能成功
+    buildPackage(root, { maintenance_report: [{ id: 1 }] }, 'protection');
+  }
 
   const restoreRunRepository = {
     findOne: jest.fn().mockResolvedValue({
@@ -97,7 +107,11 @@ function buildService(options: {
     findOne: jest.fn().mockResolvedValue({ id: 1, installationId: INSTALLATION_ID }),
   };
   const hold = jest.fn().mockResolvedValue({ holdId: 'hold-1', created: true });
-  const release = jest.fn().mockResolvedValue(1);
+  const release =
+    options.releaseError === true
+      ? jest.fn().mockRejectedValue(new Error('冻结解除失败'))
+      : jest.fn().mockResolvedValue(1);
+  const appendRestoreEvent = jest.fn().mockResolvedValue(undefined);
 
   const writer = options.writer ?? {
     supportedTables: ['maintenance_report'],
@@ -121,11 +135,12 @@ function buildService(options: {
     backupAssetRepository as never,
     installationRepository as never,
     { hold, release } as never,
-    { appendRestoreEvent: jest.fn().mockResolvedValue(undefined) } as never,
+    { appendRestoreEvent } as never,
     { get: jest.fn(() => writer) } as never,
+    asPinoLogger(createTestPinoLogger()),
     { keyHex: KEY_HEX, keyId: 'kid-1' },
   );
-  return { service, hold, release, restoreRunRepository, writer };
+  return { service, hold, release, restoreRunRepository, writer, appendRestoreEvent };
 }
 
 describe('恢复执行编排（S5-2／S5-3）', () => {
@@ -214,6 +229,33 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
       { restoreId: 'restore-1' },
       expect.objectContaining({ status: 'FAILED' }),
     );
+  });
+
+  it('数据已回滚但**冻结解除失败**：终态必须留痕（阶段＝冻结未解除）', async () => {
+    const { service, release, appendRestoreEvent } = buildService({
+      releaseError: true,
+      protectionPackageReady: true,
+    });
+
+    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+
+    expect(result.status).toBe('FAILED');
+    if (result.status !== 'FAILED') {
+      throw new Error('应失败');
+    }
+    // 设备仍停写停传（保守口径）⇒ 终态事实必须能被任务 10 读回
+    expect(result.holdRetained).toBe(true);
+    // 解除冻结被试了两次（成功后一次、回滚后再一次），两次都失败
+    expect(release).toHaveBeenCalledTimes(2);
+    // 两条事实都在：执行成功（数据已恢复）＋ 冻结未解除（设备仍停写停传）
+    const stages = appendRestoreEvent.mock.calls.map((call: unknown[]) => {
+      const payload = call[0] as { result: string; stage: string };
+      return { result: payload.result, stage: payload.stage };
+    });
+    expect(stages).toEqual([
+      { result: 'SUCCEEDED', stage: 'RESTORE_SUCCEEDED' },
+      { result: 'FAILED', stage: 'RESTORE_HOLD_RETAINED' },
+    ]);
   });
 
   it('核验不一致：失败且保持冻结', async () => {

@@ -1,5 +1,6 @@
 // src/usecases/admin-document-database/apply-local-sync-conflict-resolution.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { RepairRequestHandlingResult } from '@app-types/models/repair-request.types';
 import { SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
@@ -51,6 +52,7 @@ export class ApplyLocalSyncConflictResolutionUsecase {
     private readonly sourceRecordQueryService: SyncSourceRecordQueryService,
     private readonly accountQueryService: AccountQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly appendRevisionUsecase: AppendRepairRequestRevisionUsecase,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -94,6 +96,11 @@ export class ApplyLocalSyncConflictResolutionUsecase {
       if (outcome.kind === 'existing') {
         return { kind: 'existing' as const };
       }
+
+      // 恢复期写入冻结：该公司数据区正在恢复时不得回写业务正文
+      await this.localWriteHoldService.assertCompanyWritable({
+        organizationId: locked.organizationId,
+      });
 
       const plan = planLocalConflictResolution({
         resourceType: locked.resourceType,

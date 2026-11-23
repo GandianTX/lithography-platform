@@ -66,6 +66,14 @@ export type SyncConflictDetail = SyncConflictSummary & {
   sourceReadOnly: boolean;
   /** 只读受控原因码 */
   sourceReadOnlyReason: string | null;
+  /**
+   * 是否允许采用云端视图（服务端裁决）。
+   *
+   * 已结单（结单后只读）允许**只读采用**；已删除／下架／冻结一律不允许。
+   */
+  canAdoptCloud: boolean;
+  /** 是否为只读采用（来源已结单）：只呈现云端视图，不获得写入权 */
+  adoptionReadOnly: boolean;
   confirmedByAccountId: number | null;
   confirmedAt: string | null;
 };

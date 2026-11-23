@@ -9,6 +9,7 @@
 // - 云副本事实（云引用与完整回执）不因本地清理被改写；
 // - 过期 30 天清理的成功与失败分支各自可辨认。
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   createReadStream,
   existsSync,
@@ -107,6 +108,19 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
       repoOf([]) as never,
       repoOf([]) as never,
       repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
       fileStorage as never,
       { keyHex: KEY_HEX, keyId: 'primary' },
       { baseDir: backupRoot },
@@ -153,6 +167,11 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
       backupAssetRepository as never,
       { baseDir: backupRoot },
       asPinoLogger(createTestPinoLogger()),
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       undefined,
     );
     return { service, updates, rows };

@@ -144,6 +144,33 @@ export class LocalWriteHoldService {
   }
 
   /**
+   * 业务写入准入守卫：**本机未启用本地运行部署时按"无冻结"放行**。
+   *
+   * 与 `assertCompanyWritable` 的区别只在"本机安装身份缺失"这一种情况：
+   * - 本机**已初始化**本地运行身份 ⇒ 与 `assertCompanyWritable` 同口径（冻结期失败关闭）；
+   * - 本机**未初始化** ⇒ 该部署根本不具备本地备份/恢复能力，不存在恢复期冻结，
+   *   此时若失败关闭会把既有业务写入（工单、报告、资料）整体打挂，故按放行处理。
+   *
+   * 该方法供**业务域**写入口调用（任务 09 S2-1 冻结入口清单化核对）。
+   */
+  async assertBusinessWritable(input: {
+    organizationId: number | null | undefined;
+  }): Promise<void> {
+    if (input.organizationId === null || input.organizationId === undefined) {
+      // 归属公司为空 ⇒ 该行不属于任何公司数据区（与备份/恢复范围口径一致），不受冻结影响
+      return;
+    }
+    const installation = await this.localRuntimeQueryService.readInstallation();
+    if (installation === null) {
+      return;
+    }
+    await this.assertWritable({
+      installationId: installation.installationId,
+      organizationId: input.organizationId,
+    });
+  }
+
+  /**
    * 写入／同步准入守卫：目标公司处于恢复期冻结时**失败关闭**。
    *
    * 判定只有一处（core 纯策略）；本方法只取事实并把结论变成受控错误。

@@ -13,6 +13,7 @@ import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-ba
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -43,6 +44,7 @@ export class StartManualLocalBackupUsecase {
     private readonly localRuntimeService: LocalRuntimeService,
     private readonly protectedBackupService: ProtectedBackupService,
     private readonly scopeResolver: LocalRuntimeScopeResolver,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
     private readonly logger: PinoLogger,
@@ -61,6 +63,9 @@ export class StartManualLocalBackupUsecase {
       installation,
     );
     const now = new Date();
+
+    // 恢复期冻结：该公司数据区正在恢复时不得再生成备份包（会把恢复中的数据出盘）
+    await this.localWriteHoldService.assertCompanyWritable({ organizationId });
 
     const run = await this.transactionRunner.run(async (transactionContext) =>
       this.localRuntimeService.insertBackupRun(
@@ -81,6 +86,7 @@ export class StartManualLocalBackupUsecase {
       organizationId,
       'MANUAL',
       now,
+      run.id,
     );
 
     try {

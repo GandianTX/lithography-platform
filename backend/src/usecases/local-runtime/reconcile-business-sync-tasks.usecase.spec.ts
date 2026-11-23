@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { BUSINESS_SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
 
 import { ReconcileBusinessSyncTasksUsecase } from './reconcile-business-sync-tasks.usecase';
@@ -80,6 +81,11 @@ function buildUsecase(
     { listSupportedResourceTypes: () => ['MAINTENANCE_REPORT'], listCandidates } as never,
     { cancelUploadTask } as never,
     localRuntimeQueryService as never,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     transactionRunner as never,
   );
 

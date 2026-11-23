@@ -1,9 +1,14 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, MANAGEMENT_AUDIT_ERROR } from '@core/common/errors/domain-error';
 import {
+  projectManagementAuditDetail,
   serializeManagementAuditDetail,
   type ManagementAuditDetailView,
 } from '@core/management-audit/policy/management-audit-detail.policy';
+import {
+  serializeLocalRestoreAuditDetail,
+  type LocalRestoreAuditStage,
+} from '@core/local-runtime/policy/local-restore-audit.policy';
 import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
@@ -221,11 +226,13 @@ export class ManagementAuditService {
   }
 
   /**
-   * 本机业务恢复终态事件（任务 09 S2-6）。
+   * 本机业务恢复终态事件（任务 09 S2-6／新计划第 06 项）。
    *
    * - 只在**终态**写入（成功／失败／回滚后失败），中途状态不写事件；
-   * - detail 只写脱敏摘要（恢复运行 ID、备份 ID、保护副本 ID、结果与计数），
-   *   不写包正文、凭据、堆栈或原件内容；
+   * - detail 按**任务 10 的白名单契约**写入（`reason` 受控原因码 ＋ `stage` 阶段），
+   *   恢复 ID／公司／操作者／结果走事件列，不塞进 detail；
+   * - detail 只写脱敏摘要，**不写**包正文、凭据、堆栈、原件内容、文件路径或计数明细；
+   * - **幂等**：同一 (恢复 ID, 终态) 只留一条事件 ⇒ 重试执行不产生重复记录；
    * - 写入失败**直接抛错**：终态事件写不进去时，恢复结果不得被当作"已完成"。
    */
   async appendRestoreEvent(params: {
@@ -238,24 +245,39 @@ export class ManagementAuditService {
     readonly protectionBackupId: string | null;
     /** SUCCEEDED / FAILED */
     readonly result: 'SUCCEEDED' | 'FAILED';
+    /** 恢复阶段（受任务 10 读侧 `stage` 字符集约束） */
+    readonly stage: LocalRestoreAuditStage;
     /** 受控原因码 */
     readonly reasonCode?: string | null;
-    /** 恢复计数摘要（行数；不含正文） */
+    /** 恢复计数摘要（行数；不含正文）——只进服务端日志，不进 detail */
     readonly counts?: { records: number; originals: number; queue: number };
     readonly transactionContext?: PersistenceTransactionContext;
   }): Promise<void> {
-    const detail: Record<string, unknown> = {
-      restore_id: params.restoreId,
-      backup_id: params.backupId,
-      protection_backup_id: params.protectionBackupId,
+    // 幂等：同一 (恢复 ID, 终态**结果**, 终态**阶段**) 只留一条事件
+    // ⇒ 同一阶段的重复执行不产生重复记录；
+    // ⇒ 但**阶段不同**是**另一个终态事实**（例如重试后从"已回滚"升级为"回滚也失败"，
+    //    或从"已回滚"变成"冻结未解除"），必须各自留痕，不能被幂等吞掉。
+    const repository = this.getRepository(params.transactionContext);
+    const existing = await repository.findOne({
+      where: {
+        operation: params.operation,
+        targetType: 'LOCAL_RESTORE',
+        targetId: params.restoreId,
+        result: params.result,
+      },
+    });
+    if (existing !== null) {
+      // 既有事件的阶段按**读侧同一套投影**取：读不出来的（历史自由文本）视为阶段未知
+      const existingStage = projectManagementAuditDetail(existing.detail ?? null)?.stage;
+      if (existingStage === params.stage) {
+        return;
+      }
+    }
+    const detail = serializeLocalRestoreAuditDetail({
       result: params.result,
-    };
-    if (params.reasonCode !== undefined && params.reasonCode !== null) {
-      detail['reason_code'] = params.reasonCode;
-    }
-    if (params.counts !== undefined) {
-      detail['counts'] = params.counts;
-    }
+      stage: params.stage,
+      reasonCode: params.reasonCode ?? null,
+    });
     await this.insertEvent(
       {
         actorAccountId: params.actorAccountId,
@@ -270,7 +292,13 @@ export class ManagementAuditService {
       params.transactionContext,
     );
     this.logger.info(
-      { operation: params.operation, restoreId: params.restoreId, result: params.result },
+      {
+        operation: params.operation,
+        restoreId: params.restoreId,
+        result: params.result,
+        stage: params.stage,
+        counts: params.counts,
+      },
       '本机业务恢复终态事件已写入',
     );
   }

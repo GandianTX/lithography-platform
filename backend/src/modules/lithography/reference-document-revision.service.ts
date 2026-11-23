@@ -10,6 +10,29 @@ import { ReferenceDocumentEntity } from './entities/reference-document.entity';
 import { ReferenceDocumentRevisionEntity } from './entities/reference-document-revision.entity';
 
 /**
+ * 资料行的受控写入目标快照（任务 09 R068 本地视图对齐用）。
+ *
+ * 只含**受控白名单字段**与判定所需事实；不含存储引用与扩展属性。
+ */
+export type ReferenceDocumentRevisionTargetSnapshot = {
+  id: number;
+  title: string;
+  documentType: string;
+  description: string | null;
+  contentText: string | null;
+  publicationStatus: string;
+  ownershipStatus: string;
+  ownerOrganizationId: number | null;
+  createdByAccountId: number;
+  schemaVersion: number;
+  currentRevisionNo: number;
+  deprecated: boolean;
+  sourceKind: string;
+  sourceReportId: number | null;
+  sourceReportVersionId: number | null;
+};
+
+/**
  * 资料管理操作允许同语句推进的列白名单（任务 07 R053/R058–R061）。
  *
  * 只开放业务确认过的字段：正文/标题/说明（R058）、发布状态（R059）、
@@ -64,6 +87,86 @@ export class ReferenceDocumentRevisionService {
     @InjectRepository(ReferenceDocumentEntity)
     private readonly documentRepository: Repository<ReferenceDocumentEntity>,
   ) {}
+
+  /**
+   * 资料行锁读（pessimistic_write）与目标快照装配。
+   *
+   * 供「使用云端」的本地视图对齐（任务 09 R068）使用：
+   * 调用方先持锁核对 `current_revision_no`，再用条件更新推进版本，
+   * 避免"读-改-写"交错导致覆盖别人的推进。
+   *
+   * 不存在时返回 null（由调用方失败关闭），不返回"空资料"。
+   */
+  async lockDocumentForRevision(
+    documentId: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<ReferenceDocumentRevisionTargetSnapshot | null> {
+    const repository = this.getDocumentRepository(transactionContext);
+    try {
+      const entity = await repository.findOne({
+        where: { id: documentId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!entity) {
+        return null;
+      }
+      return {
+        id: entity.id,
+        title: entity.title,
+        documentType: entity.documentType,
+        description: entity.description,
+        contentText: entity.contentText,
+        publicationStatus: entity.publicationStatus,
+        ownershipStatus: entity.ownershipStatus,
+        ownerOrganizationId: entity.ownerOrganizationId,
+        createdByAccountId: entity.createdByAccountId,
+        schemaVersion: entity.schemaVersion,
+        currentRevisionNo: entity.currentRevisionNo,
+        deprecated: entity.deprecated,
+        sourceKind: entity.sourceKind,
+        sourceReportId: entity.sourceReportId,
+        sourceReportVersionId: entity.sourceReportVersionId,
+      };
+    } catch (error) {
+      throw new DomainError(
+        REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED,
+        '参考资料修订失败，请稍后重试',
+        { id: documentId },
+        error,
+      );
+    }
+  }
+
+  /**
+   * 读取指定生效修订版本的正文（`after_snapshot.contentText`）。
+   *
+   * - `found=false`：该修订行**不存在**（数据定式破坏，调用方须失败关闭，
+   *   不得回退资料自身正文冒充历史）；
+   * - `found=true` 且 `contentText=null`：修订行在，但快照里没有正文键
+   *   （历史快照 schema 差异，读侧按空值降级）。
+   */
+  async findRevisionContentText(
+    documentId: number,
+    revisionNo: number,
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<{ found: boolean; contentText: string | null }> {
+    const repository = this.getRevisionRepository(transactionContext);
+    const row = await repository.findOne({ where: { documentId, revisionNo } });
+    if (!row) {
+      return { found: false, contentText: null };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.afterSnapshot);
+    } catch {
+      return { found: true, contentText: null };
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { found: true, contentText: null };
+    }
+    const contentText = (parsed as Record<string, unknown>).contentText;
+    return { found: true, contentText: typeof contentText === 'string' ? contentText : null };
+  }
 
   /**
    * 追加生效修订行（revisionNo 必须是 expected+1，由调用方核对后传入）。

@@ -226,4 +226,43 @@ describe('ListSyncConflictsUsecase', () => {
 
     expect(page.total).toBeUndefined();
   });
+
+  it('清单条目如实给出来源只读标记与采用准入（与详情页同一口径）', async () => {
+    const { usecase } = buildUsecase({
+      facts: [recordFact({ contentState: { withdrawn: false, frozen: false, closed: false } })],
+    });
+
+    const page = await usecase.execute({ session });
+
+    expect(page.items[0].sourceRecordId).toBe(12);
+    expect(page.items[0].sourceReadOnly).toBe(false);
+    expect(page.items[0].sourceReadOnlyReason).toBeNull();
+    expect(page.items[0].canAdoptCloud).toBe(true);
+    expect(page.items[0].adoptionReadOnly).toBe(false);
+  });
+
+  it('来源已冻结：清单不得显示"可采用"', async () => {
+    const { usecase } = buildUsecase({
+      facts: [recordFact({ contentState: { withdrawn: false, frozen: true, closed: false } })],
+    });
+
+    const page = await usecase.execute({ session });
+
+    expect(page.items[0].sourceReadOnly).toBe(true);
+    expect(page.items[0].sourceReadOnlyReason).toBe('SOURCE_FROZEN');
+    expect(page.items[0].canAdoptCloud).toBe(false);
+  });
+
+  it('来源已结单：允许只读采用（不获得写入权）', async () => {
+    const { usecase } = buildUsecase({
+      facts: [recordFact({ contentState: { withdrawn: false, frozen: false, closed: true } })],
+    });
+
+    const page = await usecase.execute({ session });
+
+    expect(page.items[0].sourceReadOnly).toBe(true);
+    expect(page.items[0].sourceReadOnlyReason).toBe('SOURCE_CLOSED');
+    expect(page.items[0].canAdoptCloud).toBe(true);
+    expect(page.items[0].adoptionReadOnly).toBe(true);
+  });
 });

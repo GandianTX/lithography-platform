@@ -2,11 +2,13 @@
 // @vitest-environment jsdom
 
 /**
- * 冲突详情面板定向测试（任务 09 S2.3）。
+ * 冲突详情面板定向测试（任务 09 S2.3 ＋ R066 只读采用口径）。
  *
  * 守住：
- * - 只读内容（已删除／下架／冻结／结单）不给"使用云端／保留本地"入口，并说明原因；
- * - 可写内容三个动作齐备，裁决动作原样下传服务端；
+ * - 已删除／下架／冻结：不给"使用云端／保留本地"入口，并说明原因；
+ * - 已结单（只读）：**允许"使用云端"**（只读采用：只对齐视图，不改历史、不给写入权），
+ *   但"保留本地"仍然禁用（不改只读业务历史）；
+ * - 可写内容三个动作齐备，裁决动作原样下传服务端，并带上**用户实际看到的云端版本**；
  * - 差异条目按服务端给出的路径与两侧值展示；
  * - 来源页入口：取不到本机 ID 时不提供跳转。
  */
@@ -55,6 +57,8 @@ const makeDetail = (overrides: Partial<SyncConflictDetail> = {}): SyncConflictDe
   sourceRecordId: 880001,
   sourceReadOnly: false,
   sourceReadOnlyReason: null,
+  canAdoptCloud: true,
+  adoptionReadOnly: false,
   confirmedByAccountId: null,
   confirmedAt: null,
   createdAt: '2026-11-22T00:00:00.000Z',
@@ -92,9 +96,13 @@ describe('冲突详情面板', () => {
     expect(screen.getByText('打开来源记录')).toBeTruthy();
   });
 
-  it('只读内容：不给恢复入口，并说明原因', async () => {
+  it('只读内容（已删除／下架／冻结）：不给恢复入口，并说明原因', async () => {
     fetchDetailMock.mockResolvedValue(
-      makeDetail({ sourceReadOnly: true, sourceReadOnlyReason: 'SOURCE_CLOSED' }),
+      makeDetail({
+        sourceReadOnly: true,
+        sourceReadOnlyReason: 'SOURCE_FROZEN',
+        canAdoptCloud: false,
+      }),
     );
 
     renderPanel();
@@ -106,7 +114,35 @@ describe('冲突详情面板', () => {
     const localButton = screen.getByRole('button', { name: '保留本地' });
     expect((cloudButton as HTMLButtonElement).disabled).toBe(true);
     expect((localButton as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('来源记录已结单，内容只读')).toBeTruthy();
+    expect(screen.getByText('来源记录正在处理中，内容已冻结')).toBeTruthy();
+  });
+
+  // R066：已结单（结单后只读）允许**只读采用**云端视图：
+  // "使用云端"可用，"保留本地"仍禁用（不改只读业务历史）。
+  it('已结单只读来源：允许"使用云端"（只读采用），"保留本地"仍禁用', async () => {
+    fetchDetailMock.mockResolvedValue(
+      makeDetail({
+        sourceReadOnly: true,
+        sourceReadOnlyReason: 'SOURCE_CLOSED',
+        canAdoptCloud: true,
+        adoptionReadOnly: true,
+      }),
+    );
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('打开来源记录')).toBeTruthy();
+    });
+    const cloudButton = screen.getByRole('button', { name: '使用云端' }) as HTMLButtonElement;
+    const localButton = screen.getByRole('button', { name: '保留本地' }) as HTMLButtonElement;
+    expect(cloudButton.disabled).toBe(false);
+    expect(localButton.disabled).toBe(true);
+    expect(
+      screen.getByText(
+        '来源记录已结单（只读），仍可采用云端视图：只对齐本机视图，不改动已结单业务历史，也不因此获得写入权。',
+      ),
+    ).toBeTruthy();
   });
 
   it('可写内容：裁决动作原样下传服务端', async () => {
@@ -130,7 +166,8 @@ describe('冲突详情面板', () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(resolveMock).toHaveBeenCalledWith('conflict-1', 'CLOUD');
+      // 带上**用户实际看到**的云端版本：服务端据此复核云端是否已变化（R067）
+      expect(resolveMock).toHaveBeenCalledWith('conflict-1', 'CLOUD', 3);
     });
   });
 

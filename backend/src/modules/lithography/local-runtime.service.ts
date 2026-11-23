@@ -13,6 +13,7 @@ import { FindOneOptions, ObjectLiteral, Repository } from 'typeorm';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
+import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 import { isDuplicateKeyError } from './database-error.helpers';
 import {
   toLocalBackupRunSnapshot,
@@ -43,6 +44,7 @@ export class LocalRuntimeService {
     private readonly uploadTaskRepository: Repository<LocalUploadTaskEntity>,
     @InjectRepository(LocalBackupRunEntity)
     private readonly backupRunRepository: Repository<LocalBackupRunEntity>,
+    private readonly restoreScopeWriteGuardService: RestoreScopeWriteGuardService,
   ) {}
 
   /**
@@ -161,6 +163,9 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
     if (task.status !== 'PENDING' && task.status !== 'FAILED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -198,6 +203,9 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
     if (task.status !== 'UPLOADING') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -241,6 +249,9 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
     if (task.status !== 'PENDING' && task.status !== 'FAILED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -281,6 +292,9 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
     if (task.status === 'SUCCEEDED' || task.status === 'CANCELLED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -316,6 +330,9 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
     if (task.status !== 'UPLOADING' && task.status !== 'PENDING') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,

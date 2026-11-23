@@ -1,5 +1,6 @@
 // src/usecases/local-runtime/backup-schedule.service.spec.ts
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { BackupScheduleService } from '@src/modules/lithography/backup-schedule.service';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
@@ -125,6 +126,11 @@ describe('backup schedule service', () => {
             return `/var/local-backups/${organizationId}/${trigger.toLowerCase()}-${at.toISOString()}`;
           }),
       } as unknown as ProtectedBackupService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       asPinoLogger(createTestPinoLogger()),
     );
     return { service, generated, runs, settingUpdates, savedSettings };

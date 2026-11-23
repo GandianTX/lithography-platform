@@ -46,6 +46,18 @@ describe('凭据用途维度（S4）', () => {
     });
   });
 
+  it('生产写入形态（对象）同样可核验：json 列读回来就是对象', () => {
+    // 回归锁：写入侧要求"签名凭据必须是对象"，读取侧若只认 JSON 文本，
+    // 生产形态的凭据会被判为不可核验 ⇒ 上云永远被跳过。
+    const claims = { purpose: ['CLOUD_BACKUP'], issuer: 'cloud' };
+    expect(hasCredentialPurpose(claims, LOCAL_CREDENTIAL_PURPOSE.CLOUD_BACKUP)).toBe(true);
+    expect(hasCredentialPurpose(claims, LOCAL_CREDENTIAL_PURPOSE.BUSINESS_SYNC)).toBe(false);
+    expect(resolveCredentialPurposes({ purpose: ['WHATEVER'] })).toEqual({
+      purposes: [],
+      verifiable: false,
+    });
+  });
+
   it('声明缺失或不可解析 → 用途不可核验（不得当作任一用途使用）', () => {
     expect(resolveCredentialPurposes(null)).toEqual({ purposes: [], verifiable: false });
     expect(resolveCredentialPurposes('not-json')).toEqual({ purposes: [], verifiable: false });

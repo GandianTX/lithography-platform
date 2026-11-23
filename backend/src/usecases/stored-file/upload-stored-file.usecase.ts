@@ -1,5 +1,6 @@
 // src/usecases/stored-file/upload-stored-file.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -63,6 +64,7 @@ export class UploadStoredFileUsecase {
     private readonly storedFileService: StoredFileService,
     private readonly storedFileQueryService: StoredFileQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly accountQueryService: AccountQueryService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -86,6 +88,11 @@ export class UploadStoredFileUsecase {
       command.session,
       businessType,
     );
+
+    // 恢复期写入冻结：stored_file 属恢复范围表，冻结期不得新增暂存原件
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: ownerOrganizationId,
+    });
 
     const originalFilename = normalizeStoredFileOriginalFilename(command.file?.originalFilename);
     if (!originalFilename) {

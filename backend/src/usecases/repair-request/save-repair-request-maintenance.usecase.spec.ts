@@ -1,6 +1,7 @@
 // src/usecases/repair-request/save-repair-request-maintenance.usecase.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
@@ -85,6 +86,11 @@ const makeUsecase = (
       maintenanceService as unknown as RepairRequestMaintenanceService,
       maintenanceQueryService as unknown as RepairRequestMaintenanceQueryService,
       trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       bindOriginalUsecase as unknown as BindRepairProcessOriginalUsecase,
       transactionRunner,
       accountQueryService as unknown as AccountQueryService,

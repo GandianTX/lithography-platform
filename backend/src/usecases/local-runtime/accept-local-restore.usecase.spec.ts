@@ -107,6 +107,38 @@ describe('恢复受理（S5-1：确认前再次检查权限、目标与保护副
     expect(confirmation).not.toHaveProperty('succeeded');
   });
 
+  it('保护副本标识只随快照落库时也能受理（PENDING 行本列为空）', async () => {
+    // 库级 CHECK `chk_backup_restore_run_execution_guard`：
+    // PENDING 行的 `protection_backup_id` 必须为空 ⇒ 标识随快照落库，
+    // 受理（→ RUNNING）时再从快照取回并写回本列。
+    const snapshot = JSON.stringify({
+      schema_version: 1,
+      protection: { backupId: 'protection-1', created: true },
+    });
+    const { usecase, update } = buildUsecase({
+      restoreRun: run({ protectionBackupId: null, checkSnapshot: snapshot }),
+    });
+
+    const result = await usecase.execute({ session: ADMIN_SESSION, restoreId: 'restore-1' });
+
+    expect(result.accepted).toBe(true);
+    expect(result.protectionBackupId).toBe('protection-1');
+    const patch = update.mock.calls[0][1] as { protectionBackupId: string; status: string };
+    expect(patch.protectionBackupId).toBe('protection-1');
+    expect(patch.status).toBe('RUNNING');
+  });
+
+  it('快照里也没有保护副本：拒绝（没有回滚保障不得受理）', async () => {
+    const snapshot = JSON.stringify({ schema_version: 1, protection: { backupId: null } });
+    const { usecase } = buildUsecase({
+      restoreRun: run({ protectionBackupId: null, checkSnapshot: snapshot }),
+    });
+
+    await expect(
+      usecase.execute({ session: ADMIN_SESSION, restoreId: 'restore-1' }),
+    ).rejects.toThrow(/保护副本/);
+  });
+
   it('预检不存在：拒绝', async () => {
     const { usecase, update } = buildUsecase({ restoreRun: null });
 

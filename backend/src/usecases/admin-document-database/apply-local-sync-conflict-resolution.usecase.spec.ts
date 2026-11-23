@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { SYNC_ERROR } from '@core/common/errors/domain-error';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
@@ -142,6 +143,11 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
         sourceRecordQueryService as unknown as SyncSourceRecordQueryService,
         accountQueryService,
         trustedOrganizationContext,
+        {
+          assertBusinessWritable: () => Promise.resolve(),
+          assertCompanyWritable: () => Promise.resolve(),
+          assertWritable: () => Promise.resolve(),
+        } as unknown as LocalWriteHoldService,
         appendRevisionUsecase,
         transactionRunner,
       ),

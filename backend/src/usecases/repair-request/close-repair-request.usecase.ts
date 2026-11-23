@@ -15,6 +15,7 @@ import { normalizeClosureReason } from '@core/repair-request/policy/repair-reque
 import { Inject, Injectable } from '@nestjs/common';
 import type { RepairProcessBindingTargetSnapshot } from '@src/modules/lithography/lithography.types';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -56,6 +57,7 @@ export class CloseRepairRequestUsecase {
   constructor(
     private readonly repairRequestService: RepairRequestService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -86,6 +88,11 @@ export class CloseRepairRequestUsecase {
         transactionContext,
       );
       this.assertClosableTarget(target, command, membership.organizationId, maintenanceVersionNo);
+
+      // 恢复期写入冻结：该工单所属公司数据区正在恢复时不得结单（写入会被整体替换掉）
+      await this.localWriteHoldService.assertBusinessWritable({
+        organizationId: target?.ownerOrganizationId ?? null,
+      });
 
       const affected = await this.repairRequestService.closeRequest(
         {

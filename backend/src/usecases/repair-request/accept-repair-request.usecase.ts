@@ -6,6 +6,7 @@ import { DomainError, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-er
 import { Inject, Injectable } from '@nestjs/common';
 import { RepairRequestEngineerDetailView } from '@src/modules/lithography/lithography.types';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -42,6 +43,7 @@ export class AcceptRepairRequestUsecase {
     private readonly repairRequestService: RepairRequestService,
     private readonly getEngineerRepairRequestDetailUsecase: GetEngineerRepairRequestDetailUsecase,
     private readonly organizationContextQueryService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -90,6 +92,11 @@ export class AcceptRepairRequestUsecase {
           { requestId: params.requestId },
         );
       }
+
+      // 恢复期写入冻结：该工单所属公司数据区正在恢复时不得接单（写入会被整体替换掉）
+      await this.localWriteHoldService.assertBusinessWritable({
+        organizationId: target.ownerOrganizationId,
+      });
 
       // acceptedAt 使用后端系统事件时间，客户端不可传入；
       // 行锁内裁决后仍保留「未删除且未接单」条件更新作为原子防并发兜底

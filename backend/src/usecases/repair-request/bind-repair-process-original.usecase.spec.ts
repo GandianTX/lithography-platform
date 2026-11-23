@@ -1,6 +1,7 @@
 // src/usecases/repair-request/bind-repair-process-original.usecase.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { PERMISSION_ERROR, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
@@ -111,6 +112,11 @@ const makeUsecase = (
     storedFileQueryService as unknown as StoredFileQueryService,
     repairRequestService as unknown as RepairRequestService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     storage,
   );
   return {

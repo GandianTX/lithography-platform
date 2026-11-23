@@ -4,6 +4,7 @@ import { DomainError, LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-err
 import { Inject, Injectable } from '@nestjs/common';
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -25,12 +26,19 @@ export class EnqueueLocalUploadUsecase {
   constructor(
     private readonly localRuntimeService: LocalRuntimeService,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
 
   async execute(command: EnqueueLocalUploadCommand): Promise<EnqueueLocalUploadResult> {
     const intent = normalizeUploadIntent(command);
+    // 恢复期冻结：该公司数据区正在恢复时不得再登记待传任务（停传）
+    if (intent.organizationId !== null && intent.organizationId !== undefined) {
+      await this.localWriteHoldService.assertCompanyWritable({
+        organizationId: intent.organizationId,
+      });
+    }
     return this.transactionRunner.run(async (transactionContext) => {
       const installation = await this.localRuntimeQueryService.readInstallation(transactionContext);
       if (!installation) {

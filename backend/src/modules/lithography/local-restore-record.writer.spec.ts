@@ -16,12 +16,15 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
+
 import { LocalRestoreRecordWriterService } from './local-restore-record.writer';
 
 type RepoStub = {
   createQueryBuilder: jest.Mock;
   insert: jest.Mock;
   update: jest.Mock;
+  save: jest.Mock;
   create: jest.Mock;
 };
 
@@ -35,19 +38,36 @@ function repoStub(): RepoStub {
         getCount: jest.fn().mockResolvedValue(0),
         getRawOne: jest.fn().mockResolvedValue(null),
         getMany: jest.fn().mockResolvedValue([]),
+        getRawMany: jest.fn().mockResolvedValue([]),
+        select: jest.fn(() => builder),
+        addSelect: jest.fn(() => builder),
         delete: jest.fn(() => ({ execute: jest.fn().mockResolvedValue({ affected: 0 }) })),
+        // 打断循环外键用的 UPDATE 链（update → set → where → execute）
+        update: jest.fn(() => builder),
+        set: jest.fn(() => builder),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
       };
       return builder;
     }),
     insert: jest.fn().mockResolvedValue({ identifiers: [] }),
     update: jest.fn().mockResolvedValue({ affected: 1 }),
+    save: jest.fn().mockResolvedValue({}),
     create: jest.fn((row: Record<string, unknown>) => row),
   };
 }
 
+/**
+ * 恢复写入覆盖的表（按外键顺序，与 core 的 `BACKUP_RESTORE_TABLE_ORDER` 同源）。
+ *
+ * 2026-11-23 新计划第 03 项：外键闭包补齐 12 张表（G21）
+ * ——缺任何一张，清空父行时都会被范围外的残留子行挡住（真实库外键失败）。
+ */
 const TABLE_NAMES = [
+  'stored_file',
+  'repair_request_intake',
   'repair_request',
   'repair_request_revision',
+  'intake_analysis_attempt',
   'maintenance_report',
   'maintenance_report_version',
   'maintenance_report_attachment',
@@ -55,11 +75,22 @@ const TABLE_NAMES = [
   'maintenance_report_alarm',
   'maintenance_report_step',
   'maintenance_report_fault',
+  'maintenance_report_review',
   'reference_document',
   'reference_document_revision',
-  'stored_file',
+  'reference_document_case_detail',
+  'ai_conversation',
+  'ai_message',
+  'ai_message_analysis',
+  'ai_report',
+  'engineer_response',
+  'repair_process_entry',
+  'repair_request_diagnostic_step',
+  'repair_request_fault_panel',
   'local_upload_task',
 ] as const;
+
+const INSTALLATION_ID = 'f5e4007d-e354-11f1-897b-345a604caa06';
 
 function buildRepositories() {
   const repos = Object.fromEntries(TABLE_NAMES.map((table) => [table, repoStub()])) as Record<
@@ -105,8 +136,21 @@ function buildWriter(
     repositories.reference_document_revision as never,
     repositories.stored_file as never,
     repositories.local_upload_task as never,
+    repositories.repair_request_intake as never,
+    repositories.intake_analysis_attempt as never,
+    repositories.repair_process_entry as never,
+    repositories.repair_request_diagnostic_step as never,
+    repositories.repair_request_fault_panel as never,
+    repositories.maintenance_report_review as never,
+    repositories.reference_document_case_detail as never,
+    repositories.ai_conversation as never,
+    repositories.ai_message as never,
+    repositories.ai_message_analysis as never,
+    repositories.ai_report as never,
+    repositories.engineer_response as never,
     fileStorage as never,
     transactionRunner as never,
+    asPinoLogger(createTestPinoLogger()),
   );
   return {
     service,
@@ -116,12 +160,14 @@ function buildWriter(
   };
 }
 
-/** 一份"父表齐全、子表齐全"的最小载荷 */
+/** 一份"父表齐全、子表齐全"的最小载荷（外键闭包全覆盖） */
 function fullPayloadTables() {
   return [
     { table: 'stored_file' as const, rows: [{ fileId: 'f-1' }] },
+    { table: 'repair_request_intake' as const, rows: [{ id: 50, serviceOrganizationId: 4 }] },
     { table: 'repair_request' as const, rows: [{ id: 1 }] },
     { table: 'repair_request_revision' as const, rows: [{ id: 10, requestId: 1 }] },
+    { table: 'intake_analysis_attempt' as const, rows: [{ id: 51, intakeId: 50 }] },
     { table: 'maintenance_report' as const, rows: [{ id: 2 }] },
     { table: 'maintenance_report_alarm' as const, rows: [{ id: 20, reportId: 2 }] },
     { table: 'maintenance_report_step' as const, rows: [{ id: 21, reportId: 2 }] },
@@ -132,8 +178,18 @@ function fullPayloadTables() {
       table: 'maintenance_report_version_attachment' as const,
       rows: [{ versionId: 23, attachmentId: 24, reportId: 2 }],
     },
+    { table: 'maintenance_report_review' as const, rows: [{ id: 25, versionId: 23 }] },
     { table: 'reference_document' as const, rows: [{ id: 3 }] },
     { table: 'reference_document_revision' as const, rows: [{ id: 30, documentId: 3 }] },
+    { table: 'reference_document_case_detail' as const, rows: [{ documentId: 3 }] },
+    { table: 'ai_conversation' as const, rows: [{ id: 60, requestId: 1 }] },
+    { table: 'ai_message' as const, rows: [{ id: 61, conversationId: 60 }] },
+    { table: 'ai_message_analysis' as const, rows: [{ questionUuid: 'q-1', conversationId: 60 }] },
+    { table: 'ai_report' as const, rows: [{ id: 62, requestId: 1, conversationId: 60 }] },
+    { table: 'engineer_response' as const, rows: [{ id: 63, requestId: 1 }] },
+    { table: 'repair_process_entry' as const, rows: [{ id: 64, requestId: 1 }] },
+    { table: 'repair_request_diagnostic_step' as const, rows: [{ id: 65, requestId: 1 }] },
+    { table: 'repair_request_fault_panel' as const, rows: [{ id: 66, requestId: 1 }] },
     { table: 'local_upload_task' as const, rows: [{ id: 40 }] },
   ];
 }
@@ -144,12 +200,13 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
 
     const outcome = await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: fullPayloadTables(),
     });
 
     expect(outcome.status).toBe('WRITTEN');
-    expect(outcome.written).toBe(13);
+    expect(outcome.written).toBe(25);
     expect(transactionRunner.run).toHaveBeenCalledTimes(1);
     // 写回顺序＝外键顺序（父先于子）：按**实际调用顺序**记录
     const insertOrder: string[] = [];
@@ -161,6 +218,7 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
     }
     await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: fullPayloadTables(),
     });
@@ -184,6 +242,13 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
       repo.createQueryBuilder.mockImplementation((): Record<string, unknown> => {
         const builder: Record<string, unknown> = {
           where: jest.fn(() => builder),
+          update: jest.fn(() => builder),
+          set: jest.fn(() => builder),
+          select: jest.fn(() => builder),
+          addSelect: jest.fn(() => builder),
+          getRawMany: jest.fn().mockResolvedValue([]),
+          getMany: jest.fn().mockResolvedValue([]),
+          execute: jest.fn().mockResolvedValue({ affected: 0 }),
           delete: jest.fn(() => ({
             execute: jest.fn(() => {
               deleteOrder.push(table);
@@ -197,6 +262,7 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
 
     await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: fullPayloadTables(),
     });
@@ -217,6 +283,7 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
 
     const outcome = await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: [
         { table: 'maintenance_report' as const, rows: [{ id: 2 }] },
@@ -237,6 +304,7 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
 
     const outcome = await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: [...fullPayloadTables(), { table: 'base_user_account' as never, rows: [{ id: 1 }] }],
     });
@@ -253,6 +321,7 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
 
     const outcome = await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: fullPayloadTables(),
     });
@@ -284,6 +353,7 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
 
     await service.write({
       organizationId: 4,
+      installationId: INSTALLATION_ID,
       restoreId: 'restore-1',
       tables: fullPayloadTables(),
     });
@@ -291,6 +361,229 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
     expect(whereCalls.length).toBeGreaterThan(0);
     expect(whereCalls[0]).toContain('report_id');
     expect(whereCalls[0]).toContain('maintenance_report');
+  });
+
+  describe('外键闭包与范围口径（2026-11-23 新计划第 02／03 项）', () => {
+    it('覆盖外键闭包 25 张可恢复表（G21：缺表会让清库被外键挡住）', () => {
+      const { service } = buildWriter();
+
+      expect(service.supportedTables).toHaveLength(25);
+      // 闭包里每一张"能引用范围表父行"的子表都必须在
+      for (const child of [
+        'maintenance_report_review',
+        'reference_document_case_detail',
+        'repair_request_intake',
+        'repair_process_entry',
+        'repair_request_diagnostic_step',
+        'repair_request_fault_panel',
+        'ai_conversation',
+        'ai_message',
+        'ai_message_analysis',
+        'ai_report',
+        'engineer_response',
+        'intake_analysis_attempt',
+      ]) {
+        expect(service.supportedTables).toContain(child);
+      }
+      // 本机运行事实表不进恢复范围
+      expect(service.supportedTables).not.toContain('local_backup_run');
+    });
+
+    it('本机运行数据按**安装 × 公司**圈定，不做无 WHERE 的整表清空（G23）', async () => {
+      const { service, repositories } = buildWriter();
+      const whereCalls: string[] = [];
+      repositories.local_upload_task.createQueryBuilder.mockImplementation(
+        (): Record<string, unknown> => {
+          const builder: Record<string, unknown> = {
+            where: jest.fn((sql: string) => {
+              whereCalls.push(sql);
+              return builder;
+            }),
+            delete: jest.fn(() => ({ execute: jest.fn().mockResolvedValue({ affected: 0 }) })),
+            orderBy: jest.fn(() => builder),
+            getMany: jest.fn().mockResolvedValue([]),
+          };
+          return builder;
+        },
+      );
+
+      await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: fullPayloadTables(),
+      });
+
+      expect(whereCalls.length).toBeGreaterThan(0);
+      for (const sql of whereCalls) {
+        // 清库路径**不允许**出现"无 WHERE 的整表删除"
+        expect(sql).toContain('installation_id');
+        expect(sql).toContain('organization_id');
+      }
+    });
+
+    it('业务表按公司列圈定（子表按父表归属递归解析）', async () => {
+      const { service, repositories } = buildWriter();
+      const whereCalls: string[] = [];
+      repositories.maintenance_report_review.createQueryBuilder.mockImplementation(
+        (): Record<string, unknown> => {
+          const builder: Record<string, unknown> = {
+            where: jest.fn((sql: string) => {
+              whereCalls.push(sql);
+              return builder;
+            }),
+            delete: jest.fn(() => ({ execute: jest.fn().mockResolvedValue({ affected: 0 }) })),
+            orderBy: jest.fn(() => builder),
+            getMany: jest.fn().mockResolvedValue([]),
+          };
+          return builder;
+        },
+      );
+
+      await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: fullPayloadTables(),
+      });
+
+      expect(whereCalls.length).toBeGreaterThan(0);
+      // 报告审核 → 报告版本 → 报告：递归解析到根表的 owner_organization_id
+      expect(whereCalls[0]).toContain('version_id');
+      expect(whereCalls[0]).toContain('maintenance_report_version');
+      expect(whereCalls[0]).toContain('maintenance_report');
+      expect(whereCalls[0]).toContain('owner_organization_id');
+    });
+
+    it('双向外键（intake ⇄ 工单）：先写 intake 再回填 converted_request_id', async () => {
+      const { service, repositories } = buildWriter();
+      const insertOrder: string[] = [];
+      for (const [table, repo] of Object.entries(repositories)) {
+        repo.insert.mockImplementation(() => {
+          insertOrder.push(table);
+          return Promise.resolve({ identifiers: [] });
+        });
+      }
+
+      const outcome = await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: fullPayloadTables().map((entry) =>
+          entry.table === 'repair_request_intake'
+            ? { table: entry.table, rows: [{ id: 50, convertedRequestId: 1 }] }
+            : entry,
+        ),
+      });
+
+      expect(outcome.status).toBe('WRITTEN');
+      // intake 必须先于工单插入（工单的 intake_id 才有父行可指）
+      expect(insertOrder.indexOf('repair_request_intake')).toBeLessThan(
+        insertOrder.indexOf('repair_request'),
+      );
+      // 插入时不得带上尚未存在的工单外键
+      const insertedIntake = repositories.repair_request_intake.insert.mock.calls[0][0] as {
+        convertedRequestId?: unknown;
+      }[];
+      expect(insertedIntake[0].convertedRequestId).toBeUndefined();
+      // 工单写完后按 intake 主键回填
+      expect(repositories.repair_request_intake.update).toHaveBeenCalledWith(
+        { id: 50 },
+        expect.objectContaining({ convertedRequestId: 1 }),
+      );
+    });
+
+    it('抑制事实以**当前事实**为准：备份后被删除的记录不得被旧包复活', async () => {
+      const { service, repositories } = buildWriter();
+      // 让工单表返回一行"当前已删除"的行（实体形态：deletedAt 非空）
+      repositories.repair_request.createQueryBuilder.mockImplementation(
+        (): Record<string, unknown> => {
+          const builder: Record<string, unknown> = {
+            where: jest.fn(() => builder),
+            select: jest.fn(() => builder),
+            addSelect: jest.fn(() => builder),
+            orderBy: jest.fn(() => builder),
+            delete: jest.fn(() => ({ execute: jest.fn().mockResolvedValue({ affected: 0 }) })),
+            getMany: jest.fn().mockResolvedValue([
+              {
+                id: 3,
+                deletedAt: new Date('2026-11-23T10:00:00.000Z'),
+                deprecated: true,
+                isAccepted: false,
+              },
+            ]),
+          };
+          return builder;
+        },
+      );
+
+      const outcome = await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: fullPayloadTables(),
+      });
+
+      expect(outcome.status).toBe('WRITTEN');
+      // 写回后必须按**整行事实**还原（删除标记不被旧包清空）
+      expect(repositories.repair_request.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 3, deletedAt: new Date('2026-11-23T10:00:00.000Z') }),
+      );
+    });
+
+    it('抑制事实采集**先于**打断循环外键（否则原稿删除事实与"原稿→工单"关联都会丢）', async () => {
+      const { service, repositories } = buildWriter();
+      // 记录顺序：采集（getMany）必须早于打断循环外键（update）
+      const order: string[] = [];
+      const baseCreateQueryBuilder = repositories.repair_request_intake.createQueryBuilder;
+      repositories.repair_request_intake.createQueryBuilder = jest.fn((alias?: string) => {
+        const builder = baseCreateQueryBuilder(alias) as Record<string, unknown>;
+        const getMany = builder['getMany'] as jest.Mock;
+        builder['getMany'] = jest.fn(() => {
+          order.push('capture');
+          return getMany();
+        });
+        builder['update'] = jest.fn(() => {
+          order.push('break');
+          return builder;
+        });
+        return builder;
+      }) as never;
+
+      const outcome = await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: fullPayloadTables(),
+      });
+
+      expect(outcome.status).toBe('WRITTEN');
+      expect(order).toContain('capture');
+      expect(order).toContain('break');
+      // 先采集、后打断：打断会把 `converted_request_id` 置空，
+      // 若先打断，采集范围（父行归属分支）会失效、且采集到的关联已为空
+      expect(order.indexOf('capture')).toBeLessThan(order.indexOf('break'));
+    });
+
+    it('旧包（缺新增子表）⇒ 失败关闭，不静默丢数据', async () => {
+      const { service, repositories } = buildWriter();
+
+      const outcome = await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: [
+          { table: 'repair_request' as const, rows: [{ id: 1 }] },
+          { table: 'repair_request_revision' as const, rows: [{ id: 10, requestId: 1 }] },
+        ],
+      });
+
+      expect(outcome.status).toBe('FAILED');
+      expect(outcome.reason).toContain('缺少子表数据');
+      for (const repo of Object.values(repositories)) {
+        expect(repo.insert).not.toHaveBeenCalled();
+      }
+    });
   });
 
   describe('原件字节还原', () => {

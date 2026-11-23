@@ -1,5 +1,6 @@
 // src/modules/lithography/local-backup-upload.service.spec.ts
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { LocalBackupUploadService } from './local-backup-upload.service';
 import type { BackupAssetEntity } from './entities/backup-asset.entity';
 import type { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
@@ -163,6 +164,11 @@ describe('local backup upload service', () => {
       settingRepository as never,
       authorizationRepository as never,
       asPinoLogger(options.logger ?? createTestPinoLogger()),
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       options.uploader,
     );
 

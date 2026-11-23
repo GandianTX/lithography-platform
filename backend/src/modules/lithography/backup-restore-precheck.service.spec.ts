@@ -119,12 +119,19 @@ describe('backup restore precheck service', () => {
     expect(inserted).toHaveLength(1);
     expect(inserted[0]).toMatchObject({
       backupId: '11111111-2222-4333-8444-555555555555',
-      // review M8：与快照里的保护副本一致
-      protectionBackupId: 'protection-1',
+      // 库级 CHECK `chk_backup_restore_run_execution_guard`：
+      // `status='PENDING'` ⇒ `protection_backup_id IS NULL AND confirmation IS NULL`。
+      // 保护副本标识随**快照**落库（受理阶段再写回本列）——
+      // 此前 PENDING 行带保护副本 ⇒ 真实数据库上预检必然违反 CHECK。
+      protectionBackupId: null,
       checkStatus: 'PASSED',
       status: 'PENDING',
       startedAt: null,
       finishedAt: null,
+    });
+    // 保护副本标识确实随快照落库（受理阶段据此还原）
+    expect(JSON.parse(String(inserted[0]?.checkSnapshot))).toMatchObject({
+      protection: { backupId: 'protection-1' },
     });
   });
 

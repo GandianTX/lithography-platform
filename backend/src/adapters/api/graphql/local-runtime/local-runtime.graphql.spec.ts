@@ -484,9 +484,22 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
       );
       expect(argType(mutationField('resolveSyncConflict'), 'conflictId')).toBe('String!');
       expect(argType(mutationField('resolveSyncConflict'), 'action')).toBe('SyncConflictAction!');
+      // R067：客户端必须提交**实际看到**的云端版本，服务端据此复核"云端是否已变化"；
+      // 该入参可空（缺省按"未提交"处理 ⇒ 服务端拒绝盲裁决），但入口必须存在
+      expect(argType(mutationField('resolveSyncConflict'), 'displayedCloudVersion')).toBe('Int');
     });
 
-    it('记录包入口的契约（前端尚未接线，靠本守卫兜住漂移）', () => {
+    it('冲突条目的来源事实字段在契约中可读（清单与详情同一口径）', () => {
+      // 清单必须能表达"来源是否只读 / 能否采用云端"：
+      // 这几个字段曾经只由详情给出，导致清单恒显示"可采用"（与详情不一致）
+      expect(objectField('SyncConflict', 'sourceReadOnly').type.toString()).toBe('Boolean!');
+      expect(objectField('SyncConflict', 'sourceReadOnlyReason').type.toString()).toBe('String');
+      expect(objectField('SyncConflict', 'canAdoptCloud').type.toString()).toBe('Boolean!');
+      expect(objectField('SyncConflict', 'adoptionReadOnly').type.toString()).toBe('Boolean!');
+      expect(objectField('SyncConflict', 'displayedCloudVersion').type.toString()).toBe('Int');
+    });
+
+    it('记录包入口的契约（前端已接线，参数漂移由本守卫兜住）', () => {
       expect(mutationField('exportRecordPackage')?.type.toString()).toBe(
         'RecordPackageExportResult!',
       );
@@ -498,6 +511,10 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
         'RecordPackageResourceType!',
       );
       expect(argType(mutationField('exportRecordPackage'), 'recordIds')).toBe('[Int!]!');
+      // 混合导出（逐条自带资源类型）：可空；提供时服务端以它为准，缺省沿用旧的单一类型形态
+      expect(argType(mutationField('exportRecordPackage'), 'entries')).toBe(
+        '[RecordPackageExportEntryInput!]',
+      );
       expect(mutationField('checkRecordPackage')?.type.toString()).toBe(
         'RecordPackageCheckResult!',
       );

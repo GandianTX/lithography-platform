@@ -1,5 +1,6 @@
 // src/usecases/admin-document-database/append-repair-request-revision.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   RepairRequestHandlingResult,
@@ -118,6 +119,7 @@ export class AppendRepairRequestRevisionUsecase {
     private readonly maintenanceService: RepairRequestMaintenanceService,
     private readonly accountQueryService: AccountQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -164,6 +166,11 @@ export class AppendRepairRequestRevisionUsecase {
         command.requestId,
         organizationScope.organizationId,
       );
+      // 恢复期写入冻结：工单归属公司数据区正在恢复时不得写入修订历史
+      await this.localWriteHoldService.assertBusinessWritable({
+        organizationId: target.ownerOrganizationId,
+      });
+
       if (target.currentRevisionNo !== command.expectedVersion) {
         throw new DomainError(
           REPAIR_REQUEST_ERROR.PROCESS_VERSION_CONFLICT,

@@ -218,11 +218,6 @@ export class LocalBackupResolver {
     };
   }
 
-  @Mutation(() => LocalRestorePrecheckResultDTO, {
-    name: 'precheckLocalRestore',
-    description:
-      '恢复预检（管理员专属）：核对目标设备与公司、逐文件校验备份包，并生成当前范围的保护副本',
-  })
   /** 恢复预检：目标核对＋包完整性＋保护副本；恢复执行入口保持如实不可用 */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.SUPER_ADMIN)

@@ -18,6 +18,7 @@
 // 6. 不改任务 06 原始数据：maintenance_report_version 冻结快照、来源工单、
 //    客户回复均只读；原始冻结报告经 frozenReport 追溯视图并存。
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
@@ -60,6 +61,7 @@ import {
 export class ReviseReferenceDocumentStructuredUsecase {
   constructor(
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly revisionService: ReferenceDocumentRevisionService,
     private readonly accountQueryService: AccountQueryService,
@@ -97,6 +99,10 @@ export class ReviseReferenceDocumentStructuredUsecase {
       forUpdate: true,
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
+    // 恢复期写入冻结：资料归属公司数据区正在恢复时不得结构化修订
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: current.ownerOrganizationId,
+    });
 
     if (isFaultCaseDocumentType(current.documentType)) {
       throw new DomainError(

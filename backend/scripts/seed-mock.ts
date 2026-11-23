@@ -99,7 +99,9 @@ function deriveSeedAccountUuid(loginName: string): string {
   const hex = ACCOUNT_UUID_NAMESPACE.replace(/-/g, '');
   const namespace = Buffer.from(hex, 'hex');
   const name = Buffer.from(`account:${loginName}`, 'utf8');
-  const digest = createHash('sha1').update(Buffer.concat([namespace, name])).digest();
+  const digest = createHash('sha1')
+    .update(Buffer.concat([namespace, name]))
+    .digest();
   const bytes = Uint8Array.from(digest.subarray(0, 16));
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;

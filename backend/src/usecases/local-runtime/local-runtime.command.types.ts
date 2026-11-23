@@ -205,6 +205,13 @@ export type ResolveSyncConflictCommand = {
   session: UsecaseSession;
   conflictId: string;
   action: SyncConflictAction;
+  /**
+   * 客户端**实际看到**的云端版本（R067）。
+   *
+   * 服务端必须与冲突登记的云端版本逐一对齐：缺失或不一致都拒绝裁决
+   * （云端已变化 ⇒ 刷新重确认），不信任前端带来的版本或快照。
+   */
+  displayedCloudVersion?: number | null;
 };
 
 /** 裁决结果视图：'existing' 表示重复请求返回既有事实，'later' 保持待处理 */
@@ -253,8 +260,16 @@ export type ExportRecordPackageCommand = {
    * （一级管理员全局范围）则必须显式指定。
    */
   organizationId?: number;
+  /** 单一资源类型（**旧接口**，保留兼容） */
   resourceType: string;
   recordIds: number[];
+  /**
+   * 导出条目清单（**新形态**：可**混合多种资源类型**）。
+   *
+   * 提供时以它为准（`resourceType`／`recordIds` 被忽略）；不提供时按旧形态处理。
+   * 与旧接口并存 ⇒ 旧客户端不受影响。
+   */
+  entries?: readonly { resourceType: string; recordId: number }[];
 };
 
 // ---- 任务09 S3：备份记录、自动备份设置与手动备份触发 ----

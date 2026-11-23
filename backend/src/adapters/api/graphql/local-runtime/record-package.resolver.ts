@@ -22,6 +22,7 @@ import {
 import { ImportRecordPackageUsecase } from '@src/usecases/local-runtime/import-record-package.usecase';
 import { ExportRecordPackageUsecase } from '@src/usecases/local-runtime/export-record-package.usecase';
 import {
+  RecordPackageExportEntryInputDTO,
   RecordPackageExportResultDTO,
   toRecordPackageExportDTO,
 } from '@src/adapters/api/graphql/local-runtime/dto/record-package-export.dto';
@@ -62,6 +63,12 @@ export class RecordPackageResolver {
     @Args('resourceType', { type: () => recordPackageResourceTypeEnum })
     resourceType: RecordPackageResourceType,
     @Args('recordIds', { type: () => [Int] }) recordIds: number[],
+    @Args('entries', {
+      type: () => [RecordPackageExportEntryInputDTO],
+      nullable: true,
+      description: '导出条目清单（可混合多种资源类型）；提供时以它为准，缺省沿用旧的单一类型形态',
+    })
+    entries?: RecordPackageExportEntryInputDTO[] | null,
   ): Promise<RecordPackageExportResultDTO> {
     const result = await this.exportRecordPackageUsecase.execute({
       session: this.toSession(user),
@@ -69,6 +76,7 @@ export class RecordPackageResolver {
       organizationId: organizationId ?? undefined,
       resourceType,
       recordIds,
+      entries: entries ?? undefined,
     });
     return toRecordPackageExportDTO(result);
   }

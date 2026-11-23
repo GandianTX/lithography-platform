@@ -29,6 +29,16 @@ const adapters = vi.hoisted(() => ({
   precheckLocalRestore: vi.fn(),
   acceptLocalRestore: vi.fn(),
   fetchLocalRestoreCapability: vi.fn(),
+  fetchLocalBackupCloudPackages: vi.fn(),
+  executeLocalRestore: vi.fn(),
+  downloadLocalBackupCloudPackage: vi.fn(),
+}));
+
+const saveBlobAsFile = vi.hoisted(() => vi.fn());
+
+// 下载动作会真的把字节交给浏览器保存：单测里替身掉，避免真的落盘
+vi.mock('@/shared/download', () => ({
+  saveBlobAsFile,
 }));
 
 vi.mock('../infrastructure/local-backup-graphql-adapter', () => adapters);
@@ -94,6 +104,24 @@ beforeEach(() => {
   });
   adapters.fetchLocalBackupSettings.mockResolvedValue([SETTING]);
   adapters.fetchLocalRestoreCapability.mockResolvedValue(CAPABILITY);
+  adapters.fetchLocalBackupCloudPackages.mockResolvedValue({ organizationId: 4, packages: [] });
+  adapters.executeLocalRestore.mockResolvedValue({
+    restoreId: 'restore-1',
+    status: 'SUCCEEDED',
+    released: true,
+    holdRetained: false,
+    restoredRecords: 3,
+    restoredOriginals: 1,
+    restoredQueue: 0,
+    reasonCode: null,
+    reason: null,
+  });
+  adapters.downloadLocalBackupCloudPackage.mockResolvedValue({
+    ok: false,
+    blob: null,
+    filename: null,
+    reason: 'not-found',
+  });
   adapters.startManualLocalBackup.mockResolvedValue({
     runId: 11,
     organizationId: 4,
@@ -164,6 +192,95 @@ describe('备份与恢复面板', () => {
     // 后端只回受控原因码：前端按码映射文案，不回显后端自由文本
     expect(screen.getByText(/未落地恢复期的写入\/同步闸门/)).toBeTruthy();
     expect(screen.getByText('当前环境暂不具备恢复执行能力')).toBeTruthy();
+  });
+
+  it('云端包清单呈现真实条目，下载动作把字节交给浏览器保存', async () => {
+    adapters.fetchLocalBackupCloudPackages.mockResolvedValue({
+      organizationId: 4,
+      packages: [
+        {
+          packageId: 'pkg-1',
+          organizationId: 4,
+          backupId: 'backup-1',
+          createdAt: '2026-11-23T00:00:00.000Z',
+          byteSize: 2048,
+          checksumSha256: 'a'.repeat(64),
+        },
+      ],
+    });
+    const blob = new Blob(['bytes']);
+    adapters.downloadLocalBackupCloudPackage.mockResolvedValue({
+      ok: true,
+      blob,
+      filename: 'backup-pkg-1.bin',
+      reason: null,
+    });
+
+    render(<LocalBackupPanel canPrecheck={false} />);
+
+    // antd 会在两个汉字之间插入空格（可访问名形如"下 载"）
+    const download = await screen.findByRole('button', { name: /下\s*载/ });
+    fireEvent.click(download);
+
+    await waitFor(() => {
+      expect(adapters.downloadLocalBackupCloudPackage).toHaveBeenCalledWith(
+        expect.objectContaining({ packageId: 'pkg-1' }),
+      );
+    });
+    // 下载必须真的落盘（否则就是"点了没反应"的假成功）
+    await waitFor(() => {
+      expect(saveBlobAsFile).toHaveBeenCalledWith(blob, 'backup-pkg-1.bin');
+    });
+  });
+
+  it('恢复执行失败并保持冻结时如实呈现"仍停写停传"，不显示为已恢复', async () => {
+    adapters.precheckLocalRestore.mockResolvedValue({
+      restoreId: 'restore-1',
+      outcome: 'PASSED',
+      checkedAt: '2026-11-23T00:10:00.000Z',
+      targetBackupId: RECORD.backupId,
+      targetOrganizationId: 4,
+      targetInstallationId: 'inst-1',
+      manifestChecksum: 'a'.repeat(64),
+      packageReadable: true,
+      fileCount: 1,
+      originalCount: 0,
+      verifiedFileCount: 1,
+      protectionBackupId: 'protection-1',
+      protectionCreated: true,
+      findings: [],
+    });
+    adapters.executeLocalRestore.mockResolvedValue({
+      restoreId: 'restore-1',
+      status: 'FAILED',
+      released: false,
+      holdRetained: true,
+      restoredRecords: null,
+      restoredOriginals: null,
+      restoredQueue: null,
+      reasonCode: 'RESTORE_EXECUTION_FAILED',
+      reason: '恢复执行失败，设备仍处于停写停传',
+    });
+
+    render(<LocalBackupPanel canPrecheck />);
+
+    const precheckAction = await screen.findByRole('button', { name: '恢复预检' });
+    fireEvent.click(precheckAction);
+
+    const accept = await screen.findByRole('button', { name: '确认受理本次恢复' });
+    fireEvent.click(accept);
+
+    const execute = await screen.findByRole('button', { name: '执行本次恢复' });
+    fireEvent.click(execute);
+
+    await waitFor(() => {
+      expect(adapters.executeLocalRestore).toHaveBeenCalledWith('restore-1');
+    });
+    // 失败且保持冻结 ⇒ 必须显示"仍停写停传"，不得出现"已恢复/已解除冻结"
+    await waitFor(() => {
+      expect(screen.getAllByText(/仍处于停写停传/).length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/已恢复完成|已解除冻结/)).toBeNull();
   });
 
   it('手动备份展示真实阶段结果：上云与清理未被伪造为已完成', async () => {

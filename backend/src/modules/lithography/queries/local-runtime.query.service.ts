@@ -211,9 +211,7 @@ export class LocalRuntimeQueryService {
       };
       if (row.authorizationStatus === 'ACTIVE') {
         summary.activeCount += 1;
-        const verdict = resolveCredentialPurposes(
-          typeof row.signedClaims === 'string' ? row.signedClaims : null,
-        );
+        const verdict = resolveCredentialPurposes(row.signedClaims);
         for (const purpose of verdict.purposes) {
           if (!summary.credentialPurposes.includes(purpose)) {
             summary.credentialPurposes.push(purpose);

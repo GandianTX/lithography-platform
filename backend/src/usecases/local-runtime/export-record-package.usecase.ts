@@ -9,6 +9,7 @@ import {
 import type { RecordPackageResourceType } from '@core/local-runtime/policy/record-package-manifest.policy';
 import { Injectable } from '@nestjs/common';
 import { RecordPackageExportService } from '@src/modules/lithography/record-package-export.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { RecordPackageExportResult } from '@src/modules/lithography/record-package-export.types';
 import type { ExportRecordPackageCommand } from './local-runtime.command.types';
@@ -33,6 +34,7 @@ export class ExportRecordPackageUsecase {
     private readonly scopeResolver: LocalRuntimeScopeResolver,
     private readonly recordPackageExportService: RecordPackageExportService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
   ) {}
 
   async execute(command: ExportRecordPackageCommand): Promise<RecordPackageExportResult> {
@@ -45,14 +47,28 @@ export class ExportRecordPackageUsecase {
         ? normalizeExportOrganization(scope.organizationId)
         : normalizeExportOrganization(command.organizationId);
     assertExportOrganizationAllowed(scope.organizationId, organizationId);
-    const recordIds = normalizeExportRecordIds(command.recordIds);
+    // 导出条目：混合形态优先（逐条自带资源类型），否则回落旧形态（单类型 ＋ id 列表）
+    const entries =
+      command.entries !== undefined && command.entries.length > 0
+        ? command.entries.map((entry) => ({
+            resourceType: normalizeExportResourceType(entry.resourceType),
+            recordId: entry.recordId,
+          }))
+        : normalizeExportRecordIds(command.recordIds).map((recordId) => ({
+            resourceType: normalizeExportResourceType(command.resourceType),
+            recordId,
+          }));
     const resourceType = normalizeExportResourceType(command.resourceType);
+
+    // 恢复期冻结：该公司数据区正在恢复时不得导出（会把恢复中的数据带出本机）
+    await this.localWriteHoldService.assertCompanyWritable({ organizationId });
 
     return this.recordPackageExportService.exportPackage({
       organizationId,
       targetPath,
       resourceType,
-      recordIds,
+      recordIds: entries.map((entry) => entry.recordId),
+      entries,
       exporterAccountId: command.session.accountId,
       exporterScope: scope,
       // 跨域读取提升到 usecase 层（账号域与业务域并列，模块间不得直接依赖）

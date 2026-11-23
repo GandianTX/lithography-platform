@@ -1,6 +1,7 @@
 // src/usecases/reference-document/reference-document-write-race.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
@@ -305,12 +306,22 @@ const makeWriteRaceBench = () => {
       referenceDocumentService as unknown as ReferenceDocumentService,
       referenceDocumentCaseDetailService as unknown as ReferenceDocumentCaseDetailService,
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       transactionRunner,
     ),
     revise: new ReviseReferenceDocumentUsecase(
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       maintenanceReportQueryService as unknown as MaintenanceReportQueryService,
       referenceDocumentRevisionService as unknown as ReferenceDocumentRevisionService,
       accountQueryService as unknown as AccountQueryService,
@@ -318,6 +329,11 @@ const makeWriteRaceBench = () => {
     ),
     softDelete: new SoftDeleteReferenceDocumentUsecase(
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       maintenanceReportQueryService as unknown as MaintenanceReportQueryService,
       referenceDocumentRevisionService as unknown as ReferenceDocumentRevisionService,
       managementAuditService as unknown as ManagementAuditService,

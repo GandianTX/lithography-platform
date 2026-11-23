@@ -3,8 +3,11 @@
 import {
   BACKUP_MANIFEST_SCHEMA_VERSION,
   BACKUP_PAYLOAD_PATH,
+  BACKUP_RESTORE_TABLE_ORDER,
   BACKUP_SCOPE_TABLES,
+  BACKUP_TABLE_DESCRIPTORS,
   backupManifestChecksum,
+  buildOrganizationScopePredicate,
   buildProtectedBackupManifest,
   decryptBackupPayload,
   encryptBackupPayload,
@@ -12,6 +15,7 @@ import {
   isSafeBackupRelativePath,
   parseBackupManifest,
   parseProtectionKey,
+  type BackupRestoreTable,
 } from './protected-backup.policy';
 
 const KEY = parseProtectionKey('ab'.repeat(32));
@@ -35,6 +39,104 @@ const manifestInput = () => ({
 });
 
 describe('protected backup policy', () => {
+  describe('外键闭包与范围口径（2026-11-23 新计划第 02／03 项）', () => {
+    it('备份范围覆盖外键闭包：每张能引用范围表父行的子表都在范围内', () => {
+      // 缺任何一张，清空父行时都会被范围外的残留子行挡住
+      // （真实库：`Cannot delete or update a parent row: a foreign key constraint fails`）。
+      const closureChildren = [
+        'maintenance_report_review',
+        'reference_document_case_detail',
+        'repair_request_intake',
+        'repair_process_entry',
+        'repair_request_diagnostic_step',
+        'repair_request_fault_panel',
+        'ai_conversation',
+        'ai_message',
+        'ai_message_analysis',
+        'ai_report',
+        'engineer_response',
+        'intake_analysis_attempt',
+      ];
+      for (const child of closureChildren) {
+        expect(BACKUP_SCOPE_TABLES).toContain(child);
+      }
+      expect(BACKUP_SCOPE_TABLES).toHaveLength(26);
+    });
+
+    it('恢复写回顺序满足外键约束：父先于子（清空时按逆序＝子先于父）', () => {
+      const position = new Map(BACKUP_RESTORE_TABLE_ORDER.map((table, index) => [table, index]));
+      const parentFirst: [BackupRestoreTable, BackupRestoreTable][] = [
+        ['repair_request_intake', 'repair_request'],
+        ['repair_request', 'repair_request_revision'],
+        ['repair_request_intake', 'intake_analysis_attempt'],
+        ['repair_request', 'maintenance_report'],
+        ['maintenance_report', 'maintenance_report_version'],
+        ['maintenance_report', 'maintenance_report_attachment'],
+        ['maintenance_report_version', 'maintenance_report_version_attachment'],
+        ['maintenance_report_attachment', 'maintenance_report_version_attachment'],
+        ['maintenance_report_step', 'maintenance_report_fault'],
+        ['maintenance_report_version', 'maintenance_report_review'],
+        ['maintenance_report_version', 'reference_document'],
+        ['reference_document', 'reference_document_revision'],
+        ['reference_document', 'reference_document_case_detail'],
+        ['repair_request', 'ai_conversation'],
+        ['ai_conversation', 'ai_message'],
+        ['ai_conversation', 'ai_message_analysis'],
+        ['ai_conversation', 'ai_report'],
+        ['repair_request', 'engineer_response'],
+        ['repair_request', 'repair_process_entry'],
+        ['repair_request', 'repair_request_diagnostic_step'],
+        ['repair_request_diagnostic_step', 'repair_request_fault_panel'],
+      ];
+      for (const [parent, child] of parentFirst) {
+        expect(position.get(parent)).toBeLessThan(position.get(child) ?? Number.MAX_SAFE_INTEGER);
+      }
+    });
+
+    it('本机运行数据不按设备全量：范围谓词必须同时约束安装与公司（G23）', () => {
+      for (const table of ['local_upload_task', 'local_backup_run'] as const) {
+        const predicate = buildOrganizationScopePredicate(table, 't');
+        expect(predicate).toContain('t.installation_id = :installationId');
+        expect(predicate).toContain('t.organization_id = :organizationId');
+      }
+    });
+
+    it('没有"无 WHERE 的整表"口径：每张表的谓词都带公司约束', () => {
+      for (const table of BACKUP_SCOPE_TABLES) {
+        const predicate = buildOrganizationScopePredicate(table, null);
+        expect(predicate).toContain(':organizationId');
+      }
+    });
+
+    it('子表按父表归属**递归**解析到根表的公司列', () => {
+      // 报告审核 → 报告版本 → 报告 → owner_organization_id
+      const predicate = buildOrganizationScopePredicate('maintenance_report_review', null);
+      expect(predicate).toContain('version_id IN (SELECT p.id FROM maintenance_report_version p');
+      expect(predicate).toContain('report_id IN (SELECT p.id FROM maintenance_report p');
+      expect(predicate).toContain('owner_organization_id = :organizationId');
+    });
+
+    it('本机运行事实表 local_backup_run 不进恢复写回顺序', () => {
+      expect(BACKUP_SCOPE_TABLES).toContain('local_backup_run');
+      expect(BACKUP_RESTORE_TABLE_ORDER).not.toContain('local_backup_run');
+    });
+  });
+
+  it('排序列按真实主键声明：无 id 列的表必须显式声明（复合主键）', () => {
+    // 回归锁：写死 `ORDER BY t.id` 会让受保护包生成在真实库上直接失败
+    // （`maintenance_report_version_attachment` 是复合主键，`stored_file` 主键是 file_id）。
+    expect(BACKUP_TABLE_DESCRIPTORS.maintenance_report_version_attachment.orderColumns).toEqual([
+      'version_id',
+      'attachment_id',
+    ]);
+    expect(BACKUP_TABLE_DESCRIPTORS.stored_file.orderColumns).toEqual(['file_id']);
+    for (const table of BACKUP_SCOPE_TABLES) {
+      const orderColumns = BACKUP_TABLE_DESCRIPTORS[table].orderColumns ?? ['id'];
+      expect(orderColumns.length).toBeGreaterThan(0);
+      expect(orderColumns.every((column) => /^[a-z_]+$/.test(column))).toBe(true);
+    }
+  });
+
   it('合法清单通过构建与解析自校验', () => {
     const manifest = buildProtectedBackupManifest(manifestInput());
     expect(manifest.schema_version).toBe(BACKUP_MANIFEST_SCHEMA_VERSION);

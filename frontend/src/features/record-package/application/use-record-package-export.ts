@@ -5,6 +5,7 @@ import { useCallback, useState } from 'react';
 import { isGraphQLIngressError } from '@/shared/graphql';
 
 import type {
+  RecordPackageExportEntry,
   RecordPackageExportResult,
   RecordPackageResourceType,
 } from '../infrastructure/record-package.types';
@@ -31,7 +32,14 @@ export function useRecordPackageExport() {
       /** 可省略：省略时由服务端按可信 session 范围取本公司（来源页导出入口） */
       organizationId?: number;
       resourceType: RecordPackageResourceType;
-      recordIds: number[];
+      /** 记录 ID（多值输入控件给出字符串，由 adapter 归一化为正整数） */
+      recordIds: Array<number | string>;
+      /**
+       * 混合导出条目（逐条自带资源类型）。
+       *
+       * 提供时服务端以它为准；缺省沿用旧的单一类型形态（旧客户端不受影响）。
+       */
+      entries?: RecordPackageExportEntry[];
     }) => {
       setState({ status: 'running' });
       try {

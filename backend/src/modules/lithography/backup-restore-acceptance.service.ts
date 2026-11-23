@@ -104,12 +104,14 @@ export class BackupRestoreAcceptanceService {
       };
     }
 
-    // 保护副本仍在且未被清理：没有保护副本就没有回滚保障
-    if (run.protectionBackupId === null || run.protectionBackupId === undefined) {
+    // 保护副本标识：预检行是 PENDING，库级 CHECK 不允许本列带值，
+    // 标识随**快照**落库；本列在受理（→ RUNNING）时才写入。
+    const protectionBackupId = resolveProtectionBackupId(run);
+    if (protectionBackupId === null) {
       return { accepted: false, restoreId: input.restoreId, reason: '保护副本已不存在' };
     }
     const protection = await this.backupAssetRepository.findOne({
-      where: { backupId: run.protectionBackupId },
+      where: { backupId: protectionBackupId },
     });
     if (protection === null) {
       return { accepted: false, restoreId: input.restoreId, reason: '保护副本已不存在' };
@@ -127,13 +129,13 @@ export class BackupRestoreAcceptanceService {
         // （此前只写 `confirmation` ⇒ **真实数据库**上的受理必然违反 CHECK 约束。）
         status: 'RUNNING',
         startedAt: input.now,
-        protectionBackupId: run.protectionBackupId,
+        protectionBackupId,
         confirmation: JSON.stringify({
           accepted_at: acceptedAt,
           accepted_by_account_id: input.acceptedByAccountId,
           restore_id: input.restoreId,
           backup_id: run.backupId,
-          protection_backup_id: run.protectionBackupId,
+          protection_backup_id: protectionBackupId,
           organization_id: run.organizationId,
         }),
       },
@@ -143,9 +145,40 @@ export class BackupRestoreAcceptanceService {
       accepted: true,
       restoreId: input.restoreId,
       backupId: run.backupId,
-      protectionBackupId: run.protectionBackupId,
+      protectionBackupId,
       organizationId: run.organizationId,
       acceptedAt,
     };
   }
+}
+
+/**
+ * 保护副本标识的解析：预检行是 PENDING，库级 CHECK
+ * `chk_backup_restore_run_execution_guard` 规定 PENDING 行本列必须为空，
+ * 标识随**快照**（`check_snapshot`）落库；本列在受理（→ RUNNING）时才写入。
+ *
+ * 快照读回可能是 JSON 文本（`longtext` 列）或对象，两种都认；
+ * 解析不出受控形态一律按"没有保护副本"处理（失败关闭）。
+ */
+function resolveProtectionBackupId(run: BackupRestoreRunEntity): string | null {
+  const columnValue = run.protectionBackupId;
+  if (typeof columnValue === 'string' && columnValue.length > 0) {
+    return columnValue;
+  }
+  const snapshot = run.checkSnapshot;
+  if (typeof snapshot !== 'string' || snapshot.trim().length === 0) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(snapshot) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null;
+  }
+  const protection = (parsed as { protection?: { backupId?: unknown } }).protection;
+  const backupId = protection?.backupId;
+  return typeof backupId === 'string' && backupId.length > 0 ? backupId : null;
 }

@@ -49,7 +49,9 @@ function syncConflictDetailReducer(
  *
  * - 裁决动作由服务端裁决，前端只负责发起并如实展示返回的 outcome；
  * - 裁决后重新拉取详情，避免本地留一份与事实不一致的旧快照；
- * - 只读内容（已删除／下架／冻结／结单）由服务端拒绝，页面据此提前禁用动作并说明原因。
+ * - 采用云端是否可用由服务端给出（`canAdoptCloud`）：已结单允许**只读采用**，
+ *   已删除／下架／冻结不允许；页面据此启用／禁用动作并说明原因；
+ * - 提交裁决时带上**用户实际看到**的云端版本，服务端据此复核云端是否已变化。
  */
 export function useSyncConflictDetail(conflictId: string) {
   const [state, dispatch] = useReducer(syncConflictDetailReducer, {
@@ -82,7 +84,12 @@ export function useSyncConflictDetail(conflictId: string) {
     async (action: SyncConflictAction) => {
       setResolvingCount();
       try {
-        await resolveSyncConflict(conflictId, action);
+        // 提交**用户实际看到**的云端版本：服务端据此复核"云端是否已变化"（R067）。
+        await resolveSyncConflict(
+          conflictId,
+          action,
+          state.status === 'ready' ? state.detail.cloudVersion : null,
+        );
         await loadDetail();
         return { ok: true as const };
       } catch (error) {
@@ -91,7 +98,7 @@ export function useSyncConflictDetail(conflictId: string) {
         setResolvingCount();
       }
     },
-    [conflictId, loadDetail],
+    [conflictId, loadDetail, state],
   );
 
   return { state, resolve, resolving: resolvingCount % 2 === 1 };

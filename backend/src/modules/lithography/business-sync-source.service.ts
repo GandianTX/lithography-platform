@@ -23,6 +23,7 @@ import {
   computeBusinessSyncManifestChecksum,
   type BusinessSyncManifestOriginal,
 } from '@core/local-runtime/policy/business-sync-source.policy';
+import type { BusinessSyncOriginalPayload } from '@core/local-runtime/policy/business-sync-protocol.policy';
 import {
   REFERENCE_DOCUMENT_STORAGE,
   type ReferenceDocumentStorage,
@@ -41,6 +42,23 @@ import {
 
 /** 单次候选扫描上限（避免一次拉取整表） */
 export const BUSINESS_SYNC_CANDIDATE_LIMIT = 200;
+
+/**
+ * 单件原件字节上限（32 MiB）。
+ *
+ * 为什么必须设上限：原件字节要**整读进内存**再以 multipart 部件送出
+ * （Node 侧 multipart 实现要求可重复读取的 Buffer/Blob），
+ * 没有上限就等于"一个超大文件把 Worker 内存吃光"。
+ * 超过上限 ⇒ 读失败（不派发），宁可同步失败也不让本机内存失控。
+ */
+export const BUSINESS_SYNC_MAX_ORIGINAL_BYTES = 32 * 1024 * 1024;
+
+/**
+ * 单次派发全部原件字节总量上限（64 MiB）。
+ *
+ * 单件都合法不代表整体合法：多件累加同样会把内存吃光。
+ */
+export const BUSINESS_SYNC_MAX_TOTAL_ORIGINAL_BYTES = 64 * 1024 * 1024;
 
 /** 候选记录事实（准入裁决的输入） */
 export type BusinessSyncSourceCandidate = {
@@ -61,7 +79,7 @@ export type BusinessSyncSourceCandidate = {
   authorizationSubjectAccountId: number | null;
 };
 
-/** 待传素材（正文 + 原件 + 摘要） */
+/** 待传素材（正文 + 原件 + 摘要 + 原件字节） */
 export type BusinessSyncSourcePayload = {
   resourceType: SyncSourceResourceType;
   recordId: number;
@@ -71,6 +89,12 @@ export type BusinessSyncSourcePayload = {
   body: Record<string, unknown>;
   /** 原件清单（相对路径 + 校验值 + 字节数） */
   originals: BusinessSyncManifestOriginal[];
+  /**
+   * 原件**字节**（本机实测读取）。
+   *
+   * 清单只是"打算传什么"，字节才是"真的传了什么"：两者必须逐项对上。
+   */
+  originalPayloads: BusinessSyncOriginalPayload[];
   /** 正文 + 原件清单的确定性摘要 */
   manifestChecksum: string;
 };
@@ -200,13 +224,21 @@ export class BusinessSyncSourceService {
     recordUuid: string;
     versionNo: number;
   }): Promise<BusinessSyncSourcePayload> {
-    if (input.resourceType === 'REFERENCE_DOCUMENT') {
-      return this.readDocumentPayload(input);
+    const payload =
+      input.resourceType === 'REFERENCE_DOCUMENT'
+        ? await this.readDocumentPayload(input)
+        : input.resourceType === 'REPAIR_REQUEST'
+          ? await this.readRepairRequestPayload(input)
+          : await this.readReportPayload(input);
+    // 总量纪律：单件都合法不代表整体合法（多件累加同样会吃光内存）
+    const totalBytes = payload.originalPayloads.reduce(
+      (sum, item) => sum + item.bytes.byteLength,
+      0,
+    );
+    if (totalBytes > BUSINESS_SYNC_MAX_TOTAL_ORIGINAL_BYTES) {
+      throw new Error(`原件总量超过上限（${BUSINESS_SYNC_MAX_TOTAL_ORIGINAL_BYTES} 字节），不派发`);
     }
-    if (input.resourceType === 'REPAIR_REQUEST') {
-      return this.readRepairRequestPayload(input);
-    }
-    return this.readReportPayload(input);
+    return payload;
   }
 
   /** 资料记录：正文取当前修订内容，原件取本机存储文件（实测校验值） */
@@ -234,13 +266,18 @@ export class BusinessSyncSourceService {
     };
 
     const originals: BusinessSyncManifestOriginal[] = [];
+    const originalPayloads: BusinessSyncOriginalPayload[] = [];
     if (row.storageBackend !== null && row.storageReference !== null) {
-      const measured = await this.measureStoredFile(row.storageReference);
+      // 原件**字节**：清单说"传什么"，字节说"真的传了什么"——两者必须逐项对上。
+      // 字节只读一次并同时用于计量与送出（避免"计量一份、送出另一份"的时序错位）。
+      const bytes = await this.readStoredFileBytes(row.storageReference);
+      const relativePath = `originals/${sanitizeOriginalName(row.originalFilename)}`;
       originals.push({
-        relativePath: `originals/${sanitizeOriginalName(row.originalFilename)}`,
-        sha256: measured.sha256,
-        byteSize: measured.byteSize,
+        relativePath,
+        sha256: sha256Of(bytes),
+        byteSize: bytes.byteLength,
       });
+      originalPayloads.push({ relativePath, bytes });
     }
 
     return {
@@ -250,6 +287,7 @@ export class BusinessSyncSourceService {
       versionNo: input.versionNo,
       body,
       originals,
+      originalPayloads,
       manifestChecksum: computeBusinessSyncManifestChecksum({
         resourceType: 'REFERENCE_DOCUMENT',
         recordUuid: input.recordUuid,
@@ -282,6 +320,7 @@ export class BusinessSyncSourceService {
     };
 
     const originals: BusinessSyncManifestOriginal[] = [];
+    const originalPayloads: BusinessSyncOriginalPayload[] = [];
     if (row.maintenanceAttachmentFileId !== null) {
       const stored = await this.storedFileRepository.findOne({
         where: { fileId: row.maintenanceAttachmentFileId },
@@ -289,11 +328,16 @@ export class BusinessSyncSourceService {
       if (stored === null || stored.checksumSha256 === null) {
         throw new Error('登记的维修附件原件缺少校验值');
       }
+      const bytes = await this.readStoredFileBytes(stored.storageReference);
+      const relativePath = `originals/${sanitizeOriginalName(stored.originalFilename)}`;
+      // 清单用**登记校验值**（附件表的事实）；与实际字节是否一致由派发前的
+      // "字节 vs 清单"复核判定（不一致即不派发），不在这里悄悄改写登记事实
       originals.push({
-        relativePath: `originals/${sanitizeOriginalName(stored.originalFilename)}`,
+        relativePath,
         sha256: stored.checksumSha256,
         byteSize: Number(stored.byteSize),
       });
+      originalPayloads.push({ relativePath, bytes });
     }
 
     return {
@@ -303,6 +347,7 @@ export class BusinessSyncSourceService {
       versionNo: input.versionNo,
       body,
       originals,
+      originalPayloads,
       manifestChecksum: computeBusinessSyncManifestChecksum({
         resourceType: 'REPAIR_REQUEST',
         recordUuid: input.recordUuid,
@@ -338,14 +383,25 @@ export class BusinessSyncSourceService {
       order: { sortOrder: 'ASC' },
     });
     const originals: BusinessSyncManifestOriginal[] = [];
-    for (const attachment of attachments) {
+    const originalPayloads: BusinessSyncOriginalPayload[] = [];
+    // 同名附件去重：两件同名附件若用同一相对路径，清单与字节就**无法逐项一一对应**
+    // （逐项核对只会命中第一条），第二件的字节永不被校验 ⇒ 相对路径必须唯一
+    const uniqueNames = assignUniqueOriginalNames(
+      attachments.map((attachment) => sanitizeOriginalName(attachment.originalFilename)),
+    );
+    for (const [index, attachment] of attachments.entries()) {
       if (attachment.checksumSha256 === null) {
         throw new Error('报告附件缺少校验值');
       }
+      const relativePath = `originals/${uniqueNames[index]}`;
       originals.push({
-        relativePath: `originals/${sanitizeOriginalName(attachment.originalFilename)}`,
+        relativePath,
         sha256: attachment.checksumSha256,
         byteSize: attachment.byteSize,
+      });
+      originalPayloads.push({
+        relativePath,
+        bytes: await this.readStoredFileBytes(attachment.storageReference),
       });
     }
 
@@ -356,6 +412,7 @@ export class BusinessSyncSourceService {
       versionNo: input.versionNo,
       body,
       originals,
+      originalPayloads,
       manifestChecksum: computeBusinessSyncManifestChecksum({
         resourceType: 'MAINTENANCE_REPORT',
         recordUuid: input.recordUuid,
@@ -366,25 +423,41 @@ export class BusinessSyncSourceService {
     };
   }
 
-  /** 实测存储文件字节流：SHA-256 与字节数（流式，不整读进内存） */
-  private async measureStoredFile(storageReference: string): Promise<{
-    sha256: string;
-    byteSize: number;
-  }> {
+  /**
+   * 读取存储原件的**字节**（实测）。
+   *
+   * 读不到即抛错：宁可本机不派发，也不送出一份"清单说有、字节其实没有"的包。
+   *
+   * 大小纪律：单件超过 `BUSINESS_SYNC_MAX_ORIGINAL_BYTES` 即中止读取并抛错
+   * （字节要整读进内存再送 multipart，没有上限就等于一个超大文件把 Worker 内存吃光）。
+   */
+  private async readStoredFileBytes(storageReference: string): Promise<Uint8Array> {
     const stream = await this.fileStorage.open(storageReference);
-    const hash = createHash('sha256');
+    const chunks: Buffer[] = [];
     let byteSize = 0;
     await new Promise<void>((resolve, reject) => {
       stream.on('data', (chunk: Buffer | string) => {
         const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-        hash.update(buffer);
         byteSize += buffer.byteLength;
+        if (byteSize > BUSINESS_SYNC_MAX_ORIGINAL_BYTES) {
+          stream.destroy();
+          reject(new Error(`原件超过单件上限（${BUSINESS_SYNC_MAX_ORIGINAL_BYTES} 字节），不派发`));
+          return;
+        }
+        chunks.push(buffer);
       });
       stream.on('error', reject);
       stream.on('end', () => resolve());
     });
-    return { sha256: hash.digest('hex'), byteSize };
+    return new Uint8Array(Buffer.concat(chunks));
   }
+}
+
+/** 原件字节 → SHA-256（十六进制小写） */
+function sha256Of(bytes: Uint8Array): string {
+  return createHash('sha256')
+    .update(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+    .digest('hex');
 }
 
 /** 原件文件名净化：只保留字母数字、点、下划线与连字符（与记录包导出口径一致） */
@@ -392,4 +465,35 @@ function sanitizeOriginalName(originalFilename: string | null): string {
   const base = (originalFilename ?? 'file.bin').split(/[\\/]/).pop() ?? 'file.bin';
   const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_');
   return cleaned.length > 0 ? cleaned.slice(0, 100) : 'file.bin';
+}
+
+/**
+ * 同名附件去重：同名时在扩展名前加序号（`report.pdf` → `report-2.pdf`）。
+ *
+ * 为什么必须唯一：清单条目与 multipart 部件都按相对路径寻址，
+ * 两条相同路径会让"清单 ↔ 字节"的逐项核对失去唯一对应
+ * （第二件的字节永不被校验，云端也会收到同名部件）。
+ */
+function assignUniqueOriginalNames(names: readonly string[]): string[] {
+  const used = new Set<string>();
+  const result: string[] = [];
+  for (const name of names) {
+    if (!used.has(name)) {
+      used.add(name);
+      result.push(name);
+      continue;
+    }
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const extension = dot > 0 ? name.slice(dot) : '';
+    let index = 2;
+    let candidate = `${stem}-${index}${extension}`;
+    while (used.has(candidate)) {
+      index += 1;
+      candidate = `${stem}-${index}${extension}`;
+    }
+    used.add(candidate);
+    result.push(candidate);
+  }
+  return result;
 }

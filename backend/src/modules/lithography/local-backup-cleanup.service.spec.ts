@@ -10,6 +10,7 @@
 // - 清理中断可辨认并可重试；
 // - 过期清理的到期／未到期分支（云副本不是清理门槛）。
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { mkdtemp, mkdir, rm, writeFile, readFile, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
@@ -144,6 +145,11 @@ describe('local backup cleanup service', () => {
       backupAssetRepository as never,
       { baseDir: backupRoot },
       asPinoLogger(createTestPinoLogger()),
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       options.withoutRunRepository ? undefined : (backupRunRepository as never),
     );
 

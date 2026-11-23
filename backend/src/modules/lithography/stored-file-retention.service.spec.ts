@@ -11,6 +11,7 @@
  * - 逐项结果如实（失败不假装已清理）。
  */
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { StoredFileRetentionService } from './stored-file-retention.service';
 
 const NOW = new Date('2026-11-23T00:00:00.000Z');
@@ -80,6 +81,11 @@ function buildService(
     installationRepository as never,
     { releaseTemporaryFiles } as never,
     { delete: remove } as never,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
   );
 
   return { service, storedFileRepository, releaseTemporaryFiles, remove, installationRepository };

@@ -1,6 +1,7 @@
 // src/usecases/stored-file/upload-stored-file.usecase.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { createHash } from 'node:crypto';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -143,6 +144,11 @@ const makeUsecase = (
     storedFileService as unknown as StoredFileService,
     queryService as unknown as StoredFileQueryService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     accountQueryService as unknown as AccountQueryService,
     transactionRunner,
     storage,

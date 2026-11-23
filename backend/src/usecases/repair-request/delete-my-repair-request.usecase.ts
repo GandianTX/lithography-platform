@@ -15,6 +15,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AsyncTaskRecordService } from '@src/modules/async-task-record/async-task-record.service';
 import { RepairRequestIntakeService } from '@src/modules/lithography/repair-request-intake.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -43,6 +44,7 @@ export class DeleteMyRepairRequestUsecase {
   constructor(
     private readonly repairRequestService: RepairRequestService,
     private readonly repairRequestIntakeService: RepairRequestIntakeService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly asyncTaskRecordService: AsyncTaskRecordService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -75,6 +77,15 @@ export class DeleteMyRepairRequestUsecase {
     command: DeleteMyRepairRequestCommand,
     transactionContext: PersistenceTransactionContext,
   ): Promise<DeleteMyRepairRequestResult> {
+    // 恢复期写入冻结：该公司数据区正在恢复时不得软删申请（写入会被整体替换掉）
+    const snapshot = await this.repairRequestService.findSnapshotById(
+      command.requestId,
+      transactionContext,
+    );
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: snapshot?.ownerOrganizationId ?? null,
+    });
+
     const outcome = await this.repairRequestService.softDeleteRequest(
       { requestId: command.requestId, customerAccountId: command.session.accountId },
       transactionContext,

@@ -1,5 +1,6 @@
 // src/usecases/admin-document-database/append-repair-request-revision.usecase.spec.ts
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import {
@@ -142,6 +143,11 @@ function createHarness(options: {
     maintenanceService as unknown as RepairRequestMaintenanceService,
     accountQueryService as unknown as AccountQueryService,
     trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     transactionRunner as unknown as TransactionRunner,
   );
 

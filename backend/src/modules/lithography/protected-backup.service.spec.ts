@@ -102,6 +102,7 @@ describe('protected backup service', () => {
       repoOf(overrides.documents ?? []) as never, // reference_document
       repoOf(overrides.storedFiles ?? []) as never, // stored_file
       repoOf([]) as never, // local_upload_task
+      repoOf([]) as never, // local_backup_run
       repoOf([]) as never, // repair_request_revision
       repoOf([]) as never, // maintenance_report_version
       repoOf([]) as never, // maintenance_report_attachment
@@ -110,6 +111,18 @@ describe('protected backup service', () => {
       repoOf([]) as never, // maintenance_report_step
       repoOf([]) as never, // maintenance_report_fault
       repoOf([]) as never, // reference_document_revision
+      repoOf([]) as never, // repair_request_intake
+      repoOf([]) as never, // intake_analysis_attempt
+      repoOf([]) as never, // repair_process_entry
+      repoOf([]) as never, // repair_request_diagnostic_step
+      repoOf([]) as never, // repair_request_fault_panel
+      repoOf([]) as never, // maintenance_report_review
+      repoOf([]) as never, // reference_document_case_detail
+      repoOf([]) as never, // ai_conversation
+      repoOf([]) as never, // ai_message
+      repoOf([]) as never, // ai_message_analysis
+      repoOf([]) as never, // ai_report
+      repoOf([]) as never, // engineer_response
       fileStorage as never,
       { keyHex: KEY_HEX, keyId: 'primary' },
       { baseDir: nodePath.join(__dirname, '.tmp-protected-backup-storage') },

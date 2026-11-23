@@ -1,5 +1,6 @@
 /// <reference types="jest" />
 import { composeBusinessSyncEntityLocalId } from '@core/local-runtime/policy/business-sync-source.policy';
+import { createHash } from 'node:crypto';
 import type { BusinessSyncReceiverResponse } from '@core/local-runtime/policy/business-sync-protocol.policy';
 
 import {
@@ -14,6 +15,10 @@ const RECORD_UUID = '11111111-2222-4333-8444-555555555555';
 const ORGANIZATION_ID = 9;
 const ACCOUNT_ID = 5;
 const CHECKSUM = 'a'.repeat(64);
+
+/** 原件真实字节与其实测校验值（清单与字节必须逐项一致） */
+const ORIGINAL_BYTES = new Uint8Array(Buffer.from('原件真实字节', 'utf8'));
+const ORIGINAL_SHA256 = createHash('sha256').update(Buffer.from(ORIGINAL_BYTES)).digest('hex');
 
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -109,7 +114,15 @@ function buildUsecase(
       recordUuid: RECORD_UUID,
       versionNo: 3,
       body: { schema_version: 2 },
-      originals: [{ relativePath: 'originals/a.pdf', sha256: 'b'.repeat(64), byteSize: 1024 }],
+      originals: [
+        {
+          relativePath: 'originals/a.pdf',
+          sha256: ORIGINAL_SHA256,
+          byteSize: ORIGINAL_BYTES.byteLength,
+        },
+      ],
+      // 原件字节：与清单逐项一致（真实链路里由本机实测读取）
+      originalPayloads: [{ relativePath: 'originals/a.pdf', bytes: ORIGINAL_BYTES }],
       manifestChecksum: overrides.payloadChecksum ?? CHECKSUM,
     }),
   };
@@ -283,6 +296,42 @@ describe('业务同步派发链（S2.2）', () => {
 
     expect(result.skipped).toBe(1);
     expect(cancelUploadTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('原件字节与清单对不上：失败关闭，不派发（只报清单不送字节＝只报账不交货）', async () => {
+    const { usecase, receiver } = buildUsecase({});
+    // 篡改"本机实测读到的字节"，使其与清单登记的校验值不一致
+    (
+      usecase as unknown as {
+        businessSyncSourceService: { readPayload: jest.Mock };
+      }
+    ).businessSyncSourceService.readPayload.mockResolvedValue({
+      resourceType: 'MAINTENANCE_REPORT',
+      recordId: 12,
+      recordUuid: RECORD_UUID,
+      versionNo: 3,
+      body: { schema_version: 2 },
+      originals: [
+        {
+          relativePath: 'originals/a.pdf',
+          sha256: ORIGINAL_SHA256,
+          byteSize: ORIGINAL_BYTES.byteLength,
+        },
+      ],
+      originalPayloads: [
+        {
+          relativePath: 'originals/a.pdf',
+          bytes: new Uint8Array(ORIGINAL_BYTES.byteLength).fill(0x41),
+        },
+      ],
+      manifestChecksum: CHECKSUM,
+    });
+
+    const result = await usecase.execute();
+
+    expect(result.rejected).toBe(1);
+    expect(result.succeeded).toBe(0);
+    expect(receiver?.requests ?? []).toHaveLength(0);
   });
 
   it('登记后内容被改动（摘要不一致）：失败关闭，不派发', async () => {

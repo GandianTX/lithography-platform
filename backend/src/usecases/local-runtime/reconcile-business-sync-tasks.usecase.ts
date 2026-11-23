@@ -6,6 +6,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { BusinessSyncSourceService } from '@src/modules/lithography/business-sync-source.service';
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import { LocalRuntimeQueryService } from '@src/modules/lithography/queries/local-runtime.query.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -37,6 +38,7 @@ export class ReconcileBusinessSyncTasksUsecase {
     private readonly businessSyncSourceService: BusinessSyncSourceService,
     private readonly localRuntimeService: LocalRuntimeService,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -65,6 +67,9 @@ export class ReconcileBusinessSyncTasksUsecase {
       cancelled: 0,
       rejections: {},
     };
+
+    // 恢复期冻结：该公司数据区正在恢复时整轮对账不执行（停写停传）
+    await this.localWriteHoldService.assertCompanyWritable({ organizationId });
 
     for (const resourceType of this.businessSyncSourceService.listSupportedResourceTypes()) {
       const candidates = await this.businessSyncSourceService.listCandidates(

@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { IntakeAnalysisStatus } from '@app-types/models/repair-request.types';
@@ -227,6 +228,11 @@ describe('CreateRepairRequestUsecase', () => {
       equipmentModelService as unknown as EquipmentModelService,
       accountQueryService as unknown as AccountQueryService,
       organizationQueryService as unknown as OrganizationQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       bindOriginal as unknown as BindRepairRequestOriginalUsecase,
       asyncTaskRecordService as unknown as AsyncTaskRecordService,
       deliverIntakeAnalysis as unknown as DeliverIntakeAnalysisUsecase,

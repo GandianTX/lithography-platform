@@ -32,6 +32,36 @@ describe('planLocalConflictResolution（保留本地载荷映射纯规则）', (
     });
   });
 
+  // 回归：真实冲突由业务同步回执链登记，快照形态是「信封 ＋ body」。
+  // 只认信封根会让真实数据取不到任何受控字段 ⇒ 保留本地必然被拒。
+  it('真实登记形态（信封 ＋ body）同样能映射出受控载荷', () => {
+    const plan = planLocalConflictResolution({
+      ...baseInput,
+      localSnapshot: JSON.stringify({
+        schema_version: 1,
+        resource_type: 'REPAIR_REQUEST',
+        record_uuid: 'record-uuid-1',
+        version_no: 4,
+        manifest_checksum: 'checksum-local',
+        body: {
+          schema_version: 1,
+          request_no: 'RQ-1',
+          content_md: '# 本地正文',
+          current_revision_no: 4,
+          handling_result: null,
+          handling_status: null,
+        },
+      }),
+    });
+
+    expect(plan.kind).toBe('apply');
+    if (plan.kind !== 'apply') {
+      return;
+    }
+    expect(plan.payload.contentMd).toBe('# 本地正文');
+    expect(plan.payload.expectedVersion).toBe(4);
+  });
+
   it('资源类型没有受控写入入口时显式拒绝', () => {
     const plan = planLocalConflictResolution({
       ...baseInput,

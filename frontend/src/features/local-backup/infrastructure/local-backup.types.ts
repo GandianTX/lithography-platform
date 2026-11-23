@@ -164,3 +164,49 @@ export type LocalBackupCleanupResult = {
   retained: number;
   items: LocalBackupCleanupItem[];
 };
+
+/**
+ * 云端备份包元数据（任务 09 S3／A09-07）。
+ *
+ * 只含受控字段：**不含密钥与存储引用**；下载动作只给字节，不触发恢复。
+ */
+export type LocalBackupCloudPackage = {
+  packageId: string;
+  organizationId: number;
+  backupId: string | null;
+  createdAt: string | null;
+  byteSize: number | null;
+  checksumSha256: string | null;
+};
+
+/** 云端备份包清单 */
+export type LocalBackupCloudPackageList = {
+  organizationId: number;
+  packages: LocalBackupCloudPackage[];
+};
+
+/**
+ * 恢复执行结果（管理员专属）。
+ *
+ * `status` 为终态结论：受理不等于恢复成功；
+ * `released=false` 表示设备仍处于停写停传（回滚未成功，保留保护副本）。
+ */
+export type LocalRestoreExecution = {
+  restoreId: string;
+  status: 'FAILED' | 'SUCCEEDED';
+  released: boolean;
+  holdRetained: boolean;
+  restoredRecords: number | null;
+  restoredOriginals: number | null;
+  restoredQueue: number | null;
+  reasonCode: string | null;
+  reason: string | null;
+};
+
+/** 云端包下载结果 */
+export type LocalBackupCloudPackageDownload = {
+  ok: boolean;
+  blob: Blob | null;
+  filename: string | null;
+  reason: 'download-failed' | 'not-found' | 'not-available' | null;
+};

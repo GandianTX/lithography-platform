@@ -1,13 +1,7 @@
-// src/usecases/reference-document/reference-document-effective-content.ts
-
-import type {
-  ReferenceDocumentContentSource,
-  ReferenceDocumentFrozenReportView,
-} from '@src/modules/lithography/lithography.types';
-import type { MaintenanceReportVersionSnapshot } from '@src/modules/lithography/maintenance-report.types';
+// src/modules/lithography/reference-document-effective-content.ts
 
 /**
- * 参考资料生效正文解析（任务 07）。
+ * 参考资料生效正文解析（任务 07；任务 09 R068 的本地视图对齐共用）。
  *
  * 读取口径：
  * - 存在管理修订（effectiveRevisionNo > 0）：读修订后正文，来源 CURRENT_REVISION；
@@ -15,7 +9,18 @@ import type { MaintenanceReportVersionSnapshot } from '@src/modules/lithography/
  * - 其余：读资料自身正文，来源 ORIGINAL（合法无附件资料的正文即此处）。
  *
  * 只读取白名单键，不透传原始 JSON；缺键按空值输出（历史快照 schema 差异不阻断读取）。
+ *
+ * 为什么放在 modules 层：管理修订（usecases 层）与「使用云端」的本地视图对齐
+ * （modules 层的来源域受控写入入口）都要解析同一个"生效正文"口径；
+ * modules 层不得反向依赖 usecases 层（架构规则
+ * `local-architecture/no-modules-to-usecases-imports`），故口径下沉到来源域。
  */
+
+import type {
+  ReferenceDocumentContentSource,
+  ReferenceDocumentFrozenReportView,
+} from './lithography.types';
+import type { MaintenanceReportVersionSnapshot } from './maintenance-report.types';
 
 function asText(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -67,7 +72,7 @@ export function parseFrozenReportVersion(
       return {
         alarmIndex: asNullableNumber(alarm.alarmIndex) ?? 0,
         alarmCode: asText(alarm.alarmCode),
-        alarmDescription: asNullableText(alarm.alarmDescription),
+        alarmDescription: asText(alarm.alarmDescription),
         phaseCode: asText(alarm.phaseCode),
         resetResult: asText(alarm.resetResult),
       };
@@ -78,10 +83,10 @@ export function parseFrozenReportVersion(
         stepNo: asNullableNumber(step.stepNo) ?? 0,
         stepCode: asText(step.stepCode),
         phaseCode: asText(step.phaseCode),
-        partName: asNullableText(step.partName),
+        partName: asText(step.partName),
         actionText: asText(step.actionText),
-        resultText: asNullableText(step.resultText),
-        newAlarmCode: asNullableText(step.newAlarmCode),
+        resultText: asText(step.resultText),
+        newAlarmCode: asText(step.newAlarmCode),
         isValidNewBranch: asNullableBoolean(step.isValidNewBranch),
       };
     }),
@@ -91,16 +96,19 @@ export function parseFrozenReportVersion(
       const fault = asRecord(item);
       return {
         branchKind: asText(fault.branchKind),
-        stepCode: asNullableText(fault.stepCode),
-        phaseCode: asNullableText(fault.phaseCode),
-        mainError: asNullableText(fault.mainError),
-        unitError: asNullableText(fault.unitError),
-        source: asNullableText(fault.source),
-        errorType: asNullableText(fault.errorType),
-        gpibStatus: asNullableText(fault.gpibStatus),
-        faultStatus: asNullableText(fault.faultStatus),
+        stepCode: asText(fault.stepCode),
+        phaseCode: asText(fault.phaseCode),
+        partName: asText(fault.partName),
+        actionText: asText(fault.actionText),
+        resultText: asText(fault.resultText),
+        mainError: asText(fault.mainError),
+        unitError: asText(fault.unitError),
+        source: asText(fault.source),
+        errorType: asText(fault.errorType),
+        gpibStatus: asText(fault.gpibStatus),
+        faultStatus: asText(fault.faultStatus),
         description: asText(fault.description),
-        action: asNullableText(fault.action),
+        action: asText(fault.action),
       };
     }),
     handlingResult: asNullableText(payload.handlingResult),
@@ -112,13 +120,13 @@ export function parseFrozenReportVersion(
     supplementaryNote: asNullableText(payload.supplementaryNote),
     ai: {
       usage: asText(ai.usage),
-      sourceType: asNullableText(ai.sourceType),
-      sourceId: asNullableText(ai.sourceId),
-      sourceVersion: asNullableText(ai.sourceVersion),
+      sourceType: asText(ai.sourceType),
+      sourceId: asText(ai.sourceId),
+      sourceVersion: asText(ai.sourceVersion),
       score: asNullableNumber(ai.score),
-      correctness: asNullableText(ai.correctness),
+      correctness: asText(ai.correctness),
       helpfulness: asNullableNumber(ai.helpfulness),
-      note: asNullableText(ai.note),
+      note: asText(ai.note),
     },
   };
 }
@@ -151,7 +159,9 @@ export function composeFrozenReportText(report: ReferenceDocumentFrozenReportVie
   }
   if (report.ai.usage) {
     lines.push('', `AI 使用：${report.ai.usage}`);
-    if (report.ai.note) lines.push(`AI 说明：${report.ai.note}`);
+    if (report.ai.note) {
+      lines.push(`AI 说明：${report.ai.note}`);
+    }
   }
   return lines.join('\n');
 }

@@ -3,6 +3,7 @@
 import { AccountInstallerModule } from '@src/modules/account/account-installer.module';
 import { LithographyModule } from '@src/modules/lithography/lithography.module';
 import { LocalRuntimeStorageModule } from '@src/infrastructure/file-storage/local-runtime-storage.module';
+import { LocalBackupCloudModule } from '@src/infrastructure/cloud/local-backup-cloud.module';
 import { Module } from '@nestjs/common';
 import { LoggerModule } from '@src/infrastructure/logger/logger.module';
 import { CompleteLocalUploadUsecase } from './complete-local-upload.usecase';
@@ -63,6 +64,8 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     LithographyModule,
     AccountInstallerModule,
     LocalRuntimeStorageModule,
+    // 云备份服务生产适配：未配置地址/凭据时不注册端口（调用方按「云服务未接入」失败关闭）
+    LocalBackupCloudModule,
     // 原始异常只进服务端日志（对外只给受控原因码）→ 用例需要 PinoLogger
     LoggerModule,
   ],

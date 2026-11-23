@@ -23,7 +23,9 @@ import { BackupRestoreAcceptanceService } from './backup-restore-acceptance.serv
 import { LocalRestoreExecutionService } from './local-restore-execution.service';
 import { LocalRestoreRecordWriterService } from './local-restore-record.writer';
 import { LOCAL_RESTORE_RECORD_WRITER } from '@usecases/common/ports/local-restore-record-writer.contract';
+import { SYNC_CONFLICT_LOCAL_VIEW_WRITER } from '@usecases/common/ports/sync-conflict-local-view-writer.contract';
 import { LocalWriteHoldService } from './local-write-hold.service';
+import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 import { LocalBackupPlanService } from './local-backup-plan.service';
 import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
 import { ManagementAuditEventEntity } from './entities/management-audit-event.entity';
@@ -102,6 +104,7 @@ import { ManagementAuditService } from './management-audit.service';
 import { OrganizationMembershipService } from './organization-membership.service';
 import { OrganizationService } from './organization.service';
 import { ReferenceDocumentCaseDetailService } from './reference-document-case-detail.service';
+import { ReferenceDocumentEffectiveContentService } from './reference-document-effective-content.service';
 import { ReferenceDocumentRevisionService } from './reference-document-revision.service';
 import { ReferenceDocumentService } from './reference-document.service';
 import { RepairProcessEntryService } from './repair-process-entry.service';
@@ -109,6 +112,7 @@ import { IntakeAnalysisService } from './intake-analysis.service';
 import { RepairRequestIntakeService } from './repair-request-intake.service';
 import { RepairRequestMaintenanceService } from './repair-request-maintenance.service';
 import { RepairRequestRevisionService } from './repair-request-revision.service';
+import { SyncConflictLocalViewWriterService } from './sync-conflict-local-view.writer';
 import { RepairRequestService } from './repair-request.service';
 import { StoredFileService } from './stored-file.service';
 
@@ -187,6 +191,9 @@ export const LITHOGRAPHY_ENTITIES = [
     RecordPackageExportService,
     LocalBackupPlanService,
     BackupRestoreAcceptanceService,
+    // 恢复期写入冻结守卫（任务 09 新计划第 04 项）：按"被写行所属公司数据区"判定，
+    // 与备份/恢复范围同列 ⇒ 恢复期间落到该数据区的写入一律被拒。
+    RestoreScopeWriteGuardService,
     // 写入/同步冻结闸门（任务 09 S5-2／S5-3）：恢复期冻结目标公司数据区的写入与同步
     LocalWriteHoldService,
     // 恢复执行编排（任务 09 S5-2／S5-3）：冻结 → 按清单恢复 → 核验 → 解除冻结
@@ -197,6 +204,13 @@ export const LITHOGRAPHY_ENTITIES = [
     {
       provide: LOCAL_RESTORE_RECORD_WRITER,
       useExisting: LocalRestoreRecordWriterService,
+    },
+    // 「使用云端」的本地视图对齐写入实现（任务 09 R068）：按端口令牌注册，
+    // 冲突编排在调用期查找（未注册＝失败关闭，不静默降级为"只改冲突事实"）
+    SyncConflictLocalViewWriterService,
+    {
+      provide: SYNC_CONFLICT_LOCAL_VIEW_WRITER,
+      useExisting: SyncConflictLocalViewWriterService,
     },
     ProtectedBackupService,
     BackupRestorePrecheckService,
@@ -217,6 +231,7 @@ export const LITHOGRAPHY_ENTITIES = [
     StoredFileService,
     StoredFileQueryService,
     ReferenceDocumentRevisionService,
+    ReferenceDocumentEffectiveContentService,
     ReferenceDocumentService,
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,
@@ -246,6 +261,7 @@ export const LITHOGRAPHY_ENTITIES = [
     LocalBackupPlanService,
     BackupRestoreAcceptanceService,
     LocalWriteHoldService,
+    RestoreScopeWriteGuardService,
     LocalRestoreExecutionService,
     ProtectedBackupService,
     BackupRestorePrecheckService,
@@ -279,6 +295,7 @@ export const LITHOGRAPHY_ENTITIES = [
     StoredFileService,
     StoredFileQueryService,
     ReferenceDocumentRevisionService,
+    ReferenceDocumentEffectiveContentService,
     ReferenceDocumentService,
     ReferenceDocumentCaseDetailService,
     EngineerResponseService,
@@ -302,6 +319,10 @@ export const LITHOGRAPHY_ENTITIES = [
     BusinessSyncReceiptService,
     ManagementAuditEventQueryService,
     ManagementAuditService,
+    // 「使用云端」的本地视图对齐写入（任务 09 R068）：按端口令牌导出，
+    // 冲突编排（本地运行域模块）按令牌注入；未注册即失败关闭
+    SyncConflictLocalViewWriterService,
+    SYNC_CONFLICT_LOCAL_VIEW_WRITER,
   ],
 })
 export class LithographyModule {}

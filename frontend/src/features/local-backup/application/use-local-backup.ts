@@ -2,22 +2,29 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
+import { saveBlobAsFile } from '@/shared/download';
 import { isForbiddenIngressError, isGraphQLIngressError } from '@/shared/graphql';
 import { translateNow } from '@/shared/i18n/runtime-translator';
 
 import type {
   LocalBackupCleanupMode,
   LocalBackupCleanupResult,
+  LocalBackupCloudPackageDownload,
+  LocalBackupCloudPackageList,
   LocalBackupRecordPage,
   LocalBackupSetting,
   LocalRestoreAcceptance,
   LocalRestoreCapability,
+  LocalRestoreExecution,
   LocalRestorePrecheckResult,
   StartManualLocalBackupResult,
 } from '../infrastructure/local-backup.types';
 import {
   acceptLocalRestore,
   cleanupLocalBackupPackages,
+  downloadLocalBackupCloudPackage,
+  executeLocalRestore,
+  fetchLocalBackupCloudPackages,
   fetchLocalBackupRecords,
   fetchLocalBackupSettings,
   fetchLocalRestoreCapability,
@@ -268,6 +275,101 @@ export function useRestorePrecheck() {
           ? error.userMessage
           : translateNow('local-backup.error.precheckFailed'),
       });
+    }
+  }, []);
+
+  return { state, trigger, reset: () => setState({ status: 'idle' }) };
+}
+
+/**
+ * 云端备份包清单（任务 09 S3／A09-07）。
+ *
+ * 云服务未接入时服务端按受控原因码失败关闭：前端如实呈现"不可用"，
+ * **不展示伪造的可用包**。
+ */
+export function useLocalBackupCloudPackages() {
+  const load = useCallback(() => fetchLocalBackupCloudPackages(), []);
+
+  return useAsyncResource<LocalBackupCloudPackageList>(
+    load,
+    translateNow('local-backup.error.cloudPackagesLoadFailed'),
+  );
+}
+
+/**
+ * 执行恢复（管理员专属）。
+ *
+ * **受理 ≠ 恢复**：本动作才真正写入数据；
+ * 失败或回滚未成功时服务端保持停写停传，结果必须如实呈现。
+ */
+export function useRestoreExecution() {
+  const [state, setState] = useState<ActionState<LocalRestoreExecution>>({
+    status: 'idle',
+  });
+
+  const trigger = useCallback(async (restoreId: string) => {
+    setState({ status: 'running' });
+
+    try {
+      const data = await executeLocalRestore(restoreId);
+      setState({ status: 'succeeded', data });
+      return data;
+    } catch (error) {
+      if (isForbiddenIngressError(error)) {
+        setState({ status: 'forbidden', message: forbiddenMessage() });
+        return null;
+      }
+      setState({
+        status: 'failed',
+        message: isGraphQLIngressError(error)
+          ? error.userMessage
+          : translateNow('local-backup.error.executeFailed'),
+      });
+      return null;
+    }
+  }, []);
+
+  return { state, trigger, reset: () => setState({ status: 'idle' }) };
+}
+
+/** 云端备份包授权下载（只给字节，不触发恢复） */
+export function useCloudPackageDownload() {
+  const [state, setState] = useState<ActionState<LocalBackupCloudPackageDownload>>({
+    status: 'idle',
+  });
+
+  const trigger = useCallback(async (packageId: string, organizationId?: number) => {
+    setState({ status: 'running' });
+
+    try {
+      const data = await downloadLocalBackupCloudPackage({ packageId, organizationId });
+      // 下载必须**真的落盘**：字节取回后交给浏览器保存，
+      // 保存失败即按失败处理——不能"取到字节"就报"已下载"（假成功）。
+      if (data.ok && data.blob !== null) {
+        try {
+          saveBlobAsFile(data.blob, data.filename ?? `backup-${packageId}.bin`);
+        } catch {
+          setState({
+            status: 'failed',
+            message: translateNow('local-backup.error.cloudDownloadFailed'),
+          });
+          return null;
+        }
+      } else if (!data.ok) {
+        setState({
+          status: 'failed',
+          message: translateNow('local-backup.error.cloudDownloadFailed'),
+        });
+        return null;
+      }
+      setState({ status: 'succeeded', data });
+      return data;
+    } catch {
+      setState({
+        status: 'failed',
+        message: translateNow('local-backup.error.cloudDownloadFailed'),
+      });
+      return null;
     }
   }, []);
 

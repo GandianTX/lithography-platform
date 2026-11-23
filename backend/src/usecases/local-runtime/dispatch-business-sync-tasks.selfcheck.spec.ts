@@ -13,6 +13,7 @@
  */
 
 import { composeBusinessSyncEntityLocalId } from '@core/local-runtime/policy/business-sync-source.policy';
+import { createHash } from 'node:crypto';
 
 import {
   BusinessSyncReceiverStub,
@@ -24,6 +25,10 @@ import { DispatchBusinessSyncTasksUsecase } from './dispatch-business-sync-tasks
 const INSTALLATION_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const ORGANIZATION_ID = 9;
 const CHECKSUM = 'a'.repeat(64);
+
+/** 原件真实字节与其实测校验值（清单与字节必须逐项一致） */
+const ORIGINAL_BYTES = new Uint8Array(Buffer.from('原件真实字节', 'utf8'));
+const ORIGINAL_SHA256 = createHash('sha256').update(Buffer.from(ORIGINAL_BYTES)).digest('hex');
 
 type SourceSpec = {
   resourceType: 'REPAIR_REQUEST' | 'REFERENCE_DOCUMENT';
@@ -108,7 +113,15 @@ function buildSelfCheck(sources: SourceSpec[], script: BusinessSyncReceiverStubS
       recordUuid: source.recordUuid,
       versionNo: source.version,
       body: { schema_version: 1, content_md: `内容-${source.recordUuid}` },
-      originals: [{ relativePath: 'originals/a.pdf', sha256: 'b'.repeat(64), byteSize: 1024 }],
+      originals: [
+        {
+          relativePath: 'originals/a.pdf',
+          sha256: ORIGINAL_SHA256,
+          byteSize: ORIGINAL_BYTES.byteLength,
+        },
+      ],
+      // 原件字节：与清单逐项一致（真实链路里由本机实测读取）
+      originalPayloads: [{ relativePath: 'originals/a.pdf', bytes: ORIGINAL_BYTES }],
       manifestChecksum: CHECKSUM,
     });
   }

@@ -39,6 +39,16 @@ const REASON_MESSAGE_KEYS: Readonly<Record<string, MessageKey>> = {
   LOCAL_RESTORE_TARGET_ORGANIZATION_MISMATCH:
     'local-backup.reason.restoreTargetOrganizationMismatch',
   LOCAL_RESTORE_LOCAL_PACKAGE_MISSING: 'local-backup.reason.restoreLocalPackageMissing',
+  // 恢复执行失败（受控原因码；原始异常只进服务端日志）
+  RESTORE_RUN_NOT_FOUND: 'local-backup.reason.restoreRunNotFound',
+  RESTORE_NOT_ACCEPTED: 'local-backup.reason.restoreNotAccepted',
+  RESTORE_CHECK_NOT_PASSED: 'local-backup.reason.restoreCheckNotPassed',
+  RESTORE_INSTALLATION_MISSING: 'local-backup.reason.restoreInstallationMissing',
+  RESTORE_VERIFY_FAILED: 'local-backup.reason.restoreVerifyFailed',
+  RESTORE_EXECUTION_FAILED: 'local-backup.reason.restoreExecutionFailed',
+  LOCAL_RESTORE_WRITE_FAILED: 'local-backup.reason.restoreWriteFailed',
+  LOCAL_RESTORE_ROLLBACK_FAILED: 'local-backup.reason.restoreRollbackFailed',
+  LOCAL_RESTORE_PROTECTION_UNREADABLE: 'local-backup.reason.restoreProtectionUnreadable',
   // 恢复执行能力（裁决在 core，adapter 只回受控码）
   RESTORE_EXECUTION_AVAILABLE: 'local-backup.reason.restoreExecutionAvailable',
   RESTORE_WRITE_GATE_UNAVAILABLE: 'local-backup.reason.restoreWriteGateUnavailable',

@@ -101,6 +101,8 @@ export class SyncConflictResolver {
     @currentUser() user: AuthenticatedSessionUser,
     @Args('conflictId', { type: () => String }) conflictId: string,
     @Args('action', { type: () => syncConflictActionEnum }) action: SyncConflictAction,
+    @Args('displayedCloudVersion', { type: () => Int, nullable: true })
+    displayedCloudVersion?: number,
   ): Promise<SyncConflictResolveResultDTO> {
     const session = this.toSession(user);
     // 保留本地是管理员动作：由管理员文档库域的受控修订入口执行（任务 09 R-03）；
@@ -116,6 +118,8 @@ export class SyncConflictResolver {
       session,
       conflictId,
       action,
+      // 客户端**实际看到**的云端版本：服务端据此复核"云端是否已变化"（R067）
+      displayedCloudVersion: displayedCloudVersion ?? null,
     });
     return toSyncConflictResolveResultDTO(result);
   }

@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import {
   DomainError,
@@ -71,6 +72,11 @@ describe('DeleteMyRepairRequestUsecase', () => {
     usecase = new DeleteMyRepairRequestUsecase(
       repairRequestService as unknown as RepairRequestService,
       intakeService as unknown as RepairRequestIntakeService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       asyncTaskRecordService as unknown as AsyncTaskRecordService,
       transactionRunner,
     );
@@ -104,7 +110,8 @@ describe('DeleteMyRepairRequestUsecase', () => {
     });
 
     it('旧工单无原稿关联（intakeId=null）时跳过首析取消', async () => {
-      repairRequestService.findSnapshotById.mockResolvedValueOnce({
+      // 冻结闸门与原稿取消都会读工单快照：此处用常驻 mock 覆盖（不再是一次性 mock）
+      repairRequestService.findSnapshotById.mockResolvedValue({
         id: 11,
         intakeId: null,
       });

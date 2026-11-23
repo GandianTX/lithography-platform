@@ -105,6 +105,16 @@ export class SyncConflictDTO {
   })
   sourceReadOnlyReason?: string | null;
 
+  @Field(() => Boolean, {
+    description: '是否允许采用云端视图（R066）：已结单允许只读采用；已删除／下架／冻结一律不允许',
+  })
+  canAdoptCloud?: boolean;
+
+  @Field(() => Boolean, {
+    description: '是否为只读采用（来源已结单）：只呈现云端视图，不写业务记录、不获得写入权',
+  })
+  adoptionReadOnly?: boolean;
+
   @Field(() => Int, { nullable: true, description: '确认处理人账号；待处理时为 null' })
   confirmedByAccountId?: number | null;
 
@@ -225,6 +235,8 @@ export function toSyncConflictDTO(view: SyncConflictSnapshot): SyncConflictDTO {
     sourceRecordId: view.sourceRecordId ?? null,
     sourceReadOnly: view.sourceReadOnly ?? false,
     sourceReadOnlyReason: view.sourceReadOnlyReason ?? null,
+    canAdoptCloud: view.canAdoptCloud ?? false,
+    adoptionReadOnly: view.adoptionReadOnly ?? false,
     confirmedByAccountId: view.confirmedByAccountId,
     confirmedAt: view.confirmedAt,
     createdAt: view.createdAt,

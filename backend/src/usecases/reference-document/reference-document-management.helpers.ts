@@ -8,7 +8,8 @@ import {
   composeFrozenReportText,
   parseFrozenReportVersion,
   readRevisionContentText,
-} from './reference-document-effective-content';
+} from '@src/modules/lithography/reference-document-effective-content';
+import { buildReferenceDocumentRevisionSnapshot } from '@src/modules/lithography/reference-document-revision-snapshot';
 import {
   readRevisionStructuredContent,
   structuredContentFromFrozenVersion,
@@ -116,13 +117,19 @@ export async function resolveEffectiveStructuredContent(
   return null;
 }
 
-/** 快照 JSON 的固定键集合（白名单；不写存储引用与账号敏感信息） */
+/**
+ * 快照 JSON 的固定键集合（白名单；不写存储引用与账号敏感信息）。
+ *
+ * 形态与「使用云端」的本地视图对齐共用同一构造器
+ * （`@src/modules/lithography/reference-document-revision-snapshot.ts`），
+ * 两处写的是同一张 `reference_document_revision` 表，形态必须一致。
+ */
 function toSnapshotRecord(
   detail: ReferenceDocumentDetailQueryResult,
   contentText: string | null,
 ): Record<string, unknown> {
-  return {
-    schema_version: detail.schemaVersion,
+  return buildReferenceDocumentRevisionSnapshot({
+    schemaVersion: detail.schemaVersion,
     title: detail.title,
     documentType: detail.documentType,
     description: detail.description,
@@ -131,7 +138,7 @@ function toSnapshotRecord(
     ownershipStatus: detail.ownershipStatus,
     createdByAccountId: detail.createdByAccountId,
     ownerOrganizationId: detail.ownerOrganizationId,
-  };
+  });
 }
 
 /**

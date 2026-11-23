@@ -21,6 +21,7 @@
  * 本服务只提供事实与执行，避免两处判定漂移。
  */
 
+import { LocalWriteHoldService } from './local-write-hold.service';
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
@@ -83,6 +84,7 @@ export class StoredFileRetentionService {
     private readonly storedFileService: StoredFileService,
     @Inject(STORED_FILE_STORAGE)
     private readonly storage: StoredFileStorage,
+    private readonly localWriteHoldService: LocalWriteHoldService,
   ) {}
 
   /**
@@ -259,6 +261,21 @@ export class StoredFileRetentionService {
         items: [],
       };
     }
+    // 恢复期写入冻结：该公司数据区正在恢复时不得回收原件字节（stored_file 属恢复范围表）
+    try {
+      await this.localWriteHoldService.assertCompanyWritable({ organizationId });
+    } catch {
+      return {
+        available: false,
+        reason: '目标公司数据区处于恢复期冻结，本次不清理暂存原件',
+        targetCount: 0,
+        cleaned: 0,
+        retained: 0,
+        failed: 0,
+        items: [],
+      };
+    }
+
     return this.cleanup({
       organizationId,
       now: input.now,

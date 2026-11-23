@@ -6,6 +6,7 @@
 // - 引用不可用时失败关闭，不落库、不静默改成「未使用」。
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   MaintenanceAiCorrectness,
@@ -154,6 +155,11 @@ const makeUsecase = (
     {
       resolveForAccount: jest.fn().mockResolvedValue({ organizationId: ORGANIZATION_ID }),
     } as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     { findModelById: jest.fn().mockResolvedValue(null) } as unknown as EquipmentModelQueryService,
     { lockForBinding: jest.fn(), bindIfTemporary: jest.fn(), unbindIfBoundTo: jest.fn() } as never,
     {

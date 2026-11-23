@@ -1,5 +1,6 @@
 // src/usecases/reference-document/update-reference-document-case.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
@@ -57,6 +58,7 @@ export class UpdateReferenceDocumentCaseUsecase {
     private readonly referenceDocumentService: ReferenceDocumentService,
     private readonly referenceDocumentCaseDetailService: ReferenceDocumentCaseDetailService,
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
     @Inject(TRANSACTION_RUNNER)
@@ -97,6 +99,11 @@ export class UpdateReferenceDocumentCaseUsecase {
       transactionContext,
       forUpdate: true,
       includeUnpublished: true,
+    });
+
+    // 恢复期写入冻结：资料归属公司数据区正在恢复时不得更正正式案例
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: current.ownerOrganizationId,
     });
 
     // 类型门禁（A-PR0 §4.1）：仅 FAULT_CASE 可走专属更正；判定复用保留类型

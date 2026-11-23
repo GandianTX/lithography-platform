@@ -104,7 +104,6 @@ describe('GetSyncConflictUsecase', () => {
       scopeResolver as unknown as LocalRuntimeScopeResolver,
       syncConflictQueryService as never,
       accessResolver,
-      sourceRecordQueryService as never,
     );
 
     return { usecase, syncConflictQueryService };

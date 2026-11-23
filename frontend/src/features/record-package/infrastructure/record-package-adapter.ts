@@ -4,6 +4,7 @@ import { executeGraphQL } from '@/shared/graphql';
 
 import type {
   RecordPackageCheckResult,
+  RecordPackageExportEntry,
   RecordPackageExportResult,
   RecordPackageProcessResult,
   RecordPackageResourceType,
@@ -22,12 +23,14 @@ const EXPORT_RECORD_PACKAGE = `
     $organizationId: Int
     $resourceType: RecordPackageResourceType!
     $recordIds: [Int!]!
+    $entries: [RecordPackageExportEntryInput!]
   ) {
     exportRecordPackage(
       targetPath: $targetPath
       organizationId: $organizationId
       resourceType: $resourceType
       recordIds: $recordIds
+      entries: $entries
     ) {
       packageId
       packagePath
@@ -123,13 +126,20 @@ const IMPORT_RECORD_PACKAGE = `
   }
 `;
 
-/** 导出记录包到本机目录（U盘挂载点） */
+/**
+ * 导出记录包到本机目录（U盘挂载点）。
+ *
+ * `entries` 是**混合导出**形态：逐条自带资源类型，一次导出可以同时包含
+ * 工单、报告与资料；提供时服务端以它为准（旧的单一类型形态保持可用）。
+ */
 export async function exportRecordPackage(input: {
   targetPath: string;
   /** 可省略：省略时由服务端按可信 session 范围取本公司（来源页导出入口） */
   organizationId?: number;
   resourceType: RecordPackageResourceType;
-  recordIds: number[];
+  /** 记录 ID：多值输入控件给出的是字符串，这里统一归一化为正整数 */
+  recordIds: Array<number | string>;
+  entries?: RecordPackageExportEntry[];
 }): Promise<RecordPackageExportResult> {
   const data = await executeGraphQL<
     { exportRecordPackage: RecordPackageExportResult },
@@ -138,10 +148,22 @@ export async function exportRecordPackage(input: {
       organizationId?: number;
       resourceType: RecordPackageResourceType;
       recordIds: number[];
+      entries?: RecordPackageExportEntry[] | null;
     }
-  >(EXPORT_RECORD_PACKAGE, input);
+  >(EXPORT_RECORD_PACKAGE, {
+    ...input,
+    recordIds: normalizeRecordIds(input.recordIds),
+    entries: input.entries ?? null,
+  });
 
   return data.exportRecordPackage;
+}
+
+/** 记录 ID 归一化：只保留正整数（GraphQL 变量为 `[Int!]!`，不接受字符串） */
+export function normalizeRecordIds(values: Array<number | string>): number[] {
+  return values
+    .map((value) => (typeof value === 'number' ? value : Number.parseInt(String(value).trim(), 10)))
+    .filter((value) => Number.isInteger(value) && value > 0);
 }
 
 /** 安全预检：只落检查事实，不写正式业务 */

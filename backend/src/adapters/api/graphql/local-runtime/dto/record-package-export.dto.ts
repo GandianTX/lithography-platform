@@ -1,6 +1,8 @@
 // src/adapters/api/graphql/local-runtime/dto/record-package-export.dto.ts
 
-import { Field, Int, ObjectType } from '@nestjs/graphql';
+import { Field, InputType, Int, ObjectType } from '@nestjs/graphql';
+import { recordPackageResourceTypeEnum } from '@core/local-runtime/policy/record-package-export.policy';
+import type { RecordPackageResourceType } from '@core/local-runtime/policy/record-package-manifest.policy';
 import type { RecordPackageExportResult } from '@src/modules/lithography/record-package-export.types';
 
 /** 逐条导出结论（单条失败不拖垮整包；全部失败则整包不产生） */
@@ -73,4 +75,19 @@ export function toRecordPackageExportDTO(
     itemFailed: result.itemFailed,
     items: result.items,
   };
+}
+
+/**
+ * 导出条目请求（**混合导出**）。
+ *
+ * 逐条自带资源类型 ⇒ 一次导出可以同时包含工单、报告与资料；
+ * 旧的"单一 resourceType ＋ recordIds"入参**保持不变**（旧客户端不受影响）。
+ */
+@InputType('RecordPackageExportEntryInput')
+export class RecordPackageExportEntryInputDTO {
+  @Field(() => recordPackageResourceTypeEnum, { description: '该条记录的资源类型' })
+  resourceType!: RecordPackageResourceType;
+
+  @Field(() => Int, { description: '来源业务记录 ID' })
+  recordId!: number;
 }

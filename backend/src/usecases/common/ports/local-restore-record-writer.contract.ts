@@ -8,30 +8,25 @@
  * "实现方不得绕过来源域的受控入口直接写业务表"）。
  * 因此由**来源域**注册实现，任务 09 在调用期按令牌查找，未注册即逐项失败关闭。
  */
+import {
+  BACKUP_RESTORE_TABLE_ORDER,
+  type BackupRestoreTable,
+} from '@core/local-runtime/policy/protected-backup.policy';
+
 export const LOCAL_RESTORE_RECORD_WRITER = Symbol('LOCAL_RESTORE_RECORD_WRITER');
 
 /**
  * 可恢复的业务表（受控枚举；与备份范围表一致，去掉本机运行事实表）。
  *
  * 顺序即**外键顺序**（先父后子）：清空时按其逆序，写回时按此序。
+ *
+ * 直接复用 core 的外键顺序常量（不再在本文件另抄一份）：
+ * 两份清单一旦漂移，备份侧取的行与恢复侧清的行就会不是同一批 ⇒ 静默丢数据。
  */
-export const LOCAL_RESTORE_RECORD_TABLES = [
-  'stored_file',
-  'repair_request',
-  'repair_request_revision',
-  'maintenance_report',
-  'maintenance_report_alarm',
-  'maintenance_report_step',
-  'maintenance_report_fault',
-  'maintenance_report_version',
-  'maintenance_report_attachment',
-  'maintenance_report_version_attachment',
-  'reference_document',
-  'reference_document_revision',
-  'local_upload_task',
-] as const;
+export const LOCAL_RESTORE_RECORD_TABLES: readonly BackupRestoreTable[] =
+  BACKUP_RESTORE_TABLE_ORDER;
 
-export type LocalRestoreRecordTable = (typeof LOCAL_RESTORE_RECORD_TABLES)[number];
+export type LocalRestoreRecordTable = BackupRestoreTable;
 
 /** 单表的待写回行 */
 export type LocalRestoreRecordTablePayload = {
@@ -43,6 +38,13 @@ export type LocalRestoreRecordTablePayload = {
 export type LocalRestoreRecordWriteRequest = {
   /** 恢复目标公司数据区 */
   organizationId: number;
+  /**
+   * 本机安装标识。
+   *
+   * 本机运行数据（`local_upload_task` 未传任务）按**本机 × 本公司**圈定，
+   * 必须知道安装标识才能与备份侧口径一致。
+   */
+  installationId: string;
   /** 恢复运行 ID（写入事实可追溯） */
   restoreId: string;
   /**
@@ -112,5 +114,10 @@ export interface LocalRestoreRecordWriter {
    *
    * 由**来源域**按真实事实给出（恢复编排不直接查业务表，避免口径漂移）。
    */
-  count(input: { organizationId: number; table: LocalRestoreRecordTable }): Promise<number>;
+  count(input: {
+    organizationId: number;
+    /** 本机安装标识（本机运行数据按安装 × 公司圈定时需要） */
+    installationId: string;
+    table: LocalRestoreRecordTable;
+  }): Promise<number>;
 }

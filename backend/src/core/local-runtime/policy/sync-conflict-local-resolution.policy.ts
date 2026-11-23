@@ -2,6 +2,11 @@
 
 import { SYNC_ERROR } from '@core/common/errors/domain-error';
 import { compareConflictVersionToRecord } from './sync-conflict-version.policy';
+import {
+  readConflictSnapshotBody,
+  SYNC_CONFLICT_SNAPSHOT_SCHEMA_VERSION,
+  type SyncConflictSnapshotBody,
+} from './sync-conflict-snapshot.policy';
 
 /**
  * 「保留本地」裁决的载荷映射与准入纯规则（任务 09 R-03，09 侧可独立部分）。
@@ -15,16 +20,18 @@ import { compareConflictVersionToRecord } from './sync-conflict-version.policy';
  *   不用"通用写库"绕过受控入口。
  *
  * 本地快照契约（冲突登记方写 `sync_conflict.local_snapshot` 时必须满足）：
- * `{ "schema_version": 1, "content_md"?, "handling_result"?, "closure_reason"?,
- *    "maintenance"?, "expected_maintenance_version"? }`
+ * 信封 `{ "schema_version": 1, ..., "body": {...} }`，受控字段在 `body` 里
+ * （`content_md`／`handling_result`／`closure_reason`／`maintenance`／
+ * `expected_maintenance_version`）；旧契约把受控字段直接挂在信封根上，
+ * 两种承载位置都认（见 `sync-conflict-snapshot.policy.ts`）。
  * - 快照里**没有**的字段一律不补、不猜（不拿当前库里的值冒充快照内容）；
  * - 快照里**类型非法**的已知字段必须被拒绝（不能当成"没有"——那会让保留本地丢掉正文）；
  * - 快照里**未知**的键一律忽略（不猜语义），但 schema_version 不符即拒绝；
  * - `process_entries`（旧过程文本）**不映射**：旧过程已只读，修订不得成为写旧过程的旁路。
  */
 
-/** 本地快照契约版本 */
-export const SYNC_CONFLICT_LOCAL_SNAPSHOT_SCHEMA_VERSION = 1;
+/** 本地快照契约版本（与冲突快照契约同版本，避免两份版本号漂移） */
+export const SYNC_CONFLICT_LOCAL_SNAPSHOT_SCHEMA_VERSION = SYNC_CONFLICT_SNAPSHOT_SCHEMA_VERSION;
 
 /** 已有受控版本写入入口的资源类型（任务 04 只交付了工单受控修订入口） */
 export const LOCAL_RESOLUTION_SUPPORTED_RESOURCE_TYPES = ['REPAIR_REQUEST'] as const;
@@ -104,28 +111,16 @@ function resolveExpectedVersion(localVersion: number | null): number | null {
 function readSnapshot(localSnapshot: string):
   | {
       kind: 'ok';
-      snapshot: Record<string, unknown>;
+      snapshot: SyncConflictSnapshotBody;
     }
   | { kind: 'reject'; code: string; message: string } {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(localSnapshot);
-  } catch {
-    return reject(
-      SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
-      '本地快照不是合法 JSON，无法映射为受控写入载荷',
-    );
+  const read = readConflictSnapshotBody(localSnapshot, {
+    invalidCode: SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+  });
+  if (read.kind === 'reject') {
+    return read;
   }
-  if (!isPlainObject(parsed)) {
-    return reject(SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID, '本地快照必须是 JSON 对象');
-  }
-  if (parsed['schema_version'] !== SYNC_CONFLICT_LOCAL_SNAPSHOT_SCHEMA_VERSION) {
-    return reject(
-      SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
-      '本地快照结构版本不符，不能猜测字段含义',
-    );
-  }
-  return { kind: 'ok', snapshot: parsed };
+  return { kind: 'ok', snapshot: read.body };
 }
 
 /**
@@ -133,7 +128,7 @@ function readSnapshot(localSnapshot: string):
  * - 缺省与 null 按"没有该字段"处理；
  * - **类型非法必须被发现**（当成"没有"会让保留本地丢掉正文）。
  */
-function readSnapshotFields(snapshot: Record<string, unknown>):
+function readSnapshotFields(snapshot: SyncConflictSnapshotBody):
   | {
       kind: 'ok';
       contentMd: OptionalStringRead;

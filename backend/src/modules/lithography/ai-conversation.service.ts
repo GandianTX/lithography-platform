@@ -26,6 +26,7 @@ import type {
 } from './ai-conversation.types';
 import { AiConversationEntity } from './entities/ai-conversation.entity';
 import { AiMessageAnalysisEntity } from './entities/ai-message-analysis.entity';
+import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 import { AiMessageEntity } from './entities/ai-message.entity';
 
 /**
@@ -52,6 +53,7 @@ export class AiConversationService {
     private readonly messageRepository: Repository<AiMessageEntity>,
     @InjectRepository(AiMessageAnalysisEntity)
     private readonly analysisRepository: Repository<AiMessageAnalysisEntity>,
+    private readonly restoreScopeWriteGuardService: RestoreScopeWriteGuardService,
   ) {}
 
   /** 新建会话：状态固定 ACTIVE、内容版本固定 1，均由本方法保证 */
@@ -59,6 +61,14 @@ export class AiConversationService {
     data: AiConversationInsertData,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<AiConversationSnapshot> {
+    // 恢复期冻结守卫：`ai_conversation` 已纳入受保护备份范围（会话按工单归属）。
+    if (data.requestId !== null && data.requestId !== undefined) {
+      await this.restoreScopeWriteGuardService.assertRequestScopeWritable(data.requestId);
+    } else {
+      await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+        data.ownerOrganizationId ?? null,
+      );
+    }
     const repository = this.getConversationRepository(transactionContext);
     try {
       const saved = await repository.save(
@@ -161,6 +171,8 @@ export class AiConversationService {
     data: AiQuestionMessageInsertData,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<AiQuestionMessageSnapshot> {
+    // 恢复期冻结守卫：`ai_message`／`ai_message_analysis` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertConversationScopeWritable(data.conversationId);
     const repository = this.getMessageRepository(transactionContext);
     try {
       const saved = await repository.save(
@@ -199,6 +211,8 @@ export class AiConversationService {
     data: AiMessageAnalysisInsertData,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<AiMessageAnalysisSnapshot> {
+    // 恢复期冻结守卫：`ai_message`／`ai_message_analysis` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertConversationScopeWritable(data.conversationId);
     const repository = this.getAnalysisRepository(transactionContext);
     try {
       const saved = await repository.save(
@@ -237,6 +251,8 @@ export class AiConversationService {
     data: AiAnswerMessageInsertData,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<AiQuestionMessageSnapshot> {
+    // 恢复期冻结守卫：`ai_message`／`ai_message_analysis` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertConversationScopeWritable(data.conversationId);
     const repository = this.getMessageRepository(transactionContext);
     try {
       const saved = await repository.save(
@@ -271,6 +287,8 @@ export class AiConversationService {
     data: AiMessageAnalysisCompleteData,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<boolean> {
+    // 恢复期冻结守卫：`ai_message_analysis` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertAnalysisScopeWritable(data.questionUuid);
     const repository = this.getAnalysisRepository(transactionContext);
     const result = await repository
       .createQueryBuilder()
@@ -295,6 +313,8 @@ export class AiConversationService {
     input: { readonly questionUuid: string; readonly reason: string },
     transactionContext?: PersistenceTransactionContext,
   ): Promise<boolean> {
+    // 恢复期冻结守卫：`ai_message_analysis` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertAnalysisScopeWritable(input.questionUuid);
     const repository = this.getAnalysisRepository(transactionContext);
     const result = await repository
       .createQueryBuilder()
@@ -316,6 +336,8 @@ export class AiConversationService {
     input: { readonly questionUuid: string },
     transactionContext?: PersistenceTransactionContext,
   ): Promise<boolean> {
+    // 恢复期冻结守卫：`ai_message_analysis` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertAnalysisScopeWritable(input.questionUuid);
     const repository = this.getAnalysisRepository(transactionContext);
     const result = await repository
       .createQueryBuilder()
@@ -427,6 +449,8 @@ export class AiConversationService {
     conversationId: number,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<number> {
+    // 恢复期冻结守卫：`ai_conversation` 已纳入受保护备份范围。
+    await this.restoreScopeWriteGuardService.assertConversationScopeWritable(conversationId);
     const repository = this.getConversationRepository(transactionContext);
     await repository.increment({ id: conversationId }, 'contentVersion', 1);
     const entity = await repository.findOne({

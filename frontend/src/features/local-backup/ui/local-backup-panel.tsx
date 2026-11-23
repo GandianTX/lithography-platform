@@ -17,18 +17,24 @@ import { StatusPill, type StatusPillTone } from '@/shared/ui/status-pill';
 import {
   type ActionState,
   useCleanupLocalBackupPackages,
+  useCloudPackageDownload,
+  useLocalBackupCloudPackages,
   useLocalBackupRecords,
   useLocalBackupSettings,
   useLocalRestoreCapability,
   useManualLocalBackup,
   useRestoreAcceptance,
+  useRestoreExecution,
   useRestorePrecheck,
 } from '../application/use-local-backup';
 import type {
   LocalBackupCleanupItem,
   LocalBackupCleanupResult,
+  LocalBackupCloudPackage,
+  LocalBackupCloudPackageDownload,
   LocalBackupRecord,
   LocalBackupSetting,
+  LocalRestoreExecution,
   LocalRestorePrecheckResult,
   StartManualLocalBackupResult,
 } from '../infrastructure/local-backup.types';
@@ -55,6 +61,9 @@ export function LocalBackupPanel({ canPrecheck }: { canPrecheck: boolean }) {
   const cleanup = useCleanupLocalBackupPackages();
   const precheck = useRestorePrecheck();
   const accept = useRestoreAcceptance();
+  const execute = useRestoreExecution();
+  const cloudPackages = useLocalBackupCloudPackages();
+  const cloudDownload = useCloudPackageDownload();
   // 恢复预检是服务端的一级管理员动作：前端只做**展示性**收敛，
   // 不作为授权依据（最终裁决仍在服务端）。角色由页面层从会话解析后传入
   // ——feature 之间不互相依赖（前端依赖规则）。
@@ -72,17 +81,32 @@ export function LocalBackupPanel({ canPrecheck }: { canPrecheck: boolean }) {
       <BackupRecordsSection
         canPrecheck={canPrecheck}
         state={records.state}
-        onPrecheck={(backupId) => void precheck.trigger(backupId)}
+        onPrecheck={(backupId) => {
+          // 换备份重新预检 ⇒ 上一轮的受理/执行结论作废
+          // （否则会给另一份备份显示"执行本次恢复"入口）
+          accept.reset();
+          execute.reset();
+          void precheck.trigger(backupId);
+        }}
         onReload={() => void records.reload()}
         setPage={setPage}
       />
 
       <RestoreSection capabilityState={capability.state} precheckState={precheck.state} />
 
+      <CloudPackagesSection
+        downloadState={cloudDownload.state}
+        state={cloudPackages.state}
+        onDownload={(packageId) => void cloudDownload.trigger(packageId)}
+      />
+
       {precheck.state.status === 'succeeded' ? (
         <PrecheckResultCard
           acceptState={accept.state}
+          canExecute={canPrecheck}
+          executeState={execute.state}
           onAccept={(restoreId) => void accept.trigger(restoreId)}
+          onExecute={(restoreId) => void execute.trigger(restoreId)}
           result={precheck.state.data}
         />
       ) : null}
@@ -645,11 +669,17 @@ function RestoreSection({
 function PrecheckResultCard({
   result,
   acceptState,
+  canExecute,
+  executeState,
   onAccept,
+  onExecute,
 }: {
   result: LocalRestorePrecheckResult;
   acceptState: ReturnType<typeof useRestoreAcceptance>['state'];
+  canExecute: boolean;
+  executeState: ActionState<LocalRestoreExecution>;
   onAccept: (restoreId: string) => void;
+  onExecute: (restoreId: string) => void;
 }) {
   const { t } = useI18n();
   const passed = result.outcome === 'PASSED';
@@ -742,7 +772,7 @@ function PrecheckResultCard({
           纪律：**受理 ≠ 恢复**——只记录「已被授权确认」的事实，不恢复数据、不冻结写入，
           不把受理显示成恢复成功；预检未通过时不提供受理入口。
         */}
-        {passed ? (
+        {passed && canExecute ? (
           <div className="page-stack">
             <SecondaryButton
               loading={acceptState.status === 'running'}
@@ -766,6 +796,231 @@ function PrecheckResultCard({
             ) : null}
           </div>
         ) : null}
+
+        {/*
+          执行恢复（管理员专属）。
+          纪律：**受理 ≠ 恢复**——只有真正执行后才给结论；
+          失败或回滚未成功时，设备仍停写停传，必须如实呈现，不得显示为「已恢复」。
+        */}
+        {passed && canExecute && acceptState.status === 'succeeded' ? (
+          <div className="page-stack">
+            <SecondaryButton
+              loading={executeState.status === 'running'}
+              onClick={() => onExecute(result.restoreId)}
+            >
+              {t('local-backup.restore.executeAction')}
+            </SecondaryButton>
+            {executeState.status === 'running' ? (
+              <LoadingState label={t('local-backup.restore.executing')} />
+            ) : null}
+            {executeState.status === 'succeeded' ? (
+              <RestoreExecutionResult result={executeState.data} />
+            ) : null}
+            {executeState.status === 'forbidden' ? (
+              <Alert showIcon title={executeState.message} type="error" />
+            ) : null}
+            {executeState.status === 'failed' ? (
+              <Alert showIcon title={executeState.message} type="error" />
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </DataCard>
+  );
+}
+
+/** 恢复执行结果：成功与否、冻结是否解除都如实呈现 */
+function RestoreExecutionResult({ result }: { result: LocalRestoreExecution }) {
+  const { t } = useI18n();
+  const succeeded = result.status === 'SUCCEEDED';
+  // 冻结是否解除**以服务端给的 released 为准**（不靠成功与否反推）
+  const released = result.released;
+
+  return (
+    <div className="page-stack">
+      <Alert
+        banner
+        showIcon
+        type={succeeded ? 'success' : 'error'}
+        title={
+          succeeded
+            ? t('local-backup.restore.executeSucceeded')
+            : t('local-backup.restore.executeFailedTitle')
+        }
+        description={
+          result.holdRetained
+            ? t('local-backup.restore.holdRetained')
+            : succeeded && released
+              ? t('local-backup.restore.released')
+              : succeeded
+                ? t('local-backup.restore.holdRetained')
+                : undefined
+        }
+      />
+      <Descriptions
+        bordered
+        column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
+        items={[
+          {
+            key: 'status',
+            label: t('local-backup.restore.executeTitle'),
+            children: <StatusPill tone={succeeded ? 'ok' : 'critical'}>{result.status}</StatusPill>,
+          },
+          {
+            key: 'restoredRecords',
+            label: t('local-backup.field.restoredRecords'),
+            children: result.restoredRecords ?? t('local-backup.value.dash'),
+          },
+          {
+            key: 'restoredOriginals',
+            label: t('local-backup.field.restoredOriginals'),
+            children: result.restoredOriginals ?? t('local-backup.value.dash'),
+          },
+          {
+            key: 'restoredQueue',
+            label: t('local-backup.field.restoredQueue'),
+            children: result.restoredQueue ?? t('local-backup.value.dash'),
+          },
+          {
+            key: 'reasonCode',
+            label: t('local-backup.field.errorMessage'),
+            children: result.reasonCode ? (
+              <ReasonText reason={result.reasonCode} />
+            ) : (
+              t('local-backup.value.dash')
+            ),
+          },
+          {
+            key: 'reason',
+            label: t('local-backup.restore.reasonTitle'),
+            children: result.reason ?? t('local-backup.value.dash'),
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+/**
+ * 云端备份包清单（任务 09 S3／A09-07）。
+ *
+ * 纪律：云服务未接入时如实呈现「不可用」，**不展示伪造的可用包**；
+ * 下载只给字节，不触发恢复（下载权限 ≠ 恢复权限）。
+ */
+function CloudPackagesSection({
+  state,
+  downloadState,
+  onDownload,
+}: {
+  state: ReturnType<typeof useLocalBackupCloudPackages>['state'];
+  downloadState: ActionState<LocalBackupCloudPackageDownload>;
+  onDownload: (packageId: string) => void;
+}) {
+  const { t } = useI18n();
+
+  if (state.status === 'loading') {
+    return (
+      <DataCard title={t('local-backup.cloud.title')}>
+        <LoadingState label={t('local-backup.loading')} />
+      </DataCard>
+    );
+  }
+
+  if (state.status === 'forbidden') {
+    return (
+      <DataCard title={t('local-backup.cloud.title')}>
+        <ErrorState description={state.message} title={t('local-backup.error.forbiddenTitle')} />
+      </DataCard>
+    );
+  }
+
+  if (state.status === 'failed') {
+    return (
+      <DataCard title={t('local-backup.cloud.title')}>
+        <div className="page-stack">
+          <ErrorState description={state.message} title={t('local-backup.cloud.loadFailed')} />
+          <Alert showIcon title={t('local-backup.cloud.unavailable')} type="warning" />
+        </div>
+      </DataCard>
+    );
+  }
+
+  if (state.data.packages.length === 0) {
+    return (
+      <DataCard title={t('local-backup.cloud.title')}>
+        <EmptyState title={t('local-backup.cloud.empty')} />
+      </DataCard>
+    );
+  }
+
+  const columns: ColumnsType<LocalBackupCloudPackage> = [
+    {
+      key: 'packageId',
+      title: t('local-backup.field.packageId'),
+      render: (_, item) => <code>{item.packageId}</code>,
+    },
+    {
+      key: 'createdAt',
+      title: t('local-backup.field.createdAt'),
+      render: (_, item) =>
+        item.createdAt ? formatDateTimeText(item.createdAt) : t('local-backup.value.dash'),
+    },
+    {
+      key: 'byteSize',
+      title: t('local-backup.field.byteSize'),
+      render: (_, item) =>
+        item.byteSize === null
+          ? t('local-backup.value.dash')
+          : `${item.byteSize} ${t('local-backup.units.bytes')}`,
+    },
+    {
+      key: 'checksum',
+      title: t('local-backup.field.checksum'),
+      render: (_, item) =>
+        item.checksumSha256 ? `${item.checksumSha256.slice(0, 12)}…` : t('local-backup.value.dash'),
+    },
+    {
+      key: 'actions',
+      title: t('local-backup.field.actions'),
+      render: (_, item) => (
+        <SecondaryButton
+          loading={downloadState.status === 'running'}
+          onClick={() => onDownload(item.packageId)}
+        >
+          {downloadState.status === 'running'
+            ? t('local-backup.cloud.downloading')
+            : t('local-backup.cloud.downloadAction')}
+        </SecondaryButton>
+      ),
+    },
+  ];
+
+  return (
+    <DataCard title={t('local-backup.cloud.title')}>
+      <div className="page-stack">
+        {downloadState.status === 'succeeded' && downloadState.data.ok ? (
+          <Alert showIcon title={t('local-backup.cloud.downloaded')} type="success" />
+        ) : null}
+        {downloadState.status === 'succeeded' && !downloadState.data.ok ? (
+          <Alert
+            description={downloadState.data.reason ?? undefined}
+            showIcon
+            title={t('local-backup.cloud.downloadFailed')}
+            type="error"
+          />
+        ) : null}
+        {downloadState.status === 'failed' ? (
+          <Alert showIcon title={downloadState.message} type="error" />
+        ) : null}
+        <Table<LocalBackupCloudPackage>
+          columns={columns}
+          dataSource={state.data.packages}
+          locale={{ emptyText: t('local-backup.cloud.empty') }}
+          pagination={false}
+          rowKey="packageId"
+          scroll={{ x: 720 }}
+          size="small"
+        />
       </div>
     </DataCard>
   );

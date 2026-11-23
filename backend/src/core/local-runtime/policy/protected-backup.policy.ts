@@ -11,14 +11,24 @@ export const BACKUP_MANIFEST_SCHEMA_VERSION = 1;
  * 纳入备份一致性快照的表（按公司圈定的恢复影响范围；逐表计数＋最新更新时间）。
  *
  * 范围口径（任务 09 S2-4「受保护备份包含业务、草稿、原件、版本与未传任务等必要范围」）：
- * - 业务根表：`repair_request`／`maintenance_report`／`reference_document`；
+ * - 业务根表：`repair_request`／`maintenance_report`／`reference_document`／
+ *   `repair_request_intake`／`stored_file`；
  * - **版本与内容子表**：报告冻结版本、报告附件、版本附件、报告报警／步骤／故障分支、
- *   工单管理修订、资料生效修订——只恢复根表而不恢复这些子表，会写出
+ *   报告审核、工单管理修订、工单内部维修过程、工单排查步骤／故障面板、AI 会话与消息、
+ *   AI 报告、工程师回复、资料生效修订——只恢复根表而不恢复这些子表，会写出
  *   「`current_version_no >= 1` 却没有对应版本行」这种**数据不自洽**的库；
  * - **原件元数据**：`stored_file`（字节随包进 `files/`，见 `originals`）；
  * - 本机运行数据：`local_upload_task`（未传任务）、`local_backup_run`（运行事实）。
+ *
+ * **外键闭包（任务 09 新计划第 03 项 / G21）**：
+ * 恢复采用"先按公司数据区清空、再按清单写回"的整体替换策略，
+ * 因此**凡是能引用范围表父行的表都必须同在范围内**——
+ * 否则清空父行时被范围外的残留子行挡住（真实库上
+ * `Cannot delete or update a parent row: a foreign key constraint fails`），
+ * 或写回时子行悬空。当前闭包共 **26 张表**（第一层 9 张 ＋ 第二层 3 张 ＋ 既有 14 张）。
  */
 export const BACKUP_SCOPE_TABLES = [
+  // —— 既有 14 张（本轮口径不变）——
   'repair_request',
   'repair_request_revision',
   'maintenance_report',
@@ -33,32 +43,116 @@ export const BACKUP_SCOPE_TABLES = [
   'stored_file',
   'local_upload_task',
   'local_backup_run',
+  // —— G21 新增第一层子表（直接引用范围表父行）——
+  'maintenance_report_review',
+  'reference_document_case_detail',
+  'repair_request_intake',
+  'repair_process_entry',
+  'repair_request_diagnostic_step',
+  'repair_request_fault_panel',
+  'ai_conversation',
+  'ai_message',
+  'ai_report',
+  'engineer_response',
+  // —— G21 新增第二层子表（引用第一层子表，清空第一层时同样会挡路）——
+  'ai_message_analysis',
+  'intake_analysis_attempt',
 ] as const;
 
 export type BackupScopeTable = (typeof BACKUP_SCOPE_TABLES)[number];
 /**
  * 备份/恢复的**逐表口径**（公司范围过滤方式、时间列）。
  *
- * 备份侧据此圈定"本公司数据区"，恢复侧据此写回同一批行——两侧共用一份口径，
- * 避免"备份按公司取、恢复按全表写"这类漂移。
+ * 备份侧据此圈定"本公司数据区"，恢复侧据此写回同一批行——两侧共用一份口径
+ * （`buildOrganizationScopePredicate`），避免"备份按公司取、恢复按全表写"这类漂移。
  *
  * - `OWNER_ORGANIZATION`：表自带 `owner_organization_id`；
+ * - `SERVICE_ORGANIZATION`：表自带 `service_organization_id`
+ *   （`repair_request_intake` 的服务公司，与 `repair_request.owner_organization_id` 同口径）；
  * - `PARENT_OWNER_ORGANIZATION`：子表没有公司列，按**父表**的公司归属圈定
- *   （报告版本／附件／报警／步骤／故障分支、工单修订、资料修订）；
- * - `ALL_DEVICE`：本机运行数据，无公司列，按设备全量纳入（未传任务）。
+ *   （报告版本／附件／报警／步骤／故障分支、报告审核、工单修订、资料修订、AI 消息等）；
+ * - `PARENT_OR_OWNER_ORGANIZATION`：父表优先；**父键为空**（尚未挂接工单）时
+ *   回落到自身 `owner_organization_id`（`ai_conversation`）；
+ * - `SERVICE_OR_PARENT_ORGANIZATION`：自身服务公司优先，**并**纳入"引用了本公司工单"
+ *   的行（`repair_request_intake`）——后者是清空工单行时唯一可能的阻塞者，
+ *   漏掉它就会在真实库上撞 `ER_ROW_IS_REFERENCED_2`；
+ * - `INSTALLATION_COMPANY`：本机运行数据，按**本机安装 × 本公司**圈定
+ *   （未传任务、备份运行事实）——**不再按设备全量**，避免一台设备上
+ *   多个公司的运行事实被整表替换。
  */
 export type BackupTableDescriptor = {
-  readonly scope: 'OWNER_ORGANIZATION' | 'PARENT_OWNER_ORGANIZATION' | 'ALL_DEVICE';
-  /** `PARENT_OWNER_ORGANIZATION` 时的父表 */
+  readonly scope:
+    | 'OWNER_ORGANIZATION'
+    | 'SERVICE_ORGANIZATION'
+    | 'PARENT_OWNER_ORGANIZATION'
+    | 'PARENT_OR_OWNER_ORGANIZATION'
+    | 'SERVICE_OR_PARENT_ORGANIZATION'
+    | 'INSTALLATION_COMPANY';
+  /** `PARENT_*` 时的父表 */
   readonly parentTable?: BackupScopeTable;
   /** 父表外键列（数据库列名） */
   readonly parentColumn?: string;
   /** 时间列（数据库列名）；无时间列的表取 null */
   readonly timeColumn: string | null;
+  /**
+   * 稳定排序列（数据库列名；默认主键）。
+   *
+   * 必须显式声明：**并非所有表都有 `id` 列**——
+   * `stored_file` 的主键是 `file_id`，`maintenance_report_version_attachment` 是
+   * **复合主键**（`version_id` + `attachment_id`），`reference_document_case_detail`
+   * 的主键是 `document_id`，`ai_message_analysis` 的主键是 `question_uuid`。
+   * 写死 `id` 会让受保护包生成在真实库上直接失败（`Unknown column 't.id' in 'order clause'`）。
+   */
+  readonly orderColumns?: readonly string[];
+  /**
+   * **抑制事实**（删除／下架）：恢复写回时，这些事实以**恢复当下**为准——
+   * 备份之后才被删除／下架的内容，**不得被旧包复活**（R086「不复活删除下架」）。
+   *
+   * 语义＝"当前事实优先"：恢复把范围整体替换成备份时刻的内容，
+   * 但**抑制事实以恢复当下为准**——删掉的仍删掉、下架的仍下架。
+   */
+  readonly suppression?: BackupTableSuppression;
+};
+
+/**
+ * 逐表的抑制事实声明。
+ *
+ * `indicators`：判定"该行当前已被抑制（删除／下架）"的方式（**属性名**，驼峰）。
+ *
+ * 命中抑制的行，恢复写回后按**恢复当下的完整行事实**还原
+ * （而不是只还原某几个列）——因为删除事实是**复合事实**：
+ * 工单的库级 CHECK `chk_repair_request_deletion_consistency` 要求
+ * `deprecated = 1 AND deleted_at IS NOT NULL AND is_accepted = 0`，
+ * 且 `chk_repair_request_acceptance_consistency` 要求 `is_accepted = 0`
+ * 时接单人与接单时间同时为空。只还原部分列会撞库级 CHECK。
+ */
+export type BackupTableSuppression = {
+  readonly indicators: readonly BackupSuppressionIndicator[];
+};
+
+export type BackupSuppressionIndicator = {
+  /** 实体属性名（驼峰） */
+  readonly column: string;
+  /** 时间戳类：非空即视为被抑制 */
+  readonly notNull?: boolean;
+  /** 0/1 标志类：非 0 即视为被抑制 */
+  readonly notZero?: boolean;
+  /** 枚举类：等于该值即视为被抑制（下架） */
+  readonly equals?: string;
 };
 
 export const BACKUP_TABLE_DESCRIPTORS: Readonly<Record<BackupScopeTable, BackupTableDescriptor>> = {
-  repair_request: { scope: 'OWNER_ORGANIZATION', timeColumn: 'created_at' },
+  repair_request: {
+    scope: 'OWNER_ORGANIZATION',
+    timeColumn: 'created_at',
+    // 抑制事实：删除标记（恢复写回时以当前事实为准 ⇒ 不复活已删工单）
+    suppression: {
+      indicators: [
+        { column: 'deletedAt', notNull: true },
+        { column: 'deprecated', notZero: true },
+      ],
+    },
+  },
   repair_request_revision: {
     scope: 'PARENT_OWNER_ORGANIZATION',
     parentTable: 'repair_request',
@@ -83,6 +177,8 @@ export const BACKUP_TABLE_DESCRIPTORS: Readonly<Record<BackupScopeTable, BackupT
     parentTable: 'maintenance_report',
     parentColumn: 'report_id',
     timeColumn: null,
+    // 复合主键（无 id 列）
+    orderColumns: ['version_id', 'attachment_id'],
   },
   maintenance_report_alarm: {
     scope: 'PARENT_OWNER_ORGANIZATION',
@@ -102,16 +198,112 @@ export const BACKUP_TABLE_DESCRIPTORS: Readonly<Record<BackupScopeTable, BackupT
     parentColumn: 'report_id',
     timeColumn: 'created_at',
   },
-  reference_document: { scope: 'OWNER_ORGANIZATION', timeColumn: 'updated_at' },
+  maintenance_report_review: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report_version',
+    parentColumn: 'version_id',
+    timeColumn: 'reviewed_at',
+  },
+  reference_document: {
+    scope: 'OWNER_ORGANIZATION',
+    timeColumn: 'updated_at',
+    // 抑制事实：删除标记 ＋ 下架（publication_status = OFFLINE）
+    suppression: {
+      indicators: [
+        { column: 'deletedAt', notNull: true },
+        { column: 'deprecated', notZero: true },
+        { column: 'publicationStatus', equals: 'OFFLINE' },
+      ],
+    },
+  },
   reference_document_revision: {
     scope: 'PARENT_OWNER_ORGANIZATION',
     parentTable: 'reference_document',
     parentColumn: 'document_id',
     timeColumn: 'created_at',
   },
-  stored_file: { scope: 'OWNER_ORGANIZATION', timeColumn: 'created_at' },
-  local_upload_task: { scope: 'ALL_DEVICE', timeColumn: 'updated_at' },
-  local_backup_run: { scope: 'ALL_DEVICE', timeColumn: null },
+  reference_document_case_detail: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'reference_document',
+    parentColumn: 'document_id',
+    timeColumn: 'updated_at',
+    // 主键是 document_id（无 id 列）
+    orderColumns: ['document_id'],
+  },
+  stored_file: {
+    scope: 'OWNER_ORGANIZATION',
+    timeColumn: 'created_at',
+    // 主键是 file_id（无 id 列）
+    orderColumns: ['file_id'],
+  },
+  repair_request_intake: {
+    scope: 'SERVICE_OR_PARENT_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'converted_request_id',
+    timeColumn: 'created_at',
+    // 抑制事实：原稿删除标记
+    suppression: {
+      indicators: [{ column: 'deletedAt', notNull: true }],
+    },
+  },
+  repair_process_entry: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'created_at',
+  },
+  repair_request_diagnostic_step: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'updated_at',
+  },
+  repair_request_fault_panel: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'updated_at',
+  },
+  ai_conversation: {
+    scope: 'PARENT_OR_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'created_at',
+  },
+  ai_message: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'ai_conversation',
+    parentColumn: 'conversation_id',
+    timeColumn: 'created_at',
+  },
+  ai_message_analysis: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'ai_conversation',
+    parentColumn: 'conversation_id',
+    timeColumn: null,
+    // 主键是 question_uuid（无 id 列）
+    orderColumns: ['question_uuid'],
+  },
+  ai_report: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'created_at',
+  },
+  engineer_response: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'created_at',
+  },
+  intake_analysis_attempt: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request_intake',
+    parentColumn: 'intake_id',
+    timeColumn: 'started_at',
+  },
+  local_upload_task: { scope: 'INSTALLATION_COMPANY', timeColumn: 'updated_at' },
+  local_backup_run: { scope: 'INSTALLATION_COMPANY', timeColumn: 'started_at' },
 };
 
 /**
@@ -119,22 +311,121 @@ export const BACKUP_TABLE_DESCRIPTORS: Readonly<Record<BackupScopeTable, BackupT
  *
  * 违反顺序会在写回时触发真实外键约束失败（`RESTORE_EXECUTION_FAILED`），
  * 留下"写了一半"的库——因此顺序是**硬约束**，不是建议。
+ *
+ * **删除时按其逆序**（先子后父）：清空父行前必须先清空引用它的子行。
+ *
+ * `local_backup_run` **不在**本列表：它是本机运行事实（备份运行记录），
+ * 只进范围快照、不进数据载荷、也不参与恢复写回
+ * （避免"恢复业务数据"把本机运行历史一起回滚）。
  */
-export const BACKUP_RESTORE_TABLE_ORDER: readonly BackupScopeTable[] = [
+export const BACKUP_RESTORE_TABLE_ORDER = [
   'stored_file',
+  'repair_request_intake',
   'repair_request',
   'repair_request_revision',
+  'intake_analysis_attempt',
   'maintenance_report',
-  'maintenance_report_alarm',
-  'maintenance_report_step',
-  'maintenance_report_fault',
   'maintenance_report_version',
   'maintenance_report_attachment',
   'maintenance_report_version_attachment',
+  'maintenance_report_alarm',
+  'maintenance_report_step',
+  'maintenance_report_fault',
+  'maintenance_report_review',
   'reference_document',
   'reference_document_revision',
+  'reference_document_case_detail',
+  'ai_conversation',
+  'ai_message',
+  'ai_message_analysis',
+  'ai_report',
+  'engineer_response',
+  'repair_process_entry',
+  'repair_request_diagnostic_step',
+  'repair_request_fault_panel',
   'local_upload_task',
-];
+] as const satisfies readonly BackupScopeTable[];
+
+export type BackupRestoreTable = (typeof BACKUP_RESTORE_TABLE_ORDER)[number];
+
+/**
+ * 公司范围谓词的**唯一实现**（备份侧与恢复侧共用）。
+ *
+ * 为什么必须共用：备份"按公司取"、恢复"按公司清"若各写一份，
+ * 就会出现"备份取到的行与恢复清掉的行不是同一批"——
+ * 轻则恢复出不自洽的库，重则静默丢数据。
+ *
+ * @param table 目标表
+ * @param alias 表别名；**DELETE 语句没有别名**（`DELETE FROM x WHERE t.col` 里的 `t.` 不是别名），
+ *               清库路径必须传 `null`。
+ * @returns SQL 布尔表达式；绑定参数固定为 `:organizationId` 与 `:installationId`。
+ */
+export function buildOrganizationScopePredicate(
+  table: BackupScopeTable,
+  alias: string | null = null,
+): string {
+  return scopePredicate(table, alias);
+}
+
+function scopePredicate(table: BackupScopeTable, alias: string | null): string {
+  const descriptor = BACKUP_TABLE_DESCRIPTORS[table];
+  const prefix = alias === null ? '' : `${alias}.`;
+  switch (descriptor.scope) {
+    case 'OWNER_ORGANIZATION':
+      return `${prefix}owner_organization_id = :organizationId`;
+    case 'SERVICE_ORGANIZATION':
+      return `${prefix}service_organization_id = :organizationId`;
+    case 'SERVICE_OR_PARENT_ORGANIZATION': {
+      const { parentTable, parentColumn } = requireParent(table, descriptor);
+      // 自身服务公司 ∪ 引用了本公司工单的行：
+      // 后者是清空工单行时唯一可能的阻塞者（`converted_request_id` 外键），
+      // 必须与工单同进同出，否则真实库上直接 `ER_ROW_IS_REFERENCED_2`。
+      return (
+        `(${prefix}service_organization_id = :organizationId` +
+        ` OR ${prefix}${parentColumn} IN (SELECT p.id FROM ${parentTable} p` +
+        ` WHERE ${scopePredicate(parentTable, 'p')}))`
+      );
+    }
+    case 'INSTALLATION_COMPANY':
+      return (
+        `${prefix}installation_id = :installationId` +
+        ` AND ${prefix}organization_id = :organizationId`
+      );
+    case 'PARENT_OR_OWNER_ORGANIZATION': {
+      const { parentTable, parentColumn } = requireParent(table, descriptor);
+      // 父表优先；父键为空（尚未挂接工单）时回落到自身归属列——
+      // 两个分支互斥（父键为空 vs 非空），同一行不会同时落进两个公司的范围。
+      return (
+        `(${prefix}${parentColumn} IN (SELECT p.id FROM ${parentTable} p` +
+        ` WHERE ${scopePredicate(parentTable, 'p')}))` +
+        ` OR (${prefix}${parentColumn} IS NULL AND ${prefix}owner_organization_id = :organizationId)`
+      );
+    }
+    case 'PARENT_OWNER_ORGANIZATION': {
+      const { parentTable, parentColumn } = requireParent(table, descriptor);
+      return (
+        `${prefix}${parentColumn} IN (SELECT p.id FROM ${parentTable} p` +
+        ` WHERE ${scopePredicate(parentTable, 'p')})`
+      );
+    }
+    default: {
+      const exhaustive: never = descriptor.scope;
+      throw new Error(`未知的备份范围口径：${String(exhaustive)}`);
+    }
+  }
+}
+
+function requireParent(
+  table: BackupScopeTable,
+  descriptor: BackupTableDescriptor,
+): { parentTable: BackupScopeTable; parentColumn: string } {
+  const parentTable = descriptor.parentTable;
+  const parentColumn = descriptor.parentColumn;
+  if (parentTable === undefined || parentColumn === undefined) {
+    throw new Error(`备份范围口径缺少父表定义：${table}`);
+  }
+  return { parentTable, parentColumn };
+}
 
 export type BackupScopeEntry = {
   table: BackupScopeTable;

@@ -24,6 +24,14 @@ export const restoreCheckFindingCodeValues = {
   TARGET_ORGANIZATION_MISMATCH: 'TARGET_ORGANIZATION_MISMATCH',
   LOCAL_PACKAGE_MISSING: 'LOCAL_PACKAGE_MISSING',
   PROTECTION_COPY_FAILED: 'PROTECTION_COPY_FAILED',
+  /**
+   * 清单登记了原件，但包内没有对应字节文件。
+   *
+   * 备份生成时读不出字节的原件会被原样登记进清单（"原件引用清单"），
+   * 但物理文件并不在包内 ⇒ 恢复执行阶段按清单还原必然失败。
+   * 预检必须在这里就把这件事说清楚，而不是让执行走到一半才炸。
+   */
+  ORIGINAL_BYTES_MISSING: 'ORIGINAL_BYTES_MISSING',
 } as const;
 
 export type RestoreCheckFindingCode =

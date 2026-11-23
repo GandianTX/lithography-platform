@@ -15,6 +15,7 @@
  * 不连接 MySQL / Redis / RAG。
  */
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ExecutionContext, INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -241,6 +242,14 @@ describe('PR#20 RQ 定向验收：GraphQL Resolver + 真实业务用例（仓储
         {
           provide: TrustedOrganizationContextQueryService,
           useValue: { resolveForAccount },
+        },
+        {
+          provide: LocalWriteHoldService,
+          useValue: {
+            assertBusinessWritable: () => Promise.resolve(),
+            assertCompanyWritable: () => Promise.resolve(),
+            assertWritable: () => Promise.resolve(),
+          },
         },
         {
           provide: TRANSACTION_RUNNER,

@@ -42,21 +42,34 @@ const KNOWN_PURPOSES: readonly string[] = Object.values(LOCAL_CREDENTIAL_PURPOSE
 /**
  * 解析云端签名声明里的用途。
  *
- * @param signedClaims 授权行登记的签名声明（JSON 原文）
+ * @param signedClaims 授权行登记的签名声明。
+ *   **两种载体都要认**（此前只认 JSON 文本，与写入侧口径矛盾）：
+ *   - **对象**（生产写入形态：`validateAuthorizationRenewalInput` 要求"签名凭据必须是对象"，
+ *     `local_account_authorization.signed_claims` 是 `json` 列，读回即对象）；
+ *   - **JSON 文本**（历史行／其他写入方直接登记原文）。
+ *   两者都解析不出受控用途时，一律按**不可核验**处理（不猜、不放宽）。
  */
-export function resolveCredentialPurposes(
-  signedClaims: string | null | undefined,
-): LocalCredentialPurposeVerdict {
-  if (typeof signedClaims !== 'string' || signedClaims.trim().length === 0) {
+export function resolveCredentialPurposes(signedClaims: unknown): LocalCredentialPurposeVerdict {
+  if (signedClaims === null || signedClaims === undefined) {
     return { purposes: [], verifiable: false };
   }
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(signedClaims) as unknown;
-  } catch {
+  if (typeof signedClaims === 'string') {
+    const raw = signedClaims.trim();
+    if (raw.length === 0) {
+      return { purposes: [], verifiable: false };
+    }
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      return { purposes: [], verifiable: false };
+    }
+  } else if (typeof signedClaims === 'object') {
+    parsed = signedClaims;
+  } else {
     return { purposes: [], verifiable: false };
   }
-  if (typeof parsed !== 'object' || parsed === null) {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return { purposes: [], verifiable: false };
   }
   const raw = (parsed as { purpose?: unknown }).purpose;
@@ -78,7 +91,7 @@ export function resolveCredentialPurposes(
  * 不可核验一律 false：用途不明不得当作任一用途使用。
  */
 export function hasCredentialPurpose(
-  signedClaims: string | null | undefined,
+  signedClaims: unknown,
   purpose: LocalCredentialPurpose,
 ): boolean {
   const verdict = resolveCredentialPurposes(signedClaims);

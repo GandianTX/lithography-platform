@@ -135,7 +135,8 @@ export class RecordPackageExportService {
         packageId: manifest.package_id,
         packagePath: command.targetPath,
         organizationId: command.organizationId,
-        resourceType: command.resourceType,
+        // 汇总字段：**混合导出时为首个条目的资源类型**（逐条结论各自带自己的资源类型）
+        resourceType: this.resolveExportEntries(command)[0]?.resourceType ?? command.resourceType,
         manifestChecksum: createHash('sha256').update(manifestRaw, 'utf8').digest('hex'),
         itemTotal: outcomes.length,
         itemExported: exported.length,
@@ -191,30 +192,52 @@ export class RecordPackageExportService {
     }
   }
 
-  /** 逐条收集＋复制：读取来源行、组装快照、复制原件并实测校验值 */
+  /**
+   * 逐条收集＋复制：读取来源行、组装快照、复制原件并实测校验值。
+   *
+   * **混合导出**：`command.entries` 存在时按其逐条处理（每条自带资源类型）；
+   * 否则按旧接口的"单一资源类型 ＋ 记录 id 列表"处理（旧接口保持兼容）。
+   */
   private async collectOutcomes(
     command: RecordPackageExportCommand,
   ): Promise<RecordPackageExportOutcome[]> {
     const outcomes: RecordPackageExportOutcome[] = [];
-    for (const recordId of command.recordIds) {
-      const outcome = await this.collectOne(command, recordId);
+    for (const entry of this.resolveExportEntries(command)) {
+      const outcome = await this.collectOne(command, entry.resourceType, entry.recordId);
       outcomes.push(outcome);
     }
     return outcomes;
   }
 
+  /** 导出条目清单：新形态（混合类型）优先，否则回落到旧形态（单类型） */
+  private resolveExportEntries(
+    command: RecordPackageExportCommand,
+  ): readonly { resourceType: RecordPackageResourceType; recordId: number }[] {
+    if (command.entries !== undefined && command.entries.length > 0) {
+      return command.entries.map((entry) => ({
+        resourceType: entry.resourceType,
+        recordId: entry.recordId,
+      }));
+    }
+    return command.recordIds.map((recordId) => ({
+      resourceType: command.resourceType,
+      recordId,
+    }));
+  }
+
   private async collectOne(
     command: RecordPackageExportCommand,
+    resourceType: RecordPackageResourceType,
     recordId: number,
   ): Promise<RecordPackageExportOutcome> {
     try {
       // ① 先授权、后读正文：授权判定只用**窄投影**（归属公司与关联账号），
       // 不加载正文与原件（与冲突读取侧「先查元数据授权再读正文」同一条纪律）。
-      await this.assertRecordAuthorized(command, recordId);
+      await this.assertRecordAuthorized(command, resourceType, recordId);
       // ② 授权通过后才读正文快照与原件
       const entry = await this.collectEntry(
         command,
-        command.resourceType,
+        resourceType,
         recordId,
         command.organizationId,
       );
@@ -233,11 +256,11 @@ export class RecordPackageExportService {
         detail: {
           recordId,
           recordUuid: await this.resolveRecordUuidSafely(
-            command.resourceType,
+            resourceType,
             recordId,
             command.organizationId,
           ),
-          resourceType: command.resourceType,
+          resourceType,
           versionNo: null,
           outcome: 'REJECTED',
           rejection: this.toRejection(normalized),
@@ -256,9 +279,10 @@ export class RecordPackageExportService {
    */
   private async assertRecordAuthorized(
     command: RecordPackageExportCommand,
+    resourceType: RecordPackageResourceType,
     recordId: number,
   ): Promise<void> {
-    const facts = await this.readRecordAuthorizationFacts(command.resourceType, recordId);
+    const facts = await this.readRecordAuthorizationFacts(resourceType, recordId);
     if (facts === null) {
       throw new DomainError(
         RECORD_PACKAGE_ERROR.FOREIGN_COMPANY,
@@ -268,7 +292,8 @@ export class RecordPackageExportService {
     const authorization = resolveRecordPackageExportAuthorization({
       sessionAccountId: command.exporterAccountId,
       scope: command.exporterScope,
-      resourceType: command.resourceType,
+      // 逐条按**该条自己的**资源类型判定（混合导出时不能沿用命令级的单一类型）
+      resourceType,
       record: facts,
     });
     if (!authorization.allowed) {

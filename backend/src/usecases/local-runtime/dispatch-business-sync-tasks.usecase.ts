@@ -4,6 +4,7 @@ import { BUSINESS_SYNC_ERROR, DomainError } from '@core/common/errors/domain-err
 import { parseBusinessSyncEntityLocalId } from '@core/local-runtime/policy/business-sync-source.policy';
 import {
   resolveBusinessSyncVerdict,
+  verifyBusinessSyncOriginalPayloads,
   type BusinessSyncDispatchRequest,
   type BusinessSyncReceiverResponse,
 } from '@core/local-runtime/policy/business-sync-protocol.policy';
@@ -222,6 +223,21 @@ export class DispatchBusinessSyncTasksUsecase {
       );
       return 'rejected';
     }
+    // 4b. 原件**字节**与清单逐项复核：清单说"要传什么"，字节说"真的传了什么"。
+    // 对不上就不派发——否则云端收到的是"清单齐全、字节缺失"的包，
+    // 后续只能以 ORIGINALS_INCOMPLETE 之类的受控原因失败，排查成本更高。
+    const originalsIssue = verifyBusinessSyncOriginalPayloads(
+      payload.originals,
+      payload.originalPayloads,
+    );
+    if (originalsIssue !== null) {
+      await this.failTask(
+        task.id,
+        BUSINESS_SYNC_ERROR.DISPATCH_REJECTED,
+        '原件字节与清单不一致，不派发',
+      );
+      return 'rejected';
+    }
 
     // 5. 生产接收端缺失：任务留在待传，等接收端就绪后续传
     if (this.receiver === null) {
@@ -238,6 +254,7 @@ export class DispatchBusinessSyncTasksUsecase {
       manifestChecksum: task.manifestChecksum,
       body: payload.body,
       originals: payload.originals,
+      originalPayloads: payload.originalPayloads,
       idempotencyKey: task.idempotencyKey,
     };
 
