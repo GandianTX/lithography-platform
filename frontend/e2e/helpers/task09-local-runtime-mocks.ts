@@ -110,6 +110,9 @@ export function classifyTableOverflow(overflow: number, hasScrollableAncestor: b
   return overflow;
 }
 
+/** 超长文案（不换行压力测试用）：连续长串，无空格 */
+const LONG_TEXT = '超长文案'.repeat(120);
+
 /** 记录包页的 GraphQL 载荷（导出/预检/导入均为 mutation，页面加载时不自动触发 ⇒ 留空即可）。 */
 const RECORD_PACKAGE_IMPORT_PREVIEW = {
   checkId: 'chk-1',
@@ -123,15 +126,68 @@ const RECORD_PACKAGE_IMPORT_PREVIEW = {
 };
 
 /**
+ * 逐态覆盖的**覆盖项**（默认全部关闭 ⇒ 行为与基线完全一致）。
+ *
+ * 逐态对照规格靠这些开关构造"空态／错误态／长文案／旧响应晚到"，
+ * 度量与截图规格不传任何覆盖项 ⇒ 基线行为不被影响。
+ */
+export type Task09MockOverrides = {
+  /** 这些 GraphQL 操作改为返回 GraphQL 错误（模拟服务端失败） */
+  failOperations?: string[];
+  /** 这些操作注入超长文案（不换行压力测试） */
+  longText?: boolean;
+  /** 备份记录总条数（默认 1；分页场景需要 > pageSize） */
+  backupRecordTotal?: number;
+  /** 备份记录按页返回不同 backupId（用于"旧响应晚到"场景） */
+  backupRecordIdByPage?: Record<number, string>;
+  /** 这些操作的**第 N 次**请求延迟（用于"旧响应晚到"场景；N 从 1 起） */
+  delayRequestIndexOf?: Record<string, number>;
+  /** 延迟毫秒数（配合 `delayRequestIndexOf`） */
+  delayMs?: number;
+};
+
+/**
  * 安装任务 09 候选页的 GraphQL 拦截器。
  *
  * 未覆盖的操作返回空对象（页面按真实空态渲染），**不**抛错：页面必须能展示
  * 空态／失败态的真实样子，而不是被拦截器本身打断。
  */
-export async function installLocalRuntimeMocks(page: Page): Promise<void> {
+export async function installLocalRuntimeMocks(
+  page: Page,
+  overrides: Task09MockOverrides = {},
+): Promise<void> {
+  const failOperations = new Set(overrides.failOperations ?? []);
+  const delayRequestIndexOf = new Map(
+    Object.entries(overrides.delayRequestIndexOf ?? {}).map(([key, value]) => [key, value]),
+  );
+  const requestCounts = new Map<string, number>();
+
   await page.route('**/graphql', async (route: Route) => {
-    const payload = route.request().postDataJSON() as { operationName?: string };
+    const payload = route.request().postDataJSON() as {
+      operationName?: string;
+      variables?: Record<string, unknown>;
+    };
     const operation = payload.operationName ?? '';
+
+    // 指定次数的请求延迟（制造"旧响应晚到"：让较早那次更慢、后一次更快）
+    const requestCount = (requestCounts.get(operation) ?? 0) + 1;
+    requestCounts.set(operation, requestCount);
+    if (delayRequestIndexOf.get(operation) === requestCount) {
+      await new Promise((resolve) => setTimeout(resolve, overrides.delayMs ?? 1_000));
+    }
+
+    if (failOperations.has(operation)) {
+      await route.fulfill({
+        body: JSON.stringify({
+          data: null,
+          errors: [{ message: `任务09 隔离库：模拟 ${operation} 失败` }],
+        }),
+        contentType: 'application/json',
+        status: 200,
+      });
+      return;
+    }
+
     let data: Record<string, unknown> = {};
 
     if (operation === 'SyncConflicts') {
@@ -139,36 +195,47 @@ export async function installLocalRuntimeMocks(page: Page): Promise<void> {
         syncConflicts: { items: [], total: 0, page: 1, pageSize: 10, truncated: false },
       };
     } else if (operation === 'LocalBackupRecords') {
+      const requestedPage = Number(
+        (payload.variables?.['pagination'] as { page?: number } | undefined)?.['page'] ?? 1,
+      );
+      const backupId =
+        overrides.backupRecordIdByPage?.[requestedPage] ??
+        overrides.backupRecordIdByPage?.[1] ??
+        'bk-1';
+      const backupTotal = overrides.backupRecordTotal ?? 1;
       data = {
         localBackupRecords: {
-          items: [
-            {
-              backupId: 'bk-1',
-              organizationId: 9,
-              runId: 1,
-              installationId: 'inst-1',
-              triggerType: 'MANUAL',
-              runStatus: 'SUCCEEDED',
-              startedAt: '2026-11-20T08:00:00.000Z',
-              finishedAt: '2026-11-20T08:01:00.000Z',
-              createdAt: '2026-11-20T08:00:00.000Z',
-              byteSize: '2048',
-              localStatus: 'AVAILABLE',
-              localPackageRetained: true,
-              cloudStatus: 'AVAILABLE',
-              cloudReceiptPresent: true,
-              manifestChecksum: 'a'.repeat(64),
-              verifiedAt: '2026-11-20T08:01:00.000Z',
-              retentionUntil: '2026-12-20T08:00:00.000Z',
-              failureReason: null,
-              localCleanupError: null,
-              attemptCount: 1,
-              lastAttemptAt: '2026-11-20T08:02:00.000Z',
-              deletedAt: null,
-            },
-          ],
-          total: 1,
-          page: 1,
+          items:
+            backupTotal === 0
+              ? []
+              : [
+                  {
+                    backupId,
+                    organizationId: 9,
+                    runId: 1,
+                    installationId: 'inst-1',
+                    triggerType: 'MANUAL',
+                    runStatus: 'SUCCEEDED',
+                    startedAt: '2026-11-20T08:00:00.000Z',
+                    finishedAt: '2026-11-20T08:01:00.000Z',
+                    createdAt: '2026-11-20T08:00:00.000Z',
+                    byteSize: '2048',
+                    localStatus: 'AVAILABLE',
+                    localPackageRetained: true,
+                    cloudStatus: 'AVAILABLE',
+                    cloudReceiptPresent: true,
+                    manifestChecksum: 'a'.repeat(64),
+                    verifiedAt: '2026-11-20T08:01:00.000Z',
+                    retentionUntil: '2026-12-20T08:00:00.000Z',
+                    failureReason: null,
+                    localCleanupError: null,
+                    attemptCount: 1,
+                    lastAttemptAt: '2026-11-20T08:02:00.000Z',
+                    deletedAt: null,
+                  },
+                ],
+          total: backupTotal,
+          page: requestedPage,
           pageSize: 10,
         },
       };
@@ -220,7 +287,8 @@ export async function installLocalRuntimeMocks(page: Page): Promise<void> {
       data = {
         localRuntimeStatus: {
           installationId: 'inst-1',
-          localSiteName: '任务09 隔离演示机',
+          // 超长文案场景：注入不换行压力文本（长站点名）
+          localSiteName: overrides.longText === true ? LONG_TEXT : '任务09 隔离演示机',
           mappedOrganizationId: 9,
           mappedOrganizationCode: 'CLIENT_DEFAULT',
           viewerRole: 'ENGINEER',
@@ -232,9 +300,10 @@ export async function installLocalRuntimeMocks(page: Page): Promise<void> {
             taskRecovery: '本地数据库',
           },
           storage: {
-            businessFileDirectory: '/srv/lithography/business',
+            businessFileDirectory:
+              overrides.longText === true ? LONG_TEXT : '/srv/lithography/business',
             businessFileDirectoryWritable: true,
-            backupDirectory: '/srv/lithography/backups',
+            backupDirectory: overrides.longText === true ? LONG_TEXT : '/srv/lithography/backups',
             backupDirectoryWritable: true,
           },
           tasks: {
