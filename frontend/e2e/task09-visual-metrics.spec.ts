@@ -1,9 +1,14 @@
 // frontend/e2e/task09-visual-metrics.spec.ts
 
-import { expect, type Page, type Route, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
+import {
+  installLocalRuntimeMocks,
+  TASK09_VISUAL_PAGES,
+  TASK09_VISUAL_VIEWPORTS,
+} from './helpers/task09-local-runtime-mocks';
 
 /**
  * 任务 09 四类页面的**三视口度量**（总计划第 14 项）。
@@ -40,12 +45,6 @@ import { seedAuthSession } from './helpers/auth-session-seed';
 const EVIDENCE_DIR = process.env.TASK09_EVIDENCE_DIR ?? '/tmp/task09-evidence';
 mkdirSync(EVIDENCE_DIR, { recursive: true });
 
-const VIEWPORTS = [
-  { label: '1440x900', width: 1440, height: 900 },
-  { label: '1366x768', width: 1366, height: 768 },
-  { label: '390x844', width: 390, height: 844 },
-] as const;
-
 /** V44 原型（`docs/plan/01-光刻维护平台-DemoV44-中英文切换.html`）实测基线 */
 const V44_BASELINE = {
   pageTitleFontSize: '24px',
@@ -60,177 +59,6 @@ const CANDIDATE_CARD_BASELINE = {
   radius: '14px',
   padding: '16px',
 } as const;
-
-/**
- * 每页的卡片面声明。
- *
- * - `REQUIRED`：该页必须渲染公共卡片面（`.data-card`），缺失即失败；
- * - `NONE`：该页**按设计**没有卡片面（表格／表单／抽屉布局），显式断言为 0，
- *   并在证据里写明"不适用"的理由（页面结构变更时必须同步更新本声明）。
- */
-const PAGES = [
-  {
-    label: 'record-packages',
-    path: '/engineer/record-packages',
-    card: 'NONE',
-    cardNote: '记录包页为 Tabs＋表单＋结果表格布局，不使用卡片面；V44 无对应页面（其入口在 #/engineer/data-center）',
-    v44Counterpart: '#/engineer/data-center',
-  },
-  {
-    label: 'sync-conflicts',
-    path: '/engineer/sync-conflicts',
-    card: 'NONE',
-    cardNote: '同步冲突页为清单＋抽屉布局，不使用卡片面；V44 对应页 #/engineer/conflicts/',
-    v44Counterpart: '#/engineer/conflicts/',
-  },
-  {
-    label: 'local-settings',
-    path: '/local-settings',
-    card: 'REQUIRED',
-    cardNote: '本地设置页用公共 DataCard（.data-card）承载分区卡片；V44 对应页 #/local/settings',
-    v44Counterpart: '#/local/settings',
-  },
-  {
-    label: 'local-backup',
-    path: '/local-backup',
-    card: 'REQUIRED',
-    cardNote: '备份与恢复页用公共 DataCard（.data-card）承载分区卡片；V44 本地设置页合并了设备与计划入口',
-    v44Counterpart: '#/local/settings',
-  },
-] as const;
-
-async function installLocalRuntimeMocks(page: Page): Promise<void> {
-  await page.route('**/graphql', async (route: Route) => {
-    const payload = route.request().postDataJSON() as { operationName?: string };
-    const operation = payload.operationName ?? '';
-    let data: Record<string, unknown> = {};
-
-    if (operation === 'SyncConflicts') {
-      data = {
-        syncConflicts: { items: [], total: 0, page: 1, pageSize: 10, truncated: false },
-      };
-    } else if (operation === 'LocalBackupRecords') {
-      data = {
-        localBackupRecords: {
-          items: [
-            {
-              backupId: 'bk-1',
-              organizationId: 9,
-              runId: 1,
-              installationId: 'inst-1',
-              triggerType: 'MANUAL',
-              runStatus: 'SUCCEEDED',
-              startedAt: '2026-11-20T08:00:00.000Z',
-              finishedAt: '2026-11-20T08:01:00.000Z',
-              createdAt: '2026-11-20T08:00:00.000Z',
-              byteSize: '2048',
-              localStatus: 'AVAILABLE',
-              localPackageRetained: true,
-              cloudStatus: 'AVAILABLE',
-              cloudReceiptPresent: true,
-              manifestChecksum: 'a'.repeat(64),
-              verifiedAt: '2026-11-20T08:01:00.000Z',
-              retentionUntil: '2026-12-20T08:00:00.000Z',
-              failureReason: null,
-              localCleanupError: null,
-              attemptCount: 1,
-              lastAttemptAt: '2026-11-20T08:02:00.000Z',
-              deletedAt: null,
-            },
-          ],
-          total: 1,
-          page: 1,
-          pageSize: 10,
-        },
-      };
-    } else if (operation === 'LocalBackupCloudPackages') {
-      data = {
-        localBackupCloudPackages: {
-          organizationId: 9,
-          packages: [
-            {
-              packageId: 'bk-1',
-              organizationId: 9,
-              backupId: 'bk-1',
-              createdAt: '2026-11-20T08:02:00.000Z',
-              byteSize: '2048',
-              checksumSha256: 'a'.repeat(64),
-            },
-          ],
-        },
-      };
-    } else if (operation === 'LocalBackupSettings') {
-      data = {
-        // 设置按"公司 × 设备"逐条返回（列表形态）
-        localBackupSettings: [
-          {
-            organizationId: 9,
-            installationId: 'inst-1',
-            backupEnabled: true,
-            backupIntervalHours: 72,
-            nextBackupAt: '2026-11-23T08:00:00.000Z',
-            lastAutoSuccessAt: '2026-11-20T08:00:00.000Z',
-            lastAutoFailureAt: null,
-            failureReason: null,
-            autoUploadEnabled: false,
-            planIntervalHours: 72,
-            retentionDays: 30,
-            lastRunStatus: 'SUCCEEDED',
-            lastRunStartedAt: '2026-11-20T08:00:00.000Z',
-            lastRunFinishedAt: '2026-11-20T08:01:00.000Z',
-            lastAssetCloudStatus: 'PENDING',
-            lastAssetLocalStatus: 'AVAILABLE',
-          },
-        ],
-      };
-    } else if (operation === 'LocalRestoreCapability') {
-      data = { localRestoreCapability: { executionAvailable: false, reason: null } };
-    } else if (operation === 'LocalRuntimeStatus') {
-      // 载荷形状必须与 `localRuntimeStatus` 查询契约一致（否则 adapter 会拒绝映射，
-      // 页面落到失败态 ⇒ 度量的是错误分支而不是真实页面）
-      data = {
-        localRuntimeStatus: {
-          installationId: 'inst-1',
-          localSiteName: '任务09 隔离演示机',
-          mappedOrganizationId: 9,
-          mappedOrganizationCode: 'CLIENT_DEFAULT',
-          viewerRole: 'ENGINEER',
-          scopeOrganizationId: 9,
-          service: {
-            apiStatus: 'UP',
-            databaseStatus: 'UP',
-            taskFactSource: '本地数据库',
-            taskRecovery: '本地数据库',
-          },
-          storage: {
-            businessFileDirectory: '/srv/lithography/business',
-            businessFileDirectoryWritable: true,
-            backupDirectory: '/srv/lithography/backups',
-            backupDirectoryWritable: true,
-          },
-          tasks: {
-            pendingUploadCount: 0,
-            uploadingUploadCount: 0,
-            failedUploadCount: 0,
-            succeededUploadCount: 0,
-            runningBackupCount: 0,
-            lastBackupStartedAt: null,
-            lastBackupFinishedAt: null,
-          },
-          companies: [],
-          authorizations: [],
-          generatedAt: '2026-11-23T08:00:00.000Z',
-        },
-      };
-    }
-
-    await route.fulfill({
-      body: JSON.stringify({ data }),
-      contentType: 'application/json',
-      status: 200,
-    });
-  });
-}
 
 type Metric = {
   documentClientWidth: number;
@@ -249,8 +77,8 @@ type Metric = {
 };
 
 test.describe('任务 09 四类页面的三视口度量', () => {
-  for (const target of PAGES) {
-    for (const viewport of VIEWPORTS) {
+  for (const target of TASK09_VISUAL_PAGES) {
+    for (const viewport of TASK09_VISUAL_VIEWPORTS) {
       test(`${target.label} @ ${viewport.label}：度量与溢出断言`, async ({ page }) => {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         await seedAuthSession(page, 'ENGINEER');

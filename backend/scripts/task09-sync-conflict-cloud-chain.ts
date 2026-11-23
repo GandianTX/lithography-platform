@@ -79,6 +79,16 @@ const FIXTURE_REQUEST_NO = 'TASK09-CLOUD-RR-0001';
 const LOCAL_CONTENT = '## 任务09 本地正文\n这是本地既有内容。';
 const CLOUD_CONTENT = '## 任务09 云端正文\n这是云端版本内容。';
 
+/** 资料类型夹具（REFERENCE_DOCUMENT 走同一条「使用云端」整链） */
+const FIXTURE_DOCUMENT_ID = 979_301;
+const FIXTURE_DOCUMENT_UUID = '00000000-0000-4000-8000-00000000d301';
+const LOCAL_DOC_TITLE = '任务09 本地资料标题';
+const LOCAL_DOC_DESCRIPTION = '任务09 本地资料说明';
+const LOCAL_DOC_CONTENT = '任务09 本地资料正文';
+const CLOUD_DOC_TITLE = '任务09 云端资料标题';
+const CLOUD_DOC_DESCRIPTION = '任务09 云端资料说明';
+const CLOUD_DOC_CONTENT = '任务09 云端资料正文';
+
 /** 一级管理员会话（等级由服务端查库复核） */
 function superAdminSession(accountId: number): UsecaseSession {
   return {
@@ -263,6 +273,98 @@ async function main(): Promise<void> {
       ],
     );
 
+    // ── 2b. 夹具：本公司可写资料（REFERENCE_DOCUMENT 走同一条采用云端链）──
+    await dataSource.query('DELETE FROM reference_document_revision WHERE document_id = ?', [
+      FIXTURE_DOCUMENT_ID,
+    ]);
+    await dataSource.query('DELETE FROM reference_document WHERE id = ? AND record_uuid = ?', [
+      FIXTURE_DOCUMENT_ID,
+      FIXTURE_DOCUMENT_UUID,
+    ]);
+    await dataSource.query(
+      'INSERT INTO reference_document ' +
+        '(id, title, document_type, description, content_text, created_by_account_id, ' +
+        'owner_organization_id, ingest_method, updated_by_account_id, schema_version, deprecated, ' +
+        'publication_status, ownership_status, current_revision_no, source_kind, record_uuid, ' +
+        'equipment_model_text) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, 1, ?, ?, ?)',
+      [
+        FIXTURE_DOCUMENT_ID,
+        LOCAL_DOC_TITLE,
+        'MANUAL',
+        LOCAL_DOC_DESCRIPTION,
+        LOCAL_DOC_CONTENT,
+        900_101,
+        organizationId,
+        'ADMIN_DIRECT',
+        900_101,
+        'ONLINE',
+        'CONFIRMED',
+        'MATERIAL',
+        FIXTURE_DOCUMENT_UUID,
+        '某机型',
+      ],
+    );
+    // 修订历史第 1 版（"历史只追加"的基线）
+    await dataSource.query(
+      'INSERT INTO reference_document_revision ' +
+        '(document_id, revision_no, before_snapshot, after_snapshot, actor_account_id, reason) ' +
+        'VALUES (?, 1, ?, ?, ?, ?)',
+      [
+        FIXTURE_DOCUMENT_ID,
+        JSON.stringify({
+          schema_version: 1,
+          title: LOCAL_DOC_TITLE,
+          description: LOCAL_DOC_DESCRIPTION,
+          content_text: LOCAL_DOC_CONTENT,
+        }),
+        JSON.stringify({
+          schema_version: 1,
+          title: LOCAL_DOC_TITLE,
+          description: LOCAL_DOC_DESCRIPTION,
+          content_text: LOCAL_DOC_CONTENT,
+        }),
+        900_101,
+        '任务09 隔离库夹具初始版本',
+      ],
+    );
+
+    const readDocument = async (): Promise<{
+      title: string;
+      description: string;
+      content_text: string;
+      current_revision_no: number;
+    }> => {
+      const rows: unknown = await dataSource.query(
+        'SELECT title, description, content_text, current_revision_no ' +
+          'FROM reference_document WHERE id = ?',
+        [FIXTURE_DOCUMENT_ID],
+      );
+      const row = (rows as Array<Record<string, unknown>>)[0];
+      if (row === undefined) {
+        throw new Error('夹具资料不存在');
+      }
+      return {
+        title: text(row['title']),
+        description: text(row['description']),
+        content_text: text(row['content_text']),
+        current_revision_no: Number(row['current_revision_no']),
+      };
+    };
+    const readDocumentRevisions = async (): Promise<
+      Array<{ revision_no: number; reason: string }>
+    > => {
+      const rows: unknown = await dataSource.query(
+        'SELECT revision_no, reason FROM reference_document_revision WHERE document_id = ? ' +
+          'ORDER BY revision_no ASC',
+        [FIXTURE_DOCUMENT_ID],
+      );
+      return (rows as Array<Record<string, unknown>>).map((row) => ({
+        revision_no: Number(row['revision_no']),
+        reason: text(row['reason']),
+      }));
+    };
+
     // ── 3. 外公司哨兵（收尾核对"非目标数据不变"）──
     const foreignBefore = await fingerprintForeignRequests(dataSource, organizationId);
 
@@ -322,18 +424,23 @@ async function main(): Promise<void> {
 
     /** 登记一条冲突（生产服务：冲突登记链的真实写法） */
     const registerConflict = async (input: {
+      resourceType?: string;
+      recordUuid?: string;
       versionNo: number;
       localVersion: number;
       cloudVersion: number;
+      localBody?: Record<string, unknown>;
       cloudBody: Record<string, unknown>;
     }): Promise<string> => {
+      const resourceType = input.resourceType ?? 'REPAIR_REQUEST';
+      const recordUuid = input.recordUuid ?? FIXTURE_REQUEST_UUID;
       const envelope = (
         versionNo: number,
         body: Record<string, unknown>,
       ): Record<string, unknown> => ({
         schema_version: 1,
-        resource_type: 'REPAIR_REQUEST',
-        record_uuid: FIXTURE_REQUEST_UUID,
+        resource_type: resourceType,
+        record_uuid: recordUuid,
         version_no: versionNo,
         manifest_checksum: 'a'.repeat(64),
         body,
@@ -342,12 +449,15 @@ async function main(): Promise<void> {
         await receiptService.recordConflict(
           {
             organizationId,
-            resourceType: 'REPAIR_REQUEST',
-            recordUuid: FIXTURE_REQUEST_UUID,
+            resourceType,
+            recordUuid,
             versionNo: input.versionNo,
             localVersion: input.localVersion,
             cloudVersion: input.cloudVersion,
-            localSnapshot: envelope(input.localVersion, { content_md: LOCAL_CONTENT }),
+            localSnapshot: envelope(
+              input.localVersion,
+              input.localBody ?? { content_md: LOCAL_CONTENT },
+            ),
             cloudSnapshot: envelope(input.cloudVersion, input.cloudBody),
             conflictReason: '任务09 隔离库：本地与云端内容不一致',
           },
@@ -356,7 +466,7 @@ async function main(): Promise<void> {
       });
       const rows: unknown = await dataSource.query(
         'SELECT conflict_id FROM sync_conflict WHERE record_uuid = ? AND version_no = ?',
-        [FIXTURE_REQUEST_UUID, input.versionNo],
+        [recordUuid, input.versionNo],
       );
       const conflictId = text((rows as Array<Record<string, unknown>>)[0]?.['conflict_id']);
       createdConflictIds.push(conflictId);
@@ -558,6 +668,67 @@ async function main(): Promise<void> {
       `contentUnchanged=${readOnlyAfter.content_md === readOnlyBefore.content_md} version=${readOnlyAfter.current_revision_no} revisions=${readOnlyAfterRevisions.length}`,
     );
 
+    // ── 8b. 资料类型（REFERENCE_DOCUMENT）：同一条「使用云端」整链 ──
+    const documentConflictId = await registerConflict({
+      resourceType: 'REFERENCE_DOCUMENT',
+      recordUuid: FIXTURE_DOCUMENT_UUID,
+      versionNo: 1,
+      localVersion: 1,
+      cloudVersion: 2,
+      localBody: {
+        title: LOCAL_DOC_TITLE,
+        description: LOCAL_DOC_DESCRIPTION,
+        content_text: LOCAL_DOC_CONTENT,
+      },
+      cloudBody: {
+        title: CLOUD_DOC_TITLE,
+        description: CLOUD_DOC_DESCRIPTION,
+        content_text: CLOUD_DOC_CONTENT,
+      },
+    });
+    const documentBefore = await readDocument();
+    const documentBeforeRevisions = await readDocumentRevisions();
+    const documentResolved = await resolveUsecase.execute({
+      session: admin,
+      conflictId: documentConflictId,
+      action: 'CLOUD',
+      displayedCloudVersion: 2,
+    });
+    const documentAfter = await readDocument();
+    const documentAfterRevisions = await readDocumentRevisions();
+    const documentConflict = await readConflict(documentConflictId);
+    check(
+      '资料采用云端：裁决返回已解决',
+      documentResolved.outcome === 'resolved',
+      `outcome=${documentResolved.outcome}`,
+    );
+    check(
+      '资料采用云端：本地当前视图的标题／说明／正文已对齐到云端',
+      documentAfter.title === CLOUD_DOC_TITLE &&
+        documentAfter.description === CLOUD_DOC_DESCRIPTION &&
+        documentAfter.content_text === CLOUD_DOC_CONTENT,
+      `title=${documentAfter.title} description=${documentAfter.description} content=${documentAfter.content_text}`,
+    );
+    check(
+      '资料采用云端：本地版本按版本条件推进一版',
+      documentAfter.current_revision_no === documentBefore.current_revision_no + 1,
+      `before=${documentBefore.current_revision_no} after=${documentAfter.current_revision_no}`,
+    );
+    check(
+      '资料采用云端：修订历史只追加（原有第 1 版未被覆盖）',
+      documentAfterRevisions.length === documentBeforeRevisions.length + 1 &&
+        documentAfterRevisions[0]?.revision_no === documentBeforeRevisions[0]?.revision_no &&
+        documentAfterRevisions[0]?.reason === documentBeforeRevisions[0]?.reason,
+      `before=${JSON.stringify(documentBeforeRevisions)} after=${JSON.stringify(documentAfterRevisions)}`,
+    );
+    check(
+      '资料采用云端：冲突行落裁决事实（RESOLVED／CLOUD／确认人）',
+      documentConflict.status === 'RESOLVED' &&
+        documentConflict.decision === 'CLOUD' &&
+        documentConflict.confirmed_by_account_id === 979_101,
+      `status=${documentConflict.status} decision=${documentConflict.decision} confirmedBy=${text(documentConflict.confirmed_by_account_id)}`,
+    );
+
     // ── 9. 收尾：只删本轮对象，并核对非目标哨兵不变 ──
     for (const createdConflictId of createdConflictIds) {
       await dataSource.query('DELETE FROM sync_conflict WHERE conflict_id = ?', [
@@ -570,6 +741,13 @@ async function main(): Promise<void> {
     await dataSource.query('DELETE FROM repair_request WHERE id = ? AND record_uuid = ?', [
       FIXTURE_REQUEST_ID,
       FIXTURE_REQUEST_UUID,
+    ]);
+    await dataSource.query('DELETE FROM reference_document_revision WHERE document_id = ?', [
+      FIXTURE_DOCUMENT_ID,
+    ]);
+    await dataSource.query('DELETE FROM reference_document WHERE id = ? AND record_uuid = ?', [
+      FIXTURE_DOCUMENT_ID,
+      FIXTURE_DOCUMENT_UUID,
     ]);
     const foreignAfter = await fingerprintForeignRequests(dataSource, organizationId);
     check(
@@ -585,11 +763,23 @@ async function main(): Promise<void> {
       'SELECT COUNT(*) AS total FROM repair_request WHERE id = ?',
       [FIXTURE_REQUEST_ID],
     );
+    const leftoverDocuments: unknown = await dataSource.query(
+      'SELECT COUNT(*) AS total FROM reference_document WHERE id = ?',
+      [FIXTURE_DOCUMENT_ID],
+    );
+    const leftoverDocumentConflicts: unknown = await dataSource.query(
+      'SELECT COUNT(*) AS total FROM sync_conflict WHERE record_uuid = ?',
+      [FIXTURE_DOCUMENT_UUID],
+    );
     check(
       '收尾：本轮对象零残留',
       Number((leftoverConflicts as Array<Record<string, unknown>>)[0]?.['total'] ?? -1) === 0 &&
-        Number((leftoverRequests as Array<Record<string, unknown>>)[0]?.['total'] ?? -1) === 0,
-      `conflicts=${String((leftoverConflicts as Array<Record<string, unknown>>)[0]?.['total'])} requests=${String((leftoverRequests as Array<Record<string, unknown>>)[0]?.['total'])}`,
+        Number((leftoverRequests as Array<Record<string, unknown>>)[0]?.['total'] ?? -1) === 0 &&
+        Number((leftoverDocuments as Array<Record<string, unknown>>)[0]?.['total'] ?? -1) === 0 &&
+        Number(
+          (leftoverDocumentConflicts as Array<Record<string, unknown>>)[0]?.['total'] ?? -1,
+        ) === 0,
+      `conflicts=${String((leftoverConflicts as Array<Record<string, unknown>>)[0]?.['total'])} requests=${String((leftoverRequests as Array<Record<string, unknown>>)[0]?.['total'])} documents=${String((leftoverDocuments as Array<Record<string, unknown>>)[0]?.['total'])} documentConflicts=${String((leftoverDocumentConflicts as Array<Record<string, unknown>>)[0]?.['total'])}`,
     );
   } finally {
     await dataSource.destroy();
