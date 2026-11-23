@@ -252,15 +252,20 @@ test.describe('任务 09 候选页面的逐态对照', () => {
       { overflow: 640, hasScrollableAncestor: false },
       { overflow: 1, hasScrollableAncestor: false },
     ];
-    const browserResults = await page.evaluate((input) => {
-      const judge = (window as unknown as Record<string, (o: number, s: boolean) => number>)[
-        TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL
-      ];
-      if (typeof judge !== 'function') {
-        throw new Error('缺少注入的表格溢出判定函数');
-      }
-      return input.map((item) => judge(item.overflow, item.hasScrollableAncestor));
-    }, samples);
+    // 注意：`page.evaluate` 的回调在**浏览器上下文**执行，不能引用 Node 作用域的常量
+    const browserResults = await page.evaluate(
+      (input, judgeGlobalName) => {
+        const judge = (window as unknown as Record<string, (o: number, s: boolean) => number>)[
+          judgeGlobalName
+        ];
+        if (typeof judge !== 'function') {
+          throw new Error('缺少注入的表格溢出判定函数');
+        }
+        return input.map((item) => judge(item.overflow, item.hasScrollableAncestor));
+      },
+      samples,
+      TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL,
+    );
     const nodeResults = samples.map((sample) =>
       classifyTableOverflow(sample.overflow, sample.hasScrollableAncestor),
     );

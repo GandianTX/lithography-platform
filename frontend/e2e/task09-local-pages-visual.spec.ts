@@ -85,7 +85,9 @@ test.describe('任务 09 候选页面的提交级截图', () => {
           filePath: `${EVIDENCE_DIR}/${fileName}`,
         });
 
-        const metrics = await page.evaluate<MetricsShape>(() => {
+        // 注意：`page.evaluate` 的回调在**浏览器上下文**执行，不能引用 Node 作用域的常量
+        // （判定函数的全局名必须作为参数传入）。
+        const metrics = await page.evaluate<MetricsShape, string>((judgeGlobalName) => {
           const root = document.documentElement;
           const tables = Array.from(document.querySelectorAll('table'));
           return {
@@ -115,7 +117,7 @@ test.describe('任务 09 候选页面的提交级截图', () => {
               // 判定口径来自共享 helper 注入的浏览器侧实现（单一真源）
               const judge = (
                 window as unknown as Record<string, (o: number, s: boolean) => number>
-              )[TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL];
+              )[judgeGlobalName];
               if (typeof judge !== 'function') {
                 throw new Error('缺少注入的表格溢出判定函数');
               }
@@ -126,7 +128,7 @@ test.describe('任务 09 候选页面的提交级截图', () => {
               .filter((text) => text.length > 0),
             dataCardCount: document.querySelectorAll('.data-card').length,
           };
-        });
+        }, TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL);
 
         expect(
           metrics.documentScrollWidth - metrics.documentClientWidth,

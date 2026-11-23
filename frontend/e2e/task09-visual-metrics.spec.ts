@@ -102,7 +102,9 @@ test.describe('任务 09 四类页面的三视口度量', () => {
         await page.waitForSelector('h1, h2', { timeout: 10_000 }).catch(() => undefined);
         await page.waitForTimeout(200);
 
-        const metrics = await page.evaluate<Metric>(() => {
+        // 注意：`page.evaluate` 的回调在**浏览器上下文**执行，不能引用 Node 作用域的常量
+        // （判定函数的全局名必须作为参数传入）。
+        const metrics = await page.evaluate<Metric, string>((judgeGlobalName) => {
           const root = document.documentElement;
           const tables = Array.from(document.querySelectorAll('table'));
           const title = document.querySelector('h1, h2');
@@ -137,7 +139,7 @@ test.describe('任务 09 四类页面的三视口度量', () => {
               // 判定口径来自共享 helper 注入的浏览器侧实现（单一真源）
               const judge = (
                 window as unknown as Record<string, (o: number, s: boolean) => number>
-              )[TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL];
+              )[judgeGlobalName];
               if (typeof judge !== 'function') {
                 throw new Error('缺少注入的表格溢出判定函数');
               }
@@ -153,7 +155,7 @@ test.describe('任务 09 四类页面的三视口度量', () => {
             cardRadius: cardStyle?.borderRadius ?? '',
             antdCardBodyCount: document.querySelectorAll('.ant-card-body').length,
           };
-        });
+        }, TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL);
 
         // 页面不得整页横溢（窄屏尤其）
         expect(
