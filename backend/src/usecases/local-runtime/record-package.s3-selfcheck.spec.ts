@@ -134,8 +134,10 @@ function buildUsecase(
       writeItemResult,
       findReceipt,
     } as never,
+    { findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-9' }) } as never,
     { recordImportedVersion: jest.fn().mockResolvedValue('receipt-new') } as never,
     { stage: jest.fn().mockResolvedValue([]) } as never,
+
     {
       listFacts: jest.fn().mockResolvedValue({
         facts:

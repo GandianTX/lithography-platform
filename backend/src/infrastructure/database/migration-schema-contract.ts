@@ -66,6 +66,7 @@ export const REQUIRED_TABLES = [
 export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
   { table: 'base_user_account', index: 'uk_login_email' },
   { table: 'base_user_account', index: 'uk_login_name' },
+  { table: 'base_user_account', index: 'uk_base_user_account_account_uuid' },
   { table: 'base_third_party_auth', index: 'base_third_party_auth_provider_IDX' },
   { table: 'base_async_task_record', index: 'uk_queue_name_job_id' },
   { table: 'ai_provider_call_record', index: 'uk_ai_provider_call_trace_seq' },
@@ -332,6 +333,7 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'base_user_account', column: 'admin_level' },
   { table: 'base_user_account', column: 'must_change_password', notNull: true },
   { table: 'base_user_account', column: 'credential_version', notNull: true },
+  { table: 'base_user_account', column: 'account_uuid' },
   { table: 'base_user_info', column: 'real_name' },
   { table: 'base_user_info', column: 'customer_organization_id' },
   { table: 'organization', column: 'short_name' },
@@ -2467,6 +2469,7 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
 const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'base_user_account.uk_login_email': 1773924900000,
   'base_user_account.uk_login_name': 1773924900000,
+  'base_user_account.uk_base_user_account_account_uuid': 1775503300000,
   'base_third_party_auth.base_third_party_auth_provider_IDX': 1773926400000,
   'base_async_task_record.uk_queue_name_job_id': 1773925700000,
   'ai_provider_call_record.uk_ai_provider_call_trace_seq': 1773889200000,
@@ -2681,6 +2684,7 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'base_user_account.admin_level': 1775501000000,
   'base_user_account.must_change_password': 1775501000000,
   'base_user_account.credential_version': 1775502400000,
+  'base_user_account.account_uuid': 1775503300000,
   'base_user_info.real_name': 1775501000000,
   'base_user_info.customer_organization_id': 1775501000000,
   'organization.short_name': 1775501000000,
@@ -3386,6 +3390,10 @@ export interface ForeignKeyDefinition {
 export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'base_user_account.uk_login_email': { unique: true, columns: ['login_email'] },
   'base_user_account.uk_login_name': { unique: true, columns: ['login_name'] },
+  'base_user_account.uk_base_user_account_account_uuid': {
+    unique: true,
+    columns: ['account_uuid'],
+  },
   'base_third_party_auth.base_third_party_auth_provider_IDX': {
     unique: true,
     columns: ['provider', 'provider_user_id'],
@@ -5232,6 +5240,12 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
   'base_user_account.admin_level': {
     since: 1775501000000,
     columnType: 'tinyint',
+    nullable: true,
+    defaultValue: null,
+  },
+  'base_user_account.account_uuid': {
+    since: 1775503300000,
+    columnType: 'char(36)',
     nullable: true,
     defaultValue: null,
   },

@@ -210,7 +210,7 @@ const EXPECTED_SERVER_UUID = TARGET?.serverUuid ?? '';
  * 因此仓库清单长度与实库历史长度都必须等于 52。两处断言共用本常量，避免再次出现
  * “beforeAll=44、R09=49” 的双写不一致；新增迁移时必须只改这一个常量。
  */
-export const EXPECTED_REPOSITORY_MIGRATION_COUNT = 53;
+export const EXPECTED_REPOSITORY_MIGRATION_COUNT = 54;
 
 const describeRealDb = ENABLED ? describe : describe.skip;
 
@@ -4557,8 +4557,8 @@ describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
     const timestamps = entries.map((entry) => entry.timestamp);
     expect(timestamps).toEqual([...timestamps].sort((left, right) => left - right));
     expect(entries[entries.length - 1]).toEqual({
-      name: 'AddLocalWriteHoldForV131775503200000',
-      timestamp: 1775503200000,
+      name: 'AddAccountUuidForCrossInstallationIdentityForV131775503300000',
+      timestamp: 1775503300000,
     });
   });
 
@@ -4580,6 +4580,7 @@ describe('S4-E 迁移终态计数与旧态拒绝（离线）', () => {
       'AddSyncConflictLocalResolutionStateForV131775502900000',
       'AddUploadTaskAccountBindingForV131775503000000',
       'AddLocalWriteHoldForV131775503200000',
+      'AddAccountUuidForCrossInstallationIdentityForV131775503300000',
     ]);
   });
 

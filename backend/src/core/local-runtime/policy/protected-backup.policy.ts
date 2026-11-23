@@ -7,17 +7,134 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 /** 备份包清单结构版本（与记录包 RECORD_PACKAGE_SCHEMA_VERSION 相互独立） */
 export const BACKUP_MANIFEST_SCHEMA_VERSION = 1;
 
-/** 纳入备份一致性快照的表（按公司圈定的恢复影响范围；逐表计数＋最新更新时间） */
+/**
+ * 纳入备份一致性快照的表（按公司圈定的恢复影响范围；逐表计数＋最新更新时间）。
+ *
+ * 范围口径（任务 09 S2-4「受保护备份包含业务、草稿、原件、版本与未传任务等必要范围」）：
+ * - 业务根表：`repair_request`／`maintenance_report`／`reference_document`；
+ * - **版本与内容子表**：报告冻结版本、报告附件、版本附件、报告报警／步骤／故障分支、
+ *   工单管理修订、资料生效修订——只恢复根表而不恢复这些子表，会写出
+ *   「`current_version_no >= 1` 却没有对应版本行」这种**数据不自洽**的库；
+ * - **原件元数据**：`stored_file`（字节随包进 `files/`，见 `originals`）；
+ * - 本机运行数据：`local_upload_task`（未传任务）、`local_backup_run`（运行事实）。
+ */
 export const BACKUP_SCOPE_TABLES = [
   'repair_request',
+  'repair_request_revision',
   'maintenance_report',
+  'maintenance_report_version',
+  'maintenance_report_attachment',
+  'maintenance_report_version_attachment',
+  'maintenance_report_alarm',
+  'maintenance_report_step',
+  'maintenance_report_fault',
   'reference_document',
+  'reference_document_revision',
   'stored_file',
   'local_upload_task',
   'local_backup_run',
 ] as const;
 
 export type BackupScopeTable = (typeof BACKUP_SCOPE_TABLES)[number];
+/**
+ * 备份/恢复的**逐表口径**（公司范围过滤方式、时间列）。
+ *
+ * 备份侧据此圈定"本公司数据区"，恢复侧据此写回同一批行——两侧共用一份口径，
+ * 避免"备份按公司取、恢复按全表写"这类漂移。
+ *
+ * - `OWNER_ORGANIZATION`：表自带 `owner_organization_id`；
+ * - `PARENT_OWNER_ORGANIZATION`：子表没有公司列，按**父表**的公司归属圈定
+ *   （报告版本／附件／报警／步骤／故障分支、工单修订、资料修订）；
+ * - `ALL_DEVICE`：本机运行数据，无公司列，按设备全量纳入（未传任务）。
+ */
+export type BackupTableDescriptor = {
+  readonly scope: 'OWNER_ORGANIZATION' | 'PARENT_OWNER_ORGANIZATION' | 'ALL_DEVICE';
+  /** `PARENT_OWNER_ORGANIZATION` 时的父表 */
+  readonly parentTable?: BackupScopeTable;
+  /** 父表外键列（数据库列名） */
+  readonly parentColumn?: string;
+  /** 时间列（数据库列名）；无时间列的表取 null */
+  readonly timeColumn: string | null;
+};
+
+export const BACKUP_TABLE_DESCRIPTORS: Readonly<Record<BackupScopeTable, BackupTableDescriptor>> = {
+  repair_request: { scope: 'OWNER_ORGANIZATION', timeColumn: 'created_at' },
+  repair_request_revision: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'repair_request',
+    parentColumn: 'request_id',
+    timeColumn: 'created_at',
+  },
+  maintenance_report: { scope: 'OWNER_ORGANIZATION', timeColumn: 'updated_at' },
+  maintenance_report_version: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report',
+    parentColumn: 'report_id',
+    timeColumn: 'created_at',
+  },
+  maintenance_report_attachment: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report',
+    parentColumn: 'report_id',
+    timeColumn: 'updated_at',
+  },
+  maintenance_report_version_attachment: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report',
+    parentColumn: 'report_id',
+    timeColumn: null,
+  },
+  maintenance_report_alarm: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report',
+    parentColumn: 'report_id',
+    timeColumn: null,
+  },
+  maintenance_report_step: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report',
+    parentColumn: 'report_id',
+    timeColumn: 'updated_at',
+  },
+  maintenance_report_fault: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'maintenance_report',
+    parentColumn: 'report_id',
+    timeColumn: 'created_at',
+  },
+  reference_document: { scope: 'OWNER_ORGANIZATION', timeColumn: 'updated_at' },
+  reference_document_revision: {
+    scope: 'PARENT_OWNER_ORGANIZATION',
+    parentTable: 'reference_document',
+    parentColumn: 'document_id',
+    timeColumn: 'created_at',
+  },
+  stored_file: { scope: 'OWNER_ORGANIZATION', timeColumn: 'created_at' },
+  local_upload_task: { scope: 'ALL_DEVICE', timeColumn: 'updated_at' },
+  local_backup_run: { scope: 'ALL_DEVICE', timeColumn: null },
+};
+
+/**
+ * 恢复写回的**外键顺序**（先父后子）。
+ *
+ * 违反顺序会在写回时触发真实外键约束失败（`RESTORE_EXECUTION_FAILED`），
+ * 留下"写了一半"的库——因此顺序是**硬约束**，不是建议。
+ */
+export const BACKUP_RESTORE_TABLE_ORDER: readonly BackupScopeTable[] = [
+  'stored_file',
+  'repair_request',
+  'repair_request_revision',
+  'maintenance_report',
+  'maintenance_report_alarm',
+  'maintenance_report_step',
+  'maintenance_report_fault',
+  'maintenance_report_version',
+  'maintenance_report_attachment',
+  'maintenance_report_version_attachment',
+  'reference_document',
+  'reference_document_revision',
+  'local_upload_task',
+];
 
 export type BackupScopeEntry = {
   table: BackupScopeTable;
@@ -213,9 +330,12 @@ export function parseBackupManifest(value: unknown): BackupManifest {
     throw invalid('备份保护元数据非法');
   }
 
-  if (!Array.isArray(manifest.scope) || manifest.scope.length !== BACKUP_SCOPE_TABLES.length) {
-    throw invalid('一致性范围快照必须覆盖全部范围表');
+  if (!Array.isArray(manifest.scope) || manifest.scope.length === 0) {
+    throw invalid('一致性范围快照缺失');
   }
+  // 不要求"覆盖当前全部范围表"：范围表随任务推进会增加，写死等长会让**已落盘的旧包**
+  // 全部无法解析（与记录包"旧包兼容"同一条纪律）。范围与数据载荷的一致性由恢复执行层
+  // 复核（载荷里出现但范围快照没有的表 ⇒ 失败关闭）。
   const seenTables = new Set<string>();
   for (const entry of manifest.scope) {
     if (!BACKUP_SCOPE_TABLES.includes(entry?.table)) {

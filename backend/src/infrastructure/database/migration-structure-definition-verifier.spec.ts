@@ -515,10 +515,10 @@ describe('collectDefinitionCoverageIssues', () => {
     // maintenance_report_attachment 原件列、索引与外键，以及第 50 条
     // （1775502800000）新增的三张业务源表稳定身份列与唯一索引：它们不在本期交付清单内。
     expect(collectDefinitionCoverageStatistics()).toEqual([
-      { kind: 'column', expected: 324, covered: 324, missing: 0, inherited: 85 },
+      { kind: 'column', expected: 324, covered: 324, missing: 0, inherited: 86 },
       { kind: 'check', expected: 125, covered: 125, missing: 0, inherited: 89 },
       // 第 53 条（1775503200000）新增写传冻结表的范围索引与两条外键
-      { kind: 'index', expected: 54, covered: 54, missing: 0, inherited: 74 },
+      { kind: 'index', expected: 54, covered: 54, missing: 0, inherited: 75 },
       { kind: 'foreignKey', expected: 62, covered: 62, missing: 0, inherited: 60 },
       { kind: 'generatedColumn', expected: 2, covered: 2, missing: 0, inherited: 4 },
     ]);

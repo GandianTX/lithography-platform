@@ -81,17 +81,27 @@ describe('protected backup policy', () => {
     );
   });
 
-  it('范围快照必须覆盖全部范围表且不重复', () => {
+  it('范围快照不重复；旧包（范围表较少）仍可解析', () => {
     const manifest = buildProtectedBackupManifest(manifestInput());
-    expect(() => parseBackupManifest({ ...manifest, scope: manifest.scope.slice(1) })).toThrow(
-      '一致性范围快照必须覆盖全部范围表',
-    );
-    // 构造 6 项但首表重复的快照（s0, s0, s2..s5）
+    // 范围表随任务推进会增加，写死"等长"会让**已落盘的旧包**全部无法解析：
+    // 旧包（范围表较少）必须仍能解析，范围与载荷的一致性由恢复执行层复核。
+    expect(() =>
+      parseBackupManifest({ ...manifest, scope: manifest.scope.slice(1) }),
+    ).not.toThrow();
+    expect(() => parseBackupManifest({ ...manifest, scope: [] })).toThrow('一致性范围快照缺失');
+    // 构造首表重复的快照
     const duplicated = {
       ...manifest,
       scope: [manifest.scope[0], manifest.scope[0], ...manifest.scope.slice(2)],
     };
     expect(() => parseBackupManifest(duplicated)).toThrow('范围快照表重复');
+    // 范围表之外的表 ⇒ 拒绝
+    expect(() =>
+      parseBackupManifest({
+        ...manifest,
+        scope: [...manifest.scope, { table: 'not_a_table', rowCount: 0, lastUpdatedAt: null }],
+      }),
+    ).toThrow('范围快照包含未知表');
   });
 
   it('保护元数据非法拒绝', () => {

@@ -722,6 +722,14 @@ export const RECORD_PACKAGE_ERROR = {
   DUPLICATE_RECORD: 'RECORD_PACKAGE_DUPLICATE_RECORD',
   IMPORT_NOT_AVAILABLE: 'RECORD_PACKAGE_IMPORT_NOT_AVAILABLE',
   IMPORT_NOT_PASSED: 'RECORD_PACKAGE_IMPORT_NOT_PASSED',
+  /**
+   * 逐条**记录级授权**不通过（任务 09 S1-3）：记录存在且同公司，
+   * 但导出人对它没有当前读取权限（如工程师导出同公司他人正式资料）。
+   *
+   * 与 `FOREIGN_COMPANY` 分开：错公司与"无权"是两回事，
+   * 前者是数据区问题，后者是授权问题，页面展示口径不同。
+   */
+  NOT_AUTHORIZED: 'RECORD_PACKAGE_NOT_AUTHORIZED',
 } as const;
 Object.freeze(RECORD_PACKAGE_ERROR);
 

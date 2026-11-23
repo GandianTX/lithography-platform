@@ -3,6 +3,11 @@
 import { AccountStatus } from '@app-types/models/account.types';
 import { UserState } from '@app-types/models/user-info.types';
 
+import type {
+  RecordPackagePortableIdentityBasis,
+  RecordPackagePortableSourceIdentity,
+} from './record-package-portable-identity.policy';
+
 /**
  * 记录包导入的**来源身份本机可信裁决**（任务 09 S3 补丁 P4）。
  *
@@ -21,16 +26,22 @@ import { UserState } from '@app-types/models/user-info.types';
  * - 任务书「工程师和二级管理员按本机本公司访问有权元数据与包，一级按当前授权范围」。
  *
  * 判定顺序（任一不满足即拒绝，并给出可读原因；**不静默改归属、不冒用导入人**）：
- * 1. 包内未携带来源账号 → 拒绝（不得以导入人冒充原作者）；
- * 2. 包内归属公司与导入目标公司不一致 → 拒绝；
- * 3. 来源账号在本机不存在 → 拒绝；
- * 4. 来源账号已停用（`account_status` 非 ACTIVE）→ 拒绝；
- * 5. 来源账号资料缺失或已停用（`user_state` 非 ACTIVE）→ 拒绝；
- * 6. 来源账号不是目标公司的在职成员（归属变更／已离开／组织停用）→ 拒绝；
- * 7. 导入者对该来源账号没有当前权限 → 拒绝：
+ * 1. 包内来源身份**不可核验**（既无跨端稳定标识也无账号名，或本机均未命中）
+ *    → 拒绝（**绝不回退到包内数字 id 选作者**：源机与目标机的自增主键空间互不相干，
+ *    同号极可能是另一个人）；
+ * 2. 来源账号在本机不存在 → 拒绝；
+ * 3. 来源账号已停用（`account_status` 非 ACTIVE）→ 拒绝；
+ * 4. 来源账号资料缺失或已停用（`user_state` 非 ACTIVE）→ 拒绝；
+ * 5. 来源账号不是目标公司的在职成员（归属变更／已离开／组织停用）→ 拒绝；
+ * 6. 导入者对该来源账号没有当前权限 → 拒绝：
  *    - 本人导入本人同公司记录 → 允许；
  *    - 二级管理员按本公司范围 → 允许（任务书「二级管理员按本机本公司访问有权元数据与包」）；
  *    - 其余（工程师导入同公司他人记录、一级管理员）→ 拒绝。
+ *
+ * 公司归属（包内归属公司与导入目标公司是否一致）由**公司身份裁决**单独完成
+ * （`record-package-portable-identity.policy.ts` 的
+ * `evaluateRecordPackageCompanyIdentity`）：跨设备时包内公司数字 id 是源机主键，
+ * 必须按公司业务编码对齐，不能在这里按数字 id 比较。
  *
  * 本函数是纯函数：确定性、无 I/O、无 DI、无 ORM、无日志、不修改入参。
  */
@@ -48,6 +59,12 @@ export type RecordPackageSourceMembershipFact = {
 export type RecordPackageSourceIdentityFacts = {
   /** 包内登记的来源账号；`null` = 包内未携带来源身份 */
   readonly sourceAccountId: number | null;
+  /** 包内携带的可移植来源身份（跨端稳定标识／账号名／姓名快照／公司编码） */
+  readonly portable: RecordPackagePortableSourceIdentity;
+  /** 来源账号在本机被解析到的账号 id；`null` = 不可核验 */
+  readonly resolvedSourceAccountId: number | null;
+  /** 映射依据（供调用方写入逐条结果供人工复核） */
+  readonly identityBasis: RecordPackagePortableIdentityBasis | null;
   /** 来源账号在本机的账号状态；`null` = 本机不存在该账号 */
   readonly accountStatus: AccountStatus | null;
   /** 来源账号在本机的资料状态；`null` = 本机没有该账号的资料 */
@@ -109,11 +126,12 @@ function resolveTargetMembership(
 function evaluateImporterAuthority(
   facts: RecordPackageSourceIdentityFacts,
 ): RecordPackageSourceIdentityDecision {
-  if (facts.sourceAccountId !== null && facts.importerAccountId === facts.sourceAccountId) {
-    return { allowed: true, sourceAccountId: facts.sourceAccountId };
+  const resolved = facts.resolvedSourceAccountId;
+  if (resolved !== null && facts.importerAccountId === resolved) {
+    return { allowed: true, sourceAccountId: resolved };
   }
-  if (facts.importerAdminLevel === 2 && facts.sourceAccountId !== null) {
-    return { allowed: true, sourceAccountId: facts.sourceAccountId };
+  if (facts.importerAdminLevel === 2 && resolved !== null) {
+    return { allowed: true, sourceAccountId: resolved };
   }
   if (facts.importerAdminLevel === 1) {
     return {
@@ -136,19 +154,13 @@ function evaluateImporterAuthority(
 export function evaluateRecordPackageSourceIdentity(
   facts: RecordPackageSourceIdentityFacts,
 ): RecordPackageSourceIdentityDecision {
-  if (facts.sourceAccountId === null) {
+  if (facts.resolvedSourceAccountId === null) {
     return {
       allowed: false,
-      reason: '包内未携带来源账号，原作者不可核验（不以导入人冒充原作者），该条未导入',
-    };
-  }
-  if (
-    facts.ownerOrganizationId !== null &&
-    facts.ownerOrganizationId !== facts.targetOrganizationId
-  ) {
-    return {
-      allowed: false,
-      reason: '包内归属公司与导入目标公司不一致，该条未导入',
+      reason:
+        facts.portable.sourceAccountUuid === null && facts.portable.sourceAccountLoginName === null
+          ? '包内未携带跨端可移植的来源账号标识，原作者不可核验（不以导入人冒充原作者），该条未导入'
+          : '本机不存在可核验的来源账号，原作者不可核验，该条未导入',
     };
   }
   if (facts.accountStatus === null) {

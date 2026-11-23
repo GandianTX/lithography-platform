@@ -14,6 +14,7 @@ import { UserInfoEntity } from './user-info.entity';
 @Entity('base_user_account')
 @Index('uk_login_name', ['loginName'], { unique: true })
 @Index('uk_login_email', ['loginEmail'], { unique: true })
+@Index('uk_base_user_account_account_uuid', ['accountUuid'], { unique: true })
 export class AccountEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: 'primary key' })
   id!: number;
@@ -37,7 +38,31 @@ export class AccountEntity {
   })
   loginEmail!: string | null;
 
-  @Column({ name: 'login_password', type: 'varchar', length: 255, comment: '密码' })
+  /**
+   * 跨端稳定账号标识：创建入口一次性生成并持久化，之后不再变化。
+   *
+   * 用途（任务 09 S1-2）：记录包／业务同步在**跨设备**搬运时，需要把
+   * 「来源账号」映射到目标设备的同一个自然人。源机自增主键在目标机可能指向
+   * 另一个人，不能作为跨端身份；本列是账号行上的**不可变**标识，
+   * 可按列定向查找（唯一索引）。
+   *
+   * 历史行保持 NULL（不回填派生值冒充可信跨端身份）。
+   */
+  @Column({
+    name: 'account_uuid',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '跨端稳定账号标识；创建时一次性生成，历史行保持 NULL',
+  })
+  accountUuid!: string | null;
+
+  @Column({
+    name: 'login_password',
+    type: 'varchar',
+    length: 255,
+    comment: '密码',
+  })
   loginPassword!: string;
 
   @Column({

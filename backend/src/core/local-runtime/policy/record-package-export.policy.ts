@@ -139,8 +139,20 @@ export type RecordPackageExportItemDraft = {
   files: RecordPackageManifestFile[];
   /** 来源账号（原作者／责任工程师）：随条目入包，导入侧据此保持原作者 */
   sourceAccountId: number | null;
+  /** 来源账号的跨端稳定标识（`account_uuid`）：目标机按列命中即同一人 */
+  sourceAccountUuid: string | null;
+  /** 来源账号的可移植账号名（`login_name`）：次级映射依据 */
+  sourceAccountLoginName: string | null;
+  /** 来源账号的姓名快照：交叉核对用 */
+  sourceAccountName: string | null;
   /** 来源归属公司 */
   ownerOrganizationId: number;
+  /** 关联记录的跨端稳定编号（如工单总结关联的工单） */
+  relatedRecordUuid: string | null;
+  /** 关联记录的资源类型 */
+  relatedRecordType: string | null;
+  /** 来源记录的设备机型编码（跨设备定位机型的稳定依据） */
+  sourceEquipmentModelCode: string | null;
   /** 来源业务状态（导入正式事实需要知道来源状态） */
   sourceStatus: string | null;
 };
@@ -152,6 +164,13 @@ export type RecordPackageExportItemDraft = {
  */
 export function buildExportManifest(input: {
   organizationId: number;
+  /**
+   * 来源公司的**稳定业务编码**（`organization.organization_code`）。
+   *
+   * 跨设备搬运时源机的 `organization_id` 在目标机无意义（同一公司在两台设备上
+   * 可以是不同数字 id），必须带业务编码才能在目标机对齐公司。
+   */
+  organizationCode: string | null;
   installationId: string;
   generatedAt: Date;
   items: RecordPackageExportItemDraft[];
@@ -163,6 +182,7 @@ export function buildExportManifest(input: {
     schema_version: RECORD_PACKAGE_SCHEMA_VERSION,
     package_id: newRecordPackageId(),
     organization_id: input.organizationId,
+    organization_code: input.organizationCode,
     installation_id: input.installationId,
     generated_at: input.generatedAt.toISOString(),
     items: input.items.map<RecordPackageManifestItem>((item) => ({
@@ -173,7 +193,13 @@ export function buildExportManifest(input: {
       files: item.files,
       // 来源账号与归属公司随条目入包：导入侧据此核验并保持原作者（缺失即"不可核验"）
       source_account_id: item.sourceAccountId,
+      source_account_uuid: item.sourceAccountUuid,
+      source_account_login_name: item.sourceAccountLoginName,
+      source_account_name: item.sourceAccountName,
       owner_organization_id: item.ownerOrganizationId,
+      related_record_uuid: item.relatedRecordUuid,
+      related_record_type: item.relatedRecordType,
+      source_equipment_model_code: item.sourceEquipmentModelCode,
       source_status: item.sourceStatus,
     })),
   };

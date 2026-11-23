@@ -94,6 +94,7 @@ describe('record package import service', () => {
       importRepository as never,
       itemRepository as never,
       receiptRepository as never,
+      { findOrganizationIdentityByCode: () => Promise.resolve(null) } as never,
     );
 
     return { service, importRows, itemRows };

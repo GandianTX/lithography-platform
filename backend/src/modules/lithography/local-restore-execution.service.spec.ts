@@ -101,7 +101,14 @@ function buildService(options: {
 
   const writer = options.writer ?? {
     supportedTables: ['maintenance_report'],
-    write: jest.fn().mockResolvedValue({ status: 'WRITTEN', written: 1, reason: null }),
+    // 整体替换语义：一次事务内清空＋写回全部表
+    write: jest.fn().mockResolvedValue({
+      status: 'WRITTEN',
+      written: 1,
+      counts: { maintenance_report: 1 },
+      reason: null,
+    }),
+    restoreOriginals: jest.fn().mockResolvedValue({ restored: 0, failed: 0, reason: null }),
     count: jest
       .fn()
       .mockImplementation(({ table }: { table: string }) =>
@@ -114,6 +121,7 @@ function buildService(options: {
     backupAssetRepository as never,
     installationRepository as never,
     { hold, release } as never,
+    { appendRestoreEvent: jest.fn().mockResolvedValue(undefined) } as never,
     { get: jest.fn(() => writer) } as never,
     { keyHex: KEY_HEX, keyId: 'kid-1' },
   );
@@ -178,9 +186,13 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
     const { service, hold, release, restoreRunRepository } = buildService({
       writer: {
         supportedTables: ['maintenance_report'],
-        write: jest
-          .fn()
-          .mockResolvedValue({ status: 'FAILED', written: 0, reason: '写入被来源域拒绝' }),
+        write: jest.fn().mockResolvedValue({
+          status: 'FAILED',
+          written: 0,
+          counts: {},
+          reason: '写入被来源域拒绝',
+        }),
+        restoreOriginals: jest.fn().mockResolvedValue({ restored: 0, failed: 0, reason: null }),
         count: jest
           .fn()
           .mockImplementation(({ table }: { table: string }) =>
@@ -208,7 +220,10 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
     const { service, release } = buildService({
       writer: {
         supportedTables: ['maintenance_report'],
-        write: jest.fn().mockResolvedValue({ status: 'WRITTEN', written: 1, reason: null }),
+        write: jest
+          .fn()
+          .mockResolvedValue({ status: 'WRITTEN', written: 1, counts: {}, reason: null }),
+        restoreOriginals: jest.fn().mockResolvedValue({ restored: 0, failed: 0, reason: null }),
         count: jest.fn().mockResolvedValue(0),
       },
     });

@@ -104,13 +104,20 @@ describe('record package export policy', () => {
       files: [{ relative_path: 'files/e1000000/doc.txt', sha256: 'a'.repeat(64), byte_size: 3 }],
       // 来源事实（S3 补丁 P0/P4）：原作者、归属公司与业务状态随条目入包
       sourceAccountId: 900101,
+      sourceAccountUuid: null,
+      sourceAccountLoginName: null,
+      sourceAccountName: null,
       ownerOrganizationId: 4,
+      relatedRecordUuid: null,
+      relatedRecordType: null,
       sourceStatus: 'SUBMITTED',
+      sourceEquipmentModelCode: null,
     };
 
     it('产出通过导入侧同一结构校验的清单', () => {
       const manifest = buildExportManifest({
         organizationId: 4,
+        organizationCode: 'ORG-4',
         installationId: 'f5e4007d-e354-11f1-897b-345a604caa06',
         generatedAt: new Date('2026-11-19T00:00:00.000Z'),
         items: [baseItem],
@@ -124,12 +131,14 @@ describe('record package export policy', () => {
     it('package_id 每次导出独立生成', () => {
       const a = buildExportManifest({
         organizationId: 4,
+        organizationCode: 'ORG-4',
         installationId: 'i',
         generatedAt: new Date(),
         items: [baseItem],
       });
       const b = buildExportManifest({
         organizationId: 4,
+        organizationCode: 'ORG-4',
         installationId: 'i',
         generatedAt: new Date(),
         items: [baseItem],
@@ -142,6 +151,7 @@ describe('record package export policy', () => {
       expect(() =>
         buildExportManifest({
           organizationId: 4,
+          organizationCode: 'ORG-4',
           installationId: 'i',
           generatedAt: new Date(),
           items: [],
@@ -153,6 +163,7 @@ describe('record package export policy', () => {
       expect(() =>
         buildExportManifest({
           organizationId: 4,
+          organizationCode: 'ORG-4',
           installationId: 'i',
           generatedAt: new Date(),
           items: [

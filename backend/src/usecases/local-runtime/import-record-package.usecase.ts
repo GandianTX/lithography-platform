@@ -33,6 +33,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
 import { RecordPackageImportService } from '@src/modules/lithography/record-package-import.service';
+import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
 import { RecordPackageOriginalStagingService } from './record-package-original-staging.service';
 import {
   SYNC_SOURCE_RESOURCE_TYPES,
@@ -79,6 +80,7 @@ export class ImportRecordPackageUsecase {
   constructor(
     private readonly scopeResolver: LocalRuntimeScopeResolver,
     private readonly recordPackageImportService: RecordPackageImportService,
+    private readonly organizationQueryService: OrganizationQueryService,
     private readonly receiptService: BusinessSyncReceiptService,
     private readonly originalStagingService: RecordPackageOriginalStagingService,
     private readonly sourceRecordQueryService: SyncSourceRecordQueryService,
@@ -91,7 +93,14 @@ export class ImportRecordPackageUsecase {
   async execute(command: ImportRecordPackageCommand): Promise<ImportRecordPackageResult> {
     const scope = await this.scopeResolver.resolve(command.session);
     const facts = await this.recordPackageImportService.readImportFacts(command.packageId);
-    if (facts === null || facts.import.organizationId !== scope.organizationId) {
+    // 范围复核：查看者有可信公司时，批次必须落在**本公司**数据区；
+    // 一级管理员为全局授权范围（`scope.organizationId = null`），不按公司收窄。
+    // （修复：一级管理员此前因"批次公司 id ≠ null"被恒定拒绝，检查能过、导入不能过。）
+    const outsideScope =
+      scope.organizationId !== null && facts !== null
+        ? facts.import.organizationId !== scope.organizationId
+        : false;
+    if (facts === null || outsideScope) {
       throw new DomainError(RECORD_PACKAGE_ERROR.PACKAGE_NOT_FOUND, '记录包不存在或不在授权范围内');
     }
     if (facts.import.checkStatus !== 'PASSED') {
@@ -105,6 +114,7 @@ export class ImportRecordPackageUsecase {
     const evaluation = await this.recordPackageImportService.evaluatePackage({
       packagePath: command.packagePath,
       organizationId: scope.organizationId,
+      organizationCode: await this.readOrganizationCode(scope.organizationId),
       importedByAccountId: command.session.accountId,
     });
     if (
@@ -146,6 +156,7 @@ export class ImportRecordPackageUsecase {
         manifestChecksum: facts.import.manifestChecksum,
         packagePath: command.packagePath,
         sourceInstallationId: manifest.installation_id,
+        sourceOrganizationCode: manifest.organization_code ?? null,
         session: command.session,
         writer,
       });
@@ -173,6 +184,17 @@ export class ImportRecordPackageUsecase {
     };
   }
 
+  /** 查看者公司的稳定业务编码（跨安装对齐公司身份；读取失败即 null） */
+  private async readOrganizationCode(organizationId: number | null): Promise<string | null> {
+    if (organizationId === null) {
+      return null;
+    }
+    const identity = await this.organizationQueryService.findOrganizationIdentityById({
+      organizationId,
+    });
+    return identity?.organizationCode ?? null;
+  }
+
   /** 逐条导入：复核去重事实 → 受控写入 → 落逐条结果 */
   private async importOne(input: {
     item: RecordPackageItemSnapshot;
@@ -181,7 +203,13 @@ export class ImportRecordPackageUsecase {
           content_snapshot: unknown;
           files: { relative_path: string; sha256: string; byte_size: number }[];
           source_account_id?: number | null;
+          source_account_uuid?: string | null;
+          source_account_login_name?: string | null;
+          source_account_name?: string | null;
           owner_organization_id?: number | null;
+          source_equipment_model_code?: string | null;
+          related_record_uuid?: string | null;
+          related_record_type?: string | null;
           source_status?: string | null;
         }
       | undefined;
@@ -189,6 +217,8 @@ export class ImportRecordPackageUsecase {
     organizationId: number;
     manifestChecksum: string;
     sourceInstallationId: string;
+    /** 清单携带的来源公司稳定业务编码（跨安装对齐公司；旧包为 null） */
+    sourceOrganizationCode: string | null;
     session: UsecaseSession;
     writer: RecordPackageItemWriter | null;
   }): Promise<{ result: string }> {
@@ -287,7 +317,16 @@ export class ImportRecordPackageUsecase {
           originals: stagedOriginals,
           manifestChecksum: input.manifestChecksum,
           sourceAccountId: identity.sourceAccountId,
+          portableSourceIdentity: {
+            sourceAccountUuid: input.manifestItem?.source_account_uuid ?? null,
+            sourceAccountLoginName: input.manifestItem?.source_account_login_name ?? null,
+            sourceAccountName: input.manifestItem?.source_account_name ?? null,
+            sourceOrganizationCode: input.sourceOrganizationCode,
+          },
           ownerOrganizationId,
+          relatedRecordUuid: input.manifestItem?.related_record_uuid ?? null,
+          relatedRecordType: input.manifestItem?.related_record_type ?? null,
+          sourceEquipmentModelCode: input.manifestItem?.source_equipment_model_code ?? null,
           sourceStatus: input.manifestItem?.source_status ?? null,
         },
         input.session,
@@ -403,10 +442,16 @@ export class ImportRecordPackageUsecase {
     manifestItem:
       | {
           source_account_id?: number | null;
+          source_account_uuid?: string | null;
+          source_account_login_name?: string | null;
+          source_account_name?: string | null;
           owner_organization_id?: number | null;
+          source_equipment_model_code?: string | null;
         }
       | undefined;
     organizationId: number;
+    /** 清单携带的来源公司稳定业务编码（跨安装对齐公司；旧包为 null） */
+    sourceOrganizationCode: string | null;
     session: UsecaseSession;
     writer: RecordPackageItemWriter | null;
   }): Promise<
@@ -421,9 +466,8 @@ export class ImportRecordPackageUsecase {
   > {
     const { item } = input;
     const ownerOrganizationId = input.manifestItem?.owner_organization_id ?? null;
-    if (ownerOrganizationId !== null && ownerOrganizationId !== input.organizationId) {
-      return { kind: 'FAILED', reason: '包内归属公司与目标公司不一致，该条未导入' };
-    }
+    // 公司归属核对由**来源域核验器**按公司业务编码完成（跨设备时源机公司 id 无意义），
+    // 编排侧不再按数字 id 比较（那会把"同公司不同 id"误判为错公司）。
     if (input.writer === null) {
       return { kind: 'FAILED', reason: '没有可用的受控写入入口，该条未导入' };
     }
@@ -435,6 +479,12 @@ export class ImportRecordPackageUsecase {
     }
     const identity = await input.writer.verifySourceIdentity({
       sourceAccountId: input.manifestItem?.source_account_id ?? null,
+      portableSourceIdentity: {
+        sourceAccountUuid: input.manifestItem?.source_account_uuid ?? null,
+        sourceAccountLoginName: input.manifestItem?.source_account_login_name ?? null,
+        sourceAccountName: input.manifestItem?.source_account_name ?? null,
+        sourceOrganizationCode: input.sourceOrganizationCode,
+      },
       ownerOrganizationId,
       targetOrganizationId: input.organizationId,
       importerAccountId: input.session.accountId,

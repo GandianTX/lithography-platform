@@ -41,6 +41,7 @@ function buildUsecase(options: { evaluateError?: Error } = {}) {
   const usecase = new CheckRecordPackageUsecase(
     scopeResolver as never,
     { evaluatePackage, persistCheckOutcome } as never,
+    { findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-9' }) } as never,
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
   );
   return { usecase, evaluatePackage, persistCheckOutcome, scopeResolver };
@@ -61,6 +62,7 @@ describe('记录包检查（预检）用例（R071）', () => {
     expect(evaluatePackage.mock.calls[0][0]).toEqual({
       packagePath: '/mnt/usb/pkg',
       organizationId: 9,
+      organizationCode: 'ORG-9',
       importedByAccountId: 900101,
     });
     // 落库阶段只写"检查事实"（批次＋逐条结论），不是业务记录

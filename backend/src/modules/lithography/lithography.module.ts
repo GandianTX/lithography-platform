@@ -21,6 +21,8 @@ import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import { BackupRestoreAcceptanceService } from './backup-restore-acceptance.service';
 import { LocalRestoreExecutionService } from './local-restore-execution.service';
+import { LocalRestoreRecordWriterService } from './local-restore-record.writer';
+import { LOCAL_RESTORE_RECORD_WRITER } from '@usecases/common/ports/local-restore-record-writer.contract';
 import { LocalWriteHoldService } from './local-write-hold.service';
 import { LocalBackupPlanService } from './local-backup-plan.service';
 import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
@@ -189,6 +191,13 @@ export const LITHOGRAPHY_ENTITIES = [
     LocalWriteHoldService,
     // 恢复执行编排（任务 09 S5-2／S5-3）：冻结 → 按清单恢复 → 核验 → 解除冻结
     LocalRestoreExecutionService,
+    // 恢复的业务数据受控写入实现（任务 09 S2-2）：按端口令牌注册，
+    // 恢复编排在调用期查找（未注册＝逐项失败关闭，不静默跳过）
+    LocalRestoreRecordWriterService,
+    {
+      provide: LOCAL_RESTORE_RECORD_WRITER,
+      useExisting: LocalRestoreRecordWriterService,
+    },
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,
@@ -230,3 +239,69 @@ export const LITHOGRAPHY_ENTITIES = [
     BusinessSyncSourceService,
     BusinessSyncReceiptService,
     ManagementAuditEventQueryService,
+    ManagementAuditService,
+  ],
+  exports: [
+    TypeOrmModule,
+    LocalBackupPlanService,
+    BackupRestoreAcceptanceService,
+    LocalWriteHoldService,
+    LocalRestoreExecutionService,
+    ProtectedBackupService,
+    BackupRestorePrecheckService,
+    LocalBackupCleanupService,
+    AiConversationService,
+    AiConversationQueryService,
+    EquipmentModelService,
+    RepairRequestIntakeService,
+    IntakeAnalysisService,
+    SyncConflictQueryService,
+    SyncSourceRecordQueryService,
+    SyncStatusQueryService,
+    SyncConflictService,
+    RecordPackageImportService,
+    RecordPackageImportQueryService,
+    RecordPackageExportService,
+    EquipmentModelQueryService,
+    ReferenceDocumentQueryService,
+    RepairRequestQueryService,
+    RepairProcessEntryQueryService,
+    RepairRequestMaintenanceQueryService,
+    EngineerRepairRevisionQueryService,
+    AdminRepairRequestQueryService,
+    AdminAiConversationQueryService,
+    AdminAiMessageQueryService,
+    AdminAiReportQueryService,
+    RepairRequestService,
+    RepairRequestRevisionService,
+    RepairRequestMaintenanceService,
+    RepairProcessEntryService,
+    StoredFileService,
+    StoredFileQueryService,
+    ReferenceDocumentRevisionService,
+    ReferenceDocumentService,
+    ReferenceDocumentCaseDetailService,
+    EngineerResponseService,
+    OrganizationMembershipQueryService,
+    OrganizationQueryService,
+    OrganizationMembershipService,
+    OrganizationService,
+    AdminOrganizationProvisioningService,
+    EngineerRegistrationQueryService,
+    EngineerRegistrationService,
+    TrustedOrganizationContextQueryService,
+    ContentSubmissionService,
+    ContentSubmissionQueryService,
+    MaintenanceReportService,
+    MaintenanceReportQueryService,
+    LocalRuntimeService,
+    LocalRuntimeQueryService,
+    LocalCompanySettingQueryService,
+    LocalBackupAssetQueryService,
+    BusinessSyncSourceService,
+    BusinessSyncReceiptService,
+    ManagementAuditEventQueryService,
+    ManagementAuditService,
+  ],
+})
+export class LithographyModule {}

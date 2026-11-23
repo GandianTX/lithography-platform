@@ -2,12 +2,15 @@
 
 import {
   BACKUP_PAYLOAD_PATH,
+  BACKUP_RESTORE_TABLE_ORDER,
   BACKUP_SCOPE_TABLES,
+  BACKUP_TABLE_DESCRIPTORS,
   buildProtectedBackupManifest,
   encryptBackupPayload,
   parseProtectionKey,
   type BackupManifestOriginal,
   type BackupScopeEntry,
+  type BackupScopeTable,
 } from '@core/local-runtime/policy/protected-backup.policy';
 import {
   BACKUP_RETENTION_DAYS,
@@ -20,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as nodePath from 'node:path';
-import { type ObjectLiteral, Repository } from 'typeorm';
+import { In, type ObjectLiteral, Repository } from 'typeorm';
 
 import {
   REFERENCE_DOCUMENT_STORAGE,
@@ -36,9 +39,17 @@ import {
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
+import { MaintenanceReportAlarmEntity } from './entities/maintenance-report-alarm.entity';
+import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';
 import { MaintenanceReportEntity } from './entities/maintenance-report.entity';
+import { MaintenanceReportFaultEntity } from './entities/maintenance-report-fault.entity';
+import { MaintenanceReportStepEntity } from './entities/maintenance-report-step.entity';
+import { MaintenanceReportVersionAttachmentEntity } from './entities/maintenance-report-version-attachment.entity';
+import { MaintenanceReportVersionEntity } from './entities/maintenance-report-version.entity';
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
+import { ReferenceDocumentRevisionEntity } from './entities/reference-document-revision.entity';
 import { RepairRequestEntity } from './entities/repair-request.entity';
+import { RepairRequestRevisionEntity } from './entities/repair-request-revision.entity';
 import { StoredFileEntity } from './entities/stored-file.entity';
 
 type PackageFileFact = { relative_path: string; sha256: string; byte_size: number };
@@ -69,6 +80,22 @@ export class ProtectedBackupService {
     private readonly storedFileRepository: Repository<StoredFileEntity>,
     @InjectRepository(LocalUploadTaskEntity)
     private readonly uploadTaskRepository: Repository<LocalUploadTaskEntity>,
+    @InjectRepository(RepairRequestRevisionEntity)
+    private readonly repairRequestRevisionRepository: Repository<RepairRequestRevisionEntity>,
+    @InjectRepository(MaintenanceReportVersionEntity)
+    private readonly reportVersionRepository: Repository<MaintenanceReportVersionEntity>,
+    @InjectRepository(MaintenanceReportAttachmentEntity)
+    private readonly reportAttachmentRepository: Repository<MaintenanceReportAttachmentEntity>,
+    @InjectRepository(MaintenanceReportVersionAttachmentEntity)
+    private readonly reportVersionAttachmentRepository: Repository<MaintenanceReportVersionAttachmentEntity>,
+    @InjectRepository(MaintenanceReportAlarmEntity)
+    private readonly reportAlarmRepository: Repository<MaintenanceReportAlarmEntity>,
+    @InjectRepository(MaintenanceReportStepEntity)
+    private readonly reportStepRepository: Repository<MaintenanceReportStepEntity>,
+    @InjectRepository(MaintenanceReportFaultEntity)
+    private readonly reportFaultRepository: Repository<MaintenanceReportFaultEntity>,
+    @InjectRepository(ReferenceDocumentRevisionEntity)
+    private readonly documentRevisionRepository: Repository<ReferenceDocumentRevisionEntity>,
     @Inject(REFERENCE_DOCUMENT_STORAGE)
     private readonly fileStorage: ReferenceDocumentStorage,
     @Inject(LOCAL_BACKUP_PROTECTION)
@@ -292,18 +319,21 @@ export class ProtectedBackupService {
         continue;
       }
       const repository = this.repositoryForTable(table) as Repository<ObjectLiteral>;
-      const where = this.scopeWhere(table, organizationId);
-      // 时间列各表不同：报修与存储文件只登记 created_at，其余表为 updated_at
-      const timeColumn =
-        table === 'repair_request' || table === 'stored_file' ? 'createdAt' : 'updatedAt';
-      const [rowCount, lastRow] = await Promise.all([
-        repository.count(where as never),
-        repository.findOne({
-          where: where,
-          order: { [timeColumn]: 'DESC' },
-        }),
-      ]);
-      const updatedAt = lastRow?.[timeColumn] as Date | undefined;
+      const descriptor = BACKUP_TABLE_DESCRIPTORS[table];
+      const timeColumn = descriptor.timeColumn;
+      const countQuery = repository.createQueryBuilder('t');
+      this.applyScopeFilter(countQuery, table, organizationId);
+      const rowCount = await countQuery.getCount();
+      let updatedAt: Date | undefined;
+      if (timeColumn !== null) {
+        const latestQuery = repository.createQueryBuilder('t');
+        this.applyScopeFilter(latestQuery, table, organizationId);
+        const lastRow = await latestQuery
+          .orderBy(`t.${timeColumn}`, 'DESC')
+          .limit(1)
+          .getRawOne<Record<string, Date> | null>();
+        updatedAt = lastRow === null || lastRow === undefined ? undefined : lastRow[timeColumn];
+      }
       scope.push({ table, rowCount, lastUpdatedAt: updatedAt?.toISOString() ?? null });
     }
     return scope;
@@ -315,21 +345,30 @@ export class ProtectedBackupService {
    * 任务/运行事实表无公司列（S0 结构事实 G-8，裁定 D-10 不改结构），
    * 一库一设备前提下按设备全量纳入，归属一致性由来源业务表行保证。
    */
-  private scopeWhere(table: string, organizationId: number): Record<string, unknown> {
-    if (table === 'local_upload_task') {
-      return {};
-    }
-    return { ownerOrganizationId: organizationId };
-  }
-
   private repositoryForTable(table: string): Repository<ObjectLiteral> | null {
     switch (table) {
       case 'repair_request':
         return this.repairRequestRepository;
+      case 'repair_request_revision':
+        return this.repairRequestRevisionRepository;
       case 'maintenance_report':
         return this.maintenanceReportRepository;
+      case 'maintenance_report_version':
+        return this.reportVersionRepository;
+      case 'maintenance_report_attachment':
+        return this.reportAttachmentRepository;
+      case 'maintenance_report_version_attachment':
+        return this.reportVersionAttachmentRepository;
+      case 'maintenance_report_alarm':
+        return this.reportAlarmRepository;
+      case 'maintenance_report_step':
+        return this.reportStepRepository;
+      case 'maintenance_report_fault':
+        return this.reportFaultRepository;
       case 'reference_document':
         return this.referenceDocumentRepository;
+      case 'reference_document_revision':
+        return this.documentRevisionRepository;
       case 'stored_file':
         return this.storedFileRepository;
       case 'local_upload_task':
@@ -339,41 +378,56 @@ export class ProtectedBackupService {
     }
   }
 
-  /** 公司数据行 JSON（核心业务表全行，作为可恢复载荷） */
+  /**
+   * 按**逐表口径**圈定本公司数据区（根表按公司列，子表按父表公司归属）。
+   *
+   * 子表没有公司列，只能按父表 id 集合圈定——这里用子查询一次完成，
+   * 不把全公司行拉到内存再过滤。
+   */
+  private applyScopeFilter(
+    queryBuilder: ReturnType<Repository<ObjectLiteral>['createQueryBuilder']>,
+    table: BackupScopeTable,
+    organizationId: number,
+  ): void {
+    const descriptor = BACKUP_TABLE_DESCRIPTORS[table];
+    if (descriptor.scope === 'ALL_DEVICE') {
+      return;
+    }
+    if (descriptor.scope === 'OWNER_ORGANIZATION') {
+      queryBuilder.where('t.owner_organization_id = :organizationId', { organizationId });
+      return;
+    }
+    const parentTable = descriptor.parentTable;
+    const parentColumn = descriptor.parentColumn;
+    if (parentTable === undefined || parentColumn === undefined) {
+      throw new Error(`备份范围口径缺少父表定义：${table}`);
+    }
+    queryBuilder.where(
+      `t.${parentColumn} IN (SELECT p.id FROM ${parentTable} p WHERE p.owner_organization_id = :organizationId)`,
+      { organizationId },
+    );
+  }
+
+  /**
+   * 公司数据行 JSON（可恢复载荷）。
+   *
+   * 逐表按**同一份口径**（`BACKUP_TABLE_DESCRIPTORS`）圈定：
+   * 根表按 `owner_organization_id`，子表按父表公司归属，本机运行数据按设备全量。
+   * 顺序按 `BACKUP_RESTORE_TABLE_ORDER`（先父后子）写出，恢复侧据此写回时
+   * 外键顺序天然成立。
+   */
   private async collectCompanyRows(organizationId: number): Promise<Record<string, unknown>> {
     const rows: Record<string, unknown> = {};
-    // stored_file 主键为 fileId（char36），其余业务表主键为 id
-    const tables: [string, Repository<ObjectLiteral>, Record<string, unknown>, string][] = [
-      [
-        'repair_request',
-        this.repairRequestRepository,
-        { ownerOrganizationId: organizationId },
-        'id',
-      ],
-      [
-        'maintenance_report',
-        this.maintenanceReportRepository,
-        { ownerOrganizationId: organizationId },
-        'id',
-      ],
-      [
-        'reference_document',
-        this.referenceDocumentRepository,
-        { ownerOrganizationId: organizationId },
-        'id',
-      ],
-      ['stored_file', this.storedFileRepository, { ownerOrganizationId: organizationId }, 'fileId'],
-    ];
-    for (const [table, repository, where, orderKey] of tables) {
-      rows[table] = await repository.find({
-        where: where as never,
-        order: { [orderKey]: 'ASC' },
-      });
+    for (const table of BACKUP_RESTORE_TABLE_ORDER) {
+      const repository = this.repositoryForTable(table);
+      if (repository === null) {
+        continue;
+      }
+      const queryBuilder = repository.createQueryBuilder('t');
+      this.applyScopeFilter(queryBuilder, table, organizationId);
+      const orderColumn = table === 'stored_file' ? 'file_id' : 'id';
+      rows[table] = await queryBuilder.orderBy(`t.${orderColumn}`, 'ASC').getMany();
     }
-    // 上传任务无公司列（G-8/D-10）：按设备全量纳入
-    rows.local_upload_task = await this.uploadTaskRepository.find({
-      order: { id: 'ASC' } as never,
-    });
     return rows;
   }
 
@@ -403,6 +457,29 @@ export class ProtectedBackupService {
         sha256: stored.checksumSha256 ?? null,
       });
     }
+    // 报告附件**自带**存储引用（读侧按附件行的引用取字节，不经 stored_file）：
+    // 必须一并进包并单独绑定，否则恢复后附件仍指向已被清理的旧引用。
+    const reportIds = (
+      await this.maintenanceReportRepository.find({
+        where: { ownerOrganizationId: organizationId } as never,
+        select: { id: true },
+      })
+    ).map((report) => report.id);
+    if (reportIds.length > 0) {
+      const attachments = await this.reportAttachmentRepository.find({
+        where: { reportId: In(reportIds) } as never,
+      });
+      for (const attachment of attachments) {
+        if (attachment.storageReference === null || attachment.storageReference === '') {
+          continue;
+        }
+        originals.push({
+          source: `maintenance_report_attachment:${attachment.id}`,
+          storage_reference: attachment.storageReference,
+          sha256: attachment.checksumSha256 ?? null,
+        });
+      }
+    }
     return originals;
   }
 
@@ -412,14 +489,20 @@ export class ProtectedBackupService {
     originals: BackupManifestOriginal[],
     files: PackageFileFact[],
   ): Promise<void> {
+    // 同一存储引用可能被多个业务行登记（如 stored_file 与报告附件）：
+    // 包内路径唯一，重复引用只复制一次（清单不出现重复相对路径）。
+    const copied = new Set<string>();
     for (const original of originals) {
+      const relativePath = `files/${original.storage_reference}`;
+      if (copied.has(relativePath)) {
+        continue;
+      }
       let source;
       try {
         source = await this.fileStorage.open(original.storage_reference);
       } catch {
         continue;
       }
-      const relativePath = `files/${original.storage_reference}`;
       const absolutePath = nodePath.join(targetPath, relativePath);
       await mkdir(nodePath.dirname(absolutePath), { recursive: true });
       const hash = createHash('sha256');
@@ -441,6 +524,7 @@ export class ProtectedBackupService {
           sha256: hash.digest('hex'),
           byte_size: byteSize,
         });
+        copied.add(relativePath);
       } catch {
         output.destroy();
         // 复制失败保留引用清单（S3.4 中断核对口径），不阻断本次备份

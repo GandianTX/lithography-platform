@@ -44,6 +44,54 @@ export class OrganizationQueryService {
   ) {}
 
   /**
+   * 按**业务编码**读取组织身份（任务 09 S1-2）。
+   *
+   * `organization_code` 是公司跨设备可携带的稳定编号（实体注释：
+   * 「组织业务编码」；名称可改，编号不变）。记录包／业务同步跨设备搬运时，
+   * 源机的 `organization_id`（自增主键）在目标机没有意义，必须用业务编码对齐公司。
+   *
+   * 只返回定位与判定所需事实（主键、编码、状态、类别）；未命中返回 `null`。
+   */
+  async findOrganizationIdentityByCode(params: {
+    organizationCode: string;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<{
+    id: number;
+    organizationCode: string;
+    name: string;
+    status: string;
+    kind: string;
+  } | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({
+      where: { organizationCode: params.organizationCode },
+      select: { id: true, organizationCode: true, name: true, status: true, kind: true },
+    });
+    return row ?? null;
+  }
+
+  /**
+   * 按主键读取组织身份（导出侧取来源公司的稳定业务编码）。
+   */
+  async findOrganizationIdentityById(params: {
+    organizationId: number;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<{
+    id: number;
+    organizationCode: string;
+    name: string;
+    status: string;
+    kind: string;
+  } | null> {
+    const repository = this.getRepository(params.transactionContext);
+    const row = await repository.findOne({
+      where: { id: params.organizationId },
+      select: { id: true, organizationCode: true, name: true, status: true, kind: true },
+    });
+    return row ?? null;
+  }
+
+  /**
    * 一级维护名单（受管公司）的窄引用列表，供「已绑定二级管理员」在线列表使用。
    *
    * 只返回定位与绑定判定所需字段（主键、编号、名称、状态），不返回联系方式或成员。

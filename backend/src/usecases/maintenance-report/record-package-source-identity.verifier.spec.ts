@@ -58,9 +58,49 @@ function buildVerifier(
       options.importerAdminLevel === undefined ? null : options.importerAdminLevel,
     );
 
+  const findCrossInstallationIdentity = jest
+    .fn()
+    .mockImplementation((params: { accountUuid?: string | null; loginName?: string | null }) => {
+      if (params.accountUuid === null && params.loginName === null) {
+        return Promise.resolve(null);
+      }
+      if (
+        params.loginName === 'engineer-2' ||
+        params.accountUuid === 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+      ) {
+        return Promise.resolve({
+          accountId: 900202,
+          accountUuid: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
+          loginName: 'engineer-2',
+          realName: '李四',
+          accountStatus: AccountStatus.ACTIVE,
+          userState: UserState.ACTIVE,
+        });
+      }
+      if (params.accountUuid === 'not-found-uuid') {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve({
+        accountId: SOURCE_ACCOUNT_ID,
+        accountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        loginName: 'engineer-1',
+        realName: '张三',
+        accountStatus: AccountStatus.ACTIVE,
+        userState: UserState.ACTIVE,
+      });
+    });
+
   const verifier = new RecordPackageSourceIdentityVerifier(
-    { findSessionAuthoritySnapshot, findAdminLevelByAccountId } as never,
+    {
+      findSessionAuthoritySnapshot,
+      findAdminLevelByAccountId,
+      findCrossInstallationIdentity,
+    } as never,
     { listMembershipsForBinding } as never,
+    {
+      findOrganizationIdentityById: () =>
+        Promise.resolve({ organizationCode: 'ORG-9', id: TARGET_ORGANIZATION_ID }),
+    } as never,
   );
 
   return {
@@ -77,6 +117,12 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
 
     const decision = await verifier.verify({
       sourceAccountId: SOURCE_ACCOUNT_ID,
+      portableSourceIdentity: {
+        sourceAccountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        sourceAccountLoginName: 'engineer-1',
+        sourceAccountName: '张三',
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,
@@ -85,11 +131,17 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
     expect(decision).toEqual({ allowed: true, sourceAccountId: SOURCE_ACCOUNT_ID });
   });
 
-  it('包内缺来源账号：不查库即拒绝（不给"未知即放行"的机会）', async () => {
+  it('包内既无数字账号 id 也无可移植标识：不查库即拒绝（不给"未知即放行"的机会）', async () => {
     const { verifier, findSessionAuthoritySnapshot } = buildVerifier();
 
     const decision = await verifier.verify({
       sourceAccountId: null,
+      portableSourceIdentity: {
+        sourceAccountUuid: null,
+        sourceAccountLoginName: null,
+        sourceAccountName: null,
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,
@@ -104,6 +156,12 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
 
     const decision = await verifier.verify({
       sourceAccountId: SOURCE_ACCOUNT_ID,
+      portableSourceIdentity: {
+        sourceAccountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        sourceAccountLoginName: 'engineer-1',
+        sourceAccountName: '张三',
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,
@@ -118,6 +176,12 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
 
     const decision = await verifier.verify({
       sourceAccountId: SOURCE_ACCOUNT_ID,
+      portableSourceIdentity: {
+        sourceAccountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        sourceAccountLoginName: 'engineer-1',
+        sourceAccountName: '张三',
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,
@@ -140,6 +204,12 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
 
     const decision = await verifier.verify({
       sourceAccountId: SOURCE_ACCOUNT_ID,
+      portableSourceIdentity: {
+        sourceAccountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        sourceAccountLoginName: 'engineer-1',
+        sourceAccountName: '张三',
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,
@@ -154,6 +224,12 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
 
     const decision = await verifier.verify({
       sourceAccountId: 900202,
+      portableSourceIdentity: {
+        sourceAccountUuid: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
+        sourceAccountLoginName: 'engineer-2',
+        sourceAccountName: '李四',
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,
@@ -169,6 +245,12 @@ describe('记录包来源身份核验器（S3 补丁 P4）', () => {
 
     const decision = await verifier.verify({
       sourceAccountId: 900202,
+      portableSourceIdentity: {
+        sourceAccountUuid: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
+        sourceAccountLoginName: 'engineer-2',
+        sourceAccountName: '李四',
+        sourceOrganizationCode: 'ORG-9',
+      },
       ownerOrganizationId: TARGET_ORGANIZATION_ID,
       targetOrganizationId: TARGET_ORGANIZATION_ID,
       importerAccountId: IMPORTER_ACCOUNT_ID,

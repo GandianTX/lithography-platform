@@ -39,6 +39,15 @@ export type RecordPackageManifest = {
   schema_version: number;
   package_id: string;
   organization_id: number;
+  /**
+   * 来源公司的**稳定业务编码**（`organization.organization_code`）。
+   *
+   * 加法式可选字段（任务 09 S1-2）：源机的 `organization_id` 是**源机自增主键**，
+   * 在目标机上没有意义（同一公司在两台设备上的 id 可以不同）。跨设备搬运时
+   * 必须用**公司业务编码**对齐公司；缺失时按旧口径只比数字 id（同机包），
+   * 跨机包会因数字 id 不同而被拒绝（不会误判成同公司）。
+   */
+  organization_code?: string | null;
   installation_id: string;
   generated_at: string;
   items: RecordPackageManifestItem[];
@@ -59,8 +68,41 @@ export type RecordPackageManifestItem = {
    * "**来源身份不可核验**"拒绝该条（不得把导入人写成原作者）。
    */
   source_account_id?: number | null;
+  /**
+   * 来源账号的**跨端稳定标识**（`base_user_account.account_uuid`）——加法式可选字段。
+   *
+   * 这是**不可变**的跨端身份（创建时一次性生成，唯一索引）：源机与目标机各自建号时
+   * 该值不同，命中即证明两个账号行是同一条账号事实（数据库克隆/同步场景）。
+   */
+  source_account_uuid?: string | null;
+  /**
+   * 来源账号的**可移植账号名**（`base_user_account.login_name`）——加法式可选字段。
+   *
+   * 账号名是工程师的**工作账号名**，跨设备可携带；但本人可自助改名，
+   * 因此它只作为**次级**映射依据（配合公司编码与姓名快照交叉核对）。
+   */
+  source_account_login_name?: string | null;
+  /** 来源账号的姓名快照（仅供跨设备人工复核，不作唯一判据） */
+  source_account_name?: string | null;
   /** 来源归属公司（数据为准，导入侧逐条复核） */
   owner_organization_id?: number | null;
+  /**
+   * 关联记录的**跨端稳定编号**（如工单总结关联的工单 `repair_request.record_uuid`）。
+   *
+   * 加法式可选字段：工单总结类报告在目标机上必须能定位到"那一张工单"，
+   * 源机的数字外键跨机无意义（按数字 id 猜会把报告挂到另一张工单上）。
+   */
+  related_record_uuid?: string | null;
+  /** 关联记录的资源类型（如 `REPAIR_REQUEST`） */
+  related_record_type?: string | null;
+  /**
+   * 来源记录的**设备机型编码**（`equipment_model.model_code`）——加法式可选字段。
+   *
+   * 机型 id 是**全局型号库**的自增主键，跨设备同样不可移植（与账号 id 同类缺陷）：
+   * 直接写入目标机会把报告挂到**另一款机型**上。因此随包携带稳定的机型编码，
+   * 目标机按编码在本机定位；定位不到即逐条拒绝（不猜机型、不静默改成空）。
+   */
+  source_equipment_model_code?: string | null;
   /**
    * 来源业务状态（如报告的 DRAFT/PENDING_REVIEW/APPROVED）。
    *
@@ -84,7 +126,9 @@ export type RecordPackageItemRejection =
   | 'FILE_MISSING'
   | 'FILE_CHECKSUM_MISMATCH'
   | 'DUPLICATE_RECORD'
-  | 'FOREIGN_COMPANY';
+  | 'FOREIGN_COMPANY'
+  /** 记录级授权不通过（不是本人有权访问的记录；不是"公司不符"） */
+  | 'NOT_AUTHORIZED';
 
 /**
  * 解析并校验包清单结构（不含文件系统访问）：
@@ -119,6 +163,18 @@ export function parseRecordPackageManifest(raw: string): RecordPackageManifest {
   if (!Number.isInteger(manifest.organization_id) || (manifest.organization_id as number) <= 0) {
     throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_MANIFEST, 'organization_id 必须为正整数');
   }
+  if (
+    manifest.organization_code !== undefined &&
+    manifest.organization_code !== null &&
+    (typeof manifest.organization_code !== 'string' ||
+      manifest.organization_code.length === 0 ||
+      manifest.organization_code.length > 64)
+  ) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_MANIFEST,
+      'organization_code 必须为 1~64 字的字符串',
+    );
+  }
   if (typeof manifest.installation_id !== 'string' || manifest.installation_id === '') {
     throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_MANIFEST, 'installation_id 缺失');
   }
@@ -131,6 +187,8 @@ export function parseRecordPackageManifest(raw: string): RecordPackageManifest {
     schema_version: RECORD_PACKAGE_SCHEMA_VERSION,
     package_id: manifest.package_id,
     organization_id: manifest.organization_id as number,
+    organization_code:
+      typeof manifest.organization_code === 'string' ? manifest.organization_code : null,
     installation_id: manifest.installation_id,
     generated_at: typeof manifest.generated_at === 'string' ? manifest.generated_at : '',
     items,
@@ -186,13 +244,72 @@ function validateManifestItem(item: unknown, index: number): RecordPackageManife
       'source_account_id',
       index,
     ),
+    source_account_uuid: readOptionalUuid(record.source_account_uuid, 'source_account_uuid', index),
+    source_account_login_name: readOptionalText(
+      record.source_account_login_name,
+      'source_account_login_name',
+      index,
+      30,
+    ),
+    source_account_name: readOptionalText(
+      record.source_account_name,
+      'source_account_name',
+      index,
+      200,
+    ),
     owner_organization_id: readOptionalPositiveInteger(
       record.owner_organization_id,
       'owner_organization_id',
       index,
     ),
+    related_record_uuid: readOptionalUuid(record.related_record_uuid, 'related_record_uuid', index),
+    related_record_type: readOptionalText(
+      record.related_record_type,
+      'related_record_type',
+      index,
+      32,
+    ),
+    source_equipment_model_code: readOptionalText(
+      record.source_equipment_model_code,
+      'source_equipment_model_code',
+      index,
+      50,
+    ),
     source_status: readOptionalStatus(record.source_status, index),
   };
+}
+
+/** 读取可选 UUID 字段（缺失／为 null 视为"未携带"；形态非法即清单非法） */
+function readOptionalUuid(value: unknown, field: string, index: number): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_MANIFEST,
+      `第 ${index + 1} 条 ${field} 必须为 UUID`,
+    );
+  }
+  return value;
+}
+
+/** 读取可选文本字段（缺失／为 null 视为"未携带"；空串或超长即清单非法） */
+function readOptionalText(
+  value: unknown,
+  field: string,
+  index: number,
+  maxLength: number,
+): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_MANIFEST,
+      `第 ${index + 1} 条 ${field} 必须为 1~${maxLength} 字的字符串`,
+    );
+  }
+  return value;
 }
 
 /** 读取可选状态字符串（缺失／为 null 视为"未携带"；过长即清单非法） */
@@ -316,6 +433,44 @@ export function assertOrganizationScopeAllowed(
   if (viewerOrganizationId !== null && viewerOrganizationId !== targetOrganizationId) {
     throw new DomainError(RECORD_PACKAGE_ERROR.FOREIGN_COMPANY, message);
   }
+}
+
+/**
+ * 跨安装可用的公司身份断言（任务 09 S1-2）。
+ *
+ * 源机与目标机的 `organization.id` 是各自的自增主键，**同一公司在两台设备上
+ * 可以是不同的数字 id**。因此跨设备搬运必须用**公司业务编码**
+ * （`organization.organization_code`，名称可改、编号不变）来对齐公司。
+ *
+ * 判定顺序：
+ * 1. 查看方为一级管理员（`viewerOrganizationId = null`）→ 全局授权范围，放行；
+ * 2. 包清单**携带**公司编码 → 必须与查看方公司的编码一致，否则拒绝
+ *    （此时**不再**比较数字 id：跨机时数字 id 本就不同）；
+ * 3. 包清单**未携带**公司编码（旧包）→ 回退到数字 id 比较（同机包口径）。
+ */
+export function assertPackageCompanyAllowedByIdentity(input: {
+  viewerOrganizationId: number | null;
+  viewerOrganizationCode: string | null;
+  manifestOrganizationId: number;
+  manifestOrganizationCode: string | null;
+}): void {
+  if (input.viewerOrganizationId === null) {
+    return;
+  }
+  if (input.manifestOrganizationCode !== null) {
+    if (
+      input.viewerOrganizationCode !== null &&
+      input.viewerOrganizationCode === input.manifestOrganizationCode
+    ) {
+      return;
+    }
+    throw new DomainError(RECORD_PACKAGE_ERROR.FOREIGN_COMPANY, '记录包属于其他公司，拒绝检查');
+  }
+  assertOrganizationScopeAllowed(
+    input.viewerOrganizationId,
+    input.manifestOrganizationId,
+    '记录包属于其他公司，拒绝检查',
+  );
 }
 
 /**

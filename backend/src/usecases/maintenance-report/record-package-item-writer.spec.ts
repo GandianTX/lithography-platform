@@ -36,6 +36,7 @@ const REQUEST = {
   recordUuid: '11111111-2222-4333-8444-555555555555',
   versionNo: 2,
   organizationId: 9,
+  sourceEquipmentModelCode: null,
   body: {
     schema_version: 1,
     record_id: 12,
@@ -61,7 +62,15 @@ const REQUEST = {
   originals: [],
   manifestChecksum: 'a'.repeat(64),
   sourceAccountId: 900101,
+  portableSourceIdentity: {
+    sourceAccountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    sourceAccountLoginName: 'engineer-1',
+    sourceAccountName: '某工程师',
+    sourceOrganizationCode: 'ORG-9',
+  },
   ownerOrganizationId: 9,
+  relatedRecordUuid: null,
+  relatedRecordType: null,
   sourceStatus: 'SUBMITTED',
 };
 
@@ -72,6 +81,12 @@ const REQUEST = {
 function buildVerifier(override?: {
   verify: (params: {
     sourceAccountId: number | null;
+    portableSourceIdentity: {
+      sourceAccountUuid: string | null;
+      sourceAccountLoginName: string | null;
+      sourceAccountName: string | null;
+      sourceOrganizationCode: string | null;
+    };
     ownerOrganizationId: number | null;
     targetOrganizationId: number;
     importerAccountId: number;
@@ -97,6 +112,10 @@ function buildWriter(
   options: {
     insertError?: Error;
     verifier?: ReturnType<typeof buildVerifier>;
+    /** 来源域只读事实（工单定位）替身 */
+    sourceFacts?: { listFacts: jest.Mock };
+    /** 机型查询替身 */
+    equipmentModel?: { findModelByCode: jest.Mock };
   } = {},
 ) {
   const insertReport = jest.fn((_data?: Record<string, unknown>) => {
@@ -118,9 +137,15 @@ function buildWriter(
       insertVersion,
       insertVersionAttachments,
     } as never,
-    {} as never,
-    {} as never,
-    verifier as never,
+    {} as never, // maintenanceReportQueryService
+    (options.sourceFacts ?? {
+      listFacts: jest.fn().mockResolvedValue({ facts: new Map(), scanComplete: true }),
+    }) as never, // syncSourceRecordQueryService
+    (options.equipmentModel ?? {
+      findModelByCode: jest.fn().mockResolvedValue(null),
+    }) as never, // equipmentModelQueryService
+    {} as never, // storedFileService
+    verifier as never, // sourceIdentityVerifier
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
   );
   return { writer, insertReport, insertVersion, insertVersionAttachments, verifier };
@@ -236,7 +261,7 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
     expect(versionRows[0].attachmentId).toBe(5);
   });
 
-  it('工单总结来源：关联工单事实规则未确认前拒绝', async () => {
+  it('工单总结来源：包内未携带关联工单的跨端稳定编号时拒绝（不猜工单）', async () => {
     const { writer, insertReport } = buildWriter();
 
     const outcome = await writer.write(
@@ -252,6 +277,142 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
 
     expect(outcome.status).toBe('FAILED');
     expect(outcome.reason).toContain('工单总结');
+    expect(insertReport).not.toHaveBeenCalled();
+  });
+
+  it('工单总结来源：按工单跨端稳定编号定位本机工单并写入本机工单 id', async () => {
+    const listFacts = jest.fn().mockResolvedValue({
+      facts: new Map([
+        [
+          'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+          { recordId: 77, withdrawn: false, currentVersion: 3, identityPersisted: true },
+        ],
+      ]),
+      scanComplete: true,
+    });
+    const { writer, insertReport, insertVersion } = buildWriter({
+      sourceFacts: { listFacts },
+    });
+
+    const outcome = await writer.write(
+      {
+        ...REQUEST,
+        relatedRecordType: 'REPAIR_REQUEST',
+        relatedRecordUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        body: {
+          ...REQUEST.body,
+          payload: {
+            ...REQUEST.body.payload,
+            sourceType: 'WORK_ORDER_SUMMARY',
+            repairRequestId: 999,
+          },
+        },
+      },
+      SESSION,
+    );
+
+    expect(outcome.status).toBe('CREATED');
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    // 写入的是**本机**工单 id，不是包内的源机数字外键
+    expect(insertData.repairRequestId).toBe(77);
+    // 冻结载荷里的工单引用同步本地化，避免落库后指向另一张工单
+    const versionData = insertVersion.mock.calls[0][0] as Record<string, unknown>;
+    const snapshot = versionData.payloadSnapshot as { repairRequestId: number | null };
+    expect(snapshot.repairRequestId).toBe(77);
+  });
+
+  it('工单总结来源：本机关联工单已删除下架时拒绝（不复活已删除下架内容）', async () => {
+    const listFacts = jest.fn().mockResolvedValue({
+      facts: new Map([
+        [
+          'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+          { recordId: 77, withdrawn: true, currentVersion: 3, identityPersisted: true },
+        ],
+      ]),
+      scanComplete: true,
+    });
+    const { writer, insertReport } = buildWriter({ sourceFacts: { listFacts } });
+
+    const outcome = await writer.write(
+      {
+        ...REQUEST,
+        relatedRecordType: 'REPAIR_REQUEST',
+        relatedRecordUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        body: {
+          ...REQUEST.body,
+          payload: { ...REQUEST.body.payload, sourceType: 'WORK_ORDER_SUMMARY' },
+        },
+      },
+      SESSION,
+    );
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('已删除或下架');
+    expect(insertReport).not.toHaveBeenCalled();
+  });
+
+  it('机型 id 跨机不可移植：包内未携带机型编码时拒绝（不静默改成空）', async () => {
+    const { writer, insertReport } = buildWriter();
+
+    const outcome = await writer.write(
+      {
+        ...REQUEST,
+        sourceEquipmentModelCode: null,
+        body: {
+          ...REQUEST.body,
+          payload: { ...REQUEST.body.payload, equipmentModelId: 5, equipmentModelText: null },
+        },
+      },
+      SESSION,
+    );
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('机型编码');
+    expect(insertReport).not.toHaveBeenCalled();
+  });
+
+  it('机型按编码在本机定位：写入本机机型 id，且不同时写机型文本（实体 CHECK 二选一）', async () => {
+    const findModelByCode = jest
+      .fn()
+      .mockResolvedValue({ id: 31, modelCode: 'MOD-A', modelName: 'A 型' });
+    const { writer, insertReport } = buildWriter({ equipmentModel: { findModelByCode } });
+
+    const outcome = await writer.write(
+      {
+        ...REQUEST,
+        sourceEquipmentModelCode: 'MOD-A',
+        body: {
+          ...REQUEST.body,
+          payload: { ...REQUEST.body.payload, equipmentModelId: 5, equipmentModelText: null },
+        },
+      },
+      SESSION,
+    );
+
+    expect(outcome.status).toBe('CREATED');
+    const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertData.equipmentModelId).toBe(31);
+    expect(insertData.equipmentModelText).toBeNull();
+  });
+
+  it('机型按编码在本机定位不到时拒绝（不猜机型）', async () => {
+    const findModelByCode = jest.fn().mockResolvedValue(null);
+    const { writer, insertReport } = buildWriter({ equipmentModel: { findModelByCode } });
+
+    const outcome = await writer.write(
+      {
+        ...REQUEST,
+        sourceEquipmentModelCode: 'MOD-MISSING',
+        body: {
+          ...REQUEST.body,
+          payload: { ...REQUEST.body.payload, equipmentModelId: 5, equipmentModelText: null },
+        },
+      },
+      SESSION,
+    );
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.reason).toContain('设备机型');
     expect(insertReport).not.toHaveBeenCalled();
   });
 

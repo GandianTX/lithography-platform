@@ -33,10 +33,58 @@ describe('protected backup service', () => {
       assets?: Record<string, unknown>[];
     } = {},
   ) => {
-    const repoOf = (rows: Record<string, unknown>[]) => ({
+    /**
+     * 仓储替身：同时支持 `find`（旧路径）与 `createQueryBuilder`（按逐表口径圈定范围）。
+     * 替身按"表名＝行上的 owner 表"近似：根表按 `ownerOrganizationId` 过滤，
+     * 子表按 `reportId`／`requestId`／`documentId` 关联根表行过滤。
+     */
+    const repoOf = (rows: Record<string, unknown>[], parentRows?: Record<string, unknown>[]) => ({
       find: jest.fn().mockResolvedValue(rows),
       findOne: jest.fn().mockResolvedValue(rows[0] ?? null),
       count: jest.fn().mockResolvedValue(rows.length),
+      createQueryBuilder: jest.fn((): Record<string, unknown> => {
+        let filter: ((row: Record<string, unknown>) => boolean) | null = null;
+        const builder: Record<string, unknown> = {
+          where: jest.fn((condition: string, params: { organizationId: number }) => {
+            if (condition.includes('owner_organization_id')) {
+              filter = (row) => row['ownerOrganizationId'] === params.organizationId;
+            } else if (condition.includes('report_id')) {
+              const allowed = new Set(
+                (parentRows ?? [])
+                  .filter((row) => row['ownerOrganizationId'] === params.organizationId)
+                  .map((row) => row['id']),
+              );
+              filter = (row) => allowed.has(row['reportId']);
+            } else if (condition.includes('request_id')) {
+              const allowed = new Set(
+                (parentRows ?? [])
+                  .filter((row) => row['ownerOrganizationId'] === params.organizationId)
+                  .map((row) => row['id']),
+              );
+              filter = (row) => allowed.has(row['requestId']);
+            } else if (condition.includes('document_id')) {
+              const allowed = new Set(
+                (parentRows ?? [])
+                  .filter((row) => row['ownerOrganizationId'] === params.organizationId)
+                  .map((row) => row['id']),
+              );
+              filter = (row) => allowed.has(row['documentId']);
+            }
+            return builder;
+          }),
+          orderBy: jest.fn(() => builder),
+          limit: jest.fn(() => builder),
+          getCount: jest
+            .fn()
+            .mockResolvedValue(filter === null ? rows.length : rows.filter(filter).length),
+          getRawOne: jest
+            .fn()
+            .mockResolvedValue(filter === null ? null : (rows.filter(filter)[0] ?? null)),
+          getMany: jest.fn().mockResolvedValue(filter === null ? rows : rows.filter(filter)),
+          delete: jest.fn(() => ({ execute: jest.fn().mockResolvedValue({ affected: 0 }) })),
+        };
+        return builder;
+      }),
     });
     const fileStorage = {
       open: (reference: string) => {
@@ -54,6 +102,14 @@ describe('protected backup service', () => {
       repoOf(overrides.documents ?? []) as never, // reference_document
       repoOf(overrides.storedFiles ?? []) as never, // stored_file
       repoOf([]) as never, // local_upload_task
+      repoOf([]) as never, // repair_request_revision
+      repoOf([]) as never, // maintenance_report_version
+      repoOf([]) as never, // maintenance_report_attachment
+      repoOf([]) as never, // maintenance_report_version_attachment
+      repoOf([]) as never, // maintenance_report_alarm
+      repoOf([]) as never, // maintenance_report_step
+      repoOf([]) as never, // maintenance_report_fault
+      repoOf([]) as never, // reference_document_revision
       fileStorage as never,
       { keyHex: KEY_HEX, keyId: 'primary' },
       { baseDir: nodePath.join(__dirname, '.tmp-protected-backup-storage') },

@@ -30,6 +30,7 @@ import {
 } from '@core/local-runtime/policy/protected-backup.policy';
 import { resolveRestoreExecutionCapability } from '@core/local-runtime/policy/restore-execution-capability.policy';
 
+import { ManagementAuditService } from './management-audit.service';
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { BackupRestoreRunEntity } from './entities/backup-restore-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
@@ -75,6 +76,7 @@ export class LocalRestoreExecutionService {
     @InjectRepository(LocalInstallationEntity)
     private readonly installationRepository: Repository<LocalInstallationEntity>,
     private readonly localWriteHoldService: LocalWriteHoldService,
+    private readonly managementAuditService: ManagementAuditService,
     private readonly moduleRef: ModuleRef,
     @Optional()
     @Inject(LOCAL_BACKUP_PROTECTION)
@@ -163,14 +165,32 @@ export class LocalRestoreExecutionService {
       // ② 核验：逐表行数必须与清单一致（由来源域按真实事实给出）
       const verified = await this.verifyScope(run, restored.expectedRows);
       if (!verified.ok) {
-        return await this.failAndKeepHold(
+        return await this.failAfterWrite(
           input.restoreId,
+          run,
+          protection,
+          installation,
+          now,
           'RESTORE_VERIFY_FAILED',
           verified.reason,
+          input.actorAccountId,
         );
       }
 
-      // ③ 解除冻结
+      // ③ 终态事件**先写**：写不进去就不算恢复成功（任务 10 读不到事实时，
+      //    不能既宣布成功又解除冻结）——事件写失败会被上面的 catch 捕获并按
+      //    "失败并回滚"处理，避免留下"数据已恢复但无人知晓"的不可解释状态。
+      await this.appendRestoreEvent({
+        restoreId: run.restoreId,
+        actorAccountId: input.actorAccountId,
+        organizationId: run.organizationId,
+        backupId: run.backupId,
+        protectionBackupId: run.protectionBackupId ?? null,
+        result: 'SUCCEEDED',
+        counts: restored.counts,
+      });
+
+      // ④ 解除冻结
       await this.localWriteHoldService.release({
         installationId: installation.installationId,
         organizationId: run.organizationId,
@@ -191,12 +211,131 @@ export class LocalRestoreExecutionService {
         released: true,
       };
     } catch (error) {
-      // 失败：**保持冻结**、保留保护副本与任务、如实记原因
-      return await this.failAndKeepHold(
+      const reason = error instanceof Error ? error.message : '恢复执行失败';
+      return await this.failAfterWrite(
         input.restoreId,
+        run,
+        protection,
+        installation,
+        now,
         'RESTORE_EXECUTION_FAILED',
-        error instanceof Error ? error.message : '恢复执行失败',
+        reason,
+        input.actorAccountId,
       );
+    }
+  }
+
+  /**
+   * 写入阶段失败后的处置（任务 09 S2-5）。
+   *
+   * - 先按**保护副本**把本次恢复改动的范围回滚到恢复前状态；
+   * - 回滚成功 ⇒ 业务数据与原件保持恢复前事实，可解除冻结，终态 FAILED；
+   * - 回滚失败 ⇒ **保持停写停传**并保留保护副本，等人工处置。
+   */
+  private async failAfterWrite(
+    restoreId: string,
+    run: BackupRestoreRunEntity,
+    protection: BackupAssetEntity | null,
+    installation: LocalInstallationEntity,
+    now: Date,
+    reasonCode: string,
+    reason: string,
+    actorAccountId: number,
+  ): Promise<LocalRestoreExecutionOutcome> {
+    const rollback = await this.rollbackToProtection(run, protection);
+    if (!rollback.ok) {
+      return await this.failAndKeepHold(
+        restoreId,
+        reasonCode,
+        `${reason}（按保护副本回滚失败：${rollback.reason ?? '原因不可用'}）`,
+      );
+    }
+    try {
+      await this.localWriteHoldService.release({
+        installationId: installation.installationId,
+        organizationId: run.organizationId,
+        now,
+      });
+    } catch {
+      // 冻结解除失败不影响"数据已回滚"的结论，但设备仍停写停传（保守口径）
+      return await this.failAndKeepHold(
+        restoreId,
+        reasonCode,
+        `${reason}（业务数据已按保护副本回滚，但冻结解除失败，设备继续停写停传）`,
+      );
+    }
+    await this.restoreRunRepository.update({ restoreId }, { status: 'FAILED', finishedAt: now });
+    // 失败终态事件是**尽力而为**：写不进去不能再反过来打断失败处置
+    // （此时数据已回滚、冻结已解除，事件缺失只影响任务 10 的可读性）。
+    await this.appendRestoreEvent({
+      restoreId,
+      actorAccountId,
+      organizationId: run.organizationId,
+      backupId: run.backupId,
+      protectionBackupId: run.protectionBackupId ?? null,
+      result: 'FAILED',
+      reasonCode,
+    }).catch(() => undefined);
+    return {
+      status: 'FAILED',
+      restoreId,
+      reasonCode,
+      reason: `${reason}（业务数据与原件已按保护副本回滚，本机保持恢复前状态）`,
+      holdRetained: false,
+    };
+  }
+
+  /**
+   * 写恢复终态事件（任务 09 S2-6，供任务 10 读）。
+   *
+   * 事件写不进去**如实抛出**：终态事件缺失时，不能让调用方以为"恢复已留痕"。
+   */
+  private async appendRestoreEvent(input: {
+    restoreId: string;
+    actorAccountId: number;
+    organizationId: number;
+    backupId: string;
+    protectionBackupId: string | null;
+    result: 'SUCCEEDED' | 'FAILED';
+    reasonCode?: string | null;
+    counts?: { records: number; originals: number; queue: number };
+  }): Promise<void> {
+    await this.managementAuditService.appendRestoreEvent({
+      actorAccountId: input.actorAccountId,
+      actorAdminLevel: 1,
+      organizationId: input.organizationId,
+      operation: 'RESTORE_LOCAL_BUSINESS',
+      restoreId: input.restoreId,
+      backupId: input.backupId,
+      protectionBackupId: input.protectionBackupId,
+      result: input.result,
+      reasonCode: input.reasonCode ?? null,
+      counts: input.counts,
+    });
+  }
+
+  /**
+   * 按**保护副本**回滚本次恢复改动的范围（任务 09 S2-5）。
+   *
+   * 保护副本是恢复前状态的一份受保护备份（同一包格式），因此回滚复用
+   * 同一套"整体替换＋原件还原"链路，而不是另写一套逆向补丁。
+   */
+  private async rollbackToProtection(
+    run: BackupRestoreRunEntity,
+    protection: BackupAssetEntity | null,
+  ): Promise<{ ok: boolean; reason: string | null }> {
+    if (
+      protection === null ||
+      protection.localReference === null ||
+      protection.localReference === ''
+    ) {
+      return { ok: false, reason: '保护副本不可读' };
+    }
+    try {
+      await this.restoreScope({ run, source: protection });
+      return { ok: true, reason: null };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : '回滚失败' };
     }
   }
 
@@ -210,9 +349,11 @@ export class LocalRestoreExecutionService {
   }
 
   /**
-   * 按清单恢复：业务数据（中立受控端口）＋ 本机运行数据（队列任务／备份运行）。
+   * 按清单恢复：业务数据（中立受控端口，整体替换）＋ 原件字节还原。
    *
-   * 业务数据写入端口未注册 ⇒ 抛错 ⇒ 上层按"失败并保持冻结"处理（不静默跳过）。
+   * - 业务数据写入端口未注册 ⇒ 抛错 ⇒ 上层按"失败并保持冻结"处理（不静默跳过）；
+   * - 载荷里的表必须都在**范围快照**里（范围与载荷不一致即失败关闭）；
+   * - 业务表与原件字节都交给来源域的受控入口写回，恢复编排不直接改业务行。
    */
   private async restoreScope(input: {
     run: BackupRestoreRunEntity;
@@ -246,28 +387,45 @@ export class LocalRestoreExecutionService {
       expectedRows[entry.table] = entry.rowCount;
     }
 
-    const writer = this.resolveRecordWriter();
-    let records = 0;
-    let queue = 0;
-    for (const [table, rows] of Object.entries(payload)) {
-      if (table === 'local_upload_task' || table === 'local_backup_run') {
-        // 本机运行数据：恢复编排可直接写（不属业务表）
-        queue += rows.length;
-        continue;
+    // 范围与载荷必须一致：载荷里出现范围快照没有的表 ⇒ 失败关闭
+    const scopeTables = new Set<string>(manifest.scope.map((entry) => entry.table));
+    for (const table of Object.keys(payload)) {
+      if (!scopeTables.has(table)) {
+        throw new Error(`备份包范围快照与数据载荷不一致（${table} 不在范围快照内）`);
       }
-      const outcome = await writer.write({
-        organizationId: run.organizationId,
-        restoreId: run.restoreId,
-        table: table as LocalRestoreRecordTable,
-        rows,
-      });
-      if (outcome.status === 'FAILED') {
-        throw new Error(outcome.reason ?? `业务数据恢复失败（${table}）`);
-      }
-      records += outcome.written;
     }
 
-    return { counts: { records, originals: 0, queue }, expectedRows };
+    const writer = this.resolveRecordWriter();
+    const tables = Object.entries(payload).map(([table, rows]) => ({
+      table: table as LocalRestoreRecordTable,
+      rows,
+    }));
+    const outcome = await writer.write({
+      organizationId: run.organizationId,
+      restoreId: run.restoreId,
+      tables,
+    });
+    if (outcome.status === 'FAILED') {
+      throw new Error(outcome.reason ?? '业务数据恢复失败');
+    }
+
+    // 原件字节：按包内清单核对后写回本地存储（来源域受控入口）
+    const originals = await writer.restoreOriginals({
+      organizationId: run.organizationId,
+      restoreId: run.restoreId,
+      packageRoot: source.localReference,
+      originals: manifest.originals,
+      files: manifest.files,
+    });
+    if (originals.failed > 0) {
+      throw new Error(originals.reason ?? '原件字节还原失败');
+    }
+
+    const queue = outcome.counts['local_upload_task'] ?? 0;
+    return {
+      counts: { records: outcome.written, originals: originals.restored, queue },
+      expectedRows,
+    };
   }
 
   /** 解析业务数据受控写入实现；未注册即失败关闭 */

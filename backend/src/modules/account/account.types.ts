@@ -424,6 +424,30 @@ export interface AccountSessionAuthoritySnapshot {
 }
 
 /**
+ * 账号的**跨端身份事实**（任务 09 S1-2）。
+ *
+ * 用途：记录包／业务同步跨设备搬运时，需要把「来源账号」映射到目标设备的同一个自然人。
+ * 源机自增主键在目标机可能指向另一个人，不能作为跨端身份；本快照提供
+ * 两个可核验的跨端标识：
+ * - `accountUuid`：**不可变**的稳定标识（创建时一次性生成，唯一索引，可按列查找）；
+ * - `loginName`：**可变**的账号名（工作账号名；改名后旧包不再命中）。
+ *
+ * 两者都只是**事实**，不含任何授权结论；裁决（是否同一人、是否在职、导入者有无权限）
+ * 由调用方按本机数据库当前事实完成。
+ */
+export interface AccountCrossInstallationIdentity {
+  readonly accountId: number;
+  /** 跨端稳定账号标识；历史行（未生成）为 null */
+  readonly accountUuid: string | null;
+  /** 账号名；账号名可被本人自助修改 */
+  readonly loginName: string | null;
+  /** 真实姓名快照（用于跨设备人工复核，不作唯一判据） */
+  readonly realName: string | null;
+  readonly accountStatus: AccountStatus;
+  readonly userState: UserState | null;
+}
+
+/**
  * 当前用户账号设置（自助场景）的**内部窄事实快照**：由 account QueryService 单语义读取、
  * 完成三源角色收敛与双字段状态一致性判定后产出，仅供 `GetMyAccountSettingsUsecase` 消费，
  * 不进入任何 GraphQL DTO。

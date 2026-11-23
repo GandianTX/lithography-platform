@@ -4,7 +4,8 @@ import {
   serializeManagementAuditDetail,
   type ManagementAuditDetailView,
 } from '@core/management-audit/policy/management-audit-detail.policy';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { PinoLogger } from 'nestjs-pino';
@@ -56,6 +57,11 @@ export type ManagementDocumentAuditOperation =
   'ADMIN_DELETE_DOCUMENT' | 'CORRECT_DOCUMENT_OWNERSHIP';
 
 /**
+ * 本机业务恢复终态事件（任务 09）。
+ */
+export type LocalRestoreAuditOperation = 'RESTORE_LOCAL_BUSINESS';
+
+/**
  * 管理审计写入服务（S3 凭据类 + 任务07 资料类 + 任务10 三类业务事实）。
  *
  * 三个入口，职责不同，不可互相替代：
@@ -76,7 +82,12 @@ export type ManagementDocumentAuditOperation =
  */
 @Injectable()
 export class ManagementAuditService {
-  constructor(private readonly logger: PinoLogger) {
+  constructor(
+    private readonly logger: PinoLogger,
+    @Optional()
+    @InjectRepository(ManagementAuditEventEntity)
+    private readonly auditEventRepository?: Repository<ManagementAuditEventEntity>,
+  ) {
     this.logger.setContext(ManagementAuditService.name);
   }
 
@@ -209,6 +220,61 @@ export class ManagementAuditService {
     );
   }
 
+  /**
+   * 本机业务恢复终态事件（任务 09 S2-6）。
+   *
+   * - 只在**终态**写入（成功／失败／回滚后失败），中途状态不写事件；
+   * - detail 只写脱敏摘要（恢复运行 ID、备份 ID、保护副本 ID、结果与计数），
+   *   不写包正文、凭据、堆栈或原件内容；
+   * - 写入失败**直接抛错**：终态事件写不进去时，恢复结果不得被当作"已完成"。
+   */
+  async appendRestoreEvent(params: {
+    readonly actorAccountId: number;
+    readonly actorAdminLevel: number;
+    readonly organizationId: number;
+    readonly operation: LocalRestoreAuditOperation;
+    readonly restoreId: string;
+    readonly backupId: string;
+    readonly protectionBackupId: string | null;
+    /** SUCCEEDED / FAILED */
+    readonly result: 'SUCCEEDED' | 'FAILED';
+    /** 受控原因码 */
+    readonly reasonCode?: string | null;
+    /** 恢复计数摘要（行数；不含正文） */
+    readonly counts?: { records: number; originals: number; queue: number };
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<void> {
+    const detail: Record<string, unknown> = {
+      restore_id: params.restoreId,
+      backup_id: params.backupId,
+      protection_backup_id: params.protectionBackupId,
+      result: params.result,
+    };
+    if (params.reasonCode !== undefined && params.reasonCode !== null) {
+      detail['reason_code'] = params.reasonCode;
+    }
+    if (params.counts !== undefined) {
+      detail['counts'] = params.counts;
+    }
+    await this.insertEvent(
+      {
+        actorAccountId: params.actorAccountId,
+        actorAdminLevel: params.actorAdminLevel,
+        organizationId: params.organizationId,
+        operation: params.operation,
+        targetType: 'LOCAL_RESTORE',
+        targetId: params.restoreId,
+        result: params.result,
+        detail,
+      },
+      params.transactionContext,
+    );
+    this.logger.info(
+      { operation: params.operation, restoreId: params.restoreId, result: params.result },
+      '本机业务恢复终态事件已写入',
+    );
+  }
+
   private async insertEvent(
     event: {
       actorAccountId: number;
@@ -220,7 +286,7 @@ export class ManagementAuditService {
       result: string;
       detail: Record<string, unknown> | string | null;
     },
-    transactionContext: PersistenceTransactionContext,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<void> {
     const repository = this.getRepository(transactionContext);
     await repository.insert({
@@ -237,10 +303,16 @@ export class ManagementAuditService {
   }
 
   private getRepository(
-    transactionContext: PersistenceTransactionContext,
+    transactionContext?: PersistenceTransactionContext,
   ): Repository<ManagementAuditEventEntity> {
-    const manager = getTypeOrmEntityManager(transactionContext);
-    return manager.getRepository(ManagementAuditEventEntity);
+    if (transactionContext !== undefined) {
+      const manager = getTypeOrmEntityManager(transactionContext);
+      return manager.getRepository(ManagementAuditEventEntity);
+    }
+    if (this.auditEventRepository === undefined) {
+      throw new Error('管理审计仓储不可用，无法写入审计事件');
+    }
+    return this.auditEventRepository;
   }
 }
 

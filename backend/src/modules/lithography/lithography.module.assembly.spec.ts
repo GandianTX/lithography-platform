@@ -3,6 +3,7 @@ import type { Provider } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { TRANSACTION_RUNNER } from '@usecases/common/ports/transaction-runner.contract';
 import { ConfigModule } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { RepairProcessEntryEntity } from './entities/repair-process-entry.entity';
@@ -54,6 +55,10 @@ describe('LithographyModule 依赖装配（离线）', () => {
     for (const token of repositoryTokens) {
       builder.overrideProvider(token).useValue({});
     }
+    // 恢复写入实现需要事务边界端口；离线装配没有全局根模块，这里给最小替身
+    builder.overrideProvider(TRANSACTION_RUNNER).useValue({
+      run: async (fn: (ctx: unknown) => Promise<unknown>) => fn({}),
+    });
     const moduleRef = await builder.compile();
     try {
       expect(moduleRef.get(ManagementAuditService)).toBeInstanceOf(ManagementAuditService);

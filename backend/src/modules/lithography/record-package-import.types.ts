@@ -54,7 +54,15 @@ export type RecordPackageItemCheckOutcome = {
 export type RecordPackageCheckCommand = {
   /** 包目录（U盘挂载点或本机目录），内含 manifest.json 与清单引用文件 */
   packagePath: string;
+  /** 查看者的可信公司数据区（一级管理员为 null＝全局授权范围） */
   organizationId: number | null;
+  /**
+   * 查看者公司的**稳定业务编码**（`organization.organization_code`）。
+   *
+   * 跨设备搬运时源机的 `organization_id` 在目标机无意义（同一公司在两台设备上
+   * 可以是不同数字 id），因此跨机对齐公司必须用业务编码（任务 09 S1-2）。
+   */
+  organizationCode: string | null;
   importedByAccountId: number;
 };
 

@@ -4,7 +4,7 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
 import {
   assertManifestSnapshotHasNoSecretMaterial,
-  assertPackageCompanyAllowed,
+  assertPackageCompanyAllowedByIdentity,
   parseRecordPackageManifest,
   recordPackageManifestChecksum,
   resolvePackageFilePath,
@@ -18,6 +18,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as nodePath from 'node:path';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository } from 'typeorm';
+import { OrganizationQueryService } from './queries/organization.query.service';
 import { RecordPackageImportEntity } from './entities/record-package-import.entity';
 import { RecordPackageItemEntity } from './entities/record-package-item.entity';
 import { SyncReceiptEntity } from './entities/sync-receipt.entity';
@@ -38,6 +39,13 @@ export type RecordPackageEvaluation = {
   manifest: RecordPackageManifest;
   manifestRaw: string;
   manifestChecksum: string;
+  /**
+   * 本机的**目标公司数据区 id**（落库到 `record_package_import.organization_id`）。
+   *
+   * 跨设备时清单里的 `organization_id` 是**源机**的自增主键，不能直接落库；
+   * 本机落库的必须是"本机对同一公司的 id"，否则导入批次会挂到不存在的公司上。
+   */
+  targetOrganizationId: number;
   outcomes: RecordPackageItemCheckOutcome[];
 };
 
@@ -65,6 +73,7 @@ export class RecordPackageImportService {
     private readonly itemRepository: Repository<RecordPackageItemEntity>,
     @InjectRepository(SyncReceiptEntity)
     private readonly receiptRepository: Repository<SyncReceiptEntity>,
+    private readonly organizationQueryService: OrganizationQueryService,
   ) {}
 
   private pickImportRepository(
@@ -154,7 +163,17 @@ export class RecordPackageImportService {
     const manifest = parseRecordPackageManifest(raw);
 
     // 错公司先拒绝：不进入数据库，也不给其他公司包留任何处理事实
-    assertPackageCompanyAllowed(command.organizationId, manifest.organization_id);
+    // （跨安装口径：清单携带公司业务编码时按编码对齐，不再比较源机自增 id）
+    assertPackageCompanyAllowedByIdentity({
+      viewerOrganizationId: command.organizationId,
+      viewerOrganizationCode: command.organizationCode,
+      manifestOrganizationId: manifest.organization_id,
+      manifestOrganizationCode: manifest.organization_code ?? null,
+    });
+
+    // 本机目标公司数据区 id（落库口径）：查看者有可信公司时即取该公司；
+    // 一级管理员（全局范围）按清单携带的公司编码在本机定位，定位不到即失败关闭。
+    const targetOrganizationId = await this.resolveTargetOrganizationId(command, manifest);
 
     const manifestChecksum = recordPackageManifestChecksum(raw);
     const seenKeys = new Set<string>();
@@ -203,7 +222,7 @@ export class RecordPackageImportService {
       }
 
       const duplicated = await this.hasDuplicateReceipt(
-        manifest.organization_id,
+        targetOrganizationId,
         item.resource_type,
         item.record_uuid,
         item.version_no,
@@ -229,7 +248,39 @@ export class RecordPackageImportService {
       );
     }
 
-    return { manifest, manifestRaw: raw, manifestChecksum, outcomes };
+    return { manifest, manifestRaw: raw, manifestChecksum, targetOrganizationId, outcomes };
+  }
+
+  /**
+   * 本机目标公司数据区 id 的解析。
+   *
+   * - 查看者有可信公司（工程师／二级管理员）→ 即该公司在本机的 id；
+   * - 一级管理员（全局范围，无所属公司）→ 按清单携带的**公司业务编码**在本机定位；
+   *   清单未携带编码（旧包）或本机不存在该公司 ⇒ 失败关闭（不猜本地 id）。
+   */
+  private async resolveTargetOrganizationId(
+    command: RecordPackageCheckCommand,
+    manifest: RecordPackageManifest,
+  ): Promise<number> {
+    if (command.organizationId !== null) {
+      return command.organizationId;
+    }
+    if (manifest.organization_code === null || manifest.organization_code === undefined) {
+      throw new DomainError(
+        RECORD_PACKAGE_ERROR.INVALID_MANIFEST,
+        '记录包未携带公司业务编码，无法在本机确定目标公司数据区',
+      );
+    }
+    const identity = await this.organizationQueryService.findOrganizationIdentityByCode({
+      organizationCode: manifest.organization_code,
+    });
+    if (identity === null) {
+      throw new DomainError(
+        RECORD_PACKAGE_ERROR.FOREIGN_COMPANY,
+        '本机不存在记录包所属公司（按公司业务编码核对），拒绝检查',
+      );
+    }
+    return identity.id;
   }
 
   /** 第二段：事务内落检查事实。并发同包检查 → 主键冲突后回读既有批次。 */
@@ -341,7 +392,7 @@ export class RecordPackageImportService {
     importedByAccountId: number,
     transactionContext?: PersistenceTransactionContext,
   ): Promise<RecordPackageCheckResult> {
-    const { manifest, manifestRaw, manifestChecksum, outcomes } = evaluation;
+    const { manifest, manifestRaw, manifestChecksum, outcomes, targetOrganizationId } = evaluation;
     const repository = this.pickImportRepository(transactionContext);
 
     const existing = await repository.findOne({ where: { packageId: manifest.package_id } });
@@ -361,7 +412,7 @@ export class RecordPackageImportService {
     if (existing) {
       const refreshed = repository.create({
         ...existing,
-        organizationId: manifest.organization_id,
+        organizationId: targetOrganizationId,
         importedByAccountId,
         manifestJson: manifestRaw,
         manifestChecksum,
@@ -402,7 +453,7 @@ export class RecordPackageImportService {
     // 与 DB CHECK 对齐：REJECTED ⇒ status 必须保持 PENDING；检查阶段 result 一律 NULL
     const importRow = repository.create({
       packageId: manifest.package_id,
-      organizationId: manifest.organization_id,
+      organizationId: targetOrganizationId,
       importedByAccountId,
       manifestJson: manifestRaw,
       manifestChecksum,

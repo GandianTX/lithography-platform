@@ -65,6 +65,18 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
       count: jest.fn().mockResolvedValue(rows.length),
       save: jest.fn().mockResolvedValue(undefined),
       create: jest.fn((row: Record<string, unknown>) => row),
+      createQueryBuilder: jest.fn(() => {
+        const builder: Record<string, unknown> = {
+          where: jest.fn(() => builder),
+          orderBy: jest.fn(() => builder),
+          limit: jest.fn(() => builder),
+          getCount: jest.fn().mockResolvedValue(rows.length),
+          getRawOne: jest.fn().mockResolvedValue(rows[0] ?? null),
+          getMany: jest.fn().mockResolvedValue(rows),
+          delete: jest.fn(() => ({ execute: jest.fn().mockResolvedValue({ affected: 0 }) })),
+        };
+        return builder;
+      }),
     });
     const fileStorage = {
       open: (reference: string) =>
@@ -85,6 +97,14 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
           title: '资料1',
         },
       ]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
+      repoOf([]) as never,
       repoOf([]) as never,
       repoOf([]) as never,
       fileStorage as never,

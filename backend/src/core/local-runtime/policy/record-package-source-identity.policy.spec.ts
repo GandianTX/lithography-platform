@@ -25,6 +25,14 @@ function buildFacts(
 ): RecordPackageSourceIdentityFacts {
   return {
     sourceAccountId: SOURCE_ACCOUNT_ID,
+    portable: {
+      sourceAccountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      sourceAccountLoginName: 'engineer-1',
+      sourceAccountName: '张三',
+      sourceOrganizationCode: 'ORG-9',
+    },
+    resolvedSourceAccountId: overrides.sourceAccountId === undefined ? SOURCE_ACCOUNT_ID : null,
+    identityBasis: 'STABLE_ID' as const,
     accountStatus: AccountStatus.ACTIVE,
     userState: UserState.ACTIVE,
     memberships: [
@@ -59,10 +67,20 @@ describe('记录包来源身份本机可信裁决（S3 补丁 P4）', () => {
   });
 
   it('包内缺来源账号：拒绝（不得以导入人冒充原作者）', () => {
-    const decision = evaluateRecordPackageSourceIdentity(buildFacts({ sourceAccountId: null }));
+    const decision = evaluateRecordPackageSourceIdentity(
+      buildFacts({
+        sourceAccountId: null,
+        portable: {
+          sourceAccountUuid: null,
+          sourceAccountLoginName: null,
+          sourceAccountName: null,
+          sourceOrganizationCode: 'ORG-9',
+        },
+      }),
+    );
 
     expect(decision.allowed).toBe(false);
-    expect(decision.allowed === false && decision.reason).toContain('未携带来源账号');
+    expect(decision.allowed === false && decision.reason).toContain('跨端可移植的来源账号标识');
   });
 
   it.each([
@@ -149,6 +167,7 @@ describe('记录包来源身份本机可信裁决（S3 补丁 P4）', () => {
     const decision = evaluateRecordPackageSourceIdentity(
       buildFacts({
         sourceAccountId: 900202,
+        resolvedSourceAccountId: 900202,
         importerAccountId: IMPORTER_ACCOUNT_ID,
         importerAdminLevel: null,
       }),
@@ -160,7 +179,11 @@ describe('记录包来源身份本机可信裁决（S3 补丁 P4）', () => {
 
   it('二级管理员按本公司范围导入同公司他人记录：放行', () => {
     const decision = evaluateRecordPackageSourceIdentity(
-      buildFacts({ sourceAccountId: 900202, importerAdminLevel: 2 }),
+      buildFacts({
+        sourceAccountId: 900202,
+        resolvedSourceAccountId: 900202,
+        importerAdminLevel: 2,
+      }),
     );
 
     expect(decision).toEqual({ allowed: true, sourceAccountId: 900202 });
@@ -168,18 +191,21 @@ describe('记录包来源身份本机可信裁决（S3 补丁 P4）', () => {
 
   it('一级管理员（无业务所属公司）：拒绝按公司范围接收他人记录', () => {
     const decision = evaluateRecordPackageSourceIdentity(
-      buildFacts({ sourceAccountId: 900202, importerAdminLevel: 1 }),
+      buildFacts({
+        sourceAccountId: 900202,
+        resolvedSourceAccountId: 900202,
+        importerAdminLevel: 1,
+      }),
     );
 
     expect(decision.allowed).toBe(false);
     expect(decision.allowed === false && decision.reason).toContain('一级管理员');
   });
 
-  it('包内归属公司与导入目标公司不一致：拒绝', () => {
+  it('公司归属不一致的裁决已移出本策略（由公司业务编码裁决承担，见可移植身份策略单测）', () => {
     const decision = evaluateRecordPackageSourceIdentity(buildFacts({ ownerOrganizationId: 10 }));
 
-    expect(decision.allowed).toBe(false);
-    expect(decision.allowed === false && decision.reason).toContain('归属公司与导入目标公司不一致');
+    expect(decision.allowed).toBe(true);
   });
 
   it('包内未登记归属公司：不因此拒绝（其余事实成立即放行）', () => {

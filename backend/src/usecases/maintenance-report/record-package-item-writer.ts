@@ -43,7 +43,9 @@ import {
 } from '@app-types/models/maintenance-report.types';
 
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
 import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
+import { SyncSourceRecordQueryService } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import { StoredFileService } from '@src/modules/lithography/stored-file.service';
 
 import { bindStagedAttachmentToReport } from './maintenance-report-attachment-binding.helpers';
@@ -96,11 +98,55 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
   constructor(
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
+    private readonly syncSourceRecordQueryService: SyncSourceRecordQueryService,
+    private readonly equipmentModelQueryService: EquipmentModelQueryService,
     private readonly storedFileService: StoredFileService,
     private readonly sourceIdentityVerifier: RecordPackageSourceIdentityVerifier,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
+
+  /**
+   * 按**工单跨端稳定编号**在本机定位关联工单（任务 09 S1-4）。
+   *
+   * 只用来源域只读事实（按公司过滤的稳定编号定位），不按源机数字外键猜工单。
+   */
+  private async resolveRelatedRepairRequest(
+    request: RecordPackageItemWriteRequest,
+  ): Promise<{ repairRequestId: number | null; failure: string | null }> {
+    if (request.relatedRecordType !== 'REPAIR_REQUEST') {
+      return {
+        repairRequestId: null,
+        failure: '工单总结来源的报告未携带关联工单的资源类型，该条未导入',
+      };
+    }
+    if (request.relatedRecordUuid === null) {
+      return {
+        repairRequestId: null,
+        failure: '工单总结来源的报告未携带关联工单的跨端稳定编号，无法在本机定位工单，该条未导入',
+      };
+    }
+    const facts = await this.syncSourceRecordQueryService.listFacts({
+      organizationId: request.organizationId,
+      resourceType: 'REPAIR_REQUEST',
+      recordUuids: [request.relatedRecordUuid],
+    });
+    const fact = facts.facts.get(request.relatedRecordUuid);
+    if (fact === undefined) {
+      return {
+        repairRequestId: null,
+        failure:
+          '本机不存在包内关联工单（按工单跨端稳定编号核对），无法确认报告归属工单，该条未导入',
+      };
+    }
+    if (fact.withdrawn) {
+      return {
+        repairRequestId: null,
+        failure: '本机关联工单已删除或下架，导入不得复活已删除下架内容，该条未导入',
+      };
+    }
+    return { repairRequestId: fact.recordId, failure: null };
+  }
 
   /**
    * 来源身份本机可信核验（端口契约 `verifySourceIdentity`）。
@@ -109,6 +155,12 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
    */
   async verifySourceIdentity(params: {
     sourceAccountId: number | null;
+    portableSourceIdentity: {
+      sourceAccountUuid: string | null;
+      sourceAccountLoginName: string | null;
+      sourceAccountName: string | null;
+      sourceOrganizationCode: string | null;
+    };
     ownerOrganizationId: number | null;
     targetOrganizationId: number;
     importerAccountId: number;
@@ -141,6 +193,7 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
     // （账号存在且启用、资料启用、目标公司在职、导入者对它有当前权限）。
     const identity = await this.sourceIdentityVerifier.verify({
       sourceAccountId: request.sourceAccountId,
+      portableSourceIdentity: request.portableSourceIdentity,
       ownerOrganizationId: request.ownerOrganizationId,
       targetOrganizationId: request.organizationId,
       importerAccountId: session.accountId,
@@ -172,28 +225,22 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
       return { status: 'FAILED', localRecordId: null, reason: '包内报告缺少来源类型' };
     }
     const sourceType = sourceTypeText;
+    /** 本机工单主键：工单总结按跨端稳定编号定位；历史案例恒为 null */
+    let repairRequestId: number | null = null;
     if (sourceType === MaintenanceReportSourceType.WORK_ORDER_SUMMARY) {
-      // 工单总结来源（P2-3 核对结论）：**本机无法核验关联工单事实**，逐条明确拒绝。
+      // 工单总结来源（任务 09 S1-4 已放行）：按**工单跨端稳定编号**在本机定位工单。
       //
-      // 核对过的事实（见 `docs/plan/task09/证据/S3补丁-P4-来源身份与工单总结核对-20261123.md`）：
-      // - 工单总结报告必须绑定一张工单（`chk_maintenance_report_request_source`
-      //   要求 `repair_request_id` 非空；`fk_maintenance_report_repair_request` 为物理外键）；
-      // - 接单人的权威事实是工单行的 `accepted_by_engineer_account_id`（**本机账号 id**），
-      //   报告的 `maintenance_engineer_account_id` 同样只是本机账号 id；
-      // - 包内只带**源机**的数字外键（`payload.repairRequestId`、`source_account_id`），
-      //   既没有工单的跨端稳定编号（`repair_request.record_uuid` 全仓未随包携带），
-      //   也没有可移植的账号标识；
-      // ⇒ 目标机无法确认"关联工单存在且属于目标公司""接单人与包内来源账号一致"，
-      //   按数字 id 猜工单会把报告挂到**另一张**工单上（且可能违反一工单一份总结的约束）。
+      // 此前逐条拒绝的原因是"包内没有工单的跨端稳定编号"（源机数字外键跨机无意义，
+      // 按数字 id 猜会把报告挂到**另一张**工单上）。现在导出侧随包携带
+      // `related_record_uuid`（`repair_request.record_uuid`）与 `related_record_type`，
+      // 目标机据此**按列定向定位**，并核对：工单存在且属于目标公司、未被删除下架。
       //
-      // 因此保持逐条失败关闭，且原因写明真实阻断点（不是笼统的统一失败）。
-      // 放行所需的前置条件（工单跨端稳定编号随包携带等）见证据文档。
-      return {
-        status: 'FAILED',
-        localRecordId: null,
-        reason:
-          '工单总结来源的报告无法在本机核验关联工单事实与接单人（包内无工单跨端稳定编号、账号 id 跨机不可移植），该条未导入',
-      };
+      // 仍不可核验时逐条明确拒绝（不猜工单、不静默改成无工单的历史案例）。
+      const related = await this.resolveRelatedRepairRequest(request);
+      if (related.failure !== null) {
+        return { status: 'FAILED', localRecordId: null, reason: related.failure };
+      }
+      repairRequestId = related.repairRequestId;
     }
 
     const sourceStatus = readText(request.sourceStatus);
@@ -206,6 +253,44 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
       };
     }
 
+    // 设备机型：包内的机型 id 是**全局型号库的自增主键**，跨设备不可移植
+    // （与账号 id 同类缺陷：照抄会把报告挂到另一款机型上）。因此按包内携带的
+    // **机型编码**在本机定位；定位不到即逐条拒绝，不猜机型、不静默清空机型事实。
+    const payloadModelId = readNumber(payload.equipmentModelId);
+    let equipmentModelId: number | null = null;
+    let equipmentModelText: string | null = null;
+    if (payloadModelId !== null) {
+      const modelCode = request.sourceEquipmentModelCode;
+      if (modelCode === null) {
+        return {
+          status: 'FAILED',
+          localRecordId: null,
+          reason: '包内未携带设备机型编码，无法在本机核验机型（机型 id 跨机不可移植），该条未导入',
+        };
+      }
+      const model = await this.equipmentModelQueryService.findModelByCode({ modelCode });
+      if (model === null) {
+        return {
+          status: 'FAILED',
+          localRecordId: null,
+          reason: '本机不存在包内记录的设备机型（按机型编码核对），该条未导入',
+        };
+      }
+      equipmentModelId = model.id;
+      // 实体 CHECK「机型 id 与机型文本二者只允许其一」：选了机型行就不再带文本快照。
+      equipmentModelText = null;
+    } else {
+      equipmentModelId = null;
+      equipmentModelText = readText(payload.equipmentModelText);
+    }
+
+    // 冻结载荷的**引用本地化**：包内 `repairRequestId` 是源机数字外键，跨机无意义；
+    // 落库前改写为本机工单 id（历史案例恒为 null，与实体 CHECK 对齐）。
+    const localizedPayload: SnapshotPayload = {
+      ...payload,
+      repairRequestId,
+    };
+
     const submittedAtText = readText(request.body.submitted_at);
     const submittedAt = submittedAtText === null ? null : new Date(submittedAtText);
     // 变更种类按 06 的冻结口径取值：导入的是**正式冻结版本**，按正式修订登记
@@ -217,11 +302,11 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
           {
             ownerOrganizationId: request.organizationId,
             sourceType,
-            repairRequestId: readNumber(payload.repairRequestId),
+            repairRequestId,
             title: readText(payload.title),
             customerFactoryName: readText(payload.customerFactoryName),
-            equipmentModelId: readNumber(payload.equipmentModelId),
-            equipmentModelText: readText(payload.equipmentModelText),
+            equipmentModelId,
+            equipmentModelText,
             maintenanceDate: readText(payload.maintenanceDate),
             // 责任工程师账号是**本机账号 id**，跨机不可移植：以来源账号为准，
             // 工程师姓名快照仍取包内事实（不丢业务事实）
@@ -249,7 +334,7 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
             versionNo: request.versionNo,
             changeKind,
             changeReason: '记录包导入',
-            payloadSnapshot: payload,
+            payloadSnapshot: localizedPayload,
             submittedByAccountId: sourceAccountId,
             submittedAt: submittedAt ?? new Date(),
           },

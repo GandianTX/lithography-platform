@@ -73,6 +73,10 @@ describe('record package export service', () => {
       oneOf(overrides.storedFile) as never,
       fileStorage as never,
       { readInstallation: () => Promise.resolve({ installationId: 'inst-uuid-1' }) } as never,
+      {
+        findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-4' }),
+      } as never,
+      { findModelById: () => Promise.resolve(null) } as never,
     );
   };
 
@@ -81,6 +85,10 @@ describe('record package export service', () => {
     targetPath: nodePath.join(targetRoot, 'pkg-1'),
     resourceType: 'REFERENCE_DOCUMENT' as const,
     recordIds: [1],
+    exporterAccountId: 16,
+    exporterScope: { role: 'ADMIN_LEVEL_2' as const, organizationId: 4, adminLevel: 2 as const },
+    resolveSourceIdentity: () =>
+      Promise.resolve({ accountUuid: null, loginName: null, name: null }),
     ...overrides,
   });
 
@@ -118,7 +126,7 @@ describe('record package export service', () => {
         storageReference: 'refs/aaa.doc.txt',
       },
     });
-    const result = await service.exportPackage(command(), 16);
+    const result = await service.exportPackage(command());
 
     expect(result.itemExported).toBe(1);
     expect(result.itemFailed).toBe(0);
@@ -158,11 +166,9 @@ describe('record package export service', () => {
     };
     const first = await buildService({ referenceDocument: row }).exportPackage(
       command({ targetPath: nodePath.join(targetRoot, 'pkg-a') }),
-      16,
     );
     const second = await buildService({ referenceDocument: row }).exportPackage(
       command({ targetPath: nodePath.join(targetRoot, 'pkg-b') }),
-      16,
     );
     const manifestA = JSON.parse(
       readFileSync(nodePath.join(first.packagePath, 'manifest.json'), 'utf8'),
@@ -236,8 +242,12 @@ describe('record package export service', () => {
           Promise.resolve(createReadStream(nodePath.join(storageRoot, 'refs/aaa.doc.txt'))),
       } as never,
       { readInstallation: () => Promise.resolve({ installationId: 'inst-uuid-1' }) } as never,
+      {
+        findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-4' }),
+      } as never,
+      { findModelById: () => Promise.resolve(null) } as never,
     );
-    const result = await service.exportPackage(command({ recordIds: [1, 2] }), 16);
+    const result = await service.exportPackage(command({ recordIds: [1, 2] }));
 
     expect(result.itemTotal).toBe(2);
     expect(result.itemExported).toBe(1);
@@ -298,13 +308,16 @@ describe('record package export service', () => {
             Promise.resolve(createReadStream(nodePath.join(storageRoot, 'refs/aaa.doc.txt'))),
         } as never,
         { readInstallation: () => Promise.resolve({ installationId: 'inst-uuid-1' }) } as never,
+        {
+          findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-4' }),
+        } as never,
+        { findModelById: () => Promise.resolve(null) } as never,
       );
     };
 
     const persistedUuid = '11111111-2222-4333-8444-555555555555';
     const persisted = await buildWithRow(persistedUuid).exportPackage(
       command({ recordIds: [2], targetPath: nodePath.join(targetRoot, 'pkg-persisted') }),
-      16,
     );
     const persistedManifest = JSON.parse(
       readFileSync(nodePath.join(persisted.packagePath, 'manifest.json'), 'utf8'),
@@ -313,7 +326,6 @@ describe('record package export service', () => {
 
     const legacy = await buildWithRow(null).exportPackage(
       command({ recordIds: [2], targetPath: nodePath.join(targetRoot, 'pkg-legacy') }),
-      16,
     );
     const legacyManifest = JSON.parse(
       readFileSync(nodePath.join(legacy.packagePath, 'manifest.json'), 'utf8'),
@@ -341,7 +353,7 @@ describe('record package export service', () => {
         storageReference: null,
       },
     });
-    const error = await catchExportError(service.exportPackage(command({ recordIds: [1] }), 16));
+    const error = await catchExportError(service.exportPackage(command({ recordIds: [1] })));
     const details = error.details as { items?: { rejection: string | null }[] };
     expect(details.items?.[0]?.rejection).toBe('STRUCTURE_INVALID');
     expect(existsSync(command().targetPath)).toBe(false);
@@ -368,11 +380,50 @@ describe('record package export service', () => {
         storageReference: null,
       },
     });
-    const error = await catchExportError(service.exportPackage(command(), 16));
+    const error = await catchExportError(service.exportPackage(command()));
     const details = error.details as { items?: { rejection: string | null; recordUuid: string }[] };
     expect(details.items?.[0]?.rejection).toBe('FOREIGN_COMPANY');
     // 越权记录的真实持久化身份不得出现在拒绝明细里（否则构成存在性泄露）
     expect(details.items?.[0]?.recordUuid).toBe(deriveRecordUuid('REFERENCE_DOCUMENT', 1));
+  });
+
+  it('工程师导出同公司他人记录：逐条拒绝（NOT_AUTHORIZED），不读正文不复制原件', async () => {
+    const service = buildService({
+      referenceDocument: {
+        id: 1,
+        recordUuid: '44444444-5555-4666-8777-888888888888',
+        ownerOrganizationId: 4,
+        // 作者是**他人**（不是导出人 16）
+        createdByAccountId: 99,
+        deprecated: false,
+        currentRevisionNo: 2,
+        schemaVersion: 1,
+        title: '他人资料',
+        documentType: 'MANUAL',
+        description: null,
+        contentText: '他人正文',
+        originalFilename: null,
+        mimeType: null,
+        extensionJson: null,
+        updatedAt: new Date(),
+        storageBackend: null,
+        storageReference: null,
+      },
+    });
+
+    const error = await catchExportError(
+      service.exportPackage(
+        command({
+          exporterAccountId: 16,
+          exporterScope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
+        }),
+      ),
+    );
+    const details = error.details as { items?: { rejection: string | null; message: string }[] };
+    expect(details.items?.[0]?.rejection).toBe('NOT_AUTHORIZED');
+    expect(details.items?.[0]?.message).toContain('本人创建');
+    // 整包不产生（目标目录不留残留）
+    expect(existsSync(command().targetPath)).toBe(false);
   });
 
   it('本公司记录被拒绝时，拒绝明细带出其真实持久化身份（与导出条目口径一致）', async () => {
@@ -397,7 +448,7 @@ describe('record package export service', () => {
         storageReference: null,
       },
     });
-    const error = await catchExportError(service.exportPackage(command(), 16));
+    const error = await catchExportError(service.exportPackage(command()));
     const details = error.details as { items?: { rejection: string | null; recordUuid: string }[] };
     expect(details.items?.[0]?.rejection).toBe('STRUCTURE_INVALID');
     expect(details.items?.[0]?.recordUuid).toBe(persistedUuid);
@@ -429,7 +480,7 @@ describe('record package export service', () => {
       },
     });
     const error = await catchExportError(
-      service.exportPackage(command({ resourceType: 'REPAIR_REQUEST' }), 16),
+      service.exportPackage(command({ resourceType: 'REPAIR_REQUEST' })),
     );
     const details = error.details as { items?: { rejection: string | null }[] };
     expect(details.items?.[0]?.rejection).toBe('FILE_CHECKSUM_MISMATCH');
@@ -441,7 +492,7 @@ describe('record package export service', () => {
     mkdirSync(occupied, { recursive: true });
     writeFileSync(nodePath.join(occupied, 'something.txt'), 'x');
     const service = buildService({});
-    await expect(service.exportPackage(command({ targetPath: occupied }), 16)).rejects.toThrow(
+    await expect(service.exportPackage(command({ targetPath: occupied }))).rejects.toThrow(
       '导出目标目录已存在且非空，拒绝覆盖',
     );
   });

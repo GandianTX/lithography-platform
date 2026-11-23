@@ -10,6 +10,10 @@ import {
   assertManifestSnapshotHasNoSecretMaterial,
   type RecordPackageResourceType,
 } from '@core/local-runtime/policy/record-package-manifest.policy';
+import {
+  describeRecordPackageExportDenial,
+  resolveRecordPackageExportAuthorization,
+} from '@core/local-runtime/policy/record-package-export-authorization.policy';
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
@@ -23,7 +27,9 @@ import {
   type ReferenceDocumentStorage,
 } from '@src/usecases/common/ports/reference-document-storage.contract';
 
+import { EquipmentModelQueryService } from './queries/equipment-model.query.service';
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
+import { OrganizationQueryService } from './queries/organization.query.service';
 import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';
 import { MaintenanceReportEntity } from './entities/maintenance-report.entity';
 import { MaintenanceReportVersionEntity } from './entities/maintenance-report-version.entity';
@@ -67,13 +73,12 @@ export class RecordPackageExportService {
     @Inject(REFERENCE_DOCUMENT_STORAGE)
     private readonly fileStorage: ReferenceDocumentStorage,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
+    private readonly organizationQueryService: OrganizationQueryService,
+    private readonly equipmentModelQueryService: EquipmentModelQueryService,
   ) {}
 
   /** 导出主流程：收集条目 → 复制原件（逐条）→ 组装清单（自校验）→ 写清单 */
-  async exportPackage(
-    command: RecordPackageExportCommand,
-    _exportedByAccountId: number,
-  ): Promise<RecordPackageExportResult> {
+  async exportPackage(command: RecordPackageExportCommand): Promise<RecordPackageExportResult> {
     await this.assertTargetWritable(command.targetPath);
     const installation = await this.localRuntimeQueryService.readInstallation();
     if (!installation) {
@@ -98,6 +103,7 @@ export class RecordPackageExportService {
 
       const manifest = buildExportManifest({
         organizationId: command.organizationId,
+        organizationCode: await this.readOrganizationCode(command.organizationId),
         installationId: installation.installationId,
         generatedAt: new Date(),
         items: exported.map((entry) => ({
@@ -108,7 +114,13 @@ export class RecordPackageExportService {
           files: entry.measuredFiles,
           // 来源账号与归属公司随条目入包（导入侧据此核验并保持原作者）
           sourceAccountId: entry.entry.sourceAccountId,
+          sourceAccountUuid: entry.entry.sourceAccountUuid,
+          sourceAccountLoginName: entry.entry.sourceAccountLoginName,
+          sourceAccountName: entry.entry.sourceAccountName,
           ownerOrganizationId: entry.entry.ownerOrganizationId,
+          relatedRecordUuid: entry.entry.relatedRecordUuid,
+          relatedRecordType: entry.entry.relatedRecordType,
+          sourceEquipmentModelCode: entry.entry.sourceEquipmentModelCode,
           sourceStatus: entry.entry.sourceStatus,
         })),
       });
@@ -137,6 +149,14 @@ export class RecordPackageExportService {
       }
       throw error;
     }
+  }
+
+  /** 来源公司的稳定业务编码（跨设备对齐公司身份；读不到即不带该字段） */
+  private async readOrganizationCode(organizationId: number): Promise<string | null> {
+    const identity = await this.organizationQueryService.findOrganizationIdentityById({
+      organizationId,
+    });
+    return identity?.organizationCode ?? null;
   }
 
   /** 统一收敛为逐条结论（EXPORTED 条目来自成功收集，REJECTED 条目来自拒绝明细） */
@@ -188,7 +208,16 @@ export class RecordPackageExportService {
     recordId: number,
   ): Promise<RecordPackageExportOutcome> {
     try {
-      const entry = await this.collectEntry(command.resourceType, recordId, command.organizationId);
+      // ① 先授权、后读正文：授权判定只用**窄投影**（归属公司与关联账号），
+      // 不加载正文与原件（与冲突读取侧「先查元数据授权再读正文」同一条纪律）。
+      await this.assertRecordAuthorized(command, recordId);
+      // ② 授权通过后才读正文快照与原件
+      const entry = await this.collectEntry(
+        command,
+        command.resourceType,
+        recordId,
+        command.organizationId,
+      );
       const measuredFiles = await this.copyEntryFiles(command.targetPath, entry);
       return { outcome: 'EXPORTED', entry, measuredFiles };
     } catch (error) {
@@ -218,6 +247,125 @@ export class RecordPackageExportService {
     }
   }
 
+  /**
+   * 逐条**记录级授权**（任务 09 S1-3）。
+   *
+   * 口径来自来源域真实读取权限（见
+   * `record-package-export-authorization.policy.ts`）。授权不通过 ⇒ 该条拒绝，
+   * 不复制原件、不留痕迹。
+   */
+  private async assertRecordAuthorized(
+    command: RecordPackageExportCommand,
+    recordId: number,
+  ): Promise<void> {
+    const facts = await this.readRecordAuthorizationFacts(command.resourceType, recordId);
+    if (facts === null) {
+      throw new DomainError(
+        RECORD_PACKAGE_ERROR.FOREIGN_COMPANY,
+        '记录不存在或归属未知，无法确认导出授权，该条未导出',
+      );
+    }
+    const authorization = resolveRecordPackageExportAuthorization({
+      sessionAccountId: command.exporterAccountId,
+      scope: command.exporterScope,
+      resourceType: command.resourceType,
+      record: facts,
+    });
+    if (!authorization.allowed) {
+      // 错公司与"无权"分开：错误码不同，页面展示口径也不同。
+      const code =
+        authorization.reason === 'DENIED_NOT_AUTHOR'
+          ? RECORD_PACKAGE_ERROR.NOT_AUTHORIZED
+          : RECORD_PACKAGE_ERROR.FOREIGN_COMPANY;
+      throw new DomainError(code, describeRecordPackageExportDenial(authorization.reason));
+    }
+  }
+
+  /**
+   * 记录级授权所需的**窄投影**（归属公司 ＋ 关联账号）。
+   *
+   * 只取授权判定必需的列，不加载正文与原件；记录读不到时返回 `null`
+   * （调用方按"不可核验"拒绝，不放行）。
+   */
+  private async readRecordAuthorizationFacts(
+    resourceType: RecordPackageResourceType,
+    recordId: number,
+  ): Promise<{
+    ownerOrganizationId: number | null;
+    relatedAccountIds: number[];
+  } | null> {
+    if (resourceType === 'REFERENCE_DOCUMENT') {
+      const row = await this.referenceDocumentRepository.findOne({
+        where: { id: recordId },
+        select: { ownerOrganizationId: true, createdByAccountId: true },
+      });
+      if (row === null) {
+        return null;
+      }
+      return {
+        ownerOrganizationId: row.ownerOrganizationId,
+        relatedAccountIds: [row.createdByAccountId],
+      };
+    }
+    if (resourceType === 'MAINTENANCE_REPORT') {
+      const row = await this.maintenanceReportRepository.findOne({
+        where: { id: recordId },
+        select: {
+          ownerOrganizationId: true,
+          createdByAccountId: true,
+          maintenanceEngineerAccountId: true,
+        },
+      });
+      if (row === null) {
+        return null;
+      }
+      return {
+        ownerOrganizationId: row.ownerOrganizationId,
+        relatedAccountIds: [row.createdByAccountId, row.maintenanceEngineerAccountId].filter(
+          (value): value is number => typeof value === 'number',
+        ),
+      };
+    }
+    const row = await this.repairRequestRepository.findOne({
+      where: { id: recordId },
+      select: {
+        ownerOrganizationId: true,
+        customerAccountId: true,
+        acceptedByEngineerAccountId: true,
+      },
+    });
+    if (row === null) {
+      return null;
+    }
+    return {
+      ownerOrganizationId: row.ownerOrganizationId,
+      relatedAccountIds: [row.customerAccountId, row.acceptedByEngineerAccountId].filter(
+        (value): value is number => typeof value === 'number',
+      ),
+    };
+  }
+
+  /**
+   * 来源账号的**跨端可移植身份**（任务 09 S1-2）。
+   *
+   * 源机的数字账号 id 在目标机可能指向另一个人，因此随包携带：
+   * 稳定标识（`account_uuid`）、可移植账号名（`login_name`）、姓名快照。
+   * 解析能力由 usecase 层按窄契约注入（账号域与业务域并列，模块间不得直接依赖）。
+   */
+  private async readPortableSourceIdentity(
+    command: RecordPackageExportCommand,
+    sourceAccountId: number | null,
+  ): Promise<{
+    accountUuid: string | null;
+    loginName: string | null;
+    name: string | null;
+  }> {
+    if (sourceAccountId === null) {
+      return { accountUuid: null, loginName: null, name: null };
+    }
+    return command.resolveSourceIdentity(sourceAccountId);
+  }
+
   private toRejection(error: DomainError): RecordPackageExportItemOutcome['rejection'] {
     switch (error.code) {
       case RECORD_PACKAGE_ERROR.FOREIGN_COMPANY:
@@ -228,12 +376,15 @@ export class RecordPackageExportService {
         return 'FILE_MISSING';
       case RECORD_PACKAGE_ERROR.FILE_CHECKSUM_MISMATCH:
         return 'FILE_CHECKSUM_MISMATCH';
+      case RECORD_PACKAGE_ERROR.NOT_AUTHORIZED:
+        return 'NOT_AUTHORIZED';
       default:
         return 'STRUCTURE_INVALID';
     }
   }
 
   private async collectEntry(
+    command: RecordPackageExportCommand,
     resourceType: RecordPackageResourceType,
     recordId: number,
     organizationId: number,
@@ -241,11 +392,11 @@ export class RecordPackageExportService {
     const recordUuid = await this.resolveRecordUuid(resourceType, recordId, organizationId);
     switch (resourceType) {
       case 'REFERENCE_DOCUMENT':
-        return this.collectReferenceDocument(recordId, organizationId, recordUuid);
+        return this.collectReferenceDocument(command, recordId, organizationId, recordUuid);
       case 'REPAIR_REQUEST':
-        return this.collectRepairRequest(recordId, organizationId, recordUuid);
+        return this.collectRepairRequest(command, recordId, organizationId, recordUuid);
       case 'MAINTENANCE_REPORT':
-        return this.collectMaintenanceReport(recordId, organizationId, recordUuid);
+        return this.collectMaintenanceReport(command, recordId, organizationId, recordUuid);
       default:
         throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, '资源类型不在允许清单内');
     }
@@ -334,6 +485,7 @@ export class RecordPackageExportService {
   }
 
   private async collectReferenceDocument(
+    command: RecordPackageExportCommand,
     recordId: number,
     organizationId: number,
     recordUuid: string,
@@ -379,6 +531,8 @@ export class RecordPackageExportService {
         expectedByteSize: null,
       });
     }
+    const sourceAccountId = entity.createdByAccountId ?? null;
+    const portable = await this.readPortableSourceIdentity(command, sourceAccountId);
     return {
       recordId,
       recordUuid,
@@ -386,13 +540,20 @@ export class RecordPackageExportService {
       versionNo: entity.currentRevisionNo,
       contentSnapshot,
       files,
-      sourceAccountId: entity.createdByAccountId ?? null,
+      sourceAccountId,
+      sourceAccountUuid: portable.accountUuid,
+      sourceAccountLoginName: portable.loginName,
+      sourceAccountName: portable.name,
       ownerOrganizationId: organizationId,
+      relatedRecordUuid: null,
+      relatedRecordType: null,
+      sourceEquipmentModelCode: null,
       sourceStatus: null,
     };
   }
 
   private async collectRepairRequest(
+    command: RecordPackageExportCommand,
     recordId: number,
     organizationId: number,
     recordUuid: string,
@@ -439,6 +600,8 @@ export class RecordPackageExportService {
         expectedByteSize: Number(stored.byteSize),
       });
     }
+    const sourceAccountId = entity.customerAccountId ?? null;
+    const portable = await this.readPortableSourceIdentity(command, sourceAccountId);
     return {
       recordId,
       recordUuid,
@@ -446,13 +609,20 @@ export class RecordPackageExportService {
       versionNo: entity.currentRevisionNo,
       contentSnapshot,
       files,
-      sourceAccountId: entity.customerAccountId ?? null,
+      sourceAccountId,
+      sourceAccountUuid: portable.accountUuid,
+      sourceAccountLoginName: portable.loginName,
+      sourceAccountName: portable.name,
       ownerOrganizationId: organizationId,
+      relatedRecordUuid: null,
+      relatedRecordType: null,
+      sourceEquipmentModelCode: null,
       sourceStatus: null,
     };
   }
 
   private async collectMaintenanceReport(
+    command: RecordPackageExportCommand,
     recordId: number,
     organizationId: number,
     recordUuid: string,
@@ -499,6 +669,12 @@ export class RecordPackageExportService {
         expectedByteSize: attachment.byteSize,
       });
     }
+    const sourceAccountId = entity.createdByAccountId ?? null;
+    const portable = await this.readPortableSourceIdentity(command, sourceAccountId);
+    // 工单总结类报告必须携带**关联工单的跨端稳定编号**（任务 09 S1-4）：
+    // 源机的数字外键在目标机无意义，按数字 id 猜会把报告挂到另一张工单上。
+    const related = await this.readRelatedRepairRequest(entity.repairRequestId);
+    const sourceEquipmentModelCode = await this.readEquipmentModelCode(entity.equipmentModelId);
     return {
       recordId,
       recordUuid,
@@ -507,11 +683,47 @@ export class RecordPackageExportService {
       contentSnapshot,
       files,
       // 原作者＝报告创建人；责任工程师在冻结载荷内（maintenanceEngineerAccountId）
-      sourceAccountId: entity.createdByAccountId ?? null,
+      sourceAccountId,
+      sourceAccountUuid: portable.accountUuid,
+      sourceAccountLoginName: portable.loginName,
+      sourceAccountName: portable.name,
       ownerOrganizationId: organizationId,
+      relatedRecordUuid: related?.recordUuid ?? null,
+      relatedRecordType: related === null ? null : 'REPAIR_REQUEST',
+      sourceEquipmentModelCode,
       // 来源业务状态：导入正式事实需要知道它是待审还是已通过结单
       sourceStatus: entity.status,
     };
+  }
+
+  /**
+   * 设备机型的**稳定编码**（跨设备定位机型）。
+   *
+   * 机型 id 是全局型号库的自增主键，跨设备不可移植；编码（`model_code`）才是
+   * 跨设备一致的标识。读不到编码即不带该字段（导入侧按"不可核验"拒绝该条）。
+   */
+  private async readEquipmentModelCode(equipmentModelId: number | null): Promise<string | null> {
+    if (equipmentModelId === null || equipmentModelId === undefined) {
+      return null;
+    }
+    const model = await this.equipmentModelQueryService.findModelById({
+      id: equipmentModelId,
+    });
+    return model?.modelCode ?? null;
+  }
+
+  /** 关联工单的跨端稳定编号（工单总结导入需要据此定位工单） */
+  private async readRelatedRepairRequest(
+    repairRequestId: number | null,
+  ): Promise<{ recordUuid: string | null } | null> {
+    if (repairRequestId === null || repairRequestId === undefined) {
+      return null;
+    }
+    const row = await this.repairRequestRepository.findOne({
+      where: { id: repairRequestId },
+      select: { recordUuid: true },
+    });
+    return row === null ? null : { recordUuid: row.recordUuid };
   }
 
   /** 包内相对路径：`files/<uuid前8>/<净化文件名>`，天然无穿越成分 */

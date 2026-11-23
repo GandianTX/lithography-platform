@@ -60,10 +60,47 @@ export type RecordPackageItemWriteRequest = {
    *
    * 为 `null` 表示**包内未携带来源身份**（旧包或来源记录本就无持久化作者）：
    * 受控写入方必须**失败关闭**——不得把导入人写成原作者。
+   *
+   * 注意：该值是**源机自增主键**，跨设备无意义（任务 09 S1-2）；
+   * 跨端身份以 `portableSourceIdentity` 为准。
    */
   sourceAccountId: number | null;
+  /**
+   * 包内携带的**跨端可移植来源身份**（任务 09 S1-2）。
+   *
+   * 跨设备搬运时，来源账号与来源公司都必须用**可移植标识**对齐：
+   * - `sourceAccountUuid`：账号的不可变稳定标识（命中即同一条账号事实）；
+   * - `sourceAccountLoginName`：工作账号名（次级映射依据，需配合姓名快照核对）；
+   * - `sourceAccountName`：姓名快照（交叉核对）；
+   * - `sourceOrganizationCode`：公司稳定业务编码（对齐公司）。
+   *
+   * 全部缺失（旧包）⇒ 受控写入方必须按"来源身份不可核验"拒绝，
+   * **不得**回退到 `sourceAccountId` 猜作者。
+   */
+  portableSourceIdentity: {
+    sourceAccountUuid: string | null;
+    sourceAccountLoginName: string | null;
+    sourceAccountName: string | null;
+    sourceOrganizationCode: string | null;
+  };
   /** 来源归属公司（数据为准；与目标公司不一致时受控写入方必须拒绝） */
   ownerOrganizationId: number | null;
+  /**
+   * 关联记录的**跨端稳定编号**（如工单总结关联的工单 `repair_request.record_uuid`）。
+   *
+   * 源机的数字外键跨机无意义：目标机必须按稳定编号定位"那一张工单"。
+   */
+  relatedRecordUuid: string | null;
+  /** 关联记录的资源类型（如 `REPAIR_REQUEST`） */
+  relatedRecordType: string | null;
+  /**
+   * 来源记录的**设备机型编码**（`equipment_model.model_code`）。
+   *
+   * 机型 id 是全局型号库的自增主键，跨设备不可移植（与账号 id 同类缺陷）：
+   * 目标机必须按**编码**在本机定位机型；缺失或定位不到时受控写入方必须拒绝
+   * （不得把报告挂到另一款机型上，也不得静默清空机型事实）。
+   */
+  sourceEquipmentModelCode: string | null;
   /**
    * 来源业务状态（如报告的 SUBMITTED／APPROVED）：导入正式事实必须知道来源状态，
    * 否则会把已通过结单的内容悄悄降级成待审草稿。缺失时受控写入方必须拒绝。
@@ -102,8 +139,15 @@ export interface RecordPackageItemWriter {
    * - 拒绝时给出可读的受控原因，不静默改归属、不冒用导入人。
    */
   verifySourceIdentity(params: {
-    /** 包内登记的来源账号；`null` = 包内未携带来源身份 */
+    /** 包内登记的来源账号；`null` = 包内未携带来源身份（跨设备时该值无意义） */
     sourceAccountId: number | null;
+    /** 包内携带的跨端可移植来源身份（任务 09 S1-2） */
+    portableSourceIdentity: {
+      sourceAccountUuid: string | null;
+      sourceAccountLoginName: string | null;
+      sourceAccountName: string | null;
+      sourceOrganizationCode: string | null;
+    };
     /** 包内登记的来源归属公司；`null` = 包内未登记 */
     ownerOrganizationId: number | null;
     /** 导入目标公司 */

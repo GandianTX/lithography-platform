@@ -77,6 +77,7 @@ function buildUsecase(
         schema_version: 1,
         package_id: PACKAGE_ID,
         organization_id: 9,
+        organization_code: 'ORG-9',
         installation_id: '88888888-9999-4aaa-8bbb-cccccccccccc',
         created_at: '2026-11-22T00:00:00.000Z',
         items: [
@@ -87,6 +88,9 @@ function buildUsecase(
             content_snapshot: { schema_version: 1, payload: { title: 'x' } },
             files: options.manifestFiles ?? [],
             source_account_id: manifestSourceAccountId,
+            source_account_uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            source_account_login_name: 'engineer-1',
+            source_account_name: '张三',
             owner_organization_id: options.manifestOwnerOrganizationId ?? 9,
           },
         ],
@@ -133,8 +137,10 @@ function buildUsecase(
       writeItemResult,
       findReceipt,
     } as never,
+    { findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-9' }) } as never,
     { recordImportedVersion } as never,
     { stage, release } as never,
+
     {
       listFacts: jest.fn().mockResolvedValue({
         facts:
@@ -242,6 +248,23 @@ describe('记录包导入编排（S3.2）', () => {
     ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.PACKAGE_NOT_FOUND });
   });
 
+  it('一级管理员（全局授权范围）可导入本公司范围的包：不被"公司 id ≠ null"恒定拒绝', async () => {
+    const { usecase, finalizeImport } = buildUsecase();
+    // 一级管理员没有业务所属公司（scope.organizationId = null）
+    (
+      usecase as unknown as { scopeResolver: { resolve: jest.Mock } }
+    ).scopeResolver.resolve.mockResolvedValue({ organizationId: null, role: 'ADMIN_LEVEL_1' });
+
+    await usecase.execute({
+      session: SESSION,
+      packageId: PACKAGE_ID,
+      packagePath: '/mnt/usb/pkg',
+      manifestChecksum: CHECKSUM,
+    });
+
+    expect(finalizeImport).toHaveBeenCalled();
+  });
+
   it('确认绑定的清单摘要与检查结论不一致时旧确认作废', async () => {
     const { usecase, markImportRunning } = buildUsecase({ evaluationChecksum: 'b'.repeat(64) });
 
@@ -303,13 +326,38 @@ describe('记录包导入编排（S3.2）', () => {
     );
   });
 
-  it('P4｜异公司：包内归属公司与目标公司不一致时该条拒绝', async () => {
+  it('P4｜异公司：公司身份裁决委托来源域（编排侧不按数字 id 猜公司）', async () => {
     // 本地 mock：避免与共享 mock 的调用计数互相干扰
     const writer = buildWriterMock();
-    const { usecase, writeItemResult } = buildUsecase({
+    const { usecase } = buildUsecase({
       writer,
       manifestOwnerOrganizationId: 10,
     });
+
+    await usecase.execute({
+      session: SESSION,
+      packageId: PACKAGE_ID,
+      packagePath: '/mnt/usb/pkg',
+      manifestChecksum: CHECKSUM,
+    });
+
+    // 公司归属核对在**来源域**（按公司业务编码），编排侧只把事实传过去
+    expect(writer.verifySourceIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerOrganizationId: 10,
+        portableSourceIdentity: expect.objectContaining({
+          sourceOrganizationCode: 'ORG-9',
+        }),
+      }),
+    );
+  });
+
+  it('P4｜来源域判定身份不可核验（异公司／不可信来源）时该条拒绝且不写入', async () => {
+    // 本地 mock：避免与共享 mock 的调用计数互相干扰
+    const writer = buildWriterMock({
+      identity: { allowed: false, reason: '包内来源公司与导入目标公司不一致，该条未导入' },
+    });
+    const { usecase, writeItemResult } = buildUsecase({ writer });
 
     await usecase.execute({
       session: SESSION,
