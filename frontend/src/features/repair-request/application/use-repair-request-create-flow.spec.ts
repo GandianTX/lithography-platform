@@ -254,6 +254,7 @@ describe('「原申请已删除」的同标识重试（PR #27 复审）', () => 
       .mockResolvedValueOnce({ ok: true, repairRequest: CREATED_RECORD });
 
     const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('ready'));
 
     await act(async () => {
       await result.current.submit({ ...VALUES });
@@ -280,6 +281,7 @@ describe('「原申请已删除」的同标识重试（PR #27 复审）', () => 
     });
 
     const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('ready'));
 
     await act(async () => {
       await result.current.submit({ ...VALUES });
@@ -300,6 +302,98 @@ describe('「原申请已删除」的同标识重试（PR #27 复审）', () => 
     const second = createRepairRequestMock.mock.calls[1][0].recordUuid;
     expect(second).toMatch(UUID_PATTERN);
     expect(second).not.toBe(first);
+  });
+});
+
+describe('提交守卫与机型模式（空目录手填）', () => {
+  it('机型目录未就绪（加载中）时不发起创建请求', async () => {
+    fetchModelsMock.mockReturnValue(new Promise(() => {}));
+    const { result } = renderFlow();
+
+    await act(async () => {
+      const record = await result.current.submit({ ...VALUES });
+      expect(record).toBeNull();
+    });
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBe('设备型号目录暂不可用，请稍后重试。');
+  });
+
+  it('机型目录加载失败时不发起创建请求（失败不得当作空目录）', async () => {
+    fetchModelsMock.mockRejectedValue(
+      new GraphQLIngressError({ type: 'network', message: 'down' }),
+    );
+    const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('failed'));
+
+    await act(async () => {
+      const record = await result.current.submit({ ...VALUES });
+      expect(record).toBeNull();
+    });
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBe('设备型号目录暂不可用，请稍后重试。');
+  });
+
+  it('厂家列表未就绪时不发起创建请求', async () => {
+    fetchServiceOrgsMock.mockReturnValue(new Promise(() => {}));
+    const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('ready'));
+
+    await act(async () => {
+      const record = await result.current.submit({ ...VALUES });
+      expect(record).toBeNull();
+    });
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBe('维修厂家列表暂不可用，请稍后重试。');
+  });
+
+  it('手填模式纯空白机型不发起创建请求', async () => {
+    const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('ready'));
+
+    await act(async () => {
+      const record = await result.current.submit(
+        { ...VALUES, equipmentModelId: null, equipmentModelText: '   ' },
+        { manualModel: true },
+      );
+      expect(record).toBeNull();
+    });
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBe('请填写新机型');
+  });
+
+  it('选择模式未选择机型不发起创建请求', async () => {
+    const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('ready'));
+
+    await act(async () => {
+      const record = await result.current.submit({ ...VALUES, equipmentModelId: null });
+      expect(record).toBeNull();
+    });
+    expect(createRepairRequestMock).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBe('请选择设备型号');
+  });
+
+  it('选择模式载荷只携带 equipmentModelId，手填模式载荷只携带去空白的 equipmentModelText', async () => {
+    createRepairRequestMock.mockResolvedValue({ ok: true, repairRequest: CREATED_RECORD });
+    const { result } = renderFlow();
+    await waitFor(() => expect(result.current.modelsState.status).toBe('ready'));
+
+    await act(async () => {
+      await result.current.submit({ ...VALUES });
+    });
+    const selectPayload = createRepairRequestMock.mock.calls[0][0];
+    expect(selectPayload.equipmentModelId).toBe(11);
+    expect('equipmentModelText' in selectPayload).toBe(false);
+
+    await act(async () => {
+      await result.current.submit(
+        { ...VALUES, equipmentModelId: null, equipmentModelText: '  NSR-S622D  ' },
+        { manualModel: true },
+      );
+    });
+    const manualPayload = createRepairRequestMock.mock.calls[1][0];
+    expect(manualPayload.equipmentModelText).toBe('NSR-S622D');
+    expect('equipmentModelId' in manualPayload).toBe(false);
   });
 });
 

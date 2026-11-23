@@ -7,6 +7,7 @@ import { type MessageKey, translateNow } from '@/shared/i18n';
 
 import type {
   CreateRepairRequestFailureReason,
+  CreateRepairRequestInput,
   EquipmentModelOption,
   RepairRequestRecord,
   ServiceOrganizationOption,
@@ -25,6 +26,8 @@ import type { StagedStoredFile } from '../infrastructure/stored-file-upload';
  *
  * 行为口径：
  * - 型号三态：loading / failed（含共享错误模型用户文案与重试）/ ready（含空态）；
+ *   查询失败不得当作空目录：只有 ready 才允许提交，空目录（ready 且无启用型号）
+ *   由 ui 直接进入手填新机型模式；
  * - 厂家三态同上，并支持按关键字重新检索（空关键字即拉取默认首页）；
  * - 原件为可选暂存上传：失败保留表单内容，成功后持有 fileId + uploadContextId，
  *   提交失败不丢弃（同一附件可随同一次提交标识重试）；每次上传持有可失效的请求
@@ -160,6 +163,11 @@ export function useRepairRequestCreateFlow() {
   const submittingRef = useRef(false);
   /** 稳定提交标识：一次填写一份报修；提交成功（或「继续创建」）后换新 */
   const recordUuidRef = useRef<string>(createSubmissionKey());
+  /**
+   * 机型目录请求序号：重试自增令牌，只回写最后一次请求的结果；
+   * 避免旧请求晚到覆盖新状态（与厂家检索的竞态守卫同口径）。
+   */
+  const modelsRequestRef = useRef(0);
   /** 厂家关键字检索的请求序号：只回写最后一次检索结果 */
   const serviceOrgsRequestRef = useRef(0);
   /**
@@ -192,17 +200,13 @@ export function useRepairRequestCreateFlow() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const requestId = ++modelsRequestRef.current;
 
     void loadEquipmentModelsState().then((state) => {
-      if (!cancelled) {
+      if (mountedRef.current && requestId === modelsRequestRef.current) {
         setModelsState(state);
       }
     });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
@@ -235,9 +239,10 @@ export function useRepairRequestCreateFlow() {
   }, []);
 
   const retryLoadModels = useCallback(() => {
+    const requestId = ++modelsRequestRef.current;
     setModelsState({ status: 'loading' });
     void loadEquipmentModelsState().then((state) => {
-      if (mountedRef.current) {
+      if (mountedRef.current && requestId === modelsRequestRef.current) {
         setModelsState(state);
       }
     });
@@ -305,12 +310,32 @@ export function useRepairRequestCreateFlow() {
   /**
    * 提交创建。成功时返回真实创建记录（含真实 id，供 ui 进入成功态并上报联动）；失败返回 null。
    *
+   * 运行时守卫（不依赖按钮置灰）：机型目录与厂家列表查询未就绪、附件上传中、
+   * 当前机型模式必填不满足（手填纯空白 / 未选择机型）时一律不发起创建请求。
+   *
+   * 机型字段口径（空目录修复）：严格按当前模式二选一裁剪——
+   * - 手填模式：只携带去首尾空白的 `equipmentModelText`，完全不携带 `equipmentModelId`；
+   * - 选择模式：只携带 `equipmentModelId`，完全不携带 `equipmentModelText`。
+   *
    * 附件口径（PR #27 复审）：载荷使用提交开始时刻 `attachmentRef` 的附件快照——
    * 页面当前展示的有效附件即实际提交的附件，提交期间的并发状态变化不影响本次载荷。
    */
   const submit = useCallback(
-    async (values: RepairRequestCreateFormValues): Promise<RepairRequestRecord | null> => {
+    async (
+      values: RepairRequestCreateFormValues,
+      options: { manualModel?: boolean } = {},
+    ): Promise<RepairRequestRecord | null> => {
       if (submittingRef.current) {
+        return null;
+      }
+      if (modelsState.status !== 'ready') {
+        setSubmitError(translateNow('repairForm.modelsNotReady'));
+
+        return null;
+      }
+      if (serviceOrgsState.status !== 'ready') {
+        setSubmitError(translateNow('repairForm.serviceOrgsNotReady'));
+
         return null;
       }
       const attachmentSnapshot = attachmentRef.current;
@@ -320,19 +345,35 @@ export function useRepairRequestCreateFlow() {
         return null;
       }
 
+      const manualModel = options.manualModel === true;
+      const manualModelText = values.equipmentModelText?.trim() ?? '';
+      if (manualModel && !manualModelText) {
+        setSubmitError(translateNow('repairForm.modelManualRequired'));
+
+        return null;
+      }
+      if (!manualModel && values.equipmentModelId == null) {
+        setSubmitError(translateNow('repairForm.modelRequired'));
+
+        return null;
+      }
+
       submittingRef.current = true;
       setSubmitting(true);
       setSubmitError(null);
       setSubmitFailureReason(null);
 
-      const manualModelText = values.equipmentModelText?.trim() ?? '';
+      // 只构造当前模式对应的机型字段，另一字段不出现（JSON 序列化即不携带）
+      const modelFields: Pick<CreateRepairRequestInput, 'equipmentModelId' | 'equipmentModelText'> =
+        manualModel
+          ? { equipmentModelText: manualModelText }
+          : { equipmentModelId: values.equipmentModelId ?? null };
 
       try {
         const result = await createRepairRequest({
           recordUuid: recordUuidRef.current,
           serviceOrganizationId: values.serviceOrganizationId,
-          equipmentModelId: manualModelText ? null : (values.equipmentModelId ?? null),
-          equipmentModelText: manualModelText ? manualModelText : null,
+          ...modelFields,
           errorCode: values.errorCode.trim(),
           faultDescription: values.faultDescription.trim(),
           attachment:
@@ -371,7 +412,7 @@ export function useRepairRequestCreateFlow() {
         }
       }
     },
-    [],
+    [modelsState, serviceOrgsState],
   );
 
   const continueCreating = useCallback(() => {
