@@ -24,6 +24,8 @@ import { LocalRestoreExecutionService } from './local-restore-execution.service'
 import { LocalRestoreRecordWriterService } from './local-restore-record.writer';
 import { LOCAL_RESTORE_RECORD_WRITER } from '@usecases/common/ports/local-restore-record-writer.contract';
 import { SYNC_CONFLICT_LOCAL_VIEW_WRITER } from '@usecases/common/ports/sync-conflict-local-view-writer.contract';
+import { SYNC_CONFLICT_LOCAL_RESOLUTION_WRITER } from '@usecases/common/ports/sync-conflict-local-resolution-writer.contract';
+import { SyncConflictLocalResolutionWriterService } from './sync-conflict-local-resolution.writer';
 import { LocalWriteHoldService } from './local-write-hold.service';
 import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 import { LocalBackupPlanService } from './local-backup-plan.service';
@@ -212,6 +214,13 @@ export const LITHOGRAPHY_ENTITIES = [
       provide: SYNC_CONFLICT_LOCAL_VIEW_WRITER,
       useExisting: SyncConflictLocalViewWriterService,
     },
+    // 「保留本地」的来源域受控写入实现（任务 09 第 05 项）：按契约令牌注册，
+    // 冲突编排在调用期查找（未注册＝失败关闭，不静默降级为"只改冲突事实"）
+    SyncConflictLocalResolutionWriterService,
+    {
+      provide: SYNC_CONFLICT_LOCAL_RESOLUTION_WRITER,
+      useExisting: SyncConflictLocalResolutionWriterService,
+    },
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,
@@ -323,6 +332,10 @@ export const LITHOGRAPHY_ENTITIES = [
     // 冲突编排（本地运行域模块）按令牌注入；未注册即失败关闭
     SyncConflictLocalViewWriterService,
     SYNC_CONFLICT_LOCAL_VIEW_WRITER,
+    // 「保留本地」的来源域受控写入（任务 09 第 05 项）：按契约令牌导出，
+    // 冲突编排（管理员文档库域用例）按令牌注入；未注册即失败关闭
+    SyncConflictLocalResolutionWriterService,
+    SYNC_CONFLICT_LOCAL_RESOLUTION_WRITER,
   ],
 })
 export class LithographyModule {}

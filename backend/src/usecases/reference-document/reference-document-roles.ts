@@ -8,6 +8,7 @@ import {
   REFERENCE_DOCUMENT_ERROR,
 } from '@core/common/errors/domain-error';
 import { hasRole } from '@core/account/policy/role-access.policy';
+import { assertFirstLevelAdminWriteAccess } from '@core/account/policy/admin-write-access.policy';
 
 /**
  * 读角色兜底决策：ENGINEER 可读，SUPER_ADMIN 按角色继承规则准入（hasRole 层级展开），
@@ -58,22 +59,22 @@ export async function assertReferenceDocumentFirstLevelAdmin(params: {
   accountQueryService: ReferenceDocumentAdminLevelReader;
 }): Promise<void> {
   assertReferenceDocumentWriteRole(params.session.roles);
-  if (params.session.activeRole !== IdentityTypeEnum.SUPER_ADMIN) {
-    throw new DomainError(
-      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
-      '仅一级管理员可以执行资料管理操作',
-    );
-  }
   const adminLevel = await params.accountQueryService.findAdminLevelByAccountId(
     params.session.accountId,
   );
-  if (adminLevel !== 1) {
-    throw new DomainError(
-      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
-      '仅一级管理员可以执行资料管理操作',
-      { adminLevel },
-    );
-  }
+  // 身份与等级判定走 core 单一口径（任务 09 第 05 项的「保留本地」资料分支共用同一判定，
+  // 避免两套写权口径漂移）；本域只负责读取等级当前事实。
+  assertFirstLevelAdminWriteAccess(
+    {
+      roles: params.session.roles,
+      activeRole: params.session.activeRole,
+      adminLevel,
+    },
+    {
+      roleDeniedMessage: '仅管理员账号可以维护参考资料',
+      levelDeniedMessage: '仅一级管理员可以执行资料管理操作',
+    },
+  );
 }
 
 /**

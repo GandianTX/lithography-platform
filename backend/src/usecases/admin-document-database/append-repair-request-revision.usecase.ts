@@ -79,6 +79,15 @@ export type AppendRepairRequestRevisionCommand = {
    */
   expectedMaintenanceVersion?: number | null;
   maintenance?: MaintenanceRecordRawInput | null;
+  /**
+   * 允许"内容与当前一致"的**留痕型修订**（任务 09 第 05 项：冲突裁决「保留本地」）。
+   *
+   * 默认 false：管理员手工修订时"未检测到需要修订的字段"仍拒绝（不产生多余版本）。
+   * 裁决「保留本地」时，本地内容**就是**要保留的对象，内容不变是必然结果；
+   * 但业务上必须留下一条可追溯的修订历史行（谁、何时、为何保留本地），
+   * 所以由调用方显式开启，而不是放宽整个入口的默认语义。
+   */
+  allowUnchangedContent?: boolean;
 };
 
 export type RepairRequestRevisionView = {
@@ -234,17 +243,24 @@ export class AppendRepairRequestRevisionUsecase {
       });
 
       if (
-        nextRequest.contentMd === target.contentMd &&
-        nextRequest.handlingResult === target.handlingResult &&
-        nextRequest.closureReason === target.closureReason &&
-        nextProcessEntries.changed.length === 0 &&
-        (maintenance === null ||
-          !hasMaintenanceChanges(
-            target,
-            beforeMaintenanceSteps,
-            beforeMaintenancePanels,
-            maintenance,
-          ))
+        !command.allowUnchangedContent &&
+        isRevisionNoop({
+          nextContentMd: nextRequest.contentMd,
+          currentContentMd: target.contentMd,
+          nextHandlingResult: nextRequest.handlingResult,
+          currentHandlingResult: target.handlingResult,
+          nextClosureReason: nextRequest.closureReason,
+          currentClosureReason: target.closureReason,
+          processEntriesChanged: nextProcessEntries.changed.length > 0,
+          maintenanceChanged:
+            maintenance !== null &&
+            hasMaintenanceChanges(
+              target,
+              beforeMaintenanceSteps,
+              beforeMaintenancePanels,
+              maintenance,
+            ),
+        })
       ) {
         throw new DomainError(REPAIR_REQUEST_ERROR.INVALID_PARAMS, '未检测到需要修订的字段');
       }
@@ -826,4 +842,31 @@ function resolveNextHandlingFacts(
     handlingStatusValue: status,
     handlingRecordedAtChanged: true,
   };
+}
+
+/**
+ * 本次修订是否**没有实际变化**（正文、处理结果、结单原因、过程行、维修记录都没变）。
+ *
+ * 默认语义：没有变化就拒绝（管理员手工修订不产生多余业务版本）。
+ * 冲突裁决「保留本地」显式开启留痕型修订（`allowUnchangedContent`）：
+ * 要保留的对象本来就是本地当前内容——内容不变是必然结果，
+ * 但业务上必须留下可追溯的修订历史行（谁、何时、为何保留本地）。
+ */
+function isRevisionNoop(input: {
+  nextContentMd: string;
+  currentContentMd: string;
+  nextHandlingResult: string | null;
+  currentHandlingResult: string | null;
+  nextClosureReason: string | null;
+  currentClosureReason: string | null;
+  processEntriesChanged: boolean;
+  maintenanceChanged: boolean;
+}): boolean {
+  return (
+    input.nextContentMd === input.currentContentMd &&
+    input.nextHandlingResult === input.currentHandlingResult &&
+    input.nextClosureReason === input.currentClosureReason &&
+    !input.processEntriesChanged &&
+    !input.maintenanceChanged
+  );
 }

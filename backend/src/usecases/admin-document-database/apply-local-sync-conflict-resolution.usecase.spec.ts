@@ -7,6 +7,7 @@ import type { TrustedOrganizationContextQueryService } from '@src/modules/lithog
 import type { SyncSourceRecordQueryService } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type { SyncConflictService } from '@src/modules/lithography/sync-conflict.service';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
+import type { SyncConflictLocalResolutionWriter } from '@src/usecases/common/ports/sync-conflict-local-resolution-writer.contract';
 
 import { ApplyLocalSyncConflictResolutionUsecase } from './apply-local-sync-conflict-resolution.usecase';
 import { AppendRepairRequestRevisionUsecase } from './append-repair-request-revision.usecase';
@@ -64,6 +65,7 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
       recordId: number;
       withdrawn?: boolean;
       currentVersion?: number | null;
+      ownerOrganizationId?: number | null;
       contentState?: { withdrawn: boolean; frozen: boolean; closed: boolean };
     } | null;
     localAffected?: number;
@@ -115,7 +117,7 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
                 ]
               : params.fact === null
                 ? []
-                : [['record-uuid-1', params.fact]],
+                : [[params.locked?.recordUuid ?? 'record-uuid-1', params.fact]],
           ),
           scanComplete: true,
         }),
@@ -133,6 +135,11 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
     const appendRevisionUsecase = {
       execute: jest.fn(() => Promise.resolve({ revisionNo: 5 })),
     } as unknown as AppendRepairRequestRevisionUsecase;
+    // 资料分支的来源域受控写入（中立契约实现，任务 09 第 05 项）
+    const localResolutionWriter = {
+      supportedResourceTypes: ['REFERENCE_DOCUMENT'],
+      writeLocalVersion: jest.fn(() => Promise.resolve({ written: true, writtenVersion: 4 })),
+    } as unknown as SyncConflictLocalResolutionWriter;
     const transactionRunner = {
       run: jest.fn((callback: (ctx: unknown) => unknown) => callback(transactionContext)),
     } as unknown as TransactionRunner;
@@ -149,11 +156,13 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
           assertWritable: () => Promise.resolve(),
         } as unknown as LocalWriteHoldService,
         appendRevisionUsecase,
+        localResolutionWriter,
         transactionRunner,
       ),
       conflictService,
       sourceRecordQueryService,
       appendRevisionUsecase,
+      localResolutionWriter,
     };
   };
 
@@ -380,5 +389,209 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
       usecase.execute({ session: superAdminSession, conflictId: 'c-1' }),
     ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID });
     expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
+  });
+  /**
+   * 资料分支（第 05 项 · P1-5／G10）：「保留本地」对资料的真实写权与受控边界。
+   *
+   * 守住：
+   * - 资料可写成功 → 经中立契约写入受控修订 ＋ 落 LOCAL 裁决事实（正文不反写）；
+   * - 写权按**来源资源真实可写角色**：二级管理员与工程师受控拒绝（不按管理员身份替代）；
+   * - 同公司记录、只读来源（已下架／归属待确认）、版本推进后一律受控拒绝；
+   * - 幂等重放不重复写修订，只补裁决事实。
+   */
+  describe('资料分支（REFERENCE_DOCUMENT）', () => {
+    const documentFirstLevelAdminSession = {
+      accountId: 900101,
+      roles: ['SUPER_ADMIN'],
+      activeRole: 'SUPER_ADMIN',
+      adminLevel: 1,
+      adminOrganizationId: null,
+    } as unknown as UsecaseSession;
+    const documentEngineerSession = {
+      accountId: 900102,
+      roles: ['ENGINEER'],
+      activeRole: 'ENGINEER',
+      adminLevel: null,
+      adminOrganizationId: null,
+    } as unknown as UsecaseSession;
+
+    const documentConflict = {
+      conflictId: 'c-doc-1',
+      recordUuid: 'record-uuid-doc-1',
+      organizationId: 4,
+      resourceType: 'REFERENCE_DOCUMENT',
+      status: 'PENDING',
+      decision: null,
+      localVersion: 3,
+      localResolutionState: null,
+      localSnapshot: JSON.stringify({
+        schema_version: 1,
+        title: '本地资料标题',
+        description: '本地说明',
+        content_text: '本地正文',
+      }),
+    };
+
+    const documentFact = {
+      recordId: 990001,
+      withdrawn: false,
+      currentVersion: 3,
+      ownerOrganizationId: 4,
+      contentState: { withdrawn: false, frozen: false, closed: false },
+    };
+
+    it('资料可写成功：经中立契约写入受控修订并落 LOCAL 裁决事实', async () => {
+      const { usecase, conflictService, localResolutionWriter, appendRevisionUsecase } =
+        makeUsecase({
+          session: documentFirstLevelAdminSession,
+          locked: documentConflict,
+          fact: documentFact,
+        });
+
+      const result = await usecase.execute({
+        session: documentFirstLevelAdminSession,
+        conflictId: 'c-doc-1',
+      });
+
+      expect(result.outcome).toBe('resolved');
+      expect(localResolutionWriter.writeLocalVersion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recordId: 990001,
+          expectedVersion: 3,
+          payload: expect.objectContaining({
+            resourceType: 'REFERENCE_DOCUMENT',
+            title: '本地资料标题',
+            description: '本地说明',
+          }),
+          actorAccountId: 900101,
+        }),
+        transactionContext,
+      );
+      // 资料分支不走工单受控修订入口
+      expect(appendRevisionUsecase.execute).not.toHaveBeenCalled();
+      expect(conflictService.applyLocalResolution).toHaveBeenCalledWith(
+        { conflictId: 'c-doc-1', action: 'LOCAL', confirmedByAccountId: 900101 },
+        expect.any(Date),
+        transactionContext,
+      );
+    });
+
+    it('资料分支：正文不进入受控载荷（保留本地不改写正文）', async () => {
+      const { usecase, localResolutionWriter } = makeUsecase({
+        session: documentFirstLevelAdminSession,
+        locked: documentConflict,
+        fact: documentFact,
+      });
+
+      await usecase.execute({ session: documentFirstLevelAdminSession, conflictId: 'c-doc-1' });
+
+      const command = (localResolutionWriter.writeLocalVersion as jest.Mock).mock.calls[0]?.[0];
+      expect(command.payload).not.toHaveProperty('contentText');
+    });
+
+    it('资料分支：二级管理员受控拒绝（资料正文修订只对一级管理员开放）', async () => {
+      const { usecase, localResolutionWriter, conflictService } = makeUsecase({
+        session: documentFirstLevelAdminSession,
+        locked: documentConflict,
+        fact: documentFact,
+        adminLevel: 2,
+        trustedOrganizationId: 4,
+      });
+
+      await expect(
+        usecase.execute({ session: documentFirstLevelAdminSession, conflictId: 'c-doc-1' }),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_PERMISSIONS' });
+      expect(localResolutionWriter.writeLocalVersion).not.toHaveBeenCalled();
+      expect(conflictService.applyLocalResolution).not.toHaveBeenCalled();
+    });
+
+    it('资料分支：工程师会话在前置门被拒（记录人／工程师无资料正文修订权）', async () => {
+      const { usecase, localResolutionWriter } = makeUsecase({
+        session: documentEngineerSession,
+        locked: documentConflict,
+        fact: documentFact,
+      });
+
+      await expect(
+        usecase.execute({ session: documentEngineerSession, conflictId: 'c-doc-1' }),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_PERMISSIONS' });
+      expect(localResolutionWriter.writeLocalVersion).not.toHaveBeenCalled();
+    });
+
+    it('资料分支：来源记录归属别家公司时受控拒绝（同公司记录）', async () => {
+      const { usecase, localResolutionWriter } = makeUsecase({
+        session: documentFirstLevelAdminSession,
+        locked: documentConflict,
+        fact: { ...documentFact, ownerOrganizationId: 9 },
+      });
+
+      await expect(
+        usecase.execute({ session: documentFirstLevelAdminSession, conflictId: 'c-doc-1' }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_NOT_FOUND });
+      expect(localResolutionWriter.writeLocalVersion).not.toHaveBeenCalled();
+    });
+
+    it('资料分支：只读来源（下架／归属待确认）受控拒绝，不写回内容', async () => {
+      for (const contentState of [
+        { withdrawn: true, frozen: false, closed: false },
+        { withdrawn: false, frozen: true, closed: false },
+      ]) {
+        const { usecase, localResolutionWriter } = makeUsecase({
+          session: documentFirstLevelAdminSession,
+          locked: documentConflict,
+          fact: { ...documentFact, contentState },
+        });
+
+        await expect(
+          usecase.execute({ session: documentFirstLevelAdminSession, conflictId: 'c-doc-1' }),
+        ).rejects.toMatchObject({ code: SYNC_ERROR.CONFLICT_SOURCE_READ_ONLY });
+        expect(localResolutionWriter.writeLocalVersion).not.toHaveBeenCalled();
+      }
+    });
+
+    it('资料分支：来源版本已被推进时受控拒绝（按用户看到的本地版本检查并发）', async () => {
+      const { usecase, localResolutionWriter } = makeUsecase({
+        session: documentFirstLevelAdminSession,
+        locked: documentConflict,
+        fact: { ...documentFact, currentVersion: 9 },
+      });
+
+      await expect(
+        usecase.execute({ session: documentFirstLevelAdminSession, conflictId: 'c-doc-1' }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE });
+      expect(localResolutionWriter.writeLocalVersion).not.toHaveBeenCalled();
+    });
+
+    it('资料分支：幂等重放不重复写修订，只补写冲突事实', async () => {
+      const { usecase, conflictService, localResolutionWriter } = makeUsecase({
+        session: documentFirstLevelAdminSession,
+        locked: { ...documentConflict, localResolutionState: 'WRITING' },
+        fact: { ...documentFact, currentVersion: 4 },
+      });
+
+      const result = await usecase.execute({
+        session: documentFirstLevelAdminSession,
+        conflictId: 'c-doc-1',
+      });
+
+      expect(result.outcome).toBe('resolved');
+      expect(localResolutionWriter.writeLocalVersion).not.toHaveBeenCalled();
+      expect(conflictService.applyLocalResolution).toHaveBeenCalled();
+    });
+
+    it('资料分支：并发已裁决（写回 0 行）显式报出，不伪装成既有事实', async () => {
+      const { usecase, conflictService, localResolutionWriter } = makeUsecase({
+        session: documentFirstLevelAdminSession,
+        locked: documentConflict,
+        fact: documentFact,
+        localAffected: 0,
+      });
+
+      await expect(
+        usecase.execute({ session: documentFirstLevelAdminSession, conflictId: 'c-doc-1' }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED });
+      expect(localResolutionWriter.writeLocalVersion).toHaveBeenCalled();
+      expect(conflictService.applyLocalResolution).toHaveBeenCalled();
+    });
   });
 });

@@ -33,17 +33,27 @@ import {
 /** 本地快照契约版本（与冲突快照契约同版本，避免两份版本号漂移） */
 export const SYNC_CONFLICT_LOCAL_SNAPSHOT_SCHEMA_VERSION = SYNC_CONFLICT_SNAPSHOT_SCHEMA_VERSION;
 
-/** 已有受控版本写入入口的资源类型（任务 04 只交付了工单受控修订入口） */
-export const LOCAL_RESOLUTION_SUPPORTED_RESOURCE_TYPES = ['REPAIR_REQUEST'] as const;
+/**
+ * 已有受控版本写入入口的资源类型。
+ *
+ * - `REPAIR_REQUEST`：任务 04 的工单受控修订入口（管理员动作）；
+ * - `REFERENCE_DOCUMENT`：资料域管理修订入口（一级管理员动作，任务 09 第 05 项补齐）。
+ *
+ * 其余类型（维修报告等）没有受控修订入口 ⇒ 显式拒绝，不用"通用写库"绕过受控入口。
+ */
+export const LOCAL_RESOLUTION_SUPPORTED_RESOURCE_TYPES = [
+  'REPAIR_REQUEST',
+  'REFERENCE_DOCUMENT',
+] as const;
 export type LocalResolutionResourceType =
   (typeof LOCAL_RESOLUTION_SUPPORTED_RESOURCE_TYPES)[number];
 
-/** 保留本地裁决的写入理由（进 04 修订历史行；调用方会补上冲突 ID 以便回溯） */
+/** 保留本地裁决的写入理由（进受控修订历史行；调用方会补上冲突 ID 以便回溯） */
 export const LOCAL_RESOLUTION_REASON = '同步冲突裁决：保留本地版本';
 
-/** 裁决载荷（已按受控入口的白名单字段裁剪） */
-export type LocalResolutionPayload = {
-  resourceType: LocalResolutionResourceType;
+/** 工单裁决载荷（已按受控入口的白名单字段裁剪） */
+export type LocalResolutionRepairRequestPayload = {
+  resourceType: 'REPAIR_REQUEST';
   /** 并发版本取数口径：冲突登记的本地版本（必须等于受控入口要求的当前版本） */
   expectedVersion: number;
   reason: string;
@@ -53,6 +63,29 @@ export type LocalResolutionPayload = {
   expectedMaintenanceVersion?: number | null;
   maintenance?: unknown;
 };
+
+/**
+ * 资料裁决载荷（已按资料域受控入口的白名单字段裁剪）。
+ *
+ * 受控字段只有 **标题 `title` 与说明 `description`**：
+ * - 资料正文（`content_text`）**不反写**——「保留本地」要保留的就是本地正文本身，
+ *   而资料的生效正文可能来自冻结的维修报告版本（`source_kind` 指向报告），
+ *   用快照里的资料自身正文覆盖会破坏冻结报告正文（读侧会回退到自身正文）；
+ * - 文档类型、原件名、MIME、扩展名属于结构与原件身份，一律不参与裁决写入。
+ */
+export type LocalResolutionReferenceDocumentPayload = {
+  resourceType: 'REFERENCE_DOCUMENT';
+  expectedVersion: number;
+  reason: string;
+  /** 标题（本地快照登记值） */
+  title?: string | null;
+  /** 说明（本地快照登记值） */
+  description?: string | null;
+};
+
+/** 裁决载荷（按资源类型区分的受控字段集合） */
+export type LocalResolutionPayload =
+  LocalResolutionRepairRequestPayload | LocalResolutionReferenceDocumentPayload;
 
 export type LocalResolutionPlan =
   | { kind: 'apply'; payload: LocalResolutionPayload }
@@ -204,6 +237,10 @@ function readMaintenancePlan(snapshot: Record<string, unknown>):
  * 计算一次「保留本地」裁决的写入计划。
  *
  * 失败关闭：任何不确定的情形都返回 `reject` 并带明确错误码，不产出"看起来能用"的载荷。
+ *
+ * 资源类型分流（每个类型一套受控字段，不共用一张大表）：
+ * - 工单：正文／处理结果／结单原因／结构化维修记录；
+ * - 资料：标题／说明（正文不反写，见 `LocalResolutionReferenceDocumentPayload`）。
  */
 export function planLocalConflictResolution(input: LocalResolutionPlanInput): LocalResolutionPlan {
   const supported = resolveSupportedResourceType(input.resourceType);
@@ -225,6 +262,10 @@ export function planLocalConflictResolution(input: LocalResolutionPlanInput): Lo
   const snapshotRead = readSnapshot(input.localSnapshot);
   if (snapshotRead.kind === 'reject') {
     return snapshotRead;
+  }
+
+  if (supported === 'REFERENCE_DOCUMENT') {
+    return planReferenceDocumentResolution(expectedVersion, snapshotRead.snapshot);
   }
 
   const fields = readSnapshotFields(snapshotRead.snapshot);
@@ -252,7 +293,7 @@ export function planLocalConflictResolution(input: LocalResolutionPlanInput): Lo
   return {
     kind: 'apply',
     payload: {
-      resourceType: supported,
+      resourceType: 'REPAIR_REQUEST',
       expectedVersion,
       reason: LOCAL_RESOLUTION_REASON,
       contentMd: fields.contentMd.kind === 'value' ? fields.contentMd.value : null,
@@ -260,6 +301,70 @@ export function planLocalConflictResolution(input: LocalResolutionPlanInput): Lo
       closureReason: fields.closureReason.kind === 'value' ? fields.closureReason.value : null,
       expectedMaintenanceVersion: maintenance.expectedMaintenanceVersion,
       maintenance: maintenance.maintenance,
+    },
+  };
+}
+
+/**
+ * 资料「保留本地」载荷映射（纯规则）。
+ *
+ * 字段名取业务同步 body 的 **snake_case**（`business-sync-source.service.ts`
+ * 的资料分支正是这个形态）：`title` / `description` / `content_text`。
+ *
+ * 口径与工单分支一致：
+ * - 缺省与 null 按"没有该字段"处理（不补、不猜）；
+ * - 空串按"没有该字段"处理（不用空串覆盖本地已有内容）；
+ * - 类型非法的已知字段必须被拒绝（当成"没有"会让保留本地丢掉标题）。
+ *
+ * 正文 `content_text` **不进入载荷**：保留本地＝保留本地正文本身，
+ * 资料生效正文可能来自冻结的维修报告版本，反写会破坏它。
+ */
+function planReferenceDocumentResolution(
+  expectedVersion: number,
+  snapshot: SyncConflictSnapshotBody,
+): LocalResolutionPlan {
+  const title = readOptionalString(snapshot['title']);
+  if (title.kind === 'invalid') {
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+      '本地快照里的资料标题类型非法，不能按"没有该字段"处理',
+    );
+  }
+  const description = readOptionalString(snapshot['description']);
+  if (description.kind === 'invalid') {
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+      '本地快照里的资料说明类型非法，不能按"没有该字段"处理',
+    );
+  }
+  // 正文只做类型校验（快照里出现非法的正文值说明快照本身不可信），
+  // 但不进入载荷：保留本地不改写资料正文。
+  const contentText = readOptionalString(snapshot['content_text']);
+  if (contentText.kind === 'invalid') {
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+      '本地快照里的资料正文类型非法，不能按"没有该字段"处理',
+    );
+  }
+
+  const titleValue = title.kind === 'value' && title.value !== '' ? title.value : null;
+  const descriptionValue =
+    description.kind === 'value' && description.value !== '' ? description.value : null;
+  if (titleValue === null && descriptionValue === null) {
+    return reject(
+      SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID,
+      '本地快照没有可写入的资料受控字段，拒绝空修订',
+    );
+  }
+
+  return {
+    kind: 'apply',
+    payload: {
+      resourceType: 'REFERENCE_DOCUMENT',
+      expectedVersion,
+      reason: LOCAL_RESOLUTION_REASON,
+      title: titleValue,
+      description: descriptionValue,
     },
   };
 }
