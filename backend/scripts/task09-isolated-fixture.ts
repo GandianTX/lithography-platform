@@ -38,6 +38,20 @@ import {
   type DisposableMarkerRow,
 } from './task09-restore-selfcheck.safety';
 
+/** 数据库行取值统一转文本（不用 String(unknown)：那会退化成默认字符串化） */
+function text(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return JSON.stringify(value) ?? '';
+}
+
 /** 确定性夹具编码（保证幂等与可重复核对） */
 const TARGET_REPORT_UUIDS = [
   '00000000-0000-4000-8000-0000000000a1',
@@ -57,6 +71,7 @@ const ISOLATION_ADMIN_ACCOUNT_ID = 979_101;
 const ISOLATION_ADMIN_MEMBERSHIP_ID = 979_101;
 
 async function main(): Promise<void> {
+  // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
   const authorization = readSelfcheckAuthorization(process.env);
   const parsed = parseDotenv(readFileSync(authorization.envFile, 'utf8'));
   for (const [key, value] of Object.entries(parsed)) {
@@ -94,8 +109,8 @@ async function main(): Promise<void> {
     const options = dataSource.options as { host?: string; port?: number };
     assertServerIdentity(
       {
-        database: String(actual['current_database'] ?? ''),
-        serverUuid: String(actual['server_uuid'] ?? ''),
+        database: text(actual['current_database']),
+        serverUuid: text(actual['server_uuid']),
         host: String(options.host ?? ''),
         port: Number(options.port ?? 0),
       },
@@ -106,8 +121,8 @@ async function main(): Promise<void> {
     );
     const markers: DisposableMarkerRow[] = (markerRows as Array<Record<string, unknown>>).map(
       (row) => ({
-        markerKey: String(row['marker_key'] ?? ''),
-        markerValue: String(row['marker_value'] ?? ''),
+        markerKey: text(row['marker_key']),
+        markerValue: text(row['marker_value']),
       }),
     );
     assertDisposableMarker(markers, authorization.disposableMarker);
@@ -240,24 +255,24 @@ async function main(): Promise<void> {
     // ── 外公司工单：哨兵公司也必须有一行，确保"外公司不被触碰"可证伪 ──
     await dataSource.query(
       'INSERT INTO repair_request ' +
-      '(id, request_no, customer_account_id, equipment_model_id, error_code, fault_description, ' +
-      'content_md, is_accepted, current_revision_no, maintenance_version_no, deprecated, deleted_at, ' +
-      'owner_organization_id, customer_organization_id, service_organization_id, record_uuid) ' +
-      'SELECT 979001, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?, ?, ?, ? FROM DUAL ' +
-      'WHERE NOT EXISTS (SELECT 1 FROM repair_request WHERE id = 979001)',
+        '(id, request_no, customer_account_id, equipment_model_id, error_code, fault_description, ' +
+        'content_md, is_accepted, current_revision_no, maintenance_version_no, deprecated, deleted_at, ' +
+        'owner_organization_id, customer_organization_id, service_organization_id, record_uuid) ' +
+        'SELECT 979001, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?, ?, ?, ? FROM DUAL ' +
+        'WHERE NOT EXISTS (SELECT 1 FROM repair_request WHERE id = 979001)',
       [
-      'TASK09-FOREIGN-RR-0001',
-      customerAccountId,
-      equipmentModelId,
-      'E-TASK09-FOREIGN',
-      '外公司哨兵工单',
-      '外公司哨兵工单正文',
-      foreignOrganizationId,
-      foreignOrganizationId,
-      foreignOrganizationId,
-      '00000000-0000-4000-8000-0000000000d1',
+        'TASK09-FOREIGN-RR-0001',
+        customerAccountId,
+        equipmentModelId,
+        'E-TASK09-FOREIGN',
+        '外公司哨兵工单',
+        '外公司哨兵工单正文',
+        foreignOrganizationId,
+        foreignOrganizationId,
+        foreignOrganizationId,
+        '00000000-0000-4000-8000-0000000000d1',
       ],
-      );
+    );
 
     // ── 本公司报修原稿（首析状态推进的写入对象）──
     for (const [index, recordUuid] of TARGET_INTAKE_UUIDS.entries()) {
@@ -334,6 +349,7 @@ async function main(): Promise<void> {
     //    "原件真实传输"无从取证。
     const storageDir = resolve(
       process.cwd(),
+      // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
       process.env['REFERENCE_DOCUMENT_STORAGE_DIR'] ?? 'var/reference-documents',
     );
     mkdirSync(storageDir, { recursive: true });
@@ -352,22 +368,22 @@ async function main(): Promise<void> {
       let reference = row.storage_reference;
       if (!/^[0-9a-f]{32}\.[a-z0-9]{1,8}$/u.test(reference)) {
         reference = `${randomBytes(16).toString('hex')}.pdf`;
-        await dataSource.query(
-          'UPDATE reference_document SET storage_reference = ? WHERE id = ?',
-          [reference, row.id],
-        );
+        await dataSource.query('UPDATE reference_document SET storage_reference = ? WHERE id = ?', [
+          reference,
+          row.id,
+        ]);
       }
-      const bytes = Buffer.from(
-        `任务09 隔离库真实原件 ${row.id}\n${'A'.repeat(4096)}\n`,
-        'utf8',
-      );
+      const bytes = Buffer.from(`任务09 隔离库真实原件 ${row.id}\n${'A'.repeat(4096)}\n`, 'utf8');
       writeFileSync(join(storageDir, reference), bytes);
       originalCount += 1;
     }
     // 一条**带校验值**的 stored_file 原件（读侧按附件行的引用取字节）
     const storedFileId = '97900100-0000-4000-8000-000000000001';
     const storedReference = `${randomBytes(16).toString('hex')}.pdf`;
-    const storedBytes = Buffer.from(`任务09 隔离库 stored_file 原件\n${'B'.repeat(2048)}\n`, 'utf8');
+    const storedBytes = Buffer.from(
+      `任务09 隔离库 stored_file 原件\n${'B'.repeat(2048)}\n`,
+      'utf8',
+    );
     writeFileSync(join(storageDir, storedReference), storedBytes);
     await dataSource.query(
       'INSERT INTO stored_file ' +
@@ -410,7 +426,10 @@ async function main(): Promise<void> {
       ],
     );
     process.stdout.write(
-      `[fixture] 夹具就绪：${JSON.stringify((summaryRows as Array<Record<string, unknown>>)[0] ?? {})}\n`,
+      `[fixture] 夹具就绪：${JSON.stringify({
+        ...((summaryRows as Array<Record<string, unknown>>)[0] ?? {}),
+        originals: originalCount,
+      })}\n`,
     );
   } finally {
     await dataSource.destroy();

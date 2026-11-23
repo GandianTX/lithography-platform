@@ -33,7 +33,8 @@ export function SyncConflictsPage() {
         onClose={() => setActiveConflictId(null)}
         open={activeConflictId !== null}
         title={t('syncConflict.detail.title')}
-        width={720}
+        // antd v6 起 `width` 属废弃属性（运行期会打弃用告警）：改用 `size` 传同一宽度
+        size={720}
       >
         {activeConflictId === null ? null : (
           <SyncConflictDetailPanel conflictId={activeConflictId} />

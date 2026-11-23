@@ -11,7 +11,7 @@
  */
 
 /// <reference types="jest" />
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,7 +25,6 @@ import {
   assertSentinelsUnchanged,
   assertServerIdentity,
   buildCleanupError,
-  DELETION_ORDER,
   planDatabaseDeletion,
   planFileDeletion,
   readSelfcheckAuthorization,
@@ -492,12 +491,12 @@ describe('恢复自检入口 · 哨兵与收尾异常', () => {
   });
 
   it('哨兵消失或新增：整轮失败', () => {
-    expect(() =>
-      assertSentinelsUnchanged([{ label: 'a', fingerprint: 'x' }], []),
-    ).toThrow(/哨兵消失/u);
-    expect(() =>
-      assertSentinelsUnchanged([], [{ label: 'b', fingerprint: 'y' }]),
-    ).toThrow(/未登记的哨兵/u);
+    expect(() => assertSentinelsUnchanged([{ label: 'a', fingerprint: 'x' }], [])).toThrow(
+      /哨兵消失/u,
+    );
+    expect(() => assertSentinelsUnchanged([], [{ label: 'b', fingerprint: 'y' }])).toThrow(
+      /未登记的哨兵/u,
+    );
   });
 
   it('哨兵一致：通过', () => {

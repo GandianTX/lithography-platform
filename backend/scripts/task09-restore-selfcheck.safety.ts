@@ -162,10 +162,7 @@ export function readSelfcheckAuthorization(
     throw new SelfcheckSafetyError('INVALID_MARKER', '一次性库标识为空，拒绝运行。');
   }
   if (!isAbsolute(fileRoot)) {
-    throw new SelfcheckSafetyError(
-      'INVALID_FILE_ROOT',
-      `受控文件根必须是绝对路径：${fileRoot}`,
-    );
+    throw new SelfcheckSafetyError('INVALID_FILE_ROOT', `受控文件根必须是绝对路径：${fileRoot}`);
   }
   if (!UUID_PATTERN.test(installationId)) {
     throw new SelfcheckSafetyError(
@@ -207,7 +204,12 @@ export function readSelfcheckAuthorization(
  * 任一维度不一致都拒绝继续：宁可零证据，也不拿"看起来对"的库开刀。
  */
 export function assertServerIdentity(
-  actual: { readonly database: string; readonly serverUuid: string; readonly host: string; readonly port: number },
+  actual: {
+    readonly database: string;
+    readonly serverUuid: string;
+    readonly host: string;
+    readonly port: number;
+  },
   expected: SelfcheckAuthorization,
 ): void {
   if (actual.database !== expected.database) {
@@ -452,10 +454,7 @@ export interface CleanupOutcome {
 /**
  * 收尾阶段的失败**不得被吞掉**：主因存在时附加在主因上，无主因时单独报错。
  */
-export function buildCleanupError(
-  mainError: unknown,
-  outcome: CleanupOutcome,
-): unknown {
+export function buildCleanupError(mainError: unknown, outcome: CleanupOutcome): unknown {
   const detail = [...outcome.errors, ...outcome.failed.map((item) => `删除失败: ${item}`)];
   if (mainError !== null && mainError !== undefined) {
     if (detail.length > 0 && mainError instanceof Error) {
@@ -594,9 +593,7 @@ export function assertNoExternalReference(
     throw new SelfcheckSafetyError(
       'EXTERNAL_REFERENCE',
       `对象 ${targetTable}#${targetId} 存在本轮之外的引用，拒绝删除：` +
-        external
-          .map((reference) => `${reference.ownerTable}#${reference.ownerId}`)
-          .join(', '),
+        external.map((reference) => `${reference.ownerTable}#${reference.ownerId}`).join(', '),
     );
   }
 }
@@ -614,7 +611,10 @@ export interface FileDeletionResult {
  *
  * 越界或符号链接路径直接抛错（不进入删除清单），避免"删到一半才发现越界"。
  */
-export function planFileDeletion(paths: ReadonlyArray<string>, root: string): ReadonlyArray<string> {
+export function planFileDeletion(
+  paths: ReadonlyArray<string>,
+  root: string,
+): ReadonlyArray<string> {
   const planned: string[] = [];
   for (const candidate of paths) {
     assertPathWithinRoot(root, candidate);
@@ -657,10 +657,7 @@ export function listFilesUnder(dir: string): ReadonlyArray<string> {
  *
  * 文件系统删除不可回滚，因此失败逐条留痕，不用事务掩盖。
  */
-export function deleteFilesByList(
-  paths: ReadonlyArray<string>,
-  root: string,
-): FileDeletionResult {
+export function deleteFilesByList(paths: ReadonlyArray<string>, root: string): FileDeletionResult {
   const deleted: string[] = [];
   const failed: Array<{ path: string; reason: string }> = [];
   for (const candidate of planFileDeletion(paths, root)) {
@@ -709,5 +706,3 @@ export function pruneEmptyDirs(dir: string, root: string): ReadonlyArray<string>
   }
   return removed;
 }
-
-

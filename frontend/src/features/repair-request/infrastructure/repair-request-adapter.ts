@@ -145,6 +145,12 @@ export async function fetchEquipmentModels(): Promise<EquipmentModelOption[]> {
     {},
   );
 
+  // 响应形状校验（失败关闭）：缺字段时**不得**把 undefined 当成列表交出去——
+  // 上层会读 `models.length`，undefined 会变成渲染期 TypeError（页面崩溃而非可重试失败态）。
+  if (!Array.isArray(data.equipmentModels)) {
+    throw new Error('设备型号列表响应缺少条目集合');
+  }
+
   return data.equipmentModels;
 }
 
@@ -200,6 +206,11 @@ export async function fetchRepairServiceOrganizations(params: {
     },
     keyword: params.keyword?.trim() ? params.keyword.trim() : null,
   });
+
+  // 响应形状校验（失败关闭）：同上，缺集合时不得把 undefined 交出去。
+  if (!Array.isArray(data.repairServiceOrganizationSearch?.items)) {
+    throw new Error('维修厂家候选响应缺少条目集合');
+  }
 
   return data.repairServiceOrganizationSearch.items;
 }
@@ -462,7 +473,14 @@ export async function fetchMyRepairRequests(
     },
   );
 
-  return data.myRepairRequests;
+  // 响应形状校验（失败关闭）：返回体缺字段时**不得**把 undefined 当成数据交出去——
+  // 上层会读 `data.items`，undefined 会变成未捕获的 TypeError（页面崩溃而非可重试的失败态）。
+  const page = data.myRepairRequests;
+  if (page === undefined || page === null || !Array.isArray(page.items)) {
+    throw new Error('我的维修申请列表响应缺少条目集合');
+  }
+
+  return page;
 }
 
 /**

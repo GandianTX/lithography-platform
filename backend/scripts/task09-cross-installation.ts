@@ -24,11 +24,11 @@
 
 // 脚本属**受控 wiring**（同 scripts/seed-mock.ts）：运行时配置只在这里读取一次。
 // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
-import { ConfigModule } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { DataSource } from 'typeorm';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -42,6 +42,7 @@ import {
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { parse as parseDotenv } from 'dotenv';
 
+import { AppConfigModule } from '@src/infrastructure/config/config.module';
 import { loadExplicitEnvConfig } from '@src/infrastructure/database/incremental-migration';
 import { TypeOrmTransactionModule } from '@src/infrastructure/database/transaction/typeorm-transaction.module';
 import { LocalReferenceDocumentStorageModule } from '@src/infrastructure/file-storage/local-reference-document-storage.module';
@@ -73,6 +74,14 @@ import {
 
 // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
 const HANDOFF_FILE = process.env.TASK09_CROSS_HANDOFF ?? '/tmp/task09-cross-installation.json';
+/**
+ * 设备 A 的包产出根（**必须是可丢弃目录**）。
+ *
+ * 隔离实测要求所有文件副作用都落在本任务自己的目录里：默认沿用 `/tmp` 的
+ * 临时目录，可用 `TASK09_CROSS_EXPORT_ROOT` 指到受控根下，便于收尾核对与清理。
+ */
+// eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
+const EXPORT_ROOT = process.env.TASK09_CROSS_EXPORT_ROOT ?? join('/tmp', 'task09-cross-export');
 /** 设备 env 文件与目标库（两台"设备"各一组；可用环境变量覆盖） */
 // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
 const DEVICE_ENV_FILE = process.env.TASK09_CROSS_ENV_FILE ?? 'env/.env.development';
@@ -104,7 +113,23 @@ type DeviceContext = {
   storedFileService: StoredFileService;
   storage: StoredFileStorage;
   transactionRunner: TransactionRunner;
+  /**
+   * 本机业务原件存储根（**实际装配值**，从 ConfigService 读取，不猜默认值）。
+   *
+   * 两台"设备"必须各自指向**不同**的存储根：否则目标机读回的原件字节可能来自
+   * 来源机写下的同一份文件，"跨安装原件字节一致"就成了自证自的假通过。
+   */
+  storageDir: string;
 };
+
+/** 读取实际装配的业务原件存储根（与 LocalReferenceDocumentStorage 同一配置键与默认值） */
+function resolveStorageDir(configService: ConfigService): string {
+  const configured = configService.get<string>(
+    'referenceDocumentStorage.dir',
+    'var/reference-documents',
+  );
+  return resolve(process.cwd(), configured);
+}
 
 /** 装配当前设备（按 NODE_ENV 取对应库／文件根／安装身份） */
 async function bootstrap(): Promise<DeviceContext> {
@@ -136,7 +161,10 @@ async function bootstrap(): Promise<DeviceContext> {
 
   const moduleRef = await Test.createTestingModule({
     imports: [
-      ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }),
+      // AppConfigModule 才装载 `referenceDocumentStorage.dir` 等配置工厂：
+      // 只注册空的 ConfigModule.forRoot 会让存储落到默认 `var/reference-documents`，
+      // 两台设备就会共用同一个存储根（跨安装原件证据将失去意义）。
+      AppConfigModule,
       LoggerModule,
       TypeOrmModule.forRoot({
         type: 'mysql',
@@ -169,6 +197,7 @@ async function bootstrap(): Promise<DeviceContext> {
     storedFileService: moduleRef.get(StoredFileService),
     storage: moduleRef.get<StoredFileStorage>(STORED_FILE_STORAGE),
     transactionRunner: moduleRef.get<TransactionRunner>(TRANSACTION_RUNNER),
+    storageDir: resolveStorageDir(moduleRef.get(ConfigService)),
   };
 }
 
@@ -208,7 +237,7 @@ async function runSourceRole(device: DeviceContext): Promise<void> {
   const session = buildSession();
   const originalBytes = buildOriginalBytes();
   const originalChecksum = sha256(originalBytes);
-  const exportRoot = join('/tmp', 'task09-cross-export');
+  const exportRoot = EXPORT_ROOT;
   mkdirSync(exportRoot, { recursive: true });
   const targetPath = join(exportRoot, `package-${Date.now()}`);
 
@@ -310,6 +339,8 @@ async function runSourceRole(device: DeviceContext): Promise<void> {
     reportId,
     organizationId,
     originalChecksum,
+    // 来源机的原件存储根：目标机据此证明"读回的不是来源机那份文件"
+    sourceStorageDir: device.storageDir,
     originalByteSize: originalBytes.byteLength,
     itemTotal: exported.itemTotal,
     itemExported: exported.itemExported,
@@ -354,6 +385,7 @@ async function runTargetRole(device: DeviceContext): Promise<void> {
     reportId: number;
     organizationId: number;
     originalChecksum: string;
+    sourceStorageDir: string;
     originalByteSize: number;
   };
   const session = buildSession();
@@ -413,6 +445,12 @@ async function runTargetRole(device: DeviceContext): Promise<void> {
     storedFile === null
       ? null
       : await readStorageBytes(device.storage, storedFile.storageReference);
+  // 目标机存储根必须与来源机不同，且读回的原件必须**物理落在目标机存储根内**：
+  // 否则"跨安装后原件字节一致"可能只是两台设备共用同一个目录造成的假通过。
+  const targetStorageDir = resolve(device.storageDir);
+  const sourceStorageDir = resolve(handoff.sourceStorageDir ?? '');
+  const originalLivesInTargetStore =
+    storedFile !== null && existsSync(join(targetStorageDir, storedFile.storageReference));
   const originalChecksum = originalBytes === null ? null : sha256(originalBytes);
   const payloadTitle =
     versionRows[0] === undefined
@@ -432,6 +470,10 @@ async function runTargetRole(device: DeviceContext): Promise<void> {
     statusPreserved: report !== null && report.status === String(MaintenanceReportStatus.SUBMITTED),
     payloadPreserved: payloadTitle === '跨安装真实链验证报告',
     attachmentBound: attachmentRows.length === 1,
+    // 两台设备的存储根必须不同（防"共用目录"造成的假通过）
+    storageRootDistinct: sourceStorageDir.length > 0 && targetStorageDir !== sourceStorageDir,
+    // 读回的原件必须物理落在**目标机**存储根内
+    originalLivesInTargetStore,
     originalBytesIdentical:
       originalChecksum !== null && originalChecksum === handoff.originalChecksum,
     originalByteSizeMatch:
@@ -441,6 +483,8 @@ async function runTargetRole(device: DeviceContext): Promise<void> {
 
   const verdict = {
     packageId: handoff.packageId,
+    sourceStorageDir,
+    targetStorageDir,
     checkItems,
     importItems,
     importedReport:

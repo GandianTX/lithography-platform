@@ -90,6 +90,25 @@ async function installGraphQLMocks(page: Page, options: MockOptions = {}): Promi
           ],
         },
       };
+    } else if (operation === 'EquipmentModels') {
+      // 客户工作台的报修表单需要机型候选：形状不全会让表单渲染期崩溃
+      data = { equipmentModels: [] };
+    } else if (operation === 'RepairServiceOrganizationSearch') {
+      // 客户工作台的报修表单需要维修厂家候选：同上
+      data = {
+        repairServiceOrganizationSearch: { items: [], total: 0, page: 1, pageSize: 20 },
+      };
+    } else if (operation === 'MyRepairRequests') {
+      // 客户会话会被路由守卫送到客户工作台（"我的维修申请"列表）：
+      // 这里给出**形状完整**的列表，避免"mock 不完整"被误读成产品缺陷。
+      data = {
+        myRepairRequests: {
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: 10,
+        },
+      };
     } else if (operation === 'MyMaintenanceRecordList') {
       data = {
         myMaintenanceRecordList: {
@@ -183,6 +202,15 @@ test.describe('记录包的浏览器交互走查（P1-3）', () => {
   });
 
   test('无权：客户会话不出现记录包入口', async ({ page }) => {
+    const consoleErrors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') {
+        consoleErrors.push(message.text().slice(0, 300));
+      }
+    });
+    page.on('pageerror', (error) => {
+      consoleErrors.push(`pageerror: ${error.message.slice(0, 300)}`);
+    });
     await seedAuthSession(page, 'CUSTOMER');
     await installGraphQLMocks(page);
 
@@ -190,6 +218,8 @@ test.describe('记录包的浏览器交互走查（P1-3）', () => {
     await page.waitForLoadState('domcontentloaded');
 
     await expect(page.getByRole('button', { name: EXPORT_LABEL })).toHaveCount(0);
+    // 未预期的控制台错误／页面异常必须可见（上一轮"读 items"异常的定性见证据文档）
+    expect(consoleErrors, '客户无权场景不应有控制台错误或页面异常').toEqual([]);
   });
 
   test('窄屏键盘：390×844 下导出入口可键盘聚焦，且无整页横向溢出', async ({ page }) => {

@@ -55,10 +55,26 @@ import {
   type DisposableMarkerRow,
 } from './task09-restore-selfcheck.safety';
 
+/** 数据库行取值统一转文本（不用 String(unknown)：那会退化成默认字符串化） */
+function text(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return JSON.stringify(value) ?? '';
+}
+
 async function main(): Promise<void> {
   // ── 子进程独立复核安全约束（不信任父进程结论）──
+  // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
   const authorization = readSelfcheckAuthorization(process.env);
   const fileRoot = assertControlledFileRoot(authorization.fileRoot);
+  // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
   const runId = process.env['TASK09_RESTORE_RUN_ID'] ?? '';
   if (!/^[0-9a-f-]{36}$/u.test(runId)) {
     throw new Error('子进程缺少有效的本轮运行 ID，拒绝运行');
@@ -79,6 +95,7 @@ async function main(): Promise<void> {
   process.env.LOCAL_BACKUP_STORAGE_DIR = backupRoot;
   // 业务原件存储目录沿用 env 文件（受控文件根内）：原件是**跨轮次既有数据**，
   // 子进程必须与父进程看到同一批原件，否则备份出来的包缺原件、预检必然拒绝。
+  // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
   const configuredOriginalsDir = process.env['REFERENCE_DOCUMENT_STORAGE_DIR'];
   const originalsDir =
     configuredOriginalsDir === undefined || configuredOriginalsDir.trim().length === 0
@@ -129,8 +146,8 @@ async function main(): Promise<void> {
     const options = dataSource.options as { host?: string; port?: number };
     assertServerIdentity(
       {
-        database: String(actual['current_database'] ?? ''),
-        serverUuid: String(actual['server_uuid'] ?? ''),
+        database: text(actual['current_database']),
+        serverUuid: text(actual['server_uuid']),
         host: String(options.host ?? ''),
         port: Number(options.port ?? 0),
       },
@@ -142,8 +159,8 @@ async function main(): Promise<void> {
         'SELECT marker_key, marker_value FROM task09_disposable_marker',
       );
       markerRows = (rows as Array<Record<string, unknown>>).map((row) => ({
-        markerKey: String(row['marker_key'] ?? ''),
-        markerValue: String(row['marker_value'] ?? ''),
+        markerKey: text(row['marker_key']),
+        markerValue: text(row['marker_value']),
       }));
     } catch {
       throw new Error('子进程读取一次性库标识失败：标识表不存在');
@@ -174,9 +191,7 @@ async function main(): Promise<void> {
         "AND m.member_role = 'SUPER_ADMIN' AND a.admin_level = 1 ORDER BY m.id ASC LIMIT 1",
       [organizationId, 'ACTIVE'],
     );
-    const actorAccountId = Number(
-      (actorRows as Array<{ account_id: number }>)[0]?.account_id ?? 0,
-    );
+    const actorAccountId = Number((actorRows as Array<{ account_id: number }>)[0]?.account_id ?? 0);
     if (!Number.isInteger(actorAccountId) || actorAccountId <= 0) {
       throw new Error('子进程找不到本公司有效的一级管理员账号，拒绝运行');
     }
