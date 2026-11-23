@@ -637,6 +637,50 @@ async function releaseRunHolds(ctx: ChainContext, scope: RunScope): Promise<void
 }
 
 /**
+ * 恢复覆盖的业务表（与 core 的 `BACKUP_RESTORE_TABLE_ORDER` 同源）。
+ *
+ * 用于"写入事务整体回滚"的**逐表行数**判据：只看某一列的值不够，
+ * 清空阶段已提交而写回阶段未执行的半截状态，只有逐表行数才能看出来。
+ */
+const RESTORE_SCOPE_TABLES: readonly string[] = [
+  'stored_file',
+  'repair_request_intake',
+  'repair_request',
+  'repair_request_revision',
+  'intake_analysis_attempt',
+  'maintenance_report',
+  'maintenance_report_version',
+  'maintenance_report_attachment',
+  'maintenance_report_version_attachment',
+  'maintenance_report_alarm',
+  'maintenance_report_step',
+  'maintenance_report_fault',
+  'maintenance_report_review',
+  'reference_document',
+  'reference_document_revision',
+  'reference_document_case_detail',
+  'ai_conversation',
+  'ai_message',
+  'ai_message_analysis',
+  'ai_report',
+  'engineer_response',
+  'repair_process_entry',
+  'repair_request_diagnostic_step',
+  'repair_request_fault_panel',
+  'local_upload_task',
+];
+
+/** 逐表行数快照（用于比对"写入是否留下半截"） */
+async function scopeRowCounts(dataSource: DataSource): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const table of RESTORE_SCOPE_TABLES) {
+    const rows: unknown = await dataSource.query(`SELECT COUNT(*) AS c FROM \`${table}\``);
+    counts[table] = Number((rows as Array<{ c: number | string }>)[0]?.c ?? 0);
+  }
+  return counts;
+}
+
+/**
  * 拉起**中断子进程**并在其执行恢复途中 `SIGKILL`，制造真实进程中断。
  *
  * 子进程先完成"备份 → 预检 → 受理 → 冻结落库"，再改动一条业务数据，
@@ -649,11 +693,30 @@ async function runInterruptScenario(
 ): Promise<{
   restoreId: string;
   noPartialWrite: boolean;
+  writeRolledBack: boolean;
+  circularKeysIntact: boolean;
+  scopeRowsUnchanged: boolean;
+  changedTables: readonly string[];
   detail: string;
   holdRetained: boolean;
   holdDetail: string;
   runStatus: string;
 }> {
+  // 子进程写入前先记录**循环外键事实**：
+  // 恢复写入的第一步是"打断循环外键"（`converted_request_id` 置空），
+  // 若它发生在事务外，被 SIGKILL 的子进程会留下"引用被永久置空"的半截改动。
+  const circularBefore: unknown = await ctx.dataSource.query(
+    'SELECT id, converted_request_id FROM repair_request_intake ORDER BY id',
+  );
+  const circularBeforeText = JSON.stringify(
+    (circularBefore as Array<{ id: number; converted_request_id: number | null }>).map((row) => [
+      row.id,
+      row.converted_request_id,
+    ]),
+  );
+  // 写入前的**逐表行数**快照：清空阶段提交而写回阶段未执行 ⇒ 行数会变
+  const countsBefore = await scopeRowCounts(ctx.dataSource);
+
   const child = spawn(
     process.execPath,
     [
@@ -746,6 +809,25 @@ async function runInterruptScenario(
   const restored = descriptions.filter((value) => value !== 'MUTATED-AFTER-BACKUP').length;
   // 不留半截：要么全部仍是"改后的值"（未提交/已回滚），要么全部是"备份时刻的值"（整批提交）
   const noPartialWrite = mutated === 0 || restored === 0;
+  // **真实事务判据**：子进程在写入途中被杀 ⇒ 写入事务必须整体回滚
+  // ⇒ 业务行必须仍是"改后的值"（未被恢复提交），不得出现"整批已提交"。
+  const writeRolledBack = restored === 0 && mutated === descriptions.length;
+  // 循环外键打断若发生在事务外 ⇒ 会留下"引用被永久置空"的半截改动 ⇒ 必须原样。
+  const circularAfter: unknown = await ctx.dataSource.query(
+    'SELECT id, converted_request_id FROM repair_request_intake ORDER BY id',
+  );
+  const circularAfterText = JSON.stringify(
+    (circularAfter as Array<{ id: number; converted_request_id: number | null }>).map((row) => [
+      row.id,
+      row.converted_request_id,
+    ]),
+  );
+  const circularKeysIntact = circularAfterText === circularBeforeText;
+  // 逐表行数：写入必须整体回滚（清空与写回都不得留下痕迹）
+  const countsAfter = await scopeRowCounts(ctx.dataSource);
+  const changedTables = RESTORE_SCOPE_TABLES.filter(
+    (table) => countsBefore[table] !== countsAfter[table],
+  );
 
   const holds = await ctx.writeHold.listActive({
     installationId: scope.installationId,
@@ -760,7 +842,13 @@ async function runInterruptScenario(
   return {
     restoreId,
     noPartialWrite,
-    detail: `mutated=${mutated} restored=${restored} total=${descriptions.length}（不得两者并存）`,
+    writeRolledBack,
+    circularKeysIntact,
+    scopeRowsUnchanged: changedTables.length === 0,
+    changedTables,
+    detail:
+      `mutated=${mutated} restored=${restored} total=${descriptions.length}` +
+      `（不得两者并存；被杀后必须全部回滚）`,
     holdRetained: holds.length > 0,
     holdDetail: `活动冻结=${holds.length}`,
     runStatus,
@@ -1915,6 +2003,25 @@ async function main(): Promise<void> {
       '进程中断：业务数据不留半截（要么未提交、要么整批提交）',
       interrupted.noPartialWrite,
       interrupted.detail,
+    );
+    check(
+      '进程中断：写入事务整体回滚（业务行仍是恢复前的值，无整批提交）',
+      interrupted.writeRolledBack,
+      interrupted.detail,
+    );
+    check(
+      '进程中断：逐表行数与写入前一致（清空与写回都未留下痕迹）',
+      interrupted.scopeRowsUnchanged,
+      interrupted.scopeRowsUnchanged
+        ? '25 张恢复覆盖表的行数与写入前完全一致'
+        : `行数发生变化：${interrupted.changedTables.join(', ')}`,
+    );
+    check(
+      '进程中断：循环外键打断随事务回滚（引用未被永久置空）',
+      interrupted.circularKeysIntact,
+      interrupted.circularKeysIntact
+        ? 'repair_request_intake.converted_request_id 与写入前一致'
+        : 'repair_request_intake.converted_request_id 与写入前不一致（存在事务外写入）',
     );
     check(
       '进程中断：冻结事实仍在（设备继续停写停传）',

@@ -36,6 +36,8 @@ import {
   type BackupTableSuppression,
 } from '@core/local-runtime/policy/protected-backup.policy';
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import {
   STORED_FILE_STORAGE,
   type StoredFileStorage,
@@ -207,8 +209,15 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     files: readonly { relative_path: string; sha256: string; byte_size: number }[];
   }): Promise<{ restored: number; failed: number; reason: string | null }> {
     const fileFacts = new Map(input.files.map((file) => [file.relative_path, file]));
-    let restored = 0;
     let failed = 0;
+    // 第一步：逐份核对并**暂存字节**（文件写入不可回滚）；
+    //         行引用**先不落库**，避免出现"部分行指向新字节、部分行仍是旧引用"。
+    const bindings: {
+      source: string;
+      storageReference: string;
+      sha256: string;
+      byteSize: number;
+    }[] = [];
     for (const original of input.originals) {
       try {
         const relativePath = `files/${original.storage_reference}`;
@@ -238,21 +247,51 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
           failed += 1;
           continue;
         }
-        const updated = await this.bindOriginalToRow(
-          original.source,
+        bindings.push({
+          source: original.source,
           storageReference,
-          digest,
-          bytes.byteLength,
-        );
-        if (!updated) {
-          failed += 1;
-          continue;
-        }
-        restored += 1;
+          sha256: digest,
+          byteSize: bytes.byteLength,
+        });
       } catch {
         failed += 1;
       }
     }
+
+    // 第二步：行绑定在**同一事务**内完成（全成或全败）：
+    //         字节已经落盘，引用一旦半途失败会出现"部分行指向新字节"的错配。
+    if (bindings.length > 0) {
+      if (this.transactionRunner === null) {
+        failed += bindings.length;
+        bindings.length = 0;
+        return {
+          restored: 0,
+          failed,
+          reason: '事务边界不可用，不能在无事务条件下绑定原件引用',
+        };
+      }
+      try {
+        await this.transactionRunner.run(async (transactionContext) => {
+          for (const binding of bindings) {
+            const updated = await this.bindOriginalToRow(
+              binding.source,
+              binding.storageReference,
+              binding.sha256,
+              binding.byteSize,
+              transactionContext,
+            );
+            if (!updated) {
+              throw new Error(`原件引用绑定失败：${binding.source}`);
+            }
+          }
+        });
+      } catch {
+        failed += bindings.length;
+        bindings.length = 0;
+      }
+    }
+
+    const restored = bindings.length;
     return {
       restored,
       failed,
@@ -299,13 +338,16 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     storageReference: string,
     sha256: string,
     byteSize: number,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<boolean> {
-    void sha256;
-    void byteSize;
     const [kind, identifier] = source.split(':');
     const id = Number(identifier);
     if (kind === 'stored_file' && identifier !== undefined && identifier !== '') {
-      const result = await this.storedFileRepository.update(
+      const repository = this.repositoryForTable('stored_file', transactionContext);
+      if (repository === null) {
+        return false;
+      }
+      const result = await repository.update(
         { fileId: identifier },
         { storageReference, checksumSha256: sha256, byteSize: String(byteSize) },
       );
@@ -313,13 +355,24 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     }
     if (kind === 'reference_document' && Number.isInteger(id) && id > 0) {
       // 资料行只登记存储引用（无独立校验值／字节数列），按引用更新
-      const result = await this.referenceDocumentRepository.update({ id }, { storageReference });
+      const repository = this.repositoryForTable('reference_document', transactionContext);
+      if (repository === null) {
+        return false;
+      }
+      const result = await repository.update({ id }, { storageReference });
       return (result.affected ?? 0) > 0;
     }
     if (kind === 'maintenance_report_attachment' && Number.isInteger(id) && id > 0) {
       // 报告附件**自带**存储引用与校验值：必须一并指向还原后的字节，
       // 否则附件仍指向备份前（可能已被清理）的旧引用。
-      const result = await this.reportAttachmentRepository.update(
+      const repository = this.repositoryForTable(
+        'maintenance_report_attachment',
+        transactionContext,
+      );
+      if (repository === null) {
+        return false;
+      }
+      const result = await repository.update(
         { id },
         { storageReference, checksumSha256: sha256, byteSize },
       );
@@ -344,7 +397,7 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     }
 
     try {
-      return await this.transactionRunner.run(async () => {
+      return await this.transactionRunner.run(async (transactionContext) => {
         const counts: Record<string, number> = {};
         // ① 清空：逆外键顺序（先子后父），只清载荷里出现的表
         const payloadTables = request.tables.map((entry) => entry.table);
@@ -361,18 +414,28 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
         const suppressionFacts = await this.captureSuppressionFacts(
           request.organizationId,
           request.installationId,
+          transactionContext,
         );
         // ①-1 打断循环外键：`repair_request_intake.converted_request_id → repair_request.id`
         //      与 `repair_request.intake_id → repair_request_intake.id` 互指，
         //      任何删除顺序都会被其中一侧挡住（真实库 `ER_ROW_IS_REFERENCED_2`）。
         //      先把"指向本次将被清空的工单"的引用置空——被置空的行都在恢复范围内，
         //      随写回按原值还原（延后外键回填），业务事实不丢。
-        await this.breakCircularForeignKeys(request.organizationId, request.installationId);
+        await this.breakCircularForeignKeys(
+          request.organizationId,
+          request.installationId,
+          transactionContext,
+        );
         for (const table of [...RESTORE_TABLES].reverse()) {
           if (!payloadTables.includes(table)) {
             continue;
           }
-          await this.clearCompanyScope(table, request.organizationId, request.installationId);
+          await this.clearCompanyScope(
+            table,
+            request.organizationId,
+            request.installationId,
+            transactionContext,
+          );
         }
         // ② 写回：正外键顺序（先父后子）
         let written = 0;
@@ -382,15 +445,15 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
           if (entry === undefined) {
             continue;
           }
-          const count = await this.insertRows(table, entry.rows, deferred);
+          const count = await this.insertRows(table, entry.rows, deferred, transactionContext);
           counts[table] = count;
           written += count;
         }
         // ③ 回填延后外键（`repair_request_intake.converted_request_id`）：
         //    双向外键无法单趟插入 ⇒ 写完工单后再按 intake 主键回填。
-        await this.applyDeferredForeignKeys(deferred);
+        await this.applyDeferredForeignKeys(deferred, transactionContext);
         // ④ 回填抑制事实：当前事实优先 ⇒ 已删除／已下架的内容不会被旧包复活。
-        await this.applySuppressionFacts(suppressionFacts);
+        await this.applySuppressionFacts(suppressionFacts, transactionContext);
         return { status: 'WRITTEN', written, counts, reason: null };
       });
     } catch (error) {
@@ -457,8 +520,9 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     table: LocalRestoreRecordTable,
     organizationId: number,
     installationId: string,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<void> {
-    const repository = this.repositoryForTable(table);
+    const repository = this.repositoryForTable(table, transactionContext);
     if (repository === null) {
       return;
     }
@@ -483,6 +547,7 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
   private async captureSuppressionFacts(
     organizationId: number,
     installationId: string,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<SuppressionFact[]> {
     const facts: SuppressionFact[] = [];
     for (const table of RESTORE_TABLES) {
@@ -490,7 +555,7 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
       if (suppression === undefined) {
         continue;
       }
-      const repository = this.repositoryForTable(table);
+      const repository = this.repositoryForTable(table, transactionContext);
       if (repository === null) {
         continue;
       }
@@ -513,9 +578,12 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
    * 只处理**载荷里也存在的行**：备份之后才新建又删除的行不在载荷内，
    * 随恢复一起消失（恢复＝回到备份时刻），不会以"未删除"形态复活。
    */
-  private async applySuppressionFacts(facts: readonly SuppressionFact[]): Promise<void> {
+  private async applySuppressionFacts(
+    facts: readonly SuppressionFact[],
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<void> {
     for (const fact of facts) {
-      const repository = this.repositoryForTable(fact.table);
+      const repository = this.repositoryForTable(fact.table, transactionContext);
       if (repository === null) {
         continue;
       }
@@ -536,9 +604,14 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
   private async breakCircularForeignKeys(
     organizationId: number,
     installationId: string,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<void> {
     const parentPredicate = buildOrganizationScopePredicate('repair_request', 'p');
-    await this.repairRequestIntakeRepository
+    const intakeRepository = this.repositoryForTable('repair_request_intake', transactionContext);
+    if (intakeRepository === null) {
+      throw new Error('恢复写入缺少仓储：repair_request_intake');
+    }
+    await intakeRepository
       .createQueryBuilder()
       .update()
       .set({ convertedRequestId: null })
@@ -559,11 +632,12 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     table: LocalRestoreRecordTable,
     rows: readonly Record<string, unknown>[],
     deferred: { id: number; value: number | null }[],
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<number> {
     if (rows.length === 0) {
       return 0;
     }
-    const repository = this.repositoryForTable(table);
+    const repository = this.repositoryForTable(table, transactionContext);
     if (repository === null) {
       throw new Error(`恢复写入缺少仓储：${table}`);
     }
@@ -586,11 +660,15 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
   /** 回填延后外键（双向外键的另一半） */
   private async applyDeferredForeignKeys(
     deferred: readonly { id: number; value: number | null }[],
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<void> {
     if (deferred.length === 0) {
       return;
     }
-    const repository = this.repairRequestIntakeRepository;
+    const repository = this.repositoryForTable('repair_request_intake', transactionContext);
+    if (repository === null) {
+      throw new Error('恢复写入缺少仓储：repair_request_intake');
+    }
     for (const item of deferred) {
       if (typeof item.id !== 'number') {
         throw new Error('延后外键回填缺少 intake 主键');
@@ -623,7 +701,29 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
     });
   }
 
-  private repositoryForTable(table: string): Repository<ObjectLiteral> | null {
+  /**
+   * 取某张表的仓储。
+   *
+   * **有事务上下文时必须取事务内的仓储**（`manager.getRepository`）：
+   * 注入的普通仓储走的是数据源默认连接，**不在事务里**，
+   * 会让"事务已开但写在事务外自动提交"⇒ 中途失败留下半截数据。
+   * 实体类型从注入仓储的 `target` 取，避免维护两套表→实体映射。
+   */
+  private repositoryForTable(
+    table: string,
+    transactionContext?: PersistenceTransactionContext,
+  ): Repository<ObjectLiteral> | null {
+    const injected = this.injectedRepositoryForTable(table);
+    if (injected === null) {
+      return null;
+    }
+    if (transactionContext === undefined) {
+      return injected;
+    }
+    return getTypeOrmEntityManager(transactionContext).getRepository(injected.target);
+  }
+
+  private injectedRepositoryForTable(table: string): Repository<ObjectLiteral> | null {
     switch (table) {
       case 'repair_request':
         return this.repairRequestRepository;

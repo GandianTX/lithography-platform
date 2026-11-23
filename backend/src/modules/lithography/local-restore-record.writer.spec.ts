@@ -17,10 +17,13 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
+import { createTypeOrmPersistenceTransactionContext } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 
 import { LocalRestoreRecordWriterService } from './local-restore-record.writer';
 
 type RepoStub = {
+  /** 实体类型标识：写入实现用它向**事务 manager** 取仓储（注入仓储只是兜底） */
+  target: string;
   createQueryBuilder: jest.Mock;
   insert: jest.Mock;
   update: jest.Mock;
@@ -28,8 +31,9 @@ type RepoStub = {
   create: jest.Mock;
 };
 
-function repoStub(): RepoStub {
+function repoStub(target = 'entity'): RepoStub {
   return {
+    target,
     createQueryBuilder: jest.fn((): Record<string, unknown> => {
       const builder: Record<string, unknown> = {
         where: jest.fn(() => builder),
@@ -93,7 +97,7 @@ const TABLE_NAMES = [
 const INSTALLATION_ID = 'f5e4007d-e354-11f1-897b-345a604caa06';
 
 function buildRepositories() {
-  const repos = Object.fromEntries(TABLE_NAMES.map((table) => [table, repoStub()])) as Record<
+  const repos = Object.fromEntries(TABLE_NAMES.map((table) => [table, repoStub(table)])) as Record<
     (typeof TABLE_NAMES)[number],
     RepoStub
   >;
@@ -108,10 +112,22 @@ function buildWriter(
   } = {},
 ) {
   const repositories = options.repositories ?? buildRepositories();
+  // 事务上下文必须绑定到**真实可解析的 manager**：写入实现按上下文取事务内仓储，
+  // 这里用假 manager 把实体标识映射回同一批仓储桩（并记录取用次数，供断言"同一 manager"）。
+  const repositoryByTarget = new Map<string, RepoStub>(
+    Object.values(repositories).map((repo) => [repo.target, repo]),
+  );
+  const manager = {
+    getRepository: jest.fn((target: unknown) => repositoryByTarget.get(String(target))),
+  };
   // `null` 是"端口缺席"的显式取值（不可用 `??`：null 会被当成未提供）
   const transactionRunner =
     options.transactionRunner === undefined
-      ? ({ run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never)
+      ? ({
+          run: jest.fn((fn: (ctx: unknown) => Promise<unknown>) =>
+            fn(createTypeOrmPersistenceTransactionContext(manager as never)),
+          ),
+        } as never)
       : options.transactionRunner;
   const fileStorage: unknown = options.fileStorage ?? {
     save: jest.fn().mockResolvedValue('new-ref.bin'),
@@ -157,6 +173,7 @@ function buildWriter(
     repositories,
     transactionRunner: transactionRunner as { run: jest.Mock },
     fileStorage,
+    manager,
   };
 }
 
@@ -193,6 +210,64 @@ function fullPayloadTables() {
     { table: 'local_upload_task' as const, rows: [{ id: 40 }] },
   ];
 }
+
+describe('恢复写入的事务边界（P1-1）', () => {
+  it('清空／写回／回填全部走**同一个事务 manager**（不再走注入仓储）', async () => {
+    const { service, manager, repositories } = buildWriter();
+
+    const outcome = await service.write({
+      organizationId: 4,
+      installationId: INSTALLATION_ID,
+      restoreId: 'restore-tx',
+      tables: fullPayloadTables(),
+    });
+
+    expect(outcome.status).toBe('WRITTEN');
+    // 事务 manager 被用于取每一张表的仓储
+    expect(manager.getRepository).toHaveBeenCalled();
+    const usedTargets = new Set(manager.getRepository.mock.calls.map((call) => String(call[0])));
+    for (const table of ['repair_request', 'repair_request_intake', 'stored_file']) {
+      expect(usedTargets.has(table)).toBe(true);
+    }
+    // 写操作确实落在这些仓储上（而不是另一批"注入仓储"）
+    expect(repositories.repair_request.insert).toHaveBeenCalled();
+    expect(repositories.stored_file.insert).toHaveBeenCalled();
+  });
+
+  it('事务失败 ⇒ 整体失败关闭（不返回"已写入"）', async () => {
+    const transactionRunner = {
+      run: jest.fn(() => {
+        throw new Error('模拟事务内 SQL 失败');
+      }),
+    };
+    const { service } = buildWriter({ transactionRunner: transactionRunner });
+
+    const outcome = await service.write({
+      organizationId: 4,
+      installationId: INSTALLATION_ID,
+      restoreId: 'restore-tx-fail',
+      tables: fullPayloadTables(),
+    });
+
+    expect(outcome.status).toBe('FAILED');
+    expect(outcome.written).toBe(0);
+    expect(outcome.reason).toBeTruthy();
+  });
+
+  it('事务端口缺席 ⇒ 失败关闭，绝不无事务硬写', async () => {
+    const { service, repositories } = buildWriter({ transactionRunner: null as never });
+
+    const outcome = await service.write({
+      organizationId: 4,
+      installationId: INSTALLATION_ID,
+      restoreId: 'restore-no-tx',
+      tables: fullPayloadTables(),
+    });
+
+    expect(outcome.status).toBe('FAILED');
+    expect(repositories.repair_request.insert).not.toHaveBeenCalled();
+  });
+});
 
 describe('恢复写入实现（S2-2／S2-3）', () => {
   it('整体替换：清空与写回都在同一事务内完成', async () => {
