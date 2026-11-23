@@ -84,6 +84,9 @@ export const ZH_CN_MESSAGES = {
   'nav.admin-reference-ownership.label': '归属待核实',
   'nav.admin-reference-ownership.description':
     '一级管理员专用：核实上传者或上传时公司不明确的资料并更正归属。',
+  'nav.admin-operation-records.label': '关键操作记录',
+  'nav.admin-operation-records.description':
+    '查看管理员删除资料、归属更正与本地业务恢复的三类关键操作事实（只读）。',
   'nav.account-settings.label': '账号设置',
   'nav.account-settings.description':
     '查看账号信息、维护基础资料与登录密码；修改密码成功后需重新登录。',
@@ -612,6 +615,10 @@ export const ZH_CN_MESSAGES = {
   'admin.documents.description':
     'SUPER_ADMIN 的数据聚合视图：参考资料、维修申请、AI 会话与 AI 报告。',
   'admin.documents.action': '进入文档数据库',
+  'admin.operationRecords.title': '关键操作记录',
+  'admin.operationRecords.description':
+    '查看资料删除、归属更正与本地业务恢复的三类管理事实（只读）。范围由管理员等级与可信公司决定。',
+  'admin.operationRecords.action': '进入关键操作记录',
   'admin.noneNotice': '当前账号缺少可信的管理等级或组织归属，暂无可用的管理入口。',
 
   // 结构化内部维修记录（任务 04）
@@ -849,6 +856,44 @@ export const ZH_CN_MESSAGES = {
   'adminRepairRequest.revisionModal.maintenance': '结构化维修记录',
   'adminRepairRequest.revisionModal.maintenanceHint':
     '可订正维修字段、排查步骤与故障面板；已绑定原件只读。',
+  // 关键操作记录页（任务10）
+  'operationRecords.page.description.level1': '查看全部公司的关键操作。',
+  'operationRecords.page.description.level2': '查看本公司的关键操作。',
+  'operationRecords.card.title': '操作记录',
+  'operationRecords.forbidden': '关键操作记录仅供管理员查看。',
+  'operationRecords.column.time': '时间',
+  'operationRecords.column.actor': '操作者',
+  'operationRecords.column.organization': '所属公司',
+  'operationRecords.column.operation': '操作类型',
+  'operationRecords.column.target': '目标',
+  'operationRecords.column.result': '实际结果',
+  'operationRecords.column.summary': '必要说明',
+  'operationRecords.operation.ADMIN_DELETE_DOCUMENT': '管理员删除正式资料',
+  'operationRecords.operation.CORRECT_DOCUMENT_OWNERSHIP': '更改资料上传者和公司归属',
+  'operationRecords.operation.RESTORE_LOCAL_BUSINESS': '使用备份包恢复本机业务',
+  'operationRecords.result.SUCCEEDED': '成功',
+  'operationRecords.result.FAILED': '失败',
+  'operationRecords.result.DENIED': '已拒绝',
+  'operationRecords.targetType.referenceDocument': '参考资料',
+  'operationRecords.targetType.backupRestoreRun': '恢复运行',
+  'operationRecords.actorLevel.level1': '一级管理员',
+  'operationRecords.actorLevel.level2': '二级管理员',
+  'operationRecords.actor.unknown': '未知管理员',
+  'operationRecords.summary.stage': '阶段：{stage}',
+  'operationRecords.summary.changedFields': '变更字段：{fields}',
+  'operationRecords.changedField.createdByAccountId': '上传者',
+  'operationRecords.changedField.ownerOrganizationId': '所属公司',
+  'operationRecords.changedField.ownershipStatus': '归属核实状态',
+  'operationRecords.summary.attempt': '第 {attemptNo} 次尝试',
+  'operationRecords.summary.organizationChange': '{before} → {after}',
+  'operationRecords.summary.organizationBefore': '原公司：{name}',
+  'operationRecords.summary.organizationAfter': '新公司：{name}',
+  'operationRecords.empty': '暂无关键操作记录',
+  'operationRecords.loadFailed': '关键操作记录加载失败，请稍后重试。',
+  'operationRecords.pageOutOfRangeTitle': '当前页无数据',
+  'operationRecords.pageOutOfRange':
+    '第 {page} 页没有数据（共 {total} 条），可能是数据已变动或翻页越界；请用下方分页返回其他页。',
+  'operationRecords.totalCount': '共 {total} 条',
 
   // 我的资料记录（任务 07）
   'nav.my-records.label': '我的资料记录',

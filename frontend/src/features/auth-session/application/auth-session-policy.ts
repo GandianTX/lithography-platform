@@ -210,11 +210,15 @@ export function resolveAuthSessionAdminScope(
 
 // 任务 08 允许一级平台管理员访问管理页，二级按可信公司范围访问。
 // 文档数据库仍要求一级且具有可信管理员组织，与该聚合能力的服务端守卫一致。
+// 任务 10 的关键操作记录对一级（全公司）与二级（本公司）都开放，数据范围由
+// 后端按会话裁决；必须在此显式登记——未登记的 /admin/* 路径会在下方默认放行，
+// 导致缺等级（NONE）的管理员也能看到入口并直达。
 const AUTH_SESSION_ADMIN_MANAGEMENT_PATHS: readonly string[] = [
   '/admin/orders',
   '/admin/users',
   '/admin/companies',
   '/admin/engineer-registrations',
+  '/admin/operation-records',
 ];
 
 export function isAuthSessionAdminPathAllowedAt(
