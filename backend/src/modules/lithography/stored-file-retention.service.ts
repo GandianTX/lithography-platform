@@ -41,6 +41,11 @@ import { RepairRequestIntakeEntity } from './entities/repair-request-intake.enti
 import { StoredFileEntity } from './entities/stored-file.entity';
 import { StoredFileService } from './stored-file.service';
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { TRANSACTION_RUNNER } from '@usecases/common/ports/transaction-runner.contract';
+import type { TransactionRunner } from '@usecases/common/ports/transaction-runner.contract';
+import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
+
 import {
   STORED_FILE_STORAGE,
   type StoredFileStorage,
@@ -85,6 +90,8 @@ export class StoredFileRetentionService {
     @Inject(STORED_FILE_STORAGE)
     private readonly storage: StoredFileStorage,
     private readonly localWriteHoldService: LocalWriteHoldService,
+    @Inject(TRANSACTION_RUNNER)
+    private readonly transactionRunner: TransactionRunner,
   ) {}
 
   /**
@@ -288,26 +295,41 @@ export class StoredFileRetentionService {
   private async cleanupOne(target: StoredFileRetentionTarget): Promise<StoredFileRetentionItem> {
     const fileId = target.candidate.fileId;
     try {
-      if (target.reason === 'EXPIRED_TEMPORARY') {
-        // 释放：标记失效（行保留、可追踪）；命中 0 表示已被绑定或状态已变 → 保留
-        const released = await this.storedFileService.releaseTemporaryFiles({ fileIds: [fileId] });
-        if (released === 0) {
-          return { fileId, outcome: 'RETAINED', reason: 'ALREADY_BOUND_OR_CHANGED' };
+      // 恢复期写入冻结（**事务内**）：`stored_file` 属恢复范围表，
+      // 回收会改行状态并删字节，必须与恢复建立冻结互斥（独立验收 P1-1）。
+      // 范围共享锁持有到本事务提交／回滚 ⇒ 恢复不会在半途把这一行换掉，
+      // 也不会在字节已被回收之后才恢复出一行指向缺失字节的记录。
+      return await this.transactionRunner.run(async (transactionContext) => {
+        await this.localWriteHoldService.assertBusinessWritableInTransaction({
+          organizationId: target.candidate.ownerOrganizationId,
+          transactionContext,
+        });
+        if (target.reason === 'EXPIRED_TEMPORARY') {
+          // 释放：标记失效（行保留、可追踪）；命中 0 表示已被绑定或状态已变 → 保留
+          const released = await this.storedFileService.releaseTemporaryFiles(
+            { fileIds: [fileId] },
+            transactionContext,
+          );
+          if (released === 0) {
+            return { fileId, outcome: 'RETAINED', reason: 'ALREADY_BOUND_OR_CHANGED' };
+          }
         }
-      }
 
-      const row = await this.storedFileRepository.findOne({ where: { fileId } });
-      if (row === null) {
-        return { fileId, outcome: 'RETAINED', reason: 'ROW_NOT_FOUND' };
-      }
-      // 二次闸门：仍有业务 id / 已绑定 → 保留
-      if (row.businessId !== null || row.bindingStatus === 'BOUND') {
-        return { fileId, outcome: 'RETAINED', reason: 'BOUND' };
-      }
+        const row = await this.getStoredFileRepository(transactionContext).findOne({
+          where: { fileId },
+        });
+        if (row === null) {
+          return { fileId, outcome: 'RETAINED', reason: 'ROW_NOT_FOUND' };
+        }
+        // 二次闸门：仍有业务 id / 已绑定 → 保留
+        if (row.businessId !== null || row.bindingStatus === 'BOUND') {
+          return { fileId, outcome: 'RETAINED', reason: 'BOUND' };
+        }
 
-      // 字节回收：仅对**未绑定且无业务 id**的行；存储契约允许 delete 用于补偿清理
-      await this.storage.delete(row.storageReference);
-      return { fileId, outcome: 'CLEANED', reason: target.reason };
+        // 字节回收：仅对**未绑定且无业务 id**的行；存储契约允许 delete 用于补偿清理
+        await this.storage.delete(row.storageReference);
+        return { fileId, outcome: 'CLEANED', reason: target.reason };
+      });
     } catch (error) {
       // 失败保留事实（不假装已清理），下一轮重试
       return {
@@ -316,5 +338,12 @@ export class StoredFileRetentionService {
         reason: error instanceof Error ? error.message : '清理失败',
       };
     }
+  }
+
+  /** 取事务内的暂存文件仓储（锁与读必须落在同一事务连接上） */
+  private getStoredFileRepository(
+    transactionContext: PersistenceTransactionContext,
+  ): Repository<StoredFileEntity> {
+    return getTypeOrmEntityManager(transactionContext).getRepository(StoredFileEntity);
   }
 }

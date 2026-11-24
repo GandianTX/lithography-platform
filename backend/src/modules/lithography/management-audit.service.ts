@@ -303,6 +303,109 @@ export class ManagementAuditService {
     );
   }
 
+  /**
+   * 写**恢复故障现场处置**事件（管理员受控解冻）。
+   *
+   * 与 `appendRestoreEvent` 的差别：
+   * - 幂等键是 **(恢复 ID, 阶段)**，不是 (恢复 ID, 结果, 阶段)——处置事件与恢复终态
+   *   事件共用同一个 `result` 值域，若沿用恢复终态那套幂等键，处置事件会被恢复终态
+   *   事件"挤掉"或与之互相吞掉；
+   * - `result` 由调用方**镜像恢复自身的终态**（不是处置结果）⇒ 一次解冻**不会**让
+   *   读侧把成功的恢复误读成失败（或反之）；处置事实由 `stage` 承载。
+   */
+  async appendRestoreIncidentEvent(params: {
+    readonly actorAccountId: number;
+    readonly actorAdminLevel: number;
+    readonly organizationId: number;
+    readonly restoreId: string;
+    readonly backupId: string;
+    readonly protectionBackupId: string | null;
+    /** 镜像恢复自身的终态（SUCCEEDED / FAILED），**不是**处置结果 */
+    readonly result: 'SUCCEEDED' | 'FAILED';
+    readonly stage: LocalRestoreAuditStage;
+    readonly reasonCode?: string | null;
+    /**
+     * **处置人的实际操作原因**（自由文本，已由上游做过去空白、长度边界与控制字符校验）。
+     *
+     * 只在"受控解冻成功"这一条处置事实上写入：那是管理员真正给出的处置理由，
+     * 必须能从审计读回。与 `reasonCode` 同占 `detail.reason` 键（处置人原因优先）。
+     */
+    readonly operatorReason?: string | null;
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<void> {
+    const repository = this.getRepository(params.transactionContext);
+    const existing: unknown = await repository
+      .createQueryBuilder('event')
+      .where('event.operation = :operation', { operation: 'RESTORE_LOCAL_BUSINESS' })
+      .andWhere('event.target_type = :targetType', { targetType: 'LOCAL_RESTORE' })
+      .andWhere('event.target_id = :targetId', { targetId: params.restoreId })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(event.detail, '$.stage')) = :stage", {
+        stage: params.stage,
+      })
+      .getRawAndEntities();
+    if (existing !== null && Array.isArray(existing) && existing.length > 0) {
+      // 幂等：同一 (恢复 ID, 阶段) 只留一条事件（重复处置不重复留痕）
+      // ⇒ **首次真实处置人的原因不会被重试覆盖**。
+      return;
+    }
+    const detail = serializeLocalRestoreAuditDetail({
+      result: params.result,
+      stage: params.stage,
+      reasonCode: params.reasonCode ?? null,
+      operatorReason: params.operatorReason ?? null,
+    });
+    await this.insertEvent(
+      {
+        actorAccountId: params.actorAccountId,
+        actorAdminLevel: params.actorAdminLevel,
+        organizationId: params.organizationId,
+        operation: 'RESTORE_LOCAL_BUSINESS',
+        targetType: 'LOCAL_RESTORE',
+        targetId: params.restoreId,
+        result: params.result,
+        detail,
+      },
+      params.transactionContext,
+    );
+    this.logger.info(
+      {
+        operation: 'RESTORE_LOCAL_BUSINESS',
+        restoreId: params.restoreId,
+        result: params.result,
+        stage: params.stage,
+      },
+      '恢复故障现场处置事件已写入',
+    );
+  }
+
+  /**
+   * 统计某次恢复已写入的**处置阶段**事件条数（幂等键的一侧）。
+   *
+   * 用途只有一个：故障处置在**提交回执丢失**时判定"事务到底提交了没有"
+   * ——冻结已解除且成功事件已存在 ⇒ 事务其实已提交；两者都没有 ⇒ 已回滚。
+   * 读侧（任务 10 的分页查询）另有 `ManagementAuditEventQueryService`，
+   * 本方法**不是**通用查询入口。
+   */
+  async countRestoreIncidentEventsByStage(params: {
+    readonly restoreId: string;
+    readonly stage: LocalRestoreAuditStage;
+  }): Promise<number> {
+    const repository = this.getRepository();
+    const existing: unknown = await repository
+      .createQueryBuilder('event')
+      .where('event.operation = :operation', { operation: 'RESTORE_LOCAL_BUSINESS' })
+      .andWhere('event.target_type = :targetType', { targetType: 'LOCAL_RESTORE' })
+      .andWhere('event.target_id = :targetId', { targetId: params.restoreId })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(event.detail, '$.stage')) = :stage", {
+        stage: params.stage,
+      })
+      .getRawAndEntities();
+    if (!Array.isArray(existing)) {
+      return 0;
+    }
+    return existing.length;
+  }
+
   private async insertEvent(
     event: {
       actorAccountId: number;

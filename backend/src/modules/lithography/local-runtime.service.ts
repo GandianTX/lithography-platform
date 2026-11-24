@@ -106,6 +106,15 @@ export class LocalRuntimeService {
     transactionContext: PersistenceTransactionContext,
   ): Promise<{ task: LocalUploadTaskSnapshot; created: boolean }> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
+    if (data.organizationId !== null && data.organizationId !== undefined) {
+      // 恢复期冻结守卫（**事务内**）：`local_upload_task` 已纳入受保护备份范围
+      // （安装 × 公司口径），恢复期间登记待传任务会污染恢复结果。
+      // 事务内取范围共享锁 ⇒ 与恢复建立冻结互斥（独立验收 P1-1）。
+      await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+        data.organizationId,
+        transactionContext,
+      );
+    }
     const existing = await this.findUploadTaskByKey(repository, data);
     if (existing) {
       return { task: toLocalUploadTaskSnapshot(existing), created: false };
@@ -165,7 +174,10 @@ export class LocalRuntimeService {
     const task = await this.lockUploadTask(repository, taskId);
     // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
     // 恢复期间推进队列状态会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'PENDING' && task.status !== 'FAILED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -205,7 +217,10 @@ export class LocalRuntimeService {
     const task = await this.lockUploadTask(repository, taskId);
     // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
     // 恢复期间推进队列状态会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'UPLOADING') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -251,7 +266,10 @@ export class LocalRuntimeService {
     const task = await this.lockUploadTask(repository, taskId);
     // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
     // 恢复期间推进队列状态会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'PENDING' && task.status !== 'FAILED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -294,7 +312,10 @@ export class LocalRuntimeService {
     const task = await this.lockUploadTask(repository, taskId);
     // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
     // 恢复期间推进队列状态会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status === 'SUCCEEDED' || task.status === 'CANCELLED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -332,7 +353,10 @@ export class LocalRuntimeService {
     const task = await this.lockUploadTask(repository, taskId);
     // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
     // 恢复期间推进队列状态会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(task.organizationId);
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'UPLOADING' && task.status !== 'PENDING') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,

@@ -83,8 +83,9 @@ export class RecordRepairRequestHandlingResultUsecase {
         );
       }
       // 恢复期写入冻结：工单归属公司数据区正在恢复时不得回写处理结果
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: request.ownerOrganizationId,
+        transactionContext,
       });
       const handlingStatus = resolveRepairRequestHandlingStatus(handlingResult); // 终结事实不可改写：再次回写（含相同值）会让“终结时间/终结人”与已发布事实漂移
       if (

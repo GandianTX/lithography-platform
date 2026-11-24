@@ -51,8 +51,9 @@ export class ReorderMaintenanceReportAttachmentsUsecase {
         transactionContext,
       });
       // 恢复期写入冻结：报告归属公司数据区正在恢复时不得调整附件顺序
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: lock.report.ownerOrganizationId,
+        transactionContext,
       });
       const current = await this.maintenanceReportQueryService.readCurrentAttachmentsForSubmit(
         command.reportId,

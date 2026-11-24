@@ -169,7 +169,9 @@ describe('受保护备份包清理的反例核对（S3.4）', () => {
       asPinoLogger(createTestPinoLogger()),
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       undefined,

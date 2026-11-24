@@ -1063,8 +1063,9 @@ export class SubmitMaintenanceReportFormalUsecase {
       transactionContext,
     });
     // 恢复期写入冻结：该公司数据区正在恢复时不得正式提交（报告会写入并生成正式资料）
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: membership.organizationId,
+      transactionContext,
     });
     return membership.organizationId;
   }

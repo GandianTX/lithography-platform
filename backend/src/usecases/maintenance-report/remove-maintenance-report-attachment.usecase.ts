@@ -56,8 +56,9 @@ export class RemoveMaintenanceReportAttachmentUsecase {
         transactionContext,
       });
       // 恢复期写入冻结：报告归属公司数据区正在恢复时不得挂接附件
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: lock.report.ownerOrganizationId,
+        transactionContext,
       });
       const retired = await this.maintenanceReportService.retireAttachment(
         command.reportId,

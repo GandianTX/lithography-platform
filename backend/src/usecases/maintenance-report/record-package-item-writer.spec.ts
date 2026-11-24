@@ -147,6 +147,9 @@ function buildWriter(
     {} as never, // storedFileService
     verifier as never, // sourceIdentityVerifier
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
+    {
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+    } as never, // localWriteHoldService
   );
   return { writer, insertReport, insertVersion, insertVersionAttachments, verifier };
 }

@@ -95,8 +95,10 @@ export class ResolveSyncConflictUsecase {
       }
 
       // 恢复期冻结：该公司数据区正在恢复时不得执行裁决（裁决会回写业务记录版本）
-      await this.localWriteHoldService.assertCompanyWritable({
+      // 事务内版本：取范围共享锁并锁定读冻结事实 ⇒ 与恢复建立冻结互斥（P1-1）
+      await this.localWriteHoldService.assertCompanyWritableInTransaction({
         organizationId: locked.organizationId,
+        transactionContext,
       });
 
       const outcome = resolveSyncConflictOutcome(

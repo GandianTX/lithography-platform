@@ -18,7 +18,16 @@
  * 不只信任父进程传下来的参数。
  */
 
-import { lstatSync, readdirSync, realpathSync, rmSync, rmdirSync, type Dirent } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  rmdirSync,
+  type Dirent,
+} from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
 /** 一次性库标识表（由建库方创建；脚本只读核对，不创建、不修改） */
@@ -357,8 +366,14 @@ export interface DatabaseDeletionTarget {
  * 数据库删除顺序：**先子后父**。
  *
  * 顺序表按外键依赖从子到父排列；同一张表内部按主键升序，保证可复现。
+ *
+ * 表清单同时是"**允许被删除的表**"白名单（`planDatabaseDeletion` 会拒绝清单外的表）：
+ * - `stored_file`：任务 09 取证脚本的暂存原件（叶子表，无本清单内表引用它）；
+ * - `base_user_account`：任务 09 处置取证脚本造的临时账号（被
+ *   `local_account_authorization` 引用 ⇒ 必须排在它之后）。
  */
 export const DELETION_ORDER: ReadonlyArray<string> = [
+  'stored_file',
   'management_audit_event',
   'local_write_hold',
   'backup_restore_run',
@@ -366,6 +381,7 @@ export const DELETION_ORDER: ReadonlyArray<string> = [
   'local_backup_run',
   'local_company_setting',
   'local_account_authorization',
+  'base_user_account',
 ];
 
 /**
@@ -815,6 +831,152 @@ export function selectCreatedSentinelIds(created: {
     authorizationIds: created.authorizationId === null ? [] : [created.authorizationId],
     holdIds: created.holdId === null ? [] : [created.holdId],
   };
+}
+
+/* ────────────────────── 哨兵真实读回与残留核对 ────────────────────── */
+
+/**
+ * 哨兵授权行的**字段级指纹**。
+ *
+ * 为什么不用"内存里的 id ＋ 硬编码状态"：那样只能证明"我以为它还在"，
+ * 证明不了"库里那行真的没被改"。独立验收 P2-1 要求 before／after **都**来自
+ * 数据库只读读回，且逐字段可比。
+ *
+ * 字段顺序固定（可复现）；缺失字段按 `null` 参与比较（缺字段本身就是变化）。
+ */
+export function authorizationSentinelFingerprint(row: Readonly<Record<string, unknown>>): string {
+  const fields = [
+    'id',
+    'installation_id',
+    'account_id',
+    'organization_id',
+    'authorization_status',
+    'permission_version',
+    'signed_claims',
+    'authorized_at',
+    'revoked_at',
+    'last_verified_at',
+  ];
+  return fields
+    .map((field) => `${field}=${normalizeOwnedFieldValue(row[field]) ?? 'null'}`)
+    .join(';');
+}
+
+/**
+ * 哨兵冻结行的**字段级指纹**（同 {@link authorizationSentinelFingerprint} 的口径）。
+ */
+export function holdSentinelFingerprint(row: Readonly<Record<string, unknown>>): string {
+  const fields = [
+    'hold_id',
+    'installation_id',
+    'organization_id',
+    'hold_type',
+    'status',
+    'restore_id',
+    'reason',
+    'created_at',
+    'released_at',
+  ];
+  return fields
+    .map((field) => `${field}=${normalizeOwnedFieldValue(row[field]) ?? 'null'}`)
+    .join(';');
+}
+
+/**
+ * 受控根内文件的**内容指纹**（真实字节的 SHA-256 ＋ 字节数）。
+ *
+ * 只断言"文件存在"是**不够**的：内容被篡改而文件仍在时，存在性检查照样通过。
+ * 独立验收 P2-1 要求文件按受控路径核对**真实字节**。
+ *
+ * - 文件不存在 ⇒ `missing`（不是错误：由调用方决定是否算失败）；
+ * - 路径越出受控根或本身是符号链接 ⇒ 抛错（拒绝"顺手读一下"）。
+ */
+export function fileContentFingerprint(root: string, candidate: string): string {
+  const rootReal = assertControlledFileRoot(root);
+  const resolved = resolve(candidate);
+  if (!resolved.startsWith(rootReal + sep)) {
+    throw new SelfcheckSafetyError(
+      'PATH_OUTSIDE_ROOT',
+      `待核对路径越出受控根：${candidate}（受控根 ${rootReal}）`,
+    );
+  }
+  let stats: ReturnType<typeof lstatSync>;
+  try {
+    stats = lstatSync(resolved);
+  } catch {
+    return 'missing';
+  }
+  if (stats.isSymbolicLink()) {
+    throw new SelfcheckSafetyError(
+      'PATH_IS_SYMLINK',
+      `待核对路径本身是符号链接，拒绝按路径读取：${candidate}`,
+    );
+  }
+  if (!stats.isFile()) {
+    return `not-a-regular-file:${stats.isDirectory() ? 'directory' : 'other'}`;
+  }
+  const bytes = readFileSync(resolved);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  return `sha256:${digest};bytes=${bytes.length}`;
+}
+
+/**
+ * 本轮**自建**哨兵的残留事实（收尾后只读读回）。
+ *
+ * `null` 表示"本轮没有创建这一类"（例如复用了既有哨兵）⇒ 不参与零残留判定。
+ */
+export interface SelfCreatedResidueFacts {
+  readonly authorizationId: string | null;
+  readonly authorizationRows: number;
+  readonly holdId: string | null;
+  readonly holdRows: number;
+  readonly filePath: string | null;
+  readonly fileExists: boolean;
+}
+
+/**
+ * 本轮自建对象必须**零残留**。
+ *
+ * 与"非目标数据不变"是两件事：前者证明"我造的都收干净了"，
+ * 后者证明"我没碰到别人的"。两者必须**各自独立**成立。
+ */
+export function assertSelfCreatedResidueCleared(facts: SelfCreatedResidueFacts): void {
+  const problems: string[] = [];
+  if (facts.authorizationId !== null && facts.authorizationRows > 0) {
+    problems.push(
+      `本轮创建的哨兵授权 ${facts.authorizationId} 仍有 ${facts.authorizationRows} 行残留`,
+    );
+  }
+  if (facts.holdId !== null && facts.holdRows > 0) {
+    problems.push(`本轮创建的哨兵冻结 ${facts.holdId} 仍有 ${facts.holdRows} 行残留`);
+  }
+  if (facts.filePath !== null && facts.fileExists) {
+    problems.push(`本轮创建的哨兵文件仍存在：${facts.filePath}`);
+  }
+  if (problems.length > 0) {
+    throw new SelfcheckSafetyError(
+      'RESIDUE_NOT_CLEARED',
+      `本轮自建对象未清干净：${problems.join('；')}`,
+    );
+  }
+}
+
+/**
+ * 非目标哨兵在收尾后必须**仍然原样存在**。
+ *
+ * 与"本轮自建零残留"相反：非目标对象**不该被删**。若收尾后查不到，
+ * 说明本轮误删了别人的东西（比留下残留更严重）。
+ */
+export function assertForeignSentinelIntact(
+  facts: ReadonlyArray<{ readonly label: string; readonly rows: number }>,
+): void {
+  const missing = facts.filter((item) => item.rows <= 0).map((item) => item.label);
+  if (missing.length > 0) {
+    throw new SelfcheckSafetyError(
+      'FOREIGN_SENTINEL_MISSING',
+      `非目标哨兵在收尾后消失（本轮误删了他人的数据）：${missing.join(', ')}`,
+    );
+  }
 }
 
 /* ────────────────────────────── 文件清理 ────────────────────────────── */

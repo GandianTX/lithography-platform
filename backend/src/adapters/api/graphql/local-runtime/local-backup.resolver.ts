@@ -21,6 +21,7 @@ import {
   LocalRestoreAcceptanceDTO,
   LocalRestoreExecutionDTO,
   LocalRestoreCapabilityDTO,
+  LocalRestoreIncidentReleaseDTO,
   LocalRestorePrecheckResultDTO,
   StartManualLocalBackupResultDTO,
   toLocalBackupRecordDetailDTO,
@@ -30,6 +31,7 @@ import {
 import { AcceptLocalRestoreUsecase } from '@src/usecases/local-runtime/accept-local-restore.usecase';
 import { ExecuteLocalRestoreUsecase } from '@src/usecases/local-runtime/execute-local-restore.usecase';
 import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
+import { ForceReleaseLocalRestoreIncidentUsecase } from '@src/usecases/local-runtime/force-release-local-restore-incident.usecase';
 import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
 import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
@@ -58,6 +60,7 @@ export class LocalBackupResolver {
     private readonly getLocalRestoreCapabilityUsecase: GetLocalRestoreCapabilityUsecase,
     private readonly acceptLocalRestoreUsecase: AcceptLocalRestoreUsecase,
     private readonly executeLocalRestoreUsecase: ExecuteLocalRestoreUsecase,
+    private readonly forceReleaseLocalRestoreIncidentUsecase: ForceReleaseLocalRestoreIncidentUsecase,
     private readonly listLocalBackupCloudPackagesUsecase: ListLocalBackupCloudPackagesUsecase,
   ) {}
 
@@ -215,6 +218,44 @@ export class LocalBackupResolver {
       restoredQueue: result.restored?.queue ?? null,
       released: result.released,
       holdRetained: result.holdRetained,
+    };
+  }
+
+  /**
+   * 恢复**故障现场**的受控解冻（管理员专属）。
+   *
+   * - 只解除"停写停传"，**不改判**恢复终态、不触碰恢复数据；
+   * - 必须给出处置原因并显式确认；恢复仍在运行、目标不匹配、保护副本或数据一致性
+   *   无法确认、冻结归属别的恢复 ⇒ 一律拒绝并**保持冻结**；
+   * - 结论如实返回（已解除／无需解除／被拒绝），并留下操作者、原因与结果的审计。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestoreIncidentReleaseDTO, {
+    name: 'forceReleaseLocalRestoreIncident',
+    description:
+      '恢复故障现场的受控解冻（管理员专属）：只解除停写停传，不改判恢复终态；须给出原因并显式确认，数据一致性无法确认时拒绝并保持冻结',
+  })
+  async forceReleaseLocalRestoreIncident(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('restoreId', { type: () => String }) restoreId: string,
+    @Args('reason', { type: () => String }) reason: string,
+    @Args('confirmed', { type: () => Boolean }) confirmed: boolean,
+  ): Promise<LocalRestoreIncidentReleaseDTO> {
+    const result = await this.forceReleaseLocalRestoreIncidentUsecase.execute({
+      session: this.toSession(user),
+      restoreId,
+      reason,
+      confirmed,
+    });
+    return {
+      restoreId: result.restoreId,
+      outcome: result.outcome,
+      released: result.released,
+      holdRetained: result.holdRetained,
+      reasonCode: result.reasonCode,
+      reason: result.reason,
+      restoreStatus: result.restoreStatus,
     };
   }
 

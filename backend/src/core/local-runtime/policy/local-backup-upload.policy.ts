@@ -8,9 +8,10 @@
 //   已产生的资产状态保留，不回退、不删除；
 // - 授权失效等价于"本轮不尝试"，资产保持待上传事实并记录原因。
 
+import { isTerminalCloudUploadFailure } from '@core/local-runtime/policy/local-backup-cloud-upload.policy';
+
 /** 自动上云检测周期（分钟，约 5 分钟） */
 export const BACKUP_UPLOAD_DETECT_INTERVAL_MINUTES = 5;
-
 /** 失败退避起始值（分钟） */
 export const BACKUP_UPLOAD_BASE_BACKOFF_MINUTES = 5;
 
@@ -47,7 +48,9 @@ export function isBackupUploadAttemptAllowed(cloudStatus: string): boolean {
  * 第 n 次失败（n 从 1 起）后的等待时长为 min(base × 2^(n-1), max)。
  */
 export function computeUploadBackoffMinutes(attemptCount: number): number {
-  const failures = Math.max(1, Math.floor(attemptCount));
+  // 非有限值（NaN／Infinity）会让退避算出 NaN ⇒ nextAttemptAt 变成 Invalid Date
+  // ⇒ 到期判定恒为 false（资产永远卡在"等待"）。此类输入按"第一次失败"处理。
+  const failures = Number.isFinite(attemptCount) ? Math.max(1, Math.floor(attemptCount)) : 1;
   const exponent = Math.min(failures - 1, 16); // 防止位移溢出
   const minutes = BACKUP_UPLOAD_BASE_BACKOFF_MINUTES * 2 ** exponent;
   return Math.min(minutes, BACKUP_UPLOAD_MAX_BACKOFF_MINUTES);
@@ -96,7 +99,14 @@ export type BackupUploadAttemptDecision =
   | { action: 'SKIP'; reason: 'CLOUD_UPLOAD_DISABLED' }
   | { action: 'SKIP'; reason: 'AUTHORIZATION_INVALID' }
   | { action: 'SKIP'; reason: 'NOT_RETRYABLE' }
-  | { action: 'SKIP'; reason: 'ALREADY_SUCCEEDED' };
+  | { action: 'SKIP'; reason: 'ALREADY_SUCCEEDED' }
+  /**
+   * **终态失败，不再重试**（任务 09 第 10 项 L2）。
+   *
+   * 本机包结构性失败（清单不可读／清单与字节不一致／超出大小上限）重试多少次
+   * 都是同一个结果，继续按退避周期重试只会无限消耗且永不收敛。
+   */
+  | { action: 'SKIP'; reason: 'TERMINAL_PACKAGE_INVALID' };
 
 export type BackupUploadDecisionInput = {
   cloudStatus: string;
@@ -104,13 +114,15 @@ export type BackupUploadDecisionInput = {
   lastAttemptAt: Date | null;
   autoUploadEnabled: boolean;
   authorizationValid: boolean;
+  /** 上一次失败的受控原因码（用于终态判定；null 表示尚无失败事实） */
+  failureReason?: string | null;
   now: Date;
 };
 
 /**
  * 自动上云尝试裁决（纯函数，便于以可控时钟验证）。
  *
- * 顺序固定：开关关闭 → 授权失效 → 不可重试 → 已成功 → 退避到期。
+ * 顺序固定：开关关闭 → 授权失效 → 不可重试 → 已成功 → **终态失败** → 退避到期。
  */
 export function decideBackupUploadAttempt(
   input: BackupUploadDecisionInput,
@@ -126,6 +138,10 @@ export function decideBackupUploadAttempt(
   }
   if (!isBackupUploadAttemptAllowed(input.cloudStatus)) {
     return { action: 'SKIP', reason: 'NOT_RETRYABLE' };
+  }
+  // 终态失败：本机包结构性失败，重试无用 ⇒ 直接跳过，不再进入退避重试
+  if (isTerminalCloudUploadFailure(input.failureReason)) {
+    return { action: 'SKIP', reason: 'TERMINAL_PACKAGE_INVALID' };
   }
   const nextAttemptAt = computeNextUploadAttemptAt(
     input.attemptCount,

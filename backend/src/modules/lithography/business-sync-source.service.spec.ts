@@ -275,4 +275,36 @@ describe('BusinessSyncSourceService（业务同步来源读取）', () => {
       }),
     ).rejects.toThrow(/上限/);
   });
+
+  it('D4：单件都在上限内但累计超限 ⇒ 读取过程中就中止（不把全部读完）', async () => {
+    // 三件各 24 MiB：单件合法（≤ 32 MiB），累计 72 MiB 超过总量上限（64 MiB）
+    const piece = Math.floor(BUSINESS_SYNC_MAX_ORIGINAL_BYTES * 0.75);
+    const attachments = [0, 1, 2].map((index) => {
+      const bytes = Buffer.alloc(piece, index + 1);
+      return {
+        id: index + 1,
+        reportId: 6,
+        status: 'CURRENT',
+        sortOrder: index + 1,
+        checksumSha256: sha256(bytes),
+        byteSize: bytes.byteLength,
+        originalFilename: `part-${index}.bin`,
+        storageReference: `${String(index).repeat(32)}.bin`,
+      };
+    });
+    const contents: Record<string, Buffer> = {};
+    attachments.forEach((attachment, index) => {
+      contents[attachment.storageReference] = Buffer.alloc(piece, index + 1);
+    });
+    const { service } = buildService({ reportAttachments: attachments, contents });
+
+    await expect(
+      service.readPayload({
+        resourceType: 'MAINTENANCE_REPORT',
+        recordId: 6,
+        recordUuid: 'uuid-report',
+        versionNo: 1,
+      }),
+    ).rejects.toThrow(/总量超过上限/);
+  });
 });

@@ -197,8 +197,9 @@ export class CreateRepairRequestUsecase {
     }
 
     // 恢复期写入冻结：该公司数据区正在恢复时不得新建报修（写入会被整体替换掉）
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: customerOrganizationId,
+      transactionContext,
     });
 
     // 选定维修厂家：写前复核「启用 + 具备维修服务资格」，与停用/撤销资格写入串行

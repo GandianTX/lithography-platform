@@ -176,8 +176,9 @@ export class AppendRepairRequestRevisionUsecase {
         organizationScope.organizationId,
       );
       // 恢复期写入冻结：工单归属公司数据区正在恢复时不得写入修订历史
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: target.ownerOrganizationId,
+        transactionContext,
       });
 
       if (target.currentRevisionNo !== command.expectedVersion) {

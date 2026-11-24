@@ -5,6 +5,7 @@ import {
   BACKUP_RESTORE_TABLE_ORDER,
   BACKUP_SCOPE_TABLES,
   BACKUP_TABLE_DESCRIPTORS,
+  backupManifestChecksum,
   buildProtectedBackupManifest,
   buildOrganizationScopePredicate,
   encryptBackupPayload,
@@ -14,10 +15,8 @@ import {
   type BackupScopeEntry,
   type BackupScopeTable,
 } from '@core/local-runtime/policy/protected-backup.policy';
-import {
-  BACKUP_RETENTION_DAYS,
-  isBackupPackagePathInside,
-} from '@core/local-runtime/policy/local-backup-cleanup.policy';
+import { isBackupPackagePathInside } from '@core/local-runtime/policy/local-backup-cleanup.policy';
+import { BACKUP_RETENTION_DAYS } from '@core/local-runtime/policy/local-backup-plan.policy';
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -293,7 +292,8 @@ export class ProtectedBackupService {
     const manifestRaw = JSON.stringify(manifest, null, 2);
     await writeFile(nodePath.join(input.targetPath, 'manifest.json'), manifestRaw, 'utf8');
 
-    const manifestChecksum = createHash('sha256').update(manifestRaw, 'utf8').digest('hex');
+    // 清单摘要：走 core 的**唯一实现**（此前此处内联又写了一遍 sha256）
+    const manifestChecksum = backupManifestChecksum(manifestRaw);
     const byteSize = files.reduce((sum, file) => sum + file.byte_size, 0);
 
     await this.recordBackupAsset({

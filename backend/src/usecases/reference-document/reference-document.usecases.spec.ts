@@ -538,7 +538,9 @@ describe('SoftDeleteReferenceDocumentUsecase（任务 07 R053 原作者删除本
         queryService as unknown as ReferenceDocumentQueryService,
         {
           assertBusinessWritable: () => Promise.resolve(),
+          assertBusinessWritableInTransaction: () => Promise.resolve(),
           assertCompanyWritable: () => Promise.resolve(),
+          assertCompanyWritableInTransaction: () => Promise.resolve(),
           assertWritable: () => Promise.resolve(),
         } as unknown as LocalWriteHoldService,
         makeMaintenanceReports() as unknown as MaintenanceReportQueryService,
@@ -911,7 +913,9 @@ describe('UpdateReferenceDocumentCaseUsecase', () => {
       queryService as unknown as ReferenceDocumentQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       modelQueryService as unknown as EquipmentModelQueryService,

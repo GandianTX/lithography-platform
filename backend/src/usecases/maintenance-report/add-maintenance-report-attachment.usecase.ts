@@ -68,8 +68,9 @@ export class AddMaintenanceReportAttachmentUsecase {
         transactionContext,
       });
       // 恢复期写入冻结：报告归属公司数据区正在恢复时不得挂接附件
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: lock.report.ownerOrganizationId,
+        transactionContext,
       });
       // 2026-11-20 需求调整：工单总结不单独登记报告原件——来源工单原件归属工单，
       // 总结页只读展示并按工单权限下载；不复制文件、不改 stored_file 业务归属

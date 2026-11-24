@@ -57,8 +57,9 @@ export class ApproveMaintenanceReportUsecase {
         transactionContext,
       });
       // 恢复期写入冻结：报告归属公司数据区正在恢复时不得审核通过
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: reviewable.report.ownerOrganizationId,
+        transactionContext,
       });
       const versionAttachments = await this.maintenanceReportQueryService.readVersionAttachments(
         reviewable.version.id,

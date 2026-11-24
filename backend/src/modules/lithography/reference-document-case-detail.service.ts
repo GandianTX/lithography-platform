@@ -43,11 +43,11 @@ export class ReferenceDocumentCaseDetailService {
    */
   async insertCaseDetail(
     data: ReferenceDocumentCaseDetailInsertData,
-    transactionContext?: PersistenceTransactionContext,
+    transactionContext: PersistenceTransactionContext,
   ): Promise<{ documentId: number }> {
     // 恢复期冻结守卫：`reference_document_case_detail` 已纳入受保护备份范围，
     // 恢复期间写入案例明细会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertDocumentScopeWritable(data.documentId);
+    await this.restoreScopeWriteGuardService.assertDocumentScopeWritable(data.documentId, transactionContext);
     const repository = this.getRepository(transactionContext);
     try {
       await repository.insert({
@@ -90,10 +90,10 @@ export class ReferenceDocumentCaseDetailService {
    */
   async updateCaseDetail(
     data: ReferenceDocumentCaseDetailUpdateData,
-    transactionContext?: PersistenceTransactionContext,
+    transactionContext: PersistenceTransactionContext,
   ): Promise<{ documentId: number }> {
     // 恢复期冻结守卫：更正案例明细同样落在受保护备份范围内。
-    await this.restoreScopeWriteGuardService.assertDocumentScopeWritable(data.documentId);
+    await this.restoreScopeWriteGuardService.assertDocumentScopeWritable(data.documentId, transactionContext);
     const repository = this.getRepository(transactionContext);
     let affected: number;
     try {

@@ -1,7 +1,10 @@
 /// <reference types="jest" />
+import { BUSINESS_SYNC_ERROR } from '@core/common/errors/domain-error';
 import { composeBusinessSyncEntityLocalId } from '@core/local-runtime/policy/business-sync-source.policy';
 import { createHash } from 'node:crypto';
 import type { BusinessSyncReceiverResponse } from '@core/local-runtime/policy/business-sync-protocol.policy';
+
+import { SyncStatusQueryService } from '../../modules/lithography/queries/sync-status.query.service';
 
 import {
   BusinessSyncReceiverStub,
@@ -47,6 +50,30 @@ function makeTask(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * 真实的授权读取服务（按**用途**过滤：D2）。
+ *
+ * 用真实实现而不是替身，才能证明"云备份凭据不会点亮业务同步"这条口径
+ * 真的在派发链上生效。
+ */
+function buildRealSyncStatusQueryService(purposes: string[]): SyncStatusQueryService {
+  return new SyncStatusQueryService(
+    { find: jest.fn().mockResolvedValue([]) } as never,
+    { find: jest.fn().mockResolvedValue([]) } as never,
+    { find: jest.fn().mockResolvedValue([]) } as never,
+    {
+      find: jest.fn().mockResolvedValue([
+        {
+          accountId: ACCOUNT_ID,
+          organizationId: ORGANIZATION_ID,
+          authorizationStatus: 'ACTIVE',
+          signedClaims: JSON.stringify({ purpose: purposes }),
+        },
+      ]),
+    } as never,
+  );
+}
+
 function buildUsecase(
   overrides: {
     script?: BusinessSyncReceiverStubScript | null;
@@ -55,6 +82,8 @@ function buildUsecase(
     fact?: Record<string, unknown> | null;
     payloadChecksum?: string;
     receiverResponse?: BusinessSyncReceiverResponse;
+    /** 接收端抛出的受控失败码（用于失败分类回归） */
+    throwCode?: string;
   } = {},
 ) {
   const startUploadAttempt = jest.fn().mockResolvedValue(makeTask({ status: 'UPLOADING' }));
@@ -142,6 +171,12 @@ function buildUsecase(
     (receiver as unknown as { send: unknown }).send = jest
       .fn()
       .mockResolvedValue(overrides.receiverResponse);
+  }
+  if (receiver !== null && overrides.throwCode !== undefined) {
+    // 发送端以 `error.code` 给出受控失败码（见 business-sync-call-failure.policy）
+    (receiver as unknown as { send: unknown }).send = jest
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('接收端调用失败'), { code: overrides.throwCode }));
   }
 
   const usecase = new DispatchBusinessSyncTasksUsecase(
@@ -369,5 +404,97 @@ describe('业务同步派发链（S2.2）', () => {
 
     expect(result.skipped).toBe(1);
     expect(cancelUploadTask).toHaveBeenCalledTimes(1);
+  });
+
+  // ── D8：失败分类（可重试 vs 终态）────────────────────────────────
+  it('D8：网络类瞬时故障（超时）⇒ 退回待传，可凭同一幂等键续传', async () => {
+    const { usecase, requeueUploadTask, failUploadTask } = buildUsecase({
+      script: { kind: 'ERROR' },
+      throwCode: 'BUSINESS_SYNC_TIMEOUT',
+    });
+
+    const result = await usecase.execute();
+
+    expect(result.retryable).toBe(1);
+    expect(result.rejected).toBe(0);
+    expect(requeueUploadTask).toHaveBeenCalledTimes(1);
+    expect(requeueUploadTask.mock.calls[0][1].errorCode).toBe(
+      BUSINESS_SYNC_ERROR.RECEIVER_UNREACHABLE,
+    );
+    expect(failUploadTask).not.toHaveBeenCalled();
+  });
+
+  it('D8：云端明确拒绝（4xx）⇒ 终态失败，不再无限重试', async () => {
+    const { usecase, requeueUploadTask, failUploadTask } = buildUsecase({
+      script: { kind: 'ERROR' },
+      throwCode: 'BUSINESS_SYNC_REJECTED',
+    });
+
+    const result = await usecase.execute();
+
+    expect(result.rejected).toBe(1);
+    expect(result.retryable).toBe(0);
+    expect(requeueUploadTask).not.toHaveBeenCalled();
+    expect(failUploadTask).toHaveBeenCalledTimes(1);
+    expect(failUploadTask.mock.calls[0][1].errorCode).toBe(BUSINESS_SYNC_ERROR.RECEIVER_REJECTED);
+  });
+
+  it('D8：回包形态非法 ⇒ 终态失败（重试不会改变结果）', async () => {
+    const { usecase, requeueUploadTask, failUploadTask } = buildUsecase({
+      script: { kind: 'ERROR' },
+      throwCode: 'BUSINESS_SYNC_INVALID_RESPONSE',
+    });
+
+    const result = await usecase.execute();
+
+    expect(result.rejected).toBe(1);
+    expect(requeueUploadTask).not.toHaveBeenCalled();
+    expect(failUploadTask).toHaveBeenCalledTimes(1);
+    expect(failUploadTask.mock.calls[0][1].errorCode).toBe(BUSINESS_SYNC_ERROR.DISPATCH_REJECTED);
+  });
+
+  it('D8：未知错误码 ⇒ 按可重试处理（退回待传，不伪造成功）', async () => {
+    const { usecase, requeueUploadTask, completeUploadTask } = buildUsecase({
+      script: { kind: 'ERROR' },
+    });
+
+    const result = await usecase.execute();
+
+    expect(result.retryable).toBe(1);
+    expect(requeueUploadTask).toHaveBeenCalledTimes(1);
+    expect(completeUploadTask).not.toHaveBeenCalled();
+  });
+
+  // ── D2：两种用途的凭据互不充数（端到端）─────────────────────────
+  it('D2：原账号只有云备份用途的凭据 ⇒ 取消任务，不派发业务同步', async () => {
+    const { usecase, cancelUploadTask, startUploadAttempt, receiver } = buildUsecase({
+      authorization: 'UNKNOWN',
+    });
+    // 用**真实**的 SyncStatusQueryService 复核：云备份用途的授权行不点亮业务同步
+    (usecase as unknown as { syncStatusQueryService: unknown }).syncStatusQueryService =
+      buildRealSyncStatusQueryService(['CLOUD_BACKUP']);
+
+    const result = await usecase.execute();
+
+    expect(result.skipped).toBe(1);
+    expect(result.succeeded).toBe(0);
+    expect(cancelUploadTask).toHaveBeenCalledTimes(1);
+    expect(cancelUploadTask.mock.calls[0][1].errorCode).toBe(
+      BUSINESS_SYNC_ERROR.AUTHORIZATION_INVALID,
+    );
+    expect(startUploadAttempt).not.toHaveBeenCalled();
+    expect(receiver?.requests ?? []).toHaveLength(0);
+  });
+
+  it('D2：原账号有业务同步用途的凭据 ⇒ 正常派发（用途可核验才放行）', async () => {
+    const { usecase, receiver, completeUploadTask } = buildUsecase({ authorization: 'ACTIVE' });
+    (usecase as unknown as { syncStatusQueryService: unknown }).syncStatusQueryService =
+      buildRealSyncStatusQueryService(['BUSINESS_SYNC']);
+
+    const result = await usecase.execute();
+
+    expect(result.succeeded).toBe(1);
+    expect(receiver?.requests ?? []).toHaveLength(1);
+    expect(completeUploadTask).toHaveBeenCalledTimes(1);
   });
 });

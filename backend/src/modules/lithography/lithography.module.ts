@@ -21,12 +21,15 @@ import { IntakeAnalysisAttemptEntity } from './entities/intake-analysis-attempt.
 import { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
 import { BackupRestoreAcceptanceService } from './backup-restore-acceptance.service';
 import { LocalRestoreExecutionService } from './local-restore-execution.service';
+import { LocalRestoreIncidentReleaseService } from './local-restore-incident-release.service';
+import { LocalRestoreExecutionCapabilityProbe } from './local-restore-execution-capability.probe';
 import { LocalRestoreRecordWriterService } from './local-restore-record.writer';
 import { LOCAL_RESTORE_RECORD_WRITER } from '@usecases/common/ports/local-restore-record-writer.contract';
 import { SYNC_CONFLICT_LOCAL_VIEW_WRITER } from '@usecases/common/ports/sync-conflict-local-view-writer.contract';
 import { SYNC_CONFLICT_LOCAL_RESOLUTION_WRITER } from '@usecases/common/ports/sync-conflict-local-resolution-writer.contract';
 import { SyncConflictLocalResolutionWriterService } from './sync-conflict-local-resolution.writer';
 import { LocalWriteHoldService } from './local-write-hold.service';
+import { LocalWriteScopeLockService } from './local-write-scope-lock.service';
 import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 import { LocalBackupPlanService } from './local-backup-plan.service';
 import { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
@@ -36,6 +39,7 @@ import { MaterialSubmissionDetailEntity } from './entities/material-submission-d
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
 import { LocalWriteHoldEntity } from './entities/local-write-hold.entity';
+import { LocalWriteScopeLockEntity } from './entities/local-write-scope-lock.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
 import { MaintenanceReportAlarmEntity } from './entities/maintenance-report-alarm.entity';
 import { MaintenanceReportAttachmentEntity } from './entities/maintenance-report-attachment.entity';
@@ -146,6 +150,7 @@ export const LITHOGRAPHY_ENTITIES = [
   MaintenanceReportReviewEntity,
   LocalInstallationEntity,
   LocalWriteHoldEntity,
+  LocalWriteScopeLockEntity,
   LocalUploadTaskEntity,
   LocalBackupRunEntity,
   StoredFileEntity,
@@ -198,8 +203,16 @@ export const LITHOGRAPHY_ENTITIES = [
     RestoreScopeWriteGuardService,
     // 写入/同步冻结闸门（任务 09 S5-2／S5-3）：恢复期冻结目标公司数据区的写入与同步
     LocalWriteHoldService,
+    // 写入/同步的**范围锁**（任务 09 独立验收 P1-1）：业务写入（共享锁）与恢复建立冻结
+    // （排他锁）共用同一把"同安装×公司"数据库行锁 ⇒ 互斥且持有到业务事务提交/回滚
+    LocalWriteScopeLockService,
     // 恢复执行编排（任务 09 S5-2／S5-3）：冻结 → 按清单恢复 → 核验 → 解除冻结
     LocalRestoreExecutionService,
+    // 恢复**故障现场**的受控解冻（任务 09 独立验收 P2-2）：管理员处置入口的裁决面
+    LocalRestoreIncidentReleaseService,
+    // 恢复执行能力的真实探测（review 遗留 L1：此前该端口无 provider，
+    // 能力查询恒报「不可用」而执行链本身可用 ⇒ 页面恒显假阴性）
+    LocalRestoreExecutionCapabilityProbe,
     // 恢复的业务数据受控写入实现（任务 09 S2-2）：按端口令牌注册，
     // 恢复编排在调用期查找（未注册＝逐项失败关闭，不静默跳过）
     LocalRestoreRecordWriterService,
@@ -270,8 +283,11 @@ export const LITHOGRAPHY_ENTITIES = [
     LocalBackupPlanService,
     BackupRestoreAcceptanceService,
     LocalWriteHoldService,
+    LocalWriteScopeLockService,
     RestoreScopeWriteGuardService,
     LocalRestoreExecutionService,
+    LocalRestoreIncidentReleaseService,
+    LocalRestoreExecutionCapabilityProbe,
     ProtectedBackupService,
     BackupRestorePrecheckService,
     LocalBackupCleanupService,

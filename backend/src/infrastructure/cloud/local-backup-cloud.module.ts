@@ -19,6 +19,9 @@ import {
 import { BUSINESS_SYNC_CLOUD_CONFIG, type BusinessSyncCloudConfig } from './business-sync.config';
 import { HttpBusinessSyncReceiver } from './http-business-sync-receiver';
 import {
+  DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES,
+  DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES,
+  DEFAULT_LOCAL_BACKUP_CLOUD_TIMEOUT_MS,
   LOCAL_BACKUP_CLOUD_CONFIG,
   type LocalBackupCloudConfig,
 } from './local-backup-cloud.config';
@@ -37,6 +40,9 @@ import { HttpLocalBackupUploader } from './http-local-backup-uploader';
  *   （凭据用途取自云端签名声明，见 `local-credential-purpose.policy`）；
  * - 凭据只在本模块内注入，不进日志、不进包、不经 API 返回；
  * - 端口在**API 与 Worker 两个进程**都装配（上传发生在 Worker，读取发生在 API）。
+ *
+ * 超时与大小上限的默认值**只有一份**（`local-backup-cloud.config.ts`），
+ * 本模块与 `config.module.ts` 都引用它，避免"两处口径不一致 ⇒ 大包绕过内存闸门"。
  */
 @Module({
   providers: [
@@ -46,7 +52,16 @@ import { HttpLocalBackupUploader } from './http-local-backup-uploader';
       useFactory: (configService: ConfigService): LocalBackupCloudConfig => ({
         baseUrl: configService.get<string | null>('localRuntime.cloudBackupBaseUrl') ?? null,
         credential: configService.get<string | null>('localRuntime.cloudBackupCredential') ?? null,
-        timeoutMs: configService.get<number>('localRuntime.cloudBackupTimeoutMs') ?? 30_000,
+        timeoutMs:
+          configService.get<number>('localRuntime.cloudBackupTimeoutMs') ??
+          DEFAULT_LOCAL_BACKUP_CLOUD_TIMEOUT_MS,
+        // 上传大小上限（单文件／整包）：超限按受控原因码失败关闭，不把内存吃光
+        maxUploadFileBytes:
+          configService.get<number>('localRuntime.cloudBackupMaxUploadFileBytes') ??
+          DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES,
+        maxUploadPackageBytes:
+          configService.get<number>('localRuntime.cloudBackupMaxUploadPackageBytes') ??
+          DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES,
       }),
     },
     HttpLocalBackupCloudClient,

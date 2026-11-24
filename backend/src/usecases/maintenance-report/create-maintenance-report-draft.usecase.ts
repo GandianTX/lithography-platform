@@ -174,8 +174,9 @@ export class CreateMaintenanceReportDraftUsecase {
     const engineerName = nicknames.get(command.session.accountId) ?? ENGINEER_NAME_FALLBACK;
 
     // 恢复期写入冻结：该公司数据区正在恢复时不得新建报告草稿
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: membership.organizationId,
+      transactionContext,
     });
 
     const report = await this.maintenanceReportService.insertReport(

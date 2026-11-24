@@ -96,8 +96,9 @@ export class UpdateMaintenanceReportDraftUsecase {
       transactionContext,
     });
     // 恢复期写入冻结：报告归属公司数据区正在恢复时不得更新草稿
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: lock.report.ownerOrganizationId,
+      transactionContext,
     });
     const existing = await this.maintenanceReportQueryService.readDraftDetail(
       command.reportId,

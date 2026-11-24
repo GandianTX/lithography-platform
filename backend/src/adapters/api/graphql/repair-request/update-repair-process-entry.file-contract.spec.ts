@@ -177,7 +177,9 @@ describe('RepairRequest GraphQL 入口合同（旧过程只读 / 结单版本必
           provide: LocalWriteHoldService,
           useValue: {
             assertBusinessWritable: () => Promise.resolve(),
+            assertBusinessWritableInTransaction: () => Promise.resolve(),
             assertCompanyWritable: () => Promise.resolve(),
+            assertCompanyWritableInTransaction: () => Promise.resolve(),
             assertWritable: () => Promise.resolve(),
           },
         },

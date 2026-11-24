@@ -143,7 +143,9 @@ describe('CreateMaintenanceReportDraftUsecase 锁序', () => {
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
@@ -324,7 +326,9 @@ describe('CreateMaintenanceReportDraftUsecase 首存同事务绑定附件（R050
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,

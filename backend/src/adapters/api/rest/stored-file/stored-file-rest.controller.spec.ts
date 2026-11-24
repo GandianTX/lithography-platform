@@ -644,7 +644,9 @@ describe('StoredFileRestController 正式上传入口（真实 Nest multipart HT
       { resolveForAccount: jest.fn().mockResolvedValue({ organizationId: 1 }) } as never,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       // 任务 03：客户报修原件的归属公司真源（本 spec 走工程师用途，不会调用）

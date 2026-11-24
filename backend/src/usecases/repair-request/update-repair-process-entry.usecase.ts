@@ -110,8 +110,9 @@ export class UpdateRepairProcessEntryUsecase {
       this.assertWritableTarget(target, command, membership.organizationId);
 
       // 恢复期写入冻结：该工单所属公司数据区正在恢复时不得改写过程行
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: target?.ownerOrganizationId ?? null,
+        transactionContext,
       });
 
       const current = await this.repairProcessEntryService.findForUpdate(

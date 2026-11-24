@@ -158,8 +158,11 @@ async function bootstrapDevice(envFile: string, database: string): Promise<Devic
     ],
   }).compile();
 
+  const dataSource = moduleRef.get(DataSource);
+  openedDataSources.push(dataSource);
+
   return {
-    dataSource: moduleRef.get(DataSource),
+    dataSource,
     exportUsecase: moduleRef.get(ExportRecordPackageUsecase),
     checkUsecase: moduleRef.get(CheckRecordPackageUsecase),
     importUsecase: moduleRef.get(ImportRecordPackageUsecase),
@@ -610,6 +613,22 @@ async function readDisposableMarker(
   return rows as ReadonlyArray<{ markerKey: string; markerValue: string }>;
 }
 
+/** 本轮创建的数据源（收尾统一释放；未释放会让进程挂住不退出） */
+const openedDataSources: DataSource[] = [];
+
+/** 释放本轮打开的全部数据库连接（幂等） */
+async function releaseConnections(): Promise<void> {
+  for (const dataSource of openedDataSources.splice(0, openedDataSources.length)) {
+    try {
+      if (dataSource.isInitialized) {
+        await dataSource.destroy();
+      }
+    } catch {
+      // 关闭失败不影响结论（结论已写入证据文件）
+    }
+  }
+}
+
 async function main(): Promise<void> {
   // ── 1. 授权（默认拒绝）：来源库与目标库各自独立授权 ────────────────────────
   // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
@@ -1000,6 +1019,10 @@ async function main(): Promise<void> {
     );
   mkdirSync(resolve(outputFile, '..'), { recursive: true });
   writeFileSync(resolve(outputFile), `${JSON.stringify(verdict, null, 2)}\n`, 'utf8');
+
+  // 释放数据库连接：否则进程会因开放句柄**挂住不退出**，
+  // 在 `timeout` 下退出码被改写成 124，把"脚本已完成"伪装成"脚本失败"。
+  await releaseConnections();
 
   process.stdout.write(`\n断言：${assertions.length} 项，失败 ${failed.length} 项\n`);
   for (const item of failed) {

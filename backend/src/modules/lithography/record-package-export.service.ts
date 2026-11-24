@@ -8,6 +8,7 @@ import {
 } from '@core/local-runtime/policy/record-package-export.policy';
 import {
   assertManifestSnapshotHasNoSecretMaterial,
+  recordPackageManifestChecksum,
   type RecordPackageResourceType,
 } from '@core/local-runtime/policy/record-package-manifest.policy';
 import {
@@ -137,7 +138,8 @@ export class RecordPackageExportService {
         organizationId: command.organizationId,
         // 汇总字段：**混合导出时为首个条目的资源类型**（逐条结论各自带自己的资源类型）
         resourceType: this.resolveExportEntries(command)[0]?.resourceType ?? command.resourceType,
-        manifestChecksum: createHash('sha256').update(manifestRaw, 'utf8').digest('hex'),
+        // 清单摘要：走 core 的**唯一实现**（此前此处内联又写了一遍 sha256）
+        manifestChecksum: recordPackageManifestChecksum(manifestRaw),
         itemTotal: outcomes.length,
         itemExported: exported.length,
         itemFailed: outcomes.length - exported.length,

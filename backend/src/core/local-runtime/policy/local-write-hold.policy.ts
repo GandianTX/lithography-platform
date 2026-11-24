@@ -29,6 +29,11 @@ export const LOCAL_WRITE_HOLD_REASON_CODES = {
   WRITE_HELD_FOR_RESTORE_SCOPE_OCCUPIED: 'WRITE_HELD_FOR_RESTORE_SCOPE_OCCUPIED',
   /** 解除冻结被拒：当前操作方不是该条冻结的持有者（不可伪造的所有权） */
   RELEASE_NOT_PERMITTED_NOT_OWNER: 'RELEASE_NOT_PERMITTED_NOT_OWNER',
+  /**
+   * 范围锁不可得：目标公司数据区的范围锁被长事务占住（等待超时／死锁）
+   * 或范围行建立后仍无法加锁 ⇒ 本次写入**失败关闭**（不放行）。
+   */
+  WRITE_HELD_FOR_RESTORE_SCOPE_BUSY: 'WRITE_HELD_FOR_RESTORE_SCOPE_BUSY',
 } as const;
 
 export type LocalWriteHoldReasonCode =
@@ -133,6 +138,50 @@ export function decideWriteHoldReleaseVerdict(input: {
     };
   }
   return { allowed: true, reason: '当前操作方是该恢复期冻结的持有者' };
+}
+
+/**
+ * 现场强制解冻的**归属裁决**（纯函数）。
+ *
+ * 为什么单独一条裁决：`forceReleaseForRecoveryIncident()` 面对的是
+ * **"历史库遗留的多条并存 ACTIVE 冻结"**（同范围多条，见
+ * `decideRestoreScopeOccupancyVerdict` 的同一条口径）。此时若按
+ * "范围里的任意一行"判归属，就会出现两种错误：
+ * - 取到**别人**那行 ⇒  rightful 持有者被误判为越权 ⇒ 其冻结解不掉
+ *   ⇒ 该公司数据区**永久停写**（只能人工改库）；
+ * - 取到**自己**那行 ⇒ 侥幸通过，但语义仍是"碰巧"，换一行就翻转。
+ *
+ * 正确口径：**只有"由请求方持有的冻结"才可被释放**。
+ * - 归属判定只看**请求方自己持有的条数**，与行序无关（可重复、可解释）；
+ * - 释放动作也只作用于这些行（同一次 `update ... where restore_id = ?`），
+ *   别人的冻结**永远不受影响**；
+ * - 请求方在该范围内**没有**任何冻结 ⇒ 失败关闭（不允许"按范围一刀切"）。
+ */
+export function decideIncidentForceReleaseVerdict(input: {
+  /** 同范围内、由请求方持有的 ACTIVE 冻结条数 */
+  ownedHoldCount: number;
+  /** 请求方声明的现场恢复 ID（仅用于说明，不参与裁决） */
+  incidentRestoreId: string;
+}):
+  | { readonly allowed: true; readonly reason: string }
+  | {
+      readonly allowed: false;
+      readonly reasonCode: LocalWriteHoldReasonCode;
+      readonly reason: string;
+    } {
+  if (input.ownedHoldCount > 0) {
+    return {
+      allowed: true,
+      reason: `该现场持有 ${input.ownedHoldCount} 条恢复期冻结，按归属解除（不影响他人冻结）`,
+    };
+  }
+  return {
+    allowed: false,
+    reasonCode: LOCAL_WRITE_HOLD_REASON_CODES.RELEASE_NOT_PERMITTED_NOT_OWNER,
+    reason:
+      `目标公司数据区当前没有属于该恢复现场（${input.incidentRestoreId}）的恢复期冻结` +
+      '（历史冲突或归属不符），不得按范围一刀切解除',
+  };
 }
 
 /** 参与裁决的冻结事实（只取判定需要的字段） */

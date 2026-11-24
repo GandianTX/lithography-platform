@@ -102,8 +102,9 @@ export class UpdateReferenceDocumentCaseUsecase {
     });
 
     // 恢复期写入冻结：资料归属公司数据区正在恢复时不得更正正式案例
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: current.ownerOrganizationId,
+      transactionContext,
     });
 
     // 类型门禁（A-PR0 §4.1）：仅 FAULT_CASE 可走专属更正；判定复用保留类型

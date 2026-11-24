@@ -19,11 +19,10 @@
 
 import { Test } from '@nestjs/testing';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { parse as parseDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
@@ -37,7 +36,7 @@ import {
   readSelfcheckAuthorization,
   type DisposableMarkerRow,
 } from './task09-restore-selfcheck.safety';
-import { text } from './task09-script-utils';
+import { loadEnvFile, text } from './task09-script-utils';
 
 /** 确定性夹具编码（保证幂等与可重复核对） */
 const TARGET_REPORT_UUIDS = [
@@ -60,11 +59,8 @@ const ISOLATION_ADMIN_MEMBERSHIP_ID = 979_101;
 async function main(): Promise<void> {
   // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
   const authorization = readSelfcheckAuthorization(process.env);
-  const parsed = parseDotenv(readFileSync(authorization.envFile, 'utf8'));
-  for (const [key, value] of Object.entries(parsed)) {
-    // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
-    process.env[key] = value;
-  }
+  // env 装载走共享工具（单一实现；此前此处内联了与 `loadEnvFile` 逐字相同的一段）
+  loadEnvFile(authorization.envFile);
   const config = loadExplicitEnvConfig(authorization.envFile, authorization.database);
   const moduleRef = await Test.createTestingModule({
     imports: [

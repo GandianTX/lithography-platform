@@ -29,25 +29,26 @@ import type {
   BusinessSyncDispatchRequest,
   BusinessSyncReceiverResponse,
 } from '@core/local-runtime/policy/business-sync-protocol.policy';
+import {
+  BUSINESS_SYNC_CALL_FAILURE_CODES,
+  type BusinessSyncCallFailureCode,
+} from '@core/local-runtime/policy/business-sync-call-failure.policy';
 import { LOCAL_CREDENTIAL_PURPOSE } from '@core/local-runtime/policy/local-credential-purpose.policy';
 import type { BusinessSyncReceiver } from '@usecases/common/ports/business-sync-receiver.contract';
 
 import { BUSINESS_SYNC_CLOUD_CONFIG, type BusinessSyncCloudConfig } from './business-sync.config';
 import { CLOUD_AUTHORIZATION_HEADER, CLOUD_PURPOSE_HEADER } from './local-backup-cloud.config';
 
-/** 受控失败码（大写下划线；**不含**地址、凭据与正文） */
-export const BUSINESS_SYNC_FAILURE_CODES = {
-  BUSINESS_SYNC_NOT_CONFIGURED: 'BUSINESS_SYNC_NOT_CONFIGURED',
-  BUSINESS_SYNC_UNREACHABLE: 'BUSINESS_SYNC_UNREACHABLE',
-  BUSINESS_SYNC_TIMEOUT: 'BUSINESS_SYNC_TIMEOUT',
-  BUSINESS_SYNC_REJECTED: 'BUSINESS_SYNC_REJECTED',
-  BUSINESS_SYNC_SERVER_ERROR: 'BUSINESS_SYNC_SERVER_ERROR',
-  BUSINESS_SYNC_INVALID_RESPONSE: 'BUSINESS_SYNC_INVALID_RESPONSE',
-  BUSINESS_SYNC_INVALID_PAYLOAD: 'BUSINESS_SYNC_INVALID_PAYLOAD',
-} as const;
+/**
+ * 受控失败码（大写下划线；**不含**地址、凭据与正文）。
+ *
+ * 口径归属：失败码是**发送端与派发链的共同语言**，定义在 core
+ * （`business-sync-call-failure.policy`），派发链据此裁决"退回待传"还是"任务失败"；
+ * 此处只是为历史引用点保留同名导出。
+ */
+export const BUSINESS_SYNC_FAILURE_CODES = BUSINESS_SYNC_CALL_FAILURE_CODES;
 
-export type BusinessSyncFailureCode =
-  (typeof BUSINESS_SYNC_FAILURE_CODES)[keyof typeof BUSINESS_SYNC_FAILURE_CODES];
+export type BusinessSyncFailureCode = BusinessSyncCallFailureCode;
 
 /** 业务同步失败（受控；原始异常只作为 cause 保留） */
 export class BusinessSyncCallError extends Error {
@@ -140,8 +141,10 @@ export class HttpBusinessSyncReceiver implements BusinessSyncReceiver {
         );
       }
       const response = await this.http.post(url, form, {
-        // HTTP 头名用计算属性给出（头名是协议字面量，不受属性命名规则约束）
-        headers: { ...headers, ['Content-Type']: 'multipart/form-data' },
+        // **不手工设置 Content-Type**：multipart 的 boundary 由 HTTP 客户端按请求体
+        // 实际形态生成并覆盖请求头；手工写死 `multipart/form-data`（没有 boundary）
+        // 会让请求体无法被对端解析，且正确性依赖"客户端会不会覆盖我"这一隐式约定。
+        headers,
       });
       return this.parseResponse(response?.data);
     } catch (error) {

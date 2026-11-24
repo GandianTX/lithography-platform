@@ -76,7 +76,9 @@ describe('BindRepairRequestOriginalUsecase', () => {
       accountQueryService as unknown as AccountQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       storage as unknown as StoredFileStorage,

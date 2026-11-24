@@ -191,7 +191,9 @@ describe('ResolveSyncConflictUsecase', () => {
         sourceRecordQueryService as unknown as SyncSourceRecordQueryService,
         {
           assertBusinessWritable: () => Promise.resolve(),
+          assertBusinessWritableInTransaction: () => Promise.resolve(),
           assertCompanyWritable: () => Promise.resolve(),
+          assertCompanyWritableInTransaction: () => Promise.resolve(),
           assertWritable: () => Promise.resolve(),
         } as unknown as LocalWriteHoldService,
         transactionRunner,

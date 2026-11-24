@@ -272,7 +272,13 @@ function AutoBackupSettingCard({ setting }: { setting: LocalBackupSetting }) {
         {
           key: 'failureReason',
           label: t('local-backup.auto.failureReason'),
-          children: setting.failureReason ?? t('local-backup.value.dash'),
+          // 失败原因走受控码映射（此前直接渲染原始字符串：
+          // 一旦后端写入自由文本，中文原文会被原样推到页面上）
+          children: setting.failureReason ? (
+            <ReasonText reason={setting.failureReason} />
+          ) : (
+            t('local-backup.value.dash')
+          ),
         },
       ]}
     />

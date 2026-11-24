@@ -157,7 +157,9 @@ const makeUsecase = (
     } as unknown as TrustedOrganizationContextQueryService,
     {
       assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
       assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
       assertWritable: () => Promise.resolve(),
     } as unknown as LocalWriteHoldService,
     { findModelById: jest.fn().mockResolvedValue(null) } as unknown as EquipmentModelQueryService,

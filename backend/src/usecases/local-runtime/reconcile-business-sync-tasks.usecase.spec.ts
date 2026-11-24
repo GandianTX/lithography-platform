@@ -83,7 +83,9 @@ function buildUsecase(
     localRuntimeQueryService as never,
     {
       assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
       assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
       assertWritable: () => Promise.resolve(),
     } as unknown as LocalWriteHoldService,
     transactionRunner as never,

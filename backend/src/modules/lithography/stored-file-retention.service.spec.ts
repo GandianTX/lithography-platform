@@ -12,6 +12,7 @@
  */
 
 import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
+import { createTypeOrmPersistenceTransactionContext } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { StoredFileRetentionService } from './stored-file-retention.service';
 
 const NOW = new Date('2026-11-23T00:00:00.000Z');
@@ -83,9 +84,21 @@ function buildService(
     { delete: remove } as never,
     {
       assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
       assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
       assertWritable: () => Promise.resolve(),
     } as unknown as LocalWriteHoldService,
+    {
+      run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) =>
+        fn(
+          createTypeOrmPersistenceTransactionContext({
+            query: jest.fn().mockResolvedValue([]),
+            getRepository: jest.fn(() => storedFileRepository),
+          } as never),
+        ),
+      ),
+    } as never, // transactionRunner
   );
 
   return { service, storedFileRepository, releaseTemporaryFiles, remove, installationRepository };
@@ -97,7 +110,10 @@ describe('过期暂存原件清理事实层（P3-3）', () => {
 
     const result = await service.cleanup({ organizationId: 4, now: NOW });
 
-    expect(releaseTemporaryFiles).toHaveBeenCalledWith({ fileIds: ['file-1'] });
+    expect(releaseTemporaryFiles).toHaveBeenCalledWith(
+      { fileIds: ['file-1'] },
+      expect.anything(),
+    );
     expect(remove).toHaveBeenCalledWith('ref-1');
     expect(result.cleaned).toBe(1);
     expect(result.items[0].outcome).toBe('CLEANED');

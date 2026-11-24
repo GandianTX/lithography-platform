@@ -85,8 +85,9 @@ export class OfflineReferenceDocumentUsecase {
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
     // 恢复期写入冻结：资料归属公司数据区正在恢复时不得下架
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: current.ownerOrganizationId,
+      transactionContext,
     });
 
     // 业务历史快照继承当时生效正文：之后读取（CURRENT_REVISION）不回退原报告

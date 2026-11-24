@@ -48,10 +48,25 @@ import type { UploadStoredFileCommand, UploadedStoredFileView } from './stored-f
  * 1. 可信会话 + 用途级写身份 + 用途白名单 —— 先于任何文件 I/O；
  * 2. 可信公司归属（工程师按成员关系、客户按账号的公司信息）—— 先于任何文件 I/O；
  * 3. 实际内容类型、1..20,000,000 字节、SHA-256 校验（内存中完成）；
- * 4. 私有存储写入（服务端生成引用）；
- * 5. 单事务登记 VALID + TEMPORARY、business_id 为空的暂存记录；
- * 6. 写盘失败：事务未开始，只记录写盘失败与文件状态未确认，不探测、不删除；
+ * 4. 恢复期冻结**只读预检** —— 先于任何文件 I/O：冻结已在生效时不得写下字节；
+ * 5. 单事务：恢复期冻结**事务内守卫**（取范围共享锁，持有到提交／回滚）
+ *    → **私有存储写入**（同一事务、同一把共享锁内）
+ *    → 登记 VALID + TEMPORARY、business_id 为空的暂存记录；
+ * 6. 写盘失败：事务回滚，只记录写盘失败与文件状态未确认，不探测、不删除；
  * 7. 落库失败时不猜测事务终局：保留存储对象并记录可排查诊断，由人工核对后清理。
+ *
+ * 冻结守卫分两层（独立验收 P1-1）：
+ * - **只读预检**（第 4 步）挡住"冻结已在生效"的写入，避免产生字节副作用；
+ * - **事务内守卫**（第 5 步）取范围共享锁并锁定读冻结事实，
+ *   锁随事务提交／回滚释放 ⇒ 恢复建立冻结必须等这次上传收口之后才成立，
+ *   杜绝"检查未冻结 → 恢复建立冻结 → 登记穿透"的窗口。
+ *
+ * **写盘也在事务内**（任务 09 恢复链最小修复 01）：
+ * 此前写盘发生在事务与共享锁**之外**，于是"预检通过 → 恢复建立冻结 → 继续写盘"
+ * 会留下**没有元数据的字节**（恢复范围里的孤儿文件）。现在写盘与登记同处一个
+ * 事务、同一把范围共享锁 ⇒
+ * - 冻结已生效 ⇒ 守卫先拒绝，**一个字节都不会写下**；
+ * - 冻结在上传途中建立 ⇒ 恢复侧的排他范围锁必须等本事务提交／回滚后才成立。
  *
  * 暂存成功只表示「已校验」，不表示已绑定任何业务；
  * 绑定必须由任务 04 保存用例在自身事务内调用绑定能力完成。
@@ -89,11 +104,6 @@ export class UploadStoredFileUsecase {
       businessType,
     );
 
-    // 恢复期写入冻结：stored_file 属恢复范围表，冻结期不得新增暂存原件
-    await this.localWriteHoldService.assertBusinessWritable({
-      organizationId: ownerOrganizationId,
-    });
-
     const originalFilename = normalizeStoredFileOriginalFilename(command.file?.originalFilename);
     if (!originalFilename) {
       throw new DomainError(STORED_FILE_ERROR.INVALID_PARAMS, '原件文件名不合法');
@@ -128,25 +138,35 @@ export class UploadStoredFileUsecase {
     const fileId = randomUUID();
     const uploadContextId = randomUUID();
 
+    // 恢复期写入冻结**只读预检**（先于任何文件 I/O）：
+    // 冻结已在生效时不得写下字节（stored_file 属恢复范围表）。
+    // 只读预检不持锁，只负责"快速拒绝"；互斥由下面的**事务内守卫**提供。
+    await this.localWriteHoldService.assertBusinessWritable({
+      organizationId: ownerOrganizationId,
+    });
+
     let storageReference: string | null = null;
     let storageSaveCompleted = false;
     let registrationCallbackCompleted = false;
     try {
-      try {
-        storageReference = await this.storage.save(buffer, extension);
-        storageSaveCompleted = true;
-      } catch (error) {
-        // 存储失败对外只暴露受控错误，不泄露路径/引用
-        throw new DomainError(
-          STORED_FILE_ERROR.UPLOAD_FAILED,
-          '原件暂存失败，请稍后重试',
-          { fileId },
-          error,
-        );
-      }
-      const savedStorageReference = storageReference;
-
       const snapshot = await this.transactionRunner.run(async (transactionContext) => {
+        // 恢复期写入冻结（**事务内**）：stored_file 属恢复范围表，冻结期不得新增暂存原件。
+        // 事务内守卫取范围共享锁 ⇒ 锁持有到本事务提交／回滚，
+        // 恢复建立冻结必须等这次上传收口之后才成立（独立验收 P1-1）。
+        await this.localWriteHoldService.assertBusinessWritableInTransaction({
+          organizationId: ownerOrganizationId,
+          transactionContext,
+        });
+        // **写盘与登记同处一个事务、同一把范围共享锁**（任务 09 恢复链最小修复 01）：
+        // 冻结已生效时守卫先拒绝 ⇒ 不会留下"没有元数据的字节"；
+        // 冻结在上传途中建立时，恢复侧的排他范围锁必须等本事务收口之后才成立。
+        const savedStorageReference = await this.saveToStorage({
+          buffer,
+          extension,
+          fileId,
+        });
+        storageReference = savedStorageReference;
+        storageSaveCompleted = true;
         const stagedFile = await this.storedFileService.insertStagedFile(
           {
             fileId,
@@ -183,7 +203,7 @@ export class UploadStoredFileUsecase {
       };
     } catch (error) {
       if (!storageSaveCompleted) {
-        // 写盘被拒绝时事务尚未开始、没有存储引用：只记录阶段事实，不探测、不删除。
+        // 写盘被拒绝时事务已回滚、**没有登记任何元数据**：只记录阶段事实，不探测、不删除。
         this.reportStorageWriteFailure({
           fileId,
           uploadContextId,
@@ -203,6 +223,29 @@ export class UploadStoredFileUsecase {
         });
       }
       throw error;
+    }
+  }
+
+  /**
+   * 私有存储写入（**在业务事务与范围共享锁之内**执行）。
+   *
+   * 存储失败对外只暴露受控错误，不泄露路径／引用；异常在事务回调内抛出 ⇒
+   * 事务回滚 ⇒ 不会留下已登记的半截状态。
+   */
+  private async saveToStorage(params: {
+    buffer: Buffer;
+    extension: string;
+    fileId: string;
+  }): Promise<string> {
+    try {
+      return await this.storage.save(params.buffer, params.extension);
+    } catch (error) {
+      throw new DomainError(
+        STORED_FILE_ERROR.UPLOAD_FAILED,
+        '原件暂存失败，请稍后重试',
+        { fileId: params.fileId },
+        error,
+      );
     }
   }
 
@@ -245,16 +288,19 @@ export class UploadStoredFileUsecase {
     businessType: string;
     failure: unknown;
   }): void {
-    // 写盘阶段只记录事实：事务未开始、文件状态未确认；不探测引用，也不声称文件已保留。
+    // 写盘阶段只记录事实：事务已回滚、**未登记任何元数据**、文件状态未确认；
+    // 不探测引用，也不声称文件已保留。
     try {
       this.logger.warn(
-        `原件写盘失败，上传事务未开始，文件状态未确认: ${JSON.stringify({
+        `原件写盘失败，事务已回滚且未登记元数据，文件状态未确认: ${JSON.stringify({
           event: 'stored_file.upload.storage_save_failed',
           fileId: params.fileId,
           uploadContextId: params.uploadContextId,
           businessType: params.businessType,
           stage: 'storage-save',
-          transactionStarted: false,
+          transactionStarted: true,
+          transactionOutcome: 'rolled-back',
+          registered: false,
           fileState: 'unconfirmed',
           referenceProbe: 'skipped',
           failure: describeError(params.failure),

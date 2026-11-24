@@ -47,6 +47,7 @@ import { EquipmentModelQueryService } from '@src/modules/lithography/queries/equ
 import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import { SyncSourceRecordQueryService } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import { StoredFileService } from '@src/modules/lithography/stored-file.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 
 import { bindStagedAttachmentToReport } from './maintenance-report-attachment-binding.helpers';
 import { RecordPackageSourceIdentityVerifier } from './record-package-source-identity.verifier';
@@ -104,6 +105,7 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
     private readonly sourceIdentityVerifier: RecordPackageSourceIdentityVerifier,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
+    private readonly localWriteHoldService: LocalWriteHoldService,
   ) {}
 
   /**
@@ -298,6 +300,13 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
 
     try {
       return await this.transactionRunner.run(async (transactionContext) => {
+        // 恢复期写入冻结（**事务内**）：导入会回写业务正文（维修报告等），
+        // 必须与恢复建立冻结互斥（独立验收 P1-1）：
+        // 取范围共享锁并锁定读冻结事实 ⇒ 锁持有到本事务提交／回滚。
+        await this.localWriteHoldService.assertCompanyWritableInTransaction({
+          organizationId: request.organizationId,
+          transactionContext,
+        });
         const report = await this.maintenanceReportService.insertReport(
           {
             ownerOrganizationId: request.organizationId,

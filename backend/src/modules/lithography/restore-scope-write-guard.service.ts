@@ -40,6 +40,8 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+
 import { AiConversationEntity } from './entities/ai-conversation.entity';
 import { AiMessageAnalysisEntity } from './entities/ai-message-analysis.entity';
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
@@ -71,12 +73,18 @@ export class RestoreScopeWriteGuardService {
    * `repair_process_entry`、`repair_request_diagnostic_step`、`repair_request_fault_panel`、
    * `ai_conversation`（按工单归属）、`ai_report`、`engineer_response`。
    */
-  async assertRequestScopeWritable(requestId: number): Promise<void> {
+  async assertRequestScopeWritable(
+    requestId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
     const request = await this.repairRequestRepository.findOne({
       where: { id: requestId },
       select: { ownerOrganizationId: true },
     });
-    await this.assertOrganizationScopeWritable(request?.ownerOrganizationId ?? null);
+    await this.assertOrganizationScopeWritable(
+      request?.ownerOrganizationId ?? null,
+      transactionContext,
+    );
   }
 
   /**
@@ -84,12 +92,18 @@ export class RestoreScopeWriteGuardService {
    *
    * 覆盖 `repair_request_intake`（服务公司口径）与 `intake_analysis_attempt`（按父表归属）。
    */
-  async assertIntakeScopeWritable(intakeId: number): Promise<void> {
+  async assertIntakeScopeWritable(
+    intakeId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
     const intake = await this.repairRequestIntakeRepository.findOne({
       where: { id: intakeId },
       select: { serviceOrganizationId: true },
     });
-    await this.assertOrganizationScopeWritable(intake?.serviceOrganizationId ?? null);
+    await this.assertOrganizationScopeWritable(
+      intake?.serviceOrganizationId ?? null,
+      transactionContext,
+    );
   }
 
   /**
@@ -100,7 +114,10 @@ export class RestoreScopeWriteGuardService {
    * （与 `BACKUP_TABLE_DESCRIPTORS.ai_conversation` 的口径一致：
    * 父键为空时回落到自身 `owner_organization_id`）。
    */
-  async assertConversationScopeWritable(conversationId: number): Promise<void> {
+  async assertConversationScopeWritable(
+    conversationId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
     const conversation = await this.aiConversationRepository.findOne({
       where: { id: conversationId },
       select: { ownerOrganizationId: true, requestId: true },
@@ -110,10 +127,13 @@ export class RestoreScopeWriteGuardService {
       return;
     }
     if (conversation.requestId !== null && conversation.requestId !== undefined) {
-      await this.assertRequestScopeWritable(conversation.requestId);
+      await this.assertRequestScopeWritable(conversation.requestId, transactionContext);
       return;
     }
-    await this.assertOrganizationScopeWritable(conversation.ownerOrganizationId ?? null);
+    await this.assertOrganizationScopeWritable(
+      conversation.ownerOrganizationId ?? null,
+      transactionContext,
+    );
   }
 
   /**
@@ -121,7 +141,10 @@ export class RestoreScopeWriteGuardService {
    *
    * 覆盖 `ai_message_analysis` 的终态写入（完成／失败／重试重置）。
    */
-  async assertAnalysisScopeWritable(questionUuid: string): Promise<void> {
+  async assertAnalysisScopeWritable(
+    questionUuid: string,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
     const analysis = await this.aiMessageAnalysisRepository.findOne({
       where: { questionUuid },
       select: { conversationId: true },
@@ -129,7 +152,7 @@ export class RestoreScopeWriteGuardService {
     if (analysis === null) {
       return;
     }
-    await this.assertConversationScopeWritable(analysis.conversationId);
+    await this.assertConversationScopeWritable(analysis.conversationId, transactionContext);
   }
 
   /**
@@ -138,12 +161,18 @@ export class RestoreScopeWriteGuardService {
    * 覆盖 `reference_document`、`reference_document_revision`、
    * `reference_document_case_detail`。
    */
-  async assertDocumentScopeWritable(documentId: number): Promise<void> {
+  async assertDocumentScopeWritable(
+    documentId: number,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
     const document = await this.referenceDocumentRepository.findOne({
       where: { id: documentId },
       select: { ownerOrganizationId: true },
     });
-    await this.assertOrganizationScopeWritable(document?.ownerOrganizationId ?? null);
+    await this.assertOrganizationScopeWritable(
+      document?.ownerOrganizationId ?? null,
+      transactionContext,
+    );
   }
 
   /**
@@ -151,7 +180,13 @@ export class RestoreScopeWriteGuardService {
    *
    * 归属为空 ⇒ 该行不属于任何公司数据区 ⇒ 不受冻结影响（与备份/恢复范围口径一致）。
    */
-  async assertOrganizationScopeWritable(organizationId: number | null | undefined): Promise<void> {
-    await this.localWriteHoldService.assertBusinessWritable({ organizationId });
+  async assertOrganizationScopeWritable(
+    organizationId: number | null | undefined,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<void> {
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId,
+      transactionContext,
+    });
   }
 }

@@ -11,7 +11,7 @@
  */
 
 /// <reference types="jest" />
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,15 +20,20 @@ import {
   assertControlledFileRoot,
   assertDatabaseCleanupAllowed,
   assertDisposableMarker,
+  assertForeignSentinelIntact,
   assertHoldReleaseAllowed,
   assertNoExternalReference,
   assertNoForeignActiveHold,
   assertOwnedFieldsMatch,
   assertPathWithinRoot,
+  assertSelfCreatedResidueCleared,
   assertSentinelsUnchanged,
   assertServerIdentity,
+  authorizationSentinelFingerprint,
   buildCleanupError,
   createCleanupGate,
+  fileContentFingerprint,
+  holdSentinelFingerprint,
   planDatabaseDeletion,
   planFileDeletion,
   planOwnedDeletion,
@@ -816,5 +821,160 @@ describe('恢复自检入口 · 敏感性验证（预检本身必须能拦住）
         [],
       ),
     ).toThrow(/存在本轮之外的引用/u);
+  });
+});
+/* ────────────────────── 哨兵真实读回与残留核对（P2-1） ────────────────────── */
+
+describe('恢复自检入口 · 哨兵真实读回（不得用内存值拼指纹）', () => {
+  it('授权哨兵指纹取自真实行字段：状态被改写即指纹不同', () => {
+    const row = {
+      id: '7',
+      installation_id: 'inst-1',
+      account_id: 11,
+      organization_id: 1,
+      authorization_status: 'ACTIVE',
+      permission_version: 1,
+      signed_claims: { purpose: ['CLOUD_BACKUP'], issuer: 'task09-sentinel' },
+      authorized_at: '2026-11-24T00:00:00.000Z',
+      revoked_at: null,
+      last_verified_at: '2026-11-24T00:00:00.000Z',
+    };
+    const before = authorizationSentinelFingerprint(row);
+    const after = authorizationSentinelFingerprint({ ...row, authorization_status: 'REVOKED' });
+    expect(before).not.toBe(after);
+    expect(before).toContain('authorization_status=ACTIVE');
+    expect(after).toContain('authorization_status=REVOKED');
+  });
+
+  it('授权哨兵行被删除后：指纹不再是"ACTIVE"（真实读回会发现）', () => {
+    // 旧实现的 before/after 都是内存拼的 `${id}:ACTIVE` ⇒ 行被删也发现不了
+    const oldStyleBefore = '7:ACTIVE';
+    const oldStyleAfter = '7:ACTIVE';
+    expect(oldStyleBefore).toBe(oldStyleAfter);
+    // 新实现：after 走真实读回 ⇒ 行不在时指纹为 missing ⇒ 与 before 不同
+    expect(authorizationSentinelFingerprint({})).not.toBe(
+      authorizationSentinelFingerprint({
+        id: '7',
+        installation_id: 'inst-1',
+        account_id: 11,
+        organization_id: 1,
+        authorization_status: 'ACTIVE',
+      }),
+    );
+  });
+
+  it('冻结哨兵指纹取自真实行字段：状态被改写即指纹不同', () => {
+    const row = {
+      hold_id: 'h-1',
+      installation_id: 'inst-1',
+      organization_id: 2,
+      hold_type: 'RESTORE',
+      status: 'ACTIVE',
+      restore_id: null,
+      reason: '任务09 哨兵冻结（非目标范围）',
+      created_at: '2026-11-24T00:00:00.000Z',
+      released_at: null,
+    };
+    const before = holdSentinelFingerprint(row);
+    const after = holdSentinelFingerprint({ ...row, status: 'RELEASED' });
+    expect(before).not.toBe(after);
+    expect(before).toContain('status=ACTIVE');
+  });
+
+  it('文件指纹按真实字节：内容被改写（文件仍在）即指纹不同', () => {
+    const root = mkdtempSync(join(tmpdir(), 'task09-sentinel-fp-'));
+    try {
+      const file = join(root, 'sentinel.txt');
+      mkdirSync(root, { recursive: true });
+      writeFileSync(file, 'task09 sentinel\n', 'utf8');
+      const before = fileContentFingerprint(root, file);
+      writeFileSync(file, 'task09 sentinel tampered\n', 'utf8');
+      const after = fileContentFingerprint(root, file);
+      expect(before).not.toBe(after);
+      expect(before).toMatch(/^sha256:[0-9a-f]{64};bytes=\d+$/u);
+      // 旧实现只看存在性 ⇒ 改内容也发现不了
+      expect(existsSync(file)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('文件不存在：指纹为 missing（不是抛错，由调用方判定是否算失败）', () => {
+    const root = mkdtempSync(join(tmpdir(), 'task09-sentinel-fp-'));
+    try {
+      expect(fileContentFingerprint(root, join(root, 'absent.txt'))).toBe('missing');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('文件指纹：路径越出受控根或本身是符号链接时拒绝', () => {
+    const root = mkdtempSync(join(tmpdir(), 'task09-sentinel-fp-'));
+    const outside = mkdtempSync(join(tmpdir(), 'task09-outside-'));
+    try {
+      expect(() => fileContentFingerprint(root, join(outside, 'x.txt'))).toThrow(/越出受控根/u);
+      symlinkSync(outside, join(root, 'link'));
+      expect(() => fileContentFingerprint(root, join(root, 'link'))).toThrow(/符号链接/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('恢复自检入口 · 本轮零残留与非目标未被误删（两者独立）', () => {
+  it('本轮自建对象仍有残留：判定失败（不得只记一句"大概没事"）', () => {
+    expect(() =>
+      assertSelfCreatedResidueCleared({
+        authorizationId: '7',
+        authorizationRows: 1,
+        holdId: 'h-1',
+        holdRows: 0,
+        filePath: '/tmp/task09/fileroot/sentinels/x.sentinel',
+        fileExists: false,
+      }),
+    ).toThrow(/未清干净/u);
+  });
+
+  it('本轮自建对象全部清干净：通过（未创建过的不参与判定）', () => {
+    expect(() =>
+      assertSelfCreatedResidueCleared({
+        authorizationId: '7',
+        authorizationRows: 0,
+        holdId: 'h-1',
+        holdRows: 0,
+        filePath: '/tmp/task09/fileroot/sentinels/x.sentinel',
+        fileExists: false,
+      }),
+    ).not.toThrow();
+    // 本轮没有创建过 ⇒ 对应计数不参与判定
+    expect(() =>
+      assertSelfCreatedResidueCleared({
+        authorizationId: null,
+        authorizationRows: 0,
+        holdId: null,
+        holdRows: 0,
+        filePath: null,
+        fileExists: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it('非目标哨兵在收尾后消失：判定失败（本轮误删了他人的数据）', () => {
+    expect(() =>
+      assertForeignSentinelIntact([
+        { label: 'reused-sentinel-authorization', rows: 0 },
+        { label: 'reused-sentinel-hold', rows: 1 },
+      ]),
+    ).toThrow(/误删/u);
+  });
+
+  it('非目标哨兵仍然原样存在：通过', () => {
+    expect(() =>
+      assertForeignSentinelIntact([
+        { label: 'reused-sentinel-authorization', rows: 1 },
+        { label: 'reused-sentinel-hold', rows: 1 },
+      ]),
+    ).not.toThrow();
   });
 });

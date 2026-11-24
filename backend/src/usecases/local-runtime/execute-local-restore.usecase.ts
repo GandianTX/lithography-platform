@@ -59,6 +59,9 @@ export class ExecuteLocalRestoreUsecase {
     const outcome: LocalRestoreExecutionOutcome = await this.restoreExecutionService.execute({
       restoreId: command.restoreId,
       actorAccountId: command.session.accountId,
+      // 公司授权范围：一级管理员为 null（全局范围）；二级管理员仅本公司。
+      // 传入后由执行服务**按最新运行事实**复核（防止跨公司执行他人恢复）。
+      allowedOrganizationId: scope.organizationId,
       now: new Date(),
     });
 
@@ -81,7 +84,8 @@ export class ExecuteLocalRestoreUsecase {
       reason: null,
       restored: outcome.restored,
       released: outcome.released,
-      holdRetained: false,
+      // 成功但冻结未解除时也为 true：设备仍在停写停传（如实回报，不假装已解冻）
+      holdRetained: outcome.holdRetained,
     };
   }
 }

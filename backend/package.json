@@ -49,7 +49,21 @@
     "start:worker": "cross-env NODE_ENV=production node dist/bootstraps/worker/main",
     "capability:list": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/capability-list.ts list",
     "capability:docs": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/capability-list.ts docs",
-    "capability:docs:check": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/capability-list.ts check"
+    "capability:docs:check": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/capability-list.ts check",
+    "task09:restore-selfcheck": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-restore-selfcheck.ts",
+    "task09:restore-mutex": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-restore-mutex-check.ts",
+    "task09:restore-race": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-restore-concurrency-race.ts",
+    "task09:restore-interrupt-child": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-restore-interrupt-child.ts",
+    "task09:backup-scope-closure": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-backup-scope-closure-check.ts",
+    "task09:identity-matrix": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-identity-counterexample-matrix.ts",
+    "task09:cross-installation": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-cross-installation.ts",
+    "task09:business-sync-chain": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-business-sync-real-chain.ts",
+    "task09:cloud-chain": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-cloud-real-chain.ts",
+    "task09:sync-conflict-cloud-chain": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-sync-conflict-cloud-chain.ts",
+    "task09:sync-conflict-readonly-view": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-sync-conflict-readonly-view-check.ts",
+    "task09:record-package-export-multitype": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-record-package-export-multitype-check.ts",
+    "task09:local-resolution-document": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-local-resolution-document-check.ts",
+    "task09:isolated-fixture": "cross-env TZ=Asia/Shanghai ts-node -r tsconfig-paths/register scripts/task09-isolated-fixture.ts"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",

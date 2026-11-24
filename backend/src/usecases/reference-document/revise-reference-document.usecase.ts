@@ -98,8 +98,9 @@ export class ReviseReferenceDocumentUsecase {
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
     // 恢复期写入冻结：资料归属公司数据区正在恢复时不得修订
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: current.ownerOrganizationId,
+      transactionContext,
     });
     this.assertCaseEditProtection(current, command.patch);
 

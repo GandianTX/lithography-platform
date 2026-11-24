@@ -166,7 +166,9 @@ describe('local backup upload service', () => {
       asPinoLogger(options.logger ?? createTestPinoLogger()),
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       options.uploader,
@@ -400,6 +402,56 @@ describe('local backup upload service', () => {
     expect(result.attempted).toBe(0);
   });
 
+  // 第 10 项 L2：本机包结构性失败（超限／清单不一致／清单不可读）重试无用，
+  // 不得再按退避周期反复重试同一份无效包。
+  it('本机包结构性失败（超限）⇒ 终态：不再尝试上传，也不增长尝试次数', async () => {
+    const upload = jest.fn();
+    const { service } = buildService({
+      assets: [
+        asset({
+          cloudStatus: 'FAILED',
+          attemptCount: 1,
+          lastAttemptAt: base,
+          failureReason: 'CLOUD_PACKAGE_TOO_LARGE',
+        }),
+      ],
+      settings: [setting()],
+      uploader: { upload },
+    });
+
+    // 远晚于任何退避到期时刻
+    const result = await service.runOnce(new Date(base.getTime() + 24 * 60 * 60_000));
+
+    expect(result.skipped).toBe(1);
+    expect(result.attempted).toBe(0);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('远端/网络类失败 ⇒ 仍按退避重试（不被误判为终态）', async () => {
+    const upload = jest.fn().mockResolvedValue({
+      status: 'FAILED',
+      code: 'CLOUD_UNREACHABLE',
+      reason: 'CLOUD_UNREACHABLE',
+    });
+    const { service } = buildService({
+      assets: [
+        asset({
+          cloudStatus: 'FAILED',
+          attemptCount: 1,
+          lastAttemptAt: base,
+          failureReason: 'CLOUD_UNREACHABLE',
+        }),
+      ],
+      settings: [setting()],
+      uploader: { upload },
+    });
+
+    const result = await service.runOnce(new Date(base.getTime() + 11 * 60_000));
+
+    expect(result.attempted).toBe(1);
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
   it('云开关关闭时不再产生新的上传尝试', async () => {
     const upload = jest.fn();
     const { service } = buildService({
@@ -469,7 +521,11 @@ describe('local backup upload service', () => {
     expect(result.attempted).toBe(1);
     expect(upload).toHaveBeenCalledTimes(1);
     expect(upload.mock.calls[0][0].backupId).toBe('backup-1');
-    expect(updates[0].patch).toMatchObject({ cloudStatus: 'FAILED' });
+    expect(updates[0].patch).toMatchObject({
+      cloudStatus: 'FAILED',
+      // 失败原因必须是**受控码**（该列同时被终态判定读取，且前端按码映射文案）
+      failureReason: 'LOCAL_UPLOAD_INTERRUPTED',
+    });
   });
 
   it('重复调度时同一轮内每个资产只尝试一次', async () => {

@@ -40,6 +40,8 @@ export const LOCAL_BACKUP_FAILURE_REASON = {
   CLOUD_PACKAGE_COMPANY_MISMATCH: 'LOCAL_CLOUD_PACKAGE_COMPANY_MISMATCH',
   /** 云端上传失败（底层原因只进服务端日志） */
   UPLOAD_FAILED: 'LOCAL_UPLOAD_FAILED',
+  /** 上传过程被进程中断，将按退避重试同一备份包 */
+  UPLOAD_INTERRUPTED: 'LOCAL_UPLOAD_INTERRUPTED',
   /** 备份包生成失败（底层原因只进服务端日志） */
   BACKUP_GENERATION_FAILED: 'LOCAL_BACKUP_GENERATION_FAILED',
   /** 保护副本生成失败（底层原因只进服务端日志） */
@@ -78,6 +80,47 @@ export const LOCAL_BACKUP_FAILURE_REASON = {
 
 export type LocalBackupFailureReason =
   (typeof LOCAL_BACKUP_FAILURE_REASON)[keyof typeof LOCAL_BACKUP_FAILURE_REASON];
+
+/**
+ * 恢复**执行阶段**的受控原因码（对外只给码，前端按码映射文案）。
+ *
+ * 为什么单列一份：这些码此前是 `local-restore-execution.service.ts` 里的
+ * **裸字符串字面量**（`RESTORE_EXECUTION_FAILED` 等），没有唯一清单 ⇒
+ * - 前端码表靠人工对齐，漏一个就显示"原因未登记"；
+ * - 后端自己拼错一个字也没有任何编译期或测试期的兜底。
+ */
+export const LOCAL_RESTORE_EXECUTION_REASON_CODES = {
+  /** 恢复运行不存在 */
+  RUN_NOT_FOUND: 'RESTORE_RUN_NOT_FOUND',
+  /** 恢复未被受理或已结束 */
+  NOT_ACCEPTED: 'RESTORE_NOT_ACCEPTED',
+  /** 恢复预检未通过 */
+  CHECK_NOT_PASSED: 'RESTORE_CHECK_NOT_PASSED',
+  /** 本机安装身份未初始化 */
+  INSTALLATION_MISSING: 'RESTORE_INSTALLATION_MISSING',
+  /** 恢复后的数据核验未通过 */
+  VERIFY_FAILED: 'RESTORE_VERIFY_FAILED',
+  /** 恢复执行失败 */
+  EXECUTION_FAILED: 'RESTORE_EXECUTION_FAILED',
+  /** 同一次恢复的并发执行被拒 */
+  EXECUTION_ALREADY_RUNNING: 'RESTORE_EXECUTION_ALREADY_RUNNING',
+  /** 恢复范围被其它恢复占用 */
+  SCOPE_OCCUPIED: 'RESTORE_SCOPE_OCCUPIED',
+  /**
+   * 该恢复运行**已是终态**（成功／失败／中断）⇒ 不得再次执行旧备份。
+   *
+   * 口径（任务 09 独立验收 P1-2）：取得执行权之后必须重新读取最新运行事实，
+   * 终态行**不再被占用** ⇒ 延迟到达的重复请求如实受控拒绝（零写入）。
+   */
+  ALREADY_TERMINAL: 'RESTORE_ALREADY_TERMINAL',
+  /** 执行人不属于该恢复目标公司的授权范围（跨公司执行被拒） */
+  ORGANIZATION_NOT_ALLOWED: 'RESTORE_ORGANIZATION_NOT_ALLOWED',
+  /** 该恢复的目标安装不是本机（异机执行被拒） */
+  INSTALLATION_MISMATCH: 'RESTORE_INSTALLATION_MISMATCH',
+} as const;
+
+export type LocalRestoreExecutionReasonCode =
+  (typeof LOCAL_RESTORE_EXECUTION_REASON_CODES)[keyof typeof LOCAL_RESTORE_EXECUTION_REASON_CODES];
 
 /**
  * 受控原因码形态校验（用于**外部实现**返回的原因，如云接收端）。

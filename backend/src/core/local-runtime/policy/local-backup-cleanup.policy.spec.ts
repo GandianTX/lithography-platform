@@ -10,7 +10,6 @@
 import * as nodePath from 'node:path';
 
 import {
-  BACKUP_RETENTION_DAYS,
   decideManualCleanupTargets,
   decideRetentionCleanupTargets,
   hasLocalPackage,
@@ -19,6 +18,7 @@ import {
   isCompleteCloudReceipt,
   type BackupCleanupCandidate,
 } from './local-backup-cleanup.policy';
+import { BACKUP_RETENTION_DAYS } from './local-backup-plan.policy';
 
 describe('local backup cleanup policy', () => {
   const base = new Date('2026-11-21T00:00:00.000Z');
@@ -108,6 +108,23 @@ describe('local backup cleanup policy', () => {
       expect(hasLocalPackage(candidate({ localStatus: 'CLEANED' }))).toBe(false);
       expect(hasLocalPackage(candidate({ localReference: null }))).toBe(false);
       expect(hasLocalPackage(candidate())).toBe(true);
+    });
+
+    it('未进入清理清单的资产逐项给出原因（与过期清理同口径）', () => {
+      const decision = decideManualCleanupTargets(
+        [
+          candidate({ backupId: 'backup-1' }),
+          candidate({ backupId: 'backup-2', localStatus: 'CLEANED', localReference: null }),
+          candidate({ backupId: 'backup-3', localReference: null }),
+        ],
+        '{"received":true}',
+      );
+
+      expect(decision.targets.map((target) => target.backupId)).toEqual(['backup-1']);
+      expect(decision.skipped).toEqual([
+        { backupId: 'backup-2', reason: 'PACKAGE_ALREADY_CLEANED' },
+        { backupId: 'backup-3', reason: 'PACKAGE_REFERENCE_MISSING' },
+      ]);
     });
 
     // 任务书 R074-03：「不是逐个旧包均须有云副本的新前提」
@@ -202,6 +219,12 @@ describe('local backup cleanup policy', () => {
       expect(isBackupPackagePathInside(root, '/var/local-backups/../business')).toBe(false);
       expect(isBackupPackagePathInside(root, '/var/business-originals')).toBe(false);
       expect(isBackupPackagePathInside(root, '')).toBe(false);
+    });
+
+    it('以 ".." 开头的合法子目录名不算越界（此前被误判为越界）', () => {
+      expect(isBackupPackagePathInside(root, '/var/local-backups/..data/manual-1')).toBe(true);
+      expect(isBackupPackagePathInside(root, '/var/local-backups/..')).toBe(false);
+      expect(isBackupPackagePathInside(root, '/var/local-backups/../business')).toBe(false);
     });
 
     it('相对路径按当前工作目录解析后仍须落在根目录内', () => {

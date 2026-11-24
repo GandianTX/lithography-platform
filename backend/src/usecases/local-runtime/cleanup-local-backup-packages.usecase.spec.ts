@@ -84,7 +84,9 @@ describe('CleanupLocalBackupPackagesUsecase', () => {
         cleanupService as unknown as LocalBackupCleanupService,
         {
           assertBusinessWritable: () => Promise.resolve(),
+          assertBusinessWritableInTransaction: () => Promise.resolve(),
           assertCompanyWritable: () => Promise.resolve(),
+          assertCompanyWritableInTransaction: () => Promise.resolve(),
           assertWritable: () => Promise.resolve(),
         } as unknown as LocalWriteHoldService,
       ),

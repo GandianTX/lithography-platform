@@ -8,7 +8,9 @@
  */
 
 import {
+  decideIncidentForceReleaseVerdict,
   decideLocalWriteHoldVerdict,
+  decideRestoreScopeOccupancyVerdict,
   LOCAL_WRITE_HOLD_REASON_CODES,
   LOCAL_WRITE_HOLD_TYPES,
   type LocalWriteHoldFact,
@@ -61,5 +63,62 @@ describe('写入/同步冻结裁决（S5-2）', () => {
     });
 
     expect(verdict.allowed).toBe(true);
+  });
+});
+
+describe('历史 ACTIVE 冻结冲突裁决（第 12 项 · 合成实库取证 S1/S3/S7）', () => {
+  it('同范围并存多条 ACTIVE ⇒ 建立冻结失败关闭（不静默挑一条）', () => {
+    const verdict = decideRestoreScopeOccupancyVerdict({
+      existingRestoreId: 'restore-a',
+      requestedRestoreId: 'restore-b',
+      activeHoldCount: 2,
+    });
+
+    expect(verdict.allowed).toBe(false);
+    if (verdict.allowed) {
+      throw new Error('不应放行');
+    }
+    expect(verdict.reasonCode).toBe(
+      LOCAL_WRITE_HOLD_REASON_CODES.WRITE_HELD_FOR_RESTORE_SCOPE_OCCUPIED,
+    );
+    expect(verdict.reason).toContain('历史冲突');
+  });
+
+  it('同范围并存多条 ACTIVE ⇒ 其它恢复不得并行占用', () => {
+    const verdict = decideRestoreScopeOccupancyVerdict({
+      existingRestoreId: 'restore-a',
+      requestedRestoreId: 'restore-b',
+      activeHoldCount: 1,
+    });
+
+    expect(verdict.allowed).toBe(false);
+    if (verdict.allowed) {
+      throw new Error('不应放行');
+    }
+    expect(verdict.reasonCode).toBe(
+      LOCAL_WRITE_HOLD_REASON_CODES.WRITE_HELD_FOR_RESTORE_SCOPE_OCCUPIED,
+    );
+  });
+
+  it('现场强制解冻：请求方持有冻结 ⇒ 放行（归属判定与行序无关）', () => {
+    const verdict = decideIncidentForceReleaseVerdict({
+      ownedHoldCount: 1,
+      incidentRestoreId: 'restore-a',
+    });
+
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('现场强制解冻：请求方在该范围内没有冻结 ⇒ 失败关闭（不得按范围一刀切）', () => {
+    const verdict = decideIncidentForceReleaseVerdict({
+      ownedHoldCount: 0,
+      incidentRestoreId: 'restore-z',
+    });
+
+    expect(verdict.allowed).toBe(false);
+    if (verdict.allowed) {
+      throw new Error('不应放行');
+    }
+    expect(verdict.reasonCode).toBe(LOCAL_WRITE_HOLD_REASON_CODES.RELEASE_NOT_PERMITTED_NOT_OWNER);
   });
 });

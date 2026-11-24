@@ -77,17 +77,22 @@ import {
   assertControlledFileRoot,
   assertDatabaseCleanupAllowed,
   assertDisposableMarker,
+  assertForeignSentinelIntact,
   assertHoldReleaseAllowed,
   assertNoExternalReference,
   assertNoForeignActiveHold,
   assertOwnedFieldsMatch,
   assertPathWithinRoot,
+  assertSelfCreatedResidueCleared,
   assertSentinelsUnchanged,
   assertServerIdentity,
+  authorizationSentinelFingerprint,
   buildCleanupError,
   createCleanupGate,
   deleteFilesByList,
   describeCleanupGate,
+  fileContentFingerprint,
+  holdSentinelFingerprint,
   listFilesUnder,
   planOwnedDeletion,
   pruneEmptyDirs,
@@ -106,6 +111,20 @@ import {
 
 /** 断言收集器与文本转换共用共享工具（避免各脚本各存一份） */
 const { assertions, check } = createAssertionCollector();
+
+/** 结果行是否已经输出过（异常路径补输出时避免重复） */
+let resultLineWritten = false;
+
+/**
+ * 结果用**单行标记**输出：日志（pino）也走 stdout，标记便于从混合输出里精确取回。
+ *
+ * 正常路径与异常路径都**必须**有一行结果：否则"脚本异常退出"只有一个退出码，
+ * 外部无法区分"断言失败"与"脚本崩了"，独立验收 P2-1 要求异常也有独立结果。
+ */
+function writeSelfcheckResult(payload: Readonly<Record<string, unknown>>): void {
+  resultLineWritten = true;
+  process.stdout.write(`TASK09_SELFCHECK_RESULT ${JSON.stringify(payload)}\n`);
+}
 
 /** 受控范围内的对象表（删除顺序＝先子后父） */
 const MANAGED_TABLES: ReadonlyArray<{ readonly table: string; readonly idColumn: string }> = [
@@ -174,6 +193,20 @@ type RunScope = {
   /** 本轮创建的哨兵（复用到的既有哨兵**不属于**本轮，不得回收） */
   createdSentinelAuthorizationId: string | null;
   createdSentinelHoldId: string | null;
+  /**
+   * **复用到的既有哨兵**（本轮未创建 ⇒ 属于非目标数据，收尾后必须原样仍在）。
+   *
+   * 与 `createdSentinel*` 严格互补：二者有且只有一个非空，
+   * 用来把"非目标数据不变"与"本轮对象零残留"分开判定。
+   */
+  reusedSentinelAuthorizationId: string | null;
+  reusedSentinelHoldId: string | null;
+  /** 哨兵的真实标识（供收尾后的独立残留核对使用） */
+  sentinelAuthorizationId: string | null;
+  sentinelHoldId: string | null;
+  sentinelFilePath: string | null;
+  /** 整轮末的哨兵快照（收尾后据此核对非目标数据是否仍然原样） */
+  sentinelsBefore: SentinelSnapshot[] | null;
   /** 本轮创建的哨兵冻结所属公司（外公司范围，删除前按此核对） */
   sentinelHoldOrganizationId: number | null;
   /** 运行前的主键基线（全部受控表，缺失即失败关闭） */
@@ -501,7 +534,53 @@ async function ensureFixtures(ctx: ChainContext, scope: RunScope): Promise<void>
   scope.ownedAuthorizationIds.add(String(authorization.id));
 }
 
-/** 外公司哨兵：本公司之外的业务行指纹（行数 ＋ 内容摘要） */
+/**
+ * 哨兵授权行的**真实读回**指纹（只读查询，不复用内存值）。
+ *
+ * 独立验收 P2-1 的核心问题：原实现 before／after 都用
+ * `${sentinelAuthorization.id}:ACTIVE`（内存 id ＋ 硬编码状态）⇒
+ * 库里那行被删、被改状态、被改公司、被改账号，脚本**都发现不了**。
+ * 这里 before／after 都走同一条只读查询，指纹逐字段可比。
+ */
+async function readAuthorizationSentinelFingerprint(
+  dataSource: DataSource,
+  authorizationId: string,
+): Promise<string> {
+  const rows: unknown = await dataSource.query(
+    'SELECT id, installation_id, account_id, organization_id, authorization_status, ' +
+      'permission_version, signed_claims, authorized_at, revoked_at, last_verified_at ' +
+      'FROM local_account_authorization WHERE id = ?',
+    [authorizationId],
+  );
+  const row = (rows as Array<Record<string, unknown>>)[0];
+  if (row === undefined) {
+    return 'missing';
+  }
+  return authorizationSentinelFingerprint(row);
+}
+
+/**
+ * 哨兵冻结行的**真实读回**指纹（只读查询）。
+ */
+async function readHoldSentinelFingerprint(
+  dataSource: DataSource,
+  holdId: string,
+): Promise<string> {
+  const rows: unknown = await dataSource.query(
+    'SELECT hold_id, installation_id, organization_id, hold_type, status, restore_id, reason, ' +
+      'created_at, released_at FROM local_write_hold WHERE hold_id = ?',
+    [holdId],
+  );
+  const row = (rows as Array<Record<string, unknown>>)[0];
+  if (row === undefined) {
+    return 'missing';
+  }
+  return holdSentinelFingerprint(row);
+}
+
+/**
+ * 外公司哨兵：本公司之外的业务行指纹（行数 ＋ 内容摘要）
+ */
 async function foreignCompanyFingerprint(
   dataSource: DataSource,
   organizationId: number,
@@ -1520,6 +1599,105 @@ async function cleanupRunArtifacts(
   };
 }
 
+/**
+ * 收尾后的**独立残留核对**（数据库与文件各自只读读回，不复用内存值）。
+ *
+ * 两件事必须**各自独立**成立，不能互相顶替：
+ * 1. **本轮自建对象零残留**：本轮创建的哨兵授权行／哨兵冻结行查不到、哨兵文件不存在；
+ * 2. **非目标数据未被误删**：复用到的既有哨兵仍然存在、外公司数据指纹与整轮末一致。
+ *
+ * 只做第 1 条会漏掉"本轮把别人的东西删了"；只做第 2 条会漏掉"自己造的东西没收干净"。
+ */
+async function verifyPostCleanupResidue(
+  ctx: ChainContext,
+  scope: RunScope,
+): Promise<{
+  residue: {
+    authorizationRows: number;
+    holdRows: number;
+    fileExists: boolean;
+  };
+  foreignIntact: boolean;
+  details: string[];
+}> {
+  const details: string[] = [];
+
+  // (1) 本轮自建对象：查不到才算干净
+  let authorizationRows = 0;
+  if (scope.createdSentinelAuthorizationId !== null) {
+    const rows: unknown = await ctx.dataSource.query(
+      'SELECT COUNT(*) AS total FROM local_account_authorization WHERE id = ?',
+      [scope.createdSentinelAuthorizationId],
+    );
+    authorizationRows = Number((rows as Array<{ total: number }>)[0]?.total ?? 0);
+  }
+  let holdRows = 0;
+  if (scope.createdSentinelHoldId !== null) {
+    const rows: unknown = await ctx.dataSource.query(
+      'SELECT COUNT(*) AS total FROM local_write_hold WHERE hold_id = ?',
+      [scope.createdSentinelHoldId],
+    );
+    holdRows = Number((rows as Array<{ total: number }>)[0]?.total ?? 0);
+  }
+  const fileExists = scope.sentinelFilePath !== null && existsSync(scope.sentinelFilePath);
+  assertSelfCreatedResidueCleared({
+    authorizationId: scope.createdSentinelAuthorizationId,
+    authorizationRows,
+    holdId: scope.createdSentinelHoldId,
+    holdRows,
+    filePath: scope.sentinelFilePath,
+    fileExists,
+  });
+
+  // (2) 非目标数据：复用到的既有哨兵必须仍在（被误删比留残留更严重）
+  const foreignRows: Array<{ label: string; rows: number }> = [];
+  if (scope.reusedSentinelAuthorizationId !== null) {
+    const rows: unknown = await ctx.dataSource.query(
+      'SELECT COUNT(*) AS total FROM local_account_authorization WHERE id = ?',
+      [scope.reusedSentinelAuthorizationId],
+    );
+    foreignRows.push({
+      label: 'reused-sentinel-authorization',
+      rows: Number((rows as Array<{ total: number }>)[0]?.total ?? 0),
+    });
+  }
+  if (scope.reusedSentinelHoldId !== null) {
+    const rows: unknown = await ctx.dataSource.query(
+      'SELECT COUNT(*) AS total FROM local_write_hold WHERE hold_id = ?',
+      [scope.reusedSentinelHoldId],
+    );
+    foreignRows.push({
+      label: 'reused-sentinel-hold',
+      rows: Number((rows as Array<{ total: number }>)[0]?.total ?? 0),
+    });
+  }
+  assertForeignSentinelIntact(foreignRows);
+
+  // (3) 外公司数据指纹：收尾后必须与整轮末一致
+  if (scope.sentinelsBefore !== null) {
+    const expected = scope.sentinelsBefore.find((item) => item.label === 'foreign-company');
+    const actual = await foreignCompanyFingerprint(ctx.dataSource, scope.organizationId);
+    if (expected !== undefined && expected.fingerprint !== actual) {
+      throw new SelfcheckSafetyError(
+        'FOREIGN_SENTINEL_CHANGED',
+        `外公司数据指纹在收尾后发生变化：${expected.fingerprint} → ${actual}`,
+      );
+    }
+  }
+
+  details.push(
+    `本轮自建残留：授权行=${authorizationRows} 冻结行=${holdRows} 哨兵文件存在=${fileExists}`,
+  );
+  details.push(
+    `非目标哨兵仍存在：${
+      foreignRows.length === 0
+        ? '（本轮无复用哨兵）'
+        : foreignRows.map((item) => `${item.label}:${item.rows}`).join(',')
+    }`,
+  );
+  return { residue: { authorizationRows, holdRows, fileExists }, foreignIntact: true, details };
+}
+
 async function main(): Promise<void> {
   // ── 0. 安全入口：默认拒绝（缺任何一项授权即零写入退出）──
   // eslint-disable-next-line local-architecture/no-runtime-config-outside-wiring
@@ -1562,6 +1740,12 @@ async function main(): Promise<void> {
     createdAuthorizationId: null,
     createdSentinelAuthorizationId: null,
     createdSentinelHoldId: null,
+    reusedSentinelAuthorizationId: null,
+    reusedSentinelHoldId: null,
+    sentinelAuthorizationId: null,
+    sentinelHoldId: null,
+    sentinelFilePath: null,
+    sentinelsBefore: null,
     sentinelHoldOrganizationId: null,
     baseline: new Map<string, Set<string>>(),
   };
@@ -1570,6 +1754,8 @@ async function main(): Promise<void> {
   let mainError: unknown = null;
   let mainFailed = false;
   const cleanupErrors: string[] = [];
+  /** 收尾后独立残留核对的明细（进回执，供人工复核） */
+  const residueDetails: string[] = [];
   const deletedArtifacts: string[] = [];
   const failedArtifacts: string[] = [];
   /** 本轮登记的所有权对象（本轮真实创建的主键清单） */
@@ -1723,19 +1909,40 @@ async function main(): Promise<void> {
     if (sentinelAuthorizationExisting === null) {
       scope.createdSentinelAuthorizationId = String(sentinelAuthorization.id);
       scope.ownedAuthorizationIds.add(String(sentinelAuthorization.id));
+    } else {
+      // 复用到的既有哨兵＝**非目标数据**：收尾后必须原样仍在（不得被本轮误删）
+      scope.reusedSentinelAuthorizationId = String(sentinelAuthorization.id);
     }
     if (sentinelHold.created) {
       scope.createdSentinelHoldId = sentinelHold.holdId;
       scope.ownedHoldIds.add(sentinelHold.holdId);
+    } else {
+      scope.reusedSentinelHoldId = sentinelHold.holdId;
     }
+    // ── 哨兵快照：**before 与 after 都来自真实读回** ──
+    //   · 授权哨兵：只读查询取回真实行，逐字段指纹（不再是"内存 id ＋ 硬编码 ACTIVE"）
+    //   · 冻结哨兵：只读查询取回真实行，逐字段指纹
+    //   · 哨兵文件：受控路径下读**真实字节**的 SHA-256（不再只断言"存在"）
     const sentinelsBefore: SentinelSnapshot[] = [
       {
         label: 'foreign-company',
         fingerprint: await foreignCompanyFingerprint(ctx.dataSource, authorization.organizationId),
       },
-      { label: 'sentinel-authorization', fingerprint: `${sentinelAuthorization.id}:ACTIVE` },
-      { label: 'sentinel-hold', fingerprint: `${sentinelHold.holdId}:ACTIVE` },
-      { label: 'sentinel-file', fingerprint: existsSync(sentinelFile) ? 'present' : 'missing' },
+      {
+        label: 'sentinel-authorization',
+        fingerprint: await readAuthorizationSentinelFingerprint(
+          ctx.dataSource,
+          String(sentinelAuthorization.id),
+        ),
+      },
+      {
+        label: 'sentinel-hold',
+        fingerprint: await readHoldSentinelFingerprint(ctx.dataSource, sentinelHold.holdId),
+      },
+      {
+        label: 'sentinel-file',
+        fingerprint: fileContentFingerprint(scope.fileRoot, sentinelFile),
+      },
     ];
 
     // ── 5. 夹具（本轮新建，不覆盖既有）──
@@ -2067,21 +2274,27 @@ async function main(): Promise<void> {
     await releaseRunHolds(ctx, scope);
 
     // ── 6. 哨兵核对：非目标对象必须原样 ──
-    const sentinelHoldStill: unknown = await ctx.dataSource.query(
-      'SELECT status FROM local_write_hold WHERE hold_id = ?',
-      [sentinelHold.holdId],
-    );
+    //    after 同样**只读读回真实事实**：授权行逐字段、冻结行逐字段、文件按字节哈希。
     const sentinelsAfter: SentinelSnapshot[] = [
       {
         label: 'foreign-company',
         fingerprint: await foreignCompanyFingerprint(ctx.dataSource, authorization.organizationId),
       },
-      { label: 'sentinel-authorization', fingerprint: `${sentinelAuthorization.id}:ACTIVE` },
+      {
+        label: 'sentinel-authorization',
+        fingerprint: await readAuthorizationSentinelFingerprint(
+          ctx.dataSource,
+          String(sentinelAuthorization.id),
+        ),
+      },
       {
         label: 'sentinel-hold',
-        fingerprint: `${sentinelHold.holdId}:${String((sentinelHoldStill as Array<{ status: string }>)[0]?.status ?? 'missing')}`,
+        fingerprint: await readHoldSentinelFingerprint(ctx.dataSource, sentinelHold.holdId),
       },
-      { label: 'sentinel-file', fingerprint: existsSync(sentinelFile) ? 'present' : 'missing' },
+      {
+        label: 'sentinel-file',
+        fingerprint: fileContentFingerprint(scope.fileRoot, sentinelFile),
+      },
     ];
     assertSentinelsUnchanged(sentinelsBefore, sentinelsAfter);
     check(
@@ -2089,6 +2302,11 @@ async function main(): Promise<void> {
       true,
       `sentinels=${sentinelsAfter.map((item) => item.label).join(',')}`,
     );
+    // 保留收尾后的残留核对所需的"整轮末"真实指纹
+    scope.sentinelFilePath = sentinelFile;
+    scope.sentinelAuthorizationId = String(sentinelAuthorization.id);
+    scope.sentinelHoldId = sentinelHold.holdId;
+    scope.sentinelsBefore = sentinelsBefore;
   } catch (error: unknown) {
     mainError = error;
     mainFailed = true;
@@ -2142,6 +2360,31 @@ async function main(): Promise<void> {
         );
       }
 
+      // (4) 收尾后的**独立残留核对**（数据库连接关闭前做，只读读回）：
+      //     · 本轮自建对象零残留（自建哨兵授权／冻结行查不到、哨兵文件不存在）
+      //     · 非目标数据未被误删（复用到的既有哨兵仍在、外公司数据指纹不变）
+      //     失败必须让整轮失败，不能只记一句"大概没事"。
+      try {
+        const residueOutcome = await verifyPostCleanupResidue(ctx, scope);
+        residueDetails.push(...residueOutcome.details);
+        check(
+          '收尾后本轮自建对象零残留（自建哨兵授权／冻结行已删、哨兵文件已删）',
+          residueOutcome.residue.authorizationRows === 0 &&
+            residueOutcome.residue.holdRows === 0 &&
+            residueOutcome.residue.fileExists === false,
+          `授权行残留=${residueOutcome.residue.authorizationRows} 冻结行残留=${residueOutcome.residue.holdRows} 哨兵文件仍存在=${residueOutcome.residue.fileExists}`,
+        );
+        check(
+          '收尾后非目标数据未被误删（复用到的既有哨兵仍在、外公司数据指纹不变）',
+          residueOutcome.foreignIntact,
+          residueOutcome.details.join(' / '),
+        );
+      } catch (error: unknown) {
+        cleanupErrors.push(
+          `收尾残留核对未通过：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
       try {
         await ctx.dataSource.destroy();
       } catch (error: unknown) {
@@ -2175,38 +2418,38 @@ async function main(): Promise<void> {
 
   const failed = assertions.filter((item) => !item.passed);
   // 结果用**单行标记**输出：日志（pino）也走 stdout，标记便于从混合输出里精确取回。
-  process.stdout.write(
-    `TASK09_SELFCHECK_RESULT ${JSON.stringify({
-      runId: scope.runId,
-      database: scope.database,
-      installationId: scope.installationId,
-      organizationId: scope.organizationId,
-      assertions: assertions.map((item) => ({
-        name: item.name,
-        passed: item.passed,
-        detail: item.detail,
-      })),
-      passed: failed.length === 0 && finalError === null,
-      total: assertions.length,
-      failedCount: failed.length,
-      cleanup: {
-        deletedCount: deletedArtifacts.length,
-        failed: failedArtifacts,
-        errors: cleanupErrors,
-        /** 收尾门禁快照：说明本轮到底允许了哪些写删动作 */
-        gate: describeCleanupGate(gate),
-        /** 本轮登记的所有权对象（本轮真实创建的主键清单） */
-        owned: ownedArtifacts,
-        /** 非本轮创建的新增行（保留不删，需人工核对） */
-        unexplained: unexplainedArtifacts,
-        /** 本轮创建的哨兵（只有这些被精确回收；复用到的既有哨兵保持原样） */
-        createdSentinels: selectCreatedSentinelIds({
-          authorizationId: scope.createdSentinelAuthorizationId,
-          holdId: scope.createdSentinelHoldId,
-        }),
-      },
-    })}\n`,
-  );
+  writeSelfcheckResult({
+    runId: scope.runId,
+    database: scope.database,
+    installationId: scope.installationId,
+    organizationId: scope.organizationId,
+    assertions: assertions.map((item) => ({
+      name: item.name,
+      passed: item.passed,
+      detail: item.detail,
+    })),
+    passed: failed.length === 0 && finalError === null,
+    total: assertions.length,
+    failedCount: failed.length,
+    cleanup: {
+      deletedCount: deletedArtifacts.length,
+      failed: failedArtifacts,
+      errors: cleanupErrors,
+      /** 收尾门禁快照：说明本轮到底允许了哪些写删动作 */
+      gate: describeCleanupGate(gate),
+      /** 本轮登记的所有权对象（本轮真实创建的主键清单） */
+      owned: ownedArtifacts,
+      /** 非本轮创建的新增行（保留不删，需人工核对） */
+      unexplained: unexplainedArtifacts,
+      /** 本轮创建的哨兵（只有这些被精确回收；复用到的既有哨兵保持原样） */
+      createdSentinels: selectCreatedSentinelIds({
+        authorizationId: scope.createdSentinelAuthorizationId,
+        holdId: scope.createdSentinelHoldId,
+      }),
+      /** 收尾后的独立残留核对明细（本轮自建零残留 ＋ 非目标未被误删） */
+      residue: residueDetails,
+    },
+  });
   if (finalError !== null) {
     throw finalError instanceof Error ? finalError : new Error(text(finalError));
   }
@@ -2220,6 +2463,20 @@ void main().catch((error: unknown) => {
   const cleanupErrors = (error as { cleanupErrors?: ReadonlyArray<string> }).cleanupErrors;
   if (cleanupErrors !== undefined) {
     process.stderr.write(`cleanupErrors: ${cleanupErrors.join(' | ')}\n`);
+  }
+  // 异常路径也必须有**独立结果行**：外部不能只靠退出码区分"断言失败"与"脚本异常"
+  if (!resultLineWritten) {
+    writeSelfcheckResult({
+      passed: false,
+      total: 0,
+      failedCount: 1,
+      assertions: [],
+      error: error instanceof Error ? error.message : String(error),
+      errorName: error instanceof Error ? error.name : 'unknown',
+      cleanup: {
+        errors: cleanupErrors ?? [],
+      },
+    });
   }
   process.exitCode = 1;
 });

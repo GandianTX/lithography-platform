@@ -484,3 +484,37 @@ export class LocalRestoreAcceptanceDTO {
   @Field(() => GraphQLISODateTime, { nullable: true, description: '受理时间' })
   acceptedAt?: Date | null;
 }
+
+/**
+ * 恢复**故障现场**的受控解冻结论（管理员处置入口）。
+ *
+ * - `released` 只在**确实**解除冻结时为 true；"无需解除"（已无活动冻结）为 false，
+ *   不把"没做"说成"做了"；
+ * - `restoreStatus` 是恢复自身的终态，**解冻不改判**恢复结果；
+ * - `reasonCode`／`reason` 为受控码与受控说明，不含路径、正文与凭据。
+ */
+@ObjectType('LocalRestoreIncidentRelease')
+export class LocalRestoreIncidentReleaseDTO {
+  @Field(() => String, { description: '稳定恢复 ID' })
+  restoreId!: string;
+
+  @Field(() => String, {
+    description: '处置结论：RELEASED 已解除 / NOT_REQUIRED 无需解除 / DENIED 拒绝',
+  })
+  outcome!: string;
+
+  @Field(() => Boolean, { description: '是否确实解除了冻结（无需解除时为 false）' })
+  released!: boolean;
+
+  @Field(() => Boolean, { description: '设备是否仍在停写停传' })
+  holdRetained!: boolean;
+
+  @Field(() => String, { nullable: true, description: '受控原因码（拒绝时必有）' })
+  reasonCode?: string | null;
+
+  @Field(() => String, { nullable: true, description: '受控原因说明（拒绝时必有）' })
+  reason?: string | null;
+
+  @Field(() => String, { nullable: true, description: '恢复自身的终态（解冻不改判恢复结果）' })
+  restoreStatus?: string | null;
+}

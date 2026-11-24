@@ -1,6 +1,7 @@
 // src/usecases/local-runtime/dispatch-business-sync-tasks.usecase.ts
 
 import { BUSINESS_SYNC_ERROR, DomainError } from '@core/common/errors/domain-error';
+import { decideBusinessSyncCallFailure } from '@core/local-runtime/policy/business-sync-call-failure.policy';
 import { parseBusinessSyncEntityLocalId } from '@core/local-runtime/policy/business-sync-source.policy';
 import {
   resolveBusinessSyncVerdict,
@@ -269,13 +270,17 @@ export class DispatchBusinessSyncTasksUsecase {
     }
     try {
       response = await this.receiver.send(request);
-    } catch {
-      // 网络中断／响应丢失：退回待传，下一轮凭同一幂等键续传
-      await this.requeueTask(
-        task.id,
-        BUSINESS_SYNC_ERROR.RECEIVER_MISSING,
-        '接收端调用失败，待传任务退回待传',
-      );
+    } catch (error) {
+      // 失败分类（D8）：受控失败码决定处置方式。
+      // - 可重试（网络类瞬时故障：不可达／超时／5xx）⇒ 退回待传，下一轮凭同一幂等键续传；
+      // - 终态（云端明确拒绝 4xx／回包形态非法／本机载荷不合规）⇒ 直接失败，
+      //   重试多少次都不会变（此前一律退回待传 ⇒ 同一份载荷无限重试）。
+      const decision = decideBusinessSyncCallFailure(readCallFailureCode(error));
+      if (decision.kind === 'TERMINAL') {
+        await this.failTask(task.id, decision.errorCode, decision.message);
+        return 'rejected';
+      }
+      await this.requeueTask(task.id, decision.errorCode, decision.message);
       return 'retryable';
     }
 
@@ -485,4 +490,18 @@ function countOutcome(
       result.receiverMissing += 1;
       return;
   }
+}
+
+/**
+ * 读取发送端产出的**受控失败码**。
+ *
+ * 发送端以 `error.code` 给出受控码（见 `business-sync-call-failure.policy`）；
+ * 这里只读取，不解释——解释与处置由 core 的裁决函数统一完成。
+ * 非对象异常（如 `Error`）没有 `code`，按未知码处理（可重试）。
+ */
+function readCallFailureCode(error: unknown): unknown {
+  if (typeof error !== 'object' || error === null) {
+    return undefined;
+  }
+  return (error as { code?: unknown }).code;
 }

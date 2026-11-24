@@ -2,7 +2,6 @@
 
 import { LocalWriteHoldService } from './local-write-hold.service';
 import {
-  BACKUP_RETENTION_DAYS,
   decideManualCleanupTargets,
   decideRetentionCleanupTargets,
   isBackupPackagePathInside,
@@ -10,6 +9,7 @@ import {
   isCompleteCloudReceipt,
   type BackupCleanupCandidate,
 } from '@core/local-runtime/policy/local-backup-cleanup.policy';
+import { BACKUP_RETENTION_DAYS } from '@core/local-runtime/policy/local-backup-plan.policy';
 import {
   LOCAL_BACKUP_FAILURE_REASON,
   toLocalCleanupSkipReasonCode,
@@ -534,41 +534,46 @@ export class LocalBackupCleanupService {
    * - 因此只认**最近一条手动运行**对应的那份包的回执，不用历史上任意一份完整回执授权——
    *   否则上一次成功的旧包会被当成本次授权，与「仅本次手动流程成功云回执后清理」不符；
    * - 回执只取自服务端已落库的资产事实，不接受客户端传入。
+   *
+   * 事务纪律：资产清单的读取**带悲观写锁**（与清理执行同锁语义），
+   * 因此必须在**事务内**读——无事务的悲观锁会被数据库层直接拒绝
+   * （`PessimisticLockTransactionRequiredError`），手动清理入口会整条报错。
    */
   async findManualRunCloudReceipt(input: {
     organizationId: number;
     installationId: string;
   }): Promise<{ backupId: string; receipt: string } | null> {
-    const repository = this.backupRunRepository;
-    if (!repository) {
+    if (!this.backupRunRepository) {
       return null;
     }
-    const runs = await repository.find({
-      where: {
-        organizationId: input.organizationId,
-        installationId: input.installationId,
-        triggerType: 'MANUAL',
-      },
-      order: { id: 'DESC' },
+    return await this.runInCleanupTransaction(async (repositories) => {
+      const runs = await repositories.backupRunRepository.find({
+        where: {
+          organizationId: input.organizationId,
+          installationId: input.installationId,
+          triggerType: 'MANUAL',
+        },
+        order: { id: 'DESC' },
+      });
+      const latestRun = runs[0];
+      if (!latestRun) {
+        return null;
+      }
+      const assets = await this.listAssets(
+        repositories.backupAssetRepository,
+        input.organizationId,
+        input.installationId,
+        'DESC',
+      );
+      const asset = assets.find((item) => item.runId === latestRun.id);
+      if (!asset || asset.cloudStatus !== 'SUCCEEDED' || asset.cloudReceipt === null) {
+        return null;
+      }
+      if (!isCompleteCloudReceipt(asset.cloudReceipt).complete) {
+        return null;
+      }
+      return { backupId: asset.backupId, receipt: asset.cloudReceipt };
     });
-    const latestRun = runs[0];
-    if (!latestRun) {
-      return null;
-    }
-    const assets = await this.listAssets(
-      this.backupAssetRepository,
-      input.organizationId,
-      input.installationId,
-      'DESC',
-    );
-    const asset = assets.find((item) => item.runId === latestRun.id);
-    if (!asset || asset.cloudStatus !== 'SUCCEEDED' || asset.cloudReceipt === null) {
-      return null;
-    }
-    if (!isCompleteCloudReceipt(asset.cloudReceipt).complete) {
-      return null;
-    }
-    return { backupId: asset.backupId, receipt: asset.cloudReceipt };
   }
 
   /** 本机本公司的资产清单（按创建时间排序）；读取带悲观写锁，与删除同事务 */

@@ -27,6 +27,7 @@ const V13_TIMESTAMPS = [
   1775501600000, 1775501700000, 1775501800000, 1775501900000, 1775502000000, 1775502100000,
   1775502200000, 1775502300000, 1775502400000, 1775502500000, 1775502600000, 1775502700000,
   1775502800000, 1775502900000, 1775503000000, 1775503200000, 1775503300000,
+  1775503400000,
 ];
 
 const V13_TABLES = [
@@ -125,6 +126,24 @@ describe('V13 结构契约（不连接实库）', () => {
     const timestamps = readMigrationTimestamps();
     expect(timestamps.slice(0, BASELINE_TIMESTAMPS.length)).toEqual(BASELINE_TIMESTAMPS);
     expect(timestamps.slice(BASELINE_TIMESTAMPS.length)).toEqual(V13_TIMESTAMPS);
+  });
+
+  it('第 55 条写入/同步范围锁载体表按独立表登记，并绑定所属迁移', () => {
+    const requirements = collectPrefixStructureRequirements(new Set(V13_TIMESTAMPS));
+    const tableRequirement = requirements.find(
+      (item) => item.kind === 'table' && item.table === 'local_write_scope_lock',
+    );
+    expect(tableRequirement).toBeDefined();
+    expect(tableRequirement?.since).toBe(1775503400000);
+    // 范围唯一性由唯一索引承载 ⇒ 与恢复建立冻结、业务写入共用同一把"安装×公司"行锁
+    const scopeIndex = requirements.find(
+      (item) =>
+        item.kind === 'index' && item.name === 'uk_local_write_scope_lock_scope',
+    );
+    expect(scopeIndex && scopeIndex.kind === 'index' ? scopeIndex.columns : undefined).toEqual([
+      'installation_id',
+      'organization_id',
+    ]);
   });
 
   it('20 个候选对象按独立表登记，且各自绑定所属迁移', () => {

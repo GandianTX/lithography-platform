@@ -44,7 +44,7 @@ export class EngineerResponseService {
   ): Promise<EngineerResponseWriteSnapshot> {
     // 恢复期冻结守卫：`engineer_response` 已纳入受保护备份范围，
     // 恢复期间追加回复会污染恢复结果（回复属于工单数据区）。
-    await this.restoreScopeWriteGuardService.assertRequestScopeWritable(data.requestId);
+    await this.restoreScopeWriteGuardService.assertRequestScopeWritable(data.requestId, transactionContext);
     const manager = getTypeOrmEntityManager(transactionContext);
     const repository = manager.getRepository(EngineerResponseEntity);
     try {

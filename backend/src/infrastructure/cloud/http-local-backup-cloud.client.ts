@@ -14,6 +14,10 @@ import { PinoLogger } from 'nestjs-pino';
 import axios, { type AxiosInstance } from 'axios';
 
 import { LOCAL_CREDENTIAL_PURPOSE } from '@core/local-runtime/policy/local-credential-purpose.policy';
+import {
+  CLOUD_REMOTE_FAILURE_CODES,
+  type CloudRemoteFailureCode,
+} from '@core/local-runtime/policy/local-backup-cloud-upload.policy';
 
 import {
   CLOUD_AUTHORIZATION_HEADER,
@@ -22,17 +26,15 @@ import {
   type LocalBackupCloudConfig,
 } from './local-backup-cloud.config';
 
-/** 受控失败码（大写下划线；执行层会再校验形态） */
-export const CLOUD_FAILURE_CODES = {
-  CLOUD_NOT_CONFIGURED: 'CLOUD_NOT_CONFIGURED',
-  CLOUD_UNREACHABLE: 'CLOUD_UNREACHABLE',
-  CLOUD_TIMEOUT: 'CLOUD_TIMEOUT',
-  CLOUD_REJECTED: 'CLOUD_REJECTED',
-  CLOUD_SERVER_ERROR: 'CLOUD_SERVER_ERROR',
-  CLOUD_INVALID_RESPONSE: 'CLOUD_INVALID_RESPONSE',
-} as const;
+/**
+ * 受控失败码（大写下划线；执行层会再校验形态）。
+ *
+ * 单一来源：core 策略层 `CLOUD_REMOTE_FAILURE_CODES`。
+ * 此前客户端自己写了一份同值常量（与策略层那套互不相通）⇒ 两处各改一处会漂移。
+ */
+export const CLOUD_FAILURE_CODES = CLOUD_REMOTE_FAILURE_CODES;
 
-export type CloudFailureCode = (typeof CLOUD_FAILURE_CODES)[keyof typeof CLOUD_FAILURE_CODES];
+export type CloudFailureCode = CloudRemoteFailureCode;
 
 export type CloudCallResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -44,7 +46,7 @@ export class HttpLocalBackupCloudClient {
 
   constructor(
     @Inject(LOCAL_BACKUP_CLOUD_CONFIG)
-    private readonly config: LocalBackupCloudConfig,
+    readonly config: LocalBackupCloudConfig,
     private readonly logger: PinoLogger,
   ) {
     this.http = axios.create({ timeout: config.timeoutMs });
@@ -112,9 +114,30 @@ export class HttpLocalBackupCloudClient {
   }
 }
 
-/** 网络类异常 → 受控失败码（不把原始文本带给调用方） */
+/**
+ * 网络类异常 → 受控失败码（不把原始文本带给调用方）。
+ *
+ * 口径（此前这里把 4xx／5xx 一律报成"云端不可达"，是**错误**的）：
+ * - axios 默认 `validateStatus` 只接受 2xx ⇒ **非 2xx 一律 reject**，
+ *   `run()` 内的 `status >= 500` 与"其余即 REJECTED"两个分支在生产路径**不可达**；
+ * - 因此必须在 catch 分支里读 `error.response.status`：
+ *   5xx ⇒ 服务端异常、4xx ⇒ 云端拒绝、其余 ⇒ 不可达；
+ * - 否则"云端明确拒绝（载荷不合规／配额／权限）"会被报成"网络不可达"，
+ *   排障方向被带偏，且 `CLOUD_REJECTED`／`CLOUD_SERVER_ERROR` 两个码**永远产生不出来**。
+ *
+ * 对照：业务同步链 `http-business-sync-receiver.ts` 同样检查 `error.response.status`。
+ */
 export function resolveNetworkFailureCode(error: unknown): CloudFailureCode {
-  const candidate = error as { code?: unknown } | null;
+  const candidate = error as { code?: unknown; response?: { status?: unknown } } | null;
+  const status = candidate?.response?.status;
+  if (typeof status === 'number') {
+    if (status >= 500) {
+      return CLOUD_FAILURE_CODES.CLOUD_SERVER_ERROR;
+    }
+    if (status >= 400) {
+      return CLOUD_FAILURE_CODES.CLOUD_REJECTED;
+    }
+  }
   const code = typeof candidate?.code === 'string' ? candidate.code : '';
   if (code === 'ECONNABORTED' || code === 'ETIMEDOUT') {
     return CLOUD_FAILURE_CODES.CLOUD_TIMEOUT;

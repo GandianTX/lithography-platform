@@ -313,7 +313,9 @@ const makeHarness = (
     queryService as unknown as ReferenceDocumentQueryService,
     {
       assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
       assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
       assertWritable: () => Promise.resolve(),
     } as unknown as LocalWriteHoldService,
     maintenanceReports as unknown as MaintenanceReportQueryService,
@@ -326,7 +328,9 @@ const makeHarness = (
     queryService as unknown as ReferenceDocumentQueryService,
     {
       assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
       assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
       assertWritable: () => Promise.resolve(),
     } as unknown as LocalWriteHoldService,
     maintenanceReports as unknown as MaintenanceReportQueryService,

@@ -226,7 +226,9 @@ const makeSubmitUsecase = (params: {
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
     {
       assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
       assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
       assertWritable: () => Promise.resolve(),
     } as unknown as LocalWriteHoldService,
     reader,
@@ -254,7 +256,9 @@ const makeReviewUsecase = (params: {
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       transactionRunner,
@@ -265,7 +269,9 @@ const makeReviewUsecase = (params: {
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       transactionRunner,
@@ -858,7 +864,9 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
         organizationContextService as unknown as TrustedOrganizationContextQueryService,
         {
           assertBusinessWritable: () => Promise.resolve(),
+          assertBusinessWritableInTransaction: () => Promise.resolve(),
           assertCompanyWritable: () => Promise.resolve(),
+          assertCompanyWritableInTransaction: () => Promise.resolve(),
           assertWritable: () => Promise.resolve(),
         } as unknown as LocalWriteHoldService,
         transactionRunner,
@@ -1005,7 +1013,9 @@ describe('RecordRepairRequestHandlingResultUsecase', () => {
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       makeTransactionRunner(),

@@ -3,6 +3,11 @@ import { Module } from '@nestjs/common';
 import { ConfigFactory, ConfigModule, registerAs } from '@nestjs/config';
 import { parseBooleanInput } from '@core/common/normalize/normalize.helper';
 import { IncomingMessage, ServerResponse } from 'http';
+import {
+  DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES,
+  DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES,
+  DEFAULT_LOCAL_BACKUP_CLOUD_TIMEOUT_MS,
+} from '@src/infrastructure/cloud/local-backup-cloud.config';
 import databaseConfig from './database.config';
 
 const isProductionEnv = (): boolean => process.env.NODE_ENV === 'production';
@@ -633,7 +638,20 @@ const localRuntimeConfig: ConfigFactory = () => ({
     // S3.1 云备份服务接入（地址 + 凭据 + 超时）：缺失即"云服务未接入"，不伪造成功
     cloudBackupBaseUrl: getOptionalEnv('LOCAL_BACKUP_CLOUD_BASE_URL') ?? null,
     cloudBackupCredential: getOptionalEnv('LOCAL_BACKUP_CLOUD_CREDENTIAL') ?? null,
-    cloudBackupTimeoutMs: getIntEnvWithDefault('LOCAL_BACKUP_CLOUD_TIMEOUT_MS', 30_000),
+    cloudBackupTimeoutMs: getIntEnvWithDefault(
+      'LOCAL_BACKUP_CLOUD_TIMEOUT_MS',
+      DEFAULT_LOCAL_BACKUP_CLOUD_TIMEOUT_MS,
+    ),
+    // 上传大小上限（单文件 128 MiB／整包 512 MiB）：超限在读字节之前失败关闭
+    // 默认值取自 `local-backup-cloud.config.ts`（单一来源，与装配模块同口径）
+    cloudBackupMaxUploadFileBytes: getIntEnvWithDefault(
+      'LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES',
+      DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES,
+    ),
+    cloudBackupMaxUploadPackageBytes: getIntEnvWithDefault(
+      'LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES',
+      DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES,
+    ),
     // 云端**业务同步**入口（与云备份分开的地址与凭据：两种用途互不充数）
     businessSyncBaseUrl: getOptionalEnv('BUSINESS_SYNC_CLOUD_BASE_URL') ?? null,
     businessSyncCredential: getOptionalEnv('BUSINESS_SYNC_CLOUD_CREDENTIAL') ?? null,

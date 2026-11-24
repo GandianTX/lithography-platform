@@ -15,6 +15,7 @@
 import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
 import { LocalWriteHoldService } from './local-write-hold.service';
+import { LocalWriteScopeLockService } from './local-write-scope-lock.service';
 
 /** 数据库范围锁的受控替身：默认取锁成功；`locked` 可设为 0 模拟"范围已被占用" */
 function buildDataSource(options: { locked?: number } = {}) {
@@ -78,16 +79,46 @@ function buildService(options: { locked?: number } = {}) {
       }),
   };
   const dataSource = buildDataSource(options);
-  // 仓储的 `manager.connection` 提供 queryRunner 能力（本模块没有 DataSource provider）
+
+  // 范围锁服务：范围行的预检／预建／锁定读全部走事务 EntityManager
+  const scopeLockService = new LocalWriteScopeLockService();
+
+  // 事务 EntityManager 替身：支持 transaction / getRepository / query（范围锁定读）
+  const manager: {
+    query: (sql: string) => Promise<unknown>;
+    getRepository: () => unknown;
+    transaction: (callback: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+  } = {
+    query: jest.fn((sql: string) => {
+      if (sql.includes('local_write_scope_lock')) {
+        if (sql.includes('INSERT IGNORE')) {
+          return Promise.resolve([]);
+        }
+        // 锁定读命中范围行 ⇒ 范围锁建立成功
+        return Promise.resolve([{ installation_id: 'inst-1' }]);
+      }
+      return Promise.resolve([]);
+    }),
+    getRepository: jest.fn(() => repository),
+    transaction: jest.fn((callback: (tx: unknown) => Promise<unknown>): Promise<unknown> =>
+      callback(manager),
+    ),
+  };
+
+  // 仓储的 `manager` 提供 queryRunner 能力（本模块没有 DataSource provider）与事务能力
   (repository as unknown as { manager: unknown }).manager = {
     connection: { createQueryRunner: dataSource.createQueryRunner },
+    query: manager.query,
+    getRepository: manager.getRepository,
+    transaction: manager.transaction,
   };
   const service = new LocalWriteHoldService(
     repository as never,
     { readInstallation: jest.fn().mockResolvedValue({ installationId: 'inst-1' }) } as never,
+    scopeLockService,
     asPinoLogger(createTestPinoLogger()),
   );
-  return { service, store, repository, dataSource };
+  return { service, store, repository, dataSource, manager, scopeLockService };
 }
 
 const SCOPE = { installationId: 'inst-1', organizationId: 4 };
@@ -247,5 +278,70 @@ describe('恢复范围的占用互斥与冻结所有权（G30–G33）', () => {
     await expect(
       service.hold({ ...SCOPE, restoreId: 'restore-A', reason: '恢复期冻结' }),
     ).rejects.toThrow(/并存/);
+  });
+});
+
+describe('现场强制解冻的归属判定（第 12 项 · 历史 ACTIVE 冲突）', () => {
+  /** 造两条并存 ACTIVE：不同持有者 */
+  const seedConflict = (store: Record<string, unknown>[]): void => {
+    store.push(
+      {
+        holdId: 'h-1',
+        installationId: 'inst-1',
+        organizationId: 4,
+        holdType: 'RESTORE',
+        status: 'ACTIVE',
+        restoreId: 'restore-A',
+        reason: 'A',
+      },
+      {
+        holdId: 'h-2',
+        installationId: 'inst-1',
+        organizationId: 4,
+        holdType: 'RESTORE',
+        status: 'ACTIVE',
+        restoreId: 'restore-B',
+        reason: 'B',
+      },
+    );
+  };
+
+  it('冲突态下本人持有者（不在首行）仍能解冻自己那条（归属判定不得依赖行序）', async () => {
+    const { service, store } = buildService();
+    seedConflict(store);
+
+    const released = await service.forceReleaseForRecoveryIncident({
+      ...SCOPE,
+      incidentRestoreId: 'restore-B',
+    });
+
+    expect(released).toBe(1);
+    expect(store.find((row) => row['holdId'] === 'h-1')?.['status']).toBe('ACTIVE');
+    expect(store.find((row) => row['holdId'] === 'h-2')?.['status']).toBe('RELEASED');
+  });
+
+  it('冲突态下本人持有者（在首行）同样能解冻自己那条（两种行序口径一致）', async () => {
+    const { service, store } = buildService();
+    seedConflict(store);
+
+    const released = await service.forceReleaseForRecoveryIncident({
+      ...SCOPE,
+      incidentRestoreId: 'restore-A',
+    });
+
+    expect(released).toBe(1);
+    expect(store.find((row) => row['holdId'] === 'h-1')?.['status']).toBe('RELEASED');
+    expect(store.find((row) => row['holdId'] === 'h-2')?.['status']).toBe('ACTIVE');
+  });
+
+  it('声明一个在该范围内并未持有冻结的恢复 ⇒ 受控拒绝且零释放（不得按范围一刀切）', async () => {
+    const { service, store } = buildService();
+    seedConflict(store);
+
+    await expect(
+      service.forceReleaseForRecoveryIncident({ ...SCOPE, incidentRestoreId: 'restore-Z' }),
+    ).rejects.toThrow(/没有属于该恢复现场/);
+
+    expect(store.filter((row) => row['status'] === 'ACTIVE')).toHaveLength(2);
   });
 });

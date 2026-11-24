@@ -16,3 +16,17 @@
  */
 
 export const LOCAL_SYNC_STATUS_READER = Symbol('LOCAL_SYNC_STATUS_READER');
+
+/*
+ * 为什么本文件**不**声明接口形状（review 遗留 L3，已核定为不可收敛）：
+ * - 形状由任务 07 的端口 `MaintenanceReportSyncStatusReader` 定义；
+ * - 若在本文件（common 域）引用它，会触发仓库架构守卫
+ *   `local-architecture/no-cross-domain-usecases-imports`（common 不得依赖具体业务域）；
+ * - 若在此**另写一份**形状，则是本分支要消除的"二次实现"（两处形状必然漂移）。
+ *
+ * 现有的编译期闭环（不依赖本文件声明形状）：
+ * - 提供侧：`MaintenanceReportSyncStatusReaderAdapter` **实现**任务 07 的端口
+ *   ⇒ 形状不符无法编译通过；
+ * - 装配侧：令牌以 `useExisting` 绑定到该适配器 ⇒ 绑定错实现会被类型发现；
+ * - 消费侧：按任务 07 的端口类型断言取用 ⇒ 用错形状无法编译通过。
+ */

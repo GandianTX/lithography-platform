@@ -14,61 +14,25 @@
 
 import * as nodePath from 'node:path';
 
-/** 本地包保留窗口（天）：需求固定口径约 30 天 */
-export const BACKUP_RETENTION_DAYS = 30;
+import { BACKUP_RETENTION_DAYS } from './local-backup-plan.policy';
+import {
+  isCompleteCloudReceipt,
+  type CloudReceiptIncompleteReason,
+} from './local-backup-cloud-receipt.policy';
 
 /** 清理中断可辨认时限（分钟）：CLEANING 超过该时长视为进程中断残留 */
 export const BACKUP_CLEANUP_INTERRUPT_MINUTES = 10;
 
-/** 云回执不完整的判定原因 */
-export type CloudReceiptIncompleteReason =
-  'CLOUD_RECEIPT_MISSING' | 'CLOUD_RECEIPT_UNPARSEABLE' | 'CLOUD_RECEIPT_NOT_SUCCESS';
-
-/** 云回执完整性裁决 */
-export type CloudReceiptVerdict =
-  { complete: true } | { complete: false; reason: CloudReceiptIncompleteReason };
-
-/** 回执中出现这些状态即视为云端已确认接收 */
-const CLOUD_RECEIPT_SUCCESS_STATUSES = ['SUCCEEDED', 'SUCCESS', 'OK', 'RECEIVED', 'ACCEPTED'];
-
 /**
- * 完整云回执判定。
- *
- * 完整回执 = 非空 + 可解析为 JSON 对象 + 无失败语义 + 明确的成功语义
- * （`received === true` 或 `status` 命中成功状态）。
- *
- * 口径从严：宁可判为不完整（零清理），也不把半截回执当作可删本地包的授权。
+ * 云回执完整性裁决的**单一来源**已移至 `local-backup-cloud-receipt.policy`
+ * （上云链与清理链共用同一实现，避免"成功"定义两处漂移）。
+ * 这里保留再导出，便于既有调用点按清理策略的入口引用。
  */
-export function isCompleteCloudReceipt(receipt: string | null | undefined): CloudReceiptVerdict {
-  const raw = (receipt ?? '').trim();
-  if (raw.length === 0) {
-    return { complete: false, reason: 'CLOUD_RECEIPT_MISSING' };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { complete: false, reason: 'CLOUD_RECEIPT_UNPARSEABLE' };
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { complete: false, reason: 'CLOUD_RECEIPT_UNPARSEABLE' };
-  }
-
-  const record = parsed as Record<string, unknown>;
-  const failure = record['error'] ?? record['failure'] ?? record['rejected'];
-  if (failure !== undefined && failure !== null && failure !== false) {
-    return { complete: false, reason: 'CLOUD_RECEIPT_NOT_SUCCESS' };
-  }
-  if (record['received'] === true) {
-    return { complete: true };
-  }
-  const status = record['status'];
-  if (typeof status === 'string' && CLOUD_RECEIPT_SUCCESS_STATUSES.includes(status.toUpperCase())) {
-    return { complete: true };
-  }
-  return { complete: false, reason: 'CLOUD_RECEIPT_NOT_SUCCESS' };
-}
+export { isCompleteCloudReceipt };
+export type {
+  CloudReceiptIncompleteReason,
+  CloudReceiptVerdict,
+} from './local-backup-cloud-receipt.policy';
 
 /** 清理裁决所需的最小资产事实（只读） */
 export type BackupCleanupCandidate = {
@@ -132,7 +96,17 @@ export function decideManualCleanupTargets(
   const skipped: Array<{ backupId: string; reason: BackupCleanupSkipReason }> = [];
   for (const candidate of candidates) {
     if (!hasLocalPackage(candidate)) {
-      // 已清理 / 无本地包：不在清理范围内，无需逐项报告
+      // 已清理／无本地包：不在清理范围内，但**逐项如实报告原因**
+      // （与过期清理 `decideRetentionCleanupTargets` 同口径：
+      //   此前本函数只 `continue`，`skipped` 永远是空数组 ⇒
+      //   "因为已清理所以没删"的项在逐项结果里消失，调用方只看到一个总数）。
+      skipped.push({
+        backupId: candidate.backupId,
+        reason:
+          candidate.localStatus === 'CLEANED'
+            ? 'PACKAGE_ALREADY_CLEANED'
+            : 'PACKAGE_REFERENCE_MISSING',
+      });
       continue;
     }
     targets.push(candidate);
@@ -212,7 +186,15 @@ export function isBackupPackagePathInside(root: string, target: string): boolean
     return false;
   }
   const relative = nodePath.relative(resolvedRoot, resolvedTarget);
-  if (relative.length === 0 || relative.startsWith('..') || nodePath.isAbsolute(relative)) {
+  // 越界判定：只有"上一级"或"上一级开头的子路径"才算越界。
+  // 此前用 `startsWith('..')` ⇒ 名为 `..data` 的**合法**子目录被误判为越界，
+  // 排障方向被带偏（"路径越界"其实不是原因）。
+  if (
+    relative.length === 0 ||
+    relative === '..' ||
+    relative.startsWith(`..${nodePath.sep}`) ||
+    nodePath.isAbsolute(relative)
+  ) {
     return false;
   }
   return true;

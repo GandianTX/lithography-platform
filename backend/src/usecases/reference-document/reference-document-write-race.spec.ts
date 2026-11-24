@@ -308,7 +308,9 @@ const makeWriteRaceBench = () => {
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
@@ -319,7 +321,9 @@ const makeWriteRaceBench = () => {
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       maintenanceReportQueryService as unknown as MaintenanceReportQueryService,
@@ -331,7 +335,9 @@ const makeWriteRaceBench = () => {
       referenceDocumentQueryService as unknown as ReferenceDocumentQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       maintenanceReportQueryService as unknown as MaintenanceReportQueryService,

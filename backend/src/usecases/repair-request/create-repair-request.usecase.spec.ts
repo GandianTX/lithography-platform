@@ -230,7 +230,9 @@ describe('CreateRepairRequestUsecase', () => {
       organizationQueryService as unknown as OrganizationQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       bindOriginal as unknown as BindRepairRequestOriginalUsecase,

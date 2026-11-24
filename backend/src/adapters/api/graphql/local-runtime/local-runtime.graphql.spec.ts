@@ -43,6 +43,7 @@ import { ExportRecordPackageUsecase } from '@src/usecases/local-runtime/export-r
 import { ImportRecordPackageUsecase } from '@src/usecases/local-runtime/import-record-package.usecase';
 import { AcceptLocalRestoreUsecase } from '@src/usecases/local-runtime/accept-local-restore.usecase';
 import { ExecuteLocalRestoreUsecase } from '@src/usecases/local-runtime/execute-local-restore.usecase';
+import { ForceReleaseLocalRestoreIncidentUsecase } from '@src/usecases/local-runtime/force-release-local-restore-incident.usecase';
 import { UpdateLocalBackupPlanUsecase } from '@src/usecases/local-runtime/update-local-backup-plan.usecase';
 import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
 import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
@@ -183,6 +184,10 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
         { provide: UpdateLocalBackupPlanUsecase, useValue: { execute: jest.fn() } },
         { provide: AcceptLocalRestoreUsecase, useValue: { execute: jest.fn() } },
         { provide: ExecuteLocalRestoreUsecase, useValue: { execute: jest.fn() } },
+        {
+          provide: ForceReleaseLocalRestoreIncidentUsecase,
+          useValue: { execute: jest.fn() },
+        },
         { provide: ListLocalBackupCloudPackagesUsecase, useValue: { execute: jest.fn() } },
         { provide: ListSyncConflictsUsecase, useValue: { execute: jest.fn() } },
         { provide: GetSyncConflictUsecase, useValue: { execute: jest.fn() } },
@@ -548,12 +553,48 @@ describe('本地运行域 GraphQL 入口（本地设置 + 备份与恢复）', (
         'cleanupLocalBackupPackages',
         'executeLocalRestore',
         'exportRecordPackage',
+        'forceReleaseLocalRestoreIncident',
         'importRecordPackage',
         'precheckLocalRestore',
         'resolveSyncConflict',
         'startManualLocalBackup',
         'updateLocalBackupPlan',
       ]);
+    });
+
+    it('恢复故障现场受控解冻入口的契约（管理员专属；须原因＋显式确认）', () => {
+      expect(mutationField('forceReleaseLocalRestoreIncident')?.type.toString()).toBe(
+        'LocalRestoreIncidentRelease!',
+      );
+      // 现场对应的恢复 ID 必填
+      expect(argType(mutationField('forceReleaseLocalRestoreIncident'), 'restoreId')).toBe(
+        'String!',
+      );
+      // 处置原因必填（不留空 ⇒ 服务端直接拒绝）
+      expect(argType(mutationField('forceReleaseLocalRestoreIncident'), 'reason')).toBe('String!');
+      // 显式确认必填（服务端不代填"是"）
+      expect(argType(mutationField('forceReleaseLocalRestoreIncident'), 'confirmed')).toBe(
+        'Boolean!',
+      );
+    });
+
+    it('恢复故障现场受控解冻结论的字段可空性符合契约（解冻不改判恢复结果）', () => {
+      // 结论与两个布尔必填：调用方不得靠"没返回"推断是否已解冻
+      expect(objectField('LocalRestoreIncidentRelease', 'outcome').type.toString()).toBe('String!');
+      expect(objectField('LocalRestoreIncidentRelease', 'released').type.toString()).toBe(
+        'Boolean!',
+      );
+      expect(objectField('LocalRestoreIncidentRelease', 'holdRetained').type.toString()).toBe(
+        'Boolean!',
+      );
+      // 受控原因码与说明可空（成功解除时为空）；恢复自身终态可空（恢复运行不存在时为空）
+      expect(objectField('LocalRestoreIncidentRelease', 'reasonCode').type.toString()).toBe(
+        'String',
+      );
+      expect(objectField('LocalRestoreIncidentRelease', 'reason').type.toString()).toBe('String');
+      expect(objectField('LocalRestoreIncidentRelease', 'restoreStatus').type.toString()).toBe(
+        'String',
+      );
     });
   });
 });

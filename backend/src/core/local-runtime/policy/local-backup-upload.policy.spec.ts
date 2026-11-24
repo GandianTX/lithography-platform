@@ -27,6 +27,12 @@ describe('local backup upload policy', () => {
     expect(computeUploadBackoffMinutes(50)).toBe(BACKUP_UPLOAD_MAX_BACKOFF_MINUTES);
   });
 
+  it('非法尝试次数不会产出 NaN（否则下次可尝试时间变成 Invalid Date，资产永远卡住）', () => {
+    expect(computeUploadBackoffMinutes(Number.NaN)).toBe(5);
+    expect(computeUploadBackoffMinutes(Number.POSITIVE_INFINITY)).toBe(5);
+    expect(Number.isNaN(computeNextUploadAttemptAt(Number.NaN, base, base).getTime())).toBe(false);
+  });
+
   it('从未尝试过立即可尝试；已失败过按最近尝试时间叠加退避', () => {
     expect(computeNextUploadAttemptAt(0, null, base).getTime()).toBe(base.getTime());
     expect(computeNextUploadAttemptAt(1, base, base).getTime()).toBe(base.getTime() + 5 * 60_000);
@@ -111,5 +117,50 @@ describe('local backup upload policy', () => {
       now: new Date(base.getTime() + 11 * 60_000),
     });
     expect(retry).toEqual({ action: 'RETRY', reason: 'BACKOFF_ELAPSED' });
+  });
+
+  it('本机包结构性失败（超限）⇒ 终态，不再进入退避重试', () => {
+    const decision = decideBackupUploadAttempt({
+      cloudStatus: 'FAILED',
+      attemptCount: 1,
+      lastAttemptAt: base,
+      autoUploadEnabled: true,
+      authorizationValid: true,
+      failureReason: 'CLOUD_PACKAGE_TOO_LARGE',
+      // 远晚于任何退避到期时刻：终态资产仍然不被重试
+      now: new Date(base.getTime() + 24 * 60 * 60_000),
+    });
+
+    expect(decision).toEqual({ action: 'SKIP', reason: 'TERMINAL_PACKAGE_INVALID' });
+  });
+
+  it('本机包结构性失败（清单不可读／清单与字节不一致）⇒ 同样是终态', () => {
+    for (const failureReason of ['CLOUD_PACKAGE_UNREADABLE', 'CLOUD_PACKAGE_INCOMPLETE']) {
+      const decision = decideBackupUploadAttempt({
+        cloudStatus: 'FAILED',
+        attemptCount: 3,
+        lastAttemptAt: base,
+        autoUploadEnabled: true,
+        authorizationValid: true,
+        failureReason,
+        now: new Date(base.getTime() + 24 * 60 * 60_000),
+      });
+
+      expect(decision).toEqual({ action: 'SKIP', reason: 'TERMINAL_PACKAGE_INVALID' });
+    }
+  });
+
+  it('远端/网络类失败仍按退避重试（不因本次改动被误判为终态）', () => {
+    const decision = decideBackupUploadAttempt({
+      cloudStatus: 'FAILED',
+      attemptCount: 1,
+      lastAttemptAt: base,
+      autoUploadEnabled: true,
+      authorizationValid: true,
+      failureReason: 'CLOUD_UNREACHABLE',
+      now: new Date(base.getTime() + 11 * 60_000),
+    });
+
+    expect(decision).toEqual({ action: 'RETRY', reason: 'BACKOFF_ELAPSED' });
   });
 });

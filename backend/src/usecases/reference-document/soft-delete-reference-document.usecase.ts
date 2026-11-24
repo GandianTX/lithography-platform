@@ -92,8 +92,9 @@ export class SoftDeleteReferenceDocumentUsecase {
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
     // 恢复期写入冻结：资料归属公司数据区正在恢复时不得删除
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: current.ownerOrganizationId,
+      transactionContext,
     });
 
     // 删除前生效正文进入快照：授权的历史追溯仍可读回删除前内容

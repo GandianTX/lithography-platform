@@ -119,8 +119,10 @@ export class ApplyLocalSyncConflictResolutionUsecase {
       }
 
       // 恢复期写入冻结：该公司数据区正在恢复时不得回写业务正文
-      await this.localWriteHoldService.assertCompanyWritable({
+      // 事务内版本：取范围共享锁并锁定读冻结事实 ⇒ 与恢复建立冻结互斥（P1-1）
+      await this.localWriteHoldService.assertCompanyWritableInTransaction({
         organizationId: locked.organizationId,
+        transactionContext,
       });
 
       // 资料分支的写权：正文修订只对一级管理员开放（来源资源真实写权口径）

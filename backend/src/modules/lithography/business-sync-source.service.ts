@@ -57,8 +57,24 @@ export const BUSINESS_SYNC_MAX_ORIGINAL_BYTES = 32 * 1024 * 1024;
  * 单次派发全部原件字节总量上限（64 MiB）。
  *
  * 单件都合法不代表整体合法：多件累加同样会把内存吃光。
+ *
+ * 判定时机：**在读取过程中**累计（见 `OriginalByteBudget`）——
+ * 此前是"全部读完再求和"，那时内存峰值已经付出去了，上限只剩事后否决的作用。
  */
 export const BUSINESS_SYNC_MAX_TOTAL_ORIGINAL_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 原件字节预算（单次派发的累计用量）。
+ *
+ * 为什么要有"预算"对象：总量上限必须在**读取每一件的过程中**判定，
+ * 否则"读完 3 件才发现总量超限"时，内存已经被占满——上限形同虚设。
+ */
+export type OriginalByteBudget = {
+  /** 已成功读取的字节累计 */
+  used: number;
+  /** 本次派发允许的字节总量 */
+  limit: number;
+};
 
 /** 候选记录事实（准入裁决的输入） */
 export type BusinessSyncSourceCandidate = {
@@ -224,13 +240,18 @@ export class BusinessSyncSourceService {
     recordUuid: string;
     versionNo: number;
   }): Promise<BusinessSyncSourcePayload> {
+    // 预算对象贯穿本次读取：总量上限在**读取每一件的过程中**判定（D4）
+    const budget: OriginalByteBudget = {
+      used: 0,
+      limit: BUSINESS_SYNC_MAX_TOTAL_ORIGINAL_BYTES,
+    };
     const payload =
       input.resourceType === 'REFERENCE_DOCUMENT'
-        ? await this.readDocumentPayload(input)
+        ? await this.readDocumentPayload(input, budget)
         : input.resourceType === 'REPAIR_REQUEST'
-          ? await this.readRepairRequestPayload(input)
-          : await this.readReportPayload(input);
-    // 总量纪律：单件都合法不代表整体合法（多件累加同样会吃光内存）
+          ? await this.readRepairRequestPayload(input, budget)
+          : await this.readReportPayload(input, budget);
+    // 兜底复核：任何未经过读取预算的路径都不允许绕过总量上限
     const totalBytes = payload.originalPayloads.reduce(
       (sum, item) => sum + item.bytes.byteLength,
       0,
@@ -242,11 +263,14 @@ export class BusinessSyncSourceService {
   }
 
   /** 资料记录：正文取当前修订内容，原件取本机存储文件（实测校验值） */
-  private async readDocumentPayload(input: {
-    recordId: number;
-    recordUuid: string;
-    versionNo: number;
-  }): Promise<BusinessSyncSourcePayload> {
+  private async readDocumentPayload(
+    input: {
+      recordId: number;
+      recordUuid: string;
+      versionNo: number;
+    },
+    budget: OriginalByteBudget,
+  ): Promise<BusinessSyncSourcePayload> {
     const row = await this.referenceDocumentRepository.findOne({
       where: { id: input.recordId },
     });
@@ -270,7 +294,7 @@ export class BusinessSyncSourceService {
     if (row.storageBackend !== null && row.storageReference !== null) {
       // 原件**字节**：清单说"传什么"，字节说"真的传了什么"——两者必须逐项对上。
       // 字节只读一次并同时用于计量与送出（避免"计量一份、送出另一份"的时序错位）。
-      const bytes = await this.readStoredFileBytes(row.storageReference);
+      const bytes = await this.readStoredFileBytes(row.storageReference, budget);
       const relativePath = `originals/${sanitizeOriginalName(row.originalFilename)}`;
       originals.push({
         relativePath,
@@ -299,11 +323,14 @@ export class BusinessSyncSourceService {
   }
 
   /** 工单：正文取当前修订内容，原件取登记的维修附件 */
-  private async readRepairRequestPayload(input: {
-    recordId: number;
-    recordUuid: string;
-    versionNo: number;
-  }): Promise<BusinessSyncSourcePayload> {
+  private async readRepairRequestPayload(
+    input: {
+      recordId: number;
+      recordUuid: string;
+      versionNo: number;
+    },
+    budget: OriginalByteBudget,
+  ): Promise<BusinessSyncSourcePayload> {
     const row = await this.repairRequestRepository.findOne({ where: { id: input.recordId } });
     if (row === null) {
       throw new Error('来源记录不存在');
@@ -328,7 +355,7 @@ export class BusinessSyncSourceService {
       if (stored === null || stored.checksumSha256 === null) {
         throw new Error('登记的维修附件原件缺少校验值');
       }
-      const bytes = await this.readStoredFileBytes(stored.storageReference);
+      const bytes = await this.readStoredFileBytes(stored.storageReference, budget);
       const relativePath = `originals/${sanitizeOriginalName(stored.originalFilename)}`;
       // 清单用**登记校验值**（附件表的事实）；与实际字节是否一致由派发前的
       // "字节 vs 清单"复核判定（不一致即不派发），不在这里悄悄改写登记事实
@@ -359,11 +386,14 @@ export class BusinessSyncSourceService {
   }
 
   /** 维修报告：正文取冻结版本快照，原件取当前附件集合 */
-  private async readReportPayload(input: {
-    recordId: number;
-    recordUuid: string;
-    versionNo: number;
-  }): Promise<BusinessSyncSourcePayload> {
+  private async readReportPayload(
+    input: {
+      recordId: number;
+      recordUuid: string;
+      versionNo: number;
+    },
+    budget: OriginalByteBudget,
+  ): Promise<BusinessSyncSourcePayload> {
     const versionRow = await this.reportVersionRepository.findOne({
       where: { reportId: input.recordId, versionNo: input.versionNo },
     });
@@ -401,7 +431,7 @@ export class BusinessSyncSourceService {
       });
       originalPayloads.push({
         relativePath,
-        bytes: await this.readStoredFileBytes(attachment.storageReference),
+        bytes: await this.readStoredFileBytes(attachment.storageReference, budget),
       });
     }
 
@@ -428,10 +458,16 @@ export class BusinessSyncSourceService {
    *
    * 读不到即抛错：宁可本机不派发，也不送出一份"清单说有、字节其实没有"的包。
    *
-   * 大小纪律：单件超过 `BUSINESS_SYNC_MAX_ORIGINAL_BYTES` 即中止读取并抛错
-   * （字节要整读进内存再送 multipart，没有上限就等于一个超大文件把 Worker 内存吃光）。
+   * 大小纪律（两道闸门，都在**读取过程中**判定）：
+   * - 单件超过 `BUSINESS_SYNC_MAX_ORIGINAL_BYTES` 即中止读取并抛错
+   *   （字节要整读进内存再送 multipart，没有上限就等于一个超大文件把 Worker 内存吃光）；
+   * - 本次派发**累计**超过 `BUSINESS_SYNC_MAX_TOTAL_ORIGINAL_BYTES` 同样在读取过程中中止
+   *   （多件累加也会吃光内存；此前是"全部读完再求和"，上限只剩事后否决的作用）。
    */
-  private async readStoredFileBytes(storageReference: string): Promise<Uint8Array> {
+  private async readStoredFileBytes(
+    storageReference: string,
+    budget: OriginalByteBudget,
+  ): Promise<Uint8Array> {
     const stream = await this.fileStorage.open(storageReference);
     const chunks: Buffer[] = [];
     let byteSize = 0;
@@ -444,11 +480,17 @@ export class BusinessSyncSourceService {
           reject(new Error(`原件超过单件上限（${BUSINESS_SYNC_MAX_ORIGINAL_BYTES} 字节），不派发`));
           return;
         }
+        if (budget.used + byteSize > budget.limit) {
+          stream.destroy();
+          reject(new Error(`原件总量超过上限（${budget.limit} 字节），不派发`));
+          return;
+        }
         chunks.push(buffer);
       });
       stream.on('error', reject);
       stream.on('end', () => resolve());
     });
+    budget.used += byteSize;
     return new Uint8Array(Buffer.concat(chunks));
   }
 }

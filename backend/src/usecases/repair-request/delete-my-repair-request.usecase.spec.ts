@@ -74,7 +74,9 @@ describe('DeleteMyRepairRequestUsecase', () => {
       intakeService as unknown as RepairRequestIntakeService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       asyncTaskRecordService as unknown as AsyncTaskRecordService,

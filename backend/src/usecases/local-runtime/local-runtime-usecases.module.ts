@@ -16,6 +16,7 @@ import { FinishLocalBackupUsecase } from './finish-local-backup.usecase';
 import { GetLocalRuntimeSettingsUsecase } from './get-local-runtime-settings.usecase';
 import { GetLocalRuntimeStatusUsecase } from './get-local-runtime-status.usecase';
 import { MaintenanceReportSyncStatusReaderAdapter } from '@src/infrastructure/sync/task09-maintenance-report-sync-status-reader';
+import { LocalRestoreExecutionCapabilityProbe } from '@src/modules/lithography/local-restore-execution-capability.probe';
 import { ListLocalBackupRunsUsecase } from './list-local-backup-runs.usecase';
 import { ListLocalUploadTasksUsecase } from './list-local-upload-tasks.usecase';
 import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
@@ -31,6 +32,7 @@ import { ImportRecordPackageUsecase } from './import-record-package.usecase';
 import { UpdateLocalBackupPlanUsecase } from './update-local-backup-plan.usecase';
 import { AcceptLocalRestoreUsecase } from './accept-local-restore.usecase';
 import { ExecuteLocalRestoreUsecase } from './execute-local-restore.usecase';
+import { ForceReleaseLocalRestoreIncidentUsecase } from './force-release-local-restore-incident.usecase';
 import {
   DownloadLocalBackupCloudPackageUsecase,
   ListLocalBackupCloudPackagesUsecase,
@@ -50,6 +52,7 @@ import { StartLocalUploadAttemptUsecase } from './start-local-upload-attempt.use
 import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settings.usecase';
 import { QuerySyncStatusesUsecase } from './query-sync-statuses.usecase';
 import { LOCAL_SYNC_STATUS_READER } from '@src/usecases/common/ports/local-sync-status-reader.contract';
+import { RESTORE_EXECUTION_CAPABILITY } from '@src/usecases/common/ports/restore-execution-capability.contract';
 import { SYNC_STATUS_QUERY } from './sync-status.contract';
 
 /**
@@ -96,6 +99,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     UpdateLocalBackupPlanUsecase,
     AcceptLocalRestoreUsecase,
     ExecuteLocalRestoreUsecase,
+    ForceReleaseLocalRestoreIncidentUsecase,
     ListLocalBackupCloudPackagesUsecase,
     DownloadLocalBackupCloudPackageUsecase,
     RecordPackageOriginalStagingService,
@@ -115,6 +119,12 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     {
       provide: LOCAL_SYNC_STATUS_READER,
       useExisting: MaintenanceReportSyncStatusReaderAdapter,
+    },
+    // 恢复执行能力的真实探测（review 遗留 L1）：此前该端口无 provider，
+    // 能力查询恒报「不可用」，与实际可用的执行链自相矛盾。
+    {
+      provide: RESTORE_EXECUTION_CAPABILITY,
+      useExisting: LocalRestoreExecutionCapabilityProbe,
     },
   ],
   exports: [
@@ -144,6 +154,7 @@ import { SYNC_STATUS_QUERY } from './sync-status.contract';
     UpdateLocalBackupPlanUsecase,
     AcceptLocalRestoreUsecase,
     ExecuteLocalRestoreUsecase,
+    ForceReleaseLocalRestoreIncidentUsecase,
     ListLocalBackupCloudPackagesUsecase,
     DownloadLocalBackupCloudPackageUsecase,
     RecordPackageOriginalStagingService,

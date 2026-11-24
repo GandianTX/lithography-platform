@@ -25,7 +25,7 @@
 import { Test } from '@nestjs/testing';
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -35,6 +35,12 @@ import { DataSource } from 'typeorm';
 import { parse as parseDotenv } from 'dotenv';
 
 import { createAssertionCollector } from './task09-script-utils';
+
+import { isBackupPackagePathInside } from '@core/local-runtime/policy/local-backup-cleanup.policy';
+import {
+  LOCAL_BACKUP_STORAGE,
+  type LocalBackupStorageConfig,
+} from '@usecases/common/ports/protected-backup.contract';
 
 import { AppConfigModule } from '@src/infrastructure/config/config.module';
 import { loadExplicitEnvConfig } from '@src/infrastructure/database/incremental-migration';
@@ -72,7 +78,8 @@ const CLOUD_CREDENTIAL = 'task09-controlled-cloud-credential';
 const CLOUD_PURPOSE = 'CLOUD_BACKUP';
 
 /** 故障模式 */
-type CloudMode = 'normal' | 'server-error' | 'missing-receipt' | 'unauthorized';
+type CloudMode =
+  'normal' | 'server-error' | 'missing-receipt' | 'non-json-receipt' | 'unauthorized';
 
 type CloudPackageRecord = {
   packageId: string;
@@ -263,6 +270,13 @@ class ControlledCloud {
       content,
     });
 
+    if (this.mode === 'non-json-receipt') {
+      // 回执**不是 JSON**（形态非法）：本机侧必须按失败处理——
+      // 成功判定与「手动清理授权」同口径（可解析为 JSON ＋ 明确成功语义）
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ cloudReference: `cloud://${packageId}`, receipt: 'ok' }));
+      return;
+    }
     if (this.mode === 'missing-receipt') {
       // 形态非法：只给引用、不给完整回执 —— 本机侧必须按失败处理（不得当成成功）
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -334,6 +348,8 @@ function readRequestBody(request: IncomingMessage): Promise<Buffer> {
 
 type ChainContext = {
   dataSource: import('typeorm').DataSource;
+  /** 本机备份包落点根目录（回收时只允许删根目录内的包目录） */
+  backupStorageRoot: string;
   startManualBackup: StartManualLocalBackupUsecase;
   cleanupPackages: CleanupLocalBackupPackagesUsecase;
   listCloudPackages: ListLocalBackupCloudPackagesUsecase;
@@ -406,6 +422,7 @@ async function bootstrap(cloudBaseUrl: string): Promise<ChainContext> {
     listCloudPackages: moduleRef.get(ListLocalBackupCloudPackagesUsecase),
     downloadCloudPackage: moduleRef.get(DownloadLocalBackupCloudPackageUsecase),
     uploadService: moduleRef.get(LocalBackupUploadService),
+    backupStorageRoot: moduleRef.get<LocalBackupStorageConfig>(LOCAL_BACKUP_STORAGE).baseDir,
   };
 }
 
@@ -559,6 +576,44 @@ async function readAsset(
   return dataSource.getRepository(BackupAssetEntity).findOne({ where: { backupId } });
 }
 
+/**
+ * **本轮**生成的备份包标识（用于结束时按本轮标识精确回收）。
+ *
+ * 为什么必须精确到"本轮"：脚本跑在**隔离库**上，但资产行与包目录会逐轮累积
+ * （此前三轮后 35 行资产／22 个包目录／4.6 MB），而"清理掉别人留下的东西"
+ * 既做不到也不该做 ⇒ 只回收**本轮自己生成**的那些。
+ */
+const createdBackupIds = new Set<string>();
+
+/**
+ * 按本轮标识精确回收本轮生成的**资产行**与**包目录**。
+ *
+ * 口径：
+ * - 只处理 `createdBackupIds` 里的备份（本轮自己生成的）；
+ * - 包目录删除前复用生产同一条路径闸门（`isBackupPackagePathInside`）：
+ *   不在备份根目录内的路径**一律不删**（宁可留残留，也不误删）；
+ * - 资产行按 `backup_id` 精确删除（已被清理链删掉的行自动跳过）。
+ */
+async function reclaimRunArtifacts(ctx: ChainContext): Promise<void> {
+  const repository = ctx.dataSource.getRepository(BackupAssetEntity);
+  for (const backupId of createdBackupIds) {
+    const asset = await repository.findOne({ where: { backupId } });
+    if (asset === null) {
+      continue;
+    }
+    const localReference = asset.localReference;
+    if (
+      localReference !== null &&
+      localReference !== '' &&
+      isBackupPackagePathInside(ctx.backupStorageRoot, localReference)
+    ) {
+      rmSync(localReference, { recursive: true, force: true });
+    }
+    await repository.delete({ backupId });
+  }
+  createdBackupIds.clear();
+}
+
 /** 本机包是否还在磁盘上（真实副作用断言，不看状态字段） */
 function localPackageExists(localReference: string | null): boolean {
   return localReference !== null && existsSync(localReference);
@@ -584,6 +639,7 @@ async function runHappyPath(
     return null;
   }
   check(`${label}：手动备份生成受保护包`, true, `backupId=${backup.backupId}`);
+  createdBackupIds.add(backup.backupId);
 
   const assetBefore = await readAsset(ctx.dataSource, backup.backupId);
   const localReference = assetBefore?.localReference ?? null;
@@ -618,6 +674,158 @@ async function runHappyPath(
     `received=${cloud.lastUploadByteSize}B files=${cloud.lastUploadFilePartCount}`,
   );
   return backup.backupId;
+}
+
+/**
+ * 场景 5（D5）：清单登记了一件原件，但包内**读不到** ⇒ 上传必须失败关闭。
+ *
+ * 为什么这样造：清单是包的**权威内容清单**；"清单说有、包里没有"绝不能被当作
+ * "上传成功"——否则云端拿到的是一份缺原件的包，却收到成功回执。
+ *
+ * 造法：生成真实本机包 → 在清单里追加一件并不存在的原件 → 同步更新资产行的
+ * 清单摘要（否则会先被"清单摘要不符"这一闸门拦下，测不到"清单 ↔ 字节"这一闸门）。
+ */
+async function runManifestOriginalMismatchScenario(
+  ctx: ChainContext,
+  cloud: ControlledCloud,
+  session: UsecaseSession,
+): Promise<void> {
+  cloud.mode = 'normal';
+  const backup = await ctx.startManualBackup.execute({ session });
+  if (backup.status !== 'SUCCEEDED' || backup.backupId === null) {
+    check('清单缺件：手动备份生成受保护包', false, `status=${backup.status}`);
+    return;
+  }
+  createdBackupIds.add(backup.backupId);
+  const asset = await readAsset(ctx.dataSource, backup.backupId);
+  const localReference = asset?.localReference ?? null;
+  if (localReference === null) {
+    check('清单缺件：本机包真实落盘', false, 'localReference=null');
+    return;
+  }
+  const manifestPath = join(localReference, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    files: Array<{ relative_path: string; sha256: string; byte_size: number }>;
+  };
+  manifest.files.push({
+    relative_path: 'files/task09-missing-original.bin',
+    sha256: 'a'.repeat(64),
+    byte_size: 10,
+  });
+  const raw = JSON.stringify(manifest);
+  writeFileSync(manifestPath, raw, 'utf8');
+  // 资产行的清单摘要同步更新（隔离库内本轮自己写的行）
+  await ctx.dataSource.query('UPDATE backup_asset SET manifest_checksum = ? WHERE backup_id = ?', [
+    createHash('sha256').update(raw).digest('hex'),
+    backup.backupId,
+  ]);
+
+  const packagesBefore = cloud.packages.size;
+  const cycle = await ctx.uploadService.runOnce(new Date());
+  const assetAfter = await readAsset(ctx.dataSource, backup.backupId);
+  check(
+    '清单缺件：按失败处理（不伪造成功）',
+    assetAfter?.cloudStatus === 'FAILED' && (assetAfter?.cloudReceipt ?? null) === null,
+    `cloudStatus=${assetAfter?.cloudStatus ?? 'null'} receipt=${assetAfter?.cloudReceipt ?? 'null'} failed=${cycle.failed}`,
+  );
+  check(
+    '清单缺件：云端没有收到该包（不得拿到缺件却判成功）',
+    cloud.packages.size === packagesBefore,
+    `packages=${cloud.packages.size}`,
+  );
+  check(
+    '清单缺件：本机包保留（未删）',
+    localPackageExists(assetAfter?.localReference ?? null),
+    `localReference=${assetAfter?.localReference ?? 'null'}`,
+  );
+}
+
+/**
+ * 场景 6（第 10 项 L2）：备份包**超出上传大小上限** ⇒ 终态失败，**不再按退避无限重试**。
+ *
+ * 为什么必须实测：同一份备份包一旦生成就是**不可变**的，超限是**确定性**失败——
+ * 重试多少次都会撞同一道上限。此前资产行会以 FAILED 留在可重试集合里，
+ * 按退避周期（5→10→…→60 分钟）**无限重试且永不收敛**，白烧资源。
+ *
+ * 造法：生成真实本机包 → 把清单里某一件的**声明字节数**改成远超任何上限的值
+ * （清单字节数是声明值；上限闸门在读取载荷字节**之前**判定，故不需要真的造大文件）
+ * → 同步更新资产行的清单摘要（否则会先被"清单摘要不符"拦下，测不到上限闸门）。
+ */
+async function runOversizePackageTerminalScenario(
+  ctx: ChainContext,
+  cloud: ControlledCloud,
+  session: UsecaseSession,
+): Promise<void> {
+  cloud.mode = 'normal';
+  const backup = await ctx.startManualBackup.execute({ session });
+  if (backup.status !== 'SUCCEEDED' || backup.backupId === null) {
+    check('超限包：手动备份生成受保护包', false, `status=${backup.status}`);
+    return;
+  }
+  createdBackupIds.add(backup.backupId);
+  const asset = await readAsset(ctx.dataSource, backup.backupId);
+  const localReference = asset?.localReference ?? null;
+  if (localReference === null) {
+    check('超限包：本机包真实落盘', false, 'localReference=null');
+    return;
+  }
+
+  const manifestPath = join(localReference, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    files: Array<{ relative_path: string; sha256: string; byte_size: number }>;
+  };
+  const first = manifest.files[0];
+  if (first === undefined) {
+    check('超限包：清单可解析且非空', false, 'files=[]');
+    return;
+  }
+  first.byte_size = Number.MAX_SAFE_INTEGER;
+  const raw = JSON.stringify(manifest);
+  writeFileSync(manifestPath, raw, 'utf8');
+  await ctx.dataSource.query('UPDATE backup_asset SET manifest_checksum = ? WHERE backup_id = ?', [
+    createHash('sha256').update(raw).digest('hex'),
+    backup.backupId,
+  ]);
+
+  const packagesBefore = cloud.packages.size;
+  const cycle = await ctx.uploadService.runOnce(new Date());
+  const assetAfter = await readAsset(ctx.dataSource, backup.backupId);
+  check(
+    '超限包：按失败处理并保留受控原因码（不得抹平成"上传失败"）',
+    assetAfter?.cloudStatus === 'FAILED' &&
+      assetAfter?.failureReason === 'CLOUD_PACKAGE_TOO_LARGE' &&
+      (assetAfter?.cloudReceipt ?? null) === null,
+    `cloudStatus=${assetAfter?.cloudStatus ?? 'null'} reason=${assetAfter?.failureReason ?? 'null'} failed=${cycle.failed}`,
+  );
+  check(
+    '超限包：云端没有收到该包（不得上传半截或跳过闸门）',
+    cloud.packages.size === packagesBefore,
+    `packages=${cloud.packages.size}`,
+  );
+  check(
+    '超限包：本机包保留（未删）',
+    localPackageExists(assetAfter?.localReference ?? null),
+    `localReference=${assetAfter?.localReference ?? 'null'}`,
+  );
+
+  // 第二轮（远超任何退避到期时刻）：终态资产**不得再被尝试**
+  const attemptCountAfterFirst = assetAfter?.attemptCount ?? -1;
+  const second = await ctx.uploadService.runOnce(new Date(Date.now() + 24 * 60 * 60_000));
+  const assetAfterSecond = await readAsset(ctx.dataSource, backup.backupId);
+  // 精确断言到**本资产**：同轮里其它可重试资产仍会被尝试，
+  // 所以不能用整轮的 attempted 计数来判断本资产是否被重试。
+  check(
+    '超限包：第二轮不再尝试（终态，不按退避无限重试）',
+    (assetAfterSecond?.attemptCount ?? -1) === attemptCountAfterFirst &&
+      assetAfterSecond?.cloudStatus === 'FAILED' &&
+      assetAfterSecond?.failureReason === 'CLOUD_PACKAGE_TOO_LARGE',
+    `attemptCount=${assetAfterSecond?.attemptCount ?? 'null'} (第一轮 ${attemptCountAfterFirst}) reason=${assetAfterSecond?.failureReason ?? 'null'}`,
+  );
+  check(
+    '超限包：同一轮里其它可重试资产仍在重试（证明本轮不是空转、断言有效）',
+    second.attempted > 0,
+    `round attempted=${second.attempted} skipped=${second.skipped} failed=${second.failed}`,
+  );
 }
 
 /** 主流程 */
@@ -751,6 +959,28 @@ async function main(): Promise<void> {
       );
     }
 
+    // ── 场景 4：回执非 JSON（D7）⇒ 上传不算成功 ⇒ 零清理
+    cloud.mode = 'non-json-receipt';
+    const nonJsonId = await runHappyPath(ctx, cloud, session, '回执非 JSON');
+    if (nonJsonId !== null) {
+      const asset = await readAsset(ctx.dataSource, nonJsonId);
+      check(
+        '回执非 JSON：形态非法 ⇒ 按失败处理（不得当成成功）',
+        asset?.cloudStatus === 'FAILED' && (asset?.cloudReceipt ?? null) === null,
+        `cloudStatus=${asset?.cloudStatus ?? 'null'} receipt=${asset?.cloudReceipt ?? 'null'}`,
+      );
+      const cleanup = await ctx.cleanupPackages.execute({ session, mode: 'MANUAL' });
+      check(
+        '回执非 JSON：无完整回执 ⇒ 零清理',
+        cleanup.available === false && cleanup.cleaned === 0,
+        `available=${cleanup.available} cleaned=${cleanup.cleaned}`,
+      );
+    }
+
+    // ── 场景 5：清单登记了原件但包内读不到（D5）⇒ 不上传成功
+    await runManifestOriginalMismatchScenario(ctx, cloud, session);
+    await runOversizePackageTerminalScenario(ctx, cloud, session);
+
     // ── 场景 4：凭据不符 ⇒ 云端拒绝（401）⇒ 按失败处理
     cloud.mode = 'unauthorized';
     cloud.setCredential('wrong-credential');
@@ -766,6 +996,15 @@ async function main(): Promise<void> {
   } finally {
     await cloud.stop();
     if (ctx !== null) {
+      // 按本轮标识精确回收（本轮生成的资产行与包目录），
+      // 避免隔离库与本机文件根逐轮累积；失败也不影响断言结论。
+      try {
+        await reclaimRunArtifacts(ctx);
+      } catch (error) {
+        process.stderr.write(
+          `[cloud] 本轮产物回收失败（不影响断言结论）：${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
       await ctx.dataSource.destroy();
     }
   }

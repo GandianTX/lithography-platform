@@ -249,11 +249,52 @@ function parseBaselineCount(total: number): number | null {
 }
 
 /**
+ * 安全地把驱动返回值转成文本（避免对象默认字符串化）。
+ */
+function readText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return '';
+}
+
+/**
+ * 读取目标表实际存在的列名集合（用于按基线形态构造 fixture）。
+ */
+async function readExistingColumns(
+  dataSource: DataSource,
+  tableName: string,
+): Promise<Set<string>> {
+  const rows: unknown = await dataSource.query(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE()
+        AND table_name = ?
+    `,
+    [tableName],
+  );
+  if (!isQueryRows(rows)) {
+    throw new Error(`读取 ${tableName} 列清单失败，返回格式异常`);
+  }
+  return new Set(rows.map((row) => readText(row['column_name'] ?? row['COLUMN_NAME'])));
+}
+
+/**
  * 在旧基线库上写入旧表旧列可用的 fixture，模拟旧库数据。
  *
- * 基线可能早于也可能晚于「给 reference_document 补组织归属列」的迁移：
- * 早于时按旧列形态写入，由后续迁移回填；晚于时新列已收紧为 NOT NULL，
- * 必须显式写入归属组织与入库方式（不能让 fixture 依赖“该迁移尚未执行”）。
+ * 基线可能早于也可能晚于「给 reference_document 补组织归属列」与
+ * 「收紧 reference_document 审核/发布列」的迁移：
+ * - 早于时按旧列形态写入，由后续迁移回填；
+ * - 晚于时新列已收紧为 **NOT NULL 且无默认值**，必须显式写入归属组织、
+ *   入库方式、发布状态、归属状态与来源种类（不能让 fixture 依赖“该迁移尚未执行”）。
+ *
+ * 口径：按**实际存在的列**构造 INSERT，不写死某一条基线的列集合，
+ * 否则基线一变（本次任务 09 的真实基线是 49 条迁移）演练就会因
+ * “Field 'publication_status' doesn't have a default value”假失败。
  */
 async function insertLegacyUpgradeFixtures(dataSource: DataSource): Promise<void> {
   await dataSource.query(
@@ -263,38 +304,74 @@ async function insertLegacyUpgradeFixtures(dataSource: DataSource): Promise<void
     `INSERT INTO \`base_user_account\` (\`id\`, \`login_name\`, \`login_password\`, \`status\`) VALUES (900001, 't02_legacy_user', 'legacy-password-hash', 'ACTIVE')`,
   );
 
-  const legacyDocumentHasOrganizationColumns = await hasQueryResult(
-    dataSource,
-    `
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema = DATABASE()
-        AND table_name = 'reference_document'
-        AND column_name = 'owner_organization_id'
-      LIMIT 1
-    `,
-    [],
-  );
+  const documentColumns = await readExistingColumns(dataSource, 'reference_document');
 
-  if (!legacyDocumentHasOrganizationColumns) {
+  // 归属组织：只有该列存在时才需要 CLIENT_DEFAULT 组织与外键取值。
+  let ownerId: number | null = null;
+  if (documentColumns.has('owner_organization_id')) {
     await dataSource.query(
-      `INSERT INTO \`reference_document\` (\`id\`, \`title\`, \`document_type\`, \`equipment_model_id\`, \`content_text\`, \`created_by_account_id\`, \`deprecated\`, \`deleted_at\`) VALUES (900001, 'T02 旧资料', 'MANUAL', 900001, 'T02 旧库升级基线内容', 900001, 0, NULL)`,
+      `INSERT IGNORE INTO \`organization\` (\`organization_code\`, \`name\`, \`kind\`, \`status\`) VALUES ('CLIENT_DEFAULT', '甲方默认组织', 'CLIENT', 'ACTIVE')`,
     );
-    return;
+    const ownerRows: unknown = await dataSource.query(
+      `SELECT \`id\` FROM \`organization\` WHERE \`organization_code\` = 'CLIENT_DEFAULT' LIMIT 1`,
+    );
+    if (!isQueryRows(ownerRows) || ownerRows.length === 0) {
+      throw new Error('旧基线已含组织归属列，但无法解析 CLIENT_DEFAULT 组织');
+    }
+    ownerId = Number(ownerRows[0]['id'] ?? ownerRows[0]['ID']);
   }
 
-  await dataSource.query(
-    `INSERT IGNORE INTO \`organization\` (\`organization_code\`, \`name\`, \`kind\`, \`status\`) VALUES ('CLIENT_DEFAULT', '甲方默认组织', 'CLIENT', 'ACTIVE')`,
-  );
-  const ownerRows: unknown = await dataSource.query(
-    `SELECT \`id\` FROM \`organization\` WHERE \`organization_code\` = 'CLIENT_DEFAULT' LIMIT 1`,
-  );
-  if (!isQueryRows(ownerRows) || ownerRows.length === 0) {
-    throw new Error('旧基线已含组织归属列，但无法解析 CLIENT_DEFAULT 组织');
+  const columns: string[] = [
+    'id',
+    'title',
+    'document_type',
+    'equipment_model_id',
+    'content_text',
+    'created_by_account_id',
+    'deprecated',
+    'deleted_at',
+  ];
+  const values: Array<string | number | null> = [
+    900001,
+    'T02 旧资料',
+    'MANUAL',
+    900001,
+    'T02 旧库升级基线内容',
+    900001,
+    0,
+    null,
+  ];
+
+  // 下列列在对应迁移之后被收紧为 NOT NULL 且无默认值 ⇒ 必须显式给合法值。
+  if (documentColumns.has('owner_organization_id')) {
+    columns.push('owner_organization_id');
+    values.push(ownerId);
   }
-  const ownerId = Number(ownerRows[0]['id'] ?? ownerRows[0]['ID']);
+  if (documentColumns.has('ingest_method')) {
+    columns.push('ingest_method');
+    values.push('ADMIN_DIRECT');
+  }
+  if (documentColumns.has('publication_status')) {
+    // CHECK：publication_status IN ('ONLINE','OFFLINE')
+    columns.push('publication_status');
+    values.push('ONLINE');
+  }
+  if (documentColumns.has('ownership_status')) {
+    // CHECK：(ownership_status = 'PENDING' OR owner_organization_id IS NOT NULL)
+    columns.push('ownership_status');
+    values.push(ownerId === null ? 'PENDING' : 'CONFIRMED');
+  }
+  if (documentColumns.has('source_kind')) {
+    // CHECK：source_kind IN ('INDEPENDENT_REPORT','WORK_ORDER_SUMMARY','MATERIAL')
+    columns.push('source_kind');
+    values.push('MATERIAL');
+  }
+
+  const placeholders = columns.map(() => '?').join(', ');
+  const columnList = columns.map((column) => `\`${column}\``).join(', ');
   await dataSource.query(
-    `INSERT INTO \`reference_document\` (\`id\`, \`title\`, \`document_type\`, \`equipment_model_id\`, \`content_text\`, \`created_by_account_id\`, \`deprecated\`, \`deleted_at\`, \`owner_organization_id\`, \`ingest_method\`) VALUES (900001, 'T02 旧资料', 'MANUAL', 900001, 'T02 旧库升级基线内容', 900001, 0, NULL, ?, 'ADMIN_DIRECT')`,
-    [ownerId],
+    `INSERT INTO \`reference_document\` (${columnList}) VALUES (${placeholders})`,
+    values,
   );
 }
 

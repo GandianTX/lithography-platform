@@ -20,6 +20,14 @@ import { BUSINESS_SYNC_ERROR, DomainError } from '@core/common/errors/domain-err
 /** 业务同步清单结构版本（云端回执与本机登记必须同版本） */
 export const BUSINESS_SYNC_MANIFEST_SCHEMA_VERSION = 1;
 
+/**
+ * 业务同步**扫描周期**（分钟，约 5 分钟）。
+ *
+ * 与备份自动上云的检测周期（`BACKUP_UPLOAD_DETECT_INTERVAL_MINUTES`）同口径：
+ * 两条链此前一处取策略常量、一处**硬编码字面量** ⇒ 调周期时行为不一致。
+ */
+export const BUSINESS_SYNC_DISPATCH_INTERVAL_MINUTES = 5;
+
 /** 原件清单条目（与本机存储实现解耦，只承载可核对的摘要事实） */
 export type BusinessSyncManifestOriginal = {
   /** 稳定相对路径（不含本机绝对路径） */

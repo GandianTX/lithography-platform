@@ -105,8 +105,9 @@ export class BindRepairProcessOriginalUsecase {
     });
 
     // 恢复期写入冻结：stored_file 属恢复范围表，冻结期不得绑定原件
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: membership.organizationId,
+      transactionContext,
     });
 
     const file = await this.storedFileService.lockForBinding(fileId, transactionContext);

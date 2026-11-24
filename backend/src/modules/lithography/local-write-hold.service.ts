@@ -14,9 +14,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { PinoLogger } from 'nestjs-pino';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
+
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 
 import {
+  decideIncidentForceReleaseVerdict,
   decideLocalWriteHoldVerdict,
   decideRestoreScopeOccupancyVerdict,
   decideWriteHoldReleaseVerdict,
@@ -25,10 +28,12 @@ import {
   type LocalWriteHoldFact,
 } from '@core/local-runtime/policy/local-write-hold.policy';
 import { DomainError, SYNC_ERROR } from '@core/common/errors/domain-error';
+import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 
 import { LocalWriteHoldEntity } from './entities/local-write-hold.entity';
 
 import { LocalRuntimeQueryService } from './queries/local-runtime.query.service';
+import { LocalWriteScopeLockService } from './local-write-scope-lock.service';
 
 /**
  * 恢复范围的**数据库级占用锁名**。
@@ -51,6 +56,7 @@ export class LocalWriteHoldService {
     @InjectRepository(LocalWriteHoldEntity)
     private readonly holdRepository: Repository<LocalWriteHoldEntity>,
     private readonly localRuntimeQueryService: LocalRuntimeQueryService,
+    private readonly scopeLockService: LocalWriteScopeLockService,
     private readonly logger: PinoLogger,
   ) {}
 
@@ -85,50 +91,58 @@ export class LocalWriteHoldService {
       input.installationId,
       input.organizationId,
       requestedRestoreId,
-      async () => {
-        const active = await this.holdRepository.find({
-          where: {
+      async () =>
+        await this.holdRepository.manager.transaction(async (manager) => {
+          // ⓿ **排他范围锁**（任务 09 独立验收 P1-1）：
+          //    与业务写入侧的共享锁互斥 ⇒ 冻结只在**在途业务事务提交或回滚之后**才成立。
+          //    没有这一步，"A 已检查未冻结但尚未提交 → B 建立冻结并开始恢复 → A 继续写入"
+          //    的窗口就仍然成立（业务侧只是"读"过冻结事实，没有与恢复共用任何锁）。
+          await this.scopeLockService.acquireExclusiveScopeLock({
+            manager,
             installationId: input.installationId,
             organizationId: input.organizationId,
-            holdType,
-            status: 'ACTIVE',
-          },
-        });
-        const occupancy = decideRestoreScopeOccupancyVerdict({
-          existingRestoreId: active[0]?.restoreId ?? null,
-          requestedRestoreId,
-          activeHoldCount: active.length,
-        });
-        if (!occupancy.allowed) {
-          throw new DomainError(SYNC_ERROR.WRITE_HELD, occupancy.reason, {
-            reasonCode: occupancy.reasonCode,
           });
-        }
-        const existing = active[0];
-        if (existing !== undefined) {
-          // 续用：刷新原因与时间；**归属不被改写**（旧实现会覆盖 restore_id）
-          existing.reason = input.reason;
-          existing.updatedAt = now;
-          await this.holdRepository.save(existing);
-          return { holdId: existing.holdId, created: false };
-        }
-        const holdId = randomUUID();
-        await this.holdRepository.save(
-          this.holdRepository.create({
-            holdId,
+          const active = await this.listHoldRows(manager, {
             installationId: input.installationId,
             organizationId: input.organizationId,
             holdType,
-            status: 'ACTIVE',
-            restoreId: requestedRestoreId,
-            reason: input.reason,
-            createdAt: now,
-            updatedAt: now,
-            releasedAt: null,
-          }),
-        );
-        return { holdId, created: true };
-      },
+          });
+          const occupancy = decideRestoreScopeOccupancyVerdict({
+            existingRestoreId: active[0]?.restoreId ?? null,
+            requestedRestoreId,
+            activeHoldCount: active.length,
+          });
+          if (!occupancy.allowed) {
+            throw new DomainError(SYNC_ERROR.WRITE_HELD, occupancy.reason, {
+              reasonCode: occupancy.reasonCode,
+            });
+          }
+          const existing = active[0];
+          const holdRepository = manager.getRepository(LocalWriteHoldEntity);
+          if (existing !== undefined) {
+            // 续用：刷新原因与时间；**归属不被改写**（旧实现会覆盖 restore_id）
+            existing.reason = input.reason;
+            existing.updatedAt = now;
+            await holdRepository.save(existing);
+            return { holdId: existing.holdId, created: false };
+          }
+          const holdId = randomUUID();
+          await holdRepository.save(
+            holdRepository.create({
+              holdId,
+              installationId: input.installationId,
+              organizationId: input.organizationId,
+              holdType,
+              status: 'ACTIVE',
+              restoreId: requestedRestoreId,
+              reason: input.reason,
+              createdAt: now,
+              updatedAt: now,
+              releasedAt: null,
+            }),
+          );
+          return { holdId, created: true };
+        }),
     );
   }
 
@@ -162,62 +176,72 @@ export class LocalWriteHoldService {
     const now = input.now ?? new Date();
     const requestedRestoreId = input.restoreId ?? null;
 
-    return await this.withScopeLock(input.installationId, input.organizationId, async () => {
-      const active = await this.holdRepository.find({
-        where: {
-          installationId: input.installationId,
-          organizationId: input.organizationId,
-          holdType,
-          status: 'ACTIVE',
-        },
-      });
-      if (active.length === 0) {
-        // 没有 ACTIVE 冻结：幂等语义，如实返回"未释放"
-        return 0;
-      }
-      if (input.holdId === undefined && requestedRestoreId === null) {
-        // 既不声明归属、也不给精确 ID ⇒ 按范围一刀切的释放，受控拒绝
-        throw new DomainError(
-          SYNC_ERROR.WRITE_HELD,
-          '解除冻结必须声明持有者（恢复 ID）或精确的冻结 ID，不接受按范围释放',
-          { reasonCode: LOCAL_WRITE_HOLD_REASON_CODES.RELEASE_NOT_PERMITTED_NOT_OWNER },
-        );
-      }
-      let targets: typeof active;
-      if (input.holdId !== undefined) {
-        // 精确路径：归属不符 ⇒ 受控拒绝（不释放）
-        const target = active.find((row) => row.holdId === input.holdId);
-        if (target === undefined) {
-          return 0;
-        }
-        const verdict = decideWriteHoldReleaseVerdict({
-          ownerRestoreId: target.restoreId ?? null,
-          requestedRestoreId,
-          hasActiveHold: true,
-        });
-        if (!verdict.allowed && verdict.reasonCode !== null) {
-          throw new DomainError(SYNC_ERROR.WRITE_HELD, verdict.reason, {
-            reasonCode: verdict.reasonCode,
+    return await this.withScopeLock(
+      input.installationId,
+      input.organizationId,
+      async () =>
+        await this.holdRepository.manager.transaction(async (manager) => {
+          // **排他范围锁**：解除冻结与在途业务写入串行（与建立冻结同一把锁）
+          await this.scopeLockService.acquireExclusiveScopeLock({
+            manager,
+            installationId: input.installationId,
+            organizationId: input.organizationId,
           });
-        }
-        targets = [target];
-      } else {
-        // 按归属路径：只解冻归属一致的那些（范围内的其它冻结不受影响）
-        targets = active.filter((row) => (row.restoreId ?? null) === requestedRestoreId);
-      }
-      if (targets.length === 0) {
-        return 0;
-      }
-      let released = 0;
-      for (const target of targets) {
-        const result = await this.holdRepository.update(
-          { holdId: target.holdId, status: 'ACTIVE' },
-          { status: 'RELEASED', releasedAt: now, updatedAt: now },
-        );
-        released += result.affected ?? 0;
-      }
-      return released;
-    });
+          const active = await this.listHoldRows(manager, {
+            installationId: input.installationId,
+            organizationId: input.organizationId,
+            holdType,
+          });
+          if (active.length === 0) {
+            // 没有 ACTIVE 冻结：幂等语义，如实返回"未释放"
+            return 0;
+          }
+          if (input.holdId === undefined && requestedRestoreId === null) {
+            // 既不声明归属、也不给精确 ID ⇒ 按范围一刀切的释放，受控拒绝
+            throw new DomainError(
+              SYNC_ERROR.WRITE_HELD,
+              '解除冻结必须声明持有者（恢复 ID）或精确的冻结 ID，不接受按范围释放',
+              { reasonCode: LOCAL_WRITE_HOLD_REASON_CODES.RELEASE_NOT_PERMITTED_NOT_OWNER },
+            );
+          }
+          let targets: typeof active;
+          if (input.holdId !== undefined) {
+            // 精确路径：归属不符 ⇒ 受控拒绝（不释放）
+            const target = active.find((row) => row.holdId === input.holdId);
+            if (target === undefined) {
+              return 0;
+            }
+            const verdict = decideWriteHoldReleaseVerdict({
+              ownerRestoreId: target.restoreId ?? null,
+              requestedRestoreId,
+              hasActiveHold: true,
+            });
+            if (!verdict.allowed && verdict.reasonCode !== null) {
+              throw new DomainError(SYNC_ERROR.WRITE_HELD, verdict.reason, {
+                reasonCode: verdict.reasonCode,
+              });
+            }
+            targets = [target];
+          } else {
+            // 按归属路径：只解冻归属一致的那些（范围内的其它冻结不受影响）
+            targets = active.filter((row) => (row.restoreId ?? null) === requestedRestoreId);
+          }
+          if (targets.length === 0) {
+            return 0;
+          }
+          let released = 0;
+          for (const target of targets) {
+            const result = await manager
+              .getRepository(LocalWriteHoldEntity)
+              .update(
+                { holdId: target.holdId, status: 'ACTIVE' },
+                { status: 'RELEASED', releasedAt: now, updatedAt: now },
+              );
+            released += result.affected ?? 0;
+          }
+          return released;
+        }),
+    );
   }
 
   /**
@@ -238,37 +262,91 @@ export class LocalWriteHoldService {
   }): Promise<number> {
     const holdType = input.holdType ?? LOCAL_WRITE_HOLD_TYPES.RESTORE;
     const now = input.now ?? new Date();
-    return await this.withScopeLock(input.installationId, input.organizationId, async () => {
-      const active = await this.holdRepository.find({
-        where: {
-          installationId: input.installationId,
-          organizationId: input.organizationId,
-          holdType,
-          status: 'ACTIVE',
-        },
-      });
-      const verdict = decideWriteHoldReleaseVerdict({
-        ownerRestoreId: active[0]?.restoreId ?? null,
-        requestedRestoreId: input.incidentRestoreId,
-        hasActiveHold: active.length > 0,
-      });
-      if (!verdict.allowed && verdict.reasonCode !== null) {
-        throw new DomainError(SYNC_ERROR.WRITE_HELD, verdict.reason, {
-          reasonCode: verdict.reasonCode,
-        });
-      }
-      const result = await this.holdRepository.update(
-        {
-          installationId: input.installationId,
-          organizationId: input.organizationId,
-          holdType,
-          status: 'ACTIVE',
-          restoreId: input.incidentRestoreId,
-        },
-        { status: 'RELEASED', releasedAt: now, updatedAt: now },
-      );
-      return result.affected ?? 0;
+    return await this.withScopeLock(
+      input.installationId,
+      input.organizationId,
+      async () =>
+        await this.holdRepository.manager.transaction(
+          async (manager) =>
+            await this.releaseForRecoveryIncidentInTransaction({
+              manager,
+              installationId: input.installationId,
+              organizationId: input.organizationId,
+              holdType,
+              incidentRestoreId: input.incidentRestoreId,
+              now,
+            }),
+        ),
+    );
+  }
+
+  /**
+   * 故障现场的强制解冻（**事务内动作**）：接受**调用方已有**的事务 manager。
+   *
+   * 为什么要拆出这一层（任务 09 恢复链最小修复 02）：
+   * - "解冻"与"成功处置审计"必须落在**同一个事务**里 ⇒ 解冻动作不能再自己开事务
+   *   （否则审计写失败时冻结已经提交，无法回滚）；
+   * - 但既有外层入口（{@link forceReleaseForRecoveryIncident}）的**对外行为**必须保持
+   *   不变（自己开事务 ＋ 命名锁 ＋ 排他范围锁）⇒ 由它复用本事务内动作。
+   *
+   * 锁：本方法在给定事务内取**排他范围锁**（与建立冻结同一把锁）⇒ 与在途业务写入
+   * （共享锁）互斥；同一事务内重复取同一把锁是幂等的（不会自锁）。
+   */
+  async releaseForRecoveryIncidentInTransaction(input: {
+    manager: EntityManager;
+    installationId: string;
+    organizationId: number;
+    holdType?: string;
+    incidentRestoreId: string;
+    now?: Date;
+  }): Promise<number> {
+    const holdType = input.holdType ?? LOCAL_WRITE_HOLD_TYPES.RESTORE;
+    const now = input.now ?? new Date();
+    // **排他范围锁**：与在途业务写入串行（与建立冻结同一把锁）
+    await this.scopeLockService.acquireExclusiveScopeLock({
+      manager: input.manager,
+      installationId: input.installationId,
+      organizationId: input.organizationId,
     });
+    const active = await this.listHoldRows(input.manager, {
+      installationId: input.installationId,
+      organizationId: input.organizationId,
+      holdType,
+    });
+    const owned = active.filter((row) => (row.restoreId ?? null) === input.incidentRestoreId);
+    const verdict = decideIncidentForceReleaseVerdict({
+      ownedHoldCount: owned.length,
+      incidentRestoreId: input.incidentRestoreId,
+    });
+    if (!verdict.allowed) {
+      throw new DomainError(SYNC_ERROR.WRITE_HELD, verdict.reason, {
+        reasonCode: verdict.reasonCode,
+      });
+    }
+    const result = await input.manager.getRepository(LocalWriteHoldEntity).update(
+      {
+        installationId: input.installationId,
+        organizationId: input.organizationId,
+        holdType,
+        status: 'ACTIVE',
+        restoreId: input.incidentRestoreId,
+      },
+      { status: 'RELEASED', releasedAt: now, updatedAt: now },
+    );
+    return result.affected ?? 0;
+  }
+
+  /**
+   * 在**数据库命名锁**保护下执行回调（与建立／解除冻结**同一把锁**、同一有界等待策略）。
+   *
+   * 供"解冻 ＋ 成功审计同事务"的处置入口复用：锁顺序固定为
+   * 「命名锁 → 事务内排他范围锁」，与既有建立／解除冻结路径一致 ⇒ 不引入新的死锁序。
+   */
+  async withRecoveryScopeLock<T>(
+    input: { installationId: string; organizationId: number },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    return await this.withScopeLock(input.installationId, input.organizationId, callback);
   }
 
   /**
@@ -439,14 +517,22 @@ export class LocalWriteHoldService {
   }
 
   /**
-   * 业务写入准入守卫：**本机未启用本地运行部署时按"无冻结"放行**。
+   * 业务写入准入守卫（**只读预检**）：**本机未启用本地运行部署时按"无冻结"放行**。
    *
-   * 与 `assertCompanyWritable` 的区别只在"本机安装身份缺失"这一种情况：
+   * 与 `assertCompanyWritable` 的区别只在"本机安装身份缺失"这一一种情况：
    * - 本机**已初始化**本地运行身份 ⇒ 与 `assertCompanyWritable` 同口径（冻结期失败关闭）；
    * - 本机**未初始化** ⇒ 该部署根本不具备本地备份/恢复能力，不存在恢复期冻结，
    *   此时若失败关闭会把既有业务写入（工单、报告、资料）整体打挂，故按放行处理。
    *
-   * 该方法供**业务域**写入口调用（任务 09 S2-1 冻结入口清单化核对）。
+   * ## 只读预检的边界（任务 09 独立验收 P1-1）
+   *
+   * 本方法**不持任何锁**，只读当前冻结事实 ⇒ 只能用于**任何副作用之前**的快速拒绝，
+   * **不能**作为"写入与恢复互斥"的依据。真正的互斥由
+   * {@link assertBusinessWritableInTransaction} 在业务事务内提供：
+   * 取范围共享锁并锁定读冻结事实，锁随事务提交／回滚释放。
+   *
+   * 两者配套使用：只读预检挡住"冻结已在生效"的写入（避免副作用），
+   * 事务内守卫挡住"冻结在写入途中建立"的写入（保证互斥）。
    */
   async assertBusinessWritable(input: {
     organizationId: number | null | undefined;
@@ -462,6 +548,144 @@ export class LocalWriteHoldService {
     await this.assertWritable({
       installationId: installation.installationId,
       organizationId: input.organizationId,
+    });
+  }
+
+  /**
+   * 业务写入准入守卫（**事务内版本**）：与恢复建立冻结**互斥**。
+   *
+   * 在**业务事务内**完成两件事，缺一不可：
+   * 1. 取**范围共享锁**（`FOR SHARE`）—— 锁随事务提交／回滚释放，
+   *    因此"检查未冻结"与"本次写入"之间不存在"恢复插进来"的窗口；
+   * 2. 以**锁定读**（当前读）读取冻结事实 —— 不受事务快照影响，
+   *    读到的就是"此刻真实的冻结事实"。
+   *
+   * 只读冻结事实而不持锁时，"A 读到未冻结 → B 建立冻结并恢复 → A 写入"
+   * 的窗口成立：恢复的整体替换会把 A 的写入覆盖掉，或让 A 的写入混进恢复结果。
+   *
+   * @param input.transactionContext 业务写入的**事务上下文**
+   *   （锁必须落在同一条事务连接上，否则锁与业务写入不再同生共死）
+   */
+  async assertBusinessWritableInTransaction(input: {
+    organizationId: number | null | undefined;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<void> {
+    if (input.organizationId === null || input.organizationId === undefined) {
+      // 归属公司为空 ⇒ 该行不属于任何公司数据区（与备份/恢复范围口径一致），不受冻结影响
+      return;
+    }
+    const installation = await this.localRuntimeQueryService.readInstallation();
+    if (installation === null) {
+      return;
+    }
+    const manager = getTypeOrmEntityManager(input.transactionContext);
+    // ① 范围共享锁：与恢复建立冻结的排他锁互斥 ⇒ 持有到本事务提交或回滚
+    await this.scopeLockService.acquireSharedScopeLock({
+      manager,
+      installationId: installation.installationId,
+      organizationId: input.organizationId,
+    });
+    // ② 锁定读冻结事实（当前读）：读到的是"此刻真实"的冻结事实
+    const holds = await this.listActiveFacts(manager, {
+      installationId: installation.installationId,
+      organizationId: input.organizationId,
+    });
+    const verdict = decideLocalWriteHoldVerdict({
+      organizationId: input.organizationId,
+      holds,
+    });
+    if (verdict.allowed) {
+      return;
+    }
+    throw new DomainError(SYNC_ERROR.WRITE_HELD, verdict.reason, {
+      reasonCode: LOCAL_WRITE_HOLD_REASON_CODES.WRITE_HELD_FOR_RESTORE,
+    });
+  }
+
+  /**
+   * 本机运行域的写入准入守卫（**事务内**版本）。
+   *
+   * 与 `assertCompanyWritable` 的区别：
+   * - 本机安装身份缺失 ⇒ **受控拒绝**（本机运行域必须先有安装身份）；
+   * - 在**事务内**取范围共享锁并锁定读冻结事实 ⇒ 与恢复建立冻结互斥。
+   *
+   * 供本机运行数据写入入口（上传任务派发、备份运行登记、记录包导入等）调用。
+   */
+  async assertCompanyWritableInTransaction(input: {
+    organizationId: number;
+    transactionContext: PersistenceTransactionContext;
+  }): Promise<void> {
+    const installation = await this.localRuntimeQueryService.readInstallation();
+    if (installation === null) {
+      throw new DomainError(SYNC_ERROR.INVALID_PARAMS, '本地安装身份未初始化');
+    }
+    const manager = getTypeOrmEntityManager(input.transactionContext);
+    await this.scopeLockService.acquireSharedScopeLock({
+      manager,
+      installationId: installation.installationId,
+      organizationId: input.organizationId,
+    });
+    const holds = await this.listActiveFacts(manager, {
+      installationId: installation.installationId,
+      organizationId: input.organizationId,
+    });
+    const verdict = decideLocalWriteHoldVerdict({
+      organizationId: input.organizationId,
+      holds,
+    });
+    if (verdict.allowed) {
+      return;
+    }
+    throw new DomainError(SYNC_ERROR.WRITE_HELD, verdict.reason, {
+      reasonCode: LOCAL_WRITE_HOLD_REASON_CODES.WRITE_HELD_FOR_RESTORE,
+    });
+  }
+
+  /**
+   * 事务内读取本范围的活动冻结事实（**锁定读**）。
+   *
+   * 用锁定读（`FOR SHARE`）而不是普通读：锁定读是"当前读"，
+   * 读到的永远是最新已提交版本，不会被事务快照回退成"冻结还不存在"。
+   */
+  private async listActiveFacts(
+    manager: EntityManager,
+    input: { installationId: string; organizationId: number },
+  ): Promise<LocalWriteHoldFact[]> {
+    const rows = await this.listHoldRows(
+      manager,
+      {
+        installationId: input.installationId,
+        organizationId: input.organizationId,
+        holdType: LOCAL_WRITE_HOLD_TYPES.RESTORE,
+      },
+      'pessimistic_read',
+    );
+    return rows.map((row) => ({
+      organizationId: row.organizationId,
+      holdType: row.holdType,
+      status: row.status,
+      reason: row.reason,
+    }));
+  }
+
+  /**
+   * 在事务内按范围读取冻结行（带行锁）。
+   *
+   * @param lockMode `pessimistic_read`＝共享锁（业务侧）／`pessimistic_write`＝排他锁（恢复侧）
+   */
+  private async listHoldRows(
+    manager: EntityManager,
+    input: { installationId: string; organizationId: number; holdType: string },
+    lockMode: 'pessimistic_read' | 'pessimistic_write' = 'pessimistic_write',
+  ): Promise<LocalWriteHoldEntity[]> {
+    return await manager.getRepository(LocalWriteHoldEntity).find({
+      where: {
+        installationId: input.installationId,
+        organizationId: input.organizationId,
+        holdType: input.holdType,
+        status: 'ACTIVE',
+      },
+      lock: { mode: lockMode },
     });
   }
 

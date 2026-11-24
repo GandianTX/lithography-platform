@@ -7,6 +7,10 @@ import * as nodePath from 'node:path';
 import { In, Repository } from 'typeorm';
 
 import { parseBackupManifest } from '@core/local-runtime/policy/protected-backup.policy';
+import {
+  BACKUP_PLAN_INTERVAL_HOURS,
+  BACKUP_RETENTION_DAYS,
+} from '@core/local-runtime/policy/local-backup-plan.policy';
 
 import { BackupAssetEntity } from '../entities/backup-asset.entity';
 import { LocalBackupRunEntity } from '../entities/local-backup-run.entity';
@@ -25,9 +29,12 @@ import type {
   LocalRuntimeListPagination,
 } from './local-runtime.query.service';
 
-/** 需求固定口径：约 72 小时计划周期、约 30 天保留窗口（只读展示，不写库） */
-export const BACKUP_PLAN_INTERVAL_HOURS = 72;
-export const BACKUP_RETENTION_DAYS = 30;
+/**
+ * 需求固定口径（约 72 小时计划周期、约 30 天保留窗口）**只读展示**，不写库。
+ *
+ * 取值来源：core 策略层 `local-backup-plan.policy`（单一来源）。
+ * 此前本文件与写库默认值、清理策略各写一份 ⇒ 同一口径三处定义，容易漂移。
+ */
 
 /**
  * 备份资产只读查询服务（任务 09 S3）。

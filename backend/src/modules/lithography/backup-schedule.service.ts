@@ -7,6 +7,7 @@ import { LessThanOrEqual, Repository } from 'typeorm';
 import { PinoLogger } from 'nestjs-pino';
 
 import { LOCAL_BACKUP_FAILURE_REASON } from '@core/local-runtime/policy/local-backup-failure-reason';
+import { BACKUP_PLAN_INTERVAL_HOURS } from '@core/local-runtime/policy/local-backup-plan.policy';
 
 import {
   hasCredentialPurpose,
@@ -19,8 +20,8 @@ import { LocalBackupRunEntity } from '@src/modules/lithography/entities/local-ba
 import { LocalInstallationEntity } from '@src/modules/lithography/entities/local-installation.entity';
 import { ProtectedBackupService } from '@src/modules/lithography/protected-backup.service';
 
-/** 自动备份计划默认周期（小时）：需求固定口径约 72 小时 */
-export const DEFAULT_BACKUP_INTERVAL_HOURS = 72;
+/** 自动备份计划默认周期（小时）：需求固定口径约 72 小时（单一来源见 core 策略层） */
+export const DEFAULT_BACKUP_INTERVAL_HOURS = BACKUP_PLAN_INTERVAL_HOURS;
 
 /**
  * 72h 持久计划执行器（任务 09 S3.1，D-8：Worker 引导内定时扫描，不依赖页面登录）。
@@ -308,7 +309,10 @@ export class BackupScheduleService {
         {
           status: 'FAILED',
           finishedAt: new Date(),
-          errorCode: 'BACKUP_GENERATION_FAILED',
+          // 失败事实**只用一个受控码**（此前 error_code 写 'BACKUP_GENERATION_FAILED'、
+          // error_message 写 'LOCAL_BACKUP_GENERATION_FAILED'：同一事实两种编码，
+          // 按 error_code 做统计会与 LOCAL_* 命名空间对不上）
+          errorCode: reason,
           errorMessage: reason,
         },
       );
@@ -349,7 +353,7 @@ export class BackupScheduleService {
 
   /** 计划推进：当前时间＋间隔小时（间隔取计划行真实值） */
   private nextBackupAt(plan: LocalCompanySettingEntity, now: Date): Date {
-    const intervalHours = Number(plan.backupIntervalHours) || 72;
+    const intervalHours = Number(plan.backupIntervalHours) || BACKUP_PLAN_INTERVAL_HOURS;
     return new Date(now.getTime() + intervalHours * 3_600_000);
   }
 }

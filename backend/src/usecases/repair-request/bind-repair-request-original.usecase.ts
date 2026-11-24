@@ -113,8 +113,9 @@ export class BindRepairRequestOriginalUsecase {
     }
 
     // 恢复期写入冻结：stored_file 属恢复范围表，冻结期绑定会被整体替换掉
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: ownerOrganizationId,
+      transactionContext,
     });
 
     this.assertFileBindableFacts(file, {

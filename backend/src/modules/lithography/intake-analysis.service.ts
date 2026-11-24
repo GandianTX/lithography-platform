@@ -97,7 +97,7 @@ export class IntakeAnalysisService {
     // 恢复期冻结守卫（先于任何状态推进与尝试行写入）：
     // `repair_request_intake`／`intake_analysis_attempt` 已纳入受保护备份范围，
     // 恢复期间推进首析状态会污染恢复结果。
-    await this.restoreScopeWriteGuardService.assertIntakeScopeWritable(locked.id);
+    await this.restoreScopeWriteGuardService.assertIntakeScopeWritable(locked.id, params.transactionContext);
     if (locked.deletedAt !== null) {
       return { kind: 'NOT_EXECUTABLE', intakeId: params.intakeId, reason: 'DELETED' };
     }
@@ -190,7 +190,7 @@ export class IntakeAnalysisService {
       return { kind: 'REJECTED', intakeId, reason: 'NOT_FOUND' };
     }
     // 恢复期冻结守卫：写回终态前必须先确认目标公司数据区未被恢复占用。
-    await this.restoreScopeWriteGuardService.assertIntakeScopeWritable(locked.id);
+    await this.restoreScopeWriteGuardService.assertIntakeScopeWritable(locked.id, params.transactionContext);
     if (locked.deletedAt !== null) {
       return { kind: 'REJECTED', intakeId, reason: 'DELETED' };
     }
@@ -403,7 +403,7 @@ export class IntakeAnalysisService {
     const repository = this.getRepository(params.transactionContext);
     // 恢复期冻结守卫：代次推进会改写 `repair_request_intake`（备份范围内），
     // 必须在写入前确认目标公司数据区未被恢复占用。
-    await this.restoreScopeWriteGuardService.assertIntakeScopeWritable(params.intakeId);
+    await this.restoreScopeWriteGuardService.assertIntakeScopeWritable(params.intakeId, params.transactionContext);
     const result = await repository
       .createQueryBuilder()
       .update(RepairRequestIntakeEntity)

@@ -293,6 +293,47 @@ export const EN_MESSAGES = {
   'local-backup.reason.restoreProtectionKeyUnavailable':
     'The decryption material for the protected package is not available in this environment, so restore execution stays unavailable.',
   'local-backup.reason.cloudReceiptMissing': 'Complete cloud receipt missing',
+  'local-backup.reason.uploadInterrupted':
+    'The upload was interrupted; the same package is retried after the backoff',
+  'local-backup.reason.cloudPackagesUnavailable':
+    'The cloud backup package service is not connected, so no cloud copy is available',
+  'local-backup.reason.cloudPackageUnavailable':
+    'The cloud copy is unavailable and cannot be used for a restore on this device',
+  'local-backup.reason.cloudPackageDigestMismatch':
+    'The cloud copy checksum does not match the local record',
+  'local-backup.reason.cloudPackageSizeMismatch':
+    'The cloud copy size does not match the local record',
+  'local-backup.reason.cloudPackageSchemaUnsupported':
+    'The package format version of the cloud copy is not supported here',
+  'local-backup.reason.cloudPackageDeviceMismatch':
+    'The cloud copy comes from a different device',
+  'local-backup.reason.cloudPackageCompanyMismatch':
+    'The cloud copy belongs to a different company',
+  'local-backup.reason.restoreOriginalBytesMissing':
+    'The manifest lists originals whose bytes are missing from the package; the restore would fail',
+  'local-backup.reason.restoreExecutionAlreadyRunning':
+    'This restore is already running; concurrent execution is refused',
+  'local-backup.reason.restoreScopeOccupied':
+    'The restore scope is occupied by another restore; this run is refused',
+  'local-backup.reason.restoreAlreadyTerminal':
+    'This restore has already finished and cannot be executed again',
+  'local-backup.reason.restoreOrganizationNotAllowed':
+    'You are not authorized to execute a restore for that company',
+  'local-backup.reason.restoreInstallationMismatch':
+    'This restore was not started on this device and cannot run here',
+  'local-backup.reason.cloudNotConfigured': 'The cloud backup service is not configured; no upload was sent',
+  'local-backup.reason.cloudUnreachable': 'The cloud service is unreachable; retried after the backoff',
+  'local-backup.reason.cloudTimeout': 'The cloud request timed out; retried after the backoff',
+  'local-backup.reason.cloudRejected': 'The cloud service rejected this upload (payload, permission or quota)',
+  'local-backup.reason.cloudServerError': 'The cloud service failed; retried after the backoff',
+  'local-backup.reason.cloudInvalidResponse':
+    'The cloud response was malformed and is not counted as a successful upload',
+  'local-backup.reason.packageTooLarge':
+    'Local backup package exceeds the upload size limit; no longer retried',
+  'local-backup.reason.packageIncomplete':
+    'Local backup package does not match its manifest; no longer retried',
+  'local-backup.reason.packageUnreadable':
+    'Local backup package is unreadable; no longer retried',
   'local-backup.reason.cloudReceiptUnparsable': 'Cloud receipt cannot be parsed',
   'local-backup.reason.cloudReceiptNotSuccess': 'Cloud receipt is not in a success state',
   // Sync status reason codes (task 09 S1)

@@ -77,8 +77,9 @@ export class InterruptRepairRequestUsecase {
       this.assertInterruptibleTarget(target, command, membership.organizationId);
 
       // 恢复期写入冻结：该工单所属公司数据区正在恢复时不得记录中断（写入会被整体替换掉）
-      await this.localWriteHoldService.assertBusinessWritable({
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
         organizationId: target?.ownerOrganizationId ?? null,
+        transactionContext,
       });
 
       const affected = await this.repairRequestService.recordInterruption(

@@ -82,8 +82,9 @@ export class DeleteMyRepairRequestUsecase {
       command.requestId,
       transactionContext,
     );
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: snapshot?.ownerOrganizationId ?? null,
+      transactionContext,
     });
 
     const outcome = await this.repairRequestService.softDeleteRequest(

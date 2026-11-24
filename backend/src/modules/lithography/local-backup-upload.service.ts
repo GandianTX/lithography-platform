@@ -133,6 +133,8 @@ export class LocalBackupUploadService {
         lastAttemptAt: asset.lastAttemptAt,
         autoUploadEnabled: setting?.autoUploadEnabled ?? false,
         authorizationValid: authorizedOrganizations.has(asset.organizationId),
+        // 终态失败（本机包结构性失败）据此跳过，不再进入退避重试（L2）
+        failureReason: asset.failureReason,
         now,
       });
 
@@ -177,6 +179,10 @@ export class LocalBackupUploadService {
    *
    * 改判失败而不是直接回到 PENDING，是为了让退避按「已尝试过」计算，
    * 避免重启后立刻连续重试。
+   *
+   * 失败原因必须写**受控原因码**：该列同时被退避终态判定读取
+   * （自由文本永远不是终态码 ⇒ 同一列会同时承担"用户可读说明"与"机器可判定码"两种职责），
+   * 且自由文本在前端查不到映射（只能显示通用兜底）。
    */
   private async compensateStaleUploading(now: Date): Promise<number> {
     const cutoff = new Date(now.getTime() - UPLOADING_STALE_MINUTES * 60_000);
@@ -188,7 +194,7 @@ export class LocalBackupUploadService {
         { backupId: asset.backupId },
         {
           cloudStatus: 'FAILED',
-          failureReason: '上传过程被进程中断，将按退避重试同一备份包',
+          failureReason: LOCAL_BACKUP_FAILURE_REASON.UPLOAD_INTERRUPTED,
         },
       );
     }
@@ -282,6 +288,9 @@ export class LocalBackupUploadService {
       // 原始异常（含本机绝对路径与可能的接收端细节）只进服务端日志；
       // 对外与落库只给受控原因码
       this.logger.error({ backupId: asset.backupId, err: error }, '本地备份包上云失败');
+      // 本机包的结构性失败（清单不可读／清单与字节不一致／超限）由接收端实现内部
+      // 转成**受控结果码**返回，不会逃逸到这里；这里的异常属非包级异常，
+      // 一律降级为通用受控码（原始文本只进服务端日志）。
       await this.backupAssetRepository.update(
         { backupId: asset.backupId },
         {

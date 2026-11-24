@@ -88,7 +88,9 @@ const makeUsecase = (
       trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       bindOriginalUsecase as unknown as BindRepairProcessOriginalUsecase,

@@ -2,6 +2,7 @@
 import { Injectable, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
 
+import { BUSINESS_SYNC_DISPATCH_INTERVAL_MINUTES } from '@core/local-runtime/policy/business-sync-source.policy';
 import { DispatchBusinessSyncTasksUsecase } from '@src/usecases/local-runtime/dispatch-business-sync-tasks.usecase';
 import { ReconcileBusinessSyncTasksUsecase } from '@src/usecases/local-runtime/reconcile-business-sync-tasks.usecase';
 
@@ -26,8 +27,13 @@ export class LocalBusinessSyncRuntime implements OnApplicationBootstrap, OnAppli
 
   onApplicationBootstrap(): void {
     void this.runCycle();
-    this.timer = setInterval(() => void this.runCycle(), 5 * 60_000);
-    this.logger.log('local business sync runtime started (interval=5min)');
+    this.timer = setInterval(
+      () => void this.runCycle(),
+      BUSINESS_SYNC_DISPATCH_INTERVAL_MINUTES * 60_000,
+    );
+    this.logger.log(
+      `local business sync runtime started (interval=${BUSINESS_SYNC_DISPATCH_INTERVAL_MINUTES}min)`,
+    );
   }
 
   onApplicationShutdown(): void {

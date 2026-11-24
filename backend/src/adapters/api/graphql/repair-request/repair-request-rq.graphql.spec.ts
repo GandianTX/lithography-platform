@@ -247,7 +247,9 @@ describe('PR#20 RQ 定向验收：GraphQL Resolver + 真实业务用例（仓储
           provide: LocalWriteHoldService,
           useValue: {
             assertBusinessWritable: () => Promise.resolve(),
+            assertBusinessWritableInTransaction: () => Promise.resolve(),
             assertCompanyWritable: () => Promise.resolve(),
+            assertCompanyWritableInTransaction: () => Promise.resolve(),
             assertWritable: () => Promise.resolve(),
           },
         },

@@ -96,11 +96,13 @@ export class CorrectReferenceDocumentOwnershipUsecase {
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
     // 恢复期写入冻结：归属公司数据区正在恢复时不得变更归属（迁出与迁入两侧都要判定）
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: current.ownerOrganizationId,
+      transactionContext,
     });
-    await this.localWriteHoldService.assertBusinessWritable({
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
       organizationId: command.ownerOrganizationId ?? null,
+      transactionContext,
     });
 
     const correctUploader = command.createdByAccountId !== undefined;

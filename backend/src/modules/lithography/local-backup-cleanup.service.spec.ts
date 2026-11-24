@@ -159,7 +159,9 @@ describe('local backup cleanup service', () => {
       asPinoLogger(createTestPinoLogger()),
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       options.withoutRunRepository ? undefined : (backupRunRepository as never),
@@ -246,7 +248,9 @@ describe('local backup cleanup service', () => {
       asPinoLogger(createTestPinoLogger()),
       {
         assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
         assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       options.withoutRunRepository ? undefined : (backupRunRepository as never),

@@ -65,10 +65,13 @@ export class StartManualLocalBackupUsecase {
     const now = new Date();
 
     // 恢复期冻结：该公司数据区正在恢复时不得再生成备份包（会把恢复中的数据出盘）
-    await this.localWriteHoldService.assertCompanyWritable({ organizationId });
-
-    const run = await this.transactionRunner.run(async (transactionContext) =>
-      this.localRuntimeService.insertBackupRun(
+    // 事务内版本：取范围共享锁并锁定读冻结事实 ⇒ 与恢复建立冻结互斥（P1-1）
+    const run = await this.transactionRunner.run(async (transactionContext) => {
+      await this.localWriteHoldService.assertCompanyWritableInTransaction({
+        organizationId,
+        transactionContext,
+      });
+      return this.localRuntimeService.insertBackupRun(
         {
           installationId: installation.installationId,
           organizationId,
@@ -79,8 +82,8 @@ export class StartManualLocalBackupUsecase {
           manualCleanupStatus: 'PENDING',
         },
         transactionContext,
-      ),
-    );
+      );
+    });
 
     const targetPath = this.protectedBackupService.resolvePackageTargetPath(
       organizationId,
@@ -140,7 +143,7 @@ export class StartManualLocalBackupUsecase {
             byteSize: null,
             attachmentCount: null,
             schemaVersion: null,
-            errorCode: 'BACKUP_GENERATION_FAILED',
+            errorCode: reason,
             errorMessage: reason,
           },
           transactionContext,
@@ -154,7 +157,7 @@ export class StartManualLocalBackupUsecase {
         backupId: null,
         manifestChecksum: null,
         byteSize: null,
-        errorCode: 'BACKUP_GENERATION_FAILED',
+        errorCode: reason,
         errorMessage: reason,
         uploadStatus: 'NOT_REQUIRED',
         cleanupStatus: 'NOT_REQUIRED',

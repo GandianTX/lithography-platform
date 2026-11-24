@@ -152,7 +152,9 @@ describe('ApplyLocalSyncConflictResolutionUsecase', () => {
         trustedOrganizationContext,
         {
           assertBusinessWritable: () => Promise.resolve(),
+          assertBusinessWritableInTransaction: () => Promise.resolve(),
           assertCompanyWritable: () => Promise.resolve(),
+          assertCompanyWritableInTransaction: () => Promise.resolve(),
           assertWritable: () => Promise.resolve(),
         } as unknown as LocalWriteHoldService,
         appendRevisionUsecase,

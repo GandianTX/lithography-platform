@@ -27,7 +27,7 @@
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DataSource } from 'typeorm';
 
@@ -132,6 +132,22 @@ function resolveStorageDir(configService: ConfigService): string {
 }
 
 /** 装配当前设备（按 NODE_ENV 取对应库／文件根／安装身份） */
+/** 本轮创建的数据源（收尾统一释放；未释放会让进程挂住不退出） */
+const openedDataSources: DataSource[] = [];
+
+/** 释放本轮打开的全部数据库连接（幂等） */
+async function releaseConnections(): Promise<void> {
+  for (const dataSource of openedDataSources.splice(0, openedDataSources.length)) {
+    try {
+      if (dataSource.isInitialized) {
+        await dataSource.destroy();
+      }
+    } catch {
+      // 关闭失败不影响结论（结论已写入交接文件／标准输出）
+    }
+  }
+}
+
 async function bootstrap(): Promise<DeviceContext> {
   // 设备 env 文件装载到 process.env：存储根、字段加密等运行时配置都从这里读
   const envContent = readFileSync(DEVICE_ENV_FILE, 'utf8');
@@ -188,7 +204,11 @@ async function bootstrap(): Promise<DeviceContext> {
   }).compile();
 
   return {
-    dataSource: moduleRef.get(DataSource),
+    dataSource: (() => {
+      const dataSource = moduleRef.get(DataSource);
+      openedDataSources.push(dataSource);
+      return dataSource;
+    })(),
     exportUsecase: moduleRef.get(ExportRecordPackageUsecase),
     checkUsecase: moduleRef.get(CheckRecordPackageUsecase),
     importUsecase: moduleRef.get(ImportRecordPackageUsecase),
@@ -514,18 +534,43 @@ async function runTargetRole(device: DeviceContext): Promise<void> {
   }
 }
 
+/**
+ * 失败时回收交接文件。
+ *
+ * 为什么必须清：交接文件是 source 与 target 之间的**事实载体**。
+ * 一次失败运行留下的半截交接文件会被下一次 target 角色**当成真事实读入**，
+ * 于是"旧包的证据"被当成本轮证据 ⇒ 证据链被污染且看不出来。
+ * 成功运行时保留文件（target 已把裁决结论写回其中，作为本轮证据留痕）。
+ */
+function removeHandoffFile(): void {
+  try {
+    rmSync(HANDOFF_FILE, { force: true });
+  } catch {
+    // 清理失败不掩盖原始错误（原始错误才是本轮要报告的事实）
+  }
+}
+
 async function main(): Promise<void> {
   const role = process.argv[2];
   const device = await bootstrap();
-  if (role === 'source') {
-    await runSourceRole(device);
-    return;
+  try {
+    if (role === 'source') {
+      await runSourceRole(device);
+      return;
+    }
+    if (role === 'target') {
+      await runTargetRole(device);
+      return;
+    }
+    throw new Error('用法：task09-cross-installation.ts <source|target>');
+  } catch (error) {
+    removeHandoffFile();
+    throw error;
+  } finally {
+    // 释放数据库连接：否则进程会因开放句柄**挂住不退出**，
+    // 在 `timeout` 下退出码被改写成 124，把"脚本已完成"伪装成"脚本失败"。
+    await releaseConnections();
   }
-  if (role === 'target') {
-    await runTargetRole(device);
-    return;
-  }
-  throw new Error('用法：task09-cross-installation.ts <source|target>');
 }
 
 void main().catch((error: unknown) => {

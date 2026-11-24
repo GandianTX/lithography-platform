@@ -33,13 +33,15 @@ export class EnqueueLocalUploadUsecase {
 
   async execute(command: EnqueueLocalUploadCommand): Promise<EnqueueLocalUploadResult> {
     const intent = normalizeUploadIntent(command);
-    // 恢复期冻结：该公司数据区正在恢复时不得再登记待传任务（停传）
-    if (intent.organizationId !== null && intent.organizationId !== undefined) {
-      await this.localWriteHoldService.assertCompanyWritable({
-        organizationId: intent.organizationId,
-      });
-    }
     return this.transactionRunner.run(async (transactionContext) => {
+      // 恢复期冻结：该公司数据区正在恢复时不得再登记待传任务（停传）
+      // 事务内版本：取范围共享锁并锁定读冻结事实 ⇒ 与恢复建立冻结互斥（P1-1）
+      if (intent.organizationId !== null && intent.organizationId !== undefined) {
+        await this.localWriteHoldService.assertCompanyWritableInTransaction({
+          organizationId: intent.organizationId,
+          transactionContext,
+        });
+      }
       const installation = await this.localRuntimeQueryService.readInstallation(transactionContext);
       if (!installation) {
         throw new DomainError(LOCAL_RUNTIME_ERROR.INSTALLATION_NOT_FOUND, '本地安装身份未初始化');

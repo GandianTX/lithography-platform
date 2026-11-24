@@ -23,7 +23,6 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES,
-  MAINTENANCE_REPORT_SYNC_STATUS_READER,
   type MaintenanceReportSyncStatusBatch,
   type MaintenanceReportSyncStatusEntry,
   type MaintenanceReportSyncProviderStatus,
@@ -100,6 +99,3 @@ export class MaintenanceReportSyncStatusReaderAdapter implements MaintenanceRepo
     return { connected: true, entries };
   }
 }
-
-/** 供装配层引用：任务 07 端口的注入令牌（避免调用方直接依赖实现类） */
-export { MAINTENANCE_REPORT_SYNC_STATUS_READER };
