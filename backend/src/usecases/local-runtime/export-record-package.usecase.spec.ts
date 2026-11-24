@@ -222,4 +222,48 @@ describe('ExportRecordPackageUsecase（记录包导出）', () => {
     ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.INVALID_PARAMS });
     expect(exportPackage).not.toHaveBeenCalled();
   });
+
+  // 第 06 项：混合形态此前绕过旧形态的闸门（条数上限／去重／正整数）
+  it('混合形态超过单次导出条数上限时受控拒绝（不产出包）', async () => {
+    const { usecase, exportPackage } = buildUsecase({
+      scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
+    });
+
+    await expect(
+      usecase.execute({
+        session,
+        targetPath: '/mnt/usb/pkg',
+        resourceType: 'REPAIR_REQUEST',
+        recordIds: [],
+        entries: Array.from({ length: 51 }, (_item, index) => ({
+          resourceType: 'REPAIR_REQUEST',
+          recordId: index + 1,
+        })),
+      }),
+    ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.INVALID_PARAMS });
+    expect(exportPackage).not.toHaveBeenCalled();
+  });
+
+  it('混合形态重复条目按（类型＋ID）去重后照常导出', async () => {
+    const { usecase, exportPackage } = buildUsecase({
+      scope: { role: 'ENGINEER', organizationId: 4, adminLevel: null },
+    });
+
+    await usecase.execute({
+      session,
+      targetPath: '/mnt/usb/pkg',
+      resourceType: 'REPAIR_REQUEST',
+      recordIds: [],
+      entries: [
+        { resourceType: 'REPAIR_REQUEST', recordId: 31 },
+        { resourceType: 'REPAIR_REQUEST', recordId: 31 },
+        { resourceType: 'REFERENCE_DOCUMENT', recordId: 31 },
+      ],
+    });
+
+    expect(exportPackage.mock.calls[0][0].entries).toEqual([
+      { resourceType: 'REPAIR_REQUEST', recordId: 31 },
+      { resourceType: 'REFERENCE_DOCUMENT', recordId: 31 },
+    ]);
+  });
 });

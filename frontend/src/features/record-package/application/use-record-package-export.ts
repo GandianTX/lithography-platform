@@ -1,6 +1,6 @@
 // src/features/record-package/application/use-record-package-export.ts
 
-import { useCallback, useState } from 'react';
+import { useCallback, useReducer, useRef } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
 
@@ -12,19 +12,57 @@ import type {
 import { exportRecordPackage } from '../infrastructure/record-package-adapter';
 
 export type RecordPackageExportState =
-  | { status: 'idle' }
-  | { status: 'running' }
-  | { status: 'succeeded'; result: RecordPackageExportResult }
-  | { status: 'failed'; message: string };
+  | { status: 'idle'; requestId: number }
+  | { status: 'running'; requestId: number }
+  | { status: 'succeeded'; requestId: number; result: RecordPackageExportResult }
+  | { status: 'failed'; requestId: number; message: string };
+
+type RecordPackageExportAction =
+  | { type: 'run-start'; requestId: number }
+  | { type: 'run-succeeded'; requestId: number; result: RecordPackageExportResult }
+  | { type: 'run-failed'; requestId: number; message: string }
+  | { type: 'reset'; requestId: number };
 
 /**
  * 记录包导出流程。
  *
  * 目标目录必须是本机绝对路径（U盘挂载点或空目录），由服务端复核；
  * 前端只把服务端返回的**逐条结论**如实展示，不自行判断哪些记录可导出。
+ *
+ * **竞态防护（任务 09 第 06 项 · P2-1／G36）**：与本仓其它列表／状态 hook 同级，
+ * 以 `requestIdRef` 为序号唯一真源：
+ * - 新一次导出使上一次的在途响应作废 ⇒ **晚到的旧响应不覆盖当前结果**；
+ * - `reset`（关闭对话框／换目标目录）同样递增序号 ⇒ 关闭后旧响应不会"复活"状态；
+ * - 成功／失败两条回写路径都核对序号 ⇒ 旧响应的失败不会覆盖新响应的成功。
  */
+function recordPackageExportReducer(
+  state: RecordPackageExportState,
+  action: RecordPackageExportAction,
+): RecordPackageExportState {
+  switch (action.type) {
+    case 'run-start':
+      return { status: 'running', requestId: action.requestId };
+    case 'run-succeeded':
+      if (action.requestId !== state.requestId) {
+        return state;
+      }
+      return { status: 'succeeded', requestId: action.requestId, result: action.result };
+    case 'run-failed':
+      if (action.requestId !== state.requestId) {
+        return state;
+      }
+      return { status: 'failed', requestId: action.requestId, message: action.message };
+    case 'reset':
+      return { status: 'idle', requestId: action.requestId };
+  }
+}
+
 export function useRecordPackageExport() {
-  const [state, setState] = useState<RecordPackageExportState>({ status: 'idle' });
+  const [state, dispatch] = useReducer(recordPackageExportReducer, {
+    status: 'idle',
+    requestId: 0,
+  } as RecordPackageExportState);
+  const requestIdRef = useRef(0);
 
   const run = useCallback(
     async (input: {
@@ -41,23 +79,29 @@ export function useRecordPackageExport() {
        */
       entries?: RecordPackageExportEntry[];
     }) => {
-      setState({ status: 'running' });
+      requestIdRef.current += 1;
+      const requestId = requestIdRef.current;
+      dispatch({ type: 'run-start', requestId });
       try {
         const result = await exportRecordPackage(input);
-        setState({ status: 'succeeded', result });
+        dispatch({ type: 'run-succeeded', requestId, result });
         return { ok: true as const, result };
       } catch (error) {
         const message = isGraphQLIngressError(error)
           ? error.userMessage
           : '记录包导出失败，请稍后重试。';
-        setState({ status: 'failed', message });
+        dispatch({ type: 'run-failed', requestId, message });
         return { ok: false as const, message };
       }
     },
     [],
   );
 
-  const reset = useCallback(() => setState({ status: 'idle' }), []);
+  // 重置同时使在途响应作废（序号递增）：关闭对话框后旧结果不会复活
+  const reset = useCallback(() => {
+    requestIdRef.current += 1;
+    dispatch({ type: 'reset', requestId: requestIdRef.current });
+  }, []);
 
   return { state, run, reset };
 }

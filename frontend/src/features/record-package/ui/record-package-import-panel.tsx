@@ -25,7 +25,7 @@ import {
  */
 export function RecordPackageImportPanel() {
   const { t } = useI18n();
-  const { state, check, confirmImport } = useRecordPackageImport();
+  const { state, check, confirmImport, reset } = useRecordPackageImport();
   const [packagePath, setPackagePath] = useState('');
 
   const columns: ColumnsType<RecordPackageItem> = [
@@ -66,7 +66,12 @@ export function RecordPackageImportPanel() {
       <div className="w-full">
         <Space.Compact>
           <Input
-            onChange={(event) => setPackagePath(event.target.value)}
+            onChange={(event) => {
+              setPackagePath(event.target.value);
+              // 换包即失效：清掉上一次的预检结论与确认入口
+              // （旧结论不该覆盖当前选择，也不该让人确认一个屏幕上没显示的包）。
+              reset();
+            }}
             placeholder="/media/usb/package"
             value={packagePath}
           />
@@ -92,6 +97,11 @@ export function RecordPackageImportPanel() {
                 key: 'packageId',
                 label: t('recordPackage.export.packageId'),
                 children: state.check.import.packageId,
+              },
+              {
+                key: 'packagePath',
+                label: t('recordPackage.export.path'),
+                children: state.packagePath,
               },
               {
                 key: 'manifestChecksum',
@@ -123,7 +133,9 @@ export function RecordPackageImportPanel() {
             title={t('recordPackage.import.confirmTitle')}
           >
             <Button
-              disabled={state.check.import.checkStatus !== 'PASSED'}
+              disabled={
+                state.check.import.checkStatus !== 'PASSED' || state.status === 'importing'
+              }
               loading={state.status === 'importing'}
               type="primary"
             >

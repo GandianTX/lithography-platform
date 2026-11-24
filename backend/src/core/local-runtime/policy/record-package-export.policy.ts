@@ -206,3 +206,46 @@ export function buildExportManifest(input: {
   // 自校验：任何结构问题在落盘前暴露（与检查器共用同一校验规则）
   return parseRecordPackageManifest(JSON.stringify(manifest));
 }
+
+/**
+ * 混合形态导出条目归一：与旧单一类型形态**同一闸门**。
+ *
+ * 缺口背景（任务 09 第 06 项）：混合形态此前绕过了旧形态的闸门
+ * （非空／去重／正整数／单次条数上限）——两条形态口径必须一致，
+ * 否则"混合"就成了绕过受控上限的旁路。
+ *
+ * - 非空：没有条目即拒绝；
+ * - 逐条资源类型在白名单内；
+ * - 逐条记录 ID 为正整数；
+ * - 按（资源类型＋记录 ID）去重：同一类型的同一记录只导出一次；
+ *   不同类型可以共用同一个记录 ID ⇒ 不能按 ID 单独去重；
+ * - 去重后单次条数不超过 `EXPORT_RECORD_IDS_MAX`。
+ */
+export function normalizeExportEntries(
+  entries: ReadonlyArray<{ resourceType: string; recordId: number }>,
+): Array<{ resourceType: RecordPackageResourceType; recordId: number }> {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, '导出条目清单不能为空');
+  }
+  const allowedResourceTypes = Object.values(recordPackageResourceTypeEnum) as readonly string[];
+  const unique = new Map<string, { resourceType: RecordPackageResourceType; recordId: number }>();
+  for (const entry of entries) {
+    if (!allowedResourceTypes.includes(entry.resourceType)) {
+      throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, '资源类型不在允许清单内');
+    }
+    if (!Number.isInteger(entry.recordId) || entry.recordId <= 0) {
+      throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, '导出记录 ID 必须是正整数');
+    }
+    unique.set(`${entry.resourceType}:${entry.recordId}`, {
+      resourceType: entry.resourceType as RecordPackageResourceType,
+      recordId: entry.recordId,
+    });
+  }
+  if (unique.size > EXPORT_RECORD_IDS_MAX) {
+    throw new DomainError(
+      RECORD_PACKAGE_ERROR.INVALID_PARAMS,
+      `单次导出不能超过 ${EXPORT_RECORD_IDS_MAX} 条记录`,
+    );
+  }
+  return [...unique.values()];
+}

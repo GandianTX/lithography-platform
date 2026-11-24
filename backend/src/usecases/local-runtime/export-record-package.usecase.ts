@@ -3,6 +3,7 @@
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
 import {
   assertExportOrganizationAllowed,
+  normalizeExportEntries,
   normalizeExportRecordIds,
   recordPackageResourceTypeEnum,
 } from '@core/local-runtime/policy/record-package-export.policy';
@@ -48,12 +49,11 @@ export class ExportRecordPackageUsecase {
         : normalizeExportOrganization(command.organizationId);
     assertExportOrganizationAllowed(scope.organizationId, organizationId);
     // 导出条目：混合形态优先（逐条自带资源类型），否则回落旧形态（单类型 ＋ id 列表）
+    // 两种形态走**同一闸门**（非空／去重／正整数／单次条数上限）：
+    // 混合形态此前绕过旧形态闸门，等于留了一条绕过受控上限的旁路（第 06 项 P2-1）。
     const entries =
       command.entries !== undefined && command.entries.length > 0
-        ? command.entries.map((entry) => ({
-            resourceType: normalizeExportResourceType(entry.resourceType),
-            recordId: entry.recordId,
-          }))
+        ? normalizeExportEntries(command.entries)
         : normalizeExportRecordIds(command.recordIds).map((recordId) => ({
             resourceType: normalizeExportResourceType(command.resourceType),
             recordId,

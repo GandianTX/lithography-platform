@@ -105,4 +105,28 @@ describe('记录包导入面板', () => {
     });
     expect(screen.getByRole('button', { name: '确认导入' })).toHaveProperty('disabled', true);
   });
+
+  it('换包即失效：改了路径后上一轮的确认入口消失（不显示过期确认）', async () => {
+    checkRecordPackage.mockResolvedValue(CHECK_RESULT);
+
+    render(<RecordPackageImportPanel />);
+
+    fireEvent.change(screen.getByPlaceholderText('/media/usb/package'), {
+      target: { value: '/mnt/usb/pkg' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '安全检查' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '确认导入' })).toBeTruthy();
+    });
+
+    // 换包：路径变化即清掉上一轮的预检结论与确认入口
+    fireEvent.change(screen.getByPlaceholderText('/media/usb/package'), {
+      target: { value: '/mnt/usb/other' },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: '确认导入' })).toBeNull();
+    });
+  });
 });
