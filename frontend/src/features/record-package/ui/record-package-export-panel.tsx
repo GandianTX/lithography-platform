@@ -36,9 +36,9 @@ const RESOURCE_TYPES: RecordPackageResourceType[] = [
  * - **混合导出**：逐条自带记录类型，一次导出可同时包含工单、报告与资料；
  *   服务端逐条复核归属、版本与权限，单条失败不拖垮整包。
  */
-export function RecordPackageExportPanel() {
+export function RecordPackageExportPanel({ sessionKey }: { sessionKey?: number | null } = {}) {
   const { t } = useI18n();
-  const { state, run } = useRecordPackageExport();
+  const { state, run } = useRecordPackageExport(sessionKey);
   const [form] = Form.useForm();
   const [mode, setMode] = useState<'SINGLE' | 'MIXED'>('SINGLE');
   // 混合形态的条目条数：由增删入口显式维护（Form.List 的变化不触发 useWatch），

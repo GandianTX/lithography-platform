@@ -1,6 +1,6 @@
 // src/features/record-package/application/use-record-package-export.ts
 
-import { useCallback, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import { isGraphQLIngressError } from '@/shared/graphql';
 
@@ -57,12 +57,26 @@ function recordPackageExportReducer(
   }
 }
 
-export function useRecordPackageExport() {
+/**
+ * @param sessionKey 当前会话的账号标识：切账号时变化 ⇒ 在途响应作废（不写进新账号的界面）。
+ */
+export function useRecordPackageExport(sessionKey?: number | null) {
   const [state, dispatch] = useReducer(recordPackageExportReducer, {
     status: 'idle',
     requestId: 0,
   } as RecordPackageExportState);
   const requestIdRef = useRef(0);
+  const lastSessionKeyRef = useRef(sessionKey);
+
+  // 切账号：作废在途响应并回到空闲（旧账号的结果不得出现在新账号的界面）
+  useEffect(() => {
+    if (lastSessionKeyRef.current === sessionKey) {
+      return;
+    }
+    lastSessionKeyRef.current = sessionKey;
+    requestIdRef.current += 1;
+    dispatch({ type: 'reset', requestId: requestIdRef.current });
+  }, [sessionKey]);
 
   const run = useCallback(
     async (input: {

@@ -23,9 +23,9 @@ import {
  * - 确认按钮带**清单摘要**（服务端据此判断旧确认是否作废）；
  * - 逐条结果如实展示：成功／失败／跳过／冲突各有受控文案。
  */
-export function RecordPackageImportPanel() {
+export function RecordPackageImportPanel({ sessionKey }: { sessionKey?: number | null } = {}) {
   const { t } = useI18n();
-  const { state, check, confirmImport, reset } = useRecordPackageImport();
+  const { state, check, confirmImport, reset } = useRecordPackageImport(sessionKey);
   const [packagePath, setPackagePath] = useState('');
 
   const columns: ColumnsType<RecordPackageItem> = [

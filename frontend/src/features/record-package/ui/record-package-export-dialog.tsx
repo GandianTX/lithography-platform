@@ -39,6 +39,7 @@ export function RecordPackageExportDialog({
   resourceType,
   recordIds,
   entries,
+  sessionKey,
   onClose,
 }: {
   open: boolean;
@@ -48,10 +49,12 @@ export function RecordPackageExportDialog({
   recordIds?: number[];
   /** 混合形态条目（逐条自带资源类型）；给出时优先于单一形态 */
   entries?: RecordPackageExportEntry[];
+  /** 当前会话的账号标识：切账号时作废在途响应 */
+  sessionKey?: number | null;
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const { state, run, reset } = useRecordPackageExport();
+  const { state, run, reset } = useRecordPackageExport(sessionKey);
   const [targetPath, setTargetPath] = useState('');
   const [selectedType, setSelectedType] = useState<RecordPackageResourceType>(
     resourceType ?? 'REPAIR_REQUEST',

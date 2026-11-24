@@ -62,6 +62,7 @@ export function MyRecordsPage() {
         open={exportRecordId !== null}
         recordIds={exportRecordId === null ? [] : [exportRecordId]}
         resourceType="MAINTENANCE_REPORT"
+        sessionKey={session?.accountId ?? null}
       />
     </div>
   );

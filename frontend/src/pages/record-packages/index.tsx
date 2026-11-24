@@ -2,6 +2,7 @@
 
 import { Tabs } from 'antd';
 
+import { useAuthSession } from '@/features/auth-session';
 import { RecordPackageExportPanel, RecordPackageImportPanel } from '@/features/record-package';
 
 import { useI18n } from '@/shared/i18n';
@@ -16,6 +17,9 @@ import { PageHeader } from '@/shared/ui/page-header';
  */
 export function RecordPackagesPage() {
   const { t } = useI18n();
+  // 切账号时作废在途响应（旧账号的导出/预检结果不得出现在新账号的界面）
+  const { session } = useAuthSession();
+  const sessionKey = session?.accountId ?? null;
 
   return (
     <div className="page-stack">
@@ -27,12 +31,12 @@ export function RecordPackagesPage() {
       <Tabs
         items={[
           {
-            children: <RecordPackageExportPanel />,
+            children: <RecordPackageExportPanel sessionKey={sessionKey} />,
             key: 'export',
             label: t('recordPackage.tab.export'),
           },
           {
-            children: <RecordPackageImportPanel />,
+            children: <RecordPackageImportPanel sessionKey={sessionKey} />,
             key: 'import',
             label: t('recordPackage.tab.import'),
           },

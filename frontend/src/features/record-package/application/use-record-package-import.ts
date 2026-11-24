@@ -107,12 +107,26 @@ function recordPackageImportReducer(
   }
 }
 
-export function useRecordPackageImport() {
+/**
+ * @param sessionKey 当前会话的账号标识：切账号时变化 ⇒ 在途响应作废（不写进新账号的界面）。
+ */
+export function useRecordPackageImport(sessionKey?: number | null) {
   const [state, dispatch] = useReducer(recordPackageImportReducer, {
     status: 'idle',
     requestId: 0,
   } as RecordPackageImportState);
   const requestIdRef = useRef(0);
+  const lastSessionKeyRef = useRef(sessionKey);
+
+  // 切账号：作废在途响应并回到空闲（旧账号的检查／导入结果不得出现在新账号的界面）
+  useEffect(() => {
+    if (lastSessionKeyRef.current === sessionKey) {
+      return;
+    }
+    lastSessionKeyRef.current = sessionKey;
+    requestIdRef.current += 1;
+    dispatch({ type: 'reset', requestId: requestIdRef.current });
+  }, [sessionKey]);
   /** 最新状态镜像：确认时读取（不在状态更新函数里发起副作用） */
   const stateRef = useRef(state);
   /** 导入中的同步闸门：双击确认只允许一次请求进入 */

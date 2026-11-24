@@ -193,4 +193,34 @@ describe('useRecordPackageImport', () => {
 
     expect(result.current.state.status).toBe('failed');
   });
+
+  it('导入中重置：在途导入成功响应不写回（已重置的界面不"复活"）', async () => {
+    vi.mocked(checkRecordPackage).mockResolvedValue(makeCheck('pkg-1'));
+    let resolveImport: (value: RecordPackageProcessResult) => void = () => {};
+    vi.mocked(importRecordPackage).mockImplementation(
+      () =>
+        new Promise<RecordPackageProcessResult>((resolve) => {
+          resolveImport = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() => useRecordPackageImport());
+    await act(async () => {
+      await result.current.check('/media/usb/pkg-1');
+    });
+
+    act(() => {
+      void result.current.confirmImport();
+    });
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.state.status).toBe('idle');
+
+    await act(async () => {
+      resolveImport(makeProcess('pkg-1'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(result.current.state.status).toBe('idle');
+  });
 });

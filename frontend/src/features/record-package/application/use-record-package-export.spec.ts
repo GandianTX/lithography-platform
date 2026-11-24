@@ -1,6 +1,6 @@
 // src/features/record-package/application/use-record-package-export.spec.ts
 
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RecordPackageExportResult } from '../infrastructure/record-package.types';
@@ -165,5 +165,39 @@ describe('useRecordPackageExport', () => {
       status: 'succeeded',
       result: { packageId: 'pkg-B' },
     });
+  });
+
+  it('切账号：在途响应对旧账号作废（不写进新账号的界面）', async () => {
+    let resolveExport: (value: RecordPackageExportResult) => void = () => {};
+    vi.mocked(exportRecordPackage).mockImplementation(
+      () =>
+        new Promise<RecordPackageExportResult>((resolve) => {
+          resolveExport = resolve;
+        }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ sessionKey }: { sessionKey: number | null }) => useRecordPackageExport(sessionKey),
+      { initialProps: { sessionKey: 900101 } },
+    );
+
+    act(() => {
+      void result.current.run({
+        targetPath: '/media/usb/pkg',
+        resourceType: 'REPAIR_REQUEST',
+        recordIds: [1],
+      });
+    });
+
+    // 切账号
+    rerender({ sessionKey: 900202 });
+    await waitFor(() => expect(result.current.state.status).toBe('idle'));
+
+    // 旧账号的响应到达：必须被丢弃
+    await act(async () => {
+      resolveExport(makeResult('pkg-old-account'));
+      await Promise.resolve();
+    });
+    expect(result.current.state.status).toBe('idle');
   });
 });
