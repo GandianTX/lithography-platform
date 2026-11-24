@@ -76,7 +76,9 @@ const METADATA_FILE = 'metadata.json';
  * 但这里再挡一道绝对路径、盘符、`..` 与嵌套分隔符，
  * 保证"即使清单被污染，也不会把路径语义送出去"。
  */
-const ORIGINAL_RELATIVE_PATH_PATTERN = /^originals\/[A-Za-z0-9._-]+$/;
+// 部件名必须是 `originals/<文件名>`：文件名不得是 `.` 或 `..`
+// （`originals/..` 会被接收端拼成父目录 ⇒ 路径穿越）。
+const ORIGINAL_RELATIVE_PATH_PATTERN = /^originals\/(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
 
 @Injectable()
 export class HttpBusinessSyncReceiver implements BusinessSyncReceiver {

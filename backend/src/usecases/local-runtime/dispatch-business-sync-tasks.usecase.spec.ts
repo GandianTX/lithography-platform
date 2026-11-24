@@ -245,6 +245,10 @@ describe('业务同步派发链（S2.2）', () => {
     expect(conflict.localVersion).toBe(3);
     expect(conflict.localSnapshot).toMatchObject({ schema_version: 1 });
     expect(conflict.cloudSnapshot).toMatchObject({ schema_version: 1 });
+    // 云端版本必须落库：裁决端在 cloudVersion 不可核验时拒绝「使用云端」
+    // （写死 null 会让派发链产生的冲突永远无法用「使用云端」闭环）。
+    expect(conflict.cloudVersion).toBe(5);
+    expect(conflict.cloudSnapshot).toMatchObject({ version_no: 5 });
     expect(failUploadTask).toHaveBeenCalledTimes(1);
   });
 

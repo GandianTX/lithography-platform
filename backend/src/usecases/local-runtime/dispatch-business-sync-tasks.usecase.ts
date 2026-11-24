@@ -285,7 +285,14 @@ export class DispatchBusinessSyncTasksUsecase {
       return 'succeeded';
     }
     if (verdict.status === 'CONFLICT') {
-      await this.recordConflict(task, request, payload.body, verdict.cloudSnapshot, verdict.reason);
+      await this.recordConflict(
+        task,
+        request,
+        payload.body,
+        verdict.cloudSnapshot,
+        verdict.reason,
+        verdict.cloudVersionNo,
+      );
       return 'conflicted';
     }
     await this.failTask(task.id, verdict.reason, '云端拒绝本次同步');
@@ -374,6 +381,7 @@ export class DispatchBusinessSyncTasksUsecase {
     localBody: Record<string, unknown>,
     cloudSnapshot: Record<string, unknown> | null,
     reason: string,
+    cloudVersion: number | null,
   ): Promise<void> {
     await this.transactionRunner.run(async (transactionContext) => {
       await this.businessSyncReceiptService.recordConflict(
@@ -383,7 +391,9 @@ export class DispatchBusinessSyncTasksUsecase {
           recordUuid: request.recordUuid,
           versionNo: request.versionNo,
           localVersion: request.versionNo,
-          cloudVersion: null,
+          // 云端版本必须落库：裁决端在 cloudVersion 不可核验时会拒绝「使用云端」，
+          // 派发链把已算出的云端版本写成 null 等于让「使用云端」永远无法闭环。
+          cloudVersion,
           localSnapshot: {
             schema_version: 1,
             resource_type: request.resourceType,
@@ -394,7 +404,7 @@ export class DispatchBusinessSyncTasksUsecase {
           },
           cloudSnapshot: {
             schema_version: 1,
-            version_no: null,
+            version_no: cloudVersion,
             body: cloudSnapshot ?? {},
           },
           conflictReason: `云端版本与本机不一致（${reason}）`,
