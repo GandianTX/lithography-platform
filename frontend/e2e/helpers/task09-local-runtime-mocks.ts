@@ -31,6 +31,12 @@ export type Task09VisualPage = {
   card: Task09CardExpectation;
   cardNote: string;
   v44Counterpart: string;
+  /**
+   * 期望的卡片体内边距（G28 的实际判据）。
+   * - V44_ALIGNED：目标页已按 V44 原型实测（`.ant-card-body` = 24px）局部对齐；
+   * - REPO_DEFAULT：仓内卡片语言默认（16px），该页不属 V44 对齐范围。
+   */
+  cardPadding: 'V44_ALIGNED' | 'REPO_DEFAULT';
 };
 
 export const TASK09_VISUAL_VIEWPORTS: readonly Task09VisualViewport[] = [
@@ -47,13 +53,16 @@ export const TASK09_VISUAL_PAGES: readonly Task09VisualPage[] = [
     cardNote:
       '记录包页为 Tabs＋表单＋结果表格布局，不使用卡片面；V44 无对应页面（其入口在 #/engineer/data-center）',
     v44Counterpart: '#/engineer/data-center',
+    cardPadding: 'REPO_DEFAULT',
   },
   {
     label: 'sync-conflicts',
     path: '/engineer/sync-conflicts',
     card: 'NONE',
-    cardNote: '同步冲突页为清单＋抽屉布局，不使用卡片面；V44 对应页 #/engineer/conflicts/',
-    v44Counterpart: '#/engineer/conflicts/',
+    cardNote:
+      '同步冲突页为清单＋抽屉布局，不使用卡片面；V44 真实冲突页入口是 #/engineer/conflicts/FR-2905（由 #/engineer/data-center 的「处理冲突」按钮跳转；直接访问 #/engineer/conflicts/ 会回落到工程师工作台）',
+    v44Counterpart: '#/engineer/conflicts/FR-2905',
+    cardPadding: 'REPO_DEFAULT',
   },
   {
     label: 'local-settings',
@@ -61,16 +70,23 @@ export const TASK09_VISUAL_PAGES: readonly Task09VisualPage[] = [
     card: 'REQUIRED',
     cardNote: '本地设置页用公共 DataCard（.data-card）承载分区卡片；V44 对应页 #/local/settings',
     v44Counterpart: '#/local/settings',
+    cardPadding: 'V44_ALIGNED',
   },
   {
     label: 'local-backup',
     path: '/local-backup',
     card: 'REQUIRED',
     cardNote:
-      '备份与恢复页用公共 DataCard（.data-card）承载分区卡片；V44 本地设置页合并了设备与计划入口',
-    v44Counterpart: '#/local/settings',
+      '备份与恢复页用公共 DataCard（.data-card）承载分区卡片；V44 对应页 #/admin/data-center（管理员流程「备份与恢复」，3 张卡）与 #/engineer/data-center（工程师流程，4 张卡）',
+    v44Counterpart: '#/admin/data-center',
+    cardPadding: 'V44_ALIGNED',
   },
 ];
+
+/** V44 原型实测卡片体内边距（`.ant-card-body`，三视口一致） */
+export const TASK09_V44_CARD_PADDING = '24px';
+/** 仓内卡片语言默认卡片体内边距（`:root` 的 --panel-padding） */
+export const TASK09_REPO_CARD_PADDING = '16px';
 
 /**
  * 表格溢出的**判定口径**（度量规格与提交级截图规格共用的单一真源）。
@@ -185,6 +201,8 @@ export type Task09MockOverrides = {
   delayRequestIndexOf?: Record<string, number>;
   /** 延迟毫秒数（配合 `delayRequestIndexOf`） */
   delayMs?: number;
+  /** 冲突清单条目数（默认 0＝空态；>0 时渲染「查看差异」入口，供抽屉焦点等场景验证） */
+  syncConflictTotal?: number;
 };
 
 /**
@@ -232,8 +250,64 @@ export async function installLocalRuntimeMocks(
     let data: Record<string, unknown> = {};
 
     if (operation === 'SyncConflicts') {
+      const conflictTotal = overrides.syncConflictTotal ?? 0;
       data = {
-        syncConflicts: { items: [], total: 0, page: 1, pageSize: 10, truncated: false },
+        syncConflicts: {
+          items:
+            conflictTotal === 0
+              ? []
+              : Array.from({ length: conflictTotal }, (_, index) => ({
+                  conflictId: `cf-${index + 1}`,
+                  recordUuid: `uuid-cf-${index + 1}`,
+                  resourceType: 'REFERENCE_DOCUMENT',
+                  versionNo: 2,
+                  localVersion: 1,
+                  cloudVersion: 2,
+                  displayedCloudVersion: 2,
+                  decision: null,
+                  status: 'PENDING',
+                  conflictReason: '云端版本较新',
+                  createdAt: '2026-11-23T08:00:00.000Z',
+                })),
+          total: conflictTotal,
+          page: 1,
+          pageSize: 10,
+          truncated: false,
+        },
+      };
+    } else if (operation === 'SyncConflict') {
+      // 冲突详情：字段集必须与 GraphQL 选择集一致（缺字段会被 adapter 判为非法响应）
+      data = {
+        syncConflict: {
+          conflictId: 'cf-1',
+          recordUuid: 'uuid-cf-1',
+          organizationId: 9,
+          resourceType: 'REFERENCE_DOCUMENT',
+          versionNo: 2,
+          localVersion: 1,
+          cloudVersion: 2,
+          displayedCloudVersion: 2,
+          decision: null,
+          status: 'PENDING',
+          localSnapshot: '本地版本快照正文',
+          cloudSnapshot: '云端版本快照正文',
+          conflictReason: '云端版本较新',
+          diff: {
+            entries: [
+              { path: 'title', kind: 'CHANGED', localValue: '本地版本标题', cloudValue: '云端版本标题' },
+            ],
+            truncated: false,
+            invalid: false,
+          },
+          sourceRecordId: 12,
+          sourceReadOnly: false,
+          sourceReadOnlyReason: null,
+          canAdoptCloud: true,
+          adoptionReadOnly: false,
+          confirmedByAccountId: null,
+          confirmedAt: null,
+          createdAt: '2026-11-23T08:00:00.000Z',
+        },
       };
     } else if (operation === 'LocalBackupRecords') {
       const requestedPage = Number(

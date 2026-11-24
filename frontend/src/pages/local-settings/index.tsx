@@ -25,7 +25,7 @@ export function LocalSettingsPage() {
   const adminLevel = auth.status === 'authenticated' ? auth.session.adminLevel : null;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack v44-panel-page">
       <PageHeader
         description={t('local-settings.description')}
         eyebrow="Local Settings"

@@ -29,7 +29,12 @@ export function SyncConflictsPage() {
       />
       <SyncConflictList onOpen={(conflictId: string) => setActiveConflictId(conflictId)} />
       <Drawer
-        destroyOnClose
+        // 不开 `destroyOnClose`：抽屉内容本来��由 `activeConflictId === null` 条件控制，
+        // 不开 `destroyOnClose`：抽屉内容本来由 `activeConflictId === null` 条件控制，
+        // 关闭即卸载详情面板（无残留、无重复请求）。
+        // 而 `destroyOnClose` 会在**关闭动画期间**销毁子树，使 antd 在打开时捕获的
+        // 触发元素引用失效 ⇒ 取消后焦点落到 body 而非返回「查看差异」按钮
+        // （任务书《前端布局与视觉验收》要求"取消后焦点返回触发控件"；实测 700ms 内关闭必现）。
         onClose={() => setActiveConflictId(null)}
         open={activeConflictId !== null}
         title={t('syncConflict.detail.title')}

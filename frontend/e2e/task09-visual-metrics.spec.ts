@@ -7,37 +7,39 @@ import { seedAuthSession } from './helpers/auth-session-seed';
 import {
   installLocalRuntimeMocks,
   installTask09TableOverflowJudge,
+  TASK09_REPO_CARD_PADDING,
   TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL,
+  TASK09_V44_CARD_PADDING,
   TASK09_VISUAL_PAGES,
   TASK09_VISUAL_VIEWPORTS,
 } from './helpers/task09-local-runtime-mocks';
 
 /**
- * 任务 09 四类页面的**三视口度量**（总计划第 14 项）。
+ * 任务 09 四类页面的**三视口度量**（总计划第 14 项／第 11 项 G28 对照）。
  *
  * 与 `task09-local-pages-visual.spec.ts` 的分工：
  * - 那份规格采集**截图**（提交级证据），因此带"干净工作区"前置守卫：
  *   工作区有未提交改动时**必须失败**（不得产出伪关联 SHA 的截图）；
  * - 本规格只采集**度量**（computed style／bounding rect／overflow／标题层级）并**断言**，
  *   **不截图**，因此不受该守卫约束，可在未提交工作区运行；
- * - 两者合起来覆盖第 14 项要求的"度量可复核"与"截图需提交级干净工作区"。
+ * - 两者合起来覆盖第 11 项要求的"度量可复核"与"截图需提交级干净工作区"。
  *
  * ── 上一轮的"假通过"与本轮的修法 ──
  * 上一轮用 `.ant-card-body` 量"卡片内边距／圆角"，而候选页**从不渲染** antd Card
  * （卡片语言真源是 `src/index.css` 的 `.data-card`／`--panel-*` token），
  * 于是选择器落空 ⇒ 度量为空串 ⇒ 断言"元素缺失也通过"（假通过）。
- * 本轮改为：
+ * 现改为：
  * 1. 量**真实卡片面** `.data-card`（本仓卡片语言真源）；
  * 2. 每页**显式声明**是否应当存在卡片面（`REQUIRED` / `NONE`）：
  *    - `REQUIRED`：卡片缺失即**失败**（不再允许空值通过）；
  *    - `NONE`：显式断言"无卡片面"，并把理由写进证据（属**明确不适用**，不是静默跳过）；
- * 3. 把 **V44 原型基线**与**本仓卡片语言基线**同时写进证据文件，
- *    差异（卡片内边距 24px vs 16px）**显式登记**，不靠空值蒙混。
+ * 3. 卡片体内边距按页**分别**断言（G28 局部对齐后不再是单一基线）：
+ *    - V44_ALIGNED 页（本地设置／备份与恢复）＝ **24px**（原型 `.ant-card-body` 实测值）；
+ *    - 其余消费者仍为仓内默认 **16px**（见 `task09-visual-consumers.spec.ts` 的消费者回归断言）。
  *
  * 度量口径（V44 对照）：
  * - 主标题字号／行高（原型：24px／32px）；
- * - 卡片内边距与圆角（原型 `.ant-card-body` 24px／`.ant-card` 14px；
- *   本仓 `.data-card` 16px／14px，基线真源见 `src/index.css` 的 `--panel-*`）；
+ * - 卡片内边距与圆角（原型 `.ant-card-body` 24px／`.ant-card` 14px）；
  * - 表单头与表格容器宽度（表格只在自身容器内横向滚动，**页面不得横溢**）；
  * - 三个视口：1440×900／1366×768／390×844。
  *
@@ -52,14 +54,9 @@ const V44_BASELINE = {
   pageTitleFontSize: '24px',
   pageTitleLineHeight: '32px',
   cardRadius: '14px',
-  cardBodyPadding: '24px',
-} as const;
-
-/** 本仓卡片语言基线（`src/index.css` 的 `.data-card` / `--panel-*` token 真源） */
-const CANDIDATE_CARD_BASELINE = {
-  selector: '.data-card',
-  radius: '14px',
-  padding: '16px',
+  cardBodyPadding: TASK09_V44_CARD_PADDING,
+  /** 原型 `.page-stack` 的纵向间距（V44 三视口实测 20px） */
+  pageStackGap: '20px',
 } as const;
 
 type Metric = {
@@ -76,6 +73,8 @@ type Metric = {
   cardRadius: string;
   /** antd Card 面数量（候选页按设计为 0，用于说明上一轮为何量不到） */
   antdCardBodyCount: number;
+  /** 页面根容器 `.page-stack` 的纵向间距（V44 基线 20px） */
+  pageStackGap: string;
 };
 
 test.describe('任务 09 四类页面的三视口度量', () => {
@@ -112,6 +111,7 @@ test.describe('任务 09 四类页面的三视口度量', () => {
           const cards = Array.from(document.querySelectorAll('.data-card'));
           const card = cards[0] ?? null;
           const cardStyle = card === null ? null : window.getComputedStyle(card);
+          const pageStack = document.querySelector('.page-stack');
           return {
             documentClientWidth: root.clientWidth,
             documentScrollWidth: root.scrollWidth,
@@ -154,6 +154,8 @@ test.describe('任务 09 四类页面的三视口度量', () => {
             cardPadding: cardStyle?.padding ?? '',
             cardRadius: cardStyle?.borderRadius ?? '',
             antdCardBodyCount: document.querySelectorAll('.ant-card-body').length,
+            pageStackGap:
+              pageStack === null ? '' : window.getComputedStyle(pageStack).rowGap,
           };
         }, TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL);
 
@@ -187,22 +189,37 @@ test.describe('任务 09 四类页面的三视口度量', () => {
         if (target.card === 'REQUIRED') {
           expect(
             metrics.cardCount,
-            `${target.label} @ ${viewport.label} 应存在公共卡片面 ${CANDIDATE_CARD_BASELINE.selector}（${target.cardNote}）`,
+            `${target.label} @ ${viewport.label} 应存在公共卡片面 .data-card（${target.cardNote}）`,
           ).toBeGreaterThan(0);
           expect(
             metrics.cardRadius,
-            `${target.label} @ ${viewport.label} 卡片圆角应与本仓卡片语言基线一致`,
-          ).toBe(CANDIDATE_CARD_BASELINE.radius);
+            `${target.label} @ ${viewport.label} 卡片圆角应与 V44 基线一致（原型 .ant-card）`,
+          ).toBe(V44_BASELINE.cardRadius);
+          // G28：卡片体内边距按页分别断言（局部对齐后不再是单一基线）
           expect(
             metrics.cardPadding,
-            `${target.label} @ ${viewport.label} 卡片内边距应与本仓卡片语言基线一致`,
-          ).toBe(CANDIDATE_CARD_BASELINE.padding);
+            `${target.label} @ ${viewport.label} 卡片体内边距应为 ${
+              target.cardPadding === 'V44_ALIGNED'
+                ? `V44 原型实测值 ${V44_BASELINE.cardBodyPadding}（原型 .ant-card-body）`
+                : `仓内卡片语言默认 ${TASK09_REPO_CARD_PADDING}`
+            }`,
+          ).toBe(
+            target.cardPadding === 'V44_ALIGNED'
+              ? V44_BASELINE.cardBodyPadding
+              : TASK09_REPO_CARD_PADDING,
+          );
         } else {
           expect(
             metrics.cardCount,
             `${target.label} @ ${viewport.label} 声明为无卡片面（${target.cardNote}）；若页面结构已变更，请同步更新本声明`,
           ).toBe(0);
         }
+
+        // 卡片纵向间距：V44 原型 `.page-stack` 的 gap 实测 20px
+        expect(
+          metrics.pageStackGap,
+          `${target.label} @ ${viewport.label} 卡片纵向间距应与 V44 基线一致（原型 .page-stack）`,
+        ).toBe(V44_BASELINE.pageStackGap);
 
         // 未预期的控制台错误／页面异常必须可见（本轮已修掉 antd Drawer width 弃用告警）
         expect(
@@ -221,14 +238,20 @@ test.describe('任务 09 四类页面的三视口度量', () => {
               comparison: {
                 v44Counterpart: target.v44Counterpart,
                 v44Baseline: V44_BASELINE,
-                candidateCardBaseline: CANDIDATE_CARD_BASELINE,
                 cardExpectation: target.card,
                 cardNote: target.cardNote,
-                deviations: [
-                  metrics.cardCount > 0
-                    ? `卡片内边距：本仓 ${CANDIDATE_CARD_BASELINE.padding}（src/index.css 的 --panel-* token 真源，另有视觉规格固化） vs V44 原型 ${V44_BASELINE.cardBodyPadding} ⇒ 已知偏离，按仓内卡片语言基线取值`
-                    : '该页无卡片面 ⇒ 卡片内边距／圆角对照项不适用',
-                ],
+                cardPaddingExpectation:
+                  target.cardPadding === 'V44_ALIGNED'
+                    ? V44_BASELINE.cardBodyPadding
+                    : TASK09_REPO_CARD_PADDING,
+                deviations:
+                  metrics.cardCount === 0
+                    ? ['该页无卡片面 ⇒ 卡片内边距／圆角对照项不适用']
+                    : target.cardPadding === 'V44_ALIGNED'
+                      ? []
+                      : [
+                          `卡片内边距：该页为仓内默认 ${TASK09_REPO_CARD_PADDING}，未纳入 V44 对齐范围（该页无 V44 同构卡片面对照）`,
+                        ],
               },
             },
             null,

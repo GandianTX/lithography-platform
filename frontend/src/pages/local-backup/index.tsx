@@ -22,7 +22,7 @@ export function LocalBackupPage() {
   const canPrecheck = status === 'authenticated' && session?.role === 'SUPER_ADMIN';
 
   return (
-    <div className="page-stack">
+    <div className="page-stack v44-panel-page">
       <PageHeader
         description={t('local-backup.description')}
         eyebrow="Local Backup"
