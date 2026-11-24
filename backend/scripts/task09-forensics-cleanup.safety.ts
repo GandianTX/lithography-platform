@@ -124,15 +124,115 @@ export function planForensicsCleanupSteps(
   });
 }
 
+/**
+ * 判定一个审计事件是否**可证明**属于本轮。
+ *
+ * 复核意见（任务 09 剩余问题 P2-2）：按"恢复 ID ＋ 事件类型"**批量**删除审计，
+ * 会把同一恢复 ID 上**非本轮生成**的同类型事件一起删掉。
+ * 因此删除必须落到**事件级**：只有能**逐条证明**属于本轮的事件才可删。
+ *
+ * 判定口径（**全部**满足才算本轮，缺一即视为外来 ⇒ 失败关闭）：
+ * 1. 操作人是**本轮登记的账号**（别的账号写的事件不可证明属于本轮）；
+ * 2. 事件类型与本轮一致（operation ＋ target_type）；
+ * 3. 事件产生时间**不早于**本轮开始时刻（基线取数据库侧时间，避免时区口径漂移）。
+ */
+export function decideAuditEventOwnership(params: {
+  readonly actorAccountId: number;
+  readonly operation: string;
+  readonly targetType: string;
+  readonly createdAt: Date | string | null;
+  readonly expectedActorAccountId: number;
+  readonly expectedOperation: string;
+  readonly expectedTargetType: string;
+  readonly notBefore: Date;
+}): 'OWNED' | 'FOREIGN' {
+  if (params.actorAccountId !== params.expectedActorAccountId) {
+    return 'FOREIGN';
+  }
+  if (params.operation !== params.expectedOperation) {
+    return 'FOREIGN';
+  }
+  if (params.targetType !== params.expectedTargetType) {
+    return 'FOREIGN';
+  }
+  if (params.createdAt === null) {
+    return 'FOREIGN';
+  }
+  const createdAt =
+    params.createdAt instanceof Date
+      ? params.createdAt.getTime()
+      : new Date(params.createdAt).getTime();
+  if (Number.isNaN(createdAt) || createdAt < params.notBefore.getTime()) {
+    return 'FOREIGN';
+  }
+  return 'OWNED';
+}
+
 /** 事务句柄（只需要能执行参数化 SQL） */
 export type ForensicsCleanupTransaction = {
   query: (sql: string, params?: readonly unknown[]) => Promise<unknown>;
 };
-
 /** 事务执行器（由脚本注入真实 DataSource，或由测试注入替身） */
 export type ForensicsCleanupExecutor = {
   transaction: <T>(run: (tx: ForensicsCleanupTransaction) => Promise<T>) => Promise<T>;
 };
+
+/** 文件清理裁决结果 */
+export type ForensicsFileCleanupDecision = {
+  /** 允许删除的存储引用 */
+  readonly deletable: readonly string[];
+  /** **保留**的存储引用（不删字节） */
+  readonly kept: readonly string[];
+  /** 裁决理由（供收尾问题留痕，不含敏感内容） */
+  readonly reason: string;
+};
+
+/**
+ * 裁决"数据库清理之后能不能删字节"。
+ *
+ * **文件清理与数据库删除无法同事务**，因此二者之间存在一个**不可原子**的窗口：
+ * 数据库事务失败并回滚 ⇒ `stored_file` 行**仍在**⇒ 若此时把字节删掉，
+ * 就留下"**行在、字节丢**"的部分清理（登记指向不存在的字节）。
+ *
+ * 规则（保守、失败关闭）：
+ * 1. `databaseCleanupOk = false`（删除失败或**提交结果未知**）⇒ **一个字节都不删**；
+ * 2. 某个引用在数据库里**仍有登记行** ⇒ 该引用**不删**（行还在就仍可能被引用）；
+ * 3. 其余引用才允许删除。
+ */
+export function decideForensicsFileCleanup(params: {
+  readonly databaseCleanupOk: boolean;
+  readonly references: readonly string[];
+  /** 数据库里仍有登记行的存储引用 */
+  readonly referencedByLiveRow?: readonly string[];
+}): ForensicsFileCleanupDecision {
+  const references = [...new Set(params.references)];
+  if (!params.databaseCleanupOk) {
+    return {
+      deletable: [],
+      kept: references,
+      reason:
+        '数据库清理失败或提交结果未知 ⇒ 登记行可能仍在，保留全部字节（不做"行在、字节丢"的部分清理）',
+    };
+  }
+  const live = new Set(params.referencedByLiveRow ?? []);
+  const deletable: string[] = [];
+  const kept: string[] = [];
+  for (const reference of references) {
+    if (live.has(reference)) {
+      kept.push(reference);
+      continue;
+    }
+    deletable.push(reference);
+  }
+  return {
+    deletable,
+    kept,
+    reason:
+      kept.length > 0
+        ? '数据库清理成功，但部分引用仍有登记行 ⇒ 保留这些字节'
+        : '数据库清理成功且无登记行残留 ⇒ 允许精确回收本轮字节',
+  };
+}
 
 /** 删除结果 */
 export type ForensicsCleanupResult =

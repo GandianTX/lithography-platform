@@ -69,6 +69,7 @@ import {
   CleanupIssueLog,
   collectResidue,
   compareSentinelEntries,
+  decideAuditEventOwnership,
   planForensicsCleanupSteps,
   runAtomicForensicsCleanup,
   type ForensicsCleanupStep,
@@ -158,6 +159,13 @@ type Registry = {
   readonly backupIds: string[];
   readonly restoreIds: string[];
   readonly holdIds: string[];
+  /**
+   * 本轮**逐条登记**的审计事件 ID（可证明属于本轮的）。
+   *
+   * 复核意见（P2-2）：删除不得按"恢复 ID ＋ 事件类型"批量进行 ⇒ 这里登记的是
+   * **事件级**清单，删除计划只按这些 `event_id` 逐条删。
+   */
+  readonly auditEventIds: string[];
 };
 
 async function createAccount(dataSource: DataSource, tag: string): Promise<number> {
@@ -377,6 +385,7 @@ async function main(): Promise<void> {
     backupIds: [],
     restoreIds: [],
     holdIds: [],
+    auditEventIds: [],
   };
   // 收尾问题清单（**不被吞掉**）：主因与收尾错误都会进退出码判定
   const issues = new CleanupIssueLog();
@@ -386,6 +395,9 @@ async function main(): Promise<void> {
   let installationId = '';
   const organizationId = Number(auth.organizationId);
   let actorAccountId = 0;
+  // ★ 本轮时间基线（取**数据库侧**时间，避免本机与数据库时区口径漂移）：
+  //   晚于该时刻产生的审计事件才可能属于本轮。
+  const runStartedAt = await readDatabaseNow(dataSource);
 
   const record = (
     id: string,
@@ -900,6 +912,99 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── 逐条登记本轮产生的审计事件（删除只按 event_id 逐条删，绝不按恢复 ID 批量删）──
+  const classification = await classifyRoundAuditEvents({
+    dataSource,
+    restoreIds: registry.restoreIds,
+    actorAccountId,
+    notBefore: runStartedAt,
+  });
+  registry.auditEventIds.push(...classification.owned);
+
+  // ── S12 归属反例：同恢复 ID、**同类型**但**别人写的**审计事件 ──
+  //    期望：归属判定把它认作"外来" ⇒ 删除前预检**拒绝**（不进入删除路径），
+  //    且它**不被删除**（正常收尾只回收本轮登记的事件）。
+  {
+    const probeRestoreId = registry.restoreIds[0] ?? '';
+    const probeEventId = randomUUID();
+    if (probeRestoreId !== '') {
+      let probeRejected = false;
+      let probeMessage = '';
+      // 找一个**本轮之外**的真实账号作为"别的操作人"（外键要求操作人必须存在）
+      const foreignActorRows: unknown = await dataSource.query(
+        'SELECT id FROM base_user_account WHERE id <> ? ORDER BY id LIMIT 1',
+        [actorAccountId],
+      );
+      const foreignActorId = Number((foreignActorRows as Array<{ id: number }>)[0]?.id ?? 0);
+      if (foreignActorId > 0) {
+        // 造一条"同目标、同类型、**别的账号**"的审计事件（P2-2 的最小反例）
+        await dataSource.query(
+          'INSERT INTO management_audit_event ' +
+            '(event_id, actor_account_id, actor_admin_level, organization_id, operation, ' +
+            'target_type, target_id, result, detail, created_at) ' +
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3))',
+          [
+            probeEventId,
+            foreignActorId,
+            1,
+            organizationId,
+            'RESTORE_LOCAL_BUSINESS',
+            'LOCAL_RESTORE',
+            probeRestoreId,
+            'SUCCEEDED',
+            JSON.stringify({ stage: 'PROBE_FOREIGN_EVENT' }),
+          ],
+        );
+        const probeClassification = await classifyRoundAuditEvents({
+          dataSource,
+          restoreIds: [probeRestoreId],
+          actorAccountId,
+          notBefore: runStartedAt,
+        });
+        const recognisedAsForeign = probeClassification.foreign.some(
+          (item) => item.eventId === probeEventId,
+        );
+        // 归属清单里**不得**包含这条反例事件
+        const excludedFromOwned = !probeClassification.owned.includes(probeEventId);
+        // 删除前预检必须**拒绝**（用**全量**本轮清单；清单不全会误伤本轮自己的事件）
+        try {
+          await assertIncidentReleasePrecheck({
+            dataSource,
+            registry: {
+              ...registry,
+              auditEventIds: classification.owned,
+            },
+            installationId,
+            organizationId,
+          });
+        } catch (error: unknown) {
+          probeRejected = true;
+          probeMessage = describeError(error);
+        }
+        // 反例事件必须**仍然存在**（预检拒绝 ⇒ 没有进入删除路径）
+        const probeRows: unknown = await dataSource.query(
+          'SELECT COUNT(*) AS total FROM management_audit_event WHERE event_id = ?',
+          [probeEventId],
+        );
+        const probeStillThere =
+          Number((probeRows as Array<{ total: number }>)[0]?.total ?? 0) === 1;
+        // 按**精确 event_id** 移除反例（正常收尾只回收本轮登记的事件）
+        await dataSource.query('DELETE FROM management_audit_event WHERE event_id = ?', [
+          probeEventId,
+        ]);
+        record(
+          'S12',
+          '同恢复 ID、**同类型**但**别人写的**审计事件：删除前预检拒绝，且该事件不被删除',
+          '归属判定认作外来 ＋ 不进本轮登记清单 ＋ 删除前预检抛错（不进入删除路径）＋ 该事件仍然存在',
+          recognisedAsForeign && excludedFromOwned && probeRejected && probeStillThere,
+          `认作外来=${String(recognisedAsForeign)} 不入清单=${String(excludedFromOwned)} ` +
+            `预检拒绝=${String(probeRejected)} 事件仍在=${String(probeStillThere)} ` +
+            `别的操作人=${String(foreignActorId)} 提示=${probeMessage}`,
+        );
+      }
+    }
+  }
+
   // ── 收尾：按本轮登记的真实主键精确回收；**任何收尾问题都让 runner 非零退出** ──
   const cleanupResult = await runCleanup({
     dataSource,
@@ -1247,14 +1352,21 @@ function planIncidentReleaseDeletionSteps(params: {
 }): readonly ForensicsCleanupStep[] {
   const { registry, installationId, organizationId, actorAccountId } = params;
   const steps: ForensicsCleanupStep[] = [];
-  for (const restoreId of registry.restoreIds) {
+  // 审计事件：**逐条按 event_id 删除**（绝不按"恢复 ID ＋ 事件类型"批量删）
+  for (const eventId of registry.auditEventIds) {
     steps.push({
       table: 'management_audit_event',
-      idColumn: 'target_id',
-      id: restoreId,
-      ownership: `本轮恢复 ${restoreId} 的处置审计事件`,
-      conditions: { operation: 'RESTORE_LOCAL_BUSINESS', target_type: 'LOCAL_RESTORE' },
+      idColumn: 'event_id',
+      id: eventId,
+      ownership: `本轮产生的处置审计事件 ${eventId}`,
+      conditions: {
+        operation: 'RESTORE_LOCAL_BUSINESS',
+        target_type: 'LOCAL_RESTORE',
+        actor_account_id: actorAccountId,
+      },
     });
+  }
+  for (const restoreId of registry.restoreIds) {
     steps.push({
       table: 'backup_restore_run',
       idColumn: 'restore_id',
@@ -1309,6 +1421,89 @@ function planIncidentReleaseDeletionSteps(params: {
  *
  * 任何一条不符 ⇒ 抛错 ⇒ 调用方在**首次删除前**中止（保留现场）。
  */
+/**
+ * 读取**数据库侧**当前时间（作为本轮时间基线）。
+ *
+ * 用数据库时间而不是本机时间 ⇒ 与 `created_at` 的口径完全一致（同一连接、同一时区），
+ * 不会因为本机时区设置不同而误判事件归属。
+ */
+async function readDatabaseNow(dataSource: DataSource): Promise<Date> {
+  const rows: unknown = await dataSource.query('SELECT NOW(3) AS t');
+  const value = (rows as Array<Record<string, unknown>>)[0]?.['t'];
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  throw new Error('无法读取数据库侧当前时间，审计事件归属无法判定');
+}
+
+/**
+ * 读取本轮恢复上的**全部**审计事件，并按"能否证明属于本轮"分类。
+ *
+ * 复核意见（P2-2）：只按事件类型判断"是不是本轮的"不够 —— 同一恢复 ID 上
+ * 可能存在**别人**写的**同类型**事件。因此这里逐条判定归属，
+ * **无法证明属于本轮**的一律归为外来，交由调用方**失败关闭**。
+ */
+async function classifyRoundAuditEvents(params: {
+  dataSource: DataSource;
+  restoreIds: readonly string[];
+  actorAccountId: number;
+  notBefore: Date;
+}): Promise<{
+  owned: string[];
+  foreign: Array<{ eventId: string; restoreId: string; reason: string }>;
+}> {
+  const owned: string[] = [];
+  const foreign: Array<{ eventId: string; restoreId: string; reason: string }> = [];
+  for (const restoreId of params.restoreIds) {
+    const rows: unknown = await params.dataSource.query(
+      'SELECT event_id, actor_account_id, operation, target_type, created_at ' +
+        'FROM management_audit_event WHERE target_id = ?',
+      [restoreId],
+    );
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const eventId = text(row['event_id']);
+      const actorAccountId = Number(row['actor_account_id'] ?? 0);
+      const operation = text(row['operation']);
+      const targetType = text(row['target_type']);
+      const createdAtRaw = row['created_at'];
+      const createdAt =
+        createdAtRaw instanceof Date
+          ? createdAtRaw
+          : typeof createdAtRaw === 'string'
+            ? new Date(createdAtRaw)
+            : null;
+      const verdict = decideAuditEventOwnership({
+        actorAccountId,
+        operation,
+        targetType,
+        createdAt,
+        expectedActorAccountId: params.actorAccountId,
+        expectedOperation: 'RESTORE_LOCAL_BUSINESS',
+        expectedTargetType: 'LOCAL_RESTORE',
+        notBefore: params.notBefore,
+      });
+      if (verdict === 'OWNED') {
+        owned.push(eventId);
+        continue;
+      }
+      foreign.push({
+        eventId,
+        restoreId,
+        reason:
+          `操作人 ${String(actorAccountId)}／类型 ${operation}／${targetType}` +
+          `／产生时间 ${createdAt === null ? '（缺失）' : createdAt.toISOString()}`,
+      });
+    }
+  }
+  return { owned, foreign };
+}
+
 async function assertIncidentReleasePrecheck(params: {
   dataSource: DataSource;
   registry: Registry;
@@ -1319,16 +1514,14 @@ async function assertIncidentReleasePrecheck(params: {
 
   for (const restoreId of registry.restoreIds) {
     const events: unknown = await dataSource.query(
-      'SELECT operation, target_type FROM management_audit_event WHERE target_id = ?',
+      'SELECT event_id, operation, target_type FROM management_audit_event WHERE target_id = ?',
       [restoreId],
     );
     for (const event of events as Array<Record<string, unknown>>) {
-      if (
-        text(event['operation']) !== 'RESTORE_LOCAL_BUSINESS' ||
-        text(event['target_type']) !== 'LOCAL_RESTORE'
-      ) {
+      // 事件级归属：本轮登记清单里没有的事件 ⇒ 无法证明属于本轮 ⇒ 失败关闭
+      if (!registry.auditEventIds.includes(text(event['event_id']))) {
         throw new Error(
-          `恢复 ${restoreId} 上存在本轮之外的审计事件（operation=${text(event['operation'])}／target_type=${text(event['target_type'])}），拒绝删除`,
+          `恢复 ${restoreId} 上存在本轮之外的审计事件（event_id=${text(event['event_id'])}／operation=${text(event['operation'])}／target_type=${text(event['target_type'])}），拒绝删除`,
         );
       }
     }
@@ -1428,14 +1621,23 @@ async function assertIncidentReleasePrecheck(params: {
   if (externalHoldRefs > 0) {
     throw new Error(`本轮恢复运行存在 ${String(externalHoldRefs)} 条本轮之外的冻结引用，拒绝删除`);
   }
-  const externalAuditRefs = await countRows(
-    dataSource,
-    'SELECT COUNT(*) AS c FROM management_audit_event WHERE target_id IN (?) ' +
-      "AND NOT (operation = 'RESTORE_LOCAL_BUSINESS' AND target_type = 'LOCAL_RESTORE')",
-    [[...registry.restoreIds]],
-  );
+  const externalAuditRefs =
+    registry.auditEventIds.length === 0
+      ? await countRows(
+          dataSource,
+          'SELECT COUNT(*) AS c FROM management_audit_event WHERE target_id IN (?)',
+          [[...registry.restoreIds]],
+        )
+      : await countRows(
+          dataSource,
+          'SELECT COUNT(*) AS c FROM management_audit_event WHERE target_id IN (?) ' +
+            'AND event_id NOT IN (?)',
+          [[...registry.restoreIds], registry.auditEventIds],
+        );
   if (externalAuditRefs > 0) {
-    throw new Error(`本轮恢复运行存在 ${String(externalAuditRefs)} 条本轮之外的审计引用，拒绝删除`);
+    throw new Error(
+      `本轮恢复运行存在 ${String(externalAuditRefs)} 条本轮之外的审计事件（同恢复 ID、无法证明属于本轮），拒绝删除`,
+    );
   }
 }
 
@@ -1462,11 +1664,14 @@ async function readResidueCounts(
   accounts: number;
 }> {
   const [audit, holds, restoreRuns, assets, backupRuns, accounts] = await Promise.all([
-    countRows(
-      dataSource,
-      'SELECT COUNT(*) AS c FROM management_audit_event WHERE target_id IN (?)',
-      [[...registry.restoreIds]],
-    ),
+    // 残留按**本轮登记的事件 ID**计数（本轮对象语义），不按恢复 ID 批量计数
+    registry.auditEventIds.length === 0
+      ? Promise.resolve(0)
+      : countRows(
+          dataSource,
+          'SELECT COUNT(*) AS c FROM management_audit_event WHERE event_id IN (?)',
+          [registry.auditEventIds],
+        ),
     countRows(dataSource, 'SELECT COUNT(*) AS c FROM local_write_hold WHERE hold_id IN (?)', [
       [...registry.holdIds],
     ]),

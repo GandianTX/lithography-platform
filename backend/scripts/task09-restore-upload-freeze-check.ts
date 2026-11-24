@@ -34,6 +34,7 @@
 
 import { Test } from '@nestjs/testing';
 
+import { existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -74,6 +75,7 @@ import {
   CleanupIssueLog,
   collectResidue,
   compareSentinelEntries,
+  decideForensicsFileCleanup,
   planForensicsCleanupSteps,
   runAtomicForensicsCleanup,
   type ForensicsCleanupStep,
@@ -622,7 +624,7 @@ async function main(): Promise<void> {
     mainError = error;
   } finally {
     // ── 收尾：只回收本轮创建的对象；**任何收尾问题都必须让 runner 非零退出** ──
-    const residueProblems = await runCleanup({
+    const cleanupOutcome = await runCleanup({
       app,
       scope,
       engineerAccountId,
@@ -632,6 +634,7 @@ async function main(): Promise<void> {
       restoreId,
       issues,
     });
+    const residueProblems = cleanupOutcome.residue;
     // 哨兵最终核对（收尾**之后**）：非目标对象必须原样存在
     const foreignHoldSentinelAfter = await snapshotForeignHoldSentinel(
       app.dataSource,
@@ -661,6 +664,14 @@ async function main(): Promise<void> {
       residueProblems.length === 0,
       residueProblems.length === 0 ? '本轮创建的对象已全部回收' : residueProblems.join('；'),
     );
+    if (cleanupOutcome.probe !== null) {
+      const probe = cleanupOutcome.probe;
+      check(
+        '收尾：数据库清理失败（事务回滚）⇒ 登记行与字节**都保留**，不做"行在、字节丢"的部分清理',
+        probe.injectionFired && probe.rowRetained && probe.bytesRetained && probe.decisionKeptBytes,
+        probe.detail,
+      );
+    }
     check(
       '收尾：无收尾错误（清理失败／残留／哨兵不一致一律不得静默通过）',
       issues.list.length === 0,
@@ -714,13 +725,134 @@ function sameSentinelsStrictly(
 }
 
 /**
+ * 读出"数据库里仍有登记行"的存储引用。
+ *
+ * 用于文件清理前的裁决：**登记行还在 ⇒ 字节仍可能被引用 ⇒ 不删**。
+ * 查询失败时**按"全部仍有登记行"处理**（失败关闭 ⇒ 一个字节都不删）。
+ */
+async function readLiveStorageReferences(
+  app: AppContext,
+  references: readonly string[],
+): Promise<readonly string[]> {
+  if (references.length === 0) {
+    return [];
+  }
+  try {
+    const rows: unknown = await app.dataSource.query(
+      'SELECT storage_reference FROM stored_file WHERE storage_reference IN (?)',
+      [[...references]],
+    );
+    return (rows as Array<Record<string, unknown>>).map((row) => String(row['storage_reference']));
+  } catch {
+    // 读不到登记行 ⇒ 无法证明"可以删字节" ⇒ 按全部仍有登记行处理（失败关闭）
+    return [...references];
+  }
+}
+
+/**
+ * 失败分支自检的结果（**在真实隔离库上真跑**，不是替身）。
+ *
+ * 复核意见（任务 09 剩余问题 P2-1）：数据库删除失败并回滚后，
+ * 脚本曾**无条件**继续删文件 ⇒ 可能留下"行在、字节丢"的部分清理。
+ * 本探针用**真实事务 ＋ 真实注入**证明：回滚后登记行与字节**都保留**，
+ * 且裁决在"数据库清理失败"时**保留字节**。
+ */
+type CleanupFailureProbe = {
+  /** 登记行是否在回滚后仍在 */
+  readonly rowRetained: boolean;
+  /** 字节是否在回滚后仍在 */
+  readonly bytesRetained: boolean;
+  /** 裁决是否在"数据库清理失败"时保留字节 */
+  readonly decisionKeptBytes: boolean;
+  /** 注入是否真的生效（事务确实失败） */
+  readonly injectionFired: boolean;
+  readonly detail: string;
+};
+
+/**
+ * 失败分支自检：对本轮登记的暂存原件行执行一次**注定失败**的清理事务。
+ *
+ * - 事务在删除之后、提交之前抛错 ⇒ **整体回滚**（真实事务，不是替身）；
+ * - 随后核对：登记行仍在、字节仍在、且"数据库清理失败 ⇒ 保留字节"的裁决成立。
+ * - 探针**不删除任何东西**（回滚了）；正常收尾随后照常精确回收这些对象。
+ */
+async function runCleanupFailureProbe(params: {
+  app: AppContext;
+  steps: readonly ForensicsCleanupStep[];
+  createdFileIds: readonly string[];
+}): Promise<CleanupFailureProbe | null> {
+  const { app, steps, createdFileIds } = params;
+  const storedFileSteps = steps.filter((step) => step.table === 'stored_file');
+  if (storedFileSteps.length === 0) {
+    // 本轮没有暂存原件行 ⇒ 没有可探针的对象（不制造假通过，直接不产出探针结论）
+    return null;
+  }
+
+  // 取本轮登记的暂存原件行对应的存储引用（字节位置）
+  const rows: unknown = await app.dataSource.query(
+    'SELECT file_id, storage_reference FROM stored_file WHERE file_id IN (?)',
+    [[...createdFileIds]],
+  );
+  const references = (rows as Array<Record<string, unknown>>).map((row) =>
+    String(row['storage_reference']),
+  );
+
+  // 注入：删除照常执行，但**提交前抛错** ⇒ 事务整体回滚
+  const probeResult = await runAtomicForensicsCleanup(storedFileSteps, {
+    transaction: async <T>(
+      run: (tx: {
+        query: (sql: string, params?: readonly unknown[]) => Promise<unknown>;
+      }) => Promise<T>,
+    ): Promise<T> =>
+      await app.dataSource.transaction(async (manager) => {
+        await run({
+          query: async (sql: string, params?: readonly unknown[]): Promise<unknown> =>
+            await manager.query(sql, params as unknown[]),
+        });
+        throw new Error('注入的清理事务失败（提交前抛错 ⇒ 整体回滚）');
+      }),
+  });
+
+  // 回滚后：登记行必须仍在
+  const afterRows: unknown = await app.dataSource.query(
+    'SELECT file_id FROM stored_file WHERE file_id IN (?)',
+    [[...createdFileIds]],
+  );
+  const rowRetained = (afterRows as Array<Record<string, unknown>>).length > 0;
+
+  // 回滚后：字节必须仍在
+  const bytesRetained = references.every((reference) =>
+    existsSync(join(app.storageDir, reference)),
+  );
+
+  // 裁决：数据库清理失败 ⇒ 必须保留字节
+  const decision = decideForensicsFileCleanup({
+    databaseCleanupOk: false,
+    references,
+  });
+  const decisionKeptBytes = decision.deletable.length === 0 && decision.kept.length > 0;
+
+  return {
+    rowRetained,
+    bytesRetained,
+    decisionKeptBytes,
+    injectionFired: !probeResult.ok,
+    detail:
+      `注入生效=${String(!probeResult.ok)} 登记行保留=${String(rowRetained)} ` +
+      `字节保留=${String(bytesRetained)} 裁决保留字节=${String(decisionKeptBytes)} ` +
+      `（本轮登记的暂存原件 ${String(createdFileIds.length)} 件）`,
+  };
+}
+
+/**
  * 收尾：只回收**本轮创建**的对象，且**不吞掉任何异常**。
  *
  * 纪律（任务 09 剩余问题 02）：
  * 1. 先按本轮登记的真实 ID **一次性预检**（归属、外部引用）；
  * 2. 预检不通过 ⇒ **在首次删除前中止**（不删任何东西）；
  * 3. 数据库删除放在**同一个事务**里按"精确 ID ＋ 归属条件"执行 ⇒ 失败整体回滚；
- * 4. 文件只删**本轮产生**、位于**受控根**的明确引用；
+ * 4. 文件只删**本轮产生**、位于**受控根**的明确引用，
+ *    且**数据库清理失败或提交结果未知时一个字节都不删**（不做"行在、字节丢"的部分清理）；
  * 5. 收尾错误、残留、哨兵不一致 ⇒ 记为收尾问题 ⇒ runner **非零退出**。
  */
 async function runCleanup(params: {
@@ -732,7 +864,7 @@ async function runCleanup(params: {
   fileRoot: string;
   restoreId: string;
   issues: CleanupIssueLog;
-}): Promise<readonly string[]> {
+}): Promise<{ residue: readonly string[]; probe: CleanupFailureProbe | null }> {
   const { app, scope, engineerAccountId, createdHoldIds, createdFileIds, fileRoot, issues } =
     params;
   const residueProblems: string[] = [];
@@ -759,10 +891,19 @@ async function runCleanup(params: {
     return null;
   });
   if (steps === null) {
-    return residueProblems;
+    return { residue: residueProblems, probe: null };
   }
 
-  // ③ 数据库删除：**同一事务**、精确 ID ＋ 归属条件；失败 ⇒ 整体回滚
+  // ③ 先跑**失败分支自检**（真实事务 ＋ 真实注入）：证明回滚后行与字节都保留
+  const probe = await runCleanupFailureProbe({ app, steps, createdFileIds }).catch(
+    (error: unknown) => {
+      issues.recordError('失败分支自检', error);
+      return null;
+    },
+  );
+
+  // ④ 数据库删除：**同一事务**、精确 ID ＋ 归属条件；失败 ⇒ 整体回滚
+  let databaseCleanupOk = true;
   if (steps.length > 0) {
     const result = await runAtomicForensicsCleanup(steps, {
       transaction: async <T>(
@@ -778,6 +919,7 @@ async function runCleanup(params: {
         }),
     });
     if (!result.ok) {
+      databaseCleanupOk = false;
       const where =
         result.failedStep === null
           ? '（事务本身失败）'
@@ -786,7 +928,9 @@ async function runCleanup(params: {
     }
   }
 
-  // ④ 文件清理：只删**本轮写盘产生**、位于**受控根**的明确引用
+  // ⑤ 文件清理：**先裁决能不能删字节**
+  //    数据库清理失败或提交结果未知 ⇒ 登记行可能仍在 ⇒ **不删字节**；
+  //    否则只删"数据库里已无登记行"的本轮引用。
   const references = [...new Set(app.gate.savedReferences)].filter((reference) => {
     if (!STORAGE_REFERENCE_PATTERN.test(reference)) {
       issues.record(`本轮写盘引用格式不合法，未删除：${reference}`);
@@ -794,9 +938,18 @@ async function runCleanup(params: {
     }
     return true;
   });
-  if (references.length > 0) {
+  const liveReferences = await readLiveStorageReferences(app, references);
+  const decision = decideForensicsFileCleanup({
+    databaseCleanupOk,
+    references,
+    referencedByLiveRow: liveReferences,
+  });
+  if (decision.kept.length > 0) {
+    issues.record(`保留本轮写盘字节（${String(decision.kept.length)} 项）：${decision.reason}`);
+  }
+  if (decision.deletable.length > 0) {
     try {
-      const paths = references.map((reference) => join(app.storageDir, reference));
+      const paths = decision.deletable.map((reference) => join(app.storageDir, reference));
       const deletion = deleteFilesByList(paths, fileRoot);
       for (const failure of deletion.failed) {
         issues.record(`文件删除失败：${failure.path}：${failure.reason}`);
@@ -806,7 +959,7 @@ async function runCleanup(params: {
     }
   }
 
-  // ⑤ 残留核对：本轮对象必须**零残留**
+  // ⑥ 残留核对：本轮对象必须**零残留**
   try {
     const leftoverHolds: unknown = await app.dataSource.query(
       'SELECT COUNT(*) AS c FROM local_write_hold ' +
@@ -834,7 +987,7 @@ async function runCleanup(params: {
   } catch (error: unknown) {
     issues.recordError('残留核对', error);
   }
-  return residueProblems;
+  return { residue: residueProblems, probe };
 }
 
 /** 统计本轮写盘的字节是否仍留在磁盘上（只读核对，不做二次删除） */

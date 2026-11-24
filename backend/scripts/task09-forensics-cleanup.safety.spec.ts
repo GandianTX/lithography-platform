@@ -24,6 +24,8 @@ import {
   CleanupIssueLog,
   collectResidue,
   compareSentinelEntries,
+  decideAuditEventOwnership,
+  decideForensicsFileCleanup,
   planForensicsCleanupSteps,
   runAtomicForensicsCleanup,
   type ForensicsCleanupExecutor,
@@ -304,5 +306,109 @@ describe('取证脚本收尾 · 哨兵比对（三个维度分开看）', () => 
       [{ label: 'file:a.pdf', fingerprint: 'sha256:aaa;bytes=10' }],
     );
     expect(comparison).toEqual({ missing: [], changed: [], added: [] });
+  });
+});
+describe('取证脚本收尾 · 文件清理裁决（P2-1：数据库失败后不得删字节）', () => {
+  it('数据库清理失败 ⇒ 一个字节都不删（不做"行在、字节丢"的部分清理）', () => {
+    const decision = decideForensicsFileCleanup({
+      databaseCleanupOk: false,
+      references: ['a.pdf', 'b.pdf'],
+    });
+    expect(decision.deletable).toEqual([]);
+    expect(decision.kept).toEqual(['a.pdf', 'b.pdf']);
+    expect(decision.reason).toContain('数据库清理失败');
+  });
+
+  it('数据库清理成功且无登记行残留 ⇒ 精确回收全部本轮字节', () => {
+    const decision = decideForensicsFileCleanup({
+      databaseCleanupOk: true,
+      references: ['a.pdf', 'b.pdf'],
+      referencedByLiveRow: [],
+    });
+    expect(decision.deletable).toEqual(['a.pdf', 'b.pdf']);
+    expect(decision.kept).toEqual([]);
+  });
+
+  it('仍有登记行的引用**保留字节**，其余照删', () => {
+    const decision = decideForensicsFileCleanup({
+      databaseCleanupOk: true,
+      references: ['a.pdf', 'b.pdf'],
+      referencedByLiveRow: ['a.pdf'],
+    });
+    expect(decision.deletable).toEqual(['b.pdf']);
+    expect(decision.kept).toEqual(['a.pdf']);
+  });
+
+  it('重复引用只算一次', () => {
+    const decision = decideForensicsFileCleanup({
+      databaseCleanupOk: true,
+      references: ['a.pdf', 'a.pdf'],
+      referencedByLiveRow: [],
+    });
+    expect(decision.deletable).toEqual(['a.pdf']);
+  });
+});
+
+describe('取证脚本收尾 · 审计事件归属判定（P2-2：不得按目标 ID 批量删）', () => {
+  const notBefore = new Date('2026-11-24T00:00:00.000Z');
+  const base = {
+    actorAccountId: 900001,
+    operation: 'RESTORE_LOCAL_BUSINESS',
+    targetType: 'LOCAL_RESTORE',
+    expectedActorAccountId: 900001,
+    expectedOperation: 'RESTORE_LOCAL_BUSINESS',
+    expectedTargetType: 'LOCAL_RESTORE',
+    notBefore,
+  };
+
+  it('操作人、类型、产生时间都吻合 ⇒ 属于本轮', () => {
+    expect(
+      decideAuditEventOwnership({
+        ...base,
+        createdAt: new Date('2026-11-24T00:00:01.000Z'),
+      }),
+    ).toBe('OWNED');
+  });
+
+  it('**别的账号**写的同类型事件 ⇒ 外来（不得被本轮删除）', () => {
+    expect(
+      decideAuditEventOwnership({
+        ...base,
+        actorAccountId: 900301,
+        createdAt: new Date('2026-11-24T00:00:01.000Z'),
+      }),
+    ).toBe('FOREIGN');
+  });
+
+  it('事件类型不同 ⇒ 外来', () => {
+    expect(
+      decideAuditEventOwnership({
+        ...base,
+        targetType: 'RECORD_PACKAGE',
+        createdAt: new Date('2026-11-24T00:00:01.000Z'),
+      }),
+    ).toBe('FOREIGN');
+  });
+
+  it('产生时间早于本轮基线 ⇒ 外来（早于本轮 ⇒ 不是本轮写的）', () => {
+    expect(
+      decideAuditEventOwnership({
+        ...base,
+        createdAt: new Date('2026-11-23T23:59:59.000Z'),
+      }),
+    ).toBe('FOREIGN');
+  });
+
+  it('产生时间缺失 ⇒ 外来（无法证明 ⇒ 失败关闭）', () => {
+    expect(decideAuditEventOwnership({ ...base, createdAt: null })).toBe('FOREIGN');
+  });
+
+  it('时间字段是字符串时也能判定', () => {
+    expect(
+      decideAuditEventOwnership({
+        ...base,
+        createdAt: '2026-11-24T00:00:01.000Z',
+      }),
+    ).toBe('OWNED');
   });
 });
