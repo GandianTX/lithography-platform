@@ -640,6 +640,27 @@ describe('恢复写入实现（S2-2／S2-3）', () => {
       expect(order.indexOf('capture')).toBeLessThan(order.indexOf('break'));
     });
 
+    it('旧包缺**范围根表** ⇒ 失败关闭（不静默部分恢复：该表既不清空也不写回）', async () => {
+      const { service, repositories } = buildWriter();
+
+      const outcome = await service.write({
+        organizationId: 4,
+        installationId: INSTALLATION_ID,
+        restoreId: 'restore-1',
+        tables: [
+          // 只带子表、缺少根表（repair_request）⇒ 恢复后该表会停留在恢复前的旧值
+          { table: 'repair_request_revision' as const, rows: [{ id: 10, requestId: 1 }] },
+        ],
+      });
+
+      expect(outcome.status).toBe('FAILED');
+      expect(outcome.reason).toContain('缺少范围表数据');
+      expect(outcome.reason).toContain('重新生成备份');
+      for (const repo of Object.values(repositories)) {
+        expect(repo.insert).not.toHaveBeenCalled();
+      }
+    });
+
     it('旧包（缺新增子表）⇒ 失败关闭，不静默丢数据', async () => {
       const { service, repositories } = buildWriter();
 

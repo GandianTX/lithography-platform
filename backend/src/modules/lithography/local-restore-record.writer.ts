@@ -605,7 +605,10 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
    *
    * - 载荷出现范围外的表 ⇒ 拒绝（不接受"多出来的"业务行）；
    * - 载荷缺少某张表的**子表** ⇒ 拒绝（清空父表会让子表外键悬空，
-   *   写回后数据库不自洽）。
+   *   写回后数据库不自洽）；
+   * - 载荷缺少**范围根表** ⇒ 拒绝（该表既不清空、也不写回、也不核验，
+   *   会留下"部分表已替换、部分表仍是恢复前旧值"的自相矛盾状态，
+   *   即**静默部分恢复**——失败关闭比半恢复更安全）。
    */
   private checkScopeConsistency(request: LocalRestoreRecordWriteRequest): string | null {
     const payloadTables = new Set(request.tables.map((entry) => entry.table));
@@ -628,6 +631,19 @@ export class LocalRestoreRecordWriterService implements LocalRestoreRecordWriter
           '该备份包未包含报告版本等业务历史数据，恢复会丢失这些事实，请重新生成备份后再恢复'
         );
       }
+    }
+    // 范围根表（无父表）必须齐备：缺它时该表不会被清空也不会被写回，
+    // 恢复结束后的库处于"一半新一半旧"的自相矛盾状态 ⇒ 显式拒绝（失败关闭）。
+    const missingRoot = this.supportedTables.find(
+      (candidate) =>
+        BACKUP_TABLE_DESCRIPTORS[candidate].parentTable === undefined &&
+        !payloadTables.has(candidate),
+    );
+    if (missingRoot !== undefined) {
+      return (
+        `备份载荷缺少范围表数据（${missingRoot}），恢复会遗漏该业务事实：` +
+        '该备份包与本机支持的数据范围不一致，请重新生成备份后再恢复'
+      );
     }
     return null;
   }
