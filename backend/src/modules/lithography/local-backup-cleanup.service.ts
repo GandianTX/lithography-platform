@@ -21,6 +21,12 @@ import { readdir, rm, stat } from 'node:fs/promises';
 import { PinoLogger } from 'nestjs-pino';
 import { Repository } from 'typeorm';
 
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
+import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
+import {
+  TRANSACTION_RUNNER,
+  type TransactionRunner,
+} from '@src/usecases/common/ports/transaction-runner.contract';
 import {
   LOCAL_BACKUP_STORAGE,
   type LocalBackupStorageConfig,
@@ -64,6 +70,17 @@ export type PackageDeletionOutcome =
   { deleted: true; reason: null } | { deleted: false; reason: string };
 
 /**
+ * 一轮清理内使用的仓储集合。
+ *
+ * 生产路径下两者都取自**同一个事务**的 EntityManager ⇒ 预检与删除同事务同连接；
+ * 单测可由替身整体替换（不依赖真实数据库）。
+ */
+export type CleanupTransactionRepositories = {
+  backupAssetRepository: Repository<BackupAssetEntity>;
+  backupRunRepository: Repository<LocalBackupRunEntity>;
+};
+
+/**
  * 本地备份包清理执行层（任务 09 S3.3）。
  *
  * 口径（R074-01～03、R083-01；验收 A09-05／A09-08）：
@@ -96,7 +113,54 @@ export class LocalBackupCleanupService {
     @Optional()
     @InjectRepository(LocalCompanySettingEntity)
     private readonly companySettingRepository?: Repository<LocalCompanySettingEntity>,
+    @Optional()
+    @Inject(TRANSACTION_RUNNER)
+    private readonly transactionRunner?: TransactionRunner,
   ) {}
+
+  /**
+   * 事务内的仓储集合（**受保护**：单测以受控替身覆盖，避免依赖真实数据库）。
+   *
+   * 生产实现：两个仓储都取自**同一个事务**的 EntityManager ⇒ 预检、逐项删除与
+   * 运行汇总共享同一事务与连接。
+   */
+  protected resolveTransactionRepositories(
+    transactionContext: PersistenceTransactionContext,
+  ): CleanupTransactionRepositories {
+    const manager = getTypeOrmEntityManager(transactionContext);
+    return {
+      backupAssetRepository: manager.getRepository(BackupAssetEntity),
+      backupRunRepository: manager.getRepository(LocalBackupRunEntity),
+    };
+  }
+
+  /**
+   * 在**单个数据库事务**内完成一轮清理的"全量预检 + 逐项删除"。
+   *
+   * 为什么必须同事务（计划第 09 项第 3 条）：
+   * - 预检（读范围 → 裁决目标）与删除若分属两个事务，并发下目标集合可能漂移：
+   *   另一轮清理刚把某包置为 CLEANED 时，本轮仍按旧快照去删同一个目录；
+   * - 同事务内对目标行加**悲观写锁**，第二个执行者会等待并在拿到锁后读到最新状态
+   *   （已 CLEANED 即被裁决跳过）⇒ **多实例下的重复清理自动收敛**。
+   *
+   * 降级口径：拿不到事务运行器时（替身装配）沿用注入的仓储执行，
+   * **行为不变但不提供跨实例互斥**——此路径只在测试替身下出现，生产必有事务运行器。
+   */
+  private async runInCleanupTransaction<T>(
+    work: (repositories: CleanupTransactionRepositories) => Promise<T>,
+  ): Promise<T> {
+    const runner = this.transactionRunner;
+    if (runner === undefined) {
+      return await work({
+        backupAssetRepository: this.backupAssetRepository,
+        backupRunRepository: this.backupRunRepository as Repository<LocalBackupRunEntity>,
+      });
+    }
+    return await runner.run(
+      async (transactionContext) =>
+        await work(this.resolveTransactionRepositories(transactionContext)),
+    );
+  }
 
   /**
    * 孤儿包巡检（review M8 重启补偿）。
@@ -266,24 +330,31 @@ export class LocalBackupCleanupService {
     now?: Date;
   }): Promise<BackupCleanupResult> {
     const now = input.now ?? new Date();
-    const assets = await this.listAssets(input.organizationId, input.installationId, 'ASC');
-    const decision = decideManualCleanupTargets(toCandidates(assets), input.cloudReceipt);
+    return await this.runInCleanupTransaction(async (repositories) => {
+      const assets = await this.listAssets(
+        repositories.backupAssetRepository,
+        input.organizationId,
+        input.installationId,
+        'ASC',
+      );
+      const decision = decideManualCleanupTargets(toCandidates(assets), input.cloudReceipt);
 
-    if (!decision.available) {
-      return {
-        available: false,
-        reason: decision.reason,
-        targetCount: 0,
-        cleaned: 0,
-        retained: 0,
-        items: [],
-      };
-    }
+      if (!decision.available) {
+        return {
+          available: false,
+          reason: decision.reason,
+          targetCount: 0,
+          cleaned: 0,
+          retained: 0,
+          items: [],
+        };
+      }
 
-    const result = await this.executeCleanup(decision.targets, assets, now);
-    // 逐项复核后被保留的资产也要可见（"因为是唯一副本所以没删"），
-    // 否则调用方只看到一个总数，无法解释"为什么没清干净"
-    return this.mergeRetainedItems(result, decision.skipped);
+      const result = await this.executeCleanup(repositories, decision.targets, assets, now);
+      // 逐项复核后被保留的资产也要可见（"因为是唯一副本所以没删"），
+      // 否则调用方只看到一个总数，无法解释"为什么没清干净"
+      return this.mergeRetainedItems(result, decision.skipped);
+    });
   }
 
   /** 把"未进入清理清单"的逐项原因并入结果（RETAINED + 受控原因码） */
@@ -322,18 +393,27 @@ export class LocalBackupCleanupService {
     retentionDays?: number;
   }): Promise<BackupCleanupResult> {
     const now = input.now ?? new Date();
-    const assets = await this.listAssets(input.organizationId, input.installationId, 'ASC');
-    const decision = decideRetentionCleanupTargets(
-      toCandidates(assets),
-      now,
-      input.retentionDays ?? BACKUP_RETENTION_DAYS,
-    );
+    return await this.runInCleanupTransaction(async (repositories) => {
+      const assets = await this.listAssets(
+        repositories.backupAssetRepository,
+        input.organizationId,
+        input.installationId,
+        'ASC',
+      );
+      const decision = decideRetentionCleanupTargets(
+        toCandidates(assets),
+        now,
+        input.retentionDays ?? BACKUP_RETENTION_DAYS,
+      );
 
-    return this.executeCleanup(
-      decision.targets.map((target) => target.candidate),
-      assets,
-      now,
-    );
+      const result = await this.executeCleanup(
+        repositories,
+        decision.targets.map((target) => target.candidate),
+        assets,
+        now,
+      );
+      return this.mergeRetainedItems(result, decision.skipped);
+    });
   }
 
   /**
@@ -369,10 +449,6 @@ export class LocalBackupCleanupService {
     const scopedOrganizationIds = await this.listBackupEnabledOrganizationIds(
       installation.installationId,
     );
-    const assets = await this.backupAssetRepository.find({
-      where: { installationId: installation.installationId },
-      order: { createdAt: 'ASC', backupId: 'ASC' },
-    });
     // 恢复期写入冻结：处于恢复期冻结的公司，其备份包本轮不清理（保护副本与待恢复包不能被删）
     const heldOrganizationIds = new Set<number>();
     for (const organizationId of scopedOrganizationIds ?? []) {
@@ -382,37 +458,48 @@ export class LocalBackupCleanupService {
         heldOrganizationIds.add(organizationId);
       }
     }
-    const scopedAssets =
-      scopedOrganizationIds === null
-        ? []
-        : assets.filter(
-            (asset) =>
-              scopedOrganizationIds.has(asset.organizationId) &&
-              !heldOrganizationIds.has(asset.organizationId),
-          );
-    if (assets.length === 0) {
-      return {
-        available: true,
-        reason: null,
-        targetCount: 0,
-        cleaned: 0,
-        retained: 0,
-        items: [],
-      };
-    }
 
-    const decision = decideRetentionCleanupTargets(
-      toCandidates(scopedAssets),
-      now,
-      input.retentionDays ?? BACKUP_RETENTION_DAYS,
-    );
-    const result = await this.executeCleanup(
-      decision.targets.map((target) => target.candidate),
-      scopedAssets,
-      now,
-    );
-    // 过期清理同理：未到期 / 云端副本不可证而保留的项也要逐项可见
-    return this.mergeRetainedItems(result, decision.skipped);
+    // 预检（读范围 → 裁决目标）与逐项删除在**同一事务**内完成。
+    return await this.runInCleanupTransaction(async (repositories) => {
+      const assets = await repositories.backupAssetRepository.find({
+        where: { installationId: installation.installationId },
+        order: { createdAt: 'ASC', backupId: 'ASC' },
+        // 悲观写锁：并发清理的执行者在此串行，拿到锁后读到最新状态再裁决
+        lock: { mode: 'pessimistic_write' },
+      });
+      const scopedAssets =
+        scopedOrganizationIds === null
+          ? []
+          : assets.filter(
+              (asset) =>
+                scopedOrganizationIds.has(asset.organizationId) &&
+                !heldOrganizationIds.has(asset.organizationId),
+            );
+      if (assets.length === 0) {
+        return {
+          available: true,
+          reason: null,
+          targetCount: 0,
+          cleaned: 0,
+          retained: 0,
+          items: [],
+        };
+      }
+
+      const decision = decideRetentionCleanupTargets(
+        toCandidates(scopedAssets),
+        now,
+        input.retentionDays ?? BACKUP_RETENTION_DAYS,
+      );
+      const result = await this.executeCleanup(
+        repositories,
+        decision.targets.map((target) => target.candidate),
+        scopedAssets,
+        now,
+      );
+      // 过期清理同理：未到期 / 云端副本不可证而保留的项也要逐项可见
+      return this.mergeRetainedItems(result, decision.skipped);
+    });
   }
 
   /**
@@ -468,7 +555,12 @@ export class LocalBackupCleanupService {
     if (!latestRun) {
       return null;
     }
-    const assets = await this.listAssets(input.organizationId, input.installationId, 'DESC');
+    const assets = await this.listAssets(
+      this.backupAssetRepository,
+      input.organizationId,
+      input.installationId,
+      'DESC',
+    );
     const asset = assets.find((item) => item.runId === latestRun.id);
     if (!asset || asset.cloudStatus !== 'SUCCEEDED' || asset.cloudReceipt === null) {
       return null;
@@ -479,32 +571,37 @@ export class LocalBackupCleanupService {
     return { backupId: asset.backupId, receipt: asset.cloudReceipt };
   }
 
-  /** 本机本公司的资产清单（按创建时间排序） */
+  /** 本机本公司的资产清单（按创建时间排序）；读取带悲观写锁，与删除同事务 */
   private async listAssets(
+    repository: Repository<BackupAssetEntity>,
     organizationId: number,
     installationId: string,
     direction: 'ASC' | 'DESC',
   ): Promise<BackupAssetEntity[]> {
-    return this.backupAssetRepository.find({
+    return await repository.find({
       where: { organizationId, installationId },
       order: { createdAt: direction, backupId: direction },
+      // 悲观写锁：并发清理的执行者在此串行，拿到锁后读到最新状态再裁决
+      lock: { mode: 'pessimistic_write' },
     });
   }
 
   /** 固定清单后的逐项清理 */
   private async executeCleanup(
+    repositories: CleanupTransactionRepositories,
     targets: BackupCleanupCandidate[],
     assets: BackupAssetEntity[],
     now: Date,
   ): Promise<BackupCleanupResult> {
     const assetByBackupId = new Map(assets.map((asset) => [asset.backupId, asset]));
+    const assetRepository = repositories.backupAssetRepository;
 
     // 清理中断可辨认：残留的 CLEANING 超时未推进先登记为中断，下一轮继续清理
     for (const target of targets) {
       if (!isCleanupInterrupted(target, now)) {
         continue;
       }
-      await this.backupAssetRepository.update(
+      await assetRepository.update(
         { backupId: target.backupId },
         { localCleanupError: LOCAL_BACKUP_FAILURE_REASON.CLEANUP_INTERRUPTED },
       );
@@ -518,7 +615,7 @@ export class LocalBackupCleanupService {
       if (!asset) {
         continue;
       }
-      const item = await this.cleanupOne(asset, now);
+      const item = await this.cleanupOne(repositories, asset, now);
       items.push(item);
       const bucket = itemsByRunId.get(asset.runId);
       if (bucket) {
@@ -528,7 +625,7 @@ export class LocalBackupCleanupService {
       }
     }
 
-    await this.markRunCleanupStatus(itemsByRunId);
+    await this.markRunCleanupStatus(repositories, itemsByRunId);
 
     return {
       available: true,
@@ -541,7 +638,12 @@ export class LocalBackupCleanupService {
   }
 
   /** 单个包的清理：路径闸门 → CLEANING（中断可辨认）→ 删除 → 落事实 */
-  private async cleanupOne(asset: BackupAssetEntity, now: Date): Promise<BackupCleanupItemResult> {
+  private async cleanupOne(
+    repositories: CleanupTransactionRepositories,
+    asset: BackupAssetEntity,
+    now: Date,
+  ): Promise<BackupCleanupItemResult> {
+    const assetRepository = repositories.backupAssetRepository;
     const reference = asset.localReference;
     if (reference === null) {
       return {
@@ -553,23 +655,23 @@ export class LocalBackupCleanupService {
 
     if (!isBackupPackagePathInside(this.backupStorage.baseDir, reference)) {
       const reason = LOCAL_BACKUP_FAILURE_REASON.PACKAGE_PATH_OUTSIDE_ROOT;
-      await this.markRetained(asset, reason);
+      await this.markRetained(assetRepository, asset, reason);
       return { backupId: asset.backupId, outcome: 'RETAINED', reason };
     }
 
     // 先落 CLEANING：删除过程被中断时状态可辨认（下一轮可重试，不会误标为已清理）
-    await this.backupAssetRepository.update(
+    await assetRepository.update(
       { backupId: asset.backupId },
       { localStatus: 'CLEANING', localCleanupError: null },
     );
 
     const deletion = await this.deletePackageDirectory(reference);
     if (!deletion.deleted) {
-      await this.markRetained(asset, deletion.reason);
+      await this.markRetained(assetRepository, asset, deletion.reason);
       return { backupId: asset.backupId, outcome: 'RETAINED', reason: deletion.reason };
     }
 
-    await this.backupAssetRepository.update(
+    await assetRepository.update(
       { backupId: asset.backupId },
       {
         localStatus: 'CLEANED',
@@ -607,8 +709,12 @@ export class LocalBackupCleanupService {
   }
 
   /** 仍保留：落 FAILED 并记录原因（包保留，不误标为已清理） */
-  private async markRetained(asset: BackupAssetEntity, reason: string): Promise<void> {
-    await this.backupAssetRepository.update(
+  private async markRetained(
+    assetRepository: Repository<BackupAssetEntity>,
+    asset: BackupAssetEntity,
+    reason: string,
+  ): Promise<void> {
+    await assetRepository.update(
       { backupId: asset.backupId },
       { localStatus: 'FAILED', localCleanupError: reason.slice(0, 1000) },
     );
@@ -616,9 +722,10 @@ export class LocalBackupCleanupService {
 
   /** 手动清理阶段状态：按运行聚合（有保留项则 FAILED） */
   private async markRunCleanupStatus(
+    repositories: CleanupTransactionRepositories,
     itemsByRunId: Map<number, BackupCleanupItemResult[]>,
   ): Promise<void> {
-    const repository = this.backupRunRepository;
+    const repository = repositories.backupRunRepository;
     if (!repository) {
       return;
     }

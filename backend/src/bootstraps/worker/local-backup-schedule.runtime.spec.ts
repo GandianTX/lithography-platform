@@ -130,4 +130,28 @@ describe('local backup schedule runtime', () => {
     expect(logger.error).toHaveBeenCalled();
     runtime.onApplicationShutdown();
   });
+
+  it('备份调度失败**不阻断**过期清理（清理是独立职责）', async () => {
+    const { runtime, calls } = buildRuntime({ scheduleError: new Error('boom') });
+
+    runtime.onApplicationBootstrap();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls.schedule).toBe(1);
+    // 关键：调度抛错后，上云与**过期清理照常执行**
+    expect(calls.upload).toBe(1);
+    expect(calls.retention).toBe(1);
+    runtime.onApplicationShutdown();
+  });
+
+  it('过期清理自身失败只记日志，不中断进程、不逃逸成未处理 rejection', async () => {
+    const { runtime, logger, calls } = buildRuntime({ retentionError: new Error('cleanup boom') });
+
+    runtime.onApplicationBootstrap();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls.retention).toBe(1);
+    expect(logger.error).toHaveBeenCalled();
+    runtime.onApplicationShutdown();
+  });
 });

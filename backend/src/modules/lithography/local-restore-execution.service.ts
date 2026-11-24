@@ -41,6 +41,7 @@ import { ManagementAuditService } from './management-audit.service';
 import { BackupAssetEntity } from './entities/backup-asset.entity';
 import { BackupRestoreRunEntity } from './entities/backup-restore-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
+import { LocalBackupCleanupService } from './local-backup-cleanup.service';
 import { LocalWriteHoldService } from './local-write-hold.service';
 
 import {
@@ -89,6 +90,8 @@ export class LocalRestoreExecutionService {
     @Optional()
     @Inject(LOCAL_BACKUP_PROTECTION)
     private readonly backupProtection?: ProtectedBackupMaterial,
+    @Optional()
+    private readonly backupCleanupService?: LocalBackupCleanupService,
   ) {}
 
   /**
@@ -243,6 +246,9 @@ export class LocalRestoreExecutionService {
           restoredScope: JSON.stringify(restored.counts),
         },
       );
+      // 恢复运行时检查（任务书第 52 行「每日及恢复运行检查」）：挂在**冻结解除之后**，
+      // 此时该公司的写入冻结已释放，过期清理的冻结闸门不再拦它。
+      await this.runRetentionCheckOnRestore();
       return {
         status: 'SUCCEEDED',
         restoreId: run.restoreId,
@@ -265,6 +271,31 @@ export class LocalRestoreExecutionService {
       // 执行权必须释放（否则同一次恢复再也执行不了）；
       // 进程崩溃时锁由数据库自动释放 ⇒ 中断后仍可重新执行收口。
       await executionLock?.release();
+    }
+  }
+
+  /**
+   * 恢复运行时触发的过期清理检查。
+   *
+   * 失败关闭：清理本身出错**不得**把已成功的恢复改判为失败——
+   * 恢复事实已经落库（状态、审计事件、冻结解除都已完成），
+   * 清理只是"顺带做一次回收"，出错只记日志并保留逐项结果（由清理链自己落库）。
+   */
+  private async runRetentionCheckOnRestore(): Promise<void> {
+    const cleanupService = this.backupCleanupService;
+    if (cleanupService === undefined) {
+      return;
+    }
+    try {
+      const result = await cleanupService.cleanupAllExpiredPackages();
+      if (result.targetCount > 0 || result.cleaned > 0) {
+        this.logger.info(
+          { targets: result.targetCount, cleaned: result.cleaned },
+          '恢复运行时过期清理检查已执行',
+        );
+      }
+    } catch (error) {
+      this.logger.error({ err: error }, '恢复运行时过期清理检查失败（不影响恢复结果）');
     }
   }
 

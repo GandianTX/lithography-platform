@@ -15,7 +15,10 @@ import { mkdtemp, mkdir, rm, writeFile, readFile, stat, utimes } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
 
-import { LocalBackupCleanupService } from './local-backup-cleanup.service';
+import {
+  LocalBackupCleanupService,
+  type CleanupTransactionRepositories,
+} from './local-backup-cleanup.service';
 import type { BackupAssetEntity } from './entities/backup-asset.entity';
 import { asPinoLogger, createTestPinoLogger } from '../../../test/utils/test-pino-logger';
 
@@ -93,7 +96,16 @@ describe('local backup cleanup service', () => {
     rows: BackupAssetEntity[],
     serviceClass: typeof LocalBackupCleanupService = LocalBackupCleanupService,
     manualRuns: ManualRunFact[] = [],
-    options: { withoutRunRepository?: boolean } = {},
+    options: {
+      withoutRunRepository?: boolean;
+      /** 事务运行器替身：提供即走事务化路径（预检与删除同事务） */
+      transactionRunner?: { run: (cb: (tx: unknown) => Promise<unknown>) => Promise<unknown> };
+      /** 事务内仓储集合：提供即覆盖受保护的 resolveTransactionRepositories */
+      transactionRepositories?: {
+        backupAssetRepository: unknown;
+        backupRunRepository: unknown;
+      };
+    } = {},
   ) {
     const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
     const runUpdates: { id: number; patch: Record<string, unknown> }[] = [];
@@ -151,9 +163,107 @@ describe('local backup cleanup service', () => {
         assertWritable: () => Promise.resolve(),
       } as unknown as LocalWriteHoldService,
       options.withoutRunRepository ? undefined : (backupRunRepository as never),
+      undefined,
+      undefined,
+      options.transactionRunner as never,
     );
 
     return { service, updates, runUpdates, rows };
+  }
+
+  /**
+   * 事务化路径的服务：覆盖受保护的 `resolveTransactionRepositories`，
+   * 使事务内取到的仓储是**受控替身**（不依赖真实数据库）。
+   */
+  function buildTransactionalService(
+    rows: BackupAssetEntity[],
+    transactionRepositories?: {
+      backupAssetRepository: unknown;
+      backupRunRepository: unknown;
+    },
+    options: { withoutRunRepository?: boolean } = {},
+  ) {
+    const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
+    const runUpdates: { id: number; patch: Record<string, unknown> }[] = [];
+    const findCalls: Array<{ where?: Record<string, unknown>; lock?: unknown }> = [];
+
+    const backupAssetRepository = {
+      find: jest.fn().mockImplementation((input?: { where?: Record<string, unknown> }) => {
+        findCalls.push({
+          where: input?.where,
+          lock: (input as { lock?: unknown } | undefined)?.lock,
+        });
+        const where = input?.where ?? {};
+        return Promise.resolve(
+          rows.filter((row) =>
+            Object.entries(where).every(
+              ([key, value]) => row[key as keyof BackupAssetEntity] === value,
+            ),
+          ),
+        );
+      }),
+      update: jest
+        .fn()
+        .mockImplementation((where: { backupId: string }, patch: Record<string, unknown>) => {
+          updates.push({ backupId: where.backupId, patch });
+          const target = rows.find((row) => row.backupId === where.backupId);
+          if (target) {
+            Object.assign(target, patch);
+          }
+          return Promise.resolve({ affected: 1 });
+        }),
+    };
+    const backupRunRepository = {
+      find: jest.fn().mockResolvedValue([]),
+      update: jest
+        .fn()
+        .mockImplementation((where: { id: number }, patch: Record<string, unknown>) => {
+          runUpdates.push({ id: where.id, patch });
+          return Promise.resolve({ affected: 1 });
+        }),
+    };
+
+    class TransactionalService extends LocalBackupCleanupService {
+      protected override resolveTransactionRepositories(): CleanupTransactionRepositories {
+        return (transactionRepositories ?? {
+          backupAssetRepository,
+          backupRunRepository,
+        }) as CleanupTransactionRepositories;
+      }
+    }
+
+    const transactionRunner = {
+      run: jest.fn().mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
+        // 事务上下文：真实实现里是 EntityManager，这里只用于传递身份
+        const transactionContext = { marker: 'tx-1' };
+        return await cb(transactionContext);
+      }),
+    };
+
+    const service = new TransactionalService(
+      backupAssetRepository as never,
+      { baseDir: backupRoot },
+      asPinoLogger(createTestPinoLogger()),
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
+      options.withoutRunRepository ? undefined : (backupRunRepository as never),
+      undefined,
+      undefined,
+      transactionRunner,
+    );
+
+    return {
+      service,
+      updates,
+      runUpdates,
+      rows,
+      findCalls,
+      transactionRunner,
+      backupAssetRepository,
+    };
   }
 
   async function createPackage(relativeDir: string, files: string[]): Promise<string> {
@@ -552,5 +662,113 @@ describe('local backup cleanup service', () => {
     expect(result.cleaned).toBe(1);
     expect(await exists(exactly)).toBe(false);
     expect(await exists(almost)).toBe(true);
+  });
+
+  describe('清理执行的数据库事务边界（计划第 09 项第 3 条：全量预检与删除在同一事务）', () => {
+    it('预检与逐项删除在**同一个事务**内完成', async () => {
+      const packagePath = await createPackage('4/tx-package', ['tx.txt']);
+      const rows = [
+        asset({ backupId: 'backup-tx', localReference: packagePath, retentionUntil: base }),
+      ];
+      const { service, transactionRunner, updates } = buildTransactionalService(rows);
+
+      const result = await service.cleanupExpiredPackages({
+        organizationId: 4,
+        installationId: 'inst-1',
+        now: base,
+      });
+
+      // 走事务：事务运行器被调用一次
+      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+      // 逐项删除确实发生
+      expect(result.cleaned).toBe(1);
+      expect(updates.map((item) => item.patch['localStatus'])).toContain('CLEANED');
+      expect(await exists(packagePath)).toBe(false);
+    });
+
+    it('事务内读取带悲观写锁（并发清理的执行者在此串行）', async () => {
+      const packagePath = await createPackage('4/tx-lock', ['lock.txt']);
+      const rows = [
+        asset({ backupId: 'backup-lock', localReference: packagePath, retentionUntil: base }),
+      ];
+      const { service, findCalls } = buildTransactionalService(rows);
+
+      await service.cleanupExpiredPackages({
+        organizationId: 4,
+        installationId: 'inst-1',
+        now: base,
+      });
+
+      expect(findCalls.length).toBeGreaterThan(0);
+      for (const call of findCalls) {
+        expect(call.lock).toEqual({ mode: 'pessimistic_write' });
+      }
+    });
+
+    it('零清理路径（回执不完整）同样在事务内裁决，且不触碰任何包', async () => {
+      const packagePath = await createPackage('4/tx-zero', ['zero.txt']);
+      const rows = [
+        asset({ backupId: 'backup-zero', localReference: packagePath, cloudReceipt: null }),
+      ];
+      const { service, transactionRunner, updates } = buildTransactionalService(rows);
+
+      const result = await service.cleanupManualPackages({
+        organizationId: 4,
+        installationId: 'inst-1',
+        cloudReceipt: null,
+        now: base,
+      });
+
+      expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+      expect(result.available).toBe(false);
+      expect(result.cleaned).toBe(0);
+      expect(updates).toHaveLength(0);
+      expect(await exists(packagePath)).toBe(true);
+    });
+
+    it('事务内的逐项结果仍逐项落库（部分失败不丢事实）', async () => {
+      const goodPath = await createPackage('4/tx-good', ['good.txt']);
+      const badPath = await createPackage('4/tx-bad', ['bad.txt']);
+      const rows = [
+        asset({ backupId: 'backup-good', localReference: goodPath, retentionUntil: base }),
+        asset({ backupId: 'backup-bad', localReference: badPath, retentionUntil: base }),
+      ];
+      const { service, updates } = buildTransactionalService(rows);
+      // 让第二个包的删除失败
+      const originalRemove = (
+        service as unknown as { removePackageDirectory: (reference: string) => Promise<void> }
+      ).removePackageDirectory.bind(service);
+      jest
+        .spyOn(
+          service as unknown as { removePackageDirectory: (reference: string) => Promise<void> },
+          'removePackageDirectory',
+        )
+        .mockImplementation(async (reference: string) => {
+          if (reference === badPath) {
+            const error = new Error('EACCES: permission denied');
+            (error as NodeJS.ErrnoException).code = 'EACCES';
+            throw error;
+          }
+          await originalRemove(reference);
+        });
+
+      const result = await service.cleanupExpiredPackages({
+        organizationId: 4,
+        installationId: 'inst-1',
+        now: base,
+      });
+
+      expect(result.targetCount).toBe(2);
+      expect(result.cleaned).toBe(1);
+      expect(result.retained).toBe(1);
+      // 失败包保留在盘上
+      expect(await exists(badPath)).toBe(true);
+      expect(await exists(goodPath)).toBe(false);
+      // 逐项落库：删除前先落 CLEANING（中断可辨认），失败后落 FAILED + 原因
+      const badUpdates = updates.filter((item) => item.backupId === 'backup-bad');
+      expect(badUpdates.map((item) => item.patch['localStatus'])).toEqual(['CLEANING', 'FAILED']);
+      const failed = badUpdates.find((item) => item.patch['localStatus'] === 'FAILED');
+      expect(String(failed?.patch['localCleanupError'])).toContain('PACKAGE_DELETE_FAILED');
+    });
   });
 });

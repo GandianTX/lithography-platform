@@ -54,25 +54,53 @@ export class LocalBackupScheduleRuntime implements OnApplicationBootstrap, OnApp
     }
     this.running = true;
     try {
+      // 三段职责**互不阻断**。
+      //
+      // 此前三段共用一个 try：备份调度或上云重试一旦抛错，**过期清理当日就不会执行**。
+      // 过期清理是独立职责（任务书第 52 行「每日及恢复运行检查」），
+      // 不能被其它链的异常吞掉；每段各自记日志、各自失败关闭。
+      await this.runBackupScheduleCycle();
+      await this.runUploadCycle();
+      await this.runRetentionCheck();
+    } catch (error) {
+      // 兜底：任何意外都不得逃逸成未处理的 Promise rejection（`void this.runCycle()`）
+      this.logger.error(
+        `local backup cycle failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** 备份调度轮：失败只记日志，不影响上云重试与过期清理 */
+  private async runBackupScheduleCycle(): Promise<void> {
+    try {
       const result = await this.backupScheduleService.runOnce();
       if (result.triggered > 0 || result.compensated > 0 || result.initialized > 0) {
         this.logger.log(
           `local backup cycle: compensated=${result.compensated} initialized=${result.initialized} succeeded=${result.succeeded} failed=${result.failed} skipped=${result.skipped}`,
         );
       }
+    } catch (error) {
+      this.logger.error(
+        `local backup cycle failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** 自动上云重试轮：失败只记日志，不影响过期清理 */
+  private async runUploadCycle(): Promise<void> {
+    try {
       const upload = await this.backupUploadService.runOnce();
       if (upload.attempted > 0 || upload.compensated > 0 || upload.receiverMissing > 0) {
         this.logger.log(
           `local backup upload cycle: attempted=${upload.attempted} succeeded=${upload.succeeded} failed=${upload.failed} waiting=${upload.waiting} skipped=${upload.skipped} compensated=${upload.compensated} receiverMissing=${upload.receiverMissing}`,
         );
       }
-      await this.runRetentionCheck();
     } catch (error) {
       this.logger.error(
-        `local backup cycle failed: ${error instanceof Error ? error.message : String(error)}`,
+        `local backup upload cycle failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    } finally {
-      this.running = false;
     }
   }
 
@@ -86,20 +114,30 @@ export class LocalBackupScheduleRuntime implements OnApplicationBootstrap, OnApp
     if (this.retentionCheckDay === today) {
       return;
     }
+    // 当日标记**先置位**：避免同一日内多轮重复清理。
+    // 失败时当日不再自动重试（"每日一次"的字面口径），
+    // 由「恢复运行时检查」在恢复成功时补一次（任务书第 52 行）。
     this.retentionCheckDay = today;
 
-    const result = await this.backupCleanupService.cleanupAllExpiredPackages();
-    if (result.targetCount > 0 || result.cleaned > 0) {
-      this.logger.log(
-        `local backup retention cycle: targets=${result.targetCount} cleaned=${result.cleaned} retained=${result.retained}`,
-      );
-    }
+    try {
+      const result = await this.backupCleanupService.cleanupAllExpiredPackages();
+      if (result.targetCount > 0 || result.cleaned > 0) {
+        this.logger.log(
+          `local backup retention cycle: targets=${result.targetCount} cleaned=${result.cleaned} retained=${result.retained}`,
+        );
+      }
 
-    // 孤儿包巡检（review M8 重启补偿）：回收进程被杀留下的半成品包目录
-    const orphan = await this.backupCleanupService.sweepOrphanPackages();
-    if (orphan.removed > 0) {
-      this.logger.log(
-        `local backup orphan sweep: scanned=${orphan.scanned} removed=${orphan.removed}`,
+      // 孤儿包巡检（review M8 重启补偿）：回收进程被杀留下的半成品包目录
+      const orphan = await this.backupCleanupService.sweepOrphanPackages();
+      if (orphan.removed > 0) {
+        this.logger.log(
+          `local backup orphan sweep: scanned=${orphan.scanned} removed=${orphan.removed}`,
+        );
+      }
+    } catch (error) {
+      // 失败关闭：清理出错只记日志，不影响 Worker 进程与其它链
+      this.logger.error(
+        `local backup retention cycle failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

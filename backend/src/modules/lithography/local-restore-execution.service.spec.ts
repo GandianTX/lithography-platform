@@ -70,6 +70,8 @@ function buildService(options: {
   protectionPackageReady?: boolean;
   /** 恢复执行权（数据库命名锁）是否取得：0＝已被同一次恢复的并发执行占用 */
   executionLockAcquired?: number;
+  /** 过期清理服务替身（恢复运行时检查）；不提供则该检查缺席 */
+  cleanupService?: { cleanupAllExpiredPackages: () => Promise<unknown> };
 }) {
   const root = '/tmp/task09-restore-spec';
   rmSync(root, { force: true, recursive: true });
@@ -160,8 +162,17 @@ function buildService(options: {
     { get: jest.fn(() => writer) } as never,
     asPinoLogger(createTestPinoLogger()),
     { keyHex: KEY_HEX, keyId: 'kid-1' },
+    options.cleanupService as never,
   );
-  return { service, hold, release, restoreRunRepository, writer, appendRestoreEvent };
+  return {
+    service,
+    hold,
+    release,
+    restoreRunRepository,
+    writer,
+    appendRestoreEvent,
+    cleanupService: options.cleanupService,
+  };
 }
 
 describe('恢复执行编排（S5-2／S5-3）', () => {
@@ -323,5 +334,96 @@ describe('恢复受理与执行的互斥（G30–G33）', () => {
     expect(hold).not.toHaveBeenCalled();
     expect((writer as { write: jest.Mock }).write).not.toHaveBeenCalled();
     expect(restoreRunRepository.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('恢复运行时的过期清理检查（任务书第 52 行「每日及恢复运行检查」）', () => {
+  it('恢复成功后触发一次过期清理检查', async () => {
+    const cleanupAllExpiredPackages = jest.fn().mockResolvedValue({
+      targetCount: 2,
+      cleaned: 1,
+      retained: 1,
+      items: [],
+    });
+    const { service } = buildService({
+      cleanupService: { cleanupAllExpiredPackages },
+    });
+
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(cleanupAllExpiredPackages).toHaveBeenCalledTimes(1);
+  });
+
+  it('清理检查在**冻结解除之后**执行（冻结未解除时清理会被闸门拦住）', async () => {
+    const order: string[] = [];
+    const release = jest.fn().mockImplementation(() => {
+      order.push('release');
+      return Promise.resolve(1);
+    });
+    const cleanupAllExpiredPackages = jest.fn().mockImplementation(() => {
+      order.push('cleanup');
+      return Promise.resolve({ targetCount: 0, cleaned: 0, retained: 0, items: [] });
+    });
+    const { service } = buildService({
+      cleanupService: { cleanupAllExpiredPackages },
+    });
+    // 用带顺序记录的 release 替换原替身
+    const serviceWithOrder = service as unknown as {
+      localWriteHoldService: { release: typeof release };
+    };
+    serviceWithOrder.localWriteHoldService.release = release;
+
+    await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(order).toEqual(['release', 'cleanup']);
+  });
+
+  it('清理检查失败**不改判恢复结果**（恢复已成功落事实）', async () => {
+    const cleanupAllExpiredPackages = jest.fn().mockRejectedValue(new Error('清理链异常'));
+    const { service, release, restoreRunRepository } = buildService({
+      cleanupService: { cleanupAllExpiredPackages },
+    });
+
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(cleanupAllExpiredPackages).toHaveBeenCalledTimes(1);
+    // 恢复事实已落库：冻结已解除、运行行已置 SUCCEEDED
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(restoreRunRepository.update).toHaveBeenCalledWith(
+      { restoreId: 'restore-1' },
+      expect.objectContaining({ status: 'SUCCEEDED' }),
+    );
+  });
+
+  it('恢复失败路径**不**触发清理检查（冻结仍持有，清理会被闸门拦住）', async () => {
+    const cleanupAllExpiredPackages = jest.fn().mockResolvedValue({
+      targetCount: 0,
+      cleaned: 0,
+      retained: 0,
+      items: [],
+    });
+    const { service } = buildService({
+      runStatus: 'PENDING',
+      cleanupService: { cleanupAllExpiredPackages },
+    });
+
+    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+
+    expect(result.status).toBe('FAILED');
+    expect(cleanupAllExpiredPackages).not.toHaveBeenCalled();
   });
 });
