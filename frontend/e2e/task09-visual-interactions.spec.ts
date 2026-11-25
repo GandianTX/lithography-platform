@@ -35,10 +35,9 @@ test.describe('任务 09 目标页的交互状态补齐', () => {
     // 恢复预检是一级管理员动作：工程师会话下**入口不得出现**
     // （页面的 canPrecheck 只按会话角色决定是否展示，最终裁决仍在服务端）
     const precheckButtons = page.getByRole('button', { name: '恢复预检' });
-    await expect(
-      precheckButtons,
-      '工程师会话不应出现恢复预检入口（越权入口不得渲染）',
-    ).toHaveCount(0);
+    await expect(precheckButtons, '工程师会话不应出现恢复预检入口（越权入口不得渲染）').toHaveCount(
+      0,
+    );
 
     // 页面本体仍应正常渲染（不是整页报错）
     await expect(page.locator('.error-block-root')).toHaveCount(0);
@@ -56,10 +55,7 @@ test.describe('任务 09 目标页的交互状态补齐', () => {
       await page.waitForTimeout(300);
       // 客户不在 /local-settings 与 /local-backup 的放行角色内 ⇒ 不得渲染任务 09 页面本体
       const task09Heading = page.getByRole('heading', { name: '本地设置' });
-      await expect(
-        task09Heading,
-        `${path} 在客户会话下不应渲染任务 09 页面本体`,
-      ).toHaveCount(0);
+      await expect(task09Heading, `${path} 在客户会话下不应渲染任务 09 页面本体`).toHaveCount(0);
     }
   });
 
@@ -97,8 +93,7 @@ test.describe('任务 09 目标页的交互状态补齐', () => {
             return '焦点未回到触发控件（落在 body 或无元素）';
           }
           const isTrigger =
-            active instanceof HTMLButtonElement &&
-            (active.textContent ?? '').includes('查看差异');
+            active instanceof HTMLButtonElement && (active.textContent ?? '').includes('查看差异');
           return isTrigger
             ? 'OK'
             : `焦点落在 ${active.tagName}（${(active.textContent ?? '').trim().slice(0, 20)}）`;
@@ -107,9 +102,7 @@ test.describe('任务 09 目标页的交互状态补齐', () => {
       .toBe('OK');
   });
 
-  test('取消后焦点返回触发控件（动画期内立即关闭）：焦点同样回到「查看差异」', async ({
-    page,
-  }) => {
+  test('取消后焦点返回触发控件（动画期内立即关闭）：焦点同样回到「查看差异」', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await seedAuthSession(page, 'ENGINEER');
     await installLocalRuntimeMocks(page, { syncConflictTotal: 1 });
@@ -136,8 +129,7 @@ test.describe('任务 09 目标页的交互状态补齐', () => {
             return '焦点未回到触发控件（落在 body 或无元素）';
           }
           const isTrigger =
-            active instanceof HTMLButtonElement &&
-            (active.textContent ?? '').includes('查看差异');
+            active instanceof HTMLButtonElement && (active.textContent ?? '').includes('查看差异');
           return isTrigger
             ? 'OK'
             : `焦点落在 ${active.tagName}（${(active.textContent ?? '').trim().slice(0, 20)}）`;

@@ -308,7 +308,10 @@ export async function resolveSyncConflict(
   const raw = result as unknown as Record<string, unknown>;
 
   return {
-    ...(raw as unknown as { outcome: 'resolved' | 'existing' | 'later'; conflict: SyncConflictSummary }),
+    ...(raw as unknown as {
+      outcome: 'resolved' | 'existing' | 'later';
+      conflict: SyncConflictSummary;
+    }),
     outcome: requireString(raw['outcome'], 'resolveSyncConflict.outcome') as
       | 'resolved'
       | 'existing'

@@ -69,9 +69,7 @@ test.describe('G28 局部对齐：目标页生效且其他直接消费者不受�
           card.padding,
           `${target.label} 的每张 .data-card 内边距都应为 ${TASK09_V44_CARD_PADDING}`,
         ).toBe(TASK09_V44_CARD_PADDING);
-        expect(card.radius, `${target.label} 的卡片圆角应为 14px（未被 G28 波及）`).toBe(
-          '14px',
-        );
+        expect(card.radius, `${target.label} 的卡片圆角应为 14px（未被 G28 波及）`).toBe('14px');
       }
     });
   }

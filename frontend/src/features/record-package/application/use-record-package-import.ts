@@ -15,7 +15,12 @@ export type RecordPackageImportState =
   | { status: 'checking'; requestId: number }
   | { status: 'checked'; requestId: number; check: RecordPackageCheckResult; packagePath: string }
   | { status: 'importing'; requestId: number; check: RecordPackageCheckResult; packagePath: string }
-  | { status: 'imported'; requestId: number; result: RecordPackageProcessResult; packagePath: string }
+  | {
+      status: 'imported';
+      requestId: number;
+      result: RecordPackageProcessResult;
+      packagePath: string;
+    }
   | { status: 'failed'; requestId: number; message: string };
 
 type RecordPackageImportAction =

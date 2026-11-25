@@ -107,8 +107,7 @@ test.describe('V44 原型页三视口度量（对照基准）', () => {
             cardRadius: cardStyle?.borderRadius ?? '',
             cardBodyPadding: cardBodyStyle?.padding ?? '',
             cardCount: document.querySelectorAll('.ant-card').length,
-            pageStackGap:
-              pageStack === null ? '' : window.getComputedStyle(pageStack).rowGap,
+            pageStackGap: pageStack === null ? '' : window.getComputedStyle(pageStack).rowGap,
             documentClientWidth: root.clientWidth,
             documentScrollWidth: root.scrollWidth,
           };

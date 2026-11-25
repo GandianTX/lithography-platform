@@ -294,7 +294,12 @@ export async function installLocalRuntimeMocks(
           conflictReason: '云端版本较新',
           diff: {
             entries: [
-              { path: 'title', kind: 'CHANGED', localValue: '本地版本标题', cloudValue: '云端版本标题' },
+              {
+                path: 'title',
+                kind: 'CHANGED',
+                localValue: '本地版本标题',
+                cloudValue: '云端版本标题',
+              },
             ],
             truncated: false,
             invalid: false,

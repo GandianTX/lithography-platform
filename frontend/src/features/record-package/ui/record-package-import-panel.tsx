@@ -133,9 +133,7 @@ export function RecordPackageImportPanel({ sessionKey }: { sessionKey?: number |
             title={t('recordPackage.import.confirmTitle')}
           >
             <Button
-              disabled={
-                state.check.import.checkStatus !== 'PASSED' || state.status === 'importing'
-              }
+              disabled={state.check.import.checkStatus !== 'PASSED' || state.status === 'importing'}
               loading={state.status === 'importing'}
               type="primary"
             >

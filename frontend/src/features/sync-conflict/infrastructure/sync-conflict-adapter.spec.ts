@@ -145,6 +145,7 @@ describe('同步冲突 adapter', () => {
 
   it('形状校验：详情缺少 diff 时失败关闭', async () => {
     const { diff: _diff, ...withoutDiff } = DETAIL_FIXTURE;
+    void _diff;
     executeGraphQLMock.mockResolvedValue({ syncConflict: withoutDiff } as never);
 
     await expect(fetchSyncConflictDetail('c-1')).rejects.toThrow('diff');

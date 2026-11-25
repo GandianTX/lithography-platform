@@ -305,8 +305,7 @@ export const EN_MESSAGES = {
     'The cloud copy size does not match the local record',
   'local-backup.reason.cloudPackageSchemaUnsupported':
     'The package format version of the cloud copy is not supported here',
-  'local-backup.reason.cloudPackageDeviceMismatch':
-    'The cloud copy comes from a different device',
+  'local-backup.reason.cloudPackageDeviceMismatch': 'The cloud copy comes from a different device',
   'local-backup.reason.cloudPackageCompanyMismatch':
     'The cloud copy belongs to a different company',
   'local-backup.reason.restoreOriginalBytesMissing':
@@ -321,10 +320,13 @@ export const EN_MESSAGES = {
     'You are not authorized to execute a restore for that company',
   'local-backup.reason.restoreInstallationMismatch':
     'This restore was not started on this device and cannot run here',
-  'local-backup.reason.cloudNotConfigured': 'The cloud backup service is not configured; no upload was sent',
-  'local-backup.reason.cloudUnreachable': 'The cloud service is unreachable; retried after the backoff',
+  'local-backup.reason.cloudNotConfigured':
+    'The cloud backup service is not configured; no upload was sent',
+  'local-backup.reason.cloudUnreachable':
+    'The cloud service is unreachable; retried after the backoff',
   'local-backup.reason.cloudTimeout': 'The cloud request timed out; retried after the backoff',
-  'local-backup.reason.cloudRejected': 'The cloud service rejected this upload (payload, permission or quota)',
+  'local-backup.reason.cloudRejected':
+    'The cloud service rejected this upload (payload, permission or quota)',
   'local-backup.reason.cloudServerError': 'The cloud service failed; retried after the backoff',
   'local-backup.reason.cloudInvalidResponse':
     'The cloud response was malformed and is not counted as a successful upload',
@@ -332,8 +334,7 @@ export const EN_MESSAGES = {
     'Local backup package exceeds the upload size limit; no longer retried',
   'local-backup.reason.packageIncomplete':
     'Local backup package does not match its manifest; no longer retried',
-  'local-backup.reason.packageUnreadable':
-    'Local backup package is unreadable; no longer retried',
+  'local-backup.reason.packageUnreadable': 'Local backup package is unreadable; no longer retried',
   'local-backup.reason.cloudReceiptUnparsable': 'Cloud receipt cannot be parsed',
   'local-backup.reason.cloudReceiptNotSuccess': 'Cloud receipt is not in a success state',
   // Sync status reason codes (task 09 S1)

@@ -154,8 +154,7 @@ test.describe('任务 09 四类页面的三视口度量', () => {
             cardPadding: cardStyle?.padding ?? '',
             cardRadius: cardStyle?.borderRadius ?? '',
             antdCardBodyCount: document.querySelectorAll('.ant-card-body').length,
-            pageStackGap:
-              pageStack === null ? '' : window.getComputedStyle(pageStack).rowGap,
+            pageStackGap: pageStack === null ? '' : window.getComputedStyle(pageStack).rowGap,
           };
         }, TASK09_TABLE_OVERFLOW_JUDGE_GLOBAL);
 
