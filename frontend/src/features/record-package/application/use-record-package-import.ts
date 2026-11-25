@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
-import { isGraphQLIngressError } from '@/shared/graphql';
+import { isGraphQLIngressError, readGraphQLErrorDetail } from '@/shared/graphql';
+import type { MessageKey } from '@/shared/i18n';
 
 import type {
   RecordPackageCheckResult,
@@ -21,7 +22,7 @@ export type RecordPackageImportState =
       result: RecordPackageProcessResult;
       packagePath: string;
     }
-  | { status: 'failed'; requestId: number; message: string };
+  | { status: 'failed'; requestId: number; message: string; messageKey?: MessageKey };
 
 type RecordPackageImportAction =
   | { type: 'check-start'; requestId: number }
@@ -31,7 +32,7 @@ type RecordPackageImportAction =
       check: RecordPackageCheckResult;
       packagePath: string;
     }
-  | { type: 'check-failed'; requestId: number; message: string }
+  | { type: 'check-failed'; requestId: number; message: string; messageKey?: MessageKey }
   | {
       type: 'import-start';
       requestId: number;
@@ -44,8 +45,24 @@ type RecordPackageImportAction =
       result: RecordPackageProcessResult;
       packagePath: string;
     }
-  | { type: 'import-failed'; requestId: number; message: string }
+  | { type: 'import-failed'; requestId: number; message: string; messageKey?: MessageKey }
   | { type: 'reset'; requestId: number };
+
+/**
+ * GraphQL 生产分支只依据稳定的 `extensions.code` 分类决定受控翻译键，
+ * 不依赖可能隐藏的 `errorCode`/`errorMessage`。清单级错误（例如同键重复）
+ * 归 BAD_USER_INPUT：UI 用当前语言提示重新导出，而不是误导用户"稍后重试"。
+ */
+function resolveRecordPackageFailure(
+  error: unknown,
+  fallback: string,
+): { message: string; messageKey?: MessageKey } {
+  const detail = readGraphQLErrorDetail(error);
+  if (detail?.code === 'BAD_USER_INPUT') {
+    return { message: fallback, messageKey: 'recordPackage.import.error.badUserInput' };
+  }
+  return { message: isGraphQLIngressError(error) ? error.userMessage : fallback };
+}
 
 /**
  * 记录包导入流程：安全预检 → 明确确认 → 受控逐项导入 → 逐条结果。
@@ -84,7 +101,12 @@ function recordPackageImportReducer(
       if (action.requestId !== state.requestId) {
         return state;
       }
-      return { status: 'failed', requestId: action.requestId, message: action.message };
+      return {
+        status: 'failed',
+        requestId: action.requestId,
+        message: action.message,
+        ...(action.messageKey === undefined ? {} : { messageKey: action.messageKey }),
+      };
     case 'import-start':
       return {
         status: 'importing',
@@ -106,7 +128,12 @@ function recordPackageImportReducer(
       if (action.requestId !== state.requestId) {
         return state;
       }
-      return { status: 'failed', requestId: action.requestId, message: action.message };
+      return {
+        status: 'failed',
+        requestId: action.requestId,
+        message: action.message,
+        ...(action.messageKey === undefined ? {} : { messageKey: action.messageKey }),
+      };
     case 'reset':
       return { status: 'idle', requestId: action.requestId };
   }
@@ -150,10 +177,11 @@ export function useRecordPackageImport(sessionKey?: number | null) {
       dispatch({ type: 'check-ok', requestId, check: result, packagePath });
       return { ok: true as const, result };
     } catch (error) {
-      const message = isGraphQLIngressError(error)
-        ? error.userMessage
-        : '记录包检查失败，请稍后重试。';
-      dispatch({ type: 'check-failed', requestId, message });
+      const { message, messageKey } = resolveRecordPackageFailure(
+        error,
+        '记录包检查失败，请稍后重试。',
+      );
+      dispatch({ type: 'check-failed', requestId, message, messageKey });
       return { ok: false as const, message };
     }
   }, []);
@@ -188,10 +216,11 @@ export function useRecordPackageImport(sessionKey?: number | null) {
       dispatch({ type: 'import-ok', requestId, result, packagePath: current.packagePath });
       return { ok: true as const, result };
     } catch (error) {
-      const message = isGraphQLIngressError(error)
-        ? error.userMessage
-        : '记录包导入失败，请稍后重试。';
-      dispatch({ type: 'import-failed', requestId, message });
+      const { message, messageKey } = resolveRecordPackageFailure(
+        error,
+        '记录包导入失败，请稍后重试。',
+      );
+      dispatch({ type: 'import-failed', requestId, message, messageKey });
       return { ok: false as const, message };
     } finally {
       // 只释放同步闸门，不回写状态（旧响应是否作废由序号判定）

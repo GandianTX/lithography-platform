@@ -54,19 +54,26 @@ function buildUsecase(
     items?: ReturnType<typeof makeItem>[];
     checkStatus?: string;
     organizationId?: number;
+    /**
+     * 本次评估按可信映射确定的**目标公司**（缺省＝批次归属公司＝一致）。
+     * 传不同值即制造"批次公司与包的目标公司不一致"。
+     */
+    evaluationTargetOrganizationId?: number;
     evaluationChecksum?: string;
     writer?: unknown;
     receiptExists?: boolean;
     /** 已存在回执登记的摘要（缺省＝与当前包一致＝同一事实） */
     receiptChecksum?: string;
+    /** 已存在回执的来源安装标识（缺省＝当前包来源安装） */
+    receiptInstallationId?: string | null;
     /** 清单条目登记的归属公司（缺省＝与目标公司一致） */
     manifestOwnerOrganizationId?: number;
-    /** 本机同编号记录的来源事实（缺省＝本机无该记录） */
-    localFact?: { withdrawn: boolean; currentVersion: number | null };
+    /** 本机同编号记录的来源事实（缺省＝本机无该记录；回执存在时默认同版本可证） */
+    localFact?: { withdrawn: boolean; currentVersion: number | null; identityPersisted?: boolean };
   } = {},
 ) {
   const items = options.items ?? [makeItem()];
-  const readImportFacts = jest.fn().mockResolvedValue({
+  const readImportFactsMockValue = {
     import: {
       packageId: PACKAGE_ID,
       organizationId: options.organizationId ?? 9,
@@ -97,21 +104,47 @@ function buildUsecase(
       completedAt: null,
     },
     items,
-  });
+  };
+  const readImportFacts = jest.fn().mockResolvedValue(readImportFactsMockValue);
+  const freshOutcomes = items.map((item) => ({
+    resourceType: String(item.resourceType),
+    recordUuid: String(item.recordUuid),
+    versionNo: Number(item.versionNo),
+    passed: item.checkResult === 'PASSED',
+    rejection: null,
+    message: typeof item.errorMessage === 'string' ? item.errorMessage : null,
+  }));
   const evaluatePackage = jest.fn().mockResolvedValue({
     manifestChecksum: options.evaluationChecksum ?? CHECKSUM,
     manifest: {},
     manifestRaw: '{}',
-    outcomes: [],
+    outcomes: freshOutcomes,
+    // 本次评估按可信映射确定的目标公司（缺省＝批次归属公司＝一致）
+    targetOrganizationId: options.evaluationTargetOrganizationId ?? options.organizationId ?? 9,
   });
-  const markImportRunning = jest.fn().mockResolvedValue(undefined);
+  // 占用（版本绑定）：回传锁内同一版本的批次与逐条事实。
+  const claimImportRun = jest.fn((input: { importedByAccountId: number }) =>
+    Promise.resolve({
+      import: {
+        ...readImportFactsMockValue.import,
+        status: 'RUNNING',
+        importedByAccountId: input.importedByAccountId,
+      },
+      items: readImportFactsMockValue.items,
+    }),
+  );
   const finalizeImport = jest.fn().mockResolvedValue(undefined);
   const writeItemResult = jest.fn().mockResolvedValue(undefined);
+  const markItemCheckRejected = jest.fn().mockResolvedValue(undefined);
   const findReceipt = jest.fn().mockResolvedValue(
     options.receiptExists === true
       ? {
           receiptId: 'receipt-1',
           manifestChecksum: options.receiptChecksum ?? CHECKSUM,
+          sourceInstallationId:
+            options.receiptInstallationId === undefined
+              ? '88888888-9999-4aaa-8bbb-cccccccccccc'
+              : options.receiptInstallationId,
         }
       : null,
   );
@@ -129,9 +162,10 @@ function buildUsecase(
     {
       readImportFacts,
       evaluatePackage,
-      markImportRunning,
+      claimImportRun,
       finalizeImport,
       writeItemResult,
+      markItemCheckRejected,
       findReceipt,
     } as never,
     { findOrganizationIdentityById: () => Promise.resolve({ organizationCode: 'ORG-9' }) } as never,
@@ -140,8 +174,12 @@ function buildUsecase(
 
     {
       listFacts: jest.fn().mockResolvedValue({
-        facts:
-          options.localFact === undefined
+        facts: (() => {
+          const localFact =
+            options.localFact === undefined && options.receiptExists === true
+              ? { withdrawn: false, currentVersion: 2, identityPersisted: true }
+              : options.localFact;
+          return localFact === undefined
             ? new Map()
             : new Map([
                 [
@@ -151,21 +189,22 @@ function buildUsecase(
                     recordUuid: RECORD_UUID,
                     recordId: 12,
                     ownerOrganizationId: 9,
-                    currentVersion: options.localFact.currentVersion,
+                    currentVersion: localFact.currentVersion,
                     versionTrusted: true,
-                    materialApplicable: !options.localFact.withdrawn,
+                    materialApplicable: !localFact.withdrawn,
                     relatedAccountIds: [5],
                     authorizationSubjectAccountId: 5,
-                    withdrawn: options.localFact.withdrawn,
-                    identityPersisted: true,
+                    withdrawn: localFact.withdrawn,
+                    identityPersisted: localFact.identityPersisted !== false,
                     contentState: {
-                      withdrawn: options.localFact.withdrawn,
+                      withdrawn: localFact.withdrawn,
                       frozen: false,
                       closed: false,
                     },
                   },
                 ],
-              ]),
+              ]);
+        })(),
         scanComplete: true,
       }),
     } as never,
@@ -181,7 +220,7 @@ function buildUsecase(
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
   );
 
-  return { usecase, markImportRunning, finalizeImport, writeItemResult, findReceipt };
+  return { usecase, claimImportRun, finalizeImport, writeItemResult, findReceipt };
 }
 
 const WRITER_OK = {
@@ -192,7 +231,7 @@ const WRITER_OK = {
 
 describe('S3 自检 · 记录包链路', () => {
   it('跨公司：包公司与本机公司不一致时拒绝导入', async () => {
-    const { usecase, markImportRunning } = buildUsecase({ organizationId: 10 });
+    const { usecase, claimImportRun } = buildUsecase({ organizationId: 10 });
 
     await expect(
       usecase.execute({
@@ -202,7 +241,7 @@ describe('S3 自检 · 记录包链路', () => {
         manifestChecksum: CHECKSUM,
       }),
     ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.PACKAGE_NOT_FOUND });
-    expect(markImportRunning).not.toHaveBeenCalled();
+    expect(claimImportRun).not.toHaveBeenCalled();
   });
 
   it('无权会话：公司范围不匹配时同样按"不存在"处理', async () => {
@@ -297,6 +336,7 @@ describe('S3 自检 · 记录包链路', () => {
     expect(finalizeImport).toHaveBeenCalledWith(
       PACKAGE_ID,
       { status: 'FAILED', succeeded: 0, failed: 1 },
+      CHECKSUM,
       expect.anything(),
     );
   });
@@ -329,7 +369,7 @@ describe('S3 自检 · 记录包链路', () => {
   });
 
   it('删除／下架旧包：换包后旧确认作废，必须重新检查与确认', async () => {
-    const { usecase, markImportRunning } = buildUsecase({ evaluationChecksum: 'c'.repeat(64) });
+    const { usecase, claimImportRun } = buildUsecase({ evaluationChecksum: 'c'.repeat(64) });
 
     await expect(
       usecase.execute({
@@ -339,7 +379,7 @@ describe('S3 自检 · 记录包链路', () => {
         manifestChecksum: CHECKSUM,
       }),
     ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_NOT_PASSED });
-    expect(markImportRunning).not.toHaveBeenCalled();
+    expect(claimImportRun).not.toHaveBeenCalled();
   });
 
   it('P5｜同键不同摘要：判冲突，不覆盖既有事实', async () => {

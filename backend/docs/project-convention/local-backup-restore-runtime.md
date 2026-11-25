@@ -15,19 +15,33 @@
 | 自动上云（上传尝试与退避重试） | **仅本机侧** | 真实接收端未接入（R-02）：无回执时如实停在"待上传"，不伪造成功 |
 | 手动清理（完整回执后精确删除） | **仅本机侧** | 真实闭环依赖 R-02；无回执时零清理 |
 | 恢复预检与保护副本 | 可用 | 只读核对＋保护副本，**不写正式业务** |
-| 恢复执行（停写停传、恢复、回滚） | **如实不可用** | 缺停写闸门与回滚补偿（R-04）；入口返回 `executionAvailable=false` 与原因 |
+| 恢复执行（停写停传、恢复、回滚） | **有条件可用** | 受三道闸门约束：本机安装身份已初始化、本次恢复的保护副本就绪、备份包解密材料可得；缺任一即如实返回 `executionAvailable=false` 与原因码，**不做无条件可用承诺** |
 
 ## 1. 执行器配置清单
 
 | 配置项 | 含义 | 默认值 | 读取点 | 缺失/错误的后果 |
 | --- | --- | --- | --- | --- |
 | `LOCAL_BACKUP_STORAGE_DIR` | 本机备份包根目录 | `var/local-backups` | `config.module.ts` → `localRuntime.backupStorageDir` | 落到默认目录；**必须与业务原件目录物理分离**，否则受控清理的路径闸门会挡下删除 |
-| `LOCAL_BACKUP_PROTECTION_KEY` | 备份包加密密钥（hex/base64） | 无 | `config.module.ts` → `localRuntime.protectionKey`（仅封包时消费） | 封包按**失败关闭**处理（不产出可用包），服务仍可启动；绝不退回硬编码密钥 |
+| `LOCAL_BACKUP_PROTECTION_KEY` | 备份包加密密钥（hex/base64） | 无 | `config.module.ts` → `localRuntime.protectionKey`（**封包与恢复都消费**） | 封包按**失败关闭**处理（不产出可用包），服务仍可启动；恢复侧能力探针报 `PROTECTION_KEY` 闸门缺失（`executionAvailable=false`）；绝不退回硬编码密钥 |
 | `LOCAL_BACKUP_PROTECTION_KEY_ID` | 密钥标识，落 `backup_asset.encryption_key_id` | 无 | 同上 | 资产行缺少密钥标识，轮换时无法定位旧密钥 |
 | `DB_*` | 数据库连接 | — | 迁移与全部事实表 | 事实读写不可用 |
 | `FIELD_ENCRYPTION_KEY` / `FIELD_ENCRYPTION_IV` | 业务字段加密密钥 | 无 | 字段加密订户 | 资料写入无法走与生产一致的加密列路径 |
 
 配置读取只在 wiring 层（`src/infrastructure/config/config.module.ts`）；用例与服务不直接读环境变量。
+
+### 1.1 恢复执行的三道闸门（可用条件）
+
+恢复执行**不是无条件可用**。`executionAvailable` 由实际 capability/provider 与前置事实决定，
+三道闸门全部就绪才为可用（`core/local-runtime/policy/restore-execution-capability.policy.ts`）：
+
+| 闸门 | 判定事实 | 缺失原因码 | 缺失后果 |
+| --- | --- | --- | --- |
+| `WRITE_GATE` | 本机安装身份已初始化（`local_installation`） | `WRITE_GATE_UNAVAILABLE` | 恢复执行入口如实不可用；**不写任何恢复事实** |
+| `FAILURE_COMPENSATION` | 本次恢复的保护副本资产就绪（未清理、有本地包引用） | `FAILURE_COMPENSATION_UNAVAILABLE` | 同上（缺回滚补偿 ⇒ 不允许开写） |
+| `PROTECTION_KEY` | 备份包解密材料可得（`LOCAL_BACKUP_PROTECTION_KEY`） | `PROTECTION_KEY_UNAVAILABLE` | 同上 |
+
+执行期这三道闸门会**按最新事实再判一次**（受理后保护副本可能被清理），
+因此"受理时可用"不等于"执行时可用"。
 
 ## 2. 密钥引用
 
@@ -53,12 +67,32 @@
   - `PROTECTION_COPY_FAILED`：保护副本生成失败 → 先修好原件存储目录与备份根目录，再重跑预检。
 - **预检不写正式业务**：预检只落 `backup_restore_run` 一行事实（`check_status` 与快照）。
 
-### 3.2 恢复执行入口不可用
+### 3.2 恢复执行入口不可用（闸门未就绪）
 
-- **现象**：`localRestoreCapability.executionAvailable=false`，并给出原因文案。
-- **原因**：停写停传闸门与失败回滚补偿尚未落地（R-04）。
-- **处置**：**不要**手工改库绕过；先按第 1 节修好配置，再确认当前版本是否已提供恢复执行；
-  在此之前"恢复"只到预检为止。
+- **现象**：`localRestoreCapability.executionAvailable=false`，并给出原因码与缺失闸门清单。
+- **原因**：三道闸门（见 1.1）任一未就绪：写/同步闸门（本机安装身份）、
+  失败回滚补偿（本次恢复的保护副本）、受保护包解密材料（备份密钥）。
+  **不是**"恢复功能没实现"，而是**前置条件不满足**。
+- **处置**：**不要**手工改库绕过；按 1.1 逐项核对前置：
+  - 缺 `WRITE_GATE` ⇒ 先初始化本机安装身份；
+  - 缺 `FAILURE_COMPENSION` ⇒ 重新预检生成保护副本（保护副本被清理后不可复用）；
+  - 缺 `PROTECTION_KEY` ⇒ 补齐与封包**同一把**密钥（密钥轮换后旧包需旧密钥）。
+- **入口语义**：闸门未就绪时恢复执行**零写入**受控拒绝（不建冻结、不写业务、不写成功事件）。
+
+### 3.2.1 恢复执行失败（已受理后执行失败）
+
+- **现象**：恢复终态为失败，`backup_restore_run.status='FAILED'`，并有一条终态审计事件
+  （`operation='RESTORE_LOCAL_BUSINESS'`，`detail.stage` 标明阶段）。
+- **阶段含义**：
+  - `RESTORE_ROLLED_BACK`：业务数据已按保护副本回滚、冻结已解除 ⇒ 设备可恢复写传；
+  - `RESTORE_ROLLBACK_FAILED`：按保护副本回滚**失败** ⇒ 数据与冻结都需人工处置；
+  - `RESTORE_SUCCEEDED_HOLD_RETAINED`：数据确实恢复成功，但**冻结解除失败** ⇒
+    终态仍是成功，设备继续停写停传（保守口径），等人工处置。
+- **处置**：按 `detail.stage` 与 `reason_code` 判断是"回滚后待确认"还是"必须人工介入"；
+  `RESTORE_ROLLBACK_FAILED` / `RESTORE_SUCCEEDED_HOLD_RETAINED` 两种情形下
+  **冻结仍在**，不要手工把 `local_write_hold` 改成已释放。
+- **审计事实**：终态事件里的 `actor_admin_level` 是**执行当时**的服务端复核等级
+  （一级＝全局范围、二级＝本公司范围），缺等级时**失败关闭**拒绝执行，不静默记成一级。
 
 ### 3.3 清理被进程中断
 

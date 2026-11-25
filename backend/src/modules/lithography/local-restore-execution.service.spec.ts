@@ -281,6 +281,7 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
     const result = await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -302,7 +303,11 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
   it('未受理（仍是 PENDING）：不执行、不冻结', async () => {
     const { service, hold } = buildService({ runStatus: 'PENDING' });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -315,7 +320,11 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
   it('预检未通过：不执行、不冻结', async () => {
     const { service, hold } = buildService({ checkStatus: 'FAILED' });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     expect(hold).not.toHaveBeenCalled();
@@ -324,7 +333,11 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
   it('闸门未就绪（保护副本已清理）：如实不可用，不冻结', async () => {
     const { service, hold } = buildService({ protectionStatus: 'CLEANED' });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -353,7 +366,11 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
       },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -385,7 +402,11 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
       },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -427,7 +448,11 @@ describe('恢复执行编排（S5-2／S5-3）', () => {
       },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -469,7 +494,11 @@ describe('对外原因不含原始异常（安全口径：路径与 SQL 片段�
       },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -492,7 +521,11 @@ describe('对外原因不含原始异常（安全口径：路径与 SQL 片段�
       },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -511,6 +544,7 @@ describe('恢复受理与执行的互斥（G30–G33）', () => {
     const result = await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -536,6 +570,7 @@ describe('执行占用与过期状态（独立验收 P1-2）', () => {
     const result = await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -557,7 +592,11 @@ describe('执行占用与过期状态（独立验收 P1-2）', () => {
       claimAffected: 0,
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -577,6 +616,7 @@ describe('执行占用与过期状态（独立验收 P1-2）', () => {
     const result = await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       allowedOrganizationId: 9,
     });
 
@@ -595,7 +635,11 @@ describe('执行占用与过期状态（独立验收 P1-2）', () => {
       latestRun: { targetInstallationId: 'other-installation' },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -613,7 +657,11 @@ describe('执行占用与过期状态（独立验收 P1-2）', () => {
       allowedOrganizationId: null,
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('SUCCEEDED');
     // 冻结范围用的是**最新事实**里的公司（不是锁前读到的旧值）
@@ -628,7 +676,11 @@ describe('执行占用与过期状态（独立验收 P1-2）', () => {
       latestRun: { status: 'RUNNING' },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('SUCCEEDED');
     expect(hold).toHaveBeenCalledTimes(1);
@@ -643,6 +695,7 @@ describe('终态发布一致性（独立验收 P1-3）', () => {
     await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -661,6 +714,7 @@ describe('终态发布一致性（独立验收 P1-3）', () => {
     await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -672,7 +726,11 @@ describe('终态发布一致性（独立验收 P1-3）', () => {
       releaseError: true,
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     // 数据确实已恢复成功 ⇒ 终态是成功；冻结未解除 ⇒ 如实回报
     expect(result.status).toBe('SUCCEEDED');
@@ -702,7 +760,11 @@ describe('终态发布一致性（独立验收 P1-3）', () => {
       protectionPackageReady: true,
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     if (result.status !== 'FAILED') {
@@ -734,6 +796,7 @@ describe('恢复运行时的过期清理检查（任务书第 52 行「每日及
     const result = await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -762,6 +825,7 @@ describe('恢复运行时的过期清理检查（任务书第 52 行「每日及
     await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -777,6 +841,7 @@ describe('恢复运行时的过期清理检查（任务书第 52 行「每日及
     const result = await service.execute({
       restoreId: 'restore-1',
       actorAccountId: 900101,
+      actorAdminLevel: 1,
       now: new Date('2026-11-23T00:00:00.000Z'),
     });
 
@@ -802,9 +867,122 @@ describe('恢复运行时的过期清理检查（任务书第 52 行「每日及
       cleanupService: { cleanupAllExpiredPackages },
     });
 
-    const result = await service.execute({ restoreId: 'restore-1', actorAccountId: 900101 });
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+    });
 
     expect(result.status).toBe('FAILED');
     expect(cleanupAllExpiredPackages).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 恢复审计的**操作者等级**（独立验收 P2）。
+ *
+ * 此前执行服务把 `actorAdminLevel` 固定写成 1 ⇒ 二级管理员的恢复在任务 10
+ * 页面上被显示成"一级管理员"（审计事实错误）。
+ * 这里锁住：终态事件、成功但保留冻结的补充留痕、回滚失败保留冻结的事件，
+ * 都必须写**调用方传入的真实等级**。
+ */
+describe('恢复审计的操作者等级（P2）', () => {
+  it('二级管理员执行成功：终态审计事件记真实等级（二级），不记一级', async () => {
+    const { service, appendRestoreEvent } = buildService({});
+
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900202,
+      actorAdminLevel: 2,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(appendRestoreEvent).toHaveBeenCalledTimes(1);
+    const payload = appendRestoreEvent.mock.calls[0]?.[0] as {
+      actorAccountId: number;
+      actorAdminLevel: number;
+      organizationId: number;
+      stage: string;
+      result: string;
+    };
+    expect(payload.actorAccountId).toBe(900202);
+    expect(payload.actorAdminLevel).toBe(2);
+    expect(payload.organizationId).toBe(ORGANIZATION_ID);
+    expect(payload.stage).toBe('RESTORE_SUCCEEDED');
+    expect(payload.result).toBe('SUCCEEDED');
+  });
+
+  it('一级管理员执行成功：终态审计事件记一级', async () => {
+    const { service, appendRestoreEvent } = buildService({});
+
+    await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    const payload = appendRestoreEvent.mock.calls[0]?.[0] as { actorAdminLevel: number };
+    expect(payload.actorAdminLevel).toBe(1);
+  });
+
+  it('二级管理员执行且**保留冻结**（解冻失败）：补充留痕同样记真实等级', async () => {
+    const { service, appendRestoreEvent } = buildService({ releaseError: true });
+
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900202,
+      actorAdminLevel: 2,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(result.holdRetained).toBe(true);
+    // 终态事件 + "成功但冻结保留"补充留痕：两条都必须记真实等级
+    expect(appendRestoreEvent).toHaveBeenCalledTimes(2);
+    const levels = appendRestoreEvent.mock.calls.map((call: unknown[]) => {
+      const payload = call[0] as { actorAdminLevel: number; stage: string };
+      return { actorAdminLevel: payload.actorAdminLevel, stage: payload.stage };
+    });
+    expect(levels).toEqual([
+      { actorAdminLevel: 2, stage: 'RESTORE_SUCCEEDED' },
+      { actorAdminLevel: 2, stage: 'RESTORE_SUCCEEDED_HOLD_RETAINED' },
+    ]);
+  });
+
+  it('二级管理员执行且**回滚失败保留冻结**：失败终态事件记真实等级', async () => {
+    const { service, appendRestoreEvent } = buildService({
+      writer: {
+        supportedTables: ['maintenance_report'],
+        write: jest.fn().mockResolvedValue({
+          status: 'FAILED',
+          written: 0,
+          counts: {},
+          reason: '写入被来源域拒绝',
+        }),
+        restoreOriginals: jest.fn().mockResolvedValue({ restored: 0, failed: 0, reason: null }),
+        count: jest.fn().mockResolvedValue(0),
+      },
+    });
+
+    const result = await service.execute({
+      restoreId: 'restore-1',
+      actorAccountId: 900202,
+      actorAdminLevel: 2,
+      now: new Date('2026-11-23T00:00:00.000Z'),
+    });
+
+    expect(result.status).toBe('FAILED');
+    expect(result.holdRetained).toBe(true);
+    expect(appendRestoreEvent).toHaveBeenCalledTimes(1);
+    const payload = appendRestoreEvent.mock.calls[0]?.[0] as {
+      actorAdminLevel: number;
+      stage: string;
+      result: string;
+    };
+    expect(payload.actorAdminLevel).toBe(2);
+    expect(payload.stage).toBe('RESTORE_ROLLBACK_FAILED');
+    expect(payload.result).toBe('FAILED');
   });
 });

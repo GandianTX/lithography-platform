@@ -35,6 +35,7 @@ const CHECK_STATUS_KEYS: Record<string, MessageKey> = {
 const ITEM_RESULT_KEYS: Record<string, MessageKey> = {
   CONFLICT: 'recordPackage.itemResult.CONFLICT',
   FAILED: 'recordPackage.itemResult.FAILED',
+  NOT_EXECUTED: 'recordPackage.itemResult.NOT_EXECUTED',
   SKIPPED: 'recordPackage.itemResult.SKIPPED',
   SUCCEEDED: 'recordPackage.itemResult.SUCCEEDED',
 };

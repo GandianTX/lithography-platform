@@ -22,6 +22,15 @@ export const localRuntimeViewerRoleValues = {
 export type LocalRuntimeViewerRole =
   (typeof localRuntimeViewerRoleValues)[keyof typeof localRuntimeViewerRoleValues];
 
+/**
+ * 管理员等级（可执行管理员专属动作的**实际**等级）。
+ *
+ * 取值域与数据库事实一致（`base_user_account.admin_level` ∈ {1, 2}）；
+ * 审计事件里的 `actor_admin_level` 记的必须是**执行当时**的这个值，
+ * 不接受客户端自报，也不允许缺省成一级。
+ */
+export type LocalRuntimeAdminLevel = 1 | 2;
+
 export type LocalRuntimeViewerScope = {
   readonly role: LocalRuntimeViewerRole;
   /**
@@ -29,7 +38,7 @@ export type LocalRuntimeViewerScope = {
    * 一级管理员为 `null`，表示"全局授权范围"而非"无公司"。
    */
   readonly organizationId: number | null;
-  readonly adminLevel: 1 | 2 | null;
+  readonly adminLevel: LocalRuntimeAdminLevel | null;
 };
 
 export type LocalRuntimeViewerFacts = {
@@ -149,4 +158,23 @@ export function assertLocalRuntimeAdministrator(scope: LocalRuntimeViewerScope):
   if (scope.role === 'ENGINEER') {
     throw new DomainError(PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS, '该操作仅管理员可执行');
   }
+}
+
+/**
+ * 管理员等级取值（**失败关闭**）：等级缺失或不合法即拒绝。
+ *
+ * 用途：把"本次执行者的实际管理员等级"写进审计事实。
+ * 绝不缺省成一级（`?? 1`）——那会把二级管理员的执行记成一级，
+ * 让审计事实与真实操作者不符。
+ */
+export function assertLocalRuntimeAdminLevel(
+  scope: LocalRuntimeViewerScope,
+): LocalRuntimeAdminLevel {
+  if (scope.adminLevel !== 1 && scope.adminLevel !== 2) {
+    throw new DomainError(
+      PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
+      '管理员等级缺失或不合法，不能执行该操作',
+    );
+  }
+  return scope.adminLevel;
 }

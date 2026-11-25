@@ -3,6 +3,8 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { GraphQLIngressError } from '@/shared/graphql';
+
 import type {
   RecordPackageCheckResult,
   RecordPackageProcessResult,
@@ -20,7 +22,8 @@ import { useRecordPackageImport } from './use-record-package-import';
  * - `reset`（换包）后在途响应不回写；
  * - **双击确认只发一次导入请求**（同步闸门，不依赖渲染快照）；
  * - 确认绑定那一轮预检的包 ID／路径／清单摘要；
- * - 导入失败如实落到失败态。
+ * - 导入失败如实落到失败态；
+ * - 清单级 GraphQL BAD_USER_INPUT 按稳定分类码展示受控提示，不误导重试。
  */
 
 vi.mock('../infrastructure/record-package-adapter', () => ({
@@ -71,6 +74,32 @@ describe('useRecordPackageImport', () => {
 
     expect(result.current.state.status).toBe('checked');
     expect(result.current.state).toMatchObject({ packagePath: '/media/usb/pkg-1' });
+  });
+
+  it('清单级 GraphQL 错误只返回稳定翻译键，文案交给 UI 当前语言', async () => {
+    vi.mocked(checkRecordPackage).mockRejectedValue(
+      new GraphQLIngressError({
+        type: 'graphql',
+        message: 'GraphQL error',
+        graphqlErrors: [
+          {
+            message: 'GraphQL error',
+            extensions: { code: 'BAD_USER_INPUT', errorCode: 'RECORD_PACKAGE_INVALID_MANIFEST' },
+          },
+        ],
+      }),
+    );
+
+    const { result } = renderHook(() => useRecordPackageImport());
+    await act(async () => {
+      await result.current.check('/media/usb/pkg-1');
+    });
+
+    expect(result.current.state.status).toBe('failed');
+    expect(result.current.state).toMatchObject({
+      message: '记录包检查失败，请稍后重试。',
+      messageKey: 'recordPackage.import.error.badUserInput',
+    });
   });
 
   it('A 先发后到、B 先返回：旧预检结论不覆盖新包', async () => {

@@ -9,6 +9,7 @@ import {
   serializeLocalRestoreAuditDetail,
   type LocalRestoreAuditStage,
 } from '@core/local-runtime/policy/local-restore-audit.policy';
+import type { LocalRuntimeAdminLevel } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 import { Injectable, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
@@ -237,7 +238,13 @@ export class ManagementAuditService {
    */
   async appendRestoreEvent(params: {
     readonly actorAccountId: number;
-    readonly actorAdminLevel: number;
+    /**
+     * 操作者**实际**管理员等级（1 或 2）。
+     *
+     * 取值域与库级 CHECK `chk_management_audit_level` 一致，
+     * 由调用方从可信 scope 透传；**不接受**缺省或客户端自报的值。
+     */
+    readonly actorAdminLevel: LocalRuntimeAdminLevel;
     readonly organizationId: number;
     readonly operation: LocalRestoreAuditOperation;
     readonly restoreId: string;

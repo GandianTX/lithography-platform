@@ -49,8 +49,16 @@ export function RecordPackageImportPanel({ sessionKey }: { sessionKey?: number |
     {
       dataIndex: 'result',
       key: 'result',
-      render: (value: string | null) =>
-        value === null ? '-' : <Tag>{t(resolveRecordPackageItemResultKey(value))}</Tag>,
+      render: (value: string | null, record: RecordPackageItem) => {
+        if (value !== null) {
+          return <Tag>{t(resolveRecordPackageItemResultKey(value))}</Tag>;
+        }
+        return record.checkResult === 'REJECTED' ? (
+          <Tag>{t(resolveRecordPackageItemResultKey('NOT_EXECUTED'))}</Tag>
+        ) : (
+          '-'
+        );
+      },
       title: t('recordPackage.column.itemResult'),
     },
     {
@@ -86,10 +94,17 @@ export function RecordPackageImportPanel({ sessionKey }: { sessionKey?: number |
         </Space.Compact>
       </div>
 
-      {state.status === 'failed' ? <Alert message={state.message} showIcon type="error" /> : null}
+      {state.status === 'failed' ? (
+        <Alert
+          message={state.messageKey === undefined ? state.message : t(state.messageKey)}
+          showIcon
+          type="error"
+        />
+      ) : null}
 
       {state.status === 'checked' || state.status === 'importing' ? (
         <section className="flex flex-col gap-2">
+          <Alert message={t('recordPackage.import.recheckHint')} showIcon type="info" />
           <Descriptions
             column={1}
             items={[

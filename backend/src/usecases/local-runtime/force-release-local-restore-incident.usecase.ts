@@ -14,7 +14,10 @@
 
 import { Injectable } from '@nestjs/common';
 
-import { assertLocalRuntimeAdministrator } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
+import {
+  assertLocalRuntimeAdminLevel,
+  assertLocalRuntimeAdministrator,
+} from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
 
@@ -50,11 +53,14 @@ export class ForceReleaseLocalRestoreIncidentUsecase {
     const scope = await this.scopeResolver.resolve(command.session);
     // 工程师无处置权限（与恢复链同一口径）
     assertLocalRuntimeAdministrator(scope);
+    // 处置人的**实际**管理员等级：缺失或不合法即失败关闭，
+    // 不缺省成一级（否则处置审计会把二级管理员的处置记成一级）。
+    const actorAdminLevel = assertLocalRuntimeAdminLevel(scope);
 
     return await this.incidentReleaseService.release({
       restoreId: command.restoreId,
       actorAccountId: command.session.accountId,
-      actorAdminLevel: scope.adminLevel ?? 1,
+      actorAdminLevel,
       // 公司授权范围：一级管理员为 null（全局范围）；二级管理员仅本公司
       allowedOrganizationId: scope.organizationId,
       actorIsAdministrator: scope.role !== 'ENGINEER',

@@ -20,9 +20,12 @@
  * - **跨资源失败补偿**：暂存成功但绑定／业务写失败时，按 fileId **精确释放**本条
  *   暂存原件（标记 FAILED、行保留可追踪、不删字节），不留永远不会被绑定的孤儿行，
  *   也不动已绑定原件与他人／他公司的对象；
- * - **结果未知先核对再重试**：重试前复核本机来源事实——同一持久化身份且同一版本已存在
- *   ⇒ 上次写入其实已生效，判同一事实跳过并补记回执，不重复写、不重复绑定；
- * - **去重**：导入前复核同键回执（与同步共用去重口径），已存在同版本即跳过。
+ * - **结果未知先核对再重试**：重试前复核本机来源事实——同一身份/版本但无可信回执或
+ *   内容证明时保守冲突，不补写回执、不重复写业务与原件；删除下架仍失败关闭；
+ * - **确认期新鲜检查**：确认时对包重新评估，按资源类型＋稳定编号＋版本及同键出现序号
+ *   与初检条目一一对应；新鲜硬失败的条目不执行、不跳过，只更新逐条检查结论；
+ * - **去重**：导入前复核同键回执；只有"同一来源包＋本机权威版本可证明同一事实"
+ *   才安全跳过，跨包/历史摘要不可判定一律冲突，不按整包摘要推断单条内容相同。
  */
 
 import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
@@ -41,6 +44,7 @@ import {
 } from '@src/modules/lithography/queries/sync-source-record.query.service';
 import type {
   RecordPackageImportSnapshot,
+  RecordPackageItemCheckOutcome,
   RecordPackageItemSnapshot,
 } from '@src/modules/lithography/record-package-import.types';
 
@@ -73,6 +77,26 @@ export type ImportRecordPackageResult = {
   outcome: 'imported' | 'existing';
   import: RecordPackageImportSnapshot;
   items: RecordPackageItemSnapshot[];
+};
+
+type ExistingReceiptDecision = {
+  result: 'SKIPPED' | 'CONFLICT' | 'FAILED';
+  errorMessage: string;
+  receiptId: string | null;
+};
+
+type RecordPackageImportManifestItem = {
+  content_snapshot: unknown;
+  files: { relative_path: string; sha256: string; byte_size: number }[];
+  source_account_id?: number | null;
+  source_account_uuid?: string | null;
+  source_account_login_name?: string | null;
+  source_account_name?: string | null;
+  owner_organization_id?: number | null;
+  source_equipment_model_code?: string | null;
+  related_record_uuid?: string | null;
+  related_record_type?: string | null;
+  source_status?: string | null;
 };
 
 @Injectable()
@@ -127,21 +151,57 @@ export class ImportRecordPackageUsecase {
       );
     }
 
+    // 归属复核（写入生命周期，任务 09 审查 P1）：
+    // 落检查事实时批次已锁定在"本次包按可信映射确定的目标公司"上，
+    // 这里再核一次，确保**写入的数据区**与**批次归属公司**是同一个公司，
+    // 不出现"拿 A 公司的批次 + 另一份清单"往别家数据区写的情况。
+    if (evaluation.targetOrganizationId !== facts.import.organizationId) {
+      throw new DomainError(
+        RECORD_PACKAGE_ERROR.FOREIGN_COMPANY,
+        '记录包所属公司与批次归属公司不一致，拒绝导入',
+      );
+    }
+
     const manifest = parseRecordPackageManifest(facts.import.manifestJson);
     const writer = this.resolveWriter();
 
-    await this.transactionRunner.run((transactionContext) =>
-      this.recordPackageImportService.markImportRunning(
-        command.packageId,
-        command.session.accountId,
+    // 占用（**绑定本次确认的版本**，任务 09 复验 P1）：
+    // 占用事务内以当前读＋行锁重新核对数据库当前事实（编号、归属公司、清单摘要、
+    // 预检状态、可占用状态）。核对不通过 ⇒ 受控拒绝，**不进入任何业务写入**。
+    // 旧确认若已失效（换包重检已提交 V2），这里直接拒绝，绝不把 V1 的执行记在 V2 批次上。
+    const claimed = await this.transactionRunner.run((transactionContext) =>
+      this.recordPackageImportService.claimImportRun({
+        packageId: command.packageId,
+        importedByAccountId: command.session.accountId,
+        organizationId: evaluation.targetOrganizationId,
+        manifestChecksum: command.manifestChecksum,
         transactionContext,
-      ),
+      }),
     );
 
+    // 执行依据＝**锁内刚确认的同一版本**批次与逐条事实（不沿用占用前的旧快照）。
+    // 确认期重新评估的逐条结论必须贯穿执行：按完整身份＋同键出现序号一一对应；
+    // 新鲜硬失败的条目没有执行，也没有导入失败，只改逐条检查结论。
+    const freshOutcomesByKey = this.indexFreshOutcomes(evaluation.outcomes);
+    const claimedOrdinals = new Map<string, number>();
     let succeeded = 0;
     let failed = 0;
-    for (const item of facts.items) {
+    let checkRejectedCount = 0;
+    let freshRejectedCount = 0;
+    for (const item of claimed.items) {
+      const fresh = this.takeFreshOutcome(freshOutcomesByKey, claimedOrdinals, item);
       if (item.checkResult !== 'PASSED') {
+        checkRejectedCount += 1;
+        continue;
+      }
+      if (fresh === null || !fresh.passed) {
+        if (item.result === null) {
+          await this.recordPackageImportService.markItemCheckRejected(
+            item.itemId,
+            fresh?.message ?? '确认时逐条检查缺少对应结论，未执行',
+          );
+        }
+        freshRejectedCount += 1;
         continue;
       }
       // 中断重试：已成功或已判定跳过的条目不重做（幂等）
@@ -149,11 +209,28 @@ export class ImportRecordPackageUsecase {
         succeeded += 1;
         continue;
       }
+      // 清单回查必须用完整身份：(资源类型, 稳定编号, 版本)。
+      // 仅按 UUID 会在混合包里取到同 UUID 的另一资源/版本条目，导致正文、来源与原件错配。
+      const manifestItem = manifest.items.find(
+        (candidate) =>
+          candidate.resource_type === item.resourceType &&
+          candidate.record_uuid === item.recordUuid &&
+          candidate.version_no === item.versionNo,
+      );
+      if (manifestItem === undefined) {
+        await this.writeItemResult(item.itemId, {
+          result: 'FAILED',
+          errorMessage: '清单条目与逐条事实无法按资源类型、稳定编号和版本精确匹配，拒绝导入',
+          receiptId: null,
+        });
+        failed += 1;
+        continue;
+      }
       const outcome = await this.importOne({
         item,
-        manifestItem: manifest.items.find((candidate) => candidate.record_uuid === item.recordUuid),
-        organizationId: facts.import.organizationId,
-        manifestChecksum: facts.import.manifestChecksum,
+        manifestItem,
+        organizationId: claimed.import.organizationId,
+        manifestChecksum: claimed.import.manifestChecksum,
         packagePath: command.packagePath,
         sourceInstallationId: manifest.installation_id,
         sourceOrganizationCode: manifest.organization_code ?? null,
@@ -167,11 +244,26 @@ export class ImportRecordPackageUsecase {
       }
     }
 
-    const status = failed === 0 ? 'SUCCEEDED' : succeeded === 0 ? 'FAILED' : 'PARTIAL';
+    // 没有任何可执行条目时不能报成功：计数 0/0 表示"什么也没做"，如实记 FAILED。
+    // 检查阶段或确认期被硬阻断的条目也没有执行：即使合格范围全部成功，批次仍是 PARTIAL，
+    // 不把"部分范围完成"冒充整包 SUCCEEDED，也不把检查失败计入导入失败。
+    checkRejectedCount += freshRejectedCount;
+    const status =
+      succeeded === 0 && failed === 0
+        ? 'FAILED'
+        : failed > 0 && succeeded > 0
+          ? 'PARTIAL'
+          : failed > 0
+            ? 'FAILED'
+            : checkRejectedCount > 0
+              ? 'PARTIAL'
+              : 'SUCCEEDED';
+    // 终态只落在**本次占用的那个摘要**上（条件更新命中 0 行 ⇒ 受控拒绝，不静默吞掉）。
     await this.transactionRunner.run((transactionContext) =>
       this.recordPackageImportService.finalizeImport(
         command.packageId,
         { status, succeeded, failed },
+        claimed.import.manifestChecksum,
         transactionContext,
       ),
     );
@@ -179,8 +271,8 @@ export class ImportRecordPackageUsecase {
     const updated = await this.recordPackageImportService.readImportFacts(command.packageId);
     return {
       outcome: 'imported',
-      import: updated?.import ?? facts.import,
-      items: updated?.items ?? facts.items,
+      import: updated?.import ?? claimed.import,
+      items: updated?.items ?? claimed.items,
     };
   }
 
@@ -195,24 +287,45 @@ export class ImportRecordPackageUsecase {
     return identity?.organizationCode ?? null;
   }
 
+  /** 逐条事实的完整身份键：资源类型＋稳定编号＋版本，不用 UUID 单键。 */
+  private itemIdentityKey(item: {
+    resourceType: string;
+    recordUuid: string;
+    versionNo: number;
+  }): string {
+    return `${item.resourceType}\u0000${item.recordUuid}\u0000${item.versionNo}`;
+  }
+
+  /** 确认期结果按同键出现顺序分组，供包内重复条目一一对应。 */
+  private indexFreshOutcomes(
+    outcomes: readonly RecordPackageItemCheckOutcome[],
+  ): Map<string, RecordPackageItemCheckOutcome[]> {
+    const grouped = new Map<string, RecordPackageItemCheckOutcome[]>();
+    for (const outcome of outcomes) {
+      const key = this.itemIdentityKey(outcome);
+      const list = grouped.get(key) ?? [];
+      list.push(outcome);
+      grouped.set(key, list);
+    }
+    return grouped;
+  }
+
+  /** 取出该条目在确认期评估中对应的唯一结果；缺失即返回 null（失败关闭）。 */
+  private takeFreshOutcome(
+    grouped: Map<string, RecordPackageItemCheckOutcome[]>,
+    ordinals: Map<string, number>,
+    item: RecordPackageItemSnapshot,
+  ): RecordPackageItemCheckOutcome | null {
+    const key = this.itemIdentityKey(item);
+    const ordinal = ordinals.get(key) ?? 0;
+    ordinals.set(key, ordinal + 1);
+    return grouped.get(key)?.[ordinal] ?? null;
+  }
+
   /** 逐条导入：复核去重事实 → 受控写入 → 落逐条结果 */
   private async importOne(input: {
     item: RecordPackageItemSnapshot;
-    manifestItem:
-      | {
-          content_snapshot: unknown;
-          files: { relative_path: string; sha256: string; byte_size: number }[];
-          source_account_id?: number | null;
-          source_account_uuid?: string | null;
-          source_account_login_name?: string | null;
-          source_account_name?: string | null;
-          owner_organization_id?: number | null;
-          source_equipment_model_code?: string | null;
-          related_record_uuid?: string | null;
-          related_record_type?: string | null;
-          source_status?: string | null;
-        }
-      | undefined;
+    manifestItem: RecordPackageImportManifestItem | undefined;
     packagePath: string;
     organizationId: number;
     manifestChecksum: string;
@@ -224,28 +337,36 @@ export class ImportRecordPackageUsecase {
   }): Promise<{ result: string }> {
     const { item } = input;
 
-    // 1. 与同步共用去重：同键回执已存在即按"同一事实"跳过；**摘要不同**判冲突
+    // 1. 与同步共用去重键，但**不把整包摘要当单条内容摘要**；裁决细节见
+    //    `resolveExistingReceiptDecision`：同一来源包＋本机权威版本＋当前权限三证齐全
+    //    才安全跳过，其余冲突/失败关闭，不覆盖既有事实。
     const existing = await this.findExistingVersion(item, input.organizationId);
     if (existing !== null) {
-      const sameContent =
-        existing.manifestChecksum === null || existing.manifestChecksum === input.manifestChecksum;
-      await this.writeItemResult(item.itemId, {
-        result: sameContent ? 'SKIPPED' : 'CONFLICT',
-        errorMessage: sameContent
-          ? '本机已存在同一记录版本（与同步去重口径一致），本次不重复导入'
-          : '同键记录版本已存在但内容摘要不同，需人工裁决（不覆盖既有事实）',
-        receiptId: null,
+      const decision = await this.resolveExistingReceiptDecision({
+        item,
+        existing,
+        organizationId: input.organizationId,
+        manifestChecksum: input.manifestChecksum,
+        sourceInstallationId: input.sourceInstallationId,
+        manifestItem: input.manifestItem,
+        sourceOrganizationCode: input.sourceOrganizationCode,
+        session: input.session,
+        writer: input.writer,
       });
-      return { result: sameContent ? 'SKIPPED' : 'CONFLICT' };
+      await this.writeItemResult(item.itemId, decision);
+      return { result: decision.result };
     }
 
-    // 1a. 本机来源事实复核（不复活已删除下架内容／不覆盖更高版本／结果未知先核对再重试）
-    const localDecision = await this.reconcileLocalFact(input);
+    // 1a. 本机来源事实复核（不复活已删除下架内容／不覆盖更高版本／同版本无回执不冒充同内容）
+    const localDecision = await this.reconcileLocalFact({
+      item,
+      organizationId: input.organizationId,
+    });
     if (localDecision.kind !== 'PROCEED') {
       await this.writeItemResult(item.itemId, {
         result: localDecision.kind,
         errorMessage: localDecision.reason,
-        receiptId: localDecision.kind === 'SKIPPED' ? localDecision.receiptId : null,
+        receiptId: null,
       });
       return { result: localDecision.kind };
     }
@@ -417,13 +538,121 @@ export class ImportRecordPackageUsecase {
   private async findExistingVersion(
     item: RecordPackageItemSnapshot,
     organizationId: number,
-  ): Promise<{ receiptId: string; manifestChecksum: string | null } | null> {
+  ): Promise<{
+    receiptId: string;
+    manifestChecksum: string | null;
+    sourceInstallationId: string | null;
+  } | null> {
     return this.recordPackageImportService.findReceipt({
       organizationId,
       resourceType: item.resourceType,
       recordUuid: item.recordUuid,
       versionNo: item.versionNo,
     });
+  }
+
+  /** 本机删除下架／更高版本的硬阻断优先于任何同包证明。 */
+  private rejectForLocalFact(
+    localFact: {
+      withdrawn: boolean;
+      currentVersion: number | null;
+      identityPersisted: boolean;
+    } | null,
+    versionNo: number,
+  ): ExistingReceiptDecision | null {
+    if (localFact?.withdrawn === true) {
+      return {
+        result: 'FAILED',
+        errorMessage: '本机同编号记录已删除或下架，不导入（导入不得复活已删除下架内容）',
+        receiptId: null,
+      };
+    }
+    if (
+      localFact !== null &&
+      localFact.currentVersion !== null &&
+      localFact.currentVersion > versionNo
+    ) {
+      return {
+        result: 'CONFLICT',
+        errorMessage: `本机同编号记录已有更高版本（v${localFact.currentVersion}），不覆盖`,
+        receiptId: null,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * 同键回执裁决（F2）：整包摘要只证明"同一份包"，不是单条内容摘要。
+   *
+   * 可证相同 = 同一来源安装 + 同一包摘要 + 本机持久化身份同版本 + 未下架；
+   * 即使如此仍复核当前权限。其余情况保守冲突或失败关闭，不覆盖既有事实。
+   */
+  private async resolveExistingReceiptDecision(input: {
+    item: RecordPackageItemSnapshot;
+    existing: {
+      receiptId: string;
+      manifestChecksum: string | null;
+      sourceInstallationId: string | null;
+    };
+    organizationId: number;
+    manifestChecksum: string;
+    sourceInstallationId: string;
+    manifestItem: RecordPackageImportManifestItem | undefined;
+    sourceOrganizationCode: string | null;
+    session: UsecaseSession;
+    writer: RecordPackageItemWriter | null;
+  }): Promise<ExistingReceiptDecision> {
+    const localFact = await this.readLocalSourceFact(input.item, input.organizationId);
+    const blocked = this.rejectForLocalFact(localFact, input.item.versionNo);
+    if (blocked !== null) {
+      return blocked;
+    }
+
+    const sameAuthoritativeVersion =
+      localFact !== null &&
+      localFact.identityPersisted &&
+      localFact.currentVersion === input.item.versionNo;
+    const samePackageProof =
+      input.existing.manifestChecksum !== null &&
+      input.existing.sourceInstallationId !== null &&
+      input.existing.manifestChecksum === input.manifestChecksum &&
+      input.existing.sourceInstallationId === input.sourceInstallationId;
+
+    if (!samePackageProof) {
+      return {
+        result: 'CONFLICT',
+        errorMessage:
+          input.existing.manifestChecksum === null
+            ? '旧回执摘要不可判定，需人工裁决（不按同键跳过，也不覆盖既有事实）'
+            : '同键回执来自不同来源包或历史摘要不可判定；整包摘要不能证明单条内容相同，需人工裁决（不覆盖）',
+        receiptId: null,
+      };
+    }
+    if (!sameAuthoritativeVersion) {
+      return {
+        result: 'CONFLICT',
+        errorMessage:
+          '同键回执与当前包一致，但本机权威版本或稳定身份不可核验，需人工裁决（不覆盖）',
+        receiptId: null,
+      };
+    }
+
+    const precondition = await this.resolveWritePrecondition({
+      item: input.item,
+      manifestItem: input.manifestItem,
+      organizationId: input.organizationId,
+      sourceOrganizationCode: input.sourceOrganizationCode,
+      session: input.session,
+      writer: input.writer,
+    });
+    if (precondition.kind === 'FAILED') {
+      return { result: 'FAILED', errorMessage: precondition.reason, receiptId: null };
+    }
+    return {
+      result: 'SKIPPED',
+      errorMessage: '同一来源包同键回执＋本机权威版本可证同一事实，当前权限已复核，本次不重复导入',
+      receiptId: input.existing.receiptId,
+    };
   }
 
   /**
@@ -497,22 +726,17 @@ export class ImportRecordPackageUsecase {
 
   /**
    * 本机来源事实复核（导入前）：
-   * - 已删除／下架 → 拒绝（导入不得复活已删除下架内容）；
+   * - 已删除／下架 → 失败关闭（导入不得复活已删除下架内容）；
    * - 本机已有更高版本 → 冲突（不覆盖更高版本）；
-   * - 本机已有**同一持久化身份且同一版本** → 判"同一事实"跳过
-   *   （结果未知时的先核对再重试：上一次尝试其实已经写成功，
-   *   不重复写、不重复绑定；并补记回执让后续重试直接命中回执去重）。
+   * - 无回执但本机同持久化身份同版本 → **受控冲突**：同一稳定身份与版本不能证明
+   *   当前包的正文/原件与本机记录相同，也不能凭此补写来源回执；交人工裁决。
+   * - 本机无记录或身份不可核验且版本更低/不可判定 → 正常受控新增。
    */
   private async reconcileLocalFact(input: {
     item: RecordPackageItemSnapshot;
     organizationId: number;
-    manifestChecksum: string;
-    sourceInstallationId: string;
   }): Promise<
-    | { kind: 'PROCEED' }
-    | { kind: 'FAILED'; reason: string }
-    | { kind: 'CONFLICT'; reason: string }
-    | { kind: 'SKIPPED'; reason: string; receiptId: string }
+    { kind: 'PROCEED' } | { kind: 'FAILED'; reason: string } | { kind: 'CONFLICT'; reason: string }
   > {
     const { item } = input;
     const localFact = await this.readLocalSourceFact(item, input.organizationId);
@@ -536,25 +760,10 @@ export class ImportRecordPackageUsecase {
       localFact.currentVersion !== null &&
       localFact.currentVersion === item.versionNo
     ) {
-      // 同一（公司, 资源类型, 记录 UUID, 版本）键在本机已存在，且该 UUID 是**持久化的
-      // 跨端稳定身份**（不是按本机自增 id 派生的历史回退值）⇒ 上次写入已生效。
-      const receiptId = await this.transactionRunner.run((transactionContext) =>
-        this.receiptService.recordImportedVersion(
-          {
-            organizationId: input.organizationId,
-            resourceType: item.resourceType,
-            recordUuid: item.recordUuid,
-            versionNo: item.versionNo,
-            manifestChecksum: input.manifestChecksum,
-            sourceInstallationId: input.sourceInstallationId,
-          },
-          transactionContext,
-        ),
-      );
       return {
-        kind: 'SKIPPED',
-        reason: '本机已存在同一记录同一版本（重试前先核对，本次不重复导入，也不重复绑定原件）',
-        receiptId,
+        kind: 'CONFLICT',
+        reason:
+          '本机已有同稳定身份同版本记录，但无同键回执可证明当前包正文与原件相同；不补写回执、不覆盖业务，需人工裁决',
       };
     }
     return { kind: 'PROCEED' };

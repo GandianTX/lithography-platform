@@ -667,6 +667,7 @@ async function main(): Promise<void> {
     const bTask = serviceB.execute({
       restoreId: fixture1.restoreId,
       actorAccountId: accountId,
+      actorAdminLevel: 1,
       allowedOrganizationId: null,
       now: new Date(),
     });
@@ -678,6 +679,7 @@ async function main(): Promise<void> {
     const outcomeA = await serviceA.execute({
       restoreId: fixture1.restoreId,
       actorAccountId: accountId,
+      actorAdminLevel: 1,
       allowedOrganizationId: null,
       now: new Date(),
     });
@@ -805,6 +807,7 @@ async function main(): Promise<void> {
     const outcomeS2 = await buildService(appA).execute({
       restoreId: fixture2.restoreId,
       actorAccountId: accountId,
+      actorAdminLevel: 1,
       allowedOrganizationId: null,
       now: new Date(),
     });
@@ -869,6 +872,7 @@ async function main(): Promise<void> {
     const outcomeS3 = await buildService(appA).execute({
       restoreId: fixture3.restoreId,
       actorAccountId: accountId,
+      actorAdminLevel: 1,
       allowedOrganizationId: null,
       now: new Date(),
     });

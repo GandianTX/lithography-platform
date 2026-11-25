@@ -41,6 +41,7 @@ import {
   LOCAL_RESTORE_AUDIT_STAGES,
   type LocalRestoreAuditStage,
 } from '@core/local-runtime/policy/local-restore-audit.policy';
+import type { LocalRuntimeAdminLevel } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 
 import { ManagementAuditService } from './management-audit.service';
 import { BackupAssetEntity } from './entities/backup-asset.entity';
@@ -131,11 +132,15 @@ export class LocalRestoreExecutionService {
    *
    * @param input.restoreId 恢复运行 ID（受理后）
    * @param input.actorAccountId 实际执行人（写入恢复事实）
+   * @param input.actorAdminLevel 实际执行人的**管理员等级**（请求期数据库复核结果）：
+   *        恢复终态审计事件里的 `actor_admin_level` 必须是它，
+   *        不接受客户端自报，也不缺省成一级。
    * @param input.allowedOrganizationId 执行人的公司授权范围（null＝一级管理员全局范围）
    */
   async execute(input: {
     restoreId: string;
     actorAccountId: number;
+    actorAdminLevel: LocalRuntimeAdminLevel;
     allowedOrganizationId?: number | null;
     now?: Date;
   }): Promise<LocalRestoreExecutionOutcome> {
@@ -254,6 +259,7 @@ export class LocalRestoreExecutionService {
       const claim = await this.claimRestoreExecution({
         restoreId: input.restoreId,
         actorAccountId: input.actorAccountId,
+        actorAdminLevel: input.actorAdminLevel,
         installationId: installation.installationId,
         allowedOrganizationId: input.allowedOrganizationId ?? null,
         now,
@@ -344,6 +350,7 @@ export class LocalRestoreExecutionService {
           LOCAL_RESTORE_EXECUTION_REASON_CODES.VERIFY_FAILED,
           verified.reason,
           input.actorAccountId,
+          input.actorAdminLevel,
         );
       }
 
@@ -366,6 +373,7 @@ export class LocalRestoreExecutionService {
           reasonCode: null,
           counts: restored.counts,
           actorAccountId: input.actorAccountId,
+          actorAdminLevel: input.actorAdminLevel,
           organizationId: activeRun.organizationId,
           backupId: activeRun.backupId,
           protectionBackupId: activeRun.protectionBackupId ?? null,
@@ -406,6 +414,7 @@ export class LocalRestoreExecutionService {
         await this.appendRestoreEvent({
           restoreId: activeRun.restoreId,
           actorAccountId: input.actorAccountId,
+          actorAdminLevel: input.actorAdminLevel,
           organizationId: activeRun.organizationId,
           backupId: activeRun.backupId,
           protectionBackupId: activeRun.protectionBackupId ?? null,
@@ -447,6 +456,7 @@ export class LocalRestoreExecutionService {
         LOCAL_RESTORE_EXECUTION_REASON_CODES.EXECUTION_FAILED,
         RESTORE_FAILURE_REASON_TEXT.EXECUTION_FAILED,
         input.actorAccountId,
+        input.actorAdminLevel,
       );
     } finally {
       // 执行权必须释放（否则同一次恢复再也执行不了）；
@@ -473,6 +483,8 @@ export class LocalRestoreExecutionService {
   private async claimRestoreExecution(input: {
     restoreId: string;
     actorAccountId: number;
+    /** 实际执行人的管理员等级（占用事实与终态审计都要用它） */
+    actorAdminLevel: LocalRuntimeAdminLevel;
     installationId: string;
     allowedOrganizationId: number | null;
     now: Date;
@@ -567,6 +579,7 @@ export class LocalRestoreExecutionService {
             claim: {
               restoreId: fresh.restoreId,
               actorAccountId: input.actorAccountId,
+              actorAdminLevel: input.actorAdminLevel,
               claimedAt: input.now.toISOString(),
             },
           }),
@@ -612,6 +625,8 @@ export class LocalRestoreExecutionService {
       reasonCode: string | null;
       counts?: { records: number; originals: number; queue: number } | null;
       actorAccountId: number;
+      /** 实际执行人的管理员等级（审计事实必须是真实等级，不固定记一级） */
+      actorAdminLevel: LocalRuntimeAdminLevel;
       organizationId: number;
       backupId: string;
       protectionBackupId: string | null;
@@ -643,6 +658,7 @@ export class LocalRestoreExecutionService {
         await this.appendRestoreEvent({
           restoreId: input.restoreId,
           actorAccountId: input.event.actorAccountId,
+          actorAdminLevel: input.event.actorAdminLevel,
           organizationId: input.event.organizationId,
           backupId: input.event.backupId,
           protectionBackupId: input.event.protectionBackupId,
@@ -803,6 +819,7 @@ export class LocalRestoreExecutionService {
     reasonCode: string,
     reason: string,
     actorAccountId: number,
+    actorAdminLevel: LocalRuntimeAdminLevel,
   ): Promise<LocalRestoreExecutionOutcome> {
     const rollback = await this.rollbackToProtection(run, protection, installation.installationId);
     if (!rollback.ok) {
@@ -812,6 +829,7 @@ export class LocalRestoreExecutionService {
         `${reason}（按保护副本回滚失败：${rollback.reason ?? '原因不可用'}）`,
         {
           actorAccountId,
+          actorAdminLevel,
           organizationId: run.organizationId,
           backupId: run.backupId,
           protectionBackupId: run.protectionBackupId ?? null,
@@ -836,6 +854,7 @@ export class LocalRestoreExecutionService {
         `${reason}（业务数据已按保护副本回滚，但冻结解除失败，设备继续停写停传）`,
         {
           actorAccountId,
+          actorAdminLevel,
           organizationId: run.organizationId,
           backupId: run.backupId,
           protectionBackupId: run.protectionBackupId ?? null,
@@ -859,6 +878,7 @@ export class LocalRestoreExecutionService {
         stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_ROLLED_BACK,
         reasonCode,
         actorAccountId,
+        actorAdminLevel,
         organizationId: run.organizationId,
         backupId: run.backupId,
         protectionBackupId: run.protectionBackupId ?? null,
@@ -895,6 +915,8 @@ export class LocalRestoreExecutionService {
   private async appendRestoreEvent(input: {
     restoreId: string;
     actorAccountId: number;
+    /** 实际执行人的管理员等级（**真实等级**，不固定记一级） */
+    actorAdminLevel: LocalRuntimeAdminLevel;
     organizationId: number;
     backupId: string;
     protectionBackupId: string | null;
@@ -910,7 +932,7 @@ export class LocalRestoreExecutionService {
   }): Promise<void> {
     await this.managementAuditService.appendRestoreEvent({
       actorAccountId: input.actorAccountId,
-      actorAdminLevel: 1,
+      actorAdminLevel: input.actorAdminLevel,
       organizationId: input.organizationId,
       operation: 'RESTORE_LOCAL_BUSINESS',
       restoreId: input.restoreId,
@@ -1107,6 +1129,8 @@ export class LocalRestoreExecutionService {
     reason: string,
     audit?: {
       readonly actorAccountId: number;
+      /** 实际执行人的管理员等级（终态审计事实必须是真实等级） */
+      readonly actorAdminLevel: LocalRuntimeAdminLevel;
       readonly organizationId: number;
       readonly backupId: string;
       readonly protectionBackupId: string | null;
@@ -1132,6 +1156,7 @@ export class LocalRestoreExecutionService {
               stage: audit.stage,
               reasonCode,
               actorAccountId: audit.actorAccountId,
+              actorAdminLevel: audit.actorAdminLevel,
               organizationId: audit.organizationId,
               backupId: audit.backupId,
               protectionBackupId: audit.protectionBackupId,

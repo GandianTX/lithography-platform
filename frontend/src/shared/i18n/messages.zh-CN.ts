@@ -1928,6 +1928,9 @@ export const ZH_CN_MESSAGES = {
   'recordPackage.import.checkStatus': '检查结论',
   'recordPackage.import.status': '导入状态',
   'recordPackage.import.summary': '导入结果',
+  'recordPackage.import.error.badUserInput': '记录包内容不符合要求，请检查清单和原件后重新导出。',
+  'recordPackage.import.recheckHint':
+    '同一包重复检查不会刷新上次结论；若文件已修复，请使用新包编号重新导出检查，同键记录可能需人工裁决。',
   'recordPackage.column.recordId': '记录 ID',
   'recordPackage.column.recordUuid': '稳定编号',
   'recordPackage.column.resourceType': '记录类型',
@@ -1949,6 +1952,7 @@ export const ZH_CN_MESSAGES = {
   'recordPackage.itemResult.FAILED': '导入失败',
   'recordPackage.itemResult.SKIPPED': '已跳过',
   'recordPackage.itemResult.CONFLICT': '存在冲突',
+  'recordPackage.itemResult.NOT_EXECUTED': '检查未通过，未执行',
   'recordPackage.status.PENDING': '待导入',
   'recordPackage.status.RUNNING': '导入中',
   'recordPackage.status.SUCCEEDED': '导入完成',

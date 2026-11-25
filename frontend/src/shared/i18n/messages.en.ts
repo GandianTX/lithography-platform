@@ -2108,6 +2108,10 @@ export const EN_MESSAGES = {
   'recordPackage.import.checkStatus': 'Check result',
   'recordPackage.import.status': 'Import status',
   'recordPackage.import.summary': 'Import result',
+  'recordPackage.import.error.badUserInput':
+    'The record package is invalid. Check the manifest and original files, then export it again.',
+  'recordPackage.import.recheckHint':
+    'Rechecking the same package does not refresh the previous result. If the files were repaired, export a package with a new package ID and check it again; records with the same key may still require manual review.',
   'recordPackage.column.recordId': 'Record ID',
   'recordPackage.column.recordUuid': 'Stable ID',
   'recordPackage.column.resourceType': 'Record type',
@@ -2129,6 +2133,7 @@ export const EN_MESSAGES = {
   'recordPackage.itemResult.FAILED': 'Import failed',
   'recordPackage.itemResult.SKIPPED': 'Skipped',
   'recordPackage.itemResult.CONFLICT': 'Conflict',
+  'recordPackage.itemResult.NOT_EXECUTED': 'Not executed (check failed)',
   'recordPackage.status.PENDING': 'Pending import',
   'recordPackage.status.RUNNING': 'Importing',
   'recordPackage.status.SUCCEEDED': 'Import finished',
