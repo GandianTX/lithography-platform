@@ -26,9 +26,11 @@
  *   与初检条目一一对应；新鲜硬失败的条目不执行、不跳过，只更新逐条检查结论；
  * - **去重**：导入前复核同键回执；只有"同一来源包＋本机权威版本可证明同一事实"
  *   才安全跳过，跨包/历史摘要不可判定一律冲突，不按整包摘要推断单条内容相同。
+ * - **冻结与占用**：占用前先做只读冻结检查；占用后若遇到正常冻结拒绝，按已完成
+ *   条目事实受控收敛批次终态，不留"零写入但 RUNNING"的假在途。
  */
 
-import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
+import { RECORD_PACKAGE_ERROR, DomainError, SYNC_ERROR } from '@core/common/errors/domain-error';
 import { parseRecordPackageManifest } from '@core/local-runtime/policy/record-package-manifest.policy';
 import { ModuleRef } from '@nestjs/core';
 import { Inject, Injectable } from '@nestjs/common';
@@ -165,6 +167,12 @@ export class ImportRecordPackageUsecase {
     const manifest = parseRecordPackageManifest(facts.import.manifestJson);
     const writer = this.resolveWriter();
 
+    // 占用前的只读冻结检查：冻结已生效时直接受控拒绝，**绝不先把批次占为 RUNNING**。
+    // 写入前仍保留逐条复核，覆盖"占用后才冻结"的窗口。
+    await this.localWriteHoldService.assertCompanyWritable({
+      organizationId: evaluation.targetOrganizationId,
+    });
+
     // 占用（**绑定本次确认的版本**，任务 09 复验 P1）：
     // 占用事务内以当前读＋行锁重新核对数据库当前事实（编号、归属公司、清单摘要、
     // 预检状态、可占用状态）。核对不通过 ⇒ 受控拒绝，**不进入任何业务写入**。
@@ -179,101 +187,154 @@ export class ImportRecordPackageUsecase {
       }),
     );
 
-    // 执行依据＝**锁内刚确认的同一版本**批次与逐条事实（不沿用占用前的旧快照）。
-    // 确认期重新评估的逐条结论必须贯穿执行：按完整身份＋同键出现序号一一对应；
-    // 新鲜硬失败的条目没有执行，也没有导入失败，只改逐条检查结论。
-    const freshOutcomesByKey = this.indexFreshOutcomes(evaluation.outcomes);
-    const claimedOrdinals = new Map<string, number>();
-    let succeeded = 0;
-    let failed = 0;
-    let checkRejectedCount = 0;
-    let freshRejectedCount = 0;
-    for (const item of claimed.items) {
-      const fresh = this.takeFreshOutcome(freshOutcomesByKey, claimedOrdinals, item);
-      if (item.checkResult !== 'PASSED') {
-        checkRejectedCount += 1;
-        continue;
-      }
-      if (fresh === null || !fresh.passed) {
-        if (item.result === null) {
-          await this.recordPackageImportService.markItemCheckRejected(
-            item.itemId,
-            fresh?.message ?? '确认时逐条检查缺少对应结论，未执行',
-          );
+    try {
+      // 执行依据＝**锁内刚确认的同一版本**批次与逐条事实（不沿用占用前的旧快照）。
+      // 确认期重新评估的逐条结论必须贯穿执行：按完整身份＋同键出现序号一一对应；
+      // 新鲜硬失败的条目没有执行，也没有导入失败，只改逐条检查结论。
+      const freshOutcomesByKey = this.indexFreshOutcomes(evaluation.outcomes);
+      const claimedOrdinals = new Map<string, number>();
+      let succeeded = 0;
+      let failed = 0;
+      let checkRejectedCount = 0;
+      let freshRejectedCount = 0;
+      for (const item of claimed.items) {
+        const fresh = this.takeFreshOutcome(freshOutcomesByKey, claimedOrdinals, item);
+        if (item.checkResult !== 'PASSED') {
+          checkRejectedCount += 1;
+          continue;
         }
-        freshRejectedCount += 1;
-        continue;
-      }
-      // 中断重试：已成功或已判定跳过的条目不重做（幂等）
-      if (item.result === 'SUCCEEDED' || item.result === 'SKIPPED') {
-        succeeded += 1;
-        continue;
-      }
-      // 清单回查必须用完整身份：(资源类型, 稳定编号, 版本)。
-      // 仅按 UUID 会在混合包里取到同 UUID 的另一资源/版本条目，导致正文、来源与原件错配。
-      const manifestItem = manifest.items.find(
-        (candidate) =>
-          candidate.resource_type === item.resourceType &&
-          candidate.record_uuid === item.recordUuid &&
-          candidate.version_no === item.versionNo,
-      );
-      if (manifestItem === undefined) {
-        await this.writeItemResult(item.itemId, {
-          result: 'FAILED',
-          errorMessage: '清单条目与逐条事实无法按资源类型、稳定编号和版本精确匹配，拒绝导入',
-          receiptId: null,
+        if (fresh === null || !fresh.passed) {
+          if (item.result === null) {
+            await this.recordPackageImportService.markItemCheckRejected(
+              item.itemId,
+              fresh?.message ?? '确认时逐条检查缺少对应结论，未执行',
+            );
+          }
+          freshRejectedCount += 1;
+          continue;
+        }
+        // 中断重试：已成功或已判定跳过的条目不重做（幂等）
+        if (item.result === 'SUCCEEDED' || item.result === 'SKIPPED') {
+          succeeded += 1;
+          continue;
+        }
+        // 清单回查必须用完整身份：(资源类型, 稳定编号, 版本)。
+        // 仅按 UUID 会在混合包里取到同 UUID 的另一资源/版本条目，导致正文、来源与原件错配。
+        const manifestItem = manifest.items.find(
+          (candidate) =>
+            candidate.resource_type === item.resourceType &&
+            candidate.record_uuid === item.recordUuid &&
+            candidate.version_no === item.versionNo,
+        );
+        if (manifestItem === undefined) {
+          await this.writeItemResult(item.itemId, {
+            result: 'FAILED',
+            errorMessage: '清单条目与逐条事实无法按资源类型、稳定编号和版本精确匹配，拒绝导入',
+            receiptId: null,
+          });
+          failed += 1;
+          continue;
+        }
+        const outcome = await this.importOne({
+          item,
+          manifestItem,
+          organizationId: claimed.import.organizationId,
+          manifestChecksum: claimed.import.manifestChecksum,
+          packagePath: command.packagePath,
+          sourceInstallationId: manifest.installation_id,
+          sourceOrganizationCode: manifest.organization_code ?? null,
+          session: command.session,
+          writer,
         });
-        failed += 1;
-        continue;
+        if (outcome.result === 'SUCCEEDED' || outcome.result === 'SKIPPED') {
+          succeeded += 1;
+        } else {
+          failed += 1;
+        }
       }
-      const outcome = await this.importOne({
-        item,
-        manifestItem,
-        organizationId: claimed.import.organizationId,
-        manifestChecksum: claimed.import.manifestChecksum,
-        packagePath: command.packagePath,
-        sourceInstallationId: manifest.installation_id,
-        sourceOrganizationCode: manifest.organization_code ?? null,
-        session: command.session,
-        writer,
-      });
-      if (outcome.result === 'SUCCEEDED' || outcome.result === 'SKIPPED') {
-        succeeded += 1;
-      } else {
-        failed += 1;
+
+      // 没有任何可执行条目时不能报成功：计数 0/0 表示"什么也没做"，如实记 FAILED。
+      // 检查阶段或确认期被硬阻断的条目也没有执行：即使合格范围全部成功，批次仍是 PARTIAL，
+      // 不把"部分范围完成"冒充整包 SUCCEEDED，也不把检查失败计入导入失败。
+      checkRejectedCount += freshRejectedCount;
+      const status = this.resolveBatchStatus(succeeded, failed, checkRejectedCount);
+      // 终态只落在**本次占用的那个摘要**上（条件更新命中 0 行 ⇒ 受控拒绝，不静默吞掉）。
+      await this.transactionRunner.run((transactionContext) =>
+        this.recordPackageImportService.finalizeImport(
+          command.packageId,
+          { status, succeeded, failed },
+          claimed.import.manifestChecksum,
+          transactionContext,
+        ),
+      );
+
+      const updated = await this.recordPackageImportService.readImportFacts(command.packageId);
+      return {
+        outcome: 'imported',
+        import: updated?.import ?? claimed.import,
+        items: updated?.items ?? claimed.items,
+      };
+    } catch (error) {
+      if (!this.isWriteHeldError(error)) {
+        throw error;
       }
+      // 占用后才发生的冻结：按已完成事实收敛本次占用，避免"零写入却 RUNNING"。
+      // 原始 WRITE_HELD 仍抛给调用方；收敛自身失败时两个原因都保留，不吞错。
+      try {
+        await this.settleFrozenRun(command.packageId, claimed.import);
+      } catch (settlementError) {
+        throw new AggregateError(
+          [error, settlementError],
+          '恢复期冻结且批次收敛失败，保留冻结与收敛两个原因，不自动重试',
+          { cause: settlementError },
+        );
+      }
+      throw error;
     }
+  }
 
-    // 没有任何可执行条目时不能报成功：计数 0/0 表示"什么也没做"，如实记 FAILED。
-    // 检查阶段或确认期被硬阻断的条目也没有执行：即使合格范围全部成功，批次仍是 PARTIAL，
-    // 不把"部分范围完成"冒充整包 SUCCEEDED，也不把检查失败计入导入失败。
-    checkRejectedCount += freshRejectedCount;
-    const status =
-      succeeded === 0 && failed === 0
-        ? 'FAILED'
-        : failed > 0 && succeeded > 0
-          ? 'PARTIAL'
-          : failed > 0
-            ? 'FAILED'
-            : checkRejectedCount > 0
-              ? 'PARTIAL'
-              : 'SUCCEEDED';
-    // 终态只落在**本次占用的那个摘要**上（条件更新命中 0 行 ⇒ 受控拒绝，不静默吞掉）。
+  /** 正常恢复冻结拒绝（不是进程中断/写入结果未知），可以受控收敛本次占用。 */
+  private isWriteHeldError(error: unknown): boolean {
+    return error instanceof DomainError && error.code === SYNC_ERROR.WRITE_HELD;
+  }
+
+  /** 批次终态口径：未执行条目不冒充成功，也不计入导入失败。 */
+  private resolveBatchStatus(
+    succeeded: number,
+    failed: number,
+    checkRejectedCount: number,
+  ): 'SUCCEEDED' | 'PARTIAL' | 'FAILED' {
+    if (succeeded === 0 && failed === 0) {
+      return 'FAILED';
+    }
+    if (failed > 0 && succeeded > 0) {
+      return 'PARTIAL';
+    }
+    if (failed > 0) {
+      return 'FAILED';
+    }
+    return checkRejectedCount > 0 ? 'PARTIAL' : 'SUCCEEDED';
+  }
+
+  /**
+   * 占用后遇到冻结的受控收敛：由真实批次服务在**同一事务/行锁内**重读 RUNNING 状态、
+   * 归属公司、清单摘要与最新逐条事实后条件更新，不盲目把 RUNNING 重置为 PENDING。
+   *
+   * 不把账号/摘要/超时当作本次执行的 fencing：批次一旦被换包重检、终态化或重置，
+   * 条件更新即受控拒绝，不把旧版本执行写到新版本批次上。
+   */
+  private async settleFrozenRun(
+    packageId: string,
+    claimed: RecordPackageImportSnapshot,
+  ): Promise<void> {
     await this.transactionRunner.run((transactionContext) =>
-      this.recordPackageImportService.finalizeImport(
-        command.packageId,
-        { status, succeeded, failed },
-        claimed.import.manifestChecksum,
+      this.recordPackageImportService.finalizeFrozenImport({
+        packageId,
+        organizationId: claimed.organizationId,
+        manifestChecksum: claimed.manifestChecksum,
         transactionContext,
-      ),
+      }),
     );
-
-    const updated = await this.recordPackageImportService.readImportFacts(command.packageId);
-    return {
-      outcome: 'imported',
-      import: updated?.import ?? claimed.import,
-      items: updated?.items ?? claimed.items,
-    };
   }
 
   /** 查看者公司的稳定业务编码（跨安装对齐公司身份；读取失败即 null） */
@@ -453,9 +514,22 @@ export class ImportRecordPackageUsecase {
         input.session,
       );
     } catch (error) {
-      // 写入抛错（未预期）：先精确补偿本条暂存原件，再如实登记失败原因。
+      // 写入抛错：先精确补偿本条暂存原件，再如实登记失败原因。
       // 业务事务已由写入方回滚，暂存行若不释放就会变成永远不会被绑定的孤儿行。
-      await this.releaseStagedOriginals(stagedOriginals);
+      const compensationError = await this.releaseStagedOriginals(stagedOriginals);
+      if (this.isWriteHeldError(error)) {
+        // 冻结不是业务失败：保留逐条 NULL（未执行），不得写 FAILED 冒充已裁决结果。
+        // 只有补偿成功、可证明没有未知残留时，才把冻结交给批次级受控收敛。
+        // 补偿失败时同时保留两个错误，外层不识别为“零副作用冻结”，不自动重试。
+        if (compensationError !== null) {
+          throw new AggregateError(
+            [error, compensationError],
+            '恢复期冻结且本条暂存原件补偿失败，批次保持受控状态，不允许自动重试',
+            { cause: error },
+          );
+        }
+        throw error;
+      }
       await this.writeItemResult(item.itemId, {
         result: 'FAILED',
         errorMessage:
@@ -511,8 +585,8 @@ export class ImportRecordPackageUsecase {
   /**
    * 精确补偿：释放本条导入尝试自己登记、且尚未被绑定的暂存原件。
    *
-   * 补偿失败**不掩盖**业务失败：主失败原因照常登记，补偿异常只记日志
-   * （行仍是 TEMPORARY，由过期暂存清理任务兜底回收）。
+   * 普通失败路径只记日志，不掩盖主失败；冻结路径需要知道补偿是否成功，
+   * 因此把补偿异常返回给调用方（行仍是 TEMPORARY，由过期暂存清理任务兜底回收）。
    */
   private async releaseStagedOriginals(
     staged: readonly {
@@ -523,14 +597,16 @@ export class ImportRecordPackageUsecase {
       byteSize: number;
       checksumSha256: string;
     }[],
-  ): Promise<void> {
+  ): Promise<unknown> {
     if (staged.length === 0) {
-      return;
+      return null;
     }
     try {
       await this.originalStagingService.release(staged);
-    } catch {
-      // 补偿失败不改变本条的业务结论；残留行由过期暂存清理任务兜底。
+      return null;
+    } catch (error) {
+      // 补偿失败不改变普通失败的业务结论；残留行由过期暂存清理任务兜底。
+      return error;
     }
   }
 

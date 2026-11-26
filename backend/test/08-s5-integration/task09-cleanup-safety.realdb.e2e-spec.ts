@@ -14,8 +14,10 @@
  * 默认跳过；启用：
  *   TASK09_CLEANUP_SAFETY_INTEGRATION=1 E2E_ALLOWED_DB_NAMES=<隔离库> \
  *     E2E_REAL_DB_NAME=<隔离库> E2E_ALLOW_PHYSICAL_CLEANUP=1 \
+ *     TASK09_CLEANUP_SAFETY_ENV_FILE=<专用 env> TASK09_CLEANUP_SAFETY_FILE_ROOT=<专用文件根父目录> \
  *     npx jest --testPathIgnorePatterns "/node_modules/" "/dist/" \
  *     --runTestsByPath test/08-s5-integration/task09-cleanup-safety.realdb.e2e-spec.ts --runInBand
+ * 后两项缺省仍为仓库 e2e 配置与 `.local/task09`，不降低库/文件归属守卫。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -50,8 +52,9 @@ jest.setTimeout(180_000);
 
 const ENABLED = process.env.TASK09_CLEANUP_SAFETY_INTEGRATION === '1';
 const describeIntegration = ENABLED ? describe : describe.skip;
-const ENV_FILE = 'env/.env.e2e';
-const FILE_BASE_DIR = join(__dirname, '../../.local/task09');
+const ENV_FILE = process.env.TASK09_CLEANUP_SAFETY_ENV_FILE ?? 'env/.env.e2e';
+const FILE_BASE_DIR =
+  process.env.TASK09_CLEANUP_SAFETY_FILE_ROOT ?? join(__dirname, '../../.local/task09');
 
 describeIntegration('任务 09 清理安全反向验证（隔离库）', () => {
   let dataSource: DataSource;

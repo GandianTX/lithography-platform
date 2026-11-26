@@ -30,8 +30,10 @@
  * 默认跳过；启用时显式声明隔离库并给出物理清理许可：
  *   LOCAL_RESTORE_AUDIT_LEVEL_INTEGRATION=1 E2E_ALLOWED_DB_NAMES=<隔离库> \
  *     E2E_ALLOW_PHYSICAL_CLEANUP=1 \
+ *     LOCAL_RESTORE_AUDIT_LEVEL_ENV_FILE=<专用 env> LOCAL_RESTORE_AUDIT_LEVEL_FILE_ROOT=<专用文件根父目录> \
  *     npx jest --testPathIgnorePatterns "/node_modules/" "/dist/" \
  *     --runTestsByPath test/08-s5-integration/local-restore-audit-level.realdb.e2e-spec.ts --runInBand
+ * 后两项缺省仍为仓库 e2e 配置与 `.local/task09`，不降低库/文件归属守卫。
  *
  * 收尾失败注入（仅测试用，不关闭任何守卫；注入后需按真实 ID/根标记精确回收残留）：
  *   TASK09_P2_INJECT_DB_CLEANUP_FAILURE=1   → 传错目标库，白名单在首删前拒绝；文件必须保留
@@ -93,14 +95,15 @@ jest.setTimeout(180_000);
 
 const ENABLED = process.env.LOCAL_RESTORE_AUDIT_LEVEL_INTEGRATION === '1';
 const describeIntegration = ENABLED ? describe : describe.skip;
-const ENV_FILE = 'env/.env.e2e';
+const ENV_FILE = process.env.LOCAL_RESTORE_AUDIT_LEVEL_ENV_FILE ?? 'env/.env.e2e';
 
 /** 本轮固定的受保护包测试密钥（与恢复自检脚本同款；仅用于一次性隔离库） */
 const TEST_KEY_HEX = '9f2c7a1d4e6b8035c7d9e1f4a2b6c8d0e3f5a7b9c1d3e5f7a9b1c3d5e7f9a1b3';
 const TEST_KEY_ID = 'kid-task09-p2-audit-level';
 
 /** 受控文件根的**基目录**（每轮在其中新建唯一子目录，绝不复用既有目录） */
-const FILE_BASE_DIR = join(__dirname, '../../.local/task09');
+const FILE_BASE_DIR =
+  process.env.LOCAL_RESTORE_AUDIT_LEVEL_FILE_ROOT ?? join(__dirname, '../../.local/task09');
 
 /** 全范围空载荷（根表齐备 ⇒ 载荷范围一致性检查通过） */
 function emptyPayload(): Record<string, unknown[]> {
@@ -378,9 +381,7 @@ describeIntegration('恢复审计的操作者等级（实库链路，任务 09 �
             : await dataSource.query(
                 `SELECT \`backup_id\` FROM \`backup_asset\` WHERE ` +
                   `\`local_reference\` IN (${referencedPaths.map(() => '?').join(', ')})` +
-                  packagePrefixes
-                    .map(() => ' OR INSTR(\`local_reference\`, ?) = 1')
-                    .join(''),
+                  packagePrefixes.map(() => ' OR INSTR(`local_reference`, ?) = 1').join(''),
                 [...referencedPaths, ...packagePrefixes],
               );
         if (references.length > 0) {

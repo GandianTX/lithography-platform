@@ -1194,6 +1194,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
             {
               name: triggerName,
               tableName: ROLLBACK_TRIGGER_TABLE,
+              timing: 'BEFORE',
+              event: 'DELETE',
               definition: ROLLBACK_TRIGGER_BODY,
             },
           ],
@@ -1212,6 +1214,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
             {
               name: triggerName,
               tableName: ROLLBACK_TRIGGER_TABLE,
+              timing: 'BEFORE',
+              event: 'DELETE',
               definition: ROLLBACK_TRIGGER_BODY,
             },
           ],
@@ -1246,7 +1250,15 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
 
       const replacedStub = createStubTriggerDataSource({
         metadataResponses: [
-          [{ name: triggerName, tableName: ROLLBACK_TRIGGER_TABLE, definition: replacedBody }],
+          [
+            {
+              name: triggerName,
+              tableName: ROLLBACK_TRIGGER_TABLE,
+              timing: 'BEFORE',
+              event: 'DELETE',
+              definition: replacedBody,
+            },
+          ],
         ],
       });
       await expect(
@@ -1273,6 +1285,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
     const assembled: OwnedTriggerRecord = {
       name: triggerName,
       tableName: ROLLBACK_TRIGGER_TABLE,
+      timing: 'BEFORE',
+      event: 'DELETE',
       body: ROLLBACK_TRIGGER_BODY,
       fact: null,
     };
@@ -1282,6 +1296,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
           {
             name: triggerName,
             tableName: ROLLBACK_TRIGGER_TABLE,
+            timing: 'BEFORE',
+            event: 'DELETE',
             definition: ROLLBACK_TRIGGER_BODY,
           },
         ],
@@ -1363,6 +1379,8 @@ describe('维修申请夹具所有权（真实隔离库）', () => {
       {
         name: triggerName,
         tableName: ROLLBACK_TRIGGER_TABLE,
+        timing: 'BEFORE',
+        event: 'DELETE',
         definition: ROLLBACK_TRIGGER_BODY,
       },
     ];

@@ -12,6 +12,8 @@
  *   账号不存在／已停用／归属已变更／导入者对它没有当前权限都必须拒绝该条。
  */
 
+import { DomainError, SYNC_ERROR } from '@core/common/errors/domain-error';
+
 import { MaintenanceReportRecordPackageItemWriter } from './record-package-item-writer';
 
 const bindStagedAttachmentToReport = jest.fn((_params?: unknown) =>
@@ -111,6 +113,8 @@ function buildVerifier(override?: {
 function buildWriter(
   options: {
     insertError?: Error;
+    /** 事务内冻结闸门错误（真实 writer 冻结透传反例） */
+    freezeError?: Error;
     verifier?: ReturnType<typeof buildVerifier>;
     /** 来源域只读事实（工单定位）替身 */
     sourceFacts?: { listFacts: jest.Mock };
@@ -148,7 +152,8 @@ function buildWriter(
     verifier as never, // sourceIdentityVerifier
     { run: jest.fn(async (fn: (ctx: unknown) => Promise<unknown>) => fn({})) } as never,
     {
-      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () =>
+        options.freezeError === undefined ? Promise.resolve() : Promise.reject(options.freezeError),
     } as never, // localWriteHoldService
   );
   return { writer, insertReport, insertVersion, insertVersionAttachments, verifier };
@@ -514,6 +519,16 @@ describe('记录包受控写入（维修报告域，S3 补丁 P2/P4）', () => {
     const insertData = insertReport.mock.calls[0][0] as Record<string, unknown>;
     expect(insertData.createdByAccountId).toBe(900303);
     expect(insertData.updatedByAccountId).toBe(900303);
+  });
+
+  it('事务内恢复冻结保留错误类别，不降级为普通 FAILED', async () => {
+    const freeze = new DomainError(SYNC_ERROR.WRITE_HELD, '恢复期冻结');
+    const { writer, insertReport } = buildWriter({ freezeError: freeze });
+
+    await expect(writer.write(REQUEST, SESSION)).rejects.toMatchObject({
+      code: SYNC_ERROR.WRITE_HELD,
+    });
+    expect(insertReport).not.toHaveBeenCalled();
   });
 
   it('受控写入被库层拒绝时如实带回失败原因，且不回退成导入人', async () => {

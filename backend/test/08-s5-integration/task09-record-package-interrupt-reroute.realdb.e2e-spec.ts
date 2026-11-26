@@ -22,8 +22,10 @@
  * 启用：
  *   TASK09_RECORD_PACKAGE_INTERRUPT_REROUTE=1 E2E_ALLOWED_DB_NAMES=<隔离库> \
  *     E2E_REAL_DB_NAME=<隔离库> E2E_ALLOW_PHYSICAL_CLEANUP=1 \
+ *     TASK09_RECORD_PACKAGE_ENV_FILE=<专用 env> TASK09_RECORD_PACKAGE_FILE_ROOT=<专用文件根父目录> \
  *     npx jest --testPathIgnorePatterns "/node_modules/" "/dist/" \
  *     --runTestsByPath test/08-s5-integration/task09-record-package-interrupt-reroute.realdb.e2e-spec.ts --runInBand
+ * 后两项缺省仍为仓库 e2e 配置与 `.local/task09`，不降低库/文件归属守卫。
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -69,7 +71,9 @@ jest.setTimeout(120_000);
 
 const ENABLED = process.env.TASK09_RECORD_PACKAGE_INTERRUPT_REROUTE === '1';
 const describeIntegration = ENABLED ? describe : describe.skip;
-const ENV_FILE = 'env/.env.e2e';
+const ENV_FILE = process.env.TASK09_RECORD_PACKAGE_ENV_FILE ?? 'env/.env.e2e';
+const FILE_ROOT_BASE =
+  process.env.TASK09_RECORD_PACKAGE_FILE_ROOT ?? join(__dirname, '../../.local/task09');
 
 const OWN_ORGANIZATION_ID = 1;
 const PEER_ORGANIZATION_ID = 910002;
@@ -174,10 +178,7 @@ describeIntegration('记录包中断后新编号重导反例（正式入口，�
     if (installationId === '') {
       throw new Error('隔离库缺少本机安装身份，无法构造导入回执');
     }
-    fileRoot = createOwnedFileRoot(
-      join(__dirname, '../../.local/task09'),
-      'task09-interrupt-reroute-',
-    );
+    fileRoot = createOwnedFileRoot(FILE_ROOT_BASE, 'task09-interrupt-reroute-');
 
     const transactionRunner = {
       run: <T>(fn: (context: unknown) => Promise<T>): Promise<T> =>

@@ -8,7 +8,7 @@
  * 逐条结果与批次终态、与同步去重、中断重试不重做。
  */
 
-import { RECORD_PACKAGE_ERROR, DomainError } from '@core/common/errors/domain-error';
+import { RECORD_PACKAGE_ERROR, DomainError, SYNC_ERROR } from '@core/common/errors/domain-error';
 
 import { ImportRecordPackageUsecase } from './import-record-package.usecase';
 
@@ -74,6 +74,12 @@ function buildUsecase(
     freshOutcomes?: MockFreshOutcome[];
     /** 恢复期冻结闸门错误（用于验证冻结先于任何写入） */
     writableError?: Error;
+    /** 按调用序号注入冻结错误，用于占用前/占用后窗口的状态化反例 */
+    writableErrors?: (Error | null)[];
+    /** 本条暂存原件补偿失败（冻结路径不得据此收敛为可重试） */
+    releaseError?: Error;
+    /** 冻结收敛自身失败：必须同时保留原始冻结与收敛错误 */
+    finalizeFrozenError?: Error;
     /**
      * 本次评估按可信映射确定的**目标公司**（缺省＝批次归属公司＝一致）。
      * 传不同值即制造"批次公司与包的目标公司不一致"。
@@ -159,6 +165,13 @@ function buildUsecase(
     }),
   );
   const finalizeImport = jest.fn().mockResolvedValue(undefined);
+  const finalizeFrozenImport = jest
+    .fn()
+    .mockImplementation(() =>
+      options.finalizeFrozenError === undefined
+        ? Promise.resolve()
+        : Promise.reject(options.finalizeFrozenError),
+    );
   const writeItemResult = jest.fn().mockResolvedValue(undefined);
   const markItemCheckRejected = jest.fn().mockResolvedValue(undefined);
   const findReceipt = jest.fn().mockResolvedValue(
@@ -175,15 +188,35 @@ function buildUsecase(
       : null,
   );
   const recordImportedVersion = jest.fn().mockResolvedValue('receipt-new');
-  const stage = jest.fn().mockResolvedValue([]);
-  const release = jest.fn().mockResolvedValue(0);
-  const assertCompanyWritable = jest
+  const stage = jest.fn().mockResolvedValue([
+    {
+      fileId: 'file-1',
+      uploadContextId: 'upload-1',
+      originalFilename: 'original.bin',
+      mimeType: 'application/octet-stream',
+      byteSize: 1,
+      checksumSha256: 'f'.repeat(64),
+    },
+  ]);
+  const release = jest
     .fn()
     .mockImplementation(() =>
-      options.writableError === undefined
-        ? Promise.resolve(undefined)
-        : Promise.reject(options.writableError),
+      options.releaseError === undefined
+        ? Promise.resolve(0)
+        : Promise.reject(options.releaseError),
     );
+  let writableCallIndex = 0;
+  const assertCompanyWritable = jest.fn().mockImplementation(() => {
+    const callIndex = writableCallIndex++;
+    const configured = options.writableErrors?.[callIndex];
+    if (configured !== undefined && configured !== null) {
+      return Promise.reject(configured);
+    }
+    if (options.writableError !== undefined) {
+      return Promise.reject(options.writableError);
+    }
+    return Promise.resolve(undefined);
+  });
 
   const usecase = new ImportRecordPackageUsecase(
     { resolve: jest.fn().mockResolvedValue({ organizationId: 9, role: 'ENGINEER' }) } as never,
@@ -192,6 +225,7 @@ function buildUsecase(
       evaluatePackage,
       claimImportRun,
       finalizeImport,
+      finalizeFrozenImport,
       writeItemResult,
       markItemCheckRejected,
       findReceipt,
@@ -246,9 +280,12 @@ function buildUsecase(
 
   return {
     usecase,
+    facts,
+    readImportFacts,
     evaluatePackage,
     claimImportRun,
     finalizeImport,
+    finalizeFrozenImport,
     writeItemResult,
     markItemCheckRejected,
     findReceipt,
@@ -271,6 +308,8 @@ function buildWriterMock(
       localRecordId: number | null;
       reason: string | null;
     };
+    /** 模拟 writer 事务内抛出的错误（如真实 writer 的恢复冻结） */
+    writeError?: Error;
     supportedResourceTypes?: string[];
   } = {},
 ) {
@@ -281,7 +320,11 @@ function buildWriterMock(
       .mockResolvedValue(options.identity ?? { allowed: true, sourceAccountId: 900101 }),
     write: jest
       .fn()
-      .mockResolvedValue(options.write ?? { status: 'CREATED', localRecordId: 42, reason: null }),
+      .mockImplementation(() =>
+        options.writeError === undefined
+          ? Promise.resolve(options.write ?? { status: 'CREATED', localRecordId: 42, reason: null })
+          : Promise.reject(options.writeError),
+      ),
   };
 }
 
@@ -638,7 +681,8 @@ describe('记录包导入编排（S3.2）', () => {
     expect(recordImportedVersion).not.toHaveBeenCalled();
     expect(writer.write).not.toHaveBeenCalled();
     expect(writer.verifySourceIdentity).not.toHaveBeenCalled();
-    expect(assertCompanyWritable).not.toHaveBeenCalled();
+    // 占用前冻结预检仍执行；该条在逐条冻结复核前已被受控冲突关闭。
+    expect(assertCompanyWritable).toHaveBeenCalledTimes(1);
     expect(stage).not.toHaveBeenCalled();
   });
 
@@ -650,7 +694,6 @@ describe('记录包导入编排（S3.2）', () => {
       {
         writer,
         localFact: { withdrawn: false, currentVersion: 2, identityPersisted: true },
-        writableError: new Error('恢复期冻结'),
       },
     );
 
@@ -667,7 +710,7 @@ describe('记录包导入编排（S3.2）', () => {
       expect.anything(),
     );
     expect(writer.verifySourceIdentity).not.toHaveBeenCalled();
-    expect(assertCompanyWritable).not.toHaveBeenCalled();
+    expect(assertCompanyWritable).toHaveBeenCalledTimes(1);
     expect(recordImportedVersion).not.toHaveBeenCalled();
     expect(writer.write).not.toHaveBeenCalled();
   });
@@ -686,7 +729,8 @@ describe('记录包导入编排（S3.2）', () => {
       manifestChecksum: CHECKSUM,
     });
 
-    expect(assertCompanyWritable).toHaveBeenCalledTimes(1);
+    // 占用前一次 + 实际写入前一次；两者都在身份核验之前。
+    expect(assertCompanyWritable).toHaveBeenCalledTimes(2);
     expect(writer.verifySourceIdentity).toHaveBeenCalledTimes(1);
     expect(assertCompanyWritable.mock.invocationCallOrder[0]).toBeLessThan(
       writer.verifySourceIdentity.mock.invocationCallOrder[0],
@@ -1075,6 +1119,366 @@ describe('记录包导入编排（S3.2）', () => {
     );
   });
 
+  describe('B 复审 P2：冻结与占用状态机', () => {
+    const heldError = () =>
+      new DomainError(SYNC_ERROR.WRITE_HELD, '恢复期冻结', {
+        reasonCode: 'WRITE_HELD_FOR_RESTORE',
+      });
+
+    it('占用前已冻结：零占用、零写入，错误原样抛出', async () => {
+      const writer = buildWriterMock();
+      const {
+        usecase,
+        claimImportRun,
+        finalizeImport,
+        finalizeFrozenImport,
+        assertCompanyWritable,
+        stage,
+      } = buildUsecase({ writer, writableErrors: [heldError()] });
+
+      await expect(
+        usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.WRITE_HELD });
+
+      expect(assertCompanyWritable).toHaveBeenCalledTimes(1);
+      expect(claimImportRun).not.toHaveBeenCalled();
+      expect(finalizeImport).not.toHaveBeenCalled();
+      expect(finalizeFrozenImport).not.toHaveBeenCalled();
+      expect(writer.write).not.toHaveBeenCalled();
+      expect(stage).not.toHaveBeenCalled();
+    });
+
+    it('占用后首条写入前冻结：零写入收敛 FAILED，解冻后同包可重试', async () => {
+      const writer = buildWriterMock();
+      const {
+        usecase,
+        finalizeImport,
+        finalizeFrozenImport,
+        writeItemResult,
+        assertCompanyWritable,
+        stage,
+        recordImportedVersion,
+      } = buildUsecase({ writer, writableErrors: [null, heldError(), null, null] });
+
+      await expect(
+        usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.WRITE_HELD });
+
+      expect(finalizeFrozenImport).toHaveBeenCalledWith({
+        packageId: PACKAGE_ID,
+        organizationId: 9,
+        manifestChecksum: CHECKSUM,
+        transactionContext: expect.anything(),
+      });
+      expect(finalizeImport).not.toHaveBeenCalled();
+      expect(writeItemResult).not.toHaveBeenCalled();
+      expect(writer.write).not.toHaveBeenCalled();
+      expect(stage).not.toHaveBeenCalled();
+      expect(recordImportedVersion).not.toHaveBeenCalled();
+
+      await expect(
+        usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).resolves.toMatchObject({ outcome: 'imported' });
+
+      expect(assertCompanyWritable).toHaveBeenCalledTimes(4);
+      expect(finalizeImport).toHaveBeenCalledWith(
+        PACKAGE_ID,
+        { status: 'SUCCEEDED', succeeded: 1, failed: 0 },
+        CHECKSUM,
+        expect.anything(),
+      );
+      expect(writer.write).toHaveBeenCalledTimes(1);
+      expect(recordImportedVersion).toHaveBeenCalledTimes(1);
+    });
+
+    it('已处理部分条目后冻结：保留已提交事实并按 PARTIAL 收敛', async () => {
+      const otherUuid = '55555555-6666-4777-8555-999999999999';
+      const first = makeItem({ itemId: 'item-first', recordUuid: RECORD_UUID, versionNo: 1 });
+      const second = makeItem({ itemId: 'item-second', recordUuid: otherUuid, versionNo: 1 });
+      const harness = buildUsecase({
+        writer: WRITER_OK,
+        items: [first, second],
+        manifestItems: [
+          {
+            record_uuid: RECORD_UUID,
+            resource_type: 'MAINTENANCE_REPORT',
+            version_no: 1,
+            content_snapshot: { schema_version: 1, payload: { title: 'first' } },
+            files: [],
+            source_account_id: 5,
+            owner_organization_id: 9,
+          },
+          {
+            record_uuid: otherUuid,
+            resource_type: 'MAINTENANCE_REPORT',
+            version_no: 1,
+            content_snapshot: { schema_version: 1, payload: { title: 'second' } },
+            files: [],
+            source_account_id: 5,
+            owner_organization_id: 9,
+          },
+        ],
+        writableErrors: [null, null, heldError()],
+      });
+      harness.readImportFacts.mockImplementationOnce(() => Promise.resolve(harness.facts));
+      harness.readImportFacts.mockImplementationOnce(() =>
+        Promise.resolve({
+          ...harness.facts,
+          items: [{ ...first, result: 'SUCCEEDED' }, second],
+        }),
+      );
+
+      await expect(
+        harness.usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.WRITE_HELD });
+
+      expect(harness.writeItemResult).toHaveBeenCalledWith(
+        'item-first',
+        expect.objectContaining({ result: 'SUCCEEDED' }),
+        expect.anything(),
+      );
+      expect(harness.recordImportedVersion).toHaveBeenCalledTimes(1);
+      expect(harness.finalizeFrozenImport).toHaveBeenCalledWith({
+        packageId: PACKAGE_ID,
+        organizationId: 9,
+        manifestChecksum: CHECKSUM,
+        transactionContext: expect.anything(),
+      });
+      expect(harness.finalizeImport).not.toHaveBeenCalled();
+    });
+
+    it('writer 事务内冻结：补偿暂存后透传冻结并按零写入收敛', async () => {
+      const writer = buildWriterMock({ writeError: heldError() });
+      const {
+        usecase,
+        finalizeImport,
+        finalizeFrozenImport,
+        writeItemResult,
+        release,
+        recordImportedVersion,
+        stage,
+      } = buildUsecase({
+        writer,
+        manifestFiles: [{ relative_path: 'a.bin', sha256: 'f'.repeat(64), byte_size: 1 }],
+      });
+
+      await expect(
+        usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).rejects.toMatchObject({ code: SYNC_ERROR.WRITE_HELD });
+
+      expect(stage).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(writeItemResult).not.toHaveBeenCalled();
+      expect(recordImportedVersion).not.toHaveBeenCalled();
+      expect(finalizeFrozenImport).toHaveBeenCalledWith({
+        packageId: PACKAGE_ID,
+        organizationId: 9,
+        manifestChecksum: CHECKSUM,
+        transactionContext: expect.anything(),
+      });
+      expect(finalizeImport).not.toHaveBeenCalled();
+    });
+
+    it('writer 冻结且补偿失败：不收敛、不释放为可重试，双错误均保留', async () => {
+      const writer = buildWriterMock({ writeError: heldError() });
+      const { usecase, finalizeImport, finalizeFrozenImport, release, recordImportedVersion } =
+        buildUsecase({
+          writer,
+          manifestFiles: [{ relative_path: 'a.bin', sha256: 'f'.repeat(64), byte_size: 1 }],
+          releaseError: new Error('暂存补偿失败'),
+        });
+
+      let caught: unknown = null;
+      try {
+        await usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(AggregateError);
+      expect((caught as AggregateError).errors).toHaveLength(2);
+      expect(String((caught as AggregateError).message)).toContain('补偿失败');
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(recordImportedVersion).not.toHaveBeenCalled();
+      expect(finalizeImport).not.toHaveBeenCalled();
+      expect(finalizeFrozenImport).not.toHaveBeenCalled();
+    });
+
+    it('冻结收敛自身失败：原始 WRITE_HELD 与收敛错误均保留', async () => {
+      const writer = buildWriterMock({ writeError: heldError() });
+      const { usecase, finalizeImport, finalizeFrozenImport } = buildUsecase({
+        writer,
+        finalizeFrozenError: new Error('冻结收敛失败'),
+      });
+
+      let caught: unknown = null;
+      try {
+        await usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(AggregateError);
+      const aggregate = caught as AggregateError;
+      expect(aggregate.errors).toHaveLength(2);
+      expect(aggregate.errors.map((error) => String((error as Error).message))).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('恢复期冻结'),
+          expect.stringContaining('冻结收敛失败'),
+        ]),
+      );
+      expect(finalizeFrozenImport).toHaveBeenCalledTimes(1);
+      expect(finalizeImport).not.toHaveBeenCalled();
+    });
+
+    it('非冻结写入异常：如实记 FAILED、不冻结收敛、不自动重试', async () => {
+      const writer = buildWriterMock({ writeError: new Error('受控写入失败') });
+      const { usecase, finalizeImport, finalizeFrozenImport, writeItemResult } = buildUsecase({
+        writer,
+      });
+
+      await expect(
+        usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).resolves.toMatchObject({ outcome: 'imported' });
+
+      expect(writeItemResult).toHaveBeenCalledWith(
+        'item-1',
+        expect.objectContaining({
+          result: 'FAILED',
+          errorMessage: expect.stringContaining('受控写入失败'),
+        }),
+        expect.anything(),
+      );
+      expect(finalizeImport).toHaveBeenCalledWith(
+        PACKAGE_ID,
+        { status: 'FAILED', succeeded: 0, failed: 1 },
+        CHECKSUM,
+        expect.anything(),
+      );
+      expect(finalizeFrozenImport).not.toHaveBeenCalled();
+      expect(writer.write).toHaveBeenCalledTimes(1);
+    });
+
+    it('占用前冻结解冻后同包可重试：不残留失败占用', async () => {
+      const writer = buildWriterMock();
+      const { usecase, claimImportRun, finalizeImport, finalizeFrozenImport } = buildUsecase({
+        writer,
+        writableErrors: [heldError()],
+      });
+      const command = {
+        session: SESSION,
+        packageId: PACKAGE_ID,
+        packagePath: '/mnt/usb/pkg',
+        manifestChecksum: CHECKSUM,
+      };
+
+      await expect(usecase.execute(command)).rejects.toMatchObject({
+        code: SYNC_ERROR.WRITE_HELD,
+      });
+      expect(claimImportRun).not.toHaveBeenCalled();
+
+      await expect(usecase.execute(command)).resolves.toMatchObject({ outcome: 'imported' });
+      expect(claimImportRun).toHaveBeenCalledTimes(1);
+      expect(finalizeFrozenImport).not.toHaveBeenCalled();
+      expect(finalizeImport).toHaveBeenCalledWith(
+        PACKAGE_ID,
+        { status: 'SUCCEEDED', succeeded: 1, failed: 0 },
+        CHECKSUM,
+        expect.anything(),
+      );
+    });
+
+    it('冻结收敛后同包重试成为新尝试：旧执行只终态一次，新尝试独立 claim/终态', async () => {
+      const writer = buildWriterMock({ writeError: heldError() });
+      const { usecase, claimImportRun, finalizeImport, finalizeFrozenImport } = buildUsecase({
+        writer,
+      });
+      const command = {
+        session: SESSION,
+        packageId: PACKAGE_ID,
+        packagePath: '/mnt/usb/pkg',
+        manifestChecksum: CHECKSUM,
+      };
+
+      await expect(usecase.execute(command)).rejects.toMatchObject({
+        code: SYNC_ERROR.WRITE_HELD,
+      });
+      expect(claimImportRun).toHaveBeenCalledTimes(1);
+      expect(finalizeFrozenImport).toHaveBeenCalledTimes(1);
+      expect(finalizeImport).not.toHaveBeenCalled();
+
+      // 解冻后同一份包再次确认：旧执行不会“复活”，新请求重新 claim 并正常终态。
+      writer.write.mockResolvedValue({ status: 'CREATED', localRecordId: 42, reason: null });
+      await expect(usecase.execute(command)).resolves.toMatchObject({ outcome: 'imported' });
+      expect(claimImportRun).toHaveBeenCalledTimes(2);
+      expect(finalizeFrozenImport).toHaveBeenCalledTimes(1);
+      expect(finalizeImport).toHaveBeenCalledTimes(1);
+    });
+
+    it('同账号 RUNNING 仍受控拒绝，不触发冻结收敛接管', async () => {
+      const writer = buildWriterMock();
+      const { usecase, claimImportRun, finalizeImport, finalizeFrozenImport } = buildUsecase({
+        writer,
+      });
+      claimImportRun.mockRejectedValueOnce(
+        new DomainError(RECORD_PACKAGE_ERROR.IMPORT_IN_PROGRESS, '记录包正在导入中，未自动接管'),
+      );
+
+      await expect(
+        usecase.execute({
+          session: SESSION,
+          packageId: PACKAGE_ID,
+          packagePath: '/mnt/usb/pkg',
+          manifestChecksum: CHECKSUM,
+        }),
+      ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_IN_PROGRESS });
+
+      expect(finalizeImport).not.toHaveBeenCalled();
+      expect(finalizeFrozenImport).not.toHaveBeenCalled();
+      expect(writer.write).not.toHaveBeenCalled();
+    });
+  });
+
   it('P2-02｜确认时原件变化：该条标检查未通过未执行，其他条目正常导入且批次 PARTIAL', async () => {
     const otherUuid = '22222222-3333-4444-8555-666666666666';
     const { usecase, finalizeImport, writeItemResult, markItemCheckRejected, findReceipt } =
@@ -1207,7 +1611,7 @@ describe('记录包导入编排（S3.2）', () => {
 
     expect(markItemCheckRejected).toHaveBeenCalledWith('item-1', '缺少原件文件');
     expect(recordImportedVersion).not.toHaveBeenCalled();
-    expect(assertCompanyWritable).not.toHaveBeenCalled();
+    expect(assertCompanyWritable).toHaveBeenCalledTimes(1);
     expect(writer.verifySourceIdentity).not.toHaveBeenCalled();
     expect(writer.write).not.toHaveBeenCalled();
     expect(stage).not.toHaveBeenCalled();

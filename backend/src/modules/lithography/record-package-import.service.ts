@@ -561,6 +561,80 @@ export class RecordPackageImportService {
     }
   }
 
+  /**
+   * 冻结后的受控收敛：在**同一事务/行锁内**重读批次与逐条事实并条件更新。
+   *
+   * 与 `finalizeImport` 的差别：这里额外验证 `status=RUNNING`、归属公司、预检状态，
+   * 并用锁内最新逐条事实计算计数，避免"事务外读取 → 终态更新"窗口使用陈旧事实。
+   * 任一条件不满足即受控拒绝；不把账号/摘要/超时当作本次执行的 fencing token。
+   */
+  async finalizeFrozenImport(input: {
+    packageId: string;
+    organizationId: number;
+    manifestChecksum: string;
+    transactionContext?: PersistenceTransactionContext;
+  }): Promise<void> {
+    const repository = this.pickImportRepository(input.transactionContext);
+    const batch = await this.lockBatch(input.packageId, input.transactionContext);
+    if (
+      batch === null ||
+      batch.organizationId !== input.organizationId ||
+      batch.manifestChecksum !== input.manifestChecksum ||
+      batch.checkStatus !== 'PASSED' ||
+      batch.status !== 'RUNNING'
+    ) {
+      throw new DomainError(
+        RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED,
+        '记录包占用状态已变化，冻结收敛拒绝执行，请重新检查并确认',
+      );
+    }
+    const items = await this.listItems(input.packageId, input.transactionContext);
+    const succeeded = items.filter(
+      (item) => item.result === 'SUCCEEDED' || item.result === 'SKIPPED',
+    ).length;
+    const failed = items.filter(
+      (item) => item.result === 'FAILED' || item.result === 'CONFLICT',
+    ).length;
+    const notExecuted = items.filter((item) => item.result === null).length;
+    const status = this.resolveFrozenBatchStatus(succeeded, failed, notExecuted);
+    const outcome = await repository.update(
+      {
+        packageId: input.packageId,
+        manifestChecksum: input.manifestChecksum,
+        status: 'RUNNING',
+      },
+      {
+        status,
+        itemSucceeded: succeeded,
+        itemFailed: failed,
+        completedAt: new Date(),
+      },
+    );
+    if (outcome.affected !== undefined && outcome.affected === 0) {
+      throw new DomainError(
+        RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED,
+        '记录包占用状态已变化，冻结收敛拒绝执行，请重新检查并确认',
+      );
+    }
+  }
+
+  private resolveFrozenBatchStatus(
+    succeeded: number,
+    failed: number,
+    notExecuted: number,
+  ): 'SUCCEEDED' | 'PARTIAL' | 'FAILED' {
+    if (succeeded === 0 && failed === 0) {
+      return 'FAILED';
+    }
+    if (failed > 0 && succeeded > 0) {
+      return 'PARTIAL';
+    }
+    if (failed > 0) {
+      return 'FAILED';
+    }
+    return notExecuted > 0 ? 'PARTIAL' : 'SUCCEEDED';
+  }
+
   async persistCheckOutcome(
     evaluation: RecordPackageEvaluation,
     importedByAccountId: number,

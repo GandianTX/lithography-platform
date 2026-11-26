@@ -610,6 +610,50 @@ describe('record package import service', () => {
     expect(importRows.get(packageId)?.status).toBe('RUNNING');
   });
 
+  it('旧执行终态后新请求才能成为当前尝试：RUNNING 期间任何晚到请求都在 claim 处拒绝', async () => {
+    const checksum = 'a'.repeat(64);
+    const { service, importRows, writes } = buildService({
+      existingChecksum: checksum,
+      existingOrganizationId: companyA,
+      existingStatus: 'PENDING',
+    });
+
+    const first = await service.claimImportRun({
+      packageId,
+      importedByAccountId: 7,
+      organizationId: companyA,
+      manifestChecksum: checksum,
+    });
+    expect(first.import.status).toBe('RUNNING');
+    expect(importRows.get(packageId)?.importedByAccountId).toBe(7);
+
+    // 旧执行仍占用时，晚到请求无法取得当前尝试身份，更不会触碰终态。
+    await expect(
+      service.claimImportRun({
+        packageId,
+        importedByAccountId: 8,
+        organizationId: companyA,
+        manifestChecksum: checksum,
+      }),
+    ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_IN_PROGRESS });
+    expect(writes.update).toBe(1);
+
+    // 旧执行自己收敛后，新请求才重新 claim；当前尝试身份随之更新。
+    await service.finalizeFrozenImport({
+      packageId,
+      organizationId: companyA,
+      manifestChecksum: checksum,
+    });
+    const second = await service.claimImportRun({
+      packageId,
+      importedByAccountId: 8,
+      organizationId: companyA,
+      manifestChecksum: checksum,
+    });
+    expect(second.import.status).toBe('RUNNING');
+    expect(importRows.get(packageId)).toMatchObject({ status: 'RUNNING', importedByAccountId: 8 });
+  });
+
   it('终态收敛：只更新本次占用的摘要，版本已变时受控拒绝（不把旧版本记到新版本）', async () => {
     const { service, importRows } = buildService({
       existingChecksum: 'a'.repeat(64),
@@ -625,6 +669,129 @@ describe('record package import service', () => {
     ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED });
 
     expect(importRows.get(packageId)?.status).toBe('PENDING');
+  });
+
+  it('冻结收敛（真实批次服务）：零写入 RUNNING 可版本绑定地终态化为 FAILED', async () => {
+    const { service, importRows, itemRows } = buildService({
+      existingChecksum: 'a'.repeat(64),
+      existingStatus: 'RUNNING',
+      existingOrganizationId: companyA,
+    });
+
+    await service.finalizeImport(
+      packageId,
+      { status: 'FAILED', succeeded: 0, failed: 0 },
+      'a'.repeat(64),
+    );
+
+    expect(importRows.get(packageId)).toMatchObject({
+      status: 'FAILED',
+      itemSucceeded: 0,
+      itemFailed: 0,
+    });
+    expect(importRows.get(packageId)?.completedAt).toBeInstanceOf(Date);
+    expect(itemRows.get(packageId)?.[0]?.result).toBeNull();
+  });
+
+  it('冻结收敛（真实批次服务）：部分提交 RUNNING 收敛 PARTIAL 且逐条事实不丢', async () => {
+    const { service, importRows, itemRows } = buildService({
+      existingChecksum: 'a'.repeat(64),
+      existingStatus: 'RUNNING',
+      existingOrganizationId: companyA,
+    });
+    const row = itemRows.get(packageId)?.[0];
+    if (row === undefined) {
+      throw new Error('测试前提缺失：既有逐条事实不存在');
+    }
+    row.result = 'SUCCEEDED';
+    const before = { ...row };
+
+    await service.finalizeImport(
+      packageId,
+      { status: 'PARTIAL', succeeded: 1, failed: 0 },
+      'a'.repeat(64),
+    );
+
+    expect(importRows.get(packageId)).toMatchObject({
+      status: 'PARTIAL',
+      itemSucceeded: 1,
+      itemFailed: 0,
+    });
+    expect(itemRows.get(packageId)?.[0]).toEqual(before);
+  });
+
+  it('冻结收敛（事务内重读）：按最新逐条事实计算 PARTIAL，不沿用事务外旧快照', async () => {
+    const { service, importRows, itemRows } = buildService({
+      existingChecksum: 'a'.repeat(64),
+      existingStatus: 'RUNNING',
+      existingOrganizationId: companyA,
+      existingItems: 2,
+    });
+    const rows = itemRows.get(packageId) ?? [];
+    if (rows.length !== 2) {
+      throw new Error('测试前提缺失：既有两条逐条事实不存在');
+    }
+    rows[0].result = 'SUCCEEDED';
+    rows[1].result = 'FAILED';
+
+    await service.finalizeFrozenImport({
+      packageId,
+      organizationId: companyA,
+      manifestChecksum: 'a'.repeat(64),
+    });
+
+    expect(importRows.get(packageId)).toMatchObject({
+      status: 'PARTIAL',
+      itemSucceeded: 1,
+      itemFailed: 1,
+    });
+    expect(importRows.get(packageId)?.completedAt).toBeInstanceOf(Date);
+    expect(itemRows.get(packageId)).toEqual(rows);
+  });
+
+  it('冻结收敛（事务内重读）：非 RUNNING/错公司/旧摘要均受控拒绝且零终态写入', async () => {
+    const checksum = 'a'.repeat(64);
+    const pending = buildService({
+      existingChecksum: checksum,
+      existingStatus: 'PENDING',
+      existingOrganizationId: companyA,
+    });
+    await expect(
+      pending.service.finalizeFrozenImport({
+        packageId,
+        organizationId: companyA,
+        manifestChecksum: checksum,
+      }),
+    ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED });
+    expect(pending.writes.update).toBe(0);
+
+    const foreign = buildService({
+      existingChecksum: checksum,
+      existingStatus: 'RUNNING',
+      existingOrganizationId: companyB,
+    });
+    await expect(
+      foreign.service.finalizeFrozenImport({
+        packageId,
+        organizationId: companyA,
+        manifestChecksum: checksum,
+      }),
+    ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED });
+    expect(foreign.writes.update).toBe(0);
+
+    const stale = buildService({
+      existingChecksum: checksum,
+      existingStatus: 'RUNNING',
+      existingOrganizationId: companyA,
+    });
+    await expect(
+      stale.service.finalizeFrozenImport({
+        packageId,
+        organizationId: companyA,
+        manifestChecksum: 'b'.repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED });
+    expect(stale.writes.update).toBe(0);
   });
 
   it('确认期检查失败：未执行条目改判 REJECTED 且导入结果保持 NULL', async () => {

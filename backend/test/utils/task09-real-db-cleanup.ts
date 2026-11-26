@@ -265,7 +265,7 @@ export type OwnedFileRoot = {
 const OWNER_MARKER_FILE = '.task09-owner.json';
 
 const isEnoent = (error: unknown): boolean =>
-  error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+  typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT';
 
 /** 清理阶段失败关闭：文案带受控根与阶段，便于从 runner 输出直接定位现场。 */
 const refuseFileCleanup = (

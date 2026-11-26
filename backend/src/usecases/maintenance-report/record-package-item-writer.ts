@@ -21,6 +21,8 @@
 
 import { Inject, Injectable } from '@nestjs/common';
 
+import { DomainError, SYNC_ERROR } from '@core/common/errors/domain-error';
+
 import type {
   RecordPackageItemWriteOutcome,
   RecordPackageItemWriteRequest,
@@ -394,6 +396,12 @@ export class MaintenanceReportRecordPackageItemWriter implements RecordPackageIt
         return { status: 'CREATED', localRecordId: reportId, reason: null };
       });
     } catch (error) {
+      // 恢复期冻结是**受控拒绝**，不是本条的普通写入失败：必须保留错误类别，
+      // 让记录包导入编排能收敛本次 RUNNING，并在解冻后按幂等语义重试。
+      // 其它拒绝仍沿用原契约，返回 FAILED outcome，不改变非记录包调用方。
+      if (error instanceof DomainError && error.code === SYNC_ERROR.WRITE_HELD) {
+        throw error;
+      }
       return {
         status: 'FAILED',
         localRecordId: null,
