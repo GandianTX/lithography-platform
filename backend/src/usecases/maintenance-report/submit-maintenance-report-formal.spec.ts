@@ -4,6 +4,7 @@
 // 只验证用例编排与事务边界，不覆盖数据库约束（见集成 spec 与 v13 校验）。
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domain-error';
 import { MaintenanceReportSourceType } from '@app-types/models/maintenance-report.types';
@@ -431,6 +432,13 @@ const makeUsecase = (
     writeService as unknown as MaintenanceReportService,
     queryService as unknown as MaintenanceReportQueryService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     equipmentModelQueryService as unknown as EquipmentModelQueryService,
     equipmentModelService as unknown as EquipmentModelService,
     referenceDocumentService as unknown as ReferenceDocumentService,

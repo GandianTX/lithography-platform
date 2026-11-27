@@ -50,6 +50,10 @@ import {
   organizationStatusValues,
 } from '@src/modules/lithography/organization.types';
 import { AiConversationExportFormat } from '@src/adapters/api/graphql/ai-conversation/dto/ai-conversation-export.dto';
+import { LocalBackupCleanupMode } from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
+import { localRuntimeViewerRoleValues } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
+import { syncConflictActionEnum } from '@core/local-runtime/policy/sync-conflict-resolve.policy';
+import { recordPackageResourceTypeEnum } from '@core/local-runtime/policy/record-package-export.policy';
 import {
   ManagementAuditBusinessOperation,
   ManagementAuditResult,
@@ -104,6 +108,10 @@ export function registerEnums(): void {
   registerEnumType(GqlSortDirection, { name: 'SortDirection' });
   registerEnumType(organizationStatusValues, { name: 'OrganizationStatus' });
   registerEnumType(organizationKindValues, { name: 'OrganizationKind' });
+  registerEnumType(localRuntimeViewerRoleValues, { name: 'LocalRuntimeViewerRole' });
+  registerEnumType(syncConflictActionEnum, { name: 'SyncConflictAction' });
+  registerEnumType(recordPackageResourceTypeEnum, { name: 'RecordPackageResourceType' });
+  registerEnumType(LocalBackupCleanupMode, { name: 'LocalBackupCleanupMode' });
   // 关键操作记录（任务 10）：只登记三类业务事实与三值结果，
   // 两类凭据 operation 刻意不进入 GraphQL 枚举，协议层即无法表达。
   registerEnumType(ManagementAuditBusinessOperation, { name: 'ManagementAuditOperation' });

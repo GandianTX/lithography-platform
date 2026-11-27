@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { MAINTENANCE_REPORT_ERROR, STORED_FILE_ERROR } from '@core/common/errors/domain-error';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
@@ -140,6 +141,13 @@ describe('CreateMaintenanceReportDraftUsecase 锁序', () => {
       reportService as unknown as MaintenanceReportService,
       reportQueryService as unknown as MaintenanceReportQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
       accountQueryService as unknown as AccountQueryService,
       storedFileService as unknown as StoredFileService,
@@ -316,6 +324,13 @@ describe('CreateMaintenanceReportDraftUsecase 首存同事务绑定附件（R050
       reportService as unknown as MaintenanceReportService,
       reportQueryService as unknown as MaintenanceReportQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       equipmentModelQueryService as unknown as EquipmentModelQueryService,
       accountQueryService as unknown as AccountQueryService,
       storedFileService as unknown as StoredFileService,

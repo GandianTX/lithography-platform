@@ -6,6 +6,7 @@ import { Injectable } from '@nestjs/common';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { EngineerResponseEntity } from './entities/engineer-response.entity';
 import { EngineerResponseInsertData, EngineerResponseWriteSnapshot } from './lithography.types';
+import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 
 /**
  * 工程师回复写服务
@@ -23,6 +24,8 @@ import { EngineerResponseInsertData, EngineerResponseWriteSnapshot } from './lit
  */
 @Injectable()
 export class EngineerResponseService {
+  constructor(private readonly restoreScopeWriteGuardService: RestoreScopeWriteGuardService) {}
+
   /**
    * 追加一条工程师回复（只插入，不更新、不覆盖历史回复）
    *
@@ -39,6 +42,9 @@ export class EngineerResponseService {
     data: EngineerResponseInsertData,
     transactionContext: PersistenceTransactionContext,
   ): Promise<EngineerResponseWriteSnapshot> {
+    // 恢复期冻结守卫：`engineer_response` 已纳入受保护备份范围，
+    // 恢复期间追加回复会污染恢复结果（回复属于工单数据区）。
+    await this.restoreScopeWriteGuardService.assertRequestScopeWritable(data.requestId, transactionContext);
     const manager = getTypeOrmEntityManager(transactionContext);
     const repository = manager.getRepository(EngineerResponseEntity);
     try {

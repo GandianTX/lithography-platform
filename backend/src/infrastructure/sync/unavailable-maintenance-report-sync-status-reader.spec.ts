@@ -3,14 +3,23 @@
 
 /// <reference types="jest" />
 
+import { IdentityTypeEnum } from '@app-types/models/account.types';
+import type { UsecaseSession } from '@app-types/auth/session.types';
+
 import { UnavailableMaintenanceReportSyncStatusReader } from './unavailable-maintenance-report-sync-status-reader';
+
+const SESSION: UsecaseSession = {
+  accountId: 900001,
+  activeRole: IdentityTypeEnum.ENGINEER,
+  roles: ['ENGINEER'],
+};
 
 describe('UnavailableMaintenanceReportSyncStatusReader（默认适配）', () => {
   it('恒返回未装配（connected=false）且无任何条目，不触发 I/O', async () => {
     const reader = new UnavailableMaintenanceReportSyncStatusReader();
 
     await expect(
-      reader.fetchStatuses([
+      reader.fetchStatuses(SESSION, [
         {
           organizationId: 101,
           resourceType: 'MAINTENANCE_REPORT',

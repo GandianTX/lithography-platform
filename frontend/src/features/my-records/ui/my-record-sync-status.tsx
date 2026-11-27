@@ -4,6 +4,7 @@ import { Tag } from 'antd';
 import type { ReactNode } from 'react';
 
 import { useI18n } from '@/shared/i18n';
+import { resolveSyncStatusReasonKey } from '@/shared/i18n/sync-status-reason';
 
 import type { MyRecordSyncStatusView } from '../infrastructure/my-records.types';
 
@@ -14,6 +15,8 @@ import { canOfferConflictResolution, resolveSyncStatusLabelKey } from './my-reco
  *
  * - 同步状态与「草稿／已入库」独立：不从保存成功推断「已同步」，标签只反映
  *   后端适配层给出的展示状态（任务 09 未接入前恒为 NOT_CONNECTED）；
+ * - 原因码走**受控码 → 文案**映射（任务 09 S1）：未知码回落通用文案，
+ *   不把机器码或后端自由文本原样透给用户；
  * - 当前网页版默认隐藏同步列（本组件暂无调用方），逻辑保留供以后开启；
  * - 「处理冲突」入口仅在三条件齐备时渲染（见 canOfferConflictResolution）且
  *   调用方传入已接入的真实路由动作；本轮无已接入路由，不出现占位跳转。
@@ -39,13 +42,13 @@ export function MyRecordSyncStatusBadge({
   conflictAction?: ReactNode;
 }) {
   const { t } = useI18n();
+  // 原因码受控化：后端只给受控码，未知码不显示原始文本
+  const reasonKey = resolveSyncStatusReasonKey(view.message);
+  const reasonTitle = reasonKey === null ? undefined : t(reasonKey);
 
   return (
     <span className="inline-flex items-center gap-2">
-      <Tag
-        color={SYNC_STATUS_TAG_COLORS[view.status] ?? 'default'}
-        title={view.message ?? undefined}
-      >
+      <Tag color={SYNC_STATUS_TAG_COLORS[view.status] ?? 'default'} title={reasonTitle}>
         {t(resolveSyncStatusLabelKey(view.status))}
       </Tag>
       {canOfferConflictResolution(view) && conflictAction !== undefined ? conflictAction : null}

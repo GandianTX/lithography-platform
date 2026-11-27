@@ -1,0 +1,392 @@
+// src/adapters/api/graphql/local-runtime/local-backup.resolver.ts
+
+import type { AuthenticatedSessionUser } from '@app-types/auth/session-restriction.types';
+import { mapJwtToUsecaseSession, type UsecaseSession } from '@app-types/auth/session.types';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
+import { UseGuards } from '@nestjs/common';
+import { Args, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
+
+import { currentUser } from '@src/adapters/api/graphql/decorators/current-user.decorator';
+import { Roles } from '@src/adapters/api/graphql/decorators/roles.decorator';
+import { JwtAuthGuard } from '@src/adapters/api/graphql/guards/jwt-auth.guard';
+import { RolesGuard } from '@src/adapters/api/graphql/guards/roles.guard';
+import {
+  LocalBackupCleanupMode,
+  LocalBackupCleanupResultDTO,
+  LocalBackupCloudPackageListDTO,
+  LocalBackupRecordDetailDTO,
+  LocalBackupRecordPageDTO,
+  LocalBackupSettingDTO,
+  LocalBackupRecordPaginationInput,
+  LocalRestoreAcceptanceDTO,
+  LocalRestoreExecutionDTO,
+  LocalRestoreCapabilityDTO,
+  LocalRestoreIncidentReleaseDTO,
+  LocalRestorePrecheckResultDTO,
+  StartManualLocalBackupResultDTO,
+  toLocalBackupRecordDetailDTO,
+  toLocalBackupRecordDTO,
+  toLocalBackupSettingDTO,
+} from '@src/adapters/api/graphql/local-runtime/dto/local-backup.dto';
+import { AcceptLocalRestoreUsecase } from '@src/usecases/local-runtime/accept-local-restore.usecase';
+import { ExecuteLocalRestoreUsecase } from '@src/usecases/local-runtime/execute-local-restore.usecase';
+import { CleanupLocalBackupPackagesUsecase } from '@src/usecases/local-runtime/cleanup-local-backup-packages.usecase';
+import { ForceReleaseLocalRestoreIncidentUsecase } from '@src/usecases/local-runtime/force-release-local-restore-incident.usecase';
+import { ListLocalBackupCloudPackagesUsecase } from '@src/usecases/local-runtime/local-backup-cloud-packages.usecase';
+import { GetLocalBackupRecordUsecase } from '@src/usecases/local-runtime/get-local-backup-record.usecase';
+import { GetLocalBackupSettingsUsecase } from '@src/usecases/local-runtime/get-local-backup-settings.usecase';
+import { GetLocalRestoreCapabilityUsecase } from '@src/usecases/local-runtime/get-local-restore-capability.usecase';
+import { ListLocalBackupRecordsUsecase } from '@src/usecases/local-runtime/list-local-backup-records.usecase';
+import { PrecheckLocalRestoreUsecase } from '@src/usecases/local-runtime/precheck-local-restore.usecase';
+import { StartManualLocalBackupUsecase } from '@src/usecases/local-runtime/start-manual-local-backup.usecase';
+
+/**
+ * 备份与恢复解析器（任务 09 S3，R081／R074-01～03）。
+ *
+ * - 备份记录与详情：公司范围由服务端按 Session 裁决，前端不传公司参数；
+ * - 自动备份设置：只读展示计划、下次时间与最近结果；
+ * - 手动备份：真实执行受保护包生成；上云与清理阶段如实返回实际状态，
+ *   不以"已提交"冒充"已上云"。
+ */
+@Resolver()
+export class LocalBackupResolver {
+  constructor(
+    private readonly listLocalBackupRecordsUsecase: ListLocalBackupRecordsUsecase,
+    private readonly getLocalBackupRecordUsecase: GetLocalBackupRecordUsecase,
+    private readonly getLocalBackupSettingsUsecase: GetLocalBackupSettingsUsecase,
+    private readonly startManualLocalBackupUsecase: StartManualLocalBackupUsecase,
+    private readonly precheckLocalRestoreUsecase: PrecheckLocalRestoreUsecase,
+    private readonly cleanupLocalBackupPackagesUsecase: CleanupLocalBackupPackagesUsecase,
+    private readonly getLocalRestoreCapabilityUsecase: GetLocalRestoreCapabilityUsecase,
+    private readonly acceptLocalRestoreUsecase: AcceptLocalRestoreUsecase,
+    private readonly executeLocalRestoreUsecase: ExecuteLocalRestoreUsecase,
+    private readonly forceReleaseLocalRestoreIncidentUsecase: ForceReleaseLocalRestoreIncidentUsecase,
+    private readonly listLocalBackupCloudPackagesUsecase: ListLocalBackupCloudPackagesUsecase,
+  ) {}
+
+  /** 备份记录列表：本公司范围（一级管理员为全局范围） */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => LocalBackupRecordPageDTO, {
+    name: 'localBackupRecords',
+    description: '本机备份记录列表（二级管理员与工程师限本公司；一级管理员为全局范围）',
+  })
+  async localBackupRecords(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('pagination', { nullable: true }) pagination?: LocalBackupRecordPaginationInput,
+  ): Promise<LocalBackupRecordPageDTO> {
+    const page = await this.listLocalBackupRecordsUsecase.execute({
+      session: this.toSession(user),
+      pagination: pagination
+        ? {
+            page: pagination.page ?? 1,
+            pageSize: pagination.pageSize ?? 20,
+            withTotal: pagination.withTotal ?? true,
+          }
+        : undefined,
+    });
+    return {
+      items: page.items.map(toLocalBackupRecordDTO),
+      total: page.total ?? null,
+      page: page.page,
+      pageSize: page.pageSize,
+    };
+  }
+
+  /** 备份记录详情：清单元数据，不含包正文与密钥材料 */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => LocalBackupRecordDetailDTO, {
+    name: 'localBackupRecord',
+    description: '本机备份记录详情（范围外与不存在同码返回）',
+  })
+  async localBackupRecord(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('backupId', { type: () => String }) backupId: string,
+  ): Promise<LocalBackupRecordDetailDTO> {
+    const detail = await this.getLocalBackupRecordUsecase.execute({
+      session: this.toSession(user),
+      backupId,
+    });
+    return toLocalBackupRecordDetailDTO(detail);
+  }
+
+  /** 自动备份设置：下次时间、最近结果与只读周期/保留窗口 */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => [LocalBackupSettingDTO], {
+    name: 'localBackupSettings',
+    description: '本机自动备份设置（本公司范围；首次初始化前为空）',
+  })
+  async localBackupSettings(
+    @currentUser() user: AuthenticatedSessionUser,
+  ): Promise<LocalBackupSettingDTO[]> {
+    const settings = await this.getLocalBackupSettingsUsecase.execute({
+      session: this.toSession(user),
+    });
+    return settings.map(toLocalBackupSettingDTO);
+  }
+
+  /** 手动备份：真实生成受保护包；上云与清理阶段如实返回实际状态 */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => StartManualLocalBackupResultDTO, {
+    name: 'startManualLocalBackup',
+    description: '手动备份并清理本地备份包（当前实现完成生成阶段；无完整云端回执时不清理本地包）',
+  })
+  async startManualLocalBackup(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('organizationId', { type: () => Int, nullable: true }) organizationId?: number,
+  ): Promise<StartManualLocalBackupResultDTO> {
+    const result = await this.startManualLocalBackupUsecase.execute({
+      session: this.toSession(user),
+      organizationId: organizationId ?? null,
+    });
+    return {
+      runId: result.runId,
+      organizationId: result.organizationId,
+      status: result.status,
+      backupId: result.backupId,
+      manifestChecksum: result.manifestChecksum,
+      byteSize: result.byteSize,
+      errorCode: result.errorCode,
+      errorMessage: result.errorMessage,
+      uploadStatus: result.uploadStatus,
+      cleanupStatus: result.cleanupStatus,
+    };
+  }
+
+  /**
+   * 恢复**受理**（管理员专属；受理 ≠ 恢复）。
+   *
+   * 确认前再次检查权限、目标与保护副本：预检结论仍通过、**未被受理过**、
+   * **目标设备仍是本机**、授权公司一致、**被恢复资产仍在**、**保护副本仍在**。
+   * 受理只写受理事实，**不冻结写入、不恢复数据、不产生成功结论**。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestoreAcceptanceDTO, {
+    name: 'acceptLocalRestore',
+    description: '恢复受理（管理员专属）：确认前再次检查权限、目标与保护副本；受理不等于恢复成功',
+  })
+  async acceptLocalRestore(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('restoreId', { type: () => String }) restoreId: string,
+  ): Promise<LocalRestoreAcceptanceDTO> {
+    const result = await this.acceptLocalRestoreUsecase.execute({
+      session: this.toSession(user),
+      restoreId,
+    });
+    return {
+      restoreId: result.restoreId,
+      accepted: result.accepted,
+      backupId: result.backupId,
+      protectionBackupId: result.protectionBackupId,
+      organizationId: result.organizationId,
+      acceptedAt: result.acceptedAt === null ? null : new Date(result.acceptedAt),
+    };
+  }
+
+  /**
+   * 恢复**执行**（管理员专属；受理之后才可执行）。
+   *
+   * 执行链：写传冻结 → 按清单恢复 → 核验 → 解除冻结；
+   * 失败时**保持冻结**（设备继续停写停传）、保留保护副本与任务，并如实给出受控原因码。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestoreExecutionDTO, {
+    name: 'executeLocalRestore',
+    description:
+      '恢复执行（管理员专属）：冻结写入与同步 → 按清单恢复 → 核验 → 解除冻结；失败保持冻结并给出原因码',
+  })
+  async executeLocalRestore(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('restoreId', { type: () => String }) restoreId: string,
+  ): Promise<LocalRestoreExecutionDTO> {
+    const result = await this.executeLocalRestoreUsecase.execute({
+      session: this.toSession(user),
+      restoreId,
+    });
+    return {
+      restoreId: result.restoreId,
+      status: result.status,
+      reasonCode: result.reasonCode,
+      reason: result.reason,
+      restoredRecords: result.restored?.records ?? null,
+      restoredOriginals: result.restored?.originals ?? null,
+      restoredQueue: result.restored?.queue ?? null,
+      released: result.released,
+      holdRetained: result.holdRetained,
+    };
+  }
+
+  /**
+   * 恢复**故障现场**的受控解冻（管理员专属）。
+   *
+   * - 只解除"停写停传"，**不改判**恢复终态、不触碰恢复数据；
+   * - 必须给出处置原因并显式确认；恢复仍在运行、目标不匹配、保护副本或数据一致性
+   *   无法确认、冻结归属别的恢复 ⇒ 一律拒绝并**保持冻结**；
+   * - 结论如实返回（已解除／无需解除／被拒绝），并留下操作者、原因与结果的审计。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestoreIncidentReleaseDTO, {
+    name: 'forceReleaseLocalRestoreIncident',
+    description:
+      '恢复故障现场的受控解冻（管理员专属）：只解除停写停传，不改判恢复终态；须给出原因并显式确认，数据一致性无法确认时拒绝并保持冻结',
+  })
+  async forceReleaseLocalRestoreIncident(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('restoreId', { type: () => String }) restoreId: string,
+    @Args('reason', { type: () => String }) reason: string,
+    @Args('confirmed', { type: () => Boolean }) confirmed: boolean,
+  ): Promise<LocalRestoreIncidentReleaseDTO> {
+    const result = await this.forceReleaseLocalRestoreIncidentUsecase.execute({
+      session: this.toSession(user),
+      restoreId,
+      reason,
+      confirmed,
+    });
+    return {
+      restoreId: result.restoreId,
+      outcome: result.outcome,
+      released: result.released,
+      holdRetained: result.holdRetained,
+      reasonCode: result.reasonCode,
+      reason: result.reason,
+      restoreStatus: result.restoreStatus,
+    };
+  }
+
+  /** 恢复预检：目标核对＋包完整性＋保护副本；恢复执行入口保持如实不可用 */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalRestorePrecheckResultDTO, {
+    name: 'precheckLocalRestore',
+    description:
+      '恢复预检（管理员专属）：核对目标设备与公司、逐文件校验备份包，并生成当前范围的保护副本',
+  })
+  async precheckLocalRestore(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('backupId', { type: () => String }) backupId: string,
+  ): Promise<LocalRestorePrecheckResultDTO> {
+    const result = await this.precheckLocalRestoreUsecase.execute({
+      session: this.toSession(user),
+      backupId,
+    });
+    const snapshot = result.snapshot;
+    return {
+      restoreId: result.restoreId,
+      outcome: result.outcome,
+      checkedAt: new Date(snapshot.checked_at),
+      targetBackupId: snapshot.target.backupId,
+      targetOrganizationId: snapshot.target.organizationId,
+      targetInstallationId: snapshot.target.installationId,
+      manifestChecksum: snapshot.target.manifestChecksum,
+      packageReadable: snapshot.package.readable,
+      fileCount: snapshot.package.fileCount,
+      originalCount: snapshot.package.originalCount,
+      verifiedFileCount: snapshot.package.verifiedFileCount,
+      protectionBackupId: snapshot.protection.backupId,
+      protectionCreated: snapshot.protection.created,
+      findings: snapshot.findings.map((finding) => ({
+        code: finding.code,
+        message: finding.message,
+      })),
+    };
+  }
+
+  /**
+   * 清理本机本公司的本地备份包。
+   *
+   * - MANUAL：授权来源是服务端已落库的完整云端回执；没有完整回执即零清理并如实不可用；
+   * - RETENTION：按约 30 天保留窗口清理过期包，且不开放工程师（R083）。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Mutation(() => LocalBackupCleanupResultDTO, {
+    name: 'cleanupLocalBackupPackages',
+    description:
+      '清理本机本公司的本地备份包（手动清理须有完整云端回执，否则零清理并如实不可用；过期清理按约 30 天保留窗口，仅管理员可执行）',
+  })
+  async cleanupLocalBackupPackages(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('mode', { type: () => LocalBackupCleanupMode }) mode: LocalBackupCleanupMode,
+    @Args('organizationId', { type: () => Int, nullable: true }) organizationId?: number,
+  ): Promise<LocalBackupCleanupResultDTO> {
+    const result = await this.cleanupLocalBackupPackagesUsecase.execute({
+      session: this.toSession(user),
+      mode: mode === LocalBackupCleanupMode.RETENTION ? 'RETENTION' : 'MANUAL',
+      organizationId: organizationId ?? null,
+    });
+    return {
+      mode: result.mode,
+      organizationId: result.organizationId,
+      available: result.available,
+      reason: result.reason,
+      targetCount: result.targetCount,
+      cleaned: result.cleaned,
+      retained: result.retained,
+      items: result.items.map((item) => ({
+        backupId: item.backupId,
+        outcome: item.outcome,
+        reason: item.reason,
+      })),
+    };
+  }
+
+  /** 恢复执行能力状态：如实告知当前环境是否可执行恢复 */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => LocalRestoreCapabilityDTO, {
+    name: 'localRestoreCapability',
+    description: '恢复执行能力状态（当前环境缺少写入/同步闸门与失败回滚补偿时如实不可用）',
+  })
+  async localRestoreCapability(): Promise<LocalRestoreCapabilityDTO> {
+    // 裁决在 core 策略，事实由用例编排取；adapter 只做协议映射
+    const result = await this.getLocalRestoreCapabilityUsecase.execute();
+    return {
+      executionAvailable: result.executionAvailable,
+      reason: result.reasonCode,
+    };
+  }
+  private toSession(user: AuthenticatedSessionUser): UsecaseSession {
+    return mapJwtToUsecaseSession(user);
+  }
+
+  /**
+   * 受授权的云端备份包清单（任务 09 S4 第 3 条）。
+   *
+   * - 本地包已清理时**仍可查找**云端副本（此链路不依赖本机包目录）；
+   * - 范围＝可信 session 的公司数据区；他人草稿与密钥都不出本入口；
+   * - **下载权限 ≠ 恢复权限**：本入口只给元数据，恢复仍需预检与保护副本；
+   * - 生产云服务未接入（R-02）时按受控原因码失败关闭，不伪造可用云包。
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
+  @Query(() => LocalBackupCloudPackageListDTO, {
+    name: 'localBackupCloudPackages',
+    description: '受授权的云端备份包清单（本地包已清理时仍可查找；不含密钥与他人草稿）',
+  })
+  async localBackupCloudPackages(
+    @currentUser() user: AuthenticatedSessionUser,
+    @Args('organizationId', { type: () => Int, nullable: true }) organizationId?: number | null,
+  ): Promise<LocalBackupCloudPackageListDTO> {
+    const result = await this.listLocalBackupCloudPackagesUsecase.execute({
+      session: mapJwtToUsecaseSession(user),
+      organizationId: organizationId ?? null,
+    });
+    return {
+      organizationId: result.organizationId,
+      packages: result.packages.map((item) => ({
+        packageId: item.packageId,
+        organizationId: item.organizationId,
+        backupId: item.backupId,
+        createdAt: item.createdAt === null ? null : new Date(item.createdAt),
+        byteSize: item.byteSize,
+        checksumSha256: item.checksumSha256,
+      })),
+    };
+  }
+}

@@ -41,9 +41,12 @@ import {
   EngineerWorkOrderSummaryEditorPage,
 } from '@/pages/engineer-work-order-summaries';
 import { ErrorPreviewPage } from '@/pages/error-preview';
+import { LocalBackupPage } from '@/pages/local-backup';
+import { LocalSettingsPage } from '@/pages/local-settings';
 import { MyRecordDetailPage } from '@/pages/my-record-detail';
 import { MyRecordsPage } from '@/pages/my-records';
 import { ProjectStructurePage } from '@/pages/project-structure';
+import { RecordPackagesPage } from '@/pages/record-packages';
 import { ReferenceDocumentDetailPage } from '@/pages/reference-document-detail';
 import { ReferenceDocumentsPage } from '@/pages/reference-documents';
 import { RegisterCustomerPage } from '@/pages/register-customer';
@@ -51,6 +54,7 @@ import { RegisterEngineerPage } from '@/pages/register-engineer';
 import { RepairRequestCreatePage } from '@/pages/repair-request-create';
 import { RestrictedPage } from '@/pages/restricted';
 import { canAccessSharedUiGallery, SharedUiGalleryPage } from '@/pages/shared-ui-gallery';
+import { SyncConflictsPage } from '@/pages/sync-conflicts';
 import { Error403, Error404, Error500, ErrorRouteCrash } from '@/features/error-feedback';
 
 import { getAppEnv } from '@/shared/env';
@@ -239,6 +243,37 @@ const router = createBrowserRouter([
         element: <AccountSettingsPage />,
         loader: protectedRouteLoader,
         path: 'account/settings',
+      },
+      {
+        // 记录包页（任务 09 S3.1）：导出与导入 U 盘记录包。
+        // 路由治理复用 protectedRouteLoader；公司范围与是否可导入由服务端按 Session 裁决。
+        element: <RecordPackagesPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/record-packages',
+      },
+      {
+        // 同步冲突页（任务 09 S2.3）：工程师与管理员的冲突处理入口（差异对照 + 裁决）。
+        // 角色放行由 auth-session 的 /engineer 根路径表覆盖；可读范围与是否可裁决
+        // 由服务端按 Session 裁决，前端不传公司参数。
+        element: <SyncConflictsPage />,
+        loader: protectedRouteLoader,
+        path: 'engineer/sync-conflicts',
+      },
+      {
+        // 备份与恢复（任务 09 S3/S4）：自动备份设置、手动备份、备份记录与恢复预检。
+        // 角色与范围由 auth-session 角色路径表 /local-backup 根路径裁决（工程师与
+        // 管理员放行，客户禁入）；公司/设备维度由服务端按 Session 裁决，前端不传参
+        element: <LocalBackupPage />,
+        loader: protectedRouteLoader,
+        path: 'local-backup',
+      },
+      {
+        // 本地设置：导航末项、只读（任务 09 R064）。角色与范围由
+        // auth-session 角色路径表 /local-settings 根路径裁决（工程师与管理员放行，
+        // 客户禁入）；公司/设备维度由服务端按 Session 裁决，前端不传参
+        element: <LocalSettingsPage />,
+        loader: protectedRouteLoader,
+        path: 'local-settings',
       },
       {
         element: <EngineerPage />,

@@ -10,7 +10,10 @@
 /// <reference types="jest" />
 import { existsSync } from 'node:fs';
 import { ConfigService } from '@nestjs/config';
-import { APP_CONFIG_FACTORIES, documentExportConfig } from '@src/infrastructure/config/config.module';
+import {
+  APP_CONFIG_FACTORIES,
+  documentExportConfig,
+} from '@src/infrastructure/config/config.module';
 import { MaintenanceReportDocumentRenderer } from '@src/infrastructure/document-export/maintenance-report-document-renderer';
 import type { MaintenanceReportExportDocument } from '@src/usecases/maintenance-report/ports/maintenance-report-export-renderer.contract';
 import { MaintenanceReportExportFormat } from '@app-types/models/maintenance-report.types';
@@ -71,9 +74,7 @@ const buildDocument = (): MaintenanceReportExportDocument => ({
 const renderPdf = async (
   doc: MaintenanceReportExportDocument = buildDocument(),
 ): Promise<Buffer> => {
-  const renderer = new MaintenanceReportDocumentRenderer(
-    new ConfigService(documentExportConfig()) as ConfigService,
-  );
+  const renderer = new MaintenanceReportDocumentRenderer(new ConfigService(documentExportConfig()));
   const result = await renderer.render(doc, MaintenanceReportExportFormat.PDF);
   return result.content;
 };

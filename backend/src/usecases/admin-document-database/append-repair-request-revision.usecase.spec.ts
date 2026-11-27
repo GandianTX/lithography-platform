@@ -1,5 +1,6 @@
 // src/usecases/admin-document-database/append-repair-request-revision.usecase.spec.ts
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import {
@@ -142,6 +143,13 @@ function createHarness(options: {
     maintenanceService as unknown as RepairRequestMaintenanceService,
     accountQueryService as unknown as AccountQueryService,
     trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     transactionRunner as unknown as TransactionRunner,
   );
 
@@ -611,5 +619,47 @@ describe('AppendRepairRequestRevisionUsecase', () => {
 
     expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.HANDLING_NOT_AVAILABLE);
     expect(revisionService.updateRequestRevisionFields).not.toHaveBeenCalled();
+  });
+
+  // 任务 09 第 05 项：冲突裁决「保留本地」需要一次**留痕型修订**——
+  // 内容与当前一致是必然结果（要保留的就是本地当前内容），但必须留下修订历史行。
+  it('内容与当前一致时默认拒绝（不产生多余版本）', async () => {
+    const { usecase, revisionService } = createHarness({
+      target: buildTarget({ contentMd: '# 原始正文', currentRevisionNo: 2 }),
+    });
+
+    const error = await captureThrownError(
+      usecase.execute({ ...baseCommand, contentMd: '# 原始正文' }),
+    );
+
+    expect((error as DomainError).code).toBe(REPAIR_REQUEST_ERROR.INVALID_PARAMS);
+    expect(revisionService.updateRequestRevisionFields).not.toHaveBeenCalled();
+    expect(revisionService.insertRevision).not.toHaveBeenCalled();
+  });
+
+  it('显式开启留痕型修订后：内容不变也写修订历史行（裁决留痕可追溯）', async () => {
+    const { usecase, revisionService } = createHarness({
+      target: buildTarget({ contentMd: '# 原始正文', currentRevisionNo: 2 }),
+    });
+
+    const result = await usecase.execute({
+      ...baseCommand,
+      contentMd: '# 原始正文',
+      allowUnchangedContent: true,
+      reason: '同步冲突裁决：保留本地版本（冲突 c-1）',
+    });
+
+    expect(result).toMatchObject({ revisionNo: 3, previousVersion: 2 });
+    expect(revisionService.updateRequestRevisionFields).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedVersion: 2, nextVersion: 3 }),
+      TRANSACTION_CONTEXT,
+    );
+    expect(revisionService.insertRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        revisionNo: 3,
+        reason: '同步冲突裁决：保留本地版本（冲突 c-1）',
+      }),
+      TRANSACTION_CONTEXT,
+    );
   });
 });

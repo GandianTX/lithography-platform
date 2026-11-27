@@ -1,6 +1,7 @@
 // src/usecases/stored-file/upload-stored-file.usecase.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { createHash } from 'node:crypto';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -9,6 +10,7 @@ import {
   PERMISSION_ERROR,
   REPAIR_REQUEST_ERROR,
   STORED_FILE_ERROR,
+  SYNC_ERROR,
 } from '@core/common/errors/domain-error';
 import { Logger } from '@nestjs/common';
 import type { AccountQueryService } from '@src/modules/account/queries/account.query.service';
@@ -138,11 +140,22 @@ const makeUsecase = (
   const accountQueryService = overrides.accountQueryService ?? makeAccountQueryService();
   const transactionRunner = overrides.transactionRunner ?? makeTransactionRunner();
   const storage = overrides.storage ?? makeStorage();
+  // 冻结闸门替身：可观察调用次序（守卫必须先于写盘）
+  const holdService = {
+    assertBusinessWritable: jest.fn(() => Promise.resolve()),
+    assertBusinessWritableInTransaction: jest.fn(
+      (_input: { organizationId: number; transactionContext: unknown }) => Promise.resolve(),
+    ),
+    assertCompanyWritable: jest.fn(() => Promise.resolve()),
+    assertCompanyWritableInTransaction: jest.fn(() => Promise.resolve()),
+    assertWritable: jest.fn(() => Promise.resolve()),
+  };
 
   const usecase = new UploadStoredFileUsecase(
     storedFileService as unknown as StoredFileService,
     queryService as unknown as StoredFileQueryService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    holdService as unknown as LocalWriteHoldService,
     accountQueryService as unknown as AccountQueryService,
     transactionRunner,
     storage,
@@ -157,6 +170,7 @@ const makeUsecase = (
     accountQueryService,
     transactionRunner,
     storage,
+    holdService,
   };
 };
 
@@ -552,31 +566,86 @@ describe('UploadStoredFileUsecase 存储补偿判定', () => {
       }),
     }) as unknown as TransactionRunner & { run: jest.Mock };
 
-  it('写盘拒绝：事务未开始、不探测引用、不声称已保留、不删除', async () => {
+  /**
+   * 事务回调已执行、但**提交回执丢失**（终局未知）：真实库语义。
+   *
+   * 写盘发生在事务内 ⇒ 回调必须真的跑过，才谈得上"字节已写下但终局未知"。
+   */
+  const makeRunnerFailingAfterCallback = (error: unknown) =>
+    ({
+      run: jest.fn(async (cb: (ctx: unknown) => unknown) => {
+        await cb(transactionContext);
+        throw error;
+      }),
+    }) as unknown as TransactionRunner & { run: jest.Mock };
+
+  it('写盘拒绝：事务已回滚且未登记、不探测引用、不声称已保留、不删除', async () => {
     const storage = makeStorage();
     storage.save.mockRejectedValueOnce(new Error('disk full'));
-    const { usecase, transactionRunner, queryService } = makeUsecase({ storage });
+    const { usecase, transactionRunner, queryService, storedFileService } = makeUsecase({
+      storage,
+    });
 
     await expect(usecase.execute(command())).rejects.toMatchObject({
       code: STORED_FILE_ERROR.UPLOAD_FAILED,
     });
 
-    expect(transactionRunner.run).not.toHaveBeenCalled();
+    // 写盘发生在**事务内** ⇒ 事务回滚，**没有任何登记**
+    expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+    expect(storedFileService.insertStagedFile).not.toHaveBeenCalled();
     expect(queryService.isStorageReferenceReferenced).not.toHaveBeenCalled();
     expect(storage.delete).not.toHaveBeenCalled();
     const message = diagnosticMessage();
     expect(message).toContain('stored_file.upload.storage_save_failed');
     expect(message).toContain('"stage":"storage-save"');
-    expect(message).toContain('"transactionStarted":false');
+    expect(message).toContain('"transactionStarted":true');
+    expect(message).toContain('"transactionOutcome":"rolled-back"');
+    expect(message).toContain('"registered":false');
     expect(message).toContain('"fileState":"unconfirmed"');
     expect(message).toContain('原件暂存失败');
     expect(message).not.toContain('compensation_retained');
     expect(message).not.toContain('已保留');
   });
 
+  it('最小修复 01：写盘在**事务内的冻结守卫之后**、登记之前（同一事务、同一范围共享锁）', async () => {
+    const { usecase, storage, storedFileService, holdService, transactionRunner } = makeUsecase();
+
+    await usecase.execute(command());
+
+    // 守卫（取范围共享锁）先于写盘
+    expect(holdService.assertBusinessWritableInTransaction).toHaveBeenCalledTimes(1);
+    expect(
+      holdService.assertBusinessWritableInTransaction.mock.invocationCallOrder[0],
+    ).toBeLessThan(storage.save.mock.invocationCallOrder[0]);
+    // 写盘先于登记
+    expect(storage.save.mock.invocationCallOrder[0]).toBeLessThan(
+      storedFileService.insertStagedFile.mock.invocationCallOrder[0],
+    );
+    // 守卫与登记用的是**同一个事务上下文**
+    expect(holdService.assertBusinessWritableInTransaction.mock.calls[0][0]).toMatchObject({
+      transactionContext,
+    });
+    expect(storedFileService.insertStagedFile).toHaveBeenCalledWith(
+      expect.anything(),
+      transactionContext,
+    );
+    expect(transactionRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('最小修复 01：冻结已生效（事务内守卫拒绝）⇒ **不写盘**、不登记', async () => {
+    const { usecase, storage, storedFileService, holdService } = makeUsecase();
+    holdService.assertBusinessWritableInTransaction.mockRejectedValueOnce(
+      new DomainError(SYNC_ERROR.WRITE_HELD, '目标公司数据区正在恢复期冻结'),
+    );
+
+    await expect(usecase.execute(command())).rejects.toBeInstanceOf(DomainError);
+
+    expect(storage.save).not.toHaveBeenCalled();
+    expect(storedFileService.insertStagedFile).not.toHaveBeenCalled();
+  });
+
   it('回归：事务终局未确认且独立查询查不到引用时，仍保留文件并记录诊断', async () => {
-    const transactionRunner = makeTransactionRunner();
-    transactionRunner.run.mockRejectedValueOnce(new Error('commit outcome unknown'));
+    const transactionRunner = makeRunnerFailingAfterCallback(new Error('commit outcome unknown'));
     const queryService = makeQueryService();
     queryService.isStorageReferenceReferenced.mockResolvedValueOnce(false);
     const { usecase, storage } = makeUsecase({ transactionRunner, queryService });
@@ -619,8 +688,7 @@ describe('UploadStoredFileUsecase 存储补偿判定', () => {
 
   it('引用探测失败时保留文件，主错误不变且不删除', async () => {
     const primaryError = new DomainError(STORED_FILE_ERROR.UPLOAD_FAILED, 'db down');
-    const transactionRunner = makeTransactionRunner();
-    transactionRunner.run.mockRejectedValueOnce(primaryError);
+    const transactionRunner = makeRunnerFailingAfterCallback(primaryError);
     const queryService = makeQueryService();
     queryService.isStorageReferenceReferenced.mockRejectedValueOnce(new Error('probe unavailable'));
     const { usecase, storage } = makeUsecase({ transactionRunner, queryService });
@@ -668,8 +736,7 @@ describe('UploadStoredFileUsecase 存储补偿判定', () => {
   it('存储对象身份不明时保留并报告，不执行删除', async () => {
     const storage = makeStorage();
     storage.save.mockResolvedValueOnce('');
-    const transactionRunner = makeTransactionRunner();
-    transactionRunner.run.mockRejectedValueOnce(new Error('db down'));
+    const transactionRunner = makeRunnerFailingAfterCallback(new Error('db down'));
     const { usecase } = makeUsecase({ storage, transactionRunner });
 
     await expect(usecase.execute(command())).rejects.toThrow('db down');

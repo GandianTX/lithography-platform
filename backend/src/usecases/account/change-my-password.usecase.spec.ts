@@ -397,10 +397,11 @@ describe('ChangeMyPasswordUsecase', () => {
           details: undefined,
         });
       }
-      expect(new Set(errors.map((error) => (error as { message: string }).message)).size).toBe(1);
-      expect(new Set(errors.map((error) => (error as { code: string }).code))).toEqual(
-        new Set([MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH]),
-      );
+      const messages = errors.map((error) => (error as { message: string }).message);
+      expect(messages.length).toBeGreaterThan(0);
+      expect(messages.every((message) => message === messages[0])).toBe(true);
+      const codes = errors.map((error) => (error as { code: string }).code);
+      expect(codes.every((code) => code === MY_ACCOUNT_ERROR.CURRENT_PASSWORD_MISMATCH)).toBe(true);
 
       // 三次都没有越过当前密码核验：零写入、均回滚
       expect(accountService.updateAccountPasswordHash).not.toHaveBeenCalled();

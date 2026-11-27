@@ -15,6 +15,7 @@ import {
 import { ACCOUNT_ERROR, ADMIN_USER_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'node:crypto';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import type {
   AccountCredentialSnapshot,
@@ -43,6 +44,14 @@ export interface AccountCreateData {
   /** 是否必须先修改密码：同样只由受控开通用例提供。 */
   mustChangePassword?: boolean;
   recentLoginHistory?: LoginHistoryItemModel[] | null;
+  /**
+   * 跨端稳定账号标识（`base_user_account.account_uuid`）。
+   *
+   * 由 `insertAccount()` 在**未显式提供时一次性生成**并持久化，之后不再变化
+   * （改名／改密／换公司都不影响）。显式提供只用于「按既有稳定身份落号」的
+   * 受控场景（例如从云端同步同一自然人的账号行）。
+   */
+  accountUuid?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -195,8 +204,15 @@ export class AccountService {
     transactionContext?: PersistenceTransactionContext;
   }): Promise<AccountCreateOutcome> {
     const repository = this.getAccountRepository(params.transactionContext);
+    // 跨端稳定账号标识：一次性生成并持久化（任务 09 S1-2）。
+    // 未显式提供时在此生成 ⇒ 所有经本入口建号的账号都带稳定标识；
+    // 显式提供时保留调用方的既有事实（不覆盖）。
+    const accountData: AccountCreateData = {
+      ...params.accountData,
+      accountUuid: params.accountData.accountUuid ?? randomUUID(),
+    };
     try {
-      const saved = await repository.save(repository.create(params.accountData));
+      const saved = await repository.save(repository.create(accountData));
       return { kind: 'CREATED', accountId: saved.id, createdAt: saved.createdAt };
     } catch (error) {
       if (this.isUniqueConstraintViolation(error)) {

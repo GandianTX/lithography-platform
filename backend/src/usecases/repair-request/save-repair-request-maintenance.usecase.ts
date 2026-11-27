@@ -19,6 +19,7 @@ import type {
 import { RepairRequestMaintenanceQueryService } from '@src/modules/lithography/queries/repair-request-maintenance.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { RepairRequestMaintenanceService } from '@src/modules/lithography/repair-request-maintenance.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -67,6 +68,7 @@ export class SaveRepairRequestMaintenanceUsecase {
     private readonly maintenanceService: RepairRequestMaintenanceService,
     private readonly maintenanceQueryService: RepairRequestMaintenanceQueryService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly bindOriginalUsecase: BindRepairProcessOriginalUsecase,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
@@ -130,6 +132,12 @@ export class SaveRepairRequestMaintenanceUsecase {
         command,
         membership.organizationId,
       );
+
+      // 恢复期写入冻结：该工单所属公司数据区正在恢复时不得保存维修记录
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
+        organizationId: target.ownerOrganizationId,
+        transactionContext,
+      });
 
       const engineerName = await this.resolveTrustedEngineerName(
         target.acceptedByEngineerAccountId!,

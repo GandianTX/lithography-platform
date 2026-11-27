@@ -115,6 +115,7 @@ export class MaintenanceReportQueryService {
         maintenanceEngineerAccountId: true,
         ownerOrganizationId: true,
         status: true,
+        recordUuid: true,
       },
     });
     if (!entity) return null;
@@ -124,6 +125,7 @@ export class MaintenanceReportQueryService {
       ownerOrganizationId: entity.ownerOrganizationId,
       // 实体列以 string 承载（CHECK 约束限定状态域）；授权分支按领域状态枚举裁决
       status: entity.status as MaintenanceReportStatus,
+      recordUuid: entity.recordUuid,
     };
   }
 
@@ -459,6 +461,7 @@ export class MaintenanceReportQueryService {
         maintenanceEngineerAccountId: true,
         ownerOrganizationId: true,
         status: true,
+        recordUuid: true,
       },
     });
     if (!entity) return null;
@@ -467,6 +470,7 @@ export class MaintenanceReportQueryService {
       maintenanceEngineerAccountId: entity.maintenanceEngineerAccountId,
       ownerOrganizationId: entity.ownerOrganizationId,
       status: entity.status as MaintenanceReportStatus,
+      recordUuid: entity.recordUuid,
     };
   }
 
@@ -715,6 +719,8 @@ function toMaintenanceReportSummary(entity: MaintenanceReportEntity): Maintenanc
     id: entity.id,
     // 归属公司来自资源行本身：同步状态匹配键的公司来源（不进入公开 DTO）
     ownerOrganizationId: entity.ownerOrganizationId,
+    // 跨端稳定业务编号：同步状态查询的记录键（历史行 NULL，不回填派生值）
+    recordUuid: entity.recordUuid,
     sourceType: entity.sourceType as MaintenanceReportSummaryView['sourceType'],
     repairRequestId: entity.repairRequestId,
     title: entity.title,

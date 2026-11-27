@@ -10,7 +10,9 @@ import {
   ManagementAuditBusinessOperation,
   ManagementAuditResult,
 } from '@app-types/models/management-audit.types';
+import { LOCAL_RESTORE_AUDIT_STAGES } from '@core/local-runtime/policy/local-restore-audit.policy';
 import { createTypeOrmPersistenceTransactionContext } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
+import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import type { EntityManager } from 'typeorm';
 import type { PinoLogger } from 'nestjs-pino';
 import { MANAGEMENT_AUDIT_QUERY_OPERATIONS } from './management-audit.types';
@@ -227,5 +229,241 @@ describe('ManagementAuditService.appendBusinessOperation', () => {
     for (const operation of MANAGEMENT_AUDIT_QUERY_OPERATIONS) {
       expect(serializeManagementAuditDetail({ reason: operation })).not.toBeNull();
     }
+  });
+});
+
+const build = () => {
+  const insert = jest.fn();
+  const manager = {
+    getRepository: () => ({ insert }),
+  };
+  const transactionContext = createTypeOrmPersistenceTransactionContext(manager as never);
+  const logger = { setContext: jest.fn(), info: jest.fn(), error: jest.fn() };
+  const service = new ManagementAuditService(logger as unknown as PinoLogger);
+
+  return { service, insert, logger, transactionContext };
+};
+
+describe('管理审计写入服务', () => {
+  it('写入成功事实：结果固定 SUCCEEDED、目标为账号，detail 为空时写 null', async () => {
+    const { service, insert, transactionContext } = build();
+
+    await service.append({
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+      organizationId: 4,
+      targetAccountId: 900202,
+      operation: 'RESET_LEVEL2_CREDENTIAL',
+      transactionContext,
+    });
+
+    expect(insert).toHaveBeenCalledTimes(1);
+    const row = insert.mock.calls[0][0] as Record<string, unknown>;
+
+    expect(row).toMatchObject({
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+      organizationId: 4,
+      targetType: 'ACCOUNT',
+      targetId: '900202',
+      result: 'SUCCEEDED',
+      detail: null,
+    });
+    expect(typeof row.eventId).toBe('string');
+    expect(String(row.eventId).length).toBeGreaterThan(0);
+  });
+
+  it('detail 只承载脱敏摘要字段，不写入其他内容', async () => {
+    const { service, insert, transactionContext } = build();
+
+    await service.append({
+      actorAccountId: 900101,
+      actorAdminLevel: 2,
+      organizationId: 4,
+      targetAccountId: 900202,
+      operation: 'RESET_LEVEL2_CREDENTIAL',
+      transactionContext,
+      reason: '用户申请重置',
+      loginNameMasked: 'zh***@example.com',
+    });
+
+    const row = insert.mock.calls[0][0] as Record<string, unknown>;
+    const detail = JSON.parse(String(row.detail)) as Record<string, unknown>;
+
+    expect(Object.keys(detail).sort()).toEqual(['loginNameMasked', 'reason']);
+    expect(detail.reason).toBe('用户申请重置');
+    expect(detail.loginNameMasked).toBe('zh***@example.com');
+  });
+
+  it('插入失败直接抛错：审计失败不得被吞掉', async () => {
+    const { service, insert, transactionContext } = build();
+
+    insert.mockRejectedValueOnce(new Error('audit insert failed'));
+
+    await expect(
+      service.append({
+        actorAccountId: 900101,
+        actorAdminLevel: 1,
+        organizationId: 4,
+        targetAccountId: 900202,
+        operation: 'REISSUE_LEVEL2_CREDENTIAL',
+        transactionContext,
+      }),
+    ).rejects.toThrow('audit insert failed');
+  });
+
+  it('日志只记操作类型与主键，不记 detail', async () => {
+    const { service, logger, transactionContext } = build();
+
+    await service.append({
+      actorAccountId: 900101,
+      actorAdminLevel: 1,
+      organizationId: 4,
+      targetAccountId: 900202,
+      operation: 'RESET_LEVEL2_CREDENTIAL',
+      transactionContext,
+      reason: '用户申请重置',
+      loginNameMasked: 'zh***@example.com',
+    });
+
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const [payload] = logger.info.mock.calls[0] as [Record<string, unknown>];
+
+    expect(Object.keys(payload).sort()).toEqual(['operation', 'organizationId', 'targetAccountId']);
+    expect(JSON.stringify(payload)).not.toContain('用户申请重置');
+  });
+});
+
+describe('ManagementAuditService.appendRestoreEvent（任务 09 新计划第 06 项）', () => {
+  const createHarness = () => {
+    const repository = {
+      insert: jest.fn().mockResolvedValue(undefined),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+    const manager = { getRepository: jest.fn(() => repository) };
+    const transactionContext = createTypeOrmPersistenceTransactionContext(
+      manager as unknown as EntityManager,
+    );
+    const logger = { setContext: jest.fn(), info: jest.fn() };
+    const service = new ManagementAuditService(logger as unknown as PinoLogger);
+    return { service, repository, logger, transactionContext };
+  };
+
+  const baseParams = (
+    transactionContext: PersistenceTransactionContext,
+    overrides: Record<string, unknown> = {},
+  ) =>
+    ({
+      actorAccountId: 7,
+      actorAdminLevel: 1,
+      organizationId: 4,
+      operation: 'RESTORE_LOCAL_BUSINESS' as const,
+      restoreId: 'restore-uuid-1',
+      backupId: 'backup-uuid-1',
+      protectionBackupId: 'protection-uuid-1',
+      result: 'SUCCEEDED' as const,
+      stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_SUCCEEDED,
+      transactionContext,
+      ...overrides,
+    }) as Parameters<ManagementAuditService['appendRestoreEvent']>[0];
+
+  it('detail 按任务 10 白名单写入：reason ＋ stage 可被读侧原样读回', async () => {
+    const { service, repository, transactionContext } = createHarness();
+
+    await service.appendRestoreEvent(
+      baseParams(transactionContext, {
+        result: 'FAILED',
+        stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_ROLLBACK_FAILED,
+        reasonCode: 'RESTORE_EXECUTION_FAILED',
+      }),
+    );
+
+    const row = repository.insert.mock.calls[0][0] as { detail: string | null };
+    // 读侧（任务 10）按同一套白名单投影 ⇒ 写得进去就必然读得出来
+    const projected = projectManagementAuditDetail(row.detail);
+    expect(projected).toEqual({
+      reason: 'RESTORE_EXECUTION_FAILED',
+      stage: 'RESTORE_ROLLBACK_FAILED',
+    });
+  });
+
+  it('恢复 ID／公司／操作者／终态走事件列，不塞进 detail', async () => {
+    const { service, repository, transactionContext } = createHarness();
+
+    await service.appendRestoreEvent(baseParams(transactionContext));
+
+    const row = repository.insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(row).toMatchObject({
+      actorAccountId: 7,
+      actorAdminLevel: 1,
+      organizationId: 4,
+      operation: 'RESTORE_LOCAL_BUSINESS',
+      targetType: 'LOCAL_RESTORE',
+      targetId: 'restore-uuid-1',
+      result: 'SUCCEEDED',
+    });
+    const projected = projectManagementAuditDetail(row['detail'] as string | null);
+    expect(projected?.reason).toBeUndefined();
+  });
+
+  it('幂等：同一 (恢复 ID, 终态**阶段**) 重试执行不再重复写入', async () => {
+    const { service, repository, transactionContext } = createHarness();
+    // 既有事件按**真实形态**给：detail 里带可读出的阶段（同一次执行的重复）
+    repository.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      eventId: 'existing',
+      detail: JSON.stringify({ stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_SUCCEEDED }),
+    });
+
+    await service.appendRestoreEvent(baseParams(transactionContext));
+    await service.appendRestoreEvent(baseParams(transactionContext));
+
+    expect(repository.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('同一恢复 ID 的失败终态**升级为更严重阶段**时必须留痕（不被幂等吞掉）', async () => {
+    const { service, repository, transactionContext } = createHarness();
+    // 既有事件：同一恢复 ID、同一失败结果，但阶段是"已回滚"
+    repository.findOne.mockResolvedValue({
+      eventId: 'existing',
+      detail: JSON.stringify({ stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_ROLLED_BACK }),
+    });
+
+    await service.appendRestoreEvent(
+      baseParams(transactionContext, {
+        result: 'FAILED',
+        stage: LOCAL_RESTORE_AUDIT_STAGES.EXECUTION_ROLLBACK_FAILED,
+        reasonCode: 'RESTORE_EXECUTION_FAILED',
+      }),
+    );
+
+    // 阶段不同 ⇒ 是另一个终态事实（回滚也失败）⇒ 必须写下
+    expect(repository.insert).toHaveBeenCalledTimes(1);
+    const row = repository.insert.mock.calls[0][0] as { detail: string | null };
+    expect(projectManagementAuditDetail(row.detail)?.stage).toBe('RESTORE_ROLLBACK_FAILED');
+  });
+
+  it('既有事件的阶段读不出来（历史自由文本）⇒ 不吞掉新事件', async () => {
+    const { service, repository, transactionContext } = createHarness();
+    repository.findOne.mockResolvedValue({
+      eventId: 'legacy',
+      detail: JSON.stringify({ restore_id: 'restore-uuid-1', counts: { records: 3 } }),
+    });
+
+    await service.appendRestoreEvent(baseParams(transactionContext));
+
+    // 读不出阶段 ⇒ 无法判定是同一事实 ⇒ 写新的（宁可多留，不可漏掉终态）
+    expect(repository.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('同一恢复 ID 的不同终态各留一条（成功与失败是不同事实）', async () => {
+    const { service, repository, transactionContext } = createHarness();
+    repository.findOne.mockResolvedValue(null);
+
+    await service.appendRestoreEvent(baseParams(transactionContext));
+    await service.appendRestoreEvent(
+      baseParams(transactionContext, { result: 'FAILED', reasonCode: 'X' }),
+    );
+
+    expect(repository.insert).toHaveBeenCalledTimes(2);
   });
 });

@@ -6,7 +6,7 @@ import { DomainError, STORED_FILE_ERROR } from '@core/common/errors/domain-error
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { StoredFileEntity } from './entities/stored-file.entity';
 import { StoredFileInsertData, StoredFileSnapshot } from './lithography.types';
 
@@ -160,6 +160,51 @@ export class StoredFileService {
         STORED_FILE_ERROR.BIND_FAILED,
         '原件解除绑定失败，请稍后重试',
         { fileId: params.fileId },
+        error,
+      );
+    }
+  }
+
+  /**
+   * **精确释放**暂存原件（补偿用）：仅 VALID + TEMPORARY + business_id 为空的行可命中。
+   *
+   * 用途：调用方自己登记的暂存原件在后续步骤失败（绑定失败／业务写失败）时，
+   * 把这些"已登记但永远不会被绑定"的行标记为 `FAILED`——
+   * **行保留（可追踪：fileId／上传者／归属公司／摘要仍在）、不物理删行、不动字节**。
+   *
+   * 命中条件自带"只处理自己范围内"的闸门：
+   * - 只处理调用方**指名**的 fileId（不按条件批量扫）；
+   * - 只处理**未被任何业务绑定**的行 → 不会动已绑定的既有原件；
+   * - 已绑定（BOUND）或已失效（FAILED/STAGING）的行不命中 → 不会动他人／他公司的对象。
+   *
+   * 返回命中行数（0 表示这些行已被绑定或状态已变化，由调用方按"保留"处理）。
+   */
+  async releaseTemporaryFiles(
+    params: { fileIds: string[] },
+    transactionContext?: PersistenceTransactionContext,
+  ): Promise<number> {
+    if (params.fileIds.length === 0) {
+      return 0;
+    }
+    const repository = this.getRepository(transactionContext);
+    try {
+      const result = await repository.update(
+        {
+          fileId: In(params.fileIds),
+          status: StoredFileStatus.VALID,
+          bindingStatus: StoredFileBindingStatus.TEMPORARY,
+          businessId: IsNull(),
+        },
+        {
+          status: StoredFileStatus.FAILED,
+        },
+      );
+      return result.affected ?? 0;
+    } catch (error) {
+      throw new DomainError(
+        STORED_FILE_ERROR.BIND_FAILED,
+        '暂存原件释放失败，请稍后重试',
+        { fileIds: params.fileIds },
         error,
       );
     }

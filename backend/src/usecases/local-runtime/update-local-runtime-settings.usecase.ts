@@ -1,6 +1,7 @@
 // src/usecases/local-runtime/update-local-runtime-settings.usecase.ts
 
 import { DomainError, LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-error';
+import { assertInstallationSettingsWritable } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
 import { Inject, Injectable } from '@nestjs/common';
 import { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import type { LocalInstallationSnapshot } from '@src/modules/lithography/local-runtime.types';
@@ -10,10 +11,13 @@ import {
 } from '@src/usecases/common/ports/transaction-runner.contract';
 import type { UpdateLocalRuntimeSettingsCommand } from './local-runtime.command.types';
 import { normalizeSettingsPatch } from './local-runtime.input.normalize';
-import { assertLocalRuntimeSettingsRole } from './local-runtime-roles';
+import { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 
 /**
  * 更新本地设置（补丁语义：未提供的字段保持落库值）。
+ *
+ * 写入准入为一级管理员的全局授权范围：现场名称、备份周期等属设备维度字段，
+ * 不属于任何公司数据区，二级管理员与工程师只读（R064 本地设置为只读说明页）。
  * 组织映射不在此修改：映射属于管理端配置，需与云端身份核对流程一并设计。
  */
 @Injectable()
@@ -22,10 +26,12 @@ export class UpdateLocalRuntimeSettingsUsecase {
     private readonly localRuntimeService: LocalRuntimeService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
+    private readonly scopeResolver: LocalRuntimeScopeResolver,
   ) {}
 
   async execute(command: UpdateLocalRuntimeSettingsCommand): Promise<LocalInstallationSnapshot> {
-    assertLocalRuntimeSettingsRole(command.session);
+    const scope = await this.scopeResolver.resolve(command.session);
+    assertInstallationSettingsWritable(scope);
     const patch = normalizeSettingsPatch(command.settings);
     return this.transactionRunner.run(async (transactionContext) => {
       // 先锁后合并：普通读 + 整体覆盖会让并发补丁互相回退对方的字段

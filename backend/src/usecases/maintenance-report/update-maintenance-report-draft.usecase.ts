@@ -5,6 +5,7 @@ import { MaintenanceReportSourceType } from '@app-types/models/maintenance-repor
 import { MAINTENANCE_REPORT_ERROR, DomainError } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type {
   MaintenanceReportDraftDetailView,
   RepairRequestWriteContext,
@@ -60,6 +61,7 @@ export class UpdateMaintenanceReportDraftUsecase {
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
     private readonly storedFileService: StoredFileService,
     private readonly maintenanceQueryService: RepairRequestMaintenanceQueryService,
@@ -91,6 +93,11 @@ export class UpdateMaintenanceReportDraftUsecase {
       organizationContextService: this.organizationContextService,
       accountId: command.session.accountId,
       reportId: command.reportId,
+      transactionContext,
+    });
+    // 恢复期写入冻结：报告归属公司数据区正在恢复时不得更新草稿
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId: lock.report.ownerOrganizationId,
       transactionContext,
     });
     const existing = await this.maintenanceReportQueryService.readDraftDetail(

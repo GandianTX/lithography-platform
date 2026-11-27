@@ -12,6 +12,7 @@ import {
 } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'node:crypto';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { QueryFailedError, Repository } from 'typeorm';
 import { RepairRequestEntity } from './entities/repair-request.entity';
@@ -69,6 +70,8 @@ export class RepairRequestService {
     try {
       const entity = repository.create({
         requestNo: data.requestNo,
+        // 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化
+        recordUuid: randomUUID(),
         customerAccountId: data.customerAccountId,
         equipmentModelId: data.equipmentModelId,
         errorCode: data.errorCode,
@@ -210,6 +213,7 @@ export class RepairRequestService {
           id: true,
           intakeId: true,
           serviceOrganizationId: true,
+          ownerOrganizationId: true,
           isAccepted: true,
           deprecated: true,
         },
@@ -222,6 +226,7 @@ export class RepairRequestService {
         id: entity.id,
         isAccepted: entity.isAccepted,
         deprecated: entity.deprecated,
+        ownerOrganizationId: entity.ownerOrganizationId,
         serviceOrganizationId: await this.resolveTrustedServiceOrganizationId(
           entity.intakeId,
           entity.serviceOrganizationId,
@@ -729,6 +734,7 @@ export class RepairRequestService {
       intakeId: entity.intakeId,
       customerOrganizationId: entity.customerOrganizationId,
       serviceOrganizationId: entity.serviceOrganizationId,
+      ownerOrganizationId: entity.ownerOrganizationId,
     };
   }
 

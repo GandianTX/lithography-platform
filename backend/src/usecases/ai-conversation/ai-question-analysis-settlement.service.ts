@@ -35,8 +35,13 @@ import {
 /** 05 会话在 workflow context 中的业务类型（与 dispatch 写入保持一致） */
 const AI_CONVERSATION_BIZ_TYPE = 'ai_conversation';
 
-/** 执行已终止且不可能再产出回答的状态：业务侧必须收敛为可重试失败 */
-const TERMINAL_FAILED_STATUSES = new Set(['FAILED', 'CANCELLED']);
+/**
+ * 执行已终止且不可能再产出回答的状态：业务侧必须收敛为可重试失败。
+ *
+ * 用只读数组而非手工集合：本仓库的 usecases 归一化守卫禁止手工集合去重，
+ * 状态数量固定且极小，数组 + `includes` 语义等价且可读性一致。
+ */
+const TERMINAL_FAILED_STATUSES: readonly string[] = ['FAILED', 'CANCELLED'];
 
 /** 单次扫描的默认批量上限（与 housekeeping 的默认批量保持同一量级） */
 export const AI_QUESTION_SETTLEMENT_DEFAULT_LIMIT = 50;
@@ -173,7 +178,7 @@ export class AiQuestionAnalysisSettlementService {
         bizSubKey: candidate.questionUuid,
         transactionContext,
       });
-      if (latest === null || !TERMINAL_FAILED_STATUSES.has(latest.status)) {
+      if (latest === null || !TERMINAL_FAILED_STATUSES.includes(latest.status)) {
         return 'skipped';
       }
 

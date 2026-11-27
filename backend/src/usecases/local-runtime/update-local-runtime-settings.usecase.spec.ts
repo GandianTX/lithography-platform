@@ -1,9 +1,10 @@
 /// <reference types="jest" />
 import type { UsecaseSession } from '@app-types/auth/session.types';
-import { LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-error';
+import { LOCAL_RUNTIME_ERROR, PERMISSION_ERROR } from '@core/common/errors/domain-error';
 import type { LocalRuntimeService } from '@src/modules/lithography/local-runtime.service';
 import type { LocalInstallationSnapshot } from '@src/modules/lithography/local-runtime.types';
 import type { TransactionRunner } from '@src/usecases/common/ports/transaction-runner.contract';
+import type { LocalRuntimeScopeResolver } from './local-runtime-scope.resolver';
 import { UpdateLocalRuntimeSettingsUsecase } from './update-local-runtime-settings.usecase';
 
 /**
@@ -46,11 +47,17 @@ describe('UpdateLocalRuntimeSettingsUsecase 先锁后合并', () => {
     const transactionRunner = {
       run: jest.fn((cb: (ctx: unknown) => unknown) => cb(transactionContext)),
     } as unknown as TransactionRunner;
+    const scopeResolver = {
+      resolve: jest.fn(() =>
+        Promise.resolve({ role: 'ADMIN_LEVEL_1', organizationId: null, adminLevel: 1 }),
+      ),
+    } as unknown as LocalRuntimeScopeResolver;
     const usecase = new UpdateLocalRuntimeSettingsUsecase(
       service as unknown as LocalRuntimeService,
       transactionRunner,
+      scopeResolver,
     );
-    return { usecase, service, callOrder };
+    return { usecase, service, callOrder, scopeResolver };
   };
 
   it('仅提交补丁字段时按锁定读到的落库值合并，且锁定发生在写入之前', async () => {
@@ -79,6 +86,21 @@ describe('UpdateLocalRuntimeSettingsUsecase 先锁后合并', () => {
     await expect(
       usecase.execute({ session: adminSession, settings: { backupIntervalDays: 3 } }),
     ).rejects.toMatchObject({ code: LOCAL_RUNTIME_ERROR.INSTALLATION_NOT_FOUND });
+
+    expect(service.updateInstallationSettings).not.toHaveBeenCalled();
+  });
+
+  it('二级管理员与工程师不得修改本机级设置', async () => {
+    const { usecase, service, scopeResolver } = makeUsecase();
+    (scopeResolver.resolve as jest.Mock).mockResolvedValue({
+      role: 'ENGINEER',
+      organizationId: 4,
+      adminLevel: null,
+    });
+
+    await expect(
+      usecase.execute({ session: adminSession, settings: { localSiteName: '越权' } }),
+    ).rejects.toMatchObject({ code: PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS });
 
     expect(service.updateInstallationSettings).not.toHaveBeenCalled();
   });

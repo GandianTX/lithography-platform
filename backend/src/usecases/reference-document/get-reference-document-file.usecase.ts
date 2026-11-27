@@ -17,7 +17,7 @@ import {
   assertReferenceDocumentDownloadRole,
 } from './reference-document-roles';
 import { resolveReferenceDocumentReadScope } from './reference-document-read-scope';
-import { REFERENCE_DOCUMENT_STORAGE } from './reference-document-storage.contract';
+import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/common/ports/reference-document-storage.contract';
 
 /**
  * 获取参考资料下载文件用例（ENGINEER + SUPER_ADMIN，负责人 0910 裁定收窄，与 GraphQL 读口径一致）。

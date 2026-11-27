@@ -1,0 +1,212 @@
+// src/features/local-backup/infrastructure/local-backup.types.ts
+
+/** 备份触发方式（与后端枚举同口径） */
+export type LocalBackupTriggerType = 'AUTO' | 'MANUAL' | 'RETRY' | 'SCHEDULED' | 'USB_EXPORT';
+
+/** 云端状态 */
+export type LocalBackupCloudStatus = 'FAILED' | 'PENDING' | 'SUCCEEDED' | 'UPLOADING';
+
+/** 本地包状态 */
+export type LocalBackupLocalStatus = 'CLEANED' | 'CLEANING' | 'FAILED' | 'PENDING';
+
+/** 备份运行状态 */
+export type LocalBackupRunStatus = 'FAILED' | 'INTERRUPTED' | 'RUNNING' | 'SUCCEEDED';
+
+/** 备份记录行 */
+export type LocalBackupRecord = {
+  backupId: string;
+  organizationId: number;
+  runId: number | null;
+  installationId: string | null;
+  triggerType: LocalBackupTriggerType | null;
+  runStatus: LocalBackupRunStatus | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
+  byteSize: number | null;
+  localStatus: LocalBackupLocalStatus;
+  localPackageRetained: boolean;
+  cloudStatus: LocalBackupCloudStatus;
+  cloudReceiptPresent: boolean;
+  manifestChecksum: string | null;
+  verifiedAt: string | null;
+  retentionUntil: string | null;
+  failureReason: string | null;
+  localCleanupError: string | null;
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  deletedAt: string | null;
+};
+
+/** 一致性范围快照条目 */
+export type LocalBackupScopeEntry = {
+  table: string;
+  rowCount: number;
+  lastUpdatedAt: string | null;
+};
+
+/** 备份记录详情 */
+export type LocalBackupRecordDetail = {
+  record: LocalBackupRecord;
+  schemaVersion: number | null;
+  protectionKeyId: string | null;
+  fileCount: number | null;
+  originalCount: number | null;
+  scope: LocalBackupScopeEntry[];
+  manifestReadable: boolean;
+};
+
+/** 备份记录分页结果 */
+export type LocalBackupRecordPage = {
+  items: LocalBackupRecord[];
+  total: number | null;
+  page: number;
+  pageSize: number;
+};
+
+/** 自动备份设置 */
+export type LocalBackupSetting = {
+  organizationId: number;
+  installationId: string;
+  backupEnabled: boolean;
+  backupIntervalHours: number;
+  nextBackupAt: string | null;
+  lastAutoSuccessAt: string | null;
+  lastAutoFailureAt: string | null;
+  failureReason: string | null;
+  autoUploadEnabled: boolean;
+  planIntervalHours: number;
+  retentionDays: number;
+  lastRunStatus: LocalBackupRunStatus | null;
+  lastRunStartedAt: string | null;
+  lastRunFinishedAt: string | null;
+  lastAssetCloudStatus: LocalBackupCloudStatus | null;
+  lastAssetLocalStatus: LocalBackupLocalStatus | null;
+};
+
+/** 手动备份触发结果 */
+export type StartManualLocalBackupResult = {
+  runId: number;
+  organizationId: number;
+  status: 'FAILED' | 'SUCCEEDED';
+  backupId: string | null;
+  manifestChecksum: string | null;
+  byteSize: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  uploadStatus: 'FAILED' | 'NOT_REQUIRED' | 'PENDING' | 'RUNNING' | 'SUCCEEDED';
+  cleanupStatus: 'FAILED' | 'NOT_REQUIRED' | 'PENDING' | 'RUNNING' | 'SUCCEEDED';
+};
+
+/** 恢复预检发现项 */
+export type LocalRestoreCheckFinding = {
+  code: string;
+  message: string;
+};
+
+/** 恢复预检结果 */
+export type LocalRestorePrecheckResult = {
+  restoreId: string;
+  outcome: 'FAILED' | 'PASSED';
+  checkedAt: string;
+  targetBackupId: string;
+  targetOrganizationId: number;
+  targetInstallationId: string | null;
+  manifestChecksum: string | null;
+  packageReadable: boolean;
+  fileCount: number | null;
+  originalCount: number | null;
+  verifiedFileCount: number;
+  protectionBackupId: string | null;
+  protectionCreated: boolean;
+  findings: LocalRestoreCheckFinding[];
+};
+
+/**
+ * 恢复受理结果（管理员专属）。
+ *
+ * **受理 ≠ 恢复**：受理只表示"已被授权确认"，不恢复数据、不冻结写入、不代表恢复成功。
+ */
+export type LocalRestoreAcceptance = {
+  restoreId: string;
+  accepted: boolean;
+  backupId: string | null;
+  protectionBackupId: string | null;
+  organizationId: number | null;
+  acceptedAt: string | null;
+};
+
+/** 恢复执行能力状态 */
+export type LocalRestoreCapability = {
+  executionAvailable: boolean;
+  reason: string;
+};
+
+/** 清理方式：MANUAL 手动清理 / RETENTION 过期清理 */
+export type LocalBackupCleanupMode = 'MANUAL' | 'RETENTION';
+
+/** 单个备份包的清理结果 */
+export type LocalBackupCleanupItem = {
+  backupId: string;
+  outcome: 'CLEANED' | 'RETAINED';
+  reason: string | null;
+};
+
+/** 一轮清理的汇总结果 */
+export type LocalBackupCleanupResult = {
+  mode: LocalBackupCleanupMode;
+  organizationId: number;
+  /** 是否具备清理授权；不可用时已清理数必为 0 */
+  available: boolean;
+  reason: string | null;
+  targetCount: number;
+  cleaned: number;
+  retained: number;
+  items: LocalBackupCleanupItem[];
+};
+
+/**
+ * 云端备份包元数据（任务 09 S3／A09-07）。
+ *
+ * 只含受控字段：**不含密钥与存储引用**；下载动作只给字节，不触发恢复。
+ */
+export type LocalBackupCloudPackage = {
+  packageId: string;
+  organizationId: number;
+  backupId: string | null;
+  createdAt: string | null;
+  byteSize: number | null;
+  checksumSha256: string | null;
+};
+
+/** 云端备份包清单 */
+export type LocalBackupCloudPackageList = {
+  organizationId: number;
+  packages: LocalBackupCloudPackage[];
+};
+
+/**
+ * 恢复执行结果（管理员专属）。
+ *
+ * `status` 为终态结论：受理不等于恢复成功；
+ * `released=false` 表示设备仍处于停写停传（回滚未成功，保留保护副本）。
+ */
+export type LocalRestoreExecution = {
+  restoreId: string;
+  status: 'FAILED' | 'SUCCEEDED';
+  released: boolean;
+  holdRetained: boolean;
+  restoredRecords: number | null;
+  restoredOriginals: number | null;
+  restoredQueue: number | null;
+  reasonCode: string | null;
+  reason: string | null;
+};
+
+/** 云端包下载结果 */
+export type LocalBackupCloudPackageDownload = {
+  ok: boolean;
+  blob: Blob | null;
+  filename: string | null;
+  reason: 'download-failed' | 'not-found' | 'not-available' | null;
+};

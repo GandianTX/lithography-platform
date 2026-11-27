@@ -75,6 +75,13 @@ export type RepairRequestSnapshot = {
   /** 客户公司 / 服务公司反规范化列；旧工单可空 */
   customerOrganizationId: number | null;
   serviceOrganizationId: number | null;
+  /**
+   * 归属公司（写入公司数据区的口径列，与备份/恢复范围一致）。
+   *
+   * 恢复期写入冻结按本列判定"这行属于哪家公司"：冻结期内对该公司的写入一律拒绝，
+   * 避免恢复期间并发写入被整体替换掉。历史行为空 ⇒ 不属于任何公司数据区。
+   */
+  ownerOrganizationId?: number | null;
 };
 
 /**
@@ -280,6 +287,8 @@ export type RepairRequestAcceptTargetSnapshot = {
   isAccepted: boolean;
   /** 可信服务公司ID；intake 缺失、服务公司缺失或两处冲突时为 null（必须失败关闭） */
   serviceOrganizationId: number | null;
+  /** 归属公司（写入冻结判定口径列，与备份/恢复范围一致） */
+  ownerOrganizationId?: number | null;
 };
 
 /**
@@ -1278,6 +1287,8 @@ export type RepairRequestMaintenanceTargetSnapshot = {
   id: number;
   intakeId: number | null;
   serviceOrganizationId: number | null;
+  /** 归属公司（写入冻结判定口径列，与备份/恢复范围一致） */
+  ownerOrganizationId?: number | null;
   isAccepted: boolean;
   acceptedByEngineerAccountId: number | null;
   deprecated: boolean;

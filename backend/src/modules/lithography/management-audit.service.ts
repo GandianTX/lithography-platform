@@ -1,10 +1,17 @@
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, MANAGEMENT_AUDIT_ERROR } from '@core/common/errors/domain-error';
 import {
+  projectManagementAuditDetail,
   serializeManagementAuditDetail,
   type ManagementAuditDetailView,
 } from '@core/management-audit/policy/management-audit-detail.policy';
-import { Injectable } from '@nestjs/common';
+import {
+  serializeLocalRestoreAuditDetail,
+  type LocalRestoreAuditStage,
+} from '@core/local-runtime/policy/local-restore-audit.policy';
+import type { LocalRuntimeAdminLevel } from '@core/local-runtime/policy/local-runtime-viewer-scope.policy';
+import { Injectable, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { PinoLogger } from 'nestjs-pino';
@@ -56,6 +63,11 @@ export type ManagementDocumentAuditOperation =
   'ADMIN_DELETE_DOCUMENT' | 'CORRECT_DOCUMENT_OWNERSHIP';
 
 /**
+ * 本机业务恢复终态事件（任务 09）。
+ */
+export type LocalRestoreAuditOperation = 'RESTORE_LOCAL_BUSINESS';
+
+/**
  * 管理审计写入服务（S3 凭据类 + 任务07 资料类 + 任务10 三类业务事实）。
  *
  * 三个入口，职责不同，不可互相替代：
@@ -76,7 +88,12 @@ export type ManagementDocumentAuditOperation =
  */
 @Injectable()
 export class ManagementAuditService {
-  constructor(private readonly logger: PinoLogger) {
+  constructor(
+    private readonly logger: PinoLogger,
+    @Optional()
+    @InjectRepository(ManagementAuditEventEntity)
+    private readonly auditEventRepository?: Repository<ManagementAuditEventEntity>,
+  ) {
     this.logger.setContext(ManagementAuditService.name);
   }
 
@@ -209,6 +226,193 @@ export class ManagementAuditService {
     );
   }
 
+  /**
+   * 本机业务恢复终态事件（任务 09 S2-6／新计划第 06 项）。
+   *
+   * - 只在**终态**写入（成功／失败／回滚后失败），中途状态不写事件；
+   * - detail 按**任务 10 的白名单契约**写入（`reason` 受控原因码 ＋ `stage` 阶段），
+   *   恢复 ID／公司／操作者／结果走事件列，不塞进 detail；
+   * - detail 只写脱敏摘要，**不写**包正文、凭据、堆栈、原件内容、文件路径或计数明细；
+   * - **幂等**：同一 (恢复 ID, 终态) 只留一条事件 ⇒ 重试执行不产生重复记录；
+   * - 写入失败**直接抛错**：终态事件写不进去时，恢复结果不得被当作"已完成"。
+   */
+  async appendRestoreEvent(params: {
+    readonly actorAccountId: number;
+    /**
+     * 操作者**实际**管理员等级（1 或 2）。
+     *
+     * 取值域与库级 CHECK `chk_management_audit_level` 一致，
+     * 由调用方从可信 scope 透传；**不接受**缺省或客户端自报的值。
+     */
+    readonly actorAdminLevel: LocalRuntimeAdminLevel;
+    readonly organizationId: number;
+    readonly operation: LocalRestoreAuditOperation;
+    readonly restoreId: string;
+    readonly backupId: string;
+    readonly protectionBackupId: string | null;
+    /** SUCCEEDED / FAILED */
+    readonly result: 'SUCCEEDED' | 'FAILED';
+    /** 恢复阶段（受任务 10 读侧 `stage` 字符集约束） */
+    readonly stage: LocalRestoreAuditStage;
+    /** 受控原因码 */
+    readonly reasonCode?: string | null;
+    /** 恢复计数摘要（行数；不含正文）——只进服务端日志，不进 detail */
+    readonly counts?: { records: number; originals: number; queue: number };
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<void> {
+    // 幂等：同一 (恢复 ID, 终态**结果**, 终态**阶段**) 只留一条事件
+    // ⇒ 同一阶段的重复执行不产生重复记录；
+    // ⇒ 但**阶段不同**是**另一个终态事实**（例如重试后从"已回滚"升级为"回滚也失败"，
+    //    或从"已回滚"变成"冻结未解除"），必须各自留痕，不能被幂等吞掉。
+    const repository = this.getRepository(params.transactionContext);
+    const existing = await repository.findOne({
+      where: {
+        operation: params.operation,
+        targetType: 'LOCAL_RESTORE',
+        targetId: params.restoreId,
+        result: params.result,
+      },
+    });
+    if (existing !== null) {
+      // 既有事件的阶段按**读侧同一套投影**取：读不出来的（历史自由文本）视为阶段未知
+      const existingStage = projectManagementAuditDetail(existing.detail ?? null)?.stage;
+      if (existingStage === params.stage) {
+        return;
+      }
+    }
+    const detail = serializeLocalRestoreAuditDetail({
+      result: params.result,
+      stage: params.stage,
+      reasonCode: params.reasonCode ?? null,
+    });
+    await this.insertEvent(
+      {
+        actorAccountId: params.actorAccountId,
+        actorAdminLevel: params.actorAdminLevel,
+        organizationId: params.organizationId,
+        operation: params.operation,
+        targetType: 'LOCAL_RESTORE',
+        targetId: params.restoreId,
+        result: params.result,
+        detail,
+      },
+      params.transactionContext,
+    );
+    this.logger.info(
+      {
+        operation: params.operation,
+        restoreId: params.restoreId,
+        result: params.result,
+        stage: params.stage,
+        counts: params.counts,
+      },
+      '本机业务恢复终态事件已写入',
+    );
+  }
+
+  /**
+   * 写**恢复故障现场处置**事件（管理员受控解冻）。
+   *
+   * 与 `appendRestoreEvent` 的差别：
+   * - 幂等键是 **(恢复 ID, 阶段)**，不是 (恢复 ID, 结果, 阶段)——处置事件与恢复终态
+   *   事件共用同一个 `result` 值域，若沿用恢复终态那套幂等键，处置事件会被恢复终态
+   *   事件"挤掉"或与之互相吞掉；
+   * - `result` 由调用方**镜像恢复自身的终态**（不是处置结果）⇒ 一次解冻**不会**让
+   *   读侧把成功的恢复误读成失败（或反之）；处置事实由 `stage` 承载。
+   */
+  async appendRestoreIncidentEvent(params: {
+    readonly actorAccountId: number;
+    readonly actorAdminLevel: number;
+    readonly organizationId: number;
+    readonly restoreId: string;
+    readonly backupId: string;
+    readonly protectionBackupId: string | null;
+    /** 镜像恢复自身的终态（SUCCEEDED / FAILED），**不是**处置结果 */
+    readonly result: 'SUCCEEDED' | 'FAILED';
+    readonly stage: LocalRestoreAuditStage;
+    readonly reasonCode?: string | null;
+    /**
+     * **处置人的实际操作原因**（自由文本，已由上游做过去空白、长度边界与控制字符校验）。
+     *
+     * 只在"受控解冻成功"这一条处置事实上写入：那是管理员真正给出的处置理由，
+     * 必须能从审计读回。与 `reasonCode` 同占 `detail.reason` 键（处置人原因优先）。
+     */
+    readonly operatorReason?: string | null;
+    readonly transactionContext?: PersistenceTransactionContext;
+  }): Promise<void> {
+    const repository = this.getRepository(params.transactionContext);
+    const existing: unknown = await repository
+      .createQueryBuilder('event')
+      .where('event.operation = :operation', { operation: 'RESTORE_LOCAL_BUSINESS' })
+      .andWhere('event.target_type = :targetType', { targetType: 'LOCAL_RESTORE' })
+      .andWhere('event.target_id = :targetId', { targetId: params.restoreId })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(event.detail, '$.stage')) = :stage", {
+        stage: params.stage,
+      })
+      .getRawAndEntities();
+    if (existing !== null && Array.isArray(existing) && existing.length > 0) {
+      // 幂等：同一 (恢复 ID, 阶段) 只留一条事件（重复处置不重复留痕）
+      // ⇒ **首次真实处置人的原因不会被重试覆盖**。
+      return;
+    }
+    const detail = serializeLocalRestoreAuditDetail({
+      result: params.result,
+      stage: params.stage,
+      reasonCode: params.reasonCode ?? null,
+      operatorReason: params.operatorReason ?? null,
+    });
+    await this.insertEvent(
+      {
+        actorAccountId: params.actorAccountId,
+        actorAdminLevel: params.actorAdminLevel,
+        organizationId: params.organizationId,
+        operation: 'RESTORE_LOCAL_BUSINESS',
+        targetType: 'LOCAL_RESTORE',
+        targetId: params.restoreId,
+        result: params.result,
+        detail,
+      },
+      params.transactionContext,
+    );
+    this.logger.info(
+      {
+        operation: 'RESTORE_LOCAL_BUSINESS',
+        restoreId: params.restoreId,
+        result: params.result,
+        stage: params.stage,
+      },
+      '恢复故障现场处置事件已写入',
+    );
+  }
+
+  /**
+   * 统计某次恢复已写入的**处置阶段**事件条数（幂等键的一侧）。
+   *
+   * 用途只有一个：故障处置在**提交回执丢失**时判定"事务到底提交了没有"
+   * ——冻结已解除且成功事件已存在 ⇒ 事务其实已提交；两者都没有 ⇒ 已回滚。
+   * 读侧（任务 10 的分页查询）另有 `ManagementAuditEventQueryService`，
+   * 本方法**不是**通用查询入口。
+   */
+  async countRestoreIncidentEventsByStage(params: {
+    readonly restoreId: string;
+    readonly stage: LocalRestoreAuditStage;
+  }): Promise<number> {
+    const repository = this.getRepository();
+    const existing: unknown = await repository
+      .createQueryBuilder('event')
+      .where('event.operation = :operation', { operation: 'RESTORE_LOCAL_BUSINESS' })
+      .andWhere('event.target_type = :targetType', { targetType: 'LOCAL_RESTORE' })
+      .andWhere('event.target_id = :targetId', { targetId: params.restoreId })
+      .andWhere("JSON_UNQUOTE(JSON_EXTRACT(event.detail, '$.stage')) = :stage", {
+        stage: params.stage,
+      })
+      .getRawAndEntities();
+    if (!Array.isArray(existing)) {
+      return 0;
+    }
+    return existing.length;
+  }
+
   private async insertEvent(
     event: {
       actorAccountId: number;
@@ -220,7 +424,7 @@ export class ManagementAuditService {
       result: string;
       detail: Record<string, unknown> | string | null;
     },
-    transactionContext: PersistenceTransactionContext,
+    transactionContext?: PersistenceTransactionContext,
   ): Promise<void> {
     const repository = this.getRepository(transactionContext);
     await repository.insert({
@@ -237,10 +441,16 @@ export class ManagementAuditService {
   }
 
   private getRepository(
-    transactionContext: PersistenceTransactionContext,
+    transactionContext?: PersistenceTransactionContext,
   ): Repository<ManagementAuditEventEntity> {
-    const manager = getTypeOrmEntityManager(transactionContext);
-    return manager.getRepository(ManagementAuditEventEntity);
+    if (transactionContext !== undefined) {
+      const manager = getTypeOrmEntityManager(transactionContext);
+      return manager.getRepository(ManagementAuditEventEntity);
+    }
+    if (this.auditEventRepository === undefined) {
+      throw new Error('管理审计仓储不可用，无法写入审计事件');
+    }
+    return this.auditEventRepository;
   }
 }
 

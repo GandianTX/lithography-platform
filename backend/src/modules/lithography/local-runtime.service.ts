@@ -13,6 +13,7 @@ import { FindOneOptions, ObjectLiteral, Repository } from 'typeorm';
 import { LocalBackupRunEntity } from './entities/local-backup-run.entity';
 import { LocalInstallationEntity } from './entities/local-installation.entity';
 import { LocalUploadTaskEntity } from './entities/local-upload-task.entity';
+import { RestoreScopeWriteGuardService } from './restore-scope-write-guard.service';
 import { isDuplicateKeyError } from './database-error.helpers';
 import {
   toLocalBackupRunSnapshot,
@@ -20,6 +21,7 @@ import {
   toLocalUploadTaskSnapshot,
 } from './local-runtime.mapper';
 import {
+  LocalBackupManualPhaseStatus,
   LocalBackupRunFinishData,
   LocalBackupRunSnapshot,
   LocalBackupRunStartData,
@@ -42,6 +44,7 @@ export class LocalRuntimeService {
     private readonly uploadTaskRepository: Repository<LocalUploadTaskEntity>,
     @InjectRepository(LocalBackupRunEntity)
     private readonly backupRunRepository: Repository<LocalBackupRunEntity>,
+    private readonly restoreScopeWriteGuardService: RestoreScopeWriteGuardService,
   ) {}
 
   /**
@@ -103,6 +106,15 @@ export class LocalRuntimeService {
     transactionContext: PersistenceTransactionContext,
   ): Promise<{ task: LocalUploadTaskSnapshot; created: boolean }> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
+    if (data.organizationId !== null && data.organizationId !== undefined) {
+      // 恢复期冻结守卫（**事务内**）：`local_upload_task` 已纳入受保护备份范围
+      // （安装 × 公司口径），恢复期间登记待传任务会污染恢复结果。
+      // 事务内取范围共享锁 ⇒ 与恢复建立冻结互斥（独立验收 P1-1）。
+      await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+        data.organizationId,
+        transactionContext,
+      );
+    }
     const existing = await this.findUploadTaskByKey(repository, data);
     if (existing) {
       return { task: toLocalUploadTaskSnapshot(existing), created: false };
@@ -115,6 +127,15 @@ export class LocalRuntimeService {
           entityLocalId: data.entityLocalId,
           entityVersion: data.entityVersion,
           idempotencyKey: data.idempotencyKey,
+          // 业务同步身份事实：稳定键、业务版本、正文/原件清单摘要、任务种类
+          // （历史行为 NULL，读侧据此判"不可核验"，不回填派生值）
+          recordUuid: data.recordUuid ?? null,
+          sourceVersion: data.sourceVersion ?? null,
+          manifestChecksum: data.manifestChecksum ?? null,
+          taskKind: data.taskKind ?? null,
+          // 原账号授权绑定：公司数据区 + 授权主体账号（派发时只认该账号的有效授权）
+          organizationId: data.organizationId ?? null,
+          accountId: data.accountId ?? null,
           status: 'PENDING',
           attemptCount: 0,
           lastAttemptAt: null,
@@ -151,6 +172,12 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'PENDING' && task.status !== 'FAILED') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -188,6 +215,12 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'UPLOADING') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -217,6 +250,99 @@ export class LocalRuntimeService {
     return toLocalUploadTaskSnapshot(await this.reloadUploadTask(repository, taskId));
   }
 
+  /**
+   * 取消上传任务：仅 PENDING/FAILED 可取消。
+   *
+   * 取消用于"这条任务不应再派发"的事实：来源记录已删除／下架、原账号授权失效，
+   * 或来源版本已被更新取代。取消不同于失败——失败表示"尝试过但没成功"，
+   * 取消表示"不再尝试"，两者在读侧都表现为非同步成功，但原因码不同。
+   */
+  async cancelUploadTask(
+    taskId: number,
+    data: LocalUploadFailureData,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<LocalUploadTaskSnapshot> {
+    const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
+    const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
+    if (task.status !== 'PENDING' && task.status !== 'FAILED') {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
+        '当前状态的上传任务不可取消',
+        { taskId, status: task.status },
+      );
+    }
+    try {
+      await repository.update(
+        { id: taskId },
+        {
+          status: 'CANCELLED',
+          errorCode: data.errorCode,
+          errorMessage: data.errorMessage,
+        },
+      );
+    } catch (error) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_FAILED,
+        '上传任务取消状态写入失败',
+        undefined,
+        error,
+      );
+    }
+    return toLocalUploadTaskSnapshot(await this.reloadUploadTask(repository, taskId));
+  }
+
+  /**
+   * 退回待传（可重试）：网络中断、响应丢失或生产接收端缺失时，任务不应被终结。
+   *
+   * 仅 UPLOADING／PENDING／FAILED 可退回；`attempt_count` 保留（供退避与排障），
+   * 错误码与说明只作最近一次失败的留痕，不影响"仍在待传"的事实。
+   */
+  async requeueUploadTask(
+    taskId: number,
+    data: LocalUploadFailureData,
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<LocalUploadTaskSnapshot> {
+    const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
+    const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
+    if (task.status === 'SUCCEEDED' || task.status === 'CANCELLED') {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
+        '当前状态的上传任务不可退回待传',
+        { taskId, status: task.status },
+      );
+    }
+    try {
+      await repository.update(
+        { id: taskId },
+        {
+          status: 'PENDING',
+          errorCode: data.errorCode,
+          errorMessage: data.errorMessage,
+        },
+      );
+    } catch (error) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.UPLOAD_TASK_FAILED,
+        '上传任务退回待传状态写入失败',
+        undefined,
+        error,
+      );
+    }
+    return toLocalUploadTaskSnapshot(await this.reloadUploadTask(repository, taskId));
+  }
+
   /** 标记上传失败：仅 UPLOADING/PENDING 可失败；错误码与说明必填且不得含凭据 */
   async failUploadTask(
     taskId: number,
@@ -225,6 +351,12 @@ export class LocalRuntimeService {
   ): Promise<LocalUploadTaskSnapshot> {
     const repository = this.getRepository(this.uploadTaskRepository, transactionContext);
     const task = await this.lockUploadTask(repository, taskId);
+    // 恢复期冻结守卫：`local_upload_task` 已纳入受保护备份范围（安装 × 公司口径），
+    // 恢复期间推进队列状态会污染恢复结果。
+    await this.restoreScopeWriteGuardService.assertOrganizationScopeWritable(
+      task.organizationId,
+      transactionContext,
+    );
     if (task.status !== 'UPLOADING' && task.status !== 'PENDING') {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.UPLOAD_TASK_CONFLICT,
@@ -282,6 +414,7 @@ export class LocalRuntimeService {
       const saved = await repository.save(
         repository.create({
           installationId: data.installationId,
+          organizationId: data.organizationId ?? null,
           triggerType: data.triggerType,
           status: 'RUNNING',
           startedAt: data.startedAt,
@@ -293,6 +426,8 @@ export class LocalRuntimeService {
           schemaVersion: null,
           errorCode: null,
           errorMessage: null,
+          manualUploadStatus: data.manualUploadStatus ?? null,
+          manualCleanupStatus: data.manualCleanupStatus ?? null,
         }),
       );
       return toLocalBackupRunSnapshot(saved);
@@ -360,6 +495,53 @@ export class LocalRuntimeService {
       throw new DomainError(
         LOCAL_RUNTIME_ERROR.BACKUP_FAILED,
         '备份运行结束写入失败',
+        undefined,
+        error,
+      );
+    }
+    return toLocalBackupRunSnapshot(await this.reloadBackupRun(repository, runId));
+  }
+
+  /**
+   * 更新手动三阶段（生成→上云→清理）的阶段状态。
+   *
+   * 仅允许在运行行仍存在时写入；阶段取值由数据库 CHECK 约束兜底。
+   * 未提供的阶段保持原值，不覆盖既有事实。
+   */
+  async updateManualPhaseStatuses(
+    runId: number,
+    data: {
+      manualUploadStatus?: LocalBackupManualPhaseStatus | null;
+      manualCleanupStatus?: LocalBackupManualPhaseStatus | null;
+    },
+    transactionContext: PersistenceTransactionContext,
+  ): Promise<LocalBackupRunSnapshot> {
+    const repository = this.getRepository(this.backupRunRepository, transactionContext);
+    const run = await repository.findOne({
+      where: { id: runId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!run) {
+      throw new DomainError(LOCAL_RUNTIME_ERROR.BACKUP_RUN_NOT_FOUND, '备份运行不存在', {
+        runId,
+      });
+    }
+    try {
+      await repository.update(
+        { id: runId },
+        {
+          ...(data.manualUploadStatus === undefined
+            ? {}
+            : { manualUploadStatus: data.manualUploadStatus }),
+          ...(data.manualCleanupStatus === undefined
+            ? {}
+            : { manualCleanupStatus: data.manualCleanupStatus }),
+        },
+      );
+    } catch (error) {
+      throw new DomainError(
+        LOCAL_RUNTIME_ERROR.BACKUP_FAILED,
+        '备份阶段状态写入失败',
         undefined,
         error,
       );

@@ -95,6 +95,9 @@ export const EN_MESSAGES = {
   'nav.account-settings.label': 'Account settings',
   'nav.account-settings.description':
     'View account information and manage your profile and password. Re-sign-in is required after changing the password.',
+  'nav.local-settings.label': 'Local settings',
+  'nav.local-settings.description':
+    'Read-only view of this device identity, service and storage status, background task counts, and per-company backup plans.',
   'nav.error-preview.label': 'Error preview',
   'nav.error-preview.description': 'Preview generic route and runtime error feedback.',
   'nav.game-2048-lab.label': 'Lab',
@@ -104,6 +107,334 @@ export const EN_MESSAGES = {
   'nav.shared-ui-gallery.label': 'UI gallery',
   'nav.shared-ui-gallery.description':
     'Real rendering combinations of shared visual primitives for screenshots and computed-style evidence.',
+
+  // Local settings (task 09 R064, read-only)
+  'local-settings.title': 'Local settings',
+  'local-settings.description':
+    'Read-only facts about this device: identity, service and database status, default save locations, background task counts, and per-company backup plans. Change plans or run backups from the backup and restore page.',
+  'local-settings.loading': 'Reading local status…',
+  'local-settings.loadFailed': 'Failed to read local status',
+  'local-settings.reload': 'Reload',
+  'local-settings.generatedAt': 'Read at',
+  'local-settings.section.identity': 'Device identity',
+  'local-settings.section.service': 'Service status',
+  'local-settings.section.storage': 'Save locations',
+  'local-settings.section.tasks': 'Background tasks',
+  'local-settings.section.companies': 'Company backup plans on this device',
+  'local-settings.section.authorizations': 'Company sync authorizations on this device',
+  'local-settings.authorizations.empty':
+    'No sync authorization for this company on this device yet (only counts and verification time are shown, never credential material).',
+  'local-settings.authorizations.active': 'Active authorizations',
+  'local-settings.authorizations.revoked': 'Revoked',
+  'local-settings.authorizations.lastVerifiedAt': 'Last verified',
+  'local-settings.authorizations.purpose': 'Credential purpose',
+  'local-settings.tasks.notVisible':
+    'Device task counts are registered per company; no task counts are visible for this company scope (for example, no company task has been registered on this device yet).',
+  'local-settings.value.businessSync': 'Business sync',
+  'local-settings.field.installationId': 'Installation ID',
+  'local-settings.field.localSiteName': 'Site name',
+  'local-settings.field.mappedOrganization': 'Mapped company',
+  'local-settings.field.viewerRole': 'Active role',
+  'local-settings.field.scope': 'Visible scope',
+  'local-settings.field.apiStatus': 'API service',
+  'local-settings.field.databaseStatus': 'Database',
+  'local-settings.field.taskFactSource': 'Task fact source',
+  'local-settings.field.taskRecovery': 'Restart recovery',
+  'local-settings.field.businessFileDirectory': 'Business file directory',
+  'local-settings.field.backupDirectory': 'Backup package directory',
+  'local-settings.field.pendingUploadCount': 'Pending uploads',
+  'local-settings.field.uploadingUploadCount': 'Uploading',
+  'local-settings.field.failedUploadCount': 'Failed uploads',
+  'local-settings.field.succeededUploadCount': 'Uploaded',
+  'local-settings.field.runningBackupCount': 'Running backups',
+  'local-settings.field.lastBackupStartedAt': 'Last backup started',
+  'local-settings.field.lastBackupFinishedAt': 'Last backup finished',
+  'local-settings.companies.toggleFailed':
+    'Failed to update the backup plan switches. Please retry later.',
+  'local-settings.companies.empty':
+    'No backup plan for this company yet (created on first save from the backup page or by background initialisation).',
+  'local-settings.companies.organization': 'Company',
+  'local-settings.companies.backupEnabled': 'Automatic backup',
+  'local-settings.companies.interval': 'Interval',
+  'local-settings.companies.nextBackupAt': 'Next run',
+  'local-settings.companies.autoUpload': 'Automatic cloud upload',
+  'local-settings.companies.lastSuccess': 'Last success',
+  'local-settings.companies.lastFailure': 'Last failure',
+  'local-settings.companies.failureReason': 'Failure reason',
+  'local-settings.companies.initializedAt': 'Plan initialised at',
+  'local-settings.value.globalScope': 'Global scope (all companies)',
+  'local-settings.value.unmapped': 'No company mapping',
+  'local-settings.value.dash': '—',
+  'local-settings.value.writable': 'Writable',
+  'local-settings.value.notWritable': 'Not writable',
+  'local-settings.value.enabled': 'Enabled',
+  'local-settings.value.disabled': 'Disabled',
+  'local-settings.notice.readonly':
+    'This page is read-only. It offers no editing, company switching, or run-now action, and always re-reads status instead of reusing cached values.',
+  'local-settings.role.adminLevel1': 'Level 1 administrator',
+  'local-settings.role.adminLevel2': 'Level 2 administrator',
+  'local-settings.role.engineer': 'Engineer',
+  'local-settings.units.hours': 'hours',
+
+  // 备份与恢复（任务 09 S3/S4）
+  'nav.local-backup.label': 'Backup & Restore',
+  'nav.local-backup.description':
+    'Review local auto-backup settings and backup records, trigger a manual backup, and precheck a local package for restore.',
+  'local-backup.title': 'Backup & Restore',
+  'local-backup.description':
+    'This page shows the real state of local backups: auto-backup plan, manual backup outcome, backup records and restore precheck results. The company scope is decided server-side by the current session.',
+  'local-backup.loading': 'Loading backup information…',
+  'local-backup.reload': 'Reload',
+  // Application-layer failure fallbacks (the application layer cannot call useI18n)
+  'local-backup.error.forbidden':
+    'The current account lacks permission for this action. Please contact an administrator.',
+  'local-backup.error.forbiddenTitle': 'Permission denied',
+  'local-backup.error.recordsLoadFailed': 'Failed to load backup records. Please retry later.',
+  'local-backup.error.settingsLoadFailed':
+    'Failed to load auto-backup settings. Please retry later.',
+  'local-backup.error.capabilityLoadFailed':
+    'Failed to load restore capability. Please retry later.',
+  'local-backup.error.manualFailed': 'Manual backup failed. Please retry later.',
+  'local-backup.error.cleanupFailed':
+    'Failed to clean up local backup packages. Please retry later.',
+  'local-backup.error.precheckFailed': 'Restore precheck failed. Please retry later.',
+  'local-backup.error.acceptFailed': 'Restore acceptance failed. Please retry later.',
+  'local-backup.error.cloudPackagesLoadFailed':
+    'Failed to load cloud backup packages. Please retry later.',
+  'local-backup.error.executeFailed': 'Restore execution failed. Please retry later.',
+  'local-backup.error.cloudDownloadFailed':
+    'Failed to download the cloud backup package. Please retry later.',
+  'local-backup.restore.acceptAction': 'Accept this restore',
+  'local-backup.restore.acceptTitle': 'Restore acceptance result',
+  'local-backup.restore.acceptSucceeded': 'Accepted: this restore has been authorized.',
+  'local-backup.restore.acceptedNotice':
+    'Acceptance is not a successful restore: this action only records the "authorized and confirmed" fact; it restores no data and does not freeze writes. Actual restore capability is shown below.',
+  'local-backup.restore.acceptRejected':
+    'This restore was not accepted. Follow the precheck findings.',
+  'local-backup.restore.acceptedAt': 'Accepted at',
+  'local-backup.restore.protectionBackupId': 'Protection copy id',
+  'local-backup.restore.executeAction': 'Execute this restore',
+  'local-backup.restore.reasonTitle': 'Failure detail',
+  'local-backup.restore.executeTitle': 'Restore execution result',
+  'local-backup.restore.executing': 'Restoring in progress, please keep this page open...',
+  'local-backup.restore.executeSucceeded':
+    'Restore completed: business data, originals and queue tasks were restored from the backup package.',
+  'local-backup.restore.executeFailedTitle': 'Restore did not complete',
+  'local-backup.restore.holdRetained':
+    'This device is still write/transmit frozen (protection copy retained). Handle the reason before retrying.',
+  'local-backup.restore.released':
+    'Freeze released: this organization data area accepts writes again.',
+  'local-backup.cloud.title': 'Cloud backup packages',
+  'local-backup.cloud.empty': 'No cloud backup package yet.',
+  'local-backup.cloud.loadFailed': 'Failed to load the cloud backup package list.',
+  'local-backup.cloud.unavailable':
+    'The cloud backup service is not connected, so cloud packages cannot be listed or downloaded.',
+  'local-backup.cloud.downloadAction': 'Download',
+  'local-backup.cloud.downloading': 'Downloading...',
+  'local-backup.cloud.downloaded': 'Cloud backup package downloaded (download does not restore).',
+  'local-backup.cloud.downloadFailed': 'Failed to download the cloud backup package.',
+  'local-backup.field.packageId': 'Cloud package ID',
+  'local-backup.field.createdAt': 'Created at',
+  'local-backup.field.restoredRecords': 'Restored business rows',
+  'local-backup.field.restoredOriginals': 'Restored originals',
+  'local-backup.field.restoredQueue': 'Restored queue tasks',
+
+  'local-backup.error.unknownReason': 'Reason not registered',
+  'local-runtime.error.statusLoadFailed':
+    'Failed to load local runtime status. Please retry later.',
+  // Controlled reason codes (the backend only sends controlled codes; unknown codes fall back)
+  'local-backup.reason.packageReferenceMissing':
+    'Local package reference missing; nothing to clean',
+  'local-backup.reason.packagePathOutsideRoot':
+    'Local package path is outside the backup root; kept and not deleted',
+  'local-backup.reason.packageDeleteFailed': 'Failed to delete the local package; kept',
+  'local-backup.reason.cleanupInterrupted': 'Cleanup was interrupted; retried next round',
+  'local-backup.reason.packageAlreadyCleaned': 'Local package already cleaned',
+  'local-backup.reason.cleanupRetained': 'Cleanup not performed; kept',
+  'local-backup.reason.uploadReceiverMissing': 'Cloud receiver not connected; upload unavailable',
+  'local-backup.reason.uploadFailed': 'Cloud upload failed',
+  'local-backup.reason.backupGenerationFailed': 'Failed to generate the backup package',
+  'local-backup.reason.protectionCopyFailed': 'Failed to generate the protection copy',
+  'local-backup.reason.packageManifestMissing': 'Backup package is missing its manifest file',
+  'local-backup.reason.packageManifestUnparsable': 'Backup package manifest cannot be parsed',
+  'local-backup.reason.packageFileMissing': 'Backup package is missing files',
+  'local-backup.reason.packageFileSizeMismatch': 'Backup package file size mismatch',
+  'local-backup.reason.packageFileChecksumMismatch': 'Backup package file checksum mismatch',
+  'local-backup.reason.restoreTargetInstallationMismatch':
+    'The package was not produced by this device and cannot be restored here',
+  'local-backup.reason.restoreRunNotFound':
+    'The restore record does not exist or is no longer valid',
+  'local-backup.reason.restoreNotAccepted':
+    'This restore has not been accepted or is no longer valid; run the precheck again',
+  'local-backup.reason.restoreCheckNotPassed':
+    'The restore precheck did not pass, so it cannot be executed',
+  'local-backup.reason.restoreInstallationMissing':
+    'This device has no installation identity, so the restore cannot run',
+  'local-backup.reason.restoreVerifyFailed':
+    'Post-restore verification did not pass; writing and syncing remain suspended',
+  'local-backup.reason.restoreExecutionFailed':
+    'The restore failed; writing and syncing remain suspended',
+  'local-backup.reason.restoreWriteFailed':
+    'Writing the restored data failed; writing and syncing remain suspended',
+  'local-backup.reason.restoreRollbackFailed':
+    'Rolling back to the protection copy failed; writing and syncing remain suspended, manual handling required',
+  'local-backup.reason.restoreProtectionUnreadable':
+    'The protection copy is unreadable, so no rollback guarantee is available',
+  'local-backup.reason.restoreTargetOrganizationMismatch':
+    'The package does not belong to the company you are authorized for',
+  'local-backup.reason.restoreLocalPackageMissing':
+    'This device no longer holds the package; obtain a usable copy from the cloud first',
+  'local-backup.reason.restoreExecutionAvailable':
+    'This environment meets the prerequisites for restore execution.',
+  'local-backup.reason.restoreWriteGateUnavailable':
+    'This environment has no write/sync hold for the restore window, so restore execution stays unavailable. Precheck and protection copy are still available.',
+  'local-backup.reason.restoreFailureCompensationUnavailable':
+    'This environment has no failure rollback compensation for restore, so restore execution stays unavailable. Precheck and protection copy are still available.',
+  'local-backup.reason.restoreProtectionKeyUnavailable':
+    'The decryption material for the protected package is not available in this environment, so restore execution stays unavailable.',
+  'local-backup.reason.cloudReceiptMissing': 'Complete cloud receipt missing',
+  'local-backup.reason.uploadInterrupted':
+    'The upload was interrupted; the same package is retried after the backoff',
+  'local-backup.reason.cloudPackagesUnavailable':
+    'The cloud backup package service is not connected, so no cloud copy is available',
+  'local-backup.reason.cloudPackageUnavailable':
+    'The cloud copy is unavailable and cannot be used for a restore on this device',
+  'local-backup.reason.cloudPackageDigestMismatch':
+    'The cloud copy checksum does not match the local record',
+  'local-backup.reason.cloudPackageSizeMismatch':
+    'The cloud copy size does not match the local record',
+  'local-backup.reason.cloudPackageSchemaUnsupported':
+    'The package format version of the cloud copy is not supported here',
+  'local-backup.reason.cloudPackageDeviceMismatch': 'The cloud copy comes from a different device',
+  'local-backup.reason.cloudPackageCompanyMismatch':
+    'The cloud copy belongs to a different company',
+  'local-backup.reason.restoreOriginalBytesMissing':
+    'The manifest lists originals whose bytes are missing from the package; the restore would fail',
+  'local-backup.reason.restoreExecutionAlreadyRunning':
+    'This restore is already running; concurrent execution is refused',
+  'local-backup.reason.restoreScopeOccupied':
+    'The restore scope is occupied by another restore; this run is refused',
+  'local-backup.reason.restoreAlreadyTerminal':
+    'This restore has already finished and cannot be executed again',
+  'local-backup.reason.restoreOrganizationNotAllowed':
+    'You are not authorized to execute a restore for that company',
+  'local-backup.reason.restoreInstallationMismatch':
+    'This restore was not started on this device and cannot run here',
+  'local-backup.reason.cloudNotConfigured':
+    'The cloud backup service is not configured; no upload was sent',
+  'local-backup.reason.cloudUnreachable':
+    'The cloud service is unreachable; retried after the backoff',
+  'local-backup.reason.cloudTimeout': 'The cloud request timed out; retried after the backoff',
+  'local-backup.reason.cloudRejected':
+    'The cloud service rejected this upload (payload, permission or quota)',
+  'local-backup.reason.cloudServerError': 'The cloud service failed; retried after the backoff',
+  'local-backup.reason.cloudInvalidResponse':
+    'The cloud response was malformed and is not counted as a successful upload',
+  'local-backup.reason.packageTooLarge':
+    'Local backup package exceeds the upload size limit; no longer retried',
+  'local-backup.reason.packageIncomplete':
+    'Local backup package does not match its manifest; no longer retried',
+  'local-backup.reason.packageUnreadable': 'Local backup package is unreadable; no longer retried',
+  'local-backup.reason.cloudReceiptUnparsable': 'Cloud receipt cannot be parsed',
+  'local-backup.reason.cloudReceiptNotSuccess': 'Cloud receipt is not in a success state',
+  // Sync status reason codes (task 09 S1)
+  'sync-status.reason.notConnected': 'Business sync is not connected yet',
+  'sync-status.reason.identityUntrusted': 'Record identity cannot be verified; status unknown',
+  'sync-status.reason.versionUntrusted': 'Record version cannot be verified; status unknown',
+  'sync-status.reason.applicabilityUnknown': 'Cannot confirm whether this record applies to sync',
+  'sync-status.reason.authorizationInvalid': 'Authorization is no longer valid; status unknown',
+  'sync-status.reason.receiptMissing': 'No cloud receipt yet; cannot be treated as synced',
+  'sync-status.reason.receiptVersionMismatch':
+    'Cloud receipt version differs from the current version',
+  'sync-status.reason.receiptIncomplete': 'Body or originals were not fully synced',
+  'sync-status.reason.receiptStatusUnknown': 'Cloud receipt status cannot be recognised',
+  'sync-status.reason.receiptSourceUnconfirmed':
+    'Cannot confirm the receipt was produced by this device',
+  'sync-status.reason.taskReceiptInconsistent': 'Task and receipt contradict each other',
+  'sync-status.reason.taskFailed': 'Sync task failed',
+  'sync-status.reason.taskCancelled': 'Sync task was cancelled',
+  'sync-status.reason.taskKindUnknown': 'Cannot confirm the purpose of the sync task',
+  'sync-status.reason.taskStatusUnknown': 'Sync task status cannot be recognised',
+  'sync-status.reason.taskNotBody': 'The task is not a body sync',
+  'sync-status.reason.conflictPending': 'A version conflict is awaiting handling',
+  'local-backup.reason.retentionNotExpired': 'Retention window has not expired',
+  'local-backup.auto.title': 'Auto Backup Settings',
+  'local-backup.auto.loadFailed': 'Failed to load auto-backup settings',
+  'local-backup.auto.empty':
+    'No auto-backup plan in the current scope yet (it appears after the first backup or background initialization).',
+  'local-backup.auto.organization': 'Company',
+  'local-backup.auto.enabled': 'Auto Backup',
+  'local-backup.auto.autoUpload': 'Auto Upload',
+  'local-backup.auto.nextBackupAt': 'Next Scheduled Time',
+  'local-backup.auto.lastSuccess': 'Last Success',
+  'local-backup.auto.lastFailure': 'Last Failure',
+  'local-backup.auto.lastRunStatus': 'Last Run Status',
+  'local-backup.auto.planInterval': 'Plan Interval (read-only)',
+  'local-backup.auto.retention': 'Retention Window (read-only)',
+  'local-backup.auto.failureReason': 'Failure Reason',
+  'local-backup.manual.title': 'Manual Backup',
+  'local-backup.manual.trigger': 'Back Up and Clean Local Backup Packages',
+  'local-backup.manual.notice':
+    'Only backup packages of this device and company are cleaned up; business data, business originals and cloud copies are never deleted. Cleanup runs only after this manual backup obtains a complete cloud receipt. The generation, upload and cleanup stages show their actual states.',
+  'local-backup.manual.cleanupRunning': 'Cleaning local backup packages…',
+  'local-backup.manual.cleanupFailed': 'Failed to clean local backup packages',
+  'local-backup.manual.cleanupUnavailable':
+    'This manual backup did not obtain a complete cloud receipt, so the local backup packages were not cleaned up.',
+  'local-backup.manual.cleanupDone':
+    '{cleaned} local backup package(s) cleaned up, {retained} still retained.',
+  'local-backup.manual.cleanupOutcome': 'Cleanup Result',
+  'local-backup.manual.cleaned': 'Cleaned',
+  'local-backup.manual.retained': 'Retained',
+  'local-backup.manual.retainedReason': 'Retention Reason',
+  'local-backup.manual.cleanupEmpty': 'No local backup package needs cleanup.',
+  'local-backup.manual.failed': 'Manual backup failed',
+  'local-backup.manual.generation': 'Generation Stage',
+  'local-backup.manual.upload': 'Upload Stage',
+  'local-backup.manual.cleanup': 'Cleanup Stage',
+  'local-backup.records.title': 'Backup Records',
+  'local-backup.records.loadFailed': 'Failed to load backup records',
+  'local-backup.records.empty': 'No backup record in the current scope yet.',
+  'local-backup.records.notVerified': 'No verification result yet',
+  'local-backup.records.total': '{count} backup records in total',
+  'local-backup.restore.title': 'Restore',
+  'local-backup.restore.capabilityFailed': 'Failed to load restore capability',
+  'local-backup.restore.executionAvailable': 'Restore execution is available in this environment',
+  'local-backup.restore.executionUnavailable':
+    'Restore execution is not available in this environment',
+  'local-backup.restore.prechecking': 'Running restore precheck…',
+  'local-backup.restore.precheckTitle': 'Restore Precheck Result',
+  'local-backup.restore.precheckFailed': 'Restore precheck failed',
+  'local-backup.restore.precheckPassed':
+    'Precheck passed: target, package integrity and protection copy are all confirmed.',
+  'local-backup.restore.precheckRejected':
+    'Precheck did not pass: resolve the findings below first.',
+  'local-backup.restore.precheckAction': 'Restore Precheck',
+  'local-backup.restore.findings': 'Precheck Findings',
+  'local-backup.field.backupId': 'Backup ID',
+  'local-backup.field.byteSize': 'Size',
+  'local-backup.field.errorMessage': 'Error Message',
+  'local-backup.field.backupAndTime': 'Backup / Time',
+  'local-backup.field.typeAndSize': 'Type / Size',
+  'local-backup.field.localPackage': 'Local Package',
+  'local-backup.field.cloudBackup': 'Cloud Backup',
+  'local-backup.field.checksum': 'Verification',
+  'local-backup.field.actions': 'Actions',
+  'local-backup.field.restoreId': 'Precheck ID',
+  'local-backup.field.installationId': 'Installation ID',
+  'local-backup.field.checkedAt': 'Checked At',
+  'local-backup.field.protectionBackupId': 'Protection Copy ID',
+  'local-backup.field.packageReadable': 'Manifest Readable',
+  'local-backup.field.fileCount': 'Files in Package',
+  'local-backup.field.verifiedFileCount': 'Verified Files',
+  'local-backup.value.enabled': 'Enabled',
+  'local-backup.value.disabled': 'Disabled',
+  'local-backup.value.dash': '—',
+  'local-backup.value.unknown': 'Unknown',
+  'local-backup.value.yes': 'Yes',
+  'local-backup.value.no': 'No',
+  'local-backup.units.hours': 'hours',
+  'local-backup.units.days': 'days',
+  'local-backup.units.bytes': 'bytes',
 
   'login.introTitle': 'Welcome',
   'login.introSubtitle': 'Sign in with your account or email to enter the workspace',
@@ -978,6 +1309,9 @@ export const EN_MESSAGES = {
   'operationRecords.totalCount': '{total} records in total',
 
   // My records (Task 07)
+  'nav.engineer-sync-conflicts.label': 'Sync conflicts',
+  'nav.engineer-sync-conflicts.description':
+    'Records whose local and cloud versions differ: review the diff and decide.',
   'nav.my-records.label': 'My records',
   'nav.my-records.description':
     'Review your independent reports and work-order summaries; drafts resume in the report editor.',
@@ -1007,6 +1341,7 @@ export const EN_MESSAGES = {
   'myRecords.action.resume': 'Continue editing',
   'myRecords.action.resumeSummary': 'Continue review',
   'myRecords.action.create': 'Record past failure',
+  'myRecords.action.exportPackage': 'Export record package',
   'myRecords.action.view': 'View record',
   'myRecords.action.viewPublished': 'View published document',
   'myRecords.action.back': 'Back to list',
@@ -1076,6 +1411,8 @@ export const EN_MESSAGES = {
   'myRecords.detail.review.empty': 'No review records yet.',
   // Sync status (task 07 reservation; the web UI hides the sync column for now)
   'myRecords.sync.column': 'Sync status',
+  'myRecords.sync.authorizationInvalid':
+    'The original record owner\u2019s authorization is invalid',
   'myRecords.sync.notConnected': 'Sync not connected',
   'myRecords.sync.unknown': 'Sync status unknown',
   'myRecords.sync.notApplicable': 'Local sync not applicable',
@@ -1679,5 +2016,130 @@ export const EN_MESSAGES = {
     'A reason is required when the repair is interrupted or unrepairable.',
   'refDocRevise.issue.reasonNotAllowed':
     'The current repair outcome does not allow an interruption / unrepairable reason.',
+  'syncConflict.title': 'Sync conflicts',
+  'syncConflict.eyebrow': 'Task 09 · Conflict handling',
+  'syncConflict.description':
+    'Records whose local and cloud versions differ: review the diff, then keep the local copy, use the cloud copy, or handle it later.',
+  'syncConflict.filter.pendingOnly': 'Pending only',
+  'syncConflict.filter.all': 'All',
+  'syncConflict.list.empty': 'There is no sync conflict right now.',
+  'syncConflict.list.error': 'Failed to load sync conflicts. Please retry later.',
+  'syncConflict.list.loading': 'Loading sync conflicts…',
+  'syncConflict.list.truncated':
+    'The conflict count exceeds the server scan limit; the list shown is a lower bound.',
+  'syncConflict.column.resourceType': 'Record type',
+  'syncConflict.column.localVersion': 'Local version',
+  'syncConflict.column.cloudVersion': 'Cloud version',
+  'syncConflict.column.status': 'Status',
+  'syncConflict.column.decision': 'Decision',
+  'syncConflict.column.reason': 'Reason',
+  'syncConflict.column.createdAt': 'Created at',
+  'syncConflict.column.actions': 'Actions',
+  'syncConflict.action.view': 'Review diff',
+  'syncConflict.action.later': 'Handle later',
+  'syncConflict.action.cloud': 'Use cloud version',
+  'syncConflict.action.local': 'Keep local version',
+  'syncConflict.action.openSource': 'Open source record',
+  'syncConflict.action.sourceUnavailable': 'The source record is unavailable and cannot be opened.',
+  'syncConflict.action.readOnlyNotice':
+    'The source record is read-only (deleted, offline, frozen or closed); its content cannot be restored or overwritten.',
+  'syncConflict.action.readOnlyAdoptNotice':
+    'The source record is closed (read-only). The cloud version can still be adopted: only the local view is aligned, the closed history is not modified, and no write permission is granted.',
+  'syncConflict.detail.title': 'Conflict detail',
+  'syncConflict.detail.localSnapshot': 'Local snapshot',
+  'syncConflict.detail.cloudSnapshot': 'Cloud snapshot',
+  'syncConflict.detail.diff': 'Field diff',
+  'syncConflict.detail.diff.empty': 'The two snapshots have no field differences.',
+  'syncConflict.detail.diff.truncated':
+    'The diff exceeds the entry limit; only some entries are shown.',
+  'syncConflict.detail.diff.invalid': 'The snapshots cannot be parsed, so the diff is unavailable.',
+  'syncConflict.detail.diff.column.path': 'Field',
+  'syncConflict.detail.diff.column.local': 'Local value',
+  'syncConflict.detail.diff.column.cloud': 'Cloud value',
+  'syncConflict.detail.diff.kind.onlyLocal': 'Local only',
+  'syncConflict.detail.diff.kind.onlyCloud': 'Cloud only',
+  'syncConflict.detail.diff.kind.different': 'Different',
+  'syncConflict.resourceType.OTHER': 'Other record',
+  'syncConflict.status.OTHER': 'Unknown status',
+  'syncConflict.decision.OTHER': 'Unknown decision',
+  'syncConflict.status.PENDING': 'Pending',
+  'syncConflict.status.RESOLVED': 'Resolved',
+  'syncConflict.status.IGNORED': 'Ignored',
+  'syncConflict.decision.PENDING': 'Awaiting decision',
+  'syncConflict.decision.LOCAL': 'Keep local',
+  'syncConflict.decision.CLOUD': 'Use cloud',
+  'syncConflict.resourceType.REPAIR_REQUEST': 'Work order',
+  'syncConflict.resourceType.REFERENCE_DOCUMENT': 'Document',
+  'syncConflict.resourceType.MAINTENANCE_REPORT': 'Maintenance report',
+  'syncConflict.readOnly.SOURCE_WITHDRAWN': 'The source record was deleted or taken offline',
+  'syncConflict.readOnly.SOURCE_FROZEN':
+    'The source record is being processed and its content is frozen',
+  'syncConflict.readOnly.SOURCE_CLOSED': 'The source record is closed and its content is read-only',
+  'recordPackage.title': 'Record packages',
+  'recordPackage.eyebrow': 'Task 09 · USB record packages',
+  'recordPackage.description':
+    'Export authorised records of this company as a USB record package, or safely check and import a record package.',
+  'recordPackage.tab.export': 'Export',
+  'recordPackage.tab.import': 'Import',
+  'recordPackage.export.resourceType': 'Record type',
+  'recordPackage.export.mode': 'Export mode',
+  'recordPackage.export.mode.single': 'Single type (multiple records)',
+  'recordPackage.export.mode.mixed': 'Mixed export (type per entry)',
+  'recordPackage.export.entry.resourceType': 'Record type',
+  'recordPackage.export.entry.recordId': 'Record ID',
+  'recordPackage.export.entry.add': 'Add entry',
+  'recordPackage.export.entry.remove': 'Remove entry',
+  'recordPackage.export.organizationId': 'Target company scope',
+  'recordPackage.export.recordIds': 'Record IDs',
+  'recordPackage.export.targetPath': 'Target directory (absolute local path)',
+  'recordPackage.export.dialogTitle': 'Export a record package to a local directory',
+  'recordPackage.export.cancel': 'Close',
+  'recordPackage.export.submit': 'Export to directory',
+  'recordPackage.export.packageId': 'Package ID',
+  'recordPackage.export.path': 'Package directory',
+  'recordPackage.export.summary': 'Export result',
+  'recordPackage.import.check': 'Safety check',
+  'recordPackage.import.cancel': 'Cancel',
+  'recordPackage.import.confirm': 'Confirm import',
+  'recordPackage.import.confirmTitle': 'Confirm record package import',
+  'recordPackage.import.confirmDescription':
+    'The import writes each record through the controlled entry of its source domain; read-only, incomplete or unsupported entries are rejected and reported truthfully.',
+  'recordPackage.import.manifestChecksum': 'Manifest checksum',
+  'recordPackage.import.checkStatus': 'Check result',
+  'recordPackage.import.status': 'Import status',
+  'recordPackage.import.summary': 'Import result',
+  'recordPackage.import.error.badUserInput':
+    'The record package is invalid. Check the manifest and original files, then export it again.',
+  'recordPackage.import.recheckHint':
+    'Rechecking the same package does not refresh the previous result. If the files were repaired, export a package with a new package ID and check it again; records with the same key may still require manual review.',
+  'recordPackage.column.recordId': 'Record ID',
+  'recordPackage.column.recordUuid': 'Stable ID',
+  'recordPackage.column.resourceType': 'Record type',
+  'recordPackage.column.outcome': 'Export outcome',
+  'recordPackage.column.checkResult': 'Check result',
+  'recordPackage.column.itemResult': 'Import result',
+  'recordPackage.column.message': 'Note',
+  'recordPackage.resourceType.REFERENCE_DOCUMENT': 'Document',
+  'recordPackage.resourceType.REPAIR_REQUEST': 'Work order',
+  'recordPackage.resourceType.MAINTENANCE_REPORT': 'Maintenance report',
+  'recordPackage.outcome.EXPORTED': 'Exported',
+  'recordPackage.outcome.REJECTED': 'Rejected',
+  'recordPackage.checkResult.PASSED': 'Passed',
+  'recordPackage.checkResult.REJECTED': 'Rejected',
+  'recordPackage.checkStatus.PENDING': 'Pending check',
+  'recordPackage.checkStatus.PASSED': 'Check passed',
+  'recordPackage.checkStatus.REJECTED': 'Check failed',
+  'recordPackage.itemResult.SUCCEEDED': 'Imported',
+  'recordPackage.itemResult.FAILED': 'Import failed',
+  'recordPackage.itemResult.SKIPPED': 'Skipped',
+  'recordPackage.itemResult.CONFLICT': 'Conflict',
+  'recordPackage.itemResult.NOT_EXECUTED': 'Not executed (check failed)',
+  'recordPackage.status.PENDING': 'Pending import',
+  'recordPackage.status.RUNNING': 'Importing',
+  'recordPackage.status.SUCCEEDED': 'Import finished',
+  'recordPackage.status.PARTIAL': 'Partially imported',
+  'recordPackage.status.FAILED': 'Import failed',
+  'nav.record-packages.label': 'Record packages',
+  'nav.record-packages.description': 'Export and import USB record packages.',
   'refDocRevise.issue.textTooLong': '{label} must not exceed {limit} characters.',
 } satisfies Record<MessageKey, string>;

@@ -21,6 +21,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { StoredFileSnapshot } from '@src/modules/lithography/lithography.types';
 import { StoredFileService } from '@src/modules/lithography/stored-file.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import {
   STORED_FILE_STORAGE,
   type StoredFileStorage,
@@ -70,6 +71,7 @@ export class BindRepairRequestOriginalUsecase {
   constructor(
     private readonly storedFileService: StoredFileService,
     private readonly accountQueryService: AccountQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(STORED_FILE_STORAGE)
     private readonly storage: StoredFileStorage,
   ) {}
@@ -109,6 +111,12 @@ export class BindRepairRequestOriginalUsecase {
     if (!file) {
       throw new DomainError(STORED_FILE_ERROR.NOT_FOUND, '原件不存在或无权绑定');
     }
+
+    // 恢复期写入冻结：stored_file 属恢复范围表，冻结期绑定会被整体替换掉
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId: ownerOrganizationId,
+      transactionContext,
+    });
 
     this.assertFileBindableFacts(file, {
       accountId: command.session.accountId,

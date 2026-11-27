@@ -1,5 +1,6 @@
 // src/usecases/reference-document/offline-reference-document.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
@@ -47,6 +48,7 @@ import { assertManagementReason } from './reference-document-fields.normalize';
 export class OfflineReferenceDocumentUsecase {
   constructor(
     private readonly referenceDocumentQueryService: ReferenceDocumentQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly revisionService: ReferenceDocumentRevisionService,
     private readonly accountQueryService: AccountQueryService,
@@ -82,6 +84,11 @@ export class OfflineReferenceDocumentUsecase {
       forUpdate: true,
     });
     assertExpectedRevisionNo(current, command.expectedVersion);
+    // 恢复期写入冻结：资料归属公司数据区正在恢复时不得下架
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId: current.ownerOrganizationId,
+      transactionContext,
+    });
 
     // 业务历史快照继承当时生效正文：之后读取（CURRENT_REVISION）不回退原报告
     const effectiveText = await resolveEffectiveContentText(current, {

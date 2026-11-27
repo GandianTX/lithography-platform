@@ -40,6 +40,7 @@
 # Local AI tool state
 **/.codex/
 **/.trae/
+**/.codebuddy/
 
 # Non-public project requirements
 /docs/requirements/

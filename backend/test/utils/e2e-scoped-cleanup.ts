@@ -67,6 +67,7 @@ export type OwnedResourceCategory =
   | 'recordPackageImport'
   | 'recordPackageItem'
   | 'backupAsset'
+  | 'localBackupRun'
   | 'backupRestoreRun'
   | 'managementAuditEvent'
   // 一级管理员新增公司开通提交台账：三个外键（操作者/公司/管理员账号）均 RESTRICT，
@@ -108,6 +109,7 @@ const LEDGER_KEY_BY_CATEGORY: Record<OwnedResourceCategory, OwnedIdKey> = {
   recordPackageImport: 'recordPackageImportIds',
   recordPackageItem: 'recordPackageItemIds',
   backupAsset: 'backupAssetIds',
+  localBackupRun: 'localBackupRunIds',
   backupRestoreRun: 'backupRestoreRunIds',
   managementAuditEvent: 'managementAuditEventIds',
   provisioningRequest: 'provisioningRequestIds',
@@ -381,6 +383,20 @@ export interface OwnedBackupAssetFacts {
 }
 
 /**
+ * local_backup_run：本机备份运行事实（任务 09）。
+ * `backup_asset.run_id` 以 FK RESTRICT 指向它，必须在 backup_asset 之后、organization 之前删除。
+ * 清单路径/摘要与状态为创建即定；文件字节数等派生值不纳入归属证明。
+ */
+export interface OwnedLocalBackupRunFacts {
+  readonly installationId: string;
+  readonly organizationId: number;
+  readonly triggerType: string;
+  readonly status: string;
+  readonly manifestPath: string;
+  readonly manifestChecksum: string;
+}
+
+/**
  * backup_restore_run：被恢复资产/保护资产/目标公司/发起人创建即定；运行状态不纳入。
  * protection_backup_id 自 v13 起可空（预检阶段与历史未知行），因此归属事实按可空比较。
  */
@@ -442,6 +458,7 @@ export interface OwnedFactsByCategory {
   recordPackageImport: OwnedRecordPackageImportFacts;
   recordPackageItem: OwnedRecordPackageItemFacts;
   backupAsset: OwnedBackupAssetFacts;
+  localBackupRun: OwnedLocalBackupRunFacts;
   backupRestoreRun: OwnedBackupRestoreRunFacts;
   managementAuditEvent: OwnedManagementAuditEventFacts;
   provisioningRequest: OwnedProvisioningRequestFacts;
@@ -500,6 +517,7 @@ export interface OwnedResourceLedger {
   recordPackageImportIds: Array<number | string>;
   recordPackageItemIds: number[];
   backupAssetIds: Array<number | string>;
+  localBackupRunIds: number[];
   backupRestoreRunIds: Array<number | string>;
   managementAuditEventIds: Array<number | string>;
   /**
@@ -586,6 +604,7 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
   recordPackageImportIds: [],
   recordPackageItemIds: [],
   backupAssetIds: [],
+  localBackupRunIds: [],
   backupRestoreRunIds: [],
   managementAuditEventIds: [],
   provisioningRequestIds: [],
@@ -615,6 +634,7 @@ export const createOwnedResourceLedger = (): OwnedResourceLedger => ({
     recordPackageImport: new Map(),
     recordPackageItem: new Map(),
     backupAsset: new Map(),
+    localBackupRun: new Map(),
     backupRestoreRun: new Map(),
     managementAuditEvent: new Map(),
     provisioningRequest: new Map(),
@@ -927,6 +947,7 @@ interface CleanupPlan {
   recordPackageImportIds: Array<number | string>;
   recordPackageItemIds: number[];
   backupAssetIds: Array<number | string>;
+  localBackupRunIds: number[];
   backupRestoreRunIds: Array<number | string>;
   managementAuditEventIds: Array<number | string>;
   provisioningRequestIds: number[];
@@ -965,6 +986,7 @@ const emptyPlan = (): CleanupPlan => ({
   recordPackageImportIds: [],
   recordPackageItemIds: [],
   backupAssetIds: [],
+  localBackupRunIds: [],
   backupRestoreRunIds: [],
   managementAuditEventIds: [],
   provisioningRequestIds: [],
@@ -1230,6 +1252,16 @@ interface RecordPackageItemRow {
   resource_type: string;
   version_no: unknown;
   receipt_id: string | null;
+}
+
+interface LocalBackupRunRow {
+  id: number;
+  installation_id: string;
+  organization_id: number;
+  trigger_type: string;
+  status: string;
+  manifest_path: string;
+  manifest_checksum: string;
 }
 
 interface BackupAssetRow {
@@ -1798,6 +1830,7 @@ const FACT_BEARING_CATEGORIES: readonly FactBearingCategory[] = [
   'recordPackageImport',
   'recordPackageItem',
   'backupAsset',
+  'localBackupRun',
   'backupRestoreRun',
   'managementAuditEvent',
   'provisioningRequest',
@@ -2610,6 +2643,37 @@ const verifyOwnedExpectations = async (
     }
   }
 
+  if (owned.facts.localBackupRun.size > 0) {
+    const ids = [...owned.facts.localBackupRun.keys()];
+    const rows: LocalBackupRunRow[] = await manager.query(
+      `SELECT id, installation_id, organization_id, trigger_type, status,
+              manifest_path, manifest_checksum
+         FROM local_backup_run
+        WHERE id IN (${inClause(ids)})
+        FOR UPDATE`,
+      ids,
+    );
+    const rowById = new Map(rows.map((row) => [asNumber(row.id), row]));
+    for (const [id, expected] of owned.facts.localBackupRun) {
+      const row = rowById.get(asNumber(id));
+      if (!row) {
+        continue;
+      }
+      const mismatches: string[] = [];
+      if (row.installation_id !== expected.installationId) mismatches.push('installation_id');
+      if (asNumber(row.organization_id) !== expected.organizationId) {
+        mismatches.push('organization_id');
+      }
+      if (row.trigger_type !== expected.triggerType) mismatches.push('trigger_type');
+      if (row.status !== expected.status) mismatches.push('status');
+      if (row.manifest_path !== expected.manifestPath) mismatches.push('manifest_path');
+      if (row.manifest_checksum !== expected.manifestChecksum) {
+        mismatches.push('manifest_checksum');
+      }
+      if (mismatches.length > 0) drift('localBackupRun', id, mismatches);
+    }
+  }
+
   if (owned.facts.backupRestoreRun.size > 0) {
     const ids = [...owned.facts.backupRestoreRun.keys()];
     const rows: BackupRestoreRunRow[] = await manager.query(
@@ -3043,6 +3107,16 @@ const collectV13OwnedGraph = async (
     orgIds,
     plan.backupRestoreRunIds,
     'backupRestoreRun',
+  );
+  // 本轮备份运行的入向引用（backup_asset.run_id）必须都在删除计划内，
+  // 否则 backup_asset 先删后 local_backup_run 会留下外部引用。
+  await collectByParent(
+    'backup_asset',
+    'backup_id',
+    'run_id',
+    plan.localBackupRunIds,
+    plan.backupAssetIds,
+    'backupAsset',
   );
   await collectByParent(
     'management_audit_event',
@@ -4073,6 +4147,8 @@ const deleteVerifiedPlan = async (manager: EntityManager, plan: CleanupPlan): Pr
     plan.recordPackageImportIds,
   );
   await deleteByColumnIds(manager, 'backup_asset', 'backup_id', plan.backupAssetIds);
+  // backup_asset 已清掉 ⇒ local_backup_run 无入向引用；公司仍在，必须在本行之后删除。
+  await deleteByIds(manager, 'local_backup_run', plan.localBackupRunIds);
   await deleteByColumnIds(
     manager,
     'management_audit_event',
@@ -4259,6 +4335,7 @@ const buildOwnedCleanupPlan = (
   plan.recordPackageImportIds = toMixedIdList(owned.recordPackageImportIds);
   plan.recordPackageItemIds = toIdList(owned.recordPackageItemIds);
   plan.backupAssetIds = toMixedIdList(owned.backupAssetIds);
+  plan.localBackupRunIds = toIdList(owned.localBackupRunIds);
   plan.backupRestoreRunIds = toMixedIdList(owned.backupRestoreRunIds);
   plan.managementAuditEventIds = toMixedIdList(owned.managementAuditEventIds);
   plan.provisioningRequestIds = toIdList(owned.provisioningRequestIds);

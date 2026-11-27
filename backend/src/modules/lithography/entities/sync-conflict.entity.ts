@@ -91,6 +91,15 @@ export class SyncConflictEntity {
   })
   decision!: string | null;
 
+  @Column({
+    name: 'local_resolution_state',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+    comment: '保留本地裁决幂等状态：WRITING/WRITTEN；旧行 NULL 表示从未走过本地裁决',
+  })
+  localResolutionState!: string | null;
+
   @Column({ name: 'local_snapshot', type: 'longtext', comment: '本地快照 JSON' })
   localSnapshot!: string;
 

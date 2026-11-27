@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import { PERMISSION_ERROR, REPAIR_REQUEST_ERROR } from '@core/common/errors/domain-error';
@@ -65,6 +66,13 @@ const makeUsecase = (
     repairProcessEntryService as unknown as RepairProcessEntryService,
     bindUsecase as unknown as BindRepairProcessOriginalUsecase,
     organizationContext as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     transactionRunner,
   );
 

@@ -1,0 +1,548 @@
+// src/modules/lithography/local-backup-upload.service.spec.ts
+
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
+import { LocalBackupUploadService } from './local-backup-upload.service';
+import type { BackupAssetEntity } from './entities/backup-asset.entity';
+import type { LocalAccountAuthorizationEntity } from './entities/local-account-authorization.entity';
+import type { LocalCompanySettingEntity } from './entities/local-company-setting.entity';
+import type {
+  LocalBackupUploadRequest,
+  LocalBackupUploadResult,
+  LocalBackupUploader,
+} from '@src/usecases/common/ports/local-backup-upload.contract';
+import {
+  asPinoLogger,
+  createTestPinoLogger,
+  type TestPinoLogger,
+} from '../../../test/utils/test-pino-logger';
+
+/**
+ * 自动上云重试执行器单测（任务 09 S3.2）。
+ *
+ * 受控替身只证明本任务能证明的边界：失败分类、退避、重启后定位同一资产、
+ * 开关关闭、授权失效与重复调度。真实云端接收端、认证与完整回执另列待联调。
+ */
+describe('local backup upload service', () => {
+  const base = new Date('2026-11-21T00:00:00.000Z');
+
+  function asset(overrides: Partial<BackupAssetEntity> = {}): BackupAssetEntity {
+    return {
+      backupId: 'backup-1',
+      organizationId: 4,
+      runId: 10,
+      installationId: 'inst-1',
+      localReference: '/var/local-backups/4/manual-1',
+      cloudStatus: 'PENDING',
+      cloudReference: null,
+      cloudReceipt: null,
+      manifestChecksum: 'a'.repeat(64),
+      fileSha256: 'a'.repeat(64),
+      byteSize: 100,
+      localStatus: 'PENDING',
+      deletedAt: null,
+      failureReason: null,
+      localCleanupError: null,
+      verifiedAt: null,
+      retentionUntil: null,
+      attemptCount: 0,
+      lastAttemptAt: null,
+      createdAt: base,
+      updatedAt: base,
+      ...overrides,
+    } as BackupAssetEntity;
+  }
+
+  function setting(overrides: Partial<LocalCompanySettingEntity> = {}): LocalCompanySettingEntity {
+    return {
+      organizationId: 4,
+      installationId: 'inst-1',
+      backupEnabled: true,
+      backupIntervalHours: 72,
+      nextBackupAt: null,
+      lastAutoSuccessAt: null,
+      lastAutoFailureAt: null,
+      failureReason: null,
+      autoUploadEnabled: true,
+      isCurrent: true,
+      initializedAt: base,
+      createdAt: base,
+      updatedAt: base,
+      ...overrides,
+    } as LocalCompanySettingEntity;
+  }
+
+  function authorization(
+    overrides: Partial<LocalAccountAuthorizationEntity> = {},
+  ): LocalAccountAuthorizationEntity {
+    return {
+      id: '1',
+      installationId: 'inst-1',
+      accountId: 10,
+      organizationId: 4,
+      authorizationStatus: 'ACTIVE',
+      authorizedAt: base,
+      // 用途维度（S4）：上云只认**云备份用途**的凭据，业务同步授权不得充数
+      signedClaims: JSON.stringify({ purpose: ['CLOUD_BACKUP'] }),
+      permissionVersion: null,
+      lastVerifiedAt: null,
+      ...overrides,
+    } as LocalAccountAuthorizationEntity;
+  }
+
+  function buildService(options: {
+    assets: BackupAssetEntity[];
+    settings: LocalCompanySettingEntity[];
+    /** 显式传 undefined 模拟 Nest 对未提供的 @Optional() 依赖注入 undefined 的情形 */
+    uploader: LocalBackupUploader | null | undefined;
+    /** 可选：注入日志替身，便于断言"原始异常只进日志" */
+    logger?: TestPinoLogger;
+    /** 可选：本机授权事实（默认一条 ACTIVE 授权） */
+    authorizations?: LocalAccountAuthorizationEntity[];
+  }) {
+    const updates: { backupId: string; patch: Record<string, unknown> }[] = [];
+    const backupAssetRepository = {
+      find: jest.fn().mockImplementation((input: { where: Record<string, unknown> }) => {
+        const where = input.where ?? {};
+        return Promise.resolve(
+          options.assets.filter((row) =>
+            Object.entries(where).every(([key, value]) => {
+              const actual = row[key as keyof BackupAssetEntity];
+              if (Array.isArray(value)) {
+                return value.includes(actual);
+              }
+              // TypeORM 的 In()/LessThan() 包装为 FindOperator（_type + value）。
+              const operator = value as Record<string, unknown>;
+              const operatorType = operator['_type'];
+              const operatorValue = operator['value'];
+              if (operatorType === 'in' && Array.isArray(operatorValue)) {
+                return operatorValue.includes(actual);
+              }
+              if (operatorType === 'lessThan') {
+                const bound = operatorValue as number | Date;
+                if (typeof actual === 'number' && typeof bound === 'number') {
+                  return actual < bound;
+                }
+                if (actual instanceof Date && bound instanceof Date) {
+                  return actual.getTime() < bound.getTime();
+                }
+                return false;
+              }
+              return actual === value;
+            }),
+          ),
+        );
+      }),
+      update: jest
+        .fn()
+        .mockImplementation((where: { backupId: string }, patch: Record<string, unknown>) => {
+          updates.push({ backupId: where.backupId, patch });
+          const target = options.assets.find((row) => row.backupId === where.backupId);
+          if (target) {
+            Object.assign(target, patch);
+          }
+          return Promise.resolve({ affected: 1 });
+        }),
+    };
+    const settingRepository = {
+      find: jest.fn().mockResolvedValue(options.settings),
+    };
+    const authorizationRepository = {
+      find: jest
+        .fn()
+        .mockImplementation((input: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            (options.authorizations ?? [authorization()]).filter((row) =>
+              Object.entries(input.where ?? {}).every(
+                ([key, value]) => row[key as keyof LocalAccountAuthorizationEntity] === value,
+              ),
+            ),
+          ),
+        ),
+    };
+    const service = new LocalBackupUploadService(
+      backupAssetRepository as never,
+      settingRepository as never,
+      authorizationRepository as never,
+      asPinoLogger(options.logger ?? createTestPinoLogger()),
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
+      options.uploader,
+    );
+
+    return { service, updates };
+  }
+
+  it('云接收端未接入时如实跳过：不伪造尝试、不增长尝试次数、不改上云状态（但落受控原因码）', async () => {
+    const { service, updates } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader: null,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.receiverMissing).toBe(1);
+    expect(result.attempted).toBe(0);
+    expect(result.succeeded).toBe(0);
+    expect(result.failed).toBe(0);
+    // 只落受控原因码（页面可见"为什么没上传"），**不改上云状态**、不伪造尝试
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch).toEqual({
+      failureReason: 'LOCAL_UPLOAD_RECEIVER_MISSING',
+    });
+    expect(updates[0].patch).not.toHaveProperty('cloudStatus');
+  });
+
+  it('可选依赖未注册时（Nest 注入 undefined）同样按未接入处理', async () => {
+    // 不提供接收端：Nest 会把未注册的 @Optional() 依赖注入为 undefined，
+    // 这里必须与显式 null 走同一条"如实跳过"路径，而不是崩溃或伪造尝试。
+    const { service, updates } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader: undefined,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.receiverMissing).toBe(1);
+    expect(result.attempted).toBe(0);
+    expect(result.succeeded).toBe(0);
+    expect(result.failed).toBe(0);
+    // 只落受控原因码（页面可见"为什么没上传"），**不改上云状态**、不伪造尝试
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch).toEqual({
+      failureReason: 'LOCAL_UPLOAD_RECEIVER_MISSING',
+    });
+    expect(updates[0].patch).not.toHaveProperty('cloudStatus');
+  });
+
+  it('上传失败后按退避重试同一备份包，不生成新的资产或包', async () => {
+    const calls: LocalBackupUploadRequest[] = [];
+    const uploader: LocalBackupUploader = {
+      upload: (request: LocalBackupUploadRequest) => {
+        calls.push(request);
+        return Promise.resolve({
+          status: 'FAILED',
+          code: 'RECEIVER_REJECTED',
+          reason: '云端拒绝接收',
+        } satisfies LocalBackupUploadResult);
+      },
+    };
+    const { service, updates } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.attempted).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].backupId).toBe('backup-1');
+    expect(updates[0].patch).toMatchObject({
+      cloudStatus: 'UPLOADING',
+      attemptCount: 1,
+      lastAttemptAt: base,
+    });
+    expect(updates[1].patch).toMatchObject({
+      cloudStatus: 'FAILED',
+      failureReason: 'LOCAL_UPLOAD_FAILED',
+    });
+  });
+
+  // 接收端返回**自由文本**原因时不得原样落库（可能含本机路径或凭据片段）：
+  // 一律降级为通用受控码，原始文本只进服务端日志。
+  it('接收端返回非受控原因文本时降级为通用受控码，原始文本只进日志', async () => {
+    const logger = createTestPinoLogger();
+    const uploader: LocalBackupUploader = {
+      upload: () =>
+        Promise.resolve({
+          status: 'FAILED',
+          code: 'RECEIVER_REJECTED',
+          reason: '拒绝接收：/var/local-backups/4/manual-1',
+        } satisfies LocalBackupUploadResult),
+    };
+    const { service, updates } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader,
+      logger,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.failed).toBe(1);
+    expect(updates[1].patch).toMatchObject({
+      cloudStatus: 'FAILED',
+      failureReason: 'LOCAL_UPLOAD_FAILED',
+    });
+    // 原始文本进了日志（不进落库列与对外字段）
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('S4 自检｜多资产部分失败：逐项如实登记，其余资产不受影响', async () => {
+    const calls: LocalBackupUploadRequest[] = [];
+    const uploader: LocalBackupUploader = {
+      upload: (request: LocalBackupUploadRequest) => {
+        calls.push(request);
+        // 只有 backup-2 被云端拒绝，其余成功
+        if (request.backupId === 'backup-2') {
+          return Promise.resolve({
+            status: 'FAILED',
+            code: 'RECEIVER_REJECTED',
+            reason: '云端拒绝接收',
+          } satisfies LocalBackupUploadResult);
+        }
+        return Promise.resolve({
+          status: 'SUCCEEDED',
+          receipt: JSON.stringify({ schema_version: 1, received_at: base.toISOString() }),
+          cloudReference: 'cloud-ref-1',
+        } satisfies LocalBackupUploadResult);
+      },
+    };
+    const { service, updates } = buildService({
+      assets: [
+        asset({ backupId: 'backup-1' }),
+        asset({ backupId: 'backup-2' }),
+        asset({ backupId: 'backup-3' }),
+      ],
+      settings: [setting()],
+      uploader,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.attempted).toBe(3);
+    expect(result.succeeded).toBe(2);
+    expect(result.failed).toBe(1);
+    // 逐项状态如实登记：失败项落 FAILED ＋受控原因码，成功项落 SUCCEEDED ＋回执
+    const byBackup = new Map(updates.map((entry) => [entry.backupId, entry.patch]));
+    expect(byBackup.get('backup-2')).toMatchObject({
+      cloudStatus: 'FAILED',
+      // 受控原因码只认白名单：替身返回的非白名单码降级为通用受控码（不回显自由文本）
+      failureReason: 'LOCAL_UPLOAD_FAILED',
+    });
+    expect(byBackup.get('backup-1')).toMatchObject({ cloudStatus: 'SUCCEEDED' });
+    expect(byBackup.get('backup-3')).toMatchObject({ cloudStatus: 'SUCCEEDED' });
+    // 失败不产生成功回执，也不触发本地包清理
+    expect(updates.filter((entry) => entry.patch.localStatus === 'CLEANED')).toHaveLength(0);
+  });
+
+  it('S4 自检｜云开关只管上云：关闭云开关不影响备份计划与授权事实', async () => {
+    const uploader: LocalBackupUploader = {
+      upload: () =>
+        Promise.resolve({
+          status: 'SUCCEEDED',
+          receipt: JSON.stringify({ schema_version: 1, received_at: base.toISOString() }),
+          cloudReference: 'cloud-ref-1',
+        } satisfies LocalBackupUploadResult),
+    };
+    const { service, updates } = buildService({
+      assets: [asset()],
+      // 云开关关闭，但本地自动备份计划仍启用、授权仍有效
+      settings: [setting({ autoUploadEnabled: false, backupEnabled: true })],
+      uploader,
+    });
+
+    const result = await service.runOnce(base);
+
+    // 云开关关闭 → 本轮不产生上云尝试；本地计划与授权事实未被改动
+    expect(result.attempted).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('上传成功记录完整回执，且不触发本地包清理', async () => {
+    const uploader: LocalBackupUploader = {
+      upload: () =>
+        Promise.resolve({
+          status: 'SUCCEEDED',
+          cloudReference: 'cloud://backup-1',
+          receipt: '{"received":true}',
+        } satisfies LocalBackupUploadResult),
+    };
+    const { service, updates } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader,
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.succeeded).toBe(1);
+    expect(updates[1].patch).toMatchObject({
+      cloudStatus: 'SUCCEEDED',
+      cloudReference: 'cloud://backup-1',
+      cloudReceipt: '{"received":true}',
+    });
+    expect(
+      updates.every((entry) => !('localStatus' in entry.patch) && !('deletedAt' in entry.patch)),
+    ).toBe(true);
+  });
+
+  it('退避未到期的失败资产本轮不重试', async () => {
+    const uploader: LocalBackupUploader = {
+      upload: () => Promise.resolve({ status: 'FAILED', code: 'X', reason: 'r' }),
+    };
+    const { service } = buildService({
+      assets: [asset({ cloudStatus: 'FAILED', attemptCount: 2, lastAttemptAt: base })],
+      settings: [setting()],
+      uploader,
+    });
+
+    const result = await service.runOnce(new Date(base.getTime() + 60_000));
+
+    expect(result.waiting).toBe(1);
+    expect(result.attempted).toBe(0);
+  });
+
+  // 第 10 项 L2：本机包结构性失败（超限／清单不一致／清单不可读）重试无用，
+  // 不得再按退避周期反复重试同一份无效包。
+  it('本机包结构性失败（超限）⇒ 终态：不再尝试上传，也不增长尝试次数', async () => {
+    const upload = jest.fn();
+    const { service } = buildService({
+      assets: [
+        asset({
+          cloudStatus: 'FAILED',
+          attemptCount: 1,
+          lastAttemptAt: base,
+          failureReason: 'CLOUD_PACKAGE_TOO_LARGE',
+        }),
+      ],
+      settings: [setting()],
+      uploader: { upload },
+    });
+
+    // 远晚于任何退避到期时刻
+    const result = await service.runOnce(new Date(base.getTime() + 24 * 60 * 60_000));
+
+    expect(result.skipped).toBe(1);
+    expect(result.attempted).toBe(0);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('远端/网络类失败 ⇒ 仍按退避重试（不被误判为终态）', async () => {
+    const upload = jest.fn().mockResolvedValue({
+      status: 'FAILED',
+      code: 'CLOUD_UNREACHABLE',
+      reason: 'CLOUD_UNREACHABLE',
+    });
+    const { service } = buildService({
+      assets: [
+        asset({
+          cloudStatus: 'FAILED',
+          attemptCount: 1,
+          lastAttemptAt: base,
+          failureReason: 'CLOUD_UNREACHABLE',
+        }),
+      ],
+      settings: [setting()],
+      uploader: { upload },
+    });
+
+    const result = await service.runOnce(new Date(base.getTime() + 11 * 60_000));
+
+    expect(result.attempted).toBe(1);
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('云开关关闭时不再产生新的上传尝试', async () => {
+    const upload = jest.fn();
+    const { service } = buildService({
+      assets: [asset({ cloudStatus: 'FAILED', attemptCount: 5, lastAttemptAt: base })],
+      settings: [setting({ autoUploadEnabled: false })],
+      uploader: { upload },
+    });
+
+    const result = await service.runOnce(new Date(base.getTime() + 10 * 60_000));
+
+    expect(result.skipped).toBe(1);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('授权失效时不尝试上传', async () => {
+    const upload = jest.fn();
+    const { service } = buildService({
+      assets: [asset()],
+      settings: [],
+      uploader: { upload },
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.skipped).toBe(1);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  // 授权有效性必须看**真实授权事实**：设置行存在但授权已撤销时不得继续上云。
+  it('授权被撤销时即使云开关是开的也不尝试上传', async () => {
+    const upload = jest.fn();
+    const { service } = buildService({
+      assets: [asset()],
+      settings: [setting()],
+      uploader: { upload },
+      authorizations: [authorization({ authorizationStatus: 'REVOKED' })],
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.skipped).toBe(1);
+    expect(result.attempted).toBe(0);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('进程重启后残留的 UPLOADING 改判失败并按退避重试同一资产', async () => {
+    const upload = jest.fn().mockResolvedValue({
+      status: 'FAILED',
+      code: 'X',
+      reason: '重试失败',
+    } satisfies LocalBackupUploadResult);
+    const { service, updates } = buildService({
+      assets: [
+        asset({
+          cloudStatus: 'UPLOADING',
+          attemptCount: 1,
+          lastAttemptAt: new Date(base.getTime() - 60 * 60_000),
+        }),
+      ],
+      settings: [setting()],
+      uploader: { upload },
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.compensated).toBe(1);
+    expect(result.attempted).toBe(1);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(upload.mock.calls[0][0].backupId).toBe('backup-1');
+    expect(updates[0].patch).toMatchObject({
+      cloudStatus: 'FAILED',
+      // 失败原因必须是**受控码**（该列同时被终态判定读取，且前端按码映射文案）
+      failureReason: 'LOCAL_UPLOAD_INTERRUPTED',
+    });
+  });
+
+  it('重复调度时同一轮内每个资产只尝试一次', async () => {
+    const upload = jest.fn().mockResolvedValue({
+      status: 'FAILED',
+      code: 'X',
+      reason: 'r',
+    } satisfies LocalBackupUploadResult);
+    const { service } = buildService({
+      assets: [asset({ backupId: 'backup-1' }), asset({ backupId: 'backup-2' })],
+      settings: [setting()],
+      uploader: { upload },
+    });
+
+    const result = await service.runOnce(base);
+
+    expect(result.attempted).toBe(2);
+    expect(upload).toHaveBeenCalledTimes(2);
+  });
+});

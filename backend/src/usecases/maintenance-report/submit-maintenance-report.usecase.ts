@@ -8,6 +8,7 @@ import {
 import { DomainError, MAINTENANCE_REPORT_ERROR } from '@core/common/errors/domain-error';
 import { Inject, Injectable } from '@nestjs/common';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
@@ -60,6 +61,7 @@ export class SubmitMaintenanceReportUsecase {
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(ANALYSIS_OUTPUT_READER)
     private readonly analysisOutputReader: AnalysisOutputReader,
     @Inject(TRANSACTION_RUNNER)
@@ -88,6 +90,11 @@ export class SubmitMaintenanceReportUsecase {
       organizationContextService: this.organizationContextService,
       accountId: command.session.accountId,
       reportId: command.reportId,
+      transactionContext,
+    });
+    // 恢复期写入冻结：报告归属公司数据区正在恢复时不得提交
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId: lock.report.ownerOrganizationId,
       transactionContext,
     });
     const draft = await this.maintenanceReportQueryService.readDraftDetail(

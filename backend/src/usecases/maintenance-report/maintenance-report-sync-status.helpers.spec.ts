@@ -8,10 +8,19 @@ import type {
   MaintenanceReportSyncStatusEntry,
   MaintenanceReportSyncStatusReader,
 } from './ports/maintenance-report-sync-status-reader.contract';
+import { IdentityTypeEnum } from '@app-types/models/account.types';
+import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   attachMaintenanceReportSyncStatuses,
   buildMaintenanceReportSyncStatusQuery,
 } from './maintenance-report-sync-status.helpers';
+
+/** 服务端可信会话（记录级授权由提供方据此裁决，载荷不含身份） */
+const SESSION: UsecaseSession = {
+  accountId: 900001,
+  activeRole: IdentityTypeEnum.ENGINEER,
+  roles: ['ENGINEER'],
+};
 
 const ORG_ID = 101;
 const UUID = '6fd663eb-6d92-47be-9fbf-c591f7eb8e67';
@@ -73,9 +82,9 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
   it('records 为空时不调用提供方', async () => {
     const reader = makeReader();
 
-    await expect(attachMaintenanceReportSyncStatuses({ reader, records: [] })).resolves.toEqual(
-      new Map(),
-    );
+    await expect(
+      attachMaintenanceReportSyncStatuses({ reader, session: SESSION, records: [] }),
+    ).resolves.toEqual(new Map());
     expect(reader.fetchStatuses).not.toHaveBeenCalled();
   });
 
@@ -84,6 +93,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [
         { id: 1, facts: trustedFacts },
         { id: 2, facts: { ...trustedFacts, recordUuid: null } },
@@ -99,12 +109,13 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: { ...trustedFacts, recordUuid: null } }],
     });
 
     expect(result.get(1)).toMatchObject({ status: 'UNKNOWN' });
     expect(reader.fetchStatuses).toHaveBeenCalledTimes(1);
-    expect(reader.fetchStatuses).toHaveBeenCalledWith([]);
+    expect(reader.fetchStatuses).toHaveBeenCalledWith(SESSION, []);
   });
 
   it('已装配且草稿 0 版本：不发真实查询，映射缺失按 UNKNOWN 展示', async () => {
@@ -112,11 +123,12 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: { ...trustedFacts, currentVersionNo: 0 } }],
     });
 
     expect(result.get(1)).toMatchObject({ status: 'UNKNOWN' });
-    expect(reader.fetchStatuses).toHaveBeenCalledWith([]);
+    expect(reader.fetchStatuses).toHaveBeenCalledWith(SESSION, []);
   });
 
   it('当前版本待上传/上传中/失败：透传提供方聚合状态（仅 BUSINESS_SYNC 口径由提供方裁决）', async () => {
@@ -125,6 +137,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
       const result = await attachMaintenanceReportSyncStatuses({
         reader,
+        session: SESSION,
         records: [{ id: 1, facts: trustedFacts }],
       });
 
@@ -137,6 +150,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -158,6 +172,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -181,6 +196,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
       const result = await attachMaintenanceReportSyncStatuses({
         reader,
+        session: SESSION,
         records: [{ id: 1, facts: trustedFacts }],
       });
 
@@ -196,6 +212,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -210,6 +227,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -221,6 +239,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -235,6 +254,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -249,6 +269,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -263,6 +284,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -278,6 +300,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
       const result = await attachMaintenanceReportSyncStatuses({
         reader,
+        session: SESSION,
         records: [{ id: 1, facts: trustedFacts }],
       });
 
@@ -293,6 +316,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -306,6 +330,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [
         { id: 1, facts: trustedFacts },
         { id: 2, facts: { ...trustedFacts, recordUuid: null } },
@@ -322,6 +347,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [{ id: 1, facts: trustedFacts }],
     });
 
@@ -336,6 +362,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
 
     const result = await attachMaintenanceReportSyncStatuses({
       reader,
+      session: SESSION,
       records: [
         { id: 1, facts: trustedFacts },
         { id: 2, facts: { ...trustedFacts, recordUuid: OTHER_UUID, currentVersionNo: 4 } },
@@ -344,7 +371,7 @@ describe('attachMaintenanceReportSyncStatuses（批量装配）', () => {
     });
 
     expect(reader.fetchStatuses).toHaveBeenCalledTimes(1);
-    expect(reader.fetchStatuses).toHaveBeenCalledWith([
+    expect(reader.fetchStatuses).toHaveBeenCalledWith(SESSION, [
       {
         organizationId: ORG_ID,
         resourceType: 'MAINTENANCE_REPORT',

@@ -59,6 +59,8 @@ describe('RepairRequestService', () => {
       intakeId: null,
       customerOrganizationId: null,
       serviceOrganizationId: null,
+      // 归属公司（恢复期写入冻结的判定口径列）：旧调用方不传 ⇒ null
+      ownerOrganizationId: null,
     });
   });
 

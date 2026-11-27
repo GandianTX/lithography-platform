@@ -1,5 +1,6 @@
 // src/usecases/repair-request/bind-repair-process-original.usecase.ts
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import {
@@ -75,6 +76,7 @@ export class BindRepairProcessOriginalUsecase {
     private readonly storedFileQueryService: StoredFileQueryService,
     private readonly repairRequestService: RepairRequestService,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(STORED_FILE_STORAGE)
     private readonly storage: StoredFileStorage,
   ) {}
@@ -99,6 +101,12 @@ export class BindRepairProcessOriginalUsecase {
 
     const membership = await this.trustedOrganizationContext.resolveForAccount({
       accountId: command.session.accountId,
+      transactionContext,
+    });
+
+    // 恢复期写入冻结：stored_file 属恢复范围表，冻结期不得绑定原件
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId: membership.organizationId,
       transactionContext,
     });
 

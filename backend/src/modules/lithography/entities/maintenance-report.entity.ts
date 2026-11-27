@@ -24,6 +24,7 @@ import {
   ['createdByAccountId', 'ownerOrganizationId', 'submissionRequestId'],
   { unique: true },
 )
+@Index('uk_maintenance_report_record_uuid', ['recordUuid'], { unique: true })
 @ForeignKey('OrganizationEntity', ['ownerOrganizationId'], ['id'], {
   name: 'fk_maintenance_report_owner_organization',
   onDelete: 'RESTRICT',
@@ -107,6 +108,19 @@ import {
 export class MaintenanceReportEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '报告主键ID' })
   id!: number;
+
+  /**
+   * 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化。
+   * 历史行保持 NULL（不回填派生值冒充可信跨端身份）。
+   */
+  @Column({
+    name: 'record_uuid',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '跨端稳定业务编号；历史行保持 NULL',
+  })
+  recordUuid!: string | null;
 
   @Column({ name: 'owner_organization_id', type: 'int', comment: '所属组织ID' })
   ownerOrganizationId!: number;

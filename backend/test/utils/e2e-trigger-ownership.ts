@@ -35,6 +35,8 @@ import { assertDataSourceOnAllowedE2eDatabase, assertPhysicalCleanupConsent } fr
 export type OwnedTriggerFact = {
   readonly name: string;
   readonly tableName: string;
+  readonly timing: 'BEFORE' | 'AFTER';
+  readonly event: 'DELETE' | 'INSERT';
   readonly definition: string;
 };
 
@@ -42,6 +44,8 @@ export type OwnedTriggerFact = {
 export type OwnedTriggerRecord = {
   readonly name: string;
   readonly tableName: string;
+  readonly timing: 'BEFORE' | 'AFTER';
+  readonly event: 'DELETE' | 'INSERT';
   /** 调用方注入的触发器体：回读失败时用于核验当前对象归属 */
   readonly body: string;
   /** 创建后回读成功的事实；null = 待核验（不得视为已确认归属） */
@@ -173,8 +177,17 @@ export const readOwnedTriggerFact = async (
   name: string,
 ): Promise<OwnedTriggerFact | null> => {
   assertTriggerNameFormat(name);
-  const rows = await ds.query<Array<{ name: string; tableName: string; definition: string }>>(
-    'SELECT TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS tableName, ACTION_STATEMENT AS definition ' +
+  const rows = await ds.query<
+    Array<{
+      name: string;
+      tableName: string;
+      timing: 'BEFORE' | 'AFTER';
+      event: 'DELETE' | 'INSERT';
+      definition: string;
+    }>
+  >(
+    'SELECT TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS tableName, ACTION_TIMING AS timing, ' +
+      'EVENT_MANIPULATION AS event, ACTION_STATEMENT AS definition ' +
       'FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = ?',
     [name],
   );
@@ -185,6 +198,8 @@ export const readOwnedTriggerFact = async (
   return {
     name: row.name,
     tableName: row.tableName,
+    timing: row.timing,
+    event: row.event,
     definition: row.definition,
   };
 };
@@ -200,12 +215,16 @@ export const createOwnedTrigger = async (params: {
   dataSource: DataSource;
   name: string;
   tableName: string;
-  /** 触发器体（调用方负责只做故障注入，不含业务写） */
+  /** 触发器体（调用方负责只做故障注入或探针写入，不含业务裁决） */
   body: string;
   tracker: TriggerOwnershipTracker;
+  timing?: 'BEFORE' | 'AFTER';
+  event?: 'DELETE' | 'INSERT';
 }): Promise<OwnedTriggerFact> => {
   const helper = 'createOwnedTrigger';
   const tracker = assertTriggerOwnershipTracker(params.tracker, helper);
+  const timing = params.timing ?? 'BEFORE';
+  const event = params.event ?? 'DELETE';
   assertTriggerNameFormat(params.name);
   await assertTriggerTarget(params.dataSource, helper);
 
@@ -218,7 +237,7 @@ export const createOwnedTrigger = async (params: {
   }
 
   await params.dataSource.query(
-    `CREATE TRIGGER \`${params.name}\` BEFORE DELETE ON \`${params.tableName}\` ` +
+    `CREATE TRIGGER \`${params.name}\` ${timing} ${event} ON \`${params.tableName}\` ` +
       `FOR EACH ROW ${params.body}`,
   );
 
@@ -226,6 +245,8 @@ export const createOwnedTrigger = async (params: {
   const record: OwnedTriggerRecord = {
     name: params.name,
     tableName: params.tableName,
+    timing,
+    event,
     body: params.body,
     fact: null,
   };
@@ -234,12 +255,14 @@ export const createOwnedTrigger = async (params: {
   tracker.register(record);
 
   const recorded = await readOwnedTriggerFact(params.dataSource, params.name);
-  // 回读成功也必须证明「当前对象仍是本次 CREATE 的对象」：名称 / 表 / 注入体三项匹配
+  // 回读成功也必须证明「当前对象仍是本次 CREATE 的对象」：名称 / 表 / 时机 / 事件 / 注入体匹配
   // 才可补齐事实；否则视为同名替换，保留待核验登记并由收尾阶段拒绝删除。
   if (
     recorded === null ||
     recorded.name !== params.name ||
     recorded.tableName !== params.tableName ||
+    recorded.timing !== timing ||
+    recorded.event !== event ||
     normalizeDefinition(recorded.definition) !== normalizeDefinition(params.body)
   ) {
     throw new Error(
@@ -284,11 +307,13 @@ const disposeRecord = async (
     const expectedDefinition = record.fact?.definition ?? record.body;
     if (
       current.tableName !== record.tableName ||
+      current.timing !== record.timing ||
+      current.event !== record.event ||
       normalizeDefinition(current.definition) !== normalizeDefinition(expectedDefinition)
     ) {
       throw new Error(
         `[${helper}] 阶段=归属校验 拒绝删除：触发器 ${record.name} 的当前定义与本轮记录不一致` +
-          `（当前表 ${current.tableName}，本轮表 ${record.tableName}）`,
+          `（当前 ${current.timing} ${current.event} ON ${current.tableName}，本轮 ${record.timing} ${record.event} ON ${record.tableName}）`,
       );
     }
   }
@@ -319,6 +344,8 @@ export const disposeOwnedTrigger = async (
   const expectedDefinition = record.fact?.definition ?? record.body;
   if (
     owned.tableName !== record.tableName ||
+    owned.timing !== record.timing ||
+    owned.event !== record.event ||
     normalizeDefinition(owned.definition) !== normalizeDefinition(expectedDefinition)
   ) {
     throw new Error(

@@ -4,6 +4,7 @@ import type { PersistenceTransactionContext } from '@app-types/common/transactio
 import { DomainError, REFERENCE_DOCUMENT_ERROR } from '@core/common/errors/domain-error';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'node:crypto';
 import { getTypeOrmEntityManager } from '@src/infrastructure/database/transaction/typeorm-persistence-transaction-context';
 import { Repository, type QueryDeepPartialEntity } from 'typeorm';
 import { ReferenceDocumentEntity } from './entities/reference-document.entity';
@@ -58,6 +59,8 @@ export class ReferenceDocumentService {
     try {
       const entity = repository.create({
         title: data.title,
+        // 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化
+        recordUuid: randomUUID(),
         documentType: data.documentType,
         equipmentModelId: data.equipmentModelId,
         equipmentModelText: data.equipmentModelText ?? null,

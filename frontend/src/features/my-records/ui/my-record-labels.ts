@@ -1,6 +1,7 @@
 // src/features/my-records/ui/my-record-labels.ts
 
 import type { MessageKey } from '@/shared/i18n';
+import { resolveControlledCodeKey } from '@/shared/i18n/controlled-code';
 
 import type { MyRecordSourceType, MyRecordSyncStatus } from '../infrastructure/my-records.types';
 
@@ -20,11 +21,17 @@ export const MY_RECORD_SOURCE_LABEL_KEYS: Record<MyRecordSourceType, MessageKey>
 };
 
 export function resolveStatusLabelKey(status: string): MessageKey {
-  return MY_RECORD_STATUS_LABEL_KEYS[status] ?? 'myRecords.status.unknown';
+  return resolveControlledCodeKey(MY_RECORD_STATUS_LABEL_KEYS, status, 'myRecords.status.unknown');
 }
 
 /** 同步状态展示键（任务 07 预留；与「草稿／已入库」标签相互独立） */
-export const MY_RECORD_SYNC_STATUS_LABEL_KEYS: Record<MyRecordSyncStatus, MessageKey> = {
+/**
+ * 同步状态展示键。
+ *
+ * 与后端 `sync-status.policy.ts` 的 `syncStatusEnum` **逐值对应**（含
+ * `AUTHORIZATION_INVALID`）：后端加值时这里必须同步，否则会被回落成 UNKNOWN。
+ */
+export const MY_RECORD_SYNC_STATUS_LABEL_KEYS: Record<string, MessageKey> = {
   NOT_CONNECTED: 'myRecords.sync.notConnected',
   UNKNOWN: 'myRecords.sync.unknown',
   NOT_APPLICABLE: 'myRecords.sync.notApplicable',
@@ -34,10 +41,15 @@ export const MY_RECORD_SYNC_STATUS_LABEL_KEYS: Record<MyRecordSyncStatus, Messag
   FAILED: 'myRecords.sync.failed',
   SYNCED: 'myRecords.sync.synced',
   CONFLICT: 'myRecords.sync.conflict',
+  AUTHORIZATION_INVALID: 'myRecords.sync.authorizationInvalid',
 };
 
 export function resolveSyncStatusLabelKey(status: string): MessageKey {
-  return MY_RECORD_SYNC_STATUS_LABEL_KEYS[status as MyRecordSyncStatus] ?? 'myRecords.sync.unknown';
+  return resolveControlledCodeKey(
+    MY_RECORD_SYNC_STATUS_LABEL_KEYS,
+    status,
+    'myRecords.sync.unknown',
+  );
 }
 
 /**

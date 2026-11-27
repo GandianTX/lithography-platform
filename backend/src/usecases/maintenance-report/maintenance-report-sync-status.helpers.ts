@@ -15,7 +15,9 @@
 // - 原有授权错误发生在进入本装配之前，不会被这里的降级逻辑吞掉。
 
 import type { MaintenanceReportSyncStatusDisplay } from '@src/modules/lithography/maintenance-report.types';
+import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
+  MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES,
   MAINTENANCE_REPORT_SYNC_RESOURCE_TYPE,
   type MaintenanceReportSyncStatusBatch,
   type MaintenanceReportSyncStatusEntry,
@@ -26,7 +28,10 @@ import {
 /** 单条记录可用于构造同步查询键的可信事实（公司来自服务端核实过的资源归属） */
 export type MaintenanceReportSyncKeyFacts = {
   ownerOrganizationId: number;
-  /** 跨端 UUID 持久来源待任务 09 对齐（草案 §2 断点）：对齐前恒为 null */
+  /**
+   * 跨端 UUID 的持久来源（`maintenance_report.record_uuid`，草案 §2 断点已消解）：
+   * 历史行保持 NULL；为 NULL 时按"无稳定键"处理，不发真实查询。
+   */
   recordUuid: string | null;
   /** 草稿 current_version_no=0 不是同步版本 */
   currentVersionNo: number;
@@ -48,16 +53,13 @@ export const UNKNOWN_MAINTENANCE_REPORT_SYNC_STATUS: MaintenanceReportSyncStatus
   canResolveConflict: false,
 };
 
-/** 提供方允许回报的状态集合（NOT_CONNECTED/UNKNOWN 由任务 07 侧判定，不接受回报） */
-const PROVIDER_STATUSES: readonly string[] = [
-  'NOT_APPLICABLE',
-  'NO_TASK',
-  'PENDING',
-  'UPLOADING',
-  'FAILED',
-  'SYNCED',
-  'CONFLICT',
-];
+/**
+ * 提供方允许回报的状态集合。
+ *
+ * 唯一来源：`MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES`（端口层再导出）——
+ * 任务 09 侧提供方适配器用的是同一份，不再各手写一遍。
+ */
+const PROVIDER_STATUSES: readonly string[] = MAINTENANCE_REPORT_SYNC_PROVIDER_STATUSES;
 
 /** message 仅限面向用户的安全提示，硬性截断防止透传大段正文、内部错误或文件路径 */
 const MAX_PROVIDER_MESSAGE_LENGTH = 200;
@@ -70,7 +72,8 @@ const MAX_PROVIDER_MESSAGE_LENGTH = 200;
 export function buildMaintenanceReportSyncStatusQuery(
   facts: MaintenanceReportSyncKeyFacts,
 ): MaintenanceReportSyncStatusQuery | null {
-  if (facts.recordUuid === null) {
+  // 无稳定键（NULL／undefined／空串）一律不发真实查询：不得用本地 ID 或派生值硬凑查询键
+  if (!facts.recordUuid) {
     return null;
   }
   if (facts.currentVersionNo <= 0) {
@@ -132,6 +135,8 @@ function matchEntryByFullKey(
  */
 export async function attachMaintenanceReportSyncStatuses(params: {
   reader: MaintenanceReportSyncStatusReader;
+  /** 服务端可信会话：单独传递供提供方做记录级授权（草案 §2） */
+  session: UsecaseSession;
   records: ReadonlyArray<{ id: number; facts: MaintenanceReportSyncKeyFacts }>;
 }): Promise<Map<number, MaintenanceReportSyncStatusDisplay>> {
   const result = new Map<number, MaintenanceReportSyncStatusDisplay>();
@@ -150,7 +155,7 @@ export async function attachMaintenanceReportSyncStatuses(params: {
 
   let batch: MaintenanceReportSyncStatusBatch | null;
   try {
-    batch = await params.reader.fetchStatuses(queries);
+    batch = await params.reader.fetchStatuses(params.session, queries);
   } catch {
     // 查询失败统一降级为 UNKNOWN；不重试、不阻塞原记录读取
     batch = null;

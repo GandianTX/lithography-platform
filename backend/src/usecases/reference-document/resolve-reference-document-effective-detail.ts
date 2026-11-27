@@ -13,7 +13,7 @@ import {
   parseFrozenReportVersion,
   readRevisionContentText,
   resolveContentSource,
-} from './reference-document-effective-content';
+} from '@src/modules/lithography/reference-document-effective-content';
 import {
   readRevisionStructuredContent,
   type ReferenceDocumentStructuredContent,

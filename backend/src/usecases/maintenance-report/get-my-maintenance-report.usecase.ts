@@ -120,16 +120,17 @@ export class GetMyMaintenanceReportUsecase {
       );
 
     // 同步状态（任务 07 预留）：详情复用列表同一批量接口，单条一次。
-    // 公司取自授权通过的资源归属；跨端 UUID 待任务 09 对齐（handoff §2），
-    // 对齐前不发真实查询，映射缺失按 UNKNOWN 展示。
+    // 公司取自授权通过的资源归属；跨端 UUID 已对齐（handoff §2 断点已消解，取
+    // `maintenance_report.record_uuid`），历史行 NULL 时不发真实查询，映射缺失按 UNKNOWN 展示。
     const syncStatuses = await attachMaintenanceReportSyncStatuses({
       reader: this.syncStatusReader,
+      session: command.session,
       records: [
         {
           id: detail.report.id,
           facts: {
             ownerOrganizationId: ownership.ownerOrganizationId,
-            recordUuid: null,
+            recordUuid: ownership.recordUuid,
             currentVersionNo: detail.report.currentVersionNo,
           },
         },

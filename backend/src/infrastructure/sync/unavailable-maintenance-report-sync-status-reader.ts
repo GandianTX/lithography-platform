@@ -10,10 +10,12 @@ import type {
   MaintenanceReportSyncStatusQuery,
   MaintenanceReportSyncStatusReader,
 } from '@usecases/maintenance-report/ports/maintenance-report-sync-status-reader.contract';
+import type { UsecaseSession } from '@app-types/auth/session.types';
 
 @Injectable()
 export class UnavailableMaintenanceReportSyncStatusReader implements MaintenanceReportSyncStatusReader {
   fetchStatuses(
+    _session: UsecaseSession,
     _queries: MaintenanceReportSyncStatusQuery[],
   ): Promise<MaintenanceReportSyncStatusBatch> {
     // 纯内存返回：connected=false 表示任务 09 尚未装配

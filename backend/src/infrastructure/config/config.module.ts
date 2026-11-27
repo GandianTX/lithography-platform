@@ -3,6 +3,11 @@ import { Module } from '@nestjs/common';
 import { ConfigFactory, ConfigModule, registerAs } from '@nestjs/config';
 import { parseBooleanInput } from '@core/common/normalize/normalize.helper';
 import { IncomingMessage, ServerResponse } from 'http';
+import {
+  DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES,
+  DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES,
+  DEFAULT_LOCAL_BACKUP_CLOUD_TIMEOUT_MS,
+} from '@src/infrastructure/cloud/local-backup-cloud.config';
 import databaseConfig from './database.config';
 
 const isProductionEnv = (): boolean => process.env.NODE_ENV === 'production';
@@ -619,6 +624,46 @@ const referenceDocumentStorageConfig: ConfigFactory = () => ({
 });
 
 /**
+ * 生成本地运行数据配置（任务 09）。
+ *
+ * - `backupStorageDir`：备份包目录，必须与业务原件目录（`referenceDocumentStorage.dir`）
+ *   物理分离，避免 R074-03 的受保护清理误伤业务原件；
+ * - 保护密钥只记录"是否已配置"与密钥标识，**不在任何日志/接口中回显密钥本身**；
+ * - 缺失保护密钥不阻断服务启动：S3 的封包用例按失败关闭处理（不产出可用包），
+ *   而不是把硬编码密钥变成可用凭据。
+ */
+const localRuntimeConfig: ConfigFactory = () => ({
+  localRuntime: {
+    backupStorageDir: getOptionalEnv('LOCAL_BACKUP_STORAGE_DIR') ?? 'var/local-backups',
+    // S3.1 云备份服务接入（地址 + 凭据 + 超时）：缺失即"云服务未接入"，不伪造成功
+    cloudBackupBaseUrl: getOptionalEnv('LOCAL_BACKUP_CLOUD_BASE_URL') ?? null,
+    cloudBackupCredential: getOptionalEnv('LOCAL_BACKUP_CLOUD_CREDENTIAL') ?? null,
+    cloudBackupTimeoutMs: getIntEnvWithDefault(
+      'LOCAL_BACKUP_CLOUD_TIMEOUT_MS',
+      DEFAULT_LOCAL_BACKUP_CLOUD_TIMEOUT_MS,
+    ),
+    // 上传大小上限（单文件 128 MiB／整包 512 MiB）：超限在读字节之前失败关闭
+    // 默认值取自 `local-backup-cloud.config.ts`（单一来源，与装配模块同口径）
+    cloudBackupMaxUploadFileBytes: getIntEnvWithDefault(
+      'LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES',
+      DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_FILE_BYTES,
+    ),
+    cloudBackupMaxUploadPackageBytes: getIntEnvWithDefault(
+      'LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES',
+      DEFAULT_LOCAL_BACKUP_CLOUD_MAX_UPLOAD_PACKAGE_BYTES,
+    ),
+    // 云端**业务同步**入口（与云备份分开的地址与凭据：两种用途互不充数）
+    businessSyncBaseUrl: getOptionalEnv('BUSINESS_SYNC_CLOUD_BASE_URL') ?? null,
+    businessSyncCredential: getOptionalEnv('BUSINESS_SYNC_CLOUD_CREDENTIAL') ?? null,
+    businessSyncTimeoutMs: getIntEnvWithDefault('BUSINESS_SYNC_CLOUD_TIMEOUT_MS', 30_000),
+    protectionKeyConfigured: Boolean(getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY')),
+    protectionKeyId: getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY_ID') ?? null,
+    // S3.1 受保护封包实际消费密钥值（D-7）；不进日志、不经 API 返回、不落包
+    protectionKey: getOptionalEnv('LOCAL_BACKUP_PROTECTION_KEY') ?? null,
+  },
+});
+
+/**
  * 生成 JWT 配置
  */
 const jwtConfig = registerAs('jwt', () => ({
@@ -683,6 +728,7 @@ export const APP_CONFIG_FACTORIES: readonly ConfigFactory[] = [
   aiConversationConfig,
   emailDeliveryConfig,
   referenceDocumentStorageConfig,
+  localRuntimeConfig,
   adminAccountResetConfig,
   documentExportConfig,
   jwtConfig,

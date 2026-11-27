@@ -7,6 +7,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AccountQueryService } from '@src/modules/account/queries/account.query.service';
 import type { RepairRequestWriteContext } from '@src/modules/lithography/maintenance-report.types';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import { EquipmentModelQueryService } from '@src/modules/lithography/queries/equipment-model.query.service';
 import { OrganizationQueryService } from '@src/modules/lithography/queries/organization.query.service';
@@ -63,6 +64,7 @@ export class CreateMaintenanceReportDraftUsecase {
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     private readonly equipmentModelQueryService: EquipmentModelQueryService,
     private readonly accountQueryService: AccountQueryService,
     private readonly storedFileService: StoredFileService,
@@ -170,6 +172,12 @@ export class CreateMaintenanceReportDraftUsecase {
       command.session.accountId,
     ]);
     const engineerName = nicknames.get(command.session.accountId) ?? ENGINEER_NAME_FALLBACK;
+
+    // 恢复期写入冻结：该公司数据区正在恢复时不得新建报告草稿
+    await this.localWriteHoldService.assertBusinessWritableInTransaction({
+      organizationId: membership.organizationId,
+      transactionContext,
+    });
 
     const report = await this.maintenanceReportService.insertReport(
       {

@@ -24,6 +24,7 @@ import {
 @Index('uk_reference_document_source_report_version', ['sourceReportVersionId'], {
   unique: true,
 })
+@Index('uk_reference_document_record_uuid', ['recordUuid'], { unique: true })
 @ForeignKey(
   'MaintenanceReportVersionEntity',
   ['sourceReportVersionId', 'sourceReportId'],
@@ -110,6 +111,19 @@ import {
 export class ReferenceDocumentEntity {
   @PrimaryGeneratedColumn({ type: 'int', comment: '参考文档主键ID' })
   id!: number;
+
+  /**
+   * 跨端稳定业务编号：创建入口一次性生成并持久化，之后不再变化。
+   * 历史行保持 NULL（不回填派生值冒充可信跨端身份）。
+   */
+  @Column({
+    name: 'record_uuid',
+    type: 'char',
+    length: 36,
+    nullable: true,
+    comment: '跨端稳定业务编号；历史行保持 NULL',
+  })
+  recordUuid!: string | null;
 
   @Column({ type: 'varchar', length: 255, comment: '文档标题' })
   title!: string;

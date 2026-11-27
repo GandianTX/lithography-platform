@@ -544,6 +544,7 @@ export async function runInitializationDataTransaction<T>(
   options: InitializationTransactionOptions<T>,
 ): Promise<T> {
   const queryRunner = options.dataSource.createQueryRunner() as InitializationQueryRunner;
+  // eslint-disable-next-line no-useless-assignment -- 显式初值表达「事务尚未开始」的起始事实，读取点均在赋值之后
   let state: InitializationTransactionState = 'NOT_STARTED';
   let phase: InitializationTransactionPhase = 'CONNECT';
   let connected = false;

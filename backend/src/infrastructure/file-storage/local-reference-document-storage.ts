@@ -9,7 +9,7 @@ import type { Readable } from 'node:stream';
 import { ConfigService } from '@nestjs/config';
 import { Injectable } from '@nestjs/common';
 
-import { ReferenceDocumentStorage } from '@src/usecases/reference-document/reference-document-storage.contract';
+import { ReferenceDocumentStorage } from '@src/usecases/common/ports/reference-document-storage.contract';
 
 /** 存储引用格式白名单：32 位随机 hex + 1~8 位小写字母数字扩展名（不含路径分隔符，天然无路径语义） */
 const STORAGE_REFERENCE_PATTERN = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
@@ -63,6 +63,19 @@ export class LocalReferenceDocumentStorage implements ReferenceDocumentStorage {
     // 白名单 + 越界断言先于任何磁盘访问；文件缺失由 access 拦截，调用方收敛为受控错误
     const resolved = this.resolve(storageReference);
     await fsp.access(resolved);
+    // **不跟随符号链接**：`createReadStream` 默认跟随链接，链接可把读取指向
+    // 存储目录之外的任意文件（业务同步会把这些字节当原件送出去）。
+    // 与云备份上云链路同一口径：先 lstat（不跟随）判定是不是链接。
+    const stat = await fsp.lstat(resolved);
+    if (stat.isSymbolicLink()) {
+      throw new Error('Rejected symbolic link storage reference');
+    }
+    // 真实路径复核：解析后的真实路径仍必须在存储目录内（防目录被换成链接）
+    const realBase = await fsp.realpath(this.baseDir);
+    const realFile = await fsp.realpath(resolved);
+    if (!realFile.startsWith(realBase + path.sep)) {
+      throw new Error('Rejected storage reference escaping storage directory');
+    }
 
     return fs.createReadStream(resolved);
   }

@@ -39,6 +39,8 @@ export const REQUIRED_TABLES = [
   'local_installation',
   'local_upload_task',
   'local_backup_run',
+  'local_write_hold',
+  'local_write_scope_lock',
   'engineer_registration_application',
   'stored_file',
   'repair_request_intake',
@@ -65,6 +67,7 @@ export const REQUIRED_TABLES = [
 export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> = [
   { table: 'base_user_account', index: 'uk_login_email' },
   { table: 'base_user_account', index: 'uk_login_name' },
+  { table: 'base_user_account', index: 'uk_base_user_account_account_uuid' },
   { table: 'base_third_party_auth', index: 'base_third_party_auth_provider_IDX' },
   { table: 'base_async_task_record', index: 'uk_queue_name_job_id' },
   { table: 'ai_provider_call_record', index: 'uk_ai_provider_call_trace_seq' },
@@ -167,6 +170,9 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
   { table: 'local_upload_task', index: 'uk_local_upload_task_entity' },
   { table: 'local_upload_task', index: 'idx_local_upload_task_status_created' },
   { table: 'local_upload_task', index: 'idx_local_upload_task_record_uuid' },
+  { table: 'local_upload_task', index: 'idx_local_upload_task_binding' },
+  { table: 'local_write_hold', index: 'idx_local_write_hold_scope' },
+  { table: 'local_write_scope_lock', index: 'uk_local_write_scope_lock_scope' },
   { table: 'local_backup_run', index: 'uk_local_backup_run_active_company' },
   { table: 'local_backup_run', index: 'idx_local_backup_run_started' },
   { table: 'local_backup_run', index: 'idx_local_backup_run_organization' },
@@ -234,6 +240,9 @@ export const REQUIRED_INDEXES: ReadonlyArray<{ table: string; index: string }> =
     table: 'engineer_registration_application',
     index: 'idx_engineer_registration_application_account_submitted',
   },
+  { table: 'repair_request', index: 'uk_repair_request_record_uuid' },
+  { table: 'reference_document', index: 'uk_reference_document_record_uuid' },
+  { table: 'maintenance_report', index: 'uk_maintenance_report_record_uuid' },
 ];
 
 export const REQUIRED_COLUMNS: ReadonlyArray<{
@@ -326,6 +335,7 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'base_user_account', column: 'admin_level' },
   { table: 'base_user_account', column: 'must_change_password', notNull: true },
   { table: 'base_user_account', column: 'credential_version', notNull: true },
+  { table: 'base_user_account', column: 'account_uuid' },
   { table: 'base_user_info', column: 'real_name' },
   { table: 'base_user_info', column: 'customer_organization_id' },
   { table: 'organization', column: 'short_name' },
@@ -368,6 +378,8 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'local_upload_task', column: 'source_version' },
   { table: 'local_upload_task', column: 'task_kind' },
   { table: 'local_upload_task', column: 'manifest_checksum' },
+  { table: 'local_upload_task', column: 'organization_id' },
+  { table: 'local_upload_task', column: 'account_id' },
   { table: 'local_backup_run', column: 'organization_id' },
   { table: 'local_backup_run', column: 'manual_upload_status' },
   { table: 'local_backup_run', column: 'manual_cleanup_status' },
@@ -460,6 +472,8 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'sync_conflict', column: 'cloud_version' },
   { table: 'sync_conflict', column: 'displayed_cloud_version' },
   { table: 'sync_conflict', column: 'decision' },
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态（历史行保持 NULL）
+  { table: 'sync_conflict', column: 'local_resolution_state' },
   // V13 本期交付（1775501000000—1775502600000）：新增/调整字段全量登记
   { table: 'ai_conversation', column: 'request_id' },
   { table: 'ai_message_analysis', column: 'answer_message_id' },
@@ -655,6 +669,9 @@ export const REQUIRED_COLUMNS: ReadonlyArray<{
   { table: 'repair_request_fault_panel', column: 'updated_at', notNull: true },
   { table: 'repair_request_fault_panel', column: 'initial_request_id' },
   { table: 'repair_request_fault_panel', column: 'reset_request_id' },
+  { table: 'repair_request', column: 'record_uuid' },
+  { table: 'reference_document', column: 'record_uuid' },
+  { table: 'maintenance_report', column: 'record_uuid' },
 ];
 
 export const FORBIDDEN_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
@@ -1009,6 +1026,7 @@ export const DELIVERY_NEW_TABLE_COLUMNS: Readonly<Record<string, ReadonlyArray<s
     'created_at',
     'decision',
     'displayed_cloud_version',
+    'local_resolution_state',
     'local_snapshot',
     'local_version',
     'organization_id',
@@ -1050,6 +1068,8 @@ export const DELIVERY_EXISTING_TABLE_COLUMNS: ReadonlyArray<string> = [
   'local_backup_run.manual_upload_status',
   'local_backup_run.organization_id',
   'local_upload_task.manifest_checksum',
+  'local_upload_task.organization_id',
+  'local_upload_task.account_id',
   'local_upload_task.record_uuid',
   'local_upload_task.source_version',
   'local_upload_task.task_kind',
@@ -1229,6 +1249,7 @@ export const DELIVERY_CHECKS: ReadonlyArray<string> = [
   'stored_file.chk_stored_file_verified',
   'sync_conflict.chk_sync_conflict_confirmed',
   'sync_conflict.chk_sync_conflict_decision',
+  'sync_conflict.chk_sync_conflict_local_resolution_state',
   'sync_conflict.chk_sync_conflict_schema',
   'sync_conflict.chk_sync_conflict_status',
   'sync_conflict.chk_sync_conflict_versions',
@@ -1258,6 +1279,9 @@ export const DELIVERY_INDEXES: ReadonlyArray<string> = [
   'local_backup_run.uk_local_backup_run_active_company',
   'local_company_setting.uk_local_company_setting_scope',
   'local_upload_task.idx_local_upload_task_record_uuid',
+  'local_upload_task.idx_local_upload_task_binding',
+  'local_write_hold.idx_local_write_hold_scope',
+  'local_write_scope_lock.uk_local_write_scope_lock_scope',
   'maintenance_report_fault.idx_maintenance_report_fault_report',
   'maintenance_report_fault.uk_maintenance_report_fault_uuid',
   'maintenance_report.uk_maintenance_report_submission',
@@ -1315,6 +1339,12 @@ export const DELIVERY_FOREIGN_KEYS: ReadonlyArray<string> = [
   'intake_analysis_attempt.fk_intake_analysis_attempt_intake',
   'intake_analysis_attempt.fk_intake_analysis_attempt_provider_call',
   'local_account_authorization.fk_local_account_authorization_account',
+  'local_upload_task.fk_local_upload_task_account',
+  'local_upload_task.fk_local_upload_task_organization',
+  'local_write_hold.fk_local_write_hold_installation',
+  'local_write_hold.fk_local_write_hold_organization',
+  'local_write_scope_lock.fk_local_write_scope_lock_installation',
+  'local_write_scope_lock.fk_local_write_scope_lock_organization',
   'local_account_authorization.fk_local_account_authorization_installation',
   'local_account_authorization.fk_local_account_authorization_organization',
   'local_backup_run.fk_local_backup_run_organization',
@@ -1702,6 +1732,7 @@ export const REQUIRED_CHECKS: ReadonlyArray<{ table: string; constraint: string 
   { table: 'sync_conflict', constraint: 'chk_sync_conflict_schema' },
   { table: 'sync_conflict', constraint: 'chk_sync_conflict_versions' },
   { table: 'sync_conflict', constraint: 'chk_sync_conflict_decision' },
+  { table: 'sync_conflict', constraint: 'chk_sync_conflict_local_resolution_state' },
   { table: 'record_package_import', constraint: 'chk_record_package_import_status' },
   { table: 'record_package_import', constraint: 'chk_record_package_import_check_status' },
   { table: 'record_package_import', constraint: 'chk_record_package_import_check_stage' },
@@ -1766,6 +1797,26 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
   constraint: string;
   referencedTable: string;
 }> = [
+  {
+    table: 'local_write_hold',
+    constraint: 'fk_local_write_hold_installation',
+    referencedTable: 'local_installation',
+  },
+  {
+    table: 'local_write_hold',
+    constraint: 'fk_local_write_hold_organization',
+    referencedTable: 'organization',
+  },
+  {
+    table: 'local_write_scope_lock',
+    constraint: 'fk_local_write_scope_lock_installation',
+    referencedTable: 'local_installation',
+  },
+  {
+    table: 'local_write_scope_lock',
+    constraint: 'fk_local_write_scope_lock_organization',
+    referencedTable: 'organization',
+  },
   {
     table: 'base_user_info',
     constraint: 'base_user_info_ibfk_1',
@@ -2045,6 +2096,16 @@ export const REQUIRED_FOREIGN_KEYS: ReadonlyArray<{
     table: 'local_upload_task',
     constraint: 'fk_local_upload_task_installation',
     referencedTable: 'local_installation',
+  },
+  {
+    table: 'local_upload_task',
+    constraint: 'fk_local_upload_task_organization',
+    referencedTable: 'organization',
+  },
+  {
+    table: 'local_upload_task',
+    constraint: 'fk_local_upload_task_account',
+    referencedTable: 'base_user_account',
   },
   {
     table: 'local_backup_run',
@@ -2395,6 +2456,8 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
   maintenance_report_review: 1775401300000,
   local_installation: 1775401400000,
   local_upload_task: 1775401400000,
+  local_write_hold: 1775503200000,
+  local_write_scope_lock: 1775503400000,
   local_backup_run: 1775401400000,
   engineer_registration_application: 1775401500000,
   stored_file: 1775501200000,
@@ -2422,6 +2485,7 @@ const TABLE_CREATED_BY: Readonly<Record<string, number>> = {
 const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'base_user_account.uk_login_email': 1773924900000,
   'base_user_account.uk_login_name': 1773924900000,
+  'base_user_account.uk_base_user_account_account_uuid': 1775503300000,
   'base_third_party_auth.base_third_party_auth_provider_IDX': 1773926400000,
   'base_async_task_record.uk_queue_name_job_id': 1773925700000,
   'ai_provider_call_record.uk_ai_provider_call_trace_seq': 1773889200000,
@@ -2488,6 +2552,9 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'local_upload_task.uk_local_upload_task_entity': 1775401400000,
   'local_upload_task.idx_local_upload_task_status_created': 1775401400000,
   'local_upload_task.idx_local_upload_task_record_uuid': 1775501100000,
+  'local_upload_task.idx_local_upload_task_binding': 1775503000000,
+  'local_write_hold.idx_local_write_hold_scope': 1775503200000,
+  'local_write_scope_lock.uk_local_write_scope_lock_scope': 1775503400000,
   'local_backup_run.uk_local_backup_run_active_company': 1775501100000,
   'local_backup_run.idx_local_backup_run_started': 1775401400000,
   'local_backup_run.idx_local_backup_run_organization': 1775501100000,
@@ -2543,6 +2610,9 @@ const INDEX_CREATED_BY: Readonly<Record<string, number>> = {
   'engineer_registration_application.uk_engineer_registration_application_pending_account': 1775401500000,
   'engineer_registration_application.idx_engineer_registration_application_org_status_submitted': 1775401500000,
   'engineer_registration_application.idx_engineer_registration_application_account_submitted': 1775401500000,
+  'repair_request.uk_repair_request_record_uuid': 1775502800000,
+  'reference_document.uk_reference_document_record_uuid': 1775502800000,
+  'maintenance_report.uk_maintenance_report_record_uuid': 1775502800000,
 };
 
 export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
@@ -2631,6 +2701,7 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'base_user_account.admin_level': 1775501000000,
   'base_user_account.must_change_password': 1775501000000,
   'base_user_account.credential_version': 1775502400000,
+  'base_user_account.account_uuid': 1775503300000,
   'base_user_info.real_name': 1775501000000,
   'base_user_info.customer_organization_id': 1775501000000,
   'organization.short_name': 1775501000000,
@@ -2705,6 +2776,8 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'local_upload_task.source_version': 1775501100000,
   'local_upload_task.task_kind': 1775501100000,
   'local_upload_task.manifest_checksum': 1775501100000,
+  'local_upload_task.organization_id': 1775503000000,
+  'local_upload_task.account_id': 1775503000000,
   'local_backup_run.organization_id': 1775501100000,
   'local_backup_run.manual_upload_status': 1775501100000,
   'local_backup_run.manual_cleanup_status': 1775501100000,
@@ -2789,6 +2862,8 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'sync_conflict.cloud_version': 1775502000000,
   'sync_conflict.displayed_cloud_version': 1775502000000,
   'sync_conflict.decision': 1775502000000,
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态
+  'sync_conflict.local_resolution_state': 1775502900000,
   // V13 本期交付（1775501000000—1775502600000）
   'ai_conversation.request_id': 1775501100000,
   'ai_message_analysis.answer_message_id': 1775501200000,
@@ -2952,6 +3027,9 @@ export const COLUMN_CREATED_BY: Readonly<Record<string, number>> = {
   'admin_organization_provisioning_request.admin_account_id': 1775502300000,
   'admin_organization_provisioning_request.created_at': 1775502300000,
   'admin_organization_provisioning_request.updated_at': 1775502300000,
+  'repair_request.record_uuid': 1775502800000,
+  'reference_document.record_uuid': 1775502800000,
+  'maintenance_report.record_uuid': 1775502800000,
 };
 
 export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
@@ -3172,6 +3250,8 @@ export const CHECK_CREATED_BY: Readonly<Record<string, number>> = {
   // D3（1775502000000）
   'sync_conflict.chk_sync_conflict_versions': 1775502000000,
   'sync_conflict.chk_sync_conflict_decision': 1775502000000,
+  // 第 51 条（1775502900000）
+  'sync_conflict.chk_sync_conflict_local_resolution_state': 1775502900000,
 };
 
 const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
@@ -3231,6 +3311,12 @@ const FOREIGN_KEY_CREATED_BY: Readonly<Record<string, number>> = {
   'maintenance_report_review.fk_maintenance_report_review_reviewer': 1775401300000,
   'local_installation.fk_local_installation_organization': 1775401400000,
   'local_upload_task.fk_local_upload_task_installation': 1775401400000,
+  'local_upload_task.fk_local_upload_task_organization': 1775503000000,
+  'local_write_hold.fk_local_write_hold_installation': 1775503200000,
+  'local_write_hold.fk_local_write_hold_organization': 1775503200000,
+  'local_write_scope_lock.fk_local_write_scope_lock_installation': 1775503400000,
+  'local_write_scope_lock.fk_local_write_scope_lock_organization': 1775503400000,
+  'local_upload_task.fk_local_upload_task_account': 1775503000000,
   'local_backup_run.fk_local_backup_run_installation': 1775401400000,
   'engineer_registration_application.fk_engineer_registration_application_account': 1775401500000,
   'engineer_registration_application.fk_engineer_registration_application_organization': 1775401500000,
@@ -3323,6 +3409,10 @@ export interface ForeignKeyDefinition {
 export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'base_user_account.uk_login_email': { unique: true, columns: ['login_email'] },
   'base_user_account.uk_login_name': { unique: true, columns: ['login_name'] },
+  'base_user_account.uk_base_user_account_account_uuid': {
+    unique: true,
+    columns: ['account_uuid'],
+  },
   'base_third_party_auth.base_third_party_auth_provider_IDX': {
     unique: true,
     columns: ['provider', 'provider_user_id'],
@@ -3572,6 +3662,18 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
     unique: false,
     columns: ['record_uuid'],
   },
+  'local_upload_task.idx_local_upload_task_binding': {
+    unique: false,
+    columns: ['installation_id', 'organization_id', 'account_id'],
+  },
+  'local_write_hold.idx_local_write_hold_scope': {
+    unique: false,
+    columns: ['installation_id', 'organization_id', 'status'],
+  },
+  'local_write_scope_lock.uk_local_write_scope_lock_scope': {
+    unique: true,
+    columns: ['installation_id', 'organization_id'],
+  },
   'local_backup_run.uk_local_backup_run_active_company': {
     unique: true,
     columns: ['active_installation_id', 'organization_id'],
@@ -3791,6 +3893,18 @@ export const INDEX_DEFINITIONS: Readonly<Record<string, IndexDefinition>> = {
   'engineer_registration_application.idx_engineer_registration_application_account_submitted': {
     unique: false,
     columns: ['account_id', 'submitted_at', 'id'],
+  },
+  'repair_request.uk_repair_request_record_uuid': {
+    unique: true,
+    columns: ['record_uuid'],
+  },
+  'reference_document.uk_reference_document_record_uuid': {
+    unique: true,
+    columns: ['record_uuid'],
+  },
+  'maintenance_report.uk_maintenance_report_record_uuid': {
+    unique: true,
+    columns: ['record_uuid'],
   },
 };
 
@@ -4080,6 +4194,48 @@ export const FOREIGN_KEY_DEFINITIONS: Readonly<Record<string, ForeignKeyDefiniti
     referenceTable: 'local_installation',
     localColumns: ['installation_id'],
     referenceColumns: ['installation_id'],
+  },
+  'local_write_hold.fk_local_write_hold_installation': {
+    referenceTable: 'local_installation',
+    localColumns: ['installation_id'],
+    referenceColumns: ['installation_id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'local_write_hold.fk_local_write_hold_organization': {
+    referenceTable: 'organization',
+    localColumns: ['organization_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'local_write_scope_lock.fk_local_write_scope_lock_installation': {
+    referenceTable: 'local_installation',
+    localColumns: ['installation_id'],
+    referenceColumns: ['installation_id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'local_write_scope_lock.fk_local_write_scope_lock_organization': {
+    referenceTable: 'organization',
+    localColumns: ['organization_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'local_upload_task.fk_local_upload_task_organization': {
+    referenceTable: 'organization',
+    localColumns: ['organization_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
+  },
+  'local_upload_task.fk_local_upload_task_account': {
+    referenceTable: 'base_user_account',
+    localColumns: ['account_id'],
+    referenceColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
   },
   'local_backup_run.fk_local_backup_run_installation': {
     referenceTable: 'local_installation',
@@ -4876,6 +5032,13 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     nullable: true,
     defaultValue: 'PENDING',
   },
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态；历史行 NULL 表示从未走过本地裁决
+  'sync_conflict.local_resolution_state': {
+    since: 1775502900000,
+    columnType: 'varchar(16)',
+    nullable: true,
+    defaultValue: null,
+  },
   // V13 本期交付（1775501000000—1775502600000）：字段精确定义
   'ai_conversation.content_version': {
     since: 1775501100000,
@@ -5117,6 +5280,12 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     nullable: true,
     defaultValue: null,
   },
+  'base_user_account.account_uuid': {
+    since: 1775503300000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
   'base_user_account.must_change_password': {
     since: 1775501000000,
     columnType: 'tinyint(1)',
@@ -5324,6 +5493,18 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
   'local_upload_task.task_kind': {
     since: 1775501100000,
     columnType: 'varchar(32)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'local_upload_task.organization_id': {
+    since: 1775503000000,
+    columnType: 'int',
+    nullable: true,
+    defaultValue: null,
+  },
+  'local_upload_task.account_id': {
+    since: 1775503000000,
+    columnType: 'int',
     nullable: true,
     defaultValue: null,
   },
@@ -6485,6 +6666,24 @@ export const COLUMN_DEFINITIONS: Readonly<Record<string, ColumnDefinition>> = {
     nullable: false,
     defaultValue: null,
   },
+  'repair_request.record_uuid': {
+    since: 1775502800000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'reference_document.record_uuid': {
+    since: 1775502800000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
+  'maintenance_report.record_uuid': {
+    since: 1775502800000,
+    columnType: 'char(36)',
+    nullable: true,
+    defaultValue: null,
+  },
 };
 
 /**
@@ -6717,6 +6916,12 @@ export const CHECK_DEFINITIONS: Readonly<Record<string, CheckDefinition>> = {
   'sync_conflict.chk_sync_conflict_decision': {
     since: 1775502000000,
     clause: "(`decision` IS NULL OR `decision` IN ('PENDING', 'LOCAL', 'CLOUD'))",
+  },
+  // 第 51 条（1775502900000）：保留本地裁决幂等状态取值受控
+  'sync_conflict.chk_sync_conflict_local_resolution_state': {
+    since: 1775502900000,
+    clause:
+      "(`local_resolution_state` IS NULL OR `local_resolution_state` IN ('WRITING', 'WRITTEN'))",
   },
   // V13 本期交付（1775501000000—1775502600000）：CHECK 精确表达式
   'ai_conversation.chk_ai_conversation_completion': {

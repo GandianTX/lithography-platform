@@ -1,6 +1,7 @@
 // src/usecases/reference-document/reference-document.usecases.spec.ts
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { Readable } from 'node:stream';
 
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -535,6 +536,13 @@ describe('SoftDeleteReferenceDocumentUsecase（任务 07 R053 原作者删除本
       auditService,
       usecase: new SoftDeleteReferenceDocumentUsecase(
         queryService as unknown as ReferenceDocumentQueryService,
+        {
+          assertBusinessWritable: () => Promise.resolve(),
+          assertBusinessWritableInTransaction: () => Promise.resolve(),
+          assertCompanyWritable: () => Promise.resolve(),
+          assertCompanyWritableInTransaction: () => Promise.resolve(),
+          assertWritable: () => Promise.resolve(),
+        } as unknown as LocalWriteHoldService,
         makeMaintenanceReports() as unknown as MaintenanceReportQueryService,
         revisionService as unknown as ReferenceDocumentRevisionService,
         auditService as unknown as ManagementAuditService,
@@ -903,6 +911,13 @@ describe('UpdateReferenceDocumentCaseUsecase', () => {
       writeService as unknown as ReferenceDocumentService,
       caseDetailService as unknown as ReferenceDocumentCaseDetailService,
       queryService as unknown as ReferenceDocumentQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       modelQueryService as unknown as EquipmentModelQueryService,
       organizationContextService as unknown as TrustedOrganizationContextQueryService,
       makeTransactionRunner(),

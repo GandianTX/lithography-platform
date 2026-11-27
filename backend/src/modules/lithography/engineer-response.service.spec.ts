@@ -6,6 +6,16 @@ import { EntityManager, QueryFailedError } from 'typeorm';
 import { EngineerResponseInsertData } from './lithography.types';
 import { EngineerResponseService } from './engineer-response.service';
 
+/** 恢复期写入冻结守卫替身：本 spec 只验证本服务行为，冻结判定另由守卫自身规格覆盖 */
+const restoreScopeWriteGuardStub = {
+  assertRequestScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertIntakeScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertConversationScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertAnalysisScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertDocumentScopeWritable: jest.fn().mockResolvedValue(undefined),
+  assertOrganizationScopeWritable: jest.fn().mockResolvedValue(undefined),
+};
+
 describe('EngineerResponseService', () => {
   const createdAt = new Date('2026-09-03T10:00:00.000Z');
   const insertData: EngineerResponseInsertData = {
@@ -28,7 +38,7 @@ describe('EngineerResponseService', () => {
       createdAt,
     }));
     // 本服务无独立 Repository 依赖：所有写入均经事务上下文的 EntityManager
-    service = new EngineerResponseService();
+    service = new EngineerResponseService(restoreScopeWriteGuardStub as never);
   });
 
   const contextOf = (repo: ReturnType<typeof createMockRepository>) =>

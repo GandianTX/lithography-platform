@@ -12,6 +12,7 @@ import {
 } from '@core/repair-request/policy/repair-request-handling.policy';
 import { Inject, Injectable } from '@nestjs/common';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
   TRANSACTION_RUNNER,
@@ -41,6 +42,7 @@ export class RecordRepairRequestHandlingResultUsecase {
   constructor(
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -80,8 +82,12 @@ export class RecordRepairRequestHandlingResultUsecase {
           { repairRequestId: command.repairRequestId },
         );
       }
-      const handlingStatus = resolveRepairRequestHandlingStatus(handlingResult);
-      // 终结事实不可改写：再次回写（含相同值）会让“终结时间/终结人”与已发布事实漂移
+      // 恢复期写入冻结：工单归属公司数据区正在恢复时不得回写处理结果
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
+        organizationId: request.ownerOrganizationId,
+        transactionContext,
+      });
+      const handlingStatus = resolveRepairRequestHandlingStatus(handlingResult); // 终结事实不可改写：再次回写（含相同值）会让“终结时间/终结人”与已发布事实漂移
       if (
         request.handlingStatus === RepairRequestHandlingStatus.COMPLETED ||
         request.handlingStatus === RepairRequestHandlingStatus.UNRESOLVED

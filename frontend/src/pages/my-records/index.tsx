@@ -1,10 +1,12 @@
 // src/pages/my-records/index.tsx
 
+import { useState } from 'react';
 import { Button } from 'antd';
 import { useNavigate } from 'react-router';
 
 import { useAuthSession } from '@/features/auth-session';
 import { MyRecordsList, resolveTask06CreateEntry } from '@/features/my-records';
+import { RecordPackageExportDialog } from '@/features/record-package';
 
 import { useI18n } from '@/shared/i18n';
 import { PageHeader } from '@/shared/ui/page-header';
@@ -23,6 +25,9 @@ export function MyRecordsPage() {
   const { session } = useAuthSession();
   const navigate = useNavigate();
   const create = resolveTask06CreateEntry(session?.role);
+  // 来源页导出入口（任务 09 S3 补丁 P1）：记录标识随行携带，用户不手抄记录 ID；
+  // 公司由服务端按可信 session 范围取，授权由后端逐条复核。
+  const [exportRecordId, setExportRecordId] = useState<number | null>(null);
 
   return (
     <div className="page-stack">
@@ -44,7 +49,21 @@ export function MyRecordsPage() {
         eyebrow={t('myRecords.eyebrow')}
         title={t('myRecords.title')}
       />
-      <MyRecordsList activeRole={session?.role} />
+      <MyRecordsList
+        activeRole={session?.role}
+        renderExportAction={(record) => (
+          <Button onClick={() => setExportRecordId(record.id)} size="small" type="link">
+            {t('myRecords.action.exportPackage')}
+          </Button>
+        )}
+      />
+      <RecordPackageExportDialog
+        onClose={() => setExportRecordId(null)}
+        open={exportRecordId !== null}
+        recordIds={exportRecordId === null ? [] : [exportRecordId]}
+        resourceType="MAINTENANCE_REPORT"
+        sessionKey={session?.accountId ?? null}
+      />
     </div>
   );
 }

@@ -81,6 +81,33 @@ interface FieldEncryptionCodec {
 const SEED_ID_MIN = 900_000;
 const SEED_ID_MAX = 999_999;
 const FIXED_CREATED_AT = new Date('2026-01-01T00:00:00.000Z');
+
+/**
+ * 账号的**跨端稳定标识**（确定性派生，任务 09 S1-2）。
+ *
+ * 用途：记录包／业务同步跨设备搬运时，靠**不可变**的账号标识把来源账号映射到
+ * 目标设备的同一个自然人。生产链路由 `AccountService.insertAccount()` 在建号时
+ * 一次性生成并持久化；seed 是**幂等导入脚本**，需要可重复执行，因此这里用
+ * 固定命名空间 + 账号登录名派生同一 UUID：
+ * - 同一份 seed 在**任意设备**上产生**相同**的 `account_uuid`
+ *   ⇒ 双设备同账号夹具天然命中"同一条账号事实"；
+ * - 派生只用于**夹具**，不写回任何业务事实（不改 `record_uuid` 等既有稳定编号）。
+ */
+const ACCOUNT_UUID_NAMESPACE = '7f3c1a52-9d64-4b8e-a7f0-5c2d6e81b430';
+
+function deriveSeedAccountUuid(loginName: string): string {
+  const hex = ACCOUNT_UUID_NAMESPACE.replace(/-/g, '');
+  const namespace = Buffer.from(hex, 'hex');
+  const name = Buffer.from(`account:${loginName}`, 'utf8');
+  const digest = createHash('sha1')
+    .update(Buffer.concat([namespace, name]))
+    .digest();
+  const bytes = Uint8Array.from(digest.subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const out = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${out.slice(0, 8)}-${out.slice(8, 12)}-${out.slice(12, 16)}-${out.slice(16, 20)}-${out.slice(20)}`;
+}
 const EXPECTED_TABLES = [
   'base_user_account',
   'base_user_info',
@@ -468,6 +495,7 @@ async function seedAccounts(
       'status',
       'recent_login_history',
       'identity_hint',
+      'account_uuid',
       'created_at',
       'updated_at',
     ],
@@ -480,6 +508,7 @@ async function seedAccounts(
       'status',
       'recent_login_history',
       'identity_hint',
+      'account_uuid',
       'created_at',
       'updated_at',
     ],
@@ -491,6 +520,8 @@ async function seedAccounts(
       'ACTIVE',
       JSON.stringify([]),
       account.role,
+      // 跨端稳定账号标识（确定性派生，双设备同 seed 一致）
+      deriveSeedAccountUuid(account.loginName),
       FIXED_CREATED_AT,
       FIXED_CREATED_AT,
     ]),

@@ -9,6 +9,7 @@
  * 明确替身：数据库/事务/绑定服务全部替换为可控 mock（不连接真实 MySQL）。
  */
 
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ExecutionContext, INestApplication } from '@nestjs/common';
 import { GraphQLModule, GqlExecutionContext } from '@nestjs/graphql';
@@ -171,6 +172,16 @@ describe('RepairRequest GraphQL 入口合同（旧过程只读 / 结单版本必
         {
           provide: TrustedOrganizationContextQueryService,
           useValue: { resolveForAccount },
+        },
+        {
+          provide: LocalWriteHoldService,
+          useValue: {
+            assertBusinessWritable: () => Promise.resolve(),
+            assertBusinessWritableInTransaction: () => Promise.resolve(),
+            assertCompanyWritable: () => Promise.resolve(),
+            assertCompanyWritableInTransaction: () => Promise.resolve(),
+            assertWritable: () => Promise.resolve(),
+          },
         },
         {
           provide: TRANSACTION_RUNNER,

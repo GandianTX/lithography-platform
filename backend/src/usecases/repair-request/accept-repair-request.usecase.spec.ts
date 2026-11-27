@@ -1,4 +1,5 @@
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { IdentityTypeEnum } from '@app-types/models/account.types';
 import type { PersistenceTransactionContext } from '@app-types/common/transaction.types';
 import type { UsecaseSession } from '@app-types/auth/session.types';
@@ -117,6 +118,13 @@ describe('AcceptRepairRequestUsecase', () => {
       repairRequestService as unknown as RepairRequestService,
       getEngineerRepairRequestDetailUsecase as unknown as GetEngineerRepairRequestDetailUsecase,
       organizationContextQueryService as unknown as TrustedOrganizationContextQueryService,
+      {
+        assertBusinessWritable: () => Promise.resolve(),
+        assertBusinessWritableInTransaction: () => Promise.resolve(),
+        assertCompanyWritable: () => Promise.resolve(),
+        assertCompanyWritableInTransaction: () => Promise.resolve(),
+        assertWritable: () => Promise.resolve(),
+      } as unknown as LocalWriteHoldService,
       transactionRunner,
     );
   });

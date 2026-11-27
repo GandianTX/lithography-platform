@@ -333,12 +333,35 @@ export const LOCAL_RUNTIME_ERROR = {
   UPLOAD_TASK_CONFLICT: 'LOCAL_RUNTIME_UPLOAD_TASK_CONFLICT',
   UPLOAD_TASK_NOT_FOUND: 'LOCAL_RUNTIME_UPLOAD_TASK_NOT_FOUND',
   UPLOAD_TASK_FAILED: 'LOCAL_RUNTIME_UPLOAD_TASK_FAILED',
+  /** 业务同步任务缺少身份事实（稳定键/版本/摘要/公司/原账号） */
+  UPLOAD_TASK_IDENTITY_MISSING: 'LOCAL_RUNTIME_UPLOAD_TASK_IDENTITY_MISSING',
   BACKUP_ALREADY_RUNNING: 'LOCAL_RUNTIME_BACKUP_ALREADY_RUNNING',
   BACKUP_RUN_NOT_FOUND: 'LOCAL_RUNTIME_BACKUP_RUN_NOT_FOUND',
   BACKUP_STATE_CONFLICT: 'LOCAL_RUNTIME_BACKUP_STATE_CONFLICT',
   BACKUP_FAILED: 'LOCAL_RUNTIME_BACKUP_FAILED',
+  /** 云端备份包服务未接入（R-02）：元数据与下载失败关闭 */
+  CLOUD_PACKAGES_UNAVAILABLE: 'LOCAL_RUNTIME_CLOUD_PACKAGES_UNAVAILABLE',
 } as const;
 Object.freeze(LOCAL_RUNTIME_ERROR);
+
+// 业务同步相关错误码（来源准入、派发、接收与回执）
+// 独立命名空间：与本地运行域错误码分开，便于按"同步"口径统一排障。
+export const BUSINESS_SYNC_ERROR = {
+  INVALID_PARAMS: 'BUSINESS_SYNC_INVALID_PARAMS',
+  SOURCE_NOT_FOUND: 'BUSINESS_SYNC_SOURCE_NOT_FOUND',
+  SOURCE_WITHDRAWN: 'BUSINESS_SYNC_SOURCE_WITHDRAWN',
+  SOURCE_VERSION_UNTRUSTED: 'BUSINESS_SYNC_SOURCE_VERSION_UNTRUSTED',
+  SOURCE_IDENTITY_UNTRUSTED: 'BUSINESS_SYNC_SOURCE_IDENTITY_UNTRUSTED',
+  AUTHORIZATION_INVALID: 'BUSINESS_SYNC_AUTHORIZATION_INVALID',
+  RECEIVER_MISSING: 'BUSINESS_SYNC_RECEIVER_MISSING',
+  /** 接收端暂不可达（网络类瞬时故障）：任务退回待传，下一轮凭同一幂等键续传 */
+  RECEIVER_UNREACHABLE: 'BUSINESS_SYNC_RECEIVER_UNREACHABLE',
+  /** 云端明确拒绝（4xx）：终态，任务不再重试 */
+  RECEIVER_REJECTED: 'BUSINESS_SYNC_RECEIVER_REJECTED',
+  DISPATCH_REJECTED: 'BUSINESS_SYNC_DISPATCH_REJECTED',
+  CONFLICT_PENDING: 'BUSINESS_SYNC_CONFLICT_PENDING',
+} as const;
+Object.freeze(BUSINESS_SYNC_ERROR);
 
 // AI 参考资料库相关错误码（资料录入/编辑/软删除，负责人 0907.docx 任务二）
 export const REFERENCE_DOCUMENT_ERROR = {
@@ -658,6 +681,106 @@ export const STORED_FILE_ERROR = {
 } as const;
 Object.freeze(STORED_FILE_ERROR);
 
+// 任务09：本地业务同步、冲突裁决与本地授权续期
+// S2.1/S2.2：冲突读取与裁决；LOCAL 裁决需 04/06/07 受控版本写入入口（X04），
+// 未接入前显式失败，不做静默覆盖
+export const SYNC_ERROR = {
+  INVALID_PARAMS: 'SYNC_INVALID_PARAMS',
+  CONFLICT_NOT_FOUND: 'SYNC_CONFLICT_NOT_FOUND',
+  CONFLICT_ALREADY_RESOLVED: 'SYNC_CONFLICT_ALREADY_RESOLVED',
+  /** 裁决：冲突登记的展示版本已不是来源记录的当前版本（记录已被别处推进） */
+  CONFLICT_VERSION_STALE: 'SYNC_CONFLICT_VERSION_STALE',
+  /** 裁决：来源记录已是只读内容（已删除／下架／冻结／结单），不得恢复或覆盖内容 */
+  CONFLICT_SOURCE_READ_ONLY: 'SYNC_CONFLICT_SOURCE_READ_ONLY',
+  LOCAL_RESOLUTION_NOT_AVAILABLE: 'SYNC_LOCAL_RESOLUTION_NOT_AVAILABLE',
+  /** 保留本地：该资源类型没有受控版本写入入口 */
+  LOCAL_RESOLUTION_RESOURCE_UNSUPPORTED: 'SYNC_LOCAL_RESOLUTION_RESOURCE_UNSUPPORTED',
+  /** 保留本地：冲突没有登记可用的本地版本，无法按版本条件写入 */
+  LOCAL_RESOLUTION_VERSION_UNAVAILABLE: 'SYNC_LOCAL_RESOLUTION_VERSION_UNAVAILABLE',
+  /** 保留本地：本地快照不满足受控载荷契约 */
+  LOCAL_RESOLUTION_SNAPSHOT_INVALID: 'SYNC_LOCAL_RESOLUTION_SNAPSHOT_INVALID',
+  /** 保留本地：该入口只处理云端与稍后处理；保留本地走管理员受控修订入口 */
+  LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY: 'SYNC_LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY',
+  /** 保留本地：冲突已被并发裁决为其他方向（受控修订已写入，冲突事实未被改写） */
+  LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED: 'SYNC_LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED',
+  /** 使用云端：该资源类型没有受控的本地视图对齐入口 */
+  CLOUD_ALIGNMENT_RESOURCE_UNSUPPORTED: 'SYNC_CLOUD_ALIGNMENT_RESOURCE_UNSUPPORTED',
+  /** 使用云端：云端快照不满足受控载荷契约 */
+  CLOUD_ALIGNMENT_SNAPSHOT_INVALID: 'SYNC_CLOUD_ALIGNMENT_SNAPSHOT_INVALID',
+  /** 使用云端：冲突没有登记可用的本地版本，无法按版本条件对齐本地视图 */
+  CLOUD_ALIGNMENT_VERSION_UNAVAILABLE: 'SYNC_CLOUD_ALIGNMENT_VERSION_UNAVAILABLE',
+  /** 使用云端：本地视图对齐入口未注册（来源域未提供受控写入） */
+  CLOUD_ALIGNMENT_UNAVAILABLE: 'SYNC_CLOUD_ALIGNMENT_UNAVAILABLE',
+  /** 使用云端：本地视图对齐失败（对齐失败不得标 resolved） */
+  CLOUD_ALIGNMENT_FAILED: 'SYNC_CLOUD_ALIGNMENT_FAILED',
+  AUTHORIZATION_NOT_FOUND: 'SYNC_AUTHORIZATION_NOT_FOUND',
+  AUTHORIZATION_RENEWAL_NOT_ALLOWED: 'SYNC_AUTHORIZATION_RENEWAL_NOT_ALLOWED',
+  /** 目标公司数据区处于恢复期冻结：写入与同步被拒（任务 09 S5-2 写传冻结闸门） */
+  WRITE_HELD: 'SYNC_WRITE_HELD',
+  CLAIMS_INVALID: 'SYNC_CLAIMS_INVALID',
+  CLAIMS_FORBIDDEN_MATERIAL: 'SYNC_CLAIMS_FORBIDDEN_MATERIAL',
+} as const;
+Object.freeze(SYNC_ERROR);
+
+// 任务09：记录包（U盘导出包）生成、检查与导入
+// R071：检查不写正式业务；R072 导入需来源业务受控写入入口（X04），
+// 未接入前显式失败，"检查合格"不冒充实际写入
+export const RECORD_PACKAGE_ERROR = {
+  INVALID_PARAMS: 'RECORD_PACKAGE_INVALID_PARAMS',
+  PACKAGE_NOT_FOUND: 'RECORD_PACKAGE_NOT_FOUND',
+  INVALID_MANIFEST: 'RECORD_PACKAGE_INVALID_MANIFEST',
+  PATH_ESCAPED: 'RECORD_PACKAGE_PATH_ESCAPED',
+  FILE_MISSING: 'RECORD_PACKAGE_FILE_MISSING',
+  FILE_CHECKSUM_MISMATCH: 'RECORD_PACKAGE_FILE_CHECKSUM_MISMATCH',
+  FOREIGN_COMPANY: 'RECORD_PACKAGE_FOREIGN_COMPANY',
+  DUPLICATE_RECORD: 'RECORD_PACKAGE_DUPLICATE_RECORD',
+  IMPORT_NOT_AVAILABLE: 'RECORD_PACKAGE_IMPORT_NOT_AVAILABLE',
+  IMPORT_NOT_PASSED: 'RECORD_PACKAGE_IMPORT_NOT_PASSED',
+  /**
+   * 逐条**记录级授权**不通过（任务 09 S1-3）：记录存在且同公司，
+   * 但导出人对它没有当前读取权限（如工程师导出同公司他人正式资料）。
+   *
+   * 与 `FOREIGN_COMPANY` 分开：错公司与"无权"是两回事，
+   * 前者是数据区问题，后者是授权问题，页面展示口径不同。
+   */
+  NOT_AUTHORIZED: 'RECORD_PACKAGE_NOT_AUTHORIZED',
+  /**
+   * **记录包编号已被占用**（任务 09 审查 P1）。
+   *
+   * `record_package_import.package_id` 是**全局主键**（公司维度不进主键/唯一键），
+   * 同一个编号在库里只能有一行、且只属于一个公司。
+   *
+   * 与 `FOREIGN_COMPANY` 分开：这里不是"包属于别的公司"（包的归属由清单与可信映射决定），
+   * 而是"这个编号已经被另一个公司占着"⇒ 属**当前状态冲突**；
+   * 且受控拒绝时不得暴露占用方的公司、摘要、状态与逐条明细。
+   */
+  PACKAGE_ID_CONFLICT: 'RECORD_PACKAGE_ID_CONFLICT',
+  /**
+   * **记录包正在导入中**（任务 09 审查 P1／同账号并发复验）。
+   *
+   * 批次处于 RUNNING（导入执行中）时，换包重检会覆盖正在执行的事实
+   * （旧逐条结论被删除、执行结果无处落库）⇒ 受控拒绝，等导入结束后再检查。
+   *
+   * 占用导入同样拒绝 RUNNING：**包括同一账号本人**——账号只是操作者身份，
+   * 不是"上一次执行已结束"的证明；短事务行锁覆盖不到整个导入执行期，
+   * 现有事实也无法区分在途与进程中断残留，因此**不提供自动接管**。
+   * 受控处置：用新包编号重新导出后导入；要支持原位自动恢复，需先有占用令牌/尝试行
+   * 与失锁停止写入的产品/架构决定（新增迁移），本轮不擅自引入。
+   */
+  IMPORT_IN_PROGRESS: 'RECORD_PACKAGE_IMPORT_IN_PROGRESS',
+  /**
+   * **本次确认的版本已失效**（任务 09 复验 P1）。
+   *
+   * 占用导入批次时以当前读＋行锁核对：批次清单摘要已不是本次确认的摘要
+   * （换包重检已提交新版本并替换了批次与逐条事实）⇒ 旧确认作废，
+   * 必须在任何业务写入、逐条结果与终态更新之前受控拒绝。
+   *
+   * 受控拒绝时不得暴露新版本的摘要、状态与逐条明细。
+   */
+  IMPORT_VERSION_CHANGED: 'RECORD_PACKAGE_IMPORT_VERSION_CHANGED',
+} as const;
+Object.freeze(RECORD_PACKAGE_ERROR);
+
 // 类型定义
 export type AuthErrorCode = (typeof AUTH_ERROR)[keyof typeof AUTH_ERROR];
 export type AccountErrorCode = (typeof ACCOUNT_ERROR)[keyof typeof ACCOUNT_ERROR];
@@ -692,6 +815,9 @@ export type OrganizationManagementErrorCode =
 export type ContentSubmissionErrorCode =
   (typeof CONTENT_SUBMISSION_ERROR)[keyof typeof CONTENT_SUBMISSION_ERROR];
 export type StoredFileErrorCode = (typeof STORED_FILE_ERROR)[keyof typeof STORED_FILE_ERROR];
+export type SyncErrorCode = (typeof SYNC_ERROR)[keyof typeof SYNC_ERROR];
+export type RecordPackageErrorCode =
+  (typeof RECORD_PACKAGE_ERROR)[keyof typeof RECORD_PACKAGE_ERROR];
 
 // 分页相关错误码
 export const PAGINATION_ERROR = {

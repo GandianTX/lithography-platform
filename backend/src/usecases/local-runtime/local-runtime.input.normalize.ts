@@ -1,12 +1,17 @@
 // src/usecases/local-runtime/local-runtime.input.normalize.ts
 // 本地运行数据输入归一化：设置、上传意图/回执/失败、备份触发与结束清单。
 
-import { DomainError, LOCAL_RUNTIME_ERROR } from '@core/common/errors/domain-error';
+import {
+  DomainError,
+  LOCAL_RUNTIME_ERROR,
+  RECORD_PACKAGE_ERROR,
+} from '@core/common/errors/domain-error';
 import type {
   LocalBackupRunFinishData,
   LocalBackupRunStatus,
   LocalBackupTriggerType,
   LocalEntityType,
+  LocalUploadTaskKind,
   LocalUploadTaskStatus,
 } from '@src/modules/lithography/local-runtime.types';
 import type {
@@ -35,11 +40,13 @@ const UPLOAD_STATUSES: readonly LocalUploadTaskStatus[] = [
 const SITE_NAME_MAX = 100;
 const ENTITY_VERSION_MAX = 64;
 const IDEMPOTENCY_KEY_MAX = 191;
+const RECORD_UUID_MAX = 36;
 const REMOTE_ID_MAX = 128;
 const REMOTE_RECEIPT_MAX = 512;
 const ERROR_CODE_MAX = 64;
 const ERROR_MESSAGE_MAX = 1000;
 const MANIFEST_PATH_MAX = 512;
+const BACKUP_ID_MAX = 36;
 const SMALLINT_UNSIGNED_MAX = 65535;
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -55,6 +62,18 @@ export type NormalizedUploadIntent = {
   entityLocalId: number;
   entityVersion: string;
   idempotencyKey: string;
+  /** 跨端稳定业务编号；备份类任务为 null */
+  recordUuid: string | null;
+  /** 业务版本；不可核验时为 null */
+  sourceVersion: number | null;
+  /** 正文与原件清单 SHA-256；缺失时为 null */
+  manifestChecksum: string | null;
+  /** 任务种类（BUSINESS_SYNC／BACKUP_UPLOAD） */
+  taskKind: LocalUploadTaskKind;
+  /** 公司数据区 */
+  organizationId: number | null;
+  /** 原账号（授权主体）账号ID */
+  accountId: number | null;
 };
 
 export function normalizeSettingsPatch(input: LocalRuntimeSettingsInput): NormalizedSettingsPatch {
@@ -85,6 +104,12 @@ export function normalizeUploadIntent(command: {
   entityLocalId: number;
   entityVersion: string;
   idempotencyKey: string;
+  recordUuid?: string | null;
+  sourceVersion?: number | null;
+  manifestChecksum?: string | null;
+  taskKind?: string | null;
+  organizationId?: number | null;
+  accountId?: number | null;
 }): NormalizedUploadIntent {
   if (!ENTITY_TYPES.includes(command.entityType as LocalEntityType)) {
     throw invalid('上传实体类型无效', { entityType: command.entityType });
@@ -94,12 +119,102 @@ export function normalizeUploadIntent(command: {
   }
   const entityVersion = requireText(command.entityVersion, ENTITY_VERSION_MAX, '实体版本');
   const idempotencyKey = requireText(command.idempotencyKey, IDEMPOTENCY_KEY_MAX, '幂等键');
+
+  const entityType = command.entityType as LocalEntityType;
+  const taskKind = normalizeUploadTaskKind(command.taskKind, entityType);
+  const identity = normalizeBusinessSyncIdentity(command, taskKind);
+
   return {
-    entityType: command.entityType as LocalEntityType,
+    entityType,
     entityLocalId: command.entityLocalId,
     entityVersion,
     idempotencyKey,
+    recordUuid: identity.recordUuid,
+    sourceVersion: identity.sourceVersion,
+    manifestChecksum: identity.manifestChecksum,
+    taskKind,
+    organizationId: identity.organizationId,
+    accountId: identity.accountId,
   };
+}
+
+/** 业务同步身份事实（稳定键、版本、摘要、公司、原账号） */
+type BusinessSyncIdentity = {
+  recordUuid: string | null;
+  sourceVersion: number | null;
+  manifestChecksum: string | null;
+  organizationId: number | null;
+  accountId: number | null;
+};
+
+/**
+ * 归一业务同步身份事实。
+ *
+ * 业务同步任务必须带齐五项：缺任一项都会让读侧判"不可核验"，
+ * 任务也会因无法核对公司与原账号而无法派发。此处失败关闭，不做静默降级。
+ */
+function normalizeBusinessSyncIdentity(
+  command: {
+    recordUuid?: string | null;
+    sourceVersion?: number | null;
+    manifestChecksum?: string | null;
+    organizationId?: number | null;
+    accountId?: number | null;
+  },
+  taskKind: LocalUploadTaskKind,
+): BusinessSyncIdentity {
+  const recordUuid = normalizeOptionalText(
+    command.recordUuid ?? null,
+    RECORD_UUID_MAX,
+    '稳定业务编号',
+  );
+  if (
+    recordUuid !== null &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(recordUuid)
+  ) {
+    throw invalid('稳定业务编号必须为 36 位 UUID 文本', { recordUuid });
+  }
+  const sourceVersion = normalizeOptionalPositiveInteger(command.sourceVersion ?? null, '业务版本');
+  const manifestChecksum = normalizeChecksum(command.manifestChecksum ?? null);
+  const organizationId = normalizeOptionalPositiveInteger(
+    command.organizationId ?? null,
+    '公司数据区',
+  );
+  const accountId = normalizeOptionalPositiveInteger(command.accountId ?? null, '原账号');
+
+  if (taskKind !== 'BUSINESS_SYNC') {
+    return { recordUuid, sourceVersion, manifestChecksum, organizationId, accountId };
+  }
+
+  const missing: string[] = [];
+  if (recordUuid === null) missing.push('稳定业务编号');
+  if (sourceVersion === null) missing.push('业务版本');
+  if (manifestChecksum === null) missing.push('正文与原件清单摘要');
+  if (organizationId === null) missing.push('公司数据区');
+  if (accountId === null) missing.push('原账号');
+  if (missing.length > 0) {
+    throw new DomainError(
+      LOCAL_RUNTIME_ERROR.UPLOAD_TASK_IDENTITY_MISSING,
+      `业务同步任务必须登记身份事实：${missing.join('、')}`,
+      { missing },
+    );
+  }
+
+  return { recordUuid, sourceVersion, manifestChecksum, organizationId, accountId };
+}
+
+/** 任务种类归一：备份清单默认按备份上云登记，其余按业务同步登记 */
+function normalizeUploadTaskKind(
+  value: string | null | undefined,
+  entityType: LocalEntityType,
+): LocalUploadTaskKind {
+  if (value === null || value === undefined) {
+    return entityType === 'BACKUP_MANIFEST' ? 'BACKUP_UPLOAD' : 'BUSINESS_SYNC';
+  }
+  if (value !== 'BUSINESS_SYNC' && value !== 'BACKUP_UPLOAD') {
+    throw invalid('上传任务种类无效', { taskKind: value });
+  }
+  return value;
 }
 
 export function normalizeTaskId(taskId: number): number {
@@ -114,6 +229,15 @@ export function normalizeRunId(runId: number): number {
     throw invalid('备份运行 ID 无效', { runId });
   }
   return runId;
+}
+
+/**
+ * 归一化备份资产 ID：去空白后按上限校验，非空返回。
+ *
+ * 备份资产 ID 是 36 位 UUID 文本，用例层不自行 trim，统一在此归一。
+ */
+export function normalizeBackupId(value: string): string {
+  return requireText(value, BACKUP_ID_MAX, '备份 ID');
 }
 
 export function normalizeUploadReceipt(remoteId: string | null): string | null {
@@ -234,6 +358,36 @@ export function normalizePagination(
   return { page, pageSize, withTotal: pagination?.withTotal ?? true };
 }
 
+/**
+ * 记录包检查路径归一：必须为非空本机绝对路径（U盘挂载点或包目录）。
+ * 只做形态归一，路径安全（穿越/逃逸）由记录包清单策略在解析层兜底。
+ */
+export function normalizePackagePath(value: string | undefined): string {
+  return normalizePackageRootPath(value, '包路径必须为本机绝对路径（U盘挂载点或包目录）');
+}
+
+/**
+ * 记录包导出目标归一：必须为非空本机绝对路径（U盘挂载点或目录）。
+ * 目录覆盖防护（不存在或为空）由导出服务在写盘前断言。
+ */
+export function normalizePackageExportTarget(value: string | undefined): string {
+  return normalizePackageRootPath(value, '导出目标必须是本机绝对路径（U盘挂载点或目录）');
+}
+
+/**
+ * 记录包路径归一（**唯一实现**）：必须为非空本机绝对路径。
+ *
+ * 检查入口与导出入口此前各写了一遍同样的判空＋绝对路径判断；这里给出唯一一份，
+ * 两侧只传各自的文案。路径安全（穿越/逃逸）不在本层，由清单策略在解析层兜底。
+ */
+export function normalizePackageRootPath(value: string | undefined, message: string): string {
+  const rootPath = (value ?? '').trim();
+  if (rootPath.length === 0 || !rootPath.startsWith('/')) {
+    throw new DomainError(RECORD_PACKAGE_ERROR.INVALID_PARAMS, message);
+  }
+  return rootPath;
+}
+
 function normalizeChecksum(value: string | null): string | null {
   const normalized = normalizeOptionalText(value, 64, '清单校验值');
   if (normalized === null) return null;
@@ -250,6 +404,15 @@ function normalizeOptionalNonNegativeInteger(
   if (value === null) return null;
   if (!Number.isInteger(value) || value < 0) {
     throw invalid(`${fieldName}必须为非负整数`, { [fieldName]: value });
+  }
+  return value;
+}
+
+/** 正整数归一（业务版本、公司数据区、账号 ID 等标识类字段） */
+function normalizeOptionalPositiveInteger(value: number | null, fieldName: string): number | null {
+  if (value === null) return null;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw invalid(`${fieldName}必须为正整数`, { [fieldName]: value });
   }
   return value;
 }

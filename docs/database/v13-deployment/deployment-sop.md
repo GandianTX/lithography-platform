@@ -469,6 +469,23 @@ npm run database:deploy -- \
 - 终态验证：`npm run migration:verify`（只读）核对新列、1 个索引与 1 个外键；
   真实库执行结果必须单独记录，不能用离线契约测试代替。
 
+#### 4.3.3 当前 49 态 → 50 态（业务源表持久化稳定身份）
+
+- 适用起点：`migration:status` 显示已执行前 49 条，仅剩 `1775502800000`。
+- 命令与 4.3 相同，继续使用 `database:deploy --mode=upgrade`，不新增部署入口；
+  执行前确认 `--database` 与 `--confirm-database` 一致。
+- 变更内容：`repair_request`、`reference_document`、`maintenance_report` 三张业务源表
+  各自追加可空 `record_uuid`（`char(36)`）与唯一索引 `uk_<table>_record_uuid`。
+  不新建表，不修改既有列、外键与历史迁移。
+- 数据影响：历史行 `record_uuid` 保持 `NULL`，**不回填派生值**（派生值只在设备内唯一，
+  不能冒充可信跨端身份）；新建记录由创建入口一次性生成并持久化。
+  既有派生 UUID 的历史事实（`record_package_item`／`local_upload_task`／`sync_receipt`）不被改写。
+- 失败与恢复：迁移在任何 `ALTER` 前做半迁移预检（前置表缺失或 `record_uuid` 已存在即失败关闭）；
+  MySQL DDL 隐式提交不能整体回滚，按错误定位人工核对到可重跑状态后再执行 `upgrade`。
+- 回退：先删唯一索引、再删列；回退不删除、不改写历史行。
+- 终态验证：`npm run migration:verify`（只读）核对 3 个新列与 3 个唯一索引；
+  真实库执行结果必须单独记录，不能用离线契约测试代替。
+
 ### 4.4 历史工单身份清单（31 态旧库 / 旧版增量已执行库）
 
 `1775501100000-alter-repair-ai-report-for-v13.migration.ts` 在收紧中断/无法修复原因约束前，

@@ -19,7 +19,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('ENGINEER 见首页、维修申请、AI 对话、历史维修记录（直达新建页）、工单维修总结、我的资料记录、参考资料（任务05 S3 与任务 06/07 入口并存）', () => {
+  it('ENGINEER 见首页、维修申请、AI 对话、历史维修记录（直达新建页）、工单维修总结、我的资料记录、参考资料、备份与恢复与本地设置（任务05 S3 与任务 06/07/09 入口并存）', () => {
     const paths = getNavigationItems('prod', 'ENGINEER').map((item) => item.path);
 
     expect(paths).toEqual([
@@ -30,9 +30,13 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       '/engineer/maintenance-records/new',
       '/engineer/work-order-summaries',
       // 任务 07 我的资料记录入口
+      '/engineer/record-packages',
+      '/engineer/sync-conflicts',
       '/engineer/records',
       '/reference-documents',
       '/account/settings',
+      '/local-backup',
+      '/local-settings',
     ]);
   });
 
@@ -48,6 +52,8 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     expect(paths).toEqual([
       '/',
       '/engineer/ai',
+      '/engineer/record-packages',
+      '/engineer/sync-conflicts',
       '/engineer/records',
       '/reference-documents',
       '/admin/users',
@@ -59,6 +65,8 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       '/admin/operation-records',
       '/admin/orders',
       '/account/settings',
+      '/local-backup',
+      '/local-settings',
     ]);
   });
 
@@ -67,6 +75,8 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       expect(getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path)).toEqual([
         '/',
         '/engineer/ai',
+        '/engineer/record-packages',
+        '/engineer/sync-conflicts',
         '/engineer/records',
         '/reference-documents',
         '/admin/users',
@@ -76,12 +86,16 @@ describe('navigation catalog（S1 菜单表对账）', () => {
         '/admin/operation-records',
         '/admin/orders',
         '/account/settings',
+        '/local-backup',
+        '/local-settings',
       ]);
     }
 
     expect(getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path)).toEqual([
       '/',
       '/engineer/ai',
+      '/engineer/record-packages',
+      '/engineer/sync-conflicts',
       '/engineer/records',
       '/reference-documents',
       '/account/settings',

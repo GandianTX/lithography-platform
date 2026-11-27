@@ -107,7 +107,9 @@ describe('CreateEngineerResponseUsecase', () => {
     };
     usecase = new CreateEngineerResponseUsecase(
       repairRequestService as unknown as RepairRequestService,
-      engineerResponseService,
+      engineerResponseService as unknown as ConstructorParameters<
+        typeof CreateEngineerResponseUsecase
+      >[1],
       accountQueryService as unknown as AccountQueryService,
       trustedOrganizationContext as unknown as TrustedOrganizationContextQueryService,
       transactionRunner,

@@ -18,6 +18,7 @@ import { getTypeOrmEntityManager } from '@src/infrastructure/database/transactio
 import { Repository, In, IsNull, Not, Raw } from 'typeorm';
 import type {
   AccountCredentialSnapshot,
+  AccountCrossInstallationIdentity,
   AccountDisplayInfo,
   AccountLoginBootstrapSnapshot,
   AccountSessionAuthoritySnapshot,
@@ -84,6 +85,65 @@ export class AccountQueryService {
     const accountRepository = this.getAccountRepository(params.transactionContext);
     const account = await accountRepository.findOne({ where: { id: params.accountId } });
     return account ? this.toUserAccountView(account) : null;
+  }
+
+  /**
+   * 跨端身份读取（任务 09 S1-2）：按**稳定标识**或**账号名**定位本机账号行。
+   *
+   * 两种入参各自对应一个跨端可携带的标识：
+   * - `accountUuid`：不可变稳定标识（创建时一次性生成，唯一索引）；
+   * - `loginName`：工作账号名（可变，改名后旧包不再命中）。
+   *
+   * 命中时返回账号当前事实（含状态与资料状态）；未命中返回 `null`
+   * （调用方按"来源身份不可核验"处理，不得回退到数字 id 猜测）。
+   */
+  async findCrossInstallationIdentity(params: {
+    accountUuid?: string | null;
+    loginName?: string | null;
+  }): Promise<AccountCrossInstallationIdentity | null> {
+    const accountUuid = params.accountUuid ?? null;
+    const loginName = params.loginName ?? null;
+    if (accountUuid === null && loginName === null) {
+      return null;
+    }
+    const account = await this.accountRepository.findOne({
+      where: accountUuid !== null ? { accountUuid } : { loginName: loginName as string },
+    });
+    if (account === null) {
+      return null;
+    }
+    const userInfo = await this.userInfoRepository.findOne({ where: { accountId: account.id } });
+    return {
+      accountId: account.id,
+      accountUuid: account.accountUuid,
+      loginName: account.loginName,
+      realName: userInfo?.realName ?? null,
+      accountStatus: account.status,
+      userState: userInfo?.userState ?? null,
+    };
+  }
+
+  /**
+   * 跨端身份读取（按本机账号主键）：导出侧取来源账号的可移植身份事实。
+   */
+  async findCrossInstallationIdentityByAccountId(params: {
+    accountId: number;
+  }): Promise<AccountCrossInstallationIdentity | null> {
+    const account = await this.accountRepository.findOne({
+      where: { id: params.accountId },
+    });
+    if (account === null) {
+      return null;
+    }
+    const userInfo = await this.userInfoRepository.findOne({ where: { accountId: account.id } });
+    return {
+      accountId: account.id,
+      accountUuid: account.accountUuid,
+      loginName: account.loginName,
+      realName: userInfo?.realName ?? null,
+      accountStatus: account.status,
+      userState: userInfo?.userState ?? null,
+    };
   }
 
   /**

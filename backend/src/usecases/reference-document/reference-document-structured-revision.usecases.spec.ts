@@ -7,6 +7,7 @@
 
 /// <reference types="jest" />
 
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import {
   DomainError,
@@ -310,6 +311,13 @@ const makeHarness = (
   );
   const reviseStructured = new ReviseReferenceDocumentStructuredUsecase(
     queryService as unknown as ReferenceDocumentQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     maintenanceReports as unknown as MaintenanceReportQueryService,
     revisionService as unknown as ReferenceDocumentRevisionService,
     accountQueryService as unknown as AccountQueryService,
@@ -318,6 +326,13 @@ const makeHarness = (
   );
   const offline = new OfflineReferenceDocumentUsecase(
     queryService as unknown as ReferenceDocumentQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     maintenanceReports as unknown as MaintenanceReportQueryService,
     revisionService as unknown as ReferenceDocumentRevisionService,
     accountQueryService as unknown as AccountQueryService,

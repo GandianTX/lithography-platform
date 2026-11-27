@@ -55,7 +55,9 @@ async function bootstrap() {
       credentials: configService.get<boolean>('server.cors.credentials', true),
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-      exposedHeaders: ['Content-Length', 'ETag'],
+      // `Content-Disposition` 必须暴露：前端据此取服务端给的文件名
+      // （否则只能自己编一个文件名，下载到的文件名与云端实际对象不一致）
+      exposedHeaders: ['Content-Length', 'ETag', 'Content-Disposition'],
       maxAge: 600,
     });
   }

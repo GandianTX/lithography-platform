@@ -16,6 +16,7 @@ import type {
 } from '@src/modules/lithography/lithography.types';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import { RepairProcessEntryService } from '@src/modules/lithography/repair-process-entry.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { RepairRequestService } from '@src/modules/lithography/repair-request.service';
 import {
   TRANSACTION_RUNNER,
@@ -52,6 +53,7 @@ export class CreateRepairProcessEntryUsecase {
     private readonly repairProcessEntryService: RepairProcessEntryService,
     private readonly bindRepairProcessOriginalUsecase: BindRepairProcessOriginalUsecase,
     private readonly trustedOrganizationContext: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -92,6 +94,12 @@ export class CreateRepairProcessEntryUsecase {
         transactionContext,
       );
       this.assertWritableTarget(target, command, membership.organizationId);
+
+      // 恢复期写入冻结：该工单所属公司数据区正在恢复时不得写入过程行
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
+        organizationId: target?.ownerOrganizationId ?? null,
+        transactionContext,
+      });
 
       return this.repairProcessEntryService.insertEntry(
         {

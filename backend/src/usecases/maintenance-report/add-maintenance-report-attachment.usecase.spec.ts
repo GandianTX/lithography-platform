@@ -5,6 +5,7 @@
 // 且不触发绑定（事务整体回滚由 TransactionRunner 契约保证，替身按同一语义实现）。
 
 /// <reference types="jest" />
+import type { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import type { UsecaseSession } from '@app-types/auth/session.types';
 import { MaintenanceReportStatus } from '@app-types/models/maintenance-report.types';
 import { StoredFileBusinessType } from '@app-types/models/stored-file.types';
@@ -95,6 +96,13 @@ const makeUsecase = (
     queryService as unknown as MaintenanceReportQueryService,
     storedFileService as unknown as StoredFileService,
     organizationContextService as unknown as TrustedOrganizationContextQueryService,
+    {
+      assertBusinessWritable: () => Promise.resolve(),
+      assertBusinessWritableInTransaction: () => Promise.resolve(),
+      assertCompanyWritable: () => Promise.resolve(),
+      assertCompanyWritableInTransaction: () => Promise.resolve(),
+      assertWritable: () => Promise.resolve(),
+    } as unknown as LocalWriteHoldService,
     {
       run: async <T>(work: (context: never) => Promise<T>): Promise<T> => work({} as never),
     },

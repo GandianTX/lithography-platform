@@ -20,9 +20,11 @@ import {
   ORGANIZATION_MANAGEMENT_ERROR,
   PAGINATION_ERROR,
   PERMISSION_ERROR,
+  RECORD_PACKAGE_ERROR,
   REFERENCE_DOCUMENT_ERROR,
   REPAIR_REQUEST_ERROR,
   STORED_FILE_ERROR,
+  SYNC_ERROR,
   THIRDPARTY_ERROR,
 } from '@core/common/errors';
 import { ArgumentsHost, Catch, HttpException } from '@nestjs/common';
@@ -348,6 +350,58 @@ const DOMAIN_ERROR_GQL_CODE_MAP: Record<string, string> = {
   [LOCAL_RUNTIME_ERROR.BACKUP_STATE_CONFLICT]: 'CONFLICT',
   [LOCAL_RUNTIME_ERROR.BACKUP_FAILED]: 'INTERNAL_SERVER_ERROR',
 
+  // 任务 09 同步状态与冲突裁决：
+  // - CONFLICT_NOT_FOUND 归 NOT_FOUND：与"越权"同码，避免通过错误类别探测冲突是否存在；
+  // - CONFLICT_ALREADY_RESOLVED 归 CONFLICT：当前状态冲突（并发已裁决），不是输入错误；
+  // - LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY 归 FORBIDDEN：该动作要求管理员入口，
+  //   当前角色无权执行，与"输入非法"区分开；
+  // - LOCAL_RESOLUTION_NOT_AVAILABLE / IMPORT_NOT_AVAILABLE 归 INTERNAL_SERVER_ERROR：
+  //   属能力未接入（同 CAPABILITY_ERROR.UNAVAILABLE 口径），不是调用方可修正的输入；
+  // - AUTHORIZATION_RENEWAL_NOT_ALLOWED 归 FORBIDDEN：授权策略不允许续期；
+  // - CLAIMS_* 归 BAD_USER_INPUT：提交的声明载荷非法或含禁止材料。
+  [SYNC_ERROR.INVALID_PARAMS]: 'BAD_USER_INPUT',
+  [SYNC_ERROR.CONFLICT_NOT_FOUND]: 'NOT_FOUND',
+  [SYNC_ERROR.CONFLICT_ALREADY_RESOLVED]: 'CONFLICT',
+  [SYNC_ERROR.LOCAL_RESOLUTION_NOT_AVAILABLE]: 'INTERNAL_SERVER_ERROR',
+  [SYNC_ERROR.LOCAL_RESOLUTION_RESOURCE_UNSUPPORTED]: 'BAD_USER_INPUT',
+  [SYNC_ERROR.LOCAL_RESOLUTION_VERSION_UNAVAILABLE]: 'CONFLICT',
+  [SYNC_ERROR.LOCAL_RESOLUTION_SNAPSHOT_INVALID]: 'CONFLICT',
+  [SYNC_ERROR.LOCAL_RESOLUTION_REQUIRES_ADMIN_ENTRY]: 'FORBIDDEN',
+  [SYNC_ERROR.LOCAL_RESOLUTION_CONCURRENTLY_RESOLVED]: 'CONFLICT',
+  [SYNC_ERROR.AUTHORIZATION_NOT_FOUND]: 'NOT_FOUND',
+  [SYNC_ERROR.AUTHORIZATION_RENEWAL_NOT_ALLOWED]: 'FORBIDDEN',
+  // 恢复期冻结：写入与同步被拒（当前设备状态冲突，非参数问题）
+  [SYNC_ERROR.WRITE_HELD]: 'CONFLICT',
+  [SYNC_ERROR.CLAIMS_INVALID]: 'BAD_USER_INPUT',
+  [SYNC_ERROR.CLAIMS_FORBIDDEN_MATERIAL]: 'BAD_USER_INPUT',
+
+  // 任务 09 记录包（U盘导出包）：
+  // - PACKAGE_NOT_FOUND / FILE_MISSING 归 NOT_FOUND：目标不存在（含无权限同码）；
+  // - FOREIGN_COMPANY 归 FORBIDDEN：跨公司数据区请求；
+  // - DUPLICATE_RECORD / IMPORT_NOT_PASSED 归 CONFLICT：当前状态冲突（重复记录 / 预检未通过）；
+  // - INVALID_MANIFEST / PATH_ESCAPED / FILE_CHECKSUM_MISMATCH 归 BAD_USER_INPUT：
+  //   提交或读取到的包内容不满足契约；
+  // - IMPORT_NOT_AVAILABLE 归 INTERNAL_SERVER_ERROR：导入能力未接入（同上）。
+  // - PACKAGE_ID_CONFLICT 归 CONFLICT：记录包编号已被占用（当前状态冲突；
+  //   不归 FORBIDDEN：调用方对本公司本有权，冲突在"编号占用"上）；
+  // - IMPORT_IN_PROGRESS 归 CONFLICT：导入执行中，暂不能换包重检。
+  [RECORD_PACKAGE_ERROR.INVALID_PARAMS]: 'BAD_USER_INPUT',
+  [RECORD_PACKAGE_ERROR.PACKAGE_NOT_FOUND]: 'NOT_FOUND',
+  [RECORD_PACKAGE_ERROR.INVALID_MANIFEST]: 'BAD_USER_INPUT',
+  [RECORD_PACKAGE_ERROR.PATH_ESCAPED]: 'BAD_USER_INPUT',
+  [RECORD_PACKAGE_ERROR.FILE_MISSING]: 'NOT_FOUND',
+  [RECORD_PACKAGE_ERROR.FILE_CHECKSUM_MISMATCH]: 'BAD_USER_INPUT',
+  [RECORD_PACKAGE_ERROR.FOREIGN_COMPANY]: 'FORBIDDEN',
+  [RECORD_PACKAGE_ERROR.DUPLICATE_RECORD]: 'CONFLICT',
+  [RECORD_PACKAGE_ERROR.IMPORT_NOT_AVAILABLE]: 'INTERNAL_SERVER_ERROR',
+  [RECORD_PACKAGE_ERROR.IMPORT_NOT_PASSED]: 'CONFLICT',
+  [RECORD_PACKAGE_ERROR.NOT_AUTHORIZED]: 'FORBIDDEN',
+  [RECORD_PACKAGE_ERROR.PACKAGE_ID_CONFLICT]: 'CONFLICT',
+  [RECORD_PACKAGE_ERROR.IMPORT_IN_PROGRESS]: 'CONFLICT',
+  // - IMPORT_VERSION_CHANGED 归 CONFLICT：本次确认的批次版本已失效（换包重检已提交新版本），
+  //   属当前状态冲突；受控拒绝不暴露新版本的摘要/状态/明细。
+  [RECORD_PACKAGE_ERROR.IMPORT_VERSION_CHANGED]: 'CONFLICT',
+
   // AI 参考资料库（0907.docx 任务二）：型号不存在属目标不存在；非法输入 BAD_USER_INPUT；
   // 不存在/已软删统一 NOT_FOUND；落库失败属系统侧故障
   [REFERENCE_DOCUMENT_ERROR.EQUIPMENT_MODEL_NOT_FOUND]: 'NOT_FOUND',
@@ -482,10 +536,17 @@ function mapDomainErrorToGqlCode(errorCode: string): string {
   return DOMAIN_ERROR_GQL_CODE_MAP[errorCode] || 'BAD_USER_INPUT';
 }
 
-/** 从 DomainError 构建 GraphQL 错误对象 */
+/** 从 DomainError 构建 GraphQL 错误对象
+ *
+ * 生产环境口径：`details` 属结构化细节（可能含包内相对路径、表名等内部事实），
+ * 与 HttpException 路径"生产隐藏细节"保持一致 → 生产不返回 details；
+ * `code`（错误大类）、`errorCode`（受控业务码）与 `errorMessage`（受控文案）保留，
+ * 前端据此区分"无权限 / 不存在 / 状态冲突"，不得因环境差异改变错误类别。
+ */
 function buildGraphQLErrorFromDomainError(
   exception: DomainError,
   host: ArgumentsHost,
+  isProdEnv: boolean,
 ): GraphQLError {
   return new GraphQLError(exception.message, {
     path: getGqlPath(host),
@@ -493,7 +554,7 @@ function buildGraphQLErrorFromDomainError(
       code: mapDomainErrorToGqlCode(exception.code),
       errorCode: exception.code,
       errorMessage: exception.message,
-      ...(exception.details ? { details: exception.details } : {}),
+      ...(exception.details && !isProdEnv ? { details: exception.details } : {}),
     },
   });
 }
@@ -526,7 +587,7 @@ export class GqlAllExceptionsFilter extends BaseExceptionFilter {
 
     // 专门处理 DomainError
     if (isDomainError(exception)) {
-      return buildGraphQLErrorFromDomainError(exception, host);
+      return buildGraphQLErrorFromDomainError(exception, host, isProdEnv);
     }
 
     if (exception instanceof HttpException) {

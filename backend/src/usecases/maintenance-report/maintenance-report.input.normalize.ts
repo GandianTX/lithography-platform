@@ -652,3 +652,16 @@ export function assertGeneratedAnalysisOutput(
     );
   }
 }
+
+/**
+ * 收集输入中「客户端已显式提供」的字段名。
+ *
+ * 供"客户端不得重复填写服务端权威字段"类断言使用：把字段存在性的判定收敛在
+ * 归一化层，用例层不再手工 filter(...length > 0) 做输入收敛。
+ */
+export function collectProvidedFieldNames(
+  record: Record<string, unknown>,
+  fields: readonly string[],
+): string[] {
+  return fields.filter((field) => record[field] !== undefined);
+}

@@ -3,6 +3,7 @@
 import { MaintenanceReportReviewDecision } from '@app-types/models/maintenance-report.types';
 import { Inject, Injectable } from '@nestjs/common';
 import { MaintenanceReportService } from '@src/modules/lithography/maintenance-report.service';
+import { LocalWriteHoldService } from '@src/modules/lithography/local-write-hold.service';
 import { MaintenanceReportQueryService } from '@src/modules/lithography/queries/maintenance-report.query.service';
 import { TrustedOrganizationContextQueryService } from '@src/modules/lithography/queries/trusted-organization-context.query.service';
 import {
@@ -29,6 +30,7 @@ export class ReturnMaintenanceReportUsecase {
     private readonly maintenanceReportService: MaintenanceReportService,
     private readonly maintenanceReportQueryService: MaintenanceReportQueryService,
     private readonly organizationContextService: TrustedOrganizationContextQueryService,
+    private readonly localWriteHoldService: LocalWriteHoldService,
     @Inject(TRANSACTION_RUNNER)
     private readonly transactionRunner: TransactionRunner,
   ) {}
@@ -44,6 +46,11 @@ export class ReturnMaintenanceReportUsecase {
         organizationContextService: this.organizationContextService,
         accountId: command.session.accountId,
         reportId: command.reportId,
+        transactionContext,
+      });
+      // 恢复期写入冻结：报告归属公司数据区正在恢复时不得退回
+      await this.localWriteHoldService.assertBusinessWritableInTransaction({
+        organizationId: reviewable.report.ownerOrganizationId,
         transactionContext,
       });
       const reviewedAt = new Date();

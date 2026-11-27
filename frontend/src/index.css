@@ -74,6 +74,14 @@
   --panel-border: #e2e8f0;
   --panel-radius: 14px;
   --panel-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  /* 卡片体内边距：仓内卡片语言的**默认**取值（全局规范未规定 panel-card 内边距，
+     此处取 gkj 视觉壳初值 16px）。V44 原型实测卡片体（.ant-card-body）为 24px，
+     任务 09 目标页按页面作用域覆盖为 24px（见 .v44-panel-page），
+     其余直接消费者（登录/注册/管理端等）保持 16px 不变。 */
+  --panel-padding: 16px;
+  /* 表格容器内边距：V44 原型 `.table-container` 实测 16px（与卡片体 24px 不同），
+     独立成 token，避免卡片体的页面作用域覆盖误伤表格容器。 */
+  --panel-table-padding: 16px;
   --sidebar-footer-bg: #f8fafc;
   --eyebrow-text: #2563eb;
   --stat-card-gradient: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
@@ -1996,7 +2004,34 @@ body {
   box-shadow: var(--panel-shadow);
   color: var(--ant-color-text);
   min-width: 0;
-  padding: 16px;
+}
+
+/* 卡片体内边距：消费 --panel-padding（默认 16px；任务 09 目标页按 V44 覆盖为 24px）。
+   表格容器单独用 --panel-table-padding：V44 原型 `.table-container` 实测 16px，
+   与卡片体（.ant-card-body 24px）**不同**，不得被卡片体的作用域覆盖波及。 */
+.data-card {
+  padding: var(--panel-padding);
+}
+
+.table-container {
+  padding: var(--panel-table-padding);
+}
+
+/* 任务 09 目标页的 V44 局部对齐（G28）。
+ *
+ * 依据：任务书 V2.3《前端布局与视觉验收》要求"参照 `.ant-card-head-title`、`.ant-card-body`"，
+ * 并给出原型实测基线"卡片间距 20px、圆角 14px、**内边距 24px**"；V44 原型实测
+ * `.ant-card-body` 的 padding 为 24px（1440×900／1366×768／390×844 三视口一致）。
+ *
+ * 为何是页面作用域而不是全局：`.data-card` 是**跨任务共享**的卡片语言，
+ * 直接消费者逾 20 处（登录、注册、管理端、工程师端、客户端等），
+ * 全局改 24px 会改写这些页面的既有几何，超出任务 09 的授权范围。
+ * 故按"该页面局部对齐并检验其他直接消费者"落地：
+ *   - 目标页（本地设置／备份与恢复／记录包／同步冲突）挂 .v44-panel-page；
+ *   - 其余消费者继续取 :root 的 --panel-padding（16px），几何不变。
+ */
+.v44-panel-page {
+  --panel-padding: 24px;
 }
 
 .data-card-header {
