@@ -202,7 +202,7 @@ function buildUsecase(
     .fn()
     .mockImplementation(() =>
       options.releaseError === undefined
-        ? Promise.resolve(0)
+        ? Promise.resolve(1)
         : Promise.reject(options.releaseError),
     );
   let writableCallIndex = 0;
@@ -1303,6 +1303,53 @@ describe('记录包导入编排（S3.2）', () => {
       });
       expect(finalizeImport).not.toHaveBeenCalled();
     });
+
+    it.each([
+      { count: 1, affected: 0 },
+      { count: 2, affected: 1 },
+    ])(
+      'writer 冻结时释放 $count 个附件仅命中 $affected：保留批次并报告双重原因',
+      async ({ count, affected }) => {
+        const writer = buildWriterMock({ writeError: heldError() });
+        const harness = buildUsecase({
+          writer,
+          manifestFiles: [{ relative_path: 'a.bin', sha256: 'f'.repeat(64), byte_size: 1 }],
+        });
+        const file = {
+          fileId: 'file-1',
+          uploadContextId: 'upload-1',
+          originalFilename: 'a.bin',
+          mimeType: 'application/octet-stream',
+          byteSize: 1,
+          checksumSha256: 'f'.repeat(64),
+        };
+        harness.stage.mockResolvedValue(
+          count === 1 ? [file] : [file, { ...file, fileId: 'file-2' }],
+        );
+        harness.release.mockResolvedValue(affected);
+        let caught: unknown;
+        try {
+          await harness.usecase.execute({
+            session: SESSION,
+            packageId: PACKAGE_ID,
+            packagePath: '/mnt/usb/pkg',
+            manifestChecksum: CHECKSUM,
+          });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(AggregateError);
+        const errors = (caught as AggregateError).errors as unknown[];
+        expect(errors[0]).toMatchObject({ code: SYNC_ERROR.WRITE_HELD });
+        expect(String(errors[1])).toContain(`预期释放 ${count}，实际释放 ${affected}`);
+        expect(String(errors[1])).toContain('file-1');
+        if (count === 2) expect(String(errors[1])).toContain('file-2');
+        expect(harness.finalizeFrozenImport).not.toHaveBeenCalled();
+        expect(harness.finalizeImport).not.toHaveBeenCalled();
+        expect(harness.writeItemResult).not.toHaveBeenCalled();
+        expect(harness.recordImportedVersion).not.toHaveBeenCalled();
+      },
+    );
 
     it('writer 冻结且补偿失败：不收敛、不释放为可重试，双错误均保留', async () => {
       const writer = buildWriterMock({ writeError: heldError() });

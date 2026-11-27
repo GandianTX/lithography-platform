@@ -516,7 +516,10 @@ export class ImportRecordPackageUsecase {
     } catch (error) {
       // 写入抛错：先精确补偿本条暂存原件，再如实登记失败原因。
       // 业务事务已由写入方回滚，暂存行若不释放就会变成永远不会被绑定的孤儿行。
-      const compensationError = await this.releaseStagedOriginals(stagedOriginals);
+      const compensationError = await this.releaseStagedOriginals(
+        stagedOriginals,
+        this.isWriteHeldError(error),
+      );
       if (this.isWriteHeldError(error)) {
         // 冻结不是业务失败：保留逐条 NULL（未执行），不得写 FAILED 冒充已裁决结果。
         // 只有补偿成功、可证明没有未知残留时，才把冻结交给批次级受控收敛。
@@ -597,12 +600,19 @@ export class ImportRecordPackageUsecase {
       byteSize: number;
       checksumSha256: string;
     }[],
+    requireComplete = false,
   ): Promise<unknown> {
     if (staged.length === 0) {
       return null;
     }
     try {
-      await this.originalStagingService.release(staged);
+      const affected = await this.originalStagingService.release(staged);
+      const fileIds = [...new Set(staged.map((file) => file.fileId))];
+      if (requireComplete && affected !== fileIds.length) {
+        return new Error(
+          `暂存原件补偿未确认：预期释放 ${fileIds.length}，实际释放 ${affected}；文件 ID：${fileIds.join(', ')}`,
+        );
+      }
       return null;
     } catch (error) {
       // 补偿失败不改变普通失败的业务结论；残留行由过期暂存清理任务兜底。
