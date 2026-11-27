@@ -13,6 +13,8 @@
 
 import type { Page } from '@playwright/test';
 
+import { handleSessionBootstrapOperation } from './my-session-identity-mocks';
+
 /** 知识库四 Tab + 统计 + 型号下拉的最小完整 fixture（字段与各 adapter 的 GraphQL 契约逐一对齐）。 */
 export const ADMIN_DOCUMENT_KB_FIXTURES = {
   equipmentModels: [
@@ -118,11 +120,26 @@ export const ADMIN_DOCUMENT_KB_FIXTURES = {
     documentType: 'ERROR_CODE_MANUAL',
     equipmentModelId: 47,
     equipmentModelName: '光刻机 200 型',
+    equipmentModelText: '光刻机 200 型',
     description: '覆盖 E-201 故障码的标准处理流程与复位步骤。',
     originalFilename: 'e201-manual.pdf',
     mimeType: 'application/pdf',
     hasFile: true,
     contentText: 'E-201 故障码标准处理流程：先断开高压，再执行复位，最后试运行确认。',
+    // 详情 DTO 当前契约：生效正文来源 / 修订号 / 报告来源 / 结构化正文 / 案例明细
+    // 普通资料这些字段如实为空，但字段必须存在，否则面板渲染期抛错（无页头）。
+    contentSource: 'ORIGINAL',
+    effectiveRevisionNo: 0,
+    frozenReport: null,
+    structuredContent: null,
+    caseDetail: null,
+    ingestMethod: 'ADMIN_DIRECT',
+    organizationName: '示例精修服务公司',
+    sourceKind: 'MATERIAL',
+    sourceReportAttachment: null,
+    sourceReportId: null,
+    sourceReportVersionId: null,
+    viewerIsOriginalAuthor: false,
     creatorNickname: '管理员',
     createdAt: '2026-08-30 15:00:00',
     updatedAt: '2026-08-30 15:00:00',
@@ -232,6 +249,17 @@ function dataByOperation(
       };
     case 'ReferenceDocument':
       return { referenceDocument: { ...ADMIN_DOCUMENT_KB_FIXTURES.referenceDocumentDetail } };
+    case 'ReferenceDocumentRevisions':
+      // 详情页挂载后读版本历史；夹具资料没有管理修订，如实回空版本列表
+      return {
+        referenceDocumentRevisions: {
+          currentRevisionNo: 1,
+          documentId: ADMIN_DOCUMENT_KB_FIXTURES.referenceDocumentDetail.id,
+          revisions: [],
+          sourceKind: 'MATERIAL',
+          sourceReportVersionId: null,
+        },
+      };
     case 'MyRepairRequest':
       return { myRepairRequest: { ...ADMIN_DOCUMENT_KB_FIXTURES.myRepairRequestDetail } };
     case 'AdminUsers':
@@ -263,6 +291,12 @@ export async function installAdminDocumentKbGraphqlMocks(
   await page.route('**/graphql', async (route) => {
     const requestBody = route.request().postDataJSON() as GraphQLRequestBody | null;
     const operationName = requestBody?.operationName;
+
+    // 会话身份复核先于业务 operation 分发：回显预置会话事实（唯一真源）。
+    // 缺公司 / 缺等级的预置会话会被原样回显，页面随后的准入判定不会被 mock 抬升。
+    if (await handleSessionBootstrapOperation(page, route, operationName)) {
+      return;
+    }
 
     if (operationName !== undefined && abortNames.has(operationName)) {
       await route.abort();

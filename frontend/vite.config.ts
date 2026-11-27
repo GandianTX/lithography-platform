@@ -73,7 +73,7 @@ export default defineConfig(({ mode }) => {
       strictPort: devServerStrictPort,
       // /graphql 与 /api 同源转发到本地后端：localhost 与端口映射域名均无跨域可用，
       // 不依赖 VITE_GRAPHQL_ENDPOINT 直连；DEV_API_PROXY_TARGET 可覆盖目标后端
-      // （/api 为参考资料文件上传/下载 REST 边界，与后端无全局前缀的显式路径一致）
+      // （/api 为历史维修记录文件上传/下载 REST 边界，与后端无全局前缀的显式路径一致）
       proxy: {
         '/graphql': {
           target: devApiProxyTarget,

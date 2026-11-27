@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 
 /**
- * 参考资料详情面板单测（任务 07：读取 + 管理入口显隐）。
+ * 历史维修记录详情面板单测（任务 07：读取 + 管理入口显隐）。
  *
  * 覆盖：
  * - 普通资料：元数据 + 生效正文 + 授权下载入口；
@@ -602,12 +602,12 @@ describe('ReferenceDocumentDetailPanel（只读）', () => {
     fetchDetailMock.mockResolvedValue({
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可查看。',
+      message: '历史维修记录不存在或不可查看。',
     });
 
     renderPanel();
 
-    expect(await screen.findByText('参考资料不存在或不可查看。')).toBeTruthy();
+    expect(await screen.findByText('历史维修记录不存在或不可查看。')).toBeTruthy();
     expect(screen.queryByText('光源模块周期性维护要点。')).toBeNull();
   });
 
@@ -619,7 +619,7 @@ describe('ReferenceDocumentDetailPanel（只读）', () => {
       />,
     );
 
-    expect(await screen.findByText('参考资料不存在或不可查看。')).toBeTruthy();
+    expect(await screen.findByText('历史维修记录不存在或不可查看。')).toBeTruthy();
     expect(fetchDetailMock).not.toHaveBeenCalled();
   });
 
@@ -708,14 +708,14 @@ describe('ReferenceDocumentDetailPanel（来源报告原件下载，任务 07 P2
     downloadSourceAttachmentMock.mockResolvedValue({
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可查看。',
+      message: '历史维修记录不存在或不可查看。',
     });
 
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: '下载报告原件' }));
 
     await waitFor(() => {
-      expect(screen.getByText('参考资料不存在或不可查看。')).toBeTruthy();
+      expect(screen.getByText('历史维修记录不存在或不可查看。')).toBeTruthy();
     });
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });

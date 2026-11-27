@@ -9,7 +9,7 @@
 // 3. 「DB 生成 ID」证据：创建前快照主键集合，创建后断言新 ID 不在快照内——
 //    直接证明本轮写入没有复用任何既有主键（含 Mock Seed 的固定主键）；
 // 4. 归属核验后的物理清理：维修申请按 id + request_no + customer_account_id 三因子绑定，
-//    参考资料按 id + created_by_account_id + 本轮标题关键字三因子绑定；绑定断言与
+//    历史维修记录按 id + created_by_account_id + 本轮标题关键字三因子绑定；绑定断言与
 //    DELETE + 残留核对在同一个事务内完成，绑定不匹配即中止（连接关闭触发回滚），
 //    不存在「绑定失败仍按 ID 继续删除」的路径。
 //
@@ -853,7 +853,7 @@ export function readPr5RepairRequestState(
 }
 
 /**
- * 参考资料**完整行绑定**（P1-1）：除三因子外必须提供数据库读回的整行 canonical 快照（15/15 列）。
+ * 历史维修记录**完整行绑定**（P1-1）：除三因子外必须提供数据库读回的整行 canonical 快照（15/15 列）。
  * 只读预检、存储引用读取与事务内 DELETE 都由该快照生成同一 WHERE——
  * 任一非三因子字段（含 `description` / `original_filename` / `mime_type` / `content_text` /
  * `equipment_model_id` / `storage_*` / `deprecated` / `deleted_at` / `created_at` / `updated_at`）
@@ -862,7 +862,7 @@ export function readPr5RepairRequestState(
  * 快照为**必填**：类型系统直接阻止「缺完整快照仍走破坏性三因子删除」的误传路径。
  */
 export interface Pr5ReferenceDocumentBinding {
-  /** 数据库生成的参考资料主键 */
+  /** 数据库生成的历史维修记录主键 */
   readonly id: number;
   readonly createdByAccountId: number;
   /** 本轮运行唯一标题关键字（残留反查 locator 使用；不再单独参与破坏性 WHERE） */
@@ -875,7 +875,7 @@ export interface Pr5ReferenceDocumentBinding {
 function buildPr5ReferenceDocumentWhere(binding: Pr5ReferenceDocumentBinding): string {
   if (binding.snapshot.table !== 'reference_document') {
     throw new Error(
-      `参考资料绑定快照表名不符：期望 reference_document，实际 ${JSON.stringify(binding.snapshot.table)}`,
+      `历史维修记录绑定快照表名不符：期望 reference_document，实际 ${JSON.stringify(binding.snapshot.table)}`,
     );
   }
 
@@ -887,33 +887,35 @@ function assertPr5ReferenceDocumentBinding(binding: Pr5ReferenceDocumentBinding)
   const { id, createdByAccountId, titleKeyword } = binding;
 
   if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error(`参考资料清理目标 ID 未通过正整数校验：${JSON.stringify(id)}`);
+    throw new Error(`历史维修记录清理目标 ID 未通过正整数校验：${JSON.stringify(id)}`);
   }
 
   if (!Number.isSafeInteger(createdByAccountId) || createdByAccountId <= 0) {
     throw new Error(
-      `参考资料清理目标创建人账号未通过正整数校验：${JSON.stringify(createdByAccountId)}`,
+      `历史维修记录清理目标创建人账号未通过正整数校验：${JSON.stringify(createdByAccountId)}`,
     );
   }
 
   if (!PR5_DOC_KEYWORD_PATTERN.test(titleKeyword)) {
-    throw new Error(`参考资料清理目标标题关键字未通过白名单校验：${JSON.stringify(titleKeyword)}`);
+    throw new Error(
+      `历史维修记录清理目标标题关键字未通过白名单校验：${JSON.stringify(titleKeyword)}`,
+    );
   }
 
   // 整行快照：列名集合与取值类型必须完整合法（缺任一 canonical 列即拒绝，杜绝字面量逃逸）
   assertPr5RowSnapshotShape(binding.snapshot);
-  assertPr5SnapshotFactorMatches(binding.snapshot, 'id', String(id), '参考资料');
+  assertPr5SnapshotFactorMatches(binding.snapshot, 'id', String(id), '历史维修记录');
   assertPr5SnapshotFactorMatches(
     binding.snapshot,
     'created_by_account_id',
     String(createdByAccountId),
-    '参考资料',
+    '历史维修记录',
   );
 
   // 残留 locator 仍按本轮标题关键字反查，故快照标题必须包含该关键字
   if (!readPr5SnapshotColumn(binding.snapshot, 'title').includes(titleKeyword)) {
     throw new Error(
-      `参考资料快照标题未包含本轮标题关键字（${titleKeyword}）：${JSON.stringify(readPr5SnapshotColumn(binding.snapshot, 'title'))}`,
+      `历史维修记录快照标题未包含本轮标题关键字（${titleKeyword}）：${JSON.stringify(readPr5SnapshotColumn(binding.snapshot, 'title'))}`,
     );
   }
 }
@@ -954,14 +956,14 @@ export function readPr5ReferenceDocumentStorageReferenceBound(
   const columns = raw.split('|');
 
   if (columns.length !== 2) {
-    throw new Error(`参考资料存储引用读取结果异常：${JSON.stringify(raw)}`);
+    throw new Error(`历史维修记录存储引用读取结果异常：${JSON.stringify(raw)}`);
   }
 
   const boundCount = Number(columns[0]);
 
   if (!Number.isSafeInteger(boundCount) || boundCount !== 1) {
     throw new Error(
-      `参考资料归属核验未精确命中 1 行（实际 ${JSON.stringify(columns[0])} 行），拒绝删除物理文件：${JSON.stringify(binding)}`,
+      `历史维修记录归属核验未精确命中 1 行（实际 ${JSON.stringify(columns[0])} 行），拒绝删除物理文件：${JSON.stringify(binding)}`,
     );
   }
 
@@ -972,14 +974,14 @@ export function readPr5ReferenceDocumentStorageReferenceBound(
   }
 
   if (!STORAGE_REFERENCE_PATTERN.test(reference)) {
-    throw new Error(`参考资料存储引用未通过白名单校验，拒绝删除：${JSON.stringify(reference)}`);
+    throw new Error(`历史维修记录存储引用未通过白名单校验，拒绝删除：${JSON.stringify(reference)}`);
   }
 
   return reference;
 }
 
 /**
- * 归属核验后物理删除本轮自建参考资料行。
+ * 归属核验后物理删除本轮自建历史维修记录行。
  *
  * 事务内顺序：三因子绑定唯一断言（id + 创建人账号 + 本轮标题关键字）→ 精确删除 → 残留核对为 0。
  * 物理文件删除必须以 readPr5ReferenceDocumentStorageReferenceBound 事先取到的精确引用为准，
@@ -1266,7 +1268,7 @@ function failureMessage(error: unknown): string {
 }
 
 /**
- * 本轮自建参考资料的统一清理编排（S4）：**全量预检 → 精确删行 → 按已核验引用删文件**。
+ * 本轮自建历史维修记录的统一清理编排（S4）：**全量预检 → 精确删行 → 按已核验引用删文件**。
  *
  * 1. 先对全部绑定做三因子归属核验并取精确存储引用：任一不唯一 / 引用非法即抛错，
  *    此时行与文件均未改动（失败发生在任何 DELETE 之前）；

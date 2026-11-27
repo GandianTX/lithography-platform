@@ -21,7 +21,7 @@ import { PageHeader } from '@/shared/ui/page-header';
 // 工程师首页快捷入口的目标路由（全部为 app/router 注册的真实路由）：
 // - 全部维修申请：列表路由默认 ALL；
 // - 我的接单：同一列表路由以查询参数恢复 MINE 范围；
-// - 参考资料库 / 账号设置：既有受保护路由。
+// - 历史维修记录库 / 账号设置：既有受保护路由。
 // AI 故障诊断没有正式路由，不提供任何入口、按钮或占位。
 const MY_REPAIR_REQUESTS_PATH = `${ENGINEER_REPAIR_REQUEST_LIST_PATH}?scope=MINE`;
 const REFERENCE_DOCUMENTS_PATH = '/reference-documents';

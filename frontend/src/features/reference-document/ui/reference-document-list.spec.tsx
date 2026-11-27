@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 
 /**
- * 参考资料列表面板 UI 单测。
+ * 历史维修记录列表面板 UI 单测。
  *
  * 走真实面板 + 真实列表 query 状态机，只 mock 外部 adapter 与路由跳转；
  * 筛选参数形状、空态文案与分页行为均由生产组件决定，测试不复制规则。
@@ -51,7 +51,7 @@ function buildItem(
 ): ReferenceDocumentListItem {
   return {
     id,
-    title: `参考资料 ${id}`,
+    title: `历史维修记录 ${id}`,
     documentType: 'ERROR_CODE_MANUAL',
     equipmentModelId: 49,
     equipmentModelName: 'ASML TWINSCAN NXT:1980Di',
@@ -105,25 +105,68 @@ describe('ReferenceDocumentList', () => {
       resolveList(buildPage([buildItem(970001)], 1));
     });
 
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
     expect(document.querySelector('.ant-skeleton')).toBeNull();
     expect(screen.getByText('错误代码手册')).toBeTruthy();
     expect(screen.getByText('ASML TWINSCAN NXT:1980Di')).toBeTruthy();
     // 纯文本资料展示占位而非空白
     expect(screen.getByText('纯文本')).toBeTruthy();
-    // 总数出现两处：真实汇总条（参考资料）与卡底统计，二者同源
+    // 总数出现两处：真实汇总条（历史维修记录）与卡底统计，二者同源
     expect(screen.getAllByText('共 1 条')).toHaveLength(2);
+  });
+
+  // 2026-11-27 更名核对：改名只动文案，不改查询条件、数据类型与可见范围。
+  // 已正式提交的工单维修总结、历史维修记录与平台已有的其他类型资料（手册/代码表）
+  // 必须在同一列表按原规则全部展示，前端不新增任何按来源/类型的隐式过滤。
+  it('非维修报告类型资料仍按既有规则展示（改名不改变过滤与数据类型）', async () => {
+    fetchListMock.mockResolvedValue(
+      buildPage(
+        [
+          buildItem(910001, {
+            documentType: 'ERROR_CODE_MANUAL',
+            sourceKind: 'MATERIAL',
+            title: '故障代码表 B（普通资料）',
+          }),
+          buildItem(910002, {
+            documentType: 'MAINTENANCE_GUIDE',
+            sourceKind: 'MATERIAL',
+            title: '保养手册 A（普通资料）',
+          }),
+          buildItem(910003, {
+            documentType: 'MAINTENANCE_GUIDE',
+            sourceKind: 'WORK_ORDER_SUMMARY',
+            title: '工单维修总结 910003',
+          }),
+          buildItem(910004, {
+            documentType: 'MAINTENANCE_GUIDE',
+            sourceKind: 'INDEPENDENT_REPORT',
+            title: '独立维修报告 910004',
+          }),
+        ],
+        4,
+      ),
+    );
+
+    render(<ReferenceDocumentList />);
+
+    await screen.findByText('故障代码表 B（普通资料）');
+    expect(screen.getByText('保养手册 A（普通资料）')).toBeTruthy();
+    expect(screen.getByText('工单维修总结 910003')).toBeTruthy();
+    expect(screen.getByText('独立维修报告 910004')).toBeTruthy();
+
+    // 请求参数只有分页：改名未引入来源/类型过滤
+    expect(fetchListMock).toHaveBeenLastCalledWith({ page: 1, pageSize: 10 }, undefined);
   });
 
   it('无筛选时以不带 filter 参数请求；点击行进入详情路由', async () => {
     fetchListMock.mockResolvedValue(buildPage([buildItem(970001)]));
 
     render(<ReferenceDocumentList />);
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     expect(fetchListMock).toHaveBeenLastCalledWith({ page: 1, pageSize: 10 }, undefined);
 
-    fireEvent.click(screen.getByText('参考资料 970001'));
+    fireEvent.click(screen.getByText('历史维修记录 970001'));
 
     expect(navigateMock).toHaveBeenCalledWith('/reference-documents/970001');
   });
@@ -168,7 +211,7 @@ describe('ReferenceDocumentList', () => {
     fetchListMock.mockResolvedValue(buildPage([buildItem(970001)]));
 
     render(<ReferenceDocumentList />);
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     // AntD Select 的 placeholder 不是 input 属性，jsdom 下按 combobox role + 页面顺序定位
     //（与 real e2e 先例一致）；下拉经 portal 渲染，mouseDown 展开
@@ -206,15 +249,15 @@ describe('ReferenceDocumentList', () => {
 
     render(<ReferenceDocumentList />);
 
-    await screen.findByText('暂无参考资料。');
+    await screen.findByText('暂无历史维修记录。');
 
     // 打开文档类型下拉（先展开筛选区，筛选区首个 combobox）并选中 → 空文案切换为筛选语义
     fireEvent.click(screen.getByRole('button', { name: '筛选' }));
     fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
     fireEvent.click(await screen.findByText('错误代码手册'));
 
-    await screen.findByText('没有符合筛选条件的参考资料。');
-    expect(screen.queryByText('暂无参考资料。')).toBeNull();
+    await screen.findByText('没有符合筛选条件的历史维修记录。');
+    expect(screen.queryByText('暂无历史维修记录。')).toBeNull();
   });
 
   it('加载失败展示共享错误文案与重试入口，重试沿用当前页码', async () => {
@@ -224,12 +267,12 @@ describe('ReferenceDocumentList', () => {
     render(<ReferenceDocumentList />);
 
     await screen.findByText(networkError.userMessage);
-    expect(screen.queryByText('暂无参考资料。')).toBeNull();
+    expect(screen.queryByText('暂无历史维修记录。')).toBeNull();
 
     fetchListMock.mockResolvedValueOnce(buildPage([buildItem(970002)]));
     fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
 
-    await screen.findByText('参考资料 970002');
+    await screen.findByText('历史维修记录 970002');
     expect(fetchListMock).toHaveBeenLastCalledWith({ page: 1, pageSize: 10 }, undefined);
   });
 
@@ -237,7 +280,7 @@ describe('ReferenceDocumentList', () => {
     fetchListMock.mockResolvedValue(buildPage([buildItem(970001)]));
 
     render(<ReferenceDocumentList />);
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     expect(screen.queryByText('新增资料')).toBeNull();
     expect(navigateMock).not.toHaveBeenCalledWith('/reference-documents/new');
@@ -250,9 +293,9 @@ describe('ReferenceDocumentList', () => {
 
     // 第三页被删空：文案是「当前页空」，不是「库空」，也不与失败态叠加
     await screen.findByText('当前页暂无数据，请翻页返回。');
-    expect(screen.queryByText('暂无参考资料。')).toBeNull();
-    expect(screen.queryByText('没有符合筛选条件的参考资料。')).toBeNull();
-    // 汇总条（参考资料）与卡底统计同源，均为 total=25
+    expect(screen.queryByText('暂无历史维修记录。')).toBeNull();
+    expect(screen.queryByText('没有符合筛选条件的历史维修记录。')).toBeNull();
+    // 汇总条（历史维修记录）与卡底统计同源，均为 total=25
     expect(screen.getAllByText('共 25 条')).toHaveLength(2);
 
     const secondPage = container.querySelector('.ant-pagination-item-2 a');
@@ -261,7 +304,7 @@ describe('ReferenceDocumentList', () => {
     fetchListMock.mockResolvedValueOnce(buildPage([buildItem(970005)], 25, 2));
     fireEvent.click(secondPage as HTMLElement);
 
-    await screen.findByText('参考资料 970005');
+    await screen.findByText('历史维修记录 970005');
     expect(fetchListMock).toHaveBeenLastCalledWith({ page: 2, pageSize: 10 }, undefined);
     expect(screen.queryByText('当前页暂无数据，请翻页返回。')).toBeNull();
   });
@@ -277,7 +320,7 @@ describe('ReferenceDocumentList', () => {
     render(<ReferenceDocumentList />);
 
     // 型号失败不阻塞列表：列表仍就绪，只额外多一条型号错误与重试入口
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
     await screen.findByText(modelsError.userMessage);
     expect(screen.getByRole('button', { name: /重\s*试/ })).toBeTruthy();
 
@@ -315,7 +358,7 @@ describe('ReferenceDocumentList', () => {
     fetchListMock.mockResolvedValue(buildPage([buildItem(970001)], 1));
 
     const { container } = render(<ReferenceDocumentList />);
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     const headerTexts = Array.from(container.querySelectorAll('.ant-table-thead th')).map((th) =>
       th.textContent?.trim(),
@@ -394,7 +437,7 @@ describe('ReferenceDocumentList', () => {
     fetchListMock.mockResolvedValue(buildPage([buildItem(970001)], 25));
 
     render(<ReferenceDocumentList />);
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     const filterButton = () => screen.getByRole('button', { name: '筛选' });
     // 默认收起：筛选控件完全不渲染（占 0px），按钮 aria-expanded=false
@@ -457,11 +500,11 @@ describe('ReferenceDocumentList', () => {
       fetchListMock.mockResolvedValue(buildPage([buildItem(970001)], 7, 1));
 
       render(<ReferenceDocumentList />);
-      await screen.findByText('参考资料 970001');
+      await screen.findByText('历史维修记录 970001');
 
       const cells = document.querySelectorAll('.reference-library-summary-cell');
       expect(cells).toHaveLength(3);
-      expect(cells[0].textContent).toContain('参考资料');
+      expect(cells[0].textContent).toContain('历史维修记录');
       expect(cells[0].textContent).toContain('共 7 条');
       expect(cells[1].textContent).toContain('支持类型');
       // 类型集合来自后端契约枚举，不由测试复制
@@ -510,7 +553,7 @@ describe('ReferenceDocumentList', () => {
       fetchListMock.mockResolvedValue(buildPage([buildItem(970001)], 1));
 
       render(<ReferenceDocumentList variant="knowledge-base" />);
-      await screen.findByText('参考资料 970001');
+      await screen.findByText('历史维修记录 970001');
 
       expect(document.querySelector('.reference-library-summary')).toBeNull();
       expect(document.querySelector('.kb-summary')).toBeNull();
@@ -522,7 +565,7 @@ describe('ReferenceDocumentList', () => {
       fetchListMock.mockResolvedValue(buildPage([buildItem(970001)], 1));
 
       render(<ReferenceDocumentList variant="knowledge-base" />);
-      await screen.findByText('参考资料 970001');
+      await screen.findByText('历史维修记录 970001');
 
       expect(document.querySelector('.kb-card')).not.toBeNull();
       expect(document.querySelector('.kb-toolbar')).not.toBeNull();
@@ -541,7 +584,7 @@ describe('ReferenceDocumentList', () => {
       fetchListMock.mockResolvedValue(buildPage([buildItem(970001)], 1));
 
       render(<ReferenceDocumentList variant="knowledge-base" />);
-      await screen.findByText('参考资料 970001');
+      await screen.findByText('历史维修记录 970001');
 
       // 默认收起：无可见 combobox
       expect(screen.queryAllByRole('combobox')).toHaveLength(0);

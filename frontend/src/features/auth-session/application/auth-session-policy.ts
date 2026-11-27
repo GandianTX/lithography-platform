@@ -126,8 +126,8 @@ export const AUTH_SESSION_RESTRICTED_PATH = '/restricted';
 const AUTH_SESSION_ROLE_ALLOWED_ROOT_PATHS: Record<AuthSessionRole, readonly string[]> = {
   // /account：账号设置（0909 账号设置计划）对全部登录角色开放，三种角色同口径放行
   CUSTOMER: ['/account', '/customer'],
-  // /reference-documents：AI 参考资料库（0907 任务二）；读模型向 ENGINEER/SUPER_ADMIN
-  // 开放，CUSTOMER 完全禁入（访问时安全跳转回个人主页，与后端读守卫口径一致）
+  // /reference-documents：历史维修记录库（0907 任务二，2026-11-27 更名）；读模型向
+  // ENGINEER/SUPER_ADMIN 开放，CUSTOMER 完全禁入（访问时安全跳转回个人主页，与后端读守卫口径一致）
   ENGINEER: ['/account', '/engineer', '/reference-documents', '/local-settings', '/local-backup'],
   // /local-settings：本地设置（任务 09 R064）为导航末项只读页；工程师、1 级与 2 级
   // 管理员可见，CUSTOMER 完全禁入。具体可见公司范围仍由服务端按 Session 裁决，
@@ -288,6 +288,31 @@ export function isAuthSessionAdminPathAllowedAt(
   }
 
   return true;
+}
+
+// 一级管理员侧的「重复入口」收口（2026-11-27）：
+// 文档数据库页已用标签承载「历史维修记录库」与「AI 会话记录」两个只读入口，
+// 侧边栏不再重复展示这两个独立入口。只在替换入口真实可用时隐藏——
+// 即 scope === 'GLOBAL'（文档数据库本身放行、可信公司已确认）；缺少可信公司的一级
+// 管理员（PLATFORM）与缺等级/非法等级的会话（NONE）保持原入口，避免「隐藏了重复入口
+// 却没有任何可进入的替代入口」。本函数只服务导航展示，不参与路由守卫：
+// 旧路由直达与既有页面跳转仍按上方既有规则放行，不收窄也不扩大权限。
+const AUTH_SESSION_GLOBAL_SCOPE_DUPLICATE_SIDEBAR_PATHS: readonly string[] = [
+  '/reference-documents',
+  '/admin/ai-conversations',
+];
+
+export function isAuthSessionDuplicateSidebarEntrySuppressedAt(
+  scope: AuthSessionAdminScope,
+  pathname: string,
+): boolean {
+  if (scope !== 'GLOBAL') {
+    return false;
+  }
+
+  return AUTH_SESSION_GLOBAL_SCOPE_DUPLICATE_SIDEBAR_PATHS.some((duplicatePath) =>
+    isAuthSessionRolePathAllowed(pathname, duplicatePath),
+  );
 }
 
 // 直达路由与导航可见性复用同一份管理范围判断。

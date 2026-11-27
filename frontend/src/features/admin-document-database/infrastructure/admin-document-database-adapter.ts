@@ -27,7 +27,7 @@ import type {
  *
  * - 只读：仅消费 SUPER_ADMIN 专用聚合 Query（backend/src/schema.graphql
  *   的 admin* Query 组），不触达任何写操作；
- * - 参考资料 tag 按计划表复用既有 features/reference-document 契约，
+ * - 历史维修记录 tag 按计划表复用既有 features/reference-document 契约，
  *   不在此重复实现；
  * - transport / auth / network 失败由共享层归一为 GraphQLIngressError 上抛，
  *   详情读取的业务拒绝（NOT_FOUND / FORBIDDEN）按既有 adapter 惯例归并

@@ -1,5 +1,5 @@
 // src/adapters/api/graphql/reference-document/dto/reference-document-read.dto.ts
-// AI 参考资料读模型 GraphQL 输出对象（0907.docx 任务二；A-PR0 §4.3 组织范围扩展）
+// 历史维修记录读模型 GraphQL 输出对象（0907.docx 任务二；A-PR0 §4.3 组织范围扩展）
 // 不返回创建人账号 ID、存储后端/存储引用与服务器路径；不返回解析状态（数据库无此模型）
 
 import { Field, Int, ObjectType } from '@nestjs/graphql';
@@ -37,13 +37,13 @@ export class ReferenceDocumentCaseDetailDTO {
 }
 
 /**
- * 参考资料列表项输出对象
+ * 历史维修记录列表项输出对象
  * 不携带 contentText 大字段（仅详情返回）；创建人展示经 creatorNickname；
  * A-PR0 §4.3：组织展示名/来源信息/机型文字/案例处理状态（普通资料为 null）
  */
-@ObjectType({ description: '参考资料列表项' })
+@ObjectType({ description: '历史维修记录列表项' })
 export class ReferenceDocumentListItemDTO {
-  @Field(() => Int, { description: '参考资料 ID' })
+  @Field(() => Int, { description: '历史维修记录 ID' })
   id!: number;
 
   @Field(() => String, { description: '文档标题' })
@@ -305,7 +305,7 @@ export class ReferenceDocumentStructuredStepDTO {
  */
 @ObjectType({ description: '管理修订编辑初值（仅一级管理员）' })
 export class ReferenceDocumentEditableContentDTO {
-  @Field(() => Int, { description: '参考资料 ID' })
+  @Field(() => Int, { description: '历史维修记录 ID' })
   documentId!: number;
 
   @Field(() => String, { description: '文档标题' })
@@ -482,13 +482,13 @@ export class ReferenceDocumentSourceAttachmentDTO {
 }
 
 /**
- * 参考资料详情输出对象（元数据 + 生效正文 + 案例明细）
+ * 历史维修记录详情输出对象（元数据 + 生效正文 + 案例明细）
  * 不返回存储引用与服务器本地路径（0907.docx：不能把服务器本地路径返回给浏览器）
  * 任务 07：contentText 为生效正文，并附来源类型 / 生效版本 / 冻结报告内容。
  */
-@ObjectType({ description: '参考资料详情（元数据与文本内容）' })
+@ObjectType({ description: '历史维修记录详情（元数据与文本内容）' })
 export class ReferenceDocumentDetailDTO {
-  @Field(() => Int, { description: '参考资料 ID' })
+  @Field(() => Int, { description: '历史维修记录 ID' })
   id!: number;
 
   @Field(() => String, { description: '文档标题' })
@@ -609,9 +609,9 @@ export class ReferenceDocumentDetailDTO {
 }
 
 /**
- * 参考资料列表分页输出（OFFSET：items/total/page/pageSize）
+ * 历史维修记录列表分页输出（OFFSET：items/total/page/pageSize）
  */
-@ObjectType({ description: '参考资料分页结果' })
+@ObjectType({ description: '历史维修记录分页结果' })
 export class ReferenceDocumentPaginatedDTO extends paginatedTypeFactory(
   ReferenceDocumentListItemDTO,
 ) {}
@@ -643,9 +643,9 @@ export class ReferenceDocumentRevisionDTO {
  * 原始冻结报告版本以 sourceReportVersionId 表达，管理修订以 revisions 表达；
  * 与列表/详情/下载共用同一服务端可见范围，不可见资料统一 NOT_FOUND。
  */
-@ObjectType({ description: '参考资料历史版本' })
+@ObjectType({ description: '历史维修记录修订版本' })
 export class ReferenceDocumentRevisionsDTO {
-  @Field(() => Int, { description: '参考资料 ID' })
+  @Field(() => Int, { description: '历史维修记录 ID' })
   documentId!: number;
 
   @Field(() => Int, { description: '当前生效修订号；0 表示无管理修订' })

@@ -1,5 +1,5 @@
 // src/adapters/api/graphql/reference-document/dto/reference-document-write.dto.ts
-// AI 参考资料写侧输入与结果（任务 07 R053/R058–R061 + A-PR0 §S6 案例更正）
+// 历史维修记录写侧输入与结果（任务 07 R053/R058–R061 + A-PR0 §S6 案例更正）
 // 仅做结构校验（拦脏数据）：空白语义、长度语义、型号/账号/公司存在性由 usecase 判定；
 // createdByAccountId 归属更正为显式输入（一级管理员核实动作），其余写路径不取自客户端。
 //
@@ -427,18 +427,18 @@ export class CorrectReferenceDocumentOwnershipInput {
 /**
  * 资料写操作结果输出对象（原作者删除 R053）
  */
-@ObjectType({ description: '参考资料写操作结果' })
+@ObjectType({ description: '历史维修记录写操作结果' })
 export class ReferenceDocumentMutationResultDTO {
-  @Field(() => Int, { description: '参考资料 ID' })
+  @Field(() => Int, { description: '历史维修记录 ID' })
   id!: number;
 }
 
 /**
  * 管理操作结果输出对象（R058/R059/R060/R061-02）：资料 ID 与新生效版本号
  */
-@ObjectType({ description: '参考资料管理操作结果（ID 与新生效版本号）' })
+@ObjectType({ description: '历史维修记录管理操作结果（ID 与新生效版本号）' })
 export class ReferenceDocumentManagedMutationResultDTO {
-  @Field(() => Int, { description: '参考资料 ID' })
+  @Field(() => Int, { description: '历史维修记录 ID' })
   id!: number;
 
   @Field(() => Int, { description: '本次生成的新生效版本号' })

@@ -20,7 +20,7 @@ import { resolveReferenceDocumentReadScope } from './reference-document-read-sco
 import { REFERENCE_DOCUMENT_STORAGE } from '@src/usecases/common/ports/reference-document-storage.contract';
 
 /**
- * 获取参考资料下载文件用例（ENGINEER + SUPER_ADMIN，负责人 0910 裁定收窄，与 GraphQL 读口径一致）。
+ * 获取历史维修记录下载文件用例（ENGINEER + SUPER_ADMIN，负责人 0910 裁定收窄，与 GraphQL 读口径一致）。
  *
  * - 读侧范围经 resolveReferenceDocumentReadScope 决议（功能 V5.6 R057-01：
  *   工程师及 2 级限本公司，1 级可跨公司）：跨范围目标与不存在/已软删统一

@@ -193,26 +193,31 @@ describe('AppLayout（S3 壳层）', () => {
     expect(screen.getByRole('link', { name: '我的申请' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '维修申请' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '参考资料' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '历史维修记录库' })).not.toBeInTheDocument();
   });
 
-  it('SUPER_ADMIN 见首页、参考资料、用户管理与文档数据库（PR3 S3）', () => {
+  // 2026-11-27 一级管理员重复入口收口：文档数据库已承载「历史维修记录库」与
+  // 「AI 会话记录」两个标签，侧边栏不再重复展示独立入口（页面与路由本身保留）。
+  it('一级管理员（全域）只从文档数据库进入历史维修记录库与 AI 会话记录，侧栏不重复展示', () => {
     useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN'));
     renderLayout('/admin/users');
 
     expect(screen.getByRole('link', { name: '首页' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '用户管理' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '文档数据库' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '历史维修记录库' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'AI 会话记录' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '发起申请' })).not.toBeInTheDocument();
   });
 
-  it('二级管理员看到任务 08 管理入口，未知等级不显示管理入口', () => {
+  it('二级管理员看到任务 08 管理入口与两个独立只读入口，未知等级不显示管理入口', () => {
     useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', 2, 910004));
     const view = renderLayout('/admin');
 
     expect(screen.getByRole('link', { name: '首页' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '参考资料' })).toBeInTheDocument();
+    // 二级管理员保持原权限设计：保留独立入口，文档数据库仍不可访问。
+    expect(screen.getByRole('link', { name: '历史维修记录库' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AI 会话记录' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '用户管理' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '公司档案' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '注册审批' })).toBeInTheDocument();
@@ -223,6 +228,30 @@ describe('AppLayout（S3 壳层）', () => {
     renderLayout('/admin');
 
     expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
+    // 等级缺失：文档数据库不可用，历史维修记录库入口保持可用（不因收口丢失有权功能）；
+    // AI 会话记录仍按既有管理范围失败关闭，不因本次收口而放开。
+    expect(screen.getByRole('link', { name: '历史维修记录库' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'AI 会话记录' })).not.toBeInTheDocument();
+  });
+
+  // 边界：一级管理员缺少可信组织时（PLATFORM）文档数据库不放行，
+  // 因此两个独立入口必须保留，避免「隐藏了重复入口却没有任何替代入口」。
+  it('一级管理员缺少可信组织时保留历史维修记录库与 AI 会话记录入口（文档数据库不可用）', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN', 1, null));
+    renderLayout('/admin');
+
+    expect(screen.getByRole('link', { name: '历史维修记录库' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AI 会话记录' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
+  });
+
+  it('工程师保留历史维修记录库入口（原有资料库与 AI 功能不变）', () => {
+    useAuthSessionMock.mockReturnValue(sessionFor('ENGINEER'));
+    renderLayout('/engineer');
+
+    expect(screen.getByRole('link', { name: '历史维修记录库' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AI 对话' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '文档数据库' })).not.toBeInTheDocument();
   });
 
@@ -270,7 +299,7 @@ describe('AppLayout（S3 壳层）', () => {
 
   // PR5 整页视觉计划 S0-3：独立资料列表是第二个工作区变体，同样按**精确**路由开启；
   // 新增（/reference-documents/new）与详情（/reference-documents/:id）必须保持通用基准。
-  it('参考资料精确列表路由应用 reference-library 工作区变体，新增/详情不继承（PR5 整页）', () => {
+  it('历史维修记录精确列表路由应用 reference-library 工作区变体，新增/详情不继承（PR5 整页）', () => {
     useAuthSessionMock.mockReturnValue(sessionFor('SUPER_ADMIN'));
     const view = renderLayout('/reference-documents');
 

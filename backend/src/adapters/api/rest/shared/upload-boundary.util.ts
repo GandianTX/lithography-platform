@@ -8,7 +8,7 @@ import { DomainError } from '@core/common/errors/domain-error';
 import { resolveRestStatus } from '@core/common/errors/rest-error-status';
 
 /**
- * REST multipart 上传/下载边界的共享运输层工具（参考资料与投稿附件共用）。
+ * REST multipart 上传/下载边界的共享运输层工具（历史维修记录与投稿附件共用）。
  *
  * - 只做协议层职责：latin1 误码还原、展示用文件名清洗、文件结构校验、
  *   DomainError → REST 统一错误体映射、下载响应头组装；

@@ -45,7 +45,7 @@ import {
 } from './dto/reference-document-write.dto';
 
 /**
- * AI 参考资料库 GraphQL 解析器
+ * 历史维修记录库 GraphQL 解析器
  * 仅做协议映射：结构校验 → 调用 usecase → 输出 DTO
  * 业务异常不在此捕获，交由全局过滤器映射为 GraphQL 错误契约
  *
@@ -78,12 +78,14 @@ export class ReferenceDocumentResolver {
   ) {}
 
   /**
-   * 查询参考资料列表（默认仅未软删；标题模糊 + 类型等值 + 型号等值 + 案例处理状态筛选）
+   * 查询历史维修记录列表（默认仅未软删；标题模糊 + 类型等值 + 型号等值 + 案例处理状态筛选）
    * 排序由契约固定：创建时间倒序 + 主键倒序；仅支持 OFFSET 分页（usecase 强制）
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
-  @Query(() => ReferenceDocumentPaginatedDTO, { description: '查询参考资料列表（工程师/管理员）' })
+  @Query(() => ReferenceDocumentPaginatedDTO, {
+    description: '查询历史维修记录列表（工程师/管理员）',
+  })
   @ValidateInput()
   async referenceDocuments(
     @Args('pagination') pagination: PaginationArgs,
@@ -110,14 +112,14 @@ export class ReferenceDocumentResolver {
   }
 
   /**
-   * 查询参考资料详情（元数据 + 生效正文 + 可空案例明细）
+   * 查询历史维修记录详情（元数据 + 生效正文 + 可空案例明细）
    * 不存在、下架、归属未确认、已软删与跨范围统一 NOT_FOUND，不泄露状态与存在性
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
-  @Query(() => ReferenceDocumentDetailDTO, { description: '查询参考资料详情（工程师/管理员）' })
+  @Query(() => ReferenceDocumentDetailDTO, { description: '查询历史维修记录详情（工程师/管理员）' })
   async referenceDocument(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentDetailDTO> {
     return this.getReferenceDocumentDetailUsecase.execute({
@@ -127,16 +129,16 @@ export class ReferenceDocumentResolver {
   }
 
   /**
-   * 查询参考资料历史版本（生效修订摘要 + 原始冻结报告版本标识）
+   * 查询历史维修记录的修订版本（生效修订摘要 + 原始冻结报告版本标识）
    * 与列表/详情/下载共用同一服务端可见范围；不可见资料统一 NOT_FOUND
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)
   @Query(() => ReferenceDocumentRevisionsDTO, {
-    description: '查询参考资料历史版本（工程师/管理员）',
+    description: '查询历史维修记录的修订版本（工程师/管理员）',
   })
   async referenceDocumentRevisions(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentRevisionsDTO> {
     return this.listReferenceDocumentRevisionsUsecase.execute({
@@ -182,7 +184,7 @@ export class ReferenceDocumentResolver {
     description: '查询归属待核实资料详情（仅一级管理员）',
   })
   async pendingOwnershipReferenceDocument(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentDetailDTO> {
     return this.getPendingOwnershipReferenceDocumentDetailUsecase.execute({
@@ -202,7 +204,7 @@ export class ReferenceDocumentResolver {
   })
   @ValidateInput()
   async reviseReferenceDocument(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args('input') input: ReviseReferenceDocumentInput,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentManagedMutationResultDTO> {
@@ -230,7 +232,7 @@ export class ReferenceDocumentResolver {
     description: '查询管理修订编辑初值（仅一级管理员）',
   })
   async referenceDocumentEditableContent(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentEditableContentDTO> {
     return this.getReferenceDocumentEditableContentUsecase.execute({
@@ -251,7 +253,7 @@ export class ReferenceDocumentResolver {
   })
   @ValidateInput()
   async reviseReferenceDocumentStructured(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args('input') input: ReviseReferenceDocumentStructuredInput,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentManagedMutationResultDTO> {
@@ -312,7 +314,7 @@ export class ReferenceDocumentResolver {
   })
   @ValidateInput()
   async offlineReferenceDocument(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args('input') input: OfflineReferenceDocumentInput,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentManagedMutationResultDTO> {
@@ -335,7 +337,7 @@ export class ReferenceDocumentResolver {
   })
   @ValidateInput()
   async adminDeleteReferenceDocument(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args('input') input: AdminDeleteReferenceDocumentInput,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentManagedMutationResultDTO> {
@@ -358,7 +360,7 @@ export class ReferenceDocumentResolver {
   })
   @ValidateInput()
   async correctReferenceDocumentOwnership(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args('input') input: CorrectReferenceDocumentOwnershipInput,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentManagedMutationResultDTO> {
@@ -383,7 +385,7 @@ export class ReferenceDocumentResolver {
   })
   @ValidateInput()
   async updateReferenceDocumentCase(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args('input') input: UpdateReferenceDocumentCaseInput,
     @currentUser() user: JwtPayload,
   ): Promise<ReferenceDocumentCaseMutationResultDTO> {
@@ -418,7 +420,7 @@ export class ReferenceDocumentResolver {
     description: '原作者删除本人正式资料（R053）',
   })
   async softDeleteReferenceDocument(
-    @Args({ name: 'id', type: () => Int, description: '参考资料 ID' }) id: number,
+    @Args({ name: 'id', type: () => Int, description: '历史维修记录 ID' }) id: number,
     @Args({ name: 'expectedVersion', type: () => Int, description: '期望生效版本号' })
     expectedVersion: number,
     @currentUser() user: JwtPayload,

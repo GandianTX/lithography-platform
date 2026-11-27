@@ -117,7 +117,7 @@ describe(GqlAllExceptionsFilter.name, () => {
   });
 
   it.each([
-    // AI 参考资料库：型号不存在属目标不存在；非法输入 BAD_USER_INPUT；
+    // 历史维修记录库：型号不存在属目标不存在；非法输入 BAD_USER_INPUT；
     // 不存在/已软删统一 NOT_FOUND；落库失败属系统侧故障
     [REFERENCE_DOCUMENT_ERROR.EQUIPMENT_MODEL_NOT_FOUND, 'NOT_FOUND'],
     [REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS, 'BAD_USER_INPUT'],
@@ -135,7 +135,10 @@ describe(GqlAllExceptionsFilter.name, () => {
     } as unknown as ArgumentsHost;
     const filter = new GqlAllExceptionsFilter(configService);
 
-    const error = filter.catch(new DomainError(errorCode, '参考资料错误'), host) as GraphQLError;
+    const error = filter.catch(
+      new DomainError(errorCode, '历史维修记录错误'),
+      host,
+    ) as GraphQLError;
 
     expect(error.extensions).toMatchObject({
       code: gqlCode,

@@ -1,7 +1,7 @@
 // src/modules/lithography/reference-document-effective-content.ts
 
 /**
- * 参考资料生效正文解析（任务 07；任务 09 R068 的本地视图对齐共用）。
+ * 历史维修记录生效正文解析（任务 07；任务 09 R068 的本地视图对齐共用）。
  *
  * 读取口径：
  * - 存在管理修订（effectiveRevisionNo > 0）：读修订后正文，来源 CURRENT_REVISION；

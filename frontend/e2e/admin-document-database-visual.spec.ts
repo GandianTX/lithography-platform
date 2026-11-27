@@ -19,7 +19,7 @@
 //   一行正文的 1:1 实现局部图（元素截图不二次缩放，供与原型人工并排对照）；
 // - 维修申请「型号告警态」：告警与表格同卡（工具区 → 告警 → 表格相邻无外部间距）；
 // - S→M→L→M：L 下搜索/筛选/分页/操作/退出可达、无整页横滚；回 M 恢复基准；
-// - 共享外观回归：登录、用户管理、客户申请、独立参考资料页保持默认外观，
+// - 共享外观回归：登录、用户管理、客户申请、独立历史维修记录库页保持默认外观，
 //   知识库变体只作用于 /admin/document-database。
 //
 // 截图与 JSON 写入 testInfo outputPath（frontend/test-results/...），由采集人复制归档到
@@ -31,6 +31,7 @@ import path from 'node:path';
 
 import { installAdminDocumentKbGraphqlMocks } from './helpers/admin-document-kb-mocks';
 import { seedAuthSession } from './helpers/auth-session-seed';
+import { GLOBAL_ADMIN_ORGANIZATION_ID } from './helpers/my-session-identity-mocks';
 import {
   captureStableViewport,
   prepareStableViewport,
@@ -158,9 +159,9 @@ const KB_CONTENT_LEFT = 236;
 const KB_CONTENT_RIGHT_GAP = 26;
 
 const TABS = [
-  { fileStem: 'reference-documents', name: '参考资料' },
+  { fileStem: 'reference-documents', name: '历史维修记录库' },
   { fileStem: 'repair-requests', name: '维修申请' },
-  { fileStem: 'ai-conversations', name: 'AI 会话' },
+  { fileStem: 'ai-conversations', name: 'AI 会话记录' },
   { fileStem: 'ai-reports', name: 'AI 报告' },
 ] as const;
 
@@ -544,7 +545,7 @@ async function shootTheadFirstRow(
   evidence[name] = { clipHeight: +clip.height.toFixed(2), clipWidth: +clip.width.toFixed(2), png };
 }
 
-/** 每个视口：实现侧页头/汇总/工具区/表头+首行 4 张 1:1 局部图（参考资料标签激活时），
+/** 每个视口：实现侧页头/汇总/工具区/表头+首行 4 张 1:1 局部图（历史维修记录库标签激活时），
     供采集人与原型在相同视口/字号档并排人工对照。 */
 async function captureImplementationLocals(
   page: Page,
@@ -552,7 +553,7 @@ async function captureImplementationLocals(
   outputDir: string,
 ): Promise<Record<string, unknown>> {
   const tag = `${viewport.width}x${viewport.height}`;
-  await focusTab(page, '参考资料');
+  await focusTab(page, '历史维修记录库');
   const pane = activePane(page);
   const evidence: Record<string, unknown> = {};
   await shootLocal(
@@ -592,7 +593,7 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     // /admin/** 为一级管理员专属路由：守卫要求 adminLevel=1 且有可信公司
     await seedAuthSession(page, 'SUPER_ADMIN', {
       adminLevel: 1,
-      adminOrganizationId: 910003,
+      adminOrganizationId: GLOBAL_ADMIN_ORGANIZATION_ID,
     });
 
     const evidenceDir = testInfo.outputPath();
@@ -707,7 +708,11 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     await installAdminDocumentKbGraphqlMocks(page, {
       abortOperationNames: ['AdminDocumentDatabaseEquipmentModels'],
     });
-    await seedAuthSession(page, 'SUPER_ADMIN');
+    // 文档数据库为一级管理员专属：路由守卫要求 adminLevel=1 且有可信公司
+    await seedAuthSession(page, 'SUPER_ADMIN', {
+      adminLevel: 1,
+      adminOrganizationId: GLOBAL_ADMIN_ORGANIZATION_ID,
+    });
 
     await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto(PAGE_PATH);
@@ -785,7 +790,11 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     page,
   }) => {
     test.setTimeout(90_000);
-    await seedAuthSession(page, 'SUPER_ADMIN');
+    // 文档数据库为一级管理员专属：路由守卫要求 adminLevel=1 且有可信公司
+    await seedAuthSession(page, 'SUPER_ADMIN', {
+      adminLevel: 1,
+      adminOrganizationId: GLOBAL_ADMIN_ORGANIZATION_ID,
+    });
     await page.setViewportSize({ height: 900, width: 1440 });
 
     // 阶段一：列表查询网络层 abort → 卡内失败态「重试」（size=small → 紧凑控件 6px）
@@ -811,7 +820,8 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     await hideNonPr3FloatingEntry(page);
     await focusTab(page, '维修申请');
     await pane.locator('.kb-table-scope .ant-table-tbody .ant-btn').first().click();
-    const drawer = page.locator('.ant-drawer').filter({ hasText: '维修申请摘要' });
+    // 抽屉标题自 #14 起为「工单详情（· 申请编号）」；旧文案「维修申请摘要」已不存在
+    const drawer = page.locator('.ant-drawer').filter({ hasText: '工单详情' });
     await expect(drawer).toBeVisible();
     // AntD 两字按钮会在中间插入全角空格（「重 试」），用正则容忍（同「摘 要」口径）
     const drawerRetry = drawer.getByRole('button', { name: /重\s*试/ });
@@ -828,7 +838,7 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     // /admin/** 为一级管理员专属路由：守卫要求 adminLevel=1 且有可信公司
     await seedAuthSession(page, 'SUPER_ADMIN', {
       adminLevel: 1,
-      adminOrganizationId: 910003,
+      adminOrganizationId: GLOBAL_ADMIN_ORGANIZATION_ID,
     });
 
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -876,7 +886,7 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     expect(restored).toEqual(baseline);
   });
 
-  test('共享外观回归：登录/管理员首页/用户管理/客户申请保持默认外观，参考资料页走整页变体', async ({
+  test('共享外观回归：登录/管理员首页/用户管理/客户申请保持默认外观，历史维修记录库页走整页变体', async ({
     page,
   }, testInfo) => {
     test.setTimeout(120_000);
@@ -915,7 +925,10 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     const expectDefaultShell = async (label: string): Promise<void> => {
       const shell = await readShell();
       expect(shell.kbVariantNodes, `${label} 不应出现知识库变体节点`).toBe(0);
-      expect(shell.referenceLibraryVariantNodes, `${label} 不应出现参考资料列表变体节点`).toBe(0);
+      expect(
+        shell.referenceLibraryVariantNodes,
+        `${label} 不应出现历史维修记录库列表变体节点`,
+      ).toBe(0);
       if (shell.mainMaxWidth !== null) {
         expect(shell.mainMaxWidth, `${label} 应保持 1280px 上限`).toBe('1280px');
       }
@@ -935,15 +948,16 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     };
 
     /**
-     * 独立参考资料页探针（PR5 整页视觉计划 S1-4：该页不再是默认工作区外观）：
+     * 独立历史维修记录库页探针（PR5 整页视觉计划 S1-4：该页不再是默认工作区外观）：
      * 自己的一整套 modifier 必须齐备且纯色铺满；知识库变体节点仍必须为 0。
      */
     const expectReferenceLibraryShell = async (label: string): Promise<void> => {
       const shell = await readShell();
       expect(shell.kbVariantNodes, `${label} 不应借用知识库变体节点`).toBe(0);
-      expect(shell.referenceLibraryVariantNodes, `${label} 应具备完整的参考资料列表变体节点`).toBe(
-        4,
-      );
+      expect(
+        shell.referenceLibraryVariantNodes,
+        `${label} 应具备完整的历史维修记录库列表变体节点`,
+      ).toBe(4);
       expect(shell.workspaceBackgroundImage, `${label} 应为纯色（不再渐变）`).toBe('none');
       expect(shell.workspaceBackgroundColor, `${label} 应为纯色 #f3f4f6`).toBe(
         'rgb(243, 244, 246)',
@@ -1086,7 +1100,12 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     await shoot('kb-shared-login-390x844.png');
     await page.setViewportSize({ height: 900, width: 1440 });
 
-    await seedAuthSession(page, 'SUPER_ADMIN');
+    // 本用例稍后要回到 /admin/document-database（一级管理员专属），因此预置会话
+    // 必须携带 adminLevel=1 与可信公司；缺任一项都会被路由守卫退回管理员首页。
+    await seedAuthSession(page, 'SUPER_ADMIN', {
+      adminLevel: 1,
+      adminOrganizationId: GLOBAL_ADMIN_ORGANIZATION_ID,
+    });
 
     // 2) 管理员首页（SUPER_ADMIN）
     await page.goto('/admin');
@@ -1288,10 +1307,10 @@ test.describe('mocked admin document database - knowledge base visual baseline (
     // 移开鼠标，避免浮层影响后续页面取证
     await page.mouse.move(0, 0);
 
-    // 4) 独立参考资料页（SUPER_ADMIN）：PR5 整页视觉计划起切换为自己的工作区变体，
+    // 4) 独立历史维修记录库页（SUPER_ADMIN）：PR5 整页视觉计划起切换为自己的工作区变体，
     //    不再属于「保持默认外观」集合（S1-4 更新旧回归假设）
     await page.goto('/reference-documents');
-    await expect(page.getByRole('heading', { name: '参考资料库' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '历史维修记录库' })).toBeVisible();
     await expectReferenceLibraryShell('reference-documents');
     await shoot('kb-shared-reference-documents-1440x900.png');
 

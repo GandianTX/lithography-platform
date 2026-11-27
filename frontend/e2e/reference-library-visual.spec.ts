@@ -127,7 +127,7 @@ test('独立资料列表整页对齐知识库骨架：页头/汇总条/列表卡
     await waitForFontsReady(page);
 
     // 通用工作区与默认页头：知识库整页变体不进入该路由
-    await expect(page.locator('.page-title')).toHaveText('参考资料库');
+    await expect(page.locator('.page-title')).toHaveText('历史维修记录库');
     for (const selector of PAGE_LEVEL_KB_MODIFIERS) {
       await expect(page.locator(selector), `${selector} 不应出现在独立资料页`).toHaveCount(0);
     }

@@ -22,7 +22,7 @@ function toUserMessage(error: unknown): string {
   return isGraphQLIngressError(error) ? error.userMessage : '编辑初值加载失败，请稍后重试。';
 }
 
-const INVALID_ID_MESSAGE = '参考资料不存在或不可访问。';
+const INVALID_ID_MESSAGE = '历史维修记录不存在或不可访问。';
 
 function editableContentReducer(
   state: EditableContentState,

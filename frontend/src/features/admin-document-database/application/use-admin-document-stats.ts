@@ -9,7 +9,7 @@ import { fetchAdminDocumentDatabaseStats } from '../infrastructure/admin-documen
 
 /**
  * 页头四类真实统计（PR3 S3）：一次聚合查询，口径与各标签默认列表过滤一致
- * （参考资料/维修申请不含软删除，由后端统计查询保证），禁止前端拼凑或
+ * （历史维修记录/维修申请不含软删除，由后端统计查询保证），禁止前端拼凑或
  * 用当前页条数冒充总数（计划表 S3-3）。
  *
  * 竞态防护与同 feature 的列表 / 详情 hook 同级：以 requestIdRef 为序号唯一真源，

@@ -17,7 +17,7 @@ const STORAGE_REFERENCE_PATTERN = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
 const FILE_EXTENSION_PATTERN = /^[a-z0-9]{1,8}$/;
 
 /**
- * 参考资料本地文件存储实现。
+ * 历史维修记录本地文件存储实现。
  *
  * - 存储目录来自配置 referenceDocumentStorage.dir（相对路径相对 backend 运行目录解析），
  *   目录内容为运行时上传产物，不入 Git（backend/.gitignore 的 /var 与 env 示例注释）；

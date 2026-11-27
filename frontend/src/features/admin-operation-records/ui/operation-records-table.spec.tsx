@@ -82,7 +82,7 @@ describe('OperationRecordsTable', () => {
 
     expect(screen.getByText('管理员删除正式资料')).toBeInTheDocument();
     expect(screen.getByText('成功')).toBeInTheDocument();
-    expect(screen.getByText('参考资料')).toBeInTheDocument();
+    expect(screen.getByText('历史维修记录')).toBeInTheDocument();
     expect(screen.getByText('doc-1001')).toBeInTheDocument();
     expect(screen.getByText('重复上传，管理员删除')).toBeInTheDocument();
     expect(screen.getByText('开发联调公司 A')).toBeInTheDocument();

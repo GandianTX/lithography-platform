@@ -111,7 +111,7 @@ export function isActiveSuperAdmin(session: UsecaseSession): boolean {
 
 /**
  * 附件下载角色兜底决策（A-PR0 §4.2：「本人或本组织授权审核员下载指定原件」）：
- * ENGINEER / SUPER_ADMIN 可进入下载链路（hasRole 层级展开，与参考资料下载
+ * ENGINEER / SUPER_ADMIN 可进入下载链路（hasRole 层级展开，与历史维修记录下载
  * 口径一致），CUSTOMER 一律拒绝；「本人 / 本组织」的资源归属精确裁决在
  * usecase 内用可信事实完成（同组织其他工程师的投稿附件不是公开数据）。
  * 守卫层 @Roles(ENGINEER, SUPER_ADMIN) 已拦截，此处兜底防止守卫被绕过。

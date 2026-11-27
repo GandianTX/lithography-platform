@@ -363,7 +363,7 @@ export const BUSINESS_SYNC_ERROR = {
 } as const;
 Object.freeze(BUSINESS_SYNC_ERROR);
 
-// AI 参考资料库相关错误码（资料录入/编辑/软删除，负责人 0907.docx 任务二）
+// 历史维修记录库相关错误码（资料录入/编辑/软删除，负责人 0907.docx 任务二）
 export const REFERENCE_DOCUMENT_ERROR = {
   INVALID_PARAMS: 'REFERENCE_DOCUMENT_INVALID_PARAMS',
   // 指定设备型号不存在（应用层预检给出友好错误，不依赖 RESTRICT 外键裸报错）

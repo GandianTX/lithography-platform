@@ -291,7 +291,7 @@ describe('MyRecordDetailPanel', () => {
     expect(screen.queryByText(/评分 0/)).toBeNull();
   });
 
-  it('已发布成品：跳转参考资料详情', async () => {
+  it('已发布成品：跳转历史维修记录详情', async () => {
     fetchMyRecordMock.mockResolvedValue({
       ok: true,
       detail: buildDetail({ publishedDocumentId: 970001 }),

@@ -11,7 +11,7 @@ import {
 } from '../infrastructure/reference-document-adapter';
 
 /**
- * 参考资料详情流程（query 状态机，收束在 feature application）。
+ * 历史维修记录详情流程（query 状态机，收束在 feature application）。
  *
  * - 不存在 / 已软删由 adapter 归并 not-found（统一口径，不区分原因）；
  * - transport / auth / network 失败进入 failed 态（含重试），不混入 not-found；
@@ -40,11 +40,13 @@ type ReferenceDocumentDetailAction =
   | { type: 'load-invalid-id'; requestSeq: number };
 
 function toDetailUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : '参考资料详情加载失败，请稍后重试。';
+  return isGraphQLIngressError(error)
+    ? error.userMessage
+    : '历史维修记录详情加载失败，请稍后重试。';
 }
 
 /** 非法路由参数的统一文案：与后端统一 NOT_FOUND 口径一致，不区分原因 */
-const INVALID_ID_NOT_FOUND_MESSAGE = '参考资料不存在或不可查看。';
+const INVALID_ID_NOT_FOUND_MESSAGE = '历史维修记录不存在或不可查看。';
 
 function referenceDocumentDetailReducer(
   state: ReferenceDocumentDetailState,

@@ -365,7 +365,7 @@ const router = createBrowserRouter([
         path: 'customer/repair-requests/new',
       },
       {
-        // 参考资料库（任务 07 改造读侧）：角色治理复用 protectedRouteLoader +
+        // 历史维修记录库（任务 07 改造读侧）：角色治理复用 protectedRouteLoader +
         // auth-session 角色路径表（ENGINEER/SUPER_ADMIN 放行，CUSTOMER 安全跳转）。
         // 旧「普通新增」路由 /reference-documents/new 已下线（任务 07 关闭旧入口），
         // 直达地址落 404，而不是仅隐藏按钮。

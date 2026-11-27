@@ -492,7 +492,7 @@ describe('readPr5RepairRequestState 客户绑定（D4-3）', () => {
   });
 });
 
-describe('参考资料归属核验与精确引用（P1-2 / D4-1）', () => {
+describe('历史维修记录归属核验与精确引用（P1-2 / D4-1）', () => {
   const validBinding = {
     createdByAccountId: 7,
     id: 970100,
@@ -745,7 +745,7 @@ describe('整行快照构造与 WHERE 口径（S0：缺列 / 非 canonical / 非
     expect(condition).toContain('deleted_at IS NULL');
   });
 
-  it('参考资料 WHERE 覆盖 canonical 全部 15 列', () => {
+  it('历史维修记录 WHERE 覆盖 canonical 全部 15 列', () => {
     const condition = buildPr5RowConditions(referenceDocumentSnapshot());
 
     expect(condition).toBe(RD_ROW_WHERE);

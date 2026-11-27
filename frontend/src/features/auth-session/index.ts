@@ -14,6 +14,7 @@ export {
   type AuthSessionAdminScope,
   type AuthSessionRoleCarrier,
   isAuthSessionAdminPathAllowedAt,
+  isAuthSessionDuplicateSidebarEntrySuppressedAt,
   isAuthSessionExpiredReason,
   isAuthSessionRestricted,
   isAuthSessionRestriction,

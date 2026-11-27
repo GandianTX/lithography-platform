@@ -11,7 +11,7 @@ import { PageHeader } from '@/shared/ui/page-header';
  * 并可导出固定内容版本的 PDF（受控原始 JSON 不在此提供入口）。
  *
  * 与 `/admin/document-database` 的 AI 会话标签的区别：
- * - 文档数据库整体页为一级管理员专属（含参考资料写能力），本页仅承载 AI 会话只读；
+ * - 文档数据库整体页为一级管理员专属（含历史维修记录写能力），本页仅承载 AI 会话只读；
  * - 因此本页对一级与二级管理员同时开放，二级的数据范围由**服务端**按本公司裁决。
  */
 export function AdminAiConversationsPage() {

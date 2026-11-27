@@ -24,15 +24,48 @@ type EyebrowCase = {
   eyebrow: string;
   path: string;
   role: SeededAuthSessionRole;
+  /** 预置会话事实：管理员路由准入按等级 + 可信公司判定，缺省不放行 */
+  facts?: {
+    adminLevel?: number | null;
+    adminOrganizationId?: number | null;
+  };
+  /** false = 该页面已下线，用例只登记不执行（不计入通过） */
+  enabled?: boolean;
 };
+
+const ADMIN_FACTS = { adminLevel: 1, adminOrganizationId: 910003 } as const;
 
 const CASES: readonly EyebrowCase[] = [
   { eyebrow: 'Account Settings', path: '/account/settings', role: 'SUPER_ADMIN' },
-  { eyebrow: 'User Management', path: '/admin/users', role: 'SUPER_ADMIN' },
-  { eyebrow: 'Knowledge Management', path: '/admin/document-database', role: 'SUPER_ADMIN' },
-  { eyebrow: 'Reference Documents', path: '/reference-documents', role: 'SUPER_ADMIN' },
-  { eyebrow: 'New Reference Document', path: '/reference-documents/new', role: 'SUPER_ADMIN' },
-  { eyebrow: 'Reference Document Detail', path: '/reference-documents/501', role: 'SUPER_ADMIN' },
+  { eyebrow: 'User Management', facts: ADMIN_FACTS, path: '/admin/users', role: 'SUPER_ADMIN' },
+  {
+    eyebrow: 'Knowledge Management',
+    facts: ADMIN_FACTS,
+    path: '/admin/document-database',
+    role: 'SUPER_ADMIN',
+  },
+  {
+    // 2026-11-27 更名轮：reference documents → maintenance record library
+    eyebrow: 'Maintenance Record Library',
+    facts: ADMIN_FACTS,
+    path: '/reference-documents',
+    role: 'SUPER_ADMIN',
+  },
+  {
+    // /reference-documents/new 路由已在任务 07 收口时下线（改为受控上传/修订通道），
+    // 无页头可断言；保留登记但跳过，不计入通过。
+    enabled: false,
+    eyebrow: 'New Reference Document',
+    facts: ADMIN_FACTS,
+    path: '/reference-documents/new',
+    role: 'SUPER_ADMIN',
+  },
+  {
+    eyebrow: 'Maintenance Record Detail',
+    facts: ADMIN_FACTS,
+    path: '/reference-documents/501',
+    role: 'SUPER_ADMIN',
+  },
   { eyebrow: 'Repair Requests', path: '/engineer/repair-requests', role: 'ENGINEER' },
   { eyebrow: 'Repair Request Detail', path: '/engineer/repair-requests/901', role: 'ENGINEER' },
   // 客户四页（PR5 整合工作台）：首页 / 创建 / 列表 / 详情四个 URL 复用同一
@@ -47,8 +80,12 @@ const CASES: readonly EyebrowCase[] = [
 
 for (const item of CASES) {
   test(`眉题覆盖：${item.path} → ${item.eyebrow}`, async ({ page }) => {
+    test.skip(item.enabled === false, `${item.path} 页面已下线，无页头眉题可断言`);
+
     await installAdminDocumentKbGraphqlMocks(page);
-    await seedAuthSession(page, item.role);
+    // 眉题断言的基准是英文，固定界面语言，避免依赖运行环境的 navigator.language
+    await page.addInitScript(() => window.localStorage.setItem('ui-language', 'en'));
+    await seedAuthSession(page, item.role, item.facts);
     await page.goto(item.path);
 
     const eyebrow = page.locator('.page-eyebrow');

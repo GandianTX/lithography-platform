@@ -1,5 +1,5 @@
 // src/adapters/api/graphql/reference-document/dto/reference-document-filter.input.ts
-// 参考资料列表筛选入参（标题模糊 + 文档类型等值 + 设备型号等值 + 案例处理状态等值，均可选）
+// 历史维修记录列表筛选入参（标题模糊 + 文档类型等值 + 设备型号等值 + 案例处理状态等值，均可选）
 
 import { Field, InputType, Int } from '@nestjs/graphql';
 import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
@@ -7,7 +7,7 @@ import { IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 /** 标题搜索词长度上限（防超长入参直达查询层） */
 const TITLE_FILTER_MAX_LENGTH = 255;
 
-@InputType({ description: '参考资料列表筛选条件' })
+@InputType({ description: '历史维修记录列表筛选条件' })
 export class ReferenceDocumentFilterInput {
   @Field(() => String, { nullable: true, description: '标题模糊搜索（区分通配符转义）' })
   @IsOptional()

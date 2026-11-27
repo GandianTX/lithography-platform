@@ -25,7 +25,7 @@ const makeReaders = (adminLevel: number | null) => ({
   },
 });
 
-describe('resolveReferenceDocumentReadScope（参考资料读侧范围）', () => {
+describe('resolveReferenceDocumentReadScope（历史维修记录读侧范围）', () => {
   it('工程师：仅本公司范围，等级读取不参与决策', async () => {
     const readers = makeReaders(1);
     await expect(

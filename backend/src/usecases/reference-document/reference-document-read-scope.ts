@@ -17,7 +17,7 @@ export interface ReferenceDocumentOrganizationReader {
 }
 
 /**
- * 参考资料库读侧范围决议（列表 / 详情 / 历史版本 / 原件下载共用同一口径）。
+ * 历史维修记录库读侧范围决议（列表 / 详情 / 历史版本 / 原件下载共用同一口径）。
  *
  * - CUSTOMER 一律拒绝（`assertReferenceDocumentReadRole` 兜底，守卫层已拦截）；
  * - SUPER_ADMIN 且 `admin_level = 1`：GLOBAL（全部公司正式资料，功能 V5.6 R055、

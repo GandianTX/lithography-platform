@@ -1,5 +1,5 @@
 // src/usecases/reference-document/reference-document-library.usecases.spec.ts
-// 任务 07 参考资料库读侧定向测试：范围 / 生效版本 / 无附件 / 下架删除 / 历史版本 / 下载。
+// 任务 07 历史维修记录库读侧定向测试：范围 / 生效版本 / 无附件 / 下架删除 / 历史版本 / 下载。
 
 /// <reference types="jest" />
 
@@ -523,7 +523,7 @@ describe('GetReferenceDocumentDetailUsecase（生效版本与可见范围）', (
   it('下架/软删/跨公司：QueryService 统一 NOT_FOUND，详情不泄露状态', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: DOCUMENT_ID,
       }),
     );
@@ -615,7 +615,7 @@ describe('ListReferenceDocumentRevisionsUsecase（历史版本）', () => {
   it('不可见资料：先经详情校验可见性，直接返回 NOT_FOUND 且不读修订', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
 
     await expect(
@@ -697,7 +697,7 @@ describe('GetReferenceDocumentFileUsecase（授权原件下载）', () => {
   it('下架/旧地址：QueryService NOT_FOUND 原样上抛，不读取存储', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
     const { usecase, storage } = makeUsecase({ queryService });
 
@@ -710,7 +710,7 @@ describe('GetReferenceDocumentFileUsecase（授权原件下载）', () => {
   it('二级管理员下载他司资料：按本公司范围查询不命中，NOT_FOUND 且不读取存储', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
     const storage = {
       open: jest.fn().mockResolvedValue({ stream: 'mock', byteSize: 10 }),

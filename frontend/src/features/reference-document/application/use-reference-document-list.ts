@@ -11,7 +11,7 @@ import type {
 import { fetchReferenceDocuments } from '../infrastructure/reference-document-adapter';
 
 /**
- * 参考资料列表流程（query 状态机，收束在 feature application）。
+ * 历史维修记录列表流程（query 状态机，收束在 feature application）。
  *
  * - filter 直接对齐后端 ReferenceDocumentFilterInput 的可选语义，不创建第三套状态值；
  * - 加载中 / 空结果 / 失败（含重试）/ 分页齐全；
@@ -45,7 +45,9 @@ type ReferenceDocumentListAction =
   | { type: 'load-failed'; requestId: number; message: string };
 
 function toListUserMessage(error: unknown): string {
-  return isGraphQLIngressError(error) ? error.userMessage : '参考资料列表加载失败，请稍后重试。';
+  return isGraphQLIngressError(error)
+    ? error.userMessage
+    : '历史维修记录列表加载失败，请稍后重试。';
 }
 
 function referenceDocumentListReducer(

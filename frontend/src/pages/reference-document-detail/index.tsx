@@ -8,10 +8,11 @@ import {
   ReferenceDocumentDetailPanel,
 } from '@/features/reference-document';
 
+import { useI18n } from '@/shared/i18n';
 import { PageHeader } from '@/shared/ui/page-header';
 
 /**
- * 参考资料详情页（任务 07）。
+ * 历史维修记录详情页（任务 07；2026-11-27 更名，原「参考资料详情」）。
  *
  * 路由接线：从路径参数解析 documentId 后注入页面组件，面板保持可独立测试。
  * 非法参数（非正整数：abc/0/负数/小数/空）不发起 GraphQL 请求，
@@ -20,6 +21,7 @@ import { PageHeader } from '@/shared/ui/page-header';
  * 仅用于管理操作入口显隐（R053/R058–R061）；授权由服务端最终裁决。
  */
 export function ReferenceDocumentDetailPage() {
+  const { t } = useI18n();
   const { documentId } = useParams();
   const auth = useAuthSession();
   const viewer =
@@ -30,9 +32,9 @@ export function ReferenceDocumentDetailPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        description="查阅维护知识资料的完整内容、来源版本与历史版本。"
-        eyebrow="Reference Document Detail"
-        title="参考资料详情"
+        description={t('referenceDocuments.detail.description')}
+        eyebrow={t('referenceDocuments.detail.eyebrow')}
+        title={t('referenceDocuments.detail.title')}
       />
       <ReferenceDocumentDetailPanel
         documentId={parseReferenceDocumentIdParam(documentId)}

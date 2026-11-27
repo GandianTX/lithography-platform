@@ -1,7 +1,7 @@
 // src/features/reference-document/reference-document-adapter.spec.ts
 
 /**
- * 参考资料库真实 GraphQL adapter 单测。
+ * 历史维修记录库真实 GraphQL adapter 单测。
  *
  * vi.mock 保留真实错误类，只替换 executeGraphQL；断言错误映射走
  * extensions.code 大类码主信号 + extensions.errorCode 可选细化，
@@ -222,14 +222,14 @@ describe('fetchReferenceDocument', () => {
     const error = buildDomainIngressError({
       code: 'NOT_FOUND',
       errorCode: 'REFERENCE_DOCUMENT_NOT_FOUND',
-      errorMessage: '参考资料不存在或不可查看。',
+      errorMessage: '历史维修记录不存在或不可查看。',
     });
     executeGraphQLMock.mockRejectedValue(error);
 
     await expect(fetchReferenceDocument(970004)).resolves.toEqual({
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可查看。',
+      message: '历史维修记录不存在或不可查看。',
     });
   });
 
@@ -239,7 +239,7 @@ describe('fetchReferenceDocument', () => {
     await expect(fetchReferenceDocument(999999)).resolves.toEqual({
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可查看。',
+      message: '历史维修记录不存在或不可查看。',
     });
   });
 

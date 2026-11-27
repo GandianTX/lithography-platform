@@ -593,7 +593,7 @@ export const documentExportConfig: ConfigFactory = () => ({
   },
 });
 
-/** 参考资料文件存储默认 MIME 白名单（扩展名同源，见 file-storage 契约） */
+/** 历史维修记录文件存储默认 MIME 白名单（扩展名同源，见 file-storage 契约） */
 const REFERENCE_DOCUMENT_DEFAULT_MIME_TYPES: readonly string[] = [
   'application/pdf',
   'application/msword',
@@ -609,7 +609,7 @@ const REFERENCE_DOCUMENT_DEFAULT_MIME_TYPES: readonly string[] = [
   'text/csv',
 ];
 
-/** 生成参考资料文件存储配置（上传目录/大小上限/MIME 白名单，未配置时用安全缺省） */
+/** 生成历史维修记录文件存储配置（上传目录/大小上限/MIME 白名单，未配置时用安全缺省） */
 const referenceDocumentStorageConfig: ConfigFactory = () => ({
   referenceDocumentStorage: {
     // 相对路径相对 backend 运行目录解析；不得指向 Git 仓库内未忽略目录（见 env/.env.example 注释）

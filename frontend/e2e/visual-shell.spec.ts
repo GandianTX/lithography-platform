@@ -5,6 +5,7 @@
 import { expect, test } from '@playwright/test';
 
 import { seedAuthSession } from './helpers/auth-session-seed';
+import { handleSessionBootstrapOperation } from './helpers/my-session-identity-mocks';
 
 // GraphQL stub：壳层验收只关心导航/布局，但仍返回已访问页面所需的最小合法 DTO。
 // 不能把 `{ data: {} }` 当成空态：adapter 会把它读成 undefined，页面进入 ready 后取
@@ -20,6 +21,13 @@ const SHELL_GRAPHQL_STUBS: Record<string, unknown> = {
   // 登记最小合法 DTO（空数组）；历史列表走空页时右栏占位不发其余业务查询。
   EquipmentModels: { equipmentModels: [] },
   MyRepairRequests: { myRepairRequests: { items: [], page: 1, pageSize: 10, total: 0 } },
+  // 创建态另读可选维修厂家与当前账号可信公司（PR #27 复审后新增）：
+  // 种子会话没有客户公司归属，可信公司如实为 null；厂家候选空数组即「暂无候选」，
+  // 不使用演示公司冒充真实归属。
+  RepairServiceOrganizationSearch: {
+    repairServiceOrganizationSearch: { items: [], page: 1, pageSize: 20, total: 0 },
+  },
+  TrustedCompanyName: { myAccountSettings: { trustedCompanyName: null } },
 };
 
 // 未登记 operation 与页面运行时异常都必须是失败依据，而不是被静默吸收：
@@ -46,6 +54,13 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/graphql', async (route) => {
     const requestBody = route.request().postDataJSON() as { operationName?: string } | null;
     const operationName = requestBody?.operationName ?? '';
+
+    // 壳层挂载后的会话身份复核与工程师准入检查：回显预置会话事实（唯一真源），
+    // 管理员等级 / 可信公司 / 客户公司都从种子读取，mock 不做任何抬升或兜底。
+    if (await handleSessionBootstrapOperation(page, route, operationName)) {
+      return;
+    }
+
     const stub = SHELL_GRAPHQL_STUBS[operationName];
 
     // 失败关闭：未登记的 operation 不返回空 data，而是显式报错，避免掩盖真实契约缺口
@@ -83,11 +98,13 @@ test('seeded roles see only their own stable menu items in the sidebar', async (
   const expectations: Array<{
     path: string;
     role: 'CUSTOMER' | 'ENGINEER' | 'SUPER_ADMIN';
+    /** 管理员侧事实：路由守卫与侧栏收口都按等级 + 可信公司判定（2026-11-27 起显式声明） */
+    adminFacts?: { adminLevel?: number | null; adminOrganizationId?: number | null };
     visible: string[];
     hidden: string[];
   }> = [
     {
-      hidden: ['维修申请', '参考资料', '用户管理'],
+      hidden: ['维修申请', '历史维修记录库', '用户管理'],
       path: '/customer',
       role: 'CUSTOMER',
       visible: ['首页', '发起申请', '我的申请'],
@@ -96,18 +113,29 @@ test('seeded roles see only their own stable menu items in the sidebar', async (
       hidden: ['发起申请', '我的申请', '用户管理'],
       path: '/engineer',
       role: 'ENGINEER',
-      visible: ['首页', '维修申请', '参考资料'],
+      visible: ['首页', '维修申请', '历史维修记录库'],
     },
+    // 一级管理员（GLOBAL）：历史维修记录库与 AI 会话记录改由文档数据库标签承载，
+    // 侧栏不再重复展示两个独立入口。
     {
-      hidden: ['发起申请', '我的申请', '维修申请'],
+      adminFacts: { adminLevel: 1, adminOrganizationId: 910003 },
+      hidden: ['发起申请', '我的申请', '维修申请', '历史维修记录库', 'AI 会话记录'],
       path: '/admin/users',
       role: 'SUPER_ADMIN',
-      visible: ['首页', '参考资料', '用户管理'],
+      visible: ['首页', '文档数据库', '用户管理'],
+    },
+    // 二级管理员（ORGANIZATION）：保留两个独立只读入口，文档数据库仍不可见。
+    {
+      adminFacts: { adminLevel: 2, adminOrganizationId: 910004 },
+      hidden: ['发起申请', '我的申请', '文档数据库'],
+      path: '/admin/users',
+      role: 'SUPER_ADMIN',
+      visible: ['首页', '历史维修记录库', 'AI 会话记录', '用户管理'],
     },
   ];
 
   for (const expectation of expectations) {
-    await seedAuthSession(page, expectation.role);
+    await seedAuthSession(page, expectation.role, expectation.adminFacts);
     await page.goto(expectation.path);
 
     const nav = page.getByRole('navigation', { name: '主导航' });
@@ -131,10 +159,13 @@ const REFRESH_CASES: ReadonlyArray<{
   readyHeading: string;
   readyText?: string;
   role: 'CUSTOMER' | 'SUPER_ADMIN';
+  /** 管理员路由准入按等级 + 可信公司判定：/admin/users 必须有 1 级与可信公司 */
+  adminFacts?: { adminLevel?: number | null; adminOrganizationId?: number | null };
 }> = [
   {
     activeLabel: '用户管理',
     inactiveLabel: '首页',
+    adminFacts: { adminLevel: 1, adminOrganizationId: 910003 },
     path: '/admin/users',
     readyHeading: '用户管理',
     role: 'SUPER_ADMIN',
@@ -162,7 +193,7 @@ for (const refreshCase of REFRESH_CASES) {
   test(`refreshing ${refreshCase.path} selects "${refreshCase.activeLabel}" for ${refreshCase.role}`, async ({
     page,
   }) => {
-    await seedAuthSession(page, refreshCase.role);
+    await seedAuthSession(page, refreshCase.role, refreshCase.adminFacts);
     // 直接打开目标路由等价于刷新：完整路由树 + protectedRouteLoader 参与执行
     await page.goto(refreshCase.path);
 

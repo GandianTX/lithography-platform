@@ -21,7 +21,7 @@ import { OrganizationMembershipQueryService } from './organization-membership.qu
  * - 恰有一条 → 返回事实（含 organizationId / memberRole，供用例继续裁决）。
  *
  * 读侧校验错误口径在此收敛（queryservice 规则：细粒度授权/读侧校验归 QueryService），
- * 供各 usecase 复用同一事实口径（S2b 参考资料组织范围、S2c 账号创建绑定、
+ * 供各 usecase 复用同一事实口径（S2b 历史维修记录组织范围、S2c 账号创建绑定、
  * S3+ 投稿用例）；组织上下文必须由此解析，不得由客户端传入。
  */
 @Injectable()

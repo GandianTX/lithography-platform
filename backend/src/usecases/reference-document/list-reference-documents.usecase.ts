@@ -20,7 +20,7 @@ import {
 const MAX_PAGE_SIZE = 100;
 
 /**
- * 查询参考资料列表用例（普通资料库，服务端统一可见范围）
+ * 查询历史维修记录列表用例（普通资料库，服务端统一可见范围）
  *
  * - 范围经 resolveReferenceDocumentReadScope 决议（A-PR0 §2.1 + 功能 V5.6 R055/R056）：
  *   工程师与二级管理员仅本公司，一级管理员全部公司正式资料；
@@ -45,7 +45,7 @@ export class ListReferenceDocumentsUsecase {
     if (command.pagination.mode !== 'OFFSET') {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS,
-        '参考资料列表第一版仅支持 OFFSET 分页',
+        '历史维修记录列表第一版仅支持 OFFSET 分页',
         { mode: command.pagination.mode },
       );
     }

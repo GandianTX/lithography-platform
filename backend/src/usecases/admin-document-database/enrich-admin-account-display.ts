@@ -14,7 +14,7 @@ import type {
   AdminRepairRequestSummaryView,
 } from '@src/modules/lithography/admin-document-database.types';
 
-/** 客户展示昵称缺失时的安全回落（与参考资料创建人回落同口径） */
+/** 客户展示昵称缺失时的安全回落（与历史维修记录创建人回落同口径） */
 const ADMIN_CUSTOMER_NICKNAME_FALLBACK = '未知用户';
 
 /** 工程师昵称缺失回落（与维修申请回复富集 ENGINEER_NICKNAME_FALLBACK 同口径） */

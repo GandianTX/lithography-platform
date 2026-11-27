@@ -7,7 +7,7 @@ export function buildMyRecordDetailPath(recordId: number): string {
   return `${MY_RECORDS_LIST_PATH}/${recordId}`;
 }
 
-/** 已发布正式资料跳转到参考资料详情（仅在有标识时由调用方渲染入口） */
+/** 已发布正式资料跳转到历史维修记录详情（仅在有标识时由调用方渲染入口） */
 export function buildPublishedDocumentPath(documentId: number): string {
   return `/reference-documents/${documentId}`;
 }

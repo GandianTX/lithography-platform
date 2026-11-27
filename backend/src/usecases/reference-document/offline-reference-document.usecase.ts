@@ -135,7 +135,7 @@ export class OfflineReferenceDocumentUsecase {
     if (outcome !== 'ADVANCED') {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.VERSION_CONFLICT,
-        '参考资料版本已更新，请重新读取当前版本后重试',
+        '历史维修记录版本已更新，请重新读取当前版本后重试',
         { id: command.documentId },
       );
     }

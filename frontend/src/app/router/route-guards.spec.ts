@@ -242,3 +242,69 @@ describe('protected route guard wiring', () => {
     ).toBe('/engineer');
   });
 });
+
+// 2026-11-27 更名 + 一级侧栏重复入口收口：路由守卫口径保持不变。
+// 收口只发生在前端导航展示层，因此「旧列表路由 / 详情链接继续可用」，
+// 同时也没有放开客户或缺少等级的会话（失败关闭不变）。
+describe('历史维修记录库与 AI 会话记录路由守卫（改名后不变）', () => {
+  const load = (path: string) =>
+    protectedRouteLoader(createLoaderRequest(`http://localhost${path}`));
+
+  beforeEach(() => {
+    mockedGetCurrentAuthSession.mockReset();
+  });
+
+  it('一级（GLOBAL）：列表与详情直达放行，文档数据库与 AI 会话记录同样放行', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1, adminOrganizationId: 910003 }),
+    );
+
+    expect(load('/reference-documents')).toBeNull();
+    expect(load('/reference-documents/970001')).toBeNull();
+    expect(load('/admin/ai-conversations')).toBeNull();
+    expect(load('/admin/document-database')).toBeNull();
+  });
+
+  it('一级缺少可信组织（PLATFORM）：库与详情仍放行，文档数据库仍拒绝（服务端范围不被绕过）', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 1 }),
+    );
+
+    // 侧栏不隐藏这两个入口，直达也必须可用，避免「两个入口都不可用」的误判
+    expect(load('/reference-documents')).toBeNull();
+    expect(load('/reference-documents/970001')).toBeNull();
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+  });
+
+  it('二级：保留库与 AI 会话记录直达，文档数据库仍拒绝', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(
+      createSnapshot('SUPER_ADMIN', 'NONE', { adminLevel: 2, adminOrganizationId: 910004 }),
+    );
+
+    expect(load('/reference-documents')).toBeNull();
+    expect(load('/reference-documents/970001')).toBeNull();
+    expect(load('/admin/ai-conversations')).toBeNull();
+    expect(redirectLocation(load('/admin/document-database'))).toBe('/admin');
+  });
+
+  it('工程师：库列表与详情放行（资料详情与下载入口保持正常）', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('ENGINEER'));
+
+    expect(load('/reference-documents')).toBeNull();
+    expect(load('/reference-documents/970001')).toBeNull();
+  });
+
+  it('客户：库列表与详情一律拒绝，回到客户主页', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('CUSTOMER'));
+
+    expect(redirectLocation(load('/reference-documents'))).toBe('/customer');
+    expect(redirectLocation(load('/reference-documents/970001'))).toBe('/customer');
+  });
+
+  it('缺少管理员等级（NONE）：库直达仍放行，AI 会话记录仍按既有范围拒绝', () => {
+    mockedGetCurrentAuthSession.mockReturnValue(createSnapshot('SUPER_ADMIN'));
+
+    expect(load('/reference-documents')).toBeNull();
+    expect(redirectLocation(load('/admin/ai-conversations'))).toBe('/admin');
+  });
+});

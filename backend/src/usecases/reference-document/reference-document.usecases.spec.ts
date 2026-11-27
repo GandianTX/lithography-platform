@@ -399,7 +399,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
   it('不存在/已软删（QueryService 统一 NOT_FOUND）原样上抛同码', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: 970004,
       }),
     );
@@ -463,7 +463,7 @@ describe('GetReferenceDocumentDetailUsecase', () => {
   it('二级管理员（admin_level=2）跨公司详情被拒：仅本公司范围由 QueryService 谓词拒绝', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: 970001,
       }),
     );
@@ -625,7 +625,7 @@ describe('SoftDeleteReferenceDocumentUsecase（任务 07 R053 原作者删除本
   it('他人条目/不存在/已软删（AUTHOR 范围核验统一 NOT_FOUND）不触达写路径', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
     const { usecase, revisionService } = makeUsecase({ queryService });
 
@@ -1198,7 +1198,7 @@ describe('UpdateReferenceDocumentCaseUsecase', () => {
   it('目标不存在/已软删/跨组织（QueryService 统一 NOT_FOUND）与无组织成员关系（均不进入写路径）', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: 970004,
       }),
     );

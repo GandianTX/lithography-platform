@@ -90,7 +90,7 @@ const columns: TableColumnsType<ReferenceDocumentListItem> = [
 ];
 
 /**
- * 参考资料列表面板。
+ * 历史维修记录列表面板（2026-11-27 更名，原「参考资料列表」）。
  *
  * - 标题搜索防抖；类型下拉与型号下拉筛选（型号选项走后端 equipmentModels）；
  * - 加载中 / 空列表 / 加载失败（含重试）/ 分页交互齐全；
@@ -171,7 +171,7 @@ export function ReferenceDocumentList({ variant = 'default' }: ReferenceDocument
   /**
    * 真实汇总条取值（PR5 整页视觉计划 S3）：三项全部来自本组件已取得的现有状态源，
    * 不新增第二次请求、不固定演示数字、不引入原型演示字段：
-   * - 参考资料：列表状态机的 `state.total`（loading/failed 显示对应状态，不伪造数字）；
+   * - 历史维修记录：列表状态机的 `state.total`（loading/failed 显示对应状态，不伪造数字）；
    * - 支持类型：后端契约枚举 `REFERENCE_DOCUMENT_TYPE_LABELS` 的真实类型集合；
    * - 适用型号：`useReferenceEquipmentModels()` 的真实型号数量（loading/failed 明确显示）。
    */
@@ -290,7 +290,9 @@ export function ReferenceDocumentList({ variant = 'default' }: ReferenceDocument
       {state.status === 'ready' && state.total === 0
         ? inCardState(
             <Empty
-              description={hasActiveFilter ? '没有符合筛选条件的参考资料。' : '暂无参考资料。'}
+              description={
+                hasActiveFilter ? '没有符合筛选条件的历史维修记录。' : '暂无历史维修记录。'
+              }
             />,
           )
         : null}
@@ -341,7 +343,7 @@ export function ReferenceDocumentList({ variant = 'default' }: ReferenceDocument
     <>
       <div className="reference-library-summary">
         <div className="reference-library-summary-cell">
-          <div className="reference-library-summary-label">参考资料</div>
+          <div className="reference-library-summary-label">历史维修记录</div>
           <div className="reference-library-summary-value">{referenceTotalText}</div>
         </div>
         <div className="reference-library-summary-cell">

@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createAuthSessionSnapshot,
+  isAuthSessionAdminPathAllowedAt,
+  isAuthSessionDuplicateSidebarEntrySuppressedAt,
   isAuthSessionExpiredReason,
   isAuthSessionRoleAllowedAt,
   resolveAuthSessionAdminScope,
@@ -642,5 +644,58 @@ describe('备份与恢复路由准入', () => {
 
   it('匿名访问跳登录并带回跳目标', () => {
     expect(resolveProtectedRouteRedirect(null, '/local-backup')).toContain('/login');
+  });
+});
+
+// 2026-11-27 重复入口收口（仅导航展示层）：
+// 一级管理员（GLOBAL）的「历史维修记录库」与「AI 会话记录」由文档数据库标签承接；
+// 该判定不得影响路由守卫与既有直达放行。
+describe('一级管理员重复入口的侧栏收口', () => {
+  it('GLOBAL 范围抑制两个重复入口（含子路径）', () => {
+    expect(isAuthSessionDuplicateSidebarEntrySuppressedAt('GLOBAL', '/reference-documents')).toBe(
+      true,
+    );
+    expect(
+      isAuthSessionDuplicateSidebarEntrySuppressedAt('GLOBAL', '/reference-documents/12'),
+    ).toBe(true);
+    expect(
+      isAuthSessionDuplicateSidebarEntrySuppressedAt('GLOBAL', '/admin/ai-conversations'),
+    ).toBe(true);
+  });
+
+  it('缺少可信公司（PLATFORM）、二级（ORGANIZATION）与缺等级（NONE）都不抑制', () => {
+    for (const scope of ['PLATFORM', 'ORGANIZATION', 'NONE'] as const) {
+      expect(isAuthSessionDuplicateSidebarEntrySuppressedAt(scope, '/reference-documents')).toBe(
+        false,
+      );
+      expect(isAuthSessionDuplicateSidebarEntrySuppressedAt(scope, '/admin/ai-conversations')).toBe(
+        false,
+      );
+    }
+  });
+
+  it('只作用于这两个入口，不误伤同前缀的其他路径', () => {
+    expect(
+      isAuthSessionDuplicateSidebarEntrySuppressedAt('GLOBAL', '/admin/document-database'),
+    ).toBe(false);
+    expect(isAuthSessionDuplicateSidebarEntrySuppressedAt('GLOBAL', '/admin/users')).toBe(false);
+    expect(
+      isAuthSessionDuplicateSidebarEntrySuppressedAt('GLOBAL', '/reference-documents-archive'),
+    ).toBe(false);
+  });
+
+  it('路由守卫与直达放行不变：GLOBAL 仍可直接打开旧路由', () => {
+    expect(isAuthSessionAdminPathAllowedAt('GLOBAL', '/reference-documents', 'SUPER_ADMIN')).toBe(
+      true,
+    );
+    expect(
+      isAuthSessionAdminPathAllowedAt('GLOBAL', '/admin/ai-conversations', 'SUPER_ADMIN'),
+    ).toBe(true);
+    expect(
+      resolveProtectedRouteRedirect(
+        { adminLevel: 1, adminOrganizationId: 910003, role: 'SUPER_ADMIN' },
+        '/reference-documents',
+      ),
+    ).toBeNull();
   });
 });

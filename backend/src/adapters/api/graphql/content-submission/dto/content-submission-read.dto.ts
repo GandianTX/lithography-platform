@@ -98,7 +98,7 @@ export class ContentSubmissionLatestReviewDTO {
 /** 已发布正式资料关联（available 表示正式资料未被软删；已下架保留 ID 但不可用） */
 @ObjectType({ description: '已发布正式资料关联' })
 export class ContentSubmissionPublishedDocumentDTO {
-  @Field(() => Int, { description: '正式参考资料 ID' })
+  @Field(() => Int, { description: '正式历史维修记录 ID' })
   documentId!: number;
 
   @Field(() => Boolean, { description: '正式资料是否可用（未被软删）' })
