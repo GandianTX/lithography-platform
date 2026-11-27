@@ -541,7 +541,7 @@ describe('资料管理操作 · 输入与事务边界共性', () => {
   it('findDetail 抛出 NOT_FOUND（不存在/下架/已软删/跨范围）时无任何写入', async () => {
     const h = makeHarness();
     h.queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
 
     await expect(

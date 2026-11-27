@@ -136,7 +136,7 @@ export class UploadContentSubmissionAttachmentUsecase {
             originalFilename: command.file.originalFilename,
             mimeType,
             byteSize: command.file.buffer.byteLength,
-            // 存储后端标识随实现固定（与参考资料上传共用同一本地存储实现）
+            // 存储后端标识随实现固定（与历史维修记录上传共用同一本地存储实现）
             storageBackend: 'local',
             storageReference: savedReference,
             uploadedByAccountId: command.session.accountId,

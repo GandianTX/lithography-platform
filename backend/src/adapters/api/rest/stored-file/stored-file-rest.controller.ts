@@ -136,7 +136,7 @@ function readStoredFileBusinessType(body: unknown): string {
  *   存储与暂存登记全部归 usecase 单一真源；
  * - 元数据与下载的访问授权归 StoredFileQueryService（暂存归属或正式业务关联）；
  * - 下载不返回私有存储引用，只回写授权后的文件流；
- * - 正式参考资料下载仍走既有 /api/reference-documents，本类不改旧接口。
+ * - 正式历史维修记录下载仍走既有 /api/reference-documents，本类不改旧接口。
  */
 @Controller('api/stored-files')
 export class StoredFileRestController {

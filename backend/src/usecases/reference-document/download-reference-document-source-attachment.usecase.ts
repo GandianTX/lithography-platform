@@ -94,7 +94,7 @@ export class DownloadReferenceDocumentSourceAttachmentUsecase {
     const sourceReportVersionId = detail.sourceReportVersionId;
     if (sourceReportId === null || sourceReportVersionId === null) {
       // 非报告来源资料没有来源报告原件入口：与不可访问统一口径
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         documentId: command.documentId,
       });
     }
@@ -106,7 +106,7 @@ export class DownloadReferenceDocumentSourceAttachmentUsecase {
       sourceReportVersionId,
     );
     if (version === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         documentId: command.documentId,
       });
     }
@@ -118,7 +118,7 @@ export class DownloadReferenceDocumentSourceAttachmentUsecase {
     );
     const binding = bindings.find((item) => item.attachmentId === command.attachmentId);
     if (!binding) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         documentId: command.documentId,
       });
     }
@@ -134,7 +134,7 @@ export class DownloadReferenceDocumentSourceAttachmentUsecase {
     );
     const attachment = snapshots[0];
     if (!attachment || attachment.fileId === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         documentId: command.documentId,
       });
     }
@@ -146,7 +146,7 @@ export class DownloadReferenceDocumentSourceAttachmentUsecase {
       sourceReportId,
     );
     if (facts === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         documentId: command.documentId,
       });
     }

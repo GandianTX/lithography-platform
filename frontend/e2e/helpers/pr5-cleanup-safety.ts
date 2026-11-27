@@ -437,7 +437,7 @@ export function insertPr5CleanupSafetyEngineerResponse(
   return id;
 }
 
-/** 真实 INSERT 本轮自建参考资料（主键由数据库生成；storage_reference 可空，需命中白名单才用于删文件） */
+/** 真实 INSERT 本轮自建历史维修记录（主键由数据库生成；storage_reference 可空，需命中白名单才用于删文件） */
 export function insertPr5CleanupSafetyReferenceDocument(
   ledger: Pr5CleanupSafetyLedger,
   input: {

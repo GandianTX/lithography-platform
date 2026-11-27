@@ -660,7 +660,7 @@ export type RepairRequestDeleteOutcome =
   | { kind: 'NOT_FOUND_OR_NOT_OWNER'; id: number }
   | { kind: 'ALREADY_ACCEPTED'; id: number; requestNo: string };
 
-// ---------- AI 参考资料库（0907.docx 任务二） ----------
+// ---------- 历史维修记录库（0907.docx 任务二） ----------
 
 /** 资料列表分页参数（仅 OFFSET；排序由契约固定：创建时间倒序 + 主键倒序） */
 export type ReferenceDocumentListPagination = {
@@ -789,7 +789,7 @@ export type ReferenceDocumentListPage = {
 };
 
 /**
- * 参考资料库读侧范围（列表 / 详情 / 历史版本 / 原件下载共用同一口径）。
+ * 历史维修记录库读侧范围（列表 / 详情 / 历史版本 / 原件下载共用同一口径）。
  *
  * - ORGANIZATION：工程师与二级管理员，仅本公司已确认归属的正式资料；
  * - GLOBAL：一级管理员，全部公司已确认归属的正式资料（功能 V5.6 R055、页面 V6.5 §9.1）；
@@ -960,7 +960,7 @@ export type ReferenceDocumentSourceAttachmentView = {
 };
 
 /**
- * 参考资料库详情稳定读视图：基础详情 + 来源/状态/生效版本与生效正文。
+ * 历史维修记录库详情稳定读视图：基础详情 + 来源/状态/生效版本与生效正文。
  *
  * - contentText 为「生效正文」：存在管理修订时取修订后正文，否则取原始正文；
  * - frozenReport 仅在 sourceKind 为报告来源且尚无管理修订时非空；

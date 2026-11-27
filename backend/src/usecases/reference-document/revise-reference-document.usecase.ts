@@ -188,7 +188,7 @@ export class ReviseReferenceDocumentUsecase {
       // 未命中：行事实已被并发操作改变；修订行插入随事务整体回滚，无半写
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.VERSION_CONFLICT,
-        '参考资料版本已更新，请重新读取当前版本后重试',
+        '历史维修记录版本已更新，请重新读取当前版本后重试',
         { id: command.documentId },
       );
     }

@@ -19,7 +19,7 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     ]);
   });
 
-  it('ENGINEER 见首页、维修申请、AI 对话、历史维修记录（直达新建页）、工单维修总结、我的资料记录、参考资料、备份与恢复与本地设置（任务05 S3 与任务 06/07/09 入口并存）', () => {
+  it('ENGINEER 见首页、维修申请、AI 对话、历史维修记录（直达新建页）、工单维修总结、我的资料记录、历史维修记录库、备份与恢复与本地设置（任务05 S3 与任务 06/07/09 入口并存）', () => {
     const paths = getNavigationItems('prod', 'ENGINEER').map((item) => item.path);
 
     expect(paths).toEqual([
@@ -46,7 +46,9 @@ describe('navigation catalog（S1 菜单表对账）', () => {
     expect(paths).toContain('/engineer/records');
   });
 
-  it('一级管理员见任务 08 管理入口、全域文档数据库、归属待核实（任务 07 R061-01）与任务 10 关键操作记录', () => {
+  // 2026-11-27 重复入口收口：一级管理员（GLOBAL）的「历史维修记录库」与「AI 会话记录」
+  // 统一由文档数据库标签承接，侧边栏不再重复展示；其余入口与顺序不变。
+  it('一级管理员见任务 08 管理入口、全域文档数据库、归属待核实（任务 07 R061-01）与任务 10 关键操作记录，且不重复展示两个标签入口', () => {
     const paths = getNavigationItems('prod', 'SUPER_ADMIN', 'GLOBAL').map((item) => item.path);
 
     expect(paths).toEqual([
@@ -55,11 +57,9 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       '/engineer/record-packages',
       '/engineer/sync-conflicts',
       '/engineer/records',
-      '/reference-documents',
       '/admin/users',
       '/admin/companies',
       '/admin/engineer-registrations',
-      '/admin/ai-conversations',
       '/admin/document-database',
       '/admin/reference-ownership',
       '/admin/operation-records',
@@ -68,6 +68,32 @@ describe('navigation catalog（S1 菜单表对账）', () => {
       '/local-backup',
       '/local-settings',
     ]);
+    expect(paths).not.toContain('/reference-documents');
+    expect(paths).not.toContain('/admin/ai-conversations');
+  });
+
+  // 边界（2026-11-27）：隐藏重复入口的前提是替代入口真实可用（文档数据库 = GLOBAL）。
+  // 缺少可信组织的一级管理员（PLATFORM）与缺等级会话（NONE）不得因收口丢失有权入口；
+  // 也不得借收口放宽 AI 会话记录既有的失败关闭行为。
+  it('重复入口只在文档数据库可用（GLOBAL）时隐藏，缺可信组织或等级缺失仍保留有权入口', () => {
+    const globalPaths = getNavigationItems('prod', 'SUPER_ADMIN', 'GLOBAL').map(
+      (item) => item.path,
+    );
+    expect(globalPaths).toContain('/admin/document-database');
+    expect(globalPaths).not.toContain('/reference-documents');
+    expect(globalPaths).not.toContain('/admin/ai-conversations');
+
+    for (const scope of ['PLATFORM', 'ORGANIZATION'] as const) {
+      const paths = getNavigationItems('prod', 'SUPER_ADMIN', scope).map((item) => item.path);
+      expect(paths, scope).toContain('/reference-documents');
+      expect(paths, scope).toContain('/admin/ai-conversations');
+    }
+
+    // 缺等级（NONE）：历史维修记录库仍按既有角色路径表可见；
+    // AI 会话记录保持既有的管理范围失败关闭（不因本次收口放开）。
+    const unknownLevelPaths = getNavigationItems('prod', 'SUPER_ADMIN').map((item) => item.path);
+    expect(unknownLevelPaths).toContain('/reference-documents');
+    expect(unknownLevelPaths).not.toContain('/admin/ai-conversations');
   });
 
   it('任务 08 管理入口对一级平台与可信公司二级管理员可见；文档聚合仍为全域，任务 10 两级均可见', () => {

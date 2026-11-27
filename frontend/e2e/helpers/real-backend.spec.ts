@@ -103,13 +103,13 @@ describe('real-backend 受保护 requestNo helper', () => {
   });
 });
 
-describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 预期事实事务核验）', () => {
+describe('real-backend 历史维修记录物理清理安全门（收紧为精确 ID + 预期事实事务核验）', () => {
   const OPT_IN_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
   const originalOptIn = process.env[OPT_IN_ENV];
   const TEST_DB_ENV =
     'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
   const CREATED_BY_ACCOUNT_ID = 9001;
-  const TITLE = 'E2E 参考资料验收行·run1（光闸维护·已改）';
+  const TITLE = 'E2E 历史维修记录验收行·run1（光闸维护·已改）';
   const STORAGE_REFERENCE = `${'a'.repeat(32)}.md`;
 
   // 本轮预期事实由测试自身掌握；不得用「从目标行反读回来的值」充当预期（否则核验自证）
@@ -347,7 +347,7 @@ describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 
     execFileSyncMock.mockReturnValue(cleanupDiagnostics({ field_mismatch_rows: '1' }));
 
     expect(() => deleteE2EReferenceDocumentRowsByIds([FILE_TARGET])).toThrow(
-      '参考资料物理清理核验失败',
+      '历史维修记录物理清理核验失败',
     );
   });
 
@@ -372,7 +372,7 @@ describe('real-backend 参考资料物理清理安全门（收紧为精确 ID + 
     });
 
     expect(() => deleteE2EReferenceDocumentRowsByIds([VALID_TARGET])).toThrow(
-      '参考资料物理清理事务中止',
+      '历史维修记录物理清理事务中止',
     );
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
   });
@@ -1250,7 +1250,7 @@ describe('真实 E2E 清理路径统一收口（不再有仅凭编号的直接�
 
   // 评审 P2：归属预检必须在软删 Mutation 之前调用（不能先软删、再等物理删除时报错），
   // 且物理删除复用同一份已预检目标，不再另行构造。
-  it('参考资料真实用例在软删除之前先做只读归属预检，物理清理复用同一份目标', async () => {
+  it('历史维修记录真实用例在软删除之前先做只读归属预检，物理清理复用同一份目标', async () => {
     const source = await readSource('../reference-document-real.spec.ts');
     const precheckIndex = source.indexOf(
       'assertE2EReferenceDocumentOwnershipBeforeCleanup(targets)',
@@ -1342,7 +1342,7 @@ describe('real-backend 存储物理文件清理（入口自证失败关闭 + 先
     return {
       id,
       expected: {
-        title: 'E2E 参考资料验收行·run1（文件上传）',
+        title: 'E2E 历史维修记录验收行·run1（文件上传）',
         createdByAccountId: 42,
         storageReference: VALID_REFERENCE,
         originalFilename: 'optics-check-run1.md',
@@ -1527,8 +1527,8 @@ describe('real-backend 存储物理文件清理（入口自证失败关闭 + 先
   });
 });
 
-describe('real-backend 参考资料软删前归属预检（只读，失败即停止清理流程）', () => {
-  const TITLE = 'E2E 参考资料验收行·run1（光闸维护·已改）';
+describe('real-backend 历史维修记录软删前归属预检（只读，失败即停止清理流程）', () => {
+  const TITLE = 'E2E 历史维修记录验收行·run1（光闸维护·已改）';
 
   function cleanupTarget(
     overrides: Partial<ReferenceDocumentCleanupTarget['expected']> = {},
@@ -1583,7 +1583,7 @@ describe('real-backend 参考资料软删前归属预检（只读，失败即停
     execFileSyncMock.mockReturnValue(ownershipDiagnostics({ field_mismatch_rows: '1' }));
 
     expect(() => assertE2EReferenceDocumentOwnershipBeforeCleanup([cleanupTarget()])).toThrow(
-      '参考资料归属预检失败',
+      '历史维修记录归属预检失败',
     );
     expect(executedSql()).not.toMatch(/\b(DELETE|UPDATE)\b/i);
     expect(rmSyncMock).not.toHaveBeenCalled();
@@ -1593,7 +1593,7 @@ describe('real-backend 参考资料软删前归属预检（只读，失败即停
     execFileSyncMock.mockReturnValue(ownershipDiagnostics({ existing_rows: '0' }));
 
     expect(() => assertE2EReferenceDocumentOwnershipBeforeCleanup([cleanupTarget()])).toThrow(
-      '参考资料归属预检失败',
+      '历史维修记录归属预检失败',
     );
     expect(executedSql()).not.toMatch(/\b(DELETE|UPDATE)\b/i);
     expect(rmSyncMock).not.toHaveBeenCalled();
@@ -1623,7 +1623,7 @@ describe('real-backend 上传存储引用登记（登记先于解析，未知引
   function facts(id = 970100): Omit<RegisteredReferenceDocument, 'storageReference'> {
     return {
       id,
-      title: 'E2E 参考资料验收行·run1（文件上传）',
+      title: 'E2E 历史维修记录验收行·run1（文件上传）',
       createdByAccountId: 42,
       originalFilename: 'optics-check-run1.md',
       mimeType: 'text/markdown',
@@ -1683,7 +1683,7 @@ describe('real-backend 上传存储引用登记（登记先于解析，未知引
   });
 });
 
-describe('real-backend 参考资料软删计划（反查仅报告遗漏，不并入删除目标）', () => {
+describe('real-backend 历史维修记录软删计划（反查仅报告遗漏，不并入删除目标）', () => {
   it('同标题异主的反查 ID 不进入软删目标，只作为遗漏行报告', () => {
     const { softDeleteIds, unexpectedIds } = planReferenceDocumentSoftDelete(
       [970100],
@@ -1806,7 +1806,7 @@ describe('real-backend 真实 E2E 夹具写入与「先核验后恢复」安全�
   const OPT_IN_ENV = 'E2E_ALLOW_PHYSICAL_CLEANUP';
   const originalOptIn = process.env[OPT_IN_ENV];
   const CREATED_BY_ACCOUNT_ID = 9001;
-  const TITLE = 'E2E 参考资料SQL回归·run1·ref-null';
+  const TITLE = 'E2E 历史维修记录SQL回归·run1·ref-null';
 
   function dedicatedDbEnv(): string {
     return 'DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=secret\nDB_NAME=lithography_e2e\n';
@@ -1944,7 +1944,7 @@ describe('real-backend 真实 E2E 夹具写入与「先核验后恢复」安全�
     expect(() =>
       restoreMutatedReferenceDocumentFixtureRow(
         readBackendEnv(),
-        restoreTarget({ title: "E2E 参考资料SQL回归·run1·bad'quote" }),
+        restoreTarget({ title: "E2E 历史维修记录SQL回归·run1·bad'quote" }),
       ),
     ).toThrow('标题未通过白名单校验');
     expect(execFileSyncMock).not.toHaveBeenCalled();

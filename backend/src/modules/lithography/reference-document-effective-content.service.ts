@@ -67,7 +67,7 @@ export class ReferenceDocumentEffectiveContentService {
         where: { documentId: params.documentId, revisionNo: params.effectiveRevisionNo },
       });
       if (!row) {
-        throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+        throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
           id: params.documentId,
         });
       }
@@ -95,7 +95,7 @@ export class ReferenceDocumentEffectiveContentService {
         },
       });
       if (!row) {
-        throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+        throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
           id: params.documentId,
         });
       }

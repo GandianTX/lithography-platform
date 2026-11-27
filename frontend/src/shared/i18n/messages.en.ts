@@ -69,9 +69,18 @@ export const EN_MESSAGES = {
   'nav.engineer-work-order-summaries.label': 'Work order summaries',
   'nav.engineer-work-order-summaries.description':
     'Read-only verification of real maintenance content on your closed work orders, then formal submission.',
-  'nav.reference-documents.label': 'Reference',
+  'nav.reference-documents.label': 'Maintenance record library',
   'nav.reference-documents.description':
-    'Browse the lithography maintenance knowledge base: error code manuals, guides, safety rules, and checklists.',
+    'View formally submitted work order summaries, maintenance history, and related materials already on the platform.',
+  // Maintenance record library pages (renamed 2026-11-27): same copy as navigation, switches with language
+  'referenceDocuments.page.eyebrow': 'Maintenance Record Library',
+  'referenceDocuments.page.title': 'Maintenance record library',
+  'referenceDocuments.page.description':
+    'View formally submitted work order summaries, maintenance history, and related materials already on the platform.',
+  'referenceDocuments.detail.eyebrow': 'Maintenance Record Detail',
+  'referenceDocuments.detail.title': 'Maintenance record detail',
+  'referenceDocuments.detail.description':
+    'Read the full content, source version, and version history of this maintenance record.',
   'nav.admin-companies.label': 'Company records',
   'nav.admin-companies.description':
     'View and manage company records according to your permissions.',
@@ -85,7 +94,7 @@ export const EN_MESSAGES = {
     'Read-only AI conversations and turn-by-turn Q&A; export a fixed-version PDF',
   'nav.admin-document-database.label': 'Document database',
   'nav.admin-document-database.description':
-    'SUPER_ADMIN data aggregation view: reference documents, repair requests, AI sessions, and AI reports.',
+    'SUPER_ADMIN data aggregation view: maintenance records, repair requests, AI sessions, and AI reports.',
   'nav.admin-reference-ownership.label': 'Ownership review',
   'nav.admin-reference-ownership.description':
     'Level-1 admin only: verify and correct documents with unconfirmed uploader or owning company.',
@@ -859,8 +868,9 @@ export const EN_MESSAGES = {
   'engineer.quick.allDescription': 'View all repair requests, filter by model and customer',
   'engineer.quick.mine': 'My accepted requests',
   'engineer.quick.mineDescription': 'Continue following requests you have accepted',
-  'engineer.quick.reference': 'Reference library',
-  'engineer.quick.referenceDescription': 'Browse equipment maintenance references',
+  'engineer.quick.reference': 'Maintenance record library',
+  'engineer.quick.referenceDescription':
+    'View submitted work order summaries, maintenance history, and related materials',
   'engineer.quick.account': 'Account settings',
   'engineer.quick.accountDescription': 'Manage your password and account information',
   'engineer.accountId': 'Account ID',
@@ -1000,7 +1010,7 @@ export const EN_MESSAGES = {
   'admin.users.action': 'Open user management',
   'admin.documents.title': 'Document database',
   'admin.documents.description':
-    'SUPER_ADMIN data aggregation view: reference documents, repair requests, AI sessions, and AI reports.',
+    'SUPER_ADMIN data aggregation view: maintenance records, repair requests, AI sessions, and AI reports.',
   'admin.documents.action': 'Open document database',
   'admin.operationRecords.title': 'Operation records',
   'admin.operationRecords.description':
@@ -1287,7 +1297,7 @@ export const EN_MESSAGES = {
   'operationRecords.result.SUCCEEDED': 'Succeeded',
   'operationRecords.result.FAILED': 'Failed',
   'operationRecords.result.DENIED': 'Denied',
-  'operationRecords.targetType.referenceDocument': 'Reference document',
+  'operationRecords.targetType.referenceDocument': 'Maintenance record',
   'operationRecords.targetType.backupRestoreRun': 'Restore run',
   'operationRecords.actorLevel.level1': 'Level-1 admin',
   'operationRecords.actorLevel.level2': 'Level-2 admin',
@@ -1442,9 +1452,9 @@ export const EN_MESSAGES = {
   'adminDocDb.page.eyebrow': 'Knowledge Management',
   'adminDocDb.page.title': 'Document database',
   'adminDocDb.page.description':
-    'Curated manuals, maintenance reports and problem-solving reports used by diagnosis models, plus platform AI conversations and reports.',
+    'Review formally submitted work order summaries, maintenance history, and related materials already on the platform, plus platform AI conversations and reports.',
   'adminDocDb.stats.repairRequests': 'Repair requests',
-  'adminDocDb.stats.referenceDocuments': 'Reference documents',
+  'adminDocDb.stats.referenceDocuments': 'Maintenance records',
   'adminDocDb.stats.aiConversations': 'AI conversations',
   'adminDocDb.stats.aiReports': 'AI reports',
   'adminDocDb.stats.hint.notSoftDeleted': 'excludes soft-deleted',
@@ -1452,7 +1462,7 @@ export const EN_MESSAGES = {
   'adminDocDb.stats.hint.allGeneratedReports': 'all generated reports',
   'adminDocDb.stats.loadFailed': 'Failed to load statistics: {message}',
   'adminDocDb.stats.unaffected': 'List features are not affected.',
-  'adminDocDb.tabs.referenceDocuments': 'Reference documents',
+  'adminDocDb.tabs.referenceDocuments': 'Maintenance record library',
   'adminDocDb.tabs.repairRequests': 'Repair requests',
   'adminDocDb.tabs.aiConversations': 'AI conversations',
   'adminDocDb.tabs.aiReports': 'AI reports',

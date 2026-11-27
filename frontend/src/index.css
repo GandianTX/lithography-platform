@@ -953,7 +953,7 @@ body {
   max-width: none;
 }
 
-/* 参考资料列表精确路由工作区变体（PR5 整页视觉计划 20260929）：
+/* 历史维修记录列表精确路由工作区变体（PR5 整页视觉计划 20260929）：
    与知识库页同一套取值来源（纯色底 + 占满侧栏后剩余宽度），但独立命名 —— 两个路由
    互不扩散（禁止把 .app-workspace--knowledge-base 借用到本路由）。仅精确列表路由消费，
    新增（/reference-documents/new）与详情继续通用渐变 + 1280px 上限。 */
@@ -966,7 +966,7 @@ body {
   max-width: none;
 }
 
-/* 参考资料列表页面根（PR5 整页视觉计划 S2）：不复用 .kb-page；覆盖 .page-stack 的 20px
+/* 历史维修记录列表页面根（PR5 整页视觉计划 S2）：不复用 .kb-page；覆盖 .page-stack 的 20px
    通用 gap，改为「页头下距 20px + 汇总条下距 16px」的显式纵向节奏（与知识库页同法），
    使 22 + 48.5 + 67 + 20 + 67.5 + 16 = 241 的列表卡绝对位置成立。
    桌面（>1024px）由 padding-block-start 消费顶部 48.5px 视觉节奏；窄屏不复制该节奏
@@ -1044,7 +1044,7 @@ body {
   margin-bottom: 1rem;
 }
 
-/* 参考资料列表真实汇总条（PR5 整页视觉计划 S3）：与 .kb-summary 同一套卡壳与单元排版
+/* 历史维修记录列表真实汇总条（PR5 整页视觉计划 S3）：与 .kb-summary 同一套卡壳与单元排版
    （三列，取值全部来自真实状态：列表 total / 类型枚举 / 型号 query），仅列数不同。
    独立命名，不把 .kb-summary 壳类扩散到通用工作区。下距 16px 对齐原型。
    三列单元排版与 .kb-summary-* 共用同一份声明（同一声明、两个选择器）。 */
@@ -1087,7 +1087,7 @@ body {
   margin-top: 0.25rem;
 }
 
-/* 参考资料汇总条取值可能含长型号串：允许在单元格内换行折断，避免窄视口撑破页面
+/* 历史维修记录汇总条取值可能含长型号串：允许在单元格内换行折断，避免窄视口撑破页面
    （仅本路由，不改知识库汇总条既有值） */
 .reference-library-summary-value {
   overflow-wrap: anywhere;
@@ -1233,7 +1233,7 @@ body {
   padding: 12px 16px;
 }
 
-/* 参考资料列表卡底收敛至 39px（PR5 整页视觉计划 S4-2）：保留 24px 真实可点击分页器，
+/* 历史维修记录列表卡底收敛至 39px（PR5 整页视觉计划 S4-2）：保留 24px 真实可点击分页器，
    仅收敛纵向 padding（7.5 + 24 + 7.5 = 39，border-box），横向保持原型 16px。
    知识库页卡底维持既有 48px 基准（padding 12px 16px），故此处独立覆盖共享声明。 */
 .reference-library-card-footer {
@@ -1351,7 +1351,7 @@ body {
   color: var(--kb-text-tool);
 }
 
-/* 参考资料详情页（/reference-documents/:documentId，PR5 S4-3）：长标题安全换行，
+/* 历史维修记录详情页（/reference-documents/:documentId，PR5 S4-3）：长标题安全换行，
    使其不因无空格长串撑破卡头与整页。
    Card 卡头标题默认 textEllipsis（nowrap + ellipsis，antd card 样式），此处改为随容器换行；
    overflow-wrap:anywhere 同时收窄 flex 项的最小内容宽度（break-word 不参与 min-content 计算，
@@ -1398,7 +1398,7 @@ body {
     width: 100%;
   }
 
-  /* 文档数据库与参考资料库汇总条窄屏降列：四列/三列在 ≤639px 收为两列，
+  /* 文档数据库与历史维修记录库汇总条窄屏降列：四列/三列在 ≤639px 收为两列，
      单元排版（.kb-summary-*）不变，仅折行避免数值与口径小字互相挤压 */
   .kb-summary,
   .reference-library-summary {
@@ -1416,7 +1416,7 @@ body {
   margin-left: 0.25rem;
 }
 
-/* 页头右上主操作（仅参考资料 Tab 激活时渲染）：原型 bg-blue-600 / rounded-lg / shadow-sm；
+/* 页头右上主操作（仅历史维修记录 Tab 激活时渲染）：原型 bg-blue-600 / rounded-lg / shadow-sm；
    包一层 wrapper 覆盖 AntD Button 默认样式（命名规则禁止给 AntD 组件加类名） */
 .kb-primary-action .ant-btn.ant-btn-color-primary.ant-btn-variant-solid {
   background: var(--kb-primary);
@@ -1916,7 +1916,7 @@ body {
     width: 100%;
   }
 
-  /* 参考资料汇总条窄屏改单列堆叠（PR5 整页计划 S3-5）：三列在 375px 会挤压长取值，
+  /* 历史维修记录汇总条窄屏改单列堆叠（PR5 整页计划 S3-5）：三列在 375px 会挤压长取值，
      改纵向堆叠并把列间竖分隔线换成横分隔线，且不产生整页横滚。 */
   .reference-library-summary {
     grid-template-columns: 1fr;

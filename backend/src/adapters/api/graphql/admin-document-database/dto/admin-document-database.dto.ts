@@ -548,7 +548,7 @@ export class AdminDocumentDatabaseStatsDTO {
   @Field(() => Int, { description: 'AI 报告总数' })
   aiReportTotal!: number;
 
-  @Field(() => Int, { description: '参考资料总数（不含软删除）' })
+  @Field(() => Int, { description: '历史维修记录总数（不含软删除）' })
   referenceDocumentTotal!: number;
 }
 

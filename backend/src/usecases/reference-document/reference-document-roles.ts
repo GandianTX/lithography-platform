@@ -19,7 +19,7 @@ export function assertReferenceDocumentReadRole(roles: readonly string[]): void 
   if (!hasRole(roles, IdentityTypeEnum.ENGINEER)) {
     throw new DomainError(
       PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
-      '仅工程师与管理员账号可以访问参考资料',
+      '仅工程师与管理员账号可以访问历史维修记录',
       { roles: [...roles] },
     );
   }
@@ -35,7 +35,7 @@ export function assertReferenceDocumentWriteRole(roles: readonly string[]): void
   if (!roles.includes(requiredRole)) {
     throw new DomainError(
       PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
-      '仅管理员账号可以维护参考资料',
+      '仅管理员账号可以维护历史维修记录',
       { roles: [...roles] },
     );
   }
@@ -71,7 +71,7 @@ export async function assertReferenceDocumentFirstLevelAdmin(params: {
       adminLevel,
     },
     {
-      roleDeniedMessage: '仅管理员账号可以维护参考资料',
+      roleDeniedMessage: '仅管理员账号可以维护历史维修记录',
       levelDeniedMessage: '仅一级管理员可以执行资料管理操作',
     },
   );
@@ -111,7 +111,7 @@ export function assertReferenceDocumentDownloadRole(roles: readonly string[]): v
   if (!hasRole(roles, IdentityTypeEnum.ENGINEER)) {
     throw new DomainError(
       PERMISSION_ERROR.INSUFFICIENT_PERMISSIONS,
-      '仅工程师与管理员账号可以下载参考资料文件',
+      '仅工程师与管理员账号可以下载历史维修记录文件',
       { roles: [...roles] },
     );
   }
@@ -120,7 +120,7 @@ export function assertReferenceDocumentDownloadRole(roles: readonly string[]): v
 /** 资料 ID 输入校验：必须为正整数 */
 export function assertDocumentIdValid(documentId: number): void {
   if (!Number.isInteger(documentId) || documentId <= 0) {
-    throw new DomainError(REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS, '参考资料 ID 无效', {
+    throw new DomainError(REFERENCE_DOCUMENT_ERROR.INVALID_PARAMS, '历史维修记录 ID 无效', {
       documentId,
     });
   }

@@ -167,7 +167,7 @@ export type MyRecordDetail = {
 };
 
 /**
- * 详情读取的领域失败结果（与参考资料详情同口径）：
+ * 详情读取的领域失败结果（与历史维修记录详情同口径）：
  * 他人 / 跨公司 / 不存在统一 not-found；transport/auth 失败仍抛 GraphQLIngressError。
  */
 export type MyRecordDetailResult =

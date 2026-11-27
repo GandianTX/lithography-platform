@@ -22,7 +22,7 @@ function toUserMessage(error: unknown): string {
   return isGraphQLIngressError(error) ? error.userMessage : '历史版本加载失败，请稍后重试。';
 }
 
-const INVALID_ID_MESSAGE = '参考资料不存在或不可查看。';
+const INVALID_ID_MESSAGE = '历史维修记录不存在或不可查看。';
 
 function revisionsReducer(state: RevisionsState, action: RevisionsAction): RevisionsState {
   switch (action.type) {

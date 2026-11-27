@@ -20,6 +20,8 @@
 
 import type { Page, Route } from '@playwright/test';
 
+import { handleSessionBootstrapOperation } from './my-session-identity-mocks';
+
 export const CUSTOMER_MOCK_ROUTES = '**/graphql';
 
 /** 按 page 记录未登记的 operationName（spec 在 afterEach 断言为空）。 */
@@ -239,6 +241,8 @@ export type CustomerRepairRequestMockOptions = {
   list?: 'ready' | 'empty' | 'failed' | 'pending' | 'long-text' | 'many';
   detail?: 'with-responses' | 'no-responses' | 'not-found' | 'failed' | 'pending' | 'long-text';
   create?: 'success' | 'pending' | 'rejected';
+  /** 当前账号可信公司名称（创建页只读展示）；缺省 null = 未绑定公司，不自造归属 */
+  trustedCompanyName?: string | null;
 };
 
 function paginated(
@@ -373,6 +377,9 @@ function resolveResponse(
     }
     case 'DeleteMyRepairRequest':
       return ok({ deleteMyRepairRequest: { id: 920001, requestNo: 'MOCK-RR-2026-0001' } });
+    case 'TrustedCompanyName':
+      // 创建页只读展示当前账号的可信公司；缺省 null 表示未绑定，不回退自填公司名。
+      return ok({ myAccountSettings: { trustedCompanyName: options.trustedCompanyName ?? null } });
     default:
       // 失败关闭：未登记（含拼错 / 遗漏）的 operation 不得回成功空 data 兜底
       return { unregistered: true };
@@ -389,6 +396,12 @@ export async function installCustomerRepairRequestMocks(
 ): Promise<void> {
   await page.route(CUSTOMER_MOCK_ROUTES, async (route) => {
     const requestBody = route.request().postDataJSON() as GraphQLRequestBody | null;
+
+    // 壳层会话身份复核：回显预置会话事实（唯一真源）；未预置会话时失败关闭。
+    if (await handleSessionBootstrapOperation(page, route, requestBody?.operationName)) {
+      return;
+    }
+
     const response = resolveResponse(requestBody?.operationName, requestBody?.variables, options);
 
     if (response === null) {

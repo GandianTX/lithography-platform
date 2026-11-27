@@ -67,9 +67,17 @@ export const ZH_CN_MESSAGES = {
   'nav.engineer-work-order-summaries.label': '工单维修总结',
   'nav.engineer-work-order-summaries.description':
     '只读核对本人已结单工单的真实维修内容并正式提交总结。',
-  'nav.reference-documents.label': '参考资料',
+  'nav.reference-documents.label': '历史维修记录库',
   'nav.reference-documents.description':
-    '查阅光刻机维护知识库：错误代码手册、维护指南、安全规范与检查表。',
+    '查看已正式提交的工单维修总结、历史维修记录及平台已有的相关资料。',
+  // 历史维修记录库页面（2026-11-27 更名）：页头与导航同源文案，页面内随语言切换
+  'referenceDocuments.page.eyebrow': '历史维修记录库',
+  'referenceDocuments.page.title': '历史维修记录库',
+  'referenceDocuments.page.description':
+    '查看已正式提交的工单维修总结、历史维修记录及平台已有的相关资料。',
+  'referenceDocuments.detail.eyebrow': '历史维修记录详情',
+  'referenceDocuments.detail.title': '历史维修记录详情',
+  'referenceDocuments.detail.description': '查阅维护知识资料的完整内容、来源版本与历史版本。',
   'nav.admin-companies.label': '公司档案',
   'nav.admin-companies.description': '按管理权限查看与维护公司档案。',
   'nav.admin-engineer-registrations.label': '注册审批',
@@ -80,7 +88,7 @@ export const ZH_CN_MESSAGES = {
   'nav.admin-ai-conversations.description': '只读查看 AI 会话与逐轮问答，可导出固定版本 PDF',
   'nav.admin-document-database.label': '文档数据库',
   'nav.admin-document-database.description':
-    'SUPER_ADMIN 的数据聚合视图：参考资料、维修申请、AI 会话与 AI 报告。',
+    'SUPER_ADMIN 的数据聚合视图：历史维修记录、维修申请、AI 会话与 AI 报告。',
   'nav.admin-reference-ownership.label': '归属待核实',
   'nav.admin-reference-ownership.description':
     '一级管理员专用：核实上传者或上传时公司不明确的资料并更正归属。',
@@ -762,8 +770,8 @@ export const ZH_CN_MESSAGES = {
   'engineer.quick.allDescription': '查看全部维修申请，按型号与客户筛选',
   'engineer.quick.mine': '我的接单',
   'engineer.quick.mineDescription': '继续跟进你已接单的维修申请',
-  'engineer.quick.reference': '参考资料库',
-  'engineer.quick.referenceDescription': '查阅设备维修参考资料',
+  'engineer.quick.reference': '历史维修记录库',
+  'engineer.quick.referenceDescription': '查看已提交的工单总结、历史维修记录与相关资料',
   'engineer.quick.account': '账号设置',
   'engineer.quick.accountDescription': '维护你的登录密码等账号信息',
   'engineer.accountId': '账号 ID',
@@ -890,7 +898,7 @@ export const ZH_CN_MESSAGES = {
   'admin.users.action': '进入用户管理',
   'admin.documents.title': '文档数据库',
   'admin.documents.description':
-    'SUPER_ADMIN 的数据聚合视图：参考资料、维修申请、AI 会话与 AI 报告。',
+    'SUPER_ADMIN 的数据聚合视图：历史维修记录、维修申请、AI 会话与 AI 报告。',
   'admin.documents.action': '进入文档数据库',
   'admin.operationRecords.title': '关键操作记录',
   'admin.operationRecords.description':
@@ -1151,7 +1159,7 @@ export const ZH_CN_MESSAGES = {
   'operationRecords.result.SUCCEEDED': '成功',
   'operationRecords.result.FAILED': '失败',
   'operationRecords.result.DENIED': '已拒绝',
-  'operationRecords.targetType.referenceDocument': '参考资料',
+  'operationRecords.targetType.referenceDocument': '历史维修记录',
   'operationRecords.targetType.backupRestoreRun': '恢复运行',
   'operationRecords.actorLevel.level1': '一级管理员',
   'operationRecords.actorLevel.level2': '二级管理员',
@@ -1298,9 +1306,9 @@ export const ZH_CN_MESSAGES = {
   'adminDocDb.page.eyebrow': 'Knowledge Management',
   'adminDocDb.page.title': '文档数据库',
   'adminDocDb.page.description':
-    '集中管理诊断模型所需的精选手册、维修报告与问题解决报告，及平台 AI 会话与报告。',
+    '集中查看已正式提交的工单维修总结、历史维修记录及平台已有的相关资料，以及平台 AI 会话与报告。',
   'adminDocDb.stats.repairRequests': '维修申请',
-  'adminDocDb.stats.referenceDocuments': '参考资料',
+  'adminDocDb.stats.referenceDocuments': '历史维修记录',
   'adminDocDb.stats.aiConversations': 'AI 会话',
   'adminDocDb.stats.aiReports': 'AI 报告',
   'adminDocDb.stats.hint.notSoftDeleted': '不含软删除',
@@ -1308,9 +1316,9 @@ export const ZH_CN_MESSAGES = {
   'adminDocDb.stats.hint.allGeneratedReports': '全部生成报告',
   'adminDocDb.stats.loadFailed': '统计加载失败：{message}',
   'adminDocDb.stats.unaffected': '列表功能不受影响。',
-  'adminDocDb.tabs.referenceDocuments': '参考资料',
+  'adminDocDb.tabs.referenceDocuments': '历史维修记录库',
   'adminDocDb.tabs.repairRequests': '维修申请',
-  'adminDocDb.tabs.aiConversations': 'AI 会话',
+  'adminDocDb.tabs.aiConversations': 'AI 会话记录',
   'adminDocDb.tabs.aiReports': 'AI 报告',
   'adminDocDb.filter.toggle': '筛选',
   'adminDocDb.filter.reset': '重置',
@@ -1667,7 +1675,7 @@ export const ZH_CN_MESSAGES = {
   'maintenanceReport.summaryReview.reconfirm': '刷新并重新核对',
   'maintenanceReport.summaryReview.loadFailed': '工单总结加载失败，请稍后重试。',
 
-  // 参考资料详情面板（任务 07）
+  // 历史维修记录详情面板（任务 07）
   'refDocDetail.action.backToList': '返回列表',
   'refDocDetail.action.downloadFile': '下载原件',
   'refDocDetail.action.downloadSourceReportFile': '下载报告原件',

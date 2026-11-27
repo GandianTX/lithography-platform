@@ -3,7 +3,7 @@
 import type { Readable } from 'node:stream';
 
 /**
- * 参考资料文件存储 boundary contract（usecase 层拥有，infrastructure 提供本地实现）。
+ * 历史维修记录文件存储 boundary contract（usecase 层拥有，infrastructure 提供本地实现）。
  *
  * - 存储引用必须由服务端生成：不可猜测且无路径语义，客户端不参与命名（负责人 0909 第二轮要求）；
  * - 引用格式白名单与越界防护属于实现细节，契约只承诺「安全引用 ↔ 字节内容」；

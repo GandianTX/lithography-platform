@@ -221,7 +221,7 @@ export async function fetchReferenceDocument(id: number): Promise<ReferenceDocum
     return {
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可查看。',
+      message: '历史维修记录不存在或不可查看。',
     };
   }
 
@@ -262,7 +262,7 @@ export async function reviseReferenceDocument(
   const record = findRecordById(id);
 
   if (!record || !isAccessible(record)) {
-    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+    return { ok: false, reason: 'not-found', message: '历史维修记录不存在或不可访问。' };
   }
 
   if (!checkExpectedVersion(id, expectedVersion)) {
@@ -331,7 +331,7 @@ export async function offlineReferenceDocument(
   const record = findRecordById(id);
 
   if (!record || !isAccessible(record)) {
-    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+    return { ok: false, reason: 'not-found', message: '历史维修记录不存在或不可访问。' };
   }
 
   if (!checkExpectedVersion(id, expectedVersion)) {
@@ -361,7 +361,7 @@ export async function adminDeleteReferenceDocument(
   const record = findRecordById(id);
 
   if (!record || !isAccessible(record)) {
-    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+    return { ok: false, reason: 'not-found', message: '历史维修记录不存在或不可访问。' };
   }
 
   if (!checkExpectedVersion(id, expectedVersion)) {
@@ -412,7 +412,7 @@ export async function correctReferenceDocumentOwnership(
   const record = findRecordById(id);
 
   if (!record || !isAccessible(record)) {
-    return { ok: false, reason: 'not-found', message: '参考资料不存在或不可访问。' };
+    return { ok: false, reason: 'not-found', message: '历史维修记录不存在或不可访问。' };
   }
 
   if (!checkExpectedVersion(id, expectedVersion)) {
@@ -442,7 +442,7 @@ export async function deleteReferenceDocument(
     return {
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可删除。',
+      message: '历史维修记录不存在或不可删除。',
     };
   }
 
@@ -488,7 +488,7 @@ export async function updateReferenceDocumentCase(
     return {
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可更正。',
+      message: '历史维修记录不存在或不可更正。',
     };
   }
 
@@ -701,7 +701,7 @@ export async function downloadReferenceDocumentFile(
     return {
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可查看。',
+      message: '历史维修记录不存在或不可查看。',
     };
   }
 

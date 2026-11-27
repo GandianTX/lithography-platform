@@ -11,7 +11,7 @@ import {
 import type { ReferenceDocumentFileDownloadResult } from './reference-document.types';
 
 /**
- * AI 参考资料库文件下载 REST 数据访问层。
+ * 历史维修记录库文件下载 REST 数据访问层。
  *
  * 与 GraphQL adapter 的差异（有意为之，非违反「adapter 不读写 Session」约定）：
  * - 带鉴权 REST 请求与统一响应信封解析复用 shared/http（Token 读取沿用
@@ -49,7 +49,7 @@ const DOWNLOAD_FALLBACK_MESSAGE_BY_REASON: Record<
   Extract<ReferenceDocumentFileDownloadResult, { ok: false }>['reason'],
   string
 > = {
-  'not-found': '参考资料不存在或不可查看。',
+  'not-found': '历史维修记录不存在或不可查看。',
   'file-not-available': '该资料没有可下载的文件。',
   forbidden: '您没有下载该资料原件的权限。',
   'download-failed': '下载失败，请稍后重试。',

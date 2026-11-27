@@ -5,7 +5,7 @@
  *
  * 大小上限以已接受迁移 `chk_stored_file_size`（1..20,000,000）为准：
  * 配置只能收窄、不能放大，避免超出数据库 CHECK 造成半成功。
- * MIME 白名单复用参考资料上传的同一配置 key（env 可收窄），
+ * MIME 白名单复用历史维修记录上传的同一配置 key（env 可收窄），
  * 扩展名 → MIME 映射单一真源在 usecases/common/file-upload.contract.ts。
  */
 
@@ -16,5 +16,5 @@
  */
 export { STORED_FILE_UPLOAD_MAX_BYTES } from '../common/stored-file-size.contract';
 
-/** 上传 MIME 白名单（与参考资料上传读同一配置 key） */
+/** 上传 MIME 白名单（与历史维修记录上传读同一配置 key） */
 export const STORED_FILE_ALLOWED_MIME_TYPES = Symbol('STORED_FILE_ALLOWED_MIME_TYPES');

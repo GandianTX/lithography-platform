@@ -337,12 +337,12 @@ describe('ReferenceDocumentRevisePanel（权限与加载）', () => {
     fetchEditableMock.mockResolvedValue({
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可访问。',
+      message: '历史维修记录不存在或不可访问。',
     });
 
     render(<ReferenceDocumentRevisePanel documentId={999999} viewer={levelOneViewer} />);
 
-    expect(await screen.findByText('参考资料不存在或不可访问。')).toBeTruthy();
+    expect(await screen.findByText('历史维修记录不存在或不可访问。')).toBeTruthy();
     // AntD 两字按钮渲染为「重 试」，用正则匹配可访问名
     expect(screen.getByRole('button', { name: /重\s*试/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: '返回资料详情' })).toBeTruthy();

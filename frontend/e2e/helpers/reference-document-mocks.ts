@@ -1,6 +1,6 @@
 // e2e/helpers/reference-document-mocks.ts
 //
-// 参考资料视觉 spec 共用的仓库内确定性 GraphQL mock（PR5 视觉证据采集的收口）：
+// 历史维修记录视觉 spec 共用的仓库内确定性 GraphQL mock（PR5 视觉证据采集的收口）：
 // 独立资料列表页（/reference-documents）与资料详情页由本文件统一提供，
 // 各视觉 spec 一律导入本文件，不再各自复制一份（避免同一模板出现平行实现）。
 //
@@ -16,6 +16,8 @@
 // 导出名与签名不变。
 
 import type { Page } from '@playwright/test';
+
+import { handleSessionBootstrapOperation } from './my-session-identity-mocks';
 
 // PR5 整页视觉计划 S0/S2：固定 10 条契约合法夹具（覆盖真实枚举与「通用资料」空型号行），
 // 使整页几何（表格 10 行 ≈ 420.5px、卡底分页 39px）与汇总条总数具有稳定的可比基准。
@@ -182,7 +184,7 @@ export type ReferenceDocumentOperationHandlers = Record<
 >;
 
 /**
- * 参考资料 GraphQL 路由的唯一分发器（Codex S0–S6 Review P3-2 收敛）：
+ * 历史维修记录 GraphQL 路由的唯一分发器（Codex S0–S6 Review P3-2 收敛）：
  * 本函数只负责「按 operationName 精确分发 + 失败关闭 + 可选留痕」这三件机械事，
  * 夹具与各 operation 的响应形态由调用方自备 —— 列表页与状态页的夹具/记录需求不同，
  * 不合并成「万能 mock」，只共享分发骨架。
@@ -209,6 +211,12 @@ export async function installReferenceDocumentGraphqlRoutes(
       recorded?.push(operationName);
     }
 
+    // 壳层挂载后的会话身份复核 / 工程师准入检查：回显预置会话事实（唯一真源），
+    // 不在这里另写一份身份夹具，也不对缺公司 / 缺等级的会话做任何放行兜底。
+    if (await handleSessionBootstrapOperation(page, route, operationName)) {
+      return;
+    }
+
     const handler = operationName ? handlers[operationName] : undefined;
 
     if (!handler) {
@@ -233,9 +241,13 @@ export async function installReferenceDocumentGraphqlRoutes(
 export async function installReferenceLibraryMocks(
   page: Page,
   items: ListItem[] = LIST_ITEMS,
+  extraHandlers: ReferenceDocumentOperationHandlers = {},
 ): Promise<void> {
   await installReferenceDocumentGraphqlRoutes(page, {
     handlers: {
+      // 页面之外的 operation（如壳层跳转后的角色首页）由调用方显式登记，
+      // 仍沿用同一失败关闭分发器，不额外放宽。
+      ...extraHandlers,
       EquipmentModels: () => ({ equipmentModels: EQUIPMENT_MODELS }),
       ReferenceDocument: (request) => {
         const item = items.find((candidate) => candidate.id === request.variables?.id);
@@ -246,18 +258,45 @@ export async function installReferenceLibraryMocks(
           );
         }
 
+        // 详情 DTO 的当前契约比列表项多出：生效正文来源、来源报告/冻结版本、
+        // 结构化正文与案例明细。夹具资料是普通资料（无报告来源、无修订、无案例），
+        // 这些字段如实为 null / 0 / false —— 缺字段会让面板在渲染期抛错。
         return {
           referenceDocument: {
             ...item,
+            caseDetail: null,
+            contentSource: 'ORIGINAL',
             contentText: null,
+            effectiveRevisionNo: 0,
+            equipmentModelText: null,
+            frozenReport: null,
             hasFile: item.originalFilename !== null,
+            ingestMethod: 'ADMIN_DIRECT',
             mimeType: item.originalFilename === null ? null : 'application/pdf',
+            organizationName: '示例精修服务公司',
+            sourceKind: 'MATERIAL',
+            sourceReportAttachment: null,
+            sourceReportId: null,
+            sourceReportVersionId: null,
+            structuredContent: null,
             updatedAt: item.createdAt,
+            viewerIsOriginalAuthor: false,
           },
         };
       },
       ReferenceDocuments: () => ({
         referenceDocuments: { items, page: 1, pageSize: 10, total: items.length },
+      }),
+      // 详情页挂载后读版本历史：夹具资料本身没有管理修订记录，如实回空版本列表
+      // （`revisions` 不是可空字段，必须给完整信封，不能回 null/[]）。
+      ReferenceDocumentRevisions: (request) => ({
+        referenceDocumentRevisions: {
+          currentRevisionNo: 1,
+          documentId: request.variables?.id ?? 0,
+          revisions: [],
+          sourceKind: 'MATERIAL',
+          sourceReportVersionId: null,
+        },
       }),
     },
     label: 'reference-library-visual',

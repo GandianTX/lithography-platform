@@ -28,6 +28,8 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { type AppLanguage, createTranslator, I18nContext } from '@/shared/i18n';
+
 import { ReferenceDocumentsPage } from './index';
 
 const { executeGraphQLMock, navigateMock, sessionMock } = vi.hoisted(() => ({
@@ -82,7 +84,7 @@ function stubGraphQLResponses(): void {
           items: [
             {
               id: 970001,
-              title: '参考资料 970001',
+              title: '历史维修记录 970001',
               documentType: 'ERROR_CODE_MANUAL',
               equipmentModelId: 49,
               equipmentModelName: 'ASML TWINSCAN NXT:1980Di',
@@ -123,7 +125,7 @@ describe('独立资料列表页的整页骨架与知识库视觉边界（PR5 整
   it('页面根与页头走 reference-library 变体：五类整页 kb modifier 计数仍为 0', async () => {
     const { container } = render(<ReferenceDocumentsPage />);
 
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     // 新变体落点：页面根 + 页头（工作区 modifier 由 AppLayout 精确路由负责，见 app-layout.spec.tsx）
     expect(container.querySelector('.reference-library-page')).not.toBeNull();
@@ -137,7 +139,7 @@ describe('独立资料列表页的整页骨架与知识库视觉边界（PR5 整
   it('列表局部改用 reference-library-* 作用域对齐知识库表格，而非复用 .kb-* 壳类', async () => {
     const { container } = render(<ReferenceDocumentsPage />);
 
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     // 局部表格作用域：S3 的落点（先红后绿，S3-1 已转绿）。
     expect(container.querySelector('.reference-library-table-scope')).not.toBeNull();
@@ -151,7 +153,7 @@ describe('独立资料列表页的整页骨架与知识库视觉边界（PR5 整
   it('真实汇总条：三项分别取自列表 total、后端类型枚举与型号 query，且不含演示字段', async () => {
     const { container } = render(<ReferenceDocumentsPage />);
 
-    await screen.findByText('参考资料 970001');
+    await screen.findByText('历史维修记录 970001');
 
     const summary = container.querySelector('.reference-library-summary');
     expect(summary).not.toBeNull();
@@ -160,9 +162,9 @@ describe('独立资料列表页的整页骨架与知识库视觉边界（PR5 整
     expect(cells.length).toBe(3);
 
     const [totalCell, typesCell, modelsCell] = Array.from(cells);
-    // 1) 参考资料 = 列表状态机的 total（桩里 total=1，落在页头之外的独立单元格）
+    // 1) 历史维修记录 = 列表状态机的 total（桩里 total=1，落在页头之外的独立单元格）
     expect(totalCell.querySelector('.reference-library-summary-label')?.textContent).toBe(
-      '参考资料',
+      '历史维修记录',
     );
     expect(totalCell.querySelector('.reference-library-summary-value')?.textContent).toBe(
       '共 1 条',
@@ -197,7 +199,7 @@ describe('任务 07：页头不再渲染任何写入入口', () => {
       sessionMock.role = role;
 
       const { container } = render(<ReferenceDocumentsPage />);
-      await screen.findByText('参考资料 970001');
+      await screen.findByText('历史维修记录 970001');
 
       expect(screen.queryByRole('button', { name: /新增资料/ })).toBeNull();
       expect(container.querySelector('.page-header-extra')).toBeNull();
@@ -205,4 +207,46 @@ describe('任务 07：页头不再渲染任何写入入口', () => {
       expect(navigateMock).not.toHaveBeenCalled();
     },
   );
+});
+
+// 2026-11-27：页头改为词条驱动（此前仅英文副标硬编码、标题与描述恒为中文）。
+// 断言「切换语言后实际显示对应语言」，而不只是断言词条表里存在这些键。
+describe('页头中英文标题与描述（i18n）', () => {
+  function renderInLanguage(language: AppLanguage) {
+    return render(
+      <I18nContext.Provider
+        value={{ language, setLanguage: () => undefined, t: createTranslator(language) }}
+      >
+        <ReferenceDocumentsPage />
+      </I18nContext.Provider>,
+    );
+  }
+
+  it('中文模式下标题、副标与描述均为中文', async () => {
+    const { container } = renderInLanguage('zh-CN');
+
+    await screen.findByText('历史维修记录 970001');
+
+    expect(container.querySelector('.page-title')?.textContent).toBe('历史维修记录库');
+    expect(container.querySelector('.page-eyebrow')?.textContent).toBe('历史维修记录库');
+    expect(container.querySelector('.page-description')?.textContent).toBe(
+      '查看已正式提交的工单维修总结、历史维修记录及平台已有的相关资料。',
+    );
+  });
+
+  it('英文模式下标题、副标与描述切换为英文，且不残留旧名称', async () => {
+    const { container } = renderInLanguage('en');
+
+    await screen.findByText('历史维修记录 970001');
+
+    expect(container.querySelector('.page-title')?.textContent).toBe('Maintenance record library');
+    expect(container.querySelector('.page-eyebrow')?.textContent).toBe(
+      'Maintenance Record Library',
+    );
+    expect(container.querySelector('.page-description')?.textContent).toBe(
+      'View formally submitted work order summaries, maintenance history, and related materials already on the platform.',
+    );
+    expect(container.textContent).not.toContain('Reference library');
+    expect(container.textContent).not.toContain('参考资料');
+  });
 });

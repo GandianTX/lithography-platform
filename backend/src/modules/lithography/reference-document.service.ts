@@ -15,12 +15,12 @@ import {
 } from './lithography.types';
 
 /**
- * AI 参考资料写服务
+ * 历史维修记录写服务
  *
  * 职责范围：
- * - 参考资料插入（显式落初始状态：未软删；本周仅 contentText 内容来源，存储字段留空）
- * - 参考资料编辑（全量覆盖式更新，写入数据由 usecase 完成合并与校验）
- * - 参考资料原子条件软删除（deprecated 与 deleted_at 同事务写入，满足
+ * - 历史维修记录插入（显式落初始状态：未软删；本周仅 contentText 内容来源，存储字段留空）
+ * - 历史维修记录编辑（全量覆盖式更新，写入数据由 usecase 完成合并与校验）
+ * - 历史维修记录原子条件软删除（deprecated 与 deleted_at 同事务写入，满足
  *   实体 chk_reference_document_deletion_consistency；不执行物理 DELETE）
  *
  * 不包含：
@@ -35,7 +35,7 @@ export class ReferenceDocumentService {
   ) {}
 
   /**
-   * 插入参考资料记录
+   * 插入历史维修记录行
    *
    * 初始状态由本方法统一保证：
    * - deprecated = false，deletedAt 为 NULL；
@@ -98,7 +98,7 @@ export class ReferenceDocumentService {
       // details 原样写入响应）
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.CREATION_FAILED,
-        '参考资料创建失败，请稍后重试',
+        '历史维修记录创建失败，请稍后重试',
         { title: data.title },
         error,
       );
@@ -122,7 +122,7 @@ export class ReferenceDocumentService {
   }
 
   /**
-   * 编辑参考资料（全量覆盖式更新，仅未软删行可编辑）
+   * 编辑历史维修记录（全量覆盖式更新，仅未软删行可编辑）
    *
    * 条件更新含 deprecated = 0，已软删行不可被编辑穿透；
    * 未命中时按状态事实返回 NOT_FOUND（负责人 docx 口径：不存在或已软删统一不可访问）。
@@ -161,14 +161,14 @@ export class ReferenceDocumentService {
     } catch (error) {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED,
-        '参考资料更新失败，请稍后重试',
+        '历史维修记录更新失败，请稍后重试',
         { id: data.documentId },
         error,
       );
     }
     if (affected !== 1) {
       // 不存在与已软删统一拒绝，不泄露删除状态
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可编辑', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可编辑', {
         id: data.documentId,
       });
     }
@@ -206,7 +206,7 @@ export class ReferenceDocumentService {
     } catch (error) {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.DELETION_FAILED,
-        '参考资料删除失败，请稍后重试',
+        '历史维修记录删除失败，请稍后重试',
         { id: params.documentId },
         error,
       );

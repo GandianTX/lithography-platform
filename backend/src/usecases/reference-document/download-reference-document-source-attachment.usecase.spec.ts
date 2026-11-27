@@ -273,7 +273,7 @@ describe('DownloadReferenceDocumentSourceAttachmentUsecase（来源报告冻结�
   ])('%s：QueryService 统一 NOT_FOUND，不触达存储', async (_name, session) => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
     const { usecase, storage } = makeUsecase({ queryService });
 
@@ -290,7 +290,7 @@ describe('DownloadReferenceDocumentSourceAttachmentUsecase（来源报告冻结�
   it('下架/删除/不存在：QueryService NOT_FOUND 原样上抛', async () => {
     const queryService = makeQueryService();
     queryService.findDetail.mockRejectedValue(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
     const { usecase } = makeUsecase({ queryService });
 

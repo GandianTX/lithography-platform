@@ -24,7 +24,7 @@ const ACTIVE_FACTS: ReferenceDocumentFixtureFacts = {
   ownerOrganizationId: 910001,
 };
 
-describe('参考资料夹具 V13 必填状态（离线，不连接数据库）', () => {
+describe('历史维修记录夹具 V13 必填状态（离线，不连接数据库）', () => {
   it('活跃未删除且有组织归属的夹具落 ONLINE / CONFIRMED / MATERIAL', () => {
     expect(deriveReferenceDocumentFixtureState(ACTIVE_FACTS)).toEqual({
       publicationStatus: 'ONLINE',

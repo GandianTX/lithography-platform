@@ -4,7 +4,7 @@ import type { Readable } from 'node:stream';
 
 /**
  * 共用业务原件私有存储 boundary contract（usecase 层拥有；infrastructure 复用
- * 参考资料文件的本地存储实现与同一存储根，安全能力对齐）。
+ * 历史维修记录文件的本地存储实现与同一存储根，安全能力对齐）。
  *
  * - 存储引用必须由服务端生成：不可猜测、无路径语义，客户端不参与命名；
  * - 服务器绝对路径是实现私有细节，不得作为契约结果暴露给 usecase 或 adapter；

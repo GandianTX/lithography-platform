@@ -15,15 +15,15 @@ import { assertAdminDocumentDatabaseGlobalAccess } from './admin-document-databa
  * 管理员文档数据库统计用例（PR3）。
  *
  * 四类统计口径与各标签默认列表过滤一致（计划表 S3.3）：
- * - 维修申请 / 参考资料：不含软删除项；
+ * - 维修申请 / 历史维修记录：不含软删除项；
  * - AI 会话 / AI 报告：无软删除概念，计全量；
- * - 参考资料：复用既有参考资料读链路的默认过滤（deprecated = false），
+ * - 历史维修记录：复用既有历史维修记录读链路的默认过滤（deprecated = false），
  *   以 pageSize=1 的 withTotal 查询取真实总数，不伪造演示数字。
  *
  * 2026-11-21 需求调整：资料列表读侧一级管理员为 GLOBAL（功能 V5.6 R055、
  * reference-document-read-scope.ts：一级不按组织过滤、不依赖本人成员关系）；
  * 统计与列表必须同一口径，否则页面统计数字与列表条数不一致。
- * 因此参考资料统计传 organizationId: null（全公司正式资料，仍不含软删）；
+ * 因此历史维修记录统计传 organizationId: null（全公司正式资料，仍不含软删）；
  * 组织解析仅保留在全域授权门槛内（L1 仍须唯一有效 SUPER_ADMIN 成员关系）。
  * 不改造维修申请、AI 会话/报告等其他业务的组织设计。
  */
@@ -53,7 +53,7 @@ export class GetAdminDocumentDatabaseStatsUsecase {
         this.adminRepairRequestQueryService.countAll(null),
         this.adminAiConversationQueryService.countAll(),
         this.adminAiReportQueryService.countAll(),
-        // 一级管理员文档数据库为全域口径：参考资料统计与普通资料库同源，
+        // 一级管理员文档数据库为全域口径：历史维修记录统计与普通资料库同源，
         // 只计未软删、已上架、归属已确认的正式资料（下架/未知归属不计入）
         this.referenceDocumentQueryService.listDocuments({
           filter: {},

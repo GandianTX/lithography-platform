@@ -4,6 +4,7 @@ import {
   type AuthSessionAdminScope,
   type AuthSessionRole,
   isAuthSessionAdminPathAllowedAt,
+  isAuthSessionDuplicateSidebarEntrySuppressedAt,
 } from '@/features/auth-session';
 
 import { type AppEnv, getAppEnv } from '@/shared/env';
@@ -113,7 +114,7 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     labelKey: 'nav.my-records.label',
     // 任务 07（2026-11-21 页面口径确认）：工程师与管理员均保留入口；页面只展示
     // 本人创建记录（后端按作者 + 本组织谓词收敛，管理员无本人记录时展示暂无记录），
-    // 管理员查看他人正式资料走参考资料库/文档数据库，不经过本页面
+    // 管理员查看他人正式资料走历史维修记录库/文档数据库，不经过本页面
     path: '/engineer/records',
     roles: ['ENGINEER', 'SUPER_ADMIN'],
     tags: ['records', 'reports', 'drafts', '我的资料记录', '草稿', '历史报告'],
@@ -123,10 +124,24 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     id: 'reference-documents',
     kind: 'stable',
     labelKey: 'nav.reference-documents.label',
-    // 与 auth-session 角色路径表同口径：工程师/管理员可读，客户禁入不可见
+    // 与 auth-session 角色路径表同口径：工程师/管理员可读，客户禁入不可见。
+    // 2026-11-27 更名：产品名改为「历史维修记录库」；路由、GraphQL 契约与权限不变。
+    // 一级管理员（GLOBAL）不再显示本入口——重复入口统一由文档数据库标签承载，
+    // 隐藏条件集中在 isAuthSessionDuplicateSidebarEntrySuppressedAt。
     path: '/reference-documents',
     roles: ['ENGINEER', 'SUPER_ADMIN'],
-    tags: ['reference', 'documents', 'knowledge', '参考资料', '知识库', '手册'],
+    // tags 是 AI 侧车路由匹配关键词而非展示文案：保留「参考资料」历史叫法作为别名，
+    // 让仍按旧名称提问的用户能被正确路由到本页。
+    tags: [
+      'reference',
+      'documents',
+      'knowledge',
+      '历史维修记录库',
+      '历史维修记录',
+      '参考资料',
+      '知识库',
+      '手册',
+    ],
   },
   {
     descriptionKey: 'nav.admin-users.description',
@@ -167,8 +182,9 @@ const STABLE_NAVIGATION_ITEMS: NavigationItem[] = [
     id: 'admin-ai-conversations',
     kind: 'stable',
     labelKey: 'nav.admin-ai-conversations.label',
-    // 任务 05 S4.1：AI 会话只读入口。一级跨公司、二级本公司（服务端裁决范围），
-    // 因此对两级管理员均展示；文档数据库整体页仍为一级专属。
+    // 任务 05 S4.1：AI 会话只读入口。一级跨公司、二级本公司（服务端裁决范围）。
+    // 2026-11-27 更名：二级管理员保留独立入口；一级管理员的同名标签已由文档数据库
+    // 承载，侧边栏不再重复展示（隐藏条件见 catalog 过滤与 auth-session 同源判定）。
     path: '/admin/ai-conversations',
     roles: ['SUPER_ADMIN'],
     tags: ['admin', 'ai', 'conversation', 'readonly', 'AI 会话', '问答记录'],
@@ -313,6 +329,12 @@ export function getNavigationItems(
       item.roles === undefined || (activeRole !== null && item.roles.includes(activeRole));
 
     if (!roleVisible) {
+      return false;
+    }
+
+    // 一级管理员：历史维修记录库与 AI 会话记录改由文档数据库标签承接，
+    // 侧边栏不再重复展示；其余角色与范围保持各自入口（导航层收口，不影响路由）。
+    if (isAuthSessionDuplicateSidebarEntrySuppressedAt(adminScope, item.path)) {
       return false;
     }
 

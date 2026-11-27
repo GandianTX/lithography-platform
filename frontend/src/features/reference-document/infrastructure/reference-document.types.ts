@@ -1,7 +1,7 @@
 // src/features/reference-document/infrastructure/reference-document.types.ts
 
 /**
- * AI 参考资料库的前端契约类型（与后端 B-05 读/写 DTO 逐字段对齐）。
+ * 历史维修记录库的前端契约类型（与后端 B-05 读/写 DTO 逐字段对齐）。
  *
  * 契约依据：0907.docx 任务二 + backend/src/adapters/api/graphql/reference-document/dto/。
  * 日期字段后端为 Date 标量，GraphQL JSON 序列化后是 ISO 字符串；

@@ -35,7 +35,7 @@ import {
  *   经授权同样可下载，不只下载「当前文件」；
  * - 授权先于文件 I/O：全部校验通过后才调用存储 open()；
  *   存储对象缺失/引用不可用统一 FILE_NOT_AVAILABLE 受控错误，
- *   不泄露服务器路径、存储引用与存储后端类型（与参考资料下载口径一致）。
+ *   不泄露服务器路径、存储引用与存储后端类型（与历史维修记录下载口径一致）。
  */
 @Injectable()
 export class DownloadContentSubmissionAttachmentUsecase {

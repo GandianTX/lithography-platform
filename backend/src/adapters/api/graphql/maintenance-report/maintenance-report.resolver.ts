@@ -351,7 +351,7 @@ export class MaintenanceReportResolver {
    * 本人记录列表（任务 07 R052，页面 V6.5 §9.2）：可按来源类型与未完成/已提交筛选，
    * OFFSET 分页；`withTotal` 缺省 true（本人记录页需要总数），total 与同一归属谓词一致。
    * 页面只展示本人创建记录（后端 usecase 按作者 [+ 本组织] 谓词收敛）；管理员查看
-   * 他人正式资料走参考资料库/文档数据库，不经过本查询。
+   * 他人正式资料走历史维修记录库/文档数据库，不经过本查询。
    */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(IdentityTypeEnum.ENGINEER, IdentityTypeEnum.SUPER_ADMIN)

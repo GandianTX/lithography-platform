@@ -181,7 +181,7 @@ describe('downloadReferenceDocumentSourceAttachment（任务 07 P2 来源报告�
           data: {
             statusCode: 404,
             code: 'REFERENCE_DOCUMENT_NOT_FOUND',
-            message: '参考资料不存在或不可访问',
+            message: '历史维修记录不存在或不可访问',
           },
         },
         { status: 404 },
@@ -193,7 +193,7 @@ describe('downloadReferenceDocumentSourceAttachment（任务 07 P2 来源报告�
     expect(result).toEqual({
       ok: false,
       reason: 'not-found',
-      message: '参考资料不存在或不可访问',
+      message: '历史维修记录不存在或不可访问',
     });
   });
 });

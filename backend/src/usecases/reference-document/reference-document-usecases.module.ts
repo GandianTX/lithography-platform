@@ -21,7 +21,7 @@ import { SoftDeleteReferenceDocumentUsecase } from './soft-delete-reference-docu
 import { UpdateReferenceDocumentCaseUsecase } from './update-reference-document-case.usecase';
 
 /**
- * 参考资料用例装配（任务 07）。
+ * 历史维修记录用例装配（任务 07）。
  *
  * 组织范围（A-PR0 §2.1）由 LithographyModule 导出的可信组织上下文查询服务提供
  * （同域读侧校验，usecase 不依赖客户端自报组织）；修订写服务与审计服务由

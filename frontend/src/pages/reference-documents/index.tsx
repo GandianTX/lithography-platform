@@ -2,14 +2,17 @@
 
 import { ReferenceDocumentList } from '@/features/reference-document';
 
+import { useI18n } from '@/shared/i18n';
 import { PageHeader } from '@/shared/ui/page-header';
 
 /**
- * 参考资料库列表页。
+ * 历史维修记录库列表页（2026-11-27 更名，原「参考资料库」）。
  *
  * 路由 /reference-documents 在 app/router 注册并复用 protectedRouteLoader；
  * 角色路由放行表仅允许 ENGINEER / SUPER_ADMIN（CUSTOMER 被安全跳转回个人主页），
  * 一级管理员的服务端范围为全部正式资料，工程师/二级管理员为本公司。
+ * 更名只改用户可见文案：查询条件、数据类型与可见范围不变，普通资料仍按原规则展示；
+ * 一级管理员的侧边栏重复入口已收敛到文档数据库标签（页面与路由本身保留）。
  *
  * 任务 07：旧「普通新增」入口（页面按钮与 /reference-documents/new 直达路由）已下线；
  * 本页只保留读侧与受控下载，不渲染任何写入入口。列表组件不读取 Session、不判定角色，
@@ -21,12 +24,14 @@ import { PageHeader } from '@/shared/ui/page-header';
  * `app-workspace--reference-library` 负责。详情路由不消费本变体。
  */
 export function ReferenceDocumentsPage() {
+  const { t } = useI18n();
+
   return (
     <div className="page-stack reference-library-page">
       <PageHeader
-        description="查阅光刻机维护知识库：错误代码手册、维护指南、安全规范与检查表。"
-        eyebrow="Reference Documents"
-        title="参考资料库"
+        description={t('referenceDocuments.page.description')}
+        eyebrow={t('referenceDocuments.page.eyebrow')}
+        title={t('referenceDocuments.page.title')}
         variant="reference-library"
       />
       <ReferenceDocumentList />

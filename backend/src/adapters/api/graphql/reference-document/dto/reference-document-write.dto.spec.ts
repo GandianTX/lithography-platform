@@ -55,7 +55,7 @@ const cases = [
   },
 ] as const;
 
-describe('参考资料写侧 DTO · expected_version 下界', () => {
+describe('历史维修记录写侧 DTO · expected_version 下界', () => {
   it.each(cases)('$label 接受首次管理操作的 expected_version = 0', async ({ build }) => {
     await expect(validate(build(0) as object)).resolves.toHaveLength(0);
   });

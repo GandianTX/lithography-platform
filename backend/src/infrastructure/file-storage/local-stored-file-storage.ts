@@ -12,7 +12,7 @@ import { LocalReferenceDocumentStorage } from './local-reference-document-storag
 /**
  * 共用业务原件本地存储实现。
  *
- * 复用参考资料文件的同一安全实现与同一存储根（referenceDocumentStorage.dir）：
+ * 复用历史维修记录文件的同一安全实现与同一存储根（referenceDocumentStorage.dir）：
  * - save/open/delete 直接委托，防穿越白名单、随机引用与原子写入完全一致；
  * - 新增 verifyIntegrity：流式重算字节数与 SHA-256，供绑定前核对原件未被替换/截断；
  * - 不在本类暴露或记录服务器绝对路径。

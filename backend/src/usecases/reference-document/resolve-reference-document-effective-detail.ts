@@ -61,7 +61,7 @@ const isStructurallyEmptyFrozenReport = (
 ): boolean => report.title === '' && report.alarms.length === 0 && report.steps.length === 0;
 
 /**
- * 参考资料生效正文装配（任务 07 读侧公共编排）。
+ * 历史维修记录生效正文装配（任务 07 读侧公共编排）。
  *
  * 普通资料库详情（GetReferenceDocumentDetailUsecase）与归属待核实详情
  * （GetPendingOwnershipReferenceDocumentDetailUsecase，R061-01）共用同一口径，
@@ -102,7 +102,7 @@ export async function resolveReferenceDocumentEffectiveContent(params: {
     );
     if (revision === null) {
       // 生效修订号指向缺失行属数据定式破坏：失败关闭，不让正文静默回退旧版
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }
@@ -124,14 +124,14 @@ export async function resolveReferenceDocumentEffectiveContent(params: {
     );
     if (version === null) {
       // 冻结版本行缺失：与不可访问统一口径失败关闭，不返回残缺内容
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }
     const parsed = parseFrozenReportVersion(version);
     if (isStructurallyEmptyFrozenReport(parsed)) {
       // 冻结快照整体为空：与版本行缺失同口径失败关闭，不输出空正文、不回退实时工单内容
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }

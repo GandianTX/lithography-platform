@@ -159,14 +159,57 @@ describe('AdminDocumentDatabasePage（PR3 S3）', () => {
     expect(screen.getByText('5')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
     expect(screen.getByText('9')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: '参考资料' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '历史维修记录库' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '维修申请' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'AI 会话' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'AI 会话记录' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'AI 报告' })).toBeInTheDocument();
     expect(fetchStatsMock).toHaveBeenCalledTimes(1);
   });
 
-  it('默认渲染参考资料标签（复用 reference-document 列表）', async () => {
+  // 2026-11-27 一级管理员重复入口收口：文档数据库的「历史维修记录库」与「AI 会话记录」
+  // 两个标签是一级管理员的唯一入口（侧栏同名入口见 app-layout.spec.tsx 的隐藏断言），
+  // 因此必须各自独立加载、不串数据，也不依赖被隐藏的独立路由。
+  it('两个标签各自独立加载：历史维修记录库（默认）+ AI 会话记录', async () => {
+    fetchReferenceMock.mockResolvedValue(
+      buildPage<ReferenceDocumentListItem>([
+        {
+          id: 900001,
+          title: '历史维修记录 900001',
+          documentType: 'ERROR_CODE_MANUAL',
+          equipmentModelId: 49,
+          equipmentModelName: 'ASML TWINSCAN NXT:1980Di',
+          equipmentModelText: null,
+          description: '说明文本',
+          originalFilename: null,
+          organizationName: '甲方默认组织',
+          ingestMethod: 'ADMIN_DIRECT',
+          sourceKind: 'MATERIAL',
+          effectiveRevisionNo: 0,
+          caseHandlingStatus: null,
+          creatorNickname: '系统管理员',
+          createdAt: '2026-09-01T08:00:00.000Z',
+        },
+      ]),
+    );
+
+    render(<AdminDocumentDatabasePage />);
+
+    expect(await screen.findByText('历史维修记录 900001')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'AI 会话记录' }));
+    });
+
+    await waitFor(() => {
+      expect(fetchConversationsMock).toHaveBeenCalled();
+    });
+    expect(await screen.findByText('RR-20260901-001')).toBeInTheDocument();
+    // Tabs 保留非激活面板（既有语义），因此两个标签各自持有自己的数据源，
+    // 互不覆盖：历史维修记录行仍在自身面板内，AI 会话行只出现在会话面板。
+    expect(screen.getByText('历史维修记录 900001')).toBeInTheDocument();
+  });
+
+  it('默认渲染历史维修记录标签（复用 reference-document 列表）', async () => {
     render(<AdminDocumentDatabasePage />);
 
     expect(screen.getByRole('tabpanel')).toBeInTheDocument();
@@ -203,7 +246,7 @@ describe('AdminDocumentDatabasePage（PR3 S3）', () => {
 
     // 切到 AI 会话：独立请求与数据
     await act(async () => {
-      fireEvent.click(screen.getByRole('tab', { name: 'AI 会话' }));
+      fireEvent.click(screen.getByRole('tab', { name: 'AI 会话记录' }));
     });
     await waitFor(() => {
       expect(fetchConversationsMock).toHaveBeenCalled();
@@ -265,7 +308,7 @@ describe('AdminDocumentDatabasePage（PR3 S3）', () => {
 
     // 统计失败提示可见（带「列表功能不受影响」的口径说明）
     expect(await screen.findByText(/统计加载失败：/)).toBeInTheDocument();
-    // 统计失败不影响列表：默认参考资料标签仍完成加载
+    // 统计失败不影响列表：默认历史维修记录标签仍完成加载
     expect(await screen.findByPlaceholderText('按文档标题搜索')).toBeInTheDocument();
   });
 

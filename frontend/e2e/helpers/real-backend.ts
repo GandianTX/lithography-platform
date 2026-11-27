@@ -317,11 +317,11 @@ export function findRepairRequestByRequestNo(requestNo: string, selectExpression
   );
 }
 
-// 参考资料 real spec 自建行标题前缀（与 reference-document-real.spec 创建标题共用）。
+// 历史维修记录 real spec 自建行标题前缀（与 reference-document-real.spec 创建标题共用）。
 // 仅用于创建标题与列表定位断言；清理一律以本次运行记录的精确 ID 为边界，
 // 禁止按标题前缀批量删除——固定前缀不是数据身份，共享库中他人数据可能碰巧同前缀，
 // 并行运行也可能互删（负责人 0909 阻塞项 1）。
-export const REFERENCE_DOCUMENT_E2E_TITLE_PREFIX = 'E2E 参考资料验收行';
+export const REFERENCE_DOCUMENT_E2E_TITLE_PREFIX = 'E2E 历史维修记录验收行';
 
 // 服务端生成的存储引用格式（与 backend local-storage 实现同口径白名单）：
 // 32 位小写 hex + 白名单扩展名，天然无路径语义；任何白名单外的引用都拒绝清理。
@@ -404,7 +404,7 @@ export type StorageReferenceRegistration =
   | { readonly status: 'resolved'; readonly reference: string };
 
 /**
- * 本轮登记的参考资料记录：id 与创建时立即记录的事实（标题 / 创建人 / 文件元数据 / 存储引用状态）。
+ * 本轮登记的历史维修记录记录：id 与创建时立即记录的事实（标题 / 创建人 / 文件元数据 / 存储引用状态）。
  * 物理清理与上传文件清理的预期事实均取自本记录，绝不从目标行反读（否则核验退化为自证）。
  */
 export interface RegisteredReferenceDocument {
@@ -468,10 +468,10 @@ export function requireResolvedStorageReference(
   return registration.status === 'none' ? null : registration.reference;
 }
 
-// ---- 参考资料物理清理：统一安全入口（精确 ID + 本轮预期事实事务核验） ----
+// ---- 历史维修记录物理清理：统一安全入口（精确 ID + 本轮预期事实事务核验） ----
 
 /**
- * 参考资料物理清理目标：id 必须来自本轮创建响应的精确 ID；
+ * 历史维修记录物理清理目标：id 必须来自本轮创建响应的精确 ID；
  * expected 必须是本轮测试自身掌握 / 创建时立即记录的事实（标题 / 创建人账号 / 存储引用），
  * 不接受「按标题反查所得的行」充当删除目标，也不接受从目标行反读回来的值充当预期，
  * 否则核验退化为自证：同标题异主 / 归属不符的行永远不会被发现。
@@ -495,13 +495,13 @@ const CLEANUP_GUARD_TABLE_REFERENCE_DOCUMENT = 'e2e_reference_document_cleanup_g
 
 /**
  * 严格库名门（在 assertPhysicalCleanupAllowed 的「测试库命名」之上再收紧一道）：
- * 参考资料物理清理只允许发生在专用隔离库 lithography_e2e，默认连共享开发库
+ * 历史维修记录物理清理只允许发生在专用隔离库 lithography_e2e，默认连共享开发库
  * （lithography_drill）时失败关闭、不执行删除，也不降级到别的库上删除。
  */
 function assertDedicatedReferenceDocumentCleanupDatabase(env: Record<string, string>): void {
   if (env.DB_NAME !== DEDICATED_E2E_DB_NAME) {
     throw new Error(
-      `参考资料物理清理被拒绝：DB_NAME=${JSON.stringify(env.DB_NAME)} 不是专用隔离库 ${JSON.stringify(DEDICATED_E2E_DB_NAME)}，失败关闭，不执行删除`,
+      `历史维修记录物理清理被拒绝：DB_NAME=${JSON.stringify(env.DB_NAME)} 不是专用隔离库 ${JSON.stringify(DEDICATED_E2E_DB_NAME)}，失败关闭，不执行删除`,
     );
   }
 }
@@ -620,7 +620,7 @@ function assertReferenceDocumentCleanupDiagnostics(output: string, expectedRows:
 
   if (mismatched.length > 0) {
     throw new Error(
-      `参考资料物理清理核验失败：${mismatched
+      `历史维修记录物理清理核验失败：${mismatched
         .map(
           ([key, value]) => `${key} 期望 ${value} 实际 ${JSON.stringify(diagnostics[key] ?? null)}`,
         )
@@ -630,7 +630,7 @@ function assertReferenceDocumentCleanupDiagnostics(output: string, expectedRows:
 }
 
 /**
- * 按本次运行记录的精确 ID 物理清理参考资料行（统一安全入口）。
+ * 按本次运行记录的精确 ID 物理清理历史维修记录行（统一安全入口）。
  *
  * 安全性质：
  * - 入口内独立执行「显式授权门 + 测试库命名门 + 严格 lithography_e2e 库名门」，任一门不通过即抛错
@@ -658,7 +658,7 @@ export function deleteE2EReferenceDocumentRowsByIds(
   const output = runCleanupTransactionSql(
     env,
     buildReferenceDocumentCleanupSql(targets),
-    '参考资料物理清理事务中止',
+    '历史维修记录物理清理事务中止',
   );
 
   assertReferenceDocumentCleanupDiagnostics(output, targets.length);
@@ -712,7 +712,7 @@ function assertReferenceDocumentOwnershipDiagnostics(output: string, expectedRow
 
   if (mismatched.length > 0) {
     throw new Error(
-      `参考资料归属预检失败（在软删 / 物理删除之前停止，保留现场）：${mismatched
+      `历史维修记录归属预检失败（在软删 / 物理删除之前停止，保留现场）：${mismatched
         .map(
           ([key, value]) => `${key} 期望 ${value} 实际 ${JSON.stringify(diagnostics[key] ?? null)}`,
         )
@@ -1060,7 +1060,7 @@ function buildRepairRequestCleanupSql(targets: readonly RepairRequestCleanupTarg
  * 执行受保护清理脚本（单次 mysql 进程 = 同一连接）。失败时抛出携带诊断的错误：
  * 密码只经 MYSQL_PWD 注入，既不在进程参数也不在诊断文本中；
  * 原始错误整条作 cause 会把完整 SQL 与 CLI 输出复制进异常链，故以副本作 cause。
- * 维修申请与参考资料清理共用同一执行器，仅事务对象名不同（label）。
+ * 维修申请与历史维修记录清理共用同一执行器，仅事务对象名不同（label）。
  */
 function runCleanupTransactionSql(env: Record<string, string>, sql: string, label: string): string {
   try {

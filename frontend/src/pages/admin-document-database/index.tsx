@@ -21,7 +21,7 @@ import { PageHeader } from '@/shared/ui/page-header';
  * *（SUPER_ADMIN 放行，ENGINEER/CUSTOMER 按角色路径表拒绝）；
  * - 四个标签各自实例化独立的列表 hook（筛选/分页/加载状态互不共享），
  *   Tabs 默认懒挂载、已挂载标签卸载保留，切换不串数据；
- * - 参考资料标签复用 features/reference-document 的公开列表组件（筛选/分页/四态），
+ * - 历史维修记录标签复用 features/reference-document 的公开列表组件（筛选/分页/四态），
  *   不制造平行功能；任务 07 起该标签只读，不再提供「新增资料」入口；
  * - 维修申请标签复用任务 04 的工单读侧；AI 会话/AI 报告标签复用 PR3 既有历史读侧，
  *   任务 05 已合入：AI 会话标签按其合并版本展示真实会话/消息/问答与导出；

@@ -58,7 +58,7 @@ function isFaultCaseType(documentType: string): boolean {
 }
 
 /**
- * AI 参考资料读侧查询服务
+ * 历史维修记录读侧查询服务
  *
  * 职责范围：
  * - 未软删、本组织（owner_organization_id）资料列表（分页 + 标题模糊搜索 +
@@ -274,7 +274,7 @@ export class ReferenceDocumentQueryService {
         : await documentRepository.findOne({ where: documentWhere });
     if (!entity || entity.deprecated) {
       // details 仅含资料标识，不区分「不存在」「已软删」「跨组织」，防删除状态与存在性探测
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: params.documentId,
       });
     }

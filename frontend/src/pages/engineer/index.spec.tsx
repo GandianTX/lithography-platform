@@ -77,7 +77,7 @@ describe('EngineerPage', () => {
     expect(screen.getByText('工作台桩')).toBeTruthy();
     expect(screen.getByText('全部维修申请')).toBeTruthy();
     expect(screen.getByText('我的接单')).toBeTruthy();
-    expect(screen.getByText('参考资料库')).toBeTruthy();
+    expect(screen.getByText('历史维修记录库')).toBeTruthy();
     expect(screen.getByText('账号设置')).toBeTruthy();
     // 个人信息条来自 session 公开模型：右侧按「标签 + 值」分栏展示
     expect(screen.getByText('陈工')).toBeTruthy();
@@ -108,7 +108,7 @@ describe('EngineerPage', () => {
     // 任务 06 两个入口：历史维修记录（2026-11-21 起直达新建页）/ 工单维修总结
     ['历史维修记录', '/engineer/maintenance-records/new'],
     ['工单维修总结', '/engineer/work-order-summaries'],
-    ['参考资料库', '/reference-documents'],
+    ['历史维修记录库', '/reference-documents'],
     ['账号设置', '/account/settings'],
   ])('点击快捷入口「%s」前往真实路由', (label, path) => {
     render(<EngineerPage />);

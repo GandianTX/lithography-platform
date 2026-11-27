@@ -115,7 +115,7 @@ function SwitchProbe({ register }: { register: (fn: (l: 'zh-CN' | 'en') => void)
 
 const ADMIN_VIEWER: ReferenceDocumentViewer = { role: 'SUPER_ADMIN', adminLevel: 1 };
 
-describe('参考资料详情面板语言切换', () => {
+describe('历史维修记录详情面板语言切换', () => {
   afterEach(() => {
     cleanup();
     window.localStorage.clear();

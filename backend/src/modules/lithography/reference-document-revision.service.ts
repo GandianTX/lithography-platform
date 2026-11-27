@@ -130,7 +130,7 @@ export class ReferenceDocumentRevisionService {
     } catch (error) {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED,
-        '参考资料修订失败，请稍后重试',
+        '历史维修记录修订失败，请稍后重试',
         { id: documentId },
         error,
       );
@@ -197,7 +197,7 @@ export class ReferenceDocumentRevisionService {
     } catch (error) {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED,
-        '参考资料修订历史写入失败，请稍后重试',
+        '历史维修记录修订历史写入失败，请稍后重试',
         { id: data.documentId },
         error,
       );
@@ -260,7 +260,7 @@ export class ReferenceDocumentRevisionService {
     } catch (error) {
       throw new DomainError(
         REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED,
-        '参考资料管理修订推进失败，请稍后重试',
+        '历史维修记录管理修订推进失败，请稍后重试',
         { id: params.documentId },
         error,
       );

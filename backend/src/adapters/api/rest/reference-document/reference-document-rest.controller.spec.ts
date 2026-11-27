@@ -62,7 +62,7 @@ describe('ReferenceDocumentRestController（REST 下载边界只解析协议与�
   it('下载失败映射受控 REST 错误（不携带服务器路径）', async () => {
     const { controller, getReferenceDocumentFileUsecase } = makeController();
     getReferenceDocumentFileUsecase.execute.mockRejectedValueOnce(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.FILE_NOT_AVAILABLE, '参考资料文件不可用'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.FILE_NOT_AVAILABLE, '历史维修记录文件不可用'),
     );
 
     const error = await controller
@@ -104,7 +104,7 @@ describe('ReferenceDocumentRestController（REST 下载边界只解析协议与�
   it('来源报告原件下载失败：映射受控 REST 错误（不携带服务器路径与存储引用）', async () => {
     const { controller, downloadSourceAttachmentUsecase } = makeController();
     downloadSourceAttachmentUsecase.execute.mockRejectedValueOnce(
-      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问'),
+      new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问'),
     );
 
     const error = await controller

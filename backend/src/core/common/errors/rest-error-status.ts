@@ -60,7 +60,7 @@ export function resolveRestStatus(code: string): number {
     [CONTENT_SUBMISSION_ERROR.EQUIPMENT_MODEL_NOT_FOUND]: 400,
     [CONTENT_SUBMISSION_ERROR.NOT_FOUND]: 404,
     [CONTENT_SUBMISSION_ERROR.STATE_NOT_EDITABLE]: 409,
-    // 投稿附件链路（A-PR0 §4.2）与参考资料上传同口径：缺失 400、超限 413、
+    // 投稿附件链路（A-PR0 §4.2）与历史维修记录上传同口径：缺失 400、超限 413、
     // 类型不允许 415、存储对象缺失 404
     [CONTENT_SUBMISSION_ERROR.UPLOAD_FILE_MISSING]: 400,
     [CONTENT_SUBMISSION_ERROR.UPLOAD_FILE_TOO_LARGE]: 413,

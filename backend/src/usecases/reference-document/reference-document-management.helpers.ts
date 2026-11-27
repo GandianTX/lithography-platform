@@ -47,7 +47,7 @@ export async function resolveEffectiveContentText(
       detail.effectiveRevisionNo,
     );
     if (revision === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }
@@ -63,7 +63,7 @@ export async function resolveEffectiveContentText(
       detail.sourceReportVersionId,
     );
     if (version === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }
@@ -91,7 +91,7 @@ export async function resolveEffectiveStructuredContent(
       detail.effectiveRevisionNo,
     );
     if (revision === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }
@@ -107,7 +107,7 @@ export async function resolveEffectiveStructuredContent(
       detail.sourceReportVersionId,
     );
     if (version === null) {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可访问', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可访问', {
         id: detail.id,
       });
     }
@@ -192,7 +192,7 @@ export function assertExpectedRevisionNo(
   if (detail.effectiveRevisionNo !== expectedVersion) {
     throw new DomainError(
       REFERENCE_DOCUMENT_ERROR.VERSION_CONFLICT,
-      '参考资料版本已更新，请重新读取当前版本后重试',
+      '历史维修记录版本已更新，请重新读取当前版本后重试',
       { id: detail.id, expectedVersion, currentVersion: detail.effectiveRevisionNo },
     );
   }

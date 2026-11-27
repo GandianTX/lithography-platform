@@ -58,7 +58,7 @@ import { ValidateAdminDocumentDatabaseInput } from './validate-admin-document-da
  * - 工单域提供唯一受控写入口 `appendRepairRequestRevision`（版本条件 + 字段白名单），
  *   其余标签保持只读；排序由契约固定（创建时间倒序 + 主键倒序；
  *   AI 消息为 messageSeq 升序），不采纳客户端排序字段；
- * - 参考资料标签复用既有 referenceDocuments / referenceDocument 查询
+ * - 历史维修记录标签复用既有 referenceDocuments / referenceDocument 查询
  *   （工程师/管理员读契约），本解析器不另建平行链路。
  */
 @Resolver()

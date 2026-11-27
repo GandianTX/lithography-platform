@@ -140,7 +140,7 @@ export class SoftDeleteReferenceDocumentUsecase {
       transactionContext,
     );
     if (outcome !== 'ADVANCED') {
-      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '参考资料不存在或不可删除', {
+      throw new DomainError(REFERENCE_DOCUMENT_ERROR.NOT_FOUND, '历史维修记录不存在或不可删除', {
         id: command.documentId,
       });
     }
@@ -153,7 +153,7 @@ export class SoftDeleteReferenceDocumentUsecase {
       if (adminLevel === null) {
         throw new DomainError(
           REFERENCE_DOCUMENT_ERROR.UPDATE_FAILED,
-          '参考资料删除失败，请稍后重试',
+          '历史维修记录删除失败，请稍后重试',
           { id: command.documentId },
         );
       }

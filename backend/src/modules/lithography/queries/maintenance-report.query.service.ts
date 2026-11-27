@@ -374,7 +374,7 @@ export class MaintenanceReportQueryService {
     const reportRepository = this.getReportRepository(transactionContext);
     // R052 / 页面 V6.5 §9.2（2026-11-21 页面设计确认）：页面只展示「本人创建且本人有权
     // 访问」的记录——所有分支必带作者谓词；他人草稿、他人待审与他人正式记录一律
-    // 不出现在本页面（一级/二级管理员查看他人正式资料走参考资料库与管理员文档
+    // 不出现在本页面（一级/二级管理员查看他人正式资料走历史维修记录库与管理员文档
     // 数据库，按 R055/R056 资源权限裁决）。
     // - 本人分支覆盖本人全部非草稿状态（含历史 PENDING_REVIEW，保持既有口径）；
     //   不枚举具体正式状态，兼容任务 06 新增的 SUBMITTED。

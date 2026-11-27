@@ -4,7 +4,7 @@
 // 数据基础：backend seed 预置数据（只读断言）——维修申请 920001~920005
 //（920004 已软删不可见）、AI 会话 930001~930003（930002 进行中，含消息
 // 940006~940011，SYSTEM/USER/ASSISTANT/TOOL 三轮完整覆盖）、AI 报告
-// 950001~950002、参考资料 970001~970003（970002 含下载入口）。
+// 950001~950002、历史维修记录 970001~970003（970002 含下载入口）。
 // 分页用例以本次运行唯一故障码（RUN_ID）自建 12 行跑满两页，try 从首笔写入前
 // 开始、逐笔记录创建响应的精确 ID 与编号（连同本轮输入事实形成目标记录），finally 经
 // deleteMyRepairRequest 逐 ID 幂等软删（清理失败归并进 primaryError 让测试转红）；
@@ -244,7 +244,7 @@ test.describe('real backend admin document database', () => {
   });
 
   // 计划表 S4.5 主链路：四标签真实渲染 + 真实统计入卡 + seed 行 + 会话消息详情 +
-  // 报告正文 + 参考资料下载入口 + 刷新恢复（seed 只读，无数据写入）
+  // 报告正文 + 历史维修记录下载入口 + 刷新恢复（seed 只读，无数据写入）
   test('super admin 四标签主链路：真实统计、seed 行、会话消息、报告正文与下载入口', async ({
     page,
   }) => {
@@ -270,7 +270,7 @@ test.describe('real backend admin document database', () => {
         page.locator('.kb-summary-cell', { hasText: label }).locator('.kb-summary-value'),
       ).toContainText(String(value));
     expectSummaryCell('维修申请', stats.repairRequestTotal);
-    expectSummaryCell('参考资料', stats.referenceDocumentTotal);
+    expectSummaryCell('历史维修记录', stats.referenceDocumentTotal);
     expectSummaryCell('AI 会话', stats.aiConversationTotal);
     expectSummaryCell('AI 报告', stats.aiReportTotal);
 
@@ -286,7 +286,7 @@ test.describe('real backend admin document database', () => {
 
     // AI 会话标签：组合筛选（关联申请编号 + 会话状态=进行中）唯一定位 seed 930002；
     // 会话状态等精确条件在「筛选」展开区内（PR3 R7 S5）
-    await page.getByRole('tab', { name: 'AI 会话' }).click();
+    await page.getByRole('tab', { name: 'AI 会话记录' }).click();
     await activePane(page)
       .getByPlaceholder('按关联申请编号搜索')
       .fill(SEED_ACTIVE_CONVERSATION_REQUEST_NO);
@@ -327,9 +327,9 @@ test.describe('real backend admin document database', () => {
     await detailDrawer(page).getByRole('button', { name: 'Close' }).click();
     await expect(detailDrawer(page)).toHaveCount(0);
 
-    // 参考资料标签：seed 行可达，含原始文件名的行进详情后下载入口可见（不点击下载，
+    // 历史维修记录库标签：seed 行可达，含原始文件名的行进详情后下载入口可见（不点击下载，
     // 下载字节链路由 reference-document-real.spec 覆盖）
-    await page.getByRole('tab', { name: '参考资料' }).click();
+    await page.getByRole('tab', { name: '历史维修记录库' }).click();
     await activePane(page).getByText('NXE:3400C 光源维护指南（Mock）').click();
     await expect(page).toHaveURL(/\/reference-documents\/\d+$/);
     await expect(page.getByRole('button', { name: /下载文件/ })).toBeVisible();
@@ -338,7 +338,7 @@ test.describe('real backend admin document database', () => {
     await page.goto(PAGE_PATH);
     await expect(page.getByRole('heading', { name: '文档数据库' })).toBeVisible();
     expectSummaryCell('AI 报告', stats.aiReportTotal);
-    await expect(page.getByRole('tab', { name: '参考资料' })).toHaveAttribute(
+    await expect(page.getByRole('tab', { name: '历史维修记录库' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
@@ -379,7 +379,7 @@ test.describe('real backend admin document database', () => {
     await expect(activePane(page).getByRole('cell', { name: 'MOCK-RR-2026-0002' })).toBeVisible();
 
     // AI 会话：状态筛选已完成 → 进行中标签消失；清空恢复（状态在「筛选」展开区）
-    await page.getByRole('tab', { name: 'AI 会话' }).click();
+    await page.getByRole('tab', { name: 'AI 会话记录' }).click();
     await activePane(page).getByRole('button', { name: '筛选' }).click();
     await activePane(page).getByRole('combobox').click();
     await page.locator('.ant-select-item-option', { hasText: '已完成' }).click();

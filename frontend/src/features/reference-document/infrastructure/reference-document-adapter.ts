@@ -20,7 +20,7 @@ import type {
 } from './reference-document.types';
 
 /**
- * AI 参考资料库真实 GraphQL 数据访问层。
+ * 历史维修记录库真实 GraphQL 数据访问层。
  *
  * 错误双轨制（frontend/docs/project-convention/graphql-error-model.md）：
  * - transport / auth / network / malformed 失败由共享层归一为 GraphQLIngressError 原样上抛；
@@ -419,7 +419,7 @@ const MANAGED_MUTATION_FALLBACK_MESSAGE_BY_REASON: Record<
   string
 > = {
   'version-conflict': '资料版本已更新，请重新读取当前版本后重试。',
-  'not-found': '参考资料不存在或不可访问。',
+  'not-found': '历史维修记录不存在或不可访问。',
   'invalid-input': '输入不符合要求，请检查后重新提交。',
   'management-failed': '资料管理操作失败，请稍后重试。',
 };
@@ -441,9 +441,9 @@ const DELETE_FALLBACK_MESSAGE_BY_REASON: Record<
   Extract<DeleteReferenceDocumentResult, { ok: false }>['reason'],
   string
 > = {
-  'not-found': '参考资料不存在或不可删除。',
+  'not-found': '历史维修记录不存在或不可删除。',
   'version-conflict': '资料版本已更新，请重新读取当前版本后重试。',
-  'delete-failed': '参考资料删除失败，请稍后重试。',
+  'delete-failed': '历史维修记录删除失败，请稍后重试。',
 };
 
 /**
@@ -553,7 +553,7 @@ export async function fetchReferenceEquipmentModels(): Promise<
 }
 
 /**
- * 查询参考资料列表（仅未软删，后端固定 createdAt DESC + id DESC，OFFSET 分页）。
+ * 查询历史维修记录列表（仅未软删，后端固定 createdAt DESC + id DESC，OFFSET 分页）。
  * 前端筛选名 titleKeyword 映射为契约字段 title；空白搜索词视为无筛选（与 Mock 口径一致）。
  */
 export async function fetchReferenceDocuments(
@@ -601,7 +601,7 @@ export async function fetchReferenceDocuments(
 }
 
 /**
- * 查询参考资料详情（元数据 + 生效正文 + 可空案例明细 + 冻结报告）。
+ * 查询历史维修记录详情（元数据 + 生效正文 + 可空案例明细 + 冻结报告）。
  *
  * - domain failure 归并为 not-found 防探测拒绝：不存在 / 已软删由后端统一 NOT_FOUND；
  *   FORBIDDEN（守卫拒绝）同样归并 not-found，与维修申请详情读取的既有契约处理一致；
@@ -622,7 +622,7 @@ export async function fetchReferenceDocument(id: number): Promise<ReferenceDocum
       return {
         ok: false,
         reason: 'not-found',
-        message: detail.errorMessage ?? '参考资料不存在或不可查看。',
+        message: detail.errorMessage ?? '历史维修记录不存在或不可查看。',
       };
     }
 
@@ -690,7 +690,7 @@ export async function fetchPendingOwnershipReferenceDocument(
 }
 
 /**
- * 查询参考资料历史版本（生效修订摘要 + 原始冻结报告版本标识）。
+ * 查询历史维修记录的管理修订版本（生效修订摘要 + 原始冻结报告版本标识）。
  * 与列表/详情/下载共用同一服务端可见范围；不可见资料统一 NOT_FOUND。
  * currentRevisionNo 即 expected_version（R053/R058–R061 写前的版本核对依据）。
  */
@@ -770,7 +770,7 @@ export async function fetchReferenceDocumentEditableContent(
       return {
         ok: false,
         reason: 'not-found',
-        message: detail.errorMessage ?? '参考资料不存在或不可访问。',
+        message: detail.errorMessage ?? '历史维修记录不存在或不可访问。',
       };
     }
     throw error;

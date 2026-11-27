@@ -20,7 +20,7 @@ import { LocalReferenceDocumentStorage } from './local-reference-document-storag
 import { LocalStoredFileStorage } from './local-stored-file-storage';
 
 /**
- * 参考资料与投稿附件文件存储/上传策略 token 装配（与 TypeOrmTransactionModule 同模式：全局 + useExisting）。
+ * 历史维修记录与投稿附件文件存储/上传策略 token 装配（与 TypeOrmTransactionModule 同模式：全局 + useExisting）。
  * 运行时配置读取归 infrastructure wiring（架构规则）；上传大小/MIME 白名单由本模块注入，
  * usecase 层作为业务规则单一真源消费（负责人 0910 架构要求）。
  *
@@ -33,7 +33,7 @@ import { LocalStoredFileStorage } from './local-stored-file-storage';
   providers: [
     LocalReferenceDocumentStorage,
     { provide: REFERENCE_DOCUMENT_STORAGE, useExisting: LocalReferenceDocumentStorage },
-    // 投稿附件与参考资料共用同一存储实例（同一存储根、同一安全实现）
+    // 投稿附件与历史维修记录共用同一存储实例（同一存储根、同一安全实现）
     {
       provide: CONTENT_SUBMISSION_ATTACHMENT_STORAGE,
       useExisting: LocalReferenceDocumentStorage,
@@ -64,7 +64,7 @@ import { LocalStoredFileStorage } from './local-stored-file-storage';
       inject: [ConfigService],
     },
     // 共用业务原件（任务 11）：复用同一本地存储实现与同一配置 key；
-    // 同一实现实例同时满足参考资料/投稿/原件三个契约，安全边界不复制
+    // 同一实现实例同时满足历史维修记录/投稿/原件三个契约，安全边界不复制
     LocalStoredFileStorage,
     { provide: STORED_FILE_STORAGE, useExisting: LocalStoredFileStorage },
     {

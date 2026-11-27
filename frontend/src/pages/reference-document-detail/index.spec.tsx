@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 
 /**
- * 参考资料详情页（/reference-documents/:documentId）页面级单测（任务 07 改造后）。
+ * 历史维修记录详情页（/reference-documents/:documentId）页面级单测（任务 07 改造后）。
  *
  * 页面职责边界：路由参数解析（合法正整数才注入面板）+ 页头装配；
  * 面板内部状态机、NOT_FOUND 归一、历史版本与下载链路由 feature 自身 spec 覆盖。
@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReferenceDocumentDetail } from '@/features/reference-document';
 
+import { type AppLanguage, createTranslator, I18nContext } from '@/shared/i18n';
 import { MessageFeedbackProvider } from '@/shared/ui/message-feedback';
 
 import { ReferenceDocumentDetailPage } from './index';
@@ -118,11 +119,11 @@ beforeEach(() => {
   stubGraphQLResponses();
 });
 
-describe('参考资料详情页：合法参数与只读渲染', () => {
+describe('历史维修记录详情页：合法参数与只读渲染', () => {
   it('合法正整数参数：发起详情与历史版本查询，渲染只读面板与下载入口', async () => {
     renderPage();
 
-    expect(screen.getByRole('heading', { name: '参考资料详情' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '历史维修记录详情' })).toBeTruthy();
     expect(await screen.findByText('NXE:3400C 光源维护指南（页面级 Mock）')).toBeTruthy();
     expect(await screen.findByText('历史版本')).toBeTruthy();
 
@@ -136,7 +137,7 @@ describe('参考资料详情页：合法参数与只读渲染', () => {
   });
 });
 
-describe('参考资料详情页：非法路由参数不发请求', () => {
+describe('历史维修记录详情页：非法路由参数不发请求', () => {
   const ILLEGAL_PARAMS: ReadonlyArray<readonly [label: string, raw: string | undefined]> = [
     ['非数字 abc', 'abc'],
     ['零 0', '0'],
@@ -155,10 +156,49 @@ describe('参考资料详情页：非法路由参数不发请求', () => {
 
       renderPage();
 
-      expect(await screen.findByText('参考资料不存在或不可查看。')).toBeTruthy();
+      expect(await screen.findByText('历史维修记录不存在或不可查看。')).toBeTruthy();
       expect(executeGraphQLMock).not.toHaveBeenCalled();
       expect(screen.queryByRole('button', { name: /编\s*辑/ })).toBeNull();
       expect(screen.queryByRole('button', { name: /删\s*除/ })).toBeNull();
     },
   );
+});
+
+// 2026-11-27：详情页页头改为词条驱动，切换语言后标题与描述实际显示对应语言。
+describe('历史维修记录详情页：页头中英文（i18n）', () => {
+  function renderInLanguage(language: AppLanguage) {
+    return render(
+      <I18nContext.Provider
+        value={{ language, setLanguage: () => undefined, t: createTranslator(language) }}
+      >
+        <MessageFeedbackProvider>
+          <ReferenceDocumentDetailPage />
+        </MessageFeedbackProvider>
+      </I18nContext.Provider>,
+    );
+  }
+
+  it('中文模式：标题/副标/描述为中文', async () => {
+    const { container } = renderInLanguage('zh-CN');
+
+    await screen.findByText('NXE:3400C 光源维护指南（页面级 Mock）');
+
+    expect(container.querySelector('.page-title')?.textContent).toBe('历史维修记录详情');
+    expect(container.querySelector('.page-eyebrow')?.textContent).toBe('历史维修记录详情');
+    expect(container.querySelector('.page-description')?.textContent).toBe(
+      '查阅维护知识资料的完整内容、来源版本与历史版本。',
+    );
+  });
+
+  it('英文模式：标题/副标/描述切换为英文', async () => {
+    const { container } = renderInLanguage('en');
+
+    await screen.findByText('NXE:3400C 光源维护指南（页面级 Mock）');
+
+    expect(container.querySelector('.page-title')?.textContent).toBe('Maintenance record detail');
+    expect(container.querySelector('.page-eyebrow')?.textContent).toBe('Maintenance Record Detail');
+    expect(container.querySelector('.page-description')?.textContent).toBe(
+      'Read the full content, source version, and version history of this maintenance record.',
+    );
+  });
 });

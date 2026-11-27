@@ -22,8 +22,8 @@ import { GetAdminDocumentDatabaseStatsUsecase } from './get-admin-document-datab
 /**
  * PR3 S4：管理员文档数据库统计用例单测。
  *
- * 统计口径与各标签默认列表过滤一致（计划表 S3.3）：维修申请/参考资料不含
- * 软删除，AI 会话/报告计全量；参考资料总数取真实 total（pageSize=1 查询）。
+ * 统计口径与各标签默认列表过滤一致（计划表 S3.3）：维修申请/历史维修记录不含
+ * 软删除，AI 会话/报告计全量；历史维修记录总数取真实 total（pageSize=1 查询）。
  * 2026-11-21 需求调整：资料列表读侧一级管理员为 GLOBAL（功能 V5.6 R055、
  * reference-document-read-scope.ts），统计与列表必须同一口径——一级管理员
  * 资料统计覆盖全部公司正式资料（organizationId: null，不按组织过滤）；
@@ -83,7 +83,7 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
     return { access, repair, conversation, report, reference, organizationContext, usecase };
   };
 
-  it('四类统计并行聚合：口径与默认列表过滤一致，参考资料统计覆盖一级管理员全范围', async () => {
+  it('四类统计并行聚合：口径与默认列表过滤一致，历史维修记录统计覆盖一级管理员全范围', async () => {
     const h = makeHarness();
 
     const stats = await h.usecase.execute({ session: createSuperAdminSession() });
@@ -94,7 +94,7 @@ describe('GetAdminDocumentDatabaseStatsUsecase', () => {
       aiReportTotal: 9,
       referenceDocumentTotal: 5,
     });
-    // 参考资料：以 pageSize=1 的 withTotal 查询取真实总数，不取当页条数冒充；
+    // 历史维修记录：以 pageSize=1 的 withTotal 查询取真实总数，不取当页条数冒充；
     // 文档数据库为一级管理员全域口径：统计与资料列表读侧（resolveReferenceDocumentReadScope）
     // 同源同口径，只计未软删、已上架、归属已确认，不按本人组织收窄
     expect(h.reference.listDocuments).toHaveBeenCalledWith({

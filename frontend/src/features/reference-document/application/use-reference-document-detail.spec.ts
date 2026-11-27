@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 
 /**
- * 参考资料详情 query 状态机单测（负责人 0909 阻塞项 2）。
+ * 历史维修记录详情 query 状态机单测（负责人 0909 阻塞项 2）。
  *
  * 用两个可控 Promise 模拟「请求 A 在途时切换 B、B 先返回、A 后返回」的竞态：
  * 无论旧请求成功、not-found 还是抛错，都不得覆盖当前 ID 的状态；
@@ -137,7 +137,11 @@ describe('useReferenceDocumentDetail 竞态保护', () => {
 
     // 旧请求 A 的 not-found 不得覆盖
     await act(async () => {
-      promiseA.resolve({ ok: false, reason: 'not-found', message: '参考资料不存在或不可查看。' });
+      promiseA.resolve({
+        ok: false,
+        reason: 'not-found',
+        message: '历史维修记录不存在或不可查看。',
+      });
     });
     expect(result.current.state.status).toBe('ready');
     expect(result.current.state.status === 'ready' ? result.current.state.detail.id : null).toBe(
@@ -153,7 +157,7 @@ describe('useReferenceDocumentDetail 竞态保护', () => {
     await waitFor(() => expect(result.current.state.status).toBe('not-found'));
     expect(fetchDetailMock).not.toHaveBeenCalled();
     expect(result.current.state.status === 'not-found' ? result.current.state.message : null).toBe(
-      '参考资料不存在或不可查看。',
+      '历史维修记录不存在或不可查看。',
     );
 
     fetchDetailMock.mockResolvedValue({ ok: true, detail: buildDetail(970002) });
@@ -223,7 +227,7 @@ describe('useReferenceDocumentDetail 竞态保护', () => {
         rendered.result.current.state.status === 'not-found'
           ? rendered.result.current.state.message
           : null,
-      ).toBe('参考资料不存在或不可查看。');
+      ).toBe('历史维修记录不存在或不可查看。');
     });
 
     it('A 后返回 not-found：不重复覆盖（状态与文案保持稳定）', async () => {
@@ -245,7 +249,7 @@ describe('useReferenceDocumentDetail 竞态保护', () => {
         rendered.result.current.state.status === 'not-found'
           ? rendered.result.current.state.message
           : null,
-      ).toBe('参考资料不存在或不可查看。');
+      ).toBe('历史维修记录不存在或不可查看。');
     });
 
     it('A 后返回失败（抛错）：不得覆盖当前无效路由的 not-found', async () => {
@@ -263,7 +267,7 @@ describe('useReferenceDocumentDetail 竞态保护', () => {
         rendered.result.current.state.status === 'not-found'
           ? rendered.result.current.state.message
           : null,
-      ).toBe('参考资料不存在或不可查看。');
+      ).toBe('历史维修记录不存在或不可查看。');
     });
   });
 });

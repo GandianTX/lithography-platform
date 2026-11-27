@@ -188,7 +188,7 @@ const CUSTOMER_DETAIL_CASE: Pr5PageCase = {
 const REFERENCE_LIST_CASE: Pr5PageCase = {
   area: 'pr5-responsive-reference-list',
   expectReady: async (page) => {
-    await expect(page.locator('.page-title')).toHaveText('参考资料库');
+    await expect(page.locator('.page-title')).toHaveText('历史维修记录库');
     await expect(page.locator('.reference-library-table-scope')).toHaveCount(1);
     await expect(page.getByText('光源模块维护指南')).toBeVisible();
     await expect(page.locator('.reference-library-card-footer')).toContainText(
@@ -221,7 +221,7 @@ const REFERENCE_NEW_CASE: Pr5PageCase = {
 const REFERENCE_DETAIL_CASE: Pr5PageCase = {
   area: 'pr5-responsive-reference-detail',
   expectReady: async (page) => {
-    await expect(page.locator('.page-title')).toHaveText('参考资料详情');
+    await expect(page.locator('.page-title')).toHaveText('历史维修记录详情');
     await expect(page.locator('.reference-document-detail')).toHaveCount(1);
     await expect(page.locator('.ant-card-head-title')).toHaveText(LIST_ITEMS[0].title);
     await expect(page.locator('.ant-descriptions-item-content')).toContainText([

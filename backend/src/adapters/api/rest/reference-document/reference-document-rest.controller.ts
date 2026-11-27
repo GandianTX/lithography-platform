@@ -27,7 +27,7 @@ import type { ReferenceDocumentFilePayload } from '@src/usecases/reference-docum
 import { applyDownloadHeaders, toRestError } from '../shared/upload-boundary.util';
 
 /**
- * 参考资料文件下载 REST 边界（任务 07）。
+ * 历史维修记录文件下载 REST 边界（任务 07）。
  *
  * - 旧 POST /api/reference-documents/upload（普通资料文件新增写入口）已按确认需求
  *   关闭：本期普通资料新增取消，服务端同步关闭生产写入口，不为 E2E 造数保留；
